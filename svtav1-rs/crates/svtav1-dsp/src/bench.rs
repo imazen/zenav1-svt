@@ -4,7 +4,6 @@
 //! against C SVT-AV1. Uses wall-clock timing with enough iterations
 //! to get stable results.
 
-use alloc::format;
 use alloc::string::String;
 use alloc::string::ToString;
 use alloc::vec;
