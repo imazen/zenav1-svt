@@ -6,5 +6,7 @@
 
 extern crate alloc;
 
+pub mod copy;
+pub mod hadamard;
 pub mod sad;
 pub mod variance;
