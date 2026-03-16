@@ -5,6 +5,7 @@
 //!
 //! Cosine constants from `svt_aom_eb_av1_cospi_arr_data` in `inv_transforms.c`.
 
+use alloc::vec;
 use svtav1_types::transform::TranLow;
 
 // =============================================================================

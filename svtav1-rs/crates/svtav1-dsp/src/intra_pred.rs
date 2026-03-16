@@ -212,6 +212,8 @@ static SM_WEIGHTS_64: [u8; 64] = [
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
+    use alloc::vec::Vec;
 
     fn make_test_block(width: usize, height: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>, u8) {
         // above: increasing values

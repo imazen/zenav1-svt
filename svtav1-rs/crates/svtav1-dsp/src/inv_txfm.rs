@@ -9,6 +9,7 @@
 use crate::fwd_txfm::{
     COS_BIT, COSPI, NEW_SQRT2, NEW_SQRT2_BITS, SINPI, half_btf, round_shift_array, round_shift_i64,
 };
+use alloc::vec;
 use svtav1_types::transform::TranLow;
 
 // =============================================================================
