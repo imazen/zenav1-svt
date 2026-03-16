@@ -226,6 +226,10 @@ impl AvifEncoder {
     ///
     /// Quality 100 -> QP 0 (best), quality 1 -> QP 63 (worst).
     /// The mapping is linear: QP = 63 - floor((quality - 1) * 63 / 99).
+    pub fn quality_to_qp_static(quality: f32) -> u8 {
+        Self::quality_to_qp(quality)
+    }
+
     fn quality_to_qp(quality: f32) -> u8 {
         let clamped = quality.clamp(1.0, 100.0);
         let qp = 63.0 - (clamped - 1.0) * 63.0 / 99.0;
