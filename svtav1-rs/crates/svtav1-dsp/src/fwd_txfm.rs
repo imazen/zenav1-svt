@@ -1820,6 +1820,117 @@ pub fn fwd_txfm2d(
     }
 }
 
+/// Forward 2D transform for rectangular blocks.
+///
+/// Handles different column and row sizes. For 2:1 ratio rectangles,
+/// applies sqrt(2) scaling after row transform. For 4:1 ratio,
+/// applies 2*sqrt(2) scaling.
+pub fn fwd_txfm2d_rect(
+    input: &[TranLow],
+    output: &mut [TranLow],
+    stride: usize,
+    col_func: TxfmFunc,
+    row_func: TxfmFunc,
+    col_size: usize,
+    row_size: usize,
+    shift: [i32; 3],
+) {
+    let mut buf = vec![0i32; col_size * row_size];
+    let mut temp_in = vec![0i32; col_size.max(row_size)];
+    let mut temp_out = vec![0i32; col_size.max(row_size)];
+
+    // Column transforms (height = row_size, iterate over columns)
+    for col in 0..col_size {
+        for row in 0..row_size {
+            temp_in[row] = input[row * stride + col];
+        }
+        round_shift_array(&mut temp_in[..row_size], -shift[0]);
+        col_func(&temp_in[..row_size], &mut temp_out[..row_size]);
+        round_shift_array(&mut temp_out[..row_size], -shift[1]);
+        for row in 0..row_size {
+            buf[row * col_size + col] = temp_out[row];
+        }
+    }
+
+    // Compute rect_type for scaling
+    let rect_type = if col_size == row_size {
+        0 // square
+    } else if col_size == 2 * row_size || row_size == 2 * col_size {
+        1 // 2:1 ratio
+    } else {
+        2 // 4:1 ratio
+    };
+
+    // Row transforms
+    for row in 0..row_size {
+        let start = row * col_size;
+        temp_in[..col_size].copy_from_slice(&buf[start..start + col_size]);
+        row_func(&temp_in[..col_size], &mut temp_out[..col_size]);
+        round_shift_array(&mut temp_out[..col_size], -shift[2]);
+
+        // Rectangular scaling
+        if rect_type == 1 {
+            for c in 0..col_size {
+                temp_out[c] =
+                    round_shift_i64(temp_out[c] as i64 * NEW_SQRT2 as i64, NEW_SQRT2_BITS);
+            }
+        } else if rect_type == 2 {
+            for c in 0..col_size {
+                temp_out[c] =
+                    round_shift_i64(temp_out[c] as i64 * 2 * NEW_SQRT2 as i64, NEW_SQRT2_BITS);
+            }
+        }
+
+        output[start..start + col_size].copy_from_slice(&temp_out[..col_size]);
+    }
+}
+
+/// Forward 64x64 DCT-DCT.
+pub fn fwd_txfm2d_64x64_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+    // 64x64 shift: [2, -6, 0]
+    fwd_txfm2d(input, output, stride, fdct64, fdct64, 64, [2, -6, 0]);
+}
+
+/// Forward 4x8 DCT-DCT (rectangular).
+pub fn fwd_txfm2d_4x8_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+    fwd_txfm2d_rect(input, output, stride, fdct4, fdct8, 4, 8, [2, 0, 0]);
+}
+
+/// Forward 8x4 DCT-DCT (rectangular).
+pub fn fwd_txfm2d_8x4_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+    fwd_txfm2d_rect(input, output, stride, fdct8, fdct4, 8, 4, [2, 0, 0]);
+}
+
+/// Forward 8x16 DCT-DCT (rectangular).
+pub fn fwd_txfm2d_8x16_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+    fwd_txfm2d_rect(input, output, stride, fdct8, fdct16, 8, 16, [2, -1, 0]);
+}
+
+/// Forward 16x8 DCT-DCT (rectangular).
+pub fn fwd_txfm2d_16x8_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+    fwd_txfm2d_rect(input, output, stride, fdct16, fdct8, 16, 8, [2, -1, 0]);
+}
+
+/// Forward 16x32 DCT-DCT (rectangular).
+pub fn fwd_txfm2d_16x32_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+    fwd_txfm2d_rect(input, output, stride, fdct16, fdct32, 16, 32, [2, -2, 0]);
+}
+
+/// Forward 32x16 DCT-DCT (rectangular).
+pub fn fwd_txfm2d_32x16_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+    fwd_txfm2d_rect(input, output, stride, fdct32, fdct16, 32, 16, [2, -2, 0]);
+}
+
+/// Forward 32x64 DCT-DCT (rectangular).
+pub fn fwd_txfm2d_32x64_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+    fwd_txfm2d_rect(input, output, stride, fdct32, fdct64, 32, 64, [2, -4, 0]);
+}
+
+/// Forward 64x32 DCT-DCT (rectangular).
+pub fn fwd_txfm2d_64x32_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+    fwd_txfm2d_rect(input, output, stride, fdct64, fdct32, 64, 32, [2, -4, 0]);
+}
+
 /// Forward 4x4 DCT-DCT using the general framework.
 pub fn fwd_txfm2d_4x4_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
     incant!(
