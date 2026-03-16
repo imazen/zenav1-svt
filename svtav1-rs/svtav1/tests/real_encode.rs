@@ -104,6 +104,7 @@ fn compute_psnr(original: &[u8], reconstructed: &[u8]) -> f64 {
     10.0 * (255.0 * 255.0 / mse).log10()
 }
 
+#[allow(dead_code)]
 fn compute_mse(original: &[u8], reconstructed: &[u8]) -> f64 {
     assert_eq!(original.len(), reconstructed.len());
     original
@@ -193,8 +194,8 @@ fn encode_and_get_recon(
     // Encode block by block and collect reconstruction
     let bw = 8usize;
     let bh = 8usize;
-    let blocks_x = (width + bw - 1) / bw;
-    let blocks_y = (height + bh - 1) / bh;
+    let blocks_x = width.div_ceil(bw);
+    let blocks_y = height.div_ceil(bh);
     let qp = AvifEncoder::quality_to_qp_static(quality);
 
     for by in 0..blocks_y {
@@ -217,7 +218,7 @@ fn encode_and_get_recon(
             // Get neighbors from current recon
             let mut above = [128u8; 8];
             let mut left = [128u8; 8];
-            let top_left;
+
             let has_above = y0 > 0;
             let has_left = x0 > 0;
 
@@ -231,7 +232,7 @@ fn encode_and_get_recon(
                     left[r] = recon[(y0 + r) * width + x0 - 1];
                 }
             }
-            top_left = if has_above && has_left {
+            let _top_left = if has_above && has_left {
                 recon[(y0 - 1) * width + x0 - 1]
             } else {
                 128
@@ -284,7 +285,6 @@ fn encode_gradient_128x128_quality_sweep() {
     let pixels = make_gradient(width, height);
 
     let mut prev_psnr = 0.0f64;
-    let mut prev_size = usize::MAX;
 
     for quality in [20.0, 40.0, 60.0, 80.0, 95.0f32] {
         let (bitstream, recon) = encode_and_get_recon(&pixels, width, height, quality, 5);
@@ -305,7 +305,6 @@ fn encode_gradient_128x128_quality_sweep() {
         assert!(ssim > 0.5, "q={quality}: SSIM {ssim:.4} too low");
 
         prev_psnr = psnr;
-        prev_size = bitstream.len();
     }
 }
 
@@ -405,7 +404,7 @@ fn encode_non_power_of_two_dimensions() {
         let enc = AvifEncoder::new().with_quality(60.0).with_speed(8);
         let result = enc
             .encode_y8(&pixels, w as u32, h as u32, w as u32)
-            .expect(&format!("encode {w}x{h} should succeed"));
+            .unwrap_or_else(|_| panic!("encode {w}x{h} should succeed"));
         assert!(!result.data.is_empty(), "{w}x{h} should produce output");
     }
 }
@@ -418,7 +417,7 @@ fn encode_various_sizes() {
         let enc = AvifEncoder::new().with_quality(50.0);
         let result = enc
             .encode_y8(&pixels, size as u32, size as u32, size as u32)
-            .expect(&format!("encode {size}x{size} should succeed"));
+            .unwrap_or_else(|_| panic!("encode {size}x{size} should succeed"));
         assert!(!result.data.is_empty(), "{size}x{size}: empty output");
         assert!(
             result.data.len() < size * size, // Compressed should be smaller than raw
