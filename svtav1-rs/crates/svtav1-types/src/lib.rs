@@ -10,7 +10,9 @@
 
 extern crate alloc;
 
+pub mod bitstream;
 pub mod block;
+pub mod block_mode;
 pub mod constants;
 pub mod frame;
 pub mod interp;
