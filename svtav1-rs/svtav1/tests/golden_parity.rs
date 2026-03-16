@@ -671,3 +671,34 @@ fn fadst16_ramp_golden() {
     fadst16(&input, &mut output);
     assert_exact("fadst16_ramp", &output, &golden);
 }
+
+// =============================================================================
+// iadst16 golden parity (measured from C)
+// =============================================================================
+
+#[test]
+fn iadst16_from_fadst16_ramp_golden() {
+    let input = [
+        171i32, -404, -133, -149, -88, -91, -67, -66, -54, -55, -47, -49, -45, -44, -43, -42,
+    ];
+    let golden = [
+        -641i32, -561, -484, -401, -313, -238, -158, -78, -1, 81, 158, 234, 322, 400, 482, 560,
+    ];
+    let mut output = [0i32; 16];
+    svtav1_dsp::inv_txfm::iadst16(&input, &mut output);
+    assert_exact("iadst16_from_fadst16_ramp", &output, &golden);
+}
+
+// =============================================================================
+// idct32 golden parity (measured from C)
+// =============================================================================
+
+#[test]
+fn idct32_dc_golden() {
+    let mut input = [0i32; 32];
+    input[0] = 2263;
+    let golden = [1600i32; 32];
+    let mut output = [0i32; 32];
+    svtav1_dsp::inv_txfm::idct32(&input, &mut output);
+    assert_exact("idct32_dc", &output, &golden);
+}

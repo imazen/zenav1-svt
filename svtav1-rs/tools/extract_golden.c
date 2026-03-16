@@ -30,8 +30,10 @@ extern void svt_av1_idct8_new(const int32_t*, int32_t*, int8_t, const int8_t*);
 extern void svt_av1_idct16_new(const int32_t*, int32_t*, int8_t, const int8_t*);
 extern void svt_av1_idct32_new(const int32_t*, int32_t*, int8_t, const int8_t*);
 extern void svt_av1_iadst8_new(const int32_t*, int32_t*, int8_t, const int8_t*);
+extern void svt_av1_iadst16_new(const int32_t*, int32_t*, int8_t, const int8_t*);
 extern void svt_av1_iadst4_new(const int32_t*, int32_t*, int8_t, const int8_t*);
 extern void svt_av1_iadst8_new(const int32_t*, int32_t*, int8_t, const int8_t*);
+extern void svt_av1_iadst16_new(const int32_t*, int32_t*, int8_t, const int8_t*);
 extern void svt_av1_iidentity4_c(const int32_t*, int32_t*, int8_t, const int8_t*);
 extern void svt_av1_iidentity8_c(const int32_t*, int32_t*, int8_t, const int8_t*);
 
@@ -155,6 +157,7 @@ int main(void) {
 
     /* ===== iadst8 ===== */
     { int32_t in[]={56,125,-19,-40,84,33,-360,445}; inv("iadst8_from_fadst8_mixed", svt_av1_iadst8_new, in, 8); }
+    { int32_t in[]={171,-404,-133,-149,-88,-91,-67,-66,-54,-55,-47,-49,-45,-44,-43,-42}; inv("iadst16_from_fadst16_ramp", svt_av1_iadst16_new, in, 16); }
 
     return 0;
 }

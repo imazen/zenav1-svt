@@ -336,6 +336,343 @@ pub fn idct16(input: &[TranLow], output: &mut [TranLow]) {
 }
 
 // =============================================================================
+// 32-point inverse DCT-II
+// Ported exactly from svt_av1_idct32_new in inv_transforms.c:377-726
+// clamp_value replaced with plain add/subtract (wide stage_range)
+// =============================================================================
+
+pub fn idct32(input: &[TranLow], output: &mut [TranLow]) {
+    let cospi = &COSPI;
+    let cos_bit = COS_BIT;
+    let mut step = [0i32; 32];
+
+    // stage 1: input permutation (bit-reversal)
+    output[0] = input[0];
+    output[1] = input[16];
+    output[2] = input[8];
+    output[3] = input[24];
+    output[4] = input[4];
+    output[5] = input[20];
+    output[6] = input[12];
+    output[7] = input[28];
+    output[8] = input[2];
+    output[9] = input[18];
+    output[10] = input[10];
+    output[11] = input[26];
+    output[12] = input[6];
+    output[13] = input[22];
+    output[14] = input[14];
+    output[15] = input[30];
+    output[16] = input[1];
+    output[17] = input[17];
+    output[18] = input[9];
+    output[19] = input[25];
+    output[20] = input[5];
+    output[21] = input[21];
+    output[22] = input[13];
+    output[23] = input[29];
+    output[24] = input[3];
+    output[25] = input[19];
+    output[26] = input[11];
+    output[27] = input[27];
+    output[28] = input[7];
+    output[29] = input[23];
+    output[30] = input[15];
+    output[31] = input[31];
+
+    // stage 2
+    let o = |i: usize| -> i32 { output[i] };
+    step[0] = o(0);
+    step[1] = o(1);
+    step[2] = o(2);
+    step[3] = o(3);
+    step[4] = o(4);
+    step[5] = o(5);
+    step[6] = o(6);
+    step[7] = o(7);
+    step[8] = o(8);
+    step[9] = o(9);
+    step[10] = o(10);
+    step[11] = o(11);
+    step[12] = o(12);
+    step[13] = o(13);
+    step[14] = o(14);
+    step[15] = o(15);
+    step[16] = half_btf(cospi[62], o(16), -cospi[2], o(31), cos_bit);
+    step[17] = half_btf(cospi[30], o(17), -cospi[34], o(30), cos_bit);
+    step[18] = half_btf(cospi[46], o(18), -cospi[18], o(29), cos_bit);
+    step[19] = half_btf(cospi[14], o(19), -cospi[50], o(28), cos_bit);
+    step[20] = half_btf(cospi[54], o(20), -cospi[10], o(27), cos_bit);
+    step[21] = half_btf(cospi[22], o(21), -cospi[42], o(26), cos_bit);
+    step[22] = half_btf(cospi[38], o(22), -cospi[26], o(25), cos_bit);
+    step[23] = half_btf(cospi[6], o(23), -cospi[58], o(24), cos_bit);
+    step[24] = half_btf(cospi[58], o(23), cospi[6], o(24), cos_bit);
+    step[25] = half_btf(cospi[26], o(22), cospi[38], o(25), cos_bit);
+    step[26] = half_btf(cospi[42], o(21), cospi[22], o(26), cos_bit);
+    step[27] = half_btf(cospi[10], o(20), cospi[54], o(27), cos_bit);
+    step[28] = half_btf(cospi[50], o(19), cospi[14], o(28), cos_bit);
+    step[29] = half_btf(cospi[18], o(18), cospi[46], o(29), cos_bit);
+    step[30] = half_btf(cospi[34], o(17), cospi[30], o(30), cos_bit);
+    step[31] = half_btf(cospi[2], o(16), cospi[62], o(31), cos_bit);
+
+    // stage 3
+    let s = |i: usize| -> i32 { step[i] };
+    output[0] = s(0);
+    output[1] = s(1);
+    output[2] = s(2);
+    output[3] = s(3);
+    output[4] = s(4);
+    output[5] = s(5);
+    output[6] = s(6);
+    output[7] = s(7);
+    output[8] = half_btf(cospi[60], s(8), -cospi[4], s(15), cos_bit);
+    output[9] = half_btf(cospi[28], s(9), -cospi[36], s(14), cos_bit);
+    output[10] = half_btf(cospi[44], s(10), -cospi[20], s(13), cos_bit);
+    output[11] = half_btf(cospi[12], s(11), -cospi[52], s(12), cos_bit);
+    output[12] = half_btf(cospi[52], s(11), cospi[12], s(12), cos_bit);
+    output[13] = half_btf(cospi[20], s(10), cospi[44], s(13), cos_bit);
+    output[14] = half_btf(cospi[36], s(9), cospi[28], s(14), cos_bit);
+    output[15] = half_btf(cospi[4], s(8), cospi[60], s(15), cos_bit);
+    output[16] = s(16) + s(17);
+    output[17] = s(16) - s(17);
+    output[18] = -s(18) + s(19);
+    output[19] = s(18) + s(19);
+    output[20] = s(20) + s(21);
+    output[21] = s(20) - s(21);
+    output[22] = -s(22) + s(23);
+    output[23] = s(22) + s(23);
+    output[24] = s(24) + s(25);
+    output[25] = s(24) - s(25);
+    output[26] = -s(26) + s(27);
+    output[27] = s(26) + s(27);
+    output[28] = s(28) + s(29);
+    output[29] = s(28) - s(29);
+    output[30] = -s(30) + s(31);
+    output[31] = s(30) + s(31);
+
+    // stage 4
+    let o = |i: usize| -> i32 { output[i] };
+    step[0] = o(0);
+    step[1] = o(1);
+    step[2] = o(2);
+    step[3] = o(3);
+    step[4] = half_btf(cospi[56], o(4), -cospi[8], o(7), cos_bit);
+    step[5] = half_btf(cospi[24], o(5), -cospi[40], o(6), cos_bit);
+    step[6] = half_btf(cospi[40], o(5), cospi[24], o(6), cos_bit);
+    step[7] = half_btf(cospi[8], o(4), cospi[56], o(7), cos_bit);
+    step[8] = o(8) + o(9);
+    step[9] = o(8) - o(9);
+    step[10] = -o(10) + o(11);
+    step[11] = o(10) + o(11);
+    step[12] = o(12) + o(13);
+    step[13] = o(12) - o(13);
+    step[14] = -o(14) + o(15);
+    step[15] = o(14) + o(15);
+    step[16] = o(16);
+    step[17] = half_btf(-cospi[8], o(17), cospi[56], o(30), cos_bit);
+    step[18] = half_btf(-cospi[56], o(18), -cospi[8], o(29), cos_bit);
+    step[19] = o(19);
+    step[20] = o(20);
+    step[21] = half_btf(-cospi[40], o(21), cospi[24], o(26), cos_bit);
+    step[22] = half_btf(-cospi[24], o(22), -cospi[40], o(25), cos_bit);
+    step[23] = o(23);
+    step[24] = o(24);
+    step[25] = half_btf(-cospi[40], o(22), cospi[24], o(25), cos_bit);
+    step[26] = half_btf(cospi[24], o(21), cospi[40], o(26), cos_bit);
+    step[27] = o(27);
+    step[28] = o(28);
+    step[29] = half_btf(-cospi[8], o(18), cospi[56], o(29), cos_bit);
+    step[30] = half_btf(cospi[56], o(17), cospi[8], o(30), cos_bit);
+    step[31] = o(31);
+
+    // stage 5
+    let s = |i: usize| -> i32 { step[i] };
+    output[0] = half_btf(cospi[32], s(0), cospi[32], s(1), cos_bit);
+    output[1] = half_btf(cospi[32], s(0), -cospi[32], s(1), cos_bit);
+    output[2] = half_btf(cospi[48], s(2), -cospi[16], s(3), cos_bit);
+    output[3] = half_btf(cospi[16], s(2), cospi[48], s(3), cos_bit);
+    output[4] = s(4) + s(5);
+    output[5] = s(4) - s(5);
+    output[6] = -s(6) + s(7);
+    output[7] = s(6) + s(7);
+    output[8] = s(8);
+    output[9] = half_btf(-cospi[16], s(9), cospi[48], s(14), cos_bit);
+    output[10] = half_btf(-cospi[48], s(10), -cospi[16], s(13), cos_bit);
+    output[11] = s(11);
+    output[12] = s(12);
+    output[13] = half_btf(-cospi[16], s(10), cospi[48], s(13), cos_bit);
+    output[14] = half_btf(cospi[48], s(9), cospi[16], s(14), cos_bit);
+    output[15] = s(15);
+    output[16] = s(16) + s(19);
+    output[17] = s(17) + s(18);
+    output[18] = s(17) - s(18);
+    output[19] = s(16) - s(19);
+    output[20] = -s(20) + s(23);
+    output[21] = -s(21) + s(22);
+    output[22] = s(21) + s(22);
+    output[23] = s(20) + s(23);
+    output[24] = s(24) + s(27);
+    output[25] = s(25) + s(26);
+    output[26] = s(25) - s(26);
+    output[27] = s(24) - s(27);
+    output[28] = -s(28) + s(31);
+    output[29] = -s(29) + s(30);
+    output[30] = s(29) + s(30);
+    output[31] = s(28) + s(31);
+
+    // stage 6
+    let o = |i: usize| -> i32 { output[i] };
+    step[0] = o(0) + o(3);
+    step[1] = o(1) + o(2);
+    step[2] = o(1) - o(2);
+    step[3] = o(0) - o(3);
+    step[4] = o(4);
+    step[5] = half_btf(-cospi[32], o(5), cospi[32], o(6), cos_bit);
+    step[6] = half_btf(cospi[32], o(5), cospi[32], o(6), cos_bit);
+    step[7] = o(7);
+    step[8] = o(8) + o(11);
+    step[9] = o(9) + o(10);
+    step[10] = o(9) - o(10);
+    step[11] = o(8) - o(11);
+    step[12] = -o(12) + o(15);
+    step[13] = -o(13) + o(14);
+    step[14] = o(13) + o(14);
+    step[15] = o(12) + o(15);
+    step[16] = o(16);
+    step[17] = o(17);
+    step[18] = half_btf(-cospi[16], o(18), cospi[48], o(29), cos_bit);
+    step[19] = half_btf(-cospi[16], o(19), cospi[48], o(28), cos_bit);
+    step[20] = half_btf(-cospi[48], o(20), -cospi[16], o(27), cos_bit);
+    step[21] = half_btf(-cospi[48], o(21), -cospi[16], o(26), cos_bit);
+    step[22] = o(22);
+    step[23] = o(23);
+    step[24] = o(24);
+    step[25] = o(25);
+    step[26] = half_btf(-cospi[16], o(21), cospi[48], o(26), cos_bit);
+    step[27] = half_btf(-cospi[16], o(20), cospi[48], o(27), cos_bit);
+    step[28] = half_btf(cospi[48], o(19), cospi[16], o(28), cos_bit);
+    step[29] = half_btf(cospi[48], o(18), cospi[16], o(29), cos_bit);
+    step[30] = o(30);
+    step[31] = o(31);
+
+    // stage 7
+    let s = |i: usize| -> i32 { step[i] };
+    output[0] = s(0) + s(7);
+    output[1] = s(1) + s(6);
+    output[2] = s(2) + s(5);
+    output[3] = s(3) + s(4);
+    output[4] = s(3) - s(4);
+    output[5] = s(2) - s(5);
+    output[6] = s(1) - s(6);
+    output[7] = s(0) - s(7);
+    output[8] = s(8);
+    output[9] = s(9);
+    output[10] = half_btf(-cospi[32], s(10), cospi[32], s(13), cos_bit);
+    output[11] = half_btf(-cospi[32], s(11), cospi[32], s(12), cos_bit);
+    output[12] = half_btf(cospi[32], s(11), cospi[32], s(12), cos_bit);
+    output[13] = half_btf(cospi[32], s(10), cospi[32], s(13), cos_bit);
+    output[14] = s(14);
+    output[15] = s(15);
+    output[16] = s(16) + s(23);
+    output[17] = s(17) + s(22);
+    output[18] = s(18) + s(21);
+    output[19] = s(19) + s(20);
+    output[20] = s(19) - s(20);
+    output[21] = s(18) - s(21);
+    output[22] = s(17) - s(22);
+    output[23] = s(16) - s(23);
+    output[24] = -s(24) + s(31);
+    output[25] = -s(25) + s(30);
+    output[26] = -s(26) + s(29);
+    output[27] = -s(27) + s(28);
+    output[28] = s(27) + s(28);
+    output[29] = s(26) + s(29);
+    output[30] = s(25) + s(30);
+    output[31] = s(24) + s(31);
+
+    // stage 8
+    let o = |i: usize| -> i32 { output[i] };
+    step[0] = o(0) + o(15);
+    step[1] = o(1) + o(14);
+    step[2] = o(2) + o(13);
+    step[3] = o(3) + o(12);
+    step[4] = o(4) + o(11);
+    step[5] = o(5) + o(10);
+    step[6] = o(6) + o(9);
+    step[7] = o(7) + o(8);
+    step[8] = o(7) - o(8);
+    step[9] = o(6) - o(9);
+    step[10] = o(5) - o(10);
+    step[11] = o(4) - o(11);
+    step[12] = o(3) - o(12);
+    step[13] = o(2) - o(13);
+    step[14] = o(1) - o(14);
+    step[15] = o(0) - o(15);
+    step[16] = o(16);
+    step[17] = o(17);
+    step[18] = o(18);
+    step[19] = o(19);
+    step[20] = half_btf(-cospi[32], o(20), cospi[32], o(27), cos_bit);
+    step[21] = half_btf(-cospi[32], o(21), cospi[32], o(26), cos_bit);
+    step[22] = half_btf(-cospi[32], o(22), cospi[32], o(25), cos_bit);
+    step[23] = half_btf(-cospi[32], o(23), cospi[32], o(24), cos_bit);
+    step[24] = half_btf(cospi[32], o(23), cospi[32], o(24), cos_bit);
+    step[25] = half_btf(cospi[32], o(22), cospi[32], o(25), cos_bit);
+    step[26] = half_btf(cospi[32], o(21), cospi[32], o(26), cos_bit);
+    step[27] = half_btf(cospi[32], o(20), cospi[32], o(27), cos_bit);
+    step[28] = o(28);
+    step[29] = o(29);
+    step[30] = o(30);
+    step[31] = o(31);
+
+    // stage 9
+    let s = |i: usize| -> i32 { step[i] };
+    output[0] = s(0) + s(31);
+    output[1] = s(1) + s(30);
+    output[2] = s(2) + s(29);
+    output[3] = s(3) + s(28);
+    output[4] = s(4) + s(27);
+    output[5] = s(5) + s(26);
+    output[6] = s(6) + s(25);
+    output[7] = s(7) + s(24);
+    output[8] = s(8) + s(23);
+    output[9] = s(9) + s(22);
+    output[10] = s(10) + s(21);
+    output[11] = s(11) + s(20);
+    output[12] = s(12) + s(19);
+    output[13] = s(13) + s(18);
+    output[14] = s(14) + s(17);
+    output[15] = s(15) + s(16);
+    output[16] = s(15) - s(16);
+    output[17] = s(14) - s(17);
+    output[18] = s(13) - s(18);
+    output[19] = s(12) - s(19);
+    output[20] = s(11) - s(20);
+    output[21] = s(10) - s(21);
+    output[22] = s(9) - s(22);
+    output[23] = s(8) - s(23);
+    output[24] = s(7) - s(24);
+    output[25] = s(6) - s(25);
+    output[26] = s(5) - s(26);
+    output[27] = s(4) - s(27);
+    output[28] = s(3) - s(28);
+    output[29] = s(2) - s(29);
+    output[30] = s(1) - s(30);
+    output[31] = s(0) - s(31);
+}
+
+// =============================================================================
+// 32-point inverse identity transform
+// Ported from svt_av1_iidentity32_c in inv_transforms.c
+// =============================================================================
+
+pub fn iidentity32(input: &[TranLow], output: &mut [TranLow]) {
+    for i in 0..32 {
+        output[i] = input[i] * 4;
+    }
+}
+
+// =============================================================================
 // 8-point inverse ADST
 // Ported exactly from svt_av1_iadst8_new in inv_transforms.c:821-924
 // =============================================================================
@@ -420,6 +757,186 @@ pub fn iadst8(input: &[TranLow], output: &mut [TranLow]) {
 }
 
 // =============================================================================
+// 16-point inverse ADST
+// Ported exactly from svt_av1_iadst16_new in inv_transforms.c:926-1129
+// =============================================================================
+
+pub fn iadst16(input: &[TranLow], output: &mut [TranLow]) {
+    let cospi = &COSPI;
+    let cos_bit = COS_BIT;
+    let mut step = [0i32; 16];
+
+    // stage 1: input permutation
+    output[0] = input[15];
+    output[1] = input[0];
+    output[2] = input[13];
+    output[3] = input[2];
+    output[4] = input[11];
+    output[5] = input[4];
+    output[6] = input[9];
+    output[7] = input[6];
+    output[8] = input[7];
+    output[9] = input[8];
+    output[10] = input[5];
+    output[11] = input[10];
+    output[12] = input[3];
+    output[13] = input[12];
+    output[14] = input[1];
+    output[15] = input[14];
+
+    // stage 2
+    let o = |i: usize| -> i32 { output[i] };
+    step[0] = half_btf(cospi[2], o(0), cospi[62], o(1), cos_bit);
+    step[1] = half_btf(cospi[62], o(0), -cospi[2], o(1), cos_bit);
+    step[2] = half_btf(cospi[10], o(2), cospi[54], o(3), cos_bit);
+    step[3] = half_btf(cospi[54], o(2), -cospi[10], o(3), cos_bit);
+    step[4] = half_btf(cospi[18], o(4), cospi[46], o(5), cos_bit);
+    step[5] = half_btf(cospi[46], o(4), -cospi[18], o(5), cos_bit);
+    step[6] = half_btf(cospi[26], o(6), cospi[38], o(7), cos_bit);
+    step[7] = half_btf(cospi[38], o(6), -cospi[26], o(7), cos_bit);
+    step[8] = half_btf(cospi[34], o(8), cospi[30], o(9), cos_bit);
+    step[9] = half_btf(cospi[30], o(8), -cospi[34], o(9), cos_bit);
+    step[10] = half_btf(cospi[42], o(10), cospi[22], o(11), cos_bit);
+    step[11] = half_btf(cospi[22], o(10), -cospi[42], o(11), cos_bit);
+    step[12] = half_btf(cospi[50], o(12), cospi[14], o(13), cos_bit);
+    step[13] = half_btf(cospi[14], o(12), -cospi[50], o(13), cos_bit);
+    step[14] = half_btf(cospi[58], o(14), cospi[6], o(15), cos_bit);
+    step[15] = half_btf(cospi[6], o(14), -cospi[58], o(15), cos_bit);
+
+    // stage 3
+    let s = |i: usize| -> i32 { step[i] };
+    output[0] = s(0) + s(8);
+    output[1] = s(1) + s(9);
+    output[2] = s(2) + s(10);
+    output[3] = s(3) + s(11);
+    output[4] = s(4) + s(12);
+    output[5] = s(5) + s(13);
+    output[6] = s(6) + s(14);
+    output[7] = s(7) + s(15);
+    output[8] = s(0) - s(8);
+    output[9] = s(1) - s(9);
+    output[10] = s(2) - s(10);
+    output[11] = s(3) - s(11);
+    output[12] = s(4) - s(12);
+    output[13] = s(5) - s(13);
+    output[14] = s(6) - s(14);
+    output[15] = s(7) - s(15);
+
+    // stage 4
+    let o = |i: usize| -> i32 { output[i] };
+    step[0] = o(0);
+    step[1] = o(1);
+    step[2] = o(2);
+    step[3] = o(3);
+    step[4] = o(4);
+    step[5] = o(5);
+    step[6] = o(6);
+    step[7] = o(7);
+    step[8] = half_btf(cospi[8], o(8), cospi[56], o(9), cos_bit);
+    step[9] = half_btf(cospi[56], o(8), -cospi[8], o(9), cos_bit);
+    step[10] = half_btf(cospi[40], o(10), cospi[24], o(11), cos_bit);
+    step[11] = half_btf(cospi[24], o(10), -cospi[40], o(11), cos_bit);
+    step[12] = half_btf(-cospi[56], o(12), cospi[8], o(13), cos_bit);
+    step[13] = half_btf(cospi[8], o(12), cospi[56], o(13), cos_bit);
+    step[14] = half_btf(-cospi[24], o(14), cospi[40], o(15), cos_bit);
+    step[15] = half_btf(cospi[40], o(14), cospi[24], o(15), cos_bit);
+
+    // stage 5
+    let s = |i: usize| -> i32 { step[i] };
+    output[0] = s(0) + s(4);
+    output[1] = s(1) + s(5);
+    output[2] = s(2) + s(6);
+    output[3] = s(3) + s(7);
+    output[4] = s(0) - s(4);
+    output[5] = s(1) - s(5);
+    output[6] = s(2) - s(6);
+    output[7] = s(3) - s(7);
+    output[8] = s(8) + s(12);
+    output[9] = s(9) + s(13);
+    output[10] = s(10) + s(14);
+    output[11] = s(11) + s(15);
+    output[12] = s(8) - s(12);
+    output[13] = s(9) - s(13);
+    output[14] = s(10) - s(14);
+    output[15] = s(11) - s(15);
+
+    // stage 6
+    let o = |i: usize| -> i32 { output[i] };
+    step[0] = o(0);
+    step[1] = o(1);
+    step[2] = o(2);
+    step[3] = o(3);
+    step[4] = half_btf(cospi[16], o(4), cospi[48], o(5), cos_bit);
+    step[5] = half_btf(cospi[48], o(4), -cospi[16], o(5), cos_bit);
+    step[6] = half_btf(-cospi[48], o(6), cospi[16], o(7), cos_bit);
+    step[7] = half_btf(cospi[16], o(6), cospi[48], o(7), cos_bit);
+    step[8] = o(8);
+    step[9] = o(9);
+    step[10] = o(10);
+    step[11] = o(11);
+    step[12] = half_btf(cospi[16], o(12), cospi[48], o(13), cos_bit);
+    step[13] = half_btf(cospi[48], o(12), -cospi[16], o(13), cos_bit);
+    step[14] = half_btf(-cospi[48], o(14), cospi[16], o(15), cos_bit);
+    step[15] = half_btf(cospi[16], o(14), cospi[48], o(15), cos_bit);
+
+    // stage 7
+    let s = |i: usize| -> i32 { step[i] };
+    output[0] = s(0) + s(2);
+    output[1] = s(1) + s(3);
+    output[2] = s(0) - s(2);
+    output[3] = s(1) - s(3);
+    output[4] = s(4) + s(6);
+    output[5] = s(5) + s(7);
+    output[6] = s(4) - s(6);
+    output[7] = s(5) - s(7);
+    output[8] = s(8) + s(10);
+    output[9] = s(9) + s(11);
+    output[10] = s(8) - s(10);
+    output[11] = s(9) - s(11);
+    output[12] = s(12) + s(14);
+    output[13] = s(13) + s(15);
+    output[14] = s(12) - s(14);
+    output[15] = s(13) - s(15);
+
+    // stage 8
+    let o = |i: usize| -> i32 { output[i] };
+    step[0] = o(0);
+    step[1] = o(1);
+    step[2] = half_btf(cospi[32], o(2), cospi[32], o(3), cos_bit);
+    step[3] = half_btf(cospi[32], o(2), -cospi[32], o(3), cos_bit);
+    step[4] = o(4);
+    step[5] = o(5);
+    step[6] = half_btf(cospi[32], o(6), cospi[32], o(7), cos_bit);
+    step[7] = half_btf(cospi[32], o(6), -cospi[32], o(7), cos_bit);
+    step[8] = o(8);
+    step[9] = o(9);
+    step[10] = half_btf(cospi[32], o(10), cospi[32], o(11), cos_bit);
+    step[11] = half_btf(cospi[32], o(10), -cospi[32], o(11), cos_bit);
+    step[12] = o(12);
+    step[13] = o(13);
+    step[14] = half_btf(cospi[32], o(14), cospi[32], o(15), cos_bit);
+    step[15] = half_btf(cospi[32], o(14), -cospi[32], o(15), cos_bit);
+
+    // stage 9: output with negation
+    output[0] = step[0];
+    output[1] = -step[8];
+    output[2] = step[12];
+    output[3] = -step[4];
+    output[4] = step[6];
+    output[5] = -step[14];
+    output[6] = step[10];
+    output[7] = -step[2];
+    output[8] = step[3];
+    output[9] = -step[11];
+    output[10] = step[15];
+    output[11] = -step[7];
+    output[12] = step[5];
+    output[13] = -step[13];
+    output[14] = step[9];
+    output[15] = -step[1];
+}
+
+// =============================================================================
 // 16-point inverse identity
 // =============================================================================
 
@@ -443,11 +960,14 @@ pub fn get_inv_txfm_func(tx_type_1d: u8, size: usize) -> Option<InvTxfmFunc> {
         (0, 4) => Some(idct4),
         (0, 8) => Some(idct8),
         (0, 16) => Some(idct16),
+        (0, 32) => Some(idct32),
         (1, 4) => Some(iadst4),
         (1, 8) => Some(iadst8),
+        (1, 16) => Some(iadst16),
         (3, 4) => Some(iidentity4),
         (3, 8) => Some(iidentity8),
         (3, 16) => Some(iidentity16),
+        (3, 32) => Some(iidentity32),
         _ => None,
     }
 }
