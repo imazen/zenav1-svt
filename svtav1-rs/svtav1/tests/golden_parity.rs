@@ -602,3 +602,72 @@ fn iadst8_from_fadst8_mixed_golden() {
     svtav1_dsp::inv_txfm::iadst8(&input, &mut output);
     assert_exact("iadst8_from_fadst8_mixed", &output, &golden);
 }
+
+// =============================================================================
+// fdct64 golden parity (measured from C)
+// =============================================================================
+
+#[test]
+fn fdct64_dc_golden() {
+    let input = [100i32; 64];
+    let mut output = [0i32; 64];
+    fdct64(&input, &mut output);
+    // C golden: [4525, 0, 0, ..., 0]
+    assert_eq!(output[0], 4525, "fdct64 DC coefficient mismatch");
+    for i in 1..64 {
+        assert_eq!(output[i], 0, "fdct64 AC[{i}] should be 0 for DC input");
+    }
+}
+
+#[test]
+fn fdct64_zero_golden() {
+    let input = [0i32; 64];
+    let mut output = [0i32; 64];
+    fdct64(&input, &mut output);
+    assert!(
+        output.iter().all(|&v| v == 0),
+        "fdct64 zero input should produce zero output"
+    );
+}
+
+#[test]
+fn fdct64_ramp_golden() {
+    let mut input = [0i32; 64];
+    for i in 0..64 {
+        input[i] = i as i32 * 3 - 96;
+    }
+    let golden = [
+        -68i32, -2492, 0, -276, 0, -98, 0, -51, 0, -30, 0, -20, 0, -15, 0, -10, 0, -9, 0, -7, 0,
+        -5, 0, -5, 0, -4, 0, -3, 0, -2, 0, -1, 0, -3, 0, -2, 0, -1, 0, -1, 0, -1, 0, -1, 0, -2, 0,
+        0, 0, -1, 0, -2, 0, 1, 0, 0, 0, 0, 0, 1, 0, -2, 0, -2,
+    ];
+    let mut output = [0i32; 64];
+    fdct64(&input, &mut output);
+    assert_exact("fdct64_ramp", &output, &golden);
+}
+
+// =============================================================================
+// fadst16 golden parity (measured from C)
+// =============================================================================
+
+#[test]
+fn fadst16_zero_golden() {
+    let input = [0i32; 16];
+    let mut output = [0i32; 16];
+    fadst16(&input, &mut output);
+    assert!(output.iter().all(|&v| v == 0));
+}
+
+#[test]
+fn fadst16_ramp_golden() {
+    let mut input = [0i32; 16];
+    for i in 0..16 {
+        input[i] = i as i32 * 10 - 80;
+    }
+    let golden = [
+        171i32, -404, -133, -149, -88, -91, -67, -66, -54, -55, -47, -49, -45, -44, -43, -42,
+    ];
+    let mut output = [0i32; 16];
+    fadst16(&input, &mut output);
+    assert_exact("fadst16_ramp", &output, &golden);
+}
