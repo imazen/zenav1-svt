@@ -1,0 +1,25 @@
+[package]
+name = "svtav1-dsp"
+version = "0.1.0"
+description = "Transforms, prediction, filtering — SIMD hot path for SVT-AV1 Rust port"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+svtav1-types = { workspace = true }
+svtav1-tables = { workspace = true }
+archmage = { workspace = true }
+magetypes = { workspace = true }
+
+[dev-dependencies]
+archmage = { workspace = true, features = ["testable_dispatch"] }
+
+[lints]
+workspace = true
+
+[features]
+default = []
+std = ["svtav1-types/std"]
+unchecked_dsp = []

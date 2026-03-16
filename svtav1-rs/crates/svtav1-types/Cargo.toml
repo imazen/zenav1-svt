@@ -1,0 +1,17 @@
+[package]
+name = "svtav1-types"
+version = "0.1.0"
+description = "Core data structures, constants, and enums for SVT-AV1 Rust port"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true
+
+[features]
+default = []
+std = []

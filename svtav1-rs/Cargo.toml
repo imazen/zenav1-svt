@@ -1,0 +1,33 @@
+[workspace]
+members = [
+    "crates/svtav1-types",
+    "crates/svtav1-tables",
+    "crates/svtav1-dsp",
+    "crates/svtav1-entropy",
+    "crates/svtav1-encoder",
+    "crates/svtav1-disjoint-mut",
+    "crates/svtav1-cuda",
+    "svtav1",
+]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+license = "BSD-2-Clause"
+repository = "https://github.com/imazen/svtav1-rs"
+
+[workspace.dependencies]
+svtav1-types = { path = "crates/svtav1-types" }
+svtav1-tables = { path = "crates/svtav1-tables" }
+svtav1-dsp = { path = "crates/svtav1-dsp" }
+svtav1-entropy = { path = "crates/svtav1-entropy" }
+svtav1-encoder = { path = "crates/svtav1-encoder" }
+svtav1-disjoint-mut = { path = "crates/svtav1-disjoint-mut" }
+svtav1-cuda = { path = "crates/svtav1-cuda" }
+
+archmage = "0.9"
+magetypes = "0.9"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"

@@ -1,0 +1,24 @@
+[package]
+name = "svtav1"
+version = "0.1.0"
+description = "Safe Rust AV1 encoder — algorithm-for-algorithm port of SVT-AV1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+svtav1-types = { workspace = true, features = ["std"] }
+svtav1-tables = { workspace = true }
+svtav1-dsp = { workspace = true, features = ["std"] }
+svtav1-entropy = { workspace = true, features = ["std"] }
+svtav1-encoder = { workspace = true }
+
+[lints]
+workspace = true
+
+[features]
+default = ["std"]
+std = []
+unsafe_encoding = ["svtav1-encoder/unsafe_encoding"]
+cuda = []

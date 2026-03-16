@@ -1,0 +1,20 @@
+[package]
+name = "svtav1-entropy"
+version = "0.1.0"
+description = "Arithmetic coder, CDF tables, and context models for SVT-AV1 Rust port"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+svtav1-types = { workspace = true }
+svtav1-tables = { workspace = true }
+
+[lints]
+workspace = true
+
+[features]
+default = []
+std = ["svtav1-types/std"]
+unchecked_entropy = []

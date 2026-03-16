@@ -1,0 +1,18 @@
+[package]
+name = "svtav1-cuda"
+version = "0.1.0"
+description = "Optional NVDEC/NVENC bridge for SVT-AV1 Rust port"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+svtav1-types = { workspace = true, features = ["std"] }
+
+[lints.rust]
+# CUDA FFI requires unsafe — isolated here
+unsafe_code = "allow"
+
+[features]
+default = []

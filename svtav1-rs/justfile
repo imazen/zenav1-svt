@@ -1,0 +1,47 @@
+# SVT-AV1 Rust port build commands
+
+# Default recipe
+default: check
+
+# Check all crates compile
+check:
+    cargo check --workspace
+
+# Build all crates
+build:
+    cargo build --workspace
+
+# Run all tests
+test:
+    cargo test --workspace
+
+# Run tests with all features
+test-all:
+    cargo test --workspace --all-features
+
+# Run tests with no default features
+test-minimal:
+    cargo test --workspace --no-default-features
+
+# Format and lint
+fmt:
+    cargo fmt --all
+
+# Clippy lint
+clippy:
+    cargo clippy --workspace --all-targets -- -D warnings
+
+# Local CI sanity check
+ci: fmt clippy test test-all test-minimal
+
+# Run benchmarks
+bench:
+    cargo bench --workspace
+
+# Check for semver violations
+semver:
+    cargo semver-checks check-release --workspace
+
+# Generate docs
+doc:
+    cargo doc --workspace --no-deps --open

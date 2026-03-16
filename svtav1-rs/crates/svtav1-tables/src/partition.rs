@@ -1,0 +1,1 @@
+//! Partition-related lookup tables.
