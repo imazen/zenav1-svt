@@ -10,5 +10,7 @@ pub mod copy;
 pub mod fwd_txfm;
 pub mod hadamard;
 pub mod intra_pred;
+pub mod inv_txfm;
+pub mod quant;
 pub mod sad;
 pub mod variance;

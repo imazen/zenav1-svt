@@ -7,8 +7,7 @@
 //! reverse stage order (un-permute -> un-butterfly -> un-combine).
 
 use crate::fwd_txfm::{
-    half_btf, round_shift_array, round_shift_i64, COS_BIT, COSPI, NEW_SQRT2, NEW_SQRT2_BITS,
-    SINPI,
+    COS_BIT, COSPI, NEW_SQRT2, NEW_SQRT2_BITS, SINPI, half_btf, round_shift_array, round_shift_i64,
 };
 use svtav1_types::transform::TranLow;
 
@@ -442,7 +441,12 @@ mod tests {
         // fidentity8 scales by 2, iidentity8 scales by 2
         // Result should be input * 4
         for i in 0..8 {
-            assert_eq!(input[i] * 4, inv[i], "identity8 scaling mismatch at [{}]", i);
+            assert_eq!(
+                input[i] * 4,
+                inv[i],
+                "identity8 scaling mismatch at [{}]",
+                i
+            );
         }
     }
 
