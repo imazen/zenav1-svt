@@ -33,6 +33,8 @@
 //! safe intrinsics API.
 #![forbid(unsafe_code)]
 
+pub mod avif;
+
 pub use svtav1_dsp as dsp;
 pub use svtav1_encoder as encoder;
 pub use svtav1_entropy as entropy;

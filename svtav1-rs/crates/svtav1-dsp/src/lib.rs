@@ -6,6 +6,8 @@
 
 extern crate alloc;
 
+#[cfg(feature = "std")]
+pub mod bench;
 pub mod copy;
 pub mod fwd_txfm;
 pub mod hadamard;
