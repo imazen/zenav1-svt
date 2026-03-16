@@ -407,3 +407,127 @@ fn roundtrip_dct8_golden() {
         );
     }
 }
+
+// =============================================================================
+// CDF update parity (computed from C algorithm in extract_intra_golden.c)
+// =============================================================================
+
+#[test]
+fn cdf_update_matches_c_algorithm() {
+    use svtav1_entropy::cdf::*;
+
+    // Verified by compiling and running the identical C algorithm (/tmp/test_cdf.c):
+    //   rate = 4 + (0>>4) + (4>3) = 5
+    //   cdf[0] += (32768-24576)>>5 = 256  → 24832
+    //   cdf[1] += (32768-16384)>>5 = 512  → 16896
+    //   cdf[2] -= 8192>>5 = 256           → 7936
+    //   count: 0+1 = 1
+    //
+    // C output (measured): [24832, 16896, 7936, 0, count=1]
+    let mut cdf = [24576u16, 16384, 8192, 0, 0u16];
+    update_cdf(&mut cdf, 2, 4);
+
+    let c_golden = [24832u16, 16896, 7936, 0, 1];
+    assert_eq!(cdf[0], c_golden[0], "cdf[0] mismatch");
+    assert_eq!(cdf[1], c_golden[1], "cdf[1] mismatch");
+    assert_eq!(cdf[2], c_golden[2], "cdf[2] mismatch");
+    assert_eq!(cdf[4], c_golden[4], "count mismatch");
+}
+
+#[test]
+fn cdf_update_10_iterations() {
+    use svtav1_entropy::cdf::*;
+
+    // Verify CDF after 10 updates with alternating symbols
+    let mut cdf = [16384u16, 0, 0]; // binary CDF: nsymbs=2
+    for i in 0..10 {
+        update_cdf(&mut cdf, (i % 2) as usize, 2);
+    }
+    // Count should be 10
+    assert_eq!(cdf[2], 10, "count after 10 updates");
+    // CDF should be near 16384 (balanced) since equal 0s and 1s
+    assert!(
+        (cdf[0] as i32 - 16384).abs() < 2000,
+        "balanced updates should keep CDF near center: {}",
+        cdf[0]
+    );
+}
+
+// =============================================================================
+// Intra prediction parity (spec algorithm — verified by construction)
+// =============================================================================
+
+#[test]
+fn dc_prediction_4x4_uniform() {
+    // DC pred of uniform neighbors = that value
+    let above = [100u8; 4];
+    let left = [100u8; 4];
+    let mut dst = [0u8; 16];
+    svtav1_dsp::intra_pred::predict_dc(&mut dst, 4, &above, &left, 4, 4, true, true);
+    assert!(
+        dst.iter().all(|&v| v == 100),
+        "DC of uniform 100 should be 100"
+    );
+}
+
+#[test]
+fn dc_prediction_4x4_mixed() {
+    // DC = (sum(above) + sum(left) + 4) / 8
+    // above=[10,20,30,40] sum=100, left=[80,70,60,50] sum=260
+    // DC = (100+260+4)/8 = 364/8 = 45
+    let above = [10u8, 20, 30, 40];
+    let left = [80u8, 70, 60, 50];
+    let mut dst = [0u8; 16];
+    svtav1_dsp::intra_pred::predict_dc(&mut dst, 4, &above, &left, 4, 4, true, true);
+    assert!(
+        dst.iter().all(|&v| v == 45),
+        "DC should be 45, got {}",
+        dst[0]
+    );
+}
+
+#[test]
+fn v_prediction_copies_above_exactly() {
+    let above = [10u8, 20, 30, 40];
+    let mut dst = [0u8; 16];
+    svtav1_dsp::intra_pred::predict_v(&mut dst, 4, &above, 4, 4);
+    for row in 0..4 {
+        assert_eq!(
+            &dst[row * 4..row * 4 + 4],
+            &above,
+            "V-pred row {row} mismatch"
+        );
+    }
+}
+
+#[test]
+fn h_prediction_copies_left_exactly() {
+    let left = [10u8, 20, 30, 40];
+    let mut dst = [0u8; 16];
+    svtav1_dsp::intra_pred::predict_h(&mut dst, 4, &left, 4, 4);
+    for row in 0..4 {
+        assert!(
+            dst[row * 4..row * 4 + 4].iter().all(|&v| v == left[row]),
+            "H-pred row {row} should all be {}",
+            left[row]
+        );
+    }
+}
+
+#[test]
+fn paeth_prediction_matches_spec() {
+    // Paeth: pred = argmin(|base - top|, |base - left|, |base - tl|)
+    // where base = top + left - tl
+    //
+    // top_left=50, above=[10,20,30,40], left=[60,70,80,90]
+    // For pixel (0,0): base = 10+60-50 = 20
+    //   |20-10|=10, |20-60|=40, |20-50|=30 → min is top=10
+    let above = [10u8, 20, 30, 40];
+    let left = [60u8, 70, 80, 90];
+    let mut dst = [0u8; 16];
+    svtav1_dsp::intra_pred::predict_paeth(&mut dst, 4, &above, &left, 50, 4, 4);
+    // Pixel (0,0): base=20, p_top=10, p_left=40, p_tl=30 → top=10
+    assert_eq!(dst[0], 10, "paeth(0,0) should be 10 (top)");
+    // Pixel (0,3): base=40+60-50=50, p_top=|50-40|=10, p_left=|50-60|=10, p_tl=|50-50|=0 → tl=50
+    assert_eq!(dst[3], 50, "paeth(0,3) should be 50 (top_left)");
+}
