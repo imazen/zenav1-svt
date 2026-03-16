@@ -7,8 +7,8 @@ use crate::frame::PLANE_TYPES;
 use crate::motion::Mv;
 use crate::partition::PartitionType;
 use crate::prediction::{
-    InterInterCompoundData, InterIntraMode, MotionMode, PredictionMode,
-    UvPredictionMode, PALETTE_MAX_SIZE,
+    InterInterCompoundData, InterIntraMode, MotionMode, PALETTE_MAX_SIZE, PredictionMode,
+    UvPredictionMode,
 };
 
 /// Block mode information — core per-block state in the MI grid.

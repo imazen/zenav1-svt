@@ -4,7 +4,7 @@
 
 use crate::block::BlockSize;
 use crate::frame::ColorConfig;
-use crate::motion::{TransformationType, MAX_PARAMDIM};
+use crate::motion::{MAX_PARAMDIM, TransformationType};
 
 /// OBU (Open Bitstream Unit) types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

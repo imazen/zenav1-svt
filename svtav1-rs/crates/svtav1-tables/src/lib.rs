@@ -5,5 +5,7 @@
 #![forbid(unsafe_code)]
 
 pub mod block;
+pub mod interp;
 pub mod partition;
+pub mod scan;
 pub mod transform;
