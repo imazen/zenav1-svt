@@ -562,3 +562,43 @@ fn paeth_prediction_matches_spec() {
     // Pixel (0,3): base=40+60-50=50, p_top=|50-40|=10, p_left=|50-60|=10, p_tl=|50-50|=0 → tl=50
     assert_eq!(dst[3], 50, "paeth(0,3) should be 50 (top_left)");
 }
+
+// =============================================================================
+// idct16 golden parity (measured from C)
+// =============================================================================
+
+#[test]
+fn idct16_dc_golden() {
+    let mut input = [0i32; 16];
+    input[0] = 566;
+    let golden = [400i32; 16];
+    let mut output = [0i32; 16];
+    svtav1_dsp::inv_txfm::idct16(&input, &mut output);
+    assert_exact("idct16_dc", &output, &golden);
+}
+
+#[test]
+fn idct16_from_fdct16_ramp_golden() {
+    let input = [
+        -57i32, -517, 0, -57, 0, -20, 0, -10, 0, -5, 0, -3, 0, -2, 0, -1,
+    ];
+    let golden = [
+        -640i32, -560, -480, -399, -320, -239, -160, -80, 0, 80, 159, 240, 319, 400, 480, 560,
+    ];
+    let mut output = [0i32; 16];
+    svtav1_dsp::inv_txfm::idct16(&input, &mut output);
+    assert_exact("idct16_from_fdct16_ramp", &output, &golden);
+}
+
+// =============================================================================
+// iadst8 golden parity (measured from C)
+// =============================================================================
+
+#[test]
+fn iadst8_from_fadst8_mixed_golden() {
+    let input = [56i32, 125, -19, -40, 84, 33, -360, 445];
+    let golden = [200i32, -101, 401, -300, 798, -599, 320, -160];
+    let mut output = [0i32; 8];
+    svtav1_dsp::inv_txfm::iadst8(&input, &mut output);
+    assert_exact("iadst8_from_fadst8_mixed", &output, &golden);
+}

@@ -193,6 +193,244 @@ pub fn iidentity8(input: &[TranLow], output: &mut [TranLow]) {
 }
 
 // =============================================================================
+// 16-point inverse DCT-II
+// Ported exactly from svt_av1_idct16_new in inv_transforms.c:214-375
+// clamp_value replaced with plain add/subtract (wide stage_range)
+// =============================================================================
+
+pub fn idct16(input: &[TranLow], output: &mut [TranLow]) {
+    let cospi = &COSPI;
+    let cos_bit = COS_BIT;
+    let mut step = [0i32; 16];
+
+    // stage 1: input permutation
+    output[0] = input[0];
+    output[1] = input[8];
+    output[2] = input[4];
+    output[3] = input[12];
+    output[4] = input[2];
+    output[5] = input[10];
+    output[6] = input[6];
+    output[7] = input[14];
+    output[8] = input[1];
+    output[9] = input[9];
+    output[10] = input[5];
+    output[11] = input[13];
+    output[12] = input[3];
+    output[13] = input[11];
+    output[14] = input[7];
+    output[15] = input[15];
+
+    // stage 2
+    let o = |i: usize| -> i32 { output[i] };
+    step[0] = o(0);
+    step[1] = o(1);
+    step[2] = o(2);
+    step[3] = o(3);
+    step[4] = o(4);
+    step[5] = o(5);
+    step[6] = o(6);
+    step[7] = o(7);
+    step[8] = half_btf(cospi[60], o(8), -cospi[4], o(15), cos_bit);
+    step[9] = half_btf(cospi[28], o(9), -cospi[36], o(14), cos_bit);
+    step[10] = half_btf(cospi[44], o(10), -cospi[20], o(13), cos_bit);
+    step[11] = half_btf(cospi[12], o(11), -cospi[52], o(12), cos_bit);
+    step[12] = half_btf(cospi[52], o(11), cospi[12], o(12), cos_bit);
+    step[13] = half_btf(cospi[20], o(10), cospi[44], o(13), cos_bit);
+    step[14] = half_btf(cospi[36], o(9), cospi[28], o(14), cos_bit);
+    step[15] = half_btf(cospi[4], o(8), cospi[60], o(15), cos_bit);
+
+    // stage 3
+    let s = |i: usize| -> i32 { step[i] };
+    output[0] = s(0);
+    output[1] = s(1);
+    output[2] = s(2);
+    output[3] = s(3);
+    output[4] = half_btf(cospi[56], s(4), -cospi[8], s(7), cos_bit);
+    output[5] = half_btf(cospi[24], s(5), -cospi[40], s(6), cos_bit);
+    output[6] = half_btf(cospi[40], s(5), cospi[24], s(6), cos_bit);
+    output[7] = half_btf(cospi[8], s(4), cospi[56], s(7), cos_bit);
+    output[8] = s(8) + s(9);
+    output[9] = s(8) - s(9);
+    output[10] = -s(10) + s(11);
+    output[11] = s(10) + s(11);
+    output[12] = s(12) + s(13);
+    output[13] = s(12) - s(13);
+    output[14] = -s(14) + s(15);
+    output[15] = s(14) + s(15);
+
+    // stage 4
+    let o = |i: usize| -> i32 { output[i] };
+    step[0] = half_btf(cospi[32], o(0), cospi[32], o(1), cos_bit);
+    step[1] = half_btf(cospi[32], o(0), -cospi[32], o(1), cos_bit);
+    step[2] = half_btf(cospi[48], o(2), -cospi[16], o(3), cos_bit);
+    step[3] = half_btf(cospi[16], o(2), cospi[48], o(3), cos_bit);
+    step[4] = o(4) + o(5);
+    step[5] = o(4) - o(5);
+    step[6] = -o(6) + o(7);
+    step[7] = o(6) + o(7);
+    step[8] = o(8);
+    step[9] = half_btf(-cospi[16], o(9), cospi[48], o(14), cos_bit);
+    step[10] = half_btf(-cospi[48], o(10), -cospi[16], o(13), cos_bit);
+    step[11] = o(11);
+    step[12] = o(12);
+    step[13] = half_btf(-cospi[16], o(10), cospi[48], o(13), cos_bit);
+    step[14] = half_btf(cospi[48], o(9), cospi[16], o(14), cos_bit);
+    step[15] = o(15);
+
+    // stage 5
+    let s = |i: usize| -> i32 { step[i] };
+    output[0] = s(0) + s(3);
+    output[1] = s(1) + s(2);
+    output[2] = s(1) - s(2);
+    output[3] = s(0) - s(3);
+    output[4] = s(4);
+    output[5] = half_btf(-cospi[32], s(5), cospi[32], s(6), cos_bit);
+    output[6] = half_btf(cospi[32], s(5), cospi[32], s(6), cos_bit);
+    output[7] = s(7);
+    output[8] = s(8) + s(11);
+    output[9] = s(9) + s(10);
+    output[10] = s(9) - s(10);
+    output[11] = s(8) - s(11);
+    output[12] = -s(12) + s(15);
+    output[13] = -s(13) + s(14);
+    output[14] = s(13) + s(14);
+    output[15] = s(12) + s(15);
+
+    // stage 6
+    let o = |i: usize| -> i32 { output[i] };
+    step[0] = o(0) + o(7);
+    step[1] = o(1) + o(6);
+    step[2] = o(2) + o(5);
+    step[3] = o(3) + o(4);
+    step[4] = o(3) - o(4);
+    step[5] = o(2) - o(5);
+    step[6] = o(1) - o(6);
+    step[7] = o(0) - o(7);
+    step[8] = o(8);
+    step[9] = o(9);
+    step[10] = half_btf(-cospi[32], o(10), cospi[32], o(13), cos_bit);
+    step[11] = half_btf(-cospi[32], o(11), cospi[32], o(12), cos_bit);
+    step[12] = half_btf(cospi[32], o(11), cospi[32], o(12), cos_bit);
+    step[13] = half_btf(cospi[32], o(10), cospi[32], o(13), cos_bit);
+    step[14] = o(14);
+    step[15] = o(15);
+
+    // stage 7
+    output[0] = step[0] + step[15];
+    output[1] = step[1] + step[14];
+    output[2] = step[2] + step[13];
+    output[3] = step[3] + step[12];
+    output[4] = step[4] + step[11];
+    output[5] = step[5] + step[10];
+    output[6] = step[6] + step[9];
+    output[7] = step[7] + step[8];
+    output[8] = step[7] - step[8];
+    output[9] = step[6] - step[9];
+    output[10] = step[5] - step[10];
+    output[11] = step[4] - step[11];
+    output[12] = step[3] - step[12];
+    output[13] = step[2] - step[13];
+    output[14] = step[1] - step[14];
+    output[15] = step[0] - step[15];
+}
+
+// =============================================================================
+// 8-point inverse ADST
+// Ported exactly from svt_av1_iadst8_new in inv_transforms.c:821-924
+// =============================================================================
+
+pub fn iadst8(input: &[TranLow], output: &mut [TranLow]) {
+    let cospi = &COSPI;
+    let cos_bit = COS_BIT;
+    let mut step = [0i32; 8];
+
+    // stage 1: input permutation
+    output[0] = input[7];
+    output[1] = input[0];
+    output[2] = input[5];
+    output[3] = input[2];
+    output[4] = input[3];
+    output[5] = input[4];
+    output[6] = input[1];
+    output[7] = input[6];
+
+    // stage 2
+    let o = |i: usize| -> i32 { output[i] };
+    step[0] = half_btf(cospi[4], o(0), cospi[60], o(1), cos_bit);
+    step[1] = half_btf(cospi[60], o(0), -cospi[4], o(1), cos_bit);
+    step[2] = half_btf(cospi[20], o(2), cospi[44], o(3), cos_bit);
+    step[3] = half_btf(cospi[44], o(2), -cospi[20], o(3), cos_bit);
+    step[4] = half_btf(cospi[36], o(4), cospi[28], o(5), cos_bit);
+    step[5] = half_btf(cospi[28], o(4), -cospi[36], o(5), cos_bit);
+    step[6] = half_btf(cospi[52], o(6), cospi[12], o(7), cos_bit);
+    step[7] = half_btf(cospi[12], o(6), -cospi[52], o(7), cos_bit);
+
+    // stage 3
+    output[0] = step[0] + step[4];
+    output[1] = step[1] + step[5];
+    output[2] = step[2] + step[6];
+    output[3] = step[3] + step[7];
+    output[4] = step[0] - step[4];
+    output[5] = step[1] - step[5];
+    output[6] = step[2] - step[6];
+    output[7] = step[3] - step[7];
+
+    // stage 4
+    let o = |i: usize| -> i32 { output[i] };
+    step[0] = o(0);
+    step[1] = o(1);
+    step[2] = o(2);
+    step[3] = o(3);
+    step[4] = half_btf(cospi[16], o(4), cospi[48], o(5), cos_bit);
+    step[5] = half_btf(cospi[48], o(4), -cospi[16], o(5), cos_bit);
+    step[6] = half_btf(-cospi[48], o(6), cospi[16], o(7), cos_bit);
+    step[7] = half_btf(cospi[16], o(6), cospi[48], o(7), cos_bit);
+
+    // stage 5
+    output[0] = step[0] + step[2];
+    output[1] = step[1] + step[3];
+    output[2] = step[0] - step[2];
+    output[3] = step[1] - step[3];
+    output[4] = step[4] + step[6];
+    output[5] = step[5] + step[7];
+    output[6] = step[4] - step[6];
+    output[7] = step[5] - step[7];
+
+    // stage 6
+    let o = |i: usize| -> i32 { output[i] };
+    step[0] = o(0);
+    step[1] = o(1);
+    step[2] = half_btf(cospi[32], o(2), cospi[32], o(3), cos_bit);
+    step[3] = half_btf(cospi[32], o(2), -cospi[32], o(3), cos_bit);
+    step[4] = o(4);
+    step[5] = o(5);
+    step[6] = half_btf(cospi[32], o(6), cospi[32], o(7), cos_bit);
+    step[7] = half_btf(cospi[32], o(6), -cospi[32], o(7), cos_bit);
+
+    // stage 7: output (exact match to C svt_av1_iadst8_new)
+    output[0] = step[0];
+    output[1] = -step[4];
+    output[2] = step[6];
+    output[3] = -step[2];
+    output[4] = step[3];
+    output[5] = -step[7];
+    output[6] = step[5];
+    output[7] = -step[1];
+}
+
+// =============================================================================
+// 16-point inverse identity
+// =============================================================================
+
+pub fn iidentity16(input: &[TranLow], output: &mut [TranLow]) {
+    let new_sqrt2 = NEW_SQRT2;
+    for i in 0..16 {
+        output[i] = round_shift_i64(input[i] as i64 * 2 * new_sqrt2 as i64, NEW_SQRT2_BITS);
+    }
+}
+
+// =============================================================================
 // 1D inverse transform function type and dispatch
 // =============================================================================
 
@@ -204,9 +442,12 @@ pub fn get_inv_txfm_func(tx_type_1d: u8, size: usize) -> Option<InvTxfmFunc> {
     match (tx_type_1d, size) {
         (0, 4) => Some(idct4),
         (0, 8) => Some(idct8),
+        (0, 16) => Some(idct16),
         (1, 4) => Some(iadst4),
+        (1, 8) => Some(iadst8),
         (3, 4) => Some(iidentity4),
         (3, 8) => Some(iidentity8),
+        (3, 16) => Some(iidentity16),
         _ => None,
     }
 }
@@ -335,6 +576,45 @@ fn inv_txfm2d_8x8_dct_dct_impl_neon(
     stride: usize,
 ) {
     inv_txfm2d(input, output, stride, idct8, idct8, 8, [-1, -4]);
+}
+
+/// Inverse 16x16 DCT-DCT.
+pub fn inv_txfm2d_16x16_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+    incant!(
+        inv_txfm2d_16x16_dct_dct_impl(input, output, stride),
+        [v3, neon, scalar]
+    )
+}
+
+fn inv_txfm2d_16x16_dct_dct_impl_scalar(
+    _token: ScalarToken,
+    input: &[TranLow],
+    output: &mut [TranLow],
+    stride: usize,
+) {
+    inv_txfm2d(input, output, stride, idct16, idct16, 16, [-2, 0]);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn inv_txfm2d_16x16_dct_dct_impl_v3(
+    _token: Desktop64,
+    input: &[TranLow],
+    output: &mut [TranLow],
+    stride: usize,
+) {
+    inv_txfm2d(input, output, stride, idct16, idct16, 16, [-2, 0]);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn inv_txfm2d_16x16_dct_dct_impl_neon(
+    _token: NeonToken,
+    input: &[TranLow],
+    output: &mut [TranLow],
+    stride: usize,
+) {
+    inv_txfm2d(input, output, stride, idct16, idct16, 16, [-2, 0]);
 }
 
 #[cfg(test)]

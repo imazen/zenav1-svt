@@ -19,12 +19,17 @@ extern void svt_av1_fdct16_new(const int32_t*, int32_t*, int8_t, const int8_t*);
 extern void svt_av1_fdct32_new(const int32_t*, int32_t*, int8_t, const int8_t*);
 extern void svt_av1_fadst4_new(const int32_t*, int32_t*, int8_t, const int8_t*);
 extern void svt_av1_fadst8_new(const int32_t*, int32_t*, int8_t, const int8_t*);
+extern void svt_av1_fadst16_new(const int32_t*, int32_t*, int8_t, const int8_t*);
+extern void svt_av1_fdct64_new(const int32_t*, int32_t*, int8_t, const int8_t*);
 extern void svt_av1_fidentity4_c(const int32_t*, int32_t*, int8_t, const int8_t*);
 extern void svt_av1_fidentity8_c(const int32_t*, int32_t*, int8_t, const int8_t*);
 
 /* Inverse transforms (stage_range used for clamping) */
 extern void svt_av1_idct4_new(const int32_t*, int32_t*, int8_t, const int8_t*);
 extern void svt_av1_idct8_new(const int32_t*, int32_t*, int8_t, const int8_t*);
+extern void svt_av1_idct16_new(const int32_t*, int32_t*, int8_t, const int8_t*);
+extern void svt_av1_idct32_new(const int32_t*, int32_t*, int8_t, const int8_t*);
+extern void svt_av1_iadst8_new(const int32_t*, int32_t*, int8_t, const int8_t*);
 extern void svt_av1_iadst4_new(const int32_t*, int32_t*, int8_t, const int8_t*);
 extern void svt_av1_iadst8_new(const int32_t*, int32_t*, int8_t, const int8_t*);
 extern void svt_av1_iidentity4_c(const int32_t*, int32_t*, int8_t, const int8_t*);
@@ -132,6 +137,24 @@ int main(void) {
         for (int i=0;i<8;i++) printf("%.2f ", orig[i]?inv_out[i]/(double)orig[i]:0);
         printf("\n");
     }
+
+    /* ===== fdct64 ===== */
+    { int32_t in[64]; for(int i=0;i<64;i++) in[i]=100; fwd("fdct64_dc", svt_av1_fdct64_new, in, 64); }
+    { int32_t in[64]; for(int i=0;i<64;i++) in[i]=i*3-96; fwd("fdct64_ramp", svt_av1_fdct64_new, in, 64); }
+
+    /* ===== fadst16 ===== */
+    { int32_t in[16]; for(int i=0;i<16;i++) in[i]=0; fwd("fadst16_zero", svt_av1_fadst16_new, in, 16); }
+    { int32_t in[16]; for(int i=0;i<16;i++) in[i]=i*10-80; fwd("fadst16_ramp", svt_av1_fadst16_new, in, 16); }
+
+    /* ===== idct16 ===== */
+    { int32_t in[16]; for(int i=0;i<16;i++) in[i]=(i==0)?566:0; inv("idct16_dc", svt_av1_idct16_new, in, 16); }
+    { int32_t in[16]={-57,-517,0,-57,0,-20,0,-10,0,-5,0,-3,0,-2,0,-1}; inv("idct16_from_fdct16_ramp", svt_av1_idct16_new, in, 16); }
+
+    /* ===== idct32 ===== */
+    { int32_t in[32]; for(int i=0;i<32;i++) in[i]=(i==0)?2263:0; inv("idct32_dc", svt_av1_idct32_new, in, 32); }
+
+    /* ===== iadst8 ===== */
+    { int32_t in[]={56,125,-19,-40,84,33,-360,445}; inv("iadst8_from_fadst8_mixed", svt_av1_iadst8_new, in, 8); }
 
     return 0;
 }
