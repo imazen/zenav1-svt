@@ -302,32 +302,57 @@ pub fn fdct16(input: &[TranLow], output: &mut [TranLow]) {
 // Ported from svt_av1_fadst4_new in transforms.c
 // =============================================================================
 
+/// Forward 4-point ADST — exact port of svt_av1_fadst4_new from transforms.c:2108.
+/// Uses i32 arithmetic matching the C code exactly.
 pub fn fadst4(input: &[TranLow], output: &mut [TranLow]) {
     let sinpi = &SINPI;
-    let cos_bit = COS_BIT;
+    let bit = COS_BIT;
 
-    let s0 = input[0] as i64;
-    let s1 = input[1] as i64;
-    let s2 = input[2] as i64;
-    let s3 = input[3] as i64;
+    let (x0, x1, x2, x3) = (input[0], input[1], input[2], input[3]);
+    if (x0 | x1 | x2 | x3) == 0 {
+        output[0] = 0;
+        output[1] = 0;
+        output[2] = 0;
+        output[3] = 0;
+        return;
+    }
 
-    let x0 = s0 * sinpi[1] as i64;
-    let x1 = s0 * sinpi[4] as i64;
-    let x2 = s1 * sinpi[2] as i64;
-    let x3 = s1 * sinpi[1] as i64;
-    let x4 = s2 * sinpi[3] as i64;
-    let x5 = s3 * sinpi[4] as i64;
-    let x6 = s3 * sinpi[2] as i64;
+    // stage 1
+    let s0 = sinpi[1] * x0;
+    let s1 = sinpi[4] * x0;
+    let s2 = sinpi[2] * x1;
+    let s3 = sinpi[1] * x1;
+    let s4 = sinpi[3] * x2;
+    let s5 = sinpi[4] * x3;
+    let s6 = sinpi[2] * x3;
+    let mut s7 = x0 + x1;
 
-    let a = x0 + x2 + x5;
-    let b = x1 - x3 + x6;
-    let c = x4;
-    let d = x0 + x3 - x6;
+    // stage 2
+    s7 -= x3;
 
-    output[0] = round_shift_i64(a + c, cos_bit);
-    output[1] = round_shift_i64(b + c, cos_bit);
-    output[2] = round_shift_i64(a - b + d, cos_bit);
-    output[3] = round_shift_i64(a + b - d, cos_bit);
+    // stage 3
+    let mut x0 = s0 + s2;
+    let x1 = sinpi[3] * s7;
+    let mut x2 = s1 - s3;
+    let x3 = s4;
+
+    // stage 4
+    x0 += s5;
+    x2 += s6;
+
+    // stage 5
+    let s0 = x0 + x3;
+    let s1 = x1;
+    let s2 = x2 - x3;
+    let mut s3 = x2 - x0;
+
+    // stage 6
+    s3 += x3;
+
+    output[0] = round_shift(s0, bit);
+    output[1] = round_shift(s1, bit);
+    output[2] = round_shift(s2, bit);
+    output[3] = round_shift(s3, bit);
 }
 
 // =============================================================================
@@ -416,15 +441,15 @@ pub fn fadst8(input: &[TranLow], output: &mut [TranLow]) {
     step[6] = half_btf(cospi[52], bf0(6), cospi[12], bf0(7), cos_bit);
     step[7] = half_btf(cospi[12], bf0(6), -cospi[52], bf0(7), cos_bit);
 
-    // stage 7 (output permutation)
-    output[0] = step[0];
-    output[1] = -step[4];
-    output[2] = step[6];
-    output[3] = -step[2];
-    output[4] = step[3];
-    output[5] = -step[7];
-    output[6] = step[5];
-    output[7] = -step[1];
+    // stage 7 (output permutation — exact match to C svt_av1_fadst8_new)
+    output[0] = step[1];
+    output[1] = step[6];
+    output[2] = step[3];
+    output[3] = step[4];
+    output[4] = step[5];
+    output[5] = step[2];
+    output[6] = step[7];
+    output[7] = step[0];
 }
 
 // =============================================================================
