@@ -31,3 +31,9 @@ magetypes = "0.9"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+# DSP functions inherently need many parameters (src, stride, ref, stride, width, height, etc.)
+too_many_arguments = "allow"
+# Transform butterfly loops use index arithmetic matching C source exactly
+needless_range_loop = "allow"

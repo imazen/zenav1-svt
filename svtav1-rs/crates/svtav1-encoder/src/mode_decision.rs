@@ -43,43 +43,40 @@ pub fn compute_rd_cost(distortion: u64, rate: u32, lambda: u64) -> u64 {
 ///
 /// Returns candidates sorted by estimated cost (cheapest first).
 pub fn generate_intra_candidates(block_size: BlockSize) -> alloc::vec::Vec<MdCandidate> {
-    let mut candidates = alloc::vec::Vec::new();
-
-    // Always include DC prediction (cheapest)
-    candidates.push(MdCandidate {
-        mode: PredictionMode::DcPred,
-        ..Default::default()
-    });
-
-    // Vertical and horizontal
-    candidates.push(MdCandidate {
-        mode: PredictionMode::VPred,
-        ..Default::default()
-    });
-    candidates.push(MdCandidate {
-        mode: PredictionMode::HPred,
-        ..Default::default()
-    });
-
-    // Smooth modes
-    candidates.push(MdCandidate {
-        mode: PredictionMode::SmoothPred,
-        ..Default::default()
-    });
-    candidates.push(MdCandidate {
-        mode: PredictionMode::SmoothVPred,
-        ..Default::default()
-    });
-    candidates.push(MdCandidate {
-        mode: PredictionMode::SmoothHPred,
-        ..Default::default()
-    });
-
-    // Paeth
-    candidates.push(MdCandidate {
-        mode: PredictionMode::PaethPred,
-        ..Default::default()
-    });
+    let mut candidates = alloc::vec![
+        // Always include DC prediction (cheapest)
+        MdCandidate {
+            mode: PredictionMode::DcPred,
+            ..Default::default()
+        },
+        // Vertical and horizontal
+        MdCandidate {
+            mode: PredictionMode::VPred,
+            ..Default::default()
+        },
+        MdCandidate {
+            mode: PredictionMode::HPred,
+            ..Default::default()
+        },
+        // Smooth modes
+        MdCandidate {
+            mode: PredictionMode::SmoothPred,
+            ..Default::default()
+        },
+        MdCandidate {
+            mode: PredictionMode::SmoothVPred,
+            ..Default::default()
+        },
+        MdCandidate {
+            mode: PredictionMode::SmoothHPred,
+            ..Default::default()
+        },
+        // Paeth
+        MdCandidate {
+            mode: PredictionMode::PaethPred,
+            ..Default::default()
+        },
+    ];
 
     // Directional modes (for blocks >= 8x8)
     if block_size as u8 >= BlockSize::Block8x8 as u8 {

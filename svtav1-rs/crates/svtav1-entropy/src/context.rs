@@ -178,7 +178,7 @@ impl FrameContext {
 use crate::writer::AomWriter;
 
 /// Encode a partition type.
-pub fn write_partition(w: &mut AomWriter, ctx: usize, partition: u8, nsymbs: usize) {
+pub fn write_partition(w: &mut AomWriter, ctx: usize, partition: u8, _nsymbs: usize) {
     debug_assert!(ctx < PARTITION_CONTEXTS);
     // For now just encode as literal — real impl uses CDF from FrameContext
     w.write_literal(partition as u32, 2);

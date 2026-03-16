@@ -182,7 +182,7 @@ pub fn fdct16(input: &[TranLow], output: &mut [TranLow]) {
     }
 
     // stage 2
-    let bf0 = output.as_ptr();
+    let _bf0 = output.as_ptr();
     let bf0 = |i: usize| -> i32 { output[i] };
     step[0] = bf0(0) + bf0(7);
     step[1] = bf0(1) + bf0(6);

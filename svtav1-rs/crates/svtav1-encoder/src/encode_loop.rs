@@ -2,7 +2,6 @@
 //!
 //! Ported from SVT-AV1's `coding_loop.c` and `enc_dec_process.c`.
 
-use svtav1_types::block::BlockSize;
 use svtav1_types::transform::TranLow;
 
 /// Result of encoding a single block.
@@ -133,7 +132,7 @@ fn estimate_coeff_rate(qcoeffs: &[TranLow], eob: u16) -> u32 {
         } else if c.abs() == 1 {
             bits += 256; // Level 1
         } else {
-            bits += 384 + (c.unsigned_abs() as u32).ilog2() * 128; // Higher levels
+            bits += 384 + c.unsigned_abs().ilog2() * 128; // Higher levels
         }
     }
     bits

@@ -179,7 +179,8 @@ pub struct Packet {
 /// The AV1 encoder.
 pub struct Encoder {
     config: EncoderConfig,
-    rc_state: RcState,
+    /// Rate control state — updated after each encoded picture.
+    pub rc_state: RcState,
     frame_count: u64,
 }
 

@@ -215,6 +215,7 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
+    #[allow(dead_code)]
     fn make_test_block(width: usize, height: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>, u8) {
         // above: increasing values
         let above: Vec<u8> = (0..width).map(|i| (100 + i) as u8).collect();

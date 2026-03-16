@@ -91,7 +91,7 @@ mod tests {
         let mut cdf = [
             (top * 3 / 4) as u16, // cdf[0]
             (top * 2 / 4) as u16, // cdf[1]
-            (top * 1 / 4) as u16, // cdf[2]
+            (top / 4) as u16,     // cdf[2]
             0u16,                 // unused by update loop iteration
             0u16,                 // cdf[4] = counter
         ];
