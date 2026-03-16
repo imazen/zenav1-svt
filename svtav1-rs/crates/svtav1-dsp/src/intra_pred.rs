@@ -241,6 +241,183 @@ fn predict_paeth_core(
     }
 }
 
+// =============================================================================
+// Directional prediction (8 angular modes)
+// Ported from svt_av1_dr_prediction_z1/z2/z3_c in intra_prediction.c
+// =============================================================================
+
+/// Derivative table for directional prediction angles.
+/// `eb_dr_intra_derivative[angle]` = 256/tan(angle) for zone 1 (0-90°).
+static DR_INTRA_DERIVATIVE: [u16; 90] = [
+    0, 0, 0, 1023, 0, 0, 547, 0, 0, 372, 0, 0, 0, 0, 273, 0, 0, 215, 0, 0, 178, 0, 0, 151, 0, 0,
+    132, 0, 0, 116, 0, 0, 102, 0, 0, 0, 90, 0, 0, 80, 0, 0, 71, 0, 0, 64, 0, 0, 57, 0, 0, 51, 0, 0,
+    45, 0, 0, 0, 40, 0, 0, 35, 0, 0, 31, 0, 0, 27, 0, 0, 23, 0, 0, 19, 0, 0, 15, 0, 0, 0, 0, 11, 0,
+    0, 7, 0, 0, 3, 0, 0,
+];
+
+/// Base angles for directional intra modes.
+pub const MODE_TO_ANGLE: [i32; 8] = [
+    0, // D45_PRED  → 45°
+    0, // D135_PRED → 135°
+    0, // D113_PRED → 113°
+    0, // D157_PRED → 157°
+    0, // D203_PRED → 203°
+    0, // D67_PRED  → 67°
+    0, 0,
+];
+
+fn get_dx(angle: i32) -> i32 {
+    if angle > 0 && angle < 90 {
+        DR_INTRA_DERIVATIVE[angle as usize] as i32
+    } else if angle > 90 && angle < 180 {
+        DR_INTRA_DERIVATIVE[(180 - angle) as usize] as i32
+    } else {
+        1
+    }
+}
+
+fn get_dy(angle: i32) -> i32 {
+    if angle > 90 && angle < 180 {
+        DR_INTRA_DERIVATIVE[(angle - 90) as usize] as i32
+    } else if angle > 180 && angle < 270 {
+        DR_INTRA_DERIVATIVE[(270 - angle) as usize] as i32
+    } else {
+        1
+    }
+}
+
+/// Directional prediction, zone 1: 0 < angle < 90.
+/// Interpolates along the `above` neighbor row.
+fn dr_prediction_z1(
+    dst: &mut [u8],
+    dst_stride: usize,
+    bw: usize,
+    bh: usize,
+    above: &[u8],
+    dx: i32,
+) {
+    let max_base_x = (bw + bh) as i32 - 1;
+    for r in 0..bh {
+        let x = dx * (r as i32 + 1);
+        let base = x >> 6;
+        let shift = ((x) & 0x3F) >> 1;
+
+        for c in 0..bw {
+            let b = base + c as i32;
+            if b < max_base_x {
+                let val = above[b as usize] as i32 * (32 - shift)
+                    + above[(b + 1) as usize] as i32 * shift;
+                dst[r * dst_stride + c] = ((val + 16) >> 5).clamp(0, 255) as u8;
+            } else {
+                dst[r * dst_stride + c] = above[max_base_x as usize];
+            }
+        }
+    }
+}
+
+/// Directional prediction, zone 3: 180 < angle < 270.
+/// Interpolates along the `left` neighbor column.
+fn dr_prediction_z3(dst: &mut [u8], dst_stride: usize, bw: usize, bh: usize, left: &[u8], dy: i32) {
+    let max_base_y = (bw + bh) as i32 - 1;
+    for c in 0..bw {
+        let y = dy * (c as i32 + 1);
+        let base = y >> 6;
+        let shift = ((y) & 0x3F) >> 1;
+
+        for r in 0..bh {
+            let b = base + r as i32;
+            if b < max_base_y {
+                let val =
+                    left[b as usize] as i32 * (32 - shift) + left[(b + 1) as usize] as i32 * shift;
+                dst[r * dst_stride + c] = ((val + 16) >> 5).clamp(0, 255) as u8;
+            } else {
+                dst[r * dst_stride + c] = left[max_base_y as usize];
+            }
+        }
+    }
+}
+
+/// Directional prediction, zone 2: 90 < angle < 180.
+/// Interpolates using both `above` and `left` neighbors.
+fn dr_prediction_z2(
+    dst: &mut [u8],
+    dst_stride: usize,
+    bw: usize,
+    bh: usize,
+    above: &[u8],
+    left: &[u8],
+    dx: i32,
+    dy: i32,
+) {
+    for r in 0..bh {
+        for c in 0..bw {
+            // Try above neighbor (zone 1 direction)
+            let y_above = -(r as i32 + 1) * dy;
+            let x_base = (c as i32) + (y_above >> 6);
+            let x_shift = ((y_above) & 0x3F) >> 1;
+
+            // Try left neighbor (zone 3 direction)
+            let x_left = -(c as i32 + 1) * dx;
+            let y_base = (r as i32) + (x_left >> 6);
+            let y_shift = ((x_left) & 0x3F) >> 1;
+
+            let val = if x_base >= 0 {
+                // Use above neighbor
+                let b = x_base as usize;
+                let a0 = if b < above.len() { above[b] } else { 128 };
+                let a1 = if b + 1 < above.len() {
+                    above[b + 1]
+                } else {
+                    128
+                };
+                a0 as i32 * (32 - x_shift) + a1 as i32 * x_shift
+            } else if y_base >= 0 {
+                // Use left neighbor
+                let b = y_base as usize;
+                let l0 = if b < left.len() { left[b] } else { 128 };
+                let l1 = if b + 1 < left.len() { left[b + 1] } else { 128 };
+                l0 as i32 * (32 - y_shift) + l1 as i32 * y_shift
+            } else {
+                128 * 32 // fallback
+            };
+            dst[r * dst_stride + c] = ((val + 16) >> 5).clamp(0, 255) as u8;
+        }
+    }
+}
+
+/// Predict a block using directional prediction at the given angle.
+///
+/// `angle` is in degrees (0-270). The 8 directional modes map to:
+/// D45=45, D67=67, D113=113, D135=135, D157=157, D203=203
+///
+/// `above` and `left` must have at least `width + height` elements.
+pub fn predict_directional(
+    dst: &mut [u8],
+    dst_stride: usize,
+    above: &[u8],
+    left: &[u8],
+    width: usize,
+    height: usize,
+    angle: i32,
+) {
+    let dx = get_dx(angle);
+    let dy = get_dy(angle);
+
+    if angle > 0 && angle < 90 {
+        dr_prediction_z1(dst, dst_stride, width, height, above, dx);
+    } else if angle > 90 && angle < 180 {
+        dr_prediction_z2(dst, dst_stride, width, height, above, left, dx, dy);
+    } else if angle > 180 && angle < 270 {
+        dr_prediction_z3(dst, dst_stride, width, height, left, dy);
+    } else if angle == 90 {
+        // V_PRED
+        predict_v(dst, dst_stride, above, width, height);
+    } else if angle == 180 {
+        // H_PRED
+        predict_h(dst, dst_stride, left, width, height);
+    }
+}
+
 /// Get smooth weight table for a given block dimension.
 ///
 /// Weights decrease from 255 (top/left edge) to approximately 0 (bottom/right edge).
