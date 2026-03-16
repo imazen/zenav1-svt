@@ -681,7 +681,7 @@ mod dispatch_tests {
         let mut reference = vec![0u8; stride * size];
         cdef_filter_block(&src, stride, &mut reference, stride, 3, 4, 2, 4, size, size);
 
-        for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+        let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
             let mut result = vec![0u8; stride * size];
             cdef_filter_block(&src, stride, &mut result, stride, 3, 4, 2, 4, size, size);
             assert_eq!(result, reference, "cdef mismatch at dispatch level {_perm}");
@@ -702,7 +702,7 @@ mod dispatch_tests {
         let mut reference = base_pixels.clone();
         deblock_vert(&mut reference, stride, 10, 10, 4, height);
 
-        for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+        let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
             let mut result = base_pixels.clone();
             deblock_vert(&mut result, stride, 10, 10, 4, height);
             assert_eq!(
@@ -726,7 +726,7 @@ mod dispatch_tests {
         let mut reference = base_pixels.clone();
         deblock_horz(&mut reference, stride, 10, 10, 4, width);
 
-        for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+        let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
             let mut result = base_pixels.clone();
             deblock_horz(&mut result, stride, 10, 10, 4, width);
             assert_eq!(
