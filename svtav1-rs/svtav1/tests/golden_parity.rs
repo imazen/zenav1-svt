@@ -702,3 +702,17 @@ fn idct32_dc_golden() {
     svtav1_dsp::inv_txfm::idct32(&input, &mut output);
     assert_exact("idct32_dc", &output, &golden);
 }
+
+// =============================================================================
+// idct64 golden parity (measured from C)
+// =============================================================================
+
+#[test]
+fn idct64_dc_golden() {
+    let mut input = [0i32; 64];
+    input[0] = 4525;
+    let golden = [3199i32; 64];
+    let mut output = [0i32; 64];
+    svtav1_dsp::inv_txfm::idct64(&input, &mut output);
+    assert_exact("idct64_dc", &output, &golden);
+}
