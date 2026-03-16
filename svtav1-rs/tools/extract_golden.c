@@ -16,6 +16,7 @@ extern const int32_t svt_aom_eb_av1_sinpi_arr_data[7][5];
 extern void svt_av1_fdct4_new(const int32_t*, int32_t*, int8_t, const int8_t*);
 extern void svt_av1_fdct8_new(const int32_t*, int32_t*, int8_t, const int8_t*);
 extern void svt_av1_fdct16_new(const int32_t*, int32_t*, int8_t, const int8_t*);
+extern void svt_av1_fdct32_new(const int32_t*, int32_t*, int8_t, const int8_t*);
 extern void svt_av1_fadst4_new(const int32_t*, int32_t*, int8_t, const int8_t*);
 extern void svt_av1_fadst8_new(const int32_t*, int32_t*, int8_t, const int8_t*);
 extern void svt_av1_fidentity4_c(const int32_t*, int32_t*, int8_t, const int8_t*);
@@ -71,6 +72,9 @@ int main(void) {
 
     { int32_t in[16]; for(int i=0;i<16;i++) in[i]=50; fwd("fdct16_dc", svt_av1_fdct16_new, in, 16); }
     { int32_t in[16]; for(int i=0;i<16;i++) in[i]=i*10-80; fwd("fdct16_ramp", svt_av1_fdct16_new, in, 16); }
+
+    { int32_t in[32]; for(int i=0;i<32;i++) in[i]=100; fwd("fdct32_dc", svt_av1_fdct32_new, in, 32); }
+    { int32_t in[32]; for(int i=0;i<32;i++) in[i]=i*5-80; fwd("fdct32_ramp", svt_av1_fdct32_new, in, 32); }
 
     /* ===== Forward ADST ===== */
     { int32_t in[]={0,0,0,0}; fwd("fadst4_zero", svt_av1_fadst4_new, in, 4); }
