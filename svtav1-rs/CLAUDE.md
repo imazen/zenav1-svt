@@ -51,7 +51,10 @@
 - Document any borrowing from rav1d-safe in commit messages and here under "Borrowed Patterns"
 
 ## Borrowed Patterns
-(Document any patterns borrowed from rav1d-safe or other projects here)
+- **DisjointMut concept**: The `svtav1-disjoint-mut` crate's region-based borrow tracking
+  pattern is adapted from `rav1d-disjoint-mut` at `/home/lilith/work/zen/rav1d-safe/crates/rav1d-disjoint-mut/`.
+  Our implementation is simplified (no UnsafeCell, fully safe), but the API shape
+  (Region, BorrowTracker, overlap detection) follows rav1d's design.
 
 ## Known Bugs
 (Document any known bugs here with file:line references)
