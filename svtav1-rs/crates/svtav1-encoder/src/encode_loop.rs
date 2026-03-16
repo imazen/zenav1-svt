@@ -42,15 +42,23 @@ pub fn encode_block(
         }
     }
 
-    // Step 2: Forward transform
+    // Step 2: Forward transform — use tuned wrappers for common sizes
     let mut coeffs = alloc::vec![0i32; n];
-    if width == 4 && height == 4 {
-        svtav1_dsp::fwd_txfm::fwd_txfm2d_4x4_dct_dct(&residual, &mut coeffs, width);
-    } else if width == 8 && height == 8 {
-        svtav1_dsp::fwd_txfm::fwd_txfm2d_8x8_dct_dct(&residual, &mut coeffs, width);
-    } else {
-        // For other sizes, use the general framework
-        svtav1_dsp::fwd_txfm::fwd_txfm2d_4x4_dct_dct(&residual[..16], &mut coeffs[..16], width);
+    match (width, height) {
+        (4, 4) => svtav1_dsp::fwd_txfm::fwd_txfm2d_4x4_dct_dct(&residual, &mut coeffs, width),
+        (8, 8) => svtav1_dsp::fwd_txfm::fwd_txfm2d_8x8_dct_dct(&residual, &mut coeffs, width),
+        (16, 16) => svtav1_dsp::fwd_txfm::fwd_txfm2d_16x16_dct_dct(&residual, &mut coeffs, width),
+        (32, 32) => svtav1_dsp::fwd_txfm::fwd_txfm2d_32x32_dct_dct(&residual, &mut coeffs, width),
+        _ => {
+            let tx_size = size_to_tx_size(width, height);
+            svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
+                &residual,
+                &mut coeffs,
+                width,
+                tx_size,
+                svtav1_types::transform::TxType::DctDct,
+            );
+        }
     }
 
     // Step 3: Quantize
@@ -77,14 +85,27 @@ pub fn encode_block(
         }
     }
 
-    // Step 4: Inverse transform (reconstruction = pred + inv_transform(dqcoeffs))
+    // Step 4: Inverse transform — use tuned wrappers matching forward
     let mut inv_residual = alloc::vec![0i32; n];
-    if width == 4 && height == 4 {
-        svtav1_dsp::inv_txfm::inv_txfm2d_4x4_dct_dct(&dqcoeffs, &mut inv_residual, width);
-    } else if width == 8 && height == 8 {
-        svtav1_dsp::inv_txfm::inv_txfm2d_8x8_dct_dct(&dqcoeffs, &mut inv_residual, width);
-    } else {
-        inv_residual[..n.min(16)].copy_from_slice(&dqcoeffs[..n.min(16)]);
+    match (width, height) {
+        (4, 4) => svtav1_dsp::inv_txfm::inv_txfm2d_4x4_dct_dct(&dqcoeffs, &mut inv_residual, width),
+        (8, 8) => svtav1_dsp::inv_txfm::inv_txfm2d_8x8_dct_dct(&dqcoeffs, &mut inv_residual, width),
+        (16, 16) => {
+            svtav1_dsp::inv_txfm::inv_txfm2d_16x16_dct_dct(&dqcoeffs, &mut inv_residual, width)
+        }
+        (32, 32) => {
+            svtav1_dsp::inv_txfm::inv_txfm2d_32x32_dct_dct(&dqcoeffs, &mut inv_residual, width)
+        }
+        _ => {
+            let tx_size = size_to_tx_size(width, height);
+            svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch(
+                &dqcoeffs,
+                &mut inv_residual,
+                width,
+                tx_size,
+                svtav1_types::transform::TxType::DctDct,
+            );
+        }
     }
 
     // Step 5: Reconstruct (pred + inv_residual, clipped to [0, 255])
@@ -110,6 +131,33 @@ pub fn encode_block(
         eob,
         distortion,
         rate,
+    }
+}
+
+/// Map (width, height) to the closest TxSize.
+fn size_to_tx_size(width: usize, height: usize) -> svtav1_types::transform::TxSize {
+    use svtav1_types::transform::TxSize;
+    match (width, height) {
+        (4, 4) => TxSize::Tx4x4,
+        (8, 8) => TxSize::Tx8x8,
+        (16, 16) => TxSize::Tx16x16,
+        (32, 32) => TxSize::Tx32x32,
+        (64, 64) => TxSize::Tx64x64,
+        (4, 8) => TxSize::Tx4x8,
+        (8, 4) => TxSize::Tx8x4,
+        (8, 16) => TxSize::Tx8x16,
+        (16, 8) => TxSize::Tx16x8,
+        (16, 32) => TxSize::Tx16x32,
+        (32, 16) => TxSize::Tx32x16,
+        (32, 64) => TxSize::Tx32x64,
+        (64, 32) => TxSize::Tx64x32,
+        (4, 16) => TxSize::Tx4x16,
+        (16, 4) => TxSize::Tx16x4,
+        (8, 32) => TxSize::Tx8x32,
+        (32, 8) => TxSize::Tx32x8,
+        (16, 64) => TxSize::Tx16x64,
+        (64, 16) => TxSize::Tx64x16,
+        _ => TxSize::Tx4x4, // fallback
     }
 }
 
