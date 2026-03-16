@@ -3,8 +3,65 @@
 //! Used extensively in prediction: copying reference blocks, averaging
 //! compound predictions, and blending with masks.
 
+use archmage::prelude::*;
+
 /// Copy a rectangular block of 8-bit pixels.
 pub fn block_copy(
+    dst: &mut [u8],
+    dst_stride: usize,
+    src: &[u8],
+    src_stride: usize,
+    width: usize,
+    height: usize,
+) {
+    incant!(
+        block_copy_impl(dst, dst_stride, src, src_stride, width, height),
+        [v3, neon, scalar]
+    )
+}
+
+fn block_copy_impl_scalar(
+    _token: ScalarToken,
+    dst: &mut [u8],
+    dst_stride: usize,
+    src: &[u8],
+    src_stride: usize,
+    width: usize,
+    height: usize,
+) {
+    block_copy_inner(dst, dst_stride, src, src_stride, width, height);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn block_copy_impl_v3(
+    _token: Desktop64,
+    dst: &mut [u8],
+    dst_stride: usize,
+    src: &[u8],
+    src_stride: usize,
+    width: usize,
+    height: usize,
+) {
+    block_copy_inner(dst, dst_stride, src, src_stride, width, height);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn block_copy_impl_neon(
+    _token: NeonToken,
+    dst: &mut [u8],
+    dst_stride: usize,
+    src: &[u8],
+    src_stride: usize,
+    width: usize,
+    height: usize,
+) {
+    block_copy_inner(dst, dst_stride, src, src_stride, width, height);
+}
+
+#[inline]
+fn block_copy_inner(
     dst: &mut [u8],
     dst_stride: usize,
     src: &[u8],
@@ -32,6 +89,69 @@ pub fn block_average(
     width: usize,
     height: usize,
 ) {
+    incant!(
+        block_average_impl(dst, dst_stride, a, a_stride, b, b_stride, width, height),
+        [v3, neon, scalar]
+    )
+}
+
+fn block_average_impl_scalar(
+    _token: ScalarToken,
+    dst: &mut [u8],
+    dst_stride: usize,
+    a: &[u8],
+    a_stride: usize,
+    b: &[u8],
+    b_stride: usize,
+    width: usize,
+    height: usize,
+) {
+    block_average_inner(dst, dst_stride, a, a_stride, b, b_stride, width, height);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn block_average_impl_v3(
+    _token: Desktop64,
+    dst: &mut [u8],
+    dst_stride: usize,
+    a: &[u8],
+    a_stride: usize,
+    b: &[u8],
+    b_stride: usize,
+    width: usize,
+    height: usize,
+) {
+    block_average_inner(dst, dst_stride, a, a_stride, b, b_stride, width, height);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn block_average_impl_neon(
+    _token: NeonToken,
+    dst: &mut [u8],
+    dst_stride: usize,
+    a: &[u8],
+    a_stride: usize,
+    b: &[u8],
+    b_stride: usize,
+    width: usize,
+    height: usize,
+) {
+    block_average_inner(dst, dst_stride, a, a_stride, b, b_stride, width, height);
+}
+
+#[inline]
+fn block_average_inner(
+    dst: &mut [u8],
+    dst_stride: usize,
+    a: &[u8],
+    a_stride: usize,
+    b: &[u8],
+    b_stride: usize,
+    width: usize,
+    height: usize,
+) {
     for row in 0..height {
         let d_off = row * dst_stride;
         let a_off = row * a_stride;
@@ -50,6 +170,121 @@ pub fn block_average(
 ///
 /// mask values are in range [0, 64] (AOM_BLEND_A64_MAX_ALPHA).
 pub fn block_blend(
+    dst: &mut [u8],
+    dst_stride: usize,
+    a: &[u8],
+    a_stride: usize,
+    b: &[u8],
+    b_stride: usize,
+    mask: &[u8],
+    mask_stride: usize,
+    width: usize,
+    height: usize,
+) {
+    incant!(
+        block_blend_impl(
+            dst,
+            dst_stride,
+            a,
+            a_stride,
+            b,
+            b_stride,
+            mask,
+            mask_stride,
+            width,
+            height
+        ),
+        [v3, neon, scalar]
+    )
+}
+
+fn block_blend_impl_scalar(
+    _token: ScalarToken,
+    dst: &mut [u8],
+    dst_stride: usize,
+    a: &[u8],
+    a_stride: usize,
+    b: &[u8],
+    b_stride: usize,
+    mask: &[u8],
+    mask_stride: usize,
+    width: usize,
+    height: usize,
+) {
+    block_blend_inner(
+        dst,
+        dst_stride,
+        a,
+        a_stride,
+        b,
+        b_stride,
+        mask,
+        mask_stride,
+        width,
+        height,
+    );
+}
+
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn block_blend_impl_v3(
+    _token: Desktop64,
+    dst: &mut [u8],
+    dst_stride: usize,
+    a: &[u8],
+    a_stride: usize,
+    b: &[u8],
+    b_stride: usize,
+    mask: &[u8],
+    mask_stride: usize,
+    width: usize,
+    height: usize,
+) {
+    block_blend_inner(
+        dst,
+        dst_stride,
+        a,
+        a_stride,
+        b,
+        b_stride,
+        mask,
+        mask_stride,
+        width,
+        height,
+    );
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn block_blend_impl_neon(
+    _token: NeonToken,
+    dst: &mut [u8],
+    dst_stride: usize,
+    a: &[u8],
+    a_stride: usize,
+    b: &[u8],
+    b_stride: usize,
+    mask: &[u8],
+    mask_stride: usize,
+    width: usize,
+    height: usize,
+) {
+    block_blend_inner(
+        dst,
+        dst_stride,
+        a,
+        a_stride,
+        b,
+        b_stride,
+        mask,
+        mask_stride,
+        width,
+        height,
+    );
+}
+
+#[inline]
+fn block_blend_inner(
     dst: &mut [u8],
     dst_stride: usize,
     a: &[u8],
@@ -160,5 +395,69 @@ mod tests {
         block_blend(&mut dst_b, 2, &a, 2, &b, 2, &mask_b, 2, 2, 2);
         assert!(dst_a.iter().all(|&v| v == 100));
         assert!(dst_b.iter().all(|&v| v == 200));
+    }
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+    use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+
+    #[test]
+    fn block_copy_all_dispatch_levels() {
+        let src: [u8; 16] = [
+            10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160,
+        ];
+        let mut reference = [0u8; 16];
+        block_copy(&mut reference, 4, &src, 4, 4, 4);
+
+        let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            let mut result = [0u8; 16];
+            block_copy(&mut result, 4, &src, 4, 4, 4);
+            assert_eq!(result, reference, "copy mismatch at dispatch level {_perm}");
+        });
+    }
+
+    #[test]
+    fn block_average_all_dispatch_levels() {
+        let a: [u8; 16] = [
+            10, 30, 50, 70, 90, 110, 130, 150, 20, 40, 60, 80, 100, 120, 140, 160,
+        ];
+        let b: [u8; 16] = [
+            200, 180, 160, 140, 120, 100, 80, 60, 190, 170, 150, 130, 110, 90, 70, 50,
+        ];
+        let mut reference = [0u8; 16];
+        block_average(&mut reference, 4, &a, 4, &b, 4, 4, 4);
+
+        let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            let mut result = [0u8; 16];
+            block_average(&mut result, 4, &a, 4, &b, 4, 4, 4);
+            assert_eq!(
+                result, reference,
+                "average mismatch at dispatch level {_perm}"
+            );
+        });
+    }
+
+    #[test]
+    fn block_blend_all_dispatch_levels() {
+        let a: [u8; 16] = [
+            10, 30, 50, 70, 90, 110, 130, 150, 20, 40, 60, 80, 100, 120, 140, 160,
+        ];
+        let b: [u8; 16] = [
+            200, 180, 160, 140, 120, 100, 80, 60, 190, 170, 150, 130, 110, 90, 70, 50,
+        ];
+        let mask: [u8; 16] = [0, 8, 16, 24, 32, 40, 48, 56, 64, 4, 12, 20, 28, 36, 44, 52];
+        let mut reference = [0u8; 16];
+        block_blend(&mut reference, 4, &a, 4, &b, 4, &mask, 4, 4, 4);
+
+        let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            let mut result = [0u8; 16];
+            block_blend(&mut result, 4, &a, 4, &b, 4, &mask, 4, 4, 4);
+            assert_eq!(
+                result, reference,
+                "blend mismatch at dispatch level {_perm}"
+            );
+        });
     }
 }

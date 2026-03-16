@@ -7,6 +7,8 @@
 //! then vertical. The filter coefficients come from
 //! `svtav1_tables::interp`.
 
+use archmage::prelude::*;
+
 /// Number of filter bits for normalization (sum of taps = 128 = 1 << 7).
 const FILTER_BITS: i32 = 7;
 
@@ -32,19 +34,74 @@ pub fn convolve_horiz(
     width: usize,
     height: usize,
 ) {
+    incant!(
+        convolve_horiz_impl(src, src_stride, dst, dst_stride, filter, width, height),
+        [v3, neon, scalar]
+    )
+}
+
+fn convolve_horiz_impl_scalar(
+    _token: ScalarToken,
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    filter: &[i16; 8],
+    width: usize,
+    height: usize,
+) {
+    convolve_horiz_inner(src, src_stride, dst, dst_stride, filter, width, height);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn convolve_horiz_impl_v3(
+    _token: Desktop64,
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    filter: &[i16; 8],
+    width: usize,
+    height: usize,
+) {
+    convolve_horiz_inner(src, src_stride, dst, dst_stride, filter, width, height);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn convolve_horiz_impl_neon(
+    _token: NeonToken,
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    filter: &[i16; 8],
+    width: usize,
+    height: usize,
+) {
+    convolve_horiz_inner(src, src_stride, dst, dst_stride, filter, width, height);
+}
+
+#[inline]
+fn convolve_horiz_inner(
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    filter: &[i16; 8],
+    width: usize,
+    height: usize,
+) {
     for row in 0..height {
         let s_row = row * src_stride;
         let d_row = row * dst_stride;
         for col in 0..width {
-            let mut sum: i16 = 0;
+            let mut sum: i32 = 0;
             for k in 0..FILTER_TAPS {
-                // Source pixel index: col - FILTER_CENTER + k
-                // The caller guarantees src is offset so index 0 corresponds
-                // to (logical_col - FILTER_CENTER).
                 let src_idx = s_row + col + k;
-                sum += src[src_idx] as i16 * filter[k];
+                sum += src[src_idx] as i32 * filter[k] as i32;
             }
-            // Normalize by FILTER_BITS and clamp to u8 range.
             let val = (sum + (1 << (FILTER_BITS - 1))) >> FILTER_BITS;
             dst[d_row + col] = val.clamp(0, 255) as u8;
         }
@@ -67,13 +124,70 @@ pub fn convolve_vert(
     width: usize,
     height: usize,
 ) {
+    incant!(
+        convolve_vert_impl(src, src_stride, dst, dst_stride, filter, width, height),
+        [v3, neon, scalar]
+    )
+}
+
+fn convolve_vert_impl_scalar(
+    _token: ScalarToken,
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    filter: &[i16; 8],
+    width: usize,
+    height: usize,
+) {
+    convolve_vert_inner(src, src_stride, dst, dst_stride, filter, width, height);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn convolve_vert_impl_v3(
+    _token: Desktop64,
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    filter: &[i16; 8],
+    width: usize,
+    height: usize,
+) {
+    convolve_vert_inner(src, src_stride, dst, dst_stride, filter, width, height);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn convolve_vert_impl_neon(
+    _token: NeonToken,
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    filter: &[i16; 8],
+    width: usize,
+    height: usize,
+) {
+    convolve_vert_inner(src, src_stride, dst, dst_stride, filter, width, height);
+}
+
+#[inline]
+fn convolve_vert_inner(
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    filter: &[i16; 8],
+    width: usize,
+    height: usize,
+) {
     for row in 0..height {
         let d_row = row * dst_stride;
         for col in 0..width {
             let mut sum: i32 = 0;
             for k in 0..FILTER_TAPS {
-                // Source row index: row + k (caller offsets src so row 0
-                // corresponds to logical_row - FILTER_CENTER).
                 let src_idx = (row + k) * src_stride + col;
                 sum += src[src_idx] as i32 * filter[k] as i32;
             }
@@ -101,15 +215,82 @@ pub fn convolve_2d(
     width: usize,
     height: usize,
 ) {
-    // We need FILTER_TAPS-1 extra rows for the vertical pass.
+    incant!(
+        convolve_2d_impl(
+            src, src_stride, dst, dst_stride, h_filter, v_filter, width, height
+        ),
+        [v3, neon, scalar]
+    )
+}
+
+fn convolve_2d_impl_scalar(
+    _token: ScalarToken,
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    h_filter: &[i16; 8],
+    v_filter: &[i16; 8],
+    width: usize,
+    height: usize,
+) {
+    convolve_2d_inner(
+        src, src_stride, dst, dst_stride, h_filter, v_filter, width, height,
+    );
+}
+
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn convolve_2d_impl_v3(
+    _token: Desktop64,
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    h_filter: &[i16; 8],
+    v_filter: &[i16; 8],
+    width: usize,
+    height: usize,
+) {
+    convolve_2d_inner(
+        src, src_stride, dst, dst_stride, h_filter, v_filter, width, height,
+    );
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn convolve_2d_impl_neon(
+    _token: NeonToken,
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    h_filter: &[i16; 8],
+    v_filter: &[i16; 8],
+    width: usize,
+    height: usize,
+) {
+    convolve_2d_inner(
+        src, src_stride, dst, dst_stride, h_filter, v_filter, width, height,
+    );
+}
+
+#[inline]
+fn convolve_2d_inner(
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    h_filter: &[i16; 8],
+    v_filter: &[i16; 8],
+    width: usize,
+    height: usize,
+) {
     let intermediate_height = height + FILTER_TAPS - 1;
     let intermediate_stride = width;
     let mut intermediate = alloc::vec![0u8; intermediate_height * intermediate_stride];
 
-    // Horizontal pass: produce intermediate_height rows of width pixels.
-    // src is already offset to (logical_row - FILTER_CENTER, logical_col - FILTER_CENTER),
-    // so we read from row 0 through intermediate_height-1 of src.
-    convolve_horiz(
+    convolve_horiz_inner(
         src,
         src_stride,
         &mut intermediate,
@@ -119,10 +300,7 @@ pub fn convolve_2d(
         intermediate_height,
     );
 
-    // Vertical pass: consume intermediate_height rows, produce height rows.
-    // The intermediate buffer starts at the top (FILTER_CENTER rows above the
-    // logical block), and convolve_vert reads from row+k where k=0..7.
-    convolve_vert(
+    convolve_vert_inner(
         &intermediate,
         intermediate_stride,
         dst,
@@ -335,5 +513,92 @@ mod tests {
         let expected =
             (((2 * 20) + (-14) * 30 + 76 * 40 + 76 * 50 + (-14) * 60 + 2 * 70) + 64) >> 7;
         assert_eq!(dst[0], expected as u8);
+    }
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+    use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+    use svtav1_tables::interp::SUB_PEL_FILTERS_8;
+
+    #[test]
+    fn convolve_horiz_all_dispatch_levels() {
+        let filter = &SUB_PEL_FILTERS_8[8]; // half-pixel filter
+        let width = 4;
+        let height = 4;
+        let padded_w = width + FILTER_TAPS - 1;
+        let src: alloc::vec::Vec<u8> = (0..(padded_w * height) as u16)
+            .map(|i| ((i * 7 + 13) % 256) as u8)
+            .collect();
+        let mut reference = alloc::vec![0u8; width * height];
+        convolve_horiz(&src, padded_w, &mut reference, width, filter, width, height);
+
+        let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            let mut result = alloc::vec![0u8; width * height];
+            convolve_horiz(&src, padded_w, &mut result, width, filter, width, height);
+            assert_eq!(
+                result, reference,
+                "horiz mismatch at dispatch level {_perm}"
+            );
+        });
+    }
+
+    #[test]
+    fn convolve_vert_all_dispatch_levels() {
+        let filter = &SUB_PEL_FILTERS_8[8];
+        let width = 4;
+        let height = 4;
+        let padded_h = height + FILTER_TAPS - 1;
+        let src: alloc::vec::Vec<u8> = (0..(width * padded_h) as u16)
+            .map(|i| ((i * 11 + 3) % 256) as u8)
+            .collect();
+        let mut reference = alloc::vec![0u8; width * height];
+        convolve_vert(&src, width, &mut reference, width, filter, width, height);
+
+        let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            let mut result = alloc::vec![0u8; width * height];
+            convolve_vert(&src, width, &mut result, width, filter, width, height);
+            assert_eq!(result, reference, "vert mismatch at dispatch level {_perm}");
+        });
+    }
+
+    #[test]
+    fn convolve_2d_all_dispatch_levels() {
+        let h_filter = &SUB_PEL_FILTERS_8[8];
+        let v_filter = &SUB_PEL_FILTERS_8[4];
+        let width = 4;
+        let height = 4;
+        let padded_w = width + FILTER_TAPS - 1;
+        let padded_h = height + FILTER_TAPS - 1;
+        let src: alloc::vec::Vec<u8> = (0..(padded_w * padded_h) as u16)
+            .map(|i| ((i * 13 + 7) % 256) as u8)
+            .collect();
+        let mut reference = alloc::vec![0u8; width * height];
+        convolve_2d(
+            &src,
+            padded_w,
+            &mut reference,
+            width,
+            h_filter,
+            v_filter,
+            width,
+            height,
+        );
+
+        let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            let mut result = alloc::vec![0u8; width * height];
+            convolve_2d(
+                &src,
+                padded_w,
+                &mut result,
+                width,
+                h_filter,
+                v_filter,
+                width,
+                height,
+            );
+            assert_eq!(result, reference, "2d mismatch at dispatch level {_perm}");
+        });
     }
 }

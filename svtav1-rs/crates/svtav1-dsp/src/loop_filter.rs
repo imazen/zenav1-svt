@@ -6,6 +6,8 @@
 //! CDEF (Constrained Directional Enhancement Filter) detects edge
 //! direction in 8x8 blocks and applies directional filtering.
 
+use archmage::prelude::*;
+
 /// CDEF block size for direction detection.
 const CDEF_BLOCK_SIZE: usize = 8;
 
@@ -54,6 +56,61 @@ pub fn deblock_vert(
     edge_col: usize,
     height: usize,
 ) {
+    incant!(
+        deblock_vert_impl(pixels, stride, strength, threshold, edge_col, height),
+        [v3, neon, scalar]
+    )
+}
+
+fn deblock_vert_impl_scalar(
+    _token: ScalarToken,
+    pixels: &mut [u8],
+    stride: usize,
+    strength: i32,
+    threshold: i32,
+    edge_col: usize,
+    height: usize,
+) {
+    deblock_vert_inner(pixels, stride, strength, threshold, edge_col, height);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn deblock_vert_impl_v3(
+    _token: Desktop64,
+    pixels: &mut [u8],
+    stride: usize,
+    strength: i32,
+    threshold: i32,
+    edge_col: usize,
+    height: usize,
+) {
+    deblock_vert_inner(pixels, stride, strength, threshold, edge_col, height);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn deblock_vert_impl_neon(
+    _token: NeonToken,
+    pixels: &mut [u8],
+    stride: usize,
+    strength: i32,
+    threshold: i32,
+    edge_col: usize,
+    height: usize,
+) {
+    deblock_vert_inner(pixels, stride, strength, threshold, edge_col, height);
+}
+
+#[inline]
+fn deblock_vert_inner(
+    pixels: &mut [u8],
+    stride: usize,
+    strength: i32,
+    threshold: i32,
+    edge_col: usize,
+    height: usize,
+) {
     if strength == 0 {
         return;
     }
@@ -77,6 +134,61 @@ pub fn deblock_vert(
 /// Filters the boundary between rows `edge_row-1` and `edge_row`.
 /// Same 4-tap filter as `deblock_vert` but applied to vertical neighbors.
 pub fn deblock_horz(
+    pixels: &mut [u8],
+    stride: usize,
+    strength: i32,
+    threshold: i32,
+    edge_row: usize,
+    width: usize,
+) {
+    incant!(
+        deblock_horz_impl(pixels, stride, strength, threshold, edge_row, width),
+        [v3, neon, scalar]
+    )
+}
+
+fn deblock_horz_impl_scalar(
+    _token: ScalarToken,
+    pixels: &mut [u8],
+    stride: usize,
+    strength: i32,
+    threshold: i32,
+    edge_row: usize,
+    width: usize,
+) {
+    deblock_horz_inner(pixels, stride, strength, threshold, edge_row, width);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn deblock_horz_impl_v3(
+    _token: Desktop64,
+    pixels: &mut [u8],
+    stride: usize,
+    strength: i32,
+    threshold: i32,
+    edge_row: usize,
+    width: usize,
+) {
+    deblock_horz_inner(pixels, stride, strength, threshold, edge_row, width);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn deblock_horz_impl_neon(
+    _token: NeonToken,
+    pixels: &mut [u8],
+    stride: usize,
+    strength: i32,
+    threshold: i32,
+    edge_row: usize,
+    width: usize,
+) {
+    deblock_horz_inner(pixels, stride, strength, threshold, edge_row, width);
+}
+
+#[inline]
+fn deblock_horz_inner(
     pixels: &mut [u8],
     stride: usize,
     strength: i32,
@@ -195,15 +307,124 @@ pub fn cdef_filter_block(
     width: usize,
     height: usize,
 ) {
-    // Primary direction taps and secondary (perpendicular +-1) taps.
-    // From the AV1 spec: primary taps have weights [4, 2] at distances
-    // [1, 2] along the direction. Secondary taps have weight [2] at
-    // distance 1 along the two adjacent directions.
+    incant!(
+        cdef_filter_block_impl(
+            src,
+            src_stride,
+            dst,
+            dst_stride,
+            dir,
+            pri_strength,
+            sec_strength,
+            damping,
+            width,
+            height
+        ),
+        [v3, neon, scalar]
+    )
+}
+
+fn cdef_filter_block_impl_scalar(
+    _token: ScalarToken,
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    dir: u8,
+    pri_strength: i32,
+    sec_strength: i32,
+    damping: i32,
+    width: usize,
+    height: usize,
+) {
+    cdef_filter_block_inner(
+        src,
+        src_stride,
+        dst,
+        dst_stride,
+        dir,
+        pri_strength,
+        sec_strength,
+        damping,
+        width,
+        height,
+    );
+}
+
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn cdef_filter_block_impl_v3(
+    _token: Desktop64,
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    dir: u8,
+    pri_strength: i32,
+    sec_strength: i32,
+    damping: i32,
+    width: usize,
+    height: usize,
+) {
+    cdef_filter_block_inner(
+        src,
+        src_stride,
+        dst,
+        dst_stride,
+        dir,
+        pri_strength,
+        sec_strength,
+        damping,
+        width,
+        height,
+    );
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn cdef_filter_block_impl_neon(
+    _token: NeonToken,
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    dir: u8,
+    pri_strength: i32,
+    sec_strength: i32,
+    damping: i32,
+    width: usize,
+    height: usize,
+) {
+    cdef_filter_block_inner(
+        src,
+        src_stride,
+        dst,
+        dst_stride,
+        dir,
+        pri_strength,
+        sec_strength,
+        damping,
+        width,
+        height,
+    );
+}
+
+#[inline]
+fn cdef_filter_block_inner(
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    dir: u8,
+    pri_strength: i32,
+    sec_strength: i32,
+    damping: i32,
+    width: usize,
+    height: usize,
+) {
     let dir = dir as usize % CDEF_DIRECTIONS;
 
-    // Primary direction offsets (distance 1 and 2 along the direction).
     let pri_offsets = CDEF_DIR_OFFSETS[dir];
-    // Secondary directions: dir +/- 2 (perpendicular-ish).
     let sec_dir1 = (dir + 2) % CDEF_DIRECTIONS;
     let sec_dir2 = (dir + CDEF_DIRECTIONS - 2) % CDEF_DIRECTIONS;
 
@@ -213,13 +434,10 @@ pub fn cdef_filter_block(
             let mut sum: i32 = 0;
 
             if pri_strength > 0 {
-                // Primary taps at distance 1 (weight 4) and distance 2 (weight 2).
                 for (dist_idx, &(dy, dx)) in pri_offsets.iter().enumerate() {
                     let weight = if dist_idx == 0 { 4 } else { 2 };
-                    // Positive direction
                     let py = row as i32 + dy;
                     let px = col as i32 + dx;
-                    // Negative direction (symmetric)
                     let ny = row as i32 - dy;
                     let nx = col as i32 - dx;
 
@@ -237,9 +455,8 @@ pub fn cdef_filter_block(
             }
 
             if sec_strength > 0 {
-                // Secondary taps at distance 1 along two perpendicular directions.
                 for &sec_dir in &[sec_dir1, sec_dir2] {
-                    let (dy, dx) = CDEF_DIR_OFFSETS[sec_dir][0]; // distance 1 only
+                    let (dy, dx) = CDEF_DIR_OFFSETS[sec_dir][0];
                     let weight = 2;
 
                     let py = row as i32 + dy;
@@ -260,10 +477,6 @@ pub fn cdef_filter_block(
                 }
             }
 
-            // Normalization: total weight is at most 4*4 + 2*4 + 2*4 = 32 for
-            // the maximum case. The spec rounds by adding 8 and shifting by 4
-            // (dividing by 16 with rounding). We use a simpler approach: the
-            // sum represents the total correction, and we just round and add.
             let result = center + ((sum + 8) >> 4);
             dst[row * dst_stride + col] = result.clamp(0, 255) as u8;
         }
@@ -449,5 +662,77 @@ mod tests {
         assert_eq!(constrain(-100, 4, 0), -4);
         // Zero strength always returns 0.
         assert_eq!(constrain(50, 0, 4), 0);
+    }
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+    use alloc::vec;
+    use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+
+    #[test]
+    fn cdef_filter_block_all_dispatch_levels() {
+        let size = 8;
+        let stride = size;
+        let src: alloc::vec::Vec<u8> = (0..(size * size) as u16)
+            .map(|i| ((i * 13 + 7) % 256) as u8)
+            .collect();
+        let mut reference = vec![0u8; stride * size];
+        cdef_filter_block(&src, stride, &mut reference, stride, 3, 4, 2, 4, size, size);
+
+        for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            let mut result = vec![0u8; stride * size];
+            cdef_filter_block(&src, stride, &mut result, stride, 3, 4, 2, 4, size, size);
+            assert_eq!(result, reference, "cdef mismatch at dispatch level {_perm}");
+        });
+    }
+
+    #[test]
+    fn deblock_vert_all_dispatch_levels() {
+        let stride = 8;
+        let height = 4;
+        let mut base_pixels = vec![0u8; stride * height];
+        // Create a step edge
+        for row in 0..height {
+            for col in 4..8 {
+                base_pixels[row * stride + col] = 100;
+            }
+        }
+        let mut reference = base_pixels.clone();
+        deblock_vert(&mut reference, stride, 10, 10, 4, height);
+
+        for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            let mut result = base_pixels.clone();
+            deblock_vert(&mut result, stride, 10, 10, 4, height);
+            assert_eq!(
+                result, reference,
+                "deblock_vert mismatch at dispatch level {_perm}"
+            );
+        });
+    }
+
+    #[test]
+    fn deblock_horz_all_dispatch_levels() {
+        let stride = 8;
+        let width = 6;
+        let mut base_pixels = vec![0u8; stride * 8];
+        // Create a horizontal step edge at row 4
+        for row in 4..8 {
+            for col in 0..stride {
+                base_pixels[row * stride + col] = 100;
+            }
+        }
+        let mut reference = base_pixels.clone();
+        deblock_horz(&mut reference, stride, 10, 10, 4, width);
+
+        for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            let mut result = base_pixels.clone();
+            deblock_horz(&mut result, stride, 10, 10, 4, width);
+            assert_eq!(
+                result, reference,
+                "deblock_horz mismatch at dispatch level {_perm}"
+            );
+        });
     }
 }

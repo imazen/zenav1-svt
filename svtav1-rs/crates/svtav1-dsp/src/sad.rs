@@ -306,3 +306,25 @@ mod tests {
         assert_eq!(sad_64x64(&block, 64, &block, 64), 0);
     }
 }
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+
+    use alloc::vec::Vec;
+    use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+
+    #[test]
+    fn sad_all_dispatch_levels() {
+        let src: Vec<u8> = (0..256).map(|i| (i * 7 + 13) as u8).collect();
+        let ref_: Vec<u8> = (0..256).map(|i| (i * 11 + 29) as u8).collect();
+
+        for size in [(4, 4), (8, 8), (16, 16)] {
+            let reference = sad(&src, 16, &ref_, 16, size.0, size.1);
+            let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+                let result = sad(&src, 16, &ref_, 16, size.0, size.1);
+                assert_eq!(result, reference, "sad {}x{} mismatch", size.0, size.1);
+            });
+        }
+    }
+}

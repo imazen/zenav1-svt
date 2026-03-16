@@ -2,7 +2,10 @@
 //!
 //! Ported from SVT-AV1's quantization routines. Implements dead-zone
 //! quantization (forward) and uniform dequantization (inverse).
+//!
+//! Uses archmage SIMD dispatch for auto-vectorization of the inner loops.
 
+use archmage::prelude::*;
 use svtav1_types::transform::TranLow;
 
 /// Quantization parameters for a transform block.
@@ -24,6 +27,57 @@ pub struct QuantParam {
 ///
 /// `eob_hint` is the number of coefficients to process (typically the block size).
 pub fn quantize(
+    coeffs: &[TranLow],
+    qparam: &QuantParam,
+    qcoeffs: &mut [TranLow],
+    dqcoeffs: &mut [TranLow],
+    eob_hint: usize,
+) -> usize {
+    incant!(
+        quantize_impl(coeffs, qparam, qcoeffs, dqcoeffs, eob_hint),
+        [v3, neon, scalar]
+    )
+}
+
+fn quantize_impl_scalar(
+    _token: ScalarToken,
+    coeffs: &[TranLow],
+    qparam: &QuantParam,
+    qcoeffs: &mut [TranLow],
+    dqcoeffs: &mut [TranLow],
+    eob_hint: usize,
+) -> usize {
+    quantize_core(coeffs, qparam, qcoeffs, dqcoeffs, eob_hint)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn quantize_impl_v3(
+    _token: Desktop64,
+    coeffs: &[TranLow],
+    qparam: &QuantParam,
+    qcoeffs: &mut [TranLow],
+    dqcoeffs: &mut [TranLow],
+    eob_hint: usize,
+) -> usize {
+    quantize_core(coeffs, qparam, qcoeffs, dqcoeffs, eob_hint)
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn quantize_impl_neon(
+    _token: NeonToken,
+    coeffs: &[TranLow],
+    qparam: &QuantParam,
+    qcoeffs: &mut [TranLow],
+    dqcoeffs: &mut [TranLow],
+    eob_hint: usize,
+) -> usize {
+    quantize_core(coeffs, qparam, qcoeffs, dqcoeffs, eob_hint)
+}
+
+#[inline]
+fn quantize_core(
     coeffs: &[TranLow],
     qparam: &QuantParam,
     qcoeffs: &mut [TranLow],
@@ -264,5 +318,81 @@ mod tests {
         let eob = quantize(&coeffs, &qparam, &mut qcoeffs, &mut dqcoeffs, 16);
         assert_eq!(eob, 0, "all small coefficients should be in the dead zone");
         assert!(qcoeffs.iter().all(|&v| v == 0));
+    }
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+    use alloc::vec;
+    use alloc::vec::Vec;
+    use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+
+    #[test]
+    fn quantize_all_dispatch_levels() {
+        let coeffs = [
+            500, -300, 200, -150, 100, -75, 50, -25, 10, -5, 1000, -2000, 3000, -4000, 5000,
+            -6000i32,
+        ];
+        let qparam = QuantParam {
+            dequant: [4, 8],
+            shift: 2,
+        };
+
+        let mut ref_qcoeffs = [0i32; 16];
+        let mut ref_dqcoeffs = [0i32; 16];
+        let ref_eob = quantize(&coeffs, &qparam, &mut ref_qcoeffs, &mut ref_dqcoeffs, 16);
+
+        let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            let mut qcoeffs = [0i32; 16];
+            let mut dqcoeffs = [0i32; 16];
+            let eob = quantize(&coeffs, &qparam, &mut qcoeffs, &mut dqcoeffs, 16);
+            assert_eq!(eob, ref_eob, "eob mismatch at dispatch level");
+            assert_eq!(qcoeffs, ref_qcoeffs, "qcoeffs mismatch at dispatch level");
+            assert_eq!(
+                dqcoeffs, ref_dqcoeffs,
+                "dqcoeffs mismatch at dispatch level"
+            );
+        });
+    }
+
+    #[test]
+    fn quantize_dispatch_zero_input() {
+        let coeffs = [0i32; 16];
+        let qparam = QuantParam {
+            dequant: [4, 8],
+            shift: 1,
+        };
+
+        let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            let mut qcoeffs = [0i32; 16];
+            let mut dqcoeffs = [0i32; 16];
+            let eob = quantize(&coeffs, &qparam, &mut qcoeffs, &mut dqcoeffs, 16);
+            assert_eq!(eob, 0);
+            assert!(qcoeffs.iter().all(|&v| v == 0));
+        });
+    }
+
+    #[test]
+    fn quantize_dispatch_large_block() {
+        // 64 coefficients (8x8 block)
+        let coeffs: Vec<i32> = (0..64).map(|i| (i - 32) * 100).collect();
+        let qparam = QuantParam {
+            dequant: [8, 16],
+            shift: 2,
+        };
+
+        let mut ref_qcoeffs = vec![0i32; 64];
+        let mut ref_dqcoeffs = vec![0i32; 64];
+        let ref_eob = quantize(&coeffs, &qparam, &mut ref_qcoeffs, &mut ref_dqcoeffs, 64);
+
+        let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            let mut qcoeffs = vec![0i32; 64];
+            let mut dqcoeffs = vec![0i32; 64];
+            let eob = quantize(&coeffs, &qparam, &mut qcoeffs, &mut dqcoeffs, 64);
+            assert_eq!(eob, ref_eob);
+            assert_eq!(qcoeffs, ref_qcoeffs);
+            assert_eq!(dqcoeffs, ref_dqcoeffs);
+        });
     }
 }

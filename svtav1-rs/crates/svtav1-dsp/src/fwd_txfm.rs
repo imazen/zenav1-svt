@@ -6,6 +6,7 @@
 //! Cosine constants from `svt_aom_eb_av1_cospi_arr_data` in `inv_transforms.c`.
 
 use alloc::vec;
+use archmage::prelude::*;
 use svtav1_types::transform::TranLow;
 
 // =============================================================================
@@ -520,19 +521,118 @@ pub fn fwd_txfm2d(
 
 /// Forward 4x4 DCT-DCT using the general framework.
 pub fn fwd_txfm2d_4x4_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    // Shift values for 4x4 8-bit: [2, 0, 0]
+    incant!(
+        fwd_txfm2d_4x4_dct_dct_impl(input, output, stride),
+        [v3, neon, scalar]
+    )
+}
+
+fn fwd_txfm2d_4x4_dct_dct_impl_scalar(
+    _token: ScalarToken,
+    input: &[TranLow],
+    output: &mut [TranLow],
+    stride: usize,
+) {
+    fwd_txfm2d(input, output, stride, fdct4, fdct4, 4, [2, 0, 0]);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn fwd_txfm2d_4x4_dct_dct_impl_v3(
+    _token: Desktop64,
+    input: &[TranLow],
+    output: &mut [TranLow],
+    stride: usize,
+) {
+    fwd_txfm2d(input, output, stride, fdct4, fdct4, 4, [2, 0, 0]);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn fwd_txfm2d_4x4_dct_dct_impl_neon(
+    _token: NeonToken,
+    input: &[TranLow],
+    output: &mut [TranLow],
+    stride: usize,
+) {
     fwd_txfm2d(input, output, stride, fdct4, fdct4, 4, [2, 0, 0]);
 }
 
 /// Forward 8x8 DCT-DCT.
 pub fn fwd_txfm2d_8x8_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    // Shift values for 8x8 8-bit: [2, -1, 0]
+    incant!(
+        fwd_txfm2d_8x8_dct_dct_impl(input, output, stride),
+        [v3, neon, scalar]
+    )
+}
+
+fn fwd_txfm2d_8x8_dct_dct_impl_scalar(
+    _token: ScalarToken,
+    input: &[TranLow],
+    output: &mut [TranLow],
+    stride: usize,
+) {
+    fwd_txfm2d(input, output, stride, fdct8, fdct8, 8, [2, -1, 0]);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn fwd_txfm2d_8x8_dct_dct_impl_v3(
+    _token: Desktop64,
+    input: &[TranLow],
+    output: &mut [TranLow],
+    stride: usize,
+) {
+    fwd_txfm2d(input, output, stride, fdct8, fdct8, 8, [2, -1, 0]);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn fwd_txfm2d_8x8_dct_dct_impl_neon(
+    _token: NeonToken,
+    input: &[TranLow],
+    output: &mut [TranLow],
+    stride: usize,
+) {
     fwd_txfm2d(input, output, stride, fdct8, fdct8, 8, [2, -1, 0]);
 }
 
 /// Forward 16x16 DCT-DCT.
 pub fn fwd_txfm2d_16x16_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    // Shift values for 16x16 8-bit: [2, -2, 0]
+    incant!(
+        fwd_txfm2d_16x16_dct_dct_impl(input, output, stride),
+        [v3, neon, scalar]
+    )
+}
+
+fn fwd_txfm2d_16x16_dct_dct_impl_scalar(
+    _token: ScalarToken,
+    input: &[TranLow],
+    output: &mut [TranLow],
+    stride: usize,
+) {
+    fwd_txfm2d(input, output, stride, fdct16, fdct16, 16, [2, -2, 0]);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn fwd_txfm2d_16x16_dct_dct_impl_v3(
+    _token: Desktop64,
+    input: &[TranLow],
+    output: &mut [TranLow],
+    stride: usize,
+) {
+    fwd_txfm2d(input, output, stride, fdct16, fdct16, 16, [2, -2, 0]);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn fwd_txfm2d_16x16_dct_dct_impl_neon(
+    _token: NeonToken,
+    input: &[TranLow],
+    output: &mut [TranLow],
+    stride: usize,
+) {
     fwd_txfm2d(input, output, stride, fdct16, fdct16, 16, [2, -2, 0]);
 }
 
@@ -721,5 +821,48 @@ mod tests {
         assert_eq!(round_shift(100, 1), 50);
         assert_eq!(round_shift(7, 1), 4); // (7 + 1) >> 1 = 4
         assert_eq!(round_shift(5, 1), 3); // (5 + 1) >> 1 = 3
+    }
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+    use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+
+    #[test]
+    fn fwd_txfm2d_4x4_dct_dct_all_dispatch_levels() {
+        let input: [i32; 16] = [
+            10, -20, 30, -40, 50, -60, 70, -80, 15, -25, 35, -45, 55, -65, 75, -85,
+        ];
+        let mut reference = [0i32; 16];
+        fwd_txfm2d_4x4_dct_dct(&input, &mut reference, 4);
+
+        let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            let mut result = [0i32; 16];
+            fwd_txfm2d_4x4_dct_dct(&input, &mut result, 4);
+            assert_eq!(
+                result, reference,
+                "4x4 DCT mismatch at dispatch level {_perm}"
+            );
+        });
+    }
+
+    #[test]
+    fn fwd_txfm2d_8x8_dct_dct_all_dispatch_levels() {
+        let mut input = [0i32; 64];
+        for (i, v) in input.iter_mut().enumerate() {
+            *v = (i as i32 * 7 - 30) % 100;
+        }
+        let mut reference = [0i32; 64];
+        fwd_txfm2d_8x8_dct_dct(&input, &mut reference, 8);
+
+        let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            let mut result = [0i32; 64];
+            fwd_txfm2d_8x8_dct_dct(&input, &mut result, 8);
+            assert_eq!(
+                result, reference,
+                "8x8 DCT mismatch at dispatch level {_perm}"
+            );
+        });
     }
 }

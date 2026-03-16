@@ -6,10 +6,106 @@
 //!
 //! SATD is the primary cost metric used in mode decision.
 
+use archmage::prelude::*;
+
 /// Compute 4x4 Hadamard transform of residual and return SATD.
 ///
 /// SATD = sum of absolute values of Hadamard-transformed residual.
 pub fn satd_4x4(src: &[u8], src_stride: usize, ref_: &[u8], ref_stride: usize) -> u32 {
+    incant!(
+        satd_4x4_impl(src, src_stride, ref_, ref_stride),
+        [v3, neon, scalar]
+    )
+}
+
+/// Compute 8x8 Hadamard transform of residual and return SATD.
+pub fn satd_8x8(src: &[u8], src_stride: usize, ref_: &[u8], ref_stride: usize) -> u32 {
+    incant!(
+        satd_8x8_impl(src, src_stride, ref_, ref_stride),
+        [v3, neon, scalar]
+    )
+}
+
+// --- Scalar implementations ---
+
+fn satd_4x4_impl_scalar(
+    _token: ScalarToken,
+    src: &[u8],
+    src_stride: usize,
+    ref_: &[u8],
+    ref_stride: usize,
+) -> u32 {
+    satd_4x4_core(src, src_stride, ref_, ref_stride)
+}
+
+fn satd_8x8_impl_scalar(
+    _token: ScalarToken,
+    src: &[u8],
+    src_stride: usize,
+    ref_: &[u8],
+    ref_stride: usize,
+) -> u32 {
+    satd_8x8_core(src, src_stride, ref_, ref_stride)
+}
+
+// --- AVX2 implementations ---
+
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn satd_4x4_impl_v3(
+    _token: Desktop64,
+    src: &[u8],
+    src_stride: usize,
+    ref_: &[u8],
+    ref_stride: usize,
+) -> u32 {
+    // Auto-vectorize with AVX2 enabled — the butterfly add/sub pattern
+    // vectorizes well with target_feature(enable = "avx2,fma")
+    satd_4x4_core(src, src_stride, ref_, ref_stride)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn satd_8x8_impl_v3(
+    _token: Desktop64,
+    src: &[u8],
+    src_stride: usize,
+    ref_: &[u8],
+    ref_stride: usize,
+) -> u32 {
+    satd_8x8_core(src, src_stride, ref_, ref_stride)
+}
+
+// --- NEON implementations ---
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn satd_4x4_impl_neon(
+    _token: NeonToken,
+    src: &[u8],
+    src_stride: usize,
+    ref_: &[u8],
+    ref_stride: usize,
+) -> u32 {
+    satd_4x4_core(src, src_stride, ref_, ref_stride)
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn satd_8x8_impl_neon(
+    _token: NeonToken,
+    src: &[u8],
+    src_stride: usize,
+    ref_: &[u8],
+    ref_stride: usize,
+) -> u32 {
+    satd_8x8_core(src, src_stride, ref_, ref_stride)
+}
+
+// --- Core algorithm (shared across all dispatch tiers) ---
+
+#[inline]
+fn satd_4x4_core(src: &[u8], src_stride: usize, ref_: &[u8], ref_stride: usize) -> u32 {
     // Compute residual
     let mut diff = [0i16; 16];
     for row in 0..4 {
@@ -52,8 +148,8 @@ pub fn satd_4x4(src: &[u8], src_stride: usize, ref_: &[u8], ref_stride: usize) -
     (satd + 1) >> 1
 }
 
-/// Compute 8x8 Hadamard transform of residual and return SATD.
-pub fn satd_8x8(src: &[u8], src_stride: usize, ref_: &[u8], ref_stride: usize) -> u32 {
+#[inline]
+fn satd_8x8_core(src: &[u8], src_stride: usize, ref_: &[u8], ref_stride: usize) -> u32 {
     // Compute residual
     let mut diff = [0i16; 64];
     for row in 0..8 {
@@ -63,8 +159,7 @@ pub fn satd_8x8(src: &[u8], src_stride: usize, ref_: &[u8], ref_stride: usize) -
         }
     }
 
-    // 8x8 Hadamard via 4 x (4x4 Hadamard) sub-blocks + cross terms
-    // Uses the butterfly decomposition
+    // 8x8 Hadamard via butterfly decomposition
     let mut tmp = [0i32; 64];
 
     // Row transforms (8-point Hadamard butterfly)
@@ -191,5 +286,43 @@ mod tests {
         }
         let satd = satd_4x4(&src, 8, &ref_, 8);
         assert!(satd > 0);
+    }
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+
+    use alloc::vec::Vec;
+    use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+
+    #[test]
+    fn satd_4x4_all_dispatch_levels() {
+        let src: Vec<u8> = (0..64).map(|i| (i * 3 + 17) as u8).collect();
+        let ref_: Vec<u8> = (0..64).map(|i| (i * 5 + 42) as u8).collect();
+        let reference_result = satd_4x4(&src, 8, &ref_, 8);
+
+        let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            let result = satd_4x4(&src, 8, &ref_, 8);
+            assert_eq!(
+                result, reference_result,
+                "satd_4x4 mismatch at dispatch level"
+            );
+        });
+    }
+
+    #[test]
+    fn satd_8x8_all_dispatch_levels() {
+        let src: Vec<u8> = (0..64).map(|i| (i * 3 + 17) as u8).collect();
+        let ref_: Vec<u8> = (0..64).map(|i| (i * 5 + 42) as u8).collect();
+        let reference_result = satd_8x8(&src, 8, &ref_, 8);
+
+        let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            let result = satd_8x8(&src, 8, &ref_, 8);
+            assert_eq!(
+                result, reference_result,
+                "satd_8x8 mismatch at dispatch level"
+            );
+        });
     }
 }

@@ -10,6 +10,7 @@ use crate::fwd_txfm::{
     COS_BIT, COSPI, NEW_SQRT2, NEW_SQRT2_BITS, SINPI, half_btf, round_shift_array, round_shift_i64,
 };
 use alloc::vec;
+use archmage::prelude::*;
 use svtav1_types::transform::TranLow;
 
 // =============================================================================
@@ -260,13 +261,79 @@ pub fn inv_txfm2d(
 
 /// Inverse 4x4 DCT-DCT using the general framework.
 pub fn inv_txfm2d_4x4_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    // Inverse shift values for 4x4: [0, -4]
+    incant!(
+        inv_txfm2d_4x4_dct_dct_impl(input, output, stride),
+        [v3, neon, scalar]
+    )
+}
+
+fn inv_txfm2d_4x4_dct_dct_impl_scalar(
+    _token: ScalarToken,
+    input: &[TranLow],
+    output: &mut [TranLow],
+    stride: usize,
+) {
+    inv_txfm2d(input, output, stride, idct4, idct4, 4, [0, -4]);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn inv_txfm2d_4x4_dct_dct_impl_v3(
+    _token: Desktop64,
+    input: &[TranLow],
+    output: &mut [TranLow],
+    stride: usize,
+) {
+    inv_txfm2d(input, output, stride, idct4, idct4, 4, [0, -4]);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn inv_txfm2d_4x4_dct_dct_impl_neon(
+    _token: NeonToken,
+    input: &[TranLow],
+    output: &mut [TranLow],
+    stride: usize,
+) {
     inv_txfm2d(input, output, stride, idct4, idct4, 4, [0, -4]);
 }
 
 /// Inverse 8x8 DCT-DCT.
 pub fn inv_txfm2d_8x8_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    // Inverse shift values for 8x8: [-1, -4]
+    incant!(
+        inv_txfm2d_8x8_dct_dct_impl(input, output, stride),
+        [v3, neon, scalar]
+    )
+}
+
+fn inv_txfm2d_8x8_dct_dct_impl_scalar(
+    _token: ScalarToken,
+    input: &[TranLow],
+    output: &mut [TranLow],
+    stride: usize,
+) {
+    inv_txfm2d(input, output, stride, idct8, idct8, 8, [-1, -4]);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn inv_txfm2d_8x8_dct_dct_impl_v3(
+    _token: Desktop64,
+    input: &[TranLow],
+    output: &mut [TranLow],
+    stride: usize,
+) {
+    inv_txfm2d(input, output, stride, idct8, idct8, 8, [-1, -4]);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn inv_txfm2d_8x8_dct_dct_impl_neon(
+    _token: NeonToken,
+    input: &[TranLow],
+    output: &mut [TranLow],
+    stride: usize,
+) {
     inv_txfm2d(input, output, stride, idct8, idct8, 8, [-1, -4]);
 }
 
@@ -592,5 +659,55 @@ mod tests {
                 first
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+    use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+
+    #[test]
+    fn inv_txfm2d_4x4_dct_dct_all_dispatch_levels() {
+        // Use forward transform output as input to inverse
+        let fwd_input: [i32; 16] = [
+            10, -20, 30, -40, 50, -60, 70, -80, 15, -25, 35, -45, 55, -65, 75, -85,
+        ];
+        let mut coeffs = [0i32; 16];
+        crate::fwd_txfm::fwd_txfm2d_4x4_dct_dct(&fwd_input, &mut coeffs, 4);
+
+        let mut reference = [0i32; 16];
+        inv_txfm2d_4x4_dct_dct(&coeffs, &mut reference, 4);
+
+        let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            let mut result = [0i32; 16];
+            inv_txfm2d_4x4_dct_dct(&coeffs, &mut result, 4);
+            assert_eq!(
+                result, reference,
+                "4x4 inv DCT mismatch at dispatch level {_perm}"
+            );
+        });
+    }
+
+    #[test]
+    fn inv_txfm2d_8x8_dct_dct_all_dispatch_levels() {
+        let mut fwd_input = [0i32; 64];
+        for (i, v) in fwd_input.iter_mut().enumerate() {
+            *v = (i as i32 * 7 - 30) % 100;
+        }
+        let mut coeffs = [0i32; 64];
+        crate::fwd_txfm::fwd_txfm2d_8x8_dct_dct(&fwd_input, &mut coeffs, 8);
+
+        let mut reference = [0i32; 64];
+        inv_txfm2d_8x8_dct_dct(&coeffs, &mut reference, 8);
+
+        let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            let mut result = [0i32; 64];
+            inv_txfm2d_8x8_dct_dct(&coeffs, &mut result, 8);
+            assert_eq!(
+                result, reference,
+                "8x8 inv DCT mismatch at dispatch level {_perm}"
+            );
+        });
     }
 }

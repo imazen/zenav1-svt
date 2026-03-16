@@ -225,3 +225,37 @@ mod tests {
         assert_eq!(sse(&src, 4, &ref_, 4, 4, 4), 255 * 255 * 16);
     }
 }
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+
+    use alloc::vec::Vec;
+    use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+
+    #[test]
+    fn variance_all_dispatch_levels() {
+        let block: Vec<u8> = (0..64).map(|i| (i * 3 + 17) as u8).collect();
+        let reference_result = variance(&block, 8, 8, 8);
+
+        let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            let result = variance(&block, 8, 8, 8);
+            assert_eq!(
+                result, reference_result,
+                "variance mismatch at dispatch level"
+            );
+        });
+    }
+
+    #[test]
+    fn sse_all_dispatch_levels() {
+        let src: Vec<u8> = (0..64).map(|i| (i * 3 + 17) as u8).collect();
+        let ref_: Vec<u8> = (0..64).map(|i| (i * 5 + 42) as u8).collect();
+        let reference_result = sse(&src, 8, &ref_, 8, 8, 8);
+
+        let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            let result = sse(&src, 8, &ref_, 8, 8, 8);
+            assert_eq!(result, reference_result, "sse mismatch at dispatch level");
+        });
+    }
+}
