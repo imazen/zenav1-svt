@@ -1898,6 +1898,153 @@ fn inv_txfm2d_16x16_dct_dct_impl_neon(
     inv_txfm2d(input, output, stride, idct16, idct16, 16, [-2, 0]);
 }
 
+/// Inverse 2D transform for rectangular blocks.
+pub fn inv_txfm2d_rect(
+    input: &[TranLow],
+    output: &mut [TranLow],
+    stride: usize,
+    row_func: InvTxfmFunc,
+    col_func: InvTxfmFunc,
+    col_size: usize,
+    row_size: usize,
+    shift: [i32; 2],
+) {
+    use crate::fwd_txfm::{NEW_SQRT2, NEW_SQRT2_BITS, round_shift_i64};
+
+    let mut buf = vec![0i32; col_size * row_size];
+    let mut temp_in = vec![0i32; col_size.max(row_size)];
+    let mut temp_out = vec![0i32; col_size.max(row_size)];
+
+    // Compute rect_type for scaling
+    let rect_type = if col_size == row_size {
+        0
+    } else if col_size == 2 * row_size || row_size == 2 * col_size {
+        1
+    } else {
+        2
+    };
+
+    // Row transforms (inverse does rows first)
+    for row in 0..row_size {
+        let row_start = row * stride;
+        temp_in[..col_size].copy_from_slice(&input[row_start..row_start + col_size]);
+
+        // Rectangular scaling before row transform
+        if rect_type == 1 {
+            for c in 0..col_size {
+                temp_in[c] = round_shift_i64(temp_in[c] as i64 * NEW_SQRT2 as i64, NEW_SQRT2_BITS);
+            }
+        } else if rect_type == 2 {
+            for c in 0..col_size {
+                temp_in[c] =
+                    round_shift_i64(temp_in[c] as i64 * 2 * NEW_SQRT2 as i64, NEW_SQRT2_BITS);
+            }
+        }
+
+        row_func(&temp_in[..col_size], &mut temp_out[..col_size]);
+        round_shift_array(&mut temp_out[..col_size], -shift[0]);
+        for col in 0..col_size {
+            buf[row * col_size + col] = temp_out[col];
+        }
+    }
+
+    // Column transforms
+    for col in 0..col_size {
+        for row in 0..row_size {
+            temp_in[row] = buf[row * col_size + col];
+        }
+        col_func(&temp_in[..row_size], &mut temp_out[..row_size]);
+        round_shift_array(&mut temp_out[..row_size], -shift[1]);
+        for row in 0..row_size {
+            output[row * stride + col] = temp_out[row];
+        }
+    }
+}
+
+// --- Square inverse 2D wrappers ---
+
+/// Inverse 32x32 DCT-DCT.
+pub fn inv_txfm2d_32x32_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+    inv_txfm2d(input, output, stride, idct32, idct32, 32, [-4, 0]);
+}
+
+/// Inverse 64x64 DCT-DCT.
+pub fn inv_txfm2d_64x64_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+    inv_txfm2d(input, output, stride, idct64, idct64, 64, [-6, 0]);
+}
+
+// --- Rectangular inverse 2D wrappers ---
+
+/// Inverse 4x8 DCT-DCT.
+pub fn inv_txfm2d_4x8_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+    inv_txfm2d_rect(input, output, stride, idct4, idct8, 4, 8, [0, 0]);
+}
+
+/// Inverse 8x4 DCT-DCT.
+pub fn inv_txfm2d_8x4_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+    inv_txfm2d_rect(input, output, stride, idct8, idct4, 8, 4, [0, 0]);
+}
+
+/// Inverse 8x16 DCT-DCT.
+pub fn inv_txfm2d_8x16_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+    inv_txfm2d_rect(input, output, stride, idct8, idct16, 8, 16, [-1, 0]);
+}
+
+/// Inverse 16x8 DCT-DCT.
+pub fn inv_txfm2d_16x8_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+    inv_txfm2d_rect(input, output, stride, idct16, idct8, 16, 8, [-1, 0]);
+}
+
+/// Inverse 16x32 DCT-DCT.
+pub fn inv_txfm2d_16x32_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+    inv_txfm2d_rect(input, output, stride, idct16, idct32, 16, 32, [-2, 0]);
+}
+
+/// Inverse 32x16 DCT-DCT.
+pub fn inv_txfm2d_32x16_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+    inv_txfm2d_rect(input, output, stride, idct32, idct16, 32, 16, [-2, 0]);
+}
+
+/// Inverse 32x64 DCT-DCT.
+pub fn inv_txfm2d_32x64_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+    inv_txfm2d_rect(input, output, stride, idct32, idct64, 32, 64, [-4, 0]);
+}
+
+/// Inverse 64x32 DCT-DCT.
+pub fn inv_txfm2d_64x32_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+    inv_txfm2d_rect(input, output, stride, idct64, idct32, 64, 32, [-4, 0]);
+}
+
+/// Inverse 4x16 DCT-DCT.
+pub fn inv_txfm2d_4x16_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+    inv_txfm2d_rect(input, output, stride, idct4, idct16, 4, 16, [0, 0]);
+}
+
+/// Inverse 16x4 DCT-DCT.
+pub fn inv_txfm2d_16x4_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+    inv_txfm2d_rect(input, output, stride, idct16, idct4, 16, 4, [0, 0]);
+}
+
+/// Inverse 8x32 DCT-DCT.
+pub fn inv_txfm2d_8x32_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+    inv_txfm2d_rect(input, output, stride, idct8, idct32, 8, 32, [-1, 0]);
+}
+
+/// Inverse 32x8 DCT-DCT.
+pub fn inv_txfm2d_32x8_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+    inv_txfm2d_rect(input, output, stride, idct32, idct8, 32, 8, [-1, 0]);
+}
+
+/// Inverse 16x64 DCT-DCT.
+pub fn inv_txfm2d_16x64_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+    inv_txfm2d_rect(input, output, stride, idct16, idct64, 16, 64, [-2, 0]);
+}
+
+/// Inverse 64x16 DCT-DCT.
+pub fn inv_txfm2d_64x16_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
+    inv_txfm2d_rect(input, output, stride, idct64, idct16, 64, 16, [-2, 0]);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -17,4 +17,5 @@ pub mod inv_txfm;
 pub mod loop_filter;
 pub mod quant;
 pub mod sad;
+pub mod txfm_dispatch;
 pub mod variance;
