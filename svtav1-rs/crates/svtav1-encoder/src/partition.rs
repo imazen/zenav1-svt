@@ -190,6 +190,77 @@ pub fn partition_search(
         }
     }
 
+    // Try PARTITION_HORZ_4: four horizontal strips (each height/4)
+    if height >= 16 {
+        let qh = height / 4;
+        let mut h4_result = PartitionResult {
+            rd_cost: 0,
+            distortion: 0,
+            rate: 64,
+            num_blocks: 0,
+        };
+        let mut h4_recon = alloc::vec![0u8; width * height];
+        let _ok = true;
+        for strip in 0..4 {
+            let y0 = strip * qh;
+            let cur_h = qh.min(height - y0);
+            let sub = encode_single_block(
+                &src[y0 * src_stride..],
+                src_stride,
+                &pred[y0 * pred_stride..],
+                pred_stride,
+                &mut h4_recon[y0 * width..],
+                width,
+                width,
+                cur_h,
+                qp,
+            );
+            h4_result.distortion += sub.distortion;
+            h4_result.rate += sub.rate;
+            h4_result.num_blocks += sub.num_blocks;
+        }
+        h4_result.rd_cost = h4_result.distortion + ((lambda * h4_result.rate as u64) >> 8);
+        if h4_result.rd_cost < best_result.rd_cost {
+            best_result = h4_result;
+            best_recon = h4_recon;
+        }
+    }
+
+    // Try PARTITION_VERT_4: four vertical strips (each width/4)
+    if width >= 16 {
+        let qw = width / 4;
+        let mut v4_result = PartitionResult {
+            rd_cost: 0,
+            distortion: 0,
+            rate: 64,
+            num_blocks: 0,
+        };
+        let mut v4_recon = alloc::vec![0u8; width * height];
+        for strip in 0..4 {
+            let x0 = strip * qw;
+            let cur_w = qw.min(width - x0);
+            let sub = encode_single_block(
+                &src[x0..],
+                src_stride,
+                &pred[x0..],
+                pred_stride,
+                &mut v4_recon[x0..],
+                width,
+                cur_w,
+                height,
+                qp,
+            );
+            v4_result.distortion += sub.distortion;
+            v4_result.rate += sub.rate;
+            v4_result.num_blocks += sub.num_blocks;
+        }
+        v4_result.rd_cost = v4_result.distortion + ((lambda * v4_result.rate as u64) >> 8);
+        if v4_result.rd_cost < best_result.rd_cost {
+            best_result = v4_result;
+            best_recon = v4_recon;
+        }
+    }
+
     // Try PARTITION_SPLIT: encode 4 sub-blocks
     let hw = width / 2;
     let hh = height / 2;
