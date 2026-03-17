@@ -64,13 +64,9 @@
 
 3. **Wiener filter coefficients not derived from content** — Pipeline uses QP-based heuristic coefficients (`strength = qp/10`) instead of optimizing Wiener coefficients per restoration unit as the spec describes. Real SVT-AV1 runs RDO to find optimal coefficients. (pipeline.rs:254-256)
 
-4. **Warped motion uses nearest-neighbor** — `warp.rs:warp_prediction` samples with nearest-neighbor instead of the spec'd 8-tap sub-pixel interpolation. Produces blocky output for non-integer affine transforms. (warp.rs:50-55)
+4. **OBMC doesn't compute neighbor predictions** — `obmc.rs` has correct blend masks but the pipeline doesn't generate the neighbor block predictions that OBMC blends with. The function signature accepts pre-computed neighbor predictions but nothing provides them. (obmc.rs — orphaned)
 
-5. **Scaled prediction uses nearest-neighbor** — Same issue as warped motion. `scale.rs:scaled_prediction` should use filtered interpolation. (scale.rs:67-70)
-
-6. **OBMC doesn't compute neighbor predictions** — `obmc.rs` has correct blend masks but the pipeline doesn't generate the neighbor block predictions that OBMC blends with. The function signature accepts pre-computed neighbor predictions but nothing provides them. (obmc.rs — orphaned)
-
-7. **Deblocking is 4-tap only** — Missing the 6, 8, and 14-tap filter variants and the proper strength derivation based on block boundary type and QP. (loop_filter.rs:65-130)
+5. **Deblocking is 4-tap only** — Missing the 6, 8, and 14-tap filter variants and the proper strength derivation based on block boundary type and QP. (loop_filter.rs:65-130)
 
 ## Investigation Notes
 
