@@ -166,7 +166,7 @@ impl EncodePipeline {
         // MV map for spatial MV prediction (8x8 block grid)
         let mv_map_stride = w.div_ceil(8);
         let mv_map_size = mv_map_stride * h.div_ceil(8);
-        let mv_map = alloc::vec![svtav1_types::motion::Mv::ZERO; mv_map_size];
+        let mut mv_map = alloc::vec![svtav1_types::motion::Mv::ZERO; mv_map_size];
 
         for sb_row in 0..sb_rows {
             for sb_col in 0..sb_cols {
@@ -216,6 +216,36 @@ impl EncodePipeline {
                 for r in 0..cur_h {
                     for c in 0..cur_w {
                         recon[(y0 + r) * w + x0 + c] = sb_recon[r * cur_w + c];
+                    }
+                }
+
+                // Update MV map: run a quick ME at SB level to record the dominant MV.
+                // This provides spatial MV predictors for subsequent SBs.
+                if let Some(ref rf) = ref_frame_data {
+                    let sb_mv = crate::motion_est::full_pel_search(
+                        &encode_input[y0 * w + x0..],
+                        w,
+                        rf,
+                        w,
+                        x0 as i32,
+                        y0 as i32,
+                        cur_w.min(16),
+                        cur_h.min(16),
+                        svtav1_types::motion::Mv::ZERO,
+                        8,
+                        8,
+                        w,
+                        h,
+                    );
+                    // Fill all 8x8 blocks in this SB with the SB-level MV
+                    let bx0 = x0 / 8;
+                    let by0 = y0 / 8;
+                    let bx1 = (x0 + cur_w).div_ceil(8);
+                    let by1 = (y0 + cur_h).div_ceil(8);
+                    for by in by0..by1.min(h.div_ceil(8)) {
+                        for bx in bx0..bx1.min(mv_map_stride) {
+                            mv_map[by * mv_map_stride + bx] = sb_mv.mv;
+                        }
                     }
                 }
             }
