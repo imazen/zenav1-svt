@@ -90,7 +90,7 @@ pub fn hash_search_intrabc(
     // Search previously reconstructed area
     let search_y_end = block_y; // Only search above current position
     let best_mv = Mv::ZERO;
-    let mut best_sad = u32::MAX;
+    let best_sad = u32::MAX;
 
     // Search in 8x8 steps for efficiency
     let step = 8;
