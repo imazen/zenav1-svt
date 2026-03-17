@@ -122,11 +122,13 @@ impl OdEcEnc {
                 + EC_MIN_PROB * (n - (s as u32 - 1));
             let v = (((r >> 8) * (fh >> EC_PROB_SHIFT)) >> (7 - EC_PROB_SHIFT))
                 + EC_MIN_PROB * (n - s as u32);
-            (l + (r - u) as u64, (u - v) as u16)
+            let range = if u > v { u - v } else { 1 };
+            (l + (r - u) as u64, range.max(1) as u16)
         } else {
             let v = (((r >> 8) * (fh >> EC_PROB_SHIFT)) >> (7 - EC_PROB_SHIFT))
                 + EC_MIN_PROB * (n - s as u32);
-            (l, (r - v) as u16)
+            let range = if r > v { r - v } else { 1 };
+            (l, range.max(1) as u16)
         };
 
         self.normalize(new_l, new_r);
