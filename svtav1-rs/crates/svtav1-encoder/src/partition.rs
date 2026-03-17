@@ -1141,12 +1141,16 @@ fn encode_single_block(
     }
 
     // Try inter prediction if a reference frame is available.
-    // Runs full-pel ME to find the best MV, generates prediction from the
-    // reference, and compares RD cost against the best intra mode.
+    // Runs hierarchical ME (full-pel + half-pel refinement) to find the best MV,
+    // generates a bilinear-interpolated prediction, and compares RD cost.
     if let Some(rfc) = ref_ctx {
-        let search_w = 16i32.min(rfc.pic_width as i32 / 2);
-        let search_h = 16i32.min(rfc.pic_height as i32 / 2);
-        let me_result = crate::motion_est::full_pel_search(
+        let me_params = crate::motion_est::MeSearchParams {
+            search_area_width: 16,
+            search_area_height: 16,
+            use_hme: false,
+            subpel_level: 1, // half-pel refinement
+        };
+        let me_result = crate::motion_est::hierarchical_me(
             src,
             src_stride,
             rfc.y_plane,
@@ -1155,28 +1159,46 @@ fn encode_single_block(
             abs_y as i32,
             width,
             height,
-            svtav1_types::motion::Mv::ZERO,
-            search_w,
-            search_h,
+            &me_params,
             rfc.pic_width,
             rfc.pic_height,
         );
 
-        // Generate inter prediction block from reference + MV
-        let ref_x = abs_x as i32 + (me_result.mv.x as i32 >> 3);
-        let ref_y = abs_y as i32 + (me_result.mv.y as i32 >> 3);
+        // Generate inter prediction from reference + MV with bilinear interpolation
+        let int_x = abs_x as i32 + (me_result.mv.x as i32 >> 3);
+        let int_y = abs_y as i32 + (me_result.mv.y as i32 >> 3);
+        let frac_x = (me_result.mv.x & 7) as i32;
+        let frac_y = (me_result.mv.y & 7) as i32;
+
         let mut inter_pred = alloc::vec![128u8; n];
         for r in 0..height {
             for c in 0..width {
-                let ry = ref_y + r as i32;
-                let rx = ref_x + c as i32;
+                let ry = int_y + r as i32;
+                let rx = int_x + c as i32;
                 if ry >= 0
-                    && (ry as usize) < rfc.pic_height
+                    && (ry as usize + 1) < rfc.pic_height
                     && rx >= 0
-                    && (rx as usize) < rfc.pic_width
+                    && (rx as usize + 1) < rfc.pic_width
                 {
-                    inter_pred[r * width + c] =
-                        rfc.y_plane[ry as usize * rfc.stride + rx as usize];
+                    let off = ry as usize * rfc.stride + rx as usize;
+                    let val = if frac_x == 0 && frac_y == 0 {
+                        rfc.y_plane[off] as i32
+                    } else if frac_y == 0 {
+                        (rfc.y_plane[off] as i32 + rfc.y_plane[off + 1] as i32 + 1) >> 1
+                    } else if frac_x == 0 {
+                        (rfc.y_plane[off] as i32
+                            + rfc.y_plane[off + rfc.stride] as i32
+                            + 1)
+                            >> 1
+                    } else {
+                        (rfc.y_plane[off] as i32
+                            + rfc.y_plane[off + 1] as i32
+                            + rfc.y_plane[off + rfc.stride] as i32
+                            + rfc.y_plane[off + rfc.stride + 1] as i32
+                            + 2)
+                            >> 2
+                    };
+                    inter_pred[r * width + c] = val.clamp(0, 255) as u8;
                 }
             }
         }

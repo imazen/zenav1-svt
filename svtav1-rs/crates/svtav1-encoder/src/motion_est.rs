@@ -164,25 +164,48 @@ pub fn half_pel_refine(
             y: mv.y + dy,
         };
 
-        // For now, round to nearest full-pel and compute SAD
-        // (Real implementation would use filtered interpolation)
-        let ref_x = ref_origin_x + ((test_mv.x as i32 + 4) >> 3);
-        let ref_y = ref_origin_y + ((test_mv.y as i32 + 4) >> 3);
+        // Integer pixel position (floor)
+        let int_x = ref_origin_x + (test_mv.x as i32 >> 3);
+        let int_y = ref_origin_y + (test_mv.y as i32 >> 3);
+        // Sub-pel fraction: 0 = full-pel, 4 = half-pel
+        let frac_x = (test_mv.x & 7) as i32;
+        let frac_y = (test_mv.y & 7) as i32;
 
-        if ref_x < 0
-            || ref_y < 0
-            || (ref_x as usize + width) > pic_width
-            || (ref_y as usize + height) > pic_height
+        // Bounds check: need +1 pixel margin for bilinear interpolation
+        let margin = if frac_x != 0 || frac_y != 0 { 1 } else { 0 };
+        if int_x < 0
+            || int_y < 0
+            || (int_x as usize + width + margin) > pic_width
+            || (int_y as usize + height + margin) > pic_height
         {
             continue;
         }
 
-        let ref_offset = ref_y as usize * ref_stride + ref_x as usize;
+        let ref_base = int_y as usize * ref_stride + int_x as usize;
         let mut sad: u32 = 0;
         for row in 0..height {
             for col in 0..width {
                 let s = src[row * src_stride + col] as i32;
-                let r = ref_pic[ref_offset + row * ref_stride + col] as i32;
+                let r_off = ref_base + row * ref_stride + col;
+
+                // Bilinear interpolation at half-pel positions
+                let r = if frac_x == 0 && frac_y == 0 {
+                    ref_pic[r_off] as i32
+                } else if frac_y == 0 {
+                    // Horizontal half-pel: average left and right
+                    (ref_pic[r_off] as i32 + ref_pic[r_off + 1] as i32 + 1) >> 1
+                } else if frac_x == 0 {
+                    // Vertical half-pel: average above and below
+                    (ref_pic[r_off] as i32 + ref_pic[r_off + ref_stride] as i32 + 1) >> 1
+                } else {
+                    // Diagonal half-pel: average of 4 corners
+                    (ref_pic[r_off] as i32
+                        + ref_pic[r_off + 1] as i32
+                        + ref_pic[r_off + ref_stride] as i32
+                        + ref_pic[r_off + ref_stride + 1] as i32
+                        + 2)
+                        >> 2
+                };
                 sad += (s - r).unsigned_abs();
             }
         }
