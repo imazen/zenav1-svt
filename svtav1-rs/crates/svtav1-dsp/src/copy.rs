@@ -1,5 +1,7 @@
 //! Block copy and blend operations.
 //!
+//! Spec 06: Block copy/average/blend for compound prediction.
+//!
 //! Used extensively in prediction: copying reference blocks, averaging
 //! compound predictions, and blending with masks.
 

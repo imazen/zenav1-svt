@@ -1,5 +1,7 @@
 //! Film grain noise estimation and synthesis.
 //!
+//! Spec 12 (film-grain.md): Noise estimation and synthesis.
+//!
 //! Estimates the noise model from the source video and signals it
 //! as metadata so the decoder can re-synthesize the grain after
 //! decompression. This allows the encoder to denoise before encoding

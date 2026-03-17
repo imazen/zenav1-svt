@@ -1,5 +1,7 @@
 //! Hadamard transform for SATD computation.
 //!
+//! Spec 02: SATD for mode decision cost metric.
+//!
 //! The Hadamard transform is used to compute SATD (Sum of Absolute
 //! Transformed Differences) — a frequency-domain distortion metric
 //! that better predicts coded size than SAD.

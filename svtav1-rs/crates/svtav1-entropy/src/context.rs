@@ -1,5 +1,7 @@
 //! AV1 entropy coding context models (FRAME_CONTEXT).
 //!
+//! Spec 07: FrameContext with all CDF tables.
+//!
 //! Contains all CDF tables needed for a single tile/frame.
 //! Ported from `cabac_context_model.c/h`.
 

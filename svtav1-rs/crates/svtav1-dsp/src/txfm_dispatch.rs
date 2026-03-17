@@ -1,5 +1,7 @@
 //! General transform dispatch — maps (TxSize, TxType) to 2D transform calls.
 //!
+//! Spec 04: Maps (TxSize, TxType) to 2D transform calls.
+//!
 //! This is the top-level interface that the encoder uses to select the
 //! correct forward and inverse transform for any block size and type.
 

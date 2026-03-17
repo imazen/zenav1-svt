@@ -1,5 +1,7 @@
 //! Variance and SSE (Sum of Squared Errors) computation.
 //!
+//! Spec 13 (segmentation.md): Variance for adaptive quantization.
+//!
 //! Variance is used for adaptive quantization, activity masking,
 //! and screen content detection. SSE is the primary distortion metric
 //! for rate-distortion optimization.

@@ -1,5 +1,7 @@
 //! Motion vector entropy coding.
 //!
+//! Spec 07: MV class-based coding.
+//!
 //! AV1 encodes motion vectors using a class-based scheme:
 //! 1. MV joint type (zero/nonzero for each component)
 //! 2. MV class (magnitude range: 0-10)

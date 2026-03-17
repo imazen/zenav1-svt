@@ -1,5 +1,7 @@
 //! Encoding loop — the core predict→transform→quantize→entropy→reconstruct cycle.
 //!
+//! Spec 10: Predict/transform/quantize/reconstruct cycle.
+//!
 //! Ported from SVT-AV1's `coding_loop.c` and `enc_dec_process.c`.
 
 use svtav1_types::transform::TranLow;

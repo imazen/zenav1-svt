@@ -1,5 +1,7 @@
 //! Overlapped Block Motion Compensation (OBMC).
 //!
+//! Spec 06: Overlapped block motion compensation blending.
+//!
 //! OBMC blends the prediction of the current block with predictions
 //! from neighboring blocks to reduce blocking artifacts at boundaries.
 //! Ported from SVT-AV1's inter_prediction.c OBMC functions.

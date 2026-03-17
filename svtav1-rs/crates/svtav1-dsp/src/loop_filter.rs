@@ -1,5 +1,7 @@
 //! Loop filters: deblocking and CDEF.
 //!
+//! Spec 08 (loop-filters.md): Deblocking, CDEF, Wiener, sgrproj.
+//!
 //! Ported from SVT-AV1's `deblocking_filter.c` and `cdef_block.c`.
 //!
 //! Deblocking smooths block edges to reduce blocking artifacts.

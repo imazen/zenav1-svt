@@ -1,5 +1,7 @@
 //! OBU (Open Bitstream Unit) writer for AV1 bitstreams.
 //!
+//! Spec 07 §5.3: OBU bitstream format.
+//!
 //! Ported from SVT-AV1's entropy_coding.c OBU writing functions.
 //! Produces valid AV1 bitstream output.
 

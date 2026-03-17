@@ -1,5 +1,7 @@
 //! Rate control — CQP, CRF, VBR, CBR modes.
 //!
+//! Spec 09 (rate-control.md): CQP/CRF/VBR/CBR modes.
+//!
 //! Ported from SVT-AV1's `rc_process.c` and related files.
 
 /// Rate control mode.

@@ -1,5 +1,7 @@
 //! Multi-pass rate control — first-pass stats and second-pass optimization.
 //!
+//! Spec 09: First-pass stats and second-pass QP optimization.
+//!
 //! Two-pass encoding: the first pass collects statistics about each frame
 //! (complexity, motion, etc.) without producing output. The second pass
 //! uses these stats to optimally distribute bits across frames.

@@ -1,5 +1,7 @@
 //! Tile coding — splitting frames into independently-codeable tiles.
 //!
+//! Spec 07: Tile coding and multi-tile OBU.
+//!
 //! AV1 supports uniform and non-uniform tile grids. Each tile is
 //! independently entropy-coded, enabling parallel encoding/decoding.
 //! Ported from SVT-AV1's entropy_coding.c tile functions.

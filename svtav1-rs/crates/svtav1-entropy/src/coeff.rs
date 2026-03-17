@@ -1,5 +1,7 @@
 //! Coefficient entropy coding — TXB skip, EOB, base levels, Golomb.
 //!
+//! Spec 07: Coefficient coding (TXB skip, EOB, base levels).
+//!
 //! This module handles the entropy coding of transform coefficients,
 //! which is the most complex part of the AV1 entropy coder.
 //! Ported from SVT-AV1's entropy_coding.c coefficient writing functions.

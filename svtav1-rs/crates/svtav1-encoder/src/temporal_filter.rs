@@ -1,5 +1,7 @@
 //! Temporal filtering — alt-ref frame generation.
 //!
+//! Spec 17 (temporal-filtering.md): Alt-ref frame generation.
+//!
 //! Temporal filtering averages multiple frames to create a denoised
 //! "alt-ref" reference frame. This improves compression by providing
 //! a cleaner prediction source.

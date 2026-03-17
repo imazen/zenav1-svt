@@ -1,5 +1,7 @@
 //! Intra prediction modes.
 //!
+//! Spec 05 (intra-prediction.md): All AV1 intra prediction modes.
+//!
 //! Ported from SVT-AV1's `intra_prediction.c` and `enc_intra_prediction.c`.
 //!
 //! AV1 defines 13 intra prediction modes: DC, V, H, 8 directional,

@@ -1,5 +1,7 @@
 //! Core arithmetic range coder engine.
 //!
+//! Spec 07 §8.2: Daala arithmetic coder (OdEcEnc).
+//!
 //! Ported from SVT-AV1's `OdEcEnc` in `bitstream_unit.c/h`.
 //!
 //! This implements the daala entropy coder used by AV1:

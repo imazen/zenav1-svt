@@ -1,5 +1,7 @@
 //! High-level AV1 bitstream writer.
 //!
+//! Spec 07: High-level bitstream writer wrapping range coder.
+//!
 //! Wraps the range coder with CDF-based symbol writing and optional
 //! backward-adaptive CDF updates.
 //!

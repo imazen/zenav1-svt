@@ -1,5 +1,7 @@
 //! Speed preset configuration — controls the speed/quality tradeoff.
 //!
+//! Spec 03: Speed preset controls (enc_mode_config.c).
+//!
 //! SVT-AV1 has 14 presets (0-13) controlling which tools are enabled
 //! and how thoroughly they're searched. Lower presets are slower but
 //! produce better quality; higher presets are faster.

@@ -1,5 +1,7 @@
 //! Scaled inter prediction — reference scaling when dimensions differ.
 //!
+//! Spec 06: Scaled inter prediction when ref dimensions differ.
+//!
 //! When the reference frame has different dimensions than the current
 //! frame (e.g., due to super-resolution or spatial scalability), the
 //! reference is scaled before motion compensation.

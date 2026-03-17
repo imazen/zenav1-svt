@@ -1,5 +1,7 @@
 //! Forward transforms (DCT, ADST, identity).
 //!
+//! Spec 04 (transforms.md): Forward DCT/ADST/identity transforms.
+//!
 //! Ported from SVT-AV1's `transforms.c` and `inv_transforms.c`.
 //! All transforms are separable (1D column → 1D row) per AV1 spec.
 //!

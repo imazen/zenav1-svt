@@ -1,5 +1,7 @@
 //! Super-resolution — 8-tap upscaling filter.
 //!
+//! Spec 08: Super-resolution 8-tap upscale filter.
+//!
 //! AV1 super-resolution encodes at a reduced horizontal resolution
 //! then upscales in the decoder. This module implements the upscaling
 //! filter used in the reconstruction loop.

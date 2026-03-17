@@ -1,5 +1,7 @@
 //! Intra Block Copy (IntraBC) — copy from elsewhere in the same frame.
 //!
+//! Spec 06: Intra block copy for screen content.
+//!
 //! IntraBC allows a block to be predicted by copying from a previously
 //! reconstructed region of the same frame. This is primarily useful for
 //! screen content coding (text, UI elements, repeated patterns).

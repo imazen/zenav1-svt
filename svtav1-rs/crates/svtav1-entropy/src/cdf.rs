@@ -1,5 +1,7 @@
 //! CDF (Cumulative Distribution Function) tables and update logic.
 //!
+//! Spec 07: CDF update (cabac_context_model.h).
+//!
 //! Ported from `cabac_context_model.h`.
 
 /// CDF probability type (Q15 fixed-point, 15 fractional bits).

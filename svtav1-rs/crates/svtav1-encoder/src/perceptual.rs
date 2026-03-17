@@ -1,5 +1,7 @@
 //! Perceptual quality optimizations — ported from zenrav1e.
 //!
+//! Ported from zenrav1e: QM, VAQ, trellis, still-image tuning.
+//!
 //! These are encoder-side improvements that produce standard AV1 bitstreams
 //! with better subjective quality at the same bitrate.
 //!

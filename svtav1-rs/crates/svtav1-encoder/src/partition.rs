@@ -1,5 +1,7 @@
 //! Partition search — recursive block splitting for optimal RD.
 //!
+//! Spec 10 (encoding-loop.md): Recursive partition search.
+//!
 //! AV1 uses a quadtree+extended partition structure starting from 64x64
 //! (or 128x128) superblocks, recursively splitting into smaller blocks.
 //! Each split decision compares RD cost of encoding at current size vs

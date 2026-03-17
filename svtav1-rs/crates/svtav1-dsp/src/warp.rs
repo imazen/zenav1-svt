@@ -1,5 +1,7 @@
 //! Warped motion prediction.
 //!
+//! Spec 06: Affine warped motion prediction.
+//!
 //! Applies an affine transformation to the reference block before
 //! sub-pixel interpolation. Used for blocks where motion is better
 //! described by rotation/zoom/shear than pure translation.

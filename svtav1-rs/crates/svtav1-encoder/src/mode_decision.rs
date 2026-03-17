@@ -1,5 +1,7 @@
 //! Mode decision pipeline — candidate generation, RD cost, partition search.
 //!
+//! Spec 03 (mode-decision.md): Candidate generation and RD cost.
+//!
 //! Ported from SVT-AV1's `mode_decision.c`, `full_loop.c`, and
 //! `enc_mode_config.c`.
 

@@ -1,5 +1,7 @@
 //! Inverse transforms (DCT, ADST, identity).
 //!
+//! Spec 04: Inverse transforms for reconstruction loop.
+//!
 //! Ported from SVT-AV1's `inv_transforms.c`.
 //! All transforms are separable (1D row -> 1D column) per AV1 spec.
 //!

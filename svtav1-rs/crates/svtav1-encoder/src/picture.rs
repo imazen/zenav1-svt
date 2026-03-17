@@ -1,5 +1,7 @@
 //! Picture management — PCS lifecycle, reference frame buffer, DPB.
 //!
+//! Spec 11 (picture-management.md): PCS, DPB, GOP.
+//!
 //! Manages the flow of pictures through the encoding pipeline:
 //! input → analysis → mode decision → encode → output.
 //!

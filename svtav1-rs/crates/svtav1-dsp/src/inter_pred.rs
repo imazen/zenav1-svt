@@ -1,5 +1,7 @@
 //! Inter prediction (sub-pixel convolution).
 //!
+//! Spec 06 (inter-prediction.md): Sub-pixel interpolation for inter prediction.
+//!
 //! Ported from SVT-AV1's `convolve.c`.
 //!
 //! AV1 inter prediction uses 8-tap separable filters for sub-pixel

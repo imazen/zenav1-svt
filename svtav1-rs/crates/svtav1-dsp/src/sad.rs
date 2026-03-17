@@ -1,5 +1,7 @@
 //! Sum of Absolute Differences (SAD) computation.
 //!
+//! Spec 02 (motion-estimation.md): SAD for ME distortion metric.
+//!
 //! SAD is the most-called function in motion estimation — it measures
 //! the distortion between a source block and a reference block.
 //!

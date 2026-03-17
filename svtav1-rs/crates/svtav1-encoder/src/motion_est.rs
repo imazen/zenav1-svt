@@ -1,5 +1,7 @@
 //! Motion estimation — hierarchical ME, full-pel search, sub-pel refinement.
 //!
+//! Spec 02: Hierarchical ME, full-pel, sub-pel search.
+//!
 //! Ported from SVT-AV1's `motion_estimation.c` and `av1me.c`.
 
 use svtav1_types::motion::Mv;

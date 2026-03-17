@@ -1,5 +1,7 @@
 //! Quantization and dequantization.
 //!
+//! Spec 04: Dead-zone quantization and dequantization.
+//!
 //! Ported from SVT-AV1's quantization routines. Implements dead-zone
 //! quantization (forward) and uniform dequantization (inverse).
 //!

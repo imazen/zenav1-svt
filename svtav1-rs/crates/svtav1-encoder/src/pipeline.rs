@@ -1,5 +1,7 @@
 //! Encoding pipeline orchestrator — wires all stages together.
 //!
+//! Spec 00 (architecture.md): Full encoding pipeline orchestrator.
+//!
 //! This is the top-level encoding function that coordinates:
 //! 1. Picture analysis (noise estimation, scene detection)
 //! 2. Reference frame management (DPB, GOP structure)
