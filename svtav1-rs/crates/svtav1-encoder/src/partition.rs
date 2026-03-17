@@ -810,8 +810,8 @@ fn encode_single_block(
             }
         }
 
-        // Encode with this prediction
-        let enc = crate::encode_loop::encode_block(
+        // Encode with this prediction — try DCT-DCT first
+        let enc_dct = crate::encode_loop::encode_block(
             src,
             src_stride,
             &pred_block,
@@ -820,12 +820,41 @@ fn encode_single_block(
             height,
             qp,
         );
+        let cost_dct = enc_dct.distortion + ((lambda * enc_dct.rate as u64) >> 8);
 
-        // RD cost
-        let cost = enc.distortion + ((lambda * enc.rate as u64) >> 8);
-        if cost < best_cost {
-            best_cost = cost;
-            best_enc = Some(enc);
+        if cost_dct < best_cost {
+            best_cost = cost_dct;
+            best_enc = Some(enc_dct);
+        }
+
+        // For directional modes at 4x4/8x8, also try ADST-DCT
+        // (Spec 04: "ADST is typically better for directional residuals")
+        if width <= 16
+            && height <= 16
+            && cand.mode.is_intra()
+            && !matches!(
+                cand.mode,
+                svtav1_types::prediction::PredictionMode::DcPred
+                    | svtav1_types::prediction::PredictionMode::SmoothPred
+                    | svtav1_types::prediction::PredictionMode::SmoothVPred
+                    | svtav1_types::prediction::PredictionMode::SmoothHPred
+            )
+        {
+            let enc_adst = crate::encode_loop::encode_block_tx(
+                src,
+                src_stride,
+                &pred_block,
+                width,
+                width,
+                height,
+                qp,
+                svtav1_types::transform::TxType::AdstDct,
+            );
+            let cost_adst = enc_adst.distortion + ((lambda * enc_adst.rate as u64) >> 8);
+            if cost_adst < best_cost {
+                best_cost = cost_adst;
+                best_enc = Some(enc_adst);
+            }
         }
     }
 
