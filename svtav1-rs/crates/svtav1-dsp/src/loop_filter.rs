@@ -773,41 +773,58 @@ fn box_filter_sgr(
     let n = (2 * radius + 1) * (2 * radius + 1);
     let n_inv = ((1 << 12) + n as i32 / 2) / n as i32; // Approximate 1/n in Q12
 
+    // Build integral images (summed area tables) for O(1) box sums.
+    // int_sum[r][c] = sum of src[0..r, 0..c] with edge clamping.
+    // int_sq[r][c] = sum of src[0..r, 0..c]^2 with edge clamping.
+    let pad = radius;
+    let iw = width + 2 * pad;
+    let ih = height + 2 * pad;
+    let mut int_sum = alloc::vec![0i32; (ih + 1) * (iw + 1)];
+    let mut int_sq = alloc::vec![0i64; (ih + 1) * (iw + 1)];
+    let is = iw + 1; // integral image stride
+
+    // Fill integral images with clamped source values
+    for r in 0..ih {
+        let sr = (r as i32 - pad as i32).clamp(0, height as i32 - 1) as usize;
+        for c in 0..iw {
+            let sc = (c as i32 - pad as i32).clamp(0, width as i32 - 1) as usize;
+            let v = src[sr * src_stride + sc] as i32;
+            let idx = (r + 1) * is + (c + 1);
+            int_sum[idx] =
+                v + int_sum[r * is + (c + 1)] + int_sum[(r + 1) * is + c] - int_sum[r * is + c];
+            int_sq[idx] = v as i64 * v as i64 + int_sq[r * is + (c + 1)] + int_sq[(r + 1) * is + c]
+                - int_sq[r * is + c];
+        }
+    }
+
     for r in 0..height {
         for c in 0..width {
-            // Compute box sum and sum of squares
-            let mut sum: i32 = 0;
-            let mut sum_sq: i32 = 0;
+            // Box sum via integral image: O(1) per pixel
+            let r0 = r; // top-left of box in integral coords
+            let c0 = c;
+            let r1 = r + 2 * pad + 1; // bottom-right + 1
+            let c1 = c + 2 * pad + 1;
 
-            for dr in 0..2 * radius + 1 {
-                let sr =
-                    (r as i32 + dr as i32 - radius as i32).clamp(0, height as i32 - 1) as usize;
-                for dc in 0..2 * radius + 1 {
-                    let sc =
-                        (c as i32 + dc as i32 - radius as i32).clamp(0, width as i32 - 1) as usize;
-                    let v = src[sr * src_stride + sc] as i32;
-                    sum += v;
-                    sum_sq += v * v;
-                }
-            }
+            let sum = int_sum[r1 * is + c1] - int_sum[r0 * is + c1] - int_sum[r1 * is + c0]
+                + int_sum[r0 * is + c0];
+            let sum_sq = int_sq[r1 * is + c1] - int_sq[r0 * is + c1] - int_sq[r1 * is + c0]
+                + int_sq[r0 * is + c0];
 
             // Compute variance-based weight
             let mean = (sum * n_inv + (1 << 11)) >> 12;
             let mean_sq = mean * mean;
-            let sq_mean = (sum_sq * n_inv + (1 << 11)) >> 12;
+            let sq_mean = ((sum_sq * n_inv as i64 + (1 << 11)) >> 12) as i32;
             let var = (sq_mean - mean_sq).max(0);
 
             // Self-guided: a = var / (var + strength), b = mean * (1 - a)
-            // In fixed-point: a_q12 = var * (1 << 12) / (var + strength)
             let denom = var + strength;
             let a = if denom > 0 {
                 (var << 12) / denom
             } else {
-                1 << 12 // No filtering
+                1 << 12
             };
             let b = ((1 << 12) - a) * mean;
 
-            // Output in Q4: filtered = (a * src + b) >> 8
             let v = src[r * src_stride + c] as i32;
             output[r * width + c] = (a * v + b + (1 << 7)) >> 8;
         }
