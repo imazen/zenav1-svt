@@ -57,7 +57,34 @@
   (Region, BorrowTracker, overlap detection) follows rav1d's design.
 
 ## Known Bugs
-(Document any known bugs here with file:line references)
+
+1. **Prediction uses mid-gray neighbors instead of reconstruction** — `partition.rs:encode_single_block` uses `above=[128; width]` and `left=[128; height]` instead of reading from the reconstruction buffer. This means intra prediction quality is worse than it should be. Fix requires threading the frame-level recon buffer through partition_search with block position context. (partition.rs:675-676)
+
+2. **sgrproj box_filter_sgr is O(N*radius^2)** — The naive per-pixel box sum loop in `loop_filter.rs:box_filter_sgr` recomputes the full box sum for every pixel. Real implementations use integral images (summed area tables) for O(1) per pixel. Current version is correct but very slow for large radii. (loop_filter.rs:655-688)
+
+3. **Wiener filter coefficients not derived from content** — Pipeline uses QP-based heuristic coefficients (`strength = qp/10`) instead of optimizing Wiener coefficients per restoration unit as the spec describes. Real SVT-AV1 runs RDO to find optimal coefficients. (pipeline.rs:254-256)
+
+4. **Warped motion uses nearest-neighbor** — `warp.rs:warp_prediction` samples with nearest-neighbor instead of the spec'd 8-tap sub-pixel interpolation. Produces blocky output for non-integer affine transforms. (warp.rs:50-55)
+
+5. **Scaled prediction uses nearest-neighbor** — Same issue as warped motion. `scale.rs:scaled_prediction` should use filtered interpolation. (scale.rs:67-70)
+
+6. **OBMC doesn't compute neighbor predictions** — `obmc.rs` has correct blend masks but the pipeline doesn't generate the neighbor block predictions that OBMC blends with. The function signature accepts pre-computed neighbor predictions but nothing provides them. (obmc.rs — orphaned)
+
+7. **Deblocking is 4-tap only** — Missing the 6, 8, and 14-tap filter variants and the proper strength derivation based on block boundary type and QP. (loop_filter.rs:65-130)
 
 ## Investigation Notes
-(Document any findings from code analysis here)
+
+### Transform Parity
+All 26 1D transform kernels are bit-exact with C SVT-AV1. Verified by extracting golden data from C object files (`cbuild/Source/Lib/Codec/CMakeFiles/CODEC.dir/transforms.c.o` and `inv_transforms.c.o`). The C functions accept `(input, output, cos_bit, stage_range)` — we pass `cos_bit=12` and `stage_range=NULL` for forward (ignored), `wide_range=[31;12]` for inverse (clamping never triggers at 8-bit).
+
+Key finding: the C `svt_av1_fadst4_new` uses i32 arithmetic while our initial port used i64, producing different rounding. Fixed by matching the C decomposition exactly. Same issue with `fadst8` output permutation — C uses `[step[1], step[6], step[3], step[4], step[5], step[2], step[7], step[0]]` without negation, while our initial port had sign flips.
+
+### Pipeline Architecture
+The pipeline processes superblocks in raster order (left-to-right, top-to-bottom) per spec 00. Each SB goes through partition_search which recursively tries all 10 partition types. At each leaf, encode_single_block evaluates 11 intra modes with mode-specific TX RDO, picking the lowest RD cost. Loop filters (deblock → CDEF → Wiener → sgrproj) are applied frame-wide after all SBs are encoded.
+
+### Performance
+Release-mode benchmarks (x86_64 AVX2):
+- SAD 16x16: ~18 Gpix/s (archmage auto-vectorization)
+- fwd_txfm 4x4: ~170 Mpix/s
+- fwd_txfm 8x8: ~215 Mpix/s
+These numbers are MEASURED, not estimated.
