@@ -261,6 +261,259 @@ pub fn partition_search(
         }
     }
 
+    // Try PARTITION_HORZ_A: top split into 2 quarters + bottom half
+    // (T-shape with split on top)
+    if width >= 8 && height >= 8 {
+        let hw = width / 2;
+        let hh = height / 2;
+        let mut ha_result = PartitionResult {
+            rd_cost: 0,
+            distortion: 0,
+            rate: 56,
+            num_blocks: 0,
+        };
+        let mut ha_recon = alloc::vec![0u8; width * height];
+        // Top-left quarter
+        let s = encode_single_block(
+            src,
+            src_stride,
+            pred,
+            pred_stride,
+            &mut ha_recon,
+            width,
+            hw,
+            hh,
+            qp,
+        );
+        ha_result.distortion += s.distortion;
+        ha_result.rate += s.rate;
+        ha_result.num_blocks += s.num_blocks;
+        // Top-right quarter
+        let s = encode_single_block(
+            &src[hw..],
+            src_stride,
+            &pred[hw..],
+            pred_stride,
+            &mut ha_recon[hw..],
+            width,
+            width - hw,
+            hh,
+            qp,
+        );
+        ha_result.distortion += s.distortion;
+        ha_result.rate += s.rate;
+        ha_result.num_blocks += s.num_blocks;
+        // Bottom half
+        let s = encode_single_block(
+            &src[hh * src_stride..],
+            src_stride,
+            &pred[hh * pred_stride..],
+            pred_stride,
+            &mut ha_recon[hh * width..],
+            width,
+            width,
+            height - hh,
+            qp,
+        );
+        ha_result.distortion += s.distortion;
+        ha_result.rate += s.rate;
+        ha_result.num_blocks += s.num_blocks;
+        ha_result.rd_cost = ha_result.distortion + ((lambda * ha_result.rate as u64) >> 8);
+        if ha_result.rd_cost < best_result.rd_cost {
+            best_result = ha_result;
+            best_recon = ha_recon;
+        }
+    }
+
+    // Try PARTITION_HORZ_B: top half + bottom split into 2 quarters
+    if width >= 8 && height >= 8 {
+        let hw = width / 2;
+        let hh = height / 2;
+        let mut hb_result = PartitionResult {
+            rd_cost: 0,
+            distortion: 0,
+            rate: 56,
+            num_blocks: 0,
+        };
+        let mut hb_recon = alloc::vec![0u8; width * height];
+        // Top half
+        let s = encode_single_block(
+            src,
+            src_stride,
+            pred,
+            pred_stride,
+            &mut hb_recon,
+            width,
+            width,
+            hh,
+            qp,
+        );
+        hb_result.distortion += s.distortion;
+        hb_result.rate += s.rate;
+        hb_result.num_blocks += s.num_blocks;
+        // Bottom-left quarter
+        let s = encode_single_block(
+            &src[hh * src_stride..],
+            src_stride,
+            &pred[hh * pred_stride..],
+            pred_stride,
+            &mut hb_recon[hh * width..],
+            width,
+            hw,
+            height - hh,
+            qp,
+        );
+        hb_result.distortion += s.distortion;
+        hb_result.rate += s.rate;
+        hb_result.num_blocks += s.num_blocks;
+        // Bottom-right quarter
+        let s = encode_single_block(
+            &src[hh * src_stride + hw..],
+            src_stride,
+            &pred[hh * pred_stride + hw..],
+            pred_stride,
+            &mut hb_recon[hh * width + hw..],
+            width,
+            width - hw,
+            height - hh,
+            qp,
+        );
+        hb_result.distortion += s.distortion;
+        hb_result.rate += s.rate;
+        hb_result.num_blocks += s.num_blocks;
+        hb_result.rd_cost = hb_result.distortion + ((lambda * hb_result.rate as u64) >> 8);
+        if hb_result.rd_cost < best_result.rd_cost {
+            best_result = hb_result;
+            best_recon = hb_recon;
+        }
+    }
+
+    // Try PARTITION_VERT_A: left split into 2 quarters + right half
+    if width >= 8 && height >= 8 {
+        let hw = width / 2;
+        let hh = height / 2;
+        let mut va_result = PartitionResult {
+            rd_cost: 0,
+            distortion: 0,
+            rate: 56,
+            num_blocks: 0,
+        };
+        let mut va_recon = alloc::vec![0u8; width * height];
+        // Top-left quarter
+        let s = encode_single_block(
+            src,
+            src_stride,
+            pred,
+            pred_stride,
+            &mut va_recon,
+            width,
+            hw,
+            hh,
+            qp,
+        );
+        va_result.distortion += s.distortion;
+        va_result.rate += s.rate;
+        va_result.num_blocks += s.num_blocks;
+        // Bottom-left quarter
+        let s = encode_single_block(
+            &src[hh * src_stride..],
+            src_stride,
+            &pred[hh * pred_stride..],
+            pred_stride,
+            &mut va_recon[hh * width..],
+            width,
+            hw,
+            height - hh,
+            qp,
+        );
+        va_result.distortion += s.distortion;
+        va_result.rate += s.rate;
+        va_result.num_blocks += s.num_blocks;
+        // Right half
+        let s = encode_single_block(
+            &src[hw..],
+            src_stride,
+            &pred[hw..],
+            pred_stride,
+            &mut va_recon[hw..],
+            width,
+            width - hw,
+            height,
+            qp,
+        );
+        va_result.distortion += s.distortion;
+        va_result.rate += s.rate;
+        va_result.num_blocks += s.num_blocks;
+        va_result.rd_cost = va_result.distortion + ((lambda * va_result.rate as u64) >> 8);
+        if va_result.rd_cost < best_result.rd_cost {
+            best_result = va_result;
+            best_recon = va_recon;
+        }
+    }
+
+    // Try PARTITION_VERT_B: left half + right split into 2 quarters
+    if width >= 8 && height >= 8 {
+        let hw = width / 2;
+        let hh = height / 2;
+        let mut vb_result = PartitionResult {
+            rd_cost: 0,
+            distortion: 0,
+            rate: 56,
+            num_blocks: 0,
+        };
+        let mut vb_recon = alloc::vec![0u8; width * height];
+        // Left half
+        let s = encode_single_block(
+            src,
+            src_stride,
+            pred,
+            pred_stride,
+            &mut vb_recon,
+            width,
+            hw,
+            height,
+            qp,
+        );
+        vb_result.distortion += s.distortion;
+        vb_result.rate += s.rate;
+        vb_result.num_blocks += s.num_blocks;
+        // Top-right quarter
+        let s = encode_single_block(
+            &src[hw..],
+            src_stride,
+            &pred[hw..],
+            pred_stride,
+            &mut vb_recon[hw..],
+            width,
+            width - hw,
+            hh,
+            qp,
+        );
+        vb_result.distortion += s.distortion;
+        vb_result.rate += s.rate;
+        vb_result.num_blocks += s.num_blocks;
+        // Bottom-right quarter
+        let s = encode_single_block(
+            &src[hh * src_stride + hw..],
+            src_stride,
+            &pred[hh * pred_stride + hw..],
+            pred_stride,
+            &mut vb_recon[hh * width + hw..],
+            width,
+            width - hw,
+            height - hh,
+            qp,
+        );
+        vb_result.distortion += s.distortion;
+        vb_result.rate += s.rate;
+        vb_result.num_blocks += s.num_blocks;
+        vb_result.rd_cost = vb_result.distortion + ((lambda * vb_result.rate as u64) >> 8);
+        if vb_result.rd_cost < best_result.rd_cost {
+            best_result = vb_result;
+            best_recon = vb_recon;
+        }
+    }
+
     // Try PARTITION_SPLIT: encode 4 sub-blocks
     let hw = width / 2;
     let hh = height / 2;
