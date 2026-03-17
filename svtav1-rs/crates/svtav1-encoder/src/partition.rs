@@ -9,7 +9,6 @@
 //! HORZ_A, HORZ_B, VERT_A, VERT_B, HORZ_4, VERT_4.
 //! This implementation supports NONE and SPLIT for simplicity.
 
-
 /// Minimum block size for partition search.
 pub const MIN_BLOCK_SIZE: usize = 4;
 
@@ -80,6 +79,117 @@ pub fn partition_search(
         return none_result;
     }
 
+    let mut best_result = none_result;
+    let mut best_recon = alloc::vec![0u8; width * height];
+    // Copy current recon as best so far
+    for r in 0..height {
+        for c in 0..width {
+            best_recon[r * width + c] = recon[r * recon_stride + c];
+        }
+    }
+
+    // Try PARTITION_HORZ: two halves stacked vertically
+    if height >= 8 {
+        let hh = height / 2;
+        let mut horz_result = PartitionResult {
+            rd_cost: 0,
+            distortion: 0,
+            rate: 48, // Partition flag overhead
+            num_blocks: 0,
+        };
+        let mut horz_recon = alloc::vec![0u8; width * height];
+
+        // Top half
+        let top = encode_single_block(
+            src,
+            src_stride,
+            pred,
+            pred_stride,
+            &mut horz_recon,
+            width,
+            width,
+            hh,
+            qp,
+        );
+        horz_result.distortion += top.distortion;
+        horz_result.rate += top.rate;
+        horz_result.num_blocks += top.num_blocks;
+
+        // Bottom half
+        let bot_src_off = hh * src_stride;
+        let bot_pred_off = hh * pred_stride;
+        let bot = encode_single_block(
+            &src[bot_src_off..],
+            src_stride,
+            &pred[bot_pred_off..],
+            pred_stride,
+            &mut horz_recon[hh * width..],
+            width,
+            width,
+            height - hh,
+            qp,
+        );
+        horz_result.distortion += bot.distortion;
+        horz_result.rate += bot.rate;
+        horz_result.num_blocks += bot.num_blocks;
+        horz_result.rd_cost = horz_result.distortion + ((lambda * horz_result.rate as u64) >> 8);
+
+        if horz_result.rd_cost < best_result.rd_cost {
+            best_result = horz_result;
+            best_recon = horz_recon;
+        }
+    }
+
+    // Try PARTITION_VERT: two halves side by side
+    if width >= 8 {
+        let hw = width / 2;
+        let mut vert_result = PartitionResult {
+            rd_cost: 0,
+            distortion: 0,
+            rate: 48,
+            num_blocks: 0,
+        };
+        let mut vert_recon = alloc::vec![0u8; width * height];
+
+        // Left half
+        let left = encode_single_block(
+            src,
+            src_stride,
+            pred,
+            pred_stride,
+            &mut vert_recon,
+            width,
+            hw,
+            height,
+            qp,
+        );
+        vert_result.distortion += left.distortion;
+        vert_result.rate += left.rate;
+        vert_result.num_blocks += left.num_blocks;
+
+        // Right half
+        let right = encode_single_block(
+            &src[hw..],
+            src_stride,
+            &pred[hw..],
+            pred_stride,
+            &mut vert_recon[hw..],
+            width,
+            width - hw,
+            height,
+            qp,
+        );
+        vert_result.distortion += right.distortion;
+        vert_result.rate += right.rate;
+        vert_result.num_blocks += right.num_blocks;
+        vert_result.rd_cost = vert_result.distortion + ((lambda * vert_result.rate as u64) >> 8);
+
+        if vert_result.rd_cost < best_result.rd_cost {
+            best_result = vert_result;
+            best_recon = vert_recon;
+        }
+    }
+
     // Try PARTITION_SPLIT: encode 4 sub-blocks
     let hw = width / 2;
     let hh = height / 2;
@@ -124,18 +234,19 @@ pub fn partition_search(
     }
     split_result.rd_cost = split_result.distortion + ((lambda * split_result.rate as u64) >> 8);
 
-    // Choose best partition
-    if split_result.rd_cost < none_result.rd_cost {
-        // Copy split recon to output
-        for r in 0..height {
-            for c in 0..width {
-                recon[r * recon_stride + c] = split_recon[r * width + c];
-            }
-        }
-        split_result
-    } else {
-        none_result
+    // Check if SPLIT is better than current best
+    if split_result.rd_cost < best_result.rd_cost {
+        best_result = split_result;
+        best_recon = split_recon;
     }
+
+    // Write best recon to output
+    for r in 0..height {
+        for c in 0..width {
+            recon[r * recon_stride + c] = best_recon[r * width + c];
+        }
+    }
+    best_result
 }
 
 /// Encode a single block (no further splitting).

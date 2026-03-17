@@ -450,6 +450,184 @@ static SM_WEIGHTS_64: [u8; 64] = [
 ];
 
 // =============================================================================
+// Filter-intra prediction
+// Ported from svt_av1_filter_intra_predictor_c in filterintra_c.c
+// =============================================================================
+
+/// Scale bits for filter-intra tap application.
+const FILTER_INTRA_SCALE_BITS: i32 = 4;
+
+/// Filter-intra tap coefficients: 5 modes, 8 sub-block positions, 7 neighbor taps (+1 padding).
+///
+/// Indexed as `FILTER_INTRA_TAPS[mode][k][tap]` where:
+/// - `mode` 0..5: the 5 filter-intra modes
+/// - `k` 0..8: the 8 pixels in a 4x2 sub-block (row = k>>2, col = k&3)
+/// - `tap` 0..7: coefficients for p0..p6 (tap 7 is always 0, present for alignment)
+#[rustfmt::skip]
+static FILTER_INTRA_TAPS: [[[i8; 8]; 8]; 5] = [
+    [
+        [-6, 10, 0, 0, 0, 12, 0, 0],
+        [-5,  2, 10, 0, 0, 9, 0, 0],
+        [-3,  1, 1, 10, 0, 7, 0, 0],
+        [-3,  1, 1, 2, 10, 5, 0, 0],
+        [-4,  6, 0, 0, 0, 2, 12, 0],
+        [-3,  2, 6, 0, 0, 2, 9, 0],
+        [-3,  2, 2, 6, 0, 2, 7, 0],
+        [-3,  1, 2, 2, 6, 3, 5, 0],
+    ],
+    [
+        [-10, 16, 0, 0, 0, 10, 0, 0],
+        [ -6,  0, 16, 0, 0, 6, 0, 0],
+        [ -4,  0, 0, 16, 0, 4, 0, 0],
+        [ -2,  0, 0, 0, 16, 2, 0, 0],
+        [-10, 16, 0, 0, 0, 0, 10, 0],
+        [ -6,  0, 16, 0, 0, 0, 6, 0],
+        [ -4,  0, 0, 16, 0, 0, 4, 0],
+        [ -2,  0, 0, 0, 16, 0, 2, 0],
+    ],
+    [
+        [-8, 8, 0, 0, 0, 16, 0, 0],
+        [-8, 0, 8, 0, 0, 16, 0, 0],
+        [-8, 0, 0, 8, 0, 16, 0, 0],
+        [-8, 0, 0, 0, 8, 16, 0, 0],
+        [-4, 4, 0, 0, 0, 0, 16, 0],
+        [-4, 0, 4, 0, 0, 0, 16, 0],
+        [-4, 0, 0, 4, 0, 0, 16, 0],
+        [-4, 0, 0, 0, 4, 0, 16, 0],
+    ],
+    [
+        [-2, 8, 0, 0, 0, 10, 0, 0],
+        [-1, 3, 8, 0, 0, 6, 0, 0],
+        [-1, 2, 3, 8, 0, 4, 0, 0],
+        [ 0, 1, 2, 3, 8, 2, 0, 0],
+        [-1, 4, 0, 0, 0, 3, 10, 0],
+        [-1, 3, 4, 0, 0, 4, 6, 0],
+        [-1, 2, 3, 4, 0, 4, 4, 0],
+        [-1, 2, 2, 3, 4, 3, 3, 0],
+    ],
+    [
+        [-12, 14, 0, 0, 0, 14, 0, 0],
+        [-10,  0, 14, 0, 0, 12, 0, 0],
+        [ -9,  0, 0, 14, 0, 11, 0, 0],
+        [ -8,  0, 0, 0, 14, 10, 0, 0],
+        [-10, 12, 0, 0, 0, 0, 14, 0],
+        [ -9,  1, 12, 0, 0, 0, 12, 0],
+        [ -8,  0, 0, 12, 0, 1, 11, 0],
+        [ -7,  0, 0, 1, 12, 1, 9, 0],
+    ],
+];
+
+/// Round a signed value by `n` bits (ROUND_POWER_OF_TWO_SIGNED).
+#[inline]
+fn round_power_of_two_signed(value: i32, n: i32) -> i32 {
+    if value < 0 {
+        -((-value + (1 << (n - 1))) >> n)
+    } else {
+        (value + (1 << (n - 1))) >> n
+    }
+}
+
+/// Predict a block using filter-intra prediction.
+///
+/// Ported from `svt_av1_filter_intra_predictor_c` in `filterintra_c.c`.
+///
+/// Uses a 33x33 intermediate buffer. Processes 4-wide by 2-tall sub-blocks,
+/// each pixel computed from 7 neighbor pixels and the mode's tap coefficients.
+///
+/// # Arguments
+/// * `above` - top-left + above pixels, length `width + 1`.
+///   `above[0]` = top-left, `above[1..]` = pixels above the block.
+/// * `left` - left column pixels, length `height`.
+/// * `mode` - filter-intra mode (0..4).
+pub fn predict_filter_intra(
+    dst: &mut [u8],
+    dst_stride: usize,
+    above: &[u8],
+    left: &[u8],
+    width: usize,
+    height: usize,
+    mode: u8,
+) {
+    assert!(width <= 32 && height <= 32);
+    assert!((mode as usize) < 5);
+
+    // 33x33 buffer: row 0 = above (with top-left at [0][0]),
+    // column 0 = left (starting at [1][0]).
+    let mut buffer = [[0u8; 33]; 33];
+
+    // Initialize top row: buffer[0][0..=bw] = above[0..=bw]
+    // above[0] = top_left, above[1..] = above pixels
+    buffer[0][..width + 1].copy_from_slice(&above[..width + 1]);
+
+    // Initialize left column: buffer[r+1][0] = left[r]
+    for r in 0..height {
+        buffer[r + 1][0] = left[r];
+    }
+
+    let taps = &FILTER_INTRA_TAPS[mode as usize];
+
+    // Process 4-wide by 2-tall sub-blocks
+    for r in (1..height + 1).step_by(2) {
+        for c in (1..width + 1).step_by(4) {
+            let p0 = buffer[r - 1][c - 1] as i32;
+            let p1 = buffer[r - 1][c] as i32;
+            let p2 = buffer[r - 1][c + 1] as i32;
+            let p3 = buffer[r - 1][c + 2] as i32;
+            let p4 = buffer[r - 1][c + 3] as i32;
+            let p5 = buffer[r][c - 1] as i32;
+            let p6 = buffer[r + 1][c - 1] as i32;
+
+            for k in 0..8 {
+                let r_offset = k >> 2;
+                let c_offset = k & 0x03;
+                let val = taps[k][0] as i32 * p0
+                    + taps[k][1] as i32 * p1
+                    + taps[k][2] as i32 * p2
+                    + taps[k][3] as i32 * p3
+                    + taps[k][4] as i32 * p4
+                    + taps[k][5] as i32 * p5
+                    + taps[k][6] as i32 * p6;
+                buffer[r + r_offset][c + c_offset] =
+                    round_power_of_two_signed(val, FILTER_INTRA_SCALE_BITS).clamp(0, 255) as u8;
+            }
+        }
+    }
+
+    // Copy result from buffer to dst
+    for r in 0..height {
+        dst[r * dst_stride..r * dst_stride + width].copy_from_slice(&buffer[r + 1][1..1 + width]);
+    }
+}
+
+// =============================================================================
+// Palette prediction
+// =============================================================================
+
+/// Predict a block using palette mode.
+///
+/// Each pixel in the block is looked up from a palette of up to 8 colors,
+/// using the color map indices.
+///
+/// # Arguments
+/// * `color_map` - palette index per pixel (values 0..palette.len()), row-major
+/// * `palette` - palette colors (up to 8 entries)
+pub fn predict_palette(
+    dst: &mut [u8],
+    dst_stride: usize,
+    color_map: &[u8],
+    map_stride: usize,
+    palette: &[u8],
+    width: usize,
+    height: usize,
+) {
+    for r in 0..height {
+        for c in 0..width {
+            dst[r * dst_stride + c] = palette[color_map[r * map_stride + c] as usize];
+        }
+    }
+}
+
+// =============================================================================
 // Chroma-from-Luma (CfL) prediction
 // Ported from svt_cfl_predict_lbd_c in cfl_c.c
 // =============================================================================
@@ -656,6 +834,119 @@ mod tests {
         assert!(dst[0] > 200);
         // Last column should be closer to 0
         assert!(dst[3] < dst[0]);
+    }
+
+    #[test]
+    fn filter_intra_mode0_4x4() {
+        // above[0] = top_left, above[1..5] = above pixels
+        let above = [100u8, 110, 120, 130, 140];
+        let left = [90u8, 80, 70, 60];
+        let mut dst = [0u8; 16];
+        predict_filter_intra(&mut dst, 4, &above, &left, 4, 4, 0);
+        // Output should be non-zero
+        for &v in &dst {
+            assert!(v > 0, "filter-intra produced zero pixel");
+        }
+        // At least some variation in the output
+        let min = dst.iter().copied().min().unwrap();
+        let max = dst.iter().copied().max().unwrap();
+        assert!(
+            max > min,
+            "filter-intra produced flat output, expected variation"
+        );
+    }
+
+    #[test]
+    fn filter_intra_zero_neighbors() {
+        // All neighbors at 128 should produce output close to 128
+        let above = [128u8; 5]; // top_left + 4 above
+        let left = [128u8; 4];
+        let mut dst = [0u8; 16];
+        predict_filter_intra(&mut dst, 4, &above, &left, 4, 4, 0);
+        for (i, &v) in dst.iter().enumerate() {
+            assert!(
+                (v as i32 - 128).abs() <= 1,
+                "pixel {i}: expected ~128, got {v}"
+            );
+        }
+    }
+
+    #[test]
+    fn filter_intra_all_modes_4x4() {
+        // Verify all 5 modes produce valid, distinct output
+        let above = [100u8, 110, 120, 130, 140];
+        let left = [90u8, 80, 70, 60];
+        let mut outputs = [[0u8; 16]; 5];
+        for mode in 0..5u8 {
+            predict_filter_intra(&mut outputs[mode as usize], 4, &above, &left, 4, 4, mode);
+        }
+        // At least some modes should differ
+        let mut any_differ = false;
+        for i in 1..5 {
+            if outputs[i] != outputs[0] {
+                any_differ = true;
+                break;
+            }
+        }
+        assert!(
+            any_differ,
+            "all 5 filter-intra modes produced identical output"
+        );
+    }
+
+    #[test]
+    fn filter_intra_8x8() {
+        // Larger block size
+        let above = [128u8; 9]; // top_left + 8 above
+        let left = [128u8; 8];
+        let mut dst = [0u8; 64];
+        predict_filter_intra(&mut dst, 8, &above, &left, 8, 8, 2);
+        for &v in &dst {
+            assert!(
+                (v as i32 - 128).abs() <= 1,
+                "expected ~128 for uniform input, got {v}"
+            );
+        }
+    }
+
+    #[test]
+    fn palette_basic() {
+        let palette = [10u8, 50, 100, 200];
+        // Color map: 4x4 block with indices into palette
+        let color_map = [0u8, 1, 2, 3, 3, 2, 1, 0, 0, 0, 3, 3, 1, 1, 2, 2];
+        let mut dst = [0u8; 16];
+        predict_palette(&mut dst, 4, &color_map, 4, &palette, 4, 4);
+
+        // Verify each pixel matches palette lookup
+        let expected = [
+            10u8, 50, 100, 200, 200, 100, 50, 10, 10, 10, 200, 200, 50, 50, 100, 100,
+        ];
+        assert_eq!(dst, expected);
+    }
+
+    #[test]
+    fn palette_single_color() {
+        let palette = [42u8];
+        let color_map = [0u8; 16];
+        let mut dst = [0u8; 16];
+        predict_palette(&mut dst, 4, &color_map, 4, &palette, 4, 4);
+        assert!(dst.iter().all(|&v| v == 42));
+    }
+
+    #[test]
+    fn palette_with_stride() {
+        let palette = [10u8, 20, 30];
+        // Map stride larger than width (2x2 block in a 4-wide map)
+        let color_map = [
+            0u8, 1, 255, 255, // row 0 (only first 2 used)
+            2, 0, 255, 255, // row 1
+        ];
+        let mut dst = [0u8; 8]; // 2x2 block with stride 4
+        predict_palette(&mut dst, 4, &color_map, 4, &palette, 2, 2);
+        assert_eq!(dst[0], 10); // palette[0]
+        assert_eq!(dst[1], 20); // palette[1]
+        assert_eq!(dst[4], 30); // palette[2]
+        assert_eq!(dst[5], 10); // palette[0]
     }
 }
 

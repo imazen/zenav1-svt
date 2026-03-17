@@ -98,6 +98,57 @@ pub fn generate_intra_candidates(block_size: BlockSize) -> alloc::vec::Vec<MdCan
     candidates
 }
 
+/// Generate inter mode candidates for a block.
+///
+/// `ref_mv` is the motion vector from the reference frame.
+/// Returns candidates for NEARESTMV, NEARMV, GLOBALMV, NEWMV.
+pub fn generate_inter_candidates(
+    _ref_mv: svtav1_types::motion::Mv,
+) -> alloc::vec::Vec<MdCandidate> {
+    alloc::vec![
+        MdCandidate {
+            mode: PredictionMode::NearestMv,
+            ..Default::default()
+        },
+        MdCandidate {
+            mode: PredictionMode::NearMv,
+            ..Default::default()
+        },
+        MdCandidate {
+            mode: PredictionMode::GlobalMv,
+            ..Default::default()
+        },
+        MdCandidate {
+            mode: PredictionMode::NewMv,
+            ..Default::default()
+        },
+    ]
+}
+
+/// Generate compound inter mode candidates.
+///
+/// These use two reference frames simultaneously.
+pub fn generate_compound_candidates() -> alloc::vec::Vec<MdCandidate> {
+    alloc::vec![
+        MdCandidate {
+            mode: PredictionMode::NearestNearestMv,
+            ..Default::default()
+        },
+        MdCandidate {
+            mode: PredictionMode::NearNearMv,
+            ..Default::default()
+        },
+        MdCandidate {
+            mode: PredictionMode::GlobalGlobalMv,
+            ..Default::default()
+        },
+        MdCandidate {
+            mode: PredictionMode::NewNewMv,
+            ..Default::default()
+        },
+    ]
+}
+
 /// Evaluate a candidate: compute distortion and RD cost.
 ///
 /// `pred` is the predicted block, `src` is the source block.
