@@ -39,13 +39,37 @@ pub struct CoeffContext {
 
 impl Default for CoeffContext {
     fn default() -> Self {
-        let half = crate::cdf::CDF_PROB_TOP / 2;
+        use crate::cdf::CDF_PROB_TOP;
+        let half = CDF_PROB_TOP / 2;
+
+        // Base level CDF: 4 symbols (0, 1, 2, 3+) + sentinel + count
+        // Uniform: [3/4, 2/4, 1/4, 0, 0] in CDF_PROB_TOP scale
+        let base_uniform = {
+            let n = NUM_BASE_LEVELS + 2; // 4 symbols
+            let mut cdf = [0u16; NUM_BASE_LEVELS + 3]; // 5 entries
+            for i in 0..n - 1 {
+                cdf[i] = (CDF_PROB_TOP as u32 * (n - 1 - i) as u32 / (n - 1) as u32) as u16;
+            }
+            // cdf[n-1] = 0 (sentinel), cdf[n] = 0 (count)
+            cdf
+        };
+
+        // BR CDF: COEFF_BASE_RANGE/4 + 1 = 4 symbols + sentinel + count
+        let br_uniform = {
+            let n = COEFF_BASE_RANGE / 4 + 1; // 4 symbols
+            let mut cdf = [0u16; COEFF_BASE_RANGE / 4 + 2]; // 5 entries
+            for i in 0..n - 1 {
+                cdf[i] = (CDF_PROB_TOP as u32 * (n - 1 - i) as u32 / (n - 1) as u32) as u16;
+            }
+            cdf
+        };
+
         Self {
             txb_skip_cdf: [[half, 0, 0]; TXB_SKIP_CONTEXTS],
             dc_sign_cdf: [[half, 0, 0]; DC_SIGN_CONTEXTS],
             eob_multi_cdf: [0; EOB_MAX_SYMS + 1],
-            base_cdf: [[0; NUM_BASE_LEVELS + 3]; 42],
-            br_cdf: [[0; COEFF_BASE_RANGE / 4 + 2]; 21],
+            base_cdf: [base_uniform; 42],
+            br_cdf: [br_uniform; 21],
         }
     }
 }
