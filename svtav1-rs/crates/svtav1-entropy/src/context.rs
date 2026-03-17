@@ -365,11 +365,13 @@ pub fn get_partition_context(width: usize, above_same_size: bool, left_same_size
 ///
 /// `ctx` is the partition context (0-19), `partition` is the partition
 /// type index, `nsymbs` is the number of valid symbols for this context.
-pub fn write_partition(w: &mut AomWriter, _fc: &mut FrameContext, _ctx: usize, partition: u8, _nsymbs: usize) {
-    // Encode partition type as a 4-bit literal.
-    // CDF-based encoding requires careful sentinel management for varying
-    // symbol counts per context; literal encoding is correct and simple.
-    w.write_literal(partition as u32, 4);
+pub fn write_partition(w: &mut AomWriter, fc: &mut FrameContext, ctx: usize, partition: u8, nsymbs: usize) {
+    debug_assert!(ctx < PARTITION_CONTEXTS);
+    let symbs = nsymbs.min(10);
+    let sym = (partition as usize).min(symbs - 1);
+    // The spec default CDFs have correct sentinels (0) at position [nsymbs-1]
+    // for each context's active symbol count.
+    w.write_symbol(sym, &mut fc.partition_cdf[ctx][..symbs + 1], symbs);
 }
 
 /// Encode a skip flag using CDF.

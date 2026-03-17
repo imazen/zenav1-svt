@@ -320,7 +320,8 @@ impl AvifEncoder {
         let h = height as usize;
 
         // Copy source with stride → contiguous buffer, edge-padded to SB alignment
-        let sb_size = if preset <= 9 { 64usize } else { 32 };
+        // AV1 spec: use_128x128_superblock=0 → sb_size=64 always
+        let sb_size = 64usize;
         let padded_w = w.div_ceil(sb_size) * sb_size;
         let padded_h = h.div_ceil(sb_size) * sb_size;
         let mut src = vec![128u8; padded_w * padded_h];

@@ -182,11 +182,11 @@ impl EncodePipeline {
         // reconstructed SBs, matching the AV1 decode order.
         // (Spec 00: "The main encoding loop processes SBs in raster order")
         let mut recon = alloc::vec![128u8; n];
-        let sb_size = if self.speed_config.max_partition_depth >= 3 {
-            64
-        } else {
-            32
-        };
+        // AV1 spec: use_128x128_superblock=0 in SH → sb_size=64.
+        // The decoder always uses 64x64 SBs when this flag is 0.
+        // The encoder's max_partition_depth controls how deep the
+        // partition search goes WITHIN each 64x64 SB, not the SB size.
+        let sb_size = 64;
         let lambda = (crate::rate_control::qp_to_lambda(tpl_adjusted_qp)
             * self.speed_config.lambda_scale()) as u64;
 
