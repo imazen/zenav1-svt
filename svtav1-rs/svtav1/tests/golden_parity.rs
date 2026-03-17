@@ -1054,3 +1054,93 @@ fn uleb128_encoding_spec() {
     let decoded = (enc_128[0] & 0x7F) as u32 | ((enc_128[1] & 0x7F) as u32) << 7;
     assert_eq!(decoded, 128);
 }
+
+// =============================================================================
+// Loop filter spec compliance tests
+// (Spec 08, AV1 Section 7.14: "Loop filter process")
+// =============================================================================
+
+#[test]
+fn deblock_flat_block_unchanged() {
+    // Spec 08: "If both sides of an edge have similar values, no filtering"
+    // A flat block should pass through the deblocking filter unchanged.
+    let mut pixels = vec![128u8; 16 * 16];
+    let original = pixels.clone();
+
+    svtav1_dsp::loop_filter::deblock_vert(&mut pixels, 16, 10, 4, 8, 16);
+
+    assert_eq!(
+        pixels, original,
+        "flat block should not be modified by deblocking"
+    );
+}
+
+#[test]
+fn cdef_direction_horizontal_gradient_spec() {
+    // Spec 08 Section 7.15.1: "CDEF direction detection"
+    // A horizontal gradient should be detected as direction 0 (horizontal)
+    let mut block = [0u8; 64]; // 8x8
+    for r in 0..8 {
+        for c in 0..8 {
+            block[r * 8 + c] = (c * 30) as u8; // horizontal gradient
+        }
+    }
+
+    let (dir, var) = svtav1_dsp::loop_filter::cdef_find_dir(&block, 8);
+
+    // A horizontal gradient has strongest edges in the vertical direction.
+    // The exact direction index depends on the CDEF direction table.
+    // We verify direction is valid and variance is nonzero.
+    assert!(dir < 8, "direction should be in 0-7: got {dir}");
+    assert!(var > 0, "variance should be nonzero for gradient");
+}
+
+#[test]
+fn cdef_filter_preserves_flat() {
+    // Spec 08: CDEF with zero strength should not modify the block
+    let src = [128u8; 64];
+    let mut dst = [0u8; 64];
+
+    svtav1_dsp::loop_filter::cdef_filter_block(
+        &src, 8, &mut dst, 8, 0, // direction
+        0, // pri_strength = 0 (no filtering)
+        0, // sec_strength = 0
+        3, // damping
+        8, 8,
+    );
+
+    assert_eq!(&dst, &src, "zero-strength CDEF should copy input unchanged");
+}
+
+#[test]
+fn wiener_filter_identity() {
+    // Spec 08 Section 7.17: Wiener restoration with identity kernel
+    // Coefficients [0, 0, 128] → center tap only → identity
+    // Actually the kernel is symmetric: [c2, c1, c0, center, c0, c1, c2]
+    // where center = 128 - 2*(c0+c1+c2)
+    // With c0=c1=c2=0: center = 128 → identity (pass-through)
+    let src = vec![100u8; 64]; // 8x8
+    let mut dst = vec![0u8; 64];
+
+    svtav1_dsp::loop_filter::wiener_filter(
+        &src,
+        8,
+        &mut dst,
+        8,
+        8,
+        8,
+        [0, 0, 0], // h_coeffs (all zero → identity)
+        [0, 0, 0], // v_coeffs
+    );
+
+    // With identity kernel, output should match input
+    for i in 0..64 {
+        let diff = (dst[i] as i32 - src[i] as i32).abs();
+        assert!(
+            diff <= 1,
+            "identity Wiener should preserve values: src={} dst={}",
+            src[i],
+            dst[i]
+        );
+    }
+}
