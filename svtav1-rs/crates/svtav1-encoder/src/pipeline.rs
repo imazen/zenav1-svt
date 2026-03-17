@@ -265,7 +265,12 @@ impl EncodePipeline {
         }
         let tile_data = writer.done().to_vec();
 
-        // Step 6: Build OBU bitstream
+        // Step 6b: Film grain estimation (compare source to reconstruction)
+        let _grain_params = crate::film_grain::estimate_film_grain(&encode_input, &recon, w, h, w);
+        // grain_params would be signaled in the frame header OBU
+        // and used by the decoder to re-synthesize grain
+
+        // Step 7: Build OBU bitstream
         let bitstream = if is_key {
             svtav1_entropy::obu::write_still_frame(self.width, self.height, pcs.qp, &tile_data)
         } else {
