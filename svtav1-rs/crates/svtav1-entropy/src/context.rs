@@ -287,6 +287,47 @@ impl FrameContext {
 
 use crate::writer::AomWriter;
 
+/// Derive the skip context from above and left neighbors.
+/// AV1 spec Section 5.11.11: ctx = above_skip + left_skip.
+pub fn get_skip_context(above_skip: bool, left_skip: bool) -> usize {
+    above_skip as usize + left_skip as usize
+}
+
+/// Derive the intra/inter context from above and left neighbors.
+/// AV1 spec Section 5.11.7: context depends on whether neighbors are intra.
+pub fn get_intra_inter_context(above_intra: bool, left_intra: bool) -> usize {
+    match (above_intra, left_intra) {
+        (true, true) => 0,   // Both intra → likely intra
+        (true, false) => 1,  // Mixed
+        (false, true) => 2,  // Mixed
+        (false, false) => 3, // Both inter → likely inter
+    }
+}
+
+/// Map intra prediction mode to a simplified context for kf_y_mode CDF.
+/// AV1 spec Section 5.11.4: maps 13 modes to 5 context groups.
+pub fn intra_mode_context(mode: u8) -> usize {
+    match mode {
+        0 => 0,      // DC_PRED
+        1 | 2 => 1,  // V_PRED, H_PRED
+        3..=6 => 2,  // Smooth modes
+        7 => 3,      // Paeth
+        _ => 4,      // Directional modes
+    }
+}
+
+/// Map block size to block_size_group for y_mode CDF selection.
+/// AV1 spec: 4 groups based on block dimensions.
+pub fn block_size_group(width: usize, height: usize) -> usize {
+    let n = width.min(height);
+    match n {
+        0..=4 => 0,
+        5..=8 => 1,
+        9..=16 => 2,
+        _ => 3,
+    }
+}
+
 /// Derive the partition context from block size.
 ///
 /// AV1 spec Section 5.9.3: partition context depends on block size.

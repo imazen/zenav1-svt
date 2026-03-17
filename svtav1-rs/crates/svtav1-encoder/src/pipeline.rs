@@ -395,49 +395,111 @@ impl EncodePipeline {
         let mut coeff_ctx = svtav1_entropy::coeff::CoeffContext::default();
         let mut frame_ctx = svtav1_entropy::context::FrameContext::new_default();
 
+        // Mode info grid for context derivation (8x8 block resolution)
+        let mi_cols = w.div_ceil(8);
+        let mi_rows = h.div_ceil(8);
+        let mut mi_skip = alloc::vec![true; mi_cols * mi_rows]; // skip flags per block
+        let mut mi_intra = alloc::vec![true; mi_cols * mi_rows]; // is_intra per block
+        let mut mi_mode = alloc::vec![0u8; mi_cols * mi_rows]; // intra mode per block
+        let mut mi_x = 0usize;
+        let mut mi_y = 0usize;
+
         for decision in &all_decisions {
-            // Skip flag: true if all coefficients are zero
+            let bw = (decision.width as usize).max(8) / 8;
+            let bh = (decision.height as usize).max(8) / 8;
+
+            // Derive context from above and left neighbors in the mode info grid
+            let above_skip = if mi_y > 0 { mi_skip[(mi_y - 1) * mi_cols + mi_x] } else { true };
+            let left_skip = if mi_x > 0 { mi_skip[mi_y * mi_cols + mi_x - 1] } else { true };
+            let skip_ctx = svtav1_entropy::context::get_skip_context(above_skip, left_skip);
+
             let skip = decision.eob == 0;
-            svtav1_entropy::context::write_skip(&mut writer, &mut frame_ctx, 0, skip);
+            svtav1_entropy::context::write_skip(&mut writer, &mut frame_ctx, skip_ctx, skip);
 
             if !skip {
-                // Intra/inter flag (for non-key frames)
                 if !is_key {
+                    let above_intra = if mi_y > 0 {
+                        mi_intra[(mi_y - 1) * mi_cols + mi_x]
+                    } else {
+                        true
+                    };
+                    let left_intra = if mi_x > 0 {
+                        mi_intra[mi_y * mi_cols + mi_x - 1]
+                    } else {
+                        true
+                    };
+                    let ii_ctx =
+                        svtav1_entropy::context::get_intra_inter_context(above_intra, left_intra);
                     svtav1_entropy::context::write_intra_inter(
                         &mut writer,
                         &mut frame_ctx,
-                        0,
+                        ii_ctx,
                         decision.is_inter,
                     );
                 }
 
-                // Intra mode (for intra blocks)
                 if !decision.is_inter {
                     if is_key {
+                        let above_mode_ctx = if mi_y > 0 {
+                            svtav1_entropy::context::intra_mode_context(
+                                mi_mode[(mi_y - 1) * mi_cols + mi_x],
+                            )
+                        } else {
+                            0
+                        };
+                        let left_mode_ctx = if mi_x > 0 {
+                            svtav1_entropy::context::intra_mode_context(
+                                mi_mode[mi_y * mi_cols + mi_x - 1],
+                            )
+                        } else {
+                            0
+                        };
                         svtav1_entropy::context::write_intra_mode_kf(
                             &mut writer,
                             &mut frame_ctx,
-                            0, // above mode context
-                            0, // left mode context
+                            above_mode_ctx,
+                            left_mode_ctx,
                             decision.intra_mode,
                         );
                     } else {
+                        let bsize_group = svtav1_entropy::context::block_size_group(
+                            decision.width as usize,
+                            decision.height as usize,
+                        );
                         svtav1_entropy::context::write_intra_mode_inter(
                             &mut writer,
                             &mut frame_ctx,
-                            0, // block size group
+                            bsize_group,
                             decision.intra_mode,
                         );
                     }
                 }
 
-                // Coefficients
                 svtav1_entropy::coeff::write_coefficients_ctx(
                     &mut writer,
                     &decision.qcoeffs,
                     decision.eob as usize,
                     &mut coeff_ctx,
                 );
+            }
+
+            // Update mode info grid for context of subsequent blocks
+            for dy in 0..bh.min(mi_rows - mi_y) {
+                for dx in 0..bw.min(mi_cols - mi_x) {
+                    let idx = (mi_y + dy) * mi_cols + (mi_x + dx);
+                    if idx < mi_skip.len() {
+                        mi_skip[idx] = skip;
+                        mi_intra[idx] = !decision.is_inter;
+                        mi_mode[idx] = decision.intra_mode;
+                    }
+                }
+            }
+
+            // Advance position in raster order
+            mi_x += bw;
+            if mi_x >= mi_cols {
+                mi_x = 0;
+                mi_y += bh;
             }
         }
         let tile_data = writer.done().to_vec();
