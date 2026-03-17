@@ -58,13 +58,11 @@
 
 ## Known Bugs
 
-1. **Wiener filter coefficients not derived from content** — Pipeline uses QP-based heuristic coefficients (`strength = qp/10`) instead of optimizing Wiener coefficients per restoration unit as the spec describes. Real SVT-AV1 runs RDO to find optimal coefficients. (pipeline.rs:254-256)
+1. **OBMC doesn't compute neighbor predictions** — `obmc.rs` has correct blend masks but the pipeline doesn't generate the neighbor block predictions that OBMC blends with. (obmc.rs — orphaned)
 
-2. **OBMC doesn't compute neighbor predictions** — `obmc.rs` has correct blend masks but the pipeline doesn't generate the neighbor block predictions that OBMC blends with. The function signature accepts pre-computed neighbor predictions but nothing provides them. (obmc.rs — orphaned)
+2. **No reference MV stack** — Inter prediction always uses Mv::ZERO as ME search center. Real AV1 derives MV predictors from spatial/temporal neighbors.
 
-3. **No reference MV stack** — Inter prediction always uses Mv::ZERO as ME search center. Real AV1 derives MV predictors from spatial/temporal neighbors for much better MV coding efficiency.
-
-4. **Bitstream not decodable** — OBU structure is correct but the entropy coding doesn't match the spec's CDF-based arithmetic codec format exactly. Needs proper context derivation and tile structure to be dav1d-conformant.
+3. **Bitstream not dav1d-decodable** — OBU structure is correct but needs proper context derivation, tile structure, and full spec-conformant frame headers for dav1d conformance.
 
 ## Investigation Notes
 
