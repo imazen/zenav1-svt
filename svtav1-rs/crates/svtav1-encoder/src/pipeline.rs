@@ -304,12 +304,18 @@ impl EncodePipeline {
         }
 
         // 5c: Wiener restoration (if enabled)
+        // Optimizes coefficients per-frame by searching for the set that
+        // minimizes SSE between filtered reconstruction and source.
         if self.speed_config.enable_restoration {
             let mut restored = recon.clone();
-            // Apply mild Wiener filter — coefficients tuned for the QP level
-            let strength = (pcs.qp as i16 / 10).max(1);
-            let h_coeffs = [strength, strength * 2, strength * 3];
-            let v_coeffs = [strength, strength * 2, strength * 3];
+            let (h_coeffs, v_coeffs) = svtav1_dsp::loop_filter::optimize_wiener_coefficients(
+                &encode_input,
+                w,
+                &recon,
+                w,
+                w,
+                h,
+            );
             svtav1_dsp::loop_filter::wiener_filter(
                 &recon,
                 w,

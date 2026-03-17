@@ -783,6 +783,74 @@ fn build_wiener_kernel(coeffs: [i16; 3]) -> [i16; 7] {
     ]
 }
 
+/// Find optimal Wiener filter coefficients by searching over the coefficient space.
+///
+/// Compares the filtered reconstruction against the original source to
+/// minimize SSE. Tests a range of coefficient values and returns the best set.
+///
+/// This replaces the QP-based heuristic with per-restoration-unit optimization
+/// (simplified RDO for Wiener coefficients).
+pub fn optimize_wiener_coefficients(
+    source: &[u8],
+    src_stride: usize,
+    degraded: &[u8],
+    deg_stride: usize,
+    width: usize,
+    height: usize,
+) -> ([i16; 3], [i16; 3]) {
+    let mut best_sse = u64::MAX;
+    let mut best_h = [0i16; 3];
+    let mut best_v = [0i16; 3];
+
+    // Search range: spec allows coefficients in [-5, 10] for outer taps
+    // and larger range for inner taps. We search a practical subset.
+    let search_vals: &[i16] = &[0, 1, 2, 3, 4, 5, 6, 8];
+
+    // Simplified search: try symmetric h == v coefficients first (most common)
+    let mut tmp_dst = alloc::vec![0u8; width * height];
+    for &c0 in search_vals {
+        for &c1 in &[0i16, 1, 2, 3, 4] {
+            for &c2 in &[0i16, 1, 2] {
+                let h_coeffs = [c0, c1, c2];
+                // Verify kernel sums to 128 (center = 128 - 2*(c0+c1+c2))
+                let center = 128 - 2 * (c0 + c1 + c2);
+                if !(0..=128).contains(&center) {
+                    continue;
+                }
+
+                wiener_filter(
+                    degraded,
+                    deg_stride,
+                    &mut tmp_dst,
+                    width,
+                    width,
+                    height,
+                    h_coeffs,
+                    h_coeffs, // symmetric: h == v
+                );
+
+                // Compute SSE against source
+                let mut sse: u64 = 0;
+                for r in 0..height {
+                    for c in 0..width {
+                        let s = source[r * src_stride + c] as i64;
+                        let d = tmp_dst[r * width + c] as i64;
+                        sse += ((s - d) * (s - d)) as u64;
+                    }
+                }
+
+                if sse < best_sse {
+                    best_sse = sse;
+                    best_h = h_coeffs;
+                    best_v = h_coeffs;
+                }
+            }
+        }
+    }
+
+    (best_h, best_v)
+}
+
 // =============================================================================
 // Self-guided restoration filter (sgrproj)
 // Ported from restoration.c — guided filter with box sums
