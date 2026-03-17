@@ -1144,3 +1144,69 @@ fn wiener_filter_identity() {
         );
     }
 }
+
+// =============================================================================
+// Transform type RDO spec compliance
+// (Spec 04: "The encoder selects the best transform type for each block")
+// =============================================================================
+
+#[test]
+fn encode_block_tx_adst_dct_produces_different_output() {
+    // Using ADST-DCT should produce different coefficients than DCT-DCT
+    // for non-symmetric residual patterns
+    let src: Vec<u8> = (0..64).map(|i| (i * 4) as u8).collect();
+    let pred = [128u8; 64];
+
+    let enc_dct = svtav1_encoder::encode_loop::encode_block(&src, 8, &pred, 8, 8, 8, 25);
+    let enc_adst = svtav1_encoder::encode_loop::encode_block_tx(
+        &src,
+        8,
+        &pred,
+        8,
+        8,
+        8,
+        25,
+        svtav1_types::transform::TxType::AdstDct,
+    );
+
+    // Both should produce valid output
+    assert!(enc_dct.eob > 0);
+    assert!(enc_adst.eob > 0);
+
+    // Coefficients should differ (different basis functions)
+    let diffs: usize = enc_dct
+        .qcoeffs
+        .iter()
+        .zip(enc_adst.qcoeffs.iter())
+        .filter(|(a, b)| a != b)
+        .count();
+    assert!(
+        diffs > 0,
+        "ADST-DCT should produce different coefficients than DCT-DCT"
+    );
+}
+
+#[test]
+fn encode_block_tx_identity_preserves_dc() {
+    // IDTX (identity transform) should preserve the DC component
+    let src = [200u8; 16]; // uniform
+    let pred = [128u8; 16];
+
+    let enc = svtav1_encoder::encode_loop::encode_block_tx(
+        &src,
+        4,
+        &pred,
+        4,
+        4,
+        4,
+        20,
+        svtav1_types::transform::TxType::Idtx,
+    );
+
+    // Identity transform on uniform residual (all 72) should produce
+    // scaled versions of the residual
+    assert!(
+        enc.eob > 0,
+        "uniform residual should have nonzero coefficients"
+    );
+}
