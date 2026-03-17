@@ -163,6 +163,11 @@ impl EncodePipeline {
             None
         };
 
+        // MV map for spatial MV prediction (8x8 block grid)
+        let mv_map_stride = w.div_ceil(8);
+        let mv_map_size = mv_map_stride * h.div_ceil(8);
+        let mv_map = alloc::vec![svtav1_types::motion::Mv::ZERO; mv_map_size];
+
         for sb_row in 0..sb_rows {
             for sb_col in 0..sb_cols {
                 let x0 = sb_col * sb_size;
@@ -186,6 +191,8 @@ impl EncodePipeline {
                         stride: w,
                         pic_width: w,
                         pic_height: h,
+                        mv_map: Some(&mv_map),
+                        mv_map_stride,
                     }
                 });
                 let _sb_result = crate::partition::partition_search_with_config(

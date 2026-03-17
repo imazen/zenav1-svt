@@ -84,6 +84,66 @@ pub struct RefFrameCtx<'a> {
     pub pic_width: usize,
     /// Reference picture height.
     pub pic_height: usize,
+    /// Frame-level MV map for spatial MV prediction (8x8 block grid).
+    /// Index: (block_y / 8) * mv_map_stride + (block_x / 8).
+    /// When None, searches around Mv::ZERO.
+    pub mv_map: Option<&'a [svtav1_types::motion::Mv]>,
+    /// Stride of the MV map (= frame_width / 8).
+    pub mv_map_stride: usize,
+}
+
+impl<'a> RefFrameCtx<'a> {
+    /// Get the spatial MV predictor for a block at (abs_x, abs_y).
+    /// Returns the median of above and left MVs if available.
+    pub fn get_mv_predictor(&self, abs_x: usize, abs_y: usize) -> svtav1_types::motion::Mv {
+        let Some(map) = self.mv_map else {
+            return svtav1_types::motion::Mv::ZERO;
+        };
+        let bx = abs_x / 8;
+        let by = abs_y / 8;
+        let stride = self.mv_map_stride;
+        if stride == 0 {
+            return svtav1_types::motion::Mv::ZERO;
+        }
+
+        // Collect available spatial neighbors
+        let mut mvs = alloc::vec::Vec::new();
+        if by > 0 {
+            let above = map[(by - 1) * stride + bx];
+            if above != svtav1_types::motion::Mv::ZERO {
+                mvs.push(above);
+            }
+        }
+        if bx > 0 {
+            let left = map[by * stride + bx - 1];
+            if left != svtav1_types::motion::Mv::ZERO {
+                mvs.push(left);
+            }
+        }
+        if by > 0 && bx > 0 {
+            let diag = map[(by - 1) * stride + bx - 1];
+            if diag != svtav1_types::motion::Mv::ZERO {
+                mvs.push(diag);
+            }
+        }
+
+        match mvs.len() {
+            0 => svtav1_types::motion::Mv::ZERO,
+            1 => mvs[0],
+            2 => svtav1_types::motion::Mv {
+                x: (mvs[0].x + mvs[1].x) / 2,
+                y: (mvs[0].y + mvs[1].y) / 2,
+            },
+            _ => {
+                // Median of 3: sort and take middle
+                let mut xs: [i16; 3] = [mvs[0].x, mvs[1].x, mvs[2].x];
+                let mut ys: [i16; 3] = [mvs[0].y, mvs[1].y, mvs[2].y];
+                xs.sort_unstable();
+                ys.sort_unstable();
+                svtav1_types::motion::Mv { x: xs[1], y: ys[1] }
+            }
+        }
+    }
 }
 
 /// Frame-level reconstruction context for extracting intra prediction neighbors.
@@ -1188,7 +1248,9 @@ fn encode_single_block(
             use_hme: false,
             subpel_level: 2, // half-pel + quarter-pel refinement
         };
-        let me_result = crate::motion_est::hierarchical_me(
+        // Use spatial MV predictor from neighboring blocks as search center
+        let center_mv = rfc.get_mv_predictor(abs_x, abs_y);
+        let me_result = crate::motion_est::hierarchical_me_centered(
             src,
             src_stride,
             rfc.y_plane,
@@ -1200,6 +1262,7 @@ fn encode_single_block(
             &me_params,
             rfc.pic_width,
             rfc.pic_height,
+            center_mv,
         );
 
         // Generate inter prediction from reference + MV with weighted bilinear

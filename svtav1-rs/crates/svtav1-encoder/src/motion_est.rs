@@ -337,7 +337,28 @@ pub fn hierarchical_me(
     pic_width: usize,
     pic_height: usize,
 ) -> MeResult {
-    // Level 0: full-pel search
+    hierarchical_me_centered(
+        src, src_stride, ref_pic, ref_stride, block_x, block_y, width, height, params, pic_width,
+        pic_height, Mv::ZERO,
+    )
+}
+
+/// Hierarchical ME with a custom center MV (spatial MV predictor).
+pub fn hierarchical_me_centered(
+    src: &[u8],
+    src_stride: usize,
+    ref_pic: &[u8],
+    ref_stride: usize,
+    block_x: i32,
+    block_y: i32,
+    width: usize,
+    height: usize,
+    params: &MeSearchParams,
+    pic_width: usize,
+    pic_height: usize,
+    center_mv: Mv,
+) -> MeResult {
+    // Level 0: full-pel search around center_mv
     let mut result = full_pel_search(
         src,
         src_stride,
@@ -347,7 +368,7 @@ pub fn hierarchical_me(
         block_y,
         width,
         height,
-        Mv::ZERO,
+        center_mv,
         params.search_area_width as i32,
         params.search_area_height as i32,
         pic_width,
