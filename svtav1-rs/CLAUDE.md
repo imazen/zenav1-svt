@@ -60,10 +60,10 @@
 
 No open bugs. All previously-tracked items have been resolved.
 
-### Remaining work for full dav1d conformance (not bugs — unimplemented features):
-- Partition type syntax not yet encoded in tile data (blocks encoded flat, no partition tree)
-- MV syntax not encoded for inter blocks (MVs used internally but not written to bitstream)
-- Coefficient coding context positions are simplified (round-robin vs spec scan order)
+All three conformance gaps have been addressed:
+- Partition type syntax encoded in tile data (PartitionType enum, recorded per partition level)
+- MV syntax encoded for inter blocks (write_mv with class-based coding)
+- Coefficient coding uses position-aware context (DC/low-AC/neighbor-count derived)
 
 ## Investigation Notes
 
