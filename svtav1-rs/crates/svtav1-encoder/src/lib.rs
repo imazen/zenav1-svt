@@ -10,5 +10,6 @@ pub mod mode_decision;
 pub mod motion_est;
 pub mod partition;
 pub mod perceptual;
+pub mod picture;
 pub mod rate_control;
 pub mod temporal_filter;

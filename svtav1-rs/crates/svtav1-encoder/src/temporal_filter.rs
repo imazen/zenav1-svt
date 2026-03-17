@@ -6,7 +6,6 @@
 //!
 //! Ported from SVT-AV1's temporal_filtering.c.
 
-
 /// Temporal filter configuration.
 #[derive(Debug, Clone)]
 pub struct TfConfig {
