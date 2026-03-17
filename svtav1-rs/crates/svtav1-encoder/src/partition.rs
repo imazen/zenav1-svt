@@ -827,33 +827,50 @@ fn encode_single_block(
             best_enc = Some(enc_dct);
         }
 
-        // For directional modes at 4x4/8x8, also try ADST-DCT
-        // (Spec 04: "ADST is typically better for directional residuals")
-        if width <= 16
-            && height <= 16
-            && cand.mode.is_intra()
-            && !matches!(
-                cand.mode,
-                svtav1_types::prediction::PredictionMode::DcPred
-                    | svtav1_types::prediction::PredictionMode::SmoothPred
-                    | svtav1_types::prediction::PredictionMode::SmoothVPred
-                    | svtav1_types::prediction::PredictionMode::SmoothHPred
-            )
-        {
-            let enc_adst = crate::encode_loop::encode_block_tx(
-                src,
-                src_stride,
-                &pred_block,
-                width,
-                width,
-                height,
-                qp,
-                svtav1_types::transform::TxType::AdstDct,
-            );
-            let cost_adst = enc_adst.distortion + ((lambda * enc_adst.rate as u64) >> 8);
-            if cost_adst < best_cost {
-                best_cost = cost_adst;
-                best_enc = Some(enc_adst);
+        // RDO transform type selection for non-DC modes at sizes <= 16.
+        // Try ADST variants that match the prediction directionality.
+        // (Spec 04: "ADST captures asymmetric energy from directional prediction")
+        if width <= 16 && height <= 16 && cand.mode.is_intra() {
+            // Select candidate TX types based on prediction mode
+            let tx_candidates: &[svtav1_types::transform::TxType] = match cand.mode {
+                svtav1_types::prediction::PredictionMode::VPred
+                | svtav1_types::prediction::PredictionMode::D67Pred => {
+                    // Vertical: ADST in column, DCT in row
+                    &[svtav1_types::transform::TxType::AdstDct]
+                }
+                svtav1_types::prediction::PredictionMode::HPred
+                | svtav1_types::prediction::PredictionMode::D203Pred => {
+                    // Horizontal: DCT in column, ADST in row
+                    &[svtav1_types::transform::TxType::DctAdst]
+                }
+                svtav1_types::prediction::PredictionMode::D45Pred
+                | svtav1_types::prediction::PredictionMode::D135Pred => {
+                    // Diagonal: ADST-ADST
+                    &[svtav1_types::transform::TxType::AdstAdst]
+                }
+                svtav1_types::prediction::PredictionMode::PaethPred => {
+                    // Paeth: try ADST-DCT
+                    &[svtav1_types::transform::TxType::AdstDct]
+                }
+                _ => &[], // DC and smooth: DCT-DCT is optimal
+            };
+
+            for &alt_tx in tx_candidates {
+                let enc_alt = crate::encode_loop::encode_block_tx(
+                    src,
+                    src_stride,
+                    &pred_block,
+                    width,
+                    width,
+                    height,
+                    qp,
+                    alt_tx,
+                );
+                let cost_alt = enc_alt.distortion + ((lambda * enc_alt.rate as u64) >> 8);
+                if cost_alt < best_cost {
+                    best_cost = cost_alt;
+                    best_enc = Some(enc_alt);
+                }
             }
         }
     }
