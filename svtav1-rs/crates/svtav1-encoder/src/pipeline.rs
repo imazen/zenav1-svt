@@ -211,8 +211,12 @@ impl EncodePipeline {
             mv_map_stride,
         );
 
+        // Collect all block decisions from all tiles
+        let mut all_decisions: Vec<crate::partition::BlockDecision> = Vec::new();
+
         // Merge tile recons into frame buffer and update MV map
-        for (tile_idx, tile_recon) in tile_recons.iter().enumerate() {
+        for (tile_idx, (tile_recon, tile_decisions)) in tile_recons.iter().enumerate() {
+            all_decisions.extend_from_slice(tile_decisions);
             let tile_sb_row_start = tile_idx * rows_per_tile;
             let tile_sb_row_end = ((tile_idx + 1) * rows_per_tile).min(sb_rows);
             let mut offset = 0;
@@ -383,43 +387,55 @@ impl EncodePipeline {
             recon = sgrproj_out;
         }
 
-        // Step 6: Entropy coding — CDF-based coefficient coding with adaptive context
+        // Step 6: Entropy coding — encode per-block decisions from partition search
+        // Uses the BlockDecision records collected during tile encoding instead of
+        // re-encoding blocks from scratch. Encodes skip, mode, and coefficients
+        // per block with CDF-based adaptive context.
         let mut writer = svtav1_entropy::writer::AomWriter::new(n);
         let mut coeff_ctx = svtav1_entropy::coeff::CoeffContext::default();
-        // Encode each block's coefficients with backward-adaptive CDFs
-        let bw = 8usize;
-        let blocks_x = w.div_ceil(bw);
-        let blocks_y = h.div_ceil(bw);
-        for by in 0..blocks_y {
-            for bx in 0..blocks_x {
-                let x0 = bx * bw;
-                let y0 = by * bw;
-                let cur_w = bw.min(w - x0);
-                let cur_h = bw.min(h - y0);
+        let mut frame_ctx = svtav1_entropy::context::FrameContext::new_default();
 
-                // Re-encode to get coefficients for entropy coding
-                let mut src_block = alloc::vec![0u8; cur_w * cur_h];
-                let mut pred_block = alloc::vec![128u8; cur_w * cur_h];
-                for r in 0..cur_h {
-                    for c in 0..cur_w {
-                        src_block[r * cur_w + c] = encode_input[(y0 + r) * w + x0 + c];
-                        pred_block[r * cur_w + c] = 128; // DC prediction
+        for decision in &all_decisions {
+            // Skip flag: true if all coefficients are zero
+            let skip = decision.eob == 0;
+            svtav1_entropy::context::write_skip(&mut writer, &mut frame_ctx, 0, skip);
+
+            if !skip {
+                // Intra/inter flag (for non-key frames)
+                if !is_key {
+                    svtav1_entropy::context::write_intra_inter(
+                        &mut writer,
+                        &mut frame_ctx,
+                        0,
+                        decision.is_inter,
+                    );
+                }
+
+                // Intra mode (for intra blocks)
+                if !decision.is_inter {
+                    if is_key {
+                        svtav1_entropy::context::write_intra_mode_kf(
+                            &mut writer,
+                            &mut frame_ctx,
+                            0, // above mode context
+                            0, // left mode context
+                            decision.intra_mode,
+                        );
+                    } else {
+                        svtav1_entropy::context::write_intra_mode_inter(
+                            &mut writer,
+                            &mut frame_ctx,
+                            0, // block size group
+                            decision.intra_mode,
+                        );
                     }
                 }
-                let enc = crate::encode_loop::encode_block(
-                    &src_block,
-                    cur_w,
-                    &pred_block,
-                    cur_w,
-                    cur_w,
-                    cur_h,
-                    pcs.qp,
-                );
-                // CDF-based coefficient coding with shared adaptive context
+
+                // Coefficients
                 svtav1_entropy::coeff::write_coefficients_ctx(
                     &mut writer,
-                    &enc.qcoeffs,
-                    enc.eob as usize,
+                    &decision.qcoeffs,
+                    decision.eob as usize,
                     &mut coeff_ctx,
                 );
             }
@@ -513,14 +529,13 @@ fn encode_tile_rows(
     ref_frame_data: Option<&[u8]>,
     mv_map: &[svtav1_types::motion::Mv],
     mv_map_stride: usize,
-) -> Vec<Vec<u8>> {
-    let encode_one_tile = |tile_idx: usize| -> Vec<u8> {
+) -> Vec<(Vec<u8>, Vec<crate::partition::BlockDecision>)> {
+    let encode_one_tile = |tile_idx: usize| -> (Vec<u8>, Vec<crate::partition::BlockDecision>) {
         let tile_sb_row_start = tile_idx * rows_per_tile;
         let tile_sb_row_end = ((tile_idx + 1) * rows_per_tile).min(sb_rows);
 
-        // Per-tile recon: accumulate SB recons sequentially
         let mut tile_recon = Vec::new();
-        // Per-tile frame recon for neighbor context within the tile
+        let mut tile_decisions: Vec<crate::partition::BlockDecision> = Vec::new();
         let mut tile_frame_recon = alloc::vec![128u8; w * h];
 
         let part_config = crate::partition::PartitionSearchConfig::from_speed_config(speed_config);
@@ -548,7 +563,7 @@ fn encode_tile_rows(
                     mv_map: Some(mv_map),
                     mv_map_stride,
                 });
-                let _sb_result = crate::partition::partition_search_with_config(
+                let sb_result = crate::partition::partition_search_with_config(
                     &encode_input[y0 * w + x0..],
                     w,
                     &mut sb_recon,
@@ -573,9 +588,10 @@ fn encode_tile_rows(
                 }
 
                 tile_recon.extend_from_slice(&sb_recon);
+                tile_decisions.extend(sb_result.decisions);
             }
         }
-        tile_recon
+        (tile_recon, tile_decisions)
     };
 
     // Parallel encoding with std::thread::scope when available
