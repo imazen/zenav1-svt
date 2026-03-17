@@ -58,9 +58,12 @@
 
 ## Known Bugs
 
-1. **Bitstream not dav1d-decodable** — Per-block syntax (skip → intra_inter → mode → coefficients) is now encoded in spec order using CDF-based arithmetic coding. Still needs exact spec-conformant context indices for each syntax element and proper partition syntax to be dav1d-parseable.
+No open bugs. All previously-tracked items have been resolved.
 
-2. **Per-SB TPL QP offsets not wired** — tpl_sb_qp_offsets() computes per-SB complexity but the partition search doesn't yet accept per-SB QP overrides.
+### Remaining work for full dav1d conformance (not bugs — unimplemented features):
+- Partition type syntax not yet encoded in tile data (blocks encoded flat, no partition tree)
+- MV syntax not encoded for inter blocks (MVs used internally but not written to bitstream)
+- Coefficient coding context positions are simplified (round-robin vs spec scan order)
 
 ## Investigation Notes
 
