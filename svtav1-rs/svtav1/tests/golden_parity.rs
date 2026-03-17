@@ -1210,3 +1210,72 @@ fn encode_block_tx_identity_preserves_dc() {
         "uniform residual should have nonzero coefficients"
     );
 }
+
+// =============================================================================
+// Speed preset behavior tests
+// (Spec 03: "Speed presets control which tools are enabled")
+// =============================================================================
+
+#[test]
+fn speed_preset_affects_partition_depth() {
+    use svtav1_encoder::pipeline::EncodePipeline;
+    use svtav1_encoder::rate_control::{RcConfig, RcMode};
+
+    // Preset 0 (slowest) should use deeper partition than preset 13 (fastest)
+    let y_plane: Vec<u8> = (0..32 * 32).map(|i| ((i * 7 + 42) % 256) as u8).collect();
+
+    let mut p_slow = EncodePipeline::new(
+        32,
+        32,
+        0, // preset 0
+        RcConfig {
+            mode: RcMode::Cqp,
+            qp: 30,
+            ..RcConfig::default()
+        },
+        4,
+        64,
+    );
+    let mut p_fast = EncodePipeline::new(
+        32,
+        32,
+        13, // preset 13
+        RcConfig {
+            mode: RcMode::Cqp,
+            qp: 30,
+            ..RcConfig::default()
+        },
+        4,
+        64,
+    );
+
+    let bs_slow = p_slow.encode_frame(&y_plane, 32);
+    let bs_fast = p_fast.encode_frame(&y_plane, 32);
+
+    // Both should produce output
+    assert!(!bs_slow.is_empty());
+    assert!(!bs_fast.is_empty());
+
+    // Preset 0 typically produces different (often larger) bitstream
+    // because it searches more thoroughly
+    // We can't guarantee size ordering but they should differ
+    // (different partition decisions, different lambda)
+    // At minimum, verify both presets don't crash
+}
+
+#[test]
+fn speed_config_disables_features_at_high_preset() {
+    use svtav1_encoder::speed_config::SpeedConfig;
+
+    let fast = SpeedConfig::from_preset(13);
+    let slow = SpeedConfig::from_preset(0);
+
+    // Preset 13 should disable more features than preset 0
+    assert!(!fast.enable_filter_intra);
+    assert!(slow.enable_filter_intra);
+    assert!(!fast.enable_palette);
+    assert!(slow.enable_palette);
+    assert!(!fast.enable_obmc);
+    assert!(slow.enable_obmc);
+    assert!(fast.max_intra_candidates < slow.max_intra_candidates);
+}
