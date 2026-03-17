@@ -140,7 +140,7 @@ impl EncodePipeline {
             w,
             h,
             pcs.qp,
-            256, // lambda
+            (crate::rate_control::qp_to_lambda(pcs.qp) * self.speed_config.lambda_scale()) as u64,
             self.speed_config.max_partition_depth as u32,
         );
 
