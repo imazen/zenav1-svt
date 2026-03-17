@@ -58,15 +58,13 @@
 
 ## Known Bugs
 
-1. **Within-SB neighbors still mid-gray** — Frame-level cross-SB neighbors are now correct (c824a6fe), but sub-blocks within the same SB partition trial still use 128 for within-SB borders. Second-order improvement; the cross-SB fix captures most of the quality gain.
+1. **Wiener filter coefficients not derived from content** — Pipeline uses QP-based heuristic coefficients (`strength = qp/10`) instead of optimizing Wiener coefficients per restoration unit as the spec describes. Real SVT-AV1 runs RDO to find optimal coefficients. (pipeline.rs:254-256)
 
-2. **sgrproj box_filter_sgr is O(N*radius^2)** — The naive per-pixel box sum loop in `loop_filter.rs:box_filter_sgr` recomputes the full box sum for every pixel. Real implementations use integral images (summed area tables) for O(1) per pixel. Current version is correct but very slow for large radii. (loop_filter.rs:655-688)
+2. **OBMC doesn't compute neighbor predictions** — `obmc.rs` has correct blend masks but the pipeline doesn't generate the neighbor block predictions that OBMC blends with. The function signature accepts pre-computed neighbor predictions but nothing provides them. (obmc.rs — orphaned)
 
-3. **Wiener filter coefficients not derived from content** — Pipeline uses QP-based heuristic coefficients (`strength = qp/10`) instead of optimizing Wiener coefficients per restoration unit as the spec describes. Real SVT-AV1 runs RDO to find optimal coefficients. (pipeline.rs:254-256)
+3. **No reference MV stack** — Inter prediction always uses Mv::ZERO as ME search center. Real AV1 derives MV predictors from spatial/temporal neighbors for much better MV coding efficiency.
 
-4. **OBMC doesn't compute neighbor predictions** — `obmc.rs` has correct blend masks but the pipeline doesn't generate the neighbor block predictions that OBMC blends with. The function signature accepts pre-computed neighbor predictions but nothing provides them. (obmc.rs — orphaned)
-
-5. **Deblocking is 4-tap only** — Missing the 6, 8, and 14-tap filter variants and the proper strength derivation based on block boundary type and QP. (loop_filter.rs:65-130)
+4. **Bitstream not decodable** — OBU structure is correct but the entropy coding doesn't match the spec's CDF-based arithmetic codec format exactly. Needs proper context derivation and tile structure to be dav1d-conformant.
 
 ## Investigation Notes
 
