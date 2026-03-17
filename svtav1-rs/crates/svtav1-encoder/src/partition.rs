@@ -594,13 +594,27 @@ fn encode_single_block(
     let left = alloc::vec![128u8; height];
 
     // Try multiple intra modes via mode decision
-    let block_size = svtav1_types::block::BlockSize::Block8x8; // approximate
-    let candidates = crate::mode_decision::generate_intra_candidates(block_size);
+    // Limit candidates based on block size (smaller blocks try fewer modes for speed)
+    let block_size = if width >= 16 && height >= 16 {
+        svtav1_types::block::BlockSize::Block16x16
+    } else if width >= 8 && height >= 8 {
+        svtav1_types::block::BlockSize::Block8x8
+    } else {
+        svtav1_types::block::BlockSize::Block4x4
+    };
+    let all_candidates = crate::mode_decision::generate_intra_candidates(block_size);
+    // For small blocks or high QP, try fewer candidates (early termination)
+    let max_cands = if width <= 4 || height <= 4 {
+        3
+    } else {
+        all_candidates.len()
+    };
+    let candidates = &all_candidates[..max_cands.min(all_candidates.len())];
 
     let mut best_enc = None;
     let mut best_cost = u64::MAX;
 
-    for cand in &candidates {
+    for cand in candidates {
         let mut pred_block = alloc::vec![128u8; n];
 
         // Generate prediction for this mode
