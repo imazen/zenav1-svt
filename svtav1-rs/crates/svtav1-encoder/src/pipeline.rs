@@ -88,35 +88,141 @@ impl EncodePipeline {
         // Step 3: Rate control — assign QP
         pcs.qp = assign_picture_qp(&self.rc_config, &self.rc_state, temporal_layer);
 
+        // Step 3b: Temporal filtering (if enabled and we have reference frames)
+        let w = self.width as usize;
+        let h = self.height as usize;
+        let n = w * h;
+        let encode_input =
+            if self.speed_config.enable_temporal_filter && !is_key && self.dpb.occupied_slots() > 0
+            {
+                // Collect available reference frames for TF
+                let mut ref_frames: alloc::vec::Vec<&[u8]> = alloc::vec::Vec::new();
+                for slot in 0..svtav1_types::reference::REF_FRAMES {
+                    if let Some(rf) = self.dpb.get(slot) {
+                        if rf.y_plane.len() == n {
+                            ref_frames.push(&rf.y_plane);
+                        }
+                    }
+                    if ref_frames.len() >= 3 {
+                        break;
+                    }
+                }
+                if !ref_frames.is_empty() {
+                    let tf_config = crate::temporal_filter::TfConfig::default();
+                    let tf_result = crate::temporal_filter::temporal_filter(
+                        y_plane,
+                        &ref_frames,
+                        w,
+                        h,
+                        y_stride,
+                        &tf_config,
+                    );
+                    tf_result.filtered
+                } else {
+                    y_plane[..n].to_vec()
+                }
+            } else {
+                y_plane[..n].to_vec()
+            };
+
         // Step 4: Encode the frame using block-level encoding
-        let n = (self.width * self.height) as usize;
         let pred = alloc::vec![128u8; n];
         let mut recon = alloc::vec![0u8; n];
 
         // Use partition search for the full frame
         let _partition_result = crate::partition::partition_search(
-            y_plane,
-            y_stride,
+            &encode_input,
+            w,
             &pred,
-            self.width as usize,
+            w,
             &mut recon,
-            self.width as usize,
-            self.width as usize,
-            self.height as usize,
+            w,
+            w,
+            h,
             pcs.qp,
             256, // lambda
             self.speed_config.max_partition_depth as u32,
         );
 
-        // Step 5: Entropy coding — write bitstream
+        // Step 5: Apply loop filters to reconstruction
+        let w = self.width as usize;
+        let h = self.height as usize;
+
+        if self.speed_config.enable_cdef {
+            // Apply CDEF to each 8x8 block
+            let mut filtered = recon.clone();
+            let bw = 8usize;
+            let blocks_x = w.div_ceil(bw);
+            let blocks_y = h.div_ceil(bw);
+            for by in 0..blocks_y {
+                for bx in 0..blocks_x {
+                    let x0 = bx * bw;
+                    let y0 = by * bw;
+                    let cur_w = bw.min(w - x0);
+                    let cur_h = bw.min(h - y0);
+                    if cur_w == 8 && cur_h == 8 {
+                        let (dir, _var) =
+                            svtav1_dsp::loop_filter::cdef_find_dir(&recon[y0 * w + x0..], w);
+                        // Light CDEF: pri_strength based on QP
+                        let pri = (pcs.qp / 8).min(15);
+                        let sec = (pcs.qp / 16).min(3);
+                        svtav1_dsp::loop_filter::cdef_filter_block(
+                            &recon[y0 * w + x0..],
+                            w,
+                            &mut filtered[y0 * w + x0..],
+                            w,
+                            dir,
+                            pri as i32,
+                            sec as i32,
+                            3 + (pcs.qp / 16) as i32,
+                            cur_w,
+                            cur_h,
+                        );
+                    }
+                }
+            }
+            recon = filtered;
+        }
+
+        // Step 6: Entropy coding — write bitstream using real coefficient coding
         let mut writer = svtav1_entropy::writer::AomWriter::new(n);
-        // Write frame data (simplified — just encode all blocks)
+        // Encode each block's coefficients
         let bw = 8usize;
-        let blocks_x = (self.width as usize).div_ceil(bw);
-        let blocks_y = (self.height as usize).div_ceil(bw);
-        for _by in 0..blocks_y {
-            for _bx in 0..blocks_x {
-                writer.write_bit(true); // skip (simplified)
+        let blocks_x = w.div_ceil(bw);
+        let blocks_y = h.div_ceil(bw);
+        for by in 0..blocks_y {
+            for bx in 0..blocks_x {
+                let x0 = bx * bw;
+                let y0 = by * bw;
+                let cur_w = bw.min(w - x0);
+                let cur_h = bw.min(h - y0);
+
+                // Re-encode to get coefficients for entropy coding
+                let mut src_block = alloc::vec![0u8; cur_w * cur_h];
+                let mut pred_block = alloc::vec![128u8; cur_w * cur_h];
+                for r in 0..cur_h {
+                    for c in 0..cur_w {
+                        src_block[r * cur_w + c] = encode_input[(y0 + r) * w + x0 + c];
+                        pred_block[r * cur_w + c] = 128; // DC prediction
+                    }
+                }
+                let enc = crate::encode_loop::encode_block(
+                    &src_block,
+                    cur_w,
+                    &pred_block,
+                    cur_w,
+                    cur_w,
+                    cur_h,
+                    pcs.qp,
+                );
+                // Write using real coefficient coding
+                svtav1_entropy::coeff::write_coefficients(
+                    &mut writer,
+                    &enc.qcoeffs,
+                    enc.eob as usize,
+                    0,
+                    0,
+                );
             }
         }
         let tile_data = writer.done().to_vec();
