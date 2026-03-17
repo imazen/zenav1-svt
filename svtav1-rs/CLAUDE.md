@@ -58,13 +58,9 @@
 
 ## Known Bugs
 
-1. **OBMC doesn't compute neighbor predictions** — blend functions work, MV map exists, but pipeline doesn't generate neighbor block predictions for blending. Needs integration into encode_single_block prediction generation.
+1. **Bitstream not dav1d-decodable** — Frame OBU structure, headers, and tile group are structurally correct, but the entropy-coded tile data doesn't match the spec's exact block-level syntax ordering (partition → mode → skip → coefficients interleaved per block). Full bitstream conformance requires recording partition/mode decisions during the partition search and encoding them in spec order during entropy coding.
 
-2. **No multi-threaded tile parallelism** — tile infrastructure exists (TileConfig, compute_tile_boundaries, write_tile_group) but encoding is single-threaded. Needs rayon or std::thread::scope for parallel tile encoding.
-
-3. **No TPL rate control** — temporal propagation layer for adaptive QP allocation across frames is not implemented. Currently uses fixed CQP/CRF without temporal lookahead.
-
-4. **Bitstream not dav1d-decodable** — Frame OBU structure is correct (raw header + tile_group_header + tile data) but the entropy-coded syntax doesn't match the spec's exact context derivation for all elements.
+2. **Per-SB TPL QP offsets not wired** — tpl_sb_qp_offsets() computes per-SB complexity but the partition search doesn't yet accept per-SB QP overrides. Currently only frame-level TPL adjustment is applied.
 
 ## Investigation Notes
 
