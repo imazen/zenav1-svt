@@ -277,33 +277,66 @@ fn write_sequence_header_inner(width: u32, height: u32, still_picture: bool) -> 
 }
 
 /// Write a minimal frame header for an intra-only key frame.
-pub fn write_key_frame_header(_width: u32, _height: u32, base_qindex: u8) -> Vec<u8> {
+/// Write a key frame header compatible with either reduced or full SH.
+///
+/// When `reduced_sh` is true, uses the minimal reduced-still-picture format.
+/// When false, writes a full key frame header with show_existing_frame,
+/// frame_type, refresh_frame_flags, and order_hint.
+pub fn write_key_frame_header(
+    _width: u32,
+    _height: u32,
+    base_qindex: u8,
+) -> Vec<u8> {
+    write_key_frame_header_full(_width, _height, base_qindex, true)
+}
+
+/// Write a key frame header for a full (non-reduced) sequence header.
+pub fn write_key_frame_header_full(
+    _width: u32,
+    _height: u32,
+    base_qindex: u8,
+    reduced_sh: bool,
+) -> Vec<u8> {
     let mut wb = BitWriter::new();
 
-    // With reduced_still_picture_header:
-    // show_existing_frame = 0 (implicit)
-    // frame_type = KEY_FRAME (implicit)
-    // show_frame = 1 (implicit)
-    // All the frame header is essentially just the quantization params
+    if !reduced_sh {
+        // Full frame header for non-reduced SH
+        // show_existing_frame = 0
+        wb.write_bit(false);
+        // frame_type = KEY_FRAME (0)
+        wb.write_bits(0, 2);
+        // show_frame = 1
+        wb.write_bit(true);
+        // showable_frame: not present for KEY_FRAME with show_frame=1
+        // error_resilient_mode = 1 (implicit for KEY_FRAME)
+    }
 
-    // No frame ID (frame_id_numbers_present_flag = 0)
+    // disable_cdf_update = 0 (only for non-reduced)
+    if !reduced_sh {
+        wb.write_bit(false);
+    }
 
     // allow_screen_content_tools (if seq_force = SELECT)
     wb.write_bit(false);
 
-    // Frame size (same as sequence header for still picture)
-    // frame_size_override_flag = 0
-    // (no frame size written — uses max_frame_width/height from seq header)
+    if !reduced_sh {
+        // frame_size_override_flag = 0
+        wb.write_bit(false);
+        // order_hint = 0 (key frame is always order 0 or start of new sequence)
+        wb.write_bits(0, ORDER_HINT_BITS);
+        // primary_ref_frame = 7 (PRIMARY_REF_NONE)
+        wb.write_bits(7, 3);
+        // refresh_frame_flags = 0xFF (refresh all slots)
+        wb.write_bits(0xFF, 8);
+    }
 
     // allow_intrabc = 0
     wb.write_bit(false);
 
     // Quantization params
-    // base_q_idx
     wb.write_bits(base_qindex as u32, 8);
     // delta_coded (DeltaQYDc) = 0
     wb.write_bit(false);
-    // No U/V delta Q for profile 0
     // using_qmatrix = 0
     wb.write_bit(false);
 
@@ -317,36 +350,17 @@ pub fn write_key_frame_header(_width: u32, _height: u32, base_qindex: u8) -> Vec
     wb.write_bits(0, 6);
     wb.write_bits(0, 6);
 
-    // CDEF: cdef_damping - 3
+    // CDEF: cdef_damping - 3 = 0, cdef_bits = 0
     wb.write_bits(0, 2);
-    // cdef_bits = 0
     wb.write_bits(0, 2);
 
-    // Loop restoration: frame_restoration_type = NONE for all planes
-    // (enabled only if enable_restoration = 1 in seq header)
-
-    // TX mode
-    wb.write_bit(true); // tx_mode_select = 1 (TX_MODE_SELECT)
-
-    // reference_select = 0 (single reference only for key frame)
-    // (not signaled for key frame)
-
-    // skip_mode = 0 (not present for key frame)
-
-    // allow_warped_motion = 0 (not present for key frame)
+    // TX mode: tx_mode_select = 1 (TX_MODE_SELECT)
+    wb.write_bit(true);
 
     // reduced_tx_set = 0
     wb.write_bit(false);
 
-    // Trailing bits
-    let remainder = wb.bit_offset % 8;
-    if remainder != 0 {
-        wb.write_bit(true);
-        let pad = 8 - (wb.bit_offset % 8);
-        if pad < 8 {
-            wb.write_bits(0, pad);
-        }
-    }
+    write_trailing_bits(&mut wb);
 
     let payload = wb.into_data();
     write_obu(ObuType::FrameHeader, &payload)

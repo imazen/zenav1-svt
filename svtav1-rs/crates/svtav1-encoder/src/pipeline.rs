@@ -418,11 +418,12 @@ impl EncodePipeline {
                     self.height,
                 ));
             }
-            // Key frame header + tile data as Frame OBU
-            let fh = svtav1_entropy::obu::write_key_frame_header(
+            // Key frame header — use full header for multi-frame sequences
+            let fh = svtav1_entropy::obu::write_key_frame_header_full(
                 self.width,
                 self.height,
                 pcs.qp,
+                is_single_frame,
             );
             let mut frame_payload = alloc::vec::Vec::new();
             frame_payload.extend_from_slice(&fh);
