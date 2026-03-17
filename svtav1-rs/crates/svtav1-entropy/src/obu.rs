@@ -303,6 +303,114 @@ pub fn write_key_frame_header(_width: u32, _height: u32, base_qindex: u8) -> Vec
     write_obu(ObuType::FrameHeader, &payload)
 }
 
+/// Write a minimal inter frame header.
+///
+/// Produces a frame header for an inter (non-key) frame with:
+/// - frame_type = INTER_FRAME
+/// - show_frame = 1
+/// - error_resilient_mode = 1 (simplified)
+/// - refresh_frame_flags
+/// - base_q_idx
+pub fn write_inter_frame_header(
+    base_qindex: u8,
+    refresh_frame_flags: u8,
+    _order_hint: u8,
+) -> Vec<u8> {
+    let mut wb = BitWriter::new();
+
+    // show_existing_frame = 0
+    wb.write_bit(false);
+    // frame_type = INTER_FRAME (1)
+    wb.write_bits(1, 2);
+    // show_frame = 1
+    wb.write_bit(true);
+    // showable_frame = 1 (implicit for show_frame=1 non-key)
+    // error_resilient_mode = 1 (simplifies reference management)
+    wb.write_bit(true);
+
+    // disable_cdf_update = 0
+    wb.write_bit(false);
+    // allow_screen_content_tools = 0
+    wb.write_bit(false);
+
+    // frame_size_override_flag = 0 (use SH dimensions)
+    wb.write_bit(false);
+
+    // order_hint (if enable_order_hint in SH — we don't enable it in reduced SH)
+    // For full SH we'd write it here: wb.write_bits(order_hint, order_hint_bits)
+
+    // primary_ref_frame = 7 (PRIMARY_REF_NONE — no previous context to load)
+    wb.write_bits(7, 3);
+
+    // refresh_frame_flags
+    wb.write_bits(refresh_frame_flags as u32, 8);
+
+    // ref_frame_idx[0..6] — all pointing to slot 0 for simplicity
+    for _ in 0..7 {
+        wb.write_bits(0, 3);
+    }
+
+    // allow_intrabc = 0
+    // (not signaled for inter frames without screen content tools)
+
+    // interpolation_filter: SWITCHABLE (2 bits = 4)
+    wb.write_bit(true); // is_filter_switchable = 1
+
+    // is_motion_mode_switchable = 0
+    wb.write_bit(false);
+
+    // reference_select = 0 (single reference)
+    wb.write_bit(false);
+
+    // Quantization params
+    wb.write_bits(base_qindex as u32, 8);
+    wb.write_bit(false); // delta_coded DeltaQYDc = 0
+    wb.write_bit(false); // using_qmatrix = 0
+
+    // Segmentation: enabled = 0
+    wb.write_bit(false);
+
+    // delta_q_present = 0
+    wb.write_bit(false);
+
+    // Loop filter: filter_level[0] = 0, filter_level[1] = 0
+    wb.write_bits(0, 6);
+    wb.write_bits(0, 6);
+
+    // CDEF
+    wb.write_bits(0, 2); // cdef_damping - 3
+    wb.write_bits(0, 2); // cdef_bits
+
+    // TX mode
+    wb.write_bit(true); // tx_mode_select = 1
+
+    // skip_mode_present = 0
+    wb.write_bit(false);
+
+    // allow_warped_motion = 0
+    wb.write_bit(false);
+
+    // reduced_tx_set = 0
+    wb.write_bit(false);
+
+    // Global motion params: is_global = 0 for all reference frames
+    for _ in 0..7 {
+        wb.write_bit(false); // is_global
+    }
+
+    // Trailing bits
+    let remainder = wb.bit_offset % 8;
+    if remainder != 0 {
+        wb.write_bit(true);
+        let pad = 8 - (wb.bit_offset % 8);
+        if pad < 8 {
+            wb.write_bits(0, pad);
+        }
+    }
+
+    wb.into_data()
+}
+
 /// Write a complete minimal AV1 bitstream for a still image.
 ///
 /// Produces: temporal_delimiter + sequence_header + frame (header + tile group).
@@ -317,8 +425,6 @@ pub fn write_still_frame(width: u32, height: u32, base_qindex: u8, tile_data: &[
 
     // Frame OBU (contains frame header + tile group)
     let frame_header = write_key_frame_header(width, height, base_qindex);
-    // For a Frame OBU, the payload is frame_header_bytes + tile_group_bytes
-    // But with reduced_still_picture_header, we use a Frame OBU directly
     let mut frame_payload = Vec::new();
     frame_payload.extend_from_slice(&frame_header);
     frame_payload.extend_from_slice(tile_data);
@@ -326,6 +432,20 @@ pub fn write_still_frame(width: u32, height: u32, base_qindex: u8, tile_data: &[
     bitstream.extend_from_slice(&write_obu(ObuType::Frame, &frame_payload));
 
     bitstream
+}
+
+/// Write an inter frame as a Frame OBU (frame header + tile data).
+pub fn write_inter_frame(
+    base_qindex: u8,
+    refresh_frame_flags: u8,
+    order_hint: u8,
+    tile_data: &[u8],
+) -> Vec<u8> {
+    let header = write_inter_frame_header(base_qindex, refresh_frame_flags, order_hint);
+    let mut payload = Vec::with_capacity(header.len() + tile_data.len());
+    payload.extend_from_slice(&header);
+    payload.extend_from_slice(tile_data);
+    write_obu(ObuType::Frame, &payload)
 }
 
 #[cfg(test)]

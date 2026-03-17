@@ -376,8 +376,13 @@ impl EncodePipeline {
         let bitstream = if is_key {
             svtav1_entropy::obu::write_still_frame(self.width, self.height, pcs.qp, &tile_data)
         } else {
-            // For inter frames, just write tile group OBU
-            svtav1_entropy::obu::write_obu(svtav1_entropy::obu::ObuType::Frame, &tile_data)
+            // Inter frame: proper frame header with type, QP, refresh flags, ref indices
+            svtav1_entropy::obu::write_inter_frame(
+                pcs.qp,
+                pcs.refresh_frame_flags,
+                display_order as u8,
+                &tile_data,
+            )
         };
 
         // Step 7: Update DPB with reconstructed frame
