@@ -31,6 +31,15 @@ pub struct PartitionSearchConfig {
     pub enable_ext_partitions: bool,
     /// Whether to try 4:1 partitions (HORZ_4, VERT_4).
     pub enable_4to1_partitions: bool,
+    /// Whether to enable ADST transform types in RDO.
+    /// (Spec 04: "ADST captures asymmetric energy from directional prediction")
+    pub enable_adst: bool,
+    /// Whether to use RDO for transform type selection (try multiple TX types).
+    /// When false, always uses DCT-DCT.
+    pub rdo_tx_decision: bool,
+    /// Whether to try filter-intra prediction modes.
+    /// (Spec 05: "filter-intra for blocks <= 32x32")
+    pub enable_filter_intra: bool,
 }
 
 impl PartitionSearchConfig {
@@ -41,6 +50,9 @@ impl PartitionSearchConfig {
             enable_directional: sc.enable_directional_modes,
             enable_ext_partitions: sc.preset <= 8,
             enable_4to1_partitions: sc.preset <= 6,
+            enable_adst: sc.enable_adst,
+            rdo_tx_decision: sc.rdo_tx_decision,
+            enable_filter_intra: sc.enable_filter_intra,
         }
     }
 
@@ -51,6 +63,9 @@ impl PartitionSearchConfig {
             enable_directional: true,
             enable_ext_partitions: true,
             enable_4to1_partitions: true,
+            enable_adst: true,
+            rdo_tx_decision: true,
+            enable_filter_intra: true,
         }
     }
 }
@@ -992,9 +1007,14 @@ fn encode_single_block(
         }
 
         // RDO transform type selection for non-DC modes at sizes <= 16.
-        // Try ADST variants that match the prediction directionality.
-        // (Spec 04: "ADST captures asymmetric energy from directional prediction")
-        if width <= 16 && height <= 16 && cand.mode.is_intra() {
+        // Gated by rdo_tx_decision (Spec 03: only at low presets) and
+        // enable_adst (Spec 04: "ADST captures asymmetric energy").
+        if config.rdo_tx_decision
+            && config.enable_adst
+            && width <= 16
+            && height <= 16
+            && cand.mode.is_intra()
+        {
             // Select candidate TX types based on prediction mode
             let tx_candidates: &[svtav1_types::transform::TxType] = match cand.mode {
                 svtav1_types::prediction::PredictionMode::VPred
@@ -1035,6 +1055,41 @@ fn encode_single_block(
                     best_cost = cost_alt;
                     best_enc = Some(enc_alt);
                 }
+            }
+        }
+    }
+
+    // Try filter-intra modes (Spec 05: 5 modes, blocks <= 32x32)
+    if config.enable_filter_intra && width <= 32 && height <= 32 {
+        // Construct extended above: [top_left, above[0..width]]
+        let mut fi_above = alloc::vec![0u8; width + 1];
+        fi_above[0] = top_left;
+        fi_above[1..width + 1].copy_from_slice(&above[..width]);
+
+        for fi_mode in 0..5u8 {
+            let mut pred_block = alloc::vec![0u8; n];
+            svtav1_dsp::intra_pred::predict_filter_intra(
+                &mut pred_block,
+                width,
+                &fi_above,
+                left,
+                width,
+                height,
+                fi_mode,
+            );
+            let enc = crate::encode_loop::encode_block(
+                src,
+                src_stride,
+                &pred_block,
+                width,
+                width,
+                height,
+                qp,
+            );
+            let cost = enc.distortion + ((lambda * enc.rate as u64) >> 8);
+            if cost < best_cost {
+                best_cost = cost;
+                best_enc = Some(enc);
             }
         }
     }
