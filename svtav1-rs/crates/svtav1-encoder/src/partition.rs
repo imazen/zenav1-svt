@@ -244,6 +244,40 @@ fn extract_neighbors(
     (above, left, top_left, has_above, has_left)
 }
 
+/// Recursive partition tree for spec-conformant bitstream encoding.
+///
+/// AV1 requires encoding partition syntax in recursive tree order:
+/// write the partition type at each node, then recurse into children.
+/// This tree captures the full partition structure for an SB.
+#[derive(Debug, Clone)]
+pub enum PartitionTree {
+    /// Leaf node: PARTITION_NONE — encode block directly.
+    Leaf(BlockDecision),
+    /// Internal node: partition type + child sub-trees.
+    Split {
+        partition_type: PartitionType,
+        width: u16,
+        height: u16,
+        children: alloc::vec::Vec<PartitionTree>,
+    },
+}
+
+impl PartitionTree {
+    /// Collect all leaf decisions in tree order (depth-first).
+    pub fn collect_decisions(&self) -> alloc::vec::Vec<BlockDecision> {
+        match self {
+            PartitionTree::Leaf(d) => alloc::vec![d.clone()],
+            PartitionTree::Split { children, .. } => {
+                let mut decisions = alloc::vec::Vec::new();
+                for child in children {
+                    decisions.extend(child.collect_decisions());
+                }
+                decisions
+            }
+        }
+    }
+}
+
 /// Per-block encoding decision record for bitstream encoding.
 #[derive(Debug, Clone, Default)]
 pub struct BlockDecision {
@@ -293,8 +327,10 @@ pub struct PartitionResult {
     pub distortion: u64,
     /// Total rate (estimated bits).
     pub rate: u32,
-    /// Per-block encoding decisions (for bitstream encoding).
+    /// Per-block encoding decisions (flat list, for backward compat).
     pub decisions: alloc::vec::Vec<BlockDecision>,
+    /// Recursive partition tree for spec-conformant bitstream encoding.
+    pub tree: Option<PartitionTree>,
     /// Number of coded blocks.
     pub num_blocks: u32,
 }
@@ -413,6 +449,7 @@ pub fn partition_search_with_config(
             rate: 48, // Partition flag overhead
             num_blocks: 0,
             decisions: alloc::vec::Vec::new(),
+            tree: None,
         };
         let mut horz_recon = alloc::vec![0u8; width * height];
 
@@ -474,6 +511,14 @@ pub fn partition_search_with_config(
         horz_result.rate += bot.rate;
         horz_result.num_blocks += bot.num_blocks;
         horz_result.decisions.extend(bot.decisions);
+        let mut horz_children = alloc::vec::Vec::new();
+        if let Some(t) = top.tree { horz_children.push(t); }
+        if let Some(t) = bot.tree { horz_children.push(t); }
+        horz_result.tree = Some(PartitionTree::Split {
+            partition_type: PartitionType::Horz,
+            width: width as u16, height: height as u16,
+            children: horz_children,
+        });
         horz_result.rd_cost = horz_result.distortion + ((lambda * horz_result.rate as u64) >> 8);
 
         if horz_result.rd_cost < best_result.rd_cost {
@@ -492,6 +537,7 @@ pub fn partition_search_with_config(
             rate: 48,
             num_blocks: 0,
             decisions: alloc::vec::Vec::new(),
+            tree: None,
         };
         let mut vert_recon = alloc::vec![0u8; width * height];
 
@@ -553,6 +599,14 @@ pub fn partition_search_with_config(
         vert_result.rate += right.rate;
         vert_result.num_blocks += right.num_blocks;
         vert_result.decisions.extend(right.decisions);
+        let mut vert_children = alloc::vec::Vec::new();
+        if let Some(t) = left.tree { vert_children.push(t); }
+        if let Some(t) = right.tree { vert_children.push(t); }
+        vert_result.tree = Some(PartitionTree::Split {
+            partition_type: PartitionType::Vert,
+            width: width as u16, height: height as u16,
+            children: vert_children,
+        });
         vert_result.rd_cost = vert_result.distortion + ((lambda * vert_result.rate as u64) >> 8);
 
         if vert_result.rd_cost < best_result.rd_cost {
@@ -572,6 +626,7 @@ pub fn partition_search_with_config(
             rate: 64,
             num_blocks: 0,
             decisions: alloc::vec::Vec::new(),
+            tree: None,
         };
         let mut h4_recon = alloc::vec![0u8; width * height];
         for strip in 0..4 {
@@ -613,6 +668,7 @@ pub fn partition_search_with_config(
             rate: 64,
             num_blocks: 0,
             decisions: alloc::vec::Vec::new(),
+            tree: None,
         };
         let mut v4_recon = alloc::vec![0u8; width * height];
         for strip in 0..4 {
@@ -656,6 +712,7 @@ pub fn partition_search_with_config(
             rate: 56,
             num_blocks: 0,
             decisions: alloc::vec::Vec::new(),
+            tree: None,
         };
         let mut ha_recon = alloc::vec![0u8; width * height];
         // Top-left quarter
@@ -733,6 +790,7 @@ pub fn partition_search_with_config(
             rate: 56,
             num_blocks: 0,
             decisions: alloc::vec::Vec::new(),
+            tree: None,
         };
         let mut hb_recon = alloc::vec![0u8; width * height];
         // Top half
@@ -810,6 +868,7 @@ pub fn partition_search_with_config(
             rate: 56,
             num_blocks: 0,
             decisions: alloc::vec::Vec::new(),
+            tree: None,
         };
         let mut va_recon = alloc::vec![0u8; width * height];
         // Top-left quarter
@@ -887,6 +946,7 @@ pub fn partition_search_with_config(
             rate: 56,
             num_blocks: 0,
             decisions: alloc::vec::Vec::new(),
+            tree: None,
         };
         let mut vb_recon = alloc::vec![0u8; width * height];
         // Left half
@@ -963,12 +1023,14 @@ pub fn partition_search_with_config(
         rate: 64, // Partition flag overhead
         num_blocks: 0,
         decisions: alloc::vec::Vec::new(),
+        tree: None,
     };
 
     // Allocate temporary recon for split
     let mut split_recon = alloc::vec![0u8; width * height];
 
-    // Encode 4 quadrants
+    // Encode 4 quadrants, collect child trees
+    let mut split_children = alloc::vec::Vec::new();
     for (qr, qc) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
         let x0 = qc * hw;
         let y0 = qr * hh;
@@ -998,7 +1060,16 @@ pub fn partition_search_with_config(
         split_result.rate += sub.rate;
         split_result.num_blocks += sub.num_blocks;
         split_result.decisions.extend(sub.decisions);
+        if let Some(t) = sub.tree {
+            split_children.push(t);
+        }
     }
+    split_result.tree = Some(PartitionTree::Split {
+        partition_type: PartitionType::Split,
+        width: width as u16,
+        height: height as u16,
+        children: split_children,
+    });
     split_result.rd_cost = split_result.distortion + ((lambda * split_result.rate as u64) >> 8);
 
     // Check if SPLIT is better than current best
@@ -1493,12 +1564,15 @@ fn encode_single_block(
         height: height as u16,
     };
 
+    let tree = PartitionTree::Leaf(decision.clone());
+
     PartitionResult {
         partition_type: PartitionType::None,
         rd_cost: enc.distortion + ((enc.rate as u64) << 4),
         distortion: enc.distortion,
         rate: enc.rate,
         decisions: alloc::vec![decision],
+        tree: Some(tree),
         num_blocks: 1,
     }
 }

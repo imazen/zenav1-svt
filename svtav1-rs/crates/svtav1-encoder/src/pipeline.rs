@@ -249,12 +249,13 @@ impl EncodePipeline {
             &sb_qp_offsets,
         );
 
-        // Keep per-tile decisions separate for per-tile entropy coding
         let mut per_tile_decisions: Vec<Vec<crate::partition::BlockDecision>> = Vec::new();
+        let mut all_trees: Vec<crate::partition::PartitionTree> = Vec::new();
 
         // Merge tile recons into frame buffer and update MV map
-        for (tile_idx, (tile_recon, tile_decisions)) in tile_recons.iter().enumerate() {
+        for (tile_idx, (tile_recon, tile_decisions, tile_trees)) in tile_recons.iter().enumerate() {
             per_tile_decisions.push(tile_decisions.clone());
+            all_trees.extend_from_slice(tile_trees);
             let tile_sb_row_start = tile_idx * rows_per_tile;
             let tile_sb_row_end = ((tile_idx + 1) * rows_per_tile).min(sb_rows);
             let mut offset = 0;
@@ -425,95 +426,24 @@ impl EncodePipeline {
             recon = sgrproj_out;
         }
 
-        // Step 6: Entropy coding — single tile stream for conformance.
-        // Internal encoding uses parallel tile rows for speed, but the OBU
-        // uses a single tile (tile_rows=1 in the frame header, no tile_info).
-        // All block decisions from all tile rows are merged and entropy-coded
-        // into one contiguous stream.
-        let mi_cols = w.div_ceil(8);
-        let mi_rows = h.div_ceil(8);
-        let all_decisions: Vec<crate::partition::BlockDecision> =
-            per_tile_decisions.into_iter().flatten().collect();
-
+        // Step 6: Entropy coding — recursive partition tree encoding.
+        // Walk each SB's partition tree in spec order (depth-first),
+        // writing partition type at each node before recursing into children.
         let tile_data = {
             let mut writer = svtav1_entropy::writer::AomWriter::new(n + 256);
             let mut coeff_ctx = svtav1_entropy::coeff::CoeffContext::default();
             let mut frame_ctx = svtav1_entropy::context::FrameContext::new_default();
-            let mut mi_skip = alloc::vec![true; mi_cols * mi_rows];
-            let mut mi_intra = alloc::vec![true; mi_cols * mi_rows];
-            let mut mi_mode = alloc::vec![0u8; mi_cols * mi_rows];
-            let mut mi_x = 0usize;
-            let mut mi_y = 0usize;
 
-            for decision in &all_decisions {
-                let bw = (decision.width as usize).max(8) / 8;
-                let bh = (decision.height as usize).max(8) / 8;
-
-                let (part_ctx, part_nsymbs) =
-                    svtav1_entropy::context::get_partition_context(
-                        decision.width as usize, true, true,
-                    );
-                svtav1_entropy::context::write_partition(
-                    &mut writer, &mut frame_ctx, part_ctx,
-                    decision.partition_type as u8, part_nsymbs,
+            debug_assert_eq!(
+                all_trees.len(),
+                sb_cols * sb_rows,
+                "tree count {} != SB count {}x{}={}",
+                all_trees.len(), sb_cols, sb_rows, sb_cols * sb_rows,
+            );
+            for tree in &all_trees {
+                encode_partition_tree(
+                    tree, &mut writer, &mut frame_ctx, &mut coeff_ctx, is_key,
                 );
-
-                if mi_y >= mi_rows || mi_x >= mi_cols {
-                    break;
-                }
-                let above_skip = if mi_y > 0 { mi_skip[(mi_y - 1) * mi_cols + mi_x] } else { true };
-                let left_skip = if mi_x > 0 { mi_skip[mi_y * mi_cols + mi_x - 1] } else { true };
-                let skip_ctx = svtav1_entropy::context::get_skip_context(above_skip, left_skip);
-
-                let skip = decision.eob == 0;
-                svtav1_entropy::context::write_skip(&mut writer, &mut frame_ctx, skip_ctx, skip);
-
-                if !skip {
-                    if !is_key {
-                        let above_intra = if mi_y > 0 { mi_intra[(mi_y - 1) * mi_cols + mi_x] } else { true };
-                        let left_intra = if mi_x > 0 { mi_intra[mi_y * mi_cols + mi_x - 1] } else { true };
-                        let ii_ctx = svtav1_entropy::context::get_intra_inter_context(above_intra, left_intra);
-                        svtav1_entropy::context::write_intra_inter(&mut writer, &mut frame_ctx, ii_ctx, decision.is_inter);
-                    }
-
-                    if decision.is_inter {
-                        svtav1_entropy::mv_coding::write_mv(&mut writer, decision.mv.x, decision.mv.y, true);
-                    }
-
-                    if !decision.is_inter {
-                        if is_key {
-                            let above_mode_ctx = if mi_y > 0 {
-                                svtav1_entropy::context::intra_mode_context(mi_mode[(mi_y - 1) * mi_cols + mi_x])
-                            } else { 0 };
-                            let left_mode_ctx = if mi_x > 0 {
-                                svtav1_entropy::context::intra_mode_context(mi_mode[mi_y * mi_cols + mi_x - 1])
-                            } else { 0 };
-                            svtav1_entropy::context::write_intra_mode_kf(&mut writer, &mut frame_ctx, above_mode_ctx, left_mode_ctx, decision.intra_mode);
-                        } else {
-                            let bsize_group = svtav1_entropy::context::block_size_group(decision.width as usize, decision.height as usize);
-                            svtav1_entropy::context::write_intra_mode_inter(&mut writer, &mut frame_ctx, bsize_group, decision.intra_mode);
-                        }
-                    }
-
-                    svtav1_entropy::coeff::write_coefficients_ctx(&mut writer, &decision.qcoeffs, decision.eob as usize, &mut coeff_ctx);
-                }
-
-                for dy in 0..bh.min(mi_rows.saturating_sub(mi_y)) {
-                    for dx in 0..bw.min(mi_cols.saturating_sub(mi_x)) {
-                        let idx = (mi_y + dy) * mi_cols + (mi_x + dx);
-                        if idx < mi_skip.len() {
-                            mi_skip[idx] = skip;
-                            mi_intra[idx] = !decision.is_inter;
-                            mi_mode[idx] = decision.intra_mode;
-                        }
-                    }
-                }
-
-                mi_x += bw;
-                if mi_x >= mi_cols {
-                    mi_x = 0;
-                    mi_y += bh;
-                }
             }
 
             svtav1_entropy::obu::build_tile_group_single(writer.done())
@@ -587,6 +517,88 @@ impl EncodePipeline {
 /// When the `std` feature is enabled and there are multiple tile rows,
 /// uses `std::thread::scope` for parallel encoding. Otherwise sequential.
 #[allow(clippy::too_many_arguments)]
+/// Recursively encode a partition tree to the bitstream in AV1 spec order.
+///
+/// AV1 spec: for each SB, write partition_type, then:
+/// - PARTITION_NONE: write block syntax (skip, mode, coeffs)
+/// - PARTITION_SPLIT: recurse into 4 children
+/// - PARTITION_HORZ/VERT: write 2 children
+/// - Extended: write 3 children
+fn encode_partition_tree(
+    tree: &crate::partition::PartitionTree,
+    writer: &mut svtav1_entropy::writer::AomWriter,
+    frame_ctx: &mut svtav1_entropy::context::FrameContext,
+    coeff_ctx: &mut svtav1_entropy::coeff::CoeffContext,
+    is_key: bool,
+) {
+    match tree {
+        crate::partition::PartitionTree::Leaf(decision) => {
+            // Leaf: block at minimum size or PARTITION_NONE chosen.
+            // Only write partition type if block is large enough to have been split.
+            // For 4x4 blocks (minimum), no partition syntax is written.
+            if decision.width > 4 || decision.height > 4 {
+                let (ctx, nsymbs) = svtav1_entropy::context::get_partition_context(
+                    decision.width as usize, true, true,
+                );
+                svtav1_entropy::context::write_partition(
+                    writer, frame_ctx, ctx, 0, nsymbs, // 0 = PARTITION_NONE
+                );
+            }
+
+            let skip = decision.eob == 0;
+            svtav1_entropy::context::write_skip(writer, frame_ctx, 0, skip);
+
+            if !skip {
+                if !is_key {
+                    svtav1_entropy::context::write_intra_inter(
+                        writer, frame_ctx, 0, decision.is_inter,
+                    );
+                }
+
+                if decision.is_inter {
+                    svtav1_entropy::mv_coding::write_mv(
+                        writer, decision.mv.x, decision.mv.y, true,
+                    );
+                } else if is_key {
+                    svtav1_entropy::context::write_intra_mode_kf(
+                        writer, frame_ctx, 0, 0, decision.intra_mode,
+                    );
+                } else {
+                    let bsize_group = svtav1_entropy::context::block_size_group(
+                        decision.width as usize, decision.height as usize,
+                    );
+                    svtav1_entropy::context::write_intra_mode_inter(
+                        writer, frame_ctx, bsize_group, decision.intra_mode,
+                    );
+                }
+
+                svtav1_entropy::coeff::write_coefficients_ctx(
+                    writer, &decision.qcoeffs, decision.eob as usize, coeff_ctx,
+                );
+            }
+        }
+        crate::partition::PartitionTree::Split {
+            partition_type,
+            width,
+            height: _,
+            children,
+        } => {
+            // Internal node: write partition type with correct context for this block size
+            let (ctx, nsymbs) = svtav1_entropy::context::get_partition_context(
+                *width as usize, true, true,
+            );
+            svtav1_entropy::context::write_partition(
+                writer, frame_ctx, ctx, *partition_type as u8, nsymbs,
+            );
+
+            // Recurse into children in spec order
+            for child in children {
+                encode_partition_tree(child, writer, frame_ctx, coeff_ctx, is_key);
+            }
+        }
+    }
+}
+
 fn encode_tile_rows(
     encode_input: &[u8],
     w: usize,
@@ -603,13 +615,14 @@ fn encode_tile_rows(
     mv_map: &[svtav1_types::motion::Mv],
     mv_map_stride: usize,
     sb_qp_offsets: &[i8],
-) -> Vec<(Vec<u8>, Vec<crate::partition::BlockDecision>)> {
-    let encode_one_tile = |tile_idx: usize| -> (Vec<u8>, Vec<crate::partition::BlockDecision>) {
+) -> Vec<(Vec<u8>, Vec<crate::partition::BlockDecision>, Vec<crate::partition::PartitionTree>)> {
+    let encode_one_tile = |tile_idx: usize| -> (Vec<u8>, Vec<crate::partition::BlockDecision>, Vec<crate::partition::PartitionTree>) {
         let tile_sb_row_start = tile_idx * rows_per_tile;
         let tile_sb_row_end = ((tile_idx + 1) * rows_per_tile).min(sb_rows);
 
         let mut tile_recon = Vec::new();
         let mut tile_decisions: Vec<crate::partition::BlockDecision> = Vec::new();
+        let mut tile_trees: Vec<crate::partition::PartitionTree> = Vec::new();
         let mut tile_frame_recon = alloc::vec![128u8; w * h];
 
         let part_config = crate::partition::PartitionSearchConfig::from_speed_config(speed_config);
@@ -674,9 +687,12 @@ fn encode_tile_rows(
 
                 tile_recon.extend_from_slice(&sb_recon);
                 tile_decisions.extend(sb_result.decisions);
+                if let Some(tree) = sb_result.tree {
+                    tile_trees.push(tree);
+                }
             }
         }
-        (tile_recon, tile_decisions)
+        (tile_recon, tile_decisions, tile_trees)
     };
 
     // Parallel encoding with std::thread::scope when available
