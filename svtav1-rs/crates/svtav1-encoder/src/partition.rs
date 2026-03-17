@@ -331,8 +331,23 @@ pub fn partition_search_with_config(
         horz_result.rate += top.rate;
         horz_result.num_blocks += top.num_blocks;
 
-        // Bottom half
-        let bot = encode_with_neighbors(
+        // Bottom half — use top half's bottom row as above neighbors
+        let above_bot: alloc::vec::Vec<u8> =
+            horz_recon[(hh - 1) * width..hh * width].to_vec();
+        let (_, left_bot, _, _, has_left_bot) =
+            extract_neighbors(frame_ctx, abs_x, abs_y + hh, width, height - hh);
+        // Top-left: from frame if left of SB, else from top half's bottom-left pixel
+        let tl_bot = if let Some(ctx) = frame_ctx {
+            if abs_x > 0 && abs_x - 1 < ctx.sb_x {
+                let idx = (abs_y + hh - 1) * ctx.stride + abs_x - 1;
+                if idx < ctx.buf.len() { ctx.buf[idx] } else { 128 }
+            } else {
+                horz_recon[(hh - 1) * width]
+            }
+        } else {
+            128
+        };
+        let bot = encode_single_block(
             &src[hh * src_stride..],
             src_stride,
             &mut horz_recon[hh * width..],
@@ -341,10 +356,14 @@ pub fn partition_search_with_config(
             height - hh,
             qp,
             config,
-            frame_ctx,
+            &above_bot,
+            &left_bot,
+            tl_bot,
+            true,
+            has_left_bot,
+            ref_ctx,
             abs_x,
             abs_y + hh,
-            ref_ctx,
         );
         horz_result.distortion += bot.distortion;
         horz_result.rate += bot.rate;
@@ -387,8 +406,23 @@ pub fn partition_search_with_config(
         vert_result.rate += left.rate;
         vert_result.num_blocks += left.num_blocks;
 
-        // Right half
-        let right = encode_with_neighbors(
+        // Right half — use left half's rightmost column as left neighbors
+        let left_for_right: alloc::vec::Vec<u8> =
+            (0..height).map(|r| vert_recon[r * width + hw - 1]).collect();
+        let (above_right, _, _, has_above_right, _) =
+            extract_neighbors(frame_ctx, abs_x + hw, abs_y, width - hw, height);
+        // Top-left: from frame if above SB, else 128
+        let tl_right = if let Some(ctx) = frame_ctx {
+            if abs_y > 0 && abs_y - 1 < ctx.sb_y {
+                let idx = (abs_y - 1) * ctx.stride + abs_x + hw - 1;
+                if idx < ctx.buf.len() { ctx.buf[idx] } else { 128 }
+            } else {
+                128
+            }
+        } else {
+            128
+        };
+        let right = encode_single_block(
             &src[hw..],
             src_stride,
             &mut vert_recon[hw..],
@@ -397,10 +431,14 @@ pub fn partition_search_with_config(
             height,
             qp,
             config,
-            frame_ctx,
+            &above_right,
+            &left_for_right,
+            tl_right,
+            has_above_right,
+            true,
+            ref_ctx,
             abs_x + hw,
             abs_y,
-            ref_ctx,
         );
         vert_result.distortion += right.distortion;
         vert_result.rate += right.rate;
