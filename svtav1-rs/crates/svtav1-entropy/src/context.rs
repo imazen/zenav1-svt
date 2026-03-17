@@ -287,24 +287,68 @@ impl FrameContext {
 
 use crate::writer::AomWriter;
 
-/// Encode a partition type.
-pub fn write_partition(w: &mut AomWriter, ctx: usize, partition: u8, _nsymbs: usize) {
+/// Encode a partition type using CDF from the frame context.
+///
+/// `ctx` is the partition context (0-19), `partition` is the partition
+/// type index, `nsymbs` is the number of valid symbols for this context.
+pub fn write_partition(w: &mut AomWriter, fc: &mut FrameContext, ctx: usize, partition: u8, nsymbs: usize) {
     debug_assert!(ctx < PARTITION_CONTEXTS);
-    // For now just encode as literal — real impl uses CDF from FrameContext
-    w.write_literal(partition as u32, 2);
+    let symbs = nsymbs.min(10);
+    w.write_symbol(
+        partition as usize,
+        &mut fc.partition_cdf[ctx][..symbs + 1],
+        symbs,
+    );
 }
 
-/// Encode a skip flag.
-pub fn write_skip(w: &mut AomWriter, skip: bool) {
-    w.write_bit(skip);
+/// Encode a skip flag using CDF.
+pub fn write_skip(w: &mut AomWriter, fc: &mut FrameContext, ctx: usize, skip: bool) {
+    let sym = if skip { 1 } else { 0 };
+    w.write_symbol(sym, &mut fc.skip_cdf[ctx.min(SKIP_CONTEXTS - 1)], 2);
 }
 
-/// Encode an intra/inter flag.
-pub fn write_intra_inter(w: &mut AomWriter, is_inter: bool) {
-    w.write_bit(is_inter);
+/// Encode an intra/inter flag using CDF.
+pub fn write_intra_inter(w: &mut AomWriter, fc: &mut FrameContext, ctx: usize, is_inter: bool) {
+    let sym = if is_inter { 1 } else { 0 };
+    w.write_symbol(
+        sym,
+        &mut fc.intra_inter_cdf[ctx.min(INTRA_INTER_CONTEXTS - 1)],
+        2,
+    );
 }
 
-/// Encode a prediction mode (literal for now, CDF-based in full impl).
+/// Encode an intra prediction mode using CDF.
+///
+/// For keyframes, uses kf_y_mode_cdf indexed by above and left mode context.
+/// For inter frames, uses y_mode_cdf indexed by block size group.
+pub fn write_intra_mode_kf(
+    w: &mut AomWriter,
+    fc: &mut FrameContext,
+    above_mode: usize,
+    left_mode: usize,
+    mode: u8,
+) {
+    let above = above_mode.min(KF_MODE_CONTEXTS - 1);
+    let left = left_mode.min(KF_MODE_CONTEXTS - 1);
+    w.write_symbol(
+        mode as usize,
+        &mut fc.kf_y_mode_cdf[above][left],
+        INTRA_MODES,
+    );
+}
+
+/// Encode an intra prediction mode for inter frames.
+pub fn write_intra_mode_inter(
+    w: &mut AomWriter,
+    fc: &mut FrameContext,
+    bsize_group: usize,
+    mode: u8,
+) {
+    let group = bsize_group.min(BLOCK_SIZE_GROUPS - 1);
+    w.write_symbol(mode as usize, &mut fc.y_mode_cdf[group], INTRA_MODES);
+}
+
+/// Legacy literal-based intra mode encoding (backward compat).
 pub fn write_intra_mode(w: &mut AomWriter, mode: u8) {
     w.write_literal(mode as u32, 4);
 }
@@ -350,8 +394,9 @@ mod tests {
     #[test]
     fn write_skip_flag() {
         let mut w = AomWriter::new(256);
-        write_skip(&mut w, true);
-        write_skip(&mut w, false);
+        let mut fc = FrameContext::new_default();
+        write_skip(&mut w, &mut fc, 0, true);
+        write_skip(&mut w, &mut fc, 1, false);
         let output = w.done();
         assert!(!output.is_empty());
     }
