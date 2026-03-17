@@ -58,7 +58,7 @@
 
 ## Known Bugs
 
-1. **Prediction uses mid-gray neighbors instead of reconstruction** — `partition.rs:encode_single_block` uses `above=[128; width]` and `left=[128; height]` instead of reading from the reconstruction buffer. This means intra prediction quality is worse than it should be. Fix requires threading the frame-level recon buffer through partition_search with block position context. (partition.rs:675-676)
+1. **Within-SB neighbors still mid-gray** — Frame-level cross-SB neighbors are now correct (c824a6fe), but sub-blocks within the same SB partition trial still use 128 for within-SB borders. Second-order improvement; the cross-SB fix captures most of the quality gain.
 
 2. **sgrproj box_filter_sgr is O(N*radius^2)** — The naive per-pixel box sum loop in `loop_filter.rs:box_filter_sgr` recomputes the full box sum for every pixel. Real implementations use integral images (summed area tables) for O(1) per pixel. Current version is correct but very slow for large radii. (loop_filter.rs:655-688)
 
