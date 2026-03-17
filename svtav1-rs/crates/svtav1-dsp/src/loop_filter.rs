@@ -232,6 +232,108 @@ pub fn deblock_horz_wide(
     }
 }
 
+/// Apply 14-tap deblocking filter to a vertical edge (strongest filter).
+///
+/// AV1 spec Section 7.14.6: Modifies p5..p0 and q0..q5 (12 pixels) using
+/// a 14-pixel window. Used for the strongest edges (high QP SB boundaries).
+pub fn deblock_vert_14tap(
+    pixels: &mut [u8],
+    stride: usize,
+    strength: i32,
+    threshold: i32,
+    edge_col: usize,
+    height: usize,
+) {
+    if strength == 0 || edge_col < 7 {
+        return;
+    }
+    for row in 0..height {
+        let base = row * stride;
+        if base + edge_col + 7 > pixels.len() {
+            break;
+        }
+        let p = |i: usize| pixels[base + edge_col - 1 - i] as i32;
+        let q = |i: usize| pixels[base + edge_col + i] as i32;
+
+        // Flatness check
+        if (p(0) - q(0)).abs() * 2 + ((p(1) - q(1)).abs() >> 1) > threshold {
+            continue;
+        }
+
+        // 14-tap wide filter: weighted average centered on the edge
+        let p6 = p(6);
+        let p5 = p(5);
+        let p4 = p(4);
+        let p3 = p(3);
+        let p2 = p(2);
+        let p1 = p(1);
+        let p0 = p(0);
+        let q0 = q(0);
+        let q1 = q(1);
+        let q2 = q(2);
+        let q3 = q(3);
+        let q4 = q(4);
+        let q5 = q(5);
+        let q6 = q(6);
+
+        // lpf_14: averages progressively centered on the edge
+        let f = |vals: &[i32]| -> u8 {
+            let s: i32 = vals.iter().sum();
+            ((s + vals.len() as i32 / 2) / vals.len() as i32).clamp(0, 255) as u8
+        };
+
+        pixels[base + edge_col - 6] =
+            f(&[p6, p6, p6, p6, p6, p6, p5, p4, p3, p2, p1, p0, q0]);
+        pixels[base + edge_col - 5] =
+            f(&[p6, p6, p6, p6, p6, p5, p4, p3, p2, p1, p0, q0, q1]);
+        pixels[base + edge_col - 4] = f(&[p6, p6, p6, p6, p5, p4, p3, p2, p1, p0, q0, q1, q2]);
+        pixels[base + edge_col - 3] = f(&[p6, p6, p6, p5, p4, p3, p2, p1, p0, q0, q1, q2, q3]);
+        pixels[base + edge_col - 2] =
+            f(&[p6, p6, p5, p4, p3, p2, p1, p0, q0, q1, q2, q3, q4]);
+        pixels[base + edge_col - 1] =
+            f(&[p6, p5, p4, p3, p2, p1, p0, q0, q1, q2, q3, q4, q5]);
+        pixels[base + edge_col] = f(&[p5, p4, p3, p2, p1, p0, q0, q1, q2, q3, q4, q5, q6]);
+        pixels[base + edge_col + 1] =
+            f(&[p4, p3, p2, p1, p0, q0, q1, q2, q3, q4, q5, q6, q6]);
+        pixels[base + edge_col + 2] =
+            f(&[p3, p2, p1, p0, q0, q1, q2, q3, q4, q5, q6, q6, q6]);
+        pixels[base + edge_col + 3] = f(&[p2, p1, p0, q0, q1, q2, q3, q4, q5, q6, q6, q6, q6]);
+        pixels[base + edge_col + 4] =
+            f(&[p1, p0, q0, q1, q2, q3, q4, q5, q6, q6, q6, q6, q6]);
+        pixels[base + edge_col + 5] =
+            f(&[p0, q0, q1, q2, q3, q4, q5, q6, q6, q6, q6, q6, q6]);
+    }
+}
+
+/// Derive deblocking filter strength from QP per the AV1 spec.
+///
+/// Returns (filter_level, threshold) for a given QP.
+/// Higher QP → stronger filtering to reduce blocking artifacts.
+pub fn derive_deblock_strength(qp: u8) -> (i32, i32) {
+    // AV1 spec table approximation: filter level scales with QP
+    let level = match qp {
+        0..=15 => qp as i32,
+        16..=31 => 15 + (qp as i32 - 15) * 2,
+        32..=63 => 47 + (qp as i32 - 31),
+        _ => 63,
+    };
+    let threshold = (level * 2 + 4).min(127);
+    (level, threshold)
+}
+
+/// Select deblock filter width based on edge type and QP.
+///
+/// Returns the recommended filter tap count: 4, 8, or 14.
+pub fn select_deblock_filter_size(is_sb_boundary: bool, qp: u8) -> u8 {
+    if is_sb_boundary && qp >= 20 {
+        14
+    } else if is_sb_boundary || qp >= 10 {
+        8
+    } else {
+        4
+    }
+}
+
 /// Apply deblocking filter to a horizontal edge.
 ///
 /// Filters the boundary between rows `edge_row-1` and `edge_row`.
