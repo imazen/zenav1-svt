@@ -716,3 +716,106 @@ fn idct64_dc_golden() {
     svtav1_dsp::inv_txfm::idct64(&input, &mut output);
     assert_exact("idct64_dc", &output, &golden);
 }
+
+// =============================================================================
+// Pipeline determinism test
+// =============================================================================
+
+#[test]
+fn pipeline_deterministic() {
+    use svtav1_encoder::pipeline::EncodePipeline;
+    use svtav1_encoder::rate_control::{RcConfig, RcMode};
+
+    let mut p1 = EncodePipeline::new(
+        32,
+        32,
+        8,
+        RcConfig {
+            mode: RcMode::Cqp,
+            qp: 30,
+            ..RcConfig::default()
+        },
+        4,
+        64,
+    );
+    let mut p2 = EncodePipeline::new(
+        32,
+        32,
+        8,
+        RcConfig {
+            mode: RcMode::Cqp,
+            qp: 30,
+            ..RcConfig::default()
+        },
+        4,
+        64,
+    );
+
+    let y_plane: Vec<u8> = (0..32 * 32).map(|i| ((i * 7 + 42) % 256) as u8).collect();
+
+    let bs1 = p1.encode_frame(&y_plane, 32);
+    let bs2 = p2.encode_frame(&y_plane, 32);
+
+    assert_eq!(
+        bs1, bs2,
+        "same input + same config should produce identical bitstream"
+    );
+}
+
+// =============================================================================
+// Roundtrip: fdct16 -> idct16 golden (measured from C)
+// =============================================================================
+
+#[test]
+fn roundtrip_dct16_golden() {
+    // C measured: fdct16(ramp) -> idct16 -> scale = 8x (16/2)
+    let mut input = [0i32; 16];
+    for i in 0..16 {
+        input[i] = i as i32 * 10 - 80;
+    }
+
+    let mut fwd = [0i32; 16];
+    let mut inv = [0i32; 16];
+    fdct16(&input, &mut fwd);
+    svtav1_dsp::inv_txfm::idct16(&fwd, &mut inv);
+
+    // C measured roundtrip: [-640, -560, -480, -399, ...]
+    // Scale = 8x (within rounding)
+    for i in 0..16 {
+        let expected = input[i] * 8;
+        let diff = (inv[i] - expected).abs();
+        assert!(
+            diff <= 4,
+            "dct16 roundtrip at [{i}]: inv={} expected ~{expected}",
+            inv[i]
+        );
+    }
+}
+
+// =============================================================================
+// Roundtrip: fdct32 -> idct32 golden
+// =============================================================================
+
+#[test]
+fn roundtrip_dct32_golden() {
+    let mut input = [0i32; 32];
+    for i in 0..32 {
+        input[i] = i as i32 * 5 - 80;
+    }
+
+    let mut fwd = [0i32; 32];
+    let mut inv = [0i32; 32];
+    fdct32(&input, &mut fwd);
+    svtav1_dsp::inv_txfm::idct32(&fwd, &mut inv);
+
+    // 32-point scale = 16x (32/2)
+    for i in 0..32 {
+        let expected = input[i] * 16;
+        let diff = (inv[i] - expected).abs();
+        assert!(
+            diff <= 8,
+            "dct32 roundtrip at [{i}]: inv={} expected ~{expected}",
+            inv[i]
+        );
+    }
+}

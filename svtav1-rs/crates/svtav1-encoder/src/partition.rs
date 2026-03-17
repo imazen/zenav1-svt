@@ -598,8 +598,8 @@ fn encode_single_block(
     // as we encode blocks left-to-right, top-to-bottom.
     // Since recon is a sub-slice, we can read previously-written rows/cols.
     // For the first row/col of a partition, neighbors are 128 (no context).
-    let mut above = alloc::vec![128u8; width];
-    let mut left = alloc::vec![128u8; height];
+    let above = alloc::vec![128u8; width];
+    let left = alloc::vec![128u8; height];
 
     // Try to read above neighbors from recon buffer (row above this block)
     // The recon buffer is written left-to-right, top-to-bottom by the caller.
