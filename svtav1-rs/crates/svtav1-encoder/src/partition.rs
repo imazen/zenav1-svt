@@ -132,6 +132,7 @@ pub fn partition_search_with_config(
             width,
             height,
             qp,
+            config,
         );
     }
 
@@ -146,6 +147,7 @@ pub fn partition_search_with_config(
         width,
         height,
         qp,
+        config,
     );
 
     // If block is small enough, don't bother splitting further
@@ -184,6 +186,7 @@ pub fn partition_search_with_config(
             width,
             hh,
             qp,
+            config,
         );
         horz_result.distortion += top.distortion;
         horz_result.rate += top.rate;
@@ -202,6 +205,7 @@ pub fn partition_search_with_config(
             width,
             height - hh,
             qp,
+            config,
         );
         horz_result.distortion += bot.distortion;
         horz_result.rate += bot.rate;
@@ -236,6 +240,7 @@ pub fn partition_search_with_config(
             hw,
             height,
             qp,
+            config,
         );
         vert_result.distortion += left.distortion;
         vert_result.rate += left.rate;
@@ -252,6 +257,7 @@ pub fn partition_search_with_config(
             width - hw,
             height,
             qp,
+            config,
         );
         vert_result.distortion += right.distortion;
         vert_result.rate += right.rate;
@@ -289,6 +295,7 @@ pub fn partition_search_with_config(
                 width,
                 cur_h,
                 qp,
+                config,
             );
             h4_result.distortion += sub.distortion;
             h4_result.rate += sub.rate;
@@ -324,6 +331,7 @@ pub fn partition_search_with_config(
                 cur_w,
                 height,
                 qp,
+                config,
             );
             v4_result.distortion += sub.distortion;
             v4_result.rate += sub.rate;
@@ -359,6 +367,7 @@ pub fn partition_search_with_config(
             hw,
             hh,
             qp,
+            config,
         );
         ha_result.distortion += s.distortion;
         ha_result.rate += s.rate;
@@ -374,6 +383,7 @@ pub fn partition_search_with_config(
             width - hw,
             hh,
             qp,
+            config,
         );
         ha_result.distortion += s.distortion;
         ha_result.rate += s.rate;
@@ -389,6 +399,7 @@ pub fn partition_search_with_config(
             width,
             height - hh,
             qp,
+            config,
         );
         ha_result.distortion += s.distortion;
         ha_result.rate += s.rate;
@@ -422,6 +433,7 @@ pub fn partition_search_with_config(
             width,
             hh,
             qp,
+            config,
         );
         hb_result.distortion += s.distortion;
         hb_result.rate += s.rate;
@@ -437,6 +449,7 @@ pub fn partition_search_with_config(
             hw,
             height - hh,
             qp,
+            config,
         );
         hb_result.distortion += s.distortion;
         hb_result.rate += s.rate;
@@ -452,6 +465,7 @@ pub fn partition_search_with_config(
             width - hw,
             height - hh,
             qp,
+            config,
         );
         hb_result.distortion += s.distortion;
         hb_result.rate += s.rate;
@@ -485,6 +499,7 @@ pub fn partition_search_with_config(
             hw,
             hh,
             qp,
+            config,
         );
         va_result.distortion += s.distortion;
         va_result.rate += s.rate;
@@ -500,6 +515,7 @@ pub fn partition_search_with_config(
             hw,
             height - hh,
             qp,
+            config,
         );
         va_result.distortion += s.distortion;
         va_result.rate += s.rate;
@@ -515,6 +531,7 @@ pub fn partition_search_with_config(
             width - hw,
             height,
             qp,
+            config,
         );
         va_result.distortion += s.distortion;
         va_result.rate += s.rate;
@@ -548,6 +565,7 @@ pub fn partition_search_with_config(
             hw,
             height,
             qp,
+            config,
         );
         vb_result.distortion += s.distortion;
         vb_result.rate += s.rate;
@@ -563,6 +581,7 @@ pub fn partition_search_with_config(
             width - hw,
             hh,
             qp,
+            config,
         );
         vb_result.distortion += s.distortion;
         vb_result.rate += s.rate;
@@ -578,6 +597,7 @@ pub fn partition_search_with_config(
             width - hw,
             height - hh,
             qp,
+            config,
         );
         vb_result.distortion += s.distortion;
         vb_result.rate += s.rate;
@@ -666,6 +686,7 @@ fn encode_single_block(
     width: usize,
     height: usize,
     qp: u8,
+    config: &PartitionSearchConfig,
 ) -> PartitionResult {
     let n = width * height;
     let lambda = crate::rate_control::qp_to_lambda(qp) as u64;
@@ -691,8 +712,10 @@ fn encode_single_block(
         svtav1_types::block::BlockSize::Block4x4
     };
     let all_candidates = crate::mode_decision::generate_intra_candidates(block_size);
-    // Limit to reasonable count for speed (spec 03: "NIC decreases with MDS stage")
-    let max_cands = if width <= 4 || height <= 4 { 3 } else { 13 };
+    // Limit candidates per config.max_intra_candidates (spec 03: NIC)
+    let max_cands = config
+        .max_intra_candidates
+        .min(if width <= 4 || height <= 4 { 3 } else { 13 });
     let candidates = &all_candidates[..max_cands.min(all_candidates.len())];
 
     let mut best_enc = None;
