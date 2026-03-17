@@ -324,9 +324,10 @@ impl EncodePipeline {
             recon = sgrproj_out;
         }
 
-        // Step 6: Entropy coding — write bitstream using real coefficient coding
+        // Step 6: Entropy coding — CDF-based coefficient coding with adaptive context
         let mut writer = svtav1_entropy::writer::AomWriter::new(n);
-        // Encode each block's coefficients
+        let mut coeff_ctx = svtav1_entropy::coeff::CoeffContext::default();
+        // Encode each block's coefficients with backward-adaptive CDFs
         let bw = 8usize;
         let blocks_x = w.div_ceil(bw);
         let blocks_y = h.div_ceil(bw);
@@ -355,13 +356,12 @@ impl EncodePipeline {
                     cur_h,
                     pcs.qp,
                 );
-                // Write using real coefficient coding
-                svtav1_entropy::coeff::write_coefficients(
+                // CDF-based coefficient coding with shared adaptive context
+                svtav1_entropy::coeff::write_coefficients_ctx(
                     &mut writer,
                     &enc.qcoeffs,
                     enc.eob as usize,
-                    0,
-                    0,
+                    &mut coeff_ctx,
                 );
             }
         }
