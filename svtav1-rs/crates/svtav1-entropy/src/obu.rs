@@ -229,14 +229,14 @@ pub fn write_sequence_header_ex(
 }
 
 /// Write trailing bits to byte-align the bitwriter.
+/// Write AV1 trailing bits: a mandatory 1-bit followed by zeros to byte-align.
+/// The trailing_one_bit MUST always be written, even if already byte-aligned
+/// (in which case a full 0x80 byte is written).
 fn write_trailing_bits(wb: &mut BitWriter) {
+    wb.write_bit(true); // trailing_one_bit = 1
     let remainder = wb.bit_offset % 8;
     if remainder != 0 {
-        wb.write_bit(true); // trailing 1
-        let pad = 8 - (wb.bit_offset % 8);
-        if pad < 8 {
-            wb.write_bits(0, pad);
-        }
+        wb.write_bits(0, 8 - remainder); // zero-pad to byte boundary
     }
 }
 
