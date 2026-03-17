@@ -163,7 +163,9 @@ impl EncodePipeline {
                 let pred = alloc::vec![128u8; cur_w * cur_h];
                 let mut sb_recon = alloc::vec![0u8; cur_w * cur_h];
 
-                let _sb_result = crate::partition::partition_search(
+                let part_config =
+                    crate::partition::PartitionSearchConfig::from_speed_config(&self.speed_config);
+                let _sb_result = crate::partition::partition_search_with_config(
                     &encode_input[y0 * w + x0..],
                     w,
                     &pred,
@@ -175,6 +177,7 @@ impl EncodePipeline {
                     vaq_adjusted_qp,
                     lambda,
                     self.speed_config.max_partition_depth as u32,
+                    &part_config,
                 );
 
                 // Write SB recon to frame buffer

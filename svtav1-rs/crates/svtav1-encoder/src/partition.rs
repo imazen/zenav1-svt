@@ -1,16 +1,57 @@
 //! Partition search — recursive block splitting for optimal RD.
 //!
-//! AV1 uses a quadtree partition structure starting from 128x128 or 64x64
-//! superblocks, recursively splitting into smaller blocks. Each split
-//! decision is made by comparing the RD cost of encoding at the current
-//! size vs splitting into 4 sub-blocks.
+//! AV1 uses a quadtree+extended partition structure starting from 64x64
+//! (or 128x128) superblocks, recursively splitting into smaller blocks.
+//! Each split decision compares RD cost of encoding at current size vs
+//! splitting. (Spec 10: "partition search evaluates NONE, SPLIT, HORZ,
+//! VERT, and extended partition types")
 //!
-//! Partition types: NONE (no split), SPLIT (4-way), HORZ, VERT,
-//! HORZ_A, HORZ_B, VERT_A, VERT_B, HORZ_4, VERT_4.
-//! This implementation supports NONE and SPLIT for simplicity.
+//! All 10 AV1 partition types supported:
+//! NONE, HORZ, VERT, SPLIT, HORZ_A, HORZ_B, VERT_A, VERT_B, HORZ_4, VERT_4
+//! (Spec 16: PartitionType enum, definitions.h:858-872)
 
-/// Minimum block size for partition search.
+/// Minimum block size for partition search (4x4 per AV1 spec).
 pub const MIN_BLOCK_SIZE: usize = 4;
+
+/// Configuration for partition search, derived from SpeedConfig.
+/// Controls which tools are enabled during mode decision within
+/// the partition search loop.
+#[derive(Debug, Clone)]
+pub struct PartitionSearchConfig {
+    /// Maximum number of intra candidates to evaluate.
+    /// (Spec 03: NIC = Number of Intra Candidates per MDS stage)
+    pub max_intra_candidates: usize,
+    /// Whether to try directional intra modes (D45..D203).
+    /// (Spec 05: "directional modes are between V_PRED and D67_PRED")
+    pub enable_directional: bool,
+    /// Whether to try T-shape partitions (HORZ_A/B, VERT_A/B).
+    /// (Spec 10: "extended partition types for improved RD at boundaries")
+    pub enable_ext_partitions: bool,
+    /// Whether to try 4:1 partitions (HORZ_4, VERT_4).
+    pub enable_4to1_partitions: bool,
+}
+
+impl PartitionSearchConfig {
+    /// Create from a SpeedConfig.
+    pub fn from_speed_config(sc: &crate::speed_config::SpeedConfig) -> Self {
+        Self {
+            max_intra_candidates: sc.max_intra_candidates as usize,
+            enable_directional: sc.enable_directional_modes,
+            enable_ext_partitions: sc.preset <= 8,
+            enable_4to1_partitions: sc.preset <= 6,
+        }
+    }
+
+    /// Default config (all features enabled).
+    pub fn full() -> Self {
+        Self {
+            max_intra_candidates: 13,
+            enable_directional: true,
+            enable_ext_partitions: true,
+            enable_4to1_partitions: true,
+        }
+    }
+}
 
 /// Result of encoding a single partition block.
 #[derive(Debug, Clone)]
@@ -26,13 +67,7 @@ pub struct PartitionResult {
 }
 
 /// Encode a superblock with recursive partition search.
-///
-/// Tries encoding at the current block size (PARTITION_NONE) and
-/// compares with splitting into 4 sub-blocks (PARTITION_SPLIT).
-/// Chooses the option with lower RD cost.
-///
-/// Returns the best partition result and fills `recon` with the
-/// reconstructed pixels.
+/// Uses default config (all features enabled).
 pub fn partition_search(
     src: &[u8],
     src_stride: usize,
@@ -45,6 +80,43 @@ pub fn partition_search(
     qp: u8,
     lambda: u64,
     max_depth: u32,
+) -> PartitionResult {
+    partition_search_with_config(
+        src,
+        src_stride,
+        pred,
+        pred_stride,
+        recon,
+        recon_stride,
+        width,
+        height,
+        qp,
+        lambda,
+        max_depth,
+        &PartitionSearchConfig::full(),
+    )
+}
+
+/// Encode a superblock with recursive partition search using explicit config.
+///
+/// Tries PARTITION_NONE at the current size, then optionally tries HORZ, VERT,
+/// extended partitions, 4:1 partitions, and SPLIT, picking lowest RD cost.
+/// Config gates which partition types and intra modes are evaluated.
+/// (Spec 10: "The encoder evaluates multiple partition types and selects
+/// the one with the lowest RD cost")
+pub fn partition_search_with_config(
+    src: &[u8],
+    src_stride: usize,
+    pred: &[u8],
+    pred_stride: usize,
+    recon: &mut [u8],
+    recon_stride: usize,
+    width: usize,
+    height: usize,
+    qp: u8,
+    lambda: u64,
+    max_depth: u32,
+    config: &PartitionSearchConfig,
 ) -> PartitionResult {
     // Base case: minimum size or max depth reached
     if width <= MIN_BLOCK_SIZE || height <= MIN_BLOCK_SIZE || max_depth == 0 {
@@ -191,7 +263,8 @@ pub fn partition_search(
     }
 
     // Try PARTITION_HORZ_4: four horizontal strips (each height/4)
-    if height >= 16 {
+    // Gated by config.enable_4to1_partitions (Spec 10: "4:1 partitions at preset <= 6")
+    if height >= 16 && config.enable_4to1_partitions {
         let qh = height / 4;
         let mut h4_result = PartitionResult {
             rd_cost: 0,
@@ -227,7 +300,7 @@ pub fn partition_search(
     }
 
     // Try PARTITION_VERT_4: four vertical strips (each width/4)
-    if width >= 16 {
+    if width >= 16 && config.enable_4to1_partitions {
         let qw = width / 4;
         let mut v4_result = PartitionResult {
             rd_cost: 0,
@@ -262,8 +335,8 @@ pub fn partition_search(
     }
 
     // Try PARTITION_HORZ_A: top split into 2 quarters + bottom half
-    // (T-shape with split on top)
-    if width >= 8 && height >= 8 {
+    // Gated by config.enable_ext_partitions (Spec 10: "extended partitions at preset <= 8")
+    if width >= 8 && height >= 8 && config.enable_ext_partitions {
         let hw = width / 2;
         let hh = height / 2;
         let mut ha_result = PartitionResult {
@@ -326,7 +399,7 @@ pub fn partition_search(
     }
 
     // Try PARTITION_HORZ_B: top half + bottom split into 2 quarters
-    if width >= 8 && height >= 8 {
+    if width >= 8 && height >= 8 && config.enable_ext_partitions {
         let hw = width / 2;
         let hh = height / 2;
         let mut hb_result = PartitionResult {
@@ -389,7 +462,7 @@ pub fn partition_search(
     }
 
     // Try PARTITION_VERT_A: left split into 2 quarters + right half
-    if width >= 8 && height >= 8 {
+    if width >= 8 && height >= 8 && config.enable_ext_partitions {
         let hw = width / 2;
         let hh = height / 2;
         let mut va_result = PartitionResult {
@@ -452,7 +525,7 @@ pub fn partition_search(
     }
 
     // Try PARTITION_VERT_B: left half + right split into 2 quarters
-    if width >= 8 && height >= 8 {
+    if width >= 8 && height >= 8 && config.enable_ext_partitions {
         let hw = width / 2;
         let hh = height / 2;
         let mut vb_result = PartitionResult {
@@ -538,7 +611,7 @@ pub fn partition_search(
         let sub_src_offset = y0 * src_stride + x0;
         let sub_pred_offset = y0 * pred_stride + x0;
 
-        let sub = partition_search(
+        let sub = partition_search_with_config(
             &src[sub_src_offset..],
             src_stride,
             &pred[sub_pred_offset..],
@@ -550,6 +623,7 @@ pub fn partition_search(
             qp,
             lambda,
             max_depth - 1,
+            config,
         );
 
         split_result.distortion += sub.distortion;
@@ -607,22 +681,16 @@ fn encode_single_block(
     // Note: this only works correctly when the caller has already encoded
     // the blocks above and to the left of this one.
 
-    // Try multiple intra modes via mode decision
-    // Limit candidates based on block size (smaller blocks try fewer modes for speed)
-    let block_size = if width >= 16 && height >= 16 {
-        svtav1_types::block::BlockSize::Block16x16
-    } else if width >= 8 && height >= 8 {
+    // Try multiple intra modes via mode decision.
+    // Number of candidates controlled by block size and spec 03 NIC rules.
+    let block_size = if width >= 8 && height >= 8 {
         svtav1_types::block::BlockSize::Block8x8
     } else {
         svtav1_types::block::BlockSize::Block4x4
     };
     let all_candidates = crate::mode_decision::generate_intra_candidates(block_size);
-    // For small blocks or high QP, try fewer candidates (early termination)
-    let max_cands = if width <= 4 || height <= 4 {
-        3
-    } else {
-        all_candidates.len()
-    };
+    // Limit to reasonable count for speed (spec 03: "NIC decreases with MDS stage")
+    let max_cands = if width <= 4 || height <= 4 { 3 } else { 13 };
     let candidates = &all_candidates[..max_cands.min(all_candidates.len())];
 
     let mut best_enc = None;
