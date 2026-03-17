@@ -145,9 +145,27 @@ impl EncodePipeline {
         );
 
         // Step 5: Apply loop filters to reconstruction
-        let w = self.width as usize;
-        let h = self.height as usize;
+        // 5a: Deblocking filter on block edges
+        {
+            let strength = (pcs.qp as i32 * 2).min(63);
+            let threshold = 4 + pcs.qp as i32 / 4;
+            // Apply deblocking on vertical edges (every 8 columns)
+            for bx in 1..(w / 8) {
+                let edge_col = bx * 8;
+                svtav1_dsp::loop_filter::deblock_vert(
+                    &mut recon, w, strength, threshold, edge_col, h,
+                );
+            }
+            // Apply deblocking on horizontal edges (every 8 rows)
+            for by in 1..(h / 8) {
+                let edge_row = by * 8;
+                svtav1_dsp::loop_filter::deblock_horz(
+                    &mut recon, w, strength, threshold, edge_row, w,
+                );
+            }
+        }
 
+        // 5b: CDEF
         if self.speed_config.enable_cdef {
             // Apply CDEF to each 8x8 block
             let mut filtered = recon.clone();
@@ -182,6 +200,26 @@ impl EncodePipeline {
                 }
             }
             recon = filtered;
+        }
+
+        // 5c: Wiener restoration (if enabled)
+        if self.speed_config.enable_restoration {
+            let mut restored = recon.clone();
+            // Apply mild Wiener filter — coefficients tuned for the QP level
+            let strength = (pcs.qp as i16 / 10).max(1);
+            let h_coeffs = [strength, strength * 2, strength * 3];
+            let v_coeffs = [strength, strength * 2, strength * 3];
+            svtav1_dsp::loop_filter::wiener_filter(
+                &recon,
+                w,
+                &mut restored,
+                w,
+                w,
+                h,
+                h_coeffs,
+                v_coeffs,
+            );
+            recon = restored;
         }
 
         // Step 6: Entropy coding — write bitstream using real coefficient coding
