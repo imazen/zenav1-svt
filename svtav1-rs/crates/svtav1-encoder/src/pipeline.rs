@@ -125,6 +125,18 @@ impl EncodePipeline {
                 y_plane[..n].to_vec()
             };
 
+        // Step 3c: Compute VAQ activity map for adaptive QP
+        let activity_map = crate::perceptual::ActivityMap::compute(&encode_input, w, h, w);
+
+        // Adjust QP based on frame-level activity (VAQ)
+        // Low-activity frames get lower QP (more bits for smooth content)
+        let vaq_adjusted_qp = if activity_map.frame_avg > 0.0 {
+            let frame_activity_factor = (activity_map.frame_avg / 10.0).log2().clamp(-2.0, 2.0);
+            (pcs.qp as f64 + frame_activity_factor).clamp(0.0, 63.0) as u8
+        } else {
+            pcs.qp
+        };
+
         // Step 4: Encode the frame using block-level encoding
         let pred = alloc::vec![128u8; n];
         let mut recon = alloc::vec![0u8; n];
@@ -139,8 +151,9 @@ impl EncodePipeline {
             w,
             w,
             h,
-            pcs.qp,
-            (crate::rate_control::qp_to_lambda(pcs.qp) * self.speed_config.lambda_scale()) as u64,
+            vaq_adjusted_qp,
+            (crate::rate_control::qp_to_lambda(vaq_adjusted_qp) * self.speed_config.lambda_scale())
+                as u64,
             self.speed_config.max_partition_depth as u32,
         );
 
