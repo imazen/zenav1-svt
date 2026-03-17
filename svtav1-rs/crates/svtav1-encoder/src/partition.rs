@@ -244,6 +244,25 @@ fn extract_neighbors(
     (above, left, top_left, has_above, has_left)
 }
 
+/// Per-block encoding decision record for bitstream encoding.
+#[derive(Debug, Clone, Default)]
+pub struct BlockDecision {
+    /// Whether this block uses inter prediction.
+    pub is_inter: bool,
+    /// Intra prediction mode index (0-12 for AV1 modes).
+    pub intra_mode: u8,
+    /// Motion vector (for inter blocks).
+    pub mv: svtav1_types::motion::Mv,
+    /// Quantized coefficients.
+    pub qcoeffs: alloc::vec::Vec<i32>,
+    /// End of block position.
+    pub eob: u16,
+    /// Block width.
+    pub width: u16,
+    /// Block height.
+    pub height: u16,
+}
+
 /// Result of encoding a single partition block.
 #[derive(Debug, Clone)]
 pub struct PartitionResult {
@@ -253,6 +272,8 @@ pub struct PartitionResult {
     pub distortion: u64,
     /// Total rate (estimated bits).
     pub rate: u32,
+    /// Per-block encoding decisions (for bitstream encoding).
+    pub decisions: alloc::vec::Vec<BlockDecision>,
     /// Number of coded blocks.
     pub num_blocks: u32,
 }
@@ -369,6 +390,7 @@ pub fn partition_search_with_config(
             distortion: 0,
             rate: 48, // Partition flag overhead
             num_blocks: 0,
+            decisions: alloc::vec::Vec::new(),
         };
         let mut horz_recon = alloc::vec![0u8; width * height];
 
@@ -390,6 +412,7 @@ pub fn partition_search_with_config(
         horz_result.distortion += top.distortion;
         horz_result.rate += top.rate;
         horz_result.num_blocks += top.num_blocks;
+        horz_result.decisions.extend(top.decisions);
 
         // Bottom half — use top half's bottom row as above neighbors
         let above_bot: alloc::vec::Vec<u8> =
@@ -428,6 +451,7 @@ pub fn partition_search_with_config(
         horz_result.distortion += bot.distortion;
         horz_result.rate += bot.rate;
         horz_result.num_blocks += bot.num_blocks;
+        horz_result.decisions.extend(bot.decisions);
         horz_result.rd_cost = horz_result.distortion + ((lambda * horz_result.rate as u64) >> 8);
 
         if horz_result.rd_cost < best_result.rd_cost {
@@ -444,6 +468,7 @@ pub fn partition_search_with_config(
             distortion: 0,
             rate: 48,
             num_blocks: 0,
+            decisions: alloc::vec::Vec::new(),
         };
         let mut vert_recon = alloc::vec![0u8; width * height];
 
@@ -465,6 +490,7 @@ pub fn partition_search_with_config(
         vert_result.distortion += left.distortion;
         vert_result.rate += left.rate;
         vert_result.num_blocks += left.num_blocks;
+        vert_result.decisions.extend(left.decisions);
 
         // Right half — use left half's rightmost column as left neighbors
         let left_for_right: alloc::vec::Vec<u8> =
@@ -503,6 +529,7 @@ pub fn partition_search_with_config(
         vert_result.distortion += right.distortion;
         vert_result.rate += right.rate;
         vert_result.num_blocks += right.num_blocks;
+        vert_result.decisions.extend(right.decisions);
         vert_result.rd_cost = vert_result.distortion + ((lambda * vert_result.rate as u64) >> 8);
 
         if vert_result.rd_cost < best_result.rd_cost {
@@ -520,6 +547,7 @@ pub fn partition_search_with_config(
             distortion: 0,
             rate: 64,
             num_blocks: 0,
+            decisions: alloc::vec::Vec::new(),
         };
         let mut h4_recon = alloc::vec![0u8; width * height];
         for strip in 0..4 {
@@ -542,6 +570,7 @@ pub fn partition_search_with_config(
             h4_result.distortion += sub.distortion;
             h4_result.rate += sub.rate;
             h4_result.num_blocks += sub.num_blocks;
+            h4_result.decisions.extend(sub.decisions);
         }
         h4_result.rd_cost = h4_result.distortion + ((lambda * h4_result.rate as u64) >> 8);
         if h4_result.rd_cost < best_result.rd_cost {
@@ -558,6 +587,7 @@ pub fn partition_search_with_config(
             distortion: 0,
             rate: 64,
             num_blocks: 0,
+            decisions: alloc::vec::Vec::new(),
         };
         let mut v4_recon = alloc::vec![0u8; width * height];
         for strip in 0..4 {
@@ -580,6 +610,7 @@ pub fn partition_search_with_config(
             v4_result.distortion += sub.distortion;
             v4_result.rate += sub.rate;
             v4_result.num_blocks += sub.num_blocks;
+            v4_result.decisions.extend(sub.decisions);
         }
         v4_result.rd_cost = v4_result.distortion + ((lambda * v4_result.rate as u64) >> 8);
         if v4_result.rd_cost < best_result.rd_cost {
@@ -598,6 +629,7 @@ pub fn partition_search_with_config(
             distortion: 0,
             rate: 56,
             num_blocks: 0,
+            decisions: alloc::vec::Vec::new(),
         };
         let mut ha_recon = alloc::vec![0u8; width * height];
         // Top-left quarter
@@ -618,6 +650,7 @@ pub fn partition_search_with_config(
         ha_result.distortion += s.distortion;
         ha_result.rate += s.rate;
         ha_result.num_blocks += s.num_blocks;
+        ha_result.decisions.extend(s.decisions);
         // Top-right quarter
         let s = encode_with_neighbors(
             &src[hw..],
@@ -636,6 +669,7 @@ pub fn partition_search_with_config(
         ha_result.distortion += s.distortion;
         ha_result.rate += s.rate;
         ha_result.num_blocks += s.num_blocks;
+        ha_result.decisions.extend(s.decisions);
         // Bottom half
         let s = encode_with_neighbors(
             &src[hh * src_stride..],
@@ -654,6 +688,7 @@ pub fn partition_search_with_config(
         ha_result.distortion += s.distortion;
         ha_result.rate += s.rate;
         ha_result.num_blocks += s.num_blocks;
+        ha_result.decisions.extend(s.decisions);
         ha_result.rd_cost = ha_result.distortion + ((lambda * ha_result.rate as u64) >> 8);
         if ha_result.rd_cost < best_result.rd_cost {
             best_result = ha_result;
@@ -670,6 +705,7 @@ pub fn partition_search_with_config(
             distortion: 0,
             rate: 56,
             num_blocks: 0,
+            decisions: alloc::vec::Vec::new(),
         };
         let mut hb_recon = alloc::vec![0u8; width * height];
         // Top half
@@ -690,6 +726,7 @@ pub fn partition_search_with_config(
         hb_result.distortion += s.distortion;
         hb_result.rate += s.rate;
         hb_result.num_blocks += s.num_blocks;
+        hb_result.decisions.extend(s.decisions);
         // Bottom-left quarter
         let s = encode_with_neighbors(
             &src[hh * src_stride..],
@@ -708,6 +745,7 @@ pub fn partition_search_with_config(
         hb_result.distortion += s.distortion;
         hb_result.rate += s.rate;
         hb_result.num_blocks += s.num_blocks;
+        hb_result.decisions.extend(s.decisions);
         // Bottom-right quarter
         let s = encode_with_neighbors(
             &src[hh * src_stride + hw..],
@@ -726,6 +764,7 @@ pub fn partition_search_with_config(
         hb_result.distortion += s.distortion;
         hb_result.rate += s.rate;
         hb_result.num_blocks += s.num_blocks;
+        hb_result.decisions.extend(s.decisions);
         hb_result.rd_cost = hb_result.distortion + ((lambda * hb_result.rate as u64) >> 8);
         if hb_result.rd_cost < best_result.rd_cost {
             best_result = hb_result;
@@ -742,6 +781,7 @@ pub fn partition_search_with_config(
             distortion: 0,
             rate: 56,
             num_blocks: 0,
+            decisions: alloc::vec::Vec::new(),
         };
         let mut va_recon = alloc::vec![0u8; width * height];
         // Top-left quarter
@@ -762,6 +802,7 @@ pub fn partition_search_with_config(
         va_result.distortion += s.distortion;
         va_result.rate += s.rate;
         va_result.num_blocks += s.num_blocks;
+        va_result.decisions.extend(s.decisions);
         // Bottom-left quarter
         let s = encode_with_neighbors(
             &src[hh * src_stride..],
@@ -780,6 +821,7 @@ pub fn partition_search_with_config(
         va_result.distortion += s.distortion;
         va_result.rate += s.rate;
         va_result.num_blocks += s.num_blocks;
+        va_result.decisions.extend(s.decisions);
         // Right half
         let s = encode_with_neighbors(
             &src[hw..],
@@ -798,6 +840,7 @@ pub fn partition_search_with_config(
         va_result.distortion += s.distortion;
         va_result.rate += s.rate;
         va_result.num_blocks += s.num_blocks;
+        va_result.decisions.extend(s.decisions);
         va_result.rd_cost = va_result.distortion + ((lambda * va_result.rate as u64) >> 8);
         if va_result.rd_cost < best_result.rd_cost {
             best_result = va_result;
@@ -814,6 +857,7 @@ pub fn partition_search_with_config(
             distortion: 0,
             rate: 56,
             num_blocks: 0,
+            decisions: alloc::vec::Vec::new(),
         };
         let mut vb_recon = alloc::vec![0u8; width * height];
         // Left half
@@ -834,6 +878,7 @@ pub fn partition_search_with_config(
         vb_result.distortion += s.distortion;
         vb_result.rate += s.rate;
         vb_result.num_blocks += s.num_blocks;
+        vb_result.decisions.extend(s.decisions);
         // Top-right quarter
         let s = encode_with_neighbors(
             &src[hw..],
@@ -852,6 +897,7 @@ pub fn partition_search_with_config(
         vb_result.distortion += s.distortion;
         vb_result.rate += s.rate;
         vb_result.num_blocks += s.num_blocks;
+        vb_result.decisions.extend(s.decisions);
         // Bottom-right quarter
         let s = encode_with_neighbors(
             &src[hh * src_stride + hw..],
@@ -870,6 +916,7 @@ pub fn partition_search_with_config(
         vb_result.distortion += s.distortion;
         vb_result.rate += s.rate;
         vb_result.num_blocks += s.num_blocks;
+        vb_result.decisions.extend(s.decisions);
         vb_result.rd_cost = vb_result.distortion + ((lambda * vb_result.rate as u64) >> 8);
         if vb_result.rd_cost < best_result.rd_cost {
             best_result = vb_result;
@@ -885,6 +932,7 @@ pub fn partition_search_with_config(
         distortion: 0,
         rate: 64, // Partition flag overhead
         num_blocks: 0,
+        decisions: alloc::vec::Vec::new(),
     };
 
     // Allocate temporary recon for split
@@ -919,6 +967,7 @@ pub fn partition_search_with_config(
         split_result.distortion += sub.distortion;
         split_result.rate += sub.rate;
         split_result.num_blocks += sub.num_blocks;
+        split_result.decisions.extend(sub.decisions);
     }
     split_result.rd_cost = split_result.distortion + ((lambda * split_result.rate as u64) >> 8);
 
@@ -1402,10 +1451,21 @@ fn encode_single_block(
         }
     }
 
+    let decision = BlockDecision {
+        is_inter: false, // TODO: track whether inter won the RD comparison
+        intra_mode: 0,   // TODO: track winning mode
+        mv: svtav1_types::motion::Mv::ZERO,
+        qcoeffs: enc.qcoeffs.to_vec(),
+        eob: enc.eob,
+        width: width as u16,
+        height: height as u16,
+    };
+
     PartitionResult {
         rd_cost: enc.distortion + ((enc.rate as u64) << 4),
         distortion: enc.distortion,
         rate: enc.rate,
+        decisions: alloc::vec![decision],
         num_blocks: 1,
     }
 }
