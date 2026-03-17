@@ -9,6 +9,8 @@ extern crate alloc;
 pub mod cdf;
 pub mod coeff;
 pub mod context;
+pub mod mv_coding;
 pub mod obu;
 pub mod range_coder;
+pub mod tile;
 pub mod writer;
