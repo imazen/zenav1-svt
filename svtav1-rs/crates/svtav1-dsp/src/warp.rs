@@ -90,6 +90,8 @@ pub fn count_warp_samples(
 mod tests {
     use super::*;
 
+    use alloc::vec::Vec;
+
     #[test]
     fn warp_identity_is_copy() {
         // Identity warp model should just copy the reference block
