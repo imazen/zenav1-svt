@@ -684,3 +684,157 @@ fn motion_estimation_on_real_content() {
         result.distortion
     );
 }
+
+// =============================================================================
+// OBU bitstream conformance tests
+// =============================================================================
+
+/// Parse OBU type and has_size from header byte.
+fn parse_obu_header(byte: u8) -> (u8, bool) {
+    let forbidden = byte >> 7;
+    assert_eq!(forbidden, 0, "forbidden bit must be 0");
+    let obu_type = (byte >> 3) & 0xF;
+    let has_extension = (byte >> 2) & 1;
+    let has_size = (byte >> 1) & 1;
+    assert_eq!(has_extension, 0, "extension not expected in simple bitstream");
+    (obu_type, has_size == 1)
+}
+
+/// Read a ULEB128-encoded size from the bitstream.
+fn read_uleb128(data: &[u8], offset: &mut usize) -> u64 {
+    let mut value: u64 = 0;
+    for i in 0..8 {
+        assert!(*offset < data.len(), "ULEB128 extends beyond data");
+        let byte = data[*offset] as u64;
+        *offset += 1;
+        value |= (byte & 0x7F) << (i * 7);
+        if byte & 0x80 == 0 {
+            break;
+        }
+    }
+    value
+}
+
+#[test]
+fn obu_structure_key_frame() {
+    // Encode a key frame and validate OBU structure
+    let mut pipeline = svtav1_encoder::pipeline::EncodePipeline::new(
+        64,
+        64,
+        8,
+        svtav1_encoder::rate_control::RcConfig::default(),
+        4,
+        64,
+    );
+    let y_plane = make_gradient(64, 64);
+    let bitstream = pipeline.encode_frame(&y_plane, 64);
+
+    assert!(bitstream.len() > 10, "bitstream too short: {} bytes", bitstream.len());
+
+    // Parse OBU sequence: TD + SH + Frame
+    let mut pos = 0;
+
+    // OBU 1: Temporal Delimiter
+    let (obu_type, has_size) = parse_obu_header(bitstream[pos]);
+    pos += 1;
+    assert_eq!(obu_type, 2, "first OBU should be Temporal Delimiter (type 2)");
+    assert!(has_size, "TD should have size field");
+    let td_size = read_uleb128(&bitstream, &mut pos);
+    assert_eq!(td_size, 0, "TD payload should be empty");
+
+    // OBU 2: Sequence Header
+    let (obu_type, has_size) = parse_obu_header(bitstream[pos]);
+    pos += 1;
+    assert_eq!(obu_type, 1, "second OBU should be Sequence Header (type 1)");
+    assert!(has_size, "SH should have size field");
+    let sh_size = read_uleb128(&bitstream, &mut pos);
+    assert!(sh_size > 0, "SH payload should be non-empty");
+    pos += sh_size as usize;
+
+    // OBU 3: Frame (combined frame header + tile data)
+    assert!(pos < bitstream.len(), "bitstream ended before Frame OBU");
+    let (obu_type, has_size) = parse_obu_header(bitstream[pos]);
+    pos += 1;
+    assert_eq!(obu_type, 6, "third OBU should be Frame (type 6)");
+    assert!(has_size, "Frame should have size field");
+    let frame_size = read_uleb128(&bitstream, &mut pos);
+    assert!(frame_size > 0, "Frame payload should be non-empty");
+    pos += frame_size as usize;
+
+    // Should have consumed the entire bitstream
+    assert_eq!(pos, bitstream.len(), "unexpected trailing data: {} extra bytes", bitstream.len() - pos);
+}
+
+#[test]
+fn obu_structure_multi_frame() {
+    // Encode a 3-frame sequence and validate structure
+    let mut pipeline = svtav1_encoder::pipeline::EncodePipeline::new(
+        32,
+        32,
+        10,
+        svtav1_encoder::rate_control::RcConfig::default(),
+        4,
+        64,
+    );
+    let y_plane = make_gradient(32, 32);
+
+    // Frame 0: key frame (TD + SH + Frame)
+    let bs0 = pipeline.encode_frame(&y_plane, 32);
+    let (obu_type, _) = parse_obu_header(bs0[0]);
+    assert_eq!(obu_type, 2, "frame 0 should start with TD");
+
+    // Frame 1: inter frame (just Frame OBU, no SH)
+    let bs1 = pipeline.encode_frame(&y_plane, 32);
+    assert!(!bs1.is_empty(), "frame 1 should produce output");
+    let (obu_type, _) = parse_obu_header(bs1[0]);
+    assert_eq!(obu_type, 6, "inter frame should be Frame OBU (type 6)");
+
+    // Frame 2: inter frame
+    let bs2 = pipeline.encode_frame(&y_plane, 32);
+    assert!(!bs2.is_empty(), "frame 2 should produce output");
+}
+
+#[test]
+fn obu_sequence_header_profile() {
+    // Verify sequence header starts with correct profile bits
+    let mut pipeline = svtav1_encoder::pipeline::EncodePipeline::new(
+        16,
+        16,
+        8,
+        svtav1_encoder::rate_control::RcConfig::default(),
+        4,
+        64,
+    );
+    let y_plane = make_flat(16, 16, 128);
+    let bitstream = pipeline.encode_frame(&y_plane, 16);
+
+    // Skip TD (header + size + 0 bytes payload)
+    let mut pos = 0;
+    pos += 1; // TD header
+    let _td_size = read_uleb128(&bitstream, &mut pos);
+
+    // SH header
+    let (obu_type, _) = parse_obu_header(bitstream[pos]);
+    pos += 1;
+    assert_eq!(obu_type, 1);
+    let sh_size = read_uleb128(&bitstream, &mut pos);
+
+    // SH payload starts here — first 3 bits are seq_profile
+    let sh_start = pos;
+    let first_byte = bitstream[sh_start];
+    let seq_profile = first_byte >> 5; // top 3 bits
+    assert_eq!(seq_profile, 0, "expected Main profile (0) for 8-bit 4:2:0");
+
+    // Verify SH size is reasonable
+    assert!(
+        (3..=100).contains(&sh_size),
+        "SH size {} is unreasonable",
+        sh_size
+    );
+
+    // Write bitstream to temp file for external decoder testing
+    let path = std::path::Path::new("/tmp/svtav1_test_output.obu");
+    std::fs::write(path, &bitstream).expect("failed to write test bitstream");
+    eprintln!("Wrote test bitstream to {path:?} ({} bytes)", bitstream.len());
+    eprintln!("Test with: dav1d -i /tmp/svtav1_test_output.obu -o /dev/null");
+}
