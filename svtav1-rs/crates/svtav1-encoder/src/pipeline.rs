@@ -216,22 +216,38 @@ impl EncodePipeline {
 
         // Step 5: Apply loop filters to reconstruction
         // 5a: Deblocking filter on block edges
+        // Uses wide (8-tap) filter at SB boundaries and narrow (4-tap) at smaller edges.
+        // (Spec 08, Section 7.14: filter size depends on boundary type)
         {
             let strength = (pcs.qp as i32 * 2).min(63);
             let threshold = 4 + pcs.qp as i32 / 4;
             // Apply deblocking on vertical edges (every 8 columns)
             for bx in 1..(w / 8) {
                 let edge_col = bx * 8;
-                svtav1_dsp::loop_filter::deblock_vert(
-                    &mut recon, w, strength, threshold, edge_col, h,
-                );
+                if edge_col % sb_size == 0 && edge_col >= 4 && edge_col + 4 <= w {
+                    // SB boundary: use wide 8-tap filter for stronger deblocking
+                    svtav1_dsp::loop_filter::deblock_vert_wide(
+                        &mut recon, w, strength, threshold, edge_col, h,
+                    );
+                } else {
+                    svtav1_dsp::loop_filter::deblock_vert(
+                        &mut recon, w, strength, threshold, edge_col, h,
+                    );
+                }
             }
             // Apply deblocking on horizontal edges (every 8 rows)
             for by in 1..(h / 8) {
                 let edge_row = by * 8;
-                svtav1_dsp::loop_filter::deblock_horz(
-                    &mut recon, w, strength, threshold, edge_row, w,
-                );
+                if edge_row % sb_size == 0 && edge_row >= 4 && edge_row + 4 <= h {
+                    // SB boundary: use wide 8-tap filter
+                    svtav1_dsp::loop_filter::deblock_horz_wide(
+                        &mut recon, w, strength, threshold, edge_row, w,
+                    );
+                } else {
+                    svtav1_dsp::loop_filter::deblock_horz(
+                        &mut recon, w, strength, threshold, edge_row, w,
+                    );
+                }
             }
         }
 

@@ -131,6 +131,107 @@ fn deblock_vert_inner(
     }
 }
 
+/// Apply wide (8-tap) deblocking filter to a vertical edge.
+///
+/// AV1 spec Section 7.14.5: Modifies p2..p0 and q0..q2 (6 pixels) using
+/// an 8-pixel window (p3..p0, q0..q3). Used for strong edges between
+/// blocks with different prediction modes or at SB boundaries.
+pub fn deblock_vert_wide(
+    pixels: &mut [u8],
+    stride: usize,
+    strength: i32,
+    threshold: i32,
+    edge_col: usize,
+    height: usize,
+) {
+    if strength == 0 || edge_col < 4 {
+        return;
+    }
+    for row in 0..height {
+        let base = row * stride;
+        if base + edge_col + 4 > pixels.len() {
+            break;
+        }
+        let p3 = pixels[base + edge_col - 4] as i32;
+        let p2 = pixels[base + edge_col - 3] as i32;
+        let p1 = pixels[base + edge_col - 2] as i32;
+        let p0 = pixels[base + edge_col - 1] as i32;
+        let q0 = pixels[base + edge_col] as i32;
+        let q1 = pixels[base + edge_col + 1] as i32;
+        let q2 = pixels[base + edge_col + 2] as i32;
+        let q3 = pixels[base + edge_col + 3] as i32;
+
+        // Flatness check: skip if edge is already smooth
+        if (p0 - q0).abs() * 2 + ((p1 - q1).abs() >> 1) > threshold {
+            continue;
+        }
+
+        // 8-tap wide filter (AV1 spec lpf_8)
+        let p2_new = (p3 + p3 + p3 + 2 * p2 + p1 + p0 + q0 + 4) >> 3;
+        let p1_new = (p3 + p3 + p2 + 2 * p1 + p0 + q0 + q1 + 4) >> 3;
+        let p0_new = (p3 + p2 + p1 + 2 * p0 + q0 + q1 + q2 + 4) >> 3;
+        let q0_new = (p2 + p1 + p0 + 2 * q0 + q1 + q2 + q3 + 4) >> 3;
+        let q1_new = (p1 + p0 + q0 + 2 * q1 + q2 + q3 + q3 + 4) >> 3;
+        let q2_new = (p0 + q0 + q1 + 2 * q2 + q3 + q3 + q3 + 4) >> 3;
+
+        pixels[base + edge_col - 3] = p2_new.clamp(0, 255) as u8;
+        pixels[base + edge_col - 2] = p1_new.clamp(0, 255) as u8;
+        pixels[base + edge_col - 1] = p0_new.clamp(0, 255) as u8;
+        pixels[base + edge_col] = q0_new.clamp(0, 255) as u8;
+        pixels[base + edge_col + 1] = q1_new.clamp(0, 255) as u8;
+        pixels[base + edge_col + 2] = q2_new.clamp(0, 255) as u8;
+    }
+}
+
+/// Apply wide (8-tap) deblocking filter to a horizontal edge.
+pub fn deblock_horz_wide(
+    pixels: &mut [u8],
+    stride: usize,
+    strength: i32,
+    threshold: i32,
+    edge_row: usize,
+    width: usize,
+) {
+    if strength == 0 || edge_row < 4 {
+        return;
+    }
+    for col in 0..width {
+        let r3 = edge_row - 4;
+        let r2 = edge_row - 3;
+        let r1 = edge_row - 2;
+        let r0 = edge_row - 1;
+        if (edge_row + 3) * stride + col >= pixels.len() {
+            break;
+        }
+        let p3 = pixels[r3 * stride + col] as i32;
+        let p2 = pixels[r2 * stride + col] as i32;
+        let p1 = pixels[r1 * stride + col] as i32;
+        let p0 = pixels[r0 * stride + col] as i32;
+        let q0 = pixels[edge_row * stride + col] as i32;
+        let q1 = pixels[(edge_row + 1) * stride + col] as i32;
+        let q2 = pixels[(edge_row + 2) * stride + col] as i32;
+        let q3 = pixels[(edge_row + 3) * stride + col] as i32;
+
+        if (p0 - q0).abs() * 2 + ((p1 - q1).abs() >> 1) > threshold {
+            continue;
+        }
+
+        let p2_new = (p3 + p3 + p3 + 2 * p2 + p1 + p0 + q0 + 4) >> 3;
+        let p1_new = (p3 + p3 + p2 + 2 * p1 + p0 + q0 + q1 + 4) >> 3;
+        let p0_new = (p3 + p2 + p1 + 2 * p0 + q0 + q1 + q2 + 4) >> 3;
+        let q0_new = (p2 + p1 + p0 + 2 * q0 + q1 + q2 + q3 + 4) >> 3;
+        let q1_new = (p1 + p0 + q0 + 2 * q1 + q2 + q3 + q3 + 4) >> 3;
+        let q2_new = (p0 + q0 + q1 + 2 * q2 + q3 + q3 + q3 + 4) >> 3;
+
+        pixels[r2 * stride + col] = p2_new.clamp(0, 255) as u8;
+        pixels[r1 * stride + col] = p1_new.clamp(0, 255) as u8;
+        pixels[r0 * stride + col] = p0_new.clamp(0, 255) as u8;
+        pixels[edge_row * stride + col] = q0_new.clamp(0, 255) as u8;
+        pixels[(edge_row + 1) * stride + col] = q1_new.clamp(0, 255) as u8;
+        pixels[(edge_row + 2) * stride + col] = q2_new.clamp(0, 255) as u8;
+    }
+}
+
 /// Apply deblocking filter to a horizontal edge.
 ///
 /// Filters the boundary between rows `edge_row-1` and `edge_row`.
