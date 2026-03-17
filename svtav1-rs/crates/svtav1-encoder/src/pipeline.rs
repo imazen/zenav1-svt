@@ -431,6 +431,7 @@ impl EncodePipeline {
         // writing partition type at each node before recursing into children.
         let tile_data = {
             let mut writer = svtav1_entropy::writer::AomWriter::new(n + 256);
+            // CDF updates enabled — matches the frame header's disable_cdf_update=0
             let mut coeff_ctx = svtav1_entropy::coeff::CoeffContext::default();
             let mut frame_ctx = svtav1_entropy::context::FrameContext::new_default();
 
@@ -440,9 +441,14 @@ impl EncodePipeline {
                 "tree count {} != SB count {}x{}={}",
                 all_trees.len(), sb_cols, sb_rows, sb_cols * sb_rows,
             );
-            for tree in &all_trees {
+            for (sb_idx, tree) in all_trees.iter().enumerate() {
+                let sb_col = sb_idx % sb_cols;
+                let sb_row = sb_idx / sb_cols;
+                let has_above = sb_row > 0;
+                let has_left = sb_col > 0;
                 encode_partition_tree(
                     tree, &mut writer, &mut frame_ctx, &mut coeff_ctx, is_key,
+                    has_above, has_left,
                 );
             }
 
@@ -530,15 +536,14 @@ fn encode_partition_tree(
     frame_ctx: &mut svtav1_entropy::context::FrameContext,
     coeff_ctx: &mut svtav1_entropy::coeff::CoeffContext,
     is_key: bool,
+    has_above: bool,
+    has_left: bool,
 ) {
     match tree {
         crate::partition::PartitionTree::Leaf(decision) => {
-            // Leaf: block at minimum size or PARTITION_NONE chosen.
-            // Only write partition type if block is large enough to have been split.
-            // For 4x4 blocks (minimum), no partition syntax is written.
             if decision.width > 4 || decision.height > 4 {
                 let (ctx, nsymbs) = svtav1_entropy::context::get_partition_context(
-                    decision.width as usize, true, true,
+                    decision.width as usize, has_above, has_left,
                 );
                 svtav1_entropy::context::write_partition(
                     writer, frame_ctx, ctx, 0, nsymbs, // 0 = PARTITION_NONE
@@ -583,17 +588,16 @@ fn encode_partition_tree(
             height: _,
             children,
         } => {
-            // Internal node: write partition type with correct context for this block size
             let (ctx, nsymbs) = svtav1_entropy::context::get_partition_context(
-                *width as usize, true, true,
+                *width as usize, has_above, has_left,
             );
             svtav1_entropy::context::write_partition(
                 writer, frame_ctx, ctx, *partition_type as u8, nsymbs,
             );
 
-            // Recurse into children in spec order
+            // Recurse into children — within an SB, sub-blocks always have neighbors
             for child in children {
-                encode_partition_tree(child, writer, frame_ctx, coeff_ctx, is_key);
+                encode_partition_tree(child, writer, frame_ctx, coeff_ctx, is_key, true, true);
             }
         }
     }
