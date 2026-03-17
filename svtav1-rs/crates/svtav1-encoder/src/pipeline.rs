@@ -435,6 +435,9 @@ impl EncodePipeline {
             );
 
             // Derive context from above and left neighbors in the mode info grid
+            if mi_y >= mi_rows || mi_x >= mi_cols {
+                break; // Safety: stop if position tracking went out of bounds
+            }
             let above_skip = if mi_y > 0 { mi_skip[(mi_y - 1) * mi_cols + mi_x] } else { true };
             let left_skip = if mi_x > 0 { mi_skip[mi_y * mi_cols + mi_x - 1] } else { true };
             let skip_ctx = svtav1_entropy::context::get_skip_context(above_skip, left_skip);

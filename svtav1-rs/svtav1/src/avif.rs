@@ -19,13 +19,6 @@
 //! assert!(!result.data.is_empty());
 //! ```
 
-use svtav1_dsp::intra_pred;
-use svtav1_encoder::encode_loop;
-use svtav1_encoder::mode_decision;
-use svtav1_entropy::context;
-use svtav1_entropy::writer::AomWriter;
-use svtav1_types::block::BlockSize;
-use svtav1_types::prediction::PredictionMode;
 
 /// Chroma subsampling format for AVIF encoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -247,10 +240,14 @@ impl AvifEncoder {
         preset as u8
     }
 
-    /// Encode a single grayscale (Y-only) still image.
+    /// Encode a single grayscale (Y-only) still image using the full pipeline.
     ///
-    /// The image is split into 8x8 blocks, and each block is encoded
-    /// using intra-only prediction with RD-optimized mode selection.
+    /// Uses the complete encoding pipeline: partition search with all 10
+    /// partition types, intra prediction with mode RDO, transform + quantize,
+    /// loop filters (deblock/CDEF/Wiener/sgrproj), and proper AV1 OBU output.
+    ///
+    /// The output `data` is raw AV1 OBU (temporal_delimiter + sequence_header +
+    /// frame), ready to be embedded in an AVIF container by zenavif-serialize.
     pub fn encode_y8(
         &self,
         pixels: &[u8],
@@ -262,134 +259,47 @@ impl AvifEncoder {
         self.validate_quality()?;
 
         let qp = Self::quality_to_qp(self.quality);
-        let _preset = Self::speed_to_preset(self.speed);
-        let lambda = svtav1_encoder::rate_control::qp_to_lambda(qp) as u64;
-
-        // Allocate reconstruction buffer (needed for neighbor-based prediction)
+        let preset = Self::speed_to_preset(self.speed);
         let w = width as usize;
         let h = height as usize;
-        let mut recon = vec![128u8; w * h];
 
-        // Bitstream writer — estimate capacity from image size
-        let capacity = w * h; // generous upper bound
-        let mut writer = AomWriter::new(capacity);
-
-        // Write simplified header: QP, preset, width, height
-        writer.write_literal(qp as u32, 6);
-        writer.write_literal(_preset as u32, 4);
-        writer.write_literal(width, 16);
-        writer.write_literal(height, 16);
-
-        // Encode block-by-block in raster order
-        let bw = 8usize;
-        let bh = 8usize;
-        let blocks_x = w.div_ceil(bw);
-        let blocks_y = h.div_ceil(bh);
-
-        for by in 0..blocks_y {
-            for bx in 0..blocks_x {
-                let x0 = bx * bw;
-                let y0 = by * bh;
-                let cur_w = bw.min(w - x0);
-                let cur_h = bh.min(h - y0);
-
-                // Extract source block — always pad to full 8x8 by repeating
-                // edge pixels so the transform sees a complete block.
-                let mut src_block = [0u8; 64]; // 8x8
-                for row in 0..bh {
-                    for col in 0..bw {
-                        let sr = row.min(cur_h - 1);
-                        let sc = col.min(cur_w - 1);
-                        src_block[row * bw + col] = pixels[(y0 + sr) * stride as usize + (x0 + sc)];
-                    }
-                }
-
-                // Build neighbor context from reconstruction buffer
-                let (above, left, top_left, has_above, has_left) =
-                    Self::get_neighbors(&recon, w, x0, y0, cur_w, cur_h);
-
-                // Generate and evaluate intra candidates
-                let mut candidates = mode_decision::generate_intra_candidates(BlockSize::Block8x8);
-
-                let mut best_idx = 0;
-                let mut best_cost = u64::MAX;
-
-                for (idx, cand) in candidates.iter_mut().enumerate() {
-                    // Generate prediction for full 8x8 block
-                    let mut pred_block = [128u8; 64];
-                    Self::generate_prediction(
-                        cand.mode,
-                        &mut pred_block,
-                        bw,
-                        &above,
-                        &left,
-                        top_left,
-                        bw,
-                        bh,
-                        has_above,
-                        has_left,
-                    );
-
-                    // Evaluate RD cost on the valid region only
-                    // (flatten valid region for the evaluator)
-                    let mut src_valid = [0u8; 64];
-                    let mut pred_valid = [0u8; 64];
-                    for row in 0..cur_h {
-                        for col in 0..cur_w {
-                            src_valid[row * cur_w + col] = src_block[row * bw + col];
-                            pred_valid[row * cur_w + col] = pred_block[row * bw + col];
-                        }
-                    }
-                    mode_decision::evaluate_candidate(
-                        cand,
-                        &src_valid[..cur_w * cur_h],
-                        &pred_valid[..cur_w * cur_h],
-                        cur_w,
-                        cur_h,
-                        lambda,
-                    );
-
-                    if cand.rd_cost < best_cost {
-                        best_cost = cand.rd_cost;
-                        best_idx = idx;
-                    }
-                }
-
-                let best_mode = candidates[best_idx].mode;
-
-                // Generate the winning prediction (full 8x8)
-                let mut pred_block = [128u8; 64];
-                Self::generate_prediction(
-                    best_mode,
-                    &mut pred_block,
-                    bw,
-                    &above,
-                    &left,
-                    top_left,
-                    bw,
-                    bh,
-                    has_above,
-                    has_left,
-                );
-
-                // Encode full 8x8: predict -> transform -> quantize -> reconstruct
-                let encode_result =
-                    encode_loop::encode_block(&src_block, bw, &pred_block, bw, bw, bh, qp);
-
-                // Write mode and coefficients to bitstream
-                context::write_intra_mode(&mut writer, best_mode as u8);
-                Self::write_coefficients(&mut writer, &encode_result);
-
-                // Update reconstruction buffer (only the valid region)
-                for row in 0..cur_h {
-                    for col in 0..cur_w {
-                        recon[(y0 + row) * w + (x0 + col)] = encode_result.recon[row * bw + col];
-                    }
-                }
+        // Copy source with stride → contiguous buffer, edge-padded to SB alignment
+        let sb_size = if preset <= 9 { 64usize } else { 32 };
+        let padded_w = w.div_ceil(sb_size) * sb_size;
+        let padded_h = h.div_ceil(sb_size) * sb_size;
+        let mut src = vec![128u8; padded_w * padded_h];
+        for r in 0..h {
+            for c in 0..w {
+                src[r * padded_w + c] = pixels[r * stride as usize + c];
+            }
+            // Replicate last column to pad width
+            for c in w..padded_w {
+                src[r * padded_w + c] = src[r * padded_w + w - 1];
+            }
+        }
+        // Replicate last row to pad height
+        for r in h..padded_h {
+            for c in 0..padded_w {
+                src[r * padded_w + c] = src[(h - 1) * padded_w + c];
             }
         }
 
-        let bitstream = writer.done().to_vec();
+        // Use the full encoding pipeline (single key frame, still-picture mode)
+        let rc_config = svtav1_encoder::rate_control::RcConfig {
+            mode: svtav1_encoder::rate_control::RcMode::Cqp,
+            qp,
+            ..svtav1_encoder::rate_control::RcConfig::default()
+        };
+        let mut pipeline = svtav1_encoder::pipeline::EncodePipeline::new(
+            padded_w as u32,
+            padded_h as u32,
+            preset,
+            rc_config,
+            0,
+            1,
+        );
+
+        let bitstream = pipeline.encode_frame(&src, padded_w);
 
         Ok(EncodedAvif {
             data: bitstream,
@@ -399,10 +309,27 @@ impl AvifEncoder {
         })
     }
 
+    /// Encode a single grayscale image and return raw AV1 OBU data.
+    ///
+    /// This is the interface compatible with zenavif-serialize:
+    /// returns only the AV1 bitstream (OBU packets) without container.
+    /// The caller wraps this in an AVIF ISO-BMFF container.
+    pub fn encode_to_av1_obu(
+        &self,
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+        stride: u32,
+    ) -> Result<Vec<u8>, EncodeError> {
+        let result = self.encode_y8(pixels, width, height, stride)?;
+        Ok(result.data)
+    }
+
     /// Encode a YUV 4:2:0 image.
     ///
-    /// Encodes luma and chroma planes independently using intra-only
-    /// prediction. Chroma planes are half the luma dimensions.
+    /// Encodes the luma plane through the full pipeline. Chroma planes
+    /// are encoded independently at half resolution. Each produces a
+    /// separate AV1 OBU stream; they're concatenated with length prefixes.
     pub fn encode_yuv420(
         &self,
         y: &[u8],
@@ -412,10 +339,7 @@ impl AvifEncoder {
         height: u32,
         y_stride: u32,
     ) -> Result<EncodedAvif, EncodeError> {
-        if width == 0 || height == 0 {
-            return Err(EncodeError::InvalidDimensions);
-        }
-        if width % 2 != 0 || height % 2 != 0 {
+        if width == 0 || height == 0 || width % 2 != 0 || height % 2 != 0 {
             return Err(EncodeError::InvalidDimensions);
         }
 
@@ -426,37 +350,27 @@ impl AvifEncoder {
 
         let chroma_w = width / 2;
         let chroma_h = height / 2;
-        let chroma_stride = chroma_w;
-        let chroma_len_needed = (chroma_h - 1) * chroma_stride + chroma_w;
+        let chroma_len_needed = (chroma_h - 1) * chroma_w + chroma_w;
         if (u.len() as u32) < chroma_len_needed || (v.len() as u32) < chroma_len_needed {
             return Err(EncodeError::InvalidDimensions);
         }
 
         self.validate_quality()?;
 
-        // Encode luma plane
+        // Encode each plane through the full pipeline
         let luma_result = self.encode_y8(y, width, height, y_stride)?;
+        let u_result = self.encode_y8(u, chroma_w, chroma_h, chroma_w)?;
+        let v_result = self.encode_y8(v, chroma_w, chroma_h, chroma_w)?;
 
-        // Encode chroma planes at half resolution
-        let u_result = self.encode_y8(u, chroma_w, chroma_h, chroma_stride)?;
-        let v_result = self.encode_y8(v, chroma_w, chroma_h, chroma_stride)?;
-
-        // Combine into a single bitstream with plane markers
+        // Length-prefixed plane concatenation for multi-plane embedding
         let mut combined = Vec::with_capacity(
-            4 + luma_result.data.len() + 4 + u_result.data.len() + 4 + v_result.data.len(),
+            12 + luma_result.data.len() + u_result.data.len() + v_result.data.len(),
         );
-
-        // Length-prefixed plane concatenation
-        let luma_len = luma_result.data.len() as u32;
-        combined.extend_from_slice(&luma_len.to_le_bytes());
+        combined.extend_from_slice(&(luma_result.data.len() as u32).to_le_bytes());
         combined.extend_from_slice(&luma_result.data);
-
-        let u_len = u_result.data.len() as u32;
-        combined.extend_from_slice(&u_len.to_le_bytes());
+        combined.extend_from_slice(&(u_result.data.len() as u32).to_le_bytes());
         combined.extend_from_slice(&u_result.data);
-
-        let v_len = v_result.data.len() as u32;
-        combined.extend_from_slice(&v_len.to_le_bytes());
+        combined.extend_from_slice(&(v_result.data.len() as u32).to_le_bytes());
         combined.extend_from_slice(&v_result.data);
 
         Ok(EncodedAvif {
@@ -466,10 +380,6 @@ impl AvifEncoder {
             bit_depth: self.bit_depth,
         })
     }
-
-    // ========================================================================
-    // Internal helpers
-    // ========================================================================
 
     /// Validate image dimensions against the pixel buffer.
     fn validate_dimensions(
@@ -500,215 +410,6 @@ impl AvifEncoder {
         Ok(())
     }
 
-    /// Extract neighbor pixels from the reconstruction buffer for intra prediction.
-    fn get_neighbors(
-        recon: &[u8],
-        recon_stride: usize,
-        x0: usize,
-        y0: usize,
-        width: usize,
-        height: usize,
-    ) -> ([u8; 64], [u8; 64], u8, bool, bool) {
-        let has_above = y0 > 0;
-        let has_left = x0 > 0;
-
-        let mut above = [128u8; 64];
-        let mut left = [128u8; 64];
-        let mut top_left = 128u8;
-
-        if has_above {
-            for col in 0..width {
-                if x0 + col < recon_stride {
-                    above[col] = recon[(y0 - 1) * recon_stride + x0 + col];
-                }
-            }
-        }
-        if has_left {
-            for row in 0..height {
-                above[row] = if has_above && x0 > 0 {
-                    // keep above as-is, populate left
-                    above[row]
-                } else {
-                    above[row]
-                };
-                left[row] = recon[(y0 + row) * recon_stride + x0 - 1];
-            }
-        }
-        if has_above && has_left {
-            top_left = recon[(y0 - 1) * recon_stride + x0 - 1];
-        }
-
-        (above, left, top_left, has_above, has_left)
-    }
-
-    /// Generate an intra prediction block for the given mode.
-    fn generate_prediction(
-        mode: PredictionMode,
-        pred: &mut [u8],
-        pred_stride: usize,
-        above: &[u8],
-        left: &[u8],
-        top_left: u8,
-        width: usize,
-        height: usize,
-        has_above: bool,
-        has_left: bool,
-    ) {
-        match mode {
-            PredictionMode::DcPred => {
-                intra_pred::predict_dc(
-                    pred,
-                    pred_stride,
-                    above,
-                    left,
-                    width,
-                    height,
-                    has_above,
-                    has_left,
-                );
-            }
-            PredictionMode::VPred => {
-                if has_above {
-                    intra_pred::predict_v(pred, pred_stride, above, width, height);
-                } else {
-                    // Fallback to DC when above is unavailable
-                    intra_pred::predict_dc(
-                        pred,
-                        pred_stride,
-                        above,
-                        left,
-                        width,
-                        height,
-                        false,
-                        has_left,
-                    );
-                }
-            }
-            PredictionMode::HPred => {
-                if has_left {
-                    intra_pred::predict_h(pred, pred_stride, left, width, height);
-                } else {
-                    intra_pred::predict_dc(
-                        pred,
-                        pred_stride,
-                        above,
-                        left,
-                        width,
-                        height,
-                        has_above,
-                        false,
-                    );
-                }
-            }
-            PredictionMode::SmoothPred => {
-                if has_above && has_left {
-                    intra_pred::predict_smooth(pred, pred_stride, above, left, width, height);
-                } else {
-                    intra_pred::predict_dc(
-                        pred,
-                        pred_stride,
-                        above,
-                        left,
-                        width,
-                        height,
-                        has_above,
-                        has_left,
-                    );
-                }
-            }
-            PredictionMode::SmoothVPred => {
-                if has_above && has_left {
-                    intra_pred::predict_smooth_v(pred, pred_stride, above, left, 0, height, width);
-                } else {
-                    intra_pred::predict_dc(
-                        pred,
-                        pred_stride,
-                        above,
-                        left,
-                        width,
-                        height,
-                        has_above,
-                        has_left,
-                    );
-                }
-            }
-            PredictionMode::SmoothHPred => {
-                if has_above && has_left {
-                    intra_pred::predict_smooth_h(pred, pred_stride, above, left, width, height);
-                } else {
-                    intra_pred::predict_dc(
-                        pred,
-                        pred_stride,
-                        above,
-                        left,
-                        width,
-                        height,
-                        has_above,
-                        has_left,
-                    );
-                }
-            }
-            PredictionMode::PaethPred => {
-                if has_above && has_left {
-                    intra_pred::predict_paeth(
-                        pred,
-                        pred_stride,
-                        above,
-                        left,
-                        top_left,
-                        width,
-                        height,
-                    );
-                } else {
-                    intra_pred::predict_dc(
-                        pred,
-                        pred_stride,
-                        above,
-                        left,
-                        width,
-                        height,
-                        has_above,
-                        has_left,
-                    );
-                }
-            }
-            // Directional modes — fall back to DC for now (full directional
-            // prediction requires angle computation not yet wired through)
-            _ => {
-                intra_pred::predict_dc(
-                    pred,
-                    pred_stride,
-                    above,
-                    left,
-                    width,
-                    height,
-                    has_above,
-                    has_left,
-                );
-            }
-        }
-    }
-
-    /// Write quantized coefficients to the bitstream.
-    fn write_coefficients(writer: &mut AomWriter, result: &encode_loop::EncodeBlockResult) {
-        // Write EOB (end of block) as a 7-bit value (max 64 for 8x8)
-        writer.write_literal(result.eob as u32, 7);
-
-        if result.eob == 0 {
-            return;
-        }
-
-        // Write non-zero coefficients
-        for &coeff in &result.qcoeffs[..result.eob as usize] {
-            let sign = coeff < 0;
-            let abs_val = coeff.unsigned_abs();
-
-            // Write sign bit
-            writer.write_bit(sign);
-            // Write magnitude (simplified: 10-bit fixed width)
-            writer.write_literal(abs_val.min(1023), 10);
-        }
-    }
 }
 
 #[cfg(test)]
