@@ -58,11 +58,13 @@
 
 ## Known Bugs
 
-1. **OBMC doesn't compute neighbor predictions** — `obmc.rs` has correct blend masks but the pipeline doesn't generate the neighbor block predictions that OBMC blends with. (obmc.rs — orphaned)
+1. **OBMC doesn't compute neighbor predictions** — blend functions work, MV map exists, but pipeline doesn't generate neighbor block predictions for blending. Needs integration into encode_single_block prediction generation.
 
-2. **No reference MV stack** — Inter prediction always uses Mv::ZERO as ME search center. Real AV1 derives MV predictors from spatial/temporal neighbors.
+2. **No multi-threaded tile parallelism** — tile infrastructure exists (TileConfig, compute_tile_boundaries, write_tile_group) but encoding is single-threaded. Needs rayon or std::thread::scope for parallel tile encoding.
 
-3. **Bitstream not dav1d-decodable** — OBU structure is correct but needs proper context derivation, tile structure, and full spec-conformant frame headers for dav1d conformance.
+3. **No TPL rate control** — temporal propagation layer for adaptive QP allocation across frames is not implemented. Currently uses fixed CQP/CRF without temporal lookahead.
+
+4. **Bitstream not dav1d-decodable** — Frame OBU structure is correct (raw header + tile_group_header + tile data) but the entropy-coded syntax doesn't match the spec's exact context derivation for all elements.
 
 ## Investigation Notes
 
