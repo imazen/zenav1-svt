@@ -978,6 +978,58 @@ fn encode_with_neighbors(
 /// prediction modes and picks the one with lowest RD cost.
 /// When `ref_ctx` is provided, also tries inter prediction using ME.
 ///
+/// Generate an inter prediction block from reference + MV with bilinear interpolation.
+/// Supports full-pel, half-pel, and quarter-pel positions.
+fn generate_inter_pred(
+    rfc: &RefFrameCtx,
+    mv: svtav1_types::motion::Mv,
+    abs_x: usize,
+    abs_y: usize,
+    width: usize,
+    height: usize,
+) -> alloc::vec::Vec<u8> {
+    let int_x = abs_x as i32 + (mv.x as i32 >> 3);
+    let int_y = abs_y as i32 + (mv.y as i32 >> 3);
+    let fx = (mv.x & 7) as i32;
+    let fy = (mv.y & 7) as i32;
+    let n = width * height;
+    let mut pred = alloc::vec![128u8; n];
+    for r in 0..height {
+        for c in 0..width {
+            let ry = int_y + r as i32;
+            let rx = int_x + c as i32;
+            if ry >= 0
+                && (ry as usize + 1) < rfc.pic_height
+                && rx >= 0
+                && (rx as usize + 1) < rfc.pic_width
+            {
+                let off = ry as usize * rfc.stride + rx as usize;
+                let val = if fx == 0 && fy == 0 {
+                    rfc.y_plane[off] as i32
+                } else if fy == 0 {
+                    ((8 - fx) * rfc.y_plane[off] as i32 + fx * rfc.y_plane[off + 1] as i32 + 4)
+                        >> 3
+                } else if fx == 0 {
+                    ((8 - fy) * rfc.y_plane[off] as i32
+                        + fy * rfc.y_plane[off + rfc.stride] as i32
+                        + 4)
+                        >> 3
+                } else {
+                    let tl = rfc.y_plane[off] as i32;
+                    let tr = rfc.y_plane[off + 1] as i32;
+                    let bl = rfc.y_plane[off + rfc.stride] as i32;
+                    let br = rfc.y_plane[off + rfc.stride + 1] as i32;
+                    let top = (8 - fx) * tl + fx * tr;
+                    let bot = (8 - fx) * bl + fx * br;
+                    ((8 - fy) * top + fy * bot + 32) >> 6
+                };
+                pred[r * width + c] = val.clamp(0, 255) as u8;
+            }
+        }
+    }
+    pred
+}
+
 /// Uses the provided `above`/`left`/`top_left` neighbor arrays for prediction.
 /// `has_above`/`has_left` control DC prediction averaging (false at frame edges).
 /// (Spec 05, Section 7.11.2)
@@ -1265,49 +1317,52 @@ fn encode_single_block(
             center_mv,
         );
 
-        // Generate inter prediction from reference + MV with weighted bilinear
-        // interpolation. Supports full-pel, half-pel, and quarter-pel positions.
-        let int_x = abs_x as i32 + (me_result.mv.x as i32 >> 3);
-        let int_y = abs_y as i32 + (me_result.mv.y as i32 >> 3);
-        let fx = (me_result.mv.x & 7) as i32; // 0-7 sub-pel fraction
-        let fy = (me_result.mv.y & 7) as i32;
+        // Generate inter prediction from reference + MV
+        let mut inter_pred = generate_inter_pred(rfc, me_result.mv, abs_x, abs_y, width, height);
 
-        let mut inter_pred = alloc::vec![128u8; n];
-        for r in 0..height {
-            for c in 0..width {
-                let ry = int_y + r as i32;
-                let rx = int_x + c as i32;
-                if ry >= 0
-                    && (ry as usize + 1) < rfc.pic_height
-                    && rx >= 0
-                    && (rx as usize + 1) < rfc.pic_width
-                {
-                    let off = ry as usize * rfc.stride + rx as usize;
-                    let val = if fx == 0 && fy == 0 {
-                        rfc.y_plane[off] as i32
-                    } else if fy == 0 {
-                        // Horizontal sub-pel: weighted average
-                        ((8 - fx) * rfc.y_plane[off] as i32
-                            + fx * rfc.y_plane[off + 1] as i32
-                            + 4)
-                            >> 3
-                    } else if fx == 0 {
-                        // Vertical sub-pel
-                        ((8 - fy) * rfc.y_plane[off] as i32
-                            + fy * rfc.y_plane[off + rfc.stride] as i32
-                            + 4)
-                            >> 3
-                    } else {
-                        // Diagonal sub-pel: bilinear 2D interpolation
-                        let tl = rfc.y_plane[off] as i32;
-                        let tr = rfc.y_plane[off + 1] as i32;
-                        let bl = rfc.y_plane[off + rfc.stride] as i32;
-                        let br = rfc.y_plane[off + rfc.stride + 1] as i32;
-                        let top = (8 - fx) * tl + fx * tr;
-                        let bot = (8 - fx) * bl + fx * br;
-                        ((8 - fy) * top + fy * bot + 32) >> 6
-                    };
-                    inter_pred[r * width + c] = val.clamp(0, 255) as u8;
+        // Apply OBMC blending with above/left neighbor predictions.
+        // Uses neighbor MVs from the MV map to generate overlap predictions.
+        // (Spec 06: OBMC blends current prediction with neighbor predictions)
+        if let Some(mv_map) = rfc.mv_map {
+            let bx = abs_x / 8;
+            let by = abs_y / 8;
+            let stride = rfc.mv_map_stride;
+            let overlap_h = (height / 2).clamp(1, 4);
+            let overlap_w = (width / 2).clamp(1, 4);
+
+            // Above neighbor OBMC
+            if by > 0 && stride > 0 {
+                let above_mv = mv_map[(by - 1) * stride + bx];
+                if above_mv != me_result.mv {
+                    let above_pred =
+                        generate_inter_pred(rfc, above_mv, abs_x, abs_y, width, overlap_h);
+                    svtav1_dsp::obmc::obmc_blend_above(
+                        &mut inter_pred,
+                        width,
+                        &above_pred,
+                        width,
+                        width,
+                        height,
+                        overlap_h,
+                    );
+                }
+            }
+
+            // Left neighbor OBMC
+            if bx > 0 && stride > 0 {
+                let left_mv = mv_map[by * stride + bx - 1];
+                if left_mv != me_result.mv {
+                    let left_pred =
+                        generate_inter_pred(rfc, left_mv, abs_x, abs_y, overlap_w, height);
+                    svtav1_dsp::obmc::obmc_blend_left(
+                        &mut inter_pred,
+                        width,
+                        &left_pred,
+                        overlap_w,
+                        width,
+                        height,
+                        overlap_w,
+                    );
                 }
             }
         }
