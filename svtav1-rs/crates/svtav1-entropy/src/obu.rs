@@ -25,6 +25,12 @@ pub struct BitWriter {
     bit_offset: u32,
 }
 
+impl Default for BitWriter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BitWriter {
     pub fn new() -> Self {
         Self {
@@ -57,7 +63,7 @@ impl BitWriter {
 
     /// Number of bytes written (rounded up).
     pub fn bytes_written(&self) -> usize {
-        ((self.bit_offset + 7) / 8) as usize
+        self.bit_offset.div_ceil(8) as usize
     }
 
     /// Get the written data.
@@ -220,7 +226,7 @@ pub fn write_sequence_header(width: u32, height: u32) -> Vec<u8> {
 }
 
 /// Write a minimal frame header for an intra-only key frame.
-pub fn write_key_frame_header(width: u32, height: u32, base_qindex: u8) -> Vec<u8> {
+pub fn write_key_frame_header(_width: u32, _height: u32, base_qindex: u8) -> Vec<u8> {
     let mut wb = BitWriter::new();
 
     // With reduced_still_picture_header:

@@ -37,3 +37,5 @@ unsafe_code = "forbid"
 too_many_arguments = "allow"
 # Transform butterfly loops use index arithmetic matching C source exactly
 needless_range_loop = "allow"
+# OBU header tests use binary literals for readability
+unusual_byte_groupings = "allow"

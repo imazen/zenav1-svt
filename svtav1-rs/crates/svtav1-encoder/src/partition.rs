@@ -9,7 +9,6 @@
 //! HORZ_A, HORZ_B, VERT_A, VERT_B, HORZ_4, VERT_4.
 //! This implementation supports NONE and SPLIT for simplicity.
 
-use svtav1_types::block::BlockSize;
 
 /// Minimum block size for partition search.
 pub const MIN_BLOCK_SIZE: usize = 4;
@@ -143,8 +142,8 @@ pub fn partition_search(
 fn encode_single_block(
     src: &[u8],
     src_stride: usize,
-    pred: &[u8],
-    pred_stride: usize,
+    _pred: &[u8],
+    _pred_stride: usize,
     recon: &mut [u8],
     recon_stride: usize,
     width: usize,
