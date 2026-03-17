@@ -70,6 +70,22 @@ impl PartitionSearchConfig {
     }
 }
 
+/// Reference frame context for inter prediction within partition search.
+///
+/// When provided, `encode_single_block` tries inter prediction in addition
+/// to intra modes, comparing RD cost to pick the winner.
+#[derive(Clone, Copy)]
+pub struct RefFrameCtx<'a> {
+    /// Reference Y plane pixels.
+    pub y_plane: &'a [u8],
+    /// Reference stride.
+    pub stride: usize,
+    /// Reference picture width.
+    pub pic_width: usize,
+    /// Reference picture height.
+    pub pic_height: usize,
+}
+
 /// Frame-level reconstruction context for extracting intra prediction neighbors.
 ///
 /// Provides read access to the frame reconstruction buffer so that blocks
@@ -208,6 +224,7 @@ pub fn partition_search(
         None,
         0,
         0,
+        None,
     )
 }
 
@@ -219,8 +236,7 @@ pub fn partition_search(
 ///
 /// When `frame_ctx` is provided, prediction reads above/left neighbors from
 /// previously-finalized superblocks in the frame reconstruction buffer.
-/// `abs_x`/`abs_y` give the absolute position of this region in the frame.
-/// (Spec 05, Section 7.11.2: prediction uses previously-reconstructed pixels)
+/// When `ref_ctx` is provided, inter prediction is also tried using ME.
 pub fn partition_search_with_config(
     src: &[u8],
     src_stride: usize,
@@ -235,6 +251,7 @@ pub fn partition_search_with_config(
     frame_ctx: Option<&FrameReconCtx>,
     abs_x: usize,
     abs_y: usize,
+    ref_ctx: Option<&RefFrameCtx>,
 ) -> PartitionResult {
     // Base case: minimum size or max depth reached
     if width <= MIN_BLOCK_SIZE || height <= MIN_BLOCK_SIZE || max_depth == 0 {
@@ -250,6 +267,7 @@ pub fn partition_search_with_config(
             frame_ctx,
             abs_x,
             abs_y,
+            ref_ctx,
         );
     }
 
@@ -266,6 +284,7 @@ pub fn partition_search_with_config(
         frame_ctx,
         abs_x,
         abs_y,
+        ref_ctx,
     );
 
     // If block is small enough, don't bother splitting further
@@ -306,6 +325,7 @@ pub fn partition_search_with_config(
             frame_ctx,
             abs_x,
             abs_y,
+            ref_ctx,
         );
         horz_result.distortion += top.distortion;
         horz_result.rate += top.rate;
@@ -324,6 +344,7 @@ pub fn partition_search_with_config(
             frame_ctx,
             abs_x,
             abs_y + hh,
+            ref_ctx,
         );
         horz_result.distortion += bot.distortion;
         horz_result.rate += bot.rate;
@@ -360,6 +381,7 @@ pub fn partition_search_with_config(
             frame_ctx,
             abs_x,
             abs_y,
+            ref_ctx,
         );
         vert_result.distortion += left.distortion;
         vert_result.rate += left.rate;
@@ -378,6 +400,7 @@ pub fn partition_search_with_config(
             frame_ctx,
             abs_x + hw,
             abs_y,
+            ref_ctx,
         );
         vert_result.distortion += right.distortion;
         vert_result.rate += right.rate;
@@ -416,6 +439,7 @@ pub fn partition_search_with_config(
                 frame_ctx,
                 abs_x,
                 abs_y + y0,
+                ref_ctx,
             );
             h4_result.distortion += sub.distortion;
             h4_result.rate += sub.rate;
@@ -453,6 +477,7 @@ pub fn partition_search_with_config(
                 frame_ctx,
                 abs_x + x0,
                 abs_y,
+                ref_ctx,
             );
             v4_result.distortion += sub.distortion;
             v4_result.rate += sub.rate;
@@ -490,6 +515,7 @@ pub fn partition_search_with_config(
             frame_ctx,
             abs_x,
             abs_y,
+            ref_ctx,
         );
         ha_result.distortion += s.distortion;
         ha_result.rate += s.rate;
@@ -507,6 +533,7 @@ pub fn partition_search_with_config(
             frame_ctx,
             abs_x + hw,
             abs_y,
+            ref_ctx,
         );
         ha_result.distortion += s.distortion;
         ha_result.rate += s.rate;
@@ -524,6 +551,7 @@ pub fn partition_search_with_config(
             frame_ctx,
             abs_x,
             abs_y + hh,
+            ref_ctx,
         );
         ha_result.distortion += s.distortion;
         ha_result.rate += s.rate;
@@ -559,6 +587,7 @@ pub fn partition_search_with_config(
             frame_ctx,
             abs_x,
             abs_y,
+            ref_ctx,
         );
         hb_result.distortion += s.distortion;
         hb_result.rate += s.rate;
@@ -576,6 +605,7 @@ pub fn partition_search_with_config(
             frame_ctx,
             abs_x,
             abs_y + hh,
+            ref_ctx,
         );
         hb_result.distortion += s.distortion;
         hb_result.rate += s.rate;
@@ -593,6 +623,7 @@ pub fn partition_search_with_config(
             frame_ctx,
             abs_x + hw,
             abs_y + hh,
+            ref_ctx,
         );
         hb_result.distortion += s.distortion;
         hb_result.rate += s.rate;
@@ -628,6 +659,7 @@ pub fn partition_search_with_config(
             frame_ctx,
             abs_x,
             abs_y,
+            ref_ctx,
         );
         va_result.distortion += s.distortion;
         va_result.rate += s.rate;
@@ -645,6 +677,7 @@ pub fn partition_search_with_config(
             frame_ctx,
             abs_x,
             abs_y + hh,
+            ref_ctx,
         );
         va_result.distortion += s.distortion;
         va_result.rate += s.rate;
@@ -662,6 +695,7 @@ pub fn partition_search_with_config(
             frame_ctx,
             abs_x + hw,
             abs_y,
+            ref_ctx,
         );
         va_result.distortion += s.distortion;
         va_result.rate += s.rate;
@@ -697,6 +731,7 @@ pub fn partition_search_with_config(
             frame_ctx,
             abs_x,
             abs_y,
+            ref_ctx,
         );
         vb_result.distortion += s.distortion;
         vb_result.rate += s.rate;
@@ -714,6 +749,7 @@ pub fn partition_search_with_config(
             frame_ctx,
             abs_x + hw,
             abs_y,
+            ref_ctx,
         );
         vb_result.distortion += s.distortion;
         vb_result.rate += s.rate;
@@ -731,6 +767,7 @@ pub fn partition_search_with_config(
             frame_ctx,
             abs_x + hw,
             abs_y + hh,
+            ref_ctx,
         );
         vb_result.distortion += s.distortion;
         vb_result.rate += s.rate;
@@ -778,6 +815,7 @@ pub fn partition_search_with_config(
             frame_ctx,
             abs_x + x0,
             abs_y + y0,
+            ref_ctx,
         );
 
         split_result.distortion += sub.distortion;
@@ -814,6 +852,7 @@ fn encode_with_neighbors(
     frame_ctx: Option<&FrameReconCtx>,
     abs_x: usize,
     abs_y: usize,
+    ref_ctx: Option<&RefFrameCtx>,
 ) -> PartitionResult {
     let (above, left, top_left, has_above, has_left) =
         extract_neighbors(frame_ctx, abs_x, abs_y, width, height);
@@ -831,11 +870,15 @@ fn encode_with_neighbors(
         top_left,
         has_above,
         has_left,
+        ref_ctx,
+        abs_x,
+        abs_y,
     )
 }
 
 /// Encode a single block with mode decision — tries multiple intra
 /// prediction modes and picks the one with lowest RD cost.
+/// When `ref_ctx` is provided, also tries inter prediction using ME.
 ///
 /// Uses the provided `above`/`left`/`top_left` neighbor arrays for prediction.
 /// `has_above`/`has_left` control DC prediction averaging (false at frame edges).
@@ -854,6 +897,9 @@ fn encode_single_block(
     top_left: u8,
     has_above: bool,
     has_left: bool,
+    ref_ctx: Option<&RefFrameCtx>,
+    abs_x: usize,
+    abs_y: usize,
 ) -> PartitionResult {
     let n = width * height;
     let lambda = crate::rate_control::qp_to_lambda(qp) as u64;
@@ -1094,6 +1140,69 @@ fn encode_single_block(
         }
     }
 
+    // Try inter prediction if a reference frame is available.
+    // Runs full-pel ME to find the best MV, generates prediction from the
+    // reference, and compares RD cost against the best intra mode.
+    if let Some(rfc) = ref_ctx {
+        let search_w = 16i32.min(rfc.pic_width as i32 / 2);
+        let search_h = 16i32.min(rfc.pic_height as i32 / 2);
+        let me_result = crate::motion_est::full_pel_search(
+            src,
+            src_stride,
+            rfc.y_plane,
+            rfc.stride,
+            abs_x as i32,
+            abs_y as i32,
+            width,
+            height,
+            svtav1_types::motion::Mv::ZERO,
+            search_w,
+            search_h,
+            rfc.pic_width,
+            rfc.pic_height,
+        );
+
+        // Generate inter prediction block from reference + MV
+        let ref_x = abs_x as i32 + (me_result.mv.x as i32 >> 3);
+        let ref_y = abs_y as i32 + (me_result.mv.y as i32 >> 3);
+        let mut inter_pred = alloc::vec![128u8; n];
+        for r in 0..height {
+            for c in 0..width {
+                let ry = ref_y + r as i32;
+                let rx = ref_x + c as i32;
+                if ry >= 0
+                    && (ry as usize) < rfc.pic_height
+                    && rx >= 0
+                    && (rx as usize) < rfc.pic_width
+                {
+                    inter_pred[r * width + c] =
+                        rfc.y_plane[ry as usize * rfc.stride + rx as usize];
+                }
+            }
+        }
+
+        let enc_inter = crate::encode_loop::encode_block(
+            src,
+            src_stride,
+            &inter_pred,
+            width,
+            width,
+            height,
+            qp,
+        );
+        // Add MV rate overhead (~2 bytes for simple MVs)
+        let mv_rate = if me_result.mv.x == 0 && me_result.mv.y == 0 {
+            64 // zero MV: ~0.25 bits
+        } else {
+            256 // nonzero MV: ~1 bit for joint + magnitude
+        };
+        let inter_cost = enc_inter.distortion + ((lambda * (enc_inter.rate + mv_rate) as u64) >> 8);
+        if inter_cost < best_cost {
+            // best_cost update intentionally omitted — no further reads
+            best_enc = Some(enc_inter);
+        }
+    }
+
     let enc = best_enc.unwrap_or_else(|| {
         // Fallback: DC prediction
         let pred_block = alloc::vec![128u8; n];
@@ -1202,6 +1311,7 @@ mod tests {
             Some(&ctx),
             0,
             16,
+            None,
         );
 
         // Encode without frame context
@@ -1220,6 +1330,7 @@ mod tests {
             None,
             0,
             0,
+            None,
         );
 
         // With real neighbors, distortion should differ (better prediction)

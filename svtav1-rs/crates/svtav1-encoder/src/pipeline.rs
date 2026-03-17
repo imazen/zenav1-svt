@@ -155,6 +155,14 @@ impl EncodePipeline {
         let sb_cols = w.div_ceil(sb_size);
         let sb_rows = h.div_ceil(sb_size);
 
+        // Get reference frame for inter prediction (if available)
+        let ref_frame_data: Option<alloc::vec::Vec<u8>> = if !is_key {
+            // Use the most recent reference from DPB slot 0
+            self.dpb.get(0).map(|rf| rf.y_plane.clone())
+        } else {
+            None
+        };
+
         for sb_row in 0..sb_rows {
             for sb_col in 0..sb_cols {
                 let x0 = sb_col * sb_size;
@@ -172,6 +180,14 @@ impl EncodePipeline {
                     sb_x: x0,
                     sb_y: y0,
                 };
+                let ref_ctx = ref_frame_data.as_ref().map(|rf| {
+                    crate::partition::RefFrameCtx {
+                        y_plane: rf,
+                        stride: w,
+                        pic_width: w,
+                        pic_height: h,
+                    }
+                });
                 let _sb_result = crate::partition::partition_search_with_config(
                     &encode_input[y0 * w + x0..],
                     w,
@@ -186,6 +202,7 @@ impl EncodePipeline {
                     Some(&frame_ctx),
                     x0,
                     y0,
+                    ref_ctx.as_ref(),
                 );
 
                 // Write SB recon to frame buffer
