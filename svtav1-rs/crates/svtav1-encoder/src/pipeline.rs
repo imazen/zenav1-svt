@@ -131,12 +131,32 @@ impl EncodePipeline {
         let activity_map = crate::perceptual::ActivityMap::compute(&encode_input, w, h, w);
 
         // Adjust QP based on frame-level activity (VAQ)
-        // Low-activity frames get lower QP (more bits for smooth content)
         let vaq_adjusted_qp = if activity_map.frame_avg > 0.0 {
             let frame_activity_factor = (activity_map.frame_avg / 10.0).log2().clamp(-2.0, 2.0);
             (pcs.qp as f64 + frame_activity_factor).clamp(0.0, 63.0) as u8
         } else {
             pcs.qp
+        };
+
+        // TPL temporal complexity adjustment for inter frames:
+        // Compare source to reference to estimate motion complexity,
+        // then adjust QP — static scenes get lower QP (better quality),
+        // high-motion scenes get higher QP (save bits for key frames).
+        let tpl_adjusted_qp = if !is_key && self.dpb.occupied_slots() > 0 {
+            if let Some(rf) = self.dpb.get(0) {
+                let tpl_delta = crate::rate_control::tpl_qp_adjustment(
+                    &encode_input,
+                    &rf.y_plane,
+                    w,
+                    h,
+                    w,
+                );
+                (vaq_adjusted_qp as i16 + tpl_delta as i16).clamp(0, 63) as u8
+            } else {
+                vaq_adjusted_qp
+            }
+        } else {
+            vaq_adjusted_qp
         };
 
         // Step 4: Encode the frame superblock-by-superblock in raster order.
@@ -149,7 +169,7 @@ impl EncodePipeline {
         } else {
             32
         };
-        let lambda = (crate::rate_control::qp_to_lambda(vaq_adjusted_qp)
+        let lambda = (crate::rate_control::qp_to_lambda(tpl_adjusted_qp)
             * self.speed_config.lambda_scale()) as u64;
 
         let sb_cols = w.div_ceil(sb_size);
@@ -183,7 +203,7 @@ impl EncodePipeline {
             sb_rows,
             rows_per_tile,
             tile_rows,
-            vaq_adjusted_qp,
+            tpl_adjusted_qp,
             lambda,
             &self.speed_config,
             ref_frame_data.as_deref(),

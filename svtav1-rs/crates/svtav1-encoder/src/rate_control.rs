@@ -128,6 +128,95 @@ pub fn assign_picture_qp(config: &RcConfig, state: &RcState, temporal_layer: u8)
     }
 }
 
+/// Temporal complexity estimation for TPL-like QP adjustment.
+///
+/// Computes the average SAD between the current frame and the reference.
+/// Returns a QP adjustment: positive for complex (high-motion) frames,
+/// negative for simple (static) frames. This implements a simplified
+/// TPL that distributes bits based on temporal prediction difficulty.
+pub fn tpl_qp_adjustment(
+    source: &[u8],
+    reference: &[u8],
+    width: usize,
+    height: usize,
+    src_stride: usize,
+) -> i8 {
+    if source.len() < width * height || reference.len() < width * height {
+        return 0;
+    }
+
+    // Compute frame-level SAD (sum of absolute differences)
+    let mut sad: u64 = 0;
+    let n = width * height;
+    for r in 0..height {
+        for c in 0..width {
+            let s = source[r * src_stride + c] as i32;
+            let ref_val = reference[r * width + c] as i32;
+            sad += (s - ref_val).unsigned_abs() as u64;
+        }
+    }
+
+    let avg_sad = sad / n as u64;
+
+    // Map average SAD to QP adjustment:
+    // SAD < 2: very static → lower QP by 4 (spend more bits = better quality)
+    // SAD 2-8: moderate → no adjustment
+    // SAD 8-20: active → raise QP by 2 (save bits for key frames)
+    // SAD > 20: high motion → raise QP by 4
+    match avg_sad {
+        0..=1 => -4,
+        2..=4 => -2,
+        5..=8 => 0,
+        9..=20 => 2,
+        _ => 4,
+    }
+}
+
+/// Compute per-SB QP offsets based on spatial + temporal complexity.
+///
+/// Returns a flat array of QP deltas (one per SB in raster order).
+/// Positive deltas = more complex = higher QP. Negative = simpler = lower QP.
+pub fn tpl_sb_qp_offsets(
+    source: &[u8],
+    reference: &[u8],
+    width: usize,
+    height: usize,
+    src_stride: usize,
+    sb_size: usize,
+) -> alloc::vec::Vec<i8> {
+    let sb_cols = width.div_ceil(sb_size);
+    let sb_rows = height.div_ceil(sb_size);
+    let mut offsets = alloc::vec![0i8; sb_cols * sb_rows];
+
+    for sb_row in 0..sb_rows {
+        for sb_col in 0..sb_cols {
+            let x0 = sb_col * sb_size;
+            let y0 = sb_row * sb_size;
+            let cur_w = sb_size.min(width - x0);
+            let cur_h = sb_size.min(height - y0);
+
+            // Compute SB-level SAD
+            let mut sad: u64 = 0;
+            for r in 0..cur_h {
+                for c in 0..cur_w {
+                    let s = source[(y0 + r) * src_stride + x0 + c] as i32;
+                    let ref_val = reference[(y0 + r) * width + x0 + c] as i32;
+                    sad += (s - ref_val).unsigned_abs() as u64;
+                }
+            }
+            let avg = sad / (cur_w * cur_h) as u64;
+
+            offsets[sb_row * sb_cols + sb_col] = match avg {
+                0..=2 => -2,
+                3..=10 => 0,
+                11..=25 => 2,
+                _ => 4,
+            };
+        }
+    }
+    offsets
+}
+
 /// Update RC state after encoding a picture.
 pub fn update_rc_state(state: &mut RcState, bits_used: u64, new_qp: u8) {
     state.total_bits += bits_used;
