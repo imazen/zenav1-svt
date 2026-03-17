@@ -1,7 +1,7 @@
 # SVT-AV1 Rust Port — Context Handoff
 
-**Date:** 2026-03-16
-**Lines:** 23,345 | **Files:** 70 | **Tests:** 471 (71 golden/spec parity) | **Warnings:** 0
+**Date:** 2026-03-17
+**Lines:** ~25,000 | **Files:** 70 | **Tests:** 460 (71 golden/spec parity) | **Warnings:** 0
 
 ## What This Is
 
@@ -23,9 +23,10 @@ The `EncodePipeline::encode_frame()` produces OBU bitstream output through this 
 2. VAQ activity map → frame-level QP adjustment
 3. SB-by-SB raster order partition search (spec 00 compliance)
    - 10/10 AV1 partition types (NONE/HORZ/VERT/SPLIT/H4/V4/HA/HB/VA/VB)
-   - 11 intra modes evaluated per block (DC/V/H/smooth*/paeth/6 directional)
+   - 11 intra modes + 5 filter-intra modes evaluated per block
    - 4 transform types in RDO (DCT-DCT/ADST-DCT/DCT-ADST/ADST-ADST)
    - Speed config gates partition types and candidate count by preset
+   - **Frame-level reconstruction neighbors** from previously-finalized SBs (c824a6fe)
 4. encode_block: transform → quantize → reconstruct at 4x4/8x8/16x16/32x32
 5. Loop filter chain: deblocking → CDEF → Wiener → sgrproj (all 5 tools wired)
 6. Film grain estimation (source vs reconstruction comparison)
@@ -33,46 +34,55 @@ The `EncodePipeline::encode_frame()` produces OBU bitstream output through this 
 8. OBU bitstream: temporal_delimiter + sequence_header + frame OBU
 9. DPB update with reconstruction, rate control state update
 
+### Inter-Frame Encoding — basic working (4c90c56b)
+- Full-pel ME (SAD-based, ±16 search) against most recent DPB reference
+- Per-block intra vs inter RD comparison in partition search
+- Inter prediction: full-pel copy from reference + MV
+- MV rate overhead in RD cost computation
+- All 10 partition types try inter when reference available
+
 ### DSP Layer — all tools implemented
 - Intra: 21 modes (DC/V/H/smooth*/paeth/directional/CfL/filter-intra/palette/IntraBC)
-- Inter: convolution/copy/blend/OBMC/warped/scaled (simplified — see below)
+- Inter: convolution/copy/blend/OBMC/warped/scaled (8-tap sub-pixel interpolation)
 - Loop filter: deblock/CDEF/Wiener/sgrproj/super-res
 - SIMD: archmage dispatch on all 10+ DSP modules (AVX2/NEON/scalar)
 
-### Speed Presets
-14 presets (0-13) with 20 feature flags. 8 flags actively used in the pipeline:
+### Speed Presets — 11 of 20 flags actively used
+14 presets (0-13) with 20 feature flags. 11 flags actively used in the pipeline:
 enable_cdef, enable_restoration, enable_temporal_filter, max_partition_depth,
-lambda_scale, enable_ext_partitions, enable_4to1_partitions, enable_directional
+lambda_scale, enable_ext_partitions, enable_4to1_partitions, enable_directional,
+enable_adst, rdo_tx_decision, enable_filter_intra
+
+### Entropy Context — AV1 spec default CDFs (2a1691f3)
+FrameContext initialized from spec Section 9.3 default tables:
+partition, kf_y_mode, y_mode, skip, intra_inter, single_ref, comp_ref, comp_inter
+
+### Conformance — OBU structure validated (160e6586)
+3 OBU conformance tests: key frame structure (TD→SH→Frame), multi-frame sequence,
+sequence header profile validation. Writes test bitstream for external dav1d testing.
 
 ## What's Simplified (code exists but not at full C quality)
 
-- **Warped motion**: nearest-neighbor sampling, not 8-tap sub-pixel (spec 06)
-- **Scaled prediction**: nearest-neighbor, not filtered (spec 06)
 - **OBMC**: blend masks real, doesn't compute neighbor predictions (spec 06)
 - **Deblocking**: 4-tap only, missing 6/8/14-tap variants + strength derivation (spec 08)
-- **Prediction neighbors**: partition search uses mid-gray (128) instead of reconstruction neighbors (spec 05)
+- **Prediction neighbors**: within-SB sub-blocks use 128 (cross-SB fixed)
 - **Entropy coding**: real Exp-Golomb coeff coding, but not CDF-based context-adaptive (spec 07)
 - **OBU output**: valid for still-picture, simplified for inter frames (spec 07)
-
-## What's Orphaned (code + tests exist, not called by pipeline)
-
-These all require inter-frame encoding to be meaningful:
-- `svtav1_dsp::obmc`, `warp`, `scale`, `intrabc`, `superres` — inter DSP tools
-- `svtav1_encoder::motion_est` — full-pel + half-pel search
-- `svtav1_encoder::multipass` — first-pass stats collection
-- `svtav1_entropy::mv_coding` — class-based MV coding
-- `svtav1_entropy::tile` — multi-tile OBU format
-- `svtav1_encoder::perceptual` — QM, trellis quantization (VAQ is wired)
+- **Inter ME**: full-pel only, no half-pel interpolation (simplified sub-pel)
+- **sgrproj**: O(N*radius²) naive box sums instead of integral images
+- **Wiener**: QP-based heuristic coefficients, not per-RU RDO optimization
 
 ## What's Not Implemented
 
-- Full AV1 default CDF initialization tables (~400 lines of const data from spec)
+- Full AV1 default CDF initialization tables for coefficient/TX CDFs
+- CDF-based arithmetic entropy coding (currently Exp-Golomb)
 - TPL (temporal propagation layer) for rate control
 - Multi-threaded tile/segment parallelism
 - Full inter-frame OBU headers (reference frame signaling, order hints)
-- 8-tap warped/scaled prediction interpolation
 - Full context derivation for partition/mode/reference syntax elements
-- AV1 bitstream conformance testing (decode output with a reference decoder)
+- Sub-pel ME interpolation (half/quarter/eighth precision)
+- Reference MV stack construction from spatial/temporal neighbors
+- AV1 bitstream conformance (pass dav1d decode without errors)
 
 ## Key Files
 
@@ -83,39 +93,28 @@ These all require inter-frame encoding to be meaningful:
 | `svtav1-rs/tools/extract_golden.c` | C program to extract golden test data |
 | `svtav1-rs/svtav1/tests/golden_parity.rs` | 71 bit-exact parity tests |
 | `svtav1-rs/svtav1/tests/e2e_correctness.rs` | 44 end-to-end tests |
-| `svtav1-rs/svtav1/tests/real_encode.rs` | 15 real encoding tests with PSNR |
+| `svtav1-rs/svtav1/tests/real_encode.rs` | 18 real encoding + OBU tests |
 | `svtav1-rs/crates/svtav1-dsp/src/fwd_txfm.rs` | All forward transforms (largest file) |
 | `svtav1-rs/crates/svtav1-encoder/src/pipeline.rs` | Encoding pipeline orchestrator |
-| `svtav1-rs/crates/svtav1-encoder/src/partition.rs` | Partition search with 10 types |
+| `svtav1-rs/crates/svtav1-encoder/src/partition.rs` | Partition search with neighbors + inter |
 
 ## Build & Test
 
 ```bash
 cd svtav1-rs
-cargo test --workspace          # 471 tests
+cargo test --workspace          # 460 tests
 cargo clippy --workspace --all-targets  # 0 warnings
 cargo run -p svtav1-dsp --features std --example perf_report --release  # benchmarks
 ```
 
-## C Golden Data Extraction
-
-```bash
-cd cbuild
-gcc -O0 -g ../svtav1-rs/tools/extract_golden.c \
-  Source/Lib/Codec/CMakeFiles/CODEC.dir/transforms.c.o \
-  Source/Lib/Codec/CMakeFiles/CODEC.dir/inv_transforms.c.o \
-  -lm -o /tmp/extract_golden
-/tmp/extract_golden  # prints golden values
-```
-
 ## Priority for Next Session
 
-1. **Fix prediction neighbors** — pass reconstruction buffer through partition search so blocks read from previously-encoded neighbors instead of mid-gray. This is the single biggest quality gap.
-2. **Wire remaining speed config flags** — 12 of 20 unused (enable_adst, enable_cfl, enable_filter_intra, enable_palette, enable_compound, rdo_tx_decision, max_intra_candidates, subpel_precision, hme_levels, me_search_width, me_search_height, enable_warped_motion)
-3. **Add inter-frame encoding** — wire motion_est + mv_coding + inter candidates into pipeline for non-key frames. This unlocks all orphaned modules.
-4. **Fix warped motion** — replace nearest-neighbor with 8-tap sub-pixel interpolation
-5. **Add AV1 default CDF tables** — initialize FrameContext from spec tables instead of uniform
-6. **Conformance testing** — decode our OBU output with rav1d-safe to verify bitstream validity
+1. **CDF-based arithmetic encoding** — replace Exp-Golomb with spec-conformant CDF coding using the default tables already in FrameContext
+2. **Sub-pel ME refinement** — wire half_pel_refine into motion_est for better inter prediction quality
+3. **Inter-frame OBU headers** — write proper frame headers with reference frame signaling for inter frames
+4. **Within-SB neighbors** — pass recon data between sub-blocks in partition trials (Level 2 of neighbor threading)
+5. **Reference MV stack** — derive MV context from spatial/temporal neighbors (enables better MV prediction)
+6. **Multi-tap deblocking** — add 6, 8, 14-tap filter variants with proper strength derivation
 
 ## Rules (from CLAUDE.md and memory)
 
