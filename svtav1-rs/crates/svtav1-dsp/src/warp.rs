@@ -33,6 +33,8 @@ pub fn warp_prediction(
     pic_height: usize,
 ) {
     let m = &params.wmmat;
+    let filters = &svtav1_tables::interp::SUB_PEL_FILTERS_8;
+    const FILTER_CENTER: i32 = 3; // Center tap index in 8-tap filter
 
     for r in 0..height {
         for c in 0..width {
@@ -41,22 +43,46 @@ pub fn warp_prediction(
             let src_y = c as i32 + ref_x;
 
             // Affine mapping (Q16 fixed-point)
-            let dst_x = m[2] as i64 * src_y as i64
+            let map_x = m[2] as i64 * src_y as i64
                 + m[3] as i64 * src_x as i64
-                + m[0] as i64 * (1 << WARPEDMODEL_PREC_BITS) as i64;
-            let dst_y = m[4] as i64 * src_y as i64
+                + m[0] as i64 * (1i64 << WARPEDMODEL_PREC_BITS);
+            let map_y = m[4] as i64 * src_y as i64
                 + m[5] as i64 * src_x as i64
-                + m[1] as i64 * (1 << WARPEDMODEL_PREC_BITS) as i64;
+                + m[1] as i64 * (1i64 << WARPEDMODEL_PREC_BITS);
 
-            // Convert to integer pixel + sub-pixel fraction
-            let px = (dst_x >> WARPEDMODEL_PREC_BITS) as i32;
-            let py = (dst_y >> WARPEDMODEL_PREC_BITS) as i32;
+            // Integer pixel position (floor division via arithmetic right shift)
+            let ix = (map_x >> WARPEDMODEL_PREC_BITS) as i32;
+            let iy = (map_y >> WARPEDMODEL_PREC_BITS) as i32;
 
-            // Clamp to reference bounds
-            let rx = px.clamp(0, pic_width as i32 - 1) as usize;
-            let ry = py.clamp(0, pic_height as i32 - 1) as usize;
+            // Sub-pixel fraction → 4-bit phase index for 16-phase filter table
+            let frac_x = (map_x - ((ix as i64) << WARPEDMODEL_PREC_BITS)) as u32;
+            let frac_y = (map_y - ((iy as i64) << WARPEDMODEL_PREC_BITS)) as u32;
+            let fx = (frac_x >> (WARPEDMODEL_PREC_BITS - 4)) as usize;
+            let fy = (frac_y >> (WARPEDMODEL_PREC_BITS - 4)) as usize;
 
-            dst[r * dst_stride + c] = ref_pic[ry * ref_stride + rx];
+            let h_filter = &filters[fx.min(15)];
+            let v_filter = &filters[fy.min(15)];
+
+            // Separable 8-tap interpolation
+            // Step 1: Horizontal filter for 8 rows centered on iy
+            let mut intermediate = [0i32; 8];
+            for tap_row in 0..8i32 {
+                let ry = (iy - FILTER_CENTER + tap_row).clamp(0, pic_height as i32 - 1) as usize;
+                let mut sum = 0i32;
+                for tap_col in 0..8i32 {
+                    let rx =
+                        (ix - FILTER_CENTER + tap_col).clamp(0, pic_width as i32 - 1) as usize;
+                    sum += ref_pic[ry * ref_stride + rx] as i32 * h_filter[tap_col as usize] as i32;
+                }
+                intermediate[tap_row as usize] = (sum + 64) >> 7;
+            }
+
+            // Step 2: Vertical filter on intermediate results
+            let mut vsum = 0i32;
+            for tap in 0..8 {
+                vsum += intermediate[tap] * v_filter[tap] as i32;
+            }
+            dst[r * dst_stride + c] = ((vsum + 64) >> 7).clamp(0, 255) as u8;
         }
     }
 }
