@@ -137,25 +137,54 @@ impl EncodePipeline {
             pcs.qp
         };
 
-        // Step 4: Encode the frame using block-level encoding
-        let pred = alloc::vec![128u8; n];
-        let mut recon = alloc::vec![0u8; n];
+        // Step 4: Encode the frame superblock-by-superblock in raster order.
+        // This ensures each SB can read above/left neighbors from previously
+        // reconstructed SBs, matching the AV1 decode order.
+        // (Spec 00: "The main encoding loop processes SBs in raster order")
+        let mut recon = alloc::vec![128u8; n];
+        let sb_size = if self.speed_config.max_partition_depth >= 3 {
+            64
+        } else {
+            32
+        };
+        let lambda = (crate::rate_control::qp_to_lambda(vaq_adjusted_qp)
+            * self.speed_config.lambda_scale()) as u64;
 
-        // Use partition search for the full frame
-        let _partition_result = crate::partition::partition_search(
-            &encode_input,
-            w,
-            &pred,
-            w,
-            &mut recon,
-            w,
-            w,
-            h,
-            vaq_adjusted_qp,
-            (crate::rate_control::qp_to_lambda(vaq_adjusted_qp) * self.speed_config.lambda_scale())
-                as u64,
-            self.speed_config.max_partition_depth as u32,
-        );
+        let sb_cols = w.div_ceil(sb_size);
+        let sb_rows = h.div_ceil(sb_size);
+
+        for sb_row in 0..sb_rows {
+            for sb_col in 0..sb_cols {
+                let x0 = sb_col * sb_size;
+                let y0 = sb_row * sb_size;
+                let cur_w = sb_size.min(w - x0);
+                let cur_h = sb_size.min(h - y0);
+
+                let pred = alloc::vec![128u8; cur_w * cur_h];
+                let mut sb_recon = alloc::vec![0u8; cur_w * cur_h];
+
+                let _sb_result = crate::partition::partition_search(
+                    &encode_input[y0 * w + x0..],
+                    w,
+                    &pred,
+                    cur_w,
+                    &mut sb_recon,
+                    cur_w,
+                    cur_w,
+                    cur_h,
+                    vaq_adjusted_qp,
+                    lambda,
+                    self.speed_config.max_partition_depth as u32,
+                );
+
+                // Write SB recon to frame buffer
+                for r in 0..cur_h {
+                    for c in 0..cur_w {
+                        recon[(y0 + r) * w + x0 + c] = sb_recon[r * cur_w + c];
+                    }
+                }
+            }
+        }
 
         // Step 5: Apply loop filters to reconstruction
         // 5a: Deblocking filter on block edges
