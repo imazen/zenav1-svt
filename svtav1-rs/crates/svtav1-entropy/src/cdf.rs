@@ -35,25 +35,30 @@ pub const fn cdf_size(nsymbs: usize) -> usize {
 ///
 /// Ported from `cabac_context_model.h` lines 469-497.
 #[inline]
+/// Update CDF after observing symbol `val`.
+///
+/// Matched exactly to rav1d's update_cdf (msac.rs) for bitstream conformance.
+/// CDFs are stored in ICDF format (CDF_PROB_TOP - cumulative_probability).
 pub fn update_cdf(cdf: &mut [AomCdfProb], val: usize, nsymbs: usize) {
     debug_assert!(nsymbs < 17);
     debug_assert!(val < nsymbs);
 
-    let count = cdf[nsymbs] as i32;
+    let count = cdf[nsymbs];
+    let rate = 4 + (count >> 4) + u16::from(nsymbs > 3);
 
-    // rate = 4 + (count >> 4) + (nsymbs > 3)
-    let rate = 4 + (count >> 4) + i32::from(nsymbs > 3);
-
-    for (i, prob) in cdf[..nsymbs - 1].iter_mut().enumerate() {
+    // rav1d-compatible update: for ICDF values
+    for i in 0..nsymbs - 1 {
         if i < val {
-            *prob += (CDF_PROB_TOP - *prob) >> rate;
+            // Increase ICDF (decrease cumulative probability below val)
+            cdf[i] = cdf[i].wrapping_add((CDF_PROB_TOP.wrapping_sub(cdf[i])) >> rate);
         } else {
-            *prob -= *prob >> rate;
+            // Decrease ICDF (increase cumulative probability at/above val)
+            cdf[i] = cdf[i].wrapping_sub(cdf[i] >> rate);
         }
     }
 
     // Increment count, capped at 32
-    cdf[nsymbs] += u16::from(count < 32);
+    cdf[nsymbs] = count + u16::from(count < 32);
 }
 
 /// Initialize a uniform CDF for `nsymbs` symbols.
