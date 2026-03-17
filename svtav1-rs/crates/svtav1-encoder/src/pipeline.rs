@@ -187,13 +187,23 @@ impl EncodePipeline {
         let mv_map_size = mv_map_stride * h.div_ceil(8);
         let mut mv_map = alloc::vec![svtav1_types::motion::Mv::ZERO; mv_map_size];
 
+        // Compute per-SB TPL QP offsets for spatial bit allocation
+        let sb_qp_offsets = if !is_key {
+            if let Some(ref rf) = ref_frame_data {
+                crate::rate_control::tpl_sb_qp_offsets(
+                    &encode_input, rf, w, h, w, sb_size,
+                )
+            } else {
+                alloc::vec![0i8; sb_cols * sb_rows]
+            }
+        } else {
+            alloc::vec![0i8; sb_cols * sb_rows]
+        };
+
         // Tile-parallel encoding: split frame into tile rows, encode each in parallel.
-        // Each tile row gets its own recon buffer; results are merged afterward.
-        // Loop filters run on the full frame after all tiles complete.
         let tile_rows = if h >= 128 && cfg!(feature = "std") { 2 } else { 1 };
         let rows_per_tile = sb_rows.div_ceil(tile_rows);
 
-        // Encode tile rows (parallel when std is available, sequential otherwise)
         let tile_recons = encode_tile_rows(
             &encode_input,
             w,
@@ -209,6 +219,7 @@ impl EncodePipeline {
             ref_frame_data.as_deref(),
             &mv_map,
             mv_map_stride,
+            &sb_qp_offsets,
         );
 
         // Collect all block decisions from all tiles
@@ -586,11 +597,12 @@ fn encode_tile_rows(
     rows_per_tile: usize,
     tile_rows: usize,
     qp: u8,
-    lambda: u64,
+    _lambda: u64, // Per-SB lambda computed from sb_qp_offsets
     speed_config: &crate::speed_config::SpeedConfig,
     ref_frame_data: Option<&[u8]>,
     mv_map: &[svtav1_types::motion::Mv],
     mv_map_stride: usize,
+    sb_qp_offsets: &[i8],
 ) -> Vec<(Vec<u8>, Vec<crate::partition::BlockDecision>)> {
     let encode_one_tile = |tile_idx: usize| -> (Vec<u8>, Vec<crate::partition::BlockDecision>) {
         let tile_sb_row_start = tile_idx * rows_per_tile;
@@ -625,6 +637,17 @@ fn encode_tile_rows(
                     mv_map: Some(mv_map),
                     mv_map_stride,
                 });
+                // Apply per-SB TPL QP offset for spatial bit allocation
+                let sb_idx = sb_row * sb_cols + sb_col;
+                let sb_qp_delta = if sb_idx < sb_qp_offsets.len() {
+                    sb_qp_offsets[sb_idx]
+                } else {
+                    0
+                };
+                let sb_qp = (qp as i16 + sb_qp_delta as i16).clamp(0, 63) as u8;
+                let sb_lambda = (crate::rate_control::qp_to_lambda(sb_qp)
+                    * speed_config.lambda_scale()) as u64;
+
                 let sb_result = crate::partition::partition_search_with_config(
                     &encode_input[y0 * w + x0..],
                     w,
@@ -632,8 +655,8 @@ fn encode_tile_rows(
                     cur_w,
                     cur_w,
                     cur_h,
-                    qp,
-                    lambda,
+                    sb_qp,
+                    sb_lambda,
                     speed_config.max_partition_depth as u32,
                     &part_config,
                     Some(&frame_ctx),
