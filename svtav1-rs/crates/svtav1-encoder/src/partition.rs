@@ -590,8 +590,8 @@ fn encode_single_block(
     let lambda = crate::rate_control::qp_to_lambda(qp) as u64;
 
     // Build neighbor context (use source edges as approximate neighbors)
-    let mut above = alloc::vec![128u8; width];
-    let mut left = alloc::vec![128u8; height];
+    let above = alloc::vec![128u8; width];
+    let left = alloc::vec![128u8; height];
 
     // Try multiple intra modes via mode decision
     let block_size = svtav1_types::block::BlockSize::Block8x8; // approximate
