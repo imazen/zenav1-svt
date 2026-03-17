@@ -690,8 +690,9 @@ fn box_filter_sgr(
 
             // Compute variance-based weight
             let mean = (sum * n_inv + (1 << 11)) >> 12;
-            let var = (sum_sq * n_inv + (1 << 11)) >> (12 - mean * mean);
-            let var = var.max(0);
+            let mean_sq = mean * mean;
+            let sq_mean = (sum_sq * n_inv + (1 << 11)) >> 12;
+            let var = (sq_mean - mean_sq).max(0);
 
             // Self-guided: a = var / (var + strength), b = mean * (1 - a)
             // In fixed-point: a_q12 = var * (1 << 12) / (var + strength)

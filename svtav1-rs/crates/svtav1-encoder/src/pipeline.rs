@@ -267,6 +267,22 @@ impl EncodePipeline {
             recon = restored;
         }
 
+        // 5d: Self-guided restoration (sgrproj) — applies variance-adaptive
+        // denoising that preserves edges. (Spec 08, Section 7.17)
+        // Only enabled at low presets where quality matters more than speed.
+        if self.speed_config.enable_restoration && self.speed_config.preset <= 6 {
+            let mut sgrproj_out = recon.clone();
+            let params = svtav1_dsp::loop_filter::SgrprojParams {
+                r0: 2,
+                r1: 1,
+                s0: (10 + pcs.qp as i32 / 2).min(100),
+                s1: (5 + pcs.qp as i32 / 4).min(50),
+                xqd: [32, 32], // Equal blend of both passes with source
+            };
+            svtav1_dsp::loop_filter::sgrproj_filter(&recon, w, &mut sgrproj_out, w, w, h, &params);
+            recon = sgrproj_out;
+        }
+
         // Step 6: Entropy coding — write bitstream using real coefficient coding
         let mut writer = svtav1_entropy::writer::AomWriter::new(n);
         // Encode each block's coefficients
