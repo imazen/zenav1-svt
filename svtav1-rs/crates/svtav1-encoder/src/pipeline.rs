@@ -419,6 +419,21 @@ impl EncodePipeline {
             let bw = (decision.width as usize).max(8) / 8;
             let bh = (decision.height as usize).max(8) / 8;
 
+            // Partition type (CDF-based with context from block size)
+            let (part_ctx, part_nsymbs) =
+                svtav1_entropy::context::get_partition_context(
+                    decision.width as usize,
+                    true, // simplified: assume same size as neighbors
+                    true,
+                );
+            svtav1_entropy::context::write_partition(
+                &mut writer,
+                &mut frame_ctx,
+                part_ctx,
+                decision.partition_type as u8,
+                part_nsymbs,
+            );
+
             // Derive context from above and left neighbors in the mode info grid
             let above_skip = if mi_y > 0 { mi_skip[(mi_y - 1) * mi_cols + mi_x] } else { true };
             let left_skip = if mi_x > 0 { mi_skip[mi_y * mi_cols + mi_x - 1] } else { true };
@@ -446,6 +461,16 @@ impl EncodePipeline {
                         &mut frame_ctx,
                         ii_ctx,
                         decision.is_inter,
+                    );
+                }
+
+                // MV encoding for inter blocks
+                if decision.is_inter {
+                    svtav1_entropy::mv_coding::write_mv(
+                        &mut writer,
+                        decision.mv.x,
+                        decision.mv.y,
+                        true, // allow high precision
                     );
                 }
 

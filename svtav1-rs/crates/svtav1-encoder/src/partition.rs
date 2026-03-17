@@ -247,6 +247,8 @@ fn extract_neighbors(
 /// Per-block encoding decision record for bitstream encoding.
 #[derive(Debug, Clone, Default)]
 pub struct BlockDecision {
+    /// Partition type that produced this block.
+    pub partition_type: PartitionType,
     /// Whether this block uses inter prediction.
     pub is_inter: bool,
     /// Intra prediction mode index (0-12 for AV1 modes).
@@ -263,9 +265,28 @@ pub struct BlockDecision {
     pub height: u16,
 }
 
+/// AV1 partition type for bitstream encoding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u8)]
+pub enum PartitionType {
+    #[default]
+    None = 0,
+    Horz = 1,
+    Vert = 2,
+    Split = 3,
+    HorzA = 4,
+    HorzB = 5,
+    VertA = 6,
+    VertB = 7,
+    Horz4 = 8,
+    Vert4 = 9,
+}
+
 /// Result of encoding a single partition block.
 #[derive(Debug, Clone)]
 pub struct PartitionResult {
+    /// The partition type chosen at this level.
+    pub partition_type: PartitionType,
     /// Total RD cost for this partition decision.
     pub rd_cost: u64,
     /// Total distortion (SSE).
@@ -386,6 +407,7 @@ pub fn partition_search_with_config(
     if height >= 8 {
         let hh = height / 2;
         let mut horz_result = PartitionResult {
+            partition_type: PartitionType::Horz,
             rd_cost: 0,
             distortion: 0,
             rate: 48, // Partition flag overhead
@@ -464,6 +486,7 @@ pub fn partition_search_with_config(
     if width >= 8 {
         let hw = width / 2;
         let mut vert_result = PartitionResult {
+            partition_type: PartitionType::Vert,
             rd_cost: 0,
             distortion: 0,
             rate: 48,
@@ -543,6 +566,7 @@ pub fn partition_search_with_config(
     if height >= 16 && config.enable_4to1_partitions {
         let qh = height / 4;
         let mut h4_result = PartitionResult {
+            partition_type: PartitionType::Horz4,
             rd_cost: 0,
             distortion: 0,
             rate: 64,
@@ -583,6 +607,7 @@ pub fn partition_search_with_config(
     if width >= 16 && config.enable_4to1_partitions {
         let qw = width / 4;
         let mut v4_result = PartitionResult {
+            partition_type: PartitionType::Vert4,
             rd_cost: 0,
             distortion: 0,
             rate: 64,
@@ -625,6 +650,7 @@ pub fn partition_search_with_config(
         let hw = width / 2;
         let hh = height / 2;
         let mut ha_result = PartitionResult {
+            partition_type: PartitionType::HorzA,
             rd_cost: 0,
             distortion: 0,
             rate: 56,
@@ -701,6 +727,7 @@ pub fn partition_search_with_config(
         let hw = width / 2;
         let hh = height / 2;
         let mut hb_result = PartitionResult {
+            partition_type: PartitionType::HorzB,
             rd_cost: 0,
             distortion: 0,
             rate: 56,
@@ -777,6 +804,7 @@ pub fn partition_search_with_config(
         let hw = width / 2;
         let hh = height / 2;
         let mut va_result = PartitionResult {
+            partition_type: PartitionType::VertA,
             rd_cost: 0,
             distortion: 0,
             rate: 56,
@@ -853,6 +881,7 @@ pub fn partition_search_with_config(
         let hw = width / 2;
         let hh = height / 2;
         let mut vb_result = PartitionResult {
+            partition_type: PartitionType::VertB,
             rd_cost: 0,
             distortion: 0,
             rate: 56,
@@ -928,6 +957,7 @@ pub fn partition_search_with_config(
     let hw = width / 2;
     let hh = height / 2;
     let mut split_result = PartitionResult {
+        partition_type: PartitionType::Split,
         rd_cost: 0,
         distortion: 0,
         rate: 64, // Partition flag overhead
@@ -1119,6 +1149,8 @@ fn encode_single_block(
 
     let mut best_enc = None;
     let mut best_cost = u64::MAX;
+    let mut chose_inter = false;
+    let mut chosen_mv = svtav1_types::motion::Mv::ZERO;
 
     for cand in candidates {
         let mut pred_block = alloc::vec![128u8; n];
@@ -1433,18 +1465,17 @@ fn encode_single_block(
         };
         let inter_cost = enc_inter.distortion + ((lambda * (enc_inter.rate + mv_rate) as u64) >> 8);
         if inter_cost < best_cost {
-            // best_cost update intentionally omitted — no further reads
             best_enc = Some(enc_inter);
+            chose_inter = true;
+            chosen_mv = me_result.mv;
         }
     }
 
     let enc = best_enc.unwrap_or_else(|| {
-        // Fallback: DC prediction
         let pred_block = alloc::vec![128u8; n];
         crate::encode_loop::encode_block(src, src_stride, &pred_block, width, width, height, qp)
     });
 
-    // Write reconstruction
     for r in 0..height {
         for c in 0..width {
             recon[r * recon_stride + c] = enc.recon[r * width + c];
@@ -1452,9 +1483,10 @@ fn encode_single_block(
     }
 
     let decision = BlockDecision {
-        is_inter: false, // TODO: track whether inter won the RD comparison
-        intra_mode: 0,   // TODO: track winning mode
-        mv: svtav1_types::motion::Mv::ZERO,
+        partition_type: PartitionType::None,
+        is_inter: chose_inter,
+        intra_mode: 0,
+        mv: chosen_mv,
         qcoeffs: enc.qcoeffs.to_vec(),
         eob: enc.eob,
         width: width as u16,
@@ -1462,6 +1494,7 @@ fn encode_single_block(
     };
 
     PartitionResult {
+        partition_type: PartitionType::None,
         rd_cost: enc.distortion + ((enc.rate as u64) << 4),
         distortion: enc.distortion,
         rate: enc.rate,

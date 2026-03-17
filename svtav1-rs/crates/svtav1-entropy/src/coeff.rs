@@ -109,11 +109,27 @@ pub fn write_coefficients_ctx(
         writer.write_symbol(sign_sym, &mut ctx.dc_sign_cdf[sign_ctx], 2);
     }
 
-    // Coefficient levels — CDF-based for base levels, Golomb for residual
+    // Coefficient levels — CDF-based for base levels, Golomb for residual.
+    // Context derivation: position-based with neighbor awareness.
+    // AV1 spec Section 5.11.39: sig_coef context = f(pos, neighbors).
     for i in 0..eob {
         let level = coeffs[i].unsigned_abs();
-        // Base level context: simplified to first 42 contexts round-robin
-        let base_ctx = i.min(41);
+        // Context from position: DC(0), first row/col (1-5), inner (6-41)
+        // Approximates spec scan-order context derivation.
+        let base_ctx = if i == 0 {
+            0 // DC coefficient
+        } else if i < 6 {
+            i // Low-frequency AC (positions 1-5)
+        } else {
+            // Higher frequency: context from number of nonzero neighbors
+            let prev_nz = coeffs[..i]
+                .iter()
+                .rev()
+                .take(5)
+                .filter(|&&c| c != 0)
+                .count();
+            (6 + prev_nz * 7).min(41)
+        };
 
         if level == 0 {
             // Symbol 0: zero coefficient
