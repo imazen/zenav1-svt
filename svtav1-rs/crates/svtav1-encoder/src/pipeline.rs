@@ -35,6 +35,10 @@ pub struct EncodePipeline {
     pub width: u32,
     /// Frame height.
     pub height: u32,
+    /// Bit depth (8, 10, or 12).
+    pub bit_depth: u8,
+    /// CICP color description.
+    pub color_description: svtav1_entropy::obu::ColorDescription,
 }
 
 impl EncodePipeline {
@@ -56,7 +60,21 @@ impl EncodePipeline {
             frame_count: 0,
             width,
             height,
+            bit_depth: 8,
+            color_description: svtav1_entropy::obu::ColorDescription::srgb(),
         }
+    }
+
+    /// Set bit depth (8, 10, or 12).
+    pub fn with_bit_depth(mut self, depth: u8) -> Self {
+        self.bit_depth = depth;
+        self
+    }
+
+    /// Set CICP color description for wide gamut / HDR signaling.
+    pub fn with_color_description(mut self, cd: svtav1_entropy::obu::ColorDescription) -> Self {
+        self.color_description = cd;
+        self
     }
 
     /// Encode a single frame through the full pipeline.
@@ -555,17 +573,13 @@ impl EncodePipeline {
         let bitstream = if is_key {
             let mut bs = alloc::vec::Vec::new();
             bs.extend_from_slice(&svtav1_entropy::obu::write_temporal_delimiter());
-            if is_single_frame {
-                bs.extend_from_slice(&svtav1_entropy::obu::write_sequence_header(
-                    self.width,
-                    self.height,
-                ));
-            } else {
-                bs.extend_from_slice(&svtav1_entropy::obu::write_sequence_header_full(
-                    self.width,
-                    self.height,
-                ));
-            }
+            bs.extend_from_slice(&svtav1_entropy::obu::write_sequence_header_ex(
+                self.width,
+                self.height,
+                is_single_frame,
+                self.bit_depth,
+                &self.color_description,
+            ));
             // Key frame header (raw bytes) + tile group with proper header
             let fh_bytes = svtav1_entropy::obu::write_key_frame_header_full(
                 self.width,

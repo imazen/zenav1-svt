@@ -7,6 +7,74 @@
 
 use alloc::vec::Vec;
 
+/// CICP color description for AV1 sequence headers.
+///
+/// Signals color primaries, transfer characteristics, and matrix coefficients
+/// per ITU-T H.273. Used for wide gamut (P3, Rec.2020) and HDR (PQ, HLG).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ColorDescription {
+    /// Color primaries (1=BT.709/sRGB, 9=BT.2020, 12=P3).
+    pub color_primaries: u8,
+    /// Transfer characteristics (1=BT.709, 13=sRGB, 16=PQ/HDR10, 18=HLG).
+    pub transfer_characteristics: u8,
+    /// Matrix coefficients (1=BT.709, 9=BT.2020, 0=Identity/RGB).
+    pub matrix_coefficients: u8,
+    /// Full range (true) or limited/studio range (false).
+    pub full_range: bool,
+}
+
+impl ColorDescription {
+    /// sRGB (BT.709 primaries, sRGB transfer, BT.709 matrix).
+    pub fn srgb() -> Self {
+        Self {
+            color_primaries: 1,
+            transfer_characteristics: 13,
+            matrix_coefficients: 1,
+            full_range: false,
+        }
+    }
+
+    /// Display P3 with sRGB transfer.
+    pub fn display_p3() -> Self {
+        Self {
+            color_primaries: 12,
+            transfer_characteristics: 13,
+            matrix_coefficients: 1,
+            full_range: false,
+        }
+    }
+
+    /// BT.2020 with PQ (HDR10).
+    pub fn bt2020_pq() -> Self {
+        Self {
+            color_primaries: 9,
+            transfer_characteristics: 16,
+            matrix_coefficients: 9,
+            full_range: false,
+        }
+    }
+
+    /// BT.2020 with HLG.
+    pub fn bt2020_hlg() -> Self {
+        Self {
+            color_primaries: 9,
+            transfer_characteristics: 18,
+            matrix_coefficients: 9,
+            full_range: false,
+        }
+    }
+
+    /// BT.2020 with sRGB-like transfer (SDR wide gamut).
+    pub fn bt2020_sdr() -> Self {
+        Self {
+            color_primaries: 9,
+            transfer_characteristics: 1,
+            matrix_coefficients: 9,
+            full_range: false,
+        }
+    }
+}
+
 /// OBU types as defined in the AV1 spec.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -137,19 +205,27 @@ pub fn write_temporal_delimiter() -> Vec<u8> {
 }
 
 /// Write a reduced-header sequence header OBU (still-picture only).
-///
-/// This produces a valid AV1 sequence header for single-frame 8-bit 4:2:0 content.
-/// Use `write_sequence_header_full` for multi-frame sequences.
 pub fn write_sequence_header(width: u32, height: u32) -> Vec<u8> {
-    write_sequence_header_inner(width, height, true)
+    write_sequence_header_ex(width, height, true, 8, &ColorDescription::srgb())
 }
 
 /// Write a full sequence header OBU that supports inter frames.
-///
-/// Enables order_hint (needed for reference frame management) and
-/// signals all features needed for multi-frame encoding.
 pub fn write_sequence_header_full(width: u32, height: u32) -> Vec<u8> {
-    write_sequence_header_inner(width, height, false)
+    write_sequence_header_ex(width, height, false, 8, &ColorDescription::srgb())
+}
+
+/// Write a sequence header with explicit bit depth and color description.
+///
+/// Supports 8, 10, or 12 bit depth and CICP color signaling for
+/// wide gamut (P3, Rec.2020) and HDR (PQ, HLG).
+pub fn write_sequence_header_ex(
+    width: u32,
+    height: u32,
+    still_picture: bool,
+    bit_depth: u8,
+    color: &ColorDescription,
+) -> Vec<u8> {
+    write_sequence_header_inner(width, height, still_picture, bit_depth, color)
 }
 
 /// Write trailing bits to byte-align the bitwriter.
@@ -167,11 +243,18 @@ fn write_trailing_bits(wb: &mut BitWriter) {
 /// Order hint bits used in the full sequence header.
 pub const ORDER_HINT_BITS: u32 = 7;
 
-fn write_sequence_header_inner(width: u32, height: u32, still_picture: bool) -> Vec<u8> {
+fn write_sequence_header_inner(
+    width: u32,
+    height: u32,
+    still_picture: bool,
+    bit_depth: u8,
+    color: &ColorDescription,
+) -> Vec<u8> {
     let mut wb = BitWriter::new();
 
-    // seq_profile = 0 (Main profile: 8/10-bit 4:2:0)
-    wb.write_bits(0, 3);
+    // seq_profile: 0 = Main (8/10-bit 4:2:0), 1 = High (4:4:4), 2 = Professional (12-bit)
+    let profile = if bit_depth > 10 { 2 } else { 0 };
+    wb.write_bits(profile, 3);
     // still_picture
     wb.write_bit(still_picture);
     // reduced_still_picture_header
@@ -252,18 +335,36 @@ fn write_sequence_header_inner(width: u32, height: u32, still_picture: bool) -> 
     // enable_restoration = 0
     wb.write_bit(false);
 
-    // Color config
-    // high_bitdepth = 0 (8-bit)
+    // Color config (AV1 spec Section 5.5.2)
+    // high_bitdepth
+    wb.write_bit(bit_depth > 8);
+    if profile == 2 && bit_depth > 8 {
+        // twelve_bit flag (only for Professional profile)
+        wb.write_bit(bit_depth >= 12);
+    }
+    // mono_chrome = 0 (not monochrome)
     wb.write_bit(false);
-    // mono_chrome = 0
-    wb.write_bit(false);
-    // color_description_present_flag = 0
-    wb.write_bit(false);
-    // color_range = 0 (studio/limited range)
-    wb.write_bit(false);
-    // subsampling_x = 1, subsampling_y = 1 (4:2:0) — implicit for profile 0
-    // chroma_sample_position = 0 (unknown)
-    wb.write_bits(0, 2);
+    // color_description_present_flag = 1 (signal CICP)
+    wb.write_bit(true);
+    // color_primaries (8 bits)
+    wb.write_bits(color.color_primaries as u32, 8);
+    // transfer_characteristics (8 bits)
+    wb.write_bits(color.transfer_characteristics as u32, 8);
+    // matrix_coefficients (8 bits)
+    wb.write_bits(color.matrix_coefficients as u32, 8);
+    // color_range
+    wb.write_bit(color.full_range);
+    // subsampling_x = 1, subsampling_y = 1 (4:2:0)
+    if color.matrix_coefficients == 0 {
+        // Identity matrix (RGB): no subsampling for profile 1+
+        if profile > 0 {
+            wb.write_bit(false); // subsampling_x = 0
+            wb.write_bit(false); // subsampling_y = 0
+        }
+    } else {
+        // chroma_sample_position = 0 (unknown) for 4:2:0
+        wb.write_bits(0, 2);
+    }
     // separate_uv_delta_q = 0
     wb.write_bit(false);
 

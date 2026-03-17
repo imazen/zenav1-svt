@@ -1,0 +1,18 @@
+{
+	"InstallScripts" : 
+	[
+		"/home/lilith/research/svtav1/cbuild/cmake_install.cmake",
+		"/home/lilith/research/svtav1/cbuild/Source/Lib/cmake_install.cmake",
+		"/home/lilith/research/svtav1/cbuild/Source/Lib/C_DEFAULT/cmake_install.cmake",
+		"/home/lilith/research/svtav1/cbuild/Source/Lib/Codec/cmake_install.cmake",
+		"/home/lilith/research/svtav1/cbuild/Source/Lib/Globals/cmake_install.cmake",
+		"/home/lilith/research/svtav1/cbuild/Source/Lib/ASM_SSE2/cmake_install.cmake",
+		"/home/lilith/research/svtav1/cbuild/Source/Lib/ASM_SSSE3/cmake_install.cmake",
+		"/home/lilith/research/svtav1/cbuild/Source/Lib/ASM_SSE4_1/cmake_install.cmake",
+		"/home/lilith/research/svtav1/cbuild/Source/Lib/ASM_AVX2/cmake_install.cmake",
+		"/home/lilith/research/svtav1/cbuild/Source/Lib/ASM_AVX512/cmake_install.cmake",
+		"/home/lilith/research/svtav1/cbuild/Source/App/cmake_install.cmake",
+		"/home/lilith/research/svtav1/cbuild/third_party/fastfeat/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

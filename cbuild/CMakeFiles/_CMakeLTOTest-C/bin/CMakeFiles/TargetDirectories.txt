@@ -1,0 +1,4 @@
+/home/lilith/research/svtav1/cbuild/CMakeFiles/_CMakeLTOTest-C/bin/CMakeFiles/foo.dir
+/home/lilith/research/svtav1/cbuild/CMakeFiles/_CMakeLTOTest-C/bin/CMakeFiles/boo.dir
+/home/lilith/research/svtav1/cbuild/CMakeFiles/_CMakeLTOTest-C/bin/CMakeFiles/edit_cache.dir
+/home/lilith/research/svtav1/cbuild/CMakeFiles/_CMakeLTOTest-C/bin/CMakeFiles/rebuild_cache.dir

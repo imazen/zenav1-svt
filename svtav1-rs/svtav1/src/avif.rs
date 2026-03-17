@@ -91,10 +91,17 @@ pub struct AvifEncoder {
     /// Enable trellis quantization.
     enable_trellis: bool,
     /// Segment-level QP boost for flat regions.
-    /// Applied when perceptual optimization is wired through.
     seg_boost: f64,
     /// Lossless encoding mode.
     lossless: bool,
+    /// CICP color primaries (1=BT.709, 9=BT.2020, 12=P3).
+    color_primaries: u8,
+    /// CICP transfer characteristics (1=BT.709, 13=sRGB, 16=PQ, 18=HLG).
+    transfer_characteristics: u8,
+    /// CICP matrix coefficients (1=BT.709, 9=BT.2020, 0=Identity/RGB).
+    matrix_coefficients: u8,
+    /// Full range (true) or limited/studio range (false).
+    full_range: bool,
 }
 
 impl Default for AvifEncoder {
@@ -121,6 +128,55 @@ impl AvifEncoder {
             enable_trellis: true,
             seg_boost: 0.0,
             lossless: false,
+            color_primaries: 1,       // BT.709
+            transfer_characteristics: 13, // sRGB
+            matrix_coefficients: 1,   // BT.709
+            full_range: false,
+        }
+    }
+
+    /// Set CICP color space for wide gamut / HDR encoding.
+    ///
+    /// # Presets
+    /// - P3 sRGB: `(12, 13, 1, false)`
+    /// - BT.2020 PQ (HDR10): `(9, 16, 9, false)`
+    /// - BT.2020 HLG: `(9, 18, 9, false)`
+    pub fn with_color_space(
+        mut self,
+        primaries: u8,
+        transfer: u8,
+        matrix: u8,
+        full_range: bool,
+    ) -> Self {
+        self.color_primaries = primaries;
+        self.transfer_characteristics = transfer;
+        self.matrix_coefficients = matrix;
+        self.full_range = full_range;
+        self
+    }
+
+    /// Set Display P3 color space (wide gamut, sRGB transfer).
+    pub fn with_display_p3(self) -> Self {
+        self.with_color_space(12, 13, 1, false)
+    }
+
+    /// Set BT.2020 with PQ transfer (HDR10).
+    pub fn with_bt2020_pq(self) -> Self {
+        self.with_color_space(9, 16, 9, false)
+    }
+
+    /// Set BT.2020 with HLG transfer.
+    pub fn with_bt2020_hlg(self) -> Self {
+        self.with_color_space(9, 18, 9, false)
+    }
+
+    /// Get the CICP color description.
+    fn color_description(&self) -> svtav1_entropy::obu::ColorDescription {
+        svtav1_entropy::obu::ColorDescription {
+            color_primaries: self.color_primaries,
+            transfer_characteristics: self.transfer_characteristics,
+            matrix_coefficients: self.matrix_coefficients,
+            full_range: self.full_range,
         }
     }
 
@@ -298,6 +354,8 @@ impl AvifEncoder {
             0,
             1,
         );
+        pipeline.bit_depth = self.bit_depth;
+        pipeline.color_description = self.color_description();
 
         let bitstream = pipeline.encode_frame(&src, padded_w);
 
