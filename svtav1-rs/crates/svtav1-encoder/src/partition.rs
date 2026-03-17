@@ -1186,7 +1186,7 @@ fn encode_single_block(
             search_area_width: 16,
             search_area_height: 16,
             use_hme: false,
-            subpel_level: 1, // half-pel refinement
+            subpel_level: 2, // half-pel + quarter-pel refinement
         };
         let me_result = crate::motion_est::hierarchical_me(
             src,
@@ -1202,11 +1202,12 @@ fn encode_single_block(
             rfc.pic_height,
         );
 
-        // Generate inter prediction from reference + MV with bilinear interpolation
+        // Generate inter prediction from reference + MV with weighted bilinear
+        // interpolation. Supports full-pel, half-pel, and quarter-pel positions.
         let int_x = abs_x as i32 + (me_result.mv.x as i32 >> 3);
         let int_y = abs_y as i32 + (me_result.mv.y as i32 >> 3);
-        let frac_x = (me_result.mv.x & 7) as i32;
-        let frac_y = (me_result.mv.y & 7) as i32;
+        let fx = (me_result.mv.x & 7) as i32; // 0-7 sub-pel fraction
+        let fy = (me_result.mv.y & 7) as i32;
 
         let mut inter_pred = alloc::vec![128u8; n];
         for r in 0..height {
@@ -1219,22 +1220,29 @@ fn encode_single_block(
                     && (rx as usize + 1) < rfc.pic_width
                 {
                     let off = ry as usize * rfc.stride + rx as usize;
-                    let val = if frac_x == 0 && frac_y == 0 {
+                    let val = if fx == 0 && fy == 0 {
                         rfc.y_plane[off] as i32
-                    } else if frac_y == 0 {
-                        (rfc.y_plane[off] as i32 + rfc.y_plane[off + 1] as i32 + 1) >> 1
-                    } else if frac_x == 0 {
-                        (rfc.y_plane[off] as i32
-                            + rfc.y_plane[off + rfc.stride] as i32
-                            + 1)
-                            >> 1
+                    } else if fy == 0 {
+                        // Horizontal sub-pel: weighted average
+                        ((8 - fx) * rfc.y_plane[off] as i32
+                            + fx * rfc.y_plane[off + 1] as i32
+                            + 4)
+                            >> 3
+                    } else if fx == 0 {
+                        // Vertical sub-pel
+                        ((8 - fy) * rfc.y_plane[off] as i32
+                            + fy * rfc.y_plane[off + rfc.stride] as i32
+                            + 4)
+                            >> 3
                     } else {
-                        (rfc.y_plane[off] as i32
-                            + rfc.y_plane[off + 1] as i32
-                            + rfc.y_plane[off + rfc.stride] as i32
-                            + rfc.y_plane[off + rfc.stride + 1] as i32
-                            + 2)
-                            >> 2
+                        // Diagonal sub-pel: bilinear 2D interpolation
+                        let tl = rfc.y_plane[off] as i32;
+                        let tr = rfc.y_plane[off + 1] as i32;
+                        let bl = rfc.y_plane[off + rfc.stride] as i32;
+                        let br = rfc.y_plane[off + rfc.stride + 1] as i32;
+                        let top = (8 - fx) * tl + fx * tr;
+                        let bot = (8 - fx) * bl + fx * br;
+                        ((8 - fy) * top + fy * bot + 32) >> 6
                     };
                     inter_pred[r * width + c] = val.clamp(0, 255) as u8;
                 }

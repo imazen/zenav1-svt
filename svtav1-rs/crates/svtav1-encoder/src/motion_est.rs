@@ -219,15 +219,111 @@ pub fn half_pel_refine(
     best
 }
 
+/// Quarter-pel sub-pixel refinement.
+///
+/// Refines a half-pel MV by checking 8 quarter-pel positions around it.
+/// Uses bilinear interpolation with 1/4-pixel offsets (2 sub-pel units).
+pub fn quarter_pel_refine(
+    src: &[u8],
+    src_stride: usize,
+    ref_pic: &[u8],
+    ref_stride: usize,
+    ref_origin_x: i32,
+    ref_origin_y: i32,
+    width: usize,
+    height: usize,
+    mv: Mv,
+    pic_width: usize,
+    pic_height: usize,
+) -> MeResult {
+    let mut best = MeResult {
+        mv,
+        distortion: u32::MAX,
+    };
+
+    // 9 positions: center + 8 quarter-pel neighbors (±2 sub-pel units = ±0.25 pixel)
+    let offsets: [(i16, i16); 9] = [
+        (0, 0),
+        (-2, 0),
+        (2, 0),
+        (0, -2),
+        (0, 2),
+        (-2, -2),
+        (2, -2),
+        (-2, 2),
+        (2, 2),
+    ];
+
+    for &(dx, dy) in &offsets {
+        let test_mv = Mv {
+            x: mv.x + dx,
+            y: mv.y + dy,
+        };
+
+        let int_x = ref_origin_x + (test_mv.x as i32 >> 3);
+        let int_y = ref_origin_y + (test_mv.y as i32 >> 3);
+        let frac_x = (test_mv.x & 7) as i32;
+        let frac_y = (test_mv.y & 7) as i32;
+
+        let margin = if frac_x != 0 || frac_y != 0 { 1 } else { 0 };
+        if int_x < 0
+            || int_y < 0
+            || (int_x as usize + width + margin) > pic_width
+            || (int_y as usize + height + margin) > pic_height
+        {
+            continue;
+        }
+
+        let ref_base = int_y as usize * ref_stride + int_x as usize;
+        let mut sad: u32 = 0;
+        for row in 0..height {
+            for col in 0..width {
+                let s = src[row * src_stride + col] as i32;
+                let r_off = ref_base + row * ref_stride + col;
+
+                // Bilinear interpolation at quarter-pel
+                // Weight: (8-frac)/8 for integer, frac/8 for +1 neighbor
+                let r = if frac_x == 0 && frac_y == 0 {
+                    ref_pic[r_off] as i32
+                } else if frac_y == 0 {
+                    let w = frac_x;
+                    ((8 - w) * ref_pic[r_off] as i32 + w * ref_pic[r_off + 1] as i32 + 4) >> 3
+                } else if frac_x == 0 {
+                    let w = frac_y;
+                    ((8 - w) * ref_pic[r_off] as i32
+                        + w * ref_pic[r_off + ref_stride] as i32
+                        + 4)
+                        >> 3
+                } else {
+                    let wx = frac_x;
+                    let wy = frac_y;
+                    let tl = ref_pic[r_off] as i32;
+                    let tr = ref_pic[r_off + 1] as i32;
+                    let bl = ref_pic[r_off + ref_stride] as i32;
+                    let br = ref_pic[r_off + ref_stride + 1] as i32;
+                    let top = (8 - wx) * tl + wx * tr;
+                    let bot = (8 - wx) * bl + wx * br;
+                    ((8 - wy) * top + wy * bot + 32) >> 6
+                };
+                sad += (s - r).unsigned_abs();
+            }
+        }
+
+        if sad < best.distortion {
+            best.distortion = sad;
+            best.mv = test_mv;
+        }
+    }
+
+    best
+}
+
 /// Hierarchical motion estimation (HME).
 ///
 /// Performs coarse-to-fine search:
-/// 1. Search on downsampled (quarter) reference → coarse MV
-/// 2. Refine on half-resolution reference
-/// 3. Refine on full-resolution reference
-///
-/// For now, this is a single-level full-pel search. Multi-level HME
-/// will be added when downsampling infrastructure is available.
+/// 1. Full-pel search
+/// 2. Half-pel refinement (subpel_level >= 1)
+/// 3. Quarter-pel refinement (subpel_level >= 2)
 pub fn hierarchical_me(
     src: &[u8],
     src_stride: usize,
@@ -241,8 +337,8 @@ pub fn hierarchical_me(
     pic_width: usize,
     pic_height: usize,
 ) -> MeResult {
-    // Level 0: full-pel search at full resolution
-    let result = full_pel_search(
+    // Level 0: full-pel search
+    let mut result = full_pel_search(
         src,
         src_stride,
         ref_pic,
@@ -258,9 +354,17 @@ pub fn hierarchical_me(
         pic_height,
     );
 
-    // Sub-pel refinement
+    // Half-pel refinement
     if params.subpel_level >= 1 {
-        return half_pel_refine(
+        result = half_pel_refine(
+            src, src_stride, ref_pic, ref_stride, block_x, block_y, width, height, result.mv,
+            pic_width, pic_height,
+        );
+    }
+
+    // Quarter-pel refinement
+    if params.subpel_level >= 2 {
+        result = quarter_pel_refine(
             src, src_stride, ref_pic, ref_stride, block_x, block_y, width, height, result.mv,
             pic_width, pic_height,
         );
