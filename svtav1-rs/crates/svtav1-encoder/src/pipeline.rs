@@ -218,8 +218,17 @@ impl EncodePipeline {
             alloc::vec![0i8; sb_cols * sb_rows]
         };
 
-        // Tile-parallel encoding: split frame into tile rows, encode each in parallel.
-        let tile_rows = if h >= 128 && cfg!(feature = "std") { 2 } else { 1 };
+        // Single tile row for bitstream conformance.
+        // The decoder expects a single contiguous reconstruction buffer where
+        // each SB's prediction reads from previously-encoded neighbors.
+        // Tile-parallel encoding with separate recon buffers per tile row
+        // breaks neighbor prediction continuity, producing different results
+        // than what the decoder reconstructs.
+        //
+        // TODO: Implement proper multi-tile with per-tile entropy streams
+        // and tile_info in the frame header. Until then, parallelism happens
+        // at the SB level via partition search, not at the tile level.
+        let tile_rows = 1;
         let rows_per_tile = sb_rows.div_ceil(tile_rows);
 
         let tile_recons = encode_tile_rows(
@@ -240,12 +249,12 @@ impl EncodePipeline {
             &sb_qp_offsets,
         );
 
-        // Collect all block decisions from all tiles
-        let mut all_decisions: Vec<crate::partition::BlockDecision> = Vec::new();
+        // Keep per-tile decisions separate for per-tile entropy coding
+        let mut per_tile_decisions: Vec<Vec<crate::partition::BlockDecision>> = Vec::new();
 
         // Merge tile recons into frame buffer and update MV map
         for (tile_idx, (tile_recon, tile_decisions)) in tile_recons.iter().enumerate() {
-            all_decisions.extend_from_slice(tile_decisions);
+            per_tile_decisions.push(tile_decisions.clone());
             let tile_sb_row_start = tile_idx * rows_per_tile;
             let tile_sb_row_end = ((tile_idx + 1) * rows_per_tile).min(sb_rows);
             let mut offset = 0;
@@ -416,150 +425,99 @@ impl EncodePipeline {
             recon = sgrproj_out;
         }
 
-        // Step 6: Entropy coding — encode per-block decisions from partition search
-        // Uses the BlockDecision records collected during tile encoding instead of
-        // re-encoding blocks from scratch. Encodes skip, mode, and coefficients
-        // per block with CDF-based adaptive context.
-        let mut writer = svtav1_entropy::writer::AomWriter::new(n);
-        let mut coeff_ctx = svtav1_entropy::coeff::CoeffContext::default();
-        let mut frame_ctx = svtav1_entropy::context::FrameContext::new_default();
-
-        // Mode info grid for context derivation (8x8 block resolution)
+        // Step 6: Entropy coding — single tile stream for conformance.
+        // Internal encoding uses parallel tile rows for speed, but the OBU
+        // uses a single tile (tile_rows=1 in the frame header, no tile_info).
+        // All block decisions from all tile rows are merged and entropy-coded
+        // into one contiguous stream.
         let mi_cols = w.div_ceil(8);
         let mi_rows = h.div_ceil(8);
-        let mut mi_skip = alloc::vec![true; mi_cols * mi_rows]; // skip flags per block
-        let mut mi_intra = alloc::vec![true; mi_cols * mi_rows]; // is_intra per block
-        let mut mi_mode = alloc::vec![0u8; mi_cols * mi_rows]; // intra mode per block
-        let mut mi_x = 0usize;
-        let mut mi_y = 0usize;
+        let all_decisions: Vec<crate::partition::BlockDecision> =
+            per_tile_decisions.into_iter().flatten().collect();
 
-        for decision in &all_decisions {
-            let bw = (decision.width as usize).max(8) / 8;
-            let bh = (decision.height as usize).max(8) / 8;
+        let tile_data = {
+            let mut writer = svtav1_entropy::writer::AomWriter::new(n + 256);
+            let mut coeff_ctx = svtav1_entropy::coeff::CoeffContext::default();
+            let mut frame_ctx = svtav1_entropy::context::FrameContext::new_default();
+            let mut mi_skip = alloc::vec![true; mi_cols * mi_rows];
+            let mut mi_intra = alloc::vec![true; mi_cols * mi_rows];
+            let mut mi_mode = alloc::vec![0u8; mi_cols * mi_rows];
+            let mut mi_x = 0usize;
+            let mut mi_y = 0usize;
 
-            // Partition type (CDF-based with context from block size)
-            let (part_ctx, part_nsymbs) =
-                svtav1_entropy::context::get_partition_context(
-                    decision.width as usize,
-                    true, // simplified: assume same size as neighbors
-                    true,
+            for decision in &all_decisions {
+                let bw = (decision.width as usize).max(8) / 8;
+                let bh = (decision.height as usize).max(8) / 8;
+
+                let (part_ctx, part_nsymbs) =
+                    svtav1_entropy::context::get_partition_context(
+                        decision.width as usize, true, true,
+                    );
+                svtav1_entropy::context::write_partition(
+                    &mut writer, &mut frame_ctx, part_ctx,
+                    decision.partition_type as u8, part_nsymbs,
                 );
-            svtav1_entropy::context::write_partition(
-                &mut writer,
-                &mut frame_ctx,
-                part_ctx,
-                decision.partition_type as u8,
-                part_nsymbs,
-            );
 
-            // Derive context from above and left neighbors in the mode info grid
-            if mi_y >= mi_rows || mi_x >= mi_cols {
-                break; // Safety: stop if position tracking went out of bounds
-            }
-            let above_skip = if mi_y > 0 { mi_skip[(mi_y - 1) * mi_cols + mi_x] } else { true };
-            let left_skip = if mi_x > 0 { mi_skip[mi_y * mi_cols + mi_x - 1] } else { true };
-            let skip_ctx = svtav1_entropy::context::get_skip_context(above_skip, left_skip);
+                if mi_y >= mi_rows || mi_x >= mi_cols {
+                    break;
+                }
+                let above_skip = if mi_y > 0 { mi_skip[(mi_y - 1) * mi_cols + mi_x] } else { true };
+                let left_skip = if mi_x > 0 { mi_skip[mi_y * mi_cols + mi_x - 1] } else { true };
+                let skip_ctx = svtav1_entropy::context::get_skip_context(above_skip, left_skip);
 
-            let skip = decision.eob == 0;
-            svtav1_entropy::context::write_skip(&mut writer, &mut frame_ctx, skip_ctx, skip);
+                let skip = decision.eob == 0;
+                svtav1_entropy::context::write_skip(&mut writer, &mut frame_ctx, skip_ctx, skip);
 
-            if !skip {
-                if !is_key {
-                    let above_intra = if mi_y > 0 {
-                        mi_intra[(mi_y - 1) * mi_cols + mi_x]
-                    } else {
-                        true
-                    };
-                    let left_intra = if mi_x > 0 {
-                        mi_intra[mi_y * mi_cols + mi_x - 1]
-                    } else {
-                        true
-                    };
-                    let ii_ctx =
-                        svtav1_entropy::context::get_intra_inter_context(above_intra, left_intra);
-                    svtav1_entropy::context::write_intra_inter(
-                        &mut writer,
-                        &mut frame_ctx,
-                        ii_ctx,
-                        decision.is_inter,
-                    );
+                if !skip {
+                    if !is_key {
+                        let above_intra = if mi_y > 0 { mi_intra[(mi_y - 1) * mi_cols + mi_x] } else { true };
+                        let left_intra = if mi_x > 0 { mi_intra[mi_y * mi_cols + mi_x - 1] } else { true };
+                        let ii_ctx = svtav1_entropy::context::get_intra_inter_context(above_intra, left_intra);
+                        svtav1_entropy::context::write_intra_inter(&mut writer, &mut frame_ctx, ii_ctx, decision.is_inter);
+                    }
+
+                    if decision.is_inter {
+                        svtav1_entropy::mv_coding::write_mv(&mut writer, decision.mv.x, decision.mv.y, true);
+                    }
+
+                    if !decision.is_inter {
+                        if is_key {
+                            let above_mode_ctx = if mi_y > 0 {
+                                svtav1_entropy::context::intra_mode_context(mi_mode[(mi_y - 1) * mi_cols + mi_x])
+                            } else { 0 };
+                            let left_mode_ctx = if mi_x > 0 {
+                                svtav1_entropy::context::intra_mode_context(mi_mode[mi_y * mi_cols + mi_x - 1])
+                            } else { 0 };
+                            svtav1_entropy::context::write_intra_mode_kf(&mut writer, &mut frame_ctx, above_mode_ctx, left_mode_ctx, decision.intra_mode);
+                        } else {
+                            let bsize_group = svtav1_entropy::context::block_size_group(decision.width as usize, decision.height as usize);
+                            svtav1_entropy::context::write_intra_mode_inter(&mut writer, &mut frame_ctx, bsize_group, decision.intra_mode);
+                        }
+                    }
+
+                    svtav1_entropy::coeff::write_coefficients_ctx(&mut writer, &decision.qcoeffs, decision.eob as usize, &mut coeff_ctx);
                 }
 
-                // MV encoding for inter blocks
-                if decision.is_inter {
-                    svtav1_entropy::mv_coding::write_mv(
-                        &mut writer,
-                        decision.mv.x,
-                        decision.mv.y,
-                        true, // allow high precision
-                    );
-                }
-
-                if !decision.is_inter {
-                    if is_key {
-                        let above_mode_ctx = if mi_y > 0 {
-                            svtav1_entropy::context::intra_mode_context(
-                                mi_mode[(mi_y - 1) * mi_cols + mi_x],
-                            )
-                        } else {
-                            0
-                        };
-                        let left_mode_ctx = if mi_x > 0 {
-                            svtav1_entropy::context::intra_mode_context(
-                                mi_mode[mi_y * mi_cols + mi_x - 1],
-                            )
-                        } else {
-                            0
-                        };
-                        svtav1_entropy::context::write_intra_mode_kf(
-                            &mut writer,
-                            &mut frame_ctx,
-                            above_mode_ctx,
-                            left_mode_ctx,
-                            decision.intra_mode,
-                        );
-                    } else {
-                        let bsize_group = svtav1_entropy::context::block_size_group(
-                            decision.width as usize,
-                            decision.height as usize,
-                        );
-                        svtav1_entropy::context::write_intra_mode_inter(
-                            &mut writer,
-                            &mut frame_ctx,
-                            bsize_group,
-                            decision.intra_mode,
-                        );
+                for dy in 0..bh.min(mi_rows.saturating_sub(mi_y)) {
+                    for dx in 0..bw.min(mi_cols.saturating_sub(mi_x)) {
+                        let idx = (mi_y + dy) * mi_cols + (mi_x + dx);
+                        if idx < mi_skip.len() {
+                            mi_skip[idx] = skip;
+                            mi_intra[idx] = !decision.is_inter;
+                            mi_mode[idx] = decision.intra_mode;
+                        }
                     }
                 }
 
-                svtav1_entropy::coeff::write_coefficients_ctx(
-                    &mut writer,
-                    &decision.qcoeffs,
-                    decision.eob as usize,
-                    &mut coeff_ctx,
-                );
-            }
-
-            // Update mode info grid for context of subsequent blocks
-            for dy in 0..bh.min(mi_rows - mi_y) {
-                for dx in 0..bw.min(mi_cols - mi_x) {
-                    let idx = (mi_y + dy) * mi_cols + (mi_x + dx);
-                    if idx < mi_skip.len() {
-                        mi_skip[idx] = skip;
-                        mi_intra[idx] = !decision.is_inter;
-                        mi_mode[idx] = decision.intra_mode;
-                    }
+                mi_x += bw;
+                if mi_x >= mi_cols {
+                    mi_x = 0;
+                    mi_y += bh;
                 }
             }
 
-            // Advance position in raster order
-            mi_x += bw;
-            if mi_x >= mi_cols {
-                mi_x = 0;
-                mi_y += bh;
-            }
-        }
-        let tile_data = writer.done().to_vec();
+            svtav1_entropy::obu::build_tile_group_single(writer.done())
+        };
 
         // Step 6b: Film grain estimation (compare source to reconstruction)
         let _grain_params = crate::film_grain::estimate_film_grain(&encode_input, &recon, w, h, w);
@@ -587,10 +545,10 @@ impl EncodePipeline {
                 pcs.qp,
                 is_single_frame,
             );
-            let tg_bytes = svtav1_entropy::obu::build_tile_group_single(&tile_data);
+            // tile_data is already a complete tile_group (with TG header)
             let mut frame_payload = alloc::vec::Vec::new();
             frame_payload.extend_from_slice(&fh_bytes);
-            frame_payload.extend_from_slice(&tg_bytes);
+            frame_payload.extend_from_slice(&tile_data);
             bs.extend_from_slice(&svtav1_entropy::obu::write_obu(
                 svtav1_entropy::obu::ObuType::Frame,
                 &frame_payload,

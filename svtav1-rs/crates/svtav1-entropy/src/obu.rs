@@ -595,6 +595,47 @@ pub fn build_tile_group_single(tile_data: &[u8]) -> Vec<u8> {
     result
 }
 
+/// Build the tile group data for a multi-tile frame.
+///
+/// AV1 spec Section 5.11.1: For NumTiles > 1, write
+/// tile_start_and_end_present_flag=0 (all tiles in one TG), byte align,
+/// then for each tile except the last: 4-byte LE tile size, followed by
+/// tile data. The last tile has no size prefix.
+pub fn build_tile_group_multi(tile_bitstreams: &[Vec<u8>]) -> Vec<u8> {
+    if tile_bitstreams.len() <= 1 {
+        return build_tile_group_single(
+            tile_bitstreams.first().map(|v| v.as_slice()).unwrap_or(&[]),
+        );
+    }
+
+    let mut wb = BitWriter::new();
+    // tile_start_and_end_present_flag = 0 (all tiles in this TG)
+    wb.write_bit(false);
+    write_trailing_bits(&mut wb);
+    let header = wb.into_data();
+
+    let total_size: usize = header.len()
+        + tile_bitstreams[..tile_bitstreams.len() - 1]
+            .iter()
+            .map(|t| 4 + t.len())
+            .sum::<usize>()
+        + tile_bitstreams.last().map_or(0, |t| t.len());
+
+    let mut result = Vec::with_capacity(total_size);
+    result.extend_from_slice(&header);
+
+    // Each tile except the last is preceded by its size (4 bytes LE)
+    for (i, tile) in tile_bitstreams.iter().enumerate() {
+        if i < tile_bitstreams.len() - 1 {
+            let size_minus_1 = (tile.len() as u32).saturating_sub(1);
+            result.extend_from_slice(&size_minus_1.to_le_bytes());
+        }
+        result.extend_from_slice(tile);
+    }
+
+    result
+}
+
 /// Write a complete minimal AV1 bitstream for a still image.
 ///
 /// Produces: temporal_delimiter + sequence_header + frame (header + tile group).
@@ -620,17 +661,20 @@ pub fn write_still_frame(width: u32, height: u32, base_qindex: u8, tile_data: &[
 }
 
 /// Write an inter frame as a Frame OBU (frame header + tile group).
+/// Write an inter frame as a Frame OBU.
+///
+/// `tile_group_data` should be a pre-formed tile group (from
+/// `build_tile_group_single` or `build_tile_group_multi`).
 pub fn write_inter_frame(
     base_qindex: u8,
     refresh_frame_flags: u8,
     order_hint: u8,
-    tile_data: &[u8],
+    tile_group_data: &[u8],
 ) -> Vec<u8> {
     let header = write_inter_frame_header(base_qindex, refresh_frame_flags, order_hint);
-    let tg = build_tile_group_single(tile_data);
-    let mut payload = Vec::with_capacity(header.len() + tg.len());
+    let mut payload = Vec::with_capacity(header.len() + tile_group_data.len());
     payload.extend_from_slice(&header);
-    payload.extend_from_slice(&tg);
+    payload.extend_from_slice(tile_group_data);
     write_obu(ObuType::Frame, &payload)
 }
 
