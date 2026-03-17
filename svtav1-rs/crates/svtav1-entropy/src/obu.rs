@@ -136,27 +136,65 @@ pub fn write_temporal_delimiter() -> Vec<u8> {
     write_obu(ObuType::TemporalDelimiter, &[])
 }
 
-/// Write a minimal sequence header OBU.
+/// Write a reduced-header sequence header OBU (still-picture only).
 ///
-/// This produces a valid AV1 sequence header for 8-bit 4:2:0 content.
+/// This produces a valid AV1 sequence header for single-frame 8-bit 4:2:0 content.
+/// Use `write_sequence_header_full` for multi-frame sequences.
 pub fn write_sequence_header(width: u32, height: u32) -> Vec<u8> {
+    write_sequence_header_inner(width, height, true)
+}
+
+/// Write a full sequence header OBU that supports inter frames.
+///
+/// Enables order_hint (needed for reference frame management) and
+/// signals all features needed for multi-frame encoding.
+pub fn write_sequence_header_full(width: u32, height: u32) -> Vec<u8> {
+    write_sequence_header_inner(width, height, false)
+}
+
+/// Write trailing bits to byte-align the bitwriter.
+fn write_trailing_bits(wb: &mut BitWriter) {
+    let remainder = wb.bit_offset % 8;
+    if remainder != 0 {
+        wb.write_bit(true); // trailing 1
+        let pad = 8 - (wb.bit_offset % 8);
+        if pad < 8 {
+            wb.write_bits(0, pad);
+        }
+    }
+}
+
+/// Order hint bits used in the full sequence header.
+pub const ORDER_HINT_BITS: u32 = 7;
+
+fn write_sequence_header_inner(width: u32, height: u32, still_picture: bool) -> Vec<u8> {
     let mut wb = BitWriter::new();
 
     // seq_profile = 0 (Main profile: 8/10-bit 4:2:0)
     wb.write_bits(0, 3);
-    // still_picture = 1
-    wb.write_bit(true);
-    // reduced_still_picture_header = 1
-    wb.write_bit(true);
+    // still_picture
+    wb.write_bit(still_picture);
+    // reduced_still_picture_header
+    wb.write_bit(still_picture);
 
-    // With reduced_still_picture_header:
-    // timing_info_present_flag = 0 (implicit)
-    // decoder_model_info_present_flag = 0 (implicit)
-    // initial_display_delay_present_flag = 0 (implicit)
-    // operating_points_cnt_minus_1 = 0 (implicit)
-    // operating_point_idc[0] = 0 (implicit)
-    // seq_level_idx[0]
-    wb.write_bits(8, 5); // Level 4.0
+    if still_picture {
+        // Reduced header: only seq_level_idx
+        wb.write_bits(8, 5); // Level 4.0
+    } else {
+        // Full header
+        // timing_info_present_flag = 0
+        wb.write_bit(false);
+        // initial_display_delay_present_flag = 0
+        wb.write_bit(false);
+        // operating_points_cnt_minus_1 = 0
+        wb.write_bits(0, 5);
+        // operating_point_idc[0] = 0
+        wb.write_bits(0, 12);
+        // seq_level_idx[0] = 8 (Level 4.0)
+        wb.write_bits(8, 5);
+        // seq_tier[0] = 0 (since level > 7)
+        wb.write_bit(false);
+    }
 
     // frame_width_bits_minus_1 and frame_height_bits_minus_1
     let w_bits = 32 - (width - 1).leading_zeros();
@@ -168,25 +206,44 @@ pub fn write_sequence_header(width: u32, height: u32) -> Vec<u8> {
     // max_frame_height_minus_1
     wb.write_bits(height - 1, h_bits);
 
-    // frame_id_numbers_present_flag = 0 (reduced header)
-    // use_128x128_superblock
+    if !still_picture {
+        // frame_id_numbers_present_flag = 0
+        wb.write_bit(false);
+    }
+
+    // use_128x128_superblock = 0
     wb.write_bit(false);
-    // enable_filter_intra
+    // enable_filter_intra = 0
     wb.write_bit(false);
-    // enable_intra_edge_filter
+    // enable_intra_edge_filter = 0
     wb.write_bit(false);
 
-    // With reduced_still_picture_header, many features are disabled:
-    // enable_interintra_compound = 0
-    // enable_masked_compound = 0
-    // enable_warped_motion = 0
-    // enable_dual_filter = 0
-    // enable_order_hint = 0
-    // enable_jnt_comp = 0 (implicit)
-    // enable_ref_frame_mvs = 0 (implicit)
+    if !still_picture {
+        // enable_interintra_compound = 0
+        wb.write_bit(false);
+        // enable_masked_compound = 0
+        wb.write_bit(false);
+        // enable_warped_motion = 0
+        wb.write_bit(false);
+        // enable_dual_filter = 0
+        wb.write_bit(false);
+        // enable_order_hint = 1 (needed for reference management)
+        wb.write_bit(true);
+        // enable_jnt_comp = 0 (requires order_hint)
+        wb.write_bit(false);
+        // enable_ref_frame_mvs = 0 (requires order_hint)
+        wb.write_bit(false);
+        // order_hint_bits_minus_1
+        wb.write_bits(ORDER_HINT_BITS - 1, 3);
+    }
+
     // seq_choose_screen_content_tools = SELECT (2)
-    wb.write_bits(2, 2); // seq_force_screen_content_tools = SELECT
-    // seq_choose_integer_mv = SELECT (implied by screen_content=SELECT)
+    wb.write_bits(2, 2);
+    // seq_choose_integer_mv: when screen_content=SELECT, this is also SELECT
+    // For non-still-picture: need to write seq_force_integer_mv
+    if !still_picture {
+        wb.write_bits(2, 2); // seq_force_integer_mv = SELECT
+    }
 
     // enable_superres = 0
     wb.write_bit(false);
@@ -204,7 +261,7 @@ pub fn write_sequence_header(width: u32, height: u32) -> Vec<u8> {
     wb.write_bit(false);
     // color_range = 0 (studio/limited range)
     wb.write_bit(false);
-    // subsampling_x = 1, subsampling_y = 1 (4:2:0)
+    // subsampling_x = 1, subsampling_y = 1 (4:2:0) — implicit for profile 0
     // chroma_sample_position = 0 (unknown)
     wb.write_bits(0, 2);
     // separate_uv_delta_q = 0
@@ -213,15 +270,7 @@ pub fn write_sequence_header(width: u32, height: u32) -> Vec<u8> {
     // film_grain_params_present = 0
     wb.write_bit(false);
 
-    // trailing bits (byte-align)
-    let remainder = wb.bit_offset % 8;
-    if remainder != 0 {
-        wb.write_bit(true); // trailing 1
-        let pad = 8 - (wb.bit_offset % 8);
-        if pad < 8 {
-            wb.write_bits(0, pad);
-        }
-    }
+    write_trailing_bits(&mut wb);
 
     let payload = wb.into_data();
     write_obu(ObuType::SequenceHeader, &payload)
@@ -314,7 +363,7 @@ pub fn write_key_frame_header(_width: u32, _height: u32, base_qindex: u8) -> Vec
 pub fn write_inter_frame_header(
     base_qindex: u8,
     refresh_frame_flags: u8,
-    _order_hint: u8,
+    order_hint: u8,
 ) -> Vec<u8> {
     let mut wb = BitWriter::new();
 
@@ -336,8 +385,8 @@ pub fn write_inter_frame_header(
     // frame_size_override_flag = 0 (use SH dimensions)
     wb.write_bit(false);
 
-    // order_hint (if enable_order_hint in SH — we don't enable it in reduced SH)
-    // For full SH we'd write it here: wb.write_bits(order_hint, order_hint_bits)
+    // order_hint (enable_order_hint = 1 in full SH)
+    wb.write_bits(order_hint as u32, ORDER_HINT_BITS);
 
     // primary_ref_frame = 7 (PRIMARY_REF_NONE — no previous context to load)
     wb.write_bits(7, 3);

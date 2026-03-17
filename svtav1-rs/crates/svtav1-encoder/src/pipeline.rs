@@ -373,8 +373,37 @@ impl EncodePipeline {
         // and used by the decoder to re-synthesize grain
 
         // Step 7: Build OBU bitstream
+        // Use full (non-reduced) sequence header for multi-frame sequences,
+        // still-picture header only for single-frame mode.
+        let is_single_frame = self.gop.intra_period <= 1;
         let bitstream = if is_key {
-            svtav1_entropy::obu::write_still_frame(self.width, self.height, pcs.qp, &tile_data)
+            let mut bs = alloc::vec::Vec::new();
+            bs.extend_from_slice(&svtav1_entropy::obu::write_temporal_delimiter());
+            if is_single_frame {
+                bs.extend_from_slice(&svtav1_entropy::obu::write_sequence_header(
+                    self.width,
+                    self.height,
+                ));
+            } else {
+                bs.extend_from_slice(&svtav1_entropy::obu::write_sequence_header_full(
+                    self.width,
+                    self.height,
+                ));
+            }
+            // Key frame header + tile data as Frame OBU
+            let fh = svtav1_entropy::obu::write_key_frame_header(
+                self.width,
+                self.height,
+                pcs.qp,
+            );
+            let mut frame_payload = alloc::vec::Vec::new();
+            frame_payload.extend_from_slice(&fh);
+            frame_payload.extend_from_slice(&tile_data);
+            bs.extend_from_slice(&svtav1_entropy::obu::write_obu(
+                svtav1_entropy::obu::ObuType::Frame,
+                &frame_payload,
+            ));
+            bs
         } else {
             // Inter frame: proper frame header with type, QP, refresh flags, ref indices
             svtav1_entropy::obu::write_inter_frame(
