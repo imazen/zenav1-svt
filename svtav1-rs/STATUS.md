@@ -49,16 +49,22 @@
 - Mode decision candidates — **21 candidates listed but not evaluated in pipeline**
 - ME (full-pel + half-pel) — **real search algorithm**
 
-## Exists But Not Wired Into Pipeline
+## Recently Wired Into Pipeline (previously orphaned)
 
-These modules have working code and tests but `encode_frame` doesn't call them:
+- **CDEF** — now applied to reconstruction when `speed_config.enable_cdef` is true
+- **Temporal filtering** — now called before encoding when refs available and enabled
+- **Mode decision** — partition search now tries 5+ intra modes (DC/V/H/smooth/paeth)
+- **Coefficient coding** — pipeline uses `write_coefficients` with Exp-Golomb, not literals
+- **Speed config** — `enable_cdef`, `enable_temporal_filter`, `max_partition_depth` now honored
 
-- **Temporal filtering** — `temporal_filter()` works in isolation, not called by pipeline
+## Still Not Wired Into Pipeline
+
 - **Film grain** — `estimate_film_grain()` + `synthesize_grain()` work, not called
-- **Loop filters in pipeline** — deblock/CDEF/Wiener/sgrproj exist but pipeline skips them
+- **Wiener/sgrproj restoration** — exist but pipeline only applies CDEF
+- **Deblocking** — exists but not called in pipeline (only CDEF)
 - **Multi-pass rate control** — `collect_first_pass_stats()` works, pipeline is single-pass
-- **Speed preset flags** — 20 flags defined, only `max_partition_depth` is used
-- **MV/coefficient/tile entropy coding** — real functions exist, pipeline uses literals
+- **Remaining speed preset flags** — 17 of 20 flags still unused
+- **MV coding** — real class-based coding exists, pipeline doesn't encode inter frames
 - **Perceptual optimizations** — QM/VAQ/trellis exist, not used in encode path
 
 ## Not Implemented
@@ -75,14 +81,15 @@ These modules have working code and tests but `encode_frame` doesn't call them:
 
 ## TODO Priority Order
 
-1. **Wire loop filters into pipeline** — call deblock + CDEF after reconstruction
-2. **Wire mode decision into partition search** — evaluate intra candidates at each leaf
-3. **Wire temporal filter** — call before encoding alt-ref frames
-4. **Wire film grain** — estimate before encode, signal in bitstream
-5. **Fix warped motion** — use 8-tap sub-pixel interpolation instead of nearest-neighbor
-6. **Fix scaled prediction** — use filtered interpolation
-7. **Fix deblocking** — add 6/8/14-tap variants and strength derivation
-8. **Wire entropy coding** — use CDF-based MV/coeff coding instead of literals
+1. ~~Wire CDEF into pipeline~~ — DONE
+2. ~~Wire mode decision into partition search~~ — DONE (5 intra modes)
+3. ~~Wire temporal filter~~ — DONE (when refs available)
+4. ~~Wire coefficient coding~~ — DONE (Exp-Golomb)
+5. **Wire deblocking + Wiener/sgrproj into pipeline**
+6. **Wire film grain** — estimate before encode, signal in bitstream
+7. **Fix warped motion** — use 8-tap sub-pixel interpolation instead of nearest-neighbor
+8. **Fix scaled prediction** — use filtered interpolation
+9. **Fix deblocking** — add 6/8/14-tap variants and strength derivation
 9. **Use speed config flags** — gate features based on preset
 10. **Add default CDF tables** — initialize FrameContext from AV1 spec tables
 11. **Wire multi-pass RC** — collect first-pass stats, use in second pass
