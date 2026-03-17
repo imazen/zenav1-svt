@@ -22,6 +22,9 @@ pub struct EncodeBlockResult {
 /// Encode a single block: predict → residual → transform → quantize → reconstruct.
 ///
 /// This is the innermost loop of the encoder.
+/// Uses DCT-DCT transform type. For RDO TX selection, use `encode_block_tx`.
+/// (Spec 10: "The encode-decode cycle applies forward transform, quantization,
+/// inverse transform, and reconstruction")
 pub fn encode_block(
     src: &[u8],
     src_stride: usize,
@@ -30,6 +33,30 @@ pub fn encode_block(
     width: usize,
     height: usize,
     qp: u8,
+) -> EncodeBlockResult {
+    encode_block_tx(
+        src,
+        src_stride,
+        pred,
+        pred_stride,
+        width,
+        height,
+        qp,
+        svtav1_types::transform::TxType::DctDct,
+    )
+}
+
+/// Encode a block with a specific transform type.
+/// (Spec 04: "16 transform types combine row and column 1D transforms")
+pub fn encode_block_tx(
+    src: &[u8],
+    src_stride: usize,
+    pred: &[u8],
+    pred_stride: usize,
+    width: usize,
+    height: usize,
+    qp: u8,
+    tx_type: svtav1_types::transform::TxType,
 ) -> EncodeBlockResult {
     let n = width * height;
 
@@ -42,15 +69,44 @@ pub fn encode_block(
         }
     }
 
-    // Step 2: Forward transform — use tuned wrappers for common sizes
+    // Step 2: Forward transform using the specified TxType.
+    // For DCT-DCT on common sizes, use optimized wrappers with SIMD dispatch.
+    // For other types or sizes, use the general TxType dispatch.
+    // (Spec 04: "the forward transform converts residual to frequency domain")
     let mut coeffs = alloc::vec![0i32; n];
-    match (width, height) {
-        (4, 4) => svtav1_dsp::fwd_txfm::fwd_txfm2d_4x4_dct_dct(&residual, &mut coeffs, width),
-        (8, 8) => svtav1_dsp::fwd_txfm::fwd_txfm2d_8x8_dct_dct(&residual, &mut coeffs, width),
-        (16, 16) => svtav1_dsp::fwd_txfm::fwd_txfm2d_16x16_dct_dct(&residual, &mut coeffs, width),
-        (32, 32) => svtav1_dsp::fwd_txfm::fwd_txfm2d_32x32_dct_dct(&residual, &mut coeffs, width),
-        _ => {
-            let tx_size = size_to_tx_size(width, height);
+    let use_optimized = tx_type == svtav1_types::transform::TxType::DctDct;
+    if use_optimized {
+        match (width, height) {
+            (4, 4) => svtav1_dsp::fwd_txfm::fwd_txfm2d_4x4_dct_dct(&residual, &mut coeffs, width),
+            (8, 8) => svtav1_dsp::fwd_txfm::fwd_txfm2d_8x8_dct_dct(&residual, &mut coeffs, width),
+            (16, 16) => {
+                svtav1_dsp::fwd_txfm::fwd_txfm2d_16x16_dct_dct(&residual, &mut coeffs, width)
+            }
+            (32, 32) => {
+                svtav1_dsp::fwd_txfm::fwd_txfm2d_32x32_dct_dct(&residual, &mut coeffs, width)
+            }
+            _ => {
+                let tx_size = size_to_tx_size(width, height);
+                svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
+                    &residual,
+                    &mut coeffs,
+                    width,
+                    tx_size,
+                    tx_type,
+                );
+            }
+        }
+    } else {
+        // Non-DCT-DCT types go through general dispatch
+        let tx_size = size_to_tx_size(width, height);
+        if !svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
+            &residual,
+            &mut coeffs,
+            width,
+            tx_size,
+            tx_type,
+        ) {
+            // Unsupported type — fall back to DCT-DCT
             svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
                 &residual,
                 &mut coeffs,
@@ -85,19 +141,44 @@ pub fn encode_block(
         }
     }
 
-    // Step 4: Inverse transform — use tuned wrappers matching forward
+    // Step 4: Inverse transform — must match the forward transform type.
+    // (Spec 10: "the inverse transform type must match the forward type
+    // signaled in the bitstream")
     let mut inv_residual = alloc::vec![0i32; n];
-    match (width, height) {
-        (4, 4) => svtav1_dsp::inv_txfm::inv_txfm2d_4x4_dct_dct(&dqcoeffs, &mut inv_residual, width),
-        (8, 8) => svtav1_dsp::inv_txfm::inv_txfm2d_8x8_dct_dct(&dqcoeffs, &mut inv_residual, width),
-        (16, 16) => {
-            svtav1_dsp::inv_txfm::inv_txfm2d_16x16_dct_dct(&dqcoeffs, &mut inv_residual, width)
+    if use_optimized {
+        match (width, height) {
+            (4, 4) => {
+                svtav1_dsp::inv_txfm::inv_txfm2d_4x4_dct_dct(&dqcoeffs, &mut inv_residual, width)
+            }
+            (8, 8) => {
+                svtav1_dsp::inv_txfm::inv_txfm2d_8x8_dct_dct(&dqcoeffs, &mut inv_residual, width)
+            }
+            (16, 16) => {
+                svtav1_dsp::inv_txfm::inv_txfm2d_16x16_dct_dct(&dqcoeffs, &mut inv_residual, width)
+            }
+            (32, 32) => {
+                svtav1_dsp::inv_txfm::inv_txfm2d_32x32_dct_dct(&dqcoeffs, &mut inv_residual, width)
+            }
+            _ => {
+                let tx_size = size_to_tx_size(width, height);
+                svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch(
+                    &dqcoeffs,
+                    &mut inv_residual,
+                    width,
+                    tx_size,
+                    tx_type,
+                );
+            }
         }
-        (32, 32) => {
-            svtav1_dsp::inv_txfm::inv_txfm2d_32x32_dct_dct(&dqcoeffs, &mut inv_residual, width)
-        }
-        _ => {
-            let tx_size = size_to_tx_size(width, height);
+    } else {
+        let tx_size = size_to_tx_size(width, height);
+        if !svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch(
+            &dqcoeffs,
+            &mut inv_residual,
+            width,
+            tx_size,
+            tx_type,
+        ) {
             svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch(
                 &dqcoeffs,
                 &mut inv_residual,
