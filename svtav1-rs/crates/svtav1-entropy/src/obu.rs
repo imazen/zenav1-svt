@@ -362,8 +362,9 @@ pub fn write_key_frame_header_full(
 
     write_trailing_bits(&mut wb);
 
-    let payload = wb.into_data();
-    write_obu(ObuType::FrameHeader, &payload)
+    // Return raw header bytes (not wrapped in OBU).
+    // The caller combines this with tile data into a Frame OBU (type 6).
+    wb.into_data()
 }
 
 /// Write a minimal inter frame header.
@@ -474,6 +475,25 @@ pub fn write_inter_frame_header(
     wb.into_data()
 }
 
+/// Build the tile group data for a single-tile frame.
+///
+/// AV1 spec Section 5.11.1: For a single tile, the tile_group_obu()
+/// contains tile_start_and_end_present_flag=0 (1 bit) + byte alignment +
+/// the raw tile data.
+pub fn build_tile_group_single(tile_data: &[u8]) -> Vec<u8> {
+    let mut wb = BitWriter::new();
+    // tile_start_and_end_present_flag = 0 (single tile, no start/end)
+    wb.write_bit(false);
+    // Byte alignment
+    write_trailing_bits(&mut wb);
+    let header = wb.into_data();
+
+    let mut result = Vec::with_capacity(header.len() + tile_data.len());
+    result.extend_from_slice(&header);
+    result.extend_from_slice(tile_data);
+    result
+}
+
 /// Write a complete minimal AV1 bitstream for a still image.
 ///
 /// Produces: temporal_delimiter + sequence_header + frame (header + tile group).
@@ -486,18 +506,19 @@ pub fn write_still_frame(width: u32, height: u32, base_qindex: u8, tile_data: &[
     // Sequence header
     bitstream.extend_from_slice(&write_sequence_header(width, height));
 
-    // Frame OBU (contains frame header + tile group)
-    let frame_header = write_key_frame_header(width, height, base_qindex);
-    let mut frame_payload = Vec::new();
-    frame_payload.extend_from_slice(&frame_header);
-    frame_payload.extend_from_slice(tile_data);
+    // Frame OBU (type 6): raw frame header bytes + tile group data
+    let fh_bytes = write_key_frame_header(width, height, base_qindex);
+    let tg_bytes = build_tile_group_single(tile_data);
+    let mut frame_payload = Vec::with_capacity(fh_bytes.len() + tg_bytes.len());
+    frame_payload.extend_from_slice(&fh_bytes);
+    frame_payload.extend_from_slice(&tg_bytes);
 
     bitstream.extend_from_slice(&write_obu(ObuType::Frame, &frame_payload));
 
     bitstream
 }
 
-/// Write an inter frame as a Frame OBU (frame header + tile data).
+/// Write an inter frame as a Frame OBU (frame header + tile group).
 pub fn write_inter_frame(
     base_qindex: u8,
     refresh_frame_flags: u8,
@@ -505,9 +526,10 @@ pub fn write_inter_frame(
     tile_data: &[u8],
 ) -> Vec<u8> {
     let header = write_inter_frame_header(base_qindex, refresh_frame_flags, order_hint);
-    let mut payload = Vec::with_capacity(header.len() + tile_data.len());
+    let tg = build_tile_group_single(tile_data);
+    let mut payload = Vec::with_capacity(header.len() + tg.len());
     payload.extend_from_slice(&header);
-    payload.extend_from_slice(tile_data);
+    payload.extend_from_slice(&tg);
     write_obu(ObuType::Frame, &payload)
 }
 
