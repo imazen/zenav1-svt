@@ -513,6 +513,203 @@ fn floor_log2(mut x: u32) -> u32 {
     log
 }
 
+// =============================================================================
+// Wiener restoration filter
+// Ported from restoration.c — 7-tap separable symmetric filter
+// =============================================================================
+
+/// Apply Wiener restoration filter to a block.
+///
+/// The Wiener filter is a 7-tap separable symmetric filter applied
+/// horizontally then vertically. Coefficients are signaled in the bitstream.
+///
+/// `coeffs`: [3] symmetric filter coefficients (the center tap is derived).
+/// The full 7-tap kernel is: [c2, c1, c0, center, c0, c1, c2]
+/// where center = 128 - 2*(c0 + c1 + c2)
+pub fn wiener_filter(
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    width: usize,
+    height: usize,
+    h_coeffs: [i16; 3],
+    v_coeffs: [i16; 3],
+) {
+    // Build full 7-tap kernels
+    let h_tap = build_wiener_kernel(h_coeffs);
+    let v_tap = build_wiener_kernel(v_coeffs);
+
+    // Intermediate buffer (i16 to avoid overflow)
+    let mut tmp = alloc::vec![0i16; width * (height + 6)];
+
+    // Horizontal pass: src → tmp (with 3-pixel border)
+    let pad = 3;
+    for r in 0..height + 2 * pad {
+        let src_r = (r as i32 - pad as i32).clamp(0, height as i32 - 1) as usize;
+        for c in 0..width {
+            let mut sum: i32 = 0;
+            for k in 0..7 {
+                let sc = (c as i32 + k as i32 - 3).clamp(0, width as i32 - 1) as usize;
+                sum += src[src_r * src_stride + sc] as i32 * h_tap[k] as i32;
+            }
+            // Round to preserve precision: (sum + 64) >> 7, but keep as i16
+            tmp[r * width + c] = ((sum + (1 << 6)) >> 7) as i16;
+        }
+    }
+
+    // Vertical pass: tmp → dst
+    for r in 0..height {
+        for c in 0..width {
+            let mut sum: i32 = 0;
+            for k in 0..7 {
+                sum += tmp[(r + k) * width + c] as i32 * v_tap[k] as i32;
+            }
+            dst[r * dst_stride + c] = ((sum + (1 << 6)) >> 7).clamp(0, 255) as u8;
+        }
+    }
+}
+
+/// Build a 7-tap symmetric Wiener kernel from 3 coefficients.
+fn build_wiener_kernel(coeffs: [i16; 3]) -> [i16; 7] {
+    let center = 128 - 2 * (coeffs[0] + coeffs[1] + coeffs[2]);
+    [
+        coeffs[2], coeffs[1], coeffs[0], center, coeffs[0], coeffs[1], coeffs[2],
+    ]
+}
+
+// =============================================================================
+// Self-guided restoration filter (sgrproj)
+// Ported from restoration.c — guided filter with box sums
+// =============================================================================
+
+/// Self-guided restoration filter parameters.
+#[derive(Debug, Clone, Copy)]
+pub struct SgrprojParams {
+    /// Radius for pass 0 (0 = skip this pass).
+    pub r0: u8,
+    /// Radius for pass 1 (0 = skip this pass).
+    pub r1: u8,
+    /// Strength parameter for pass 0 (sgr_params[set_idx].s[0]).
+    pub s0: i32,
+    /// Strength parameter for pass 1.
+    pub s1: i32,
+    /// Mixing weights: output = w0 * pass0 + w1 * pass1 + (1 - w0 - w1) * src
+    pub xqd: [i32; 2],
+}
+
+/// Apply self-guided restoration filter to a block.
+///
+/// Uses box filtering with self-guided projection to denoise while
+/// preserving edges. Two passes with different radii are blended.
+pub fn sgrproj_filter(
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    width: usize,
+    height: usize,
+    params: &SgrprojParams,
+) {
+    let mut flt0 = alloc::vec![0i32; width * height];
+    let mut flt1 = alloc::vec![0i32; width * height];
+
+    // Pass 0: box filter with radius r0
+    if params.r0 > 0 {
+        box_filter_sgr(
+            src,
+            src_stride,
+            &mut flt0,
+            width,
+            height,
+            params.r0 as usize,
+            params.s0,
+        );
+    }
+
+    // Pass 1: box filter with radius r1
+    if params.r1 > 0 {
+        box_filter_sgr(
+            src,
+            src_stride,
+            &mut flt1,
+            width,
+            height,
+            params.r1 as usize,
+            params.s1,
+        );
+    }
+
+    // Blend: dst = clip(w0 * flt0 + w1 * flt1 + (1 - w0 - w1) * src)
+    let w0 = params.xqd[0];
+    let w1 = params.xqd[1];
+    let w_src = (1 << 7) - w0 - w1; // Weights sum to 128
+
+    for r in 0..height {
+        for c in 0..width {
+            let idx = r * width + c;
+            let s = src[r * src_stride + c] as i32;
+            let f0 = if params.r0 > 0 { flt0[idx] } else { s << 4 };
+            let f1 = if params.r1 > 0 { flt1[idx] } else { s << 4 };
+            let val = (w0 * f0 + w1 * f1 + w_src * (s << 4) + (1 << 10)) >> 11;
+            dst[r * dst_stride + c] = val.clamp(0, 255) as u8;
+        }
+    }
+}
+
+/// Box filter for self-guided restoration (single pass).
+fn box_filter_sgr(
+    src: &[u8],
+    src_stride: usize,
+    output: &mut [i32],
+    width: usize,
+    height: usize,
+    radius: usize,
+    strength: i32,
+) {
+    let n = (2 * radius + 1) * (2 * radius + 1);
+    let n_inv = ((1 << 12) + n as i32 / 2) / n as i32; // Approximate 1/n in Q12
+
+    for r in 0..height {
+        for c in 0..width {
+            // Compute box sum and sum of squares
+            let mut sum: i32 = 0;
+            let mut sum_sq: i32 = 0;
+
+            for dr in 0..2 * radius + 1 {
+                let sr =
+                    (r as i32 + dr as i32 - radius as i32).clamp(0, height as i32 - 1) as usize;
+                for dc in 0..2 * radius + 1 {
+                    let sc =
+                        (c as i32 + dc as i32 - radius as i32).clamp(0, width as i32 - 1) as usize;
+                    let v = src[sr * src_stride + sc] as i32;
+                    sum += v;
+                    sum_sq += v * v;
+                }
+            }
+
+            // Compute variance-based weight
+            let mean = (sum * n_inv + (1 << 11)) >> 12;
+            let var = (sum_sq * n_inv + (1 << 11)) >> (12 - mean * mean);
+            let var = var.max(0);
+
+            // Self-guided: a = var / (var + strength), b = mean * (1 - a)
+            // In fixed-point: a_q12 = var * (1 << 12) / (var + strength)
+            let denom = var + strength;
+            let a = if denom > 0 {
+                (var << 12) / denom
+            } else {
+                1 << 12 // No filtering
+            };
+            let b = ((1 << 12) - a) * mean;
+
+            // Output in Q4: filtered = (a * src + b) >> 8
+            let v = src[r * src_stride + c] as i32;
+            output[r * width + c] = (a * v + b + (1 << 7)) >> 8;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -449,6 +449,91 @@ static SM_WEIGHTS_64: [u8; 64] = [
     35, 32, 29, 27, 25, 22, 20, 18, 16, 15, 13, 12, 10, 9, 8, 7, 6, 6, 5, 5, 4, 4, 4,
 ];
 
+// =============================================================================
+// Chroma-from-Luma (CfL) prediction
+// Ported from svt_cfl_predict_lbd_c in cfl_c.c
+// =============================================================================
+
+/// CfL buffer line stride (max block width).
+pub const CFL_BUF_LINE: usize = 32;
+
+/// CfL luma subsampling: downsample luma 2x (for 4:2:0) and store as Q3.
+///
+/// Takes the reconstructed luma block and produces a Q3 AC prediction buffer
+/// by averaging 2x2 luma samples and subtracting the DC component.
+pub fn cfl_luma_subsampling_420(
+    luma: &[u8],
+    luma_stride: usize,
+    output_q3: &mut [i16],
+    width: usize,
+    height: usize,
+) {
+    // Downsample 2x2 luma to chroma resolution
+    for j in (0..height).step_by(2) {
+        let out_row = (j / 2) * CFL_BUF_LINE;
+        for i in (0..width).step_by(2) {
+            let sum = luma[j * luma_stride + i] as i32
+                + luma[j * luma_stride + i + 1] as i32
+                + luma[(j + 1) * luma_stride + i] as i32
+                + luma[(j + 1) * luma_stride + i + 1] as i32;
+            // Q3 = sum * 2 (since we're averaging 4 pixels and want Q3 precision)
+            output_q3[out_row + i / 2] = (sum * 2) as i16;
+        }
+    }
+}
+
+/// Subtract the DC (average) from the Q3 luma buffer to get AC-only values.
+pub fn cfl_subtract_average(pred_buf_q3: &mut [i16], width: usize, height: usize) {
+    let mut sum: i32 = 0;
+    for j in 0..height {
+        let row = j * CFL_BUF_LINE;
+        for i in 0..width {
+            sum += pred_buf_q3[row + i] as i32;
+        }
+    }
+    let num_pel = width * height;
+    let num_pel_log2 = (num_pel as u32).trailing_zeros();
+    let round_offset = (1 << num_pel_log2) >> 1;
+    let avg = (sum + round_offset) >> num_pel_log2;
+
+    for j in 0..height {
+        let row = j * CFL_BUF_LINE;
+        for i in 0..width {
+            pred_buf_q3[row + i] -= avg as i16;
+        }
+    }
+}
+
+/// CfL prediction: multiply alpha by AC luma values and add to DC chroma prediction.
+///
+/// `pred_buf_q3`: AC luma values in Q3 (from cfl_subtract_average)
+/// `pred`: DC chroma prediction (e.g., from DC mode)
+/// `dst`: output chroma prediction
+/// `alpha_q3`: CfL alpha parameter in Q3
+pub fn cfl_predict_lbd(
+    pred_buf_q3: &[i16],
+    pred: &[u8],
+    pred_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    alpha_q3: i32,
+    width: usize,
+    height: usize,
+) {
+    for j in 0..height {
+        for i in 0..width {
+            let scaled_luma_q6 = alpha_q3 * pred_buf_q3[j * CFL_BUF_LINE + i] as i32;
+            let scaled_luma_q0 = if scaled_luma_q6 < 0 {
+                -((-scaled_luma_q6 + 32) >> 6)
+            } else {
+                (scaled_luma_q6 + 32) >> 6
+            };
+            let val = scaled_luma_q0 + pred[j * pred_stride + i] as i32;
+            dst[j * dst_stride + i] = val.clamp(0, 255) as u8;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1724,6 +1724,9 @@ pub fn get_inv_txfm_func(tx_type_1d: u8, size: usize) -> Option<InvTxfmFunc> {
         (1, 4) => Some(iadst4),
         (1, 8) => Some(iadst8),
         (1, 16) => Some(iadst16),
+        (2, 4) => Some(iadst4), // FLIPADST inverse = ADST inverse (flip handled externally)
+        (2, 8) => Some(iadst8),
+        (2, 16) => Some(iadst16),
         (3, 4) => Some(iidentity4),
         (3, 8) => Some(iidentity8),
         (3, 16) => Some(iidentity16),

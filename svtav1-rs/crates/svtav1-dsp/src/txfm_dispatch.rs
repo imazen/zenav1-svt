@@ -255,16 +255,25 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_all_tx_types_4x4() {
+    fn dispatch_all_16_tx_types_4x4() {
         let input = vec![50i32; 16];
         for tx_type in [
             TxType::DctDct,
             TxType::AdstDct,
             TxType::DctAdst,
             TxType::AdstAdst,
+            TxType::FlipAdstDct,
+            TxType::DctFlipAdst,
+            TxType::FlipAdstFlipAdst,
+            TxType::AdstFlipAdst,
+            TxType::FlipAdstAdst,
             TxType::Idtx,
             TxType::VDct,
             TxType::HDct,
+            TxType::VAdst,
+            TxType::HAdst,
+            TxType::VFlipAdst,
+            TxType::HFlipAdst,
         ] {
             let mut output = vec![0i32; 16];
             let ok = fwd_txfm2d_dispatch(&input, &mut output, 4, TxSize::Tx4x4, tx_type);
