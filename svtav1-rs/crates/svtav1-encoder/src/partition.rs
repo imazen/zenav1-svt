@@ -658,8 +658,63 @@ fn encode_single_block(
                     height,
                 );
             }
+            svtav1_types::prediction::PredictionMode::SmoothVPred => {
+                svtav1_dsp::intra_pred::predict_smooth_v(
+                    &mut pred_block,
+                    width,
+                    &above,
+                    &left,
+                    0,
+                    height,
+                    width,
+                );
+            }
+            svtav1_types::prediction::PredictionMode::SmoothHPred => {
+                svtav1_dsp::intra_pred::predict_smooth_h(
+                    &mut pred_block,
+                    width,
+                    &above,
+                    &left,
+                    width,
+                    height,
+                );
+            }
+            svtav1_types::prediction::PredictionMode::D45Pred
+            | svtav1_types::prediction::PredictionMode::D67Pred
+            | svtav1_types::prediction::PredictionMode::D135Pred
+            | svtav1_types::prediction::PredictionMode::D113Pred
+            | svtav1_types::prediction::PredictionMode::D157Pred
+            | svtav1_types::prediction::PredictionMode::D203Pred => {
+                // Directional prediction needs extended neighbor arrays
+                let ext_len = width + height;
+                let mut ext_above = alloc::vec![128u8; ext_len];
+                let copy_a = above.len().min(ext_len);
+                ext_above[..copy_a].copy_from_slice(&above[..copy_a]);
+                let mut ext_left = alloc::vec![128u8; ext_len];
+                let copy_l = left.len().min(ext_len);
+                ext_left[..copy_l].copy_from_slice(&left[..copy_l]);
+
+                let angle = match cand.mode {
+                    svtav1_types::prediction::PredictionMode::D45Pred => 45,
+                    svtav1_types::prediction::PredictionMode::D67Pred => 67,
+                    svtav1_types::prediction::PredictionMode::D113Pred => 113,
+                    svtav1_types::prediction::PredictionMode::D135Pred => 135,
+                    svtav1_types::prediction::PredictionMode::D157Pred => 157,
+                    svtav1_types::prediction::PredictionMode::D203Pred => 203,
+                    _ => 45,
+                };
+                svtav1_dsp::intra_pred::predict_directional(
+                    &mut pred_block,
+                    width,
+                    &ext_above,
+                    &ext_left,
+                    width,
+                    height,
+                    angle,
+                );
+            }
             _ => {
-                // For other modes, use DC as fallback
+                // Remaining directional modes and advanced modes — use DC as fallback
                 svtav1_dsp::intra_pred::predict_dc(
                     &mut pred_block,
                     width,
