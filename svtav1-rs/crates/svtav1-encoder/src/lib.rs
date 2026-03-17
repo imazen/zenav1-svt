@@ -7,5 +7,6 @@ extern crate alloc;
 pub mod encode_loop;
 pub mod mode_decision;
 pub mod motion_est;
+pub mod partition;
 pub mod perceptual;
 pub mod rate_control;
