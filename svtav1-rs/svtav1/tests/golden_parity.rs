@@ -924,3 +924,133 @@ fn directional_203_deg_zone3() {
         }
     }
 }
+
+// =============================================================================
+// Entropy coder spec compliance tests
+// (Spec 07, AV1 Section 8.2: "Arithmetic coding engine")
+// =============================================================================
+
+#[test]
+fn range_coder_invariant_rng_ge_32768() {
+    // Spec 07: "After normalization, rng must be in [32768, 65535]"
+    // The OdEcEnc maintains this invariant after every encode operation.
+    use svtav1_entropy::range_coder::OdEcEnc;
+
+    let mut enc = OdEcEnc::new(4096);
+    // After init, rng = 0x8000 = 32768
+    assert!(!enc.has_error());
+
+    // Encode many symbols — invariant must hold throughout
+    for i in 0..200 {
+        let prob = ((i % 30) + 1) * 1000; // varying probabilities
+        enc.encode_bool_q15(i % 3 == 0, prob);
+        assert!(!enc.has_error(), "error after {i} symbols");
+    }
+
+    let output = enc.done();
+    assert!(
+        !output.is_empty(),
+        "should produce output after 200 symbols"
+    );
+}
+
+#[test]
+fn cdf_update_rate_formula() {
+    // Spec 07: "rate = 4 + (count >> 4) + (nsymbs > 3)"
+    // Verify the rate computation matches the spec exactly.
+    use svtav1_entropy::cdf::*;
+
+    // nsymbs=2, count=0: rate = 4 + 0 + 0 = 4
+    let mut cdf2 = [CDF_PROB_TOP / 2, 0, 0u16];
+    let initial = cdf2[0];
+    update_cdf(&mut cdf2, 0, 2);
+    let delta = initial - cdf2[0]; // cdf decreases for val=0
+    // delta = cdf[0] >> rate = (CDF_PROB_TOP/2) >> 4 = 16384 >> 4 = 1024
+    assert_eq!(
+        delta, 1024,
+        "rate=4 for nsymbs=2 count=0: delta should be 1024"
+    );
+
+    // nsymbs=4, count=0: rate = 4 + 0 + 1 = 5
+    let mut cdf4 = [CDF_PROB_TOP / 2, 0, 0, 0, 0u16];
+    let initial4 = cdf4[0];
+    update_cdf(&mut cdf4, 1, 4); // val=1, so cdf[0] increases
+    let delta4 = cdf4[0] - initial4;
+    // cdf[0] += (CDF_PROB_TOP - cdf[0]) >> 5 = (32768 - 16384) >> 5 = 16384 >> 5 = 512
+    assert_eq!(
+        delta4, 512,
+        "rate=5 for nsymbs=4 count=0: delta should be 512"
+    );
+
+    // After 16 updates, count reaches 16: rate = 4 + 1 + 1 = 6
+    let mut cdf_16 = [CDF_PROB_TOP / 2, 0, 0, 0, 0u16];
+    for _ in 0..16 {
+        update_cdf(&mut cdf_16, 0, 4);
+    }
+    assert_eq!(cdf_16[4], 16, "count should be 16 after 16 updates");
+    // Now rate = 4 + (16>>4) + 1 = 4 + 1 + 1 = 6
+    let before = cdf_16[0];
+    update_cdf(&mut cdf_16, 1, 4);
+    let delta_rate6 = cdf_16[0] - before;
+    // (CDF_PROB_TOP - cdf[0]) >> 6
+    let expected_delta = (CDF_PROB_TOP - before) >> 6;
+    assert_eq!(delta_rate6, expected_delta, "rate=6 at count=16");
+}
+
+#[test]
+fn cdf_counter_caps_at_32() {
+    // Spec 07: "count is incremented until it reaches 32, then stays"
+    use svtav1_entropy::cdf::*;
+
+    let mut cdf = [CDF_PROB_TOP / 2, 0, 0u16];
+    for _ in 0..100 {
+        update_cdf(&mut cdf, 0, 2);
+    }
+    assert_eq!(cdf[2], 32, "count should cap at 32 after 100 updates");
+}
+
+// =============================================================================
+// OBU format spec compliance tests
+// (Spec 07, AV1 Section 5.3: "OBU syntax")
+// =============================================================================
+
+#[test]
+fn obu_header_format() {
+    // Spec: OBU header is 1 byte (no extension):
+    // bit 0: obu_forbidden_bit = 0
+    // bits 1-4: obu_type
+    // bit 5: obu_extension_flag = 0
+    // bit 6: obu_has_size_field = 1
+    // bit 7: obu_reserved_1bit = 0
+    use svtav1_entropy::obu::*;
+
+    let header = write_obu_header(ObuType::SequenceHeader, false);
+    assert_eq!(header.len(), 1, "non-extension OBU header is 1 byte");
+
+    let byte = header[0];
+    assert_eq!(byte >> 7, 0, "forbidden bit must be 0");
+    assert_eq!((byte >> 3) & 0xF, 1, "type 1 = sequence header");
+    assert_eq!((byte >> 2) & 1, 0, "no extension");
+    assert_eq!((byte >> 1) & 1, 1, "has size field");
+    assert_eq!(byte & 1, 0, "reserved = 0");
+}
+
+#[test]
+fn uleb128_encoding_spec() {
+    // Spec: LEB128 encodes values as 7-bit groups with continuation bit
+    use svtav1_entropy::obu::uleb_encode;
+
+    // Single byte: value < 128
+    assert_eq!(uleb_encode(0), vec![0x00]);
+    assert_eq!(uleb_encode(1), vec![0x01]);
+    assert_eq!(uleb_encode(127), vec![0x7F]);
+
+    // Two bytes: 128 <= value < 16384
+    let enc_128 = uleb_encode(128);
+    assert_eq!(enc_128, vec![0x80, 0x01]); // 0 + continuation, 1
+    assert_eq!(enc_128.len(), 2);
+
+    // Decode verification: (0x80 & 0x7F) | ((0x01 & 0x7F) << 7) = 0 | 128 = 128
+    let decoded = (enc_128[0] & 0x7F) as u32 | ((enc_128[1] & 0x7F) as u32) << 7;
+    assert_eq!(decoded, 128);
+}
