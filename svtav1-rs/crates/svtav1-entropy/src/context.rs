@@ -287,6 +287,39 @@ impl FrameContext {
 
 use crate::writer::AomWriter;
 
+/// Derive the partition context from block size.
+///
+/// AV1 spec Section 5.9.3: partition context depends on block size.
+/// 8x8 → ctx 0-3 (4 types), 16-32 → ctx 4-15 (10 types), 64+ → ctx 16-19 (8 types).
+/// Sub-context (0-3) from above/left neighbor block sizes.
+pub fn get_partition_context(width: usize, above_same_size: bool, left_same_size: bool) -> (usize, usize) {
+    let bsl = match width {
+        w if w <= 8 => 0,
+        w if w <= 16 => 1,
+        w if w <= 32 => 2,
+        _ => 3,
+    };
+
+    // Sub-context from neighbors: 0-3
+    let sub = match (above_same_size, left_same_size) {
+        (true, true) => 0,
+        (true, false) => 1,
+        (false, true) => 2,
+        (false, false) => 3,
+    };
+
+    let ctx = bsl * 4 + sub;
+
+    // Number of valid partition symbols for this size
+    let nsymbs = match bsl {
+        0 => 4,  // NONE, HORZ, VERT, SPLIT only
+        3 => 8,  // Excludes HORZ_4, VERT_4
+        _ => 10, // All 10 types
+    };
+
+    (ctx.min(PARTITION_CONTEXTS - 1), nsymbs)
+}
+
 /// Encode a partition type using CDF from the frame context.
 ///
 /// `ctx` is the partition context (0-19), `partition` is the partition
