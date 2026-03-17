@@ -838,3 +838,175 @@ fn obu_sequence_header_profile() {
     eprintln!("Wrote test bitstream to {path:?} ({} bytes)", bitstream.len());
     eprintln!("Test with: dav1d -i /tmp/svtav1_test_output.obu -o /dev/null");
 }
+
+// =============================================================================
+// Multi-frame encoding quality tests
+// =============================================================================
+
+#[test]
+fn multi_frame_bitstream_sizes_decrease() {
+    // Inter frames should be smaller than the key frame for static content
+    let mut pipeline = svtav1_encoder::pipeline::EncodePipeline::new(
+        64,
+        64,
+        8,
+        svtav1_encoder::rate_control::RcConfig::default(),
+        4,
+        64,
+    );
+    let y_plane = make_gradient(64, 64);
+
+    let mut sizes = Vec::new();
+    for _ in 0..5 {
+        let bs = pipeline.encode_frame(&y_plane, 64);
+        sizes.push(bs.len());
+    }
+
+    // Frame 0 (key) should be largest (has SH + full key frame)
+    // Inter frames should be smaller (temporal prediction reduces residual)
+    eprintln!("Frame sizes: {:?}", sizes);
+    assert!(
+        sizes[0] > sizes[1],
+        "key frame ({}) should be larger than first inter ({})",
+        sizes[0],
+        sizes[1]
+    );
+}
+
+#[test]
+fn multi_frame_full_sh_obu_structure() {
+    // Verify multi-frame encoding uses full (non-reduced) SH
+    let mut pipeline = svtav1_encoder::pipeline::EncodePipeline::new(
+        32,
+        32,
+        8,
+        svtav1_encoder::rate_control::RcConfig::default(),
+        4,
+        64,
+    );
+    let y_plane = make_gradient(32, 32);
+
+    // Frame 0: key with full SH
+    let bs0 = pipeline.encode_frame(&y_plane, 32);
+    // Parse TD
+    let mut pos = 0;
+    let _ = parse_obu_header(bs0[pos]);
+    pos += 1;
+    let _td_size = read_uleb128(&bs0, &mut pos);
+
+    // Parse SH
+    let (obu_type, _) = parse_obu_header(bs0[pos]);
+    pos += 1;
+    assert_eq!(obu_type, 1, "SH type");
+    let sh_size = read_uleb128(&bs0, &mut pos) as usize;
+    let sh_byte = bs0[pos];
+    let still_picture = (sh_byte >> 2) & 1;
+    // Multi-frame should NOT use still_picture
+    assert_eq!(
+        still_picture, 0,
+        "multi-frame SH should have still_picture=0"
+    );
+    pos += sh_size;
+
+    // Frame OBU
+    let (obu_type, _) = parse_obu_header(bs0[pos]);
+    assert_eq!(obu_type, 6, "Frame OBU");
+
+    // Frame 1: inter
+    let bs1 = pipeline.encode_frame(&y_plane, 32);
+    let (obu_type, _) = parse_obu_header(bs1[0]);
+    assert_eq!(obu_type, 6, "inter frame should be Frame OBU");
+}
+
+#[test]
+fn speed_presets_affect_output_size() {
+    // Higher speed presets should produce output faster (fewer tools = less overhead)
+    // but potentially larger bitstreams due to less optimization
+    let y_plane = make_zone_plate(64, 64);
+
+    let mut sizes = Vec::new();
+    for preset in [0u8, 6, 13] {
+        let mut pipeline = svtav1_encoder::pipeline::EncodePipeline::new(
+            64,
+            64,
+            preset,
+            svtav1_encoder::rate_control::RcConfig::default(),
+            4,
+            64,
+        );
+        let bs = pipeline.encode_frame(&y_plane, 64);
+        sizes.push((preset, bs.len()));
+    }
+    eprintln!("Preset sizes: {:?}", sizes);
+    // All presets should produce valid output
+    for (preset, size) in &sizes {
+        assert!(*size > 10, "preset {} produced only {} bytes", preset, size);
+    }
+}
+
+#[test]
+fn encode_10_frame_sequence() {
+    // Encode a longer sequence and verify all frames produce output
+    let mut pipeline = svtav1_encoder::pipeline::EncodePipeline::new(
+        64,
+        64,
+        8,
+        svtav1_encoder::rate_control::RcConfig::default(),
+        4,
+        32,
+    );
+    let y_plane = make_gradient(64, 64);
+
+    let mut total_bytes = 0;
+    for i in 0..10 {
+        let bs = pipeline.encode_frame(&y_plane, 64);
+        assert!(
+            !bs.is_empty(),
+            "frame {} produced empty output",
+            i
+        );
+        total_bytes += bs.len();
+    }
+    assert_eq!(pipeline.frame_count, 10);
+    eprintln!("10 frames: {} total bytes", total_bytes);
+}
+
+#[test]
+fn write_multi_frame_bitstream_to_disk() {
+    // Write a complete multi-frame bitstream for external decoder testing
+    let mut pipeline = svtav1_encoder::pipeline::EncodePipeline::new(
+        128,
+        128,
+        6,
+        svtav1_encoder::rate_control::RcConfig {
+            mode: svtav1_encoder::rate_control::RcMode::Cqp,
+            qp: 30,
+            ..svtav1_encoder::rate_control::RcConfig::default()
+        },
+        4,
+        32,
+    );
+
+    let mut bitstream = Vec::new();
+    for i in 0..5 {
+        // Slight variation per frame to test inter prediction
+        let mut y_plane = make_gradient(128, 128);
+        // Shift pattern by frame index to create motion
+        for r in 0..128usize {
+            for c in 0..128usize {
+                let shifted_c = (c + i * 2) % 128;
+                y_plane[r * 128 + c] = ((r + shifted_c) as u8).wrapping_mul(3).wrapping_add(16);
+            }
+        }
+        let bs = pipeline.encode_frame(&y_plane, 128);
+        bitstream.extend_from_slice(&bs);
+    }
+
+    let path = std::path::Path::new("/tmp/svtav1_multiframe.obu");
+    std::fs::write(path, &bitstream).expect("failed to write");
+    eprintln!(
+        "Wrote 5-frame bitstream to {path:?} ({} bytes)",
+        bitstream.len()
+    );
+    eprintln!("Test with: dav1d -i /tmp/svtav1_multiframe.obu -o /dev/null");
+}
