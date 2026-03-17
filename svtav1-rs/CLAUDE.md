@@ -58,9 +58,9 @@
 
 ## Known Bugs
 
-1. **Bitstream not dav1d-decodable** — Frame OBU structure, headers, and tile group are structurally correct, but the entropy-coded tile data doesn't match the spec's exact block-level syntax ordering (partition → mode → skip → coefficients interleaved per block). Full bitstream conformance requires recording partition/mode decisions during the partition search and encoding them in spec order during entropy coding.
+1. **Bitstream not dav1d-decodable** — BlockDecision records are now produced by the partition search (is_inter, intra_mode, mv, qcoeffs, eob per block). The pipeline's entropy coding step doesn't yet use these decisions — it re-encodes blocks from scratch. Wiring the decisions into entropy coding requires collecting them from tile-parallel encoding and encoding in spec syntax order. The data structures are ready.
 
-2. **Per-SB TPL QP offsets not wired** — tpl_sb_qp_offsets() computes per-SB complexity but the partition search doesn't yet accept per-SB QP overrides. Currently only frame-level TPL adjustment is applied.
+2. **Per-SB TPL QP offsets not wired** — tpl_sb_qp_offsets() computes per-SB complexity but the partition search doesn't yet accept per-SB QP overrides.
 
 ## Investigation Notes
 
