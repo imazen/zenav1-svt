@@ -162,16 +162,19 @@ impl EncodePipeline {
                 let cur_w = sb_size.min(w - x0);
                 let cur_h = sb_size.min(h - y0);
 
-                let pred = alloc::vec![128u8; cur_w * cur_h];
                 let mut sb_recon = alloc::vec![0u8; cur_w * cur_h];
 
                 let part_config =
                     crate::partition::PartitionSearchConfig::from_speed_config(&self.speed_config);
+                let frame_ctx = crate::partition::FrameReconCtx {
+                    buf: &recon,
+                    stride: w,
+                    sb_x: x0,
+                    sb_y: y0,
+                };
                 let _sb_result = crate::partition::partition_search_with_config(
                     &encode_input[y0 * w + x0..],
                     w,
-                    &pred,
-                    cur_w,
                     &mut sb_recon,
                     cur_w,
                     cur_w,
@@ -180,6 +183,9 @@ impl EncodePipeline {
                     lambda,
                     self.speed_config.max_partition_depth as u32,
                     &part_config,
+                    Some(&frame_ctx),
+                    x0,
+                    y0,
                 );
 
                 // Write SB recon to frame buffer
