@@ -1,5 +1,17 @@
 # SVT-AV1 Rust Port Rules
 
+## CONFORMANCE MANDATE
+
+**NEVER stop working while ANY conformance or parity issue remains.** If the bitstream does not decode with rav1d-safe at ALL tested sizes, the work is NOT DONE. If any differential test shows a decode failure, investigate the root cause and fix it before committing documentation, before updating handoffs, before doing anything else. Conformance failures are the #1 priority — above new features, above performance, above code cleanup. Do not describe a conformance failure as "expected" or "known" — describe it as "BLOCKING" and fix it in the same session.
+
+This applies to:
+- Bitstream decode failures at any image size
+- Parity mismatches between C golden output and Rust implementation
+- CDF/entropy coding mismatches that produce non-decodable output
+- OBU structure errors that cause decoder rejection
+
+**The definition of "done" for any encoding feature is: rav1d-safe decodes the output correctly at all tested sizes.**
+
 ## Commit Discipline
 - **Commit after EVERY meaningful change.** After porting a function, commit. After adding a test, commit. After fixing a test, commit. Never batch more than ~30 minutes of work into one commit.
 - **Push after every commit.** CI runs on remote.
@@ -56,14 +68,9 @@
   Our implementation is simplified (no UnsafeCell, fully safe), but the API shape
   (Region, BorrowTracker, overlap detection) follows rav1d's design.
 
-## Known Bugs
+## Known Bugs — BLOCKING
 
-No open bugs. All previously-tracked items have been resolved.
-
-All three conformance gaps have been addressed:
-- Partition type syntax encoded in tile data (PartitionType enum, recorded per partition level)
-- MV syntax encoded for inter blocks (write_mv with class-based coding)
-- Coefficient coding uses position-aware context (DC/low-AC/neighbor-count derived)
+1. **128x128+ images fail to decode with rav1d-safe** — 64x64 decodes correctly but 128x128 fails with "AV1 decode error -1". The recursive partition tree encoding is correct (tree order, size-aware context). The root cause is likely in the frame header syntax (reduced-SH key frame header may have incorrect field ordering or missing fields for multi-SB frames) or in the coefficient entropy format (the CDF-based coding may not match what rav1d expects for the byte count). This is BLOCKING — must be fixed before any other work.
 
 ## Investigation Notes
 
