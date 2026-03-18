@@ -65,23 +65,45 @@ impl OdEcEnc {
         self.error
     }
 
-    /// Encode a symbol using a CDF table (Q15 probabilities).
+    /// Encode a symbol using an ICDF table (Q15 inverse CDF probabilities).
     ///
-    /// `s` is the symbol index, `icdf` is the inverse CDF table,
+    /// `s` is the symbol index, `icdf` is the inverse CDF table (decreasing
+    /// values: icdf[0] > icdf[1] > ... > icdf[nsyms-1] = 0).
     /// `nsyms` is the number of symbols.
     ///
-    /// Ported from `svt_od_ec_encode_cdf_q15`.
+    /// Both our encoder and rav1d's decoder use ICDF format internally.
+    /// rav1d converts from CDF to ICDF during initialization (cdf0d function).
+    ///
+    /// The range computation matches rav1d's msac_decode_symbol:
+    ///   v[val] = (r>>8) * (icdf[val] >> 6) >> 1 + EC_MIN_PROB * (n - val)
+    /// Symbol s has range [v[s], v[s-1]) where v[-1] = rng.
     pub fn encode_cdf_q15(&mut self, s: usize, icdf: &[AomCdfProb], nsyms: usize) {
         debug_assert!(s < nsyms);
-        debug_assert!(icdf[nsyms - 1] == crate::cdf::aom_icdf(CDF_PROB_TOP));
 
-        let fl = if s > 0 {
-            icdf[s - 1]
+        let n = nsyms as u32 - 1;
+        let r = self.rng as u32;
+        let l = self.low;
+
+        // Compute v[s] = lower boundary of symbol s
+        let v_s = if s <= n as usize {
+            (((r >> 8) * ((icdf[s] >> EC_PROB_SHIFT) as u32)) >> (7 - EC_PROB_SHIFT))
+                + EC_MIN_PROB * (n - s as u32)
         } else {
-            crate::cdf::aom_icdf(0)
+            0u32
         };
-        let fh = icdf[s];
-        self.encode_q15(fl as u32, fh as u32, s, nsyms);
+
+        // Compute v[s-1] = upper boundary of symbol s (= lower boundary of s-1)
+        let v_prev = if s > 0 {
+            (((r >> 8) * ((icdf[s - 1] >> EC_PROB_SHIFT) as u32)) >> (7 - EC_PROB_SHIFT))
+                + EC_MIN_PROB * (n - (s as u32 - 1))
+        } else {
+            r // v[-1] = rng for symbol 0
+        };
+
+        let new_rng = if v_prev > v_s { v_prev - v_s } else { 1 };
+        let new_l = l + v_s as u64;
+
+        self.normalize(new_l, new_rng as u16);
     }
 
     /// Encode a binary symbol with probability `f` (Q15).

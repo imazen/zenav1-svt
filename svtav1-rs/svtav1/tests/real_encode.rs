@@ -1393,3 +1393,81 @@ fn range_coder_state_trace() {
         eprintln!("  done: {} bytes {:02x?}", bytes.len(), bytes);
     }
 }
+
+#[test]
+fn verify_gray64_tile_data() {
+    use svtav1_entropy::writer::AomWriter;
+    use svtav1_entropy::context::*;
+    
+    // Reproduce gray64 encoding: HORZ(1) at ctx=12, children 64x32 NONE + skip
+    let mut w = AomWriter::new(128);
+    let mut fc = FrameContext::new_default();
+    let mut cc = svtav1_entropy::coeff::CoeffContext::default();
+    
+    // With mode/skip tracking
+    let w4 = 64/4;
+    let h4 = 64/4;
+    let mut above_skip = vec![false; w4];
+    
+    // SB: HORZ at ctx=12
+    write_partition(&mut w, &mut fc, 12, 1, 10);
+    
+    // Child 0 (64x32 at 0,0): ctx=12 NONE, skip_ctx=0
+    write_partition(&mut w, &mut fc, 12, 0, 10);
+    write_skip(&mut w, &mut fc, 0, true); // skip_ctx=0
+    // Record: above_skip[0..16] = true
+    for i in 0..w4 { above_skip[i] = true; }
+    
+    // Child 1 (64x32 at 0,32): ctx=12 NONE
+    write_partition(&mut w, &mut fc, 12, 0, 10);
+    // skip_ctx: above was skip → ctx=1
+    write_skip(&mut w, &mut fc, 1, true);
+    
+    let bytes = w.done().to_vec();
+    eprintln!("Reproduced tile data: {} bytes {:02x?}", bytes.len(), bytes);
+    eprintln!("Expected from pipeline: a3 a8");
+}
+
+#[test]
+fn simulate_decoder_on_gray64() {
+    // Simulate rav1d decoder reading [a3, a8] as tile data
+    // Initial state: rng=32768, cnt=-15, dif=0
+    let tile_data: [u8; 2] = [0xa3, 0xa8];
+    
+    // Refill: read bytes until cnt >= 0
+    let mut dif: u64 = 0;
+    let mut cnt: i32 = -15;
+    let mut pos = 0;
+    while cnt < 0 && pos < tile_data.len() {
+        dif = (dif << 8) | (tile_data[pos] as u64);
+        cnt += 8;
+        pos += 1;
+    }
+    eprintln!("After refill: dif=0x{:x}, cnt={}", dif, cnt);
+    
+    // First symbol: partition at ctx=12 (bl=1, sub=0)
+    // rav1d CDF for partition[1][0] in CDF format:
+    // [20137, 21547, 23078, 29566, 29837, 30261, 30524, 30892, 31724]
+    let cdf = [20137u32, 21547, 23078, 29566, 29837, 30261, 30524, 30892, 31724];
+    let n_symbols: u32 = 9;
+    let rng: u32 = 32768;
+    let r = rng >> 8; // 128
+    
+    let c = (dif >> (64 - 16)) as u32;
+    eprintln!("c = {} (0x{:x})", c, c);
+    
+    let mut val: u32 = 0;
+    let mut u = rng;
+    let mut v;
+    loop {
+        u = rng; // simplified
+        v = r * (cdf[val as usize] >> 6);
+        v >>= 1; // >>= (7 - EC_PROB_SHIFT) where EC_PROB_SHIFT=6
+        v += 4 * (n_symbols - val); // EC_MIN_PROB=4
+        eprintln!("  val={}: v={}", val, v);
+        if c >= v { break; }
+        val += 1;
+        if val >= n_symbols { val = n_symbols; break; }
+    }
+    eprintln!("Decoded partition symbol: {} (0=NONE, 1=HORZ, 2=VERT, 3=SPLIT)", val);
+}
