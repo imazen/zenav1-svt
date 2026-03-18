@@ -1121,3 +1121,243 @@ fn avif_encode_real_sizes() {
         assert!(!result.data.is_empty());
     }
 }
+
+#[test]
+fn dump_obu_comparison() {
+    let enc = AvifEncoder::new().with_quality(70.0).with_speed(8);
+    
+    // Uniform gray (all skip)
+    let gray = vec![128u8; 64 * 64];
+    let obu_gray = enc.encode_to_av1_obu(&gray, 64, 64, 64).unwrap();
+    std::fs::write("/tmp/obu_gray64.bin", &obu_gray).unwrap();
+    
+    // Gradient (non-skip)  
+    let mut grad = vec![0u8; 64 * 64];
+    for r in 0..64usize { for c in 0..64usize { grad[r*64+c] = ((r*4+c*2) % 256) as u8; } }
+    let obu_grad = enc.encode_to_av1_obu(&grad, 64, 64, 64).unwrap();
+    std::fs::write("/tmp/obu_grad64.bin", &obu_grad).unwrap();
+    
+    eprintln!("Gray: {} bytes, Gradient: {} bytes", obu_gray.len(), obu_grad.len());
+    
+    // Compare headers (TD + SH should be identical)
+    let min_len = obu_gray.len().min(obu_grad.len()).min(20);
+    let headers_match = obu_gray[..min_len] == obu_grad[..min_len];
+    eprintln!("First {} bytes match: {}", min_len, headers_match);
+    
+    // Hex dump both
+    eprintln!("\nGray ({} bytes):", obu_gray.len());
+    for (i, chunk) in obu_gray.chunks(16).enumerate() {
+        eprint!("  {:04x}: ", i*16);
+        for b in chunk { eprint!("{:02x} ", b); }
+        eprintln!();
+    }
+    eprintln!("\nGradient ({} bytes, first 48):", obu_grad.len());
+    for (i, chunk) in obu_grad[..48.min(obu_grad.len())].chunks(16).enumerate() {
+        eprint!("  {:04x}: ", i*16);
+        for b in chunk { eprint!("{:02x} ", b); }
+        eprintln!();
+    }
+}
+
+#[test]
+fn partition_ctx_comparison() {
+    use svtav1_entropy::writer::AomWriter;
+    use svtav1_entropy::context::{FrameContext, write_partition, write_skip};
+    
+    // ctx=12 PARTITION_NONE + skip=true
+    let mut w = AomWriter::new(64);
+    let mut fc = FrameContext::new_default();
+    write_partition(&mut w, &mut fc, 12, 0, 10);
+    write_skip(&mut w, &mut fc, 0, true);
+    let b12 = w.done().to_vec();
+    
+    // ctx=15 PARTITION_NONE + skip=true
+    let mut w = AomWriter::new(64);
+    let mut fc = FrameContext::new_default();
+    write_partition(&mut w, &mut fc, 15, 0, 10);
+    write_skip(&mut w, &mut fc, 0, true);
+    let b15 = w.done().to_vec();
+    
+    eprintln!("ctx=12: {} bytes {:02x?}", b12.len(), b12);
+    eprintln!("ctx=15: {} bytes {:02x?}", b15.len(), b15);
+    
+    // These should be different (different CDF probabilities)
+    assert_ne!(b12, b15, "different contexts should produce different bytes");
+}
+
+#[test]
+fn debug_gray64_encoding() {
+    let enc = AvifEncoder::new().with_quality(70.0).with_speed(8);
+    let gray = vec![128u8; 64 * 64];
+    let obu = enc.encode_to_av1_obu(&gray, 64, 64, 64).unwrap();
+    
+    // Also try quality=70 speed=10
+    let enc10 = AvifEncoder::new().with_quality(70.0).with_speed(10);
+    let obu10 = enc10.encode_to_av1_obu(&gray, 64, 64, 64).unwrap();
+    
+    eprintln!("s8 gray: {} bytes, last 4: {:02x?}", obu.len(), &obu[obu.len()-4..]);
+    eprintln!("s10 gray: {} bytes, last 4: {:02x?}", obu10.len(), &obu10[obu10.len()-4..]);
+    
+    // Encode using the pipeline directly to see tile data  
+    let rc = svtav1_encoder::rate_control::RcConfig {
+        mode: svtav1_encoder::rate_control::RcMode::Cqp,
+        qp: 19,
+        ..svtav1_encoder::rate_control::RcConfig::default()
+    };
+    let mut pipeline = svtav1_encoder::pipeline::EncodePipeline::new(64, 64, 10, rc, 0, 1);
+    
+    // Manually encode to see what happens
+    let bs = pipeline.encode_frame(&gray, 64);
+    eprintln!("Pipeline s10 gray: {} bytes", bs.len());
+    for (i, chunk) in bs.chunks(16).enumerate() {
+        eprint!("  {:04x}: ", i*16);
+        for b in chunk { eprint!("{:02x} ", b); }
+        eprintln!();
+    }
+}
+
+#[test]
+fn trace_gray64_tree() {
+    // Directly build a pipeline and inspect the partition trees
+    let rc = svtav1_encoder::rate_control::RcConfig {
+        mode: svtav1_encoder::rate_control::RcMode::Cqp,
+        qp: 19,
+        ..svtav1_encoder::rate_control::RcConfig::default()
+    };
+    let sc = svtav1_encoder::speed_config::SpeedConfig::from_preset(13); // speed 10
+    let gray = vec![128u8; 64 * 64];
+    
+    let part_config = svtav1_encoder::partition::PartitionSearchConfig::from_speed_config(&sc);
+    let mut recon = vec![128u8; 64 * 64];
+    let result = svtav1_encoder::partition::partition_search_with_config(
+        &gray, 64, &mut recon, 64, 64, 64, 19, 100, sc.max_partition_depth as u32,
+        &part_config, None, 0, 0, None,
+    );
+    
+    eprintln!("Decisions: {} blocks", result.decisions.len());
+    for (i, d) in result.decisions.iter().enumerate() {
+        eprintln!("  block {}: {}x{} mode={} eob={} inter={} mv=({},{})", 
+            i, d.width, d.height, d.intra_mode, d.eob, d.is_inter, d.mv.x, d.mv.y);
+    }
+    if let Some(ref tree) = result.tree {
+        fn print_tree(t: &svtav1_encoder::partition::PartitionTree, indent: usize) {
+            match t {
+                svtav1_encoder::partition::PartitionTree::Leaf(d) => {
+                    eprintln!("{:indent$}Leaf: {}x{} mode={} eob={}", "", d.width, d.height, d.intra_mode, d.eob, indent=indent);
+                }
+                svtav1_encoder::partition::PartitionTree::Split { partition_type, width, height, children } => {
+                    eprintln!("{:indent$}Split({:?}): {}x{}, {} children", "", partition_type, width, height, children.len(), indent=indent);
+                    for c in children { print_tree(c, indent + 2); }
+                }
+            }
+        }
+        print_tree(tree, 0);
+    }
+}
+
+#[test]
+fn compare_ctx12_vs_ctx15_horz() {
+    use svtav1_entropy::writer::AomWriter;
+    use svtav1_entropy::context::{FrameContext, write_partition, write_skip, get_partition_context};
+    
+    // Simulate encoding PARTITION_HORZ + 2 children (each NONE + skip)
+    // At ctx=15 (our current, sub=3)
+    let mut w = AomWriter::new(128);
+    let mut fc = FrameContext::new_default();
+    let (ctx, nsymbs) = get_partition_context(64, false, false); // has_above=false, has_left=false
+    eprintln!("SB-level: ctx={}, nsymbs={}", ctx, nsymbs);
+    write_partition(&mut w, &mut fc, ctx, 1, nsymbs); // 1 = HORZ
+    // Child 0: 64x32 PARTITION_NONE at (true, true)
+    let (ctx_c, ns_c) = get_partition_context(32, true, true);
+    eprintln!("Child-level: ctx={}, nsymbs={}", ctx_c, ns_c);
+    write_partition(&mut w, &mut fc, ctx_c, 0, ns_c);
+    write_skip(&mut w, &mut fc, 0, true);
+    // Child 1: 64x32 PARTITION_NONE at (true, true)
+    write_partition(&mut w, &mut fc, ctx_c, 0, ns_c);
+    write_skip(&mut w, &mut fc, 0, true);
+    let b15 = w.done().to_vec();
+    eprintln!("ctx=15 HORZ: {} bytes {:02x?}", b15.len(), b15);
+    
+    // At ctx=12 (correct per spec, sub=0)
+    let mut w = AomWriter::new(128);
+    let mut fc = FrameContext::new_default();
+    let (ctx, nsymbs) = get_partition_context(64, true, true); // sub=0
+    eprintln!("\nSB-level (corrected): ctx={}, nsymbs={}", ctx, nsymbs);
+    write_partition(&mut w, &mut fc, ctx, 1, nsymbs); // 1 = HORZ
+    let (ctx_c, ns_c) = get_partition_context(32, true, true);
+    write_partition(&mut w, &mut fc, ctx_c, 0, ns_c);
+    write_skip(&mut w, &mut fc, 0, true);
+    write_partition(&mut w, &mut fc, ctx_c, 0, ns_c);
+    write_skip(&mut w, &mut fc, 0, true);
+    let b12 = w.done().to_vec();
+    eprintln!("ctx=12 HORZ: {} bytes {:02x?}", b12.len(), b12);
+}
+
+#[test]
+fn exact_gray64_tile_data() {
+    use svtav1_entropy::writer::AomWriter;
+    use svtav1_entropy::context::*;
+    
+    // Reproduce the exact pipeline encoding for gray 64x64:
+    // PARTITION_HORZ at ctx=(has_above=false,has_left=false) → ctx=15
+    // Child 0: 64x32 at (0,0), PARTITION_NONE + skip=true, skip_ctx=0
+    // Child 1: 64x32 at (0,32), PARTITION_NONE + skip=true, skip_ctx=1 (above was skip)
+    
+    let mut w = AomWriter::new(128);
+    let mut fc = FrameContext::new_default();
+    
+    // SB partition: HORZ(1) at ctx=15
+    write_partition(&mut w, &mut fc, 15, 1, 10);
+    // Child 0: partition NONE at ctx=8, skip=true at skip_ctx=0
+    write_partition(&mut w, &mut fc, 8, 0, 10);
+    write_skip(&mut w, &mut fc, 0, true);
+    // Child 1: partition NONE at ctx=8, skip=true at skip_ctx=1 (above was skip)
+    write_partition(&mut w, &mut fc, 8, 0, 10);
+    write_skip(&mut w, &mut fc, 1, true);
+    let bytes = w.done().to_vec();
+    eprintln!("Exact gray64 (ctx=15): {} bytes {:02x?}", bytes.len(), bytes);
+    
+    // Now with corrected SB context=12
+    let mut w = AomWriter::new(128);
+    let mut fc = FrameContext::new_default();
+    write_partition(&mut w, &mut fc, 12, 1, 10);
+    write_partition(&mut w, &mut fc, 8, 0, 10);
+    write_skip(&mut w, &mut fc, 0, true);
+    write_partition(&mut w, &mut fc, 8, 0, 10);
+    write_skip(&mut w, &mut fc, 1, true);
+    let bytes2 = w.done().to_vec();
+    eprintln!("Exact gray64 (ctx=12): {} bytes {:02x?}", bytes2.len(), bytes2);
+}
+
+#[test]
+fn exact_gray64_v2() {
+    use svtav1_entropy::writer::AomWriter;
+    use svtav1_entropy::context::*;
+    
+    // Gray 64x64 PARTITION_HORZ: children are 64x32 (width=64!)
+    // Child width=64 → bsl=3 → ctx=12 (with has_above=true, has_left=true → sub=0)
+    let mut w = AomWriter::new(128);
+    let mut fc = FrameContext::new_default();
+    
+    // SB: HORZ(1) at ctx=15 (has_above=false, has_left=false)
+    write_partition(&mut w, &mut fc, 15, 1, 10);
+    // Child 0 (64x32): width=64 → bsl=3 → ctx=12, NONE(0), nsymbs=10
+    write_partition(&mut w, &mut fc, 12, 0, 10);
+    write_skip(&mut w, &mut fc, 0, true);
+    // Child 1 (64x32): same ctx=12, skip_ctx=1
+    write_partition(&mut w, &mut fc, 12, 0, 10);
+    write_skip(&mut w, &mut fc, 1, true);
+    let bytes = w.done().to_vec();
+    eprintln!("v2 ctx=15: {} bytes {:02x?}", bytes.len(), bytes);
+    
+    // With corrected SB context=12
+    let mut w = AomWriter::new(128);
+    let mut fc = FrameContext::new_default();
+    write_partition(&mut w, &mut fc, 12, 1, 10);
+    write_partition(&mut w, &mut fc, 12, 0, 10);
+    write_skip(&mut w, &mut fc, 0, true);
+    write_partition(&mut w, &mut fc, 12, 0, 10);
+    write_skip(&mut w, &mut fc, 1, true);
+    let bytes2 = w.done().to_vec();
+    eprintln!("v2 ctx=12: {} bytes {:02x?}", bytes2.len(), bytes2);
+}

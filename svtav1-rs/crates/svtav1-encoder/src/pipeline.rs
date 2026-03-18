@@ -448,13 +448,14 @@ impl EncodePipeline {
             for (sb_idx, tree) in all_trees.iter().enumerate() {
                 let sb_col = sb_idx % sb_cols;
                 let sb_row = sb_idx / sb_cols;
-                let has_above = sb_row > 0;
-                let has_left = sb_col > 0;
                 let bx = sb_col * sb_size;
                 let by = sb_row * sb_size;
+                // AV1 spec: partition context sub_ctx is 0 for all SBs because
+                // neighbors are never smaller (same sb_size or don't exist).
+                // This maps to (true, true) in our convention → sub=0.
                 encode_partition_tree(
                     tree, &mut writer, &mut frame_ctx, &mut coeff_ctx, &mut ectx,
-                    is_key, has_above, has_left, bx, by,
+                    is_key, true, true, bx, by,
                 );
             }
 
