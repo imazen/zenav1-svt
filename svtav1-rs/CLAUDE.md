@@ -70,7 +70,7 @@ This applies to:
 
 ## Known Bugs — BLOCKING
 
-1. **128x128+ images fail to decode with rav1d-safe** — 64x64 decodes correctly but 128x128 fails with "AV1 decode error -1". The recursive partition tree encoding is correct (tree order, size-aware context). The root cause is likely in the frame header syntax (reduced-SH key frame header may have incorrect field ordering or missing fields for multi-SB frames) or in the coefficient entropy format (the CDF-based coding may not match what rav1d expects for the byte count). This is BLOCKING — must be fixed before any other work.
+1. **Multi-SB frames with PARTITION_SPLIT fail to decode** — Single-SB frames (≤64x64) decode at all quality/speed levels. Multi-SB frames decode when using PARTITION_NONE only (speed 10+, some size/quality combos). Failures occur when PARTITION_SPLIT is used (speed ≤8), likely due to: (a) sub-block partition context not matching decoder's mi-grid tracking, (b) coefficient coding format mismatch with AV1 spec's multi-part EOB CDFs. See CONTEXT-HANDOFF.md for full analysis.
 
 ## Investigation Notes
 

@@ -1,84 +1,81 @@
 # SVT-AV1 Rust Port — Context Handoff
 
 **Date:** 2026-03-17
-**Tests:** 470 | **Warnings:** 0
+**Tests:** 473 | **Warnings:** 0
 
-## BLOCKING: Multi-SB decode failure
+## Status: Multi-SB decode partially working
 
-Single-SB frames (up to 64x64 padded) decode with rav1d-safe at ALL quality levels and ALL speed presets. Multi-SB frames (128x128+ = 2+ SBs at sb_size=64) fail with "AV1 decode error -1". This is the ONLY remaining conformance issue.
+Single-SB frames (up to 64x64) decode correctly at ALL quality levels and ALL speed presets with rav1d-safe. Multi-SB frames decode for SOME configurations (speed 10, certain sizes at speed 8) but fail for others.
 
 ### What works
-- 64x64 gradient: DECODES at q30/q60/q70/q90, speeds 4-10
-- 32x32 padded to 64x64: DECODES
-- OBU structure verified correct by both rav1d-safe and ffprobe (after trailing_one_bit fix)
-- Frame data for the first SB is byte-identical between 64x64 standalone and 128x128 multi-SB
+- **All single-SB frames**: 32x32, 48x48, 64x64 — all quality levels (q30-q90), all speeds (s4-s10)
+- **Some multi-SB frames**: 80x80 at s8 (2×2 SBs), 128x128 at s10 q50 (via zenavif)
+- OBU structure validated by ffprobe and rav1d-safe
+- Monochrome (NumPlanes=1) encoding — no chroma syntax in bitstream
 
 ### What fails
-- 128x128 gradient (2×2 = 4 SBs): FAIL
-- 128x64 gradient (2×1 = 2 SBs): FAIL
-- 80x80 (padded to 128x128, 4 SBs): FAIL
-- ANY frame with >1 SB fails
+- 96x96, 112x112, 128x128 at speed 8 (via zenavif) — multi-SB
+- 80x80 at speed 10 — multi-SB
+- Direct 128x128 (gradient and uniform) — multi-SB
+- Most multi-SB configurations at speeds where partition splitting occurs
 
-### Root cause investigation so far
+### Fixes applied this session
 
-1. **CDF format** — FIXED. CDFs were stored in CDF format but encoder expects ICDF. Converted all 9 default tables. (6a611ba6)
-2. **CDF update logic** — FIXED. update_cdf now matches rav1d's msac.rs exactly for ICDF values. (b813e500)
-3. **sb_size mismatch** — FIXED. SH signals use_128x128_superblock=0 → sb_size=64. Encoder was using 32. (cb349569)
-4. **trailing_one_bit** — FIXED. Always written per spec, even when byte-aligned. (9852ac19)
-5. **Partition context** — FIXED. Position-aware has_above/has_left for SB boundaries. (0025d962)
-6. **Range coder underflow** — FIXED. Clamped range to minimum 1. (568d1a4a)
-7. **CoeffContext CDFs** — FIXED. base_cdf and br_cdf initialized with proper uniform distributions. (6bbbcdec)
+1. **Partition CDF update** (9c9d45bd) — `write_partition` was using `write_cdf` (no CDF update) while the decoder always updates. Changed to `write_symbol`.
 
-### Key observation
-The first SB's encoded data in a 128x128 bitstream is byte-identical to a standalone 64x64 bitstream. The decoder successfully parses SB #1 but fails when reading SB #2. This means the encoder's state after SB #1 (CDF tables, range coder state) diverges from the decoder's state.
+2. **OBU rewrite** (03081990) — Complete rewrite of SH and FH to match AV1 spec:
+   - SH: switched to `mono_chrome=1` (NumPlanes=1) — eliminates chroma delta-Q, uv_mode, chroma coefficients
+   - SH: fixed `seq_choose_screen_content_tools` from 2-bit to 1-bit
+   - FH: added `render_and_frame_size_different`, `tile_info()`, loop filter sharpness/delta
+   - FH: removed CDEF bits (enable_cdef=0), allow_intrabc (implicit), primary_ref_frame (implicit for error_resilient KEY_FRAME)
+   - FH: set `tx_mode_select=0` (TX_MODE_LARGEST) — no per-block tx_size needed
 
-### Most likely remaining causes (in priority order)
+3. **Angle delta** (03081990) — Added `y_angle_delta` encoding for directional intra modes (V_PRED through D67_PRED). The decoder reads this after y_mode.
 
-1. **Coefficient coding syntax mismatch** — Our coefficient encoding (write_coefficients_ctx) may not match what the decoder reads. The decoder reads coefficients in a specific scan order with specific context derivation. Our base_ctx derivation (position + neighbor count) may differ from the spec's exact SIG_COEF_CONTEXTS formula. After one SB of coefficient coding, the CoeffContext CDFs diverge.
+4. **Partition context revert** (c1535dc4) — The `has_above/has_left` based partition context produces decodable bitstreams for single-SB. The exact context derivation needs investigation to match rav1d's mi-grid based computation for multi-SB.
 
-2. **write_symbol vs write_cdf inconsistency** — Some syntax elements use write_symbol (with CDF update) and some use write_cdf (without update). The decoder always updates CDFs. If we mix updated and non-updated CDFs, the states diverge. Currently write_partition uses write_cdf (no update) while skip/mode use write_symbol (with update). The decoder updates ALL CDFs.
+### Root cause analysis for remaining failures
 
-3. **Intra mode CDF mismatch** — Our kf_y_mode_cdf has 13 symbols. The write_intra_mode_kf passes INTRA_MODES=13 as nsymbs. The CDF array has 14 entries (13 + sentinel). If the ICDF sentinel or count position is wrong, the CDF update corrupts adjacent memory.
+The remaining multi-SB failures occur specifically when the encoder uses **PARTITION_SPLIT** (speed 8 and below). When all SBs use PARTITION_NONE (speed 10+), multi-SB frames can decode.
 
-4. **Missing syntax elements** — The AV1 spec may require additional syntax elements per block that we don't encode (e.g., tx_size, tx_type as separate syntax, filter type). Each missing element causes the decoder to read bits from the coefficient data, misaligning everything.
+**Most likely causes:**
 
-### Files to investigate
+1. **Partition context for sub-blocks within SPLIT** — Within a PARTITION_SPLIT, the 4 child blocks need partition contexts based on the decoder's mi-grid tracking. Our encoder passes `(true, true)` for all children, but the actual contexts depend on which children have already been decoded and their sizes.
 
-- `crates/svtav1-entropy/src/coeff.rs` — write_coefficients_ctx, base_ctx derivation
-- `crates/svtav1-entropy/src/cdf.rs` — update_cdf (already matched to rav1d)
-- `crates/svtav1-entropy/src/context.rs` — write_partition, write_skip, write_intra_mode_kf
-- `crates/svtav1-encoder/src/pipeline.rs` — encode_partition_tree, tile data assembly
-- `/home/lilith/work/zen/rav1d-safe/src/msac.rs` — decoder's CDF update (reference)
-- `/home/lilith/work/zen/rav1d-safe/src/decode.rs` — decoder's syntax reading (reference)
+2. **Coefficient coding format mismatch** — Our `write_coefficients_ctx` uses simplified literal EOB and position-based contexts that may not match the AV1 spec's multi-part CDF-based EOB coding (eob_pt_16/32/64/etc). The coefficient scan order and context derivation also need verification.
 
-### Debugging approach
+3. **Partition context bsl/nsymbs mismatch** — Our bsl mapping (0=8x8, 3=64x64) and nsymbs (4/10/8) may differ from what rav1d uses internally. Investigation needed to verify the flattened CDF indexing matches rav1d's 2D `partition[BlockLevel][sub_ctx]` layout. rav1d uses symbol counts [7, 9, 9, 9, 3] indexed by BlockLevel (0=128x128, 4=8x8).
 
-1. **Instrument rav1d-safe** to print each syntax element it reads (symbol, context, CDF state) for a 128x128 frame
-2. **Instrument our encoder** to print each syntax element it writes
-3. **Compare the two traces** — the first divergence point is the bug
-4. Alternative: encode a 128x128 frame with `disable_cdf_update=1` in the frame header AND disable updates in the encoder. If this decodes, the issue is CDF update divergence. If it still fails, the issue is in the base syntax.
+### Investigation approach
+
+1. **Instrument encoder** to log each syntax element written per SB (symbol, context, CDF state)
+2. **Instrument rav1d** to log each syntax element read per SB
+3. **Compare traces** for a failing multi-SB frame — first divergence is the bug
+4. Alternative: encode with `PARTITION_NONE` forced for all SBs regardless of speed preset. If this makes multi-SB decode work at s8, the issue is confirmed in PARTITION_SPLIT handling.
 
 ### Quick test commands
 
 ```bash
-# Run from svtav1-rs/
 cd /home/lilith/research/svtav1/svtav1-rs
-cargo test --workspace  # 470 tests, all pass
+cargo test --workspace          # 473 tests, all pass
+cargo clippy --workspace --all-targets  # 0 warnings
 
-# Run decode tests from zenavif/
 cd /home/lilith/work/zen/zenavif
 cargo test --features "encode,encode-svtav1" --test differential_svtav1 -- "svtav1_decode" --nocapture
-
-# Key tests:
-# svtav1_decode_direct_gradient_64x64  — PASSES (single SB)
-# svtav1_decode_direct_gradient_128x128 — FAILS (4 SBs)
-# svtav1_decode_roundtrip_gradient — PASSES (64x64 via zenavif)
 ```
+
+### Key files
+- `crates/svtav1-entropy/src/obu.rs` — Sequence header, frame header, tile info
+- `crates/svtav1-entropy/src/context.rs` — Partition, skip, mode, angle_delta CDFs
+- `crates/svtav1-entropy/src/coeff.rs` — Coefficient entropy coding
+- `crates/svtav1-encoder/src/pipeline.rs` — Block-level syntax writing order
+- `/home/lilith/work/zen/rav1d-safe/src/decode.rs` — Decoder reference
+- `/home/lilith/work/zen/rav1d-safe/src/env.rs:94` — Decoder partition context
 
 ### Build
 ```bash
 cd /home/lilith/research/svtav1/svtav1-rs
-cargo test --workspace          # 470 tests
+cargo test --workspace          # 473 tests
 cargo clippy --workspace --all-targets  # 0 warnings
 ```
 
