@@ -42,6 +42,10 @@ pub const DC_SIGN_CONTEXTS: usize = 3;
 pub const PLANE_TYPES: usize = 2;
 pub const TXB_SKIP_CONTEXTS: usize = 13;
 pub const EOB_MAX_SYMS: usize = 13;
+/// Number of directional intra modes (V_PRED through D67_PRED).
+pub const DIRECTIONAL_MODES: usize = 8;
+/// Number of angle delta symbols (delta -3 to +3 = 7 values).
+pub const ANGLE_DELTA_SYMS: usize = 7;
 
 // =============================================================================
 // Frame context — all CDF tables for a frame/tile
@@ -77,6 +81,10 @@ pub struct FrameContext {
 
     /// UV-mode CDFs [2][INTRA_MODES][UV_INTRA_MODES+1] (CFL and non-CFL)
     pub uv_mode_cdf: [[[AomCdfProb; UV_INTRA_MODES + 1]; INTRA_MODES]; 2],
+
+    /// Angle delta CDFs [DIRECTIONAL_MODES][ANGLE_DELTA_SYMS+1]
+    /// For directional modes (V_PRED..D67_PRED), encodes angle offset -3..+3.
+    pub angle_delta_cdf: [[AomCdfProb; ANGLE_DELTA_SYMS + 1]; DIRECTIONAL_MODES],
 
     // --- Inter prediction ---
     /// Inter compound mode CDFs [INTER_MODE_CONTEXTS][4+1]
@@ -251,6 +259,18 @@ impl FrameContext {
             kf_y_mode_cdf: DEFAULT_KF_Y_MODE_CDF,
             y_mode_cdf: DEFAULT_Y_MODE_CDF,
             uv_mode_cdf: [[[0; UV_INTRA_MODES + 1]; INTRA_MODES]; 2],
+            // Uniform ICDF for 7 angle delta symbols: 6/6*T, 5/6*T, 4/6*T, 3/6*T, 2/6*T, 1/6*T, 0, 0
+            angle_delta_cdf: {
+                let n = ANGLE_DELTA_SYMS; // 7
+                let mut cdf = [0u16; ANGLE_DELTA_SYMS + 1];
+                let mut i = 0;
+                while i < n - 1 {
+                    cdf[i] = (CDF_PROB_TOP as u32 * (n - 1 - i) as u32 / (n - 1) as u32) as u16;
+                    i += 1;
+                }
+                // cdf[n-1] = 0 (last ICDF), cdf[n] = 0 (count)
+                [cdf; DIRECTIONAL_MODES]
+            },
             inter_compound_mode_cdf: [[
                 CDF_PROB_TOP / 4 * 3,
                 CDF_PROB_TOP / 4 * 2,
@@ -414,6 +434,29 @@ pub fn write_intra_mode_kf(
         &mut fc.kf_y_mode_cdf[above][left],
         INTRA_MODES,
     );
+}
+
+/// Returns true if the given intra mode is directional (V_PRED..D67_PRED).
+pub fn is_directional_mode(mode: u8) -> bool {
+    (1..=8).contains(&mode)
+}
+
+/// Encode the angle delta for a directional intra mode.
+///
+/// AV1 spec Section 5.11.42: angle_delta is signaled for directional modes
+/// (V_PRED through D67_PRED) when the block is at least 8x8.
+/// The delta ranges from -3 to +3 (7 symbols, symbol 3 = delta 0).
+pub fn write_angle_delta(
+    w: &mut AomWriter,
+    fc: &mut FrameContext,
+    mode: u8,
+    angle_delta: i8,
+) {
+    debug_assert!(is_directional_mode(mode), "angle_delta only for directional modes");
+    let mode_idx = (mode as usize - 1).min(DIRECTIONAL_MODES - 1);
+    // Map delta -3..+3 to symbol 0..6
+    let sym = (angle_delta + 3).clamp(0, 6) as usize;
+    w.write_symbol(sym, &mut fc.angle_delta_cdf[mode_idx], ANGLE_DELTA_SYMS);
 }
 
 /// Encode an intra prediction mode for inter frames.

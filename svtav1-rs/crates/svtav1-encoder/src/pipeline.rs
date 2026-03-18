@@ -568,6 +568,12 @@ fn encode_partition_tree(
                     svtav1_entropy::context::write_intra_mode_kf(
                         writer, frame_ctx, 0, 0, decision.intra_mode,
                     );
+                    // AV1 spec: angle_delta for directional modes (V..D67)
+                    if svtav1_entropy::context::is_directional_mode(decision.intra_mode) {
+                        svtav1_entropy::context::write_angle_delta(
+                            writer, frame_ctx, decision.intra_mode, 0,
+                        );
+                    }
                 } else {
                     let bsize_group = svtav1_entropy::context::block_size_group(
                         decision.width as usize, decision.height as usize,
@@ -575,6 +581,12 @@ fn encode_partition_tree(
                     svtav1_entropy::context::write_intra_mode_inter(
                         writer, frame_ctx, bsize_group, decision.intra_mode,
                     );
+                    // AV1 spec: angle_delta for directional modes
+                    if svtav1_entropy::context::is_directional_mode(decision.intra_mode) {
+                        svtav1_entropy::context::write_angle_delta(
+                            writer, frame_ctx, decision.intra_mode, 0,
+                        );
+                    }
                 }
 
                 svtav1_entropy::coeff::write_coefficients_ctx(

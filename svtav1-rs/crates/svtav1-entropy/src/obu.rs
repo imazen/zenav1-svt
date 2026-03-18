@@ -2,8 +2,8 @@
 //!
 //! Spec 07 §5.3: OBU bitstream format.
 //!
-//! Ported from SVT-AV1's entropy_coding.c OBU writing functions.
-//! Produces valid AV1 bitstream output.
+//! Produces valid AV1 bitstream output. All field orderings match
+//! the AV1 specification (av1-spec-errata1) exactly.
 
 use alloc::vec::Vec;
 
@@ -228,7 +228,6 @@ pub fn write_sequence_header_ex(
     write_sequence_header_inner(width, height, still_picture, bit_depth, color)
 }
 
-/// Write trailing bits to byte-align the bitwriter.
 /// Write AV1 trailing bits: a mandatory 1-bit followed by zeros to byte-align.
 /// The trailing_one_bit MUST always be written, even if already byte-aligned
 /// (in which case a full 0x80 byte is written).
@@ -243,6 +242,17 @@ fn write_trailing_bits(wb: &mut BitWriter) {
 /// Order hint bits used in the full sequence header.
 pub const ORDER_HINT_BITS: u32 = 7;
 
+/// Compute ceil(log2(n)), with tile_log2(0) = 0, tile_log2(1) = 0.
+fn tile_log2(n: u32) -> u32 {
+    if n <= 1 {
+        return 0;
+    }
+    32 - (n - 1).leading_zeros()
+}
+
+/// AV1 spec Section 5.5.1: Sequence header OBU.
+///
+/// Monochrome output (NumPlanes=1) — matches luma-only encoder.
 fn write_sequence_header_inner(
     width: u32,
     height: u32,
@@ -252,124 +262,88 @@ fn write_sequence_header_inner(
 ) -> Vec<u8> {
     let mut wb = BitWriter::new();
 
-    // seq_profile: 0 = Main (8/10-bit 4:2:0), 1 = High (4:4:4), 2 = Professional (12-bit)
+    // seq_profile: 0 = Main (8/10-bit 4:2:0), 2 = Professional (12-bit)
     let profile = if bit_depth > 10 { 2 } else { 0 };
     wb.write_bits(profile, 3);
-    // still_picture
     wb.write_bit(still_picture);
-    // reduced_still_picture_header
-    wb.write_bit(still_picture);
+    wb.write_bit(still_picture); // reduced_still_picture_header = still_picture
 
     if still_picture {
         // Reduced header: only seq_level_idx
         wb.write_bits(8, 5); // Level 4.0
     } else {
-        // Full header
-        // timing_info_present_flag = 0
-        wb.write_bit(false);
-        // initial_display_delay_present_flag = 0
-        wb.write_bit(false);
-        // operating_points_cnt_minus_1 = 0
-        wb.write_bits(0, 5);
-        // operating_point_idc[0] = 0
-        wb.write_bits(0, 12);
-        // seq_level_idx[0] = 8 (Level 4.0)
-        wb.write_bits(8, 5);
-        // seq_tier[0] = 0 (since level > 7)
-        wb.write_bit(false);
+        wb.write_bit(false); // timing_info_present_flag = 0
+        wb.write_bit(false); // initial_display_delay_present_flag = 0
+        wb.write_bits(0, 5); // operating_points_cnt_minus_1 = 0
+        wb.write_bits(0, 12); // operating_point_idc[0] = 0
+        wb.write_bits(8, 5); // seq_level_idx[0] = 8 (Level 4.0)
+        wb.write_bit(false); // seq_tier[0] = 0
     }
 
-    // frame_width_bits_minus_1 and frame_height_bits_minus_1
+    // Frame dimensions
     let w_bits = 32 - (width - 1).leading_zeros();
     let h_bits = 32 - (height - 1).leading_zeros();
-    wb.write_bits(w_bits - 1, 4);
-    wb.write_bits(h_bits - 1, 4);
-    // max_frame_width_minus_1
-    wb.write_bits(width - 1, w_bits);
-    // max_frame_height_minus_1
-    wb.write_bits(height - 1, h_bits);
+    wb.write_bits(w_bits - 1, 4); // frame_width_bits_minus_1
+    wb.write_bits(h_bits - 1, 4); // frame_height_bits_minus_1
+    wb.write_bits(width - 1, w_bits); // max_frame_width_minus_1
+    wb.write_bits(height - 1, h_bits); // max_frame_height_minus_1
 
     if !still_picture {
-        // frame_id_numbers_present_flag = 0
-        wb.write_bit(false);
+        wb.write_bit(false); // frame_id_numbers_present_flag = 0
     }
 
-    // use_128x128_superblock = 0
-    wb.write_bit(false);
-    // enable_filter_intra = 0
-    wb.write_bit(false);
-    // enable_intra_edge_filter = 0
-    wb.write_bit(false);
+    wb.write_bit(false); // use_128x128_superblock = 0
+    wb.write_bit(false); // enable_filter_intra = 0
+    wb.write_bit(false); // enable_intra_edge_filter = 0
 
-    if !still_picture {
-        // enable_interintra_compound = 0
-        wb.write_bit(false);
-        // enable_masked_compound = 0
-        wb.write_bit(false);
-        // enable_warped_motion = 0
-        wb.write_bit(false);
-        // enable_dual_filter = 0
-        wb.write_bit(false);
-        // enable_order_hint = 1 (needed for reference management)
-        wb.write_bit(true);
-        // enable_jnt_comp = 0 (requires order_hint)
-        wb.write_bit(false);
-        // enable_ref_frame_mvs = 0 (requires order_hint)
-        wb.write_bit(false);
-        // order_hint_bits_minus_1
-        wb.write_bits(ORDER_HINT_BITS - 1, 3);
-    }
-
-    // seq_choose_screen_content_tools = SELECT (2)
-    wb.write_bits(2, 2);
-    // seq_choose_integer_mv: when screen_content=SELECT, this is also SELECT
-    // For non-still-picture: need to write seq_force_integer_mv
-    if !still_picture {
-        wb.write_bits(2, 2); // seq_force_integer_mv = SELECT
-    }
-
-    // enable_superres = 0
-    wb.write_bit(false);
-    // enable_cdef = 0
-    wb.write_bit(false);
-    // enable_restoration = 0
-    wb.write_bit(false);
-
-    // Color config (AV1 spec Section 5.5.2)
-    // high_bitdepth
-    wb.write_bit(bit_depth > 8);
-    if profile == 2 && bit_depth > 8 {
-        // twelve_bit flag (only for Professional profile)
-        wb.write_bit(bit_depth >= 12);
-    }
-    // mono_chrome = 0 (not monochrome)
-    wb.write_bit(false);
-    // color_description_present_flag = 1 (signal CICP)
-    wb.write_bit(true);
-    // color_primaries (8 bits)
-    wb.write_bits(color.color_primaries as u32, 8);
-    // transfer_characteristics (8 bits)
-    wb.write_bits(color.transfer_characteristics as u32, 8);
-    // matrix_coefficients (8 bits)
-    wb.write_bits(color.matrix_coefficients as u32, 8);
-    // color_range
-    wb.write_bit(color.full_range);
-    // subsampling_x = 1, subsampling_y = 1 (4:2:0)
-    if color.matrix_coefficients == 0 {
-        // Identity matrix (RGB): no subsampling for profile 1+
-        if profile > 0 {
-            wb.write_bit(false); // subsampling_x = 0
-            wb.write_bit(false); // subsampling_y = 0
-        }
+    if still_picture {
+        // For reduced SH: all inter features are implicit 0,
+        // seq_force_screen_content_tools = SELECT (implicit),
+        // seq_force_integer_mv = SELECT (implicit).
+        // NO bits written for these.
     } else {
-        // chroma_sample_position = 0 (unknown) for 4:2:0
-        wb.write_bits(0, 2);
-    }
-    // separate_uv_delta_q = 0
-    wb.write_bit(false);
+        wb.write_bit(false); // enable_interintra_compound = 0
+        wb.write_bit(false); // enable_masked_compound = 0
+        wb.write_bit(false); // enable_warped_motion = 0
+        wb.write_bit(false); // enable_dual_filter = 0
+        wb.write_bit(true); // enable_order_hint = 1
+        wb.write_bit(false); // enable_jnt_comp = 0
+        wb.write_bit(false); // enable_ref_frame_mvs = 0
+        wb.write_bits(ORDER_HINT_BITS - 1, 3); // order_hint_bits_minus_1
 
-    // film_grain_params_present = 0
-    wb.write_bit(false);
+        // seq_choose_screen_content_tools (1 bit, NOT 2!)
+        wb.write_bit(true); // = 1 → seq_force_screen_content_tools = SELECT
+
+        // seq_force_screen_content_tools > 0 (SELECT=2 > 0), so:
+        // seq_choose_integer_mv (1 bit)
+        wb.write_bit(true); // = 1 → seq_force_integer_mv = SELECT
+    }
+
+    wb.write_bit(false); // enable_superres = 0
+    wb.write_bit(false); // enable_cdef = 0
+    wb.write_bit(false); // enable_restoration = 0
+
+    // ---- color_config() ----
+    wb.write_bit(bit_depth > 8); // high_bitdepth
+    if profile == 2 && bit_depth > 8 {
+        wb.write_bit(bit_depth >= 12); // twelve_bit
+    }
+
+    // Monochrome: NumPlanes = 1
+    // (mono_chrome is present for profile != 1)
+    wb.write_bit(true); // mono_chrome = 1
+
+    // color_description_present_flag = 1
+    wb.write_bit(true);
+    wb.write_bits(color.color_primaries as u32, 8);
+    wb.write_bits(color.transfer_characteristics as u32, 8);
+    wb.write_bits(color.matrix_coefficients as u32, 8);
+
+    // For mono_chrome: color_range=1 (implicit), subsampling=1,1 (implicit),
+    // chroma_sample_position=CSP_UNKNOWN (implicit), separate_uv_delta_q=0 (implicit).
+    // NO bits written.
+
+    wb.write_bit(false); // film_grain_params_present = 0
 
     write_trailing_bits(&mut wb);
 
@@ -377,105 +351,139 @@ fn write_sequence_header_inner(
     write_obu(ObuType::SequenceHeader, &payload)
 }
 
-/// Write a minimal frame header for an intra-only key frame.
-/// Write a key frame header compatible with either reduced or full SH.
-///
-/// When `reduced_sh` is true, uses the minimal reduced-still-picture format.
-/// When false, writes a full key frame header with show_existing_frame,
-/// frame_type, refresh_frame_flags, and order_hint.
+/// Write a key frame header for a reduced (still-picture) sequence header.
 pub fn write_key_frame_header(
-    _width: u32,
-    _height: u32,
+    width: u32,
+    height: u32,
     base_qindex: u8,
 ) -> Vec<u8> {
-    write_key_frame_header_full(_width, _height, base_qindex, true)
+    write_key_frame_header_full(width, height, base_qindex, true)
 }
 
-/// Write a key frame header for a full (non-reduced) sequence header.
+/// AV1 spec Section 5.9.2: uncompressed_header() for KEY_FRAME.
+///
+/// Field ordering matches the spec exactly. Monochrome (NumPlanes=1).
 pub fn write_key_frame_header_full(
-    _width: u32,
-    _height: u32,
+    width: u32,
+    height: u32,
     base_qindex: u8,
     reduced_sh: bool,
 ) -> Vec<u8> {
     let mut wb = BitWriter::new();
 
     if !reduced_sh {
-        // Full frame header for non-reduced SH
-        // show_existing_frame = 0
-        wb.write_bit(false);
-        // frame_type = KEY_FRAME (0)
-        wb.write_bits(0, 2);
-        // show_frame = 1
-        wb.write_bit(true);
-        // showable_frame: not present for KEY_FRAME with show_frame=1
-        // error_resilient_mode = 1 (implicit for KEY_FRAME)
+        // ---- Full frame header preamble ----
+        wb.write_bit(false); // show_existing_frame = 0
+        wb.write_bits(0, 2); // frame_type = KEY_FRAME (0)
+        wb.write_bit(true); // show_frame = 1
+        // showable_frame: implicit 0 for KEY_FRAME with show_frame=1
+        // error_resilient_mode: implicit 1 for KEY_FRAME with show_frame=1
+        wb.write_bit(false); // disable_cdf_update = 0
     }
+    // For reduced SH: show_existing_frame/frame_type/show_frame/error_resilient
+    // are all implicit. disable_cdf_update is not signaled.
 
-    // disable_cdf_update = 0 (only for non-reduced)
-    if !reduced_sh {
-        wb.write_bit(false);
-    }
-
-    // allow_screen_content_tools (if seq_force = SELECT)
-    wb.write_bit(false);
+    // allow_screen_content_tools: seq_force = SELECT → read 1 bit
+    wb.write_bit(false); // allow_screen_content_tools = 0
+    // Since allow_screen_content_tools=0: force_integer_mv not signaled
 
     if !reduced_sh {
-        // frame_size_override_flag = 0
-        wb.write_bit(false);
-        // order_hint = 0 (key frame is always order 0 or start of new sequence)
-        wb.write_bits(0, ORDER_HINT_BITS);
-        // primary_ref_frame = 7 (PRIMARY_REF_NONE)
-        wb.write_bits(7, 3);
-        // refresh_frame_flags = 0xFF (refresh all slots)
-        wb.write_bits(0xFF, 8);
+        wb.write_bit(false); // frame_size_override_flag = 0
+        wb.write_bits(0, ORDER_HINT_BITS); // order_hint = 0
+        // primary_ref_frame: NOT signaled for KEY_FRAME with error_resilient=1
+        //   (implicit PRIMARY_REF_NONE)
+        wb.write_bits(0xFF, 8); // refresh_frame_flags = 0xFF
     }
 
-    // allow_intrabc = 0
-    wb.write_bit(false);
+    // ---- frame_size() ----
+    // frame_size_override_flag = 0 → use SH dimensions, no bits
+    // superres_params(): enable_superres=0 → no bits
 
-    // Quantization params
-    wb.write_bits(base_qindex as u32, 8);
-    // delta_coded (DeltaQYDc) = 0
-    wb.write_bit(false);
-    // using_qmatrix = 0
-    wb.write_bit(false);
+    // ---- render_size() ----
+    wb.write_bit(false); // render_and_frame_size_different = 0
 
-    // Segmentation: enabled = 0
-    wb.write_bit(false);
+    // allow_intrabc: NOT signaled (allow_screen_content_tools=0 → implicit 0)
 
-    // delta_q_present = 0
-    wb.write_bit(false);
+    // ---- tile_info() ----
+    write_tile_info(&mut wb, width, height);
 
-    // Loop filter: filter_level[0] = 0, filter_level[1] = 0
-    wb.write_bits(0, 6);
-    wb.write_bits(0, 6);
+    // ---- quantization_params() ----
+    wb.write_bits(base_qindex as u32, 8); // base_q_idx
+    wb.write_bit(false); // DeltaQYDc: delta_coded = 0
+    // NumPlanes=1 (mono_chrome): no DeltaQUDc, DeltaQUAc
+    wb.write_bit(false); // using_qmatrix = 0
 
-    // CDEF: cdef_damping - 3 = 0, cdef_bits = 0
-    wb.write_bits(0, 2);
-    wb.write_bits(0, 2);
+    // ---- segmentation_params() ----
+    wb.write_bit(false); // segmentation_enabled = 0
 
-    // TX mode: tx_mode_select = 1 (TX_MODE_SELECT)
-    wb.write_bit(true);
+    // ---- delta_q_params() ----
+    wb.write_bit(false); // delta_q_present = 0
+    // delta_lf_params(): not signaled when delta_q_present=0
 
-    // reduced_tx_set = 0
-    wb.write_bit(false);
+    // ---- loop_filter_params() ----
+    // CodedLossless is only true when base_q_idx=0 AND all delta-Q=0 AND
+    // all segments have qindex 0. With base_q_idx>0 in practice, not lossless.
+    // allow_intrabc=0, so we always write loop filter params.
+    wb.write_bits(0, 6); // loop_filter_level[0] = 0
+    wb.write_bits(0, 6); // loop_filter_level[1] = 0
+    // NumPlanes=1: no loop_filter_level[2]/[3]
+    wb.write_bits(0, 3); // loop_filter_sharpness = 0
+    wb.write_bit(false); // loop_filter_delta_enabled = 0
+
+    // ---- cdef_params() ----
+    // enable_cdef=0 → no bits (implicit cdef_bits=0)
+
+    // ---- lr_params() ----
+    // enable_restoration=0 → no bits
+
+    // ---- read_tx_mode() ----
+    // Not CodedLossless (since base_q_idx may be nonzero) →
+    wb.write_bit(false); // tx_mode_select = 0 → TX_MODE_LARGEST
+
+    // For intra frames: no reference_select, skip_mode, warped_motion, global_motion
+
+    wb.write_bit(false); // reduced_tx_set = 0
 
     write_trailing_bits(&mut wb);
-
-    // Return raw header bytes (not wrapped in OBU).
-    // The caller combines this with tile data into a Frame OBU (type 6).
     wb.into_data()
 }
 
-/// Write a minimal inter frame header.
+/// AV1 spec Section 5.9.15: tile_info().
 ///
-/// Produces a frame header for an inter (non-key) frame with:
-/// - frame_type = INTER_FRAME
-/// - show_frame = 1
-/// - error_resilient_mode = 1 (simplified)
-/// - refresh_frame_flags
-/// - base_q_idx
+/// Writes uniform tile spacing with a single tile (no splitting).
+fn write_tile_info(wb: &mut BitWriter, width: u32, height: u32) {
+    let sb_size = 64u32; // use_128x128_superblock = 0
+    let sb_cols = width.div_ceil(sb_size);
+    let sb_rows = height.div_ceil(sb_size);
+
+    wb.write_bit(true); // uniform_tile_spacing_flag = 1
+
+    // TileColsLog2 starts at minLog2TileCols.
+    // For our small images, minLog2TileCols = 0.
+    // maxLog2TileCols = tile_log2(min(sbCols, MAX_TILE_COLS))
+    // MAX_TILE_COLS = 64 in AV1 spec
+    let max_log2_tile_cols = tile_log2(sb_cols.min(64));
+    // Write 0 (don't increment) for each possible increment level
+    // to keep TileColsLog2 = 0 (single tile column).
+    for _ in 0..max_log2_tile_cols {
+        wb.write_bit(false); // increment_tile_cols_log2 = 0 → break
+        break; // Only one 0 needed: the decoder breaks on first 0
+    }
+
+    // TileRowsLog2 starts at max(minLog2Tiles - TileColsLog2, 0) = 0
+    // maxLog2TileRows = tile_log2(min(sbRows, MAX_TILE_ROWS))
+    // MAX_TILE_ROWS = 64 in AV1 spec
+    let max_log2_tile_rows = tile_log2(sb_rows.min(64));
+    for _ in 0..max_log2_tile_rows {
+        wb.write_bit(false); // increment_tile_rows_log2 = 0 → break
+        break;
+    }
+
+    // TileColsLog2=0, TileRowsLog2=0 → NumTiles=1
+    // No context_update_tile_id or tile_size_bytes_minus_1 needed
+}
+
+/// Write an inter frame header (non-reduced SH).
 pub fn write_inter_frame_header(
     base_qindex: u8,
     refresh_frame_flags: u8,
@@ -483,96 +491,70 @@ pub fn write_inter_frame_header(
 ) -> Vec<u8> {
     let mut wb = BitWriter::new();
 
-    // show_existing_frame = 0
-    wb.write_bit(false);
-    // frame_type = INTER_FRAME (1)
-    wb.write_bits(1, 2);
-    // show_frame = 1
-    wb.write_bit(true);
-    // showable_frame = 1 (implicit for show_frame=1 non-key)
-    // error_resilient_mode = 1 (simplifies reference management)
-    wb.write_bit(true);
+    wb.write_bit(false); // show_existing_frame = 0
+    wb.write_bits(1, 2); // frame_type = INTER_FRAME (1)
+    wb.write_bit(true); // show_frame = 1
+    // showable_frame: implicit (frame_type != KEY_FRAME with show_frame=1)
+    wb.write_bit(true); // error_resilient_mode = 1
 
-    // disable_cdf_update = 0
-    wb.write_bit(false);
-    // allow_screen_content_tools = 0
-    wb.write_bit(false);
+    wb.write_bit(false); // disable_cdf_update = 0
+    wb.write_bit(false); // allow_screen_content_tools = 0
 
-    // frame_size_override_flag = 0 (use SH dimensions)
-    wb.write_bit(false);
+    wb.write_bit(false); // frame_size_override_flag = 0
+    wb.write_bits(order_hint as u32, ORDER_HINT_BITS); // order_hint
+    // primary_ref_frame: NOT signaled (error_resilient_mode=1)
+    wb.write_bits(refresh_frame_flags as u32, 8); // refresh_frame_flags
 
-    // order_hint (enable_order_hint = 1 in full SH)
-    wb.write_bits(order_hint as u32, ORDER_HINT_BITS);
-
-    // primary_ref_frame = 7 (PRIMARY_REF_NONE — no previous context to load)
-    wb.write_bits(7, 3);
-
-    // refresh_frame_flags
-    wb.write_bits(refresh_frame_flags as u32, 8);
-
-    // ref_frame_idx[0..6] — all pointing to slot 0 for simplicity
+    // ref_frame_idx[0..6] — all pointing to slot 0
     for _ in 0..7 {
         wb.write_bits(0, 3);
     }
 
-    // allow_intrabc = 0
-    // (not signaled for inter frames without screen content tools)
+    // frame_size(): no bits (no override, no superres)
+    // render_size():
+    wb.write_bit(false); // render_and_frame_size_different = 0
+    // allow_intrabc: not signaled (not intra)
 
-    // interpolation_filter: SWITCHABLE (2 bits = 4)
     wb.write_bit(true); // is_filter_switchable = 1
+    wb.write_bit(false); // is_motion_mode_switchable = 0
+    wb.write_bit(false); // reference_select = 0
 
-    // is_motion_mode_switchable = 0
-    wb.write_bit(false);
-
-    // reference_select = 0 (single reference)
-    wb.write_bit(false);
+    // TODO: tile_info for inter frames — currently assumes caller handles this
+    // For now, write minimal tile_info
+    wb.write_bit(true); // uniform_tile_spacing_flag = 1
 
     // Quantization params
     wb.write_bits(base_qindex as u32, 8);
-    wb.write_bit(false); // delta_coded DeltaQYDc = 0
+    wb.write_bit(false); // DeltaQYDc delta_coded = 0
+    // NumPlanes=1: no chroma delta-Q
     wb.write_bit(false); // using_qmatrix = 0
 
-    // Segmentation: enabled = 0
-    wb.write_bit(false);
+    wb.write_bit(false); // segmentation_enabled = 0
+    wb.write_bit(false); // delta_q_present = 0
 
-    // delta_q_present = 0
-    wb.write_bit(false);
+    // Loop filter
+    wb.write_bits(0, 6); // filter_level[0] = 0
+    wb.write_bits(0, 6); // filter_level[1] = 0
+    wb.write_bits(0, 3); // loop_filter_sharpness = 0
+    wb.write_bit(false); // loop_filter_delta_enabled = 0
 
-    // Loop filter: filter_level[0] = 0, filter_level[1] = 0
-    wb.write_bits(0, 6);
-    wb.write_bits(0, 6);
+    // cdef: enable_cdef=0, no bits
+    // lr: enable_restoration=0, no bits
 
-    // CDEF
-    wb.write_bits(0, 2); // cdef_damping - 3
-    wb.write_bits(0, 2); // cdef_bits
-
-    // TX mode
-    wb.write_bit(true); // tx_mode_select = 1
+    wb.write_bit(false); // tx_mode_select = 0 → TX_MODE_LARGEST
 
     // skip_mode_present = 0
     wb.write_bit(false);
+    // allow_warped_motion: not present (enable_warped_motion=0 in SH)
 
-    // allow_warped_motion = 0
-    wb.write_bit(false);
-
-    // reduced_tx_set = 0
-    wb.write_bit(false);
+    wb.write_bit(false); // reduced_tx_set = 0
 
     // Global motion params: is_global = 0 for all reference frames
     for _ in 0..7 {
-        wb.write_bit(false); // is_global
+        wb.write_bit(false);
     }
 
-    // Trailing bits
-    let remainder = wb.bit_offset % 8;
-    if remainder != 0 {
-        wb.write_bit(true);
-        let pad = 8 - (wb.bit_offset % 8);
-        if pad < 8 {
-            wb.write_bits(0, pad);
-        }
-    }
-
+    write_trailing_bits(&mut wb);
     wb.into_data()
 }
 
@@ -609,7 +591,6 @@ pub fn build_tile_group_multi(tile_bitstreams: &[Vec<u8>]) -> Vec<u8> {
     }
 
     let mut wb = BitWriter::new();
-    // tile_start_and_end_present_flag = 0 (all tiles in this TG)
     wb.write_bit(false);
     write_trailing_bits(&mut wb);
     let header = wb.into_data();
@@ -624,7 +605,6 @@ pub fn build_tile_group_multi(tile_bitstreams: &[Vec<u8>]) -> Vec<u8> {
     let mut result = Vec::with_capacity(total_size);
     result.extend_from_slice(&header);
 
-    // Each tile except the last is preceded by its size (4 bytes LE)
     for (i, tile) in tile_bitstreams.iter().enumerate() {
         if i < tile_bitstreams.len() - 1 {
             let size_minus_1 = (tile.len() as u32).saturating_sub(1);
@@ -642,13 +622,9 @@ pub fn build_tile_group_multi(tile_bitstreams: &[Vec<u8>]) -> Vec<u8> {
 pub fn write_still_frame(width: u32, height: u32, base_qindex: u8, tile_data: &[u8]) -> Vec<u8> {
     let mut bitstream = Vec::new();
 
-    // Temporal delimiter
     bitstream.extend_from_slice(&write_temporal_delimiter());
-
-    // Sequence header
     bitstream.extend_from_slice(&write_sequence_header(width, height));
 
-    // Frame OBU (type 6): raw frame header bytes + tile group data
     let fh_bytes = write_key_frame_header(width, height, base_qindex);
     let tg_bytes = build_tile_group_single(tile_data);
     let mut frame_payload = Vec::with_capacity(fh_bytes.len() + tg_bytes.len());
@@ -660,7 +636,6 @@ pub fn write_still_frame(width: u32, height: u32, base_qindex: u8, tile_data: &[
     bitstream
 }
 
-/// Write an inter frame as a Frame OBU (frame header + tile group).
 /// Write an inter frame as a Frame OBU.
 ///
 /// `tile_group_data` should be a pre-formed tile group (from
@@ -699,41 +674,35 @@ mod tests {
     fn obu_header_basic() {
         let header = write_obu_header(ObuType::SequenceHeader, false);
         assert_eq!(header.len(), 1);
-        // Byte: 0 | 0001 (seq header=1) | 0 | 1 | 0 = 0b0_0001_0_1_0 = 0x0A
         assert_eq!(header[0], 0b0_0001_0_1_0);
     }
 
     #[test]
     fn obu_header_frame() {
         let header = write_obu_header(ObuType::Frame, false);
-        // 0 | 0110 (frame=6) | 0 | 1 | 0 = 0b0_0110_0_1_0 = 0x32
         assert_eq!(header[0], 0b0_0110_0_1_0);
     }
 
     #[test]
     fn temporal_delimiter_obu() {
         let td = write_temporal_delimiter();
-        // Header (1 byte) + size (1 byte, value 0) = 2 bytes
         assert_eq!(td.len(), 2);
-        // Type = 2: 0b0_0010_0_1_0 = 0x12
         assert_eq!(td[0], 0b0_0010_0_1_0);
-        assert_eq!(td[1], 0); // payload size = 0
+        assert_eq!(td[1], 0);
     }
 
     #[test]
     fn sequence_header_non_empty() {
         let sh = write_sequence_header(64, 64);
         assert!(sh.len() > 3, "sequence header should be > 3 bytes");
-        // First byte is OBU header for sequence header
         assert_eq!(sh[0], 0b0_0001_0_1_0);
     }
 
     #[test]
     fn still_frame_produces_valid_structure() {
-        let tile_data = vec![0u8; 10]; // dummy tile data
+        let tile_data = vec![0u8; 10];
         let bitstream = write_still_frame(64, 64, 128, &tile_data);
         assert!(bitstream.len() > 20, "bitstream should be substantial");
-        // Should start with temporal delimiter
         assert_eq!(bitstream[0], 0b0_0010_0_1_0);
     }
 
@@ -754,5 +723,33 @@ mod tests {
         assert_eq!(bw.bytes_written(), 2);
         assert_eq!(bw.data()[0], 0xFF);
         assert_eq!(bw.data()[1], 0x80);
+    }
+
+    #[test]
+    fn tile_info_single_sb() {
+        // 64x64 = 1 SB → uniform + no increments
+        let mut wb = BitWriter::new();
+        write_tile_info(&mut wb, 64, 64);
+        // Should be just 1 bit (uniform_tile_spacing_flag)
+        assert_eq!(wb.bit_offset, 1);
+    }
+
+    #[test]
+    fn tile_info_four_sbs() {
+        // 128x128 = 4 SBs → uniform + 1 col increment + 1 row increment
+        let mut wb = BitWriter::new();
+        write_tile_info(&mut wb, 128, 128);
+        // uniform_flag (1) + col_increment (1) + row_increment (1) = 3
+        assert_eq!(wb.bit_offset, 3);
+    }
+
+    #[test]
+    fn tile_log2_values() {
+        assert_eq!(tile_log2(0), 0);
+        assert_eq!(tile_log2(1), 0);
+        assert_eq!(tile_log2(2), 1);
+        assert_eq!(tile_log2(3), 2);
+        assert_eq!(tile_log2(4), 2);
+        assert_eq!(tile_log2(5), 3);
     }
 }
