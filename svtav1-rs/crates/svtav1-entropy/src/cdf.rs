@@ -43,11 +43,14 @@ pub fn update_cdf(cdf: &mut [AomCdfProb], val: usize, nsymbs: usize) {
     debug_assert!(nsymbs < 17);
     debug_assert!(val < nsymbs);
 
-    let count = cdf[nsymbs];
+    // Counter is stored at cdf[nsymbs-1], matching rav1d's cdf[n_symbols]
+    // where n_symbols = nsymbs - 1 = number of CDF entries.
+    let n = nsymbs - 1;
+    let count = cdf[n];
     let rate = 4 + (count >> 4) + u16::from(nsymbs > 3);
 
     // rav1d-compatible update: for ICDF values
-    for i in 0..nsymbs - 1 {
+    for i in 0..n {
         if i < val {
             // Increase ICDF (decrease cumulative probability below val)
             cdf[i] = cdf[i].wrapping_add((CDF_PROB_TOP.wrapping_sub(cdf[i])) >> rate);
@@ -58,7 +61,7 @@ pub fn update_cdf(cdf: &mut [AomCdfProb], val: usize, nsymbs: usize) {
     }
 
     // Increment count, capped at 32
-    cdf[nsymbs] = count + u16::from(count < 32);
+    cdf[n] = count + u16::from(count < 32);
 }
 
 /// Initialize a uniform CDF for `nsymbs` symbols.
