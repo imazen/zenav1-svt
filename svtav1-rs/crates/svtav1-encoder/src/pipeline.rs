@@ -434,6 +434,10 @@ impl EncodePipeline {
             // CDF updates enabled — matches the frame header's disable_cdf_update=0
             let mut coeff_ctx = svtav1_entropy::coeff::CoeffContext::default();
             let mut frame_ctx = svtav1_entropy::context::FrameContext::new_default();
+            // Mode/skip context tracking at 4x4 granularity
+            let w4 = w.div_ceil(4);
+            let h4 = h.div_ceil(4);
+            let mut ectx = EntropyCtx::new(w4, h4);
 
             debug_assert_eq!(
                 all_trees.len(),
@@ -446,9 +450,11 @@ impl EncodePipeline {
                 let sb_row = sb_idx / sb_cols;
                 let has_above = sb_row > 0;
                 let has_left = sb_col > 0;
+                let bx = sb_col * sb_size;
+                let by = sb_row * sb_size;
                 encode_partition_tree(
-                    tree, &mut writer, &mut frame_ctx, &mut coeff_ctx, is_key,
-                    has_above, has_left,
+                    tree, &mut writer, &mut frame_ctx, &mut coeff_ctx, &mut ectx,
+                    is_key, has_above, has_left, bx, by,
                 );
             }
 
@@ -523,6 +529,75 @@ impl EncodePipeline {
 /// When the `std` feature is enabled and there are multiple tile rows,
 /// uses `std::thread::scope` for parallel encoding. Otherwise sequential.
 #[allow(clippy::too_many_arguments)]
+/// Mode tracking for the encoder's entropy coding context.
+///
+/// Tracks intra mode and skip status at 4x4 block granularity, matching
+/// the decoder's above/left BlockContext arrays. This is required for
+/// correct CDF context derivation in keyframe y_mode and skip coding.
+struct EntropyCtx {
+    /// Above row modes (at 4x4 granularity), indexed by column in 4x4 units.
+    /// Updated after each block is encoded.
+    above_mode: Vec<u8>,
+    /// Left column modes (at 4x4 granularity), indexed by row in 4x4 units.
+    left_mode: Vec<u8>,
+    /// Above row skip flags.
+    above_skip: Vec<bool>,
+    /// Left column skip flags.
+    left_skip: Vec<bool>,
+}
+
+impl EntropyCtx {
+    fn new(width_4x4: usize, height_4x4: usize) -> Self {
+        Self {
+            above_mode: alloc::vec![0u8; width_4x4],  // DC_PRED = 0
+            left_mode: alloc::vec![0u8; height_4x4],
+            above_skip: alloc::vec![false; width_4x4],
+            left_skip: alloc::vec![false; height_4x4],
+        }
+    }
+
+    /// Record a block's mode and skip status in the context maps.
+    fn record_block(&mut self, x: usize, y: usize, w: usize, h: usize, mode: u8, skip: bool) {
+        let x4 = x / 4;
+        let y4 = y / 4;
+        let w4 = w / 4;
+        let h4 = h / 4;
+        // Fill above row with this block's mode
+        for i in x4..(x4 + w4).min(self.above_mode.len()) {
+            self.above_mode[i] = mode;
+            self.above_skip[i] = skip;
+        }
+        // Fill left column with this block's mode
+        for i in y4..(y4 + h4).min(self.left_mode.len()) {
+            self.left_mode[i] = mode;
+            self.left_skip[i] = skip;
+        }
+    }
+
+    /// Get the above mode context at position (x, y) in pixel coordinates.
+    fn above_mode_ctx(&self, x: usize) -> usize {
+        let x4 = x / 4;
+        let mode = if x4 < self.above_mode.len() { self.above_mode[x4] } else { 0 };
+        svtav1_entropy::context::intra_mode_context(mode)
+    }
+
+    /// Get the left mode context at position (x, y) in pixel coordinates.
+    fn left_mode_ctx(&self, y: usize) -> usize {
+        let y4 = y / 4;
+        let mode = if y4 < self.left_mode.len() { self.left_mode[y4] } else { 0 };
+        svtav1_entropy::context::intra_mode_context(mode)
+    }
+
+    /// Get the skip context at position (x, y).
+    fn skip_ctx(&self, x: usize, y: usize) -> usize {
+        let x4 = x / 4;
+        let y4 = y / 4;
+        let above = x4 < self.above_skip.len() && self.above_skip[x4];
+        let left = y4 < self.left_skip.len() && self.left_skip[y4];
+        svtav1_entropy::context::get_skip_context(above, left)
+    }
+}
+
 /// Recursively encode a partition tree to the bitstream in AV1 spec order.
 ///
 /// AV1 spec: for each SB, write partition_type, then:
@@ -535,9 +610,12 @@ fn encode_partition_tree(
     writer: &mut svtav1_entropy::writer::AomWriter,
     frame_ctx: &mut svtav1_entropy::context::FrameContext,
     coeff_ctx: &mut svtav1_entropy::coeff::CoeffContext,
+    ectx: &mut EntropyCtx,
     is_key: bool,
     has_above: bool,
     has_left: bool,
+    block_x: usize,
+    block_y: usize,
 ) {
     match tree {
         crate::partition::PartitionTree::Leaf(decision) => {
@@ -551,7 +629,8 @@ fn encode_partition_tree(
             }
 
             let skip = decision.eob == 0;
-            svtav1_entropy::context::write_skip(writer, frame_ctx, 0, skip);
+            let skip_ctx = ectx.skip_ctx(block_x, block_y);
+            svtav1_entropy::context::write_skip(writer, frame_ctx, skip_ctx, skip);
 
             if !skip {
                 if !is_key {
@@ -565,10 +644,11 @@ fn encode_partition_tree(
                         writer, decision.mv.x, decision.mv.y, true,
                     );
                 } else if is_key {
+                    let above_ctx = ectx.above_mode_ctx(block_x);
+                    let left_ctx = ectx.left_mode_ctx(block_y);
                     svtav1_entropy::context::write_intra_mode_kf(
-                        writer, frame_ctx, 0, 0, decision.intra_mode,
+                        writer, frame_ctx, above_ctx, left_ctx, decision.intra_mode,
                     );
-                    // AV1 spec: angle_delta for directional modes (V..D67)
                     if svtav1_entropy::context::is_directional_mode(decision.intra_mode) {
                         svtav1_entropy::context::write_angle_delta(
                             writer, frame_ctx, decision.intra_mode, 0,
@@ -581,7 +661,6 @@ fn encode_partition_tree(
                     svtav1_entropy::context::write_intra_mode_inter(
                         writer, frame_ctx, bsize_group, decision.intra_mode,
                     );
-                    // AV1 spec: angle_delta for directional modes
                     if svtav1_entropy::context::is_directional_mode(decision.intra_mode) {
                         svtav1_entropy::context::write_angle_delta(
                             writer, frame_ctx, decision.intra_mode, 0,
@@ -593,11 +672,19 @@ fn encode_partition_tree(
                     writer, &decision.qcoeffs, decision.eob as usize, coeff_ctx,
                 );
             }
+
+            // Update context maps for subsequent blocks
+            let mode = if skip { 0 } else { decision.intra_mode }; // skip → DC_PRED
+            ectx.record_block(
+                block_x, block_y,
+                decision.width as usize, decision.height as usize,
+                mode, skip,
+            );
         }
         crate::partition::PartitionTree::Split {
             partition_type,
             width,
-            height: _,
+            height,
             children,
         } => {
             let (ctx, nsymbs) = svtav1_entropy::context::get_partition_context(
@@ -607,9 +694,25 @@ fn encode_partition_tree(
                 writer, frame_ctx, ctx, *partition_type as u8, nsymbs,
             );
 
-            // Recurse into children — within an SB, sub-blocks always have neighbors
-            for child in children {
-                encode_partition_tree(child, writer, frame_ctx, coeff_ctx, is_key, true, true);
+            // Recurse into children in Z-order (top-left, top-right, bottom-left, bottom-right)
+            let half_w = (*width as usize) / 2;
+            let half_h = (*height as usize) / 2;
+            if children.len() == 4 {
+                // PARTITION_SPLIT: 4 equal children
+                encode_partition_tree(&children[0], writer, frame_ctx, coeff_ctx, ectx,
+                    is_key, has_above, has_left, block_x, block_y);
+                encode_partition_tree(&children[1], writer, frame_ctx, coeff_ctx, ectx,
+                    is_key, has_above, true, block_x + half_w, block_y);
+                encode_partition_tree(&children[2], writer, frame_ctx, coeff_ctx, ectx,
+                    is_key, true, has_left, block_x, block_y + half_h);
+                encode_partition_tree(&children[3], writer, frame_ctx, coeff_ctx, ectx,
+                    is_key, true, true, block_x + half_w, block_y + half_h);
+            } else {
+                // HORZ/VERT/extended: encode children sequentially
+                for child in children {
+                    encode_partition_tree(child, writer, frame_ctx, coeff_ctx, ectx,
+                        is_key, true, true, block_x, block_y);
+                }
             }
         }
     }

@@ -326,14 +326,19 @@ pub fn get_intra_inter_context(above_intra: bool, left_intra: bool) -> usize {
 }
 
 /// Map intra prediction mode to a simplified context for kf_y_mode CDF.
-/// AV1 spec Section 5.11.4: maps 13 modes to 5 context groups.
+///
+/// AV1 spec Table 9.3 / rav1d dav1d_intra_mode_context[13]:
+///   DC=0, V/H=1, D45-D67=2, SMOOTH variants=3, PAETH=4
 pub fn intra_mode_context(mode: u8) -> usize {
+    // AV1 modes: 0=DC, 1=V, 2=H, 3=D45, 4=D135, 5=D113, 6=D157, 7=D203, 8=D67,
+    //            9=SMOOTH, 10=SMOOTH_V, 11=SMOOTH_H, 12=PAETH
     match mode {
-        0 => 0,      // DC_PRED
-        1 | 2 => 1,  // V_PRED, H_PRED
-        3..=6 => 2,  // Smooth modes
-        7 => 3,      // Paeth
-        _ => 4,      // Directional modes
+        0 => 0,       // DC_PRED
+        1 | 2 => 1,   // V_PRED, H_PRED
+        3..=8 => 2,   // D45..D67 (directional angles)
+        9..=11 => 3,  // SMOOTH, SMOOTH_V, SMOOTH_H
+        12 => 4,      // PAETH
+        _ => 0,       // fallback
     }
 }
 
