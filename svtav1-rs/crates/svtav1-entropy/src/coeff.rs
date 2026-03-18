@@ -675,7 +675,8 @@ pub fn write_coefficients_v2(
         // hi_ctx: if (x|y) > 1 then 14, else 7
         let hi_ctx = if (eob_x | eob_y) > 1 { 14 } else { 7 };
         hi_tok_total = write_hi_tok(writer, cdf_ctx, br_ctx_level, hi_ctx, eob_level);
-        let level_tok_val = hi_tok_total - 3 + (3 << 6);
+        // rav1d: level_tok = tok + (3 << 6) where tok = decode_hi_tok() (3-15)
+        let level_tok_val = hi_tok_total + (3 << 6);
         levels[eob_x * stride + eob_y] = level_tok_val as u8;
     } else {
         levels[eob_x * stride + eob_y] = level_tok_byte;
@@ -733,7 +734,7 @@ pub fn write_coefficients_v2(
                     (mag_trunc + 1) >> 1
                 };
             let tok_val = write_hi_tok(writer, cdf_ctx, br_ctx_level, hi_ctx as usize, level);
-            let level_tok_val = tok_val - 3 + (3 << 6);
+            let level_tok_val = tok_val + (3 << 6); // rav1d: tok + (3 << 6)
             levels[x * stride + y] = level_tok_val as u8;
             nonzero_coeffs.push(NonZeroCoeff {
                 coeff_idx,
