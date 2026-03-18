@@ -502,10 +502,12 @@ impl EncodePipeline {
                 &self.color_description,
             ));
             // Key frame header (raw bytes) + tile group with proper header
+            // Use tpl_adjusted_qp (same value used for CDF category selection)
+            // so the decoder's CDF initialization matches the encoder's.
             let fh_bytes = svtav1_entropy::obu::write_key_frame_header_full(
                 self.width,
                 self.height,
-                pcs.qp,
+                tpl_adjusted_qp,
                 is_single_frame,
             );
             // tile_data is already a complete tile_group (with TG header)
@@ -520,7 +522,7 @@ impl EncodePipeline {
         } else {
             // Inter frame: proper frame header with type, QP, refresh flags, ref indices
             svtav1_entropy::obu::write_inter_frame(
-                pcs.qp,
+                tpl_adjusted_qp,
                 pcs.refresh_frame_flags,
                 display_order as u8,
                 &tile_data,
