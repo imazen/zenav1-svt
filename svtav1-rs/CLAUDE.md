@@ -70,13 +70,13 @@ This applies to:
 
 ## Known Bugs — BLOCKING
 
-1. **Content-specific decode failures at q70 and multi-SB** — Most quality levels decode correctly (q30-q60, q90 all pass for single-SB). Some specific QP/content combinations fail, likely due to a subtle issue in the coefficient encoder's CDF adaptation, context derivation for dense coefficient patterns, or a missing detail in the br_tok hi_ctx computation. The TX type CDFs use uniform defaults instead of rav1d spec defaults, which may also contribute.
+1. **Content-specific decode failures at q70 and some multi-SB** — Most quality levels decode correctly (q30-q60, q90 all pass for single-SB, 128x128 multi-SB decodes). Some specific QP/content combinations fail, likely due to a subtle interaction between the coefficient encoder's CDF adaptation and the specific density/positions of non-zero coefficients. Requires decoder-side range coder state trace comparison to diagnose further. TX type CDFs use uniform defaults instead of rav1d spec defaults, which may contribute.
 
-2. **All-skip frames fail to decode** — When all blocks have eob=0 (uniform content, very high QP), the frame structure may be missing required elements.
+2. **All-skip frames fail to decode** — When all blocks have eob=0 (uniform content, high QP), decode fails (e.g., 25-byte "direct 64x64"). Root cause undiagnosed.
 
 ### Decode Status
-**Working:** 32x32, 48x48, 64x64 (q30-q60, q90), 128x128 single-tile, 128x128 edges (11dB PSNR)
-**Failing:** q70 gradient, 80x80/96x96 multi-SB at some speeds, all-skip frames, 64x64 s4/s6/s8 speed sweep
+**Working:** 32x32, 48x48, 64x64 (q30-q60, q90), 128x128 multi-SB, 128x128 edges (PSNR 11.1 dB), direct gradient 128x128, comprehensive_all_configs (48 configs)
+**Failing:** q70 gradient (content-specific), 80x80/96x96/112x112 at certain speeds, all-skip frames, 64x64 at s4-s8 speed sweep
 
 ### Fixed Bugs (this session)
 - **Spec-conformant coefficient encoder (write_coefficients_v2)** — Complete rewrite: CDF-based EOB (bin + hi-bit + equi), reverse diagonal scan, proper token structure (eob_base_tok/base_tok/br_tok), DC sign after tokens, AC signs separate, Golomb in sign phase, default CDFs from rav1d for 4 QP categories.
