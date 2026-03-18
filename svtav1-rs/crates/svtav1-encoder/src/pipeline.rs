@@ -694,24 +694,54 @@ fn encode_partition_tree(
                 writer, frame_ctx, ctx, *partition_type as u8, nsymbs,
             );
 
-            // Recurse into children in Z-order (top-left, top-right, bottom-left, bottom-right)
+            // Recurse into children with correct spatial positions
             let half_w = (*width as usize) / 2;
             let half_h = (*height as usize) / 2;
-            if children.len() == 4 {
-                // PARTITION_SPLIT: 4 equal children
-                encode_partition_tree(&children[0], writer, frame_ctx, coeff_ctx, ectx,
-                    is_key, has_above, has_left, block_x, block_y);
-                encode_partition_tree(&children[1], writer, frame_ctx, coeff_ctx, ectx,
-                    is_key, has_above, true, block_x + half_w, block_y);
-                encode_partition_tree(&children[2], writer, frame_ctx, coeff_ctx, ectx,
-                    is_key, true, has_left, block_x, block_y + half_h);
-                encode_partition_tree(&children[3], writer, frame_ctx, coeff_ctx, ectx,
-                    is_key, true, true, block_x + half_w, block_y + half_h);
-            } else {
-                // HORZ/VERT/extended: encode children sequentially
-                for child in children {
-                    encode_partition_tree(child, writer, frame_ctx, coeff_ctx, ectx,
-                        is_key, true, true, block_x, block_y);
+            match (*partition_type, children.len()) {
+                (crate::partition::PartitionType::Split, 4) => {
+                    // PARTITION_SPLIT: 4 equal quarter-size children in Z-order
+                    encode_partition_tree(&children[0], writer, frame_ctx, coeff_ctx, ectx,
+                        is_key, has_above, has_left, block_x, block_y);
+                    encode_partition_tree(&children[1], writer, frame_ctx, coeff_ctx, ectx,
+                        is_key, has_above, true, block_x + half_w, block_y);
+                    encode_partition_tree(&children[2], writer, frame_ctx, coeff_ctx, ectx,
+                        is_key, true, has_left, block_x, block_y + half_h);
+                    encode_partition_tree(&children[3], writer, frame_ctx, coeff_ctx, ectx,
+                        is_key, true, true, block_x + half_w, block_y + half_h);
+                }
+                (crate::partition::PartitionType::Horz, 2) => {
+                    // PARTITION_HORZ: 2 children stacked vertically
+                    encode_partition_tree(&children[0], writer, frame_ctx, coeff_ctx, ectx,
+                        is_key, has_above, has_left, block_x, block_y);
+                    encode_partition_tree(&children[1], writer, frame_ctx, coeff_ctx, ectx,
+                        is_key, true, has_left, block_x, block_y + half_h);
+                }
+                (crate::partition::PartitionType::Vert, 2) => {
+                    // PARTITION_VERT: 2 children side by side
+                    encode_partition_tree(&children[0], writer, frame_ctx, coeff_ctx, ectx,
+                        is_key, has_above, has_left, block_x, block_y);
+                    encode_partition_tree(&children[1], writer, frame_ctx, coeff_ctx, ectx,
+                        is_key, has_above, true, block_x + half_w, block_y);
+                }
+                _ => {
+                    // Extended partitions (HORZ_A/B, VERT_A/B, HORZ_4, VERT_4)
+                    // For now, handle generically with approximate positions
+                    for (i, child) in children.iter().enumerate() {
+                        let (cx, cy) = match children.len() {
+                            3 => {
+                                // T-shape: child 0 is quarter, child 1 is quarter, child 2 is half
+                                // Approximate positions
+                                match i {
+                                    0 => (block_x, block_y),
+                                    1 => (block_x + half_w, block_y),
+                                    _ => (block_x, block_y + half_h),
+                                }
+                            }
+                            _ => (block_x, block_y),
+                        };
+                        encode_partition_tree(child, writer, frame_ctx, coeff_ctx, ectx,
+                            is_key, true, true, cx, cy);
+                    }
                 }
             }
         }
