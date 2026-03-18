@@ -351,20 +351,11 @@ pub fn block_size_group(width: usize, height: usize) -> usize {
 
 /// Derive the partition context from block size and neighbor information.
 ///
-/// AV1 spec Section 5.11.3: The partition context depends on block size
-/// and whether above/left neighbors use SMALLER blocks.
-///
-/// `above_is_smaller`: true if an above neighbor exists AND its block is smaller
-/// `left_is_smaller`: true if a left neighbor exists AND its block is smaller
-///
-/// When neighbors don't exist (frame boundaries), they default to "not smaller"
-/// (contribute 0 to the context), matching the decoder's behavior.
-///
-/// Context layout: bsl * 4 + sub, where:
-/// - bsl: 0 (8x8), 1 (16x16), 2 (32x32), 3 (64x64)
-/// - sub: above_is_smaller * 2 + left_is_smaller
-/// - Contexts 0-3: 4 symbols, 4-15: 10 symbols, 16-19: 8 symbols
-pub fn get_partition_context(width: usize, above_is_smaller: bool, left_is_smaller: bool) -> (usize, usize) {
+/// AV1 spec Section 5.11.3: partition context = bsl * 4 + sub_ctx.
+/// `has_above` and `has_left` indicate whether above/left neighbors exist.
+/// For the simplified case where all SBs use the same partition, neighbors
+/// are never smaller, so sub_ctx encodes neighbor availability.
+pub fn get_partition_context(width: usize, has_above: bool, has_left: bool) -> (usize, usize) {
     let bsl = match width {
         w if w <= 8 => 0,
         w if w <= 16 => 1,
@@ -372,7 +363,12 @@ pub fn get_partition_context(width: usize, above_is_smaller: bool, left_is_small
         _ => 3,
     };
 
-    let sub = above_is_smaller as usize * 2 + left_is_smaller as usize;
+    let sub = match (has_above, has_left) {
+        (true, true) => 0,
+        (true, false) => 1,
+        (false, true) => 2,
+        (false, false) => 3,
+    };
 
     let ctx = bsl * 4 + sub;
 

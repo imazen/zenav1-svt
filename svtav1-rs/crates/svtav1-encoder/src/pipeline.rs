@@ -542,12 +542,8 @@ fn encode_partition_tree(
     match tree {
         crate::partition::PartitionTree::Leaf(decision) => {
             if decision.width > 4 || decision.height > 4 {
-                // AV1 spec: partition context depends on whether above/left
-                // neighbors use SMALLER blocks. At the SB level, all SBs are
-                // the same size, so neighbors are never smaller (false, false).
-                // Within a split, sub-blocks track their own neighbor sizes.
                 let (ctx, nsymbs) = svtav1_entropy::context::get_partition_context(
-                    decision.width as usize, false, false,
+                    decision.width as usize, has_above, has_left,
                 );
                 svtav1_entropy::context::write_partition(
                     writer, frame_ctx, ctx, 0, nsymbs, // 0 = PARTITION_NONE
@@ -604,10 +600,8 @@ fn encode_partition_tree(
             height: _,
             children,
         } => {
-            // Within a split node, sub-blocks always have same-size neighbors
-            // (all children of the same parent are the same size).
             let (ctx, nsymbs) = svtav1_entropy::context::get_partition_context(
-                *width as usize, false, false,
+                *width as usize, has_above, has_left,
             );
             svtav1_entropy::context::write_partition(
                 writer, frame_ctx, ctx, *partition_type as u8, nsymbs,
