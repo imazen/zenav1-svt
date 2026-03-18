@@ -85,7 +85,10 @@ impl OdEcEnc {
         let l = self.low;
 
         // Compute v[s] = lower boundary of symbol s
-        let v_s = if s <= n as usize {
+        // For the last symbol (s == n), v_s = 0 (implicit lower boundary).
+        // For other symbols, v_s = range_from_cdf(icdf[s]) + EC_MIN_PROB * (n - s).
+        // NOTE: icdf[n] stores the CDF adaptation counter, NOT a CDF value.
+        let v_s = if s < n as usize {
             (((r >> 8) * ((icdf[s] >> EC_PROB_SHIFT) as u32)) >> (7 - EC_PROB_SHIFT))
                 + EC_MIN_PROB * (n - s as u32)
         } else {
