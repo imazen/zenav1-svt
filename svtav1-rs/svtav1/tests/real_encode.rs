@@ -1471,3 +1471,4 @@ fn simulate_decoder_on_gray64() {
     }
     eprintln!("Decoded partition symbol: {} (0=NONE, 1=HORZ, 2=VERT, 3=SPLIT)", val);
 }
+

@@ -70,7 +70,14 @@ This applies to:
 
 ## Known Bugs — BLOCKING
 
-1. **Multi-SB frames with PARTITION_SPLIT fail to decode** — Single-SB frames (≤64x64) decode at all quality/speed levels and presets (including deep partition at s4). Multi-SB PARTITION_NONE-only frames work. PARTITION_SPLIT multi-SB fails due to coefficient coding format mismatch (literal EOB vs CDF-based, forward vs reverse scan, interleaved vs separated signs). All-skip frames also fail even for single-SB, suggesting an additional frame header or tile structure issue. See CONTEXT-HANDOFF.md for detailed analysis.
+1. **Coefficient coding format mismatch** — The coefficient encoder uses simplified literal-based EOB encoding and forward scan order, while the AV1 decoder expects CDF-based multi-class EOB and reverse scan order. This causes: (a) content-dependent decode failures when eob>255 overflows the 8-bit literal encoding, (b) incorrect decoded pixel values even when decoding succeeds (low PSNR ~11dB for 128x128 edges test). Proper AV1 coefficient coding (multi-class EOB CDFs, reverse scan, spec context derivation) is needed.
+
+2. **All-skip frames fail to decode** — When all blocks have eob=0 (uniform content, very high QP), the frame structure may be missing required elements. Manifests as "direct 64x64" (23 bytes) and "uniform 128x128" (25 bytes) failing.
+
+### Fixed Bugs (this session)
+- **PARTITION_HORZ/VERT children wrote extra partition symbols** — Fixed: children now encode block syntax directly without partition symbols.
+- **Partition context always sub=0 for multi-SB** — Fixed: added rav1d-compatible partition context tracking (above/left arrays at 8x8 granularity, AL_PART_CTX lookup, left reset per SB row).
+- **Extended partition types had missing trees** — Fixed: Horz4/Vert4/HorzA/HorzB/VertA/VertB now build proper partition trees.
 
 ## Investigation Notes
 
