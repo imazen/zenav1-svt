@@ -218,40 +218,54 @@ impl OdEcEnc {
     /// Finalize encoding and return the encoded bytes.
     ///
     /// Must be called after all symbols are encoded.
+    /// Ported from libaom/SVT-AV1's `od_ec_enc_done`.
     pub fn done(&mut self) -> &[u8] {
         if self.error {
             return &[];
         }
 
-        // Flush remaining bits
-        let l = self.low;
+        // Round up `low` to ensure the decoder can correctly decode.
+        let m: u64 = 0x3FFF;
+        let e = ((self.low + m) & !m) | (m + 1);
+
+        // Number of valid bits: 10 + cnt
+        let s = 10 + self.cnt as i32;
+        if s <= 0 {
+            return &self.buf[..self.offs as usize];
+        }
+
+        let needed = self.offs as usize + ((s as usize + 7) / 8);
+        if needed > self.buf.len() {
+            self.buf.resize(needed + 8, 0);
+        }
+
+        // The valid bits in `e` are at a position determined by the accumulated
+        // normalization shifts. The top bit of the range was initially at bit 14.
+        // After normalization shifts totaling (cnt + 9), the top is at 14 + cnt + 9.
+        // The first output byte starts at that position.
+        //
+        // To extract byte i: shift = 14 + (cnt + 9) - 7 - i*8 = 16 + cnt - i*8
+        let num_bytes = ((s as u32 + 7) / 8) as usize;
         let c = self.cnt as i32;
 
-        // Round up to ensure the decoder can decode correctly
-        let m: u64 = 0x3FFF;
-        let e = ((l + m) & !m) | (m + 1);
-        let s = 10 + c;
-
-        if s > 0 {
-            let needed = self.offs as usize + ((s + 7) / 8) as usize;
-            if needed > self.buf.len() {
-                self.buf.resize(needed + 8, 0);
-            }
-
-            // Write final bytes
-            let num_bytes = ((s + 7) / 8) as u32;
-            let shift_amount = s - (num_bytes as i32 * 8);
-            let output = if shift_amount >= 0 {
-                e >> shift_amount
+        for i in 0..num_bytes {
+            let shift = 16 + c - (i as i32) * 8;
+            let byte = if shift >= 0 {
+                ((e >> shift) & 0xFF) as u8
             } else {
-                e << (-shift_amount)
+                ((e << (-shift)) & 0xFF) as u8
             };
 
-            for i in 0..num_bytes {
-                let byte_shift = (num_bytes - 1 - i) * 8;
-                self.buf[self.offs as usize + i as usize] = (output >> byte_shift) as u8;
+            let offs = self.offs as usize;
+            if offs < self.buf.len() {
+                self.buf[offs] = byte;
+                // Carry propagation into previously written bytes
+                if byte > 0 && offs > 0 {
+                    // Check if adding this byte causes overflow
+                    // (not needed for final flush — bytes are independent)
+                }
             }
-            self.offs += num_bytes;
+            self.offs += 1;
         }
 
         &self.buf[..self.offs as usize]
@@ -261,6 +275,13 @@ impl OdEcEnc {
     pub fn bytes_written(&self) -> usize {
         self.offs as usize
     }
+
+    /// Debug: internal state access.
+    pub fn low(&self) -> u64 { self.low }
+    /// Debug: internal range.
+    pub fn rng_val(&self) -> u16 { self.rng }
+    /// Debug: internal bit count.
+    pub fn cnt_val(&self) -> i16 { self.cnt }
 }
 
 /// Integer log2 for nonzero values (number of bits needed).

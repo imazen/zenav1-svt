@@ -1361,3 +1361,35 @@ fn exact_gray64_v2() {
     let bytes2 = w.done().to_vec();
     eprintln!("v2 ctx=12: {} bytes {:02x?}", bytes2.len(), bytes2);
 }
+
+#[test]
+fn range_coder_symbol_comparison() {
+    use svtav1_entropy::writer::AomWriter;
+    use svtav1_entropy::context::*;
+    
+    let fc = FrameContext::new_default();
+    for sym in 0..10u8 {
+        let mut w = AomWriter::new(64);
+        let mut fc2 = fc.clone();
+        write_partition(&mut w, &mut fc2, 12, sym, 10);
+        let b = w.done().to_vec();
+        eprintln!("ctx=12, sym={}: {} bytes {:02x?}", sym, b.len(), b);
+    }
+}
+
+#[test]
+fn range_coder_state_trace() {
+    use svtav1_entropy::range_coder::OdEcEnc;
+    use svtav1_entropy::cdf::{CDF_PROB_TOP, aom_icdf};
+    
+    let icdf: [u16; 11] = [12631, 11221, 9690, 3202, 2931, 2507, 2244, 1876, 1044, 0, 0];
+    
+    for sym in [0usize, 1, 3] {
+        let mut enc = OdEcEnc::new(64);
+        enc.encode_cdf_q15(sym, &icdf, 10);
+        eprintln!("After sym={}: low=0x{:x}, rng={}, cnt={}", 
+            sym, enc.low(), enc.rng_val(), enc.cnt_val());
+        let bytes = enc.done();
+        eprintln!("  done: {} bytes {:02x?}", bytes.len(), bytes);
+    }
+}
