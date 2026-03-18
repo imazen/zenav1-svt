@@ -436,14 +436,14 @@ fn get_lo_ctx_2d(
 // Hi-tok (BR token) encoding — matching rav1d's decode_hi_tok
 // ============================================================================
 
-/// Encode the hi-token sequence for a coefficient with level >= 3.
+/// Encode the br_tok sequence for a coefficient with level >= 3.
 ///
 /// The decoder reads br_tok symbols in groups of up to 4 iterations,
 /// each reading a 4-symbol CDF (values 0-3). If the symbol is 3,
-/// continue to the next group. After 4 groups (max tok = 15),
-/// a Golomb residual encodes the remaining value.
+/// continue to the next group.
 ///
-/// Returns the total token value written.
+/// Returns the token value from br_tok only (3-15). Does NOT write
+/// the Golomb residual — that's written separately in the sign phase.
 fn write_hi_tok(
     writer: &mut AomWriter,
     cdf_ctx: &mut CdfCoefCtx,
@@ -466,11 +466,9 @@ fn write_hi_tok(
         remaining -= 3;
     }
 
-    // If we get here, tok == 15 and there may be a Golomb residual
-    if remaining > 0 {
-        write_golomb(writer, remaining);
-    }
-    tok + remaining
+    // tok == 15. Golomb residual is NOT written here — it's written
+    // in the sign/residual phase after all tokens and DC sign.
+    tok // returns 15
 }
 
 // ============================================================================
