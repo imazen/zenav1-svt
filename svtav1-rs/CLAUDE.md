@@ -70,11 +70,13 @@ This applies to:
 
 ## Known Bugs — BLOCKING
 
-1. **Content-specific decode failure at q70** — Specific gradient patterns at q70 (QP 19) fail while q30-q60 and q90 all decode. The issue is content-dependent within the same QP category. Lower quality and HIGHER quality (q90) both work. Suggests a specific coefficient pattern triggers a remaining context or scan mismatch. TX type CDFs use uniform defaults (should use rav1d spec defaults).
+1. **Content-specific decode failures at q70 and multi-SB** — Most quality levels decode correctly (q30-q60, q90 all pass for single-SB). Some specific QP/content combinations fail, likely due to a subtle issue in the coefficient encoder's CDF adaptation, context derivation for dense coefficient patterns, or a missing detail in the br_tok hi_ctx computation. The TX type CDFs use uniform defaults instead of rav1d spec defaults, which may also contribute.
 
 2. **All-skip frames fail to decode** — When all blocks have eob=0 (uniform content, very high QP), the frame structure may be missing required elements.
 
-3. **Multi-SB frames at certain QP/content combinations** — 80x80, 96x96 at certain speeds fail. Partition context tracking works (128x128 decodes), but coefficient encoding for specific multi-SB patterns still has issues.
+### Decode Status
+**Working:** 32x32, 48x48, 64x64 (q30-q60, q90), 128x128 single-tile, 128x128 edges (11dB PSNR)
+**Failing:** q70 gradient, 80x80/96x96 multi-SB at some speeds, all-skip frames, 64x64 s4/s6/s8 speed sweep
 
 ### Fixed Bugs (this session)
 - **Spec-conformant coefficient encoder (write_coefficients_v2)** — Complete rewrite: CDF-based EOB (bin + hi-bit + equi), reverse diagonal scan, proper token structure (eob_base_tok/base_tok/br_tok), DC sign after tokens, AC signs separate, Golomb in sign phase, default CDFs from rav1d for 4 QP categories.
