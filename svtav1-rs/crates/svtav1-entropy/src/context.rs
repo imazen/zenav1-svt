@@ -349,12 +349,22 @@ pub fn block_size_group(width: usize, height: usize) -> usize {
     }
 }
 
-/// Derive the partition context from block size.
+/// Derive the partition context from block size and neighbor information.
 ///
-/// AV1 spec Section 5.9.3: partition context depends on block size.
-/// 8x8 → ctx 0-3 (4 types), 16-32 → ctx 4-15 (10 types), 64+ → ctx 16-19 (8 types).
-/// Sub-context (0-3) from above/left neighbor block sizes.
-pub fn get_partition_context(width: usize, above_same_size: bool, left_same_size: bool) -> (usize, usize) {
+/// AV1 spec Section 5.11.3: The partition context depends on block size
+/// and whether above/left neighbors use SMALLER blocks.
+///
+/// `above_is_smaller`: true if an above neighbor exists AND its block is smaller
+/// `left_is_smaller`: true if a left neighbor exists AND its block is smaller
+///
+/// When neighbors don't exist (frame boundaries), they default to "not smaller"
+/// (contribute 0 to the context), matching the decoder's behavior.
+///
+/// Context layout: bsl * 4 + sub, where:
+/// - bsl: 0 (8x8), 1 (16x16), 2 (32x32), 3 (64x64)
+/// - sub: above_is_smaller * 2 + left_is_smaller
+/// - Contexts 0-3: 4 symbols, 4-15: 10 symbols, 16-19: 8 symbols
+pub fn get_partition_context(width: usize, above_is_smaller: bool, left_is_smaller: bool) -> (usize, usize) {
     let bsl = match width {
         w if w <= 8 => 0,
         w if w <= 16 => 1,
@@ -362,19 +372,10 @@ pub fn get_partition_context(width: usize, above_same_size: bool, left_same_size
         _ => 3,
     };
 
-    let sub = match (above_same_size, left_same_size) {
-        (true, true) => 0,
-        (true, false) => 1,
-        (false, true) => 2,
-        (false, false) => 3,
-    };
+    let sub = above_is_smaller as usize * 2 + left_is_smaller as usize;
 
     let ctx = bsl * 4 + sub;
 
-    // Number of symbols: determined by context range, matching the CDF sentinel positions.
-    // Contexts 0-3: 4 symbols (sentinel at cdf[3])
-    // Contexts 4-15: 10 symbols (sentinel at cdf[9])
-    // Contexts 16-19: 8 symbols (sentinel at cdf[7])
     let nsymbs = match ctx {
         0..=3 => 4,
         4..=15 => 10,
