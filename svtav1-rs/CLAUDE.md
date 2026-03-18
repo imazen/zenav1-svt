@@ -70,14 +70,18 @@ This applies to:
 
 ## Known Bugs — BLOCKING
 
-1. **Coefficient coding format mismatch** — The coefficient encoder uses simplified literal-based EOB encoding and forward scan order, while the AV1 decoder expects CDF-based multi-class EOB and reverse scan order. This causes: (a) content-dependent decode failures when eob>255 overflows the 8-bit literal encoding, (b) incorrect decoded pixel values even when decoding succeeds (low PSNR ~11dB for 128x128 edges test). Proper AV1 coefficient coding (multi-class EOB CDFs, reverse scan, spec context derivation) is needed.
+1. **Coefficient context divergence at high quality** — At q70+ (QP ≤ 19), dense coefficient blocks fail to decode. Lower quality (q30-q60) decodes successfully. Root cause: likely a remaining context derivation mismatch in base_tok/br_tok that accumulates over many non-zero coefficients. The default CDF initialization may also be slightly off for TX type CDFs (currently uniform, should use rav1d spec defaults).
 
 2. **All-skip frames fail to decode** — When all blocks have eob=0 (uniform content, very high QP), the frame structure may be missing required elements. Manifests as "direct 64x64" (23 bytes) and "uniform 128x128" (25 bytes) failing.
 
 ### Fixed Bugs (this session)
-- **PARTITION_HORZ/VERT children wrote extra partition symbols** — Fixed: children now encode block syntax directly without partition symbols.
-- **Partition context always sub=0 for multi-SB** — Fixed: added rav1d-compatible partition context tracking (above/left arrays at 8x8 granularity, AL_PART_CTX lookup, left reset per SB row).
-- **Extended partition types had missing trees** — Fixed: Horz4/Vert4/HorzA/HorzB/VertA/VertB now build proper partition trees.
+- **Spec-conformant coefficient encoder (write_coefficients_v2)** — Complete rewrite: CDF-based EOB (bin + hi-bit + equi), reverse diagonal scan, proper token structure (eob_base_tok/base_tok/br_tok), DC sign after tokens, AC signs separate, Golomb in sign phase, default CDFs from rav1d for 4 QP categories.
+- **Coefficient stride mismatch for 64x64 blocks** — AV1 caps to 32x32 scan but coefficients use original stride. Fixed with scan_to_coeff_idx conversion.
+- **TX type signaling for blocks < 32x32** — Decoder expects explicit TX type symbol; now writes DCT_DCT (index 1) via txtp_intra CDF.
+- **Golomb residual in wrong phase** — Was written during token phase, moved to sign/residual phase matching rav1d.
+- **PARTITION_HORZ/VERT children wrote extra partition symbols** — Fixed: children encode block syntax directly.
+- **Partition context always sub=0 for multi-SB** — Fixed: rav1d-compatible partition context tracking.
+- **Extended partition types had missing trees** — Fixed: all 6 types now build proper trees.
 
 ## Investigation Notes
 
