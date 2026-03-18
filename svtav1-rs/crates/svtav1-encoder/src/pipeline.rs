@@ -445,17 +445,23 @@ impl EncodePipeline {
                 "tree count {} != SB count {}x{}={}",
                 all_trees.len(), sb_cols, sb_rows, sb_cols * sb_rows,
             );
+            let mut prev_sb_row = usize::MAX;
             for (sb_idx, tree) in all_trees.iter().enumerate() {
                 let sb_col = sb_idx % sb_cols;
                 let sb_row = sb_idx / sb_cols;
                 let bx = sb_col * sb_size;
                 let by = sb_row * sb_size;
-                // AV1 spec: partition context sub_ctx is 0 for all SBs because
-                // neighbors are never smaller (same sb_size or don't exist).
-                // This maps to (true, true) in our convention → sub=0.
+
+                // Reset left partition context at the start of each SB row,
+                // matching rav1d's per-tile-row left context reset.
+                if sb_row != prev_sb_row {
+                    ectx.reset_left_for_sb_row();
+                    prev_sb_row = sb_row;
+                }
+
                 encode_partition_tree(
                     tree, &mut writer, &mut frame_ctx, &mut coeff_ctx, &mut ectx,
-                    is_key, true, true, bx, by,
+                    is_key, bx, by,
                 );
             }
 
@@ -535,6 +541,10 @@ impl EncodePipeline {
 /// Tracks intra mode and skip status at 4x4 block granularity, matching
 /// the decoder's above/left BlockContext arrays. This is required for
 /// correct CDF context derivation in keyframe y_mode and skip coding.
+///
+/// Also tracks partition context at 8x8 granularity, matching the rav1d
+/// decoder's `BlockContext.partition` arrays. This is essential for multi-SB
+/// frames where the partition context of one SB depends on its neighbors.
 struct EntropyCtx {
     /// Above row modes (at 4x4 granularity), indexed by column in 4x4 units.
     /// Updated after each block is encoded.
@@ -545,15 +555,141 @@ struct EntropyCtx {
     above_skip: Vec<bool>,
     /// Left column skip flags.
     left_skip: Vec<bool>,
+    /// Above partition context at 8x8 granularity (full frame width).
+    /// Each byte stores partition depth bits, matching rav1d's `a.partition`.
+    above_partition: Vec<u8>,
+    /// Left partition context at 8x8 granularity (one SB column height).
+    /// Reset at the start of each SB row, matching rav1d's `t.l.partition`.
+    left_partition: Vec<u8>,
 }
+
+/// Partition context update lookup table, matching rav1d's `dav1d_al_part_ctx`.
+///
+/// Indexed as `AL_PART_CTX[direction][block_level][partition_type]`.
+/// direction: 0 = above, 1 = left.
+/// block_level: 0 = Bl128x128, 1 = Bl64x64, 2 = Bl32x32, 3 = Bl16x16, 4 = Bl8x8.
+/// partition_type: 0=NONE, 1=HORZ, 2=VERT, 3=SPLIT, 4-9=extended.
+/// Value 0xff marks invalid combinations (SPLIT doesn't update directly).
+static AL_PART_CTX: [[[u8; 10]; 5]; 2] = [
+    // Above context
+    [
+        [0x00, 0x00, 0x10, 0xff, 0x00, 0x10, 0x10, 0x10, 0xff, 0xff], // Bl128x128
+        [0x10, 0x10, 0x18, 0xff, 0x10, 0x18, 0x18, 0x18, 0x10, 0x1c], // Bl64x64
+        [0x18, 0x18, 0x1c, 0xff, 0x18, 0x1c, 0x1c, 0x1c, 0x18, 0x1e], // Bl32x32
+        [0x1c, 0x1c, 0x1e, 0xff, 0x1c, 0x1e, 0x1e, 0x1e, 0x1c, 0x1f], // Bl16x16
+        [0x1e, 0x1e, 0x1f, 0x1f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff], // Bl8x8
+    ],
+    // Left context
+    [
+        [0x00, 0x10, 0x00, 0xff, 0x10, 0x10, 0x00, 0x10, 0xff, 0xff], // Bl128x128
+        [0x10, 0x18, 0x10, 0xff, 0x18, 0x18, 0x10, 0x18, 0x1c, 0x10], // Bl64x64
+        [0x18, 0x1c, 0x18, 0xff, 0x1c, 0x1c, 0x18, 0x1c, 0x1e, 0x18], // Bl32x32
+        [0x1c, 0x1e, 0x1c, 0xff, 0x1e, 0x1e, 0x1c, 0x1e, 0x1f, 0x1c], // Bl16x16
+        [0x1e, 0x1f, 0x1e, 0x1f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff], // Bl8x8
+    ],
+];
 
 impl EntropyCtx {
     fn new(width_4x4: usize, height_4x4: usize) -> Self {
+        let width_8x8 = (width_4x4 + 1) / 2;
+        let height_8x8 = (height_4x4 + 1) / 2;
         Self {
             above_mode: alloc::vec![0u8; width_4x4],  // DC_PRED = 0
             left_mode: alloc::vec![0u8; height_4x4],
             above_skip: alloc::vec![false; width_4x4],
             left_skip: alloc::vec![false; height_4x4],
+            above_partition: alloc::vec![0u8; width_8x8],
+            left_partition: alloc::vec![0u8; height_8x8],
+        }
+    }
+
+    /// Reset left context at the start of each SB row.
+    /// In rav1d, `t.l` is reset per tile row (= SB row for single-tile).
+    fn reset_left_for_sb_row(&mut self) {
+        self.left_partition.fill(0);
+    }
+
+    /// Convert block width to our bsl (block size level).
+    fn bsl(width: usize) -> usize {
+        match width {
+            w if w <= 8 => 0,
+            w if w <= 16 => 1,
+            w if w <= 32 => 2,
+            _ => 3,
+        }
+    }
+
+    /// Convert our bsl to rav1d BlockLevel.
+    /// bsl=0 (8x8) → bl=4, bsl=1 (16x16) → bl=3, bsl=2 (32x32) → bl=2, bsl=3 (64x64) → bl=1.
+    fn bsl_to_block_level(bsl: usize) -> usize {
+        4 - bsl
+    }
+
+    /// Compute partition context (sub, 0-3) from tracked above/left values.
+    /// Uses the same bit-extraction logic as rav1d's `get_partition_ctx`.
+    fn partition_sub(&self, x: usize, y: usize, bsl: usize) -> usize {
+        let xb8 = x / 8;
+        let yb8 = y / 8;
+        let above_val = if xb8 < self.above_partition.len() {
+            self.above_partition[xb8]
+        } else {
+            0
+        };
+        let left_val = if yb8 < self.left_partition.len() {
+            self.left_partition[yb8]
+        } else {
+            0
+        };
+        // Extract bit at position bsl (matching rav1d's (4 - bl) = bsl)
+        let above_bit = ((above_val >> bsl) & 1) as usize;
+        let left_bit = ((left_val >> bsl) & 1) as usize;
+        above_bit + 2 * left_bit
+    }
+
+    /// Get the partition context (ctx, nsymbs) for a block at (x, y) with given width.
+    fn partition_ctx(&self, x: usize, y: usize, width: usize) -> (usize, usize) {
+        let bsl = Self::bsl(width);
+        let sub = self.partition_sub(x, y, bsl);
+        let ctx = bsl * 4 + sub;
+        let nsymbs = match ctx {
+            0..=3 => 4,
+            4..=15 => 10,
+            _ => 8,
+        };
+        (ctx.min(svtav1_entropy::context::PARTITION_CONTEXTS - 1), nsymbs)
+    }
+
+    /// Update partition context after encoding a non-SPLIT partition.
+    /// For SPLIT, the children update the context — don't call this for SPLIT.
+    fn update_partition_ctx(
+        &mut self,
+        x: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+        partition_type: crate::partition::PartitionType,
+    ) {
+        let bsl = Self::bsl(width.max(height));
+        let bl = Self::bsl_to_block_level(bsl);
+        let pt = partition_type as usize;
+        if pt >= 10 || bl >= 5 {
+            return;
+        }
+        let above_val = AL_PART_CTX[0][bl][pt];
+        let left_val = AL_PART_CTX[1][bl][pt];
+        // 0xff means invalid (SPLIT) — don't update
+        if above_val == 0xff || left_val == 0xff {
+            return;
+        }
+        let hsz_8 = width / 8; // half-size in 8x8 units = width/8
+        let xb8 = x / 8;
+        let yb8 = y / 8;
+        for i in xb8..(xb8 + hsz_8).min(self.above_partition.len()) {
+            self.above_partition[i] = above_val;
+        }
+        let vsz_8 = height / 8;
+        for i in yb8..(yb8 + vsz_8).min(self.left_partition.len()) {
+            self.left_partition[i] = left_val;
         }
     }
 
@@ -687,6 +823,9 @@ fn expect_leaf(tree: &crate::partition::PartitionTree) -> &crate::partition::Blo
 /// - PARTITION_HORZ/VERT: write partition symbol, then block syntax for
 ///   each child directly (NO partition symbols for children — the decoder
 ///   reads them as leaf blocks without expecting a partition symbol)
+///
+/// Partition context is derived from tracked above/left partition arrays,
+/// matching the rav1d decoder's context derivation exactly.
 fn encode_partition_tree(
     tree: &crate::partition::PartitionTree,
     writer: &mut svtav1_entropy::writer::AomWriter,
@@ -694,21 +833,25 @@ fn encode_partition_tree(
     coeff_ctx: &mut svtav1_entropy::coeff::CoeffContext,
     ectx: &mut EntropyCtx,
     is_key: bool,
-    has_above: bool,
-    has_left: bool,
     block_x: usize,
     block_y: usize,
 ) {
     match tree {
         crate::partition::PartitionTree::Leaf(decision) => {
-            if decision.width > 4 || decision.height > 4 {
-                let (ctx, nsymbs) = svtav1_entropy::context::get_partition_context(
-                    decision.width as usize, has_above, has_left,
-                );
+            let w = decision.width as usize;
+            let h = decision.height as usize;
+            if w > 4 || h > 4 {
+                let (ctx, nsymbs) = ectx.partition_ctx(block_x, block_y, w);
                 svtav1_entropy::context::write_partition(
                     writer, frame_ctx, ctx, 0, nsymbs, // 0 = PARTITION_NONE
                 );
             }
+
+            // Update partition context for PARTITION_NONE
+            ectx.update_partition_ctx(
+                block_x, block_y, w, h,
+                crate::partition::PartitionType::None,
+            );
 
             encode_block_syntax(decision, writer, frame_ctx, coeff_ctx, ectx,
                 is_key, block_x, block_y);
@@ -719,33 +862,36 @@ fn encode_partition_tree(
             height,
             children,
         } => {
-            let (ctx, nsymbs) = svtav1_entropy::context::get_partition_context(
-                *width as usize, has_above, has_left,
-            );
+            let w = *width as usize;
+            let h = *height as usize;
+            let (ctx, nsymbs) = ectx.partition_ctx(block_x, block_y, w);
             svtav1_entropy::context::write_partition(
                 writer, frame_ctx, ctx, *partition_type as u8, nsymbs,
             );
 
-            // Recurse into children with correct spatial positions.
-            // Within a partition split, all children are the same size,
-            // so the partition context sub_ctx is always 0 (neighbors are
-            // never smaller). Pass (true, true) for all children.
-            let half_w = (*width as usize) / 2;
-            let half_h = (*height as usize) / 2;
+            let half_w = w / 2;
+            let half_h = h / 2;
             match (*partition_type, children.len()) {
                 (crate::partition::PartitionType::Split, 4) => {
-                    // PARTITION_SPLIT: 4 equal quarter-size children in Z-order
+                    // PARTITION_SPLIT: 4 equal quarter-size children in Z-order.
+                    // Don't update partition context here — children do it.
                     encode_partition_tree(&children[0], writer, frame_ctx, coeff_ctx, ectx,
-                        is_key, true, true, block_x, block_y);
+                        is_key, block_x, block_y);
                     encode_partition_tree(&children[1], writer, frame_ctx, coeff_ctx, ectx,
-                        is_key, true, true, block_x + half_w, block_y);
+                        is_key, block_x + half_w, block_y);
                     encode_partition_tree(&children[2], writer, frame_ctx, coeff_ctx, ectx,
-                        is_key, true, true, block_x, block_y + half_h);
+                        is_key, block_x, block_y + half_h);
                     encode_partition_tree(&children[3], writer, frame_ctx, coeff_ctx, ectx,
-                        is_key, true, true, block_x + half_w, block_y + half_h);
+                        is_key, block_x + half_w, block_y + half_h);
                 }
                 (crate::partition::PartitionType::Horz, 2) => {
                     // PARTITION_HORZ: two children stacked vertically.
+                    // Update partition context for HORZ (children don't do it).
+                    ectx.update_partition_ctx(
+                        block_x, block_y, w, h,
+                        crate::partition::PartitionType::Horz,
+                    );
+
                     // Children are leaf blocks — encode directly without
                     // partition symbols (decoder reads them as direct blocks).
                     let top = expect_leaf(&children[0]);
@@ -757,8 +903,12 @@ fn encode_partition_tree(
                 }
                 (crate::partition::PartitionType::Vert, 2) => {
                     // PARTITION_VERT: two children side by side.
-                    // Children are leaf blocks — encode directly without
-                    // partition symbols.
+                    // Update partition context for VERT.
+                    ectx.update_partition_ctx(
+                        block_x, block_y, w, h,
+                        crate::partition::PartitionType::Vert,
+                    );
+
                     let left = expect_leaf(&children[0]);
                     encode_block_syntax(left, writer, frame_ctx, coeff_ctx, ectx,
                         is_key, block_x, block_y);
@@ -770,7 +920,7 @@ fn encode_partition_tree(
                     // Extended partitions — children in order with approximate positions
                     for child in children {
                         encode_partition_tree(child, writer, frame_ctx, coeff_ctx, ectx,
-                            is_key, true, true, block_x, block_y);
+                            is_key, block_x, block_y);
                     }
                 }
             }
