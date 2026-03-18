@@ -599,13 +599,94 @@ impl EntropyCtx {
     }
 }
 
+/// Encode block syntax (skip, mode, coefficients) WITHOUT a partition symbol.
+///
+/// This is the core block encoding used by both PARTITION_NONE leaves and
+/// HORZ/VERT children. In AV1, HORZ/VERT children are always leaf blocks
+/// that the decoder reads directly — no partition symbol is expected for them.
+fn encode_block_syntax(
+    decision: &crate::partition::BlockDecision,
+    writer: &mut svtav1_entropy::writer::AomWriter,
+    frame_ctx: &mut svtav1_entropy::context::FrameContext,
+    coeff_ctx: &mut svtav1_entropy::coeff::CoeffContext,
+    ectx: &mut EntropyCtx,
+    is_key: bool,
+    block_x: usize,
+    block_y: usize,
+) {
+    let skip = decision.eob == 0;
+    let skip_ctx = ectx.skip_ctx(block_x, block_y);
+    svtav1_entropy::context::write_skip(writer, frame_ctx, skip_ctx, skip);
+
+    if !skip {
+        if !is_key {
+            svtav1_entropy::context::write_intra_inter(
+                writer, frame_ctx, 0, decision.is_inter,
+            );
+        }
+
+        if decision.is_inter {
+            svtav1_entropy::mv_coding::write_mv(
+                writer, decision.mv.x, decision.mv.y, true,
+            );
+        } else if is_key {
+            let above_ctx = ectx.above_mode_ctx(block_x);
+            let left_ctx = ectx.left_mode_ctx(block_y);
+            svtav1_entropy::context::write_intra_mode_kf(
+                writer, frame_ctx, above_ctx, left_ctx, decision.intra_mode,
+            );
+            if svtav1_entropy::context::is_directional_mode(decision.intra_mode) {
+                svtav1_entropy::context::write_angle_delta(
+                    writer, frame_ctx, decision.intra_mode, 0,
+                );
+            }
+        } else {
+            let bsize_group = svtav1_entropy::context::block_size_group(
+                decision.width as usize, decision.height as usize,
+            );
+            svtav1_entropy::context::write_intra_mode_inter(
+                writer, frame_ctx, bsize_group, decision.intra_mode,
+            );
+            if svtav1_entropy::context::is_directional_mode(decision.intra_mode) {
+                svtav1_entropy::context::write_angle_delta(
+                    writer, frame_ctx, decision.intra_mode, 0,
+                );
+            }
+        }
+
+        svtav1_entropy::coeff::write_coefficients_ctx(
+            writer, &decision.qcoeffs, decision.eob as usize, coeff_ctx,
+        );
+    }
+
+    // Update context maps for subsequent blocks
+    let mode = if skip { 0 } else { decision.intra_mode }; // skip → DC_PRED
+    ectx.record_block(
+        block_x, block_y,
+        decision.width as usize, decision.height as usize,
+        mode, skip,
+    );
+}
+
+/// Extract the leaf decision from a partition tree node.
+/// Panics if the node is not a Leaf (HORZ/VERT children must always be leaves).
+fn expect_leaf(tree: &crate::partition::PartitionTree) -> &crate::partition::BlockDecision {
+    match tree {
+        crate::partition::PartitionTree::Leaf(d) => d,
+        crate::partition::PartitionTree::Split { .. } => {
+            panic!("HORZ/VERT children must be leaf blocks, not split nodes")
+        }
+    }
+}
+
 /// Recursively encode a partition tree to the bitstream in AV1 spec order.
 ///
 /// AV1 spec: for each SB, write partition_type, then:
-/// - PARTITION_NONE: write block syntax (skip, mode, coeffs)
-/// - PARTITION_SPLIT: recurse into 4 children
-/// - PARTITION_HORZ/VERT: write 2 children
-/// - Extended: write 3 children
+/// - PARTITION_NONE: write partition symbol + block syntax
+/// - PARTITION_SPLIT: write partition symbol, recurse into 4 children
+/// - PARTITION_HORZ/VERT: write partition symbol, then block syntax for
+///   each child directly (NO partition symbols for children — the decoder
+///   reads them as leaf blocks without expecting a partition symbol)
 fn encode_partition_tree(
     tree: &crate::partition::PartitionTree,
     writer: &mut svtav1_entropy::writer::AomWriter,
@@ -629,58 +710,8 @@ fn encode_partition_tree(
                 );
             }
 
-            let skip = decision.eob == 0;
-            let skip_ctx = ectx.skip_ctx(block_x, block_y);
-            svtav1_entropy::context::write_skip(writer, frame_ctx, skip_ctx, skip);
-
-            if !skip {
-                if !is_key {
-                    svtav1_entropy::context::write_intra_inter(
-                        writer, frame_ctx, 0, decision.is_inter,
-                    );
-                }
-
-                if decision.is_inter {
-                    svtav1_entropy::mv_coding::write_mv(
-                        writer, decision.mv.x, decision.mv.y, true,
-                    );
-                } else if is_key {
-                    let above_ctx = ectx.above_mode_ctx(block_x);
-                    let left_ctx = ectx.left_mode_ctx(block_y);
-                    svtav1_entropy::context::write_intra_mode_kf(
-                        writer, frame_ctx, above_ctx, left_ctx, decision.intra_mode,
-                    );
-                    if svtav1_entropy::context::is_directional_mode(decision.intra_mode) {
-                        svtav1_entropy::context::write_angle_delta(
-                            writer, frame_ctx, decision.intra_mode, 0,
-                        );
-                    }
-                } else {
-                    let bsize_group = svtav1_entropy::context::block_size_group(
-                        decision.width as usize, decision.height as usize,
-                    );
-                    svtav1_entropy::context::write_intra_mode_inter(
-                        writer, frame_ctx, bsize_group, decision.intra_mode,
-                    );
-                    if svtav1_entropy::context::is_directional_mode(decision.intra_mode) {
-                        svtav1_entropy::context::write_angle_delta(
-                            writer, frame_ctx, decision.intra_mode, 0,
-                        );
-                    }
-                }
-
-                svtav1_entropy::coeff::write_coefficients_ctx(
-                    writer, &decision.qcoeffs, decision.eob as usize, coeff_ctx,
-                );
-            }
-
-            // Update context maps for subsequent blocks
-            let mode = if skip { 0 } else { decision.intra_mode }; // skip → DC_PRED
-            ectx.record_block(
-                block_x, block_y,
-                decision.width as usize, decision.height as usize,
-                mode, skip,
-            );
+            encode_block_syntax(decision, writer, frame_ctx, coeff_ctx, ectx,
+                is_key, block_x, block_y);
         }
         crate::partition::PartitionTree::Split {
             partition_type,
@@ -695,12 +726,10 @@ fn encode_partition_tree(
                 writer, frame_ctx, ctx, *partition_type as u8, nsymbs,
             );
 
-            // Recurse into children with correct spatial positions
-            let half_w = (*width as usize) / 2;
-            let half_h = (*height as usize) / 2;
-            // Recurse into children. Within a partition split, all children
-            // are the same size, so the partition context sub_ctx is always 0
-            // (neighbors are never smaller). Pass (true, true) for all children.
+            // Recurse into children with correct spatial positions.
+            // Within a partition split, all children are the same size,
+            // so the partition context sub_ctx is always 0 (neighbors are
+            // never smaller). Pass (true, true) for all children.
             let half_w = (*width as usize) / 2;
             let half_h = (*height as usize) / 2;
             match (*partition_type, children.len()) {
@@ -716,16 +745,26 @@ fn encode_partition_tree(
                         is_key, true, true, block_x + half_w, block_y + half_h);
                 }
                 (crate::partition::PartitionType::Horz, 2) => {
-                    encode_partition_tree(&children[0], writer, frame_ctx, coeff_ctx, ectx,
-                        is_key, true, true, block_x, block_y);
-                    encode_partition_tree(&children[1], writer, frame_ctx, coeff_ctx, ectx,
-                        is_key, true, true, block_x, block_y + half_h);
+                    // PARTITION_HORZ: two children stacked vertically.
+                    // Children are leaf blocks — encode directly without
+                    // partition symbols (decoder reads them as direct blocks).
+                    let top = expect_leaf(&children[0]);
+                    encode_block_syntax(top, writer, frame_ctx, coeff_ctx, ectx,
+                        is_key, block_x, block_y);
+                    let bot = expect_leaf(&children[1]);
+                    encode_block_syntax(bot, writer, frame_ctx, coeff_ctx, ectx,
+                        is_key, block_x, block_y + half_h);
                 }
                 (crate::partition::PartitionType::Vert, 2) => {
-                    encode_partition_tree(&children[0], writer, frame_ctx, coeff_ctx, ectx,
-                        is_key, true, true, block_x, block_y);
-                    encode_partition_tree(&children[1], writer, frame_ctx, coeff_ctx, ectx,
-                        is_key, true, true, block_x + half_w, block_y);
+                    // PARTITION_VERT: two children side by side.
+                    // Children are leaf blocks — encode directly without
+                    // partition symbols.
+                    let left = expect_leaf(&children[0]);
+                    encode_block_syntax(left, writer, frame_ctx, coeff_ctx, ectx,
+                        is_key, block_x, block_y);
+                    let right = expect_leaf(&children[1]);
+                    encode_block_syntax(right, writer, frame_ctx, coeff_ctx, ectx,
+                        is_key, block_x + half_w, block_y);
                 }
                 _ => {
                     // Extended partitions — children in order with approximate positions
