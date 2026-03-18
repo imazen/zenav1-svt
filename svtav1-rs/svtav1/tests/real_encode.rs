@@ -699,7 +699,10 @@ fn parse_obu_header(byte: u8) -> (u8, bool) {
     let obu_type = (byte >> 3) & 0xF;
     let has_extension = (byte >> 2) & 1;
     let has_size = (byte >> 1) & 1;
-    assert_eq!(has_extension, 0, "extension not expected in simple bitstream");
+    assert_eq!(
+        has_extension, 0,
+        "extension not expected in simple bitstream"
+    );
     (obu_type, has_size == 1)
 }
 
@@ -732,7 +735,11 @@ fn obu_structure_key_frame() {
     let y_plane = make_gradient(64, 64);
     let bitstream = pipeline.encode_frame(&y_plane, 64);
 
-    assert!(bitstream.len() > 10, "bitstream too short: {} bytes", bitstream.len());
+    assert!(
+        bitstream.len() > 10,
+        "bitstream too short: {} bytes",
+        bitstream.len()
+    );
 
     // Parse OBU sequence: TD + SH + Frame
     let mut pos = 0;
@@ -740,7 +747,10 @@ fn obu_structure_key_frame() {
     // OBU 1: Temporal Delimiter
     let (obu_type, has_size) = parse_obu_header(bitstream[pos]);
     pos += 1;
-    assert_eq!(obu_type, 2, "first OBU should be Temporal Delimiter (type 2)");
+    assert_eq!(
+        obu_type, 2,
+        "first OBU should be Temporal Delimiter (type 2)"
+    );
     assert!(has_size, "TD should have size field");
     let td_size = read_uleb128(&bitstream, &mut pos);
     assert_eq!(td_size, 0, "TD payload should be empty");
@@ -765,7 +775,12 @@ fn obu_structure_key_frame() {
     pos += frame_size as usize;
 
     // Should have consumed the entire bitstream
-    assert_eq!(pos, bitstream.len(), "unexpected trailing data: {} extra bytes", bitstream.len() - pos);
+    assert_eq!(
+        pos,
+        bitstream.len(),
+        "unexpected trailing data: {} extra bytes",
+        bitstream.len() - pos
+    );
 }
 
 #[test]
@@ -838,7 +853,10 @@ fn obu_sequence_header_profile() {
     // Write bitstream to temp file for external decoder testing
     let path = std::path::Path::new("/tmp/svtav1_test_output.obu");
     std::fs::write(path, &bitstream).expect("failed to write test bitstream");
-    eprintln!("Wrote test bitstream to {path:?} ({} bytes)", bitstream.len());
+    eprintln!(
+        "Wrote test bitstream to {path:?} ({} bytes)",
+        bitstream.len()
+    );
     eprintln!("Test with: dav1d -i /tmp/svtav1_test_output.obu -o /dev/null");
 }
 
@@ -963,11 +981,7 @@ fn encode_10_frame_sequence() {
     let mut total_bytes = 0;
     for i in 0..10 {
         let bs = pipeline.encode_frame(&y_plane, 64);
-        assert!(
-            !bs.is_empty(),
-            "frame {} produced empty output",
-            i
-        );
+        assert!(!bs.is_empty(), "frame {} produced empty output", i);
         total_bytes += bs.len();
     }
     assert_eq!(pipeline.frame_count, 10);
@@ -1082,8 +1096,15 @@ fn avif_encode_to_av1_obu_compatible() {
     assert_eq!(obu_type, 2, "first OBU should be TD (type 2)");
 
     // Should contain at least TD + SH + Frame
-    assert!(obu_data.len() > 20, "OBU data too short: {} bytes", obu_data.len());
-    eprintln!("AV1 OBU output: {} bytes (ready for zenavif-serialize)", obu_data.len());
+    assert!(
+        obu_data.len() > 20,
+        "OBU data too short: {} bytes",
+        obu_data.len()
+    );
+    eprintln!(
+        "AV1 OBU output: {} bytes (ready for zenavif-serialize)",
+        obu_data.len()
+    );
 }
 
 #[test]
@@ -1098,9 +1119,18 @@ fn avif_yuv420_encode() {
 
     // YUV420 output should be 3 length-prefixed plane bitstreams
     assert!(result.data.len() > 12, "too short for 3 planes");
-    let luma_len = u32::from_le_bytes([result.data[0], result.data[1], result.data[2], result.data[3]]);
+    let luma_len = u32::from_le_bytes([
+        result.data[0],
+        result.data[1],
+        result.data[2],
+        result.data[3],
+    ]);
     assert!(luma_len > 0, "luma plane should be non-empty");
-    eprintln!("YUV420: {} total bytes, luma={} bytes", result.data.len(), luma_len);
+    eprintln!(
+        "YUV420: {} total bytes, luma={} bytes",
+        result.data.len(),
+        luma_len
+    );
 }
 
 #[test]
@@ -1110,7 +1140,9 @@ fn avif_encode_real_sizes() {
         let pixels = make_zone_plate(w, h);
         let enc = AvifEncoder::new().with_quality(70.0).with_speed(8);
         let start = std::time::Instant::now();
-        let result = enc.encode_y8(&pixels, w as u32, h as u32, w as u32).unwrap();
+        let result = enc
+            .encode_y8(&pixels, w as u32, h as u32, w as u32)
+            .unwrap();
         let elapsed = start.elapsed();
         let bpp = result.data.len() as f64 * 8.0 / (w * h) as f64;
         eprintln!(
@@ -1125,64 +1157,79 @@ fn avif_encode_real_sizes() {
 #[test]
 fn dump_obu_comparison() {
     let enc = AvifEncoder::new().with_quality(70.0).with_speed(8);
-    
+
     // Uniform gray (all skip)
     let gray = vec![128u8; 64 * 64];
     let obu_gray = enc.encode_to_av1_obu(&gray, 64, 64, 64).unwrap();
     std::fs::write("/tmp/obu_gray64.bin", &obu_gray).unwrap();
-    
-    // Gradient (non-skip)  
+
+    // Gradient (non-skip)
     let mut grad = vec![0u8; 64 * 64];
-    for r in 0..64usize { for c in 0..64usize { grad[r*64+c] = ((r*4+c*2) % 256) as u8; } }
+    for r in 0..64usize {
+        for c in 0..64usize {
+            grad[r * 64 + c] = ((r * 4 + c * 2) % 256) as u8;
+        }
+    }
     let obu_grad = enc.encode_to_av1_obu(&grad, 64, 64, 64).unwrap();
     std::fs::write("/tmp/obu_grad64.bin", &obu_grad).unwrap();
-    
-    eprintln!("Gray: {} bytes, Gradient: {} bytes", obu_gray.len(), obu_grad.len());
-    
+
+    eprintln!(
+        "Gray: {} bytes, Gradient: {} bytes",
+        obu_gray.len(),
+        obu_grad.len()
+    );
+
     // Compare headers (TD + SH should be identical)
     let min_len = obu_gray.len().min(obu_grad.len()).min(20);
     let headers_match = obu_gray[..min_len] == obu_grad[..min_len];
     eprintln!("First {} bytes match: {}", min_len, headers_match);
-    
+
     // Hex dump both
     eprintln!("\nGray ({} bytes):", obu_gray.len());
     for (i, chunk) in obu_gray.chunks(16).enumerate() {
-        eprint!("  {:04x}: ", i*16);
-        for b in chunk { eprint!("{:02x} ", b); }
+        eprint!("  {:04x}: ", i * 16);
+        for b in chunk {
+            eprint!("{:02x} ", b);
+        }
         eprintln!();
     }
     eprintln!("\nGradient ({} bytes, first 48):", obu_grad.len());
     for (i, chunk) in obu_grad[..48.min(obu_grad.len())].chunks(16).enumerate() {
-        eprint!("  {:04x}: ", i*16);
-        for b in chunk { eprint!("{:02x} ", b); }
+        eprint!("  {:04x}: ", i * 16);
+        for b in chunk {
+            eprint!("{:02x} ", b);
+        }
         eprintln!();
     }
 }
 
 #[test]
 fn partition_ctx_comparison() {
-    use svtav1_entropy::writer::AomWriter;
     use svtav1_entropy::context::{FrameContext, write_partition, write_skip};
-    
+    use svtav1_entropy::writer::AomWriter;
+
     // ctx=12 PARTITION_NONE + skip=true
     let mut w = AomWriter::new(64);
     let mut fc = FrameContext::new_default();
     write_partition(&mut w, &mut fc, 12, 0, 10);
     write_skip(&mut w, &mut fc, 0, true);
     let b12 = w.done().to_vec();
-    
+
     // ctx=15 PARTITION_NONE + skip=true
     let mut w = AomWriter::new(64);
     let mut fc = FrameContext::new_default();
     write_partition(&mut w, &mut fc, 15, 0, 10);
     write_skip(&mut w, &mut fc, 0, true);
     let b15 = w.done().to_vec();
-    
+
     eprintln!("ctx=12: {} bytes {:02x?}", b12.len(), b12);
     eprintln!("ctx=15: {} bytes {:02x?}", b15.len(), b15);
-    
+
     // These should be different (different CDF probabilities)
-    assert_ne!(b12, b15, "different contexts should produce different bytes");
+    assert_ne!(
+        b12, b15,
+        "different contexts should produce different bytes"
+    );
 }
 
 #[test]
@@ -1190,28 +1237,38 @@ fn debug_gray64_encoding() {
     let enc = AvifEncoder::new().with_quality(70.0).with_speed(8);
     let gray = vec![128u8; 64 * 64];
     let obu = enc.encode_to_av1_obu(&gray, 64, 64, 64).unwrap();
-    
+
     // Also try quality=70 speed=10
     let enc10 = AvifEncoder::new().with_quality(70.0).with_speed(10);
     let obu10 = enc10.encode_to_av1_obu(&gray, 64, 64, 64).unwrap();
-    
-    eprintln!("s8 gray: {} bytes, last 4: {:02x?}", obu.len(), &obu[obu.len()-4..]);
-    eprintln!("s10 gray: {} bytes, last 4: {:02x?}", obu10.len(), &obu10[obu10.len()-4..]);
-    
-    // Encode using the pipeline directly to see tile data  
+
+    eprintln!(
+        "s8 gray: {} bytes, last 4: {:02x?}",
+        obu.len(),
+        &obu[obu.len() - 4..]
+    );
+    eprintln!(
+        "s10 gray: {} bytes, last 4: {:02x?}",
+        obu10.len(),
+        &obu10[obu10.len() - 4..]
+    );
+
+    // Encode using the pipeline directly to see tile data
     let rc = svtav1_encoder::rate_control::RcConfig {
         mode: svtav1_encoder::rate_control::RcMode::Cqp,
         qp: 19,
         ..svtav1_encoder::rate_control::RcConfig::default()
     };
     let mut pipeline = svtav1_encoder::pipeline::EncodePipeline::new(64, 64, 10, rc, 0, 1);
-    
+
     // Manually encode to see what happens
     let bs = pipeline.encode_frame(&gray, 64);
     eprintln!("Pipeline s10 gray: {} bytes", bs.len());
     for (i, chunk) in bs.chunks(16).enumerate() {
-        eprint!("  {:04x}: ", i*16);
-        for b in chunk { eprint!("{:02x} ", b); }
+        eprint!("  {:04x}: ", i * 16);
+        for b in chunk {
+            eprint!("{:02x} ", b);
+        }
         eprintln!();
     }
 }
@@ -1226,28 +1283,65 @@ fn trace_gray64_tree() {
     };
     let sc = svtav1_encoder::speed_config::SpeedConfig::from_preset(13); // speed 10
     let gray = vec![128u8; 64 * 64];
-    
+
     let part_config = svtav1_encoder::partition::PartitionSearchConfig::from_speed_config(&sc);
     let mut recon = vec![128u8; 64 * 64];
     let result = svtav1_encoder::partition::partition_search_with_config(
-        &gray, 64, &mut recon, 64, 64, 64, 19, 100, sc.max_partition_depth as u32,
-        &part_config, None, 0, 0, None,
+        &gray,
+        64,
+        &mut recon,
+        64,
+        64,
+        64,
+        19,
+        100,
+        sc.max_partition_depth as u32,
+        &part_config,
+        None,
+        0,
+        0,
+        None,
     );
-    
+
     eprintln!("Decisions: {} blocks", result.decisions.len());
     for (i, d) in result.decisions.iter().enumerate() {
-        eprintln!("  block {}: {}x{} mode={} eob={} inter={} mv=({},{})", 
-            i, d.width, d.height, d.intra_mode, d.eob, d.is_inter, d.mv.x, d.mv.y);
+        eprintln!(
+            "  block {}: {}x{} mode={} eob={} inter={} mv=({},{})",
+            i, d.width, d.height, d.intra_mode, d.eob, d.is_inter, d.mv.x, d.mv.y
+        );
     }
     if let Some(ref tree) = result.tree {
         fn print_tree(t: &svtav1_encoder::partition::PartitionTree, indent: usize) {
             match t {
                 svtav1_encoder::partition::PartitionTree::Leaf(d) => {
-                    eprintln!("{:indent$}Leaf: {}x{} mode={} eob={}", "", d.width, d.height, d.intra_mode, d.eob, indent=indent);
+                    eprintln!(
+                        "{:indent$}Leaf: {}x{} mode={} eob={}",
+                        "",
+                        d.width,
+                        d.height,
+                        d.intra_mode,
+                        d.eob,
+                        indent = indent
+                    );
                 }
-                svtav1_encoder::partition::PartitionTree::Split { partition_type, width, height, children } => {
-                    eprintln!("{:indent$}Split({:?}): {}x{}, {} children", "", partition_type, width, height, children.len(), indent=indent);
-                    for c in children { print_tree(c, indent + 2); }
+                svtav1_encoder::partition::PartitionTree::Split {
+                    partition_type,
+                    width,
+                    height,
+                    children,
+                } => {
+                    eprintln!(
+                        "{:indent$}Split({:?}): {}x{}, {} children",
+                        "",
+                        partition_type,
+                        width,
+                        height,
+                        children.len(),
+                        indent = indent
+                    );
+                    for c in children {
+                        print_tree(c, indent + 2);
+                    }
                 }
             }
         }
@@ -1257,9 +1351,11 @@ fn trace_gray64_tree() {
 
 #[test]
 fn compare_ctx12_vs_ctx15_horz() {
+    use svtav1_entropy::context::{
+        FrameContext, get_partition_context, write_partition, write_skip,
+    };
     use svtav1_entropy::writer::AomWriter;
-    use svtav1_entropy::context::{FrameContext, write_partition, write_skip, get_partition_context};
-    
+
     // Simulate encoding PARTITION_HORZ + 2 children (each NONE + skip)
     // At ctx=15 (our current, sub=3)
     let mut w = AomWriter::new(128);
@@ -1277,7 +1373,7 @@ fn compare_ctx12_vs_ctx15_horz() {
     write_skip(&mut w, &mut fc, 0, true);
     let b15 = w.done().to_vec();
     eprintln!("ctx=15 HORZ: {} bytes {:02x?}", b15.len(), b15);
-    
+
     // At ctx=12 (correct per spec, sub=0)
     let mut w = AomWriter::new(128);
     let mut fc = FrameContext::new_default();
@@ -1295,17 +1391,17 @@ fn compare_ctx12_vs_ctx15_horz() {
 
 #[test]
 fn exact_gray64_tile_data() {
-    use svtav1_entropy::writer::AomWriter;
     use svtav1_entropy::context::*;
-    
+    use svtav1_entropy::writer::AomWriter;
+
     // Reproduce the exact pipeline encoding for gray 64x64:
     // PARTITION_HORZ at ctx=(has_above=false,has_left=false) → ctx=15
     // Child 0: 64x32 at (0,0), PARTITION_NONE + skip=true, skip_ctx=0
     // Child 1: 64x32 at (0,32), PARTITION_NONE + skip=true, skip_ctx=1 (above was skip)
-    
+
     let mut w = AomWriter::new(128);
     let mut fc = FrameContext::new_default();
-    
+
     // SB partition: HORZ(1) at ctx=15
     write_partition(&mut w, &mut fc, 15, 1, 10);
     // Child 0: partition NONE at ctx=8, skip=true at skip_ctx=0
@@ -1315,8 +1411,12 @@ fn exact_gray64_tile_data() {
     write_partition(&mut w, &mut fc, 8, 0, 10);
     write_skip(&mut w, &mut fc, 1, true);
     let bytes = w.done().to_vec();
-    eprintln!("Exact gray64 (ctx=15): {} bytes {:02x?}", bytes.len(), bytes);
-    
+    eprintln!(
+        "Exact gray64 (ctx=15): {} bytes {:02x?}",
+        bytes.len(),
+        bytes
+    );
+
     // Now with corrected SB context=12
     let mut w = AomWriter::new(128);
     let mut fc = FrameContext::new_default();
@@ -1326,19 +1426,23 @@ fn exact_gray64_tile_data() {
     write_partition(&mut w, &mut fc, 8, 0, 10);
     write_skip(&mut w, &mut fc, 1, true);
     let bytes2 = w.done().to_vec();
-    eprintln!("Exact gray64 (ctx=12): {} bytes {:02x?}", bytes2.len(), bytes2);
+    eprintln!(
+        "Exact gray64 (ctx=12): {} bytes {:02x?}",
+        bytes2.len(),
+        bytes2
+    );
 }
 
 #[test]
 fn exact_gray64_v2() {
-    use svtav1_entropy::writer::AomWriter;
     use svtav1_entropy::context::*;
-    
+    use svtav1_entropy::writer::AomWriter;
+
     // Gray 64x64 PARTITION_HORZ: children are 64x32 (width=64!)
     // Child width=64 → bsl=3 → ctx=12 (with has_above=true, has_left=true → sub=0)
     let mut w = AomWriter::new(128);
     let mut fc = FrameContext::new_default();
-    
+
     // SB: HORZ(1) at ctx=15 (has_above=false, has_left=false)
     write_partition(&mut w, &mut fc, 15, 1, 10);
     // Child 0 (64x32): width=64 → bsl=3 → ctx=12, NONE(0), nsymbs=10
@@ -1349,7 +1453,7 @@ fn exact_gray64_v2() {
     write_skip(&mut w, &mut fc, 1, true);
     let bytes = w.done().to_vec();
     eprintln!("v2 ctx=15: {} bytes {:02x?}", bytes.len(), bytes);
-    
+
     // With corrected SB context=12
     let mut w = AomWriter::new(128);
     let mut fc = FrameContext::new_default();
@@ -1364,9 +1468,9 @@ fn exact_gray64_v2() {
 
 #[test]
 fn range_coder_symbol_comparison() {
-    use svtav1_entropy::writer::AomWriter;
     use svtav1_entropy::context::*;
-    
+    use svtav1_entropy::writer::AomWriter;
+
     let fc = FrameContext::new_default();
     for sym in 0..10u8 {
         let mut w = AomWriter::new(64);
@@ -1379,16 +1483,21 @@ fn range_coder_symbol_comparison() {
 
 #[test]
 fn range_coder_state_trace() {
-    use svtav1_entropy::range_coder::OdEcEnc;
     use svtav1_entropy::cdf::{CDF_PROB_TOP, aom_icdf};
-    
+    use svtav1_entropy::range_coder::OdEcEnc;
+
     let icdf: [u16; 11] = [12631, 11221, 9690, 3202, 2931, 2507, 2244, 1876, 1044, 0, 0];
-    
+
     for sym in [0usize, 1, 3] {
         let mut enc = OdEcEnc::new(64);
         enc.encode_cdf_q15(sym, &icdf, 10);
-        eprintln!("After sym={}: low=0x{:x}, rng={}, cnt={}", 
-            sym, enc.low(), enc.rng_val(), enc.cnt_val());
+        eprintln!(
+            "After sym={}: low=0x{:x}, rng={}, cnt={}",
+            sym,
+            enc.low(),
+            enc.rng_val(),
+            enc.cnt_val()
+        );
         let bytes = enc.done();
         eprintln!("  done: {} bytes {:02x?}", bytes.len(), bytes);
     }
@@ -1396,33 +1505,35 @@ fn range_coder_state_trace() {
 
 #[test]
 fn verify_gray64_tile_data() {
-    use svtav1_entropy::writer::AomWriter;
     use svtav1_entropy::context::*;
-    
+    use svtav1_entropy::writer::AomWriter;
+
     // Reproduce gray64 encoding: HORZ(1) at ctx=12, children 64x32 NONE + skip
     let mut w = AomWriter::new(128);
     let mut fc = FrameContext::new_default();
     let mut cc = svtav1_entropy::coeff::CoeffContext::default();
-    
+
     // With mode/skip tracking
-    let w4 = 64/4;
-    let h4 = 64/4;
+    let w4 = 64 / 4;
+    let h4 = 64 / 4;
     let mut above_skip = vec![false; w4];
-    
+
     // SB: HORZ at ctx=12
     write_partition(&mut w, &mut fc, 12, 1, 10);
-    
+
     // Child 0 (64x32 at 0,0): ctx=12 NONE, skip_ctx=0
     write_partition(&mut w, &mut fc, 12, 0, 10);
     write_skip(&mut w, &mut fc, 0, true); // skip_ctx=0
     // Record: above_skip[0..16] = true
-    for i in 0..w4 { above_skip[i] = true; }
-    
+    for i in 0..w4 {
+        above_skip[i] = true;
+    }
+
     // Child 1 (64x32 at 0,32): ctx=12 NONE
     write_partition(&mut w, &mut fc, 12, 0, 10);
     // skip_ctx: above was skip → ctx=1
     write_skip(&mut w, &mut fc, 1, true);
-    
+
     let bytes = w.done().to_vec();
     eprintln!("Reproduced tile data: {} bytes {:02x?}", bytes.len(), bytes);
     eprintln!("Expected from pipeline: a3 a8");
@@ -1433,7 +1544,7 @@ fn simulate_decoder_on_gray64() {
     // Simulate rav1d decoder reading [a3, a8] as tile data
     // Initial state: rng=32768, cnt=-15, dif=0
     let tile_data: [u8; 2] = [0xa3, 0xa8];
-    
+
     // Refill: read bytes until cnt >= 0
     let mut dif: u64 = 0;
     let mut cnt: i32 = -15;
@@ -1444,18 +1555,20 @@ fn simulate_decoder_on_gray64() {
         pos += 1;
     }
     eprintln!("After refill: dif=0x{:x}, cnt={}", dif, cnt);
-    
+
     // First symbol: partition at ctx=12 (bl=1, sub=0)
     // rav1d CDF for partition[1][0] in CDF format:
     // [20137, 21547, 23078, 29566, 29837, 30261, 30524, 30892, 31724]
-    let cdf = [20137u32, 21547, 23078, 29566, 29837, 30261, 30524, 30892, 31724];
+    let cdf = [
+        20137u32, 21547, 23078, 29566, 29837, 30261, 30524, 30892, 31724,
+    ];
     let n_symbols: u32 = 9;
     let rng: u32 = 32768;
     let r = rng >> 8; // 128
-    
+
     let c = (dif >> (64 - 16)) as u32;
     eprintln!("c = {} (0x{:x})", c, c);
-    
+
     let mut val: u32 = 0;
     let mut u = rng;
     let mut v;
@@ -1465,10 +1578,17 @@ fn simulate_decoder_on_gray64() {
         v >>= 1; // >>= (7 - EC_PROB_SHIFT) where EC_PROB_SHIFT=6
         v += 4 * (n_symbols - val); // EC_MIN_PROB=4
         eprintln!("  val={}: v={}", val, v);
-        if c >= v { break; }
+        if c >= v {
+            break;
+        }
         val += 1;
-        if val >= n_symbols { val = n_symbols; break; }
+        if val >= n_symbols {
+            val = n_symbols;
+            break;
+        }
     }
-    eprintln!("Decoded partition symbol: {} (0=NONE, 1=HORZ, 2=VERT, 3=SPLIT)", val);
+    eprintln!(
+        "Decoded partition symbol: {} (0=NONE, 1=HORZ, 2=VERT, 3=SPLIT)",
+        val
+    );
 }
-

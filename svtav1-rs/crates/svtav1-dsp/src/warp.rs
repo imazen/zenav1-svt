@@ -70,8 +70,7 @@ pub fn warp_prediction(
                 let ry = (iy - FILTER_CENTER + tap_row).clamp(0, pic_height as i32 - 1) as usize;
                 let mut sum = 0i32;
                 for tap_col in 0..8i32 {
-                    let rx =
-                        (ix - FILTER_CENTER + tap_col).clamp(0, pic_width as i32 - 1) as usize;
+                    let rx = (ix - FILTER_CENTER + tap_col).clamp(0, pic_width as i32 - 1) as usize;
                     sum += ref_pic[ry * ref_stride + rx] as i32 * h_filter[tap_col as usize] as i32;
                 }
                 intermediate[tap_row as usize] = (sum + 64) >> 7;

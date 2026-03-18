@@ -78,7 +78,7 @@ impl OdEcEnc {
     ///   v[val] = (r>>8) * (icdf[val] >> 6) >> 1 + EC_MIN_PROB * (n - val)
     /// Symbol s has range [v[s], v[s-1]) where v[-1] = rng.
     pub fn encode_cdf_q15(&mut self, s: usize, icdf: &[AomCdfProb], nsyms: usize) {
-        debug_assert!(s < nsyms);
+        assert!(s < nsyms, "symbol {s} >= nsyms {nsyms}");
 
         let n = nsyms as u32 - 1;
         let r = self.rng as u32;
@@ -299,11 +299,17 @@ impl OdEcEnc {
     }
 
     /// Debug: internal state access.
-    pub fn low(&self) -> u64 { self.low }
+    pub fn low(&self) -> u64 {
+        self.low
+    }
     /// Debug: internal range.
-    pub fn rng_val(&self) -> u16 { self.rng }
+    pub fn rng_val(&self) -> u16 {
+        self.rng
+    }
     /// Debug: internal bit count.
-    pub fn cnt_val(&self) -> i16 { self.cnt }
+    pub fn cnt_val(&self) -> i16 {
+        self.cnt
+    }
 }
 
 /// Integer log2 for nonzero values (number of bits needed).

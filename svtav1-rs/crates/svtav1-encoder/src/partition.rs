@@ -474,15 +474,18 @@ pub fn partition_search_with_config(
         horz_result.decisions.extend(top.decisions);
 
         // Bottom half — use top half's bottom row as above neighbors
-        let above_bot: alloc::vec::Vec<u8> =
-            horz_recon[(hh - 1) * width..hh * width].to_vec();
+        let above_bot: alloc::vec::Vec<u8> = horz_recon[(hh - 1) * width..hh * width].to_vec();
         let (_, left_bot, _, _, has_left_bot) =
             extract_neighbors(frame_ctx, abs_x, abs_y + hh, width, height - hh);
         // Top-left: from frame if left of SB, else from top half's bottom-left pixel
         let tl_bot = if let Some(ctx) = frame_ctx {
             if abs_x > 0 && abs_x - 1 < ctx.sb_x {
                 let idx = (abs_y + hh - 1) * ctx.stride + abs_x - 1;
-                if idx < ctx.buf.len() { ctx.buf[idx] } else { 128 }
+                if idx < ctx.buf.len() {
+                    ctx.buf[idx]
+                } else {
+                    128
+                }
             } else {
                 horz_recon[(hh - 1) * width]
             }
@@ -512,11 +515,16 @@ pub fn partition_search_with_config(
         horz_result.num_blocks += bot.num_blocks;
         horz_result.decisions.extend(bot.decisions);
         let mut horz_children = alloc::vec::Vec::new();
-        if let Some(t) = top.tree { horz_children.push(t); }
-        if let Some(t) = bot.tree { horz_children.push(t); }
+        if let Some(t) = top.tree {
+            horz_children.push(t);
+        }
+        if let Some(t) = bot.tree {
+            horz_children.push(t);
+        }
         horz_result.tree = Some(PartitionTree::Split {
             partition_type: PartitionType::Horz,
-            width: width as u16, height: height as u16,
+            width: width as u16,
+            height: height as u16,
             children: horz_children,
         });
         horz_result.rd_cost = horz_result.distortion + ((lambda * horz_result.rate as u64) >> 8);
@@ -562,15 +570,20 @@ pub fn partition_search_with_config(
         vert_result.decisions.extend(left.decisions);
 
         // Right half — use left half's rightmost column as left neighbors
-        let left_for_right: alloc::vec::Vec<u8> =
-            (0..height).map(|r| vert_recon[r * width + hw - 1]).collect();
+        let left_for_right: alloc::vec::Vec<u8> = (0..height)
+            .map(|r| vert_recon[r * width + hw - 1])
+            .collect();
         let (above_right, _, _, has_above_right, _) =
             extract_neighbors(frame_ctx, abs_x + hw, abs_y, width - hw, height);
         // Top-left: from frame if above SB, else 128
         let tl_right = if let Some(ctx) = frame_ctx {
             if abs_y > 0 && abs_y - 1 < ctx.sb_y {
                 let idx = (abs_y - 1) * ctx.stride + abs_x + hw - 1;
-                if idx < ctx.buf.len() { ctx.buf[idx] } else { 128 }
+                if idx < ctx.buf.len() {
+                    ctx.buf[idx]
+                } else {
+                    128
+                }
             } else {
                 128
             }
@@ -600,11 +613,16 @@ pub fn partition_search_with_config(
         vert_result.num_blocks += right.num_blocks;
         vert_result.decisions.extend(right.decisions);
         let mut vert_children = alloc::vec::Vec::new();
-        if let Some(t) = left.tree { vert_children.push(t); }
-        if let Some(t) = right.tree { vert_children.push(t); }
+        if let Some(t) = left.tree {
+            vert_children.push(t);
+        }
+        if let Some(t) = right.tree {
+            vert_children.push(t);
+        }
         vert_result.tree = Some(PartitionTree::Split {
             partition_type: PartitionType::Vert,
-            width: width as u16, height: height as u16,
+            width: width as u16,
+            height: height as u16,
             children: vert_children,
         });
         vert_result.rd_cost = vert_result.distortion + ((lambda * vert_result.rate as u64) >> 8);
@@ -651,11 +669,14 @@ pub fn partition_search_with_config(
             h4_result.rate += sub.rate;
             h4_result.num_blocks += sub.num_blocks;
             h4_result.decisions.extend(sub.decisions);
-            if let Some(t) = sub.tree { h4_children.push(t); }
+            if let Some(t) = sub.tree {
+                h4_children.push(t);
+            }
         }
         h4_result.tree = Some(PartitionTree::Split {
             partition_type: PartitionType::Horz4,
-            width: width as u16, height: height as u16,
+            width: width as u16,
+            height: height as u16,
             children: h4_children,
         });
         h4_result.rd_cost = h4_result.distortion + ((lambda * h4_result.rate as u64) >> 8);
@@ -700,11 +721,14 @@ pub fn partition_search_with_config(
             v4_result.rate += sub.rate;
             v4_result.num_blocks += sub.num_blocks;
             v4_result.decisions.extend(sub.decisions);
-            if let Some(t) = sub.tree { v4_children.push(t); }
+            if let Some(t) = sub.tree {
+                v4_children.push(t);
+            }
         }
         v4_result.tree = Some(PartitionTree::Split {
             partition_type: PartitionType::Vert4,
-            width: width as u16, height: height as u16,
+            width: width as u16,
+            height: height as u16,
             children: v4_children,
         });
         v4_result.rd_cost = v4_result.distortion + ((lambda * v4_result.rate as u64) >> 8);
@@ -749,7 +773,9 @@ pub fn partition_search_with_config(
         ha_result.rate += s.rate;
         ha_result.num_blocks += s.num_blocks;
         ha_result.decisions.extend(s.decisions);
-        if let Some(t) = s.tree { ha_children.push(t); }
+        if let Some(t) = s.tree {
+            ha_children.push(t);
+        }
         // Top-right quarter
         let s = encode_with_neighbors(
             &src[hw..],
@@ -769,7 +795,9 @@ pub fn partition_search_with_config(
         ha_result.rate += s.rate;
         ha_result.num_blocks += s.num_blocks;
         ha_result.decisions.extend(s.decisions);
-        if let Some(t) = s.tree { ha_children.push(t); }
+        if let Some(t) = s.tree {
+            ha_children.push(t);
+        }
         // Bottom half
         let s = encode_with_neighbors(
             &src[hh * src_stride..],
@@ -789,10 +817,13 @@ pub fn partition_search_with_config(
         ha_result.rate += s.rate;
         ha_result.num_blocks += s.num_blocks;
         ha_result.decisions.extend(s.decisions);
-        if let Some(t) = s.tree { ha_children.push(t); }
+        if let Some(t) = s.tree {
+            ha_children.push(t);
+        }
         ha_result.tree = Some(PartitionTree::Split {
             partition_type: PartitionType::HorzA,
-            width: width as u16, height: height as u16,
+            width: width as u16,
+            height: height as u16,
             children: ha_children,
         });
         ha_result.rd_cost = ha_result.distortion + ((lambda * ha_result.rate as u64) >> 8);
@@ -836,7 +867,9 @@ pub fn partition_search_with_config(
         hb_result.rate += s.rate;
         hb_result.num_blocks += s.num_blocks;
         hb_result.decisions.extend(s.decisions);
-        if let Some(t) = s.tree { hb_children.push(t); }
+        if let Some(t) = s.tree {
+            hb_children.push(t);
+        }
         // Bottom-left quarter
         let s = encode_with_neighbors(
             &src[hh * src_stride..],
@@ -856,7 +889,9 @@ pub fn partition_search_with_config(
         hb_result.rate += s.rate;
         hb_result.num_blocks += s.num_blocks;
         hb_result.decisions.extend(s.decisions);
-        if let Some(t) = s.tree { hb_children.push(t); }
+        if let Some(t) = s.tree {
+            hb_children.push(t);
+        }
         // Bottom-right quarter
         let s = encode_with_neighbors(
             &src[hh * src_stride + hw..],
@@ -876,10 +911,13 @@ pub fn partition_search_with_config(
         hb_result.rate += s.rate;
         hb_result.num_blocks += s.num_blocks;
         hb_result.decisions.extend(s.decisions);
-        if let Some(t) = s.tree { hb_children.push(t); }
+        if let Some(t) = s.tree {
+            hb_children.push(t);
+        }
         hb_result.tree = Some(PartitionTree::Split {
             partition_type: PartitionType::HorzB,
-            width: width as u16, height: height as u16,
+            width: width as u16,
+            height: height as u16,
             children: hb_children,
         });
         hb_result.rd_cost = hb_result.distortion + ((lambda * hb_result.rate as u64) >> 8);
@@ -923,7 +961,9 @@ pub fn partition_search_with_config(
         va_result.rate += s.rate;
         va_result.num_blocks += s.num_blocks;
         va_result.decisions.extend(s.decisions);
-        if let Some(t) = s.tree { va_children.push(t); }
+        if let Some(t) = s.tree {
+            va_children.push(t);
+        }
         // Bottom-left quarter
         let s = encode_with_neighbors(
             &src[hh * src_stride..],
@@ -943,7 +983,9 @@ pub fn partition_search_with_config(
         va_result.rate += s.rate;
         va_result.num_blocks += s.num_blocks;
         va_result.decisions.extend(s.decisions);
-        if let Some(t) = s.tree { va_children.push(t); }
+        if let Some(t) = s.tree {
+            va_children.push(t);
+        }
         // Right half
         let s = encode_with_neighbors(
             &src[hw..],
@@ -963,10 +1005,13 @@ pub fn partition_search_with_config(
         va_result.rate += s.rate;
         va_result.num_blocks += s.num_blocks;
         va_result.decisions.extend(s.decisions);
-        if let Some(t) = s.tree { va_children.push(t); }
+        if let Some(t) = s.tree {
+            va_children.push(t);
+        }
         va_result.tree = Some(PartitionTree::Split {
             partition_type: PartitionType::VertA,
-            width: width as u16, height: height as u16,
+            width: width as u16,
+            height: height as u16,
             children: va_children,
         });
         va_result.rd_cost = va_result.distortion + ((lambda * va_result.rate as u64) >> 8);
@@ -1010,7 +1055,9 @@ pub fn partition_search_with_config(
         vb_result.rate += s.rate;
         vb_result.num_blocks += s.num_blocks;
         vb_result.decisions.extend(s.decisions);
-        if let Some(t) = s.tree { vb_children.push(t); }
+        if let Some(t) = s.tree {
+            vb_children.push(t);
+        }
         // Top-right quarter
         let s = encode_with_neighbors(
             &src[hw..],
@@ -1030,7 +1077,9 @@ pub fn partition_search_with_config(
         vb_result.rate += s.rate;
         vb_result.num_blocks += s.num_blocks;
         vb_result.decisions.extend(s.decisions);
-        if let Some(t) = s.tree { vb_children.push(t); }
+        if let Some(t) = s.tree {
+            vb_children.push(t);
+        }
         // Bottom-right quarter
         let s = encode_with_neighbors(
             &src[hh * src_stride + hw..],
@@ -1050,10 +1099,13 @@ pub fn partition_search_with_config(
         vb_result.rate += s.rate;
         vb_result.num_blocks += s.num_blocks;
         vb_result.decisions.extend(s.decisions);
-        if let Some(t) = s.tree { vb_children.push(t); }
+        if let Some(t) = s.tree {
+            vb_children.push(t);
+        }
         vb_result.tree = Some(PartitionTree::Split {
             partition_type: PartitionType::VertB,
-            width: width as u16, height: height as u16,
+            width: width as u16,
+            height: height as u16,
             children: vb_children,
         });
         vb_result.rd_cost = vb_result.distortion + ((lambda * vb_result.rate as u64) >> 8);
@@ -1207,8 +1259,7 @@ fn generate_inter_pred(
                 let val = if fx == 0 && fy == 0 {
                     rfc.y_plane[off] as i32
                 } else if fy == 0 {
-                    ((8 - fx) * rfc.y_plane[off] as i32 + fx * rfc.y_plane[off + 1] as i32 + 4)
-                        >> 3
+                    ((8 - fx) * rfc.y_plane[off] as i32 + fx * rfc.y_plane[off + 1] as i32 + 4) >> 3
                 } else if fx == 0 {
                     ((8 - fy) * rfc.y_plane[off] as i32
                         + fy * rfc.y_plane[off + rfc.stride] as i32
@@ -1752,8 +1803,7 @@ mod tests {
             sb_x: 0,
             sb_y: 0,
         };
-        let (above, left, tl, has_above, has_left) =
-            extract_neighbors(Some(&ctx), 0, 0, 8, 8);
+        let (above, left, tl, has_above, has_left) = extract_neighbors(Some(&ctx), 0, 0, 8, 8);
         assert!(!has_above);
         assert!(!has_left);
         assert!(above.iter().all(|&v| v == 128));
@@ -1780,8 +1830,7 @@ mod tests {
             sb_x: 0,
             sb_y: 64,
         };
-        let (above, _left, _tl, has_above, has_left) =
-            extract_neighbors(Some(&ctx), 0, 64, 8, 8);
+        let (above, _left, _tl, has_above, has_left) = extract_neighbors(Some(&ctx), 0, 64, 8, 8);
         assert!(has_above);
         assert!(!has_left); // x=0, no left
         // Above should be row 63, columns 0..8
@@ -1809,8 +1858,7 @@ mod tests {
             sb_x: 64,
             sb_y: 0,
         };
-        let (_above, left, _tl, _has_above, has_left) =
-            extract_neighbors(Some(&ctx), 64, 0, 8, 8);
+        let (_above, left, _tl, _has_above, has_left) = extract_neighbors(Some(&ctx), 64, 0, 8, 8);
         assert!(has_left);
         // Left should be column 63, rows 0..8
         for i in 0..8 {
@@ -1821,8 +1869,7 @@ mod tests {
     #[test]
     fn extract_neighbors_none_ctx() {
         // No frame context — everything 128
-        let (above, left, tl, has_above, has_left) =
-            extract_neighbors(None, 32, 32, 8, 8);
+        let (above, left, tl, has_above, has_left) = extract_neighbors(None, 32, 32, 8, 8);
         assert!(has_above);
         assert!(has_left);
         assert!(above.iter().all(|&v| v == 128));

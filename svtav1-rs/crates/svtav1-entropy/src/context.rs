@@ -167,19 +167,12 @@ static DEFAULT_PARTITION_CDF: [[AomCdfProb; 11]; PARTITION_CONTEXTS] = [
 ];
 
 /// Default skip CDFs.
-static DEFAULT_SKIP_CDF: [[AomCdfProb; 3]; SKIP_CONTEXTS] = [
-    [1097, 0, 0],
-    [16253, 0, 0],
-    [28192, 0, 0],
-];
+static DEFAULT_SKIP_CDF: [[AomCdfProb; 3]; SKIP_CONTEXTS] =
+    [[1097, 0, 0], [16253, 0, 0], [28192, 0, 0]];
 
 /// Default intra/inter CDFs.
-static DEFAULT_INTRA_INTER_CDF: [[AomCdfProb; 3]; INTRA_INTER_CONTEXTS] = [
-    [31962, 0, 0],
-    [16106, 0, 0],
-    [12582, 0, 0],
-    [6230, 0, 0],
-];
+static DEFAULT_INTRA_INTER_CDF: [[AomCdfProb; 3]; INTRA_INTER_CONTEXTS] =
+    [[31962, 0, 0], [16106, 0, 0], [12582, 0, 0], [6230, 0, 0]];
 
 /// Default Y-mode CDFs for inter frames.
 #[rustfmt::skip]
@@ -333,12 +326,12 @@ pub fn intra_mode_context(mode: u8) -> usize {
     // AV1 modes: 0=DC, 1=V, 2=H, 3=D45, 4=D135, 5=D113, 6=D157, 7=D203, 8=D67,
     //            9=SMOOTH, 10=SMOOTH_V, 11=SMOOTH_H, 12=PAETH
     match mode {
-        0 => 0,       // DC_PRED
-        1 | 2 => 1,   // V_PRED, H_PRED
-        3..=8 => 2,   // D45..D67 (directional angles)
-        9..=11 => 3,  // SMOOTH, SMOOTH_V, SMOOTH_H
-        12 => 4,      // PAETH
-        _ => 0,       // fallback
+        0 => 0,      // DC_PRED
+        1 | 2 => 1,  // V_PRED, H_PRED
+        3..=8 => 2,  // D45..D67 (directional angles)
+        9..=11 => 3, // SMOOTH, SMOOTH_V, SMOOTH_H
+        12 => 4,     // PAETH
+        _ => 0,      // fallback
     }
 }
 
@@ -395,7 +388,13 @@ pub fn get_partition_context(width: usize, has_above: bool, has_left: bool) -> (
 /// The AV1 decoder always updates partition CDFs after each symbol.
 /// Each context has its own CDF array, so varying symbol counts across
 /// contexts don't interfere — updates apply to the specific context's CDF.
-pub fn write_partition(w: &mut AomWriter, fc: &mut FrameContext, ctx: usize, partition: u8, nsymbs: usize) {
+pub fn write_partition(
+    w: &mut AomWriter,
+    fc: &mut FrameContext,
+    ctx: usize,
+    partition: u8,
+    nsymbs: usize,
+) {
     debug_assert!(ctx < PARTITION_CONTEXTS);
     let symbs = nsymbs.min(10);
     let sym = (partition as usize).min(symbs - 1);
@@ -448,13 +447,11 @@ pub fn is_directional_mode(mode: u8) -> bool {
 /// AV1 spec Section 5.11.42: angle_delta is signaled for directional modes
 /// (V_PRED through D67_PRED) when the block is at least 8x8.
 /// The delta ranges from -3 to +3 (7 symbols, symbol 3 = delta 0).
-pub fn write_angle_delta(
-    w: &mut AomWriter,
-    fc: &mut FrameContext,
-    mode: u8,
-    angle_delta: i8,
-) {
-    debug_assert!(is_directional_mode(mode), "angle_delta only for directional modes");
+pub fn write_angle_delta(w: &mut AomWriter, fc: &mut FrameContext, mode: u8, angle_delta: i8) {
+    debug_assert!(
+        is_directional_mode(mode),
+        "angle_delta only for directional modes"
+    );
     let mode_idx = (mode as usize - 1).min(DIRECTIONAL_MODES - 1);
     // Map delta -3..+3 to symbol 0..6
     let sym = (angle_delta + 3).clamp(0, 6) as usize;

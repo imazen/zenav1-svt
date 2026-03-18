@@ -290,9 +290,7 @@ pub fn quarter_pel_refine(
                     ((8 - w) * ref_pic[r_off] as i32 + w * ref_pic[r_off + 1] as i32 + 4) >> 3
                 } else if frac_x == 0 {
                     let w = frac_y;
-                    ((8 - w) * ref_pic[r_off] as i32
-                        + w * ref_pic[r_off + ref_stride] as i32
-                        + 4)
+                    ((8 - w) * ref_pic[r_off] as i32 + w * ref_pic[r_off + ref_stride] as i32 + 4)
                         >> 3
                 } else {
                     let wx = frac_x;
@@ -338,8 +336,18 @@ pub fn hierarchical_me(
     pic_height: usize,
 ) -> MeResult {
     hierarchical_me_centered(
-        src, src_stride, ref_pic, ref_stride, block_x, block_y, width, height, params, pic_width,
-        pic_height, Mv::ZERO,
+        src,
+        src_stride,
+        ref_pic,
+        ref_stride,
+        block_x,
+        block_y,
+        width,
+        height,
+        params,
+        pic_width,
+        pic_height,
+        Mv::ZERO,
     )
 }
 

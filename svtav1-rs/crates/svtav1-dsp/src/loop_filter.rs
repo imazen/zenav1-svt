@@ -282,26 +282,18 @@ pub fn deblock_vert_14tap(
             ((s + vals.len() as i32 / 2) / vals.len() as i32).clamp(0, 255) as u8
         };
 
-        pixels[base + edge_col - 6] =
-            f(&[p6, p6, p6, p6, p6, p6, p5, p4, p3, p2, p1, p0, q0]);
-        pixels[base + edge_col - 5] =
-            f(&[p6, p6, p6, p6, p6, p5, p4, p3, p2, p1, p0, q0, q1]);
+        pixels[base + edge_col - 6] = f(&[p6, p6, p6, p6, p6, p6, p5, p4, p3, p2, p1, p0, q0]);
+        pixels[base + edge_col - 5] = f(&[p6, p6, p6, p6, p6, p5, p4, p3, p2, p1, p0, q0, q1]);
         pixels[base + edge_col - 4] = f(&[p6, p6, p6, p6, p5, p4, p3, p2, p1, p0, q0, q1, q2]);
         pixels[base + edge_col - 3] = f(&[p6, p6, p6, p5, p4, p3, p2, p1, p0, q0, q1, q2, q3]);
-        pixels[base + edge_col - 2] =
-            f(&[p6, p6, p5, p4, p3, p2, p1, p0, q0, q1, q2, q3, q4]);
-        pixels[base + edge_col - 1] =
-            f(&[p6, p5, p4, p3, p2, p1, p0, q0, q1, q2, q3, q4, q5]);
+        pixels[base + edge_col - 2] = f(&[p6, p6, p5, p4, p3, p2, p1, p0, q0, q1, q2, q3, q4]);
+        pixels[base + edge_col - 1] = f(&[p6, p5, p4, p3, p2, p1, p0, q0, q1, q2, q3, q4, q5]);
         pixels[base + edge_col] = f(&[p5, p4, p3, p2, p1, p0, q0, q1, q2, q3, q4, q5, q6]);
-        pixels[base + edge_col + 1] =
-            f(&[p4, p3, p2, p1, p0, q0, q1, q2, q3, q4, q5, q6, q6]);
-        pixels[base + edge_col + 2] =
-            f(&[p3, p2, p1, p0, q0, q1, q2, q3, q4, q5, q6, q6, q6]);
+        pixels[base + edge_col + 1] = f(&[p4, p3, p2, p1, p0, q0, q1, q2, q3, q4, q5, q6, q6]);
+        pixels[base + edge_col + 2] = f(&[p3, p2, p1, p0, q0, q1, q2, q3, q4, q5, q6, q6, q6]);
         pixels[base + edge_col + 3] = f(&[p2, p1, p0, q0, q1, q2, q3, q4, q5, q6, q6, q6, q6]);
-        pixels[base + edge_col + 4] =
-            f(&[p1, p0, q0, q1, q2, q3, q4, q5, q6, q6, q6, q6, q6]);
-        pixels[base + edge_col + 5] =
-            f(&[p0, q0, q1, q2, q3, q4, q5, q6, q6, q6, q6, q6, q6]);
+        pixels[base + edge_col + 4] = f(&[p1, p0, q0, q1, q2, q3, q4, q5, q6, q6, q6, q6, q6]);
+        pixels[base + edge_col + 5] = f(&[p0, q0, q1, q2, q3, q4, q5, q6, q6, q6, q6, q6, q6]);
     }
 }
 

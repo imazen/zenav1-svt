@@ -162,13 +162,8 @@ impl EncodePipeline {
         // high-motion scenes get higher QP (save bits for key frames).
         let tpl_adjusted_qp = if !is_key && self.dpb.occupied_slots() > 0 {
             if let Some(rf) = self.dpb.get(0) {
-                let tpl_delta = crate::rate_control::tpl_qp_adjustment(
-                    &encode_input,
-                    &rf.y_plane,
-                    w,
-                    h,
-                    w,
-                );
+                let tpl_delta =
+                    crate::rate_control::tpl_qp_adjustment(&encode_input, &rf.y_plane, w, h, w);
                 (vaq_adjusted_qp as i16 + tpl_delta as i16).clamp(0, 63) as u8
             } else {
                 vaq_adjusted_qp
@@ -208,9 +203,7 @@ impl EncodePipeline {
         // Compute per-SB TPL QP offsets for spatial bit allocation
         let sb_qp_offsets = if !is_key {
             if let Some(ref rf) = ref_frame_data {
-                crate::rate_control::tpl_sb_qp_offsets(
-                    &encode_input, rf, w, h, w, sb_size,
-                )
+                crate::rate_control::tpl_sb_qp_offsets(&encode_input, rf, w, h, w, sb_size)
             } else {
                 alloc::vec![0i8; sb_cols * sb_rows]
             }
@@ -276,10 +269,18 @@ impl EncodePipeline {
                     if let Some(ref rf) = ref_frame_data {
                         let sb_mv = crate::motion_est::full_pel_search(
                             &encode_input[y0 * w + x0..],
-                            w, rf, w,
-                            x0 as i32, y0 as i32,
-                            cur_w.min(16), cur_h.min(16),
-                            svtav1_types::motion::Mv::ZERO, 8, 8, w, h,
+                            w,
+                            rf,
+                            w,
+                            x0 as i32,
+                            y0 as i32,
+                            cur_w.min(16),
+                            cur_h.min(16),
+                            svtav1_types::motion::Mv::ZERO,
+                            8,
+                            8,
+                            w,
+                            h,
                         );
                         let bx0 = x0 / 8;
                         let by0 = y0 / 8;
@@ -300,8 +301,7 @@ impl EncodePipeline {
         // Filter width (4/8/14-tap) and strength derived from QP and edge type.
         // (Spec 08, Section 7.14: filter size and strength per-edge)
         {
-            let (strength, threshold) =
-                svtav1_dsp::loop_filter::derive_deblock_strength(pcs.qp);
+            let (strength, threshold) = svtav1_dsp::loop_filter::derive_deblock_strength(pcs.qp);
             // Apply deblocking on vertical edges (every 8 columns)
             for bx in 1..(w / 8) {
                 let edge_col = bx * 8;
@@ -432,8 +432,13 @@ impl EncodePipeline {
         let tile_data = {
             let mut writer = svtav1_entropy::writer::AomWriter::new(n + 256);
             // CDF updates enabled — matches the frame header's disable_cdf_update=0
-            let mut coeff_ctx = svtav1_entropy::coeff::CoeffContext::default();
             let mut frame_ctx = svtav1_entropy::context::FrameContext::new_default();
+            // Spec-conformant coefficient CDFs, initialized from rav1d defaults
+            // matching the QP category the decoder will select.
+            let qp_cat = (tpl_adjusted_qp > 20) as usize
+                + (tpl_adjusted_qp > 60) as usize
+                + (tpl_adjusted_qp > 120) as usize;
+            let mut coeff_cdf_ctx = svtav1_entropy::coeff::CdfCoefCtx::new(qp_cat);
             // Mode/skip context tracking at 4x4 granularity
             let w4 = w.div_ceil(4);
             let h4 = h.div_ceil(4);
@@ -443,7 +448,10 @@ impl EncodePipeline {
                 all_trees.len(),
                 sb_cols * sb_rows,
                 "tree count {} != SB count {}x{}={}",
-                all_trees.len(), sb_cols, sb_rows, sb_cols * sb_rows,
+                all_trees.len(),
+                sb_cols,
+                sb_rows,
+                sb_cols * sb_rows,
             );
             let mut prev_sb_row = usize::MAX;
             for (sb_idx, tree) in all_trees.iter().enumerate() {
@@ -460,8 +468,14 @@ impl EncodePipeline {
                 }
 
                 encode_partition_tree(
-                    tree, &mut writer, &mut frame_ctx, &mut coeff_ctx, &mut ectx,
-                    is_key, bx, by,
+                    tree,
+                    &mut writer,
+                    &mut frame_ctx,
+                    &mut coeff_cdf_ctx,
+                    &mut ectx,
+                    is_key,
+                    bx,
+                    by,
                 );
             }
 
@@ -594,7 +608,7 @@ impl EntropyCtx {
         let width_8x8 = (width_4x4 + 1) / 2;
         let height_8x8 = (height_4x4 + 1) / 2;
         Self {
-            above_mode: alloc::vec![0u8; width_4x4],  // DC_PRED = 0
+            above_mode: alloc::vec![0u8; width_4x4], // DC_PRED = 0
             left_mode: alloc::vec![0u8; height_4x4],
             above_skip: alloc::vec![false; width_4x4],
             left_skip: alloc::vec![false; height_4x4],
@@ -656,7 +670,10 @@ impl EntropyCtx {
             4..=15 => 10,
             _ => 8,
         };
-        (ctx.min(svtav1_entropy::context::PARTITION_CONTEXTS - 1), nsymbs)
+        (
+            ctx.min(svtav1_entropy::context::PARTITION_CONTEXTS - 1),
+            nsymbs,
+        )
     }
 
     /// Update partition context after encoding a non-SPLIT partition.
@@ -714,14 +731,22 @@ impl EntropyCtx {
     /// Get the above mode context at position (x, y) in pixel coordinates.
     fn above_mode_ctx(&self, x: usize) -> usize {
         let x4 = x / 4;
-        let mode = if x4 < self.above_mode.len() { self.above_mode[x4] } else { 0 };
+        let mode = if x4 < self.above_mode.len() {
+            self.above_mode[x4]
+        } else {
+            0
+        };
         svtav1_entropy::context::intra_mode_context(mode)
     }
 
     /// Get the left mode context at position (x, y) in pixel coordinates.
     fn left_mode_ctx(&self, y: usize) -> usize {
         let y4 = y / 4;
-        let mode = if y4 < self.left_mode.len() { self.left_mode[y4] } else { 0 };
+        let mode = if y4 < self.left_mode.len() {
+            self.left_mode[y4]
+        } else {
+            0
+        };
         svtav1_entropy::context::intra_mode_context(mode)
     }
 
@@ -744,7 +769,7 @@ fn encode_block_syntax(
     decision: &crate::partition::BlockDecision,
     writer: &mut svtav1_entropy::writer::AomWriter,
     frame_ctx: &mut svtav1_entropy::context::FrameContext,
-    coeff_ctx: &mut svtav1_entropy::coeff::CoeffContext,
+    coeff_cdf: &mut svtav1_entropy::coeff::CdfCoefCtx,
     ectx: &mut EntropyCtx,
     is_key: bool,
     block_x: usize,
@@ -756,51 +781,71 @@ fn encode_block_syntax(
 
     if !skip {
         if !is_key {
-            svtav1_entropy::context::write_intra_inter(
-                writer, frame_ctx, 0, decision.is_inter,
-            );
+            svtav1_entropy::context::write_intra_inter(writer, frame_ctx, 0, decision.is_inter);
         }
 
         if decision.is_inter {
-            svtav1_entropy::mv_coding::write_mv(
-                writer, decision.mv.x, decision.mv.y, true,
-            );
+            svtav1_entropy::mv_coding::write_mv(writer, decision.mv.x, decision.mv.y, true);
         } else if is_key {
             let above_ctx = ectx.above_mode_ctx(block_x);
             let left_ctx = ectx.left_mode_ctx(block_y);
             svtav1_entropy::context::write_intra_mode_kf(
-                writer, frame_ctx, above_ctx, left_ctx, decision.intra_mode,
+                writer,
+                frame_ctx,
+                above_ctx,
+                left_ctx,
+                decision.intra_mode,
             );
             if svtav1_entropy::context::is_directional_mode(decision.intra_mode) {
                 svtav1_entropy::context::write_angle_delta(
-                    writer, frame_ctx, decision.intra_mode, 0,
+                    writer,
+                    frame_ctx,
+                    decision.intra_mode,
+                    0,
                 );
             }
         } else {
             let bsize_group = svtav1_entropy::context::block_size_group(
-                decision.width as usize, decision.height as usize,
+                decision.width as usize,
+                decision.height as usize,
             );
             svtav1_entropy::context::write_intra_mode_inter(
-                writer, frame_ctx, bsize_group, decision.intra_mode,
+                writer,
+                frame_ctx,
+                bsize_group,
+                decision.intra_mode,
             );
             if svtav1_entropy::context::is_directional_mode(decision.intra_mode) {
                 svtav1_entropy::context::write_angle_delta(
-                    writer, frame_ctx, decision.intra_mode, 0,
+                    writer,
+                    frame_ctx,
+                    decision.intra_mode,
+                    0,
                 );
             }
         }
 
-        svtav1_entropy::coeff::write_coefficients_ctx(
-            writer, &decision.qcoeffs, decision.eob as usize, coeff_ctx,
+        svtav1_entropy::coeff::write_coefficients_v2(
+            writer,
+            &decision.qcoeffs,
+            decision.eob as usize,
+            decision.width as usize,
+            decision.height as usize,
+            0, // skip_ctx — simplified for now
+            1, // dc_sign_ctx — neutral
+            coeff_cdf,
         );
     }
 
     // Update context maps for subsequent blocks
     let mode = if skip { 0 } else { decision.intra_mode }; // skip → DC_PRED
     ectx.record_block(
-        block_x, block_y,
-        decision.width as usize, decision.height as usize,
-        mode, skip,
+        block_x,
+        block_y,
+        decision.width as usize,
+        decision.height as usize,
+        mode,
+        skip,
     );
 }
 
@@ -830,7 +875,7 @@ fn encode_partition_tree(
     tree: &crate::partition::PartitionTree,
     writer: &mut svtav1_entropy::writer::AomWriter,
     frame_ctx: &mut svtav1_entropy::context::FrameContext,
-    coeff_ctx: &mut svtav1_entropy::coeff::CoeffContext,
+    coeff_cdf: &mut svtav1_entropy::coeff::CdfCoefCtx,
     ectx: &mut EntropyCtx,
     is_key: bool,
     block_x: usize,
@@ -849,12 +894,16 @@ fn encode_partition_tree(
 
             // Update partition context for PARTITION_NONE
             ectx.update_partition_ctx(
-                block_x, block_y, w, h,
+                block_x,
+                block_y,
+                w,
+                h,
                 crate::partition::PartitionType::None,
             );
 
-            encode_block_syntax(decision, writer, frame_ctx, coeff_ctx, ectx,
-                is_key, block_x, block_y);
+            encode_block_syntax(
+                decision, writer, frame_ctx, coeff_cdf, ectx, is_key, block_x, block_y,
+            );
         }
         crate::partition::PartitionTree::Split {
             partition_type,
@@ -866,7 +915,11 @@ fn encode_partition_tree(
             let h = *height as usize;
             let (ctx, nsymbs) = ectx.partition_ctx(block_x, block_y, w);
             svtav1_entropy::context::write_partition(
-                writer, frame_ctx, ctx, *partition_type as u8, nsymbs,
+                writer,
+                frame_ctx,
+                ctx,
+                *partition_type as u8,
+                nsymbs,
             );
 
             let half_w = w / 2;
@@ -875,52 +928,109 @@ fn encode_partition_tree(
                 (crate::partition::PartitionType::Split, 4) => {
                     // PARTITION_SPLIT: 4 equal quarter-size children in Z-order.
                     // Don't update partition context here — children do it.
-                    encode_partition_tree(&children[0], writer, frame_ctx, coeff_ctx, ectx,
-                        is_key, block_x, block_y);
-                    encode_partition_tree(&children[1], writer, frame_ctx, coeff_ctx, ectx,
-                        is_key, block_x + half_w, block_y);
-                    encode_partition_tree(&children[2], writer, frame_ctx, coeff_ctx, ectx,
-                        is_key, block_x, block_y + half_h);
-                    encode_partition_tree(&children[3], writer, frame_ctx, coeff_ctx, ectx,
-                        is_key, block_x + half_w, block_y + half_h);
+                    encode_partition_tree(
+                        &children[0],
+                        writer,
+                        frame_ctx,
+                        coeff_cdf,
+                        ectx,
+                        is_key,
+                        block_x,
+                        block_y,
+                    );
+                    encode_partition_tree(
+                        &children[1],
+                        writer,
+                        frame_ctx,
+                        coeff_cdf,
+                        ectx,
+                        is_key,
+                        block_x + half_w,
+                        block_y,
+                    );
+                    encode_partition_tree(
+                        &children[2],
+                        writer,
+                        frame_ctx,
+                        coeff_cdf,
+                        ectx,
+                        is_key,
+                        block_x,
+                        block_y + half_h,
+                    );
+                    encode_partition_tree(
+                        &children[3],
+                        writer,
+                        frame_ctx,
+                        coeff_cdf,
+                        ectx,
+                        is_key,
+                        block_x + half_w,
+                        block_y + half_h,
+                    );
                 }
                 (crate::partition::PartitionType::Horz, 2) => {
                     // PARTITION_HORZ: two children stacked vertically.
                     // Update partition context for HORZ (children don't do it).
                     ectx.update_partition_ctx(
-                        block_x, block_y, w, h,
+                        block_x,
+                        block_y,
+                        w,
+                        h,
                         crate::partition::PartitionType::Horz,
                     );
 
                     // Children are leaf blocks — encode directly without
                     // partition symbols (decoder reads them as direct blocks).
                     let top = expect_leaf(&children[0]);
-                    encode_block_syntax(top, writer, frame_ctx, coeff_ctx, ectx,
-                        is_key, block_x, block_y);
+                    encode_block_syntax(
+                        top, writer, frame_ctx, coeff_cdf, ectx, is_key, block_x, block_y,
+                    );
                     let bot = expect_leaf(&children[1]);
-                    encode_block_syntax(bot, writer, frame_ctx, coeff_ctx, ectx,
-                        is_key, block_x, block_y + half_h);
+                    encode_block_syntax(
+                        bot,
+                        writer,
+                        frame_ctx,
+                        coeff_cdf,
+                        ectx,
+                        is_key,
+                        block_x,
+                        block_y + half_h,
+                    );
                 }
                 (crate::partition::PartitionType::Vert, 2) => {
                     // PARTITION_VERT: two children side by side.
                     // Update partition context for VERT.
                     ectx.update_partition_ctx(
-                        block_x, block_y, w, h,
+                        block_x,
+                        block_y,
+                        w,
+                        h,
                         crate::partition::PartitionType::Vert,
                     );
 
                     let left = expect_leaf(&children[0]);
-                    encode_block_syntax(left, writer, frame_ctx, coeff_ctx, ectx,
-                        is_key, block_x, block_y);
+                    encode_block_syntax(
+                        left, writer, frame_ctx, coeff_cdf, ectx, is_key, block_x, block_y,
+                    );
                     let right = expect_leaf(&children[1]);
-                    encode_block_syntax(right, writer, frame_ctx, coeff_ctx, ectx,
-                        is_key, block_x + half_w, block_y);
+                    encode_block_syntax(
+                        right,
+                        writer,
+                        frame_ctx,
+                        coeff_cdf,
+                        ectx,
+                        is_key,
+                        block_x + half_w,
+                        block_y,
+                    );
                 }
                 _ => {
                     // Extended partitions — children in order with approximate positions
                     for child in children {
-                        encode_partition_tree(child, writer, frame_ctx, coeff_ctx, ectx,
-                            is_key, block_x, block_y);
+                        encode_partition_tree(
+                            child, writer, frame_ctx, coeff_cdf, ectx, is_key, block_x, block_y,
+                        );
                     }
                 }
             }
@@ -944,8 +1054,16 @@ fn encode_tile_rows(
     mv_map: &[svtav1_types::motion::Mv],
     mv_map_stride: usize,
     sb_qp_offsets: &[i8],
-) -> Vec<(Vec<u8>, Vec<crate::partition::BlockDecision>, Vec<crate::partition::PartitionTree>)> {
-    let encode_one_tile = |tile_idx: usize| -> (Vec<u8>, Vec<crate::partition::BlockDecision>, Vec<crate::partition::PartitionTree>) {
+) -> Vec<(
+    Vec<u8>,
+    Vec<crate::partition::BlockDecision>,
+    Vec<crate::partition::PartitionTree>,
+)> {
+    let encode_one_tile = |tile_idx: usize| -> (
+        Vec<u8>,
+        Vec<crate::partition::BlockDecision>,
+        Vec<crate::partition::PartitionTree>,
+    ) {
         let tile_sb_row_start = tile_idx * rows_per_tile;
         let tile_sb_row_end = ((tile_idx + 1) * rows_per_tile).min(sb_rows);
 
@@ -987,8 +1105,8 @@ fn encode_tile_rows(
                     0
                 };
                 let sb_qp = (qp as i16 + sb_qp_delta as i16).clamp(0, 63) as u8;
-                let sb_lambda = (crate::rate_control::qp_to_lambda(sb_qp)
-                    * speed_config.lambda_scale()) as u64;
+                let sb_lambda =
+                    (crate::rate_control::qp_to_lambda(sb_qp) * speed_config.lambda_scale()) as u64;
 
                 let sb_result = crate::partition::partition_search_with_config(
                     &encode_input[y0 * w + x0..],
@@ -1031,10 +1149,7 @@ fn encode_tile_rows(
             let handles: Vec<_> = (0..tile_rows)
                 .map(|tile_idx| s.spawn(move || encode_one_tile(tile_idx)))
                 .collect();
-            handles
-                .into_iter()
-                .map(|h| h.join().unwrap())
-                .collect()
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
         });
     }
 

@@ -19,7 +19,6 @@
 //! assert!(!result.data.is_empty());
 //! ```
 
-
 /// Chroma subsampling format for AVIF encoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChromaSubsampling {
@@ -128,9 +127,9 @@ impl AvifEncoder {
             enable_trellis: true,
             seg_boost: 0.0,
             lossless: false,
-            color_primaries: 1,       // BT.709
+            color_primaries: 1,           // BT.709
             transfer_characteristics: 13, // sRGB
-            matrix_coefficients: 1,   // BT.709
+            matrix_coefficients: 1,       // BT.709
             full_range: false,
         }
     }
@@ -468,7 +467,6 @@ impl AvifEncoder {
         }
         Ok(())
     }
-
 }
 
 #[cfg(test)]

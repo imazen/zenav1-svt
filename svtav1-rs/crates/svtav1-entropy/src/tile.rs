@@ -132,6 +132,7 @@ impl TileBounds {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
 
     #[test]
     fn single_tile() {

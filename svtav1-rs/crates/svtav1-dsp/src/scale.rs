@@ -67,10 +67,8 @@ pub fn scaled_prediction(
             // For Q14 scale factors, the fractional part after scaling
             // comes from the lower bits of the full-precision computation.
             // Recompute at higher precision for sub-pixel extraction.
-            let full_x =
-                (block_x + c as i32) as i64 * sf.x_scale as i64; // Q14 result
-            let full_y =
-                (block_y + r as i32) as i64 * sf.y_scale as i64;
+            let full_x = (block_x + c as i32) as i64 * sf.x_scale as i64; // Q14 result
+            let full_y = (block_y + r as i32) as i64 * sf.y_scale as i64;
 
             let int_x = (full_x >> 14) as i32;
             let int_y = (full_y >> 14) as i32;
@@ -89,14 +87,14 @@ pub fn scaled_prediction(
 
                 let mut intermediate = [0i32; 8];
                 for tap_row in 0..8i32 {
-                    let ry = (int_y - FILTER_CENTER + tap_row)
-                        .clamp(0, ref_height as i32 - 1) as usize;
+                    let ry =
+                        (int_y - FILTER_CENTER + tap_row).clamp(0, ref_height as i32 - 1) as usize;
                     let mut sum = 0i32;
                     for tap_col in 0..8i32 {
-                        let rx = (int_x - FILTER_CENTER + tap_col)
-                            .clamp(0, ref_width as i32 - 1) as usize;
-                        sum +=
-                            ref_pic[ry * ref_stride + rx] as i32 * h_filter[tap_col as usize] as i32;
+                        let rx = (int_x - FILTER_CENTER + tap_col).clamp(0, ref_width as i32 - 1)
+                            as usize;
+                        sum += ref_pic[ry * ref_stride + rx] as i32
+                            * h_filter[tap_col as usize] as i32;
                     }
                     intermediate[tap_row as usize] = (sum + 64) >> 7;
                 }

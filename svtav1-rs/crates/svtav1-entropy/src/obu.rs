@@ -352,11 +352,7 @@ fn write_sequence_header_inner(
 }
 
 /// Write a key frame header for a reduced (still-picture) sequence header.
-pub fn write_key_frame_header(
-    width: u32,
-    height: u32,
-    base_qindex: u8,
-) -> Vec<u8> {
+pub fn write_key_frame_header(width: u32, height: u32, base_qindex: u8) -> Vec<u8> {
     write_key_frame_header_full(width, height, base_qindex, true)
 }
 
@@ -656,6 +652,7 @@ pub fn write_inter_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
 
     #[test]
     fn uleb_encode_small() {
