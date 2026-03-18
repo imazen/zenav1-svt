@@ -397,11 +397,8 @@ fn get_scan_table(width: usize, height: usize) -> Vec<u16> {
 ///
 /// This matches rav1d's `get_lo_ctx` for `TxClass::TwoD` exactly.
 ///
-/// `levels` is indexed as `levels[x * stride + y]` where x is the column
-/// and y is the row in the coefficient grid. Each entry stores `level_tok`
-/// which is a packed byte: bits[6] flag + magnitude bits.
-///
-/// `stride` = 4 * sh (where sh = min(h_in_4x4, 8))
+/// `levels` is indexed as `levels[y * stride + x]` (row-major), matching
+/// rav1d's convention where y is the row and x is the column.
 ///
 /// Returns (lo_ctx, hi_mag) where hi_mag is the magnitude of the 3
 /// closest neighbors (for br_tok context).
@@ -412,14 +409,15 @@ fn get_lo_ctx_2d(
     stride: usize,
     lo_ctx_offsets: &[[u8; 5]; 5],
 ) -> (u8, u32) {
-    let level = |yy: usize, xx: usize| -> u32 { levels[xx * stride + yy] as u32 };
+    // rav1d: level(y, x) = levels[y * stride + x]
+    let level = |yy: usize, xx: usize| -> u32 { levels[yy * stride + xx] as u32 };
 
-    // 3 closest neighbors
-    let mut mag = level(y, x + 1) + level(y + 1, x); // right + below
+    // 3 closest neighbors: (y, x+1), (y+1, x), (y+1, x+1)
+    let mut mag = level(y, x + 1) + level(y + 1, x);
     mag += level(y + 1, x + 1); // diagonal
     let hi_mag = mag;
 
-    // 2 more neighbors
+    // 2 more neighbors: (y, x+2), (y+2, x)
     mag += level(y, x + 2) + level(y + 2, x);
 
     let offset = lo_ctx_offsets[y.min(4)][x.min(4)];
@@ -677,9 +675,9 @@ pub fn write_coefficients_v2(
         hi_tok_total = write_hi_tok(writer, cdf_ctx, br_ctx_level, hi_ctx, eob_level);
         // rav1d: level_tok = tok + (3 << 6) where tok = decode_hi_tok() (3-15)
         let level_tok_val = hi_tok_total + (3 << 6);
-        levels[eob_x * stride + eob_y] = level_tok_val as u8;
+        levels[eob_y * stride + eob_x] = level_tok_val as u8;
     } else {
-        levels[eob_x * stride + eob_y] = level_tok_byte;
+        levels[eob_y * stride + eob_x] = level_tok_byte;
     }
 
     // Track the linked list of non-zero coefficient positions for sign/golomb phase.
@@ -735,14 +733,14 @@ pub fn write_coefficients_v2(
                 };
             let tok_val = write_hi_tok(writer, cdf_ctx, br_ctx_level, hi_ctx as usize, level);
             let level_tok_val = tok_val + (3 << 6); // rav1d: tok + (3 << 6)
-            levels[x * stride + y] = level_tok_val as u8;
+            levels[y * stride + x] = level_tok_val as u8;
             nonzero_coeffs.push(NonZeroCoeff {
                 coeff_idx,
                 tok: tok_val,
             });
         } else {
             let level_tok_val = sym as u8 * 0x41;
-            levels[x * stride + y] = level_tok_val;
+            levels[y * stride + x] = level_tok_val;
             if sym > 0 {
                 nonzero_coeffs.push(NonZeroCoeff {
                     coeff_idx,
@@ -769,14 +767,15 @@ pub fn write_coefficients_v2(
 
         if dc_sym == 3 {
             // Compute mag for DC hi_ctx
-            // For 2D DC: mag = levels[0*stride+1] + levels[1*stride+0] + levels[1*stride+1]
+            // For 2D DC at (x=0, y=0): y_combined = 0, so base = 7
             let mag = levels[1] as u32 + levels[stride] as u32 + levels[stride + 1] as u32;
             let mag_trunc = (mag as u8) & 63;
-            let hi_ctx = if mag_trunc > 12 {
-                6u8
-            } else {
-                (mag_trunc + 1) >> 1
-            };
+            let hi_ctx = 7u8 // base: y_combined=0 ≤ 1 → 7
+                + if mag_trunc > 12 {
+                    6
+                } else {
+                    (mag_trunc + 1) >> 1
+                };
             dc_tok = write_hi_tok(writer, cdf_ctx, br_ctx_level, hi_ctx as usize, dc_level);
         } else {
             dc_tok = dc_sym as u32;
