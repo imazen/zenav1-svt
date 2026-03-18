@@ -628,6 +628,7 @@ pub fn partition_search_with_config(
             decisions: alloc::vec::Vec::new(),
             tree: None,
         };
+        let mut h4_children = alloc::vec::Vec::new();
         let mut h4_recon = alloc::vec![0u8; width * height];
         for strip in 0..4 {
             let y0 = strip * qh;
@@ -650,7 +651,13 @@ pub fn partition_search_with_config(
             h4_result.rate += sub.rate;
             h4_result.num_blocks += sub.num_blocks;
             h4_result.decisions.extend(sub.decisions);
+            if let Some(t) = sub.tree { h4_children.push(t); }
         }
+        h4_result.tree = Some(PartitionTree::Split {
+            partition_type: PartitionType::Horz4,
+            width: width as u16, height: height as u16,
+            children: h4_children,
+        });
         h4_result.rd_cost = h4_result.distortion + ((lambda * h4_result.rate as u64) >> 8);
         if h4_result.rd_cost < best_result.rd_cost {
             best_result = h4_result;
@@ -670,6 +677,7 @@ pub fn partition_search_with_config(
             decisions: alloc::vec::Vec::new(),
             tree: None,
         };
+        let mut v4_children = alloc::vec::Vec::new();
         let mut v4_recon = alloc::vec![0u8; width * height];
         for strip in 0..4 {
             let x0 = strip * qw;
@@ -692,7 +700,13 @@ pub fn partition_search_with_config(
             v4_result.rate += sub.rate;
             v4_result.num_blocks += sub.num_blocks;
             v4_result.decisions.extend(sub.decisions);
+            if let Some(t) = sub.tree { v4_children.push(t); }
         }
+        v4_result.tree = Some(PartitionTree::Split {
+            partition_type: PartitionType::Vert4,
+            width: width as u16, height: height as u16,
+            children: v4_children,
+        });
         v4_result.rd_cost = v4_result.distortion + ((lambda * v4_result.rate as u64) >> 8);
         if v4_result.rd_cost < best_result.rd_cost {
             best_result = v4_result;
@@ -715,6 +729,7 @@ pub fn partition_search_with_config(
             tree: None,
         };
         let mut ha_recon = alloc::vec![0u8; width * height];
+        let mut ha_children = alloc::vec::Vec::new();
         // Top-left quarter
         let s = encode_with_neighbors(
             src,
@@ -734,6 +749,7 @@ pub fn partition_search_with_config(
         ha_result.rate += s.rate;
         ha_result.num_blocks += s.num_blocks;
         ha_result.decisions.extend(s.decisions);
+        if let Some(t) = s.tree { ha_children.push(t); }
         // Top-right quarter
         let s = encode_with_neighbors(
             &src[hw..],
@@ -753,6 +769,7 @@ pub fn partition_search_with_config(
         ha_result.rate += s.rate;
         ha_result.num_blocks += s.num_blocks;
         ha_result.decisions.extend(s.decisions);
+        if let Some(t) = s.tree { ha_children.push(t); }
         // Bottom half
         let s = encode_with_neighbors(
             &src[hh * src_stride..],
@@ -772,6 +789,12 @@ pub fn partition_search_with_config(
         ha_result.rate += s.rate;
         ha_result.num_blocks += s.num_blocks;
         ha_result.decisions.extend(s.decisions);
+        if let Some(t) = s.tree { ha_children.push(t); }
+        ha_result.tree = Some(PartitionTree::Split {
+            partition_type: PartitionType::HorzA,
+            width: width as u16, height: height as u16,
+            children: ha_children,
+        });
         ha_result.rd_cost = ha_result.distortion + ((lambda * ha_result.rate as u64) >> 8);
         if ha_result.rd_cost < best_result.rd_cost {
             best_result = ha_result;
@@ -793,6 +816,7 @@ pub fn partition_search_with_config(
             tree: None,
         };
         let mut hb_recon = alloc::vec![0u8; width * height];
+        let mut hb_children = alloc::vec::Vec::new();
         // Top half
         let s = encode_with_neighbors(
             src,
@@ -812,6 +836,7 @@ pub fn partition_search_with_config(
         hb_result.rate += s.rate;
         hb_result.num_blocks += s.num_blocks;
         hb_result.decisions.extend(s.decisions);
+        if let Some(t) = s.tree { hb_children.push(t); }
         // Bottom-left quarter
         let s = encode_with_neighbors(
             &src[hh * src_stride..],
@@ -831,6 +856,7 @@ pub fn partition_search_with_config(
         hb_result.rate += s.rate;
         hb_result.num_blocks += s.num_blocks;
         hb_result.decisions.extend(s.decisions);
+        if let Some(t) = s.tree { hb_children.push(t); }
         // Bottom-right quarter
         let s = encode_with_neighbors(
             &src[hh * src_stride + hw..],
@@ -850,6 +876,12 @@ pub fn partition_search_with_config(
         hb_result.rate += s.rate;
         hb_result.num_blocks += s.num_blocks;
         hb_result.decisions.extend(s.decisions);
+        if let Some(t) = s.tree { hb_children.push(t); }
+        hb_result.tree = Some(PartitionTree::Split {
+            partition_type: PartitionType::HorzB,
+            width: width as u16, height: height as u16,
+            children: hb_children,
+        });
         hb_result.rd_cost = hb_result.distortion + ((lambda * hb_result.rate as u64) >> 8);
         if hb_result.rd_cost < best_result.rd_cost {
             best_result = hb_result;
@@ -871,6 +903,7 @@ pub fn partition_search_with_config(
             tree: None,
         };
         let mut va_recon = alloc::vec![0u8; width * height];
+        let mut va_children = alloc::vec::Vec::new();
         // Top-left quarter
         let s = encode_with_neighbors(
             src,
@@ -890,6 +923,7 @@ pub fn partition_search_with_config(
         va_result.rate += s.rate;
         va_result.num_blocks += s.num_blocks;
         va_result.decisions.extend(s.decisions);
+        if let Some(t) = s.tree { va_children.push(t); }
         // Bottom-left quarter
         let s = encode_with_neighbors(
             &src[hh * src_stride..],
@@ -909,6 +943,7 @@ pub fn partition_search_with_config(
         va_result.rate += s.rate;
         va_result.num_blocks += s.num_blocks;
         va_result.decisions.extend(s.decisions);
+        if let Some(t) = s.tree { va_children.push(t); }
         // Right half
         let s = encode_with_neighbors(
             &src[hw..],
@@ -928,6 +963,12 @@ pub fn partition_search_with_config(
         va_result.rate += s.rate;
         va_result.num_blocks += s.num_blocks;
         va_result.decisions.extend(s.decisions);
+        if let Some(t) = s.tree { va_children.push(t); }
+        va_result.tree = Some(PartitionTree::Split {
+            partition_type: PartitionType::VertA,
+            width: width as u16, height: height as u16,
+            children: va_children,
+        });
         va_result.rd_cost = va_result.distortion + ((lambda * va_result.rate as u64) >> 8);
         if va_result.rd_cost < best_result.rd_cost {
             best_result = va_result;
@@ -949,6 +990,7 @@ pub fn partition_search_with_config(
             tree: None,
         };
         let mut vb_recon = alloc::vec![0u8; width * height];
+        let mut vb_children = alloc::vec::Vec::new();
         // Left half
         let s = encode_with_neighbors(
             src,
@@ -968,6 +1010,7 @@ pub fn partition_search_with_config(
         vb_result.rate += s.rate;
         vb_result.num_blocks += s.num_blocks;
         vb_result.decisions.extend(s.decisions);
+        if let Some(t) = s.tree { vb_children.push(t); }
         // Top-right quarter
         let s = encode_with_neighbors(
             &src[hw..],
@@ -987,6 +1030,7 @@ pub fn partition_search_with_config(
         vb_result.rate += s.rate;
         vb_result.num_blocks += s.num_blocks;
         vb_result.decisions.extend(s.decisions);
+        if let Some(t) = s.tree { vb_children.push(t); }
         // Bottom-right quarter
         let s = encode_with_neighbors(
             &src[hh * src_stride + hw..],
@@ -1006,6 +1050,12 @@ pub fn partition_search_with_config(
         vb_result.rate += s.rate;
         vb_result.num_blocks += s.num_blocks;
         vb_result.decisions.extend(s.decisions);
+        if let Some(t) = s.tree { vb_children.push(t); }
+        vb_result.tree = Some(PartitionTree::Split {
+            partition_type: PartitionType::VertB,
+            width: width as u16, height: height as u16,
+            children: vb_children,
+        });
         vb_result.rd_cost = vb_result.distortion + ((lambda * vb_result.rate as u64) >> 8);
         if vb_result.rd_cost < best_result.rd_cost {
             best_result = vb_result;
