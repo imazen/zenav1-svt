@@ -70,7 +70,7 @@ This applies to:
 
 ## Known Bugs — BLOCKING
 
-1. **Multi-SB frames with PARTITION_SPLIT fail to decode** — Single-SB frames (≤64x64) decode at all quality/speed levels. Multi-SB frames decode when using PARTITION_NONE only (speed 10+, some size/quality combos). Failures occur when PARTITION_SPLIT is used (speed ≤8), likely due to: (a) sub-block partition context not matching decoder's mi-grid tracking, (b) coefficient coding format mismatch with AV1 spec's multi-part EOB CDFs. See CONTEXT-HANDOFF.md for full analysis.
+1. **Multi-SB frames with PARTITION_SPLIT fail to decode** — Single-SB frames (≤64x64) decode at all quality/speed levels and presets (including deep partition at s4). Multi-SB PARTITION_NONE-only frames work. PARTITION_SPLIT multi-SB fails due to coefficient coding format mismatch (literal EOB vs CDF-based, forward vs reverse scan, interleaved vs separated signs). All-skip frames also fail even for single-SB, suggesting an additional frame header or tile structure issue. See CONTEXT-HANDOFF.md for detailed analysis.
 
 ## Investigation Notes
 
