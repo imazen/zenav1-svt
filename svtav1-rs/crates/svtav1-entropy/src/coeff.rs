@@ -330,6 +330,11 @@ impl CdfCoefCtx {
 /// raster_position = row * width + col.
 ///
 /// This matches the AV1 default scan order for 2D transforms.
+/// Public wrapper for tests.
+pub fn generate_diagonal_scan_pub(width: usize, height: usize) -> Vec<u16> {
+    generate_diagonal_scan(width, height)
+}
+
 fn generate_diagonal_scan(width: usize, height: usize) -> Vec<u16> {
     let mut scan = Vec::with_capacity(width * height);
     for diag in 0..(width + height - 1) {
@@ -397,11 +402,11 @@ fn get_scan_table(width: usize, height: usize) -> Vec<u16> {
 ///
 /// This matches rav1d's `get_lo_ctx` for `TxClass::TwoD` exactly.
 ///
-/// `levels` is indexed as `levels[y * stride + x]` (row-major), matching
-/// rav1d's convention where y is the row and x is the column.
+/// `levels` is indexed as `levels[x * stride + y]` (column-major), matching
+/// rav1d's convention. Storage at (x, y): levels[x * stride + y].
+/// Neighbor access: level(dx, dy) = levels[(x+dx) * stride + (y+dy)].
 ///
-/// Returns (lo_ctx, hi_mag) where hi_mag is the magnitude of the 3
-/// closest neighbors (for br_tok context).
+/// Returns (lo_ctx, hi_mag).
 fn get_lo_ctx_2d(
     levels: &[u8],
     x: usize,
@@ -409,16 +414,18 @@ fn get_lo_ctx_2d(
     stride: usize,
     lo_ctx_offsets: &[[u8; 5]; 5],
 ) -> (u8, u32) {
-    // rav1d: level(y, x) = levels[y * stride + x]
-    let level = |yy: usize, xx: usize| -> u32 { levels[yy * stride + xx] as u32 };
+    // Access neighbor at offset (dx, dy) from current position (x, y)
+    let level = |dx: usize, dy: usize| -> u32 {
+        levels[(x + dx) * stride + (y + dy)] as u32
+    };
 
-    // 3 closest neighbors: (y, x+1), (y+1, x), (y+1, x+1)
-    let mut mag = level(y, x + 1) + level(y + 1, x);
-    mag += level(y + 1, x + 1); // diagonal
+    // 3 closest neighbors
+    let mut mag = level(0, 1) + level(1, 0); // below + right
+    mag += level(1, 1); // diagonal
     let hi_mag = mag;
 
-    // 2 more neighbors: (y, x+2), (y+2, x)
-    mag += level(y, x + 2) + level(y + 2, x);
+    // 2 more neighbors
+    mag += level(0, 2) + level(2, 0);
 
     let offset = lo_ctx_offsets[y.min(4)][x.min(4)];
     let ctx = offset
@@ -675,9 +682,9 @@ pub fn write_coefficients_v2(
         hi_tok_total = write_hi_tok(writer, cdf_ctx, br_ctx_level, hi_ctx, eob_level);
         // rav1d: level_tok = tok + (3 << 6) where tok = decode_hi_tok() (3-15)
         let level_tok_val = hi_tok_total + (3 << 6);
-        levels[eob_y * stride + eob_x] = level_tok_val as u8;
+        levels[eob_x * stride + eob_y] = level_tok_val as u8;
     } else {
-        levels[eob_y * stride + eob_x] = level_tok_byte;
+        levels[eob_x * stride + eob_y] = level_tok_byte;
     }
 
     // Track the linked list of non-zero coefficient positions for sign/golomb phase.
@@ -733,14 +740,14 @@ pub fn write_coefficients_v2(
                 };
             let tok_val = write_hi_tok(writer, cdf_ctx, br_ctx_level, hi_ctx as usize, level);
             let level_tok_val = tok_val + (3 << 6); // rav1d: tok + (3 << 6)
-            levels[y * stride + x] = level_tok_val as u8;
+            levels[x * stride + y] = level_tok_val as u8;
             nonzero_coeffs.push(NonZeroCoeff {
                 coeff_idx,
                 tok: tok_val,
             });
         } else {
             let level_tok_val = sym as u8 * 0x41;
-            levels[y * stride + x] = level_tok_val;
+            levels[x * stride + y] = level_tok_val;
             if sym > 0 {
                 nonzero_coeffs.push(NonZeroCoeff {
                     coeff_idx,
