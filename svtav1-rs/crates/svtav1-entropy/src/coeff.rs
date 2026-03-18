@@ -127,6 +127,14 @@ pub struct CdfCoefCtx {
     /// Flattened: index = min(t_dim_ctx, 3) * 21 + hi_ctx
     /// 4-symbol CDF (symbols 0,1,2,3)
     pub br_tok: [[AomCdfProb; 5]; 84],
+
+    /// Intra TX type CDFs (reduced set, 5 symbols): [3 t_dim_min][13 y_mode]
+    /// Used when reduced_txtp_set || t_dim.min == S16x16 (t_dim_min >= 2)
+    pub txtp_intra2: [[[AomCdfProb; 6]; 13]; 3],
+
+    /// Intra TX type CDFs (full set, 7 symbols): [2 t_dim_min][13 y_mode]
+    /// Used when !reduced_txtp_set && t_dim.min < S16x16 (t_dim_min < 2)
+    pub txtp_intra1: [[[AomCdfProb; 8]; 13]; 2],
 }
 
 impl CdfCoefCtx {
@@ -163,6 +171,8 @@ impl CdfCoefCtx {
             eob_base_tok: EOB_BASE_TOK_CDF_0,
             base_tok: BASE_TOK_CDF_0,
             br_tok: BR_TOK_CDF_0,
+            txtp_intra2: Self::uniform_txtp_intra2(),
+            txtp_intra1: Self::uniform_txtp_intra1(),
         }
     }
 
@@ -184,6 +194,8 @@ impl CdfCoefCtx {
             eob_base_tok: EOB_BASE_TOK_CDF_1,
             base_tok: BASE_TOK_CDF_1,
             br_tok: BR_TOK_CDF_1,
+            txtp_intra2: Self::uniform_txtp_intra2(),
+            txtp_intra1: Self::uniform_txtp_intra1(),
         }
     }
 
@@ -205,6 +217,8 @@ impl CdfCoefCtx {
             eob_base_tok: EOB_BASE_TOK_CDF_2,
             base_tok: BASE_TOK_CDF_2,
             br_tok: BR_TOK_CDF_2,
+            txtp_intra2: Self::uniform_txtp_intra2(),
+            txtp_intra1: Self::uniform_txtp_intra1(),
         }
     }
 
@@ -226,7 +240,23 @@ impl CdfCoefCtx {
             eob_base_tok: EOB_BASE_TOK_CDF_3,
             base_tok: BASE_TOK_CDF_3,
             br_tok: BR_TOK_CDF_3,
+            txtp_intra2: Self::uniform_txtp_intra2(),
+            txtp_intra1: Self::uniform_txtp_intra1(),
         }
+    }
+
+    /// Uniform TX type CDFs (reduced set, 5 symbols)
+    fn uniform_txtp_intra2() -> [[[AomCdfProb; 6]; 13]; 3] {
+        let cdf: [AomCdfProb; 6] = [26214, 19661, 13107, 6554, 0, 0];
+        let row: [[AomCdfProb; 6]; 13] = [cdf; 13];
+        [row; 3]
+    }
+
+    /// Uniform TX type CDFs (full set, 7 symbols)
+    fn uniform_txtp_intra1() -> [[[AomCdfProb; 8]; 13]; 2] {
+        let cdf: [AomCdfProb; 8] = [28087, 23406, 18725, 14043, 9362, 4681, 0, 0];
+        let row: [[AomCdfProb; 8]; 13] = [cdf; 13];
+        [row; 2]
     }
 
     /// Pack the 7 eob_bin CDFs (of varying lengths) into uniform [12] arrays.
@@ -481,6 +511,7 @@ pub fn write_coefficients_v2(
     height: usize,
     skip_ctx: usize,
     dc_sign_ctx: usize,
+    intra_mode: u8,
     cdf_ctx: &mut CdfCoefCtx,
 ) {
     let lw = log2_of_tx_dim(width);
@@ -494,9 +525,25 @@ pub fn write_coefficients_v2(
     }
     writer.write_symbol(0, cdf_ctx.skip_cdf(t_dim_ctx, skip_ctx), 2);
 
-    // Note: Transform type would be coded here for intra blocks, but our
-    // encoder currently only uses DCT_DCT, which is implicit for the sizes
-    // we support. Skip txtp coding.
+    // Step 1b: Transform type
+    // For intra blocks with t_dim.max >= S32x32 (lw >= 3 or lh >= 3),
+    // TX type is implicitly DCT_DCT — no symbol needed.
+    // For smaller blocks, write the TX type symbol.
+    let t_dim_min = lw.min(lh);
+    let t_dim_max = lw.max(lh);
+    if t_dim_max < 3 {
+        // Need to write TX type. DCT_DCT = symbol index 1 in both sets.
+        let y_mode = (intra_mode as usize).min(12); // cap to valid range
+        if t_dim_min >= 2 {
+            // Reduced set (5 symbols): txtp_intra2[t_dim_min][y_mode]
+            let cdf = &mut cdf_ctx.txtp_intra2[t_dim_min][y_mode];
+            writer.write_symbol(1, cdf, 5); // 1 = DCT_DCT
+        } else {
+            // Full set (7 symbols): txtp_intra1[t_dim_min][y_mode]
+            let cdf = &mut cdf_ctx.txtp_intra1[t_dim_min][y_mode];
+            writer.write_symbol(1, cdf, 7); // 1 = DCT_DCT
+        }
+    }
 
     // Get scan table and find the actual last non-zero scan position.
     // AV1 coefficient coding caps the transform to 32x32 even for 64x64 blocks.
@@ -506,7 +553,7 @@ pub fn write_coefficients_v2(
 
     // Find actual scan-order EOB from coefficient data.
     // The caller's `eob` is a count, but we need the scan position.
-    let scan_eob = find_last_nonzero_scan_pos(coeffs, &scan, sw, sh);
+    let scan_eob = find_last_nonzero_scan_pos(coeffs, &scan, sw, sh, width);
     if scan_eob.is_none() {
         // All coefficients in the scan area are zero — treat as skip.
         // This shouldn't happen since caller said eob > 0, but handle gracefully.
@@ -559,12 +606,19 @@ pub fn write_coefficients_v2(
     let lo_ctx_offsets = &LO_CTX_OFFSETS[is_rect];
 
     // Now encode base tokens.
-    // First: build the absolute levels from coefficients in scan order.
-    // We need to know the absolute value at each scan position.
+    // The scan table maps scan_pos to raster index in the (sw x sh) grid.
+    // But coefficients are stored in the original (width x height) layout.
+    // Convert: scan raster → (col, row) in capped grid → actual coeff index.
+    let scan_to_coeff_idx = |scan_pos: usize| -> usize {
+        let scan_raster = scan[scan_pos] as usize;
+        let col = scan_raster % sw;
+        let row = scan_raster / sw;
+        row * width + col // use original width as stride
+    };
     let abs_level_at = |scan_pos: usize| -> u32 {
-        let raster_idx = scan[scan_pos] as usize;
-        if raster_idx < coeffs.len() {
-            coeffs[raster_idx].unsigned_abs()
+        let idx = scan_to_coeff_idx(scan_pos);
+        if idx < coeffs.len() {
+            coeffs[idx].unsigned_abs()
         } else {
             0
         }
@@ -600,15 +654,15 @@ pub fn write_coefficients_v2(
         3,
     );
 
-    // Compute (x, y) from scan position for levels array
-    let raster_to_xy = |raster_idx: usize| -> (usize, usize) {
-        let col = raster_idx % sw;
-        let row = raster_idx / sw;
+    // Compute (x, y) in the capped grid from scan table raster index
+    let scan_raster_to_xy = |scan_raster: usize| -> (usize, usize) {
+        let col = scan_raster % sw;
+        let row = scan_raster / sw;
         (col, row) // x = col, y = row
     };
 
     // Store level_tok in levels array for eob position
-    let (eob_x, eob_y) = raster_to_xy(scan[scan_eob] as usize);
+    let (eob_x, eob_y) = scan_raster_to_xy(scan[scan_eob] as usize);
     let eob_tok = eob_raw_tok + 1; // actual token (1, 2, or 3)
     let level_tok_byte = if eob_raw_tok == 2 {
         // Will be updated after hi_tok
@@ -633,7 +687,7 @@ pub fn write_coefficients_v2(
     // In rav1d, cf[rc] stores (tok << 11) | next_rc. We track differently.
     // We'll collect (scan_pos, raster_idx, token_value) for non-zero coefficients.
     struct NonZeroCoeff {
-        raster_idx: usize,
+        coeff_idx: usize,
         tok: u32,
     }
     let mut nonzero_coeffs: Vec<NonZeroCoeff> = Vec::with_capacity(scan_eob + 1);
@@ -645,20 +699,21 @@ pub fn write_coefficients_v2(
         eob_tok as u32
     };
     nonzero_coeffs.push(NonZeroCoeff {
-        raster_idx: scan[scan_eob] as usize,
+        coeff_idx: scan_to_coeff_idx(scan_eob),
         tok: eob_final_tok,
     });
 
     // Step 6: AC tokens (scan_eob-1 down to 1)
     for i in (1..scan_eob).rev() {
-        let raster_idx = scan[i] as usize;
-        let level = if raster_idx < coeffs.len() {
-            coeffs[raster_idx].unsigned_abs()
+        let scan_raster = scan[i] as usize;
+        let coeff_idx = scan_to_coeff_idx(i);
+        let level = if coeff_idx < coeffs.len() {
+            coeffs[coeff_idx].unsigned_abs()
         } else {
             0
         };
 
-        let (x, y) = raster_to_xy(raster_idx);
+        let (x, y) = scan_raster_to_xy(scan_raster);
 
         // Compute lo_ctx from levels array
         let (lo_ctx, hi_mag) = get_lo_ctx_2d(&levels, x, y, stride, lo_ctx_offsets);
@@ -683,7 +738,7 @@ pub fn write_coefficients_v2(
             let level_tok_val = tok_val - 3 + (3 << 6);
             levels[x * stride + y] = level_tok_val as u8;
             nonzero_coeffs.push(NonZeroCoeff {
-                raster_idx,
+                coeff_idx,
                 tok: tok_val,
             });
         } else {
@@ -691,7 +746,7 @@ pub fn write_coefficients_v2(
             levels[x * stride + y] = level_tok_val;
             if sym > 0 {
                 nonzero_coeffs.push(NonZeroCoeff {
-                    raster_idx,
+                    coeff_idx,
                     tok: sym as u32,
                 });
             }
@@ -730,7 +785,7 @@ pub fn write_coefficients_v2(
 
         if dc_tok > 0 {
             nonzero_coeffs.push(NonZeroCoeff {
-                raster_idx: scan[0] as usize,
+                coeff_idx: scan_to_coeff_idx(0), // DC is always at (0,0)
                 tok: dc_tok,
             });
         }
@@ -820,10 +875,10 @@ pub fn write_coefficients_v2(
 
     for nz in &nonzero_coeffs {
         // Skip DC — its sign was already written via dc_sign CDF
-        if nz.raster_idx == 0 {
+        if nz.coeff_idx == 0 {
             continue;
         }
-        let coeff = coeffs[nz.raster_idx];
+        let coeff = coeffs[nz.coeff_idx];
         let sign = coeff < 0;
         writer.write_bit(sign);
 
@@ -897,17 +952,24 @@ fn eob_to_bin(eob: usize) -> u32 {
 ///
 /// Returns the scan-order index (0-based) of the last non-zero coefficient,
 /// or None if all coefficients are zero.
+///
+/// `scan_width` is the capped scan grid width (sw), `orig_width` is the
+/// actual coefficient stride in the coeffs array.
 fn find_last_nonzero_scan_pos(
     coeffs: &[i32],
     scan: &[u16],
-    width: usize,
-    height: usize,
+    scan_width: usize,
+    scan_height: usize,
+    orig_width: usize,
 ) -> Option<usize> {
-    let total = width * height;
+    let total = scan_width * scan_height;
     let scan_len = scan.len().min(total);
     for i in (0..scan_len).rev() {
-        let raster_idx = scan[i] as usize;
-        if raster_idx < coeffs.len() && coeffs[raster_idx] != 0 {
+        let scan_raster = scan[i] as usize;
+        let col = scan_raster % scan_width;
+        let row = scan_raster / scan_width;
+        let coeff_idx = row * orig_width + col;
+        if coeff_idx < coeffs.len() && coeffs[coeff_idx] != 0 {
             return Some(i);
         }
     }

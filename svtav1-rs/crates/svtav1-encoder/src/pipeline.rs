@@ -833,6 +833,7 @@ fn encode_block_syntax(
             decision.height as usize,
             0, // skip_ctx — simplified for now
             1, // dc_sign_ctx — neutral
+            decision.intra_mode,
             coeff_cdf,
         );
     }
