@@ -6,9 +6,14 @@ A pure Rust AV1 encoder, ported from Intel's SVT-AV1. Produces spec-conformant A
 
 ## What it does
 
-Encodes still images and video sequences as AV1 bitstreams. Designed primarily as a backend for [zenavif](https://github.com/imazen/zenavif) (AVIF image encoding), but the encoder handles multi-frame sequences with inter prediction, temporal filtering, and proper GOP structure.
+Encodes still images and video sequences as AV1 bitstreams. Designed primarily as a backend for [zenavif](https://github.com/imazen/zenavif) (AVIF image encoding), where it's available behind the `encode-svtav1` feature flag:
 
-The encoder produces OBU-formatted bitstreams with correct sequence headers, frame headers, tile groups, and entropy-coded coefficient data. Tested against rav1d-safe (the safe Rust AV1 decoder) for decode conformance.
+```toml
+[dependencies]
+zenavif = { version = "0.1", features = ["encode", "encode-svtav1"] }
+```
+
+The encoder handles multi-frame sequences with inter prediction, temporal filtering, and proper GOP structure. It produces OBU-formatted bitstreams with correct sequence headers, frame headers, tile groups, and entropy-coded coefficient data. Tested against rav1d-safe (the safe Rust AV1 decoder) for decode conformance.
 
 ### What works
 
