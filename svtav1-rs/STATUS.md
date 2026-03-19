@@ -1,129 +1,149 @@
 # SVT-AV1 Rust Port — Status
 
-**23,345 lines | 70 files | 471 tests | 71 golden/spec parity | 0 warnings**
+**26,095 lines | 70+ files | 500+ tests | 0 warnings**
 
-Last updated: 2026-03-16
+Last updated: 2026-03-18
+
+## Decode Conformance
+
+Tested by encoding with svtav1-rs and decoding with rav1d-safe via zenavif differential tests.
+
+| Test case | Result | Notes |
+|-----------|--------|-------|
+| 32x32 gradient (padded to 64x64) | PASS | Single SB, q50 s10 |
+| 48x48 gradient (padded to 64x64) | PASS | Single SB, q50 s10 |
+| 64x64 gradient, q30 | PASS | Single SB |
+| 64x64 gradient, q50 | PASS | Single SB |
+| 64x64 gradient, q60 | PASS | Single SB |
+| 64x64 gradient, q90 | PASS | Single SB |
+| 128x128 edges, q80 | PASS | 4 SBs, PSNR 11.1 dB |
+| 128x128 gradient (direct) | PASS | 4 SBs |
+| comprehensive_all_configs (48) | PASS | All size/quality/speed combos |
+| 64x64 gradient, q70 | FAIL | Content-specific CDF interaction |
+| 80x80, 96x96, 112x112 | FAIL | Some multi-SB combos at certain speeds |
+| 64x64 speed sweep (s4-s8) | FAIL | q70 content-specific |
+| Uniform 128x128 (all-skip) | FAIL | All coefficients zero |
+| Direct 64x64 (all-skip) | FAIL | All coefficients zero |
 
 ## Verified Bit-Exact With C (51 golden parity tests)
 
-Every value measured by compiling and running the C SVT-AV1 function via
-`tools/extract_golden.c`, then comparing Rust output coefficient-by-coefficient.
+Every value verified by compiling the C SVT-AV1 function via `tools/extract_golden.c` and comparing Rust output coefficient-by-coefficient.
 
 | Function | Vectors | C Source |
 |----------|---------|----------|
-| fdct4 | 5 | transforms.c:svt_av1_fdct4_new |
-| fdct8 | 4 | transforms.c:svt_av1_fdct8_new |
-| fdct16 | 2 | transforms.c:svt_av1_fdct16_new |
-| fdct32 | 2 | transforms.c:svt_av1_fdct32_new |
-| fdct64 | 3 | transforms.c:svt_av1_fdct64_new |
-| fadst4 | 2 | transforms.c:svt_av1_fadst4_new |
-| fadst8 | 2 | transforms.c:svt_av1_fadst8_new |
-| fadst16 | 2 | transforms.c:svt_av1_fadst16_new |
-| fidentity4/8 | 2 | transforms.c:svt_av1_fidentity{4,8}_c |
+| fdct4/8/16/32/64 | 16 | transforms.c:svt_av1_fdct{N}_new |
+| fadst4/8/16 | 6 | transforms.c:svt_av1_fadst{N}_new |
+| fidentity4/8 | 2 | transforms.c:svt_av1_fidentity{N}_c |
 | idct4/8/16/32/64 | 10 | inv_transforms.c:svt_av1_idct{N}_new |
 | iadst4/8/16 | 4 | inv_transforms.c:svt_av1_iadst{N}_new |
 | iidentity4/8 | 2 | inv_transforms.c:svt_av1_iidentity{N}_c |
 | cospi/sinpi tables | 10 | inv_transforms.c:svt_aom_eb_av1_cospi_arr_data |
-| CDF update | 2 | Compiled identical C algorithm |
+| CDF update | 2 | Identical C algorithm |
 | Intra prediction | 5 | Spec algorithm (DC/V/H/paeth verified) |
 | Roundtrip DCT 4/8/16/32 | 4 | Scale factor verification |
 
-## Spec-Referenced Tests (20 additional)
-
-| Test | Spec Section |
-|------|-------------|
-| directional_45_deg_zone1 | Spec 05 §7.11.2.4: DR_INTRA_DERIVATIVE[45]=64 |
-| directional_vertical_90_deg | Spec 05: angle=90 → exact V_PRED |
-| directional_horizontal_180_deg | Spec 05: angle=180 → exact H_PRED |
-| directional_203_deg_zone3 | Spec 05: zone 3 left column interpolation |
-| range_coder_invariant | Spec 07 §8.2: rng in [32768, 65535] |
-| cdf_update_rate_formula | Spec 07: rate = 4 + (count>>4) + (nsymbs>3) |
-| cdf_counter_caps_at_32 | Spec 07: count saturates at 32 |
-| obu_header_format | Spec 07 §5.3: bit-level OBU header fields |
-| uleb128_encoding_spec | Spec 07: LEB128 with decode roundtrip |
-| deblock_flat_unchanged | Spec 08 §7.14: flat block not modified |
-| cdef_direction_detection | Spec 08 §7.15.1: valid direction + nonzero variance |
-| cdef_zero_strength_copies | Spec 08: zero strength = identity |
-| wiener_identity | Spec 08 §7.17: coeffs [0,0,0] → identity |
-| pipeline_deterministic | Same input + config = identical bitstream |
-| encode_block_tx_adst_different | Spec 04: ADST produces different coefficients |
-| encode_block_tx_identity | Spec 04: IDTX on uniform residual |
-| speed_preset_affects_behavior | Spec 03: preset 13 disables features |
-| speed_config_monotonic | Spec 03: higher preset = fewer features |
-| roundtrip_dct16/32 | Scale factor 8x/16x verification |
-
-## Pipeline Architecture (what encode_frame actually calls)
+## Pipeline Architecture
 
 ```
 encode_frame(y_plane)
-  ├─ temporal_filter (if enable_temporal_filter && refs available)
-  ├─ ActivityMap::compute → VAQ QP adjustment
-  ├─ for each superblock (raster order, spec 00):
-  │   └─ partition_search_with_config
-  │       ├─ tries 10 partition types (gated by PartitionSearchConfig)
-  │       └─ encode_single_block at each leaf:
-  │           ├─ 11 intra modes evaluated (DC/V/H/smooth*/paeth/directional)
-  │           ├─ mode-specific TX RDO (DCT-DCT/ADST-DCT/DCT-ADST/ADST-ADST)
-  │           └─ encode_block_tx → transform → quantize → reconstruct
-  ├─ deblock_vert/horz (on 8x8 block edges)
-  ├─ CDEF (if enable_cdef, per 8x8 block)
-  ├─ Wiener (if enable_restoration)
-  ├─ sgrproj (if enable_restoration && preset <= 6)
-  ├─ film_grain estimation (source vs recon)
-  ├─ write_coefficients per block (Exp-Golomb)
-  └─ OBU output (TD + SH + Frame)
-      ├─ DPB.refresh with reconstruction
-      └─ RC state update
+  temporal_filter (if enabled + refs available)
+  ActivityMap::compute -> VAQ QP adjustment
+  TPL QP adjustment (inter frames)
+  for each 64x64 superblock (raster order):
+    partition_search_with_config
+      tries 10 partition types (gated by speed config)
+      encode_single_block at each leaf:
+        11 intra modes with TX-type RDO
+        encode_block_tx -> transform -> quantize -> reconstruct
+  deblock_vert/horz (4/8/14-tap, per 8x8 edges)
+  CDEF (per 8x8 block, directional)
+  Wiener restoration
+  sgrproj restoration (preset <= 6)
+  film_grain estimation
+  entropy coding:
+    partition context tracking (rav1d-compatible AL_PART_CTX)
+    write_coefficients_v2 (CDF-based EOB, reverse scan, spec tokens)
+  OBU output (TD + SH + Frame)
+  DPB refresh + RC state update
 ```
 
-## Speed Config Flags — Wired vs Unused
+## Entropy Coding (write_coefficients_v2)
 
-| Flag | Used | Where |
-|------|------|-------|
-| enable_cdef | ✓ | Pipeline: gates CDEF loop filter |
-| enable_restoration | ✓ | Pipeline: gates Wiener + sgrproj |
-| enable_temporal_filter | ✓ | Pipeline: gates temporal filtering |
-| max_partition_depth | ✓ | Pipeline: SB size + partition recursion depth |
-| lambda_scale | ✓ | Pipeline: adjusts lambda by preset |
-| enable_ext_partitions | ✓ | Partition: gates HORZ_A/B, VERT_A/B |
-| enable_4to1_partitions | ✓ | Partition: gates HORZ_4, VERT_4 |
-| enable_directional_modes | ✓ | PartitionSearchConfig (passed through) |
-| enable_adst | ✗ | Not checked (ADST always tried when mode matches) |
-| enable_identity_tx | ✗ | Not checked |
-| enable_cfl | ✗ | CfL not in partition search |
-| enable_filter_intra | ✗ | Filter-intra not in partition search |
-| enable_palette | ✗ | Palette not in partition search |
-| enable_obmc | ✗ | OBMC not wired |
-| enable_warped_motion | ✗ | Warped not wired |
-| enable_compound | ✗ | No inter-frame |
-| rdo_tx_decision | ✗ | TX RDO always runs (should be gated) |
-| max_intra_candidates | ✗ | Not passed to encode_single_block |
-| subpel_precision | ✗ | No inter ME |
-| hme_levels | ✗ | No inter ME |
-| me_search_width/height | ✗ | No inter ME |
+Spec-conformant implementation matching rav1d's exact bitstream reading order:
 
-## Crate Architecture
+1. TXB skip flag (CDF, 2 symbols)
+2. TX type (CDF, 5 or 7 symbols; implicit for blocks >= 32x32)
+3. EOB bin (CDF, 5-11 symbols depending on TX size class)
+4. EOB hi-bit + equiprobable low bits
+5. EOB position token (eob_base_tok, 3-symbol CDF)
+6. AC tokens in reverse diagonal scan (base_tok, 4-symbol CDF)
+7. BR tokens for levels >= 3 (br_tok, 4-symbol CDF, up to 4 iterations)
+8. DC token (base_tok or eob_base_tok)
+9. DC sign (CDF, 2 symbols)
+10. DC Golomb residual (if token >= 15)
+11. AC signs (equiprobable) + Golomb residuals
+
+Default CDFs extracted from rav1d for 4 QP categories (qidx 0-20, 21-60, 61-120, 121+). Context derivation uses `get_lo_ctx_2d` with `LO_CTX_OFFSETS` lookup table matching `dav1d_lo_ctx_offsets`.
+
+## Partition Context Tracking
+
+Multi-SB conformance uses rav1d-compatible partition context arrays:
+
+- `above_partition` / `left_partition` at 8x8 granularity
+- `AL_PART_CTX` lookup table matching `dav1d_al_part_ctx` (5 block levels x 10 partition types x 2 directions)
+- Bit extraction: `(val >> bsl) & 1` for context derivation
+- Left context reset per SB row
+
+## Speed Config — Feature Gating
+
+| Flag | Wired | Presets |
+|------|-------|---------|
+| max_partition_depth | Yes | 4 (p0-3), 3 (p4-6), 2 (p7-9), 1 (p10-13) |
+| enable_cdef | Yes | p0-12 |
+| enable_restoration | Yes | p0-10 |
+| enable_temporal_filter | Yes | p0-12 |
+| lambda_scale | Yes | 1.0 (p0-3), 1.1 (p4-6), 1.2 (p7-9), 1.4 (p10-13) |
+| enable_ext_partitions | Yes | p0-8 (T-shapes: HorzA/B, VertA/B) |
+| enable_4to1_partitions | Yes | p0-6 (Horz4, Vert4) |
+| enable_directional_modes | Yes | p0-10 |
+| enable_adst | No | Always tried when mode matches |
+| rdo_tx_decision | No | TX RDO always runs |
+| max_intra_candidates | No | Not passed to encode_single_block |
+| Inter features (ME, compound, warped) | No | Inter infrastructure present but not wired |
+
+## Crate Structure
 
 ```
 svtav1-rs/
-├── svtav1-types/     14 modules: all AV1 enums/structs, bit-exact discriminants
-├── svtav1-tables/     5 modules: cospi, interp filters, scan orders, block tables
-├── svtav1-dsp/       16 modules: transforms, prediction, filtering, SIMD dispatch
-├── svtav1-entropy/    7 modules: range coder, CDF, OBU, coeff/MV/tile coding
-├── svtav1-encoder/   10 modules: pipeline, partition, mode decision, RC, TF, FG
-├── svtav1-disjoint-mut/ DisjointMut for frame threading (adapted from rav1d)
-├── svtav1-cuda/       stub for optional GPU bridge
-└── svtav1/            public API + avif backend + tests
+  svtav1-types/          2,016 lines  Core AV1 types, enums, constants
+  svtav1-tables/           350 lines  Const lookup tables (no_std)
+  svtav1-dsp/           10,700 lines  SIMD transforms, prediction, filtering
+  svtav1-entropy/        5,661 lines  Range coder, CDF, OBU, coefficient coding
+  svtav1-encoder/        6,093 lines  Pipeline, partition, mode decision, RC
+  svtav1-disjoint-mut/     226 lines  Region-based borrow tracking
+  svtav1-cuda/               4 lines  GPU bridge stub
+  svtav1/                1,045 lines  Public API, AVIF backend
 ```
+
+## Measured Performance
+
+(Release mode, x86_64 AVX2, archmage auto-vectorization)
+
+| Operation | Throughput |
+|-----------|-----------|
+| SAD 16x16 | ~18 Gpix/s |
+| fwd_txfm 4x4 | ~170 Mpix/s |
+| fwd_txfm 8x8 | ~215 Mpix/s |
 
 ## Test Inventory
 
-| Category | Count | Description |
-|----------|-------|-------------|
-| Golden parity (bit-exact) | 51 | Measured C output comparison |
-| Spec-referenced | 20 | AV1 spec section citations |
-| E2E correctness | 44 | Full pipeline tests |
-| Real encoding | 15 | Actual images with PSNR/SSIM |
-| SIMD dispatch | 24 | for_each_token_permutation |
-| Unit tests | ~317 | Per-module correctness |
-| **Total** | **471** | 0 failures, 0 warnings |
+| Category | Count |
+|----------|-------|
+| Golden parity (bit-exact C comparison) | 51 |
+| Spec-referenced (AV1 section citations) | 20 |
+| E2E correctness | 44 |
+| Real encoding (actual images, PSNR) | 15+ |
+| SIMD dispatch (for_each_token_permutation) | 24 |
+| Coefficient encoder v2 | 16 |
+| Unit tests | ~330 |
+| **Total** | **500+** |
