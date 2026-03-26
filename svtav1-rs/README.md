@@ -1,37 +1,29 @@
 # svtav1-rs
 
-A pure Rust AV1 encoder, ported from Intel's SVT-AV1. Produces spec-conformant AV1 bitstreams that decode with rav1d/dav1d.
+A work-in-progress pure Rust AV1 encoder, ported from Intel's SVT-AV1.
 
 **26k lines | 8 crates | 500+ tests | `#![forbid(unsafe_code)]` | BSD-2-Clause**
 
-## What it does
-
-Encodes still images and video sequences as AV1 bitstreams. Designed primarily as a backend for [zenavif](https://github.com/imazen/zenavif) (AVIF image encoding), where it's available behind the `encode-svtav1` feature flag:
-
-```toml
-[dependencies]
-zenavif = { version = "0.1", features = ["encode", "encode-svtav1"] }
-```
-
-The encoder handles multi-frame sequences with inter prediction, temporal filtering, and proper GOP structure. It produces OBU-formatted bitstreams with correct sequence headers, frame headers, tile groups, and entropy-coded coefficient data. Tested against rav1d-safe (the safe Rust AV1 decoder) for decode conformance.
+> **Status: experimental.** Many content/size/speed/quality combinations produce corrupt bitstreams that fail to decode. Not ready for production use. The zenavif integration is currently disabled pending further work on decode conformance.
 
 ### What works
 
-- Single-SB frames (up to 64x64) decode at quality levels 30-60 and 90
-- Multi-SB frames (128x128, 2x2 superblocks) decode
+- 128x128 gradient images at low speed (4) encode and decode correctly
 - All 10 AV1 partition types, including extended T-shapes and 4:1
 - 13 intra prediction modes with directional angle delta
 - 16 transform types across 19 sizes, all bit-exact with C SVT-AV1
 - CDF-based entropy coding matching the rav1d decoder
 - Speed presets 0-13 with progressive feature gating
-- CQP, CRF, VBR, and CBR rate control
-- Deblocking, CDEF, Wiener, and sgrproj loop filters
-- Film grain estimation and synthesis parameters
-- VAQ (variance-adaptive quantization) and perceptual QM
 
 ### What doesn't work yet
 
-Some content/QP combinations fail to decode. Specifically: quality 70 with certain gradient patterns, some multi-SB sizes at certain speeds, and all-skip frames (uniform content). These are CDF context interaction bugs in the coefficient encoder that need a decoder-side trace comparison to diagnose. See [Known Bugs](#known-bugs) below.
+Many configurations produce corrupt bitstreams:
+- Small images (< 128x128) at most speed presets
+- High speed presets (8+) at most sizes
+- Uniform/all-skip content (zero coefficients)
+- Quality 70 with certain gradient patterns
+
+The root causes are CDF context interaction bugs in the coefficient encoder and frame header generation. Diagnosing these requires decoder-side range coder state tracing.
 
 ## Quick start
 
