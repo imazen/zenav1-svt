@@ -1346,7 +1346,7 @@ mod tests {
         let mut w = AomWriter::new(256);
         let mut cdf = CdfCoefCtx::new(0);
         let coeffs = [0i32; 16];
-        write_coefficients_v2(&mut w, &coeffs, 0, 4, 4, 0, 1, &mut cdf);
+        write_coefficients_v2(&mut w, &coeffs, 0, 4, 4, 0, 1, 0u8, &mut cdf);
         let output = w.done();
         assert!(!output.is_empty(), "zero block should produce output");
     }
@@ -1360,7 +1360,7 @@ mod tests {
         // eob = 1 means "there is 1 non-zero coefficient" in our convention,
         // but for v2, eob is scan_eob, the position. Since DC is at scan position 0,
         // we pass eob=1 to indicate non-zero content exists.
-        write_coefficients_v2(&mut w, &coeffs, 1, 4, 4, 0, 1, &mut cdf);
+        write_coefficients_v2(&mut w, &coeffs, 1, 4, 4, 0, 1, 0u8, &mut cdf);
         let output = w.done();
         assert!(!output.is_empty(), "dc-only block should produce output");
     }
@@ -1374,7 +1374,7 @@ mod tests {
         ];
         // eob should be the number of non-zero coefficients for our caller,
         // but v2 internally finds the scan-order eob.
-        write_coefficients_v2(&mut w, &coeffs, 10, 4, 4, 0, 1, &mut cdf);
+        write_coefficients_v2(&mut w, &coeffs, 10, 4, 4, 0, 1, 0u8, &mut cdf);
         let output = w.done();
         assert!(
             output.len() > 5,
@@ -1392,7 +1392,7 @@ mod tests {
         coeffs[1] = -500;
         coeffs[8] = 200;
         coeffs[9] = -100;
-        write_coefficients_v2(&mut w, &coeffs, 4, 8, 8, 0, 1, &mut cdf);
+        write_coefficients_v2(&mut w, &coeffs, 4, 8, 8, 0, 1, 0u8, &mut cdf);
         let output = w.done();
         assert!(!output.is_empty(), "8x8 block should produce output");
     }
@@ -1408,7 +1408,7 @@ mod tests {
         coeffs[16] = 500;
         coeffs[17] = -200;
         coeffs[32] = 100;
-        write_coefficients_v2(&mut w, &coeffs, 5, 16, 16, 0, 1, &mut cdf);
+        write_coefficients_v2(&mut w, &coeffs, 5, 16, 16, 0, 1, 0u8, &mut cdf);
         let output = w.done();
         assert!(!output.is_empty(), "16x16 block should produce output");
     }
@@ -1421,7 +1421,7 @@ mod tests {
         coeffs[0] = 5000;
         coeffs[1] = -2000;
         coeffs[32] = 1000;
-        write_coefficients_v2(&mut w, &coeffs, 3, 32, 32, 0, 1, &mut cdf);
+        write_coefficients_v2(&mut w, &coeffs, 3, 32, 32, 0, 1, 0u8, &mut cdf);
         let output = w.done();
         assert!(!output.is_empty(), "32x32 block should produce output");
     }
@@ -1432,7 +1432,7 @@ mod tests {
         let mut cdf = CdfCoefCtx::new(0);
         let mut coeffs = [0i32; 16];
         coeffs[0] = -42;
-        write_coefficients_v2(&mut w, &coeffs, 1, 4, 4, 0, 1, &mut cdf);
+        write_coefficients_v2(&mut w, &coeffs, 1, 4, 4, 0, 1, 0u8, &mut cdf);
         let output = w.done();
         assert!(!output.is_empty());
     }
@@ -1444,7 +1444,7 @@ mod tests {
         let mut coeffs = [0i32; 16];
         // Level 100 requires golomb coding (tok >= 15)
         coeffs[0] = 100;
-        write_coefficients_v2(&mut w, &coeffs, 1, 4, 4, 0, 1, &mut cdf);
+        write_coefficients_v2(&mut w, &coeffs, 1, 4, 4, 0, 1, 0u8, &mut cdf);
         let output = w.done();
         assert!(!output.is_empty(), "large coefficient should be encodable");
     }
@@ -1457,7 +1457,7 @@ mod tests {
             let mut coeffs = [0i32; 16];
             coeffs[0] = 10;
             coeffs[1] = -5;
-            write_coefficients_v2(&mut w, &coeffs, 2, 4, 4, 0, 1, &mut cdf);
+            write_coefficients_v2(&mut w, &coeffs, 2, 4, 4, 0, 1, 0u8, &mut cdf);
             let output = w.done();
             assert!(!output.is_empty(), "QP category {qp} should produce output");
         }
