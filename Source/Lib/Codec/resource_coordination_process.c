@@ -1225,7 +1225,7 @@ void* svt_aom_resource_coordination_kernel(void* input_ptr) {
             }
             // Get Empty Output Results Object
             // For the low delay mode, buffering for receiving EOS does not happen
-            if (scs->static_config.pred_structure == LOW_DELAY) {
+            if (scs->static_config.pred_structure == LOW_DELAY || scs->static_config.pred_structure == ALL_INTRA) {
                 PictureParentControlSet* ppcs_out = pcs;
 
                 ppcs_out->end_of_sequence_flag = end_of_sequence_flag;

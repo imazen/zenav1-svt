@@ -344,7 +344,7 @@ void svt_av1_cdef_frame(SequenceControlSet* scs, PictureControlSet* pcs) {
                 continue;
             }
 
-            int dirinit = !(ppcs->cdef_search_ctrls.use_reference_cdef_fs);
+            int dirinit = !(ppcs->cdef_search_ctrls.use_reference_cdef_fs || ppcs->cdef_search_ctrls.use_qp_strength);
             // When SB 128 is used, the search for certain blocks is skipped, so dir/var info is not generated
             // In those cases, must generate info here
             if (sb_size == 128) {
@@ -663,7 +663,6 @@ static uint64_t joint_strength_search_dual(int32_t* best_lev0, int32_t* best_lev
     return best_tot_mse;
 }
 
-#if OPT_Q_CDEF
 // This kernel is ported/adapted from libaom (AV1 reference implementation).
 // Original logic inspired by aom_pick_cdef_from_qp().
 // Adjusted to match SVT-AV1 data structures and pipeline integration.
@@ -717,7 +716,6 @@ static void svt_pick_cdef_from_qp(PictureParentControlSet* ppcs, int32_t is_scre
     *pred_y_strength  = y_f1 * CDEF_SEC_STRENGTHS + y_f2;
     *pred_uv_strength = uv_f1 * CDEF_SEC_STRENGTHS + uv_f2;
 }
-#endif
 
 void finish_cdef_search(PictureControlSet* pcs) {
     PictureParentControlSet* ppcs    = pcs->ppcs;
@@ -733,7 +731,6 @@ void finish_cdef_search(PictureControlSet* pcs) {
     int32_t  nhfb = (mi_cols + MI_SIZE_64X64 - 1) / MI_SIZE_64X64;
     //CDEF Settings
     CdefSearchControls* cdef_search_ctrls = &pcs->ppcs->cdef_search_ctrls;
-#if OPT_Q_CDEF
     if (cdef_search_ctrls->use_qp_strength) {
         int pred_y, pred_uv;
 
@@ -758,12 +755,11 @@ void finish_cdef_search(PictureControlSet* pcs) {
                     continue;
                 }
 
-                // Optional: skip SBs marked as no CDEF
-                if (pcs->skip_cdef_seg && pcs->skip_cdef_seg[fbr * nhfb + fbc]) {
+                // No filtering if the entire filter block is skipped
+                if (svt_sb_all_skip(pcs, cm, fbr * MI_SIZE_64X64, fbc * MI_SIZE_64X64)) {
                     continue;
                 }
 
-                // Only one strength → index 0
                 mbmi->cdef_strength = 0;
 
                 // Duplicate for large blocks in SVT MI map
@@ -797,7 +793,6 @@ void finish_cdef_search(PictureControlSet* pcs) {
         }
         return;
     }
-#endif
 
     CdefReconControls* cdef_recon_ctrls           = &pcs->ppcs->cdef_recon_ctrls;
     const int          first_pass_fs_num          = cdef_search_ctrls->first_pass_fs_num;

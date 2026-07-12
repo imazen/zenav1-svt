@@ -129,6 +129,10 @@ typedef enum {
     RESIZE_MODES
 } RESIZE_MODE;
 
+/* Indicates what prediction structure to use
+ */
+typedef enum PredStructure { ALL_INTRA, LOW_DELAY, RANDOM_ACCESS, PRED_TOTAL_COUNT, PRED_INVALID = 0xFF } PredStructure;
+
 /** The SvtAv1IntraRefreshType is used to describe the intra refresh type.
 */
 typedef enum SvtAv1IntraRefreshType {
@@ -256,7 +260,7 @@ typedef struct EbSvtAv1EncConfiguration {
      * Refer to PredStructure enum for valid values.
      *
      * Default is RANDOM_ACCESS. */
-    uint8_t pred_structure;
+    PredStructure pred_structure;
 
     // Input Info
 
@@ -964,6 +968,7 @@ typedef struct EbSvtAv1EncConfiguration {
     // clang-format off
     /* Add 128 Byte Padding to Struct to avoid changing the size of the public configuration struct */
     uint8_t padding[128
+        - sizeof(PredStructure) + sizeof (uint8_t) // pred_strucutre type was changed from uint8_t to PredStructure
     ];
     // clang-format on
 } EbSvtAv1EncConfiguration;
