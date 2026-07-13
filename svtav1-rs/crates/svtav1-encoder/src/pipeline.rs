@@ -296,134 +296,147 @@ impl EncodePipeline {
             }
         }
 
-        // Step 5: Apply loop filters to reconstruction
-        // 5a: Deblocking filter on block edges
-        // Filter width (4/8/14-tap) and strength derived from QP and edge type.
-        // (Spec 08, Section 7.14: filter size and strength per-edge)
-        {
-            let (strength, threshold) = svtav1_dsp::loop_filter::derive_deblock_strength(pcs.qp);
-            // Apply deblocking on vertical edges (every 8 columns)
-            for bx in 1..(w / 8) {
-                let edge_col = bx * 8;
-                let is_sb_edge = edge_col % sb_size == 0;
-                let filter_size =
-                    svtav1_dsp::loop_filter::select_deblock_filter_size(is_sb_edge, pcs.qp);
-                match filter_size {
-                    14 if edge_col >= 7 && edge_col + 7 <= w => {
-                        svtav1_dsp::loop_filter::deblock_vert_14tap(
-                            &mut recon, w, strength, threshold, edge_col, h,
-                        );
+        // Step 5: Loop filters — DISABLED until the C filter-search ports
+        // land. The frame header currently signals loop_filter_level=0,
+        // enable_cdef=0 (SH) and no restoration, so the decoder applies NO
+        // filtering; applying them here would make the encoder's DPB recon
+        // diverge from what any conforming decoder reconstructs (pixel
+        // integrity rule: two paths producing different pixels is a bug).
+        // The filter implementations below are kept for the faithful
+        // deblock/CDEF/restoration ports, which must signal parameters and
+        // filter identically to C.
+        const APPLY_UNSIGNALED_FILTERS: bool = false;
+        if APPLY_UNSIGNALED_FILTERS {
+            // Step 5: Apply loop filters to reconstruction
+            // 5a: Deblocking filter on block edges
+            // Filter width (4/8/14-tap) and strength derived from QP and edge type.
+            // (Spec 08, Section 7.14: filter size and strength per-edge)
+            {
+                let (strength, threshold) = svtav1_dsp::loop_filter::derive_deblock_strength(pcs.qp);
+                // Apply deblocking on vertical edges (every 8 columns)
+                for bx in 1..(w / 8) {
+                    let edge_col = bx * 8;
+                    let is_sb_edge = edge_col % sb_size == 0;
+                    let filter_size =
+                        svtav1_dsp::loop_filter::select_deblock_filter_size(is_sb_edge, pcs.qp);
+                    match filter_size {
+                        14 if edge_col >= 7 && edge_col + 7 <= w => {
+                            svtav1_dsp::loop_filter::deblock_vert_14tap(
+                                &mut recon, w, strength, threshold, edge_col, h,
+                            );
+                        }
+                        8 if edge_col >= 4 && edge_col + 4 <= w => {
+                            svtav1_dsp::loop_filter::deblock_vert_wide(
+                                &mut recon, w, strength, threshold, edge_col, h,
+                            );
+                        }
+                        _ => {
+                            svtav1_dsp::loop_filter::deblock_vert(
+                                &mut recon, w, strength, threshold, edge_col, h,
+                            );
+                        }
                     }
-                    8 if edge_col >= 4 && edge_col + 4 <= w => {
-                        svtav1_dsp::loop_filter::deblock_vert_wide(
-                            &mut recon, w, strength, threshold, edge_col, h,
-                        );
-                    }
-                    _ => {
-                        svtav1_dsp::loop_filter::deblock_vert(
-                            &mut recon, w, strength, threshold, edge_col, h,
-                        );
+                }
+                // Apply deblocking on horizontal edges (every 8 rows)
+                for by in 1..(h / 8) {
+                    let edge_row = by * 8;
+                    let is_sb_edge = edge_row % sb_size == 0;
+                    let filter_size =
+                        svtav1_dsp::loop_filter::select_deblock_filter_size(is_sb_edge, pcs.qp);
+                    match filter_size {
+                        8 if edge_row >= 4 && edge_row + 4 <= h => {
+                            svtav1_dsp::loop_filter::deblock_horz_wide(
+                                &mut recon, w, strength, threshold, edge_row, w,
+                            );
+                        }
+                        _ => {
+                            svtav1_dsp::loop_filter::deblock_horz(
+                                &mut recon, w, strength, threshold, edge_row, w,
+                            );
+                        }
                     }
                 }
             }
-            // Apply deblocking on horizontal edges (every 8 rows)
-            for by in 1..(h / 8) {
-                let edge_row = by * 8;
-                let is_sb_edge = edge_row % sb_size == 0;
-                let filter_size =
-                    svtav1_dsp::loop_filter::select_deblock_filter_size(is_sb_edge, pcs.qp);
-                match filter_size {
-                    8 if edge_row >= 4 && edge_row + 4 <= h => {
-                        svtav1_dsp::loop_filter::deblock_horz_wide(
-                            &mut recon, w, strength, threshold, edge_row, w,
-                        );
-                    }
-                    _ => {
-                        svtav1_dsp::loop_filter::deblock_horz(
-                            &mut recon, w, strength, threshold, edge_row, w,
-                        );
-                    }
-                }
-            }
-        }
 
-        // 5b: CDEF
-        if self.speed_config.enable_cdef {
-            // Apply CDEF to each 8x8 block
-            let mut filtered = recon.clone();
-            let bw = 8usize;
-            let blocks_x = w.div_ceil(bw);
-            let blocks_y = h.div_ceil(bw);
-            for by in 0..blocks_y {
-                for bx in 0..blocks_x {
-                    let x0 = bx * bw;
-                    let y0 = by * bw;
-                    let cur_w = bw.min(w - x0);
-                    let cur_h = bw.min(h - y0);
-                    if cur_w == 8 && cur_h == 8 {
-                        let (dir, _var) =
-                            svtav1_dsp::loop_filter::cdef_find_dir(&recon[y0 * w + x0..], w);
-                        // Light CDEF: pri_strength based on QP
-                        let pri = (pcs.qp / 8).min(15);
-                        let sec = (pcs.qp / 16).min(3);
-                        svtav1_dsp::loop_filter::cdef_filter_block(
-                            &recon[y0 * w + x0..],
-                            w,
-                            &mut filtered[y0 * w + x0..],
-                            w,
-                            dir,
-                            pri as i32,
-                            sec as i32,
-                            3 + (pcs.qp / 16) as i32,
-                            cur_w,
-                            cur_h,
-                        );
+            // 5b: CDEF
+            if self.speed_config.enable_cdef {
+                // Apply CDEF to each 8x8 block
+                let mut filtered = recon.clone();
+                let bw = 8usize;
+                let blocks_x = w.div_ceil(bw);
+                let blocks_y = h.div_ceil(bw);
+                for by in 0..blocks_y {
+                    for bx in 0..blocks_x {
+                        let x0 = bx * bw;
+                        let y0 = by * bw;
+                        let cur_w = bw.min(w - x0);
+                        let cur_h = bw.min(h - y0);
+                        if cur_w == 8 && cur_h == 8 {
+                            let (dir, _var) =
+                                svtav1_dsp::loop_filter::cdef_find_dir(&recon[y0 * w + x0..], w);
+                            // Light CDEF: pri_strength based on QP
+                            let pri = (pcs.qp / 8).min(15);
+                            let sec = (pcs.qp / 16).min(3);
+                            svtav1_dsp::loop_filter::cdef_filter_block(
+                                &recon[y0 * w + x0..],
+                                w,
+                                &mut filtered[y0 * w + x0..],
+                                w,
+                                dir,
+                                pri as i32,
+                                sec as i32,
+                                3 + (pcs.qp / 16) as i32,
+                                cur_w,
+                                cur_h,
+                            );
+                        }
                     }
                 }
+                recon = filtered;
             }
-            recon = filtered;
-        }
 
-        // 5c: Wiener restoration (if enabled)
-        // Optimizes coefficients per-frame by searching for the set that
-        // minimizes SSE between filtered reconstruction and source.
-        if self.speed_config.enable_restoration {
-            let mut restored = recon.clone();
-            let (h_coeffs, v_coeffs) = svtav1_dsp::loop_filter::optimize_wiener_coefficients(
-                &encode_input,
-                w,
-                &recon,
-                w,
-                w,
-                h,
-            );
-            svtav1_dsp::loop_filter::wiener_filter(
-                &recon,
-                w,
-                &mut restored,
-                w,
-                w,
-                h,
-                h_coeffs,
-                v_coeffs,
-            );
-            recon = restored;
-        }
+            // 5c: Wiener restoration (if enabled)
+            // Optimizes coefficients per-frame by searching for the set that
+            // minimizes SSE between filtered reconstruction and source.
+            if self.speed_config.enable_restoration {
+                let mut restored = recon.clone();
+                let (h_coeffs, v_coeffs) = svtav1_dsp::loop_filter::optimize_wiener_coefficients(
+                    &encode_input,
+                    w,
+                    &recon,
+                    w,
+                    w,
+                    h,
+                );
+                svtav1_dsp::loop_filter::wiener_filter(
+                    &recon,
+                    w,
+                    &mut restored,
+                    w,
+                    w,
+                    h,
+                    h_coeffs,
+                    v_coeffs,
+                );
+                recon = restored;
+            }
 
-        // 5d: Self-guided restoration (sgrproj) — applies variance-adaptive
-        // denoising that preserves edges. (Spec 08, Section 7.17)
-        // Only enabled at low presets where quality matters more than speed.
-        if self.speed_config.enable_restoration && self.speed_config.preset <= 6 {
-            let mut sgrproj_out = recon.clone();
-            let params = svtav1_dsp::loop_filter::SgrprojParams {
-                r0: 2,
-                r1: 1,
-                s0: (10 + pcs.qp as i32 / 2).min(100),
-                s1: (5 + pcs.qp as i32 / 4).min(50),
-                xqd: [32, 32], // Equal blend of both passes with source
-            };
-            svtav1_dsp::loop_filter::sgrproj_filter(&recon, w, &mut sgrproj_out, w, w, h, &params);
-            recon = sgrproj_out;
+            // 5d: Self-guided restoration (sgrproj) — applies variance-adaptive
+            // denoising that preserves edges. (Spec 08, Section 7.17)
+            // Only enabled at low presets where quality matters more than speed.
+            if self.speed_config.enable_restoration && self.speed_config.preset <= 6 {
+                let mut sgrproj_out = recon.clone();
+                let params = svtav1_dsp::loop_filter::SgrprojParams {
+                    r0: 2,
+                    r1: 1,
+                    s0: (10 + pcs.qp as i32 / 2).min(100),
+                    s1: (5 + pcs.qp as i32 / 4).min(50),
+                    xqd: [32, 32], // Equal blend of both passes with source
+                };
+                svtav1_dsp::loop_filter::sgrproj_filter(&recon, w, &mut sgrproj_out, w, w, h, &params);
+                recon = sgrproj_out;
+            }
+
         }
 
         // Step 6: Entropy coding — recursive partition tree encoding.
