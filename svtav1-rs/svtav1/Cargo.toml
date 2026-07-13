@@ -22,3 +22,6 @@ default = ["std"]
 std = []
 unsafe_encoding = ["svtav1-encoder/unsafe_encoding"]
 cuda = []
+# Per-symbol arithmetic-coder trace on stderr (identity harness:
+# tools/identity_diff.sh diffs it against the wrapped C library's trace).
+symtrace = ["svtav1-entropy/symtrace"]
