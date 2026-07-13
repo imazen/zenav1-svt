@@ -394,6 +394,53 @@ fn nz_map_ctx(
     nz_map_ctx_from_stats(stats, coeff_idx, bwl, tx_size, tx_class)
 }
 
+/// C `get_lower_levels_ctx_general` (coefficients.h:195 + the
+/// `get_lower_levels_ctx_eob` is_last branch, coefficients.h:55): the
+/// per-coefficient base-level context the RDOQ trellis
+/// (`svt_av1_optimize_b`) prices with. `levels_buf` is the full padded
+/// buffer from [`txb_init_levels`]; `ci` is the packed raster position.
+#[inline]
+pub fn lower_levels_ctx_general(
+    levels_buf: &[u8],
+    ci: usize,
+    bwl: usize,
+    height: usize,
+    scan_idx: usize,
+    is_last: bool,
+    tx_size: usize,
+    tx_class: usize,
+) -> usize {
+    nz_map_ctx(
+        levels_buf,
+        levels_origin(1 << bwl),
+        ci,
+        bwl,
+        height,
+        scan_idx,
+        is_last,
+        tx_size,
+        tx_class,
+    )
+}
+
+/// C `get_br_ctx_eob` (coefficients.h:68) — the coeff_br context for the
+/// last (eob) coefficient, which never reads neighbor levels.
+#[inline]
+pub fn br_ctx_eob(c: usize, bwl: usize, tx_class: usize) -> usize {
+    let row = c >> bwl;
+    let col = c - (row << bwl);
+    if c == 0 {
+        return 0;
+    }
+    if (tx_class == TX_CLASS_2D && row < 2 && col < 2)
+        || (tx_class == TX_CLASS_HORIZ && col == 0)
+        || (tx_class == TX_CLASS_VERT && row == 0)
+    {
+        return 7;
+    }
+    14
+}
+
 /// C `svt_av1_get_nz_map_contexts_c`.
 pub fn get_nz_map_contexts(
     levels_buf: &[u8],

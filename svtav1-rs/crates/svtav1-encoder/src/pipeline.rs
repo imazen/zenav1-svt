@@ -276,6 +276,46 @@ impl EncodePipeline {
         // (see qp_to_lambda) until C's lambda_rate_tables.h port lands.
         let base_qindex = crate::rate_control::qp_to_qindex(tpl_adjusted_qp);
 
+        // C-exact coding quantizer for the still/PD1 path (quant.rs): the
+        // frame-level rdoq_level from `derive_intra_coeff_level`
+        // (pic_avg_variance = mean of the per-B64 64x64 variances,
+        // pic_analysis_process.c:608, truncated to u16) via the allintra
+        // policy, the KF full lambda, and the default-CDF coefficient cost
+        // tables. Only key/still frames at presets >= 9 (the PD0
+        // fixed-tree path) on 64-aligned dims — everywhere else the
+        // legacy dead-zone quantizer stays.
+        let c_quant: Option<alloc::sync::Arc<crate::quant::CodingQuantCfg>> =
+            if is_key && self.speed_config.preset >= 9 && w % 64 == 0 && h % 64 == 0 {
+                let mut tot: u64 = 0;
+                let mut cnt: u64 = 0;
+                for sy in (0..h).step_by(64) {
+                    for sx in (0..w).step_by(64) {
+                        tot += crate::pd0::compute_b64_variance(&encode_input, w, sx, sy).0[0]
+                            as u64;
+                        cnt += 1;
+                    }
+                }
+                let pic_avg_variance = (tot / cnt) as u16;
+                let coeff_lvl = crate::quant::derive_intra_coeff_level(
+                    pic_avg_variance,
+                    tpl_adjusted_qp as u32,
+                    w,
+                    h,
+                );
+                // C clamps allintra presets above M9 to M9 (enc_handle.c:4634).
+                let eff_mode = self.speed_config.preset.min(9);
+                let rdoq_level = crate::quant::rdoq_level_allintra(eff_mode, coeff_lvl);
+                let lambda =
+                    crate::pd0::kf_full_lambda_8bit(base_qindex, tpl_adjusted_qp as u32);
+                Some(alloc::sync::Arc::new(crate::quant::CodingQuantCfg::new(
+                    rdoq_level,
+                    lambda,
+                    base_qindex,
+                )))
+            } else {
+                None
+            };
+
         // Step 4: Encode the frame superblock-by-superblock in raster order.
         // This ensures each SB can read above/left neighbors from previously
         // reconstructed SBs, matching the AV1 decode order.
@@ -349,6 +389,7 @@ impl EncodePipeline {
             mv_map_stride,
             &sb_qp_offsets,
             chroma.is_some(),
+            c_quant.clone(),
         );
 
         let mut per_tile_decisions: Vec<Vec<crate::partition::BlockDecision>> = Vec::new();
@@ -535,6 +576,7 @@ impl EncodePipeline {
                 v_recon: &mut v_recon,
                 stride: cw,
                 qindex: base_qindex,
+                c_quant: c_quant.as_deref(),
             });
 
             debug_assert_eq!(
@@ -818,6 +860,9 @@ struct ChromaPass<'a> {
     /// qindex (0..255) for chroma quantization — same tables as luma,
     /// since the frame header signals DeltaQUDc = DeltaQUAc = 0.
     qindex: u8,
+    /// Frame-level C-exact coding quantizer (still path) — C's MDS3 RDOQ
+    /// covers chroma too (skip_uv cleared when enc-dec is bypassed).
+    c_quant: Option<&'a crate::quant::CodingQuantCfg>,
 }
 
 /// Partition context update lookup table, matching rav1d's `dav1d_al_part_ctx`.
@@ -1223,10 +1268,10 @@ fn encode_block_syntax(
         let cx = block_x / 2;
         let cy = block_y / 2;
         let (u_q, u_eob) = crate::partition::encode_chroma_block_dc(
-            cp.u_src, cp.u_recon, cp.stride, cx, cy, cw, ch, cp.qindex,
+            cp.u_src, cp.u_recon, cp.stride, cx, cy, cw, ch, cp.qindex, cp.c_quant,
         );
         let (v_q, v_eob) = crate::partition::encode_chroma_block_dc(
-            cp.v_src, cp.v_recon, cp.stride, cx, cy, cw, ch, cp.qindex,
+            cp.v_src, cp.v_recon, cp.stride, cx, cy, cw, ch, cp.qindex, cp.c_quant,
         );
         (u_q, u_eob, v_q, v_eob)
     });
@@ -1795,6 +1840,7 @@ fn encode_tile_rows(
     mv_map_stride: usize,
     sb_qp_offsets: &[i8],
     chroma_420: bool,
+    c_quant: Option<alloc::sync::Arc<crate::quant::CodingQuantCfg>>,
 ) -> Vec<(
     Vec<u8>,
     Vec<crate::partition::BlockDecision>,
@@ -1820,6 +1866,8 @@ fn encode_tile_rows(
             // chroma reference with chroma dims exactly (w/2, h/2) >= 4.
             part_config.min_block_dim = 8;
         }
+        // Frame-level C-exact coding quantizer (still path — quant.rs).
+        part_config.c_quant = c_quant.clone();
 
         for sb_row in tile_sb_row_start..tile_sb_row_end {
             for sb_col in 0..sb_cols {

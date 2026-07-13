@@ -46,6 +46,11 @@ pub struct PartitionSearchConfig {
     /// is a chroma reference with chroma dims exactly (w/2, h/2) >= 4 —
     /// AV1's sub-8x8 is_chroma_ref / last-block chroma rules are deferred.
     pub min_block_dim: usize,
+    /// Frame-level C-exact coding quantizer (still path, presets >= 9):
+    /// when set, every luma quantization in this search runs C's
+    /// MDS3/still quantize path (`quant.rs`) instead of the legacy
+    /// dead-zone quantizer. None everywhere else.
+    pub c_quant: Option<alloc::sync::Arc<crate::quant::CodingQuantCfg>>,
 }
 
 impl PartitionSearchConfig {
@@ -60,6 +65,7 @@ impl PartitionSearchConfig {
             rdo_tx_decision: sc.rdo_tx_decision,
             enable_filter_intra: sc.enable_filter_intra,
             min_block_dim: MIN_BLOCK_SIZE,
+            c_quant: None,
         }
     }
 
@@ -74,6 +80,7 @@ impl PartitionSearchConfig {
             rdo_tx_decision: true,
             enable_filter_intra: true,
             min_block_dim: MIN_BLOCK_SIZE,
+            c_quant: None,
         }
     }
 }
@@ -1359,6 +1366,12 @@ pub fn encode_fixed_tree(
 /// previously reconstructed chroma neighbors exactly as the decoder will.
 ///
 /// Returns (qcoeffs raster cw x ch, eob) for the entropy writer.
+///
+/// `cq`: the frame-level C-exact coding quantizer (still path). C's MDS3
+/// runs RDOQ on chroma too when enc-dec is bypassed (`md_stage_3` clears
+/// `rdoq_ctrls.skip_uv`, product_coding_loop.c) — plane_type 1 selects the
+/// chroma cost tables and `plane_rd_mult` 13.
+#[allow(clippy::too_many_arguments)]
 pub fn encode_chroma_block_dc(
     src: &[u8],
     recon: &mut [u8],
@@ -1368,6 +1381,7 @@ pub fn encode_chroma_block_dc(
     cw: usize,
     ch: usize,
     qindex: u8,
+    cq: Option<&crate::quant::CodingQuantCfg>,
 ) -> (alloc::vec::Vec<i32>, u16) {
     let (above, left, _top_left, has_above, has_left) =
         extract_neighbors(recon, stride, cx, cy, cw, ch);
@@ -1375,7 +1389,7 @@ pub fn encode_chroma_block_dc(
     let mut pred = alloc::vec![0u8; cw * ch];
     svtav1_dsp::intra_pred::predict_dc(&mut pred, cw, &above, &left, cw, ch, has_above, has_left);
 
-    let enc = crate::encode_loop::encode_block(
+    let enc = crate::encode_loop::encode_block_tx_cq(
         &src[cy * stride + cx..],
         stride,
         &pred,
@@ -1383,6 +1397,9 @@ pub fn encode_chroma_block_dc(
         cw,
         ch,
         qindex,
+        svtav1_types::transform::TxType::DctDct,
+        cq,
+        1,
     );
 
     for r in 0..ch {
@@ -1706,7 +1723,7 @@ fn encode_single_block(
         }
 
         // Encode with this prediction — try DCT-DCT first
-        let enc_dct = crate::encode_loop::encode_block(
+        let enc_dct = crate::encode_loop::encode_block_tx_cq(
             src,
             src_stride,
             &pred_block,
@@ -1714,6 +1731,9 @@ fn encode_single_block(
             width,
             height,
             qindex,
+            svtav1_types::transform::TxType::DctDct,
+            config.c_quant.as_deref(),
+            0,
         );
         let cost_dct = enc_dct.distortion + ((lambda * enc_dct.rate as u64) >> 8);
 
@@ -1758,7 +1778,7 @@ fn encode_single_block(
             };
 
             for &alt_tx in tx_candidates {
-                let enc_alt = crate::encode_loop::encode_block_tx(
+                let enc_alt = crate::encode_loop::encode_block_tx_cq(
                     src,
                     src_stride,
                     &pred_block,
@@ -1767,6 +1787,8 @@ fn encode_single_block(
                     height,
                     qindex,
                     alt_tx,
+                    config.c_quant.as_deref(),
+                    0,
                 );
                 let cost_alt = enc_alt.distortion + ((lambda * enc_alt.rate as u64) >> 8);
                 if cost_alt < best_cost {
@@ -1885,7 +1907,18 @@ fn encode_single_block(
 
     let enc = best_enc.unwrap_or_else(|| {
         let pred_block = alloc::vec![128u8; n];
-        crate::encode_loop::encode_block(src, src_stride, &pred_block, width, width, height, qindex)
+        crate::encode_loop::encode_block_tx_cq(
+            src,
+            src_stride,
+            &pred_block,
+            width,
+            width,
+            height,
+            qindex,
+            svtav1_types::transform::TxType::DctDct,
+            config.c_quant.as_deref(),
+            0,
+        )
     });
 
     for r in 0..height {

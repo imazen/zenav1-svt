@@ -67,6 +67,31 @@ pub fn encode_block_tx(
     qindex: u8,
     tx_type: svtav1_types::transform::TxType,
 ) -> EncodeBlockResult {
+    encode_block_tx_cq(
+        src, src_stride, pred, pred_stride, width, height, qindex, tx_type, None, 0,
+    )
+}
+
+/// [`encode_block_tx`] with an optional C-exact coding quantizer.
+///
+/// `cq = None` keeps the legacy dead-zone quantizer. `cq = Some(cfg)`
+/// quantizes exactly like C's still/MDS3 path (`quant.rs`): plain
+/// `svt_aom_quantize_b` at rdoq_level 0, else `quantize_fp` + the
+/// `svt_av1_optimize_b` trellis. `plane_type` selects the luma/chroma
+/// cost tables and `plane_rd_mult` row (0 = Y, 1 = UV).
+#[allow(clippy::too_many_arguments)]
+pub fn encode_block_tx_cq(
+    src: &[u8],
+    src_stride: usize,
+    pred: &[u8],
+    pred_stride: usize,
+    width: usize,
+    height: usize,
+    qindex: u8,
+    tx_type: svtav1_types::transform::TxType,
+    cq: Option<&crate::quant::CodingQuantCfg>,
+    plane_type: usize,
+) -> EncodeBlockResult {
     let n = width * height;
 
     // Step 1: Compute residual (src - pred)
@@ -126,54 +151,110 @@ pub fn encode_block_tx(
         }
     }
 
-    // Step 3: Quantize with the real AV1 step tables so the decoder's
-    // dequantization ((level * dqv) >> tx_scale, libaom decodetxb.c)
-    // reproduces our reconstruction exactly.
-    let dequant_dc = svtav1_dsp::quant_tables::DC_QLOOKUP_8[qindex as usize] as i32;
-    let dequant_ac = svtav1_dsp::quant_tables::AC_QLOOKUP_8[qindex as usize] as i32;
-    // av1_get_tx_scale: 0 for <=256 pels, 1 for 1024, 2 for >1024.
-    let pels = (width * height) as i32;
-    let tx_scale = i32::from(pels > 256) + i32::from(pels > 1024);
-
+    // Step 3: Quantize. Two paths, both keeping the decoder's dequant
+    // mirror dq = (level * dqv) >> tx_scale exact so reconstruction always
+    // matches what the decoder will build:
+    //
+    // - cq = Some: the C-exact coding quantizer (quant.rs) — the exact
+    //   MDS3/still path of `svt_aom_quantize_inv_quantize`
+    //   (quantize_b, or quantize_fp + the optimize_b RDOQ trellis).
+    // - cq = None: the legacy dead-zone quantizer (homegrown paths).
     let mut qcoeffs = alloc::vec![0i32; n];
     let mut dqcoeffs = alloc::vec![0i32; n];
     let mut eob: u16 = 0;
 
-    for i in 0..n {
-        let dqv = if i == 0 { dequant_dc } else { dequant_ac };
-        // Dead-zone quantization against the decoder-visible step.
-        let sign = if coeffs[i] < 0 { -1i32 } else { 1 };
-        let abs_scaled = (coeffs[i].abs() as i64) << tx_scale;
-        let q = ((abs_scaled + i64::from(dqv) / 2) / i64::from(dqv)) as i32;
-        qcoeffs[i] = sign * q;
-        // Mirror of the decoder: dq = (level * dqv) >> tx_scale.
-        dqcoeffs[i] = sign * (((q as i64 * i64::from(dqv)) >> tx_scale) as i32);
-        if q > 0 {
-            eob = (i + 1) as u16;
-        }
-    }
-
-    // 64-dim transforms: the EC layer transmits only the top-left 32x32
-    // coefficients (AV1 caps coefficient coding at 32x32), so anything
-    // outside that region never reaches the decoder. Zero it here so the
-    // encoder reconstruction cannot include energy the decoder never sees,
-    // and recompute eob over the surviving coefficients.
-    if width > 32 || height > 32 {
-        let keep_w = width.min(32);
-        let keep_h = height.min(32);
-        for row in 0..height {
-            for col in 0..width {
-                if row >= keep_h || col >= keep_w {
-                    let idx = row * width + col;
-                    qcoeffs[idx] = 0;
-                    dqcoeffs[idx] = 0;
+    if let Some(cfg) = cq {
+        // C operates on the ADJUSTED (32-capped) packed coefficient block
+        // — pack the top-left quadrant for 64-dim transforms exactly like
+        // svt_handle_transform64x64/64x32 leaves it (values unchanged).
+        let c_tx = svtav1_entropy::coeff_c::tx_size_from_dims(width, height);
+        let packed_w = width.min(32);
+        let packed_h = height.min(32);
+        let packed: alloc::vec::Vec<i32> = if packed_w != width || packed_h != height {
+            let mut v = alloc::vec![0i32; packed_w * packed_h];
+            for r in 0..packed_h {
+                v[r * packed_w..(r + 1) * packed_w]
+                    .copy_from_slice(&coeffs[r * width..r * width + packed_w]);
+            }
+            v
+        } else {
+            coeffs.clone()
+        };
+        let scan = svtav1_entropy::scan_tables::scan(
+            c_tx,
+            svtav1_entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type as usize] as usize,
+        );
+        let tx_class = svtav1_entropy::coeff_c::TX_TYPE_TO_CLASS[tx_type as usize];
+        let mut pq = alloc::vec![0i32; packed_w * packed_h];
+        let mut pdq = alloc::vec![0i32; packed_w * packed_h];
+        crate::quant::quantize_inv_quantize_still(
+            cfg,
+            &packed,
+            &mut pq,
+            &mut pdq,
+            scan,
+            qindex,
+            c_tx,
+            tx_class,
+            plane_type,
+            (width * height) as u32,
+        );
+        // Unpack into the full raster (zeros outside the kept quadrant)
+        // and derive the raster-domain eob the rest of this function uses
+        // (the tile writer recomputes the scan-domain eob itself).
+        for r in 0..packed_h {
+            for c in 0..packed_w {
+                let q = pq[r * packed_w + c];
+                qcoeffs[r * width + c] = q;
+                dqcoeffs[r * width + c] = pdq[r * packed_w + c];
+                if q != 0 {
+                    eob = (r * width + c + 1) as u16;
                 }
             }
         }
-        eob = 0;
+    } else {
+        // Legacy dead-zone quantization against the decoder-visible step.
+        let dequant_dc = svtav1_dsp::quant_tables::DC_QLOOKUP_8[qindex as usize] as i32;
+        let dequant_ac = svtav1_dsp::quant_tables::AC_QLOOKUP_8[qindex as usize] as i32;
+        // av1_get_tx_scale: 0 for <=256 pels, 1 for 1024, 2 for >1024.
+        let pels = (width * height) as i32;
+        let tx_scale = i32::from(pels > 256) + i32::from(pels > 1024);
+
         for i in 0..n {
-            if qcoeffs[i] != 0 {
+            let dqv = if i == 0 { dequant_dc } else { dequant_ac };
+            let sign = if coeffs[i] < 0 { -1i32 } else { 1 };
+            let abs_scaled = (coeffs[i].abs() as i64) << tx_scale;
+            let q = ((abs_scaled + i64::from(dqv) / 2) / i64::from(dqv)) as i32;
+            qcoeffs[i] = sign * q;
+            // Mirror of the decoder: dq = (level * dqv) >> tx_scale.
+            dqcoeffs[i] = sign * (((q as i64 * i64::from(dqv)) >> tx_scale) as i32);
+            if q > 0 {
                 eob = (i + 1) as u16;
+            }
+        }
+
+        // 64-dim transforms: the EC layer transmits only the top-left
+        // 32x32 coefficients (AV1 caps coefficient coding at 32x32), so
+        // anything outside that region never reaches the decoder. Zero it
+        // here so the encoder reconstruction cannot include energy the
+        // decoder never sees, and recompute eob over the survivors.
+        if width > 32 || height > 32 {
+            let keep_w = width.min(32);
+            let keep_h = height.min(32);
+            for row in 0..height {
+                for col in 0..width {
+                    if row >= keep_h || col >= keep_w {
+                        let idx = row * width + col;
+                        qcoeffs[idx] = 0;
+                        dqcoeffs[idx] = 0;
+                    }
+                }
+            }
+            eob = 0;
+            for i in 0..n {
+                if qcoeffs[i] != 0 {
+                    eob = (i + 1) as u16;
+                }
             }
         }
     }
