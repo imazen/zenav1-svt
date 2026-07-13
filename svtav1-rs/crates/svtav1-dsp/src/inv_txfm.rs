@@ -15,12 +15,53 @@ use alloc::vec;
 use archmage::prelude::*;
 use svtav1_types::transform::TranLow;
 
+/// C `new_inv_sqrt2` = 2^12 / sqrt(2) (inv_transforms.h:257).
+pub const NEW_INV_SQRT2: i32 = 2896;
+
+/// C `clamp_value` (inv_transforms.c:87): clamp to a signed `bit`-bit range.
+/// `bit <= 0` is a no-op ("invalid clamp bit"), matching C.
+#[inline]
+pub fn clamp_value(value: i32, bit: i8) -> i32 {
+    if bit <= 0 {
+        return value;
+    }
+    let max_value: i64 = (1i64 << (bit - 1)) - 1;
+    let min_value: i64 = -(1i64 << (bit - 1));
+    (value as i64).clamp(min_value, max_value) as i32
+}
+
+/// C `clamp_buf` (inv_transforms.c:815).
+#[inline]
+fn clamp_buf(buf: &mut [i32], bit: i8) {
+    for v in buf.iter_mut() {
+        *v = clamp_value(*v, bit);
+    }
+}
+
+// Fixed bd=8 composition constants, all from the C reference:
+// - row-pass input clamp: bd + 8 = 16 bits (inv_txfm2d_add_c)
+// - col-pass input clamp: max(bd + 6, 16) = 16 bits
+// - per-stage kernel range: svt_av1_gen_inv_stage_range gives 16 for every
+//   stage of every kernel at bd = 8 (inv_transforms.c:43-85)
+const BD8_ROW_CLAMP: i8 = 16;
+const BD8_COL_CLAMP: i8 = 16;
+const BD8_STAGE_RANGE: i8 = 16;
+
+/// C `HIGHBD_WRAPLOW(x, 8)` = `check_range(x, 8)` (inv_transforms.c:2426):
+/// clamp the residual to +/-(2^15 - 1 + 1828), the AV1 8-bit coefficient
+/// range including maximum quantization error.
+#[inline]
+fn highbd_wraplow_bd8(trans: i32) -> i32 {
+    const INT_MAX8: i32 = (1 << 15) - 1 + (914 << 1);
+    trans.clamp(-INT_MAX8 - 1, INT_MAX8)
+}
+
 // =============================================================================
 // 4-point inverse DCT-II
 // Ported from svt_av1_idct4_new in inv_transforms.c:96-133
 // =============================================================================
 
-pub fn idct4(input: &[TranLow], output: &mut [TranLow]) {
+pub fn idct4(input: &[TranLow], output: &mut [TranLow], range: i8) {
     let cospi = &COSPI;
     let cos_bit = COS_BIT;
 
@@ -36,10 +77,10 @@ pub fn idct4(input: &[TranLow], output: &mut [TranLow]) {
     ];
 
     // stage 3: combine
-    output[0] = step[0] + step[3];
-    output[1] = step[1] + step[2];
-    output[2] = step[1] - step[2];
-    output[3] = step[0] - step[3];
+    output[0] = clamp_value(step[0] + step[3], range);
+    output[1] = clamp_value(step[1] + step[2], range);
+    output[2] = clamp_value(step[1] - step[2], range);
+    output[3] = clamp_value(step[0] - step[3], range);
 }
 
 // =============================================================================
@@ -47,7 +88,7 @@ pub fn idct4(input: &[TranLow], output: &mut [TranLow]) {
 // Ported from svt_av1_idct8_new in inv_transforms.c:135-212
 // =============================================================================
 
-pub fn idct8(input: &[TranLow], output: &mut [TranLow]) {
+pub fn idct8(input: &[TranLow], output: &mut [TranLow], range: i8) {
     let cospi = &COSPI;
     let cos_bit = COS_BIT;
     let mut step = [0i32; 8];
@@ -79,10 +120,10 @@ pub fn idct8(input: &[TranLow], output: &mut [TranLow]) {
     output[1] = half_btf(cospi[32], s[0], -cospi[32], s[1], cos_bit);
     output[2] = half_btf(cospi[48], s[2], -cospi[16], s[3], cos_bit);
     output[3] = half_btf(cospi[16], s[2], cospi[48], s[3], cos_bit);
-    output[4] = s[4] + s[5];
-    output[5] = s[4] - s[5];
-    output[6] = -s[6] + s[7];
-    output[7] = s[6] + s[7];
+    output[4] = clamp_value(s[4] + s[5], range);
+    output[5] = clamp_value(s[4] - s[5], range);
+    output[6] = clamp_value(-s[6] + s[7], range);
+    output[7] = clamp_value(s[6] + s[7], range);
 
     // stage 4
     let bf0_0 = output[0];
@@ -93,24 +134,24 @@ pub fn idct8(input: &[TranLow], output: &mut [TranLow]) {
     let bf0_5 = output[5];
     let bf0_6 = output[6];
     let bf0_7 = output[7];
-    step[0] = bf0_0 + bf0_3;
-    step[1] = bf0_1 + bf0_2;
-    step[2] = bf0_1 - bf0_2;
-    step[3] = bf0_0 - bf0_3;
+    step[0] = clamp_value(bf0_0 + bf0_3, range);
+    step[1] = clamp_value(bf0_1 + bf0_2, range);
+    step[2] = clamp_value(bf0_1 - bf0_2, range);
+    step[3] = clamp_value(bf0_0 - bf0_3, range);
     step[4] = bf0_4;
     step[5] = half_btf(-cospi[32], bf0_5, cospi[32], bf0_6, cos_bit);
     step[6] = half_btf(cospi[32], bf0_5, cospi[32], bf0_6, cos_bit);
     step[7] = bf0_7;
 
     // stage 5: final combine
-    output[0] = step[0] + step[7];
-    output[1] = step[1] + step[6];
-    output[2] = step[2] + step[5];
-    output[3] = step[3] + step[4];
-    output[4] = step[3] - step[4];
-    output[5] = step[2] - step[5];
-    output[6] = step[1] - step[6];
-    output[7] = step[0] - step[7];
+    output[0] = clamp_value(step[0] + step[7], range);
+    output[1] = clamp_value(step[1] + step[6], range);
+    output[2] = clamp_value(step[2] + step[5], range);
+    output[3] = clamp_value(step[3] + step[4], range);
+    output[4] = clamp_value(step[3] - step[4], range);
+    output[5] = clamp_value(step[2] - step[5], range);
+    output[6] = clamp_value(step[1] - step[6], range);
+    output[7] = clamp_value(step[0] - step[7], range);
 }
 
 // =============================================================================
@@ -118,7 +159,7 @@ pub fn idct8(input: &[TranLow], output: &mut [TranLow]) {
 // Ported from svt_av1_iadst4_new in inv_transforms.c:728-813
 // =============================================================================
 
-pub fn iadst4(input: &[TranLow], output: &mut [TranLow]) {
+pub fn iadst4(input: &[TranLow], output: &mut [TranLow], _range: i8) {
     let sinpi = &SINPI;
     let cos_bit = COS_BIT;
 
@@ -177,7 +218,7 @@ pub fn iadst4(input: &[TranLow], output: &mut [TranLow]) {
 // Ported from svt_av1_iidentity4_c in inv_transforms.c:2345-2354
 // =============================================================================
 
-pub fn iidentity4(input: &[TranLow], output: &mut [TranLow]) {
+pub fn iidentity4(input: &[TranLow], output: &mut [TranLow], _range: i8) {
     for i in 0..4 {
         output[i] = round_shift_i64(input[i] as i64 * NEW_SQRT2 as i64, NEW_SQRT2_BITS);
     }
@@ -188,7 +229,7 @@ pub fn iidentity4(input: &[TranLow], output: &mut [TranLow]) {
 // Ported from svt_av1_iidentity8_c in inv_transforms.c:2356-2362
 // =============================================================================
 
-pub fn iidentity8(input: &[TranLow], output: &mut [TranLow]) {
+pub fn iidentity8(input: &[TranLow], output: &mut [TranLow], _range: i8) {
     for i in 0..8 {
         output[i] = input[i] * 2;
     }
@@ -200,7 +241,7 @@ pub fn iidentity8(input: &[TranLow], output: &mut [TranLow]) {
 // clamp_value replaced with plain add/subtract (wide stage_range)
 // =============================================================================
 
-pub fn idct16(input: &[TranLow], output: &mut [TranLow]) {
+pub fn idct16(input: &[TranLow], output: &mut [TranLow], range: i8) {
     let cospi = &COSPI;
     let cos_bit = COS_BIT;
     let mut step = [0i32; 16];
@@ -252,14 +293,14 @@ pub fn idct16(input: &[TranLow], output: &mut [TranLow]) {
     output[5] = half_btf(cospi[24], s(5), -cospi[40], s(6), cos_bit);
     output[6] = half_btf(cospi[40], s(5), cospi[24], s(6), cos_bit);
     output[7] = half_btf(cospi[8], s(4), cospi[56], s(7), cos_bit);
-    output[8] = s(8) + s(9);
-    output[9] = s(8) - s(9);
-    output[10] = -s(10) + s(11);
-    output[11] = s(10) + s(11);
-    output[12] = s(12) + s(13);
-    output[13] = s(12) - s(13);
-    output[14] = -s(14) + s(15);
-    output[15] = s(14) + s(15);
+    output[8] = clamp_value(s(8) + s(9), range);
+    output[9] = clamp_value(s(8) - s(9), range);
+    output[10] = clamp_value(-s(10) + s(11), range);
+    output[11] = clamp_value(s(10) + s(11), range);
+    output[12] = clamp_value(s(12) + s(13), range);
+    output[13] = clamp_value(s(12) - s(13), range);
+    output[14] = clamp_value(-s(14) + s(15), range);
+    output[15] = clamp_value(s(14) + s(15), range);
 
     // stage 4
     let o = |i: usize| -> i32 { output[i] };
@@ -267,10 +308,10 @@ pub fn idct16(input: &[TranLow], output: &mut [TranLow]) {
     step[1] = half_btf(cospi[32], o(0), -cospi[32], o(1), cos_bit);
     step[2] = half_btf(cospi[48], o(2), -cospi[16], o(3), cos_bit);
     step[3] = half_btf(cospi[16], o(2), cospi[48], o(3), cos_bit);
-    step[4] = o(4) + o(5);
-    step[5] = o(4) - o(5);
-    step[6] = -o(6) + o(7);
-    step[7] = o(6) + o(7);
+    step[4] = clamp_value(o(4) + o(5), range);
+    step[5] = clamp_value(o(4) - o(5), range);
+    step[6] = clamp_value(-o(6) + o(7), range);
+    step[7] = clamp_value(o(6) + o(7), range);
     step[8] = o(8);
     step[9] = half_btf(-cospi[16], o(9), cospi[48], o(14), cos_bit);
     step[10] = half_btf(-cospi[48], o(10), -cospi[16], o(13), cos_bit);
@@ -282,33 +323,33 @@ pub fn idct16(input: &[TranLow], output: &mut [TranLow]) {
 
     // stage 5
     let s = |i: usize| -> i32 { step[i] };
-    output[0] = s(0) + s(3);
-    output[1] = s(1) + s(2);
-    output[2] = s(1) - s(2);
-    output[3] = s(0) - s(3);
+    output[0] = clamp_value(s(0) + s(3), range);
+    output[1] = clamp_value(s(1) + s(2), range);
+    output[2] = clamp_value(s(1) - s(2), range);
+    output[3] = clamp_value(s(0) - s(3), range);
     output[4] = s(4);
     output[5] = half_btf(-cospi[32], s(5), cospi[32], s(6), cos_bit);
     output[6] = half_btf(cospi[32], s(5), cospi[32], s(6), cos_bit);
     output[7] = s(7);
-    output[8] = s(8) + s(11);
-    output[9] = s(9) + s(10);
-    output[10] = s(9) - s(10);
-    output[11] = s(8) - s(11);
-    output[12] = -s(12) + s(15);
-    output[13] = -s(13) + s(14);
-    output[14] = s(13) + s(14);
-    output[15] = s(12) + s(15);
+    output[8] = clamp_value(s(8) + s(11), range);
+    output[9] = clamp_value(s(9) + s(10), range);
+    output[10] = clamp_value(s(9) - s(10), range);
+    output[11] = clamp_value(s(8) - s(11), range);
+    output[12] = clamp_value(-s(12) + s(15), range);
+    output[13] = clamp_value(-s(13) + s(14), range);
+    output[14] = clamp_value(s(13) + s(14), range);
+    output[15] = clamp_value(s(12) + s(15), range);
 
     // stage 6
     let o = |i: usize| -> i32 { output[i] };
-    step[0] = o(0) + o(7);
-    step[1] = o(1) + o(6);
-    step[2] = o(2) + o(5);
-    step[3] = o(3) + o(4);
-    step[4] = o(3) - o(4);
-    step[5] = o(2) - o(5);
-    step[6] = o(1) - o(6);
-    step[7] = o(0) - o(7);
+    step[0] = clamp_value(o(0) + o(7), range);
+    step[1] = clamp_value(o(1) + o(6), range);
+    step[2] = clamp_value(o(2) + o(5), range);
+    step[3] = clamp_value(o(3) + o(4), range);
+    step[4] = clamp_value(o(3) - o(4), range);
+    step[5] = clamp_value(o(2) - o(5), range);
+    step[6] = clamp_value(o(1) - o(6), range);
+    step[7] = clamp_value(o(0) - o(7), range);
     step[8] = o(8);
     step[9] = o(9);
     step[10] = half_btf(-cospi[32], o(10), cospi[32], o(13), cos_bit);
@@ -319,22 +360,22 @@ pub fn idct16(input: &[TranLow], output: &mut [TranLow]) {
     step[15] = o(15);
 
     // stage 7
-    output[0] = step[0] + step[15];
-    output[1] = step[1] + step[14];
-    output[2] = step[2] + step[13];
-    output[3] = step[3] + step[12];
-    output[4] = step[4] + step[11];
-    output[5] = step[5] + step[10];
-    output[6] = step[6] + step[9];
-    output[7] = step[7] + step[8];
-    output[8] = step[7] - step[8];
-    output[9] = step[6] - step[9];
-    output[10] = step[5] - step[10];
-    output[11] = step[4] - step[11];
-    output[12] = step[3] - step[12];
-    output[13] = step[2] - step[13];
-    output[14] = step[1] - step[14];
-    output[15] = step[0] - step[15];
+    output[0] = clamp_value(step[0] + step[15], range);
+    output[1] = clamp_value(step[1] + step[14], range);
+    output[2] = clamp_value(step[2] + step[13], range);
+    output[3] = clamp_value(step[3] + step[12], range);
+    output[4] = clamp_value(step[4] + step[11], range);
+    output[5] = clamp_value(step[5] + step[10], range);
+    output[6] = clamp_value(step[6] + step[9], range);
+    output[7] = clamp_value(step[7] + step[8], range);
+    output[8] = clamp_value(step[7] - step[8], range);
+    output[9] = clamp_value(step[6] - step[9], range);
+    output[10] = clamp_value(step[5] - step[10], range);
+    output[11] = clamp_value(step[4] - step[11], range);
+    output[12] = clamp_value(step[3] - step[12], range);
+    output[13] = clamp_value(step[2] - step[13], range);
+    output[14] = clamp_value(step[1] - step[14], range);
+    output[15] = clamp_value(step[0] - step[15], range);
 }
 
 // =============================================================================
@@ -343,7 +384,7 @@ pub fn idct16(input: &[TranLow], output: &mut [TranLow]) {
 // clamp_value replaced with plain add/subtract (wide stage_range)
 // =============================================================================
 
-pub fn idct32(input: &[TranLow], output: &mut [TranLow]) {
+pub fn idct32(input: &[TranLow], output: &mut [TranLow], range: i8) {
     let cospi = &COSPI;
     let cos_bit = COS_BIT;
     let mut step = [0i32; 32];
@@ -435,22 +476,22 @@ pub fn idct32(input: &[TranLow], output: &mut [TranLow]) {
     output[13] = half_btf(cospi[20], s(10), cospi[44], s(13), cos_bit);
     output[14] = half_btf(cospi[36], s(9), cospi[28], s(14), cos_bit);
     output[15] = half_btf(cospi[4], s(8), cospi[60], s(15), cos_bit);
-    output[16] = s(16) + s(17);
-    output[17] = s(16) - s(17);
-    output[18] = -s(18) + s(19);
-    output[19] = s(18) + s(19);
-    output[20] = s(20) + s(21);
-    output[21] = s(20) - s(21);
-    output[22] = -s(22) + s(23);
-    output[23] = s(22) + s(23);
-    output[24] = s(24) + s(25);
-    output[25] = s(24) - s(25);
-    output[26] = -s(26) + s(27);
-    output[27] = s(26) + s(27);
-    output[28] = s(28) + s(29);
-    output[29] = s(28) - s(29);
-    output[30] = -s(30) + s(31);
-    output[31] = s(30) + s(31);
+    output[16] = clamp_value(s(16) + s(17), range);
+    output[17] = clamp_value(s(16) - s(17), range);
+    output[18] = clamp_value(-s(18) + s(19), range);
+    output[19] = clamp_value(s(18) + s(19), range);
+    output[20] = clamp_value(s(20) + s(21), range);
+    output[21] = clamp_value(s(20) - s(21), range);
+    output[22] = clamp_value(-s(22) + s(23), range);
+    output[23] = clamp_value(s(22) + s(23), range);
+    output[24] = clamp_value(s(24) + s(25), range);
+    output[25] = clamp_value(s(24) - s(25), range);
+    output[26] = clamp_value(-s(26) + s(27), range);
+    output[27] = clamp_value(s(26) + s(27), range);
+    output[28] = clamp_value(s(28) + s(29), range);
+    output[29] = clamp_value(s(28) - s(29), range);
+    output[30] = clamp_value(-s(30) + s(31), range);
+    output[31] = clamp_value(s(30) + s(31), range);
 
     // stage 4
     let o = |i: usize| -> i32 { output[i] };
@@ -462,14 +503,14 @@ pub fn idct32(input: &[TranLow], output: &mut [TranLow]) {
     step[5] = half_btf(cospi[24], o(5), -cospi[40], o(6), cos_bit);
     step[6] = half_btf(cospi[40], o(5), cospi[24], o(6), cos_bit);
     step[7] = half_btf(cospi[8], o(4), cospi[56], o(7), cos_bit);
-    step[8] = o(8) + o(9);
-    step[9] = o(8) - o(9);
-    step[10] = -o(10) + o(11);
-    step[11] = o(10) + o(11);
-    step[12] = o(12) + o(13);
-    step[13] = o(12) - o(13);
-    step[14] = -o(14) + o(15);
-    step[15] = o(14) + o(15);
+    step[8] = clamp_value(o(8) + o(9), range);
+    step[9] = clamp_value(o(8) - o(9), range);
+    step[10] = clamp_value(-o(10) + o(11), range);
+    step[11] = clamp_value(o(10) + o(11), range);
+    step[12] = clamp_value(o(12) + o(13), range);
+    step[13] = clamp_value(o(12) - o(13), range);
+    step[14] = clamp_value(-o(14) + o(15), range);
+    step[15] = clamp_value(o(14) + o(15), range);
     step[16] = o(16);
     step[17] = half_btf(-cospi[8], o(17), cospi[56], o(30), cos_bit);
     step[18] = half_btf(-cospi[56], o(18), -cospi[8], o(29), cos_bit);
@@ -493,10 +534,10 @@ pub fn idct32(input: &[TranLow], output: &mut [TranLow]) {
     output[1] = half_btf(cospi[32], s(0), -cospi[32], s(1), cos_bit);
     output[2] = half_btf(cospi[48], s(2), -cospi[16], s(3), cos_bit);
     output[3] = half_btf(cospi[16], s(2), cospi[48], s(3), cos_bit);
-    output[4] = s(4) + s(5);
-    output[5] = s(4) - s(5);
-    output[6] = -s(6) + s(7);
-    output[7] = s(6) + s(7);
+    output[4] = clamp_value(s(4) + s(5), range);
+    output[5] = clamp_value(s(4) - s(5), range);
+    output[6] = clamp_value(-s(6) + s(7), range);
+    output[7] = clamp_value(s(6) + s(7), range);
     output[8] = s(8);
     output[9] = half_btf(-cospi[16], s(9), cospi[48], s(14), cos_bit);
     output[10] = half_btf(-cospi[48], s(10), -cospi[16], s(13), cos_bit);
@@ -505,41 +546,41 @@ pub fn idct32(input: &[TranLow], output: &mut [TranLow]) {
     output[13] = half_btf(-cospi[16], s(10), cospi[48], s(13), cos_bit);
     output[14] = half_btf(cospi[48], s(9), cospi[16], s(14), cos_bit);
     output[15] = s(15);
-    output[16] = s(16) + s(19);
-    output[17] = s(17) + s(18);
-    output[18] = s(17) - s(18);
-    output[19] = s(16) - s(19);
-    output[20] = -s(20) + s(23);
-    output[21] = -s(21) + s(22);
-    output[22] = s(21) + s(22);
-    output[23] = s(20) + s(23);
-    output[24] = s(24) + s(27);
-    output[25] = s(25) + s(26);
-    output[26] = s(25) - s(26);
-    output[27] = s(24) - s(27);
-    output[28] = -s(28) + s(31);
-    output[29] = -s(29) + s(30);
-    output[30] = s(29) + s(30);
-    output[31] = s(28) + s(31);
+    output[16] = clamp_value(s(16) + s(19), range);
+    output[17] = clamp_value(s(17) + s(18), range);
+    output[18] = clamp_value(s(17) - s(18), range);
+    output[19] = clamp_value(s(16) - s(19), range);
+    output[20] = clamp_value(-s(20) + s(23), range);
+    output[21] = clamp_value(-s(21) + s(22), range);
+    output[22] = clamp_value(s(21) + s(22), range);
+    output[23] = clamp_value(s(20) + s(23), range);
+    output[24] = clamp_value(s(24) + s(27), range);
+    output[25] = clamp_value(s(25) + s(26), range);
+    output[26] = clamp_value(s(25) - s(26), range);
+    output[27] = clamp_value(s(24) - s(27), range);
+    output[28] = clamp_value(-s(28) + s(31), range);
+    output[29] = clamp_value(-s(29) + s(30), range);
+    output[30] = clamp_value(s(29) + s(30), range);
+    output[31] = clamp_value(s(28) + s(31), range);
 
     // stage 6
     let o = |i: usize| -> i32 { output[i] };
-    step[0] = o(0) + o(3);
-    step[1] = o(1) + o(2);
-    step[2] = o(1) - o(2);
-    step[3] = o(0) - o(3);
+    step[0] = clamp_value(o(0) + o(3), range);
+    step[1] = clamp_value(o(1) + o(2), range);
+    step[2] = clamp_value(o(1) - o(2), range);
+    step[3] = clamp_value(o(0) - o(3), range);
     step[4] = o(4);
     step[5] = half_btf(-cospi[32], o(5), cospi[32], o(6), cos_bit);
     step[6] = half_btf(cospi[32], o(5), cospi[32], o(6), cos_bit);
     step[7] = o(7);
-    step[8] = o(8) + o(11);
-    step[9] = o(9) + o(10);
-    step[10] = o(9) - o(10);
-    step[11] = o(8) - o(11);
-    step[12] = -o(12) + o(15);
-    step[13] = -o(13) + o(14);
-    step[14] = o(13) + o(14);
-    step[15] = o(12) + o(15);
+    step[8] = clamp_value(o(8) + o(11), range);
+    step[9] = clamp_value(o(9) + o(10), range);
+    step[10] = clamp_value(o(9) - o(10), range);
+    step[11] = clamp_value(o(8) - o(11), range);
+    step[12] = clamp_value(-o(12) + o(15), range);
+    step[13] = clamp_value(-o(13) + o(14), range);
+    step[14] = clamp_value(o(13) + o(14), range);
+    step[15] = clamp_value(o(12) + o(15), range);
     step[16] = o(16);
     step[17] = o(17);
     step[18] = half_btf(-cospi[16], o(18), cospi[48], o(29), cos_bit);
@@ -559,14 +600,14 @@ pub fn idct32(input: &[TranLow], output: &mut [TranLow]) {
 
     // stage 7
     let s = |i: usize| -> i32 { step[i] };
-    output[0] = s(0) + s(7);
-    output[1] = s(1) + s(6);
-    output[2] = s(2) + s(5);
-    output[3] = s(3) + s(4);
-    output[4] = s(3) - s(4);
-    output[5] = s(2) - s(5);
-    output[6] = s(1) - s(6);
-    output[7] = s(0) - s(7);
+    output[0] = clamp_value(s(0) + s(7), range);
+    output[1] = clamp_value(s(1) + s(6), range);
+    output[2] = clamp_value(s(2) + s(5), range);
+    output[3] = clamp_value(s(3) + s(4), range);
+    output[4] = clamp_value(s(3) - s(4), range);
+    output[5] = clamp_value(s(2) - s(5), range);
+    output[6] = clamp_value(s(1) - s(6), range);
+    output[7] = clamp_value(s(0) - s(7), range);
     output[8] = s(8);
     output[9] = s(9);
     output[10] = half_btf(-cospi[32], s(10), cospi[32], s(13), cos_bit);
@@ -575,41 +616,41 @@ pub fn idct32(input: &[TranLow], output: &mut [TranLow]) {
     output[13] = half_btf(cospi[32], s(10), cospi[32], s(13), cos_bit);
     output[14] = s(14);
     output[15] = s(15);
-    output[16] = s(16) + s(23);
-    output[17] = s(17) + s(22);
-    output[18] = s(18) + s(21);
-    output[19] = s(19) + s(20);
-    output[20] = s(19) - s(20);
-    output[21] = s(18) - s(21);
-    output[22] = s(17) - s(22);
-    output[23] = s(16) - s(23);
-    output[24] = -s(24) + s(31);
-    output[25] = -s(25) + s(30);
-    output[26] = -s(26) + s(29);
-    output[27] = -s(27) + s(28);
-    output[28] = s(27) + s(28);
-    output[29] = s(26) + s(29);
-    output[30] = s(25) + s(30);
-    output[31] = s(24) + s(31);
+    output[16] = clamp_value(s(16) + s(23), range);
+    output[17] = clamp_value(s(17) + s(22), range);
+    output[18] = clamp_value(s(18) + s(21), range);
+    output[19] = clamp_value(s(19) + s(20), range);
+    output[20] = clamp_value(s(19) - s(20), range);
+    output[21] = clamp_value(s(18) - s(21), range);
+    output[22] = clamp_value(s(17) - s(22), range);
+    output[23] = clamp_value(s(16) - s(23), range);
+    output[24] = clamp_value(-s(24) + s(31), range);
+    output[25] = clamp_value(-s(25) + s(30), range);
+    output[26] = clamp_value(-s(26) + s(29), range);
+    output[27] = clamp_value(-s(27) + s(28), range);
+    output[28] = clamp_value(s(27) + s(28), range);
+    output[29] = clamp_value(s(26) + s(29), range);
+    output[30] = clamp_value(s(25) + s(30), range);
+    output[31] = clamp_value(s(24) + s(31), range);
 
     // stage 8
     let o = |i: usize| -> i32 { output[i] };
-    step[0] = o(0) + o(15);
-    step[1] = o(1) + o(14);
-    step[2] = o(2) + o(13);
-    step[3] = o(3) + o(12);
-    step[4] = o(4) + o(11);
-    step[5] = o(5) + o(10);
-    step[6] = o(6) + o(9);
-    step[7] = o(7) + o(8);
-    step[8] = o(7) - o(8);
-    step[9] = o(6) - o(9);
-    step[10] = o(5) - o(10);
-    step[11] = o(4) - o(11);
-    step[12] = o(3) - o(12);
-    step[13] = o(2) - o(13);
-    step[14] = o(1) - o(14);
-    step[15] = o(0) - o(15);
+    step[0] = clamp_value(o(0) + o(15), range);
+    step[1] = clamp_value(o(1) + o(14), range);
+    step[2] = clamp_value(o(2) + o(13), range);
+    step[3] = clamp_value(o(3) + o(12), range);
+    step[4] = clamp_value(o(4) + o(11), range);
+    step[5] = clamp_value(o(5) + o(10), range);
+    step[6] = clamp_value(o(6) + o(9), range);
+    step[7] = clamp_value(o(7) + o(8), range);
+    step[8] = clamp_value(o(7) - o(8), range);
+    step[9] = clamp_value(o(6) - o(9), range);
+    step[10] = clamp_value(o(5) - o(10), range);
+    step[11] = clamp_value(o(4) - o(11), range);
+    step[12] = clamp_value(o(3) - o(12), range);
+    step[13] = clamp_value(o(2) - o(13), range);
+    step[14] = clamp_value(o(1) - o(14), range);
+    step[15] = clamp_value(o(0) - o(15), range);
     step[16] = o(16);
     step[17] = o(17);
     step[18] = o(18);
@@ -629,38 +670,38 @@ pub fn idct32(input: &[TranLow], output: &mut [TranLow]) {
 
     // stage 9
     let s = |i: usize| -> i32 { step[i] };
-    output[0] = s(0) + s(31);
-    output[1] = s(1) + s(30);
-    output[2] = s(2) + s(29);
-    output[3] = s(3) + s(28);
-    output[4] = s(4) + s(27);
-    output[5] = s(5) + s(26);
-    output[6] = s(6) + s(25);
-    output[7] = s(7) + s(24);
-    output[8] = s(8) + s(23);
-    output[9] = s(9) + s(22);
-    output[10] = s(10) + s(21);
-    output[11] = s(11) + s(20);
-    output[12] = s(12) + s(19);
-    output[13] = s(13) + s(18);
-    output[14] = s(14) + s(17);
-    output[15] = s(15) + s(16);
-    output[16] = s(15) - s(16);
-    output[17] = s(14) - s(17);
-    output[18] = s(13) - s(18);
-    output[19] = s(12) - s(19);
-    output[20] = s(11) - s(20);
-    output[21] = s(10) - s(21);
-    output[22] = s(9) - s(22);
-    output[23] = s(8) - s(23);
-    output[24] = s(7) - s(24);
-    output[25] = s(6) - s(25);
-    output[26] = s(5) - s(26);
-    output[27] = s(4) - s(27);
-    output[28] = s(3) - s(28);
-    output[29] = s(2) - s(29);
-    output[30] = s(1) - s(30);
-    output[31] = s(0) - s(31);
+    output[0] = clamp_value(s(0) + s(31), range);
+    output[1] = clamp_value(s(1) + s(30), range);
+    output[2] = clamp_value(s(2) + s(29), range);
+    output[3] = clamp_value(s(3) + s(28), range);
+    output[4] = clamp_value(s(4) + s(27), range);
+    output[5] = clamp_value(s(5) + s(26), range);
+    output[6] = clamp_value(s(6) + s(25), range);
+    output[7] = clamp_value(s(7) + s(24), range);
+    output[8] = clamp_value(s(8) + s(23), range);
+    output[9] = clamp_value(s(9) + s(22), range);
+    output[10] = clamp_value(s(10) + s(21), range);
+    output[11] = clamp_value(s(11) + s(20), range);
+    output[12] = clamp_value(s(12) + s(19), range);
+    output[13] = clamp_value(s(13) + s(18), range);
+    output[14] = clamp_value(s(14) + s(17), range);
+    output[15] = clamp_value(s(15) + s(16), range);
+    output[16] = clamp_value(s(15) - s(16), range);
+    output[17] = clamp_value(s(14) - s(17), range);
+    output[18] = clamp_value(s(13) - s(18), range);
+    output[19] = clamp_value(s(12) - s(19), range);
+    output[20] = clamp_value(s(11) - s(20), range);
+    output[21] = clamp_value(s(10) - s(21), range);
+    output[22] = clamp_value(s(9) - s(22), range);
+    output[23] = clamp_value(s(8) - s(23), range);
+    output[24] = clamp_value(s(7) - s(24), range);
+    output[25] = clamp_value(s(6) - s(25), range);
+    output[26] = clamp_value(s(5) - s(26), range);
+    output[27] = clamp_value(s(4) - s(27), range);
+    output[28] = clamp_value(s(3) - s(28), range);
+    output[29] = clamp_value(s(2) - s(29), range);
+    output[30] = clamp_value(s(1) - s(30), range);
+    output[31] = clamp_value(s(0) - s(31), range);
 }
 
 // =============================================================================
@@ -668,7 +709,7 @@ pub fn idct32(input: &[TranLow], output: &mut [TranLow]) {
 // Ported from svt_av1_iidentity32_c in inv_transforms.c
 // =============================================================================
 
-pub fn iidentity32(input: &[TranLow], output: &mut [TranLow]) {
+pub fn iidentity32(input: &[TranLow], output: &mut [TranLow], _range: i8) {
     for i in 0..32 {
         output[i] = input[i] * 4;
     }
@@ -680,7 +721,7 @@ pub fn iidentity32(input: &[TranLow], output: &mut [TranLow]) {
 // clamp_value replaced with plain add/subtract (wide stage_range)
 // =============================================================================
 
-pub fn idct64(input: &[TranLow], output: &mut [TranLow]) {
+pub fn idct64(input: &[TranLow], output: &mut [TranLow], range: i8) {
     let cospi = &COSPI;
     let cos_bit = COS_BIT;
     let mut step = [0i32; 64];
@@ -852,38 +893,38 @@ pub fn idct64(input: &[TranLow], output: &mut [TranLow]) {
     output[29] = half_btf(cospi[18], s(18), cospi[46], s(29), cos_bit);
     output[30] = half_btf(cospi[34], s(17), cospi[30], s(30), cos_bit);
     output[31] = half_btf(cospi[2], s(16), cospi[62], s(31), cos_bit);
-    output[32] = s(32) + s(33);
-    output[33] = s(32) - s(33);
-    output[34] = -s(34) + s(35);
-    output[35] = s(34) + s(35);
-    output[36] = s(36) + s(37);
-    output[37] = s(36) - s(37);
-    output[38] = -s(38) + s(39);
-    output[39] = s(38) + s(39);
-    output[40] = s(40) + s(41);
-    output[41] = s(40) - s(41);
-    output[42] = -s(42) + s(43);
-    output[43] = s(42) + s(43);
-    output[44] = s(44) + s(45);
-    output[45] = s(44) - s(45);
-    output[46] = -s(46) + s(47);
-    output[47] = s(46) + s(47);
-    output[48] = s(48) + s(49);
-    output[49] = s(48) - s(49);
-    output[50] = -s(50) + s(51);
-    output[51] = s(50) + s(51);
-    output[52] = s(52) + s(53);
-    output[53] = s(52) - s(53);
-    output[54] = -s(54) + s(55);
-    output[55] = s(54) + s(55);
-    output[56] = s(56) + s(57);
-    output[57] = s(56) - s(57);
-    output[58] = -s(58) + s(59);
-    output[59] = s(58) + s(59);
-    output[60] = s(60) + s(61);
-    output[61] = s(60) - s(61);
-    output[62] = -s(62) + s(63);
-    output[63] = s(62) + s(63);
+    output[32] = clamp_value(s(32) + s(33), range);
+    output[33] = clamp_value(s(32) - s(33), range);
+    output[34] = clamp_value(-s(34) + s(35), range);
+    output[35] = clamp_value(s(34) + s(35), range);
+    output[36] = clamp_value(s(36) + s(37), range);
+    output[37] = clamp_value(s(36) - s(37), range);
+    output[38] = clamp_value(-s(38) + s(39), range);
+    output[39] = clamp_value(s(38) + s(39), range);
+    output[40] = clamp_value(s(40) + s(41), range);
+    output[41] = clamp_value(s(40) - s(41), range);
+    output[42] = clamp_value(-s(42) + s(43), range);
+    output[43] = clamp_value(s(42) + s(43), range);
+    output[44] = clamp_value(s(44) + s(45), range);
+    output[45] = clamp_value(s(44) - s(45), range);
+    output[46] = clamp_value(-s(46) + s(47), range);
+    output[47] = clamp_value(s(46) + s(47), range);
+    output[48] = clamp_value(s(48) + s(49), range);
+    output[49] = clamp_value(s(48) - s(49), range);
+    output[50] = clamp_value(-s(50) + s(51), range);
+    output[51] = clamp_value(s(50) + s(51), range);
+    output[52] = clamp_value(s(52) + s(53), range);
+    output[53] = clamp_value(s(52) - s(53), range);
+    output[54] = clamp_value(-s(54) + s(55), range);
+    output[55] = clamp_value(s(54) + s(55), range);
+    output[56] = clamp_value(s(56) + s(57), range);
+    output[57] = clamp_value(s(56) - s(57), range);
+    output[58] = clamp_value(-s(58) + s(59), range);
+    output[59] = clamp_value(s(58) + s(59), range);
+    output[60] = clamp_value(s(60) + s(61), range);
+    output[61] = clamp_value(s(60) - s(61), range);
+    output[62] = clamp_value(-s(62) + s(63), range);
+    output[63] = clamp_value(s(62) + s(63), range);
 
     // stage 4
     let o = |i: usize| -> i32 { output[i] };
@@ -903,22 +944,22 @@ pub fn idct64(input: &[TranLow], output: &mut [TranLow]) {
     step[13] = half_btf(cospi[20], o(10), cospi[44], o(13), cos_bit);
     step[14] = half_btf(cospi[36], o(9), cospi[28], o(14), cos_bit);
     step[15] = half_btf(cospi[4], o(8), cospi[60], o(15), cos_bit);
-    step[16] = o(16) + o(17);
-    step[17] = o(16) - o(17);
-    step[18] = -o(18) + o(19);
-    step[19] = o(18) + o(19);
-    step[20] = o(20) + o(21);
-    step[21] = o(20) - o(21);
-    step[22] = -o(22) + o(23);
-    step[23] = o(22) + o(23);
-    step[24] = o(24) + o(25);
-    step[25] = o(24) - o(25);
-    step[26] = -o(26) + o(27);
-    step[27] = o(26) + o(27);
-    step[28] = o(28) + o(29);
-    step[29] = o(28) - o(29);
-    step[30] = -o(30) + o(31);
-    step[31] = o(30) + o(31);
+    step[16] = clamp_value(o(16) + o(17), range);
+    step[17] = clamp_value(o(16) - o(17), range);
+    step[18] = clamp_value(-o(18) + o(19), range);
+    step[19] = clamp_value(o(18) + o(19), range);
+    step[20] = clamp_value(o(20) + o(21), range);
+    step[21] = clamp_value(o(20) - o(21), range);
+    step[22] = clamp_value(-o(22) + o(23), range);
+    step[23] = clamp_value(o(22) + o(23), range);
+    step[24] = clamp_value(o(24) + o(25), range);
+    step[25] = clamp_value(o(24) - o(25), range);
+    step[26] = clamp_value(-o(26) + o(27), range);
+    step[27] = clamp_value(o(26) + o(27), range);
+    step[28] = clamp_value(o(28) + o(29), range);
+    step[29] = clamp_value(o(28) - o(29), range);
+    step[30] = clamp_value(-o(30) + o(31), range);
+    step[31] = clamp_value(o(30) + o(31), range);
     step[32] = o(32);
     step[33] = half_btf(-cospi[4], o(33), cospi[60], o(62), cos_bit);
     step[34] = half_btf(-cospi[60], o(34), -cospi[4], o(61), cos_bit);
@@ -962,14 +1003,14 @@ pub fn idct64(input: &[TranLow], output: &mut [TranLow]) {
     output[5] = half_btf(cospi[24], s(5), -cospi[40], s(6), cos_bit);
     output[6] = half_btf(cospi[40], s(5), cospi[24], s(6), cos_bit);
     output[7] = half_btf(cospi[8], s(4), cospi[56], s(7), cos_bit);
-    output[8] = s(8) + s(9);
-    output[9] = s(8) - s(9);
-    output[10] = -s(10) + s(11);
-    output[11] = s(10) + s(11);
-    output[12] = s(12) + s(13);
-    output[13] = s(12) - s(13);
-    output[14] = -s(14) + s(15);
-    output[15] = s(14) + s(15);
+    output[8] = clamp_value(s(8) + s(9), range);
+    output[9] = clamp_value(s(8) - s(9), range);
+    output[10] = clamp_value(-s(10) + s(11), range);
+    output[11] = clamp_value(s(10) + s(11), range);
+    output[12] = clamp_value(s(12) + s(13), range);
+    output[13] = clamp_value(s(12) - s(13), range);
+    output[14] = clamp_value(-s(14) + s(15), range);
+    output[15] = clamp_value(s(14) + s(15), range);
     output[16] = s(16);
     output[17] = half_btf(-cospi[8], s(17), cospi[56], s(30), cos_bit);
     output[18] = half_btf(-cospi[56], s(18), -cospi[8], s(29), cos_bit);
@@ -986,38 +1027,38 @@ pub fn idct64(input: &[TranLow], output: &mut [TranLow]) {
     output[29] = half_btf(-cospi[8], s(18), cospi[56], s(29), cos_bit);
     output[30] = half_btf(cospi[56], s(17), cospi[8], s(30), cos_bit);
     output[31] = s(31);
-    output[32] = s(32) + s(35);
-    output[33] = s(33) + s(34);
-    output[34] = s(33) - s(34);
-    output[35] = s(32) - s(35);
-    output[36] = -s(36) + s(39);
-    output[37] = -s(37) + s(38);
-    output[38] = s(37) + s(38);
-    output[39] = s(36) + s(39);
-    output[40] = s(40) + s(43);
-    output[41] = s(41) + s(42);
-    output[42] = s(41) - s(42);
-    output[43] = s(40) - s(43);
-    output[44] = -s(44) + s(47);
-    output[45] = -s(45) + s(46);
-    output[46] = s(45) + s(46);
-    output[47] = s(44) + s(47);
-    output[48] = s(48) + s(51);
-    output[49] = s(49) + s(50);
-    output[50] = s(49) - s(50);
-    output[51] = s(48) - s(51);
-    output[52] = -s(52) + s(55);
-    output[53] = -s(53) + s(54);
-    output[54] = s(53) + s(54);
-    output[55] = s(52) + s(55);
-    output[56] = s(56) + s(59);
-    output[57] = s(57) + s(58);
-    output[58] = s(57) - s(58);
-    output[59] = s(56) - s(59);
-    output[60] = -s(60) + s(63);
-    output[61] = -s(61) + s(62);
-    output[62] = s(61) + s(62);
-    output[63] = s(60) + s(63);
+    output[32] = clamp_value(s(32) + s(35), range);
+    output[33] = clamp_value(s(33) + s(34), range);
+    output[34] = clamp_value(s(33) - s(34), range);
+    output[35] = clamp_value(s(32) - s(35), range);
+    output[36] = clamp_value(-s(36) + s(39), range);
+    output[37] = clamp_value(-s(37) + s(38), range);
+    output[38] = clamp_value(s(37) + s(38), range);
+    output[39] = clamp_value(s(36) + s(39), range);
+    output[40] = clamp_value(s(40) + s(43), range);
+    output[41] = clamp_value(s(41) + s(42), range);
+    output[42] = clamp_value(s(41) - s(42), range);
+    output[43] = clamp_value(s(40) - s(43), range);
+    output[44] = clamp_value(-s(44) + s(47), range);
+    output[45] = clamp_value(-s(45) + s(46), range);
+    output[46] = clamp_value(s(45) + s(46), range);
+    output[47] = clamp_value(s(44) + s(47), range);
+    output[48] = clamp_value(s(48) + s(51), range);
+    output[49] = clamp_value(s(49) + s(50), range);
+    output[50] = clamp_value(s(49) - s(50), range);
+    output[51] = clamp_value(s(48) - s(51), range);
+    output[52] = clamp_value(-s(52) + s(55), range);
+    output[53] = clamp_value(-s(53) + s(54), range);
+    output[54] = clamp_value(s(53) + s(54), range);
+    output[55] = clamp_value(s(52) + s(55), range);
+    output[56] = clamp_value(s(56) + s(59), range);
+    output[57] = clamp_value(s(57) + s(58), range);
+    output[58] = clamp_value(s(57) - s(58), range);
+    output[59] = clamp_value(s(56) - s(59), range);
+    output[60] = clamp_value(-s(60) + s(63), range);
+    output[61] = clamp_value(-s(61) + s(62), range);
+    output[62] = clamp_value(s(61) + s(62), range);
+    output[63] = clamp_value(s(60) + s(63), range);
 
     // stage 6
     let o = |i: usize| -> i32 { output[i] };
@@ -1025,10 +1066,10 @@ pub fn idct64(input: &[TranLow], output: &mut [TranLow]) {
     step[1] = half_btf(cospi[32], o(0), -cospi[32], o(1), cos_bit);
     step[2] = half_btf(cospi[48], o(2), -cospi[16], o(3), cos_bit);
     step[3] = half_btf(cospi[16], o(2), cospi[48], o(3), cos_bit);
-    step[4] = o(4) + o(5);
-    step[5] = o(4) - o(5);
-    step[6] = -o(6) + o(7);
-    step[7] = o(6) + o(7);
+    step[4] = clamp_value(o(4) + o(5), range);
+    step[5] = clamp_value(o(4) - o(5), range);
+    step[6] = clamp_value(-o(6) + o(7), range);
+    step[7] = clamp_value(o(6) + o(7), range);
     step[8] = o(8);
     step[9] = half_btf(-cospi[16], o(9), cospi[48], o(14), cos_bit);
     step[10] = half_btf(-cospi[48], o(10), -cospi[16], o(13), cos_bit);
@@ -1037,22 +1078,22 @@ pub fn idct64(input: &[TranLow], output: &mut [TranLow]) {
     step[13] = half_btf(-cospi[16], o(10), cospi[48], o(13), cos_bit);
     step[14] = half_btf(cospi[48], o(9), cospi[16], o(14), cos_bit);
     step[15] = o(15);
-    step[16] = o(16) + o(19);
-    step[17] = o(17) + o(18);
-    step[18] = o(17) - o(18);
-    step[19] = o(16) - o(19);
-    step[20] = -o(20) + o(23);
-    step[21] = -o(21) + o(22);
-    step[22] = o(21) + o(22);
-    step[23] = o(20) + o(23);
-    step[24] = o(24) + o(27);
-    step[25] = o(25) + o(26);
-    step[26] = o(25) - o(26);
-    step[27] = o(24) - o(27);
-    step[28] = -o(28) + o(31);
-    step[29] = -o(29) + o(30);
-    step[30] = o(29) + o(30);
-    step[31] = o(28) + o(31);
+    step[16] = clamp_value(o(16) + o(19), range);
+    step[17] = clamp_value(o(17) + o(18), range);
+    step[18] = clamp_value(o(17) - o(18), range);
+    step[19] = clamp_value(o(16) - o(19), range);
+    step[20] = clamp_value(-o(20) + o(23), range);
+    step[21] = clamp_value(-o(21) + o(22), range);
+    step[22] = clamp_value(o(21) + o(22), range);
+    step[23] = clamp_value(o(20) + o(23), range);
+    step[24] = clamp_value(o(24) + o(27), range);
+    step[25] = clamp_value(o(25) + o(26), range);
+    step[26] = clamp_value(o(25) - o(26), range);
+    step[27] = clamp_value(o(24) - o(27), range);
+    step[28] = clamp_value(-o(28) + o(31), range);
+    step[29] = clamp_value(-o(29) + o(30), range);
+    step[30] = clamp_value(o(29) + o(30), range);
+    step[31] = clamp_value(o(28) + o(31), range);
     step[32] = o(32);
     step[33] = o(33);
     step[34] = half_btf(-cospi[8], o(34), cospi[56], o(61), cos_bit);
@@ -1088,22 +1129,22 @@ pub fn idct64(input: &[TranLow], output: &mut [TranLow]) {
 
     // stage 7
     let s = |i: usize| -> i32 { step[i] };
-    output[0] = s(0) + s(3);
-    output[1] = s(1) + s(2);
-    output[2] = s(1) - s(2);
-    output[3] = s(0) - s(3);
+    output[0] = clamp_value(s(0) + s(3), range);
+    output[1] = clamp_value(s(1) + s(2), range);
+    output[2] = clamp_value(s(1) - s(2), range);
+    output[3] = clamp_value(s(0) - s(3), range);
     output[4] = s(4);
     output[5] = half_btf(-cospi[32], s(5), cospi[32], s(6), cos_bit);
     output[6] = half_btf(cospi[32], s(5), cospi[32], s(6), cos_bit);
     output[7] = s(7);
-    output[8] = s(8) + s(11);
-    output[9] = s(9) + s(10);
-    output[10] = s(9) - s(10);
-    output[11] = s(8) - s(11);
-    output[12] = -s(12) + s(15);
-    output[13] = -s(13) + s(14);
-    output[14] = s(13) + s(14);
-    output[15] = s(12) + s(15);
+    output[8] = clamp_value(s(8) + s(11), range);
+    output[9] = clamp_value(s(9) + s(10), range);
+    output[10] = clamp_value(s(9) - s(10), range);
+    output[11] = clamp_value(s(8) - s(11), range);
+    output[12] = clamp_value(-s(12) + s(15), range);
+    output[13] = clamp_value(-s(13) + s(14), range);
+    output[14] = clamp_value(s(13) + s(14), range);
+    output[15] = clamp_value(s(12) + s(15), range);
     output[16] = s(16);
     output[17] = s(17);
     output[18] = half_btf(-cospi[16], s(18), cospi[48], s(29), cos_bit);
@@ -1120,49 +1161,49 @@ pub fn idct64(input: &[TranLow], output: &mut [TranLow]) {
     output[29] = half_btf(cospi[48], s(18), cospi[16], s(29), cos_bit);
     output[30] = s(30);
     output[31] = s(31);
-    output[32] = s(32) + s(39);
-    output[33] = s(33) + s(38);
-    output[34] = s(34) + s(37);
-    output[35] = s(35) + s(36);
-    output[36] = s(35) - s(36);
-    output[37] = s(34) - s(37);
-    output[38] = s(33) - s(38);
-    output[39] = s(32) - s(39);
-    output[40] = -s(40) + s(47);
-    output[41] = -s(41) + s(46);
-    output[42] = -s(42) + s(45);
-    output[43] = -s(43) + s(44);
-    output[44] = s(43) + s(44);
-    output[45] = s(42) + s(45);
-    output[46] = s(41) + s(46);
-    output[47] = s(40) + s(47);
-    output[48] = s(48) + s(55);
-    output[49] = s(49) + s(54);
-    output[50] = s(50) + s(53);
-    output[51] = s(51) + s(52);
-    output[52] = s(51) - s(52);
-    output[53] = s(50) - s(53);
-    output[54] = s(49) - s(54);
-    output[55] = s(48) - s(55);
-    output[56] = -s(56) + s(63);
-    output[57] = -s(57) + s(62);
-    output[58] = -s(58) + s(61);
-    output[59] = -s(59) + s(60);
-    output[60] = s(59) + s(60);
-    output[61] = s(58) + s(61);
-    output[62] = s(57) + s(62);
-    output[63] = s(56) + s(63);
+    output[32] = clamp_value(s(32) + s(39), range);
+    output[33] = clamp_value(s(33) + s(38), range);
+    output[34] = clamp_value(s(34) + s(37), range);
+    output[35] = clamp_value(s(35) + s(36), range);
+    output[36] = clamp_value(s(35) - s(36), range);
+    output[37] = clamp_value(s(34) - s(37), range);
+    output[38] = clamp_value(s(33) - s(38), range);
+    output[39] = clamp_value(s(32) - s(39), range);
+    output[40] = clamp_value(-s(40) + s(47), range);
+    output[41] = clamp_value(-s(41) + s(46), range);
+    output[42] = clamp_value(-s(42) + s(45), range);
+    output[43] = clamp_value(-s(43) + s(44), range);
+    output[44] = clamp_value(s(43) + s(44), range);
+    output[45] = clamp_value(s(42) + s(45), range);
+    output[46] = clamp_value(s(41) + s(46), range);
+    output[47] = clamp_value(s(40) + s(47), range);
+    output[48] = clamp_value(s(48) + s(55), range);
+    output[49] = clamp_value(s(49) + s(54), range);
+    output[50] = clamp_value(s(50) + s(53), range);
+    output[51] = clamp_value(s(51) + s(52), range);
+    output[52] = clamp_value(s(51) - s(52), range);
+    output[53] = clamp_value(s(50) - s(53), range);
+    output[54] = clamp_value(s(49) - s(54), range);
+    output[55] = clamp_value(s(48) - s(55), range);
+    output[56] = clamp_value(-s(56) + s(63), range);
+    output[57] = clamp_value(-s(57) + s(62), range);
+    output[58] = clamp_value(-s(58) + s(61), range);
+    output[59] = clamp_value(-s(59) + s(60), range);
+    output[60] = clamp_value(s(59) + s(60), range);
+    output[61] = clamp_value(s(58) + s(61), range);
+    output[62] = clamp_value(s(57) + s(62), range);
+    output[63] = clamp_value(s(56) + s(63), range);
 
     // stage 8
     let o = |i: usize| -> i32 { output[i] };
-    step[0] = o(0) + o(7);
-    step[1] = o(1) + o(6);
-    step[2] = o(2) + o(5);
-    step[3] = o(3) + o(4);
-    step[4] = o(3) - o(4);
-    step[5] = o(2) - o(5);
-    step[6] = o(1) - o(6);
-    step[7] = o(0) - o(7);
+    step[0] = clamp_value(o(0) + o(7), range);
+    step[1] = clamp_value(o(1) + o(6), range);
+    step[2] = clamp_value(o(2) + o(5), range);
+    step[3] = clamp_value(o(3) + o(4), range);
+    step[4] = clamp_value(o(3) - o(4), range);
+    step[5] = clamp_value(o(2) - o(5), range);
+    step[6] = clamp_value(o(1) - o(6), range);
+    step[7] = clamp_value(o(0) - o(7), range);
     step[8] = o(8);
     step[9] = o(9);
     step[10] = half_btf(-cospi[32], o(10), cospi[32], o(13), cos_bit);
@@ -1171,22 +1212,22 @@ pub fn idct64(input: &[TranLow], output: &mut [TranLow]) {
     step[13] = half_btf(cospi[32], o(10), cospi[32], o(13), cos_bit);
     step[14] = o(14);
     step[15] = o(15);
-    step[16] = o(16) + o(23);
-    step[17] = o(17) + o(22);
-    step[18] = o(18) + o(21);
-    step[19] = o(19) + o(20);
-    step[20] = o(19) - o(20);
-    step[21] = o(18) - o(21);
-    step[22] = o(17) - o(22);
-    step[23] = o(16) - o(23);
-    step[24] = -o(24) + o(31);
-    step[25] = -o(25) + o(30);
-    step[26] = -o(26) + o(29);
-    step[27] = -o(27) + o(28);
-    step[28] = o(27) + o(28);
-    step[29] = o(26) + o(29);
-    step[30] = o(25) + o(30);
-    step[31] = o(24) + o(31);
+    step[16] = clamp_value(o(16) + o(23), range);
+    step[17] = clamp_value(o(17) + o(22), range);
+    step[18] = clamp_value(o(18) + o(21), range);
+    step[19] = clamp_value(o(19) + o(20), range);
+    step[20] = clamp_value(o(19) - o(20), range);
+    step[21] = clamp_value(o(18) - o(21), range);
+    step[22] = clamp_value(o(17) - o(22), range);
+    step[23] = clamp_value(o(16) - o(23), range);
+    step[24] = clamp_value(-o(24) + o(31), range);
+    step[25] = clamp_value(-o(25) + o(30), range);
+    step[26] = clamp_value(-o(26) + o(29), range);
+    step[27] = clamp_value(-o(27) + o(28), range);
+    step[28] = clamp_value(o(27) + o(28), range);
+    step[29] = clamp_value(o(26) + o(29), range);
+    step[30] = clamp_value(o(25) + o(30), range);
+    step[31] = clamp_value(o(24) + o(31), range);
     step[32] = o(32);
     step[33] = o(33);
     step[34] = o(34);
@@ -1222,22 +1263,22 @@ pub fn idct64(input: &[TranLow], output: &mut [TranLow]) {
 
     // stage 9
     let s = |i: usize| -> i32 { step[i] };
-    output[0] = s(0) + s(15);
-    output[1] = s(1) + s(14);
-    output[2] = s(2) + s(13);
-    output[3] = s(3) + s(12);
-    output[4] = s(4) + s(11);
-    output[5] = s(5) + s(10);
-    output[6] = s(6) + s(9);
-    output[7] = s(7) + s(8);
-    output[8] = s(7) - s(8);
-    output[9] = s(6) - s(9);
-    output[10] = s(5) - s(10);
-    output[11] = s(4) - s(11);
-    output[12] = s(3) - s(12);
-    output[13] = s(2) - s(13);
-    output[14] = s(1) - s(14);
-    output[15] = s(0) - s(15);
+    output[0] = clamp_value(s(0) + s(15), range);
+    output[1] = clamp_value(s(1) + s(14), range);
+    output[2] = clamp_value(s(2) + s(13), range);
+    output[3] = clamp_value(s(3) + s(12), range);
+    output[4] = clamp_value(s(4) + s(11), range);
+    output[5] = clamp_value(s(5) + s(10), range);
+    output[6] = clamp_value(s(6) + s(9), range);
+    output[7] = clamp_value(s(7) + s(8), range);
+    output[8] = clamp_value(s(7) - s(8), range);
+    output[9] = clamp_value(s(6) - s(9), range);
+    output[10] = clamp_value(s(5) - s(10), range);
+    output[11] = clamp_value(s(4) - s(11), range);
+    output[12] = clamp_value(s(3) - s(12), range);
+    output[13] = clamp_value(s(2) - s(13), range);
+    output[14] = clamp_value(s(1) - s(14), range);
+    output[15] = clamp_value(s(0) - s(15), range);
     output[16] = s(16);
     output[17] = s(17);
     output[18] = s(18);
@@ -1254,73 +1295,73 @@ pub fn idct64(input: &[TranLow], output: &mut [TranLow]) {
     output[29] = s(29);
     output[30] = s(30);
     output[31] = s(31);
-    output[32] = s(32) + s(47);
-    output[33] = s(33) + s(46);
-    output[34] = s(34) + s(45);
-    output[35] = s(35) + s(44);
-    output[36] = s(36) + s(43);
-    output[37] = s(37) + s(42);
-    output[38] = s(38) + s(41);
-    output[39] = s(39) + s(40);
-    output[40] = s(39) - s(40);
-    output[41] = s(38) - s(41);
-    output[42] = s(37) - s(42);
-    output[43] = s(36) - s(43);
-    output[44] = s(35) - s(44);
-    output[45] = s(34) - s(45);
-    output[46] = s(33) - s(46);
-    output[47] = s(32) - s(47);
-    output[48] = -s(48) + s(63);
-    output[49] = -s(49) + s(62);
-    output[50] = -s(50) + s(61);
-    output[51] = -s(51) + s(60);
-    output[52] = -s(52) + s(59);
-    output[53] = -s(53) + s(58);
-    output[54] = -s(54) + s(57);
-    output[55] = -s(55) + s(56);
-    output[56] = s(55) + s(56);
-    output[57] = s(54) + s(57);
-    output[58] = s(53) + s(58);
-    output[59] = s(52) + s(59);
-    output[60] = s(51) + s(60);
-    output[61] = s(50) + s(61);
-    output[62] = s(49) + s(62);
-    output[63] = s(48) + s(63);
+    output[32] = clamp_value(s(32) + s(47), range);
+    output[33] = clamp_value(s(33) + s(46), range);
+    output[34] = clamp_value(s(34) + s(45), range);
+    output[35] = clamp_value(s(35) + s(44), range);
+    output[36] = clamp_value(s(36) + s(43), range);
+    output[37] = clamp_value(s(37) + s(42), range);
+    output[38] = clamp_value(s(38) + s(41), range);
+    output[39] = clamp_value(s(39) + s(40), range);
+    output[40] = clamp_value(s(39) - s(40), range);
+    output[41] = clamp_value(s(38) - s(41), range);
+    output[42] = clamp_value(s(37) - s(42), range);
+    output[43] = clamp_value(s(36) - s(43), range);
+    output[44] = clamp_value(s(35) - s(44), range);
+    output[45] = clamp_value(s(34) - s(45), range);
+    output[46] = clamp_value(s(33) - s(46), range);
+    output[47] = clamp_value(s(32) - s(47), range);
+    output[48] = clamp_value(-s(48) + s(63), range);
+    output[49] = clamp_value(-s(49) + s(62), range);
+    output[50] = clamp_value(-s(50) + s(61), range);
+    output[51] = clamp_value(-s(51) + s(60), range);
+    output[52] = clamp_value(-s(52) + s(59), range);
+    output[53] = clamp_value(-s(53) + s(58), range);
+    output[54] = clamp_value(-s(54) + s(57), range);
+    output[55] = clamp_value(-s(55) + s(56), range);
+    output[56] = clamp_value(s(55) + s(56), range);
+    output[57] = clamp_value(s(54) + s(57), range);
+    output[58] = clamp_value(s(53) + s(58), range);
+    output[59] = clamp_value(s(52) + s(59), range);
+    output[60] = clamp_value(s(51) + s(60), range);
+    output[61] = clamp_value(s(50) + s(61), range);
+    output[62] = clamp_value(s(49) + s(62), range);
+    output[63] = clamp_value(s(48) + s(63), range);
 
     // stage 10
     let o = |i: usize| -> i32 { output[i] };
-    step[0] = o(0) + o(31);
-    step[1] = o(1) + o(30);
-    step[2] = o(2) + o(29);
-    step[3] = o(3) + o(28);
-    step[4] = o(4) + o(27);
-    step[5] = o(5) + o(26);
-    step[6] = o(6) + o(25);
-    step[7] = o(7) + o(24);
-    step[8] = o(8) + o(23);
-    step[9] = o(9) + o(22);
-    step[10] = o(10) + o(21);
-    step[11] = o(11) + o(20);
-    step[12] = o(12) + o(19);
-    step[13] = o(13) + o(18);
-    step[14] = o(14) + o(17);
-    step[15] = o(15) + o(16);
-    step[16] = o(15) - o(16);
-    step[17] = o(14) - o(17);
-    step[18] = o(13) - o(18);
-    step[19] = o(12) - o(19);
-    step[20] = o(11) - o(20);
-    step[21] = o(10) - o(21);
-    step[22] = o(9) - o(22);
-    step[23] = o(8) - o(23);
-    step[24] = o(7) - o(24);
-    step[25] = o(6) - o(25);
-    step[26] = o(5) - o(26);
-    step[27] = o(4) - o(27);
-    step[28] = o(3) - o(28);
-    step[29] = o(2) - o(29);
-    step[30] = o(1) - o(30);
-    step[31] = o(0) - o(31);
+    step[0] = clamp_value(o(0) + o(31), range);
+    step[1] = clamp_value(o(1) + o(30), range);
+    step[2] = clamp_value(o(2) + o(29), range);
+    step[3] = clamp_value(o(3) + o(28), range);
+    step[4] = clamp_value(o(4) + o(27), range);
+    step[5] = clamp_value(o(5) + o(26), range);
+    step[6] = clamp_value(o(6) + o(25), range);
+    step[7] = clamp_value(o(7) + o(24), range);
+    step[8] = clamp_value(o(8) + o(23), range);
+    step[9] = clamp_value(o(9) + o(22), range);
+    step[10] = clamp_value(o(10) + o(21), range);
+    step[11] = clamp_value(o(11) + o(20), range);
+    step[12] = clamp_value(o(12) + o(19), range);
+    step[13] = clamp_value(o(13) + o(18), range);
+    step[14] = clamp_value(o(14) + o(17), range);
+    step[15] = clamp_value(o(15) + o(16), range);
+    step[16] = clamp_value(o(15) - o(16), range);
+    step[17] = clamp_value(o(14) - o(17), range);
+    step[18] = clamp_value(o(13) - o(18), range);
+    step[19] = clamp_value(o(12) - o(19), range);
+    step[20] = clamp_value(o(11) - o(20), range);
+    step[21] = clamp_value(o(10) - o(21), range);
+    step[22] = clamp_value(o(9) - o(22), range);
+    step[23] = clamp_value(o(8) - o(23), range);
+    step[24] = clamp_value(o(7) - o(24), range);
+    step[25] = clamp_value(o(6) - o(25), range);
+    step[26] = clamp_value(o(5) - o(26), range);
+    step[27] = clamp_value(o(4) - o(27), range);
+    step[28] = clamp_value(o(3) - o(28), range);
+    step[29] = clamp_value(o(2) - o(29), range);
+    step[30] = clamp_value(o(1) - o(30), range);
+    step[31] = clamp_value(o(0) - o(31), range);
     step[32] = o(32);
     step[33] = o(33);
     step[34] = o(34);
@@ -1356,70 +1397,70 @@ pub fn idct64(input: &[TranLow], output: &mut [TranLow]) {
 
     // stage 11
     let s = |i: usize| -> i32 { step[i] };
-    output[0] = s(0) + s(63);
-    output[1] = s(1) + s(62);
-    output[2] = s(2) + s(61);
-    output[3] = s(3) + s(60);
-    output[4] = s(4) + s(59);
-    output[5] = s(5) + s(58);
-    output[6] = s(6) + s(57);
-    output[7] = s(7) + s(56);
-    output[8] = s(8) + s(55);
-    output[9] = s(9) + s(54);
-    output[10] = s(10) + s(53);
-    output[11] = s(11) + s(52);
-    output[12] = s(12) + s(51);
-    output[13] = s(13) + s(50);
-    output[14] = s(14) + s(49);
-    output[15] = s(15) + s(48);
-    output[16] = s(16) + s(47);
-    output[17] = s(17) + s(46);
-    output[18] = s(18) + s(45);
-    output[19] = s(19) + s(44);
-    output[20] = s(20) + s(43);
-    output[21] = s(21) + s(42);
-    output[22] = s(22) + s(41);
-    output[23] = s(23) + s(40);
-    output[24] = s(24) + s(39);
-    output[25] = s(25) + s(38);
-    output[26] = s(26) + s(37);
-    output[27] = s(27) + s(36);
-    output[28] = s(28) + s(35);
-    output[29] = s(29) + s(34);
-    output[30] = s(30) + s(33);
-    output[31] = s(31) + s(32);
-    output[32] = s(31) - s(32);
-    output[33] = s(30) - s(33);
-    output[34] = s(29) - s(34);
-    output[35] = s(28) - s(35);
-    output[36] = s(27) - s(36);
-    output[37] = s(26) - s(37);
-    output[38] = s(25) - s(38);
-    output[39] = s(24) - s(39);
-    output[40] = s(23) - s(40);
-    output[41] = s(22) - s(41);
-    output[42] = s(21) - s(42);
-    output[43] = s(20) - s(43);
-    output[44] = s(19) - s(44);
-    output[45] = s(18) - s(45);
-    output[46] = s(17) - s(46);
-    output[47] = s(16) - s(47);
-    output[48] = s(15) - s(48);
-    output[49] = s(14) - s(49);
-    output[50] = s(13) - s(50);
-    output[51] = s(12) - s(51);
-    output[52] = s(11) - s(52);
-    output[53] = s(10) - s(53);
-    output[54] = s(9) - s(54);
-    output[55] = s(8) - s(55);
-    output[56] = s(7) - s(56);
-    output[57] = s(6) - s(57);
-    output[58] = s(5) - s(58);
-    output[59] = s(4) - s(59);
-    output[60] = s(3) - s(60);
-    output[61] = s(2) - s(61);
-    output[62] = s(1) - s(62);
-    output[63] = s(0) - s(63);
+    output[0] = clamp_value(s(0) + s(63), range);
+    output[1] = clamp_value(s(1) + s(62), range);
+    output[2] = clamp_value(s(2) + s(61), range);
+    output[3] = clamp_value(s(3) + s(60), range);
+    output[4] = clamp_value(s(4) + s(59), range);
+    output[5] = clamp_value(s(5) + s(58), range);
+    output[6] = clamp_value(s(6) + s(57), range);
+    output[7] = clamp_value(s(7) + s(56), range);
+    output[8] = clamp_value(s(8) + s(55), range);
+    output[9] = clamp_value(s(9) + s(54), range);
+    output[10] = clamp_value(s(10) + s(53), range);
+    output[11] = clamp_value(s(11) + s(52), range);
+    output[12] = clamp_value(s(12) + s(51), range);
+    output[13] = clamp_value(s(13) + s(50), range);
+    output[14] = clamp_value(s(14) + s(49), range);
+    output[15] = clamp_value(s(15) + s(48), range);
+    output[16] = clamp_value(s(16) + s(47), range);
+    output[17] = clamp_value(s(17) + s(46), range);
+    output[18] = clamp_value(s(18) + s(45), range);
+    output[19] = clamp_value(s(19) + s(44), range);
+    output[20] = clamp_value(s(20) + s(43), range);
+    output[21] = clamp_value(s(21) + s(42), range);
+    output[22] = clamp_value(s(22) + s(41), range);
+    output[23] = clamp_value(s(23) + s(40), range);
+    output[24] = clamp_value(s(24) + s(39), range);
+    output[25] = clamp_value(s(25) + s(38), range);
+    output[26] = clamp_value(s(26) + s(37), range);
+    output[27] = clamp_value(s(27) + s(36), range);
+    output[28] = clamp_value(s(28) + s(35), range);
+    output[29] = clamp_value(s(29) + s(34), range);
+    output[30] = clamp_value(s(30) + s(33), range);
+    output[31] = clamp_value(s(31) + s(32), range);
+    output[32] = clamp_value(s(31) - s(32), range);
+    output[33] = clamp_value(s(30) - s(33), range);
+    output[34] = clamp_value(s(29) - s(34), range);
+    output[35] = clamp_value(s(28) - s(35), range);
+    output[36] = clamp_value(s(27) - s(36), range);
+    output[37] = clamp_value(s(26) - s(37), range);
+    output[38] = clamp_value(s(25) - s(38), range);
+    output[39] = clamp_value(s(24) - s(39), range);
+    output[40] = clamp_value(s(23) - s(40), range);
+    output[41] = clamp_value(s(22) - s(41), range);
+    output[42] = clamp_value(s(21) - s(42), range);
+    output[43] = clamp_value(s(20) - s(43), range);
+    output[44] = clamp_value(s(19) - s(44), range);
+    output[45] = clamp_value(s(18) - s(45), range);
+    output[46] = clamp_value(s(17) - s(46), range);
+    output[47] = clamp_value(s(16) - s(47), range);
+    output[48] = clamp_value(s(15) - s(48), range);
+    output[49] = clamp_value(s(14) - s(49), range);
+    output[50] = clamp_value(s(13) - s(50), range);
+    output[51] = clamp_value(s(12) - s(51), range);
+    output[52] = clamp_value(s(11) - s(52), range);
+    output[53] = clamp_value(s(10) - s(53), range);
+    output[54] = clamp_value(s(9) - s(54), range);
+    output[55] = clamp_value(s(8) - s(55), range);
+    output[56] = clamp_value(s(7) - s(56), range);
+    output[57] = clamp_value(s(6) - s(57), range);
+    output[58] = clamp_value(s(5) - s(58), range);
+    output[59] = clamp_value(s(4) - s(59), range);
+    output[60] = clamp_value(s(3) - s(60), range);
+    output[61] = clamp_value(s(2) - s(61), range);
+    output[62] = clamp_value(s(1) - s(62), range);
+    output[63] = clamp_value(s(0) - s(63), range);
 }
 
 // =============================================================================
@@ -1427,7 +1468,7 @@ pub fn idct64(input: &[TranLow], output: &mut [TranLow]) {
 // Ported from svt_av1_iidentity64_c in inv_transforms.c
 // =============================================================================
 
-pub fn iidentity64(input: &[TranLow], output: &mut [TranLow]) {
+pub fn iidentity64(input: &[TranLow], output: &mut [TranLow], _range: i8) {
     for i in 0..64 {
         output[i] = round_shift_i64(input[i] as i64 * 4 * NEW_SQRT2 as i64, NEW_SQRT2_BITS);
     }
@@ -1438,7 +1479,7 @@ pub fn iidentity64(input: &[TranLow], output: &mut [TranLow]) {
 // Ported exactly from svt_av1_iadst8_new in inv_transforms.c:821-924
 // =============================================================================
 
-pub fn iadst8(input: &[TranLow], output: &mut [TranLow]) {
+pub fn iadst8(input: &[TranLow], output: &mut [TranLow], range: i8) {
     let cospi = &COSPI;
     let cos_bit = COS_BIT;
     let mut step = [0i32; 8];
@@ -1465,14 +1506,14 @@ pub fn iadst8(input: &[TranLow], output: &mut [TranLow]) {
     step[7] = half_btf(cospi[12], o(6), -cospi[52], o(7), cos_bit);
 
     // stage 3
-    output[0] = step[0] + step[4];
-    output[1] = step[1] + step[5];
-    output[2] = step[2] + step[6];
-    output[3] = step[3] + step[7];
-    output[4] = step[0] - step[4];
-    output[5] = step[1] - step[5];
-    output[6] = step[2] - step[6];
-    output[7] = step[3] - step[7];
+    output[0] = clamp_value(step[0] + step[4], range);
+    output[1] = clamp_value(step[1] + step[5], range);
+    output[2] = clamp_value(step[2] + step[6], range);
+    output[3] = clamp_value(step[3] + step[7], range);
+    output[4] = clamp_value(step[0] - step[4], range);
+    output[5] = clamp_value(step[1] - step[5], range);
+    output[6] = clamp_value(step[2] - step[6], range);
+    output[7] = clamp_value(step[3] - step[7], range);
 
     // stage 4
     let o = |i: usize| -> i32 { output[i] };
@@ -1486,14 +1527,14 @@ pub fn iadst8(input: &[TranLow], output: &mut [TranLow]) {
     step[7] = half_btf(cospi[16], o(6), cospi[48], o(7), cos_bit);
 
     // stage 5
-    output[0] = step[0] + step[2];
-    output[1] = step[1] + step[3];
-    output[2] = step[0] - step[2];
-    output[3] = step[1] - step[3];
-    output[4] = step[4] + step[6];
-    output[5] = step[5] + step[7];
-    output[6] = step[4] - step[6];
-    output[7] = step[5] - step[7];
+    output[0] = clamp_value(step[0] + step[2], range);
+    output[1] = clamp_value(step[1] + step[3], range);
+    output[2] = clamp_value(step[0] - step[2], range);
+    output[3] = clamp_value(step[1] - step[3], range);
+    output[4] = clamp_value(step[4] + step[6], range);
+    output[5] = clamp_value(step[5] + step[7], range);
+    output[6] = clamp_value(step[4] - step[6], range);
+    output[7] = clamp_value(step[5] - step[7], range);
 
     // stage 6
     let o = |i: usize| -> i32 { output[i] };
@@ -1522,7 +1563,7 @@ pub fn iadst8(input: &[TranLow], output: &mut [TranLow]) {
 // Ported exactly from svt_av1_iadst16_new in inv_transforms.c:926-1129
 // =============================================================================
 
-pub fn iadst16(input: &[TranLow], output: &mut [TranLow]) {
+pub fn iadst16(input: &[TranLow], output: &mut [TranLow], range: i8) {
     let cospi = &COSPI;
     let cos_bit = COS_BIT;
     let mut step = [0i32; 16];
@@ -1566,22 +1607,22 @@ pub fn iadst16(input: &[TranLow], output: &mut [TranLow]) {
 
     // stage 3
     let s = |i: usize| -> i32 { step[i] };
-    output[0] = s(0) + s(8);
-    output[1] = s(1) + s(9);
-    output[2] = s(2) + s(10);
-    output[3] = s(3) + s(11);
-    output[4] = s(4) + s(12);
-    output[5] = s(5) + s(13);
-    output[6] = s(6) + s(14);
-    output[7] = s(7) + s(15);
-    output[8] = s(0) - s(8);
-    output[9] = s(1) - s(9);
-    output[10] = s(2) - s(10);
-    output[11] = s(3) - s(11);
-    output[12] = s(4) - s(12);
-    output[13] = s(5) - s(13);
-    output[14] = s(6) - s(14);
-    output[15] = s(7) - s(15);
+    output[0] = clamp_value(s(0) + s(8), range);
+    output[1] = clamp_value(s(1) + s(9), range);
+    output[2] = clamp_value(s(2) + s(10), range);
+    output[3] = clamp_value(s(3) + s(11), range);
+    output[4] = clamp_value(s(4) + s(12), range);
+    output[5] = clamp_value(s(5) + s(13), range);
+    output[6] = clamp_value(s(6) + s(14), range);
+    output[7] = clamp_value(s(7) + s(15), range);
+    output[8] = clamp_value(s(0) - s(8), range);
+    output[9] = clamp_value(s(1) - s(9), range);
+    output[10] = clamp_value(s(2) - s(10), range);
+    output[11] = clamp_value(s(3) - s(11), range);
+    output[12] = clamp_value(s(4) - s(12), range);
+    output[13] = clamp_value(s(5) - s(13), range);
+    output[14] = clamp_value(s(6) - s(14), range);
+    output[15] = clamp_value(s(7) - s(15), range);
 
     // stage 4
     let o = |i: usize| -> i32 { output[i] };
@@ -1604,22 +1645,22 @@ pub fn iadst16(input: &[TranLow], output: &mut [TranLow]) {
 
     // stage 5
     let s = |i: usize| -> i32 { step[i] };
-    output[0] = s(0) + s(4);
-    output[1] = s(1) + s(5);
-    output[2] = s(2) + s(6);
-    output[3] = s(3) + s(7);
-    output[4] = s(0) - s(4);
-    output[5] = s(1) - s(5);
-    output[6] = s(2) - s(6);
-    output[7] = s(3) - s(7);
-    output[8] = s(8) + s(12);
-    output[9] = s(9) + s(13);
-    output[10] = s(10) + s(14);
-    output[11] = s(11) + s(15);
-    output[12] = s(8) - s(12);
-    output[13] = s(9) - s(13);
-    output[14] = s(10) - s(14);
-    output[15] = s(11) - s(15);
+    output[0] = clamp_value(s(0) + s(4), range);
+    output[1] = clamp_value(s(1) + s(5), range);
+    output[2] = clamp_value(s(2) + s(6), range);
+    output[3] = clamp_value(s(3) + s(7), range);
+    output[4] = clamp_value(s(0) - s(4), range);
+    output[5] = clamp_value(s(1) - s(5), range);
+    output[6] = clamp_value(s(2) - s(6), range);
+    output[7] = clamp_value(s(3) - s(7), range);
+    output[8] = clamp_value(s(8) + s(12), range);
+    output[9] = clamp_value(s(9) + s(13), range);
+    output[10] = clamp_value(s(10) + s(14), range);
+    output[11] = clamp_value(s(11) + s(15), range);
+    output[12] = clamp_value(s(8) - s(12), range);
+    output[13] = clamp_value(s(9) - s(13), range);
+    output[14] = clamp_value(s(10) - s(14), range);
+    output[15] = clamp_value(s(11) - s(15), range);
 
     // stage 6
     let o = |i: usize| -> i32 { output[i] };
@@ -1642,22 +1683,22 @@ pub fn iadst16(input: &[TranLow], output: &mut [TranLow]) {
 
     // stage 7
     let s = |i: usize| -> i32 { step[i] };
-    output[0] = s(0) + s(2);
-    output[1] = s(1) + s(3);
-    output[2] = s(0) - s(2);
-    output[3] = s(1) - s(3);
-    output[4] = s(4) + s(6);
-    output[5] = s(5) + s(7);
-    output[6] = s(4) - s(6);
-    output[7] = s(5) - s(7);
-    output[8] = s(8) + s(10);
-    output[9] = s(9) + s(11);
-    output[10] = s(8) - s(10);
-    output[11] = s(9) - s(11);
-    output[12] = s(12) + s(14);
-    output[13] = s(13) + s(15);
-    output[14] = s(12) - s(14);
-    output[15] = s(13) - s(15);
+    output[0] = clamp_value(s(0) + s(2), range);
+    output[1] = clamp_value(s(1) + s(3), range);
+    output[2] = clamp_value(s(0) - s(2), range);
+    output[3] = clamp_value(s(1) - s(3), range);
+    output[4] = clamp_value(s(4) + s(6), range);
+    output[5] = clamp_value(s(5) + s(7), range);
+    output[6] = clamp_value(s(4) - s(6), range);
+    output[7] = clamp_value(s(5) - s(7), range);
+    output[8] = clamp_value(s(8) + s(10), range);
+    output[9] = clamp_value(s(9) + s(11), range);
+    output[10] = clamp_value(s(8) - s(10), range);
+    output[11] = clamp_value(s(9) - s(11), range);
+    output[12] = clamp_value(s(12) + s(14), range);
+    output[13] = clamp_value(s(13) + s(15), range);
+    output[14] = clamp_value(s(12) - s(14), range);
+    output[15] = clamp_value(s(13) - s(15), range);
 
     // stage 8
     let o = |i: usize| -> i32 { output[i] };
@@ -1701,7 +1742,7 @@ pub fn iadst16(input: &[TranLow], output: &mut [TranLow]) {
 // 16-point inverse identity
 // =============================================================================
 
-pub fn iidentity16(input: &[TranLow], output: &mut [TranLow]) {
+pub fn iidentity16(input: &[TranLow], output: &mut [TranLow], _range: i8) {
     let new_sqrt2 = NEW_SQRT2;
     for i in 0..16 {
         output[i] = round_shift_i64(input[i] as i64 * 2 * new_sqrt2 as i64, NEW_SQRT2_BITS);
@@ -1713,7 +1754,7 @@ pub fn iidentity16(input: &[TranLow], output: &mut [TranLow]) {
 // =============================================================================
 
 /// 1D inverse transform function signature.
-pub type InvTxfmFunc = fn(&[TranLow], &mut [TranLow]);
+pub type InvTxfmFunc = fn(&[TranLow], &mut [TranLow], i8);
 
 /// Get the 1D inverse transform function for a given type and size.
 pub fn get_inv_txfm_func(tx_type_1d: u8, size: usize) -> Option<InvTxfmFunc> {
@@ -1739,51 +1780,164 @@ pub fn get_inv_txfm_func(tx_type_1d: u8, size: usize) -> Option<InvTxfmFunc> {
 }
 
 // =============================================================================
-// General 2D inverse transform
+// General 2D inverse transform — C-exact port of inv_txfm2d_add_c
+// (inv_transforms.c:2495) at bd = 8
 // =============================================================================
 
-/// Inverse 2D transform for square blocks.
+/// C-exact inverse 2D composition at bd = 8, producing residuals.
 ///
-/// Applies row transforms, then column transforms, following the
-/// SVT-AV1 `inv_txfm2d_add_c` pattern (rows first, then columns).
+/// Row pass first: per-row rect sqrt(2) pre-scale (2:1 rects only), clamp to
+/// bd+8 = 16 bits, row kernel (per-stage clamps to 16 bits inside), then
+/// round_shift by -shift[0]. Column pass: gather (with left-right flip),
+/// clamp to max(bd+6, 16) = 16 bits, column kernel, round_shift by -shift[1],
+/// then the residual is `HIGHBD_WRAPLOW(trans, 8)` written to
+/// `output[r * out_stride + c]` (upside-down flip applied like C).
 ///
-/// `shift` = [row_post_shift, col_post_shift] applied after each stage.
-/// Note: The inverse goes rows-first then columns, opposite of the forward.
-pub fn inv_txfm2d(
+/// C adds the residual to base pixels with `highbd_clip_pixel_add`; callers
+/// here do `clip(base + residual)` themselves, which is bit-exact with C for
+/// any 8-bit base because |residual| <= 34596 saturates the pixel clip in the
+/// same direction as the unclamped value would.
+#[allow(clippy::too_many_arguments)]
+fn inv_txfm2d_core(
     input: &[TranLow],
+    input_stride: usize,
     output: &mut [TranLow],
-    stride: usize,
+    out_stride: usize,
+    w: usize,
+    h: usize,
     row_func: InvTxfmFunc,
     col_func: InvTxfmFunc,
-    size: usize,
-    shift: [i32; 2],
+    shift: [i8; 2],
+    ud_flip: bool,
+    lr_flip: bool,
 ) {
-    let mut buf = vec![0i32; size * size];
-    let mut temp_in = vec![0i32; size];
-    let mut temp_out = vec![0i32; size];
+    let mut buf = vec![0i32; w * h];
+    let nmax = w.max(h);
+    let mut temp_in = vec![0i32; nmax];
+    let mut temp_out = vec![0i32; nmax];
+    // get_rect_tx_log_ratio(col, row)
+    let rect_log_ratio = w.trailing_zeros() as i32 - h.trailing_zeros() as i32;
 
-    // Row transforms (inverse does rows first)
-    for row in 0..size {
-        let row_start = row * stride;
-        temp_in[..size].copy_from_slice(&input[row_start..row_start + size]);
-        row_func(&temp_in, &mut temp_out);
-        round_shift_array(&mut temp_out, -shift[0]);
-        for col in 0..size {
-            buf[row * size + col] = temp_out[col];
+    // Rows
+    for r in 0..h {
+        if rect_log_ratio.abs() == 1 {
+            for c in 0..w {
+                temp_in[c] = round_shift_i64(
+                    input[r * input_stride + c] as i64 * NEW_INV_SQRT2 as i64,
+                    NEW_SQRT2_BITS,
+                );
+            }
+        } else {
+            for c in 0..w {
+                temp_in[c] = input[r * input_stride + c];
+            }
         }
+        clamp_buf(&mut temp_in[..w], BD8_ROW_CLAMP);
+        row_func(&temp_in[..w], &mut buf[r * w..(r + 1) * w], BD8_STAGE_RANGE);
+        round_shift_array(&mut buf[r * w..(r + 1) * w], -(shift[0] as i32));
     }
 
-    // Column transforms
-    for col in 0..size {
-        for row in 0..size {
-            temp_in[row] = buf[row * size + col];
+    // Columns
+    for c in 0..w {
+        if !lr_flip {
+            for r in 0..h {
+                temp_in[r] = buf[r * w + c];
+            }
+        } else {
+            // flip left right
+            for r in 0..h {
+                temp_in[r] = buf[r * w + (w - c - 1)];
+            }
         }
-        col_func(&temp_in, &mut temp_out);
-        round_shift_array(&mut temp_out, -shift[1]);
-        for row in 0..size {
-            output[row * stride + col] = temp_out[row];
+        clamp_buf(&mut temp_in[..h], BD8_COL_CLAMP);
+        col_func(&temp_in[..h], &mut temp_out[..h], BD8_STAGE_RANGE);
+        round_shift_array(&mut temp_out[..h], -(shift[1] as i32));
+        if !ud_flip {
+            for r in 0..h {
+                output[r * out_stride + c] = highbd_wraplow_bd8(temp_out[r]);
+            }
+        } else {
+            // flip upside down
+            for r in 0..h {
+                output[r * out_stride + c] = highbd_wraplow_bd8(temp_out[h - r - 1]);
+            }
         }
     }
+}
+
+/// C `svt_aom_inv_txfm_shift_ls` (inv_transforms.c:17-41), keyed by (w, h).
+pub fn inv_txfm_shift(w: usize, h: usize) -> [i8; 2] {
+    match (w, h) {
+        (4, 4) => [0, -4],
+        (8, 8) => [-1, -4],
+        (16, 16) | (32, 32) | (64, 64) => [-2, -4],
+        (4, 8) | (8, 4) => [0, -4],
+        (8, 16) | (16, 8) => [-1, -4],
+        (16, 32) | (32, 16) => [-1, -4],
+        (32, 64) | (64, 32) => [-1, -4],
+        (4, 16) | (16, 4) => [-1, -4],
+        (8, 32) | (32, 8) => [-2, -4],
+        (16, 64) | (64, 16) => [-2, -4],
+        _ => unreachable!("unsupported transform size {w}x{h}"),
+    }
+}
+
+/// Configured C-exact inverse 2D transform (`svt_av1_inv_txfm2d_add_*`
+/// semantics minus the pixel add — residual output). The inverse cos_bit is
+/// INV_COS_BIT = 12 for every size, baked into the 1D kernels.
+///
+/// `row_1d`/`col_1d`: 0=DCT, 1=ADST, 2=FLIPADST, 3=IDENTITY. For 64-dim sizes
+/// `input` must already be the zero-extended w x h "mod_input" (the region
+/// outside the top-left 32x32 must be zero, which the C decoder guarantees by
+/// construction — the bitstream never carries those coefficients).
+#[allow(clippy::too_many_arguments)]
+pub fn inv_txfm2d_c_exact(
+    input: &[TranLow],
+    input_stride: usize,
+    output: &mut [TranLow],
+    out_stride: usize,
+    w: usize,
+    h: usize,
+    row_1d: u8,
+    col_1d: u8,
+    ud_flip: bool,
+    lr_flip: bool,
+) -> bool {
+    let row_func = match get_inv_txfm_func(row_1d, w) {
+        Some(f) => f,
+        None => return false,
+    };
+    let col_func = match get_inv_txfm_func(col_1d, h) {
+        Some(f) => f,
+        None => return false,
+    };
+    inv_txfm2d_core(
+        input,
+        input_stride,
+        output,
+        out_stride,
+        w,
+        h,
+        row_func,
+        col_func,
+        inv_txfm_shift(w, h),
+        ud_flip,
+        lr_flip,
+    );
+    true
+}
+
+/// 64-dim named-wrapper input remap: the C `svt_av1_inv_txfm2d_add_64x*_c`
+/// functions take input packed at stride min(w, 32) with min(h, 32) rows and
+/// zero-extend it into a w x h buffer (inv_transforms.c:2614-2733).
+fn mod_input_64(input: &[TranLow], w: usize, h: usize) -> alloc::vec::Vec<TranLow> {
+    let cw = w.min(32);
+    let ch = h.min(32);
+    let mut m = vec![0i32; w * h];
+    for r in 0..ch {
+        m[r * w..r * w + cw].copy_from_slice(&input[r * cw..(r + 1) * cw]);
+    }
+    m
 }
 
 /// Inverse 4x4 DCT-DCT using the general framework.
@@ -1800,7 +1954,7 @@ fn inv_txfm2d_4x4_dct_dct_impl_scalar(
     output: &mut [TranLow],
     stride: usize,
 ) {
-    inv_txfm2d(input, output, stride, idct4, idct4, 4, [0, -4]);
+    inv_txfm2d_c_exact(input, stride, output, stride, 4, 4, 0, 0, false, false);
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1811,7 +1965,7 @@ fn inv_txfm2d_4x4_dct_dct_impl_v3(
     output: &mut [TranLow],
     stride: usize,
 ) {
-    inv_txfm2d(input, output, stride, idct4, idct4, 4, [0, -4]);
+    inv_txfm2d_c_exact(input, stride, output, stride, 4, 4, 0, 0, false, false);
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -1822,7 +1976,7 @@ fn inv_txfm2d_4x4_dct_dct_impl_neon(
     output: &mut [TranLow],
     stride: usize,
 ) {
-    inv_txfm2d(input, output, stride, idct4, idct4, 4, [0, -4]);
+    inv_txfm2d_c_exact(input, stride, output, stride, 4, 4, 0, 0, false, false);
 }
 
 /// Inverse 8x8 DCT-DCT.
@@ -1839,7 +1993,7 @@ fn inv_txfm2d_8x8_dct_dct_impl_scalar(
     output: &mut [TranLow],
     stride: usize,
 ) {
-    inv_txfm2d(input, output, stride, idct8, idct8, 8, [-1, -4]);
+    inv_txfm2d_c_exact(input, stride, output, stride, 8, 8, 0, 0, false, false);
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1850,7 +2004,7 @@ fn inv_txfm2d_8x8_dct_dct_impl_v3(
     output: &mut [TranLow],
     stride: usize,
 ) {
-    inv_txfm2d(input, output, stride, idct8, idct8, 8, [-1, -4]);
+    inv_txfm2d_c_exact(input, stride, output, stride, 8, 8, 0, 0, false, false);
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -1861,7 +2015,7 @@ fn inv_txfm2d_8x8_dct_dct_impl_neon(
     output: &mut [TranLow],
     stride: usize,
 ) {
-    inv_txfm2d(input, output, stride, idct8, idct8, 8, [-1, -4]);
+    inv_txfm2d_c_exact(input, stride, output, stride, 8, 8, 0, 0, false, false);
 }
 
 /// Inverse 16x16 DCT-DCT.
@@ -1878,7 +2032,7 @@ fn inv_txfm2d_16x16_dct_dct_impl_scalar(
     output: &mut [TranLow],
     stride: usize,
 ) {
-    inv_txfm2d(input, output, stride, idct16, idct16, 16, [-2, 0]);
+    inv_txfm2d_c_exact(input, stride, output, stride, 16, 16, 0, 0, false, false);
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1889,7 +2043,7 @@ fn inv_txfm2d_16x16_dct_dct_impl_v3(
     output: &mut [TranLow],
     stride: usize,
 ) {
-    inv_txfm2d(input, output, stride, idct16, idct16, 16, [-2, 0]);
+    inv_txfm2d_c_exact(input, stride, output, stride, 16, 16, 0, 0, false, false);
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -1900,154 +2054,97 @@ fn inv_txfm2d_16x16_dct_dct_impl_neon(
     output: &mut [TranLow],
     stride: usize,
 ) {
-    inv_txfm2d(input, output, stride, idct16, idct16, 16, [-2, 0]);
+    inv_txfm2d_c_exact(input, stride, output, stride, 16, 16, 0, 0, false, false);
 }
 
-/// Inverse 2D transform for rectangular blocks.
-pub fn inv_txfm2d_rect(
-    input: &[TranLow],
-    output: &mut [TranLow],
-    stride: usize,
-    row_func: InvTxfmFunc,
-    col_func: InvTxfmFunc,
-    col_size: usize,
-    row_size: usize,
-    shift: [i32; 2],
-) {
-    use crate::fwd_txfm::{NEW_SQRT2, NEW_SQRT2_BITS, round_shift_i64};
-
-    let mut buf = vec![0i32; col_size * row_size];
-    let mut temp_in = vec![0i32; col_size.max(row_size)];
-    let mut temp_out = vec![0i32; col_size.max(row_size)];
-
-    // Compute rect_type for scaling
-    let rect_type = if col_size == row_size {
-        0
-    } else if col_size == 2 * row_size || row_size == 2 * col_size {
-        1
-    } else {
-        2
-    };
-
-    // Row transforms (inverse does rows first)
-    for row in 0..row_size {
-        let row_start = row * stride;
-        temp_in[..col_size].copy_from_slice(&input[row_start..row_start + col_size]);
-
-        // Rectangular scaling before row transform
-        if rect_type == 1 {
-            for c in 0..col_size {
-                temp_in[c] = round_shift_i64(temp_in[c] as i64 * NEW_SQRT2 as i64, NEW_SQRT2_BITS);
-            }
-        } else if rect_type == 2 {
-            for c in 0..col_size {
-                temp_in[c] =
-                    round_shift_i64(temp_in[c] as i64 * 2 * NEW_SQRT2 as i64, NEW_SQRT2_BITS);
-            }
-        }
-
-        row_func(&temp_in[..col_size], &mut temp_out[..col_size]);
-        round_shift_array(&mut temp_out[..col_size], -shift[0]);
-        for col in 0..col_size {
-            buf[row * col_size + col] = temp_out[col];
-        }
-    }
-
-    // Column transforms
-    for col in 0..col_size {
-        for row in 0..row_size {
-            temp_in[row] = buf[row * col_size + col];
-        }
-        col_func(&temp_in[..row_size], &mut temp_out[..row_size]);
-        round_shift_array(&mut temp_out[..row_size], -shift[1]);
-        for row in 0..row_size {
-            output[row * stride + col] = temp_out[row];
-        }
-    }
-}
 
 // --- Square inverse 2D wrappers ---
 
 /// Inverse 32x32 DCT-DCT.
 pub fn inv_txfm2d_32x32_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    inv_txfm2d(input, output, stride, idct32, idct32, 32, [-4, 0]);
+    inv_txfm2d_c_exact(input, stride, output, stride, 32, 32, 0, 0, false, false);
 }
 
 /// Inverse 64x64 DCT-DCT.
 pub fn inv_txfm2d_64x64_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    inv_txfm2d(input, output, stride, idct64, idct64, 64, [-6, 0]);
+    let m = mod_input_64(input, 64, 64);
+    inv_txfm2d_c_exact(&m, 64, output, stride, 64, 64, 0, 0, false, false);
 }
 
 // --- Rectangular inverse 2D wrappers ---
 
 /// Inverse 4x8 DCT-DCT.
 pub fn inv_txfm2d_4x8_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    inv_txfm2d_rect(input, output, stride, idct4, idct8, 4, 8, [0, 0]);
+    inv_txfm2d_c_exact(input, stride, output, stride, 4, 8, 0, 0, false, false);
 }
 
 /// Inverse 8x4 DCT-DCT.
 pub fn inv_txfm2d_8x4_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    inv_txfm2d_rect(input, output, stride, idct8, idct4, 8, 4, [0, 0]);
+    inv_txfm2d_c_exact(input, stride, output, stride, 8, 4, 0, 0, false, false);
 }
 
 /// Inverse 8x16 DCT-DCT.
 pub fn inv_txfm2d_8x16_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    inv_txfm2d_rect(input, output, stride, idct8, idct16, 8, 16, [-1, 0]);
+    inv_txfm2d_c_exact(input, stride, output, stride, 8, 16, 0, 0, false, false);
 }
 
 /// Inverse 16x8 DCT-DCT.
 pub fn inv_txfm2d_16x8_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    inv_txfm2d_rect(input, output, stride, idct16, idct8, 16, 8, [-1, 0]);
+    inv_txfm2d_c_exact(input, stride, output, stride, 16, 8, 0, 0, false, false);
 }
 
 /// Inverse 16x32 DCT-DCT.
 pub fn inv_txfm2d_16x32_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    inv_txfm2d_rect(input, output, stride, idct16, idct32, 16, 32, [-2, 0]);
+    inv_txfm2d_c_exact(input, stride, output, stride, 16, 32, 0, 0, false, false);
 }
 
 /// Inverse 32x16 DCT-DCT.
 pub fn inv_txfm2d_32x16_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    inv_txfm2d_rect(input, output, stride, idct32, idct16, 32, 16, [-2, 0]);
+    inv_txfm2d_c_exact(input, stride, output, stride, 32, 16, 0, 0, false, false);
 }
 
 /// Inverse 32x64 DCT-DCT.
 pub fn inv_txfm2d_32x64_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    inv_txfm2d_rect(input, output, stride, idct32, idct64, 32, 64, [-4, 0]);
+    let m = mod_input_64(input, 32, 64);
+    inv_txfm2d_c_exact(&m, 32, output, stride, 32, 64, 0, 0, false, false);
 }
 
 /// Inverse 64x32 DCT-DCT.
 pub fn inv_txfm2d_64x32_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    inv_txfm2d_rect(input, output, stride, idct64, idct32, 64, 32, [-4, 0]);
+    let m = mod_input_64(input, 64, 32);
+    inv_txfm2d_c_exact(&m, 64, output, stride, 64, 32, 0, 0, false, false);
 }
 
 /// Inverse 4x16 DCT-DCT.
 pub fn inv_txfm2d_4x16_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    inv_txfm2d_rect(input, output, stride, idct4, idct16, 4, 16, [0, 0]);
+    inv_txfm2d_c_exact(input, stride, output, stride, 4, 16, 0, 0, false, false);
 }
 
 /// Inverse 16x4 DCT-DCT.
 pub fn inv_txfm2d_16x4_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    inv_txfm2d_rect(input, output, stride, idct16, idct4, 16, 4, [0, 0]);
+    inv_txfm2d_c_exact(input, stride, output, stride, 16, 4, 0, 0, false, false);
 }
 
 /// Inverse 8x32 DCT-DCT.
 pub fn inv_txfm2d_8x32_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    inv_txfm2d_rect(input, output, stride, idct8, idct32, 8, 32, [-1, 0]);
+    inv_txfm2d_c_exact(input, stride, output, stride, 8, 32, 0, 0, false, false);
 }
 
 /// Inverse 32x8 DCT-DCT.
 pub fn inv_txfm2d_32x8_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    inv_txfm2d_rect(input, output, stride, idct32, idct8, 32, 8, [-1, 0]);
+    inv_txfm2d_c_exact(input, stride, output, stride, 32, 8, 0, 0, false, false);
 }
 
 /// Inverse 16x64 DCT-DCT.
 pub fn inv_txfm2d_16x64_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    inv_txfm2d_rect(input, output, stride, idct16, idct64, 16, 64, [-2, 0]);
+    let m = mod_input_64(input, 16, 64);
+    inv_txfm2d_c_exact(&m, 16, output, stride, 16, 64, 0, 0, false, false);
 }
 
 /// Inverse 64x16 DCT-DCT.
 pub fn inv_txfm2d_64x16_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    inv_txfm2d_rect(input, output, stride, idct64, idct16, 64, 16, [-2, 0]);
+    let m = mod_input_64(input, 64, 16);
+    inv_txfm2d_c_exact(&m, 64, output, stride, 64, 16, 0, 0, false, false);
 }
 
 #[cfg(test)]
@@ -2060,7 +2157,7 @@ mod tests {
     #[test]
     fn idct4_zero() {
         let mut output = [0i32; 4];
-        idct4(&[0i32; 4], &mut output);
+        idct4(&[0i32; 4], &mut output, 31);
         assert!(output.iter().all(|&v| v == 0));
     }
 
@@ -2070,8 +2167,8 @@ mod tests {
         let input = [10i32, -20, 30, -40];
         let mut fwd = [0i32; 4];
         let mut inv = [0i32; 4];
-        fdct4(&input, &mut fwd);
-        idct4(&fwd, &mut inv);
+        fdct4(&input, &mut fwd, 12);
+        idct4(&fwd, &mut inv, 31);
         for i in 0..4 {
             assert!(
                 (input[i] * 2 - inv[i]).abs() <= 1,
@@ -2089,8 +2186,8 @@ mod tests {
         let input = [100i32; 4];
         let mut fwd = [0i32; 4];
         let mut inv = [0i32; 4];
-        fdct4(&input, &mut fwd);
-        idct4(&fwd, &mut inv);
+        fdct4(&input, &mut fwd, 12);
+        idct4(&fwd, &mut inv, 31);
         for i in 0..4 {
             assert!(
                 (input[i] * 2 - inv[i]).abs() <= 1,
@@ -2107,7 +2204,7 @@ mod tests {
     #[test]
     fn idct8_zero() {
         let mut output = [0i32; 8];
-        idct8(&[0i32; 8], &mut output);
+        idct8(&[0i32; 8], &mut output, 31);
         assert!(output.iter().all(|&v| v == 0));
     }
 
@@ -2118,8 +2215,8 @@ mod tests {
         let input = [10, -20, 30, -40, 50, -60, 70, -80i32];
         let mut fwd = [0i32; 8];
         let mut inv = [0i32; 8];
-        fdct8(&input, &mut fwd);
-        idct8(&fwd, &mut inv);
+        fdct8(&input, &mut fwd, 12);
+        idct8(&fwd, &mut inv, 31);
         for i in 0..8 {
             assert!(
                 (input[i] * 4 - inv[i]).abs() <= 2,
@@ -2137,8 +2234,8 @@ mod tests {
         let input = [50i32; 8];
         let mut fwd = [0i32; 8];
         let mut inv = [0i32; 8];
-        fdct8(&input, &mut fwd);
-        idct8(&fwd, &mut inv);
+        fdct8(&input, &mut fwd, 12);
+        idct8(&fwd, &mut inv, 31);
         for i in 0..8 {
             assert!(
                 (input[i] * 4 - inv[i]).abs() <= 1,
@@ -2206,7 +2303,7 @@ mod tests {
     #[test]
     fn iadst4_zero() {
         let mut output = [0i32; 4];
-        iadst4(&[0i32; 4], &mut output);
+        iadst4(&[0i32; 4], &mut output, 31);
         assert!(output.iter().all(|&v| v == 0));
     }
 
@@ -2218,7 +2315,7 @@ mod tests {
         let mut fwd = [0i32; 4];
         let mut inv = [0i32; 4];
         c_fadst4(&input, &mut fwd);
-        iadst4(&fwd, &mut inv);
+        iadst4(&fwd, &mut inv, 31);
         for i in 0..4 {
             assert!(
                 (input[i] * 2 - inv[i]).abs() <= 1,
@@ -2235,7 +2332,7 @@ mod tests {
         // Verify iadst4 produces nonzero output for nonzero input
         let input = [100, 50, -30, 20i32];
         let mut output = [0i32; 4];
-        iadst4(&input, &mut output);
+        iadst4(&input, &mut output, 31);
         assert!(
             output.iter().any(|&v| v != 0),
             "iadst4 should produce nonzero output"
@@ -2247,14 +2344,14 @@ mod tests {
     #[test]
     fn iidentity4_zero() {
         let mut output = [0i32; 4];
-        iidentity4(&[0i32; 4], &mut output);
+        iidentity4(&[0i32; 4], &mut output, 31);
         assert!(output.iter().all(|&v| v == 0));
     }
 
     #[test]
     fn iidentity8_zero() {
         let mut output = [0i32; 8];
-        iidentity8(&[0i32; 8], &mut output);
+        iidentity8(&[0i32; 8], &mut output, 31);
         assert!(output.iter().all(|&v| v == 0));
     }
 
@@ -2266,8 +2363,8 @@ mod tests {
         let input = [10i32, 20, 30, 40];
         let mut fwd = [0i32; 4];
         let mut inv = [0i32; 4];
-        crate::fwd_txfm::fidentity4(&input, &mut fwd);
-        iidentity4(&fwd, &mut inv);
+        crate::fwd_txfm::fidentity4(&input, &mut fwd, 12);
+        iidentity4(&fwd, &mut inv, 31);
         // fidentity4 scales by sqrt(2), iidentity4 scales by sqrt(2)
         // Result should be input * 2
         for i in 0..4 {
@@ -2286,8 +2383,8 @@ mod tests {
         let input = [10i32, 20, 30, 40, 50, 60, 70, 80];
         let mut fwd = [0i32; 8];
         let mut inv = [0i32; 8];
-        crate::fwd_txfm::fidentity8(&input, &mut fwd);
-        iidentity8(&fwd, &mut inv);
+        crate::fwd_txfm::fidentity8(&input, &mut fwd, 12);
+        iidentity8(&fwd, &mut inv, 31);
         // fidentity8 scales by 2, iidentity8 scales by 2
         // Result should be input * 4
         for i in 0..8 {
