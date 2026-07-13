@@ -763,17 +763,12 @@ changes).
 
 ### Remaining subsystems for gradient p13/p10 identity (updated)
 
-1. **Final coefficient parity (the coding quantizer) — now owns EVERY
-   remaining gradient p13/p10 tile divergence** (g64 q40 op8 / q20 op21 /
-   q55 op8, g128 q20 op10). Correction to the superseded item 2 above:
-   the C path is the REGULAR-PD1 MDS3 quant, not light-PD1 —
-   `svt_aom_quantize_inv_quantize` with `quants_8bit` (zbin/round
-   84-80/48; pd0.rs `build_quant_entry`/`quantize_b` are the C-exact
-   primitives) and RDOQ per `pcs->rdoq_level` from the allintra config
-   (enc_mode_config.c:14931: 0 at coeff_lvl HIGH, 3 at NORMAL, else 2 —
-   instrument `pcs->coeff_lvl` for these cells before assuming which
-   RDOQ level binds), plus the coeff-shaving/eob path of
-   `md_stage_3`/`full_loop_core`.
+1. **[FIXED 2026-07-13 — the coding-quantizer port closed EVERY
+   remaining M13/M10 cell, see the section below]** Final coefficient
+   parity (the coding quantizer) — owned g64 q40 op8 / q20 op21 /
+   q55 op8, g128 q20 op10. The C path is the REGULAR-PD1 MDS3 quant —
+   `svt_aom_quantize_inv_quantize` with `quants_8bit` and RDOQ per
+   `pcs->rdoq_level`.
 2. **Non-DC-only leaf cost chase** (latent, currently non-binding at
    the tracked cells): where the gate does NOT fire (e.g. the q55
    64x64), C runs the 4-candidate {DC, V, H, SMOOTH} funnel — MDS0
@@ -782,8 +777,108 @@ changes).
    SSE level 3, `svt_av1_cost_coeffs_txb` rate, `svt_aom_intra_fast_cost`
    mode rate). Our homegrown loop happens to agree (DC) at q55; any
    future cell where it disagrees lands here.
-3. **g128 q40/q55 FH `cdef_uv_pri_strength`** — unchanged, the CDEF
-   search gap (2a in the main list).
+3. **g128 q40/q55 FH `cdef_uv_pri_strength`** — MEASURED GONE with the
+   quantizer port (those cells are now byte-identical); the CDEF search
+   gap (2a) remains only at preset 6 (gradient 64 q55 p6).
 
 Preset-6 gradient cells: unchanged, see the note above (different PD0
 architecture at M6).
+
+## 2026-07-13 (wave2, latest): coding quantizer CLOSED — every gradient M13/M10 cell byte-identical, matrix 30/36
+
+The quantizer chunk landed as `crates/svtav1-encoder/src/quant.rs` plus
+the still-path wiring. All 12 gradient p13/p10 cells (64+128, q20/40/55)
+now print `VERDICT: streams IDENTICAL` — together with the 18 uniform
+cells the matrix is **30/36** (`benchmarks/identity_matrix_2026-07-13.tsv`).
+The only remaining divergences are the 6 gradient preset-6 cells (5x
+tile-op 0/1 partition + 1x FH `cdef_y_pri_strength` q55 — the M6 PD0
+architecture + CDEF live-block search, both documented above).
+
+### Verified C path (instrumented library, never in-repo)
+
+Every claim below was confirmed by an SVT_QDBG-gated instrumented build
+in a scratch copy of the C tree (prints inside
+`svt_aom_quantize_inv_quantize`, `svt_av1_optimize_b`,
+`derive_intra_coeff_level`, `svt_aom_sig_deriv_mode_decision_config_allintra`):
+
+- **The MDS3 quantize IS the coding quantizer**: `pic_bypass_encdec = 1`
+  above M3 (`svt_aom_get_bypass_encdec_allintra`,
+  enc_mode_config.c:12037; assignment :15173) — zero `is_encode_pass`
+  quantize calls observed in any tracked cell. Call site:
+  `perform_dct_dct_tx` (product_coding_loop.c:5790, or the
+  `perform_tx_partitioning` depth-0 leg when the PD0-LVL_6 forced-TXS
+  search runs, e.g. g64 q20) with `full_lambda =
+  ctx->full_lambda_md[EB_8_BIT_MD]` and contexts 0/0
+  (`rate_est_level = 0` above M8 -> `update_skip_ctx_dc_sign_ctx = 0`).
+- **rdoq_level** = f(`pcs->coeff_lvl`) at eff-M9
+  (enc_mode_config.c:14931: HIGH->0, NORMAL->3, else->2), where
+  `coeff_lvl` comes from `derive_intra_coeff_level`
+  (md_config_process.c:620): `cmplx = pic_avg_variance / max(1, cli_qp)`
+  against intra thresholds {25,50,150} x1.7 (<240p) = {42,85,255};
+  `pic_avg_variance` = u16-truncated mean of the per-B64 64x64 variances
+  (pic_analysis_process.c:608). Captured: g64 pav=5425 -> q20 cmplx 271
+  HIGH (rdoq 0), q40 135 NORMAL (rdoq 3), q55 98 NORMAL (rdoq 3);
+  g128 pav=1483 -> q20 cmplx 74 LOW (rdoq 2).
+- **rdoq_level 0** -> `av1_quantize_b_facade_ii` -> `svt_aom_quantize_b_c`
+  (full_loop.c:31). **rdoq_level > 0** -> `svt_av1_quantize_fp_facade`
+  (quantize_fp_helper_c, full_loop.c:222, `_fp` round/quant rows:
+  `round_fp = (64*q)>>7`, `quant_fp = 65536/q`) then the
+  `svt_av1_optimize_b` trellis (full_loop.c:1038). At MDS3 with bypassed
+  enc-dec, `md_stage_3` CLEARS `rdoq_ctrls.skip_uv`/`dct_dct_only`
+  (product_coding_loop.c) so chroma runs RDOQ too; `eob_th`/`eob_fast_th`
+  are 255 at levels 1-3 (never fire); `coeff_shaving_level = 0`
+  (allintra) so no shaving. `rdmult = ((lambda *
+  plane_rd_mult[1][0][plane]) * 100/100 + 2) >> 2` with 17 luma / 13
+  chroma (sharpness 0 -> rweight 100, rshift 2); captured rdmult
+  1054880 @ lambda 248207 and 6493388 @ 1527856 — the lambda equals
+  pd0's `kf_full_lambda_8bit` chain at the frame qindex exactly.
+- **Cost tables**: default-CDF-derived and frame-static at eff-M9
+  (`update_cdf_level = 0` -> `cdf_ctrl.enabled = 0`);
+  `svt_aom_estimate_coefficients_rate` (md_rate_estimation.c:495) over
+  the `base_q_idx`-bucket default coefficient CDFs.
+- Quant table row pinned at qindex 220: dc zbin 326 / round 195 / quant
+  -1255 / shift 128 / fp 125/261 / deq 522; ac 583/349/-29571/128/70/466/933.
+- RDOQ effect captured: g64 q55 luma TX_64X64 fp-eob 671 -> post-trellis
+  521; q40 32x32 fp-eob 997 -> 528 (per block).
+
+### What landed (all under svtav1-rs/, C tree untouched)
+
+- `svtav1-encoder/src/quant.rs`: C-exact `build_quant_table`
+  (svt_av1_build_quantizer row incl. `_fp`), `quantize_b`
+  (svt_aom_quantize_b_c), `quantize_fp` (quantize_fp_helper_c),
+  `build_coeff_cost_tables` (estimate_coefficients_rate incl. the
+  base_cost[4..8) deltas + lps_cost extension rows), `optimize_b`
+  (svt_av1_optimize_b verbatim: update_coeff_general/eob/simple,
+  update_skip, cut_off si_end, golomb diff tables, br/eob ctx via the
+  coeff_c ports), `eob_cost` (get_eob_cost), the coeff_lvl/rdoq policy
+  fns, and `quantize_inv_quantize_still` tying them together. Unit
+  tests pin the instrumented captures (table row @220, rdmult pairs,
+  coeff_lvl cells, rdoq policy, q/dq decoder-mirror invariant).
+- `svtav1-entropy/src/coeff_c.rs`: pub `lower_levels_ctx_general` +
+  `br_ctx_eob` (thin C-exact wrappers the trellis prices with).
+- `encode_loop.rs`: `encode_block_tx_cq` — when the frame-level
+  `CodingQuantCfg` is present, quantization runs the C path on the
+  PACKED (32-capped) block exactly like C (pack -> quantize ->
+  optimize -> unpack; dequant mirror preserved); dead-zone otherwise.
+- `partition.rs`/`pipeline.rs`: `PartitionSearchConfig.c_quant`
+  (Arc), threaded to every luma quantize in `encode_single_block` and
+  to `encode_chroma_block_dc` (plane_type 1); the pipeline derives the
+  frame cfg (pic_avg_variance over the pd0 variance maps -> coeff_lvl
+  -> rdoq_level, kf lambda, cost tables) for key/still frames at
+  presets >= 9 on 64-aligned dims.
+
+### Gates after the port
+
+- identity matrix **30/36** (+12; all uniform + all gradient M13/M10)
+- recon parity 216/0 (C-exact quantizer keeps encoder recon == aomdec)
+- decode conformance 525/0 mono + 700/0 chroma
+- `cargo test --workspace` green (no test-input changes needed)
+
+### Next subsystem (owns all 6 remaining cells)
+
+Preset-6 gradient parity: M6 runs `pic_pd0_lvl = 1` (prediction-based
+PD0 with ME/intra candidates + depth refinement, not the LVL_5/6
+shortcut), nsq GEOMETRY enabled (min 8x8), and the CDEF live-block
+search (`svt_av1_cdef_search` per-fb mse + `joint_strength_search_dual`)
+— tile-op 0/1 partition divergence on 5 cells, FH `cdef_y_pri_strength`
+on gradient-64 q55 p6.
