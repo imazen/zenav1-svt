@@ -388,6 +388,12 @@ impl AvifEncoder {
     /// Encodes the luma plane through the full pipeline. Chroma planes
     /// are encoded independently at half resolution. Each produces a
     /// separate AV1 OBU stream; they're concatenated with length prefixes.
+    ///
+    /// TODO: switch to the real single-stream 4:2:0 path
+    /// (`EncodePipeline::with_chroma_420(true)` + `encode_frame_420`,
+    /// mono_chrome=0 sequence header) — kept on the legacy three-mono-plane
+    /// format for now because callers consume this length-prefixed layout;
+    /// changing the output contract needs its own migration.
     pub fn encode_yuv420(
         &self,
         y: &[u8],

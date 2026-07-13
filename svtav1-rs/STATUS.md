@@ -4,13 +4,16 @@ Last updated: 2026-07-13 (wave2/entropy-c-parity) — C baseline **v4.2.0-rc**
 
 ## Decode conformance (AV1 reference decoder)
 
-`tools/decode_conformance.sh` — 525-stream matrix (gradient/uniform/edges x
-32..128 px x qindex 30..90 x speeds 2..10), every stream must decode under
-**aomdec**:
+`tools/decode_conformance.sh` — 525-stream mono matrix (gradient/uniform/
+edges x 32..128 px x qindex 30..90 x speeds 2..10) plus a 700-stream
+4:2:0 matrix (`tools/decode_conformance.sh <dir> chroma`: same grid + a
+`color` content whose chroma planes carry real patterns), every stream
+must decode under **aomdec**:
 
 | Gate | Result |
 |---|---|
-| 525/525 streams decode | **PASS** (was 0/525 before this wave) |
+| 525/525 mono streams decode | **PASS** (was 0/525 before this wave) |
+| 700/700 chroma-420 streams decode | **PASS** (new 2026-07-13; opt-in `with_chroma_420`) |
 
 The old rav1d-based "decode PASS" claims were leniency artifacts; aomdec is
 the gate now.
@@ -43,6 +46,9 @@ All probes decode via aomdec and compare against the source:
 | edges 64px qindex30 s2 / 96px q50 s4 | **LOSSLESS** (205/367 bytes; C reference also lossless at 172 bytes — remaining delta is RD tuning) |
 | gradient 64px qindex30 s4 | **46.76 dB** |
 | gradient 128px q50 s8 | 30.39 dB |
+| 420 probe 64px q30 (examples/probe_420) | Y 46.64 / U 52.97 / V lossless |
+| 420 probe 128px q30 | Y 46.03 / U 51.92 / V 52.86 dB |
+| 420 probe 128px q50 | Y 30.39 / U 55.98 / V 57.44 dB (Y == mono ref) |
 
 Fixed en route: live-recon prediction neighbors, real mode/tx-type
 signaling, AV1 quantizer tables + decoder-mirrored dequant, per-size
@@ -66,7 +72,10 @@ example). Bitstream writer layer (headers, tile groups, coefficient coding)
 is now C-exact at the writer level; decision layers (partition/mode RDO,
 filters, chroma) still ours and next in line:
 
-1. Chroma 4:2:0 end-to-end (C cannot emit monochrome — required for parity)
+1. Chroma 4:2:0 end-to-end — **landed 2026-07-13 (opt-in
+   `with_chroma_420` + `encode_frame_420`; still-frame, UV_DC-only,
+   min-8x8 luma policy — see CLAUDE.md gap 1a-1d for what remains
+   toward C decision parity)**
 2. Filter search + signaling ports (deblock/CDEF/restoration)
 3. Directional-mode edge extension (has_top_right/bottom_left)
 4. Decision-layer parity vs C (partition/mode/TX RDO), then per-preset
