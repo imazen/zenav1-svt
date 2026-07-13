@@ -391,42 +391,9 @@ impl EncodePipeline {
         // parameters and filter identically to C.
         const APPLY_UNSIGNALED_FILTERS: bool = false;
         if APPLY_UNSIGNALED_FILTERS {
-            // 5b: CDEF
-            if self.speed_config.enable_cdef {
-                // Apply CDEF to each 8x8 block
-                let mut filtered = recon.clone();
-                let bw = 8usize;
-                let blocks_x = w.div_ceil(bw);
-                let blocks_y = h.div_ceil(bw);
-                for by in 0..blocks_y {
-                    for bx in 0..blocks_x {
-                        let x0 = bx * bw;
-                        let y0 = by * bw;
-                        let cur_w = bw.min(w - x0);
-                        let cur_h = bw.min(h - y0);
-                        if cur_w == 8 && cur_h == 8 {
-                            let (dir, _var) =
-                                svtav1_dsp::loop_filter::cdef_find_dir(&recon[y0 * w + x0..], w);
-                            // Light CDEF: pri_strength based on QP
-                            let pri = (pcs.qp / 8).min(15);
-                            let sec = (pcs.qp / 16).min(3);
-                            svtav1_dsp::loop_filter::cdef_filter_block(
-                                &recon[y0 * w + x0..],
-                                w,
-                                &mut filtered[y0 * w + x0..],
-                                w,
-                                dir,
-                                pri as i32,
-                                sec as i32,
-                                3 + (pcs.qp / 16) as i32,
-                                cur_w,
-                                cur_h,
-                            );
-                        }
-                    }
-                }
-                recon = filtered;
-            }
+            // (CDEF's old approximation block was deleted when the C-exact
+            // port landed — CDEF is now signaled + applied decoder-exactly
+            // in step 6a below, alongside deblocking.)
 
             // 5c: Wiener restoration (if enabled)
             // Optimizes coefficients per-frame by searching for the set that

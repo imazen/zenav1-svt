@@ -351,3 +351,39 @@ void ref_lf_limits(int32_t sharpness, uint8_t* lim_out, uint8_t* mblim_out) {
         mblim_out[l] = lfi.lfthr[l].mblim[0];
     }
 }
+
+/* ---- CDEF kernels (cdef.c) ---- */
+
+uint8_t svt_aom_cdef_find_dir_c(const uint16_t* img, int32_t stride, int32_t* var, int32_t coeff_shift);
+uint8_t svt_aom_cdef_find_dir_8bit_c(const uint8_t* img, int32_t stride, int32_t* var, int32_t coeff_shift);
+void    svt_cdef_filter_block_c(uint8_t* dst8, uint16_t* dst16, int32_t dstride, const uint16_t* in,
+                                int32_t pri_strength, int32_t sec_strength, int32_t dir, int32_t pri_damping,
+                                int32_t sec_damping, int32_t bsize, int32_t coeff_shift,
+                                uint8_t subsampling_factor);
+void    svt_cdef_filter_block_8bit_c(uint8_t* dst, int32_t dstride, const uint8_t* in, int32_t pri_strength,
+                                     int32_t sec_strength, int32_t dir, int32_t damping, int32_t bsize,
+                                     int32_t coeff_shift, uint8_t subsampling_factor);
+
+uint8_t ref_cdef_find_dir(const uint16_t* img, int32_t stride, int32_t* var, int32_t coeff_shift) {
+    return svt_aom_cdef_find_dir_c(img, stride, var, coeff_shift);
+}
+
+uint8_t ref_cdef_find_dir_8bit(const uint8_t* img, int32_t stride, int32_t* var, int32_t coeff_shift) {
+    return svt_aom_cdef_find_dir_8bit_c(img, stride, var, coeff_shift);
+}
+
+/* dst8 arm only (8-bit pipeline); `in` points at the block origin inside the
+   CDEF_BSTRIDE-padded buffer, exactly like svt_cdef_filter_fb passes it. */
+void ref_cdef_filter_block_8(uint8_t* dst, int32_t dstride, const uint16_t* in, int32_t pri_strength,
+                             int32_t sec_strength, int32_t dir, int32_t pri_damping, int32_t sec_damping,
+                             int32_t bsize, int32_t coeff_shift, uint8_t subsampling_factor) {
+    svt_cdef_filter_block_c(dst, NULL, dstride, in, pri_strength, sec_strength, dir, pri_damping, sec_damping,
+                            bsize, coeff_shift, subsampling_factor);
+}
+
+void ref_cdef_filter_block_8bit(uint8_t* dst, int32_t dstride, const uint8_t* in, int32_t pri_strength,
+                                int32_t sec_strength, int32_t dir, int32_t damping, int32_t bsize,
+                                int32_t coeff_shift, uint8_t subsampling_factor) {
+    svt_cdef_filter_block_8bit_c(dst, dstride, in, pri_strength, sec_strength, dir, damping, bsize, coeff_shift,
+                                 subsampling_factor);
+}
