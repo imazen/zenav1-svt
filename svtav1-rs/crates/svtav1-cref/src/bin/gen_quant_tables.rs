@@ -21,7 +21,9 @@ fn main() {
         ("DC_QLOOKUP_8", cref::dc_quant_qtx as fn(i32) -> i16),
         ("AC_QLOOKUP_8", cref::ac_quant_qtx as fn(i32) -> i16),
     ] {
-        out.push_str(&format!("#[rustfmt::skip]\npub static {name}: [i16; 256] = [\n    "));
+        out.push_str(&format!(
+            "#[rustfmt::skip]\npub static {name}: [i16; 256] = [\n    "
+        ));
         for q in 0..256 {
             out.push_str(&format!("{}, ", f(q)));
             if q % 16 == 15 {

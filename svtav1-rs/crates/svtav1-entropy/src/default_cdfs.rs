@@ -17,12 +17,12 @@ pub const TOKEN_CDF_Q_CTXS: usize = 4;
 /// C `get_q_ctx`: map base_qindex to the coefficient-CDF bucket.
 #[inline]
 pub fn coef_q_ctx(base_qindex: u8) -> usize {
-match base_qindex {
-0..=20 => 0,
-21..=60 => 1,
-61..=120 => 2,
-_ => 3,
-}
+    match base_qindex {
+        0..=20 => 0,
+        21..=60 => 1,
+        61..=120 => 2,
+        _ => 3,
+    }
 }
 
 #[rustfmt::skip]
@@ -4445,4 +4445,3 @@ pub static Y_MODE_CDF: [[AomCdfProb; 14]; 4] = [
     [12998, 11789, 9372, 8829, 8527, 8114, 7632, 5695, 4938, 3408, 3038, 2109, 0, 0],
     [12613, 11467, 9930, 9590, 9507, 9235, 9065, 7964, 7416, 6193, 5752, 4719, 0, 0],
 ];
-

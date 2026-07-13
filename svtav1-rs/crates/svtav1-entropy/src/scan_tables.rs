@@ -9,7 +9,7 @@
 //! The c_scan_tables_match test asserts these stay in sync with C.
 
 /// C `tx_type_to_scan_index[TX_TYPES]`.
-pub static TX_TYPE_TO_SCAN_INDEX: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 1, 2, 1, 2, ];
+pub static TX_TYPE_TO_SCAN_INDEX: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 1, 2, 1, 2];
 
 #[rustfmt::skip]
 static SCAN_TS0_C0: [u16; 16] = [

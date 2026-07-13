@@ -25,7 +25,9 @@ pub fn fwd_txfm2d_dispatch(
     let (col_1d, row_1d) = tx_type_to_1d(tx_type);
     let (w, h) = tx_size_dims(tx_size);
     let (ud_flip, lr_flip) = flip_cfg(tx_type);
-    fwd_txfm2d_c_exact(input, output, stride, w, h, col_1d, row_1d, ud_flip, lr_flip)
+    fwd_txfm2d_c_exact(
+        input, output, stride, w, h, col_1d, row_1d, ud_flip, lr_flip,
+    )
 }
 
 /// Inverse 2D transform dispatch for any supported (TxSize, TxType) combination.

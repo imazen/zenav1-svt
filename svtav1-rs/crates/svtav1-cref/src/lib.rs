@@ -40,10 +40,16 @@ impl RefEcEnc {
     pub fn new(size: u32) -> Self {
         let bytes = unsafe { ref_od_ec_enc_sizeof() };
         let align = unsafe { ref_od_ec_enc_alignof() };
-        assert!(align <= 8, "OdEcEnc alignment {align} exceeds u64 alignment");
+        assert!(
+            align <= 8,
+            "OdEcEnc alignment {align} exceeds u64 alignment"
+        );
         let words = bytes.div_ceil(8);
         let blob = vec![0u64; words].into_boxed_slice();
-        let mut this = Self { blob, finished: false };
+        let mut this = Self {
+            blob,
+            finished: false,
+        };
         unsafe { ref_od_ec_enc_init(this.ptr(), size) };
         this
     }
@@ -130,7 +136,11 @@ mod tests {
         let bytes = enc.done();
         assert!(!bytes.is_empty(), "64 coin flips must produce output bytes");
         // ~1 bit/symbol -> ~8 bytes plus termination
-        assert!(bytes.len() >= 8 && bytes.len() <= 12, "got {} bytes", bytes.len());
+        assert!(
+            bytes.len() >= 8 && bytes.len() <= 12,
+            "got {} bytes",
+            bytes.len()
+        );
     }
 
     #[test]
@@ -251,7 +261,14 @@ pub fn scan_len(tx_size: usize) -> usize {
 pub fn scan(tx_size: usize, scan_class: usize) -> Vec<i16> {
     let len = scan_len(tx_size);
     let mut v = vec![0i16; len];
-    unsafe { ref_scan_copy(tx_size as i32, scan_class as i32, v.as_mut_ptr(), len as i32) };
+    unsafe {
+        ref_scan_copy(
+            tx_size as i32,
+            scan_class as i32,
+            v.as_mut_ptr(),
+            len as i32,
+        )
+    };
     v
 }
 
@@ -275,7 +292,12 @@ pub fn nz_map_ctx_offset(tx_size: usize, coeff_idx: usize) -> i32 {
 
 pub fn txb_init_levels(coeff: &[i32], width: usize, height: usize, levels: &mut [u8]) {
     unsafe {
-        ref_txb_init_levels(coeff.as_ptr(), width as i32, height as i32, levels.as_mut_ptr())
+        ref_txb_init_levels(
+            coeff.as_ptr(),
+            width as i32,
+            height as i32,
+            levels.as_mut_ptr(),
+        )
     };
 }
 
@@ -342,7 +364,14 @@ unsafe extern "C" {
         stride_w: i32,
         tx_type: i32,
     );
-    fn ref_fwd_txfm2d_rect(w: i32, h: i32, input: *mut i16, output: *mut i32, stride: u32, tx_type: i32);
+    fn ref_fwd_txfm2d_rect(
+        w: i32,
+        h: i32,
+        input: *mut i16,
+        output: *mut i32,
+        stride: u32,
+        tx_type: i32,
+    );
     fn ref_inv_txfm2d_add_rect(
         w: i32,
         h: i32,
@@ -360,7 +389,15 @@ pub fn fwd_txfm2d(n: usize, input: &[i16], tx_type: usize) -> Vec<i32> {
     assert!(input.len() >= n * n);
     let mut out = vec![0i32; n * n];
     let mut inp = input.to_vec();
-    unsafe { ref_fwd_txfm2d(n as i32, inp.as_mut_ptr(), out.as_mut_ptr(), n as u32, tx_type as i32) };
+    unsafe {
+        ref_fwd_txfm2d(
+            n as i32,
+            inp.as_mut_ptr(),
+            out.as_mut_ptr(),
+            n as u32,
+            tx_type as i32,
+        )
+    };
     out
 }
 
@@ -433,15 +470,7 @@ pub fn inv_txfm2d_add_rect(
 // ---- Deblocking loop filter kernels + thresholds ----
 
 unsafe extern "C" {
-    fn ref_lpf(
-        kind: i32,
-        buf: *mut u8,
-        off: i32,
-        pitch: i32,
-        blimit: u8,
-        limit: u8,
-        thresh: u8,
-    );
+    fn ref_lpf(kind: i32, buf: *mut u8, off: i32, pitch: i32, blimit: u8, limit: u8, thresh: u8);
     fn ref_lf_limits(sharpness: i32, lim_out: *mut u8, mblim_out: *mut u8);
 }
 

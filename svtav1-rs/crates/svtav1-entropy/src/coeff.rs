@@ -415,9 +415,7 @@ fn get_lo_ctx_2d(
     lo_ctx_offsets: &[[u8; 5]; 5],
 ) -> (u8, u32) {
     // Access neighbor at offset (dx, dy) from current position (x, y)
-    let level = |dx: usize, dy: usize| -> u32 {
-        levels[(x + dx) * stride + (y + dy)] as u32
-    };
+    let level = |dx: usize, dy: usize| -> u32 { levels[(x + dx) * stride + (y + dy)] as u32 };
 
     // 3 closest neighbors
     let mut mag = level(0, 1) + level(1, 0); // below + right

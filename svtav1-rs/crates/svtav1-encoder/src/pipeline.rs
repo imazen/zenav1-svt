@@ -124,7 +124,10 @@ impl EncodePipeline {
             "encode_frame_420 requires the pipeline to be built with with_chroma_420(true)"
         );
         let cn = (self.width as usize / 2) * (self.height as usize / 2);
-        assert!(u.len() >= cn && v.len() >= cn, "u/v planes must be (w/2 x h/2)");
+        assert!(
+            u.len() >= cn && v.len() >= cn,
+            "u/v planes must be (w/2 x h/2)"
+        );
         self.encode_frame_impl(y, y_stride, Some((u, v)))
     }
 
@@ -463,10 +466,17 @@ impl EncodePipeline {
                     s1: (5 + pcs.qp as i32 / 4).min(50),
                     xqd: [32, 32], // Equal blend of both passes with source
                 };
-                svtav1_dsp::loop_filter::sgrproj_filter(&recon, w, &mut sgrproj_out, w, w, h, &params);
+                svtav1_dsp::loop_filter::sgrproj_filter(
+                    &recon,
+                    w,
+                    &mut sgrproj_out,
+                    w,
+                    w,
+                    h,
+                    &params,
+                );
                 recon = sgrproj_out;
             }
-
         }
 
         // Step 6: Entropy coding — recursive partition tree encoding.
@@ -507,8 +517,7 @@ impl EncodePipeline {
             let mut frame_ctx = svtav1_entropy::context::FrameContext::new_default();
             // C-exact coefficient CDFs for the base_q_idx bucket
             // (svt_av1_default_coef_probs semantics) — qindex domain.
-            let mut coeff_fc =
-                svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex);
+            let mut coeff_fc = svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex);
             // Mode/skip context tracking at 4x4 granularity
             let w4 = w.div_ceil(4);
             let h4 = h.div_ceil(4);
@@ -777,10 +786,7 @@ impl EntropyCtx {
             // neighbor-array init.
             above_coeff: alloc::vec![0xFFu8; width_4x4],
             left_coeff: alloc::vec![0xFFu8; height_4x4],
-            above_coeff_uv: [
-                alloc::vec![0xFFu8; width_c4],
-                alloc::vec![0xFFu8; width_c4],
-            ],
+            above_coeff_uv: [alloc::vec![0xFFu8; width_c4], alloc::vec![0xFFu8; width_c4]],
             left_coeff_uv: [
                 alloc::vec![0xFFu8; height_c4],
                 alloc::vec![0xFFu8; height_c4],
@@ -795,7 +801,10 @@ impl EntropyCtx {
         let y4 = y / 4;
         let w4 = (w / 4).min(self.above_coeff.len().saturating_sub(x4));
         let h4 = (h / 4).min(self.left_coeff.len().saturating_sub(y4));
-        (&self.above_coeff[x4..x4 + w4], &self.left_coeff[y4..y4 + h4])
+        (
+            &self.above_coeff[x4..x4 + w4],
+            &self.left_coeff[y4..y4 + h4],
+        )
     }
 
     /// Record a coded transform block's `(dc_sign << 6) | cul_level` byte
@@ -815,7 +824,14 @@ impl EntropyCtx {
     /// Chroma-plane coefficient neighbor spans for a transform at chroma
     /// coords (cx, cy) of cw x ch chroma pixels, in chroma 4x4 units,
     /// clipped to the plane like the luma variant. `uv`: 0 = U, 1 = V.
-    fn coeff_neighbors_uv(&self, uv: usize, cx: usize, cy: usize, cw: usize, ch: usize) -> (&[u8], &[u8]) {
+    fn coeff_neighbors_uv(
+        &self,
+        uv: usize,
+        cx: usize,
+        cy: usize,
+        cw: usize,
+        ch: usize,
+    ) -> (&[u8], &[u8]) {
         let x4 = cx / 4;
         let y4 = cy / 4;
         let w4 = (cw / 4).min(self.above_coeff_uv[uv].len().saturating_sub(x4));
@@ -1441,8 +1457,8 @@ fn encode_partition_tree(
                     // partition symbols (decoder reads them as direct blocks).
                     let top = expect_leaf(&children[0]);
                     encode_block_syntax(
-                        top, writer, frame_ctx, coeff_fc, base_q_idx, ectx, is_key, block_x, block_y,
-                        chroma, geom,
+                        top, writer, frame_ctx, coeff_fc, base_q_idx, ectx, is_key, block_x,
+                        block_y, chroma, geom,
                     );
                     let bot = expect_leaf(&children[1]);
                     encode_block_syntax(
@@ -1472,8 +1488,8 @@ fn encode_partition_tree(
 
                     let left = expect_leaf(&children[0]);
                     encode_block_syntax(
-                        left, writer, frame_ctx, coeff_fc, base_q_idx, ectx, is_key, block_x, block_y,
-                        chroma, geom,
+                        left, writer, frame_ctx, coeff_fc, base_q_idx, ectx, is_key, block_x,
+                        block_y, chroma, geom,
                     );
                     let right = expect_leaf(&children[1]);
                     encode_block_syntax(
@@ -1512,12 +1528,18 @@ fn encode_partition_tree(
                         (crate::partition::PartitionType::VertB, 3) => {
                             &[(0, 0), (half_w, 0), (half_w, half_h)]
                         }
-                        (crate::partition::PartitionType::Horz4, 4) => {
-                            &[(0, 0), (0, quarter_h), (0, 2 * quarter_h), (0, 3 * quarter_h)]
-                        }
-                        (crate::partition::PartitionType::Vert4, 4) => {
-                            &[(0, 0), (quarter_w, 0), (2 * quarter_w, 0), (3 * quarter_w, 0)]
-                        }
+                        (crate::partition::PartitionType::Horz4, 4) => &[
+                            (0, 0),
+                            (0, quarter_h),
+                            (0, 2 * quarter_h),
+                            (0, 3 * quarter_h),
+                        ],
+                        (crate::partition::PartitionType::Vert4, 4) => &[
+                            (0, 0),
+                            (quarter_w, 0),
+                            (2 * quarter_w, 0),
+                            (3 * quarter_w, 0),
+                        ],
                         other => panic!("unsupported partition shape {other:?}"),
                     };
                     ectx.update_partition_ctx(block_x, block_y, w, h, ptype);

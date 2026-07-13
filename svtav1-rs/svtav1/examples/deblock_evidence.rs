@@ -65,7 +65,15 @@ fn main() {
 
     println!(
         "{:<10} {:>3} {:>6} {:>15} {:>9} {:>12} {:>12} {:>8} {:>7}",
-        "content", "qp", "qindex", "lf[y,y,u,v]", "px_moved", "psnr_pre", "psnr_post", "parity", "bytes"
+        "content",
+        "qp",
+        "qindex",
+        "lf[y,y,u,v]",
+        "px_moved",
+        "psnr_pre",
+        "psnr_post",
+        "parity",
+        "bytes"
     );
 
     let sz = 128usize;
@@ -98,8 +106,8 @@ fn main() {
                 .stderr(std::process::Stdio::null())
                 .status()
                 .expect("run aomdec");
-            let parity = st.success()
-                && decode_y(&y4m_path, sz, sz).as_deref() == Some(post.as_slice());
+            let parity =
+                st.success() && decode_y(&y4m_path, sz, sz).as_deref() == Some(post.as_slice());
 
             println!(
                 "{:<10} {:>3} {:>6} {:>15} {:>9} {:>12.2} {:>12.2} {:>8} {:>7}",

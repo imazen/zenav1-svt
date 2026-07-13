@@ -12,9 +12,17 @@ use svtav1_encoder::pipeline::EncodePipeline;
 use svtav1_encoder::rate_control::{RcConfig, RcMode};
 
 fn main() {
-    let outdir = std::env::args().nth(1).unwrap_or_else(|| "target/probe_420".to_string());
-    let size: usize = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(64);
-    let qp: u8 = std::env::args().nth(3).and_then(|s| s.parse().ok()).unwrap_or(30);
+    let outdir = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "target/probe_420".to_string());
+    let size: usize = std::env::args()
+        .nth(2)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(64);
+    let qp: u8 = std::env::args()
+        .nth(3)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(30);
     std::fs::create_dir_all(&outdir).expect("create outdir");
 
     // The pipeline contract (like AvifEncoder / decode_conformance) is
@@ -48,7 +56,11 @@ fn main() {
         }
     }
 
-    let rc = RcConfig { mode: RcMode::Cqp, qp, ..RcConfig::default() };
+    let rc = RcConfig {
+        mode: RcMode::Cqp,
+        qp,
+        ..RcConfig::default()
+    };
     let mut pipeline = EncodePipeline::new(w as u32, h as u32, 4, rc, 0, 1).with_chroma_420(true);
     let obu = pipeline.encode_frame_420(&y, &u, &v, w);
 

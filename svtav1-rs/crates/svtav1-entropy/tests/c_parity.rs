@@ -163,7 +163,10 @@ fn ec_adaptive_stream_matches_c() {
 
         let c_bytes = c.done();
         let rust_bytes = rust.done().to_vec();
-        assert_eq!(rust_bytes, c_bytes, "adaptive stream bytes diverged at trial={trial}");
+        assert_eq!(
+            rust_bytes, c_bytes,
+            "adaptive stream bytes diverged at trial={trial}"
+        );
         for (k, (r, c)) in ctxs.iter().zip(c_ctxs.iter()).enumerate() {
             assert_eq!(r.1, c.1, "context {k} CDF state diverged at trial={trial}");
         }
@@ -180,13 +183,21 @@ fn ec_carry_torture_matches_c() {
         // Extreme 2-symbol CDFs in C layout.
         // icdf[0]=1     -> P(sym0) ~ 1        (dominant first symbol)
         // icdf[0]=32767 -> P(sym0) ~ 1/32768  (dominant second symbol)
-        let cdf: [u16; 3] = if dominant_first { [1, 0, 0] } else { [32767, 0, 0] };
+        let cdf: [u16; 3] = if dominant_first {
+            [1, 0, 0]
+        } else {
+            [32767, 0, 0]
+        };
         let dominant = usize::from(!dominant_first);
 
         let mut rust = OdEcEnc::new(16);
         let mut c = cref::RefEcEnc::new(16);
         for _ in 0..4096 {
-            let s = if rng.below(97) == 0 { 1 - dominant } else { dominant };
+            let s = if rng.below(97) == 0 {
+                1 - dominant
+            } else {
+                dominant
+            };
             rust.encode_cdf_q15(s, &cdf, 2);
             c.encode_cdf_q15(s, &cdf, 2);
         }
@@ -241,41 +252,128 @@ fn c_default_cdf_tables_match() {
                 assert_eq!(rust_flat, $c, concat!($name, " bucket mismatch"));
             }};
         }
-        check_q!(d::TXB_SKIP_CDF[k], cref::fc_table(cref::FcTable::TxbSkip), "TXB_SKIP_CDF");
-        check_q!(d::DC_SIGN_CDF[k], cref::fc_table(cref::FcTable::DcSign), "DC_SIGN_CDF");
-        check_q!(d::EOB_FLAG_CDF16[k], cref::fc_table(cref::FcTable::EobFlag16), "EOB_FLAG_CDF16");
-        check_q!(d::EOB_FLAG_CDF1024[k], cref::fc_table(cref::FcTable::EobFlag1024), "EOB_FLAG_CDF1024");
-        let base: Vec<u16> = d::COEFF_BASE_CDF[k].iter().flatten().flatten().flatten().copied().collect();
-        assert_eq!(base, cref::fc_table(cref::FcTable::CoeffBase), "COEFF_BASE_CDF bucket {q}");
-        let br: Vec<u16> = d::COEFF_BR_CDF[k].iter().flatten().flatten().flatten().copied().collect();
-        assert_eq!(br, cref::fc_table(cref::FcTable::CoeffBr), "COEFF_BR_CDF bucket {q}");
-        let beob: Vec<u16> = d::COEFF_BASE_EOB_CDF[k].iter().flatten().flatten().flatten().copied().collect();
-        assert_eq!(beob, cref::fc_table(cref::FcTable::CoeffBaseEob), "COEFF_BASE_EOB_CDF bucket {q}");
-        let eex: Vec<u16> = d::EOB_EXTRA_CDF[k].iter().flatten().flatten().flatten().copied().collect();
-        assert_eq!(eex, cref::fc_table(cref::FcTable::EobExtra), "EOB_EXTRA_CDF bucket {q}");
+        check_q!(
+            d::TXB_SKIP_CDF[k],
+            cref::fc_table(cref::FcTable::TxbSkip),
+            "TXB_SKIP_CDF"
+        );
+        check_q!(
+            d::DC_SIGN_CDF[k],
+            cref::fc_table(cref::FcTable::DcSign),
+            "DC_SIGN_CDF"
+        );
+        check_q!(
+            d::EOB_FLAG_CDF16[k],
+            cref::fc_table(cref::FcTable::EobFlag16),
+            "EOB_FLAG_CDF16"
+        );
+        check_q!(
+            d::EOB_FLAG_CDF1024[k],
+            cref::fc_table(cref::FcTable::EobFlag1024),
+            "EOB_FLAG_CDF1024"
+        );
+        let base: Vec<u16> = d::COEFF_BASE_CDF[k]
+            .iter()
+            .flatten()
+            .flatten()
+            .flatten()
+            .copied()
+            .collect();
+        assert_eq!(
+            base,
+            cref::fc_table(cref::FcTable::CoeffBase),
+            "COEFF_BASE_CDF bucket {q}"
+        );
+        let br: Vec<u16> = d::COEFF_BR_CDF[k]
+            .iter()
+            .flatten()
+            .flatten()
+            .flatten()
+            .copied()
+            .collect();
+        assert_eq!(
+            br,
+            cref::fc_table(cref::FcTable::CoeffBr),
+            "COEFF_BR_CDF bucket {q}"
+        );
+        let beob: Vec<u16> = d::COEFF_BASE_EOB_CDF[k]
+            .iter()
+            .flatten()
+            .flatten()
+            .flatten()
+            .copied()
+            .collect();
+        assert_eq!(
+            beob,
+            cref::fc_table(cref::FcTable::CoeffBaseEob),
+            "COEFF_BASE_EOB_CDF bucket {q}"
+        );
+        let eex: Vec<u16> = d::EOB_EXTRA_CDF[k]
+            .iter()
+            .flatten()
+            .flatten()
+            .flatten()
+            .copied()
+            .collect();
+        assert_eq!(
+            eex,
+            cref::fc_table(cref::FcTable::EobExtra),
+            "EOB_EXTRA_CDF bucket {q}"
+        );
     }
 
     // Mode tables (q-independent).
     cref::fc_init(60);
     let part: Vec<u16> = d::PARTITION_CDF.iter().flatten().copied().collect();
-    assert_eq!(part, cref::fc_table(cref::FcTable::Partition), "PARTITION_CDF");
+    assert_eq!(
+        part,
+        cref::fc_table(cref::FcTable::Partition),
+        "PARTITION_CDF"
+    );
     let skip: Vec<u16> = d::SKIP_CDF.iter().flatten().copied().collect();
     assert_eq!(skip, cref::fc_table(cref::FcTable::Skip), "SKIP_CDF");
     let kf: Vec<u16> = d::KF_Y_CDF.iter().flatten().flatten().copied().collect();
     assert_eq!(kf, cref::fc_table(cref::FcTable::KfY), "KF_Y_CDF");
     let ad: Vec<u16> = d::ANGLE_DELTA_CDF.iter().flatten().copied().collect();
-    assert_eq!(ad, cref::fc_table(cref::FcTable::AngleDelta), "ANGLE_DELTA_CDF");
-    let iet: Vec<u16> = d::INTRA_EXT_TX_CDF.iter().flatten().flatten().flatten().copied().collect();
-    assert_eq!(iet, cref::fc_table(cref::FcTable::IntraExtTx), "INTRA_EXT_TX_CDF");
+    assert_eq!(
+        ad,
+        cref::fc_table(cref::FcTable::AngleDelta),
+        "ANGLE_DELTA_CDF"
+    );
+    let iet: Vec<u16> = d::INTRA_EXT_TX_CDF
+        .iter()
+        .flatten()
+        .flatten()
+        .flatten()
+        .copied()
+        .collect();
+    assert_eq!(
+        iet,
+        cref::fc_table(cref::FcTable::IntraExtTx),
+        "INTRA_EXT_TX_CDF"
+    );
     let uv: Vec<u16> = d::UV_MODE_CDF.iter().flatten().flatten().copied().collect();
     assert_eq!(uv, cref::fc_table(cref::FcTable::UvMode), "UV_MODE_CDF");
     let ts: Vec<u16> = d::TX_SIZE_CDF.iter().flatten().flatten().copied().collect();
     assert_eq!(ts, cref::fc_table(cref::FcTable::TxSize), "TX_SIZE_CDF");
-    assert_eq!(d::FILTER_INTRA_MODE_CDF.to_vec(), cref::fc_table(cref::FcTable::FilterIntraMode));
-    assert_eq!(d::DELTA_Q_CDF.to_vec(), cref::fc_table(cref::FcTable::DeltaQ));
-    assert_eq!(d::INTRABC_CDF.to_vec(), cref::fc_table(cref::FcTable::IntraBc));
+    assert_eq!(
+        d::FILTER_INTRA_MODE_CDF.to_vec(),
+        cref::fc_table(cref::FcTable::FilterIntraMode)
+    );
+    assert_eq!(
+        d::DELTA_Q_CDF.to_vec(),
+        cref::fc_table(cref::FcTable::DeltaQ)
+    );
+    assert_eq!(
+        d::INTRABC_CDF.to_vec(),
+        cref::fc_table(cref::FcTable::IntraBc)
+    );
     let fi: Vec<u16> = d::FILTER_INTRA_CDF.iter().flatten().copied().collect();
-    assert_eq!(fi, cref::fc_table(cref::FcTable::FilterIntra), "FILTER_INTRA_CDF");
+    assert_eq!(
+        fi,
+        cref::fc_table(cref::FcTable::FilterIntra),
+        "FILTER_INTRA_CDF"
+    );
     let ym: Vec<u16> = d::Y_MODE_CDF.iter().flatten().copied().collect();
     assert_eq!(ym, cref::fc_table(cref::FcTable::YMode), "Y_MODE_CDF");
 }
@@ -296,7 +394,11 @@ fn coeff_c_dims_and_scans_match_c() {
         );
         for class in 0..3usize {
             let c_scan: Vec<u16> = cref::scan(ts, class).iter().map(|&v| v as u16).collect();
-            assert_eq!(scan_tables::scan(ts, class), &c_scan[..], "scan ts={ts} class={class}");
+            assert_eq!(
+                scan_tables::scan(ts, class),
+                &c_scan[..],
+                "scan ts={ts} class={class}"
+            );
         }
         // 2D nz-map context offsets: our generator formula vs the C table.
         let n = cref::scan_len(ts);
@@ -354,7 +456,8 @@ fn coeff_c_levels_and_contexts_match_c() {
                 coeff_c::txb_init_levels(&coeffs, width, height, &mut rust_buf);
                 let origin = coeff_c::levels_origin(width);
                 let stride = width + coeff_c::TX_PAD_HOR;
-                let written = stride * height + coeff_c::TX_PAD_BOTTOM * stride + coeff_c::TX_PAD_END;
+                let written =
+                    stride * height + coeff_c::TX_PAD_BOTTOM * stride + coeff_c::TX_PAD_END;
                 let mut c_buf = [0u8; coeff_c::TX_PAD_2D];
                 cref::txb_init_levels(&coeffs, width, height, &mut c_buf[origin..]);
                 assert_eq!(

@@ -648,7 +648,7 @@ pub fn partition_search_with_config(
                 cur_h,
                 qindex,
                 config,
-                    abs_x,
+                abs_x,
                 abs_y + y0,
                 ref_ctx,
                 svtav1_types::partition::PartitionType::Horz4,
@@ -699,7 +699,7 @@ pub fn partition_search_with_config(
                 height,
                 qindex,
                 config,
-                    abs_x + x0,
+                abs_x + x0,
                 abs_y,
                 ref_ctx,
                 svtav1_types::partition::PartitionType::Vert4,
@@ -1172,8 +1172,7 @@ pub fn partition_search_with_config(
             height: height as u16,
             children: split_children,
         });
-        split_result.rd_cost =
-            split_result.distortion + ((lambda * split_result.rate as u64) >> 8);
+        split_result.rd_cost = split_result.distortion + ((lambda * split_result.rate as u64) >> 8);
 
         // Check if SPLIT is better than current best
         if split_result.rd_cost < best_result.rd_cost {
@@ -1218,7 +1217,15 @@ pub fn encode_chroma_block_dc(
     let mut pred = alloc::vec![0u8; cw * ch];
     svtav1_dsp::intra_pred::predict_dc(&mut pred, cw, &above, &left, cw, ch, has_above, has_left);
 
-    let enc = crate::encode_loop::encode_block(&src[cy * stride + cx..], stride, &pred, cw, cw, ch, qindex);
+    let enc = crate::encode_loop::encode_block(
+        &src[cy * stride + cx..],
+        stride,
+        &pred,
+        cw,
+        cw,
+        ch,
+        qindex,
+    );
 
     for r in 0..ch {
         let dst = (cy + r) * stride + cx;
@@ -1857,7 +1864,10 @@ mod tests {
         let (above, left, tl, has_above, has_left) = extract_neighbors(&frame, w, 8, 0, 8, 8);
         assert!(!has_above);
         assert!(has_left);
-        assert!(above.iter().all(|&v| v == 32), "above = left_ref[0]: {above:?}");
+        assert!(
+            above.iter().all(|&v| v == 32),
+            "above = left_ref[0]: {above:?}"
+        );
         assert!(left.iter().all(|&v| v == 32));
         assert_eq!(tl, 32, "top-left = left_ref[0] when only left exists");
 
@@ -1866,7 +1876,10 @@ mod tests {
         assert!(has_above);
         assert!(!has_left);
         assert!(above.iter().all(|&v| v == 32));
-        assert!(left.iter().all(|&v| v == 32), "left = above_ref[0]: {left:?}");
+        assert!(
+            left.iter().all(|&v| v == 32),
+            "left = above_ref[0]: {left:?}"
+        );
         assert_eq!(tl, 32, "top-left = above_ref[0] when only above exists");
     }
 
@@ -1916,6 +1929,9 @@ mod tests {
         }
         let (above, _left, _tl, has_above, _has_left) = extract_neighbors(&frame, w, 8, 8, 8, 8);
         assert!(has_above);
-        assert!(above.iter().all(|&v| v == 200), "in-SB above must be live: {above:?}");
+        assert!(
+            above.iter().all(|&v| v == 200),
+            "in-SB above must be live: {above:?}"
+        );
     }
 }

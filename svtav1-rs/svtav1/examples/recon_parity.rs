@@ -64,14 +64,15 @@ fn pad_replicate(src: &[u8], sz: usize, enc: usize) -> Vec<u8> {
     out
 }
 
-fn decode_y4m_planes(path: &str, w: usize, h: usize, mono: bool) -> Option<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+fn decode_y4m_planes(
+    path: &str,
+    w: usize,
+    h: usize,
+    mono: bool,
+) -> Option<(Vec<u8>, Vec<u8>, Vec<u8>)> {
     let data = std::fs::read(path).ok()?;
     let hdr_end = data.iter().position(|&b| b == b'\n')?;
-    let frame_pos = data
-        .windows(5)
-        .skip(hdr_end)
-        .position(|w| w == b"FRAME")?
-        + hdr_end;
+    let frame_pos = data.windows(5).skip(hdr_end).position(|w| w == b"FRAME")? + hdr_end;
     let y_start = data[frame_pos..].iter().position(|&b| b == b'\n')? + frame_pos + 1;
     let ysz = w * h;
     let csz = if mono { 0 } else { (w / 2) * (h / 2) };
@@ -185,13 +186,11 @@ fn main() {
                         }
                         if chroma {
                             if du != ru {
-                                let i =
-                                    du.iter().zip(ru.iter()).position(|(a, b)| a != b).unwrap();
+                                let i = du.iter().zip(ru.iter()).position(|(a, b)| a != b).unwrap();
                                 diffs.push(format!("U@{i} dec={} enc={}", du[i], ru[i]));
                             }
                             if dv != rv {
-                                let i =
-                                    dv.iter().zip(rv.iter()).position(|(a, b)| a != b).unwrap();
+                                let i = dv.iter().zip(rv.iter()).position(|(a, b)| a != b).unwrap();
                                 diffs.push(format!("V@{i} dec={} enc={}", dv[i], rv[i]));
                             }
                         }

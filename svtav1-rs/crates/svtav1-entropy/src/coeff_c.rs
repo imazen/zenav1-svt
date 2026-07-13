@@ -38,10 +38,12 @@ pub const TX_64X16: usize = 18;
 pub const TX_SIZES_ALL: usize = 19;
 
 // ---- Transform dimension tables (common_utils.c) ----
-pub const TX_SIZE_WIDE: [usize; TX_SIZES_ALL] =
-    [4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64];
-pub const TX_SIZE_HIGH: [usize; TX_SIZES_ALL] =
-    [4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16];
+pub const TX_SIZE_WIDE: [usize; TX_SIZES_ALL] = [
+    4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64,
+];
+pub const TX_SIZE_HIGH: [usize; TX_SIZES_ALL] = [
+    4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16,
+];
 pub const TX_SIZE_WIDE_LOG2: [usize; TX_SIZES_ALL] =
     [2, 3, 4, 5, 6, 2, 3, 3, 4, 4, 5, 5, 6, 2, 4, 3, 5, 4, 6];
 pub const TX_SIZE_HIGH_LOG2: [usize; TX_SIZES_ALL] =
@@ -182,14 +184,26 @@ pub fn ext_tx_set_type(tx_size: usize, is_inter: bool, use_reduced_set: bool) ->
         return EXT_TX_SET_DCTONLY;
     }
     if tx_size_sqr_up == TX_32X32 {
-        return if is_inter { EXT_TX_SET_DCT_IDTX } else { EXT_TX_SET_DCTONLY };
+        return if is_inter {
+            EXT_TX_SET_DCT_IDTX
+        } else {
+            EXT_TX_SET_DCTONLY
+        };
     }
     if use_reduced_set {
-        return if is_inter { EXT_TX_SET_DCT_IDTX } else { EXT_TX_SET_DTT4_IDTX };
+        return if is_inter {
+            EXT_TX_SET_DCT_IDTX
+        } else {
+            EXT_TX_SET_DTT4_IDTX
+        };
     }
     let tx_size_sqr = TXSIZE_SQR_MAP[tx_size];
     if is_inter {
-        if tx_size_sqr == TX_16X16 { EXT_TX_SET_DTT9_IDTX_1DDCT } else { EXT_TX_SET_ALL16 }
+        if tx_size_sqr == TX_16X16 {
+            EXT_TX_SET_DTT9_IDTX_1DDCT
+        } else {
+            EXT_TX_SET_ALL16
+        }
     } else if tx_size_sqr == TX_16X16 {
         EXT_TX_SET_DTT4_IDTX
     } else {
@@ -325,7 +339,13 @@ pub fn nz_map_ctx_offset_2d(tx_size: usize, coeff_idx: usize) -> usize {
 
 /// C `get_nz_map_ctx_from_stats`.
 #[inline]
-fn nz_map_ctx_from_stats(stats: u32, coeff_idx: usize, bwl: usize, tx_size: usize, tx_class: usize) -> usize {
+fn nz_map_ctx_from_stats(
+    stats: u32,
+    coeff_idx: usize,
+    bwl: usize,
+    tx_size: usize,
+    tx_class: usize,
+) -> usize {
     if (tx_class | coeff_idx) == 0 {
         return 0;
     }
@@ -388,8 +408,17 @@ pub fn get_nz_map_contexts(
     let origin = levels_origin(txb_wide(tx_size));
     for i in 0..eob {
         let pos = scan[i] as usize;
-        coeff_contexts[pos] =
-            nz_map_ctx(levels_buf, origin, pos, bwl, height, i, i == eob - 1, tx_size, tx_class) as i8;
+        coeff_contexts[pos] = nz_map_ctx(
+            levels_buf,
+            origin,
+            pos,
+            bwl,
+            height,
+            i,
+            i == eob - 1,
+            tx_size,
+            tx_class,
+        ) as i8;
     }
 }
 
@@ -515,17 +544,26 @@ impl CoeffFc {
             coeff_br_cdf: [[0; 5]; 168],
             intra_ext_tx_cdf: [[0; 17]; 156],
         });
-        fc.txb_skip_cdf.copy_from_slice(d::TXB_SKIP_CDF[q].as_flattened());
+        fc.txb_skip_cdf
+            .copy_from_slice(d::TXB_SKIP_CDF[q].as_flattened());
         fc.eob_extra_cdf
             .copy_from_slice(d::EOB_EXTRA_CDF[q].as_flattened().as_flattened());
-        fc.dc_sign_cdf.copy_from_slice(d::DC_SIGN_CDF[q].as_flattened());
-        fc.eob_flag_cdf16.copy_from_slice(d::EOB_FLAG_CDF16[q].as_flattened());
-        fc.eob_flag_cdf32.copy_from_slice(d::EOB_FLAG_CDF32[q].as_flattened());
-        fc.eob_flag_cdf64.copy_from_slice(d::EOB_FLAG_CDF64[q].as_flattened());
-        fc.eob_flag_cdf128.copy_from_slice(d::EOB_FLAG_CDF128[q].as_flattened());
-        fc.eob_flag_cdf256.copy_from_slice(d::EOB_FLAG_CDF256[q].as_flattened());
-        fc.eob_flag_cdf512.copy_from_slice(d::EOB_FLAG_CDF512[q].as_flattened());
-        fc.eob_flag_cdf1024.copy_from_slice(d::EOB_FLAG_CDF1024[q].as_flattened());
+        fc.dc_sign_cdf
+            .copy_from_slice(d::DC_SIGN_CDF[q].as_flattened());
+        fc.eob_flag_cdf16
+            .copy_from_slice(d::EOB_FLAG_CDF16[q].as_flattened());
+        fc.eob_flag_cdf32
+            .copy_from_slice(d::EOB_FLAG_CDF32[q].as_flattened());
+        fc.eob_flag_cdf64
+            .copy_from_slice(d::EOB_FLAG_CDF64[q].as_flattened());
+        fc.eob_flag_cdf128
+            .copy_from_slice(d::EOB_FLAG_CDF128[q].as_flattened());
+        fc.eob_flag_cdf256
+            .copy_from_slice(d::EOB_FLAG_CDF256[q].as_flattened());
+        fc.eob_flag_cdf512
+            .copy_from_slice(d::EOB_FLAG_CDF512[q].as_flattened());
+        fc.eob_flag_cdf1024
+            .copy_from_slice(d::EOB_FLAG_CDF1024[q].as_flattened());
         fc.coeff_base_eob_cdf
             .copy_from_slice(d::COEFF_BASE_EOB_CDF[q].as_flattened().as_flattened());
         fc.coeff_base_cdf
@@ -563,7 +601,12 @@ impl CoeffFc {
         &mut self.coeff_br_cdf[(txs_ctx * 2 + plane) * 21 + ctx]
     }
     #[inline]
-    fn intra_ext_tx(&mut self, eset: usize, sq_tx: usize, intra_dir: usize) -> &mut [AomCdfProb; 17] {
+    fn intra_ext_tx(
+        &mut self,
+        eset: usize,
+        sq_tx: usize,
+        intra_dir: usize,
+    ) -> &mut [AomCdfProb; 17] {
         &mut self.intra_ext_tx_cdf[(eset * 4 + sq_tx) * 13 + intra_dir]
     }
 }
@@ -628,7 +671,10 @@ pub fn write_coeffs_txb_1d(
     reduced_tx_set: bool,
 ) -> i32 {
     let txs_ctx = txsize_entropy_ctx(tx_size);
-    let scan = scan_tables::scan(tx_size, scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type] as usize);
+    let scan = scan_tables::scan(
+        tx_size,
+        scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type] as usize,
+    );
     let bwl = txb_bwl(tx_size);
     let width = txb_wide(tx_size);
     let height = txb_high(tx_size);
@@ -645,7 +691,15 @@ pub fn write_coeffs_txb_1d(
     txb_init_levels(coeffs, width, height, &mut levels_buf);
 
     if plane_type == 0 {
-        write_tx_type_intra(fc, w, intra_dir, tx_type, tx_size, base_q_idx, reduced_tx_set);
+        write_tx_type_intra(
+            fc,
+            w,
+            intra_dir,
+            tx_type,
+            tx_size,
+            base_q_idx,
+            reduced_tx_set,
+        );
     }
 
     let (eob_pt, eob_extra) = eob_pos_token(eob);
@@ -696,7 +750,14 @@ pub fn write_coeffs_txb_1d(
     }
 
     let mut coeff_contexts = [0i8; 32 * 32];
-    get_nz_map_contexts(&levels_buf, scan, eob as usize, tx_size, tx_class, &mut coeff_contexts);
+    get_nz_map_contexts(
+        &levels_buf,
+        scan,
+        eob as usize,
+        tx_size,
+        tx_class,
+        &mut coeff_contexts,
+    );
 
     for c in (0..eob as usize).rev() {
         let pos = scan[c] as usize;
@@ -846,4 +907,3 @@ pub fn get_txb_ctx(
 
     (txb_skip_ctx, dc_sign_ctx)
 }
-

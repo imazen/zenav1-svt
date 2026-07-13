@@ -2057,7 +2057,6 @@ fn inv_txfm2d_16x16_dct_dct_impl_neon(
     inv_txfm2d_c_exact(input, stride, output, stride, 16, 16, 0, 0, false, false);
 }
 
-
 // --- Square inverse 2D wrappers ---
 
 /// Inverse 32x32 DCT-DCT.

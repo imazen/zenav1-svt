@@ -63,7 +63,11 @@ fn kernels() -> [(cref::LpfKind, OurKernel, usize); 8] {
         (cref::LpfKind::V6, lf::lpf_vertical_6 as OurKernel, v_off),
         (cref::LpfKind::H8, lf::lpf_horizontal_8 as OurKernel, h_off),
         (cref::LpfKind::V8, lf::lpf_vertical_8 as OurKernel, v_off),
-        (cref::LpfKind::H14, lf::lpf_horizontal_14 as OurKernel, h_off),
+        (
+            cref::LpfKind::H14,
+            lf::lpf_horizontal_14 as OurKernel,
+            h_off,
+        ),
         (cref::LpfKind::V14, lf::lpf_vertical_14 as OurKernel, v_off),
     ]
 }

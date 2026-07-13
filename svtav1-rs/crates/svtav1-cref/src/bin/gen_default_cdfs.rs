@@ -28,32 +28,157 @@ struct Tbl {
 
 const TABLES: &[Tbl] = &[
     // ---- coefficient CDFs (q-dependent, svt_av1_default_coef_probs) ----
-    Tbl { rust_name: "TXB_SKIP_CDF", table: FcTable::TxbSkip, dims: &[5, 13, 3], q_dependent: true },
-    Tbl { rust_name: "EOB_EXTRA_CDF", table: FcTable::EobExtra, dims: &[5, 2, 9, 3], q_dependent: true },
-    Tbl { rust_name: "DC_SIGN_CDF", table: FcTable::DcSign, dims: &[2, 3, 3], q_dependent: true },
-    Tbl { rust_name: "EOB_FLAG_CDF16", table: FcTable::EobFlag16, dims: &[2, 2, 6], q_dependent: true },
-    Tbl { rust_name: "EOB_FLAG_CDF32", table: FcTable::EobFlag32, dims: &[2, 2, 7], q_dependent: true },
-    Tbl { rust_name: "EOB_FLAG_CDF64", table: FcTable::EobFlag64, dims: &[2, 2, 8], q_dependent: true },
-    Tbl { rust_name: "EOB_FLAG_CDF128", table: FcTable::EobFlag128, dims: &[2, 2, 9], q_dependent: true },
-    Tbl { rust_name: "EOB_FLAG_CDF256", table: FcTable::EobFlag256, dims: &[2, 2, 10], q_dependent: true },
-    Tbl { rust_name: "EOB_FLAG_CDF512", table: FcTable::EobFlag512, dims: &[2, 2, 11], q_dependent: true },
-    Tbl { rust_name: "EOB_FLAG_CDF1024", table: FcTable::EobFlag1024, dims: &[2, 2, 12], q_dependent: true },
-    Tbl { rust_name: "COEFF_BASE_EOB_CDF", table: FcTable::CoeffBaseEob, dims: &[5, 2, 4, 4], q_dependent: true },
-    Tbl { rust_name: "COEFF_BASE_CDF", table: FcTable::CoeffBase, dims: &[5, 2, 42, 5], q_dependent: true },
-    Tbl { rust_name: "COEFF_BR_CDF", table: FcTable::CoeffBr, dims: &[4, 2, 21, 5], q_dependent: true },
+    Tbl {
+        rust_name: "TXB_SKIP_CDF",
+        table: FcTable::TxbSkip,
+        dims: &[5, 13, 3],
+        q_dependent: true,
+    },
+    Tbl {
+        rust_name: "EOB_EXTRA_CDF",
+        table: FcTable::EobExtra,
+        dims: &[5, 2, 9, 3],
+        q_dependent: true,
+    },
+    Tbl {
+        rust_name: "DC_SIGN_CDF",
+        table: FcTable::DcSign,
+        dims: &[2, 3, 3],
+        q_dependent: true,
+    },
+    Tbl {
+        rust_name: "EOB_FLAG_CDF16",
+        table: FcTable::EobFlag16,
+        dims: &[2, 2, 6],
+        q_dependent: true,
+    },
+    Tbl {
+        rust_name: "EOB_FLAG_CDF32",
+        table: FcTable::EobFlag32,
+        dims: &[2, 2, 7],
+        q_dependent: true,
+    },
+    Tbl {
+        rust_name: "EOB_FLAG_CDF64",
+        table: FcTable::EobFlag64,
+        dims: &[2, 2, 8],
+        q_dependent: true,
+    },
+    Tbl {
+        rust_name: "EOB_FLAG_CDF128",
+        table: FcTable::EobFlag128,
+        dims: &[2, 2, 9],
+        q_dependent: true,
+    },
+    Tbl {
+        rust_name: "EOB_FLAG_CDF256",
+        table: FcTable::EobFlag256,
+        dims: &[2, 2, 10],
+        q_dependent: true,
+    },
+    Tbl {
+        rust_name: "EOB_FLAG_CDF512",
+        table: FcTable::EobFlag512,
+        dims: &[2, 2, 11],
+        q_dependent: true,
+    },
+    Tbl {
+        rust_name: "EOB_FLAG_CDF1024",
+        table: FcTable::EobFlag1024,
+        dims: &[2, 2, 12],
+        q_dependent: true,
+    },
+    Tbl {
+        rust_name: "COEFF_BASE_EOB_CDF",
+        table: FcTable::CoeffBaseEob,
+        dims: &[5, 2, 4, 4],
+        q_dependent: true,
+    },
+    Tbl {
+        rust_name: "COEFF_BASE_CDF",
+        table: FcTable::CoeffBase,
+        dims: &[5, 2, 42, 5],
+        q_dependent: true,
+    },
+    Tbl {
+        rust_name: "COEFF_BR_CDF",
+        table: FcTable::CoeffBr,
+        dims: &[4, 2, 21, 5],
+        q_dependent: true,
+    },
     // ---- mode CDFs (q-independent, svt_aom_init_mode_probs) ----
-    Tbl { rust_name: "PARTITION_CDF", table: FcTable::Partition, dims: &[20, 11], q_dependent: false },
-    Tbl { rust_name: "SKIP_CDF", table: FcTable::Skip, dims: &[3, 3], q_dependent: false },
-    Tbl { rust_name: "KF_Y_CDF", table: FcTable::KfY, dims: &[5, 5, 14], q_dependent: false },
-    Tbl { rust_name: "ANGLE_DELTA_CDF", table: FcTable::AngleDelta, dims: &[8, 8], q_dependent: false },
-    Tbl { rust_name: "INTRA_EXT_TX_CDF", table: FcTable::IntraExtTx, dims: &[3, 4, 13, 17], q_dependent: false },
-    Tbl { rust_name: "TX_SIZE_CDF", table: FcTable::TxSize, dims: &[4, 3, 4], q_dependent: false },
-    Tbl { rust_name: "UV_MODE_CDF", table: FcTable::UvMode, dims: &[2, 13, 15], q_dependent: false },
-    Tbl { rust_name: "FILTER_INTRA_CDF", table: FcTable::FilterIntra, dims: &[22, 3], q_dependent: false },
-    Tbl { rust_name: "FILTER_INTRA_MODE_CDF", table: FcTable::FilterIntraMode, dims: &[6], q_dependent: false },
-    Tbl { rust_name: "DELTA_Q_CDF", table: FcTable::DeltaQ, dims: &[5], q_dependent: false },
-    Tbl { rust_name: "INTRABC_CDF", table: FcTable::IntraBc, dims: &[3], q_dependent: false },
-    Tbl { rust_name: "Y_MODE_CDF", table: FcTable::YMode, dims: &[4, 14], q_dependent: false },
+    Tbl {
+        rust_name: "PARTITION_CDF",
+        table: FcTable::Partition,
+        dims: &[20, 11],
+        q_dependent: false,
+    },
+    Tbl {
+        rust_name: "SKIP_CDF",
+        table: FcTable::Skip,
+        dims: &[3, 3],
+        q_dependent: false,
+    },
+    Tbl {
+        rust_name: "KF_Y_CDF",
+        table: FcTable::KfY,
+        dims: &[5, 5, 14],
+        q_dependent: false,
+    },
+    Tbl {
+        rust_name: "ANGLE_DELTA_CDF",
+        table: FcTable::AngleDelta,
+        dims: &[8, 8],
+        q_dependent: false,
+    },
+    Tbl {
+        rust_name: "INTRA_EXT_TX_CDF",
+        table: FcTable::IntraExtTx,
+        dims: &[3, 4, 13, 17],
+        q_dependent: false,
+    },
+    Tbl {
+        rust_name: "TX_SIZE_CDF",
+        table: FcTable::TxSize,
+        dims: &[4, 3, 4],
+        q_dependent: false,
+    },
+    Tbl {
+        rust_name: "UV_MODE_CDF",
+        table: FcTable::UvMode,
+        dims: &[2, 13, 15],
+        q_dependent: false,
+    },
+    Tbl {
+        rust_name: "FILTER_INTRA_CDF",
+        table: FcTable::FilterIntra,
+        dims: &[22, 3],
+        q_dependent: false,
+    },
+    Tbl {
+        rust_name: "FILTER_INTRA_MODE_CDF",
+        table: FcTable::FilterIntraMode,
+        dims: &[6],
+        q_dependent: false,
+    },
+    Tbl {
+        rust_name: "DELTA_Q_CDF",
+        table: FcTable::DeltaQ,
+        dims: &[5],
+        q_dependent: false,
+    },
+    Tbl {
+        rust_name: "INTRABC_CDF",
+        table: FcTable::IntraBc,
+        dims: &[3],
+        q_dependent: false,
+    },
+    Tbl {
+        rust_name: "Y_MODE_CDF",
+        table: FcTable::YMode,
+        dims: &[4, 14],
+        q_dependent: false,
+    },
 ];
 
 fn type_str(dims: &[usize]) -> String {
@@ -143,7 +268,12 @@ fn main() {
             }
             let mut dims = vec![4usize];
             dims.extend_from_slice(t.dims);
-            assert_eq!(per_q_len, t.dims.iter().product::<usize>(), "{}", t.rust_name);
+            assert_eq!(
+                per_q_len,
+                t.dims.iter().product::<usize>(),
+                "{}",
+                t.rust_name
+            );
             emit_table(&mut out, t.rust_name, &all, &dims);
         } else {
             fc_init(60);
