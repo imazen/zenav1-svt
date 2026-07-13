@@ -37,6 +37,13 @@ pub struct RcConfig {
     pub framerate: f64,
     /// Number of temporal layers.
     pub temporal_layers: u8,
+    /// Adaptive-quantization mode, mirroring the C encoder's `--aq-mode`
+    /// semantics for the frame-level decision: 0 = OFF (CQP is a straight
+    /// `quantizer_to_qindex[qp]` lookup with NO content-adaptive QP shift
+    /// — the C default for `--rc 0 --aq-mode 0` matched configs), non-zero
+    /// = enable the Rust frame-level VAQ/TPL QP adjustments (a homegrown
+    /// heuristic, NOT a port of C's aq-mode 1/2 segment-based VAQ).
+    pub aq_mode: u8,
 }
 
 impl Default for RcConfig {
@@ -49,6 +56,7 @@ impl Default for RcConfig {
             buffer_size_ms: 1000,
             framerate: 30.0,
             temporal_layers: 1,
+            aq_mode: 0,
         }
     }
 }

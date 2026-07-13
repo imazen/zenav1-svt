@@ -218,31 +218,45 @@ impl EncodePipeline {
                 y_plane[..n].to_vec()
             };
 
-        // Step 3c: Compute VAQ activity map for adaptive QP
-        let activity_map = crate::perceptual::ActivityMap::compute(&encode_input, w, h, w);
+        // Step 3c: Frame-level adaptive QP — OPT-IN via RcConfig.aq_mode.
+        //
+        // aq_mode == 0 (the default, matching the C encoder's
+        // `--rc 0 --aq-mode 0` CQP semantics) means the assigned QP is used
+        // UNCHANGED: C's CQP path is a straight `quantizer_to_qindex[qp]`
+        // lookup with no content-adaptive shift (rc_process.c CQP branch).
+        // The frame-level VAQ + TPL adjustments below are homegrown
+        // heuristics (not ports of C's segment-based aq-mode 1/2) and used
+        // to fire unconditionally, shifting base_q_idx on every stream —
+        // the F1 divergence in docs/IDENTITY-STATUS.md.
+        let tpl_adjusted_qp = if self.rc_config.aq_mode != 0 {
+            // Compute VAQ activity map for adaptive QP
+            let activity_map = crate::perceptual::ActivityMap::compute(&encode_input, w, h, w);
 
-        // Adjust QP based on frame-level activity (VAQ)
-        let vaq_adjusted_qp = if activity_map.frame_avg > 0.0 {
-            let frame_activity_factor = (activity_map.frame_avg / 10.0).log2().clamp(-2.0, 2.0);
-            (pcs.qp as f64 + frame_activity_factor).clamp(0.0, 63.0) as u8
-        } else {
-            pcs.qp
-        };
+            // Adjust QP based on frame-level activity (VAQ)
+            let vaq_adjusted_qp = if activity_map.frame_avg > 0.0 {
+                let frame_activity_factor = (activity_map.frame_avg / 10.0).log2().clamp(-2.0, 2.0);
+                (pcs.qp as f64 + frame_activity_factor).clamp(0.0, 63.0) as u8
+            } else {
+                pcs.qp
+            };
 
-        // TPL temporal complexity adjustment for inter frames:
-        // Compare source to reference to estimate motion complexity,
-        // then adjust QP — static scenes get lower QP (better quality),
-        // high-motion scenes get higher QP (save bits for key frames).
-        let tpl_adjusted_qp = if !is_key && self.dpb.occupied_slots() > 0 {
-            if let Some(rf) = self.dpb.get(0) {
-                let tpl_delta =
-                    crate::rate_control::tpl_qp_adjustment(&encode_input, &rf.y_plane, w, h, w);
-                (vaq_adjusted_qp as i16 + tpl_delta as i16).clamp(0, 63) as u8
+            // TPL temporal complexity adjustment for inter frames:
+            // Compare source to reference to estimate motion complexity,
+            // then adjust QP — static scenes get lower QP (better quality),
+            // high-motion scenes get higher QP (save bits for key frames).
+            if !is_key && self.dpb.occupied_slots() > 0 {
+                if let Some(rf) = self.dpb.get(0) {
+                    let tpl_delta =
+                        crate::rate_control::tpl_qp_adjustment(&encode_input, &rf.y_plane, w, h, w);
+                    (vaq_adjusted_qp as i16 + tpl_delta as i16).clamp(0, 63) as u8
+                } else {
+                    vaq_adjusted_qp
+                }
             } else {
                 vaq_adjusted_qp
             }
         } else {
-            vaq_adjusted_qp
+            pcs.qp
         };
 
         // THE single CLI-qp -> qindex conversion (C: quantizer_to_qindex
