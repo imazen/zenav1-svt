@@ -752,6 +752,16 @@ struct EntropyCtx {
     above_coeff_uv: [Vec<u8>; 2],
     /// Left coefficient neighbor bytes for the chroma planes.
     left_coeff_uv: [Vec<u8>; 2],
+    /// Above TXFM context at 4x4 granularity: the WIDTH in pixels of the
+    /// last coded TX in each mi column (C TXFM_CONTEXT / txfm_context_array
+    /// top array, maintained by set_txfm_ctxs, entropy_coding.c:4614).
+    /// Init value is never read: get_tx_size_context gates on
+    /// availability, and every available cell was written by a previous
+    /// block (blocks are coded in z-order).
+    above_txfm: Vec<u8>,
+    /// Left TXFM context at 4x4 granularity: the HEIGHT in pixels of the
+    /// last coded TX in each mi row.
+    left_txfm: Vec<u8>,
 }
 
 /// Live state for the 4:2:0 chroma pass, threaded through the entropy walk
@@ -820,6 +830,8 @@ impl EntropyCtx {
                 alloc::vec![0xFFu8; height_c4],
                 alloc::vec![0xFFu8; height_c4],
             ],
+            above_txfm: alloc::vec![0u8; width_4x4],
+            left_txfm: alloc::vec![0u8; height_4x4],
         }
     }
 
@@ -1025,6 +1037,52 @@ impl EntropyCtx {
         let left = y4 < self.left_skip.len() && self.left_skip[y4];
         svtav1_entropy::context::get_skip_context(above, left)
     }
+
+    /// tx_size context for a block at (x, y) of w x h pixels.
+    ///
+    /// C `get_tx_size_context(xd)` (entropy_coding.c:4642-4676):
+    /// `above = above_txfm_context[0] >= tx_size_wide[max_tx_size]`,
+    /// `left = left_txfm_context[0] >= tx_size_high[max_tx_size]`, each
+    /// gated on availability; both available → sum, one → that one,
+    /// none → 0. For every bsize <= 64x64 the largest TX has the block's
+    /// own dims, so max_tx_wide/high == w/h. The C is_inter neighbor
+    /// override (use the neighbor's BLOCK dims instead of its TX dims)
+    /// can't fire here: tx_depth is only coded on key frames, where every
+    /// neighbor is intra.
+    fn tx_size_ctx(&self, x: usize, y: usize, w: usize, h: usize) -> usize {
+        // Availability == C xd->up_available / left_available
+        // (set_mi_row_col: mi_row/col > tile start; single tile here).
+        let has_above = y > 0;
+        let has_left = x > 0;
+        let above = (self.above_txfm[x / 4] as usize >= w) as usize;
+        let left = (self.left_txfm[y / 4] as usize >= h) as usize;
+        match (has_above, has_left) {
+            (true, true) => above + left,
+            (true, false) => above,
+            (false, true) => left,
+            (false, false) => 0,
+        }
+    }
+
+    /// Update the TXFM context arrays after coding a block.
+    ///
+    /// C `set_txfm_ctxs(tx_size, n8_w, n8_h, skip && is_inter, xd)`
+    /// (entropy_coding.c:4614-4625): above cells over the block's mi
+    /// columns take tx_size_wide, left cells over its mi rows take
+    /// tx_size_high. Runs for EVERY block (both branches of
+    /// av1_code_tx_size), signaling or not. Our blocks always use the
+    /// full-block TX and the skip||inter override stores block dims —
+    /// identical values here either way.
+    fn record_txfm(&mut self, x: usize, y: usize, w: usize, h: usize) {
+        let x4 = x / 4;
+        let y4 = y / 4;
+        for i in x4..(x4 + w / 4).min(self.above_txfm.len()) {
+            self.above_txfm[i] = w as u8;
+        }
+        for i in y4..(y4 + h / 4).min(self.left_txfm.len()) {
+            self.left_txfm[i] = h as u8;
+        }
+    }
 }
 
 /// C `av1_use_angle_delta(bsize)` (reconintra.h:59): `bsize >= BLOCK_8X8` in
@@ -1209,6 +1267,25 @@ fn encode_block_syntax(
             decision.intra_mode,
             0, // UV_DC_PRED
         );
+    }
+
+    // tx_size syntax — C av1_code_tx_size (entropy_coding.c:4697) called
+    // from write_modes_b right after the uv/palette/filter_intra syntax
+    // and before the residuals. Key frames signal TX_MODE_SELECT in the
+    // FH (like C always does), so every INTRA block with bsize > 4x4
+    // codes a tx_depth symbol — skip only suppresses it for inter
+    // blocks, and our depth is always 0 (largest TX). The neighbor
+    // context update (set_txfm_ctxs) runs for EVERY block, signaling or
+    // not. Inter frames signal TX_MODE_LARGEST (no symbol), but keep
+    // their context arrays maintained exactly like C's else-branch.
+    {
+        let w = decision.width as usize;
+        let h = decision.height as usize;
+        if is_key && !(w == 4 && h == 4) {
+            let ctx = ectx.tx_size_ctx(block_x, block_y, w, h);
+            svtav1_entropy::context::write_tx_depth(writer, frame_ctx, w, h, ctx, 0);
+        }
+        ectx.record_txfm(block_x, block_y, w, h);
     }
 
     if !skip {
