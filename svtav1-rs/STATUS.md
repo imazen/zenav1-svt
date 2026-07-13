@@ -31,6 +31,7 @@ run:
 | Scan orders (19 x 3) | drift test vs `eb_av1_scan_orders` |
 | Quantizer step tables | generated from `svt_aom_dc/ac_quant_qtx` |
 | Coefficient writer helpers (level maps, nz/br ctx, eob tokens, txb dims) | fuzzed vs exported C impls |
+| Deblocking kernels (`svt_aom_lpf_{h,v}_{4,6,8,14}_c`) + sharpness limits | bit-exact over all (level, sharpness) x content classes (c_parity_lpf) |
 
 v4.2.0-rc note: upstream refactored the coder internals (borrowed buffer,
 ptr walk) — output verified still byte-identical; `coeff_br_cdf` dropped its
@@ -53,8 +54,10 @@ All probes decode via aomdec and compare against the source:
 Fixed en route: live-recon prediction neighbors, real mode/tx-type
 signaling, AV1 quantizer tables + decoder-mirrored dequant, per-size
 forward cos bits, restored inverse stage-range clamps, C-exact intra edge
-fill (127/129/left[0]/above[0] rules), 64-dim coefficient zeroing,
-unsignaled loop filters disabled (DPB recon now decoder-exact).
+fill (127/129/left[0]/above[0] rules), 64-dim coefficient zeroing.
+Deblocking is now SIGNALED and applied decoder-exactly (2026-07-13): key
+frames carry the q-picked loop_filter levels and the recon-parity gate
+holds 216/0 with filtering live; CDEF/restoration stay disabled+unsignaled.
 Per-SB QP offsets stay disabled until delta_q signaling is ported.
 
 ## Known failing test
@@ -76,7 +79,10 @@ filters, chroma) still ours and next in line:
    `with_chroma_420` + `encode_frame_420`; still-frame, UV_DC-only,
    min-8x8 luma policy — see CLAUDE.md gap 1a-1d for what remains
    toward C decision parity)**
-2. Filter search + signaling ports (deblock/CDEF/restoration)
+2. Filter search + signaling ports — deblocking landed 2026-07-13
+   (C-exact kernels + q-based level picker + decoder-exact frame walk,
+   signaled in the FH; SSE-based level search and inter-frame levels still
+   pending); CDEF/restoration next
 3. Directional-mode edge extension (has_top_right/bottom_left)
 4. Decision-layer parity vs C (partition/mode/TX RDO), then per-preset
    bitstream identity gates (see COVERAGE.md for the config-surface

@@ -119,9 +119,15 @@ under the AV1 reference decoder as of 2026-07-13, C baseline v4.2.0-rc)
    1d. `svtav1::avif::encode_yuv420` still uses the legacy
        three-mono-stream format (output-contract migration pending; TODO
        in avif.rs).
-2. **Filter signaling** — encoder applies deblock/CDEF/restoration to its
-   recon but signals them OFF; harmless for still-frame decode but the DPB
-   recon diverges (matters for inter). Signal or stop applying.
+2. **Filter signaling** — **deblocking DONE 2026-07-13**: key frames signal
+   the q-picked loop_filter levels (svt_av1_pick_filter_level_by_q closed
+   form; sharpness 0, delta_enabled 0) and the encoder applies the
+   decoder-exact edge walk to the OUTPUT recon copy only (intra prediction
+   keeps reading unfiltered pixels) — recon-parity 216/0 WITH filtering
+   live; kernels differential-fuzzed vs C (tests/c_parity_lpf.rs). Still
+   open: CDEF/restoration (neither signaled nor applied — consistent),
+   inter-frame deblock levels (signaled 0, applied nothing), and the C
+   SSE-based filter-level search (we ship the LPF_PICK_FROM_Q path only).
 3. **Decision-layer parity** — partitions/modes/qcoeffs still come from our
    own RDO; port C mode decision after pixel-path parity.
 4. **[FIXED 2026-07-13] Intra edge preparation** — directional
@@ -170,7 +176,7 @@ All 26 1D transform kernels are bit-exact with C SVT-AV1. Verified by extracting
 Key finding: the C `svt_av1_fadst4_new` uses i32 arithmetic while our initial port used i64, producing different rounding. Fixed by matching the C decomposition exactly. Same issue with `fadst8` output permutation — C uses `[step[1], step[6], step[3], step[4], step[5], step[2], step[7], step[0]]` without negation, while our initial port had sign flips.
 
 ### Pipeline Architecture
-The pipeline processes superblocks in raster order (left-to-right, top-to-bottom) per spec 00. Each SB goes through partition_search which recursively tries all 10 partition types. At each leaf, encode_single_block evaluates 11 intra modes with mode-specific TX RDO, picking the lowest RD cost. Loop filters (deblock → CDEF → Wiener → sgrproj) are applied frame-wide after all SBs are encoded.
+The pipeline processes superblocks in raster order (left-to-right, top-to-bottom) per spec 00. Each SB goes through partition_search which recursively tries all 10 partition types. At each leaf, encode_single_block evaluates 11 intra modes with mode-specific TX RDO, picking the lowest RD cost. Deblocking runs after the entropy walk on the OUTPUT recon copy only (signaled levels; prediction sources stay unfiltered — the decoder's split); CDEF/Wiener/sgrproj stay disabled+unsignaled pending their ports.
 
 ### Performance
 Release-mode benchmarks (x86_64 AVX2):
