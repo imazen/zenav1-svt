@@ -1223,6 +1223,93 @@ pub fn partition_search_with_config(
     best_result
 }
 
+/// Encode a superblock with a FIXED square partition tree (from the
+/// C-exact PD0 decision, `crate::pd0`): no shape search happens here —
+/// the tree is walked in coding order and every leaf is coded with the
+/// same mode-decision block coder the search path uses
+/// (`encode_with_neighbors`), reconstructing into the live frame buffer.
+///
+/// This mirrors C's `fixed_partition` PD1 pass at allintra effective-M9:
+/// the partition structure comes from PD0 (pred_depth_only, nsq search
+/// off), and only per-block mode/coeff decisions remain.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_fixed_tree(
+    src: &[u8],
+    src_stride: usize,
+    recon: &mut [u8],
+    recon_stride: usize,
+    tree: &crate::pd0::Pd0Tree,
+    size: usize,
+    qindex: u8,
+    config: &PartitionSearchConfig,
+    abs_x: usize,
+    abs_y: usize,
+) -> PartitionResult {
+    match tree {
+        crate::pd0::Pd0Tree::Leaf(leaf_size) => {
+            debug_assert_eq!(*leaf_size, size, "PD0 leaf size must match node size");
+            encode_with_neighbors(
+                src,
+                src_stride,
+                recon,
+                recon_stride,
+                size,
+                size,
+                qindex,
+                config,
+                abs_x,
+                abs_y,
+                None,
+                svtav1_types::partition::PartitionType::None,
+            )
+        }
+        crate::pd0::Pd0Tree::Split(children) => {
+            let half = size / 2;
+            let mut result = PartitionResult {
+                partition_type: PartitionType::Split,
+                rd_cost: 0,
+                distortion: 0,
+                rate: 0,
+                num_blocks: 0,
+                decisions: alloc::vec::Vec::new(),
+                tree: None,
+            };
+            let mut child_trees = alloc::vec::Vec::with_capacity(4);
+            for (i, child) in children.iter().enumerate() {
+                let x0 = (i & 1) * half;
+                let y0 = (i >> 1) * half;
+                let sub = encode_fixed_tree(
+                    &src[y0 * src_stride + x0..],
+                    src_stride,
+                    recon,
+                    recon_stride,
+                    child,
+                    half,
+                    qindex,
+                    config,
+                    abs_x + x0,
+                    abs_y + y0,
+                );
+                result.distortion += sub.distortion;
+                result.rate += sub.rate;
+                result.num_blocks += sub.num_blocks;
+                result.decisions.extend(sub.decisions);
+                if let Some(t) = sub.tree {
+                    child_trees.push(t);
+                }
+            }
+            result.rd_cost = result.distortion;
+            result.tree = Some(PartitionTree::Split {
+                partition_type: PartitionType::Split,
+                width: size as u16,
+                height: size as u16,
+                children: child_trees,
+            });
+            result
+        }
+    }
+}
+
 /// Encode one chroma plane's block for the 4:2:0 path: UV_DC prediction
 /// from the live chroma reconstruction plane, full-block DCT-DCT transform
 /// and quantization at the SAME qindex tables as luma (the frame header

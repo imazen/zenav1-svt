@@ -341,6 +341,7 @@ impl EncodePipeline {
             rows_per_tile,
             tile_rows,
             base_qindex,
+            tpl_adjusted_qp,
             lambda,
             &self.speed_config,
             ref_frame_data.as_deref(),
@@ -1786,6 +1787,7 @@ fn encode_tile_rows(
     rows_per_tile: usize,
     tile_rows: usize,
     base_qindex: u8,
+    cli_qp: u8,
     _lambda: u64, // Per-SB lambda computed from sb_qp_offsets
     speed_config: &crate::speed_config::SpeedConfig,
     ref_frame_data: Option<&[u8]>,
@@ -1851,25 +1853,60 @@ fn encode_tile_rows(
                     crate::rate_control::qindex_to_qp(sb_qindex),
                 ) * speed_config.lambda_scale()) as u64;
 
+                // C-exact partition source: at allintra presets >= 9 the C
+                // library (which clamps allintra presets to M9) decides the
+                // ENTIRE partition tree in PD0 with a fixed {NONE, SPLIT}
+                // quadtree and no NSQ search (docs/IDENTITY-STATUS.md
+                // 2026-07-13 diagnosis). Key/still frames at those presets
+                // take the ported PD0 decision (crate::pd0) and encode the
+                // fixed tree; everything else keeps the homegrown search.
+                let use_pd0 = ref_ctx.is_none()
+                    && speed_config.preset >= 9
+                    && cur_w == sb_size
+                    && cur_h == sb_size;
+
                 // The search reads intra neighbors from — and reconstructs
                 // directly into — the live frame buffer, exactly like the
                 // decoder (fixes within-SB predictions that previously fell
                 // back to 128).
-                let sb_result = crate::partition::partition_search_with_config(
-                    &encode_input[y0 * w + x0..],
-                    w,
-                    &mut tile_frame_recon,
-                    w,
-                    cur_w,
-                    cur_h,
-                    sb_qindex,
-                    sb_lambda,
-                    speed_config.max_partition_depth as u32,
-                    &part_config,
-                    x0,
-                    y0,
-                    ref_ctx.as_ref(),
-                );
+                let sb_result = if use_pd0 {
+                    let tree = crate::pd0::pd0_pick_sb_partition(
+                        encode_input,
+                        w,
+                        x0,
+                        y0,
+                        cli_qp as u32,
+                        sb_qindex,
+                    );
+                    crate::partition::encode_fixed_tree(
+                        &encode_input[y0 * w + x0..],
+                        w,
+                        &mut tile_frame_recon,
+                        w,
+                        &tree,
+                        sb_size,
+                        sb_qindex,
+                        &part_config,
+                        x0,
+                        y0,
+                    )
+                } else {
+                    crate::partition::partition_search_with_config(
+                        &encode_input[y0 * w + x0..],
+                        w,
+                        &mut tile_frame_recon,
+                        w,
+                        cur_w,
+                        cur_h,
+                        sb_qindex,
+                        sb_lambda,
+                        speed_config.max_partition_depth as u32,
+                        &part_config,
+                        x0,
+                        y0,
+                        ref_ctx.as_ref(),
+                    )
+                };
 
                 // Keep the per-SB recon list layout for downstream consumers.
                 let mut sb_recon = alloc::vec![0u8; cur_w * cur_h];
