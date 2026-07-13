@@ -74,12 +74,16 @@ This applies to:
 under the AV1 reference decoder as of 2026-07-13, C baseline v4.2.0-rc)
 
 ### Next structural gaps toward C bit-identity (not decode blockers)
-0a. **Edges-content quality (16 dB at qindex30)** — smooth content now reaches
-   41.75 dB after the 2D transform fix, but checkerboard/edges content stays
-   ~16 dB. Determine whether encoder recon == decoder recon there (honest RD
-   weakness: bad mode/partition choices on sharp content, likely rate model)
-   or a remaining divergence class. Method: dump encoder-side recon PSNR and
-   compare against decoded PSNR for the same stream.
+0a. **Edges-content divergence (PROVEN not honest-RD)** — 8px checkerboard at
+   qindex30: C SVT-AV1 preset 2 encodes it LOSSLESSLY in 172 bytes; ours
+   spends 211 bytes and decodes to 16 dB. Similar budget, infinite quality
+   gap => encoder recon still diverges from decoder recon on a path this
+   content uniquely exercises (smooth content is now fine at 41.75 dB, flats
+   bit-exact). Candidates: a per-size named-wrapper path in encode_loop not
+   actually C-exact for some size hit here, rect transforms, or an eob/skip
+   interaction at exact-prediction boundaries. Method: per-block recon diff
+   (encoder recon vs aomdec output) on this exact stream to find the first
+   diverging block, then trace that block
 0b. **[FIXED 2026-07-13] 2D transform wrapper divergence (AC only, encoder-blind)** — evidence:
    flat-140/flat-250 decode bit-exactly (DC + golomb path perfect), but any
    AC-rich content degrades (gradient 64px qindex30: 11.7 dB; 128px q50:
