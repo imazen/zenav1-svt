@@ -7,7 +7,7 @@ bumps). Statuses ARE hand-maintained and survive regeneration:
 `tested:<test>` (a passing test exercises it against the gates).
 The coverage gate is green when every row is `tested`.
 
-**121 fields** — tested: 0, mapped: 0, unmapped: 121
+**121 fields** — tested: 0, mapped: 4, unmapped: 117
 
 | field | type | status | notes |
 |---|---|---|---|
@@ -132,3 +132,144 @@ The coverage gate is green when every row is `tested`.
 | `max_inter_bitrate_pct` | `uint32_t` | unmapped | Default is 0. |
 | `enable_intrabc` | `bool` | unmapped | Default is true. |
 | `max_managed_refs` | `uint8_t` | unmapped | stack contents and unexpectedly enable the feature. |
+
+## CLI flag surface (SvtAv1EncApp)
+
+         **134 flags** — tested: 0, mapped: 0, unmapped: 134
+
+| field | type | status | notes |
+|---|---|---|---|
+| `--help` | `flag` | unmapped | Shows the command line options currently available |
+| `--color-help` | `flag` | unmapped | Extra help for adding AV1 metadata to the bitstream |
+| `--version` | `flag` | unmapped | Shows the version of the library that's linked to the library |
+| `-i` | `flag` | unmapped | Input raw video (y4m and yuv) file path, use `stdin` or `-` to read from pipe |
+| `--input` | `flag` | unmapped | Input raw video (y4m and yuv) file path, use `stdin` or `-` to read from pipe |
+| `--allow-mmap-file` | `flag` | unmapped | Allow memory mapping for regular input file. Performance is platform dependent |
+| `-b` | `flag` | unmapped |  |
+| `--output` | `flag` | unmapped |  |
+| `--ivf` | `flag` | unmapped | Output bitstream in IVF container format (default) |
+| `--obu` | `flag` | unmapped | Output bitstream as raw OBU (Open Bitstream Units) without IVF container |
+| `-c` | `flag` | unmapped | Configuration file path |
+| `--config` | `flag` | unmapped | Configuration file path |
+| `--errlog` | `flag` | unmapped | Error file path, defaults to stderr |
+| `-o` | `flag` | unmapped | Reconstructed yuv file path |
+| `--recon` | `flag` | unmapped | Reconstructed yuv file path |
+| `--stat-file` | `flag` | unmapped | PSNR / SSIM per picture stat output file path, requires `--enable-stat-report 1` |
+| `--progress` | `flag` | unmapped | Verbosity of the output, default is 1 [0: no progress is printed, 2: detailed progress] |
+| `--no-progress" // tbd if it should be removed` | `flag` | unmapped |  |
+| `--preset` | `flag` | unmapped |  |
+| `-w` | `flag` | unmapped | Frame width in pixels, inferred if y4m, default is 0 [4-16384] |
+| `--width` | `flag` | unmapped | Frame width in pixels, inferred if y4m, default is 0 [4-16384] |
+| `-h` | `flag` | unmapped | Frame height in pixels, inferred if y4m, default is 0 [4-8704] |
+| `--height` | `flag` | unmapped | Frame height in pixels, inferred if y4m, default is 0 [4-8704] |
+| `--forced-max-frame-width` | `flag` | unmapped | Maximum frame width value to force, default is 0 [4-16384] |
+| `--forced-max-frame-height` | `flag` | unmapped | Maximum frame height value to force, default is 0 [4-8704] |
+| `-n` | `flag` | unmapped |  |
+| `--frames` | `flag` | unmapped |  |
+| `--nb` | `flag` | unmapped |  |
+| `--profile` | `flag` | unmapped | Bitstream profile, default is 0 [0: main, 1: high, 2: professional] |
+| `--level` | `flag` | unmapped |  |
+| `--fps-num` | `flag` | unmapped | Input video frame rate numerator, default is 60000 [0-2^32-1] |
+| `--fps-denom` | `flag` | unmapped | Input video frame rate denominator, default is 1000 [0-2^32-1] |
+| `--input-depth` | `flag` | unmapped | Input video file and output bitstream bit-depth, default is 8 [8, 10] |
+| `--inj" // no Eval` | `flag` | unmapped | Inject pictures to the library at defined frame rate, default is 0 [0-1] |
+| `--inj-frm-rt" // no Eval` | `flag` | unmapped | Set injector frame rate, only applicable with `--inj 1`, default is 60 [0-240] |
+| `--enable-stat-report` | `flag` | unmapped | Calculates and outputs PSNR SSIM metrics at the end of encoding, default is 0 [0-1] |
+| `--asm` | `flag` | unmapped |  |
+| `--rc` | `flag` | unmapped |  |
+| `-q` | `flag` | unmapped | Initial QP level value, default is 35 [1-63] |
+| `--qp` | `flag` | unmapped | Initial QP level value, default is 35 [1-63] |
+| `--crf` | `flag` | unmapped |  |
+| `--cqp` | `flag` | unmapped |  |
+| `--tbr` | `flag` | unmapped |  |
+| `--mbr` | `flag` | unmapped | Maximum Bitrate (kbps) only applicable for CRF encoding, default is 0 [1-100000] |
+| `--use-q-file` | `flag` | unmapped |  |
+| `--qpfile` | `flag` | unmapped | Path to a file containing per picture QP value separated by newlines |
+| `--max-qp` | `flag` | unmapped | Maximum (highest) quantizer, only applicable for VBR and CBR, default is 63 [1-63] |
+| `--min-qp` | `flag` | unmapped | Minimum (lowest) quantizer, only applicable for VBR and CBR, default is 1 [1-63] |
+| `--aq-mode` | `flag` | unmapped |  |
+| `--use-fixed-qindex-offsets` | `flag` | unmapped |  |
+| `--key-frame-qindex-offset` | `flag` | unmapped |  |
+| `--key-frame-chroma-qindex-offset` | `flag` | unmapped |  |
+| `--qindex-offsets` | `flag` | unmapped |  |
+| `--chroma-qindex-offsets` | `flag` | unmapped |  |
+| `--luma-y-dc-qindex-offset` | `flag` | unmapped | Luma Y DC Qindex Offset |
+| `--chroma-u-dc-qindex-offset` | `flag` | unmapped | Chroma U DC Qindex Offset |
+| `--chroma-u-ac-qindex-offset` | `flag` | unmapped | Chroma U AC Qindex Offset |
+| `--chroma-v-dc-qindex-offset` | `flag` | unmapped | Chroma V DC Qindex Offset |
+| `--chroma-v-ac-qindex-offset` | `flag` | unmapped | Chroma V AC Qindex Offset |
+| `--lambda-scale-factors` | `flag` | unmapped |  |
+| `--undershoot-pct` | `flag` | unmapped |  |
+| `--overshoot-pct` | `flag` | unmapped |  |
+| `--mbr-overshoot-pct` | `flag` | unmapped |  |
+| `--max-intra-bitrate-pct` | `flag` | unmapped |  |
+| `--max-inter-bitrate-pct` | `flag` | unmapped |  |
+| `--gop-constraint-rc` | `flag` | unmapped |  |
+| `--buf-sz` | `flag` | unmapped | Client buffer size (ms), only applicable for CBR, default is 6000 [0-10000] |
+| `--buf-initial-sz` | `flag` | unmapped | Client initial buffer size (ms), only applicable for CBR, default is 4000 [0-10000] |
+| `--buf-optimal-sz` | `flag` | unmapped | Client optimal buffer size (ms), only applicable for CBR, default is 5000 [0-10000] |
+| `--recode-loop` | `flag` | unmapped |  |
+| `--minsection-pct` | `flag` | unmapped | GOP min bitrate (expressed as a percentage of the target rate), default is 0 [0-100] |
+| `--maxsection-pct` | `flag` | unmapped |  |
+| `--enable-qm` | `flag` | unmapped | Enable quantisation matrices, default is 0 [0-1] |
+| `--qm-min` | `flag` | unmapped | Min quant matrix flatness, default is 8 [0-15] |
+| `--qm-max` | `flag` | unmapped | Max quant matrix flatness, default is 15 [0-15] |
+| `--chroma-qm-min` | `flag` | unmapped | Min chroma quant matrix flatness, default is 8 [0-15] |
+| `--chroma-qm-max` | `flag` | unmapped | Max chroma quant matrix flatness, default is 15 [0-15] |
+| `--roi-map-file` | `flag` | unmapped | Enable Region Of Interest and specify a picture based QP Offset map file, default is off |
+| `--tf-strength` | `flag` | unmapped | Adjust temporal filtering strength, default is 3 [0-4] |
+| `--luminance-qp-bias` | `flag` | unmapped | Adjusts a frame's QP based on its average luma value, default is 0 [0-100] |
+| `--sharpness` | `flag` | unmapped | Bias towards decreased/increased sharpness, default is 0 [-7 to 7] |
+| `--pass` | `flag` | unmapped |  |
+| `--stats` | `flag` | unmapped | Filename for multi-pass encoding, default is \ |
+| `--passes` | `flag` | unmapped |  |
+| `--keyint` | `flag` | unmapped |  |
+| `--irefresh-type" // no Eval` | `flag` | unmapped | Intra refresh type, default is 2 [1: FWD Frame (Open GOP), 2: KEY Frame (Closed GOP)] |
+| `--scd` | `flag` | unmapped | Scene change detection control, default is 0 [0-1] |
+| `--lookahead` | `flag` | unmapped |  |
+| `--hierarchical-levels" // no Eval` | `flag` | unmapped |  |
+| `--pred-struct` | `flag` | unmapped | Set prediction structure, default is 2 [1: low delay frames, 2: random access] |
+| `--rtc` | `flag` | unmapped |  |
+| `--force-key-frames` | `flag` | unmapped | Force key frames at the comma separated specifiers. `#f` for frames, `#.#s` for seconds |
+| `--startup-mg-size` | `flag` | unmapped |  |
+| `--startup-qp-offset` | `flag` | unmapped |  |
+| `--tile-rows` | `flag` | unmapped | Number of tile rows to use, `TileRow == log2(x)`, default changes per resolution but is 1 [0-6] |
+| `--tile-columns` | `flag` | unmapped |  |
+| `--enable-cdef` | `flag` | unmapped | Enable Constrained Directional Enhancement Filter, default is 1 [0-1] |
+| `--enable-restoration` | `flag` | unmapped | Enable loop restoration filter, default is 1 [0-1] |
+| `--enable-mfmv` | `flag` | unmapped | Motion Field Motion Vector control, default is -1 [-1: auto, 0-1] |
+| `--enable-dg` | `flag` | unmapped | Dynamic GoP control, default is 1 [0-1] |
+| `--fast-decode` | `flag` | unmapped | Fast Decoder levels, default is 0 [0-2] |
+| `--enable-tf` | `flag` | unmapped | Enable ALT-REF (temporally filtered) frames, default is 1 [0-2] |
+| `--enable-kf-tf` | `flag` | unmapped | Enable MCTF for key frames, default is 1 [0-1] |
+| `--tune` | `flag` | unmapped |  |
+| `--scm` | `flag` | unmapped |  |
+| `--enable-intrabc` | `flag` | unmapped | Enable Intra Block Copy, default is 1 [0: off, 1: on] |
+| `--film-grain` | `flag` | unmapped | Enable film grain, default is 0 [0: off, 1-50: level of denoising for film grain] |
+| `--film-grain-denoise` | `flag` | unmapped |  |
+| `--fgs-table` | `flag` | unmapped | Set the film grain model table path |
+| `--sframe-dist` | `flag` | unmapped | S-Frame interval (frames) (0: OFF[default], > 0: ON) |
+| `--sframe-mode` | `flag` | unmapped |  |
+| `--sframe-posi` | `flag` | unmapped |  |
+| `--sframe-qp` | `flag` | unmapped | S-Frame setup qp, a list separated by ',', QP value(s) set with S-Frame insertion |
+| `--sframe-qp-offset` | `flag` | unmapped |  |
+| `--lossless` | `flag` | unmapped | Enable lossless coding, default is 0 [0-1] |
+| `--avif` | `flag` | unmapped | Enable still-picture coding, default is 0 [0-1] |
+| `--color-primaries` | `flag` | unmapped | Color primaries, refer to --color-help. Default is 2 [0-12, 22] |
+| `--transfer-characteristics` | `flag` | unmapped | Transfer characteristics, refer to --color-help. Default is 2 [0-22] |
+| `--matrix-coefficients` | `flag` | unmapped | Matrix coefficients, refer to --color-help. Default is 2 [0-14] |
+| `--color-range` | `flag` | unmapped | Color range, default is 0 [0: Studio, 1: Full] |
+| `--chroma-sample-position` | `flag` | unmapped |  |
+| `--mastering-display` | `flag` | unmapped |  |
+| `--content-light` | `flag` | unmapped |  |
+| `--enable-variance-boost` | `flag` | unmapped | Enable Variance Boost, default is 0 [0-1] |
+| `--variance-boost-strength` | `flag` | unmapped | Variance Boost strength, default is 2 [1-4] |
+| `--variance-octile` | `flag` | unmapped | Octile for Variance Boost, default is 5 [1-8] |
+| `--variance-boost-curve` | `flag` | unmapped | Curve for Variance Boost, default is 0 [0-2] |
+| `--qp-scale-compress-strength` | `flag` | unmapped | QP scale compress strength, default is 0 [0-3] |
+| `--adaptive-film-grain` | `flag` | unmapped | Adapts film grain blocksize based on video resolution, default is 1 [0-1] |
+| `--max-tx-size` | `flag` | unmapped | Limits the allowed transform sizes to the specified, default is 64 [32,64] |
+| `--ac-bias` | `flag` | unmapped | Strength of AC bias in rate distortion, default is 0.0 [0.0-8.0] |
+| `--hbd-mds` | `flag` | unmapped |  |
+| `--tier` | `flag` | unmapped | Tier |
+| `--intra-period` | `flag` | unmapped | IntraPeriod |
