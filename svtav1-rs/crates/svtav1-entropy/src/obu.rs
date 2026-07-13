@@ -906,6 +906,101 @@ mod tests {
         assert_eq!(got, expected_obu, "420 SH layout drifted from spec derivation");
     }
 
+    /// The 4:2:0 SH's color_config must be BIT-IDENTICAL to what C SVT-AV1
+    /// writes for the matching CICP config. C golden captured from
+    /// v4.2.0-rc:
+    ///
+    /// ```text
+    /// SvtAv1EncApp -i grad64.y4m -b c_420.ivf --avif 1 -q 30 --preset 4 \
+    ///   --color-primaries 1 --transfer-characteristics 13 \
+    ///   --matrix-coefficients 1 --color-range 1 -n 1
+    /// ```
+    ///
+    /// (64x64 4:2:0 still picture -> reduced SH, payload 9 bytes.) Full SH
+    /// byte-equality is NOT reachable: the C app derives seq_level_idx=0
+    /// (2.0) from the tiny dims where we pin 8 (4.0), and it enables
+    /// filter_intra/cdef/restoration, which our encoder deliberately
+    /// signals OFF until those tool ports land. Those four fields are all
+    /// in the fixed-width preamble, so both color_configs start at bit 36
+    /// and must match field-for-field — asserted below by parsing both.
+    #[test]
+    fn sh_420_color_config_matches_c_reference() {
+        const C_SH_PAYLOAD: [u8; 9] = [0x18, 0x15, 0x7f, 0xfd, 0x32, 0x02, 0x1a, 0x03, 0x08];
+
+        struct Bits<'a> {
+            d: &'a [u8],
+            pos: usize,
+        }
+        impl Bits<'_> {
+            fn f(&mut self, n: usize) -> u32 {
+                let mut v = 0;
+                for _ in 0..n {
+                    let byte = self.d[self.pos / 8];
+                    let bit = (byte >> (7 - (self.pos % 8))) & 1;
+                    v = (v << 1) | u32::from(bit);
+                    self.pos += 1;
+                }
+                v
+            }
+        }
+
+        // Reduced-SH preamble is fixed-width: profile(3) still(1) reduced(1)
+        // level(5) wbits(4) hbits(4) w(6) h(6) sb128(1) filter_intra(1)
+        // intra_edge_filter(1) superres(1) cdef(1) restoration(1) = 36 bits.
+        fn parse(payload: &[u8]) -> (u32, u32, [u32; 10]) {
+            let mut b = Bits { d: payload, pos: 0 };
+            assert_eq!(b.f(3), 0, "seq_profile 0");
+            assert_eq!(b.f(1), 1, "still_picture");
+            assert_eq!(b.f(1), 1, "reduced_still_picture_header");
+            let level = b.f(5);
+            assert_eq!(b.f(4), 5); // frame_width_bits_minus_1
+            assert_eq!(b.f(4), 5); // frame_height_bits_minus_1
+            assert_eq!(b.f(6), 63); // max_frame_width_minus_1
+            assert_eq!(b.f(6), 63); // max_frame_height_minus_1
+            assert_eq!(b.f(1), 0, "use_128x128_superblock");
+            let tools = b.f(1) << 4 | b.f(1) << 3 | b.f(1) << 2 | b.f(1) << 1 | b.f(1);
+            // color_config from here:
+            let cc = [
+                b.f(1), // high_bitdepth
+                b.f(1), // mono_chrome
+                b.f(1), // color_description_present_flag
+                b.f(8), // color_primaries
+                b.f(8), // transfer_characteristics
+                b.f(8), // matrix_coefficients
+                b.f(1), // color_range
+                b.f(2), // chroma_sample_position (profile 0, 420)
+                b.f(1), // separate_uv_delta_q
+                b.f(1), // film_grain_params_present
+            ];
+            assert_eq!(b.f(1), 1, "trailing_one_bit");
+            (level, tools, cc)
+        }
+
+        let ours = write_sequence_header_ex(64, 64, true, 8, &ColorDescription::srgb(), false);
+        // Strip OBU header (1 byte) + leb128 size (1 byte for these sizes).
+        assert_eq!(ours[0], 0b0_0001_0_1_0);
+        let our_payload = &ours[2..];
+
+        let (c_level, c_tools, c_cc) = parse(&C_SH_PAYLOAD);
+        let (r_level, r_tools, r_cc) = parse(our_payload);
+
+        assert_eq!(c_cc, r_cc, "color_config fields must match C bit-for-bit");
+        assert_eq!(c_cc[1], 0, "mono_chrome = 0");
+        assert_eq!(&c_cc[3..6], &[1, 13, 1], "CICP cp/tc/mc");
+        assert_eq!(c_cc[6], 1, "color_range full");
+        assert_eq!(c_cc[7], 0, "chroma_sample_position CSP_UNKNOWN");
+        assert_eq!(c_cc[8], 0, "separate_uv_delta_q");
+
+        // Documented config differences (NOT bitstream-structure drift):
+        assert_eq!(c_level, 0, "C derives level 2.0 for 64x64");
+        assert_eq!(r_level, 8, "we pin level 4.0");
+        // C: filter_intra=1, cdef=1, restoration=1; ours: all 0 until the
+        // tool ports land (bit 4=filter_intra .. bit 0=restoration; C also
+        // has intra_edge_filter=0 here, superres=0).
+        assert_eq!(c_tools, 0b10011);
+        assert_eq!(r_tools, 0b00000);
+    }
+
     /// Pin the 4:2:0 (NumPlanes=3) key-frame-header layout for a reduced SH
     /// at 64x64 q30 — hand-derived from spec 5.9.2/5.9.12 and libaom
     /// setup_quantization (decodeframe.c:1818): with separate_uv_delta_q=0
