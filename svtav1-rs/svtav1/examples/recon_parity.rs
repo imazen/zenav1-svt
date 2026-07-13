@@ -36,6 +36,34 @@ fn gen_content(content: &str, sz: usize) -> Vec<u8> {
     y
 }
 
+/// Edge-replicate `src` (sz x sz) up to enc x enc, exactly like
+/// decode_conformance / AvifEncoder pad to superblock alignment. The
+/// pipeline requires 64-aligned frame dims (unpadded partial-SB frames are
+/// an unimplemented front: the partition writer has no
+/// split_or_horz/split_or_vert syntax and the search emits unsignalable
+/// leaf shapes there), so non-aligned CONTENT sizes are exercised through
+/// the same padding path production callers use.
+fn pad_replicate(src: &[u8], sz: usize, enc: usize) -> Vec<u8> {
+    if enc == sz {
+        return src.to_vec();
+    }
+    let mut out = vec![128u8; enc * enc];
+    for r in 0..sz {
+        for c in 0..sz {
+            out[r * enc + c] = src[r * sz + c];
+        }
+        for c in sz..enc {
+            out[r * enc + c] = out[r * enc + sz - 1];
+        }
+    }
+    for r in sz..enc {
+        for c in 0..enc {
+            out[r * enc + c] = out[(sz - 1) * enc + c];
+        }
+    }
+    out
+}
+
 fn decode_y4m_planes(path: &str, w: usize, h: usize, mono: bool) -> Option<(Vec<u8>, Vec<u8>, Vec<u8>)> {
     let data = std::fs::read(path).ok()?;
     let hdr_end = data.iter().position(|&b| b == b'\n')?;
@@ -71,37 +99,42 @@ fn main() {
 
     for chroma in [false, true] {
         for content in ["gradient", "uniform", "edges"] {
-            for sz in [64usize, 128] {
+            // (content size, encode size): 96px content is edge-replicated
+            // to the 64-aligned encode size like every production caller
+            // (see pad_replicate) — it exercises different partition/mode
+            // choices than the aligned contents while staying within the
+            // pipeline's supported geometry.
+            for (sz, enc) in [(64usize, 64usize), (96, 128), (128, 128)] {
                 for qp in [30u8, 50, 90] {
-                    for speed in [2u8, 6, 10] {
-                        let y = gen_content(content, sz);
+                    for speed in [2u8, 4, 6, 10] {
+                        let y = pad_replicate(&gen_content(content, sz), sz, enc);
                         let rc = RcConfig {
                             mode: RcMode::Cqp,
                             qp,
                             ..Default::default()
                         };
-                        let mut p =
-                            EncodePipeline::new(sz as u32, sz as u32, speed, rc, 0, 1)
-                                .with_chroma_420(chroma);
+                        let mut p = EncodePipeline::new(enc as u32, enc as u32, speed, rc, 0, 1)
+                            .with_chroma_420(chroma);
                         let (u, v);
                         let obu = if chroma {
-                            u = (0..(sz / 2) * (sz / 2))
+                            u = (0..(enc / 2) * (enc / 2))
                                 .map(|i| (((i * 3) & 0x7F) + 64) as u8)
                                 .collect::<Vec<u8>>();
-                            v = (0..(sz / 2) * (sz / 2))
+                            v = (0..(enc / 2) * (enc / 2))
                                 .map(|i| (((i * 5) & 0x7F) + 64) as u8)
                                 .collect::<Vec<u8>>();
-                            p.encode_frame_420(&y, &u, &v, sz)
+                            p.encode_frame_420(&y, &u, &v, enc)
                         } else {
-                            p.encode_frame(&y, sz)
+                            p.encode_frame(&y, enc)
                         };
                         let (ry, ru, rv) = p.last_recon.clone().expect("recon published");
 
                         let name = format!(
-                            "{}_{}_{}_q{}_s{}",
+                            "{}_{}_{}{}_q{}_s{}",
                             if chroma { "c420" } else { "mono" },
                             content,
                             sz,
+                            if enc != sz { "pad" } else { "" },
                             qp,
                             speed
                         );
@@ -119,7 +152,7 @@ fn main() {
                             failures.push(format!("{name}: DECODE FAILED"));
                             continue;
                         }
-                        let Some((dy, du, dv)) = decode_y4m_planes(&y4m_path, sz, sz, !chroma)
+                        let Some((dy, du, dv)) = decode_y4m_planes(&y4m_path, enc, enc, !chroma)
                         else {
                             fail += 1;
                             failures.push(format!("{name}: y4m parse failed"));
@@ -132,8 +165,8 @@ fn main() {
                             diffs.push(format!(
                                 "Y@{} (r{} c{}) dec={} enc={}",
                                 i,
-                                i / sz,
-                                i % sz,
+                                i / enc,
+                                i % enc,
                                 dy[i],
                                 ry[i]
                             ));

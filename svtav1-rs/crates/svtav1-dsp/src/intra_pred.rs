@@ -892,11 +892,7 @@ mod tests {
         for r in 0..4 {
             for c in 0..4 {
                 let idx = (r + c + 1).min(7);
-                assert_eq!(
-                    dst[r * 4 + c],
-                    above[idx],
-                    "D45 exact at ({r},{c})"
-                );
+                assert_eq!(dst[r * 4 + c], above[idx], "D45 exact at ({r},{c})");
             }
         }
     }
@@ -920,11 +916,7 @@ mod tests {
                     core::cmp::Ordering::Equal => top_left,
                     core::cmp::Ordering::Less => left[r - c - 1],
                 };
-                assert_eq!(
-                    dst[r * 4 + c],
-                    expected,
-                    "D135 exact at ({r},{c})"
-                );
+                assert_eq!(dst[r * 4 + c], expected, "D135 exact at ({r},{c})");
             }
         }
     }
