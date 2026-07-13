@@ -9,7 +9,12 @@
 //! STATUS.md (all-skip uniform frames, q70 gradients, 80/96/112 multi-SB
 //! sizes, speed sweeps) so regressions and fixes are both visible.
 //!
-//! Usage: `cargo run --release -p svtav1 --example decode_conformance -- <outdir>`
+//! Usage: `cargo run --release -p svtav1 --example decode_conformance -- <outdir> [chroma]`
+//!
+//! With the optional `chroma` mode argument the same matrix is encoded via
+//! `encode_frame_420` (mono_chrome=0, NumPlanes=3): the three mono contents
+//! get flat u=v=128 chroma, plus a fourth `color` content whose chroma
+//! planes carry real patterns (u=((r*3)&0x7F)+64, v=((c*5)&0x7F)+64).
 
 use svtav1_encoder::pipeline::EncodePipeline;
 use svtav1_encoder::rate_control::{RcConfig, RcMode};
@@ -38,17 +43,40 @@ fn make_edges(w: usize, h: usize) -> Vec<u8> {
     v
 }
 
+/// Chroma plane pair for the 420 matrix: `color` content gets real
+/// patterns (r, c in CHROMA coords), everything else flat 128.
+fn make_chroma(cname: &str, cw: usize, chh: usize) -> (Vec<u8>, Vec<u8>) {
+    if cname == "color" {
+        let mut u = vec![0u8; cw * chh];
+        let mut v = vec![0u8; cw * chh];
+        for r in 0..chh {
+            for c in 0..cw {
+                u[r * cw + c] = (((r * 3) & 0x7F) + 64) as u8;
+                v[r * cw + c] = (((c * 5) & 0x7F) + 64) as u8;
+            }
+        }
+        (u, v)
+    } else {
+        (vec![128u8; cw * chh], vec![128u8; cw * chh])
+    }
+}
+
 fn main() {
     let outdir = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "target/decode_conformance".to_string());
+    let chroma_mode = std::env::args().nth(2).as_deref() == Some("chroma");
     std::fs::create_dir_all(&outdir).expect("create outdir");
 
-    let contents: [(&str, fn(usize, usize) -> Vec<u8>); 3] = [
+    let mut contents: Vec<(&str, fn(usize, usize) -> Vec<u8>)> = vec![
         ("gradient", make_gradient),
         ("uniform", make_uniform),
         ("edges", make_edges),
     ];
+    if chroma_mode {
+        // Luma gradient + chroma that actually carries content.
+        contents.push(("color", make_gradient));
+    }
     // Square sizes padded internally to 64-aligned; the multi-SB odd sizes
     // (80/96/112) are historical failure cases.
     let sizes = [32usize, 48, 64, 80, 96, 112, 128];
@@ -87,7 +115,13 @@ fn main() {
                     };
                     let mut pipeline =
                         EncodePipeline::new(pw as u32, ph as u32, speed, rc, 0, 1);
-                    let obu = pipeline.encode_frame(&src, pw);
+                    let obu = if chroma_mode {
+                        pipeline = pipeline.with_chroma_420(true);
+                        let (u, v) = make_chroma(cname, pw / 2, ph / 2);
+                        pipeline.encode_frame_420(&src, &u, &v, pw)
+                    } else {
+                        pipeline.encode_frame(&src, pw)
+                    };
 
                     let name = format!("{cname}_{sz}x{sz}_q{qp}_s{speed}.obu");
                     std::fs::write(format!("{outdir}/{name}"), &obu).expect("write obu");
@@ -97,5 +131,6 @@ fn main() {
             }
         }
     }
-    eprintln!("wrote {count} streams to {outdir}");
+    let mode = if chroma_mode { "chroma-420" } else { "mono" };
+    eprintln!("wrote {count} {mode} streams to {outdir}");
 }
