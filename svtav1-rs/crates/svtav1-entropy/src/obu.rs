@@ -206,26 +206,31 @@ pub fn write_temporal_delimiter() -> Vec<u8> {
 
 /// Write a reduced-header sequence header OBU (still-picture only).
 pub fn write_sequence_header(width: u32, height: u32) -> Vec<u8> {
-    write_sequence_header_ex(width, height, true, 8, &ColorDescription::srgb())
+    write_sequence_header_ex(width, height, true, 8, &ColorDescription::srgb(), true)
 }
 
 /// Write a full sequence header OBU that supports inter frames.
 pub fn write_sequence_header_full(width: u32, height: u32) -> Vec<u8> {
-    write_sequence_header_ex(width, height, false, 8, &ColorDescription::srgb())
+    write_sequence_header_ex(width, height, false, 8, &ColorDescription::srgb(), true)
 }
 
 /// Write a sequence header with explicit bit depth and color description.
 ///
 /// Supports 8, 10, or 12 bit depth and CICP color signaling for
 /// wide gamut (P3, Rec.2020) and HDR (PQ, HLG).
+///
+/// `monochrome = true` writes the spec 5.5.2 mono color_config (NumPlanes=1,
+/// luma-only streams); `monochrome = false` writes the profile-0 4:2:0
+/// color_config (NumPlanes=3).
 pub fn write_sequence_header_ex(
     width: u32,
     height: u32,
     still_picture: bool,
     bit_depth: u8,
     color: &ColorDescription,
+    monochrome: bool,
 ) -> Vec<u8> {
-    write_sequence_header_inner(width, height, still_picture, bit_depth, color)
+    write_sequence_header_inner(width, height, still_picture, bit_depth, color, monochrome)
 }
 
 /// Write AV1 trailing bits: a mandatory 1-bit followed by zeros to byte-align.
@@ -252,13 +257,15 @@ fn tile_log2(n: u32) -> u32 {
 
 /// AV1 spec Section 5.5.1: Sequence header OBU.
 ///
-/// Monochrome output (NumPlanes=1) — matches luma-only encoder.
+/// `monochrome = true`: NumPlanes=1 (luma-only encoder output).
+/// `monochrome = false`: profile-0 4:2:0, NumPlanes=3.
 fn write_sequence_header_inner(
     width: u32,
     height: u32,
     still_picture: bool,
     bit_depth: u8,
     color: &ColorDescription,
+    monochrome: bool,
 ) -> Vec<u8> {
     let mut wb = BitWriter::new();
 
@@ -324,14 +331,17 @@ fn write_sequence_header_inner(
     wb.write_bit(false); // enable_restoration = 0
 
     // ---- color_config() ----
+    // Spec 5.5.2; decoder authority: libaom av1_read_color_config
+    // (av1/decoder/decodeframe.c:4167); C write path: write_color_config
+    // (Source/Lib/Codec/entropy_coding.c:2740).
     wb.write_bit(bit_depth > 8); // high_bitdepth
     if profile == 2 && bit_depth > 8 {
         wb.write_bit(bit_depth >= 12); // twelve_bit
     }
 
-    // Monochrome: NumPlanes = 1
-    // (mono_chrome is present for profile != 1)
-    wb.write_bit(true); // mono_chrome = 1
+    // mono_chrome: NumPlanes = mono_chrome ? 1 : 3
+    // (present for profile != 1)
+    wb.write_bit(monochrome);
 
     // color_description_present_flag = 1
     wb.write_bit(true);
@@ -339,10 +349,36 @@ fn write_sequence_header_inner(
     wb.write_bits(color.transfer_characteristics as u32, 8);
     wb.write_bits(color.matrix_coefficients as u32, 8);
 
-    // For mono_chrome, spec 5.5.2 reads color_range (1 bit) and then stops:
-    // subsampling=1,1, chroma_sample_position=CSP_UNKNOWN, and
-    // separate_uv_delta_q=0 are implicit — but color_range is NOT.
-    wb.write_bit(true); // color_range = 1 (full range)
+    if monochrome {
+        // For mono_chrome, spec 5.5.2 reads color_range (1 bit) and then
+        // stops: subsampling=1,1, chroma_sample_position=CSP_UNKNOWN, and
+        // separate_uv_delta_q=0 are implicit — but color_range is NOT.
+        wb.write_bit(true); // color_range = 1 (full range)
+    } else {
+        // Non-mono, and (cp, tc, mc) != (BT709=1, SRGB=13, IDENTITY=0) —
+        // that RGB special case implies 4:4:4 and is rejected by the
+        // decoder for profile 0, so it must never be combined with 4:2:0.
+        // The decoder then reads color_range, derives subsampling 1,1 from
+        // seq_profile==0 (NO subsampling bits), reads chroma_sample_position
+        // (2 bits, because subsampling_x && subsampling_y), and finally
+        // separate_uv_delta_q. (libaom av1_read_color_config,
+        // decodeframe.c:4210-4243; C write_color_config writes the same
+        // fields for MAIN_PROFILE.)
+        debug_assert!(
+            !(color.color_primaries == 1
+                && color.transfer_characteristics == 13
+                && color.matrix_coefficients == 0),
+            "sRGB-identity CICP implies 4:4:4 — invalid with profile-0 4:2:0"
+        );
+        debug_assert!(
+            profile == 0,
+            "4:2:0 color_config is only implemented for seq_profile 0 (8/10-bit)"
+        );
+        wb.write_bit(true); // color_range = 1 (full range)
+        // seq_profile 0: subsampling_x = subsampling_y = 1 implied, no bits.
+        wb.write_bits(0, 2); // chroma_sample_position = 0 (CSP_UNKNOWN)
+        wb.write_bit(false); // separate_uv_delta_q = 0
+    }
 
     wb.write_bit(false); // film_grain_params_present = 0
 
@@ -354,18 +390,41 @@ fn write_sequence_header_inner(
 
 /// Write a key frame header for a reduced (still-picture) sequence header.
 pub fn write_key_frame_header(width: u32, height: u32, base_qindex: u8) -> Vec<u8> {
-    write_key_frame_header_full(width, height, base_qindex, true)
+    write_key_frame_header_full(width, height, base_qindex, true, true)
 }
 
 /// AV1 spec Section 5.9.2: uncompressed_header() for KEY_FRAME.
 ///
-/// Field ordering matches the spec exactly. Monochrome (NumPlanes=1).
+/// Field ordering matches the spec exactly. `monochrome` must match the
+/// sequence header's mono_chrome flag: it selects NumPlanes (1 vs 3), which
+/// gates the chroma delta-Q fields in quantization_params().
 pub fn write_key_frame_header_full(
     width: u32,
     height: u32,
     base_qindex: u8,
     reduced_sh: bool,
+    monochrome: bool,
 ) -> Vec<u8> {
+    let mut wb = key_frame_header_bits(width, height, base_qindex, reduced_sh, monochrome);
+    // This header is embedded in an OBU_FRAME: the spec requires
+    // byte_alignment() (zero bits only) between frame_header and tile_group —
+    // trailing_bits (with its leading 1) is only for standalone
+    // OBU_FRAME_HEADER. C: write_frame_header_obu(appendTrailingBits=0).
+    byte_align_zero(&mut wb);
+    wb.into_data()
+}
+
+/// Body of [`write_key_frame_header_full`] returning the raw [`BitWriter`]
+/// BEFORE byte alignment (pre-alignment bit count observable for layout
+/// tests — chroma delta-Q bits are zeros inside a zero run, invisible at
+/// byte granularity).
+fn key_frame_header_bits(
+    width: u32,
+    height: u32,
+    base_qindex: u8,
+    reduced_sh: bool,
+    monochrome: bool,
+) -> BitWriter {
     let mut wb = BitWriter::new();
 
     if !reduced_sh {
@@ -409,8 +468,21 @@ pub fn write_key_frame_header_full(
     write_tile_info(&mut wb, width, height);
 
     // ---- quantization_params() ----
+    // Spec 5.9.12; decoder authority: libaom setup_quantization
+    // (av1/decoder/decodeframe.c:1818-1841).
     wb.write_bits(base_qindex as u32, 8); // base_q_idx
     wb.write_bit(false); // DeltaQYDc: delta_coded = 0
+    if !monochrome {
+        // NumPlanes=3. The SH signaled separate_uv_delta_q=0, so the
+        // decoder does NOT read diff_uv_delta (it stays 0):
+        //     if (separate_uv_delta_q) diff_uv_delta = aom_rb_read_bit(rb);
+        // It then reads DeltaQUDc and DeltaQUAc, and because
+        // diff_uv_delta==0 the V plane reuses the U deltas — no V bits.
+        // (libaom decodeframe.c:1823-1834; C write path writes the same
+        // two zero delta_coded bits for u_dc/u_ac.)
+        wb.write_bit(false); // DeltaQUDc: delta_coded = 0
+        wb.write_bit(false); // DeltaQUAc: delta_coded = 0
+    }
     // NumPlanes=1 (mono_chrome): no DeltaQUDc, DeltaQUAc
     wb.write_bit(false); // using_qmatrix = 0
 
@@ -430,7 +502,10 @@ pub fn write_key_frame_header_full(
     // allow_intrabc=0, so we always write loop filter params.
     wb.write_bits(0, 6); // loop_filter_level[0] = 0
     wb.write_bits(0, 6); // loop_filter_level[1] = 0
-    // NumPlanes=1: no loop_filter_level[2]/[3]
+    // NumPlanes=1: no loop_filter_level[2]/[3].
+    // NumPlanes=3: levels [2]/[3] are only read when
+    // (loop_filter_level[0] || loop_filter_level[1]) — ours are 0, so no
+    // bits either way. (libaom setup_loopfilter, decodeframe.c:1766-1773.)
     wb.write_bits(0, 3); // loop_filter_sharpness = 0
     wb.write_bit(false); // loop_filter_delta_enabled = 0
 
@@ -448,12 +523,9 @@ pub fn write_key_frame_header_full(
 
     wb.write_bit(false); // reduced_tx_set = 0
 
-    // This header is embedded in an OBU_FRAME: the spec requires
-    // byte_alignment() (zero bits only) between frame_header and tile_group —
-    // trailing_bits (with its leading 1) is only for standalone
-    // OBU_FRAME_HEADER. C: write_frame_header_obu(appendTrailingBits=0).
-    byte_align_zero(&mut wb);
-    wb.into_data()
+    // NOTE: byte_alignment() is applied by the caller
+    // (write_key_frame_header_full) so tests can observe the raw bit count.
+    wb
 }
 
 /// byte_alignment(): pad with zero bits to the next byte boundary.
@@ -764,5 +836,125 @@ mod tests {
         assert_eq!(tile_log2(3), 2);
         assert_eq!(tile_log2(4), 2);
         assert_eq!(tile_log2(5), 3);
+    }
+
+    /// Mono SH/FH bytes captured BEFORE the 4:2:0 work landed (2026-07-13,
+    /// wave2/entropy-c-parity @ 264deaf03) — the mono path must stay
+    /// bit-identical while chroma support is added.
+    #[test]
+    fn mono_headers_unchanged_golden() {
+        assert_eq!(
+            write_sequence_header(64, 64),
+            [0x0a, 0x09, 0x1a, 0x15, 0x7f, 0xfc, 0x06, 0x02, 0x1a, 0x03, 0x40]
+        );
+        assert_eq!(
+            write_key_frame_header(64, 64, 30),
+            [0x11, 0xe0, 0x00, 0x00, 0x00]
+        );
+        assert_eq!(
+            write_sequence_header_full(64, 64),
+            [0x0a, 0x0d, 0x00, 0x00, 0x00, 0x41, 0x57, 0xff, 0xc0, 0x26, 0xc3, 0x01, 0x0d, 0x01, 0xa0]
+        );
+    }
+
+    /// Pin the 4:2:0 (mono_chrome=0) sequence-header bit layout for a
+    /// 64x64 reduced (still-picture) SH, hand-derived field by field from
+    /// AV1 spec 5.5.1/5.5.2 and cross-checked against libaom's
+    /// av1_read_color_config (decodeframe.c:4167).
+    #[test]
+    fn sh_420_bit_layout_pinned() {
+        // Hand-assemble the expected payload (independent field spelling —
+        // any field-order/width regression in the writer breaks equality).
+        let mut wb = BitWriter::new();
+        wb.write_bits(0, 3); // seq_profile = 0 (Main: 8/10-bit 4:2:0)
+        wb.write_bit(true); // still_picture = 1
+        wb.write_bit(true); // reduced_still_picture_header = 1
+        wb.write_bits(8, 5); // seq_level_idx = 8 (Level 4.0)
+        wb.write_bits(5, 4); // frame_width_bits_minus_1 (64 -> 6 bits)
+        wb.write_bits(5, 4); // frame_height_bits_minus_1
+        wb.write_bits(63, 6); // max_frame_width_minus_1
+        wb.write_bits(63, 6); // max_frame_height_minus_1
+        wb.write_bit(false); // use_128x128_superblock = 0
+        wb.write_bit(false); // enable_filter_intra = 0
+        wb.write_bit(false); // enable_intra_edge_filter = 0
+        wb.write_bit(false); // enable_superres = 0
+        wb.write_bit(false); // enable_cdef = 0
+        wb.write_bit(false); // enable_restoration = 0
+        // color_config() per spec 5.5.2, mono_chrome = 0 branch:
+        wb.write_bit(false); // high_bitdepth = 0 (8-bit)
+        wb.write_bit(false); // mono_chrome = 0 -> NumPlanes = 3
+        wb.write_bit(true); // color_description_present_flag = 1
+        wb.write_bits(1, 8); // color_primaries = CP_BT_709
+        wb.write_bits(13, 8); // transfer_characteristics = TC_SRGB
+        wb.write_bits(1, 8); // matrix_coefficients = MC_BT_709
+        // (cp,tc,mc) != (BT709, SRGB, IDENTITY) -> decoder reads:
+        wb.write_bit(true); // color_range = 1 (full)
+        // seq_profile == 0 -> subsampling_x = subsampling_y = 1, NO bits.
+        // subsampling_x && subsampling_y -> chroma_sample_position f(2):
+        wb.write_bits(0, 2); // chroma_sample_position = CSP_UNKNOWN
+        wb.write_bit(false); // separate_uv_delta_q = 0
+        wb.write_bit(false); // film_grain_params_present = 0
+        wb.write_bit(true); // trailing_one_bit
+        let remainder = wb.bit_offset % 8;
+        if remainder != 0 {
+            wb.write_bits(0, 8 - remainder); // trailing zero pad
+        }
+        let expected_payload = wb.into_data();
+        let expected_obu = write_obu(ObuType::SequenceHeader, &expected_payload);
+
+        let got = write_sequence_header_ex(64, 64, true, 8, &ColorDescription::srgb(), false);
+        assert_eq!(got, expected_obu, "420 SH layout drifted from spec derivation");
+    }
+
+    /// Pin the 4:2:0 (NumPlanes=3) key-frame-header layout for a reduced SH
+    /// at 64x64 q30 — hand-derived from spec 5.9.2/5.9.12 and libaom
+    /// setup_quantization (decodeframe.c:1818): with separate_uv_delta_q=0
+    /// the decoder reads NO diff_uv_delta, then DeltaQUDc + DeltaQUAc
+    /// (delta_coded=0 each), and V reuses U (no V bits).
+    #[test]
+    fn fh_420_bit_layout_pinned() {
+        let mut wb = BitWriter::new();
+        wb.write_bit(false); // disable_cdf_update = 0
+        wb.write_bit(false); // allow_screen_content_tools = 0
+        wb.write_bit(false); // render_and_frame_size_different = 0
+        wb.write_bit(true); // tile_info: uniform_tile_spacing_flag (64x64 = 1 SB)
+        wb.write_bits(30, 8); // base_q_idx = 30
+        wb.write_bit(false); // DeltaQYDc: delta_coded = 0
+        wb.write_bit(false); // DeltaQUDc: delta_coded = 0 (NumPlanes=3)
+        wb.write_bit(false); // DeltaQUAc: delta_coded = 0 (V reuses U)
+        wb.write_bit(false); // using_qmatrix = 0
+        wb.write_bit(false); // segmentation_enabled = 0
+        wb.write_bit(false); // delta_q_present = 0 (base_q_idx > 0)
+        wb.write_bits(0, 6); // loop_filter_level[0] = 0
+        wb.write_bits(0, 6); // loop_filter_level[1] = 0
+        // levels [2]/[3] not coded: (level[0] || level[1]) == 0
+        wb.write_bits(0, 3); // loop_filter_sharpness = 0
+        wb.write_bit(false); // loop_filter_delta_enabled = 0
+        wb.write_bit(false); // tx_mode_select = 0
+        wb.write_bit(false); // reduced_tx_set = 0
+        let remainder = wb.bit_offset % 8;
+        if remainder != 0 {
+            wb.write_bits(0, 8 - remainder); // byte_alignment(): zero bits
+        }
+        let expected = wb.into_data();
+
+        let got = write_key_frame_header_full(64, 64, 30, true, false);
+        assert_eq!(got, expected, "420 FH layout drifted from spec derivation");
+
+        // The 420 FH is exactly the mono FH with two zero bits
+        // (DeltaQUDc/DeltaQUAc delta_coded=0) inserted after DeltaQYDc.
+        // Every bit after DeltaQYDc is zero in this config and
+        // byte_alignment() pads with zeros, so the PADDED BYTES coincide
+        // with mono — the real difference is the pre-alignment bit count,
+        // which shifts where the decoder's field boundaries fall. Pin it.
+        let bits_420 = key_frame_header_bits(64, 64, 30, true, false).bit_offset;
+        let bits_mono = key_frame_header_bits(64, 64, 30, true, true).bit_offset;
+        assert_eq!(bits_mono, 34, "mono reduced-SH FH is 34 bits pre-align");
+        assert_eq!(bits_420, 36, "420 adds exactly DeltaQUDc + DeltaQUAc");
+        assert_eq!(
+            got,
+            write_key_frame_header_full(64, 64, 30, true, true),
+            "byte-level coincidence expected (zero bits inside zero padding)"
+        );
     }
 }

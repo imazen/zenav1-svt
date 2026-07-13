@@ -512,6 +512,7 @@ impl EncodePipeline {
                 is_single_frame,
                 self.bit_depth,
                 &self.color_description,
+                true,
             ));
             // Key frame header (raw bytes) + tile group with proper header
             // Use tpl_adjusted_qp (same value used for CDF category selection)
@@ -521,6 +522,7 @@ impl EncodePipeline {
                 self.height,
                 tpl_adjusted_qp,
                 is_single_frame,
+                true,
             );
             // tile_data is already a complete tile_group (with TG header)
             let mut frame_payload = alloc::vec::Vec::new();
