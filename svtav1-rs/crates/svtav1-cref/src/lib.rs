@@ -217,3 +217,97 @@ fc_tables! {
     (IntraBc, ref_fc_sizeof_intrabc_cdf, ref_fc_copy_intrabc_cdf),
     (YMode, ref_fc_sizeof_y_mode_cdf, ref_fc_copy_y_mode_cdf),
 }
+
+// ---- Scan orders + coefficient-context helpers ----
+
+unsafe extern "C" {
+    fn ref_scan_len(tx_size: i32) -> i32;
+    fn ref_scan_copy(tx_size: i32, scan_class: i32, scan_out: *mut i16, len: i32);
+    fn ref_tx_type_to_scan_index(tx_type: i32) -> i32;
+    fn ref_get_br_ctx(levels: *const u8, c: i32, bwl: i32, tx_class: i32) -> i32;
+    fn ref_get_eob_pos_token(eob: i32, extra: *mut i32) -> i32;
+    fn ref_nz_map_ctx_offset(tx_size: i32, coeff_idx: i32) -> i32;
+    fn ref_txb_init_levels(coeff: *const i32, width: i32, height: i32, levels: *mut u8);
+    fn ref_get_nz_map_contexts(
+        levels: *const u8,
+        scan: *const i16,
+        eob: u16,
+        tx_size: i32,
+        tx_class: i32,
+        coeff_contexts: *mut i8,
+    );
+    fn ref_get_txsize_entropy_ctx(tx_size: i32) -> i32;
+    fn ref_get_txb_bwl(tx_size: i32) -> i32;
+    fn ref_get_txb_wide(tx_size: i32) -> i32;
+    fn ref_get_txb_high(tx_size: i32) -> i32;
+}
+
+/// Number of coefficients scanned for `tx_size` (adjusted dimensions).
+pub fn scan_len(tx_size: usize) -> usize {
+    unsafe { ref_scan_len(tx_size as i32) as usize }
+}
+
+/// Copy the reference scan order for (tx_size, scan_class 0..3).
+pub fn scan(tx_size: usize, scan_class: usize) -> Vec<i16> {
+    let len = scan_len(tx_size);
+    let mut v = vec![0i16; len];
+    unsafe { ref_scan_copy(tx_size as i32, scan_class as i32, v.as_mut_ptr(), len as i32) };
+    v
+}
+
+pub fn tx_type_to_scan_index(tx_type: usize) -> usize {
+    unsafe { ref_tx_type_to_scan_index(tx_type as i32) as usize }
+}
+
+pub fn get_br_ctx(levels: &[u8], c: usize, bwl: usize, tx_class: usize) -> i32 {
+    unsafe { ref_get_br_ctx(levels.as_ptr(), c as i32, bwl as i32, tx_class as i32) }
+}
+
+pub fn get_eob_pos_token(eob: i32) -> (i32, i32) {
+    let mut extra = 0i32;
+    let t = unsafe { ref_get_eob_pos_token(eob, &mut extra) };
+    (t, extra)
+}
+
+pub fn nz_map_ctx_offset(tx_size: usize, coeff_idx: usize) -> i32 {
+    unsafe { ref_nz_map_ctx_offset(tx_size as i32, coeff_idx as i32) }
+}
+
+pub fn txb_init_levels(coeff: &[i32], width: usize, height: usize, levels: &mut [u8]) {
+    unsafe {
+        ref_txb_init_levels(coeff.as_ptr(), width as i32, height as i32, levels.as_mut_ptr())
+    };
+}
+
+pub fn get_nz_map_contexts(
+    levels: &[u8],
+    scan: &[i16],
+    eob: u16,
+    tx_size: usize,
+    tx_class: usize,
+    coeff_contexts: &mut [i8],
+) {
+    unsafe {
+        ref_get_nz_map_contexts(
+            levels.as_ptr(),
+            scan.as_ptr(),
+            eob,
+            tx_size as i32,
+            tx_class as i32,
+            coeff_contexts.as_mut_ptr(),
+        )
+    };
+}
+
+pub fn txsize_entropy_ctx(tx_size: usize) -> usize {
+    unsafe { ref_get_txsize_entropy_ctx(tx_size as i32) as usize }
+}
+pub fn txb_bwl(tx_size: usize) -> usize {
+    unsafe { ref_get_txb_bwl(tx_size as i32) as usize }
+}
+pub fn txb_wide(tx_size: usize) -> usize {
+    unsafe { ref_get_txb_wide(tx_size as i32) as usize }
+}
+pub fn txb_high(tx_size: usize) -> usize {
+    unsafe { ref_get_txb_high(tx_size as i32) as usize }
+}

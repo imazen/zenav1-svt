@@ -279,3 +279,128 @@ fn c_default_cdf_tables_match() {
     let ym: Vec<u16> = d::Y_MODE_CDF.iter().flatten().copied().collect();
     assert_eq!(ym, cref::fc_table(cref::FcTable::YMode), "Y_MODE_CDF");
 }
+
+// ---- coeff_c helper parity ----
+
+#[test]
+fn coeff_c_dims_and_scans_match_c() {
+    use svtav1_entropy::{coeff_c, scan_tables};
+    for ts in 0..19usize {
+        assert_eq!(coeff_c::txb_bwl(ts), cref::txb_bwl(ts), "bwl ts={ts}");
+        assert_eq!(coeff_c::txb_wide(ts), cref::txb_wide(ts), "wide ts={ts}");
+        assert_eq!(coeff_c::txb_high(ts), cref::txb_high(ts), "high ts={ts}");
+        assert_eq!(
+            coeff_c::txsize_entropy_ctx(ts),
+            cref::txsize_entropy_ctx(ts),
+            "txs_ctx ts={ts}"
+        );
+        for class in 0..3usize {
+            let c_scan: Vec<u16> = cref::scan(ts, class).iter().map(|&v| v as u16).collect();
+            assert_eq!(scan_tables::scan(ts, class), &c_scan[..], "scan ts={ts} class={class}");
+        }
+        // 2D nz-map context offsets: our generator formula vs the C table.
+        let n = cref::scan_len(ts);
+        for idx in 0..n {
+            assert_eq!(
+                coeff_c::nz_map_ctx_offset_2d(ts, idx) as i32,
+                cref::nz_map_ctx_offset(ts, idx),
+                "nz_map_ctx_offset ts={ts} idx={idx}"
+            );
+        }
+    }
+    for t in 0..16usize {
+        assert_eq!(
+            scan_tables::TX_TYPE_TO_SCAN_INDEX[t] as usize,
+            cref::tx_type_to_scan_index(t),
+            "scan index tx_type={t}"
+        );
+    }
+}
+
+#[test]
+fn coeff_c_eob_pos_token_matches_c() {
+    use svtav1_entropy::coeff_c;
+    for eob in 1..=1024i32 {
+        let (t, extra) = coeff_c::eob_pos_token(eob);
+        let (ct, cextra) = cref::get_eob_pos_token(eob);
+        assert_eq!((t as i32, extra), (ct, cextra), "eob={eob}");
+    }
+}
+
+#[test]
+fn coeff_c_levels_and_contexts_match_c() {
+    use svtav1_entropy::coeff_c;
+    let mut rng = Rng(0xC0FFEE_D00D_1234);
+    // All square/rect sizes after adjustment; classes 2D/H/V via tx types.
+    for ts in 0..19usize {
+        let width = coeff_c::txb_wide(ts);
+        let height = coeff_c::txb_high(ts);
+        let n = width * height;
+        for &tx_type in &[0usize, 10, 11] {
+            // DCT_DCT (2D), V_DCT (VERT), H_DCT (HORIZ)
+            let tx_class = coeff_c::TX_TYPE_TO_CLASS[tx_type];
+            for _trial in 0..8 {
+                // Sparse random coefficients.
+                let mut coeffs = vec![0i32; n];
+                let nnz = 1 + rng.below((n as u64 / 4).max(1)) as usize;
+                for _ in 0..nnz {
+                    let p = rng.below(n as u64) as usize;
+                    let mag = 1 + rng.below(300) as i32;
+                    coeffs[p] = if rng.below(2) == 0 { mag } else { -mag };
+                }
+
+                // Level map parity.
+                let mut rust_buf = [0u8; coeff_c::TX_PAD_2D];
+                coeff_c::txb_init_levels(&coeffs, width, height, &mut rust_buf);
+                let origin = coeff_c::levels_origin(width);
+                let stride = width + coeff_c::TX_PAD_HOR;
+                let written = stride * height + coeff_c::TX_PAD_BOTTOM * stride + coeff_c::TX_PAD_END;
+                let mut c_buf = [0u8; coeff_c::TX_PAD_2D];
+                cref::txb_init_levels(&coeffs, width, height, &mut c_buf[origin..]);
+                assert_eq!(
+                    &rust_buf[origin..origin + written],
+                    &c_buf[origin..origin + written],
+                    "levels ts={ts}"
+                );
+
+                // Scan + eob from the level map.
+                let scan = svtav1_entropy::scan_tables::scan(
+                    ts,
+                    svtav1_entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type] as usize,
+                );
+                let mut eob = 0usize;
+                for (i, &pos) in scan.iter().enumerate() {
+                    if coeffs[pos as usize] != 0 {
+                        eob = i + 1;
+                    }
+                }
+                if eob == 0 {
+                    continue;
+                }
+
+                // nz-map contexts parity.
+                let mut rust_ctx = [0i8; 32 * 32];
+                coeff_c::get_nz_map_contexts(&rust_buf, scan, eob, ts, tx_class, &mut rust_ctx);
+                let c_scan: Vec<i16> = scan.iter().map(|&v| v as i16).collect();
+                let mut c_ctx = [0i8; 32 * 32];
+                cref::get_nz_map_contexts(
+                    &c_buf[origin..],
+                    &c_scan,
+                    eob as u16,
+                    ts,
+                    tx_class,
+                    &mut c_ctx,
+                );
+                assert_eq!(&rust_ctx[..n], &c_ctx[..n], "nz ctx ts={ts} type={tx_type}");
+
+                // br context parity at every nonzero position.
+                let bwl = coeff_c::txb_bwl(ts);
+                for &pos in scan[..eob].iter() {
+                    let r = coeff_c::br_ctx(&rust_buf, pos as usize, bwl, tx_class);
+                    let c = cref::get_br_ctx(&c_buf[origin..], pos as usize, bwl, tx_class);
+                    assert_eq!(r as i32, c, "br_ctx ts={ts} pos={pos}");
+                }
+            }
+        }
+    }
+}

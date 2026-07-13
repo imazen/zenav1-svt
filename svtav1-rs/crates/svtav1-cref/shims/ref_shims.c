@@ -100,3 +100,55 @@ REF_TBL(filter_intra_mode_cdf)
 REF_TBL(delta_q_cdf)
 REF_TBL(intrabc_cdf)
 REF_TBL(y_mode_cdf)
+
+/* ---- Scan orders + coefficient-context helpers ---- */
+
+#include "coefficients.h"
+#include "common_utils.h"
+#include "encode_txb_ref_c.h"
+#include "entropy_coding.h"
+
+int32_t ref_scan_len(int32_t tx_size) {
+    const TxSize adj = av1_get_adjusted_tx_size((TxSize)tx_size);
+    return get_txb_wide(adj) * get_txb_high(adj);
+}
+
+void ref_scan_copy(int32_t tx_size, int32_t scan_class, int16_t* scan_out, int32_t len) {
+    const ScanOrder* so = &eb_av1_scan_orders[tx_size][scan_class];
+    memcpy(scan_out, so->scan, (size_t)len * sizeof(int16_t));
+}
+
+int32_t ref_tx_type_to_scan_index(int32_t tx_type) { return tx_type_to_scan_index[tx_type]; }
+
+int32_t ref_get_br_ctx(const uint8_t* levels, int32_t c, int32_t bwl, int32_t tx_class) {
+    return get_br_ctx(levels, c, bwl, (TxClass)tx_class);
+}
+
+int32_t ref_get_eob_pos_token(int32_t eob, int32_t* extra) {
+    int e = 0;
+    int t = get_eob_pos_token(eob, &e);
+    *extra = e;
+    return t;
+}
+
+int32_t ref_nz_map_ctx_offset(int32_t tx_size, int32_t coeff_idx) {
+    return eb_av1_nz_map_ctx_offset[tx_size][coeff_idx];
+}
+
+/* Declared in the generated RTCD header only; prototype it directly. */
+void svt_av1_txb_init_levels_c(const int32_t* const coeff, const int32_t width, const int32_t height,
+                               uint8_t* const levels);
+
+void ref_txb_init_levels(const int32_t* coeff, int32_t width, int32_t height, uint8_t* levels) {
+    svt_av1_txb_init_levels_c(coeff, width, height, levels);
+}
+
+void ref_get_nz_map_contexts(const uint8_t* levels, const int16_t* scan, uint16_t eob, int32_t tx_size,
+                             int32_t tx_class, int8_t* coeff_contexts) {
+    svt_av1_get_nz_map_contexts_c(levels, scan, eob, (TxSize)tx_size, (TxClass)tx_class, coeff_contexts);
+}
+
+int32_t ref_get_txsize_entropy_ctx(int32_t tx_size) { return (int32_t)get_txsize_entropy_ctx((TxSize)tx_size); }
+int32_t ref_get_txb_bwl(int32_t tx_size) { return get_txb_bwl((TxSize)tx_size); }
+int32_t ref_get_txb_wide(int32_t tx_size) { return get_txb_wide((TxSize)tx_size); }
+int32_t ref_get_txb_high(int32_t tx_size) { return get_txb_high((TxSize)tx_size); }
