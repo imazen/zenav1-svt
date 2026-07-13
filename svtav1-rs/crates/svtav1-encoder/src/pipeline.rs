@@ -53,6 +53,12 @@ pub struct EncodePipeline {
     /// reproduce BIT-EXACTLY — the recon-parity gate compares it against
     /// aomdec's output.
     pub last_recon: Option<(Vec<u8>, Vec<u8>, Vec<u8>)>,
+    /// The same reconstruction BEFORE the in-loop deblocking filter was
+    /// applied (equals `last_recon` when the picked levels are all zero).
+    /// Evidence/analysis aid: lets tools quantify what deblocking
+    /// contributes (before/after PSNR) without re-deriving the unfiltered
+    /// state. Cheap (one copy per frame) on a bring-up encoder.
+    pub last_recon_unfiltered: Option<(Vec<u8>, Vec<u8>, Vec<u8>)>,
 }
 
 impl EncodePipeline {
@@ -78,6 +84,7 @@ impl EncodePipeline {
             color_description: svtav1_entropy::obu::ColorDescription::srgb(),
             chroma_420: false,
             last_recon: None,
+            last_recon_unfiltered: None,
         }
     }
 
@@ -574,6 +581,7 @@ impl EncodePipeline {
         } else {
             crate::deblock::LfLevels::default()
         };
+        self.last_recon_unfiltered = Some((recon.clone(), u_recon.clone(), v_recon.clone()));
         if lf_levels.any() {
             crate::deblock::apply_deblock_frame(
                 &mut recon,
