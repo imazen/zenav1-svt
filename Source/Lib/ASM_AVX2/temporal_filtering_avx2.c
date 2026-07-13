@@ -10,6 +10,7 @@
  */
 
 #include <assert.h>
+#include <math.h>
 #include <immintrin.h> /* AVX2 */
 
 #include "definitions.h"
@@ -328,7 +329,7 @@ static void svt_av1_apply_temporal_filter_planewise_medium_partial_avx2(
                                        block_error_fp8[subblock_idx]) /
             (TF_WINDOW_BLOCK_BALANCE_WEIGHT + 1);
 
-        uint64_t avg_err_fp10  = ((combined_error_fp8 >> 3) * (d_factor_fp8[subblock_idx] >> 3));
+        uint64_t avg_err_fp10  = (uint64_t)(combined_error_fp8 >> 3) * (d_factor_fp8[subblock_idx] >> 3);
         uint32_t scaled_diff16 = (uint32_t)AOMMIN(
             /*((16*avg_err)<<8)*/ (avg_err_fp10) / AOMMAX((tf_decay_factor >> 10), 1), 7 * 16);
         uint32_t adjusted_weight = (expf_tab_fp16[scaled_diff16] * TF_WEIGHT_SCALE) >> 16;
@@ -598,7 +599,7 @@ static void svt_av1_apply_temporal_filter_planewise_medium_hbd_partial_avx2(
                                        block_error_fp8[subblock_idx]) /
             (TF_WINDOW_BLOCK_BALANCE_WEIGHT + 1);
 
-        uint64_t avg_err_fp10  = ((combined_error_fp8 >> 3) * (d_factor_fp8[subblock_idx] >> 3));
+        uint64_t avg_err_fp10  = (uint64_t)(combined_error_fp8 >> 3) * (d_factor_fp8[subblock_idx] >> 3);
         uint32_t scaled_diff16 = (uint32_t)AOMMIN(
             /*((16*avg_err)<<8)*/ (avg_err_fp10) / AOMMAX((tf_decay_factor >> 10), 1), 7 * 16);
         int adjusted_weight = (expf_tab_fp16[scaled_diff16] * TF_WEIGHT_SCALE) >> 16;
@@ -899,6 +900,272 @@ void svt_aom_apply_filtering_central_highbd_avx2(MeContext* me_ctx, EbPictureBuf
             blk_width_ch, blk_height_ch, src_16bit[PLANE_V], src_stride_ch, accum[PLANE_V], count[PLANE_V]);
     }
 }
+
+#if OPT_TUNE_VMAF
+uint32_t svt_vmaf_compute_avg_mad_avx2(const uint8_t* src, int width, int height, int stride) {
+    const __m128i zero           = _mm_setzero_si128();
+    const __m128i ones           = _mm_set1_epi16(1);
+    uint64_t      total_activity = 0;
+    int           block_count    = 0;
+
+    for (int by = 0; by + 8 <= height; by += 8) {
+        for (int bx = 0; bx + 8 <= width; bx += 8) {
+            __m128i sum = zero;
+            for (int r = 0; r < 8; r++) {
+                __m128i row = _mm_loadl_epi64((__m128i const*)(src + (by + r) * stride + bx));
+                sum         = _mm_add_epi32(sum, _mm_sad_epu8(row, zero));
+            }
+            const uint32_t block_sum = (uint32_t)(_mm_cvtsi128_si32(sum) + _mm_extract_epi32(sum, 2));
+            const uint32_t mean      = block_sum >> 6;
+
+            const __m128i mean_vec = _mm_set1_epi16((int16_t)mean);
+            __m128i       mad_sum  = zero;
+            for (int r = 0; r < 8; r++) {
+                __m128i row    = _mm_loadl_epi64((__m128i const*)(src + (by + r) * stride + bx));
+                __m128i row_16 = _mm_unpacklo_epi8(row, zero);
+                __m128i dif    = _mm_abs_epi16(_mm_sub_epi16(row_16, mean_vec));
+                mad_sum        = _mm_add_epi32(mad_sum, _mm_madd_epi16(dif, ones));
+            }
+            mad_sum = _mm_hadd_epi32(mad_sum, mad_sum);
+            mad_sum = _mm_hadd_epi32(mad_sum, mad_sum);
+            total_activity += (uint32_t)_mm_cvtsi128_si32(mad_sum);
+            block_count++;
+        }
+    }
+    if (block_count == 0) {
+        return 0;
+    }
+    return (uint32_t)(total_activity / ((uint64_t)block_count * 64));
+}
+
+void svt_vmaf_apply_unsharp_row_avx2(const uint8_t* src, const int16_t* blur, uint8_t* dst, int width, int amount,
+                                     int32_t max_delta) {
+    const int16_t max_delta_i16 = (int16_t)(max_delta > 32767 ? 32767 : max_delta);
+    const __m256i amount_vec    = _mm256_set1_epi32(amount);
+    const __m256i clamp_max     = _mm256_set1_epi16(max_delta_i16);
+    const __m256i clamp_min     = _mm256_sub_epi16(_mm256_setzero_si256(), clamp_max);
+    const __m256i zero          = _mm256_setzero_si256();
+
+    int j = 0;
+    for (; j + 16 <= width; j += 16) {
+        __m256i src_16        = _mm256_cvtepu8_epi16(_mm_loadu_si128((__m128i const*)(src + j)));
+        __m256i blur_16       = _mm256_loadu_si256((__m256i const*)(blur + j));
+        __m256i detail        = _mm256_sub_epi16(src_16, blur_16);
+        detail                = _mm256_max_epi16(detail, clamp_min);
+        detail                = _mm256_min_epi16(detail, clamp_max);
+        __m256i detail_lo     = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(detail));
+        __m256i detail_hi     = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(detail, 1));
+        detail_lo             = _mm256_srai_epi32(_mm256_mullo_epi32(detail_lo, amount_vec), 15);
+        detail_hi             = _mm256_srai_epi32(_mm256_mullo_epi32(detail_hi, amount_vec), 15);
+        __m256i detail_scaled = _mm256_permute4x64_epi64(_mm256_packs_epi32(detail_lo, detail_hi), 0xD8);
+        __m256i result        = _mm256_add_epi16(src_16, detail_scaled);
+        __m256i packed        = _mm256_packus_epi16(result, zero);
+        packed                = _mm256_permute4x64_epi64(packed, 0xD8);
+        _mm_storeu_si128((__m128i*)(dst + j), _mm256_castsi256_si128(packed));
+    }
+    for (; j < width; j++) {
+        int32_t detail = (int32_t)src[j] - (int32_t)blur[j];
+        detail         = detail > max_delta ? max_delta : detail < -max_delta ? -max_delta : detail;
+        int32_t result = (int32_t)src[j] + ((detail * amount) >> 15);
+        dst[j]         = (uint8_t)(result < 0 ? 0 : result > 255 ? 255 : result);
+    }
+}
+
+void svt_vmaf_vpass_row_avx2(const uint32_t* hpass, uint32_t* sc0, uint32_t* sc1, uint32_t* sc2, uint32_t* sc3,
+                             int16_t* blur_row, int alloc_width, int width, int steps_x, int do_output) {
+    (void)width;
+    const __m256i rounding   = _mm256_set1_epi32(128);
+    const __m256i zero       = _mm256_setzero_si256();
+    const int     blur_start = 2 * steps_x;
+    int           i;
+
+    for (i = 0; i < blur_start; i++) {
+        uint32_t tmp1 = hpass[i];
+        uint32_t tmp2 = sc0[i] + tmp1;
+        sc0[i]        = tmp1;
+        tmp1          = sc1[i] + tmp2;
+        sc1[i]        = tmp2;
+        tmp2          = sc2[i] + tmp1;
+        sc2[i]        = tmp1;
+        tmp1          = sc3[i] + tmp2;
+        sc3[i]        = tmp2;
+    }
+
+    for (; i + 8 <= alloc_width; i += 8) {
+        __m256i hpass_val = _mm256_loadu_si256((__m256i const*)(hpass + i));
+        __m256i sc0_vec   = _mm256_loadu_si256((__m256i const*)(sc0 + i));
+        __m256i sc1_vec   = _mm256_loadu_si256((__m256i const*)(sc1 + i));
+        __m256i sc2_vec   = _mm256_loadu_si256((__m256i const*)(sc2 + i));
+        __m256i sc3_vec   = _mm256_loadu_si256((__m256i const*)(sc3 + i));
+
+        __m256i tmp = _mm256_add_epi32(sc0_vec, hpass_val);
+        _mm256_storeu_si256((__m256i*)(sc0 + i), hpass_val);
+        __m256i v_acc0 = _mm256_add_epi32(sc1_vec, tmp);
+        _mm256_storeu_si256((__m256i*)(sc1 + i), tmp);
+
+        tmp = _mm256_add_epi32(sc2_vec, v_acc0);
+        _mm256_storeu_si256((__m256i*)(sc2 + i), v_acc0);
+        __m256i v_acc2 = _mm256_add_epi32(sc3_vec, tmp);
+        _mm256_storeu_si256((__m256i*)(sc3 + i), tmp);
+
+        if (do_output) {
+            __m256i blur_out = _mm256_srli_epi32(_mm256_add_epi32(v_acc2, rounding), 8);
+            __m256i packed   = _mm256_packs_epi32(blur_out, zero);
+            packed           = _mm256_permute4x64_epi64(packed, 0xD8);
+            _mm_storeu_si128((__m128i*)(blur_row + (i - blur_start)), _mm256_castsi256_si128(packed));
+        }
+    }
+
+    for (; i < alloc_width; i++) {
+        uint32_t tmp1 = hpass[i];
+        uint32_t tmp2 = sc0[i] + tmp1;
+        sc0[i]        = tmp1;
+        tmp1          = sc1[i] + tmp2;
+        sc1[i]        = tmp2;
+        tmp2          = sc2[i] + tmp1;
+        sc2[i]        = tmp1;
+        tmp1          = sc3[i] + tmp2;
+        sc3[i]        = tmp2;
+        if (do_output) {
+            blur_row[i - blur_start] = (int16_t)((tmp1 + 128u) >> 8);
+        }
+    }
+}
+
+static INLINE int64_t hsum_epi32x8_to_i64(__m256i v) {
+    int32_t lanes[8];
+    _mm256_storeu_si256((__m256i*)lanes, v);
+    int64_t sum = 0;
+    for (int i = 0; i < 8; i++) {
+        sum += lanes[i];
+    }
+    return sum;
+}
+
+float svt_vmaf_compute_gradient_coherence_avx2(const uint8_t* src, int width, int height, int stride) {
+    const __m256i lane_idx     = _mm256_setr_epi16(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+    double        weighted_coh = 0.0;
+    double        weight_sum   = 0.0;
+
+    for (int by = 1; by < height - 1; by += 16) {
+        for (int bx = 1; bx < width - 1; bx += 16) {
+            const int     y_end      = (by + 16 < height - 1) ? by + 16 : height - 1;
+            const int     x_end      = (bx + 16 < width - 1) ? bx + 16 : width - 1;
+            const int     valid_cols = x_end - bx;
+            const __m256i mask       = _mm256_cmpgt_epi16(_mm256_set1_epi16((int16_t)valid_cols), lane_idx);
+            __m256i       acc_xx     = _mm256_setzero_si256();
+            __m256i       acc_yy     = _mm256_setzero_si256();
+            __m256i       acc_xy     = _mm256_setzero_si256();
+            for (int y = by; y < y_end; y++) {
+                const uint8_t* row  = src + (size_t)y * stride;
+                const uint8_t* up   = src + (size_t)(y - 1) * stride;
+                const uint8_t* down = src + (size_t)(y + 1) * stride;
+
+                __m256i right_16 = _mm256_cvtepu8_epi16(_mm_loadu_si128((__m128i const*)(row + bx + 1)));
+                __m256i left_16  = _mm256_cvtepu8_epi16(_mm_loadu_si128((__m128i const*)(row + bx - 1)));
+                __m256i down_16  = _mm256_cvtepu8_epi16(_mm_loadu_si128((__m128i const*)(down + bx)));
+                __m256i up_16    = _mm256_cvtepu8_epi16(_mm_loadu_si128((__m128i const*)(up + bx)));
+                __m256i grad_x   = _mm256_and_si256(_mm256_sub_epi16(right_16, left_16), mask);
+                __m256i grad_y   = _mm256_and_si256(_mm256_sub_epi16(down_16, up_16), mask);
+
+                acc_xx = _mm256_add_epi32(acc_xx, _mm256_madd_epi16(grad_x, grad_x));
+                acc_yy = _mm256_add_epi32(acc_yy, _mm256_madd_epi16(grad_y, grad_y));
+                acc_xy = _mm256_add_epi32(acc_xy, _mm256_madd_epi16(grad_x, grad_y));
+            }
+            const double xx        = (double)hsum_epi32x8_to_i64(acc_xx);
+            const double yy        = (double)hsum_epi32x8_to_i64(acc_yy);
+            const double xy        = (double)hsum_epi32x8_to_i64(acc_xy);
+            const double energy    = xx + yy + 1e-6;
+            const double coherence = sqrt((xx - yy) * (xx - yy) + 4.0 * xy * xy) / energy;
+
+            weighted_coh += coherence * energy;
+            weight_sum += energy;
+        }
+    }
+    if (weight_sum <= 0.0) {
+        return 1.0f;
+    }
+    return (float)(weighted_coh / weight_sum);
+}
+
+uint32_t svt_vmaf_count_detail_le_avx2(const uint8_t* src, const int16_t* blur, int width, int height, int src_stride,
+                                       int thresh) {
+    const __m256i ones       = _mm256_set1_epi16(1);
+    const __m256i limit      = _mm256_set1_epi16((int16_t)(thresh + 1));
+    __m256i       match_acc  = _mm256_setzero_si256();
+    uint32_t      tail_count = 0;
+
+    for (int y = 0; y < height; y++) {
+        const uint8_t* src_row  = src + (size_t)y * src_stride;
+        const int16_t* blur_row = blur + (size_t)y * width;
+        int            x        = 0;
+        for (; x + 16 <= width; x += 16) {
+            __m256i src_16  = _mm256_cvtepu8_epi16(_mm_loadu_si128((__m128i const*)(src_row + x)));
+            __m256i blur_16 = _mm256_loadu_si256((__m256i const*)(blur_row + x));
+            __m256i detail  = _mm256_abs_epi16(_mm256_sub_epi16(src_16, blur_16));
+            __m256i match   = _mm256_cmpgt_epi16(limit, detail);
+            match_acc       = _mm256_add_epi32(match_acc, _mm256_madd_epi16(match, ones));
+        }
+        for (; x < width; x++) {
+            int32_t detail = (int32_t)src_row[x] - (int32_t)blur_row[x];
+            if (detail < 0) {
+                detail = -detail;
+            }
+            if (detail <= thresh) {
+                tail_count++;
+            }
+        }
+    }
+    const int64_t neg_matches = hsum_epi32x8_to_i64(match_acc);
+    return (uint32_t)(-neg_matches) + tail_count;
+}
+
+static INLINE uint32_t vmaf_hpass_in(const uint8_t* src_row, int width, int i) {
+    if (i < -2) {
+        return 0;
+    }
+    if (i < 0) {
+        i = 0;
+    }
+    if (i >= width) {
+        i = width - 1;
+    }
+    return src_row[i];
+}
+
+static INLINE uint32_t vmaf_hpass_out_scalar(const uint8_t* src_row, int width, int j) {
+    const int c = j - 4;
+    return 1u * vmaf_hpass_in(src_row, width, c - 2) + 4u * vmaf_hpass_in(src_row, width, c - 1) +
+        6u * vmaf_hpass_in(src_row, width, c) + 4u * vmaf_hpass_in(src_row, width, c + 1) +
+        1u * vmaf_hpass_in(src_row, width, c + 2);
+}
+
+void svt_vmaf_hpass_row_avx2(const uint8_t* src_row, int width, uint32_t* h_row) {
+    const int     out_count = width + 4;
+    const __m256i weight_4  = _mm256_set1_epi32(4);
+    const __m256i weight_6  = _mm256_set1_epi32(6);
+
+    int j = 0;
+    for (; j < 6 && j < out_count; j++) {
+        h_row[j] = vmaf_hpass_out_scalar(src_row, width, j);
+    }
+    for (; j + 7 <= width + 1; j += 8) {
+        const uint8_t* base = src_row + (j - 6);
+        __m256i        tap0 = _mm256_cvtepu8_epi32(_mm_loadl_epi64((__m128i const*)(base + 0)));
+        __m256i        tap1 = _mm256_cvtepu8_epi32(_mm_loadl_epi64((__m128i const*)(base + 1)));
+        __m256i        tap2 = _mm256_cvtepu8_epi32(_mm_loadl_epi64((__m128i const*)(base + 2)));
+        __m256i        tap3 = _mm256_cvtepu8_epi32(_mm_loadl_epi64((__m128i const*)(base + 3)));
+        __m256i        tap4 = _mm256_cvtepu8_epi32(_mm_loadl_epi64((__m128i const*)(base + 4)));
+        __m256i        acc  = _mm256_add_epi32(tap0, tap4);
+        acc                 = _mm256_add_epi32(acc, _mm256_mullo_epi32(_mm256_add_epi32(tap1, tap3), weight_4));
+        acc                 = _mm256_add_epi32(acc, _mm256_mullo_epi32(tap2, weight_6));
+        _mm256_storeu_si256((__m256i*)(h_row + j), acc);
+    }
+    for (; j < out_count; j++) {
+        h_row[j] = vmaf_hpass_out_scalar(src_row, width, j);
+    }
+}
+#endif
 
 int32_t svt_estimate_noise_fp16_avx2(const uint8_t* src, uint16_t width, uint16_t height, uint16_t y_stride) {
     int64_t sum = 0;

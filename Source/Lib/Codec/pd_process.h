@@ -45,6 +45,10 @@ bool        svt_aom_is_pic_used_as_ref(unsigned hierarchical_levels, unsigned te
                                        unsigned referencing_scheme, bool is_overlay);
 bool        svt_aom_is_incomp_mg_frame(PictureParentControlSet* pcs);
 
+// Bitmask of DPB slots safe to STORE-lock (i.e. slots no pred-struct
+// branch refreshes as its sole refresh_frame_mask bit). See pd_process.c.
+uint8_t svt_aom_ref_mgmt_storeable_slots_mask(const SequenceControlSet* scs);
+
 typedef struct DpbEntry {
     uint64_t picture_number;
     uint64_t decode_order;
@@ -101,6 +105,12 @@ typedef struct PictureDecisionContext {
     uint8_t                  last_i_picture_sc_class2;
     uint8_t                  last_i_picture_sc_class3;
     uint8_t                  last_i_picture_sc_class4;
+#if TUNE_SIMPLIFY_SETTINGS
+    uint8_t last_i_picture_sc_class5;
+#endif
+#if OPT_LPD1_TX_SKIP_DECISION
+    bool last_i_picture_grayscale_like_input;
+#endif
     uint64_t                 last_long_base_pic;
     uint64_t                 key_poc;
     uint8_t                  tf_level;
@@ -134,6 +144,21 @@ typedef struct PictureDecisionContext {
     int32_t  sframe_hier_lvls;
     uint64_t sframe_last_arf;
     bool     next_arf_is_s;
-} PictureDecisionContext;
+    int64_t  current_input_poc;
 
+    // Ref-frame management bookkeeping (per pd_process thread):
+    //   pic_id_per_dpb_slot[i] : application pic_id held in DPB slot i (0 = none).
+    // The STOREd-slot bitmask is derived on demand via ref_mgmt_stored_mask().
+    uint32_t pic_id_per_dpb_slot[REF_FRAMES];
+#if ADD_ON_THE_FLY_MG && !OTF_MG_IMMEDIATELY
+    // Dynamic hierarchical_levels change support for LOW_DELAY prediction structure.
+    // When pcs->hierarchical_levels (set by resource_coordination) differs from the
+    // currently active level, the change is deferred until the next base picture
+    // (temporal_layer_index == 0) to avoid splitting a mini-GOP mid-flight.
+    uint8_t  ld_active_hierarchical_levels; // currently applied hierarchical level
+    uint8_t  ld_new_hierarchical_levels; // requested new hierarchical level
+    bool     ld_hierarchical_levels_change_pending; // true when a change is awaiting a base frame
+    uint64_t last_base_pic; // pic number of the previous base frame
+#endif
+} PictureDecisionContext;
 #endif // EbPictureDecision_h

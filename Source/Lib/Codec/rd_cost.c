@@ -92,11 +92,7 @@ static INLINE int32_t get_golomb_cost(int32_t abs_qc) {
 
 void svt_av1_txb_init_levels_c(const TranLow* const coeff, const int32_t width, const int32_t height,
                                uint8_t* const levels) {
-    const int32_t stride = width + TX_PAD_HOR;
-    uint8_t*      ls     = levels;
-
-    memset(levels - TX_PAD_TOP * stride, 0, sizeof(*levels) * TX_PAD_TOP * stride);
-    memset(levels + stride * height, 0, sizeof(*levels) * (TX_PAD_BOTTOM * stride + TX_PAD_END));
+    uint8_t* ls = levels;
 
     for (int32_t i = 0; i < height; i++) {
         for (int32_t j = 0; j < width; j++) {
@@ -191,12 +187,10 @@ static void update_eob_context(int eob, TxSize tx_size, TxClass tx_class, PlaneT
         break;
     }
 
-    const int eob_offset_bits = svt_aom_eob_offset_bits[eob_pt];
-    if (eob_offset_bits > 0) {
-        const int eob_ctx   = eob_pt - 3;
-        const int eob_shift = eob_offset_bits - 1;
-        const int bit       = (eob_extra & (1 << eob_shift)) ? 1 : 0;
-        update_cdf(ec_ctx->eob_extra_cdf[txs_ctx][plane][eob_ctx], bit, 2);
+    if (eob_pt > 2) {
+        const int cnt = eob_pt - 3;
+        const int bit = (eob_extra >> cnt) & 1;
+        update_cdf(ec_ctx->eob_extra_cdf[txs_ctx][plane][cnt], bit, 2);
     }
 }
 
@@ -207,15 +201,11 @@ int get_eob_cost(int eob, const LvMapEobCost* txb_eob_costs, const LvMapCoeffCos
     const int eob_multi_ctx = (tx_class == TX_CLASS_2D) ? 0 : 1;
     int       eob_cost      = txb_eob_costs->eob_cost[eob_multi_ctx][eob_pt - 1];
 
-    const int eob_offset_bits = svt_aom_eob_offset_bits[eob_pt];
-    if (eob_offset_bits > 0) {
-        const int eob_ctx   = eob_pt - 3;
-        const int eob_shift = eob_offset_bits - 1;
-        const int bit       = (eob_extra & (1 << eob_shift)) ? 1 : 0;
-        eob_cost += txb_costs->eob_extra_cost[eob_ctx][bit];
-        if (eob_offset_bits > 1) {
-            eob_cost += av1_cost_literal(eob_offset_bits - 1);
-        }
+    if (eob_pt > 2) {
+        const int cnt = eob_pt - 3;
+        const int bit = (eob_extra >> cnt) & 1;
+        eob_cost += txb_costs->eob_extra_cost[cnt][bit];
+        eob_cost += av1_cost_literal(cnt);
     }
     return eob_cost;
 }
@@ -371,18 +361,17 @@ uint64_t svt_av1_cost_coeffs_txb(ModeDecisionContext* ctx, uint8_t allow_update_
     //Note: there is a different version of this function in AOM that seems to be efficient as its name is:
     //warehouse_efficients_txb
 
-    const TxSize  txs_ctx  = (TxSize)((txsize_sqr_map[transform_size] + txsize_sqr_up_map[transform_size] + 1) >> 1);
+    const TxSize  txs_ctx  = get_txsize_entropy_ctx(transform_size);
     const TxClass tx_class = tx_type_to_class[transform_type];
     int32_t       cost;
     const int32_t bwl    = get_txb_bwl(transform_size);
     const int32_t width  = get_txb_wide(transform_size);
     const int32_t height = get_txb_high(transform_size);
 
-    const ScanOrder* const scan_order = get_scan_order(transform_size, transform_type);
-    const int16_t* const   scan       = scan_order->scan;
-    uint8_t                levels_buf[TX_PAD_2D];
-    uint8_t* const         levels = set_levels(levels_buf, width);
-    DECLARE_ALIGNED(16, int8_t, coeff_contexts[MAX_TX_SQUARE]);
+    const ScanOrder* const scan_order     = get_scan_order(transform_size, transform_type);
+    const int16_t* const   scan           = scan_order->scan;
+    uint8_t* const         levels         = set_levels(ctx->md_levels_buf, width, height);
+    int8_t* const          coeff_contexts = ctx->md_coeff_contexts;
     assert(txs_ctx < TX_SIZES);
     const LvMapCoeffCost* const coeff_costs = &ctx->md_rate_est_ctx->coeff_fac_bits[txs_ctx][plane_type];
 
@@ -443,12 +432,6 @@ uint64_t svt_av1_cost_coeffs_txb(ModeDecisionContext* ctx, uint8_t allow_update_
             {
                 if (c == eob - 1) {
                     assert(coeff_ctx < 4);
-#if CONFIG_ENTROPY_STATS
-                    ++td->counts
-                          ->coeff_base_eob_multi[cdf_idx][txsize_ctx][plane_type][coeff_ctx][AOMMIN(level, 3) - 1];
-                } else {
-                    ++td->counts->coeff_base_multi[cdf_idx][txsize_ctx][plane_type][coeff_ctx][AOMMIN(level, 3)];
-#endif
                 }
             }
 
@@ -465,16 +448,10 @@ uint64_t svt_av1_cost_coeffs_txb(ModeDecisionContext* ctx, uint8_t allow_update_
                     const int k = AOMMIN(base_range - idx, BR_CDF_SIZE - 1);
                     update_cdf(ec_ctx->coeff_br_cdf[AOMMIN(txs_ctx, TX_32X32)][plane_type][br_ctx], k, BR_CDF_SIZE);
                     for (int lps = 0; lps < BR_CDF_SIZE - 1; lps++) {
-#if CONFIG_ENTROPY_STATS
-                        ++td->counts->coeff_lps[AOMMIN(txsize_ctx, TX_32X32)][plane_type][lps][br_ctx][lps == k];
-#endif // CONFIG_ENTROPY_STATS
                         if (lps == k) {
                             break;
                         }
                     }
-#if CONFIG_ENTROPY_STATS
-                    ++td->counts->coeff_lps_multi[cdf_idx][AOMMIN(txsize_ctx, TX_32X32)][plane_type][br_ctx][k];
-#endif
                     if (k < BR_CDF_SIZE - 1) {
                         break;
                     }
@@ -1226,9 +1203,13 @@ uint64_t svt_aom_inter_fast_cost(PictureControlSet* pcs, ModeDecisionContext* ct
 
 /*
  */
+#if CLN_RENAME_PD0
+EbErrorType svt_aom_txb_estimate_coeff_bits_pd0(ModeDecisionContext* ctx, ModeDecisionCandidateBuffer* cand_bf,
+#else
 EbErrorType svt_aom_txb_estimate_coeff_bits_light_pd0(ModeDecisionContext* ctx, ModeDecisionCandidateBuffer* cand_bf,
-                                                      uint32_t txb_origin_index, EbPictureBufferDesc* coeff_buffer_sb,
-                                                      uint32_t y_eob, uint64_t* y_txb_coeff_bits, TxSize txsize) {
+#endif
+                                                uint32_t txb_origin_index, EbPictureBufferDesc* coeff_buffer_sb,
+                                                uint32_t y_eob, uint64_t* y_txb_coeff_bits, TxSize txsize) {
     if (y_eob) {
         *y_txb_coeff_bits = svt_av1_cost_coeffs_txb(
             ctx,
@@ -1350,8 +1331,12 @@ EbErrorType svt_aom_txb_estimate_coeff_bits(ModeDecisionContext* ctx, uint8_t al
     return return_error;
 }
 
+#if CLN_RENAME_PD0
+EbErrorType svt_aom_full_cost_pd0(ModeDecisionContext* ctx, ModeDecisionCandidateBuffer* cand_bf,
+#else
 EbErrorType svt_aom_full_cost_light_pd0(ModeDecisionContext* ctx, ModeDecisionCandidateBuffer* cand_bf,
-                                        uint64_t* y_distortion, uint64_t lambda, uint64_t* y_coeff_bits) {
+#endif
+                                  uint64_t* y_distortion, uint64_t lambda, uint64_t* y_coeff_bits) {
     EbErrorType return_error = EB_ErrorNone;
 
     uint64_t coeff_rate = (*y_coeff_bits + (uint64_t)ctx->md_rate_est_ctx->skip_fac_bits[0][0]);
@@ -1506,7 +1491,13 @@ void svt_aom_coding_loop_context_generation(PictureControlSet* pcs, ModeDecision
         ctx->skip_mode_ctx = av1_get_skip_mode_context(xd);
     }
     // Collect Neighbor ref cout
+#if OPT_APPROX_COEFF_RATE
+    // At approx_inter_rate>=2, estimate_ref_frames_num_bits is skipped so ref counts
+    // are not consumed in MD. EC has its own call to collect_neighbors_ref_counts_new.
+    if ((pcs->slice_type != I_SLICE || pcs->ppcs->frm_hdr.allow_intrabc) && ctx->approx_inter_rate < 2) {
+#else
     if (pcs->slice_type != I_SLICE || pcs->ppcs->frm_hdr.allow_intrabc) {
+#endif
         svt_aom_collect_neighbors_ref_counts_new(blk_ptr->av1xd);
     }
 
@@ -1802,9 +1793,9 @@ uint64_t svt_aom_tx_size_bits(PictureControlSet* pcs, uint8_t segment_id, MdRate
 future blocks. */
 uint64_t svt_aom_get_tx_size_bits(ModeDecisionCandidateBuffer* candidateBuffer, ModeDecisionContext* ctx,
                                   PictureControlSet* pcs, uint8_t tx_depth, bool block_has_coeff) {
-    NeighborArrayUnit* txfm_context_array      = ctx->txfm_context_array;
-    uint32_t           txfm_context_left_index = get_neighbor_array_unit_left_index(txfm_context_array, ctx->blk_org_y);
-    uint32_t           txfm_context_above_index = get_neighbor_array_unit_top_index(txfm_context_array, ctx->blk_org_x);
+    NeighborArrayUnit* txfm_context_array = ctx->txfm_context_array;
+    const uint8_t*     txfm_above_ptr     = svt_aom_na_top_ptr_pu(txfm_context_array, ctx->blk_org_x);
+    const uint8_t*     txfm_left_ptr      = svt_aom_na_left_ptr_pu(txfm_context_array, ctx->blk_org_y);
 
     TxMode       tx_mode = pcs->ppcs->frm_hdr.tx_mode;
     MacroBlockD* xd      = ctx->blk_ptr->av1xd;
@@ -1812,12 +1803,8 @@ uint64_t svt_aom_get_tx_size_bits(ModeDecisionCandidateBuffer* candidateBuffer, 
     const TxSize tx_size = tx_depth_to_tx_size[tx_depth][bsize];
     MbModeInfo*  mbmi    = xd->mi[0];
 
-    svt_memcpy(ctx->above_txfm_context,
-               &(txfm_context_array->top_array[txfm_context_above_index]),
-               (ctx->blk_geom->bwidth >> MI_SIZE_LOG2) * sizeof(TXFM_CONTEXT));
-    svt_memcpy(ctx->left_txfm_context,
-               &(txfm_context_array->left_array[txfm_context_left_index]),
-               (ctx->blk_geom->bheight >> MI_SIZE_LOG2) * sizeof(TXFM_CONTEXT));
+    svt_memcpy(ctx->above_txfm_context, txfm_above_ptr, (ctx->blk_geom->bwidth >> MI_SIZE_LOG2) * sizeof(TXFM_CONTEXT));
+    svt_memcpy(ctx->left_txfm_context, txfm_left_ptr, (ctx->blk_geom->bheight >> MI_SIZE_LOG2) * sizeof(TXFM_CONTEXT));
 
     xd->above_txfm_context      = ctx->above_txfm_context;
     xd->left_txfm_context       = ctx->left_txfm_context;
@@ -1847,12 +1834,10 @@ uint64_t svt_aom_get_tx_size_bits(ModeDecisionCandidateBuffer* candidateBuffer, 
 int64_t svt_aom_partition_rate_cost(PictureParentControlSet* ppcs, const BlockSize bsize, const int mi_row,
                                     const int mi_col, MdRateEstimationContext* md_rate_est_ctx, PartitionType p,
                                     const PartitionContextType left_ctx, const PartitionContextType above_ctx) {
-    assert(mi_size_wide_log2[bsize] == mi_size_high_log2[bsize]);
-    assert(bsize < BLOCK_SIZES_ALL);
-
     if (bsize < BLOCK_8X8) {
         return 0;
     }
+    assert(bsize < BLOCK_SIZES_ALL && mi_size_wide_log2[bsize] == mi_size_high_log2[bsize]);
 
     const int hbs      = mi_size_wide[bsize] >> 1;
     const int has_rows = (mi_row + hbs) < ppcs->av1_cm->mi_rows;

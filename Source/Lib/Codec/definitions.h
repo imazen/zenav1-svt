@@ -114,12 +114,14 @@ typedef struct MrpCtrls {
      */
     uint8_t referencing_scheme;
 
+#if !TUNE_SIMPLIFY_SETTINGS
     // SC signals
     uint8_t sc_base_ref_list0_count;
     uint8_t sc_base_ref_list1_count;
     uint8_t sc_non_base_ref_list0_count;
     uint8_t sc_non_base_ref_list1_count;
     // non-SC signals
+#endif
     uint8_t base_ref_list0_count;
     uint8_t base_ref_list1_count;
     uint8_t non_base_ref_list0_count;
@@ -153,6 +155,10 @@ typedef struct MrpCtrls {
     uint8_t ld_reduce_ref_buffs;
     // When flat rtc structure is used, this is the number of refs to use (from previous consecutive frames)
     uint8_t flat_max_refs;
+#if OPT_MRP_HME_L0_DETECT
+    // HME L0 MRP detector threshold. 0: off. Higher values are more conservative.
+    uint16_t early_hme_l0_prune_th;
+#endif
 
 } MrpCtrls;
 
@@ -333,9 +339,7 @@ enum {
 #define CFL_BUF_SQUARE (CFL_BUF_LINE * CFL_BUF_LINE)
 /***********************************    AV1_OBU     ********************************/
 #define INVALID_NEIGHBOR_DATA 0xFFu
-#define CONFIG_BITSTREAM_DEBUG 0
 #define CONFIG_COEFFICIENT_RANGE_CHECKING 0
-#define CONFIG_ENTROPY_STATS 0
 
 // Max superblock size
 #define MAX_SB_SIZE_LOG2 7
@@ -419,14 +423,17 @@ one more than the minimum. */
 // Pad 4 extra columns to remove horizontal availability check.
 #define TX_PAD_HOR_LOG2 2
 #define TX_PAD_HOR 4
-// Pad 6 extra rows (2 on top and 4 on bottom) to remove vertical availability
-// check.
-#define TX_PAD_TOP 2
+// Pad 4 extra rows on bottom to remove vertical availability check.
+// No top padding needed: context functions only read right/below neighbors.
+#define TX_PAD_TOP 0
 #define TX_PAD_BOTTOM 4
 #define TX_PAD_VER (TX_PAD_TOP + TX_PAD_BOTTOM)
 // Pad 16 extra bytes to avoid reading overflow in SIMD optimization.
 #define TX_PAD_END 16
 #define TX_PAD_2D ((MAX_TX_SIZE + TX_PAD_HOR) * (MAX_TX_SIZE + TX_PAD_VER) + TX_PAD_END)
+// Offset where the guaranteed-zero tail begins in levels_buf.
+// Data is placed so it ends at this offset; the tail serves as bottom padding.
+#define LEVELS_TAIL_OFFSET ((MAX_TX_SIZE + TX_PAD_HOR) * MAX_TX_SIZE)
 #define DIST_PRECISION_BITS 4
 
 #define PROFILE_BITS 3
@@ -509,6 +516,14 @@ typedef int16_t InterpKernel[SUBPEL_TAPS];
 #endif
 #endif
 
+#ifndef EB_ASSUME
+#if HAVE_BUILTIN_ASSUME
+#define EB_ASSUME(x) __builtin_assume(x)
+#else
+#define EB_ASSUME(x) ((void)0)
+#endif
+#endif
+
 #if defined(__clang__) && defined(__has_warning)
 #if __has_feature(cxx_attributes) && __has_warning("-Wimplicit-fallthrough")
 #define AOM_FALLTHROUGH_INTENDED [[clang::fallthrough]] // NOLINT
@@ -573,6 +588,76 @@ static __inline void mem_put_le32(void* vmem, MEM_VALUE_T val) {
     mem[1] = (MAU_T)((val >> 8) & 0xff);
     mem[2] = (MAU_T)((val >> 16) & 0xff);
     mem[3] = (MAU_T)((val >> 24) & 0xff);
+}
+
+// bitops.h
+// These versions of get_msb() are only valid when n != 0 because all
+// of the optimized versions are undefined when n == 0:
+// https://gcc.gnu.org/onlinedocs/gcc/Other-Builtins.html
+
+#define svt_log2f_safe(x) get_msb((x) | 1)
+#define svt_log2f get_msb
+
+// use GNU builtins where available.
+#if defined(__GNUC__) && ((__GNUC__ == 3 && __GNUC_MINOR__ >= 4) || __GNUC__ >= 4)
+static INLINE int32_t get_msb(uint32_t n) {
+    assert(n != 0);
+    return 31 - __builtin_clz(n);
+}
+
+#define svt_ctz(x) __builtin_ctz(x)
+#define svt_ctzll(x) __builtin_ctzll(x)
+
+#elif defined(_MSC_VER)
+#include <intrin.h>
+
+static INLINE int32_t get_msb(uint32_t n) {
+    unsigned long first_set_bit;
+    assert(n != 0);
+    _BitScanReverse(&first_set_bit, n);
+    return first_set_bit;
+}
+
+static inline int svt_ctz(unsigned long x) {
+    unsigned long k;
+    _BitScanForward(&k, x);
+    return k;
+}
+
+static inline int svt_ctzll(unsigned __int64 x) {
+    unsigned long k;
+    _BitScanForward64(&k, x);
+    return k;
+}
+
+#else
+// Returns (int32_t)floor(log2(n)). n must be > 0.
+/*static*/ INLINE int32_t get_msb(uint32_t n) {
+    int32_t  log   = 0;
+    uint32_t value = n;
+    int32_t  i;
+
+    assert(n != 0);
+
+    for (i = 4; i >= 0; --i) {
+        const int32_t  shift = (1 << i);
+        const uint32_t x     = value >> shift;
+        if (x != 0) {
+            value = x;
+            log += shift;
+        }
+    }
+    return log;
+}
+#endif
+
+// Count of set bits in x. Portable, branchless, ~12 ops; not on any hot
+// path so the C version is fine and avoids compiler-specific intrinsics.
+static INLINE int svt_numbits(unsigned int x) {
+    x = x - ((x >> 1) & 0x55555555u);
+    x = (x & 0x33333333u) + ((x >> 2) & 0x33333333u);
+    x = (x + (x >> 4)) & 0x0F0F0F0Fu;
+    return (int)((x * 0x01010101u) >> 24);
 }
 
 /* clang-format on */
@@ -663,15 +748,37 @@ typedef enum PdPass {
 } PdPass;
 
 typedef enum ATTRIBUTE_PACKED {
+#if !CLN_PD0
     REGULAR_PD0 =
         -1, // The regular PD0 path; negative so that LPD1 can start at 0 (easy for indexing arrays in lpd0_ctrls)
-    LPD0_LVL_0     = 0,
-    LPD0_LVL_1     = 1,
-    LPD0_LVL_2     = 2,
-    LPD0_LVL_3     = 3,
-    LPD0_LVL_4     = 4,
+#endif
+#if CLN_RENAME_PD0
+    PD0_LVL_0 = 0,
+    PD0_LVL_1 = 1,
+    PD0_LVL_2 = 2,
+    PD0_LVL_3 = 3,
+    PD0_LVL_4 = 4,
+#else
+    LPD0_LVL_0 = 0,
+    LPD0_LVL_1 = 1,
+    LPD0_LVL_2 = 2,
+    LPD0_LVL_3 = 3,
+    LPD0_LVL_4 = 4,
+#endif
+#if CLN_PD0
+#if CLN_RENAME_PD0
+    PD0_LVL_5 = 5,
+    PD0_LVL_6 = 6, // Lightest PD0 path, doesn't perform TX
+    PD0_LEVELS // Number of PD0 paths
+#else
+    LPD0_LVL_5     = 5,
+    VERY_LIGHT_PD0 = 6, // Lightest PD0 path, doesn't perform TX
+    LPD0_LEVELS // Number of light-PD0 paths
+#endif
+#else
     VERY_LIGHT_PD0 = 5, // Lightest PD0 path, doesn't perform TX
     LPD0_LEVELS // Number of light-PD0 paths (regular PD0 isn't a light-PD0 path)
+#endif
 } Pd0Level;
 
 typedef enum ATTRIBUTE_PACKED {
@@ -682,7 +789,12 @@ typedef enum ATTRIBUTE_PACKED {
     LPD1_LVL_2 = 2, // Light PD1 path, having more shortcuts than previous LPD1 level
     LPD1_LVL_3 = 3, // Light PD1 path, having more shortcuts than previous LPD1 level
     LPD1_LVL_4 = 4, // Light PD1 path, having more shortcuts than previous LPD1 level
+#if OPT_LPD1
+    LPD1_LVL_5 = 5, // Light PD1 path, having more shortcuts than previous LPD1 level
+    LPD1_LVL_6 = 6, // Light-PD1 path, with most aggressive feature levels
+#else
     LPD1_LVL_5 = 5, // Light-PD1 path, with most aggressive feature levels
+#endif
     LPD1_LEVELS // Number of light-PD1 paths (regular PD1 isn't a light-PD1 path)
 } Pd1Level;
 
@@ -765,8 +877,12 @@ enum {
 enum {
     SUBPEL_TREE        = 0,
     SUBPEL_TREE_PRUNED = 1, // Prunes 1/2-pel searches
-    //SUBPEL_TREE_PRUNED_MORE = 2,      // Not supported - (from libaom: Prunes 1/2-pel searches more aggressively)
-    //SUBPEL_TREE_PRUNED_EVENMORE = 3,  // Not supported - (from libaom: Prunes 1/2- and 1/4-pel searches)
+#if OPT_LPD1
+    SUBPEL_FIXED_STAGE_SEARCH = 2,
+#else
+//SUBPEL_TREE_PRUNED_MORE = 2,      // Not supported - (from libaom: Prunes 1/2-pel searches more aggressively)
+//SUBPEL_TREE_PRUNED_EVENMORE = 3,  // Not supported - (from libaom: Prunes 1/2- and 1/4-pel searches)
+#endif
 } UENUM1BYTE(SUBPEL_SEARCH_METHODS);
 
 enum { EIGHTH_PEL, QUARTER_PEL, HALF_PEL, FULL_PEL } UENUM1BYTE(SUBPEL_FORCE_STOP);
@@ -1780,8 +1896,13 @@ typedef enum Tune {
     TUNE_PSNR = 1, // Average of (PSNR, SSIM, VMAF)
     TUNE_SSIM = 2, // SSIM-optimized
     TUNE_IQ   = 3, // Image Quality
+#if FTR_TUNE_VMAF
+    TUNE_MS_SSIM = 4,  // MS_SSIM and SSIMULACRA2 optimized
+    TUNE_VMAF    = 5   // VMAF preprocessing (unsharp filter on luma)
+#else
     TUNE_MS_SSIM = 4 // MS_SSIM and SSIMULACRA2 optimized
 
+#endif
 } Tune;
 
 /*
@@ -1944,6 +2065,7 @@ void(*error_handler)(
 
 //***Prediction Structure***
 #define MAX_TEMPORAL_LAYERS                         6
+#define MAX_MINIGOP_SIZE                            (1 << (MAX_TEMPORAL_LAYERS - 1))
 #define MAX_NUM_OF_REF_PIC_LIST                     2
 #define MAX_REF_IDX                                 4
 #define MAX_ELAPSED_IDR_COUNT                       1024

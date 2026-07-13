@@ -16,10 +16,10 @@ if("${CMAKE_CURRENT_SOURCE_DIR}" STREQUAL "${CMAKE_CURRENT_BINARY_DIR}")
                     "Please use the Build folder or create your own.")
 endif()
 
-project(svt-av1 VERSION 4.1.0
+project(svt-av1 VERSION 4.2.0
     LANGUAGES C CXX)
 
-set(VERSION_TAG "")
+set(VERSION_TAG "rc")
 
 set(CMAKE_C_VISIBILITY_PRESET hidden)
 # Default build type to release if the generator does not has its own set of build types
@@ -229,6 +229,14 @@ option(BUILD_SHARED_LIBS "Build shared libraries (DLLs)." ON)
 message(STATUS "BUILD_SHARED_LIBS: ${BUILD_SHARED_LIBS}")
 
 option(BUILD_TESTING "Build SvtAv1UnitTests, SvtAv1ApiTests, and SvtAv1E2ETests unit tests")
+if(BUILD_TESTING)
+    # Unit tests rely on C reference functions (they call
+    # svt_aom_setup_*_rtcd_internal(0) to populate the C path), so the
+    # guaranteed-SIMD C-stripping/devirtualization must be disabled here.
+    # Applied globally and before add_subdirectory(Source/Lib) so it reaches
+    # the SvtAv1Enc library compile that the tests link against.
+    add_definitions(-DSVT_AV1_UNIT_TEST_BUILD=1)
+endif()
 option(COVERAGE "Generate coverage report")
 if(NOT MSVC)
     option(SVT_AV1_PGO "Enable profile guided optimization. Creates the RunPGO and CompilePGO targets")
@@ -238,8 +246,10 @@ if(NOT MSVC)
     mark_as_advanced(SVT_INTERNAL_PGO_GENERATE SVT_INTERNAL_PGO_USE)
     set(SVT_AV1_PGO_DIR "${CMAKE_BINARY_DIR}" CACHE PATH "Path to the directory passed to -fprofile-dir for use with profile guided optimization")
     set(SVT_AV1_PGO_CUSTOM_VIDEOS "" CACHE STRING "Semi-colon separated list of directories with y4m videos to run PGO on instead of objective-1-fast")
+    option(SVT_AV1_NVTX "Compile NVTX3 ranges + thread names for NVIDIA Nsight Systems profiling (CPU sampling, PMU events, OS runtime, thread states)" OFF)
 else()
     set(SVT_AV1_PGO OFF)
+    set(SVT_AV1_NVTX OFF)
 endif()
 
 if(MSVC AND SVT_AV1_PGO)
@@ -573,6 +583,25 @@ else()
         APPEND
         PROPERTY COMPILE_DEFINITIONS
             HAVE_BUILTIN_EXPECT=0)
+endif()
+
+# try to see if __builtin_assume is available (Clang, GCC 13+)
+check_c_source_compiles("
+    int main() {
+        int x = 42;
+        __builtin_assume(x > 0);
+        return 0;
+    }" HAVE_BUILTIN_ASSUME)
+if(HAVE_BUILTIN_ASSUME)
+    set_property(DIRECTORY .
+        APPEND
+        PROPERTY COMPILE_DEFINITIONS
+            HAVE_BUILTIN_ASSUME=1)
+else()
+    set_property(DIRECTORY .
+        APPEND
+        PROPERTY COMPILE_DEFINITIONS
+            HAVE_BUILTIN_ASSUME=0)
 endif()
 
 include_directories(.)

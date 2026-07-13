@@ -52,9 +52,13 @@ EbErrorType svt_aom_txb_estimate_coeff_bits(ModeDecisionContext* ctx, uint8_t al
                                             uint64_t* cr_txb_coeff_bits, TxSize txsize, TxSize txsize_uv,
                                             TxType tx_type, TxType tx_type_uv, COMPONENT_TYPE component_type);
 
+#if CLN_RENAME_PD0
+EbErrorType svt_aom_txb_estimate_coeff_bits_pd0(ModeDecisionContext* ctx, ModeDecisionCandidateBuffer* cand_bf,
+#else
 EbErrorType svt_aom_txb_estimate_coeff_bits_light_pd0(ModeDecisionContext* ctx, ModeDecisionCandidateBuffer* cand_bf,
-                                                      uint32_t txb_origin_index, EbPictureBufferDesc* coeff_buffer_sb,
-                                                      uint32_t y_eob, uint64_t* y_txb_coeff_bits, TxSize txsize);
+#endif
+                                                uint32_t txb_origin_index, EbPictureBufferDesc* coeff_buffer_sb,
+                                                uint32_t y_eob, uint64_t* y_txb_coeff_bits, TxSize txsize);
 
 //**********************************************************************************************************//
 // onyxc_int.h
@@ -91,24 +95,14 @@ static INLINE void set_dc_sign(int32_t* cul_level, int32_t dc_val) {
     }
 }
 
-extern const uint8_t eob_to_pos_small[33];
-extern const int16_t eob_group_start[12];
-extern const int16_t svt_aom_eob_offset_bits[12];
-extern const uint8_t eob_to_pos_large[17];
-
 static INLINE int get_eob_pos_token(const int eob, int* const extra) {
-    int t;
-
-    if (eob < 33) {
-        t = eob_to_pos_small[eob];
-    } else {
-        const int e = MIN((eob - 1) >> 5, 16);
-        t           = eob_to_pos_large[e];
+    if (eob < 3) {
+        *extra = 0;
+        return eob;
     }
-
-    *extra = eob - eob_group_start[t];
-
-    return t;
+    int t  = get_msb(eob - 1);
+    *extra = eob - 1 - (1 << t);
+    return t + 2;
 }
 
 //**********************************************************************************************************//

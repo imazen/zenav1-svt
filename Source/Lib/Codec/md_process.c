@@ -96,8 +96,12 @@ static void mode_decision_context_dctor(EbPtr p) {
     EB_FREE_ARRAY(obj->mds);
     EB_FREE_ARRAY(obj->pc_tree);
     EB_FREE_ARRAY(obj->tested_blk);
+    EB_FREE_ARRAY(obj->uv_cand_buff_indices);
     obj->blocks_to_alloc = 0;
     EB_FREE_ARRAY(obj->md_blk_arr_nsq);
+#if OPT_LPD1_GLOBALMV_BYPASS
+    EB_FREE_ARRAY(obj->pd0_mds0_best_cost);
+#endif
     if (obj->rate_est_table) {
         EB_FREE_ARRAY(obj->rate_est_table);
     }
@@ -227,6 +231,10 @@ EbErrorType svt_aom_mode_decision_context_ctor(ModeDecisionContext* ctx, Sequenc
     ctx->dctor  = mode_decision_context_dctor;
     ctx->hbd_md = enable_hbd_mode_decision;
 
+    // Zero the tail of md_levels_buf once; it serves as permanent bottom-padding
+    // for set_levels() and is never overwritten by svt_av1_txb_init_levels().
+    memset(ctx->md_levels_buf + LEVELS_TAIL_OFFSET, 0, TX_PAD_2D - LEVELS_TAIL_OFFSET);
+
     // Input/Output System Resource Manager FIFOs
     ctx->mode_decision_configuration_input_fifo_ptr = mode_decision_configuration_input_fifo_ptr;
     ctx->mode_decision_output_fifo_ptr              = mode_decision_output_fifo_ptr;
@@ -240,9 +248,29 @@ EbErrorType svt_aom_mode_decision_context_ctor(ModeDecisionContext* ctx, Sequenc
         uint8_t nic_level  = svt_aom_get_nic_level_allintra(enc_mode);
         stage1_scaling_num = MD_STAGE_NICS_SCAL_NUM[svt_aom_set_nic_controls(NULL, nic_level)][MD_STAGE_1];
     } else if (rtc_tune) {
-        uint8_t nic_level  = svt_aom_get_nic_level_rtc(enc_mode, scs->use_flat_ipp);
+#if TUNE_RTC
+#if REMOVE_USE_FLAT_IPP
+        // When using RTC, hierarchical_levels 0 corresponds to a flat pred structure
+        uint8_t nic_level = svt_aom_get_nic_level_rtc(enc_mode, scs->static_config.hierarchical_levels == 0);
+#else
+        uint8_t nic_level = svt_aom_get_nic_level_rtc(enc_mode, scs->use_flat_ipp);
+#endif
+#else
+#if TUNE_SIMPLIFY_SETTINGS
+        uint8_t nic_level = svt_aom_get_nic_level_rtc(enc_mode);
+#else
+        uint8_t nic_level = svt_aom_get_nic_level_rtc(enc_mode, scs->use_flat_ipp);
+#endif
+#endif
         stage1_scaling_num = MD_STAGE_NICS_SCAL_NUM[svt_aom_set_nic_controls(NULL, nic_level)][MD_STAGE_1];
     } else {
+#if TUNE_SIMPLIFY_SETTINGS
+        for (uint8_t is_base = 0; is_base < 2; is_base++) {
+            uint8_t nic_level         = svt_aom_get_nic_level_default(enc_mode, is_base);
+            uint8_t nic_scaling_level = svt_aom_set_nic_controls(NULL, nic_level);
+            min_nic_scaling_level     = MIN(min_nic_scaling_level, nic_scaling_level);
+        }
+#else
         for (uint8_t sc_class1 = 0; sc_class1 < 2; sc_class1++) {
             for (uint8_t is_base = 0; is_base < 2; is_base++) {
                 uint8_t nic_level         = svt_aom_get_nic_level_default(enc_mode, is_base, sc_class1);
@@ -250,6 +278,7 @@ EbErrorType svt_aom_mode_decision_context_ctor(ModeDecisionContext* ctx, Sequenc
                 min_nic_scaling_level     = MIN(min_nic_scaling_level, nic_scaling_level);
             }
         }
+#endif
 
         stage1_scaling_num = MD_STAGE_NICS_SCAL_NUM[min_nic_scaling_level][MD_STAGE_1];
     }
@@ -282,6 +311,18 @@ EbErrorType svt_aom_mode_decision_context_ctor(ModeDecisionContext* ctx, Sequenc
         is_chroma_mode_0 = svt_aom_set_chroma_controls(NULL, svt_aom_get_chroma_level_allintra(enc_mode)) ==
             CHROMA_MODE_0;
     } else if (scs->static_config.rtc) {
+#if TUNE_SIMPLIFY_SETTINGS
+#if REMOVE_USE_FLAT_IPP
+        is_chroma_mode_0 = svt_aom_set_chroma_controls(
+                               NULL,
+                               svt_aom_get_chroma_level_rtc(
+                                   enc_mode, scs->static_config.rtc && scs->static_config.hierarchical_levels == 0)) ==
+            CHROMA_MODE_0;
+#else
+        is_chroma_mode_0 = svt_aom_set_chroma_controls(
+                               NULL, svt_aom_get_chroma_level_rtc(enc_mode, scs->use_flat_ipp)) == CHROMA_MODE_0;
+#endif
+#else
         for (uint8_t is_i_slice = 0; is_i_slice < 2; is_i_slice++) {
             is_chroma_mode_0 = svt_aom_set_chroma_controls(NULL, svt_aom_get_chroma_level_rtc(enc_mode, is_i_slice)) ==
                 CHROMA_MODE_0;
@@ -289,6 +330,7 @@ EbErrorType svt_aom_mode_decision_context_ctor(ModeDecisionContext* ctx, Sequenc
                 break;
             }
         }
+#endif
     } else {
         for (uint8_t is_i_slice = 0; is_i_slice < 2; is_i_slice++) {
             is_chroma_mode_0 = svt_aom_set_chroma_controls(
@@ -302,6 +344,7 @@ EbErrorType svt_aom_mode_decision_context_ctor(ModeDecisionContext* ctx, Sequenc
     max_nics += CAND_CLASS_TOTAL; //need one extra temp buffer for each fast loop call
     ctx->max_nics    = max_nics;
     ctx->max_nics_uv = max_nics + ind_uv_cands;
+    EB_MALLOC_ARRAY(ctx->uv_cand_buff_indices, ctx->max_nics_uv);
     // Cfl scratch memory
     if (ctx->hbd_md > EB_8_BIT_MD) {
         EB_MALLOC_ALIGNED(ctx->cfl_temp_luma_recon16bit, sizeof(uint16_t) * sb_size * sb_size);
@@ -314,6 +357,14 @@ EbErrorType svt_aom_mode_decision_context_ctor(ModeDecisionContext* ctx, Sequenc
     if (allintra) {
         use_update_cdf = svt_aom_get_update_cdf_level_allintra(enc_mode);
     } else if (rtc_tune) {
+#if TUNE_SIMPLIFY_SETTINGS
+        for (uint8_t is_islice = 0; is_islice < 2; is_islice++) {
+            if (use_update_cdf) {
+                break;
+            }
+            use_update_cdf |= svt_aom_get_update_cdf_level_rtc(enc_mode, is_islice);
+        }
+#else
         for (uint8_t sc_class1 = 0; sc_class1 < 2; sc_class1++) {
             for (uint8_t is_islice = 0; is_islice < 2; is_islice++) {
                 for (uint8_t is_base = 0; is_base < 2; is_base++) {
@@ -324,7 +375,18 @@ EbErrorType svt_aom_mode_decision_context_ctor(ModeDecisionContext* ctx, Sequenc
                 }
             }
         }
+#endif
     } else {
+#if TUNE_SIMPLIFY_SETTINGS
+        for (uint8_t is_islice = 0; is_islice < 2; is_islice++) {
+            for (uint8_t is_base = 0; is_base < 2; is_base++) {
+                if (use_update_cdf) {
+                    break;
+                }
+                use_update_cdf |= svt_aom_get_update_cdf_level_default(enc_mode, is_islice, is_base);
+            }
+        }
+#else
         for (uint8_t sc_class1 = 0; sc_class1 < 2; sc_class1++) {
             for (uint8_t is_islice = 0; is_islice < 2; is_islice++) {
                 for (uint8_t is_base = 0; is_base < 2; is_base++) {
@@ -335,6 +397,7 @@ EbErrorType svt_aom_mode_decision_context_ctor(ModeDecisionContext* ctx, Sequenc
                 }
             }
         }
+#endif
     }
     if (use_update_cdf) {
         EB_CALLOC_ARRAY(ctx->rate_est_table, 1);
@@ -373,7 +436,11 @@ EbErrorType svt_aom_mode_decision_context_ctor(ModeDecisionContext* ctx, Sequenc
             if (obmc_allowed) {
                 break;
             }
+#if TUNE_SHIFT_PRESETS_RTC && !TUNE_RTC
+            obmc_allowed |= svt_aom_get_obmc_level(enc_mode, qp, seq_qp_mod, rtc_tune);
+#else
             obmc_allowed |= svt_aom_get_obmc_level(enc_mode, qp, seq_qp_mod);
+#endif
         }
     }
     if (obmc_allowed) {
@@ -384,8 +451,15 @@ EbErrorType svt_aom_mode_decision_context_ctor(ModeDecisionContext* ctx, Sequenc
         EB_MALLOC(ctx->mask_buf, sb_size * sb_size * sizeof(ctx->mask_buf[0]));
     }
     EB_MALLOC_ARRAY(ctx->md_blk_arr_nsq, block_max_count_sb);
+#if OPT_LPD1_GLOBALMV_BYPASS
+    EB_MALLOC_ARRAY(ctx->pd0_mds0_best_cost, block_max_count_sb);
+#endif
     // Fast Candidate Array
+#if OPT_MAX_CAN_COUNT_RTC
+    uint16_t max_can_count = svt_aom_get_max_can_count(enc_mode, rtc_tune) + ind_uv_cands;
+#else
     uint16_t max_can_count = svt_aom_get_max_can_count(enc_mode) + ind_uv_cands;
+#endif
     EB_MALLOC_ARRAY(ctx->fast_cand_array, max_can_count);
 
     for (cand_index = 0; cand_index < max_can_count; ++cand_index) {
@@ -479,9 +553,13 @@ EbErrorType svt_aom_mode_decision_context_ctor(ModeDecisionContext* ctx, Sequenc
     EB_MALLOC_ARRAY(ctx->md_blk_arr_nsq[0].av1xd, block_max_count_sb);
 
     // Alloc mds and pc_tree, which are used to track tested blocks in MD
-    bool    disallow_4x4     = allintra ? svt_aom_get_disallow_4x4_allintra(enc_mode)
-               : rtc_tune               ? svt_aom_get_disallow_4x4_rtc(enc_mode)
-                                        : svt_aom_get_disallow_4x4_default(enc_mode);
+    bool disallow_4x4 = allintra ? svt_aom_get_disallow_4x4_allintra(enc_mode)
+#if TUNE_SIMPLIFY_SETTINGS
+        : rtc_tune ? svt_aom_get_disallow_4x4_rtc()
+#else
+        : rtc_tune ? svt_aom_get_disallow_4x4_rtc(enc_mode)
+#endif
+                   : svt_aom_get_disallow_4x4_default(enc_mode);
     bool    disallow_8x8     = allintra ? svt_aom_get_disallow_8x8_allintra()
                : rtc_tune ? svt_aom_get_disallow_8x8_rtc(enc_mode, scs->max_input_luma_width, scs->max_input_luma_height)
                           : svt_aom_get_disallow_8x8_default();
@@ -701,8 +779,10 @@ static void av1_lambda_assign_md(PictureControlSet* pcs, ModeDecisionContext* ct
 
 void svt_aom_reset_mode_decision(SequenceControlSet* scs, ModeDecisionContext* ctx, PictureControlSet* pcs,
                                  uint16_t tile_group_idx, uint32_t segment_index) {
+#if !OPT_LPD1_FAST_SKIP
     const bool rtc_tune = scs->static_config.rtc;
-    ctx->hbd_md         = pcs->hbd_md;
+#endif
+    ctx->hbd_md = pcs->hbd_md;
     // Reset MD rate Estimation table to initial values by copying from md_rate_est_ctx
     ctx->md_rate_est_ctx = pcs->md_rate_est_ctx;
     // Reset CABAC Contexts
@@ -723,12 +803,13 @@ void svt_aom_reset_mode_decision(SequenceControlSet* scs, ModeDecisionContext* c
     }
     //each segment enherits the bypass encdec from the picture level
     ctx->bypass_encdec = pcs->pic_bypass_encdec;
-
+#if !OPT_LPD1_FAST_SKIP
     if (!rtc_tune && (pcs->enc_mode <= ENC_M11 || pcs->temporal_layer_index != 0)) {
         ctx->rtc_use_N4_dct_dct_shortcut = 1;
     } else {
         ctx->rtc_use_N4_dct_dct_shortcut = 0;
     }
+#endif
     return;
 }
 

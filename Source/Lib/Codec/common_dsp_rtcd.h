@@ -43,6 +43,15 @@ EbCpuFlags svt_aom_get_cpu_flags_to_use();
 #endif
 void svt_aom_setup_common_rtcd_internal(EbCpuFlags flags);
 
+// Returns 1 if the library was compiled with SVT_AV1_UNIT_TEST_BUILD defined,
+// 0 otherwise. The unit-test harness calls this at startup to verify it is
+// linked against a test-mode library. A test-mode library keeps the C
+// reference functions (CONFIG_ARM_NEON_IS_GUARANTEED stays 0), which the tests
+// require because they call svt_aom_setup_*_rtcd_internal(0). Linking a
+// deployment library here would silently strip the C path and leave the RTCD
+// table unassigned. See EbConfigMacros.h.
+int svt_aom_library_built_for_unit_tests(void);
+
 void svt_av1_copy_wxh_8bit_c(uint8_t *src, uint32_t src_stride, uint8_t *dst, uint32_t dst_stride, uint32_t height, uint32_t width);
 RTCD_EXTERN void(*svt_av1_copy_wxh_8bit)(uint8_t *src, uint32_t src_stride, uint8_t *dst, uint32_t dst_stride, uint32_t height, uint32_t width);
 void svt_av1_copy_wxh_16bit_c(uint16_t *src, uint32_t src_stride, uint16_t *dst, uint32_t dst_stride, uint32_t height, uint32_t width);
@@ -141,7 +150,7 @@ RTCD_EXTERN void(*svt_residual_kernel8bit)(uint8_t *input, uint32_t input_stride
 RTCD_EXTERN uint64_t(*compute8x8_satd_u8)(uint8_t *diff, uint64_t *dc_value, uint32_t src_stride);
 RTCD_EXTERN int32_t(*sum_residual8bit)(int16_t *in_ptr, uint32_t size, uint32_t stride_in);
 RTCD_EXTERN void(*svt_full_distortion_kernel_cbf_zero32_bits)(int32_t *coeff, uint32_t coeff_stride, uint64_t distortion_result[DIST_CALC_TOTAL], uint32_t area_width, uint32_t area_height);
-RTCD_EXTERN void(*svt_full_distortion_kernel32_bits)(int32_t *coeff, uint32_t coeff_stride, int32_t *recon_coeff, uint32_t recon_coeff_stride, uint64_t distortion_result[DIST_CALC_TOTAL], uint32_t area_width, uint32_t area_height);
+RTCD_EXTERN void(*svt_full_distortion_kernel32_bits)(int32_t *coeff, int32_t *recon_coeff, uint32_t stride, uint32_t area_width, uint32_t area_height, uint64_t distortion_result[DIST_CALC_TOTAL]);
 uint64_t svt_spatial_full_distortion_kernel_c(uint8_t *input, uint32_t input_offset, uint32_t input_stride, uint8_t *recon, int32_t recon_offset, uint32_t recon_stride, uint32_t area_width, uint32_t area_height);
 RTCD_EXTERN uint64_t(*svt_spatial_full_distortion_kernel)(uint8_t *input, uint32_t input_offset, uint32_t input_stride, uint8_t *recon, int32_t recon_offset, uint32_t recon_stride, uint32_t area_width, uint32_t area_height);
 uint64_t svt_full_distortion_kernel16_bits_c(uint8_t* input, uint32_t input_offset, uint32_t input_stride, uint8_t* recon, int32_t recon_offset, uint32_t recon_stride, uint32_t area_width, uint32_t area_height);
@@ -1016,6 +1025,16 @@ void svt_cdef_filter_block_c(uint8_t *dst8, uint16_t *dst16, int32_t dstride, co
 RTCD_EXTERN void(*svt_cdef_filter_block)(uint8_t *dst8, uint16_t *dst16, int32_t dstride, const uint16_t *in, int32_t pri_strength, int32_t sec_strength, int32_t dir, int32_t pri_damping, int32_t sec_damping, int32_t bsize, int32_t coeff_shift, uint8_t subsampling_factor);
 RTCD_EXTERN void(*svt_cdef_filter_block_8xn_16)(const uint16_t *const in, const int32_t pri_strength, const int32_t sec_strength, const int32_t dir, int32_t pri_damping, int32_t sec_damping, const int32_t coeff_shift, uint16_t *const dst, const int32_t dstride, uint8_t height, uint8_t subsampling_factor);
 
+// Native 8-bit interior CDEF (ARM 8-bit path; C fallback elsewhere).
+void svt_cdef_filter_block_8bit_c(uint8_t *dst, int32_t dstride, const uint8_t *in, int32_t pri_strength, int32_t sec_strength, int32_t dir, int32_t damping, int32_t bsize, int32_t coeff_shift, uint8_t subsampling_factor);
+RTCD_EXTERN void(*svt_cdef_filter_block_8bit)(uint8_t *dst, int32_t dstride, const uint8_t *in, int32_t pri_strength, int32_t sec_strength, int32_t dir, int32_t damping, int32_t bsize, int32_t coeff_shift, uint8_t subsampling_factor);
+void svt_cdef_filter_block_8bit_bounded_c(uint8_t *dst, int32_t dstride, const uint8_t *in, int32_t pri_strength, int32_t sec_strength, int32_t dir, int32_t damping, int32_t bsize, int32_t coeff_shift, uint8_t subsampling_factor, int edge_top, int edge_left, int edge_bottom, int edge_right);
+RTCD_EXTERN void(*svt_cdef_filter_block_8bit_bounded)(uint8_t *dst, int32_t dstride, const uint8_t *in, int32_t pri_strength, int32_t sec_strength, int32_t dir, int32_t damping, int32_t bsize, int32_t coeff_shift, uint8_t subsampling_factor, int edge_top, int edge_left, int edge_bottom, int edge_right);
+uint8_t svt_aom_cdef_find_dir_8bit_c(const uint8_t *img, int32_t stride, int32_t *var, int32_t coeff_shift);
+RTCD_EXTERN uint8_t (*svt_aom_cdef_find_dir_8bit)(const uint8_t *img, int32_t stride, int32_t *var, int32_t coeff_shift);
+void svt_aom_cdef_find_dir_dual_8bit_c(const uint8_t *img1, const uint8_t *img2, int stride, int32_t *var1, int32_t *var2, int32_t coeff_shift, uint8_t *out1, uint8_t *out2);
+RTCD_EXTERN void (*svt_aom_cdef_find_dir_dual_8bit)(const uint8_t *img1, const uint8_t *img2, int stride, int32_t *var1, int32_t *var2, int32_t coeff_shift, uint8_t *out1, uint8_t *out2);
+
 void svt_aom_copy_rect8_8bit_to_16bit_c(uint16_t *dst, int32_t dstride, const uint8_t *src, int32_t sstride, int32_t v, int32_t h);
 void svt_aom_copy_rect8_8bit_to_16bit_sse4_1(uint16_t *dst, int32_t dstride, const uint8_t *src, int32_t sstride, int32_t v, int32_t h);
 void svt_aom_copy_rect8_8bit_to_16bit_avx2(uint16_t *dst, int32_t dstride, const uint8_t *src, int32_t sstride, int32_t v, int32_t h);
@@ -1058,8 +1077,6 @@ void svt_aom_lpf_vertical_6_c(uint8_t* s, int32_t pitch, const uint8_t* blimit, 
 RTCD_EXTERN void(*svt_aom_lpf_vertical_6)(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
 void svt_aom_lpf_vertical_8_c(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
 RTCD_EXTERN void(*svt_aom_lpf_vertical_8)(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
-uint32_t svt_aom_log2f_32(uint32_t x);
-RTCD_EXTERN uint32_t(*svt_log2f)(uint32_t x);
 void svt_memcpy_c(void  *dst_ptr, void  const*src_ptr, size_t size);
 RTCD_EXTERN void (*svt_memcpy)(void  *dst_ptr, void  const*src_ptr, size_t size);
 void svt_memset_c(void *dst_ptr, int c, size_t size);
@@ -1125,7 +1142,6 @@ void svt_av1_convolve_x_sr_neon_i8mm(const uint8_t *src, int32_t src_stride, uin
 
 void svt_av1_convolve_y_sr_neon(const uint8_t *src, int32_t src_stride, uint8_t *dst, int32_t dst_stride, int32_t w, int32_t h, const InterpFilterParams *filter_params_x, const InterpFilterParams *filter_params_y, const int32_t subpel_x_q4, const int32_t subpel_y_q4, ConvolveParams *conv_params);
 
-void svt_av1_convolve_y_sr_neon_dotprod(const uint8_t *src, int32_t src_stride, uint8_t *dst, int32_t dst_stride, int32_t w, int32_t h, const InterpFilterParams *filter_params_x, const InterpFilterParams *filter_params_y, const int32_t subpel_x_q4, const int32_t subpel_y_q4, ConvolveParams *conv_params);
 
 void svt_av1_convolve_y_sr_neon_i8mm(const uint8_t *src, int32_t src_stride, uint8_t *dst, int32_t dst_stride, int32_t w, int32_t h, const InterpFilterParams *filter_params_x, const InterpFilterParams *filter_params_y, const int32_t subpel_x_q4, const int32_t subpel_y_q4, ConvolveParams *conv_params);
 
@@ -1211,6 +1227,10 @@ void svt_residual_kernel8bit_neon(uint8_t *input, uint32_t input_stride, uint8_t
 void svt_residual_kernel16bit_neon(uint16_t *input, uint32_t input_stride, uint16_t *pred, uint32_t pred_stride, int16_t *residual, uint32_t residual_stride, uint32_t area_width, uint32_t area_height);
 
 void svt_cdef_filter_block_neon(uint8_t *dst8, uint16_t *dst16, int32_t dstride, const uint16_t *in, int32_t pri_strength, int32_t sec_strength, int32_t dir, int32_t pri_damping, int32_t sec_damping, int32_t bsize, int32_t coeff_shift, uint8_t subsampling_factor);
+void svt_cdef_filter_block_8bit_neon(uint8_t *dst, int32_t dstride, const uint8_t *in, int32_t pri_strength, int32_t sec_strength, int32_t dir, int32_t damping, int32_t bsize, int32_t coeff_shift, uint8_t subsampling_factor);
+void svt_cdef_filter_block_8bit_bounded_neon(uint8_t *dst, int32_t dstride, const uint8_t *in, int32_t pri_strength, int32_t sec_strength, int32_t dir, int32_t damping, int32_t bsize, int32_t coeff_shift, uint8_t subsampling_factor, int edge_top, int edge_left, int edge_bottom, int edge_right);
+uint8_t svt_aom_cdef_find_dir_8bit_neon(const uint8_t *img, int32_t stride, int32_t *var, int32_t coeff_shift);
+void svt_aom_cdef_find_dir_dual_8bit_neon(const uint8_t *img1, const uint8_t *img2, int stride, int32_t *var1, int32_t *var2, int32_t coeff_shift, uint8_t *out1, uint8_t *out2);
 uint8_t svt_aom_cdef_find_dir_neon(const uint16_t *img, int32_t stride, int32_t *var, int32_t coeff_shift);
 void svt_aom_cdef_find_dir_dual_neon(const uint16_t *img1, const uint16_t *img2, int stride, int32_t *var1, int32_t *var2, int32_t coeff_shift, uint8_t *out1, uint8_t *out2);
 
@@ -1656,7 +1676,7 @@ void svt_aom_paeth_predictor_64x64_neon(uint8_t *dst, ptrdiff_t stride, const ui
 
 uint64_t svt_full_distortion_kernel16_bits_neon(uint8_t* input, uint32_t input_offset, uint32_t input_stride, uint8_t* recon, int32_t recon_offset, uint32_t recon_stride, uint32_t area_width, uint32_t area_height);
 uint64_t svt_full_distortion_kernel16_bits_sve(uint8_t* input, uint32_t input_offset, uint32_t input_stride, uint8_t* recon, int32_t recon_offset, uint32_t recon_stride, uint32_t area_width, uint32_t area_height);
-void svt_full_distortion_kernel32_bits_neon(int32_t *coeff, uint32_t coeff_stride, int32_t *recon_coeff, uint32_t recon_coeff_stride, uint64_t distortion_result[DIST_CALC_TOTAL], uint32_t area_width, uint32_t area_height);
+void svt_full_distortion_kernel32_bits_neon(int32_t *coeff, int32_t *recon_coeff, uint32_t stride, uint32_t area_width, uint32_t area_height, uint64_t distortion_result[DIST_CALC_TOTAL]);
 
 void svt_full_distortion_kernel_cbf_zero32_bits_neon(int32_t *coeff, uint32_t coeff_stride,
                                                         uint64_t distortion_result[DIST_CALC_TOTAL], uint32_t area_width,
@@ -1860,14 +1880,12 @@ void svt_full_distortion_kernel_cbf_zero32_bits_avx2(int32_t *coeff, uint32_t co
 void svt_full_distortion_kernel_cbf_zero32_bits_sse4_1(int32_t *coeff, uint32_t coeff_stride,
     uint64_t distortion_result[DIST_CALC_TOTAL],
     uint32_t area_width, uint32_t area_height);
-void svt_full_distortion_kernel32_bits_sse4_1(int32_t *coeff, uint32_t coeff_stride, int32_t *recon_coeff,
-    uint32_t recon_coeff_stride,
-    uint64_t distortion_result[DIST_CALC_TOTAL],
-    uint32_t area_width, uint32_t area_height);
-void svt_full_distortion_kernel32_bits_avx2(int32_t *coeff, uint32_t coeff_stride, int32_t *recon_coeff,
-    uint32_t recon_coeff_stride,
-    uint64_t distortion_result[DIST_CALC_TOTAL],
-    uint32_t area_width, uint32_t area_height);
+void svt_full_distortion_kernel32_bits_sse4_1(int32_t *coeff, int32_t *recon_coeff, uint32_t stride,
+    uint32_t area_width, uint32_t area_height,
+    uint64_t distortion_result[DIST_CALC_TOTAL]);
+void svt_full_distortion_kernel32_bits_avx2(int32_t *coeff, int32_t *recon_coeff, uint32_t stride,
+    uint32_t area_width, uint32_t area_height,
+    uint64_t distortion_result[DIST_CALC_TOTAL]);
 uint64_t svt_spatial_full_distortion_kernel_sse4_1(uint8_t *input, uint32_t input_offset, uint32_t input_stride, uint8_t *recon, int32_t recon_offset, uint32_t recon_stride, uint32_t area_width, uint32_t area_height);
 uint64_t svt_spatial_full_distortion_kernel_avx2(uint8_t *input, uint32_t input_offset, uint32_t input_stride, uint8_t *recon, int32_t recon_offset, uint32_t recon_stride, uint32_t area_width, uint32_t area_height);
 uint64_t svt_spatial_full_distortion_kernel_avx512(uint8_t *input, uint32_t input_offset, uint32_t input_stride, uint8_t *recon, int32_t recon_offset, uint32_t recon_stride, uint32_t area_width, uint32_t area_height);
@@ -2890,14 +2908,29 @@ void svt_aom_lpf_vertical_6_sse2(uint8_t *s, int32_t pitch, const uint8_t *blimi
 
 void svt_aom_lpf_vertical_8_sse2(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
 
-uint32_t Log2f_ASM(uint32_t x);
-
 extern void svt_memcpy_intrin_sse (void  *dst_ptr, void  const *src_ptr, size_t size);
 
 void svt_aom_hadamard_4x4_sse2(const int16_t *src_diff, ptrdiff_t src_stride, int32_t *coeff);
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
 void svt_aom_highbd_hadamard_8x8_avx2(const int16_t *src_diff, ptrdiff_t src_stride, int32_t *coeff);
 #endif
+#endif
+
+// Devirtualize NEON-only dispatch on guaranteed-Neon RTC builds. The included
+// header (generated by Build/gen_devirt.py) is a list of `#define name name_neon`
+// redirects; the setup TU keeps the indirect form via the !RTCD_C guard.
+#if CONFIG_ARM_NEON_IS_GUARANTEED && !defined(RTCD_C)
+#include "common_dsp_rtcd_neon_devirt.h"
+#endif
+
+// `svt_memcpy` is NULL until svt_aom_setup_common_rtcd_internal() runs, so call
+// sites dispatch to `svt_memcpy_c` when the optimized pointer is not yet set.
+// Under NEON devirtualization `svt_memcpy` expands to a concrete function whose
+// address is never NULL (which trips -Werror=address), so resolve directly to it.
+#if CONFIG_ARM_NEON_IS_GUARANTEED && !defined(RTCD_C)
+#define SVT_MEMCPY svt_memcpy
+#else
+#define SVT_MEMCPY (svt_memcpy ? svt_memcpy : svt_memcpy_c)
 #endif
 
 #ifdef __cplusplus

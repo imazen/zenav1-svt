@@ -335,7 +335,7 @@ static void model_rd_with_curvfit(PictureControlSet* pcs, BlockSize plane_bsize,
     }
 
     const double sse_norm = (double)sse / num_samples;
-    const double xqr      = (double)svt_log2f((uint32_t)sse_norm / (qstep * qstep));
+    const double xqr      = (double)svt_log2f_safe((uint32_t)sse_norm / (qstep * qstep));
 
     double rate_f, dist_by_sse_norm_f;
     av1_model_rd_curvfit(plane_bsize, sse_norm, xqr, &rate_f, &dist_by_sse_norm_f);
@@ -548,15 +548,11 @@ static void pick_interinter_seg(PictureControlSet* pcs, ModeDecisionContext* ctx
     DIFFWTD_MASK_TYPE cur_mask_type;
     int64_t           best_rd        = INT64_MAX;
     DIFFWTD_MASK_TYPE best_mask_type = 0;
-    // cppcheck-suppress unassignedVariable
-    DECLARE_ALIGNED(16, uint8_t, seg_mask0[2 * MAX_SB_SQUARE]);
-    // cppcheck-suppress unassignedVariable
-    DECLARE_ALIGNED(16, uint8_t, seg_mask1[2 * MAX_SB_SQUARE]);
 
     const int bd_round = 0;
     // try each mask type and its inverse
     for (cur_mask_type = 0; cur_mask_type < DIFFWTD_MASK_TYPES; cur_mask_type++) {
-        uint8_t* const temp_mask = cur_mask_type ? seg_mask1 : seg_mask0;
+        DECLARE_ALIGNED(16, uint8_t, temp_mask[2 * MAX_SB_SQUARE]);
         // build mask and inverse
         if (hbd_md) {
             svt_av1_build_compound_diffwtd_mask_highbd(temp_mask, cur_mask_type, p0, bw, p1, bw, bh, bw, EB_TEN_BIT);
@@ -2264,7 +2260,8 @@ static void inter_intra_prediction(PictureControlSet* pcs, ModeDecisionContext* 
                 if (pu_origin_y != 0 && pu_origin_x != 0) {
                     topNeighArray[0] = leftNeighArray[0] =
                         recon_neigh_y
-                            ->top_left_array[(recon_neigh_y->max_pic_h + pu_origin_x - pu_origin_y) << is16bit];
+                            ->top_left_array[(svt_aom_na_topleft_offset(recon_neigh_y, pu_origin_x, pu_origin_y))
+                                             << is16bit];
                 }
             }
         }
@@ -2291,7 +2288,8 @@ static void inter_intra_prediction(PictureControlSet* pcs, ModeDecisionContext* 
             if (blk_originy_uv != 0 && blk_originx_uv != 0) {
                 topNeighArray[0] = leftNeighArray[0] =
                     recon_neigh_cb
-                        ->top_left_array[(recon_neigh_cb->max_pic_h + blk_originx_uv - blk_originy_uv / 2) << is16bit];
+                        ->top_left_array[(svt_aom_na_topleft_offset(recon_neigh_cb, blk_originx_uv, blk_originy_uv / 2))
+                                         << is16bit];
             }
         } else {
             dst = pred_pic->v_buffer +
@@ -2315,7 +2313,8 @@ static void inter_intra_prediction(PictureControlSet* pcs, ModeDecisionContext* 
             if (blk_originy_uv != 0 && blk_originx_uv != 0) {
                 topNeighArray[0] = leftNeighArray[0] =
                     recon_neigh_cr
-                        ->top_left_array[(recon_neigh_cr->max_pic_h + blk_originx_uv - blk_originy_uv / 2) << is16bit];
+                        ->top_left_array[(svt_aom_na_topleft_offset(recon_neigh_cr, blk_originx_uv, blk_originy_uv / 2))
+                                         << is16bit];
             }
         }
         const TxSize tx_size    = tx_depth_to_tx_size[0][bsize];
@@ -2488,10 +2487,18 @@ void tf_inter_predictor(SequenceControlSet* scs, uint8_t* src_ptr, uint8_t* dst_
     }
 }
 
+#if CLN_RENAME_PD0
+static void enc_make_inter_predictor_pd0(uint8_t* src, uint8_t* dst, SubpelParams* subpel_params,
+#else
 static void enc_make_inter_predictor_light_pd0(uint8_t* src, uint8_t* dst, SubpelParams* subpel_params,
-                                               ConvolveParams* conv_params, uint8_t blk_width, uint8_t blk_height,
-                                               int32_t src_stride, int32_t dst_stride) {
+#endif
+                                         ConvolveParams* conv_params, uint8_t blk_width, uint8_t blk_height,
+                                         int32_t src_stride, int32_t dst_stride) {
+#if CLN_RENAME_PD0
+    svt_inter_predictor_pd0(src, src_stride, dst, dst_stride, blk_width, blk_height, subpel_params, conv_params);
+#else
     svt_inter_predictor_light_pd0(src, src_stride, dst, dst_stride, blk_width, blk_height, subpel_params, conv_params);
+#endif
 }
 
 void svt_aom_enc_make_inter_predictor(SequenceControlSet* scs, uint8_t* src_ptr, uint8_t* src_ptr_2b, uint8_t* dst_ptr,
@@ -2704,9 +2711,13 @@ EbErrorType svt_aom_simple_luma_unipred(SequenceControlSet* scs, ScaleFactors sf
     return return_error;
 }
 
+#if CLN_RENAME_PD0
+static void av1_inter_prediction_pd0(SequenceControlSet* scs, ModeDecisionContext* ctx, BlockModeInfo* block_mi,
+#else
 static void av1_inter_prediction_light_pd0(SequenceControlSet* scs, ModeDecisionContext* ctx, BlockModeInfo* block_mi,
-                                           EbPictureBufferDesc* ref_pic_0, EbPictureBufferDesc* ref_pic_1,
-                                           EbPictureBufferDesc* pred, ScaleFactors* sf0, ScaleFactors* sf1) {
+#endif
+                                     EbPictureBufferDesc* ref_pic_0, EbPictureBufferDesc* ref_pic_1,
+                                     EbPictureBufferDesc* pred, ScaleFactors* sf0, ScaleFactors* sf1) {
     const BlockGeom* blk_geom     = ctx->blk_geom;
     const uint16_t   ref_origin_x = ctx->blk_org_x;
     const uint16_t   ref_origin_y = ctx->blk_org_y;
@@ -2715,10 +2726,20 @@ static void av1_inter_prediction_light_pd0(SequenceControlSet* scs, ModeDecision
     const uint8_t    bwidth       = blk_geom->bwidth;
     const uint8_t    bheight      = blk_geom->bheight;
     const uint8_t    is_compound  = has_second_ref(block_mi);
+#if CLN_PD0
+    DECLARE_ALIGNED(32, uint16_t, tmp_dstY[128 * 128]);
+    const int32_t conv_buf_stride = scs->super_block_size == 128 ? 128 : 64;
+#else
     DECLARE_ALIGNED(32, uint16_t, tmp_dstY[64 * 64]);
-    uint8_t*       dst_ptr     = pred->y_buffer + ((dst_origin_x + (dst_origin_y)*pred->y_stride));
-    int32_t        dst_stride  = pred->y_stride;
+#endif
+    uint8_t* dst_ptr    = pred->y_buffer + ((dst_origin_x + (dst_origin_y)*pred->y_stride));
+    int32_t  dst_stride = pred->y_stride;
+#if CLN_PD0
+    ConvolveParams conv_params = get_conv_params_no_round(
+        0, 0, 0, tmp_dstY, conv_buf_stride, is_compound, EB_EIGHT_BIT);
+#else
     ConvolveParams conv_params = get_conv_params_no_round(0, 0, 0, tmp_dstY, 64, is_compound, EB_EIGHT_BIT);
+#endif
     for (int ref_itr = 0; ref_itr < 1 + is_compound; ref_itr++) {
         SubpelParams subpel_params = {SCALE_SUBPEL_SHIFTS, SCALE_SUBPEL_SHIFTS, 0, 0};
         int32_t      pos_x         = ref_origin_x + (block_mi->mv[ref_itr].x >> 3);
@@ -2753,7 +2774,11 @@ static void av1_inter_prediction_light_pd0(SequenceControlSet* scs, ModeDecision
         }
 
         assert(IMPLIES(conv_params.do_average, is_compound));
+#if CLN_RENAME_PD0
+        enc_make_inter_predictor_pd0(
+#else
         enc_make_inter_predictor_light_pd0(
+#endif
             src_ptr, dst_ptr, &subpel_params, &conv_params, bwidth, bheight, ref_pic->y_stride, dst_stride);
     }
 }
@@ -3700,8 +3725,12 @@ void svt_aom_search_compound_diff_wedge(PictureControlSet* pcs, ModeDecisionCont
 
 /*
  */
+#if CLN_RENAME_PD0
+EbErrorType svt_aom_inter_pu_prediction_av1_pd0(uint8_t hbd_md, ModeDecisionContext* ctx, PictureControlSet* pcs,
+#else
 EbErrorType svt_aom_inter_pu_prediction_av1_light_pd0(uint8_t hbd_md, ModeDecisionContext* ctx, PictureControlSet* pcs,
-                                                      ModeDecisionCandidateBuffer* cand_bf) {
+#endif
+                                                ModeDecisionCandidateBuffer* cand_bf) {
     UNUSED(hbd_md);
     ModeDecisionCandidate* const cand = cand_bf->cand;
 
@@ -3726,14 +3755,18 @@ EbErrorType svt_aom_inter_pu_prediction_av1_light_pd0(uint8_t hbd_md, ModeDecisi
                                               pcs->ppcs->enhanced_pic->height);
     }
 
+#if CLN_RENAME_PD0
+    av1_inter_prediction_pd0(scs,
+#else
     av1_inter_prediction_light_pd0(scs,
-                                   ctx,
-                                   &cand->block_mi,
-                                   ref_pic_list0,
-                                   ref_pic_list1,
-                                   cand_bf->pred,
-                                   &ref0_scale_factors,
-                                   &ref1_scale_factors);
+#endif
+                             ctx,
+                             &cand->block_mi,
+                             ref_pic_list0,
+                             ref_pic_list1,
+                             cand_bf->pred,
+                             &ref0_scale_factors,
+                             &ref1_scale_factors);
 
     return EB_ErrorNone;
 }

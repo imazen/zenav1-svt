@@ -58,6 +58,7 @@
 
 #include "pack_unpack_c.h"
 #include "enc_mode_config.h"
+#include "hash.h"
 
 #ifdef ARCH_X86_64
 #include <immintrin.h>
@@ -228,12 +229,12 @@ void set_segments_numbers(SequenceControlSet* scs) {
 
     scs->enc_dec_segment_row_count_array =
         (lp == PARALLEL_LEVEL_1 || is_pic_dimension_single_sb(scs->super_block_size, scs->max_input_luma_width)) ? 1
-        : (scs->super_block_size == 128) ? ((scs->max_input_luma_height + 64) / 128)
-                                         : ((scs->max_input_luma_height + 32) / 64);
+        : (scs->super_block_size == 128) ? MAX((int32_t)((scs->max_input_luma_height + 64) / 128), 1)
+                                         : MAX((int32_t)((scs->max_input_luma_height + 32) / 64), 1);
     scs->enc_dec_segment_col_count_array =
         (lp == PARALLEL_LEVEL_1 || is_pic_dimension_single_sb(scs->super_block_size, scs->max_input_luma_height)) ? 1
-        : (scs->super_block_size == 128) ? ((scs->max_input_luma_width + 64) / 128)
-                                         : ((scs->max_input_luma_width + 32) / 64);
+        : (scs->super_block_size == 128) ? MAX((int32_t)((scs->max_input_luma_width + 64) / 128), 1)
+                                         : MAX((int32_t)((scs->max_input_luma_width + 32) / 64), 1);
 
     scs->me_segment_row_count_array = scs->tf_segment_row_count = (lp == PARALLEL_LEVEL_1) ? 1
         : (((scs->max_input_luma_height + 32) / BLOCK_SIZE_64) < 6)                        ? 1
@@ -255,9 +256,11 @@ void set_segments_numbers(SequenceControlSet* scs) {
     scs->tpl_segment_row_count_array = (lp == PARALLEL_LEVEL_1 ||
                                         is_pic_dimension_single_sb(64, scs->max_input_luma_width))
         ? 1
-        : ((scs->max_input_luma_height + 32) / 64);
+        : MAX((int32_t)((scs->max_input_luma_height + 32) / 64), 1);
 
-    scs->tpl_segment_col_count_array = (lp == PARALLEL_LEVEL_1) ? 1 : ((scs->max_input_luma_width + 32) / 64);
+    scs->tpl_segment_col_count_array = (lp == PARALLEL_LEVEL_1)
+        ? 1
+        : MAX((int32_t)((scs->max_input_luma_width + 32) / 64), 1);
 
     scs->cdef_segment_row_count    = (lp == PARALLEL_LEVEL_1)          ? 1
            : (((scs->max_input_luma_height + 32) / BLOCK_SIZE_64) < 6) ? 1
@@ -384,7 +387,11 @@ static EbErrorType load_default_buffer_configuration_settings(SequenceControlSet
         min_child              = 1; // max_child is 1 for LD
         uint8_t max_refs       = dpb_frames;
         // For special, known, RPS structures and ref frame counts, we can reduce the number of ref buffers
+#if REMOVE_USE_FLAT_IPP
+        if (scs->static_config.rtc && scs->static_config.hierarchical_levels == 0) {
+#else
         if (scs->use_flat_ipp) {
+#endif
             max_refs = scs->mrp_ctrls.flat_max_refs;
             // For flat IPP the previous frame is always used as a reference. Therefore, that picture does
             // not require a special buffer for use as a TF ref.
@@ -396,10 +403,21 @@ static EbErrorType load_default_buffer_configuration_settings(SequenceControlSet
         } else if (scs->mrp_ctrls.ld_reduce_ref_buffs == 2) {
             max_refs = 2;
         }
+#if ADD_ON_THE_FLY_MG
+        // Set flat_max_refs in case we switch MG size
+        scs->mrp_ctrls.flat_max_refs = max_refs;
+#endif
 
-        min_ref   = 1 /*current pic*/ + max_refs;
+        min_ref = 1 /*current pic*/ + max_refs;
+        // Ref-frame management: app may hold up to max_managed_refs anchors
+        // simultaneously; grow the ref-buffer pool by that many entries.
+        // When max_managed_refs == 0 (default), this adds 0 and the legacy
+        // memory footprint is preserved bit-exactly.
+        min_ref += scs->static_config.max_managed_refs;
         min_me    = 1;
         min_paref = 1 /*current pic*/ + low_delay_tf_frames + max_refs + scs->scd_delay + eos_delay;
+        // Same rationale for the PA-ref pool.
+        min_paref += scs->static_config.max_managed_refs;
     }
     //Configure max needed buffers to process 1+n_extra_mg Mini-Gops in the pipeline. n extra MGs to feed to picMgr on top of current one.
     // Low delay mode has no extra minigops to process.
@@ -458,6 +476,15 @@ static EbErrorType load_default_buffer_configuration_settings(SequenceControlSet
         scs->overlay_input_picture_buffer_init_count   = min_overlay;
 
         scs->output_recon_buffer_fifo_init_count = MAX(scs->reference_picture_buffer_init_count, min_recon);
+#if CONFIG_SINGLE_THREAD_KERNEL
+        // In ST mode the dispatcher processes a full mini-GOP before returning
+        // to the app.  svt_aom_recon_output() is called from both REST and
+        // Packetization for each non-alt-ref frame, consuming 2 buffers per
+        // frame.  The pool must hold enough for the full mini-GOP.
+        if (scs->static_config.recon_enabled) {
+            scs->output_recon_buffer_fifo_init_count = MAX(scs->output_recon_buffer_fifo_init_count, return_ppcs);
+        }
+#endif
     } else if (lp <= PARALLEL_LEVEL_2) {
         scs->picture_control_set_pool_init_count_child = scs->enc_dec_pool_init_count = clamp(2, min_child, max_child) +
             superres_count;
@@ -1118,7 +1145,8 @@ static int create_pa_ref_buf_descs(EbEncHandle* enc_handle_ptr) {
            0,
            svt_pa_reference_object_creator,
            &(eb_pa_ref_obj_ect_desc_init_data_structure),
-           NULL);
+           NULL,
+           (scs->lp == 1));
     // Set the SequenceControlSet Picture Pool Fifo Ptrs
     enc_handle_ptr->scs_instance->enc_ctx->pa_reference_picture_pool_fifo_ptr = svt_system_resource_get_producer_fifo(
         enc_handle_ptr->pa_reference_picture_pool_ptr, 0);
@@ -1160,7 +1188,8 @@ static int create_tpl_ref_buf_descs(EbEncHandle* enc_handle_ptr) {
            0,
            svt_tpl_reference_object_creator,
            &(eb_tpl_ref_obj_ect_desc_init_data_structure),
-           NULL);
+           NULL,
+           (scs->lp == 1));
     // Set the SequenceControlSet Picture Pool Fifo Ptrs
     enc_handle_ptr->scs_instance->enc_ctx->tpl_reference_picture_pool_fifo_ptr = svt_system_resource_get_producer_fifo(
         enc_handle_ptr->tpl_reference_picture_pool_ptr, 0);
@@ -1209,7 +1238,8 @@ static int create_ref_buf_descs(EbEncHandle* enc_handle_ptr) {
            0,
            svt_reference_object_creator,
            &(eb_ref_obj_ect_desc_init_data_structure),
-           NULL);
+           NULL,
+           (scs->lp == 1));
 
     // Create reference list for Picture Manager
     // When decode-order is not enforced at pic mgr, each reference picture must have an allocated reference buffer (for at least one mini-gop) so the
@@ -1223,7 +1253,12 @@ static int create_ref_buf_descs(EbEncHandle* enc_handle_ptr) {
     for (uint32_t idx = 0; idx < ref_pic_list_length; ++idx) {
         EB_NEW(enc_handle_ptr->scs_instance->enc_ctx->ref_pic_list[idx], svt_aom_reference_queue_entry_ctor);
     }
-    EB_CREATE_SEMAPHORE(scs->ref_buffer_available_semaphore, ref_pic_list_length, ref_pic_list_length);
+#if CONFIG_SINGLE_THREAD_KERNEL
+    if (scs->lp > 1)
+#endif
+    {
+        EB_CREATE_SEMAPHORE(scs->ref_buffer_available_semaphore, ref_pic_list_length, ref_pic_list_length);
+    }
     enc_handle_ptr->scs_instance->enc_ctx->reference_picture_pool_fifo_ptr = svt_system_resource_get_producer_fifo(
         enc_handle_ptr->reference_picture_pool_ptr, 0);
 
@@ -1247,6 +1282,7 @@ static ONCE_ROUTINE(init_global_tables) {
     init_fn_ptr();
     svt_av1_init_wedge_masks();
     init_ii_masks();
+    svt_av1_crc32c_table_init();
     ONCE_ROUTINE_EPILOG;
 }
 
@@ -1263,6 +1299,7 @@ EB_API EbErrorType svt_av1_enc_init(EbComponentType* svt_enc_component) {
     EbErrorType         return_error   = EB_ErrorNone;
     SequenceControlSet* scs            = enc_handle_ptr->scs_instance->scs;
     EbColorFormat       color_format   = scs->static_config.encoder_color_format;
+    const bool          single_thread  = (scs->lp == 1);
 
     svt_aom_setup_common_rtcd_internal(scs->static_config.use_cpu_flags);
     svt_aom_setup_rtcd_internal(scs->static_config.use_cpu_flags);
@@ -1281,7 +1318,8 @@ EB_API EbErrorType svt_av1_enc_init(EbComponentType* svt_enc_component) {
            0,
            svt_aom_scs_set_creator,
            NULL,
-           NULL);
+           NULL,
+           single_thread);
     /************************************
     * Picture Control Set: Parent
     ************************************/
@@ -1306,15 +1344,19 @@ EB_API EbErrorType svt_av1_enc_init(EbComponentType* svt_enc_component) {
         input_data.enc_dec_segment_col  = (uint16_t)scs->tpl_segment_col_count_array;
         input_data.enc_dec_segment_row  = (uint16_t)scs->tpl_segment_row_count_array;
         MrpCtrls* mrp_ctrl              = &(scs->mrp_ctrls);
+#if TUNE_SIMPLIFY_SETTINGS
+        input_data.ref_count_used_list0 = MAX(mrp_ctrl->base_ref_list0_count, mrp_ctrl->non_base_ref_list0_count);
+        input_data.ref_count_used_list1 = MAX(mrp_ctrl->base_ref_list1_count, mrp_ctrl->non_base_ref_list1_count);
+#else
         input_data.ref_count_used_list0 = MAX(
             mrp_ctrl->sc_base_ref_list0_count,
             MAX(mrp_ctrl->base_ref_list0_count,
                 MAX(mrp_ctrl->sc_non_base_ref_list0_count, mrp_ctrl->non_base_ref_list0_count)));
-
         input_data.ref_count_used_list1 = MAX(
             mrp_ctrl->sc_base_ref_list1_count,
             MAX(mrp_ctrl->base_ref_list1_count,
                 MAX(mrp_ctrl->sc_non_base_ref_list1_count, mrp_ctrl->non_base_ref_list1_count)));
+#endif
         input_data.tpl_synth_size = svt_aom_set_tpl_group(NULL,
                                                           svt_aom_get_tpl_group_level(1, scs->static_config.enc_mode),
                                                           input_data.picture_width,
@@ -1333,9 +1375,14 @@ EB_API EbErrorType svt_av1_enc_init(EbComponentType* svt_enc_component) {
         input_data.rtc_tune            = scs->static_config.rtc;
         input_data.variance_octile     = scs->static_config.variance_octile;
         input_data.adaptive_film_grain = scs->static_config.adaptive_film_grain;
+        input_data.hbd_mds             = scs->static_config.hbd_mds;
         input_data.static_config       = scs->static_config;
         input_data.allintra            = scs->allintra;
-        input_data.use_flat_ipp        = scs->use_flat_ipp;
+#if REMOVE_USE_FLAT_IPP
+        input_data.use_flat_ipp = scs->static_config.rtc && scs->static_config.hierarchical_levels == 0;
+#else
+        input_data.use_flat_ipp = scs->use_flat_ipp;
+#endif
         EB_NEW(enc_handle_ptr->picture_parent_control_set_pool_ptr,
                svt_system_resource_ctor,
                scs->picture_control_set_pool_init_count, //enc_handle_ptr->pcs_pool_total_count,
@@ -1343,7 +1390,8 @@ EB_API EbErrorType svt_av1_enc_init(EbComponentType* svt_enc_component) {
                0,
                svt_aom_picture_parent_control_set_creator,
                &input_data,
-               NULL);
+               NULL,
+               single_thread);
 #if SRM_REPORT
         enc_handle_ptr->picture_parent_control_set_pool_ptr->empty_queue->log = 0;
 #endif
@@ -1354,7 +1402,8 @@ EB_API EbErrorType svt_av1_enc_init(EbComponentType* svt_enc_component) {
                0,
                svt_aom_me_creator,
                &input_data,
-               NULL);
+               NULL,
+               single_thread);
 #if SRM_REPORT
         enc_handle_ptr->me_pool_ptr->empty_queue->log = 0;
         dump_srm_content(enc_handle_ptr->me_pool_ptr, false);
@@ -1393,9 +1442,13 @@ EB_API EbErrorType svt_av1_enc_init(EbComponentType* svt_enc_component) {
         input_data.is_scale         = scs->static_config.superres_mode > SUPERRES_NONE ||
             scs->static_config.resize_mode > RESIZE_NONE;
 
-        input_data.rtc_tune     = scs->static_config.rtc;
-        input_data.allintra     = scs->allintra;
+        input_data.rtc_tune = scs->static_config.rtc;
+        input_data.allintra = scs->allintra;
+#if REMOVE_USE_FLAT_IPP
+        input_data.use_flat_ipp = scs->static_config.rtc && scs->static_config.hierarchical_levels == 0;
+#else
         input_data.use_flat_ipp = scs->use_flat_ipp;
+#endif
         EB_NEW(enc_handle_ptr->enc_dec_pool_ptr,
                svt_system_resource_ctor,
                scs->enc_dec_pool_init_count, //EB_PictureControlSetPoolInitCountChild,
@@ -1403,7 +1456,8 @@ EB_API EbErrorType svt_av1_enc_init(EbComponentType* svt_enc_component) {
                0,
                svt_aom_recon_coef_creator,
                &input_data,
-               NULL);
+               NULL,
+               single_thread);
     }
 
     /************************************
@@ -1438,9 +1492,13 @@ EB_API EbErrorType svt_av1_enc_init(EbComponentType* svt_enc_component) {
         input_data.is_scale         = scs->static_config.superres_mode > SUPERRES_NONE ||
             scs->static_config.resize_mode > RESIZE_NONE;
 
-        input_data.rtc_tune     = scs->static_config.rtc;
-        input_data.allintra     = scs->allintra;
+        input_data.rtc_tune = scs->static_config.rtc;
+        input_data.allintra = scs->allintra;
+#if REMOVE_USE_FLAT_IPP
+        input_data.use_flat_ipp = scs->static_config.rtc && scs->static_config.hierarchical_levels == 0;
+#else
         input_data.use_flat_ipp = scs->use_flat_ipp;
+#endif
         EB_NEW(enc_handle_ptr->picture_control_set_pool_ptr,
                svt_system_resource_ctor,
                scs->picture_control_set_pool_init_count_child, //EB_PictureControlSetPoolInitCountChild,
@@ -1448,7 +1506,8 @@ EB_API EbErrorType svt_av1_enc_init(EbComponentType* svt_enc_component) {
                0,
                svt_aom_picture_control_set_creator,
                &input_data,
-               NULL);
+               NULL,
+               single_thread);
     }
 
     /************************************
@@ -1489,7 +1548,8 @@ EB_API EbErrorType svt_av1_enc_init(EbComponentType* svt_enc_component) {
                    0,
                    svt_overlay_buffer_header_creator,
                    scs,
-                   svt_input_buffer_header_destroyer);
+                   svt_input_buffer_header_destroyer,
+                   single_thread);
             // Set the SequenceControlSet Overlay input Picture Pool Fifo Ptrs
             enc_handle_ptr->scs_instance->enc_ctx->overlay_input_picture_pool_fifo_ptr =
                 svt_system_resource_get_producer_fifo(enc_handle_ptr->overlay_input_picture_pool_ptr, 0);
@@ -1506,7 +1566,8 @@ EB_API EbErrorType svt_av1_enc_init(EbComponentType* svt_enc_component) {
            EB_ResourceCoordinationProcessInitCount,
            svt_input_cmd_creator,
            scs,
-           NULL);
+           NULL,
+           single_thread);
     enc_handle_ptr->input_cmd_producer_fifo_ptr = svt_system_resource_get_producer_fifo(
         enc_handle_ptr->input_cmd_resource_ptr, 0);
 
@@ -1518,7 +1579,8 @@ EB_API EbErrorType svt_av1_enc_init(EbComponentType* svt_enc_component) {
            0, //1/2 SRM; no consumer FIFO
            svt_input_buffer_header_creator,
            scs,
-           svt_input_buffer_header_destroyer);
+           svt_input_buffer_header_destroyer,
+           single_thread);
     enc_handle_ptr->input_buffer_producer_fifo_ptr = svt_system_resource_get_producer_fifo(
         enc_handle_ptr->input_buffer_resource_ptr, 0);
 
@@ -1530,7 +1592,8 @@ EB_API EbErrorType svt_av1_enc_init(EbComponentType* svt_enc_component) {
            0, //1/2 SRM; no consumer FIFO
            svt_input_y8b_creator,
            scs,
-           svt_input_y8b_destroyer);
+           svt_input_y8b_destroyer,
+           single_thread);
 
 #if SRM_REPORT
     enc_handle_ptr->input_y8b_buffer_resource_ptr->empty_queue->log = 1;
@@ -1547,7 +1610,8 @@ EB_API EbErrorType svt_av1_enc_init(EbComponentType* svt_enc_component) {
                1,
                svt_output_buffer_header_creator,
                &scs->static_config,
-               svt_output_buffer_header_destroyer);
+               svt_output_buffer_header_destroyer,
+               single_thread);
     }
     enc_handle_ptr->output_stream_buffer_consumer_fifo_ptr = svt_system_resource_get_consumer_fifo(
         enc_handle_ptr->output_stream_buffer_resource_ptr, 0);
@@ -1561,7 +1625,8 @@ EB_API EbErrorType svt_av1_enc_init(EbComponentType* svt_enc_component) {
                    1,
                    svt_output_recon_buffer_header_creator,
                    scs,
-                   svt_output_recon_buffer_header_destroyer);
+                   svt_output_recon_buffer_header_destroyer,
+                   single_thread);
         }
         enc_handle_ptr->output_recon_buffer_consumer_fifo_ptr = svt_system_resource_get_consumer_fifo(
             enc_handle_ptr->output_recon_buffer_resource_ptr, 0);
@@ -1577,7 +1642,8 @@ EB_API EbErrorType svt_av1_enc_init(EbComponentType* svt_enc_component) {
                scs->picture_analysis_process_init_count,
                svt_aom_resource_coordination_result_creator,
                &resource_coordination_result_init_data,
-               NULL);
+               NULL,
+               single_thread);
     }
 
     // Picture Analysis Results
@@ -1590,7 +1656,8 @@ EB_API EbErrorType svt_av1_enc_init(EbComponentType* svt_enc_component) {
                EB_PictureDecisionProcessInitCount,
                svt_aom_picture_analysis_result_creator,
                &picture_analysis_result_init_data,
-               NULL);
+               NULL,
+               single_thread);
     }
 
     // Picture Decision Results
@@ -1604,7 +1671,8 @@ EB_API EbErrorType svt_av1_enc_init(EbComponentType* svt_enc_component) {
                scs->motion_estimation_process_init_count,
                svt_aom_picture_decision_result_creator,
                &picture_decision_result_init_data,
-               NULL);
+               NULL,
+               single_thread);
         EB_ALLOC_PTR_ARRAY(scs->enc_ctx->picture_decision_reorder_queue,
                            scs->enc_ctx->picture_decision_reorder_queue_size);
 
@@ -1626,7 +1694,8 @@ EB_API EbErrorType svt_av1_enc_init(EbComponentType* svt_enc_component) {
                EB_InitialRateControlProcessInitCount,
                svt_aom_motion_estimation_results_creator,
                &motion_estimation_result_init_data,
-               NULL);
+               NULL,
+               single_thread);
     }
 
     // Initial Rate Control Results
@@ -1639,7 +1708,8 @@ EB_API EbErrorType svt_av1_enc_init(EbComponentType* svt_enc_component) {
                scs->source_based_operations_process_init_count,
                svt_aom_initial_rate_control_results_creator,
                &initial_rate_control_result_init_data,
-               NULL);
+               NULL,
+               single_thread);
     }
 
     // Picture Demux Results
@@ -1652,7 +1722,8 @@ EB_API EbErrorType svt_av1_enc_init(EbComponentType* svt_enc_component) {
                EB_PictureManagerProcessInitCount,
                svt_aom_picture_results_creator,
                &picture_result_init_data,
-               NULL);
+               NULL,
+               single_thread);
 
         EB_ALLOC_PTR_ARRAY(scs->enc_ctx->pic_mgr_input_pic_list, scs->enc_ctx->pic_mgr_input_pic_list_size);
 
@@ -1672,7 +1743,8 @@ EB_API EbErrorType svt_av1_enc_init(EbComponentType* svt_enc_component) {
                scs->tpl_disp_process_init_count,
                tpl_disp_results_creator,
                &tpl_disp_result_init_data,
-               NULL);
+               NULL,
+               single_thread);
     }
 
     // Rate Control Tasks
@@ -1685,7 +1757,8 @@ EB_API EbErrorType svt_av1_enc_init(EbComponentType* svt_enc_component) {
                EB_RateControlProcessInitCount,
                svt_aom_rate_control_tasks_creator,
                &rate_control_tasks_init_data,
-               NULL);
+               NULL,
+               single_thread);
     }
 
     // Rate Control Results
@@ -1698,7 +1771,8 @@ EB_API EbErrorType svt_av1_enc_init(EbComponentType* svt_enc_component) {
                scs->mode_decision_configuration_process_init_count,
                svt_aom_rate_control_results_creator,
                &rate_control_result_init_data,
-               NULL);
+               NULL,
+               single_thread);
     }
     // EncDec Tasks
     {
@@ -1711,7 +1785,8 @@ EB_API EbErrorType svt_av1_enc_init(EbComponentType* svt_enc_component) {
                scs->enc_dec_process_init_count,
                svt_aom_enc_dec_tasks_creator,
                &mode_decision_result_init_data,
-               NULL);
+               NULL,
+               single_thread);
     }
 
     // EncDec Results
@@ -1724,7 +1799,8 @@ EB_API EbErrorType svt_av1_enc_init(EbComponentType* svt_enc_component) {
                scs->dlf_process_init_count,
                svt_aom_enc_dec_results_creator,
                &enc_dec_result_init_data,
-               NULL);
+               NULL,
+               single_thread);
     }
 
     //DLF results
@@ -1737,7 +1813,8 @@ EB_API EbErrorType svt_av1_enc_init(EbComponentType* svt_enc_component) {
                scs->cdef_process_init_count,
                dlf_results_creator,
                &delf_result_init_data,
-               NULL);
+               NULL,
+               single_thread);
     }
     //CDEF results
     {
@@ -1749,7 +1826,8 @@ EB_API EbErrorType svt_av1_enc_init(EbComponentType* svt_enc_component) {
                scs->rest_process_init_count,
                cdef_results_creator,
                &cdef_result_init_data,
-               NULL);
+               NULL,
+               single_thread);
     }
     //REST results
     {
@@ -1761,7 +1839,8 @@ EB_API EbErrorType svt_av1_enc_init(EbComponentType* svt_enc_component) {
                scs->entropy_coding_process_init_count,
                rest_results_creator,
                &rest_result_init_data,
-               NULL);
+               NULL,
+               single_thread);
     }
 
     // Entropy Coding Results
@@ -1774,7 +1853,8 @@ EB_API EbErrorType svt_av1_enc_init(EbComponentType* svt_enc_component) {
                EB_PacketizationProcessInitCount,
                svt_aom_entropy_coding_results_creator,
                &entropy_coding_results_init_data,
-               NULL);
+               NULL,
+               single_thread);
         EB_ALLOC_PTR_ARRAY(scs->enc_ctx->packetization_reorder_queue, scs->enc_ctx->packetization_reorder_queue_size);
 
         for (uint32_t picture_index = 0; picture_index < scs->enc_ctx->packetization_reorder_queue_size;
@@ -1938,90 +2018,235 @@ EB_API EbErrorType svt_av1_enc_init(EbComponentType* svt_enc_component) {
     /************************************
     * Thread Handles
     ************************************/
-    // Resource Coordination
-    EB_CREATE_THREAD(enc_handle_ptr->resource_coordination_thread_handle,
-                     svt_aom_resource_coordination_kernel,
-                     enc_handle_ptr->resource_coordination_context_ptr);
-    EB_CREATE_THREAD_ARRAY(enc_handle_ptr->picture_analysis_thread_handle_array,
-                           scs->picture_analysis_process_init_count,
-                           svt_aom_picture_analysis_kernel,
-                           enc_handle_ptr->picture_analysis_context_ptr_array);
+#if CONFIG_SINGLE_THREAD_KERNEL
+    // Single-thread kernel dispatch: at lp=1, register all kernels for
+    // cooperative dispatch instead of creating 16 OS threads.
+    svt_kernel_dispatcher_init(&enc_handle_ptr->kernel_dispatcher);
+    if (scs->lp == 1) {
+        enc_handle_ptr->kernel_dispatcher.active = true;
 
-    // Picture Decision
-    EB_CREATE_THREAD(enc_handle_ptr->picture_decision_thread_handle,
-                     svt_aom_picture_decision_kernel,
-                     enc_handle_ptr->picture_decision_context_ptr);
+        // Enable non-blocking FIFO mode on all system resources
+#define SRM_SET_ST(member) \
+    svt_system_resource_set_single_thread_mode(enc_handle_ptr->member, &enc_handle_ptr->kernel_dispatcher)
+        SRM_SET_ST(scs_pool_ptr);
+        SRM_SET_ST(picture_parent_control_set_pool_ptr);
+        SRM_SET_ST(me_pool_ptr);
+        SRM_SET_ST(picture_control_set_pool_ptr);
+        SRM_SET_ST(enc_dec_pool_ptr);
+        SRM_SET_ST(reference_picture_pool_ptr);
+        SRM_SET_ST(tpl_reference_picture_pool_ptr);
+        SRM_SET_ST(pa_reference_picture_pool_ptr);
+        SRM_SET_ST(overlay_input_picture_pool_ptr);
+        SRM_SET_ST(input_buffer_resource_ptr);
+        SRM_SET_ST(input_y8b_buffer_resource_ptr);
+        SRM_SET_ST(input_cmd_resource_ptr);
+        SRM_SET_ST(output_stream_buffer_resource_ptr);
+        if (enc_handle_ptr->output_recon_buffer_resource_ptr) {
+            SRM_SET_ST(output_recon_buffer_resource_ptr);
+        }
+        SRM_SET_ST(resource_coordination_results_resource_ptr);
+        SRM_SET_ST(picture_analysis_results_resource_ptr);
+        SRM_SET_ST(picture_decision_results_resource_ptr);
+        SRM_SET_ST(motion_estimation_results_resource_ptr);
+        SRM_SET_ST(initial_rate_control_results_resource_ptr);
+        SRM_SET_ST(picture_demux_results_resource_ptr);
+        SRM_SET_ST(tpl_disp_res_srm);
+        SRM_SET_ST(rate_control_tasks_resource_ptr);
+        SRM_SET_ST(rate_control_results_resource_ptr);
+        SRM_SET_ST(enc_dec_tasks_resource_ptr);
+        SRM_SET_ST(enc_dec_results_resource_ptr);
+        SRM_SET_ST(entropy_coding_results_resource_ptr);
+        SRM_SET_ST(dlf_results_resource_ptr);
+        SRM_SET_ST(cdef_results_resource_ptr);
+        SRM_SET_ST(rest_results_resource_ptr);
+#undef SRM_SET_ST
 
-    // Motion Estimation
-    EB_CREATE_THREAD_ARRAY(enc_handle_ptr->motion_estimation_thread_handle_array,
-                           scs->motion_estimation_process_init_count,
-                           svt_aom_motion_estimation_kernel,
-                           enc_handle_ptr->motion_estimation_context_ptr_array);
+        // Register all 16 pipeline kernels in stage order
+        SvtKernelDispatcher* d = &enc_handle_ptr->kernel_dispatcher;
+#define CONSUMER_FIFO(res) svt_system_resource_get_consumer_fifo(enc_handle_ptr->res, 0)
 
-    // Initial Rate Control
-    EB_CREATE_THREAD(enc_handle_ptr->initial_rate_control_thread_handle,
-                     svt_aom_initial_rate_control_kernel,
-                     enc_handle_ptr->initial_rate_control_context_ptr);
+        svt_kernel_dispatcher_register(d,
+                                       svt_aom_resource_coordination_kernel_iter,
+                                       enc_handle_ptr->resource_coordination_context_ptr->priv,
+                                       CONSUMER_FIFO(input_cmd_resource_ptr),
+                                       "ResCoord");
+        svt_kernel_dispatcher_register(d,
+                                       svt_aom_picture_analysis_kernel_iter,
+                                       enc_handle_ptr->picture_analysis_context_ptr_array[0]->priv,
+                                       CONSUMER_FIFO(resource_coordination_results_resource_ptr),
+                                       "PicAnalysis");
+        svt_kernel_dispatcher_register(d,
+                                       svt_aom_picture_decision_kernel_iter,
+                                       enc_handle_ptr->picture_decision_context_ptr->priv,
+                                       CONSUMER_FIFO(picture_analysis_results_resource_ptr),
+                                       "PicDecision");
+        svt_kernel_dispatcher_register(d,
+                                       svt_aom_motion_estimation_kernel_iter,
+                                       enc_handle_ptr->motion_estimation_context_ptr_array[0]->priv,
+                                       CONSUMER_FIFO(picture_decision_results_resource_ptr),
+                                       "ME");
+        svt_kernel_dispatcher_register(d,
+                                       svt_aom_initial_rate_control_kernel_iter,
+                                       enc_handle_ptr->initial_rate_control_context_ptr->priv,
+                                       CONSUMER_FIFO(motion_estimation_results_resource_ptr),
+                                       "InitRC");
+        svt_kernel_dispatcher_register(d,
+                                       svt_aom_source_based_operations_kernel_iter,
+                                       enc_handle_ptr->source_based_operations_context_ptr_array[0]->priv,
+                                       CONSUMER_FIFO(initial_rate_control_results_resource_ptr),
+                                       "SrcOps");
+        svt_kernel_dispatcher_register(d,
+                                       svt_aom_tpl_disp_kernel_iter,
+                                       enc_handle_ptr->tpl_disp_context_ptr_array[0]->priv,
+                                       CONSUMER_FIFO(tpl_disp_res_srm),
+                                       "TPL");
+        svt_kernel_dispatcher_register(d,
+                                       svt_aom_picture_manager_kernel_iter,
+                                       enc_handle_ptr->picture_manager_context_ptr->priv,
+                                       CONSUMER_FIFO(picture_demux_results_resource_ptr),
+                                       "PicMgr");
+        svt_kernel_dispatcher_register(d,
+                                       svt_aom_rate_control_kernel_iter,
+                                       enc_handle_ptr->rate_control_context_ptr->priv,
+                                       CONSUMER_FIFO(rate_control_tasks_resource_ptr),
+                                       "RC");
+        svt_kernel_dispatcher_register(d,
+                                       svt_aom_mode_decision_configuration_kernel_iter,
+                                       enc_handle_ptr->mode_decision_configuration_context_ptr_array[0]->priv,
+                                       CONSUMER_FIFO(rate_control_results_resource_ptr),
+                                       "MDConfig");
+        svt_kernel_dispatcher_register(d,
+                                       svt_aom_mode_decision_kernel_iter,
+                                       enc_handle_ptr->enc_dec_context_ptr_array[0]->priv,
+                                       CONSUMER_FIFO(enc_dec_tasks_resource_ptr),
+                                       "EncDec");
+        svt_kernel_dispatcher_register(d,
+                                       svt_aom_dlf_kernel_iter,
+                                       enc_handle_ptr->dlf_context_ptr_array[0]->priv,
+                                       CONSUMER_FIFO(enc_dec_results_resource_ptr),
+                                       "DLF");
+        svt_kernel_dispatcher_register(d,
+                                       svt_aom_cdef_kernel_iter,
+                                       enc_handle_ptr->cdef_context_ptr_array[0]->priv,
+                                       CONSUMER_FIFO(dlf_results_resource_ptr),
+                                       "CDEF");
+        svt_kernel_dispatcher_register(d,
+                                       svt_aom_rest_kernel_iter,
+                                       enc_handle_ptr->rest_context_ptr_array[0]->priv,
+                                       CONSUMER_FIFO(cdef_results_resource_ptr),
+                                       "Rest");
+        svt_kernel_dispatcher_register(d,
+                                       svt_aom_entropy_coding_kernel_iter,
+                                       enc_handle_ptr->entropy_coding_context_ptr_array[0]->priv,
+                                       CONSUMER_FIFO(rest_results_resource_ptr),
+                                       "EC");
+        svt_kernel_dispatcher_register(d,
+                                       svt_aom_packetization_kernel_iter,
+                                       enc_handle_ptr->packetization_context_ptr->priv,
+                                       CONSUMER_FIFO(entropy_coding_results_resource_ptr),
+                                       "Pack");
 
-    // Source Based Oprations
-    EB_CREATE_THREAD_ARRAY(enc_handle_ptr->source_based_operations_thread_handle_array,
-                           scs->source_based_operations_process_init_count,
-                           svt_aom_source_based_operations_kernel,
-                           enc_handle_ptr->source_based_operations_context_ptr_array);
+#undef CONSUMER_FIFO
 
-    // TPL dispenser
-    EB_CREATE_THREAD_ARRAY(enc_handle_ptr->tpl_disp_thread_handle_array,
-                           scs->tpl_disp_process_init_count,
-                           svt_aom_tpl_disp_kernel, //TODOOMK
-                           enc_handle_ptr->tpl_disp_context_ptr_array);
-    // Picture Manager
-    EB_CREATE_THREAD(enc_handle_ptr->picture_manager_thread_handle,
-                     svt_aom_picture_manager_kernel,
-                     enc_handle_ptr->picture_manager_context_ptr);
-    // Rate Control
-    EB_CREATE_THREAD(enc_handle_ptr->rate_control_thread_handle,
-                     svt_aom_rate_control_kernel,
-                     enc_handle_ptr->rate_control_context_ptr);
+        // Store ME context for inline TF/MCTF processing in PD
+        scs->enc_ctx->st_me_context = enc_handle_ptr->motion_estimation_context_ptr_array[0]->priv;
+    } else
+#endif
+    {
+        EB_CREATE_THREAD(enc_handle_ptr->resource_coordination_thread_handle,
+                         svt_aom_resource_coordination_kernel,
+                         enc_handle_ptr->resource_coordination_context_ptr);
+        EB_CREATE_THREAD_ARRAY(enc_handle_ptr->picture_analysis_thread_handle_array,
+                               scs->picture_analysis_process_init_count,
+                               svt_aom_picture_analysis_kernel,
+                               enc_handle_ptr->picture_analysis_context_ptr_array,
+                               "svt-picana");
 
-    // Mode Decision Configuration Process
-    EB_CREATE_THREAD_ARRAY(enc_handle_ptr->mode_decision_configuration_thread_handle_array,
-                           scs->mode_decision_configuration_process_init_count,
-                           svt_aom_mode_decision_configuration_kernel,
-                           enc_handle_ptr->mode_decision_configuration_context_ptr_array);
+        // Picture Decision
+        EB_CREATE_THREAD(enc_handle_ptr->picture_decision_thread_handle,
+                         svt_aom_picture_decision_kernel,
+                         enc_handle_ptr->picture_decision_context_ptr);
 
-    // EncDec Process
-    EB_CREATE_THREAD_ARRAY(enc_handle_ptr->enc_dec_thread_handle_array,
-                           scs->enc_dec_process_init_count,
-                           svt_aom_mode_decision_kernel,
-                           enc_handle_ptr->enc_dec_context_ptr_array);
+        // Motion Estimation
+        EB_CREATE_THREAD_ARRAY(enc_handle_ptr->motion_estimation_thread_handle_array,
+                               scs->motion_estimation_process_init_count,
+                               svt_aom_motion_estimation_kernel,
+                               enc_handle_ptr->motion_estimation_context_ptr_array,
+                               "svt-me");
 
-    // Dlf Process
-    EB_CREATE_THREAD_ARRAY(enc_handle_ptr->dlf_thread_handle_array,
-                           scs->dlf_process_init_count,
-                           svt_aom_dlf_kernel,
-                           enc_handle_ptr->dlf_context_ptr_array);
+        // Initial Rate Control
+        EB_CREATE_THREAD(enc_handle_ptr->initial_rate_control_thread_handle,
+                         svt_aom_initial_rate_control_kernel,
+                         enc_handle_ptr->initial_rate_control_context_ptr);
 
-    // Cdef Process
-    EB_CREATE_THREAD_ARRAY(enc_handle_ptr->cdef_thread_handle_array,
-                           scs->cdef_process_init_count,
-                           svt_aom_cdef_kernel,
-                           enc_handle_ptr->cdef_context_ptr_array);
+        // Source Based Oprations
+        EB_CREATE_THREAD_ARRAY(enc_handle_ptr->source_based_operations_thread_handle_array,
+                               scs->source_based_operations_process_init_count,
+                               svt_aom_source_based_operations_kernel,
+                               enc_handle_ptr->source_based_operations_context_ptr_array,
+                               "svt-srcops");
 
-    // Rest Process
-    EB_CREATE_THREAD_ARRAY(enc_handle_ptr->rest_thread_handle_array,
-                           scs->rest_process_init_count,
-                           svt_aom_rest_kernel,
-                           enc_handle_ptr->rest_context_ptr_array);
+        // TPL dispenser
+        EB_CREATE_THREAD_ARRAY(enc_handle_ptr->tpl_disp_thread_handle_array,
+                               scs->tpl_disp_process_init_count,
+                               svt_aom_tpl_disp_kernel, //TODOOMK
+                               enc_handle_ptr->tpl_disp_context_ptr_array,
+                               "svt-tpl");
+        // Picture Manager
+        EB_CREATE_THREAD(enc_handle_ptr->picture_manager_thread_handle,
+                         svt_aom_picture_manager_kernel,
+                         enc_handle_ptr->picture_manager_context_ptr);
+        // Rate Control
+        EB_CREATE_THREAD(enc_handle_ptr->rate_control_thread_handle,
+                         svt_aom_rate_control_kernel,
+                         enc_handle_ptr->rate_control_context_ptr);
 
-    // Entropy Coding Process
-    EB_CREATE_THREAD_ARRAY(enc_handle_ptr->entropy_coding_thread_handle_array,
-                           scs->entropy_coding_process_init_count,
-                           svt_aom_entropy_coding_kernel,
-                           enc_handle_ptr->entropy_coding_context_ptr_array);
-    // Packetization
-    EB_CREATE_THREAD(enc_handle_ptr->packetization_thread_handle,
-                     svt_aom_packetization_kernel,
-                     enc_handle_ptr->packetization_context_ptr);
+        // Mode Decision Configuration Process
+        EB_CREATE_THREAD_ARRAY(enc_handle_ptr->mode_decision_configuration_thread_handle_array,
+                               scs->mode_decision_configuration_process_init_count,
+                               svt_aom_mode_decision_configuration_kernel,
+                               enc_handle_ptr->mode_decision_configuration_context_ptr_array,
+                               "svt-mdcfg");
+
+        // EncDec Process
+        EB_CREATE_THREAD_ARRAY(enc_handle_ptr->enc_dec_thread_handle_array,
+                               scs->enc_dec_process_init_count,
+                               svt_aom_mode_decision_kernel,
+                               enc_handle_ptr->enc_dec_context_ptr_array,
+                               "svt-md");
+
+        // Dlf Process
+        EB_CREATE_THREAD_ARRAY(enc_handle_ptr->dlf_thread_handle_array,
+                               scs->dlf_process_init_count,
+                               svt_aom_dlf_kernel,
+                               enc_handle_ptr->dlf_context_ptr_array,
+                               "svt-dlf");
+
+        // Cdef Process
+        EB_CREATE_THREAD_ARRAY(enc_handle_ptr->cdef_thread_handle_array,
+                               scs->cdef_process_init_count,
+                               svt_aom_cdef_kernel,
+                               enc_handle_ptr->cdef_context_ptr_array,
+                               "svt-cdef");
+
+        // Rest Process
+        EB_CREATE_THREAD_ARRAY(enc_handle_ptr->rest_thread_handle_array,
+                               scs->rest_process_init_count,
+                               svt_aom_rest_kernel,
+                               enc_handle_ptr->rest_context_ptr_array,
+                               "svt-rest");
+
+        // Entropy Coding Process
+        EB_CREATE_THREAD_ARRAY(enc_handle_ptr->entropy_coding_thread_handle_array,
+                               scs->entropy_coding_process_init_count,
+                               svt_aom_entropy_coding_kernel,
+                               enc_handle_ptr->entropy_coding_context_ptr_array,
+                               "svt-ec");
+        // Packetization
+        EB_CREATE_THREAD(enc_handle_ptr->packetization_thread_handle,
+                         svt_aom_packetization_kernel,
+                         enc_handle_ptr->packetization_context_ptr);
+    } // end of thread creation block
 
     svt_print_memory_usage();
 
@@ -3059,6 +3284,10 @@ static void derive_tf_params(SequenceControlSet* scs) {
     const EncMode enc_mode = scs->static_config.enc_mode;
     uint8_t       tf_level = 0;
     if (scs->static_config.pred_structure == LOW_DELAY) {
+#if TUNE_SIMPLIFY_SETTINGS
+        // TF disabled for all LD
+        tf_level = 0;
+#else
         // For LD, only use TF for non-SC content in RTC mode; the TF is tuned for RTC content
         if (!do_tf || scs->static_config.screen_content_mode == 1 || !scs->static_config.rtc) {
             tf_level = 0;
@@ -3069,6 +3298,7 @@ static void derive_tf_params(SequenceControlSet* scs) {
         } else {
             tf_level = 0;
         }
+#endif
         tf_ld_controls(scs, tf_level);
         return;
     }
@@ -3089,16 +3319,16 @@ static void derive_tf_params(SequenceControlSet* scs) {
 /*
  * Set the MRP control
  */
-static void set_mrp_ctrl(SequenceControlSet* scs, uint8_t mrp_level) {
-    MrpCtrls* mrp_ctrl = &scs->mrp_ctrls;
-
+static void set_mrp_ctrl_with_level(const SequenceControlSet* scs, MrpCtrls* mrp_ctrl, uint8_t mrp_level) {
     switch (mrp_level) {
     case 0:
-        mrp_ctrl->referencing_scheme          = 0;
+        mrp_ctrl->referencing_scheme = 0;
+#if !TUNE_SIMPLIFY_SETTINGS
         mrp_ctrl->sc_base_ref_list0_count     = 1;
         mrp_ctrl->sc_base_ref_list1_count     = 0;
         mrp_ctrl->sc_non_base_ref_list0_count = 1;
         mrp_ctrl->sc_non_base_ref_list1_count = 0;
+#endif
         mrp_ctrl->base_ref_list0_count        = 1;
         mrp_ctrl->base_ref_list1_count        = 0;
         mrp_ctrl->non_base_ref_list0_count    = 1;
@@ -3109,14 +3339,19 @@ static void set_mrp_ctrl(SequenceControlSet* scs, uint8_t mrp_level) {
         mrp_ctrl->only_l_bwd                  = 0;
         mrp_ctrl->pme_ref0_only               = 0;
         mrp_ctrl->use_best_references         = 0;
+#if OPT_MRP_HME_L0_DETECT
+        mrp_ctrl->early_hme_l0_prune_th = 0;
+#endif
         break;
 
     case 1:
-        mrp_ctrl->referencing_scheme          = 1;
+        mrp_ctrl->referencing_scheme = 1;
+#if !TUNE_SIMPLIFY_SETTINGS
         mrp_ctrl->sc_base_ref_list0_count     = 2;
         mrp_ctrl->sc_base_ref_list1_count     = 2;
         mrp_ctrl->sc_non_base_ref_list0_count = 2;
         mrp_ctrl->sc_non_base_ref_list1_count = 2;
+#endif
         mrp_ctrl->base_ref_list0_count        = 4;
         mrp_ctrl->base_ref_list1_count        = 3;
         mrp_ctrl->non_base_ref_list0_count    = 4;
@@ -3127,14 +3362,19 @@ static void set_mrp_ctrl(SequenceControlSet* scs, uint8_t mrp_level) {
         mrp_ctrl->only_l_bwd                  = 0;
         mrp_ctrl->pme_ref0_only               = 0;
         mrp_ctrl->use_best_references         = 0;
+#if OPT_MRP_HME_L0_DETECT
+        mrp_ctrl->early_hme_l0_prune_th = 0;
+#endif
         break;
 
     case 2:
-        mrp_ctrl->referencing_scheme          = 1;
+        mrp_ctrl->referencing_scheme = 1;
+#if !TUNE_SIMPLIFY_SETTINGS
         mrp_ctrl->sc_base_ref_list0_count     = 2;
         mrp_ctrl->sc_base_ref_list1_count     = 2;
         mrp_ctrl->sc_non_base_ref_list0_count = 2;
         mrp_ctrl->sc_non_base_ref_list1_count = 2;
+#endif
         mrp_ctrl->base_ref_list0_count        = 4;
         mrp_ctrl->base_ref_list1_count        = 3;
         mrp_ctrl->non_base_ref_list0_count    = 4;
@@ -3145,13 +3385,18 @@ static void set_mrp_ctrl(SequenceControlSet* scs, uint8_t mrp_level) {
         mrp_ctrl->only_l_bwd                  = 1;
         mrp_ctrl->pme_ref0_only               = 0;
         mrp_ctrl->use_best_references         = 0;
+#if OPT_MRP_HME_L0_DETECT
+        mrp_ctrl->early_hme_l0_prune_th = 0;
+#endif
         break;
     case 3:
-        mrp_ctrl->referencing_scheme          = 1;
+        mrp_ctrl->referencing_scheme = 1;
+#if !TUNE_SIMPLIFY_SETTINGS
         mrp_ctrl->sc_base_ref_list0_count     = 2;
         mrp_ctrl->sc_base_ref_list1_count     = 2;
         mrp_ctrl->sc_non_base_ref_list0_count = 2;
         mrp_ctrl->sc_non_base_ref_list1_count = 2;
+#endif
         mrp_ctrl->base_ref_list0_count        = 4;
         mrp_ctrl->base_ref_list1_count        = 3;
         mrp_ctrl->non_base_ref_list0_count    = 4;
@@ -3162,13 +3407,18 @@ static void set_mrp_ctrl(SequenceControlSet* scs, uint8_t mrp_level) {
         mrp_ctrl->only_l_bwd                  = 1;
         mrp_ctrl->pme_ref0_only               = 0;
         mrp_ctrl->use_best_references         = 2;
+#if OPT_MRP_HME_L0_DETECT
+        mrp_ctrl->early_hme_l0_prune_th = 0;
+#endif
         break;
     case 4:
-        mrp_ctrl->referencing_scheme          = 1;
+        mrp_ctrl->referencing_scheme = 1;
+#if !TUNE_SIMPLIFY_SETTINGS
         mrp_ctrl->sc_base_ref_list0_count     = 2;
         mrp_ctrl->sc_base_ref_list1_count     = 2;
         mrp_ctrl->sc_non_base_ref_list0_count = 2;
         mrp_ctrl->sc_non_base_ref_list1_count = 2;
+#endif
         mrp_ctrl->base_ref_list0_count        = 4;
         mrp_ctrl->base_ref_list1_count        = 3;
         mrp_ctrl->non_base_ref_list0_count    = 4;
@@ -3179,13 +3429,18 @@ static void set_mrp_ctrl(SequenceControlSet* scs, uint8_t mrp_level) {
         mrp_ctrl->only_l_bwd                  = 1;
         mrp_ctrl->pme_ref0_only               = 1;
         mrp_ctrl->use_best_references         = 3;
+#if OPT_MRP_HME_L0_DETECT
+        mrp_ctrl->early_hme_l0_prune_th = 0;
+#endif
         break;
     case 5:
-        mrp_ctrl->referencing_scheme          = 0;
+        mrp_ctrl->referencing_scheme = 0;
+#if !TUNE_SIMPLIFY_SETTINGS
         mrp_ctrl->sc_base_ref_list0_count     = 2;
         mrp_ctrl->sc_base_ref_list1_count     = 2;
         mrp_ctrl->sc_non_base_ref_list0_count = 2;
         mrp_ctrl->sc_non_base_ref_list1_count = 2;
+#endif
         mrp_ctrl->base_ref_list0_count        = 4;
         mrp_ctrl->base_ref_list1_count        = 3;
         mrp_ctrl->non_base_ref_list0_count    = 4;
@@ -3196,13 +3451,18 @@ static void set_mrp_ctrl(SequenceControlSet* scs, uint8_t mrp_level) {
         mrp_ctrl->only_l_bwd                  = 1;
         mrp_ctrl->pme_ref0_only               = 1;
         mrp_ctrl->use_best_references         = 3;
+#if OPT_MRP_HME_L0_DETECT
+        mrp_ctrl->early_hme_l0_prune_th = 0;
+#endif
         break;
     case 6:
-        mrp_ctrl->referencing_scheme          = 0;
+        mrp_ctrl->referencing_scheme = 0;
+#if !TUNE_SIMPLIFY_SETTINGS
         mrp_ctrl->sc_base_ref_list0_count     = 2;
         mrp_ctrl->sc_base_ref_list1_count     = 2;
         mrp_ctrl->sc_non_base_ref_list0_count = 1;
         mrp_ctrl->sc_non_base_ref_list1_count = 1;
+#endif
         mrp_ctrl->base_ref_list0_count        = 3;
         mrp_ctrl->base_ref_list1_count        = 2;
         mrp_ctrl->non_base_ref_list0_count    = 3;
@@ -3213,13 +3473,48 @@ static void set_mrp_ctrl(SequenceControlSet* scs, uint8_t mrp_level) {
         mrp_ctrl->only_l_bwd                  = 1;
         mrp_ctrl->pme_ref0_only               = 1;
         mrp_ctrl->use_best_references         = 3;
+#if OPT_MRP_HME_L0_DETECT
+        mrp_ctrl->early_hme_l0_prune_th = 170;
+#endif
         break;
+#if OPT_MRP_HME_L0_DETECT
     case 7:
-        mrp_ctrl->referencing_scheme          = 0;
+        mrp_ctrl->referencing_scheme       = 0;
+        mrp_ctrl->base_ref_list0_count     = 3;
+        mrp_ctrl->base_ref_list1_count     = 2;
+        mrp_ctrl->non_base_ref_list0_count = 3;
+        mrp_ctrl->non_base_ref_list1_count = 2;
+        mrp_ctrl->more_5L_refs             = 0;
+        mrp_ctrl->safe_limit_nref          = 2;
+        mrp_ctrl->safe_limit_zz_th         = 60000;
+        mrp_ctrl->only_l_bwd               = 1;
+        mrp_ctrl->pme_ref0_only            = 1;
+        mrp_ctrl->use_best_references      = 3;
+        mrp_ctrl->early_hme_l0_prune_th    = 150;
+        break;
+    case 8:
+        mrp_ctrl->referencing_scheme       = 0;
+        mrp_ctrl->base_ref_list0_count     = 3;
+        mrp_ctrl->base_ref_list1_count     = 2;
+        mrp_ctrl->non_base_ref_list0_count = 2;
+        mrp_ctrl->non_base_ref_list1_count = 2;
+        mrp_ctrl->more_5L_refs             = 0;
+        mrp_ctrl->safe_limit_nref          = 2;
+        mrp_ctrl->safe_limit_zz_th         = 60000;
+        mrp_ctrl->only_l_bwd               = 1;
+        mrp_ctrl->pme_ref0_only            = 1;
+        mrp_ctrl->use_best_references      = 3;
+        mrp_ctrl->early_hme_l0_prune_th    = 0;
+        break;
+#else
+    case 7:
+        mrp_ctrl->referencing_scheme = 0;
+#if !TUNE_SIMPLIFY_SETTINGS
         mrp_ctrl->sc_base_ref_list0_count     = 2;
         mrp_ctrl->sc_base_ref_list1_count     = 2;
         mrp_ctrl->sc_non_base_ref_list0_count = 1;
         mrp_ctrl->sc_non_base_ref_list1_count = 1;
+#endif
         mrp_ctrl->base_ref_list0_count        = 3;
         mrp_ctrl->base_ref_list1_count        = 2;
         mrp_ctrl->non_base_ref_list0_count    = 2;
@@ -3232,11 +3527,13 @@ static void set_mrp_ctrl(SequenceControlSet* scs, uint8_t mrp_level) {
         mrp_ctrl->use_best_references         = 3;
         break;
     case 8:
-        mrp_ctrl->referencing_scheme          = 0;
+        mrp_ctrl->referencing_scheme = 0;
+#if !TUNE_SIMPLIFY_SETTINGS
         mrp_ctrl->sc_base_ref_list0_count     = 2;
         mrp_ctrl->sc_base_ref_list1_count     = 2;
         mrp_ctrl->sc_non_base_ref_list0_count = 1;
         mrp_ctrl->sc_non_base_ref_list1_count = 1;
+#endif
         mrp_ctrl->base_ref_list0_count        = 2;
         mrp_ctrl->base_ref_list1_count        = 2;
         mrp_ctrl->non_base_ref_list0_count    = 2;
@@ -3248,12 +3545,15 @@ static void set_mrp_ctrl(SequenceControlSet* scs, uint8_t mrp_level) {
         mrp_ctrl->pme_ref0_only               = 1;
         mrp_ctrl->use_best_references         = 3;
         break;
+#endif
     case 9:
-        mrp_ctrl->referencing_scheme          = 0;
+        mrp_ctrl->referencing_scheme = 0;
+#if !TUNE_SIMPLIFY_SETTINGS
         mrp_ctrl->sc_base_ref_list0_count     = 2;
         mrp_ctrl->sc_base_ref_list1_count     = 2;
         mrp_ctrl->sc_non_base_ref_list0_count = 1;
         mrp_ctrl->sc_non_base_ref_list1_count = 1;
+#endif
         mrp_ctrl->base_ref_list0_count        = 3;
         mrp_ctrl->base_ref_list1_count        = 2;
         mrp_ctrl->non_base_ref_list0_count    = 1;
@@ -3264,13 +3564,18 @@ static void set_mrp_ctrl(SequenceControlSet* scs, uint8_t mrp_level) {
         mrp_ctrl->only_l_bwd                  = 1;
         mrp_ctrl->pme_ref0_only               = 1;
         mrp_ctrl->use_best_references         = 3;
+#if OPT_MRP_HME_L0_DETECT
+        mrp_ctrl->early_hme_l0_prune_th = 0;
+#endif
         break;
     case 10:
-        mrp_ctrl->referencing_scheme          = 0;
+        mrp_ctrl->referencing_scheme = 0;
+#if !TUNE_SIMPLIFY_SETTINGS
         mrp_ctrl->sc_base_ref_list0_count     = 2;
         mrp_ctrl->sc_base_ref_list1_count     = 2;
         mrp_ctrl->sc_non_base_ref_list0_count = 1;
         mrp_ctrl->sc_non_base_ref_list1_count = 1;
+#endif
         mrp_ctrl->base_ref_list0_count        = 2;
         mrp_ctrl->base_ref_list1_count        = 2;
         mrp_ctrl->non_base_ref_list0_count    = 1;
@@ -3281,13 +3586,18 @@ static void set_mrp_ctrl(SequenceControlSet* scs, uint8_t mrp_level) {
         mrp_ctrl->only_l_bwd                  = 1;
         mrp_ctrl->pme_ref0_only               = 1;
         mrp_ctrl->use_best_references         = 3;
+#if OPT_MRP_HME_L0_DETECT
+        mrp_ctrl->early_hme_l0_prune_th = 0;
+#endif
         break;
     case 11:
-        mrp_ctrl->referencing_scheme          = 0;
+        mrp_ctrl->referencing_scheme = 0;
+#if !TUNE_SIMPLIFY_SETTINGS
         mrp_ctrl->sc_base_ref_list0_count     = 1;
         mrp_ctrl->sc_base_ref_list1_count     = 1;
         mrp_ctrl->sc_non_base_ref_list0_count = 1;
         mrp_ctrl->sc_non_base_ref_list1_count = 1;
+#endif
         mrp_ctrl->base_ref_list0_count        = 1;
         mrp_ctrl->base_ref_list1_count        = 1;
         mrp_ctrl->non_base_ref_list0_count    = 1;
@@ -3298,6 +3608,9 @@ static void set_mrp_ctrl(SequenceControlSet* scs, uint8_t mrp_level) {
         mrp_ctrl->only_l_bwd                  = 0;
         mrp_ctrl->pme_ref0_only               = 0;
         mrp_ctrl->use_best_references         = 0;
+#if OPT_MRP_HME_L0_DETECT
+        mrp_ctrl->early_hme_l0_prune_th = 0;
+#endif
         break;
     default:
         assert(0);
@@ -3305,11 +3618,17 @@ static void set_mrp_ctrl(SequenceControlSet* scs, uint8_t mrp_level) {
     }
     // For low delay mode, list1 references are not used
     if (scs->static_config.pred_structure == LOW_DELAY && scs->static_config.rate_control_mode == SVT_AV1_RC_MODE_CBR) {
+#if !TUNE_SIMPLIFY_SETTINGS
         mrp_ctrl->sc_base_ref_list1_count     = 0;
         mrp_ctrl->sc_non_base_ref_list1_count = 0;
-        mrp_ctrl->base_ref_list1_count        = 0;
-        mrp_ctrl->non_base_ref_list1_count    = 0;
+#endif
+        mrp_ctrl->base_ref_list1_count     = 0;
+        mrp_ctrl->non_base_ref_list1_count = 0;
+#if REMOVE_USE_FLAT_IPP
+        if (scs->static_config.rtc && scs->static_config.hierarchical_levels == 0) {
+#else
         if (scs->use_flat_ipp) {
+#endif
             mrp_ctrl->referencing_scheme  = 0;
             mrp_ctrl->more_5L_refs        = 0;
             mrp_ctrl->safe_limit_nref     = 0;
@@ -3318,18 +3637,39 @@ static void set_mrp_ctrl(SequenceControlSet* scs, uint8_t mrp_level) {
             mrp_ctrl->use_best_references = 0;
         }
     }
+
     if (scs->static_config.pred_structure == LOW_DELAY) {
+#if REMOVE_USE_FLAT_IPP
+        if (scs->static_config.rtc && scs->static_config.hierarchical_levels == 0) {
+#else
         if (scs->use_flat_ipp) {
+#endif
+#if TUNE_SIMPLIFY_SETTINGS
+            mrp_ctrl->flat_max_refs = MAX(MAX(mrp_ctrl->base_ref_list0_count, mrp_ctrl->base_ref_list1_count),
+                                          MAX(mrp_ctrl->non_base_ref_list0_count, mrp_ctrl->non_base_ref_list1_count));
+#else
             const uint8_t max_sc_refs = MAX(
-                MAX(scs->mrp_ctrls.sc_non_base_ref_list0_count, scs->mrp_ctrls.sc_non_base_ref_list1_count),
-                MAX(scs->mrp_ctrls.sc_base_ref_list0_count, scs->mrp_ctrls.sc_base_ref_list1_count));
+                MAX(mrp_ctrl->sc_non_base_ref_list0_count, mrp_ctrl->sc_non_base_ref_list1_count),
+                MAX(mrp_ctrl->sc_base_ref_list0_count, mrp_ctrl->sc_base_ref_list1_count));
             const uint8_t max_nsc_refs = MAX(
-                MAX(scs->mrp_ctrls.base_ref_list0_count, scs->mrp_ctrls.base_ref_list1_count),
-                MAX(scs->mrp_ctrls.non_base_ref_list0_count, scs->mrp_ctrls.non_base_ref_list1_count));
+                MAX(mrp_ctrl->base_ref_list0_count, mrp_ctrl->base_ref_list1_count),
+                MAX(mrp_ctrl->non_base_ref_list0_count, mrp_ctrl->non_base_ref_list1_count));
             mrp_ctrl->flat_max_refs = scs->static_config.screen_content_mode == 2 ? MAX(max_sc_refs, max_nsc_refs)
                 : scs->static_config.screen_content_mode == 1                     ? max_sc_refs
                                                                                   : max_nsc_refs;
+#endif
         }
+
+#if TUNE_SIMPLIFY_SETTINGS
+        mrp_ctrl->ld_reduce_ref_buffs = (mrp_ctrl->base_ref_list0_count <= 1 && mrp_ctrl->base_ref_list1_count <= 1 &&
+                                         mrp_ctrl->non_base_ref_list0_count <= 1 &&
+                                         mrp_ctrl->non_base_ref_list1_count <= 1)
+            ? 2
+            : (mrp_ctrl->base_ref_list0_count <= 2 && mrp_ctrl->base_ref_list1_count <= 2 &&
+               mrp_ctrl->non_base_ref_list0_count <= 2 && mrp_ctrl->non_base_ref_list1_count <= 2)
+            ? 1
+            : 0;
+#else
         // If content type (SC/NSC) is known, can allocate refs based on settings, else consider worst-case
         if (scs->static_config.screen_content_mode == 1) {
             mrp_ctrl->ld_reduce_ref_buffs = (mrp_ctrl->sc_base_ref_list0_count <= 1 &&
@@ -3366,9 +3706,143 @@ static void set_mrp_ctrl(SequenceControlSet* scs, uint8_t mrp_level) {
                 ? 1
                 : 0;
         }
+#endif
     } else {
         mrp_ctrl->ld_reduce_ref_buffs = 0;
     }
+}
+
+// Preset-driven entry point for setting mrp_ctrl. Owns the
+// enc_mode->mrp_level cascade; callers needing to FORCE a specific level
+// (e.g. LTR override) call set_mrp_ctrl_with_level directly.
+static void set_mrp_ctrl(const SequenceControlSet* scs, MrpCtrls* mrp_ctrl, EncMode enc_mode) {
+    uint8_t mrp_level;
+#if TUNE_SIMPLIFY_SETTINGS
+    if (scs->static_config.rtc) {
+#if REMOVE_USE_FLAT_IPP
+        if (scs->static_config.hierarchical_levels == 0) {
+#else
+        if (scs->use_flat_ipp) {
+#endif
+#if TUNE_SHIFT_PRESETS_RTC
+            if (enc_mode <= ENC_M8) {
+                mrp_level = 6;
+            } else {
+                mrp_level = 0;
+            }
+#else
+            if (enc_mode <= ENC_M8) {
+                mrp_level = 6;
+            } else if (enc_mode <= ENC_M9) {
+                mrp_level = 9;
+            } else {
+                mrp_level = 0;
+            }
+#endif
+        } else {
+#if TUNE_SHIFT_PRESETS_RTC
+            if (enc_mode <= ENC_M9) {
+                mrp_level = 6;
+            } else if (enc_mode <= ENC_M10) {
+                mrp_level = 9;
+            } else {
+                mrp_level = 0;
+            }
+#else
+            if (enc_mode <= ENC_M10) {
+                mrp_level = 6;
+            } else if (enc_mode <= ENC_M11) {
+                mrp_level = 9;
+            } else {
+                mrp_level = 0;
+            }
+#endif
+        }
+#else
+    if (scs->static_config.rtc) {
+        if (enc_mode <= ENC_M8 || (!scs->use_flat_ipp && enc_mode <= ENC_M10)) {
+            mrp_level = 6;
+        } else if ((scs->use_flat_ipp && enc_mode <= ENC_M9) || (!scs->use_flat_ipp && enc_mode <= ENC_M11)) {
+            mrp_level = 9;
+        } else {
+            mrp_level = 0;
+        }
+#endif
+    }
+
+    else {
+        if (enc_mode <= ENC_MR) {
+            mrp_level = 1;
+        } else if (enc_mode <= ENC_M2) {
+            mrp_level = 2;
+        } else if (enc_mode <= ENC_M4) {
+            mrp_level = 4;
+        } else if (enc_mode <= ENC_M8) {
+            mrp_level = 6;
+        } else if (enc_mode <= ENC_M9) {
+            mrp_level = scs->static_config.pred_structure == RANDOM_ACCESS ? 7 : 9;
+        } else {
+            if (scs->static_config.encoder_bit_depth == EB_EIGHT_BIT) {
+                mrp_level = scs->static_config.pred_structure == RANDOM_ACCESS ? 11 : 0;
+            } else {
+                mrp_level = scs->static_config.pred_structure == RANDOM_ACCESS ? 7 : 0;
+            }
+        }
+    }
+    set_mrp_ctrl_with_level(scs, mrp_ctrl, mrp_level);
+}
+
+// Mutate mrp_ctrls mode-decision fields in place for the runtime preset.
+// Structural fields (ld_reduce_ref_buffs, flat_max_refs) are never written
+// — they're locked to the init-time DPB allocation. Per-field writes are
+// hardware-atomic; same lock-free runtime-update pattern as
+// update_rate_info / update_frame_rate_info.
+void svt_aom_clamp_mrp_ctrls_to_runtime_preset(SequenceControlSet* scs, EncMode runtime_enc_mode) {
+    // Defensive zero-init: set_mrp_ctrl writes most but not all fields (e.g.
+    // flat_max_refs only in the flat-IPP path). We don't read the unset
+    // fields, but zero-init prevents propagation of garbage if a future
+    // edit adds a copy-back for one.
+    MrpCtrls tmp = {0};
+    // mrp_ctrls_init is populated at end of set_param_based_on_input; if 0
+    // here, init never ran and we shouldn't be processing frames.
+    assert(scs->mrp_ctrls_init.base_ref_list0_count > 0);
+    set_mrp_ctrl(scs, &tmp, runtime_enc_mode);
+
+    // Clamp list counts to the init buffer envelope (runtime can shrink but
+    // never grow past what was allocated).
+#define CLAMP(field) tmp.field = MIN(scs->mrp_ctrls_init.field, tmp.field)
+    CLAMP(base_ref_list0_count);
+    CLAMP(base_ref_list1_count);
+    CLAMP(non_base_ref_list0_count);
+    CLAMP(non_base_ref_list1_count);
+#if !TUNE_SIMPLIFY_SETTINGS
+    CLAMP(sc_base_ref_list0_count);
+    CLAMP(sc_base_ref_list1_count);
+    CLAMP(sc_non_base_ref_list0_count);
+    CLAMP(sc_non_base_ref_list1_count);
+#endif
+#undef CLAMP
+
+    // Publish mutable fields one-by-one. NOT updating ld_reduce_ref_buffs
+    // or flat_max_refs — readers in pd_process use those to interpret DPB
+    // layout, which is locked at init.
+    scs->mrp_ctrls.referencing_scheme       = tmp.referencing_scheme;
+    scs->mrp_ctrls.base_ref_list0_count     = tmp.base_ref_list0_count;
+    scs->mrp_ctrls.base_ref_list1_count     = tmp.base_ref_list1_count;
+    scs->mrp_ctrls.non_base_ref_list0_count = tmp.non_base_ref_list0_count;
+    scs->mrp_ctrls.non_base_ref_list1_count = tmp.non_base_ref_list1_count;
+    scs->mrp_ctrls.more_5L_refs             = tmp.more_5L_refs;
+    scs->mrp_ctrls.safe_limit_nref          = tmp.safe_limit_nref;
+    scs->mrp_ctrls.safe_limit_zz_th         = tmp.safe_limit_zz_th;
+    scs->mrp_ctrls.only_l_bwd               = tmp.only_l_bwd;
+    scs->mrp_ctrls.pme_ref0_only            = tmp.pme_ref0_only;
+    scs->mrp_ctrls.use_best_references      = tmp.use_best_references;
+#if !TUNE_SIMPLIFY_SETTINGS
+    scs->mrp_ctrls.sc_base_ref_list0_count     = tmp.sc_base_ref_list0_count;
+    scs->mrp_ctrls.sc_base_ref_list1_count     = tmp.sc_base_ref_list1_count;
+    scs->mrp_ctrls.sc_non_base_ref_list0_count = tmp.sc_non_base_ref_list0_count;
+    scs->mrp_ctrls.sc_non_base_ref_list1_count = tmp.sc_non_base_ref_list1_count;
+#endif
 }
 
 static uint8_t get_tpl(uint8_t pred_structure, uint8_t superres_mode, uint8_t resize_mode, uint8_t aq_mode,
@@ -3461,8 +3935,8 @@ void set_multi_pass_params(SequenceControlSet* scs) {
 
     if (scs->static_config.recode_loop > 0 &&
         ((scs->static_config.rate_control_mode == SVT_AV1_RC_MODE_CQP_OR_CRF && scs->static_config.max_bit_rate == 0) ||
-         (scs->static_config.rate_control_mode == SVT_AV1_RC_MODE_CBR))) {
-        // Only allow re-encoding for VBR or capped CRF, otherwise force recode_loop to DISALLOW_RECODE or 0
+         (scs->static_config.rate_control_mode == SVT_AV1_RC_MODE_CBR && !scs->static_config.rtc))) {
+        // Only allow re-encoding for VBR, RTC CBR or capped CRF, otherwise force recode_loop to DISALLOW_RECODE
         scs->static_config.recode_loop = DISALLOW_RECODE;
     } else if (scs->static_config.recode_loop == ALLOW_RECODE_DEFAULT) {
         // capped CRF has reencde enabled for base layer frames for all presets
@@ -3536,7 +4010,22 @@ void set_qp_based_th_scaling_ctrls_default(SequenceControlSet* scs) {
 
 void set_qp_based_th_scaling_ctrls_rtc(SequenceControlSet* scs) {
     QpBasedThScaling* qp_ctrls = &scs->qp_based_th_scaling_ctrls;
-    const EncMode     enc_mode = scs->static_config.enc_mode;
+#if TUNE_SIMPLIFY_SETTINGS
+    qp_ctrls->tf_me_qp_based_th_scaling        = 1;
+    qp_ctrls->tf_ref_qp_based_th_scaling       = 1;
+    qp_ctrls->depths_qp_based_th_scaling       = 1;
+    qp_ctrls->hme_qp_based_th_scaling          = 1;
+    qp_ctrls->me_qp_based_th_scaling           = 1;
+    qp_ctrls->nsq_qp_based_th_scaling          = 1;
+    qp_ctrls->nic_max_qp_based_th_scaling      = 1;
+    qp_ctrls->nic_pruning_qp_based_th_scaling  = 1;
+    qp_ctrls->pme_qp_based_th_scaling          = 1;
+    qp_ctrls->txt_qp_based_th_scaling          = 1;
+    qp_ctrls->cap_max_size_qp_based_th_scaling = 1;
+    qp_ctrls->lpd0_qp_based_th_scaling         = 1;
+    qp_ctrls->intra_bc_mesh_qp_scaling         = 1;
+#else
+    const EncMode enc_mode = scs->static_config.enc_mode;
 
     if (enc_mode <= ENC_MR) {
         qp_ctrls->tf_me_qp_based_th_scaling        = 0;
@@ -3567,13 +4056,32 @@ void set_qp_based_th_scaling_ctrls_rtc(SequenceControlSet* scs) {
         qp_ctrls->lpd0_qp_based_th_scaling         = 1;
         qp_ctrls->intra_bc_mesh_qp_scaling         = 1;
     }
+#endif
 }
 
 void set_qp_based_th_scaling_ctrls_all_intra(SequenceControlSet* scs) {
     QpBasedThScaling* qp_ctrls = &scs->qp_based_th_scaling_ctrls;
     const EncMode     enc_mode = scs->static_config.enc_mode;
 
+#if FIX_MR_STILL_IMAGE
+    if (enc_mode <= ENC_MR) {
+        qp_ctrls->tf_me_qp_based_th_scaling        = 0;
+        qp_ctrls->tf_ref_qp_based_th_scaling       = 0;
+        qp_ctrls->depths_qp_based_th_scaling       = 0;
+        qp_ctrls->hme_qp_based_th_scaling          = 0;
+        qp_ctrls->me_qp_based_th_scaling           = 0;
+        qp_ctrls->nsq_qp_based_th_scaling          = 0;
+        qp_ctrls->nic_max_qp_based_th_scaling      = 1;
+        qp_ctrls->nic_pruning_qp_based_th_scaling  = 1;
+        qp_ctrls->pme_qp_based_th_scaling          = 0;
+        qp_ctrls->txt_qp_based_th_scaling          = 1;
+        qp_ctrls->cap_max_size_qp_based_th_scaling = 0;
+        qp_ctrls->lpd0_qp_based_th_scaling         = 0;
+        qp_ctrls->intra_bc_mesh_qp_scaling         = 0;
+    } else if (enc_mode <= ENC_M3) {
+#else
     if (enc_mode <= ENC_M3) {
+#endif
         qp_ctrls->tf_me_qp_based_th_scaling        = 0;
         qp_ctrls->tf_ref_qp_based_th_scaling       = 0;
         qp_ctrls->depths_qp_based_th_scaling       = 0;
@@ -3865,11 +4373,15 @@ static void set_param_based_on_input(SequenceControlSet* scs) {
         if (scs->allintra) {
             nsq_geom_level = svt_aom_get_nsq_geom_level_allintra(scs->static_config.enc_mode);
         } else if (scs->static_config.rtc) {
+#if TUNE_SIMPLIFY_SETTINGS
+            nsq_geom_level = svt_aom_get_nsq_geom_level_rtc();
+#else
             nsq_geom_level = svt_aom_get_nsq_geom_level_rtc(scs->static_config.enc_mode);
+#endif
         } else {
             nsq_geom_level = svt_aom_get_nsq_geom_level_default(scs->static_config.enc_mode, coeff_lvl);
         }
-        disallow_nsq               = MIN(disallow_nsq, (nsq_geom_level == 0 ? 1 : 0));
+        disallow_nsq               = MIN(disallow_nsq, nsq_geom_level == 0);
         uint8_t temp_allow_HVA_HVB = 0, temp_allow_HV4 = 0;
         svt_aom_set_nsq_geom_ctrls(NULL, nsq_geom_level, &temp_allow_HVA_HVB, &temp_allow_HV4, &min_nsq_bsize);
         allow_HVA_HVB |= temp_allow_HVA_HVB;
@@ -3885,7 +4397,11 @@ static void set_param_based_on_input(SequenceControlSet* scs) {
         disallow_4x4 = svt_aom_get_disallow_4x4_allintra(scs->static_config.enc_mode);
         disallow_8x8 = svt_aom_get_disallow_8x8_allintra();
     } else if (scs->static_config.rtc) {
+#if TUNE_SIMPLIFY_SETTINGS
+        disallow_4x4 = svt_aom_get_disallow_4x4_rtc();
+#else
         disallow_4x4 = svt_aom_get_disallow_4x4_rtc(scs->static_config.enc_mode);
+#endif
         disallow_8x8 = svt_aom_get_disallow_8x8_rtc(
             scs->static_config.enc_mode, scs->max_input_luma_width, scs->max_input_luma_height);
     } else {
@@ -3966,7 +4482,7 @@ static void set_param_based_on_input(SequenceControlSet* scs) {
     // 0: Do not use boundary pixels in the restoration filter search.
     scs->use_boundaries_in_rest_search = 0;
 
-    svt_aom_set_mfmv_config(scs);
+    svt_aom_set_mfmv_config(scs, scs->static_config.enc_mode);
 
     scs->list0_only_base = scs->static_config.enc_mode > ENC_M2;
 
@@ -3986,51 +4502,95 @@ static void set_param_based_on_input(SequenceControlSet* scs) {
     if (scs->static_config.scene_change_detection == 1) {
         SVT_WARN("Scene Change is not optimal and may produce suboptimal keyframe placements\n");
     }
-    // MRP level
-    uint8_t mrp_level;
-    if (scs->static_config.rtc) {
-        if (scs->static_config.enc_mode <= ENC_M8 || (!scs->use_flat_ipp && scs->static_config.enc_mode <= ENC_M10)) {
-            mrp_level = 6;
-        } else if ((scs->use_flat_ipp && scs->static_config.enc_mode <= ENC_M9) ||
-                   (!scs->use_flat_ipp && scs->static_config.enc_mode <= ENC_M11)) {
-            mrp_level = 9;
-        } else {
-            mrp_level = 0;
-        }
-    } else {
-        if (scs->static_config.enc_mode <= ENC_MR) {
-            mrp_level = 1;
-        } else if (scs->static_config.enc_mode <= ENC_M2) {
-            mrp_level = 2;
-        } else if (scs->static_config.enc_mode <= ENC_M4) {
-            mrp_level = 4;
-        } else if (scs->static_config.enc_mode <= ENC_M8) {
-            mrp_level = 6;
-        } else if (scs->static_config.enc_mode <= ENC_M9) {
-            mrp_level = scs->static_config.pred_structure == RANDOM_ACCESS ? 7 : 9;
-        } else {
-            if (scs->static_config.encoder_bit_depth == EB_EIGHT_BIT) {
-                mrp_level = scs->static_config.pred_structure == RANDOM_ACCESS ? 11 : 0;
-            } else {
-                mrp_level = scs->static_config.pred_structure == RANDOM_ACCESS ? 7 : 0;
-            }
+    // LTR DPB-layout constraint: the natural mrp_level may not provide enough
+    // STORE-safe DPB slots for the configured max_managed_refs. Override to
+    // the cheapest level that does, preferring to preserve non_base list0
+    // count (non_base refs are consulted by every TID>0 frame). RTC-tuned
+    // non-flat-IPP per-preset native capacity:
+    //
+    //   M9   → level 6 (list0 3/3) → ld_reduce 0 → 2 STOREs  (insufficient)
+    //   M10  → level 9 (list0 3/1) → ld_reduce 0 → 2 STOREs  (insufficient)
+    //   M11+ → level 0 (list0 1/1) → ld_reduce 2 → 4 STOREs  (native)
+    //
+    // Fallback choice: level 8 (list0 2/2) when non_base ≥ 2, else level 10
+    // (list0 2/1). See src/Docs/Appendix-Ref-Frame-Management.md §5.
+    set_mrp_ctrl(scs, &scs->mrp_ctrls, scs->static_config.enc_mode);
+    if (scs->static_config.max_managed_refs > 0) {
+        const uint8_t safe_pool_size = (uint8_t)svt_numbits(svt_aom_ref_mgmt_storeable_slots_mask(scs));
+        if (safe_pool_size < scs->static_config.max_managed_refs) {
+            const uint8_t fallback_level = (scs->mrp_ctrls.non_base_ref_list0_count >= 2) ? 8 : 10;
+            SVT_LOG(
+                "LTR enabled (max_managed_refs=%u): natural safe pool %u "
+                "insufficient, forcing mrp_level=%u\n",
+                (unsigned)scs->static_config.max_managed_refs,
+                (unsigned)safe_pool_size,
+                (unsigned)fallback_level);
+            set_mrp_ctrl_with_level(scs, &scs->mrp_ctrls, fallback_level);
         }
     }
-    set_mrp_ctrl(scs, mrp_level);
-    scs->is_short_clip = scs->static_config.gop_constraint_rc
-        ? 1
-        : 0; // set to 1 if multipass and less than 200 frames in resourcecordination
+
+    // Defensive invariant: the override must have left enough STORE-safe
+    // slots. Trips if a future change to set_mrp_ctrl's per-level counts
+    // silently regresses below the cap.
+    if (scs->static_config.max_managed_refs > 0) {
+        const uint8_t safe_pool_size = (uint8_t)svt_numbits(svt_aom_ref_mgmt_storeable_slots_mask(scs));
+        if (safe_pool_size < scs->static_config.max_managed_refs) {
+#if REMOVE_USE_FLAT_IPP
+            SVT_ERROR(
+                "LTR invariant: safe-pool %u < max_managed_refs %u "
+                "(ld_reduce=%u list0=%u/%u hier=%u rtc=%u)\n",
+                (unsigned)safe_pool_size,
+                (unsigned)scs->static_config.max_managed_refs,
+                (unsigned)scs->mrp_ctrls.ld_reduce_ref_buffs,
+                (unsigned)scs->mrp_ctrls.base_ref_list0_count,
+                (unsigned)scs->mrp_ctrls.non_base_ref_list0_count,
+                (unsigned)scs->static_config.hierarchical_levels,
+                (unsigned)scs->static_config.rtc);
+#else
+            SVT_ERROR(
+                "LTR invariant: safe-pool %u < max_managed_refs %u "
+                "(ld_reduce=%u list0=%u/%u hier=%u flat_ipp=%u)\n",
+                (unsigned)safe_pool_size,
+                (unsigned)scs->static_config.max_managed_refs,
+                (unsigned)scs->mrp_ctrls.ld_reduce_ref_buffs,
+                (unsigned)scs->mrp_ctrls.base_ref_list0_count,
+                (unsigned)scs->mrp_ctrls.non_base_ref_list0_count,
+                (unsigned)scs->static_config.hierarchical_levels,
+                (unsigned)scs->use_flat_ipp);
+#endif
+            assert(0 && "LTR safe-pool size < max_managed_refs");
+        }
+    }
+
+    // Snapshot the post-override state; PRESET_CHANGE_EVENT clamps against this.
+    scs->mrp_ctrls_init = scs->mrp_ctrls;
+    // set to 1 if multipass and less than 200 frames in resourcecordination
+    scs->is_short_clip = scs->static_config.gop_constraint_rc ? 1 : 0;
     if (allintra || scs->static_config.aq_mode == 1 || scs->static_config.scene_change_detection == 1 ||
         scs->vq_ctrls.sharpness_ctrls.tf == 1 || scs->static_config.enable_variance_boost) {
         scs->calculate_variance = 1;
     } else {
         scs->calculate_variance = 0;
     }
-
+#if OPT_LPD1_TX_SKIP_DECISION
+    if (allintra) {
+        scs->detect_grayscale_like_input = false;
+    } else {
+        scs->detect_grayscale_like_input = true;
+    }
+#endif
     scs->resize_pending_params.resize_state = ORIG;
     scs->resize_pending_params.resize_denom = SCALE_NUMERATOR;
 
+#if OPT_GATE_SB_LAMBDA_MOD
+#if TUNE_SHIFT_PRESETS_RTC
+    scs->stats_based_sb_lambda_modulation = (scs->static_config.enc_mode <= (rtc_tune ? ENC_M10 : ENC_M11)) ? 1 : 0;
+#else
+    scs->stats_based_sb_lambda_modulation = (scs->static_config.enc_mode <= ENC_M11) ? 1 : 0;
+#endif
+#else
     scs->stats_based_sb_lambda_modulation = 1;
+#endif
 
     scs->fast_aa_aware_screen_detection_mode = (scs->static_config.enc_mode >= ENC_M3) ? 1 : 0;
 }
@@ -4071,18 +4631,48 @@ static void copy_api_from_app(SequenceControlSet* scs, EbSvtAv1EncConfiguration*
     scs->static_config.intra_refresh_type = config_struct->intra_refresh_type;
     scs->static_config.enc_mode           = config_struct->enc_mode;
     if (scs->allintra) {
+#if FIX_MR_STILL_IMAGE
+        if (scs->static_config.enc_mode > ENC_M9) {
+#else
         if (scs->static_config.enc_mode == ENC_MR) {
             SVT_WARN("The lowest supported preset for all-intra and still-image is M0.\n");
             scs->static_config.enc_mode = ENC_M0;
         } else if (scs->static_config.enc_mode > ENC_M9) {
+#endif
             SVT_WARN("Preset M%d is mapped to M9.\n", scs->static_config.enc_mode);
             scs->static_config.enc_mode = ENC_M9;
         }
-    } else if (scs->static_config.rtc) {
+    }
+
+    else if (scs->static_config.rtc) {
+#if TUNE_SHIFT_PRESETS_RTC
+#if FTR_ADD_RTC_M12_M13
+        if (scs->static_config.enc_mode > ENC_M13) {
+            SVT_WARN("Preset M%d is mapped to M13.\n", scs->static_config.enc_mode);
+            scs->static_config.enc_mode = ENC_M13;
+        }
+
+        if (scs->static_config.enc_mode == ENC_M13) {
+            SVT_WARN("Preset M13 is experimental and intended for speed evaluation\n");
+        }
+#else
+        if (scs->static_config.enc_mode > ENC_M11) {
+            SVT_WARN("Preset M%d is mapped to M11.\n", scs->static_config.enc_mode);
+            scs->static_config.enc_mode = ENC_M11;
+        }
+#endif
+#else
         if (scs->static_config.enc_mode > ENC_M12) {
             SVT_WARN("Preset M%d is mapped to M12.\n", scs->static_config.enc_mode);
             scs->static_config.enc_mode = ENC_M12;
         }
+#if TUNE_SIMPLIFY_SETTINGS
+        else if (scs->static_config.enc_mode == ENC_M9) {
+            SVT_WARN("Preset M%d is temporarily mapped to M10 (placeholder).\n", scs->static_config.enc_mode);
+            scs->static_config.enc_mode = ENC_M10;
+        }
+#endif
+#endif
     }
 
     else if (scs->static_config.enc_mode > ENC_M11) {
@@ -4140,6 +4730,9 @@ static void copy_api_from_app(SequenceControlSet* scs, EbSvtAv1EncConfiguration*
 
     // CDEF
     scs->static_config.cdef_level = config_struct->cdef_level;
+
+    // Intra Block Copy
+    scs->static_config.enable_intrabc = config_struct->enable_intrabc;
 
     // Restoration filtering
     scs->static_config.enable_restoration_filtering = config_struct->enable_restoration_filtering;
@@ -4200,11 +4793,13 @@ static void copy_api_from_app(SequenceControlSet* scs, EbSvtAv1EncConfiguration*
     scs->static_config.tune                = config_struct->tune;
     scs->static_config.hierarchical_levels = config_struct->hierarchical_levels;
 
+#if !REMOVE_USE_FLAT_IPP
     if (scs->static_config.rtc && scs->static_config.hierarchical_levels == 0) {
         scs->static_config.hierarchical_levels = HIERARCHICAL_LEVELS_AUTO;
         // Mimic flat prediction structure
         scs->use_flat_ipp = 1;
     }
+#endif
     // Set the default hierarchical levels
     if (scs->static_config.hierarchical_levels == HIERARCHICAL_LEVELS_AUTO) {
         scs->static_config.hierarchical_levels = scs->static_config.pred_structure == LOW_DELAY &&
@@ -4221,16 +4816,24 @@ static void copy_api_from_app(SequenceControlSet* scs, EbSvtAv1EncConfiguration*
     }
     if (scs->static_config.pass == ENC_SINGLE_PASS && scs->static_config.pred_structure == LOW_DELAY) {
         if (scs->static_config.rate_control_mode == SVT_AV1_RC_MODE_CBR &&
+#if OPT_USE_HL0_FLAT
+            scs->static_config.hierarchical_levels > 2) {
+            scs->static_config.hierarchical_levels = 2;
+            SVT_WARN("Low delay CBR supports hierarchical_levels [0-2]. Forced hierarchical_levels = 2.\n");
+#else
             scs->static_config.hierarchical_levels != 2) {
             scs->static_config.hierarchical_levels = 2;
             SVT_WARN("Forced Low delay CBR mode to use HierarchicalLevels = 2\n");
+#endif
         }
     }
     // Set hierarchical_levels to 2 to reduce memory allocation; 2 is the minimum currently supported
     if (scs->allintra) {
         scs->static_config.hierarchical_levels = 2;
     }
-    scs->max_temporal_layers                  = scs->static_config.hierarchical_levels;
+#if !ADD_ON_THE_FLY_MG
+    scs->max_temporal_layers = scs->static_config.hierarchical_levels;
+#endif
     scs->static_config.look_ahead_distance    = config_struct->look_ahead_distance;
     scs->static_config.frame_rate_denominator = config_struct->frame_rate_denominator;
     scs->static_config.frame_rate_numerator   = config_struct->frame_rate_numerator;
@@ -4268,6 +4871,8 @@ static void copy_api_from_app(SequenceControlSet* scs, EbSvtAv1EncConfiguration*
         scs->static_config.over_shoot_pct = 25;
     }
     scs->static_config.mbr_over_shoot_pct       = config_struct->mbr_over_shoot_pct;
+    scs->static_config.max_intra_bitrate_pct    = config_struct->max_intra_bitrate_pct;
+    scs->static_config.max_inter_bitrate_pct    = config_struct->max_inter_bitrate_pct;
     scs->static_config.gop_constraint_rc        = config_struct->gop_constraint_rc;
     scs->static_config.maximum_buffer_size_ms   = config_struct->maximum_buffer_size_ms;
     scs->static_config.starting_buffer_level_ms = config_struct->starting_buffer_level_ms;
@@ -4290,12 +4895,56 @@ static void copy_api_from_app(SequenceControlSet* scs, EbSvtAv1EncConfiguration*
     scs->subsampling_y     = (scs->chroma_format_idc >= EB_YUV422 ? 0 : 1);
     // Force screen-content detection OFF when allintra
     const bool allintra = scs->allintra;
-
+#if TUNE_SIMPLIFY_SETTINGS
+    const bool rtc = scs->static_config.rtc;
+#endif
+#if OPT_SC_STILL_IMAGE
+    if (allintra) {
+        if (config_struct->screen_content_mode <= 1) {
+            scs->static_config.screen_content_mode = config_struct->screen_content_mode;
+        } else if (scs->static_config.enc_mode <= ENC_M7) {
+            scs->static_config.screen_content_mode = 3;
+        } else {
+            scs->static_config.screen_content_mode = 0;
+            SVT_WARN(
+                "Screen-content detection and tools are disabled for all-intra coding at M8 and above; forcing NSC "
+                "path\n");
+        }
+#else
     if (allintra && config_struct->screen_content_mode > 1) {
         scs->static_config.screen_content_mode = 0;
         SVT_WARN("Screen-content detection is disabled for all-intra coding; forcing NSC path\n");
-    } else {
+#endif
+    }
+#if TUNE_SIMPLIFY_SETTINGS
+    else if (rtc) {
+        if (config_struct->screen_content_mode <= 1 && scs->static_config.enc_mode <= ENC_M8) {
+            scs->static_config.screen_content_mode = config_struct->screen_content_mode;
+        } else if (scs->static_config.enc_mode <= ENC_M8) {
+            scs->static_config.screen_content_mode = 3;
+        } else {
+            scs->static_config.screen_content_mode = 0;
+            SVT_WARN(
+                "Screen-content detection and tools are disabled for RTC mode coding at M9 and above; forcing NSC "
+                "path\n");
+        }
+    }
+#endif
+    else {
+#if TUNE_SIMPLIFY_SETTINGS
+        if (config_struct->screen_content_mode <= 1 && scs->static_config.enc_mode <= ENC_M8) {
+            scs->static_config.screen_content_mode = config_struct->screen_content_mode;
+        } else if (scs->static_config.enc_mode <= ENC_M8) {
+            scs->static_config.screen_content_mode = 3;
+        } else {
+            scs->static_config.screen_content_mode = 0;
+            SVT_WARN(
+                "Screen-content detection and tools are disabled for RA mode coding at M9 and above; forcing NSC "
+                "path\n");
+        }
+#else
         scs->static_config.screen_content_mode = config_struct->screen_content_mode;
+#endif
     }
     // Annex A parameters
     scs->static_config.profile     = config_struct->profile;
@@ -4319,23 +4968,22 @@ static void copy_api_from_app(SequenceControlSet* scs, EbSvtAv1EncConfiguration*
     scs->static_config.qp            = config_struct->qp;
     scs->static_config.recon_enabled = config_struct->recon_enabled;
 
-    // Extract frame rate from Numerator and Denominator if not 0
-    if (scs->static_config.frame_rate_numerator != 0 && scs->static_config.frame_rate_denominator != 0) {
-        scs->frame_rate = (double)scs->static_config.frame_rate_numerator /
-            (double)scs->static_config.frame_rate_denominator;
-    }
+    // Numerator and Denominator already checked to be non 0
+    scs->frame_rate = (double)scs->static_config.frame_rate_numerator /
+        (double)scs->static_config.frame_rate_denominator;
+
     // Get Default Intra Period if not specified
     if (scs->static_config.intra_period_length == -2) {
         scs->static_config.intra_period_length = compute_default_intra_period(scs);
         scs->allintra = (scs->static_config.intra_period_length == 0 || scs->static_config.avif);
     } else if (scs->static_config.multiply_keyint) {
-        const double fps = (double)scs->static_config.frame_rate_numerator / scs->static_config.frame_rate_denominator;
-        scs->static_config.intra_period_length = (int32_t)(fps * scs->static_config.intra_period_length);
+        scs->static_config.intra_period_length = (int32_t)(scs->frame_rate * scs->static_config.intra_period_length);
     }
     if (scs->static_config.look_ahead_distance == (uint32_t)~0) {
         scs->static_config.look_ahead_distance = compute_default_look_ahead(&scs->static_config);
     }
     scs->static_config.enable_tf          = scs->allintra ? 0 : config_struct->enable_tf;
+    scs->static_config.enable_tf_key      = config_struct->enable_tf && config_struct->enable_tf_key;
     scs->static_config.enable_overlays    = config_struct->enable_overlays;
     scs->static_config.superres_mode      = config_struct->superres_mode;
     scs->static_config.superres_denom     = config_struct->superres_denom;
@@ -4478,6 +5126,12 @@ static void copy_api_from_app(SequenceControlSet* scs, EbSvtAv1EncConfiguration*
     // AC bias
     scs->static_config.ac_bias = config_struct->ac_bias;
 
+    // HBD-MDS
+    scs->static_config.hbd_mds = config_struct->hbd_mds;
+
+    // Ref-frame management: propagate caller's max-anchors hint (0 = disabled).
+    scs->static_config.max_managed_refs = config_struct->max_managed_refs;
+
     // Override settings for Still IQ tune
     if (scs->static_config.tune == TUNE_IQ) {
         SVT_WARN(
@@ -4506,6 +5160,11 @@ static void copy_api_from_app(SequenceControlSet* scs, EbSvtAv1EncConfiguration*
         scs->static_config.variance_boost_strength = 3;
         scs->static_config.variance_boost_curve    = 2;
     }
+#if FTR_TUNE_VMAF
+    else if (scs->static_config.tune == TUNE_VMAF) {
+        SVT_WARN("Tune VMAF: a pre-processing / unsharp masking is applied\n");
+    }
+#endif
     return;
 }
 
@@ -4533,6 +5192,33 @@ EB_API EbErrorType svt_av1_enc_set_parameter(EbComponentType*          svt_enc_c
         scs->seq_header.still_picture                = 1;
         scs->seq_header.reduced_still_picture_header = 1;
     }
+
+    // Signal initial_display_delay in the sequence header for hierarchical coding.
+    // With hierarchical B-frames, the encoder bundles multiple non-displayable reference
+    // frames into a single temporal unit (TU). The decoder must process all frames in a
+    // TU before displaying the first frame. Without this signal, players may start audio
+    // playback before video is ready after a seek, causing A/V desync — especially
+    // noticeable with hierarchical_levels >= 4 where the TU can contain 5-6 coded frames.
+    //
+    // Per AV1 spec section 6.4.1: initial_display_delay is "the number of decoded frames
+    // that should be present in the buffer pool before the first presentable frame is
+    // displayed." For the TU-based output of SVT-AV1, this equals hierarchical_levels + 1
+    // (the base layer frame + all intermediate reference frames that must be decoded
+    // before the first leaf frame is displayable).
+    if (!scs->seq_header.reduced_still_picture_header) {
+        uint8_t hierarchical_levels = scs->static_config.hierarchical_levels;
+        // The display delay equals the number of frames in the first non-keyframe TU:
+        // one frame per temporal layer (layers 0 through hierarchical_levels-1 are
+        // non-displayable, layer hierarchical_levels is displayable), so the decoder
+        // must buffer hierarchical_levels + 1 frames before first display.
+        // Capped at 10 per AV1 spec (4 bits, max value 10).
+        uint8_t display_delay = AOMMIN(hierarchical_levels + 1, 10);
+
+        scs->seq_header.initial_display_delay_present_flag                           = 1;
+        scs->seq_header.operating_point[0].initial_display_delay_present_for_this_op = 1;
+        scs->seq_header.operating_point[0].initial_display_delay                     = display_delay;
+    }
+
     set_param_based_on_input(scs);
     // Initialize the Prediction Structure Group
     EB_NO_THROW_NEW(enc_handle->scs_instance->enc_ctx->prediction_structure_group_ptr,
@@ -5062,51 +5748,40 @@ static EbErrorType validate_on_the_fly_settings(EbBufferHeaderType* input_ptr, S
         if (node->node_type == RES_CHANGE_EVENT) {
             SvtAv1InputPicDef* node_data = (SvtAv1InputPicDef*)node->data;
             if (input_ptr->pic_type != EB_AV1_KEY_PICTURE) {
-                input_ptr->flags = EB_BUFFERFLAG_EOS;
                 SVT_ERROR("Resolution change on the fly not supported for non key frames\n");
                 return EB_ErrorBadParameter;
             } else if ((node_data->input_luma_height > scs->max_initial_input_luma_height) ||
                        (node_data->input_luma_width > scs->max_initial_input_luma_width)) {
-                input_ptr->flags = EB_BUFFERFLAG_EOS;
                 SVT_ERROR(
                     "Resolution cannot be changed to anything greater than the original picture width and height\n");
                 return EB_ErrorBadParameter;
             } else if (scs->static_config.superres_mode > SUPERRES_NONE) {
-                input_ptr->flags = EB_BUFFERFLAG_EOS;
                 SVT_ERROR("Resolution change on the fly is not supported when Super-Resolution mode is on\n");
                 return EB_ErrorBadParameter;
             } else if (scs->static_config.resize_mode != RESIZE_NONE) {
-                input_ptr->flags = EB_BUFFERFLAG_EOS;
                 SVT_ERROR("Resolution change on the fly is not supported when Reference Scaling mode is on\n");
                 return EB_ErrorBadParameter;
             } else if (scs->static_config.pred_structure != LOW_DELAY) {
-                input_ptr->flags = EB_BUFFERFLAG_EOS;
                 SVT_ERROR("Resolution change on the fly is only supported for Low-Delay mode\n");
                 return EB_ErrorBadParameter;
             } else if (scs->static_config.pass != ENC_SINGLE_PASS) {
-                input_ptr->flags = EB_BUFFERFLAG_EOS;
                 SVT_ERROR("Resolution change on the fly is only supported for single pass encoding\n");
                 return EB_ErrorBadParameter;
             } else if (scs->static_config.tile_rows || scs->static_config.tile_columns) {
-                input_ptr->flags = EB_BUFFERFLAG_EOS;
                 SVT_ERROR("Resolution change on the fly is not supported when tiles are being used\n");
                 return EB_ErrorBadParameter;
             } else if (scs->static_config.aq_mode == 1) {
-                input_ptr->flags = EB_BUFFERFLAG_EOS;
                 SVT_ERROR(
                     "Resolution change on the fly is not supported for segment based adaptive quantization (--aq-mode "
                     "== 1)\n");
                 return EB_ErrorBadParameter;
             } else if (node_data->input_luma_width < 64) {
-                input_ptr->flags = EB_BUFFERFLAG_EOS;
                 SVT_ERROR("Resolution change on the fly is not supported for luma width less than 64\n");
                 return EB_ErrorBadParameter;
             } else if (node_data->input_luma_height < 64) {
-                input_ptr->flags = EB_BUFFERFLAG_EOS;
                 SVT_ERROR("Resolution change on the fly is not supported for luma height less than 64\n");
                 return EB_ErrorBadParameter;
             } else if (scs->static_config.encoder_bit_depth == EB_TEN_BIT) {
-                input_ptr->flags = EB_BUFFERFLAG_EOS;
                 SVT_ERROR("Resolution change on the fly is not supported for 10-bit encoding\n");
                 return EB_ErrorBadParameter;
             } else {
@@ -5124,21 +5799,18 @@ static EbErrorType validate_on_the_fly_settings(EbBufferHeaderType* input_ptr, S
         } else if (node->node_type == RATE_CHANGE_EVENT) {
             SvtAv1RateInfo* node_data = (SvtAv1RateInfo*)node->data;
             if ((scs->static_config.target_bit_rate != node_data->target_bit_rate) &&
-                !((scs->static_config.pred_structure == LOW_DELAY) &&
-                  (scs->static_config.rate_control_mode == SVT_AV1_RC_MODE_CBR))) {
-                input_ptr->flags = EB_BUFFERFLAG_EOS;
-                SVT_ERROR("TBR change on the fly not supported for any mode other than Low-Delay CBR\n");
+                !(scs->static_config.rtc && scs->static_config.pred_structure == LOW_DELAY &&
+                  scs->static_config.rate_control_mode == SVT_AV1_RC_MODE_CBR)) {
+                SVT_ERROR("TBR change on the fly not supported for any mode other than RTC Low-Delay CBR\n");
                 return EB_ErrorBadParameter;
             }
             if (node_data->seq_qp != 0) {
                 if (node_data->seq_qp > MAX_QP_VALUE) {
-                    input_ptr->flags = EB_BUFFERFLAG_EOS;
                     SVT_ERROR("QP change on the fly requires a QP value less than or equal to 63\n");
                     return EB_ErrorBadParameter;
                 }
             }
             if (node_data->target_bit_rate > 100000000) {
-                input_ptr->flags = EB_BUFFERFLAG_EOS;
                 SVT_ERROR("TBR change on the fly requires that the target bit rate must be between [0, 100000] kbps\n");
                 return EB_ErrorBadParameter;
             }
@@ -5146,18 +5818,105 @@ static EbErrorType validate_on_the_fly_settings(EbBufferHeaderType* input_ptr, S
             SvtAv1FrameRateInfo* node_data = (SvtAv1FrameRateInfo*)node->data;
             if (!((scs->static_config.pred_structure == LOW_DELAY) &&
                   (scs->static_config.rate_control_mode == SVT_AV1_RC_MODE_CBR))) {
-                input_ptr->flags = EB_BUFFERFLAG_EOS;
                 SVT_ERROR("Frame rate change on the fly not supported for any mode other than Low-Delay CBR\n");
                 return EB_ErrorBadParameter;
             }
             if (node_data->frame_rate_numerator == 0 || node_data->frame_rate_denominator == 0) {
-                input_ptr->flags = EB_BUFFERFLAG_EOS;
                 SVT_ERROR(
                     "Frame rate change on the fly requires that he frame_rate_numerator and frame_rate_denominator "
                     "must be greater than 0\n");
                 return EB_ErrorBadParameter;
             }
+        } else if (node->node_type == PRESET_CHANGE_EVENT) {
+            SvtAv1PresetInfo* node_data = (SvtAv1PresetInfo*)node->data;
+            if (!((scs->static_config.pred_structure == LOW_DELAY) &&
+                  (scs->static_config.rate_control_mode == SVT_AV1_RC_MODE_CBR) && scs->static_config.rtc)) {
+                SVT_ERROR("Preset change on the fly not supported for any mode other than RTC Low-Delay CBR\n");
+                return EB_ErrorBadParameter;
+            }
+            if (node_data->enc_mode < scs->static_config.enc_mode || node_data->enc_mode > MAX_ENC_PRESET) {
+                SVT_ERROR("Preset change on the fly requires enc_mode in range [%d, %d]\n",
+                          scs->static_config.enc_mode,
+                          MAX_ENC_PRESET);
+                return EB_ErrorBadParameter;
+            }
+        } else if (node->node_type == REF_STORE_EVENT || node->node_type == REF_CLEAR_EVENT ||
+                   node->node_type == REF_USE_EVENT) {
+            // Ref-frame management: per-event validation (FAIL-HARD path).
+            // Synchronous-checkable preconditions:
+            //   - Payload shape (size + non-NULL data).
+            //   - pic_id != 0 (0 is reserved as the "no event" sentinel).
+            //   - max_managed_refs > 0 (feature must be enabled at config time).
+            //   - pred_structure == LOW_DELAY (feature scope).
+            //   - At most ONE event of each type per input (STORE/CLEAR/USE).
+            //   - No pic_id collision across STORE/CLEAR/USE on the same input.
+            // Conditions requiring per-frame DPB state (duplicate STORE,
+            // cap reached, unknown CLEAR/USE, non-base layer, overlay) are
+            // detected later in pd_process and logged with SVT_ERROR.
+            const char* evt_name = (node->node_type == REF_STORE_EVENT) ? "REF_STORE_EVENT"
+                : (node->node_type == REF_CLEAR_EVENT)                  ? "REF_CLEAR_EVENT"
+                                                                        : "REF_USE_EVENT";
+            if (node->size != sizeof(SvtAv1RefFrameCmd) || !node->data) {
+                input_ptr->flags = EB_BUFFERFLAG_EOS;
+                SVT_ERROR("%s: invalid private-data size or NULL data\n", evt_name);
+                return EB_ErrorBadParameter;
+            }
+            const uint32_t pic_id = ((const SvtAv1RefFrameCmd*)node->data)->pic_id;
+            if (pic_id == 0) {
+                input_ptr->flags = EB_BUFFERFLAG_EOS;
+                SVT_ERROR("%s: pic_id == 0 is reserved\n", evt_name);
+                return EB_ErrorBadParameter;
+            }
+            if (scs->static_config.max_managed_refs == 0) {
+                input_ptr->flags = EB_BUFFERFLAG_EOS;
+                SVT_ERROR("%s requires max_managed_refs > 0\n", evt_name);
+                return EB_ErrorBadParameter;
+            }
+            if (scs->static_config.pred_structure != LOW_DELAY) {
+                input_ptr->flags = EB_BUFFERFLAG_EOS;
+                SVT_ERROR("%s requires pred_structure == LOW_DELAY\n", evt_name);
+                return EB_ErrorBadParameter;
+            }
+            // Walk the rest of the priv-data chain to detect (a) a second
+            // node of the same type and (b) a different ref-mgmt node
+            // carrying the same pic_id. Both indicate caller misuse.
+            for (EbPrivDataNode* peer = node->next; peer != NULL; peer = peer->next) {
+                if (peer->node_type != REF_STORE_EVENT && peer->node_type != REF_CLEAR_EVENT &&
+                    peer->node_type != REF_USE_EVENT) {
+                    continue;
+                }
+                if (peer->size != sizeof(SvtAv1RefFrameCmd) || !peer->data) {
+                    continue; // its own validation pass will reject it
+                }
+                if (peer->node_type == node->node_type) {
+                    input_ptr->flags = EB_BUFFERFLAG_EOS;
+                    SVT_ERROR("%s: duplicate event type on same input\n", evt_name);
+                    return EB_ErrorBadParameter;
+                }
+                if (((const SvtAv1RefFrameCmd*)peer->data)->pic_id == pic_id) {
+                    input_ptr->flags = EB_BUFFERFLAG_EOS;
+                    SVT_ERROR("Ref-frame mgmt: pic_id=%u used by multiple events on the same input (STORE/CLEAR/USE)\n",
+                              (unsigned)pic_id);
+                    return EB_ErrorBadParameter;
+                }
+            }
         }
+#if ADD_ON_THE_FLY_MG
+        else if (node->node_type == MG_SIZE_CHANGE_EVENT) {
+            SvtAv1MgSizeInfo* node_data = (SvtAv1MgSizeInfo*)node->data;
+            if (!((scs->static_config.pred_structure == LOW_DELAY) &&
+                  (scs->static_config.rate_control_mode == SVT_AV1_RC_MODE_CBR) && scs->static_config.rtc)) {
+                input_ptr->flags = EB_BUFFERFLAG_EOS;
+                SVT_ERROR("MG size change on the fly not supported for any mode other than RTC Low-Delay CBR.\n");
+                return EB_ErrorBadParameter;
+            }
+            if (node_data->hierarchical_levels > 2) {
+                input_ptr->flags = EB_BUFFERFLAG_EOS;
+                SVT_ERROR("Low delay CBR supports hierarchical_levels [0-2].\n");
+                return EB_ErrorBadParameter;
+            }
+        }
+#endif
         node = node->next;
     }
     return EB_ErrorNone;
@@ -5193,14 +5952,24 @@ EB_API EbErrorType svt_av1_enc_send_picture(EbComponentType* svt_enc_component, 
         SVT_ERROR("Invalid API input buffer size detected. Please ignore the output stream\n");
     }
 
+    // Validate any on-the-fly setting changes before acquiring pipeline buffers.
+    // A rejected setting change (rate / frame rate / preset / resolution) is a
+    // CLEAN REJECT: report EB_ErrorBadParameter but leave the stream intact so
+    // the caller can correct the request and keep sending. validate_on_the_fly_
+    // settings() leaves EOS clear for these. If EOS is set afterwards it is a
+    // fail-hard rejection (ref-frame management misuse) or the caller's own
+    // end-of-stream, so fall through and let the encoder drain as before.
+    if (validate_on_the_fly_settings(p_buffer, scs, enc_handle_ptr->scs_instance->config_mutex)) {
+        return_val = EB_ErrorBadParameter;
+        if (!(p_buffer->flags & EB_BUFFERFLAG_EOS)) {
+            return EB_ErrorBadParameter;
+        }
+        enc_handle_ptr->eos_received = 1;
+    }
+
     // Get new Luma-8b buffer & a new (Chroma-8b + Luma-Chroma-2bit) buffers; Lib will release once done.
     EbObjectWrapper* y8b_wrapper;
     svt_get_empty_object(enc_handle_ptr->input_y8b_buffer_producer_fifo_ptr, &y8b_wrapper);
-    // Update the input picture definitions: resolution of the sequence
-    if (validate_on_the_fly_settings(p_buffer, scs, enc_handle_ptr->scs_instance->config_mutex)) {
-        return_val                   = EB_ErrorBadParameter;
-        enc_handle_ptr->eos_received = 1;
-    }
     // if resolution has changed, and the y8b_wrapper settings do not match scs settings, update y8b_wrapper settings
     if (buffer_update_needed((EbBufferHeaderType*)y8b_wrapper->object_ptr, scs)) {
         svt_input_y8b_update((EbBufferHeaderType*)y8b_wrapper->object_ptr, scs);
@@ -5259,6 +6028,14 @@ EB_API EbErrorType svt_av1_enc_send_picture(EbComponentType* svt_enc_component, 
     input_cmd_obj->y8b_wrapper          = y8b_wrapper;
     //Send to Lib
     svt_post_full_object(input_cmd_wrp);
+
+#if CONFIG_SINGLE_THREAD_KERNEL
+    // In single-thread mode, run the entire pipeline synchronously
+    if (enc_handle_ptr->kernel_dispatcher.active) {
+        svt_kernel_dispatcher_run(&enc_handle_ptr->kernel_dispatcher);
+    }
+#endif
+
     return return_val;
 }
 
@@ -5317,7 +6094,7 @@ EB_API EbErrorType svt_av1_enc_get_packet(EbComponentType* svt_enc_component, Eb
 
     if (eb_wrapper_ptr) {
         packet = (EbBufferHeaderType*)eb_wrapper_ptr->object_ptr;
-        if (packet->flags & 0xfffffff0) {
+        if (packet->flags & EB_BUFFERFLAG_ERROR_MASK) {
             return_error = EB_ErrorMax;
         }
         // return the output stream buffer
@@ -5410,6 +6187,8 @@ EB_API void svt_av1_print_version(void) {
         __VERSION__ "\t"
 #elif defined(__GNUC__)
         "GCC " __VERSION__ "\t"
+#elif defined(_MSC_VER) && (_MSC_VER >= 1950)
+        "Visual Studio 2026"
 #elif defined(_MSC_VER) && (_MSC_VER >= 1930)
         "Visual Studio 2022"
 #elif defined(_MSC_VER) && (_MSC_VER >= 1920)
@@ -5669,10 +6448,16 @@ EbErrorType svt_output_recon_buffer_header_creator(EbPtr* object_dbl_ptr, EbPtr 
     EbBufferHeaderType* recon_buffer;
     SequenceControlSet* scs       = (SequenceControlSet*)object_init_data_ptr;
     const uint32_t      luma_size = scs->seq_header.max_frame_width * scs->seq_header.max_frame_height;
-    // both u and v
-    const uint32_t chroma_size = luma_size >> 1;
-    const uint32_t ten_bit     = (scs->static_config.encoder_bit_depth > 8);
-    const uint32_t frame_size  = (luma_size + chroma_size) << ten_bit;
+    // Chroma width/height should be re-derived using the chroma width/height instead of shifting the
+    // luma_size because for odd dimensions, the size of each chroma component may not be exactly a quarter of
+    // the luma size. The chroma_size variable includes U and V planes.
+    const int      ss_x        = scs->subsampling_x;
+    const int      ss_y        = scs->subsampling_y;
+    const uint32_t chroma_size = (((scs->seq_header.max_frame_width + ss_x) >> ss_x) *
+                                  ((scs->seq_header.max_frame_height + ss_y) >> ss_y)) *
+        2 /*u + v*/;
+    const uint32_t ten_bit    = (scs->static_config.encoder_bit_depth > 8);
+    const uint32_t frame_size = (luma_size + chroma_size) << ten_bit;
 
     *object_dbl_ptr = NULL;
     EB_CALLOC(recon_buffer, 1, sizeof(EbBufferHeaderType));

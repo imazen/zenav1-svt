@@ -95,6 +95,7 @@
 #define SCREEN_CONTENT_TOKEN "--scm"
 // --- start: ALTREF_FILTERING_SUPPORT
 #define ENABLE_TF_TOKEN "--enable-tf"
+#define ENABLE_TF_KEY_TOKEN "--enable-kf-tf"
 #define ENABLE_OVERLAYS "--enable-overlays"
 #define TUNE_TOKEN "--tune"
 // --- end: ALTREF_FILTERING_SUPPORT
@@ -123,6 +124,8 @@
 #define UNDER_SHOOT_PCT_TOKEN "--undershoot-pct"
 #define OVER_SHOOT_PCT_TOKEN "--overshoot-pct"
 #define MBR_OVER_SHOOT_PCT_TOKEN "--mbr-overshoot-pct"
+#define MAX_INTRA_BITRATE_PCT_TOKEN "--max-intra-bitrate-pct"
+#define MAX_INTER_BITRATE_PCT_TOKEN "--max-inter-bitrate-pct"
 #define GOP_CONSTRAINT_RC_TOKEN "--gop-constraint-rc"
 #define BUFFER_SIZE_TOKEN "--buf-sz"
 #define BUFFER_INITIAL_SIZE_TOKEN "--buf-initial-sz"
@@ -155,6 +158,8 @@
 #define ALLOW_MMAP_FILE_TOKEN "--allow-mmap-file"
 #define OUTPUT_BITSTREAM_LONG_TOKEN "--output"
 #define OUTPUT_RECON_LONG_TOKEN "--recon"
+#define OUTPUT_FORMAT_IVF_TOKEN "--ivf"
+#define OUTPUT_FORMAT_OBU_TOKEN "--obu"
 #define WIDTH_LONG_TOKEN "--width"
 #define HEIGHT_LONG_TOKEN "--height"
 #define NUMBER_OF_PICTURES_LONG_TOKEN "--frames"
@@ -162,6 +167,7 @@
 
 #define QP_LONG_TOKEN "--qp"
 #define CRF_LONG_TOKEN "--crf"
+#define CQP_LONG_TOKEN "--cqp"
 #define LOOP_FILTER_ENABLE "--enable-dlf"
 #define FORCED_MAX_FRAME_WIDTH_TOKEN "--forced-max-frame-width"
 #define FORCED_MAX_FRAME_HEIGHT_TOKEN "--forced-max-frame-height"
@@ -205,6 +211,8 @@
 #define ADAPTIVE_FILM_GRAIN_TOKEN "--adaptive-film-grain"
 #define MAX_TX_SIZE_TOKEN "--max-tx-size"
 #define AC_BIAS_TOKEN "--ac-bias"
+#define HBD_MDS_TOKEN "--hbd-mds"
+#define ENABLE_INTRABC_TOKEN "--enable-intrabc"
 
 static EbErrorType validate_error(EbErrorType err, const char* token, const char* value) {
     switch (err) {
@@ -406,6 +414,14 @@ static EbErrorType set_cfg_stream_file(EbConfig* cfg, const char* token, const c
         }
         cfg->bitstream_file = stdout;
         return EB_ErrorNone;
+    }
+    const char* ext = strrchr(value, '.');
+    if (ext) {
+        if (!strcmp(ext, ".obu")) {
+            cfg->output_format = OUTPUT_FORMAT_OBU;
+        } else if (!strcmp(ext, ".ivf")) {
+            cfg->output_format = OUTPUT_FORMAT_IVF;
+        }
     }
     return open_file(&cfg->bitstream_file, token, value, "wb");
 }
@@ -692,8 +708,15 @@ ConfigDescription config_entry_options[] = {
     {INPUT_FILE_LONG_TOKEN, "Input raw video (y4m and yuv) file path, use `stdin` or `-` to read from pipe"},
     {ALLOW_MMAP_FILE_TOKEN, "Allow memory mapping for regular input file. Performance is platform dependent"},
 
-    {OUTPUT_BITSTREAM_TOKEN, "Output compressed (ivf) file path, use `stdout` or `-` to write to pipe"},
-    {OUTPUT_BITSTREAM_LONG_TOKEN, "Output compressed (ivf) file path, use `stdout` or `-` to write to pipe"},
+    {OUTPUT_BITSTREAM_TOKEN,
+     "Output compressed file path, use `stdout` or `-` to write to pipe. "
+     "Format is auto-detected from extension (.ivf or .obu), default is IVF"},
+    {OUTPUT_BITSTREAM_LONG_TOKEN,
+     "Output compressed file path, use `stdout` or `-` to write to pipe. "
+     "Format is auto-detected from extension (.ivf or .obu), default is IVF"},
+
+    {OUTPUT_FORMAT_IVF_TOKEN, "Output bitstream in IVF container format (default)"},
+    {OUTPUT_FORMAT_OBU_TOKEN, "Output bitstream as raw OBU (Open Bitstream Units) without IVF container"},
 
     {CONFIG_FILE_TOKEN, "Configuration file path"},
     {CONFIG_FILE_LONG_TOKEN, "Configuration file path"},
@@ -780,6 +803,10 @@ ConfigDescription config_entry_rc[] = {
      "Constant Rate Factor value, setting this value is similar to `--rc 0 --aq-mode 2 --qp "
      "x`.  Compared to `--qp`, `--crf` can take a value up to 70, and can be set in 0.25 increments, default is 35 "
      "[1-70]"},
+    {CQP_LONG_TOKEN,
+     "Constant Quality value, setting this value is similar to `--rc 0 --aq-mode 0 --qp "
+     "x`.  Compared to `--qp`, `--cqp` can take a value up to 70, and can be set in 0.25 increments, default is 35 "
+     "[1-70]"},
 
     {TARGET_BIT_RATE_TOKEN,
      "Target Bitrate (kbps), only applicable for VBR and CBR encoding, default is 7000 [1-100000]"},
@@ -825,6 +852,10 @@ ConfigDescription config_entry_rc[] = {
     {MBR_OVER_SHOOT_PCT_TOKEN,
      "Only for Capped CRF, allowable datarate overshoot (max) target (percentage), default is 50, "
      "but can change based on rate control [0-100]"},
+    {MAX_INTRA_BITRATE_PCT_TOKEN,
+     "Max bitrate for intra frames as a percentage of the target bitrate, 0 to disable, default is 300"},
+    {MAX_INTER_BITRATE_PCT_TOKEN,
+     "Max bitrate for inter frames as a percentage of the target bitrate, 0 to disable, default is 0"},
     {GOP_CONSTRAINT_RC_TOKEN,
      "Enable GoP constraint rc.  When enabled, the rate control matches the target rate for each "
      "GoP, default is 0 [0-1]"},
@@ -908,18 +939,19 @@ ConfigDescription config_entry_specific[] = {
     {FAST_DECODE_TOKEN, "Fast Decoder levels, default is 0 [0-2]"},
     // --- start: ALTREF_FILTERING_SUPPORT
     {ENABLE_TF_TOKEN, "Enable ALT-REF (temporally filtered) frames, default is 1 [0-2]"},
-
+    {ENABLE_TF_KEY_TOKEN, "Enable MCTF for key frames, default is 1 [0-1]"},
     {ENABLE_OVERLAYS,
      "Enable the insertion of overlayer pictures which will be used as an additional reference "
      "frame for the base layer picture, default is 0 [0-1]"},
     // --- end: ALTREF_FILTERING_SUPPORT
     {TUNE_TOKEN,
      "Optimize the encoding process for different desired outcomes [0 = VQ, 1 = PSNR, 2 = SSIM, 3 = IQ (Image "
-     "Quality)], 4 = MS_SSIM (MS_SSIM and SSIMULACRA2 optimized mode), default is 1 [0-4]"},
+     "Quality), 4 = MS_SSIM (MS_SSIM and SSIMULACRA2 optimized mode), 5 = VMAF], default is 1 [0-5]"},
     // MD Parameters
     {SCREEN_CONTENT_TOKEN,
      "Set screen content detection level, default is 2 [0: off, 1: on, 2: content adaptive, 3: content adaptive "
      "(anti-alias aware)]"},
+    {ENABLE_INTRABC_TOKEN, "Enable Intra Block Copy, default is 1 [0: off, 1: on]"},
 #if CONFIG_ENABLE_FILM_GRAIN
     // Annex A parameters
     {FILM_GRAIN_TOKEN, "Enable film grain, default is 0 [0: off, 1-50: level of denoising for film grain]"},
@@ -1013,6 +1045,9 @@ ConfigDescription config_entry_psychovisual[] = {
     {MAX_TX_SIZE_TOKEN, "Limits the allowed transform sizes to the specified, default is 64 [32,64]"},
     //AC-Bias
     {AC_BIAS_TOKEN, "Strength of AC bias in rate distortion, default is 0.0 [0.0-8.0]"},
+    //HBD-MDS
+    {HBD_MDS_TOKEN,
+     "High Bit-Depth Mode Decision, default is -1 [-1: preset-determined, 0 = 8-bit, 1 = 10-bit, 2 = hybrid 8/10-bit]"},
     // Termination
     {NULL, NULL}};
 
@@ -1076,6 +1111,7 @@ ConfigEntry config_entry[] = {
     {QP_TOKEN, "QP", set_cfg_generic_token},
     {QP_LONG_TOKEN, "QP", set_cfg_generic_token},
     {CRF_LONG_TOKEN, "CRF", set_cfg_generic_token},
+    {CQP_LONG_TOKEN, "CQP", set_cfg_generic_token},
     {TARGET_BIT_RATE_TOKEN, "TargetBitRate", set_cfg_generic_token},
     {MAX_BIT_RATE_TOKEN, "MaxBitRate", set_cfg_generic_token},
 
@@ -1102,6 +1138,8 @@ ConfigEntry config_entry[] = {
     {UNDER_SHOOT_PCT_TOKEN, "UnderShootPct", set_cfg_generic_token},
     {OVER_SHOOT_PCT_TOKEN, "OverShootPct", set_cfg_generic_token},
     {MBR_OVER_SHOOT_PCT_TOKEN, "MbrOverShootPct", set_cfg_generic_token},
+    {MAX_INTRA_BITRATE_PCT_TOKEN, "MaxIntraBitratePct", set_cfg_generic_token},
+    {MAX_INTER_BITRATE_PCT_TOKEN, "MaxInterBitratePct", set_cfg_generic_token},
     {GOP_CONSTRAINT_RC_TOKEN, "GopConstraintRc", set_cfg_generic_token},
     {BUFFER_SIZE_TOKEN, "BufSz", set_cfg_generic_token},
     {BUFFER_INITIAL_SIZE_TOKEN, "BufInitialSz", set_cfg_generic_token},
@@ -1139,8 +1177,10 @@ ConfigEntry config_entry[] = {
     {TUNE_TOKEN, "Tune", set_cfg_generic_token},
     //   ALT-REF filtering support
     {ENABLE_TF_TOKEN, "EnableTf", set_cfg_generic_token},
+    {ENABLE_TF_KEY_TOKEN, "EnableTfKey", set_cfg_generic_token},
     {ENABLE_OVERLAYS, "EnableOverlays", set_cfg_generic_token},
     {SCREEN_CONTENT_TOKEN, "ScreenContentMode", set_cfg_generic_token},
+    {ENABLE_INTRABC_TOKEN, "EnableIntraBC", set_cfg_generic_token},
 
 #if CONFIG_ENABLE_FILM_GRAIN
     {FILM_GRAIN_TOKEN, "FilmGrain", set_cfg_generic_token},
@@ -1223,6 +1263,9 @@ ConfigEntry config_entry[] = {
     // Psy rd strength
     {AC_BIAS_TOKEN, "AcBias", set_cfg_generic_token},
 
+    // HBD MDS
+    {HBD_MDS_TOKEN, "HBDMDS", set_cfg_generic_token},
+
     // Termination
     {NULL, NULL, NULL}};
 
@@ -1261,8 +1304,10 @@ void svt_config_dtor(EbConfig* app_cfg) {
     }
 
     if (app_cfg->bitstream_file) {
-        if (!fseek(app_cfg->bitstream_file, 0, SEEK_SET)) {
-            write_ivf_stream_header(app_cfg, app_cfg->frames_encoded);
+        if (app_cfg->output_format == OUTPUT_FORMAT_IVF) {
+            if (!fseek(app_cfg->bitstream_file, 0, SEEK_SET)) {
+                write_ivf_stream_header(app_cfg, app_cfg->frames_encoded);
+            }
         }
         fclose(app_cfg->bitstream_file);
         app_cfg->bitstream_file = NULL;
@@ -2402,6 +2447,10 @@ EbErrorType read_command_line(int32_t argc, char* const argv[], EncChannel* chan
                 free(config_strings);
                 return EB_ErrorBadParameter;
             }
+            // argumentless flags don't consume the next value
+            if (!strcmp(*indx, OUTPUT_FORMAT_IVF_TOKEN) || !strcmp(*indx, OUTPUT_FORMAT_OBU_TOKEN)) {
+                continue;
+            }
             next_is_value = true;
         }
     }
@@ -2423,6 +2472,17 @@ EbErrorType read_command_line(int32_t argc, char* const argv[], EncChannel* chan
         EbErrorType err       = (entry->scf)(channel->app_cfg, entry->token, config_strings);
         channel->return_error = (EbErrorType)(channel->return_error | err);
         return_error          = (EbErrorType)(return_error & channel->return_error);
+    }
+
+    // Handle --ivf and --obu flags (argumentless, override auto-detection from extension)
+    for (int32_t i = 0; i < argc; ++i) {
+        if (cmd_copy[i] && !strcmp(argv[i], OUTPUT_FORMAT_IVF_TOKEN)) {
+            channel->app_cfg->output_format = OUTPUT_FORMAT_IVF;
+            cmd_copy[i]                     = TOKEN_READ_MARKER;
+        } else if (cmd_copy[i] && !strcmp(argv[i], OUTPUT_FORMAT_OBU_TOKEN)) {
+            channel->app_cfg->output_format = OUTPUT_FORMAT_OBU;
+            cmd_copy[i]                     = TOKEN_READ_MARKER;
+        }
     }
 
     /***************************************************************************************************/

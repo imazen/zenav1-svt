@@ -29,6 +29,8 @@ target_sources(
   PUBLIC cfl_neon.c
   PUBLIC compound_convolve_neon.c
   PUBLIC compute_sad_neon.c
+  PUBLIC sad_x4d_neon.c
+  PUBLIC ssim_neon.c
   PUBLIC convolve_neon.c
   PUBLIC convolve_scale_neon.c
   PUBLIC corner_match_neon.c
@@ -57,6 +59,7 @@ target_sources(
   PUBLIC inter_prediction_neon.c
   PUBLIC intra_prediction_neon.c
   PUBLIC itx.S
+  PUBLIC lowbd_fwd_txfm2d_neon.c
   PUBLIC mem_neon.c
   PUBLIC obmc_sad_neon.c
   PUBLIC obmc_variance_neon.c

@@ -19,6 +19,7 @@ add_library(ASM_NEON_DOTPROD OBJECT)
 target_sources(
   ASM_NEON_DOTPROD
   PUBLIC aom_convolve8_neon_dotprod.c
+  PUBLIC ssim_neon_dotprod.c
   PUBLIC cdef_neon_dotprod.c
   PUBLIC compute_sad_neon_dotprod.c
   PUBLIC convolve_neon_dotprod.c
@@ -28,6 +29,7 @@ target_sources(
   PUBLIC pic_analysis_neon_dotprod.c
   PUBLIC sad_neon_dotprod.c
   PUBLIC sse_neon_dotprod.c
+  PUBLIC temporal_filtering_neon_dotprod.c
   PUBLIC variance_neon_dotprod.c)
 
 target_include_directories(

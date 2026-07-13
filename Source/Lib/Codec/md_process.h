@@ -408,9 +408,11 @@ typedef struct MdSubPelSearchCtrls {
     int round_dev_th;
     // Specifies the refinement accuracy for diagonal position(s).
     uint8_t skip_diag_refinement;
+#if !OPT_LPD1
     // Specifies whether the Sub-Pel search will be performed for around (0,0) or not (0: OFF, 1:
     // ON)
     uint8_t skip_zz_mv;
+#endif
     uint8_t min_blk_sz; //blk size below which we skip subpel
     uint8_t mvp_th; // when > 0, use mvp info to skip hpel search. skip if ME is  worse than MVP.
     // Skip high precision (1/8-Pel) when the ME vs. MVP MV difference (x or y) is larger than the threshold.
@@ -442,6 +444,25 @@ typedef struct RdoqCtrls {
     uint8_t eob_th;
     uint8_t eob_fast_th;
 } RdoqCtrls;
+
+#if OPT_COEFF_SHAVING
+#if OPT_EC_SHAVE_RD_ZERO
+typedef struct CoeffShavingCtrls {
+    uint8_t enabled;
+    int32_t level_threshold; // max abs(quantized_level) eligible for trailing removal
+    int32_t zero_gap_threshold; // min zero-gap to justify removing a trailing coeff
+    int32_t rd_zero_strength; // RD-zero aggressiveness in [0..10]; 0 disables, 10 is strongest
+} CoeffShavingCtrls;
+#else
+typedef struct CoeffShavingCtrls {
+    uint8_t enabled;
+    int32_t level_threshold; // max abs(quantized_level) eligible for trailing removal
+    int32_t zero_gap_threshold; // min zero-gap to justify removing a trailing coeff
+    int32_t skip_energy_threshold; // if total abs energy of all surviving coeffs (after trailing
+    // retraction) is <= this, zero the entire block
+} CoeffShavingCtrls;
+#endif
+#endif
 
 typedef struct NicScalingCtrls {
     // Scaling numerator for post-stage 0 NICS: <x>/16
@@ -684,6 +705,22 @@ typedef struct BlockLocation {
     uint32_t input_cb_origin_in_index;
 } BlockLocation;
 
+#if CLN_RENAME_PD0
+typedef struct Pd0Ctrls {
+    // Whether light-PD0 is set to be used for an SB (the detector may change this)
+    Pd0Level pd0_level;
+    bool     use_pd0_detector[PD0_LEVELS];
+    // Use info of ref frames - incl. colocated SBs - such as mode, coeffs, etc. in the detector.
+    // [0,2] - 0 is off, 2 is most aggressive
+    uint8_t use_ref_info[PD0_LEVELS];
+    // me_8x8_cost_variance_th beyond which the PD0 is used (instead of light-PD0)
+    uint32_t me_8x8_cost_variance_th[PD0_LEVELS];
+    // ME_64x64_dist threshold used for edge SBs when PD0 is skipped
+    uint32_t edge_dist_th[PD0_LEVELS];
+    // Shift applied to ME dist and var of top and left SBs when PD0 is skipped
+    uint16_t neigh_me_dist_shift[PD0_LEVELS];
+} Pd0Ctrls;
+#else
 typedef struct Lpd0Ctrls {
     // Whether light-PD0 is set to be used for an SB (the detector may change this)
     Pd0Level pd0_level;
@@ -699,6 +736,7 @@ typedef struct Lpd0Ctrls {
     // Shift applied to ME dist and var of top and left SBs when PD0 is skipped
     uint16_t neigh_me_dist_shift[LPD0_LEVELS];
 } Lpd0Ctrls;
+#endif
 
 typedef struct Lpd1Ctrls {
     // Whether light-PD1 is set to be used for an SB (the detector may change this)
@@ -725,6 +763,37 @@ typedef struct Lpd1Ctrls {
     uint16_t skip_pd0_me_shift[LPD1_LEVELS];
 } Lpd1Ctrls;
 
+#if OPT_LPD1_TX_SKIP_DECISION
+typedef struct Lpd1TxSkipDecisionCtrls {
+    // Score threshold above which TX is skipped.
+    int skip_tx_score_th;
+
+    // Threshold for the fast dist/energy-based skip signal.
+    uint16_t dist_energy_th;
+
+    // Threshold for the RD-based skip signal; 0 disables this path.
+    uint16_t rd_skip_th;
+
+} Lpd1TxSkipDecisionCtrls;
+#endif
+#if OPT_LPD1_FAST_SKIP
+typedef struct Lpd1TxCtrls {
+    // skip cost calc and chroma TX/compensation if there are zero luma coeffs
+    uint8_t zero_y_coeff_exit;
+    // Control aggressiveness of chroma detector (used to skip chroma TX when luma has 0 coeffs): 0:
+    // OFF, 1: saftest, 2, 3: medium
+    uint8_t chroma_detector_level;
+#if !OPT_LPD1_TX_SKIP_DECISION
+    // if (skip_tx_th/QP < TH) skip TX at MDS3; 0: OFF, higher: more aggressive
+    uint16_t skip_tx_th;
+#endif
+    // if (best_mds0_distortion/QP < TH) use shortcuts for candidate at MDS3; 0: OFF, higher: more
+    // aggressive
+    uint32_t use_mds3_shortcuts_th;
+    // Apply shortcuts to the chroma TX path if luma has few coeffs
+    uint8_t use_uv_shortcuts_on_y_coeffs;
+} Lpd1TxCtrls;
+#else
 typedef struct Lpd1TxCtrls {
     // skip cost calc and chroma TX/compensation if there are zero luma coeffs
     uint8_t zero_y_coeff_exit;
@@ -744,6 +813,7 @@ typedef struct Lpd1TxCtrls {
     // Apply shortcuts to the chroma TX path if luma has few coeffs
     uint8_t use_uv_shortcuts_on_y_coeffs;
 } Lpd1TxCtrls;
+#endif
 
 typedef struct CflCtrls {
     bool enabled;
@@ -1065,7 +1135,9 @@ typedef struct ModeDecisionContext {
     CandClass target_class;
     uint8_t   perform_mds1;
     uint8_t   use_tx_shortcuts_mds3;
-    uint8_t   lpd1_allow_skipping_tx;
+#if !OPT_LPD1_TX_SKIP_DECISION
+    uint8_t lpd1_allow_skipping_tx;
+#endif
     // Signals controlling which features are used at each MD stage
     bool mds_do_ifs;
     bool mds_do_txs;
@@ -1121,6 +1193,9 @@ typedef struct ModeDecisionContext {
     NsqSearchCtrls       nsq_search_ctrls;
     DepthEarlyExitCtrls  depth_early_exit_ctrls;
     RdoqCtrls            rdoq_ctrls;
+#if OPT_COEFF_SHAVING
+    CoeffShavingCtrls coeff_shaving_ctrls;
+#endif
     uint8_t              disallow_8x8;
     uint8_t              disallow_4x4;
     uint8_t              md_disallow_nsq_search;
@@ -1174,7 +1249,10 @@ typedef struct ModeDecisionContext {
     // Maximum number of candidates MD can support
     uint32_t max_nics;
     // Maximum number of candidates MD can support
-    uint32_t                 max_nics_uv;
+    uint32_t max_nics_uv;
+    // Persistent scratch for sort_fast_cost_based_candidates in search_best_independent_uv_mode
+    // (was a per-call EB_MALLOC_ARRAY/EB_FREE_ARRAY). Sized max_nics_uv at ctor.
+    uint32_t*                uv_cand_buff_indices;
     InterpolationSearchCtrls ifs_ctrls;
     // If enabled, will bypass EncDec and copy recon/quant coeffs from MD
     bool bypass_encdec;
@@ -1192,8 +1270,13 @@ typedef struct ModeDecisionContext {
     uint16_t coded_area_sb_uv;
     // Use source samples instead of reconstructed samples for INTRA prediction of PD0 in I_SLICE
     // to avoid inverse transform and neighbor array updates for reconstructed samples
+#if CLN_RENAME_PD0
+    bool     pd0_use_src_samples;
+    Pd0Ctrls pd0_ctrls;
+#else
     bool      lpd0_use_src_samples;
     Lpd0Ctrls lpd0_ctrls;
+#endif
     // 0 : Use regular PD0 1 : Use light PD0 path. Assumes one class, no NSQ, no 4x4, TXT off, TXS
     // off, PME off, etc. 2 : Use very light PD0 path: only mds0 (no transform path), no
     // compensation(s) @ mds0 (only umpired candidates, and read directly from reference buffer(s)
@@ -1226,21 +1309,49 @@ typedef struct ModeDecisionContext {
     // Bias the inter-depth decision cost in MD towards the parent block. This will scale the cost of the
     // parent depth by parent_cost_bias/1000. Values <1000 favour the  parent, while values >1000 favour
     // the child depth. 1000 means no bias.
-    uint32_t    parent_cost_bias;
-    uint8_t     is_intra_bordered;
-    uint8_t     updated_enable_pme;
+    uint32_t parent_cost_bias;
+    uint8_t  is_intra_bordered;
+    uint8_t  updated_enable_pme;
+#if OPT_LPD1_TX_SKIP_DECISION
+    Lpd1TxSkipDecisionCtrls lpd1_tx_skip_decision_ctrls;
+#endif
     Lpd1TxCtrls lpd1_tx_ctrls;
     // Indicates which chroma components (if any) are complex, relative to luma. Chroma TX shortcuts
     // based on luma should not be used when chroma is complex.
     uint8_t chroma_complexity;
     uint8_t cfl_complexity;
+#if !OPT_LPD1_TX_SKIP_DECISION
     // Signal to skip INTER TX in LPD1; should only be used by M13 as this causes blocking
     // artifacts. 0: OFF, 1: Skip INTER TX if neighs have 0 coeffs, 2: skip all INTER TX
     uint8_t lpd1_skip_inter_tx_level;
+#endif
+#if OPT_LPD1_FAST_SKIP
+    // Decide whole-block SKIP after the luma TX (LPD1). After the luma TX, compare RD cost of
+    // coding the luma residual against RD cost of forcing skip. If skip_cost * pct < non_skip_cost
+    // * 100 -> commit to SKIP (zero luma coeffs, bypass chroma TX). 0: OFF.
+    uint16_t lpd1_blk_skip_luma_rd_pct; // whole-block SKIP via luma RD signal
+#endif
+#if OPT_LPD1_CHROMA_SKIP
+    // Decide chroma-plane SKIP BEFORE the chroma TX (LPD1). Per-pixel (Cb / Cr) SAD threshold:
+    // when plane_residual_sad < th * blk_area_uv -> skip that plane's TX/Q/RDOQ. Evaluated
+    // per-plane; can collapse to whole-block SKIP if luma also has zero coeffs. 0: OFF.
+    uint16_t lpd1_chroma_skip_energy_th; // skip chroma via chroma residual energy
+#endif
+#if !OPT_LPD1_TX_SKIP_DECISION
     // Specifies the threshold to bypass transform in LPD1 based on full cost estimate.
     // 0: OFF (no bypassing)
     // The higher the number, the more aggressive the feature is
     uint8_t lpd1_bypass_tx_th;
+#endif
+#if OPT_LPD1_GLOBALMV_BYPASS
+    // Per-pixel residual-cost threshold for the LPD1 GLOBALMV (MDS0-2) bypass.
+    // 0: OFF. Otherwise: bypass fires when pd0_mds0_best_cost[mds_idx] < th * blk_area.
+    uint8_t lpd1_globalmv_bypass_th;
+    // Parallel-to-md_blk_arr_nsq array of PD0 MDS0 best costs, consumed by the LPD1
+    // GLOBALMV-bypass classifier. Reset to UINT32_MAX per SB via a single memset; PD0 storage
+    // sites overwrite per block. UINT32_MAX => "not available" => bypass declines (safe fallback).
+    uint32_t* pd0_mds0_best_cost;
+#endif
     // chroma components to compensate at MDS3 of LPD1
     COMPONENT_TYPE lpd1_chroma_comp;
     uint8_t        corrupted_mv_check;
@@ -1251,8 +1362,10 @@ typedef struct ModeDecisionContext {
     // non-normative txs
     uint16_t min_nz_h;
     uint16_t min_nz_v;
+#if !OPT_LPD1_FAST_SKIP
     // used to signal when the N4 shortcut can be used for rtc, works in conjunction with use_tx_shortcuts_mds3 flag
     uint8_t rtc_use_N4_dct_dct_shortcut;
+#endif
     // SSIM_LVL_0: off
     // SSIM_LVL_1: use ssim cost to find best candidate in product_full_mode_decision()
     // SSIM_LVL_2: addition to level 1, also use ssim cost to find best tx type in tx_type_search()
@@ -1262,6 +1375,10 @@ typedef struct ModeDecisionContext {
     bool obmc_neighbor_luma_pred_ready; // Flag indicating if luma neighbor prediction is prepared
     bool obmc_neighbor_chroma_pred_ready; // Flag indicating if luma neighbor prediction is prepared
     bool obmc_is_luma_neigh_10bit; // Flag indicating if neighbor uses 10-bit data
+    // Persistent buffers for svt_av1_cost_coeffs_txb() / svt_av1_optimize_b()
+    // (moved from the stack to avoid repeated tail-zeroing).
+    uint8_t md_levels_buf[TX_PAD_2D];
+    DECLARE_ALIGNED(16, int8_t, md_coeff_contexts[MAX_TX_SQUARE]);
 } ModeDecisionContext;
 
 /**************************************

@@ -151,6 +151,13 @@ typedef struct CdefDirData {
     int32_t var[CDEF_NBLOCKS][CDEF_NBLOCKS];
 } CdefDirData;
 
+// Per-64x64-fb dlist/count computed once by the CDEF search and reused by the apply (SB=64),
+// avoiding a second svt_sb_compute_cdef_list scan. Own allocation (CdefDirData size is layout-sensitive).
+typedef struct CdefFbList {
+    int32_t  cdef_count;
+    CdefList dlist[(64 / 8) * (64 / 8)]; // max 8x8 sub-blocks in a 64x64 fb
+} CdefFbList;
+
 typedef struct PictureControlSet {
     /*!< Pointer to the dtor of the struct*/
     EbDctor                    dctor;
@@ -197,6 +204,19 @@ typedef struct PictureControlSet {
     uint64_t (*mse_seg[2])[TOTAL_STRENGTHS];
     uint8_t*     skip_cdef_seg;
     CdefDirData* cdef_dir_data;
+    CdefFbList*  cdef_fb_list;
+    // Persistent scratch for finish_cdef_search RDO (sized b64_total_count): index list and the
+    // per-sb mse pointer arrays (into mse_seg). Allocated once with the pcs instead of per frame.
+    int32_t*   cdef_sb_index;
+    uint64_t** cdef_mse_ptr[2];
+    // Persistent apply scratch (svt_av1_cdef_frame): line/col border buffers + row-filtered flags,
+    // lazily (re)allocated on grow instead of malloc/free every frame. Sizes track the current alloc.
+    uint16_t*    cdef_linebuf[3];
+    uint16_t*    cdef_colbuf[3];
+    uint8_t*     cdef_row_cdef;
+    uint32_t     cdef_linebuf_sz[3];
+    uint32_t     cdef_colbuf_sz[3];
+    uint32_t     cdef_row_cdef_sz;
     EbByte       cdef_input_recon[3]; // DLF'd recon
     EbByte       cdef_input_source[3]; // Input video
     uint32_t     tot_seg_searched_rest;
@@ -273,7 +293,6 @@ typedef struct PictureControlSet {
     NeighborArrayUnit** cb_dc_sign_level_coeff_na;
     NeighborArrayUnit** txfm_context_array;
 
-    NeighborArrayUnit**      segmentation_id_pred_array;
     SegmentationNeighborMap* segmentation_neighbor_map;
 
     MbModeInfo** mi_grid_base;
@@ -305,8 +324,22 @@ typedef struct PictureControlSet {
     uint8_t md_sq_mv_search_level;
     uint8_t md_nsq_mv_search_level;
     uint8_t md_pme_level;
+#if OPT_LPD1
+    uint8_t me_subpel_level;
+    uint8_t pme_subpel_level;
+#endif
     uint8_t mds0_level;
     uint8_t rdoq_level;
+#if OPT_COEFF_SHAVING
+    uint8_t coeff_shaving_level;
+#endif
+#if OPT_VLPD0_COST_BIS
+#if CLN_RENAME_PD0
+    uint16_t pd0_cost_bias_weight; // [512..1024] = 50%..100% of default variance offset; 0 = off
+#else
+    uint16_t vlpd0_cost_bias_weight; // [512..1024] = 50%..100% of default variance offset; 0 = off
+#endif
+#endif
     uint8_t rate_est_level;
     uint8_t intra_level;
     uint8_t dist_based_ang_intra_level;
@@ -314,15 +347,18 @@ typedef struct PictureControlSet {
     // depth_removal_level signal at the picture level
     uint8_t pic_depth_removal_level;
     // block_based_depth_refinement_level signal set at the picture level
-    uint8_t          pic_block_based_depth_refinement_level;
-    uint8_t          pic_lpd0_lvl; // lpd0_lvl signal set at the picture level
+    uint8_t pic_block_based_depth_refinement_level;
+#if CLN_RENAME_PD0
+    uint8_t pic_pd0_lvl; // lpd0_lvl signal set at the picture level
+#else
+    uint8_t pic_lpd0_lvl; // lpd0_lvl signal set at the picture level
+#endif
     uint8_t          pic_lpd1_lvl; // lpd1_lvl signal set at the picture level
     bool             pic_bypass_encdec;
     EncMode          enc_mode;
     InputCoeffLvl    coeff_lvl;
     SearchSiteConfig ss_cfg; // CHKN this might be a seq based
     HashTable        hash_table;
-    CRC32C           crc_calculator;
 
     FRAME_CONTEXT*                  ec_ctx_array;
     FRAME_CONTEXT                   md_frame_context;
@@ -549,8 +585,13 @@ typedef struct CdefSearchControls {
     // process at once. Only search best filter strengths of the nearest ref frames (skips the
     // search if the filters of list0/list1 are the same).
     uint8_t search_best_ref_fs;
+#if OPT_CDEF_SKIP_TH
+    // Shut CDEF if ref skip percentage exceeds this threshold (0 = OFF).
+    uint8_t skip_th;
+#else
     // Shut CDEF at the picture level based on the skip area of the nearest reference frames.
     uint8_t use_skip_detector;
+#endif
     // If true, skip UV filter search and force UV filters to take the chosen luma values
     bool uv_from_y;
     // Enable QP-based CDEF strength prediction (bypass strength search)
@@ -606,13 +647,22 @@ typedef struct IntrabcCtrls {
     uint8_t     search_dir; // Search direction: 0 = Left + Top, 1 = Top only
 } IntrabcCtrls;
 
+#if OPT_SC_STILL_IMAGE
+typedef struct PaletteCtrls {
+    uint8_t enabled; // Enable/disable palette mode
+    uint8_t dominant_color_step; // Step size for dominant color search
+    uint8_t kmean_color_step; // Step size for k-means color refinement
+    bool    centroid_refinement; // Enable refinement of palette centroids
+    uint8_t k_means_max_itr; // Maximum number of iterations for K-means refinement (stops earlier if converged)
+} PaletteCtrls;
+#else
 typedef struct PaletteCtrls {
     uint8_t enabled;
     uint8_t dominant_color_step;
     uint8_t kmean_color_step;
     bool    centroid_refinement;
 } PaletteCtrls;
-
+#endif
 /*!
  * \brief The structure of Cyclic_Refresh.
  * \ingroup cyclic_refresh
@@ -639,13 +689,26 @@ typedef struct CyclicRefresh {
      * Rate target ratio to set q delta.
      */
     double rate_ratio_qdelta;
-
+    /*!
+     * Same for segment 2, computed internally.
+     */
+    double rate_ratio_qdelta_seg2;
+    /*!
+     * Enable/disable refresh.
+     */
     int apply_cyclic_refresh;
     /*!
-     * Boost factor for rate target ratio, for segment CR_SEGMENT_ID_BOOST2.
+     * Boost factor for rate target ratio, for segment 2.
      */
     int rate_boost_fac;
+    /*!
+     * Qdeltas for 3 segments.
+     */
     int qindex_delta[3];
+    /*!
+     * ME distortions for 3 segments.
+     */
+    uint64_t me_distortion[3];
     /*!
     * Actual number of SB(s) that were applied delta-q,
     * for segment 1.
@@ -687,6 +750,15 @@ typedef struct DGDetectorSeg {
 //  to store SB based encoding results and information. Parent is created before the Child, and
 //  continue to live more. Child PCS only lives the exact time needed to encode the picture: from ME
 //  to EC/ALF.
+
+// Ref-frame management — per-frame app intent: stamped from REF_STORE/CLEAR/USE_EVENT
+// nodes during resource coordination, consumed by pd_process. 0 = no event.
+typedef struct RefMgmt {
+    uint32_t store_id;
+    uint32_t clear_id;
+    uint32_t use_id;
+} RefMgmt;
+
 typedef struct PictureParentControlSet {
     EbDctor          dctor;
     EbObjectWrapper* input_pic_wrapper;
@@ -850,11 +922,6 @@ typedef struct PictureParentControlSet {
     // index of picture in the mg
     uint32_t pic_idx_in_mg;
 
-    /* profile settings */
-#if CONFIG_ENTROPY_STATS
-    int32_t coef_cdf_category;
-#endif
-
     // Global quant matrix tables
     const QmVal* giqmatrix[NUM_QM_LEVELS][3][TX_SIZES_ALL];
     const QmVal* gqmatrix[NUM_QM_LEVELS][3][TX_SIZES_ALL];
@@ -919,9 +986,13 @@ typedef struct PictureParentControlSet {
 
     uint8_t sc_class2;
 
-    uint8_t      sc_class3;
-    uint8_t      sc_class4;
-    uint8_t      sc_class5;
+    uint8_t sc_class3;
+    uint8_t sc_class4;
+    uint8_t sc_class5;
+#if OPT_LPD1_TX_SKIP_DECISION
+    // Frame-level grayscale-like hint computed during picture analysis from input chroma
+    bool is_grayscale_like_input;
+#endif
     SkipModeInfo skip_mode_info;
 
     uint64_t picture_number_alt; // The picture number overlay includes all the overlay frames
@@ -989,6 +1060,11 @@ typedef struct PictureParentControlSet {
     EbRefFrameScale resize_evt;
     bool            rc_reset_flag;
 
+    // Ref-frame management: per-frame STORE/USE intent stamped from
+    // REF_STORE_EVENT / REF_USE_EVENT nodes during resource coordination
+    // and consumed by pd_process for reference selection.
+    RefMgmt ref_mgmt;
+
     bool    frame_superres_enabled;
     uint8_t superres_denom;
     // recode for auto superres
@@ -1032,7 +1108,6 @@ typedef struct PictureParentControlSet {
     int         undershoot_seen;
     int         low_cr_seen;
     uint64_t    pcs_total_rate;
-    EbHandle    pcs_total_rate_mutex;
     uint8_t     first_pass_done;
     uint8_t     first_frame_in_minigop;
     TplControls tpl_ctrls;
@@ -1093,6 +1168,15 @@ typedef struct PictureParentControlSet {
     uint64_t tf_avg_luma;
     bool     tf_active_region_present;
     bool     seq_param_changed;
+    bool     bitrate_changed;
+    bool     frame_rate_changed;
+    // Runtime bitrate and frame rate values that may be adjusted mid-encoding
+    // via RATE_CHANGE_EVENT / FRAME_RATE_CHANGE_EVENT. These are per-frame
+    // snapshots stamped by resource coordination so downstream threads (RC)
+    // read thread-safe per-PCS values instead of the shared SCS.
+    uint32_t target_bit_rate;
+    uint32_t frame_rate_numerator;
+    uint32_t frame_rate_denominator;
     uint64_t norm_me_dist;
     uint8_t  tpl_params_ready;
     bool     is_startup_gop;
@@ -1100,6 +1184,10 @@ typedef struct PictureParentControlSet {
 
     bool   sframe_ref_pruned;
     int8_t sframe_qp_offset;
+#if OPT_TUNE_VMAF
+    int     vmaf_sharpening_amount;
+    int32_t vmaf_max_delta;
+#endif
 } PictureParentControlSet;
 
 typedef struct TplDispResults {
@@ -1162,6 +1250,7 @@ typedef struct PictureControlSetInitData {
     bool    allintra;
     bool    adaptive_film_grain;
     bool    use_flat_ipp;
+    int     hbd_mds;
 } PictureControlSetInitData;
 
 /**************************************
@@ -1176,7 +1265,7 @@ EbErrorType svt_aom_picture_parent_control_set_creator(EbPtr* object_dbl_ptr, Eb
 EbErrorType svt_aom_me_creator(EbPtr* object_dbl_ptr, EbPtr object_init_data_ptr);
 EbErrorType svt_aom_me_sb_results_ctor(MeSbResults* obj_ptr, PictureControlSetInitData* init_data_ptr);
 EbErrorType ppcs_update_param(PictureParentControlSet* ppcs);
-EbErrorType pcs_update_param(PictureControlSet* pcs);
+EbErrorType pcs_update_param(PictureControlSet* pcs, int8_t enc_mode);
 EbErrorType me_update_param(MotionEstimationData* me_data, struct SequenceControlSet* scs);
 EbErrorType recon_coef_update_param(EncDecSet* recon_coef, struct SequenceControlSet* scs);
 bool        svt_aom_is_pic_skipped(PictureParentControlSet* pcs);

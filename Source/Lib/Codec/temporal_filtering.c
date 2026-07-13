@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
+#include <math.h>
 #include "temporal_filtering.h"
 #include "compute_sad.h"
 #include "motion_estimation.h"
@@ -80,7 +81,11 @@ static const uint32_t idx_32x32_to_idx_8x8[4][4][4] = {
 };
 // clang-format on
 
+#if ADD_ON_THE_FLY_MG
+int32_t svt_aom_get_frame_update_type(PictureParentControlSet* pcs);
+#else
 int32_t svt_aom_get_frame_update_type(SequenceControlSet* scs, PictureParentControlSet* pcs);
+#endif
 #if DEBUG_SCALING
 // save YUV to file - auxiliary function for debug
 void save_YUV_to_file(char* filename, EbByte y_buffer, EbByte buffer_u, EbByte buffer_v, uint16_t width,
@@ -1013,7 +1018,7 @@ static void svt_av1_apply_temporal_filter_planewise_medium_partial_c(
                                        block_error_fp8[subblock_idx]) /
             (TF_WINDOW_BLOCK_BALANCE_WEIGHT + 1);
 
-        uint64_t avg_err_fp10 = ((combined_error_fp8 >> 3) * (d_factor_fp8[subblock_idx] >> 3));
+        uint64_t avg_err_fp10 = (uint64_t)(combined_error_fp8 >> 3) * (d_factor_fp8[subblock_idx] >> 3);
         //double scaled_diff = AOMMIN(combined_error * d_factor[subblock_idx] / (FP2FLOAT(tf_decay_factor_fp16)), 7);
         uint32_t scaled_diff16 = (uint32_t)AOMMIN(
             /*((16*avg_err)<<8)*/ (avg_err_fp10) / AOMMAX((tf_decay_factor_fp16 >> 10), 1), 7 * 16);
@@ -1190,7 +1195,7 @@ static void svt_av1_apply_temporal_filter_planewise_medium_hbd_partial_c(
                                        block_error_fp8[subblock_idx]) /
             (TF_WINDOW_BLOCK_BALANCE_WEIGHT + 1);
 
-        uint64_t avg_err_fp10 = ((combined_error_fp8 >> 3) * (d_factor_fp8[subblock_idx] >> 3));
+        uint64_t avg_err_fp10 = (uint64_t)(combined_error_fp8 >> 3) * (d_factor_fp8[subblock_idx] >> 3);
         //double scaled_diff = AOMMIN(combined_error * d_factor[subblock_idx] / (FP2FLOAT(tf_decay_factor_fp16)), 7);
         uint32_t scaled_diff16 = (uint32_t)AOMMIN(
             /*((16*avg_err)<<8)*/ (avg_err_fp10) / AOMMAX((tf_decay_factor_fp16 >> 10), 1), 7 * 16);
@@ -1727,11 +1732,11 @@ static void tf_64x64_sub_pel_search(PictureParentControlSet* pcs, MeContext* me_
     // Set the starting MV and distortion
     me_ctx->tf_64x64_block_error = INT_MAX;
     me_ctx->tf_64x64_mv_x        = (me_ctx->tf_use_pred_64x64_only_th == (uint8_t)~0)
-               ? me_ctx->search_results[0][0].hme_sc_x << 3
-               : (_MVXT(me_ctx->p_best_mv64x64[0])) << 3;
+               ? me_ctx->search_results[0][0].hme_sc_x * 8
+               : (_MVXT(me_ctx->p_best_mv64x64[0])) * 8;
     me_ctx->tf_64x64_mv_y        = (me_ctx->tf_use_pred_64x64_only_th == (uint8_t)~0)
-               ? me_ctx->search_results[0][0].hme_sc_y << 3
-               : (_MVYT(me_ctx->p_best_mv64x64[0])) << 3;
+               ? me_ctx->search_results[0][0].hme_sc_y * 8
+               : (_MVYT(me_ctx->p_best_mv64x64[0])) * 8;
 
     TF_SUBPEL_SEARCH_PARAMS tf_sp_param;
     tf_sp_param.subsampling_shift = pcs->tf_ctrls.sub_sampling_shift;
@@ -1839,8 +1844,8 @@ static void tf_32x32_sub_pel_search(PictureParentControlSet* pcs, MeContext* me_
     // Set starting MV and distortion
     // AV1 MVs are always in 1/8th pel precision.
     me_ctx->tf_32x32_block_error[idx_32x32] = INT_MAX;
-    me_ctx->tf_32x32_mv_x[idx_32x32]        = (_MVXT(me_ctx->p_best_mv32x32[mv_index])) << 3;
-    me_ctx->tf_32x32_mv_y[idx_32x32]        = (_MVYT(me_ctx->p_best_mv32x32[mv_index])) << 3;
+    me_ctx->tf_32x32_mv_x[idx_32x32]        = (_MVXT(me_ctx->p_best_mv32x32[mv_index])) * 8;
+    me_ctx->tf_32x32_mv_y[idx_32x32]        = (_MVYT(me_ctx->p_best_mv32x32[mv_index])) * 8;
 
     TF_SUBPEL_SEARCH_PARAMS tf_sp_param;
     tf_sp_param.subsampling_shift = pcs->tf_ctrls.sub_sampling_shift;
@@ -1963,8 +1968,8 @@ static void tf_16x16_sub_pel_search(PictureParentControlSet* pcs, MeContext* me_
         // Set starting MV and distortion
         me_ctx->tf_16x16_block_error[idx_32x32 * 4 + idx_16x16] = INT_MAX;
         // AV1 MVs are always in 1/8th pel precision.
-        me_ctx->tf_16x16_mv_x[idx_32x32 * 4 + idx_16x16] = (_MVXT(me_ctx->p_best_mv16x16[mv_index])) << 3;
-        me_ctx->tf_16x16_mv_y[idx_32x32 * 4 + idx_16x16] = (_MVYT(me_ctx->p_best_mv16x16[mv_index])) << 3;
+        me_ctx->tf_16x16_mv_x[idx_32x32 * 4 + idx_16x16] = (_MVXT(me_ctx->p_best_mv16x16[mv_index])) * 8;
+        me_ctx->tf_16x16_mv_y[idx_32x32 * 4 + idx_16x16] = (_MVYT(me_ctx->p_best_mv16x16[mv_index])) * 8;
 
         // Perform subpel search for the block
         tf_subpel_search(&tf_sp_param,
@@ -2076,10 +2081,8 @@ static void tf_8x8_sub_pel_search(PictureParentControlSet* pcs, MeContext* me_ct
             // Set starting MV and distortion
             me_ctx->tf_8x8_block_error[idx_32x32 * 16 + 4 * idx_16x16 + idx_8x8] = INT_MAX;
             // AV1 MVs are always in 1/8th pel precision.
-            me_ctx->tf_8x8_mv_x[idx_32x32 * 16 + 4 * idx_16x16 + idx_8x8] = (_MVXT(me_ctx->p_best_mv8x8[mv_index]))
-                << 3;
-            me_ctx->tf_8x8_mv_y[idx_32x32 * 16 + 4 * idx_16x16 + idx_8x8] = (_MVYT(me_ctx->p_best_mv8x8[mv_index]))
-                << 3;
+            me_ctx->tf_8x8_mv_x[idx_32x32 * 16 + 4 * idx_16x16 + idx_8x8] = (_MVXT(me_ctx->p_best_mv8x8[mv_index])) * 8;
+            me_ctx->tf_8x8_mv_y[idx_32x32 * 16 + 4 * idx_16x16 + idx_8x8] = (_MVYT(me_ctx->p_best_mv8x8[mv_index])) * 8;
 
             // Search subpel for this block
             tf_subpel_search(&tf_sp_param,
@@ -2728,7 +2731,11 @@ static EbErrorType produce_temporally_filtered_pic(PictureParentControlSet** pcs
          * TF STRENGTH CALCULATION
          */
     // Get the frame update type for the current frame
+#if ADD_ON_THE_FLY_MG
+    const uint32_t frame_update_type = svt_aom_get_frame_update_type(centre_pcs);
+#else
     const uint32_t frame_update_type = svt_aom_get_frame_update_type(centre_pcs->scs, centre_pcs);
+#endif
 
     if (scs->static_config.enable_tf > 1) {
         uint8_t adaptive_tf_shift_factor = calculate_tf_shift_factor(ctx);
@@ -2848,11 +2855,11 @@ static EbErrorType produce_temporally_filtered_pic(PictureParentControlSet** pcs
             // 2nd segment: current pic
             // 3rd segment: future pics - from closest to farthest
 
-            int start_frame_index[3] = {0, centre_pcs->past_altref_nframes, centre_pcs->past_altref_nframes + 1};
+            const int start_frame_index[3] = {0, centre_pcs->past_altref_nframes, centre_pcs->past_altref_nframes + 1};
 
-            int end_frame_index[3] = {centre_pcs->past_altref_nframes - 1,
-                                      centre_pcs->past_altref_nframes,
-                                      centre_pcs->past_altref_nframes + centre_pcs->future_altref_nframes};
+            const int end_frame_index[3] = {centre_pcs->past_altref_nframes - 1,
+                                            centre_pcs->past_altref_nframes,
+                                            centre_pcs->past_altref_nframes + centre_pcs->future_altref_nframes};
 
             for (int segment_idx = 0; segment_idx < 3; segment_idx++) {
                 for (int frame_index = start_frame_index[segment_idx]; frame_index <= end_frame_index[segment_idx];
@@ -3252,7 +3259,11 @@ static EbErrorType produce_temporally_filtered_pic_ld(PictureParentControlSet** 
      * TF STRENGTH CALCULATION (2)
      */
     // Get the frame update type for the current frame
+#if ADD_ON_THE_FLY_MG
+    const uint32_t frame_update_type = svt_aom_get_frame_update_type(centre_pcs);
+#else
     const uint32_t frame_update_type = svt_aom_get_frame_update_type(centre_pcs->scs, centre_pcs);
+#endif
 
     if (scs->static_config.enable_tf > 1) {
         uint8_t adaptive_tf_shift_factor = calculate_tf_shift_factor(ctx);
@@ -3607,6 +3618,132 @@ int32_t svt_estimate_noise_highbd_fp16_c(const uint16_t* src, int width, int hei
 }
 #endif
 
+#if OPT_TUNE_VMAF
+uint32_t svt_vmaf_compute_avg_mad_c(const uint8_t* src, int width, int height, int stride) {
+    uint64_t total_activity = 0;
+    int      block_count    = 0;
+    for (int by = 0; by + 8 <= height; by += 8) {
+        for (int bx = 0; bx + 8 <= width; bx += 8) {
+            uint32_t sum = 0;
+            for (int r = 0; r < 8; r++) {
+                for (int c = 0; c < 8; c++) {
+                    sum += src[(by + r) * stride + (bx + c)];
+                }
+            }
+            uint32_t mean = sum >> 6;
+            uint32_t mad  = 0;
+            for (int r = 0; r < 8; r++) {
+                for (int c = 0; c < 8; c++) {
+                    mad += (uint32_t)abs((int)src[(by + r) * stride + (bx + c)] - (int)mean);
+                }
+            }
+            total_activity += mad;
+            block_count++;
+        }
+    }
+    if (block_count == 0) {
+        return 0;
+    }
+    return (uint32_t)(total_activity / ((uint64_t)block_count * 64));
+}
+
+void svt_vmaf_apply_unsharp_row_c(const uint8_t* src, const int16_t* blur, uint8_t* dst, int width, int amount,
+                                  int32_t max_delta) {
+    for (int j = 0; j < width; j++) {
+        int32_t detail = (int32_t)src[j] - (int32_t)blur[j];
+        detail         = detail > max_delta ? max_delta : detail < -max_delta ? -max_delta : detail;
+        int32_t result = (int32_t)src[j] + ((detail * amount) >> 15);
+        dst[j]         = (uint8_t)(result < 0 ? 0 : result > 255 ? 255 : result);
+    }
+}
+
+void svt_vmaf_vpass_row_c(const uint32_t* hpass, uint32_t* sc0, uint32_t* sc1, uint32_t* sc2, uint32_t* sc3,
+                          int16_t* blur_row, int alloc_width, int width, int steps_x, int do_output) {
+    (void)width;
+    const int blur_start = 2 * steps_x;
+    for (int i = 0; i < alloc_width; i++) {
+        uint32_t tmp1 = hpass[i];
+        uint32_t tmp2 = sc0[i] + tmp1;
+        sc0[i]        = tmp1;
+        tmp1          = sc1[i] + tmp2;
+        sc1[i]        = tmp2;
+        tmp2          = sc2[i] + tmp1;
+        sc2[i]        = tmp1;
+        tmp1          = sc3[i] + tmp2;
+        sc3[i]        = tmp2;
+        if (do_output && i >= blur_start) {
+            blur_row[i - blur_start] = (int16_t)((tmp1 + 128u) >> 8);
+        }
+    }
+}
+
+float svt_vmaf_compute_gradient_coherence_c(const uint8_t* src, int width, int height, int stride) {
+    double weighted_coh = 0.0;
+    double weight_sum   = 0.0;
+    for (int by = 1; by < height - 1; by += 16) {
+        for (int bx = 1; bx < width - 1; bx += 16) {
+            int64_t sum_xx = 0, sum_yy = 0, sum_xy = 0;
+            int     y_end = (by + 16 < height - 1) ? by + 16 : height - 1;
+            int     x_end = (bx + 16 < width - 1) ? bx + 16 : width - 1;
+            for (int y = by; y < y_end; y++) {
+                const uint8_t* row  = src + y * stride;
+                const uint8_t* up   = src + (y - 1) * stride;
+                const uint8_t* down = src + (y + 1) * stride;
+                for (int x = bx; x < x_end; x++) {
+                    int32_t grad_x = (int32_t)row[x + 1] - (int32_t)row[x - 1];
+                    int32_t grad_y = (int32_t)down[x] - (int32_t)up[x];
+                    sum_xx += (int64_t)grad_x * grad_x;
+                    sum_yy += (int64_t)grad_y * grad_y;
+                    sum_xy += (int64_t)grad_x * grad_y;
+                }
+            }
+            double xx        = (double)sum_xx;
+            double yy        = (double)sum_yy;
+            double xy        = (double)sum_xy;
+            double energy    = xx + yy + 1e-6;
+            double coherence = sqrt((xx - yy) * (xx - yy) + 4.0 * xy * xy) / energy;
+            weighted_coh += coherence * energy;
+            weight_sum += energy;
+        }
+    }
+    if (weight_sum <= 0.0) {
+        return 1.0f;
+    }
+    return (float)(weighted_coh / weight_sum);
+}
+
+uint32_t svt_vmaf_count_detail_le_c(const uint8_t* src, const int16_t* blur, int width, int height, int src_stride,
+                                    int thresh) {
+    uint32_t match_count = 0;
+    for (int y = 0; y < height; y++) {
+        const uint8_t* src_row  = src + (size_t)y * src_stride;
+        const int16_t* blur_row = blur + (size_t)y * width;
+        for (int x = 0; x < width; x++) {
+            int32_t detail = abs((int32_t)src_row[x] - (int32_t)blur_row[x]);
+            if (detail <= thresh) {
+                match_count++;
+            }
+        }
+    }
+    return match_count;
+}
+
+void svt_vmaf_hpass_row_c(const uint8_t* src_row, int width, uint32_t* h_row) {
+    const int steps_x  = 2;
+    uint32_t  h_acc[4] = {0};
+    for (int x = -steps_x; x < width + steps_x; x++) {
+        uint32_t tmp1 = x <= 0 ? src_row[0] : x >= width ? src_row[width - 1] : (uint32_t)src_row[x];
+        for (int s = 0; s < steps_x * 2; s += 2) {
+            uint32_t tmp2 = h_acc[s] + tmp1;
+            h_acc[s]      = tmp1;
+            tmp1          = h_acc[s + 1] + tmp2;
+            h_acc[s + 1]  = tmp2;
+        }
+        h_row[x + steps_x] = tmp1;
+    }
+}
+#endif
+
 void pad_and_decimate_filtered_pic(PictureParentControlSet* centre_pcs) {
     // reference structures (padded pictures + downsampled versions)
     SequenceControlSet*  scs        = centre_pcs->scs;
@@ -3864,10 +4001,14 @@ EbErrorType svt_av1_init_temporal_filtering(PictureParentControlSet** pcs_list, 
 
         // save original source picture (to be replaced by the temporally filtered pic)
         // if PSNR or SSIM computation needed or if superres recode is enabled
-        SUPERRES_MODE             superres_mode           = centre_pcs->scs->static_config.superres_mode;
-        SUPERRES_AUTO_SEARCH_TYPE search_type             = centre_pcs->scs->static_config.superres_auto_search_type;
-        uint32_t                  frame_update_type       = svt_aom_get_frame_update_type(centre_pcs->scs, centre_pcs);
-        bool                      superres_recode_enabled = (superres_mode == SUPERRES_AUTO) &&
+        SUPERRES_MODE             superres_mode = centre_pcs->scs->static_config.superres_mode;
+        SUPERRES_AUTO_SEARCH_TYPE search_type   = centre_pcs->scs->static_config.superres_auto_search_type;
+#if ADD_ON_THE_FLY_MG
+        uint32_t frame_update_type = svt_aom_get_frame_update_type(centre_pcs);
+#else
+        uint32_t frame_update_type = svt_aom_get_frame_update_type(centre_pcs->scs, centre_pcs);
+#endif
+        bool superres_recode_enabled = (superres_mode == SUPERRES_AUTO) &&
             ((search_type == SUPERRES_AUTO_DUAL) || (search_type == SUPERRES_AUTO_ALL)) // auto-dual or auto-all
             && ((frame_update_type == SVT_AV1_KF_UPDATE) ||
                 (frame_update_type == SVT_AV1_ARF_UPDATE)); // recode only applies to key and arf

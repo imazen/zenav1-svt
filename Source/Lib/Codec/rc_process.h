@@ -61,10 +61,6 @@ typedef enum rate_factor_level {
 #define BOOST_KF_HIGH 5000
 #define BOOST_KF_LOW 400
 
-#define CR_SEGMENT_ID_BASE 0
-#define CR_SEGMENT_ID_BOOST1 1
-#define CR_SEGMENT_ID_BOOST2 2
-
 extern const int svt_av1_non_base_qindex_weight_ref[EB_MAX_TEMPORAL_LAYERS];
 extern const int svt_av1_non_base_qindex_weight_wq[EB_MAX_TEMPORAL_LAYERS];
 
@@ -121,6 +117,9 @@ typedef struct RATE_CONTROL {
     int     constrained_gf_group;
     int     frames_to_key;
     int     frames_since_key;
+#if FIX_RTC_M13
+    int frames_since_cdf_update;
+#endif
     int     this_key_frame_forced;
     int     avg_frame_bandwidth; // Average frame size target for clip
     int     max_frame_bandwidth; // Maximum burst rate allowed for a frame.
@@ -192,6 +191,26 @@ typedef struct RATE_CONTROL {
     // current and previous average base layer ME distortion
     uint32_t cur_avg_base_me_dist;
     uint32_t prev_avg_base_me_dist;
+
+    // RTC CBR
+    int mini_qop_size;
+    int min_ref_base_q_idx;
+#if USE_FRAME_TYPE_BOOST
+    int rc_mini_gop_pos; // RC virtual mini-GoP position (0..mini_qop_size-1)
+    int rc_num_layers; // RC virtual layer count, independent of encoder pred structure
+#endif
+    double target_size_factors[1 + MAX_TEMPORAL_LAYERS];
+
+#if USE_FRAME_TYPE_BOOST
+    // Rate correction factors for RTC CBR are tracked per RC virtual mini-GoP position
+    double rcf_values[1 + MAX_MINIGOP_SIZE]; // RCF per position in RC virtual mini-gop
+#else
+    // Rate correction factors for RTC CBR are tracked per pred_struct_index
+    // because besides layer index the position in minigop affect compression too
+    double rcf_values[1 + MAX_MINIGOP_SIZE]; // RCF per frame in mini-gop
+#endif
+    double rcf_kalman_P[1 + MAX_MINIGOP_SIZE]; // estimation variance per layer
+    double rcf_kalman_R[1 + MAX_MINIGOP_SIZE]; // adaptive measurement noise per layer
 } RATE_CONTROL;
 
 /**************************************
@@ -237,11 +256,12 @@ void svt_av1_rc_init_sb_qindex(struct PictureControlSet* pcs, struct SequenceCon
 void svt_av1_variance_adjust_qp(struct PictureControlSet* pcs);
 void svt_aom_sb_qp_derivation_tpl_la(struct PictureControlSet* pcs);
 void svt_av1_normalize_sb_delta_q(struct PictureControlSet* pcs);
+void svt_av1_generate_b64_me_qindex_map(struct PictureControlSet* pcs);
 
 int32_t svt_av1_convert_qindex_to_q_fp8(int32_t qindex, EbBitDepth bit_depth);
 int32_t svt_av1_compute_qdelta_fp(int32_t qstart_fp8, int32_t qtarget_fp8, EbBitDepth bit_depth);
 
-void svt_aom_cyclic_refresh_init(struct PictureParentControlSet* ppcs);
+void svt_aom_cyclic_refresh_setup(struct PictureParentControlSet* ppcs);
 
 // CQP/CRF
 void svt_av1_rc_calc_qindex_crf_cqp(struct PictureControlSet* pcs, struct SequenceControlSet* scs);
@@ -253,12 +273,21 @@ void svt_av1_rc_calc_qindex_rate_control(struct PictureControlSet* pcs, struct S
 void svt_av1_rc_postencode_update_gop_const(struct PictureParentControlSet* ppcs);
 void svt_av1_rc_postencode_update(struct PictureParentControlSet* ppcs);
 
+// Dynamic resolution resize decision; shared by the low-delay VBR/CBR path
+// (svt_aom_one_pass_rt_rate_alloc) and the RTC-CBR path (svt_av1_rc_calc_qindex_rtc_cbr).
+// Caller must have verified resize_mode==RESIZE_DYNAMIC && single-pass && LOW_DELAY.
+void svt_aom_dynamic_resize_decision(struct PictureParentControlSet* pcs);
+
+// RTC CBR
+void svt_av1_rc_calc_qindex_rtc_cbr(struct PictureControlSet* pcs);
+void svt_av1_rc_postencode_update_rtc_cbr(struct PictureParentControlSet* ppcs);
+bool svt_av1_rc_recode_decision_rtc_cbr(struct PictureControlSet* pcs);
+
 // common stuff
 void    svt_av1_rc_init(struct SequenceControlSet* scs);
 int32_t svt_av1_compute_qdelta(double qstart, double qtarget, EbBitDepth bit_depth);
 double  svt_av1_convert_qindex_to_q(int32_t qindex, EbBitDepth bit_depth);
 int     svt_av1_calculate_boost_bits(int frame_count, int boost, int64_t total_group_bits);
-int     svt_av1_compute_deltaq(struct PictureParentControlSet* ppcs, int q, double rate_ratio_qdelta);
 
 int svt_aom_frame_is_kf_gf_arf(struct PictureParentControlSet* ppcs);
 
