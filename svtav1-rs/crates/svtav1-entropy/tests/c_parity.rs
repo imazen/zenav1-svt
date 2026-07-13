@@ -222,3 +222,60 @@ fn ec_empty_and_tiny_streams_match_c() {
         }
     }
 }
+
+/// The committed default CDF tables must exactly match a fresh extraction
+/// from the linked C library (guards against upstream bumps and manual
+/// edits of the generated file).
+#[test]
+fn c_default_cdf_tables_match() {
+    use svtav1_entropy::default_cdfs as d;
+
+    // Q-dependent coefficient tables: bucket k extracted at its
+    // representative qindex.
+    let q_reps = [10, 40, 100, 160];
+    for (k, &q) in q_reps.iter().enumerate() {
+        cref::fc_init(q);
+        macro_rules! check_q {
+            ($table:expr, $c:expr, $name:literal) => {{
+                let rust_flat: Vec<u16> = $table.iter().flatten().flatten().copied().collect();
+                assert_eq!(rust_flat, $c, concat!($name, " bucket mismatch"));
+            }};
+        }
+        check_q!(d::TXB_SKIP_CDF[k], cref::fc_table(cref::FcTable::TxbSkip), "TXB_SKIP_CDF");
+        check_q!(d::DC_SIGN_CDF[k], cref::fc_table(cref::FcTable::DcSign), "DC_SIGN_CDF");
+        check_q!(d::EOB_FLAG_CDF16[k], cref::fc_table(cref::FcTable::EobFlag16), "EOB_FLAG_CDF16");
+        check_q!(d::EOB_FLAG_CDF1024[k], cref::fc_table(cref::FcTable::EobFlag1024), "EOB_FLAG_CDF1024");
+        let base: Vec<u16> = d::COEFF_BASE_CDF[k].iter().flatten().flatten().flatten().copied().collect();
+        assert_eq!(base, cref::fc_table(cref::FcTable::CoeffBase), "COEFF_BASE_CDF bucket {q}");
+        let br: Vec<u16> = d::COEFF_BR_CDF[k].iter().flatten().flatten().flatten().copied().collect();
+        assert_eq!(br, cref::fc_table(cref::FcTable::CoeffBr), "COEFF_BR_CDF bucket {q}");
+        let beob: Vec<u16> = d::COEFF_BASE_EOB_CDF[k].iter().flatten().flatten().flatten().copied().collect();
+        assert_eq!(beob, cref::fc_table(cref::FcTable::CoeffBaseEob), "COEFF_BASE_EOB_CDF bucket {q}");
+        let eex: Vec<u16> = d::EOB_EXTRA_CDF[k].iter().flatten().flatten().flatten().copied().collect();
+        assert_eq!(eex, cref::fc_table(cref::FcTable::EobExtra), "EOB_EXTRA_CDF bucket {q}");
+    }
+
+    // Mode tables (q-independent).
+    cref::fc_init(60);
+    let part: Vec<u16> = d::PARTITION_CDF.iter().flatten().copied().collect();
+    assert_eq!(part, cref::fc_table(cref::FcTable::Partition), "PARTITION_CDF");
+    let skip: Vec<u16> = d::SKIP_CDF.iter().flatten().copied().collect();
+    assert_eq!(skip, cref::fc_table(cref::FcTable::Skip), "SKIP_CDF");
+    let kf: Vec<u16> = d::KF_Y_CDF.iter().flatten().flatten().copied().collect();
+    assert_eq!(kf, cref::fc_table(cref::FcTable::KfY), "KF_Y_CDF");
+    let ad: Vec<u16> = d::ANGLE_DELTA_CDF.iter().flatten().copied().collect();
+    assert_eq!(ad, cref::fc_table(cref::FcTable::AngleDelta), "ANGLE_DELTA_CDF");
+    let iet: Vec<u16> = d::INTRA_EXT_TX_CDF.iter().flatten().flatten().flatten().copied().collect();
+    assert_eq!(iet, cref::fc_table(cref::FcTable::IntraExtTx), "INTRA_EXT_TX_CDF");
+    let uv: Vec<u16> = d::UV_MODE_CDF.iter().flatten().flatten().copied().collect();
+    assert_eq!(uv, cref::fc_table(cref::FcTable::UvMode), "UV_MODE_CDF");
+    let ts: Vec<u16> = d::TX_SIZE_CDF.iter().flatten().flatten().copied().collect();
+    assert_eq!(ts, cref::fc_table(cref::FcTable::TxSize), "TX_SIZE_CDF");
+    assert_eq!(d::FILTER_INTRA_MODE_CDF.to_vec(), cref::fc_table(cref::FcTable::FilterIntraMode));
+    assert_eq!(d::DELTA_Q_CDF.to_vec(), cref::fc_table(cref::FcTable::DeltaQ));
+    assert_eq!(d::INTRABC_CDF.to_vec(), cref::fc_table(cref::FcTable::IntraBc));
+    let fi: Vec<u16> = d::FILTER_INTRA_CDF.iter().flatten().copied().collect();
+    assert_eq!(fi, cref::fc_table(cref::FcTable::FilterIntra), "FILTER_INTRA_CDF");
+    let ym: Vec<u16> = d::Y_MODE_CDF.iter().flatten().copied().collect();
+    assert_eq!(ym, cref::fc_table(cref::FcTable::YMode), "Y_MODE_CDF");
+}
