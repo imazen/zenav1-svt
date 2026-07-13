@@ -1084,39 +1084,55 @@ fn deblock_flat_block_unchanged() {
 
 #[test]
 fn cdef_direction_horizontal_gradient_spec() {
-    // Spec 08 Section 7.15.1: "CDEF direction detection"
-    // A horizontal gradient should be detected as direction 0 (horizontal)
-    let mut block = [0u8; 64]; // 8x8
+    // Spec 7.15.3 direction semantics on the C-exact search
+    // (svt_aom_cdef_find_dir_8bit_c port): columns constant, rows varying
+    // -> lines of equal pixels run vertically -> direction 6 (vertical);
+    // a left-to-right gradient -> horizontal lines -> direction 2.
+    let mut cols = [0u8; 64]; // 8x8, value depends on column
+    let mut rows = [0u8; 64]; // value depends on row
     for r in 0..8 {
         for c in 0..8 {
-            block[r * 8 + c] = (c * 30) as u8; // horizontal gradient
+            cols[r * 8 + c] = (c * 30) as u8;
+            rows[r * 8 + c] = (r * 30) as u8;
         }
     }
-
-    let (dir, var) = svtav1_dsp::loop_filter::cdef_find_dir(&block, 8);
-
-    // A horizontal gradient has strongest edges in the vertical direction.
-    // The exact direction index depends on the CDEF direction table.
-    // We verify direction is valid and variance is nonzero.
-    assert!(dir < 8, "direction should be in 0-7: got {dir}");
-    assert!(var > 0, "variance should be nonzero for gradient");
+    let (dir_cols, var_cols) = svtav1_dsp::cdef::cdef_find_dir_8bit(&cols, 8, 0);
+    let (dir_rows, var_rows) = svtav1_dsp::cdef::cdef_find_dir_8bit(&rows, 8, 0);
+    assert_eq!(dir_cols, 6, "column gradient = vertical lines = dir 6");
+    assert_eq!(dir_rows, 2, "row gradient = horizontal lines = dir 2");
+    assert!(var_cols > 0 && var_rows > 0, "variance nonzero for gradients");
 }
 
 #[test]
 fn cdef_filter_preserves_flat() {
-    // Spec 08: CDEF with zero strength should not modify the block
-    let src = [128u8; 64];
+    // Spec 08: CDEF at zero strength must not modify the block. Uses the
+    // C-exact kernel (svt_cdef_filter_block_c port) on a padded 16-bit
+    // buffer with the frame-boundary sentinel in the halo.
+    use svtav1_dsp::cdef;
+    let mut inb = vec![cdef::CDEF_VERY_LARGE; cdef::CDEF_INBUF_SIZE];
+    let ioff = cdef::CDEF_VBORDER * cdef::CDEF_BSTRIDE + cdef::CDEF_HBORDER;
+    for r in 0..8 {
+        for c in 0..8 {
+            inb[ioff + r * cdef::CDEF_BSTRIDE + c] = 128;
+        }
+    }
     let mut dst = [0u8; 64];
-
-    svtav1_dsp::loop_filter::cdef_filter_block(
-        &src, 8, &mut dst, 8, 0, // direction
+    cdef::cdef_filter_block(
+        &mut dst,
+        0,
+        8,
+        &inb,
+        ioff,
         0, // pri_strength = 0 (no filtering)
         0, // sec_strength = 0
-        3, // damping
-        8, 8,
+        0, // direction
+        3, // pri damping
+        3, // sec damping
+        cdef::BLOCK_8X8,
+        0, // coeff_shift (8-bit)
+        1,
     );
-
-    assert_eq!(&dst, &src, "zero-strength CDEF should copy input unchanged");
+    assert_eq!(dst, [128u8; 64], "zero-strength CDEF must be the identity");
 }
 
 #[test]

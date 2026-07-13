@@ -533,3 +533,131 @@ pub fn lf_limits(sharpness: u8) -> ([u8; 64], [u8; 64]) {
     unsafe { ref_lf_limits(sharpness as i32, lim.as_mut_ptr(), mblim.as_mut_ptr()) };
     (lim, mblim)
 }
+
+// ---- CDEF reference kernels ----
+
+unsafe extern "C" {
+    fn ref_cdef_find_dir(img: *const u16, stride: i32, var: *mut i32, coeff_shift: i32) -> u8;
+    fn ref_cdef_find_dir_8bit(img: *const u8, stride: i32, var: *mut i32, coeff_shift: i32) -> u8;
+    fn ref_cdef_filter_block_8(
+        dst: *mut u8,
+        dstride: i32,
+        input: *const u16,
+        pri_strength: i32,
+        sec_strength: i32,
+        dir: i32,
+        pri_damping: i32,
+        sec_damping: i32,
+        bsize: i32,
+        coeff_shift: i32,
+        subsampling_factor: u8,
+    );
+    fn ref_cdef_filter_block_8bit(
+        dst: *mut u8,
+        dstride: i32,
+        input: *const u8,
+        pri_strength: i32,
+        sec_strength: i32,
+        dir: i32,
+        damping: i32,
+        bsize: i32,
+        coeff_shift: i32,
+        subsampling_factor: u8,
+    );
+}
+
+/// Reference `svt_aom_cdef_find_dir_c`: 8x8 direction search over 16-bit
+/// pixels. Returns `(dir, var)`.
+pub fn cdef_find_dir(img: &[u16], stride: usize, coeff_shift: i32) -> (u8, i32) {
+    assert!(img.len() >= 7 * stride + 8);
+    let mut var = 0i32;
+    let dir = unsafe { ref_cdef_find_dir(img.as_ptr(), stride as i32, &mut var, coeff_shift) };
+    (dir, var)
+}
+
+/// Reference `svt_aom_cdef_find_dir_8bit_c`.
+pub fn cdef_find_dir_8bit(img: &[u8], stride: usize, coeff_shift: i32) -> (u8, i32) {
+    assert!(img.len() >= 7 * stride + 8);
+    let mut var = 0i32;
+    let dir =
+        unsafe { ref_cdef_find_dir_8bit(img.as_ptr(), stride as i32, &mut var, coeff_shift) };
+    (dir, var)
+}
+
+/// Reference `svt_cdef_filter_block_c` (dst8 arm). `inb`/`ioff` locate the
+/// block origin inside a `CDEF_BSTRIDE`(=144)-strided padded buffer; the
+/// asserts keep every possible tap (`|off| <= 2*144+2`) in bounds.
+#[allow(clippy::too_many_arguments)]
+pub fn cdef_filter_block_8(
+    dst: &mut [u8],
+    doff: usize,
+    dstride: usize,
+    inb: &[u16],
+    ioff: usize,
+    pri_strength: i32,
+    sec_strength: i32,
+    dir: i32,
+    pri_damping: i32,
+    sec_damping: i32,
+    bsize: i32,
+    coeff_shift: i32,
+    subsampling_factor: u8,
+) {
+    const TAP_REACH: usize = 2 * 144 + 2;
+    assert!(ioff >= TAP_REACH);
+    assert!(ioff + 7 * 144 + 7 + TAP_REACH < inb.len());
+    assert!(doff + 7 * dstride + 8 <= dst.len());
+    assert!((0..=7).contains(&dir));
+    unsafe {
+        ref_cdef_filter_block_8(
+            dst.as_mut_ptr().add(doff),
+            dstride as i32,
+            inb.as_ptr().add(ioff),
+            pri_strength,
+            sec_strength,
+            dir,
+            pri_damping,
+            sec_damping,
+            bsize,
+            coeff_shift,
+            subsampling_factor,
+        );
+    }
+}
+
+/// Reference `svt_cdef_filter_block_8bit_c` (interior, no sentinel).
+#[allow(clippy::too_many_arguments)]
+pub fn cdef_filter_block_8bit(
+    dst: &mut [u8],
+    doff: usize,
+    dstride: usize,
+    inb: &[u8],
+    ioff: usize,
+    pri_strength: i32,
+    sec_strength: i32,
+    dir: i32,
+    damping: i32,
+    bsize: i32,
+    coeff_shift: i32,
+    subsampling_factor: u8,
+) {
+    const TAP_REACH: usize = 2 * 144 + 2;
+    assert!(ioff >= TAP_REACH);
+    assert!(ioff + 7 * 144 + 7 + TAP_REACH < inb.len());
+    assert!(doff + 7 * dstride + 8 <= dst.len());
+    assert!((0..=7).contains(&dir));
+    unsafe {
+        ref_cdef_filter_block_8bit(
+            dst.as_mut_ptr().add(doff),
+            dstride as i32,
+            inb.as_ptr().add(ioff),
+            pri_strength,
+            sec_strength,
+            dir,
+            damping,
+            bsize,
+            coeff_shift,
+            subsampling_factor,
+        );
+    }
+}
