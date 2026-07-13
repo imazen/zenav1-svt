@@ -97,6 +97,11 @@ fn main() {
     let mut pass = 0usize;
     let mut fail = 0usize;
     let mut failures: Vec<String> = Vec::new();
+    // Non-vacuity accounting: the gate is only meaningful if CDEF (and
+    // deblocking before it) actually rewrites pixels in these streams.
+    let mut cdef_filtered_px = 0u64;
+    let mut cdef_changed_px = 0u64;
+    let mut cdef_active_streams = 0usize;
 
     for chroma in [false, true] {
         for content in ["gradient", "uniform", "edges"] {
@@ -145,6 +150,10 @@ fn main() {
                             p.encode_frame(&y, enc)
                         };
                         let (ry, ru, rv) = p.last_recon.clone().expect("recon published");
+                        let cs = p.last_cdef_stats;
+                        cdef_filtered_px += cs.filtered_px;
+                        cdef_changed_px += cs.changed_px;
+                        cdef_active_streams += usize::from(cs.filtered_px > 0);
 
                         let obu_path = format!("{outdir}/{name}.obu");
                         let y4m_path = format!("{outdir}/{name}.y4m");
@@ -206,6 +215,11 @@ fn main() {
         }
     }
 
+    println!(
+        "CDEF evidence: {cdef_active_streams}/{} streams fired, \
+         {cdef_filtered_px} px filtered, {cdef_changed_px} px changed",
+        pass + fail
+    );
     println!("recon parity: {pass} passed, {fail} failed");
     for f in &failures {
         println!("  {f}");

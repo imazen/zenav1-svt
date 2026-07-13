@@ -88,6 +88,10 @@ pub struct DeblockGeom {
     /// `mbmi->skip_txfm && is_inter_block(mbmi)`: intra blocks are never
     /// "skipped" for deblocking purposes.
     skip_inter: Vec<bool>,
+    /// The raw signaled `mbmi->skip_txfm` (any block type) — CDEF's
+    /// per-8x8 skip-all test uses this directly (libaom
+    /// is_8x8_block_skip, av1/common/cdef.c:29).
+    skip: Vec<bool>,
 }
 
 impl DeblockGeom {
@@ -104,6 +108,7 @@ impl DeblockGeom {
             bw: alloc::vec![0; n],
             bh: alloc::vec![0; n],
             skip_inter: alloc::vec![false; n],
+            skip: alloc::vec![false; n],
         }
     }
 
@@ -128,8 +133,24 @@ impl DeblockGeom {
                 self.bw[i] = w as u8;
                 self.bh[i] = h as u8;
                 self.skip_inter[i] = skip_inter;
+                self.skip[i] = skip;
             }
         }
+    }
+
+    /// CDEF's per-8x8 skip test: true when all four mi units of the 8x8
+    /// whose top-left mi is (mi_row, mi_col) carry the signaled skip flag
+    /// (libaom `is_8x8_block_skip`, av1/common/cdef.c:29 — the dlist in
+    /// av1_cdef_compute_sb_list excludes exactly these blocks).
+    pub fn is_8x8_all_skip(&self, mi_row: usize, mi_col: usize) -> bool {
+        for r in mi_row..(mi_row + 2).min(self.mi_rows) {
+            for c in mi_col..(mi_col + 2).min(self.mi_cols) {
+                if !self.skip[r * self.mi_cols + c] {
+                    return false;
+                }
+            }
+        }
+        true
     }
 }
 
