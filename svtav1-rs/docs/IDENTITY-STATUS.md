@@ -4,11 +4,32 @@ Date: 2026-07-13 · branch `wave2/entropy-c-parity` · C baseline: in-tree
 v4.2.0-rc `Bin/Release/libSvtAv1Enc.a` · goal gate: **byte-identical streams
 at matched configs** (still-picture/AVIF, CQP, `--lp 1`).
 
-This document is the first output of the identity harness: an honest map of
-every currently-observed divergence, with the owning C subsystem for each.
-**No parity fixes were applied in this chunk** — the harness plus this map
-are the deliverable; the fix list at the bottom is priority-ordered for the
-decision-parity campaign.
+This document is the divergence map of the identity campaign. **2026-07-13
+update: the campaign's first byte-identical stream landed** — uniform 64x64
+CLI-qp 40 preset 13 prints `VERDICT: streams IDENTICAL` (exit 0): all 22
+bytes equal (TD+SH+FH+tile) and all 5 arithmetic-coder ops equal including
+rng state. Fixes that got there, each its own commit:
+
+1. `d72a76411` — CQP means CQP: frame-level VAQ/TPL gated behind
+   `RcConfig.aq_mode` (default 0 = off, matching C `--aq-mode 0`). Killed
+   divergence F1 and its whole FH cascade (F2).
+2. `5e5c222cb` — SH parity: C-exact `seq_level_idx` auto-derivation
+   (set_bitstream_level_tier port, fps-aware) + CICP-unspecified defaults
+   (cp/tc/mc 2/2/2, `color_description_present_flag=0`, studio range) +
+   `color_range` honors `ColorDescription::full_range` + full-SH `seq_tier`
+   only for level idx > 7. Killed S1-S3; SH byte-identical.
+3. `752790777` — TX_MODE_SELECT + C-exact per-block tx_depth symbol
+   (`tx_size_cdf[cat][ctx]`, get_tx_size_context port with TXFM neighbor
+   arrays). Killed F3, the last structural tile-syntax gap.
+4. `85d7e0fd1` — real entropy costs for partition symbols (av1_prob_cost /
+   av1_cost_symbol port, DEFAULT partition CDFs, NONE priced + rescored
+   with the same lambda formula as the candidates). Killed the op-0
+   partition divergence for the flat-content case: uniform 64x64 picks
+   PARTITION_NONE like C at every lambda.
+
+Remaining divergences at the bottom of this doc. The original first-map
+analysis below is kept for the record (the per-config reports show the
+PRE-fix state).
 
 ## The harness
 
@@ -60,7 +81,7 @@ Run: `tools/identity_diff.sh <w> <h> <cli_qp> <preset> [uniform|gradient]`
 |---------------------------------|------------|------------------------------------------|
 | `enc_mode`                      | preset     | `EncodePipeline::new(.., preset, ..)`     |
 | `rate_control_mode`             | 0          | `RcMode::Cqp`                             |
-| `aq_mode`                       | 0          | **no equivalent — frame-level VAQ always on (divergence F1)** |
+| `aq_mode`                       | 0          | `RcConfig.aq_mode` (default 0 = off, C-matched since d72a7641) |
 | `qp` (CLI 0..63)                | qp         | `RcConfig.qp`                             |
 | `avif`                          | true       | `intra_period=1` → reduced-still SH       |
 | `level_of_parallelism`          | 1          | single-threaded                           |
@@ -439,31 +460,40 @@ tx_depth symbol (F3) that Rust never emits.
 | `CDF nsyms=11 s=10 icdf=[26070,..]` | eob_pt, 1024-coeff class (32x32 TX) |
 | `CDF2 [1229]/[16253]` | txb_skip rows / adapted skip ctx |
 
-## Priority-ordered fixes for the decision-parity campaign
+## Status after the 2026-07-13 fixes (commits d72a7641..85d7e0fd)
 
-1. **CQP must mean CQP: gate the frame-level VAQ off** (pipeline.rs:225-230)
-   behind an aq/`match-C` switch. Single highest-leverage change: aligns
-   base_q_idx, all four loop_filter levels, and all CDEF strengths at once
-   (proven by the qp-42 control). Policy change touching every stream →
-   needs the conformance/recon gates re-baselined, hence not done in this
-   chunk.
-2. **TX_MODE_SELECT + per-block tx_depth syntax** (obu.rs:571 + tile writer
-   + tx_size_cdf contexts, C model: entropy_coding.c:4704). Without it the
-   op streams can never align even with identical decisions.
-3. **SH constants**: port the level calculator
-   (`major_minor_to_seq_level_idx` inputs); add a match-C color-config knob
-   (description absent, studio range). Byte-for-byte SH is then reachable
-   for these configs.
-4. **p6 tool bits**: per-preset `enable_filter_intra` /
-   `enable_restoration` SH signaling + the FH `lr_type[0..2]` syntax
-   (signaling alone closes the p6 FH shape gap; actual filter-intra mode
+Items 1-3 and the flat-content half of item 5 of the original list below
+are DONE (see the header). Verdicts at the three tracked configs:
+
+| config | verdict | residual divergence |
+|--------|---------|---------------------|
+| uniform 64x64 q40 **p13** | **IDENTICAL** (exit 0) | none |
+| uniform 64x64 q40 **p6** | NOT IDENTICAL | tile ops IDENTICAL (5/5 incl. rng); SH `enable_filter_intra=1` / `enable_restoration=1` (unported tools, S4/S5), FH `lr_type[0..2]` syntax, and CDEF strengths 0/0/0/0 from C's `svt_av1_cdef_search` RDO (gap 2a) vs our qp fast path 3/1/3/x |
+| gradient 64x64 q40 **p13** | NOT IDENTICAL | TD+SH+FH all byte-identical; tile op 0 = C picks PARTITION_SPLIT (full RDO with real coeff-rate estimation), ours picks NONE (crude coeff-rate estimates + ctx-0 partition costs) |
+
+Both residual classes need ports explicitly out of the current scope
+(C's full RDO / preset tool searches):
+
+## Priority-ordered fixes — remaining
+
+1. **p6 tool bits**: per-preset `enable_filter_intra` /
+   `enable_restoration` SH signaling + the FH `lr_type[0..2]` syntax +
+   the per-block `use_filter_intra` flag symbol for eligible blocks
+   (DC, <=32x32) once the SH signals the tool (signaling alone closes
+   the p6 SH/FH shape gap for the uniform case, whose only block is
+   64x64 and codes no filter_intra flag; actual filter-intra mode
    search and restoration search are separate ports).
-5. **Partition-decision parity**: port C's partition RDO cost model (real
-   bit-estimation tables + per-preset depth-removal gates). Minimal repro to
-   start from: uniform 64x64 — why Rust's rate model prefers HORZ over NONE.
-6. **CDEF RDO search** at default presets (gap 2a, already tracked) — p6
-   showed C picking all-zero strengths via the search where Rust's qp fast
-   path picks 2/1/2/0.
+2. **CDEF RDO search** at default presets (gap 2a, already tracked) — p6
+   shows C picking all-zero strengths via `svt_av1_cdef_search` where the
+   qp fast path picks 3/1/3/x.
+3. **Partition/mode-decision parity for textured content**: port C's md
+   coefficient-rate estimation (the crude `estimate_coeff_rate` is now
+   the binding constraint — partition symbol costs are already real
+   entropy costs; threading the live md partition_context into the cost
+   rows is the follow-up) + per-preset depth-removal gates. Repro:
+   gradient 64x64 p13 — C SPLITs where we keep NONE.
+4. **uv_mode alphabet / CFL** and everything downstream of decision
+   parity — derivative until item 3 lands.
 
 ## Harness limitations (known, accepted for now)
 
