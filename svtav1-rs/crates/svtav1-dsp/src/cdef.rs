@@ -126,7 +126,11 @@ pub fn adjust_strength(strength: i32, var: i32) -> i32 {
     } else {
         0
     };
-    if var != 0 { (strength * (4 + i) + 8) >> 4 } else { 0 }
+    if var != 0 {
+        (strength * (4 + i) + 8) >> 4
+    } else {
+        0
+    }
 }
 
 /// `svt_aom_cdef_find_dir_c` (cdef.c:88): direction search over an 8x8 block
@@ -161,10 +165,10 @@ pub fn cdef_find_dir(img: &[u16], stride: usize, coeff_shift: i32) -> (u8, i32) 
     cost[2] *= DIV_TABLE[8];
     cost[6] *= DIV_TABLE[8];
     for i in 0..7 {
-        cost[0] +=
-            (partial[0][i] * partial[0][i] + partial[0][14 - i] * partial[0][14 - i]) * DIV_TABLE[i + 1];
-        cost[4] +=
-            (partial[4][i] * partial[4][i] + partial[4][14 - i] * partial[4][14 - i]) * DIV_TABLE[i + 1];
+        cost[0] += (partial[0][i] * partial[0][i] + partial[0][14 - i] * partial[0][14 - i])
+            * DIV_TABLE[i + 1];
+        cost[4] += (partial[4][i] * partial[4][i] + partial[4][14 - i] * partial[4][14 - i])
+            * DIV_TABLE[i + 1];
     }
     cost[0] += partial[0][7] * partial[0][7] * DIV_TABLE[8];
     cost[4] += partial[4][7] * partial[4][7] * DIV_TABLE[8];
@@ -175,9 +179,8 @@ pub fn cdef_find_dir(img: &[u16], stride: usize, coeff_shift: i32) -> (u8, i32) 
         }
         cost[i] *= DIV_TABLE[8];
         for j in 0..3 {
-            cost[i] +=
-                (partial[i][j] * partial[i][j] + partial[i][10 - j] * partial[i][10 - j])
-                    * DIV_TABLE[2 * j + 2];
+            cost[i] += (partial[i][j] * partial[i][j] + partial[i][10 - j] * partial[i][10 - j])
+                * DIV_TABLE[2 * j + 2];
         }
         i += 2;
     }
@@ -246,12 +249,18 @@ pub fn cdef_filter_block(
     let s = CDEF_BSTRIDE as i32;
     let pri_taps = CDEF_PRI_TAPS[((pri_strength >> coeff_shift) & 1) as usize];
     let sec_taps = CDEF_SEC_TAPS[((pri_strength >> coeff_shift) & 1) as usize];
-    let rows = if bsize == BLOCK_8X8 || bsize == BLOCK_4X8 { 8 } else { 4 };
-    let cols = if bsize == BLOCK_8X8 || bsize == BLOCK_8X4 { 8 } else { 4 };
-
-    let at = |i: i32, j: i32, off: i32| -> u16 {
-        inb[(ioff as i32 + i * s + j + off) as usize]
+    let rows = if bsize == BLOCK_8X8 || bsize == BLOCK_4X8 {
+        8
+    } else {
+        4
     };
+    let cols = if bsize == BLOCK_8X8 || bsize == BLOCK_8X4 {
+        8
+    } else {
+        4
+    };
+
+    let at = |i: i32, j: i32, off: i32| -> u16 { inb[(ioff as i32 + i * s + j + off) as usize] };
 
     let mut i = 0i32;
     while i < rows {
@@ -264,10 +273,12 @@ pub fn cdef_filter_block(
                 let p0 = at(i, j, cdef_direction(dir, k)) as i16;
                 let p1 = at(i, j, -cdef_direction(dir, k)) as i16;
                 sum = sum.wrapping_add(
-                    (pri_taps[k] * constrain(p0 as i32 - x as i32, pri_strength, pri_damping)) as i16,
+                    (pri_taps[k] * constrain(p0 as i32 - x as i32, pri_strength, pri_damping))
+                        as i16,
                 );
                 sum = sum.wrapping_add(
-                    (pri_taps[k] * constrain(p1 as i32 - x as i32, pri_strength, pri_damping)) as i16,
+                    (pri_taps[k] * constrain(p1 as i32 - x as i32, pri_strength, pri_damping))
+                        as i16,
                 );
                 if p0 as u16 != CDEF_VERY_LARGE {
                     max = (p0 as i32).max(max);
@@ -298,16 +309,20 @@ pub fn cdef_filter_block(
                 min = (s2 as i32).min(min);
                 min = (s3 as i32).min(min);
                 sum = sum.wrapping_add(
-                    (sec_taps[k] * constrain(s0 as i32 - x as i32, sec_strength, sec_damping)) as i16,
+                    (sec_taps[k] * constrain(s0 as i32 - x as i32, sec_strength, sec_damping))
+                        as i16,
                 );
                 sum = sum.wrapping_add(
-                    (sec_taps[k] * constrain(s1 as i32 - x as i32, sec_strength, sec_damping)) as i16,
+                    (sec_taps[k] * constrain(s1 as i32 - x as i32, sec_strength, sec_damping))
+                        as i16,
                 );
                 sum = sum.wrapping_add(
-                    (sec_taps[k] * constrain(s2 as i32 - x as i32, sec_strength, sec_damping)) as i16,
+                    (sec_taps[k] * constrain(s2 as i32 - x as i32, sec_strength, sec_damping))
+                        as i16,
                 );
                 sum = sum.wrapping_add(
-                    (sec_taps[k] * constrain(s3 as i32 - x as i32, sec_strength, sec_damping)) as i16,
+                    (sec_taps[k] * constrain(s3 as i32 - x as i32, sec_strength, sec_damping))
+                        as i16,
                 );
             }
             let y = clamp_i32(
@@ -343,13 +358,24 @@ pub fn cdef_filter_block_8bit(
     let s = CDEF_BSTRIDE as i32;
     let pri_taps = CDEF_PRI_TAPS[((pri_strength >> coeff_shift) & 1) as usize];
     let sec_taps = CDEF_SEC_TAPS[((pri_strength >> coeff_shift) & 1) as usize];
-    let rows = if bsize == BLOCK_8X8 || bsize == BLOCK_4X8 { 8 } else { 4 };
-    let cols = if bsize == BLOCK_8X8 || bsize == BLOCK_8X4 { 8 } else { 4 };
-    let sub = if bsize == BLOCK_4X4 { 1 } else { subsampling_factor };
-
-    let at = |i: i32, j: i32, off: i32| -> i16 {
-        inb[(ioff as i32 + i * s + j + off) as usize] as i16
+    let rows = if bsize == BLOCK_8X8 || bsize == BLOCK_4X8 {
+        8
+    } else {
+        4
     };
+    let cols = if bsize == BLOCK_8X8 || bsize == BLOCK_8X4 {
+        8
+    } else {
+        4
+    };
+    let sub = if bsize == BLOCK_4X4 {
+        1
+    } else {
+        subsampling_factor
+    };
+
+    let at =
+        |i: i32, j: i32, off: i32| -> i16 { inb[(ioff as i32 + i * s + j + off) as usize] as i16 };
 
     let mut i = 0i32;
     while i < rows {
@@ -430,7 +456,11 @@ mod tests {
             for k in 0..2 {
                 let off = cdef_direction(dir, k);
                 // decode: dy = round-to-nearest row (offsets have |dx| <= 2)
-                let dy = if off >= 0 { (off + s / 2) / s } else { -((-off + s / 2) / s) };
+                let dy = if off >= 0 {
+                    (off + s / 2) / s
+                } else {
+                    -((-off + s / 2) / s)
+                };
                 let dx = off - dy * s;
                 assert_eq!([dy, dx], SPEC[dir as usize][k], "dir {dir} k {k}");
             }

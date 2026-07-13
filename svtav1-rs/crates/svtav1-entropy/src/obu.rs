@@ -1136,16 +1136,19 @@ mod tests {
     fn fh_loop_filter_level_bit_layout() {
         // Mono: nonzero luma levels add no chroma bits.
         let zero = key_frame_header_bits(64, 64, 30, true, true, [0; 4], [3, 0, 0]).bit_offset;
-        let mono = key_frame_header_bits(64, 64, 30, true, true, [2, 2, 1, 1], [3, 0, 0]).bit_offset;
+        let mono =
+            key_frame_header_bits(64, 64, 30, true, true, [2, 2, 1, 1], [3, 0, 0]).bit_offset;
         assert_eq!(mono, zero, "mono FH never codes chroma levels");
 
         // 420: +12 bits (two 6-bit chroma levels) when l0||l1.
         let z420 = key_frame_header_bits(64, 64, 30, true, false, [0; 4], [3, 0, 0]).bit_offset;
-        let c420 = key_frame_header_bits(64, 64, 30, true, false, [2, 2, 1, 1], [3, 0, 0]).bit_offset;
+        let c420 =
+            key_frame_header_bits(64, 64, 30, true, false, [2, 2, 1, 1], [3, 0, 0]).bit_offset;
         assert_eq!(c420, z420 + 12, "420 FH codes U/V levels iff l0||l1");
         // Zero luma levels suppress the chroma level fields even if
         // uv levels are nonzero (the decoder cannot read them).
-        let z420uv = key_frame_header_bits(64, 64, 30, true, false, [0, 0, 1, 1], [3, 0, 0]).bit_offset;
+        let z420uv =
+            key_frame_header_bits(64, 64, 30, true, false, [0, 0, 1, 1], [3, 0, 0]).bit_offset;
         assert_eq!(z420uv, z420);
 
         // Hand-derive the mono field bytes with levels [3,3,_,_]: identical
@@ -1191,7 +1194,11 @@ mod tests {
         let hot = key_frame_header_bits(64, 64, 220, true, true, [0; 4], [6, 43, 7]).bit_offset;
         assert_eq!(base, hot, "mono cdef fields are fixed-width");
         let b420 = key_frame_header_bits(64, 64, 220, true, false, [0; 4], [6, 43, 7]).bit_offset;
-        assert_eq!(b420, hot + 2 + 6, "420 adds chroma delta-q (2) + uv strength (6)");
+        assert_eq!(
+            b420,
+            hot + 2 + 6,
+            "420 adds chroma delta-q (2) + uv strength (6)"
+        );
 
         // Hand-derive the mono FH at qindex 220 with damping 6, y=43:
         let mut wb = BitWriter::new();

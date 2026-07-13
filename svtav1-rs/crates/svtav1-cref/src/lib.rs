@@ -579,8 +579,7 @@ pub fn cdef_find_dir(img: &[u16], stride: usize, coeff_shift: i32) -> (u8, i32) 
 pub fn cdef_find_dir_8bit(img: &[u8], stride: usize, coeff_shift: i32) -> (u8, i32) {
     assert!(img.len() >= 7 * stride + 8);
     let mut var = 0i32;
-    let dir =
-        unsafe { ref_cdef_find_dir_8bit(img.as_ptr(), stride as i32, &mut var, coeff_shift) };
+    let dir = unsafe { ref_cdef_find_dir_8bit(img.as_ptr(), stride as i32, &mut var, coeff_shift) };
     (dir, var)
 }
 

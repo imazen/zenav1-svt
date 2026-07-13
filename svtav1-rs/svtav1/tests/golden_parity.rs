@@ -1100,7 +1100,10 @@ fn cdef_direction_horizontal_gradient_spec() {
     let (dir_rows, var_rows) = svtav1_dsp::cdef::cdef_find_dir_8bit(&rows, 8, 0);
     assert_eq!(dir_cols, 6, "column gradient = vertical lines = dir 6");
     assert_eq!(dir_rows, 2, "row gradient = horizontal lines = dir 2");
-    assert!(var_cols > 0 && var_rows > 0, "variance nonzero for gradients");
+    assert!(
+        var_cols > 0 && var_rows > 0,
+        "variance nonzero for gradients"
+    );
 }
 
 #[test]

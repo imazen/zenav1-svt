@@ -116,7 +116,10 @@ fn main() {
                 content,
                 qp,
                 qindex,
-                format!("[{},{},{}]", params.damping, params.y_strength, params.uv_strength),
+                format!(
+                    "[{},{},{}]",
+                    params.damping, params.y_strength, params.uv_strength
+                ),
                 stats.filtered_px,
                 stats.changed_px,
                 psnr_pre,

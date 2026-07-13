@@ -72,10 +72,10 @@ pub fn pick_cdef_params_key_frame(qindex: u8) -> CdefFrameParams {
     let q = AC_QLOOKUP_8[qindex as usize] as i32 as f32;
 
     // enc_cdef.c:880-888 (Intra branch), verbatim constants.
-    let y_f1 = (q * q * 0.000_003_373_197_4_f32 + q * 0.008_070_594_f32 + 0.018_763_4_f32).round()
+    let y_f1 =
+        (q * q * 0.000_003_373_197_4_f32 + q * 0.008_070_594_f32 + 0.018_763_4_f32).round() as i32;
+    let y_f2 = (q * q * 0.000_002_916_734_3_f32 + q * 0.002_779_862_4_f32 + 0.007_940_5_f32).round()
         as i32;
-    let y_f2 = (q * q * 0.000_002_916_734_3_f32 + q * 0.002_779_862_4_f32 + 0.007_940_5_f32)
-        .round() as i32;
     let uv_f1 = (q * q * -0.000_013_079_099_5_f32 + q * 0.012_892_405_f32 - 0.007_483_88_f32)
         .round() as i32;
     let uv_f2 = (q * q * 0.000_003_265_178_3_f32 + q * 0.000_355_201_83_f32 + 0.002_280_92_f32)
@@ -219,12 +219,22 @@ pub fn apply_cdef_frame(
             // runs here even at zero luma strength because chroma reuses
             // dir[][] (libaom cdef_fb_col never skips plane 0).
             build_src(
-                &mut src, &pre_y, width, height, fbr * 64, fbc * 64, vsize, hsize,
+                &mut src,
+                &pre_y,
+                width,
+                height,
+                fbr * 64,
+                fbc * 64,
+                vsize,
+                hsize,
             );
             let base = k::CDEF_VBORDER * k::CDEF_BSTRIDE + k::CDEF_HBORDER;
             for &(by, bx) in &dlist {
-                let (d, vr) =
-                    k::cdef_find_dir(&src[base + by * 8 * k::CDEF_BSTRIDE + bx * 8..], k::CDEF_BSTRIDE, 0);
+                let (d, vr) = k::cdef_find_dir(
+                    &src[base + by * 8 * k::CDEF_BSTRIDE + bx * 8..],
+                    k::CDEF_BSTRIDE,
+                    0,
+                );
                 dir[by][bx] = d as i32;
                 var[by][bx] = vr;
             }
@@ -263,7 +273,14 @@ pub fn apply_cdef_frame(
                 let (cw, ch) = (width / 2, height / 2);
                 for (pre_c, buf) in [(&pre_u, &mut *u), (&pre_v, &mut *v)] {
                     build_src(
-                        &mut src, pre_c, cw, ch, fbr * 32, fbc * 32, vsize / 2, hsize / 2,
+                        &mut src,
+                        pre_c,
+                        cw,
+                        ch,
+                        fbr * 32,
+                        fbc * 32,
+                        vsize / 2,
+                        hsize / 2,
                     );
                     for &(by, bx) in &dlist {
                         let px = fbc * 32 + bx * 4;
@@ -374,10 +391,7 @@ mod tests {
             (6, 63, 3)
         );
         let p128 = pick_cdef_params_key_frame(128);
-        assert_eq!(
-            (p128.damping, p128.y_strength, p128.uv_strength),
-            (5, 9, 8)
-        );
+        assert_eq!((p128.damping, p128.y_strength, p128.uv_strength), (5, 9, 8));
         // Very low q: everything zero (CDEF off near-lossless).
         let p30 = pick_cdef_params_key_frame(30);
         assert_eq!((p30.y_strength, p30.uv_strength), (0, 0));
