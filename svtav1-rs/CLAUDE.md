@@ -70,22 +70,44 @@ This applies to:
 
 ## Known Bugs — BLOCKING
 
-1. **Content-specific decode failures at q70 and some multi-SB** — Most quality levels decode correctly (q30-q60, q90 all pass for single-SB, 128x128 multi-SB decodes). Some specific QP/content combinations fail, likely due to a subtle interaction between the coefficient encoder's CDF adaptation and the specific density/positions of non-zero coefficients. Requires decoder-side range coder state trace comparison to diagnose further. TX type CDFs use uniform defaults instead of rav1d spec defaults, which may contribute.
+1. **Tile data does not decode under the reference decoder (aomdec): coefficient
+   writer uses wrong tables + wrong context indexing** — 0/525 conformance-matrix
+   streams decode. Symbol-trace diff (tools: `symtrace` feature + gdb script on a
+   debug aomdec) shows the first stream divergence at symbol op 14: encoder used
+   eob_base_tok CDF [602,250] where the decoder expects [1903,120] — both rows
+   exist in the C defaults at *different coordinates*. The old `coeff.rs` tables
+   are flattened/partially-uniform inventions. Fix underway: C-exact tables now
+   live in `default_cdfs.rs` (generated from libSvtAv1Enc.a); the writer must be
+   re-ported from C `av1_write_coeffs_txb_1d` (entropy_coding.c:448) with C
+   context derivation (`svt_av1_get_nz_map_contexts`, `get_br_ctx`,
+   `svt_aom_get_txb_ctx`).
 
-2. **All-skip frames fail to decode** — When all blocks have eob=0 (uniform content, high QP), decode fails (e.g., 25-byte "direct 64x64"). Root cause undiagnosed.
+2. **Prior "decode PASS" claims were rav1d-leniency artifacts** — the old zenavif
+   rav1d-safe checks accepted streams the reference decoder rejects (and "PASS
+   PSNR 11.1 dB" was garbage output). aomdec via `tools/decode_conformance.sh`
+   is now the decode gate. Do not trust pre-2026-07-13 conformance claims.
 
-### Decode Status
-**Working:** 32x32, 48x48, 64x64 (q30-q60, q90), 128x128 multi-SB, 128x128 edges (PSNR 11.1 dB), direct gradient 128x128, comprehensive_all_configs (48 configs)
-**Failing:** q70 gradient (content-specific), 80x80/96x96/112x112 at certain speeds, all-skip frames, 64x64 at s4-s8 speed sweep
+3. **Monochrome is a dead end for C parity** — C SVT-AV1 hardcodes
+   `is_monochrome = 0` (write_color_config); it cannot emit mono streams. The
+   Rust pipeline is currently luma-only and signals mono_chrome=1 (spec-legal,
+   now parses after the color_range fix). For bit-identity the pipeline must
+   encode 4:2:0 with chroma planes + chroma syntax. Structural work item.
 
-### Fixed Bugs (this session)
-- **Spec-conformant coefficient encoder (write_coefficients_v2)** — Complete rewrite: CDF-based EOB (bin + hi-bit + equi), reverse diagonal scan, proper token structure (eob_base_tok/base_tok/br_tok), DC sign after tokens, AC signs separate, Golomb in sign phase, default CDFs from rav1d for 4 QP categories.
-- **Coefficient stride mismatch for 64x64 blocks** — AV1 caps to 32x32 scan but coefficients use original stride. Fixed with scan_to_coeff_idx conversion.
-- **TX type signaling for blocks < 32x32** — Decoder expects explicit TX type symbol; now writes DCT_DCT (index 1) via txtp_intra CDF.
-- **Golomb residual in wrong phase** — Was written during token phase, moved to sign/residual phase matching rav1d.
-- **PARTITION_HORZ/VERT children wrote extra partition symbols** — Fixed: children encode block syntax directly.
-- **Partition context always sub=0 for multi-SB** — Fixed: rav1d-compatible partition context tracking.
-- **Extended partition types had missing trees** — Fixed: all 6 types now build proper trees.
+4. **Filter signaling inconsistency** — the encoder pipeline applies
+   deblock/CDEF/restoration to its recon but signals them OFF in headers
+   (enable_cdef=0, lf levels 0). Decoder recon therefore diverges from encoder
+   recon (the "PSNR 11 dB" garbage). Either signal the filters or stop applying
+   them until the C-faithful filter-signaling port lands.
+
+### Fixed this wave (2026-07-13, wave2/entropy-c-parity)
+- Range coder + update_cdf are now exact C ports, proven byte-identical by
+  differential fuzz vs libSvtAv1Enc.a (`svtav1-cref` harness, tests/c_parity.rs).
+- SH: monochrome color_config now writes the required color_range bit.
+- FH: disable_cdf_update always signaled; delta_q_present gated on qidx>0.
+- OBU_FRAME: FH ends with zero byte_alignment (was trailing-one).
+- Tile group: no TG header bits for single tile; zero-align for multi.
+- Default CDFs: all coefficient+mode tables extracted from C into
+  `default_cdfs.rs` with a drift test pinning them to the linked library.
 
 ## Investigation Notes
 
