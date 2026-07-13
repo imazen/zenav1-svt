@@ -111,6 +111,18 @@ fn main() {
                 // {30, 50, 90} list ran as qindexes 30/50/63 pre-split.
                 for qp in [20u8, 43, 63] {
                     for speed in [2u8, 4, 6, 10] {
+                        let name = format!(
+                            "{}_{}_{}{}_q{}_s{}",
+                            if chroma { "c420" } else { "mono" },
+                            content,
+                            sz,
+                            if enc != sz { "pad" } else { "" },
+                            qp,
+                            speed
+                        );
+                        // Progress marker on stderr — also labels the
+                        // SVTAV1_DUMP_TREE output per case.
+                        eprintln!("case {name}");
                         let y = pad_replicate(&gen_content(content, sz), sz, enc);
                         let rc = RcConfig {
                             mode: RcMode::Cqp,
@@ -133,15 +145,6 @@ fn main() {
                         };
                         let (ry, ru, rv) = p.last_recon.clone().expect("recon published");
 
-                        let name = format!(
-                            "{}_{}_{}{}_q{}_s{}",
-                            if chroma { "c420" } else { "mono" },
-                            content,
-                            sz,
-                            if enc != sz { "pad" } else { "" },
-                            qp,
-                            speed
-                        );
                         let obu_path = format!("{outdir}/{name}.obu");
                         let y4m_path = format!("{outdir}/{name}.y4m");
                         std::fs::write(&obu_path, &obu).unwrap();
@@ -165,15 +168,20 @@ fn main() {
 
                         let mut diffs = Vec::new();
                         if dy != ry {
-                            let i = dy.iter().zip(ry.iter()).position(|(a, b)| a != b).unwrap();
-                            diffs.push(format!(
-                                "Y@{} (r{} c{}) dec={} enc={}",
-                                i,
-                                i / enc,
-                                i % enc,
-                                dy[i],
-                                ry[i]
-                            ));
+                            let n = dy.iter().zip(ry.iter()).filter(|(a, b)| a != b).count();
+                            let pos: Vec<String> = dy
+                                .iter()
+                                .zip(ry.iter())
+                                .enumerate()
+                                .filter(|(_, (a, b))| a != b)
+                                .take(8)
+                                .map(|(i, (a, b))| {
+                                    format!("(r{} c{}) dec={a} enc={b}", i / enc, i % enc)
+                                })
+                                .collect();
+                            diffs.push(format!("Y {n} px: {}", pos.join(" ")));
+                            // Dump the encoder recon for offline analysis.
+                            std::fs::write(format!("{outdir}/{name}.encY.raw"), &ry).unwrap();
                         }
                         if chroma {
                             if du != ru {

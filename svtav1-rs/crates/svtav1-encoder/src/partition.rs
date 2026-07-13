@@ -446,6 +446,7 @@ pub fn partition_search_with_config(
             abs_x,
             abs_y,
             ref_ctx,
+            svtav1_types::partition::PartitionType::None,
         );
     }
 
@@ -462,6 +463,7 @@ pub fn partition_search_with_config(
         abs_x,
         abs_y,
         ref_ctx,
+        svtav1_types::partition::PartitionType::None,
     );
 
     // If block is small enough, don't bother splitting further
@@ -501,6 +503,7 @@ pub fn partition_search_with_config(
             abs_x,
             abs_y,
             ref_ctx,
+            svtav1_types::partition::PartitionType::Horz,
         );
         horz_result.distortion += top.distortion;
         horz_result.rate += top.rate;
@@ -520,6 +523,7 @@ pub fn partition_search_with_config(
             abs_x,
             abs_y + hh,
             ref_ctx,
+            svtav1_types::partition::PartitionType::Horz,
         );
         horz_result.distortion += bot.distortion;
         horz_result.rate += bot.rate;
@@ -571,6 +575,7 @@ pub fn partition_search_with_config(
             abs_x,
             abs_y,
             ref_ctx,
+            svtav1_types::partition::PartitionType::Vert,
         );
         vert_result.distortion += left.distortion;
         vert_result.rate += left.rate;
@@ -590,6 +595,7 @@ pub fn partition_search_with_config(
             abs_x + hw,
             abs_y,
             ref_ctx,
+            svtav1_types::partition::PartitionType::Vert,
         );
         vert_result.distortion += right.distortion;
         vert_result.rate += right.rate;
@@ -645,6 +651,7 @@ pub fn partition_search_with_config(
                     abs_x,
                 abs_y + y0,
                 ref_ctx,
+                svtav1_types::partition::PartitionType::Horz4,
             );
             h4_result.distortion += sub.distortion;
             h4_result.rate += sub.rate;
@@ -695,6 +702,7 @@ pub fn partition_search_with_config(
                     abs_x + x0,
                 abs_y,
                 ref_ctx,
+                svtav1_types::partition::PartitionType::Vert4,
             );
             v4_result.distortion += sub.distortion;
             v4_result.rate += sub.rate;
@@ -748,6 +756,7 @@ pub fn partition_search_with_config(
             abs_x,
             abs_y,
             ref_ctx,
+            svtav1_types::partition::PartitionType::HorzA,
         );
         ha_result.distortion += s.distortion;
         ha_result.rate += s.rate;
@@ -769,6 +778,7 @@ pub fn partition_search_with_config(
             abs_x + hw,
             abs_y,
             ref_ctx,
+            svtav1_types::partition::PartitionType::HorzA,
         );
         ha_result.distortion += s.distortion;
         ha_result.rate += s.rate;
@@ -790,6 +800,7 @@ pub fn partition_search_with_config(
             abs_x,
             abs_y + hh,
             ref_ctx,
+            svtav1_types::partition::PartitionType::HorzA,
         );
         ha_result.distortion += s.distortion;
         ha_result.rate += s.rate;
@@ -841,6 +852,7 @@ pub fn partition_search_with_config(
             abs_x,
             abs_y,
             ref_ctx,
+            svtav1_types::partition::PartitionType::HorzB,
         );
         hb_result.distortion += s.distortion;
         hb_result.rate += s.rate;
@@ -862,6 +874,7 @@ pub fn partition_search_with_config(
             abs_x,
             abs_y + hh,
             ref_ctx,
+            svtav1_types::partition::PartitionType::HorzB,
         );
         hb_result.distortion += s.distortion;
         hb_result.rate += s.rate;
@@ -883,6 +896,7 @@ pub fn partition_search_with_config(
             abs_x + hw,
             abs_y + hh,
             ref_ctx,
+            svtav1_types::partition::PartitionType::HorzB,
         );
         hb_result.distortion += s.distortion;
         hb_result.rate += s.rate;
@@ -934,6 +948,7 @@ pub fn partition_search_with_config(
             abs_x,
             abs_y,
             ref_ctx,
+            svtav1_types::partition::PartitionType::VertA,
         );
         va_result.distortion += s.distortion;
         va_result.rate += s.rate;
@@ -955,6 +970,7 @@ pub fn partition_search_with_config(
             abs_x,
             abs_y + hh,
             ref_ctx,
+            svtav1_types::partition::PartitionType::VertA,
         );
         va_result.distortion += s.distortion;
         va_result.rate += s.rate;
@@ -976,6 +992,7 @@ pub fn partition_search_with_config(
             abs_x + hw,
             abs_y,
             ref_ctx,
+            svtav1_types::partition::PartitionType::VertA,
         );
         va_result.distortion += s.distortion;
         va_result.rate += s.rate;
@@ -1027,6 +1044,7 @@ pub fn partition_search_with_config(
             abs_x,
             abs_y,
             ref_ctx,
+            svtav1_types::partition::PartitionType::VertB,
         );
         vb_result.distortion += s.distortion;
         vb_result.rate += s.rate;
@@ -1048,6 +1066,7 @@ pub fn partition_search_with_config(
             abs_x + hw,
             abs_y,
             ref_ctx,
+            svtav1_types::partition::PartitionType::VertB,
         );
         vb_result.distortion += s.distortion;
         vb_result.rate += s.rate;
@@ -1069,6 +1088,7 @@ pub fn partition_search_with_config(
             abs_x + hw,
             abs_y + hh,
             ref_ctx,
+            svtav1_types::partition::PartitionType::VertB,
         );
         vb_result.distortion += s.distortion;
         vb_result.rate += s.rate;
@@ -1209,6 +1229,15 @@ pub fn encode_chroma_block_dc(
 }
 
 /// Helper: extract neighbors from frame context and encode a single block.
+///
+/// `partition` is the partition type this block will be SIGNALED under
+/// (the parent candidate's type; None for PARTITION_NONE leaves). It must
+/// be the real one: the decoder selects different has_top_right /
+/// has_bottom_left availability tables for PARTITION_VERT_A/VERT_B
+/// children (libaom get_has_tr_table / get_has_bl_table), and coding a
+/// directional block against the wrong availability makes the encoder
+/// extend edges with pixels the decoder never sees.
+#[allow(clippy::too_many_arguments)]
 fn encode_with_neighbors(
     src: &[u8],
     src_stride: usize,
@@ -1221,6 +1250,7 @@ fn encode_with_neighbors(
     abs_x: usize,
     abs_y: usize,
     ref_ctx: Option<&RefFrameCtx>,
+    partition: svtav1_types::partition::PartitionType,
 ) -> PartitionResult {
     let (above, left, top_left, has_above, has_left) =
         extract_neighbors(recon, recon_stride, abs_x, abs_y, width, height);
@@ -1241,6 +1271,7 @@ fn encode_with_neighbors(
         ref_ctx,
         abs_x,
         abs_y,
+        partition,
     )
 }
 
@@ -1319,6 +1350,7 @@ fn encode_single_block(
     ref_ctx: Option<&RefFrameCtx>,
     abs_x: usize,
     abs_y: usize,
+    partition: svtav1_types::partition::PartitionType,
 ) -> PartitionResult {
     let n = width * height;
     // Mode-RD lambda: CLI-qp-calibrated closed form via the exact inverse
@@ -1441,11 +1473,15 @@ fn encode_single_block(
                 // decoder's unavailable-edge fills — instead of the old
                 // flat-128 padding the decoder never sees.
                 //
-                // PartitionType::None: only PARTITION_VERT_A/B select
-                // different availability tables and this encoder never
-                // emits them (search generates None/Horz/Vert/Horz4/
-                // Vert4/Split only). If VERT_A/B are ever added, the
-                // actual partition type must be threaded through here.
+                // `partition` is the type this block is SIGNALED under:
+                // PARTITION_VERT_A/B children select the has_tr_vert_*/
+                // has_bl_vert_* availability tables in the decoder
+                // (libaom get_has_tr_table), everything else the generic
+                // ones. The search DOES emit VERT_A/B (ext partitions,
+                // preset <= 8) — passing None here coded VERT_A/B
+                // D-mode children against above-right/bottom-left pixels
+                // the decoder never has (recon-parity failures at
+                // qindex >= 80 where ext partitions start winning).
                 match crate::intra_edge::build_directional_edges(
                     recon,
                     recon_stride,
@@ -1454,7 +1490,7 @@ fn encode_single_block(
                     width,
                     height,
                     angle,
-                    svtav1_types::partition::PartitionType::None,
+                    partition,
                 ) {
                     crate::intra_edge::DirEdges::Flat(v) => pred_block.fill(v),
                     crate::intra_edge::DirEdges::Edges {
