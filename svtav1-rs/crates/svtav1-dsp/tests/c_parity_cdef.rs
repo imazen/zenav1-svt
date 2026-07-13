@@ -121,7 +121,11 @@ fn find_dir_8bit_matches_c() {
             }
             let (rd, rv) = cdef::cdef_find_dir_8bit(&buf, stride, 0);
             let (cd, cv) = cref::cdef_find_dir_8bit(&buf, stride, 0);
-            assert_eq!((rd, rv), (cd, cv), "find_dir_8bit diverges, stride {stride}");
+            assert_eq!(
+                (rd, rv),
+                (cd, cv),
+                "find_dir_8bit diverges, stride {stride}"
+            );
         }
     }
 }
@@ -146,8 +150,8 @@ fn apply_borders(pattern: u32, rng: &mut Rng, buf: &mut [u16]) {
         }
     };
     match pattern {
-        0 => {} // interior: no sentinels
-        1 => fill(0, cdef::CDEF_VBORDER, 0, cols),          // frame top
+        0 => {}                                              // interior: no sentinels
+        1 => fill(0, cdef::CDEF_VBORDER, 0, cols),           // frame top
         2 => fill(rows - cdef::CDEF_VBORDER, rows, 0, cols), // frame bottom
         3 => fill(0, rows, 0, cdef::CDEF_HBORDER),           // frame left
         4 => fill(0, rows, cdef::CDEF_HBORDER + 8, cols),    // frame right
@@ -360,7 +364,18 @@ fn filter_block_8bit_matches_c() {
             &mut ours, 0, 8, &inb, IOFF, pri, sec, dir, damping, bsize, 0, sub,
         );
         cref::cdef_filter_block_8bit(
-            &mut theirs, 0, 8, &inb, IOFF, pri, sec, dir, damping, bsize, 0, sub as u8,
+            &mut theirs,
+            0,
+            8,
+            &inb,
+            IOFF,
+            pri,
+            sec,
+            dir,
+            damping,
+            bsize,
+            0,
+            sub as u8,
         );
         assert_eq!(
             ours, theirs,
