@@ -27,6 +27,11 @@ pub struct EncodeBlockResult {
 /// Uses DCT-DCT transform type. For RDO TX selection, use `encode_block_tx`.
 /// (Spec 10: "The encode-decode cycle applies forward transform, quantization,
 /// inverse transform, and reconstruction")
+///
+/// `qindex` is the AV1 qindex (0..255, the frame header's base_q_idx) —
+/// NOT the CLI 0..63 qp. It indexes the 256-entry DC/AC step tables
+/// directly; CLI-domain callers must convert via
+/// `rate_control::qp_to_qindex` first.
 pub fn encode_block(
     src: &[u8],
     src_stride: usize,
@@ -34,7 +39,7 @@ pub fn encode_block(
     pred_stride: usize,
     width: usize,
     height: usize,
-    qp: u8,
+    qindex: u8,
 ) -> EncodeBlockResult {
     encode_block_tx(
         src,
@@ -43,13 +48,15 @@ pub fn encode_block(
         pred_stride,
         width,
         height,
-        qp,
+        qindex,
         svtav1_types::transform::TxType::DctDct,
     )
 }
 
 /// Encode a block with a specific transform type.
 /// (Spec 04: "16 transform types combine row and column 1D transforms")
+///
+/// `qindex`: AV1 qindex 0..255 — see [`encode_block`].
 pub fn encode_block_tx(
     src: &[u8],
     src_stride: usize,
@@ -57,7 +64,7 @@ pub fn encode_block_tx(
     pred_stride: usize,
     width: usize,
     height: usize,
-    qp: u8,
+    qindex: u8,
     tx_type: svtav1_types::transform::TxType,
 ) -> EncodeBlockResult {
     let n = width * height;
@@ -122,8 +129,8 @@ pub fn encode_block_tx(
     // Step 3: Quantize with the real AV1 step tables so the decoder's
     // dequantization ((level * dqv) >> tx_scale, libaom decodetxb.c)
     // reproduces our reconstruction exactly.
-    let dequant_dc = svtav1_dsp::quant_tables::DC_QLOOKUP_8[qp as usize] as i32;
-    let dequant_ac = svtav1_dsp::quant_tables::AC_QLOOKUP_8[qp as usize] as i32;
+    let dequant_dc = svtav1_dsp::quant_tables::DC_QLOOKUP_8[qindex as usize] as i32;
+    let dequant_ac = svtav1_dsp::quant_tables::AC_QLOOKUP_8[qindex as usize] as i32;
     // av1_get_tx_scale: 0 for <=256 pels, 1 for 1024, 2 for >1024.
     let pels = (width * height) as i32;
     let tx_scale = i32::from(pels > 256) + i32::from(pels > 1024);

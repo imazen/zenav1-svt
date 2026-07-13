@@ -385,7 +385,7 @@ pub fn partition_search(
     recon_stride: usize,
     width: usize,
     height: usize,
-    qp: u8,
+    qindex: u8,
     lambda: u64,
     max_depth: u32,
 ) -> PartitionResult {
@@ -396,7 +396,7 @@ pub fn partition_search(
         recon_stride,
         width,
         height,
-        qp,
+        qindex,
         lambda,
         max_depth,
         &PartitionSearchConfig::full(),
@@ -424,7 +424,7 @@ pub fn partition_search_with_config(
     recon_stride: usize,
     width: usize,
     height: usize,
-    qp: u8,
+    qindex: u8,
     lambda: u64,
     max_depth: u32,
     config: &PartitionSearchConfig,
@@ -441,7 +441,7 @@ pub fn partition_search_with_config(
             recon_stride,
             width,
             height,
-            qp,
+            qindex,
             config,
             abs_x,
             abs_y,
@@ -457,7 +457,7 @@ pub fn partition_search_with_config(
         recon_stride,
         width,
         height,
-        qp,
+        qindex,
         config,
         abs_x,
         abs_y,
@@ -496,7 +496,7 @@ pub fn partition_search_with_config(
             recon_stride,
             width,
             hh,
-            qp,
+            qindex,
             config,
             abs_x,
             abs_y,
@@ -515,7 +515,7 @@ pub fn partition_search_with_config(
             recon_stride,
             width,
             height - hh,
-            qp,
+            qindex,
             config,
             abs_x,
             abs_y + hh,
@@ -566,7 +566,7 @@ pub fn partition_search_with_config(
             recon_stride,
             hw,
             height,
-            qp,
+            qindex,
             config,
             abs_x,
             abs_y,
@@ -585,7 +585,7 @@ pub fn partition_search_with_config(
             recon_stride,
             width - hw,
             height,
-            qp,
+            qindex,
             config,
             abs_x + hw,
             abs_y,
@@ -640,7 +640,7 @@ pub fn partition_search_with_config(
                 recon_stride,
                 width,
                 cur_h,
-                qp,
+                qindex,
                 config,
                     abs_x,
                 abs_y + y0,
@@ -690,7 +690,7 @@ pub fn partition_search_with_config(
                 recon_stride,
                 cur_w,
                 height,
-                qp,
+                qindex,
                 config,
                     abs_x + x0,
                 abs_y,
@@ -743,7 +743,7 @@ pub fn partition_search_with_config(
             recon_stride,
             hw,
             hh,
-            qp,
+            qindex,
             config,
             abs_x,
             abs_y,
@@ -764,7 +764,7 @@ pub fn partition_search_with_config(
             recon_stride,
             width - hw,
             hh,
-            qp,
+            qindex,
             config,
             abs_x + hw,
             abs_y,
@@ -785,7 +785,7 @@ pub fn partition_search_with_config(
             recon_stride,
             width,
             height - hh,
-            qp,
+            qindex,
             config,
             abs_x,
             abs_y + hh,
@@ -836,7 +836,7 @@ pub fn partition_search_with_config(
             recon_stride,
             width,
             hh,
-            qp,
+            qindex,
             config,
             abs_x,
             abs_y,
@@ -857,7 +857,7 @@ pub fn partition_search_with_config(
             recon_stride,
             hw,
             height - hh,
-            qp,
+            qindex,
             config,
             abs_x,
             abs_y + hh,
@@ -878,7 +878,7 @@ pub fn partition_search_with_config(
             recon_stride,
             width - hw,
             height - hh,
-            qp,
+            qindex,
             config,
             abs_x + hw,
             abs_y + hh,
@@ -929,7 +929,7 @@ pub fn partition_search_with_config(
             recon_stride,
             hw,
             hh,
-            qp,
+            qindex,
             config,
             abs_x,
             abs_y,
@@ -950,7 +950,7 @@ pub fn partition_search_with_config(
             recon_stride,
             hw,
             height - hh,
-            qp,
+            qindex,
             config,
             abs_x,
             abs_y + hh,
@@ -971,7 +971,7 @@ pub fn partition_search_with_config(
             recon_stride,
             width - hw,
             height,
-            qp,
+            qindex,
             config,
             abs_x + hw,
             abs_y,
@@ -1022,7 +1022,7 @@ pub fn partition_search_with_config(
             recon_stride,
             hw,
             height,
-            qp,
+            qindex,
             config,
             abs_x,
             abs_y,
@@ -1043,7 +1043,7 @@ pub fn partition_search_with_config(
             recon_stride,
             width - hw,
             hh,
-            qp,
+            qindex,
             config,
             abs_x + hw,
             abs_y,
@@ -1064,7 +1064,7 @@ pub fn partition_search_with_config(
             recon_stride,
             width - hw,
             height - hh,
-            qp,
+            qindex,
             config,
             abs_x + hw,
             abs_y + hh,
@@ -1129,7 +1129,7 @@ pub fn partition_search_with_config(
                 recon_stride,
                 cur_w,
                 cur_h,
-                qp,
+                qindex,
                 lambda,
                 max_depth - 1,
                 config,
@@ -1190,7 +1190,7 @@ pub fn encode_chroma_block_dc(
     cy: usize,
     cw: usize,
     ch: usize,
-    qp: u8,
+    qindex: u8,
 ) -> (alloc::vec::Vec<i32>, u16) {
     let (above, left, _top_left, has_above, has_left) =
         extract_neighbors(recon, stride, cx, cy, cw, ch);
@@ -1198,7 +1198,7 @@ pub fn encode_chroma_block_dc(
     let mut pred = alloc::vec![0u8; cw * ch];
     svtav1_dsp::intra_pred::predict_dc(&mut pred, cw, &above, &left, cw, ch, has_above, has_left);
 
-    let enc = crate::encode_loop::encode_block(&src[cy * stride + cx..], stride, &pred, cw, cw, ch, qp);
+    let enc = crate::encode_loop::encode_block(&src[cy * stride + cx..], stride, &pred, cw, cw, ch, qindex);
 
     for r in 0..ch {
         let dst = (cy + r) * stride + cx;
@@ -1216,7 +1216,7 @@ fn encode_with_neighbors(
     recon_stride: usize,
     width: usize,
     height: usize,
-    qp: u8,
+    qindex: u8,
     config: &PartitionSearchConfig,
     abs_x: usize,
     abs_y: usize,
@@ -1231,7 +1231,7 @@ fn encode_with_neighbors(
         recon_stride,
         width,
         height,
-        qp,
+        qindex,
         config,
         &above,
         &left,
@@ -1309,7 +1309,7 @@ fn encode_single_block(
     recon_stride: usize,
     width: usize,
     height: usize,
-    qp: u8,
+    qindex: u8,
     config: &PartitionSearchConfig,
     above: &[u8],
     left: &[u8],
@@ -1321,7 +1321,13 @@ fn encode_single_block(
     abs_y: usize,
 ) -> PartitionResult {
     let n = width * height;
-    let lambda = crate::rate_control::qp_to_lambda(qp) as u64;
+    // Mode-RD lambda: CLI-qp-calibrated closed form via the exact inverse
+    // mapping (see qp_to_lambda's domain note — feeding the raw qindex
+    // would scale lambda by ~2^48 and make rate dominate every decision).
+    // Pre-existing wrinkle kept as-is: this recomputes an UNSCALED lambda
+    // while the partition-level RD uses the speed-scaled one.
+    let lambda =
+        crate::rate_control::qp_to_lambda(crate::rate_control::qindex_to_qp(qindex)) as u64;
 
     // Try multiple intra modes via mode decision.
     // Number of candidates controlled by block size and spec 03 NIC rules.
@@ -1492,7 +1498,7 @@ fn encode_single_block(
             width,
             width,
             height,
-            qp,
+            qindex,
         );
         let cost_dct = enc_dct.distortion + ((lambda * enc_dct.rate as u64) >> 8);
 
@@ -1544,7 +1550,7 @@ fn encode_single_block(
                     width,
                     width,
                     height,
-                    qp,
+                    qindex,
                     alt_tx,
                 );
                 let cost_alt = enc_alt.distortion + ((lambda * enc_alt.rate as u64) >> 8);
@@ -1646,7 +1652,7 @@ fn encode_single_block(
             width,
             width,
             height,
-            qp,
+            qindex,
         );
         // Add MV rate overhead (~2 bytes for simple MVs)
         let mv_rate = if me_result.mv.x == 0 && me_result.mv.y == 0 {
@@ -1664,7 +1670,7 @@ fn encode_single_block(
 
     let enc = best_enc.unwrap_or_else(|| {
         let pred_block = alloc::vec![128u8; n];
-        crate::encode_loop::encode_block(src, src_stride, &pred_block, width, width, height, qp)
+        crate::encode_loop::encode_block(src, src_stride, &pred_block, width, width, height, qindex)
     });
 
     for r in 0..height {
