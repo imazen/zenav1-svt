@@ -48,6 +48,11 @@ pub struct EncodePipeline {
     /// exactly (w/2, h/2) >= 4x4 (sub-8x8 chroma-ref rules deferred).
     /// Still/key frames only.
     pub chroma_420: bool,
+    /// Reconstruction of the most recently encoded frame (Y, U, V planes;
+    /// U/V empty in mono mode). This is what a conforming decoder must
+    /// reproduce BIT-EXACTLY — the recon-parity gate compares it against
+    /// aomdec's output.
+    pub last_recon: Option<(Vec<u8>, Vec<u8>, Vec<u8>)>,
 }
 
 impl EncodePipeline {
@@ -72,6 +77,7 @@ impl EncodePipeline {
             bit_depth: 8,
             color_description: svtav1_entropy::obu::ColorDescription::srgb(),
             chroma_420: false,
+            last_recon: None,
         }
     }
 
@@ -614,7 +620,8 @@ impl EncodePipeline {
             )
         };
 
-        // Step 7: Update DPB with reconstructed frame
+        // Step 7: Publish recon for the recon-parity gate, then update DPB.
+        self.last_recon = Some((recon.clone(), u_recon.clone(), v_recon.clone()));
         let ref_frame = ReferenceFrame {
             y_plane: recon,
             width: self.width,

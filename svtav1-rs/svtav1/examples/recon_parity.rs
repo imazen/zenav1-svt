@@ -1,0 +1,172 @@
+//! Recon-parity gate: the encoder's reconstruction must equal the AV1
+//! reference decoder's output BIT-EXACTLY for every stream.
+//!
+//! This is the strongest pixel-integrity check available short of full
+//! bitstream identity: any divergence between what the encoder believes it
+//! reconstructed and what a conforming decoder produces is a shipping bug
+//! (the encoder's RD decisions were made against pixels the decoder never
+//! sees). It would have caught every pixel bug found by probing this wave.
+//!
+//! Encodes a matrix in both mono and 4:2:0 modes, decodes each stream with
+//! aomdec, and byte-compares all planes.
+//!
+//! Usage: cargo run --release -p svtav1 --example recon_parity -- [outdir]
+//! Env:   AOMDEC (default: /root/aomdec-build/aomdec — override in CI)
+
+use svtav1_encoder::pipeline::EncodePipeline;
+use svtav1_encoder::rate_control::{RcConfig, RcMode};
+
+fn gen_content(content: &str, sz: usize) -> Vec<u8> {
+    let mut y = vec![0u8; sz * sz];
+    for r in 0..sz {
+        for c in 0..sz {
+            y[r * sz + c] = match content {
+                "uniform" => 128,
+                "edges" => {
+                    if (r / 8 + c / 8) % 2 == 0 {
+                        32
+                    } else {
+                        224
+                    }
+                }
+                _ => (((r * 255) / sz) as u8) ^ (((c * 3) & 0x3F) as u8),
+            };
+        }
+    }
+    y
+}
+
+fn decode_y4m_planes(path: &str, w: usize, h: usize, mono: bool) -> Option<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    let data = std::fs::read(path).ok()?;
+    let hdr_end = data.iter().position(|&b| b == b'\n')?;
+    let frame_pos = data
+        .windows(5)
+        .skip(hdr_end)
+        .position(|w| w == b"FRAME")?
+        + hdr_end;
+    let y_start = data[frame_pos..].iter().position(|&b| b == b'\n')? + frame_pos + 1;
+    let ysz = w * h;
+    let csz = if mono { 0 } else { (w / 2) * (h / 2) };
+    if data.len() < y_start + ysz + 2 * csz {
+        return None;
+    }
+    Some((
+        data[y_start..y_start + ysz].to_vec(),
+        data[y_start + ysz..y_start + ysz + csz].to_vec(),
+        data[y_start + ysz + csz..y_start + ysz + 2 * csz].to_vec(),
+    ))
+}
+
+fn main() {
+    let outdir = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "target/recon_parity".to_string());
+    std::fs::create_dir_all(&outdir).unwrap();
+    let aomdec =
+        std::env::var("AOMDEC").unwrap_or_else(|_| "/root/aomdec-build/aomdec".to_string());
+
+    let mut pass = 0usize;
+    let mut fail = 0usize;
+    let mut failures: Vec<String> = Vec::new();
+
+    for chroma in [false, true] {
+        for content in ["gradient", "uniform", "edges"] {
+            for sz in [64usize, 128] {
+                for qp in [30u8, 50, 90] {
+                    for speed in [2u8, 6, 10] {
+                        let y = gen_content(content, sz);
+                        let rc = RcConfig {
+                            mode: RcMode::Cqp,
+                            qp,
+                            ..Default::default()
+                        };
+                        let mut p =
+                            EncodePipeline::new(sz as u32, sz as u32, speed, rc, 0, 1)
+                                .with_chroma_420(chroma);
+                        let (u, v);
+                        let obu = if chroma {
+                            u = (0..(sz / 2) * (sz / 2))
+                                .map(|i| (((i * 3) & 0x7F) + 64) as u8)
+                                .collect::<Vec<u8>>();
+                            v = (0..(sz / 2) * (sz / 2))
+                                .map(|i| (((i * 5) & 0x7F) + 64) as u8)
+                                .collect::<Vec<u8>>();
+                            p.encode_frame_420(&y, &u, &v, sz)
+                        } else {
+                            p.encode_frame(&y, sz)
+                        };
+                        let (ry, ru, rv) = p.last_recon.clone().expect("recon published");
+
+                        let name = format!(
+                            "{}_{}_{}_q{}_s{}",
+                            if chroma { "c420" } else { "mono" },
+                            content,
+                            sz,
+                            qp,
+                            speed
+                        );
+                        let obu_path = format!("{outdir}/{name}.obu");
+                        let y4m_path = format!("{outdir}/{name}.y4m");
+                        std::fs::write(&obu_path, &obu).unwrap();
+                        let st = std::process::Command::new(&aomdec)
+                            .args([&obu_path, "-o", &y4m_path])
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .status()
+                            .expect("run aomdec");
+                        if !st.success() {
+                            fail += 1;
+                            failures.push(format!("{name}: DECODE FAILED"));
+                            continue;
+                        }
+                        let Some((dy, du, dv)) = decode_y4m_planes(&y4m_path, sz, sz, !chroma)
+                        else {
+                            fail += 1;
+                            failures.push(format!("{name}: y4m parse failed"));
+                            continue;
+                        };
+
+                        let mut diffs = Vec::new();
+                        if dy != ry {
+                            let i = dy.iter().zip(ry.iter()).position(|(a, b)| a != b).unwrap();
+                            diffs.push(format!(
+                                "Y@{} (r{} c{}) dec={} enc={}",
+                                i,
+                                i / sz,
+                                i % sz,
+                                dy[i],
+                                ry[i]
+                            ));
+                        }
+                        if chroma {
+                            if du != ru {
+                                let i =
+                                    du.iter().zip(ru.iter()).position(|(a, b)| a != b).unwrap();
+                                diffs.push(format!("U@{i} dec={} enc={}", du[i], ru[i]));
+                            }
+                            if dv != rv {
+                                let i =
+                                    dv.iter().zip(rv.iter()).position(|(a, b)| a != b).unwrap();
+                                diffs.push(format!("V@{i} dec={} enc={}", dv[i], rv[i]));
+                            }
+                        }
+                        if diffs.is_empty() {
+                            pass += 1;
+                        } else {
+                            fail += 1;
+                            failures.push(format!("{name}: {}", diffs.join("; ")));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    println!("recon parity: {pass} passed, {fail} failed");
+    for f in &failures {
+        println!("  {f}");
+    }
+    if fail > 0 {
+        std::process::exit(1);
+    }
+}
