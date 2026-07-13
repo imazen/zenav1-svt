@@ -2,12 +2,17 @@ date: 2026-07-13
 tool: tools/identity_matrix.sh (bitstream-identity differ per cell)
 matrix: {uniform,gradient} x {64,128} x cli_qp{20,40,55} x preset{13,10,6} = 36
 c_reference: SvtAv1EncApp v4.2.0-rc static, matched still/AVIF CQP --lp 1
-result: 12/36 byte-identical
-  identical set: uniform content at preset 10 AND 13, all qp/sizes
-  divergence stages (first-diverging): SH=12 (all preset-6: enable_filter_intra/
-    restoration seq bits), FH=6 (gradient128 M10/M13: cdef_uv_sec_strength[1] —
-    C CDEF RDO search vs our qp fast path), tile-op=6 (gradient64 M10/M13:
-    partition/mode decision RDO)
-next-fix leverage: preset-6 SH tool-bit signaling (+per-block filter_intra flag,
-  lr_params) unblocks the SH stage for all 12 M6 cells; CDEF RDO search + mode
-  decision RDO are the decision-layer campaign.
+commit: eab9d8860 (p6 allintra tool bits: SH filter_intra/restoration + FH
+  lr_params + per-block use_filter_intra + CDEF all-skip search outcome)
+result: 18/36 byte-identical (was 12/36 at 6da9f3e23)
+  identical set: uniform content at EVERY preset (13, 10 AND 6), all qp/sizes —
+    the entire SH stage (12 cells at 6da9f3e23) is eliminated
+  divergence stages (first-diverging): tile-op=11 (gradient partition/mode
+    decision RDO, all presets), FH=7 (gradient128 M10/M13 cdef_uv_sec_strength
+    fast-path vs C search [6 cells, pre-existing]; gradient64 q55 M6
+    cdef_y_pri 0 vs 10 — C's search result on non-all-skip content vs our qp
+    fast path [1 cell, the narrowed gap 2a])
+next-fix leverage: mode-decision RDO parity (tile-op, 11 cells) and the
+  full CDEF RDO search for non-all-skip frames (FH, 7 cells). The search's
+  sb_count==0 outcome is already C-exact (uniform cells prove it); the mse
+  path over live filter blocks is the remaining port.
