@@ -351,68 +351,22 @@ impl EncodePipeline {
             }
         }
 
-        // Step 5: Loop filters — DISABLED until the C filter-search ports
-        // land. The frame header currently signals loop_filter_level=0,
-        // enable_cdef=0 (SH) and no restoration, so the decoder applies NO
-        // filtering; applying them here would make the encoder's DPB recon
-        // diverge from what any conforming decoder reconstructs (pixel
-        // integrity rule: two paths producing different pixels is a bug).
-        // The filter implementations below are kept for the faithful
-        // deblock/CDEF/restoration ports, which must signal parameters and
-        // filter identically to C.
+        // Step 5: Post-reconstruction filters.
+        //
+        // Deblocking is SIGNALED and applied decoder-exactly further down
+        // (after the entropy walk records the block/TX/skip geometry the
+        // edge walk needs — see `deblock_geom` / apply_deblock_frame).
+        //
+        // CDEF / Wiener / sgrproj remain DISABLED until their C search +
+        // signaling ports land: the frame header signals enable_cdef=0 (SH)
+        // and no restoration, so the decoder applies none of them; applying
+        // them here would make the encoder's DPB recon diverge from what
+        // any conforming decoder reconstructs (pixel integrity rule: two
+        // paths producing different pixels is a bug). Their implementations
+        // below are kept for the faithful ports, which must signal
+        // parameters and filter identically to C.
         const APPLY_UNSIGNALED_FILTERS: bool = false;
         if APPLY_UNSIGNALED_FILTERS {
-            // Step 5: Apply loop filters to reconstruction
-            // 5a: Deblocking filter on block edges
-            // Filter width (4/8/14-tap) and strength derived from QP and edge type.
-            // (Spec 08, Section 7.14: filter size and strength per-edge)
-            {
-                let (strength, threshold) = svtav1_dsp::loop_filter::derive_deblock_strength(pcs.qp);
-                // Apply deblocking on vertical edges (every 8 columns)
-                for bx in 1..(w / 8) {
-                    let edge_col = bx * 8;
-                    let is_sb_edge = edge_col % sb_size == 0;
-                    let filter_size =
-                        svtav1_dsp::loop_filter::select_deblock_filter_size(is_sb_edge, pcs.qp);
-                    match filter_size {
-                        14 if edge_col >= 7 && edge_col + 7 <= w => {
-                            svtav1_dsp::loop_filter::deblock_vert_14tap(
-                                &mut recon, w, strength, threshold, edge_col, h,
-                            );
-                        }
-                        8 if edge_col >= 4 && edge_col + 4 <= w => {
-                            svtav1_dsp::loop_filter::deblock_vert_wide(
-                                &mut recon, w, strength, threshold, edge_col, h,
-                            );
-                        }
-                        _ => {
-                            svtav1_dsp::loop_filter::deblock_vert(
-                                &mut recon, w, strength, threshold, edge_col, h,
-                            );
-                        }
-                    }
-                }
-                // Apply deblocking on horizontal edges (every 8 rows)
-                for by in 1..(h / 8) {
-                    let edge_row = by * 8;
-                    let is_sb_edge = edge_row % sb_size == 0;
-                    let filter_size =
-                        svtav1_dsp::loop_filter::select_deblock_filter_size(is_sb_edge, pcs.qp);
-                    match filter_size {
-                        8 if edge_row >= 4 && edge_row + 4 <= h => {
-                            svtav1_dsp::loop_filter::deblock_horz_wide(
-                                &mut recon, w, strength, threshold, edge_row, w,
-                            );
-                        }
-                        _ => {
-                            svtav1_dsp::loop_filter::deblock_horz(
-                                &mut recon, w, strength, threshold, edge_row, w,
-                            );
-                        }
-                    }
-                }
-            }
-
             // 5b: CDEF
             if self.speed_config.enable_cdef {
                 // Apply CDEF to each 8x8 block
@@ -510,6 +464,9 @@ impl EncodePipeline {
         } else {
             (Vec::new(), Vec::new())
         };
+        // Per-4x4 block/TX/skip geometry for the deblocking edge walk,
+        // recorded in coding order (== the decoder's parse order).
+        let mut deblock_geom = crate::deblock::DeblockGeom::new(w, h);
         let tile_data = {
             let mut writer = svtav1_entropy::writer::AomWriter::new(n + 256);
             // CDF updates enabled — matches the frame header's disable_cdf_update=0
@@ -565,11 +522,44 @@ impl EncodePipeline {
                     bx,
                     by,
                     &mut chroma_pass,
+                    &mut deblock_geom,
                 );
             }
 
             svtav1_entropy::obu::build_tile_group_single(writer.done())
         };
+
+        // Step 6a: Deblocking — pick the levels the frame header will
+        // signal (C svt_av1_pick_filter_level_by_q closed form) and apply
+        // the filter decoder-exactly to the OUTPUT reconstruction. The
+        // prediction sources are untouched: intra prediction read the live
+        // unfiltered buffers (tile_frame_recon for luma, u/v_recon during
+        // the walk) and the walk is complete by now — the filtered copy
+        // becomes last_recon and the DPB frame, exactly the decoder's
+        // split (it predicts intra from unfiltered pixels and stores the
+        // filtered frame for output/reference).
+        //
+        // Inter frames keep levels 0 (write_inter_frame signals 0): the
+        // q-based picker is only wired for key frames, and signaling
+        // nothing while applying nothing stays self-consistent.
+        let lf_levels = if is_key {
+            crate::deblock::pick_filter_levels_key_frame(tpl_adjusted_qp)
+        } else {
+            crate::deblock::LfLevels::default()
+        };
+        if lf_levels.any() {
+            crate::deblock::apply_deblock_frame(
+                &mut recon,
+                &mut u_recon,
+                &mut v_recon,
+                w,
+                h,
+                chroma.is_some(),
+                &deblock_geom,
+                &lf_levels,
+                0, // sharpness: matches the signaled loop_filter_sharpness
+            );
+        }
 
         // Step 6b: Film grain estimation (compare source to reconstruction)
         let _grain_params = crate::film_grain::estimate_film_grain(&encode_input, &recon, w, h, w);
@@ -600,10 +590,10 @@ impl EncodePipeline {
                 tpl_adjusted_qp,
                 is_single_frame,
                 chroma.is_none(),
-                // Signaling stays zero until the decoder-exact application
-                // lands in the same change that flips this on: signaled
-                // levels the encoder does not apply desync the recon.
-                [0; 4],
+                // The levels applied to the output recon above — signaling
+                // and application MUST agree or the recon desyncs from
+                // every conforming decoder.
+                lf_levels.levels,
             );
             // tile_data is already a complete tile_group (with TG header)
             let mut frame_payload = alloc::vec::Vec::new();
@@ -1040,6 +1030,7 @@ fn encode_block_syntax(
     block_x: usize,
     block_y: usize,
     chroma: &mut Option<ChromaPass<'_>>,
+    geom: &mut crate::deblock::DeblockGeom,
 ) {
     // 4:2:0: encode this block's chroma pair FIRST (prediction reads the
     // live chroma recon written by previous blocks in coding order). The
@@ -1247,6 +1238,18 @@ fn encode_block_syntax(
         mode,
         skip,
     );
+
+    // Deblocking geometry: exactly what the decoder derives per mi from
+    // the parsed block — dims (single TX per block), signaled skip, and
+    // inter-ness (skip only suppresses deblocking for inter blocks).
+    geom.record_block(
+        block_x,
+        block_y,
+        decision.width as usize,
+        decision.height as usize,
+        decision.is_inter,
+        skip,
+    );
 }
 
 /// Extract the leaf decision from a partition tree node.
@@ -1283,6 +1286,7 @@ fn encode_partition_tree(
     block_x: usize,
     block_y: usize,
     chroma: &mut Option<ChromaPass<'_>>,
+    geom: &mut crate::deblock::DeblockGeom,
 ) {
     match tree {
         crate::partition::PartitionTree::Leaf(decision) => {
@@ -1306,7 +1310,7 @@ fn encode_partition_tree(
 
             encode_block_syntax(
                 decision, writer, frame_ctx, coeff_fc, base_q_idx, ectx, is_key, block_x, block_y,
-                chroma,
+                chroma, geom,
             );
         }
         crate::partition::PartitionTree::Split {
@@ -1343,6 +1347,7 @@ fn encode_partition_tree(
                         block_x,
                         block_y,
                         chroma,
+                        geom,
                     );
                     encode_partition_tree(
                         &children[1],
@@ -1355,6 +1360,7 @@ fn encode_partition_tree(
                         block_x + half_w,
                         block_y,
                         chroma,
+                        geom,
                     );
                     encode_partition_tree(
                         &children[2],
@@ -1367,6 +1373,7 @@ fn encode_partition_tree(
                         block_x,
                         block_y + half_h,
                         chroma,
+                        geom,
                     );
                     encode_partition_tree(
                         &children[3],
@@ -1379,6 +1386,7 @@ fn encode_partition_tree(
                         block_x + half_w,
                         block_y + half_h,
                         chroma,
+                        geom,
                     );
                 }
                 (crate::partition::PartitionType::Horz, 2) => {
@@ -1397,7 +1405,7 @@ fn encode_partition_tree(
                     let top = expect_leaf(&children[0]);
                     encode_block_syntax(
                         top, writer, frame_ctx, coeff_fc, base_q_idx, ectx, is_key, block_x, block_y,
-                        chroma,
+                        chroma, geom,
                     );
                     let bot = expect_leaf(&children[1]);
                     encode_block_syntax(
@@ -1411,6 +1419,7 @@ fn encode_partition_tree(
                         block_x,
                         block_y + half_h,
                         chroma,
+                        geom,
                     );
                 }
                 (crate::partition::PartitionType::Vert, 2) => {
@@ -1427,7 +1436,7 @@ fn encode_partition_tree(
                     let left = expect_leaf(&children[0]);
                     encode_block_syntax(
                         left, writer, frame_ctx, coeff_fc, base_q_idx, ectx, is_key, block_x, block_y,
-                        chroma,
+                        chroma, geom,
                     );
                     let right = expect_leaf(&children[1]);
                     encode_block_syntax(
@@ -1441,6 +1450,7 @@ fn encode_partition_tree(
                         block_x + half_w,
                         block_y,
                         chroma,
+                        geom,
                     );
                 }
                 (ptype, n) => {
@@ -1487,6 +1497,7 @@ fn encode_partition_tree(
                             block_x + dx,
                             block_y + dy,
                             chroma,
+                            geom,
                         );
                     }
                 }
