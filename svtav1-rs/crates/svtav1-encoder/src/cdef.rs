@@ -88,9 +88,271 @@ pub fn pick_cdef_params_key_frame(qindex: u8) -> CdefFrameParams {
     let uv_f2 = uv_f2.clamp(0, 3);
 
     CdefFrameParams {
-        damping: (3 + (qindex >> 6)) as u8,
+        damping: 3 + (qindex >> 6),
         y_strength: (y_f1 * 4 + y_f2) as u8,
         uv_strength: (uv_f1 * 4 + uv_f2) as u8,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Decoder-exact frame application
+// ---------------------------------------------------------------------------
+
+use crate::deblock::DeblockGeom;
+use alloc::vec::Vec;
+use svtav1_dsp::cdef as k;
+
+/// Evidence counters from one CDEF frame pass.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct CdefStats {
+    /// Pixels covered by a filter invocation with nonzero effective
+    /// strength (adjusted primary or secondary) — "CDEF did real work".
+    pub filtered_px: u64,
+    /// Subset of `filtered_px` whose value actually changed.
+    pub changed_px: u64,
+}
+
+/// Apply the CDEF frame pass to the (already deblocked) output
+/// reconstruction, exactly as a conforming decoder does — the authority is
+/// libaom `av1_cdef_frame` (av1/common/cdef.c:467; what aomdec runs
+/// single-threaded), with SVT's `svt_av1_cdef_frame` (cdef_process.c)
+/// carrying the same structure. Specialized to our signaled configuration:
+/// 8-bit, 64x64 superblocks (CDEF unit == SB, so the 128x128 sub-unit
+/// indexing collapses), `cdef_bits = 0` (every unit uses strength set 0),
+/// single tile, 8-aligned frame dims (see the alignment note below).
+///
+/// EQUIVALENCE TO THE C LINEBUFFER/COLBUF DISCIPLINE: `av1_cdef_frame`
+/// assembles each fb's padded 16-bit source from (a) the deblocked frame
+/// for the fb itself + not-yet-filtered right/bottom neighbors, (b)
+/// `top_linebuf`/`bot_linebuf` (rows saved from the deblocked frame BEFORE
+/// the rows above got CDEF-filtered), (c) `colbuf` (the left fb's right
+/// edge saved pre-CDEF), and (d) CDEF_VERY_LARGE fills outside the frame.
+/// In single-threaded raster order every one of those sources is the
+/// post-deblock, PRE-CDEF value of the pixel — the machinery exists only to
+/// avoid a full-frame copy (and for MT row sync). We keep an explicit
+/// pre-CDEF snapshot instead, so the buffer build reduces to: in-frame ->
+/// snapshot pixel, out-of-frame -> CDEF_VERY_LARGE. Region-by-region proof
+/// against cdef_prepare_fb (all 13 copy/fill sites) in the port notes of
+/// this commit; the recon-parity gate (encoder recon == aomdec, byte-exact,
+/// 216 streams with CDEF firing) is the binary judge.
+///
+/// The per-64x64 skip rule: a unit whose 8x8s are all-skip gets no dlist
+/// entries; a fully-skip unit also never had a cdef_idx transmitted
+/// (`mbmi->cdef_strength == -1` early-out in libaom cdef_fb_col) — with
+/// cdef_bits = 0 both conditions coincide with "dlist empty" (a strength is
+/// transmitted iff some block has skip = 0 iff some 8x8 is non-skip).
+///
+/// Frame dims must be multiples of 8 (asserted): partial 64x64 fbs are
+/// handled exactly like C (`nvb = min(16, mi_rows - 16*fbr)` mi units), and
+/// 8-alignment guarantees no partial 8x8 blocks exist, sidestepping the
+/// C mi-grid over-read semantics for 4px tails (which today's pipeline
+/// cannot code anyway — the partition writer has no partial-SB syntax).
+pub fn apply_cdef_frame(
+    y: &mut [u8],
+    u: &mut [u8],
+    v: &mut [u8],
+    width: usize,
+    height: usize,
+    chroma_420: bool,
+    geom: &DeblockGeom,
+    params: &CdefFrameParams,
+) -> CdefStats {
+    let mut stats = CdefStats::default();
+    // Decoder's frame-level gate (libaom decodeframe.c:5417 do_cdef): with
+    // cdef_bits = 0 and all strengths 0 the pass does not run at all.
+    if !params.any(!chroma_420) {
+        return stats;
+    }
+    assert!(width % 8 == 0 && height % 8 == 0, "8-aligned frames only");
+
+    // Strength decomposition (libaom cdef_fb_col, av1/common/cdef.c:323):
+    // level = strength / 4, sec = strength % 4, sec 3 decodes as 4.
+    let lvl_y = (params.y_strength / 4) as i32;
+    let mut sec_y = (params.y_strength % 4) as i32;
+    sec_y += i32::from(sec_y == 3);
+    let (lvl_uv, sec_uv) = if chroma_420 {
+        let l = (params.uv_strength / 4) as i32;
+        let mut s = (params.uv_strength % 4) as i32;
+        s += i32::from(s == 3);
+        (l, s)
+    } else {
+        (0, 0)
+    };
+    let zero_y = lvl_y == 0 && sec_y == 0;
+    let zero_uv = lvl_uv == 0 && sec_uv == 0;
+    let damping = params.damping as i32; // + coeff_shift (=0 at 8-bit)
+
+    let nvfb = height.div_ceil(64);
+    let nhfb = width.div_ceil(64);
+
+    // Pre-CDEF (post-deblock) snapshot per plane — see the doc comment.
+    let pre_y: Vec<u8> = y.to_vec();
+    let (pre_u, pre_v): (Vec<u8>, Vec<u8>) = if chroma_420 && !zero_uv {
+        (u.to_vec(), v.to_vec())
+    } else {
+        (Vec::new(), Vec::new())
+    };
+
+    let mut src = alloc::vec![0u16; k::CDEF_INBUF_SIZE];
+    let mut dir = [[0i32; 8]; 8];
+    let mut var = [[0i32; 8]; 8];
+
+    for fbr in 0..nvfb {
+        let vsize = 64.min(height - fbr * 64); // nvb << 2 in C mi units
+        for fbc in 0..nhfb {
+            let hsize = 64.min(width - fbc * 64);
+            // dlist: non-skip 8x8s of this (possibly partial) 64x64 unit,
+            // raster order (av1_cdef_compute_sb_list).
+            let mut dlist: Vec<(usize, usize)> = Vec::with_capacity(64);
+            for by in 0..vsize / 8 {
+                for bx in 0..hsize / 8 {
+                    if !geom.is_8x8_all_skip(fbr * 16 + by * 2, fbc * 16 + bx * 2) {
+                        dlist.push((by, bx));
+                    }
+                }
+            }
+            if dlist.is_empty() {
+                continue;
+            }
+
+            // ---- Luma (pli 0): always prepared — the direction search
+            // runs here even at zero luma strength because chroma reuses
+            // dir[][] (libaom cdef_fb_col never skips plane 0).
+            build_src(
+                &mut src, &pre_y, width, height, fbr * 64, fbc * 64, vsize, hsize,
+            );
+            let base = k::CDEF_VBORDER * k::CDEF_BSTRIDE + k::CDEF_HBORDER;
+            for &(by, bx) in &dlist {
+                let (d, vr) =
+                    k::cdef_find_dir(&src[base + by * 8 * k::CDEF_BSTRIDE + bx * 8..], k::CDEF_BSTRIDE, 0);
+                dir[by][bx] = d as i32;
+                var[by][bx] = vr;
+            }
+            if !zero_y {
+                for &(by, bx) in &dlist {
+                    // pli 0: variance-adjusted primary strength.
+                    let t = k::adjust_strength(lvl_y, var[by][bx]);
+                    if t == 0 && sec_y == 0 {
+                        // libaom dispatches the enable-nothing variant,
+                        // which writes x back — a no-op on our buffer.
+                        continue;
+                    }
+                    let px = fbc * 64 + bx * 8;
+                    let py = fbr * 64 + by * 8;
+                    let doff = py * width + px;
+                    filter_and_count(
+                        y,
+                        doff,
+                        width,
+                        &src,
+                        base + by * 8 * k::CDEF_BSTRIDE + bx * 8,
+                        t,
+                        sec_y,
+                        if lvl_y != 0 { dir[by][bx] } else { 0 },
+                        damping,
+                        k::BLOCK_8X8,
+                        &mut stats,
+                    );
+                }
+            }
+
+            // ---- Chroma (pli 1/2), 4:2:0: 4x4 blocks, luma dirs, no
+            // adjust_strength, damping - 1 (libaom av1_cdef_filter_fb:
+            // damping += coeff_shift - (pli != AOM_PLANE_Y)).
+            if chroma_420 && !zero_uv {
+                let (cw, ch) = (width / 2, height / 2);
+                for (pre_c, buf) in [(&pre_u, &mut *u), (&pre_v, &mut *v)] {
+                    build_src(
+                        &mut src, pre_c, cw, ch, fbr * 32, fbc * 32, vsize / 2, hsize / 2,
+                    );
+                    for &(by, bx) in &dlist {
+                        let px = fbc * 32 + bx * 4;
+                        let py = fbr * 32 + by * 4;
+                        filter_and_count(
+                            buf,
+                            py * cw + px,
+                            cw,
+                            &src,
+                            base + by * 4 * k::CDEF_BSTRIDE + bx * 4,
+                            lvl_uv,
+                            sec_uv,
+                            if lvl_uv != 0 { dir[by][bx] } else { 0 },
+                            damping - 1,
+                            k::BLOCK_4X4,
+                            &mut stats,
+                        );
+                    }
+                }
+            }
+        }
+    }
+    stats
+}
+
+/// Build one plane's padded fb source: `src[r][c]` = snapshot pixel when
+/// (plane_y0 + r - VBORDER, plane_x0 + c - HBORDER) is inside the plane,
+/// else CDEF_VERY_LARGE — exactly what cdef_prepare_fb assembles for a
+/// 64-aligned frame (see apply_cdef_frame docs).
+fn build_src(
+    src: &mut [u16],
+    pre: &[u8],
+    plane_w: usize,
+    plane_h: usize,
+    y0: usize,
+    x0: usize,
+    vsize: usize,
+    hsize: usize,
+) {
+    for r in 0..(vsize + 2 * k::CDEF_VBORDER) {
+        let gy = y0 as isize + r as isize - k::CDEF_VBORDER as isize;
+        let row = &mut src[r * k::CDEF_BSTRIDE..r * k::CDEF_BSTRIDE + hsize + 2 * k::CDEF_HBORDER];
+        if gy < 0 || gy >= plane_h as isize {
+            row.fill(k::CDEF_VERY_LARGE);
+            continue;
+        }
+        let gy = gy as usize;
+        for (c, out) in row.iter_mut().enumerate() {
+            let gx = x0 as isize + c as isize - k::CDEF_HBORDER as isize;
+            *out = if gx < 0 || gx >= plane_w as isize {
+                k::CDEF_VERY_LARGE
+            } else {
+                pre[gy * plane_w + gx as usize] as u16
+            };
+        }
+    }
+}
+
+/// Run the C-exact block kernel into `buf` and account evidence counters.
+#[allow(clippy::too_many_arguments)]
+fn filter_and_count(
+    buf: &mut [u8],
+    doff: usize,
+    dstride: usize,
+    src: &[u16],
+    ioff: usize,
+    pri: i32,
+    sec: i32,
+    dir: i32,
+    damping: i32,
+    bsize: i32,
+    stats: &mut CdefStats,
+) {
+    let dim = if bsize == k::BLOCK_8X8 { 8 } else { 4 };
+    let mut before = [0u8; 64];
+    for r in 0..dim {
+        before[r * dim..r * dim + dim]
+            .copy_from_slice(&buf[doff + r * dstride..doff + r * dstride + dim]);
+    }
+    k::cdef_filter_block(
+        buf, doff, dstride, src, ioff, pri, sec, dir, damping, damping, bsize, 0, 1,
+    );
+    stats.filtered_px += (dim * dim) as u64;
+    for r in 0..dim {
+        for c in 0..dim {
+            if buf[doff + r * dstride + c] != before[r * dim + c] {
+                stats.changed_px += 1;
+            }
+        }
     }
 }
 

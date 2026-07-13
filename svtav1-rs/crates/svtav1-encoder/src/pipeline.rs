@@ -59,6 +59,13 @@ pub struct EncodePipeline {
     /// contributes (before/after PSNR) without re-deriving the unfiltered
     /// state. Cheap (one copy per frame) on a bring-up encoder.
     pub last_recon_unfiltered: Option<(Vec<u8>, Vec<u8>, Vec<u8>)>,
+    /// The reconstruction after deblocking but BEFORE CDEF (equals
+    /// `last_recon` when CDEF didn't fire) — evidence aid for CDEF's
+    /// before/after contribution.
+    pub last_recon_pre_cdef: Option<(Vec<u8>, Vec<u8>, Vec<u8>)>,
+    /// CDEF evidence counters for the last encoded frame (non-vacuity
+    /// reporting: how many pixels the signaled strengths actually touched).
+    pub last_cdef_stats: crate::cdef::CdefStats,
 }
 
 impl EncodePipeline {
@@ -85,6 +92,8 @@ impl EncodePipeline {
             chroma_420: false,
             last_recon: None,
             last_recon_unfiltered: None,
+            last_recon_pre_cdef: None,
+            last_cdef_stats: crate::cdef::CdefStats::default(),
         }
     }
 
@@ -381,14 +390,15 @@ impl EncodePipeline {
         // (after the entropy walk records the block/TX/skip geometry the
         // edge walk needs — see `deblock_geom` / apply_deblock_frame).
         //
-        // CDEF / Wiener / sgrproj remain DISABLED until their C search +
-        // signaling ports land: the frame header signals enable_cdef=0 (SH)
-        // and no restoration, so the decoder applies none of them; applying
-        // them here would make the encoder's DPB recon diverge from what
-        // any conforming decoder reconstructs (pixel integrity rule: two
-        // paths producing different pixels is a bug). Their implementations
-        // below are kept for the faithful ports, which must signal
-        // parameters and filter identically to C.
+        // CDEF is SIGNALED and applied decoder-exactly after deblocking
+        // (step 6a'). Wiener / sgrproj remain DISABLED until their C
+        // search + signaling ports land: the SH signals no restoration, so
+        // the decoder applies none; applying them here would make the
+        // encoder's DPB recon diverge from what any conforming decoder
+        // reconstructs (pixel integrity rule: two paths producing
+        // different pixels is a bug). Their sketches below are kept for
+        // the faithful ports, which must signal parameters and filter
+        // identically to C.
         const APPLY_UNSIGNALED_FILTERS: bool = false;
         if APPLY_UNSIGNALED_FILTERS {
             // (CDEF's old approximation block was deleted when the C-exact
@@ -572,6 +582,32 @@ impl EncodePipeline {
             );
         }
 
+        // Step 6a': CDEF — decoder order is deblock -> CDEF (-> restoration,
+        // unported). Key frames signal the qp-picked strengths
+        // (svt_pick_cdef_from_qp intra branch) and apply the decoder-exact
+        // frame pass (libaom av1_cdef_frame) to the SAME output copy; the
+        // per-64x64 cdef_idx costs ZERO arithmetic-coder bits because
+        // cdef_bits = 0 (libaom read_cdef does aom_read_literal(r, 0) —
+        // a no-iteration loop, bitreader.h:161 — so the entropy walk needs
+        // no syntax change). Inter frames signal zero strengths and apply
+        // nothing — consistent.
+        let cdef_params = if is_key {
+            crate::cdef::pick_cdef_params_key_frame(base_qindex)
+        } else {
+            crate::cdef::CdefFrameParams::default()
+        };
+        self.last_recon_pre_cdef = Some((recon.clone(), u_recon.clone(), v_recon.clone()));
+        self.last_cdef_stats = crate::cdef::apply_cdef_frame(
+            &mut recon,
+            &mut u_recon,
+            &mut v_recon,
+            w,
+            h,
+            chroma.is_some(),
+            &deblock_geom,
+            &cdef_params,
+        );
+
         // Step 6b: Film grain estimation (compare source to reconstruction)
         let _grain_params = crate::film_grain::estimate_film_grain(&encode_input, &recon, w, h, w);
         // grain_params would be signaled in the frame header OBU
@@ -606,11 +642,10 @@ impl EncodePipeline {
                 // and application MUST agree or the recon desyncs from
                 // every conforming decoder.
                 lf_levels.levels,
-                // CDEF: zero strengths until the decoder-exact application
-                // lands (same flip-on-together discipline as deblocking) —
-                // the decoder's do_cdef gate stays false, so signaling
-                // zeros while applying nothing is self-consistent.
-                crate::cdef::CdefFrameParams::default().signal(),
+                // The CDEF strengths applied to the output recon above —
+                // like the deblock levels, signaling and application MUST
+                // agree or the recon desyncs from every conforming decoder.
+                cdef_params.signal(),
             );
             // tile_data is already a complete tile_group (with TG header)
             let mut frame_payload = alloc::vec::Vec::new();

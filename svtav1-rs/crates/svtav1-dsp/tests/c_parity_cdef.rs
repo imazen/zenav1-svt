@@ -265,7 +265,7 @@ fn filter_block_all_signalable_combos() {
                             bsize,
                             0,
                             1,
-                            &border_label(pattern),
+                            border_label(pattern),
                         );
                     }
                 }
