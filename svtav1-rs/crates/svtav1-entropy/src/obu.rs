@@ -390,22 +390,29 @@ fn write_sequence_header_inner(
 
 /// Write a key frame header for a reduced (still-picture) sequence header.
 pub fn write_key_frame_header(width: u32, height: u32, base_qindex: u8) -> Vec<u8> {
-    write_key_frame_header_full(width, height, base_qindex, true, true)
+    write_key_frame_header_full(width, height, base_qindex, true, true, [0; 4])
 }
 
 /// AV1 spec Section 5.9.2: uncompressed_header() for KEY_FRAME.
 ///
 /// Field ordering matches the spec exactly. `monochrome` must match the
 /// sequence header's mono_chrome flag: it selects NumPlanes (1 vs 3), which
-/// gates the chroma delta-Q fields in quantization_params().
+/// gates the chroma delta-Q fields in quantization_params() and the chroma
+/// loop-filter levels in loop_filter_params().
+///
+/// `lf_levels` = `[loop_filter_level[0], [1], [2] (U), [3] (V)]` per spec
+/// 5.9.11; the encoder MUST apply deblocking with exactly these levels to
+/// its reconstruction or the DPB diverges from every conforming decoder.
 pub fn write_key_frame_header_full(
     width: u32,
     height: u32,
     base_qindex: u8,
     reduced_sh: bool,
     monochrome: bool,
+    lf_levels: [u8; 4],
 ) -> Vec<u8> {
-    let mut wb = key_frame_header_bits(width, height, base_qindex, reduced_sh, monochrome);
+    let mut wb =
+        key_frame_header_bits(width, height, base_qindex, reduced_sh, monochrome, lf_levels);
     // This header is embedded in an OBU_FRAME: the spec requires
     // byte_alignment() (zero bits only) between frame_header and tile_group —
     // trailing_bits (with its leading 1) is only for standalone
@@ -424,6 +431,7 @@ fn key_frame_header_bits(
     base_qindex: u8,
     reduced_sh: bool,
     monochrome: bool,
+    lf_levels: [u8; 4],
 ) -> BitWriter {
     let mut wb = BitWriter::new();
 
@@ -500,13 +508,22 @@ fn key_frame_header_bits(
     // CodedLossless is only true when base_q_idx=0 AND all delta-Q=0 AND
     // all segments have qindex 0. With base_q_idx>0 in practice, not lossless.
     // allow_intrabc=0, so we always write loop filter params.
-    wb.write_bits(0, 6); // loop_filter_level[0] = 0
-    wb.write_bits(0, 6); // loop_filter_level[1] = 0
+    // Field set matches C encode_loopfilter (entropy_coding.c:2338) and
+    // spec 5.9.11; libaom setup_loopfilter (decodeframe.c:1766) reads it.
+    wb.write_bits(lf_levels[0] as u32, 6); // loop_filter_level[0]
+    wb.write_bits(lf_levels[1] as u32, 6); // loop_filter_level[1]
     // NumPlanes=1: no loop_filter_level[2]/[3].
-    // NumPlanes=3: levels [2]/[3] are only read when
-    // (loop_filter_level[0] || loop_filter_level[1]) — ours are 0, so no
-    // bits either way. (libaom setup_loopfilter, decodeframe.c:1766-1773.)
+    // NumPlanes=3: levels [2] (U) and [3] (V) are only coded when
+    // (loop_filter_level[0] || loop_filter_level[1]).
+    if !monochrome && (lf_levels[0] != 0 || lf_levels[1] != 0) {
+        wb.write_bits(lf_levels[2] as u32, 6); // loop_filter_level[2] (U)
+        wb.write_bits(lf_levels[3] as u32, 6); // loop_filter_level[3] (V)
+    }
     wb.write_bits(0, 3); // loop_filter_sharpness = 0
+    // loop_filter_delta_enabled = 0: the C encoder runs with
+    // mode_ref_delta_enabled = 0 (resource_coordination_process.c:393) and
+    // encode_loopfilter writes the flag verbatim, so no ref/mode deltas are
+    // signaled or applied — the filter level is uniform per plane/direction.
     wb.write_bit(false); // loop_filter_delta_enabled = 0
 
     // ---- cdef_params() ----
@@ -1034,7 +1051,7 @@ mod tests {
         }
         let expected = wb.into_data();
 
-        let got = write_key_frame_header_full(64, 64, 30, true, false);
+        let got = write_key_frame_header_full(64, 64, 30, true, false, [0; 4]);
         assert_eq!(got, expected, "420 FH layout drifted from spec derivation");
 
         // The 420 FH is exactly the mono FH with two zero bits
@@ -1043,14 +1060,63 @@ mod tests {
         // byte_alignment() pads with zeros, so the PADDED BYTES coincide
         // with mono — the real difference is the pre-alignment bit count,
         // which shifts where the decoder's field boundaries fall. Pin it.
-        let bits_420 = key_frame_header_bits(64, 64, 30, true, false).bit_offset;
-        let bits_mono = key_frame_header_bits(64, 64, 30, true, true).bit_offset;
+        let bits_420 = key_frame_header_bits(64, 64, 30, true, false, [0; 4]).bit_offset;
+        let bits_mono = key_frame_header_bits(64, 64, 30, true, true, [0; 4]).bit_offset;
         assert_eq!(bits_mono, 34, "mono reduced-SH FH is 34 bits pre-align");
         assert_eq!(bits_420, 36, "420 adds exactly DeltaQUDc + DeltaQUAc");
         assert_eq!(
             got,
-            write_key_frame_header_full(64, 64, 30, true, true),
+            write_key_frame_header_full(64, 64, 30, true, true, [0; 4]),
             "byte-level coincidence expected (zero bits inside zero padding)"
+        );
+    }
+
+    /// Pin loop_filter_params() with real levels (spec 5.9.11; C
+    /// encode_loopfilter, entropy_coding.c:2338): levels [2]/[3] are coded
+    /// only for NumPlanes=3 AND (level[0] || level[1]); sharpness and
+    /// delta_enabled=0 follow. Mono never codes chroma levels.
+    #[test]
+    fn fh_loop_filter_level_bit_layout() {
+        // Mono: nonzero luma levels add no chroma bits.
+        let zero = key_frame_header_bits(64, 64, 30, true, true, [0; 4]).bit_offset;
+        let mono = key_frame_header_bits(64, 64, 30, true, true, [2, 2, 1, 1]).bit_offset;
+        assert_eq!(mono, zero, "mono FH never codes chroma levels");
+
+        // 420: +12 bits (two 6-bit chroma levels) when l0||l1.
+        let z420 = key_frame_header_bits(64, 64, 30, true, false, [0; 4]).bit_offset;
+        let c420 = key_frame_header_bits(64, 64, 30, true, false, [2, 2, 1, 1]).bit_offset;
+        assert_eq!(c420, z420 + 12, "420 FH codes U/V levels iff l0||l1");
+        // Zero luma levels suppress the chroma level fields even if
+        // uv levels are nonzero (the decoder cannot read them).
+        let z420uv = key_frame_header_bits(64, 64, 30, true, false, [0, 0, 1, 1]).bit_offset;
+        assert_eq!(z420uv, z420);
+
+        // Hand-derive the mono field bytes with levels [3,3,_,_]: identical
+        // to the zero-level header except the two 6-bit level fields.
+        let mut wb = BitWriter::new();
+        wb.write_bit(false); // disable_cdf_update
+        wb.write_bit(false); // allow_screen_content_tools
+        wb.write_bit(false); // render_and_frame_size_different
+        wb.write_bit(true); // tile_info: uniform_tile_spacing_flag
+        wb.write_bits(30, 8); // base_q_idx
+        wb.write_bit(false); // DeltaQYDc
+        wb.write_bit(false); // using_qmatrix
+        wb.write_bit(false); // segmentation_enabled
+        wb.write_bit(false); // delta_q_present
+        wb.write_bits(3, 6); // loop_filter_level[0]
+        wb.write_bits(3, 6); // loop_filter_level[1]
+        wb.write_bits(0, 3); // loop_filter_sharpness
+        wb.write_bit(false); // loop_filter_delta_enabled
+        wb.write_bit(false); // tx_mode_select
+        wb.write_bit(false); // reduced_tx_set
+        let remainder = wb.bit_offset % 8;
+        if remainder != 0 {
+            wb.write_bits(0, 8 - remainder);
+        }
+        assert_eq!(
+            write_key_frame_header_full(64, 64, 30, true, true, [3, 3, 0, 0]),
+            wb.into_data(),
+            "mono FH with levels drifted from spec derivation"
         );
     }
 }

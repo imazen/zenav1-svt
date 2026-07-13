@@ -4,6 +4,7 @@
 
 extern crate alloc;
 
+pub mod deblock;
 pub mod encode_loop;
 pub mod film_grain;
 pub mod intra_edge;
