@@ -146,6 +146,31 @@ pub fn encode_block_tx(
         }
     }
 
+    // 64-dim transforms: the EC layer transmits only the top-left 32x32
+    // coefficients (AV1 caps coefficient coding at 32x32), so anything
+    // outside that region never reaches the decoder. Zero it here so the
+    // encoder reconstruction cannot include energy the decoder never sees,
+    // and recompute eob over the surviving coefficients.
+    if width > 32 || height > 32 {
+        let keep_w = width.min(32);
+        let keep_h = height.min(32);
+        for row in 0..height {
+            for col in 0..width {
+                if row >= keep_h || col >= keep_w {
+                    let idx = row * width + col;
+                    qcoeffs[idx] = 0;
+                    dqcoeffs[idx] = 0;
+                }
+            }
+        }
+        eob = 0;
+        for i in 0..n {
+            if qcoeffs[i] != 0 {
+                eob = (i + 1) as u16;
+            }
+        }
+    }
+
     // Step 4: Inverse transform — must match the forward transform type.
     // (Spec 10: "the inverse transform type must match the forward type
     // signaled in the bitstream")
