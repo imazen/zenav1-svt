@@ -1276,7 +1276,7 @@ fn debug_gray64_encoding() {
 #[test]
 fn trace_gray64_tree() {
     // Directly build a pipeline and inspect the partition trees
-    let rc = svtav1_encoder::rate_control::RcConfig {
+    let _rc = svtav1_encoder::rate_control::RcConfig {
         mode: svtav1_encoder::rate_control::RcMode::Cqp,
         qp: 19,
         ..svtav1_encoder::rate_control::RcConfig::default()
@@ -1483,7 +1483,6 @@ fn range_coder_symbol_comparison() {
 
 #[test]
 fn range_coder_state_trace() {
-    use svtav1_entropy::cdf::{CDF_PROB_TOP, aom_icdf};
     use svtav1_entropy::range_coder::OdEcEnc;
 
     let icdf: [u16; 11] = [12631, 11221, 9690, 3202, 2931, 2507, 2244, 1876, 1044, 0, 0];
@@ -1511,11 +1510,11 @@ fn verify_gray64_tile_data() {
     // Reproduce gray64 encoding: HORZ(1) at ctx=12, children 64x32 NONE + skip
     let mut w = AomWriter::new(128);
     let mut fc = FrameContext::new_default();
-    let mut cc = svtav1_entropy::coeff::CoeffContext::default();
+    let _cc = svtav1_entropy::coeff::CoeffContext::default();
 
     // With mode/skip tracking
     let w4 = 64 / 4;
-    let h4 = 64 / 4;
+    let _h4 = 64 / 4;
     let mut above_skip = vec![false; w4];
 
     // SB: HORZ at ctx=12
@@ -1570,10 +1569,8 @@ fn simulate_decoder_on_gray64() {
     eprintln!("c = {} (0x{:x})", c, c);
 
     let mut val: u32 = 0;
-    let mut u = rng;
     let mut v;
     loop {
-        u = rng; // simplified
         v = r * (cdf[val as usize] >> 6);
         v >>= 1; // >>= (7 - EC_PROB_SHIFT) where EC_PROB_SHIFT=6
         v += 4 * (n_symbols - val); // EC_MIN_PROB=4

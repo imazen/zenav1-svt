@@ -11,6 +11,9 @@ repository.workspace = true
 svtav1-types = { workspace = true }
 svtav1-tables = { workspace = true }
 
+[dev-dependencies]
+svtav1-cref = { path = "../svtav1-cref" }
+
 [lints]
 workspace = true
 

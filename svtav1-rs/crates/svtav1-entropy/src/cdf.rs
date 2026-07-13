@@ -29,39 +29,29 @@ pub const fn cdf_size(nsymbs: usize) -> usize {
 
 /// Update CDF probabilities after encoding/decoding a symbol.
 ///
-/// This is the core backward-adaptive CDF update from the AV1 spec.
-/// The CDF array has `nsymbs` probability entries followed by a count
-/// at index `nsymbs`.
-///
-/// Ported from `cabac_context_model.h` lines 469-497.
+/// Exact port of `update_cdf` from `cabac_context_model.h` (C layout:
+/// ICDF values at `cdf[0..nsymbs-1]` with a structural 0 at `cdf[nsymbs-1]`,
+/// and the adaptation counter at `cdf[nsymbs]`, capped at 32). Verified
+/// bit-for-bit against the linked C reference in `tests/c_parity.rs`.
 #[inline]
-/// Update CDF after observing symbol `val`.
-///
-/// Matched exactly to rav1d's update_cdf (msac.rs) for bitstream conformance.
-/// CDFs are stored in ICDF format (CDF_PROB_TOP - cumulative_probability).
 pub fn update_cdf(cdf: &mut [AomCdfProb], val: usize, nsymbs: usize) {
-    debug_assert!(nsymbs < 17);
+    debug_assert!(nsymbs >= 2 && nsymbs < 17);
     debug_assert!(val < nsymbs);
+    debug_assert!(cdf.len() >= nsymbs + 1);
 
-    // Counter is stored at cdf[nsymbs-1], matching rav1d's cdf[n_symbols]
-    // where n_symbols = nsymbs - 1 = number of CDF entries.
-    let n = nsymbs - 1;
-    let count = cdf[n];
-    let rate = 4 + (count >> 4) + u16::from(nsymbs > 3);
+    let count = cdf[nsymbs];
+    // rate = 4 + (count > 15) + (count > 31) + (nsymbs > 3), folded into a
+    // shift since count never exceeds 32 — see the C source derivation.
+    let rate = u32::from(4 + (count >> 4)) + u32::from(nsymbs > 3);
 
-    // rav1d-compatible update: for ICDF values
-    for i in 0..n {
+    for i in 0..nsymbs - 1 {
         if i < val {
-            // Increase ICDF (decrease cumulative probability below val)
-            cdf[i] = cdf[i].wrapping_add((CDF_PROB_TOP.wrapping_sub(cdf[i])) >> rate);
+            cdf[i] += (CDF_PROB_TOP - cdf[i]) >> rate;
         } else {
-            // Decrease ICDF (increase cumulative probability at/above val)
-            cdf[i] = cdf[i].wrapping_sub(cdf[i] >> rate);
+            cdf[i] -= cdf[i] >> rate;
         }
     }
-
-    // Increment count, capped at 32
-    cdf[n] = count + u16::from(count < 32);
+    cdf[nsymbs] += u16::from(count < 32);
 }
 
 /// Initialize a uniform CDF for `nsymbs` symbols.

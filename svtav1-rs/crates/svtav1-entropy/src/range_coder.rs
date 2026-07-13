@@ -1,37 +1,42 @@
 //! Core arithmetic range coder engine.
 //!
-//! Spec 07 §8.2: Daala arithmetic coder (OdEcEnc).
-//!
-//! Ported from SVT-AV1's `OdEcEnc` in `bitstream_unit.c/h`.
+//! Exact port of SVT-AV1's `OdEcEnc` from `bitstream_unit.c/h` — every
+//! arithmetic operation mirrors the C reference so the emitted bytes are
+//! bit-identical (verified by the differential tests in `tests/c_parity.rs`
+//! against the linked C library).
 //!
 //! This implements the daala entropy coder used by AV1:
-//! - 64-bit window (OdEcWindow)
-//! - Q15 probability (15-bit fixed point)
-//! - Inverse CDF representation
-//! - Byte-at-a-time output with carry propagation
+//! - 64-bit window (`OdEcWindow`), batched byte flushes
+//! - Q15 probabilities in inverse-CDF representation (C layout: structural 0
+//!   at `icdf[nsyms-1]`, adaptation counter — unused here — at `icdf[nsyms]`)
+//! - Carry propagation both at flush time and at final `done()`
 
-use crate::cdf::{AomCdfProb, CDF_PROB_TOP};
+use crate::cdf::AomCdfProb;
 use alloc::vec::Vec;
 
-/// Probability shift for range coding.
+/// Probability shift for range coding (`EC_PROB_SHIFT`).
 pub const EC_PROB_SHIFT: u32 = 6;
-/// Minimum probability (must be <= (1 << EC_PROB_SHIFT) / 16).
+/// Minimum probability (`EC_MIN_PROB`, must be <= (1 << EC_PROB_SHIFT) / 16).
 pub const EC_MIN_PROB: u32 = 4;
 
 /// Core arithmetic encoder state.
 ///
-/// Ported from `OdEcEnc` struct in `bitstream_unit.h`.
+/// Ported from the `OdEcEnc` struct in `bitstream_unit.h`.
 #[derive(Debug)]
 pub struct OdEcEnc {
     /// Output buffer for encoded bytes.
+    ///
+    /// Invariant: `buf.len() >= offs + 8` is (re-)established before every
+    /// flush so the 8-byte batched store in `normalize` always fits, exactly
+    /// like the C `storage` bookkeeping.
     buf: Vec<u8>,
-    /// Write offset in buf.
+    /// The offset at which the next entropy-coded byte will be written.
     offs: u32,
-    /// Low end of the current range (64-bit window).
+    /// The low end of the current range (64-bit window).
     low: u64,
-    /// Number of values in the current range.
+    /// The number of values in the current range.
     rng: u16,
-    /// Number of bits of data in the current value.
+    /// The number of bits of data in the current value.
     cnt: i16,
     /// Whether an error occurred.
     error: bool,
@@ -39,19 +44,21 @@ pub struct OdEcEnc {
 
 impl OdEcEnc {
     /// Create a new encoder with the given initial buffer capacity.
+    ///
+    /// Ported from `svt_od_ec_enc_init` (growth happens on demand, so any
+    /// capacity — including 0 — is valid).
     pub fn new(capacity: usize) -> Self {
-        let buf = alloc::vec![0u8; capacity];
         Self {
-            buf,
+            buf: alloc::vec![0u8; capacity],
             offs: 0,
             low: 0,
-            rng: 0x8000, // Initial range = 32768
-            cnt: -9,     // Initial count
+            rng: 0x8000,
+            cnt: -9,
             error: false,
         }
     }
 
-    /// Reset the encoder state for a new frame.
+    /// Reset the encoder state for a new frame (`svt_od_ec_enc_reset`).
     pub fn reset(&mut self) {
         self.offs = 0;
         self.low = 0;
@@ -65,235 +72,173 @@ impl OdEcEnc {
         self.error
     }
 
-    /// Encode a symbol using an ICDF table (Q15 inverse CDF probabilities).
+    /// Encode a symbol given a CDF table in Q15 (`svt_od_ec_encode_cdf_q15`).
     ///
-    /// `s` is the symbol index, `icdf` is the inverse CDF table (decreasing
-    /// values: icdf[0] > icdf[1] > ... > icdf[nsyms-1] = 0).
-    /// `nsyms` is the number of symbols.
-    ///
-    /// Both our encoder and rav1d's decoder use ICDF format internally.
-    /// rav1d converts from CDF to ICDF during initialization (cdf0d function).
-    ///
-    /// The range computation matches rav1d's msac_decode_symbol:
-    ///   v[val] = (r>>8) * (icdf[val] >> 6) >> 1 + EC_MIN_PROB * (n - val)
-    /// Symbol s has range [v[s], v[s-1]) where v[-1] = rng.
+    /// `icdf` is 32768 minus the CDF, such that symbol `s` falls in the range
+    /// `[s > 0 ? (32768 - icdf[s-1]) : 0, 32768 - icdf[s])`. The values must
+    /// be monotonically decreasing and `icdf[nsyms-1]` must be 0 (C layout;
+    /// the adaptation counter lives one past it at `icdf[nsyms]`).
     pub fn encode_cdf_q15(&mut self, s: usize, icdf: &[AomCdfProb], nsyms: usize) {
-        assert!(s < nsyms, "symbol {s} >= nsyms {nsyms}");
-
-        let n = nsyms as u32 - 1;
-        let r = self.rng as u32;
-        let l = self.low;
-
-        // Compute v[s] = lower boundary of symbol s
-        // For the last symbol (s == n), v_s = 0 (implicit lower boundary).
-        // For other symbols, v_s = range_from_cdf(icdf[s]) + EC_MIN_PROB * (n - s).
-        // NOTE: icdf[n] stores the CDF adaptation counter, NOT a CDF value.
-        let v_s = if s < n as usize {
-            (((r >> 8) * ((icdf[s] >> EC_PROB_SHIFT) as u32)) >> (7 - EC_PROB_SHIFT))
-                + EC_MIN_PROB * (n - s as u32)
-        } else {
-            0u32
-        };
-
-        // Compute v[s-1] = upper boundary of symbol s (= lower boundary of s-1)
-        let v_prev = if s > 0 {
-            (((r >> 8) * ((icdf[s - 1] >> EC_PROB_SHIFT) as u32)) >> (7 - EC_PROB_SHIFT))
-                + EC_MIN_PROB * (n - (s as u32 - 1))
-        } else {
-            r // v[-1] = rng for symbol 0
-        };
-
-        let new_rng = if v_prev > v_s { v_prev - v_s } else { 1 };
-        let new_l = l + v_s as u64;
-
-        self.normalize(new_l, new_rng as u16);
+        debug_assert!(s < nsyms, "symbol {s} >= nsyms {nsyms}");
+        debug_assert_eq!(icdf[nsyms - 1], 0, "C layout requires icdf[nsyms-1] == 0");
+        let fl = if s > 0 { u32::from(icdf[s - 1]) } else { 32768 };
+        self.encode_q15(fl, u32::from(icdf[s]), s as i32, nsyms as i32);
     }
 
-    /// Encode a binary symbol with probability `f` (Q15).
+    /// Encode a single binary value (`svt_od_ec_encode_bool_q15`).
     ///
-    /// Ported from `svt_od_ec_encode_bool_q15`.
+    /// `f` is the probability that the value is one, scaled by 32768.
     pub fn encode_bool_q15(&mut self, val: bool, f: u32) {
-        debug_assert!(f > 0 && f < 32768);
-
-        let l = self.low;
-        let r = self.rng as u32;
+        debug_assert!(0 < f && f < 32768);
+        let mut l = self.low;
+        let mut r = u32::from(self.rng);
         debug_assert!(r >= 32768);
-
-        let v = (((r >> 8) * (f >> EC_PROB_SHIFT)) >> (7 - EC_PROB_SHIFT)) + EC_MIN_PROB;
-
-        let (new_l, new_r) = if val {
-            (l + (r - v) as u64, v as u16)
-        } else {
-            (l, (r - v) as u16)
-        };
-
-        self.normalize(new_l, new_r);
+        let v = ((r >> 8) * (f >> EC_PROB_SHIFT) >> (7 - EC_PROB_SHIFT)) + EC_MIN_PROB;
+        if val {
+            l += u64::from(r - v);
+        }
+        r = if val { v } else { r - v };
+        self.normalize(l, r);
     }
 
-    /// Core Q15 range update.
+    /// Encode a symbol given its frequency interval in Q15
+    /// (`svt_od_ec_encode_q15`).
     ///
-    /// Ported from `svt_od_ec_encode_q15`.
-    fn encode_q15(&mut self, fl: u32, fh: u32, s: usize, nsyms: usize) {
-        let l = self.low;
-        let r = self.rng as u32;
+    /// `fl`: 32768 minus the cumulative frequency of all symbols before the
+    /// one to be encoded (or 32768 when `s == 0`).
+    /// `fh`: 32768 minus the cumulative frequency of all symbols up to and
+    /// including the one to be encoded.
+    fn encode_q15(&mut self, fl: u32, fh: u32, s: i32, nsyms: i32) {
+        let mut l = self.low;
+        let mut r = u32::from(self.rng);
         debug_assert!(r >= 32768);
         debug_assert!(fh <= fl);
         debug_assert!(fl <= 32768);
-
-        let n = (nsyms - 1) as u32;
-
-        let (new_l, new_r) = if fl < CDF_PROB_TOP as u32 {
-            let u = (((r >> 8) * (fl >> EC_PROB_SHIFT)) >> (7 - EC_PROB_SHIFT))
-                + EC_MIN_PROB * (n - (s as u32 - 1));
-            let v = (((r >> 8) * (fh >> EC_PROB_SHIFT)) >> (7 - EC_PROB_SHIFT))
-                + EC_MIN_PROB * (n - s as u32);
-            let range = if u > v { u - v } else { 1 };
-            (l + (r - u) as u64, range.max(1) as u16)
+        let n = nsyms - 1;
+        if fl < 32768 {
+            // `s > 0` here: fl == 32768 exactly when s == 0.
+            let u = ((r >> 8) * (fl >> EC_PROB_SHIFT) >> (7 - EC_PROB_SHIFT))
+                + EC_MIN_PROB * (n - (s - 1)) as u32;
+            let v = ((r >> 8) * (fh >> EC_PROB_SHIFT) >> (7 - EC_PROB_SHIFT))
+                + EC_MIN_PROB * (n - s) as u32;
+            l += u64::from(r - u);
+            r = u - v;
         } else {
-            let v = (((r >> 8) * (fh >> EC_PROB_SHIFT)) >> (7 - EC_PROB_SHIFT))
-                + EC_MIN_PROB * (n - s as u32);
-            let range = if r > v { r - v } else { 1 };
-            (l, range.max(1) as u16)
-        };
-
-        self.normalize(new_l, new_r);
+            r -= ((r >> 8) * (fh >> EC_PROB_SHIFT) >> (7 - EC_PROB_SHIFT))
+                + EC_MIN_PROB * (n - s) as u32;
+        }
+        self.normalize(l, r);
     }
 
-    /// Renormalization — maintains the invariant 32768 <= rng < 65536
-    /// and flushes bytes when the window is full.
-    ///
-    /// Ported from `svt_od_ec_enc_normalize`.
-    fn normalize(&mut self, low: u64, rng: u16) {
+    /// Renormalize so that `32768 <= rng < 65536`, flushing bytes from `low`
+    /// to the output buffer when the window fills
+    /// (`svt_od_ec_enc_normalize`).
+    fn normalize(&mut self, mut low: u64, rng: u32) {
         if self.error {
             return;
         }
+        let mut c = i32::from(self.cnt);
+        debug_assert!(rng <= 65535);
+        // The number of leading zeros in the 16-bit binary representation of rng.
+        let d = 16 - ilog_nz(rng);
+        let mut s = c + d;
 
-        let c = self.cnt as i32;
-
-        // Number of leading zeros in 16-bit representation of rng
-        let d = 16 - ilog_nz(rng as u32);
-        let s = c + d;
-
-        // Flush bytes when window is nearly full
+        // Flush whenever `low` cannot safely accommodate more data; see the C
+        // source for the full derivation of the 40 == 56 - 16 threshold.
         if s >= 40 {
-            self.flush_bytes(low, rng, s, d);
-            return;
-        }
+            let offs = self.offs as usize;
+            if offs + 8 > self.buf.len() {
+                // C: storage = 2 * storage + 8 (values past `offs` are scratch).
+                let new_len = 2 * self.buf.len() + 8;
+                self.buf.resize(new_len, 0);
+            }
+            // One extra byte vs. s>>3 since cnt always counts one byte short
+            // (it starts at -9).
+            let num_bytes_ready = (s >> 3) + 1;
+            // Number of non-ready bits left in `low` after extracting the
+            // ready bytes (64-bit window: 24 == 64 - 40 cushion).
+            c += 24 - (num_bytes_ready << 3);
 
+            let output = low >> c;
+            low &= (1u64 << c) - 1;
+
+            let mask = 1u64 << (num_bytes_ready << 3);
+            let carry = output & mask;
+            let output = output & (mask - 1);
+
+            // write_enc_data_to_out_buf: single big-endian 8-byte store with
+            // the ready bytes left-aligned; bytes past `offs + num_bytes_ready`
+            // are scratch and get overwritten by later flushes.
+            let reg = (output << ((8 - num_bytes_ready) << 3)).to_be_bytes();
+            self.buf[offs..offs + 8].copy_from_slice(&reg);
+            if carry != 0 {
+                debug_assert!(self.offs > 0);
+                propagate_carry_bwd(&mut self.buf, self.offs - 1);
+            }
+            self.offs += num_bytes_ready as u32;
+
+            s = c + d - 24;
+        }
         self.low = low << d;
-        self.rng = rng << d;
+        self.rng = (rng << d) as u16;
         self.cnt = s as i16;
     }
 
-    /// Flush encoded bytes from the window.
-    fn flush_bytes(&mut self, low: u64, rng: u16, s: i32, d: i32) {
-        let c = self.cnt as i32;
-
-        // Ensure buffer has enough space
-        let needed = self.offs as usize + 8;
-        if needed > self.buf.len() {
-            self.buf.resize(self.buf.len() * 2 + 8, 0);
-        }
-
-        let num_bytes_ready = ((s >> 3) + 1) as u32;
-        let new_c = c + 24 - (num_bytes_ready as i32 * 8);
-
-        let output = low >> new_c;
-        let new_low = low & ((1u64 << new_c) - 1);
-
-        let mask = 1u64 << (num_bytes_ready * 8);
-        let carry = output & mask;
-        let data = output & (mask - 1);
-
-        // Write bytes and handle carry
-        self.write_bytes(data, carry, num_bytes_ready);
-
-        let new_s = new_c + d - 24;
-        self.low = new_low << d;
-        self.rng = rng << d;
-        self.cnt = new_s as i16;
-    }
-
-    /// Write encoded bytes to the output buffer with carry propagation.
-    fn write_bytes(&mut self, data: u64, carry: u64, num_bytes: u32) {
-        let offs = self.offs as usize;
-
-        // Handle carry propagation
-        if carry != 0 && offs > 0 {
-            let mut i = offs - 1;
-            loop {
-                let new_val = self.buf[i].wrapping_add(1);
-                self.buf[i] = new_val;
-                if new_val != 0 || i == 0 {
-                    break;
-                }
-                i -= 1;
-            }
-        }
-
-        // Write bytes in big-endian order
-        for i in 0..num_bytes {
-            let shift = (num_bytes - 1 - i) * 8;
-            self.buf[offs + i as usize] = (data >> shift) as u8;
-        }
-
-        self.offs += num_bytes;
-    }
-
-    /// Finalize encoding and return the encoded bytes.
+    /// Finalize encoding and return the encoded bytes
+    /// (`svt_od_ec_enc_done`).
     ///
-    /// Must be called after all symbols are encoded.
-    /// Ported from libaom/SVT-AV1's `od_ec_enc_done`.
+    /// Call `reset` before reusing the encoder afterwards.
     pub fn done(&mut self) -> &[u8] {
         if self.error {
             return &[];
         }
 
-        // Round up `low` to ensure the decoder can correctly decode.
+        let l = self.low;
+        let mut c = i32::from(self.cnt);
+        // We output the minimum number of bits that ensures the symbols
+        // encoded thus far decode correctly regardless of trailing bits.
+        let mut s = 10 + c;
         let m: u64 = 0x3FFF;
-        let e = ((self.low + m) & !m) | (m + 1);
+        let mut e = ((l + m) & !m) | (m + 1);
+        let mut offs = self.offs as usize;
 
-        // Number of valid bits: 10 + cnt
-        let s = 10 + self.cnt as i32;
-        if s <= 0 {
-            return &self.buf[..self.offs as usize];
+        // Make sure there's enough room for the entropy-coded bits.
+        let s_bits = (s + 7) >> 3;
+        let b = s_bits.max(0) as usize;
+        if offs + b > self.buf.len() {
+            self.buf.resize(offs + b, 0);
         }
 
-        let needed = self.offs as usize + ((s as usize + 7) / 8);
-        if needed > self.buf.len() {
-            self.buf.resize(needed + 8, 0);
-        }
+        if s > 0 {
+            let mut n = (1u64 << (c + 16)) - 1;
+            loop {
+                let val = (e >> (c + 16)) as u16;
+                self.buf[offs] = (val & 0x00FF) as u8;
+                if val & 0x0100 != 0 {
+                    debug_assert!(offs > 0);
+                    propagate_carry_bwd(&mut self.buf, (offs - 1) as u32);
+                }
+                offs += 1;
 
-        // The valid bits in `e` are at a position determined by the accumulated
-        // normalization shifts. The top bit of the range was initially at bit 14.
-        // After normalization shifts totaling (cnt + 9), the top is at 14 + cnt + 9.
-        // The first output byte starts at that position.
-        //
-        // To extract byte i: shift = 14 + (cnt + 9) - 7 - i*8 = 16 + cnt - i*8
-        let num_bytes = ((s as u32 + 7) / 8) as usize;
-        let c = self.cnt as i32;
-
-        for i in 0..num_bytes {
-            let shift = 16 + c - (i as i32) * 8;
-            let byte = if shift >= 0 {
-                ((e >> shift) & 0xFF) as u8
-            } else {
-                ((e << (-shift)) & 0xFF) as u8
-            };
-
-            let offs = self.offs as usize;
-            if offs < self.buf.len() {
-                self.buf[offs] = byte;
-                // Carry propagation into previously written bytes
-                if byte > 0 && offs > 0 {
-                    // Check if adding this byte causes overflow
-                    // (not needed for final flush — bytes are independent)
+                e &= n;
+                s -= 8;
+                c -= 8;
+                n >>= 8;
+                if s <= 0 {
+                    break;
                 }
             }
-            self.offs += 1;
         }
+        self.offs = offs as u32;
+        &self.buf[..offs]
+    }
 
-        &self.buf[..self.offs as usize]
+    /// The number of bits "used" by the encoded symbols so far
+    /// (`svt_od_ec_enc_tell`); always slightly larger than the exact value.
+    pub fn tell(&self) -> i32 {
+        // The 10 counteracts the -9 baked into cnt and reserves 1 bit for
+        // terminating the stream.
+        i32::from(self.cnt) + 10 + self.offs as i32 * 8
     }
 
     /// Get the number of bytes written so far.
@@ -301,7 +246,7 @@ impl OdEcEnc {
         self.offs as usize
     }
 
-    /// Debug: internal state access.
+    /// Debug: internal `low` window state.
     pub fn low(&self) -> u64 {
         self.low
     }
@@ -315,8 +260,23 @@ impl OdEcEnc {
     }
 }
 
+/// Backward carry propagation (`propagate_carry_bwd`).
+fn propagate_carry_bwd(buf: &mut [u8], offs: u32) {
+    let mut offs = offs as usize;
+    loop {
+        let sum = u16::from(buf[offs]) + 1;
+        buf[offs] = sum as u8;
+        if sum >> 8 == 0 {
+            break;
+        }
+        // A carry out of buf[0] would be a caller bug (the stream always
+        // starts with a byte < 0xFF in valid use); underflow panics here.
+        offs -= 1;
+    }
+}
+
 /// Integer log2 for nonzero values (number of bits needed).
-/// Equivalent to C's OD_ILOG_NZ.
+/// Equivalent to C's `OD_ILOG_NZ`.
 #[inline]
 fn ilog_nz(v: u32) -> i32 {
     debug_assert!(v > 0);
@@ -347,12 +307,22 @@ mod tests {
     #[test]
     fn encode_produces_output() {
         let mut enc = OdEcEnc::new(1024);
-        // Encode a sequence of booleans
         for _ in 0..100 {
             enc.encode_bool_q15(true, 16384);
         }
         let output = enc.done();
         assert!(!output.is_empty(), "encoder should produce output");
+    }
+
+    #[test]
+    fn zero_capacity_grows() {
+        let mut enc = OdEcEnc::new(0);
+        let icdf = [16384u16, 0, 0];
+        for i in 0..1000 {
+            enc.encode_cdf_q15(i & 1, &icdf, 2);
+        }
+        let output = enc.done();
+        assert!(output.len() >= 120, "~1 bit/symbol expected, got {}", output.len());
     }
 
     #[test]
@@ -374,5 +344,14 @@ mod tests {
         enc.reset();
         assert_eq!(enc.rng, 0x8000);
         assert_eq!(enc.offs, 0);
+    }
+
+    #[test]
+    fn tell_advances() {
+        let mut enc = OdEcEnc::new(256);
+        let t0 = enc.tell();
+        assert_eq!(t0, 1); // -9 + 10 + 0*8
+        enc.encode_bool_q15(true, 16384);
+        assert!(enc.tell() > t0);
     }
 }
