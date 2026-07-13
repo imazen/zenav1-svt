@@ -6,6 +6,7 @@ extern crate alloc;
 
 pub mod encode_loop;
 pub mod film_grain;
+pub mod intra_edge;
 pub mod mode_decision;
 pub mod motion_est;
 pub mod multipass;

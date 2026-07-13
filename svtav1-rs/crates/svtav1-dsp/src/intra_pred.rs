@@ -340,7 +340,19 @@ fn dr_prediction_z3(dst: &mut [u8], dst_stride: usize, bw: usize, bh: usize, lef
 }
 
 /// Directional prediction, zone 2: 90 < angle < 180.
-/// Interpolates using both `above` and `left` neighbors.
+/// Interpolates using both `above` and `left` neighbors plus the
+/// top-left corner sample.
+///
+/// C-exact port of libaom `av1_dr_prediction_z2_c`
+/// (av1/common/reconintra.c), specialized to
+/// `upsample_above == upsample_left == 0` (our sequence headers signal
+/// `enable_intra_edge_filter = 0`, so upsampling never applies):
+/// `min_base_x = -1`, `frac_bits_x = frac_bits_y = 6`.
+///
+/// The C code indexes `above[-1]` / `left[-1]` — the top-left neighbor
+/// sample (`above_row[-1] == left_col[-1]` in
+/// `build_directional_and_filter_intra_predictors`). Rust slices cannot
+/// be indexed at -1, so that sample is passed separately as `top_left`.
 fn dr_prediction_z2(
     dst: &mut [u8],
     dst_stride: usize,
@@ -348,41 +360,50 @@ fn dr_prediction_z2(
     bh: usize,
     above: &[u8],
     left: &[u8],
+    top_left: u8,
     dx: i32,
     dy: i32,
 ) {
+    debug_assert!(dx > 0);
+    debug_assert!(dy > 0);
     for r in 0..bh {
         for c in 0..bw {
-            // Try above neighbor (zone 1 direction)
-            let y_above = -(r as i32 + 1) * dy;
-            let x_base = (c as i32) + (y_above >> 6);
-            let x_shift = ((y_above) & 0x3F) >> 1;
-
-            // Try left neighbor (zone 3 direction)
-            let x_left = -(c as i32 + 1) * dx;
-            let y_base = (r as i32) + (x_left >> 6);
-            let y_shift = ((x_left) & 0x3F) >> 1;
-
-            let val = if x_base >= 0 {
-                // Use above neighbor
-                let b = x_base as usize;
-                let a0 = if b < above.len() { above[b] } else { 128 };
-                let a1 = if b + 1 < above.len() {
-                    above[b + 1]
+            // C: int y = r + 1; int x = (c << 6) - y * dx;
+            //    const int base_x = x >> frac_bits_x;
+            let y = r as i32 + 1;
+            let x = ((c as i32) << 6) - y * dx;
+            let base_x = x >> 6;
+            let val = if base_x >= -1 {
+                // C: shift = ((x * (1 << upsample_above)) & 0x3F) >> 1;
+                //    val = above[base_x] * (32 - shift) + above[base_x + 1] * shift;
+                let shift = (x & 0x3F) >> 1;
+                let p0 = if base_x < 0 {
+                    top_left
                 } else {
-                    128
-                };
-                a0 as i32 * (32 - x_shift) + a1 as i32 * x_shift
-            } else if y_base >= 0 {
-                // Use left neighbor
-                let b = y_base as usize;
-                let l0 = if b < left.len() { left[b] } else { 128 };
-                let l1 = if b + 1 < left.len() { left[b + 1] } else { 128 };
-                l0 as i32 * (32 - y_shift) + l1 as i32 * y_shift
+                    above[base_x as usize]
+                } as i32;
+                let p1 = above[(base_x + 1) as usize] as i32;
+                p0 * (32 - shift) + p1 * shift
             } else {
-                128 * 32 // fallback
+                // C: x = c + 1; y = (r << 6) - x * dy;
+                //    const int base_y = y >> frac_bits_y;
+                //    assert(base_y >= min_base_y);
+                let x2 = c as i32 + 1;
+                let y2 = ((r as i32) << 6) - x2 * dy;
+                let base_y = y2 >> 6;
+                debug_assert!(base_y >= -1);
+                let shift = (y2 & 0x3F) >> 1;
+                let p0 = if base_y < 0 {
+                    top_left
+                } else {
+                    left[base_y as usize]
+                } as i32;
+                let p1 = left[(base_y + 1) as usize] as i32;
+                p0 * (32 - shift) + p1 * shift
             };
-            dst[r * dst_stride + c] = ((val + 16) >> 5).clamp(0, 255) as u8;
+            // C: ROUND_POWER_OF_TWO(val, 5) — val is a 32-weight blend of
+            // u8 samples, so (val + 16) >> 5 <= 255; no clamp in C either.
+            dst[r * dst_stride + c] = ((val + 16) >> 5) as u8;
         }
     }
 }
@@ -392,12 +413,24 @@ fn dr_prediction_z2(
 /// `angle` is in degrees (0-270). The 8 directional modes map to:
 /// D45=45, D67=67, D113=113, D135=135, D157=157, D203=203
 ///
-/// `above` and `left` must have at least `width + height` elements.
+/// Mirrors libaom `dr_predictor` (av1/common/reconintra.c) with
+/// `upsample_above == upsample_left == 0`.
+///
+/// Neighbor array requirements (all indices relative to the block origin,
+/// exactly as libaom's `above_row` / `left_col` after
+/// `build_directional_and_filter_intra_predictors`):
+/// - zone 1 (angle < 90): `above` needs `width + height` samples
+///   (block top row + top-right extension).
+/// - zone 2 (90 < angle < 180): `above` needs `width`, `left` needs
+///   `height`, plus `top_left` (the C `above_row[-1] == left_col[-1]`).
+/// - zone 3 (angle > 180): `left` needs `width + height` samples
+///   (left column + bottom-left extension).
 pub fn predict_directional(
     dst: &mut [u8],
     dst_stride: usize,
     above: &[u8],
     left: &[u8],
+    top_left: u8,
     width: usize,
     height: usize,
     angle: i32,
@@ -408,7 +441,9 @@ pub fn predict_directional(
     if angle > 0 && angle < 90 {
         dr_prediction_z1(dst, dst_stride, width, height, above, dx);
     } else if angle > 90 && angle < 180 {
-        dr_prediction_z2(dst, dst_stride, width, height, above, left, dx, dy);
+        dr_prediction_z2(
+            dst, dst_stride, width, height, above, left, top_left, dx, dy,
+        );
     } else if angle > 180 && angle < 270 {
         dr_prediction_z3(dst, dst_stride, width, height, left, dy);
     } else if angle == 90 {
@@ -836,6 +871,130 @@ mod tests {
         assert!(dst[0] > 200);
         // Last column should be closer to 0
         assert!(dst[3] < dst[0]);
+    }
+
+    // =========================================================================
+    // Directional kernel exact-value tests vs libaom av1_dr_prediction_z*_c
+    // (av1/common/reconintra.c, upsample = 0). Expected values are
+    // hand-computed from the C formulas — the same math the AV1 reference
+    // decoder runs, which is what the recon-parity gate compares against.
+    // =========================================================================
+
+    #[test]
+    fn dr_z1_d45_exact_diagonal() {
+        // D45: dx = DR_INTRA_DERIVATIVE[45] = 64.
+        // x = 64*(r+1) → base = r+1, shift = 0 → pred[r][c] = above[r+c+1]
+        // while r+c+1 < max_base_x (= 7 for 4x4), else above[max_base_x].
+        let above: Vec<u8> = (0..8).map(|i| (10 + i * 10) as u8).collect();
+        let left = [0u8; 8];
+        let mut dst = [0u8; 16];
+        predict_directional(&mut dst, 4, &above, &left, 99, 4, 4, 45);
+        for r in 0..4 {
+            for c in 0..4 {
+                let idx = (r + c + 1).min(7);
+                assert_eq!(
+                    dst[r * 4 + c],
+                    above[idx],
+                    "D45 exact at ({r},{c})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn dr_z2_d135_exact_diagonal() {
+        // D135: dx = dy = DR_INTRA_DERIVATIVE[45] = 64. All shifts are 0, so
+        // the prediction is the pure -45° diagonal through the top-left:
+        //   pred[r][c] = above[c-r-1]  (c > r)
+        //              = top_left      (c == r)
+        //              = left[r-c-1]   (c < r)
+        let above = [10u8, 20, 30, 40];
+        let left = [50u8, 60, 70, 80];
+        let top_left = 100u8;
+        let mut dst = [0u8; 16];
+        predict_directional(&mut dst, 4, &above, &left, top_left, 4, 4, 135);
+        for r in 0..4 {
+            for c in 0..4 {
+                let expected = match c.cmp(&r) {
+                    core::cmp::Ordering::Greater => above[c - r - 1],
+                    core::cmp::Ordering::Equal => top_left,
+                    core::cmp::Ordering::Less => left[r - c - 1],
+                };
+                assert_eq!(
+                    dst[r * 4 + c],
+                    expected,
+                    "D135 exact at ({r},{c})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn dr_z2_d113_exact_4x4() {
+        // D113: dx = DR_INTRA_DERIVATIVE[180-113] = deriv[67] = 27,
+        //        dy = DR_INTRA_DERIVATIVE[113-90]  = deriv[23] = 151.
+        // Full 4x4 hand-computed from av1_dr_prediction_z2_c with
+        // above = [10,20,30,40], left = [50,60,70,80], above[-1] = 100.
+        // e.g. r0c0: x = -27, base_x = -1, shift = 18 →
+        //      (100*14 + 10*18 + 16) >> 5 = 49.
+        //      r2c0: x = -81, base_x = -2 → left branch: y = 128 - 151 =
+        //      -23, base_y = -1, shift = 20 →
+        //      (100*12 + 50*20 + 16) >> 5 = 69.
+        let above = [10u8, 20, 30, 40];
+        let left = [50u8, 60, 70, 80];
+        let top_left = 100u8;
+        let mut dst = [0u8; 16];
+        predict_directional(&mut dst, 4, &above, &left, top_left, 4, 4, 113);
+        let expected: [u8; 16] = [
+            49, 16, 26, 36, //
+            86, 12, 22, 32, //
+            69, 35, 17, 27, //
+            56, 72, 13, 23,
+        ];
+        assert_eq!(dst, expected, "D113 exact 4x4");
+    }
+
+    #[test]
+    fn dr_z2_d157_exact_spots() {
+        // D157: dx = deriv[180-157] = deriv[23] = 151,
+        //        dy = deriv[157-90]  = deriv[67] = 27.
+        let above = [10u8, 20, 30, 40];
+        let left = [50u8, 60, 70, 80];
+        let top_left = 100u8;
+        let mut dst = [0u8; 16];
+        predict_directional(&mut dst, 4, &above, &left, top_left, 4, 4, 157);
+        // r0c0: x = -151, base_x = -3 → left branch: y = -27, base_y = -1,
+        //       shift = 18 → (100*14 + 50*18 + 16) >> 5 = 72
+        assert_eq!(dst[0], 72, "D157 r0c0");
+        // r0c1: x = -87, base_x = -2 → left: y = -54, base_y = -1,
+        //       shift = 5 → (100*27 + 50*5 + 16) >> 5 = 92
+        assert_eq!(dst[1], 92, "D157 r0c1");
+        // r0c2: x = -23, base_x = -1, shift = 20 →
+        //       (100*12 + 10*20 + 16) >> 5 = 44
+        assert_eq!(dst[2], 44, "D157 r0c2");
+        // r0c3: x = 41, base_x = 0, shift = 20 →
+        //       (10*12 + 20*20 + 16) >> 5 = 16
+        assert_eq!(dst[3], 16, "D157 r0c3");
+        // r1c0: x = -302, base_x = -5 → left: y = 64 - 27 = 37,
+        //       base_y = 0, shift = 18 → (50*14 + 60*18 + 16) >> 5 = 56
+        assert_eq!(dst[4], 56, "D157 r1c0");
+    }
+
+    #[test]
+    fn dr_z3_d203_exact_spots() {
+        // D203: dy = DR_INTRA_DERIVATIVE[270-203] = deriv[67] = 27.
+        let above = [0u8; 8];
+        let left: Vec<u8> = (0..8).map(|i| (50 + i * 10) as u8).collect();
+        let mut dst = [0u8; 16];
+        predict_directional(&mut dst, 4, &above, &left, 99, 4, 4, 203);
+        // c0: y = 27, base = 0, shift = 13:
+        //   r0: (50*19 + 60*13 + 16) >> 5 = 54
+        //   r1: (60*19 + 70*13 + 16) >> 5 = 64
+        assert_eq!(dst[0], 54, "D203 r0c0");
+        assert_eq!(dst[4], 64, "D203 r1c0");
+        // c1: y = 54, base = 0, shift = 27:
+        //   r0: (50*5 + 60*27 + 16) >> 5 = 58
+        assert_eq!(dst[1], 58, "D203 r0c1");
     }
 
     #[test]
