@@ -478,6 +478,19 @@ impl EncodePipeline {
         } else {
             (Vec::new(), Vec::new())
         };
+        // Debug aid: SVTAV1_DUMP_TREE=1 prints every winning leaf
+        // (abs rect, mode, tx_type, eob) in coding order — the fastest way
+        // to correlate a recon-parity diff position with the block that
+        // produced it.
+        #[cfg(feature = "std")]
+        if std::env::var_os("SVTAV1_DUMP_TREE").is_some() {
+            for (sb_idx, tree) in all_trees.iter().enumerate() {
+                let bx = (sb_idx % sb_cols) * sb_size;
+                let by = (sb_idx / sb_cols) * sb_size;
+                dump_tree_leaves(tree, bx, by);
+            }
+        }
+
         // Per-4x4 block/TX/skip geometry for the deblocking edge walk,
         // recorded in coding order (== the decoder's parse order).
         let mut deblock_geom = crate::deblock::DeblockGeom::new(w, h);
@@ -1517,6 +1530,45 @@ fn encode_partition_tree(
                         );
                     }
                 }
+            }
+        }
+    }
+}
+
+/// Recursive leaf printer for `SVTAV1_DUMP_TREE` (coding order).
+#[cfg(feature = "std")]
+fn dump_tree_leaves(tree: &crate::partition::PartitionTree, x: usize, y: usize) {
+    match tree {
+        crate::partition::PartitionTree::Leaf(d) => {
+            eprintln!(
+                "LEAF x{:4} y{:4} {}x{} mode {:2} tx {} eob {}",
+                x, y, d.width, d.height, d.intra_mode, d.tx_type, d.eob
+            );
+        }
+        crate::partition::PartitionTree::Split {
+            partition_type,
+            width,
+            height,
+            children,
+        } => {
+            let (w, h) = (*width as usize, *height as usize);
+            let (hw, hh, qw, qh) = (w / 2, h / 2, w / 4, h / 4);
+            use crate::partition::PartitionType as P;
+            let offs: alloc::vec::Vec<(usize, usize)> = match partition_type {
+                P::Split => alloc::vec![(0, 0), (hw, 0), (0, hh), (hw, hh)],
+                P::Horz => alloc::vec![(0, 0), (0, hh)],
+                P::Vert => alloc::vec![(0, 0), (hw, 0)],
+                P::HorzA => alloc::vec![(0, 0), (hw, 0), (0, hh)],
+                P::HorzB => alloc::vec![(0, 0), (0, hh), (hw, hh)],
+                P::VertA => alloc::vec![(0, 0), (0, hh), (hw, 0)],
+                P::VertB => alloc::vec![(0, 0), (hw, 0), (hw, hh)],
+                P::Horz4 => alloc::vec![(0, 0), (0, qh), (0, 2 * qh), (0, 3 * qh)],
+                P::Vert4 => alloc::vec![(0, 0), (qw, 0), (2 * qw, 0), (3 * qw, 0)],
+                P::None => alloc::vec![(0, 0)],
+            };
+            eprintln!("SPLIT x{x:4} y{y:4} {w}x{h} {partition_type:?}");
+            for (child, (dx, dy)) in children.iter().zip(offs) {
+                dump_tree_leaves(child, x + dx, y + dy);
             }
         }
     }
