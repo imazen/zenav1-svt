@@ -490,7 +490,7 @@ pub struct CoeffFc {
     pub eob_flag_cdf1024: [[AomCdfProb; 12]; 2 * 2],
     pub coeff_base_eob_cdf: [[AomCdfProb; 4]; 4 * 2 * 5],
     pub coeff_base_cdf: [[AomCdfProb; 5]; 42 * 2 * 5],
-    pub coeff_br_cdf: [[AomCdfProb; 5]; 21 * 2 * 5],
+    pub coeff_br_cdf: [[AomCdfProb; 5]; 21 * 2 * 4],
     pub intra_ext_tx_cdf: [[AomCdfProb; 17]; 13 * 4 * 3],
 }
 
@@ -512,7 +512,7 @@ impl CoeffFc {
             eob_flag_cdf1024: [[0; 12]; 4],
             coeff_base_eob_cdf: [[0; 4]; 40],
             coeff_base_cdf: [[0; 5]; 420],
-            coeff_br_cdf: [[0; 5]; 210],
+            coeff_br_cdf: [[0; 5]; 168],
             intra_ext_tx_cdf: [[0; 17]; 156],
         });
         fc.txb_skip_cdf.copy_from_slice(d::TXB_SKIP_CDF[q].as_flattened());

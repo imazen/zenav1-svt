@@ -311,3 +311,20 @@ pub fn txb_wide(tx_size: usize) -> usize {
 pub fn txb_high(tx_size: usize) -> usize {
     unsafe { ref_get_txb_high(tx_size as i32) as usize }
 }
+
+// ---- AV1 quantizer step tables ----
+
+unsafe extern "C" {
+    fn ref_dc_quant_qtx(qindex: i32) -> i16;
+    fn ref_ac_quant_qtx(qindex: i32) -> i16;
+}
+
+/// Reference `svt_aom_dc_quant_qtx(qindex, 0, 8-bit)`.
+pub fn dc_quant_qtx(qindex: i32) -> i16 {
+    unsafe { ref_dc_quant_qtx(qindex) }
+}
+
+/// Reference `svt_aom_ac_quant_qtx(qindex, 0, 8-bit)`.
+pub fn ac_quant_qtx(qindex: i32) -> i16 {
+    unsafe { ref_ac_quant_qtx(qindex) }
+}

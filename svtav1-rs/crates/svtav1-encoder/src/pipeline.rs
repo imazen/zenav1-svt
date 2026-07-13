@@ -1231,13 +1231,13 @@ fn encode_tile_rows(
                     mv_map: Some(mv_map),
                     mv_map_stride,
                 });
-                // Apply per-SB TPL QP offset for spatial bit allocation
-                let sb_idx = sb_row * sb_cols + sb_col;
-                let sb_qp_delta = if sb_idx < sb_qp_offsets.len() {
-                    sb_qp_offsets[sb_idx]
-                } else {
-                    0
-                };
+                // Per-SB TPL QP offsets are DISABLED until delta_q signaling
+                // is ported: the frame header currently writes
+                // delta_q_present=0, so the decoder dequantizes every block
+                // at base_q_idx — any per-SB offset here silently corrupts
+                // reconstruction (encoder and decoder disagree on scale).
+                let _ = (sb_row, sb_col, &sb_qp_offsets);
+                let sb_qp_delta = 0i8;
                 let sb_qp = (qp as i16 + sb_qp_delta as i16).clamp(0, 63) as u8;
                 let sb_lambda =
                     (crate::rate_control::qp_to_lambda(sb_qp) * speed_config.lambda_scale()) as u64;
