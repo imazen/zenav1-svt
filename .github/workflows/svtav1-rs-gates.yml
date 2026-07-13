@@ -1,0 +1,77 @@
+name: svtav1-rs gates
+
+on:
+  push:
+    branches: ["wave2/**", "master"]
+    paths: ["svtav1-rs/**", "Source/**", ".github/workflows/svtav1-rs-gates.yml"]
+  pull_request:
+    paths: ["svtav1-rs/**", "Source/**"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  gates:
+    name: differential + conformance gates (x86-64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install toolchain deps
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q nasm cmake ninja-build dav1d
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: svtav1-rs
+
+      - name: Build C reference (static, the differential oracle)
+        run: |
+          cmake -S . -B cbuild-static -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF -DBUILD_APPS=ON -DBUILD_TESTING=OFF
+          cmake --build cbuild-static
+
+      - name: Cache libaom build (aomdec oracle)
+        id: aom-cache
+        uses: actions/cache@v4
+        with:
+          path: aom-build/aomdec
+          key: aomdec-v3-${{ runner.os }}
+
+      - name: Build aomdec (reference decoder)
+        if: steps.aom-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 -b v3.12.1 https://aomedia.googlesource.com/aom aom-src
+          cmake -S aom-src -B aom-build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCONFIG_AV1_ENCODER=0 -DENABLE_TESTS=0 -DENABLE_EXAMPLES=1 \
+            -DENABLE_DOCS=0 -DENABLE_TOOLS=0
+          cmake --build aom-build --target aomdec
+
+      - name: Workspace tests (differential parity suites vs C)
+        working-directory: svtav1-rs
+        run: cargo test --workspace --no-fail-fast
+
+      - name: Decode conformance — mono (aomdec + dav1d)
+        working-directory: svtav1-rs
+        run: |
+          AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" DAV1D="$(command -v dav1d)" \
+            ./tools/decode_conformance.sh target/dc-mono
+
+      - name: Decode conformance — 4:2:0 (aomdec + dav1d)
+        working-directory: svtav1-rs
+        run: |
+          AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" DAV1D="$(command -v dav1d)" \
+            ./tools/decode_conformance.sh target/dc-chroma chroma
+
+      - name: Recon parity (encoder recon == aomdec output, byte-exact)
+        working-directory: svtav1-rs
+        run: |
+          AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" ./tools/recon_parity.sh
+
+      # Performance ratchet intentionally NOT run here: shared runners are
+      # too noisy for the <=1.20x wall-time gate; it runs on the fixed HW
+      # matrix (see benchmarks/*.meta for the current measured baselines).

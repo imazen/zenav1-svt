@@ -9,12 +9,15 @@
 #
 # Env:
 #   AOMDEC  path to the aomdec binary (default: `aomdec` on PATH)
+#   DAV1D   path to the dav1d CLI (optional second decoder; when set, every
+#           stream must decode under BOTH decoders per the project gates)
 set -u
 cd "$(dirname "$0")/.."
 
 outdir="${1:-target/decode_conformance}"
 mode="${2:-}"
 aomdec="${AOMDEC:-aomdec}"
+dav1d="${DAV1D:-}"
 
 command -v "$aomdec" >/dev/null 2>&1 || {
     echo "aomdec not found (set AOMDEC=/path/to/aomdec)" >&2
@@ -32,7 +35,12 @@ fail=0
 failed=()
 for f in "$outdir"/*.obu; do
     if "$aomdec" "$f" -o /dev/null >/dev/null 2>&1; then
-        pass=$((pass + 1))
+        if [ -n "$dav1d" ] && ! "$dav1d" -i "$f" -o /dev/null >/dev/null 2>&1; then
+            fail=$((fail + 1))
+            failed+=("$(basename "$f") [dav1d]")
+        else
+            pass=$((pass + 1))
+        fi
     else
         fail=$((fail + 1))
         failed+=("$(basename "$f")")
