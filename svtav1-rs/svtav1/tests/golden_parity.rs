@@ -39,7 +39,7 @@ fn fdct4_dc_golden() {
     let input = [100i32, 100, 100, 100];
     let golden = [283, 0, 0, 0];
     let mut output = [0i32; 4];
-    fdct4(&input, &mut output);
+    fdct4(&input, &mut output, 12);
     assert_exact("fdct4_dc", &output, &golden);
 }
 
@@ -48,7 +48,7 @@ fn fdct4_zero_golden() {
     let input = [0i32; 4];
     let golden = [0, 0, 0, 0];
     let mut output = [0i32; 4];
-    fdct4(&input, &mut output);
+    fdct4(&input, &mut output, 12);
     assert_exact("fdct4_zero", &output, &golden);
 }
 
@@ -57,7 +57,7 @@ fn fdct4_mixed_golden() {
     let input = [100i32, -50, 200, -150];
     let golden = [71, 135, -141, 327];
     let mut output = [0i32; 4];
-    fdct4(&input, &mut output);
+    fdct4(&input, &mut output, 12);
     assert_exact("fdct4_mixed", &output, &golden);
 }
 
@@ -66,7 +66,7 @@ fn fdct4_impulse_golden() {
     let input = [1i32, 0, 0, 0];
     let golden = [1, 1, 1, 0];
     let mut output = [0i32; 4];
-    fdct4(&input, &mut output);
+    fdct4(&input, &mut output, 12);
     assert_exact("fdct4_impulse", &output, &golden);
 }
 
@@ -75,7 +75,7 @@ fn fdct4_alt_golden() {
     let input = [1i32, -1, 1, -1];
     let golden = [0, 1, 0, 3];
     let mut output = [0i32; 4];
-    fdct4(&input, &mut output);
+    fdct4(&input, &mut output, 12);
     assert_exact("fdct4_alt", &output, &golden);
 }
 
@@ -88,7 +88,7 @@ fn fdct8_dc_golden() {
     let input = [100i32; 8];
     let golden = [566, 0, 0, 0, 0, 0, 0, 0];
     let mut output = [0i32; 8];
-    fdct8(&input, &mut output);
+    fdct8(&input, &mut output, 12);
     assert_exact("fdct8_dc", &output, &golden);
 }
 
@@ -97,7 +97,7 @@ fn fdct8_zero_golden() {
     let input = [0i32; 8];
     let golden = [0, 0, 0, 0, 0, 0, 0, 0];
     let mut output = [0i32; 8];
-    fdct8(&input, &mut output);
+    fdct8(&input, &mut output, 12);
     assert_exact("fdct8_zero", &output, &golden);
 }
 
@@ -106,7 +106,7 @@ fn fdct8_mixed_golden() {
     let input = [50i32, -25, 100, -75, 200, -150, 80, -40];
     let golden = [99, 87, -66, 3, 92, -27, -141, 554];
     let mut output = [0i32; 8];
-    fdct8(&input, &mut output);
+    fdct8(&input, &mut output, 12);
     assert_exact("fdct8_mixed", &output, &golden);
 }
 
@@ -115,7 +115,7 @@ fn fdct8_alt_golden() {
     let input = [1i32, -1, 1, -1, 1, -1, 1, -1];
     let golden = [0, 1, 0, 1, 0, 2, 0, 5];
     let mut output = [0i32; 8];
-    fdct8(&input, &mut output);
+    fdct8(&input, &mut output, 12);
     assert_exact("fdct8_alt", &output, &golden);
 }
 
@@ -128,7 +128,7 @@ fn fdct16_dc_golden() {
     let input = [50i32; 16];
     let golden = [566, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     let mut output = [0i32; 16];
-    fdct16(&input, &mut output);
+    fdct16(&input, &mut output, 12);
     assert_exact("fdct16_dc", &output, &golden);
 }
 
@@ -142,7 +142,7 @@ fn fdct16_ramp_golden() {
         -57, -517, 0, -57, 0, -20, 0, -10, 0, -5, 0, -3, 0, -2, 0, -1,
     ];
     let mut output = [0i32; 16];
-    fdct16(&input, &mut output);
+    fdct16(&input, &mut output, 12);
     assert_exact("fdct16_ramp", &output, &golden);
 }
 
@@ -158,7 +158,7 @@ fn fdct32_dc_golden() {
         0, 0, 0,
     ];
     let mut output = [0i32; 32];
-    fdct32(&input, &mut output);
+    fdct32(&input, &mut output, 12);
     assert_exact("fdct32_dc", &output, &golden);
 }
 
@@ -173,7 +173,7 @@ fn fdct32_ramp_golden() {
         -2, 0, -1, 0, 0, 0, 0, 0, 0,
     ];
     let mut output = [0i32; 32];
-    fdct32(&input, &mut output);
+    fdct32(&input, &mut output, 12);
     assert_exact("fdct32_ramp", &output, &golden);
 }
 
@@ -186,7 +186,7 @@ fn fadst4_zero_golden() {
     let input = [0i32; 4];
     let golden = [0, 0, 0, 0];
     let mut output = [0i32; 4];
-    fadst4(&input, &mut output);
+    fadst4(&input, &mut output, 12);
     assert_exact("fadst4_zero", &output, &golden);
 }
 
@@ -195,7 +195,7 @@ fn fadst4_mixed_golden() {
     let input = [100i32, -50, 200, -150];
     let golden = [26, 163, -145, 319];
     let mut output = [0i32; 4];
-    fadst4(&input, &mut output);
+    fadst4(&input, &mut output, 12);
     assert_exact("fadst4_mixed", &output, &golden);
 }
 
@@ -208,7 +208,7 @@ fn fadst8_zero_golden() {
     let input = [0i32; 8];
     let golden = [0, 0, 0, 0, 0, 0, 0, 0];
     let mut output = [0i32; 8];
-    fadst8(&input, &mut output);
+    fadst8(&input, &mut output, 12);
     assert_exact("fadst8_zero", &output, &golden);
 }
 
@@ -217,7 +217,7 @@ fn fadst8_mixed_golden() {
     let input = [50i32, -25, 100, -75, 200, -150, 80, -40];
     let golden = [56, 125, -19, -40, 84, 33, -360, 445];
     let mut output = [0i32; 8];
-    fadst8(&input, &mut output);
+    fadst8(&input, &mut output, 12);
     assert_exact("fadst8_mixed", &output, &golden);
 }
 
@@ -254,7 +254,7 @@ fn fidentity4_golden() {
     let input = [100i32, 200, 300, 400];
     let golden = [141, 283, 424, 566];
     let mut output = [0i32; 4];
-    fidentity4(&input, &mut output);
+    fidentity4(&input, &mut output, 12);
     assert_exact("fidentity4", &output, &golden);
 }
 
@@ -267,7 +267,7 @@ fn fidentity8_golden() {
     let input = [100i32; 8];
     let golden = [200; 8];
     let mut output = [0i32; 8];
-    fidentity8(&input, &mut output);
+    fidentity8(&input, &mut output, 12);
     assert_exact("fidentity8", &output, &golden);
 }
 
@@ -280,7 +280,7 @@ fn idct4_dc_golden() {
     let input = [283i32, 0, 0, 0];
     let golden = [200, 200, 200, 200];
     let mut output = [0i32; 4];
-    idct4(&input, &mut output);
+    idct4(&input, &mut output, 31);
     assert_exact("idct4_dc", &output, &golden);
 }
 
@@ -289,7 +289,7 @@ fn idct4_zero_golden() {
     let input = [0i32; 4];
     let golden = [0, 0, 0, 0];
     let mut output = [0i32; 4];
-    idct4(&input, &mut output);
+    idct4(&input, &mut output, 31);
     assert_exact("idct4_zero", &output, &golden);
 }
 
@@ -298,7 +298,7 @@ fn idct4_from_fdct4_mixed_golden() {
     let input = [71i32, 135, -141, 327];
     let golden = [201, -100, 400, -299];
     let mut output = [0i32; 4];
-    idct4(&input, &mut output);
+    idct4(&input, &mut output, 31);
     assert_exact("idct4_from_fdct4_mixed", &output, &golden);
 }
 
@@ -311,7 +311,7 @@ fn idct8_dc_golden() {
     let input = [566i32, 0, 0, 0, 0, 0, 0, 0];
     let golden = [400, 400, 400, 400, 400, 400, 400, 400];
     let mut output = [0i32; 8];
-    idct8(&input, &mut output);
+    idct8(&input, &mut output, 31);
     assert_exact("idct8_dc", &output, &golden);
 }
 
@@ -320,7 +320,7 @@ fn idct8_zero_golden() {
     let input = [0i32; 8];
     let golden = [0, 0, 0, 0, 0, 0, 0, 0];
     let mut output = [0i32; 8];
-    idct8(&input, &mut output);
+    idct8(&input, &mut output, 31);
     assert_exact("idct8_zero", &output, &golden);
 }
 
@@ -329,7 +329,7 @@ fn idct8_from_fdct8_mixed_golden() {
     let input = [99i32, 87, -66, 3, 92, -27, -141, 554];
     let golden = [200, -99, 401, -300, 800, -601, 319, -160];
     let mut output = [0i32; 8];
-    idct8(&input, &mut output);
+    idct8(&input, &mut output, 31);
     assert_exact("idct8_from_fdct8_mixed", &output, &golden);
 }
 
@@ -342,7 +342,7 @@ fn iadst4_zero_golden() {
     let input = [0i32; 4];
     let golden = [0, 0, 0, 0];
     let mut output = [0i32; 4];
-    iadst4(&input, &mut output);
+    iadst4(&input, &mut output, 31);
     assert_exact("iadst4_zero", &output, &golden);
 }
 
@@ -351,7 +351,7 @@ fn iadst4_from_fadst4_mixed_golden() {
     let input = [26i32, 163, -145, 319];
     let golden = [200, -101, 400, -300];
     let mut output = [0i32; 4];
-    iadst4(&input, &mut output);
+    iadst4(&input, &mut output, 31);
     assert_exact("iadst4_from_fadst4_mixed", &output, &golden);
 }
 
@@ -364,7 +364,7 @@ fn iidentity4_golden() {
     let input = [100i32, 200, 300, 400];
     let golden = [141, 283, 424, 566];
     let mut output = [0i32; 4];
-    iidentity4(&input, &mut output);
+    iidentity4(&input, &mut output, 31);
     assert_exact("iidentity4", &output, &golden);
 }
 
@@ -377,7 +377,7 @@ fn iidentity8_golden() {
     let input = [200i32; 8];
     let golden = [400; 8];
     let mut output = [0i32; 8];
-    iidentity8(&input, &mut output);
+    iidentity8(&input, &mut output, 31);
     assert_exact("iidentity8", &output, &golden);
 }
 
@@ -393,9 +393,9 @@ fn roundtrip_dct4_golden() {
     let orig = [100i32, -50, 200, -150];
     let mut fwd = [0i32; 4];
     let mut inv = [0i32; 4];
-    fdct4(&orig, &mut fwd);
+    fdct4(&orig, &mut fwd, 12);
     assert_exact("roundtrip_dct4 fwd", &fwd, &[71, 135, -141, 327]);
-    idct4(&fwd, &mut inv);
+    idct4(&fwd, &mut inv, 31);
     assert_exact("roundtrip_dct4 inv", &inv, &[201, -100, 400, -299]);
     // Verify scale factor is ~2x (tolerance +-1 from rounding)
     for i in 0..4 {
@@ -416,13 +416,13 @@ fn roundtrip_dct8_golden() {
     let orig = [50i32, -25, 100, -75, 200, -150, 80, -40];
     let mut fwd = [0i32; 8];
     let mut inv = [0i32; 8];
-    fdct8(&orig, &mut fwd);
+    fdct8(&orig, &mut fwd, 12);
     assert_exact(
         "roundtrip_dct8 fwd",
         &fwd,
         &[99, 87, -66, 3, 92, -27, -141, 554],
     );
-    idct8(&fwd, &mut inv);
+    idct8(&fwd, &mut inv, 31);
     assert_exact(
         "roundtrip_dct8 inv",
         &inv,
@@ -573,7 +573,7 @@ fn idct16_dc_golden() {
     input[0] = 566;
     let golden = [400i32; 16];
     let mut output = [0i32; 16];
-    svtav1_dsp::inv_txfm::idct16(&input, &mut output);
+    svtav1_dsp::inv_txfm::idct16(&input, &mut output, 31);
     assert_exact("idct16_dc", &output, &golden);
 }
 
@@ -586,7 +586,7 @@ fn idct16_from_fdct16_ramp_golden() {
         -640i32, -560, -480, -399, -320, -239, -160, -80, 0, 80, 159, 240, 319, 400, 480, 560,
     ];
     let mut output = [0i32; 16];
-    svtav1_dsp::inv_txfm::idct16(&input, &mut output);
+    svtav1_dsp::inv_txfm::idct16(&input, &mut output, 31);
     assert_exact("idct16_from_fdct16_ramp", &output, &golden);
 }
 
@@ -599,7 +599,7 @@ fn iadst8_from_fadst8_mixed_golden() {
     let input = [56i32, 125, -19, -40, 84, 33, -360, 445];
     let golden = [200i32, -101, 401, -300, 798, -599, 320, -160];
     let mut output = [0i32; 8];
-    svtav1_dsp::inv_txfm::iadst8(&input, &mut output);
+    svtav1_dsp::inv_txfm::iadst8(&input, &mut output, 31);
     assert_exact("iadst8_from_fadst8_mixed", &output, &golden);
 }
 
@@ -611,7 +611,7 @@ fn iadst8_from_fadst8_mixed_golden() {
 fn fdct64_dc_golden() {
     let input = [100i32; 64];
     let mut output = [0i32; 64];
-    fdct64(&input, &mut output);
+    fdct64(&input, &mut output, 12);
     // C golden: [4525, 0, 0, ..., 0]
     assert_eq!(output[0], 4525, "fdct64 DC coefficient mismatch");
     for i in 1..64 {
@@ -623,7 +623,7 @@ fn fdct64_dc_golden() {
 fn fdct64_zero_golden() {
     let input = [0i32; 64];
     let mut output = [0i32; 64];
-    fdct64(&input, &mut output);
+    fdct64(&input, &mut output, 12);
     assert!(
         output.iter().all(|&v| v == 0),
         "fdct64 zero input should produce zero output"
@@ -642,7 +642,7 @@ fn fdct64_ramp_golden() {
         0, 0, -1, 0, -2, 0, 1, 0, 0, 0, 0, 0, 1, 0, -2, 0, -2,
     ];
     let mut output = [0i32; 64];
-    fdct64(&input, &mut output);
+    fdct64(&input, &mut output, 12);
     assert_exact("fdct64_ramp", &output, &golden);
 }
 
@@ -654,7 +654,7 @@ fn fdct64_ramp_golden() {
 fn fadst16_zero_golden() {
     let input = [0i32; 16];
     let mut output = [0i32; 16];
-    fadst16(&input, &mut output);
+    fadst16(&input, &mut output, 12);
     assert!(output.iter().all(|&v| v == 0));
 }
 
@@ -668,7 +668,7 @@ fn fadst16_ramp_golden() {
         171i32, -404, -133, -149, -88, -91, -67, -66, -54, -55, -47, -49, -45, -44, -43, -42,
     ];
     let mut output = [0i32; 16];
-    fadst16(&input, &mut output);
+    fadst16(&input, &mut output, 12);
     assert_exact("fadst16_ramp", &output, &golden);
 }
 
@@ -685,7 +685,7 @@ fn iadst16_from_fadst16_ramp_golden() {
         -641i32, -561, -484, -401, -313, -238, -158, -78, -1, 81, 158, 234, 322, 400, 482, 560,
     ];
     let mut output = [0i32; 16];
-    svtav1_dsp::inv_txfm::iadst16(&input, &mut output);
+    svtav1_dsp::inv_txfm::iadst16(&input, &mut output, 31);
     assert_exact("iadst16_from_fadst16_ramp", &output, &golden);
 }
 
@@ -699,7 +699,7 @@ fn idct32_dc_golden() {
     input[0] = 2263;
     let golden = [1600i32; 32];
     let mut output = [0i32; 32];
-    svtav1_dsp::inv_txfm::idct32(&input, &mut output);
+    svtav1_dsp::inv_txfm::idct32(&input, &mut output, 31);
     assert_exact("idct32_dc", &output, &golden);
 }
 
@@ -713,7 +713,7 @@ fn idct64_dc_golden() {
     input[0] = 4525;
     let golden = [3199i32; 64];
     let mut output = [0i32; 64];
-    svtav1_dsp::inv_txfm::idct64(&input, &mut output);
+    svtav1_dsp::inv_txfm::idct64(&input, &mut output, 31);
     assert_exact("idct64_dc", &output, &golden);
 }
 
@@ -776,8 +776,8 @@ fn roundtrip_dct16_golden() {
 
     let mut fwd = [0i32; 16];
     let mut inv = [0i32; 16];
-    fdct16(&input, &mut fwd);
-    svtav1_dsp::inv_txfm::idct16(&fwd, &mut inv);
+    fdct16(&input, &mut fwd, 12);
+    svtav1_dsp::inv_txfm::idct16(&fwd, &mut inv, 31);
 
     // C measured roundtrip: [-640, -560, -480, -399, ...]
     // Scale = 8x (within rounding)
@@ -805,8 +805,8 @@ fn roundtrip_dct32_golden() {
 
     let mut fwd = [0i32; 32];
     let mut inv = [0i32; 32];
-    fdct32(&input, &mut fwd);
-    svtav1_dsp::inv_txfm::idct32(&fwd, &mut inv);
+    fdct32(&input, &mut fwd, 12);
+    svtav1_dsp::inv_txfm::idct32(&fwd, &mut inv, 31);
 
     // 32-point scale = 16x (32/2)
     for i in 0..32 {

@@ -40,8 +40,8 @@ mod transform_roundtrip {
             let input = test_pattern(4, seed);
             let mut fwd = [0i32; 4];
             let mut inv = [0i32; 4];
-            fdct4(&input, &mut fwd);
-            idct4(&fwd, &mut inv);
+            fdct4(&input, &mut fwd, 12);
+            idct4(&fwd, &mut inv, 31);
             // AV1 scale factor: roundtrip = input * N/2 = input * 2
             for i in 0..4 {
                 let expected = input[i] * 2;
@@ -61,8 +61,8 @@ mod transform_roundtrip {
             let input = test_pattern(8, seed);
             let mut fwd = [0i32; 8];
             let mut inv = [0i32; 8];
-            fdct8(&input, &mut fwd);
-            idct8(&fwd, &mut inv);
+            fdct8(&input, &mut fwd, 12);
+            idct8(&fwd, &mut inv, 31);
             for i in 0..8 {
                 let expected = input[i] * 4; // 8-point scale = N/2 = 4
                 let diff = (inv[i] - expected).abs();
