@@ -958,7 +958,8 @@ mod tests {
             assert_eq!(b.f(6), 63); // max_frame_width_minus_1
             assert_eq!(b.f(6), 63); // max_frame_height_minus_1
             assert_eq!(b.f(1), 0, "use_128x128_superblock");
-            let tools = b.f(1) << 4 | b.f(1) << 3 | b.f(1) << 2 | b.f(1) << 1 | b.f(1);
+            let tools =
+                (b.f(1) << 4) | (b.f(1) << 3) | (b.f(1) << 2) | (b.f(1) << 1) | b.f(1);
             // color_config from here:
             let cc = [
                 b.f(1), // high_bitdepth

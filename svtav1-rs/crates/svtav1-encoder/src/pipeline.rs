@@ -1672,4 +1672,45 @@ mod tests {
         // After key frame, all DPB slots should be filled
         assert!(pipeline.dpb.occupied_slots() > 0);
     }
+
+    #[test]
+    fn pipeline_encode_420_single_frame() {
+        let rc = RcConfig {
+            mode: RcMode::Cqp,
+            qp: 30,
+            ..RcConfig::default()
+        };
+        let mut pipeline = EncodePipeline::new(64, 64, 4, rc.clone(), 0, 1).with_chroma_420(true);
+        let mut y = vec![0u8; 64 * 64];
+        for (i, px) in y.iter_mut().enumerate() {
+            *px = ((i / 64) * 4) as u8;
+        }
+        // Nontrivial chroma so u/v txbs actually carry coefficients.
+        let mut u = vec![0u8; 32 * 32];
+        let mut v = vec![0u8; 32 * 32];
+        for i in 0..32 * 32 {
+            u[i] = (64 + (i / 32) * 3) as u8;
+            v[i] = (64 + (i % 32) * 5) as u8;
+        }
+        let bs_420 = pipeline.encode_frame_420(&y, &u, &v, 64);
+        assert!(!bs_420.is_empty());
+        assert_eq!(pipeline.frame_count, 1);
+
+        // The mono stream for the same luma must differ (mono_chrome flag,
+        // uv_mode symbols, chroma txbs) and the mono path must not require
+        // the chroma flag.
+        let mut mono = EncodePipeline::new(64, 64, 4, rc, 0, 1);
+        let bs_mono = mono.encode_frame(&y, 64);
+        assert_ne!(bs_420, bs_mono);
+    }
+
+    #[test]
+    #[should_panic(expected = "with_chroma_420")]
+    fn pipeline_encode_420_requires_flag() {
+        let mut pipeline = EncodePipeline::new(64, 64, 4, RcConfig::default(), 0, 1);
+        let y = vec![0u8; 64 * 64];
+        let u = vec![128u8; 32 * 32];
+        let v = vec![128u8; 32 * 32];
+        let _ = pipeline.encode_frame_420(&y, &u, &v, 64);
+    }
 }

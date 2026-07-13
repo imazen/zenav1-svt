@@ -97,8 +97,30 @@ under the AV1 reference decoder as of 2026-07-13, C baseline v4.2.0-rc)
    were never differentially tested. NEXT: cref shims for
    svt_av1_fwd_txfm2d_NxN + svt_av1_inv_txfm2d_add_NxN and per-size fuzz;
    fix wrappers to match; PSNR should jump to sane values everywhere.
-1. **Chroma (4:2:0) support** — C SVT-AV1 cannot emit monochrome; required
-   for bit-identity. Pipeline is luma-only mono.
+1. **[LANDED 2026-07-13, opt-in] Chroma (4:2:0) support** — C SVT-AV1
+   cannot emit monochrome; this was the structural prerequisite for
+   bit-identity. `EncodePipeline::with_chroma_420(true)` +
+   `encode_frame_420(y,u,v,stride)` emits mono_chrome=0 profile-0 420
+   streams (SH color_config bit-identical to C for matching CICP; per-block
+   UV_DC + per-plane chroma txbs with plane_type=1 CDFs and per-plane
+   neighbor contexts; chroma reconstructed inside the entropy walk so
+   coding order == parse order). Gates: 700/700 chroma decode-conformance
+   matrix under aomdec + per-plane pixel probes (128px q30: Y 46.03 dB,
+   U 51.92, V 52.86). Remaining policy limitations toward C parity:
+   1a. **min-8x8 luma partition policy under 420** (`min_block_dim = 8`):
+       4x4/4x8/8x4 luma blocks never occur, so every block is a chroma
+       reference with chroma dims exactly (w/2, h/2) — AV1's sub-8x8
+       is_chroma_ref/last-block-carries-chroma rules are NOT implemented
+       yet and must be ported before decision-layer parity vs C (C will
+       pick sub-8x8 partitions).
+   1b. **Chroma mode search is UV_DC-only, cost-free** — no uv_mode RDO,
+       no CFL, no chroma tx-type search; C's chroma RD must be ported for
+       bit-identity.
+   1c. **Still/key frames only** — inter frames would need chroma in the
+       DPB + chroma-aware inter FH (asserted at runtime).
+   1d. `svtav1::avif::encode_yuv420` still uses the legacy
+       three-mono-stream format (output-contract migration pending; TODO
+       in avif.rs).
 2. **Filter signaling** — encoder applies deblock/CDEF/restoration to its
    recon but signals them OFF; harmless for still-frame decode but the DPB
    recon diverges (matters for inter). Signal or stop applying.
