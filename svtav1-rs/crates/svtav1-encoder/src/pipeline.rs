@@ -39,6 +39,15 @@ pub struct EncodePipeline {
     pub bit_depth: u8,
     /// CICP color description.
     pub color_description: svtav1_entropy::obu::ColorDescription,
+    /// Opt-in 4:2:0 chroma mode (default false = monochrome).
+    ///
+    /// When set, frames are encoded via [`Self::encode_frame_420`] with
+    /// NumPlanes=3: the sequence header signals mono_chrome=0 (profile-0
+    /// 4:2:0), every coded block carries a UV_DC chroma pair, and the
+    /// partition search is clamped to min luma dim 8 so chroma blocks are
+    /// exactly (w/2, h/2) >= 4x4 (sub-8x8 chroma-ref rules deferred).
+    /// Still/key frames only.
+    pub chroma_420: bool,
 }
 
 impl EncodePipeline {
@@ -62,6 +71,7 @@ impl EncodePipeline {
             height,
             bit_depth: 8,
             color_description: svtav1_entropy::obu::ColorDescription::srgb(),
+            chroma_420: false,
         }
     }
 
@@ -77,14 +87,52 @@ impl EncodePipeline {
         self
     }
 
-    /// Encode a single frame through the full pipeline.
+    /// Enable/disable the opt-in 4:2:0 chroma mode (see `chroma_420` field).
+    pub fn with_chroma_420(mut self, enabled: bool) -> Self {
+        self.chroma_420 = enabled;
+        self
+    }
+
+    /// Encode a single frame through the full pipeline (monochrome).
     ///
     /// Returns the encoded bitstream data and updates internal state.
     pub fn encode_frame(&mut self, y_plane: &[u8], y_stride: usize) -> Vec<u8> {
+        self.encode_frame_impl(y_plane, y_stride, None)
+    }
+
+    /// Encode a single 4:2:0 still/key frame (NumPlanes=3).
+    ///
+    /// `u`/`v` are (w/2 x h/2) planes tightly packed at stride w/2, where
+    /// (w, h) are the pipeline frame dimensions (64-aligned in practice).
+    /// Requires `chroma_420` to be enabled via [`Self::with_chroma_420`].
+    pub fn encode_frame_420(&mut self, y: &[u8], u: &[u8], v: &[u8], y_stride: usize) -> Vec<u8> {
+        assert!(
+            self.chroma_420,
+            "encode_frame_420 requires the pipeline to be built with with_chroma_420(true)"
+        );
+        let cn = (self.width as usize / 2) * (self.height as usize / 2);
+        assert!(u.len() >= cn && v.len() >= cn, "u/v planes must be (w/2 x h/2)");
+        self.encode_frame_impl(y, y_stride, Some((u, v)))
+    }
+
+    /// Shared frame encode body. `chroma = Some((u, v))` selects the 4:2:0
+    /// path; `None` is the unchanged monochrome path.
+    fn encode_frame_impl(
+        &mut self,
+        y_plane: &[u8],
+        y_stride: usize,
+        chroma: Option<(&[u8], &[u8])>,
+    ) -> Vec<u8> {
         let display_order = self.frame_count;
 
         // Step 1: Determine frame type from GOP structure
         let is_key = self.gop.is_key_frame(display_order);
+        // The 4:2:0 path is still-frame only: inter frames would need
+        // chroma in the DPB and a chroma-aware inter frame header.
+        assert!(
+            chroma.is_none() || is_key,
+            "chroma_420 pipeline supports still/key frames only (intra_period <= 1)"
+        );
         let temporal_layer = if is_key {
             0
         } else {
@@ -240,6 +288,7 @@ impl EncodePipeline {
             &mv_map,
             mv_map_stride,
             &sb_qp_offsets,
+            chroma.is_some(),
         );
 
         let mut per_tile_decisions: Vec<Vec<crate::partition::BlockDecision>> = Vec::new();
@@ -442,6 +491,19 @@ impl EncodePipeline {
         // Step 6: Entropy coding — recursive partition tree encoding.
         // Walk each SB's partition tree in spec order (depth-first),
         // writing partition type at each node before recursing into children.
+        //
+        // For 4:2:0 the chroma blocks are predicted, transformed and
+        // reconstructed INSIDE this walk (encode_block_syntax), so the
+        // chroma coding order is structurally identical to the decoder's
+        // parse order — the UV_DC prediction reads exactly the chroma
+        // neighbors the decoder will have reconstructed.
+        let cw = w / 2;
+        let chh = h / 2;
+        let (mut u_recon, mut v_recon) = if chroma.is_some() {
+            (alloc::vec![128u8; cw * chh], alloc::vec![128u8; cw * chh])
+        } else {
+            (Vec::new(), Vec::new())
+        };
         let tile_data = {
             let mut writer = svtav1_entropy::writer::AomWriter::new(n + 256);
             // CDF updates enabled — matches the frame header's disable_cdf_update=0
@@ -454,6 +516,14 @@ impl EncodePipeline {
             let w4 = w.div_ceil(4);
             let h4 = h.div_ceil(4);
             let mut ectx = EntropyCtx::new(w4, h4);
+            let mut chroma_pass = chroma.map(|(u_src, v_src)| ChromaPass {
+                u_src,
+                v_src,
+                u_recon: &mut u_recon,
+                v_recon: &mut v_recon,
+                stride: cw,
+                qp: tpl_adjusted_qp,
+            });
 
             debug_assert_eq!(
                 all_trees.len(),
@@ -488,6 +558,7 @@ impl EncodePipeline {
                     is_key,
                     bx,
                     by,
+                    &mut chroma_pass,
                 );
             }
 
@@ -512,7 +583,7 @@ impl EncodePipeline {
                 is_single_frame,
                 self.bit_depth,
                 &self.color_description,
-                true,
+                chroma.is_none(), // mono_chrome unless the 4:2:0 path is active
             ));
             // Key frame header (raw bytes) + tile group with proper header
             // Use tpl_adjusted_qp (same value used for CDF category selection)
@@ -522,7 +593,7 @@ impl EncodePipeline {
                 self.height,
                 tpl_adjusted_qp,
                 is_single_frame,
-                true,
+                chroma.is_none(),
             );
             // tile_data is already a complete tile_group (with TG header)
             let mut frame_payload = alloc::vec::Vec::new();
@@ -596,6 +667,31 @@ struct EntropyCtx {
     above_coeff: Vec<u8>,
     /// Left coefficient neighbor bytes at 4x4 granularity.
     left_coeff: Vec<u8>,
+    /// Above coefficient neighbor bytes for the chroma planes (U = 0,
+    /// V = 1), in CHROMA-plane 4x4 units (each unit covers 8x8 luma
+    /// pixels). Same encoding and INVALID convention as the luma arrays;
+    /// the decoder keeps per-plane entropy context arrays exactly like
+    /// this (libaom pd->above/left_entropy_context, zeroed per tile;
+    /// 0xFF-skip == zero contribution, matching svt_aom_get_txb_ctx).
+    above_coeff_uv: [Vec<u8>; 2],
+    /// Left coefficient neighbor bytes for the chroma planes.
+    left_coeff_uv: [Vec<u8>; 2],
+}
+
+/// Live state for the 4:2:0 chroma pass, threaded through the entropy walk
+/// so every leaf's chroma blocks are predicted from — and reconstructed
+/// into — the chroma planes in exact coding order (identical to the
+/// decoder's parse order; the walk IS the bitstream order).
+struct ChromaPass<'a> {
+    u_src: &'a [u8],
+    v_src: &'a [u8],
+    u_recon: &'a mut [u8],
+    v_recon: &'a mut [u8],
+    /// Chroma plane stride (= frame_width / 2).
+    stride: usize,
+    /// qindex for chroma quantization — same tables as luma, since the
+    /// frame header signals DeltaQUDc = DeltaQUAc = 0.
+    qp: u8,
 }
 
 /// Partition context update lookup table, matching rav1d's `dav1d_al_part_ctx`.
@@ -628,6 +724,10 @@ impl EntropyCtx {
     fn new(width_4x4: usize, height_4x4: usize) -> Self {
         let width_8x8 = (width_4x4 + 1) / 2;
         let height_8x8 = (height_4x4 + 1) / 2;
+        // Chroma-plane 4x4 units: (w/2)/4 = width_4x4/2 (frames are
+        // 64-aligned so this divides exactly; div_ceil for safety).
+        let width_c4 = width_4x4.div_ceil(2);
+        let height_c4 = height_4x4.div_ceil(2);
         Self {
             above_mode: alloc::vec![0u8; width_4x4], // DC_PRED = 0
             left_mode: alloc::vec![0u8; height_4x4],
@@ -639,6 +739,14 @@ impl EntropyCtx {
             // neighbor-array init.
             above_coeff: alloc::vec![0xFFu8; width_4x4],
             left_coeff: alloc::vec![0xFFu8; height_4x4],
+            above_coeff_uv: [
+                alloc::vec![0xFFu8; width_c4],
+                alloc::vec![0xFFu8; width_c4],
+            ],
+            left_coeff_uv: [
+                alloc::vec![0xFFu8; height_c4],
+                alloc::vec![0xFFu8; height_c4],
+            ],
         }
     }
 
@@ -663,6 +771,33 @@ impl EntropyCtx {
         }
         for i in y4..(y4 + h / 4).min(self.left_coeff.len()) {
             self.left_coeff[i] = val;
+        }
+    }
+
+    /// Chroma-plane coefficient neighbor spans for a transform at chroma
+    /// coords (cx, cy) of cw x ch chroma pixels, in chroma 4x4 units,
+    /// clipped to the plane like the luma variant. `uv`: 0 = U, 1 = V.
+    fn coeff_neighbors_uv(&self, uv: usize, cx: usize, cy: usize, cw: usize, ch: usize) -> (&[u8], &[u8]) {
+        let x4 = cx / 4;
+        let y4 = cy / 4;
+        let w4 = (cw / 4).min(self.above_coeff_uv[uv].len().saturating_sub(x4));
+        let h4 = (ch / 4).min(self.left_coeff_uv[uv].len().saturating_sub(y4));
+        (
+            &self.above_coeff_uv[uv][x4..x4 + w4],
+            &self.left_coeff_uv[uv][y4..y4 + h4],
+        )
+    }
+
+    /// Record a chroma transform block's neighbor byte over its chroma
+    /// 4x4 span (per-plane, like the decoder's per-plane entropy contexts).
+    fn record_coeff_uv(&mut self, uv: usize, cx: usize, cy: usize, cw: usize, ch: usize, val: u8) {
+        let x4 = cx / 4;
+        let y4 = cy / 4;
+        for i in x4..(x4 + cw / 4).min(self.above_coeff_uv[uv].len()) {
+            self.above_coeff_uv[uv][i] = val;
+        }
+        for i in y4..(y4 + ch / 4).min(self.left_coeff_uv[uv].len()) {
+            self.left_coeff_uv[uv][i] = val;
         }
     }
 
@@ -816,11 +951,73 @@ fn use_angle_delta(width: u16, height: u16) -> bool {
     !matches!((width, height), (4, 4) | (4, 8) | (8, 4))
 }
 
+/// Write one chroma plane's transform block (`uv`: 0 = U, 1 = V) with the
+/// C-exact coefficient writer, using that plane's own neighbor context
+/// arrays but the SHARED plane_type=1 CDF tables (AV1 PLANE_TYPES = 2:
+/// U and V share tables, contexts stay per-plane — libaom keeps
+/// pd->above/left_entropy_context per plane while indexing every CDF with
+/// `plane_type = plane > 0`).
+///
+/// The chroma tx type is NOT signaled: the decoder derives it from UVMode
+/// via Mode_To_Txfm (spec compute_tx_type, plane > 0 intra) —
+/// UV_DC_PRED -> DCT_DCT, which also selects the default scan. The writer
+/// only emits tx_type symbols for plane_type == 0.
+#[allow(clippy::too_many_arguments)]
+fn write_chroma_txb(
+    writer: &mut svtav1_entropy::writer::AomWriter,
+    coeff_fc: &mut svtav1_entropy::coeff_c::CoeffFc,
+    ectx: &mut EntropyCtx,
+    uv: usize,
+    cx: usize,
+    cy: usize,
+    cw: usize,
+    ch: usize,
+    qcoeffs: &[i32],
+    base_q_idx: u8,
+) {
+    use svtav1_entropy::coeff_c;
+    let tx_size = coeff_c::tx_size_from_dims(cw, ch);
+    let (above, left) = ectx.coeff_neighbors_uv(uv, cx, cy, cw, ch);
+    // plane != 0: txb_skip_ctx = (above nonzero) + (left nonzero) + 7,
+    // because the chroma plane bsize equals the (full-block) chroma tx
+    // size here — never "chroma larger" (C svt_aom_get_txb_ctx else-branch;
+    // libaom get_txb_ctx num_pels comparison). The 4th arg is the luma-only
+    // fast-path flag, unused for plane != 0.
+    let (txb_skip_ctx, dc_sign_ctx) = coeff_c::get_txb_ctx(1, above, left, true, false);
+    // eob relative to the DCT_DCT (default) scan for this tx size.
+    let scan = svtav1_entropy::scan_tables::scan(
+        tx_size,
+        svtav1_entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[coeff_c::DCT_DCT] as usize,
+    );
+    let mut eob = 0i32;
+    for (i, &pos) in scan.iter().enumerate() {
+        if qcoeffs[pos as usize] != 0 {
+            eob = i as i32 + 1;
+        }
+    }
+    let cul_level = coeff_c::write_coeffs_txb_1d(
+        coeff_fc,
+        writer,
+        tx_size,
+        coeff_c::DCT_DCT,
+        1, // plane_type: U and V both use the chroma tables
+        txb_skip_ctx,
+        dc_sign_ctx,
+        qcoeffs,
+        eob,
+        0, // intra_dir: unused for plane_type != 0 (no tx_type signaling)
+        base_q_idx,
+        false,
+    );
+    ectx.record_coeff_uv(uv, cx, cy, cw, ch, cul_level as u8);
+}
+
 /// Encode block syntax (skip, mode, coefficients) WITHOUT a partition symbol.
 ///
 /// This is the core block encoding used by both PARTITION_NONE leaves and
 /// HORZ/VERT children. In AV1, HORZ/VERT children are always leaf blocks
 /// that the decoder reads directly — no partition symbol is expected for them.
+#[allow(clippy::too_many_arguments)]
 fn encode_block_syntax(
     decision: &crate::partition::BlockDecision,
     writer: &mut svtav1_entropy::writer::AomWriter,
@@ -831,8 +1028,35 @@ fn encode_block_syntax(
     is_key: bool,
     block_x: usize,
     block_y: usize,
+    chroma: &mut Option<ChromaPass<'_>>,
 ) {
-    let skip = decision.eob == 0;
+    // 4:2:0: encode this block's chroma pair FIRST (prediction reads the
+    // live chroma recon written by previous blocks in coding order). The
+    // min-8x8 luma policy guarantees the chroma block is exactly
+    // (w/2, h/2) >= 4x4 and every block is a chroma reference.
+    let chroma_blocks = chroma.as_mut().map(|cp| {
+        let cw = decision.width as usize / 2;
+        let ch = decision.height as usize / 2;
+        let cx = block_x / 2;
+        let cy = block_y / 2;
+        let (u_q, u_eob) = crate::partition::encode_chroma_block_dc(
+            cp.u_src, cp.u_recon, cp.stride, cx, cy, cw, ch, cp.qp,
+        );
+        let (v_q, v_eob) = crate::partition::encode_chroma_block_dc(
+            cp.v_src, cp.v_recon, cp.stride, cx, cy, cw, ch, cp.qp,
+        );
+        (u_q, u_eob, v_q, v_eob)
+    });
+
+    // The block-level skip flag means ALL planes are zero (the decoder
+    // reads no txbs at all for skip blocks and zeroes every plane's
+    // entropy context — spec reset_block_context / libaom
+    // av1_reset_entropy_context). Per-plane eob==0 inside a non-skip
+    // block is carried by that plane's own txb_skip symbol instead.
+    let skip = decision.eob == 0
+        && chroma_blocks
+            .as_ref()
+            .is_none_or(|(_, u_eob, _, v_eob)| *u_eob == 0 && *v_eob == 0);
     let skip_ctx = ectx.skip_ctx(block_x, block_y);
     svtav1_entropy::context::write_skip(writer, frame_ctx, skip_ctx, skip);
 
@@ -882,7 +1106,35 @@ fn encode_block_syntax(
         }
     }
 
+    // 4:2:0 chroma mode syntax — read by the decoder right after y_mode +
+    // angle_delta_y when `!monochrome && is_chroma_ref` (libaom
+    // read_intra_frame_mode_info, decodemv.c:824-836):
+    //   uv_mode: cdf [cfl_allowed][y_mode], 14 syms if CFL allowed else 13
+    //   (read_intra_mode_uv, decodemv.c:140). We always code UV_DC_PRED
+    //   (symbol 0). CFL alphas only follow UV_CFL_PRED; angle_delta_uv only
+    //   follows directional UV modes — UV_DC triggers neither.
+    // CFL allowed = LUMA block w <= 32 && h <= 32 (is_cfl_allowed,
+    // blockd.h, non-lossless path).
+    if chroma_blocks.is_some() {
+        debug_assert!(!decision.is_inter, "420 path is key/intra only");
+        let cfl_allowed = decision.width <= 32 && decision.height <= 32;
+        svtav1_entropy::context::write_uv_mode(
+            writer,
+            frame_ctx,
+            cfl_allowed,
+            decision.intra_mode,
+            0, // UV_DC_PRED
+        );
+    }
+
     if !skip {
+        // Residual order per spec residual(): all of plane 0's txbs, then
+        // plane 1 (U), then plane 2 (V) — one full-size txb per plane here
+        // (libaom decode_token_recon_block intra loop,
+        // decodeframe.c:936-960). A plane with eob == 0 inside a non-skip
+        // block still writes its txb (as a txb_skip=1 symbol) — only the
+        // block-level skip removes txbs entirely.
+        //
         // C-exact coefficient coding (av1_write_coeffs_txb_1d port).
         // The block uses a single full-size transform (tx_depth 0), so
         // plane_bsize == txsize_to_bsize[tx_size] and the luma
@@ -938,9 +1190,23 @@ fn encode_block_syntax(
             false,
         );
         ectx.record_coeff(block_x, block_y, w, h, cul_level as u8);
+
+        // Chroma txbs: plane 1 (U) then plane 2 (V), each one full-size
+        // (w/2 x h/2) transform with its own neighbor context state.
+        if let Some((u_q, _u_eob, v_q, _v_eob)) = chroma_blocks.as_ref() {
+            let cw = w / 2;
+            let ch = h / 2;
+            let cx = block_x / 2;
+            let cy = block_y / 2;
+            write_chroma_txb(writer, coeff_fc, ectx, 0, cx, cy, cw, ch, u_q, base_q_idx);
+            write_chroma_txb(writer, coeff_fc, ectx, 1, cx, cy, cw, ch, v_q, base_q_idx);
+        }
     } else {
         // Skipped blocks contribute zero cul_level neighbors (C writes the
-        // txb through the same path with eob == 0 -> cul 0).
+        // txb through the same path with eob == 0 -> cul 0). For skip the
+        // decoder zeroes EVERY plane's entropy context over the block span
+        // (spec reset_block_context; libaom av1_reset_entropy_context) —
+        // mirror that for the chroma planes too.
         ectx.record_coeff(
             block_x,
             block_y,
@@ -948,6 +1214,14 @@ fn encode_block_syntax(
             decision.height as usize,
             0,
         );
+        if chroma_blocks.is_some() {
+            let cw = decision.width as usize / 2;
+            let ch = decision.height as usize / 2;
+            let cx = block_x / 2;
+            let cy = block_y / 2;
+            ectx.record_coeff_uv(0, cx, cy, cw, ch, 0);
+            ectx.record_coeff_uv(1, cx, cy, cw, ch, 0);
+        }
     }
 
     // Update context maps for subsequent blocks. The y_mode is signaled
@@ -986,6 +1260,7 @@ fn expect_leaf(tree: &crate::partition::PartitionTree) -> &crate::partition::Blo
 ///
 /// Partition context is derived from tracked above/left partition arrays,
 /// matching the rav1d decoder's context derivation exactly.
+#[allow(clippy::too_many_arguments)]
 fn encode_partition_tree(
     tree: &crate::partition::PartitionTree,
     writer: &mut svtav1_entropy::writer::AomWriter,
@@ -996,6 +1271,7 @@ fn encode_partition_tree(
     is_key: bool,
     block_x: usize,
     block_y: usize,
+    chroma: &mut Option<ChromaPass<'_>>,
 ) {
     match tree {
         crate::partition::PartitionTree::Leaf(decision) => {
@@ -1019,6 +1295,7 @@ fn encode_partition_tree(
 
             encode_block_syntax(
                 decision, writer, frame_ctx, coeff_fc, base_q_idx, ectx, is_key, block_x, block_y,
+                chroma,
             );
         }
         crate::partition::PartitionTree::Split {
@@ -1054,6 +1331,7 @@ fn encode_partition_tree(
                         is_key,
                         block_x,
                         block_y,
+                        chroma,
                     );
                     encode_partition_tree(
                         &children[1],
@@ -1065,6 +1343,7 @@ fn encode_partition_tree(
                         is_key,
                         block_x + half_w,
                         block_y,
+                        chroma,
                     );
                     encode_partition_tree(
                         &children[2],
@@ -1076,6 +1355,7 @@ fn encode_partition_tree(
                         is_key,
                         block_x,
                         block_y + half_h,
+                        chroma,
                     );
                     encode_partition_tree(
                         &children[3],
@@ -1087,6 +1367,7 @@ fn encode_partition_tree(
                         is_key,
                         block_x + half_w,
                         block_y + half_h,
+                        chroma,
                     );
                 }
                 (crate::partition::PartitionType::Horz, 2) => {
@@ -1105,6 +1386,7 @@ fn encode_partition_tree(
                     let top = expect_leaf(&children[0]);
                     encode_block_syntax(
                         top, writer, frame_ctx, coeff_fc, base_q_idx, ectx, is_key, block_x, block_y,
+                        chroma,
                     );
                     let bot = expect_leaf(&children[1]);
                     encode_block_syntax(
@@ -1117,6 +1399,7 @@ fn encode_partition_tree(
                         is_key,
                         block_x,
                         block_y + half_h,
+                        chroma,
                     );
                 }
                 (crate::partition::PartitionType::Vert, 2) => {
@@ -1133,6 +1416,7 @@ fn encode_partition_tree(
                     let left = expect_leaf(&children[0]);
                     encode_block_syntax(
                         left, writer, frame_ctx, coeff_fc, base_q_idx, ectx, is_key, block_x, block_y,
+                        chroma,
                     );
                     let right = expect_leaf(&children[1]);
                     encode_block_syntax(
@@ -1145,6 +1429,7 @@ fn encode_partition_tree(
                         is_key,
                         block_x + half_w,
                         block_y,
+                        chroma,
                     );
                 }
                 (ptype, n) => {
@@ -1190,6 +1475,7 @@ fn encode_partition_tree(
                             is_key,
                             block_x + dx,
                             block_y + dy,
+                            chroma,
                         );
                     }
                 }
@@ -1214,6 +1500,7 @@ fn encode_tile_rows(
     mv_map: &[svtav1_types::motion::Mv],
     mv_map_stride: usize,
     sb_qp_offsets: &[i8],
+    chroma_420: bool,
 ) -> Vec<(
     Vec<u8>,
     Vec<crate::partition::BlockDecision>,
@@ -1232,7 +1519,13 @@ fn encode_tile_rows(
         let mut tile_trees: Vec<crate::partition::PartitionTree> = Vec::new();
         let mut tile_frame_recon = alloc::vec![128u8; w * h];
 
-        let part_config = crate::partition::PartitionSearchConfig::from_speed_config(speed_config);
+        let mut part_config =
+            crate::partition::PartitionSearchConfig::from_speed_config(speed_config);
+        if chroma_420 {
+            // 4:2:0 policy: min luma block dim 8, so every coded block is a
+            // chroma reference with chroma dims exactly (w/2, h/2) >= 4.
+            part_config.min_block_dim = 8;
+        }
 
         for sb_row in tile_sb_row_start..tile_sb_row_end {
             for sb_col in 0..sb_cols {
