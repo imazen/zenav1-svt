@@ -889,9 +889,10 @@ fn encode_block_syntax(
         // The decision's eob was derived from the mode-decision scan; the
         // bitstream eob must be relative to the C scan order for this
         // (tx_size, tx_type).
+        let tx_type = decision.tx_type as usize;
         let scan = svtav1_entropy::scan_tables::scan(
             tx_size,
-            svtav1_entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[coeff_c::DCT_DCT] as usize,
+            svtav1_entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type] as usize,
         );
         let mut eob = 0i32;
         for (i, &pos) in scan.iter().enumerate() {
@@ -903,7 +904,7 @@ fn encode_block_syntax(
             coeff_fc,
             writer,
             tx_size,
-            coeff_c::DCT_DCT,
+            tx_type,
             0,
             txb_skip_ctx,
             dc_sign_ctx,
@@ -926,8 +927,10 @@ fn encode_block_syntax(
         );
     }
 
-    // Update context maps for subsequent blocks
-    let mode = if skip { 0 } else { decision.intra_mode }; // skip → DC_PRED
+    // Update context maps for subsequent blocks. The y_mode is signaled
+    // for skip blocks too, and the decoder records it in its above/left
+    // mode contexts — so must we.
+    let mode = decision.intra_mode;
     ectx.record_block(
         block_x,
         block_y,
@@ -1215,14 +1218,6 @@ fn encode_tile_rows(
                 let cur_w = sb_size.min(w - x0);
                 let cur_h = sb_size.min(h - y0);
 
-                let mut sb_recon = alloc::vec![0u8; cur_w * cur_h];
-
-                let frame_ctx = crate::partition::FrameReconCtx {
-                    buf: &tile_frame_recon,
-                    stride: w,
-                    sb_x: x0,
-                    sb_y: y0,
-                };
                 let ref_ctx = ref_frame_data.map(|rf| crate::partition::RefFrameCtx {
                     y_plane: rf,
                     stride: w,
@@ -1242,30 +1237,33 @@ fn encode_tile_rows(
                 let sb_lambda =
                     (crate::rate_control::qp_to_lambda(sb_qp) * speed_config.lambda_scale()) as u64;
 
+                // The search reads intra neighbors from — and reconstructs
+                // directly into — the live frame buffer, exactly like the
+                // decoder (fixes within-SB predictions that previously fell
+                // back to 128).
                 let sb_result = crate::partition::partition_search_with_config(
                     &encode_input[y0 * w + x0..],
                     w,
-                    &mut sb_recon,
-                    cur_w,
+                    &mut tile_frame_recon,
+                    w,
                     cur_w,
                     cur_h,
                     sb_qp,
                     sb_lambda,
                     speed_config.max_partition_depth as u32,
                     &part_config,
-                    Some(&frame_ctx),
                     x0,
                     y0,
                     ref_ctx.as_ref(),
                 );
 
-                // Update tile-local frame recon for neighbor context
+                // Keep the per-SB recon list layout for downstream consumers.
+                let mut sb_recon = alloc::vec![0u8; cur_w * cur_h];
                 for r in 0..cur_h {
-                    for c in 0..cur_w {
-                        tile_frame_recon[(y0 + r) * w + x0 + c] = sb_recon[r * cur_w + c];
-                    }
+                    let src_off = (y0 + r) * w + x0;
+                    sb_recon[r * cur_w..(r + 1) * cur_w]
+                        .copy_from_slice(&tile_frame_recon[src_off..src_off + cur_w]);
                 }
-
                 tile_recon.extend_from_slice(&sb_recon);
                 tile_decisions.extend(sb_result.decisions);
                 if let Some(tree) = sb_result.tree {

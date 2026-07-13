@@ -74,27 +74,27 @@ This applies to:
 under the AV1 reference decoder as of 2026-07-13, C baseline v4.2.0-rc)
 
 ### Next structural gaps toward C bit-identity (not decode blockers)
-0. **Encoder intra prediction ignores reconstructed neighbors** — flat-140
-   probe: first block decodes exactly 140 (transform/quant/DC chain correct),
-   then values ramp +12 per block to 255 (mean 219). The encoder predicts
-   each block with the 128 no-neighbor fallback while the decoder predicts
-   from real reconstructed neighbors, so residuals compound. Fix in the
-   partition/encode loop: predictions must read the reconstructed above/left
-   rows exactly as the decoder does. (Then re-check the unsignaled-filter
-   divergence beneath it.)
-1. **Chroma (4:2:0) support** — C SVT-AV1 cannot emit monochrome
-   (write_color_config hardcodes is_monochrome=0); our pipeline is
-   luma-only mono. Bit-identity requires 3-plane 4:2:0 encoding + chroma
-   syntax (uv_mode, chroma txbs) end to end.
-2. **Filter signaling** — the pipeline applies deblock/CDEF/restoration to
-   its recon but signals them OFF in headers, so decoder recon != encoder
-   recon (quality bug, not a parse bug). Signal or stop applying until the
-   C filter-search ports land.
-3. **Decision-layer parity** — headers/coeff syntax are now C-exact at the
-   writer level, but partitions/modes/qcoeffs come from our own RDO.
-   Bit-identity requires porting C's mode decision, and the tile writer
-   should migrate to C's av1_encode_tx_coef_y ordering as multi-txb
-   blocks appear (tx_depth > 0).
+0. **2D transform wrapper divergence (AC only, encoder-blind)** — evidence:
+   flat-140/flat-250 decode bit-exactly (DC + golomb path perfect), but any
+   AC-rich content degrades (gradient 64px qindex30: 11.7 dB; 128px q50:
+   29.5 dB) identically across speeds, invisible to the encoder because our
+   fwd+inv roundtrip is self-consistent while the decoder inverts per spec.
+   The 1D kernels are C-bit-exact (51 golden tests) but the 2D wrappers
+   (stage ranges/shifts/transpose order in fwd_txfm/inv_txfm/txfm_dispatch)
+   were never differentially tested. NEXT: cref shims for
+   svt_av1_fwd_txfm2d_NxN + svt_av1_inv_txfm2d_add_NxN and per-size fuzz;
+   fix wrappers to match; PSNR should jump to sane values everywhere.
+1. **Chroma (4:2:0) support** — C SVT-AV1 cannot emit monochrome; required
+   for bit-identity. Pipeline is luma-only mono.
+2. **Filter signaling** — encoder applies deblock/CDEF/restoration to its
+   recon but signals them OFF; harmless for still-frame decode but the DPB
+   recon diverges (matters for inter). Signal or stop applying.
+3. **Decision-layer parity** — partitions/modes/qcoeffs still come from our
+   own RDO; port C mode decision after pixel-path parity.
+4. **Intra edge preparation** — directional predictions pad extension
+   arrays with 128 where the decoder replicates edges / uses real
+   above-right when available (has_top_right/has_bottom_left). Not the
+   current bottleneck (D-modes rarely win), but must be ported for parity.
 
 ### Recently fixed (2026-07-13, wave2/entropy-c-parity)
 - 525/525 decode conformance via: C-exact range coder + update_cdf

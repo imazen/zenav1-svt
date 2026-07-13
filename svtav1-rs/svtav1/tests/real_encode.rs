@@ -1297,7 +1297,6 @@ fn trace_gray64_tree() {
         100,
         sc.max_partition_depth as u32,
         &part_config,
-        None,
         0,
         0,
         None,
