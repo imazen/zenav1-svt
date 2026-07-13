@@ -27,6 +27,32 @@ rng state. Fixes that got there, each its own commit:
    partition divergence for the flat-content case: uniform 64x64 picks
    PARTITION_NONE like C at every lambda.
 
+**2026-07-13 later the same day: preset-6 landed** (commits `084d2c13e` +
+`eab9d8860`) — every uniform cell is now byte-identical at ALL THREE
+tracked presets (18/36 matrix cells, was 12/36; the SH divergence stage is
+gone):
+
+5. `084d2c13e` — entropy-layer plumbing: SH writer takes
+   `SeqTools {enable_filter_intra, enable_restoration}`; FH writer emits
+   spec 5.9.20 lr_params (NumPlanes x 2-bit `lr_type` = RESTORE_NONE, no
+   unit-size bits — C encode_restoration_mode, entropy_coding.c:2243);
+   FrameContext gains `filter_intra_cdfs` (generated defaults,
+   drift-tested) + `write_use_filter_intra` + `block_size_index`.
+6. `eab9d8860` — C-exact allintra derivations threaded from the preset:
+   `seq_tools_for_preset` (filter_intra get_filter_intra_level_allintra
+   enc_mode_config.c:12679 / restoration
+   svt_aom_get_enable_restoration_allintra :3944 — both ON for M0..M6,
+   OFF M7+), the per-block `use_filter_intra` flag for eligible DC blocks
+   <= 32x32 (svt_aom_filter_intra_allowed, mode_decision.c:102-108;
+   write position entropy_coding.c:5098-5112: after uv/palette, before
+   tx_depth), and the CDEF policy split: allintra presets <= M6 run C's
+   search (cdef_search_level 7 at M6) — of which the deterministic
+   sb_count==0 outcome is ported (all filter blocks skip -> cdef_bits=0,
+   strengths 0/0, damping 3+(q>>6); enc_cdef.c:1296-1449) — while
+   non-all-skip frames at search presets keep the qp fast path (gap 2a,
+   narrowed).
+
+Killed S4, S5, and the M6 half of the FH/cdef class for all-skip frames.
 Remaining divergences at the bottom of this doc. The original first-map
 analysis below is kept for the record (the per-config reports show the
 PRE-fix state).
@@ -460,38 +486,46 @@ tx_depth symbol (F3) that Rust never emits.
 | `CDF nsyms=11 s=10 icdf=[26070,..]` | eob_pt, 1024-coeff class (32x32 TX) |
 | `CDF2 [1229]/[16253]` | txb_skip rows / adapted skip ctx |
 
-## Status after the 2026-07-13 fixes (commits d72a7641..85d7e0fd)
+## Status after the 2026-07-13 fixes (commits d72a7641..85d7e0fd + 084d2c13e/eab9d8860)
 
 Items 1-3 and the flat-content half of item 5 of the original list below
-are DONE (see the header). Verdicts at the three tracked configs:
+are DONE, and the p6 tool bits landed the same day (header items 5-6).
+Matrix: **18/36 byte-identical** (`benchmarks/identity_matrix_2026-07-13.tsv`)
+— every uniform cell at every tracked preset (13/10/6), both sizes, all
+qps. Verdicts at the tracked configs:
 
 | config | verdict | residual divergence |
 |--------|---------|---------------------|
 | uniform 64x64 q40 **p13** | **IDENTICAL** (exit 0) | none |
-| uniform 64x64 q40 **p6** | NOT IDENTICAL | tile ops IDENTICAL (5/5 incl. rng); SH `enable_filter_intra=1` / `enable_restoration=1` (unported tools, S4/S5), FH `lr_type[0..2]` syntax, and CDEF strengths 0/0/0/0 from C's `svt_av1_cdef_search` RDO (gap 2a) vs our qp fast path 3/1/3/x |
+| uniform {64,128} q{20,40,55} **p6** | **IDENTICAL** (exit 0) | none — SH tool bits (S4/S5), 70-bit FH with `lr_type[0..2]`, and the all-skip cdef-search outcome all match; tile stays 5-op with rng equality (64x64 blocks are filter-intra-ineligible, exactly like C) |
 | gradient 64x64 q40 **p13** | NOT IDENTICAL | TD+SH+FH all byte-identical; tile op 0 = C picks PARTITION_SPLIT (full RDO with real coeff-rate estimation), ours picks NONE (crude coeff-rate estimates + ctx-0 partition costs) |
-
-Both residual classes need ports explicitly out of the current scope
-(C's full RDO / preset tool searches):
+| gradient 64x64 q55 **p6** | NOT IDENTICAL | FH `cdef_y_pri_strength[0]`: C searched 0, our qp fast path 10 — the narrowed gap 2a (search outcome for frames with live filter blocks) |
 
 ## Priority-ordered fixes — remaining
 
-1. **p6 tool bits**: per-preset `enable_filter_intra` /
-   `enable_restoration` SH signaling + the FH `lr_type[0..2]` syntax +
-   the per-block `use_filter_intra` flag symbol for eligible blocks
-   (DC, <=32x32) once the SH signals the tool (signaling alone closes
-   the p6 SH/FH shape gap for the uniform case, whose only block is
-   64x64 and codes no filter_intra flag; actual filter-intra mode
-   search and restoration search are separate ports).
-2. **CDEF RDO search** at default presets (gap 2a, already tracked) — p6
-   shows C picking all-zero strengths via `svt_av1_cdef_search` where the
-   qp fast path picks 3/1/3/x.
+1. **[DONE 2026-07-13, commits 084d2c13e+eab9d8860] p6 tool bits** —
+   SH `enable_filter_intra`/`enable_restoration` per-preset (C-exact
+   allintra derivations), FH `lr_type[0..2]` all-RESTORE_NONE syntax,
+   per-block `use_filter_intra` flag for eligible DC <=32x32 blocks
+   (fires for real in the s2 gradient conformance cells — trace-verified
+   non-vacuous — and both aomdec + dav1d parse all 525+700 streams),
+   plus the CDEF all-skip search outcome. All 6 uniform p6 matrix cells
+   -> IDENTICAL.
+2. **CDEF RDO search for non-all-skip frames** (gap 2a, narrowed) — the
+   sb_count==0 branch of `finish_cdef_search` is ported and C-exact
+   (uniform cells prove it); the mse path over live filter blocks
+   (svt_av1_cdef_search per-fb strength mse + joint_strength_search_dual
+   + lambda rate) remains. Repro: gradient 64 q55 p6 — C searched
+   y_pri 0, qp path says 10. Also owns the 6 gradient128 M10/M13
+   `cdef_uv_sec_strength[1]` FH cells (C search vs qp fast path at
+   multi-SB sizes).
 3. **Partition/mode-decision parity for textured content**: port C's md
    coefficient-rate estimation (the crude `estimate_coeff_rate` is now
    the binding constraint — partition symbol costs are already real
    entropy costs; threading the live md partition_context into the cost
    rows is the follow-up) + per-preset depth-removal gates. Repro:
-   gradient 64x64 p13 — C SPLITs where we keep NONE.
+   gradient 64x64 p13 — C SPLITs where we keep NONE. Owns the 11
+   tile-op matrix cells.
 4. **uv_mode alphabet / CFL** and everything downstream of decision
    parity — derivative until item 3 lands.
 

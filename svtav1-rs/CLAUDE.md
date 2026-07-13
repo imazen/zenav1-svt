@@ -85,9 +85,17 @@ under the AV1 reference decoder as of 2026-07-13, C baseline v4.2.0-rc)
 > (22 bytes, 5/5 EC ops incl. rng). Landed: aq_mode=0 CQP gating (VAQ
 > off by default), C-exact SH level auto-derivation + CICP-unspecified
 > defaults, TX_MODE_SELECT + per-block tx_depth syntax, real
-> entropy-cost partition rates. Remaining (map has details): p6 tool
-> bits (filter_intra/restoration signaling + CDEF RDO search) and
-> textured-content decision parity (md coeff-rate estimation).
+> entropy-cost partition rates.
+> **PRESET-6 IDENTICAL 2026-07-13** (commits 084d2c13e+eab9d8860):
+> matrix now **18/36** — uniform is byte-identical at ALL tracked
+> presets (13/10/6) x {64,128} x qp{20,40,55}. Landed: C-exact allintra
+> SH tool bits (filter_intra/restoration per preset,
+> seq_tools_for_preset), FH lr_params all-RESTORE_NONE syntax,
+> per-block use_filter_intra flag (DC <=32x32, always 0), CDEF
+> all-skip-frame search outcome (bits=0/strengths 0). Remaining (map
+> has details): CDEF RDO search for non-all-skip frames and
+> textured-content decision parity (md coeff-rate estimation) — all 18
+> gradient cells.
 0a. **[FIXED 2026-07-13] Edges-content divergence** — root cause was NOT the
    transforms (all named + dispatch wrapper paths are now pinned bit-exact
    vs C by c_parity_txfm, incl. rect + flat-DC shapes): extract_neighbors
@@ -151,19 +159,32 @@ under the AV1 reference decoder as of 2026-07-13, C baseline v4.2.0-rc)
    pre-CDEF snapshot replaces the linebuf/colbuf machinery — provably
    identical single-threaded). Recon-parity 216/0 with CDEF FIRING
    (168/216 streams, 2.34M px filtered, 882k changed).
-   2a. **CDEF strength policy is C's use_qp_strength fast path, NOT the
-       C-default RDO search**: pick_cdef_params_key_frame ports
-       svt_pick_cdef_from_qp (enc_cdef.c:849) intra branch bit-exactly
-       (f32 fits pinned vs C for all 256 qindexes,
-       tests/c_parity_cdef_pick.rs) + damping = 3 + (qindex>>6)
-       (enc_cdef.c:923). C presets default to svt_av1_cdef_search
-       (per-fb RDO over 64 strengths + cdef_bits>0) — that port lands
-       with decision-layer parity (gap 3). Inter frames signal zero
+   2a. **CDEF strength policy matches C per preset EXCEPT the live-block
+       search**: C's allintra policy is preset-split (enc_mode_config.c:
+       3543-3600) — presets >= M7 use the use_qp_strength fast path
+       (pick_cdef_params_key_frame ports svt_pick_cdef_from_qp
+       enc_cdef.c:849 intra branch bit-exactly, f32 fits pinned for all
+       256 qindexes, tests/c_parity_cdef_pick.rs; damping 3+(qindex>>6),
+       enc_cdef.c:923) and presets <= M6 run svt_av1_cdef_search. Of the
+       search, ONLY the sb_count==0 outcome is ported (every filter
+       block all-skip -> cdef_bits=0, strengths 0/0 — deterministic,
+       enc_cdef.c:1296-1449; cdef.rs pick_cdef_params_all_skip_search):
+       C-exact for flat/all-skip frames (uniform p6 identity cells prove
+       it). Frames with ANY live filter block at presets <= M6 still
+       take the qp fast path — self-consistent (signal == apply) but
+       divergent from C's searched strengths (1 of 16 matrix stages:
+       gradient64 q55 p6 FH). The per-fb mse search port (64 strengths x
+       joint_strength_search_dual + lambda rate) lands with
+       decision-layer parity (gap 3). Inter frames signal zero
        strengths (no CDEF), like inter deblock levels.
-   Still open: restoration (neither signaled nor applied — consistent),
+   Still open: restoration application (SH signals enable_restoration=1
+   at allintra presets <= M6 per C, and the FH then signals
+   RESTORE_NONE for every plane — spec 5.9.20 lr_params, C
+   encode_restoration_mode — so nothing is applied, consistently on
+   both sides; the actual wiener/sgrproj SEARCH+apply is unported),
    inter-frame deblock/CDEF (signaled 0, applied nothing), the C
    SSE-based filter-level search (we ship LPF_PICK_FROM_Q only), and the
-   CDEF RDO search (2a).
+   CDEF RDO live-block search (2a).
 3. **Decision-layer parity** — partitions/modes/qcoeffs still come from our
    own RDO; port C mode decision after pixel-path parity.
 4. **[FIXED 2026-07-13] Intra edge preparation** — directional
