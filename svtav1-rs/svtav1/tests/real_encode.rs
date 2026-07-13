@@ -457,29 +457,79 @@ fn encode_yuv420_real_content() {
     eprintln!("yuv420 64x64 q=60: {} bytes", result.data.len());
 }
 
+/// Quality direction test (2026-07-13 revision, wave2/entropy-c-parity).
+///
+/// This test previously asserted BYTES non-decreasing in quality over
+/// {30, 50, 70, 90}. That was never a codec invariant: RD tree switches
+/// legally produce local byte dips, and the pre-revision encoder already
+/// violated it between the sampled points (measured on the same content
+/// and config: q60 = 139 bytes > q70 = 133 bytes) — the 4-point grid
+/// simply straddled the dip. When partition symbols got their real
+/// entropy costs (replacing flat hardcoded constants), the tree switch
+/// moved between the sampled points and exposed it: q60 now encodes at
+/// 94 bytes / 48.65 dB where the old model spent 139 bytes / 46.49 dB —
+/// strictly better on both axes — while q50 keeps its old 113-byte tree.
+///
+/// The revised assertions pin the invariants that actually hold (and
+/// held before): PSNR strictly increases with the quality setting
+/// (decoder-exact recon — recon-parity gate proves pipeline recon ==
+/// aomdec output), and bytes grow across the quality range as a whole.
 #[test]
 fn quality_vs_bitrate_monotonic() {
-    let width = 64;
-    let height = 64;
+    let width = 64usize;
+    let height = 64usize;
     let pixels = make_zone_plate(width, height);
 
-    let mut prev_size = 0usize;
-    // Start from q=30 — at very low quality, per-block overhead dominates
-    // and bitrate may not be strictly monotonic
+    // Same config the AvifEncoder default path uses: default speed 6 ->
+    // preset 7 (speed_to_preset), mono pipeline, CQP.
+    let mut sizes: Vec<usize> = Vec::new();
+    let mut psnrs: Vec<f64> = Vec::new();
     for quality in [30.0, 50.0, 70.0, 90.0f32] {
-        let enc = AvifEncoder::new().with_quality(quality);
+        let enc = AvifEncoder::new().with_speed(6).with_quality(quality);
         let result = enc
             .encode_y8(&pixels, width as u32, height as u32, width as u32)
             .unwrap();
         let size = result.data.len();
-        eprintln!("zone_plate q={quality:5.1}: {size:6} bytes");
 
-        assert!(
-            size >= prev_size,
-            "q={quality}: {size} bytes < prev {prev_size} bytes"
+        let qp = AvifEncoder::quality_to_qp_static(quality);
+        let rc = svtav1_encoder::rate_control::RcConfig {
+            mode: svtav1_encoder::rate_control::RcMode::Cqp,
+            qp,
+            ..svtav1_encoder::rate_control::RcConfig::default()
+        };
+        let mut p = svtav1_encoder::pipeline::EncodePipeline::new(
+            width as u32,
+            height as u32,
+            7, // speed_to_preset(6)
+            rc,
+            0,
+            1,
         );
-        prev_size = size;
+        // The probe exists to capture decoder-exact recon for PSNR; its
+        // stream differs from the AvifEncoder one only in SH color bytes
+        // (AvifEncoder signals explicit CICP; the pipeline default is
+        // C-matched "unspecified"), which don't touch the tile payload.
+        let bs = p.encode_frame(&pixels, width);
+        assert_eq!(bs.len() + 3, size, "probe must differ only by CICP bytes");
+        let recon = p.last_recon.clone().unwrap().0;
+        let psnr = compute_psnr(&pixels, &recon);
+        eprintln!("zone_plate q={quality:5.1}: {size:6} bytes  {psnr:6.2} dB");
+        sizes.push(size);
+        psnrs.push(psnr);
     }
+
+    // Quality (decoder-exact PSNR) must strictly increase with the
+    // quality setting — the guarantee users actually get.
+    for i in 1..psnrs.len() {
+        assert!(psnrs[i] > psnrs[i - 1], "PSNR not increasing: {:?}", psnrs);
+    }
+    // Bytes grow across the quality range as a whole (local dips from RD
+    // tree switches are legal and occur on this content).
+    assert!(
+        sizes.last().unwrap() > sizes.first().unwrap(),
+        "bytes did not grow from q=30 to q=90: {:?}",
+        sizes
+    );
 }
 
 #[test]
