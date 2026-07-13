@@ -476,6 +476,7 @@ pub fn partition_search_with_config(
             abs_y,
             ref_ctx,
             svtav1_types::partition::PartitionType::None,
+            false,
         );
         add_none_node_cost(&mut leaf, width, height, lambda);
         return leaf;
@@ -495,6 +496,7 @@ pub fn partition_search_with_config(
         abs_y,
         ref_ctx,
         svtav1_types::partition::PartitionType::None,
+        false,
     );
     // Every square node the tile writer visits codes a partition symbol:
     // price PARTITION_NONE with its real entropy cost and rescore with
@@ -541,6 +543,7 @@ pub fn partition_search_with_config(
             abs_y,
             ref_ctx,
             svtav1_types::partition::PartitionType::Horz,
+            false,
         );
         horz_result.distortion += top.distortion;
         horz_result.rate += top.rate;
@@ -561,6 +564,7 @@ pub fn partition_search_with_config(
             abs_y + hh,
             ref_ctx,
             svtav1_types::partition::PartitionType::Horz,
+            false,
         );
         horz_result.distortion += bot.distortion;
         horz_result.rate += bot.rate;
@@ -613,6 +617,7 @@ pub fn partition_search_with_config(
             abs_y,
             ref_ctx,
             svtav1_types::partition::PartitionType::Vert,
+            false,
         );
         vert_result.distortion += left.distortion;
         vert_result.rate += left.rate;
@@ -633,6 +638,7 @@ pub fn partition_search_with_config(
             abs_y,
             ref_ctx,
             svtav1_types::partition::PartitionType::Vert,
+            false,
         );
         vert_result.distortion += right.distortion;
         vert_result.rate += right.rate;
@@ -689,6 +695,7 @@ pub fn partition_search_with_config(
                 abs_y + y0,
                 ref_ctx,
                 svtav1_types::partition::PartitionType::Horz4,
+                false,
             );
             h4_result.distortion += sub.distortion;
             h4_result.rate += sub.rate;
@@ -740,6 +747,7 @@ pub fn partition_search_with_config(
                 abs_y,
                 ref_ctx,
                 svtav1_types::partition::PartitionType::Vert4,
+                false,
             );
             v4_result.distortion += sub.distortion;
             v4_result.rate += sub.rate;
@@ -794,6 +802,7 @@ pub fn partition_search_with_config(
             abs_y,
             ref_ctx,
             svtav1_types::partition::PartitionType::HorzA,
+            false,
         );
         ha_result.distortion += s.distortion;
         ha_result.rate += s.rate;
@@ -816,6 +825,7 @@ pub fn partition_search_with_config(
             abs_y,
             ref_ctx,
             svtav1_types::partition::PartitionType::HorzA,
+            false,
         );
         ha_result.distortion += s.distortion;
         ha_result.rate += s.rate;
@@ -838,6 +848,7 @@ pub fn partition_search_with_config(
             abs_y + hh,
             ref_ctx,
             svtav1_types::partition::PartitionType::HorzA,
+            false,
         );
         ha_result.distortion += s.distortion;
         ha_result.rate += s.rate;
@@ -890,6 +901,7 @@ pub fn partition_search_with_config(
             abs_y,
             ref_ctx,
             svtav1_types::partition::PartitionType::HorzB,
+            false,
         );
         hb_result.distortion += s.distortion;
         hb_result.rate += s.rate;
@@ -912,6 +924,7 @@ pub fn partition_search_with_config(
             abs_y + hh,
             ref_ctx,
             svtav1_types::partition::PartitionType::HorzB,
+            false,
         );
         hb_result.distortion += s.distortion;
         hb_result.rate += s.rate;
@@ -934,6 +947,7 @@ pub fn partition_search_with_config(
             abs_y + hh,
             ref_ctx,
             svtav1_types::partition::PartitionType::HorzB,
+            false,
         );
         hb_result.distortion += s.distortion;
         hb_result.rate += s.rate;
@@ -986,6 +1000,7 @@ pub fn partition_search_with_config(
             abs_y,
             ref_ctx,
             svtav1_types::partition::PartitionType::VertA,
+            false,
         );
         va_result.distortion += s.distortion;
         va_result.rate += s.rate;
@@ -1008,6 +1023,7 @@ pub fn partition_search_with_config(
             abs_y + hh,
             ref_ctx,
             svtav1_types::partition::PartitionType::VertA,
+            false,
         );
         va_result.distortion += s.distortion;
         va_result.rate += s.rate;
@@ -1030,6 +1046,7 @@ pub fn partition_search_with_config(
             abs_y,
             ref_ctx,
             svtav1_types::partition::PartitionType::VertA,
+            false,
         );
         va_result.distortion += s.distortion;
         va_result.rate += s.rate;
@@ -1082,6 +1099,7 @@ pub fn partition_search_with_config(
             abs_y,
             ref_ctx,
             svtav1_types::partition::PartitionType::VertB,
+            false,
         );
         vb_result.distortion += s.distortion;
         vb_result.rate += s.rate;
@@ -1104,6 +1122,7 @@ pub fn partition_search_with_config(
             abs_y,
             ref_ctx,
             svtav1_types::partition::PartitionType::VertB,
+            false,
         );
         vb_result.distortion += s.distortion;
         vb_result.rate += s.rate;
@@ -1126,6 +1145,7 @@ pub fn partition_search_with_config(
             abs_y + hh,
             ref_ctx,
             svtav1_types::partition::PartitionType::VertB,
+            false,
         );
         vb_result.distortion += s.distortion;
         vb_result.rate += s.rate;
@@ -1244,10 +1264,21 @@ pub fn encode_fixed_tree(
     config: &PartitionSearchConfig,
     abs_x: usize,
     abs_y: usize,
+    sb_vars: &crate::pd0::SbVariance,
+    sb_org: (usize, usize),
 ) -> PartitionResult {
     match tree {
         crate::pd0::Pd0Tree::Leaf(leaf_size) => {
             debug_assert_eq!(*leaf_size, size, "PD0 leaf size must match node size");
+            // C-exact leaf intra candidate set: at allintra effective-M9
+            // the PD1 pass (REGULAR PD1 with the allintra signals —
+            // enc_mode_config.c:11294; intra_level 8 arms
+            // prune_using_edge_info) forces {DC_PRED} whenever the
+            // variance-map gate `is_dc_only_safe` (mode_decision.c:845)
+            // fires for the block. The fixed tree is exactly the C
+            // context for the gate: PART_N squares 8..64, 64x64 SB.
+            let dc_only =
+                crate::pd0::is_dc_only_safe(sb_vars, size, abs_x - sb_org.0, abs_y - sb_org.1);
             encode_with_neighbors(
                 src,
                 src_stride,
@@ -1261,6 +1292,7 @@ pub fn encode_fixed_tree(
                 abs_y,
                 None,
                 svtav1_types::partition::PartitionType::None,
+                dc_only,
             )
         }
         crate::pd0::Pd0Tree::Split(children) => {
@@ -1289,6 +1321,8 @@ pub fn encode_fixed_tree(
                     config,
                     abs_x + x0,
                     abs_y + y0,
+                    sb_vars,
+                    sb_org,
                 );
                 result.distortion += sub.distortion;
                 result.rate += sub.rate;
@@ -1368,6 +1402,10 @@ pub fn encode_chroma_block_dc(
 /// children (libaom get_has_tr_table / get_has_bl_table), and coding a
 /// directional block against the wrong availability makes the encoder
 /// extend edges with pixels the decoder never sees.
+///
+/// `dc_only` restricts the intra candidate set to exactly {DC_PRED} — the
+/// C `is_dc_only_safe` outcome on the still/PD1 fixed-tree path (C injects
+/// no other candidate, so no cost compare runs; mode_decision.c:3633).
 #[allow(clippy::too_many_arguments)]
 fn encode_with_neighbors(
     src: &[u8],
@@ -1382,6 +1420,7 @@ fn encode_with_neighbors(
     abs_y: usize,
     ref_ctx: Option<&RefFrameCtx>,
     partition: svtav1_types::partition::PartitionType,
+    dc_only: bool,
 ) -> PartitionResult {
     let (above, left, top_left, has_above, has_left) =
         extract_neighbors(recon, recon_stride, abs_x, abs_y, width, height);
@@ -1403,6 +1442,7 @@ fn encode_with_neighbors(
         abs_x,
         abs_y,
         partition,
+        dc_only,
     )
 }
 
@@ -1482,6 +1522,7 @@ fn encode_single_block(
     abs_x: usize,
     abs_y: usize,
     partition: svtav1_types::partition::PartitionType,
+    dc_only: bool,
 ) -> PartitionResult {
     let n = width * height;
     // Mode-RD lambda: CLI-qp-calibrated closed form via the exact inverse
@@ -1504,7 +1545,14 @@ fn encode_single_block(
     let max_cands = config
         .max_intra_candidates
         .min(if width <= 4 || height <= 4 { 3 } else { 13 });
-    let candidates = &all_candidates[..max_cands.min(all_candidates.len())];
+    // dc_only = the C is_dc_only_safe gate fired: the candidate set is
+    // exactly {DC_PRED} (generate_intra_candidates puts DC first), like
+    // C's inject_intra_candidates with dc_cand_only_flag.
+    let candidates = if dc_only {
+        &all_candidates[..1]
+    } else {
+        &all_candidates[..max_cands.min(all_candidates.len())]
+    };
 
     let mut best_enc = None;
     let mut best_cost = u64::MAX;
