@@ -226,6 +226,17 @@ impl EncodePipeline {
             vaq_adjusted_qp
         };
 
+        // THE single CLI-qp -> qindex conversion (C: quantizer_to_qindex
+        // lookup on picture_qp, rc_crf_cqp.c). Everything above this line
+        // (assign_picture_qp, VAQ, TPL) works in the CLI 0..63 domain where
+        // those deltas were calibrated — one CLI step maps to ~4 qindex
+        // steps through the table. Everything below (quantizer step
+        // tables, CDF q bucket, EC base_q_idx, chroma quantization,
+        // deblock level picker, FH base_q_idx) consumes ONLY this qindex.
+        // Lambda is the documented exception: it stays CLI-qp-calibrated
+        // (see qp_to_lambda) until C's lambda_rate_tables.h port lands.
+        let base_qindex = crate::rate_control::qp_to_qindex(tpl_adjusted_qp);
+
         // Step 4: Encode the frame superblock-by-superblock in raster order.
         // This ensures each SB can read above/left neighbors from previously
         // reconstructed SBs, matching the AV1 decode order.
@@ -236,6 +247,9 @@ impl EncodePipeline {
         // The encoder's max_partition_depth controls how deep the
         // partition search goes WITHIN each 64x64 SB, not the SB size.
         let sb_size = 64;
+        // Lambda stays CLI-qp-calibrated (see qp_to_lambda's domain note);
+        // tpl_adjusted_qp is the CLI-domain value base_qindex is derived
+        // from, so this is qp_to_lambda(qindex_to_qp(base_qindex)).
         let lambda = (crate::rate_control::qp_to_lambda(tpl_adjusted_qp)
             * self.speed_config.lambda_scale()) as u64;
 
@@ -287,7 +301,7 @@ impl EncodePipeline {
             sb_rows,
             rows_per_tile,
             tile_rows,
-            tpl_adjusted_qp,
+            base_qindex,
             lambda,
             &self.speed_config,
             ref_frame_data.as_deref(),
@@ -472,9 +486,9 @@ impl EncodePipeline {
             // CDF updates enabled — matches the frame header's disable_cdf_update=0
             let mut frame_ctx = svtav1_entropy::context::FrameContext::new_default();
             // C-exact coefficient CDFs for the base_q_idx bucket
-            // (svt_av1_default_coef_probs semantics).
+            // (svt_av1_default_coef_probs semantics) — qindex domain.
             let mut coeff_fc =
-                svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(tpl_adjusted_qp);
+                svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex);
             // Mode/skip context tracking at 4x4 granularity
             let w4 = w.div_ceil(4);
             let h4 = h.div_ceil(4);
@@ -485,7 +499,7 @@ impl EncodePipeline {
                 u_recon: &mut u_recon,
                 v_recon: &mut v_recon,
                 stride: cw,
-                qp: tpl_adjusted_qp,
+                qindex: base_qindex,
             });
 
             debug_assert_eq!(
@@ -516,7 +530,7 @@ impl EncodePipeline {
                     &mut writer,
                     &mut frame_ctx,
                     &mut coeff_fc,
-                    tpl_adjusted_qp,
+                    base_qindex,
                     &mut ectx,
                     is_key,
                     bx,
@@ -543,7 +557,7 @@ impl EncodePipeline {
         // q-based picker is only wired for key frames, and signaling
         // nothing while applying nothing stays self-consistent.
         let lf_levels = if is_key {
-            crate::deblock::pick_filter_levels_key_frame(tpl_adjusted_qp)
+            crate::deblock::pick_filter_levels_key_frame(base_qindex)
         } else {
             crate::deblock::LfLevels::default()
         };
@@ -581,13 +595,14 @@ impl EncodePipeline {
                 &self.color_description,
                 chroma.is_none(), // mono_chrome unless the 4:2:0 path is active
             ));
-            // Key frame header (raw bytes) + tile group with proper header
-            // Use tpl_adjusted_qp (same value used for CDF category selection)
-            // so the decoder's CDF initialization matches the encoder's.
+            // Key frame header (raw bytes) + tile group with proper header.
+            // base_qindex is the SAME value used for quantization, CDF
+            // bucket selection and the deblock picker above — the decoder's
+            // dequant/CDF init must match the encoder's exactly.
             let fh_bytes = svtav1_entropy::obu::write_key_frame_header_full(
                 self.width,
                 self.height,
-                tpl_adjusted_qp,
+                base_qindex,
                 is_single_frame,
                 chroma.is_none(),
                 // The levels applied to the output recon above — signaling
@@ -605,9 +620,10 @@ impl EncodePipeline {
             ));
             bs
         } else {
-            // Inter frame: proper frame header with type, QP, refresh flags, ref indices
+            // Inter frame: proper frame header with type, qindex, refresh
+            // flags, ref indices.
             svtav1_entropy::obu::write_inter_frame(
-                tpl_adjusted_qp,
+                base_qindex,
                 pcs.refresh_frame_flags,
                 display_order as u8,
                 &tile_data,
@@ -690,9 +706,9 @@ struct ChromaPass<'a> {
     v_recon: &'a mut [u8],
     /// Chroma plane stride (= frame_width / 2).
     stride: usize,
-    /// qindex for chroma quantization — same tables as luma, since the
-    /// frame header signals DeltaQUDc = DeltaQUAc = 0.
-    qp: u8,
+    /// qindex (0..255) for chroma quantization — same tables as luma,
+    /// since the frame header signals DeltaQUDc = DeltaQUAc = 0.
+    qindex: u8,
 }
 
 /// Partition context update lookup table, matching rav1d's `dav1d_al_part_ctx`.
@@ -1042,10 +1058,10 @@ fn encode_block_syntax(
         let cx = block_x / 2;
         let cy = block_y / 2;
         let (u_q, u_eob) = crate::partition::encode_chroma_block_dc(
-            cp.u_src, cp.u_recon, cp.stride, cx, cy, cw, ch, cp.qp,
+            cp.u_src, cp.u_recon, cp.stride, cx, cy, cw, ch, cp.qindex,
         );
         let (v_q, v_eob) = crate::partition::encode_chroma_block_dc(
-            cp.v_src, cp.v_recon, cp.stride, cx, cy, cw, ch, cp.qp,
+            cp.v_src, cp.v_recon, cp.stride, cx, cy, cw, ch, cp.qindex,
         );
         (u_q, u_eob, v_q, v_eob)
     });
@@ -1515,7 +1531,7 @@ fn encode_tile_rows(
     sb_rows: usize,
     rows_per_tile: usize,
     tile_rows: usize,
-    qp: u8,
+    base_qindex: u8,
     _lambda: u64, // Per-SB lambda computed from sb_qp_offsets
     speed_config: &crate::speed_config::SpeedConfig,
     ref_frame_data: Option<&[u8]>,
@@ -1569,11 +1585,17 @@ fn encode_tile_rows(
                 // delta_q_present=0, so the decoder dequantizes every block
                 // at base_q_idx — any per-SB offset here silently corrupts
                 // reconstruction (encoder and decoder disagree on scale).
+                // When delta_q lands, the offsets must be applied HERE in
+                // qindex units (AV1 delta_q is qindex-domain); the old
+                // clamp(0, 63) that lived here was the CLI/qindex
+                // conflation and is gone — qindex saturates at u8 range.
                 let _ = (sb_row, sb_col, &sb_qp_offsets);
-                let sb_qp_delta = 0i8;
-                let sb_qp = (qp as i16 + sb_qp_delta as i16).clamp(0, 63) as u8;
-                let sb_lambda =
-                    (crate::rate_control::qp_to_lambda(sb_qp) * speed_config.lambda_scale()) as u64;
+                let sb_qindex = base_qindex;
+                // CLI-qp-calibrated lambda via the exact inverse mapping
+                // (see qp_to_lambda's domain note).
+                let sb_lambda = (crate::rate_control::qp_to_lambda(
+                    crate::rate_control::qindex_to_qp(sb_qindex),
+                ) * speed_config.lambda_scale()) as u64;
 
                 // The search reads intra neighbors from — and reconstructs
                 // directly into — the live frame buffer, exactly like the
@@ -1586,7 +1608,7 @@ fn encode_tile_rows(
                     w,
                     cur_w,
                     cur_h,
-                    sb_qp,
+                    sb_qindex,
                     sb_lambda,
                     speed_config.max_partition_depth as u32,
                     &part_config,
