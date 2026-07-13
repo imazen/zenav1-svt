@@ -33,18 +33,23 @@ v4.2.0-rc note: upstream refactored the coder internals (borrowed buffer,
 ptr walk) — output verified still byte-identical; `coeff_br_cdf` dropped its
 dead 64x64 slice (tables regenerated).
 
-## Pixel-path status (decoded output correctness)
+## Pixel-path status (decoded output correctness) — CORRECT
+
+All probes decode via aomdec and compare against the source:
 
 | Probe | Result |
 |---|---|
-| uniform-128 (all-skip) | decodes exactly (all 128) |
-| flat-140 first block | decodes exactly 140 — fwd transform -> quant -> decoder dequant -> inverse chain is scale-correct |
-| flat-140 full frame | ramps to 255: **encoder intra prediction ignores reconstructed neighbors** (predicts 128 fallback per block; decoder uses real neighbors; residuals compound). THE current pixel-path blocker. |
-| gradient qindex 30 | 11.3 dB (garbage until the prediction plumbing is fixed) |
+| uniform-128, flat-140, flat-250 | **bit-exact** |
+| edges 64px qindex30 s2 / 96px q50 s4 | **LOSSLESS** (205/367 bytes; C reference also lossless at 172 bytes — remaining delta is RD tuning) |
+| gradient 64px qindex30 s4 | **46.76 dB** |
+| gradient 128px q50 s8 | 30.39 dB |
 
-Also pending beneath it: unsignaled loop filters (encoder filters its recon,
-headers say off) and per-SB QP offsets (now disabled until delta_q signaling
-is ported).
+Fixed en route: live-recon prediction neighbors, real mode/tx-type
+signaling, AV1 quantizer tables + decoder-mirrored dequant, per-size
+forward cos bits, restored inverse stage-range clamps, C-exact intra edge
+fill (127/129/left[0]/above[0] rules), 64-dim coefficient zeroing,
+unsignaled loop filters disabled (DPB recon now decoder-exact).
+Per-SB QP offsets stay disabled until delta_q signaling is ported.
 
 ## Known failing test
 
@@ -61,11 +66,12 @@ example). Bitstream writer layer (headers, tile groups, coefficient coding)
 is now C-exact at the writer level; decision layers (partition/mode RDO,
 filters, chroma) still ours and next in line:
 
-1. Encoder prediction from reconstructed neighbors (pixel-path blocker)
-2. Chroma 4:2:0 end-to-end (C cannot emit monochrome — required for parity)
-3. Filter search + signaling ports (deblock/CDEF/restoration)
+1. Chroma 4:2:0 end-to-end (C cannot emit monochrome — required for parity)
+2. Filter search + signaling ports (deblock/CDEF/restoration)
+3. Directional-mode edge extension (has_top_right/bottom_left)
 4. Decision-layer parity vs C (partition/mode/TX RDO), then per-preset
-   bitstream identity gates
+   bitstream identity gates (see COVERAGE.md for the config-surface
+   scoreboard: 121 fields auto-derived from EbSvtAv1EncConfiguration)
 
 ## Crate structure
 
