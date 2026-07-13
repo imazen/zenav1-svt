@@ -74,7 +74,13 @@ This applies to:
 under the AV1 reference decoder as of 2026-07-13, C baseline v4.2.0-rc)
 
 ### Next structural gaps toward C bit-identity (not decode blockers)
-0. **2D transform wrapper divergence (AC only, encoder-blind)** — evidence:
+0a. **Edges-content quality (16 dB at qindex30)** — smooth content now reaches
+   41.75 dB after the 2D transform fix, but checkerboard/edges content stays
+   ~16 dB. Determine whether encoder recon == decoder recon there (honest RD
+   weakness: bad mode/partition choices on sharp content, likely rate model)
+   or a remaining divergence class. Method: dump encoder-side recon PSNR and
+   compare against decoded PSNR for the same stream.
+0b. **[FIXED 2026-07-13] 2D transform wrapper divergence (AC only, encoder-blind)** — evidence:
    flat-140/flat-250 decode bit-exactly (DC + golomb path perfect), but any
    AC-rich content degrades (gradient 64px qindex30: 11.7 dB; 128px q50:
    29.5 dB) identically across speeds, invisible to the encoder because our
