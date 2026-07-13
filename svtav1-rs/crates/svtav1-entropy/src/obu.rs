@@ -339,9 +339,10 @@ fn write_sequence_header_inner(
     wb.write_bits(color.transfer_characteristics as u32, 8);
     wb.write_bits(color.matrix_coefficients as u32, 8);
 
-    // For mono_chrome: color_range=1 (implicit), subsampling=1,1 (implicit),
-    // chroma_sample_position=CSP_UNKNOWN (implicit), separate_uv_delta_q=0 (implicit).
-    // NO bits written.
+    // For mono_chrome, spec 5.5.2 reads color_range (1 bit) and then stops:
+    // subsampling=1,1, chroma_sample_position=CSP_UNKNOWN, and
+    // separate_uv_delta_q=0 are implicit — but color_range is NOT.
+    wb.write_bit(true); // color_range = 1 (full range)
 
     wb.write_bit(false); // film_grain_params_present = 0
 
@@ -374,10 +375,14 @@ pub fn write_key_frame_header_full(
         wb.write_bit(true); // show_frame = 1
         // showable_frame: implicit 0 for KEY_FRAME with show_frame=1
         // error_resilient_mode: implicit 1 for KEY_FRAME with show_frame=1
-        wb.write_bit(false); // disable_cdf_update = 0
     }
     // For reduced SH: show_existing_frame/frame_type/show_frame/error_resilient
-    // are all implicit. disable_cdf_update is not signaled.
+    // are all implicit.
+
+    // disable_cdf_update is ALWAYS signaled (spec 5.9.2 reads it outside the
+    // reduced_still_picture_header branch; C writes it unconditionally at
+    // entropy_coding.c:3373).
+    wb.write_bit(false); // disable_cdf_update = 0
 
     // allow_screen_content_tools: seq_force = SELECT → read 1 bit
     wb.write_bit(false); // allow_screen_content_tools = 0
@@ -413,7 +418,10 @@ pub fn write_key_frame_header_full(
     wb.write_bit(false); // segmentation_enabled = 0
 
     // ---- delta_q_params() ----
-    wb.write_bit(false); // delta_q_present = 0
+    // Spec: delta_q_present is only signaled when base_q_idx > 0.
+    if base_qindex > 0 {
+        wb.write_bit(false); // delta_q_present = 0
+    }
     // delta_lf_params(): not signaled when delta_q_present=0
 
     // ---- loop_filter_params() ----
@@ -440,8 +448,20 @@ pub fn write_key_frame_header_full(
 
     wb.write_bit(false); // reduced_tx_set = 0
 
-    write_trailing_bits(&mut wb);
+    // This header is embedded in an OBU_FRAME: the spec requires
+    // byte_alignment() (zero bits only) between frame_header and tile_group —
+    // trailing_bits (with its leading 1) is only for standalone
+    // OBU_FRAME_HEADER. C: write_frame_header_obu(appendTrailingBits=0).
+    byte_align_zero(&mut wb);
     wb.into_data()
+}
+
+/// byte_alignment(): pad with zero bits to the next byte boundary.
+fn byte_align_zero(wb: &mut BitWriter) {
+    let remainder = wb.bit_offset % 8;
+    if remainder != 0 {
+        wb.write_bits(0, 8 - remainder);
+    }
 }
 
 /// AV1 spec Section 5.9.15: tile_info().
@@ -560,17 +580,11 @@ pub fn write_inter_frame_header(
 /// contains tile_start_and_end_present_flag=0 (1 bit) + byte alignment +
 /// the raw tile data.
 pub fn build_tile_group_single(tile_data: &[u8]) -> Vec<u8> {
-    let mut wb = BitWriter::new();
-    // tile_start_and_end_present_flag = 0 (single tile, no start/end)
-    wb.write_bit(false);
-    // Byte alignment
-    write_trailing_bits(&mut wb);
-    let header = wb.into_data();
-
-    let mut result = Vec::with_capacity(header.len() + tile_data.len());
-    result.extend_from_slice(&header);
-    result.extend_from_slice(tile_data);
-    result
+    // Spec 5.11.1: tile_start_and_end_present_flag is only read when
+    // NumTiles > 1. For a single tile the tile group has NO header bits —
+    // the (already byte-aligned) tile data starts immediately. C reference:
+    // write_tile_group_header returns 0 bytes when tiles_log2 == 0.
+    tile_data.to_vec()
 }
 
 /// Build the tile group data for a multi-tile frame.
@@ -587,8 +601,10 @@ pub fn build_tile_group_multi(tile_bitstreams: &[Vec<u8>]) -> Vec<u8> {
     }
 
     let mut wb = BitWriter::new();
+    // NumTiles > 1: tile_start_and_end_present_flag = 0 (all tiles in this
+    // TG), then byte_alignment() — zero bits, NOT trailing_bits (spec 5.11.1).
     wb.write_bit(false);
-    write_trailing_bits(&mut wb);
+    byte_align_zero(&mut wb);
     let header = wb.into_data();
 
     let total_size: usize = header.len()

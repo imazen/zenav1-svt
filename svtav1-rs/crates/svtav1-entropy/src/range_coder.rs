@@ -89,6 +89,8 @@ impl OdEcEnc {
     ///
     /// `f` is the probability that the value is one, scaled by 32768.
     pub fn encode_bool_q15(&mut self, val: bool, f: u32) {
+        #[cfg(feature = "symtrace")]
+        std::eprintln!("W BOOL val={} f={f}", u32::from(val));
         debug_assert!(0 < f && f < 32768);
         let mut l = self.low;
         let mut r = u32::from(self.rng);
@@ -230,6 +232,8 @@ impl OdEcEnc {
             }
         }
         self.offs = offs as u32;
+        #[cfg(feature = "symtrace")]
+        std::eprintln!("W DONE nbytes={} head={:02x?}", offs, &self.buf[..offs.min(16)]);
         &self.buf[..offs]
     }
 

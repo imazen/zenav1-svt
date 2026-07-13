@@ -21,3 +21,6 @@ workspace = true
 default = []
 std = ["svtav1-types/std"]
 unchecked_entropy = []
+# Prints every symbol written to stderr — for differential debugging against
+# a gdb-instrumented reference decoder. Requires std.
+symtrace = ["std"]
