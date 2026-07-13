@@ -327,7 +327,12 @@ fn write_sequence_header_inner(
     }
 
     wb.write_bit(false); // enable_superres = 0
-    wb.write_bit(false); // enable_cdef = 0
+    // enable_cdef = 1: matches C (scs->seq_header.cdef_level defaults on;
+    // the C SH golden below carries the same bit). Every frame header now
+    // carries cdef_params() (spec 5.9.19) — zero strengths when CDEF is off
+    // for the frame, which a conforming decoder treats as "no CDEF pass"
+    // (libaom do_cdef gate, decodeframe.c:5417).
+    wb.write_bit(true); // enable_cdef = 1
     wb.write_bit(false); // enable_restoration = 0
 
     // ---- color_config() ----
@@ -390,7 +395,7 @@ fn write_sequence_header_inner(
 
 /// Write a key frame header for a reduced (still-picture) sequence header.
 pub fn write_key_frame_header(width: u32, height: u32, base_qindex: u8) -> Vec<u8> {
-    write_key_frame_header_full(width, height, base_qindex, true, true, [0; 4])
+    write_key_frame_header_full(width, height, base_qindex, true, true, [0; 4], [3, 0, 0])
 }
 
 /// AV1 spec Section 5.9.2: uncompressed_header() for KEY_FRAME.
@@ -403,6 +408,13 @@ pub fn write_key_frame_header(width: u32, height: u32, base_qindex: u8) -> Vec<u
 /// `lf_levels` = `[loop_filter_level[0], [1], [2] (U), [3] (V)]` per spec
 /// 5.9.11; the encoder MUST apply deblocking with exactly these levels to
 /// its reconstruction or the DPB diverges from every conforming decoder.
+///
+/// `cdef` = `[cdef_damping (3..=6), cdef_y_strength, cdef_uv_strength]` per
+/// spec 5.9.19 with `cdef_bits = 0` (single strength set; the per-block
+/// cdef_idx read is then ZERO arithmetic-coder bits — libaom read_cdef does
+/// `aom_read_literal(r, cdef_bits)`). uv_strength is only coded for
+/// NumPlanes = 3 (libaom setup_cdef, decodeframe.c:1799). Same contract as
+/// deblocking: the encoder MUST apply CDEF with exactly these strengths.
 pub fn write_key_frame_header_full(
     width: u32,
     height: u32,
@@ -410,6 +422,7 @@ pub fn write_key_frame_header_full(
     reduced_sh: bool,
     monochrome: bool,
     lf_levels: [u8; 4],
+    cdef: [u8; 3],
 ) -> Vec<u8> {
     let mut wb = key_frame_header_bits(
         width,
@@ -418,6 +431,7 @@ pub fn write_key_frame_header_full(
         reduced_sh,
         monochrome,
         lf_levels,
+        cdef,
     );
     // This header is embedded in an OBU_FRAME: the spec requires
     // byte_alignment() (zero bits only) between frame_header and tile_group —
@@ -438,6 +452,7 @@ fn key_frame_header_bits(
     reduced_sh: bool,
     monochrome: bool,
     lf_levels: [u8; 4],
+    cdef: [u8; 3],
 ) -> BitWriter {
     let mut wb = BitWriter::new();
 
@@ -533,7 +548,20 @@ fn key_frame_header_bits(
     wb.write_bit(false); // loop_filter_delta_enabled = 0
 
     // ---- cdef_params() ----
-    // enable_cdef=0 → no bits (implicit cdef_bits=0)
+    // Spec 5.9.19; C write path encode_cdef (entropy_coding.c:2398), read
+    // path libaom setup_cdef (decodeframe.c:1799). Present because the SH
+    // signals enable_cdef=1 and this header is neither CodedLossless
+    // (base_q_idx > 0 in practice — same standing assumption as
+    // loop_filter_params above) nor allow_intrabc.
+    debug_assert!((3..=6).contains(&cdef[0]), "cdef_damping out of range");
+    wb.write_bits((cdef[0] - 3) as u32, 2); // cdef_damping_minus_3
+    wb.write_bits(0, 2); // cdef_bits = 0 -> (1 << 0) = 1 strength set
+    wb.write_bits(cdef[1] as u32, 6); // cdef_y_pri(4) + cdef_y_sec(2) packed
+    if !monochrome {
+        // NumPlanes=3 only: libaom reads uv strengths iff num_planes > 1
+        // (C SVT always writes both — it cannot emit monochrome).
+        wb.write_bits(cdef[2] as u32, 6); // cdef_uv_pri(4) + cdef_uv_sec(2)
+    }
 
     // ---- lr_params() ----
     // enable_restoration=0 → no bits
@@ -648,7 +676,15 @@ pub fn write_inter_frame_header(
     wb.write_bits(0, 3); // loop_filter_sharpness = 0
     wb.write_bit(false); // loop_filter_delta_enabled = 0
 
-    // cdef: enable_cdef=0, no bits
+    // ---- cdef_params() ---- (SH signals enable_cdef=1, so every
+    // non-lossless FH carries them). Inter frames don't run CDEF yet:
+    // zero strengths keep the decoder's do_cdef gate false — signaling
+    // and (non-)application stay consistent. Damping uses the same
+    // C derivation as key frames (CDEF_DAMPING_FROM_QP, enc_cdef.c:923)
+    // so the field is always legal and uniform across frame types.
+    wb.write_bits((base_qindex >> 6) as u32, 2); // cdef_damping_minus_3
+    wb.write_bits(0, 2); // cdef_bits = 0
+    wb.write_bits(0, 6); // cdef_y_strength[0] = 0 (mono: no uv field)
     // lr: enable_restoration=0, no bits
 
     wb.write_bit(false); // tx_mode_select = 0 → TX_MODE_LARGEST
@@ -860,25 +896,28 @@ mod tests {
         assert_eq!(tile_log2(5), 3);
     }
 
-    /// Mono SH/FH bytes captured BEFORE the 4:2:0 work landed (2026-07-13,
-    /// wave2/entropy-c-parity @ 264deaf03) — the mono path must stay
-    /// bit-identical while chroma support is added.
+    /// Mono SH/FH byte goldens. Originally captured before the 4:2:0 work
+    /// (2026-07-13 @ 264deaf03) to pin the mono path while chroma landed;
+    /// re-captured when CDEF signaling landed: the SH gained the
+    /// enable_cdef=1 bit (0x06 -> 0x26 in byte 6 of the reduced SH,
+    /// 0xc3 -> 0xd3 in the full SH) and every FH gained the 10-bit
+    /// zero-strength cdef_params tail (FH grows 5 -> 6 bytes).
     #[test]
     fn mono_headers_unchanged_golden() {
         assert_eq!(
             write_sequence_header(64, 64),
             [
-                0x0a, 0x09, 0x1a, 0x15, 0x7f, 0xfc, 0x06, 0x02, 0x1a, 0x03, 0x40
+                0x0a, 0x09, 0x1a, 0x15, 0x7f, 0xfc, 0x26, 0x02, 0x1a, 0x03, 0x40
             ]
         );
         assert_eq!(
             write_key_frame_header(64, 64, 30),
-            [0x11, 0xe0, 0x00, 0x00, 0x00]
+            [0x11, 0xe0, 0x00, 0x00, 0x00, 0x00]
         );
         assert_eq!(
             write_sequence_header_full(64, 64),
             [
-                0x0a, 0x0d, 0x00, 0x00, 0x00, 0x41, 0x57, 0xff, 0xc0, 0x26, 0xc3, 0x01, 0x0d, 0x01,
+                0x0a, 0x0d, 0x00, 0x00, 0x00, 0x41, 0x57, 0xff, 0xc0, 0x26, 0xd3, 0x01, 0x0d, 0x01,
                 0xa0
             ]
         );
@@ -905,7 +944,7 @@ mod tests {
         wb.write_bit(false); // enable_filter_intra = 0
         wb.write_bit(false); // enable_intra_edge_filter = 0
         wb.write_bit(false); // enable_superres = 0
-        wb.write_bit(false); // enable_cdef = 0
+        wb.write_bit(true); // enable_cdef = 1 (CDEF signaling landed)
         wb.write_bit(false); // enable_restoration = 0
         // color_config() per spec 5.5.2, mono_chrome = 0 branch:
         wb.write_bit(false); // high_bitdepth = 0 (8-bit)
@@ -1024,11 +1063,12 @@ mod tests {
         // Documented config differences (NOT bitstream-structure drift):
         assert_eq!(c_level, 0, "C derives level 2.0 for 64x64");
         assert_eq!(r_level, 8, "we pin level 4.0");
-        // C: filter_intra=1, cdef=1, restoration=1; ours: all 0 until the
-        // tool ports land (bit 4=filter_intra .. bit 0=restoration; C also
-        // has intra_edge_filter=0 here, superres=0).
+        // Tool bits (bit 4=filter_intra .. bit 0=restoration; both sides
+        // have intra_edge_filter=0, superres=0): C enables
+        // filter_intra/cdef/restoration. Our cdef bit now MATCHES C (the
+        // port landed); filter_intra/restoration stay 0 until theirs land.
         assert_eq!(c_tools, 0b10011);
-        assert_eq!(r_tools, 0b00000);
+        assert_eq!(r_tools, 0b00010, "enable_cdef=1, rest pending ports");
     }
 
     /// Pin the 4:2:0 (NumPlanes=3) key-frame-header layout for a reduced SH
@@ -1055,6 +1095,10 @@ mod tests {
         // levels [2]/[3] not coded: (level[0] || level[1]) == 0
         wb.write_bits(0, 3); // loop_filter_sharpness = 0
         wb.write_bit(false); // loop_filter_delta_enabled = 0
+        wb.write_bits(0, 2); // cdef_damping_minus_3 (damping 3)
+        wb.write_bits(0, 2); // cdef_bits = 0
+        wb.write_bits(0, 6); // cdef_y_strength[0]
+        wb.write_bits(0, 6); // cdef_uv_strength[0] (NumPlanes=3)
         wb.write_bit(false); // tx_mode_select = 0
         wb.write_bit(false); // reduced_tx_set = 0
         let remainder = wb.bit_offset % 8;
@@ -1063,24 +1107,25 @@ mod tests {
         }
         let expected = wb.into_data();
 
-        let got = write_key_frame_header_full(64, 64, 30, true, false, [0; 4]);
+        let got = write_key_frame_header_full(64, 64, 30, true, false, [0; 4], [3, 0, 0]);
         assert_eq!(got, expected, "420 FH layout drifted from spec derivation");
 
         // The 420 FH is exactly the mono FH with two zero bits
-        // (DeltaQUDc/DeltaQUAc delta_coded=0) inserted after DeltaQYDc.
-        // Every bit after DeltaQYDc is zero in this config and
-        // byte_alignment() pads with zeros, so the PADDED BYTES coincide
-        // with mono — the real difference is the pre-alignment bit count,
-        // which shifts where the decoder's field boundaries fall. Pin it.
-        let bits_420 = key_frame_header_bits(64, 64, 30, true, false, [0; 4]).bit_offset;
-        let bits_mono = key_frame_header_bits(64, 64, 30, true, true, [0; 4]).bit_offset;
-        assert_eq!(bits_mono, 34, "mono reduced-SH FH is 34 bits pre-align");
-        assert_eq!(bits_420, 36, "420 adds exactly DeltaQUDc + DeltaQUAc");
-        assert_eq!(
-            got,
-            write_key_frame_header_full(64, 64, 30, true, true, [0; 4]),
-            "byte-level coincidence expected (zero bits inside zero padding)"
-        );
+        // (DeltaQUDc/DeltaQUAc delta_coded=0) plus the 6-bit
+        // cdef_uv_strength inserted; every differing bit is zero in this
+        // config. Pin the pre-alignment bit counts (which set the decoder's
+        // field boundaries): mono 34+10 cdef bits = 44, 420 36+16 = 52 —
+        // the 420 header now crosses into a 7th byte whose bits are all
+        // zero, so the byte streams relate by a trailing zero byte.
+        let bits_420 = key_frame_header_bits(64, 64, 30, true, false, [0; 4], [3, 0, 0]).bit_offset;
+        let bits_mono = key_frame_header_bits(64, 64, 30, true, true, [0; 4], [3, 0, 0]).bit_offset;
+        assert_eq!(bits_mono, 44, "mono reduced-SH FH is 44 bits pre-align");
+        assert_eq!(bits_420, 52, "420 adds DeltaQUDc + DeltaQUAc + uv cdef");
+        let mono = write_key_frame_header_full(64, 64, 30, true, true, [0; 4], [3, 0, 0]);
+        assert_eq!(got.len(), 7);
+        assert_eq!(mono.len(), 6);
+        assert_eq!(&got[..6], &mono[..], "shared zero-bit prefix");
+        assert_eq!(got[6], 0);
     }
 
     /// Pin loop_filter_params() with real levels (spec 5.9.11; C
@@ -1090,17 +1135,17 @@ mod tests {
     #[test]
     fn fh_loop_filter_level_bit_layout() {
         // Mono: nonzero luma levels add no chroma bits.
-        let zero = key_frame_header_bits(64, 64, 30, true, true, [0; 4]).bit_offset;
-        let mono = key_frame_header_bits(64, 64, 30, true, true, [2, 2, 1, 1]).bit_offset;
+        let zero = key_frame_header_bits(64, 64, 30, true, true, [0; 4], [3, 0, 0]).bit_offset;
+        let mono = key_frame_header_bits(64, 64, 30, true, true, [2, 2, 1, 1], [3, 0, 0]).bit_offset;
         assert_eq!(mono, zero, "mono FH never codes chroma levels");
 
         // 420: +12 bits (two 6-bit chroma levels) when l0||l1.
-        let z420 = key_frame_header_bits(64, 64, 30, true, false, [0; 4]).bit_offset;
-        let c420 = key_frame_header_bits(64, 64, 30, true, false, [2, 2, 1, 1]).bit_offset;
+        let z420 = key_frame_header_bits(64, 64, 30, true, false, [0; 4], [3, 0, 0]).bit_offset;
+        let c420 = key_frame_header_bits(64, 64, 30, true, false, [2, 2, 1, 1], [3, 0, 0]).bit_offset;
         assert_eq!(c420, z420 + 12, "420 FH codes U/V levels iff l0||l1");
         // Zero luma levels suppress the chroma level fields even if
         // uv levels are nonzero (the decoder cannot read them).
-        let z420uv = key_frame_header_bits(64, 64, 30, true, false, [0, 0, 1, 1]).bit_offset;
+        let z420uv = key_frame_header_bits(64, 64, 30, true, false, [0, 0, 1, 1], [3, 0, 0]).bit_offset;
         assert_eq!(z420uv, z420);
 
         // Hand-derive the mono field bytes with levels [3,3,_,_]: identical
@@ -1119,6 +1164,9 @@ mod tests {
         wb.write_bits(3, 6); // loop_filter_level[1]
         wb.write_bits(0, 3); // loop_filter_sharpness
         wb.write_bit(false); // loop_filter_delta_enabled
+        wb.write_bits(0, 2); // cdef_damping_minus_3
+        wb.write_bits(0, 2); // cdef_bits
+        wb.write_bits(0, 6); // cdef_y_strength[0]
         wb.write_bit(false); // tx_mode_select
         wb.write_bit(false); // reduced_tx_set
         let remainder = wb.bit_offset % 8;
@@ -1126,9 +1174,53 @@ mod tests {
             wb.write_bits(0, 8 - remainder);
         }
         assert_eq!(
-            write_key_frame_header_full(64, 64, 30, true, true, [3, 3, 0, 0]),
+            write_key_frame_header_full(64, 64, 30, true, true, [3, 3, 0, 0], [3, 0, 0]),
             wb.into_data(),
             "mono FH with levels drifted from spec derivation"
+        );
+    }
+
+    /// Pin cdef_params() (spec 5.9.19; C encode_cdef entropy_coding.c:2398)
+    /// with real values: damping_minus_3 then cdef_bits=0 then one 6-bit
+    /// strength per coded plane type — uv only for NumPlanes=3 (libaom
+    /// setup_cdef reads uv iff num_planes > 1).
+    #[test]
+    fn fh_cdef_params_bit_layout() {
+        let base = key_frame_header_bits(64, 64, 220, true, true, [0; 4], [3, 0, 0]).bit_offset;
+        // Strength/damping values change bits, never the field count.
+        let hot = key_frame_header_bits(64, 64, 220, true, true, [0; 4], [6, 43, 7]).bit_offset;
+        assert_eq!(base, hot, "mono cdef fields are fixed-width");
+        let b420 = key_frame_header_bits(64, 64, 220, true, false, [0; 4], [6, 43, 7]).bit_offset;
+        assert_eq!(b420, hot + 2 + 6, "420 adds chroma delta-q (2) + uv strength (6)");
+
+        // Hand-derive the mono FH at qindex 220 with damping 6, y=43:
+        let mut wb = BitWriter::new();
+        wb.write_bit(false); // disable_cdf_update
+        wb.write_bit(false); // allow_screen_content_tools
+        wb.write_bit(false); // render_and_frame_size_different
+        wb.write_bit(true); // tile_info: uniform_tile_spacing_flag
+        wb.write_bits(220, 8); // base_q_idx
+        wb.write_bit(false); // DeltaQYDc
+        wb.write_bit(false); // using_qmatrix
+        wb.write_bit(false); // segmentation_enabled
+        wb.write_bit(false); // delta_q_present
+        wb.write_bits(0, 6); // loop_filter_level[0]
+        wb.write_bits(0, 6); // loop_filter_level[1]
+        wb.write_bits(0, 3); // loop_filter_sharpness
+        wb.write_bit(false); // loop_filter_delta_enabled
+        wb.write_bits(3, 2); // cdef_damping_minus_3 = 6 - 3
+        wb.write_bits(0, 2); // cdef_bits = 0
+        wb.write_bits(43, 6); // cdef_y_strength[0] = pri 10, sec 3
+        wb.write_bit(false); // tx_mode_select
+        wb.write_bit(false); // reduced_tx_set
+        let remainder = wb.bit_offset % 8;
+        if remainder != 0 {
+            wb.write_bits(0, 8 - remainder);
+        }
+        assert_eq!(
+            write_key_frame_header_full(64, 64, 220, true, true, [0; 4], [6, 43, 0]),
+            wb.into_data(),
+            "mono FH cdef_params drifted from spec derivation"
         );
     }
 }

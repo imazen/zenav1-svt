@@ -606,6 +606,11 @@ impl EncodePipeline {
                 // and application MUST agree or the recon desyncs from
                 // every conforming decoder.
                 lf_levels.levels,
+                // CDEF: zero strengths until the decoder-exact application
+                // lands (same flip-on-together discipline as deblocking) —
+                // the decoder's do_cdef gate stays false, so signaling
+                // zeros while applying nothing is self-consistent.
+                crate::cdef::CdefFrameParams::default().signal(),
             );
             // tile_data is already a complete tile_group (with TG header)
             let mut frame_payload = alloc::vec::Vec::new();

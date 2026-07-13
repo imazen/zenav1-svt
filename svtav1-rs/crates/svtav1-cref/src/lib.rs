@@ -661,3 +661,22 @@ pub fn cdef_filter_block_8bit(
         );
     }
 }
+
+// ---- CDEF strength picker (intra branch, C float semantics) ----
+
+unsafe extern "C" {
+    fn ref_pick_cdef_from_qp_intra_8bit(
+        base_q_idx: i32,
+        pred_y_strength: *mut i32,
+        pred_uv_strength: *mut i32,
+    );
+}
+
+/// Reference `svt_pick_cdef_from_qp` intra branch at 8-bit: returns the
+/// packed `(y_strength, uv_strength)` pair for a qindex, evaluated with C
+/// float semantics against the library's `svt_aom_ac_quant_qtx`.
+pub fn pick_cdef_from_qp_intra_8bit(base_q_idx: u8) -> (i32, i32) {
+    let (mut y, mut uv) = (0i32, 0i32);
+    unsafe { ref_pick_cdef_from_qp_intra_8bit(base_q_idx as i32, &mut y, &mut uv) };
+    (y, uv)
+}

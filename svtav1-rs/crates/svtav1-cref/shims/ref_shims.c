@@ -387,3 +387,32 @@ void ref_cdef_filter_block_8bit(uint8_t* dst, int32_t dstride, const uint8_t* in
     svt_cdef_filter_block_8bit_c(dst, dstride, in, pri_strength, sec_strength, dir, damping, bsize, coeff_shift,
                                  subsampling_factor);
 }
+
+/* ---- CDEF strength-from-QP picker (svt_pick_cdef_from_qp is static; this
+   replicates its intra branch verbatim from enc_cdef.c:849 against the
+   REAL svt_aom_ac_quant_qtx, pinning the C float-expression semantics the
+   Rust port must reproduce bit-exactly) ---- */
+
+#include <math.h>
+
+int16_t svt_aom_ac_quant_qtx(int32_t qindex, int32_t delta, EbBitDepth bit_depth);
+
+void ref_pick_cdef_from_qp_intra_8bit(int32_t base_q_idx, int32_t* pred_y_strength,
+                                      int32_t* pred_uv_strength) {
+    int32_t q = svt_aom_ac_quant_qtx(base_q_idx, 0, EB_EIGHT_BIT);
+    q >>= 0; /* (bit_depth - 8) */
+
+    /* enc_cdef.c:880-888, Intra branch, verbatim. */
+    int32_t y_f1  = (int32_t)roundf(q * q * 0.0000033731974f + q * 0.008070594f + 0.0187634f);
+    int32_t y_f2  = (int32_t)roundf(q * q * 0.0000029167343f + q * 0.0027798624f + 0.0079405f);
+    int32_t uv_f1 = (int32_t)roundf(q * q * -0.0000130790995f + q * 0.012892405f - 0.00748388f);
+    int32_t uv_f2 = (int32_t)roundf(q * q * 0.0000032651783f + q * 0.00035520183f + 0.00228092f);
+
+    y_f1  = y_f1 < 0 ? 0 : (y_f1 > 15 ? 15 : y_f1);
+    y_f2  = y_f2 < 0 ? 0 : (y_f2 > 3 ? 3 : y_f2);
+    uv_f1 = uv_f1 < 0 ? 0 : (uv_f1 > 15 ? 15 : uv_f1);
+    uv_f2 = uv_f2 < 0 ? 0 : (uv_f2 > 3 ? 3 : uv_f2);
+
+    *pred_y_strength  = y_f1 * 4 + y_f2;
+    *pred_uv_strength = uv_f1 * 4 + uv_f2;
+}
