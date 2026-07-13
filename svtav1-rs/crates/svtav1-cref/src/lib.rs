@@ -342,6 +342,17 @@ unsafe extern "C" {
         stride_w: i32,
         tx_type: i32,
     );
+    fn ref_fwd_txfm2d_rect(w: i32, h: i32, input: *mut i16, output: *mut i32, stride: u32, tx_type: i32);
+    fn ref_inv_txfm2d_add_rect(
+        w: i32,
+        h: i32,
+        input: *const i32,
+        output_r: *const u16,
+        stride_r: i32,
+        output_w: *mut u16,
+        stride_w: i32,
+        tx_type: i32,
+    );
 }
 
 /// Reference 2D forward transform (square `n`, 8-bit).
@@ -366,6 +377,53 @@ pub fn inv_txfm2d_add(n: usize, coeffs: &[i32], base: &[u16], tx_type: usize) ->
             n as i32,
             out.as_mut_ptr(),
             n as i32,
+            tx_type as i32,
+        )
+    };
+    out
+}
+
+/// Reference 2D forward transform (rectangular `w` x `h`, 8-bit).
+/// `input` is packed row-major with stride `w`.
+pub fn fwd_txfm2d_rect(w: usize, h: usize, input: &[i16], tx_type: usize) -> Vec<i32> {
+    assert!(input.len() >= w * h);
+    let mut out = vec![0i32; w * h];
+    let mut inp = input.to_vec();
+    unsafe {
+        ref_fwd_txfm2d_rect(
+            w as i32,
+            h as i32,
+            inp.as_mut_ptr(),
+            out.as_mut_ptr(),
+            w as u32,
+            tx_type as i32,
+        )
+    };
+    out
+}
+
+/// Reference 2D inverse transform + add onto `base` (rectangular `w` x `h`,
+/// 8-bit). For 64-dim sizes the C function reads `coeffs` packed at stride
+/// min(w, 32) with min(h, 32) rows. Returns the reconstructed pixels.
+pub fn inv_txfm2d_add_rect(
+    w: usize,
+    h: usize,
+    coeffs: &[i32],
+    base: &[u16],
+    tx_type: usize,
+) -> Vec<u16> {
+    assert!(base.len() >= w * h);
+    assert!(coeffs.len() >= w.min(32) * h.min(32));
+    let mut out = vec![0u16; w * h];
+    unsafe {
+        ref_inv_txfm2d_add_rect(
+            w as i32,
+            h as i32,
+            coeffs.as_ptr(),
+            base.as_ptr(),
+            w as i32,
+            out.as_mut_ptr(),
+            w as i32,
             tx_type as i32,
         )
     };
