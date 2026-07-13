@@ -88,7 +88,13 @@ impl EncodePipeline {
             width,
             height,
             bit_depth: 8,
-            color_description: svtav1_entropy::obu::ColorDescription::srgb(),
+            // C-matched default: CICP "unspecified" (cp/tc/mc = 2/2/2,
+            // studio range) — the library defaults of enc_settings.c:1043.
+            // The SH then carries color_description_present_flag=0 and
+            // color_range=0, byte-matching C at matched configs. Callers
+            // that know their color space (AVIF path) override via
+            // with_color_description.
+            color_description: svtav1_entropy::obu::ColorDescription::default(),
             chroma_420: false,
             last_recon: None,
             last_recon_unfiltered: None,
@@ -641,6 +647,8 @@ impl EncodePipeline {
                 self.bit_depth,
                 &self.color_description,
                 chroma.is_none(), // mono_chrome unless the 4:2:0 path is active
+                // seq_level_idx auto-derivation input (C: scs->frame_rate).
+                self.rc_config.framerate,
             ));
             // Key frame header (raw bytes) + tile group with proper header.
             // base_qindex is the SAME value used for quantization, CDF
