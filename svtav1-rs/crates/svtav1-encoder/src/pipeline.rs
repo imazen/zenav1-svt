@@ -600,6 +600,10 @@ impl EncodePipeline {
                 tpl_adjusted_qp,
                 is_single_frame,
                 chroma.is_none(),
+                // Signaling stays zero until the decoder-exact application
+                // lands in the same change that flips this on: signaled
+                // levels the encoder does not apply desync the recon.
+                [0; 4],
             );
             // tile_data is already a complete tile_group (with TG header)
             let mut frame_payload = alloc::vec::Vec::new();
