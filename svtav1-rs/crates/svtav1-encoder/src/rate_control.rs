@@ -21,7 +21,11 @@ pub enum RcMode {
 #[derive(Debug, Clone)]
 pub struct RcConfig {
     pub mode: RcMode,
-    /// CQP/CRF target quality (0-63).
+    /// CQP/CRF target quality in the CLI domain (0-63), identical to the
+    /// C encoder's `--qp`. This is NOT an AV1 qindex: the pipeline maps
+    /// it through [`QUANTIZER_TO_QINDEX`] exactly once at frame setup and
+    /// everything downstream (quantizer tables, frame-header base_q_idx,
+    /// CDF q bucket, deblock picker) operates on the resulting qindex.
     pub qp: u8,
     /// Target bitrate in kbps (for VBR/CBR).
     pub target_bitrate: u32,
@@ -80,16 +84,65 @@ impl Default for RcState {
 /// Layer 0 (base) gets the base QP, higher layers get increased QP.
 pub const TEMPORAL_LAYER_QP_DELTA: [i8; 6] = [0, 4, 8, 10, 12, 12];
 
-/// Compute lambda from QP for rate-distortion optimization.
+/// CLI-QP (0..63) to AV1 qindex (0..255) mapping.
+///
+/// Verbatim port of C SVT-AV1 `quantizer_to_qindex[64]`
+/// (Source/Lib/Codec/md_process.c:20, declared md_process.h:1396,
+/// baseline v4.2.0-rc). C's `--qp` is 0..63 and is mapped through this
+/// table before ANY internal use — quantizer step tables, frame-header
+/// base_q_idx, default-CDF q bucket, deblock level picker all operate on
+/// the resulting qindex. Entries are `4*qp` for qp <= 61, then 249, 255;
+/// max 255 fits u8 exactly like the C uint8_t table.
+pub const QUANTIZER_TO_QINDEX: [u8; 64] = [
+    0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60, //
+    64, 68, 72, 76, 80, 84, 88, 92, 96, 100, 104, 108, 112, 116, 120, 124, //
+    128, 132, 136, 140, 144, 148, 152, 156, 160, 164, 168, 172, 176, 180, 184, 188, //
+    192, 196, 200, 204, 208, 212, 216, 220, 224, 228, 232, 236, 240, 244, 249, 255,
+];
+
+/// Convert a CLI-domain QP (0..63, C `--qp` semantics) to the AV1 qindex
+/// (0..255) via [`QUANTIZER_TO_QINDEX`]. Inputs > 63 are clamped to 63
+/// (the CLI boundary clamp — the only place the 0..63 range is enforced).
+pub fn qp_to_qindex(qp: u8) -> u8 {
+    QUANTIZER_TO_QINDEX[qp.min(63) as usize]
+}
+
+/// Inverse of [`qp_to_qindex`]: recover the CLI-domain QP (0..63) from a
+/// qindex. `qindex >> 2` is the EXACT inverse for every value the table
+/// produces (`4n >> 2 == n` for n <= 61, `249 >> 2 == 62`,
+/// `255 >> 2 == 63`); for intermediate qindexes (future qindex-domain
+/// deltas) it is the floor approximation. Used only to derive the interim
+/// CLI-qp-scale lambda until C's qindex-driven lambda tables
+/// (`lambda_rate_tables.h`) are ported.
+pub fn qindex_to_qp(qindex: u8) -> u8 {
+    qindex >> 2
+}
+
+/// Compute lambda from CLI-domain QP (0..63) for rate-distortion
+/// optimization.
 ///
 /// Lambda controls the tradeoff between distortion and rate.
 /// Higher QP → higher lambda → accept more distortion to save bits.
+///
+/// DOMAIN NOTE: this HEVC-style closed form (`0.85 * 2^((qp-12)/3)`) is
+/// calibrated for the CLI 0..63 scale — feeding a qindex (0..255) would
+/// blow lambda up to ~2^80 and turn every RD decision into "cheapest
+/// rate wins". Qindex-domain call sites must convert with
+/// [`qindex_to_qp`] first. C instead derives lambda from qindex via
+/// dedicated tables (`lambda_rate_tables.h`, av1_compute_rd_mult path);
+/// porting those is a separate chunk — until then lambda intentionally
+/// stays CLI-qp-driven and deterministic.
 pub fn qp_to_lambda(qp: u8) -> f64 {
     let q = qp as f64;
     0.85 * 2.0_f64.powf((q - 12.0) / 3.0)
 }
 
 /// Assign QP for a picture based on its temporal layer and RC state.
+///
+/// Operates ENTIRELY in the CLI QP domain (0..63), like C's picture_qp:
+/// hierarchical/temporal-layer deltas apply here, and the 0..63 clamps in
+/// each arm are the CLI boundary clamp. The pipeline converts the result
+/// to qindex via [`qp_to_qindex`] exactly once afterwards.
 pub fn assign_picture_qp(config: &RcConfig, state: &RcState, temporal_layer: u8) -> u8 {
     match config.mode {
         RcMode::Cqp => {
@@ -134,6 +187,12 @@ pub fn assign_picture_qp(config: &RcConfig, state: &RcState, temporal_layer: u8)
 /// Returns a QP adjustment: positive for complex (high-motion) frames,
 /// negative for simple (static) frames. This implements a simplified
 /// TPL that distributes bits based on temporal prediction difficulty.
+///
+/// DOMAIN NOTE: the returned delta is in CLI QP units (its ±2/±4
+/// magnitudes were chosen on the 0..63 scale). It is applied to the
+/// CLI-domain picture QP BEFORE the single qp→qindex conversion, so one
+/// CLI step becomes ~4 qindex steps through the table — the sensible
+/// qindex-domain effect without re-tuning the constants.
 pub fn tpl_qp_adjustment(
     source: &[u8],
     reference: &[u8],
@@ -176,6 +235,11 @@ pub fn tpl_qp_adjustment(
 ///
 /// Returns a flat array of QP deltas (one per SB in raster order).
 /// Positive deltas = more complex = higher QP. Negative = simpler = lower QP.
+///
+/// DOMAIN NOTE: deltas are CLI-QP-scale (±2/±4). Currently unused by the
+/// pipeline (per-SB delta_q signaling is not ported); when delta_q lands
+/// these must be converted to qindex units (AV1 signals delta_q_res
+/// steps of qindex), not applied to the CLI qp.
 pub fn tpl_sb_qp_offsets(
     source: &[u8],
     reference: &[u8],
@@ -286,5 +350,39 @@ mod tests {
         // Layer 2 delta = 8, so 62 + 8 = 70 → clamped to 63
         let qp = assign_picture_qp(&config, &state, 2);
         assert_eq!(qp, 63);
+    }
+
+    /// Spot-check the C table endpoints and the non-linear tail
+    /// (md_process.c:20: ..., 240, 244, 249, 255).
+    #[test]
+    fn quantizer_to_qindex_matches_c() {
+        assert_eq!(QUANTIZER_TO_QINDEX[0], 0);
+        assert_eq!(QUANTIZER_TO_QINDEX[1], 4);
+        assert_eq!(QUANTIZER_TO_QINDEX[20], 80);
+        assert_eq!(QUANTIZER_TO_QINDEX[32], 128);
+        assert_eq!(QUANTIZER_TO_QINDEX[40], 160);
+        assert_eq!(QUANTIZER_TO_QINDEX[55], 220);
+        assert_eq!(QUANTIZER_TO_QINDEX[60], 240);
+        assert_eq!(QUANTIZER_TO_QINDEX[61], 244);
+        assert_eq!(QUANTIZER_TO_QINDEX[62], 249);
+        assert_eq!(QUANTIZER_TO_QINDEX[63], 255);
+        // 4*qp for the linear region.
+        for qp in 0..=61u8 {
+            assert_eq!(QUANTIZER_TO_QINDEX[qp as usize], 4 * qp);
+        }
+        // Strictly monotonic over the whole range.
+        for qp in 1..64usize {
+            assert!(QUANTIZER_TO_QINDEX[qp] > QUANTIZER_TO_QINDEX[qp - 1]);
+        }
+    }
+
+    #[test]
+    fn qp_qindex_round_trip() {
+        for qp in 0..=63u8 {
+            assert_eq!(qindex_to_qp(qp_to_qindex(qp)), qp, "round trip at qp {qp}");
+        }
+        // CLI boundary clamp: out-of-range CLI qp saturates to 63 → 255.
+        assert_eq!(qp_to_qindex(90), 255);
+        assert_eq!(qp_to_qindex(255), 255);
     }
 }
