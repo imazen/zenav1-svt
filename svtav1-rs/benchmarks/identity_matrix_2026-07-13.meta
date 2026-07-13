@@ -1,0 +1,13 @@
+date: 2026-07-13
+tool: tools/identity_matrix.sh (bitstream-identity differ per cell)
+matrix: {uniform,gradient} x {64,128} x cli_qp{20,40,55} x preset{13,10,6} = 36
+c_reference: SvtAv1EncApp v4.2.0-rc static, matched still/AVIF CQP --lp 1
+result: 12/36 byte-identical
+  identical set: uniform content at preset 10 AND 13, all qp/sizes
+  divergence stages (first-diverging): SH=12 (all preset-6: enable_filter_intra/
+    restoration seq bits), FH=6 (gradient128 M10/M13: cdef_uv_sec_strength[1] —
+    C CDEF RDO search vs our qp fast path), tile-op=6 (gradient64 M10/M13:
+    partition/mode decision RDO)
+next-fix leverage: preset-6 SH tool-bit signaling (+per-block filter_intra flag,
+  lr_params) unblocks the SH stage for all 12 M6 cells; CDEF RDO search + mode
+  decision RDO are the decision-layer campaign.
