@@ -78,13 +78,16 @@ under the AV1 reference decoder as of 2026-07-13, C baseline v4.2.0-rc)
 > **Identity harness live (2026-07-13):** `tools/identity_diff.sh <w> <h>
 > <qp> <preset> [content]` (or `just identity`) runs Rust + wrapped-C at a
 > matched still/AVIF CQP config and diffs OBU bytes (SH/FH field-level) +
-> canonicalized od_ec op traces. First divergence map with per-class C
-> source cites + priority-ordered fix list: **docs/IDENTITY-STATUS.md**.
-> Headlines: Rust-only frame-level VAQ shifts base_q (CQP ≠ CQP); C always
-> signals TX_MODE_SELECT + per-block tx_depth (we signal LARGEST, no
-> syntax); SH level/CICP/color_range constants differ; op-0 tile
-> divergence is the 64x64 partition decision (C md RDO vs our homegrown
-> partition_search costs).
+> canonicalized od_ec op traces. Divergence map with per-class C source
+> cites + priority-ordered fix list: **docs/IDENTITY-STATUS.md**.
+> **FIRST BYTE-IDENTICAL STREAM 2026-07-13** (commits d72a7641..85d7e0fd):
+> `identity_diff.sh 64 64 40 13 uniform` → VERDICT: streams IDENTICAL
+> (22 bytes, 5/5 EC ops incl. rng). Landed: aq_mode=0 CQP gating (VAQ
+> off by default), C-exact SH level auto-derivation + CICP-unspecified
+> defaults, TX_MODE_SELECT + per-block tx_depth syntax, real
+> entropy-cost partition rates. Remaining (map has details): p6 tool
+> bits (filter_intra/restoration signaling + CDEF RDO search) and
+> textured-content decision parity (md coeff-rate estimation).
 0a. **[FIXED 2026-07-13] Edges-content divergence** — root cause was NOT the
    transforms (all named + dispatch wrapper paths are now pinned bit-exact
    vs C by c_parity_txfm, incl. rect + flat-DC shapes): extract_neighbors
