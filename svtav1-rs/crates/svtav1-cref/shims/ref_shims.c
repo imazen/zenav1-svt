@@ -300,3 +300,54 @@ void ref_inv_txfm2d_add_rect(int32_t w, int32_t h, const int32_t* input, uint16_
     default: break;
     }
 }
+
+/* ---- Deblocking loop filter kernels + thresholds ---- */
+
+#include "deblocking_common.h"
+
+void svt_aom_lpf_horizontal_4_c(uint8_t* s, int32_t p, const uint8_t* blimit, const uint8_t* limit,
+                                const uint8_t* thresh);
+void svt_aom_lpf_vertical_4_c(uint8_t* s, int32_t p, const uint8_t* blimit, const uint8_t* limit,
+                              const uint8_t* thresh);
+void svt_aom_lpf_horizontal_6_c(uint8_t* s, int32_t p, const uint8_t* blimit, const uint8_t* limit,
+                                const uint8_t* thresh);
+void svt_aom_lpf_vertical_6_c(uint8_t* s, int32_t p, const uint8_t* blimit, const uint8_t* limit,
+                              const uint8_t* thresh);
+void svt_aom_lpf_horizontal_8_c(uint8_t* s, int32_t p, const uint8_t* blimit, const uint8_t* limit,
+                                const uint8_t* thresh);
+void svt_aom_lpf_vertical_8_c(uint8_t* s, int32_t p, const uint8_t* blimit, const uint8_t* limit,
+                              const uint8_t* thresh);
+void svt_aom_lpf_horizontal_14_c(uint8_t* s, int p, const uint8_t* blimit, const uint8_t* limit,
+                                 const uint8_t* thresh);
+void svt_aom_lpf_vertical_14_c(uint8_t* s, int p, const uint8_t* blimit, const uint8_t* limit,
+                               const uint8_t* thresh);
+
+/* kind: 0..7 = h4, v4, h6, v6, h8, v8, h14, v14. `off` indexes q0 of the
+   first filtered line; the SIMD-width blimit/limit/thresh arrays only have
+   their first byte read by the _c kernels, so scalars suffice. */
+void ref_lpf(int32_t kind, uint8_t* buf, int32_t off, int32_t pitch, uint8_t blimit, uint8_t limit,
+             uint8_t thresh) {
+    uint8_t* s = buf + off;
+    switch (kind) {
+    case 0: svt_aom_lpf_horizontal_4_c(s, pitch, &blimit, &limit, &thresh); break;
+    case 1: svt_aom_lpf_vertical_4_c(s, pitch, &blimit, &limit, &thresh); break;
+    case 2: svt_aom_lpf_horizontal_6_c(s, pitch, &blimit, &limit, &thresh); break;
+    case 3: svt_aom_lpf_vertical_6_c(s, pitch, &blimit, &limit, &thresh); break;
+    case 4: svt_aom_lpf_horizontal_8_c(s, pitch, &blimit, &limit, &thresh); break;
+    case 5: svt_aom_lpf_vertical_8_c(s, pitch, &blimit, &limit, &thresh); break;
+    case 6: svt_aom_lpf_horizontal_14_c(s, pitch, &blimit, &limit, &thresh); break;
+    case 7: svt_aom_lpf_vertical_14_c(s, pitch, &blimit, &limit, &thresh); break;
+    default: break;
+    }
+}
+
+/* Reference limits per level for a sharpness setting: lim_out/mblim_out are
+   64-entry arrays indexed by filter level (svt_aom_update_sharpness). */
+void ref_lf_limits(int32_t sharpness, uint8_t* lim_out, uint8_t* mblim_out) {
+    static LoopFilterInfoN lfi; /* large; keep off the stack */
+    svt_aom_update_sharpness(&lfi, sharpness);
+    for (int l = 0; l <= MAX_LOOP_FILTER; l++) {
+        lim_out[l]   = lfi.lfthr[l].lim[0];
+        mblim_out[l] = lfi.lfthr[l].mblim[0];
+    }
+}
