@@ -1,9 +1,14 @@
 //! Performance gate baseline: wall-time ratio vs the C reference encoder.
 //!
 //! Generates deterministic test frames, encodes them with our pipeline and
-//! with the C `SvtAv1EncApp` at matched (preset, qindex, still-picture,
+//! with the C `SvtAv1EncApp` at matched (preset, CLI qp, still-picture,
 //! --lp 1) settings, and prints a ratio table plus a CSV row set suitable
 //! for committing under `benchmarks/`.
+//!
+//! QP DOMAIN: the same CLI-domain qp (0..63) goes to RcConfig.qp and to
+//! the C app's `--qp` — both encoders map it through quantizer_to_qindex
+//! (40 -> qindex 160), so the settings are now genuinely matched. Before
+//! the domain split our side ran at qindex 40 while C ran at qindex 160.
 //!
 //! Goal gate: wall time <= 1.20x C at the same preset and --lp. This tool
 //! MEASURES the current honest ratio (expected to be far above the gate
@@ -66,7 +71,7 @@ fn main() {
         "{:<8} {:>7} {:>4} {:>12} {:>12} {:>8}",
         "size", "preset", "q", "rust_ms", "c_ms", "ratio"
     );
-    let mut csv = String::from("size,preset,qindex,rust_ms,c_ms,ratio,commit\n");
+    let mut csv = String::from("size,preset,cli_qp,rust_ms,c_ms,ratio,commit\n");
 
     for &sz in &[256usize, 1024] {
         let y = gen_frame(sz);

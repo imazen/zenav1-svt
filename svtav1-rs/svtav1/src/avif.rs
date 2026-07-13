@@ -270,10 +270,13 @@ impl AvifEncoder {
         self.seg_boost
     }
 
-    /// Map quality (1.0-100.0) to AV1 QP (0-63).
+    /// Map quality (1.0-100.0) to the CLI-domain QP (0-63, C `--qp`
+    /// semantics — NOT an AV1 qindex).
     ///
     /// Quality 100 -> QP 0 (best), quality 1 -> QP 63 (worst).
     /// The mapping is linear: QP = 63 - floor((quality - 1) * 63 / 99).
+    /// The pipeline maps the result through `quantizer_to_qindex` once at
+    /// frame setup (e.g. quality 75 -> qp 16 -> qindex 64).
     pub fn quality_to_qp_static(quality: f32) -> u8 {
         Self::quality_to_qp(quality)
     }

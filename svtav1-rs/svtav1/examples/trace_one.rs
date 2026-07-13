@@ -1,6 +1,9 @@
-//! Encode exactly one conformance case (gradient 64x64 q50 s10) so the
-//! `symtrace` feature's per-symbol log can be diffed against a
+//! Encode exactly one conformance case (gradient 64x64 CLI-qp50 s10) so
+//! the `symtrace` feature's per-symbol log can be diffed against a
 //! gdb-instrumented reference decoder. See tools/decode_conformance.sh.
+//!
+//! The qp argument is CLI-domain (0..63, C `--qp` semantics); the
+//! pipeline maps it to qindex via quantizer_to_qindex (50 -> 200).
 
 use svtav1_encoder::pipeline::EncodePipeline;
 use svtav1_encoder::rate_control::{RcConfig, RcMode};
