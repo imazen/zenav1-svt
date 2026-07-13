@@ -32,7 +32,7 @@ jobs:
       - name: Build C reference (static, the differential oracle)
         run: |
           cmake -S . -B cbuild-static -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_SHARED_LIBS=OFF -DBUILD_APPS=ON -DBUILD_TESTING=OFF
+            -DBUILD_SHARED_LIBS=OFF -DBUILD_APPS=ON -DBUILD_TESTING=OFF -DSVT_AV1_LTO=OFF
           cmake --build cbuild-static
 
       - name: Cache libaom build (aomdec oracle)
