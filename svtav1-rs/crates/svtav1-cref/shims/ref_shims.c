@@ -212,3 +212,91 @@ void ref_inv_txfm2d_add(int32_t n, const int32_t* input, uint16_t* output_r, int
     default: svt_av1_inv_txfm2d_add_64x64_c(input, output_r, stride_r, output_w, stride_w, (TxType)tx_type, 8); break;
     }
 }
+
+/* ---- 2D transform wrappers (rectangular sizes, C reference versions) ---- */
+
+#define DECL_FWD_RECT(W, H) \
+    void svt_av1_fwd_txfm2d_##W##x##H##_c(int16_t* input, int32_t* output, uint32_t input_stride, TxType tx_type, \
+                                          uint8_t bd);
+DECL_FWD_RECT(4, 8)
+DECL_FWD_RECT(8, 4)
+DECL_FWD_RECT(8, 16)
+DECL_FWD_RECT(16, 8)
+DECL_FWD_RECT(16, 32)
+DECL_FWD_RECT(32, 16)
+DECL_FWD_RECT(32, 64)
+DECL_FWD_RECT(64, 32)
+DECL_FWD_RECT(4, 16)
+DECL_FWD_RECT(16, 4)
+DECL_FWD_RECT(8, 32)
+DECL_FWD_RECT(32, 8)
+DECL_FWD_RECT(16, 64)
+DECL_FWD_RECT(64, 16)
+
+/* Small rects take (..., tx_type, tx_size, bd); the rest take
+ * (..., tx_type, tx_size, eob, bd). tx_size/eob are UNUSED in the C bodies. */
+#define DECL_INV_RECT(W, H) \
+    void svt_av1_inv_txfm2d_add_##W##x##H##_c(const int32_t* input, uint16_t* output_r, int32_t stride_r, \
+                                              uint16_t* output_w, int32_t stride_w, TxType tx_type, TxSize tx_size, \
+                                              int32_t bd);
+#define DECL_INV_RECT_EOB(W, H) \
+    void svt_av1_inv_txfm2d_add_##W##x##H##_c(const int32_t* input, uint16_t* output_r, int32_t stride_r, \
+                                              uint16_t* output_w, int32_t stride_w, TxType tx_type, TxSize tx_size, \
+                                              int32_t eob, int32_t bd);
+DECL_INV_RECT(4, 8)
+DECL_INV_RECT(8, 4)
+DECL_INV_RECT(4, 16)
+DECL_INV_RECT(16, 4)
+DECL_INV_RECT_EOB(8, 16)
+DECL_INV_RECT_EOB(16, 8)
+DECL_INV_RECT_EOB(16, 32)
+DECL_INV_RECT_EOB(32, 16)
+DECL_INV_RECT_EOB(32, 64)
+DECL_INV_RECT_EOB(64, 32)
+DECL_INV_RECT_EOB(8, 32)
+DECL_INV_RECT_EOB(32, 8)
+DECL_INV_RECT_EOB(16, 64)
+DECL_INV_RECT_EOB(64, 16)
+
+void ref_fwd_txfm2d_rect(int32_t w, int32_t h, int16_t* input, int32_t* output, uint32_t stride, int32_t tx_type) {
+    const TxType t = (TxType)tx_type;
+    switch (w * 100 + h) {
+    case 408: svt_av1_fwd_txfm2d_4x8_c(input, output, stride, t, 8); break;
+    case 804: svt_av1_fwd_txfm2d_8x4_c(input, output, stride, t, 8); break;
+    case 816: svt_av1_fwd_txfm2d_8x16_c(input, output, stride, t, 8); break;
+    case 1608: svt_av1_fwd_txfm2d_16x8_c(input, output, stride, t, 8); break;
+    case 1632: svt_av1_fwd_txfm2d_16x32_c(input, output, stride, t, 8); break;
+    case 3216: svt_av1_fwd_txfm2d_32x16_c(input, output, stride, t, 8); break;
+    case 3264: svt_av1_fwd_txfm2d_32x64_c(input, output, stride, t, 8); break;
+    case 6432: svt_av1_fwd_txfm2d_64x32_c(input, output, stride, t, 8); break;
+    case 416: svt_av1_fwd_txfm2d_4x16_c(input, output, stride, t, 8); break;
+    case 1604: svt_av1_fwd_txfm2d_16x4_c(input, output, stride, t, 8); break;
+    case 832: svt_av1_fwd_txfm2d_8x32_c(input, output, stride, t, 8); break;
+    case 3208: svt_av1_fwd_txfm2d_32x8_c(input, output, stride, t, 8); break;
+    case 1664: svt_av1_fwd_txfm2d_16x64_c(input, output, stride, t, 8); break;
+    case 6416: svt_av1_fwd_txfm2d_64x16_c(input, output, stride, t, 8); break;
+    default: break;
+    }
+}
+
+void ref_inv_txfm2d_add_rect(int32_t w, int32_t h, const int32_t* input, uint16_t* output_r, int32_t stride_r,
+                             uint16_t* output_w, int32_t stride_w, int32_t tx_type) {
+    const TxType t = (TxType)tx_type;
+    switch (w * 100 + h) {
+    case 408: svt_av1_inv_txfm2d_add_4x8_c(input, output_r, stride_r, output_w, stride_w, t, TX_4X8, 8); break;
+    case 804: svt_av1_inv_txfm2d_add_8x4_c(input, output_r, stride_r, output_w, stride_w, t, TX_8X4, 8); break;
+    case 416: svt_av1_inv_txfm2d_add_4x16_c(input, output_r, stride_r, output_w, stride_w, t, TX_4X16, 8); break;
+    case 1604: svt_av1_inv_txfm2d_add_16x4_c(input, output_r, stride_r, output_w, stride_w, t, TX_16X4, 8); break;
+    case 816: svt_av1_inv_txfm2d_add_8x16_c(input, output_r, stride_r, output_w, stride_w, t, TX_8X16, 0, 8); break;
+    case 1608: svt_av1_inv_txfm2d_add_16x8_c(input, output_r, stride_r, output_w, stride_w, t, TX_16X8, 0, 8); break;
+    case 1632: svt_av1_inv_txfm2d_add_16x32_c(input, output_r, stride_r, output_w, stride_w, t, TX_16X32, 0, 8); break;
+    case 3216: svt_av1_inv_txfm2d_add_32x16_c(input, output_r, stride_r, output_w, stride_w, t, TX_32X16, 0, 8); break;
+    case 3264: svt_av1_inv_txfm2d_add_32x64_c(input, output_r, stride_r, output_w, stride_w, t, TX_32X64, 0, 8); break;
+    case 6432: svt_av1_inv_txfm2d_add_64x32_c(input, output_r, stride_r, output_w, stride_w, t, TX_64X32, 0, 8); break;
+    case 832: svt_av1_inv_txfm2d_add_8x32_c(input, output_r, stride_r, output_w, stride_w, t, TX_8X32, 0, 8); break;
+    case 3208: svt_av1_inv_txfm2d_add_32x8_c(input, output_r, stride_r, output_w, stride_w, t, TX_32X8, 0, 8); break;
+    case 1664: svt_av1_inv_txfm2d_add_16x64_c(input, output_r, stride_r, output_w, stride_w, t, TX_16X64, 0, 8); break;
+    case 6416: svt_av1_inv_txfm2d_add_64x16_c(input, output_r, stride_r, output_w, stride_w, t, TX_64X16, 0, 8); break;
+    default: break;
+    }
+}
