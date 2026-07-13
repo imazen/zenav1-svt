@@ -70,44 +70,35 @@ This applies to:
 
 ## Known Bugs — BLOCKING
 
-1. **Tile data does not decode under the reference decoder (aomdec): coefficient
-   writer uses wrong tables + wrong context indexing** — 0/525 conformance-matrix
-   streams decode. Symbol-trace diff (tools: `symtrace` feature + gdb script on a
-   debug aomdec) shows the first stream divergence at symbol op 14: encoder used
-   eob_base_tok CDF [602,250] where the decoder expects [1903,120] — both rows
-   exist in the C defaults at *different coordinates*. The old `coeff.rs` tables
-   are flattened/partially-uniform inventions. Fix underway: C-exact tables now
-   live in `default_cdfs.rs` (generated from libSvtAv1Enc.a); the writer must be
-   re-ported from C `av1_write_coeffs_txb_1d` (entropy_coding.c:448) with C
-   context derivation (`svt_av1_get_nz_map_contexts`, `get_br_ctx`,
-   `svt_aom_get_txb_ctx`).
+(none — decode conformance gate is green: 525/525 matrix streams decode
+under the AV1 reference decoder as of 2026-07-13, C baseline v4.2.0-rc)
 
-2. **Prior "decode PASS" claims were rav1d-leniency artifacts** — the old zenavif
-   rav1d-safe checks accepted streams the reference decoder rejects (and "PASS
-   PSNR 11.1 dB" was garbage output). aomdec via `tools/decode_conformance.sh`
-   is now the decode gate. Do not trust pre-2026-07-13 conformance claims.
+### Next structural gaps toward C bit-identity (not decode blockers)
+1. **Chroma (4:2:0) support** — C SVT-AV1 cannot emit monochrome
+   (write_color_config hardcodes is_monochrome=0); our pipeline is
+   luma-only mono. Bit-identity requires 3-plane 4:2:0 encoding + chroma
+   syntax (uv_mode, chroma txbs) end to end.
+2. **Filter signaling** — the pipeline applies deblock/CDEF/restoration to
+   its recon but signals them OFF in headers, so decoder recon != encoder
+   recon (quality bug, not a parse bug). Signal or stop applying until the
+   C filter-search ports land.
+3. **Decision-layer parity** — headers/coeff syntax are now C-exact at the
+   writer level, but partitions/modes/qcoeffs come from our own RDO.
+   Bit-identity requires porting C's mode decision, and the tile writer
+   should migrate to C's av1_encode_tx_coef_y ordering as multi-txb
+   blocks appear (tx_depth > 0).
 
-3. **Monochrome is a dead end for C parity** — C SVT-AV1 hardcodes
-   `is_monochrome = 0` (write_color_config); it cannot emit mono streams. The
-   Rust pipeline is currently luma-only and signals mono_chrome=1 (spec-legal,
-   now parses after the color_range fix). For bit-identity the pipeline must
-   encode 4:2:0 with chroma planes + chroma syntax. Structural work item.
-
-4. **Filter signaling inconsistency** — the encoder pipeline applies
-   deblock/CDEF/restoration to its recon but signals them OFF in headers
-   (enable_cdef=0, lf levels 0). Decoder recon therefore diverges from encoder
-   recon (the "PSNR 11 dB" garbage). Either signal the filters or stop applying
-   them until the C-faithful filter-signaling port lands.
-
-### Fixed this wave (2026-07-13, wave2/entropy-c-parity)
-- Range coder + update_cdf are now exact C ports, proven byte-identical by
-  differential fuzz vs libSvtAv1Enc.a (`svtav1-cref` harness, tests/c_parity.rs).
-- SH: monochrome color_config now writes the required color_range bit.
-- FH: disable_cdf_update always signaled; delta_q_present gated on qidx>0.
-- OBU_FRAME: FH ends with zero byte_alignment (was trailing-one).
-- Tile group: no TG header bits for single tile; zero-align for multi.
-- Default CDFs: all coefficient+mode tables extracted from C into
-  `default_cdfs.rs` with a drift test pinning them to the linked library.
+### Recently fixed (2026-07-13, wave2/entropy-c-parity)
+- 525/525 decode conformance via: C-exact range coder + update_cdf
+  (differential-fuzzed vs libSvtAv1Enc.a), C default CDF tables + scan
+  orders (generated + drift-tested), C-exact coefficient writer
+  (av1_write_coeffs_txb_1d port with real txb_skip/dc_sign neighbor
+  contexts), SH/FH/tile-group bit-layout fixes, ext-partition child
+  geometry (was coding all children at the parent origin), angle_delta
+  gated to >=8x8 blocks, and mode syntax made unconditional (skip only
+  gates residuals — this was the all-skip decode failure).
+- C baseline updated to upstream v4.2.0-rc; all parity suites re-verified
+  against the new library.
 
 ## Investigation Notes
 

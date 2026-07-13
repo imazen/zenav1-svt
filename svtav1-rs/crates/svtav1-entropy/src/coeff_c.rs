@@ -86,6 +86,32 @@ pub const fn txb_high(tx_size: usize) -> usize {
     TX_SIZE_HIGH[adjusted_tx_size(tx_size)]
 }
 
+/// Map transform dimensions in pixels to the C `TxSize` index.
+pub fn tx_size_from_dims(w: usize, h: usize) -> usize {
+    match (w, h) {
+        (4, 4) => TX_4X4,
+        (8, 8) => TX_8X8,
+        (16, 16) => TX_16X16,
+        (32, 32) => TX_32X32,
+        (64, 64) => TX_64X64,
+        (4, 8) => TX_4X8,
+        (8, 4) => TX_8X4,
+        (8, 16) => TX_8X16,
+        (16, 8) => TX_16X8,
+        (16, 32) => TX_16X32,
+        (32, 16) => TX_32X16,
+        (32, 64) => TX_32X64,
+        (64, 32) => TX_64X32,
+        (4, 16) => TX_4X16,
+        (16, 4) => TX_16X4,
+        (8, 32) => TX_8X32,
+        (32, 8) => TX_32X8,
+        (16, 64) => TX_16X64,
+        (64, 16) => TX_64X16,
+        _ => panic!("no TxSize for {w}x{h}"),
+    }
+}
+
 /// C `get_txsize_entropy_ctx`.
 #[inline]
 pub const fn txsize_entropy_ctx(tx_size: usize) -> usize {
