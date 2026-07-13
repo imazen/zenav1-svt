@@ -87,15 +87,21 @@ under the AV1 reference decoder as of 2026-07-13, C baseline v4.2.0-rc)
 > defaults, TX_MODE_SELECT + per-block tx_depth syntax, real
 > entropy-cost partition rates.
 > **PRESET-6 IDENTICAL 2026-07-13** (commits 084d2c13e+eab9d8860):
-> matrix now **18/36** — uniform is byte-identical at ALL tracked
+> matrix 18/36 — uniform is byte-identical at ALL tracked
 > presets (13/10/6) x {64,128} x qp{20,40,55}. Landed: C-exact allintra
 > SH tool bits (filter_intra/restoration per preset,
 > seq_tools_for_preset), FH lr_params all-RESTORE_NONE syntax,
 > per-block use_filter_intra flag (DC <=32x32, always 0), CDEF
-> all-skip-frame search outcome (bits=0/strengths 0). Remaining (map
-> has details): CDEF RDO search for non-all-skip frames and
-> textured-content decision parity (md coeff-rate estimation) — all 18
-> gradient cells.
+> all-skip-frame search outcome (bits=0/strengths 0).
+> **GRADIENT M13/M10 IDENTICAL 2026-07-13** (PD0 partition port
+> ffb73bcf2+60b006b85, is_dc_only_safe leaf gate b7f362af4, C-exact
+> coding quantizer ee18fed11 — quant.rs: quantize_b / quantize_fp +
+> svt_av1_optimize_b RDOQ trellis + coeff_lvl->rdoq_level policy):
+> matrix now **30/36** — every uniform AND every gradient M13/M10 cell
+> is byte-identical. Remaining (map has details): the 6 gradient
+> preset-6 cells — M6 PD0 architecture (prediction-based pd0_lvl 1 +
+> nsq geometry) owns 5 partition tile-op cells, the CDEF live-block
+> RDO search owns the g64 q55 p6 FH cell.
 0a. **[FIXED 2026-07-13] Edges-content divergence** — root cause was NOT the
    transforms (all named + dispatch wrapper paths are now pinned bit-exact
    vs C by c_parity_txfm, incl. rect + flat-DC shapes): extract_neighbors
@@ -185,8 +191,13 @@ under the AV1 reference decoder as of 2026-07-13, C baseline v4.2.0-rc)
    inter-frame deblock/CDEF (signaled 0, applied nothing), the C
    SSE-based filter-level search (we ship LPF_PICK_FROM_Q only), and the
    CDEF RDO live-block search (2a).
-3. **Decision-layer parity** — partitions/modes/qcoeffs still come from our
-   own RDO; port C mode decision after pixel-path parity.
+3. **Decision-layer parity** — CLOSED for the still M13/M10 path
+   (2026-07-13): partitions come from the C-exact PD0 port (pd0.rs),
+   leaf modes from the is_dc_only_safe gate + candidate funnel, and
+   qcoeffs from the C-exact coding quantizer (quant.rs: quantize_b /
+   quantize_fp + svt_av1_optimize_b RDOQ). Still homegrown: preset <= 8
+   decisions (M6 PD0 architecture + nsq), inter frames, and the
+   non-DC-only leaf cost funnel (currently agrees at every tracked cell).
 4. **[FIXED 2026-07-13] Intra edge preparation** — directional
    predictions padded extension arrays with 128 where the decoder
    replicates edges / uses real above-right/bottom-left pixels. Fixed by
