@@ -17,21 +17,21 @@ uniform	128	40	6	IDENTICAL	-	-
 uniform	128	55	13	IDENTICAL	-	-
 uniform	128	55	10	IDENTICAL	-	-
 uniform	128	55	6	IDENTICAL	-	-
-gradient	64	20	13	DIFFERS	tile-op	op 21
-gradient	64	20	10	DIFFERS	tile-op	op 21
+gradient	64	20	13	IDENTICAL	-	-
+gradient	64	20	10	IDENTICAL	-	-
 gradient	64	20	6	DIFFERS	tile-op	op 0
-gradient	64	40	13	DIFFERS	tile-op	op 8
-gradient	64	40	10	DIFFERS	tile-op	op 8
+gradient	64	40	13	IDENTICAL	-	-
+gradient	64	40	10	IDENTICAL	-	-
 gradient	64	40	6	DIFFERS	tile-op	op 0
-gradient	64	55	13	DIFFERS	tile-op	op 8
-gradient	64	55	10	DIFFERS	tile-op	op 8
+gradient	64	55	13	IDENTICAL	-	-
+gradient	64	55	10	IDENTICAL	-	-
 gradient	64	55	6	DIFFERS	FH	cdef_y_pri_strength[0]=0               | R @50   cdef_y_pri_strength[0]=10
-gradient	128	20	13	DIFFERS	tile-op	op 10
-gradient	128	20	10	DIFFERS	tile-op	op 10
+gradient	128	20	13	IDENTICAL	-	-
+gradient	128	20	10	IDENTICAL	-	-
 gradient	128	20	6	DIFFERS	tile-op	op 1
-gradient	128	40	13	DIFFERS	FH	cdef_uv_pri_strength[2]=13             | R @80   cdef_uv_pri_strength[2]=14
-gradient	128	40	10	DIFFERS	FH	cdef_uv_pri_strength[2]=13             | R @80   cdef_uv_pri_strength[2]=14
+gradient	128	40	13	IDENTICAL	-	-
+gradient	128	40	10	IDENTICAL	-	-
 gradient	128	40	6	DIFFERS	tile-op	op 0
-gradient	128	55	13	DIFFERS	FH	cdef_uv_pri_strength[2]=3              | R @80   cdef_uv_pri_strength[2]=8
-gradient	128	55	10	DIFFERS	FH	cdef_uv_pri_strength[2]=3              | R @80   cdef_uv_pri_strength[2]=8
+gradient	128	55	13	IDENTICAL	-	-
+gradient	128	55	10	IDENTICAL	-	-
 gradient	128	55	6	DIFFERS	tile-op	op 0
