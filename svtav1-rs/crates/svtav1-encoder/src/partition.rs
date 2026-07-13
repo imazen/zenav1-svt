@@ -152,6 +152,21 @@ impl<'a> RefFrameCtx<'a> {
 /// The buffer is the live frame (or SB) reconstruction written in coding
 /// order, so above/left pixels — including those inside the current
 /// superblock — are always current, exactly as the decoder sees them.
+///
+/// Unavailable edges are filled with the C decoder's rules
+/// (libaom reconintra.c build_intra_predictors):
+/// - above row missing: fill with left_ref[0] if the left column exists,
+///   else 127
+/// - left column missing: fill with above_ref[0] if the above row exists,
+///   else 129
+/// - top-left: above_ref[-1] if both exist; above_ref[0] if only above;
+///   left_ref[0] if only left; 128 if neither
+/// - samples past the reconstructed area extend the last available sample
+///
+/// Filling with anything else (previously a flat 128) makes the encoder
+/// predict from pixels the decoder never sees: an edge V_PRED block coded
+/// against pred=128 decodes against pred=left_ref[0], corrupting the
+/// reconstruction by the difference.
 fn extract_neighbors(
     recon: &[u8],
     stride: usize,
@@ -163,34 +178,61 @@ fn extract_neighbors(
     let has_above = abs_y > 0;
     let has_left = abs_x > 0;
 
-    let above = if has_above {
-        let row = abs_y - 1;
-        (0..width)
-            .map(|i| {
-                let x = abs_x + i;
-                let idx = row * stride + x;
-                if x < stride && idx < recon.len() { recon[idx] } else { 128 }
-            })
-            .collect()
+    // C left_ref[0] / above_ref[0]: the first sample of each neighbor edge.
+    let left_ref0 = if has_left {
+        recon.get(abs_y * stride + abs_x - 1).copied()
     } else {
-        alloc::vec![128u8; width]
+        None
+    };
+    let above_ref0 = if has_above {
+        recon.get((abs_y - 1) * stride + abs_x).copied()
+    } else {
+        None
     };
 
-    let left = if has_left {
-        let col = abs_x - 1;
-        (0..height)
-            .map(|i| {
-                let idx = (abs_y + i) * stride + col;
-                if idx < recon.len() { recon[idx] } else { 128 }
-            })
-            .collect()
+    let above: alloc::vec::Vec<u8> = if has_above {
+        let row = abs_y - 1;
+        let mut v = alloc::vec::Vec::with_capacity(width);
+        let mut last = above_ref0.unwrap_or(127);
+        for i in 0..width {
+            let x = abs_x + i;
+            let idx = row * stride + x;
+            if x < stride && idx < recon.len() {
+                last = recon[idx];
+            }
+            // else: extend the last available sample, like C
+            v.push(last);
+        }
+        v
     } else {
-        alloc::vec![128u8; height]
+        alloc::vec![left_ref0.unwrap_or(127); width]
+    };
+
+    let left: alloc::vec::Vec<u8> = if has_left {
+        let col = abs_x - 1;
+        let mut v = alloc::vec::Vec::with_capacity(height);
+        let mut last = left_ref0.unwrap_or(129);
+        for i in 0..height {
+            let idx = (abs_y + i) * stride + col;
+            if idx < recon.len() {
+                last = recon[idx];
+            }
+            v.push(last);
+        }
+        v
+    } else {
+        alloc::vec![above_ref0.unwrap_or(129); height]
     };
 
     let top_left = if has_above && has_left {
-        let idx = (abs_y - 1) * stride + abs_x - 1;
-        if idx < recon.len() { recon[idx] } else { 128 }
+        recon
+            .get((abs_y - 1) * stride + abs_x - 1)
+            .copied()
+            .unwrap_or(128)
+    } else if has_above {
+        above_ref0.unwrap_or(128)
+    } else if has_left {
+        left_ref0.unwrap_or(128)
     } else {
         128
     };
@@ -1650,13 +1692,43 @@ mod tests {
 
     #[test]
     fn extract_neighbors_frame_edge() {
+        // Both edges unavailable: the C decoder fills above with base-1 = 127
+        // and left with base+1 = 129 (libaom reconintra.c), top-left 128.
         let frame = vec![100u8; 64 * 64];
         let (above, left, tl, has_above, has_left) = extract_neighbors(&frame, 64, 0, 0, 8, 8);
         assert!(!has_above);
         assert!(!has_left);
-        assert!(above.iter().all(|&v| v == 128));
-        assert!(left.iter().all(|&v| v == 128));
+        assert!(above.iter().all(|&v| v == 127), "above fill: {above:?}");
+        assert!(left.iter().all(|&v| v == 129), "left fill: {left:?}");
         assert_eq!(tl, 128);
+    }
+
+    #[test]
+    fn extract_neighbors_single_edge_fill_matches_c() {
+        // Above missing + left available: above[] = left_ref[0].
+        // Left missing + above available: left[] = above_ref[0].
+        let w = 64;
+        let mut frame = vec![0u8; w * w];
+        for r in 0..w {
+            for c in 0..w {
+                frame[r * w + c] = if c < 8 { 32 } else { 224 };
+            }
+        }
+        // Block at (8, 0): top frame edge, left column available (value 32).
+        let (above, left, tl, has_above, has_left) = extract_neighbors(&frame, w, 8, 0, 8, 8);
+        assert!(!has_above);
+        assert!(has_left);
+        assert!(above.iter().all(|&v| v == 32), "above = left_ref[0]: {above:?}");
+        assert!(left.iter().all(|&v| v == 32));
+        assert_eq!(tl, 32, "top-left = left_ref[0] when only left exists");
+
+        // Block at (0, 8): left frame edge, above row available (value 32).
+        let (above, left, tl, has_above, has_left) = extract_neighbors(&frame, w, 0, 8, 8, 8);
+        assert!(has_above);
+        assert!(!has_left);
+        assert!(above.iter().all(|&v| v == 32));
+        assert!(left.iter().all(|&v| v == 32), "left = above_ref[0]: {left:?}");
+        assert_eq!(tl, 32, "top-left = above_ref[0] when only above exists");
     }
 
     #[test]
