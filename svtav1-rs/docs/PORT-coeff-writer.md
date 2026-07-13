@@ -111,3 +111,33 @@ split ctx-vs-sbrecon design exists only to appease borrowck). Then:
 - re-run flat-140 (expect all-140) then full PSNR sweep vs aomdec output
 - after that: stop applying unsignaled loop filters (or signal them) and
   re-measure; then chroma 4:2:0.
+
+
+## 2D transform wrapper divergence — full diagnosis (2026-07-13, evening)
+
+`crates/svtav1-dsp/tests/c_parity_txfm.rs` (RED on purpose) pins both bugs
+against the linked C library:
+
+1. **Forward: per-size cos bits.** C `fwd_cos_bit_col/row[txw][txh]`
+   (transforms.c:17-20) uses 13/12/11/10 depending on size; our 1D kernels
+   bake cos_bit=12. Symptom: 4x4 fwd off-by-one from row 1 onward
+   (row 0 exact). Fix: parameterize the 26 kernels on cos_bit (cospi table
+   selected per bit like C `cospi_arr(cos_bit)`), thread per-size bits
+   through fwd_txfm2d/fwd_txfm2d_rect.
+2. **Inverse: stage-range clamps were REMOVED.** inv_txfm.rs comments at
+   lines ~200/343/680: "clamp_value replaced with plain add/subtract (wide
+   stage_range)". C clamps every stage to gen_inv_stage_range (=16 bits at
+   bd=8, inv_transforms.c:43-80) plus clamp_buf(bd+8) before the row pass
+   and clamp_buf(max(bd+6,16)) before the col pass. With real coefficient
+   energy the clamps fire constantly; our recon diverges wildly (probe:
+   ours=255 vs c=192 at 16x16). Fix: restore clamp_value in all inverse
+   kernels with real ranges, port inv_txfm2d_add_c exactly
+   (row-first order, inv_shift_ls table {0/-1/-2, -4}, per-size
+   inv_cos_bit tables, pixel add+clip).
+3. Also: for 64-dim transforms the encoder must zero coefficients outside
+   the top-left 32x32 BEFORE recon (they are dropped at EC packing, so the
+   encoder recon currently includes energy the decoder never sees).
+
+Verification once fixed: c_parity_txfm green, then PSNR probes
+(gradient 64 qindex30 should jump from 11.7 dB to sane 40+), then the
+conformance matrix, then per-block recon compare vs aomdec output.

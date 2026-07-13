@@ -328,3 +328,46 @@ pub fn dc_quant_qtx(qindex: i32) -> i16 {
 pub fn ac_quant_qtx(qindex: i32) -> i16 {
     unsafe { ref_ac_quant_qtx(qindex) }
 }
+
+// ---- 2D transform wrappers ----
+
+unsafe extern "C" {
+    fn ref_fwd_txfm2d(n: i32, input: *mut i16, output: *mut i32, stride: u32, tx_type: i32);
+    fn ref_inv_txfm2d_add(
+        n: i32,
+        input: *const i32,
+        output_r: *const u16,
+        stride_r: i32,
+        output_w: *mut u16,
+        stride_w: i32,
+        tx_type: i32,
+    );
+}
+
+/// Reference 2D forward transform (square `n`, 8-bit).
+pub fn fwd_txfm2d(n: usize, input: &[i16], tx_type: usize) -> Vec<i32> {
+    assert!(input.len() >= n * n);
+    let mut out = vec![0i32; n * n];
+    let mut inp = input.to_vec();
+    unsafe { ref_fwd_txfm2d(n as i32, inp.as_mut_ptr(), out.as_mut_ptr(), n as u32, tx_type as i32) };
+    out
+}
+
+/// Reference 2D inverse transform + add onto `base` (square `n`, 8-bit).
+/// Returns the reconstructed pixels.
+pub fn inv_txfm2d_add(n: usize, coeffs: &[i32], base: &[u16], tx_type: usize) -> Vec<u16> {
+    assert!(coeffs.len() >= n * n && base.len() >= n * n);
+    let mut out = vec![0u16; n * n];
+    unsafe {
+        ref_inv_txfm2d_add(
+            n as i32,
+            coeffs.as_ptr(),
+            base.as_ptr(),
+            n as i32,
+            out.as_mut_ptr(),
+            n as i32,
+            tx_type as i32,
+        )
+    };
+    out
+}
