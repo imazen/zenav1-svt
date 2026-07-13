@@ -999,3 +999,57 @@ mod cross_module {
         assert!(large.len() > small.len());
     }
 }
+
+// =============================================================================
+// Determinism gate (goal: identical output regardless of --lp)
+// =============================================================================
+
+/// Determinism gate: identical bitstreams across repeated encodes and across
+/// independently-constructed pipelines.
+///
+/// NOTE: tile-parallel encoding is currently disabled (tile_rows = 1 in the
+/// pipeline), so thread-count invariance is vacuously satisfied; this test is
+/// the tripwire that must be extended to sweep the thread/tile knob the
+/// moment the parallelism model lands. The C reference guarantees
+/// thread-count-invariant output; ours must too.
+#[test]
+fn determinism_repeated_encodes_are_byte_identical() {
+    let w = 128usize;
+    let h = 128usize;
+    let mut src = vec![0u8; w * h];
+    for r in 0..h {
+        for c in 0..w {
+            src[r * w + c] = (((r * 255) / h) as u8) ^ (((c * 7) & 0x3F) as u8);
+        }
+    }
+    let encode = || {
+        let rc = svtav1_encoder::rate_control::RcConfig {
+            mode: svtav1_encoder::rate_control::RcMode::Cqp,
+            qp: 40,
+            ..Default::default()
+        };
+        let mut p = svtav1_encoder::pipeline::EncodePipeline::new(w as u32, h as u32, 4, rc, 0, 1);
+        p.encode_frame(&src, w)
+    };
+    let a = encode();
+    let b = encode();
+    assert!(!a.is_empty());
+    assert_eq!(a, b, "same input + config must produce byte-identical streams");
+
+    // And the same through the 4:2:0 path.
+    let u = vec![90u8; (w / 2) * (h / 2)];
+    let v = vec![160u8; (w / 2) * (h / 2)];
+    let encode420 = || {
+        let rc = svtav1_encoder::rate_control::RcConfig {
+            mode: svtav1_encoder::rate_control::RcMode::Cqp,
+            qp: 40,
+            ..Default::default()
+        };
+        let mut p = svtav1_encoder::pipeline::EncodePipeline::new(w as u32, h as u32, 4, rc, 0, 1)
+            .with_chroma_420(true);
+        p.encode_frame_420(&src, &u, &v, w)
+    };
+    let a = encode420();
+    let b = encode420();
+    assert_eq!(a, b, "420 path must be deterministic too");
+}

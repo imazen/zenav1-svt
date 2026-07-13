@@ -1,0 +1,9 @@
+date: 2026-07-13
+host: dev-32gb (16 cores, x86-64)
+command: cargo run --release -p svtav1 --example perf_vs_c
+settings: --lp 1, still-picture (--avif 1), CQP qindex 40, median of 3
+c_reference: SvtAv1EncApp v4.2.0-rc (in-tree build, Release)
+rust_build: release, no target-cpu=native (runtime dispatch as shipped)
+caveats: C timings include app process startup (~constant ms, biases in C's
+  favor at small sizes); rust timings are frame-encode only with warm buffers.
+  Baseline for the <=1.20x gate ratchet — decision-layer and SIMD ports pending.
