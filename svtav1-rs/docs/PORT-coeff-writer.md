@@ -91,3 +91,23 @@ struct = { scan, iscan, neighbors? } — check coefficients.h struct def).
 - [ ] helper ports + differential tests
 - [ ] writer port (coeff_c.rs), pipeline rewire, old v2 writer removal
 - [ ] chroma (4:2:0) support — REQUIRED for C parity (C cannot emit mono)
+
+## Next surgery: prediction neighbors (pixel-path blocker, diagnosed 2026-07-13)
+
+Mechanism (proven by flat-140 probe): `tile_frame_recon` is updated only
+AFTER each SB finishes (pipeline.rs ~1263), so within an SB every block's
+neighbor extraction (partition.rs FrameReconCtx / extract_neighbors) reads
+stale 128-init recon. First block decodes exactly; later blocks re-add the
+residual on top of the decoder's correct neighbor prediction (+12 ramp to
+255 on flat-140).
+
+Fix shape: make partition_search write recon THROUGH the tile/frame recon
+buffer (stride = frame width) instead of a local sb_recon, and extract
+neighbors from that same buffer internally (single &mut borrow; the current
+split ctx-vs-sbrecon design exists only to appease borrowck). Then:
+- in-SB neighbors are fresh automatically; cross-SB edges unchanged
+- delete the post-SB copy loop; tile_recon extraction copies FROM the frame
+  buffer
+- re-run flat-140 (expect all-140) then full PSNR sweep vs aomdec output
+- after that: stop applying unsignaled loop filters (or signal them) and
+  re-measure; then chroma 4:2:0.
