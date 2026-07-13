@@ -141,3 +141,24 @@ against the linked C library:
 Verification once fixed: c_parity_txfm green, then PSNR probes
 (gradient 64 qindex30 should jump from 11.7 dB to sane 40+), then the
 conformance matrix, then per-block recon compare vs aomdec output.
+
+### FIXED (2026-07-13, wave2/entropy-c-parity)
+
+All three items landed; `c_parity_txfm` is GREEN (both tests, 5 sizes x 24
+trials) and the conformance matrix is back to 525/0:
+
+1. Forward: kernels parameterized on cos_bit (cospi_arr 10..16), per-size
+   `FWD_COS_BIT_COL/ROW` + C `fwd_txfm_shift` threaded through a C-exact
+   `fwd_txfm2d_core` (also fixes 64-dim shifts and the bogus 4:1 2*sqrt2
+   scale). df3bbf91a
+2. Inverse: clamp_value restored at every C site (counts verified per
+   kernel: 4/16/48/128/320/16/48), C-exact `inv_txfm2d_core` with
+   clamp_buf(16)/round_shift/inv_shift tables/WRAPLOW residuals, 64-dim
+   mod_input remap. d0af4d16b
+3. Encoder zeroes 64-dim coefficients outside the top-left 32x32 before
+   recon. 04750c2fc
+
+Bonus find: the recon fix let H/V_PRED win RDO on 4x16/16x4 blocks, which
+exposed a dormant writer bug — angle_delta was gated on `w>=8 && h>=8`
+instead of C `av1_use_angle_delta` (enum compare; 4x16/16x4 DO signal it).
+30 gradient streams desynced until 49eae41d8 fixed the gate.
