@@ -45,3 +45,7 @@ semver:
 # Generate docs
 doc:
     cargo doc --workspace --no-deps --open
+
+# Bitstream-identity harness vs C SVT-AV1 (report: docs/IDENTITY-STATUS.md)
+identity w="64" h="64" qp="40" preset="13" content="uniform":
+    tools/identity_diff.sh {{w}} {{h}} {{qp}} {{preset}} {{content}}
