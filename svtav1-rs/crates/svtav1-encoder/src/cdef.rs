@@ -94,6 +94,59 @@ pub fn pick_cdef_params_key_frame(qindex: u8) -> CdefFrameParams {
     }
 }
 
+/// Whether C's allintra path runs the CDEF RDO *search* (vs the
+/// `use_qp_strength` fast path) at this preset.
+///
+/// C: `svt_aom_sig_deriv_multi_processes_allintra` cdef derivation
+/// (enc_mode_config.c:3543-3600, `fast_decode == 0` branch — our configs):
+/// MR -> level 1, M0 -> 2, M1..M3 -> 3, M4..M5 -> 5, M6 -> 7, M7+ ->
+/// level 10 (OPT_CDEF_PRI_ONLY=1 && FIX_RTC_M13=1, EbDebugMacros.h:59/114).
+/// `set_cdef_search_controls`: levels 1..=7 all set
+/// `use_qp_strength = false` (search); level 10 sets it true
+/// (enc_mode_config.c:1688-1692). So in the u8 preset domain: search for
+/// presets 0..=6, qp fast path for 7+ (MR = -1 is unreachable).
+pub fn allintra_preset_uses_cdef_search(preset: u8) -> bool {
+    preset <= 6
+}
+
+/// The C-exact `finish_cdef_search` outcome for a frame in which EVERY
+/// 64x64 filter block is CDEF-skipped (`sb_count == 0`) at a search
+/// preset — the still/allintra <=M6 case for all-skip content.
+///
+/// Trace of enc_cdef.c:1129-1449 with `use_qp_strength = false`,
+/// `use_reference_cdef_fs = 0` (I_SLICE: case-7 sets it from
+/// `is_not_highest_layer`, which is TRUE for a KEY/KF_UPDATE frame —
+/// `frame_is_leaf` = LF_UPDATE only, enc_mode_config.h:192 — and
+/// `update_cdef_filters_on_ref_info` only mutates non-I slices,
+/// md_config_process.c:709-711) and `sb_count == 0`:
+///
+/// - `joint_strength_search_dual` with 0 filter blocks leaves
+///   `best_lev0/1 = {0}` and returns tot_mse 0 (svt_search_one_dual's
+///   accumulators stay zero; the argmin lands on (0,0),
+///   enc_cdef.c:740-811).
+/// - The nb_strength_bits loop then minimizes pure rate:
+///   `total_bits = sb_count*i + (1<<i)*CDEF_STRENGTH_BITS*2` — strictly
+///   increasing in i at sb_count 0, so `cdef_bits = 0` wins
+///   (enc_cdef.c:1368-1388).
+/// - The final strength remap `filter_map[best_lev] = pf_gi[0] = 0`
+///   (enc_mode_config.c:16), so `cdef_y_strength[0] =
+///   cdef_uv_strength[0] = 0`.
+/// - `cdef_damping = 3 + (base_q_idx >> 6)` (enc_cdef.c:1446) — same
+///   formula as the qp path.
+///
+/// The outcome is independent of lambda and zero_fs_cost_bias (both only
+/// touch per-fb mse rows; there are none). This is the ONLY piece of the
+/// RDO search ported so far: frames with any non-skip filter block at a
+/// search preset still take the qp fast path and hence still diverge
+/// from C's searched strengths (gap 2a, narrowed).
+pub fn pick_cdef_params_all_skip_search(qindex: u8) -> CdefFrameParams {
+    CdefFrameParams {
+        damping: 3 + (qindex >> 6),
+        y_strength: 0,
+        uv_strength: 0,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Decoder-exact frame application
 // ---------------------------------------------------------------------------
