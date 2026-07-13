@@ -157,6 +157,24 @@ under the AV1 reference decoder as of 2026-07-13, C baseline v4.2.0-rc)
    load-bearing.
 
 ### Recently fixed (2026-07-13, wave2/entropy-c-parity)
+- **QP domain split (C-exact)**: RcConfig.qp is CLI 0..63 like C's
+  `--qp`; the pipeline converts ONCE at frame setup via the verbatim
+  `quantizer_to_qindex[64]` port (rate_control.rs, from C
+  md_process.c:20) and everything downstream (quant tables, FH
+  base_q_idx, CDF q bucket, chroma, deblock picker) consumes qindex
+  0..255. Lambda stays CLI-qp-calibrated via `qindex_to_qp` (exact
+  inverse on table values) until C's lambda_rate_tables.h port. The old
+  conflation capped the reachable range at qindex 63 and made "qp 70/90"
+  matrix cells silent duplicates of qindex 63.
+- **VERT_A/VERT_B intra edge availability**: their children now select
+  the C has_tr_vert_*/has_bl_vert_* tables (partition type threaded
+  through encode_single_block -> build_directional_edges). The generic
+  tables coded VertA D-mode children against above-right pixels the
+  decoder decodes AFTER them — recon-parity went 211/5 -> 216/0 once
+  high qindexes (80/172/255) let ext partitions win. Debug aids added:
+  SVTAV1_DUMP_TREE=1 leaf dump, recon_parity full diff counts +
+  per-case progress, EncodePipeline.last_recon_unfiltered +
+  examples/deblock_evidence.
 - 525/525 decode conformance via: C-exact range coder + update_cdf
   (differential-fuzzed vs libSvtAv1Enc.a), C default CDF tables + scan
   orders (generated + drift-tested), C-exact coefficient writer
