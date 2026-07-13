@@ -882,3 +882,129 @@ shortcut), nsq GEOMETRY enabled (min 8x8), and the CDEF live-block
 search (`svt_av1_cdef_search` per-fb mse + `joint_strength_search_dual`)
 — tile-op 0/1 partition divergence on 5 cells, FH `cdef_y_pri_strength`
 on gradient-64 q55 p6.
+
+## 2026-07-13 (wave2, M6 chunk): gradient preset-6 diagnosis — the briefed theory was (again) partially wrong
+
+Differ reruns on all 6 cells + C-vs-C tile comparison (p6 vs p10 traces) +
+an instrumented scratch build (`/root/svtav1-instr`, SVT_M6DBG env-gated
+prints in enc_mode_config.c / product_coding_loop.c / restoration_pick.c /
+enc_cdef.c; instrumented OBUs verified byte-identical to baseline on every
+cell before trusting any dump). Corrections to the going-in theory:
+
+1. **Loop restoration owns 4 of the 6 first divergences, not partition/mode.**
+   C op 0 at g64 q20/q40 + g128 q40/q55 is `BOOL f=21198` = the
+   `wiener_restore` flag (default CDF 11570) followed by BOOLEQ subexp tap
+   bits: the M6 allintra LR search (`wn_filter_lvl=4`: enabled, use_chroma,
+   filter_tap_lvl=2 -> 5x5 taps even for luma, use_refinement=0;
+   `sg_filter_lvl=0` -> **sgrproj never searched**, rest_finish force type
+   RESTORE_WIENER-vs-NONE only) picks RESTORE_WIENER for LUMA on those 4
+   cells. Instrumented picks (rest_finish_search / search_wiener_finish,
+   rdmult = the un-weighted lambda chain — see below):
+   - g64 q20: luma WIENER; g64 q40: luma WIENER; g128 q40: luma WIENER;
+     g128 q55: luma WIENER; chroma NONE everywhere (gradient U=V=128 ->
+     sse_none=0); g64 q55 + g128 q20: luma NONE too (FH lr all-NONE).
+   - unit_size 256 (lr_unit_shift=2), ntiles=1 at both 64 and 128.
+   - example (g64 q55, the NONE case): sse_none=671191 sse_wn=670249,
+     bits_none=768 bits_wn=13120, cost_none 86034676.53 < cost_wn
+     87879942.74 -> NONE; taps v=[0,8,-17,18,-17,8,0] h=[0,-8,26,-36,26,-8,0].
+2. **The differ FH walker was silently broken for 128x128 frames** — it
+   skipped the `tile_info` increment bits that exist once a frame has >1 SB
+   (uniform_tile_spacing_flag=1 is followed by increment_tile_cols/rows_log2
+   bits when max_log2 > 0), so every g128 FH walk failed with a bogus
+   "lr unit size" error (base_q_idx decoded as 20, etc.). g128 q20's C FH is
+   actually lr-all-NONE (instrumented LRBEST) — its real first divergence is
+   tile op 1 (32x32 partition: C NONE vs our VERT_4). Fixed in this chunk
+   (differ tile_info + lr unit-size walk).
+3. **The M6 tree is decided entirely by PD0** (as briefed):
+   `pic_pd0_lvl=1` -> `pd0_level=PD0_LVL_1`, depth refinement level 10 ->
+   mode 2 = PD0_DEPTH_PRED_PART_ONLY -> `pred_depth_only=1` (M6SB dump), so
+   PD1 codes exactly the PD0 tree. NSQ: geom level 3, search level 0 ->
+   square-only trees. `max_block_size=64` unconditionally at M6
+   (base_var_th_cap=~0 below M8 — the M9 variance cap does NOT apply).
+4. **PD0_LVL_1 block encode vs the ported LVL_5** (M6PD0CFG dump:
+   intra_lvl=1(PD0), subres=0, rate_est_lvl=2 -> upd_skip_dc=1,
+   upd_skip_coeff=0, coeff_rate_lvl=1, qp_off=0, fast_coeff=2,
+   parent_bias=1000, ee ths 50/0, pf=0, use_src=1):
+   - quantize at qindex+0 (LVL_5 used +8);
+   - NO subres row-subsampling, ever;
+   - coeff rate = real `svt_av1_cost_coeffs_txb(ctx0, dc_sign ctx0,
+     reduced=0)` over the MD rate tables (rd_cost.c:1207
+     svt_aom_txb_estimate_coeff_bits_pd0; eob=0 -> av1_cost_skip_txb), NOT
+     the 5000+100*eob closed form (that is coeff_rate_est_lvl==0);
+   - full cost shape unchanged: RDCOST(lambda, coeff_bits +
+     skip_fac_bits[0][0] + partition_fac_bits[0][NONE], dist)
+     (rd_cost.c:1335), lambda = same kf chain (1527856 @ qindex 220);
+   - split compare unchanged (parent_bias 1000, split-rate at ctx 0,
+     depth-early-exit ths 50/0) BUT `use_accurate_part_ctx=true` at M6 so
+     the x2 SPLIT-rate penalty is OFF (svt_aom_partition_rate_cost raw:
+     1195/1465/2020 at 64/32/16, drifting per SB — see 5).
+   - PD0 walk captures (verbatim in the dumps): q55 g64 all-PARENT ->
+     64x64 NONE (parent 1791569177 <= split 2270708565); q40 g64 64->SPLIT
+     (1176293547 > 956921042) with all four 32x32 PARENT -> 4x32 NONE;
+     q20 g64: also 4x32 NONE (M6 tree is SHALLOWER than M9's 16x16 tree);
+     g128 q40: SBs 0-2 64-NONE, SB3 SPLIT (M9 splits all four).
+5. **update_cdf is ON at M6** (`svt_aom_get_update_cdf_level_allintra`: 2
+   for M4..M6 -> update_se=1, update_coef=1, update_mv=0) — MD rate tables
+   are REBUILT per SB from the evolving frame context
+   (enc_dec_process.c:2991-3044): ec_ctx_array[sb] = md_frame_context for
+   the first SB, else left-neighbor context (3x) averaged with top-right
+   (1x) via avg_cdf_symbols (pic_based_rate_est=false, enc_handle.c:4617),
+   then svt_aom_estimate_syntax_rate + estimate_coefficients_rate
+   regenerate rate_est_table. Observed: PD0 64x64 SPLIT rate drifts
+   1195 -> 1221 -> 1244 -> 1268 across the 4 SBs of g128 q55. Single-SB
+   64x64 frames always use the default tables (chain starts at
+   md_frame_context).
+6. **The M6 PD1 leaf layer is materially different from eff-M9** (config
+   dump: intra_lvl=6, txt_level=8, txs_level=3, cfl_level=4, chroma_level=5,
+   nic_level=6, filter_intra level 2, rate_est_level=1, rdoq f(coeff_lvl)
+   same policy, spatial_sse 3, lambda_weight 150):
+   - g64 q40 leaf (0,0) 32x32 picks **use_filter_intra=1 with
+     FILTER_DC_PRED** (PD1WIN fi_mode=0; the tile then codes the CDF5
+     filter_intra_mode symbol icdf=[23819,19992,15557] our writer never
+     emits), leaves (0,32)/(32,32) pick **H_PRED** (mode=2);
+   - g64 q20 leaves: DC,DC,DC,H — so C's M6 y_modes differ from both our
+     homegrown picks and from C's own M9 picks; closing any q20/q40 cell
+     requires the M6 candidate funnel (MDS0 SATD -> NIC -> MDS3 full loop
+     with filter-intra + TXT + real rate ctx (rate_est_level=1 ->
+     update_skip_ctx_dc_sign_ctx=1) + per-SB updated cost tables).
+   - g64 q55 leaf = 64x64 DC, txdep 0, DCT_DCT — identical decisions to
+     M9; **C's whole q55-g64 tile is op-for-op identical between p6 and
+     p10** (0 diff lines, W-op streams equal incl. rng), so our existing
+     C-exact leaf coder already produces the exact tile once the PD0 tree
+     is driven at p6.
+7. **CDEF at M6 = search level 7** (allintra split, enc_mode_config.c:3543:
+   M6 -> 7; cdef_recon_level=0 -> zero_fs_cost_bias=0, no mse scaling):
+   4 candidate strengths {0, 60, 2, 62} (first_pass {pf_gi[0], pf_gi[15]},
+   second_pass +2 each), subsampling_factor=4 (luma rows; chroma 4x4 ->
+   capped to 1), uv candidates only {0, 60} (second-pass uv = -1 ->
+   sentinel default_mse_uv*64 = 1040400*64 = 66585600), uv_from_y=false,
+   damping = 3+(qindex>>6) both planes (luma; -1 chroma inside kernel),
+   use_qp_strength=false -> the finish_cdef_search RD path: lambda from
+   svt_aom_lambda_assign = **the kf full-lambda chain WITHOUT the
+   lambda_weight multiply** (1303771 @ 220 = 1527856*128/150 exactly;
+   211804 @ 160; 21888 @ 80), cost = RDCOST(lambda,
+   av1_cost_literal(sb_count*i + nb*12), tot_mse*16) over i=0..3 signal
+   bits, joint_strength_search_dual over (y,uv) pairs, then filter_map
+   remap. Captures: g64 q55 mse0=[885020,900992,875920,892836] -> best
+   gi 2 -> strength 2 = (pri 0, sec 2), uv gi 0 -> (0,0), damping 6,
+   cdef_bits=0 — exactly the C FH the differ shows. g128 q20 picks y=2;
+   g64 q20/q40 + g128 q40/q55 pick y=62 (pri 15, sec 2).
+   The mse rows come from svt_av1_cdef_search (cdef_process.c:334-640):
+   per 64x64 filter block, dlist = non-skip 8x8s, svt_cdef_filter_fb per
+   strength on the POST-DEBLOCK recon with 2px halo, mse =
+   compute_cdef_dist(subsampled rows) * subsampling_factor; V-plane mse
+   accumulates INTO mse[1] (uv joint).
+8. Per-cell requirement stack (updated):
+
+   | cell | close requires |
+   |------|----------------|
+   | g64 q55 | M6 PD0 tree (64 NONE, same leaf coder) + CDEF search port |
+   | g64 q40 | + LR wiener (search+FH+tile syntax+apply) + M6 leaf funnel (filter-intra RDO picks fire) |
+   | g64 q20 | same as q40 (H_PRED leaf, wiener luma) |
+   | g128 q20 | M6 PD0 tree + per-SB cost-table refresh + M6 leaves + CDEF |
+   | g128 q40 | + LR wiener | 
+   | g128 q55 | M6 PD0 (tree==M9) + per-SB tables + leaf deltas + LR wiener + CDEF |
+
+   Fix order this chunk: differ-walker fix -> PD0_LVL_1 port (drives all
+   p6 still trees) -> CDEF live search port (closes g64 q55) -> LR /
+   leaf-funnel documented as the next subsystems.
