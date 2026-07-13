@@ -541,3 +541,83 @@ qps. Verdicts at the tracked configs:
 - C stderr (config dump) is preserved at `c.stderr` per case; C INIT/RESET/
   DONE markers segment the trace and confirmed exactly one EC instance and
   one tile per stream at `--lp 1`.
+
+## 2026-07-13 (wave2, later): gradient-64 p13/p10 — op-level diagnosis + root cause
+
+Differ reruns (all six cells, `identity_diff.sh 64 64 {20,40,55} {13,10} gradient`):
+p10 and p13 traces are **byte-identical on both sides** — the C library
+clamps allintra presets: `enc_handle.c:4634-4644` `if (enc_mode > ENC_M9)
+enc_mode = ENC_M9` ("Preset M13 is mapped to M9." in `c.stderr`). Three
+distinct cases, each owning 2 matrix cells; TD+SH+FH byte-identical in all:
+
+| case | first diverging op | C op (kind, sym, icdf, rng) | Rust op |
+|------|--------------------|------------------------------|---------|
+| q40 (op 0) | 64x64 partition, ctx0 | `CDF10 s=3 [12631,11221,9690] rng=32768` = SPLIT | `s=0` = NONE (V_PRED leaf) |
+| q55 (op 0) | 64x64 partition, ctx0 | `CDF10 s=0` = NONE (DC, skip=0) | `s=2` = VERT |
+| q20 (op 1) | 32x32 partition, ctx0 (op 0 = SPLIT matches) | `CDF10 s=3 [14306,11848,9644] rng=51744` = SPLIT | `s=0` = NONE |
+
+Same CDF, same ctx, same starting `rng` at the diverging op in every case —
+pure DECISION divergence (candidate sets + cost model), zero context/state
+divergence.
+
+### Root cause (C decision architecture at allintra effective-M9)
+
+Instrumented the C library (SVT_MD_DEBUG prints in `product_coding_loop.c` /
+`enc_dec_process.c`, never committed) and captured the full MD walk for all
+six cells. The C partition decision for these configs is **entirely PD0**:
+
+- `pd1_signals: pred_depth_only=1 fixed_partition=1 nsq_search_off=1
+  depth_refine_mode=2(PD0_DEPTH_PRED_PART_ONLY)` — PD1 (light-PD1) codes
+  exactly the PD0-picked tree; **no NSQ shapes are ever searched**
+  (`svt_aom_get_nsq_search_level_allintra` = 0 above M3,
+  enc_mode_config.c:11936). Rust's VERT pick at q55 is a shape C never
+  evaluates.
+- Depth set: `set_blocks_to_be_tested` (enc_dec_process.c:1491) limits
+  `max_sq_size = ctx->max_block_size` from
+  `get_max_block_size_allintra` (enc_mode_config.c:8969): M8+ →
+  `var_th_cap = round(7500*qw/qwd)`; SB 64x64 source variance (5425 for
+  gradient) > cap at q20 (2381) and q40 (4762) → **64x64 depth is not
+  even evaluated (SPLIT at 64 is forced)**; at q55 (cap 6860) 64x64 is in
+  the set. min = 8x8 (`disallow_4x4=1`, `disallow_8x8_allintra()=false`).
+- Per-SB PD0 level: `pic_pd0_lvl=7` → `PD0_LVL_6` (enc_mode_config.c:12598),
+  then `pd0_detector_allintra` (enc_dec_process.c:2373) demotes to LVL_5
+  when the variance-across-depths spread is flat (th `round(7500*qw/qwd)`):
+  gradient stays LVL_6 at q20, demotes to **LVL_5 at q40/q55**.
+- LVL_6 block cost = `compute_lpd0_cost_allintra`
+  (product_coding_loop.c:8418): closed-form `area * bias / 1000` from the
+  picture-analysis variance map (85 uint16s per 64x64,
+  pic_analysis_process.c:312 `compute_b64_variance`, BLOCK_MEAN_PREC_SUB
+  even-row subsampling) with qp-scaled thresholds; split rate = 0.
+- LVL_5 block cost = real light-PD0 encode (product_coding_loop.c
+  `md_encode_block_pd0` → `full_loop_core_pd0` → `perform_tx_pd0`):
+  single DC candidate (mode_decision.c `inject_intra_candidates_pd0`),
+  prediction from **source-pixel neighbors** (`pd0_use_src_samples=1` for
+  allintra, enc_mode_config.c:9437) with spec edge fills, max-square
+  TX at depth 0 (subres row-subsampling when the per-SB 64x64 odd/even
+  SAD check passes: q55 yes → TX_64X32/32X16/16X8; q40 no 64x64 block →
+  forced step 0), `svt_aom_quantize_b` at `qindex+8`
+  (`rate_est_ctrls.lpd0_qp_offset`), **freq-domain SSE** distortion
+  (coeff vs dq-coeff over the packed <=32x32 region + three_quad_energy,
+  shifted by `(1 - tx_scale)*2`), and coefficient rate =
+  **`5000 + 100*eob`** (`coeff_rate_est_lvl==0` closed form,
+  product_coding_loop.c:4568; verified: eob 980 -> 103000, 97 -> 14700).
+  `full_cost = RDCOST(lambda, bits + skip_fac_bits[0][0](26) +
+  partition_fac_bits[0][NONE](400), dist)` (rd_cost.c:1335), lambda =
+  `svt_aom_compute_rd_mult` KF chain (rc_process.c:452:
+  `(3.3+0.0015*dc_q)*dc_q^2` ×150>>7; observed 25650/248207/1527856 at
+  qindex 80/160/220).
+- Split-vs-parent (`test_split_partition_pd0`, product_coding_loop.c:10897):
+  `split_cost = RDCOST(lambda, 2*partition_fac_bits[0][SPLIT], 0)` (the ×2
+  because `use_accurate_part_ctx=0` at M9; = 0 at LVL_6-allintra) + sum of
+  child costs; parent wins iff `1000*parent <= 1000*split` (bias 1000 for
+  allintra); early exits (th 50/0) only at LVL_5.
+
+C final trees: q20 → 16x16 leaves (SPLIT,SPLIT,NONE...), q40 → four 32x32
+NONE, q55 → single 64x64 NONE — each matches the stream ops exactly.
+
+**Fix direction (this chunk):** port PD0 verbatim for allintra effective-M9
+(variance map, detector, LVL_6 + LVL_5 costs, split compare) and drive the
+SB partition tree from it (fixed partition, nsq off), leaving leaf
+mode/coeff decisions to the existing coder. That moves every partition
+symbol; the next divergence is then the per-leaf mode/coeff syntax (LPD1
+parity: DC-only-vs-mode-search, C quantizer, tx_depth/uv syntax).
