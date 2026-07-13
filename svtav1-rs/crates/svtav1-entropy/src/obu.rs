@@ -1352,13 +1352,14 @@ mod tests {
     ///   --matrix-coefficients 1 --color-range 1 -n 1
     /// ```
     ///
-    /// (64x64 4:2:0 still picture -> reduced SH, payload 9 bytes.) Full SH
-    /// byte-equality is NOT reachable: the C app derives seq_level_idx=0
-    /// (2.0) from the tiny dims where we pin 8 (4.0), and it enables
-    /// filter_intra/cdef/restoration, which our encoder deliberately
-    /// signals OFF until those tool ports land. Those four fields are all
-    /// in the fixed-width preamble, so both color_configs start at bit 36
-    /// and must match field-for-field — asserted below by parsing both.
+    /// (64x64 4:2:0 still picture -> reduced SH, payload 9 bytes.) This
+    /// golden predates the level auto-derivation and the preset tool
+    /// bits, so full SH byte-equality is not asserted here; the
+    /// preamble/tool fields are all fixed-width, so both color_configs
+    /// start at bit 36 and must match field-for-field — asserted below
+    /// by parsing both. (Whole-SH byte goldens vs C live in
+    /// sh_420_default_byte_identical_to_c (p13, tools off) and
+    /// sh_420_p6_tools_byte_identical_to_c (p6, tools on).)
     #[test]
     fn sh_420_color_config_matches_c_reference() {
         const C_SH_PAYLOAD: [u8; 9] = [0x18, 0x15, 0x7f, 0xfd, 0x32, 0x02, 0x1a, 0x03, 0x08];
