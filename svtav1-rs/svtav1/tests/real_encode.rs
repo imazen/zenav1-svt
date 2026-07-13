@@ -196,7 +196,12 @@ fn encode_and_get_recon(
     let bh = 8usize;
     let blocks_x = width.div_ceil(bw);
     let blocks_y = height.div_ceil(bh);
+    // quality_to_qp yields the CLI-domain qp (0..63); this proxy encoder
+    // must quantize at the same AV1 qindex the real pipeline derives from
+    // it, or its PSNR proxy tracks a finer quantizer than the encoder
+    // actually uses.
     let qp = AvifEncoder::quality_to_qp_static(quality);
+    let qindex = svtav1_encoder::rate_control::qp_to_qindex(qp);
 
     for by in 0..blocks_y {
         for bx in 0..blocks_x {
@@ -251,7 +256,7 @@ fn encode_and_get_recon(
                 has_left,
             );
 
-            // Encode block
+            // Encode block at the real pipeline's qindex
             let enc_result = svtav1_encoder::encode_loop::encode_block(
                 &src_block,
                 bw,
@@ -259,7 +264,7 @@ fn encode_and_get_recon(
                 bw,
                 bw,
                 bh,
-                qp,
+                qindex,
             );
 
             // Write reconstruction to output

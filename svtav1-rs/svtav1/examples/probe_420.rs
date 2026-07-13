@@ -2,7 +2,11 @@
 //! U/V patterns, write the raw OBU stream plus the padded source planes so a
 //! driver can decode with aomdec (-o y4m) and compare all three planes.
 //!
-//! Usage: cargo run --release -p svtav1 --example probe_420 -- <outdir> [size] [qindex]
+//! Usage: cargo run --release -p svtav1 --example probe_420 -- <outdir> [size] [qp]
+//!
+//! The qp argument is CLI-domain (0..63, C `--qp` semantics); the
+//! pipeline maps it to qindex via quantizer_to_qindex. (The old usage
+//! line said "qindex" — that was the pre-split conflation.)
 
 use svtav1_encoder::pipeline::EncodePipeline;
 use svtav1_encoder::rate_control::{RcConfig, RcMode};
@@ -52,5 +56,12 @@ fn main() {
     std::fs::write(format!("{outdir}/src_y.raw"), &y).unwrap();
     std::fs::write(format!("{outdir}/src_u.raw"), &u).unwrap();
     std::fs::write(format!("{outdir}/src_v.raw"), &v).unwrap();
-    println!("{}x{} qindex {} -> {} bytes", w, h, qp, obu.len());
+    println!(
+        "{}x{} qp {} (qindex {}) -> {} bytes",
+        w,
+        h,
+        qp,
+        svtav1_encoder::rate_control::qp_to_qindex(qp),
+        obu.len()
+    );
 }

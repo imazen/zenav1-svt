@@ -6,8 +6,15 @@
 //! reference decoder (`aomdec`) — the project's decode-conformance gate.
 //!
 //! The matrix deliberately includes every historical PASS and FAIL case from
-//! STATUS.md (all-skip uniform frames, q70 gradients, 80/96/112 multi-SB
+//! STATUS.md (all-skip uniform frames, high-q gradients, 80/96/112 multi-SB
 //! sizes, speed sweeps) so regressions and fixes are both visible.
+//!
+//! QP DOMAIN: the qp values are CLI-domain (0..63, C `--qp` semantics) and
+//! map through quantizer_to_qindex — {20, 32, 43, 55, 63} hit qindex
+//! {80, 128, 172, 220, 255}, spanning all four CDF q buckets and the high
+//! qindex range where deblock levels are material. (The old {30..90} list
+//! predates the domain split: values ran as qindexes 30..63 after the
+//! CLI clamp, so q70/q90 were duplicate qindex-63 cells.)
 //!
 //! Usage: `cargo run --release -p svtav1 --example decode_conformance -- <outdir> [chroma]`
 //!
@@ -80,7 +87,8 @@ fn main() {
     // Square sizes padded internally to 64-aligned; the multi-SB odd sizes
     // (80/96/112) are historical failure cases.
     let sizes = [32usize, 48, 64, 80, 96, 112, 128];
-    let qps = [30u8, 50, 60, 70, 90];
+    // CLI-domain qps -> qindex {80, 128, 172, 220, 255} (see header note).
+    let qps = [20u8, 32, 43, 55, 63];
     let speeds = [2u8, 4, 6, 8, 10];
 
     let mut count = 0usize;

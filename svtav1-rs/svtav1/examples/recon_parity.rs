@@ -105,7 +105,11 @@ fn main() {
             // choices than the aligned contents while staying within the
             // pipeline's supported geometry.
             for (sz, enc) in [(64usize, 64usize), (96, 128), (128, 128)] {
-                for qp in [30u8, 50, 90] {
+                // CLI-domain qps -> qindex {80, 172, 255}: low/mid/max of
+                // the real quantizer range, incl. qindex 255 where deblock
+                // levels peak (the strongest recon-parity stress). The old
+                // {30, 50, 90} list ran as qindexes 30/50/63 pre-split.
+                for qp in [20u8, 43, 63] {
                     for speed in [2u8, 4, 6, 10] {
                         let y = pad_replicate(&gen_content(content, sz), sz, enc);
                         let rc = RcConfig {
