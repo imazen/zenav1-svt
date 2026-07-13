@@ -151,3 +151,69 @@ mod tests {
         let _ = enc.done();
     }
 }
+
+// ---- Default CDF table extraction (FRAME_CONTEXT) ----
+
+macro_rules! fc_tables {
+    ($(($variant:ident, $sizeof_fn:ident, $copy_fn:ident)),* $(,)?) => {
+        unsafe extern "C" {
+            fn ref_fc_init(base_qindex: i32);
+            $(fn $sizeof_fn() -> usize;
+              fn $copy_fn(dst: *mut u16);)*
+        }
+
+        /// Tables extractable from the C `FRAME_CONTEXT` after default init.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum FcTable {
+            $($variant,)*
+        }
+
+        /// Copy one table out of the C context as a flat `u16` vector.
+        /// Call [`fc_init`] first.
+        pub fn fc_table(t: FcTable) -> Vec<u16> {
+            match t {
+                $(FcTable::$variant => {
+                    let bytes = unsafe { $sizeof_fn() };
+                    assert!(bytes % 2 == 0);
+                    let mut v = vec![0u16; bytes / 2];
+                    unsafe { $copy_fn(v.as_mut_ptr()) };
+                    v
+                })*
+            }
+        }
+    };
+}
+
+/// Initialize the C `FRAME_CONTEXT` with the reference defaults for
+/// `base_qindex` (`svt_av1_default_coef_probs` + `svt_aom_init_mode_probs`).
+pub fn fc_init(base_qindex: i32) {
+    unsafe { ref_fc_init(base_qindex) };
+}
+
+fc_tables! {
+    (TxbSkip, ref_fc_sizeof_txb_skip_cdf, ref_fc_copy_txb_skip_cdf),
+    (EobExtra, ref_fc_sizeof_eob_extra_cdf, ref_fc_copy_eob_extra_cdf),
+    (DcSign, ref_fc_sizeof_dc_sign_cdf, ref_fc_copy_dc_sign_cdf),
+    (EobFlag16, ref_fc_sizeof_eob_flag_cdf16, ref_fc_copy_eob_flag_cdf16),
+    (EobFlag32, ref_fc_sizeof_eob_flag_cdf32, ref_fc_copy_eob_flag_cdf32),
+    (EobFlag64, ref_fc_sizeof_eob_flag_cdf64, ref_fc_copy_eob_flag_cdf64),
+    (EobFlag128, ref_fc_sizeof_eob_flag_cdf128, ref_fc_copy_eob_flag_cdf128),
+    (EobFlag256, ref_fc_sizeof_eob_flag_cdf256, ref_fc_copy_eob_flag_cdf256),
+    (EobFlag512, ref_fc_sizeof_eob_flag_cdf512, ref_fc_copy_eob_flag_cdf512),
+    (EobFlag1024, ref_fc_sizeof_eob_flag_cdf1024, ref_fc_copy_eob_flag_cdf1024),
+    (CoeffBaseEob, ref_fc_sizeof_coeff_base_eob_cdf, ref_fc_copy_coeff_base_eob_cdf),
+    (CoeffBase, ref_fc_sizeof_coeff_base_cdf, ref_fc_copy_coeff_base_cdf),
+    (CoeffBr, ref_fc_sizeof_coeff_br_cdf, ref_fc_copy_coeff_br_cdf),
+    (Partition, ref_fc_sizeof_partition_cdf, ref_fc_copy_partition_cdf),
+    (Skip, ref_fc_sizeof_skip_cdfs, ref_fc_copy_skip_cdfs),
+    (KfY, ref_fc_sizeof_kf_y_cdf, ref_fc_copy_kf_y_cdf),
+    (AngleDelta, ref_fc_sizeof_angle_delta_cdf, ref_fc_copy_angle_delta_cdf),
+    (IntraExtTx, ref_fc_sizeof_intra_ext_tx_cdf, ref_fc_copy_intra_ext_tx_cdf),
+    (TxSize, ref_fc_sizeof_tx_size_cdf, ref_fc_copy_tx_size_cdf),
+    (UvMode, ref_fc_sizeof_uv_mode_cdf, ref_fc_copy_uv_mode_cdf),
+    (FilterIntra, ref_fc_sizeof_filter_intra_cdfs, ref_fc_copy_filter_intra_cdfs),
+    (FilterIntraMode, ref_fc_sizeof_filter_intra_mode_cdf, ref_fc_copy_filter_intra_mode_cdf),
+    (DeltaQ, ref_fc_sizeof_delta_q_cdf, ref_fc_copy_delta_q_cdf),
+    (IntraBc, ref_fc_sizeof_intrabc_cdf, ref_fc_copy_intrabc_cdf),
+    (YMode, ref_fc_sizeof_y_mode_cdf, ref_fc_copy_y_mode_cdf),
+}
