@@ -4,3 +4,6 @@ Cargo.lock
 *.swo
 *~
 .DS_Store
+
+# identity harness: locally built C trace driver (tools/capture_c_trace/build.sh)
+tools/capture_c_trace/capture_c_trace
