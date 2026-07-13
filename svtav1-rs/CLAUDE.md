@@ -74,16 +74,19 @@ This applies to:
 under the AV1 reference decoder as of 2026-07-13, C baseline v4.2.0-rc)
 
 ### Next structural gaps toward C bit-identity (not decode blockers)
-0a. **Edges-content divergence (PROVEN not honest-RD)** — 8px checkerboard at
-   qindex30: C SVT-AV1 preset 2 encodes it LOSSLESSLY in 172 bytes; ours
-   spends 211 bytes and decodes to 16 dB. Similar budget, infinite quality
-   gap => encoder recon still diverges from decoder recon on a path this
-   content uniquely exercises (smooth content is now fine at 41.75 dB, flats
-   bit-exact). Candidates: a per-size named-wrapper path in encode_loop not
-   actually C-exact for some size hit here, rect transforms, or an eob/skip
-   interaction at exact-prediction boundaries. Method: per-block recon diff
-   (encoder recon vs aomdec output) on this exact stream to find the first
-   diverging block, then trace that block
+0a. **[FIXED 2026-07-13] Edges-content divergence** — root cause was NOT the
+   transforms (all named + dispatch wrapper paths are now pinned bit-exact
+   vs C by c_parity_txfm, incl. rect + flat-DC shapes): extract_neighbors
+   filled unavailable prediction edges with 128 while the decoder fills
+   above-missing with left_ref[0] (else 127), left-missing with
+   above_ref[0] (else 129) per libaom build_intra_predictors. Edge V_PRED
+   blocks were coded against pred=128 but decoded against pred=32 — the
+   observed "half residual". After the C-exact fill (5d51ef1e6): edges 64
+   qindex30 s2 decodes LOSSLESSLY (205 bytes vs C's 172), gradient 64
+   qindex30 s4 = 46.76 dB, gradient 128 q50 s8 = 30.39 dB, conformance
+   525/0. Residual gap vs C: directional (D45..D203) extended-edge arrays
+   still pad the beyond-block region with replication instead of the
+   decoder's has_top_right/bottom_left rules
 0b. **[FIXED 2026-07-13] 2D transform wrapper divergence (AC only, encoder-blind)** — evidence:
    flat-140/flat-250 decode bit-exactly (DC + golomb path perfect), but any
    AC-rich content degrades (gradient 64px qindex30: 11.7 dB; 128px q50:
