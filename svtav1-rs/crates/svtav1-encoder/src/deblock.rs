@@ -152,6 +152,23 @@ impl DeblockGeom {
         }
         true
     }
+
+    /// True when EVERY 8x8 unit of the frame is all-skip — i.e. every
+    /// 64x64 filter block's CDEF dlist is empty. C equivalence: the CDEF
+    /// search kernel's `svt_sb_compute_cdef_list` returns 0 for every fb,
+    /// so `pcs->skip_cdef_seg[]` is all-1 (cdef_process.c:385-392) and
+    /// `finish_cdef_search` runs its strength selection with
+    /// `sb_count == 0` (enc_cdef.c:1296-1316).
+    pub fn cdef_frame_all_skip(&self) -> bool {
+        for r in (0..self.mi_rows).step_by(2) {
+            for c in (0..self.mi_cols).step_by(2) {
+                if !self.is_8x8_all_skip(r, c) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

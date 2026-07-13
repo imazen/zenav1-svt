@@ -637,6 +637,9 @@ impl EncodePipeline {
         // Use full (non-reduced) sequence header for multi-frame sequences,
         // still-picture header only for single-frame mode.
         let is_single_frame = self.gop.intra_period <= 1;
+        // Per-preset SH tool bits (threaded to SH + FH; commit A keeps
+        // them off — the C-exact allintra derivation lands next).
+        let seq_tools = svtav1_entropy::obu::SeqTools::default();
         let bitstream = if is_key {
             let mut bs = alloc::vec::Vec::new();
             bs.extend_from_slice(&svtav1_entropy::obu::write_temporal_delimiter());
@@ -649,6 +652,7 @@ impl EncodePipeline {
                 chroma.is_none(), // mono_chrome unless the 4:2:0 path is active
                 // seq_level_idx auto-derivation input (C: scs->frame_rate).
                 self.rc_config.framerate,
+                seq_tools,
             ));
             // Key frame header (raw bytes) + tile group with proper header.
             // base_qindex is the SAME value used for quantization, CDF
@@ -668,6 +672,9 @@ impl EncodePipeline {
                 // like the deblock levels, signaling and application MUST
                 // agree or the recon desyncs from every conforming decoder.
                 cdef_params.signal(),
+                // MUST equal the SH's enable_restoration bit (spec 5.9.20
+                // gates lr_params on it) — same SeqTools the SH got.
+                seq_tools.enable_restoration,
             );
             // tile_data is already a complete tile_group (with TG header)
             let mut frame_payload = alloc::vec::Vec::new();

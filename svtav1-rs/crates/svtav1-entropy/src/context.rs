@@ -36,6 +36,9 @@ pub const REF_CONTEXTS: usize = 3;
 pub const INTERP_FILTER_CONTEXTS: usize = 16;
 pub const SWITCHABLE_FILTERS: usize = 3;
 pub const BLOCK_SIZE_GROUPS: usize = 4;
+/// Number of entries in the C `BlockSize` enum / spec BLOCK_SIZES_ALL
+/// (definitions.h:923-946): the 16 square/2:1 sizes + the 6 4:1 rects.
+pub const BLOCK_SIZES_ALL: usize = 22;
 pub const TX_TYPES: usize = 16;
 pub const EXT_TX_SIZES: usize = 4;
 pub const EOB_COEF_CONTEXTS: usize = 9;
@@ -91,6 +94,12 @@ pub struct FrameContext {
     /// Angle delta CDFs [DIRECTIONAL_MODES][ANGLE_DELTA_SYMS+1]
     /// For directional modes (V_PRED..D67_PRED), encodes angle offset -3..+3.
     pub angle_delta_cdf: [[AomCdfProb; ANGLE_DELTA_SYMS + 1]; DIRECTIONAL_MODES],
+
+    /// use_filter_intra flag CDFs [BLOCK_SIZES_ALL][2+1] — C
+    /// FRAME_CONTEXT.filter_intra_cdfs, coded per eligible intra block
+    /// when the SH signals enable_filter_intra (entropy_coding.c:5099-5104;
+    /// decoder: read_filter_intra_mode_info).
+    pub filter_intra_cdfs: [[AomCdfProb; 3]; BLOCK_SIZES_ALL],
 
     // --- Inter prediction ---
     /// Inter compound mode CDFs [INTER_MODE_CONTEXTS][4+1]
@@ -325,6 +334,11 @@ impl FrameContext {
             // initializes angle_delta_cdf with these, so a uniform table
             // desyncs the stream on the first directional mode.
             angle_delta_cdf: crate::default_cdfs::ANGLE_DELTA_CDF,
+            // Real AV1 defaults (generated from the C reference and
+            // drift-tested vs FcTable::FilterIntra in tests/c_parity.rs) —
+            // the decoder initializes filter_intra_cdfs with these; wrong
+            // values desync the stream on the first use_filter_intra flag.
+            filter_intra_cdfs: crate::default_cdfs::FILTER_INTRA_CDF,
             inter_compound_mode_cdf: [[
                 CDF_PROB_TOP / 4 * 3,
                 CDF_PROB_TOP / 4 * 2,
@@ -589,6 +603,64 @@ pub fn write_uv_mode(
     );
 }
 
+/// C `BlockSize` / spec BLOCK_SIZES_ALL index for a (width, height) pair —
+/// the enum order of definitions.h:923-946 (squares/2:1 rects first, the
+/// six 4:1 rects appended). This is the row index for per-bsize CDF tables
+/// such as `filter_intra_cdfs[BlockSize]`.
+pub fn block_size_index(width: usize, height: usize) -> usize {
+    match (width, height) {
+        (4, 4) => 0,     // BLOCK_4X4
+        (4, 8) => 1,     // BLOCK_4X8
+        (8, 4) => 2,     // BLOCK_8X4
+        (8, 8) => 3,     // BLOCK_8X8
+        (8, 16) => 4,    // BLOCK_8X16
+        (16, 8) => 5,    // BLOCK_16X8
+        (16, 16) => 6,   // BLOCK_16X16
+        (16, 32) => 7,   // BLOCK_16X32
+        (32, 16) => 8,   // BLOCK_32X16
+        (32, 32) => 9,   // BLOCK_32X32
+        (32, 64) => 10,  // BLOCK_32X64
+        (64, 32) => 11,  // BLOCK_64X32
+        (64, 64) => 12,  // BLOCK_64X64
+        (64, 128) => 13, // BLOCK_64X128
+        (128, 64) => 14, // BLOCK_128X64
+        (128, 128) => 15, // BLOCK_128X128
+        (4, 16) => 16,   // BLOCK_4X16
+        (16, 4) => 17,   // BLOCK_16X4
+        (8, 32) => 18,   // BLOCK_8X32
+        (32, 8) => 19,   // BLOCK_32X8
+        (16, 64) => 20,  // BLOCK_16X64
+        (64, 16) => 21,  // BLOCK_64X16
+        _ => panic!("no BlockSize for {width}x{height}"),
+    }
+}
+
+/// Encode the `use_filter_intra` flag for an eligible intra block.
+///
+/// C: `aom_write_symbol(ec_writer, filter_intra_mode != FILTER_INTRA_MODES,
+/// frame_context->filter_intra_cdfs[bsize], 2)` in the key-frame block walk
+/// (entropy_coding.c:5099-5104; same shape on the inter-frame intra path,
+/// :5231-5236), written right after the palette syntax and before
+/// code_tx_size. The decoder mirror is read_filter_intra_mode_info.
+///
+/// Eligibility is the caller's job — C `svt_aom_filter_intra_allowed`
+/// (mode_decision.c:102-108): SH filter_intra level != 0, `mode == DC_PRED`,
+/// `palette_size == 0`, and `block_size_wide/high[bsize] <= 32`
+/// (`svt_aom_filter_intra_allowed_bsize`). `bsize_idx` is the
+/// [`block_size_index`] of the LUMA block. When `used` (never, for this
+/// encoder — filter-intra prediction is not performed), C follows with a
+/// filter_intra_mode symbol; that arm is deliberately unimplemented here.
+pub fn write_use_filter_intra(
+    w: &mut AomWriter,
+    fc: &mut FrameContext,
+    bsize_idx: usize,
+    used: bool,
+) {
+    debug_assert!(bsize_idx < BLOCK_SIZES_ALL);
+    debug_assert!(!used, "filter-intra prediction is not implemented");
+    w.write_symbol(usize::from(used), &mut fc.filter_intra_cdfs[bsize_idx], 2);
+}
+
 /// Encode the angle delta for a directional intra mode.
 ///
 /// AV1 spec Section 5.11.42: angle_delta is signaled for directional modes
@@ -650,6 +722,61 @@ mod tests {
         assert!(fc.partition_cdf[0][0] > fc.partition_cdf[0][1]);
         // KF Y-mode CDF should have proper values
         assert_eq!(fc.kf_y_mode_cdf[0][0][0], 17180);
+        // filter_intra_cdfs from the generated C defaults (BLOCK_8X8 row
+        // = 24902, BLOCK_32X32 row = 10425 — default_cdfs.rs, drift-tested
+        // vs FcTable::FilterIntra in tests/c_parity.rs).
+        assert_eq!(fc.filter_intra_cdfs[3][0], 24902);
+        assert_eq!(fc.filter_intra_cdfs[9][0], 10425);
+    }
+
+    /// block_size_index must reproduce the C BlockSize enum order
+    /// (definitions.h:923-946) — spot-check every entry via the
+    /// C `block_size_wide/high` semantics.
+    #[test]
+    fn block_size_index_matches_c_enum_order() {
+        const DIMS: [(usize, usize); 22] = [
+            (4, 4),
+            (4, 8),
+            (8, 4),
+            (8, 8),
+            (8, 16),
+            (16, 8),
+            (16, 16),
+            (16, 32),
+            (32, 16),
+            (32, 32),
+            (32, 64),
+            (64, 32),
+            (64, 64),
+            (64, 128),
+            (128, 64),
+            (128, 128),
+            (4, 16),
+            (16, 4),
+            (8, 32),
+            (32, 8),
+            (16, 64),
+            (64, 16),
+        ];
+        for (i, &(w, h)) in DIMS.iter().enumerate() {
+            assert_eq!(block_size_index(w, h), i, "{w}x{h}");
+        }
+    }
+
+    /// use_filter_intra = 0 through the default BLOCK_8X8 CDF must code
+    /// the same arithmetic as any nsyms=2 bool with f = icdf[0] (the C
+    /// aom_write_symbol nsyms==2 specialization) and must adapt the CDF.
+    #[test]
+    fn write_use_filter_intra_smoke() {
+        let mut fc = FrameContext::new_default();
+        let mut w = AomWriter::new(64);
+        let before = fc.filter_intra_cdfs[3];
+        write_use_filter_intra(&mut w, &mut fc, 3, false);
+        assert_ne!(
+            fc.filter_intra_cdfs[3], before,
+            "CDF must adapt after coding (decoder updates too)"
+        );
+        let _ = w.done();
     }
 
     #[test]
