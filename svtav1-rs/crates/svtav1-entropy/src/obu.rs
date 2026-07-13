@@ -711,7 +711,13 @@ fn key_frame_header_bits(
 
     // ---- read_tx_mode() ----
     // Not CodedLossless (since base_q_idx may be nonzero) →
-    wb.write_bit(false); // tx_mode_select = 0 → TX_MODE_LARGEST
+    // TX_MODE_SELECT, like C: SVT always sets frm_hdr->tx_mode =
+    // TX_MODE_SELECT at these presets ("Use TX_MODE_SELECT even when
+    // txs_level == 0", enc_mode_config.c:15140-15143; written at
+    // entropy_coding.c:3659). The tile walk then codes a per-block
+    // tx_depth symbol for every bsize > 4x4 (always depth 0 = largest —
+    // matching what the LARGEST mode implied, but now in C's syntax).
+    wb.write_bit(true); // tx_mode_select = 1 → TX_MODE_SELECT
 
     // For intra frames: no reference_select, skip_mode, warped_motion, global_motion
 
@@ -1063,9 +1069,11 @@ mod tests {
                 0x0a, 0x09, 0x18, 0x15, 0x7f, 0xfc, 0x26, 0x02, 0x1a, 0x02, 0x40
             ]
         );
+        // FH golden re-captured when TX_MODE_SELECT landed (bit 42
+        // tx_mode_select 0->1: byte 5 0x00 -> 0x20, hand-verified).
         assert_eq!(
             write_key_frame_header(64, 64, 30),
-            [0x11, 0xe0, 0x00, 0x00, 0x00, 0x00]
+            [0x11, 0xe0, 0x00, 0x00, 0x00, 0x20]
         );
         assert_eq!(
             write_sequence_header_full(64, 64),
@@ -1301,7 +1309,7 @@ mod tests {
         wb.write_bits(0, 2); // cdef_bits = 0
         wb.write_bits(0, 6); // cdef_y_strength[0]
         wb.write_bits(0, 6); // cdef_uv_strength[0] (NumPlanes=3)
-        wb.write_bit(false); // tx_mode_select = 0
+        wb.write_bit(true); // tx_mode_select = 1 (TX_MODE_SELECT, like C)
         wb.write_bit(false); // reduced_tx_set = 0
         let remainder = wb.bit_offset % 8;
         if remainder != 0 {
@@ -1314,11 +1322,12 @@ mod tests {
 
         // The 420 FH is exactly the mono FH with two zero bits
         // (DeltaQUDc/DeltaQUAc delta_coded=0) plus the 6-bit
-        // cdef_uv_strength inserted; every differing bit is zero in this
-        // config. Pin the pre-alignment bit counts (which set the decoder's
-        // field boundaries): mono 34+10 cdef bits = 44, 420 36+16 = 52 —
-        // the 420 header now crosses into a 7th byte whose bits are all
-        // zero, so the byte streams relate by a trailing zero byte.
+        // cdef_uv_strength inserted. Pin the pre-alignment bit counts
+        // (which set the decoder's field boundaries): mono 34+10 cdef
+        // bits = 44, 420 36+16 = 52. Since TX_MODE_SELECT landed the
+        // differing region is no longer all-zero: the tx_mode_select=1
+        // bit sits at bit 42 (mono) vs bit 50 (420), so mono byte 5 is
+        // 0x20 while 420 has byte 5 = 0x00 and the set bit in byte 6.
         let bits_420 = key_frame_header_bits(64, 64, 30, true, false, [0; 4], [3, 0, 0]).bit_offset;
         let bits_mono = key_frame_header_bits(64, 64, 30, true, true, [0; 4], [3, 0, 0]).bit_offset;
         assert_eq!(bits_mono, 44, "mono reduced-SH FH is 44 bits pre-align");
@@ -1326,8 +1335,10 @@ mod tests {
         let mono = write_key_frame_header_full(64, 64, 30, true, true, [0; 4], [3, 0, 0]);
         assert_eq!(got.len(), 7);
         assert_eq!(mono.len(), 6);
-        assert_eq!(&got[..6], &mono[..], "shared zero-bit prefix");
-        assert_eq!(got[6], 0);
+        assert_eq!(&got[..5], &mono[..5], "shared prefix through cdef");
+        assert_eq!(mono[5], 0x20, "mono: tx_mode_select at bit 42");
+        assert_eq!(got[5], 0x00, "420: uv cdef strength bits still zero");
+        assert_eq!(got[6], 0x20, "420: tx_mode_select at bit 50");
     }
 
     /// Pin loop_filter_params() with real levels (spec 5.9.11; C
@@ -1372,7 +1383,7 @@ mod tests {
         wb.write_bits(0, 2); // cdef_damping_minus_3
         wb.write_bits(0, 2); // cdef_bits
         wb.write_bits(0, 6); // cdef_y_strength[0]
-        wb.write_bit(false); // tx_mode_select
+        wb.write_bit(true); // tx_mode_select = 1 (TX_MODE_SELECT, like C)
         wb.write_bit(false); // reduced_tx_set
         let remainder = wb.bit_offset % 8;
         if remainder != 0 {
@@ -1420,7 +1431,7 @@ mod tests {
         wb.write_bits(3, 2); // cdef_damping_minus_3 = 6 - 3
         wb.write_bits(0, 2); // cdef_bits = 0
         wb.write_bits(43, 6); // cdef_y_strength[0] = pri 10, sec 3
-        wb.write_bit(false); // tx_mode_select
+        wb.write_bit(true); // tx_mode_select = 1 (TX_MODE_SELECT, like C)
         wb.write_bit(false); // reduced_tx_set
         let remainder = wb.bit_offset % 8;
         if remainder != 0 {

@@ -25,6 +25,12 @@ pub const INTRA_INTER_CONTEXTS: usize = 4;
 pub const SKIP_CONTEXTS: usize = 3;
 pub const SKIP_MODE_CONTEXTS: usize = 3;
 pub const TX_SIZE_CONTEXTS: usize = 3;
+/// C MAX_TX_CATS (definitions.h): rows of tx_size_cdf, one per
+/// largest-TX square-size category (8, 16, 32, 64).
+pub const MAX_TX_CATS: usize = 4;
+/// C MAX_TX_DEPTH: a block codes at most this many split levels, so the
+/// tx_depth symbol has at most MAX_TX_DEPTH+1 values.
+pub const MAX_TX_DEPTH: usize = 2;
 pub const DELTA_Q_PROBS: usize = 3;
 pub const REF_CONTEXTS: usize = 3;
 pub const INTERP_FILTER_CONTEXTS: usize = 16;
@@ -103,8 +109,11 @@ pub struct FrameContext {
     pub drl_cdf: [[AomCdfProb; 3]; DRL_MODE_CONTEXTS],
 
     // --- Transform ---
-    /// TX size CDFs [TX_SIZE_CONTEXTS][3+1]
-    pub tx_size_cdf: [[AomCdfProb; 4]; TX_SIZE_CONTEXTS],
+    /// TX size (depth) CDFs [MAX_TX_CATS][TX_SIZE_CONTEXTS][MAX_TX_DEPTH+1+1]
+    /// — C FRAME_CONTEXT.tx_size_cdf, coded by write_selected_tx_size
+    /// (entropy_coding.c:4678) with row = bsize_to_tx_size_cat(bsize) and
+    /// column = get_tx_size_context(xd).
+    pub tx_size_cdf: [[[AomCdfProb; 4]; TX_SIZE_CONTEXTS]; MAX_TX_CATS],
 
     /// TXB skip CDFs [TXB_SKIP_CONTEXTS][2+1]
     pub txb_skip_cdf: [[AomCdfProb; 3]; TXB_SKIP_CONTEXTS],
@@ -272,7 +281,11 @@ impl FrameContext {
             globalmv_cdf: [[CDF_PROB_TOP / 2, 0, 0]; GLOBALMV_MODE_CONTEXTS],
             refmv_cdf: [[CDF_PROB_TOP / 2, 0, 0]; REFMV_MODE_CONTEXTS],
             drl_cdf: [[CDF_PROB_TOP / 2, 0, 0]; DRL_MODE_CONTEXTS],
-            tx_size_cdf: [[CDF_PROB_TOP / 3 * 2, CDF_PROB_TOP / 3, 0, 0]; TX_SIZE_CONTEXTS],
+            // Real AV1 defaults (generated from the C reference and
+            // drift-tested vs FcTable::TxSize) — the decoder initializes
+            // tx_size_cdf with these; wrong values desync the stream on
+            // the first tx_depth symbol.
+            tx_size_cdf: crate::default_cdfs::TX_SIZE_CDF,
             txb_skip_cdf: [[CDF_PROB_TOP / 2, 0, 0]; TXB_SKIP_CONTEXTS],
             dc_sign_cdf: [[[CDF_PROB_TOP / 2, 0, 0]; DC_SIGN_CONTEXTS]; PLANE_TYPES],
             eob_flag_cdf: [[[0; EOB_MAX_SYMS + 1]; 2]; PLANE_TYPES],
@@ -398,6 +411,56 @@ pub fn write_partition(
 pub fn write_skip(w: &mut AomWriter, fc: &mut FrameContext, ctx: usize, skip: bool) {
     let sym = if skip { 1 } else { 0 };
     w.write_symbol(sym, &mut fc.skip_cdf[ctx.min(SKIP_CONTEXTS - 1)], 2);
+}
+
+/// Length of the sub-TX chain from the block's largest TX down to TX_4X4.
+///
+/// C walks `eb_sub_tx_size_map` starting at `blocksize_to_txsize[bsize]`
+/// (bsize_to_tx_size_cat / bsize_to_max_depth, inter_prediction.h:322-344).
+/// For every bsize <= 64x64 the largest TX has exactly the block's own
+/// dimensions, and the sub map halves the larger dimension (both when
+/// square) until 4x4 — so the chain length is `log2(max(w, h)) - 2`.
+/// (Chain spot-checks vs the C tables live in the tests below.)
+fn tx_chain_len(width: usize, height: usize) -> usize {
+    debug_assert!(width <= 64 && height <= 64, "128 blocks cap at TX_64X64");
+    let max_dim = width.max(height);
+    debug_assert!(max_dim >= 4 && max_dim.is_power_of_two());
+    max_dim.ilog2() as usize - 2
+}
+
+/// C `bsize_to_tx_size_cat(bsize)` (inter_prediction.h:322): the
+/// tx_size_cdf ROW for a block. Only valid for bsize > BLOCK_4X4.
+pub fn tx_size_cat(width: usize, height: usize) -> usize {
+    let cat = tx_chain_len(width, height) - 1;
+    debug_assert!(cat < MAX_TX_CATS);
+    cat
+}
+
+/// C `bsize_to_max_depth(bsize)` (inter_prediction.h:335): the maximum
+/// codable tx_depth; the symbol alphabet is `max_depth + 1` values.
+pub fn tx_max_depth(width: usize, height: usize) -> usize {
+    tx_chain_len(width, height).min(MAX_TX_DEPTH)
+}
+
+/// Encode the per-block tx_depth symbol (TX_MODE_SELECT intra blocks).
+///
+/// C `write_selected_tx_size` (entropy_coding.c:4678-4696):
+/// `aom_write_symbol(w, depth, ec_ctx->tx_size_cdf[tx_size_cat][tx_size_ctx],
+/// max_depths + 1)`. Only called when `block_signals_txsize(bsize)`
+/// (`bsize > BLOCK_4X4`, entropy_coding.c:4466) — the caller gates that.
+pub fn write_tx_depth(
+    w: &mut AomWriter,
+    fc: &mut FrameContext,
+    width: usize,
+    height: usize,
+    ctx: usize,
+    depth: usize,
+) {
+    let cat = tx_size_cat(width, height);
+    let nsyms = tx_max_depth(width, height) + 1;
+    debug_assert!(depth < nsyms);
+    debug_assert!(ctx < TX_SIZE_CONTEXTS);
+    w.write_symbol(depth, &mut fc.tx_size_cdf[cat][ctx], nsyms);
 }
 
 /// Encode an intra/inter flag using CDF.
@@ -568,5 +631,50 @@ mod tests {
         }
         let output = w.done();
         assert!(!output.is_empty());
+    }
+
+    /// Pin tx_size_cat / tx_max_depth against hand-walked C values:
+    /// bsize_to_tx_size_cat / bsize_to_max_depth chains through
+    /// eb_sub_tx_size_map from blocksize_to_txsize[bsize]
+    /// (TX_64X64→TX_32X32→TX_16X16→TX_8X8→TX_4X4; rect TXs halve the
+    /// larger dim, e.g. TX_32X64→TX_32X32, TX_4X16→TX_4X8→TX_4X4).
+    #[test]
+    fn tx_size_cat_and_depth_match_c_tables() {
+        // (w, h, cat, max_depth) — every signaling bsize <= 64x64.
+        const CASES: [(usize, usize, usize, usize); 18] = [
+            (4, 8, 0, 1),
+            (8, 4, 0, 1),
+            (8, 8, 0, 1),
+            (8, 16, 1, 2),
+            (16, 8, 1, 2),
+            (4, 16, 1, 2),
+            (16, 4, 1, 2),
+            (16, 16, 1, 2),
+            (16, 32, 2, 2),
+            (32, 16, 2, 2),
+            (8, 32, 2, 2),
+            (32, 8, 2, 2),
+            (32, 32, 2, 2),
+            (32, 64, 3, 2),
+            (64, 32, 3, 2),
+            (16, 64, 3, 2),
+            (64, 16, 3, 2),
+            (64, 64, 3, 2),
+        ];
+        for (w, h, cat, maxd) in CASES {
+            assert_eq!(tx_size_cat(w, h), cat, "cat {w}x{h}");
+            assert_eq!(tx_max_depth(w, h), maxd, "max_depth {w}x{h}");
+        }
+    }
+
+    /// The 64x64 depth-0 tx_depth symbol must come from tx_size_cdf[3][0]
+    /// with the C default icdf [26986, 21293] (op 4 of the C uniform-p13
+    /// identity trace: `W CDF nsyms=3 s=0 icdf=[26986,21293,0]`).
+    #[test]
+    fn tx_depth_64x64_uses_cat3_defaults() {
+        let fc = FrameContext::new_default();
+        assert_eq!(tx_size_cat(64, 64), 3);
+        assert_eq!(tx_max_depth(64, 64) + 1, 3);
+        assert_eq!(&fc.tx_size_cdf[3][0][..2], &[26986, 21293]);
     }
 }
