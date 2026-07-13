@@ -84,9 +84,7 @@ under the AV1 reference decoder as of 2026-07-13, C baseline v4.2.0-rc)
    observed "half residual". After the C-exact fill (5d51ef1e6): edges 64
    qindex30 s2 decodes LOSSLESSLY (205 bytes vs C's 172), gradient 64
    qindex30 s4 = 46.76 dB, gradient 128 q50 s8 = 30.39 dB, conformance
-   525/0. Residual gap vs C: directional (D45..D203) extended-edge arrays
-   still pad the beyond-block region with replication instead of the
-   decoder's has_top_right/bottom_left rules
+   525/0. Residual gap (directional extended-edge arrays) FIXED — see 4.
 0b. **[FIXED 2026-07-13] 2D transform wrapper divergence (AC only, encoder-blind)** — evidence:
    flat-140/flat-250 decode bit-exactly (DC + golomb path perfect), but any
    AC-rich content degrades (gradient 64px qindex30: 11.7 dB; 128px q50:
@@ -126,10 +124,31 @@ under the AV1 reference decoder as of 2026-07-13, C baseline v4.2.0-rc)
    recon diverges (matters for inter). Signal or stop applying.
 3. **Decision-layer parity** — partitions/modes/qcoeffs still come from our
    own RDO; port C mode decision after pixel-path parity.
-4. **Intra edge preparation** — directional predictions pad extension
-   arrays with 128 where the decoder replicates edges / uses real
-   above-right when available (has_top_right/has_bottom_left). Not the
-   current bottleneck (D-modes rarely win), but must be ported for parity.
+4. **[FIXED 2026-07-13] Intra edge preparation** — directional
+   predictions padded extension arrays with 128 where the decoder
+   replicates edges / uses real above-right/bottom-left pixels. Fixed by
+   porting has_top_right/has_bottom_left (+ verbatim has_tr_*/has_bl_*
+   tables) and the dr-mode edge construction of build_intra_predictors
+   from libaom reconintra.c (svtav1-encoder/src/intra_edge.rs), and by
+   correcting dr_prediction_z2 to av1_dr_prediction_z2_c (dx/dy were
+   swapped in the above/left branches — only D135 with dx==dy was
+   unaffected — and base == -1 now reads the top-left sample via the new
+   top_left parameter). This was the last recon-parity blocker: the gate
+   went 102/6 → 108/0 (the 6 were gradient s2 ±1 at r0 c0/c63, D-modes
+   at the top frame row coded against 128-padding the decoder never
+   sees). Matrix since extended to 216/0 (added speed 4 + 96px padded
+   content).
+5. **Non-64-aligned frame dims (partial superblocks) unsupported** —
+   every caller pads to 64-aligned before EncodePipeline (see
+   decode_conformance/trace_one/AvifEncoder), so this is masked in all
+   gates. Encoding an unpadded 96x96 panics in the encoder itself
+   ("no TxSize for 4x32", coeff_c.rs:111): the mono search
+   (min_block_dim=4) 4:1-splits partial-SB areas (e.g. 16x32) into
+   unsignalable leaf shapes, and the partition writer has no
+   split_or_horz/split_or_vert bool syntax or forced-split /
+   skip-out-of-frame-children handling for partial SBs. Needed before
+   true odd-size frame support; until then the padding convention is
+   load-bearing.
 
 ### Recently fixed (2026-07-13, wave2/entropy-c-parity)
 - 525/525 decode conformance via: C-exact range coder + update_cdf

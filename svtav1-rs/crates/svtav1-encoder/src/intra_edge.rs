@@ -418,8 +418,7 @@ pub fn has_top_right(
 
         // General case (neither top row nor rightmost column): check if
         // the top-right block is coded before the current block.
-        let this_blk_index =
-            (blk_row_in_sb << (MAX_MIB_SIZE_LOG2 - bw_in_mi_log2)) + blk_col_in_sb;
+        let this_blk_index = (blk_row_in_sb << (MAX_MIB_SIZE_LOG2 - bw_in_mi_log2)) + blk_col_in_sb;
         let idx1 = this_blk_index / 8;
         let idx2 = this_blk_index % 8;
         let table = get_has_tr_table(partition, bw_px, bh_px);
@@ -512,8 +511,7 @@ pub fn has_bottom_left(
 
         // General case (neither leftmost column nor bottom row): check if
         // the bottom-left block is coded before the current block.
-        let this_blk_index =
-            (blk_row_in_sb << (MAX_MIB_SIZE_LOG2 - bw_in_mi_log2)) + blk_col_in_sb;
+        let this_blk_index = (blk_row_in_sb << (MAX_MIB_SIZE_LOG2 - bw_in_mi_log2)) + blk_col_in_sb;
         let idx1 = this_blk_index / 8;
         let idx2 = this_blk_index % 8;
         let table = get_has_bl_table(partition, bw_px, bh_px);
@@ -622,8 +620,19 @@ pub fn build_directional_edges(
         i32::from(
             shape_ok
                 && has_top_right(
-                    16, width, height, mi_row, mi_col, have_top, right_available, partition,
-                    tx_w_mi, 0, 0, 0, 0,
+                    16,
+                    width,
+                    height,
+                    mi_row,
+                    mi_col,
+                    have_top,
+                    right_available,
+                    partition,
+                    tx_w_mi,
+                    0,
+                    0,
+                    0,
+                    0,
                 ),
         )
     } else {
@@ -633,8 +642,19 @@ pub fn build_directional_edges(
         i32::from(
             shape_ok
                 && has_bottom_left(
-                    16, width, height, mi_row, mi_col, bottom_available, have_left, partition,
-                    tx_h_mi, 0, 0, 0, 0,
+                    16,
+                    width,
+                    height,
+                    mi_row,
+                    mi_col,
+                    bottom_available,
+                    have_left,
+                    partition,
+                    tx_h_mi,
+                    0,
+                    0,
+                    0,
+                    0,
                 ),
         )
     } else {
@@ -920,7 +940,10 @@ mod tests {
                 }
                 let last = recon[63 * stride + 127];
                 for i in 32..64 {
-                    assert_eq!(above[i], last, "above[{i}] must replicate the last real pixel");
+                    assert_eq!(
+                        above[i], last,
+                        "above[{i}] must replicate the last real pixel"
+                    );
                 }
             }
             DirEdges::Flat(_) => panic!("expected edges"),
