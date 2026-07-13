@@ -377,6 +377,35 @@ pub struct PartitionResult {
 }
 
 /// Encode a superblock with recursive partition search.
+/// Rate (1/256-bit units, the scale of every other rate in this module)
+/// of coding partition symbol `sym` at a square node of `width`.
+///
+/// Real entropy cost from the DEFAULT partition CDFs via the C cost model
+/// (av1_prob_cost / av1_cost_symbol, 1/512-bit units, halved with
+/// rounding into this module's 1/256 scale) — replacing the old
+/// hardcoded 48/56/64 constants that priced every partition equally and
+/// NONE at zero. Neighbor sub-context 0 is used: the search runs before
+/// the entropy pass, so the write-time above/left partition bits aren't
+/// known here; row selection by block-size class carries the dominant
+/// asymmetry (e.g. 64x64: NONE ~0.7 bits vs HORZ ~4.5 bits). Threading
+/// the live neighbor context (C's md partition_context) is the next step
+/// toward C's md RDO.
+fn partition_rate_256(width: usize, sym: PartitionType) -> u32 {
+    (svtav1_entropy::context::partition_symbol_cost(width, 0, sym as usize) + 1) >> 1
+}
+
+/// Add the PARTITION_NONE symbol cost to a leaf result at a SQUARE node
+/// and rescore its rd with this search's lambda (the same
+/// `dist + (lambda * rate) >> 8` formula every candidate below uses).
+/// Non-square and 4x4 leaves code no partition symbol (the tile writer
+/// only emits one for square tree leaves with dim > 4).
+fn add_none_node_cost(result: &mut PartitionResult, width: usize, height: usize, lambda: u64) {
+    if width == height && width > 4 {
+        result.rate += partition_rate_256(width, PartitionType::None);
+        result.rd_cost = result.distortion + ((lambda * result.rate as u64) >> 8);
+    }
+}
+
 /// Uses default config (all features enabled). No frame context (mid-gray neighbors).
 pub fn partition_search(
     src: &[u8],
@@ -434,7 +463,7 @@ pub fn partition_search_with_config(
 ) -> PartitionResult {
     // Base case: minimum size or max depth reached
     if width <= MIN_BLOCK_SIZE || height <= MIN_BLOCK_SIZE || max_depth == 0 {
-        return encode_with_neighbors(
+        let mut leaf = encode_with_neighbors(
             src,
             src_stride,
             recon,
@@ -448,10 +477,12 @@ pub fn partition_search_with_config(
             ref_ctx,
             svtav1_types::partition::PartitionType::None,
         );
+        add_none_node_cost(&mut leaf, width, height, lambda);
+        return leaf;
     }
 
     // Try PARTITION_NONE: encode at current size
-    let none_result = encode_with_neighbors(
+    let mut none_result = encode_with_neighbors(
         src,
         src_stride,
         recon,
@@ -465,6 +496,12 @@ pub fn partition_search_with_config(
         ref_ctx,
         svtav1_types::partition::PartitionType::None,
     );
+    // Every square node the tile writer visits codes a partition symbol:
+    // price PARTITION_NONE with its real entropy cost and rescore with
+    // THIS search's lambda — the leaf rd formula uses a fixed scale, and
+    // comparing that against the lambda-scaled candidates below is what
+    // used to misprice NONE (docs/IDENTITY-STATUS.md, op-0 divergence).
+    add_none_node_cost(&mut none_result, width, height, lambda);
 
     // If block is small enough, don't bother splitting further
     if width <= 8 && height <= 8 {
@@ -485,7 +522,7 @@ pub fn partition_search_with_config(
             partition_type: PartitionType::Horz,
             rd_cost: 0,
             distortion: 0,
-            rate: 48, // Partition flag overhead
+            rate: partition_rate_256(width, PartitionType::Horz),
             num_blocks: 0,
             decisions: alloc::vec::Vec::new(),
             tree: None,
@@ -557,7 +594,7 @@ pub fn partition_search_with_config(
             partition_type: PartitionType::Vert,
             rd_cost: 0,
             distortion: 0,
-            rate: 48,
+            rate: partition_rate_256(width, PartitionType::Vert),
             num_blocks: 0,
             decisions: alloc::vec::Vec::new(),
             tree: None,
@@ -630,7 +667,7 @@ pub fn partition_search_with_config(
             partition_type: PartitionType::Horz4,
             rd_cost: 0,
             distortion: 0,
-            rate: 64,
+            rate: partition_rate_256(width, PartitionType::Horz4),
             num_blocks: 0,
             decisions: alloc::vec::Vec::new(),
             tree: None,
@@ -681,7 +718,7 @@ pub fn partition_search_with_config(
             partition_type: PartitionType::Vert4,
             rd_cost: 0,
             distortion: 0,
-            rate: 64,
+            rate: partition_rate_256(width, PartitionType::Vert4),
             num_blocks: 0,
             decisions: alloc::vec::Vec::new(),
             tree: None,
@@ -737,7 +774,7 @@ pub fn partition_search_with_config(
             partition_type: PartitionType::HorzA,
             rd_cost: 0,
             distortion: 0,
-            rate: 56,
+            rate: partition_rate_256(width, PartitionType::HorzA),
             num_blocks: 0,
             decisions: alloc::vec::Vec::new(),
             tree: None,
@@ -833,7 +870,7 @@ pub fn partition_search_with_config(
             partition_type: PartitionType::HorzB,
             rd_cost: 0,
             distortion: 0,
-            rate: 56,
+            rate: partition_rate_256(width, PartitionType::HorzB),
             num_blocks: 0,
             decisions: alloc::vec::Vec::new(),
             tree: None,
@@ -929,7 +966,7 @@ pub fn partition_search_with_config(
             partition_type: PartitionType::VertA,
             rd_cost: 0,
             distortion: 0,
-            rate: 56,
+            rate: partition_rate_256(width, PartitionType::VertA),
             num_blocks: 0,
             decisions: alloc::vec::Vec::new(),
             tree: None,
@@ -1025,7 +1062,7 @@ pub fn partition_search_with_config(
             partition_type: PartitionType::VertB,
             rd_cost: 0,
             distortion: 0,
-            rate: 56,
+            rate: partition_rate_256(width, PartitionType::VertB),
             num_blocks: 0,
             decisions: alloc::vec::Vec::new(),
             tree: None,
@@ -1126,7 +1163,7 @@ pub fn partition_search_with_config(
             partition_type: PartitionType::Split,
             rd_cost: 0,
             distortion: 0,
-            rate: 64, // Partition flag overhead
+            rate: partition_rate_256(width, PartitionType::Split),
             num_blocks: 0,
             decisions: alloc::vec::Vec::new(),
             tree: None,

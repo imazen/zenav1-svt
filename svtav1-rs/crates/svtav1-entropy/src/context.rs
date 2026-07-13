@@ -175,6 +175,61 @@ static DEFAULT_PARTITION_CDF: [[AomCdfProb; 11]; PARTITION_CONTEXTS] = [
     [  32057,   31802,  31596, 320, 230, 151, 104, 0, 0, 0, 0],
 ];
 
+// =============================================================================
+// Syntax rate estimation (C md_rate_estimation.{h,c})
+// =============================================================================
+
+/// C `av1_prob_cost[128]` (md_rate_estimation.h:131):
+/// `round(-log2(i/256) * (1 << AV1_PROB_COST_SHIFT))` for i = 128..255,
+/// i.e. symbol costs in 1/512-bit units (AV1_PROB_COST_SHIFT = 9).
+#[rustfmt::skip]
+pub const AV1_PROB_COST: [u16; 128] = [
+    512, 506, 501, 495, 489, 484, 478, 473, 467, 462, 456, 451, 446, 441, 435, 430,
+    425, 420, 415, 410, 405, 400, 395, 390, 385, 380, 375, 371, 366, 361, 356, 352,
+    347, 343, 338, 333, 329, 324, 320, 316, 311, 307, 302, 298, 294, 289, 285, 281,
+    277, 273, 268, 264, 260, 256, 252, 248, 244, 240, 236, 232, 228, 224, 220, 216,
+    212, 209, 205, 201, 197, 194, 190, 186, 182, 179, 175, 171, 168, 164, 161, 157,
+    153, 150, 146, 143, 139, 136, 132, 129, 125, 122, 119, 115, 112, 109, 105, 102,
+     99,  95,  92,  89,  86,  82,  79,  76,  73,  70,  66,  63,  60,  57,  54,  51,
+     48,  45,  42,  38,  35,  32,  29,  26,  23,  20,  18,  15,  12,   9,   6,   3,
+];
+
+/// C `av1_cost_symbol(p15)` (md_rate_estimation.c:33-43): the cost in
+/// 1/512-bit units of coding a symbol whose probability is `p15 / 32768`.
+/// `shift` normalizes p15 into [2^14, 2^15); `prob = get_prob(p15 <<
+/// shift, 32768)` maps it to [128, 255] (get_prob rounds `num * 256 /
+/// den` and clips to [1, 255]).
+pub fn av1_cost_symbol(p15: u32) -> u32 {
+    let p15 = p15.clamp(1, CDF_PROB_TOP as u32 - 1);
+    let shift = 14 - (31 - p15.leading_zeros());
+    let prob = (((p15 << shift) * 256 + (1 << 14)) >> 15).clamp(1, 255);
+    debug_assert!(prob >= 128);
+    AV1_PROB_COST[(prob - 128) as usize] as u32 + shift * 512
+}
+
+/// Cost (1/512-bit units) of coding partition symbol `sym` at a square
+/// node of `width`, with neighbor sub-context `sub_ctx` (0..3), from the
+/// DEFAULT partition CDFs — the same table the frame context starts from.
+///
+/// This is C `svt_aom_get_syntax_rate_from_cdf` (md_rate_estimation.c:48)
+/// applied to `partition_cdf[bsl*4 + sub_ctx]`: symbol probability
+/// `p15 = CDF(sym) - CDF(sym-1)` recovered from the stored inverse CDFs
+/// (`icdf[sym-1] - icdf[sym]`, `icdf[-1] = 32768`), floored at
+/// EC_MIN_PROB = 4 like the C table builder, then `av1_cost_symbol`.
+pub fn partition_symbol_cost(width: usize, sub_ctx: usize, sym: usize) -> u32 {
+    debug_assert!((8..=128).contains(&width) && width.is_power_of_two());
+    debug_assert!(sub_ctx < 4);
+    let bsl = width.ilog2() as usize - 3;
+    let row = &DEFAULT_PARTITION_CDF[(bsl * 4 + sub_ctx).min(PARTITION_CONTEXTS - 1)];
+    let prev = if sym == 0 {
+        CDF_PROB_TOP as u32
+    } else {
+        row[sym - 1] as u32
+    };
+    let p15 = prev.saturating_sub(row[sym] as u32).max(4); // EC_MIN_PROB
+    av1_cost_symbol(p15)
+}
+
 /// Default skip CDFs.
 static DEFAULT_SKIP_CDF: [[AomCdfProb; 3]; SKIP_CONTEXTS] =
     [[1097, 0, 0], [16253, 0, 0], [28192, 0, 0]];
