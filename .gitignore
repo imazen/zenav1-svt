@@ -31,3 +31,6 @@ cbuild/
 
 .workongoing
 .jj/
+cbuild-static/
+cbuild-config.log
+cbuild-static-config.log
