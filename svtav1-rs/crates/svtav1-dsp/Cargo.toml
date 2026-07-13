@@ -15,6 +15,7 @@ magetypes = { workspace = true }
 
 [dev-dependencies]
 archmage = { workspace = true, features = ["testable_dispatch"] }
+svtav1-cref = { path = "../svtav1-cref" }
 
 [lints]
 workspace = true
