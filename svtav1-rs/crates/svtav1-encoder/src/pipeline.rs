@@ -433,12 +433,10 @@ impl EncodePipeline {
             let mut writer = svtav1_entropy::writer::AomWriter::new(n + 256);
             // CDF updates enabled — matches the frame header's disable_cdf_update=0
             let mut frame_ctx = svtav1_entropy::context::FrameContext::new_default();
-            // Spec-conformant coefficient CDFs, initialized from rav1d defaults
-            // matching the QP category the decoder will select.
-            let qp_cat = (tpl_adjusted_qp > 20) as usize
-                + (tpl_adjusted_qp > 60) as usize
-                + (tpl_adjusted_qp > 120) as usize;
-            let mut coeff_cdf_ctx = svtav1_entropy::coeff::CdfCoefCtx::new(qp_cat);
+            // C-exact coefficient CDFs for the base_q_idx bucket
+            // (svt_av1_default_coef_probs semantics).
+            let mut coeff_fc =
+                svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(tpl_adjusted_qp);
             // Mode/skip context tracking at 4x4 granularity
             let w4 = w.div_ceil(4);
             let h4 = h.div_ceil(4);
@@ -471,7 +469,8 @@ impl EncodePipeline {
                     tree,
                     &mut writer,
                     &mut frame_ctx,
-                    &mut coeff_cdf_ctx,
+                    &mut coeff_fc,
+                    tpl_adjusted_qp,
                     &mut ectx,
                     is_key,
                     bx,
@@ -577,6 +576,11 @@ struct EntropyCtx {
     /// Left partition context at 8x8 granularity (one SB column height).
     /// Reset at the start of each SB row, matching rav1d's `t.l.partition`.
     left_partition: Vec<u8>,
+    /// Above coefficient neighbor bytes at 4x4 granularity:
+    /// `(dc_sign << 6) | min(cul_level, 63)`, 0xFF = unavailable (frame edge).
+    above_coeff: Vec<u8>,
+    /// Left coefficient neighbor bytes at 4x4 granularity.
+    left_coeff: Vec<u8>,
 }
 
 /// Partition context update lookup table, matching rav1d's `dav1d_al_part_ctx`.
@@ -616,6 +620,34 @@ impl EntropyCtx {
             left_skip: alloc::vec![false; height_4x4],
             above_partition: alloc::vec![0u8; width_8x8],
             left_partition: alloc::vec![0u8; height_8x8],
+            // 0xFF = INVALID_NEIGHBOR_DATA at frame edges, like C's
+            // neighbor-array init.
+            above_coeff: alloc::vec![0xFFu8; width_4x4],
+            left_coeff: alloc::vec![0xFFu8; height_4x4],
+        }
+    }
+
+    /// Coefficient neighbor spans for a transform at (x, y) of w x h pixels,
+    /// in 4x4 units, clipped to the frame like C svt_aom_get_txb_ctx.
+    fn coeff_neighbors(&self, x: usize, y: usize, w: usize, h: usize) -> (&[u8], &[u8]) {
+        let x4 = x / 4;
+        let y4 = y / 4;
+        let w4 = (w / 4).min(self.above_coeff.len().saturating_sub(x4));
+        let h4 = (h / 4).min(self.left_coeff.len().saturating_sub(y4));
+        (&self.above_coeff[x4..x4 + w4], &self.left_coeff[y4..y4 + h4])
+    }
+
+    /// Record a coded transform block's `(dc_sign << 6) | cul_level` byte
+    /// over its 4x4 span (C: neighbor array unit write after
+    /// av1_write_coeffs_txb_1d).
+    fn record_coeff(&mut self, x: usize, y: usize, w: usize, h: usize, val: u8) {
+        let x4 = x / 4;
+        let y4 = y / 4;
+        for i in x4..(x4 + w / 4).min(self.above_coeff.len()) {
+            self.above_coeff[i] = val;
+        }
+        for i in y4..(y4 + h / 4).min(self.left_coeff.len()) {
+            self.left_coeff[i] = val;
         }
     }
 
@@ -771,7 +803,8 @@ fn encode_block_syntax(
     decision: &crate::partition::BlockDecision,
     writer: &mut svtav1_entropy::writer::AomWriter,
     frame_ctx: &mut svtav1_entropy::context::FrameContext,
-    coeff_cdf: &mut svtav1_entropy::coeff::CdfCoefCtx,
+    coeff_fc: &mut svtav1_entropy::coeff_c::CoeffFc,
+    base_q_idx: u8,
     ectx: &mut EntropyCtx,
     is_key: bool,
     block_x: usize,
@@ -781,62 +814,115 @@ fn encode_block_syntax(
     let skip_ctx = ectx.skip_ctx(block_x, block_y);
     svtav1_entropy::context::write_skip(writer, frame_ctx, skip_ctx, skip);
 
-    if !skip {
-        if !is_key {
-            svtav1_entropy::context::write_intra_inter(writer, frame_ctx, 0, decision.is_inter);
-        }
+    // Mode syntax is ALWAYS coded — the skip flag only gates residuals
+    // (AV1 intra_frame_mode_info reads y_mode regardless of skip).
+    if !is_key {
+        svtav1_entropy::context::write_intra_inter(writer, frame_ctx, 0, decision.is_inter);
+    }
 
-        if decision.is_inter {
-            svtav1_entropy::mv_coding::write_mv(writer, decision.mv.x, decision.mv.y, true);
-        } else if is_key {
-            let above_ctx = ectx.above_mode_ctx(block_x);
-            let left_ctx = ectx.left_mode_ctx(block_y);
-            svtav1_entropy::context::write_intra_mode_kf(
-                writer,
-                frame_ctx,
-                above_ctx,
-                left_ctx,
-                decision.intra_mode,
-            );
-            if svtav1_entropy::context::is_directional_mode(decision.intra_mode) {
-                svtav1_entropy::context::write_angle_delta(
-                    writer,
-                    frame_ctx,
-                    decision.intra_mode,
-                    0,
-                );
-            }
-        } else {
-            let bsize_group = svtav1_entropy::context::block_size_group(
-                decision.width as usize,
-                decision.height as usize,
-            );
-            svtav1_entropy::context::write_intra_mode_inter(
-                writer,
-                frame_ctx,
-                bsize_group,
-                decision.intra_mode,
-            );
-            if svtav1_entropy::context::is_directional_mode(decision.intra_mode) {
-                svtav1_entropy::context::write_angle_delta(
-                    writer,
-                    frame_ctx,
-                    decision.intra_mode,
-                    0,
-                );
-            }
-        }
-
-        svtav1_entropy::coeff::write_coefficients_v2(
+    if decision.is_inter {
+        svtav1_entropy::mv_coding::write_mv(writer, decision.mv.x, decision.mv.y, true);
+    } else if is_key {
+        let above_ctx = ectx.above_mode_ctx(block_x);
+        let left_ctx = ectx.left_mode_ctx(block_y);
+        svtav1_entropy::context::write_intra_mode_kf(
             writer,
-            &decision.qcoeffs,
-            decision.eob as usize,
+            frame_ctx,
+            above_ctx,
+            left_ctx,
+            decision.intra_mode,
+        );
+        // angle_delta is only signaled for blocks >= 8x8
+        // (spec av1_use_angle_delta).
+        if decision.width >= 8
+            && decision.height >= 8
+            && svtav1_entropy::context::is_directional_mode(decision.intra_mode)
+        {
+            svtav1_entropy::context::write_angle_delta(writer, frame_ctx, decision.intra_mode, 0);
+        }
+    } else {
+        let bsize_group = svtav1_entropy::context::block_size_group(
             decision.width as usize,
             decision.height as usize,
-            0, // skip_ctx — simplified for now
-            1, // dc_sign_ctx — neutral
+        );
+        svtav1_entropy::context::write_intra_mode_inter(
+            writer,
+            frame_ctx,
+            bsize_group,
             decision.intra_mode,
-            coeff_cdf,
+        );
+        if decision.width >= 8
+            && decision.height >= 8
+            && svtav1_entropy::context::is_directional_mode(decision.intra_mode)
+        {
+            svtav1_entropy::context::write_angle_delta(writer, frame_ctx, decision.intra_mode, 0);
+        }
+    }
+
+    if !skip {
+        // C-exact coefficient coding (av1_write_coeffs_txb_1d port).
+        // The block uses a single full-size transform (tx_depth 0), so
+        // plane_bsize == txsize_to_bsize[tx_size] and the luma
+        // txb_skip_ctx fast path applies; dc_sign_ctx comes from the
+        // per-4x4 (dc_sign << 6 | cul_level) neighbor bytes like C.
+        use svtav1_entropy::coeff_c;
+        let w = decision.width as usize;
+        let h = decision.height as usize;
+        let tx_size = coeff_c::tx_size_from_dims(w, h);
+        let (above, left) = ectx.coeff_neighbors(block_x, block_y, w, h);
+        let (txb_skip_ctx, dc_sign_ctx) = coeff_c::get_txb_ctx(0, above, left, true, false);
+        // 64-dim transforms keep only the 32-capped low-frequency quadrant;
+        // the C writer expects that quadrant packed at the adjusted stride.
+        let aw = coeff_c::txb_wide(tx_size);
+        let ah = coeff_c::txb_high(tx_size);
+        let packed;
+        let coeffs: &[i32] = if aw == w && ah == h {
+            &decision.qcoeffs
+        } else {
+            let mut v = alloc::vec![0i32; aw * ah];
+            for r in 0..ah {
+                v[r * aw..r * aw + aw].copy_from_slice(&decision.qcoeffs[r * w..r * w + aw]);
+            }
+            packed = v;
+            &packed
+        };
+        // The decision's eob was derived from the mode-decision scan; the
+        // bitstream eob must be relative to the C scan order for this
+        // (tx_size, tx_type).
+        let scan = svtav1_entropy::scan_tables::scan(
+            tx_size,
+            svtav1_entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[coeff_c::DCT_DCT] as usize,
+        );
+        let mut eob = 0i32;
+        for (i, &pos) in scan.iter().enumerate() {
+            if coeffs[pos as usize] != 0 {
+                eob = i as i32 + 1;
+            }
+        }
+        let cul_level = coeff_c::write_coeffs_txb_1d(
+            coeff_fc,
+            writer,
+            tx_size,
+            coeff_c::DCT_DCT,
+            0,
+            txb_skip_ctx,
+            dc_sign_ctx,
+            coeffs,
+            eob,
+            decision.intra_mode as usize,
+            base_q_idx,
+            false,
+        );
+        ectx.record_coeff(block_x, block_y, w, h, cul_level as u8);
+    } else {
+        // Skipped blocks contribute zero cul_level neighbors (C writes the
+        // txb through the same path with eob == 0 -> cul 0).
+        ectx.record_coeff(
+            block_x,
+            block_y,
+            decision.width as usize,
+            decision.height as usize,
+            0,
         );
     }
 
@@ -878,7 +964,8 @@ fn encode_partition_tree(
     tree: &crate::partition::PartitionTree,
     writer: &mut svtav1_entropy::writer::AomWriter,
     frame_ctx: &mut svtav1_entropy::context::FrameContext,
-    coeff_cdf: &mut svtav1_entropy::coeff::CdfCoefCtx,
+    coeff_fc: &mut svtav1_entropy::coeff_c::CoeffFc,
+    base_q_idx: u8,
     ectx: &mut EntropyCtx,
     is_key: bool,
     block_x: usize,
@@ -905,7 +992,7 @@ fn encode_partition_tree(
             );
 
             encode_block_syntax(
-                decision, writer, frame_ctx, coeff_cdf, ectx, is_key, block_x, block_y,
+                decision, writer, frame_ctx, coeff_fc, base_q_idx, ectx, is_key, block_x, block_y,
             );
         }
         crate::partition::PartitionTree::Split {
@@ -935,7 +1022,8 @@ fn encode_partition_tree(
                         &children[0],
                         writer,
                         frame_ctx,
-                        coeff_cdf,
+                        coeff_fc,
+                        base_q_idx,
                         ectx,
                         is_key,
                         block_x,
@@ -945,7 +1033,8 @@ fn encode_partition_tree(
                         &children[1],
                         writer,
                         frame_ctx,
-                        coeff_cdf,
+                        coeff_fc,
+                        base_q_idx,
                         ectx,
                         is_key,
                         block_x + half_w,
@@ -955,7 +1044,8 @@ fn encode_partition_tree(
                         &children[2],
                         writer,
                         frame_ctx,
-                        coeff_cdf,
+                        coeff_fc,
+                        base_q_idx,
                         ectx,
                         is_key,
                         block_x,
@@ -965,7 +1055,8 @@ fn encode_partition_tree(
                         &children[3],
                         writer,
                         frame_ctx,
-                        coeff_cdf,
+                        coeff_fc,
+                        base_q_idx,
                         ectx,
                         is_key,
                         block_x + half_w,
@@ -987,14 +1078,15 @@ fn encode_partition_tree(
                     // partition symbols (decoder reads them as direct blocks).
                     let top = expect_leaf(&children[0]);
                     encode_block_syntax(
-                        top, writer, frame_ctx, coeff_cdf, ectx, is_key, block_x, block_y,
+                        top, writer, frame_ctx, coeff_fc, base_q_idx, ectx, is_key, block_x, block_y,
                     );
                     let bot = expect_leaf(&children[1]);
                     encode_block_syntax(
                         bot,
                         writer,
                         frame_ctx,
-                        coeff_cdf,
+                        coeff_fc,
+                        base_q_idx,
                         ectx,
                         is_key,
                         block_x,
@@ -1014,25 +1106,64 @@ fn encode_partition_tree(
 
                     let left = expect_leaf(&children[0]);
                     encode_block_syntax(
-                        left, writer, frame_ctx, coeff_cdf, ectx, is_key, block_x, block_y,
+                        left, writer, frame_ctx, coeff_fc, base_q_idx, ectx, is_key, block_x, block_y,
                     );
                     let right = expect_leaf(&children[1]);
                     encode_block_syntax(
                         right,
                         writer,
                         frame_ctx,
-                        coeff_cdf,
+                        coeff_fc,
+                        base_q_idx,
                         ectx,
                         is_key,
                         block_x + half_w,
                         block_y,
                     );
                 }
-                _ => {
-                    // Extended partitions — children in order with approximate positions
-                    for child in children {
-                        encode_partition_tree(
-                            child, writer, frame_ctx, coeff_cdf, ectx, is_key, block_x, block_y,
+                (ptype, n) => {
+                    // Extended partitions: children are DIRECT leaf blocks at
+                    // spec-defined offsets — no partition symbols of their own.
+                    let quarter_w = w / 4;
+                    let quarter_h = h / 4;
+                    let offsets: &[(usize, usize)] = match (ptype, n) {
+                        // 2 tops (w/2 x h/2) + full-width bottom (w x h/2)
+                        (crate::partition::PartitionType::HorzA, 3) => {
+                            &[(0, 0), (half_w, 0), (0, half_h)]
+                        }
+                        // full-width top + 2 bottoms
+                        (crate::partition::PartitionType::HorzB, 3) => {
+                            &[(0, 0), (0, half_h), (half_w, half_h)]
+                        }
+                        // 2 lefts (w/2 x h/2) + full-height right (w/2 x h)
+                        (crate::partition::PartitionType::VertA, 3) => {
+                            &[(0, 0), (0, half_h), (half_w, 0)]
+                        }
+                        // full-height left + 2 rights
+                        (crate::partition::PartitionType::VertB, 3) => {
+                            &[(0, 0), (half_w, 0), (half_w, half_h)]
+                        }
+                        (crate::partition::PartitionType::Horz4, 4) => {
+                            &[(0, 0), (0, quarter_h), (0, 2 * quarter_h), (0, 3 * quarter_h)]
+                        }
+                        (crate::partition::PartitionType::Vert4, 4) => {
+                            &[(0, 0), (quarter_w, 0), (2 * quarter_w, 0), (3 * quarter_w, 0)]
+                        }
+                        other => panic!("unsupported partition shape {other:?}"),
+                    };
+                    ectx.update_partition_ctx(block_x, block_y, w, h, ptype);
+                    for (child, &(dx, dy)) in children.iter().zip(offsets) {
+                        let leaf = expect_leaf(child);
+                        encode_block_syntax(
+                            leaf,
+                            writer,
+                            frame_ctx,
+                            coeff_fc,
+                            base_q_idx,
+                            ectx,
+                            is_key,
+                            block_x + dx,
+                            block_y + dy,
                         );
                     }
                 }
