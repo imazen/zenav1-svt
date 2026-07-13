@@ -508,6 +508,14 @@ impl EncodePipeline {
         // Per-4x4 block/TX/skip geometry for the deblocking edge walk,
         // recorded in coding order (== the decoder's parse order).
         let mut deblock_geom = crate::deblock::DeblockGeom::new(w, h);
+        // Sequence-level tool bits (C svt_aom_sig_deriv_pre_analysis_scs):
+        // per-preset for the still/allintra path, off for multi-frame.
+        // Threaded to the SH + FH writers AND the entropy walk below —
+        // the per-block use_filter_intra symbol exists exactly when the
+        // SH signals the tool, so all three consumers MUST see one value.
+        let is_single_frame = self.gop.intra_period <= 1;
+        let seq_tools =
+            crate::speed_config::seq_tools_for_preset(self.speed_config.preset, is_single_frame);
         let tile_data = {
             let mut writer = svtav1_entropy::writer::AomWriter::new(n + 256);
             // CDF updates enabled — matches the frame header's disable_cdf_update=0
@@ -518,7 +526,7 @@ impl EncodePipeline {
             // Mode/skip context tracking at 4x4 granularity
             let w4 = w.div_ceil(4);
             let h4 = h.div_ceil(4);
-            let mut ectx = EntropyCtx::new(w4, h4);
+            let mut ectx = EntropyCtx::new(w4, h4, seq_tools.enable_filter_intra);
             let mut chroma_pass = chroma.map(|(u_src, v_src)| ChromaPass {
                 u_src,
                 v_src,
@@ -612,7 +620,26 @@ impl EncodePipeline {
         // no syntax change). Inter frames signal zero strengths and apply
         // nothing — consistent.
         let cdef_params = if is_key {
-            crate::cdef::pick_cdef_params_key_frame(base_qindex)
+            // C splits the strength policy per preset (allintra
+            // enc_mode_config.c:3543-3600): presets <= M6 run the CDEF
+            // RDO search, >= M7 the use_qp_strength fast path we ported.
+            // Of the search, exactly ONE outcome is ported so far: the
+            // sb_count == 0 case — every filter block all-skip, e.g.
+            // flat content — where finish_cdef_search deterministically
+            // signals cdef_bits=0 with zero strengths (see
+            // pick_cdef_params_all_skip_search provenance). Search
+            // presets with any non-skip filter block keep the qp fast
+            // path for now: still self-consistent (signal == apply),
+            // but their signaled strengths diverge from C's searched
+            // ones (gap 2a, narrowed to the non-all-skip case).
+            if is_single_frame
+                && crate::cdef::allintra_preset_uses_cdef_search(self.speed_config.preset)
+                && deblock_geom.cdef_frame_all_skip()
+            {
+                crate::cdef::pick_cdef_params_all_skip_search(base_qindex)
+            } else {
+                crate::cdef::pick_cdef_params_key_frame(base_qindex)
+            }
         } else {
             crate::cdef::CdefFrameParams::default()
         };
@@ -635,11 +662,9 @@ impl EncodePipeline {
 
         // Step 7: Build OBU bitstream
         // Use full (non-reduced) sequence header for multi-frame sequences,
-        // still-picture header only for single-frame mode.
-        let is_single_frame = self.gop.intra_period <= 1;
-        // Per-preset SH tool bits (threaded to SH + FH; commit A keeps
-        // them off — the C-exact allintra derivation lands next).
-        let seq_tools = svtav1_entropy::obu::SeqTools::default();
+        // still-picture header only for single-frame mode. is_single_frame
+        // + seq_tools were derived before the entropy walk (the walk codes
+        // use_filter_intra flags iff the SH will signal the tool).
         let bitstream = if is_key {
             let mut bs = alloc::vec::Vec::new();
             bs.extend_from_slice(&svtav1_entropy::obu::write_temporal_delimiter());
@@ -769,6 +794,13 @@ struct EntropyCtx {
     /// Left TXFM context at 4x4 granularity: the HEIGHT in pixels of the
     /// last coded TX in each mi row.
     left_txfm: Vec<u8>,
+    /// The sequence header's `enable_filter_intra` bit (C
+    /// `scs->seq_header.filter_intra_level`, read by the block walk at
+    /// entropy_coding.c:5099-5100): when set, every eligible intra block
+    /// (DC_PRED, no palette, both dims <= 32) codes a `use_filter_intra`
+    /// symbol. Sequence-level walk config, not per-block state — carried
+    /// here because the walk already threads this context everywhere.
+    seq_filter_intra: bool,
 }
 
 /// Live state for the 4:2:0 chroma pass, threaded through the entropy walk
@@ -814,7 +846,7 @@ static AL_PART_CTX: [[[u8; 10]; 5]; 2] = [
 ];
 
 impl EntropyCtx {
-    fn new(width_4x4: usize, height_4x4: usize) -> Self {
+    fn new(width_4x4: usize, height_4x4: usize, seq_filter_intra: bool) -> Self {
         let width_8x8 = (width_4x4 + 1) / 2;
         let height_8x8 = (height_4x4 + 1) / 2;
         // Chroma-plane 4x4 units: (w/2)/4 = width_4x4/2 (frames are
@@ -839,6 +871,7 @@ impl EntropyCtx {
             ],
             above_txfm: alloc::vec![0u8; width_4x4],
             left_txfm: alloc::vec![0u8; height_4x4],
+            seq_filter_intra,
         }
     }
 
@@ -1274,6 +1307,32 @@ fn encode_block_syntax(
             decision.intra_mode,
             0, // UV_DC_PRED
         );
+    }
+
+    // use_filter_intra flag — C writes it right after the uv/palette
+    // syntax (palette is never allowed for us:
+    // allow_screen_content_tools = 0 -> svt_aom_allow_palette false) and
+    // BEFORE code_tx_size, for every intra block passing
+    // svt_aom_filter_intra_allowed (mode_decision.c:102-108): SH
+    // filter_intra level != 0, mode == DC_PRED, palette_size == 0 (always
+    // for us), and block_size_wide/high[bsize] <= 32. Write order:
+    // entropy_coding.c:5098-5112 (key frames; the inter-frame intra path
+    // :5231-5236 is identical — eligibility does not involve the frame
+    // type or chroma presence, so this applies to mono streams too;
+    // decoder mirror read_filter_intra_mode_info). We never PREDICT with
+    // filter-intra, so the flag is always 0 — but when the SH signals the
+    // tool the symbol MUST be coded or the decoder desyncs.
+    if ectx.seq_filter_intra
+        && !decision.is_inter
+        && decision.intra_mode == 0 // DC_PRED
+        && decision.width <= 32
+        && decision.height <= 32
+    {
+        let bsize_idx = svtav1_entropy::context::block_size_index(
+            decision.width as usize,
+            decision.height as usize,
+        );
+        svtav1_entropy::context::write_use_filter_intra(writer, frame_ctx, bsize_idx, false);
     }
 
     // tx_size syntax — C av1_code_tx_size (entropy_coding.c:4697) called
