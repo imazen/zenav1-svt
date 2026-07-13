@@ -74,6 +74,14 @@ This applies to:
 under the AV1 reference decoder as of 2026-07-13, C baseline v4.2.0-rc)
 
 ### Next structural gaps toward C bit-identity (not decode blockers)
+0. **Encoder intra prediction ignores reconstructed neighbors** — flat-140
+   probe: first block decodes exactly 140 (transform/quant/DC chain correct),
+   then values ramp +12 per block to 255 (mean 219). The encoder predicts
+   each block with the 128 no-neighbor fallback while the decoder predicts
+   from real reconstructed neighbors, so residuals compound. Fix in the
+   partition/encode loop: predictions must read the reconstructed above/left
+   rows exactly as the decoder does. (Then re-check the unsignaled-filter
+   divergence beneath it.)
 1. **Chroma (4:2:0) support** — C SVT-AV1 cannot emit monochrome
    (write_color_config hardcodes is_monochrome=0); our pipeline is
    luma-only mono. Bit-identity requires 3-plane 4:2:0 encoding + chroma

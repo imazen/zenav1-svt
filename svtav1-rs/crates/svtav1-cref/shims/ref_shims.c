@@ -7,6 +7,7 @@
  */
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 #include "bitstream_unit.h"
 #include "cabac_context_model.h"
@@ -16,9 +17,26 @@
 size_t ref_od_ec_enc_sizeof(void) { return sizeof(OdEcEnc); }
 size_t ref_od_ec_enc_alignof(void) { return _Alignof(OdEcEnc); }
 
-void ref_od_ec_enc_init(void* enc, uint32_t size) { svt_od_ec_enc_init((OdEcEnc*)enc, size); }
+/* v4.2.0-rc: the coder borrows its buffer (no internal malloc); the shim
+   owns a fixed generous buffer so the Rust API stays capacity-based. */
+#define REF_EC_BUF_CAP (1u << 20)
+
+void ref_od_ec_enc_init(void* enc, uint32_t size) {
+    OdEcEnc* e = (OdEcEnc*)enc;
+    (void)size;
+    svt_od_ec_enc_init(e);
+    e->buf = (unsigned char*)malloc(REF_EC_BUF_CAP);
+    svt_od_ec_enc_reset(e);
+}
 void ref_od_ec_enc_reset(void* enc) { svt_od_ec_enc_reset((OdEcEnc*)enc); }
-void ref_od_ec_enc_clear(void* enc) { svt_od_ec_enc_clear((OdEcEnc*)enc); }
+void ref_od_ec_enc_clear(void* enc) {
+    /* v4.2 removed the clear() declaration (buffer is borrowed); the shim
+       owns the buffer, so free it and null the pointers directly. */
+    OdEcEnc* e = (OdEcEnc*)enc;
+    free(e->buf);
+    e->buf = NULL;
+    e->ptr = NULL;
+}
 
 void ref_od_ec_encode_cdf_q15(void* enc, int32_t s, const uint16_t* icdf, int32_t nsyms) {
     svt_od_ec_encode_cdf_q15((OdEcEnc*)enc, s, icdf, nsyms);
@@ -34,7 +52,7 @@ const uint8_t* ref_od_ec_enc_done(void* enc, uint32_t* nbytes) {
 
 int32_t ref_od_ec_enc_error(const void* enc) { return ((const OdEcEnc*)enc)->error; }
 
-uint32_t ref_od_ec_enc_tell(const void* enc) { return svt_od_ec_enc_tell((OdEcEnc*)enc); }
+uint32_t ref_od_ec_enc_tell(const void* enc) { return (uint32_t)svt_od_ec_enc_tell((const OdEcEnc*)enc); }
 
 /* ---- CDF adaptation (static INLINE in cabac_context_model.h) ---- */
 
@@ -152,3 +170,11 @@ int32_t ref_get_txsize_entropy_ctx(int32_t tx_size) { return (int32_t)get_txsize
 int32_t ref_get_txb_bwl(int32_t tx_size) { return get_txb_bwl((TxSize)tx_size); }
 int32_t ref_get_txb_wide(int32_t tx_size) { return get_txb_wide((TxSize)tx_size); }
 int32_t ref_get_txb_high(int32_t tx_size) { return get_txb_high((TxSize)tx_size); }
+
+/* ---- AV1 quantizer step tables ---- */
+
+int16_t svt_aom_dc_quant_qtx(int qindex, int delta, EbBitDepth bit_depth);
+int16_t svt_aom_ac_quant_qtx(int qindex, int delta, EbBitDepth bit_depth);
+
+int16_t ref_dc_quant_qtx(int32_t qindex) { return svt_aom_dc_quant_qtx(qindex, 0, EB_EIGHT_BIT); }
+int16_t ref_ac_quant_qtx(int32_t qindex) { return svt_aom_ac_quant_qtx(qindex, 0, EB_EIGHT_BIT); }

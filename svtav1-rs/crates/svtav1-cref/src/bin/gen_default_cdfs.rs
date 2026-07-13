@@ -40,7 +40,7 @@ const TABLES: &[Tbl] = &[
     Tbl { rust_name: "EOB_FLAG_CDF1024", table: FcTable::EobFlag1024, dims: &[2, 2, 12], q_dependent: true },
     Tbl { rust_name: "COEFF_BASE_EOB_CDF", table: FcTable::CoeffBaseEob, dims: &[5, 2, 4, 4], q_dependent: true },
     Tbl { rust_name: "COEFF_BASE_CDF", table: FcTable::CoeffBase, dims: &[5, 2, 42, 5], q_dependent: true },
-    Tbl { rust_name: "COEFF_BR_CDF", table: FcTable::CoeffBr, dims: &[5, 2, 21, 5], q_dependent: true },
+    Tbl { rust_name: "COEFF_BR_CDF", table: FcTable::CoeffBr, dims: &[4, 2, 21, 5], q_dependent: true },
     // ---- mode CDFs (q-independent, svt_aom_init_mode_probs) ----
     Tbl { rust_name: "PARTITION_CDF", table: FcTable::Partition, dims: &[20, 11], q_dependent: false },
     Tbl { rust_name: "SKIP_CDF", table: FcTable::Skip, dims: &[3, 3], q_dependent: false },

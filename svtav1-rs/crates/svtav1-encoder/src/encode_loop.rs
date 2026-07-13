@@ -119,25 +119,28 @@ pub fn encode_block_tx(
         }
     }
 
-    // Step 3: Quantize
-    let dequant_dc = qp_to_dequant(qp, true) as i32;
-    let dequant_ac = qp_to_dequant(qp, false) as i32;
+    // Step 3: Quantize with the real AV1 step tables so the decoder's
+    // dequantization ((level * dqv) >> tx_scale, libaom decodetxb.c)
+    // reproduces our reconstruction exactly.
+    let dequant_dc = svtav1_dsp::quant_tables::DC_QLOOKUP_8[qp as usize] as i32;
+    let dequant_ac = svtav1_dsp::quant_tables::AC_QLOOKUP_8[qp as usize] as i32;
+    // av1_get_tx_scale: 0 for <=256 pels, 1 for 1024, 2 for >1024.
+    let pels = (width * height) as i32;
+    let tx_scale = i32::from(pels > 256) + i32::from(pels > 1024);
 
     let mut qcoeffs = alloc::vec![0i32; n];
     let mut dqcoeffs = alloc::vec![0i32; n];
     let mut eob: u16 = 0;
 
     for i in 0..n {
-        let dequant = if i == 0 { dequant_dc } else { dequant_ac };
-        if dequant == 0 {
-            continue;
-        }
-        // Dead-zone quantization
+        let dqv = if i == 0 { dequant_dc } else { dequant_ac };
+        // Dead-zone quantization against the decoder-visible step.
         let sign = if coeffs[i] < 0 { -1i32 } else { 1 };
-        let abs_coeff = coeffs[i].abs();
-        let q = (abs_coeff + dequant / 2) / dequant;
+        let abs_scaled = (coeffs[i].abs() as i64) << tx_scale;
+        let q = ((abs_scaled + i64::from(dqv) / 2) / i64::from(dqv)) as i32;
         qcoeffs[i] = sign * q;
-        dqcoeffs[i] = qcoeffs[i] * dequant;
+        // Mirror of the decoder: dq = (level * dqv) >> tx_scale.
+        dqcoeffs[i] = sign * (((q as i64 * i64::from(dqv)) >> tx_scale) as i32);
         if q > 0 {
             eob = (i + 1) as u16;
         }
@@ -242,13 +245,6 @@ fn size_to_tx_size(width: usize, height: usize) -> svtav1_types::transform::TxSi
         (64, 16) => TxSize::Tx64x16,
         _ => TxSize::Tx4x4, // fallback
     }
-}
-
-/// Convert QP to dequantization step size (simplified).
-fn qp_to_dequant(qp: u8, is_dc: bool) -> u16 {
-    // Simplified: real AV1 uses a lookup table indexed by qindex
-    let base = 4 + qp as u16 * 2;
-    if is_dc { base } else { base + 2 }
 }
 
 /// Estimate rate from quantized coefficients (simplified).
