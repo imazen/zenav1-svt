@@ -127,10 +127,10 @@ def decode_sh(payload):
     b.f(5, "seq_level_idx[0]")
     wbits = b.f(4, "frame_width_bits_minus_1") + 1
     hbits = b.f(4, "frame_height_bits_minus_1") + 1
-    b.f(wbits, "max_frame_width_minus_1")
-    b.f(hbits, "max_frame_height_minus_1")
+    width = b.f(wbits, "max_frame_width_minus_1") + 1
+    height = b.f(hbits, "max_frame_height_minus_1") + 1
     # reduced -> no frame ids
-    b.f(1, "use_128x128_superblock")
+    use_128 = b.f(1, "use_128x128_superblock")
     b.f(1, "enable_filter_intra")
     b.f(1, "enable_intra_edge_filter")
     # reduced -> inter tools all 0, no order hint
@@ -162,7 +162,14 @@ def decode_sh(payload):
     if not mono:
         b.f(1, "separate_uv_delta_q")
     b.f(1, "film_grain_params_present")
-    return b, dict(enable_superres=enable_superres, mono=mono, profile=profile)
+    return b, dict(
+        enable_superres=enable_superres,
+        mono=mono,
+        profile=profile,
+        width=width,
+        height=height,
+        use_128=use_128,
+    )
 
 
 # ----------------------------------------------------------------------------
@@ -192,11 +199,51 @@ def decode_fh(payload, sh_info, num_planes):
     # NO: implied only via disable_cdf_update; spec 5.9.2:
     #   if (reduced_still_picture_header || disable_cdf_update)
     #       disable_frame_end_update_cdf = 1  (not coded)
-    # tile_info() — single-SB frames have max log2 = 0 -> zero increment bits
-    b.f(1, "uniform_tile_spacing_flag")
-    # (64x64/128x128-frame assumption: no tile log2 increment bits possible;
-    #  sb_cols small enough that maxLog2TileCols==0. Larger frames would need
-    #  the full loop; sizes used by the identity harness stay tiny.)
+    # tile_info() — spec 5.9.15. Once a frame has more than one SB per
+    # direction, uniform spacing is followed by increment_tile_cols/rows_log2
+    # bits (one per possible doubling, terminated by a 0 bit or the max).
+    uniform = b.f(1, "uniform_tile_spacing_flag")
+    mi_cols = 2 * ((sh_info.get("width", 64) + 7) >> 3)
+    mi_rows = 2 * ((sh_info.get("height", 64) + 7) >> 3)
+    if sh_info.get("use_128"):
+        sb_cols = (mi_cols + 31) >> 5
+        sb_rows = (mi_rows + 31) >> 5
+        sb_size_log2 = 7
+    else:
+        sb_cols = (mi_cols + 15) >> 4
+        sb_rows = (mi_rows + 15) >> 4
+        sb_size_log2 = 6
+    max_tile_width_sb = 4096 >> sb_size_log2
+    max_tile_area_sb = (4096 * 2304) >> (2 * sb_size_log2)
+
+    def tl2(a, target):
+        k = 0
+        while (a << k) < target:
+            k += 1
+        return k
+
+    min_log2_tile_cols = tl2(max_tile_width_sb, sb_cols)
+    max_log2_tile_cols = tl2(1, min(sb_cols, 64))
+    max_log2_tile_rows = tl2(1, min(sb_rows, 64))
+    min_log2_tiles = max(min_log2_tile_cols, tl2(max_tile_area_sb, sb_rows * sb_cols))
+    if not uniform:
+        raise ValueError("non-uniform tile spacing walk not implemented")
+    tile_cols_log2 = min_log2_tile_cols
+    while tile_cols_log2 < max_log2_tile_cols:
+        if b.f(1, f"increment_tile_cols_log2[{tile_cols_log2}]"):
+            tile_cols_log2 += 1
+        else:
+            break
+    min_log2_tile_rows = max(min_log2_tiles - tile_cols_log2, 0)
+    tile_rows_log2 = min_log2_tile_rows
+    while tile_rows_log2 < max_log2_tile_rows:
+        if b.f(1, f"increment_tile_rows_log2[{tile_rows_log2}]"):
+            tile_rows_log2 += 1
+        else:
+            break
+    if tile_cols_log2 > 0 or tile_rows_log2 > 0:
+        b.f(tile_cols_log2 + tile_rows_log2, "context_update_tile_id")
+        b.f(2, "tile_size_bytes_minus_1")
     # quantization_params()
     base_q = b.f(8, "base_q_idx")
     coded_lossless_possible = base_q == 0
@@ -256,11 +303,22 @@ def decode_fh(payload, sh_info, num_planes):
     # lr_params() — only when SH.enable_restoration
     if sh_info.get("enable_restoration") and not allow_intrabc:
         uses = 0
+        uses_chroma_lr = 0
         for i in range(num_planes):
             t = b.f(2, f"lr_type[{i}]")
             uses |= t != 0
+            if i > 0:
+                uses_chroma_lr |= t != 0
         if uses:
-            raise ValueError("lr unit size walk not implemented")
+            # spec 5.9.20 lr unit size
+            if sh_info.get("use_128"):
+                b.f(1, "lr_unit_shift")  # shift = bit + 1
+            else:
+                if b.f(1, "lr_unit_shift"):
+                    b.f(1, "lr_unit_extra_shift")
+            if num_planes > 1 and uses_chroma_lr:
+                # profile 0 -> subsampling_x = subsampling_y = 1
+                b.f(1, "lr_uv_shift")
     # read_tx_mode()
     b.f(1, "tx_mode_select")
     # intra frame: no reference_select / skip_mode / warped motion
