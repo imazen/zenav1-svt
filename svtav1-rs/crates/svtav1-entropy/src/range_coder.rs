@@ -233,7 +233,11 @@ impl OdEcEnc {
         }
         self.offs = offs as u32;
         #[cfg(feature = "symtrace")]
-        std::eprintln!("W DONE nbytes={} head={:02x?}", offs, &self.buf[..offs.min(16)]);
+        std::eprintln!(
+            "W DONE nbytes={} head={:02x?}",
+            offs,
+            &self.buf[..offs.min(16)]
+        );
         &self.buf[..offs]
     }
 
@@ -326,7 +330,11 @@ mod tests {
             enc.encode_cdf_q15(i & 1, &icdf, 2);
         }
         let output = enc.done();
-        assert!(output.len() >= 120, "~1 bit/symbol expected, got {}", output.len());
+        assert!(
+            output.len() >= 120,
+            "~1 bit/symbol expected, got {}",
+            output.len()
+        );
     }
 
     #[test]

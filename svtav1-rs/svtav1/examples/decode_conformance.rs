@@ -121,8 +121,7 @@ fn main() {
                         qp,
                         ..RcConfig::default()
                     };
-                    let mut pipeline =
-                        EncodePipeline::new(pw as u32, ph as u32, speed, rc, 0, 1);
+                    let mut pipeline = EncodePipeline::new(pw as u32, ph as u32, speed, rc, 0, 1);
                     let obu = if chroma_mode {
                         pipeline = pipeline.with_chroma_420(true);
                         let (u, v) = make_chroma(cname, pw / 2, ph / 2);

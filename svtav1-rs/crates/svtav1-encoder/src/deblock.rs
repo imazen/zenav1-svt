@@ -170,7 +170,11 @@ fn lpf_params(
     let tx_dims = |i: usize| -> (usize, usize) {
         let (bw, bh) = (geom.bw[i] as usize, geom.bh[i] as usize);
         debug_assert!(bw >= 4 && bh >= 4, "uncovered mi {i}");
-        if plane == 0 { (bw, bh) } else { (bw >> 1, bh >> 1) }
+        if plane == 0 {
+            (bw, bh)
+        } else {
+            (bw >> 1, bh >> 1)
+        }
     };
     let (tw, th) = tx_dims(idx);
     let ts_dim = if dir == EdgeDir::Vert { tw } else { th };
@@ -260,7 +264,8 @@ fn filter_plane(
     for my in 0..mi_rows_p {
         let mut mx = 0;
         while mx < mi_cols_p {
-            let (adv, filter) = lpf_params(geom, EdgeDir::Vert, mx * 4, my * 4, plane, ss, level_vert);
+            let (adv, filter) =
+                lpf_params(geom, EdgeDir::Vert, mx * 4, my * 4, plane, ss, level_vert);
             if let Some(len) = filter {
                 let off = (my * 4) * stride + mx * 4;
                 match len {
@@ -279,7 +284,8 @@ fn filter_plane(
     for mx in 0..mi_cols_p {
         let mut my = 0;
         while my < mi_rows_p {
-            let (adv, filter) = lpf_params(geom, EdgeDir::Horz, mx * 4, my * 4, plane, ss, level_horz);
+            let (adv, filter) =
+                lpf_params(geom, EdgeDir::Horz, mx * 4, my * 4, plane, ss, level_horz);
             if let Some(len) = filter {
                 let off = (my * 4) * stride + mx * 4;
                 match len {
@@ -356,8 +362,18 @@ mod tests {
 
     #[test]
     fn any_requires_luma() {
-        assert!(!LfLevels { levels: [0, 0, 1, 1] }.any());
-        assert!(LfLevels { levels: [1, 0, 0, 0] }.any());
+        assert!(
+            !LfLevels {
+                levels: [0, 0, 1, 1]
+            }
+            .any()
+        );
+        assert!(
+            LfLevels {
+                levels: [1, 0, 0, 0]
+            }
+            .any()
+        );
         assert!(LfLevels::default() == LfLevels { levels: [0; 4] });
     }
 }

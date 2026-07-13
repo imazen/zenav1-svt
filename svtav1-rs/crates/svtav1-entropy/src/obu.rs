@@ -411,8 +411,14 @@ pub fn write_key_frame_header_full(
     monochrome: bool,
     lf_levels: [u8; 4],
 ) -> Vec<u8> {
-    let mut wb =
-        key_frame_header_bits(width, height, base_qindex, reduced_sh, monochrome, lf_levels);
+    let mut wb = key_frame_header_bits(
+        width,
+        height,
+        base_qindex,
+        reduced_sh,
+        monochrome,
+        lf_levels,
+    );
     // This header is embedded in an OBU_FRAME: the spec requires
     // byte_alignment() (zero bits only) between frame_header and tile_group —
     // trailing_bits (with its leading 1) is only for standalone
@@ -861,7 +867,9 @@ mod tests {
     fn mono_headers_unchanged_golden() {
         assert_eq!(
             write_sequence_header(64, 64),
-            [0x0a, 0x09, 0x1a, 0x15, 0x7f, 0xfc, 0x06, 0x02, 0x1a, 0x03, 0x40]
+            [
+                0x0a, 0x09, 0x1a, 0x15, 0x7f, 0xfc, 0x06, 0x02, 0x1a, 0x03, 0x40
+            ]
         );
         assert_eq!(
             write_key_frame_header(64, 64, 30),
@@ -869,7 +877,10 @@ mod tests {
         );
         assert_eq!(
             write_sequence_header_full(64, 64),
-            [0x0a, 0x0d, 0x00, 0x00, 0x00, 0x41, 0x57, 0xff, 0xc0, 0x26, 0xc3, 0x01, 0x0d, 0x01, 0xa0]
+            [
+                0x0a, 0x0d, 0x00, 0x00, 0x00, 0x41, 0x57, 0xff, 0xc0, 0x26, 0xc3, 0x01, 0x0d, 0x01,
+                0xa0
+            ]
         );
     }
 
@@ -919,7 +930,10 @@ mod tests {
         let expected_obu = write_obu(ObuType::SequenceHeader, &expected_payload);
 
         let got = write_sequence_header_ex(64, 64, true, 8, &ColorDescription::srgb(), false);
-        assert_eq!(got, expected_obu, "420 SH layout drifted from spec derivation");
+        assert_eq!(
+            got, expected_obu,
+            "420 SH layout drifted from spec derivation"
+        );
     }
 
     /// The 4:2:0 SH's color_config must be BIT-IDENTICAL to what C SVT-AV1
@@ -974,8 +988,7 @@ mod tests {
             assert_eq!(b.f(6), 63); // max_frame_width_minus_1
             assert_eq!(b.f(6), 63); // max_frame_height_minus_1
             assert_eq!(b.f(1), 0, "use_128x128_superblock");
-            let tools =
-                (b.f(1) << 4) | (b.f(1) << 3) | (b.f(1) << 2) | (b.f(1) << 1) | b.f(1);
+            let tools = (b.f(1) << 4) | (b.f(1) << 3) | (b.f(1) << 2) | (b.f(1) << 1) | b.f(1);
             // color_config from here:
             let cc = [
                 b.f(1), // high_bitdepth

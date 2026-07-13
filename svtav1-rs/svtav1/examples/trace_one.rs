@@ -11,8 +11,15 @@ use svtav1_encoder::rate_control::{RcConfig, RcMode};
 fn main() {
     // args: [out] [content] [size] [qp] [speed]  (defaults: gradient 64 50 10)
     let args: Vec<String> = std::env::args().collect();
-    let out = args.get(1).cloned().unwrap_or_else(|| "/tmp/trace_one.obu".into());
-    let content = args.get(2).map(String::as_str).unwrap_or("gradient").to_string();
+    let out = args
+        .get(1)
+        .cloned()
+        .unwrap_or_else(|| "/tmp/trace_one.obu".into());
+    let content = args
+        .get(2)
+        .map(String::as_str)
+        .unwrap_or("gradient")
+        .to_string();
     let sz: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(64);
     let qp: u8 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(50);
     let speed: u8 = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(10);
@@ -28,7 +35,11 @@ fn main() {
                 "flat140" => 140,
                 "flat250" => 250,
                 "edges" => {
-                    if (r / 8 + c / 8) % 2 == 0 { 32 } else { 224 }
+                    if (r / 8 + c / 8) % 2 == 0 {
+                        32
+                    } else {
+                        224
+                    }
                 }
                 _ => ((r * 255) / sz) as u8 ^ ((c * 3) & 0x3F) as u8,
             };
@@ -48,7 +59,11 @@ fn main() {
             src[r * pw + c] = src[(sz - 1) * pw + c];
         }
     }
-    let rc = RcConfig { mode: RcMode::Cqp, qp, ..RcConfig::default() };
+    let rc = RcConfig {
+        mode: RcMode::Cqp,
+        qp,
+        ..RcConfig::default()
+    };
     let mut pipeline = EncodePipeline::new(pw as u32, ph as u32, speed, rc, 0, 1);
     let obu = pipeline.encode_frame(&src, pw);
     std::fs::write(&out, &obu).unwrap();

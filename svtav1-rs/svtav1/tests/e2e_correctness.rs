@@ -1034,7 +1034,10 @@ fn determinism_repeated_encodes_are_byte_identical() {
     let a = encode();
     let b = encode();
     assert!(!a.is_empty());
-    assert_eq!(a, b, "same input + config must produce byte-identical streams");
+    assert_eq!(
+        a, b,
+        "same input + config must produce byte-identical streams"
+    );
 
     // And the same through the 4:2:0 path.
     let u = vec![90u8; (w / 2) * (h / 2)];

@@ -72,7 +72,11 @@ fn main() {
         }
         fields.push((
             name.to_string(),
-            format!("{}{}", ty.split_whitespace().collect::<Vec<_>>().join(" "), dims),
+            format!(
+                "{}{}",
+                ty.split_whitespace().collect::<Vec<_>>().join(" "),
+                dims
+            ),
             std::mem::take(&mut last_comment),
         ));
     }
@@ -83,7 +87,11 @@ fn main() {
         for line in old.lines() {
             let cols: Vec<&str> = line.split('|').map(str::trim).collect();
             // | field | type | status | notes |
-            if cols.len() >= 4 && !cols[1].is_empty() && cols[1] != "field" && !cols[1].starts_with('-') {
+            if cols.len() >= 4
+                && !cols[1].is_empty()
+                && cols[1] != "field"
+                && !cols[1].starts_with('-')
+            {
                 statuses.insert(cols[1].trim_matches('`').to_string(), cols[3].to_string());
             }
         }
@@ -117,7 +125,10 @@ fn main() {
     let _ = writeln!(out, "| field | type | status | notes |");
     let _ = writeln!(out, "|---|---|---|---|");
     for (name, ty, hint) in &fields {
-        let status = statuses.get(name).cloned().unwrap_or_else(|| "unmapped".into());
+        let status = statuses
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| "unmapped".into());
         let _ = writeln!(out, "| `{name}` | `{ty}` | {status} | {hint} |");
     }
 
@@ -125,14 +136,18 @@ fn main() {
     let app_src = std::fs::read_to_string(repo_root.join("Source/App/app_config.c"))
         .expect("read app_config.c");
     // Pass 1: token macros — `#define FOO_TOKEN "--foo"` in app_config.{c,h}.
-    let app_hdr = std::fs::read_to_string(repo_root.join("Source/App/app_config.h"))
-        .unwrap_or_default();
+    let app_hdr =
+        std::fs::read_to_string(repo_root.join("Source/App/app_config.h")).unwrap_or_default();
     let mut macros: BTreeMap<String, String> = BTreeMap::new();
     for line in app_src.lines().chain(app_hdr.lines()) {
         let t = line.trim();
-        let Some(rest) = t.strip_prefix("#define ") else { continue };
+        let Some(rest) = t.strip_prefix("#define ") else {
+            continue;
+        };
         let mut it = rest.splitn(2, char::is_whitespace);
-        let (Some(name), Some(val)) = (it.next(), it.next()) else { continue };
+        let (Some(name), Some(val)) = (it.next(), it.next()) else {
+            continue;
+        };
         let val = val.trim();
         if name.ends_with("_TOKEN") && val.starts_with('"') {
             if let Some(tok) = val.trim_matches('"').strip_prefix("") {
@@ -148,22 +163,22 @@ fn main() {
     let mut seen = std::collections::BTreeSet::new();
     for line in app_src.lines() {
         let t = line.trim();
-        let Some(body) = t.strip_prefix('{') else { continue };
+        let Some(body) = t.strip_prefix('{') else {
+            continue;
+        };
         let macro_name = body
             .split([',', '}'])
             .next()
             .unwrap_or("")
             .trim()
             .to_string();
-        let Some(token) = macros.get(&macro_name) else { continue };
+        let Some(token) = macros.get(&macro_name) else {
+            continue;
+        };
         if !seen.insert(token.clone()) {
             continue;
         }
-        let help = body
-            .split('"')
-            .nth(1)
-            .unwrap_or("")
-            .to_string();
+        let help = body.split('"').nth(1).unwrap_or("").to_string();
         flags.push((token.clone(), help));
     }
     let ftotal = flags.len();
@@ -187,9 +202,16 @@ fn main() {
     let _ = writeln!(out, "| field | type | status | notes |");
     let _ = writeln!(out, "|---|---|---|---|");
     for (token, help) in &flags {
-        let status = statuses.get(token).cloned().unwrap_or_else(|| "unmapped".into());
+        let status = statuses
+            .get(token)
+            .cloned()
+            .unwrap_or_else(|| "unmapped".into());
         let help = help.replace('|', "\\|");
-        let help = if help.len() > 100 { format!("{}…", &help[..100]) } else { help };
+        let help = if help.len() > 100 {
+            format!("{}…", &help[..100])
+        } else {
+            help
+        };
         let _ = writeln!(out, "| `{token}` | `flag` | {status} | {help} |");
     }
 

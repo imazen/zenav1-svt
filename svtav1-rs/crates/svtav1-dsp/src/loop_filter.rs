@@ -54,8 +54,7 @@ pub struct LfThresh {
 pub fn lf_thresholds(level: u8, sharpness: u8) -> LfThresh {
     let lvl = level as i32;
     let sharpness_lvl = sharpness as i32;
-    let mut block_inside_limit =
-        lvl >> ((sharpness_lvl > 0) as i32 + (sharpness_lvl > 4) as i32);
+    let mut block_inside_limit = lvl >> ((sharpness_lvl > 0) as i32 + (sharpness_lvl > 4) as i32);
     if sharpness_lvl > 0 && block_inside_limit > 9 - sharpness_lvl {
         block_inside_limit = 9 - sharpness_lvl;
     }
@@ -118,7 +117,16 @@ fn filter_mask(
 
 /// C `filter_mask3_chroma` (deblocking_common.c:173) for 6-tap edges.
 #[inline]
-fn filter_mask3_chroma(limit: u8, blimit: u8, p2: u8, p1: u8, p0: u8, q0: u8, q1: u8, q2: u8) -> i8 {
+fn filter_mask3_chroma(
+    limit: u8,
+    blimit: u8,
+    p2: u8,
+    p1: u8,
+    p0: u8,
+    q0: u8,
+    q1: u8,
+    q2: u8,
+) -> i8 {
     let (p2, p1, p0) = (p2 as i32, p1 as i32, p0 as i32);
     let (q0, q1, q2) = (q0 as i32, q1 as i32, q2 as i32);
     let l = limit as i32;
@@ -1147,5 +1155,4 @@ mod dispatch_tests {
             assert_eq!(result, reference, "cdef mismatch at dispatch level {_perm}");
         });
     }
-
 }

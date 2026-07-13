@@ -176,7 +176,11 @@ fn fwd_named_square_wrappers_match_c() {
             let mut ours = vec![0i32; n * n];
             named_fwd_square(n, &res32, &mut ours, n);
             if ours != c_out {
-                let first = ours.iter().zip(c_out.iter()).position(|(a, b)| a != b).unwrap();
+                let first = ours
+                    .iter()
+                    .zip(c_out.iter())
+                    .position(|(a, b)| a != b)
+                    .unwrap();
                 panic!(
                     "named fwd {n}x{n} trial {trial}: first diff at {} (r{} c{}): ours={} c={}",
                     first,
@@ -221,7 +225,11 @@ fn fwd_named_rect_wrappers_match_c() {
             let mut ours = vec![0i32; w * h];
             named_fwd_rect(w, h, &res32, &mut ours, w);
             if ours != c_out {
-                let first = ours.iter().zip(c_out.iter()).position(|(a, b)| a != b).unwrap();
+                let first = ours
+                    .iter()
+                    .zip(c_out.iter())
+                    .position(|(a, b)| a != b)
+                    .unwrap();
                 panic!(
                     "named fwd {w}x{h} trial {trial}: first diff at {} (r{} c{}): ours={} c={}",
                     first,
@@ -248,12 +256,20 @@ fn fwd_dispatch_rect_matches_c() {
             let mut ours = vec![0i32; w * h];
             assert!(
                 svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
-                    &res32, &mut ours, w, ts, TxType::DctDct
+                    &res32,
+                    &mut ours,
+                    w,
+                    ts,
+                    TxType::DctDct
                 ),
                 "dispatch must support {w}x{h} DCT_DCT"
             );
             if ours != c_out {
-                let first = ours.iter().zip(c_out.iter()).position(|(a, b)| a != b).unwrap();
+                let first = ours
+                    .iter()
+                    .zip(c_out.iter())
+                    .position(|(a, b)| a != b)
+                    .unwrap();
                 panic!(
                     "dispatch fwd {w}x{h} trial {trial}: first diff at {} (r{} c{}): ours={} c={}",
                     first,
