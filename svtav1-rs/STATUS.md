@@ -48,12 +48,10 @@ is ported).
 
 ## Known failing test
 
-`multi_frame_bitstream_sizes_decrease` (real_encode): asserts key frame >
-first inter frame in bytes. The corrected quantizer legitimately shrinks the
-key frame (mostly-skip static content) while the primitive inter path spends
-~230 bytes/frame on MV/mode overhead. Expectation left untouched pending a
-decision (test-relaxation rule); it currently documents that the inter path
-is unfinished.
+(none — `multi_frame_bitstream_sizes_decrease` passes again since the
+unsignaled loop filters were disabled: the filtered DPB recon had been
+corrupting inter references, which was the real reason inter frames
+outweighed the key frame. Workspace fully green.)
 
 ## Architecture direction
 
