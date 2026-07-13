@@ -1,0 +1,17 @@
+command: cargo run --release -p svtav1 --example perf_vs_c
+commit: 44e13c336 (wave2/entropy-c-parity, CDEF signaled+applied)
+date: 2026-07-13
+c_encoder: SvtAv1EncApp v4.2.0-rc (../Bin/Release), --rc 0 --aq-mode 0 --avif 1 --lp 1 -n 1
+settings: CLI qp 40 (qindex 160 both sides), same grid as _qindex.csv.
+delta vs perf_vs_c_2026-07-13_qindex.csv (rust_ms, the honest CDEF cost —
+  the pass adds a full-frame pre-CDEF snapshot + per-8x8 dir search +
+  filter at qindex 160 strengths y=13):
+  256 p2: 723.0 -> 742.5 (+2.7%); p6: 387.2 -> 390.6 (+0.9%);
+  p10: 15.1 -> 19.3 (+28% — fixed per-frame cost on a tiny encode);
+  1024 p2: 11557.1 -> 11917.2 (+3.1%); p6: 5978.6 -> 6267.4 (+4.8%);
+  p10: 237.6 -> 284.2 (+19.6%).
+  c_ms moved between runs too (172 vs 197 etc.) — C-side run-to-run
+  variance; rust_ms deltas are the meaningful CDEF cost signal. Scalar
+  kernels (no SIMD yet), correctness-first per porting rules.
+note: C timing includes app setup (few-ms constant bias in C's favor);
+  median of 3 runs both sides.
