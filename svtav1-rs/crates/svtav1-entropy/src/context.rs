@@ -251,7 +251,12 @@ impl FrameContext {
             intra_inter_cdf: DEFAULT_INTRA_INTER_CDF,
             kf_y_mode_cdf: DEFAULT_KF_Y_MODE_CDF,
             y_mode_cdf: DEFAULT_Y_MODE_CDF,
-            uv_mode_cdf: [[[0; UV_INTRA_MODES + 1]; INTRA_MODES]; 2],
+            // Real AV1 defaults (generated from the C reference, layout
+            // [cfl_allowed][y_mode][UV_INTRA_MODES+1]): the decoder inits
+            // uv_mode_cdf with these (libaom entropymode.c
+            // default_uv_mode_cdf), so an all-zero table desyncs the stream
+            // on the first uv_mode symbol.
+            uv_mode_cdf: crate::default_cdfs::UV_MODE_CDF,
             // Real AV1 defaults extracted from the C reference — the decoder
             // initializes angle_delta_cdf with these, so a uniform table
             // desyncs the stream on the first directional mode.
@@ -428,6 +433,42 @@ pub fn write_intra_mode_kf(
 /// Returns true if the given intra mode is directional (V_PRED..D67_PRED).
 pub fn is_directional_mode(mode: u8) -> bool {
     (1..=8).contains(&mode)
+}
+
+/// Encode a chroma (UV) intra prediction mode.
+///
+/// Mirrors libaom's decoder exactly (av1/decoder/decodemv.c:140
+/// `read_intra_mode_uv`):
+///
+/// ```c
+/// aom_read_symbol(r, ec_ctx->uv_mode_cdf[cfl_allowed][y_mode],
+///                 UV_INTRA_MODES - !cfl_allowed, ...)
+/// ```
+///
+/// i.e. the CDF is selected by `[cfl_allowed][y_mode]` and the alphabet is
+/// 14 symbols when CFL is allowed, else 13. CFL is allowed for luma blocks
+/// with width <= 32 && height <= 32 (libaom av1/common/blockd.h
+/// `is_cfl_allowed`, non-lossless path) — the caller derives that from the
+/// LUMA block dimensions. `UV_DC_PRED` is symbol 0 in both alphabets.
+pub fn write_uv_mode(
+    w: &mut AomWriter,
+    fc: &mut FrameContext,
+    cfl_allowed: bool,
+    y_mode: u8,
+    uv_mode: u8,
+) {
+    let nsymbs = if cfl_allowed {
+        UV_INTRA_MODES
+    } else {
+        UV_INTRA_MODES - 1
+    };
+    debug_assert!((uv_mode as usize) < nsymbs);
+    let y = (y_mode as usize).min(INTRA_MODES - 1);
+    w.write_symbol(
+        uv_mode as usize,
+        &mut fc.uv_mode_cdf[usize::from(cfl_allowed)][y],
+        nsymbs,
+    );
 }
 
 /// Encode the angle delta for a directional intra mode.
