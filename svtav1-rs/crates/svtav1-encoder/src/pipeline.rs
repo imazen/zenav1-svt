@@ -794,6 +794,13 @@ impl EntropyCtx {
     }
 }
 
+/// C `av1_use_angle_delta(bsize)` (reconintra.h:59): `bsize >= BLOCK_8X8` in
+/// enum order — true for every block size except BLOCK_4X4, BLOCK_4X8 and
+/// BLOCK_8X4 (the 4:1 rects 4x16/16x4 come AFTER BLOCK_128X128 in the enum).
+fn use_angle_delta(width: u16, height: u16) -> bool {
+    !matches!((width, height), (4, 4) | (4, 8) | (8, 4))
+}
+
 /// Encode block syntax (skip, mode, coefficients) WITHOUT a partition symbol.
 ///
 /// This is the core block encoding used by both PARTITION_NONE leaves and
@@ -832,10 +839,12 @@ fn encode_block_syntax(
             left_ctx,
             decision.intra_mode,
         );
-        // angle_delta is only signaled for blocks >= 8x8
-        // (spec av1_use_angle_delta).
-        if decision.width >= 8
-            && decision.height >= 8
+        // C av1_use_angle_delta(bsize) is `bsize >= BLOCK_8X8` in ENUM order
+        // (reconintra.h:59): only BLOCK_4X4/4X8/8X4 are excluded — the 4:1
+        // rects BLOCK_4X16/16X4 (enum 16/17) DO signal angle_delta. The
+        // decoder reads the symbol for every directional mode on those
+        // blocks; omitting it desyncs the tile.
+        if use_angle_delta(decision.width, decision.height)
             && svtav1_entropy::context::is_directional_mode(decision.intra_mode)
         {
             svtav1_entropy::context::write_angle_delta(writer, frame_ctx, decision.intra_mode, 0);
@@ -851,8 +860,7 @@ fn encode_block_syntax(
             bsize_group,
             decision.intra_mode,
         );
-        if decision.width >= 8
-            && decision.height >= 8
+        if use_angle_delta(decision.width, decision.height)
             && svtav1_entropy::context::is_directional_mode(decision.intra_mode)
         {
             svtav1_entropy::context::write_angle_delta(writer, frame_ctx, decision.intra_mode, 0);
