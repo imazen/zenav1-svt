@@ -838,7 +838,7 @@ fn directional_45_deg_zone1() {
     let left = [128u8; 8];
     let mut dst = [0u8; 64];
 
-    svtav1_dsp::intra_pred::predict_directional(&mut dst, 8, &above, &left, 8, 8, 45);
+    svtav1_dsp::intra_pred::predict_directional(&mut dst, 8, &above, &left, 128, 8, 8, 45);
 
     // Row 0 should be close to above[0..8]
     // Row 1 should be shifted right by ~1 pixel (interpolated between above[c] and above[c+1])
@@ -867,7 +867,7 @@ fn directional_vertical_90_deg() {
     let left = [0u8; 8];
     let mut dst = [0u8; 64];
 
-    svtav1_dsp::intra_pred::predict_directional(&mut dst, 8, &above, &left, 8, 8, 90);
+    svtav1_dsp::intra_pred::predict_directional(&mut dst, 8, &above, &left, 128, 8, 8, 90);
 
     // Every row should be exactly above
     for r in 0..8 {
@@ -884,7 +884,7 @@ fn directional_horizontal_180_deg() {
     let left = [10u8, 20, 30, 40, 50, 60, 70, 80];
     let mut dst = [0u8; 64];
 
-    svtav1_dsp::intra_pred::predict_directional(&mut dst, 8, &above, &left, 8, 8, 180);
+    svtav1_dsp::intra_pred::predict_directional(&mut dst, 8, &above, &left, 128, 8, 8, 180);
 
     // Every column should be the corresponding left value
     for r in 0..8 {
@@ -905,7 +905,7 @@ fn directional_203_deg_zone3() {
     }
     let mut dst = [0u8; 64];
 
-    svtav1_dsp::intra_pred::predict_directional(&mut dst, 8, &above, &left, 8, 8, 203);
+    svtav1_dsp::intra_pred::predict_directional(&mut dst, 8, &above, &left, 128, 8, 8, 203);
 
     // Zone 3: each column shifts down along left
     // Verify values are derived from left array and monotonically increasing down columns

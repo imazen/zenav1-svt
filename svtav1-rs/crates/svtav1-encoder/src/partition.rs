@@ -1418,15 +1418,6 @@ fn encode_single_block(
             | svtav1_types::prediction::PredictionMode::D113Pred
             | svtav1_types::prediction::PredictionMode::D157Pred
             | svtav1_types::prediction::PredictionMode::D203Pred => {
-                // Directional prediction needs extended neighbor arrays
-                let ext_len = width + height;
-                let mut ext_above = alloc::vec![128u8; ext_len];
-                let copy_a = above.len().min(ext_len);
-                ext_above[..copy_a].copy_from_slice(&above[..copy_a]);
-                let mut ext_left = alloc::vec![128u8; ext_len];
-                let copy_l = left.len().min(ext_len);
-                ext_left[..copy_l].copy_from_slice(&left[..copy_l]);
-
                 let angle = match cand.mode {
                     svtav1_types::prediction::PredictionMode::D45Pred => 45,
                     svtav1_types::prediction::PredictionMode::D67Pred => 67,
@@ -1436,15 +1427,47 @@ fn encode_single_block(
                     svtav1_types::prediction::PredictionMode::D203Pred => 203,
                     _ => 45,
                 };
-                svtav1_dsp::intra_pred::predict_directional(
-                    &mut pred_block,
-                    width,
-                    &ext_above,
-                    &ext_left,
+                // Build the extended neighbor arrays exactly like the
+                // decoder (libaom build_intra_predictors): real
+                // above-right / bottom-left pixels where
+                // has_top_right/has_bottom_left say they are decoded,
+                // replication of the last real sample otherwise, and the
+                // decoder's unavailable-edge fills — instead of the old
+                // flat-128 padding the decoder never sees.
+                //
+                // PartitionType::None: only PARTITION_VERT_A/B select
+                // different availability tables and this encoder never
+                // emits them (search generates None/Horz/Vert/Horz4/
+                // Vert4/Split only). If VERT_A/B are ever added, the
+                // actual partition type must be threaded through here.
+                match crate::intra_edge::build_directional_edges(
+                    recon,
+                    recon_stride,
+                    abs_x,
+                    abs_y,
                     width,
                     height,
                     angle,
-                );
+                    svtav1_types::partition::PartitionType::None,
+                ) {
+                    crate::intra_edge::DirEdges::Flat(v) => pred_block.fill(v),
+                    crate::intra_edge::DirEdges::Edges {
+                        above: ext_above,
+                        left: ext_left,
+                        top_left: ext_top_left,
+                    } => {
+                        svtav1_dsp::intra_pred::predict_directional(
+                            &mut pred_block,
+                            width,
+                            &ext_above,
+                            &ext_left,
+                            ext_top_left,
+                            width,
+                            height,
+                            angle,
+                        );
+                    }
+                }
             }
             _ => {
                 // Remaining directional modes and advanced modes — use DC as fallback
