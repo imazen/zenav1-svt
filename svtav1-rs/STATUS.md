@@ -2,13 +2,25 @@
 
 Last updated: 2026-07-13 (wave2/entropy-c-parity) — C baseline **v4.2.0-rc**
 
+## QP domain (C-exact since 2026-07-13)
+
+`RcConfig.qp` is CLI-domain 0..63 exactly like C's `--qp`; the pipeline
+maps it through the verbatim `quantizer_to_qindex[64]` port ONCE at frame
+setup and every downstream consumer (quantizer tables, FH base_q_idx,
+CDF q bucket, chroma quantization, deblock level picker) operates on the
+qindex 0..255. Before the split the 0..63 value was consumed as qindex
+directly, capping the reachable quantizer range at qindex 63 (top-quality
+quarter) and keeping deblock levels <= 3. All matrices below use
+CLI-domain qps.
+
 ## Decode conformance (AV1 reference decoder)
 
 `tools/decode_conformance.sh` — 525-stream mono matrix (gradient/uniform/
-edges x 32..128 px x qindex 30..90 x speeds 2..10) plus a 700-stream
-4:2:0 matrix (`tools/decode_conformance.sh <dir> chroma`: same grid + a
-`color` content whose chroma planes carry real patterns), every stream
-must decode under **aomdec**:
+edges x 32..128 px x CLI qp {20,32,43,55,63} = qindex {80,128,172,220,
+255} x speeds 2..10) plus a 700-stream 4:2:0 matrix
+(`tools/decode_conformance.sh <dir> chroma`: same grid + a `color`
+content whose chroma planes carry real patterns), every stream must
+decode under **aomdec**:
 
 | Gate | Result |
 |---|---|
@@ -39,7 +51,11 @@ dead 64x64 slice (tables regenerated).
 
 ## Pixel-path status (decoded output correctness) — CORRECT
 
-All probes decode via aomdec and compare against the source:
+All probes decode via aomdec and compare against the source. (The
+q labels below are the EFFECTIVE QINDEXES the historical runs measured
+at — they predate the CLI-qp/qindex split, when RcConfig.qp was consumed
+as qindex directly; to reproduce "qindex30" today pass CLI qp 30/4 ≈ 8,
+or call the block APIs with qindex 30 directly.)
 
 | Probe | Result |
 |---|---|
@@ -58,6 +74,14 @@ fill (127/129/left[0]/above[0] rules), 64-dim coefficient zeroing.
 Deblocking is now SIGNALED and applied decoder-exactly (2026-07-13): key
 frames carry the q-picked loop_filter levels and the recon-parity gate
 holds 216/0 with filtering live; CDEF/restoration stay disabled+unsignaled.
+At real high qindexes the picker returns material levels ([61,61,30,30]
+at qindex 220, [63,63,60,60] at 255) and the filter moves hundreds of
+pixels with parity still exact (examples/deblock_evidence).
+The qindex split also exposed + fixed a latent VERT_A/VERT_B bug: their
+children now use the C has_tr_vert_*/has_bl_vert_* availability tables
+(the search emits ext partitions at preset <= 8; passing the generic
+tables coded D-mode children against above-right pixels the decoder
+doesn't have yet — recon-parity 211/5 -> 216/0 at qindex {80,172,255}).
 Per-SB QP offsets stay disabled until delta_q signaling is ported.
 
 ## Known failing test
