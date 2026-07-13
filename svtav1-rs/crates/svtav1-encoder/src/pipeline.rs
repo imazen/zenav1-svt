@@ -1878,6 +1878,11 @@ fn encode_tile_rows(
                         cli_qp as u32,
                         sb_qindex,
                     );
+                    // The same per-SB variance map C's picture analysis
+                    // feeds to is_dc_only_safe (pcs->ppcs->variance): the
+                    // fixed-tree leaves use it to force the C-exact
+                    // DC-only intra candidate set where the gate fires.
+                    let sb_vars = crate::pd0::compute_b64_variance(encode_input, w, x0, y0);
                     crate::partition::encode_fixed_tree(
                         &encode_input[y0 * w + x0..],
                         w,
@@ -1889,6 +1894,8 @@ fn encode_tile_rows(
                         &part_config,
                         x0,
                         y0,
+                        &sb_vars,
+                        (x0, y0),
                     )
                 } else {
                     crate::partition::partition_search_with_config(

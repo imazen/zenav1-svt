@@ -66,7 +66,7 @@ use alloc::vec::Vec;
 
 /// The 85-entry per-64x64-block variance map: index 0 = 64x64,
 /// 1..=4 = 32x32 (2x2 raster), 5..=20 = 16x16 (4x4), 21..=84 = 8x8 (8x8).
-pub(crate) struct SbVariance(pub [u16; 85]);
+pub struct SbVariance(pub [u16; 85]);
 
 /// C `compute_b64_variance` at `BLOCK_MEAN_PREC_SUB` (the default,
 /// enc_handle.c:4618): 8x8 means/mean-squares from the EVEN rows only
@@ -77,7 +77,12 @@ pub(crate) struct SbVariance(pub [u16; 85]);
 /// The source region must be fully inside the picture (the C input is the
 /// edge-padded `input_padded_pic`; every current caller pads frames to
 /// 64-aligned dimensions so the region is always complete).
-pub(crate) fn compute_b64_variance(src: &[u8], stride: usize, org_x: usize, org_y: usize) -> SbVariance {
+pub(crate) fn compute_b64_variance(
+    src: &[u8],
+    stride: usize,
+    org_x: usize,
+    org_y: usize,
+) -> SbVariance {
     let mut mean8 = [0u64; 64];
     let mut msq8 = [0u64; 64];
     for by in 0..8 {
@@ -141,7 +146,8 @@ fn blk_var_map(block_size: usize, org_x: usize, org_y: usize) -> (usize, [usize;
     const BASE_LUT: [usize; 4] = [0, 1, 5, 21];
     let lvl = 6 - block_size.ilog2() as usize;
     debug_assert!(lvl <= 3);
-    let blk_idx = BASE_LUT[lvl] + (org_y >> LOG2_LUT[lvl]) * GRID_LUT[lvl] + (org_x >> LOG2_LUT[lvl]);
+    let blk_idx =
+        BASE_LUT[lvl] + (org_y >> LOG2_LUT[lvl]) * GRID_LUT[lvl] + (org_x >> LOG2_LUT[lvl]);
     let sub_lvl = lvl + 1;
     let sub = if sub_lvl < 4 {
         let (ss, sb, sg) = (LOG2_LUT[sub_lvl], BASE_LUT[sub_lvl], GRID_LUT[sub_lvl]);
@@ -231,11 +237,55 @@ pub(crate) fn kf_full_lambda_8bit(qindex: u8, cli_qp: u32) -> u32 {
 pub(crate) fn max_block_size_allintra(var64: u16, qp: u32) -> usize {
     let (qw, qwd) = qp_th_scaling_factors(qp);
     let var_th_cap = divide_and_round(7500 * qw as u64, qwd as u64) as u16;
-    if var64 <= var_th_cap {
-        64
-    } else {
-        32
+    if var64 <= var_th_cap { 64 } else { 32 }
+}
+
+/// C `is_dc_only_safe` (mode_decision.c:845) — the variance half, verbatim.
+///
+/// At allintra effective-M9 the PD1 intra controls are
+/// `set_intra_ctrls(pcs, ctx, 8, 0)` (pcs->intra_level = 8 from
+/// `svt_aom_get_intra_mode_levels_allintra` enc_mode_config.c:6907,
+/// applied by `svt_aom_sig_deriv_enc_dec_allintra` enc_mode_config.c:11294;
+/// note the light-PD1 path is NEVER taken for allintra —
+/// `pcs->pic_lpd1_lvl = 0` unconditionally, enc_mode_config.c:15250 — so
+/// PD1 is REGULAR with the allintra signals). Level 8 sets
+/// `prune_using_edge_info = 1` (enc_mode_config.c:8576-8582), which arms
+/// this gate inside `generate_md_stage_0_cand` (mode_decision.c:3633):
+/// when it returns true the intra candidate set is EXACTLY {DC_PRED}
+/// (`inject_intra_candidates` with dc_cand_only_flag; filter-intra,
+/// palette and intrabc are all level-0 at eff-M9), so the leaf y_mode is
+/// DC by construction — no cost compare ever runs. Verified live with the
+/// instrumented library at gradient-64: q40 all four 32x32 leaves and q20
+/// all sixteen 16x16 leaves print `dc_only=1 safe=1 ncand=1 modes: 0/0`;
+/// the q55 64x64 prints `safe=0 ncand=4 modes: 0 1 2 9` (var 5425 >= 2000).
+///
+/// The C early exits (`prune_using_edge_info`, SB-128, `shape != PART_N`,
+/// `sq_size == 4`) are the caller's context here: the fixed-tree PD1 walk
+/// at still presets >= 9 is exactly PART_N squares 8..64 in a 64x64 SB.
+/// (org_x, org_y) are SB-relative.
+pub fn is_dc_only_safe(vars: &SbVariance, sq_size: usize, org_x: usize, org_y: usize) -> bool {
+    if sq_size == 4 {
+        return false;
     }
+    let (blk_idx, sub_idx) = blk_var_map(sq_size, org_x, org_y);
+    let blk_var = vars.0[blk_idx] as u32;
+
+    // For 8x8, we do not have 4x4 sub-variance, skip spread check.
+    if sq_size == 8 {
+        return blk_var < 2000;
+    }
+
+    // For 16x16 and above, compute spread from sub-blocks.
+    let mut min_var = u32::MAX;
+    let mut max_var = 0u32;
+    for &si in &sub_idx {
+        let v = vars.0[si] as u32;
+        min_var = min_var.min(v);
+        max_var = max_var.max(v);
+    }
+    let spread_var = max_var - min_var;
+
+    blk_var < 2000 && spread_var < 4000
 }
 
 /// C `pd0_detector_allintra` (enc_dec_process.c:2373): demote PD0_LVL_6 to
@@ -255,7 +305,13 @@ pub(crate) fn pd0_detector_allintra_demotes(vars: &SbVariance, qp: u32) -> bool 
 // ---------------------------------------------------------------------------
 
 /// C `compute_lpd0_cost_allintra` (product_coding_loop.c:8418).
-pub(crate) fn lvl6_cost_allintra(vars: &SbVariance, sq_size: usize, org_x: usize, org_y: usize, qp: u32) -> u64 {
+pub(crate) fn lvl6_cost_allintra(
+    vars: &SbVariance,
+    sq_size: usize,
+    org_x: usize,
+    org_y: usize,
+    qp: u32,
+) -> u64 {
     let (qw, qwd) = qp_th_scaling_factors(qp);
     let (qw, qwd) = (qw as u64, qwd as u64);
     let (blk_idx, sub_idx) = blk_var_map(sq_size, org_x, org_y);
@@ -319,7 +375,13 @@ fn build_quant_entry(qindex: u8) -> QuantEntry {
     let dc = svtav1_dsp::quant_tables::DC_QLOOKUP_8[q] as i32;
     let ac = svtav1_dsp::quant_tables::AC_QLOOKUP_8[q] as i32;
     // svt_aom_get_qzbin_factor (inv_transforms.c:3492), 8-bit.
-    let qzbin_factor = if q == 0 { 64 } else if dc < 148 { 84 } else { 80 };
+    let qzbin_factor = if q == 0 {
+        64
+    } else if dc < 148 {
+        84
+    } else {
+        80
+    };
     let qrounding_factor = if q == 0 { 64 } else { 48 };
     let mut e = QuantEntry {
         zbin: [0; 2],
@@ -417,7 +479,13 @@ fn energy(coeff: &[i32], stride: usize, w: usize, h: usize) -> u64 {
 /// and the closed-form coefficient rate.
 ///
 /// Returns (eob, dist, bits).
-fn lvl5_tx_cost(residual: &[i32], sq_size: usize, tx_h: usize, qindex_off: u8, subres_step: u32) -> (u16, u64, u64) {
+fn lvl5_tx_cost(
+    residual: &[i32],
+    sq_size: usize,
+    tx_h: usize,
+    qindex_off: u8,
+    subres_step: u32,
+) -> (u16, u64, u64) {
     use svtav1_types::transform::{TxSize, TxType};
     // tx size after the subres remap (perform_tx_pd0): the residual is
     // sq_size x tx_h with tx_h = sq_size >> subres_step.
@@ -434,13 +502,20 @@ fn lvl5_tx_cost(residual: &[i32], sq_size: usize, tx_h: usize, qindex_off: u8, s
     };
 
     let mut coeffs = vec![0i32; sq_size * tx_h];
-    svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(residual, &mut coeffs, sq_size, tx_size, TxType::DctDct);
+    svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
+        residual,
+        &mut coeffs,
+        sq_size,
+        tx_size,
+        TxType::DctDct,
+    );
 
     // 64-dim fold + pack (svt_handle_transform64x64 / 64x32).
     let mut three_quad_energy = 0u64;
     if sq_size == 64 {
         if tx_h == 64 {
-            three_quad_energy = energy(&coeffs[32..], 64, 32, 32) + energy(&coeffs[32 * 64..], 64, 64, 32);
+            three_quad_energy =
+                energy(&coeffs[32..], 64, 32, 32) + energy(&coeffs[32 * 64..], 64, 64, 32);
         } else {
             three_quad_energy = energy(&coeffs[32..], 64, 32, 32);
         }
@@ -475,7 +550,11 @@ fn lvl5_tx_cost(residual: &[i32], sq_size: usize, tx_h: usize, qindex_off: u8, s
     dist += three_quad_energy;
     // RIGHT_SIGNED_SHIFT(dist, (MAX_TX_SCALE=1 - tx_scale) * 2) << subres
     let shift = (1 - log_scale) * 2;
-    dist = if shift < 0 { dist << (-shift) } else { dist >> shift };
+    dist = if shift < 0 {
+        dist << (-shift)
+    } else {
+        dist >> shift
+    };
     dist <<= subres_step;
 
     // coeff_rate_est_lvl == 0 closed form (perform_tx_pd0): input
@@ -488,7 +567,13 @@ fn lvl5_tx_cost(residual: &[i32], sq_size: usize, tx_h: usize, qindex_off: u8, s
 /// C `check_is_subres_safe` (product_coding_loop.c): SAD of even vs odd
 /// rows of (src - pred) over the 64x64; safe iff the deviation is within
 /// `odd_to_even_deviation_th = 5` percent.
-fn check_is_subres_safe(src: &[u8], stride: usize, org_x: usize, org_y: usize, pred: &[u8]) -> bool {
+fn check_is_subres_safe(
+    src: &[u8],
+    stride: usize,
+    org_x: usize,
+    org_y: usize,
+    pred: &[u8],
+) -> bool {
     let mut sad_even = 0i64;
     let mut sad_odd = 0i64;
     for r in 0..64 {
@@ -549,7 +634,11 @@ struct Pd0Ctx<'a> {
 /// 0 (never updated in PD0), `has_rows`/`has_cols` are true for the fully
 /// in-picture blocks every current caller produces. Units: 1/512 bit.
 fn partition_split_bits(sq_size: usize) -> u64 {
-    svtav1_entropy::context::partition_symbol_cost(sq_size, 0, crate::partition::PartitionType::Split as usize) as u64
+    svtav1_entropy::context::partition_symbol_cost(
+        sq_size,
+        0,
+        crate::partition::PartitionType::Split as usize,
+    ) as u64
 }
 
 /// C `partition_fac_bits[0][PARTITION_NONE]`: svt_aom_full_cost_pd0 uses
@@ -557,7 +646,11 @@ fn partition_split_bits(sq_size: usize) -> u64 {
 /// as an approximation for every block size (rd_cost.c:1344-1349). 400
 /// units of 1/512 bit from the default tables.
 fn partition_none_bits_ctx0() -> u64 {
-    svtav1_entropy::context::partition_symbol_cost(8, 0, crate::partition::PartitionType::None as usize) as u64
+    svtav1_entropy::context::partition_symbol_cost(
+        8,
+        0,
+        crate::partition::PartitionType::None as usize,
+    ) as u64
 }
 
 /// C `skip_fac_bits[0][0]` — cost of skip=0 at context 0 from the default
@@ -575,20 +668,38 @@ impl<'a> Pd0Ctx<'a> {
         let abs_y = self.sb_y + org_y;
         // DC prediction from SOURCE neighbors (pd0_use_src_samples=1):
         // the same spec unavailable-edge fills as the recon path.
-        let (above, left, _tl, has_above, has_left) =
-            crate::partition::extract_neighbors(self.src, self.stride, abs_x, abs_y, sq_size, sq_size);
+        let (above, left, _tl, has_above, has_left) = crate::partition::extract_neighbors(
+            self.src,
+            self.stride,
+            abs_x,
+            abs_y,
+            sq_size,
+            sq_size,
+        );
         let mut pred = vec![0u8; sq_size * sq_size];
-        svtav1_dsp::intra_pred::predict_dc(&mut pred, sq_size, &above, &left, sq_size, sq_size, has_above, has_left);
+        svtav1_dsp::intra_pred::predict_dc(
+            &mut pred, sq_size, &above, &left, sq_size, sq_size, has_above, has_left,
+        );
 
         // Subres safety: determined once per SB by the first (and only)
         // tested 64x64 block; blocks tested while it is undetermined use
         // step 0 (C forces mds_subres_step = 0 when is_subres_safe != 1).
         if sq_size == 64 && self.is_subres_safe == 255 {
-            self.is_subres_safe = u8::from(check_is_subres_safe(self.src, self.stride, abs_x, abs_y, &pred));
+            self.is_subres_safe = u8::from(check_is_subres_safe(
+                self.src,
+                self.stride,
+                abs_x,
+                abs_y,
+                &pred,
+            ));
         }
         // subres_ctrls.step = 1 for this config; 8x8 caps at min(1, step).
         let step_cfg = 1u32;
-        let mut step = if sq_size >= 16 { step_cfg } else { step_cfg.min(1) };
+        let mut step = if sq_size >= 16 {
+            step_cfg
+        } else {
+            step_cfg.min(1)
+        };
         if self.is_subres_safe != 1 {
             step = 0;
         }
@@ -818,7 +929,11 @@ mod tests {
             (16, 16, 16, 320),
             (32, 32, 0, 1382),
         ] {
-            assert_eq!(lvl6_cost_allintra(&v, sq, ox, oy, 20), cost, "sq={sq} ({ox},{oy})");
+            assert_eq!(
+                lvl6_cost_allintra(&v, sq, ox, oy, 20),
+                cost,
+                "sq={sq} ({ox},{oy})"
+            );
         }
     }
 
@@ -878,7 +993,10 @@ mod tests {
             is_subres_safe: 255,
         };
         assert_eq!(ctx.lvl5_block_cost(64, 0, 0), 1708208432);
-        assert_eq!(ctx.is_subres_safe, 1, "64x64 DC pred must pass the odd/even check");
+        assert_eq!(
+            ctx.is_subres_safe, 1,
+            "64x64 DC pred must pass the odd/even check"
+        );
         for (sq, ox, oy, cost) in [
             (32usize, 0usize, 0usize, 522128378u64),
             (16, 0, 0, 137213980),
@@ -890,6 +1008,42 @@ mod tests {
             (32, 32, 32, 469165693),
         ] {
             assert_eq!(ctx.lvl5_block_cost(sq, ox, oy), cost, "sq={sq} ({ox},{oy})");
+        }
+    }
+
+    #[test]
+    fn dc_only_safe_matches_c() {
+        // Instrumented-C capture (SVT_MDBG2 cand_gen prints, gradient-64,
+        // 2026-07-13): q40 32x32 leaves and q20 16x16 leaves all print
+        // dc_only=1 safe=1 (candidate set = {DC}); the q55/q40 64x64
+        // prints safe=0 (var 5425 >= 2000).
+        let y = gradient64();
+        let v = compute_b64_variance(&y, 64, 0, 0);
+        assert!(!is_dc_only_safe(&v, 64, 0, 0), "64x64: var 5425 >= 2000");
+        for (ox, oy) in [(0usize, 0usize), (32, 0), (0, 32), (32, 32)] {
+            assert!(is_dc_only_safe(&v, 32, ox, oy), "32x32 ({ox},{oy})");
+        }
+        for by in 0..4 {
+            for bx in 0..4 {
+                assert!(
+                    is_dc_only_safe(&v, 16, bx * 16, by * 16),
+                    "16x16 ({bx},{by})"
+                );
+            }
+        }
+        // 8x8: blk_var < 2000 only (all gradient 8x8 vars are 79..1957).
+        for by in 0..8 {
+            for bx in 0..8 {
+                assert!(is_dc_only_safe(&v, 8, bx * 8, by * 8), "8x8 ({bx},{by})");
+            }
+        }
+        // 4x4 has no variance data: C early-exits with 0.
+        assert!(!is_dc_only_safe(&v, 4, 0, 0));
+        // Uniform content: zero variance everywhere -> always DC-only.
+        let u = vec![128u8; 64 * 64];
+        let vu = compute_b64_variance(&u, 64, 0, 0);
+        for sq in [64usize, 32, 16, 8] {
+            assert!(is_dc_only_safe(&vu, sq, 0, 0), "uniform sq={sq}");
         }
     }
 
