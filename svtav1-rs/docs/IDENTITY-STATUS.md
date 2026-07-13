@@ -621,3 +621,64 @@ SB partition tree from it (fixed partition, nsq off), leaving leaf
 mode/coeff decisions to the existing coder. That moves every partition
 symbol; the next divergence is then the per-leaf mode/coeff syntax (LPD1
 parity: DC-only-vs-mode-search, C quantizer, tx_depth/uv syntax).
+
+### Status after the PD0 port (commits ffb73bcf2 + 60b006b85)
+
+`crates/svtav1-encoder/src/pd0.rs` is the verbatim PD0 port (every
+constant and per-block cost pinned against instrumented-C captures in its
+unit tests — variance map, qp factors, the KF lambda chain incl. the
+lambda_weight=150 frame multiply, LVL_6 costs, LVL_5 costs with subres,
+rate constants 26/400/1195/1465/2020, and the final q20/q40/q55 trees),
+and the pipeline drives still-frame SB partitions from it at presets >= 9
+(`encode_fixed_tree`; inter frames and presets <= 8 keep the search).
+
+Differ deltas on the six gradient-64 p13/p10 cells (matrix
+`benchmarks/identity_matrix_2026-07-13.tsv` regenerated — still 18/36
+identical, no uniform regressions, divergences strictly later):
+
+| cell | first divergence | now diverges on |
+|------|------------------|-----------------|
+| q40 p13/p10 | op 0 -> **op 3** | leaf y_mode: C DC, ours V_PRED (32x32 leaves) |
+| q55 p13/p10 | op 0 -> **op 8** | coefficient bits: partition + skip + y_mode(DC) + uv_mode + tx_depth + txb_skip + eob_pt class ALL match; C quantized levels differ from our dead-zone quantizer |
+| q20 p13/p10 | op 1 -> **op 4** | leaf y_mode (16x16 leaves) |
+
+Every PARTITION symbol in these streams now matches C. The two remaining
+subsystems for full gradient-64 p13/p10 identity, in dependency order:
+
+1. **Leaf mode parity (light-PD1 y_mode)** — owns q20 op 4 + q40 op 3.
+   C decides leaf modes in light-PD1: `generate_md_stage_0_cand_light_pd1`
+   (mode_decision.c:3583; intra candidate set from `set_intra_ctrls(pcs,
+   ctx, 1, 2)` at I-slice eff-M9, enc_mode_config.c:9307-9317 — NOT
+   DC-only, C picked DC by cost), MDS0 fast loop
+   (`md_stage_0_light_pd1`, SAD/fast-rate based candidate reduction),
+   then `md_stage_3_light_pd1` -> `full_loop_core_light_pd1`
+   (product_coding_loop.c:9032 area; mds_do_rdoq=true,
+   mds_fast_coeff_est_level=1, spatial SSE, real `svt_av1_cost_coeffs_txb`
+   coefficient rate, intra fast rate via `svt_aom_intra_fast_cost`).
+   The whole light-PD1 mode search must be ported for op-3/op-4 parity —
+   there is no smaller C-exact piece (the candidate ordering, MDS0
+   pruning, fast rate, and full cost all bind the pick).
+2. **Final coefficient parity (light-PD1 coding quantizer)** — owns
+   q55 op 8 (and everything after mode parity elsewhere). Our leaf coder
+   quantizes with a homegrown dead-zone rounding
+   (encode_loop.rs:142-154); C's final levels come from the LPD1 MDS3
+   quant path: `svt_aom_quantize_inv_quantize` (full_loop.c) with
+   `enc_ctx->quants_8bit` (svt_av1_build_quantizer zbin/round 84-80/48
+   factors — the PD0 port's `build_quant_entry`/`quantize_b` in pd0.rs
+   are the C-exact primitives to reuse) plus RDOQ
+   (`ctx->mds_do_rdoq = true` at light-PD1, md_stage_3_light_pd1) —
+   RDOQ (`svt_aom_rdoq` / av1_optimize_txb port) is the large piece.
+   The q55 64x64 block is DC + DCT_DCT + TX_64X64 with eob 97 vs our
+   different levels — a first sub-step could be swapping the leaf
+   coder's quantizer to quantize_b (no RDOQ) and measuring the op-8
+   delta; only land it if it provably moves the divergence (RDOQ may
+   dominate).
+
+Preset-6 gradient cells (op 0/1) are NOT covered by this port: at
+allintra M6 the C pipeline runs `pic_pd0_lvl = 1` (PD0_LVL_0/1 —
+prediction-based PD0 with ME/intra candidates and depth refinement, not
+the LVL_5/6 shortcut) and nsq geometry level 3 with a real nsq search
+(`svt_aom_get_nsq_search_level_allintra` != 0 at <= M3 only — M6 still
+has nsq GEOMETRY enabled with min 8x8 but search level 0; the M6
+divergence is depth-set + PD0-cost differences, enc_mode_config.c:12598
+`set_pic_pd0_lvl_allintra` M2..M8 branch).
