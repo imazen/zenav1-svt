@@ -12,22 +12,120 @@ use archmage::prelude::*;
 use svtav1_types::transform::TranLow;
 
 // =============================================================================
-// Cosine constant table — Q12 row (cos_bit = 12)
-// cospi[j] = round(cos(j * pi / 128) * 2^12)
+// Cosine constant tables — one row per cos_bit in 10..=16.
+// cospi_arr_data[i][j] = round(cos(j * pi / 128) * 2^(10 + i))
+// Port of svt_aom_eb_av1_cospi_arr_data (inv_transforms.c:3289).
 // =============================================================================
-pub const COSPI: [i32; 64] = [
-    4096, 4095, 4091, 4085, 4076, 4065, 4052, 4036, 4017, 3996, 3973, 3948, 3920, 3889, 3857, 3822,
-    3784, 3745, 3703, 3659, 3612, 3564, 3513, 3461, 3406, 3349, 3290, 3229, 3166, 3102, 3035, 2967,
-    2896, 2824, 2751, 2675, 2598, 2520, 2440, 2359, 2276, 2191, 2106, 2019, 1931, 1842, 1751, 1660,
-    1567, 1474, 1380, 1285, 1189, 1092, 995, 897, 799, 700, 601, 501, 401, 301, 201, 101,
+pub const COS_BIT_MIN: i8 = 10;
+
+#[rustfmt::skip]
+pub const COSPI_ARR_DATA: [[i32; 64]; 7] = [
+    [1024, 1024, 1023, 1021, 1019, 1016, 1013, 1009, 1004, 999, 993, 987, 980, 972, 964, 955,
+     946,  936,  926,  915,  903,  891,  878,  865,  851,  837, 822, 807, 792, 775, 759, 742,
+     724,  706,  688,  669,  650,  630,  610,  590,  569,  548, 526, 505, 483, 460, 438, 415,
+     392,  369,  345,  321,  297,  273,  249,  224,  200,  175, 150, 125, 100, 75,  50,  25],
+    [2048, 2047, 2046, 2042, 2038, 2033, 2026, 2018, 2009, 1998, 1987, 1974, 1960, 1945, 1928, 1911,
+     1892, 1872, 1851, 1829, 1806, 1782, 1757, 1730, 1703, 1674, 1645, 1615, 1583, 1551, 1517, 1483,
+     1448, 1412, 1375, 1338, 1299, 1260, 1220, 1179, 1138, 1096, 1053, 1009, 965,  921,  876,  830,
+     784,  737,  690,  642,  595,  546,  498,  449,  400,  350,  301,  251,  201,  151,  100,  50],
+    [4096, 4095, 4091, 4085, 4076, 4065, 4052, 4036, 4017, 3996, 3973, 3948, 3920, 3889, 3857, 3822,
+     3784, 3745, 3703, 3659, 3612, 3564, 3513, 3461, 3406, 3349, 3290, 3229, 3166, 3102, 3035, 2967,
+     2896, 2824, 2751, 2675, 2598, 2520, 2440, 2359, 2276, 2191, 2106, 2019, 1931, 1842, 1751, 1660,
+     1567, 1474, 1380, 1285, 1189, 1092, 995,  897,  799,  700,  601,  501,  401,  301,  201,  101],
+    [8192, 8190, 8182, 8170, 8153, 8130, 8103, 8071, 8035, 7993, 7946, 7895, 7839, 7779, 7713, 7643,
+     7568, 7489, 7405, 7317, 7225, 7128, 7027, 6921, 6811, 6698, 6580, 6458, 6333, 6203, 6070, 5933,
+     5793, 5649, 5501, 5351, 5197, 5040, 4880, 4717, 4551, 4383, 4212, 4038, 3862, 3683, 3503, 3320,
+     3135, 2948, 2760, 2570, 2378, 2185, 1990, 1795, 1598, 1401, 1202, 1003, 803,  603,  402,  201],
+    [16384, 16379, 16364, 16340, 16305, 16261, 16207, 16143, 16069, 15986, 15893, 15791, 15679, 15557, 15426, 15286,
+     15137, 14978, 14811, 14635, 14449, 14256, 14053, 13842, 13623, 13395, 13160, 12916, 12665, 12406, 12140, 11866,
+     11585, 11297, 11003, 10702, 10394, 10080, 9760,  9434,  9102,  8765,  8423,  8076,  7723,  7366,  7005,  6639,
+     6270,  5897,  5520,  5139,  4756,  4370,  3981,  3590,  3196,  2801,  2404,  2006,  1606,  1205,  804,   402],
+    [32768, 32758, 32729, 32679, 32610, 32522, 32413, 32286, 32138, 31972, 31786, 31581, 31357, 31114, 30853, 30572,
+     30274, 29957, 29622, 29269, 28899, 28511, 28106, 27684, 27246, 26791, 26320, 25833, 25330, 24812, 24279, 23732,
+     23170, 22595, 22006, 21403, 20788, 20160, 19520, 18868, 18205, 17531, 16846, 16151, 15447, 14733, 14010, 13279,
+     12540, 11793, 11039, 10279, 9512,  8740,  7962,  7180,  6393,  5602,  4808,  4011,  3212,  2411,  1608,  804],
+    [65536, 65516, 65457, 65358, 65220, 65043, 64827, 64571, 64277, 63944, 63572, 63162, 62714, 62228, 61705, 61145,
+     60547, 59914, 59244, 58538, 57798, 57022, 56212, 55368, 54491, 53581, 52639, 51665, 50660, 49624, 48559, 47464,
+     46341, 45190, 44011, 42806, 41576, 40320, 39040, 37736, 36410, 35062, 33692, 32303, 30893, 29466, 28020, 26558,
+     25080, 23586, 22078, 20557, 19024, 17479, 15924, 14359, 12785, 11204, 9616,  8022,  6424,  4821,  3216,  1608],
 ];
 
-/// Sinusoidal constants for ADST-4 (Q12).
-/// sinpi[j] = round(sqrt(2) * sin(j*pi/9) * 2/3 * 2^12)
-pub const SINPI: [i32; 5] = [0, 1321, 2482, 3344, 3803];
+/// Sinusoidal constants for ADST-4, one row per cos_bit in 10..=16.
+/// Port of svt_aom_eb_av1_sinpi_arr_data (inv_transforms.c:3321).
+#[rustfmt::skip]
+pub const SINPI_ARR_DATA: [[i32; 5]; 7] = [
+    [0, 330, 621, 836, 951],
+    [0, 660, 1241, 1672, 1901],
+    [0, 1321, 2482, 3344, 3803],
+    [0, 2642, 4964, 6689, 7606],
+    [0, 5283, 9929, 13377, 15212],
+    [0, 10566, 19858, 26755, 30424],
+    [0, 21133, 39716, 53510, 60849],
+];
 
-/// Default cos_bit for transforms.
+/// C `cospi_arr(n)` — select the cosine table row for a cos_bit.
+#[inline]
+pub fn cospi_arr(cos_bit: i8) -> &'static [i32; 64] {
+    &COSPI_ARR_DATA[(cos_bit - COS_BIT_MIN) as usize]
+}
+
+/// C `sinpi_arr(n)` — select the ADST-4 sine table row for a cos_bit.
+#[inline]
+pub fn sinpi_arr(cos_bit: i8) -> &'static [i32; 5] {
+    &SINPI_ARR_DATA[(cos_bit - COS_BIT_MIN) as usize]
+}
+
+/// Cosine constant table — Q12 row (cos_bit = 12).
+pub const COSPI: [i32; 64] = COSPI_ARR_DATA[2];
+
+/// Sinusoidal constants for ADST-4 (Q12).
+pub const SINPI: [i32; 5] = SINPI_ARR_DATA[2];
+
+/// Default cos_bit for transforms (the inverse always uses 12 = INV_COS_BIT;
+/// the forward uses per-size bits from `FWD_COS_BIT_COL`/`FWD_COS_BIT_ROW`).
 pub const COS_BIT: u32 = 12;
+
+/// C `fwd_cos_bit_col[txw_idx][txh_idx]` (transforms.c:17).
+/// txw_idx = log2(width) - 2, txh_idx = log2(height) - 2.
+#[rustfmt::skip]
+pub const FWD_COS_BIT_COL: [[i8; 5]; 5] = [
+    [13, 13, 13,  0,  0],
+    [13, 13, 13, 12,  0],
+    [13, 13, 13, 12, 13],
+    [ 0, 13, 13, 12, 13],
+    [ 0,  0, 13, 12, 13],
+];
+
+/// C `fwd_cos_bit_row[txw_idx][txh_idx]` (transforms.c:19).
+#[rustfmt::skip]
+pub const FWD_COS_BIT_ROW: [[i8; 5]; 5] = [
+    [13, 13, 12,  0,  0],
+    [13, 13, 13, 12,  0],
+    [13, 13, 12, 13, 12],
+    [ 0, 12, 13, 12, 11],
+    [ 0,  0, 12, 11, 10],
+];
+
+/// C `fwd_txfm_shift_ls` (transforms.c:702-725), keyed by (width, height).
+pub fn fwd_txfm_shift(w: usize, h: usize) -> [i8; 3] {
+    match (w, h) {
+        (4, 4) => [2, 0, 0],
+        (8, 8) => [2, -1, 0],
+        (16, 16) => [2, -2, 0],
+        (32, 32) => [2, -4, 0],
+        (64, 64) => [0, -2, -2],
+        (4, 8) | (8, 4) => [2, -1, 0],
+        (8, 16) | (16, 8) => [2, -2, 0],
+        (16, 32) | (32, 16) => [2, -4, 0],
+        (32, 64) => [0, -2, -2],
+        (64, 32) => [2, -4, -2],
+        (4, 16) | (16, 4) => [2, -1, 0],
+        (8, 32) | (32, 8) => [2, -2, 0],
+        (16, 64) => [0, -2, 0],
+        (64, 16) => [2, -4, 0],
+        _ => unreachable!("unsupported transform size {w}x{h}"),
+    }
+}
 
 /// New sqrt(2) constant for rectangular transform scaling.
 pub const NEW_SQRT2: i32 = 5793; // 2^12 * sqrt(2)
@@ -83,9 +181,9 @@ pub fn round_shift_array(arr: &mut [i32], bit: i32) {
 // Ported from svt_av1_fdct4_new in transforms.c
 // =============================================================================
 
-pub fn fdct4(input: &[TranLow], output: &mut [TranLow]) {
-    let cospi = &COSPI;
-    let cos_bit = COS_BIT;
+pub fn fdct4(input: &[TranLow], output: &mut [TranLow], cos_bit: i8) {
+    let cospi = cospi_arr(cos_bit);
+    let cos_bit = cos_bit as u32;
 
     // stage 1
     let bf0 = [
@@ -107,9 +205,9 @@ pub fn fdct4(input: &[TranLow], output: &mut [TranLow]) {
 // Ported exactly from svt_av1_fdct8_new in transforms.c:776-846
 // =============================================================================
 
-pub fn fdct8(input: &[TranLow], output: &mut [TranLow]) {
-    let cospi = &COSPI;
-    let cos_bit = COS_BIT;
+pub fn fdct8(input: &[TranLow], output: &mut [TranLow], cos_bit: i8) {
+    let cospi = cospi_arr(cos_bit);
+    let cos_bit = cos_bit as u32;
     let mut step = [0i32; 8];
 
     // stage 1
@@ -173,9 +271,9 @@ pub fn fdct8(input: &[TranLow], output: &mut [TranLow]) {
 // Ported exactly from svt_av1_fdct16_new in transforms.c:848-1000
 // =============================================================================
 
-pub fn fdct16(input: &[TranLow], output: &mut [TranLow]) {
-    let cospi = &COSPI;
-    let cos_bit = COS_BIT;
+pub fn fdct16(input: &[TranLow], output: &mut [TranLow], cos_bit: i8) {
+    let cospi = cospi_arr(cos_bit);
+    let cos_bit = cos_bit as u32;
     let mut step = [0i32; 16];
 
     // stage 1
@@ -304,9 +402,9 @@ pub fn fdct16(input: &[TranLow], output: &mut [TranLow]) {
 // Ported exactly from svt_av1_fdct32_new in transforms.c:1002-1340
 // =============================================================================
 
-pub fn fdct32(input: &[TranLow], output: &mut [TranLow]) {
-    let cospi = &COSPI;
-    let cos_bit = COS_BIT;
+pub fn fdct32(input: &[TranLow], output: &mut [TranLow], cos_bit: i8) {
+    let cospi = cospi_arr(cos_bit);
+    let cos_bit = cos_bit as u32;
     let mut step = [0i32; 32];
 
     // stage 1
@@ -628,9 +726,9 @@ pub fn fdct32(input: &[TranLow], output: &mut [TranLow]) {
 // Ported exactly from svt_av1_fdct64_new in transforms.c:1342-2106
 // =============================================================================
 
-pub fn fdct64(input: &[TranLow], output: &mut [TranLow]) {
-    let cospi = &COSPI;
-    let cos_bit = COS_BIT;
+pub fn fdct64(input: &[TranLow], output: &mut [TranLow], cos_bit: i8) {
+    let cospi = cospi_arr(cos_bit);
+    let cos_bit = cos_bit as u32;
     let mut step = [0i32; 64];
 
     // stage 1
@@ -1373,7 +1471,7 @@ pub fn fdct64(input: &[TranLow], output: &mut [TranLow]) {
 // 64-point identity transform
 // =============================================================================
 
-pub fn fidentity64(input: &[TranLow], output: &mut [TranLow]) {
+pub fn fidentity64(input: &[TranLow], output: &mut [TranLow], _cos_bit: i8) {
     for i in 0..64 {
         output[i] = round_shift_i64(input[i] as i64 * 4 * NEW_SQRT2 as i64, NEW_SQRT2_BITS);
     }
@@ -1383,7 +1481,7 @@ pub fn fidentity64(input: &[TranLow], output: &mut [TranLow]) {
 // 32-point identity transform
 // =============================================================================
 
-pub fn fidentity32(input: &[TranLow], output: &mut [TranLow]) {
+pub fn fidentity32(input: &[TranLow], output: &mut [TranLow], _cos_bit: i8) {
     for i in 0..32 {
         output[i] = input[i] * 4;
     }
@@ -1396,9 +1494,9 @@ pub fn fidentity32(input: &[TranLow], output: &mut [TranLow]) {
 
 /// Forward 4-point ADST — exact port of svt_av1_fadst4_new from transforms.c:2108.
 /// Uses i32 arithmetic matching the C code exactly.
-pub fn fadst4(input: &[TranLow], output: &mut [TranLow]) {
-    let sinpi = &SINPI;
-    let bit = COS_BIT;
+pub fn fadst4(input: &[TranLow], output: &mut [TranLow], cos_bit: i8) {
+    let sinpi = sinpi_arr(cos_bit);
+    let bit = cos_bit as u32;
 
     let (x0, x1, x2, x3) = (input[0], input[1], input[2], input[3]);
     if (x0 | x1 | x2 | x3) == 0 {
@@ -1409,22 +1507,23 @@ pub fn fadst4(input: &[TranLow], output: &mut [TranLow]) {
         return;
     }
 
-    // stage 1
-    let s0 = sinpi[1] * x0;
-    let s1 = sinpi[4] * x0;
-    let s2 = sinpi[2] * x1;
-    let s3 = sinpi[1] * x1;
-    let s4 = sinpi[3] * x2;
-    let s5 = sinpi[4] * x3;
-    let s6 = sinpi[2] * x3;
-    let mut s7 = x0 + x1;
+    // stage 1 (i64 intermediates; C accumulates in int32 but promotes to
+    // int64 at round_shift — identical for all conformant input ranges)
+    let s0 = sinpi[1] as i64 * x0 as i64;
+    let s1 = sinpi[4] as i64 * x0 as i64;
+    let s2 = sinpi[2] as i64 * x1 as i64;
+    let s3 = sinpi[1] as i64 * x1 as i64;
+    let s4 = sinpi[3] as i64 * x2 as i64;
+    let s5 = sinpi[4] as i64 * x3 as i64;
+    let s6 = sinpi[2] as i64 * x3 as i64;
+    let mut s7 = (x0 + x1) as i64;
 
     // stage 2
-    s7 -= x3;
+    s7 -= x3 as i64;
 
     // stage 3
     let mut x0 = s0 + s2;
-    let x1 = sinpi[3] * s7;
+    let x1 = sinpi[3] as i64 * s7;
     let mut x2 = s1 - s3;
     let x3 = s4;
 
@@ -1441,17 +1540,17 @@ pub fn fadst4(input: &[TranLow], output: &mut [TranLow]) {
     // stage 6
     s3 += x3;
 
-    output[0] = round_shift(s0, bit);
-    output[1] = round_shift(s1, bit);
-    output[2] = round_shift(s2, bit);
-    output[3] = round_shift(s3, bit);
+    output[0] = round_shift_i64(s0, bit);
+    output[1] = round_shift_i64(s1, bit);
+    output[2] = round_shift_i64(s2, bit);
+    output[3] = round_shift_i64(s3, bit);
 }
 
 // =============================================================================
 // 4-point identity transform
 // =============================================================================
 
-pub fn fidentity4(input: &[TranLow], output: &mut [TranLow]) {
+pub fn fidentity4(input: &[TranLow], output: &mut [TranLow], _cos_bit: i8) {
     let new_sqrt2 = NEW_SQRT2;
     for i in 0..4 {
         output[i] = round_shift_i64(input[i] as i64 * new_sqrt2 as i64, NEW_SQRT2_BITS);
@@ -1463,9 +1562,9 @@ pub fn fidentity4(input: &[TranLow], output: &mut [TranLow]) {
 // Ported from svt_av1_fadst8_new in transforms.c
 // =============================================================================
 
-pub fn fadst8(input: &[TranLow], output: &mut [TranLow]) {
-    let cospi = &COSPI;
-    let cos_bit = COS_BIT;
+pub fn fadst8(input: &[TranLow], output: &mut [TranLow], cos_bit: i8) {
+    let cospi = cospi_arr(cos_bit);
+    let cos_bit = cos_bit as u32;
     let mut step = [0i32; 8];
 
     // stage 1
@@ -1549,9 +1648,9 @@ pub fn fadst8(input: &[TranLow], output: &mut [TranLow]) {
 // Ported exactly from svt_av1_fadst16_new in transforms.c:2294-2486
 // =============================================================================
 
-pub fn fadst16(input: &[TranLow], output: &mut [TranLow]) {
-    let cospi = &COSPI;
-    let cos_bit = COS_BIT;
+pub fn fadst16(input: &[TranLow], output: &mut [TranLow], cos_bit: i8) {
+    let cospi = cospi_arr(cos_bit);
+    let cos_bit = cos_bit as u32;
     let mut step = [0i32; 16];
 
     // stage 1: input permutation with sign flips
@@ -1728,7 +1827,7 @@ pub fn fadst16(input: &[TranLow], output: &mut [TranLow]) {
 // 8-point identity transform
 // =============================================================================
 
-pub fn fidentity8(input: &[TranLow], output: &mut [TranLow]) {
+pub fn fidentity8(input: &[TranLow], output: &mut [TranLow], _cos_bit: i8) {
     for i in 0..8 {
         output[i] = input[i] * 2;
     }
@@ -1738,7 +1837,7 @@ pub fn fidentity8(input: &[TranLow], output: &mut [TranLow]) {
 // 16-point identity transform
 // =============================================================================
 
-pub fn fidentity16(input: &[TranLow], output: &mut [TranLow]) {
+pub fn fidentity16(input: &[TranLow], output: &mut [TranLow], _cos_bit: i8) {
     let new_sqrt2 = NEW_SQRT2;
     for i in 0..16 {
         output[i] = round_shift_i64(input[i] as i64 * 2 * new_sqrt2 as i64, NEW_SQRT2_BITS);
@@ -1750,7 +1849,7 @@ pub fn fidentity16(input: &[TranLow], output: &mut [TranLow]) {
 // =============================================================================
 
 /// 1D forward transform function signature.
-pub type TxfmFunc = fn(&[TranLow], &mut [TranLow]);
+pub type TxfmFunc = fn(&[TranLow], &mut [TranLow], i8);
 
 /// Get the 1D forward transform function for a given type and size.
 pub fn get_fwd_txfm_func(tx_type_1d: u8, size: usize) -> Option<TxfmFunc> {
@@ -1777,190 +1876,197 @@ pub fn get_fwd_txfm_func(tx_type_1d: u8, size: usize) -> Option<TxfmFunc> {
 }
 
 // =============================================================================
-// General 2D forward transform
+// General 2D forward transform — C-exact port of av1_tranform_two_d_core_c
+// (transforms.c:2978)
 // =============================================================================
 
-/// Forward 2D transform for square blocks.
+/// C-exact 2D forward composition.
 ///
-/// Applies column transforms, then row transforms, following the
-/// SVT-AV1 `av1_tranform_two_d_core_c` pattern.
-///
-/// `shift` = [pre_shift, mid_shift, post_shift] applied at each stage.
-pub fn fwd_txfm2d(
+/// Column pass first (with optional upside-down flip on load), then row pass;
+/// per-pass round shifts from the C `fwd_txfm_shift_ls` tables, per-pass cos
+/// bits from `fwd_cos_bit_col/row`, and the sqrt(2) scale on rows when the
+/// log2 aspect ratio is exactly 1 (2:1 rectangles) — 4:1 rectangles get NO
+/// extra scale, exactly like C.
+#[allow(clippy::too_many_arguments)]
+pub fn fwd_txfm2d_core(
     input: &[TranLow],
     output: &mut [TranLow],
-    stride: usize,
+    input_stride: usize,
+    w: usize,
+    h: usize,
     col_func: TxfmFunc,
     row_func: TxfmFunc,
-    size: usize,
-    shift: [i32; 3],
+    cos_bit_col: i8,
+    cos_bit_row: i8,
+    shift: [i8; 3],
+    ud_flip: bool,
+    lr_flip: bool,
 ) {
-    let mut buf = vec![0i32; size * size];
-    let mut temp_in = vec![0i32; size];
-    let mut temp_out = vec![0i32; size];
+    let mut buf = vec![0i32; w * h];
+    let mut temp_in = vec![0i32; h];
+    let mut temp_out = vec![0i32; h];
+    // get_rect_tx_log_ratio(col, row)
+    let rect_log_ratio = w.trailing_zeros() as i32 - h.trailing_zeros() as i32;
 
-    // Column transforms
-    for col in 0..size {
-        for row in 0..size {
-            temp_in[row] = input[row * stride + col];
+    // Columns
+    for c in 0..w {
+        if !ud_flip {
+            for r in 0..h {
+                temp_in[r] = input[r * input_stride + c];
+            }
+        } else {
+            for r in 0..h {
+                // flip upside down
+                temp_in[r] = input[(h - r - 1) * input_stride + c];
+            }
         }
-        round_shift_array(&mut temp_in, -shift[0]);
-        col_func(&temp_in, &mut temp_out);
-        round_shift_array(&mut temp_out, -shift[1]);
-        for row in 0..size {
-            buf[row * size + col] = temp_out[row];
+        round_shift_array(&mut temp_in, -(shift[0] as i32));
+        col_func(&temp_in, &mut temp_out, cos_bit_col);
+        round_shift_array(&mut temp_out, -(shift[1] as i32));
+        if !lr_flip {
+            for r in 0..h {
+                buf[r * w + c] = temp_out[r];
+            }
+        } else {
+            for r in 0..h {
+                // flip from left to right
+                buf[r * w + (w - c - 1)] = temp_out[r];
+            }
         }
     }
 
-    // Row transforms
-    for row in 0..size {
-        let row_start = row * size;
-        temp_in[..size].copy_from_slice(&buf[row_start..row_start + size]);
-        row_func(&temp_in, &mut temp_out);
-        round_shift_array(&mut temp_out, -shift[2]);
-        output[row_start..row_start + size].copy_from_slice(&temp_out[..size]);
+    // Rows
+    let mut row_out = vec![0i32; w];
+    for r in 0..h {
+        row_func(&buf[r * w..r * w + w], &mut row_out, cos_bit_row);
+        round_shift_array(&mut row_out, -(shift[2] as i32));
+        if rect_log_ratio.abs() == 1 {
+            // Multiply everything by Sqrt2 if the transform is rectangular
+            // and the size difference is a factor of 2.
+            for v in row_out.iter_mut() {
+                *v = round_shift_i64(*v as i64 * NEW_SQRT2 as i64, NEW_SQRT2_BITS);
+            }
+        }
+        output[r * w..r * w + w].copy_from_slice(&row_out);
     }
 }
 
-/// Forward 2D transform for rectangular blocks.
+/// Configured C-exact forward 2D transform (svt_av1_transform_two_d semantics).
 ///
-/// Handles different column and row sizes. For 2:1 ratio rectangles,
-/// applies sqrt(2) scaling after row transform. For 4:1 ratio,
-/// applies 2*sqrt(2) scaling.
-pub fn fwd_txfm2d_rect(
+/// `col_1d`/`row_1d`: 0=DCT, 1=ADST, 2=FLIPADST, 3=IDENTITY. Returns false if
+/// the (type, size) combination has no 1D kernel (e.g. ADST on 32/64 dims).
+#[allow(clippy::too_many_arguments)]
+pub fn fwd_txfm2d_c_exact(
     input: &[TranLow],
     output: &mut [TranLow],
-    stride: usize,
-    col_func: TxfmFunc,
-    row_func: TxfmFunc,
-    col_size: usize,
-    row_size: usize,
-    shift: [i32; 3],
-) {
-    let mut buf = vec![0i32; col_size * row_size];
-    let mut temp_in = vec![0i32; col_size.max(row_size)];
-    let mut temp_out = vec![0i32; col_size.max(row_size)];
-
-    // Column transforms (height = row_size, iterate over columns)
-    for col in 0..col_size {
-        for row in 0..row_size {
-            temp_in[row] = input[row * stride + col];
-        }
-        round_shift_array(&mut temp_in[..row_size], -shift[0]);
-        col_func(&temp_in[..row_size], &mut temp_out[..row_size]);
-        round_shift_array(&mut temp_out[..row_size], -shift[1]);
-        for row in 0..row_size {
-            buf[row * col_size + col] = temp_out[row];
-        }
-    }
-
-    // Compute rect_type for scaling
-    let rect_type = if col_size == row_size {
-        0 // square
-    } else if col_size == 2 * row_size || row_size == 2 * col_size {
-        1 // 2:1 ratio
-    } else {
-        2 // 4:1 ratio
+    input_stride: usize,
+    w: usize,
+    h: usize,
+    col_1d: u8,
+    row_1d: u8,
+    ud_flip: bool,
+    lr_flip: bool,
+) -> bool {
+    let col_func = match get_fwd_txfm_func(col_1d, h) {
+        Some(f) => f,
+        None => return false,
     };
-
-    // Row transforms
-    for row in 0..row_size {
-        let start = row * col_size;
-        temp_in[..col_size].copy_from_slice(&buf[start..start + col_size]);
-        row_func(&temp_in[..col_size], &mut temp_out[..col_size]);
-        round_shift_array(&mut temp_out[..col_size], -shift[2]);
-
-        // Rectangular scaling
-        if rect_type == 1 {
-            for c in 0..col_size {
-                temp_out[c] =
-                    round_shift_i64(temp_out[c] as i64 * NEW_SQRT2 as i64, NEW_SQRT2_BITS);
-            }
-        } else if rect_type == 2 {
-            for c in 0..col_size {
-                temp_out[c] =
-                    round_shift_i64(temp_out[c] as i64 * 2 * NEW_SQRT2 as i64, NEW_SQRT2_BITS);
-            }
-        }
-
-        output[start..start + col_size].copy_from_slice(&temp_out[..col_size]);
-    }
+    let row_func = match get_fwd_txfm_func(row_1d, w) {
+        Some(f) => f,
+        None => return false,
+    };
+    let txw_idx = w.trailing_zeros() as usize - 2;
+    let txh_idx = h.trailing_zeros() as usize - 2;
+    fwd_txfm2d_core(
+        input,
+        output,
+        input_stride,
+        w,
+        h,
+        col_func,
+        row_func,
+        FWD_COS_BIT_COL[txw_idx][txh_idx],
+        FWD_COS_BIT_ROW[txw_idx][txh_idx],
+        fwd_txfm_shift(w, h),
+        ud_flip,
+        lr_flip,
+    );
+    true
 }
 
 /// Forward 64x64 DCT-DCT.
 pub fn fwd_txfm2d_64x64_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    // 64x64 shift: [2, -6, 0]
-    fwd_txfm2d(input, output, stride, fdct64, fdct64, 64, [2, -6, 0]);
+    fwd_txfm2d_c_exact(input, output, stride, 64, 64, 0, 0, false, false);
 }
 
 /// Forward 4x8 DCT-DCT (rectangular).
 pub fn fwd_txfm2d_4x8_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    fwd_txfm2d_rect(input, output, stride, fdct4, fdct8, 4, 8, [2, 0, 0]);
+    fwd_txfm2d_c_exact(input, output, stride, 4, 8, 0, 0, false, false);
 }
 
 /// Forward 8x4 DCT-DCT (rectangular).
 pub fn fwd_txfm2d_8x4_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    fwd_txfm2d_rect(input, output, stride, fdct8, fdct4, 8, 4, [2, 0, 0]);
+    fwd_txfm2d_c_exact(input, output, stride, 8, 4, 0, 0, false, false);
 }
 
 /// Forward 8x16 DCT-DCT (rectangular).
 pub fn fwd_txfm2d_8x16_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    fwd_txfm2d_rect(input, output, stride, fdct8, fdct16, 8, 16, [2, -1, 0]);
+    fwd_txfm2d_c_exact(input, output, stride, 8, 16, 0, 0, false, false);
 }
 
 /// Forward 16x8 DCT-DCT (rectangular).
 pub fn fwd_txfm2d_16x8_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    fwd_txfm2d_rect(input, output, stride, fdct16, fdct8, 16, 8, [2, -1, 0]);
+    fwd_txfm2d_c_exact(input, output, stride, 16, 8, 0, 0, false, false);
 }
 
 /// Forward 16x32 DCT-DCT (rectangular).
 pub fn fwd_txfm2d_16x32_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    fwd_txfm2d_rect(input, output, stride, fdct16, fdct32, 16, 32, [2, -2, 0]);
+    fwd_txfm2d_c_exact(input, output, stride, 16, 32, 0, 0, false, false);
 }
 
 /// Forward 32x16 DCT-DCT (rectangular).
 pub fn fwd_txfm2d_32x16_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    fwd_txfm2d_rect(input, output, stride, fdct32, fdct16, 32, 16, [2, -2, 0]);
+    fwd_txfm2d_c_exact(input, output, stride, 32, 16, 0, 0, false, false);
 }
 
 /// Forward 32x64 DCT-DCT (rectangular).
 pub fn fwd_txfm2d_32x64_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    fwd_txfm2d_rect(input, output, stride, fdct32, fdct64, 32, 64, [2, -4, 0]);
+    fwd_txfm2d_c_exact(input, output, stride, 32, 64, 0, 0, false, false);
 }
 
 /// Forward 64x32 DCT-DCT (rectangular).
 pub fn fwd_txfm2d_64x32_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    fwd_txfm2d_rect(input, output, stride, fdct64, fdct32, 64, 32, [2, -4, 0]);
+    fwd_txfm2d_c_exact(input, output, stride, 64, 32, 0, 0, false, false);
 }
 
 /// Forward 4x16 DCT-DCT (4:1 rectangular).
 pub fn fwd_txfm2d_4x16_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    fwd_txfm2d_rect(input, output, stride, fdct4, fdct16, 4, 16, [2, 0, 0]);
+    fwd_txfm2d_c_exact(input, output, stride, 4, 16, 0, 0, false, false);
 }
 
 /// Forward 16x4 DCT-DCT (4:1 rectangular).
 pub fn fwd_txfm2d_16x4_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    fwd_txfm2d_rect(input, output, stride, fdct16, fdct4, 16, 4, [2, 0, 0]);
+    fwd_txfm2d_c_exact(input, output, stride, 16, 4, 0, 0, false, false);
 }
 
 /// Forward 8x32 DCT-DCT (4:1 rectangular).
 pub fn fwd_txfm2d_8x32_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    fwd_txfm2d_rect(input, output, stride, fdct8, fdct32, 8, 32, [2, -1, 0]);
+    fwd_txfm2d_c_exact(input, output, stride, 8, 32, 0, 0, false, false);
 }
 
 /// Forward 32x8 DCT-DCT (4:1 rectangular).
 pub fn fwd_txfm2d_32x8_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    fwd_txfm2d_rect(input, output, stride, fdct32, fdct8, 32, 8, [2, -1, 0]);
+    fwd_txfm2d_c_exact(input, output, stride, 32, 8, 0, 0, false, false);
 }
 
 /// Forward 16x64 DCT-DCT (4:1 rectangular).
 pub fn fwd_txfm2d_16x64_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    fwd_txfm2d_rect(input, output, stride, fdct16, fdct64, 16, 64, [2, -2, 0]);
+    fwd_txfm2d_c_exact(input, output, stride, 16, 64, 0, 0, false, false);
 }
 
 /// Forward 64x16 DCT-DCT (4:1 rectangular).
 pub fn fwd_txfm2d_64x16_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    fwd_txfm2d_rect(input, output, stride, fdct64, fdct16, 64, 16, [2, -2, 0]);
+    fwd_txfm2d_c_exact(input, output, stride, 64, 16, 0, 0, false, false);
 }
 
 /// Forward 4x4 DCT-DCT using the general framework.
@@ -1977,7 +2083,7 @@ fn fwd_txfm2d_4x4_dct_dct_impl_scalar(
     output: &mut [TranLow],
     stride: usize,
 ) {
-    fwd_txfm2d(input, output, stride, fdct4, fdct4, 4, [2, 0, 0]);
+    fwd_txfm2d_c_exact(input, output, stride, 4, 4, 0, 0, false, false);
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1988,7 +2094,7 @@ fn fwd_txfm2d_4x4_dct_dct_impl_v3(
     output: &mut [TranLow],
     stride: usize,
 ) {
-    fwd_txfm2d(input, output, stride, fdct4, fdct4, 4, [2, 0, 0]);
+    fwd_txfm2d_c_exact(input, output, stride, 4, 4, 0, 0, false, false);
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -1999,7 +2105,7 @@ fn fwd_txfm2d_4x4_dct_dct_impl_neon(
     output: &mut [TranLow],
     stride: usize,
 ) {
-    fwd_txfm2d(input, output, stride, fdct4, fdct4, 4, [2, 0, 0]);
+    fwd_txfm2d_c_exact(input, output, stride, 4, 4, 0, 0, false, false);
 }
 
 /// Forward 8x8 DCT-DCT.
@@ -2016,7 +2122,7 @@ fn fwd_txfm2d_8x8_dct_dct_impl_scalar(
     output: &mut [TranLow],
     stride: usize,
 ) {
-    fwd_txfm2d(input, output, stride, fdct8, fdct8, 8, [2, -1, 0]);
+    fwd_txfm2d_c_exact(input, output, stride, 8, 8, 0, 0, false, false);
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -2027,7 +2133,7 @@ fn fwd_txfm2d_8x8_dct_dct_impl_v3(
     output: &mut [TranLow],
     stride: usize,
 ) {
-    fwd_txfm2d(input, output, stride, fdct8, fdct8, 8, [2, -1, 0]);
+    fwd_txfm2d_c_exact(input, output, stride, 8, 8, 0, 0, false, false);
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -2038,7 +2144,7 @@ fn fwd_txfm2d_8x8_dct_dct_impl_neon(
     output: &mut [TranLow],
     stride: usize,
 ) {
-    fwd_txfm2d(input, output, stride, fdct8, fdct8, 8, [2, -1, 0]);
+    fwd_txfm2d_c_exact(input, output, stride, 8, 8, 0, 0, false, false);
 }
 
 /// Forward 16x16 DCT-DCT.
@@ -2055,7 +2161,7 @@ fn fwd_txfm2d_16x16_dct_dct_impl_scalar(
     output: &mut [TranLow],
     stride: usize,
 ) {
-    fwd_txfm2d(input, output, stride, fdct16, fdct16, 16, [2, -2, 0]);
+    fwd_txfm2d_c_exact(input, output, stride, 16, 16, 0, 0, false, false);
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -2066,7 +2172,7 @@ fn fwd_txfm2d_16x16_dct_dct_impl_v3(
     output: &mut [TranLow],
     stride: usize,
 ) {
-    fwd_txfm2d(input, output, stride, fdct16, fdct16, 16, [2, -2, 0]);
+    fwd_txfm2d_c_exact(input, output, stride, 16, 16, 0, 0, false, false);
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -2077,7 +2183,7 @@ fn fwd_txfm2d_16x16_dct_dct_impl_neon(
     output: &mut [TranLow],
     stride: usize,
 ) {
-    fwd_txfm2d(input, output, stride, fdct16, fdct16, 16, [2, -2, 0]);
+    fwd_txfm2d_c_exact(input, output, stride, 16, 16, 0, 0, false, false);
 }
 
 /// Forward 32x32 DCT-DCT.
@@ -2094,7 +2200,7 @@ fn fwd_txfm2d_32x32_dct_dct_impl_scalar(
     output: &mut [TranLow],
     stride: usize,
 ) {
-    fwd_txfm2d(input, output, stride, fdct32, fdct32, 32, [2, -4, 0]);
+    fwd_txfm2d_c_exact(input, output, stride, 32, 32, 0, 0, false, false);
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -2105,7 +2211,7 @@ fn fwd_txfm2d_32x32_dct_dct_impl_v3(
     output: &mut [TranLow],
     stride: usize,
 ) {
-    fwd_txfm2d(input, output, stride, fdct32, fdct32, 32, [2, -4, 0]);
+    fwd_txfm2d_c_exact(input, output, stride, 32, 32, 0, 0, false, false);
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -2116,7 +2222,7 @@ fn fwd_txfm2d_32x32_dct_dct_impl_neon(
     output: &mut [TranLow],
     stride: usize,
 ) {
-    fwd_txfm2d(input, output, stride, fdct32, fdct32, 32, [2, -4, 0]);
+    fwd_txfm2d_c_exact(input, output, stride, 32, 32, 0, 0, false, false);
 }
 
 #[cfg(test)]
@@ -2129,7 +2235,7 @@ mod tests {
     fn fdct4_dc_input() {
         let input = [100i32; 4];
         let mut output = [0i32; 4];
-        fdct4(&input, &mut output);
+        fdct4(&input, &mut output, 12);
         assert!(output[0].abs() > 0, "DC should be nonzero");
         for i in 1..4 {
             assert!(output[i].abs() <= 1, "AC[{i}] = {}", output[i]);
@@ -2140,7 +2246,7 @@ mod tests {
     fn fdct4_zero() {
         let input = [0i32; 4];
         let mut output = [0i32; 4];
-        fdct4(&input, &mut output);
+        fdct4(&input, &mut output, 12);
         assert!(output.iter().all(|&v| v == 0));
     }
 
@@ -2150,7 +2256,7 @@ mod tests {
     fn fdct8_dc_input() {
         let input = [100i32; 8];
         let mut output = [0i32; 8];
-        fdct8(&input, &mut output);
+        fdct8(&input, &mut output, 12);
         assert!(output[0].abs() > 0, "DC should be nonzero");
         for i in 1..8 {
             assert!(output[i].abs() <= 1, "AC[{i}] = {}", output[i]);
@@ -2160,7 +2266,7 @@ mod tests {
     #[test]
     fn fdct8_zero() {
         let mut output = [0i32; 8];
-        fdct8(&[0i32; 8], &mut output);
+        fdct8(&[0i32; 8], &mut output, 12);
         assert!(output.iter().all(|&v| v == 0));
     }
 
@@ -2169,7 +2275,7 @@ mod tests {
         // Alternating +1/-1 should produce energy in higher frequencies
         let input = [1, -1, 1, -1, 1, -1, 1, -1i32];
         let mut output = [0i32; 8];
-        fdct8(&input, &mut output);
+        fdct8(&input, &mut output, 12);
         // DC should be 0 (equal positive and negative)
         assert_eq!(output[0], 0);
         // Some AC coefficients should be nonzero
@@ -2182,7 +2288,7 @@ mod tests {
     fn fdct16_dc_input() {
         let input = [50i32; 16];
         let mut output = [0i32; 16];
-        fdct16(&input, &mut output);
+        fdct16(&input, &mut output, 12);
         assert!(output[0].abs() > 0, "DC should be nonzero");
         for i in 1..16 {
             assert!(output[i].abs() <= 1, "AC[{i}] = {}", output[i]);
@@ -2192,7 +2298,7 @@ mod tests {
     #[test]
     fn fdct16_zero() {
         let mut output = [0i32; 16];
-        fdct16(&[0i32; 16], &mut output);
+        fdct16(&[0i32; 16], &mut output, 12);
         assert!(output.iter().all(|&v| v == 0));
     }
 
@@ -2202,7 +2308,7 @@ mod tests {
     fn fdct32_dc_input() {
         let input = [100i32; 32];
         let mut output = [0i32; 32];
-        fdct32(&input, &mut output);
+        fdct32(&input, &mut output, 12);
         assert!(output[0].abs() > 0, "DC should be nonzero");
         for i in 1..32 {
             assert!(output[i].abs() <= 1, "AC[{i}] = {}", output[i]);
@@ -2212,7 +2318,7 @@ mod tests {
     #[test]
     fn fdct32_zero() {
         let mut output = [0i32; 32];
-        fdct32(&[0i32; 32], &mut output);
+        fdct32(&[0i32; 32], &mut output, 12);
         assert!(output.iter().all(|&v| v == 0));
     }
 
@@ -2221,14 +2327,14 @@ mod tests {
     #[test]
     fn fadst4_zero() {
         let mut output = [0i32; 4];
-        fadst4(&[0i32; 4], &mut output);
+        fadst4(&[0i32; 4], &mut output, 12);
         assert!(output.iter().all(|&v| v == 0));
     }
 
     #[test]
     fn fadst8_zero() {
         let mut output = [0i32; 8];
-        fadst8(&[0i32; 8], &mut output);
+        fadst8(&[0i32; 8], &mut output, 12);
         assert!(output.iter().all(|&v| v == 0));
     }
 
@@ -2238,7 +2344,7 @@ mod tests {
     fn fidentity4_ratio() {
         let input = [10i32, 20, 30, 40];
         let mut output = [0i32; 4];
-        fidentity4(&input, &mut output);
+        fidentity4(&input, &mut output, 12);
         for v in &output {
             assert!(*v != 0);
         }
@@ -2250,7 +2356,7 @@ mod tests {
     fn fidentity8_scale() {
         let input = [100i32; 8];
         let mut output = [0i32; 8];
-        fidentity8(&input, &mut output);
+        fidentity8(&input, &mut output, 12);
         // Should be 200 (scaled by 2)
         assert!(output.iter().all(|&v| v == 200));
     }

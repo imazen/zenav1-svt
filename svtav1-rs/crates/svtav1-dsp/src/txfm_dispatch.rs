@@ -11,6 +11,9 @@ use svtav1_types::transform::{TranLow, TxSize, TxType};
 
 /// Forward 2D transform dispatch for any supported (TxSize, TxType) combination.
 ///
+/// C-exact: per-size cos bits (`fwd_cos_bit_col/row`), C shift tables, and
+/// FLIPADST input flips, matching `svt_av1_transform_two_d` + config.
+///
 /// Returns false if the combination is not supported.
 pub fn fwd_txfm2d_dispatch(
     input: &[TranLow],
@@ -19,34 +22,20 @@ pub fn fwd_txfm2d_dispatch(
     tx_size: TxSize,
     tx_type: TxType,
 ) -> bool {
-    // Decompose TxType into (col_type_1d, row_type_1d)
     let (col_1d, row_1d) = tx_type_to_1d(tx_type);
-
-    // Get block dimensions
     let (w, h) = tx_size_dims(tx_size);
-
-    // Get 1D functions
-    let col_func = match get_fwd_txfm_func(col_1d, h) {
-        Some(f) => f,
-        None => return false,
-    };
-    let row_func = match get_fwd_txfm_func(row_1d, w) {
-        Some(f) => f,
-        None => return false,
-    };
-
-    // Get shift values
-    let shift = fwd_shift(tx_size);
-
-    if w == h {
-        fwd_txfm2d(input, output, stride, col_func, row_func, w, shift);
-    } else {
-        fwd_txfm2d_rect(input, output, stride, col_func, row_func, w, h, shift);
-    }
-    true
+    let (ud_flip, lr_flip) = flip_cfg(tx_type);
+    fwd_txfm2d_c_exact(input, output, stride, w, h, col_1d, row_1d, ud_flip, lr_flip)
 }
 
 /// Inverse 2D transform dispatch for any supported (TxSize, TxType) combination.
+///
+/// C-exact port of the `svt_av1_inv_txfm2d_add_*_c` composition at bd=8,
+/// producing residuals instead of adding to base pixels (see
+/// `inv_txfm::inv_txfm2d_c_exact`). `input` is in the full-stride layout
+/// (`stride` elements per row); for 64-dim sizes only the top-left 32x32
+/// region is read — the rest is treated as zero exactly like the C decoder,
+/// which never receives those coefficients.
 pub fn inv_txfm2d_dispatch(
     input: &[TranLow],
     output: &mut [TranLow],
@@ -56,24 +45,37 @@ pub fn inv_txfm2d_dispatch(
 ) -> bool {
     let (col_1d, row_1d) = tx_type_to_1d(tx_type);
     let (w, h) = tx_size_dims(tx_size);
+    let (ud_flip, lr_flip) = flip_cfg(tx_type);
 
-    let row_func = match get_inv_txfm_func(row_1d, w) {
-        Some(f) => f,
-        None => return false,
-    };
-    let col_func = match get_inv_txfm_func(col_1d, h) {
-        Some(f) => f,
-        None => return false,
-    };
-
-    let shift = inv_shift(tx_size);
-
-    if w == h {
-        inv_txfm2d(input, output, stride, row_func, col_func, w, shift);
+    if w > 32 || h > 32 {
+        // Remap the top-left 32x32 into a zero-extended w x h buffer,
+        // mirroring the mod_input construction in svt_av1_inv_txfm2d_add_64x*.
+        let keep_w = w.min(32);
+        let keep_h = h.min(32);
+        let mut mod_input = alloc::vec![0i32; w * h];
+        for r in 0..keep_h {
+            for c in 0..keep_w {
+                mod_input[r * w + c] = input[r * stride + c];
+            }
+        }
+        inv_txfm2d_c_exact(
+            &mod_input, w, output, stride, w, h, row_1d, col_1d, ud_flip, lr_flip,
+        )
     } else {
-        inv_txfm2d_rect(input, output, stride, row_func, col_func, w, h, shift);
+        inv_txfm2d_c_exact(
+            input, stride, output, stride, w, h, row_1d, col_1d, ud_flip, lr_flip,
+        )
     }
-    true
+}
+
+/// C `get_flip_cfg` (inv_transforms.h:139): (ud_flip, lr_flip) per TxType.
+pub fn flip_cfg(tx_type: TxType) -> (bool, bool) {
+    match tx_type {
+        TxType::FlipAdstDct | TxType::FlipAdstAdst | TxType::VFlipAdst => (true, false),
+        TxType::DctFlipAdst | TxType::AdstFlipAdst | TxType::HFlipAdst => (false, true),
+        TxType::FlipAdstFlipAdst => (true, true),
+        _ => (false, false),
+    }
 }
 
 /// Decompose a 2D TxType into (column_1d_type, row_1d_type).
@@ -124,42 +126,6 @@ fn tx_size_dims(tx_size: TxSize) -> (usize, usize) {
     }
 }
 
-/// Forward transform shift values for each TxSize (8-bit content).
-fn fwd_shift(tx_size: TxSize) -> [i32; 3] {
-    match tx_size {
-        TxSize::Tx4x4 => [2, 0, 0],
-        TxSize::Tx8x8 => [2, -1, 0],
-        TxSize::Tx16x16 => [2, -2, 0],
-        TxSize::Tx32x32 => [2, -4, 0],
-        TxSize::Tx64x64 => [2, -6, 0],
-        TxSize::Tx4x8 | TxSize::Tx8x4 => [2, 0, 0],
-        TxSize::Tx8x16 | TxSize::Tx16x8 => [2, -1, 0],
-        TxSize::Tx16x32 | TxSize::Tx32x16 => [2, -2, 0],
-        TxSize::Tx32x64 | TxSize::Tx64x32 => [2, -4, 0],
-        TxSize::Tx4x16 | TxSize::Tx16x4 => [2, 0, 0],
-        TxSize::Tx8x32 | TxSize::Tx32x8 => [2, -1, 0],
-        TxSize::Tx16x64 | TxSize::Tx64x16 => [2, -2, 0],
-    }
-}
-
-/// Inverse transform shift values for each TxSize (8-bit content).
-fn inv_shift(tx_size: TxSize) -> [i32; 2] {
-    match tx_size {
-        TxSize::Tx4x4 => [0, 0],
-        TxSize::Tx8x8 => [-1, 0],
-        TxSize::Tx16x16 => [-2, 0],
-        TxSize::Tx32x32 => [-4, 0],
-        TxSize::Tx64x64 => [-6, 0],
-        TxSize::Tx4x8 | TxSize::Tx8x4 => [0, 0],
-        TxSize::Tx8x16 | TxSize::Tx16x8 => [-1, 0],
-        TxSize::Tx16x32 | TxSize::Tx32x16 => [-2, 0],
-        TxSize::Tx32x64 | TxSize::Tx64x32 => [-4, 0],
-        TxSize::Tx4x16 | TxSize::Tx16x4 => [0, 0],
-        TxSize::Tx8x32 | TxSize::Tx32x8 => [-1, 0],
-        TxSize::Tx16x64 | TxSize::Tx64x16 => [-2, 0],
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,10 +160,12 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_fwd_inv_4x4_preserves_relative_values() {
-        // AV1 transforms have a built-in scale factor:
-        // fwd pre-shift * 1D scale^2 = 4 * 2 * 2 = 16 for 4x4
-        // We verify the roundtrip preserves relative values (ratios)
+    fn dispatch_fwd_inv_4x4_roundtrip_is_identity() {
+        // The C-exact inverse produces pixel-domain residuals (the C
+        // composition ends with a >>4 round shift before the pixel add), so
+        // fwd -> inv through the dispatch reconstructs the input exactly up
+        // to rounding. This is stricter than the old relative-scale check:
+        // it pins the absolute decoder-facing scale.
         let input: Vec<i32> = (0..16).map(|i| i * 7 - 50).collect();
         let mut fwd = vec![0i32; 16];
         let mut inv = vec![0i32; 16];
@@ -215,20 +183,14 @@ mod tests {
             TxSize::Tx4x4,
             TxType::DctDct
         ));
-        // All output should be a consistent scale of input
-        // Find scale from first nonzero element
-        let first_nonzero = input.iter().position(|&x| x != 0).unwrap();
-        let scale = inv[first_nonzero] as f64 / input[first_nonzero] as f64;
-        assert!(scale.abs() > 1.0, "scale should be > 1: {scale}");
         for i in 0..16 {
-            if input[i] != 0 {
-                let actual_scale = inv[i] as f64 / input[i] as f64;
-                let diff = (actual_scale - scale).abs();
-                assert!(
-                    diff < 0.5,
-                    "inconsistent scale at {i}: {actual_scale} vs {scale}"
-                );
-            }
+            let diff = (inv[i] - input[i]).abs();
+            assert!(
+                diff <= 2,
+                "roundtrip not identity at {i}: inv={} input={} diff={diff}",
+                inv[i],
+                input[i]
+            );
         }
     }
 
