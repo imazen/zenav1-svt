@@ -1,0 +1,12 @@
+command: cargo run --release -p svtav1 --example perf_vs_c
+commit: ca1cc3189 (wave2/entropy-c-parity, qp->qindex domain split live)
+date: 2026-07-13
+c_encoder: SvtAv1EncApp v4.2.0-rc (../Bin/Release), --rc 0 --aq-mode 0 --avif 1 --lp 1 -n 1
+settings: CLI qp 40 passed identically to RcConfig.qp and C --qp; BOTH
+  encoders now map it through quantizer_to_qindex (qindex 160). Earlier
+  perf_vs_c CSVs (perf_vs_c_2026-07-13.csv, _deblock.csv) ran the Rust
+  side at effective qindex 40 vs C at 160 (the pre-split conflation), so
+  ratios are not directly comparable: Rust now quantizes ~4x coarser =
+  fewer coefficients = less entropy work, C side unchanged.
+note: C timing includes app setup (few-ms constant bias in C's favor);
+  median of 3 runs both sides.
