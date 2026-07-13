@@ -7,6 +7,7 @@ members = [
     "crates/svtav1-encoder",
     "crates/svtav1-disjoint-mut",
     "crates/svtav1-cuda",
+    "crates/svtav1-cref",
     "svtav1",
 ]
 resolver = "3"

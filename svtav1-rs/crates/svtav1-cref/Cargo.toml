@@ -1,0 +1,17 @@
+[package]
+name = "svtav1-cref"
+version = "0.0.0"
+publish = false
+description = "Test-only FFI harness linking the in-tree C SVT-AV1 static library for differential parity testing"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[build-dependencies]
+cc = "1.2.67"
+
+# NOTE: no `[lints] workspace = true` here — this crate is the single sanctioned
+# exception to the workspace-wide `unsafe_code = "forbid"`: it exists solely to
+# call into the C reference implementation for differential testing and is never
+# part of a shipped artifact (`publish = false`, dev-dependency only).
