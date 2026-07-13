@@ -11,19 +11,54 @@ use alloc::vec::Vec;
 ///
 /// Signals color primaries, transfer characteristics, and matrix coefficients
 /// per ITU-T H.273. Used for wide gamut (P3, Rec.2020) and HDR (PQ, HLG).
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct ColorDescription {
-    /// Color primaries (1=BT.709/sRGB, 9=BT.2020, 12=P3).
+    /// Color primaries (1=BT.709/sRGB, 2=unspecified, 9=BT.2020, 12=P3).
     pub color_primaries: u8,
-    /// Transfer characteristics (1=BT.709, 13=sRGB, 16=PQ/HDR10, 18=HLG).
+    /// Transfer characteristics (1=BT.709, 2=unspecified, 13=sRGB,
+    /// 16=PQ/HDR10, 18=HLG).
     pub transfer_characteristics: u8,
-    /// Matrix coefficients (1=BT.709, 9=BT.2020, 0=Identity/RGB).
+    /// Matrix coefficients (1=BT.709, 2=unspecified, 9=BT.2020,
+    /// 0=Identity/RGB).
     pub matrix_coefficients: u8,
     /// Full range (true) or limited/studio range (false).
     pub full_range: bool,
 }
 
+/// The default is [`ColorDescription::unspecified`] — the C encoder's
+/// default color configuration (`enc_settings.c:1043-1046`), which the SH
+/// writer signals as `color_description_present_flag = 0`.
+impl Default for ColorDescription {
+    fn default() -> Self {
+        Self::unspecified()
+    }
+}
+
 impl ColorDescription {
+    /// CICP "unspecified": cp/tc/mc = 2/2/2, studio (limited) range.
+    ///
+    /// These are the C encoder's defaults (`svt_av1_set_default_params`,
+    /// `Source/Lib/Globals/enc_settings.c:1043-1046`: cp/tc/mc = 2 and
+    /// `color_range = EB_CR_STUDIO_RANGE`). The SH writer emits
+    /// `color_description_present_flag = 0` (no CICP bytes) for this
+    /// value, exactly like C's `write_color_config`
+    /// (`Source/Lib/Codec/entropy_coding.c:2749-2753`).
+    pub fn unspecified() -> Self {
+        Self {
+            color_primaries: 2,
+            transfer_characteristics: 2,
+            matrix_coefficients: 2,
+            full_range: false,
+        }
+    }
+
+    /// True iff cp/tc/mc are all 2 ("unspecified"), in which case the SH
+    /// carries no color description (C `write_color_config` behavior).
+    pub fn is_unspecified(&self) -> bool {
+        self.color_primaries == 2
+            && self.transfer_characteristics == 2
+            && self.matrix_coefficients == 2
+    }
     /// sRGB (BT.709 primaries, sRGB transfer, BT.709 matrix).
     pub fn srgb() -> Self {
         Self {
@@ -205,13 +240,33 @@ pub fn write_temporal_delimiter() -> Vec<u8> {
 }
 
 /// Write a reduced-header sequence header OBU (still-picture only).
+///
+/// Convenience wrapper: explicit sRGB CICP, 30 fps level derivation.
 pub fn write_sequence_header(width: u32, height: u32) -> Vec<u8> {
-    write_sequence_header_ex(width, height, true, 8, &ColorDescription::srgb(), true)
+    write_sequence_header_ex(
+        width,
+        height,
+        true,
+        8,
+        &ColorDescription::srgb(),
+        true,
+        30.0,
+    )
 }
 
 /// Write a full sequence header OBU that supports inter frames.
+///
+/// Convenience wrapper: explicit sRGB CICP, 30 fps level derivation.
 pub fn write_sequence_header_full(width: u32, height: u32) -> Vec<u8> {
-    write_sequence_header_ex(width, height, false, 8, &ColorDescription::srgb(), true)
+    write_sequence_header_ex(
+        width,
+        height,
+        false,
+        8,
+        &ColorDescription::srgb(),
+        true,
+        30.0,
+    )
 }
 
 /// Write a sequence header with explicit bit depth and color description.
@@ -222,6 +277,10 @@ pub fn write_sequence_header_full(width: u32, height: u32) -> Vec<u8> {
 /// `monochrome = true` writes the spec 5.5.2 mono color_config (NumPlanes=1,
 /// luma-only streams); `monochrome = false` writes the profile-0 4:2:0
 /// color_config (NumPlanes=3).
+///
+/// `fps` feeds the C-exact `seq_level_idx` auto-derivation
+/// ([`compute_seq_level_idx`]); C uses `scs->frame_rate` =
+/// numerator/denominator of the configured frame rate.
 pub fn write_sequence_header_ex(
     width: u32,
     height: u32,
@@ -229,8 +288,17 @@ pub fn write_sequence_header_ex(
     bit_depth: u8,
     color: &ColorDescription,
     monochrome: bool,
+    fps: f64,
 ) -> Vec<u8> {
-    write_sequence_header_inner(width, height, still_picture, bit_depth, color, monochrome)
+    write_sequence_header_inner(
+        width,
+        height,
+        still_picture,
+        bit_depth,
+        color,
+        monochrome,
+        fps,
+    )
 }
 
 /// Write AV1 trailing bits: a mandatory 1-bit followed by zeros to byte-align.
@@ -246,6 +314,66 @@ fn write_trailing_bits(wb: &mut BitWriter) {
 
 /// Order hint bits used in the full sequence header.
 pub const ORDER_HINT_BITS: u32 = 7;
+
+/// C `does_level_match` (`Source/Lib/Codec/entropy_coding.c:101-110`):
+/// dims/display-sample-rate check for one level ladder entry.
+fn does_level_match(
+    width: u32,
+    height: u32,
+    fps: f64,
+    lvl_width: u32,
+    lvl_height: u32,
+    lvl_fps: f64,
+    lvl_dim_mult: u32,
+) -> bool {
+    let lvl_luma_pels = i64::from(lvl_width) * i64::from(lvl_height);
+    let lvl_display_sample_rate = lvl_luma_pels as f64 * lvl_fps;
+    let luma_pels = i64::from(width) * i64::from(height);
+    let display_sample_rate = luma_pels as f64 * fps;
+    luma_pels <= lvl_luma_pels
+        && display_sample_rate <= lvl_display_sample_rate
+        && width <= lvl_width * lvl_dim_mult
+        && height <= lvl_height * lvl_dim_mult
+}
+
+/// Auto-compute `seq_level_idx` from frame dimensions and frame rate.
+///
+/// Port of C `set_bitstream_level_tier`
+/// (`Source/Lib/Codec/entropy_coding.c:111-232`, the `static_config.level
+/// == 0` auto branch — the C default) followed by
+/// `major_minor_to_seq_level_idx` (`entropy_coding.h:85-88`):
+/// `((major - LEVEL_MAJOR_MIN) << LEVEL_MINOR_BITS) + minor` with
+/// `LEVEL_MAJOR_MIN = 2`, `LEVEL_MINOR_BITS = 2` (`definitions.h:398-401`).
+/// The C ladder only checks dims + display sample rate (its own comment:
+/// bit rate / header rate checks not covered). Falls through to level
+/// "maximum parameters" {9,3} → idx 31 when nothing matches.
+///
+/// 64x64 stills at 30 fps land on the first rung: level 2.0 → idx 0.
+pub fn compute_seq_level_idx(width: u32, height: u32, fps: f64) -> u8 {
+    // (lvl_width, lvl_height, lvl_fps, lvl_dim_mult, major, minor)
+    const LADDER: [(u32, u32, f64, u32, u8, u8); 12] = [
+        (512, 288, 30.0, 4, 2, 0),
+        (704, 396, 30.0, 4, 2, 1),
+        (1088, 612, 30.0, 4, 3, 0),
+        (1376, 774, 30.0, 4, 3, 1),
+        (2048, 1152, 30.0, 3, 4, 0),
+        (2048, 1152, 60.0, 3, 4, 1),
+        (4096, 2176, 30.0, 2, 5, 0),
+        (4096, 2176, 60.0, 2, 5, 1),
+        (4096, 2176, 120.0, 2, 5, 2),
+        (8192, 4352, 30.0, 2, 6, 0),
+        (8192, 4352, 60.0, 2, 6, 1),
+        (8192, 4352, 120.0, 2, 6, 2),
+    ];
+    let (mut major, mut minor) = (9u8, 3u8); // C default bl = {9, 3}
+    for &(lw, lh, lfps, mult, maj, min) in &LADDER {
+        if does_level_match(width, height, fps, lw, lh, lfps, mult) {
+            (major, minor) = (maj, min);
+            break;
+        }
+    }
+    ((major - 2) << 2) + minor
+}
 
 /// Compute ceil(log2(n)), with tile_log2(0) = 0, tile_log2(1) = 0.
 fn tile_log2(n: u32) -> u32 {
@@ -266,6 +394,7 @@ fn write_sequence_header_inner(
     bit_depth: u8,
     color: &ColorDescription,
     monochrome: bool,
+    fps: f64,
 ) -> Vec<u8> {
     let mut wb = BitWriter::new();
 
@@ -275,16 +404,24 @@ fn write_sequence_header_inner(
     wb.write_bit(still_picture);
     wb.write_bit(still_picture); // reduced_still_picture_header = still_picture
 
+    // C-exact auto level (set_bitstream_level_tier; 64x64@30 → 2.0 → 0).
+    let seq_level_idx = compute_seq_level_idx(width, height, fps);
+
     if still_picture {
         // Reduced header: only seq_level_idx
-        wb.write_bits(8, 5); // Level 4.0
+        wb.write_bits(seq_level_idx as u32, 5);
     } else {
         wb.write_bit(false); // timing_info_present_flag = 0
         wb.write_bit(false); // initial_display_delay_present_flag = 0
         wb.write_bits(0, 5); // operating_points_cnt_minus_1 = 0
         wb.write_bits(0, 12); // operating_point_idc[0] = 0
-        wb.write_bits(8, 5); // seq_level_idx[0] = 8 (Level 4.0)
-        wb.write_bit(false); // seq_tier[0] = 0
+        wb.write_bits(seq_level_idx as u32, 5); // seq_level_idx[0]
+        // seq_tier is only coded for seq_level_idx > 7 (level major > 3):
+        // spec 5.5.1 and C write_sequence_header_obu
+        // (entropy_coding.c:3790-3792, `if (scs->level[i].major > 3)`).
+        if seq_level_idx > 7 {
+            wb.write_bit(false); // seq_tier[0] = 0 (main tier)
+        }
     }
 
     // Frame dimensions
@@ -348,17 +485,23 @@ fn write_sequence_header_inner(
     // (present for profile != 1)
     wb.write_bit(monochrome);
 
-    // color_description_present_flag = 1
-    wb.write_bit(true);
-    wb.write_bits(color.color_primaries as u32, 8);
-    wb.write_bits(color.transfer_characteristics as u32, 8);
-    wb.write_bits(color.matrix_coefficients as u32, 8);
+    // color_description_present_flag: 0 when cp/tc/mc are all
+    // "unspecified" (2/2/2) — C write_color_config
+    // (entropy_coding.c:2749-2758) — else 1 followed by the three bytes.
+    if color.is_unspecified() {
+        wb.write_bit(false); // no color description
+    } else {
+        wb.write_bit(true);
+        wb.write_bits(color.color_primaries as u32, 8);
+        wb.write_bits(color.transfer_characteristics as u32, 8);
+        wb.write_bits(color.matrix_coefficients as u32, 8);
+    }
 
     if monochrome {
         // For mono_chrome, spec 5.5.2 reads color_range (1 bit) and then
         // stops: subsampling=1,1, chroma_sample_position=CSP_UNKNOWN, and
         // separate_uv_delta_q=0 are implicit — but color_range is NOT.
-        wb.write_bit(true); // color_range = 1 (full range)
+        wb.write_bit(color.full_range); // color_range
     } else {
         // Non-mono, and (cp, tc, mc) != (BT709=1, SRGB=13, IDENTITY=0) —
         // that RGB special case implies 4:4:4 and is rejected by the
@@ -379,7 +522,7 @@ fn write_sequence_header_inner(
             profile == 0,
             "4:2:0 color_config is only implemented for seq_profile 0 (8/10-bit)"
         );
-        wb.write_bit(true); // color_range = 1 (full range)
+        wb.write_bit(color.full_range); // color_range
         // seq_profile 0: subsampling_x = subsampling_y = 1 implied, no bits.
         wb.write_bits(0, 2); // chroma_sample_position = 0 (CSP_UNKNOWN)
         wb.write_bit(false); // separate_uv_delta_q = 0
@@ -902,12 +1045,22 @@ mod tests {
     /// enable_cdef=1 bit (0x06 -> 0x26 in byte 6 of the reduced SH,
     /// 0xc3 -> 0xd3 in the full SH) and every FH gained the 10-bit
     /// zero-strength cdef_params tail (FH grows 5 -> 6 bytes).
+    /// Re-captured 2026-07-13 when SH C-parity landed (IDENTITY-STATUS item
+    /// S1-S3): seq_level_idx now auto-derives via the C
+    /// set_bitstream_level_tier port (64x64@30 → level 2.0 → idx 0, was
+    /// pinned 8/4.0 — reduced SH byte 0 0x1a → 0x18) and color_range now
+    /// honors ColorDescription::full_range (srgb() is studio range →
+    /// bit 0, was hardcoded 1 — byte 7 0x03 → 0x02). The full SH
+    /// additionally LOSES its seq_tier bit (only coded for level idx > 7,
+    /// spec 5.5.1 / C entropy_coding.c:3790), shifting every later field
+    /// one bit left. All bytes hand-verified field-by-field against spec
+    /// 5.5.1/5.5.2.
     #[test]
     fn mono_headers_unchanged_golden() {
         assert_eq!(
             write_sequence_header(64, 64),
             [
-                0x0a, 0x09, 0x1a, 0x15, 0x7f, 0xfc, 0x26, 0x02, 0x1a, 0x03, 0x40
+                0x0a, 0x09, 0x18, 0x15, 0x7f, 0xfc, 0x26, 0x02, 0x1a, 0x02, 0x40
             ]
         );
         assert_eq!(
@@ -917,10 +1070,51 @@ mod tests {
         assert_eq!(
             write_sequence_header_full(64, 64),
             [
-                0x0a, 0x0d, 0x00, 0x00, 0x00, 0x41, 0x57, 0xff, 0xc0, 0x26, 0xd3, 0x01, 0x0d, 0x01,
-                0xa0
+                0x0a, 0x0d, 0x00, 0x00, 0x00, 0x02, 0xaf, 0xff, 0x80, 0x4d, 0xa6, 0x02, 0x1a, 0x02,
+                0x40
             ]
         );
+    }
+
+    /// The pipeline-default SH must be byte-identical to what C SVT-AV1
+    /// emits at the identity-harness matched config (uniform/gradient
+    /// 64x64 still, preset 13, defaults: CICP unspecified 2/2/2 →
+    /// color_description_present_flag=0, studio range, 30 fps → level
+    /// 2.0). C golden = the SEQUENCE_HEADER OBU payload captured by
+    /// tools/identity_diff.sh from libSvtAv1Enc v4.2.0-rc (see
+    /// docs/IDENTITY-STATUS.md "uniform 64x64 q40 p13").
+    #[test]
+    fn sh_420_default_byte_identical_to_c() {
+        const C_SH_PAYLOAD: [u8; 6] = [0x18, 0x15, 0x7f, 0xfc, 0x20, 0x08];
+        let ours =
+            write_sequence_header_ex(64, 64, true, 8, &ColorDescription::default(), false, 30.0);
+        assert_eq!(ours[0], 0b0_0001_0_1_0); // SH OBU header
+        assert_eq!(ours[1] as usize, C_SH_PAYLOAD.len()); // leb128 size
+        assert_eq!(&ours[2..], &C_SH_PAYLOAD, "SH payload != C bytes");
+    }
+
+    /// The level ladder port must reproduce C's set_bitstream_level_tier
+    /// picks across the rungs (and the {9,3}→31 fallthrough).
+    #[test]
+    fn seq_level_ladder_matches_c() {
+        assert_eq!(compute_seq_level_idx(64, 64, 30.0), 0); // 2.0
+        assert_eq!(compute_seq_level_idx(512, 288, 30.0), 0); // 2.0 edge
+        assert_eq!(compute_seq_level_idx(704, 396, 30.0), 1); // 2.1
+        assert_eq!(compute_seq_level_idx(1088, 612, 30.0), 4); // 3.0
+        assert_eq!(compute_seq_level_idx(1376, 774, 30.0), 5); // 3.1
+        assert_eq!(compute_seq_level_idx(1920, 1080, 30.0), 8); // 4.0
+        assert_eq!(compute_seq_level_idx(1920, 1080, 60.0), 9); // 4.1
+        assert_eq!(compute_seq_level_idx(3840, 2160, 30.0), 12); // 5.0
+        assert_eq!(compute_seq_level_idx(3840, 2160, 60.0), 13); // 5.1
+        assert_eq!(compute_seq_level_idx(3840, 2160, 120.0), 14); // 5.2
+        assert_eq!(compute_seq_level_idx(7680, 4320, 30.0), 16); // 6.0
+        assert_eq!(compute_seq_level_idx(7680, 4320, 60.0), 17); // 6.1
+        assert_eq!(compute_seq_level_idx(7680, 4320, 120.0), 18); // 6.2
+        // Nothing matches → C default bl {9,3} → ((9-2)<<2)+3 = 31.
+        assert_eq!(compute_seq_level_idx(16384, 8704, 30.0), 31);
+        // dim_mult check: 4096 wide fits level 2.0 pels? No — width
+        // 4096 > 512*4 = 2048, and pels too big; lands on 5.0 via pels.
+        assert_eq!(compute_seq_level_idx(4096, 2176, 30.0), 12);
     }
 
     /// Pin the 4:2:0 (mono_chrome=0) sequence-header bit layout for a
@@ -935,7 +1129,7 @@ mod tests {
         wb.write_bits(0, 3); // seq_profile = 0 (Main: 8/10-bit 4:2:0)
         wb.write_bit(true); // still_picture = 1
         wb.write_bit(true); // reduced_still_picture_header = 1
-        wb.write_bits(8, 5); // seq_level_idx = 8 (Level 4.0)
+        wb.write_bits(0, 5); // seq_level_idx = 0 (auto: 64x64@30 → 2.0)
         wb.write_bits(5, 4); // frame_width_bits_minus_1 (64 -> 6 bits)
         wb.write_bits(5, 4); // frame_height_bits_minus_1
         wb.write_bits(63, 6); // max_frame_width_minus_1
@@ -954,7 +1148,7 @@ mod tests {
         wb.write_bits(13, 8); // transfer_characteristics = TC_SRGB
         wb.write_bits(1, 8); // matrix_coefficients = MC_BT_709
         // (cp,tc,mc) != (BT709, SRGB, IDENTITY) -> decoder reads:
-        wb.write_bit(true); // color_range = 1 (full)
+        wb.write_bit(false); // color_range = 0 (srgb() is studio range)
         // seq_profile == 0 -> subsampling_x = subsampling_y = 1, NO bits.
         // subsampling_x && subsampling_y -> chroma_sample_position f(2):
         wb.write_bits(0, 2); // chroma_sample_position = CSP_UNKNOWN
@@ -968,7 +1162,7 @@ mod tests {
         let expected_payload = wb.into_data();
         let expected_obu = write_obu(ObuType::SequenceHeader, &expected_payload);
 
-        let got = write_sequence_header_ex(64, 64, true, 8, &ColorDescription::srgb(), false);
+        let got = write_sequence_header_ex(64, 64, true, 8, &ColorDescription::srgb(), false, 30.0);
         assert_eq!(
             got, expected_obu,
             "420 SH layout drifted from spec derivation"
@@ -1045,7 +1239,14 @@ mod tests {
             (level, tools, cc)
         }
 
-        let ours = write_sequence_header_ex(64, 64, true, 8, &ColorDescription::srgb(), false);
+        // The C capture passed --color-range 1 (full), so the matching Rust
+        // config is sRGB CICP + full range (the writer now honors
+        // full_range instead of hardcoding 1).
+        let color = ColorDescription {
+            full_range: true,
+            ..ColorDescription::srgb()
+        };
+        let ours = write_sequence_header_ex(64, 64, true, 8, &color, false, 30.0);
         // Strip OBU header (1 byte) + leb128 size (1 byte for these sizes).
         assert_eq!(ours[0], 0b0_0001_0_1_0);
         let our_payload = &ours[2..];
@@ -1060,9 +1261,10 @@ mod tests {
         assert_eq!(c_cc[7], 0, "chroma_sample_position CSP_UNKNOWN");
         assert_eq!(c_cc[8], 0, "separate_uv_delta_q");
 
-        // Documented config differences (NOT bitstream-structure drift):
+        // Level now auto-derives exactly like C (set_bitstream_level_tier
+        // port): 64x64@30 → level 2.0 → idx 0 on both sides.
         assert_eq!(c_level, 0, "C derives level 2.0 for 64x64");
-        assert_eq!(r_level, 8, "we pin level 4.0");
+        assert_eq!(r_level, 0, "we derive level 2.0 too (C-exact port)");
         // Tool bits (bit 4=filter_intra .. bit 0=restoration; both sides
         // have intra_edge_filter=0, superres=0): C enables
         // filter_intra/cdef/restoration. Our cdef bit now MATCHES C (the
