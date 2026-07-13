@@ -11,11 +11,13 @@ extern crate alloc;
 
 pub mod cdf;
 pub mod coeff;
+pub mod coeff_c;
 pub mod context;
 pub mod default_cdfs;
 pub mod default_coef_cdfs;
 pub mod mv_coding;
 pub mod obu;
 pub mod range_coder;
+pub mod scan_tables;
 pub mod tile;
 pub mod writer;
