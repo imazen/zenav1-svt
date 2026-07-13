@@ -175,7 +175,7 @@ impl<'a> RefFrameCtx<'a> {
 /// predict from pixels the decoder never sees: an edge V_PRED block coded
 /// against pred=128 decodes against pred=left_ref[0], corrupting the
 /// reconstruction by the difference.
-fn extract_neighbors(
+pub(crate) fn extract_neighbors(
     recon: &[u8],
     stride: usize,
     abs_x: usize,

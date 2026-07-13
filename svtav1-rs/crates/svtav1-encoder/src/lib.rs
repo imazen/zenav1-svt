@@ -13,6 +13,7 @@ pub mod mode_decision;
 pub mod motion_est;
 pub mod multipass;
 pub mod partition;
+pub mod pd0;
 pub mod perceptual;
 pub mod picture;
 pub mod pipeline;
