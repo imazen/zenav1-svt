@@ -568,20 +568,19 @@ fn write_tile_info(wb: &mut BitWriter, width: u32, height: u32) {
     // maxLog2TileCols = tile_log2(min(sbCols, MAX_TILE_COLS))
     // MAX_TILE_COLS = 64 in AV1 spec
     let max_log2_tile_cols = tile_log2(sb_cols.min(64));
-    // Write 0 (don't increment) for each possible increment level
-    // to keep TileColsLog2 = 0 (single tile column).
-    for _ in 0..max_log2_tile_cols {
-        wb.write_bit(false); // increment_tile_cols_log2 = 0 → break
-        break; // Only one 0 needed: the decoder breaks on first 0
+    // The decoder reads increment_tile_cols_log2 bits until a 0: a single
+    // 0 keeps TileColsLog2 = 0 (single tile column). No bit at all when
+    // no increment is even possible (maxLog2TileCols == 0).
+    if max_log2_tile_cols > 0 {
+        wb.write_bit(false); // increment_tile_cols_log2 = 0 → stop
     }
 
     // TileRowsLog2 starts at max(minLog2Tiles - TileColsLog2, 0) = 0
     // maxLog2TileRows = tile_log2(min(sbRows, MAX_TILE_ROWS))
     // MAX_TILE_ROWS = 64 in AV1 spec
     let max_log2_tile_rows = tile_log2(sb_rows.min(64));
-    for _ in 0..max_log2_tile_rows {
-        wb.write_bit(false); // increment_tile_rows_log2 = 0 → break
-        break;
+    if max_log2_tile_rows > 0 {
+        wb.write_bit(false); // increment_tile_rows_log2 = 0 → stop
     }
 
     // TileColsLog2=0, TileRowsLog2=0 → NumTiles=1
