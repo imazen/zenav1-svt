@@ -146,102 +146,89 @@ impl<'a> RefFrameCtx<'a> {
     }
 }
 
-/// Frame-level reconstruction context for extracting intra prediction neighbors.
+/// Extract prediction neighbors for a block at absolute position
+/// (abs_x, abs_y) directly from the reconstruction buffer.
 ///
-/// Provides read access to the frame reconstruction buffer so that blocks
-/// can read above/left neighbors from previously-finalized superblocks.
-/// Superblocks are processed in raster order (left-to-right, top-to-bottom),
-/// so any SB above or to the left of the current one is already finalized.
-#[derive(Clone, Copy)]
-pub struct FrameReconCtx<'a> {
-    /// Frame reconstruction buffer (Y plane).
-    pub buf: &'a [u8],
-    /// Frame stride (= frame width for contiguous single-plane layout).
-    pub stride: usize,
-    /// X origin of the current superblock in the frame.
-    pub sb_x: usize,
-    /// Y origin of the current superblock in the frame.
-    pub sb_y: usize,
-}
-
-/// Extract prediction neighbors for a block at absolute position (abs_x, abs_y).
-///
-/// Reads from the frame reconstruction buffer for pixels in already-finalized
-/// superblocks. A pixel at (x, y) is finalized if y < sb_y (in a previous SB row)
-/// or x < sb_x (in a previous SB column in the current row). Returns 128 for
-/// pixels within the current SB (not yet finalized) or at frame edges.
+/// The buffer is the live frame (or SB) reconstruction written in coding
+/// order, so above/left pixels — including those inside the current
+/// superblock — are always current, exactly as the decoder sees them.
 fn extract_neighbors(
-    frame_ctx: Option<&FrameReconCtx>,
+    recon: &[u8],
+    stride: usize,
     abs_x: usize,
     abs_y: usize,
     width: usize,
     height: usize,
 ) -> (alloc::vec::Vec<u8>, alloc::vec::Vec<u8>, u8, bool, bool) {
-    let Some(ctx) = frame_ctx else {
-        // No frame context (standalone/test mode) — use mid-gray
-        return (
-            alloc::vec![128u8; width],
-            alloc::vec![128u8; height],
-            128,
-            true,
-            true,
-        );
-    };
-
     let has_above = abs_y > 0;
     let has_left = abs_x > 0;
 
-    // Above row: finalized if the row above is in a previous SB row
-    let above_avail = has_above && (abs_y - 1 < ctx.sb_y);
-    let above = if above_avail {
+    let above = if has_above {
         let row = abs_y - 1;
         (0..width)
             .map(|i| {
                 let x = abs_x + i;
-                let idx = row * ctx.stride + x;
-                if x < ctx.stride && idx < ctx.buf.len() {
-                    ctx.buf[idx]
-                } else {
-                    128
-                }
+                let idx = row * stride + x;
+                if x < stride && idx < recon.len() { recon[idx] } else { 128 }
             })
             .collect()
     } else {
         alloc::vec![128u8; width]
     };
 
-    // Left column: finalized if the column to the left is in a previous SB column
-    let left_avail = has_left && (abs_x - 1 < ctx.sb_x);
-    let left = if left_avail {
+    let left = if has_left {
         let col = abs_x - 1;
         (0..height)
             .map(|i| {
-                let y = abs_y + i;
-                let idx = y * ctx.stride + col;
-                if idx < ctx.buf.len() {
-                    ctx.buf[idx]
-                } else {
-                    128
-                }
+                let idx = (abs_y + i) * stride + col;
+                if idx < recon.len() { recon[idx] } else { 128 }
             })
             .collect()
     } else {
         alloc::vec![128u8; height]
     };
 
-    // Top-left corner: finalized if either the above row or left column is finalized
-    let top_left = if has_above && has_left && (above_avail || left_avail) {
-        let idx = (abs_y - 1) * ctx.stride + abs_x - 1;
-        if idx < ctx.buf.len() {
-            ctx.buf[idx]
-        } else {
-            128
-        }
+    let top_left = if has_above && has_left {
+        let idx = (abs_y - 1) * stride + abs_x - 1;
+        if idx < recon.len() { recon[idx] } else { 128 }
     } else {
         128
     };
 
     (above, left, top_left, has_above, has_left)
+}
+
+/// Save a rectangular region of the reconstruction buffer.
+fn save_region(
+    recon: &[u8],
+    stride: usize,
+    abs_x: usize,
+    abs_y: usize,
+    width: usize,
+    height: usize,
+) -> alloc::vec::Vec<u8> {
+    let mut out = alloc::vec![0u8; width * height];
+    for r in 0..height {
+        let src = (abs_y + r) * stride + abs_x;
+        out[r * width..r * width + width].copy_from_slice(&recon[src..src + width]);
+    }
+    out
+}
+
+/// Restore a rectangular region of the reconstruction buffer.
+fn restore_region(
+    recon: &mut [u8],
+    stride: usize,
+    abs_x: usize,
+    abs_y: usize,
+    width: usize,
+    height: usize,
+    saved: &[u8],
+) {
+    for r in 0..height {
+        let dst = (abs_y + r) * stride + abs_x;
+        recon[dst..dst + width].copy_from_slice(&saved[r * width..r * width + width]);
+    }
 }
 
 /// Recursive partition tree for spec-conformant bitstream encoding.
@@ -287,6 +274,10 @@ pub struct BlockDecision {
     pub is_inter: bool,
     /// Intra prediction mode index (0-12 for AV1 modes).
     pub intra_mode: u8,
+    /// Transform type used for the residual (C TxType index; 0 = DCT_DCT).
+    /// MUST match what the bitstream signals or the decoder inverse-
+    /// transforms with the wrong basis.
+    pub tx_type: u8,
     /// Motion vector (for inter blocks).
     pub mv: svtav1_types::motion::Mv,
     /// Quantized coefficients.
@@ -359,7 +350,6 @@ pub fn partition_search(
         lambda,
         max_depth,
         &PartitionSearchConfig::full(),
-        None,
         0,
         0,
         None,
@@ -372,8 +362,10 @@ pub fn partition_search(
 /// extended partitions, 4:1 partitions, and SPLIT, picking lowest RD cost.
 /// Config gates which partition types and intra modes are evaluated.
 ///
-/// When `frame_ctx` is provided, prediction reads above/left neighbors from
-/// previously-finalized superblocks in the frame reconstruction buffer.
+/// `recon` is the full frame (or standalone block) reconstruction buffer with
+/// `recon_stride`; the block lives at (abs_x, abs_y). Predictions read
+/// above/left neighbors directly from this buffer — including neighbors
+/// inside the current superblock — exactly as the decoder reconstructs them.
 /// When `ref_ctx` is provided, inter prediction is also tried using ME.
 pub fn partition_search_with_config(
     src: &[u8],
@@ -386,7 +378,6 @@ pub fn partition_search_with_config(
     lambda: u64,
     max_depth: u32,
     config: &PartitionSearchConfig,
-    frame_ctx: Option<&FrameReconCtx>,
     abs_x: usize,
     abs_y: usize,
     ref_ctx: Option<&RefFrameCtx>,
@@ -402,7 +393,6 @@ pub fn partition_search_with_config(
             height,
             qp,
             config,
-            frame_ctx,
             abs_x,
             abs_y,
             ref_ctx,
@@ -419,7 +409,6 @@ pub fn partition_search_with_config(
         height,
         qp,
         config,
-        frame_ctx,
         abs_x,
         abs_y,
         ref_ctx,
@@ -431,13 +420,9 @@ pub fn partition_search_with_config(
     }
 
     let mut best_result = none_result;
-    let mut best_recon = alloc::vec![0u8; width * height];
-    // Copy current recon as best so far
-    for r in 0..height {
-        for c in 0..width {
-            best_recon[r * width + c] = recon[r * recon_stride + c];
-        }
-    }
+    // Snapshot of the winning candidate's reconstruction for this region
+    // (PARTITION_NONE was just encoded into the buffer).
+    let mut best_snap = save_region(recon, recon_stride, abs_x, abs_y, width, height);
 
     // Try PARTITION_HORZ: two halves stacked vertically
     if height >= 8 {
@@ -451,19 +436,16 @@ pub fn partition_search_with_config(
             decisions: alloc::vec::Vec::new(),
             tree: None,
         };
-        let mut horz_recon = alloc::vec![0u8; width * height];
-
         // Top half
         let top = encode_with_neighbors(
             src,
             src_stride,
-            &mut horz_recon,
-            width,
+            recon,
+            recon_stride,
             width,
             hh,
             qp,
             config,
-            frame_ctx,
             abs_x,
             abs_y,
             ref_ctx,
@@ -473,42 +455,19 @@ pub fn partition_search_with_config(
         horz_result.num_blocks += top.num_blocks;
         horz_result.decisions.extend(top.decisions);
 
-        // Bottom half — use top half's bottom row as above neighbors
-        let above_bot: alloc::vec::Vec<u8> = horz_recon[(hh - 1) * width..hh * width].to_vec();
-        let (_, left_bot, _, _, has_left_bot) =
-            extract_neighbors(frame_ctx, abs_x, abs_y + hh, width, height - hh);
-        // Top-left: from frame if left of SB, else from top half's bottom-left pixel
-        let tl_bot = if let Some(ctx) = frame_ctx {
-            if abs_x > 0 && abs_x - 1 < ctx.sb_x {
-                let idx = (abs_y + hh - 1) * ctx.stride + abs_x - 1;
-                if idx < ctx.buf.len() {
-                    ctx.buf[idx]
-                } else {
-                    128
-                }
-            } else {
-                horz_recon[(hh - 1) * width]
-            }
-        } else {
-            128
-        };
-        let bot = encode_single_block(
+        // Bottom half — neighbors come straight from the live buffer.
+        let bot = encode_with_neighbors(
             &src[hh * src_stride..],
             src_stride,
-            &mut horz_recon[hh * width..],
-            width,
+            recon,
+            recon_stride,
             width,
             height - hh,
             qp,
             config,
-            &above_bot,
-            &left_bot,
-            tl_bot,
-            true,
-            has_left_bot,
-            ref_ctx,
             abs_x,
             abs_y + hh,
+            ref_ctx,
         );
         horz_result.distortion += bot.distortion;
         horz_result.rate += bot.rate;
@@ -531,7 +490,7 @@ pub fn partition_search_with_config(
 
         if horz_result.rd_cost < best_result.rd_cost {
             best_result = horz_result;
-            best_recon = horz_recon;
+            best_snap = save_region(recon, recon_stride, abs_x, abs_y, width, height);
         }
     }
 
@@ -547,19 +506,16 @@ pub fn partition_search_with_config(
             decisions: alloc::vec::Vec::new(),
             tree: None,
         };
-        let mut vert_recon = alloc::vec![0u8; width * height];
-
         // Left half
         let left = encode_with_neighbors(
             src,
             src_stride,
-            &mut vert_recon,
-            width,
+            recon,
+            recon_stride,
             hw,
             height,
             qp,
             config,
-            frame_ctx,
             abs_x,
             abs_y,
             ref_ctx,
@@ -569,44 +525,19 @@ pub fn partition_search_with_config(
         vert_result.num_blocks += left.num_blocks;
         vert_result.decisions.extend(left.decisions);
 
-        // Right half — use left half's rightmost column as left neighbors
-        let left_for_right: alloc::vec::Vec<u8> = (0..height)
-            .map(|r| vert_recon[r * width + hw - 1])
-            .collect();
-        let (above_right, _, _, has_above_right, _) =
-            extract_neighbors(frame_ctx, abs_x + hw, abs_y, width - hw, height);
-        // Top-left: from frame if above SB, else 128
-        let tl_right = if let Some(ctx) = frame_ctx {
-            if abs_y > 0 && abs_y - 1 < ctx.sb_y {
-                let idx = (abs_y - 1) * ctx.stride + abs_x + hw - 1;
-                if idx < ctx.buf.len() {
-                    ctx.buf[idx]
-                } else {
-                    128
-                }
-            } else {
-                128
-            }
-        } else {
-            128
-        };
-        let right = encode_single_block(
+        // Right half — neighbors come straight from the live buffer.
+        let right = encode_with_neighbors(
             &src[hw..],
             src_stride,
-            &mut vert_recon[hw..],
-            width,
+            recon,
+            recon_stride,
             width - hw,
             height,
             qp,
             config,
-            &above_right,
-            &left_for_right,
-            tl_right,
-            has_above_right,
-            true,
-            ref_ctx,
             abs_x + hw,
             abs_y,
+            ref_ctx,
         );
         vert_result.distortion += right.distortion;
         vert_result.rate += right.rate;
@@ -629,7 +560,7 @@ pub fn partition_search_with_config(
 
         if vert_result.rd_cost < best_result.rd_cost {
             best_result = vert_result;
-            best_recon = vert_recon;
+            best_snap = save_region(recon, recon_stride, abs_x, abs_y, width, height);
         }
     }
 
@@ -647,21 +578,19 @@ pub fn partition_search_with_config(
             tree: None,
         };
         let mut h4_children = alloc::vec::Vec::new();
-        let mut h4_recon = alloc::vec![0u8; width * height];
         for strip in 0..4 {
             let y0 = strip * qh;
             let cur_h = qh.min(height - y0);
             let sub = encode_with_neighbors(
                 &src[y0 * src_stride..],
                 src_stride,
-                &mut h4_recon[y0 * width..],
-                width,
+                recon,
+                recon_stride,
                 width,
                 cur_h,
                 qp,
                 config,
-                frame_ctx,
-                abs_x,
+                    abs_x,
                 abs_y + y0,
                 ref_ctx,
             );
@@ -682,7 +611,7 @@ pub fn partition_search_with_config(
         h4_result.rd_cost = h4_result.distortion + ((lambda * h4_result.rate as u64) >> 8);
         if h4_result.rd_cost < best_result.rd_cost {
             best_result = h4_result;
-            best_recon = h4_recon;
+            best_snap = save_region(recon, recon_stride, abs_x, abs_y, width, height);
         }
     }
 
@@ -699,21 +628,19 @@ pub fn partition_search_with_config(
             tree: None,
         };
         let mut v4_children = alloc::vec::Vec::new();
-        let mut v4_recon = alloc::vec![0u8; width * height];
         for strip in 0..4 {
             let x0 = strip * qw;
             let cur_w = qw.min(width - x0);
             let sub = encode_with_neighbors(
                 &src[x0..],
                 src_stride,
-                &mut v4_recon[x0..],
-                width,
+                recon,
+                recon_stride,
                 cur_w,
                 height,
                 qp,
                 config,
-                frame_ctx,
-                abs_x + x0,
+                    abs_x + x0,
                 abs_y,
                 ref_ctx,
             );
@@ -734,7 +661,7 @@ pub fn partition_search_with_config(
         v4_result.rd_cost = v4_result.distortion + ((lambda * v4_result.rate as u64) >> 8);
         if v4_result.rd_cost < best_result.rd_cost {
             best_result = v4_result;
-            best_recon = v4_recon;
+            best_snap = save_region(recon, recon_stride, abs_x, abs_y, width, height);
         }
     }
 
@@ -752,19 +679,17 @@ pub fn partition_search_with_config(
             decisions: alloc::vec::Vec::new(),
             tree: None,
         };
-        let mut ha_recon = alloc::vec![0u8; width * height];
         let mut ha_children = alloc::vec::Vec::new();
         // Top-left quarter
         let s = encode_with_neighbors(
             src,
             src_stride,
-            &mut ha_recon,
-            width,
+            recon,
+            recon_stride,
             hw,
             hh,
             qp,
             config,
-            frame_ctx,
             abs_x,
             abs_y,
             ref_ctx,
@@ -780,13 +705,12 @@ pub fn partition_search_with_config(
         let s = encode_with_neighbors(
             &src[hw..],
             src_stride,
-            &mut ha_recon[hw..],
-            width,
+            recon,
+            recon_stride,
             width - hw,
             hh,
             qp,
             config,
-            frame_ctx,
             abs_x + hw,
             abs_y,
             ref_ctx,
@@ -802,13 +726,12 @@ pub fn partition_search_with_config(
         let s = encode_with_neighbors(
             &src[hh * src_stride..],
             src_stride,
-            &mut ha_recon[hh * width..],
-            width,
+            recon,
+            recon_stride,
             width,
             height - hh,
             qp,
             config,
-            frame_ctx,
             abs_x,
             abs_y + hh,
             ref_ctx,
@@ -829,7 +752,7 @@ pub fn partition_search_with_config(
         ha_result.rd_cost = ha_result.distortion + ((lambda * ha_result.rate as u64) >> 8);
         if ha_result.rd_cost < best_result.rd_cost {
             best_result = ha_result;
-            best_recon = ha_recon;
+            best_snap = save_region(recon, recon_stride, abs_x, abs_y, width, height);
         }
     }
 
@@ -846,19 +769,17 @@ pub fn partition_search_with_config(
             decisions: alloc::vec::Vec::new(),
             tree: None,
         };
-        let mut hb_recon = alloc::vec![0u8; width * height];
         let mut hb_children = alloc::vec::Vec::new();
         // Top half
         let s = encode_with_neighbors(
             src,
             src_stride,
-            &mut hb_recon,
-            width,
+            recon,
+            recon_stride,
             width,
             hh,
             qp,
             config,
-            frame_ctx,
             abs_x,
             abs_y,
             ref_ctx,
@@ -874,13 +795,12 @@ pub fn partition_search_with_config(
         let s = encode_with_neighbors(
             &src[hh * src_stride..],
             src_stride,
-            &mut hb_recon[hh * width..],
-            width,
+            recon,
+            recon_stride,
             hw,
             height - hh,
             qp,
             config,
-            frame_ctx,
             abs_x,
             abs_y + hh,
             ref_ctx,
@@ -896,13 +816,12 @@ pub fn partition_search_with_config(
         let s = encode_with_neighbors(
             &src[hh * src_stride + hw..],
             src_stride,
-            &mut hb_recon[hh * width + hw..],
-            width,
+            recon,
+            recon_stride,
             width - hw,
             height - hh,
             qp,
             config,
-            frame_ctx,
             abs_x + hw,
             abs_y + hh,
             ref_ctx,
@@ -923,7 +842,7 @@ pub fn partition_search_with_config(
         hb_result.rd_cost = hb_result.distortion + ((lambda * hb_result.rate as u64) >> 8);
         if hb_result.rd_cost < best_result.rd_cost {
             best_result = hb_result;
-            best_recon = hb_recon;
+            best_snap = save_region(recon, recon_stride, abs_x, abs_y, width, height);
         }
     }
 
@@ -940,19 +859,17 @@ pub fn partition_search_with_config(
             decisions: alloc::vec::Vec::new(),
             tree: None,
         };
-        let mut va_recon = alloc::vec![0u8; width * height];
         let mut va_children = alloc::vec::Vec::new();
         // Top-left quarter
         let s = encode_with_neighbors(
             src,
             src_stride,
-            &mut va_recon,
-            width,
+            recon,
+            recon_stride,
             hw,
             hh,
             qp,
             config,
-            frame_ctx,
             abs_x,
             abs_y,
             ref_ctx,
@@ -968,13 +885,12 @@ pub fn partition_search_with_config(
         let s = encode_with_neighbors(
             &src[hh * src_stride..],
             src_stride,
-            &mut va_recon[hh * width..],
-            width,
+            recon,
+            recon_stride,
             hw,
             height - hh,
             qp,
             config,
-            frame_ctx,
             abs_x,
             abs_y + hh,
             ref_ctx,
@@ -990,13 +906,12 @@ pub fn partition_search_with_config(
         let s = encode_with_neighbors(
             &src[hw..],
             src_stride,
-            &mut va_recon[hw..],
-            width,
+            recon,
+            recon_stride,
             width - hw,
             height,
             qp,
             config,
-            frame_ctx,
             abs_x + hw,
             abs_y,
             ref_ctx,
@@ -1017,7 +932,7 @@ pub fn partition_search_with_config(
         va_result.rd_cost = va_result.distortion + ((lambda * va_result.rate as u64) >> 8);
         if va_result.rd_cost < best_result.rd_cost {
             best_result = va_result;
-            best_recon = va_recon;
+            best_snap = save_region(recon, recon_stride, abs_x, abs_y, width, height);
         }
     }
 
@@ -1034,19 +949,17 @@ pub fn partition_search_with_config(
             decisions: alloc::vec::Vec::new(),
             tree: None,
         };
-        let mut vb_recon = alloc::vec![0u8; width * height];
         let mut vb_children = alloc::vec::Vec::new();
         // Left half
         let s = encode_with_neighbors(
             src,
             src_stride,
-            &mut vb_recon,
-            width,
+            recon,
+            recon_stride,
             hw,
             height,
             qp,
             config,
-            frame_ctx,
             abs_x,
             abs_y,
             ref_ctx,
@@ -1062,13 +975,12 @@ pub fn partition_search_with_config(
         let s = encode_with_neighbors(
             &src[hw..],
             src_stride,
-            &mut vb_recon[hw..],
-            width,
+            recon,
+            recon_stride,
             width - hw,
             hh,
             qp,
             config,
-            frame_ctx,
             abs_x + hw,
             abs_y,
             ref_ctx,
@@ -1084,13 +996,12 @@ pub fn partition_search_with_config(
         let s = encode_with_neighbors(
             &src[hh * src_stride + hw..],
             src_stride,
-            &mut vb_recon[hh * width + hw..],
-            width,
+            recon,
+            recon_stride,
             width - hw,
             height - hh,
             qp,
             config,
-            frame_ctx,
             abs_x + hw,
             abs_y + hh,
             ref_ctx,
@@ -1111,7 +1022,7 @@ pub fn partition_search_with_config(
         vb_result.rd_cost = vb_result.distortion + ((lambda * vb_result.rate as u64) >> 8);
         if vb_result.rd_cost < best_result.rd_cost {
             best_result = vb_result;
-            best_recon = vb_recon;
+            best_snap = save_region(recon, recon_stride, abs_x, abs_y, width, height);
         }
     }
 
@@ -1128,9 +1039,6 @@ pub fn partition_search_with_config(
         tree: None,
     };
 
-    // Allocate temporary recon for split
-    let mut split_recon = alloc::vec![0u8; width * height];
-
     // Encode 4 quadrants, collect child trees
     let mut split_children = alloc::vec::Vec::new();
     for (qr, qc) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
@@ -1144,15 +1052,14 @@ pub fn partition_search_with_config(
         let sub = partition_search_with_config(
             &src[sub_src_offset..],
             src_stride,
-            &mut split_recon[y0 * width + x0..],
-            width,
+            recon,
+            recon_stride,
             cur_w,
             cur_h,
             qp,
             lambda,
             max_depth - 1,
             config,
-            frame_ctx,
             abs_x + x0,
             abs_y + y0,
             ref_ctx,
@@ -1177,15 +1084,11 @@ pub fn partition_search_with_config(
     // Check if SPLIT is better than current best
     if split_result.rd_cost < best_result.rd_cost {
         best_result = split_result;
-        best_recon = split_recon;
+        best_snap = save_region(recon, recon_stride, abs_x, abs_y, width, height);
     }
 
-    // Write best recon to output
-    for r in 0..height {
-        for c in 0..width {
-            recon[r * recon_stride + c] = best_recon[r * width + c];
-        }
-    }
+    // Leave the winning candidate's reconstruction in the buffer.
+    restore_region(recon, recon_stride, abs_x, abs_y, width, height, &best_snap);
     best_result
 }
 
@@ -1199,13 +1102,12 @@ fn encode_with_neighbors(
     height: usize,
     qp: u8,
     config: &PartitionSearchConfig,
-    frame_ctx: Option<&FrameReconCtx>,
     abs_x: usize,
     abs_y: usize,
     ref_ctx: Option<&RefFrameCtx>,
 ) -> PartitionResult {
     let (above, left, top_left, has_above, has_left) =
-        extract_neighbors(frame_ctx, abs_x, abs_y, width, height);
+        extract_neighbors(recon, recon_stride, abs_x, abs_y, width, height);
     encode_single_block(
         src,
         src_stride,
@@ -1323,6 +1225,11 @@ fn encode_single_block(
     let mut best_cost = u64::MAX;
     let mut chose_inter = false;
     let mut chosen_mv = svtav1_types::motion::Mv::ZERO;
+    // AV1 y_mode index of the winning intra candidate — MUST match what the
+    // bitstream signals, or the decoder predicts with a different mode than
+    // the one the residual was built against.
+    let mut chosen_mode: u8 = 0;
+    let mut chosen_tx: u8 = 0; // C TxType index (DCT_DCT = 0)
 
     for cand in candidates {
         let mut pred_block = alloc::vec![128u8; n];
@@ -1453,6 +1360,8 @@ fn encode_single_block(
         if cost_dct < best_cost {
             best_cost = cost_dct;
             best_enc = Some(enc_dct);
+            chosen_mode = cand.mode as u8;
+            chosen_tx = svtav1_types::transform::TxType::DctDct as u8;
         }
 
         // RDO transform type selection for non-DC modes at sizes <= 16.
@@ -1503,45 +1412,16 @@ fn encode_single_block(
                 if cost_alt < best_cost {
                     best_cost = cost_alt;
                     best_enc = Some(enc_alt);
+                    chosen_mode = cand.mode as u8;
+                    chosen_tx = alt_tx as u8;
                 }
             }
         }
     }
 
-    // Try filter-intra modes (Spec 05: 5 modes, blocks <= 32x32)
-    if config.enable_filter_intra && width <= 32 && height <= 32 {
-        // Construct extended above: [top_left, above[0..width]]
-        let mut fi_above = alloc::vec![0u8; width + 1];
-        fi_above[0] = top_left;
-        fi_above[1..width + 1].copy_from_slice(&above[..width]);
-
-        for fi_mode in 0..5u8 {
-            let mut pred_block = alloc::vec![0u8; n];
-            svtav1_dsp::intra_pred::predict_filter_intra(
-                &mut pred_block,
-                width,
-                &fi_above,
-                left,
-                width,
-                height,
-                fi_mode,
-            );
-            let enc = crate::encode_loop::encode_block(
-                src,
-                src_stride,
-                &pred_block,
-                width,
-                width,
-                height,
-                qp,
-            );
-            let cost = enc.distortion + ((lambda * enc.rate as u64) >> 8);
-            if cost < best_cost {
-                best_cost = cost;
-                best_enc = Some(enc);
-            }
-        }
-    }
+    // Filter-intra candidates are NOT evaluated: the sequence header
+    // signals enable_filter_intra = 0, so the bitstream cannot represent
+    // them — using their prediction would diverge from the decoder.
 
     // Try inter prediction if a reference frame is available.
     // Runs hierarchical ME (full-pel + half-pel refinement) to find the best MV,
@@ -1649,15 +1529,15 @@ fn encode_single_block(
     });
 
     for r in 0..height {
-        for c in 0..width {
-            recon[r * recon_stride + c] = enc.recon[r * width + c];
-        }
+        let dst = (abs_y + r) * recon_stride + abs_x;
+        recon[dst..dst + width].copy_from_slice(&enc.recon[r * width..r * width + width]);
     }
 
     let decision = BlockDecision {
         partition_type: PartitionType::None,
         is_inter: chose_inter,
-        intra_mode: 0,
+        intra_mode: chosen_mode,
+        tx_type: if chose_inter { 0 } else { chosen_tx },
         mv: chosen_mv,
         qcoeffs: enc.qcoeffs.to_vec(),
         eob: enc.eob,
@@ -1726,84 +1606,52 @@ mod tests {
     }
 
     #[test]
-    fn partition_search_with_frame_ctx() {
-        // Verify that frame context provides real neighbors
+    fn partition_search_reads_frame_neighbors() {
+        // Frame buffer with a gradient row above the target block: the
+        // search must read it as the above neighbors and reconstruct into
+        // the same buffer.
         let w = 32usize;
-        let h = 32usize;
-        // Create a frame recon with a gradient in the first SB row
-        let mut frame_recon = vec![128u8; w * h];
+        let h = 48usize;
+        let mut frame = vec![128u8; w * h];
         for c in 0..w {
-            frame_recon[c] = (c * 8) as u8; // First row has a gradient
+            frame[15 * w + c] = (c * 8) as u8; // row 15 = above the block at y=16
         }
-        // Source for the second SB row — same gradient
         let mut src = vec![0u8; 16 * 16];
         for r in 0..16 {
             for c in 0..16 {
                 src[r * 16 + c] = (c * 8) as u8;
             }
         }
-        let mut recon = vec![0u8; 16 * 16];
-
-        // Encode with frame context — SB at (0, 16), so above row is finalized
-        let ctx = FrameReconCtx {
-            buf: &frame_recon,
-            stride: w,
-            sb_x: 0,
-            sb_y: 16,
-        };
-        let result_with_ctx = partition_search_with_config(
+        let result = partition_search_with_config(
             &src,
             16,
-            &mut recon,
-            16,
+            &mut frame,
+            w,
             16,
             16,
             30,
             256,
             2,
             &PartitionSearchConfig::full(),
-            Some(&ctx),
             0,
             16,
             None,
         );
-
-        // Encode without frame context
-        let mut recon2 = vec![0u8; 16 * 16];
-        let result_without = partition_search_with_config(
-            &src,
-            16,
-            &mut recon2,
-            16,
-            16,
-            16,
-            30,
-            256,
-            2,
-            &PartitionSearchConfig::full(),
-            None,
-            0,
-            0,
-            None,
+        assert!(result.num_blocks >= 1);
+        // The block region must have been reconstructed (roughly matching src).
+        let recon_center = frame[(16 + 8) * w + 8];
+        assert!(
+            (recon_center as i32 - src[8 * 16 + 8] as i32).abs() < 64,
+            "recon {} vs src {}",
+            recon_center,
+            src[8 * 16 + 8]
         );
-
-        // With real neighbors, distortion should differ (better prediction)
-        // Both should produce valid results
-        assert!(result_with_ctx.num_blocks >= 1);
-        assert!(result_without.num_blocks >= 1);
     }
 
     #[test]
     fn extract_neighbors_frame_edge() {
-        // Block at (0, 0) — no above or left
         let frame = vec![100u8; 64 * 64];
-        let ctx = FrameReconCtx {
-            buf: &frame,
-            stride: 64,
-            sb_x: 0,
-            sb_y: 0,
-        };
-        let (above, left, tl, has_above, has_left) = extract_neighbors(Some(&ctx), 0, 0, 8, 8);
+        let (above, left, tl, has_above, has_left) = extract_neighbors(&frame, 64, 0, 0, 8, 8);
         assert!(!has_above);
         assert!(!has_left);
         assert!(above.iter().all(|&v| v == 128));
@@ -1812,68 +1660,51 @@ mod tests {
     }
 
     #[test]
-    fn extract_neighbors_cross_sb() {
-        // 128x128 frame, two 64x64 SB rows
+    fn extract_neighbors_reads_above_row() {
         let w = 128;
         let h = 128;
         let mut frame = vec![0u8; w * h];
-        // Fill first SB row (rows 0-63) with known values
         for r in 0..64 {
             for c in 0..w {
                 frame[r * w + c] = ((r + c) % 256) as u8;
             }
         }
-        // SB at (0, 64) should read above from row 63
-        let ctx = FrameReconCtx {
-            buf: &frame,
-            stride: w,
-            sb_x: 0,
-            sb_y: 64,
-        };
-        let (above, _left, _tl, has_above, has_left) = extract_neighbors(Some(&ctx), 0, 64, 8, 8);
+        let (above, _left, _tl, has_above, has_left) = extract_neighbors(&frame, w, 0, 64, 8, 8);
         assert!(has_above);
-        assert!(!has_left); // x=0, no left
-        // Above should be row 63, columns 0..8
+        assert!(!has_left);
         for i in 0..8 {
             assert_eq!(above[i], ((63 + i) % 256) as u8);
         }
     }
 
     #[test]
-    fn extract_neighbors_left_sb() {
-        // Two SBs side by side: SB0 at (0,0), SB1 at (64,0)
+    fn extract_neighbors_reads_left_column() {
         let w = 128;
         let h = 64;
         let mut frame = vec![0u8; w * h];
-        // Fill SB0 (columns 0-63) with known values
         for r in 0..h {
             for c in 0..64 {
                 frame[r * w + c] = ((r * 2 + c) % 256) as u8;
             }
         }
-        // SB at (64, 0) should read left from column 63
-        let ctx = FrameReconCtx {
-            buf: &frame,
-            stride: w,
-            sb_x: 64,
-            sb_y: 0,
-        };
-        let (_above, left, _tl, _has_above, has_left) = extract_neighbors(Some(&ctx), 64, 0, 8, 8);
+        let (_above, left, _tl, _has_above, has_left) = extract_neighbors(&frame, w, 64, 0, 8, 8);
         assert!(has_left);
-        // Left should be column 63, rows 0..8
         for i in 0..8 {
             assert_eq!(left[i], ((i * 2 + 63) % 256) as u8);
         }
     }
 
     #[test]
-    fn extract_neighbors_none_ctx() {
-        // No frame context — everything 128
-        let (above, left, tl, has_above, has_left) = extract_neighbors(None, 32, 32, 8, 8);
+    fn extract_neighbors_in_sb_positions_are_live() {
+        // Neighbors INSIDE the current superblock must be read from the
+        // buffer (the historical bug returned 128 for them).
+        let w = 64;
+        let mut frame = vec![0u8; w * w];
+        for c in 0..w {
+            frame[7 * w + c] = 200; // row 7 — above a block at y=8 inside the SB
+        }
+        let (above, _left, _tl, has_above, _has_left) = extract_neighbors(&frame, w, 8, 8, 8, 8);
         assert!(has_above);
-        assert!(has_left);
-        assert!(above.iter().all(|&v| v == 128));
-        assert!(left.iter().all(|&v| v == 128));
-        assert_eq!(tl, 128);
+        assert!(above.iter().all(|&v| v == 200), "in-SB above must be live: {above:?}");
     }
 }

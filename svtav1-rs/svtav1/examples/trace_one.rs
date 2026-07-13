@@ -23,6 +23,7 @@ fn main() {
             small[r * sz + c] = match content.as_str() {
                 "uniform" => 128,
                 "flat140" => 140,
+                "flat250" => 250,
                 "edges" => {
                     if (r / 8 + c / 8) % 2 == 0 { 32 } else { 224 }
                 }

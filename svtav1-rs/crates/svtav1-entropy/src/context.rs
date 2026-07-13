@@ -252,18 +252,10 @@ impl FrameContext {
             kf_y_mode_cdf: DEFAULT_KF_Y_MODE_CDF,
             y_mode_cdf: DEFAULT_Y_MODE_CDF,
             uv_mode_cdf: [[[0; UV_INTRA_MODES + 1]; INTRA_MODES]; 2],
-            // Uniform ICDF for 7 angle delta symbols: 6/6*T, 5/6*T, 4/6*T, 3/6*T, 2/6*T, 1/6*T, 0, 0
-            angle_delta_cdf: {
-                let n = ANGLE_DELTA_SYMS; // 7
-                let mut cdf = [0u16; ANGLE_DELTA_SYMS + 1];
-                let mut i = 0;
-                while i < n - 1 {
-                    cdf[i] = (CDF_PROB_TOP as u32 * (n - 1 - i) as u32 / (n - 1) as u32) as u16;
-                    i += 1;
-                }
-                // cdf[n-1] = 0 (last ICDF), cdf[n] = 0 (count)
-                [cdf; DIRECTIONAL_MODES]
-            },
+            // Real AV1 defaults extracted from the C reference — the decoder
+            // initializes angle_delta_cdf with these, so a uniform table
+            // desyncs the stream on the first directional mode.
+            angle_delta_cdf: crate::default_cdfs::ANGLE_DELTA_CDF,
             inter_compound_mode_cdf: [[
                 CDF_PROB_TOP / 4 * 3,
                 CDF_PROB_TOP / 4 * 2,
@@ -318,21 +310,17 @@ pub fn get_intra_inter_context(above_intra: bool, left_intra: bool) -> usize {
     }
 }
 
-/// Map intra prediction mode to a simplified context for kf_y_mode CDF.
+/// Map intra prediction mode to the kf_y_mode CDF context.
 ///
-/// AV1 spec Table 9.3 / rav1d dav1d_intra_mode_context[13]:
-///   DC=0, V/H=1, D45-D67=2, SMOOTH variants=3, PAETH=4
+/// This is the actual `intra_mode_context[]` table shared by libaom and
+/// rav1d: {0, 1, 2, 3, 4, 4, 4, 4, 3, 0, 1, 2, 0}. The decoder derives
+/// kf_y_cdf[above_ctx][left_ctx] with it — any deviation desyncs the
+/// stream as soon as non-DC modes appear.
 pub fn intra_mode_context(mode: u8) -> usize {
     // AV1 modes: 0=DC, 1=V, 2=H, 3=D45, 4=D135, 5=D113, 6=D157, 7=D203, 8=D67,
     //            9=SMOOTH, 10=SMOOTH_V, 11=SMOOTH_H, 12=PAETH
-    match mode {
-        0 => 0,      // DC_PRED
-        1 | 2 => 1,  // V_PRED, H_PRED
-        3..=8 => 2,  // D45..D67 (directional angles)
-        9..=11 => 3, // SMOOTH, SMOOTH_V, SMOOTH_H
-        12 => 4,     // PAETH
-        _ => 0,      // fallback
-    }
+    const INTRA_MODE_CONTEXT: [usize; 13] = [0, 1, 2, 3, 4, 4, 4, 4, 3, 0, 1, 2, 0];
+    INTRA_MODE_CONTEXT.get(mode as usize).copied().unwrap_or(0)
 }
 
 /// Map block size to block_size_group for y_mode CDF selection.
