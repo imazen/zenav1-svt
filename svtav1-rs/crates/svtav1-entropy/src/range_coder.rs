@@ -48,6 +48,8 @@ impl OdEcEnc {
     /// Ported from `svt_od_ec_enc_init` (growth happens on demand, so any
     /// capacity — including 0 — is valid).
     pub fn new(capacity: usize) -> Self {
+        #[cfg(feature = "symtrace")]
+        std::eprintln!("W RESET");
         Self {
             buf: alloc::vec![0u8; capacity],
             offs: 0,
@@ -60,6 +62,8 @@ impl OdEcEnc {
 
     /// Reset the encoder state for a new frame (`svt_od_ec_enc_reset`).
     pub fn reset(&mut self) {
+        #[cfg(feature = "symtrace")]
+        std::eprintln!("W RESET");
         self.offs = 0;
         self.low = 0;
         self.rng = 0x8000;
@@ -79,6 +83,16 @@ impl OdEcEnc {
     /// be monotonically decreasing and `icdf[nsyms-1]` must be 0 (C layout;
     /// the adaptation counter lives one past it at `icdf[nsyms]`).
     pub fn encode_cdf_q15(&mut self, s: usize, icdf: &[AomCdfProb], nsyms: usize) {
+        #[cfg(feature = "symtrace")]
+        std::eprintln!(
+            "W CDF nsyms={} s={} icdf=[{},{},{}] rng={}",
+            nsyms,
+            s,
+            icdf[0],
+            if nsyms >= 2 { icdf[1] } else { 0 },
+            if nsyms >= 3 { icdf[2] } else { 0 },
+            self.rng
+        );
         debug_assert!(s < nsyms, "symbol {s} >= nsyms {nsyms}");
         debug_assert_eq!(icdf[nsyms - 1], 0, "C layout requires icdf[nsyms-1] == 0");
         let fl = if s > 0 { u32::from(icdf[s - 1]) } else { 32768 };
@@ -90,7 +104,7 @@ impl OdEcEnc {
     /// `f` is the probability that the value is one, scaled by 32768.
     pub fn encode_bool_q15(&mut self, val: bool, f: u32) {
         #[cfg(feature = "symtrace")]
-        std::eprintln!("W BOOL val={} f={f}", u32::from(val));
+        std::eprintln!("W BOOL val={} f={f} rng={}", u32::from(val), self.rng);
         debug_assert!(0 < f && f < 32768);
         let mut l = self.low;
         let mut r = u32::from(self.rng);

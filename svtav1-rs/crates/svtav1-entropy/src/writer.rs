@@ -54,15 +54,10 @@ impl AomWriter {
     /// Write a symbol using a CDF and optionally update the CDF.
     #[inline]
     pub fn write_symbol(&mut self, symb: usize, cdf: &mut [AomCdfProb], nsymbs: usize) {
-        #[cfg(feature = "symtrace")]
-        std::eprintln!(
-            "W CDF nsyms={} s={} icdf=[{},{},{}]",
-            nsymbs,
-            symb,
-            cdf[0],
-            cdf.get(1).copied().unwrap_or(0),
-            cdf.get(2).copied().unwrap_or(0)
-        );
+        // symtrace: the per-op log lives in OdEcEnc::encode_cdf_q15 /
+        // encode_bool_q15 — the exact seam the C harness wraps with
+        // -Wl,--wrap (tools/capture_c_trace), so both traces are emitted at
+        // the same abstraction level.
         self.ec.encode_cdf_q15(symb, cdf, nsymbs);
         if self.allow_update_cdf {
             update_cdf(cdf, symb, nsymbs);
@@ -72,8 +67,6 @@ impl AomWriter {
     /// Write a symbol using a CDF without updating it.
     #[inline]
     pub fn write_cdf(&mut self, symb: usize, cdf: &[AomCdfProb], nsymbs: usize) {
-        #[cfg(feature = "symtrace")]
-        std::eprintln!("W CDF nsyms={nsymbs} s={symb} (no-update)");
         self.ec.encode_cdf_q15(symb, cdf, nsymbs);
     }
 
