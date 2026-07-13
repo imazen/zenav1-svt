@@ -74,6 +74,17 @@ This applies to:
 under the AV1 reference decoder as of 2026-07-13, C baseline v4.2.0-rc)
 
 ### Next structural gaps toward C bit-identity (not decode blockers)
+
+> **Identity harness live (2026-07-13):** `tools/identity_diff.sh <w> <h>
+> <qp> <preset> [content]` (or `just identity`) runs Rust + wrapped-C at a
+> matched still/AVIF CQP config and diffs OBU bytes (SH/FH field-level) +
+> canonicalized od_ec op traces. First divergence map with per-class C
+> source cites + priority-ordered fix list: **docs/IDENTITY-STATUS.md**.
+> Headlines: Rust-only frame-level VAQ shifts base_q (CQP ≠ CQP); C always
+> signals TX_MODE_SELECT + per-block tx_depth (we signal LARGEST, no
+> syntax); SH level/CICP/color_range constants differ; op-0 tile
+> divergence is the 64x64 partition decision (C md RDO vs our homegrown
+> partition_search costs).
 0a. **[FIXED 2026-07-13] Edges-content divergence** — root cause was NOT the
    transforms (all named + dispatch wrapper paths are now pinned bit-exact
    vs C by c_parity_txfm, incl. rect + flat-DC shapes): extract_neighbors
