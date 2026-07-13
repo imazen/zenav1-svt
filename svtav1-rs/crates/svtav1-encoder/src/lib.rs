@@ -15,6 +15,7 @@ pub mod multipass;
 pub mod partition;
 pub mod pd0;
 pub mod perceptual;
+pub mod quant;
 pub mod picture;
 pub mod pipeline;
 pub mod rate_control;
