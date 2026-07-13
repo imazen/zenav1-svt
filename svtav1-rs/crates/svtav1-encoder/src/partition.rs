@@ -40,6 +40,12 @@ pub struct PartitionSearchConfig {
     /// Whether to try filter-intra prediction modes.
     /// (Spec 05: "filter-intra for blocks <= 32x32")
     pub enable_filter_intra: bool,
+    /// Minimum luma block dimension the partition search may produce.
+    /// 4 = full AV1 partition ladder (mono default). 8 = 4:2:0 policy:
+    /// every coded block keeps min(width, height) >= 8, so every luma block
+    /// is a chroma reference with chroma dims exactly (w/2, h/2) >= 4 —
+    /// AV1's sub-8x8 is_chroma_ref / last-block chroma rules are deferred.
+    pub min_block_dim: usize,
 }
 
 impl PartitionSearchConfig {
@@ -53,6 +59,7 @@ impl PartitionSearchConfig {
             enable_adst: sc.enable_adst,
             rdo_tx_decision: sc.rdo_tx_decision,
             enable_filter_intra: sc.enable_filter_intra,
+            min_block_dim: MIN_BLOCK_SIZE,
         }
     }
 
@@ -66,6 +73,7 @@ impl PartitionSearchConfig {
             enable_adst: true,
             rdo_tx_decision: true,
             enable_filter_intra: true,
+            min_block_dim: MIN_BLOCK_SIZE,
         }
     }
 }
@@ -466,8 +474,10 @@ pub fn partition_search_with_config(
     // (PARTITION_NONE was just encoded into the buffer).
     let mut best_snap = save_region(recon, recon_stride, abs_x, abs_y, width, height);
 
-    // Try PARTITION_HORZ: two halves stacked vertically
-    if height >= 8 {
+    // Try PARTITION_HORZ: two halves stacked vertically.
+    // Children are height/2 tall — gate keeps them >= min_block_dim
+    // (identical to the historical `height >= 8` at min_block_dim = 4).
+    if height >= 2 * config.min_block_dim {
         let hh = height / 2;
         let mut horz_result = PartitionResult {
             partition_type: PartitionType::Horz,
@@ -537,7 +547,7 @@ pub fn partition_search_with_config(
     }
 
     // Try PARTITION_VERT: two halves side by side
-    if width >= 8 {
+    if width >= 2 * config.min_block_dim {
         let hw = width / 2;
         let mut vert_result = PartitionResult {
             partition_type: PartitionType::Vert,
@@ -608,7 +618,7 @@ pub fn partition_search_with_config(
 
     // Try PARTITION_HORZ_4: four horizontal strips (each height/4)
     // Gated by config.enable_4to1_partitions (Spec 10: "4:1 partitions at preset <= 6")
-    if height >= 16 && config.enable_4to1_partitions {
+    if height >= 4 * config.min_block_dim && config.enable_4to1_partitions {
         let qh = height / 4;
         let mut h4_result = PartitionResult {
             partition_type: PartitionType::Horz4,
@@ -658,7 +668,7 @@ pub fn partition_search_with_config(
     }
 
     // Try PARTITION_VERT_4: four vertical strips (each width/4)
-    if width >= 16 && config.enable_4to1_partitions {
+    if width >= 4 * config.min_block_dim && config.enable_4to1_partitions {
         let qw = width / 4;
         let mut v4_result = PartitionResult {
             partition_type: PartitionType::Vert4,
@@ -709,7 +719,10 @@ pub fn partition_search_with_config(
 
     // Try PARTITION_HORZ_A: top split into 2 quarters + bottom half
     // Gated by config.enable_ext_partitions (Spec 10: "extended partitions at preset <= 8")
-    if width >= 8 && height >= 8 && config.enable_ext_partitions {
+    if width >= 2 * config.min_block_dim
+        && height >= 2 * config.min_block_dim
+        && config.enable_ext_partitions
+    {
         let hw = width / 2;
         let hh = height / 2;
         let mut ha_result = PartitionResult {
@@ -799,7 +812,10 @@ pub fn partition_search_with_config(
     }
 
     // Try PARTITION_HORZ_B: top half + bottom split into 2 quarters
-    if width >= 8 && height >= 8 && config.enable_ext_partitions {
+    if width >= 2 * config.min_block_dim
+        && height >= 2 * config.min_block_dim
+        && config.enable_ext_partitions
+    {
         let hw = width / 2;
         let hh = height / 2;
         let mut hb_result = PartitionResult {
@@ -889,7 +905,10 @@ pub fn partition_search_with_config(
     }
 
     // Try PARTITION_VERT_A: left split into 2 quarters + right half
-    if width >= 8 && height >= 8 && config.enable_ext_partitions {
+    if width >= 2 * config.min_block_dim
+        && height >= 2 * config.min_block_dim
+        && config.enable_ext_partitions
+    {
         let hw = width / 2;
         let hh = height / 2;
         let mut va_result = PartitionResult {
@@ -979,7 +998,10 @@ pub fn partition_search_with_config(
     }
 
     // Try PARTITION_VERT_B: left half + right split into 2 quarters
-    if width >= 8 && height >= 8 && config.enable_ext_partitions {
+    if width >= 2 * config.min_block_dim
+        && height >= 2 * config.min_block_dim
+        && config.enable_ext_partitions
+    {
         let hw = width / 2;
         let hh = height / 2;
         let mut vb_result = PartitionResult {
@@ -1068,70 +1090,122 @@ pub fn partition_search_with_config(
         }
     }
 
-    // Try PARTITION_SPLIT: encode 4 sub-blocks
-    let hw = width / 2;
-    let hh = height / 2;
-    let mut split_result = PartitionResult {
-        partition_type: PartitionType::Split,
-        rd_cost: 0,
-        distortion: 0,
-        rate: 64, // Partition flag overhead
-        num_blocks: 0,
-        decisions: alloc::vec::Vec::new(),
-        tree: None,
-    };
+    // Try PARTITION_SPLIT: encode 4 sub-blocks.
+    // With the default min_block_dim (4) SPLIT is tried unconditionally,
+    // exactly as before; with the 4:2:0 min-8x8 policy it is gated so
+    // quadrants never drop below min_block_dim. (The `width <= 8 &&
+    // height <= 8` early-return above already prevents SPLIT below 16 for
+    // the square blocks the recursion produces — this gate makes the
+    // policy explicit for any caller-supplied shape.)
+    let allow_split = config.min_block_dim <= MIN_BLOCK_SIZE
+        || (width / 2 >= config.min_block_dim && height / 2 >= config.min_block_dim);
+    if allow_split {
+        let hw = width / 2;
+        let hh = height / 2;
+        let mut split_result = PartitionResult {
+            partition_type: PartitionType::Split,
+            rd_cost: 0,
+            distortion: 0,
+            rate: 64, // Partition flag overhead
+            num_blocks: 0,
+            decisions: alloc::vec::Vec::new(),
+            tree: None,
+        };
 
-    // Encode 4 quadrants, collect child trees
-    let mut split_children = alloc::vec::Vec::new();
-    for (qr, qc) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
-        let x0 = qc * hw;
-        let y0 = qr * hh;
-        let cur_w = hw.min(width - x0);
-        let cur_h = hh.min(height - y0);
+        // Encode 4 quadrants, collect child trees
+        let mut split_children = alloc::vec::Vec::new();
+        for (qr, qc) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
+            let x0 = qc * hw;
+            let y0 = qr * hh;
+            let cur_w = hw.min(width - x0);
+            let cur_h = hh.min(height - y0);
 
-        let sub_src_offset = y0 * src_stride + x0;
+            let sub_src_offset = y0 * src_stride + x0;
 
-        let sub = partition_search_with_config(
-            &src[sub_src_offset..],
-            src_stride,
-            recon,
-            recon_stride,
-            cur_w,
-            cur_h,
-            qp,
-            lambda,
-            max_depth - 1,
-            config,
-            abs_x + x0,
-            abs_y + y0,
-            ref_ctx,
-        );
+            let sub = partition_search_with_config(
+                &src[sub_src_offset..],
+                src_stride,
+                recon,
+                recon_stride,
+                cur_w,
+                cur_h,
+                qp,
+                lambda,
+                max_depth - 1,
+                config,
+                abs_x + x0,
+                abs_y + y0,
+                ref_ctx,
+            );
 
-        split_result.distortion += sub.distortion;
-        split_result.rate += sub.rate;
-        split_result.num_blocks += sub.num_blocks;
-        split_result.decisions.extend(sub.decisions);
-        if let Some(t) = sub.tree {
-            split_children.push(t);
+            split_result.distortion += sub.distortion;
+            split_result.rate += sub.rate;
+            split_result.num_blocks += sub.num_blocks;
+            split_result.decisions.extend(sub.decisions);
+            if let Some(t) = sub.tree {
+                split_children.push(t);
+            }
         }
-    }
-    split_result.tree = Some(PartitionTree::Split {
-        partition_type: PartitionType::Split,
-        width: width as u16,
-        height: height as u16,
-        children: split_children,
-    });
-    split_result.rd_cost = split_result.distortion + ((lambda * split_result.rate as u64) >> 8);
+        split_result.tree = Some(PartitionTree::Split {
+            partition_type: PartitionType::Split,
+            width: width as u16,
+            height: height as u16,
+            children: split_children,
+        });
+        split_result.rd_cost =
+            split_result.distortion + ((lambda * split_result.rate as u64) >> 8);
 
-    // Check if SPLIT is better than current best
-    if split_result.rd_cost < best_result.rd_cost {
-        best_result = split_result;
-        best_snap = save_region(recon, recon_stride, abs_x, abs_y, width, height);
+        // Check if SPLIT is better than current best
+        if split_result.rd_cost < best_result.rd_cost {
+            best_result = split_result;
+            best_snap = save_region(recon, recon_stride, abs_x, abs_y, width, height);
+        }
     }
 
     // Leave the winning candidate's reconstruction in the buffer.
     restore_region(recon, recon_stride, abs_x, abs_y, width, height, &best_snap);
     best_result
+}
+
+/// Encode one chroma plane's block for the 4:2:0 path: UV_DC prediction
+/// from the live chroma reconstruction plane, full-block DCT-DCT transform
+/// and quantization at the SAME qindex tables as luma (the frame header
+/// signals DeltaQUDc = DeltaQUAc = 0, so the decoder dequantizes chroma
+/// with the identical step sizes), reconstructing into the plane.
+///
+/// `src`/`recon` are full (w/2 x h/2) chroma planes with `stride`; the
+/// block lives at chroma coords (cx, cy) with chroma dims (cw, ch).
+/// Neighbor extraction reuses the C-exact edge fill (127/129/left[0]/
+/// above[0] rules) on the chroma plane; DC prediction and the
+/// transform/quant/recon cycle are the same decoder-mirrored paths the
+/// luma side uses. Must be called in coding order — the prediction reads
+/// previously reconstructed chroma neighbors exactly as the decoder will.
+///
+/// Returns (qcoeffs raster cw x ch, eob) for the entropy writer.
+pub fn encode_chroma_block_dc(
+    src: &[u8],
+    recon: &mut [u8],
+    stride: usize,
+    cx: usize,
+    cy: usize,
+    cw: usize,
+    ch: usize,
+    qp: u8,
+) -> (alloc::vec::Vec<i32>, u16) {
+    let (above, left, _top_left, has_above, has_left) =
+        extract_neighbors(recon, stride, cx, cy, cw, ch);
+
+    let mut pred = alloc::vec![0u8; cw * ch];
+    svtav1_dsp::intra_pred::predict_dc(&mut pred, cw, &above, &left, cw, ch, has_above, has_left);
+
+    let enc = crate::encode_loop::encode_block(&src[cy * stride + cx..], stride, &pred, cw, cw, ch, qp);
+
+    for r in 0..ch {
+        let dst = (cy + r) * stride + cx;
+        recon[dst..dst + cw].copy_from_slice(&enc.recon[r * cw..r * cw + cw]);
+    }
+
+    (enc.qcoeffs, enc.eob)
 }
 
 /// Helper: extract neighbors from frame context and encode a single block.
