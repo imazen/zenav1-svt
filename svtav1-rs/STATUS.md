@@ -44,6 +44,8 @@ run:
 | Quantizer step tables | generated from `svt_aom_dc/ac_quant_qtx` |
 | Coefficient writer helpers (level maps, nz/br ctx, eob tokens, txb dims) | fuzzed vs exported C impls |
 | Deblocking kernels (`svt_aom_lpf_{h,v}_{4,6,8,14}_c`) + sharpness limits | bit-exact over all (level, sharpness) x content classes (c_parity_lpf) |
+| CDEF kernels (`svt_cdef_filter_block_c` dst8, `svt_cdef_filter_block_8bit_c`, `svt_aom_cdef_find_dir{,_8bit}_c`) | bit-exact over all 64 signalable strengths x damping 2..=6 x dirs x 8x8/4x4 x frame-border sentinel patterns + randomized wide/torture (c_parity_cdef) |
+| CDEF qp-strength picker (`svt_pick_cdef_from_qp` intra branch) | bit-exact for all 256 qindexes vs C float semantics (c_parity_cdef_pick) |
 
 v4.2.0-rc note: upstream refactored the coder internals (borrowed buffer,
 ptr walk) — output verified still byte-identical; `coeff_br_cdf` dropped its
@@ -73,10 +75,17 @@ forward cos bits, restored inverse stage-range clamps, C-exact intra edge
 fill (127/129/left[0]/above[0] rules), 64-dim coefficient zeroing.
 Deblocking is now SIGNALED and applied decoder-exactly (2026-07-13): key
 frames carry the q-picked loop_filter levels and the recon-parity gate
-holds 216/0 with filtering live; CDEF/restoration stay disabled+unsignaled.
-At real high qindexes the picker returns material levels ([61,61,30,30]
-at qindex 220, [63,63,60,60] at 255) and the filter moves hundreds of
-pixels with parity still exact (examples/deblock_evidence).
+holds 216/0 with filtering live. CDEF likewise (2026-07-13): SH
+enable_cdef=1, FH cdef_params (cdef_bits=0, qp-picked strengths — C's
+use_qp_strength closed form, NOT the RDO search yet), decoder-exact
+av1_cdef_frame pass after deblock on the output copy; recon-parity 216/0
+with CDEF firing on 168/216 streams (2.34M px filtered, 882k changed;
+per-64x64 cdef_idx costs zero EC bits at cdef_bits=0). Restoration stays
+disabled+unsignaled. At real high qindexes deblock returns material
+levels ([61,61,30,30] at qindex 220, [63,63,60,60] at 255;
+examples/deblock_evidence) and CDEF signals y=17/43/63 at qindex
+172/220/255, improving gradient content +0.25/+0.50/+0.31 dB and ringing
+edges +0.16 dB at 255 with parity exact (examples/cdef_evidence).
 The qindex split also exposed + fixed a latent VERT_A/VERT_B bug: their
 children now use the C has_tr_vert_*/has_bl_vert_* availability tables
 (the search emits ext partitions at preset <= 8; passing the generic
@@ -106,7 +115,10 @@ filters, chroma) still ours and next in line:
 2. Filter search + signaling ports — deblocking landed 2026-07-13
    (C-exact kernels + q-based level picker + decoder-exact frame walk,
    signaled in the FH; SSE-based level search and inter-frame levels still
-   pending); CDEF/restoration next
+   pending); CDEF landed 2026-07-13 (C-exact kernels + C's qp-strength
+   fast path at cdef_bits=0 + decoder-exact av1_cdef_frame application;
+   the C-default per-fb RDO search moves to the decision-parity wave);
+   restoration next
 3. Directional-mode edge extension (has_top_right/bottom_left)
 4. Decision-layer parity vs C (partition/mode/TX RDO), then per-preset
    bitstream identity gates (see COVERAGE.md for the config-surface

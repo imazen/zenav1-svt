@@ -124,10 +124,32 @@ under the AV1 reference decoder as of 2026-07-13, C baseline v4.2.0-rc)
    form; sharpness 0, delta_enabled 0) and the encoder applies the
    decoder-exact edge walk to the OUTPUT recon copy only (intra prediction
    keeps reading unfiltered pixels) — recon-parity 216/0 WITH filtering
-   live; kernels differential-fuzzed vs C (tests/c_parity_lpf.rs). Still
-   open: CDEF/restoration (neither signaled nor applied — consistent),
-   inter-frame deblock levels (signaled 0, applied nothing), and the C
-   SSE-based filter-level search (we ship the LPF_PICK_FROM_Q path only).
+   live; kernels differential-fuzzed vs C (tests/c_parity_lpf.rs).
+   **CDEF DONE 2026-07-13**: SH enable_cdef=1; key-frame FH carries spec
+   5.9.19 cdef_params with cdef_bits=0 (per-64x64 cdef_idx is then ZERO
+   arithmetic-coder bits — libaom read_cdef aom_read_literal(r,0) is a
+   no-iteration loop, bitreader.h:161 — so no EC syntax exists for it);
+   kernels are C-exact ports of svt_cdef_filter_block_c /
+   svt_aom_cdef_find_dir_c (svtav1-dsp/src/cdef.rs, differential-fuzzed
+   over every signalable strength x damping x dir x bsize x border
+   pattern, tests/c_parity_cdef.rs); application ports libaom
+   av1_cdef_frame decoder-exactly (deblock -> CDEF on the output copy;
+   pre-CDEF snapshot replaces the linebuf/colbuf machinery — provably
+   identical single-threaded). Recon-parity 216/0 with CDEF FIRING
+   (168/216 streams, 2.34M px filtered, 882k changed).
+   2a. **CDEF strength policy is C's use_qp_strength fast path, NOT the
+       C-default RDO search**: pick_cdef_params_key_frame ports
+       svt_pick_cdef_from_qp (enc_cdef.c:849) intra branch bit-exactly
+       (f32 fits pinned vs C for all 256 qindexes,
+       tests/c_parity_cdef_pick.rs) + damping = 3 + (qindex>>6)
+       (enc_cdef.c:923). C presets default to svt_av1_cdef_search
+       (per-fb RDO over 64 strengths + cdef_bits>0) — that port lands
+       with decision-layer parity (gap 3). Inter frames signal zero
+       strengths (no CDEF), like inter deblock levels.
+   Still open: restoration (neither signaled nor applied — consistent),
+   inter-frame deblock/CDEF (signaled 0, applied nothing), the C
+   SSE-based filter-level search (we ship LPF_PICK_FROM_Q only), and the
+   CDEF RDO search (2a).
 3. **Decision-layer parity** — partitions/modes/qcoeffs still come from our
    own RDO; port C mode decision after pixel-path parity.
 4. **[FIXED 2026-07-13] Intra edge preparation** — directional
