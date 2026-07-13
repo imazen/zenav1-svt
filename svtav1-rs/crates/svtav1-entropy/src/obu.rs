@@ -110,6 +110,31 @@ impl ColorDescription {
     }
 }
 
+/// Sequence-level tool bits the SH signals that vary per encoder preset.
+///
+/// C derives these once per sequence in `svt_aom_sig_deriv_pre_analysis_scs`
+/// (`Source/Lib/Codec/enc_mode_config.c`): `seq_header.filter_intra_level`
+/// (:4017-4025) and `seq_header.enable_restoration` (:4051-4071). The
+/// encoder crate computes them with its C-exact per-preset port
+/// (`seq_tools_for_preset`) and threads them into
+/// [`write_sequence_header_ex`]; the FH writer needs `enable_restoration`
+/// too because it gates the lr_params() walk (spec 5.9.20).
+///
+/// The default is both off — matching every allintra preset >= M7 (M10/M13
+/// were byte-identical to C with these bits hardwired 0) and the mono
+/// convenience wrappers' historical behavior.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SeqTools {
+    /// SH `enable_filter_intra` (spec 5.5.1): gates the per-block
+    /// `use_filter_intra` symbol for eligible intra blocks
+    /// ([`crate::context::write_use_filter_intra`]).
+    pub enable_filter_intra: bool,
+    /// SH `enable_restoration` (spec 5.5.1): gates the FH lr_params()
+    /// fields (spec 5.9.20) — every frame header of the sequence must
+    /// then carry per-plane `lr_type` bits.
+    pub enable_restoration: bool,
+}
+
 /// OBU types as defined in the AV1 spec.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -241,7 +266,8 @@ pub fn write_temporal_delimiter() -> Vec<u8> {
 
 /// Write a reduced-header sequence header OBU (still-picture only).
 ///
-/// Convenience wrapper: explicit sRGB CICP, 30 fps level derivation.
+/// Convenience wrapper: explicit sRGB CICP, 30 fps level derivation,
+/// preset-independent tools off ([`SeqTools::default`]).
 pub fn write_sequence_header(width: u32, height: u32) -> Vec<u8> {
     write_sequence_header_ex(
         width,
@@ -251,12 +277,14 @@ pub fn write_sequence_header(width: u32, height: u32) -> Vec<u8> {
         &ColorDescription::srgb(),
         true,
         30.0,
+        SeqTools::default(),
     )
 }
 
 /// Write a full sequence header OBU that supports inter frames.
 ///
-/// Convenience wrapper: explicit sRGB CICP, 30 fps level derivation.
+/// Convenience wrapper: explicit sRGB CICP, 30 fps level derivation,
+/// preset-independent tools off ([`SeqTools::default`]).
 pub fn write_sequence_header_full(width: u32, height: u32) -> Vec<u8> {
     write_sequence_header_ex(
         width,
@@ -266,6 +294,7 @@ pub fn write_sequence_header_full(width: u32, height: u32) -> Vec<u8> {
         &ColorDescription::srgb(),
         true,
         30.0,
+        SeqTools::default(),
     )
 }
 
@@ -281,6 +310,14 @@ pub fn write_sequence_header_full(width: u32, height: u32) -> Vec<u8> {
 /// `fps` feeds the C-exact `seq_level_idx` auto-derivation
 /// ([`compute_seq_level_idx`]); C uses `scs->frame_rate` =
 /// numerator/denominator of the configured frame rate.
+///
+/// `tools` carries the per-preset SH tool bits (`enable_filter_intra` /
+/// `enable_restoration`) — see [`SeqTools`]. Signaling
+/// `enable_restoration` obligates every FH of the sequence to carry
+/// lr_params(), and `enable_filter_intra` obligates the tile walk to code
+/// `use_filter_intra` for eligible blocks: callers must thread the SAME
+/// bits to [`write_key_frame_header_full`] and the entropy walk.
+#[allow(clippy::too_many_arguments)]
 pub fn write_sequence_header_ex(
     width: u32,
     height: u32,
@@ -289,6 +326,7 @@ pub fn write_sequence_header_ex(
     color: &ColorDescription,
     monochrome: bool,
     fps: f64,
+    tools: SeqTools,
 ) -> Vec<u8> {
     write_sequence_header_inner(
         width,
@@ -298,6 +336,7 @@ pub fn write_sequence_header_ex(
         color,
         monochrome,
         fps,
+        tools,
     )
 }
 
@@ -387,6 +426,7 @@ fn tile_log2(n: u32) -> u32 {
 ///
 /// `monochrome = true`: NumPlanes=1 (luma-only encoder output).
 /// `monochrome = false`: profile-0 4:2:0, NumPlanes=3.
+#[allow(clippy::too_many_arguments)]
 fn write_sequence_header_inner(
     width: u32,
     height: u32,
@@ -395,6 +435,7 @@ fn write_sequence_header_inner(
     color: &ColorDescription,
     monochrome: bool,
     fps: f64,
+    tools: SeqTools,
 ) -> Vec<u8> {
     let mut wb = BitWriter::new();
 
@@ -437,7 +478,12 @@ fn write_sequence_header_inner(
     }
 
     wb.write_bit(false); // use_128x128_superblock = 0
-    wb.write_bit(false); // enable_filter_intra = 0
+    // enable_filter_intra: per-preset in C —
+    // scs->seq_header.filter_intra_level = (allintra level != 0), set by
+    // get_filter_intra_level_allintra (enc_mode_config.c:12679, on for
+    // <= M6) via enc_mode_config.c:4017-4025; written verbatim by
+    // write_sequence_header_obu (entropy_coding.c:2850).
+    wb.write_bit(tools.enable_filter_intra);
     wb.write_bit(false); // enable_intra_edge_filter = 0
 
     if still_picture {
@@ -470,7 +516,13 @@ fn write_sequence_header_inner(
     // for the frame, which a conforming decoder treats as "no CDEF pass"
     // (libaom do_cdef gate, decodeframe.c:5417).
     wb.write_bit(true); // enable_cdef = 1
-    wb.write_bit(false); // enable_restoration = 0
+    // enable_restoration: per-preset in C —
+    // svt_aom_get_enable_restoration_allintra (enc_mode_config.c:3944,
+    // wn>0 || sg>0 at DEFAULT config → on for <= M6) assigned at
+    // enc_mode_config.c:4057; written by write_sequence_header_obu
+    // (entropy_coding.c:2891). When set, every FH carries lr_params()
+    // (spec 5.9.20) — write_key_frame_header_full must get the same bit.
+    wb.write_bit(tools.enable_restoration);
 
     // ---- color_config() ----
     // Spec 5.5.2; decoder authority: libaom av1_read_color_config
@@ -538,7 +590,16 @@ fn write_sequence_header_inner(
 
 /// Write a key frame header for a reduced (still-picture) sequence header.
 pub fn write_key_frame_header(width: u32, height: u32, base_qindex: u8) -> Vec<u8> {
-    write_key_frame_header_full(width, height, base_qindex, true, true, [0; 4], [3, 0, 0])
+    write_key_frame_header_full(
+        width,
+        height,
+        base_qindex,
+        true,
+        true,
+        [0; 4],
+        [3, 0, 0],
+        false,
+    )
 }
 
 /// AV1 spec Section 5.9.2: uncompressed_header() for KEY_FRAME.
@@ -558,6 +619,12 @@ pub fn write_key_frame_header(width: u32, height: u32, base_qindex: u8) -> Vec<u
 /// `aom_read_literal(r, cdef_bits)`). uv_strength is only coded for
 /// NumPlanes = 3 (libaom setup_cdef, decodeframe.c:1799). Same contract as
 /// deblocking: the encoder MUST apply CDEF with exactly these strengths.
+///
+/// `enable_restoration` MUST equal the sequence header's
+/// `enable_restoration` bit: it gates lr_params() (spec 5.9.20). Our
+/// encoder never applies restoration, so all planes signal RESTORE_NONE —
+/// see the lr block in [`key_frame_header_bits`].
+#[allow(clippy::too_many_arguments)]
 pub fn write_key_frame_header_full(
     width: u32,
     height: u32,
@@ -566,6 +633,7 @@ pub fn write_key_frame_header_full(
     monochrome: bool,
     lf_levels: [u8; 4],
     cdef: [u8; 3],
+    enable_restoration: bool,
 ) -> Vec<u8> {
     let mut wb = key_frame_header_bits(
         width,
@@ -575,6 +643,7 @@ pub fn write_key_frame_header_full(
         monochrome,
         lf_levels,
         cdef,
+        enable_restoration,
     );
     // This header is embedded in an OBU_FRAME: the spec requires
     // byte_alignment() (zero bits only) between frame_header and tile_group —
@@ -588,6 +657,7 @@ pub fn write_key_frame_header_full(
 /// BEFORE byte alignment (pre-alignment bit count observable for layout
 /// tests — chroma delta-Q bits are zeros inside a zero run, invisible at
 /// byte granularity).
+#[allow(clippy::too_many_arguments)]
 fn key_frame_header_bits(
     width: u32,
     height: u32,
@@ -596,6 +666,7 @@ fn key_frame_header_bits(
     monochrome: bool,
     lf_levels: [u8; 4],
     cdef: [u8; 3],
+    enable_restoration: bool,
 ) -> BitWriter {
     let mut wb = BitWriter::new();
 
@@ -707,7 +778,27 @@ fn key_frame_header_bits(
     }
 
     // ---- lr_params() ----
-    // enable_restoration=0 → no bits
+    // Spec 5.9.20; C writer: encode_restoration_mode
+    // (entropy_coding.c:2243-2307), whose call is gated on
+    // seq_header.enable_restoration at entropy_coding.c:3652-3653 (the
+    // spec folds the gate into lr_params' AllLossless/allow_intrabc/
+    // enable_restoration early-out; base_q_idx > 0 and
+    // allow_intrabc = 0 are the same standing assumptions as
+    // cdef_params above). Our encoder never runs restoration, so every
+    // plane signals RESTORE_NONE: C writes the bit pair (0,0) per plane
+    // (entropy_coding.c:2263-2266; read as lr_type f(2) with
+    // Remap_Lr_Type[0] = RESTORE_NONE). With all planes none, C's
+    // !all_none / !chroma_none blocks are skipped (spec: UsesLr and
+    // usesChromaLr stay 0) — NO lr_unit_shift / lr_uv_shift bits.
+    // NumPlanes = 1 for mono, 3 for 4:2:0 (C is always 3-plane; the
+    // decoder reads NumPlanes lr_types — libaom decode_restoration_mode,
+    // decodeframe.c).
+    if enable_restoration {
+        let num_planes = if monochrome { 1 } else { 3 };
+        for _ in 0..num_planes {
+            wb.write_bits(0, 2); // lr_type = 0b00 → RESTORE_NONE
+        }
+    }
 
     // ---- read_tx_mode() ----
     // Not CodedLossless (since base_q_idx may be nonzero) →
@@ -1095,10 +1186,75 @@ mod tests {
     fn sh_420_default_byte_identical_to_c() {
         const C_SH_PAYLOAD: [u8; 6] = [0x18, 0x15, 0x7f, 0xfc, 0x20, 0x08];
         let ours =
-            write_sequence_header_ex(64, 64, true, 8, &ColorDescription::default(), false, 30.0);
+            write_sequence_header_ex(
+            64,
+            64,
+            true,
+            8,
+            &ColorDescription::default(),
+            false,
+            30.0,
+            SeqTools::default(),
+        );
         assert_eq!(ours[0], 0b0_0001_0_1_0); // SH OBU header
         assert_eq!(ours[1] as usize, C_SH_PAYLOAD.len()); // leb128 size
         assert_eq!(&ours[2..], &C_SH_PAYLOAD, "SH payload != C bytes");
+    }
+
+    /// The preset<=6 allintra SH must be byte-identical to what C SVT-AV1
+    /// emits at the identity-harness matched config with the M6 tool bits
+    /// on. C golden = the SEQUENCE_HEADER OBU payload captured by
+    /// tools/identity_diff.sh from libSvtAv1Enc v4.2.0-rc at uniform
+    /// 64x64 q40 preset 6 (docs/IDENTITY-STATUS.md "uniform 64x64 q40
+    /// p6": `[18] 15 7f fd 30 08`). vs the p13 payload the only changes
+    /// are bit 31 (enable_filter_intra 0->1: byte 3 0xfc->0xfd) and bit
+    /// 35 (enable_restoration 0->1: byte 4 0x20->0x30) — hand-verified
+    /// against the differ's field walk (@31 / @35).
+    #[test]
+    fn sh_420_p6_tools_byte_identical_to_c() {
+        const C_SH_PAYLOAD_P6: [u8; 6] = [0x18, 0x15, 0x7f, 0xfd, 0x30, 0x08];
+        let ours = write_sequence_header_ex(
+            64,
+            64,
+            true,
+            8,
+            &ColorDescription::default(),
+            false,
+            30.0,
+            SeqTools {
+                enable_filter_intra: true,
+                enable_restoration: true,
+            },
+        );
+        assert_eq!(ours[0], 0b0_0001_0_1_0); // SH OBU header
+        assert_eq!(ours[1] as usize, C_SH_PAYLOAD_P6.len()); // leb128 size
+        assert_eq!(&ours[2..], &C_SH_PAYLOAD_P6, "p6 SH payload != C bytes");
+    }
+
+    /// lr_params() (spec 5.9.20) with every plane RESTORE_NONE adds
+    /// exactly NumPlanes x 2 zero bits after cdef_params and codes no
+    /// unit-size fields (C encode_restoration_mode skips the !all_none /
+    /// !chroma_none blocks, entropy_coding.c:2284-2306). At the identity
+    /// config C's p6 FH decodes to 70 bits where p13 is 64 — the +6 is
+    /// the three lr_type pairs (IDENTITY-STATUS "uniform 64x64 q40 p6").
+    #[test]
+    fn fh_lr_params_all_none_bit_shape() {
+        // 4:2:0: 3 planes -> +6 bits.
+        let base = key_frame_header_bits(64, 64, 160, true, false, [19, 19, 9, 9], [4, 14, 14], false);
+        let lr = key_frame_header_bits(64, 64, 160, true, false, [19, 19, 9, 9], [4, 14, 14], true);
+        assert_eq!(base.bit_offset, 64, "p13-shape FH must stay 64 bits");
+        assert_eq!(lr.bit_offset, 70, "3-plane all-NONE lr_params adds 6 bits");
+        // Mono: 1 plane -> +2 bits.
+        let base_m = key_frame_header_bits(64, 64, 160, true, true, [19, 19, 0, 0], [4, 14, 0], false);
+        let lr_m = key_frame_header_bits(64, 64, 160, true, true, [19, 19, 0, 0], [4, 14, 0], true);
+        assert_eq!(lr_m.bit_offset - base_m.bit_offset, 2);
+        // The inserted lr_type bits are zeros (RESTORE_NONE), positioned
+        // between cdef_params and tx_mode: everything before is equal,
+        // and the 2 trailing fields (tx_mode_select=1, reduced_tx_set=0)
+        // follow the inserted zeros.
+        let b = lr.into_data();
+        let base_b = base.into_data();
+        assert_eq!(b[..7], base_b[..7], "bits before lr_params must match");
     }
 
     /// The level ladder port must reproduce C's set_bitstream_level_tier
@@ -1170,7 +1326,16 @@ mod tests {
         let expected_payload = wb.into_data();
         let expected_obu = write_obu(ObuType::SequenceHeader, &expected_payload);
 
-        let got = write_sequence_header_ex(64, 64, true, 8, &ColorDescription::srgb(), false, 30.0);
+        let got = write_sequence_header_ex(
+            64,
+            64,
+            true,
+            8,
+            &ColorDescription::srgb(),
+            false,
+            30.0,
+            SeqTools::default(),
+        );
         assert_eq!(
             got, expected_obu,
             "420 SH layout drifted from spec derivation"
@@ -1254,7 +1419,7 @@ mod tests {
             full_range: true,
             ..ColorDescription::srgb()
         };
-        let ours = write_sequence_header_ex(64, 64, true, 8, &color, false, 30.0);
+        let ours = write_sequence_header_ex(64, 64, true, 8, &color, false, 30.0, SeqTools::default());
         // Strip OBU header (1 byte) + leb128 size (1 byte for these sizes).
         assert_eq!(ours[0], 0b0_0001_0_1_0);
         let our_payload = &ours[2..];
@@ -1317,7 +1482,7 @@ mod tests {
         }
         let expected = wb.into_data();
 
-        let got = write_key_frame_header_full(64, 64, 30, true, false, [0; 4], [3, 0, 0]);
+        let got = write_key_frame_header_full(64, 64, 30, true, false, [0; 4], [3, 0, 0], false);
         assert_eq!(got, expected, "420 FH layout drifted from spec derivation");
 
         // The 420 FH is exactly the mono FH with two zero bits
@@ -1328,11 +1493,11 @@ mod tests {
         // differing region is no longer all-zero: the tx_mode_select=1
         // bit sits at bit 42 (mono) vs bit 50 (420), so mono byte 5 is
         // 0x20 while 420 has byte 5 = 0x00 and the set bit in byte 6.
-        let bits_420 = key_frame_header_bits(64, 64, 30, true, false, [0; 4], [3, 0, 0]).bit_offset;
-        let bits_mono = key_frame_header_bits(64, 64, 30, true, true, [0; 4], [3, 0, 0]).bit_offset;
+        let bits_420 = key_frame_header_bits(64, 64, 30, true, false, [0; 4], [3, 0, 0], false).bit_offset;
+        let bits_mono = key_frame_header_bits(64, 64, 30, true, true, [0; 4], [3, 0, 0], false).bit_offset;
         assert_eq!(bits_mono, 44, "mono reduced-SH FH is 44 bits pre-align");
         assert_eq!(bits_420, 52, "420 adds DeltaQUDc + DeltaQUAc + uv cdef");
-        let mono = write_key_frame_header_full(64, 64, 30, true, true, [0; 4], [3, 0, 0]);
+        let mono = write_key_frame_header_full(64, 64, 30, true, true, [0; 4], [3, 0, 0], false);
         assert_eq!(got.len(), 7);
         assert_eq!(mono.len(), 6);
         assert_eq!(&got[..5], &mono[..5], "shared prefix through cdef");
@@ -1348,20 +1513,20 @@ mod tests {
     #[test]
     fn fh_loop_filter_level_bit_layout() {
         // Mono: nonzero luma levels add no chroma bits.
-        let zero = key_frame_header_bits(64, 64, 30, true, true, [0; 4], [3, 0, 0]).bit_offset;
+        let zero = key_frame_header_bits(64, 64, 30, true, true, [0; 4], [3, 0, 0], false).bit_offset;
         let mono =
-            key_frame_header_bits(64, 64, 30, true, true, [2, 2, 1, 1], [3, 0, 0]).bit_offset;
+            key_frame_header_bits(64, 64, 30, true, true, [2, 2, 1, 1], [3, 0, 0], false).bit_offset;
         assert_eq!(mono, zero, "mono FH never codes chroma levels");
 
         // 420: +12 bits (two 6-bit chroma levels) when l0||l1.
-        let z420 = key_frame_header_bits(64, 64, 30, true, false, [0; 4], [3, 0, 0]).bit_offset;
+        let z420 = key_frame_header_bits(64, 64, 30, true, false, [0; 4], [3, 0, 0], false).bit_offset;
         let c420 =
-            key_frame_header_bits(64, 64, 30, true, false, [2, 2, 1, 1], [3, 0, 0]).bit_offset;
+            key_frame_header_bits(64, 64, 30, true, false, [2, 2, 1, 1], [3, 0, 0], false).bit_offset;
         assert_eq!(c420, z420 + 12, "420 FH codes U/V levels iff l0||l1");
         // Zero luma levels suppress the chroma level fields even if
         // uv levels are nonzero (the decoder cannot read them).
         let z420uv =
-            key_frame_header_bits(64, 64, 30, true, false, [0, 0, 1, 1], [3, 0, 0]).bit_offset;
+            key_frame_header_bits(64, 64, 30, true, false, [0, 0, 1, 1], [3, 0, 0], false).bit_offset;
         assert_eq!(z420uv, z420);
 
         // Hand-derive the mono field bytes with levels [3,3,_,_]: identical
@@ -1390,7 +1555,7 @@ mod tests {
             wb.write_bits(0, 8 - remainder);
         }
         assert_eq!(
-            write_key_frame_header_full(64, 64, 30, true, true, [3, 3, 0, 0], [3, 0, 0]),
+            write_key_frame_header_full(64, 64, 30, true, true, [3, 3, 0, 0], [3, 0, 0], false),
             wb.into_data(),
             "mono FH with levels drifted from spec derivation"
         );
@@ -1402,11 +1567,11 @@ mod tests {
     /// setup_cdef reads uv iff num_planes > 1).
     #[test]
     fn fh_cdef_params_bit_layout() {
-        let base = key_frame_header_bits(64, 64, 220, true, true, [0; 4], [3, 0, 0]).bit_offset;
+        let base = key_frame_header_bits(64, 64, 220, true, true, [0; 4], [3, 0, 0], false).bit_offset;
         // Strength/damping values change bits, never the field count.
-        let hot = key_frame_header_bits(64, 64, 220, true, true, [0; 4], [6, 43, 7]).bit_offset;
+        let hot = key_frame_header_bits(64, 64, 220, true, true, [0; 4], [6, 43, 7], false).bit_offset;
         assert_eq!(base, hot, "mono cdef fields are fixed-width");
-        let b420 = key_frame_header_bits(64, 64, 220, true, false, [0; 4], [6, 43, 7]).bit_offset;
+        let b420 = key_frame_header_bits(64, 64, 220, true, false, [0; 4], [6, 43, 7], false).bit_offset;
         assert_eq!(
             b420,
             hot + 2 + 6,
@@ -1438,7 +1603,7 @@ mod tests {
             wb.write_bits(0, 8 - remainder);
         }
         assert_eq!(
-            write_key_frame_header_full(64, 64, 220, true, true, [0; 4], [6, 43, 0]),
+            write_key_frame_header_full(64, 64, 220, true, true, [0; 4], [6, 43, 0], false),
             wb.into_data(),
             "mono FH cdef_params drifted from spec derivation"
         );
