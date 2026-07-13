@@ -1062,12 +1062,19 @@ fn uleb128_encoding_spec() {
 
 #[test]
 fn deblock_flat_block_unchanged() {
-    // Spec 08: "If both sides of an edge have similar values, no filtering"
-    // A flat block should pass through the deblocking filter unchanged.
+    // Spec 08 / AV1 7.14: a flat region passes through every deblocking
+    // kernel unchanged (filter4 computes a zero delta; the flat-branch
+    // weighted averages of equal samples reproduce the sample).
     let mut pixels = vec![128u8; 16 * 16];
     let original = pixels.clone();
 
-    svtav1_dsp::loop_filter::deblock_vert(&mut pixels, 16, 10, 4, 8, 16);
+    for level in [1u8, 8, 32, 63] {
+        let t = svtav1_dsp::loop_filter::lf_thresholds(level, 0);
+        svtav1_dsp::loop_filter::lpf_vertical_4(&mut pixels, 2 * 16 + 8, 16, t);
+        svtav1_dsp::loop_filter::lpf_vertical_14(&mut pixels, 2 * 16 + 8, 16, t);
+        svtav1_dsp::loop_filter::lpf_horizontal_4(&mut pixels, 8 * 16 + 3, 16, t);
+        svtav1_dsp::loop_filter::lpf_horizontal_14(&mut pixels, 8 * 16 + 3, 16, t);
+    }
 
     assert_eq!(
         pixels, original,
