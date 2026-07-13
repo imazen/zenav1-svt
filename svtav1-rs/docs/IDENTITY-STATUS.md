@@ -645,19 +645,21 @@ identical, no uniform regressions, divergences strictly later):
 Every PARTITION symbol in these streams now matches C. The two remaining
 subsystems for full gradient-64 p13/p10 identity, in dependency order:
 
-1. **Leaf mode parity (light-PD1 y_mode)** — owns q20 op 4 + q40 op 3.
-   C decides leaf modes in light-PD1: `generate_md_stage_0_cand_light_pd1`
-   (mode_decision.c:3583; intra candidate set from `set_intra_ctrls(pcs,
-   ctx, 1, 2)` at I-slice eff-M9, enc_mode_config.c:9307-9317 — NOT
-   DC-only, C picked DC by cost), MDS0 fast loop
-   (`md_stage_0_light_pd1`, SAD/fast-rate based candidate reduction),
-   then `md_stage_3_light_pd1` -> `full_loop_core_light_pd1`
-   (product_coding_loop.c:9032 area; mds_do_rdoq=true,
-   mds_fast_coeff_est_level=1, spatial SSE, real `svt_av1_cost_coeffs_txb`
-   coefficient rate, intra fast rate via `svt_aom_intra_fast_cost`).
-   The whole light-PD1 mode search must be ported for op-3/op-4 parity —
-   there is no smaller C-exact piece (the candidate ordering, MDS0
-   pruning, fast rate, and full cost all bind the pick).
+1. **[FIXED 2026-07-13, commit b7f362af4 — and the diagnosis below was
+   WRONG] Leaf mode parity (y_mode)** — owned q20 op 4 + q40 op 3.
+   The light-PD1 attribution was an unverified inference: **allintra
+   never takes light-PD1** (`pcs->pic_lpd1_lvl = 0` unconditionally,
+   `svt_aom_sig_deriv_mode_decision_config_allintra`,
+   enc_mode_config.c:15250, so `pd1_level = REGULAR_PD1` and the
+   enc-dec dispatch at enc_dec_process.c:3311 selects
+   `svt_aom_sig_deriv_enc_dec_allintra`). See the 2026-07-13 (later)
+   section at the bottom for the verified mechanism — the pick is bound
+   by the CANDIDATE SET (`is_dc_only_safe`), not by any cost.
+   <i>Original (wrong) text kept for the record:</i>
+   `generate_md_stage_0_cand_light_pd1` / `md_stage_0_light_pd1` /
+   `md_stage_3_light_pd1` -> `full_loop_core_light_pd1` cost-chain port
+   claimed required; "there is no smaller C-exact piece" — there was:
+   the variance gate.
 2. **Final coefficient parity (light-PD1 coding quantizer)** — owns
    q55 op 8 (and everything after mode parity elsewhere). Our leaf coder
    quantizes with a homegrown dead-zone rounding
@@ -682,3 +684,106 @@ the LVL_5/6 shortcut) and nsq geometry level 3 with a real nsq search
 has nsq GEOMETRY enabled with min 8x8 but search level 0; the M6
 divergence is depth-set + PD0-cost differences, enc_mode_config.c:12598
 `set_pic_pd0_lvl_allintra` M2..M8 branch).
+
+## 2026-07-13 (wave2, later still): leaf y_mode CLOSED — the C pick is a candidate-set fact, not a cost fact (commit b7f362af4)
+
+Source-verified + instrumented-C-proven correction of the section above,
+then the fix. All C cites re-verified against the tree at v4.2.0-rc with
+every `EbDebugMacros.h` feature macro = 1.
+
+### The real C decision path at allintra effective-M9 (PD1)
+
+- **Light-PD1 is never used for allintra**: the allintra MD-config
+  function sets `pcs->pic_lpd1_lvl = 0` unconditionally
+  (enc_mode_config.c:15250), `set_lpd1_ctrls(ctx, 0)` leaves
+  `pd1_level = REGULAR_PD1` (enc_mode_config.c:7337,9133), and the PD1
+  dispatch (enc_dec_process.c:3301-3312) therefore runs
+  `svt_aom_sig_deriv_enc_dec_allintra` (the live `CLN_PD0` variant,
+  enc_mode_config.c:11294) + the regular `md_encode_block`
+  (product_coding_loop.c:9804).
+- PD1 intra controls: `pcs->intra_level = 8` at eff-M9
+  (`svt_aom_get_intra_mode_levels_allintra`, enc_mode_config.c:6907:
+  1/M4, 2/M5, 6/M6, 7/M7-M8, **8 above**), applied via
+  `set_intra_ctrls(pcs, ctx, 8, 0)` (enc_mode_config.c:8449): intra
+  mode end SMOOTH_PRED, `angular_pred_level = 4` (only V/H survive the
+  D45..D67 skip mask, no angle deltas), `prune_using_best_mode = 1`,
+  **`prune_using_edge_info = 1`** — the flag that arms the gate below.
+  Filter-intra level 0, palette level 0 (even sc_class5 is 0 above M7,
+  enc_mode_config.c:3488), intrabc off, cand_elimination off.
+- **The gate: `is_dc_only_safe` (mode_decision.c:845)**, called from
+  `generate_md_stage_0_cand` (mode_decision.c:3633). Reads the SAME
+  85-entry per-SB variance map the PD0 port already computes
+  (`pcs->ppcs->variance[sb_index]` = `compute_b64_variance`;
+  `svt_aom_get_blk_var_map` product_coding_loop.c:8368 = pd0.rs
+  `blk_var_map`). For PART_N squares in a 64x64 SB: 8x8 ->
+  `blk_var < 2000`; >=16x16 -> `blk_var < 2000 && (max-min of the four
+  sub-block variances) < 4000`; 4x4/SB-128/non-PART_N -> never. When it
+  fires, `inject_intra_candidates` runs with `dc_cand_only_flag = 1`:
+  the candidate list is EXACTLY {DC_PRED} and **no cost compare of any
+  kind decides the mode**.
+
+Instrumented proof (env-gated `SVT_MDBG2` prints in a scratch copy of
+the C tree, never in-repo), gradient-64:
+
+| cell | leaves | per-leaf capture |
+|------|--------|------------------|
+| q40 | 4x 32x32 | `dc_only=1 safe=1 ... ncand=1 modes: 0/0` -> winner mode=0 (all 4) |
+| q20 | 16x 16x16 | same, all 16 |
+| q55 | 1x 64x64 | `dc_only=0 safe=0` (var 5425 >= 2000) -> `ncand=4 modes: 0/0 1/0 2/0 9/0` -> winner DC by cost, `mds3_cnt=1` |
+
+Variance check against the pinned map (`C_GRADIENT64_VARS`): 32x32 vars
+1343/1353/1733/1893 (< 2000), spreads 437/563/128/64 (< 4000); all 16x16
+vars 336..901, spreads <= 1728 — every q40/q20 leaf fires the gate.
+
+### The fix (smallest C-exact slice)
+
+`pd0::is_dc_only_safe` is the verbatim variance half (the C early exits
+are the fixed-tree call-site context), threaded as `dc_only` through
+`encode_fixed_tree` -> `encode_with_neighbors` -> `encode_single_block`,
+which then restricts the intra candidate slice to `[..1]` (= DC, first
+in `generate_intra_candidates`) exactly like C's dc_cand_only injection.
+Pipeline passes the per-SB variance map + SB origin. Homegrown-search
+paths (presets <= 8, inter, partial SBs) are untouched. Pinned test
+`dc_only_safe_matches_c` reproduces the instrumented capture.
+
+### Differ deltas (p13 == p10 verified on every moved cell)
+
+| cell | first divergence | now diverges on |
+|------|------------------|-----------------|
+| g64 q40 | op 3 -> **op 8** | eob_extra/coeff bits (same CDF f=22212, same rng; value differs) |
+| g64 q20 | op 4 -> **op 21** | ONE quantized level in coeff_base (first 3 coeff_base symbols match) |
+| g64 q55 | op 8 (unchanged) | coeff bits |
+| g128 q20 | FH -> **tile op 10** | eob_extra low bits (FH now byte-identical — leaf modes DC-match at 128 too) |
+
+Matrix: still **18/36** (`benchmarks/identity_matrix_2026-07-13.tsv`
+regenerated; all uniform cells IDENTICAL, divergences strictly later).
+Gates re-run green: recon-parity 216/0, decode conformance 525/0 mono +
+700/0 chroma, `cargo test --workspace` all green (no test-input
+changes).
+
+### Remaining subsystems for gradient p13/p10 identity (updated)
+
+1. **Final coefficient parity (the coding quantizer) — now owns EVERY
+   remaining gradient p13/p10 tile divergence** (g64 q40 op8 / q20 op21 /
+   q55 op8, g128 q20 op10). Correction to the superseded item 2 above:
+   the C path is the REGULAR-PD1 MDS3 quant, not light-PD1 —
+   `svt_aom_quantize_inv_quantize` with `quants_8bit` (zbin/round
+   84-80/48; pd0.rs `build_quant_entry`/`quantize_b` are the C-exact
+   primitives) and RDOQ per `pcs->rdoq_level` from the allintra config
+   (enc_mode_config.c:14931: 0 at coeff_lvl HIGH, 3 at NORMAL, else 2 —
+   instrument `pcs->coeff_lvl` for these cells before assuming which
+   RDOQ level binds), plus the coeff-shaving/eob path of
+   `md_stage_3`/`full_loop_core`.
+2. **Non-DC-only leaf cost chase** (latent, currently non-binding at
+   the tracked cells): where the gate does NOT fire (e.g. the q55
+   64x64), C runs the 4-candidate {DC, V, H, SMOOTH} funnel — MDS0
+   Hadamard SATD fast cost (`mds0_use_hadamard_sb=true`, mds0_level 0)
+   -> NIC counts (nic_level 11 at eff-M9) -> MDS3 full loop (spatial
+   SSE level 3, `svt_av1_cost_coeffs_txb` rate, `svt_aom_intra_fast_cost`
+   mode rate). Our homegrown loop happens to agree (DC) at q55; any
+   future cell where it disagrees lands here.
+3. **g128 q40/q55 FH `cdef_uv_pri_strength`** — unchanged, the CDEF
+   search gap (2a in the main list).
+
+Preset-6 gradient cells: unchanged, see the note above (different PD0
+architecture at M6).
