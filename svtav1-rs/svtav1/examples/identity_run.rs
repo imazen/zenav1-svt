@@ -10,14 +10,130 @@
 //! library emits (`W CDF ...` / `W BOOL ...` lines).
 //!
 //! Usage: identity_run <content> <width> <height> <cli_qp 0..63> <preset> <out_prefix>
-//!   content: uniform  — y = 128 everywhere
-//!            gradient — y[r][c] = ((r*255/h) ^ ((c*3) & 0x3f)), spec'd by
-//!                       the identity campaign brief (trace_one's gradient)
-//!   u = v = 128 for both.
-//! Writes <out_prefix>.yuv and <out_prefix>.obu.
+//!   content: uniform       — y = 128 everywhere
+//!            gradient      — y[r][c] = ((r*255/h) ^ ((c*3) & 0x3f)), spec'd by
+//!                            the identity campaign brief (trace_one's gradient)
+//!            file:<a.png>  — decode the PNG, edge-replicate to <width>x<height>
+//!                            if smaller, convert to I420 with the fixed
+//!                            deterministic BT.601 limited-range transform below
+//!                            (real photographic content — CID22, imazen26).
+//!   u = v = 128 for uniform/gradient; real chroma for file: content.
+//!
+//! Writes <out_prefix>.yuv and <out_prefix>.obu. The critical harness
+//! invariant is that this ONE .yuv is the exact byte stream the C driver
+//! encodes too, so the RGB->YUV choice need not match any spec — only be
+//! fixed and deterministic (both encoders see identical YUV).
 
 use svtav1_encoder::pipeline::EncodePipeline;
 use svtav1_encoder::rate_control::{RcConfig, RcMode};
+
+fn clip8(x: i32) -> u8 {
+    x.clamp(0, 255) as u8
+}
+
+/// Decode a PNG to tightly-packed 8-bit RGB (3 bytes/pixel), returning
+/// (rgb, width, height). Palette/16-bit/low-bit-gray inputs are normalised
+/// via EXPAND + STRIP_16; grayscale and alpha variants are folded to RGB.
+fn decode_png_rgb(path: &str) -> (Vec<u8>, usize, usize) {
+    let file = std::fs::File::open(path).unwrap_or_else(|e| panic!("open {path}: {e}"));
+    let mut dec = png::Decoder::new(std::io::BufReader::new(file));
+    // EXPAND: palette -> RGB(A), sub-8-bit grayscale -> 8-bit. STRIP_16:
+    // 16-bit -> 8-bit. After both, the output is always 8-bit in one of
+    // {Grayscale, GrayscaleAlpha, Rgb, Rgba}.
+    dec.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = dec.read_info().expect("png read_info");
+    let mut buf = vec![0u8; reader.output_buffer_size().expect("png output_buffer_size")];
+    let info = reader.next_frame(&mut buf).expect("png next_frame");
+    let (w, h) = (info.width as usize, info.height as usize);
+    let buf = &buf[..info.buffer_size()];
+    let rgb = match info.color_type {
+        png::ColorType::Rgb => buf.to_vec(),
+        png::ColorType::Rgba => {
+            let mut o = Vec::with_capacity(w * h * 3);
+            for px in buf.chunks_exact(4) {
+                o.extend_from_slice(&px[..3]);
+            }
+            o
+        }
+        png::ColorType::Grayscale => {
+            let mut o = Vec::with_capacity(w * h * 3);
+            for &g in buf {
+                o.extend_from_slice(&[g, g, g]);
+            }
+            o
+        }
+        png::ColorType::GrayscaleAlpha => {
+            let mut o = Vec::with_capacity(w * h * 3);
+            for px in buf.chunks_exact(2) {
+                o.extend_from_slice(&[px[0], px[0], px[0]]);
+            }
+            o
+        }
+        other => panic!("unsupported PNG color type {other:?} after EXPAND/STRIP_16"),
+    };
+    assert_eq!(rgb.len(), w * h * 3, "rgb length mismatch");
+    (rgb, w, h)
+}
+
+/// Edge-replicate an RGB buffer from (pw,ph) up to (w,h) — the same
+/// bottom/right pixel-extend padding decode_conformance / AvifEncoder use to
+/// reach 64-aligned encode dims. No-op when the image already fills (w,h).
+fn pad_rgb_replicate(rgb: &[u8], pw: usize, ph: usize, w: usize, h: usize) -> Vec<u8> {
+    if pw == w && ph == h {
+        return rgb.to_vec();
+    }
+    let mut out = vec![0u8; w * h * 3];
+    for r in 0..h {
+        let sr = r.min(ph - 1);
+        for c in 0..w {
+            let sc = c.min(pw - 1);
+            let si = (sr * pw + sc) * 3;
+            let di = (r * w + c) * 3;
+            out[di..di + 3].copy_from_slice(&rgb[si..si + 3]);
+        }
+    }
+    out
+}
+
+/// Fixed, deterministic BT.601 limited-range ("studio swing") integer
+/// RGB->I420. Y is per-pixel; chroma averages each 2x2 RGB block (libyuv's
+/// ARGBToI420 shape) before converting, so U/V are (w/2)x(h/2). This choice
+/// is arbitrary but FIXED: both encoders consume the identical .yuv this
+/// writes, so the comparison stays apples-to-apples regardless of the exact
+/// coefficients. (w,h) must be even.
+fn rgb_to_i420_bt601(rgb: &[u8], w: usize, h: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    assert!(w % 2 == 0 && h % 2 == 0, "I420 needs even dims");
+    let mut y = vec![0u8; w * h];
+    for r in 0..h {
+        for c in 0..w {
+            let i = (r * w + c) * 3;
+            let (rr, gg, bb) = (rgb[i] as i32, rgb[i + 1] as i32, rgb[i + 2] as i32);
+            y[r * w + c] = clip8(((66 * rr + 129 * gg + 25 * bb + 128) >> 8) + 16);
+        }
+    }
+    let (cw, ch) = (w / 2, h / 2);
+    let mut u = vec![0u8; cw * ch];
+    let mut v = vec![0u8; cw * ch];
+    for cr in 0..ch {
+        for cc in 0..cw {
+            let mut sr = 0i32;
+            let mut sg = 0i32;
+            let mut sb = 0i32;
+            for dr in 0..2 {
+                for dc in 0..2 {
+                    let i = ((cr * 2 + dr) * w + (cc * 2 + dc)) * 3;
+                    sr += rgb[i] as i32;
+                    sg += rgb[i + 1] as i32;
+                    sb += rgb[i + 2] as i32;
+                }
+            }
+            let (rr, gg, bb) = ((sr + 2) >> 2, (sg + 2) >> 2, (sb + 2) >> 2);
+            u[cr * cw + cc] = clip8(((-38 * rr - 74 * gg + 112 * bb + 128) >> 8) + 128);
+            v[cr * cw + cc] = clip8(((112 * rr - 94 * gg - 18 * bb + 128) >> 8) + 128);
+        }
+    }
+    (y, u, v)
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -39,18 +155,32 @@ fn main() {
         "identity harness requires 64-aligned dims (partial-SB support pending, CLAUDE.md gap 5)"
     );
 
-    let mut y = vec![0u8; w * h];
-    for r in 0..h {
-        for c in 0..w {
-            y[r * w + c] = match content {
-                "uniform" => 128,
-                "gradient" => (((r * 255) / h) as u8) ^ (((c * 3) & 0x3f) as u8),
-                other => panic!("unknown content {other:?} (use uniform|gradient)"),
-            };
+    let (y, u, v) = if let Some(path) = content.strip_prefix("file:") {
+        // Real photographic content. The caller (real_image_matrix.sh) passes
+        // (w,h) = the image dims rounded up to a multiple of 64; edge-replicate
+        // into that box (a no-op for natively 64-aligned corpora like CID22-512).
+        let (rgb, pw, ph) = decode_png_rgb(path);
+        assert!(
+            w >= pw && h >= ph,
+            "requested {w}x{h} is smaller than image {pw}x{ph} — caller must round up to >= image"
+        );
+        let rgb = pad_rgb_replicate(&rgb, pw, ph, w, h);
+        rgb_to_i420_bt601(&rgb, w, h)
+    } else {
+        let mut y = vec![0u8; w * h];
+        for r in 0..h {
+            for c in 0..w {
+                y[r * w + c] = match content {
+                    "uniform" => 128,
+                    "gradient" => (((r * 255) / h) as u8) ^ (((c * 3) & 0x3f) as u8),
+                    other => panic!("unknown content {other:?} (use uniform|gradient|file:<png>)"),
+                };
+            }
         }
-    }
-    let u = vec![128u8; (w / 2) * (h / 2)];
-    let v = vec![128u8; (w / 2) * (h / 2)];
+        let u = vec![128u8; (w / 2) * (h / 2)];
+        let v = vec![128u8; (w / 2) * (h / 2)];
+        (y, u, v)
+    };
 
     // Raw I420 input for the C driver: identical bytes on both sides.
     let mut yuv = Vec::with_capacity(w * h * 3 / 2);

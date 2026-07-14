@@ -49,3 +49,9 @@ doc:
 # Bitstream-identity harness vs C SVT-AV1 (report: docs/IDENTITY-STATUS.md)
 identity w="64" h="64" qp="40" preset="13" content="uniform":
     tools/identity_diff.sh {{w}} {{h}} {{qp}} {{preset}} {{content}}
+
+# Real-image identity matrix vs C SVT-AV1 on CID22-512 photos (report:
+# benchmarks/real_image_identity_<suffix>.tsv). Env-overridable: RIM_CORPUS,
+# RIM_IMAGES, RIM_PRESETS, RIM_QPS, RIM_CELL_TIMEOUT (see the script header).
+real-identity suffix="latest":
+    tools/real_image_matrix.sh {{suffix}}
