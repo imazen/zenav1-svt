@@ -902,3 +902,71 @@ pub fn write_refsubexpfin_bytes(n: u16, k: u16, r: u16, v: u16) -> Vec<u8> {
 pub fn count_refsubexpfin(n: u16, k: u16, r: u16, v: u16) -> i32 {
     unsafe { ref_count_refsubexpfin(n, k, r, v) }
 }
+
+// ---------------------------------------------------------------------------
+// MD fast-loop kernels (M6 leaf funnel): filter-intra predictor, aom
+// Hadamard/SATD. All global `T` symbols in the non-LTO archive.
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn svt_av1_filter_intra_predictor_c(
+        dst: *mut u8,
+        stride: isize,
+        tx_size: u32,
+        above: *const u8,
+        left: *const u8,
+        mode: i32,
+    );
+    fn svt_aom_hadamard_8x8_c(src_diff: *const i16, src_stride: isize, coeff: *mut i32);
+    fn svt_aom_hadamard_16x16_c(src_diff: *const i16, src_stride: isize, coeff: *mut i32);
+    fn svt_aom_hadamard_32x32_c(src_diff: *const i16, src_stride: isize, coeff: *mut i32);
+    fn svt_aom_satd_c(coeff: *const i32, length: i32) -> i32;
+}
+
+/// Reference `svt_av1_filter_intra_predictor_c`.
+///
+/// `above_with_corner[0]` is the top-left corner sample; the block's above
+/// row starts at `above_with_corner[1]` (C reads `&above[-1]` through
+/// `above[bw-1]`). `left` holds `bh` samples. `c_tx_size` is the C TxSize
+/// index of the (square, <=32x32) transform.
+pub fn filter_intra_predictor(
+    dst: &mut [u8],
+    stride: usize,
+    c_tx_size: usize,
+    above_with_corner: &[u8],
+    left: &[u8],
+    mode: u8,
+) {
+    unsafe {
+        svt_av1_filter_intra_predictor_c(
+            dst.as_mut_ptr(),
+            stride as isize,
+            c_tx_size as u32,
+            above_with_corner.as_ptr().add(1),
+            left.as_ptr(),
+            mode as i32,
+        );
+    }
+}
+
+/// Reference `svt_aom_hadamard_{8x8,16x16,32x32}_c` (dim = 8, 16 or 32).
+pub fn hadamard(dim: usize, src_diff: &[i16], src_stride: usize, coeff: &mut [i32]) {
+    assert!(coeff.len() >= dim * dim);
+    unsafe {
+        match dim {
+            8 => svt_aom_hadamard_8x8_c(src_diff.as_ptr(), src_stride as isize, coeff.as_mut_ptr()),
+            16 => {
+                svt_aom_hadamard_16x16_c(src_diff.as_ptr(), src_stride as isize, coeff.as_mut_ptr())
+            }
+            32 => {
+                svt_aom_hadamard_32x32_c(src_diff.as_ptr(), src_stride as isize, coeff.as_mut_ptr())
+            }
+            _ => panic!("unsupported hadamard dim {dim}"),
+        }
+    }
+}
+
+/// Reference `svt_aom_satd_c`.
+pub fn satd(coeff: &[i32]) -> i32 {
+    unsafe { svt_aom_satd_c(coeff.as_ptr(), coeff.len() as i32) }
+}
