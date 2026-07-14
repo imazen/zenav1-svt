@@ -499,8 +499,17 @@ impl EncodePipeline {
         // the per-block use_filter_intra symbol exists exactly when the
         // SH signals the tool, so all three consumers MUST see one value.
         let is_single_frame = self.gop.intra_period <= 1;
-        let seq_tools =
-            crate::speed_config::seq_tools_for_preset(self.speed_config.preset, is_single_frame);
+        let seq_tools = {
+            let mut t =
+                crate::speed_config::seq_tools_for_preset(self.speed_config.preset, is_single_frame);
+            // enable_intra_edge_filter's C-parity surface is still/420
+            // (the C matched config). The mono extension keeps 0: C cannot
+            // emit mono, and the mono leaf coder predicts without edge
+            // filtering — signaling 0 keeps our recon decoder-exact on
+            // that self-consistent surface.
+            t.enable_intra_edge_filter &= self.chroma_420;
+            t
+        };
 
         // The entropy walk as a re-runnable pass: decisions are already
         // fixed (trees + luma recon from MD; chroma decisions are pure
@@ -2260,6 +2269,17 @@ fn encode_tile_rows(
             // 4:2:0 policy: min luma block dim 8, so every coded block is a
             // chroma reference with chroma dims exactly (w/2, h/2) >= 4.
             part_config.min_block_dim = 8;
+        }
+        // Preset 5 signals SH enable_intra_edge_filter=1 on the still/420
+        // surface (C-exact — the ONLY allintra preset with the bit). A
+        // conforming decoder then edge-filters/upsamples directional
+        // predictions whose p_angle != 90/180; the homegrown leaf coder
+        // predicts UNFILTERED, so until the M5 funnel (which will predict
+        // with the C edge filter) routes this preset, D45..D203 candidates
+        // must not be emitted — V (exactly 90) and H (exactly 180) are
+        // skipped by the decoder's filter and stay recon-exact.
+        if speed_config.preset == 5 && chroma_420 && ref_frame_data.is_none() {
+            part_config.enable_directional = false;
         }
         // Frame-level C-exact coding quantizer (still path — quant.rs).
         part_config.c_quant = c_quant.clone();
