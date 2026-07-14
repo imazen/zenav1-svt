@@ -278,6 +278,18 @@ pub struct FunnelCfg {
     /// (product_coding_loop.c:7561/:7436; skip_ind_uv_if_only_dc = 1).
     /// false = chroma_level 5 (CHROMA_MODE_1, uv follows luma — M6+).
     pub ind_uv_mds3: bool,
+    /// chroma_level 1/2 (M0/M1): `search_best_independent_uv_mode`
+    /// (product_coding_loop.c:7778, `ind_uv_last_mds` 0/1). A FULL
+    /// independent uv search — inject ALL uv modes, fast-loop prune by
+    /// residual variance to the `uv_nic`-scaled nfl (UV_DC always forced),
+    /// then pick the best uv per luma mode by RD. Differs from the mds3
+    /// variant (which only tests the survivors' uv-follows-luma modes):
+    /// on flat chroma UV_PAETH is injected last and pruned, so a
+    /// luma-PAETH block resolves to UV_DC (C M1 codes UV_DC where M2, the
+    /// mds3 variant, codes UV_PAETH). `Some(uv_nic_scaling_num)` = 16 at
+    /// chroma_level 1 (M0), 8 at chroma_level 2 (M1); mutually exclusive
+    /// with `ind_uv_mds3`. `None` = not the independent variant.
+    pub ind_uv_independent: Option<u16>,
     /// SH `enable_intra_edge_filter` (M5 still/420 only): directional
     /// predictions run the corner/edge filters + upsampling
     /// (enc_intra_prediction.c:181-215).
@@ -317,9 +329,51 @@ impl FunnelCfg {
             txt_d1_off: 3,
             txt_d2_off: 3,
             ind_uv_mds3: false,
+            ind_uv_independent: None,
             edge_filter: false,
         };
         match preset {
+            // M1 (still/420): the svt_aom_get_*_allintra rows for enc_mode=1
+            // give the SAME funnel-relevant config as M2 — nic_level 3
+            // (svt_aom_get_nic_level_allintra :5994 `<= ENC_M2` -> 3),
+            // txt_level 2, txs_level 2, filter_intra level 2 (fi_max 0 =
+            // FILTER_DC only, get_filter_intra_level_allintra :12683
+            // `<= ENC_M6` -> 2), intra_level 1 (mode_end PAETH, ang 1) —
+            // EXCEPT chroma_level 2 (svt_aom_get_chroma_level_allintra
+            // :12233 `<= ENC_M1` -> 2: ind_uv_last_mds=1, uv_nic 8,
+            // skip_ind_uv_if_only_dc=0; set_chroma_controls case 2, :5757)
+            // vs M2's chroma_level 4 (ind_uv_last_mds=2). This IS binding
+            // even on flat chroma: chroma_level 2 runs
+            // `search_best_independent_uv_mode` (a full independent uv
+            // search whose distortion-sorted prune drops UV_PAETH), so a
+            // luma-PAETH block resolves to UV_DC — whereas chroma_level 4's
+            // `search_best_mds3_uv_mode` tests the survivors' uv-follows-
+            // luma modes and picks UV_PAETH (cheap in the luma-conditioned
+            // uv CDF). Differ-verified on g128 q55: C M1 codes UV_DC where
+            // C M2 codes UV_PAETH. The other M1-vs-M2 deltas live outside
+            // FunnelCfg — nsq_search level 10 vs 14 (NsqCfg::for_preset_qp)
+            // and PD0_LVL_0 vs LVL_1 (the PD0 pick).
+            1 => FunnelCfg {
+                mode_end: 12,
+                angular_level: 1,
+                nic_num: (12, 12, 12),
+                mds1_rank_factor: 0,
+                mds2_cand_base_th: 30,
+                mds2_rank_factor: 0,
+                mds2_rel_dev_th: 0,
+                mds3_cand_base_th: 25,
+                txt_group_lt16: 6,
+                txt_group_ge16: 6,
+                txt_satd_th: 20,
+                txt_rate_th: 250,
+                txs_max_sq: 2,
+                txs_max_nsq: 2,
+                txt_d1_off: 0,
+                txt_d2_off: 0,
+                ind_uv_mds3: false,
+                ind_uv_independent: Some(8),
+                ..m6_tail
+            },
             // M2/M3 (still/420): the M5DBG CFG enc_mode=2/3 rows
             // (docs/captures/m0m5_config_dlf.txt lines 12-13) — config ==
             // M4 except:
@@ -506,6 +560,36 @@ fn nic_counts(cli_qp: u32, num: (u64, u64, u64)) -> (u32, u32, u32) {
         min.max(div_round(n * qw, qwd)) as u32
     };
     (scale(64, num.0), scale(32, num.1), scale(16, num.2))
+}
+
+/// C `svt_aom_mefn_ptr[bsize].vf` (the block variance function used as the
+/// fast-loop chroma distortion in `search_best_independent_uv_mode`):
+/// `sse - sum^2 / N` over a `w`x`h` block, where the residual is `src`
+/// (plane at `src_stride`, block origin `(sx,sy)`) minus the block-local
+/// `pred`. The DC-offset subtraction is intentional (it is the *variance*
+/// of the residual, not the SSE). On flat chroma every uv prediction is a
+/// constant, so every candidate scores 0 and the stable sort keeps the C
+/// injection order.
+fn residual_variance(
+    src: &[u8],
+    src_stride: usize,
+    sx: usize,
+    sy: usize,
+    pred: &[u8],
+    w: usize,
+    h: usize,
+) -> u64 {
+    let mut sum: i64 = 0;
+    let mut sse: i64 = 0;
+    for r in 0..h {
+        let base = (sy + r) * src_stride + sx;
+        for c in 0..w {
+            let d = src[base + c] as i64 - pred[r * w + c] as i64;
+            sum += d;
+            sse += d * d;
+        }
+    }
+    (sse - (sum * sum) / (w * h) as i64) as u64
 }
 
 // ---------------------------------------------------------------------------
@@ -1845,6 +1929,115 @@ pub(crate) fn evaluate_leaf(
                     fcr2 += rates.angle[uvm as usize - 1][(3 + uvd) as usize] as u64;
                 }
                 let (bits, dist) = uv_rd[k];
+                let cost = rdcost(lambda, bits + fcr2, dist);
+                if cost < best_cost {
+                    best_cost = cost;
+                    table[luma] = (uvm, uvd);
+                }
+            }
+        }
+        ind_uv = Some(table);
+    } else if has_uv && cfg.ind_uv_independent.is_some() {
+        // C `search_best_independent_uv_mode` (product_coding_loop.c:7778),
+        // chroma_level 1/2 (ind_uv_last_mds 0/1): a FULL independent uv
+        // search over ALL uv modes, not just the survivors' uv-follows-luma
+        // modes. `perform_ind_uv_search_last_mds` (:7899) is true whenever
+        // an intra candidate survived (skip_ind_uv_if_only_dc = 0 here, and
+        // the inter-vs-intra arm is I-slice-dead) — so it always runs for
+        // our intra blocks.
+        let uv_nic = cfg.ind_uv_independent.unwrap() as u64;
+
+        // 1. Inject ALL uv modes DC..mode_end with angle deltas, in the C
+        //    uv_mode-then-delta order (:7807-7849): angular_pred_level >= 4
+        //    skips D45..D67; directional modes get 7 deltas (-3..3) when
+        //    use_angle_delta && level <= 2, else 1; |1|/|2| are dropped at
+        //    level >= 2 (all inert for M0/M1 at angular_pred_level 1).
+        let mut uv_cands: Vec<(u8, i8)> = Vec::new();
+        for uvm in 0u8..=cfg.mode_end {
+            let directional = matches!(uvm, 1..=8);
+            if directional && ((cfg.angular_level >= 4 && uvm >= 3) || cfg.angular_level == 0) {
+                continue;
+            }
+            let ndelta = if use_angle && directional && cfg.angular_level <= 2 {
+                7
+            } else {
+                1
+            };
+            for k in 0..ndelta {
+                let d: i8 = if ndelta == 1 { 0 } else { k as i8 - 3 };
+                if cfg.angular_level >= 2 && matches!(d, -2 | -1 | 1 | 2) {
+                    continue;
+                }
+                uv_cands.push((uvm, d));
+            }
+        }
+
+        // 2. Fast loop: residual variance (u + v) per candidate — C uses
+        //    `svt_aom_mefn_ptr[bsize_uv].vf` and NO rate at this stage
+        //    (:7864-7899).
+        let mut u_pred = alloc::vec![0u8; cw * chh];
+        let mut v_pred = alloc::vec![0u8; cw * chh];
+        let mut fast: Vec<(u64, usize)> = Vec::with_capacity(uv_cands.len());
+        for (idx, &(uvm, uvd)) in uv_cands.iter().enumerate() {
+            predict_unit(
+                fx.u_recon, fx.c_stride, ccx, ccy, cw, chh, uvm, uvd, FI_NONE, &uv_geom,
+                cfg.edge_filter, filt_type_uv, &mut u_pred,
+            );
+            predict_unit(
+                fx.v_recon, fx.c_stride, ccx, ccy, cw, chh, uvm, uvd, FI_NONE, &uv_geom,
+                cfg.edge_filter, filt_type_uv, &mut v_pred,
+            );
+            let var = residual_variance(fx.u_src, fx.c_stride, ccx, ccy, &u_pred, cw, chh)
+                + residual_variance(fx.v_src, fx.c_stride, ccx, ccy, &v_pred, cw, chh);
+            fast.push((var, idx));
+        }
+
+        // 3. Stable sort by fast cost — C `sort_fast_cost_based_candidates`
+        //    (:1404) is a strict-less selection sort, so ties keep the
+        //    injection order; Rust `sort_by_key` is stable.
+        fast.sort_by_key(|&(var, _)| var);
+
+        // 4. Full-loop count: allintra path -> base is_highest_layer ? 16
+        //    : 32 (:7919). Under OPT_USE_HL0_FLAT a still KF (temporal layer
+        //    0, hierarchical_levels 0) has is_highest_layer = FALSE
+        //    (pd_process.c:6212: `(tli == hl) && hl != 0`), so base = 32;
+        //    scaled by uv_nic_scaling_num/16, min 1 (:7919-7925). UV_DC is
+        //    always tested (:7927-7947); it is injected first (sorted index
+        //    0 on the flat-chroma tie) so it is already within the first
+        //    nfl, but the explicit force is kept for content where DC sorts
+        //    late. -> nfl = 16 at M1 (uv_nic 8), 32 at M0 (uv_nic 16).
+        let mut nfl = div_round(32 * uv_nic, 16).max(1) as usize;
+        nfl = nfl.min(uv_cands.len()).max(1);
+        let mut set: Vec<(u8, i8)> = fast.iter().take(nfl).map(|&(_, i)| uv_cands[i]).collect();
+        if !set.iter().any(|&(m, _)| m == 0) {
+            set.push((0, 0));
+        }
+
+        // 5. Full loop: coeff_rate + SSD distortion per uv candidate
+        //    (:7949-8003).
+        let mut uv_rd: Vec<(u8, i8, u64, u64)> = Vec::with_capacity(set.len());
+        for &(uvm, uvd) in &set {
+            let (u_out, v_out) = chroma_eval(fx, uvm, uvd);
+            uv_rd.push((
+                uvm,
+                uvd,
+                u_out.bits as u64 + v_out.bits as u64,
+                u_out.dist + v_out.dist,
+            ));
+        }
+
+        // 6. Per luma mode: best uv by RD with the uv rate conditioned on
+        //    the (real) luma mode (:8005-8039). All luma modes DC..mode_end
+        //    get an entry (no directional skip at angular_pred_level 1); the
+        //    rewrite below reads only the surviving luma modes.
+        let mut table = [(0u8, 0i8); 13];
+        for luma in 0..=(cfg.mode_end as usize) {
+            let mut best_cost = u64::MAX;
+            for &(uvm, uvd, bits, dist) in &uv_rd {
+                let mut fcr2 = rates.uv[cfl_allowed][luma][uvm as usize] as u64;
+                if use_angle && matches!(uvm, 1..=8) {
+                    fcr2 += rates.angle[uvm as usize - 1][(3 + uvd) as usize] as u64;
+                }
                 let cost = rdcost(lambda, bits + fcr2, dist);
                 if cost < best_cost {
                     best_cost = cost;

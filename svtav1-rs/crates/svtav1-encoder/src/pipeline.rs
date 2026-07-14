@@ -292,7 +292,7 @@ impl EncodePipeline {
         // enc_mode_config.c:14931) on 64-aligned dims — everywhere else
         // the legacy dead-zone quantizer stays.
         let c_quant: Option<alloc::sync::Arc<crate::quant::CodingQuantCfg>> =
-            if is_key && self.speed_config.preset >= 2 && w % 64 == 0 && h % 64 == 0 {
+            if is_key && self.speed_config.preset >= 1 && w % 64 == 0 && h % 64 == 0 {
                 let mut tot: u64 = 0;
                 let mut cnt: u64 = 0;
                 for sy in (0..h).step_by(64) {
@@ -2358,7 +2358,7 @@ fn encode_tile_rows(
         // the per-SB CDF chain gate below is 2..=6. 7/8/9+ use
         // update_cdf_level 0 (static default tables all frame).
         // eff-M9 (intra_level 8) arms the is_dc_only gate inside the funnel.
-        let use_funnel = speed_config.preset >= 2
+        let use_funnel = speed_config.preset >= 1
             && chroma_420
             && chroma_src.is_some()
             && ref_frame_data.is_none()
@@ -2411,7 +2411,7 @@ fn encode_tile_rows(
         // the static default rate tables for every SB, so they never chain.
         // Gated on use_funnel so it only fires for the chroma/420 funnel
         // path (chroma_src is Some) — mono never chains.
-        let funnel_chain = use_funnel && matches!(speed_config.preset, 2..=6) && multi_sb;
+        let funnel_chain = use_funnel && matches!(speed_config.preset, 1..=6) && multi_sb;
         let mut chain_snaps: Vec<(
             svtav1_entropy::context::FrameContext,
             alloc::boxed::Box<svtav1_entropy::coeff_c::CoeffFc>,
@@ -2481,7 +2481,7 @@ fn encode_tile_rows(
                 // computed here because the leaf lambda depends on it.
                 let use_pd0 = ref_ctx.is_none()
                     && (speed_config.preset >= 6
-                        || (matches!(speed_config.preset, 2..=5) && use_funnel))
+                        || (matches!(speed_config.preset, 1..=5) && use_funnel))
                     && cur_w == sb_size
                     && cur_h == sb_size;
                 // CLI-qp-calibrated lambda via the exact inverse mapping
@@ -2619,7 +2619,7 @@ fn encode_tile_rows(
                             None => m6_pd0_tables
                                 .get_or_insert_with(|| crate::pd0::build_m6_pd0_tables(sb_qindex)),
                         };
-                        let refined = matches!(speed_config.preset, 2..=5) && use_funnel;
+                        let refined = matches!(speed_config.preset, 1..=5) && use_funnel;
                         if refined {
                             // M4/M5 (`dr_mode = 1`, PD0_DEPTH_ADAPTIVE):
                             // PD1 re-decides depths around the PD0 tree —
