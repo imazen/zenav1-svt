@@ -970,3 +970,153 @@ pub fn hadamard(dim: usize, src_diff: &[i16], src_stride: usize, coeff: &mut [i3
 pub fn satd(coeff: &[i32]) -> i32 {
     unsafe { svt_aom_satd_c(coeff.as_ptr(), coeff.len() as i32) }
 }
+
+// ---------------------------------------------------------------------------
+// Intra edge filter / upsample + upsample-capable dr prediction kernels
+// (M5 leaf funnel: SH enable_intra_edge_filter=1 directional prediction).
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn ref_filter_intra_edge(p: *mut u8, sz: i32, strength: i32);
+    fn svt_av1_upsample_intra_edge_c(p: *mut u8, sz: i32);
+    fn svt_aom_intra_edge_filter_strength(bs0: i32, bs1: i32, delta: i32, type_: i32) -> i32;
+    fn svt_aom_use_intra_edge_upsample(bs0: i32, bs1: i32, delta: i32, type_: i32) -> i32;
+    fn svt_av1_dr_prediction_z1_c(
+        dst: *mut u8,
+        stride: isize,
+        bw: i32,
+        bh: i32,
+        above: *const u8,
+        left: *const u8,
+        upsample_above: i32,
+        dx: i32,
+        dy: i32,
+    );
+    fn svt_av1_dr_prediction_z2_c(
+        dst: *mut u8,
+        stride: isize,
+        bw: i32,
+        bh: i32,
+        above: *const u8,
+        left: *const u8,
+        upsample_above: i32,
+        upsample_left: i32,
+        dx: i32,
+        dy: i32,
+    );
+    fn svt_av1_dr_prediction_z3_c(
+        dst: *mut u8,
+        stride: isize,
+        bw: i32,
+        bh: i32,
+        above: *const u8,
+        left: *const u8,
+        upsample_left: i32,
+        dx: i32,
+        dy: i32,
+    );
+}
+
+/// Reference `svt_av1_filter_intra_edge_c` on `p[start..start+sz]`.
+pub fn filter_intra_edge(p: &mut [u8], start: usize, sz: usize, strength: i32) {
+    unsafe { ref_filter_intra_edge(p.as_mut_ptr().add(start), sz as i32, strength) }
+}
+
+/// Reference `svt_av1_upsample_intra_edge_c` with the block edge at
+/// `p[origin..origin+sz]` (writes `p[origin-2..]`).
+pub fn upsample_intra_edge(p: &mut [u8], origin: usize, sz: usize) {
+    unsafe { svt_av1_upsample_intra_edge_c(p.as_mut_ptr().add(origin), sz as i32) }
+}
+
+/// Reference `svt_aom_intra_edge_filter_strength`.
+pub fn intra_edge_filter_strength(bs0: i32, bs1: i32, delta: i32, filt_type: i32) -> i32 {
+    unsafe { svt_aom_intra_edge_filter_strength(bs0, bs1, delta, filt_type) }
+}
+
+/// Reference `svt_aom_use_intra_edge_upsample`.
+pub fn use_intra_edge_upsample(bs0: i32, bs1: i32, delta: i32, filt_type: i32) -> bool {
+    unsafe { svt_aom_use_intra_edge_upsample(bs0, bs1, delta, filt_type) != 0 }
+}
+
+/// Reference dr predictor over origin-based edged buffers
+/// (`above[origin+i]` = C `above_row[i]`), dispatching to the C
+/// z1/z2/z3 kernels exactly like C `svt_aom_dr_predictor`.
+#[allow(clippy::too_many_arguments)]
+pub fn dr_predictor_edged(
+    dst: &mut [u8],
+    stride: usize,
+    above: &[u8],
+    left: &[u8],
+    origin: usize,
+    upsample_above: bool,
+    upsample_left: bool,
+    bw: usize,
+    bh: usize,
+    angle: i32,
+) {
+    // C eb_dr_intra_derivative lookups (get_dx/get_dy, intra_prediction.c).
+    const DR: [u16; 90] = [
+        0, 0, 0, 1023, 0, 0, 547, 0, 0, 372, 0, 0, 0, 0, 273, 0, 0, 215, 0, 0, 178, 0, 0, 151, 0,
+        0, 132, 0, 0, 116, 0, 0, 102, 0, 0, 0, 90, 0, 0, 80, 0, 0, 71, 0, 0, 64, 0, 0, 57, 0, 0,
+        51, 0, 0, 45, 0, 0, 0, 40, 0, 0, 35, 0, 0, 31, 0, 0, 27, 0, 0, 23, 0, 0, 19, 0, 0, 15, 0,
+        0, 0, 0, 11, 0, 0, 7, 0, 0, 3, 0, 0,
+    ];
+    let dx = if angle > 0 && angle < 90 {
+        DR[angle as usize] as i32
+    } else if angle > 90 && angle < 180 {
+        DR[(180 - angle) as usize] as i32
+    } else {
+        1
+    };
+    let dy = if angle > 90 && angle < 180 {
+        DR[(angle - 90) as usize] as i32
+    } else if angle > 180 && angle < 270 {
+        DR[(270 - angle) as usize] as i32
+    } else {
+        1
+    };
+    unsafe {
+        let a = above.as_ptr().add(origin);
+        let l = left.as_ptr().add(origin);
+        if angle > 0 && angle < 90 {
+            svt_av1_dr_prediction_z1_c(
+                dst.as_mut_ptr(),
+                stride as isize,
+                bw as i32,
+                bh as i32,
+                a,
+                l,
+                upsample_above as i32,
+                dx,
+                dy,
+            );
+        } else if angle > 90 && angle < 180 {
+            svt_av1_dr_prediction_z2_c(
+                dst.as_mut_ptr(),
+                stride as isize,
+                bw as i32,
+                bh as i32,
+                a,
+                l,
+                upsample_above as i32,
+                upsample_left as i32,
+                dx,
+                dy,
+            );
+        } else if angle > 180 && angle < 270 {
+            svt_av1_dr_prediction_z3_c(
+                dst.as_mut_ptr(),
+                stride as isize,
+                bw as i32,
+                bh as i32,
+                a,
+                l,
+                upsample_left as i32,
+                dx,
+                dy,
+            );
+        } else {
+            panic!("dr_predictor_edged: exact 90/180 handled by V/H paths");
+        }
+    }
+}

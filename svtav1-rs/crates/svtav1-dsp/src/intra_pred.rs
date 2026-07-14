@@ -455,6 +455,347 @@ pub fn predict_directional(
     }
 }
 
+// =============================================================================
+// Intra edge filtering / upsampling + upsample-capable directional prediction
+// (C SVT-AV1 intra_prediction.c: svt_aom_intra_edge_filter_strength,
+// svt_aom_use_intra_edge_upsample, svt_av1_filter_intra_edge_c,
+// filter_intra_edge_corner, svt_av1_upsample_intra_edge_c, and the
+// upsample-aware svt_av1_dr_prediction_z1/z2/z3_c.)
+//
+// The edged buffers mirror C's `above_data[.. ]`/`left_data[..]` with the
+// block origin at index `EDGE_ORIGIN` (C `above_row = above_data + 16`):
+// upsampling writes p[-2], zone-2 reads above[-1]/left[-1] (the top-left
+// sample) and, when upsampled, above[-2]/left[-2].
+// =============================================================================
+
+/// Origin index inside the edged above/left buffers (C `+ 16`).
+pub const EDGE_ORIGIN: usize = 16;
+/// Edged buffer length (C `MAX_TX_SIZE * 2 + 32` = 160).
+pub const EDGE_BUF_LEN: usize = 64 * 2 + 32;
+
+/// C `svt_aom_intra_edge_filter_strength` (intra_prediction.c:180).
+pub fn intra_edge_filter_strength(bs0: i32, bs1: i32, delta: i32, filt_type: i32) -> i32 {
+    let d = delta.abs();
+    let blk_wh = bs0 + bs1;
+    let mut strength = 0;
+    if filt_type == 0 {
+        if blk_wh <= 8 {
+            if d >= 56 {
+                strength = 1;
+            }
+        } else if blk_wh <= 12 {
+            if d >= 40 {
+                strength = 1;
+            }
+        } else if blk_wh <= 16 {
+            if d >= 40 {
+                strength = 1;
+            }
+        } else if blk_wh <= 24 {
+            if d >= 8 {
+                strength = 1;
+            }
+            if d >= 16 {
+                strength = 2;
+            }
+            if d >= 32 {
+                strength = 3;
+            }
+        } else if blk_wh <= 32 {
+            if d >= 1 {
+                strength = 1;
+            }
+            if d >= 4 {
+                strength = 2;
+            }
+            if d >= 32 {
+                strength = 3;
+            }
+        } else if d >= 1 {
+            strength = 3;
+        }
+    } else if blk_wh <= 8 {
+        if d >= 40 {
+            strength = 1;
+        }
+        if d >= 64 {
+            strength = 2;
+        }
+    } else if blk_wh <= 16 {
+        if d >= 20 {
+            strength = 1;
+        }
+        if d >= 48 {
+            strength = 2;
+        }
+    } else if blk_wh <= 24 {
+        if d >= 4 {
+            strength = 3;
+        }
+    } else if d >= 1 {
+        strength = 3;
+    }
+    strength
+}
+
+/// C `svt_aom_use_intra_edge_upsample` (intra_prediction.c:144).
+pub fn use_intra_edge_upsample(bs0: i32, bs1: i32, delta: i32, filt_type: i32) -> bool {
+    let d = delta.abs();
+    let blk_wh = bs0 + bs1;
+    if d <= 0 || d >= 40 {
+        return false;
+    }
+    if filt_type != 0 {
+        blk_wh <= 8
+    } else {
+        blk_wh <= 16
+    }
+}
+
+/// C `svt_av1_filter_intra_edge_c` (intra_prediction.c:156) applied to
+/// `p[start .. start + sz]` (C receives the pointer already offset — the
+/// caller passes `origin - ab_le`).
+pub fn filter_intra_edge(p: &mut [u8], start: usize, sz: usize, strength: i32) {
+    if strength == 0 {
+        return;
+    }
+    const KERNEL: [[i32; 5]; 3] = [[0, 4, 8, 4, 0], [0, 5, 6, 5, 0], [2, 4, 4, 4, 2]];
+    let filt = (strength - 1) as usize;
+    debug_assert!(sz <= 129);
+    let mut edge = [0u8; 129];
+    edge[..sz].copy_from_slice(&p[start..start + sz]);
+    for i in 1..sz {
+        let mut s = 0i32;
+        for (j, &k_w) in KERNEL[filt].iter().enumerate() {
+            let k = (i as i32 - 2 + j as i32).clamp(0, sz as i32 - 1) as usize;
+            s += edge[k] as i32 * k_w;
+        }
+        p[start + i] = ((s + 8) >> 4) as u8;
+    }
+}
+
+/// C `filter_intra_edge_corner` (intra_prediction.c:2356): smooths the
+/// shared corner sample `above[origin-1] == left[origin-1]`.
+pub fn filter_intra_edge_corner(above: &mut [u8], left: &mut [u8], origin: usize) {
+    let s = (left[origin] as i32 * 5 + above[origin - 1] as i32 * 6 + above[origin] as i32 * 5 + 8)
+        >> 4;
+    above[origin - 1] = s as u8;
+    left[origin - 1] = s as u8;
+}
+
+/// C `svt_av1_upsample_intra_edge_c` (C_DEFAULT/intra_prediction_c.c:39):
+/// 2x upsample of `p[origin .. origin + sz]` in place, writing
+/// `p[origin - 2 .. origin + 2 * sz - 1]` (reads `p[origin - 1]`).
+pub fn upsample_intra_edge(p: &mut [u8], origin: usize, sz: usize) {
+    debug_assert!(sz <= 16, "C MAX_UPSAMPLE_SZ");
+    debug_assert!(origin >= 2);
+    let mut input = [0u8; 16 + 3];
+    input[0] = p[origin - 1];
+    input[1] = p[origin - 1];
+    input[2..2 + sz].copy_from_slice(&p[origin..origin + sz]);
+    input[sz + 2] = p[origin + sz - 1];
+
+    p[origin - 2] = input[0];
+    for i in 0..sz {
+        let s = -(input[i] as i32) + 9 * input[i + 1] as i32 + 9 * input[i + 2] as i32
+            - input[i + 3] as i32;
+        let s = ((s + 8) >> 4).clamp(0, 255);
+        p[origin + 2 * i - 1] = s as u8;
+        p[origin + 2 * i] = input[i + 2];
+    }
+}
+
+/// C `svt_av1_dr_prediction_z1_c` (intra_prediction.c:351) with upsampling.
+/// `above[origin + i]` is C `above[i]`.
+fn dr_z1_edged(
+    dst: &mut [u8],
+    dst_stride: usize,
+    bw: usize,
+    bh: usize,
+    above: &[u8],
+    origin: usize,
+    upsample_above: bool,
+    dx: i32,
+) {
+    let up = upsample_above as i32;
+    let max_base_x = ((bw + bh) as i32 - 1) << up;
+    let frac_bits = 6 - up;
+    let base_inc = 1i32 << up;
+    let mut x = dx;
+    for r in 0..bh {
+        let mut base = x >> frac_bits;
+        let shift = ((x << up) & 0x3F) >> 1;
+        if base >= max_base_x {
+            let fill = above[origin + max_base_x as usize];
+            for row in dst.chunks_mut(dst_stride).skip(r).take(bh - r) {
+                row[..bw].fill(fill);
+            }
+            return;
+        }
+        for c in 0..bw {
+            let v = if base < max_base_x {
+                let val = above[origin + base as usize] as i32 * (32 - shift)
+                    + above[origin + base as usize + 1] as i32 * shift;
+                ((val + 16) >> 5).clamp(0, 255) as u8
+            } else {
+                above[origin + max_base_x as usize]
+            };
+            dst[r * dst_stride + c] = v;
+            base += base_inc;
+        }
+        x += dx;
+    }
+}
+
+/// C `svt_av1_dr_prediction_z2_c` (intra_prediction.c:386) with upsampling.
+/// Reads `above[origin - 1 - up_above ..]` and `left[origin - 1 - up_left ..]`.
+#[allow(clippy::too_many_arguments)]
+fn dr_z2_edged(
+    dst: &mut [u8],
+    dst_stride: usize,
+    bw: usize,
+    bh: usize,
+    above: &[u8],
+    left: &[u8],
+    origin: usize,
+    upsample_above: bool,
+    upsample_left: bool,
+    dx: i32,
+    dy: i32,
+) {
+    debug_assert!(dx > 0 && dy > 0);
+    let up_a = upsample_above as i32;
+    let up_l = upsample_left as i32;
+    let min_base_x = -(1i32 << up_a);
+    let frac_bits_x = 6 - up_a;
+    let frac_bits_y = 6 - up_l;
+    let base_inc_x = 1i32 << up_a;
+    let mut x = -dx;
+    for r in 0..bh {
+        let mut base1 = x >> frac_bits_x;
+        let mut y = ((r as i32) << 6) - dy;
+        for c in 0..bw {
+            let val = if base1 >= min_base_x {
+                let shift1 = ((x * (1 << up_a)) & 0x3F) >> 1;
+                let i0 = (origin as i32 + base1) as usize;
+                above[i0] as i32 * (32 - shift1) + above[i0 + 1] as i32 * shift1
+            } else {
+                let base2 = y >> frac_bits_y;
+                debug_assert!(base2 >= -(1 << up_l));
+                let shift2 = ((y * (1 << up_l)) & 0x3F) >> 1;
+                let i0 = (origin as i32 + base2) as usize;
+                left[i0] as i32 * (32 - shift2) + left[i0 + 1] as i32 * shift2
+            };
+            dst[r * dst_stride + c] = (((val + 16) >> 5).clamp(0, 255)) as u8;
+            base1 += base_inc_x;
+            y -= dy;
+        }
+        x -= dx;
+    }
+}
+
+/// C `svt_av1_dr_prediction_z3_c` (intra_prediction.c:321) with upsampling.
+fn dr_z3_edged(
+    dst: &mut [u8],
+    dst_stride: usize,
+    bw: usize,
+    bh: usize,
+    left: &[u8],
+    origin: usize,
+    upsample_left: bool,
+    dy: i32,
+) {
+    let up = upsample_left as i32;
+    let max_base_y = ((bw + bh - 1) as i32) << up;
+    let frac_bits = 6 - up;
+    let base_inc = 1i32 << up;
+    let mut y = dy;
+    for c in 0..bw {
+        let mut base = y >> frac_bits;
+        let shift = ((y << up) & 0x3F) >> 1;
+        let mut r = 0usize;
+        while r < bh {
+            if base < max_base_y {
+                let val = left[origin + base as usize] as i32 * (32 - shift)
+                    + left[origin + base as usize + 1] as i32 * shift;
+                dst[r * dst_stride + c] = ((val + 16) >> 5).clamp(0, 255) as u8;
+            } else {
+                let fill = left[origin + max_base_y as usize];
+                while r < bh {
+                    dst[r * dst_stride + c] = fill;
+                    r += 1;
+                }
+                break;
+            }
+            r += 1;
+            base += base_inc;
+        }
+        y += dy;
+    }
+}
+
+/// C `svt_aom_dr_predictor` over edged buffers (`above[origin + i]` = C
+/// `above_row[i]`, `left[origin + i]` = C `left_col[i]`;
+/// `above[origin - 1] == left[origin - 1]` is the top-left sample). The
+/// upsample flags select the C kernels' upsampled indexing exactly.
+#[allow(clippy::too_many_arguments)]
+pub fn dr_predictor_edged(
+    dst: &mut [u8],
+    dst_stride: usize,
+    above: &[u8],
+    left: &[u8],
+    origin: usize,
+    upsample_above: bool,
+    upsample_left: bool,
+    width: usize,
+    height: usize,
+    angle: i32,
+) {
+    let dx = get_dx(angle);
+    let dy = get_dy(angle);
+    if angle > 0 && angle < 90 {
+        dr_z1_edged(
+            dst,
+            dst_stride,
+            width,
+            height,
+            above,
+            origin,
+            upsample_above,
+            dx,
+        );
+    } else if angle > 90 && angle < 180 {
+        dr_z2_edged(
+            dst,
+            dst_stride,
+            width,
+            height,
+            above,
+            left,
+            origin,
+            upsample_above,
+            upsample_left,
+            dx,
+            dy,
+        );
+    } else if angle > 180 && angle < 270 {
+        dr_z3_edged(
+            dst,
+            dst_stride,
+            width,
+            height,
+            left,
+            origin,
+            upsample_left,
+            dy,
+        );
+    } else if angle == 90 {
+        predict_v(dst, dst_stride, &above[origin..], width, height);
+    } else if angle == 180 {
+        predict_h(dst, dst_stride, &left[origin..], width, height);
+    }
+}
+
 /// Get smooth weight table for a given block dimension.
 ///
 /// Weights decrease from 255 (top/left edge) to approximately 0 (bottom/right edge).
