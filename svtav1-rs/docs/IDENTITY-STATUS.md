@@ -1253,3 +1253,117 @@ SATD/NIC pruning + MDS3 4-candidate compare with chroma-in-decision,
 spec'd as next-op spec A above) — landing it closes the leaf picks,
 which fixes the recons, which makes the already-C-exact search emit
 C's taps: potentially all 6 cells at once.
+
+## 2026-07-14 (wave2, M6 leaf-funnel chunk): MATRIX COMPLETE — 36/36 byte-identical
+
+The M6 leaf intra-mode decision funnel — the last remaining subsystem —
+is ported C-exactly; all 6 gradient preset-6 cells print
+`VERDICT: streams IDENTICAL` and `tools/identity_matrix.sh check`
+reports **36 / 36 byte-identical** (scoreboard
+`benchmarks/identity_matrix_check.tsv`). Four commits:
+
+1. `265830cf7` — instrumented M6FNL captures for all 6 cells
+   (docs/captures/gradient_*_p6.m6fnl.txt; instrumented OBUs verified
+   byte-identical to baseline before trusting any dump).
+2. `2fc88e564` — C-exact aom Hadamard/SATD kernels (MDS0 fast dist) +
+   the existing `predict_filter_intra` pinned bit-exact vs
+   `svt_av1_filter_intra_predictor_c` (cref differential suites:
+   700 hadamard blocks, 5 modes x 4 sizes x 200 edge patterns).
+3. `725fd3b09` — the funnel itself (`leaf_funnel.rs`) + walk wiring:
+   closed all 3 gradient-64 cells.
+4. `661efa7bc` — the per-SB CDF refresh chain (funnel + M6 PD0 tables):
+   closed all 3 gradient-128 cells.
+
+### The verified C funnel at allintra M6 (all instrumented; file:line in leaf_funnel.rs docs)
+
+- **Config**: intra_level 6 -> mode_end SMOOTH / angular_pred_level 4
+  (only V,H survive; no angle deltas; no prune flags — `is_dc_only_safe`
+  is DEAD at M6, its arming flag prune_using_edge_info is 0), filter
+  intra level 2 -> FILTER_DC_PRED only (<= 32x32), nic_level 6
+  (scaling 6/6/6 over I-slice class-0 base 64/32/16, qp-scaled;
+  pruning ths mds1 1200/rank 3, mds2 15/rank 1/rel-dev 5, mds3 15,
+  class ths dead for the single intra class), staging mode 1 (MDS1
+  runs, MDS2 bypassed), CHROMA_MODE_1 (uv follows luma; no independent
+  uv search), cfl level 4 (gated by the chroma-complexity detector —
+  never arms on flat chroma), txt_level 8 (intra groups 4 / 5;
+  DCT-only >= 32 via the ext-tx sets; depth-1 group offset 3), txs
+  level 3 (intra sq max depth 1, prev-depth coeff exit 1),
+  spatial_sse SSSE_MDS3, rate_est_level 1 (REAL txb_skip/dc_sign
+  contexts in cost AND RDOQ — unlike the eff-M9 path's 0/0),
+  update_cdf_level 2 (per-SB rate-table refresh), mds0 hadamard SB
+  flag true, cand_reduction 0 (tot_itr = 1: single MDS0 pass).
+- **MDS0**: whole-block prediction from MD recon neighbors,
+  `hadamard_path` SATD (32-capped aom-hadamard tiles), fast cost =
+  RDCOST(lambda, flr + fcr, satd << 4); flr = kf_y[above][left] +
+  angle0 (V/H) + fi flag/mode bits (eligible DC blocks); fcr =
+  uv_mode[cfl_allowed][y][uv] + uv angle0.
+- **MDS1**: luma-only, depth 0, DCT_DCT, `quantize_b` (NO rdoq —
+  mds_do_rdoq false: captured eob 996 vs fp 997 vs trellis 528 at q40),
+  freq-domain SSE (+ three_quad, RIGHT_SIGNED_SHIFT (1 - scale) * 2),
+  real contexts, full cost with zero chroma dist/bits but fcr counted.
+- **MDS3**: per candidate — TXS depths 0..1 with per-txb prediction
+  from the depth-local canvas + TX-local (dc_sign|cul) overlay
+  contexts; per-txb TXT search (SATD early exit th 10 qp-scaled, rate
+  th 100); RDOQ per the frame policy (q20 HIGH -> rdoq 0 ->
+  quantize_b at MDS3 too); spatial SSE << 4; chroma pred/residual/
+  quant/SSE at tx_size_uv with the uv-derived tx type (UV_H ->
+  DCT_ADST etc. — capture-confirmed ttuv 1/2/3) + per-plane contexts;
+  full cost = svt_aom_full_cost (skip_fac[skip_ctx], tx_size bits at
+  the chosen depth). Winner = lowest full cost, first-in-order ties.
+- **Per-SB chain**: ec_ctx_array[sb] = left copy (col > 0) / top-right
+  copy (column 0, multi-row) / md_frame_context (SB 0), evolved by the
+  SB's coded symbols; MdRates AND M6Pd0Tables (split 1195 -> drifting
+  rates) rebuilt per SB. Simulated by re-coding each decided SB
+  through the real entropy walk against the chain contexts (bypass
+  enc-dec == MD symbols are the coded symbols).
+
+### What landed (svtav1-rs only)
+
+- `svtav1-dsp`: `aom_hadamard_8x8/16x16/32x32` + `aom_satd`
+  (differential vs C); `predict_filter_intra` differential coverage.
+- `svtav1-entropy`: `FrameContext.filter_intra_mode_cdf` +
+  `write_filter_intra_mode` (CDF5); `write_use_filter_intra` accepts
+  used=1.
+- `svtav1-encoder/leaf_funnel.rs`: MdRates (syntax + coeff tables from
+  arbitrary chained contexts), the staged funnel, cost_coeffs_txb
+  (full-scan, real-ctx, any plane/type generalization of the pd0
+  port), TX-unit pipeline, chroma detector, exact NIC/pruning walks.
+- `partition.rs`: BlockDecision carries fi/uv/tx_depth/per-txb/chroma
+  decisions; `encode_fixed_tree` routes leaves to the funnel at
+  preset 6 + 4:2:0 still.
+- `pipeline.rs`: funnel state + per-SB chain in `encode_tile_rows`;
+  the walk codes decided uv_mode (+ uv angle 0), use_filter_intra +
+  fi mode symbol, tx_depth (incl. depth-1 per-txb residuals with
+  per-txb contexts + chosen-tx-dims txfm records + per-txb deblock
+  geometry), copies decision chroma recon, chroma tx types derived
+  from uv mode.
+- `pd0.rs`: `build_m6_pd0_tables_from_ctx` (chained partition/skip/
+  coeff/tx-type rates); LVL_1 costs consume them.
+- `quant.rs`: `build_coeff_cost_tables_from_fc`.
+
+### Gates
+
+- identity matrix **36/36** (`benchmarks/identity_matrix_check.tsv`) —
+  all uniform + ALL gradient cells at presets 13/10/6, both sizes,
+  all qps; zero regressions.
+- `cargo test --workspace --no-fail-fast`: **609 passed / 0 failed**
+  (+4 new differential suites; no test-input changes).
+- recon-parity + decode conformance: see the gate outputs in the
+  session close-out (run after this doc's commit).
+
+### Honest residual gaps (none owns a matrix cell)
+
+- **CFL evaluation**: when the chroma-complexity detector arms
+  (complex chroma, <= 32x32), C evaluates cfl_prediction and may pick
+  UV_CFL; unported — we keep the non-CFL uv mode. Never arms on the
+  tracked cells (flat chroma). Streams remain valid on content where
+  it arms; they may differ from C's.
+- **avg_cdf_symbols**: frames wider than 2 SBs chain left-only where C
+  averages left 3x + top-right 1x. No tracked frame is that wide.
+- **Funnel scope**: preset 6 + 4:2:0 still only. Presets 7/8 keep the
+  homegrown leaf coder (C uses intra_level 7 / prune_using_best_mode
+  there — unverified constants); mono keeps the legacy path (C cannot
+  emit mono).
+- The MDS3 chroma quantize prices RDOQ with the funnel's own chain
+  tables; the walk codes the funnel's coefficients verbatim (no
+  re-quantization), so decision == stream by construction.
