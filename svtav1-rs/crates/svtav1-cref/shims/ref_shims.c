@@ -526,3 +526,103 @@ void ref_filter_intra_edge(uint8_t* p, int32_t sz, int32_t strength) {
     ref_rtcd_once();
     svt_av1_filter_intra_edge_c(p, sz, strength);
 }
+
+/* ===========================================================================
+ * AUDIT 2026-07-14 (wave2/entropy-c-parity): inter / motion DSP oracles.
+ * The `_c` scalar reference is ground truth for the pre-v4.2-bump Rust ports
+ * in svtav1-dsp {sad, variance, inter_pred, obmc, warp, scale, superres}.
+ * v4.2_functions.md shows NONE of these C files changed 4.1->4.2, so any
+ * divergence a c_parity_* test finds is a pre-existing port bug, not drift.
+ * =========================================================================== */
+
+#include "aom_dsp_rtcd.h"
+
+/* ---- SAD: svt_aom_sad{W}x{H}_c (compute_sad_c.c) ---- */
+uint32_t ref_sad(int32_t w, int32_t h, const uint8_t* src, int32_t ss, const uint8_t* ref, int32_t rs) {
+    switch (w * 1000 + h) {
+    case 4004:     return svt_aom_sad4x4_c(src, ss, ref, rs);
+    case 4008:     return svt_aom_sad4x8_c(src, ss, ref, rs);
+    case 4016:     return svt_aom_sad4x16_c(src, ss, ref, rs);
+    case 8004:     return svt_aom_sad8x4_c(src, ss, ref, rs);
+    case 8008:     return svt_aom_sad8x8_c(src, ss, ref, rs);
+    case 8016:     return svt_aom_sad8x16_c(src, ss, ref, rs);
+    case 8032:     return svt_aom_sad8x32_c(src, ss, ref, rs);
+    case 16004:    return svt_aom_sad16x4_c(src, ss, ref, rs);
+    case 16008:    return svt_aom_sad16x8_c(src, ss, ref, rs);
+    case 16016:    return svt_aom_sad16x16_c(src, ss, ref, rs);
+    case 16032:    return svt_aom_sad16x32_c(src, ss, ref, rs);
+    case 16064:    return svt_aom_sad16x64_c(src, ss, ref, rs);
+    case 32008:    return svt_aom_sad32x8_c(src, ss, ref, rs);
+    case 32016:    return svt_aom_sad32x16_c(src, ss, ref, rs);
+    case 32032:    return svt_aom_sad32x32_c(src, ss, ref, rs);
+    case 32064:    return svt_aom_sad32x64_c(src, ss, ref, rs);
+    case 64016:    return svt_aom_sad64x16_c(src, ss, ref, rs);
+    case 64032:    return svt_aom_sad64x32_c(src, ss, ref, rs);
+    case 64064:    return svt_aom_sad64x64_c(src, ss, ref, rs);
+    case 64128:    return svt_aom_sad64x128_c(src, ss, ref, rs);
+    case 128064:   return svt_aom_sad128x64_c(src, ss, ref, rs);
+    case 128128:   return svt_aom_sad128x128_c(src, ss, ref, rs);
+    default:       return 0xFFFFFFFFu; /* unsupported size sentinel */
+    }
+}
+
+/* ---- Variance: svt_aom_variance{W}x{H}_c (variance.c).
+   Two-block: outputs *sse = sum((a-b)^2), returns *sse - sum(a-b)^2 / (W*H). ---- */
+uint32_t ref_variance(int32_t w, int32_t h, const uint8_t* a, int32_t as, const uint8_t* b, int32_t bs,
+                      uint32_t* sse) {
+    *sse = 0xFFFFFFFFu;
+    switch (w * 1000 + h) {
+    case 4004:     return svt_aom_variance4x4_c(a, as, b, bs, sse);
+    case 4008:     return svt_aom_variance4x8_c(a, as, b, bs, sse);
+    case 4016:     return svt_aom_variance4x16_c(a, as, b, bs, sse);
+    case 8004:     return svt_aom_variance8x4_c(a, as, b, bs, sse);
+    case 8008:     return svt_aom_variance8x8_c(a, as, b, bs, sse);
+    case 8016:     return svt_aom_variance8x16_c(a, as, b, bs, sse);
+    case 8032:     return svt_aom_variance8x32_c(a, as, b, bs, sse);
+    case 16004:    return svt_aom_variance16x4_c(a, as, b, bs, sse);
+    case 16008:    return svt_aom_variance16x8_c(a, as, b, bs, sse);
+    case 16016:    return svt_aom_variance16x16_c(a, as, b, bs, sse);
+    case 16032:    return svt_aom_variance16x32_c(a, as, b, bs, sse);
+    case 16064:    return svt_aom_variance16x64_c(a, as, b, bs, sse);
+    case 32008:    return svt_aom_variance32x8_c(a, as, b, bs, sse);
+    case 32016:    return svt_aom_variance32x16_c(a, as, b, bs, sse);
+    case 32032:    return svt_aom_variance32x32_c(a, as, b, bs, sse);
+    case 32064:    return svt_aom_variance32x64_c(a, as, b, bs, sse);
+    case 64016:    return svt_aom_variance64x16_c(a, as, b, bs, sse);
+    case 64032:    return svt_aom_variance64x32_c(a, as, b, bs, sse);
+    case 64064:    return svt_aom_variance64x64_c(a, as, b, bs, sse);
+    case 64128:    return svt_aom_variance64x128_c(a, as, b, bs, sse);
+    case 128064:   return svt_aom_variance128x64_c(a, as, b, bs, sse);
+    case 128128:   return svt_aom_variance128x128_c(a, as, b, bs, sse);
+    default:       return 0xFFFFFFFFu;
+    }
+}
+
+/* ---- convolve8 single-pass horiz / vert (convolve.c).
+   svt_aom_convolve8_horiz_c recovers the 16-phase InterpKernel base from the
+   filter pointer via (ptr & ~0xFF) [get_filter_base] and its offset. We stage
+   the caller's 8 taps into every row of a 256-byte-aligned table so, whichever
+   offset it computes, the applied taps are the caller's, x_step_q4=16 => 1px
+   per output. The kernel does src-=3 internally, sum of 8 taps, then
+   clip_pixel(ROUND_POWER_OF_TWO(sum,7)) -- what our Rust convolve_{horiz,vert}
+   does on a caller-offset slice. ---- */
+void svt_aom_convolve8_horiz_c(const uint8_t* src, ptrdiff_t src_stride, uint8_t* dst, ptrdiff_t dst_stride,
+                               const int16_t* filter_x, int x_step_q4, const int16_t* filter_y, int y_step_q4,
+                               int w, int h);
+void svt_aom_convolve8_vert_c(const uint8_t* src, ptrdiff_t src_stride, uint8_t* dst, ptrdiff_t dst_stride,
+                              const int16_t* filter_x, int x_step_q4, const int16_t* filter_y, int y_step_q4, int w,
+                              int h);
+
+void ref_convolve8_horiz(const uint8_t* src, int32_t src_stride, uint8_t* dst, int32_t dst_stride,
+                         const int16_t* taps, int32_t w, int32_t h) {
+    _Alignas(256) int16_t table[16][8];
+    for (int p = 0; p < 16; ++p) memcpy(table[p], taps, 8 * sizeof(int16_t));
+    svt_aom_convolve8_horiz_c(src, src_stride, dst, dst_stride, table[0], 16, NULL, -1, w, h);
+}
+
+void ref_convolve8_vert(const uint8_t* src, int32_t src_stride, uint8_t* dst, int32_t dst_stride,
+                        const int16_t* taps, int32_t w, int32_t h) {
+    _Alignas(256) int16_t table[16][8];
+    for (int p = 0; p < 16; ++p) memcpy(table[p], taps, 8 * sizeof(int16_t));
+    svt_aom_convolve8_vert_c(src, src_stride, dst, dst_stride, NULL, -1, table[0], 16, w, h);
+}
