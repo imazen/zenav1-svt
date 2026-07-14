@@ -690,11 +690,7 @@ pub fn build_directional_edges(
     // C early exit: the required edge has no real pixels → flat fill.
     if (!need_above && n_left_px == 0) || (!need_left && n_top_px == 0) {
         let val = if need_left {
-            if n_top_px > 0 {
-                above_ref(0)
-            } else {
-                129
-            }
+            if n_top_px > 0 { above_ref(0) } else { 129 }
         } else if n_left_px > 0 {
             left_ref(0)
         } else {
@@ -945,11 +941,7 @@ pub fn dr_predict<S: Fn(usize, usize) -> u8>(
     // Early flat exit (:86-99).
     if (!need_above && n_left_px == 0) || (!need_left && n_top_px == 0) {
         let val = if need_left {
-            if n_top_px > 0 {
-                above_ref(0)
-            } else {
-                129
-            }
+            if n_top_px > 0 { above_ref(0) } else { 129 }
         } else if n_left_px > 0 {
             left_ref(0)
         } else {
