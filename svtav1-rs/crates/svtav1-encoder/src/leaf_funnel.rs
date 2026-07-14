@@ -1,12 +1,14 @@
-//! C-exact leaf intra-mode decision funnel (allintra presets 5..=10,
+//! C-exact leaf intra-mode decision funnel (allintra presets 4..=10,
 //! still/PD1 fixed-tree path).
 //!
 //! Per-preset configuration lives in [`FunnelCfg::for_preset`]; the M5
 //! extension (mode_end PAETH, angular deltas {-3,0,+3}, SH-gated edge-
 //! filtered directional prediction, independent-uv at MDS3, txt 6/6
-//! satd 15 rate 250) is documented against its C cites there and in
-//! docs/IDENTITY-STATUS.md 2026-07-14. The staging skeleton below is
-//! the M6 baseline the other presets specialize:
+//! satd 15 rate 250) and the M4 extension (intra_level 1: ALL 7 angle
+//! deltas, unfiltered prediction — SH bit 0; nic case 5: rank factors
+//! 0, mds2 base 20, rel-dev off) are documented against their C cites
+//! there and in docs/IDENTITY-STATUS.md 2026-07-14. The staging
+//! skeleton below is the M6 baseline the other presets specialize:
 //!
 //! Ports the REGULAR-PD1 `md_encode_block` staging for the allintra M6
 //! configuration, verified against instrumented-library captures
@@ -210,11 +212,20 @@ pub struct FunnelCfg {
     pub nic_num: (u64, u64, u64),
     /// `mds1_cand_base_th_intra` (M6/M7: 1200; M8: 1).
     pub mds1_cand_base_th: u64,
-    /// `mds1_cand_th_rank_factor` (3 for all three).
+    /// `mds1_cand_th_rank_factor` (M5..M8: 3; M4 nic case 5: 0). When 0
+    /// the mds1 divisor is 1 — no per-rank tightening (C ternary,
+    /// product_coding_loop.c:8095).
     pub mds1_rank_factor: u64,
-    /// `mds2_cand_base_th` (M6/M7: 15; M8: 1).
+    /// `mds2_cand_base_th` (M5..M7: 15; M4: 20; M8: 1).
     pub mds2_cand_base_th: u64,
-    /// `mds2_relative_dev_th` (5 for all three).
+    /// `mds2_cand_th_rank_factor` (M5..M8: 1; M4 nic case 5: 0). When 0
+    /// the mds2 divisor is 1 and the +2 winner-coincide staging is dead
+    /// (C guards the staging on the factor being nonzero,
+    /// product_coding_loop.c:8158-8171).
+    pub mds2_rank_factor: u64,
+    /// `mds2_relative_dev_th` (M5..M8: 5; M4 nic case 5: 0 = the
+    /// relative-dev exit is DISABLED — C `!mds2_relative_dev_th ||`,
+    /// product_coding_loop.c:8170).
     pub mds2_rel_dev_th: u64,
     /// `mds3_cand_base_th` (M6/M7: 15; M8: 1).
     pub mds3_cand_base_th: u64,
@@ -278,6 +289,7 @@ impl FunnelCfg {
             mds1_cand_base_th: 1200,
             mds1_rank_factor: 3,
             mds2_cand_base_th: 15,
+            mds2_rank_factor: 1,
             mds2_rel_dev_th: 5,
             mds3_cand_base_th: 15,
             real_coeff_ctx: true,
@@ -294,6 +306,42 @@ impl FunnelCfg {
             edge_filter: false,
         };
         match preset {
+            // M4 (still/420): the M5DBG CFG enc_mode=4 dump
+            // (docs/captures/m0m5_config_dlf.txt line 14) — config == M5
+            // except:
+            // - intra_level 1 (svt_aom_get_intra_mode_levels_allintra
+            //   enc_mode_config.c:6907 `<= ENC_M4`; set_intra_ctrls case 1
+            //   :8469): mode_end PAETH, angular_pred_level[1] = 1 (:18) —
+            //   the |delta| 1/2 skip (mode_decision.c:3268-3271) only arms
+            //   at level >= 2, so ALL SEVEN deltas -3..+3 are injected per
+            //   directional mode (61 regular candidates + FILTER_DC).
+            // - SH enable_intra_edge_filter = 0 (enc_mode_config.c:
+            //   4035-4048: angular_pred_level[1] = 1 not in {2,3}) ->
+            //   directional prediction is UNFILTERED (disable_edge_filter,
+            //   enc_intra_prediction.c:526), like M6.
+            // - nic_level 5 (svt_aom_get_nic_level_allintra :5986
+            //   `<= ENC_M4`; set_nic_controls case 5): same scaling 6 /
+            //   mds1_base 1200 / mds3_base 15 / staging MODE_1 as case 6,
+            //   but mds1_cand_th_rank_factor 0, mds2_cand_base_th 20,
+            //   mds2_cand_th_rank_factor 0, mds2_relative_dev_th 0 (class
+            //   ths 300/25/15 + band counts are dead: single intra class).
+            // Depth refinement 6 (vs M5's 9) stays unported like M5's:
+            // the ADAPTIVE extra depths lose the inter-depth compare on
+            // every tracked cell (capture partition streams == PD0 trees).
+            4 => FunnelCfg {
+                mode_end: 12,
+                angular_level: 1,
+                txt_group_lt16: 6,
+                txt_group_ge16: 6,
+                txt_satd_th: 15,
+                txt_rate_th: 250,
+                ind_uv_mds3: true,
+                mds1_rank_factor: 0,
+                mds2_cand_base_th: 20,
+                mds2_rank_factor: 0,
+                mds2_rel_dev_th: 0,
+                ..m6_tail
+            },
             // M5 (still/420): the M5DBG CFG enc_mode=5 dump
             // (docs/captures/m0m5_config_dlf.txt) — intra_level 2
             // (mode_end PAETH, ang 2), fi_max 0 (FILTER_DC only, same
@@ -852,11 +900,7 @@ fn tx_unit(
         }
         d += three_quad_energy;
         let shift = (1 - log_scale as i32) * 2;
-        if shift < 0 {
-            d << (-shift)
-        } else {
-            d >> shift
-        }
+        if shift < 0 { d << (-shift) } else { d >> shift }
     };
 
     let bits = if eob > 0 {
@@ -1026,6 +1070,63 @@ pub(crate) struct FunnelCtx<'a> {
     pub frame: &'a FunnelFrame,
 }
 
+/// One evaluated (not yet committed) PART_N funnel decision — the C
+/// `md_encode_block` output before `md_update_all_neighbour_arrays`
+/// commits it. The PD1 depth walk evaluates parent and child depths and
+/// only commits the depth that wins the inter-depth compare.
+pub(crate) struct LeafEval {
+    pub abs_x: usize,
+    pub abs_y: usize,
+    pub size: usize,
+    win: Cand,
+}
+
+impl LeafEval {
+    /// The winner's MDS3 full cost (C `blk_ptr->cost` before the
+    /// partition-rate term the depth walk adds).
+    pub(crate) fn block_cost(&self) -> u64 {
+        self.win.mds3_cost
+    }
+
+    /// C `cnt_nz_coeff` (sum of the winner's luma txb eobs,
+    /// product_coding_loop.c:7166-7168).
+    pub(crate) fn cnt_nz_coeff(&self) -> u32 {
+        self.win.txb_eob.iter().map(|&e| e as u32).sum()
+    }
+
+    /// Winner luma recon (size x size raster).
+    pub(crate) fn y_recon(&self) -> &[u8] {
+        &self.win.y_recon
+    }
+
+    /// Winner chroma recons ((size/2)^2 rasters).
+    pub(crate) fn uv_recon(&self) -> (&[u8], &[u8]) {
+        (&self.win.u_recon, &self.win.v_recon)
+    }
+
+    /// The walk/entropy-pass view of the winner.
+    pub(crate) fn to_choice(&self) -> LeafChoice {
+        let cand = &self.win;
+        LeafChoice {
+            mode: cand.mode,
+            angle_delta: cand.delta,
+            fi_mode: cand.fi,
+            uv_mode: cand.uv,
+            uv_angle_delta: cand.uv_delta,
+            tx_depth: cand.tx_depth,
+            txb_qcoeffs: cand.txb_q.clone(),
+            txb_eobs: cand.txb_eob.clone(),
+            txb_tx_types: cand.txb_type.clone(),
+            u_qcoeffs: cand.u_q.clone(),
+            v_qcoeffs: cand.v_q.clone(),
+            u_eob: cand.u_eob,
+            v_eob: cand.v_eob,
+            u_recon: cand.u_recon.clone(),
+            v_recon: cand.v_recon.clone(),
+        }
+    }
+}
+
 /// Decide one PART_N leaf of the fixed tree — the full MDS0/MDS1/MDS3
 /// funnel — and commit the winner (luma recon into `y_recon`, chroma into
 /// the funnel's decision planes, all neighbor context updates).
@@ -1040,11 +1141,44 @@ pub(crate) fn decide_leaf(
     abs_x: usize,
     abs_y: usize,
     size: usize,
+    dc_only: bool,
+) -> LeafChoice {
+    let ev = evaluate_leaf(
+        fx,
+        y_src,
+        y_src_stride,
+        y_src_off,
+        y_recon,
+        y_stride,
+        abs_x,
+        abs_y,
+        size,
+        dc_only,
+    );
+    let choice = ev.to_choice();
+    commit_leaf(fx, y_recon, y_stride, &ev);
+    choice
+}
+
+/// Evaluate one PART_N block through the funnel WITHOUT committing —
+/// C `md_encode_block` (the neighbour arrays / MD recon planes are
+/// untouched; the caller commits the winning depth via [`commit_leaf`]).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn evaluate_leaf(
+    fx: &FunnelCtx<'_>,
+    y_src: &[u8],
+    y_src_stride: usize,
+    y_src_off: usize,
+    y_recon: &[u8],
+    y_stride: usize,
+    abs_x: usize,
+    abs_y: usize,
+    size: usize,
     // eff-M9: `is_dc_only_safe` fired for this block -> C's dc_cand_only
     // injection restricts the candidate list to {DC_PRED}
     // (mode_decision.c:3633). Always false at M6/M7/M8 (gate dead).
     dc_only: bool,
-) -> LeafChoice {
+) -> LeafEval {
     let frame = fx.frame;
     let rates = fx.rates;
     let w = size;
@@ -1236,7 +1370,15 @@ pub(crate) fn decide_leaf(
         if best > 0 {
             while count < n1 {
                 let dev = (cands[order[count]].fast_cost - best) * 100 / best;
-                if dev >= mds1_cand_th / (cfg.mds1_rank_factor * count as u64) {
+                // C: `mds1_cand_th / (rank ? rank * cand_count : 1)`
+                // (product_coding_loop.c:8095) — rank 0 (M4 nic case 5)
+                // means the raw threshold, NOT a zero divisor.
+                let div = if cfg.mds1_rank_factor != 0 {
+                    cfg.mds1_rank_factor * count as u64
+                } else {
+                    1
+                };
+                if dev >= mds1_cand_th / div {
                     break;
                 }
                 count += 1;
@@ -1299,15 +1441,28 @@ pub(crate) fn decide_leaf(
         let best = cands[order1[0]].full_cost;
         let mut count = 1usize;
         if best > 0 && count < n2 {
-            // Same class; +2 when the MDS0 and MDS1 winners coincide.
-            let mut rank_factor = 1u64;
-            if mds0_best_idx == mds1_best_idx {
+            // C rank staging (product_coding_loop.c:8158-8166): only when
+            // the config factor is nonzero — same class (the inter-class
+            // +3 arm is dead: single intra class == the mds1 best class),
+            // +2 when the MDS0 and MDS1 winners coincide.
+            let mut rank_factor = cfg.mds2_rank_factor;
+            if rank_factor != 0 && mds0_best_idx == mds1_best_idx {
                 rank_factor += 2;
             }
             let mut prev_dev = (cands[order1[count]].full_cost - best) * 100 / best;
             let mut dev = prev_dev;
-            while dev <= prev_dev + cfg.mds2_rel_dev_th
-                && dev < mds2_cand_th / (rank_factor * count as u64)
+            // C while (:8169-8171): `(!mds2_relative_dev_th || dev <=
+            // prev_dev + mds2_relative_dev_th) && dev < mds2_cand_th /
+            // (rank ? rank * cand_count : 1)` — rel-dev th 0 (M4) DISABLES
+            // the relative-dev exit; rank 0 means divisor 1.
+            while (cfg.mds2_rel_dev_th == 0 || dev <= prev_dev + cfg.mds2_rel_dev_th)
+                && dev
+                    < mds2_cand_th
+                        / (if rank_factor != 0 {
+                            rank_factor * count as u64
+                        } else {
+                            1
+                        })
             {
                 count += 1;
                 if count >= n2 {
@@ -1806,8 +1961,34 @@ pub(crate) fn decide_leaf(
         }
     }
 
-    // -- Commit the winner --
-    let cand = &cands[win];
+    LeafEval {
+        abs_x,
+        abs_y,
+        size,
+        win: cands.swap_remove(win),
+    }
+}
+
+/// Commit an evaluated winner — C `md_update_all_neighbour_arrays` (+ the
+/// MD recon plane writes `copy_recon_md` feeds): luma recon into
+/// `y_recon`, chroma into the funnel's decision planes, mode/skip/uv
+/// rows, chosen-tx txfm dims, per-txb + chroma coefficient contexts.
+/// Every array write spans exactly the block, so re-committing a parent
+/// block after its children were committed overwrites them completely
+/// (the C winner-overwrite in `test_split_partition`).
+pub(crate) fn commit_leaf(
+    fx: &mut FunnelCtx<'_>,
+    y_recon: &mut [u8],
+    y_stride: usize,
+    ev: &LeafEval,
+) {
+    let (abs_x, abs_y, size) = (ev.abs_x, ev.abs_y, ev.size);
+    let (w, h) = (size, size);
+    let cw = w / 2;
+    let chh = h / 2;
+    let ccx = abs_x / 2;
+    let ccy = abs_y / 2;
+    let cand = &ev.win;
     for r in 0..h {
         let dst = (abs_y + r) * y_stride + abs_x;
         y_recon[dst..dst + w].copy_from_slice(&cand.y_recon[r * w..(r + 1) * w]);
@@ -1820,6 +2001,14 @@ pub(crate) fn decide_leaf(
     let skip = !cand.block_has_coeff;
     fx.ectx
         .record_block(abs_x, abs_y, w, h, cand.mode, cand.uv, skip);
+    // MD partition-context bytes (mode_decision_update_neighbor_arrays,
+    // product_coding_loop.c:179-192: partition_context_lookup[bsize]
+    // written over the block span — the AL_PART_CTX NONE rows are the
+    // same values). Consumed by the depth walk's partition rates
+    // (update_part_neighs); inert for the fixed-tree paths (nothing
+    // reads the decision ectx's partition bytes there).
+    fx.ectx
+        .update_partition_ctx(abs_x, abs_y, w, h, crate::partition::PartitionType::None);
     // set_txfm_ctxs with the CHOSEN tx dims (mode_decision_update:246-256).
     let chosen_tx = size >> cand.tx_depth;
     fx.ectx
@@ -1835,24 +2024,6 @@ pub(crate) fn decide_leaf(
     }
     fx.ectx.record_coeff_uv(0, ccx, ccy, cw, chh, cand.u_cul);
     fx.ectx.record_coeff_uv(1, ccx, ccy, cw, chh, cand.v_cul);
-
-    LeafChoice {
-        mode: cand.mode,
-        angle_delta: cand.delta,
-        fi_mode: cand.fi,
-        uv_mode: cand.uv,
-        uv_angle_delta: cand.uv_delta,
-        tx_depth: cand.tx_depth,
-        txb_qcoeffs: cand.txb_q.clone(),
-        txb_eobs: cand.txb_eob.clone(),
-        txb_tx_types: cand.txb_type.clone(),
-        u_qcoeffs: cand.u_q.clone(),
-        v_qcoeffs: cand.v_q.clone(),
-        u_eob: cand.u_eob,
-        v_eob: cand.v_eob,
-        u_recon: cand.u_recon.clone(),
-        v_recon: cand.v_recon.clone(),
-    }
 }
 
 /// C `get_end_tx_depth` (product_coding_loop.c:4171) clamped by
@@ -2376,6 +2547,7 @@ mod tests {
         assert_eq!((c.txt_satd_th, c.txt_rate_th), (15, 250));
         assert!(c.real_coeff_ctx && c.txs_on && c.txt_on);
         assert!(c.ind_uv_mds3 && c.edge_filter && !c.dc_only_gate);
+        assert_eq!(c.mds2_rank_factor, 1);
         // M6 keeps the original shape (regression pin for the shared tail).
         let m6 = FunnelCfg::for_preset(6);
         assert_eq!(m6.mode_end, 9);
@@ -2383,6 +2555,65 @@ mod tests {
         assert_eq!((m6.txt_group_lt16, m6.txt_group_ge16), (5, 4));
         assert_eq!((m6.txt_satd_th, m6.txt_rate_th), (10, 100));
         assert!(!m6.ind_uv_mds3 && !m6.edge_filter);
+        assert_eq!(m6.mds2_rank_factor, 1);
+    }
+
+    /// FunnelCfg::for_preset(4) pins vs the instrumented M5DBG CFG
+    /// enc_mode=4 dump (docs/captures/m0m5_config_dlf.txt line 14):
+    /// intra_level 1 -> mode_end PAETH / angular_pred_level 1 (ALL 7
+    /// deltas); SH edge filter OFF (ang 1 not in {2,3}); nic case 5 —
+    /// scal 6, mds1 1200/rank 0, mds2 20/rank 0/rel-dev 0, mds3 15;
+    /// txt/txs/rdoq/chroma identical to M5.
+    #[test]
+    fn m4_cfg_matches_capture() {
+        let c = FunnelCfg::for_preset(4);
+        assert_eq!(c.mode_end, 12);
+        assert_eq!(c.angular_level, 1);
+        assert!(c.filter_intra && !c.prune_best_mode);
+        assert_eq!(c.nic_num, (6, 6, 6));
+        assert_eq!(
+            (c.mds1_cand_base_th, c.mds1_rank_factor, c.mds2_cand_base_th),
+            (1200, 0, 20)
+        );
+        assert_eq!((c.mds2_rank_factor, c.mds2_rel_dev_th), (0, 0));
+        assert_eq!(c.mds3_cand_base_th, 15);
+        assert_eq!((c.txt_group_lt16, c.txt_group_ge16), (6, 6));
+        assert_eq!((c.txt_satd_th, c.txt_rate_th), (15, 250));
+        assert!(c.real_coeff_ctx && c.txs_on && c.txt_on);
+        assert!(c.ind_uv_mds3 && !c.edge_filter && !c.dc_only_gate);
+    }
+
+    /// M4 candidate enumeration (angular_pred_level 1): every directional
+    /// mode carries all 7 deltas in counter order -3..+3
+    /// (mode_decision.c:3259-3271 — the |1|/|2| skip only arms at
+    /// level >= 2), non-directionals one entry each, FILTER_DC last:
+    /// 13 modes + 8 x 6 extra deltas = 61 regular + 1 filter-intra.
+    #[test]
+    fn m4_candidate_set_shape() {
+        let cfg = FunnelCfg::for_preset(4);
+        let mut n = 0usize;
+        let mut first_dir_deltas: Vec<i8> = Vec::new();
+        for mode in 0..=cfg.mode_end {
+            let directional = matches!(mode, 1..=8);
+            if matches!(mode, 3..=8) && cfg.angular_level >= 4 {
+                continue;
+            }
+            if directional && cfg.angular_level <= 2 {
+                for d in -3i8..=3 {
+                    if cfg.angular_level >= 2 && matches!(d, -2 | -1 | 1 | 2) {
+                        continue;
+                    }
+                    if mode == 1 {
+                        first_dir_deltas.push(d);
+                    }
+                    n += 1;
+                }
+            } else {
+                n += 1;
+            }
+        }
+        assert_eq!(n, 61);
+        assert_eq!(first_dir_deltas, alloc::vec![-3, -2, -1, 0, 1, 2, 3]);
     }
 
     /// The chroma tx type derivation confirmed by the WIN dumps
