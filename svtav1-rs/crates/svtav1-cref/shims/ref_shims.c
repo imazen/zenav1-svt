@@ -519,3 +519,10 @@ uint32_t ref_write_refsubexpfin_bytes(uint16_t n, uint16_t k, uint16_t ref, uint
 int32_t ref_count_refsubexpfin(uint16_t n, uint16_t k, uint16_t ref, uint16_t v) {
     return svt_aom_count_primitive_refsubexpfin(n, k, ref, v);
 }
+
+/* ---- Intra edge filter (svt_memcpy is an rtcd pointer: init first) ---- */
+void svt_av1_filter_intra_edge_c(uint8_t* p, int32_t sz, int32_t strength);
+void ref_filter_intra_edge(uint8_t* p, int32_t sz, int32_t strength) {
+    ref_rtcd_once();
+    svt_av1_filter_intra_edge_c(p, sz, strength);
+}

@@ -796,6 +796,280 @@ pub fn build_directional_edges(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Generalized C-exact directional prediction (edge fill + optional intra
+// edge filter/upsample + dr kernel), covering whole blocks AND sub-TX
+// units, luma AND chroma planes — the ENCODER MD path
+// (`svt_av1_predict_intra_block` geometry, enc_intra_prediction.c:452-566,
+// + `build_intra_predictors` dr branch :181-215).
+// ---------------------------------------------------------------------------
+
+/// Geometry of one directional prediction unit.
+///
+/// All `*_px` are PLANE-domain pixels; `mi_*` are LUMA mi (4px) units of
+/// the CODED block (C `xd->mi_row/mi_col`, `blk_geom->bsize`); `row_off` /
+/// `col_off` are the TX offset within the block in PLANE mi units (C
+/// `tx_org >> 2`).
+pub struct DrGeom {
+    /// Plane-domain absolute origin of the TX unit.
+    pub px: usize,
+    pub py: usize,
+    /// TX dims (plane px).
+    pub txw: usize,
+    pub txh: usize,
+    /// Coded block's luma mi position.
+    pub mi_row: usize,
+    pub mi_col: usize,
+    /// Coded block dims in luma px (`block_size_wide/high[bsize]`).
+    pub bw_px: usize,
+    pub bh_px: usize,
+    /// TX offset within the block, plane mi units.
+    pub row_off: usize,
+    pub col_off: usize,
+    /// Plane subsampling (0 = luma, 1 = 4:2:0 chroma).
+    pub ss: usize,
+    /// LUMA frame dims in px (64-aligned in this encoder).
+    pub frame_w: usize,
+    pub frame_h: usize,
+}
+
+/// C `mode_to_angle_map` (V..D67) + `ANGLE_STEP = 3`.
+pub const MODE_TO_ANGLE_MAP: [i32; 13] = [0, 90, 180, 45, 135, 113, 157, 203, 67, 0, 0, 0, 0];
+
+/// Directional prediction of one TX unit, C-exact against the encoder MD
+/// path: `svt_av1_predict_intra_block` n_px geometry +
+/// `build_intra_predictors`' dr branch, including the intra edge filter,
+/// corner filter and edge upsampling when `edge_filter` (SH
+/// `enable_intra_edge_filter`) is set. `sample(x, y)` returns the plane
+/// pixel at plane coords (x, y) — callers implement live-plane or
+/// depth-overlay reads; it is only consulted for previously-coded
+/// positions per the availability rules.
+///
+/// `filt_type` is C `get_filt_type(xd, plane)`: 1 when the above OR left
+/// neighbor of the CODED BLOCK is smooth (per-plane mode), else 0.
+#[allow(clippy::too_many_arguments)]
+pub fn dr_predict<S: Fn(usize, usize) -> u8>(
+    sample: S,
+    g: &DrGeom,
+    p_angle: i32,
+    edge_filter: bool,
+    filt_type: i32,
+    partition: PartitionType,
+    dst: &mut [u8],
+) {
+    use svtav1_dsp::intra_pred as ip;
+    debug_assert!(g.frame_w % 8 == 0 && g.frame_h % 8 == 0);
+    let mi_cols = 2 * ((g.frame_w + 7) >> 3);
+    let mi_rows = 2 * ((g.frame_h + 7) >> 3);
+    let txwpx = g.txw as i64;
+    let txhpx = g.txh as i64;
+    let wpx = (g.bw_px >> g.ss) as i64;
+    let hpx = (g.bh_px >> g.ss) as i64;
+    let x_off = (g.col_off * 4) as i64;
+    let y_off = (g.row_off * 4) as i64;
+
+    // C: have_top = row_off || up_available; have_left = col_off ||
+    // left_available (single tile).
+    let have_top = g.row_off > 0 || g.mi_row > 0;
+    let have_left = g.col_off > 0 || g.mi_col > 0;
+
+    // C: xr/yd — distance from the TX unit's right/bottom edge to the
+    // frame's mi-aligned edges, in PLANE px (mb_to_right_edge >> (3+ss)).
+    let xr = (((mi_cols * 4) as i64 - (g.mi_col * 4) as i64 - g.bw_px as i64) >> g.ss)
+        + (wpx - x_off - txwpx);
+    let yd = (((mi_rows * 4) as i64 - (g.mi_row * 4) as i64 - g.bh_px as i64) >> g.ss)
+        + (hpx - y_off - txhpx);
+
+    let txw_mi = g.txw / 4;
+    let txh_mi = g.txh / 4;
+    let right_available = g.mi_col + ((g.col_off + txw_mi) << g.ss) < mi_cols;
+    let bottom_available = yd > 0 && g.mi_row + ((g.row_off + txh_mi) << g.ss) < mi_rows;
+
+    let shape_ok = is_av1_block_shape(g.bw_px, g.bh_px);
+    let have_top_right = shape_ok
+        && has_top_right(
+            16,
+            g.bw_px,
+            g.bh_px,
+            g.mi_row,
+            g.mi_col,
+            have_top,
+            right_available,
+            partition,
+            txw_mi,
+            g.row_off,
+            g.col_off,
+            g.ss,
+            g.ss,
+        );
+    let have_bottom_left = shape_ok
+        && has_bottom_left(
+            16,
+            g.bw_px,
+            g.bh_px,
+            g.mi_row,
+            g.mi_col,
+            bottom_available,
+            have_left,
+            partition,
+            txh_mi,
+            g.row_off,
+            g.col_off,
+            g.ss,
+            g.ss,
+        );
+
+    let n_top_px = if have_top { txwpx.min(xr + txwpx) } else { 0 };
+    let n_topright_px = if have_top_right { txwpx.min(xr) } else { 0 };
+    let n_left_px = if have_left { txhpx.min(yd + txhpx) } else { 0 };
+    let n_bottomleft_px = if have_bottom_left { txhpx.min(yd) } else { 0 };
+
+    // dr-mode need flags (build_intra_predictors:67-76).
+    let (need_above, need_left) = if p_angle <= 90 {
+        (true, false)
+    } else if p_angle < 180 {
+        (true, true)
+    } else {
+        (false, true)
+    };
+    let need_right = p_angle < 90;
+    let need_bottom = p_angle > 180;
+
+    let above_ref = |i: i64| sample(((g.px as i64) + i) as usize, g.py - 1);
+    let left_ref = |i: i64| sample(g.px - 1, ((g.py as i64) + i) as usize);
+
+    // Early flat exit (:86-99).
+    if (!need_above && n_left_px == 0) || (!need_left && n_top_px == 0) {
+        let val = if need_left {
+            if n_top_px > 0 { above_ref(0) } else { 129 }
+        } else if n_left_px > 0 {
+            left_ref(0)
+        } else {
+            127
+        };
+        for r in 0..g.txh {
+            dst[r * g.txw..(r + 1) * g.txw].fill(val);
+        }
+        return;
+    }
+
+    let origin = ip::EDGE_ORIGIN;
+    let mut above = [127u8; ip::EDGE_BUF_LEN];
+    let mut left = [129u8; ip::EDGE_BUF_LEN];
+
+    // NEED_LEFT (:100-131).
+    if need_left {
+        let num_left = (txhpx + if need_bottom { txwpx } else { 0 }) as usize;
+        if n_left_px > 0 {
+            for i in 0..n_left_px {
+                left[origin + i as usize] = left_ref(i);
+            }
+            let mut i = n_left_px as usize;
+            if need_bottom && n_bottomleft_px > 0 {
+                debug_assert_eq!(i as i64, txhpx);
+                while (i as i64) < txhpx + n_bottomleft_px {
+                    left[origin + i] = left_ref(i as i64);
+                    i += 1;
+                }
+            }
+            if i < num_left {
+                let v = left[origin + i - 1];
+                left[origin + i..origin + num_left].fill(v);
+            }
+        } else if n_top_px > 0 {
+            let v = above_ref(0);
+            left[origin..origin + num_left].fill(v);
+        }
+    }
+
+    // NEED_ABOVE (:133-161).
+    if need_above {
+        let num_top = (txwpx + if need_right { txhpx } else { 0 }) as usize;
+        if n_top_px > 0 {
+            for i in 0..n_top_px {
+                above[origin + i as usize] = above_ref(i);
+            }
+            let mut i = n_top_px as usize;
+            if need_right && n_topright_px > 0 {
+                debug_assert_eq!(i as i64, txwpx);
+                while (i as i64) < txwpx + n_topright_px {
+                    above[origin + i] = above_ref(i as i64);
+                    i += 1;
+                }
+            }
+            if i < num_top {
+                let v = above[origin + i - 1];
+                above[origin + i..origin + num_top].fill(v);
+            }
+        } else if n_left_px > 0 {
+            let v = left_ref(0);
+            above[origin..origin + num_top].fill(v);
+        }
+    }
+
+    // need_above_left (always set for dr modes, :163-176).
+    let top_left = if n_top_px > 0 && n_left_px > 0 {
+        sample(g.px - 1, g.py - 1)
+    } else if n_top_px > 0 {
+        above_ref(0)
+    } else if n_left_px > 0 {
+        left_ref(0)
+    } else {
+        128
+    };
+    above[origin - 1] = top_left;
+    left[origin - 1] = top_left;
+
+    // dr edge filter + upsample (:181-215).
+    let mut upsample_above = false;
+    let mut upsample_left = false;
+    if edge_filter {
+        if p_angle != 90 && p_angle != 180 {
+            let ab_le = 1usize; // need_above_left
+            if need_above && need_left && (txwpx + txhpx >= 24) {
+                ip::filter_intra_edge_corner(&mut above, &mut left, origin);
+            }
+            if need_above && n_top_px > 0 {
+                let strength =
+                    ip::intra_edge_filter_strength(txwpx as i32, txhpx as i32, p_angle - 90, filt_type);
+                let n_px = (n_top_px + ab_le as i64 + if need_right { txhpx } else { 0 }) as usize;
+                ip::filter_intra_edge(&mut above, origin - ab_le, n_px, strength);
+            }
+            if need_left && n_left_px > 0 {
+                let strength =
+                    ip::intra_edge_filter_strength(txhpx as i32, txwpx as i32, p_angle - 180, filt_type);
+                let n_px = (n_left_px + ab_le as i64 + if need_bottom { txwpx } else { 0 }) as usize;
+                ip::filter_intra_edge(&mut left, origin - ab_le, n_px, strength);
+            }
+        }
+        upsample_above =
+            ip::use_intra_edge_upsample(txwpx as i32, txhpx as i32, p_angle - 90, filt_type);
+        if need_above && upsample_above {
+            let n_px = (txwpx + if need_right { txhpx } else { 0 }) as usize;
+            ip::upsample_intra_edge(&mut above, origin, n_px);
+        }
+        upsample_left =
+            ip::use_intra_edge_upsample(txhpx as i32, txwpx as i32, p_angle - 180, filt_type);
+        if need_left && upsample_left {
+            let n_px = (txhpx + if need_bottom { txwpx } else { 0 }) as usize;
+            ip::upsample_intra_edge(&mut left, origin, n_px);
+        }
+    }
+
+    ip::dr_predictor_edged(
+        dst,
+        g.txw,
+        &above,
+        &left,
+        origin,
+        upsample_above,
+        upsample_left,
+        g.txw,
+        g.txh,
+        p_angle,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
