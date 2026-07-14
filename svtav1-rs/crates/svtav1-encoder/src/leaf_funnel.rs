@@ -1053,6 +1053,20 @@ fn rs_tx_size(w: usize, h: usize) -> svtav1_types::transform::TxSize {
         (16, 16) => TxSize::Tx16x16,
         (32, 32) => TxSize::Tx32x32,
         (64, 64) => TxSize::Tx64x64,
+        (4, 8) => TxSize::Tx4x8,
+        (8, 4) => TxSize::Tx8x4,
+        (8, 16) => TxSize::Tx8x16,
+        (16, 8) => TxSize::Tx16x8,
+        (16, 32) => TxSize::Tx16x32,
+        (32, 16) => TxSize::Tx32x16,
+        (32, 64) => TxSize::Tx32x64,
+        (64, 32) => TxSize::Tx64x32,
+        (4, 16) => TxSize::Tx4x16,
+        (16, 4) => TxSize::Tx16x4,
+        (8, 32) => TxSize::Tx8x32,
+        (32, 8) => TxSize::Tx32x8,
+        (16, 64) => TxSize::Tx16x64,
+        (64, 16) => TxSize::Tx64x16,
         _ => unreachable!("funnel tx {w}x{h}"),
     }
 }
@@ -1163,6 +1177,13 @@ pub(crate) struct LeafEval {
     pub w: usize,
     pub h: usize,
     win: Cand,
+    /// C `cand_bf->residual` content at `non_normative_txs` time: ALL
+    /// MDS3 candidates share ONE residual workspace (verified by buffer-
+    /// pointer instrumentation — docs/captures/nsq_m2m3), so the buffer
+    /// holds the LAST MDS3-processed candidate's whole-block DEPTH-0
+    /// residual (the depth-1/2 trials write the per-depth scratch
+    /// buffers, init_tx_cand_bf copies OUT of this one).
+    psq_resid: Vec<i32>,
 }
 
 impl LeafEval {
@@ -1198,10 +1219,11 @@ impl LeafEval {
         self.win.block_has_coeff
     }
 
-    /// Winner luma prediction (w x h raster) — the parent-SQ TXS gate
-    /// (`non_normative_txs`) re-transforms the winner's residual.
-    pub(crate) fn y_pred(&self) -> &[u8] {
-        &self.win.pred
+    /// The shared MDS3 residual-workspace state (C `cand_bf->residual`,
+    /// consumed by the psq gate): the LAST MDS3 candidate's depth-0
+    /// residual.
+    pub(crate) fn psq_resid(&self) -> &[i32] {
+        &self.psq_resid
     }
 
     /// Winner luma recon (w x h raster).
@@ -2085,12 +2107,26 @@ pub(crate) fn evaluate_leaf(
         }
     }
 
+    // The shared MDS3 residual workspace after the loop: the LAST
+    // processed candidate's (order1[n3-1]) whole-block depth-0 residual.
+    let mut psq_resid = vec![0i32; w * h];
+    {
+        let last = &cands[order1[n3 - 1]];
+        for r in 0..h {
+            let srow = y_src_off + r * y_src_stride;
+            for c in 0..w {
+                psq_resid[r * w + c] = y_src[srow + c] as i32 - last.pred[r * w + c] as i32;
+            }
+        }
+    }
+
     LeafEval {
         abs_x,
         abs_y,
         w,
         h,
         win: cands.swap_remove(win),
+        psq_resid,
     }
 }
 
@@ -2205,37 +2241,32 @@ fn sub_tx_dims(tw: usize, th: usize) -> (usize, usize) {
 }
 
 /// C `non_normative_txs` (product_coding_loop.c:9641): re-transform the
-/// SQ winner's whole-block residual with the two half-height TXs (H
-/// split) and the two half-width TXs (V split), DCT_DCT +
-/// `svt_aom_quantize_inv_quantize_light` (plain quantize_b, y tables,
-/// full_loop.c:1253), and return the min eob per split direction.
-/// `None` when the winner kept no coefficients (C leaves the ~0
-/// sentinels, so the psq gate can't fire).
-pub(crate) fn min_nz_hv(
-    ev: &LeafEval,
-    y_src: &[u8],
-    y_src_stride: usize,
-    y_src_off: usize,
-    qindex: u8,
-) -> Option<(u16, u16)> {
+/// shared MDS3 residual workspace (`cand_bf->residual` = the LAST MDS3
+/// candidate's whole-block depth-0 residual — every MDS3 candidate
+/// full-loops through ONE pixel workspace at staging mode 1; pointer-
+/// instrumented) with the two half-height TXs (H split) and the two
+/// half-width TXs (V split), DCT_DCT + `svt_aom_quantize_inv_quantize_
+/// light` (plain quantize_b, y tables, full_loop.c:1253), and return
+/// the min eob per split direction. `None` when the winner kept no
+/// coefficients (C leaves the ~0 sentinels, so the psq gate can't
+/// fire).
+pub(crate) fn min_nz_hv(ev: &LeafEval, qindex: u8) -> Option<(u16, u16)> {
     if !ev.block_has_coeff() {
         return None;
     }
     let (w, h) = (ev.w, ev.h);
     debug_assert!(w == h && w >= 8, "psq gate runs on SQ blocks only");
     let qt = crate::quant::build_quant_table(qindex);
-    let pred = ev.y_pred();
+    let resid = ev.psq_resid();
+    debug_assert_eq!(resid.len(), w * h);
 
     let half_eob = |ox: usize, oy: usize, tw: usize, th: usize| -> u16 {
         let n = tw * th;
         let c_tx = cc::tx_size_from_dims(tw, th);
         let mut residual = vec![0i32; n];
         for r in 0..th {
-            let srow = y_src_off + (oy + r) * y_src_stride + ox;
-            let prow = (oy + r) * w + ox;
-            for c in 0..tw {
-                residual[r * tw + c] = y_src[srow + c] as i32 - pred[prow + c] as i32;
-            }
+            let rrow = (oy + r) * w + ox;
+            residual[r * tw..(r + 1) * tw].copy_from_slice(&resid[rrow..rrow + tw]);
         }
         let mut coeffs = vec![0i32; n];
         let ok = svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(

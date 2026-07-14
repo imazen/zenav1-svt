@@ -741,6 +741,35 @@ struct SqInfo {
     min_nz: Option<(u16, u16)>,
 }
 
+/// SVTAV1_NSQDBG=1: mirror the instrumented C NSQDBG line format
+/// (docs/captures/nsq_m2m3/) on stderr for direct MD-level diffing.
+fn nsqdbg_on() -> bool {
+    std::env::var_os("SVTAV1_NSQDBG").is_some()
+}
+
+/// C BLOCK_SIZES enum value of a square block (dump parity).
+fn c_bsize_sq(size: usize) -> u32 {
+    match size {
+        4 => 0,
+        8 => 3,
+        16 => 6,
+        32 => 9,
+        _ => 12,
+    }
+}
+
+/// C `Part` enum value of a funnel shape (dump parity).
+fn c_part(p: PartitionType) -> u32 {
+    match p {
+        PartitionType::None => 0,
+        PartitionType::Horz => 1,
+        PartitionType::Vert => 2,
+        PartitionType::Horz4 => 3,
+        PartitionType::Vert4 => 4,
+        _ => 255,
+    }
+}
+
 impl DepthWalk<'_, '_> {
     const PARENT_COST_BIAS: u64 = 995; // ctx->parent_cost_bias, allintra
     const EE_SPLIT_TH: u64 = 50; // depth_early_exit level 1
@@ -1206,6 +1235,23 @@ impl DepthWalk<'_, '_> {
                             &h_children,
                             &v_children,
                         ) {
+                            if nsqdbg_on() {
+                                let g = if self.skip_by_split_rate(
+                                    shape, sq, best_part, ctx_row, size, scan.split_flag,
+                                ) {
+                                    1
+                                } else if self.skip_by_sq_txs(shape, sq) {
+                                    2
+                                } else if self.skip_by_recon_dist(shape, sq) {
+                                    3
+                                } else {
+                                    4
+                                };
+                                eprintln!(
+                                    "NSQDBG SKIP mi=({},{}) bsize={} shape={} gate={}",
+                                    abs_y / 4, abs_x / 4, c_bsize_sq(size), c_part(shape), g,
+                                );
+                            }
                             valid = false;
                             break;
                         }
@@ -1226,11 +1272,26 @@ impl DepthWalk<'_, '_> {
                         ch,
                         false, // is_dc_only gate: eff-M9 only
                     );
+                    if nsqdbg_on() {
+                        eprintln!(
+                            "NSQDBG BLK mi=({},{}) bsize={} shape={} nsi={} cost={} rate={} dist={} mode={} coeff={} nz={}",
+                            abs_y / 4, abs_x / 4, c_bsize_sq(size), c_part(shape), nsi,
+                            ev.block_cost(), ev.total_rate(), ev.full_dist(), ev.mode(),
+                            u8::from(ev.block_has_coeff()), ev.cnt_nz_coeff(),
+                        );
+                    }
                     part_cost += ev.block_cost();
                     evals.push(ev);
 
                     if let Some((_, best_rd, _)) = &best {
                         if part_cost >= *best_rd {
+                            if nsqdbg_on() {
+                                eprintln!(
+                                    "NSQDBG ABORT mi=({},{}) bsize={} shape={} nsi={} part_cost={} best={}",
+                                    abs_y / 4, abs_x / 4, c_bsize_sq(size), c_part(shape), nsi,
+                                    part_cost, best_rd,
+                                );
+                            }
                             valid = false;
                             break;
                         }
@@ -1284,13 +1345,7 @@ impl DepthWalk<'_, '_> {
                         && size >= 8
                         && size > self.nsq.min_nsq
                     {
-                        crate::leaf_funnel::min_nz_hv(
-                            ev,
-                            self.y_src,
-                            self.y_src_stride,
-                            abs_y * self.y_src_stride + abs_x,
-                            self.fx.frame.base_qindex,
-                        )
+                        crate::leaf_funnel::min_nz_hv(ev, self.fx.frame.base_qindex)
                     } else {
                         None
                     };
@@ -1310,6 +1365,27 @@ impl DepthWalk<'_, '_> {
                     if better {
                         best = Some((shape, part_cost, evals));
                     }
+                }
+                if nsqdbg_on() {
+                    let (bp, brd) = best
+                        .as_ref()
+                        .map(|(p, rd, _)| (*p as u32, *rd))
+                        .unwrap_or((255, 0));
+                    eprint!(
+                        "NSQDBG SHAPE mi=({},{}) bsize={} shape={} valid={} part_cost={} part_rate={} best={}/{}",
+                        abs_y / 4, abs_x / 4, c_bsize_sq(size), c_part(shape),
+                        u8::from(valid), part_cost, part_rate, bp, brd,
+                    );
+                    if shape == PartitionType::None {
+                        let sq = sq_info.as_ref().unwrap();
+                        let q = sq.quad.unwrap_or([0; 4]);
+                        let (nzh, nzv) = sq.min_nz.unwrap_or((0, 0));
+                        eprint!(
+                            " q=[{},{},{},{}] nzh={} nzv={}",
+                            q[0], q[1], q[2], q[3], nzh, nzv
+                        );
+                    }
+                    eprintln!();
                 }
             }
 
@@ -1418,6 +1494,12 @@ impl DepthWalk<'_, '_> {
                 if (prd as u128) * (th as u128) * (Self::PARENT_COST_BIAS as u128)
                     <= (split_cost as u128) * 1_000_000
                 {
+                    if nsqdbg_on() {
+                        eprintln!(
+                            "NSQDBG TSX mi=({},{}) bsize={} i={} parent={} split={}",
+                            abs_y / 4, abs_x / 4, c_bsize_sq(size), i, prd, split_cost,
+                        );
+                    }
                     return SplitOut::Invalid;
                 }
             }
@@ -1431,6 +1513,23 @@ impl DepthWalk<'_, '_> {
 
         // Final compare (:11375): parent wins on
         // bias * parent_rd <= split_cost * 1000.
+        if nsqdbg_on() {
+            let chose = match parent_rd {
+                Some(prd)
+                    if (Self::PARENT_COST_BIAS as u128) * (prd as u128)
+                        <= (split_cost as u128) * 1000 =>
+                {
+                    "parent"
+                }
+                _ => "split",
+            };
+            eprintln!(
+                "NSQDBG TS mi=({},{}) bsize={} parent_valid={} parent={} split={} chose={}",
+                abs_y / 4, abs_x / 4, c_bsize_sq(size),
+                u8::from(parent_rd.is_some()),
+                parent_rd.unwrap_or(0), split_cost, chose,
+            );
+        }
         if let Some(prd) = parent_rd {
             if (Self::PARENT_COST_BIAS as u128) * (prd as u128) <= (split_cost as u128) * 1000 {
                 return SplitOut::ParentKept;

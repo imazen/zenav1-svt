@@ -53,6 +53,59 @@ impl CdefFrameParams {
     }
 }
 
+/// The full CDEF frame decision: `cdef_bits` + the `1 << bits` strength
+/// pairs + the per-64x64-filter-block strength index (`mi_grid
+/// cdef_strength`, consumed by the tile writer's per-SB `cdef_idx`
+/// literal and by the frame application). `bits = 0` collapses to the
+/// single-pair behavior every previously-tracked cell used.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CdefPick {
+    pub damping: u8,
+    pub bits: u8,
+    /// `(y_strength, uv_strength)` packed pairs; len == `1 << bits`.
+    pub strengths: alloc::vec::Vec<(u8, u8)>,
+    /// Per-fb (64x64, raster over nhfb columns) strength index; 0 for
+    /// all-skip fbs (never transmitted or applied).
+    pub fb_idx: alloc::vec::Vec<u8>,
+    pub nhfb: usize,
+}
+
+impl CdefPick {
+    pub fn single(p: CdefFrameParams) -> Self {
+        CdefPick {
+            damping: p.damping,
+            bits: 0,
+            strengths: alloc::vec![(p.y_strength, p.uv_strength)],
+            fb_idx: alloc::vec::Vec::new(),
+            nhfb: 0,
+        }
+    }
+
+    /// Decoder `do_cdef` gate (libaom decodeframe.c:5417):
+    /// `cdef_bits || strengths[0].y || strengths[0].uv`.
+    pub fn any(&self, monochrome: bool) -> bool {
+        self.bits != 0
+            || self.strengths[0].0 != 0
+            || (!monochrome && self.strengths[0].1 != 0)
+    }
+
+    pub fn signal(&self) -> svtav1_entropy::obu::CdefSignal {
+        svtav1_entropy::obu::CdefSignal {
+            damping: self.damping,
+            bits: self.bits,
+            strengths: self.strengths.clone(),
+        }
+    }
+
+    /// The strength pair a filter block applies (fb in 64x64 raster).
+    pub fn fb_strengths(&self, fbr: usize, fbc: usize) -> (u8, u8) {
+        if self.bits == 0 {
+            return self.strengths[0];
+        }
+        self.strengths[self.fb_idx[fbr * self.nhfb + fbc] as usize]
+    }
+}
+
 /// C-exact port of `svt_pick_cdef_from_qp` (enc_cdef.c:849), intra branch
 /// (`is_screen_content = 0`, `frame_type == KEY_FRAME`), plus the
 /// `CDEF_DAMPING_FROM_QP` damping derivation (enc_cdef.c:923).
@@ -208,31 +261,17 @@ pub fn apply_cdef_frame(
     height: usize,
     chroma_420: bool,
     geom: &DeblockGeom,
-    params: &CdefFrameParams,
+    params: &CdefPick,
 ) -> CdefStats {
     let mut stats = CdefStats::default();
-    // Decoder's frame-level gate (libaom decodeframe.c:5417 do_cdef): with
-    // cdef_bits = 0 and all strengths 0 the pass does not run at all.
+    // Decoder's frame-level gate (libaom decodeframe.c:5417 do_cdef):
+    // `cdef_bits || strengths[0]` — with bits > 0 the pass runs even when
+    // set 0 is zero (other sets may filter).
     if !params.any(!chroma_420) {
         return stats;
     }
     assert!(width % 8 == 0 && height % 8 == 0, "8-aligned frames only");
 
-    // Strength decomposition (libaom cdef_fb_col, av1/common/cdef.c:323):
-    // level = strength / 4, sec = strength % 4, sec 3 decodes as 4.
-    let lvl_y = (params.y_strength / 4) as i32;
-    let mut sec_y = (params.y_strength % 4) as i32;
-    sec_y += i32::from(sec_y == 3);
-    let (lvl_uv, sec_uv) = if chroma_420 {
-        let l = (params.uv_strength / 4) as i32;
-        let mut s = (params.uv_strength % 4) as i32;
-        s += i32::from(s == 3);
-        (l, s)
-    } else {
-        (0, 0)
-    };
-    let zero_y = lvl_y == 0 && sec_y == 0;
-    let zero_uv = lvl_uv == 0 && sec_uv == 0;
     let damping = params.damping as i32; // + coeff_shift (=0 at 8-bit)
 
     let nvfb = height.div_ceil(64);
@@ -240,7 +279,7 @@ pub fn apply_cdef_frame(
 
     // Pre-CDEF (post-deblock) snapshot per plane — see the doc comment.
     let pre_y: Vec<u8> = y.to_vec();
-    let (pre_u, pre_v): (Vec<u8>, Vec<u8>) = if chroma_420 && !zero_uv {
+    let (pre_u, pre_v): (Vec<u8>, Vec<u8>) = if chroma_420 {
         (u.to_vec(), v.to_vec())
     } else {
         (Vec::new(), Vec::new())
@@ -267,6 +306,23 @@ pub fn apply_cdef_frame(
             if dlist.is_empty() {
                 continue;
             }
+
+            // Per-fb strengths (libaom cdef_fb_col: mi cdef_strength ->
+            // cdef_strengths[idx]; strength/4, %4, sec 3 -> 4).
+            let (fb_y, fb_uv) = params.fb_strengths(fbr, fbc);
+            let lvl_y = (fb_y / 4) as i32;
+            let mut sec_y = (fb_y % 4) as i32;
+            sec_y += i32::from(sec_y == 3);
+            let (lvl_uv, sec_uv) = if chroma_420 {
+                let l = (fb_uv / 4) as i32;
+                let mut s = (fb_uv % 4) as i32;
+                s += i32::from(s == 3);
+                (l, s)
+            } else {
+                (0, 0)
+            };
+            let zero_y = lvl_y == 0 && sec_y == 0;
+            let zero_uv = lvl_uv == 0 && sec_uv == 0;
 
             // ---- Luma (pli 0): always prepared — the direction search
             // runs here even at zero luma strength because chroma reuses
@@ -435,14 +491,9 @@ pub enum CdefSearchPick {
     /// Every 64x64 filter block is all-skip (`sb_count == 0`): the caller
     /// takes `pick_cdef_params_all_skip_search` (already C-exact).
     AllSkip,
-    /// A single strength pair won (`cdef_bits = 0`) — the fully supported
-    /// case; all six tracked identity cells land here.
-    Picked(CdefFrameParams),
-    /// The RD search preferred `cdef_bits > 0` (multiple strength pairs).
-    /// The tile writer has no per-SB `cdef_idx` emission yet, so the
-    /// caller falls back to the qp fast path (self-consistent stream,
-    /// documented divergence from C — see docs/IDENTITY-STATUS.md).
-    MultiStrength,
+    /// The RD pick: `cdef_bits` strength sets + the per-fb indices
+    /// (finish_cdef_search, enc_cdef.c:1369-1435).
+    Picked(CdefPick),
 }
 
 /// Chroma second-pass rows carry the `default_mse_uv * 64` sentinel
@@ -579,13 +630,23 @@ fn joint_strength_search_dual(
 /// cdef_recon_level 0 — so no mse scaling). Returns (cdef_bits,
 /// y_strength, uv_strength) in the SEARCH-INDEX domain for bits = 0, or
 /// the bits count when > 0.
-fn finish_cdef_rd(mse: &[MseRow], n_cand: usize, qindex: u8) -> (usize, usize, usize) {
+/// `finish_cdef_search`'s nb_strengths loop (enc_cdef.c:1369-1391):
+/// returns (nb_strength_bits, lev0[1<<bits], lev1[1<<bits]) in the
+/// candidate-slot domain. `zero_fs_cost_bias = 0` at allintra <= M7
+/// (cdef_recon_level 0, enc_mode_config.c:3602-3607) so the mse rows are
+/// used raw.
+fn finish_cdef_rd(
+    mse: &[MseRow],
+    n_cand: usize,
+    qindex: u8,
+) -> (usize, alloc::vec::Vec<usize>, alloc::vec::Vec<usize>) {
     let sb_count = mse.len();
     debug_assert!(sb_count > 0);
     let lambda = crate::pd0::kf_full_lambda_8bit_unweighted(qindex) as u64;
     let mut best_cost = 1u64 << 63;
     let mut best_bits = 0usize;
-    let mut best_pair = (0usize, 0usize);
+    let mut best_lev0: alloc::vec::Vec<usize> = alloc::vec![0];
+    let mut best_lev1: alloc::vec::Vec<usize> = alloc::vec![0];
     for i in 0..=3usize {
         let nb = 1usize << i;
         let mut lev0 = [0i32; 16];
@@ -597,10 +658,11 @@ fn finish_cdef_rd(mse: &[MseRow], n_cand: usize, qindex: u8) -> (usize, usize, u
         if cost < best_cost {
             best_cost = cost;
             best_bits = i;
-            best_pair = (lev0[0] as usize, lev1[0] as usize);
+            best_lev0 = lev0[..nb].iter().map(|&v| v as usize).collect();
+            best_lev1 = lev1[..nb].iter().map(|&v| v as usize).collect();
         }
     }
-    (best_bits, best_pair.0, best_pair.1)
+    (best_bits, best_lev0, best_lev1)
 }
 
 /// One fb's packed filter pass: C `svt_cdef_filter_fb` with `dstride = 0`
@@ -753,6 +815,7 @@ pub fn cdef_search_still(
     let sub_uv = cfg.subsampling.min(1);
 
     let mut mse: Vec<MseRow> = Vec::new();
+    let mut fb_addr: Vec<(usize, usize)> = Vec::new();
     let mut src_pad = alloc::vec![0u16; k::CDEF_INBUF_SIZE];
     let mut tmp = alloc::vec![0u8; 64 * 64];
     let mut dlist: Vec<(usize, usize)> = Vec::with_capacity(64);
@@ -846,20 +909,42 @@ pub fn cdef_search_still(
                 // num_planes=1 loop bound.
             }
             mse.push(row);
+            fb_addr.push((fbr, fbc));
         }
     }
 
     if mse.is_empty() {
         return CdefSearchPick::AllSkip;
     }
-    let (bits, y_idx, uv_idx) = finish_cdef_rd(&mse, n_cand, qindex);
-    if bits > 0 {
-        return CdefSearchPick::MultiStrength;
+    let (bits, lev0, lev1) = finish_cdef_rd(&mse, n_cand, qindex);
+    // Per-fb best strength index (finish_cdef_search, enc_cdef.c:
+    // 1397-1412): min over gi of luma+uv candidate-slot mse; skip fbs
+    // keep index 0 (never transmitted or applied).
+    let nb = 1usize << bits;
+    let mut fb_idx = alloc::vec![0u8; nvfb * nhfb];
+    for (i, &(fbr, fbc)) in fb_addr.iter().enumerate() {
+        let mut best_gi = 0usize;
+        let mut best_mse = u64::MAX;
+        for gi in 0..nb {
+            let cur = mse[i][0][lev0[gi]] + mse[i][1][lev1[gi]];
+            if cur < best_mse {
+                best_gi = gi;
+                best_mse = cur;
+            }
+        }
+        fb_idx[fbr * nhfb + fbc] = best_gi as u8;
     }
-    CdefSearchPick::Picked(CdefFrameParams {
+    // filter_map translation: slot -> packed gi strength (the fs table
+    // IS the map, enc_cdef.c:1414-1424).
+    let strengths: alloc::vec::Vec<(u8, u8)> = (0..nb)
+        .map(|gi| (cfg.fs[lev0[gi]] as u8, cfg.fs[lev1[gi]] as u8))
+        .collect();
+    CdefSearchPick::Picked(CdefPick {
         damping: (3 + (qindex >> 6)) as u8,
-        y_strength: cfg.fs[y_idx] as u8,
-        uv_strength: cfg.fs[uv_idx] as u8,
+        bits: bits as u8,
+        strengths,
+        fb_idx,
+        nhfb,
     })
 }
 

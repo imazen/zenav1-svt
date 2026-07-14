@@ -523,7 +523,9 @@ impl EncodePipeline {
         // the post-CDEF recon, so the tile must be re-written AFTER
         // deblock+CDEF when any plane signals wiener — C's pipeline order
         // (rest_process before the EC kernel) gives it the same view.
-        let run_entropy_walk = |lr: Option<&crate::restoration::FrameRestInfo>| -> (
+        let run_entropy_walk = |lr: Option<&crate::restoration::FrameRestInfo>,
+                                cdef_walk: Option<&crate::cdef::CdefPick>|
+         -> (
             Vec<u8>,
             crate::deblock::DeblockGeom,
             Vec<u8>,
@@ -583,6 +585,14 @@ impl EncodePipeline {
                     prev_sb_row = sb_row;
                 }
 
+                // Arm the per-SB cdef_idx emission (C write_cdef resets
+                // cdef_transmitted at the SB's top-left, then the first
+                // non-skip block emits `cdef_bits` literal bits). 64x64
+                // SBs: one filter block per SB.
+                ectx.cdef_pending = cdef_walk.and_then(|p| {
+                    (p.bits > 0).then(|| (p.bits, p.fb_idx[sb_row * p.nhfb + sb_col]))
+                });
+
                 // Loop-restoration coefficients for every RU cornered in
                 // this SB — BEFORE the SB's partition tree, matching the
                 // decoder's read order.
@@ -623,7 +633,7 @@ impl EncodePipeline {
                 v_recon,
             )
         };
-        let (mut tile_data, deblock_geom, mut u_recon, mut v_recon) = run_entropy_walk(None);
+        let (mut tile_data, deblock_geom, mut u_recon, mut v_recon) = run_entropy_walk(None, None);
 
         // Step 6a: Deblocking — pick the levels the frame header will
         // signal (C svt_av1_pick_filter_level_by_q closed form) and apply
@@ -710,7 +720,9 @@ impl EncodePipeline {
                 && crate::cdef::allintra_preset_uses_cdef_search(self.speed_config.preset)
             {
                 if deblock_geom.cdef_frame_all_skip() {
-                    crate::cdef::pick_cdef_params_all_skip_search(base_qindex)
+                    crate::cdef::CdefPick::single(crate::cdef::pick_cdef_params_all_skip_search(
+                        base_qindex,
+                    ))
                 } else {
                     // The live-block RDO search (svt_av1_cdef_search +
                     // finish_cdef_search, per-preset candidate sets:
@@ -737,20 +749,29 @@ impl EncodePipeline {
                         base_qindex,
                     ) {
                         crate::cdef::CdefSearchPick::Picked(p) => p,
-                        crate::cdef::CdefSearchPick::AllSkip => {
-                            crate::cdef::pick_cdef_params_all_skip_search(base_qindex)
-                        }
-                        crate::cdef::CdefSearchPick::MultiStrength => {
-                            crate::cdef::pick_cdef_params_key_frame(base_qindex)
-                        }
+                        crate::cdef::CdefSearchPick::AllSkip => crate::cdef::CdefPick::single(
+                            crate::cdef::pick_cdef_params_all_skip_search(base_qindex),
+                        ),
                     }
                 }
             } else {
-                crate::cdef::pick_cdef_params_key_frame(base_qindex)
+                crate::cdef::CdefPick::single(crate::cdef::pick_cdef_params_key_frame(
+                    base_qindex,
+                ))
             }
         } else {
-            crate::cdef::CdefFrameParams::default()
+            crate::cdef::CdefPick::single(crate::cdef::CdefFrameParams::default())
         };
+        // cdef_bits > 0 adds per-SB cdef_idx literals to the tile — the
+        // walk is re-run with the emission armed (recon is untouched by
+        // the extra syntax; C's EC pass simply runs after the cdef
+        // search, ours re-runs the deterministic walk).
+        if cdef_params.bits > 0 {
+            let (tile_cdef, _geom_c, u_c, v_c) = run_entropy_walk(None, Some(&cdef_params));
+            debug_assert_eq!(u_c, u_recon, "cdef re-walk chroma recon must be identical");
+            debug_assert_eq!(v_c, v_recon, "cdef re-walk chroma recon must be identical");
+            tile_data = tile_cdef;
+        }
         self.last_recon_pre_cdef = Some((recon.clone(), u_recon.clone(), v_recon.clone()));
         self.last_cdef_stats = crate::cdef::apply_cdef_frame(
             &mut recon,
@@ -809,7 +830,9 @@ impl EncodePipeline {
                 }
                 if rest_info.any_non_none() {
                     // Tile pass 2: identical symbol stream + LR syntax.
-                    let (tile_lr, _geom2, u2, v2) = run_entropy_walk(Some(&rest_info));
+                    let cdef_walk_opt = (cdef_params.bits > 0).then_some(&cdef_params);
+                    let (tile_lr, _geom2, u2, v2) =
+                        run_entropy_walk(Some(&rest_info), cdef_walk_opt);
                     debug_assert_eq!(u2, u_recon, "re-walk chroma recon must be identical");
                     debug_assert_eq!(v2, v_recon, "re-walk chroma recon must be identical");
                     tile_data = tile_lr;
@@ -913,7 +936,7 @@ impl EncodePipeline {
                 // The CDEF strengths applied to the output recon above —
                 // like the deblock levels, signaling and application MUST
                 // agree or the recon desyncs from every conforming decoder.
-                cdef_params.signal(),
+                &cdef_params.signal(),
                 // lr_params: `enabled` MUST equal the SH's
                 // enable_restoration bit (spec 5.9.20 gates on it — same
                 // SeqTools the SH got); the per-plane types/taps are the
@@ -1028,6 +1051,11 @@ pub(crate) struct EntropyCtx {
     /// symbol. Sequence-level walk config, not per-block state — carried
     /// here because the walk already threads this context everywhere.
     seq_filter_intra: bool,
+    /// Pending per-SB `cdef_idx` emission (C write_cdef,
+    /// entropy_coding.c:4034: `aom_write_literal(w, mbmi->cdef_strength,
+    /// cdef_bits)` at the FIRST NON-SKIP block of each 64x64). Set at SB
+    /// start by the walk when `cdef_bits > 0`; `take()`n at emission.
+    cdef_pending: Option<(u8, u8)>,
 }
 
 /// Live state for the 4:2:0 chroma pass, threaded through the entropy walk
@@ -1104,6 +1132,7 @@ impl EntropyCtx {
             above_txfm: alloc::vec![0u8; width_4x4],
             left_txfm: alloc::vec![0u8; height_4x4],
             seq_filter_intra,
+            cdef_pending: None,
         }
     }
 
@@ -1587,6 +1616,17 @@ fn encode_block_syntax(
             .is_none_or(|(_, u_eob, _, v_eob)| *u_eob == 0 && *v_eob == 0);
     let skip_ctx = ectx.skip_ctx(block_x, block_y);
     svtav1_entropy::context::write_skip(writer, frame_ctx, skip_ctx, skip);
+
+    // Per-SB cdef_idx (C write_cdef, entropy_coding.c:4034-4065; spec
+    // read_cdef): at the FIRST NON-SKIP coded block of each 64x64,
+    // `cdef_bits` raw literal bits carry the filter block's strength
+    // index. Armed by the walk at SB start only when cdef_bits > 0
+    // (aom_write_literal with 0 bits is a no-iteration loop).
+    if !skip {
+        if let Some((bits, idx)) = ectx.cdef_pending.take() {
+            writer.write_literal(idx as u32, bits as u32);
+        }
+    }
 
     // Mode syntax is ALWAYS coded — the skip flag only gates residuals
     // (AV1 intra_frame_mode_info reads y_mode regardless of skip).

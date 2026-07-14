@@ -508,6 +508,7 @@ fn tx_quant_core(
         (16, 8) => (TxSize::Tx16x8, 8),
         (8, 8) => (TxSize::Tx8x8, 1),
         (8, 4) => (TxSize::Tx8x4, 6),
+        (4, 4) => (TxSize::Tx4x4, 0),
         _ => unreachable!("PD0 tx {}x{}", sq_size, tx_h),
     };
 
