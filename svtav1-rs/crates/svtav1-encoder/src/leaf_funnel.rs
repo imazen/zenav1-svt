@@ -226,6 +226,34 @@ pub struct FunnelCfg {
     /// txt_level 0 -> DCT_DCT only for every tx size, incl. < 32 blocks
     /// where an ext-tx set would otherwise be searched).
     pub txt_on: bool,
+    /// `intra_ctrls.intra_mode_end` (C PredictionMode index): SMOOTH (9)
+    /// at intra_level 6/7/8 (M6+), PAETH (12) at intra_level 2 (M5).
+    pub mode_end: u8,
+    /// `intra_ctrls.angular_pred_level`: 4 = D45..D203 masked + no angle
+    /// deltas (M6+); 2 = all directional modes with deltas {-3, 0, +3}
+    /// (M5, `inject_intra_candidates` skips |delta| 1/2, mode_decision.c
+    /// :3268-3271); 3 = directional at delta 0 only; 1 = all 7 deltas.
+    pub angular_level: u8,
+    /// `txt_ctrls.txt_group_of_tx_types_for_types_of_size_lt_16 / ge_16`
+    /// (set_txt_controls): M6 5/4, M5 (txt_level 3) 6/6 — the M5DBG dump
+    /// fields `txt_lt16=6 txt_ge16=6`.
+    pub txt_group_lt16: i32,
+    pub txt_group_ge16: i32,
+    /// `txt_ctrls.satd_early_exit_th_intra` (M6: 10; M5: 15), qp-scaled.
+    pub txt_satd_th: u64,
+    /// `txt_ctrls.txt_rate_cost_th` (M6: 100; M5: 250).
+    pub txt_rate_th: u64,
+    /// chroma_level 4 (M5): CHROMA_MODE_0 with `ind_uv_last_mds = 2` —
+    /// `search_best_mds3_uv_mode` over the MDS3 survivors' uv modes
+    /// (+ UV_DC), then `update_intra_chroma_mode` rewrites each MDS3
+    /// candidate's uv mode from `best_uv_mode[luma_mode]`
+    /// (product_coding_loop.c:7561/:7436; skip_ind_uv_if_only_dc = 1).
+    /// false = chroma_level 5 (CHROMA_MODE_1, uv follows luma — M6+).
+    pub ind_uv_mds3: bool,
+    /// SH `enable_intra_edge_filter` (M5 still/420 only): directional
+    /// predictions run the corner/edge filters + upsampling
+    /// (enc_intra_prediction.c:181-215).
+    pub edge_filter: bool,
 }
 
 impl FunnelCfg {
@@ -233,34 +261,58 @@ impl FunnelCfg {
     /// Presets 6/7/8/9+ (the funnel scope); other presets never construct
     /// one. Presets >= 9 clamp to eff-M9 (enc_handle.c:4634).
     pub fn for_preset(preset: u8) -> Self {
+        // M6+ common tail (intra_level 6/7/8: mode_end SMOOTH, angular
+        // level 4, txt groups 5/4 satd 10 rate 100, uv follows luma, no
+        // SH edge filter bit).
+        let m6_tail = FunnelCfg {
+            filter_intra: true,
+            prune_best_mode: false,
+            nic_num: (6, 6, 6),
+            mds1_cand_base_th: 1200,
+            mds1_rank_factor: 3,
+            mds2_cand_base_th: 15,
+            mds2_rel_dev_th: 5,
+            mds3_cand_base_th: 15,
+            real_coeff_ctx: true,
+            txs_on: true,
+            dc_only_gate: false,
+            txt_on: true,
+            mode_end: 9,
+            angular_level: 4,
+            txt_group_lt16: 5,
+            txt_group_ge16: 4,
+            txt_satd_th: 10,
+            txt_rate_th: 100,
+            ind_uv_mds3: false,
+            edge_filter: false,
+        };
         match preset {
-            6 => FunnelCfg {
-                filter_intra: true,
-                prune_best_mode: false,
-                nic_num: (6, 6, 6),
-                mds1_cand_base_th: 1200,
-                mds1_rank_factor: 3,
-                mds2_cand_base_th: 15,
-                mds2_rel_dev_th: 5,
-                mds3_cand_base_th: 15,
-                real_coeff_ctx: true,
-                txs_on: true,
-                dc_only_gate: false,
-                txt_on: true,
+            // M5 (still/420): the M5DBG CFG enc_mode=5 dump
+            // (docs/captures/m0m5_config_dlf.txt) — intra_level 2
+            // (mode_end PAETH, ang 2), fi_max 0 (FILTER_DC only, same
+            // candidate as M6), nic_level 6 with the SAME pruning ths as
+            // M6 (1200/3, 15/5, 15), txt_level 3 (groups 6/6, satd 15,
+            // rate 250, d1 offset 3), txs_sq depth 1, rdoq 1,
+            // rate_est_level 1, chroma_level 4 (ind-uv at MDS3,
+            // skip-if-only-DC, uv_nic 1), SH enable_intra_edge_filter=1.
+            5 => FunnelCfg {
+                mode_end: 12,
+                angular_level: 2,
+                txt_group_lt16: 6,
+                txt_group_ge16: 6,
+                txt_satd_th: 15,
+                txt_rate_th: 250,
+                ind_uv_mds3: true,
+                edge_filter: true,
+                ..m6_tail
             },
+            6 => m6_tail,
             7 => FunnelCfg {
                 filter_intra: false,
                 prune_best_mode: true,
                 nic_num: (4, 4, 4),
-                mds1_cand_base_th: 1200,
-                mds1_rank_factor: 3,
-                mds2_cand_base_th: 15,
-                mds2_rel_dev_th: 5,
-                mds3_cand_base_th: 15,
                 real_coeff_ctx: false,
-                txs_on: true,
-                dc_only_gate: false,
-                txt_on: true,
+                ..m6_tail
             },
             // preset 8: nic_level 11 (scaling 15 -> nums 0/0/0 -> 1/1/1),
             // all cand thresholds 1, enable_skipping_mds1 (n1==1 makes it a
@@ -270,14 +322,11 @@ impl FunnelCfg {
                 prune_best_mode: true,
                 nic_num: (0, 0, 0),
                 mds1_cand_base_th: 1,
-                mds1_rank_factor: 3,
                 mds2_cand_base_th: 1,
-                mds2_rel_dev_th: 5,
                 mds3_cand_base_th: 1,
                 real_coeff_ctx: false,
                 txs_on: false,
-                dc_only_gate: false,
-                txt_on: true,
+                ..m6_tail
             },
             // eff-M9 (presets 9+): intra_level 8 arms the is_dc_only gate
             // (dc_only_gate); the non-DC funnel body is identical to M8
@@ -290,14 +339,13 @@ impl FunnelCfg {
                 prune_best_mode: true,
                 nic_num: (0, 0, 0),
                 mds1_cand_base_th: 1,
-                mds1_rank_factor: 3,
                 mds2_cand_base_th: 1,
-                mds2_rel_dev_th: 5,
                 mds3_cand_base_th: 1,
                 real_coeff_ctx: false,
                 txs_on: false,
                 dc_only_gate: true,
                 txt_on: false,
+                ..m6_tail
             },
         }
     }
@@ -340,12 +388,30 @@ fn nic_counts(cli_qp: u32, num: (u64, u64, u64)) -> (u32, u32, u32) {
 // Prediction helpers
 // ---------------------------------------------------------------------------
 
-/// Predict one intra mode (DC/V/H/SMOOTH or FILTER_DC) for a (possibly
-/// sub-TX) block at absolute plane coords, reading the live recon plane
-/// with the C edge-fill rules. The M6 candidate set never needs extended
-/// (above-right / bottom-left) edges, edge filtering or upsampling:
-/// V is exactly angle 90 and H exactly 180 (build_intra_predictors skips
-/// all three for those angles), DC/SMOOTH/filter-intra never use them.
+/// Per-unit geometry the directional predictor needs beyond the plane
+/// coords: the CODED BLOCK's luma mi position/dims (availability tables),
+/// the plane subsampling, and the LUMA frame dims.
+#[derive(Clone, Copy)]
+pub(crate) struct UnitGeom {
+    pub mi_row: usize,
+    pub mi_col: usize,
+    pub bw_px: usize,
+    pub bh_px: usize,
+    pub ss: usize,
+    pub frame_w: usize,
+    pub frame_h: usize,
+}
+
+/// Predict one intra mode (any of the 13 C modes + angle delta, or
+/// FILTER_DC) for a whole prediction unit at absolute plane coords,
+/// reading the live recon plane with the C edge-fill rules
+/// (`svt_av1_intra_prediction` -> `build_intra_predictors`).
+///
+/// Non-directional modes and V/H at delta 0 (p_angle exactly 90/180 —
+/// the decoder's edge filter skips them) use the extract_neighbors fills;
+/// all other directional predictions run `intra_edge::dr_predict`, which
+/// applies the SH-gated corner/edge filters + upsampling
+/// (`edge_filter`, `filt_type` = C `get_filt_type`).
 #[allow(clippy::too_many_arguments)]
 fn predict_unit(
     recon: &[u8],
@@ -355,9 +421,43 @@ fn predict_unit(
     w: usize,
     h: usize,
     mode: u8,
+    delta: i8,
     fi_mode: u8,
+    geom: &UnitGeom,
+    edge_filter: bool,
+    filt_type: i32,
     dst: &mut [u8],
 ) {
+    use svtav1_dsp::intra_pred as ip;
+    if matches!(mode, 3..=8) || (matches!(mode, 1 | 2) && delta != 0) {
+        let p_angle = crate::intra_edge::MODE_TO_ANGLE_MAP[mode as usize] + delta as i32 * 3;
+        debug_assert!(fi_mode == FI_NONE);
+        let g = crate::intra_edge::DrGeom {
+            px: abs_x,
+            py: abs_y,
+            txw: w,
+            txh: h,
+            mi_row: geom.mi_row,
+            mi_col: geom.mi_col,
+            bw_px: geom.bw_px,
+            bh_px: geom.bh_px,
+            row_off: 0,
+            col_off: 0,
+            ss: geom.ss,
+            frame_w: geom.frame_w,
+            frame_h: geom.frame_h,
+        };
+        crate::intra_edge::dr_predict(
+            |x, y| recon[y * stride + x],
+            &g,
+            p_angle,
+            edge_filter,
+            filt_type,
+            svtav1_types::partition::PartitionType::None,
+            dst,
+        );
+        return;
+    }
     let (above, left, top_left, has_above, has_left) =
         crate::partition::extract_neighbors(recon, stride, abs_x, abs_y, w, h);
     if fi_mode != FI_NONE {
@@ -372,15 +472,18 @@ fn predict_unit(
             128
         };
         above_c[1..].copy_from_slice(&above);
-        svtav1_dsp::intra_pred::predict_filter_intra(dst, w, &above_c, &left, w, h, fi_mode);
+        ip::predict_filter_intra(dst, w, &above_c, &left, w, h, fi_mode);
         return;
     }
     match mode {
-        0 => svtav1_dsp::intra_pred::predict_dc(dst, w, &above, &left, w, h, has_above, has_left),
-        1 => svtav1_dsp::intra_pred::predict_v(dst, w, &above, w, h),
-        2 => svtav1_dsp::intra_pred::predict_h(dst, w, &left, w, h),
-        9 => svtav1_dsp::intra_pred::predict_smooth(dst, w, &above, &left, w, h),
-        m => unreachable!("M6 funnel mode {m}"),
+        0 => ip::predict_dc(dst, w, &above, &left, w, h, has_above, has_left),
+        1 => ip::predict_v(dst, w, &above, w, h),
+        2 => ip::predict_h(dst, w, &left, w, h),
+        9 => ip::predict_smooth(dst, w, &above, &left, w, h),
+        10 => ip::predict_smooth_v(dst, w, &above, &left, h, h, w),
+        11 => ip::predict_smooth_h(dst, w, &above, &left, w, h),
+        12 => ip::predict_paeth(dst, w, &above, &left, top_left, w, h),
+        m => unreachable!("funnel mode {m}"),
     }
 }
 
@@ -836,8 +939,13 @@ const FIMODE_TO_INTRADIR: [u8; 5] = [0, 1, 2, 6, 0];
 /// One funnel candidate's evolving state.
 struct Cand {
     mode: u8,
+    /// Luma angle delta (directional modes only; C ANGLE_STEP units).
+    delta: i8,
     fi: u8,
     uv: u8,
+    /// Chroma angle delta (= luma delta at injection; rewritten by the
+    /// ind-uv MDS3 update at chroma_level 4).
+    uv_delta: i8,
     /// Whole-block depth-0 luma prediction (w x h).
     pred: Vec<u8>,
     flr: u64,
@@ -871,8 +979,12 @@ struct Cand {
 /// pass.
 pub struct LeafChoice {
     pub mode: u8,
+    /// Luma angle delta (0 for non-directional modes).
+    pub angle_delta: i8,
     pub fi_mode: u8,
     pub uv_mode: u8,
+    /// Chroma angle delta (0 unless the ind-uv search picked one).
+    pub uv_angle_delta: i8,
     pub tx_depth: u8,
     /// Per-txb packed quantized levels (1 txb at depth 0, 4 at depth 1),
     /// in raster txb order.
@@ -945,21 +1057,55 @@ pub(crate) fn decide_leaf(
     let cfl_allowed = usize::from(w <= 32 && h <= 32);
     let use_angle = !matches!((w, h), (4, 4) | (4, 8) | (8, 4));
 
-    // -- Candidate injection + MDS0 (DC, V, H, SMOOTH, then FILTER_DC) --
-    // Filter-intra candidate only when the tool is enabled at this preset
-    // (M6 filter_intra level 2; M7/M8 level 0 -> off). C injection order:
-    // regular intra modes (inject_intra_candidates, mode_decision.c:3236),
-    // then filter-intra (inject_filter_intra_candidates).
+    // Block geometry for the directional predictor (availability tables +
+    // frame-edge clamps) and the per-block C `get_filt_type` inputs (the
+    // above/left CODED-BLOCK modes' smoothness, per plane).
+    let frame_h_px = y_recon.len() / y_stride;
+    let y_geom = UnitGeom {
+        mi_row: abs_y >> 2,
+        mi_col: abs_x >> 2,
+        bw_px: w,
+        bh_px: h,
+        ss: 0,
+        frame_w: y_stride,
+        frame_h: frame_h_px,
+    };
+    let uv_geom = UnitGeom { ss: 1, ..y_geom };
+    let filt_type_y = fx.ectx.filt_type_y(abs_x, abs_y);
+    let filt_type_uv = fx.ectx.filt_type_uv(abs_x, abs_y);
+
+    // -- Candidate injection + MDS0 --
+    // C order (`generate_md_stage_0_cand`): regular intra modes DC ..
+    // intra_mode_end with the angular-delta inner loop in counter order
+    // (-3..3, level >= 2 keeping {-3, 0, +3}; inject_intra_candidates,
+    // mode_decision.c:3254-3271), then filter-intra
+    // (inject_filter_intra_candidates — FILTER_DC only at fi level 2).
     let cfg = frame.cfg;
     let fi_elig = cfg.filter_intra && fi_allowed_bsize;
-    let mut cand_modes: Vec<(u8, u8)> = if dc_only {
+    let mut cand_modes: Vec<(u8, i8, u8)> = Vec::new();
+    if dc_only {
         // eff-M9 dc_cand_only injection: exactly {DC_PRED}, no filter-intra.
-        alloc::vec![(0, FI_NONE)]
+        cand_modes.push((0, 0, FI_NONE));
     } else {
-        alloc::vec![(0, FI_NONE), (1, FI_NONE), (2, FI_NONE), (9, FI_NONE)]
-    };
+        for mode in 0..=cfg.mode_end {
+            let directional = matches!(mode, 1..=8);
+            if directional && cfg.angular_level >= 4 {
+                continue; // directional_mode_skip_mask
+            }
+            if directional && cfg.angular_level <= 2 && use_angle {
+                for d in -3i8..=3 {
+                    if cfg.angular_level >= 2 && matches!(d, -2 | -1 | 1 | 2) {
+                        continue;
+                    }
+                    cand_modes.push((mode, d, FI_NONE));
+                }
+            } else {
+                cand_modes.push((mode, 0, FI_NONE));
+            }
+        }
+    }
     if fi_elig && !dc_only {
-        cand_modes.push((0, 0)); // FILTER_DC_PRED
+        cand_modes.push((0, 0, 0)); // FILTER_DC_PRED
     }
 
     let mut cands: Vec<Cand> = Vec::with_capacity(cand_modes.len());
@@ -972,7 +1118,7 @@ pub(crate) fn decide_leaf(
     // the original funnel.
     let mut best_reg_cost = u64::MAX;
     let mut best_reg_mode: i32 = -1;
-    for &(mode, fi) in &cand_modes {
+    for &(mode, delta, fi) in &cand_modes {
         if cfg.prune_best_mode && fi == FI_NONE {
             // intra_mode_end SMOOTH >= H_PRED, so the gate is armed.
             if mode == 2 && best_reg_mode == 1 {
@@ -982,14 +1128,32 @@ pub(crate) fn decide_leaf(
                 continue; // DC still best -> skip SMOOTH
             }
         }
+        // uv = intra_luma_to_chroma[mode] with the SAME angle delta
+        // (ind_uv_avail is 0 at injection — mode_decision.c:3280; the
+        // ind-uv rewrite happens at MDS3 via update_intra_chroma_mode).
         let uv = uv_from_y(if fi != FI_NONE { 0 } else { mode });
+        let uv_delta = if fi != FI_NONE { 0 } else { delta };
         let mut pred = vec![0u8; w * h];
-        predict_unit(y_recon, y_stride, abs_x, abs_y, w, h, mode, fi, &mut pred);
+        predict_unit(
+            y_recon,
+            y_stride,
+            abs_x,
+            abs_y,
+            w,
+            h,
+            mode,
+            delta,
+            fi,
+            &y_geom,
+            cfg.edge_filter,
+            filt_type_y,
+            &mut pred,
+        );
         let satd = hadamard_satd(y_src, y_src_stride, y_src_off, &pred, size);
 
         let mut flr = rates.kf_y[above_ctx][left_ctx][mode as usize] as u64;
         if use_angle && matches!(mode, 1..=8) {
-            flr += rates.angle[mode as usize - 1][3] as u64;
+            flr += rates.angle[mode as usize - 1][(3 + delta) as usize] as u64;
         }
         if fi_elig && mode == 0 {
             flr += rates.fi_flag[bsize_idx][usize::from(fi != FI_NONE)] as u64;
@@ -999,7 +1163,7 @@ pub(crate) fn decide_leaf(
         }
         let mut fcr = rates.uv[cfl_allowed][mode as usize][uv as usize] as u64;
         if use_angle && matches!(uv, 1..=8) {
-            fcr += rates.angle[uv as usize - 1][3] as u64;
+            fcr += rates.angle[uv as usize - 1][(3 + uv_delta) as usize] as u64;
         }
         let fast_cost = rdcost(lambda, flr + fcr, satd << 4);
         // C updates best_reg_intra_mode after fast_loop_core for regular
@@ -1010,8 +1174,10 @@ pub(crate) fn decide_leaf(
         }
         cands.push(Cand {
             mode,
+            delta,
             fi,
             uv,
+            uv_delta,
             pred,
             flr,
             fcr,
@@ -1170,7 +1336,179 @@ pub(crate) fn decide_leaf(
     let tsz_cat = tx_size_cat(w);
     let tsz_ctx = fx.ectx.tx_size_ctx(abs_x, abs_y, w, h);
 
+    // Chroma txb contexts (real at rate_est_level 1; candidate-independent
+    // — the neighbour bytes don't change during this block's search).
+    let (cb_tsc, cb_dsc) = if cfg.real_coeff_ctx {
+        let (a, l) = fx.ectx.coeff_neighbors_uv(0, ccx, ccy, cw, chh);
+        cc::get_txb_ctx(1, a, l, true, false)
+    } else {
+        (0, 0)
+    };
+    let (cr_tsc, cr_dsc) = if cfg.real_coeff_ctx {
+        let (a, l) = fx.ectx.coeff_neighbors_uv(1, ccx, ccy, cw, chh);
+        cc::get_txb_ctx(1, a, l, true, false)
+    } else {
+        (0, 0)
+    };
+
+    // One full-loop chroma evaluation of a (uv_mode, uv_delta) pair —
+    // the shared body of `search_best_mds3_uv_mode`'s full loop and
+    // MDS3's `svt_aom_full_loop_uv` (identical settings: rdoq per frame
+    // policy, spatial SSE, real contexts).
+    let chroma_eval = |fx: &FunnelCtx<'_>, uv: u8, uv_delta: i8| -> (TxUnitOut, TxUnitOut) {
+        let mut u_pred = vec![0u8; cw * chh];
+        let mut v_pred = vec![0u8; cw * chh];
+        predict_unit(
+            fx.u_recon,
+            fx.c_stride,
+            ccx,
+            ccy,
+            cw,
+            chh,
+            uv,
+            uv_delta,
+            FI_NONE,
+            &uv_geom,
+            cfg.edge_filter,
+            filt_type_uv,
+            &mut u_pred,
+        );
+        predict_unit(
+            fx.v_recon,
+            fx.c_stride,
+            ccx,
+            ccy,
+            cw,
+            chh,
+            uv,
+            uv_delta,
+            FI_NONE,
+            &uv_geom,
+            cfg.edge_filter,
+            filt_type_uv,
+            &mut v_pred,
+        );
+        let tt = uv_tx_type(uv, cw, chh);
+        let u_out = tx_unit(
+            fx.u_src,
+            fx.c_stride,
+            ccy * fx.c_stride + ccx,
+            &u_pred,
+            cw,
+            0,
+            cw,
+            chh,
+            tt,
+            1,
+            cb_tsc,
+            cb_dsc,
+            0,
+            &qt,
+            frame,
+            rates,
+            do_rdoq,
+            true,
+        );
+        let v_out = tx_unit(
+            fx.v_src,
+            fx.c_stride,
+            ccy * fx.c_stride + ccx,
+            &v_pred,
+            cw,
+            0,
+            cw,
+            chh,
+            tt,
+            1,
+            cr_tsc,
+            cr_dsc,
+            0,
+            &qt,
+            frame,
+            rates,
+            do_rdoq,
+            true,
+        );
+        (u_out, v_out)
+    };
+
+    // -- Independent chroma search before MDS3 (chroma_level 4:
+    //    `search_best_mds3_uv_mode`, product_coding_loop.c:7561, invoked
+    //    per :10098-10105 when `perform_ind_uv_search_last_mds` — at
+    //    least one MDS3 intra candidate whose (injected, uv-follows-luma)
+    //    uv mode is not UV_DC (skip_ind_uv_if_only_dc = 1; the
+    //    inter_vs_intra_cost_th=100 arm never fires on I-slices:
+    //    MAX_MODE_COST * 100 does not overflow and dwarfs any intra
+    //    cost). Produces best_uv[(luma mode)] -> (uv mode, uv delta);
+    //    `update_intra_chroma_mode` (:7326) then rewrites each MDS3
+    //    candidate before its full loop. --
+    let mut ind_uv: Option<[(u8, i8); 13]> = None;
+    if cfg.ind_uv_mds3 && order1.iter().take(n3).any(|&ci| cands[ci].uv != 0) {
+        // Distinct (uv, uv_delta) pairs of the MDS3 survivors, in
+        // survivor order, excluding UV_DC; then UV_DC (delta 0) last.
+        let mut tested = [[false; 7]; 13];
+        let mut uv_list: Vec<(u8, i8)> = Vec::new();
+        for &ci in order1.iter().take(n3) {
+            let (uvm, uvd) = (cands[ci].uv, cands[ci].uv_delta);
+            if uvm == 0 || tested[uvm as usize][(3 + uvd) as usize] {
+                continue;
+            }
+            tested[uvm as usize][(3 + uvd) as usize] = true;
+            uv_list.push((uvm, uvd));
+        }
+        uv_list.push((0, 0));
+
+        // Full loop per uv candidate: coeff_rate + SSD distortion
+        // (DIST_CALC_RESIDUAL — both planes summed).
+        let mut uv_rd: Vec<(u64, u64)> = Vec::with_capacity(uv_list.len());
+        for &(uvm, uvd) in &uv_list {
+            let (u_out, v_out) = chroma_eval(fx, uvm, uvd);
+            uv_rd.push((u_out.bits as u64 + v_out.bits as u64, u_out.dist + v_out.dist));
+        }
+
+        // Per distinct surviving luma mode (survivor order), pick the
+        // lowest-cost uv pair (strict less, list order on ties).
+        let mut table = [(0u8, 0i8); 13];
+        let mut mode_seen = [false; 13];
+        for &ci in order1.iter().take(n3) {
+            let luma = cands[ci].mode as usize;
+            if mode_seen[luma] {
+                continue;
+            }
+            mode_seen[luma] = true;
+            let mut best_cost = u64::MAX;
+            for (k, &(uvm, uvd)) in uv_list.iter().enumerate() {
+                let mut fcr2 = rates.uv[cfl_allowed][luma][uvm as usize] as u64;
+                if use_angle && matches!(uvm, 1..=8) {
+                    fcr2 += rates.angle[uvm as usize - 1][(3 + uvd) as usize] as u64;
+                }
+                let (bits, dist) = uv_rd[k];
+                let cost = rdcost(lambda, bits + fcr2, dist);
+                if cost < best_cost {
+                    best_cost = cost;
+                    table[luma] = (uvm, uvd);
+                }
+            }
+        }
+        ind_uv = Some(table);
+    }
+
     for &ci in order1.iter().take(n3) {
+        // `update_intra_chroma_mode`: rewrite the candidate's chroma from
+        // the ind-uv table (fast chroma rate recomputed for the luma
+        // mode + new uv pair — same formula as injection, so an
+        // unconditional recompute is C-identical).
+        if let Some(tbl) = &ind_uv {
+            let (uvm, uvd) = tbl[cands[ci].mode as usize];
+            let c = &mut cands[ci];
+            c.uv = uvm;
+            c.uv_delta = uvd;
+            let mut fcr = rates.uv[cfl_allowed][c.mode as usize][uvm as usize] as u64;
+            if use_angle && matches!(uvm, 1..=8) {
+                fcr += rates.angle[uvm as usize - 1][(3 + uvd) as usize] as u64;
+            }
+            c.fcr = fcr;
+        }
         // ---- Luma: TX depth loop ----
         let mut best_depth = 0u8;
         let mut best_cost = u64::MAX;
@@ -1228,7 +1566,11 @@ pub(crate) fn decide_leaf(
                         tx_y,
                         tx,
                         cand.mode,
+                        cand.delta,
                         cand.fi,
+                        &y_geom,
+                        cfg.edge_filter,
+                        filt_type_y,
                         &mut txb_pred,
                     );
                 }
@@ -1313,113 +1655,73 @@ pub(crate) fn decide_leaf(
             }
         }
 
-        // ---- Chroma (CHROMA_MODE_1, uv follows luma) ----
+        // ---- Chroma full loop (uv per candidate: follows-luma at
+        //      CHROMA_MODE_1, or the ind-uv table pick at chroma_level 4)
+        //      + the complexity detector (CFL gate; see below) ----
         let cand = &cands[ci];
-        let mut u_pred = vec![0u8; cw * chh];
-        let mut v_pred = vec![0u8; cw * chh];
-        predict_unit(
-            fx.u_recon,
-            fx.c_stride,
-            ccx,
-            ccy,
-            cw,
-            chh,
-            cand.uv,
-            FI_NONE,
-            &mut u_pred,
-        );
-        predict_unit(
-            fx.v_recon,
-            fx.c_stride,
-            ccx,
-            ccy,
-            cw,
-            chh,
-            cand.uv,
-            FI_NONE,
-            &mut v_pred,
-        );
-        // Chroma complexity detector (chroma_complexity_check_pred,
-        // product_coding_loop.c:6095) — its only funnel-visible effect at
-        // M6 is the CFL gate (tx shortcuts are level 0). When it fires C
-        // would evaluate cfl_prediction for <= 32x32 blocks; CFL search is
-        // unported, so the non-CFL uv mode is kept and the event recorded
-        // (never fires on flat-chroma content — all tracked identity
-        // cells).
-        let cfl_would_run = chroma_detector_fires(
-            y_src,
-            y_src_stride,
-            y_src_off,
-            &cand.pred,
-            w,
-            fx.u_src,
-            fx.v_src,
-            &u_pred,
-            &v_pred,
-            fx.c_stride,
-            ccy * fx.c_stride + ccx,
-            cw,
-            chh,
-        );
-        // When the gate arms on <= 32x32 blocks C would run
-        // cfl_prediction and possibly pick UV_CFL — unported: we keep the
-        // non-CFL uv mode. Tracked cells never arm it (flat chroma);
-        // arming on other content yields a valid (non-C-identical)
-        // stream.
-        let _ = cfl_would_run;
-
-        let (cb_tsc, cb_dsc) = if cfg.real_coeff_ctx {
-            let (a, l) = fx.ectx.coeff_neighbors_uv(0, ccx, ccy, cw, chh);
-            cc::get_txb_ctx(1, a, l, true, false)
-        } else {
-            (0, 0)
-        };
-        let u_out = tx_unit(
-            fx.u_src,
-            fx.c_stride,
-            ccy * fx.c_stride + ccx,
-            &u_pred,
-            cw,
-            0,
-            cw,
-            chh,
-            uv_tx_type(cand.uv, cw, chh),
-            1,
-            cb_tsc,
-            cb_dsc,
-            0,
-            &qt,
-            frame,
-            rates,
-            do_rdoq,
-            true,
-        );
-        let (cr_tsc, cr_dsc) = if cfg.real_coeff_ctx {
-            let (a, l) = fx.ectx.coeff_neighbors_uv(1, ccx, ccy, cw, chh);
-            cc::get_txb_ctx(1, a, l, true, false)
-        } else {
-            (0, 0)
-        };
-        let v_out = tx_unit(
-            fx.v_src,
-            fx.c_stride,
-            ccy * fx.c_stride + ccx,
-            &v_pred,
-            cw,
-            0,
-            cw,
-            chh,
-            uv_tx_type(cand.uv, cw, chh),
-            1,
-            cr_tsc,
-            cr_dsc,
-            0,
-            &qt,
-            frame,
-            rates,
-            do_rdoq,
-            true,
-        );
+        let (u_out, v_out) = chroma_eval(fx, cand.uv, cand.uv_delta);
+        {
+            // Chroma complexity detector (chroma_complexity_check_pred,
+            // product_coding_loop.c:6095) — its only funnel-visible effect
+            // is the CFL gate (tx shortcuts are level 0). When it fires C
+            // would evaluate cfl_prediction for <= 32x32 blocks; CFL
+            // search is unported, so the non-CFL uv mode is kept and the
+            // event recorded (never fires on flat-chroma content — all
+            // tracked identity cells).
+            let mut u_pred = vec![0u8; cw * chh];
+            let mut v_pred = vec![0u8; cw * chh];
+            predict_unit(
+                fx.u_recon,
+                fx.c_stride,
+                ccx,
+                ccy,
+                cw,
+                chh,
+                cand.uv,
+                cand.uv_delta,
+                FI_NONE,
+                &uv_geom,
+                cfg.edge_filter,
+                filt_type_uv,
+                &mut u_pred,
+            );
+            predict_unit(
+                fx.v_recon,
+                fx.c_stride,
+                ccx,
+                ccy,
+                cw,
+                chh,
+                cand.uv,
+                cand.uv_delta,
+                FI_NONE,
+                &uv_geom,
+                cfg.edge_filter,
+                filt_type_uv,
+                &mut v_pred,
+            );
+            let cfl_would_run = chroma_detector_fires(
+                y_src,
+                y_src_stride,
+                y_src_off,
+                &cand.pred,
+                w,
+                fx.u_src,
+                fx.v_src,
+                &u_pred,
+                &v_pred,
+                fx.c_stride,
+                ccy * fx.c_stride + ccx,
+                cw,
+                chh,
+            );
+            // When the gate arms on <= 32x32 blocks C would run
+            // cfl_prediction and possibly pick UV_CFL — unported: we keep
+            // the non-CFL uv mode. Tracked cells never arm it (flat
+            // chroma); arming on other content yields a valid
+            // (non-C-identical) stream.
+            let _ = cfl_would_run;
+        }
 
         // ---- svt_aom_full_cost (rd_cost.c:1357) ----
         let block_has_coeff = best_coeff_count > 0 || u_out.eob > 0 || v_out.eob > 0;
@@ -1499,7 +1801,8 @@ pub(crate) fn decide_leaf(
         fx.v_recon[dst..dst + cw].copy_from_slice(&cand.v_recon[r * cw..(r + 1) * cw]);
     }
     let skip = !cand.block_has_coeff;
-    fx.ectx.record_block(abs_x, abs_y, w, h, cand.mode, skip);
+    fx.ectx
+        .record_block(abs_x, abs_y, w, h, cand.mode, cand.uv, skip);
     // set_txfm_ctxs with the CHOSEN tx dims (mode_decision_update:246-256).
     let chosen_tx = size >> cand.tx_depth;
     fx.ectx
@@ -1518,8 +1821,10 @@ pub(crate) fn decide_leaf(
 
     LeafChoice {
         mode: cand.mode,
+        angle_delta: cand.delta,
         fi_mode: cand.fi,
         uv_mode: cand.uv,
+        uv_angle_delta: cand.uv_delta,
         tx_depth: cand.tx_depth,
         txb_qcoeffs: cand.txb_q.clone(),
         txb_eobs: cand.txb_eob.clone(),
@@ -1554,23 +1859,17 @@ fn tx_size_cat(size: usize) -> usize {
     }
 }
 
-/// Chroma tx type: `svt_aom_get_intra_uv_tx_type` = Mode_To_Txfm of the
-/// uv mode capped by the tx-size DCT-only rule. For the M6 uv set
-/// {DC, V, H, SMOOTH}: DCT_DCT everywhere except V -> ADST? No —
-/// C get_intra_uv_tx_type uses intra_mode_to_tx_type: DC->DCT_DCT,
-/// V->ADST_DCT, H->DCT_ADST, SMOOTH->ADST_ADST — then
-/// av1_get_tx_type clamps to DCT_DCT when the tx size's set has 1 type
-/// (>= 32) — chroma tx here is 16x16 max for 32x32 luma... but the
-/// captures show ttuv = 1/2/3 signalling-free derivation. The uv tx type
-/// affects the SCAN + coeff coding only when eob > 0.
+/// Chroma tx type: C `svt_aom_get_intra_uv_tx_type`
+/// (mode_decision.c:2991) = `g_intra_mode_to_tx_type[uv_mode]` clamped to
+/// DCT_DCT when the chroma tx size's intra ext set doesn't carry the
+/// type (32x32 chroma is DCT-only; the WIN dumps' ttuv fields pin the
+/// mapping). The uv tx type affects the SCAN + coeff coding only when
+/// eob > 0.
 pub(crate) fn uv_tx_type(uv: u8, cw: usize, chh: usize) -> usize {
-    let t = match uv {
-        0 => cc::DCT_DCT,
-        1 => 1, // ADST_DCT (V_PRED)
-        2 => 2, // DCT_ADST (H_PRED)
-        9 => 3, // ADST_ADST (SMOOTH)
-        _ => cc::DCT_DCT,
-    };
+    /// C `g_intra_mode_to_tx_type[INTRA_MODES]` (DCT=0, ADST_DCT=1,
+    /// DCT_ADST=2, ADST_ADST=3).
+    const MODE_TO_TX: [usize; 13] = [0, 1, 2, 0, 3, 1, 2, 2, 1, 3, 1, 2, 3];
+    let t = MODE_TO_TX[uv as usize];
     // DCT-only tx sizes (>= 32 in either dim).
     if cw >= 32 || chh >= 32 {
         cc::DCT_DCT
@@ -1581,6 +1880,10 @@ pub(crate) fn uv_tx_type(uv: u8, cw: usize, chh: usize) -> usize {
 
 /// Per-txb luma prediction at depth > 0: reads the frame recon for
 /// out-of-block neighbors and this depth's partial recon inside the block.
+/// Mirrors C `av1_intra_luma_prediction` (product_coding_loop.c:4072):
+/// `svt_av1_predict_intra_block` at (row_off, col_off) over the
+/// tx-search neighbor arrays (block interior = this depth's recon so
+/// far, exterior = frame recon).
 #[allow(clippy::too_many_arguments)]
 fn predict_unit_overlay(
     y_recon: &[u8],
@@ -1593,9 +1896,48 @@ fn predict_unit_overlay(
     tx_y: usize,
     tx: usize,
     mode: u8,
+    delta: i8,
     fi: u8,
+    geom: &UnitGeom,
+    edge_filter: bool,
+    filt_type: i32,
     dst: &mut [u8],
 ) {
+    if matches!(mode, 3..=8) || (matches!(mode, 1 | 2) && delta != 0) {
+        let p_angle = crate::intra_edge::MODE_TO_ANGLE_MAP[mode as usize] + delta as i32 * 3;
+        debug_assert!(fi == FI_NONE);
+        let g = crate::intra_edge::DrGeom {
+            px: blk_x + tx_x,
+            py: blk_y + tx_y,
+            txw: tx,
+            txh: tx,
+            mi_row: geom.mi_row,
+            mi_col: geom.mi_col,
+            bw_px: geom.bw_px,
+            bh_px: geom.bh_px,
+            row_off: tx_y / 4,
+            col_off: tx_x / 4,
+            ss: 0,
+            frame_w: geom.frame_w,
+            frame_h: geom.frame_h,
+        };
+        crate::intra_edge::dr_predict(
+            |x, y| {
+                if x >= blk_x && x < blk_x + blk_w && y >= blk_y && y < blk_y + blk_w {
+                    dep_recon[(y - blk_y) * blk_w + (x - blk_x)]
+                } else {
+                    y_recon[y * y_stride + x]
+                }
+            },
+            &g,
+            p_angle,
+            edge_filter,
+            filt_type,
+            svtav1_types::partition::PartitionType::None,
+            dst,
+        );
+        return;
+    }
     // Build a small canvas: (tx + 1) left col + (tx + 1) top row around
     // the txb, sourcing in-block pixels from dep_recon and out-of-block
     // pixels from the frame recon, then run the standard edge extraction
@@ -1668,7 +2010,10 @@ fn predict_unit_overlay(
         1 => svtav1_dsp::intra_pred::predict_v(dst, tx, &above, tx, tx),
         2 => svtav1_dsp::intra_pred::predict_h(dst, tx, &left, tx, tx),
         9 => svtav1_dsp::intra_pred::predict_smooth(dst, tx, &above, &left, tx, tx),
-        m => unreachable!("M6 funnel mode {m}"),
+        10 => svtav1_dsp::intra_pred::predict_smooth_v(dst, tx, &above, &left, tx, tx, tx),
+        11 => svtav1_dsp::intra_pred::predict_smooth_h(dst, tx, &above, &left, tx, tx),
+        12 => svtav1_dsp::intra_pred::predict_paeth(dst, tx, &above, &left, top_left, tx, tx),
+        m => unreachable!("funnel mode {m}"),
     }
 }
 
@@ -1722,14 +2067,15 @@ fn txt_search(
         || h > 32
         || cc::ext_tx_types(c_tx, false, false) == 1
         || cc::ext_tx_set(c_tx, false, false) == 0;
-    // get_tx_type_group: intra >= 16x16 -> 4, < 16x16 -> 5; depth 1
-    // offset 3 (min 1).
+    // get_tx_type_group (product_coding_loop.c:4358): per-preset intra
+    // group counts (M6 txt_level 8: ge16 4 / lt16 5; M5 txt_level 3:
+    // 6 / 6 — the dump's txt_ge16/txt_lt16); depth-1 offset 3 (min 1).
     let mut groups: i32 = if only_dct {
         1
     } else if w >= 16 && h >= 16 {
-        4
+        frame.cfg.txt_group_ge16
     } else {
-        5
+        frame.cfg.txt_group_lt16
     };
     if depth == 1 && !only_dct {
         groups = (groups - 3).max(1);
@@ -1756,9 +2102,14 @@ fn txt_search(
     ];
 
     let set_type = cc::ext_tx_set_type(c_tx, false, false);
-    // qp-scaled SATD early-exit th (satd_th_q_weight = 1, intra th 10).
+    // qp-scaled SATD early-exit th (satd_th_q_weight = 1; intra th 10 at
+    // M6, 15 at M5 — txt_satd_intra in the dumps).
     let (qw, qwd) = qp_scale_factors(frame.cli_qp);
-    let satd_th = if only_dct { 0 } else { div_round(10 * qw, qwd) } as i64;
+    let satd_th = if only_dct {
+        0
+    } else {
+        div_round(frame.cfg.txt_satd_th * qw, qwd)
+    } as i64;
 
     let mut best: Option<TxUnitOut> = None;
     let mut best_type = cc::DCT_DCT;
@@ -1775,10 +2126,13 @@ fn txt_search(
                 if AV1_EXT_TX_USED[set_type][tx_type] == 0 {
                     continue;
                 }
-                // txt_rate_cost_th = 100: skip types whose signalling
-                // rate alone exceeds the DCT cost fraction.
+                // txt_rate_cost_th (100 at M6, 250 at M5): skip types
+                // whose signalling rate alone exceeds the DCT cost
+                // fraction (product_coding_loop.c:4787-4794).
                 let tx_type_rate = rates.txt_rate(c_tx, intra_dir, tx_type) as u64;
-                if dct_cost != u64::MAX && rdcost(lambda, tx_type_rate, 0) * 1000 > dct_cost * 100 {
+                if dct_cost != u64::MAX
+                    && rdcost(lambda, tx_type_rate, 0) * 1000 > dct_cost * frame.cfg.txt_rate_th
+                {
                     continue;
                 }
             }

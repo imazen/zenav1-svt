@@ -351,6 +351,10 @@ pub struct BlockDecision {
     pub filter_intra_mode: u8,
     /// UV prediction mode (0 = UV_DC; follows luma on M6 funnel leaves).
     pub uv_mode: u8,
+    /// Luma angle delta (directional modes on >= 8x8 blocks; 0 elsewhere).
+    pub angle_delta: i8,
+    /// Chroma angle delta (directional uv modes on >= 8x8 blocks).
+    pub uv_angle_delta: i8,
     /// TX depth (0 = block-sized TX, 1 = quartered). Depth > 0 blocks
     /// carry per-txb data in `txb_qcoeffs`/`txb_eobs`/`txb_tx_types`.
     pub tx_depth: u8,
@@ -389,6 +393,8 @@ impl Default for BlockDecision {
             height: 0,
             filter_intra_mode: 5,
             uv_mode: 0,
+            angle_delta: 0,
+            uv_angle_delta: 0,
             tx_depth: 0,
             txb_qcoeffs: alloc::vec::Vec::new(),
             txb_eobs: alloc::vec::Vec::new(),
@@ -1385,6 +1391,8 @@ pub(crate) fn encode_fixed_tree(
                     height: size as u16,
                     filter_intra_mode: choice.fi_mode,
                     uv_mode: choice.uv_mode,
+                    angle_delta: choice.angle_delta,
+                    uv_angle_delta: choice.uv_angle_delta,
                     tx_depth: choice.tx_depth,
                     txb_qcoeffs: if choice.tx_depth > 0 {
                         choice.txb_qcoeffs
