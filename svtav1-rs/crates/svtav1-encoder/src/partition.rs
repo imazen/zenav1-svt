@@ -323,7 +323,7 @@ impl PartitionTree {
 }
 
 /// Per-block encoding decision record for bitstream encoding.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct BlockDecision {
     /// Partition type that produced this block.
     pub partition_type: PartitionType,
@@ -345,6 +345,57 @@ pub struct BlockDecision {
     pub width: u16,
     /// Block height.
     pub height: u16,
+    /// Filter-intra mode (0..4) or 5 = not used — C block_mi
+    /// filter_intra_mode (FILTER_INTRA_MODES sentinel). When used, the
+    /// block codes y_mode DC + use_filter_intra=1 + the CDF5 mode symbol.
+    pub filter_intra_mode: u8,
+    /// UV prediction mode (0 = UV_DC; follows luma on M6 funnel leaves).
+    pub uv_mode: u8,
+    /// TX depth (0 = block-sized TX, 1 = quartered). Depth > 0 blocks
+    /// carry per-txb data in `txb_qcoeffs`/`txb_eobs`/`txb_tx_types`.
+    pub tx_depth: u8,
+    /// Per-txb packed qcoeffs at tx_depth > 0, raster txb order.
+    pub txb_qcoeffs: alloc::vec::Vec<alloc::vec::Vec<i32>>,
+    /// Per-txb eobs (raster-domain nonzero indicator) at tx_depth > 0.
+    pub txb_eobs: alloc::vec::Vec<u16>,
+    /// Per-txb C TxType indices at tx_depth > 0.
+    pub txb_tx_types: alloc::vec::Vec<u8>,
+    /// Funnel-decided chroma: (u_q, v_q, u_eob, v_eob, u_recon, v_recon)
+    /// — packed cw x ch rasters + the decision-phase reconstructions the
+    /// walk copies into its chroma planes. None on non-funnel paths (the
+    /// walk derives UV_DC chroma itself).
+    #[allow(clippy::type_complexity)]
+    pub chroma_dec: Option<(
+        alloc::vec::Vec<i32>,
+        alloc::vec::Vec<i32>,
+        u16,
+        u16,
+        alloc::vec::Vec<u8>,
+        alloc::vec::Vec<u8>,
+    )>,
+}
+
+impl Default for BlockDecision {
+    fn default() -> Self {
+        Self {
+            partition_type: PartitionType::None,
+            is_inter: false,
+            intra_mode: 0,
+            tx_type: 0,
+            mv: svtav1_types::motion::Mv::ZERO,
+            qcoeffs: alloc::vec::Vec::new(),
+            eob: 0,
+            width: 0,
+            height: 0,
+            filter_intra_mode: 5,
+            uv_mode: 0,
+            tx_depth: 0,
+            txb_qcoeffs: alloc::vec::Vec::new(),
+            txb_eobs: alloc::vec::Vec::new(),
+            txb_tx_types: alloc::vec::Vec::new(),
+            chroma_dec: None,
+        }
+    }
 }
 
 /// AV1 partition type for bitstream encoding.
@@ -1260,7 +1311,7 @@ pub fn partition_search_with_config(
 /// the partition structure comes from PD0 (pred_depth_only, nsq search
 /// off), and only per-block mode/coeff decisions remain.
 #[allow(clippy::too_many_arguments)]
-pub fn encode_fixed_tree(
+pub(crate) fn encode_fixed_tree(
     src: &[u8],
     src_stride: usize,
     recon: &mut [u8],
@@ -1273,10 +1324,93 @@ pub fn encode_fixed_tree(
     abs_y: usize,
     sb_vars: &crate::pd0::SbVariance,
     sb_org: (usize, usize),
+    mut funnel: Option<&mut crate::leaf_funnel::FunnelCtx<'_>>,
 ) -> PartitionResult {
     match tree {
         crate::pd0::Pd0Tree::Leaf(leaf_size) => {
             debug_assert_eq!(*leaf_size, size, "PD0 leaf size must match node size");
+            // M6 leaf funnel (presets 6..8, 4:2:0 still): the C-exact
+            // MDS0/MDS1/MDS3 mode decision replaces the homegrown leaf
+            // coder; the walk codes exactly what it decided.
+            if let Some(fx) = funnel.as_deref_mut() {
+                let choice = crate::leaf_funnel::decide_leaf(
+                    fx,
+                    src,
+                    src_stride,
+                    0,
+                    recon,
+                    recon_stride,
+                    abs_x,
+                    abs_y,
+                    size,
+                );
+                let (qcoeffs, eob, tx_type) = if choice.tx_depth == 0 {
+                    // Unpack the packed (<= 32-capped) txb into the full
+                    // w x h raster the depth-0 walk path expects.
+                    let (pw, ph) = (size.min(32), size.min(32));
+                    let mut full = alloc::vec![0i32; size * size];
+                    let mut eob = 0u16;
+                    for r in 0..ph {
+                        for c in 0..pw {
+                            let q = choice.txb_qcoeffs[0][r * pw + c];
+                            full[r * size + c] = q;
+                            if q != 0 {
+                                eob = (r * size + c + 1) as u16;
+                            }
+                        }
+                    }
+                    (full, eob, choice.txb_tx_types[0])
+                } else {
+                    let total: u32 = choice.txb_eobs.iter().map(|&e| e as u32).sum();
+                    (alloc::vec::Vec::new(), total.min(u16::MAX as u32) as u16, 0)
+                };
+                let decision = BlockDecision {
+                    partition_type: PartitionType::None,
+                    intra_mode: choice.mode,
+                    tx_type,
+                    qcoeffs,
+                    eob,
+                    width: size as u16,
+                    height: size as u16,
+                    filter_intra_mode: choice.fi_mode,
+                    uv_mode: choice.uv_mode,
+                    tx_depth: choice.tx_depth,
+                    txb_qcoeffs: if choice.tx_depth > 0 {
+                        choice.txb_qcoeffs
+                    } else {
+                        alloc::vec::Vec::new()
+                    },
+                    txb_eobs: if choice.tx_depth > 0 {
+                        choice.txb_eobs
+                    } else {
+                        alloc::vec::Vec::new()
+                    },
+                    txb_tx_types: if choice.tx_depth > 0 {
+                        choice.txb_tx_types
+                    } else {
+                        alloc::vec::Vec::new()
+                    },
+                    chroma_dec: Some((
+                        choice.u_qcoeffs,
+                        choice.v_qcoeffs,
+                        choice.u_eob,
+                        choice.v_eob,
+                        choice.u_recon,
+                        choice.v_recon,
+                    )),
+                    ..Default::default()
+                };
+                let tree = PartitionTree::Leaf(decision.clone());
+                return PartitionResult {
+                    partition_type: PartitionType::None,
+                    rd_cost: 0,
+                    distortion: 0,
+                    rate: 0,
+                    decisions: alloc::vec![decision],
+                    tree: Some(tree),
+                    num_blocks: 1,
+                };
+            }
             // C-exact leaf intra candidate set: at allintra effective-M9
             // the PD1 pass (REGULAR PD1 with the allintra signals —
             // enc_mode_config.c:11294; intra_level 8 arms
@@ -1330,6 +1464,7 @@ pub fn encode_fixed_tree(
                     abs_y + y0,
                     sb_vars,
                     sb_org,
+                    funnel.as_deref_mut(),
                 );
                 result.distortion += sub.distortion;
                 result.rate += sub.rate;
@@ -1936,6 +2071,7 @@ fn encode_single_block(
         eob: enc.eob,
         width: width as u16,
         height: height as u16,
+        ..Default::default()
     };
 
     let tree = PartitionTree::Leaf(decision.clone());
