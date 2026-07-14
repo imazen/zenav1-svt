@@ -1,0 +1,7 @@
+# Identity matrix — all presets M0..M10 x {uniform,gradient} x {64,128} x q{20,40,55}
+# Generated: 2026-07-14T05:09:18Z
+# Commit: 7c68d3634 (eff-M9 funnel routing)
+# Host: dev-32gb
+# Command: IM_PRESETS="0 1 2 3 4 5 6 7 8 9 10" bash tools/identity_matrix.sh
+# C baseline: in-tree Bin/Release/libSvtAv1Enc.a v4.2.0-rc
+# Result: 60/132 identical. M6/M7/M8/M9/M10 = 12/12 each; M0-M5 = 0/12 (unported).
