@@ -42,11 +42,15 @@ mkdir -p "$OUTDIR"
 SVT_TRACE_OUT="$OUTDIR/c.trace" "$HERE/capture_c_trace/capture_c_trace" \
     "$W" "$H" "$QP" "$PRESET" "$OUTDIR/rs.yuv" "$OUTDIR/c.obu" 2>"$OUTDIR/c.stderr"
 
-# 5. Diff.
+# 5. Diff. Concise by default (STAGE + VERDICT); set IDENTITY_VERBOSE=1 for
+#    the full field walks + op-context dumps when diagnosing.
 set +e
+verbose_flag=()
+[[ -n "${IDENTITY_VERBOSE:-}" ]] && verbose_flag=(--verbose)
 python3 "$HERE/identity_diff.py" \
     --c-obu "$OUTDIR/c.obu" --rust-obu "$OUTDIR/rs.obu" \
     --c-trace "$OUTDIR/c.trace" --rust-trace "$OUTDIR/rs.trace" \
+    "${verbose_flag[@]}" \
     | tee "$OUTDIR/report.txt"
 rc=${PIPESTATUS[0]}
 set -e
