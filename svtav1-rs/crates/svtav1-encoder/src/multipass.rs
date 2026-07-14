@@ -6,7 +6,18 @@
 //! (complexity, motion, etc.) without producing output. The second pass
 //! uses these stats to optimally distribute bits across frames.
 //!
-//! Ported from SVT-AV1's initial_rc_process.c and rc_process.c.
+//! AUDIT 2026-07-14 (pre-v4.2-bump port correctness): this is a HOMEGROWN
+//! block-variance / DC-SSE first-pass and a heuristic QP estimator — NOT a
+//! port of the C two-pass path (`firstpass.c` `svt_av1_first_pass` /
+//! `FIRSTPASS_STATS`, `initial_rc_process.c`, `pass2_strategy.c`,
+//! `rc_process.c`). It is also UNWIRED: nothing in the crate calls
+//! [`collect_first_pass_stats`] / [`FirstPassData`] — dead everywhere, not
+//! just dormant for the still gates. Rate control is non-normative (it only
+//! picks QP → which bits, never the bitstream format). `initial_rc_process.c`
+//! and `pass2_strategy.c` are bit-affecting-changed 4.1->4.2 (`firstpass.c` is
+//! not); a real two-pass port must track the v4.2 source. No C differential
+//! oracle exists for the current heuristics — they do not correspond to any
+//! single C function's contract.
 
 use alloc::vec::Vec;
 

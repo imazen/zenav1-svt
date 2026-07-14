@@ -2,7 +2,24 @@
 //!
 //! Spec 02: Hierarchical ME, full-pel, sub-pel search.
 //!
-//! Ported from SVT-AV1's `motion_estimation.c` and `av1me.c`.
+//! AUDIT 2026-07-14 (pre-v4.2-bump port correctness): this is a HOMEGROWN
+//! searcher, NOT a port of the C ME path. C `svt_aom_motion_estimation_b64`
+//! (motion_estimation.c), the `mcomp.c` sub-pel tree, and `av1me.c` are all
+//! bit-affecting-changed 4.1->4.2; this module does not track them. What it
+//! implements:
+//! - [`full_pel_search`]: a plain raster SAD search with early termination.
+//!   The SAD arithmetic is C-equivalent — proven against `svt_aom_sad` in
+//!   `tests/c_parity_motion_est.rs` — but the search order/pruning is not C's
+//!   diamond/HME.
+//! - [`half_pel_refine`] / [`quarter_pel_refine`]: BILINEAR interpolation, NOT
+//!   C's 8-tap `svt_aom_upsampled_pred` / `svt_aom_convolve8` sub-pel. Results
+//!   will differ from C at any fractional MV.
+//!
+//! Motion estimation is non-normative (it only selects which MV/bits get
+//! coded, never the bitstream format). Reachability: the `partition.rs` inter
+//! path and the `pipeline.rs` MV-map update, both gated on reference data that
+//! is absent on key/still frames — dormant for the conformance + identity
+//! gates.
 
 use svtav1_types::motion::Mv;
 

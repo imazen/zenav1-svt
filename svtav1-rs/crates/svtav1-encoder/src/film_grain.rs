@@ -2,12 +2,23 @@
 //!
 //! Spec 12 (film-grain.md): Noise estimation and synthesis.
 //!
-//! Estimates the noise model from the source video and signals it
-//! as metadata so the decoder can re-synthesize the grain after
-//! decompression. This allows the encoder to denoise before encoding
-//! (better compression) while preserving the perceptual quality.
+//! AUDIT 2026-07-14 (pre-v4.2-bump port correctness): both functions here are
+//! HOMEGROWN placeholders, NOT ports of the C film-grain path:
+//! - [`estimate_film_grain`]: a noise-variance heuristic that fits a flat
+//!   2-point scaling curve. It is NOT C `noise_model.c`
+//!   (`svt_aom_noise_model_*` / AR-model fitting), and its output is currently
+//!   DISCARDED — `pipeline.rs` computes it into `_grain_params` and drops it.
+//! - [`synthesize_grain`]: an LCG additive-noise stand-in, NOT the AV1
+//!   normative grain synthesis (`grainSynthesis.c` `add_noise_to_block` +
+//!   AR grain-block generation).
 //!
-//! Ported from SVT-AV1's noise_model.c and grainSynthesis.c.
+//! The bitstream-relevant path — the frame-header `film_grain_params` write —
+//! is NOT implemented here; `obu.rs` unconditionally emits
+//! `film_grain_params_present = 0` (a C-valid grain-off frame), so no film
+//! grain is ever signaled. `grainSynthesis.c` is bit-affecting-changed
+//! 4.1->4.2; a real port (params + normative synth) must track the v4.2 source.
+//! No C differential oracle exists for the current heuristics because they do
+//! not correspond to any single C function's contract.
 
 /// Film grain parameters for a frame.
 #[derive(Debug, Clone, Default)]
