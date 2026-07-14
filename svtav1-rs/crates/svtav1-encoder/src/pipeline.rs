@@ -679,9 +679,41 @@ impl EncodePipeline {
             // ones (gap 2a, narrowed to the non-all-skip case).
             if is_single_frame
                 && crate::cdef::allintra_preset_uses_cdef_search(self.speed_config.preset)
-                && deblock_geom.cdef_frame_all_skip()
             {
-                crate::cdef::pick_cdef_params_all_skip_search(base_qindex)
+                if deblock_geom.cdef_frame_all_skip() {
+                    crate::cdef::pick_cdef_params_all_skip_search(base_qindex)
+                } else {
+                    // The live-block RDO search (svt_av1_cdef_search +
+                    // finish_cdef_search, level-7 controls): filter the
+                    // POST-DEBLOCK recon per candidate strength and RD-pick
+                    // against the source. All tracked identity cells land
+                    // in the cdef_bits=0 outcome; the multi-strength
+                    // outcome (cdef_bits>0 needs per-SB cdef_idx syntax
+                    // the tile writer lacks) falls back to the qp fast
+                    // path — self-consistent, documented divergence.
+                    let (su, sv) = chroma.unwrap_or((&[][..], &[][..]));
+                    match crate::cdef::cdef_search_still_level7(
+                        &recon,
+                        &u_recon,
+                        &v_recon,
+                        &encode_input,
+                        su,
+                        sv,
+                        w,
+                        h,
+                        chroma.is_some(),
+                        &deblock_geom,
+                        base_qindex,
+                    ) {
+                        crate::cdef::CdefSearchPick::Picked(p) => p,
+                        crate::cdef::CdefSearchPick::AllSkip => {
+                            crate::cdef::pick_cdef_params_all_skip_search(base_qindex)
+                        }
+                        crate::cdef::CdefSearchPick::MultiStrength => {
+                            crate::cdef::pick_cdef_params_key_frame(base_qindex)
+                        }
+                    }
+                }
             } else {
                 crate::cdef::pick_cdef_params_key_frame(base_qindex)
             }

@@ -426,6 +426,400 @@ fn filter_and_count(
     }
 }
 
+// ---------------------------------------------------------------------------
+// CDEF RDO strength search (svt_av1_cdef_search + finish_cdef_search)
+// ---------------------------------------------------------------------------
+
+/// Outcome of the live-block CDEF search.
+pub enum CdefSearchPick {
+    /// Every 64x64 filter block is all-skip (`sb_count == 0`): the caller
+    /// takes `pick_cdef_params_all_skip_search` (already C-exact).
+    AllSkip,
+    /// A single strength pair won (`cdef_bits = 0`) — the fully supported
+    /// case; all six tracked identity cells land here.
+    Picked(CdefFrameParams),
+    /// The RD search preferred `cdef_bits > 0` (multiple strength pairs).
+    /// The tile writer has no per-SB `cdef_idx` emission yet, so the
+    /// caller falls back to the qp fast path (self-consistent stream,
+    /// documented divergence from C — see docs/IDENTITY-STATUS.md).
+    MultiStrength,
+}
+
+/// The level-7 candidate strengths: `first_pass = {pf_gi[0], pf_gi[15]}`,
+/// `second_pass = first_pass + 2` (enc_mode_config.c:1579-1607) — i.e.
+/// {(pri 0, sec 0), (pri 15, sec 0), (pri 0, sec 2), (pri 15, sec 2)}.
+const L7_FS: [i32; 4] = [0, 60, 2, 62];
+/// Chroma candidates: only the first-pass pair is evaluated
+/// (`default_second_pass_fs_uv = -1`); the second-pass rows carry the
+/// `default_mse_uv * 64` sentinel (cdef_process.c:494/569).
+const L7_UV_VALID: [bool; 4] = [true, true, false, false];
+const DEFAULT_MSE_UV: u64 = 1_040_400; // enc_cdef.c / cdef_process.c:240
+
+/// C `RDCOST` (identical macro to rd_cost.h).
+#[inline]
+fn rdc(lambda: u64, rate: u64, dist: u64) -> u64 {
+    ((rate * lambda + 256) >> 9) + (dist << 7)
+}
+
+/// `svt_search_one_dual_c` (enc_cdef.c:740), specialized to
+/// `start_gi = 0, end_gi = 4`.
+fn search_one_dual(
+    lev0: &mut [i32; 8],
+    lev1: &mut [i32; 8],
+    nb_strengths: usize,
+    mse: &[[[u64; 4]; 2]],
+) -> u64 {
+    let mut tot_mse = [[0u64; 4]; 4];
+    for row in mse {
+        let mut best_mse = 1u64 << 63;
+        for gi in 0..nb_strengths {
+            let curr = row[0][lev0[gi] as usize] + row[1][lev1[gi] as usize];
+            if curr < best_mse {
+                best_mse = curr;
+            }
+        }
+        for (j, tj) in tot_mse.iter_mut().enumerate() {
+            for (kk, t) in tj.iter_mut().enumerate() {
+                let curr = row[0][j] + row[1][kk];
+                *t += curr.min(best_mse);
+            }
+        }
+    }
+    let mut best_tot = 1u64 << 63;
+    let (mut best_id0, mut best_id1) = (0usize, 0usize);
+    for (j, tj) in tot_mse.iter().enumerate() {
+        for (kk, &t) in tj.iter().enumerate() {
+            if t < best_tot {
+                best_tot = t;
+                best_id0 = j;
+                best_id1 = kk;
+            }
+        }
+    }
+    lev0[nb_strengths] = best_id0 as i32;
+    lev1[nb_strengths] = best_id1 as i32;
+    best_tot
+}
+
+/// `joint_strength_search_dual` (enc_cdef.c:813): greedy + 4*nb rotation
+/// refinement.
+fn joint_strength_search_dual(
+    best_lev0: &mut [i32; 8],
+    best_lev1: &mut [i32; 8],
+    nb_strengths: usize,
+    mse: &[[[u64; 4]; 2]],
+) -> u64 {
+    let mut best_tot = 1u64 << 63;
+    for i in 0..nb_strengths {
+        best_tot = search_one_dual(best_lev0, best_lev1, i, mse);
+    }
+    for _ in 0..4 * nb_strengths {
+        for j in 0..nb_strengths - 1 {
+            best_lev0[j] = best_lev0[j + 1];
+            best_lev1[j] = best_lev1[j + 1];
+        }
+        best_tot = search_one_dual(best_lev0, best_lev1, nb_strengths - 1, mse);
+    }
+    best_tot
+}
+
+/// The `finish_cdef_search` RD half (enc_cdef.c:1063-1127) over already
+/// computed per-fb mse rows (zero_fs_cost_bias = 0 at allintra <= M7 —
+/// cdef_recon_level 0 — so no mse scaling). Returns (cdef_bits,
+/// y_strength, uv_strength) in the SEARCH-INDEX domain for bits = 0, or
+/// the bits count when > 0.
+fn finish_cdef_rd(mse: &[[[u64; 4]; 2]], qindex: u8) -> (usize, usize, usize) {
+    let sb_count = mse.len();
+    debug_assert!(sb_count > 0);
+    let lambda = crate::pd0::kf_full_lambda_8bit_unweighted(qindex) as u64;
+    let mut best_cost = 1u64 << 63;
+    let mut best_bits = 0usize;
+    let mut best_pair = (0usize, 0usize);
+    for i in 0..=3usize {
+        let nb = 1usize << i;
+        let mut lev0 = [0i32; 8];
+        let mut lev1 = [0i32; 8];
+        let tot = joint_strength_search_dual(&mut lev0, &mut lev1, nb, mse);
+        // CDEF_STRENGTH_BITS = 6, two planes; av1_cost_literal = n << 9.
+        let total_bits = (sb_count * i + nb * 6 * 2) as u64;
+        let cost = rdc(lambda, total_bits << 9, tot * 16);
+        if cost < best_cost {
+            best_cost = cost;
+            best_bits = i;
+            best_pair = (lev0[0] as usize, lev1[0] as usize);
+        }
+    }
+    (best_bits, best_pair.0, best_pair.1)
+}
+
+/// One fb's packed filter pass: C `svt_cdef_filter_fb` with `dstride = 0`
+/// (search mode): each dlist block lands at `bi << (bsizex + bsizey)` with
+/// row stride `1 << bsizex`, rows stepped by `subsampling` (unfiltered rows
+/// keep stale bytes exactly like C's tmp_dst — the dist reads the same
+/// subsampled rows only).
+#[allow(clippy::too_many_arguments)]
+fn filter_fb_packed(
+    tmp: &mut [u8],
+    src_pad: &[u16],
+    dlist: &[(usize, usize)],
+    strength: i32,
+    damping: i32,
+    pli: usize,
+    subsampling: usize,
+    dir: &mut [[i32; 8]; 8],
+    var: &mut [[i32; 8]; 8],
+    dirinit: &mut bool,
+) {
+    let pri_strength = strength / 4;
+    let sec = strength % 4;
+    let sec_strength = sec + i32::from(sec == 3);
+    let damping = damping - i32::from(pli != 0);
+    let (bsizex, bsizey, bsize) = if pli == 0 {
+        (3usize, 3usize, k::BLOCK_8X8)
+    } else {
+        (2, 2, k::BLOCK_4X4)
+    };
+    let base = k::CDEF_VBORDER * k::CDEF_BSTRIDE + k::CDEF_HBORDER;
+
+    if strength == 0 {
+        // Copy path (svt_cdef_filter_fb, cdef.c:336-364).
+        for (bi, &(by, bx)) in dlist.iter().enumerate() {
+            let ioff = base + ((by << bsizey) * k::CDEF_BSTRIDE) + (bx << bsizex);
+            let doff = bi << (bsizex + bsizey);
+            let mut iy = 0usize;
+            while iy < (1 << bsizey) {
+                for ix in 0..(1 << bsizex) {
+                    tmp[doff + (iy << bsizex) + ix] = src_pad[ioff + iy * k::CDEF_BSTRIDE + ix] as u8;
+                }
+                iy += subsampling;
+            }
+        }
+        return;
+    }
+
+    if pli == 0 && !*dirinit {
+        for &(by, bx) in dlist {
+            let (d, vr) = k::cdef_find_dir(
+                &src_pad[base + by * 8 * k::CDEF_BSTRIDE + bx * 8..],
+                k::CDEF_BSTRIDE,
+                0,
+            );
+            dir[by][bx] = d as i32;
+            var[by][bx] = vr;
+        }
+        *dirinit = true;
+    }
+
+    for (bi, &(by, bx)) in dlist.iter().enumerate() {
+        let t = if pli != 0 {
+            pri_strength
+        } else {
+            k::adjust_strength(pri_strength, var[by][bx])
+        };
+        let doff = bi << (bsizex + bsizey);
+        let ioff = base + ((by << bsizey) * k::CDEF_BSTRIDE) + (bx << bsizex);
+        k::cdef_filter_block(
+            tmp,
+            doff,
+            1 << bsizex,
+            src_pad,
+            ioff,
+            t,
+            sec_strength,
+            if pri_strength != 0 { dir[by][bx] } else { 0 },
+            damping,
+            damping,
+            bsize,
+            0,
+            subsampling,
+        );
+    }
+}
+
+/// `svt_aom_compute_cdef_dist_8bit_c` (enc_cdef.c): SSE between the SOURCE
+/// plane and the packed filtered blocks over the subsampled rows.
+fn dist_packed(
+    tmp: &[u8],
+    src_plane: &[u8],
+    plane_w: usize,
+    fb_y0: usize,
+    fb_x0: usize,
+    dlist: &[(usize, usize)],
+    luma: bool,
+    subsampling: usize,
+) -> u64 {
+    let dim = if luma { 8usize } else { 4 };
+    let mut sum = 0u64;
+    for (bi, &(by, bx)) in dlist.iter().enumerate() {
+        let s0 = (fb_y0 + by * dim) * plane_w + fb_x0 + bx * dim;
+        let p0 = bi * dim * dim;
+        let mut i = 0usize;
+        while i < dim {
+            for j in 0..dim {
+                let e = src_plane[s0 + i * plane_w + j] as i32 - tmp[p0 + i * dim + j] as i32;
+                sum += (e * e) as u64;
+            }
+            i += subsampling;
+        }
+    }
+    sum
+}
+
+/// The full still-frame CDEF strength search at allintra search presets
+/// with the level-7 controls (M6; levels 5/3 share the machinery but wider
+/// strength sets — unported): per 64x64 filter block, filter the
+/// POST-DEBLOCK recon at each candidate strength and measure SSE against
+/// the source over every-4th luma row (chroma 4x4 blocks cap the
+/// subsampling at 1), then run the C RD pick over signal-bit counts.
+///
+/// C references: svt_av1_cdef_search (cdef_process.c:300-640, damping
+/// `3 + (qindex >> 6)`, `mse *= subsampling_factor`, V accumulates into
+/// the joint uv row) + finish_cdef_search (enc_cdef.c:925-1127).
+#[allow(clippy::too_many_arguments)]
+pub fn cdef_search_still_level7(
+    recon_y: &[u8],
+    recon_u: &[u8],
+    recon_v: &[u8],
+    src_y: &[u8],
+    src_u: &[u8],
+    src_v: &[u8],
+    width: usize,
+    height: usize,
+    chroma_420: bool,
+    geom: &DeblockGeom,
+    qindex: u8,
+) -> CdefSearchPick {
+    assert!(width % 8 == 0 && height % 8 == 0, "8-aligned frames only");
+    let damping = 3 + (qindex as i32 >> 6);
+    let nvfb = height.div_ceil(64);
+    let nhfb = width.div_ceil(64);
+    let sub_y = 4usize; // BLOCK_8X8: min(subsampling_factor=4, 4)
+    let sub_uv = 1usize; // BLOCK_4X4: min(4, 1)
+
+    let mut mse: Vec<[[u64; 4]; 2]> = Vec::new();
+    let mut src_pad = alloc::vec![0u16; k::CDEF_INBUF_SIZE];
+    let mut tmp = alloc::vec![0u8; 64 * 64];
+    let mut dlist: Vec<(usize, usize)> = Vec::with_capacity(64);
+
+    for fbr in 0..nvfb {
+        let vsize = 64.min(height - fbr * 64);
+        for fbc in 0..nhfb {
+            let hsize = 64.min(width - fbc * 64);
+            dlist.clear();
+            for by in 0..vsize / 8 {
+                for bx in 0..hsize / 8 {
+                    if !geom.is_8x8_all_skip(fbr * 16 + by * 2, fbc * 16 + bx * 2) {
+                        dlist.push((by, bx));
+                    }
+                }
+            }
+            if dlist.is_empty() {
+                continue;
+            }
+            let mut row = [[0u64; 4]; 2];
+            let mut dir = [[0i32; 8]; 8];
+            let mut var = [[0i32; 8]; 8];
+            let mut dirinit = false;
+
+            // ---- Luma
+            build_src(
+                &mut src_pad,
+                recon_y,
+                width,
+                height,
+                fbr * 64,
+                fbc * 64,
+                vsize,
+                hsize,
+            );
+            for (gi, &fs) in L7_FS.iter().enumerate() {
+                filter_fb_packed(
+                    &mut tmp,
+                    &src_pad,
+                    &dlist,
+                    fs,
+                    damping,
+                    0,
+                    sub_y,
+                    &mut dir,
+                    &mut var,
+                    &mut dirinit,
+                );
+                let d = dist_packed(&tmp, src_y, width, fbr * 64, fbc * 64, &dlist, true, sub_y);
+                row[0][gi] = d * sub_y as u64;
+            }
+
+            // ---- Chroma: U then V ACCUMULATE into the joint uv row.
+            if chroma_420 {
+                let (cw, ch) = (width / 2, height / 2);
+                for gi in 0..4 {
+                    if !L7_UV_VALID[gi] {
+                        row[1][gi] = DEFAULT_MSE_UV * 64;
+                    }
+                }
+                for (rec_c, src_c) in [(recon_u, src_u), (recon_v, src_v)] {
+                    build_src(
+                        &mut src_pad,
+                        rec_c,
+                        cw,
+                        ch,
+                        fbr * 32,
+                        fbc * 32,
+                        vsize / 2,
+                        hsize / 2,
+                    );
+                    for (gi, &fs) in L7_FS.iter().enumerate() {
+                        if !L7_UV_VALID[gi] {
+                            continue;
+                        }
+                        filter_fb_packed(
+                            &mut tmp,
+                            &src_pad,
+                            &dlist,
+                            fs,
+                            damping,
+                            1,
+                            sub_uv,
+                            &mut dir,
+                            &mut var,
+                            &mut dirinit,
+                        );
+                        let d = dist_packed(
+                            &tmp,
+                            src_c,
+                            cw,
+                            fbr * 32,
+                            fbc * 32,
+                            &dlist,
+                            false,
+                            sub_uv,
+                        );
+                        row[1][gi] += d * sub_uv as u64;
+                    }
+                }
+            } else {
+                // Monochrome: the C search still runs pli 0 only; the uv
+                // rows stay zero, making uv candidate 0 free like C's
+                // num_planes=1 loop bound.
+            }
+            mse.push(row);
+        }
+    }
+
+    if mse.is_empty() {
+        return CdefSearchPick::AllSkip;
+    }
+    let (bits, y_idx, uv_idx) = finish_cdef_rd(&mse, qindex);
+    if bits > 0 {
+        return CdefSearchPick::MultiStrength;
+    }
+    CdefSearchPick::Picked(CdefFrameParams {
+        damping: (3 + (qindex >> 6)) as u8,
+        y_strength: L7_FS[y_idx] as u8,
+        uv_strength: L7_FS[uv_idx] as u8,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -473,6 +867,37 @@ mod tests {
             );
         }
         assert!(pick_cdef_params_key_frame(80).uv_strength != 0);
+    }
+
+    /// The finish_cdef_search RD pick pinned against the instrumented C
+    /// captures (SVT_M6DBG CDEFMSE/CDEFBITS/CDEFPICK, gradient p6 cells,
+    /// docs/IDENTITY-STATUS.md M6 chunk).
+    #[test]
+    fn finish_rd_matches_c_captures() {
+        // g64 q55 (qindex 220): pick y search-index 2 (strength 2 =
+        // pri 0 / sec 2), uv index 0, cdef_bits 0.
+        let m55 = [[
+            [885_020u64, 900_992, 875_920, 892_836],
+            [0, 0, 66_585_600, 66_585_600],
+        ]];
+        assert_eq!(finish_cdef_rd(&m55, 220), (0, 2, 0));
+        // g64 q40 (qindex 160): pick y index 3 (strength 62 = pri 15 /
+        // sec 2).
+        let m40 = [[
+            [271_716u64, 257_812, 260_308, 251_848],
+            [0, 0, 66_585_600, 66_585_600],
+        ]];
+        assert_eq!(finish_cdef_rd(&m40, 160), (0, 3, 0));
+        // g128 q20 (qindex 80), 4 filter blocks: pick y index 2
+        // (strength 2), uv 0, bits 0 (CDEFPICK y=[2]).
+        let uvrow = [0u64, 0, 66_585_600, 66_585_600];
+        let m20 = [
+            [[51_440u64, 48_480, 47_460, 49_720], uvrow],
+            [[49_580, 46_280, 45_176, 47_436], uvrow],
+            [[52_756, 49_508, 48_144, 49_800], uvrow],
+            [[52_028, 48_140, 46_548, 48_664], uvrow],
+        ];
+        assert_eq!(finish_cdef_rd(&m20, 80), (0, 2, 0));
     }
 
     /// Damping steps exactly at the C breakpoints.

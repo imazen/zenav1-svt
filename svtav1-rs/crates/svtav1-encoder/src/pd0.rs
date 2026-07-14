@@ -210,6 +210,16 @@ fn rdcost(lambda: u64, rate: u64, dist: u64) -> u64 {
 /// `lambda_scale_factors` stay 128 (no-op). Verified against the
 /// instrumented library: 25650/248207/1527856 at qindex 80/160/220
 /// (CLI qp 20/40/55), intermediates 21888/211804/1303771.
+/// The kf full lambda WITHOUT the frame `lambda_weight` multiply — what C's
+/// `svt_aom_lambda_assign` hands the CDEF search (enc_cdef.c:991) and the
+/// restoration search rdmult. Instrumented: 21888 / 211804 / 1303771 at
+/// qindex 80/160/220 (= kf_full_lambda_8bit * 128 / 150 exactly).
+pub(crate) fn kf_full_lambda_8bit_unweighted(qindex: u8) -> u32 {
+    let dc_q = svtav1_dsp::quant_tables::DC_QLOOKUP_8[qindex as usize] as i64;
+    let rdmult = ((3.3 + 0.0015 * dc_q as f64) * (dc_q as f64) * (dc_q as f64)) as i64;
+    ((rdmult * 150) >> 7) as u32
+}
+
 pub(crate) fn kf_full_lambda_8bit(qindex: u8, cli_qp: u32) -> u32 {
     let dc_q = svtav1_dsp::quant_tables::DC_QLOOKUP_8[qindex as usize] as i64;
     let rdmult = ((3.3 + 0.0015 * dc_q as f64) * (dc_q as f64) * (dc_q as f64)) as i64;
