@@ -19,5 +19,6 @@ pub mod quant;
 pub mod picture;
 pub mod pipeline;
 pub mod rate_control;
+pub mod restoration;
 pub mod speed_config;
 pub mod temporal_filter;
