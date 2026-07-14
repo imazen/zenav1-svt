@@ -203,6 +203,13 @@ pub struct FunnelCfg {
     /// filter-intra candidate + `use_filter_intra` syntax (M6: on level 2;
     /// M7/M8: `get_filter_intra_level_allintra` == 0 -> off).
     pub filter_intra: bool,
+    /// `filter_intra_ctrls.max_filter_intra_mode` (set_filter_intra_ctrls,
+    /// enc_mode_config.c:8045): the highest filter-intra mode injected as a
+    /// candidate (all inject a DC_PRED block with filter_intra_mode = 0..N).
+    /// filter_intra level 1 (M0) -> FILTER_PAETH_PRED (4 = all 5 modes);
+    /// level 2 (M1..M6) -> FILTER_DC_PRED (0, the single FILTER_DC
+    /// candidate). Only consulted when `filter_intra` is set.
+    pub fi_max: u8,
     /// `intra_ctrls.prune_using_best_mode` (M6: 0; M7/M8 intra_level 7: 1) —
     /// the MDS0 order-dependent H/SMOOTH skip (product_coding_loop.c:1688).
     pub prune_best_mode: bool,
@@ -330,6 +337,7 @@ impl FunnelCfg {
             txt_d2_off: 3,
             ind_uv_mds3: false,
             ind_uv_independent: None,
+            fi_max: 0,
             edge_filter: false,
         };
         match preset {
@@ -353,6 +361,48 @@ impl FunnelCfg {
             // C M2 codes UV_PAETH. The other M1-vs-M2 deltas live outside
             // FunnelCfg — nsq_search level 10 vs 14 (NsqCfg::for_preset_qp)
             // and PD0_LVL_0 vs LVL_1 (the PD0 pick).
+            // M0 (still/420): the svt_aom_get_*_allintra rows for enc_mode=0.
+            // Deltas vs M1 (each C-verified):
+            // - nic_level 1 (svt_aom_get_nic_level_allintra :5988 `<= ENC_M0`
+            //   with OPT_NSC_STILL_IMAGE -> 1; set_nic_controls case 1 :6060):
+            //   nic_scaling_level 0 -> MD_STAGE_NICS_SCAL_NUM[0] = {20,20,20};
+            //   mds1_cand_base_th_intra MAX (no mds1 cand pruning), mds1 rank
+            //   0; mds2/mds3 cand base 50, rank 0, rel_dev 0. (mds2/mds3 class
+            //   ths 25/25 are single-intra-class-dead like the M2 case.)
+            // - chroma_level 1 (svt_aom_get_chroma_level_allintra :12231
+            //   `<= ENC_M0` -> 1; set_chroma_controls case 1 :5747):
+            //   ind_uv_last_mds=0, uv_nic 16, skip_ind_uv_if_only_dc=0 — the
+            //   independent uv search with a WIDER prune (nfl = 32*16/16 = 32).
+            // - filter_intra level 1 (get_filter_intra_level_allintra :12681
+            //   `<= ENC_M0` -> 1; set_filter_intra_ctrls case 1 :8053):
+            //   max_filter_intra_mode FILTER_PAETH_PRED -> all five fi modes
+            //   are candidates (fi_max 4), vs M1's fi_max 0 (FILTER_DC only).
+            // - nsq_search level 3 vs M1's 10 (NsqCfg::for_preset_qp).
+            // pd0_lvl 0, txt_level 2, txs_level 2, intra_level 1, dr_level 6
+            // are all shared with M1.
+            0 => FunnelCfg {
+                mode_end: 12,
+                angular_level: 1,
+                nic_num: (20, 20, 20),
+                mds1_cand_base_th: u64::MAX,
+                mds1_rank_factor: 0,
+                mds2_cand_base_th: 50,
+                mds2_rank_factor: 0,
+                mds2_rel_dev_th: 0,
+                mds3_cand_base_th: 50,
+                txt_group_lt16: 6,
+                txt_group_ge16: 6,
+                txt_satd_th: 20,
+                txt_rate_th: 250,
+                txs_max_sq: 2,
+                txs_max_nsq: 2,
+                txt_d1_off: 0,
+                txt_d2_off: 0,
+                fi_max: 4,
+                ind_uv_mds3: false,
+                ind_uv_independent: Some(16),
+                ..m6_tail
+            },
             1 => FunnelCfg {
                 mode_end: 12,
                 angular_level: 1,
@@ -1185,7 +1235,7 @@ fn uv_from_y(mode: u8) -> u8 {
 }
 
 /// C `fimode_to_intradir` (common_utils.c:33).
-const FIMODE_TO_INTRADIR: [u8; 5] = [0, 1, 2, 6, 0];
+pub(crate) const FIMODE_TO_INTRADIR: [u8; 5] = [0, 1, 2, 6, 0];
 
 /// One funnel candidate's evolving state.
 struct Cand {
@@ -1513,7 +1563,13 @@ pub(crate) fn evaluate_leaf(
         }
     }
     if fi_elig && !dc_only {
-        cand_modes.push((0, 0, 0)); // FILTER_DC_PRED
+        // Inject FILTER_DC_PRED..max_filter_intra_mode (each is a DC_PRED
+        // block carrying filter_intra_mode 0..N). fi_max 0 = FILTER_DC only
+        // (M1..M6); fi_max 4 = all five filter-intra modes (M0, filter_intra
+        // level 1). inject_filter_intra_candidates, mode_decision.c:3318-3330.
+        for fi_mode in 0..=cfg.fi_max {
+            cand_modes.push((0, 0, fi_mode));
+        }
     }
 
     let mut cands: Vec<Cand> = Vec::with_capacity(cand_modes.len());
@@ -1536,9 +1592,11 @@ pub(crate) fn evaluate_leaf(
                 continue; // DC still best -> skip SMOOTH
             }
         }
-        // uv = intra_luma_to_chroma[mode] with the SAME angle delta
-        // (ind_uv_avail is 0 at injection — mode_decision.c:3280; the
-        // ind-uv rewrite happens at MDS3 via update_intra_chroma_mode).
+        // uv = intra_luma_to_chroma[mode] at injection (ind_uv_avail is 0 —
+        // mode_decision.c:3280; the ind-uv rewrite happens later via
+        // update_intra_chroma_mode). Filter-intra candidates carry uv=DC at
+        // this stage (their coded luma mode is DC); the CORRESPONDING intra
+        // mode's chroma is applied by the ind-uv rewrite below.
         let uv = uv_from_y(if fi != FI_NONE { 0 } else { mode });
         let uv_delta = if fi != FI_NONE { 0 } else { delta };
         let mut pred = vec![0u8; w * h];
@@ -1630,7 +1688,14 @@ pub(crate) fn evaluate_leaf(
     // -- post_mds0_nic_pruning (product_coding_loop.c:8045) --
     let (nic1, nic2, nic3) = nic_counts(frame.cli_qp, cfg.nic_num);
     let (qw, qwd) = qp_scale_factors(frame.cli_qp);
-    let mds1_cand_th = div_round(cfg.mds1_cand_base_th * qw, qwd);
+    // nic_level 1 (M0) sets mds1_cand_base_th_intra = (uint64_t)~0 (no mds1
+    // cand pruning); the qp-scaled threshold stays saturated so the loop
+    // below never prunes (guard avoids the base*qw overflow).
+    let mds1_cand_th = if cfg.mds1_cand_base_th == u64::MAX {
+        u64::MAX
+    } else {
+        div_round(cfg.mds1_cand_base_th * qw, qwd)
+    };
     let mut n1 = (ncand as u32).min(nic1) as usize;
     {
         let best = cands[order[0]].fast_cost;
@@ -2054,6 +2119,18 @@ pub(crate) fn evaluate_leaf(
         // mode + new uv pair — same formula as injection, so an
         // unconditional recompute is C-identical).
         if let Some(tbl) = &ind_uv {
+            // NOTE (M0 residual): C `update_intra_chroma_mode`
+            // (mode_decision.c:3332) keys the best-uv table on
+            // `fimode_to_intramode[filter_intra_mode]` for filter-intra
+            // candidates (block_mi.mode == DC_PRED) — so FILTER_H should take
+            // best_uv[H], not best_uv[DC]. Applying that refinement in
+            // isolation regressed the M0 q40 cell (a deeper independent-uv
+            // best_uv_mode / ind_uv_last_mds=0 timing divergence on
+            // sub-8-width blocks), so the table[cand.mode] approximation is
+            // kept for now (exact for every fi_max==0 preset — M1..M6 — where
+            // the only fi candidate is FILTER_DC and fimode_to_intramode[0]
+            // == DC). Closing M0's 2 residual q20 cells needs C-side
+            // best_uv_mode instrumentation. See docs/IDENTITY-STATUS.md.
             let (uvm, uvd) = tbl[cands[ci].mode as usize];
             let c = &mut cands[ci];
             c.uv = uvm;
@@ -2356,7 +2433,6 @@ pub(crate) fn evaluate_leaf(
             win = ci;
         }
     }
-
     // The shared MDS3 residual workspace after the loop: the LAST
     // processed candidate's (order1[n3-1]) whole-block depth-0 residual.
     let mut psq_resid = vec![0i32; w * h];

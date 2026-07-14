@@ -588,9 +588,11 @@ impl NsqCfg {
         }
 
         // set_nsq_search_ctrls level rows (enc_mode_config.c:6496-6786),
-        // levels reachable from the allintra bases + offsets (3..=19).
+        // levels reachable from the allintra bases + offsets (2..=19).
+        // Level 2 is M0's base 3 minus the qp>59 offset (min 1, but 3-1=2).
         // (sq_w, max_dev, split_th, lower_th, hvv, nonhv, off16, psq, comp, hv_w)
         let row: (u64, u64, u64, u64, u64, u64, u64, u8, u64, u64) = match level {
+            2 => (105, 0, 150, 3, 0, 0, 10, 0, 0, 115),
             3 => (105, 0, 100, 3, 0, 0, 10, 0, 0, 115),
             4 => (100, 0, 100, 3, 0, 0, 10, 0, 80, 115),
             5 => (100, 0, 100, 5, 0, 0, 10, 0, 80, 110),

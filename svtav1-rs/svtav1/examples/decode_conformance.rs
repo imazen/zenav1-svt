@@ -89,7 +89,7 @@ fn main() {
     let sizes = [32usize, 48, 64, 80, 96, 112, 128];
     // CLI-domain qps -> qindex {80, 128, 172, 220, 255} (see header note).
     let qps = [20u8, 32, 43, 55, 63];
-    let speeds = [1u8, 2, 3, 4, 5, 6, 8, 10];
+    let speeds = [0u8, 1, 2, 3, 4, 5, 6, 8, 10];
 
     let mut count = 0usize;
     for (cname, generator) in contents {

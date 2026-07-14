@@ -2070,3 +2070,92 @@ Two things must land before M0 can be routed:
 - decode_conformance: mono **840/0** + chroma **1120/0** (aomdec + dav1d,
   speed 1 ADDED).
 - cargo test --workspace: **628/0**.
+
+## 2026-07-14 (wave2, M0 sub-8 chunk): filter-intra tx_type CDF fix — M0 ROUTED, conformance unblocked, matrix 126 -> 130/132
+
+Session scope: land the stashed `M0-routing-WIP` (route preset 0 through the
+PD0 + depth-refine + leaf-funnel path) and fix the conformance blocker it
+exposed. **The blocker was NOT a missing "sub-8 partition writer"** (the
+prior chunk's hypothesis) — the 4x16 / 8x32 partition + block + coeff writer
+was already correct. The real bug is a one-line **luma tx_type CDF index**
+error that only bites filter-intra blocks, which M0 is the first preset to
+emit (filter_intra level 1 injects all five fi modes; M1..M6 use fi_max 0).
+
+### Root cause (differ + aomdec-debug gdb, no scratch-C build needed)
+
+The 4 recon_parity decode failures (`c420_gradient_{64,128}_q20_s0`,
+`c420_gradient_96pad_{q20,q43}_s0`) AND the M0 gradient q20 identity cells
+produced a **self-inconsistent** tile: the encoder wrote bits the reference
+decoder could not read back. Localised it precisely:
+
+1. **aom-inspect + gdb on `/root/aomdec-debug/aomdec`** (libaom source at
+   `/root/aom-rs/reference/libaom`): the decoder read the first 16x16's four
+   4x16 leaves fine, then read the *second* 16x16's partition as VERT where
+   the encoder wrote VERT_4 — a coder-state desync inside the first 16x16.
+2. **Per-txb gdb dump vs encoder WTXB log**: every txb (tx sizes, skip/dc
+   contexts, eobs, and coeff values under the transposed level-buffer layout
+   `enc(r,c) == dec c*16+r`) matched for x=32, x=36, x=40; **x=44 desynced**.
+3. **Full rng-sequence diff (encoder symtrace vs decoder `dec->rng`)**:
+   first divergence at the CDF op ENTERING x=44's coeffs — the **luma
+   tx_type symbol** (nsyms=7). Encoder CDF `[31456,25911,24693]`, decoder
+   CDF `[32096,29521,...]`: SAME rng in, DIFFERENT adapted CDF — i.e. the
+   two sides indexed a *different* `intra_ext_tx_cdf` instance.
+
+**Why:** C `av1_read_tx_type` (decodemv.c:637) indexes the luma tx_type CDF
+by `filter_intra ? fimode_to_intradir[fi_mode] : mbmi->mode`. For a
+filter-intra block the coded luma mode is DC, but the tx_type CDF must use
+`fimode_to_intradir[fi]` (`{DC,V,H,D157,DC}`). x=32 (mode V) had adapted the
+`[V]` instance; x=44 (filter-intra FILTER_H) must reuse `[V]`, but the Rust
+writer passed the plain DC mode -> used the `[DC]` instance (adapted by x=40)
+-> CDF mismatch -> desync. The FUNNEL already used `FIMODE_TO_INTRADIR` for
+the candidate's tx_type *rate* (leaf_funnel.rs:2223); only the **bitstream
+writer** (`encode_block_syntax`, both the single- and multi-tx luma paths)
+was missing it.
+
+### Fix (2 hunks)
+
+- `leaf_funnel.rs`: `FIMODE_TO_INTRADIR` -> `pub(crate)`.
+- `pipeline.rs` `encode_block_syntax`: compute
+  `tx_intra_dir = filter_intra ? FIMODE_TO_INTRADIR[fi] : intra_mode` once
+  and pass it (not `decision.intra_mode`) as the tx_type `intra_dir` to
+  `write_coeffs_txb_1d` on both luma tx paths. Chroma tx_type is derived
+  (never signalled), so it is unaffected.
+
+Plus the `M0-routing-WIP` config (all re-verified vs C last chunk): preset 0
+funnel cfg (nic_level 1 -> nic (20,20,20) + mds1_base MAX no-prune; chroma
+level 1 independent-uv nfl 32; filter_intra level 1 fi_max 4; nsq_search 3),
+NsqCfg level-2 row, and the pipeline gates extended to `preset >= 0`.
+
+### Result
+
+Every M0 sub-8 stream now decodes. **matrix 126 -> 130/132.** M0 is 10/12:
+all 6 uniform + gradient q40/q55 (4) byte-IDENTICAL; the 2 residual cells are
+`gradient {64,128} q20 p0`.
+
+### Residual: 2 cells (gradient q20 p0) — a DECISION-layer tie-break, NOT a writer bug
+
+Both residual cells now **decode + recon byte-exact** (self-consistent valid
+streams); they are not byte-identical to C. First divergence (differ) is a
+genuine mode pick on a 4x16 block: **C codes H_PRED, Rust codes FILTER_H**
+(the filter-intra H). The two predictions are near-identical, so it is a
+close RD tie-break the funnel resolves differently only at q20 (q40/q55
+agree). This matches the prior chunk's note (M0/M1 chunk residual item 2):
+"a deeper independent-uv `best_uv_mode` / `ind_uv_last_mds=0`-timing
+divergence on sub-8 blocks" — the sub-8 chroma-ref total-RD (luma+chroma)
+tips the luma winner. Closing it needs C-side per-candidate RD instrumentation
+of the x=36/x=44 4x16 blocks at M0 q20 (which fi/H candidate C ranks where).
+
+### Gates (all green on the committed tree, matrix 130/132)
+
+- identity matrix (presets 0-10): **130/132**
+  (benchmarks/identity_matrix_allpresets.tsv regenerated) — presets 1-10 =
+  12/12 each (no regression); M0 = 10/12 (2 gradient q20 residual).
+- recon_parity: **432/0** (speed 0 in the gate; the 4 prior DECODE FAILURES
+  are gone).
+- decode_conformance: mono **945/0** + chroma **1260/0** (aomdec AND dav1d,
+  speed 0 owned by the funnel).
+- cargo test --workspace: **662/0**.
+- Build profile: opt-level 2 for release+test (deps stay opt-3); identity
+  matrix re-verified byte-identical at opt-2 (opt-level does not affect
+  bit-exactness — no FMA contraction without target-feature=+fma), ~faster
+  rebuilds for iteration.
