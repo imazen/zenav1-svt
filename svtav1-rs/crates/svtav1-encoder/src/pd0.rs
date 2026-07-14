@@ -591,11 +591,6 @@ pub struct TxTypeRatesDc {
     tx16: i32,
 }
 
-pub(crate) fn build_tx_type_rates_dc() -> TxTypeRatesDc {
-    let fc = svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(0);
-    build_tx_type_rates_dc_from_fc(&fc)
-}
-
 pub(crate) fn build_tx_type_rates_dc_from_fc(
     fc: &svtav1_entropy::coeff_c::CoeffFc,
 ) -> TxTypeRatesDc {

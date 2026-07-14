@@ -1297,10 +1297,6 @@ impl EntropyCtx {
     /// av1_code_tx_size), signaling or not. Our blocks always use the
     /// full-block TX and the skip||inter override stores block dims —
     /// identical values here either way.
-    pub(crate) fn record_txfm(&mut self, x: usize, y: usize, w: usize, h: usize) {
-        self.record_txfm_dims(x, y, w, h, w, h);
-    }
-
     /// C `set_txfm_ctxs(tx_size, n8_w, n8_h, 0, xd)` with an explicit
     /// CHOSEN tx size — above cells take tx_size_wide, left cells
     /// tx_size_high, over the block's mi span (entropy_coding.c:4614;
