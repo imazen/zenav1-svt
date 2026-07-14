@@ -129,6 +129,16 @@ pub struct SeqTools {
     /// `use_filter_intra` symbol for eligible intra blocks
     /// ([`crate::context::write_use_filter_intra`]).
     pub enable_filter_intra: bool,
+    /// SH `enable_intra_edge_filter` (spec 5.5.1): the DECODER then
+    /// filters/upsamples directional-prediction edges
+    /// (libaom build_intra_predictors `disable_edge_filter`), so the
+    /// encoder's reconstruction path must do the same. C allintra
+    /// derivation (`svt_aom_sig_deriv_pre_analysis_scs`,
+    /// enc_mode_config.c:4036-4048): 1 iff `dist_based_ang_intra_level
+    /// >= 1 || angular_pred_level[intra_level] in {2, 3}` — true ONLY at
+    /// M5 (intra_level 2 -> angular_pred_level 2) among representable
+    /// allintra presets.
+    pub enable_intra_edge_filter: bool,
     /// SH `enable_restoration` (spec 5.5.1): gates the FH lr_params()
     /// fields (spec 5.9.20) — every frame header of the sequence must
     /// then carry per-plane `lr_type` bits.
@@ -484,7 +494,7 @@ fn write_sequence_header_inner(
     // <= M6) via enc_mode_config.c:4017-4025; written verbatim by
     // write_sequence_header_obu (entropy_coding.c:2850).
     wb.write_bit(tools.enable_filter_intra);
-    wb.write_bit(false); // enable_intra_edge_filter = 0
+    wb.write_bit(tools.enable_intra_edge_filter); // enable_intra_edge_filter
 
     if still_picture {
         // For reduced SH: all inter features are implicit 0,

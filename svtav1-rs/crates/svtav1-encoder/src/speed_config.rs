@@ -185,8 +185,19 @@ pub fn seq_tools_for_preset(preset: u8, allintra: bool) -> svtav1_entropy::obu::
     // svt_aom_get_sg_filter_level_allintra (enc_mode_config.c:2000):
     // 1 only for ENC_MR (-1) — not representable as a u8 preset.
     let sg: u8 = 0;
+    // enable_intra_edge_filter (svt_aom_sig_deriv_pre_analysis_scs,
+    // enc_mode_config.c:4036-4048): allintra sets it iff
+    // `dist_based_ang_intra_level >= 1 || angular_pred_level[intra_level]
+    // == 2 || == 3`. svt_aom_get_intra_mode_levels_allintra (:6907):
+    // intra_level = 1 (<=M4), 2 (M5), 6 (M6), 7 (M7-M8), 8 (>=M9), always
+    // with dist_based_ang_intra_level = 0; angular_pred_level table (:18)
+    // = {0,1,2,2,3,4,4,4,4,0} -> only intra_level 2 (= preset 5) lands in
+    // {2,3}. Verified by the instrumented config dump (M5DBG CFG ang=2 at
+    // enc_mode 5, ang=1 at <=4, ang=4 at >=6).
+    let enable_intra_edge_filter = preset == 5;
     svtav1_entropy::obu::SeqTools {
         enable_filter_intra: filter_intra_level != 0,
+        enable_intra_edge_filter,
         enable_restoration: wn > 0 || sg > 0,
     }
 }
