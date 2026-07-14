@@ -1,0 +1,11 @@
+date: 2026-07-14
+tool: tools/real_image_matrix.sh + identity_run.rs file:<png> mode
+corpus: CID22-512 (/root/work/codec-corpus/CID22/CID22-512), 250 real 512x512 photos
+  (imazen26 unavailable — /mnt/v not mounted on this box; RIM_CORPUS swaps it in)
+c_reference: SvtAv1EncApp v4.2.0-rc, matched still/AVIF CQP --lp 1, shared I420 (BT.601 limited)
+result: 0/66 byte-identical on REAL content (vs 130/132 on synthetic)
+  divergence: p2(M0-5) FH loop_filter_level (DLF full-image search on real recon);
+    p6(M6) FH cdef strength search; p10(M7+) tile partition/mode/tx RD.
+  finding: synthetic gradient/uniform is too degenerate to exercise the search/RD
+    layer; real photos show the decision layer is not yet C-exact across the full
+    mode space. Bitstream identity on real content requires completing the RD port.

@@ -14,6 +14,11 @@ svtav1-dsp = { workspace = true, features = ["std"] }
 svtav1-entropy = { workspace = true, features = ["std"] }
 svtav1-encoder = { workspace = true }
 
+[dev-dependencies]
+# PNG decode for the real-image identity harness (examples/identity_run.rs
+# `file:<path.png>` content). Example-only — not linked into the library.
+png = "0.18.1"
+
 [lints]
 workspace = true
 
