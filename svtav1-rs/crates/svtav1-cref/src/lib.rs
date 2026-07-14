@@ -1022,6 +1022,161 @@ pub fn filter_intra_edge(p: &mut [u8], start: usize, sz: usize, strength: i32) {
     unsafe { ref_filter_intra_edge(p.as_mut_ptr().add(start), sz as i32, strength) }
 }
 
+// ---------------------------------------------------------------------------
+// AUDIT 2026-07-14: inter / motion DSP oracles (sad, variance, convolve8).
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn ref_sad(w: i32, h: i32, src: *const u8, ss: i32, r: *const u8, rs: i32) -> u32;
+    fn ref_variance(
+        w: i32,
+        h: i32,
+        a: *const u8,
+        as_: i32,
+        b: *const u8,
+        bs: i32,
+        sse: *mut u32,
+    ) -> u32;
+    fn ref_convolve8_horiz(
+        src: *const u8,
+        src_stride: i32,
+        dst: *mut u8,
+        dst_stride: i32,
+        taps: *const i16,
+        w: i32,
+        h: i32,
+    );
+    fn ref_convolve8_vert(
+        src: *const u8,
+        src_stride: i32,
+        dst: *mut u8,
+        dst_stride: i32,
+        taps: *const i16,
+        w: i32,
+        h: i32,
+    );
+}
+
+/// Reference `svt_aom_sad{w}x{h}_c`: sum of abs differences over the block.
+/// `src_origin`/`ref_origin` index the block top-left inside their buffers.
+#[allow(clippy::too_many_arguments)]
+pub fn sad(
+    w: usize,
+    h: usize,
+    src: &[u8],
+    src_origin: usize,
+    src_stride: usize,
+    r: &[u8],
+    ref_origin: usize,
+    ref_stride: usize,
+) -> u32 {
+    assert!(src_origin + (h - 1) * src_stride + w <= src.len());
+    assert!(ref_origin + (h - 1) * ref_stride + w <= r.len());
+    let out = unsafe {
+        ref_sad(
+            w as i32,
+            h as i32,
+            src.as_ptr().add(src_origin),
+            src_stride as i32,
+            r.as_ptr().add(ref_origin),
+            ref_stride as i32,
+        )
+    };
+    assert_ne!(out, 0xFFFF_FFFF, "cref: unsupported SAD size {w}x{h}");
+    out
+}
+
+/// Reference `svt_aom_variance{w}x{h}_c`: returns `(variance, sse)` where
+/// `sse = sum((a-b)^2)` and `variance = sse - sum(a-b)^2 / (w*h)` (two blocks).
+#[allow(clippy::too_many_arguments)]
+pub fn variance(
+    w: usize,
+    h: usize,
+    a: &[u8],
+    a_origin: usize,
+    a_stride: usize,
+    b: &[u8],
+    b_origin: usize,
+    b_stride: usize,
+) -> (u32, u32) {
+    assert!(a_origin + (h - 1) * a_stride + w <= a.len());
+    assert!(b_origin + (h - 1) * b_stride + w <= b.len());
+    let mut sse = 0u32;
+    let var = unsafe {
+        ref_variance(
+            w as i32,
+            h as i32,
+            a.as_ptr().add(a_origin),
+            a_stride as i32,
+            b.as_ptr().add(b_origin),
+            b_stride as i32,
+            &mut sse,
+        )
+    };
+    assert_ne!(sse, 0xFFFF_FFFF, "cref: unsupported variance size {w}x{h}");
+    (var, sse)
+}
+
+/// Reference `svt_aom_convolve8_horiz_c` with `x_step_q4=16` and the given
+/// 8 taps. `src_origin` points at the C-convention origin (the kernel reads
+/// `src[origin-3 ..= origin+w+3]` per row — 3 left / 4 right of the window).
+#[allow(clippy::too_many_arguments)]
+pub fn convolve8_horiz(
+    src: &[u8],
+    src_origin: usize,
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    taps: &[i16; 8],
+    w: usize,
+    h: usize,
+) {
+    assert!(src_origin >= 3);
+    assert!(src_origin + (h - 1) * src_stride + w + 4 <= src.len());
+    assert!((h - 1) * dst_stride + w <= dst.len());
+    unsafe {
+        ref_convolve8_horiz(
+            src.as_ptr().add(src_origin),
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            taps.as_ptr(),
+            w as i32,
+            h as i32,
+        );
+    }
+}
+
+/// Reference `svt_aom_convolve8_vert_c` with `y_step_q4=16` and the given
+/// 8 taps. `src_origin` points at the C-convention origin (the kernel reads
+/// rows `origin-3 ..= origin+h+3` — 3 above / 4 below the window).
+#[allow(clippy::too_many_arguments)]
+pub fn convolve8_vert(
+    src: &[u8],
+    src_origin: usize,
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    taps: &[i16; 8],
+    w: usize,
+    h: usize,
+) {
+    assert!(src_origin >= 3 * src_stride);
+    assert!(src_origin + (h + 3) * src_stride + w <= src.len());
+    assert!((h - 1) * dst_stride + w <= dst.len());
+    unsafe {
+        ref_convolve8_vert(
+            src.as_ptr().add(src_origin),
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            taps.as_ptr(),
+            w as i32,
+            h as i32,
+        );
+    }
+}
+
 /// Reference `svt_av1_upsample_intra_edge_c` with the block edge at
 /// `p[origin..origin+sz]` (writes `p[origin-2..]`).
 pub fn upsample_intra_edge(p: &mut [u8], origin: usize, sz: usize) {
