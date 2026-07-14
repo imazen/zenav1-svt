@@ -372,6 +372,42 @@ fn hadamard_col8(src_diff: &[i16], src_stride: usize, coeff: &mut [i16; 8]) {
     coeff[5] = (c3 - c7) as i16;
 }
 
+/// C `hadamard_col4` (picture_operators_c.c:72): 4-point butterfly with a
+/// `>> 1` on the first stage.
+fn hadamard_col4(src_diff: &[i16], src_stride: usize, coeff: &mut [i16; 4]) {
+    let b0 = (src_diff[0] + src_diff[src_stride]) >> 1;
+    let b1 = (src_diff[0] - src_diff[src_stride]) >> 1;
+    let b2 = (src_diff[2 * src_stride] + src_diff[3 * src_stride]) >> 1;
+    let b3 = (src_diff[2 * src_stride] - src_diff[3 * src_stride]) >> 1;
+    coeff[0] = b0 + b2;
+    coeff[1] = b1 + b3;
+    coeff[2] = b0 - b2;
+    coeff[3] = b1 - b3;
+}
+
+/// C `svt_aom_hadamard_4x4_c` (picture_operators_c.c:85): 2D 4x4 Hadamard
+/// (column pass, row pass over the transposed intermediate, then the
+/// extra transpose matching the SSE2 kernel's output order).
+pub fn aom_hadamard_4x4(src_diff: &[i16], src_stride: usize, coeff: &mut [i32]) {
+    let mut buffer = [0i16; 16];
+    let mut buffer2 = [0i16; 16];
+    for idx in 0..4 {
+        let mut out = [0i16; 4];
+        hadamard_col4(&src_diff[idx..], src_stride, &mut out);
+        buffer[idx * 4..idx * 4 + 4].copy_from_slice(&out);
+    }
+    for idx in 0..4 {
+        let mut out = [0i16; 4];
+        hadamard_col4(&buffer[idx..], 4, &mut out);
+        buffer2[idx * 4..idx * 4 + 4].copy_from_slice(&out);
+    }
+    for i in 0..4 {
+        for j in 0..4 {
+            coeff[i * 4 + j] = buffer2[j * 4 + i] as i32;
+        }
+    }
+}
+
 /// C `svt_aom_hadamard_8x8_c`: 2D 8x8 Hadamard of an int16 residual block
 /// (stride `src_stride`) into 64 int32 coefficients. No scaling.
 pub fn aom_hadamard_8x8(src_diff: &[i16], src_stride: usize, coeff: &mut [i32]) {

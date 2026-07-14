@@ -292,7 +292,7 @@ impl EncodePipeline {
         // enc_mode_config.c:14931) on 64-aligned dims — everywhere else
         // the legacy dead-zone quantizer stays.
         let c_quant: Option<alloc::sync::Arc<crate::quant::CodingQuantCfg>> =
-            if is_key && self.speed_config.preset >= 4 && w % 64 == 0 && h % 64 == 0 {
+            if is_key && self.speed_config.preset >= 2 && w % 64 == 0 && h % 64 == 0 {
                 let mut tot: u64 = 0;
                 let mut cnt: u64 = 0;
                 for sy in (0..h).step_by(64) {
@@ -973,6 +973,7 @@ impl EncodePipeline {
 /// Also tracks partition context at 8x8 granularity, matching the rav1d
 /// decoder's `BlockContext.partition` arrays. This is essential for multi-SB
 /// frames where the partition context of one SB depends on its neighbors.
+#[derive(Clone)]
 pub(crate) struct EntropyCtx {
     /// Above row modes (at 4x4 granularity), indexed by column in 4x4 units.
     /// Updated after each block is encoded.
@@ -1236,6 +1237,35 @@ impl EntropyCtx {
 
     /// Update partition context after encoding a non-SPLIT partition.
     /// For SPLIT, the children update the context — don't call this for SPLIT.
+    /// MD leaf commit: C `mode_decision_update_neighbor_arrays` writes
+    /// `partition_context_lookup[bsize]` over the block span
+    /// (product_coding_loop.c:179-192). For RECT leaves the above byte is
+    /// the WIDTH's NONE row and the left byte the HEIGHT's — i.e. the
+    /// per-dimension levels, not max(w, h) for both.
+    pub(crate) fn update_partition_ctx_leaf(
+        &mut self,
+        x: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+    ) {
+        let bl_w = Self::bsl_to_block_level(Self::bsl(width));
+        let bl_h = Self::bsl_to_block_level(Self::bsl(height));
+        if bl_w >= 5 || bl_h >= 5 {
+            return;
+        }
+        let above_val = AL_PART_CTX[0][bl_w][0];
+        let left_val = AL_PART_CTX[1][bl_h][0];
+        let xb8 = x / 8;
+        let yb8 = y / 8;
+        for i in xb8..(xb8 + width / 8).min(self.above_partition.len()) {
+            self.above_partition[i] = above_val;
+        }
+        for i in yb8..(yb8 + height / 8).min(self.left_partition.len()) {
+            self.left_partition[i] = left_val;
+        }
+    }
+
     pub(crate) fn update_partition_ctx(
         &mut self,
         x: usize,
@@ -1694,14 +1724,16 @@ fn encode_block_syntax(
     {
         let w = decision.width as usize;
         let h = decision.height as usize;
-        let depth = decision.tx_depth as usize;
+        let depth = decision.tx_depth;
         if is_key && !(w == 4 && h == 4) {
             let ctx = ectx.tx_size_ctx(block_x, block_y, w, h);
-            svtav1_entropy::context::write_tx_depth(writer, frame_ctx, w, h, ctx, depth);
+            svtav1_entropy::context::write_tx_depth(writer, frame_ctx, w, h, ctx, depth as usize);
         }
-        // set_txfm_ctxs records the CHOSEN tx dims (w >> depth for our
-        // square blocks) — the next blocks' tx_size contexts read them.
-        ectx.record_txfm_dims(block_x, block_y, w, h, w >> depth, h >> depth);
+        // set_txfm_ctxs records the CHOSEN tx dims (the C
+        // tx_depth_to_tx_size chain — rect blocks halve the LONG dim
+        // first) — the next blocks' tx_size contexts read them.
+        let (txw, txh) = crate::leaf_funnel::txb_dims_at_depth(w, h, depth);
+        ectx.record_txfm_dims(block_x, block_y, w, h, txw, txh);
     }
 
     if !skip {
@@ -1770,17 +1802,19 @@ fn encode_block_syntax(
             );
             ectx.record_coeff(block_x, block_y, w, h, cul_level as u8);
         } else {
-            // tx_depth 1: four quartered txbs in raster order (spec
-            // residual() / C av1_write_coeffs_mb over the tx grid), each
-            // with its own neighbor contexts and tx type; the per-txb
-            // contexts read the bytes recorded by the previous txbs.
-            debug_assert_eq!(decision.tx_depth, 1);
-            let tx = w >> 1;
-            let tx_size = coeff_c::tx_size_from_dims(tx, tx);
-            for txb in 0..4usize {
-                let tx_x = block_x + (txb & 1) * tx;
-                let tx_y = block_y + (txb >> 1) * tx;
-                let (above, left) = ectx.coeff_neighbors(tx_x, tx_y, tx, tx);
+            // tx_depth > 0: the C tx grid at this depth
+            // (tx_depth_to_tx_size / tx_blocks_per_depth, raster order —
+            // spec residual() / C av1_write_coeffs_mb), each txb with its
+            // own neighbor contexts and tx type; the per-txb contexts
+            // read the bytes recorded by the previous txbs.
+            let (txw, txh) = crate::leaf_funnel::txb_dims_at_depth(w, h, decision.tx_depth);
+            let cols = w / txw;
+            let txbs = cols * (h / txh);
+            let tx_size = coeff_c::tx_size_from_dims(txw, txh);
+            for txb in 0..txbs {
+                let tx_x = block_x + (txb % cols) * txw;
+                let tx_y = block_y + (txb / cols) * txh;
+                let (above, left) = ectx.coeff_neighbors(tx_x, tx_y, txw, txh);
                 let (txb_skip_ctx, dc_sign_ctx) =
                     coeff_c::get_txb_ctx(0, above, left, false, false);
                 let tx_type = decision.txb_tx_types[txb] as usize;
@@ -1809,7 +1843,7 @@ fn encode_block_syntax(
                     base_q_idx,
                     false,
                 );
-                ectx.record_coeff(tx_x, tx_y, tx, tx, cul_level as u8);
+                ectx.record_coeff(tx_x, tx_y, txw, txh, cul_level as u8);
             }
         }
 
@@ -1879,10 +1913,21 @@ fn encode_block_syntax(
         decision.is_inter,
         skip,
     );
-    if decision.tx_depth == 1 {
-        let tx = decision.width as usize >> 1;
-        for txb in 0..4usize {
-            geom.record_tx_dims(block_x + (txb & 1) * tx, block_y + (txb >> 1) * tx, tx, tx);
+    if decision.tx_depth > 0 {
+        let (txw, txh) = crate::leaf_funnel::txb_dims_at_depth(
+            decision.width as usize,
+            decision.height as usize,
+            decision.tx_depth,
+        );
+        let cols = decision.width as usize / txw;
+        let txbs = cols * (decision.height as usize / txh);
+        for txb in 0..txbs {
+            geom.record_tx_dims(
+                block_x + (txb % cols) * txw,
+                block_y + (txb / cols) * txh,
+                txw,
+                txh,
+            );
         }
     }
 }
@@ -2230,12 +2275,14 @@ fn encode_tile_rows(
         // per-SB contexts (ec_ctx_array averaging), a documented residual
         // gap for the 128-cell decisions.
         // The C-exact leaf intra funnel covers still/420 allintra presets
-        // 4, 5, 6, 7, 8, and eff-M9 (presets >= 9 clamp to M9). Presets
-        // 4..=6 use update_cdf_level 2 (per-SB CDF chain,
-        // enc_mode_config.c:12154); 7/8/9+ use update_cdf_level 0 (static
-        // default tables all frame — `funnel_chain` below is 4..=6).
+        // 2, 3, 4, 5, 6, 7, 8, and eff-M9 (presets >= 9 clamp to M9).
+        // Presets 2/3 use update_cdf_level 1 and 4..=6 level 2 — for
+        // I-slices the two are identical (only update_mv differs, forced
+        // 0 on I-slices; set_cdf_controls, enc_mode_config.c:12047), so
+        // the per-SB CDF chain gate below is 2..=6. 7/8/9+ use
+        // update_cdf_level 0 (static default tables all frame).
         // eff-M9 (intra_level 8) arms the is_dc_only gate inside the funnel.
-        let use_funnel = speed_config.preset >= 4
+        let use_funnel = speed_config.preset >= 2
             && chroma_420
             && chroma_src.is_some()
             && ref_frame_data.is_none()
@@ -2288,7 +2335,7 @@ fn encode_tile_rows(
         // the static default rate tables for every SB, so they never chain.
         // Gated on use_funnel so it only fires for the chroma/420 funnel
         // path (chroma_src is Some) — mono never chains.
-        let funnel_chain = use_funnel && matches!(speed_config.preset, 4..=6) && multi_sb;
+        let funnel_chain = use_funnel && matches!(speed_config.preset, 2..=6) && multi_sb;
         let mut chain_snaps: Vec<(
             svtav1_entropy::context::FrameContext,
             alloc::boxed::Box<svtav1_entropy::coeff_c::CoeffFc>,
@@ -2358,7 +2405,7 @@ fn encode_tile_rows(
                 // computed here because the leaf lambda depends on it.
                 let use_pd0 = ref_ctx.is_none()
                     && (speed_config.preset >= 6
-                        || (matches!(speed_config.preset, 4 | 5) && use_funnel))
+                        || (matches!(speed_config.preset, 2..=5) && use_funnel))
                     && cur_w == sb_size
                     && cur_h == sb_size;
                 // CLI-qp-calibrated lambda via the exact inverse mapping
@@ -2496,7 +2543,7 @@ fn encode_tile_rows(
                             None => m6_pd0_tables
                                 .get_or_insert_with(|| crate::pd0::build_m6_pd0_tables(sb_qindex)),
                         };
-                        let refined = matches!(speed_config.preset, 4 | 5) && use_funnel;
+                        let refined = matches!(speed_config.preset, 2..=5) && use_funnel;
                         if refined {
                             // M4/M5 (`dr_mode = 1`, PD0_DEPTH_ADAPTIVE):
                             // PD1 re-decides depths around the PD0 tree —
@@ -2507,6 +2554,7 @@ fn encode_tile_rows(
                             // (bias 995). M6+ (PRED_PART_ONLY) keeps the
                             // fixed-tree path below (identical outcome:
                             // s = e = 0 everywhere).
+                            let dr = crate::depth_refine::DrCtrls::for_preset(speed_config.preset);
                             let eval = crate::pd0::pd0_pick_sb_partition_m6_eval(
                                 encode_input,
                                 w,
@@ -2515,8 +2563,8 @@ fn encode_tile_rows(
                                 cli_qp as u32,
                                 sb_qindex,
                                 tables,
+                                if dr.disallow_4x4 { 8 } else { 4 },
                             );
-                            let dr = crate::depth_refine::DrCtrls::for_preset(speed_config.preset);
                             let cq = c_quant.as_ref().unwrap();
                             let scan = crate::depth_refine::build_refined_scan(
                                 &eval,
@@ -2544,6 +2592,10 @@ fn encode_tile_rows(
                                 rates: fun_rates.as_deref().unwrap(),
                                 frame: fun_frame.as_ref().unwrap(),
                             };
+                            let nsq = crate::depth_refine::NsqCfg::for_preset_qp(
+                                speed_config.preset,
+                                cli_qp as u32,
+                            );
                             crate::depth_refine::decide_sb_refined(
                                 &scan,
                                 &mut fx,
@@ -2553,6 +2605,8 @@ fn encode_tile_rows(
                                 w,
                                 cq.lambda as u64,
                                 &part_rates,
+                                &nsq,
+                                dr.disallow_4x4,
                                 x0,
                                 y0,
                             )

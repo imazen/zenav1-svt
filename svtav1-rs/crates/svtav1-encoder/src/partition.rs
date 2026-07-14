@@ -1321,20 +1321,21 @@ pub fn partition_search_with_config(
 /// (shared by the fixed-tree path and the depth-refined walk).
 pub(crate) fn funnel_block_decision(
     choice: crate::leaf_funnel::LeafChoice,
-    size: usize,
+    w: usize,
+    h: usize,
 ) -> BlockDecision {
     let (qcoeffs, eob, tx_type) = if choice.tx_depth == 0 {
         // Unpack the packed (<= 32-capped) txb into the full
         // w x h raster the depth-0 walk path expects.
-        let (pw, ph) = (size.min(32), size.min(32));
-        let mut full = alloc::vec![0i32; size * size];
+        let (pw, ph) = (w.min(32), h.min(32));
+        let mut full = alloc::vec![0i32; w * h];
         let mut eob = 0u16;
         for r in 0..ph {
             for c in 0..pw {
                 let q = choice.txb_qcoeffs[0][r * pw + c];
-                full[r * size + c] = q;
+                full[r * w + c] = q;
                 if q != 0 {
-                    eob = (r * size + c + 1) as u16;
+                    eob = (r * w + c + 1) as u16;
                 }
             }
         }
@@ -1349,8 +1350,8 @@ pub(crate) fn funnel_block_decision(
         tx_type,
         qcoeffs,
         eob,
-        width: size as u16,
-        height: size as u16,
+        width: w as u16,
+        height: h as u16,
         filter_intra_mode: choice.fi_mode,
         uv_mode: choice.uv_mode,
         angle_delta: choice.angle_delta,
@@ -1427,7 +1428,7 @@ pub(crate) fn encode_fixed_tree(
                     size,
                     dc_only,
                 );
-                let decision = funnel_block_decision(choice, size);
+                let decision = funnel_block_decision(choice, size, size);
                 let tree = PartitionTree::Leaf(decision.clone());
                 return PartitionResult {
                     partition_type: PartitionType::None,
