@@ -15,6 +15,7 @@ pub mod coeff_c;
 pub mod context;
 pub mod default_cdfs;
 pub mod default_coef_cdfs;
+pub mod lr;
 pub mod mv_coding;
 pub mod obu;
 pub mod range_coder;

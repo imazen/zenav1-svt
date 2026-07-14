@@ -20,6 +20,7 @@ pub mod loop_filter;
 pub mod obmc;
 pub mod quant;
 pub mod quant_tables;
+pub mod restoration;
 pub mod sad;
 pub mod scale;
 pub mod superres;

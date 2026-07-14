@@ -416,3 +416,106 @@ void ref_pick_cdef_from_qp_intra_8bit(int32_t base_q_idx, int32_t* pred_y_streng
     *pred_y_strength  = y_f1 * 4 + y_f2;
     *pred_uv_strength = uv_f1 * 4 + uv_f2;
 }
+
+/* ---- Loop restoration (Wiener): kernel, stats, filter_unit, subexp coding ---- */
+
+#include "restoration.h"
+#include "convolve.h"
+
+static void ref_rtcd_once(void) {
+    if (!g_rtcd_ready) {
+        svt_aom_setup_common_rtcd_internal(svt_aom_get_cpu_flags_to_use());
+        g_rtcd_ready = 1;
+    }
+}
+
+void svt_av1_wiener_convolve_add_src_c(const uint8_t* const src, const ptrdiff_t src_stride, uint8_t* const dst,
+                                       const ptrdiff_t dst_stride, const int16_t* const filter_x,
+                                       const int16_t* const filter_y, const int32_t w, const int32_t h,
+                                       const ConvolveParams* const conv_params);
+void svt_av1_compute_stats_c(int32_t wiener_win, const uint8_t* dgd, const uint8_t* src, int32_t h_start,
+                             int32_t h_end, int32_t v_start, int32_t v_end, int32_t dgd_stride, int32_t src_stride,
+                             int64_t* M, int64_t* H);
+
+/* src/dst point at the block origin (borders live around them, caller's
+   responsibility). Filters are copied into 16-aligned storage so the C
+   entry's InterpKernel base/offset arithmetic behaves exactly as with the
+   real WienerInfo (DECLARE_ALIGNED(16, ...)). */
+void ref_wiener_convolve_add_src(const uint8_t* src, int32_t src_stride, uint8_t* dst, int32_t dst_stride,
+                                 const int16_t* filter_x, const int16_t* filter_y, int32_t w, int32_t h) {
+    ref_rtcd_once();
+    _Alignas(16) int16_t fx[8];
+    _Alignas(16) int16_t fy[8];
+    memcpy(fx, filter_x, sizeof(fx));
+    memcpy(fy, filter_y, sizeof(fy));
+    const ConvolveParams conv_params = get_conv_params_wiener(8);
+    svt_av1_wiener_convolve_add_src_c(src, src_stride, dst, dst_stride, fx, fy, w, h, &conv_params);
+}
+
+void ref_compute_stats(int32_t wiener_win, const uint8_t* dgd, const uint8_t* src, int32_t h_start, int32_t h_end,
+                       int32_t v_start, int32_t v_end, int32_t dgd_stride, int32_t src_stride, int64_t* m,
+                       int64_t* h) {
+    svt_av1_compute_stats_c(wiener_win, dgd, src, h_start, h_end, v_start, v_end, dgd_stride, src_stride, m, h);
+}
+
+/* Full per-unit stripe machinery. data/dst point at plane (0,0) of padded
+   planes (>=4px physical margins); boundary buffers follow the C layout
+   (col i == plane col i-4, row 2*stripe + j). */
+void ref_loop_restoration_filter_unit(uint8_t need_boundaries, int32_t h_start, int32_t h_end, int32_t v_start,
+                                      int32_t v_end, int32_t rtype, const int16_t* vfilter, const int16_t* hfilter,
+                                      const uint8_t* bdry_above, const uint8_t* bdry_below, int32_t bdry_stride,
+                                      int32_t tile_left, int32_t tile_top, int32_t tile_right, int32_t tile_bottom,
+                                      int32_t tile_stripe0, int32_t ss_x, int32_t ss_y, uint8_t* data,
+                                      int32_t stride, uint8_t* dst, int32_t dst_stride) {
+    ref_rtcd_once();
+    RestorationTileLimits limits = {h_start, h_end, v_start, v_end};
+    Av1PixelRect          rect   = {tile_left, tile_top, tile_right, tile_bottom};
+    RestorationUnitInfo   rui;
+    memset(&rui, 0, sizeof(rui));
+    rui.restoration_type = (RestorationType)rtype;
+    memcpy(rui.wiener_info.vfilter, vfilter, 8 * sizeof(int16_t));
+    memcpy(rui.wiener_info.hfilter, hfilter, 8 * sizeof(int16_t));
+    RestorationStripeBoundaries rsb;
+    rsb.stripe_boundary_above  = (uint8_t*)bdry_above;
+    rsb.stripe_boundary_below  = (uint8_t*)bdry_below;
+    rsb.stripe_boundary_stride = bdry_stride;
+    rsb.stripe_boundary_size   = 0;
+    static RestorationLineBuffers rlbs; /* large; single-threaded tests */
+    svt_av1_loop_restoration_filter_unit(need_boundaries, &limits, &rui, &rsb, &rlbs, &rect, tile_stripe0, ss_x,
+                                         ss_y, /*highbd*/ 0, /*bit_depth*/ 8, data, stride, dst, dst_stride,
+                                         /*tmpbuf*/ NULL, /*optimized_lr*/ 0);
+}
+
+void ref_extend_frame(uint8_t* data, int32_t width, int32_t height, int32_t stride, int32_t border_horz,
+                      int32_t border_vert) {
+    ref_rtcd_once();
+    svt_extend_frame(data, width, height, stride, border_horz, border_vert, /*highbd*/ 0);
+}
+
+/* Subexp-with-reference bit chain (tap coding). Returns the coded byte
+   stream via the od_ec coder, so Rust can byte-compare its port. */
+void    svt_aom_write_primitive_refsubexpfin(AomWriter* w, uint16_t n, uint16_t k, uint16_t ref, uint16_t v);
+int32_t svt_aom_count_primitive_refsubexpfin(uint16_t n, uint16_t k, uint16_t ref, uint16_t v);
+
+uint32_t ref_write_refsubexpfin_bytes(uint16_t n, uint16_t k, uint16_t ref, uint16_t v, uint8_t* out,
+                                      uint32_t cap) {
+    AomWriter w;
+    memset(&w, 0, sizeof(w));
+    w.allow_update_cdf = 1;
+    svt_od_ec_enc_init(&w.ec);
+    w.ec.buf = (unsigned char*)malloc(REF_EC_BUF_CAP);
+    svt_od_ec_enc_reset(&w.ec);
+    svt_aom_write_primitive_refsubexpfin(&w, n, k, ref, v);
+    uint32_t       nbytes;
+    const uint8_t* p = svt_od_ec_enc_done(&w.ec, &nbytes);
+    if (nbytes > cap) {
+        nbytes = cap;
+    }
+    memcpy(out, p, nbytes);
+    free(w.ec.buf);
+    return nbytes;
+}
+
+int32_t ref_count_refsubexpfin(uint16_t n, uint16_t k, uint16_t ref, uint16_t v) {
+    return svt_aom_count_primitive_refsubexpfin(n, k, ref, v);
+}

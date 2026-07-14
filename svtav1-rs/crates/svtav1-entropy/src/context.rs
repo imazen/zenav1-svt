@@ -101,6 +101,13 @@ pub struct FrameContext {
     /// decoder: read_filter_intra_mode_info).
     pub filter_intra_cdfs: [[AomCdfProb; 3]; BLOCK_SIZES_ALL],
 
+    /// Per-RU `wiener_restore` flag CDF — C FRAME_CONTEXT.wiener_restore_cdf
+    /// (default AOM_CDF2(11570), cabac_context_model.c:629), coded by
+    /// loop_restoration_write_sb_coeffs when the frame restoration type is
+    /// RESTORE_WIENER (entropy_coding.c:4186; decoder
+    /// loop_restoration_read_sb_coeffs, libaom decodeframe.c:1702).
+    pub wiener_restore_cdf: [AomCdfProb; 3],
+
     // --- Inter prediction ---
     /// Inter compound mode CDFs [INTER_MODE_CONTEXTS][4+1]
     pub inter_compound_mode_cdf: [[AomCdfProb; 5]; INTER_MODE_CONTEXTS],
@@ -339,6 +346,10 @@ impl FrameContext {
             // the decoder initializes filter_intra_cdfs with these; wrong
             // values desync the stream on the first use_filter_intra flag.
             filter_intra_cdfs: crate::default_cdfs::FILTER_INTRA_CDF,
+            // AOM_CDF2(11570) in ICDF storage (32768 - 11570 = 21198) —
+            // matches the C trace fingerprint `BOOL f=21198` on the
+            // wiener_restore flag.
+            wiener_restore_cdf: [CDF_PROB_TOP - 11570, 0, 0],
             inter_compound_mode_cdf: [[
                 CDF_PROB_TOP / 4 * 3,
                 CDF_PROB_TOP / 4 * 2,
