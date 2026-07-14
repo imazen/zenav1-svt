@@ -1867,29 +1867,21 @@ fn encode_block_syntax(
     // Deblocking geometry: exactly what the decoder derives per mi from
     // the parsed block — dims (single TX per block), signaled skip, and
     // inter-ness (skip only suppresses deblocking for inter blocks).
-    if decision.tx_depth == 0 {
-        geom.record_block(
-            block_x,
-            block_y,
-            decision.width as usize,
-            decision.height as usize,
-            decision.is_inter,
-            skip,
-        );
-    } else {
-        // tx_depth 1: the decoder's filter masks see TX edges at the
-        // quartered grid — record each txb with its TX dims (skip is the
-        // block-level flag; intra blocks filter regardless).
+    // The decoder's mi grid: BLOCK identity/dims (chroma TX + pu_edge
+    // derive from these) + the LUMA TX grid (quartered at tx_depth 1 —
+    // chroma never splits with luma tx_depth).
+    geom.record_block(
+        block_x,
+        block_y,
+        decision.width as usize,
+        decision.height as usize,
+        decision.is_inter,
+        skip,
+    );
+    if decision.tx_depth == 1 {
         let tx = decision.width as usize >> 1;
         for txb in 0..4usize {
-            geom.record_block(
-                block_x + (txb & 1) * tx,
-                block_y + (txb >> 1) * tx,
-                tx,
-                tx,
-                decision.is_inter,
-                skip,
-            );
+            geom.record_tx_dims(block_x + (txb & 1) * tx, block_y + (txb >> 1) * tx, tx, tx);
         }
     }
 }

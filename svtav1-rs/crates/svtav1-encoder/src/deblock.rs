@@ -337,10 +337,18 @@ pub struct DeblockGeom {
     /// equivalent is the shared MB_MODE_INFO pointer in mi_grid_base —
     /// `pu_edge = mi_prev != mbmi` compares these).
     block_id: Vec<u32>,
-    /// Covering block's width in pixels.
+    /// Covering BLOCK's width in pixels (bsize — the chroma TX dims
+    /// derive from THESE: chroma never splits with luma tx_depth,
+    /// av1_get_max_uv_txsize is bsize-based).
     bw: Vec<u8>,
     /// Covering block's height in pixels.
     bh: Vec<u8>,
+    /// Luma TX width in pixels per mi (== block dims at tx_depth 0;
+    /// quartered at tx_depth 1 — the decoder's tx_size grid that the
+    /// LUMA edge mask walks).
+    tw: Vec<u8>,
+    /// Luma TX height in pixels per mi.
+    th: Vec<u8>,
     /// `mbmi->skip_txfm && is_inter_block(mbmi)`: intra blocks are never
     /// "skipped" for deblocking purposes.
     skip_inter: Vec<bool>,
@@ -363,6 +371,8 @@ impl DeblockGeom {
             block_id: alloc::vec![u32::MAX; n],
             bw: alloc::vec![0; n],
             bh: alloc::vec![0; n],
+            tw: alloc::vec![0; n],
+            th: alloc::vec![0; n],
             skip_inter: alloc::vec![false; n],
             skip: alloc::vec![false; n],
         }
@@ -388,8 +398,23 @@ impl DeblockGeom {
                 self.block_id[i] = id;
                 self.bw[i] = w as u8;
                 self.bh[i] = h as u8;
+                self.tw[i] = w as u8;
+                self.th[i] = h as u8;
                 self.skip_inter[i] = skip_inter;
                 self.skip[i] = skip;
+            }
+        }
+    }
+
+    /// Override the LUMA TX dims over one transform unit's span (called
+    /// per txb after `record_block` when the block signals tx_depth > 0
+    /// — the decoder's inverse-transform grid the luma edge mask sees).
+    pub fn record_tx_dims(&mut self, x: usize, y: usize, tw: usize, th: usize) {
+        for my in y / 4..((y + th) / 4).min(self.mi_rows) {
+            for mx in x / 4..((x + tw) / 4).min(self.mi_cols) {
+                let i = my * self.mi_cols + mx;
+                self.tw[i] = tw as u8;
+                self.th[i] = th as u8;
             }
         }
     }
@@ -459,14 +484,18 @@ fn lpf_params(
     let mi_col = ss | ((x << ss) >> 2);
     let idx = mi_row * geom.mi_cols + mi_col;
 
-    // Plane transform dims: single TX per block; chroma TX is the plane
-    // block size (av1_get_max_uv_txsize of (bw/2, bh/2), never 64-dim).
+    // Plane transform dims: LUMA edges walk the per-mi TX grid (quartered
+    // at tx_depth 1); CHROMA TX is the plane BLOCK size — chroma never
+    // splits with luma tx_depth (av1_get_max_uv_txsize is bsize-based,
+    // one (bw/2, bh/2) TX per block, never 64-dim).
     let tx_dims = |i: usize| -> (usize, usize) {
-        let (bw, bh) = (geom.bw[i] as usize, geom.bh[i] as usize);
-        debug_assert!(bw >= 4 && bh >= 4, "uncovered mi {i}");
         if plane == 0 {
-            (bw, bh)
+            let (tw, th) = (geom.tw[i] as usize, geom.th[i] as usize);
+            debug_assert!(tw >= 4 && th >= 4, "uncovered mi {i}");
+            (tw, th)
         } else {
+            let (bw, bh) = (geom.bw[i] as usize, geom.bh[i] as usize);
+            debug_assert!(bw >= 4 && bh >= 4, "uncovered mi {i}");
             // Chroma TX is never smaller than TX_4X4: av1_get_max_uv_txsize
             // floors at 4x4 (a 4-wide/tall luma block shares one 4x4 chroma
             // TX across its 2x2 luma group via is_chroma_reference). Without
