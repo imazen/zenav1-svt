@@ -98,6 +98,17 @@ under the AV1 reference decoder as of 2026-07-13, C baseline v4.2.0-rc)
 > SH edge-filtered prediction + MDS3 ind-uv + txt 6/6/15/250; deblock
 > chroma-TX-from-block-dims fix). Remaining 30 = gradient at M0-M4.
 > See docs/IDENTITY-STATUS.md 2026-07-14 M5 chunk.
+> **PRESET-4 + DEPTH REFINEMENT 2026-07-14 (latest)**: matrix
+> **108/132** — presets 4-10 all 84/84 (a4ec124a0+ee5b08c65: M4 funnel
+> config — intra_level 1 all-7-angle-deltas, nic case 5 zero-rank
+> semantics, unfiltered prediction — PLUS the PD1 depth-refinement +
+> inter-depth decision port, depth_refine.rs: dr_mode 1 ADAPTIVE at
+> M0-M5, PD0-cost deviation gates, funnel evals at admitted depths,
+> bias-995 compares at real partition contexts; presets 4..5 now
+> decide trees through the walk — M5 re-verified 12/12 through it).
+> Remaining 24 = gradient at M0-M3 (nsq search, 4x4, bypass_encdec=0,
+> PD0_LVL_0 at M0/M1, cfl at M0). See docs/IDENTITY-STATUS.md
+> 2026-07-14 M4 chunk.
 > **MATRIX COMPLETE 36/36 — 2026-07-14** (M6 leaf funnel chunk:
 > captures 265830cf7, kernels 2fc88e564, funnel 725fd3b09, per-SB CDF
 > chain 661efa7bc): the C-exact M6 leaf intra funnel (MDS0 Hadamard
@@ -217,13 +228,14 @@ under the AV1 reference decoder as of 2026-07-13, C baseline v4.2.0-rc)
    LPF_PICK_FROM_Q only), the CDEF RDO live-block search remainder
    (2a), and sgrproj (out of scope — C never searches it at any
    representable allintra preset).
-3. **Decision-layer parity** — CLOSED for the still M13/M10 path
-   (2026-07-13) AND the still M6 path (2026-07-14: leaf_funnel.rs —
-   the C-exact MDS0/MDS1/MDS3 funnel with filter-intra, chroma-in-RD
-   and the per-SB CDF chain; matrix 36/36). Still homegrown: presets
-   7/8 leaf decisions (intra_level 7 constants unverified), presets
-   <= 5, mono leaf decisions (C cannot emit mono), inter frames, and
-   CFL evaluation when the chroma detector arms.
+3. **Decision-layer parity** — CLOSED for still/420 presets 4-10
+   (2026-07-13/14: leaf_funnel.rs MDS0/MDS1/MDS3 funnel for
+   intra_level 1/2/6/7/8 + depth_refine.rs PD1 depth
+   refinement/inter-depth decision at M4/M5; matrix 84/84 for
+   presets 4-10). Still homegrown: presets <= 3 (nsq search, 4x4,
+   bypass_encdec=0, PD0_LVL_0 at M0/M1, cfl_level 1 at M0), mono
+   leaf decisions (C cannot emit mono), inter frames, and CFL
+   evaluation when the chroma detector arms.
 4. **[FIXED 2026-07-13] Intra edge preparation** — directional
    predictions padded extension arrays with 128 where the decoder
    replicates edges / uses real above-right/bottom-left pixels. Fixed by

@@ -1675,3 +1675,136 @@ mode — and dr 9->6; then M2/M3 +nsq_search +bypass_encdec=0 +4x4;
 then M1/M0 +PD0_LVL_0 +cfl_level 1 +fi all-modes +ind-uv at mds0/1
 with uv_nic 16/8 — search_best_independent_uv_mode :7778, whose
 allintra nfl count needs an is_highest_layer instrument check).
+
+## 2026-07-14 (wave2, M4 chunk): preset 4 COMPLETE — matrix 102 -> 108/132, presets 4-10 all 84/84
+
+Session scope: the 6 gradient M4 cells. No fresh C instrumentation was
+needed (the /root/svtav1-instr scratch was never built): every config
+delta was re-verified against the C SOURCE, the M5DBG CFG enc_mode=4
+capture row supplied the runtime ground truth, and — for the one cell
+the config alone did not close — the C-p4-vs-C-p5 trace comparison plus
+source elimination pinned the owning subsystem. C tree untouched
+(read-only greps only). Three commits: `a4ec124a0` (funnel config +
+evaluate/commit split + PD0 eval tree), `ee5b08c65` (PD1 depth
+refinement + inter-depth decision), `1e3187715` (fmt collateral).
+
+### Verified M4 deltas vs M5 (C cites, all re-read this session)
+
+The capture rows (m0m5_config_dlf.txt lines 14-15) diff in exactly four
+groups; everything else is field-identical:
+
+1. **intra_level 2 -> 1** (svt_aom_get_intra_mode_levels_allintra
+   enc_mode_config.c:6907 `<= ENC_M4`; set_intra_ctrls case 1 :8469):
+   mode_end PAETH unchanged, `angular_pred_level[1] = 1` (:18) — the
+   |delta| 1/2 skip (mode_decision.c:3268-3271) only arms at level >= 2,
+   so ALL SEVEN deltas -3..+3 inject per directional mode in counter
+   order: 61 regular candidates + FILTER_DC (fi level 2 unchanged).
+2. **SH enable_intra_edge_filter 1 -> 0** (enc_mode_config.c:4035-4048:
+   the bit is `dist_ang >= 1 || angular_pred_level[intra_level] in
+   {2,3}`; angular[1]=1 fails) -> directional prediction UNFILTERED
+   (disable_edge_filter, enc_intra_prediction.c:526), like M6.
+3. **nic_level 6 -> 5** (svt_aom_get_nic_level_allintra :5986
+   `<= ENC_M4`; set_nic_controls case 5): same scaling 6 / mds1_base
+   1200 / mds3_base 15 / staging MODE_1, but `mds1_cand_th_rank_factor
+   0`, `mds2_cand_base_th 20`, `mds2_cand_th_rank_factor 0`,
+   `mds2_relative_dev_th 0`. The C walk semantics for the zeros were
+   ported exactly: divisor `(rank ? rank*count : 1)`
+   (product_coding_loop.c:8095/:8171) and the rel-dev exit DISABLED at
+   th 0 (`!mds2_relative_dev_th ||`, :8170); the mds2 +2
+   winner-coincide staging only fires when the config rank is nonzero
+   (:8158-8166). Class ths (300/25/15) + band counts stay dead (single
+   intra class on I-slices).
+4. **depth refinement level 9 -> 6** (set_block_based_depth_refinement_
+   controls cases 6/9): s1/e1 15 vs 10, parent_max_cost_mult 10 vs 0,
+   band modulation OFF vs on (max_cost 400/bands 4/dec [MAX,MAX,10,5]),
+   lower_split 20 vs 100, split_rate 10 vs 5 (+20 CLN_PD0), use_ref 0
+   vs 1 (I-slice-dead), unavail 2 vs 0. THIS delta owned the last cell
+   (below).
+
+### The g128 q20 flip — depth refinement finally binds
+
+After the funnel config extension, 5 of 6 gradient cells (+ uniform
+6/6) went IDENTICAL immediately; g128 q20 diverged at tile op 2554 —
+a 32x32 partition symbol with the SAME evolved CDF and rng on both
+sides: C codes SPLIT, we coded NONE. Aligning C's own p4-vs-p5 traces
+localized it to SB0's (0,32) quadrant (C-M5 keeps 32x32 NONE, C-M4
+splits into four 16x16 NONEs). Since every PD0 knob is
+capture-identical between M4 and M5 (pd0=1, parent_bias, sse, subres),
+C-M4's PD0 tree == C-M5's == NONE there — so the CODED tree flip is
+owned by the PD1 depth machinery, by elimination: at M0..M5 `dr_mode=1`
+(PD0_DEPTH_ADAPTIVE) means PD1 RE-DECIDES depths around the PD0
+prediction; the M6+ PRED_PART_ONLY shortcut (coded tree == PD0 tree)
+was only ever C-exact at M5 because the admitted extra depths LOSE the
+inter-depth compare on every tracked cell — the m0m5 capture's 16x16
+WIN rows under (32,0) at q20/q40 are exactly those losing evaluations.
+At M4 (e1 15 + intra_level-1 leaf costs) the 16x16 depth WINS once.
+
+### What landed (svtav1-rs only)
+
+- `leaf_funnel.rs`: FunnelCfg::for_preset(4) + mds2_rank_factor field +
+  the C NIC ternaries; `decide_leaf` split into `evaluate_leaf`
+  (read-only C md_encode_block) + `commit_leaf`
+  (md_update_all_neighbour_arrays + MD recon writes, now including the
+  MD partition-context bytes — partition_context_lookup[bsize] span
+  writes, product_coding_loop.c:179-192).
+- `pd0.rs`: `Pd0Eval` — the pick recursion now returns per-node
+  tested/cost/partition (the C pc_tree fields the refinement reads,
+  incl. untested early-exit-skipped quadrants); tree APIs unchanged.
+- `depth_refine.rs` (new): DrCtrls 6/9; `build_refined_scan` =
+  perform_pred_depth_refinement / refine_depth / set_start_end_depth +
+  both deviation gates + update_pred_th_offset (enc_dec_process.c:
+  1545-1997) — s/e in {0,-1}/{0,1} (s2/e2=255 -> MIN_SIGNED), RAW
+  thresholds (depths_qp_based_th_scaling=0 for allintra <= M6,
+  enc_handle.c), parent-depth admissions bubbling up through PD0-SPLIT
+  nodes (tot_shapes=1 + s++); `DepthWalk` = svt_aom_pick_partition /
+  test_depth / test_split_partition (product_coding_loop.c:
+  11304-11597) — funnel evaluation + partition rate at REAL partition
+  contexts (PartRates over the chained partition CDFs), per-quadrant
+  early exits (ths 50/1000), parent_cost_bias 995 compare,
+  use_accurate_part_ctx=1 (no split-rate doubling), skip_sub_depth
+  cond1 (<= 16x16, f32 quadrant-SSE stddev 250 + coeff 15%). Commit
+  discipline: eager quadrant commits + parent-win overwrite,
+  state-equivalent to C's index<3/deferred-q3 scheme because every
+  neighbour/recon write spans exactly the block.
+- `pipeline.rs`: still/420 presets 4..5 route through the refined walk
+  (c_quant + use_funnel gates >= 4, per-SB CDF chain 4..=6 per
+  update_cdf_level 2 :12154); presets 6+ keep the fixed tree
+  (PRED_PART_ONLY: provably the same outcome).
+- `partition.rs`: `funnel_block_decision` factored out (shared).
+
+### Gates (all green, verbatim tallies)
+
+- identity matrix FULL sweep: **108 / 132 byte-identical**
+  (benchmarks/identity_matrix_2026-07-14.tsv + .meta regenerated) —
+  presets 4-10: 84/84; presets 0-3: every uniform cell identical, all
+  24 gradient cells divergent (23 FH + 1 tile g128q55p3).
+- `IM_PRESETS="4 5 6 7 8 9 10" identity_matrix.sh check`: **84/84**
+  (all 12 M5 cells re-verified through the NEW refined walk — the
+  extra-depth evaluations now run and lose exactly like C's).
+- recon_parity: **270 passed, 0 failed** (CDEF fired 150/270 streams,
+  2043808 px filtered / 807364 changed; LR wiener 86/270, 144 RUs —
+  counts moved vs M5 close-out because speed-4 chroma streams now take
+  the C-exact funnel).
+- decode conformance (aomdec AND dav1d): mono **630/0**, chroma
+  **840/0** (both matrices already include speed 4, so the new walk is
+  covered without test changes).
+- `cargo test --workspace --no-fail-fast`: **36 suites, 625 passed,
+  0 failed** (+8 new pins: m4 cfg/candidate-shape, dr ctrls, m5/m4
+  scan shapes vs the WIN-dump admission pattern, pred-part-only
+  equivalence, mds2_rank_factor rows).
+
+### Remaining for M0-M3 (the 24 gradient cells)
+
+All four presets run the SAME depth-refinement level 6 as M4 (now
+ported) — the new deltas are the decision layer: nsq GEOMETRY 2 with a
+real NSQ SEARCH (levels 5/12/16/18 qp-offset), 4x4 partitions
+(disallow_4x4=0, nsq_min 0, hv4 1), bypass_encdec=0 (the encode pass
+re-runs — MD == final only if intra MD predicts from real recon;
+verify when chasing), PD0_LVL_0 at M0/M1 (pd0=0: full PD0 with its own
+candidate search), txt_level 2 (satd 20), txs_sq 2 (depth-2 TX splits),
+update_cdf_level 1 at M0-M3 (vs 2 — verify the se/coef/mv split),
+chroma ind-uv at mds0/mds1 with uv_nic 16/8 at M0/M1, cfl_level 1 at
+M0 (cplx 0 -> CFL evaluated per block: the CFL port becomes binding),
+fi_max 4 at M0 (all five filter-intra modes). Attack order per the
+prior plan: M2/M3 first (nsq_search + bypass_encdec=0 + 4x4 on top of
+the now-complete M4 base), then M1/M0.

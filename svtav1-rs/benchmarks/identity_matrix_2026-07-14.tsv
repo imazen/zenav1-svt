@@ -69,7 +69,7 @@ gradient	64	20	0	DIFFERS	FH	cdef_y_sec_strength[0] C=2 Rust=3
 gradient	64	20	1	DIFFERS	FH	cdef_y_pri_strength[0] C=0 Rust=4
 gradient	64	20	2	DIFFERS	FH	cdef_y_pri_strength[0] C=0 Rust=4
 gradient	64	20	3	DIFFERS	FH	cdef_y_pri_strength[0] C=0 Rust=4
-gradient	64	20	4	DIFFERS	FH	lr_type[0] C=2 Rust=0
+gradient	64	20	4	IDENTICAL	-	-
 gradient	64	20	5	IDENTICAL	-	-
 gradient	64	20	6	IDENTICAL	-	-
 gradient	64	20	7	IDENTICAL	-	-
@@ -80,7 +80,7 @@ gradient	64	40	0	DIFFERS	FH	cdef_y_pri_strength[0] C=4 Rust=9
 gradient	64	40	1	DIFFERS	FH	cdef_y_pri_strength[0] C=4 Rust=12
 gradient	64	40	2	DIFFERS	FH	cdef_y_pri_strength[0] C=4 Rust=12
 gradient	64	40	3	DIFFERS	FH	cdef_y_pri_strength[0] C=4 Rust=12
-gradient	64	40	4	DIFFERS	FH	cdef_y_pri_strength[0] C=7 Rust=15
+gradient	64	40	4	IDENTICAL	-	-
 gradient	64	40	5	IDENTICAL	-	-
 gradient	64	40	6	IDENTICAL	-	-
 gradient	64	40	7	IDENTICAL	-	-
@@ -91,7 +91,7 @@ gradient	64	55	0	DIFFERS	FH	loop_filter_level[0] C=0 Rust=34
 gradient	64	55	1	DIFFERS	FH	loop_filter_level[0] C=0 Rust=34
 gradient	64	55	2	DIFFERS	FH	loop_filter_level[0] C=0 Rust=34
 gradient	64	55	3	DIFFERS	FH	loop_filter_level[0] C=0 Rust=34
-gradient	64	55	4	DIFFERS	FH	cdef_y_pri_strength[0] C=7 Rust=15
+gradient	64	55	4	IDENTICAL	-	-
 gradient	64	55	5	IDENTICAL	-	-
 gradient	64	55	6	IDENTICAL	-	-
 gradient	64	55	7	IDENTICAL	-	-
@@ -102,7 +102,7 @@ gradient	128	20	0	DIFFERS	FH	loop_filter_level[0] C=0 Rust=10
 gradient	128	20	1	DIFFERS	FH	loop_filter_level[0] C=0 Rust=10
 gradient	128	20	2	DIFFERS	FH	loop_filter_level[0] C=0 Rust=10
 gradient	128	20	3	DIFFERS	FH	loop_filter_level[0] C=0 Rust=10
-gradient	128	20	4	DIFFERS	FH	loop_filter_level[0] C=0 Rust=8
+gradient	128	20	4	IDENTICAL	-	-
 gradient	128	20	5	IDENTICAL	-	-
 gradient	128	20	6	IDENTICAL	-	-
 gradient	128	20	7	IDENTICAL	-	-
@@ -113,7 +113,7 @@ gradient	128	40	0	DIFFERS	FH	loop_filter_level[0] C=0 Rust=22
 gradient	128	40	1	DIFFERS	FH	loop_filter_level[0] C=15 Rust=22
 gradient	128	40	2	DIFFERS	FH	loop_filter_level[0] C=15 Rust=22
 gradient	128	40	3	DIFFERS	FH	loop_filter_level[0] C=5 Rust=22
-gradient	128	40	4	DIFFERS	FH	loop_filter_level[0] C=0 Rust=20
+gradient	128	40	4	IDENTICAL	-	-
 gradient	128	40	5	IDENTICAL	-	-
 gradient	128	40	6	IDENTICAL	-	-
 gradient	128	40	7	IDENTICAL	-	-
@@ -124,7 +124,7 @@ gradient	128	55	0	DIFFERS	FH	cdef_y_pri_strength[0] C=6 Rust=13
 gradient	128	55	1	DIFFERS	FH	cdef_y_pri_strength[0] C=8 Rust=12
 gradient	128	55	2	DIFFERS	FH	cdef_y_pri_strength[0] C=8 Rust=12
 gradient	128	55	3	DIFFERS	tile	tile payload C=150B Rust=325B
-gradient	128	55	4	DIFFERS	FH	loop_filter_level[0] C=0 Rust=28
+gradient	128	55	4	IDENTICAL	-	-
 gradient	128	55	5	IDENTICAL	-	-
 gradient	128	55	6	IDENTICAL	-	-
 gradient	128	55	7	IDENTICAL	-	-
