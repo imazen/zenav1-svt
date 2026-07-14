@@ -1963,3 +1963,110 @@ line-by-line against C.
   8x8 on M0/M1's richer PD0) — the sub-8x8 walk/writer surface
   (partition ctx at 4x4 granularity, 4x4 tx_depth syntax, sub-8
   chroma in the WALK) is still unproven.
+
+## 2026-07-14 (wave2, M0/M1 chunk): M1 COMPLETE — matrix 120 -> 126/132; M0 analyzed but blocked
+
+Session scope: the last identity tier (12 gradient cells at M0/M1).
+**M1 gradient is now byte-identical (6/6); matrix 126/132.** M0 was
+verified + prototyped but is NOT shipped: routing it exposed a
+conformance blocker (invalid tile data on sub-8-width blocks — see the M0
+subsection). Every config delta below was re-verified against the C
+source this session (file:line); divergences were localised with the
+differ + Rust-side funnel instrumentation (removed after use), no
+scratch-C build.
+
+### M1 (chroma_level 2) — the binding delta was the INDEPENDENT uv search
+
+Routed preset 1 through the PD0 fixed-tree + depth-refine + leaf-funnel
+path (pipeline.rs gates extended to preset 1). The M1-vs-M2 deltas:
+
+- **pd0_lvl 0 vs 1** (set_pic_pd0_lvl_allintra, enc_mode_config.c:12602
+  `<= ENC_M1` -> 0). PD0_LVL_0 uses intra_level MAX_INTRA_LEVEL-1
+  (svt_aom_sig_deriv_enc_dec_light_pd0:9308). NON-BINDING on the tracked
+  cells: the existing LVL_1 pick reproduced C's LVL_0 partition tree on
+  all 6 M1 cells (every partition symbol matched in the differ).
+- **nsq_search 10 vs 14** (:11941). NsqCfg::for_preset_qp already carried
+  M1=10 (-> 13/12/10 by qp). Trees matched C -> non-binding on these cells.
+- **chroma_level 2 vs 4** (svt_aom_get_chroma_level_allintra:12233). THIS
+  was binding, even on flat chroma. chroma_level 2 (ind_uv_last_mds=1)
+  runs `search_best_independent_uv_mode` (product_coding_loop.c:7778), NOT
+  `search_best_mds3_uv_mode`. The independent search injects ALL uv modes,
+  fast-loop-prunes by residual variance to the uv_nic-scaled nfl, and
+  forces UV_DC; UV_PAETH (injected last) is pruned, so a luma-PAETH block
+  resolves to UV_DC — where the mds3 variant picks UV_PAETH (uv-matches-
+  luma is cheap in the luma-conditioned CDF). Differ-verified: C M1 codes
+  UV_DC at g128 q55 where C M2 codes UV_PAETH.
+  - **nfl base is 32, not 16**: a still KF has is_highest_layer=FALSE
+    under OPT_USE_HL0_FLAT (pd_process.c:6212 `(tli==hl) && hl!=0`, hl=0),
+    so `uv_mode_nfl_count = allintra ? 32` (:7919). At uv_nic 8 -> nfl 16
+    (includes DC,V,H+deltas,D45(-3)); the first cut (nfl 8) mispicked
+    uv=DC for luma=H because H's delta-0 was pruned — the q20/q40 cells
+    caught it.
+
+Ported `search_best_independent_uv_mode` into the funnel behind
+`FunnelCfg::ind_uv_independent(uv_nic)` (leaf_funnel.rs): inject all uv
+modes with the C angle-delta rules, fast-loop residual variance
+(`svt_aom_mefn_ptr[bsize].vf` = sse - sum^2/N), stable prune to the nfl
+(sort_fast_cost_based_candidates is a strict-less selection sort = stable),
+force UV_DC, full-loop coeff+dist, then per-luma best-uv by RD. M1's other
+funnel config equals M2's (nic_level 3, txt_level 2, txs_level 2,
+filter_intra level 2). **All 6 M1 gradient cells IDENTICAL.**
+
+### M0 — ANALYZED but NOT shipped (blocked on the sub-8 partition writer)
+
+M0's config was verified and a funnel-routing prototype built, but it is
+**NOT committed** because it produces INVALID bitstreams (a conformance
+regression), not merely a parity divergence. It is held in a git stash
+(`M0-routing-WIP`) for the next chunk; the matrix stays at 126/132.
+
+Verified M0-vs-M1 config deltas (for the next chunk, all re-checked vs C):
+
+- **nic_level 1** (svt_aom_get_nic_level_allintra:5988 `<= ENC_M0` under
+  OPT_NSC_STILL_IMAGE -> 1; set_nic_controls case 1): nic_num (20,20,20)
+  (MD_STAGE_NICS_SCAL_NUM[0]), mds1_cand_base_th MAX (no mds1 pruning),
+  mds2/mds3 base 50.
+- **chroma_level 1** (svt_aom_get_chroma_level_allintra:12231 -> 1):
+  independent uv search, uv_nic 16 (nfl 32), ind_uv_last_mds=0 (C runs it
+  BEFORE MDS0).
+- **filter_intra level 1** (get_filter_intra_level_allintra:12681 -> 1):
+  all five filter-intra modes are candidates (fi_max 4), vs M1's fi_max 0.
+- **nsq_search 3** (-> 6/5/3/2 by qp; NsqCfg level-2 row = (105,0,150,3,
+  0,0,10,0,0,115) from set_nsq_search_ctrls case 2 needed — M0 hits level
+  2 at qp>59, which the 3..=19 table panicked on).
+
+Prototype result on the identity matrix: **6/6 uniform + 4/6 gradient
+(q40,q55) byte-identical**. BUT recon_parity (speed 0 added) then showed
+**4 DECODE FAILURES** — `c420_gradient_{64,128}_q20_s0`,
+`c420_gradient_96pad_{q20,q43}_s0` — aomdec: "Failed to decode tile data".
+
+Root cause: M0's aggressive nsq (level 6 at q20 / 5 at q43) picks
+**VERT4/HORZ4 -> sub-8-width (4x16) blocks**, which hit the **unproven
+sub-8 partition/writer surface** (CLAUDE.md gap: partition ctx at 4x4
+granularity, 4x4 tx_depth syntax, sub-8 chroma pairing in the WALK). The
+tile entropy for those blocks is malformed -> non-conformant stream. M1's
+higher nsq levels (10-13) prune VERT4 away, so M1 never hits it (M1 is
+fully valid + identical).
+
+Two things must land before M0 can be routed:
+1. **The sub-8 partition/writer** (the conformance blocker) — port the
+   C 4x4-granularity partition context, sub-8 tx_depth syntax, and the
+   is_chroma_reference sub-8 chroma pairing in the entropy walk so 4x16 /
+   16x4 leaves emit valid tile data.
+2. **The filter-intra chroma-mode** (a parity item exposed while chasing
+   q20): C `update_intra_chroma_mode` (mode_decision.c:3332) keys the
+   best-uv table on `fimode_to_intramode[fi]` (definitions.h:1342 =
+   {DC,V,H,D157,PAETH}) — FILTER_H's uv is best_uv[H], not best_uv[DC].
+   Applying that refinement alone did NOT close q20 and regressed q40, so
+   a deeper independent-uv `best_uv_mode` / ind_uv_last_mds=0-timing
+   divergence on sub-8 blocks is also present — needs C-side best_uv_mode
+   instrumentation for a 4x16 block at M0 q20.
+
+### Gates (all green on the committed tree — M1 chunk, matrix 126/132)
+
+- identity matrix: **126/132** (benchmarks/identity_matrix_allpresets
+  .tsv + .meta): presets 1-10 = 12/12 each; M0 = 6/12 (6 uniform
+  identical; 6 gradient still homegrown — the last identity tier).
+- recon_parity: **378/0** (speed 1 ADDED — the funnel now owns speed 1).
+- decode_conformance: mono **840/0** + chroma **1120/0** (aomdec + dav1d,
+  speed 1 ADDED).
+- cargo test --workspace: **628/0**.
