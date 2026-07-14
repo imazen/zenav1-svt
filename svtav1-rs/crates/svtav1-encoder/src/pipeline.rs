@@ -627,8 +627,34 @@ impl EncodePipeline {
         // Inter frames keep levels 0 (write_inter_frame signals 0): the
         // q-based picker is only wired for key frames, and signaling
         // nothing while applying nothing stays self-consistent.
+        //
+        // Preset split (C get_dlf_level_allintra, enc_mode_config.c:2214,
+        // fast_decode 0): presets <= M5 get dlf_level 1/2 -> sb_based_dlf=0
+        // -> dlf_process runs svt_av1_pick_filter_level with
+        // LPF_PICK_FROM_FULL_IMAGE (real SSE trials on the post-encode
+        // recon); presets >= M6 get dlf_level 5 -> sb_based_dlf=1 -> the
+        // LPF_PICK_FROM_Q closed form. early_exit_convergence is 0 at
+        // dlf_level 1 (<= M3) and 1 at dlf_level 2 (M4/M5).
         let lf_levels = if is_key {
-            crate::deblock::pick_filter_levels_key_frame(base_qindex)
+            if is_single_frame && self.speed_config.preset <= 5 {
+                let (su, sv) = chroma.unwrap_or((&[][..], &[][..]));
+                let input = crate::deblock::DlfSearchInput {
+                    y_src: &encode_input,
+                    u_src: su,
+                    v_src: sv,
+                    y_recon: &recon,
+                    u_recon: &u_recon,
+                    v_recon: &v_recon,
+                    width: w,
+                    height: h,
+                    chroma_420: chroma.is_some(),
+                    geom: &deblock_geom,
+                    early_exit_convergence: if self.speed_config.preset <= 3 { 0 } else { 1 },
+                };
+                crate::deblock::pick_filter_levels_full_search(&input)
+            } else {
+                crate::deblock::pick_filter_levels_key_frame(base_qindex)
+            }
         } else {
             crate::deblock::LfLevels::default()
         };
