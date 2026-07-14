@@ -1254,6 +1254,151 @@ pub fn obmc_blend_left(
     }
 }
 
+// ---------------------------------------------------------------------------
+// AUDIT 2026-07-14: oracles for the dormant inter/scaling stubs
+// (warp.rs / scale.rs / superres.rs are NOT ports of these — see the
+// c_parity_{warp,scale,superres} suites which pin the divergence).
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn ref_warp_affine(
+        mat: *const i32,
+        r: *const u8,
+        width: i32,
+        height: i32,
+        stride: i32,
+        pred: *mut u8,
+        p_col: i32,
+        p_row: i32,
+        p_width: i32,
+        p_height: i32,
+        p_stride: i32,
+        alpha: i16,
+        beta: i16,
+        gamma: i16,
+        delta: i16,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn ref_convolve_2d_scale(
+        src: *const u8,
+        src_stride: i32,
+        dst: *mut u8,
+        dst_stride: i32,
+        w: i32,
+        h: i32,
+        subpel_x_qn: i32,
+        x_step_qn: i32,
+        subpel_y_qn: i32,
+        y_step_qn: i32,
+    );
+    fn ref_superres_filter_normative(phase: i32, out8: *mut i16);
+    fn ref_superres_upscale_row(input: *const u8, in_width: i32, output: *mut u8, out_width: i32);
+}
+
+/// Reference `svt_av1_warp_affine_c` (non-compound, 8-bit). `mat` is the 6-entry
+/// Q16 affine model; `pred` is `p_height` rows × `p_stride`. See warped_motion.c.
+#[allow(clippy::too_many_arguments)]
+pub fn warp_affine(
+    mat: &[i32; 6],
+    r: &[u8],
+    width: usize,
+    height: usize,
+    stride: usize,
+    pred: &mut [u8],
+    p_col: i32,
+    p_row: i32,
+    p_width: usize,
+    p_height: usize,
+    p_stride: usize,
+    shear: (i16, i16, i16, i16),
+) {
+    assert!(r.len() >= height * stride);
+    assert!(pred.len() >= (p_height - 1) * p_stride + p_width);
+    unsafe {
+        ref_warp_affine(
+            mat.as_ptr(),
+            r.as_ptr(),
+            width as i32,
+            height as i32,
+            stride as i32,
+            pred.as_mut_ptr(),
+            p_col,
+            p_row,
+            p_width as i32,
+            p_height as i32,
+            p_stride as i32,
+            shear.0,
+            shear.1,
+            shear.2,
+            shear.3,
+        );
+    }
+}
+
+/// Reference `svt_av1_convolve_2d_scale_c` (non-compound 8-bit, EIGHTTAP_REGULAR
+/// both axes). Phases are in the `SCALE_SUBPEL_BITS = 10` domain. `src` must be
+/// pre-offset so the kernel's fo_horiz/fo_vert (3) taps stay in bounds.
+#[allow(clippy::too_many_arguments)]
+pub fn convolve_2d_scale(
+    src: &[u8],
+    src_origin: usize,
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    w: usize,
+    h: usize,
+    subpel_x_qn: i32,
+    x_step_qn: i32,
+    subpel_y_qn: i32,
+    y_step_qn: i32,
+) {
+    unsafe {
+        ref_convolve_2d_scale(
+            src.as_ptr().add(src_origin),
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            w as i32,
+            h as i32,
+            subpel_x_qn,
+            x_step_qn,
+            subpel_y_qn,
+            y_step_qn,
+        );
+    }
+}
+
+/// Copy one 8-tap phase (0..=63) of the C normative resize filter
+/// `svt_av1_resize_filter_normative`.
+pub fn superres_filter_normative(phase: usize) -> [i16; 8] {
+    let mut out = [0i16; 8];
+    unsafe { ref_superres_filter_normative(phase as i32, out.as_mut_ptr()) };
+    out
+}
+
+/// Reference one-row normative horizontal upscale (`upscale_normative_rect` ->
+/// `av1_convolve_horiz_rs_c`). `input` indexes the first pixel of a row that has
+/// >= 5 border bytes on each side (the rect replicates/restores them in place).
+pub fn superres_upscale_row(
+    input: &mut [u8],
+    input_origin: usize,
+    in_width: usize,
+    output: &mut [u8],
+    out_width: usize,
+) {
+    assert!(input_origin >= 5 && input_origin + in_width + 5 <= input.len());
+    assert!(output.len() >= out_width);
+    unsafe {
+        ref_superres_upscale_row(
+            input.as_ptr().add(input_origin),
+            in_width as i32,
+            output.as_mut_ptr(),
+            out_width as i32,
+        );
+    }
+}
+
 /// Reference `svt_av1_upsample_intra_edge_c` with the block edge at
 /// `p[origin..origin+sz]` (writes `p[origin-2..]`).
 pub fn upsample_intra_edge(p: &mut [u8], origin: usize, sz: usize) {

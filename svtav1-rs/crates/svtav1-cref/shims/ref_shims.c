@@ -655,3 +655,73 @@ void ref_obmc_blend_left(uint8_t* dst, int32_t dst_stride, const uint8_t* left, 
     const uint8_t* mask = svt_av1_get_obmc_mask(overlap);
     svt_aom_blend_a64_hmask_c(dst, dst_stride, dst, dst_stride, left, left_stride, mask, overlap, h);
 }
+
+/* ---- Warp affine: svt_av1_warp_affine_c (warped_motion.c). The real warp
+   uses svt_aom_warped_filter (WARPEDPIXEL_PREC_SHIFTS=64, ~193 phases),
+   alpha/beta/gamma/delta shear, conv_params ROUND0/ROUND1 and 8x8 tiling. The
+   Rust warp.rs is a homegrown 16-phase SUB_PEL approximation (stub); this shim
+   is the oracle a real port must match. Non-compound 8-bit conv params. ---- */
+void svt_av1_warp_affine_c(const int32_t* mat, const uint8_t* ref, int width, int height, int stride, uint8_t* pred,
+                           int p_col, int p_row, int p_width, int p_height, int p_stride, int subsampling_x,
+                           int subsampling_y, ConvolveParams* conv_params, int16_t alpha, int16_t beta, int16_t gamma,
+                           int16_t delta);
+
+void ref_warp_affine(const int32_t* mat, const uint8_t* ref, int32_t width, int32_t height, int32_t stride,
+                     uint8_t* pred, int32_t p_col, int32_t p_row, int32_t p_width, int32_t p_height, int32_t p_stride,
+                     int16_t alpha, int16_t beta, int16_t gamma, int16_t delta) {
+    ConvolveParams cp = get_conv_params(0, 0, 0, 8); /* non-compound, 8-bit */
+    svt_av1_warp_affine_c(mat, ref, width, height, stride, pred, p_col, p_row, p_width, p_height, p_stride, 0, 0, &cp,
+                          alpha, beta, gamma, delta);
+}
+
+/* ---- Scaled 2D convolve: svt_av1_convolve_2d_scale_c (inter_prediction.c).
+   Real scaled inter prediction: SCALE_SUBPEL_BITS=10 phase domain, EIGHTTAP
+   InterpFilterParams, ROUND0/ROUND1 + 16-bit intermediate. scale.rs is a naive
+   16-phase separable stub. Non-compound 8-bit; EIGHTTAP_REGULAR both axes. ---- */
+#include "inter_prediction.h"
+void svt_av1_convolve_2d_scale_c(const uint8_t* src, int src_stride, uint8_t* dst8, int dst8_stride, int w, int h,
+                                 const InterpFilterParams* fx, const InterpFilterParams* fy, int subpel_x_qn,
+                                 int x_step_qn, int subpel_y_qn, int y_step_qn, ConvolveParams* conv_params);
+
+void ref_convolve_2d_scale(const uint8_t* src, int32_t src_stride, uint8_t* dst, int32_t dst_stride, int32_t w,
+                           int32_t h, int32_t subpel_x_qn, int32_t x_step_qn, int32_t subpel_y_qn, int32_t y_step_qn) {
+    const InterpFilterParams* fx = &av1_interp_filter_params_list[EIGHTTAP_REGULAR];
+    const InterpFilterParams* fy = &av1_interp_filter_params_list[EIGHTTAP_REGULAR];
+    ConvolveParams            cp = get_conv_params(0, 0, 0, 8);
+    svt_av1_convolve_2d_scale_c(src, src_stride, dst, dst_stride, w, h, fx, fy, subpel_x_qn, x_step_qn, subpel_y_qn,
+                                y_step_qn, &cp);
+}
+
+/* ---- Superres normative upscale: upscale_normative_rect ->
+   av1_convolve_horiz_rs_c (super_res.c), svt_av1_resize_filter_normative
+   (RS_SUBPEL_BITS=6 -> 64 phases, RS_SCALE_SUBPEL_BITS=14 phase accumulator).
+   superres.rs uses a 16-phase table and Q14/4-bit-phase math (stub). ---- */
+#include "super_res.h"
+void upscale_normative_rect(const uint8_t* input, int height, int width, int in_stride, uint8_t* output, int height2,
+                            int width2, int out_stride, int x_step_qn, int x0_qn, int pad_left, int pad_right);
+
+/* Copy one 8-tap phase of the C normative filter (phase in 0..63). */
+void ref_superres_filter_normative(int32_t phase, int16_t* out8) {
+    memcpy(out8, &svt_av1_resize_filter_normative[phase][0], 8 * sizeof(int16_t));
+}
+
+/* av1_get_upscale_convolve_step / get_upscale_convolve_x0 are static; replicate
+   verbatim so the oracle scales exactly like svt_av1_upscale_normative_rows. */
+static int32_t ref_us_step(int32_t in_len, int32_t out_len) {
+    return ((in_len << RS_SCALE_SUBPEL_BITS) + out_len / 2) / out_len;
+}
+static int32_t ref_us_x0(int32_t in_len, int32_t out_len, int32_t x_step_qn) {
+    const int     err = out_len * x_step_qn - (in_len << RS_SCALE_SUBPEL_BITS);
+    const int32_t x0  = (-((out_len - in_len) << (RS_SCALE_SUBPEL_BITS - 1)) + out_len / 2) / out_len +
+        RS_SCALE_EXTRA_OFF - err / 2;
+    return (int32_t)((uint32_t)x0 & RS_SCALE_SUBPEL_MASK);
+}
+
+/* One-row normative horizontal upscale (in_width -> out_width). `input` must
+   carry >= 5 border bytes each side (rect saves/replicates/restores them). */
+void ref_superres_upscale_row(const uint8_t* input, int32_t in_width, uint8_t* output, int32_t out_width) {
+    ref_rtcd_once(); /* svt_memcpy in the border save path */
+    const int32_t step = ref_us_step(in_width, out_width);
+    const int32_t x0   = ref_us_x0(in_width, out_width, step);
+    upscale_normative_rect((uint8_t*)input, 1, in_width, in_width, output, 1, out_width, out_width, step, x0, 1, 1);
+}
