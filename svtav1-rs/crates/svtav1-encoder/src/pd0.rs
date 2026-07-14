@@ -472,20 +472,20 @@ fn energy(coeff: &[i32], stride: usize, w: usize, h: usize) -> u64 {
     e
 }
 
-/// The per-block LVL_5 transform pipeline (perform_tx_pd0): forward
+/// The shared perform_tx_pd0 transform+quant+distortion core: forward
 /// DCT_DCT at the (possibly subres-halved) max-square tx size, 64-dim
 /// energy fold + pack (svt_handle_transform64x64/64x32), quantize at
-/// `qindex + 8`, frequency-domain SSE + three_quad_energy, dist shift,
-/// and the closed-form coefficient rate.
+/// `qindex_off` (the caller applies `rate_est_ctrls.lpd0_qp_offset`),
+/// frequency-domain SSE + three_quad_energy, and the dist shift.
 ///
-/// Returns (eob, dist, bits).
-fn lvl5_tx_cost(
+/// Returns (eob, dist, packed qcoeff, packed C TxSize).
+fn tx_quant_core(
     residual: &[i32],
     sq_size: usize,
     tx_h: usize,
     qindex_off: u8,
     subres_step: u32,
-) -> (u16, u64, u64) {
+) -> (u16, u64, Vec<i32>, usize) {
     use svtav1_types::transform::{TxSize, TxType};
     // tx size after the subres remap (perform_tx_pd0): the residual is
     // sq_size x tx_h with tx_h = sq_size >> subres_step.
@@ -534,7 +534,7 @@ fn lvl5_tx_cost(
     let entry = build_quant_entry(qindex_off);
     let scan = svtav1_entropy::scan_tables::scan(c_tx_size, 0);
     debug_assert_eq!(scan.len(), packed_w * packed_h);
-    let (eob, _qcoeff, dqcoeff) = quantize_b(&coeffs, scan, &entry, log_scale);
+    let (eob, qcoeff, dqcoeff) = quantize_b(&coeffs, scan, &entry, log_scale);
 
     // svt_aom_picture_full_distortion32_bits_single: freq-domain SSE
     // (or plain coeff energy when eob == 0) over the packed region.
@@ -557,11 +557,238 @@ fn lvl5_tx_cost(
     };
     dist <<= subres_step;
 
-    // coeff_rate_est_lvl == 0 closed form (perform_tx_pd0): input
-    // resolution factor is 0 for every <= 240p-range picture (all
-    // identity/gate frames).
-    let bits = 5000 + 100 * eob as u64;
-    (eob, dist, bits)
+    (eob, dist, qcoeff, c_tx_size)
+}
+
+// ---------------------------------------------------------------------------
+// PD0_LVL_1 coefficient rate (svt_av1_cost_coeffs_txb, contexts 0)
+// ---------------------------------------------------------------------------
+
+/// C `av1_cost_literal(n)` (1/512-bit units).
+#[inline]
+const fn cost_literal(n: i32) -> i32 {
+    n * 512
+}
+
+/// Intra tx-type signalling rate for DCT_DCT at a DC-predicted block —
+/// `av1_transform_type_rate_estimation` (rd_cost.c:107): nonzero only for
+/// tx sizes whose intra ext-tx set has > 1 type (8x8 and 16x16 among the
+/// square PD0 sizes; 32/64 are DCT-only). Costs derive from the DEFAULT
+/// `intra_ext_tx_cdf` rows (qindex-independent) at intra_dir = DC.
+#[derive(Debug, Clone, Copy)]
+pub struct TxTypeRatesDc {
+    tx8: i32,
+    tx16: i32,
+}
+
+pub(crate) fn build_tx_type_rates_dc() -> TxTypeRatesDc {
+    use svtav1_entropy::coeff_c as cc;
+    let fc = cc::CoeffFc::default_for_qindex(0);
+    let mut rates = TxTypeRatesDc { tx8: 0, tx16: 0 };
+    for (tx_size, slot) in [(1usize, 0usize), (2, 1)] {
+        // TX_8X8 = 1, TX_16X16 = 2 in the C TxSize enum.
+        let set_type = cc::ext_tx_set_type(tx_size, false, false);
+        let eset = cc::EXT_TX_SET_INDEX[0][set_type];
+        debug_assert!(eset > 0);
+        let sq_tx = cc::TXSIZE_SQR_MAP[tx_size];
+        let row = &fc.intra_ext_tx_cdf[(eset as usize * 4 + sq_tx) * 13 /* + DC=0 */];
+        let mut costs = [0i32; 17];
+        crate::quant::syntax_rate_from_cdf(&mut costs, row);
+        let sym = cc::AV1_EXT_TX_IND[set_type][cc::DCT_DCT];
+        let r = costs[sym];
+        if slot == 0 {
+            rates.tx8 = r;
+        } else {
+            rates.tx16 = r;
+        }
+    }
+    rates
+}
+
+impl TxTypeRatesDc {
+    #[inline]
+    fn rate_for(&self, c_tx_size: usize) -> i32 {
+        match c_tx_size {
+            1 => self.tx8,  // TX_8X8
+            2 => self.tx16, // TX_16X16
+            _ => 0,         // TX_32X32 / TX_64X64: DCT-only intra set
+        }
+    }
+}
+
+/// C `av1_cost_coeffs_txb_loop_cost_eob` (rd_cost.c:255) for plane Y,
+/// DCT_DCT (TX_CLASS_2D), dc_sign_ctx 0, `mds_fast_coeff_est_level = 2`,
+/// `mds_subres_step = 0` — the PD0_LVL_1 configuration. `eob >= 1`.
+#[allow(clippy::too_many_arguments)]
+fn loop_cost_eob_pd0(
+    qcoeff: &[i32],
+    eob: u16,
+    scan: &[u16],
+    coeff_contexts: &[i8],
+    costs: &crate::quant::TxbCosts,
+    levels_buf: &[u8],
+    bwl: usize,
+) -> i32 {
+    use svtav1_entropy::coeff_c as cc;
+    const TX_CLASS: usize = cc::TX_CLASS_2D;
+    let eob = eob as usize;
+    let lit = cost_literal(1);
+    let mut cost = 0i32;
+
+    if eob == 1 {
+        // av1_cost_coeffs_txb_loop_cost_one_eob
+        let v = qcoeff[0];
+        let level = v.unsigned_abs() as i32;
+        let coeff_ctx = coeff_contexts[0] as usize;
+        cost += costs.base_eob_cost[coeff_ctx][(level.min(3) - 1) as usize];
+        if v != 0 {
+            let sign = usize::from(v < 0);
+            cost += costs.dc_sign_cost[0][sign];
+            if level > cc::NUM_BASE_LEVELS {
+                let base_range = level - 1 - cc::NUM_BASE_LEVELS;
+                if base_range < cc::COEFF_BASE_RANGE {
+                    cost += costs.lps_cost[0][base_range as usize];
+                } else {
+                    cost += costs.lps_cost[0][cc::COEFF_BASE_RANGE as usize];
+                }
+                if level >= 1 + cc::NUM_BASE_LEVELS + cc::COEFF_BASE_RANGE {
+                    cost += crate::quant::golomb_cost(level);
+                }
+            }
+        }
+        return cost;
+    }
+
+    // first (eob - 1) index
+    {
+        let pos = scan[eob - 1] as usize;
+        let v = qcoeff[pos];
+        let level = v.unsigned_abs() as i32;
+        let coeff_ctx = coeff_contexts[pos] as usize;
+        cost += costs.base_eob_cost[coeff_ctx][(level.min(3) - 1) as usize];
+        if v != 0 {
+            cost += lit;
+            if level > cc::NUM_BASE_LEVELS {
+                let ctx = cc::br_ctx(levels_buf, pos, bwl, TX_CLASS);
+                let base_range = level - 1 - cc::NUM_BASE_LEVELS;
+                if base_range < cc::COEFF_BASE_RANGE {
+                    cost += costs.lps_cost[ctx][base_range as usize];
+                } else {
+                    cost += costs.lps_cost[ctx][cc::COEFF_BASE_RANGE as usize];
+                }
+                if level >= 1 + cc::NUM_BASE_LEVELS + cc::COEFF_BASE_RANGE {
+                    cost += crate::quant::golomb_cost(level);
+                }
+            }
+        }
+    }
+    // last (0) index
+    {
+        let v = qcoeff[0];
+        let level = v.unsigned_abs() as i32;
+        let coeff_ctx = coeff_contexts[0] as usize;
+        cost += costs.base_cost[coeff_ctx][level.min(3) as usize];
+        if v != 0 {
+            let sign = usize::from(v < 0);
+            cost += costs.dc_sign_cost[0][sign];
+            if level > cc::NUM_BASE_LEVELS {
+                let ctx = cc::br_ctx(levels_buf, 0, bwl, TX_CLASS);
+                let base_range = level - 1 - cc::NUM_BASE_LEVELS;
+                if base_range < cc::COEFF_BASE_RANGE {
+                    cost += costs.lps_cost[ctx][base_range as usize];
+                } else {
+                    cost += costs.lps_cost[ctx][cc::COEFF_BASE_RANGE as usize];
+                }
+                if level >= 1 + cc::NUM_BASE_LEVELS + cc::COEFF_BASE_RANGE {
+                    cost += crate::quant::golomb_cost(level);
+                }
+            }
+        }
+    }
+    // Optimized middle loop: only the first eob/(fast_coeff_est_level -
+    // subres_step) = eob/2 scan positions (excluding DC and eob-1) are
+    // priced; the rest contribute nothing.
+    let c_start = (eob as i32 - 2).min(eob as i32 / 2);
+    let mut cost_literal_cnt = 0u32;
+    let mut c = c_start;
+    while c >= 1 {
+        let pos = scan[c as usize] as usize;
+        let v = qcoeff[pos];
+        cost_literal_cnt += u32::from(v != 0);
+        let level = v.unsigned_abs() as i32;
+        if level > cc::NUM_BASE_LEVELS {
+            let ctx = cc::br_ctx(levels_buf, pos, bwl, TX_CLASS);
+            let base_range = level - 1 - cc::NUM_BASE_LEVELS;
+            cost += costs.base_cost[coeff_contexts[pos] as usize][3];
+            if base_range < cc::COEFF_BASE_RANGE {
+                cost += costs.lps_cost[ctx][base_range as usize];
+            } else {
+                cost += crate::quant::golomb_cost(level)
+                    + costs.lps_cost[ctx][cc::COEFF_BASE_RANGE as usize];
+            }
+        } else {
+            cost += costs.base_cost[coeff_contexts[pos] as usize][level as usize];
+        }
+        c -= 1;
+    }
+    cost + cost_literal_cnt as i32 * lit
+}
+
+/// C `svt_av1_cost_coeffs_txb` (rd_cost.c:355) specialized to the
+/// PD0_LVL_1 call (rd_cost.c:1207 `svt_aom_txb_estimate_coeff_bits_pd0`):
+/// plane Y, DCT_DCT, `txb_skip_ctx = 0`, `dc_sign_ctx = 0`,
+/// `reduced_tx_set = 0`, no CDF updates. `eob > 0`.
+fn cost_coeffs_txb_pd0(
+    qcoeff: &[i32],
+    eob: u16,
+    c_tx_size: usize,
+    tables: &crate::quant::CoeffCostTables,
+    tx_rates: &TxTypeRatesDc,
+) -> i32 {
+    use svtav1_entropy::coeff_c as cc;
+    debug_assert!(eob > 0);
+    let txs_ctx = cc::txsize_entropy_ctx(c_tx_size);
+    let bwl = cc::txb_bwl(c_tx_size);
+    let width = cc::txb_wide(c_tx_size);
+    let height = cc::txb_high(c_tx_size);
+    let scan = svtav1_entropy::scan_tables::scan(c_tx_size, 0);
+    let coeff_costs = tables.txb(txs_ctx, 0);
+    let eob_multi_size = cc::TXSIZE_LOG2_MINUS4[c_tx_size];
+    let eob_bits = &tables.eob[eob_multi_size][0];
+
+    let mut cost = coeff_costs.txb_skip_cost[0][0];
+
+    let mut levels_buf = vec![0u8; cc::TX_PAD_2D];
+    if eob > 1 {
+        cc::txb_init_levels(qcoeff, width, height, &mut levels_buf);
+    }
+    cost += tx_rates.rate_for(c_tx_size);
+    cost += crate::quant::eob_cost(eob as i32, eob_bits, coeff_costs, cc::TX_CLASS_2D);
+
+    let mut coeff_contexts = vec![0i8; width * height];
+    cc::get_nz_map_contexts(
+        &levels_buf,
+        scan,
+        eob as usize,
+        c_tx_size,
+        cc::TX_CLASS_2D,
+        &mut coeff_contexts,
+    );
+    cost + loop_cost_eob_pd0(
+        qcoeff,
+        eob,
+        scan,
+        &coeff_contexts,
+        coeff_costs,
+        &levels_buf,
+        bwl,
+    )
+}
+
+/// C `av1_cost_skip_txb` (rd_cost.c:213) at context 0: the eob == 0 rate.
+fn cost_skip_txb_pd0(c_tx_size: usize, tables: &crate::quant::CoeffCostTables) -> i32 {
+    let txs_ctx = svtav1_entropy::coeff_c::txsize_entropy_ctx(c_tx_size);
+    tables.txb(txs_ctx, 0).txb_skip_cost[0][1]
 }
 
 /// C `check_is_subres_safe` (product_coding_loop.c): SAD of even vs odd
@@ -612,6 +839,39 @@ impl Pd0Tree {
     }
 }
 
+/// Which PD0 block-encode path prices a block (C `Pd0Level`, collapsed to
+/// the three configurations reachable from the allintra preset ladder).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pd0Mode {
+    /// PD0_LVL_6 closed-form variance cost (eff-M9, undemoted).
+    Lvl6,
+    /// PD0_LVL_5 light encode: qindex+8, subres, 5000+100*eob rate
+    /// (eff-M9 demoted by the detector).
+    Lvl5,
+    /// PD0_LVL_1 (allintra M2..M8): qindex+0, no subres, real
+    /// `svt_av1_cost_coeffs_txb` rate at zero contexts, undoubled split
+    /// rate (`use_accurate_part_ctx = 1`).
+    Lvl1,
+}
+
+/// The rate tables PD0_LVL_1 prices with. For single-SB frames these are
+/// the default tables at the frame qindex bucket (C: `md_frame_context`
+/// feeds SB 0); multi-SB refresh from the evolving frame context
+/// (enc_dec_process.c:2991, `cdf_ctrl.enabled` at M6) is NOT yet ported —
+/// SBs after the first reuse the defaults, which C only does for SB 0.
+pub struct M6Pd0Tables {
+    pub coeff: alloc::boxed::Box<crate::quant::CoeffCostTables>,
+    tx_rates: TxTypeRatesDc,
+}
+
+/// Build the PD0_LVL_1 tables for a frame (default CDFs at `qindex`).
+pub fn build_m6_pd0_tables(qindex: u8) -> M6Pd0Tables {
+    M6Pd0Tables {
+        coeff: crate::quant::build_coeff_cost_tables(qindex),
+        tx_rates: build_tx_type_rates_dc(),
+    }
+}
+
 struct Pd0Ctx<'a> {
     src: &'a [u8],
     stride: usize,
@@ -621,7 +881,8 @@ struct Pd0Ctx<'a> {
     qp: u32,
     qindex: u8,
     lambda: u64,
-    level5: bool,
+    mode: Pd0Mode,
+    lvl1: Option<&'a M6Pd0Tables>,
     max_sq: usize,
     min_sq: usize,
     /// C `ctx->is_subres_safe`: 255 = not yet determined (only a tested
@@ -714,19 +975,62 @@ impl<'a> Pd0Ctx<'a> {
             }
         }
         let qindex_off = (self.qindex as u32 + 8).min(255) as u8; // lpd0_qp_offset = 8
-        let (eob, dist, bits) = lvl5_tx_cost(&residual, sq_size, tx_h, qindex_off, step);
-        let _ = eob;
+        let (eob, dist, _qcoeff, _c_tx) = tx_quant_core(&residual, sq_size, tx_h, qindex_off, step);
+        // coeff_rate_est_lvl == 0 closed form (perform_tx_pd0): input
+        // resolution factor is 0 for every <= 240p-range picture (all
+        // identity/gate frames).
+        let bits = 5000 + 100 * eob as u64;
         // svt_aom_full_cost_pd0: rate = coeff bits + skip(0) bits +
         // PARTITION_NONE bits at context 0.
         let rate = bits + skip0_bits() + partition_none_bits_ctx0();
         rdcost(self.lambda, rate, dist)
     }
 
-    fn block_cost(&mut self, sq_size: usize, org_x: usize, org_y: usize) -> u64 {
-        if self.level5 {
-            self.lvl5_block_cost(sq_size, org_x, org_y)
+    /// PD0_LVL_1 block cost (md_encode_block_pd0 at allintra M2..M8):
+    /// same DC-from-source prediction, but `lpd0_qp_offset = 0`, subres
+    /// permanently off (`pd0_level <= PD0_LVL_2` -> subres_level 0), and
+    /// the REAL coefficient rate (`coeff_rate_est_lvl = 1` ->
+    /// svt_aom_txb_estimate_coeff_bits_pd0 with zero contexts).
+    fn lvl1_block_cost(&mut self, sq_size: usize, org_x: usize, org_y: usize) -> u64 {
+        let abs_x = self.sb_x + org_x;
+        let abs_y = self.sb_y + org_y;
+        let (above, left, _tl, has_above, has_left) = crate::partition::extract_neighbors(
+            self.src,
+            self.stride,
+            abs_x,
+            abs_y,
+            sq_size,
+            sq_size,
+        );
+        let mut pred = vec![0u8; sq_size * sq_size];
+        svtav1_dsp::intra_pred::predict_dc(
+            &mut pred, sq_size, &above, &left, sq_size, sq_size, has_above, has_left,
+        );
+
+        let mut residual = vec![0i32; sq_size * sq_size];
+        for r in 0..sq_size {
+            let srow = (abs_y + r) * self.stride + abs_x;
+            let prow = r * sq_size;
+            for c in 0..sq_size {
+                residual[r * sq_size + c] = self.src[srow + c] as i32 - pred[prow + c] as i32;
+            }
+        }
+        let (eob, dist, qcoeff, c_tx) = tx_quant_core(&residual, sq_size, sq_size, self.qindex, 0);
+        let tables = self.lvl1.expect("LVL_1 requires tables");
+        let bits = if eob == 0 {
+            cost_skip_txb_pd0(c_tx, &tables.coeff) as u64
         } else {
-            lvl6_cost_allintra(&self.vars, sq_size, org_x, org_y, self.qp)
+            cost_coeffs_txb_pd0(&qcoeff, eob, c_tx, &tables.coeff, &tables.tx_rates) as u64
+        };
+        let rate = bits + skip0_bits() + partition_none_bits_ctx0();
+        rdcost(self.lambda, rate, dist)
+    }
+
+    fn block_cost(&mut self, sq_size: usize, org_x: usize, org_y: usize) -> u64 {
+        match self.mode {
+            Pd0Mode::Lvl1 => self.lvl1_block_cost(sq_size, org_x, org_y),
+            Pd0Mode::Lvl5 => self.lvl5_block_cost(sq_size, org_x, org_y),
+            Pd0Mode::Lvl6 => lvl6_cost_allintra(&self.vars, sq_size, org_x, org_y, self.qp),
         }
     }
 
@@ -747,11 +1051,13 @@ impl<'a> Pd0Ctx<'a> {
         }
 
         // test_split_partition_pd0: split rate term (0 at LVL_6 allintra;
-        // doubled at LVL_5 because use_accurate_part_ctx = 0 at eff-M9).
-        let mut split_cost = if self.level5 {
-            rdcost(self.lambda, 2 * partition_split_bits(sq_size), 0)
-        } else {
-            0
+        // doubled at LVL_5 because use_accurate_part_ctx = 0 at eff-M9;
+        // RAW at LVL_1 because use_accurate_part_ctx = 1 at M2..M8 —
+        // observed 1195/1465/2020 in the instrumented PD0SPLITRATE dumps).
+        let mut split_cost = match self.mode {
+            Pd0Mode::Lvl6 => 0,
+            Pd0Mode::Lvl5 => rdcost(self.lambda, 2 * partition_split_bits(sq_size), 0),
+            Pd0Mode::Lvl1 => rdcost(self.lambda, partition_split_bits(sq_size), 0),
         };
 
         let half = sq_size / 2;
@@ -760,10 +1066,11 @@ impl<'a> Pd0Ctx<'a> {
         for i in 0..4 {
             let cx = org_x + (i & 1) * half;
             let cy = org_y + (i >> 1) * half;
-            // LVL_5-only early exits (disabled entirely for allintra
-            // LVL_6): th = split_cost_th(50) for i == 0, else
-            // early_exit_th(0 -> 1000); parent_cost_bias = 1000.
-            if self.level5 {
+            // Early exits (disabled entirely for allintra LVL_6): th =
+            // split_cost_th(50) for i == 0, else early_exit_th(0 -> 1000);
+            // parent_cost_bias = 1000. Identical ths at LVL_5 and LVL_1
+            // (depth_early_exit level 1 for both, enc_mode_config.c:9282).
+            if self.mode != Pd0Mode::Lvl6 {
                 if let Some(pc) = parent_cost {
                     let th: u128 = if i == 0 { 50 } else { 1000 };
                     if (pc as u128) * th * 1000 <= (split_cost as u128) * 1_000_000 {
@@ -808,7 +1115,11 @@ pub fn pd0_pick_sb_partition(
 ) -> Pd0Tree {
     let vars = compute_b64_variance(src, stride, sb_x, sb_y);
     let max_sq = max_block_size_allintra(vars.0[0], qp);
-    let level5 = pd0_detector_allintra_demotes(&vars, qp);
+    let mode = if pd0_detector_allintra_demotes(&vars, qp) {
+        Pd0Mode::Lvl5
+    } else {
+        Pd0Mode::Lvl6
+    };
     let lambda = kf_full_lambda_8bit(qindex, qp) as u64;
     let mut ctx = Pd0Ctx {
         src,
@@ -819,10 +1130,56 @@ pub fn pd0_pick_sb_partition(
         qp,
         qindex,
         lambda,
-        level5,
+        mode,
+        lvl1: None,
         max_sq,
         // disallow_4x4 = 1 (pic_disallow_4x4 for these presets),
         // disallow_8x8_allintra() = false, no depth removal flags.
+        min_sq: 8,
+        is_subres_safe: 255,
+    };
+    let (_cost, tree) = ctx.pick(64, 0, 0);
+    tree
+}
+
+/// Decide the partition tree of one 64x64 superblock exactly like the C
+/// PD0 pass at allintra M2..M8 (`pic_pd0_lvl = 1` -> PD0_LVL_1,
+/// depth-refinement level 10 -> PRED_PART_ONLY, so this tree IS the coded
+/// tree). Differences from the eff-M9 entry above, all instrumented-C
+/// verified (docs/IDENTITY-STATUS.md M6 chunk):
+/// - no variance cap on the depth set (`base_var_th_cap = ~0` below M8):
+///   the 64x64 depth is always evaluated;
+/// - no PD0-level detector (`use_pd0_detector[PD0_LVL_1] = 0`): every SB
+///   runs the LVL_1 block encode;
+/// - LVL_1 block costs (real coeff rate, qindex+0, no subres);
+/// - split rate NOT doubled (`use_accurate_part_ctx = 1`).
+///
+/// `tables` carries the frame-level default cost tables (C
+/// `md_frame_context` for the first SB; the per-SB refresh from the
+/// evolving frame context under `cdf_ctrl.enabled` is not yet ported).
+pub fn pd0_pick_sb_partition_m6(
+    src: &[u8],
+    stride: usize,
+    sb_x: usize,
+    sb_y: usize,
+    qp: u32,
+    qindex: u8,
+    tables: &M6Pd0Tables,
+) -> Pd0Tree {
+    let vars = compute_b64_variance(src, stride, sb_x, sb_y);
+    let lambda = kf_full_lambda_8bit(qindex, qp) as u64;
+    let mut ctx = Pd0Ctx {
+        src,
+        stride,
+        sb_x,
+        sb_y,
+        vars,
+        qp,
+        qindex,
+        lambda,
+        mode: Pd0Mode::Lvl1,
+        lvl1: Some(tables),
+        max_sq: 64,
         min_sq: 8,
         is_subres_safe: 255,
     };
@@ -951,7 +1308,8 @@ mod tests {
             qp: 40,
             qindex: 160,
             lambda: kf_full_lambda_8bit(160, 40) as u64,
-            level5: true,
+            mode: Pd0Mode::Lvl5,
+            lvl1: None,
             max_sq: 32,
             min_sq: 8,
             is_subres_safe: 255,
@@ -987,7 +1345,8 @@ mod tests {
             qp: 55,
             qindex: 220,
             lambda: kf_full_lambda_8bit(220, 55) as u64,
-            level5: true,
+            mode: Pd0Mode::Lvl5,
+            lvl1: None,
             max_sq: 64,
             min_sq: 8,
             is_subres_safe: 255,
@@ -1065,6 +1424,112 @@ mod tests {
         // Uniform: LVL_5 with zero residual everywhere -> 64x64 NONE.
         let u = vec![128u8; 64 * 64];
         let tu = pd0_pick_sb_partition(&u, 64, 0, 0, 40, 160);
+        assert_eq!(tu, Pd0Tree::Leaf(64));
+    }
+
+    /// PD0_LVL_1 per-block costs pinned from the instrumented M6 run
+    /// (SVT_M6DBG PD0BLK lines, gradient-64, docs/IDENTITY-STATUS.md M6
+    /// chunk). Single-SB frame -> default tables, exactly like C's SB 0.
+    #[test]
+    fn lvl1_block_costs_match_c() {
+        let y = gradient64();
+        let tables = build_m6_pd0_tables(220);
+        let mut ctx = Pd0Ctx {
+            src: &y,
+            stride: 64,
+            sb_x: 0,
+            sb_y: 0,
+            vars: compute_b64_variance(&y, 64, 0, 0),
+            qp: 55,
+            qindex: 220,
+            lambda: kf_full_lambda_8bit(220, 55) as u64,
+            mode: Pd0Mode::Lvl1,
+            lvl1: Some(&tables),
+            max_sq: 64,
+            min_sq: 8,
+            is_subres_safe: 255,
+        };
+        for (sq, ox, oy, cost) in [
+            (64usize, 0usize, 0usize, 1791569177u64),
+            (32, 0, 0, 526486441),
+            (32, 32, 0, 572301943),
+            (16, 0, 0, 146206469),
+            (8, 0, 0, 44014180),
+            (8, 8, 0, 35188942),
+            (8, 0, 8, 37535984),
+            (8, 8, 8, 60514499),
+        ] {
+            assert_eq!(ctx.lvl1_block_cost(sq, ox, oy), cost, "q55 sq={sq} ({ox},{oy})");
+        }
+
+        let tables40 = build_m6_pd0_tables(160);
+        let mut ctx40 = Pd0Ctx {
+            src: &y,
+            stride: 64,
+            sb_x: 0,
+            sb_y: 0,
+            vars: compute_b64_variance(&y, 64, 0, 0),
+            qp: 40,
+            qindex: 160,
+            lambda: kf_full_lambda_8bit(160, 40) as u64,
+            mode: Pd0Mode::Lvl1,
+            lvl1: Some(&tables40),
+            max_sq: 64,
+            min_sq: 8,
+            is_subres_safe: 255,
+        };
+        for (sq, ox, oy, cost) in [
+            (64usize, 0usize, 0usize, 1176293547u64),
+            (32, 0, 0, 230378290),
+            (16, 0, 0, 62496975),
+            (8, 0, 0, 16077204),
+        ] {
+            assert_eq!(ctx40.lvl1_block_cost(sq, ox, oy), cost, "q40 sq={sq} ({ox},{oy})");
+        }
+
+        let tables20 = build_m6_pd0_tables(80);
+        let mut ctx20 = Pd0Ctx {
+            src: &y,
+            stride: 64,
+            sb_x: 0,
+            sb_y: 0,
+            vars: compute_b64_variance(&y, 64, 0, 0),
+            qp: 20,
+            qindex: 80,
+            lambda: kf_full_lambda_8bit(80, 20) as u64,
+            mode: Pd0Mode::Lvl1,
+            lvl1: Some(&tables20),
+            max_sq: 64,
+            min_sq: 8,
+            is_subres_safe: 255,
+        };
+        for (sq, ox, oy, cost) in [
+            (64usize, 0usize, 0usize, 903280295u64),
+            (32, 0, 0, 51245980),
+            (16, 0, 0, 14528276),
+            (8, 0, 0, 3483565),
+            (8, 8, 0, 3484388),
+        ] {
+            assert_eq!(ctx20.lvl1_block_cost(sq, ox, oy), cost, "q20 sq={sq} ({ox},{oy})");
+        }
+    }
+
+    /// M6 PD0 trees for the gradient-64 identity cells (instrumented
+    /// PD0CMP verdicts): q20/q40 -> 64 SPLIT + four 32x32 PARENT (q20 is
+    /// SHALLOWER than the eff-M9 16x16 tree), q55 -> single 64x64.
+    #[test]
+    fn m6_gradient64_trees_match_c() {
+        let y = gradient64();
+        let t20 = pd0_pick_sb_partition_m6(&y, 64, 0, 0, 20, 80, &build_m6_pd0_tables(80));
+        assert_eq!(t20.leaf_sizes(), vec![32; 4]);
+        let t40 = pd0_pick_sb_partition_m6(&y, 64, 0, 0, 40, 160, &build_m6_pd0_tables(160));
+        assert_eq!(t40.leaf_sizes(), vec![32; 4]);
+        let t55 = pd0_pick_sb_partition_m6(&y, 64, 0, 0, 55, 220, &build_m6_pd0_tables(220));
+        assert_eq!(t55, Pd0Tree::Leaf(64));
+        // Uniform content: exact DC prediction, zero residual -> 64 NONE
+        // (keeps every uniform p6 identity cell byte-identical).
+        let u = vec![128u8; 64 * 64];
+        let tu = pd0_pick_sb_partition_m6(&u, 64, 0, 0, 40, 160, &build_m6_pd0_tables(160));
         assert_eq!(tu, Pd0Tree::Leaf(64));
     }
 }

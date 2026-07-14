@@ -273,7 +273,7 @@ const fn cost_literal(n: i32) -> i32 {
 /// C `svt_aom_get_syntax_rate_from_cdf` (md_rate_estimation.c:48): per-
 /// symbol costs from a stored inverse CDF (icdf convention: value 0 marks
 /// the last symbol), probability floored at EC_MIN_PROB = 4.
-fn syntax_rate_from_cdf(costs: &mut [i32], cdf: &[u16]) {
+pub(crate) fn syntax_rate_from_cdf(costs: &mut [i32], cdf: &[u16]) {
     let mut prev_cum = 0u32; // AOM_ICDF(cdf[i]) accumulates the cumulative prob
     for (i, &v) in cdf.iter().enumerate() {
         let cum = 32768 - v as u32; // AOM_ICDF
@@ -411,7 +411,7 @@ fn get_coeff_dist(tcoeff: i32, dqcoeff: i32, shift: i32) -> i64 {
 
 /// C `get_golomb_cost` (full_loop.c:613).
 #[inline]
-fn golomb_cost(abs_qc: i32) -> i32 {
+pub(crate) fn golomb_cost(abs_qc: i32) -> i32 {
     if abs_qc >= 1 + NUM_BASE_LEVELS + COEFF_BASE_RANGE as i32 {
         let r = abs_qc - COEFF_BASE_RANGE as i32 - NUM_BASE_LEVELS;
         let length = (31 - (r as u32).leading_zeros()) as i32 + 1; // get_msb + 1
