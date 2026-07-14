@@ -99,9 +99,13 @@ under the AV1 reference decoder as of 2026-07-13, C baseline v4.2.0-rc)
 > svt_av1_optimize_b RDOQ trellis + coeff_lvl->rdoq_level policy):
 > matrix now **30/36** — every uniform AND every gradient M13/M10 cell
 > is byte-identical. Remaining (map has details): the 6 gradient
-> preset-6 cells — M6 PD0 architecture (prediction-based pd0_lvl 1 +
-> nsq geometry) owns 5 partition tile-op cells, the CDEF live-block
-> RDO search owns the g64 q55 p6 FH cell.
+> preset-6 cells, ALL owned by the M6 leaf funnel (filter-intra RDO +
+> MDS0/NIC pruning + MDS3 leaf compare) after the 2026-07-14 chunks
+> landed M6 PD0 (partitions match), the CDEF live-block search (FH
+> matches) and Wiener loop restoration end-to-end (lr_type/flag/tap
+> SYNTAX matches; the remaining 4 lr cells diverge only on tap VALUES,
+> which derive from the leaf-funnel recon gap — the search itself is
+> proven C-exact on C's inputs, tests/lr_search_c_capture.rs).
 0a. **[FIXED 2026-07-13] Edges-content divergence** — root cause was NOT the
    transforms (all named + dispatch wrapper paths are now pinned bit-exact
    vs C by c_parity_txfm, incl. rect + flat-DC shapes): extract_neighbors
@@ -183,14 +187,26 @@ under the AV1 reference decoder as of 2026-07-13, C baseline v4.2.0-rc)
        joint_strength_search_dual + lambda rate) lands with
        decision-layer parity (gap 3). Inter frames signal zero
        strengths (no CDEF), like inter deblock levels.
-   Still open: restoration application (SH signals enable_restoration=1
-   at allintra presets <= M6 per C, and the FH then signals
-   RESTORE_NONE for every plane — spec 5.9.20 lr_params, C
-   encode_restoration_mode — so nothing is applied, consistently on
-   both sides; the actual wiener/sgrproj SEARCH+apply is unported),
-   inter-frame deblock/CDEF (signaled 0, applied nothing), the C
-   SSE-based filter-level search (we ship LPF_PICK_FROM_Q only), and the
-   CDEF RDO live-block search (2a).
+   **Wiener loop restoration DONE 2026-07-14** (commits
+   a724ebdc0..bbf1ddb69): C-exact kernel + stripe machinery
+   (svt_av1_wiener_convolve_add_src_c / svt_av1_loop_restoration_
+   filter_unit incl. the deblock/CDEF boundary line buffers,
+   differentially fuzzed — svtav1-dsp/src/restoration.rs,
+   tests/c_parity_wiener.rs), the tap-coding chain (refsubexpfin
+   exhaustive byte-parity, svtav1-entropy/src/lr.rs), the FULL search
+   (restoration_seg_search + rest_finish_search at the allintra
+   wn_filter controls; sgrproj NEVER searched — sg_filter_lvl=0;
+   svtav1-encoder/src/restoration.rs, validated to reproduce C's taps
+   and picks on C's exact dgd for all 6 instrumented cells —
+   tests/lr_search_c_capture.rs pins two of them), FH lr_params +
+   per-SB tile syntax (tile re-walk when wiener signals), and the
+   decoder-exact frame application on the output copy. recon-parity
+   216/0 with 59/216 streams signaling wiener (107 RUs incl. chroma).
+   Still open: inter-frame deblock/CDEF/LR (signaled 0, applied
+   nothing), the C SSE-based filter-level search (we ship
+   LPF_PICK_FROM_Q only), the CDEF RDO live-block search remainder
+   (2a), and sgrproj (out of scope — C never searches it at any
+   representable allintra preset).
 3. **Decision-layer parity** — CLOSED for the still M13/M10 path
    (2026-07-13): partitions come from the C-exact PD0 port (pd0.rs),
    leaf modes from the is_dc_only_safe gate + candidate funnel, and
@@ -262,7 +278,7 @@ All 26 1D transform kernels are bit-exact with C SVT-AV1. Verified by extracting
 Key finding: the C `svt_av1_fadst4_new` uses i32 arithmetic while our initial port used i64, producing different rounding. Fixed by matching the C decomposition exactly. Same issue with `fadst8` output permutation — C uses `[step[1], step[6], step[3], step[4], step[5], step[2], step[7], step[0]]` without negation, while our initial port had sign flips.
 
 ### Pipeline Architecture
-The pipeline processes superblocks in raster order (left-to-right, top-to-bottom) per spec 00. Each SB goes through partition_search which recursively tries all 10 partition types. At each leaf, encode_single_block evaluates 11 intra modes with mode-specific TX RDO, picking the lowest RD cost. Deblocking runs after the entropy walk on the OUTPUT recon copy only (signaled levels; prediction sources stay unfiltered — the decoder's split); CDEF/Wiener/sgrproj stay disabled+unsignaled pending their ports.
+The pipeline processes superblocks in raster order (left-to-right, top-to-bottom) per spec 00. Each SB goes through partition_search which recursively tries all 10 partition types. At each leaf, encode_single_block evaluates 11 intra modes with mode-specific TX RDO, picking the lowest RD cost. The loop-filter chain runs after the entropy walk on the OUTPUT recon copy only (prediction sources stay unfiltered — the decoder's split), in decoder order: deblock -> CDEF -> Wiener loop restoration. The LR search needs the post-CDEF recon, so when it signals wiener the entropy walk is re-run with the per-SB lr syntax (the walk is a deterministic re-runnable pass). sgrproj is never searched (C sg_filter_lvl = 0 at every representable allintra preset) and stays unported.
 
 ### Performance
 Release-mode benchmarks (x86_64 AVX2):
