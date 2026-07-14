@@ -281,11 +281,13 @@ impl EncodePipeline {
         // (pic_avg_variance = mean of the per-B64 64x64 variances,
         // pic_analysis_process.c:608, truncated to u16) via the allintra
         // policy, the KF full lambda, and the default-CDF coefficient cost
-        // tables. Only key/still frames at presets >= 9 (the PD0
-        // fixed-tree path) on 64-aligned dims — everywhere else the
-        // legacy dead-zone quantizer stays.
+        // tables. Only key/still frames at presets >= 6 (the PD0
+        // fixed-tree paths: eff-M9 above 8, PD0_LVL_1 at 6..8 — the C
+        // rdoq policy line `<=M5 -> 1, else f(coeff_lvl)` covers both,
+        // enc_mode_config.c:14931) on 64-aligned dims — everywhere else
+        // the legacy dead-zone quantizer stays.
         let c_quant: Option<alloc::sync::Arc<crate::quant::CodingQuantCfg>> =
-            if is_key && self.speed_config.preset >= 9 && w % 64 == 0 && h % 64 == 0 {
+            if is_key && self.speed_config.preset >= 6 && w % 64 == 0 && h % 64 == 0 {
                 let mut tot: u64 = 0;
                 let mut cnt: u64 = 0;
                 for sy in (0..h).step_by(64) {
@@ -1855,6 +1857,9 @@ fn encode_tile_rows(
         let tile_sb_row_end = ((tile_idx + 1) * rows_per_tile).min(sb_rows);
 
         let mut tile_recon = Vec::new();
+        // PD0_LVL_1 rate tables (presets 6..8), built once per tile on
+        // first use — default CDFs at the frame qindex (C md_frame_context).
+        let mut m6_pd0_tables: Option<crate::pd0::M6Pd0Tables> = None;
         let mut tile_decisions: Vec<crate::partition::BlockDecision> = Vec::new();
         let mut tile_trees: Vec<crate::partition::PartitionTree> = Vec::new();
         let mut tile_frame_recon = alloc::vec![128u8; w * h];
@@ -1895,37 +1900,70 @@ fn encode_tile_rows(
                 // conflation and is gone — qindex saturates at u8 range.
                 let _ = (sb_row, sb_col, &sb_qp_offsets);
                 let sb_qindex = base_qindex;
+                // C-exact partition source gate (see the comment below);
+                // computed here because the leaf lambda depends on it.
+                let use_pd0 = ref_ctx.is_none()
+                    && speed_config.preset >= 6
+                    && cur_w == sb_size
+                    && cur_h == sb_size;
                 // CLI-qp-calibrated lambda via the exact inverse mapping
-                // (see qp_to_lambda's domain note).
+                // (see qp_to_lambda's domain note). On the PD0 fixed-tree
+                // path the leaf funnel must be preset-INDEPENDENT like
+                // C's (the C decision lambda is the same kf chain at M6
+                // and eff-M9 — instrumented 1527856 at qindex 220 in
+                // both), so it pins the scale the byte-identical M10/M13
+                // cells validated instead of the per-preset homegrown
+                // scale.
+                let leaf_scale = if use_pd0 {
+                    crate::speed_config::SpeedConfig::from_preset(13).lambda_scale()
+                } else {
+                    speed_config.lambda_scale()
+                };
                 let sb_lambda = (crate::rate_control::qp_to_lambda(
                     crate::rate_control::qindex_to_qp(sb_qindex),
-                ) * speed_config.lambda_scale()) as u64;
+                ) * leaf_scale) as u64;
 
                 // C-exact partition source: at allintra presets >= 9 the C
                 // library (which clamps allintra presets to M9) decides the
                 // ENTIRE partition tree in PD0 with a fixed {NONE, SPLIT}
                 // quadtree and no NSQ search (docs/IDENTITY-STATUS.md
-                // 2026-07-13 diagnosis). Key/still frames at those presets
-                // take the ported PD0 decision (crate::pd0) and encode the
-                // fixed tree; everything else keeps the homegrown search.
-                let use_pd0 = ref_ctx.is_none()
-                    && speed_config.preset >= 9
-                    && cur_w == sb_size
-                    && cur_h == sb_size;
-
+                // 2026-07-13 diagnosis), and at M2..M8 the same
+                // PRED_PART_ONLY architecture runs the prediction-based
+                // PD0_LVL_1 block encode instead (M6 chunk diagnosis).
+                // Key/still frames at presets >= 6 take the ported PD0
+                // decisions (crate::pd0) and encode the fixed tree;
+                // everything else keeps the homegrown search. (Presets
+                // 2..5 also run PD0_LVL_1 in C, but their PD1 leaf
+                // configs — rdoq_level 1, txt 2/3, lower intra levels —
+                // are unported, so they stay on the homegrown path until
+                // that lands.)
                 // The search reads intra neighbors from — and reconstructs
                 // directly into — the live frame buffer, exactly like the
                 // decoder (fixes within-SB predictions that previously fell
                 // back to 128).
                 let sb_result = if use_pd0 {
-                    let tree = crate::pd0::pd0_pick_sb_partition(
-                        encode_input,
-                        w,
-                        x0,
-                        y0,
-                        cli_qp as u32,
-                        sb_qindex,
-                    );
+                    let tree = if speed_config.preset >= 9 {
+                        crate::pd0::pd0_pick_sb_partition(
+                            encode_input,
+                            w,
+                            x0,
+                            y0,
+                            cli_qp as u32,
+                            sb_qindex,
+                        )
+                    } else {
+                        crate::pd0::pd0_pick_sb_partition_m6(
+                            encode_input,
+                            w,
+                            x0,
+                            y0,
+                            cli_qp as u32,
+                            sb_qindex,
+                            m6_pd0_tables.get_or_insert_with(|| {
+                                crate::pd0::build_m6_pd0_tables(sb_qindex)
+                            }),
+                        )
+                    };
                     // The same per-SB variance map C's picture analysis
                     // feeds to is_dc_only_safe (pcs->ppcs->variance): the
                     // fixed-tree leaves use it to force the C-exact
