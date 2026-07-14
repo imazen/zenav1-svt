@@ -211,7 +211,12 @@ fn lpf_params(
         if plane == 0 {
             (bw, bh)
         } else {
-            (bw >> 1, bh >> 1)
+            // Chroma TX is never smaller than TX_4X4: av1_get_max_uv_txsize
+            // floors at 4x4 (a 4-wide/tall luma block shares one 4x4 chroma
+            // TX across its 2x2 luma group via is_chroma_reference). Without
+            // the floor, bw==4 gives a 2-wide chroma dim and advance == 0 in
+            // filter_plane's edge walk -> infinite loop.
+            ((bw >> 1).max(4), (bh >> 1).max(4))
         }
     };
     let (tw, th) = tx_dims(idx);
