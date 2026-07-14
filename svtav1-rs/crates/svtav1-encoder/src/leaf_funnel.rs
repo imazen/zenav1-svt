@@ -801,6 +801,22 @@ struct TxUnitOut {
     cul: u8,
 }
 
+impl TxUnitOut {
+    /// The no-chroma placeholder for `has_uv == 0` blocks: C never runs
+    /// the chroma full loop there, so every chroma term is EXACTLY zero
+    /// (no skip-txb rate either — the syntax doesn't exist).
+    fn absent() -> Self {
+        TxUnitOut {
+            eob: 0,
+            qcoeff: Vec::new(),
+            recon: Vec::new(),
+            dist: 0,
+            bits: 0,
+            cul: 0,
+        }
+    }
+}
+
 /// C `svt_av1_compute_cul_level` (full_loop.c:1356).
 fn compute_cul_level(scan: &[u16], qcoeff: &[i32], eob: u16) -> u8 {
     let mut cul: u32 = 0;
@@ -877,8 +893,11 @@ fn tx_unit(
             three_quad_energy = energy_region(&coeffs[32..], 64, 32, 32)
                 + energy_region(&coeffs[32 * 64..], 64, 64, 32);
         } else if w == 64 {
-            three_quad_energy = energy_region(&coeffs[32..], 64, 32, 32);
+            // 64x32 / 64x16: top-right (w-32)-wide, h-tall region
+            // (svt_handle_transform64x32_c / 64x16_c, transforms.c:3223).
+            three_quad_energy = energy_region(&coeffs[32..], 64, 32, h.min(32));
         } else {
+            // 32x64 / 16x64: bottom w-wide, (h-32)-tall region.
             three_quad_energy = energy_region(&coeffs[32 * w..], w, w, h - 32);
         }
         let mut v = vec![0i32; pw * ph];
@@ -1176,6 +1195,14 @@ pub(crate) struct LeafEval {
     pub abs_y: usize,
     pub w: usize,
     pub h: usize,
+    /// C `ctx->has_uv` (is_chroma_reference) + the chroma PAIR geometry
+    /// (bsize_uv dims at the ROUND_UV origin) — sub-8 NSQ children only
+    /// deviate from (x/2, y/2, w/2, h/2).
+    has_uv: bool,
+    ccx: usize,
+    ccy: usize,
+    cw: usize,
+    chh: usize,
     win: Cand,
     /// C `cand_bf->residual` content at `non_normative_txs` time: ALL
     /// MDS3 candidates share ONE residual workspace (verified by buffer-
@@ -1333,6 +1360,12 @@ pub(crate) fn evaluate_leaf(
     let bsize_idx = svtav1_entropy::context::block_size_index(w, h);
     let cfl_allowed = usize::from(w <= 32 && h <= 32);
     let use_angle = !matches!((w, h), (4, 4) | (4, 8) | (8, 4));
+    // C `is_chroma_reference(mi_row, mi_col, bsize, 1, 1)`
+    // (common_utils.h:315): sub-8 blocks carry chroma only at odd mi in
+    // the sub-8 dimension; the chroma block then covers the PAIR
+    // (bsize_uv dims = max(dim,8)/2 at the ROUND_UV origin).
+    let has_uv = ((abs_y / 4) % 2 == 1 || (h / 4) % 2 == 0)
+        && ((abs_x / 4) % 2 == 1 || (w / 4) % 2 == 0);
 
     // Block geometry for the directional predictor (availability tables +
     // frame-edge clamps) and the per-block C `get_filt_type` inputs (the
@@ -1441,8 +1474,14 @@ pub(crate) fn evaluate_leaf(
                 flr += rates.fi_mode[fi as usize] as u64;
             }
         }
-        let mut fcr = rates.uv[cfl_allowed][mode as usize][uv as usize] as u64;
-        if use_angle && matches!(uv, 1..=8) {
+        let mut fcr = if has_uv {
+            rates.uv[cfl_allowed][mode as usize][uv as usize] as u64
+        } else {
+            // C fast cost: chroma_rate only when ctx->has_uv
+            // (av1_intra_fast_cost, rd_cost.c:619).
+            0
+        };
+        if has_uv && use_angle && matches!(uv, 1..=8) {
             fcr += rates.angle[uv as usize - 1][(3 + uv_delta) as usize] as u64;
         }
         let fast_cost = rdcost(lambda, flr + fcr, satd << 4);
@@ -1637,10 +1676,11 @@ pub(crate) fn evaluate_leaf(
     } else {
         0
     };
-    let cw = w / 2;
-    let chh = h / 2;
-    let ccx = abs_x / 2;
-    let ccy = abs_y / 2;
+    // Chroma pair geometry (C blk_geom bsize_uv + ROUND_UV origins).
+    let cw = w.max(8) / 2;
+    let chh = h.max(8) / 2;
+    let ccx = ((abs_x >> 3) << 3) / 2 + if w >= 8 { (abs_x % 8) / 2 } else { 0 };
+    let ccy = ((abs_y >> 3) << 3) / 2 + if h >= 8 { (abs_y % 8) / 2 } else { 0 };
     let tsz_cat = tx_size_cat(w, h);
     let tsz_ctx = fx.ectx.tx_size_ctx(abs_x, abs_y, w, h);
 
@@ -1751,7 +1791,7 @@ pub(crate) fn evaluate_leaf(
     //    `update_intra_chroma_mode` (:7326) then rewrites each MDS3
     //    candidate before its full loop. --
     let mut ind_uv: Option<[(u8, i8); 13]> = None;
-    if cfg.ind_uv_mds3 && order1.iter().take(n3).any(|&ci| cands[ci].uv != 0) {
+    if cfg.ind_uv_mds3 && has_uv && order1.iter().take(n3).any(|&ci| cands[ci].uv != 0) {
         // Distinct (uv, uv_delta) pairs of the MDS3 survivors, in
         // survivor order, excluding UV_DC; then UV_DC (delta 0) last.
         let mut tested = [[false; 7]; 13];
@@ -1974,9 +2014,15 @@ pub(crate) fn evaluate_leaf(
         // ---- Chroma full loop (uv per candidate: follows-luma at
         //      CHROMA_MODE_1, or the ind-uv table pick at chroma_level 4)
         //      + the complexity detector (CFL gate; see below) ----
+        //      Skipped entirely for non-chroma-ref blocks (C gates every
+        //      chroma stage on ctx->has_uv).
         let cand = &cands[ci];
-        let (u_out, v_out) = chroma_eval(fx, cand.uv, cand.uv_delta);
-        {
+        let (u_out, v_out) = if has_uv {
+            chroma_eval(fx, cand.uv, cand.uv_delta)
+        } else {
+            (TxUnitOut::absent(), TxUnitOut::absent())
+        };
+        if has_uv {
             // Chroma complexity detector (chroma_complexity_check_pred,
             // product_coding_loop.c:6095) — its only funnel-visible effect
             // is the CFL gate (tx shortcuts are level 0). When it fires C
@@ -2125,6 +2171,11 @@ pub(crate) fn evaluate_leaf(
         abs_y,
         w,
         h,
+        has_uv,
+        ccx,
+        ccy,
+        cw,
+        chh,
         win: cands.swap_remove(win),
         psq_resid,
     }
@@ -2145,19 +2196,18 @@ pub(crate) fn commit_leaf(
 ) {
     let (abs_x, abs_y) = (ev.abs_x, ev.abs_y);
     let (w, h) = (ev.w, ev.h);
-    let cw = w / 2;
-    let chh = h / 2;
-    let ccx = abs_x / 2;
-    let ccy = abs_y / 2;
+    let (ccx, ccy, cw, chh) = (ev.ccx, ev.ccy, ev.cw, ev.chh);
     let cand = &ev.win;
     for r in 0..h {
         let dst = (abs_y + r) * y_stride + abs_x;
         y_recon[dst..dst + w].copy_from_slice(&cand.y_recon[r * w..(r + 1) * w]);
     }
-    for r in 0..chh {
-        let dst = (ccy + r) * fx.c_stride + ccx;
-        fx.u_recon[dst..dst + cw].copy_from_slice(&cand.u_recon[r * cw..(r + 1) * cw]);
-        fx.v_recon[dst..dst + cw].copy_from_slice(&cand.v_recon[r * cw..(r + 1) * cw]);
+    if ev.has_uv {
+        for r in 0..chh {
+            let dst = (ccy + r) * fx.c_stride + ccx;
+            fx.u_recon[dst..dst + cw].copy_from_slice(&cand.u_recon[r * cw..(r + 1) * cw]);
+            fx.v_recon[dst..dst + cw].copy_from_slice(&cand.v_recon[r * cw..(r + 1) * cw]);
+        }
     }
     let skip = !cand.block_has_coeff;
     fx.ectx
@@ -2180,8 +2230,10 @@ pub(crate) fn commit_leaf(
         fx.ectx
             .record_coeff(abs_x + tx_x, abs_y + tx_y, txw, txh, cul);
     }
-    fx.ectx.record_coeff_uv(0, ccx, ccy, cw, chh, cand.u_cul);
-    fx.ectx.record_coeff_uv(1, ccx, ccy, cw, chh, cand.v_cul);
+    if ev.has_uv {
+        fx.ectx.record_coeff_uv(0, ccx, ccy, cw, chh, cand.u_cul);
+        fx.ectx.record_coeff_uv(1, ccx, ccy, cw, chh, cand.v_cul);
+    }
 }
 
 /// C `get_end_tx_depth` (product_coding_loop.c:4171) clamped by
