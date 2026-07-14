@@ -621,9 +621,9 @@ pub fn write_key_frame_header(width: u32, height: u32, base_qindex: u8) -> Vec<u
 /// deblocking: the encoder MUST apply CDEF with exactly these strengths.
 ///
 /// `enable_restoration` MUST equal the sequence header's
-/// `enable_restoration` bit: it gates lr_params() (spec 5.9.20). Our
-/// encoder never applies restoration, so all planes signal RESTORE_NONE —
-/// see the lr block in [`key_frame_header_bits`].
+/// `enable_restoration` bit: it gates lr_params() (spec 5.9.20). This
+/// convenience form signals RESTORE_NONE for every plane — see
+/// [`write_key_frame_header_full_lr`] for real restoration signaling.
 #[allow(clippy::too_many_arguments)]
 pub fn write_key_frame_header_full(
     width: u32,
@@ -635,7 +635,7 @@ pub fn write_key_frame_header_full(
     cdef: [u8; 3],
     enable_restoration: bool,
 ) -> Vec<u8> {
-    let mut wb = key_frame_header_bits(
+    write_key_frame_header_full_lr(
         width,
         height,
         base_qindex,
@@ -643,7 +643,60 @@ pub fn write_key_frame_header_full(
         monochrome,
         lf_levels,
         cdef,
-        enable_restoration,
+        &LrSignal::none(enable_restoration),
+    )
+}
+
+/// Frame-header lr_params() signaling (spec 5.9.20; C
+/// `encode_restoration_mode`, entropy_coding.c:2243).
+#[derive(Clone, Copy, Debug)]
+pub struct LrSignal {
+    /// SH `enable_restoration` — gates the whole lr_params() block.
+    pub enabled: bool,
+    /// Per-plane RestorationType (0 NONE / 1 WIENER / 2 SGRPROJ /
+    /// 3 SWITCHABLE), plane order Y, U, V.
+    pub frame_types: [u8; 3],
+    /// Luma restoration_unit_size (C rst_info\[0\], pcs.c:37 — 256).
+    pub unit_size: u16,
+    /// `lr_uv_shift` bit: chroma unit size is half luma's. C writes
+    /// `rst_info[1].size != rst_info[0].size` when any chroma plane uses
+    /// restoration (entropy_coding.c:2298; SVT always picks equal sizes).
+    pub uv_size_differs: bool,
+}
+
+impl LrSignal {
+    /// All planes RESTORE_NONE (the pre-restoration behavior).
+    pub fn none(enabled: bool) -> Self {
+        LrSignal {
+            enabled,
+            frame_types: [0; 3],
+            unit_size: 256,
+            uv_size_differs: false,
+        }
+    }
+}
+
+/// [`write_key_frame_header_full`] with full lr_params() signaling.
+#[allow(clippy::too_many_arguments)]
+pub fn write_key_frame_header_full_lr(
+    width: u32,
+    height: u32,
+    base_qindex: u8,
+    reduced_sh: bool,
+    monochrome: bool,
+    lf_levels: [u8; 4],
+    cdef: [u8; 3],
+    lr: &LrSignal,
+) -> Vec<u8> {
+    let mut wb = key_frame_header_bits_lr(
+        width,
+        height,
+        base_qindex,
+        reduced_sh,
+        monochrome,
+        lf_levels,
+        cdef,
+        lr,
     );
     // This header is embedded in an OBU_FRAME: the spec requires
     // byte_alignment() (zero bits only) between frame_header and tile_group —
@@ -656,8 +709,9 @@ pub fn write_key_frame_header_full(
 /// Body of [`write_key_frame_header_full`] returning the raw [`BitWriter`]
 /// BEFORE byte alignment (pre-alignment bit count observable for layout
 /// tests — chroma delta-Q bits are zeros inside a zero run, invisible at
-/// byte granularity).
+/// byte granularity). Bool-compat form: all planes RESTORE_NONE.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 fn key_frame_header_bits(
     width: u32,
     height: u32,
@@ -667,6 +721,30 @@ fn key_frame_header_bits(
     lf_levels: [u8; 4],
     cdef: [u8; 3],
     enable_restoration: bool,
+) -> BitWriter {
+    key_frame_header_bits_lr(
+        width,
+        height,
+        base_qindex,
+        reduced_sh,
+        monochrome,
+        lf_levels,
+        cdef,
+        &LrSignal::none(enable_restoration),
+    )
+}
+
+/// Body of [`write_key_frame_header_full_lr`] (see the compat wrapper above).
+#[allow(clippy::too_many_arguments)]
+fn key_frame_header_bits_lr(
+    width: u32,
+    height: u32,
+    base_qindex: u8,
+    reduced_sh: bool,
+    monochrome: bool,
+    lf_levels: [u8; 4],
+    cdef: [u8; 3],
+    lr: &LrSignal,
 ) -> BitWriter {
     let mut wb = BitWriter::new();
 
@@ -784,19 +862,45 @@ fn key_frame_header_bits(
     // spec folds the gate into lr_params' AllLossless/allow_intrabc/
     // enable_restoration early-out; base_q_idx > 0 and
     // allow_intrabc = 0 are the same standing assumptions as
-    // cdef_params above). Our encoder never runs restoration, so every
-    // plane signals RESTORE_NONE: C writes the bit pair (0,0) per plane
-    // (entropy_coding.c:2263-2266; read as lr_type f(2) with
-    // Remap_Lr_Type[0] = RESTORE_NONE). With all planes none, C's
-    // !all_none / !chroma_none blocks are skipped (spec: UsesLr and
-    // usesChromaLr stay 0) — NO lr_unit_shift / lr_uv_shift bits.
+    // cdef_params above). Per-plane bit pairs (entropy_coding.c:2263-2282;
+    // read as lr_type f(2) with Remap_Lr_Type): NONE (0,0), WIENER (1,0),
+    // SGRPROJ (1,1), SWITCHABLE (0,1). When any plane restores, the luma
+    // unit-size bits follow (sb 64: bit(size>64), then bit(size>128));
+    // when a CHROMA plane restores, the lr_uv_shift bit follows.
     // NumPlanes = 1 for mono, 3 for 4:2:0 (C is always 3-plane; the
     // decoder reads NumPlanes lr_types — libaom decode_restoration_mode,
     // decodeframe.c).
-    if enable_restoration {
+    if lr.enabled {
         let num_planes = if monochrome { 1 } else { 3 };
-        for _ in 0..num_planes {
-            wb.write_bits(0, 2); // lr_type = 0b00 → RESTORE_NONE
+        let mut all_none = true;
+        let mut chroma_none = true;
+        for p in 0..num_planes {
+            let t = lr.frame_types[p];
+            if t != 0 {
+                all_none = false;
+                if p > 0 {
+                    chroma_none = false;
+                }
+            }
+            let (b0, b1) = match t {
+                0 => (false, false), // RESTORE_NONE
+                1 => (true, false),  // RESTORE_WIENER
+                2 => (true, true),   // RESTORE_SGRPROJ
+                _ => (false, true),  // RESTORE_SWITCHABLE
+            };
+            wb.write_bit(b0);
+            wb.write_bit(b1);
+        }
+        if !all_none {
+            // sb_size is 64 in this encoder (C asserts unit >= sb).
+            debug_assert!(lr.unit_size >= 64);
+            wb.write_bit(lr.unit_size > 64);
+            if lr.unit_size > 64 {
+                wb.write_bit(lr.unit_size > 128);
+            }
+        }
+        if !chroma_none {
+            wb.write_bit(lr.uv_size_differs);
         }
     }
 

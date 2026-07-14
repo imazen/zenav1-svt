@@ -548,6 +548,34 @@ def main():
         print("=" * 78)
         c_ops, c_marks = parse_trace(args.c_trace)
         r_ops, r_marks = parse_trace(args.rust_trace)
+
+        # Compare only the LAST coder segment (RESET..DONE) on each side —
+        # the tile that actually landed in the OBU. The Rust encoder may
+        # legitimately run the entropy walk twice (the loop-restoration
+        # search needs the post-CDEF recon, so the tile is re-written with
+        # the per-SB lr syntax after the search); the discarded first pass
+        # still logs its ops. C's --lp 1 trace has exactly one segment, so
+        # this is a no-op there.
+        def last_segment(ops, marks):
+            last_reset_i = None
+            for i, m in enumerate(marks):
+                if "RESET" in m[1]:
+                    last_reset_i = i
+            if last_reset_i is None:
+                return ops
+            start = marks[last_reset_i][0]
+            end = len(ops)
+            # first DONE *after* the reset in marker (= file) order — op
+            # offsets alone can collide (pass-1 DONE and pass-2 RESET sit
+            # between the same two ops).
+            for m in marks[last_reset_i + 1:]:
+                if "DONE" in m[1]:
+                    end = m[0]
+                    break
+            return ops[start:end]
+
+        c_ops = last_segment(c_ops, c_marks)
+        r_ops = last_segment(r_ops, r_marks)
         print(f"  op counts: C={len(c_ops)}  Rust={len(r_ops)}")
         c_done = [m for m in c_marks if "DONE" in m[1]]
         r_done = [m for m in r_marks if "DONE" in m[1]]

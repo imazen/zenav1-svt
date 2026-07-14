@@ -475,11 +475,6 @@ impl EncodePipeline {
         // neighbors the decoder will have reconstructed.
         let cw = w / 2;
         let chh = h / 2;
-        let (mut u_recon, mut v_recon) = if chroma.is_some() {
-            (alloc::vec![128u8; cw * chh], alloc::vec![128u8; cw * chh])
-        } else {
-            (Vec::new(), Vec::new())
-        };
         // Debug aid: SVTAV1_DUMP_TREE=1 prints every winning leaf
         // (abs rect, mode, tx_type, eob) in coding order — the fastest way
         // to correlate a recon-parity diff position with the block that
@@ -493,9 +488,6 @@ impl EncodePipeline {
             }
         }
 
-        // Per-4x4 block/TX/skip geometry for the deblocking edge walk,
-        // recorded in coding order (== the decoder's parse order).
-        let mut deblock_geom = crate::deblock::DeblockGeom::new(w, h);
         // Sequence-level tool bits (C svt_aom_sig_deriv_pre_analysis_scs):
         // per-preset for the still/allintra path, off for multi-frame.
         // Threaded to the SH + FH writers AND the entropy walk below —
@@ -504,7 +496,31 @@ impl EncodePipeline {
         let is_single_frame = self.gop.intra_period <= 1;
         let seq_tools =
             crate::speed_config::seq_tools_for_preset(self.speed_config.preset, is_single_frame);
-        let tile_data = {
+
+        // The entropy walk as a re-runnable pass: decisions are already
+        // fixed (trees + luma recon from MD; chroma decisions are pure
+        // functions of the sources), so a second invocation reproduces the
+        // identical symbol stream — plus, when `lr` is set, the per-SB
+        // loop-restoration syntax C codes at the head of write_modes_sb
+        // (entropy_coding.c:5500-5521; decoder decode_partition,
+        // libaom decodeframe.c:1325-1341). The restoration search needs
+        // the post-CDEF recon, so the tile must be re-written AFTER
+        // deblock+CDEF when any plane signals wiener — C's pipeline order
+        // (rest_process before the EC kernel) gives it the same view.
+        let run_entropy_walk = |lr: Option<&crate::restoration::FrameRestInfo>| -> (
+            Vec<u8>,
+            crate::deblock::DeblockGeom,
+            Vec<u8>,
+            Vec<u8>,
+        ) {
+            let (mut u_recon, mut v_recon) = if chroma.is_some() {
+                (alloc::vec![128u8; cw * chh], alloc::vec![128u8; cw * chh])
+            } else {
+                (Vec::new(), Vec::new())
+            };
+            // Per-4x4 block/TX/skip geometry for the deblocking edge walk,
+            // recorded in coding order (== the decoder's parse order).
+            let mut deblock_geom = crate::deblock::DeblockGeom::new(w, h);
             let mut writer = svtav1_entropy::writer::AomWriter::new(n + 256);
             // CDF updates enabled — matches the frame header's disable_cdf_update=0
             let mut frame_ctx = svtav1_entropy::context::FrameContext::new_default();
@@ -524,6 +540,9 @@ impl EncodePipeline {
                 qindex: base_qindex,
                 c_quant: c_quant.as_deref(),
             });
+            // LR tap references reset at the tile start (C
+            // svt_av1_reset_loop_restoration, ec_process.c:199).
+            let mut lr_refs = crate::restoration::LrWalkRefs::default();
 
             debug_assert_eq!(
                 all_trees.len(),
@@ -548,6 +567,24 @@ impl EncodePipeline {
                     prev_sb_row = sb_row;
                 }
 
+                // Loop-restoration coefficients for every RU cornered in
+                // this SB — BEFORE the SB's partition tree, matching the
+                // decoder's read order.
+                if let Some(info) = lr {
+                    crate::restoration::write_lr_for_sb(
+                        &mut writer,
+                        &mut frame_ctx,
+                        info,
+                        &mut lr_refs,
+                        (by / 4) as i32,
+                        (bx / 4) as i32,
+                        (sb_size / 4) as i32,
+                        w,
+                        h,
+                        chroma.is_none(),
+                    );
+                }
+
                 encode_partition_tree(
                     tree,
                     &mut writer,
@@ -563,8 +600,14 @@ impl EncodePipeline {
                 );
             }
 
-            svtav1_entropy::obu::build_tile_group_single(writer.done())
+            (
+                svtav1_entropy::obu::build_tile_group_single(writer.done()),
+                deblock_geom,
+                u_recon,
+                v_recon,
+            )
         };
+        let (mut tile_data, deblock_geom, mut u_recon, mut v_recon) = run_entropy_walk(None);
 
         // Step 6a: Deblocking — pick the levels the frame header will
         // signal (C svt_av1_pick_filter_level_by_q closed form) and apply
@@ -676,6 +719,101 @@ impl EncodePipeline {
             &cdef_params,
         );
 
+        // Step 6a'': Wiener loop restoration — C order deblock -> CDEF ->
+        // LR. The C-exact search (restoration_seg_search +
+        // rest_finish_search at the allintra wn_filter controls) picks
+        // per-RU taps against the POST-CDEF recon; when any plane signals
+        // RESTORE_WIENER the tile is RE-walked with the per-SB lr syntax
+        // (the flag+taps precede the first partition symbol, so the whole
+        // arithmetic stream shifts — exactly like C, whose EC kernel runs
+        // after rest_process), the FH carries the real lr_params, and the
+        // output copy gets the decoder-exact stripe-boundary filter pass
+        // (svt_av1_loop_restoration_filter_frame). Prediction sources are
+        // untouched — the decoder's split.
+        let mut lr_signal = svtav1_entropy::obu::LrSignal::none(seq_tools.enable_restoration);
+        if is_key && seq_tools.enable_restoration {
+            let ctrls = crate::restoration::wn_filter_ctrls_allintra(self.speed_config.preset);
+            if ctrls.enabled {
+                let rdmult = crate::pd0::kf_full_lambda_8bit_unweighted(base_qindex) as i64;
+                let (su, sv) = chroma.unwrap_or((&[][..], &[][..]));
+                let rest_info = crate::restoration::search_restoration_still(
+                    &ctrls,
+                    &encode_input,
+                    su,
+                    sv,
+                    &recon,
+                    &u_recon,
+                    &v_recon,
+                    w,
+                    h,
+                    chroma.is_some(),
+                    rdmult,
+                );
+                #[cfg(feature = "std")]
+                if std::env::var_os("SVTAV1_DUMP_LR").is_some() {
+                    for (p, pr) in rest_info.planes.iter().enumerate() {
+                        eprintln!(
+                            "LR plane={p} frame_rtype={} units={:?}",
+                            pr.frame_rtype,
+                            pr.units
+                                .iter()
+                                .map(|u| (u.rtype, u.wiener.vfilter, u.wiener.hfilter))
+                                .collect::<alloc::vec::Vec<_>>()
+                        );
+                    }
+                }
+                if rest_info.any_non_none() {
+                    // Tile pass 2: identical symbol stream + LR syntax.
+                    let (tile_lr, _geom2, u2, v2) = run_entropy_walk(Some(&rest_info));
+                    debug_assert_eq!(u2, u_recon, "re-walk chroma recon must be identical");
+                    debug_assert_eq!(v2, v_recon, "re-walk chroma recon must be identical");
+                    tile_data = tile_lr;
+
+                    // Decoder-exact application to the output copy: stripe
+                    // boundaries from the post-deblock (pre-CDEF) and
+                    // post-CDEF planes (dlf_process.c:134 after_cdef=0,
+                    // cdef_process.c:707 after_cdef=1).
+                    let (pre_y, pre_u, pre_v) = self
+                        .last_recon_pre_cdef
+                        .as_ref()
+                        .expect("pre-CDEF recon captured above");
+                    let bounds = crate::restoration::save_lr_boundaries(
+                        pre_y,
+                        pre_u,
+                        pre_v,
+                        &recon,
+                        &u_recon,
+                        &v_recon,
+                        w,
+                        h,
+                        chroma.is_some(),
+                    );
+                    crate::restoration::apply_restoration_frame(
+                        &mut recon,
+                        &mut u_recon,
+                        &mut v_recon,
+                        w,
+                        h,
+                        chroma.is_some(),
+                        &rest_info,
+                        &bounds,
+                    );
+                }
+                lr_signal = svtav1_entropy::obu::LrSignal {
+                    enabled: true,
+                    frame_types: [
+                        rest_info.planes[0].frame_rtype,
+                        rest_info.planes[1].frame_rtype,
+                        rest_info.planes[2].frame_rtype,
+                    ],
+                    unit_size: rest_info.planes[0].unit_size as u16,
+                    // C: rst_info[1].size != rst_info[0].size — always
+                    // equal (set_restoration_unit_size s = 0).
+                    uv_size_differs: false,
+                };
+            }
+        }
+
         // Step 6b: Film grain estimation (compare source to reconstruction)
         let _grain_params = crate::film_grain::estimate_film_grain(&encode_input, &recon, w, h, w);
         // grain_params would be signaled in the frame header OBU
@@ -704,7 +842,7 @@ impl EncodePipeline {
             // base_qindex is the SAME value used for quantization, CDF
             // bucket selection and the deblock picker above — the decoder's
             // dequant/CDF init must match the encoder's exactly.
-            let fh_bytes = svtav1_entropy::obu::write_key_frame_header_full(
+            let fh_bytes = svtav1_entropy::obu::write_key_frame_header_full_lr(
                 self.width,
                 self.height,
                 base_qindex,
@@ -718,9 +856,11 @@ impl EncodePipeline {
                 // like the deblock levels, signaling and application MUST
                 // agree or the recon desyncs from every conforming decoder.
                 cdef_params.signal(),
-                // MUST equal the SH's enable_restoration bit (spec 5.9.20
-                // gates lr_params on it) — same SeqTools the SH got.
-                seq_tools.enable_restoration,
+                // lr_params: `enabled` MUST equal the SH's
+                // enable_restoration bit (spec 5.9.20 gates on it — same
+                // SeqTools the SH got); the per-plane types/taps are the
+                // ones the tile signals and the output recon had applied.
+                &lr_signal,
             );
             // tile_data is already a complete tile_group (with TG header)
             let mut frame_payload = alloc::vec::Vec::new();

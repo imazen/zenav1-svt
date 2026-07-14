@@ -1,0 +1,48 @@
+Svt[info]: -------------------------------------------
+Svt[info]: SVT [version]:	SVT-AV1 Encoder Lib v4.2.0rc
+Svt[info]: SVT [build]  :	GCC 15.2.0	 64 bit
+Svt[info]: LIB Build date: Jul 14 2026 01:02:38
+Svt[info]: -------------------------------------------
+Svt[warn]: TPL is disabled for all-intra coding
+Svt[info]: Level of Parallelism: 1
+Svt[info]: Number of PPCS 4
+Svt[info]: [asm level on system : up to avx512icl]
+Svt[info]: [asm level selected : up to avx512icl]
+Svt[info]: -------------------------------------------
+Svt[info]: SVT [config]: main profile	tier (auto)	level (auto)
+Svt[info]: SVT [config]: width / height / fps numerator / fps denominator 		: 64 / 64 / 30 / 1
+Svt[info]: SVT [config]: bit-depth / color format 					: 8 / YUV420
+Svt[info]: SVT [config]: preset / tune / pred struct 					: 6 / PSNR / all intra
+Svt[info]: SVT [config]: gop size / mini-gop size / key-frame type 			: 1 / 4 / key frame
+Svt[info]: SVT [config]: BRC mode / CQP Assignment 					: CQP / 55.00 
+Svt[info]: SVT [config]: AQ mode / Variance Boost 					: 0 / 0
+Svt[info]: SVT [config]: sharpness / luminance-based QP bias 				: 0 / 0
+Svt[info]: SVT [config]: QP scale compress strength 					: 0
+Svt[info]: SVT [config]: High Bit Depth Mode Decision setting 					: -1
+Svt[info]: -------------------------------------------
+LRNONE plane=0 unit=0 lim=[0,64,0,64] sse=671191
+LRWNSOLVE plane=0 unit=0 win=5 vd=[5127,-12156,79594,-12156,5127,14614754,14221531] hd=[-4288,13088,47936,13088,-4288,15335650,15991025] v=[0,8,-17,18,-17,8,0] h=[0,-8,26,-36,26,-8,0]
+LRWNSCORE plane=0 unit=0 score=-1503
+LRWNSEG plane=0 unit=0 sse_wn=670249 v=[0,8,-17,18,-17,8,0] h=[0,-8,26,-36,26,-8,0]
+LRNONE plane=1 unit=0 lim=[0,32,0,32] sse=0
+LRWNSOLVE plane=1 unit=0 win=5 vd=[-3584,7680,54272,7680,-3584,14614754,14221531] hd=[-3584,7680,54272,7680,-3584,15335650,15991025] v=[0,-7,15,-16,15,-7,0] h=[0,-7,15,-16,15,-7,0]
+LRWNSCORE plane=1 unit=0 score=0
+LRWNSEG plane=1 unit=0 sse_wn=0 v=[0,-7,15,-16,15,-7,0] h=[0,-7,15,-16,15,-7,0]
+LRNONE plane=2 unit=0 lim=[0,32,0,32] sse=0
+LRWNSOLVE plane=2 unit=0 win=5 vd=[-3584,7680,54272,7680,-3584,14614754,14221531] hd=[-3584,7680,54272,7680,-3584,15335650,15991025] v=[0,-7,15,-16,15,-7,0] h=[0,-7,15,-16,15,-7,0]
+LRWNSCORE plane=2 unit=0 score=0
+LRWNSEG plane=2 unit=0 sse_wn=0 v=[0,-7,15,-16,15,-7,0] h=[0,-7,15,-16,15,-7,0]
+LRTYPE plane=0 rtype=0 bits=0 sse=671191 cost=85912448.000000
+LRWNFIN plane=0 unit=0 win=5 sse_none=671191 sse_wn=670249 bits_none=768 bits_wn=13120 cnt_bits=25 rdmult=1303771 cost_none=86034676.531250 cost_wn=87879942.742188 pick=0 refv=[3,-7,15] refh=[3,-7,15]
+LRTYPE plane=0 rtype=1 bits=768 sse=671191 cost=86034676.531250
+LRBEST plane=0 frame_rtype=0 ntiles=1
+LRTYPE plane=1 rtype=0 bits=0 sse=0 cost=0.000000
+LRWNFIN plane=1 unit=0 win=5 sse_none=0 sse_wn=0 bits_none=768 bits_wn=7488 cnt_bits=14 rdmult=1303771 cost_none=122228.531250 cost_wn=1191728.179688 pick=0 refv=[3,-7,15] refh=[3,-7,15]
+LRTYPE plane=1 rtype=1 bits=768 sse=0 cost=122228.531250
+LRBEST plane=1 frame_rtype=0 ntiles=1
+LRTYPE plane=2 rtype=0 bits=0 sse=0 cost=0.000000
+LRWNFIN plane=2 unit=0 win=5 sse_none=0 sse_wn=0 bits_none=768 bits_wn=7488 cnt_bits=14 rdmult=1303771 cost_none=122228.531250 cost_wn=1191728.179688 pick=0 refv=[3,-7,15] refh=[3,-7,15]
+LRTYPE plane=2 rtype=1 bits=768 sse=0 cost=122228.531250
+LRBEST plane=2 frame_rtype=0 ntiles=1
+capture_c_trace: packet 1: 65 bytes, pts=0, flags=0x4
+capture_c_trace: wrote 65 bytes (1 packets) to /tmp/lrcap/gradient_64x64_q55_p6.obu
