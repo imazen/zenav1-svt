@@ -30,6 +30,26 @@ svtav1-cuda = { path = "crates/svtav1-cuda" }
 archmage = "0.9"
 magetypes = "0.9"
 
+# Iteration-time balance: opt-level 2 compiles markedly faster than opt-3
+# while keeping the encode/decode gates and codec tests fast at runtime
+# (the gates are entropy-walk + external-decoder bound, not raw-DSP bound,
+# so opt-2 vs opt-3 is a wash at run time but a clear win at build time).
+# Bit-exactness is unaffected: Rust does not auto-contract a*b+c into FMA
+# without target-feature=+fma, so integer/float results are identical
+# across opt-levels (identity matrix re-verified at opt-2). Dependencies
+# stay at full opt (compiled once, rarely rebuilt).
+[profile.release]
+opt-level = 2
+
+[profile.test]
+opt-level = 2
+
+[profile.test.package."*"]
+opt-level = 3
+
+[profile.release.package."*"]
+opt-level = 3
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 
