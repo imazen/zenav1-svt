@@ -1,0 +1,14 @@
+# identity_matrix full sweep — M5 leaf funnel session close-out
+# date: 2026-07-14 (UTC)
+# commit: fd95e9fb5 (+ this meta/tsv commit)
+# host: dev-32gb
+# cmd: IM_PRESETS="0 1 2 3 4 5 6 7 8 9 10" bash tools/identity_matrix.sh 2026-07-14
+# grid: {uniform, gradient} x {64, 128} x cli_qp {20, 40, 55} x presets 0-10 = 132 cells
+# C baseline: SVT-AV1 v4.2.0-rc (repo-root Bin/Release, unmodified)
+# result: 102/132 byte-identical
+#   presets 5-10: 72/72 (every cell; preset 5 closed this session: uniform 6/6 + gradient 6/6)
+#   presets 0-4: 30/60 — every uniform cell identical; all 30 gradient cells
+#   diverge (29 first-diverge at FH filter params, 1 at tile: g128 q55 p3),
+#   all recon cascades of the unported M0-M4 leaf decision layer
+#   (intra_level 1, NSQ search at M0-M3, 4x4 at M0-M3, PD0_LVL_0 at M0/M1,
+#   bypass_encdec=0 at M0-M3, cfl_level 1 at M0 — docs/IDENTITY-STATUS.md).
