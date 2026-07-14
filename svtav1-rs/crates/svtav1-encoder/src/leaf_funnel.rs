@@ -1089,8 +1089,11 @@ pub(crate) fn decide_leaf(
     } else {
         for mode in 0..=cfg.mode_end {
             let directional = matches!(mode, 1..=8);
-            if directional && cfg.angular_level >= 4 {
-                continue; // directional_mode_skip_mask
+            // directional_mode_skip_mask at angular_pred_level >= 4 masks
+            // D45_PRED (3) .. D67_PRED (8) — V/H stay
+            // (inject_intra_candidates, mode_decision.c:3246-3250).
+            if matches!(mode, 3..=8) && cfg.angular_level >= 4 {
+                continue;
             }
             if directional && cfg.angular_level <= 2 && use_angle {
                 for d in -3i8..=3 {
