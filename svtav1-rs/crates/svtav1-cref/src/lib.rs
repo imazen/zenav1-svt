@@ -1177,6 +1177,83 @@ pub fn convolve8_vert(
     }
 }
 
+unsafe extern "C" {
+    fn ref_obmc_mask(length: i32, out: *mut u8);
+    fn ref_obmc_blend_above(
+        dst: *mut u8,
+        dst_stride: i32,
+        above: *const u8,
+        above_stride: i32,
+        w: i32,
+        overlap: i32,
+    );
+    fn ref_obmc_blend_left(
+        dst: *mut u8,
+        dst_stride: i32,
+        left: *const u8,
+        left_stride: i32,
+        overlap: i32,
+        h: i32,
+    );
+}
+
+/// Reference `svt_av1_get_obmc_mask(length)` (length in {1,2,4,8,16,32}).
+pub fn obmc_mask(length: usize) -> Vec<u8> {
+    let mut out = vec![0u8; length];
+    unsafe { ref_obmc_mask(length as i32, out.as_mut_ptr()) };
+    out
+}
+
+/// Reference OBMC "above" blend: `svt_aom_blend_a64_vmask_c(dst, dst, above,
+/// obmc_mask(overlap))` over the top `overlap` rows × `w` cols — the exact
+/// `build_obmc_inter_pred_above` reconstruction blend (dst = current pred).
+pub fn obmc_blend_above(
+    dst: &mut [u8],
+    dst_stride: usize,
+    above: &[u8],
+    above_stride: usize,
+    w: usize,
+    overlap: usize,
+) {
+    assert!((overlap - 1) * dst_stride + w <= dst.len());
+    assert!((overlap - 1) * above_stride + w <= above.len());
+    unsafe {
+        ref_obmc_blend_above(
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            above.as_ptr(),
+            above_stride as i32,
+            w as i32,
+            overlap as i32,
+        );
+    }
+}
+
+/// Reference OBMC "left" blend: `svt_aom_blend_a64_hmask_c(dst, dst, left,
+/// obmc_mask(overlap))` over `h` rows × the left `overlap` cols — the exact
+/// `build_obmc_inter_pred_left` reconstruction blend (dst = current pred).
+pub fn obmc_blend_left(
+    dst: &mut [u8],
+    dst_stride: usize,
+    left: &[u8],
+    left_stride: usize,
+    overlap: usize,
+    h: usize,
+) {
+    assert!((h - 1) * dst_stride + overlap <= dst.len());
+    assert!((h - 1) * left_stride + overlap <= left.len());
+    unsafe {
+        ref_obmc_blend_left(
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            left.as_ptr(),
+            left_stride as i32,
+            overlap as i32,
+            h as i32,
+        );
+    }
+}
+
 /// Reference `svt_av1_upsample_intra_edge_c` with the block edge at
 /// `p[origin..origin+sz]` (writes `p[origin-2..]`).
 pub fn upsample_intra_edge(p: &mut [u8], origin: usize, sz: usize) {

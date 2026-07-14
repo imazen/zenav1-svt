@@ -626,3 +626,32 @@ void ref_convolve8_vert(const uint8_t* src, int32_t src_stride, uint8_t* dst, in
     for (int p = 0; p < 16; ++p) memcpy(table[p], taps, 8 * sizeof(int16_t));
     svt_aom_convolve8_vert_c(src, src_stride, dst, dst_stride, NULL, -1, table[0], 16, w, h);
 }
+
+/* ---- OBMC blend (enc_inter_prediction.c build_obmc_inter_pred_{above,left}):
+   the reconstruction-side blend combines the current prediction (src0) with a
+   neighbor prediction (src1) using svt_av1_get_obmc_mask(overlap) via
+   svt_aom_blend_a64_{v,h}mask_c. AOM_BLEND_A64(m, v0, v1)=((m*v0+(64-m)*v1)+32)>>6.
+   'above' blends the top `overlap` rows (mask by row, vmask); 'left' blends the
+   left `overlap` cols (mask by col, hmask). ---- */
+const uint8_t* svt_av1_get_obmc_mask(int length);
+void svt_aom_blend_a64_vmask_c(uint8_t* dst, uint32_t dst_stride, const uint8_t* src0, uint32_t src0_stride,
+                               const uint8_t* src1, uint32_t src1_stride, const uint8_t* mask, int w, int h);
+void svt_aom_blend_a64_hmask_c(uint8_t* dst, uint32_t dst_stride, const uint8_t* src0, uint32_t src0_stride,
+                               const uint8_t* src1, uint32_t src1_stride, const uint8_t* mask, int w, int h);
+
+void ref_obmc_mask(int32_t length, uint8_t* out) {
+    const uint8_t* m = svt_av1_get_obmc_mask(length);
+    memcpy(out, m, (size_t)length);
+}
+
+void ref_obmc_blend_above(uint8_t* dst, int32_t dst_stride, const uint8_t* above, int32_t above_stride, int32_t w,
+                          int32_t overlap) {
+    const uint8_t* mask = svt_av1_get_obmc_mask(overlap);
+    svt_aom_blend_a64_vmask_c(dst, dst_stride, dst, dst_stride, above, above_stride, mask, w, overlap);
+}
+
+void ref_obmc_blend_left(uint8_t* dst, int32_t dst_stride, const uint8_t* left, int32_t left_stride, int32_t overlap,
+                         int32_t h) {
+    const uint8_t* mask = svt_av1_get_obmc_mask(overlap);
+    svt_aom_blend_a64_hmask_c(dst, dst_stride, dst, dst_stride, left, left_stride, mask, overlap, h);
+}
