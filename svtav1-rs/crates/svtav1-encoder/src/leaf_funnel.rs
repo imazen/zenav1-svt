@@ -181,6 +181,91 @@ pub struct FunnelFrame {
     /// Frame rdoq level (0 = quantize_b at MDS3 too).
     pub rdoq_level: u8,
     pub base_qindex: u8,
+    /// Per-preset intra-leaf config (M6 vs intra_level-7 M7/M8).
+    pub cfg: FunnelCfg,
+}
+
+/// Per-preset leaf-funnel configuration (allintra still, presets 6/7/8),
+/// verified against the instrumented C `svt_aom_sig_deriv_enc_dec_allintra`
+/// config dump (enc_mode_config.c:11294). All fields are pure functions of
+/// `enc_mode`; the M6 values reproduce the original hardcoded funnel exactly.
+#[derive(Clone, Copy, Debug)]
+pub struct FunnelCfg {
+    /// filter-intra candidate + `use_filter_intra` syntax (M6: on level 2;
+    /// M7/M8: `get_filter_intra_level_allintra` == 0 -> off).
+    pub filter_intra: bool,
+    /// `intra_ctrls.prune_using_best_mode` (M6: 0; M7/M8 intra_level 7: 1) —
+    /// the MDS0 order-dependent H/SMOOTH skip (product_coding_loop.c:1688).
+    pub prune_best_mode: bool,
+    /// `MD_STAGE_NICS_SCAL_NUM[nic_scaling_level]` stage-1/2/3 numerators
+    /// (M6 lvl6: 6/6/6; M7 lvl8: 4/4/4; M8 lvl15: 0/0/0). Base counts are
+    /// the I-slice class-0 {64,32,16} scaled by these / 16 then qp-scaled.
+    pub nic_num: (u64, u64, u64),
+    /// `mds1_cand_base_th_intra` (M6/M7: 1200; M8: 1).
+    pub mds1_cand_base_th: u64,
+    /// `mds1_cand_th_rank_factor` (3 for all three).
+    pub mds1_rank_factor: u64,
+    /// `mds2_cand_base_th` (M6/M7: 15; M8: 1).
+    pub mds2_cand_base_th: u64,
+    /// `mds2_relative_dev_th` (5 for all three).
+    pub mds2_rel_dev_th: u64,
+    /// `mds3_cand_base_th` (M6/M7: 15; M8: 1).
+    pub mds3_cand_base_th: u64,
+    /// `rate_est_ctrls.update_skip_ctx_dc_sign_ctx`/`update_skip_coeff_ctx`
+    /// (M6 rate_est 1: real neighbour contexts; M7/M8 rate_est 4: 0/0).
+    pub real_coeff_ctx: bool,
+    /// TX-size search on (M6/M7 txs_level 3) vs off (M8 txs_level 0 ->
+    /// depth 0 only).
+    pub txs_on: bool,
+}
+
+impl FunnelCfg {
+    /// C-exact per-preset derivation for the still/420 allintra path.
+    /// Presets 6/7/8 only (the funnel scope); other presets never
+    /// construct one.
+    pub fn for_preset(preset: u8) -> Self {
+        match preset {
+            6 => FunnelCfg {
+                filter_intra: true,
+                prune_best_mode: false,
+                nic_num: (6, 6, 6),
+                mds1_cand_base_th: 1200,
+                mds1_rank_factor: 3,
+                mds2_cand_base_th: 15,
+                mds2_rel_dev_th: 5,
+                mds3_cand_base_th: 15,
+                real_coeff_ctx: true,
+                txs_on: true,
+            },
+            7 => FunnelCfg {
+                filter_intra: false,
+                prune_best_mode: true,
+                nic_num: (4, 4, 4),
+                mds1_cand_base_th: 1200,
+                mds1_rank_factor: 3,
+                mds2_cand_base_th: 15,
+                mds2_rel_dev_th: 5,
+                mds3_cand_base_th: 15,
+                real_coeff_ctx: false,
+                txs_on: true,
+            },
+            // preset 8: nic_level 11 (scaling 15 -> nums 0/0/0 -> 1/1/1),
+            // all cand thresholds 1, enable_skipping_mds1 (n1==1 makes it a
+            // no-op for the pick), txs_level 0.
+            _ => FunnelCfg {
+                filter_intra: false,
+                prune_best_mode: true,
+                nic_num: (0, 0, 0),
+                mds1_cand_base_th: 1,
+                mds1_rank_factor: 3,
+                mds2_cand_base_th: 1,
+                mds2_rel_dev_th: 5,
+                mds3_cand_base_th: 1,
+                real_coeff_ctx: false,
+                txs_on: false,
+            },
+        }
+    }
 }
 
 /// C `RDCOST` (rd_cost.h:36).
@@ -201,16 +286,19 @@ fn qp_scale_factors(cli_qp: u32) -> (u64, u64) {
     (w as u64, d as u64)
 }
 
-/// NIC counts for I-slice class 0 at nic scaling level 6 (nums 6/6/6):
-/// `svt_aom_set_nics` (product_coding_loop.c:1347), base {64, 32, 16},
-/// qp-scaled with min 2.
-fn nic_counts(cli_qp: u32) -> (u32, u32, u32) {
+/// NIC counts for I-slice class 0 at the config's scaling nums:
+/// `svt_aom_set_nics` (product_coding_loop.c:1347), base {64, 32, 16}
+/// (MD_STAGE_NICS[I][C0] = 64, >>1, >>2), scaled by num/16 then qp-scaled.
+/// `min_nics = 2` when the stage's scaling num != 0 (I-slice pic_type < 2),
+/// else 1 — so nums 0/0/0 (nic level 15/M8) yield 1/1/1.
+fn nic_counts(cli_qp: u32, num: (u64, u64, u64)) -> (u32, u32, u32) {
     let (qw, qwd) = qp_scale_factors(cli_qp);
     let scale = |base: u64, num: u64| -> u32 {
-        let n = 2u64.max(div_round(base * num, 16));
-        2u64.max(div_round(n * qw, qwd)) as u32
+        let min = if num != 0 { 2u64 } else { 1u64 };
+        let n = min.max(div_round(base * num, 16));
+        min.max(div_round(n * qw, qwd)) as u32
     };
-    (scale(64, 6), scale(32, 6), scale(16, 6))
+    (scale(64, num.0), scale(32, num.1), scale(16, num.2))
 }
 
 // ---------------------------------------------------------------------------
@@ -263,13 +351,7 @@ fn predict_unit(
 
 /// C `hadamard_path` (product_coding_loop.c:1187): residual over
 /// min(32,dim)-capped tiles, aom Hadamard per tile, SATD accumulated.
-fn hadamard_satd(
-    src: &[u8],
-    src_stride: usize,
-    src_off: usize,
-    pred: &[u8],
-    size: usize,
-) -> u64 {
+fn hadamard_satd(src: &[u8], src_stride: usize, src_off: usize, pred: &[u8], size: usize) -> u64 {
     let tx = size.min(32);
     let mut satd: u64 = 0;
     let mut res = vec![0i16; tx * tx];
@@ -350,40 +432,36 @@ pub(crate) fn cost_coeffs_txb(
     let lit = 512i32; // av1_cost_literal(1)
     let eob_us = eob as usize;
 
-    let level_cost = |cost: &mut i32,
-                      pos: usize,
-                      v: i32,
-                      is_eob_pos: bool,
-                      is_dc: bool,
-                      levels_buf: &[u8]| {
-        let level = v.unsigned_abs() as i32;
-        let coeff_ctx = coeff_contexts[pos] as usize;
-        if is_eob_pos {
-            *cost += costs.base_eob_cost[coeff_ctx][(level.min(3) - 1) as usize];
-        } else {
-            *cost += costs.base_cost[coeff_ctx][level.min(3) as usize];
-        }
-        if v != 0 {
-            if is_dc {
-                let sign = usize::from(v < 0);
-                *cost += costs.dc_sign_cost[dc_sign_ctx][sign];
+    let level_cost =
+        |cost: &mut i32, pos: usize, v: i32, is_eob_pos: bool, is_dc: bool, levels_buf: &[u8]| {
+            let level = v.unsigned_abs() as i32;
+            let coeff_ctx = coeff_contexts[pos] as usize;
+            if is_eob_pos {
+                *cost += costs.base_eob_cost[coeff_ctx][(level.min(3) - 1) as usize];
             } else {
-                *cost += lit;
+                *cost += costs.base_cost[coeff_ctx][level.min(3) as usize];
             }
-            if level > cc::NUM_BASE_LEVELS {
-                let ctx = cc::br_ctx(levels_buf, pos, bwl, tx_class);
-                let base_range = level - 1 - cc::NUM_BASE_LEVELS;
-                if base_range < cc::COEFF_BASE_RANGE {
-                    *cost += costs.lps_cost[ctx][base_range as usize];
+            if v != 0 {
+                if is_dc {
+                    let sign = usize::from(v < 0);
+                    *cost += costs.dc_sign_cost[dc_sign_ctx][sign];
                 } else {
-                    *cost += costs.lps_cost[ctx][cc::COEFF_BASE_RANGE as usize];
+                    *cost += lit;
                 }
-                if level >= 1 + cc::NUM_BASE_LEVELS + cc::COEFF_BASE_RANGE {
-                    *cost += crate::quant::golomb_cost(level);
+                if level > cc::NUM_BASE_LEVELS {
+                    let ctx = cc::br_ctx(levels_buf, pos, bwl, tx_class);
+                    let base_range = level - 1 - cc::NUM_BASE_LEVELS;
+                    if base_range < cc::COEFF_BASE_RANGE {
+                        *cost += costs.lps_cost[ctx][base_range as usize];
+                    } else {
+                        *cost += costs.lps_cost[ctx][cc::COEFF_BASE_RANGE as usize];
+                    }
+                    if level >= 1 + cc::NUM_BASE_LEVELS + cc::COEFF_BASE_RANGE {
+                        *cost += crate::quant::golomb_cost(level);
+                    }
                 }
             }
-        }
-    };
+        };
 
     if eob_us == 1 {
         level_cost(&mut cost, 0, qcoeff[0], true, true, &levels_buf);
@@ -593,8 +671,7 @@ fn tx_unit(
         for r in 0..h {
             let prow = pred_off + r * pred_stride;
             for c in 0..w {
-                recon[r * w + c] =
-                    (pred[prow + c] as i32 + inv[r * w + c]).clamp(0, 255) as u8;
+                recon[r * w + c] = (pred[prow + c] as i32 + inv[r * w + c]).clamp(0, 255) as u8;
             }
         }
     } else {
@@ -677,8 +754,22 @@ use crate::quant::TX_SCALE_TAB;
 const TX_TYPE_FROM_C: [svtav1_types::transform::TxType; 16] = {
     use svtav1_types::transform::TxType::*;
     [
-        DctDct, AdstDct, DctAdst, AdstAdst, FlipAdstDct, DctFlipAdst, FlipAdstFlipAdst,
-        AdstFlipAdst, FlipAdstAdst, Idtx, VDct, HDct, VAdst, HAdst, VFlipAdst, HFlipAdst,
+        DctDct,
+        AdstDct,
+        DctAdst,
+        AdstAdst,
+        FlipAdstDct,
+        DctFlipAdst,
+        FlipAdstFlipAdst,
+        AdstFlipAdst,
+        FlipAdstAdst,
+        Idtx,
+        VDct,
+        HDct,
+        VAdst,
+        HAdst,
+        VFlipAdst,
+        HFlipAdst,
     ]
 };
 
@@ -800,25 +891,88 @@ pub(crate) fn decide_leaf(
     let qt = crate::quant::build_quant_table(frame.base_qindex);
 
     // -- Block-level contexts (svt_aom_coding_loop_context_generation) --
+    // Intra-mode and tx-size contexts are always neighbour-derived; the
+    // skip_coeff context is only real when `update_skip_coeff_ctx` is set
+    // (rate_est_level 1 at M6). M7/M8 (rate_est_level 4) price it at ctx 0.
     let above_ctx = fx.ectx.above_mode_ctx(abs_x);
     let left_ctx = fx.ectx.left_mode_ctx(abs_y);
-    let skip_ctx = fx.ectx.skip_ctx(abs_x, abs_y);
+    let skip_ctx = if fx.frame.cfg.real_coeff_ctx {
+        fx.ectx.skip_ctx(abs_x, abs_y)
+    } else {
+        0
+    };
     let fi_allowed_bsize = w <= 32 && h <= 32;
     let bsize_idx = svtav1_entropy::context::block_size_index(w, h);
     let cfl_allowed = usize::from(w <= 32 && h <= 32);
     let use_angle = !matches!((w, h), (4, 4) | (4, 8) | (8, 4));
 
-    // -- Candidate injection (DC, V, H, SMOOTH, then FILTER_DC) --
-    let mut cands: Vec<Cand> = Vec::with_capacity(5);
-    let mut push = |mode: u8, fi: u8| {
+    // -- Candidate injection + MDS0 (DC, V, H, SMOOTH, then FILTER_DC) --
+    // Filter-intra candidate only when the tool is enabled at this preset
+    // (M6 filter_intra level 2; M7/M8 level 0 -> off). C injection order:
+    // regular intra modes (inject_intra_candidates, mode_decision.c:3236),
+    // then filter-intra (inject_filter_intra_candidates).
+    let cfg = frame.cfg;
+    let fi_elig = cfg.filter_intra && fi_allowed_bsize;
+    let mut cand_modes: Vec<(u8, u8)> =
+        alloc::vec![(0, FI_NONE), (1, FI_NONE), (2, FI_NONE), (9, FI_NONE)];
+    if fi_elig {
+        cand_modes.push((0, 0)); // FILTER_DC_PRED
+    }
+
+    let mut cands: Vec<Cand> = Vec::with_capacity(cand_modes.len());
+    // MDS0 with `prune_using_best_mode` (product_coding_loop.c:1680-1737):
+    // candidates are evaluated in injection order; the running best REGULAR
+    // (class-0, non-filter-intra) mode by fast cost is tracked and used to
+    // SKIP later candidates — H when V is currently best, SMOOTH when DC is
+    // still best. Skipped candidates never get a fast cost (never enter the
+    // pool). At M6 (prune off) every candidate is evaluated, identical to
+    // the original funnel.
+    let mut best_reg_cost = u64::MAX;
+    let mut best_reg_mode: i32 = -1;
+    for &(mode, fi) in &cand_modes {
+        if cfg.prune_best_mode && fi == FI_NONE {
+            // intra_mode_end SMOOTH >= H_PRED, so the gate is armed.
+            if mode == 2 && best_reg_mode == 1 {
+                continue; // V better than DC -> skip H
+            }
+            if mode == 9 && best_reg_mode == 0 {
+                continue; // DC still best -> skip SMOOTH
+            }
+        }
+        let uv = uv_from_y(if fi != FI_NONE { 0 } else { mode });
+        let mut pred = vec![0u8; w * h];
+        predict_unit(y_recon, y_stride, abs_x, abs_y, w, h, mode, fi, &mut pred);
+        let satd = hadamard_satd(y_src, y_src_stride, y_src_off, &pred, size);
+
+        let mut flr = rates.kf_y[above_ctx][left_ctx][mode as usize] as u64;
+        if use_angle && matches!(mode, 1..=8) {
+            flr += rates.angle[mode as usize - 1][3] as u64;
+        }
+        if fi_elig && mode == 0 {
+            flr += rates.fi_flag[bsize_idx][usize::from(fi != FI_NONE)] as u64;
+            if fi != FI_NONE {
+                flr += rates.fi_mode[fi as usize] as u64;
+            }
+        }
+        let mut fcr = rates.uv[cfl_allowed][mode as usize][uv as usize] as u64;
+        if use_angle && matches!(uv, 1..=8) {
+            fcr += rates.angle[uv as usize - 1][3] as u64;
+        }
+        let fast_cost = rdcost(lambda, flr + fcr, satd << 4);
+        // C updates best_reg_intra_mode after fast_loop_core for regular
+        // class-0 candidates when prune is armed (line 1727).
+        if cfg.prune_best_mode && fi == FI_NONE && fast_cost < best_reg_cost {
+            best_reg_cost = fast_cost;
+            best_reg_mode = mode as i32;
+        }
         cands.push(Cand {
             mode,
             fi,
-            uv: uv_from_y(if fi != FI_NONE { 0 } else { mode }),
-            pred: Vec::new(),
-            flr: 0,
-            fcr: 0,
-            fast_cost: u64::MAX,
+            uv,
+            pred,
+            flr,
+            fcr,
+            fast_cost,
             full_cost: u64::MAX,
             mds1_has_coeff: false,
             tx_depth: 0,
@@ -840,42 +994,8 @@ pub(crate) fn decide_leaf(
             mds3_cost: u64::MAX,
             block_has_coeff: false,
         });
-    };
-    for m in [0u8, 1, 2, 9] {
-        push(m, FI_NONE);
-    }
-    if fi_allowed_bsize {
-        push(0, 0); // FILTER_DC_PRED
     }
     let ncand = cands.len();
-
-    // -- MDS0: prediction + Hadamard SATD + fast cost --
-    for cand in cands.iter_mut() {
-        let mut pred = vec![0u8; w * h];
-        predict_unit(
-            y_recon, y_stride, abs_x, abs_y, w, h, cand.mode, cand.fi, &mut pred,
-        );
-        let satd = hadamard_satd(y_src, y_src_stride, y_src_off, &pred, size);
-
-        let mut flr = rates.kf_y[above_ctx][left_ctx][cand.mode as usize] as u64;
-        if use_angle && matches!(cand.mode, 1..=8) {
-            flr += rates.angle[cand.mode as usize - 1][3] as u64;
-        }
-        if fi_allowed_bsize && cand.mode == 0 {
-            flr += rates.fi_flag[bsize_idx][usize::from(cand.fi != FI_NONE)] as u64;
-            if cand.fi != FI_NONE {
-                flr += rates.fi_mode[cand.fi as usize] as u64;
-            }
-        }
-        let mut fcr = rates.uv[cfl_allowed][cand.mode as usize][cand.uv as usize] as u64;
-        if use_angle && matches!(cand.uv, 1..=8) {
-            fcr += rates.angle[cand.uv as usize - 1][3] as u64;
-        }
-        cand.pred = pred;
-        cand.flr = flr;
-        cand.fcr = fcr;
-        cand.fast_cost = rdcost(lambda, flr + fcr, satd << 4);
-    }
 
     // -- Sort by fast cost (stable == C's strict-less bubble) --
     let mut order: Vec<usize> = (0..ncand).collect();
@@ -883,9 +1003,9 @@ pub(crate) fn decide_leaf(
     let mds0_best_idx = order[0];
 
     // -- post_mds0_nic_pruning (product_coding_loop.c:8045) --
-    let (nic1, nic2, nic3) = nic_counts(frame.cli_qp);
+    let (nic1, nic2, nic3) = nic_counts(frame.cli_qp, cfg.nic_num);
     let (qw, qwd) = qp_scale_factors(frame.cli_qp);
-    let mds1_cand_th = div_round(1200 * qw, qwd);
+    let mds1_cand_th = div_round(cfg.mds1_cand_base_th * qw, qwd);
     let mut n1 = (ncand as u32).min(nic1) as usize;
     {
         let best = cands[order[0]].fast_cost;
@@ -893,8 +1013,7 @@ pub(crate) fn decide_leaf(
         if best > 0 {
             while count < n1 {
                 let dev = (cands[order[count]].fast_cost - best) * 100 / best;
-                // rank factor 3 (mds1_cand_th_rank_factor, nic level 6)
-                if dev >= mds1_cand_th / (3 * count as u64) {
+                if dev >= mds1_cand_th / (cfg.mds1_rank_factor * count as u64) {
                     break;
                 }
                 count += 1;
@@ -906,8 +1025,12 @@ pub(crate) fn decide_leaf(
     // -- MDS1: luma-only full loop (freq dist, quantize_b, DCT, depth 0) --
     for &ci in order.iter().take(n1) {
         let cand = &mut cands[ci];
-        let (above, left) = fx.ectx.coeff_neighbors(abs_x, abs_y, w, h);
-        let (txb_skip_ctx, dc_sign_ctx) = cc::get_txb_ctx(0, above, left, true, false);
+        let (txb_skip_ctx, dc_sign_ctx) = if cfg.real_coeff_ctx {
+            let (above, left) = fx.ectx.coeff_neighbors(abs_x, abs_y, w, h);
+            cc::get_txb_ctx(0, above, left, true, false)
+        } else {
+            (0, 0)
+        };
         let out = tx_unit(
             y_src,
             y_src_stride,
@@ -947,7 +1070,7 @@ pub(crate) fn decide_leaf(
     let mds1_best_idx = order1[0];
 
     // -- post_mds1_nic_pruning (:8111) --
-    let mds2_cand_th = div_round(15 * qw, qwd);
+    let mds2_cand_th = div_round(cfg.mds2_cand_base_th * qw, qwd);
     let mut n2 = (n1 as u32).min(nic2) as usize;
     {
         let best = cands[order1[0]].full_cost;
@@ -960,8 +1083,9 @@ pub(crate) fn decide_leaf(
             }
             let mut prev_dev = (cands[order1[count]].full_cost - best) * 100 / best;
             let mut dev = prev_dev;
-            // mds2_relative_dev_th = 5
-            while dev <= prev_dev + 5 && dev < mds2_cand_th / (rank_factor * count as u64) {
+            while dev <= prev_dev + cfg.mds2_rel_dev_th
+                && dev < mds2_cand_th / (rank_factor * count as u64)
+            {
                 count += 1;
                 if count >= n2 {
                     break;
@@ -975,7 +1099,7 @@ pub(crate) fn decide_leaf(
 
     // -- post_mds2_nic_pruning (:8189) on the SAME MDS1 costs (MDS2
     //    bypassed at staging mode 1) --
-    let mds3_cand_th = div_round(15 * qw, qwd);
+    let mds3_cand_th = div_round(cfg.mds3_cand_base_th * qw, qwd);
     let mut n3 = (n2 as u32).min(nic3) as usize;
     {
         let best = cands[order1[0]].full_cost;
@@ -994,7 +1118,8 @@ pub(crate) fn decide_leaf(
 
     // -- MDS3: full loop with TXS + TXT + RDOQ + spatial SSE + chroma --
     let do_rdoq = frame.rdoq_level > 0;
-    let end_depth = end_tx_depth(size);
+    // txs_level 0 (M8) -> depth 0 only; txs_level 3 (M6/M7) -> get_end_tx_depth.
+    let end_depth = if cfg.txs_on { end_tx_depth(size) } else { 0 };
     let cw = w / 2;
     let chh = h / 2;
     let ccx = abs_x / 2;
@@ -1064,15 +1189,14 @@ pub(crate) fn decide_leaf(
                         &mut txb_pred,
                     );
                 }
-                // Per-txb contexts from the TX-local overlay.
-                let (tsc, dsc) = txb_ctx_from_spans(
-                    &loc_above,
-                    &loc_left,
-                    tx_x,
-                    tx_y,
-                    tx,
-                    depth == 0,
-                );
+                // Per-txb contexts from the TX-local overlay (real at M6;
+                // 0/0 at M7/M8 where update_skip_ctx_dc_sign_ctx == 0, so
+                // cul_level never accumulates — full_loop.c:1880).
+                let (tsc, dsc) = if cfg.real_coeff_ctx {
+                    txb_ctx_from_spans(&loc_above, &loc_left, tx_x, tx_y, tx, depth == 0)
+                } else {
+                    (0, 0)
+                };
                 // TXT search over this txb.
                 let intra_dir = if cand.fi != FI_NONE {
                     FIMODE_TO_INTRADIR[cand.fi as usize] as usize
@@ -1151,10 +1275,26 @@ pub(crate) fn decide_leaf(
         let mut u_pred = vec![0u8; cw * chh];
         let mut v_pred = vec![0u8; cw * chh];
         predict_unit(
-            fx.u_recon, fx.c_stride, ccx, ccy, cw, chh, cand.uv, FI_NONE, &mut u_pred,
+            fx.u_recon,
+            fx.c_stride,
+            ccx,
+            ccy,
+            cw,
+            chh,
+            cand.uv,
+            FI_NONE,
+            &mut u_pred,
         );
         predict_unit(
-            fx.v_recon, fx.c_stride, ccx, ccy, cw, chh, cand.uv, FI_NONE, &mut v_pred,
+            fx.v_recon,
+            fx.c_stride,
+            ccx,
+            ccy,
+            cw,
+            chh,
+            cand.uv,
+            FI_NONE,
+            &mut v_pred,
         );
         // Chroma complexity detector (chroma_complexity_check_pred,
         // product_coding_loop.c:6095) — its only funnel-visible effect at
@@ -1185,9 +1325,11 @@ pub(crate) fn decide_leaf(
         // stream.
         let _ = cfl_would_run;
 
-        let (cb_tsc, cb_dsc) = {
+        let (cb_tsc, cb_dsc) = if cfg.real_coeff_ctx {
             let (a, l) = fx.ectx.coeff_neighbors_uv(0, ccx, ccy, cw, chh);
             cc::get_txb_ctx(1, a, l, true, false)
+        } else {
+            (0, 0)
         };
         let u_out = tx_unit(
             fx.u_src,
@@ -1209,9 +1351,11 @@ pub(crate) fn decide_leaf(
             do_rdoq,
             true,
         );
-        let (cr_tsc, cr_dsc) = {
+        let (cr_tsc, cr_dsc) = if cfg.real_coeff_ctx {
             let (a, l) = fx.ectx.coeff_neighbors_uv(1, ccx, ccy, cw, chh);
             cc::get_txb_ctx(1, a, l, true, false)
+        } else {
+            (0, 0)
         };
         let v_out = tx_unit(
             fx.v_src,
@@ -1236,14 +1380,33 @@ pub(crate) fn decide_leaf(
 
         // ---- svt_aom_full_cost (rd_cost.c:1357) ----
         let block_has_coeff = best_coeff_count > 0 || u_out.eob > 0 || v_out.eob > 0;
-        let tx_size_bits_final =
-            rates.tx_size[tsz_cat][tsz_ctx][best_depth as usize] as u64;
+        let tx_size_bits_final = rates.tx_size[tsz_cat][tsz_ctx][best_depth as usize] as u64;
+        // Chroma coeff rate: M6 (coeff_rate_est_lvl 1) prices the real
+        // cost_coeffs_txb / cost_skip_txb (already in u_out.bits/v_out.bits).
+        // M7/M8 (coeff_rate_est_lvl 2, OPT_APPROX_COEFF_RATE) use the
+        // eob-based chroma approximation (`skip_chroma_rate_est`,
+        // full_loop.c:1922): th = (tx_w_uv * tx_h_uv) >> 6; eob == 0 -> 0,
+        // eob < th -> 3000 + eob*500, eob >= th -> full estimation.
+        let (u_bits, v_bits) = if cfg.real_coeff_ctx {
+            (u_out.bits as u64, v_out.bits as u64)
+        } else {
+            let uv_th = ((cw * chh) >> 6) as u16;
+            let approx = |eob: u16, full: u64| -> u64 {
+                if eob == 0 {
+                    0
+                } else if eob < uv_th {
+                    3000 + eob as u64 * 500
+                } else {
+                    full
+                }
+            };
+            (
+                approx(u_out.eob, u_out.bits as u64),
+                approx(v_out.eob, v_out.bits as u64),
+            )
+        };
         let coeff_rate = if block_has_coeff {
-            best_bits
-                + u_out.bits as u64
-                + v_out.bits as u64
-                + tx_size_bits_final
-                + rates.skip[skip_ctx][0] as u64
+            best_bits + u_bits + v_bits + tx_size_bits_final + rates.skip[skip_ctx][0] as u64
         } else {
             rates.skip[skip_ctx][1] as u64 + tx_size_bits_final
         };
@@ -1296,7 +1459,8 @@ pub(crate) fn decide_leaf(
     fx.ectx.record_block(abs_x, abs_y, w, h, cand.mode, skip);
     // set_txfm_ctxs with the CHOSEN tx dims (mode_decision_update:246-256).
     let chosen_tx = size >> cand.tx_depth;
-    fx.ectx.record_txfm_dims(abs_x, abs_y, w, h, chosen_tx, chosen_tx);
+    fx.ectx
+        .record_txfm_dims(abs_x, abs_y, w, h, chosen_tx, chosen_tx);
     // Per-txb luma cul bytes; chroma culs over the chroma span.
     let txbs = if cand.tx_depth == 0 { 1usize } else { 4 };
     let tx = size >> cand.tx_depth;
@@ -1455,7 +1619,9 @@ fn predict_unit_overlay(
         return;
     }
     match mode {
-        0 => svtav1_dsp::intra_pred::predict_dc(dst, tx, &above, &left, tx, tx, has_above, has_left),
+        0 => {
+            svtav1_dsp::intra_pred::predict_dc(dst, tx, &above, &left, tx, tx, has_above, has_left)
+        }
         1 => svtav1_dsp::intra_pred::predict_v(dst, tx, &above, tx, tx),
         2 => svtav1_dsp::intra_pred::predict_h(dst, tx, &left, tx, tx),
         9 => svtav1_dsp::intra_pred::predict_smooth(dst, tx, &above, &left, tx, tx),
@@ -1537,10 +1703,10 @@ fn txt_search(
     ];
     const TX_TYPE_GROUPS: [&[usize]; 6] = [
         &[cc::DCT_DCT],
-        &[10, 11],    // V_DCT, H_DCT
-        &[3],         // ADST_ADST
-        &[1, 2],      // ADST_DCT, DCT_ADST
-        &[6, 9],      // FLIPADST_FLIPADST, IDTX
+        &[10, 11], // V_DCT, H_DCT
+        &[3],      // ADST_ADST
+        &[1, 2],   // ADST_DCT, DCT_ADST
+        &[6, 9],   // FLIPADST_FLIPADST, IDTX
         &[4, 5, 7, 8, 12, 13, 14, 15],
     ];
 
@@ -1567,9 +1733,7 @@ fn txt_search(
                 // txt_rate_cost_th = 100: skip types whose signalling
                 // rate alone exceeds the DCT cost fraction.
                 let tx_type_rate = rates.txt_rate(c_tx, intra_dir, tx_type) as u64;
-                if dct_cost != u64::MAX
-                    && rdcost(lambda, tx_type_rate, 0) * 1000 > dct_cost * 100
-                {
+                if dct_cost != u64::MAX && rdcost(lambda, tx_type_rate, 0) * 1000 > dct_cost * 100 {
                     continue;
                 }
             }
@@ -1692,42 +1856,42 @@ fn chroma_detector_fires(
         0
     };
     let rows = chh >> shift;
-    let sad = |a: &[u8],
-               a_off: usize,
-               a_stride: usize,
-               b: &[u8],
-               b_off: usize,
-               b_stride: usize|
-     -> u32 {
-        let mut s = 0u32;
-        for r in 0..rows {
-            let ar = a_off + r * (a_stride << shift);
-            let br = b_off + r * (b_stride << shift);
-            for c in 0..cw {
-                s += (a[ar + c] as i32 - b[br + c] as i32).unsigned_abs();
+    let sad =
+        |a: &[u8], a_off: usize, a_stride: usize, b: &[u8], b_off: usize, b_stride: usize| -> u32 {
+            let mut s = 0u32;
+            for r in 0..rows {
+                let ar = a_off + r * (a_stride << shift);
+                let br = b_off + r * (b_stride << shift);
+                for c in 0..cw {
+                    s += (a[ar + c] as i32 - b[br + c] as i32).unsigned_abs();
+                }
             }
-        }
-        s
-    };
+            s
+        };
     let y_dist = sad(y_src, y_off, y_stride, y_pred, 0, y_pred_stride) << 1;
     let cb_dist = sad(u_src, c_off, c_stride, u_pred, 0, cw);
     let cr_dist = sad(v_src, c_off, c_stride, v_pred, 0, cw);
     cb_dist > y_dist || cr_dist > y_dist
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// Instrumented-capture pins: `M6FNL NICS c0` lines — mds1/2/3
-    /// counts at CLI qp 20/40/55 (q-scaled 24/12/6 base).
+    /// counts at CLI qp 20/40/55 (M6 nic level 6, nums 6/6/6, base
+    /// 24/12/6 q-scaled).
     #[test]
     fn nic_counts_match_c() {
-        assert_eq!(nic_counts(20), (8, 4, 2));
-        assert_eq!(nic_counts(40), (15, 8, 4));
-        assert_eq!(nic_counts(55), (22, 11, 5));
+        // M6 (nic level 6): nums 6/6/6.
+        assert_eq!(nic_counts(20, (6, 6, 6)), (8, 4, 2));
+        assert_eq!(nic_counts(40, (6, 6, 6)), (15, 8, 4));
+        assert_eq!(nic_counts(55, (6, 6, 6)), (22, 11, 5));
+        // M8 (nic level 11 -> scaling level 15 -> nums 0/0/0): the min-1
+        // floor (scaling num == 0) pins every stage to 1 at all tracked qps.
+        assert_eq!(nic_counts(20, (0, 0, 0)), (1, 1, 1));
+        assert_eq!(nic_counts(40, (0, 0, 0)), (1, 1, 1));
+        assert_eq!(nic_counts(55, (0, 0, 0)), (1, 1, 1));
     }
 
     /// RDCOST identity from the captured g64 q55 MDS3 rows: the DC

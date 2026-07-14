@@ -297,8 +297,8 @@ impl EncodePipeline {
                 let mut cnt: u64 = 0;
                 for sy in (0..h).step_by(64) {
                     for sx in (0..w).step_by(64) {
-                        tot += crate::pd0::compute_b64_variance(&encode_input, w, sx, sy).0[0]
-                            as u64;
+                        tot +=
+                            crate::pd0::compute_b64_variance(&encode_input, w, sx, sy).0[0] as u64;
                         cnt += 1;
                     }
                 }
@@ -312,8 +312,7 @@ impl EncodePipeline {
                 // C clamps allintra presets above M9 to M9 (enc_handle.c:4634).
                 let eff_mode = self.speed_config.preset.min(9);
                 let rdoq_level = crate::quant::rdoq_level_allintra(eff_mode, coeff_lvl);
-                let lambda =
-                    crate::pd0::kf_full_lambda_8bit(base_qindex, tpl_adjusted_qp as u32);
+                let lambda = crate::pd0::kf_full_lambda_8bit(base_qindex, tpl_adjusted_qp as u32);
                 Some(alloc::sync::Arc::new(crate::quant::CodingQuantCfg::new(
                     rdoq_level,
                     lambda,
@@ -1109,7 +1108,15 @@ impl EntropyCtx {
 
     /// Record a chroma transform block's neighbor byte over its chroma
     /// 4x4 span (per-plane, like the decoder's per-plane entropy contexts).
-    pub(crate) fn record_coeff_uv(&mut self, uv: usize, cx: usize, cy: usize, cw: usize, ch: usize, val: u8) {
+    pub(crate) fn record_coeff_uv(
+        &mut self,
+        uv: usize,
+        cx: usize,
+        cy: usize,
+        cw: usize,
+        ch: usize,
+        val: u8,
+    ) {
         let x4 = cx / 4;
         let y4 = cy / 4;
         for i in x4..(x4 + cw / 4).min(self.above_coeff_uv[uv].len()) {
@@ -1214,7 +1221,15 @@ impl EntropyCtx {
     }
 
     /// Record a block's mode and skip status in the context maps.
-    pub(crate) fn record_block(&mut self, x: usize, y: usize, w: usize, h: usize, mode: u8, skip: bool) {
+    pub(crate) fn record_block(
+        &mut self,
+        x: usize,
+        y: usize,
+        w: usize,
+        h: usize,
+        mode: u8,
+        skip: bool,
+    ) {
         let x4 = x / 4;
         let y4 = y / 4;
         let w4 = w / 4;
@@ -1633,8 +1648,7 @@ fn encode_block_syntax(
             } else {
                 let mut v = alloc::vec![0i32; aw * ah];
                 for r in 0..ah {
-                    v[r * aw..r * aw + aw]
-                        .copy_from_slice(&decision.qcoeffs[r * w..r * w + aw]);
+                    v[r * aw..r * aw + aw].copy_from_slice(&decision.qcoeffs[r * w..r * w + aw]);
                 }
                 packed = v;
                 &packed
@@ -2135,11 +2149,16 @@ fn encode_tile_rows(
         // multi-SB frames currently reuse them for every SB — C chains
         // per-SB contexts (ec_ctx_array averaging), a documented residual
         // gap for the 128-cell decisions.
-        let use_funnel = speed_config.preset == 6
+        // The C-exact leaf intra funnel covers still/420 allintra presets
+        // 6, 7, 8 (intra_level 6 and 7). Preset 6 uses update_cdf_level 2
+        // (per-SB CDF chain); presets 7/8 use update_cdf_level 0 (static
+        // default tables all frame — `funnel_chain` below is M6-only).
+        let use_funnel = (6..=8).contains(&speed_config.preset)
             && chroma_420
             && chroma_src.is_some()
             && ref_frame_data.is_none()
             && c_quant.is_some();
+        let funnel_cfg = crate::leaf_funnel::FunnelCfg::for_preset(speed_config.preset);
         let cwid = w / 2;
         let chgt = h / 2;
         let mut fun_u_recon = alloc::vec![128u8; if use_funnel { cwid * chgt } else { 0 }];
@@ -2164,6 +2183,7 @@ fn encode_tile_rows(
                 cli_qp: cli_qp as u32,
                 rdoq_level: cq.rdoq_level,
                 base_qindex,
+                cfg: funnel_cfg,
             })
         } else {
             None
@@ -2180,18 +2200,22 @@ fn encode_tile_rows(
         // (left 3x + top-right 1x) — unimplemented: such SBs fall back to
         // the left-only copy (no identity-matrix frame is that wide).
         let multi_sb = sb_cols * sb_rows > 1;
+        // The per-SB CDF-refresh chain is only C-correct at M6
+        // (update_cdf_level 2). M7/M8 (update_cdf_level 0) keep the static
+        // default rate tables for every SB, so they never chain.
+        let funnel_chain = speed_config.preset == 6 && multi_sb;
         let mut chain_snaps: Vec<(
             svtav1_entropy::context::FrameContext,
             alloc::boxed::Box<svtav1_entropy::coeff_c::CoeffFc>,
         )> = Vec::new();
-        let mut sim_ectx = if use_funnel && multi_sb {
+        let mut sim_ectx = if funnel_chain {
             Some(EntropyCtx::new(w / 4, h / 4, true))
         } else {
             None
         };
         let mut sim_geom = crate::deblock::DeblockGeom::new(w, h);
-        let mut sim_u = alloc::vec![128u8; if use_funnel && multi_sb { cwid * chgt } else { 0 }];
-        let mut sim_v = alloc::vec![128u8; if use_funnel && multi_sb { cwid * chgt } else { 0 }];
+        let mut sim_u = alloc::vec![128u8; if funnel_chain { cwid * chgt } else { 0 }];
+        let mut sim_v = alloc::vec![128u8; if funnel_chain { cwid * chgt } else { 0 }];
         let mut sim_prev_sb_row = usize::MAX;
         let mut fun_rates = fun_rates;
         let mut tile_decisions: Vec<crate::partition::BlockDecision> = Vec::new();
@@ -2278,7 +2302,7 @@ fn encode_tile_rows(
                 // Chain: select this SB's context base per the C rule and
                 // rebuild the funnel rate tables from it.
                 let sb_index = sb_row * sb_cols + sb_col;
-                let chain_base = if use_funnel && multi_sb {
+                let chain_base = if funnel_chain {
                     let left_avail = sb_col > 0;
                     let topright_avail = sb_row > 0 && sb_col + 1 < sb_cols;
                     if left_avail {
@@ -2297,7 +2321,7 @@ fn encode_tile_rows(
                 } else {
                     None
                 };
-                if use_funnel && multi_sb {
+                if funnel_chain {
                     fun_rates = Some(match &chain_base {
                         Some((fc, cfc)) => crate::leaf_funnel::build_md_rates(fc, cfc),
                         None => {
@@ -2322,7 +2346,7 @@ fn encode_tile_rows(
                         // Per-SB PD0 rate tables from the chain (C rebuilds
                         // rate_est_table from ec_ctx_array[sb] BEFORE the
                         // SB's PD0 runs — the drifting SPLIT rates).
-                        let chained_tables = if use_funnel && multi_sb {
+                        let chained_tables = if funnel_chain {
                             Some(match &chain_base {
                                 Some((fc, cfc)) => {
                                     crate::pd0::build_m6_pd0_tables_from_ctx(fc, cfc)
@@ -2334,9 +2358,8 @@ fn encode_tile_rows(
                         };
                         let tables = match &chained_tables {
                             Some(t) => t,
-                            None => m6_pd0_tables.get_or_insert_with(|| {
-                                crate::pd0::build_m6_pd0_tables(sb_qindex)
-                            }),
+                            None => m6_pd0_tables
+                                .get_or_insert_with(|| crate::pd0::build_m6_pd0_tables(sb_qindex)),
                         };
                         crate::pd0::pd0_pick_sb_partition_m6(
                             encode_input,
@@ -2404,7 +2427,7 @@ fn encode_tile_rows(
                 // Chain: evolve this SB's contexts by re-coding the decided
                 // tree (throwaway arithmetic state; only the CDF updates
                 // matter) and snapshot them for the following SBs.
-                if use_funnel && multi_sb {
+                if funnel_chain {
                     let (mut fc, mut cfc) = chain_base.unwrap_or_else(|| {
                         (
                             svtav1_entropy::context::FrameContext::new_default(),
