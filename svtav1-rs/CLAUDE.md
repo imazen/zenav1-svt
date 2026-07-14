@@ -302,6 +302,38 @@ Key finding: the C `svt_av1_fadst4_new` uses i32 arithmetic while our initial po
 ### Pipeline Architecture
 The pipeline processes superblocks in raster order (left-to-right, top-to-bottom) per spec 00. Each SB goes through partition_search which recursively tries all 10 partition types. At each leaf, encode_single_block evaluates 11 intra modes with mode-specific TX RDO, picking the lowest RD cost. The loop-filter chain runs after the entropy walk on the OUTPUT recon copy only (prediction sources stay unfiltered — the decoder's split), in decoder order: deblock -> CDEF -> Wiener loop restoration. The LR search needs the post-CDEF recon, so when it signals wiener the entropy walk is re-run with the per-SB lr syntax (the walk is a deterministic re-runnable pass). sgrproj is never searched (C sg_filter_lvl = 0 at every representable allintra preset) and stays unported.
 
+### Inter/Motion DSP Audit vs v4.2 C (2026-07-14, wave2/entropy-c-parity)
+Differential-tested the 7 pre-v4.2-bump DSP modules that had inline tests but
+ZERO cref coverage. All 7 C reference files are UNCHANGED 4.1->4.2
+(v4.2_functions.md), so findings are pre-existing port state, not drift.
+cref oracles + `tests/c_parity_{sad,variance,inter_pred,obmc,warp,scale,superres}.rs`.
+
+- **sad.rs** — VERIFIED bit-exact vs `svt_aom_sad{W}x{H}_c` (all 22 sizes).
+- **variance.rs** — `sse()` bit-exact vs the C variance kernel's `*sse`;
+  single-block `variance()` bit-exact vs the exact C-derived numerator
+  (`N*sum(x^2)-sum(x)^2`). NOTE: `variance()` is an N^2-scaled single-block
+  helper, NOT the two-block `svt_aom_variance*` (which returns `sse-sum^2/N`).
+- **inter_pred.rs** — `convolve_horiz/vert` bit-exact vs
+  `svt_aom_convolve8_{horiz,vert}_c` (all 16 phases); `convolve_2d` matches the
+  u8-intermediate 2-pass (the `svt_aom_upsampled_pred_c` ME path). It is NOT the
+  reconstruction convolve `svt_av1_convolve_2d_sr_c` (16-bit intermediate) —
+  that kernel is unported.
+- **obmc.rs** — was STALE, now FIXED: wrong mask tables (had e.g. overlap-4
+  `[53,32,11,4]` vs C `[39,50,59,64]`) AND inverted blend weighting. Now
+  bit-exact vs `svt_av1_get_obmc_mask` + `svt_aom_blend_a64_{v,h}mask_c`. This
+  is the only audited DSP module the encoder imports (partition.rs inter path;
+  dormant for the still gates — `mv_map` is None on key frames).
+- **warp.rs / scale.rs / superres.rs** — STUBS (0 in-tree callers), homegrown
+  approximations, NOT ports of `svt_av1_warp_affine_c` /
+  `svt_av1_convolve_2d_scale_c` / normative `upscale_normative_rect`. Oracles
+  shimmed + gap-pinning tests (flip `assert_ne!`->`assert_eq!` when ported).
+  A real port needs: warp -> 193-phase `svt_aom_warped_filter` + shear
+  (alpha/beta/gamma/delta) + ROUND0/1 + 8x8 tiling (Rust also double-scales
+  m0/m1 by 1<<16); scale -> SCALE_SUBPEL_BITS=10 EIGHTTAP + 16-bit ROUND0/1;
+  superres -> 64-phase `svt_av1_resize_filter_normative` + RS_SCALE_SUBPEL_BITS=14.
+Gates after the OBMC fix: workspace tests 647/0, recon_parity 378/0,
+decode_conformance 840/0.
+
 ### Performance
 Release-mode benchmarks (x86_64 AVX2):
 - SAD 16x16: ~18 Gpix/s (archmage auto-vectorization)
