@@ -2341,10 +2341,52 @@ mod tests {
         assert_eq!(r.tx_size[2][0][0], 683);
     }
 
+    /// FunnelCfg::for_preset(5) pins vs the instrumented M5DBG CFG
+    /// enc_mode=5 dump (docs/captures/m0m5_config_dlf.txt): intra_level 2
+    /// -> mode_end PAETH / ang 2; fi_max 0 (FILTER_DC only); nic 6 with
+    /// M6's pruning ths; txt 6/6 satd 15 rate 250; chroma_level 4
+    /// (ind-uv MDS3); SH edge filter.
+    #[test]
+    fn m5_cfg_matches_capture() {
+        let c = FunnelCfg::for_preset(5);
+        assert_eq!(c.mode_end, 12);
+        assert_eq!(c.angular_level, 2);
+        assert!(c.filter_intra && !c.prune_best_mode);
+        assert_eq!(c.nic_num, (6, 6, 6));
+        assert_eq!(
+            (c.mds1_cand_base_th, c.mds1_rank_factor, c.mds2_cand_base_th),
+            (1200, 3, 15)
+        );
+        assert_eq!((c.mds2_rel_dev_th, c.mds3_cand_base_th), (5, 15));
+        assert_eq!((c.txt_group_lt16, c.txt_group_ge16), (6, 6));
+        assert_eq!((c.txt_satd_th, c.txt_rate_th), (15, 250));
+        assert!(c.real_coeff_ctx && c.txs_on && c.txt_on);
+        assert!(c.ind_uv_mds3 && c.edge_filter && !c.dc_only_gate);
+        // M6 keeps the original shape (regression pin for the shared tail).
+        let m6 = FunnelCfg::for_preset(6);
+        assert_eq!(m6.mode_end, 9);
+        assert_eq!(m6.angular_level, 4);
+        assert_eq!((m6.txt_group_lt16, m6.txt_group_ge16), (5, 4));
+        assert_eq!((m6.txt_satd_th, m6.txt_rate_th), (10, 100));
+        assert!(!m6.ind_uv_mds3 && !m6.edge_filter);
+    }
+
     /// The chroma tx type derivation confirmed by the WIN dumps
-    /// (ttuv 0/1/2/3 for DC/V/H/SMOOTH; DCT-only at >= 32).
+    /// (ttuv 0/1/2/3 for DC/V/H/SMOOTH; DCT-only at >= 32) + the full
+    /// g_intra_mode_to_tx_type rows the M5 ind-uv modes reach.
     #[test]
     fn uv_tx_type_matches_c() {
+        // SMOOTH_V -> ADST_DCT, SMOOTH_H -> DCT_ADST, PAETH -> ADST_ADST,
+        // D45 -> DCT_DCT, D135 -> ADST_ADST (mode_decision.c:2991 table).
+        assert_eq!(uv_tx_type(10, 16, 16), 1);
+        assert_eq!(uv_tx_type(11, 16, 16), 2);
+        assert_eq!(uv_tx_type(12, 16, 16), 3);
+        assert_eq!(uv_tx_type(3, 16, 16), 0);
+        assert_eq!(uv_tx_type(4, 16, 16), 3);
+    }
+
+    #[test]
+    fn uv_tx_type_m6_subset_matches_c() {
         assert_eq!(uv_tx_type(0, 16, 16), 0);
         assert_eq!(uv_tx_type(1, 16, 16), 1);
         assert_eq!(uv_tx_type(2, 16, 16), 2);
