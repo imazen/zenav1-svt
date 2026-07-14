@@ -1,8 +1,10 @@
 # Identity matrix — all presets M0..M10 x {uniform,gradient} x {64,128} x q{20,40,55}
-# Generated: 2026-07-14T18:00:00Z
-# Commit: wave2/entropy-c-parity (M1 gradient identity)
+# Generated: 2026-07-14T21:30:00Z
+# Commit: wave2/entropy-c-parity (M0 sub-8: filter-intra tx_type CDF fix + M0 routing)
 # Host: dev-32gb
 # Command: IM_PRESETS="0 1 2 3 4 5 6 7 8 9 10" bash tools/identity_matrix.sh allpresets
 # C baseline: in-tree Bin/Release/libSvtAv1Enc.a v4.2.0-rc
-# Result: 126/132 identical. Presets 1..10 = 12/12 each; M0 = 6/12
-#   (uniform identical, gradient still homegrown — the last identity tier).
+# Result: 130/132 identical. Presets 1..10 = 12/12 each; M0 = 10/12
+#   (all uniform + gradient q40/q55 identical; residual = gradient q20 p0 at
+#   {64,128} — a FILTER_H-vs-H_PRED RD tie-break, decodes+recon-exact but not
+#   byte-identical to C; see docs/IDENTITY-STATUS.md 2026-07-14 M0 sub-8 chunk).
