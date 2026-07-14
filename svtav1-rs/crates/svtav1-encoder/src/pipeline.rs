@@ -292,7 +292,7 @@ impl EncodePipeline {
         // enc_mode_config.c:14931) on 64-aligned dims — everywhere else
         // the legacy dead-zone quantizer stays.
         let c_quant: Option<alloc::sync::Arc<crate::quant::CodingQuantCfg>> =
-            if is_key && self.speed_config.preset >= 6 && w % 64 == 0 && h % 64 == 0 {
+            if is_key && self.speed_config.preset >= 5 && w % 64 == 0 && h % 64 == 0 {
                 let mut tot: u64 = 0;
                 let mut cnt: u64 = 0;
                 for sy in (0..h).step_by(64) {
@@ -978,6 +978,13 @@ pub(crate) struct EntropyCtx {
     above_mode: Vec<u8>,
     /// Left column modes (at 4x4 granularity), indexed by row in 4x4 units.
     left_mode: Vec<u8>,
+    /// Above/left UV modes (4x4 granularity) — C's chroma_above/left_mbmi
+    /// uv_mode inputs to `get_filt_type(xd, plane > 0)` (the intra edge
+    /// filter's smooth-neighbour strength selector). With min-8x8 blocks
+    /// every mi of a neighbour block carries the same uv mode, so the
+    /// luma-granular arrays reproduce C's bottom-right-of-group pick.
+    above_uv_mode: Vec<u8>,
+    left_uv_mode: Vec<u8>,
     /// Above row skip flags.
     above_skip: Vec<bool>,
     /// Left column skip flags.
@@ -1077,6 +1084,8 @@ impl EntropyCtx {
         Self {
             above_mode: alloc::vec![0u8; width_4x4], // DC_PRED = 0
             left_mode: alloc::vec![0u8; height_4x4],
+            above_uv_mode: alloc::vec![0u8; width_4x4],
+            left_uv_mode: alloc::vec![0u8; height_4x4],
             above_skip: alloc::vec![false; width_4x4],
             left_skip: alloc::vec![false; height_4x4],
             above_partition: alloc::vec![0u8; width_8x8],
@@ -1266,6 +1275,7 @@ impl EntropyCtx {
         w: usize,
         h: usize,
         mode: u8,
+        uv_mode: u8,
         skip: bool,
     ) {
         let x4 = x / 4;
@@ -1275,13 +1285,36 @@ impl EntropyCtx {
         // Fill above row with this block's mode
         for i in x4..(x4 + w4).min(self.above_mode.len()) {
             self.above_mode[i] = mode;
+            self.above_uv_mode[i] = uv_mode;
             self.above_skip[i] = skip;
         }
         // Fill left column with this block's mode
         for i in y4..(y4 + h4).min(self.left_mode.len()) {
             self.left_mode[i] = mode;
+            self.left_uv_mode[i] = uv_mode;
             self.left_skip[i] = skip;
         }
+    }
+
+    /// C `get_filt_type(xd, plane = 0)` (enc_intra_prediction.c:20): 1
+    /// when the above OR left neighbour block's Y mode is smooth
+    /// (SMOOTH/SMOOTH_V/SMOOTH_H), else 0. Neighbours are the blocks at
+    /// (mi_row - 1, mi_col) / (mi_row, mi_col - 1); unavailable -> 0.
+    pub(crate) fn filt_type_y(&self, x: usize, y: usize) -> i32 {
+        let smooth = |m: u8| matches!(m, 9 | 10 | 11);
+        let ab = y > 0 && smooth(self.above_mode[x / 4]);
+        let le = x > 0 && smooth(self.left_mode[y / 4]);
+        i32::from(ab || le)
+    }
+
+    /// C `get_filt_type(xd, plane > 0)`: same over the neighbours' UV
+    /// modes (chroma_above/left_mbmi; min-8x8 blocks make the +1-mi
+    /// group offsets land in the same neighbour block).
+    pub(crate) fn filt_type_uv(&self, x: usize, y: usize) -> i32 {
+        let smooth = |m: u8| matches!(m, 9 | 10 | 11);
+        let ab = y > 0 && smooth(self.above_uv_mode[x / 4]);
+        let le = x > 0 && smooth(self.left_uv_mode[y / 4]);
+        i32::from(ab || le)
     }
 
     /// Get the above mode context at position (x, y) in pixel coordinates.
@@ -1550,7 +1583,12 @@ fn encode_block_syntax(
         if use_angle_delta(decision.width, decision.height)
             && svtav1_entropy::context::is_directional_mode(decision.intra_mode)
         {
-            svtav1_entropy::context::write_angle_delta(writer, frame_ctx, decision.intra_mode, 0);
+            svtav1_entropy::context::write_angle_delta(
+                writer,
+                frame_ctx,
+                decision.intra_mode,
+                decision.angle_delta,
+            );
         }
     } else {
         let bsize_group = svtav1_entropy::context::block_size_group(
@@ -1566,7 +1604,12 @@ fn encode_block_syntax(
         if use_angle_delta(decision.width, decision.height)
             && svtav1_entropy::context::is_directional_mode(decision.intra_mode)
         {
-            svtav1_entropy::context::write_angle_delta(writer, frame_ctx, decision.intra_mode, 0);
+            svtav1_entropy::context::write_angle_delta(
+                writer,
+                frame_ctx,
+                decision.intra_mode,
+                decision.angle_delta,
+            );
         }
     }
 
@@ -1590,12 +1633,17 @@ fn encode_block_syntax(
             decision.uv_mode,
         );
         // angle_delta_uv follows directional UV modes on >= 8x8 blocks
-        // (read_intra_frame_mode_info, decodemv.c:833; delta always 0 —
-        // the M6 candidate set has no uv angle deltas).
+        // (read_intra_frame_mode_info, decodemv.c:833) — nonzero only
+        // when the M5 ind-uv search picked a delta'd uv mode.
         if use_angle_delta(decision.width, decision.height)
             && svtav1_entropy::context::is_directional_mode(decision.uv_mode)
         {
-            svtav1_entropy::context::write_angle_delta(writer, frame_ctx, decision.uv_mode, 0);
+            svtav1_entropy::context::write_angle_delta(
+                writer,
+                frame_ctx,
+                decision.uv_mode,
+                decision.uv_angle_delta,
+            );
         }
     }
 
@@ -1812,6 +1860,7 @@ fn encode_block_syntax(
         decision.width as usize,
         decision.height as usize,
         mode,
+        decision.uv_mode,
         skip,
     );
 
@@ -2192,7 +2241,7 @@ fn encode_tile_rows(
         // update_cdf_level 2 (per-SB CDF chain); 7/8/9+ use update_cdf_level 0
         // (static default tables all frame — `funnel_chain` below is M6-only).
         // eff-M9 (intra_level 8) arms the is_dc_only gate inside the funnel.
-        let use_funnel = speed_config.preset >= 6
+        let use_funnel = speed_config.preset >= 5
             && chroma_420
             && chroma_src.is_some()
             && ref_frame_data.is_none()
@@ -2244,7 +2293,8 @@ fn encode_tile_rows(
         // static default rate tables for every SB, so they never chain.
         // Gated on use_funnel so it only fires for the chroma/420 funnel
         // path (chroma_src is Some) — mono M6 never chains.
-        let funnel_chain = use_funnel && speed_config.preset == 6 && multi_sb;
+        let funnel_chain =
+            use_funnel && matches!(speed_config.preset, 5 | 6) && multi_sb;
         let mut chain_snaps: Vec<(
             svtav1_entropy::context::FrameContext,
             alloc::boxed::Box<svtav1_entropy::coeff_c::CoeffFc>,
@@ -2313,7 +2363,7 @@ fn encode_tile_rows(
                 // C-exact partition source gate (see the comment below);
                 // computed here because the leaf lambda depends on it.
                 let use_pd0 = ref_ctx.is_none()
-                    && speed_config.preset >= 6
+                    && (speed_config.preset >= 6 || (speed_config.preset == 5 && use_funnel))
                     && cur_w == sb_size
                     && cur_h == sb_size;
                 // CLI-qp-calibrated lambda via the exact inverse mapping
@@ -2340,13 +2390,16 @@ fn encode_tile_rows(
                 // 2026-07-13 diagnosis), and at M2..M8 the same
                 // PRED_PART_ONLY architecture runs the prediction-based
                 // PD0_LVL_1 block encode instead (M6 chunk diagnosis).
-                // Key/still frames at presets >= 6 take the ported PD0
-                // decisions (crate::pd0) and encode the fixed tree;
-                // everything else keeps the homegrown search. (Presets
-                // 2..5 also run PD0_LVL_1 in C, but their PD1 leaf
-                // configs — rdoq_level 1, txt 2/3, lower intra levels —
-                // are unported, so they stay on the homegrown path until
-                // that lands.)
+                // Key/still frames at presets >= 6 — and preset 5 when
+                // the M5 leaf funnel is live (still/420) — take the
+                // ported PD0 decisions (crate::pd0) and encode the fixed
+                // tree; everything else keeps the homegrown search.
+                // (Presets 2..4 also run PD0_LVL_1 in C, but their PD1
+                // leaf configs are unported, so they stay on the
+                // homegrown path until they land. M5 depth refinement is
+                // ADAPTIVE level 9 — the refined depths lose the
+                // inter-depth compare on every tracked cell, the coded
+                // tree == the PD0 tree; see docs/IDENTITY-STATUS.md.)
                 // The search reads intra neighbors from — and reconstructs
                 // directly into — the live frame buffer, exactly like the
                 // decoder (fixes within-SB predictions that previously fell
