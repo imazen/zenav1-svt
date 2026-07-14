@@ -118,6 +118,95 @@ REF_TBL(filter_intra_mode_cdf)
 REF_TBL(delta_q_cdf)
 REF_TBL(intrabc_cdf)
 REF_TBL(y_mode_cdf)
+REF_TBL(nmvc)
+
+/* ---- MV entropy encode (AUDIT 2026-07-14) ----
+ *
+ * Faithful transcription of svt_av1_encode_mv + encode_mv_component
+ * (entropy_coding.c:1502-1576) driving the REAL primitives: the public
+ * svt_av1_get_mv_class (md_rate_estimation.c) for the bit-exact class/offset
+ * split, the header-inline aom_write_symbol (bitstream_unit.h) for the real
+ * range coder + CDF adaptation, and the real default_nmv_context CDFs
+ * (svt_aom_init_mode_probs). The CDFs adapt across the whole sequence exactly
+ * as a frame's nmvc would, so the sequence oracle exercises adaptation too.
+ * The MV-encode path is UNCHANGED 4.1->4.2 (not in mainline_v4.2.bit-affecting.diff).
+ */
+/* Direct oracle for the MV class/offset split (md_rate_estimation.c). */
+int32_t ref_get_mv_class(int32_t z, int32_t* offset) { return (int32_t)svt_av1_get_mv_class(z, offset); }
+
+static void ref_encode_mv_component(AomWriter* w, int32_t comp, NmvComponent* mvcomp,
+                                    MvSubpelPrecision precision) {
+    int32_t       offset;
+    const int32_t sign     = comp < 0;
+    const int32_t mag      = sign ? -comp : comp;
+    const int32_t mv_class = svt_av1_get_mv_class(mag - 1, &offset);
+    const int32_t d        = offset >> 3;
+    const int32_t fr       = (offset >> 1) & 3;
+    const int32_t hp       = offset & 1;
+
+    aom_write_symbol(w, sign, mvcomp->sign_cdf, 2);
+    aom_write_symbol(w, mv_class, mvcomp->classes_cdf, MV_CLASSES);
+    if (mv_class == MV_CLASS_0) {
+        aom_write_symbol(w, d, mvcomp->class0_cdf, CLASS0_SIZE);
+    } else {
+        const int32_t n = mv_class + CLASS0_BITS - 1;
+        for (int32_t i = 0; i < n; ++i) {
+            aom_write_symbol(w, (d >> i) & 1, mvcomp->bits_cdf[i], 2);
+        }
+    }
+    if (precision > MV_SUBPEL_NONE) {
+        aom_write_symbol(w, fr, mv_class == MV_CLASS_0 ? mvcomp->class0_fp_cdf[d] : mvcomp->fp_cdf, MV_FP_SIZE);
+    }
+    if (precision > MV_SUBPEL_LOW_PRECISION) {
+        aom_write_symbol(w, hp, mv_class == MV_CLASS_0 ? mvcomp->class0_hp_cdf : mvcomp->hp_cdf, 2);
+    }
+}
+
+/* Encode a whole sequence of MV diffs (mv - ref) with one adapting nmvc, in
+ * the C encode order (Y/vertical component first). Returns the finalized byte
+ * count; up to `cap` bytes are copied to `out`. `precision` is the
+ * MvSubpelPrecision int (-1 none, 0 low, 1 high). */
+uint32_t ref_encode_mv_seq(const int32_t* mv_y, const int32_t* mv_x, const int32_t* ref_y,
+                           const int32_t* ref_x, int32_t n, int32_t precision, uint8_t* out,
+                           uint32_t cap) {
+    if (!g_rtcd_ready) {
+        svt_aom_setup_common_rtcd_internal(svt_aom_get_cpu_flags_to_use());
+        g_rtcd_ready = 1;
+    }
+    FRAME_CONTEXT fc;
+    memset(&fc, 0, sizeof(fc));
+    svt_aom_init_mode_probs(&fc);
+    NmvContext mvctx = fc.nmvc;
+
+    AomWriter w;
+    memset(&w, 0, sizeof(w));
+    w.allow_update_cdf = 1;
+    svt_od_ec_enc_init(&w.ec);
+    w.ec.buf = (unsigned char*)malloc(REF_EC_BUF_CAP);
+    svt_od_ec_enc_reset(&w.ec);
+
+    for (int32_t k = 0; k < n; ++k) {
+        int32_t           diff[2] = {mv_y[k] - ref_y[k], mv_x[k] - ref_x[k]};
+        const MvJointType j       = (diff[0] == 0) ? (diff[1] == 0 ? MV_JOINT_ZERO : MV_JOINT_HNZVZ)
+                                                   : (diff[1] == 0 ? MV_JOINT_HZVNZ : MV_JOINT_HNZVNZ);
+        aom_write_symbol(&w, j, mvctx.joints_cdf, MV_JOINTS);
+        if (mv_joint_vertical(j)) {
+            ref_encode_mv_component(&w, diff[0], &mvctx.comps[0], (MvSubpelPrecision)precision);
+        }
+        if (mv_joint_horizontal(j)) {
+            ref_encode_mv_component(&w, diff[1], &mvctx.comps[1], (MvSubpelPrecision)precision);
+        }
+    }
+
+    uint32_t       nbytes = 0;
+    const uint8_t* p      = svt_od_ec_enc_done(&w.ec, &nbytes);
+    if (p) {
+        uint32_t copyn = nbytes < cap ? nbytes : cap;
+        memcpy(out, p, copyn);
+    }
+    free(w.ec.buf);
+    return nbytes;
+}
 
 /* ---- Scan orders + coefficient-context helpers ---- */
 
