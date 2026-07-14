@@ -1337,6 +1337,7 @@ mod tests {
             30.0,
             SeqTools {
                 enable_filter_intra: true,
+                enable_intra_edge_filter: false,
                 enable_restoration: true,
             },
         );

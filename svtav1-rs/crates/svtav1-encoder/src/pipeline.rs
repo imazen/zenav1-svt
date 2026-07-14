@@ -702,15 +702,18 @@ impl EncodePipeline {
                     crate::cdef::pick_cdef_params_all_skip_search(base_qindex)
                 } else {
                     // The live-block RDO search (svt_av1_cdef_search +
-                    // finish_cdef_search, level-7 controls): filter the
-                    // POST-DEBLOCK recon per candidate strength and RD-pick
-                    // against the source. All tracked identity cells land
-                    // in the cdef_bits=0 outcome; the multi-strength
+                    // finish_cdef_search, per-preset candidate sets:
+                    // level 2 at M0, 3 at M1-M3, 5 at M4-M5, 7 at M6):
+                    // filter the POST-DEBLOCK recon per candidate strength
+                    // and RD-pick against the source. The multi-strength
                     // outcome (cdef_bits>0 needs per-SB cdef_idx syntax
                     // the tile writer lacks) falls back to the qp fast
                     // path — self-consistent, documented divergence.
                     let (su, sv) = chroma.unwrap_or((&[][..], &[][..]));
-                    match crate::cdef::cdef_search_still_level7(
+                    let cfg =
+                        crate::cdef::cdef_search_cfg_for_preset(self.speed_config.preset);
+                    match crate::cdef::cdef_search_still(
+                        &cfg,
                         &recon,
                         &u_recon,
                         &v_recon,

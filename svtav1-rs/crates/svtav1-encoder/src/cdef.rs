@@ -445,15 +445,59 @@ pub enum CdefSearchPick {
     MultiStrength,
 }
 
-/// The level-7 candidate strengths: `first_pass = {pf_gi[0], pf_gi[15]}`,
-/// `second_pass = first_pass + 2` (enc_mode_config.c:1579-1607) — i.e.
-/// {(pri 0, sec 0), (pri 15, sec 0), (pri 0, sec 2), (pri 15, sec 2)}.
-const L7_FS: [i32; 4] = [0, 60, 2, 62];
-/// Chroma candidates: only the first-pass pair is evaluated
-/// (`default_second_pass_fs_uv = -1`); the second-pass rows carry the
-/// `default_mse_uv * 64` sentinel (cdef_process.c:494/569).
-const L7_UV_VALID: [bool; 4] = [true, true, false, false];
+/// Chroma second-pass rows carry the `default_mse_uv * 64` sentinel
+/// (`default_second_pass_fs_uv = -1`, cdef_process.c:494/569).
 const DEFAULT_MSE_UV: u64 = 1_040_400; // enc_cdef.c / cdef_process.c:240
+
+/// `pf_gi[16]` (enc_mode_config.c:16): first-pass strength ids = pri
+/// strength index * 4 (sec 0).
+const PF_GI: [i32; 16] = [0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60];
+
+/// One preset's CDEF search candidate set — the
+/// `set_cdef_search_controls` fields the still path consumes
+/// (enc_mode_config.c:1360-1700).
+pub struct CdefSearchCfg {
+    /// Candidate strengths in C slot order: `default_first_pass_fs[..n]`
+    /// then `default_second_pass_fs[..m]` (gi domain: pri*4 + sec-code).
+    pub fs: Vec<i32>,
+    /// Number of first-pass entries == the slots whose UV row is real
+    /// (every ported level sets `default_first_pass_fs_uv = first_pass_fs`
+    /// and all-(-1) second-pass uv).
+    pub first_pass_num: usize,
+    /// `subsampling_factor` (row subsampling for the mse; per-plane caps
+    /// applied at use: BLOCK_8X8 -> min(.,4), BLOCK_4X4 -> min(.,1),
+    /// cdef_process.c:467-486).
+    pub subsampling: usize,
+}
+
+/// C `set_cdef_search_controls` levels for the allintra preset split
+/// (`svt_aom_sig_deriv_multi_processes_allintra`, enc_mode_config.c:
+/// 3543-3600, fast_decode 0): M0 -> level 2, M1..M3 -> 3, M4..M5 -> 5,
+/// M6 -> 7. Second-pass sets: levels 2/3 append pf+1, pf+2, pf+3 per
+/// first-pass entry (nested order); levels 5/7 append pf+2 per entry.
+pub fn cdef_search_cfg_for_preset(preset: u8) -> CdefSearchCfg {
+    let (first, extra): (&[usize], &[i32]) = match preset {
+        0 => (&[0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14], &[1, 2, 3]),
+        1..=3 => (&[0, 4, 8, 12, 15], &[1, 2, 3]),
+        4 | 5 => (&[0, 7, 15], &[2]),
+        _ => (&[0, 15], &[2]),
+    };
+    let mut fs: Vec<i32> = first.iter().map(|&i| PF_GI[i]).collect();
+    let first_pass_num = fs.len();
+    // C fills default_second_pass_fs[sf_idx++] looping first-pass entries
+    // outer, deltas inner (levels 1-4); levels 5-7 have one delta so the
+    // order is the same either way.
+    for &i in first {
+        for &d in extra {
+            fs.push(PF_GI[i] + d);
+        }
+    }
+    CdefSearchCfg {
+        fs,
+        first_pass_num,
+        subsampling: if preset >= 6 { 4 } else { 1 },
+    }
+}
 
 /// C `RDCOST` (identical macro to rd_cost.h).
 #[inline]
@@ -461,15 +505,20 @@ fn rdc(lambda: u64, rate: u64, dist: u64) -> u64 {
     ((rate * lambda + 256) >> 9) + (dist << 7)
 }
 
-/// `svt_search_one_dual_c` (enc_cdef.c:740), specialized to
-/// `start_gi = 0, end_gi = 4`.
+/// One filter block's mse rows: `[0]` = luma, `[1]` = joint U+V, indexed
+/// by candidate slot (0..n_cand).
+type MseRow = [Vec<u64>; 2];
+
+/// `svt_search_one_dual_c` (enc_cdef.c:740), `start_gi = 0`,
+/// `end_gi = n_cand` (`total_strengths`).
 fn search_one_dual(
-    lev0: &mut [i32; 8],
-    lev1: &mut [i32; 8],
+    lev0: &mut [i32; 16],
+    lev1: &mut [i32; 16],
     nb_strengths: usize,
-    mse: &[[[u64; 4]; 2]],
+    mse: &[MseRow],
+    n_cand: usize,
 ) -> u64 {
-    let mut tot_mse = [[0u64; 4]; 4];
+    let mut tot_mse = alloc::vec![0u64; n_cand * n_cand];
     for row in mse {
         let mut best_mse = 1u64 << 63;
         for gi in 0..nb_strengths {
@@ -478,17 +527,18 @@ fn search_one_dual(
                 best_mse = curr;
             }
         }
-        for (j, tj) in tot_mse.iter_mut().enumerate() {
-            for (kk, t) in tj.iter_mut().enumerate() {
+        for j in 0..n_cand {
+            for kk in 0..n_cand {
                 let curr = row[0][j] + row[1][kk];
-                *t += curr.min(best_mse);
+                tot_mse[j * n_cand + kk] += curr.min(best_mse);
             }
         }
     }
     let mut best_tot = 1u64 << 63;
     let (mut best_id0, mut best_id1) = (0usize, 0usize);
-    for (j, tj) in tot_mse.iter().enumerate() {
-        for (kk, &t) in tj.iter().enumerate() {
+    for j in 0..n_cand {
+        for kk in 0..n_cand {
+            let t = tot_mse[j * n_cand + kk];
             if t < best_tot {
                 best_tot = t;
                 best_id0 = j;
@@ -504,21 +554,22 @@ fn search_one_dual(
 /// `joint_strength_search_dual` (enc_cdef.c:813): greedy + 4*nb rotation
 /// refinement.
 fn joint_strength_search_dual(
-    best_lev0: &mut [i32; 8],
-    best_lev1: &mut [i32; 8],
+    best_lev0: &mut [i32; 16],
+    best_lev1: &mut [i32; 16],
     nb_strengths: usize,
-    mse: &[[[u64; 4]; 2]],
+    mse: &[MseRow],
+    n_cand: usize,
 ) -> u64 {
     let mut best_tot = 1u64 << 63;
     for i in 0..nb_strengths {
-        best_tot = search_one_dual(best_lev0, best_lev1, i, mse);
+        best_tot = search_one_dual(best_lev0, best_lev1, i, mse, n_cand);
     }
     for _ in 0..4 * nb_strengths {
         for j in 0..nb_strengths - 1 {
             best_lev0[j] = best_lev0[j + 1];
             best_lev1[j] = best_lev1[j + 1];
         }
-        best_tot = search_one_dual(best_lev0, best_lev1, nb_strengths - 1, mse);
+        best_tot = search_one_dual(best_lev0, best_lev1, nb_strengths - 1, mse, n_cand);
     }
     best_tot
 }
@@ -528,7 +579,7 @@ fn joint_strength_search_dual(
 /// cdef_recon_level 0 — so no mse scaling). Returns (cdef_bits,
 /// y_strength, uv_strength) in the SEARCH-INDEX domain for bits = 0, or
 /// the bits count when > 0.
-fn finish_cdef_rd(mse: &[[[u64; 4]; 2]], qindex: u8) -> (usize, usize, usize) {
+fn finish_cdef_rd(mse: &[MseRow], n_cand: usize, qindex: u8) -> (usize, usize, usize) {
     let sb_count = mse.len();
     debug_assert!(sb_count > 0);
     let lambda = crate::pd0::kf_full_lambda_8bit_unweighted(qindex) as u64;
@@ -537,9 +588,9 @@ fn finish_cdef_rd(mse: &[[[u64; 4]; 2]], qindex: u8) -> (usize, usize, usize) {
     let mut best_pair = (0usize, 0usize);
     for i in 0..=3usize {
         let nb = 1usize << i;
-        let mut lev0 = [0i32; 8];
-        let mut lev1 = [0i32; 8];
-        let tot = joint_strength_search_dual(&mut lev0, &mut lev1, nb, mse);
+        let mut lev0 = [0i32; 16];
+        let mut lev1 = [0i32; 16];
+        let tot = joint_strength_search_dual(&mut lev0, &mut lev1, nb, mse, n_cand);
         // CDEF_STRENGTH_BITS = 6, two planes; av1_cost_literal = n << 9.
         let total_bits = (sb_count * i + nb * 6 * 2) as u64;
         let cost = rdc(lambda, total_bits << 9, tot * 16);
@@ -667,17 +718,18 @@ fn dist_packed(
 }
 
 /// The full still-frame CDEF strength search at allintra search presets
-/// with the level-7 controls (M6; levels 5/3 share the machinery but wider
-/// strength sets — unported): per 64x64 filter block, filter the
-/// POST-DEBLOCK recon at each candidate strength and measure SSE against
-/// the source over every-4th luma row (chroma 4x4 blocks cap the
-/// subsampling at 1), then run the C RD pick over signal-bit counts.
+/// (levels 2/3/5/7 per preset — [`cdef_search_cfg_for_preset`]): per
+/// 64x64 filter block, filter the POST-DEBLOCK recon at each candidate
+/// strength and measure SSE against the source over the level's row
+/// subsampling (chroma 4x4 blocks cap the subsampling at 1), then run
+/// the C RD pick over signal-bit counts.
 ///
 /// C references: svt_av1_cdef_search (cdef_process.c:300-640, damping
 /// `3 + (qindex >> 6)`, `mse *= subsampling_factor`, V accumulates into
 /// the joint uv row) + finish_cdef_search (enc_cdef.c:925-1127).
 #[allow(clippy::too_many_arguments)]
-pub fn cdef_search_still_level7(
+pub fn cdef_search_still(
+    cfg: &CdefSearchCfg,
     recon_y: &[u8],
     recon_u: &[u8],
     recon_v: &[u8],
@@ -694,10 +746,13 @@ pub fn cdef_search_still_level7(
     let damping = 3 + (qindex as i32 >> 6);
     let nvfb = height.div_ceil(64);
     let nhfb = width.div_ceil(64);
-    let sub_y = 4usize; // BLOCK_8X8: min(subsampling_factor=4, 4)
-    let sub_uv = 1usize; // BLOCK_4X4: min(4, 1)
+    let n_cand = cfg.fs.len();
+    // Per-plane caps (cdef_process.c:467-486): BLOCK_8X8 -> min(., 4),
+    // BLOCK_4X4 -> min(., 1).
+    let sub_y = cfg.subsampling.min(4);
+    let sub_uv = cfg.subsampling.min(1);
 
-    let mut mse: Vec<[[u64; 4]; 2]> = Vec::new();
+    let mut mse: Vec<MseRow> = Vec::new();
     let mut src_pad = alloc::vec![0u16; k::CDEF_INBUF_SIZE];
     let mut tmp = alloc::vec![0u8; 64 * 64];
     let mut dlist: Vec<(usize, usize)> = Vec::with_capacity(64);
@@ -717,7 +772,7 @@ pub fn cdef_search_still_level7(
             if dlist.is_empty() {
                 continue;
             }
-            let mut row = [[0u64; 4]; 2];
+            let mut row: MseRow = [alloc::vec![0u64; n_cand], alloc::vec![0u64; n_cand]];
             let mut dir = [[0i32; 8]; 8];
             let mut var = [[0i32; 8]; 8];
             let mut dirinit = false;
@@ -733,7 +788,7 @@ pub fn cdef_search_still_level7(
                 vsize,
                 hsize,
             );
-            for (gi, &fs) in L7_FS.iter().enumerate() {
+            for (gi, &fs) in cfg.fs.iter().enumerate() {
                 filter_fb_packed(
                     &mut tmp,
                     &src_pad,
@@ -753,10 +808,8 @@ pub fn cdef_search_still_level7(
             // ---- Chroma: U then V ACCUMULATE into the joint uv row.
             if chroma_420 {
                 let (cw, ch) = (width / 2, height / 2);
-                for gi in 0..4 {
-                    if !L7_UV_VALID[gi] {
-                        row[1][gi] = DEFAULT_MSE_UV * 64;
-                    }
+                for gi in cfg.first_pass_num..n_cand {
+                    row[1][gi] = DEFAULT_MSE_UV * 64;
                 }
                 for (rec_c, src_c) in [(recon_u, src_u), (recon_v, src_v)] {
                     build_src(
@@ -769,10 +822,7 @@ pub fn cdef_search_still_level7(
                         vsize / 2,
                         hsize / 2,
                     );
-                    for (gi, &fs) in L7_FS.iter().enumerate() {
-                        if !L7_UV_VALID[gi] {
-                            continue;
-                        }
+                    for (gi, &fs) in cfg.fs.iter().enumerate().take(cfg.first_pass_num) {
                         filter_fb_packed(
                             &mut tmp,
                             &src_pad,
@@ -802,14 +852,14 @@ pub fn cdef_search_still_level7(
     if mse.is_empty() {
         return CdefSearchPick::AllSkip;
     }
-    let (bits, y_idx, uv_idx) = finish_cdef_rd(&mse, qindex);
+    let (bits, y_idx, uv_idx) = finish_cdef_rd(&mse, n_cand, qindex);
     if bits > 0 {
         return CdefSearchPick::MultiStrength;
     }
     CdefSearchPick::Picked(CdefFrameParams {
         damping: (3 + (qindex >> 6)) as u8,
-        y_strength: L7_FS[y_idx] as u8,
-        uv_strength: L7_FS[uv_idx] as u8,
+        y_strength: cfg.fs[y_idx] as u8,
+        uv_strength: cfg.fs[uv_idx] as u8,
     })
 }
 
@@ -867,30 +917,33 @@ mod tests {
     /// docs/IDENTITY-STATUS.md M6 chunk).
     #[test]
     fn finish_rd_matches_c_captures() {
+        fn row(y: [u64; 4], uv: [u64; 4]) -> MseRow {
+            [y.to_vec(), uv.to_vec()]
+        }
         // g64 q55 (qindex 220): pick y search-index 2 (strength 2 =
         // pri 0 / sec 2), uv index 0, cdef_bits 0.
-        let m55 = [[
-            [885_020u64, 900_992, 875_920, 892_836],
+        let m55 = [row(
+            [885_020, 900_992, 875_920, 892_836],
             [0, 0, 66_585_600, 66_585_600],
-        ]];
-        assert_eq!(finish_cdef_rd(&m55, 220), (0, 2, 0));
+        )];
+        assert_eq!(finish_cdef_rd(&m55, 4, 220), (0, 2, 0));
         // g64 q40 (qindex 160): pick y index 3 (strength 62 = pri 15 /
         // sec 2).
-        let m40 = [[
-            [271_716u64, 257_812, 260_308, 251_848],
+        let m40 = [row(
+            [271_716, 257_812, 260_308, 251_848],
             [0, 0, 66_585_600, 66_585_600],
-        ]];
-        assert_eq!(finish_cdef_rd(&m40, 160), (0, 3, 0));
+        )];
+        assert_eq!(finish_cdef_rd(&m40, 4, 160), (0, 3, 0));
         // g128 q20 (qindex 80), 4 filter blocks: pick y index 2
         // (strength 2), uv 0, bits 0 (CDEFPICK y=[2]).
         let uvrow = [0u64, 0, 66_585_600, 66_585_600];
         let m20 = [
-            [[51_440u64, 48_480, 47_460, 49_720], uvrow],
-            [[49_580, 46_280, 45_176, 47_436], uvrow],
-            [[52_756, 49_508, 48_144, 49_800], uvrow],
-            [[52_028, 48_140, 46_548, 48_664], uvrow],
+            row([51_440, 48_480, 47_460, 49_720], uvrow),
+            row([49_580, 46_280, 45_176, 47_436], uvrow),
+            row([52_756, 49_508, 48_144, 49_800], uvrow),
+            row([52_028, 48_140, 46_548, 48_664], uvrow),
         ];
-        assert_eq!(finish_cdef_rd(&m20, 80), (0, 2, 0));
+        assert_eq!(finish_cdef_rd(&m20, 4, 80), (0, 2, 0));
     }
 
     /// Damping steps exactly at the C breakpoints.
