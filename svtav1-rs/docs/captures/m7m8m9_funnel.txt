@@ -1,0 +1,44 @@
+# Instrumented C captures — leaf-funnel config + per-leaf winners for presets 7/8/9
+# Source: scratch build /root/svtav1-instr (SVT_M7DBG env-gated prints in
+# svt_aom_sig_deriv_enc_dec_allintra + svt_aom_product_full_mode_decision;
+# instrumented OBUs verified byte-identical to baseline. C v4.2.0-rc, all
+# EbDebugMacros feature macros = 1. Deleted after capture.
+
+## Config dump (M6 vs M7 vs M8 vs M9), gradient 64x64 q40/q55
+M7DBG CFG enc_mode=8 intra_level=7 prune_best=1 prune_edge=0 mode_end=9 ang=4 fi=0 nic_level=11 scal1=0 scal2=0 scal3=0 staging=1 mds1_base_th=1 rankf=3 mds2_base_th=1 reldev=5 mds3_base_th=1 skip_mds1=1 mds1_cls=75 mds2_cls=0 mds3_cls=0 txt_level=10 txt_en=1 txt_lt16=3 txt_ge16=2 txt_rate_th=50 satd_ee=10 satd_qw=1 txs_level=0 txs_en=0 txs_sq=0 txs_nsq=0 prevcoeff_exit=0 d1_txt_off=0 rate_est_level=4 upd_skip_dc=0 upd_skip_coeff=0 coeff_rate_lvl=2 chroma_level=5 uv_mode=1 cfl_level=0 rdoq_level=3 coeff_lvl=2 sse=3 mds0=0 pd0=1
+M7DBG CFG enc_mode=6 intra_level=6 prune_best=0 prune_edge=0 mode_end=9 ang=4 fi=2 nic_level=6 scal1=6 scal2=6 scal3=6 staging=1 mds1_base_th=1200 rankf=3 mds2_base_th=15 reldev=5 mds3_base_th=15 skip_mds1=0 mds1_cls=200 mds2_cls=10 mds3_cls=5 txt_level=8 txt_en=1 txt_lt16=5 txt_ge16=4 txt_rate_th=100 satd_ee=10 satd_qw=1 txs_level=3 txs_en=1 txs_sq=1 txs_nsq=0 prevcoeff_exit=1 d1_txt_off=3 rate_est_level=1 upd_skip_dc=1 upd_skip_coeff=1 coeff_rate_lvl=1 chroma_level=5 uv_mode=1 cfl_level=4 rdoq_level=3 coeff_lvl=2 sse=3 mds0=0 pd0=1
+M7DBG CFG enc_mode=7 intra_level=7 prune_best=1 prune_edge=0 mode_end=9 ang=4 fi=0 nic_level=7 scal1=4 scal2=4 scal3=4 staging=1 mds1_base_th=1200 rankf=3 mds2_base_th=15 reldev=5 mds3_base_th=15 skip_mds1=0 mds1_cls=200 mds2_cls=10 mds3_cls=5 txt_level=10 txt_en=1 txt_lt16=3 txt_ge16=2 txt_rate_th=50 satd_ee=10 satd_qw=1 txs_level=3 txs_en=1 txs_sq=1 txs_nsq=0 prevcoeff_exit=1 d1_txt_off=3 rate_est_level=4 upd_skip_dc=0 upd_skip_coeff=0 coeff_rate_lvl=2 chroma_level=5 uv_mode=1 cfl_level=0 rdoq_level=3 coeff_lvl=2 sse=3 mds0=0 pd0=1
+M7DBG CFG enc_mode=9 intra_level=8 prune_best=1 prune_edge=1 mode_end=9 ang=4 fi=0 nic_level=11 scal1=0 scal2=0 scal3=0 staging=1 mds1_base_th=1 rankf=3 mds2_base_th=1 reldev=5 mds3_base_th=1 skip_mds1=1 mds1_cls=75 mds2_cls=0 mds3_cls=0 txt_level=0 txt_en=0 txt_lt16=1 txt_ge16=1 txt_rate_th=0 satd_ee=0 satd_qw=0 txs_level=0 txs_en=0 txs_sq=0 txs_nsq=0 prevcoeff_exit=0 d1_txt_off=0 rate_est_level=0 upd_skip_dc=0 upd_skip_coeff=0 coeff_rate_lvl=0 chroma_level=5 uv_mode=1 cfl_level=0 rdoq_level=3 coeff_lvl=2 sse=3 mds0=0 pd0=7
+
+## Per-leaf winners g64 q40 (M6 | M7 | M8): org mode fi uv txdep tt0 ttuv mds3cnt
+-- preset 6 --
+M7DBG WIN org=(0,0) bsize=9 sq=32 mode=0 fi=0 uv=0 txdep=0 tt0=0 ttuv=0 rate=267453 dist=872400 cost=230378290 mds3cnt=4
+M7DBG WIN org=(32,0) bsize=9 sq=32 mode=0 fi=5 uv=0 txdep=0 tt0=0 ttuv=0 rate=267000 dist=963760 cost=240353896 mds3cnt=3
+M7DBG WIN org=(0,32) bsize=9 sq=32 mode=2 fi=5 uv=2 txdep=0 tt0=0 ttuv=2 rate=283091 dist=892320 cost=241190807 mds3cnt=3
+M7DBG WIN org=(32,32) bsize=9 sq=32 mode=2 fi=5 uv=2 txdep=0 tt0=0 ttuv=2 rate=276638 dist=868256 cost=244418738 mds3cnt=2
+-- preset 7 --
+M7DBG WIN org=(0,0) bsize=9 sq=32 mode=0 fi=5 uv=0 txdep=0 tt0=0 ttuv=0 rate=267416 dist=886608 cost=230378290 mds3cnt=3
+M7DBG WIN org=(32,0) bsize=9 sq=32 mode=2 fi=5 uv=2 txdep=0 tt0=0 ttuv=2 rate=268786 dist=952736 cost=240353896 mds3cnt=2
+M7DBG WIN org=(0,32) bsize=9 sq=32 mode=0 fi=5 uv=0 txdep=0 tt0=0 ttuv=0 rate=281456 dist=895648 cost=241190807 mds3cnt=2
+M7DBG WIN org=(32,32) bsize=9 sq=32 mode=2 fi=5 uv=2 txdep=0 tt0=0 ttuv=2 rate=272015 dist=889680 cost=244418738 mds3cnt=2
+-- preset 8 --
+M7DBG WIN org=(0,0) bsize=9 sq=32 mode=0 fi=5 uv=0 txdep=0 tt0=0 ttuv=0 rate=267416 dist=886608 cost=230378290 mds3cnt=1
+M7DBG WIN org=(32,0) bsize=9 sq=32 mode=0 fi=5 uv=0 txdep=0 tt0=0 ttuv=0 rate=266096 dist=965920 cost=240353896 mds3cnt=1
+M7DBG WIN org=(0,32) bsize=9 sq=32 mode=2 fi=5 uv=2 txdep=0 tt0=0 ttuv=2 rate=282777 dist=894080 cost=241190807 mds3cnt=1
+M7DBG WIN org=(32,32) bsize=9 sq=32 mode=2 fi=5 uv=2 txdep=0 tt0=0 ttuv=2 rate=271728 dist=889680 cost=244418738 mds3cnt=1
+
+## g64 q55 winners (M7 | M8 | M9): all DC — the op-2/op-3 divergence was the homegrown leaf, funnel picks DC
+-- preset 7 --
+M7DBG WIN org=(0,0) bsize=12 sq=64 mode=0 fi=5 uv=0 txdep=0 tt0=0 ttuv=0 rate=178686 dist=10963760 cost=1791569177 mds3cnt=3
+-- preset 8 --
+M7DBG WIN org=(0,0) bsize=12 sq=64 mode=0 fi=5 uv=0 txdep=0 tt0=0 ttuv=0 rate=178686 dist=10963760 cost=1791569177 mds3cnt=1
+-- preset 9 --
+M7DBG WIN org=(0,0) bsize=12 sq=64 mode=0 fi=5 uv=0 txdep=0 tt0=0 ttuv=0 rate=216526 dist=10963760 cost=1708208432 mds3cnt=1
+
+## (0,0) g64 q40 p7 per-candidate MDS0 fast + MDS3 full costs (the chroma-approx fix)
+M7DBG MDS0 org=(0,0) sq=32 itr=0 mode=0 fi=5 fc=110447613
+M7DBG MDS0 org=(0,0) sq=32 itr=0 mode=1 fi=5 fc=111452682
+M7DBG MDS0 org=(0,0) sq=32 itr=0 mode=2 fi=5 fc=111846564
+M7DBG FMD org=(0,0) sq=32 mode=0 fi=5 uv=0 txdep=0 rate=267416 dist=886608 full=243123564
+M7DBG FMD org=(0,0) sq=32 mode=2 fi=5 uv=2 txdep=0 rate=277785 dist=880352 full=247349473
+M7DBG FMD org=(0,0) sq=32 mode=1 fi=5 uv=1 txdep=0 rate=277030 dist=893648 full=248685353

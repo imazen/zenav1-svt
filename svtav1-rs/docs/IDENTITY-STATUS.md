@@ -1367,3 +1367,97 @@ reports **36 / 36 byte-identical** (scoreboard
 - The MDS3 chroma quantize prices RDOQ with the funnel's own chain
   tables; the walk codes the funnel's coefficients verbatim (no
   re-quantization), so decision == stream by construction.
+
+## 2026-07-14 (wave2, M7/M8/M9 leaf-funnel chunk): presets 6-10 COMPLETE — matrix 47 -> 60/132
+
+The C-exact leaf intra funnel now covers still/420 allintra presets 6, 7,
+8, and eff-M9 (presets >= 9 clamp to M9, enc_handle.c:4634). Every tracked
+identity cell at presets 6-10 (uniform + gradient, {64,128}, q{20,40,55})
+prints `VERDICT: streams IDENTICAL` — **60/60 for presets 6-10**, lifting
+the all-presets matrix from 47/132 to **60/132** (M0-M5 unchanged at 0/60;
+they run PD0_LVL_1 with lower intra/rdoq/txt levels — unported). Two commits.
+
+### Verified C config deltas (instrumented `svt_aom_sig_deriv_enc_dec_allintra` dump)
+
+Scratch build `/root/svtav1-instr` (SVT_M7DBG env-gated prints in
+enc_mode_config.c + product_coding_loop.c + mode_decision.c; instrumented
+OBUs byte-identical to baseline; deleted after). Config dump captured for
+M6/M7/M8/M9 (docs/captures/m7m8m9_funnel.txt):
+
+| field | M6 | M7 | M8 | eff-M9 |
+|-------|-----|-----|-----|-----|
+| intra_level | 6 | 7 | 7 | 8 |
+| prune_using_best_mode | 0 | 1 | 1 | 1 |
+| prune_using_edge_info (is_dc_only) | 0 | 0 | 0 | **1** |
+| filter_intra_level | 2 | **0** | **0** | 0 |
+| nic_level | 6 | 7 | 11 | 11 |
+| -> nic scaling nums | 6/6/6 | **4/4/4** | **0/0/0** | 0/0/0 |
+| -> nic bases (mds1/2/3) | 24/12/6 | 16/8/4 | 1/1/1 | 1/1/1 |
+| -> mds{1,2,3}_cand_base_th | 1200/15/15 | 1200/15/15 | **1/1/1** | 1/1/1 |
+| txt_level | 8 | 10 | 10 | **0 (off)** |
+| txs_level | 3 | 3 | **0 (off)** | 0 (off) |
+| rate_est_level | 1 | 4 | 4 | 0 |
+| -> update_skip_ctx_dc_sign_ctx | 1 (real) | **0** | 0 | 0 |
+| -> coeff_rate_est_lvl | 1 | 2 | 2 | 0 |
+| update_cdf_level | 2 (chain) | **0 (static)** | 0 | 0 |
+| cfl_level | 4 | **0** | 0 | 0 |
+| chroma_level / rdoq | 5 / f(coeff_lvl) | 5 / same | 5 / same | 5 / same |
+
+### The binding fixes (each proven by the differ + per-candidate C captures)
+
+1. **Chroma coeff-rate approximation (OPT_APPROX_COEFF_RATE)** — the term
+   that flipped M7 leaf picks. At coeff_rate_est_lvl >= 2 (M7/M8) the chroma
+   coeff bits are the eob-based `skip_chroma_rate_est` estimate
+   (full_loop.c:1922): th = (tx_w_uv*tx_h_uv)>>6; **eob==0 -> 0 bits**,
+   eob<th -> 3000+eob*500, else full. M6 (lvl 1) prices the real
+   cost_skip_txb (3578 for a flat-chroma DC skip). Per-candidate C captures
+   for g64 q40 p7 (0,0): C DC full 243123564 < H 247349473; our funnel had
+   DC 246592645 > H 244810199 (H wins) purely because it charged 3578x2 for
+   DC's flat-chroma skip that C charges 0 for. With the approximation:
+   DC wins, matching C.
+2. **prune_using_best_mode** (product_coding_loop.c:1688): the MDS0
+   order-dependent skip (H when V beats DC, SMOOTH when DC stays best) —
+   changes the candidate pool that reaches MDS3.
+3. **0/0 coeff contexts** (rate_est 4/0 -> update_skip_ctx_dc_sign_ctx 0):
+   all txb_skip/dc_sign/skip_coeff contexts priced at 0 in cost AND RDOQ
+   (cul never accumulates, full_loop.c:1880), unlike M6's real contexts.
+4. **txt off for eff-M9** (txt_level 0): DCT_DCT forced for every tx size,
+   incl. < 32 blocks. Without it the funnel over-searched a 16x16 dc-only
+   block and picked ext-tx index 3 where C (txt off) codes DCT (index 1).
+5. **NIC bases + M8/M9 = 1/1/1**: at nic 1/1/1 only the MDS0 SATD winner
+   reaches MDS3, so the mode is the SATD pick; TXS/coeff_rate_est_lvl
+   never affect a single-candidate MDS3.
+
+### eff-M9 routing + the is_dc_only gate
+
+eff-M9 partition trees are all-DC-winner across every tracked cell; only
+g64 q55's single 64x64 leaf is NON-dc-only (var 5425 >= 2000) — where the
+homegrown coder had picked SMOOTH but C's funnel picks DC (op-2 divergence).
+Routing all still/420 leaves through the funnel with the is_dc_only gate
+(dc_cand_only -> {DC_PRED} when the variance gate fires) closes g64 q55 p9
+and reproduces every dc-only leaf; the funnel's dc-only path needed txt-off
+(fix 4) to match. The per-SB CDF chain stays M6-only (update_cdf_level 0
+elsewhere -> static default tables).
+
+### Gates
+
+- identity matrix **60/60 for presets 6-10** (M6/M7/M8/M9/M10 all 12/12);
+  all-presets total **60/132** (M0-M5 unported).
+- `cargo test --workspace --no-fail-fast`: **613 passed / 0 failed**.
+- recon-parity **216/0** (eff-M9 funnel self-consistent on real content;
+  CDEF 127/216, wiener 58/216).
+- decode conformance **525/0 mono + 700/0 chroma** (aomdec + dav1d).
+
+### Residual gaps (none owns a preset 6-10 cell)
+
+- Presets 0-5: PD0_LVL_1 with lower intra_level (1/2/6), rdoq_level 1,
+  txt 2/3 — unported (0/60).
+- The M7/M8 funnel reuses M6's txt group counts (5/4) rather than 3/2
+  (txt_level 10); harmless because every tracked M7/M8 block is >= 32 ->
+  DCT-only. A tracked cell with a < 32 M7/M8 block would need the group
+  counts parameterized.
+- Mixed-frame chroma: a 420 eff-M9 frame with BOTH dc-only and non-dc-only
+  leaves would need the funnel decision chroma plane synced with the
+  fast-path leaves. No tracked cell mixes (g64 q55 is a single leaf);
+  routing all eff-M9 leaves through the funnel avoids the seam entirely.
+- CFL, avg_cdf_symbols (>2-SB-wide chains), mono: as before.

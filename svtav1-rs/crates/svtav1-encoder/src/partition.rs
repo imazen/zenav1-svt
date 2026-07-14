@@ -1329,10 +1329,20 @@ pub(crate) fn encode_fixed_tree(
     match tree {
         crate::pd0::Pd0Tree::Leaf(leaf_size) => {
             debug_assert_eq!(*leaf_size, size, "PD0 leaf size must match node size");
-            // M6 leaf funnel (presets 6..8, 4:2:0 still): the C-exact
+            // C-exact leaf funnel (presets 6/7/8/eff-M9, 4:2:0 still): the
             // MDS0/MDS1/MDS3 mode decision replaces the homegrown leaf
             // coder; the walk codes exactly what it decided.
             if let Some(fx) = funnel.as_deref_mut() {
+                // eff-M9 (intra_level 8) arms the is_dc_only variance gate;
+                // when it fires the funnel injects only DC. Dead at M6/M7/M8
+                // (dc_only_gate false -> full {DC,V,H,SMOOTH} candidate set).
+                let dc_only = fx.frame.cfg.dc_only_gate
+                    && crate::pd0::is_dc_only_safe(
+                        sb_vars,
+                        size,
+                        abs_x - sb_org.0,
+                        abs_y - sb_org.1,
+                    );
                 let choice = crate::leaf_funnel::decide_leaf(
                     fx,
                     src,
@@ -1343,6 +1353,7 @@ pub(crate) fn encode_fixed_tree(
                     abs_x,
                     abs_y,
                     size,
+                    dc_only,
                 );
                 let (qcoeffs, eob, tx_type) = if choice.tx_depth == 0 {
                     // Unpack the packed (<= 32-capped) txb into the full
