@@ -1380,7 +1380,18 @@ pub(crate) fn evaluate_leaf(
         frame_w: y_stride,
         frame_h: frame_h_px,
     };
-    let uv_geom = UnitGeom { ss: 1, ..y_geom };
+    // Chroma prediction geometry: for sub-8 chroma-ref blocks the unit
+    // is the PAIR (C predicts the ROUND_UV-anchored bsize_uv block), so
+    // the mi origin and luma dims are the pair's — the child's odd mi
+    // would desync the plane coords from the availability tables.
+    let uv_geom = UnitGeom {
+        mi_row: ((abs_y >> 3) << 3) >> 2,
+        mi_col: ((abs_x >> 3) << 3) >> 2,
+        bw_px: w.max(8),
+        bh_px: h.max(8),
+        ss: 1,
+        ..y_geom
+    };
     let filt_type_y = fx.ectx.filt_type_y(abs_x, abs_y);
     let filt_type_uv = fx.ectx.filt_type_uv(abs_x, abs_y);
 
@@ -2942,6 +2953,69 @@ mod tests {
     /// The chroma tx type derivation confirmed by the WIN dumps
     /// (ttuv 0/1/2/3 for DC/V/H/SMOOTH; DCT-only at >= 32) + the full
     /// g_intra_mode_to_tx_type rows the M5 ind-uv modes reach.
+    #[test]
+    fn txb_geometry_matches_c_tables() {
+        // Pinned against the instrumented tx_org/tx_blocks_per_depth/
+        // tx_depth_to_tx_size dump (intra rows; docs/captures/nsq_m2m3
+        // provenance): (w, h, depth) -> (txw, txh).
+        const CASES: [(usize, usize, u8, usize, usize); 16] = [
+            (64, 64, 1, 32, 32),
+            (64, 64, 2, 16, 16),
+            (32, 32, 2, 8, 8),
+            (16, 16, 2, 4, 4),
+            (64, 32, 0, 64, 32),
+            (64, 32, 1, 32, 32),
+            (64, 32, 2, 16, 16),
+            (32, 64, 2, 16, 16),
+            (64, 16, 1, 32, 16),
+            (64, 16, 2, 16, 16),
+            (16, 64, 2, 16, 16),
+            (32, 8, 1, 16, 8),
+            (32, 8, 2, 8, 8),
+            (16, 8, 2, 4, 4),
+            (4, 16, 1, 4, 8),
+            (4, 16, 2, 4, 4),
+        ];
+        for &(w, h, d, tw, th) in &CASES {
+            assert_eq!(txb_dims_at_depth(w, h, d), (tw, th), "{w}x{h} d{d}");
+        }
+    }
+
+    #[test]
+    fn m2_m3_funnel_cfg_matches_capture() {
+        // M5DBG CFG enc_mode=2/3 rows (docs/captures/m0m5_config_dlf.txt
+        // lines 12-13): txt satd 20, groups 6/6, rate 250; txs 2/2 with
+        // d1/d2 offsets 0; M2 nic case 3 (scal 12, mds1 1200/rank 0,
+        // mds2 30/rank 0/rel 0, mds3 25); M3 nic case 5 == M4.
+        for p in [2u8, 3] {
+            let c = FunnelCfg::for_preset(p);
+            assert_eq!(c.txt_satd_th, 20, "p{p}");
+            assert_eq!((c.txt_group_lt16, c.txt_group_ge16), (6, 6));
+            assert_eq!(c.txt_rate_th, 250);
+            assert_eq!((c.txs_max_sq, c.txs_max_nsq), (2, 2));
+            assert_eq!((c.txt_d1_off, c.txt_d2_off), (0, 0));
+            assert_eq!(c.mode_end, 12);
+            assert_eq!(c.angular_level, 1);
+            assert!(c.ind_uv_mds3);
+            assert_eq!(c.mds1_rank_factor, 0);
+            assert_eq!(c.mds2_rank_factor, 0);
+            assert_eq!(c.mds2_rel_dev_th, 0);
+        }
+        let m2 = FunnelCfg::for_preset(2);
+        assert_eq!(m2.nic_num, (12, 12, 12));
+        assert_eq!(m2.mds2_cand_base_th, 30);
+        assert_eq!(m2.mds3_cand_base_th, 25);
+        let m3 = FunnelCfg::for_preset(3);
+        assert_eq!(m3.nic_num, (6, 6, 6));
+        assert_eq!(m3.mds2_cand_base_th, 20);
+        assert_eq!(m3.mds3_cand_base_th, 15);
+        // M4 (txs level 3) unchanged by the M2/M3 additions.
+        let m4 = FunnelCfg::for_preset(4);
+        assert_eq!((m4.txs_max_sq, m4.txs_max_nsq), (1, 0));
+        assert_eq!((m4.txt_d1_off, m4.txt_d2_off), (3, 3));
+        assert_eq!(m4.txt_satd_th, 15);
+    }
+
     #[test]
     fn uv_tx_type_matches_c() {
         // SMOOTH_V -> ADST_DCT, SMOOTH_H -> DCT_ADST, PAETH -> ADST_ADST,

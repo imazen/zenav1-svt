@@ -118,7 +118,7 @@ fn main() {
                 // levels peak (the strongest recon-parity stress). The old
                 // {30, 50, 90} list ran as qindexes 30/50/63 pre-split.
                 for qp in [20u8, 43, 63] {
-                    for speed in [2u8, 4, 5, 6, 10] {
+                    for speed in [2u8, 3, 4, 5, 6, 10] {
                         let name = format!(
                             "{}_{}_{}{}_q{}_s{}",
                             if chroma { "c420" } else { "mono" },

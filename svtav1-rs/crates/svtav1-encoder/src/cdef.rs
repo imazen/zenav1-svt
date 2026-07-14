@@ -1011,14 +1011,20 @@ mod tests {
             [885_020, 900_992, 875_920, 892_836],
             [0, 0, 66_585_600, 66_585_600],
         )];
-        assert_eq!(finish_cdef_rd(&m55, 4, 220), (0, 2, 0));
+        assert_eq!(
+            finish_cdef_rd(&m55, 4, 220),
+            (0, alloc::vec![2], alloc::vec![0])
+        );
         // g64 q40 (qindex 160): pick y index 3 (strength 62 = pri 15 /
         // sec 2).
         let m40 = [row(
             [271_716, 257_812, 260_308, 251_848],
             [0, 0, 66_585_600, 66_585_600],
         )];
-        assert_eq!(finish_cdef_rd(&m40, 4, 160), (0, 3, 0));
+        assert_eq!(
+            finish_cdef_rd(&m40, 4, 160),
+            (0, alloc::vec![3], alloc::vec![0])
+        );
         // g128 q20 (qindex 80), 4 filter blocks: pick y index 2
         // (strength 2), uv 0, bits 0 (CDEFPICK y=[2]).
         let uvrow = [0u64, 0, 66_585_600, 66_585_600];
@@ -1028,7 +1034,10 @@ mod tests {
             row([52_756, 49_508, 48_144, 49_800], uvrow),
             row([52_028, 48_140, 46_548, 48_664], uvrow),
         ];
-        assert_eq!(finish_cdef_rd(&m20, 4, 80), (0, 2, 0));
+        assert_eq!(
+            finish_cdef_rd(&m20, 4, 80),
+            (0, alloc::vec![2], alloc::vec![0])
+        );
     }
 
     /// Damping steps exactly at the C breakpoints.

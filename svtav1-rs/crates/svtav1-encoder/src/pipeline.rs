@@ -1278,19 +1278,29 @@ impl EntropyCtx {
         width: usize,
         height: usize,
     ) {
-        let bl_w = Self::bsl_to_block_level(Self::bsl(width));
-        let bl_h = Self::bsl_to_block_level(Self::bsl(height));
-        if bl_w >= 5 || bl_h >= 5 {
-            return;
+        // C partition_context_lookup[bsize].above/.left — a pure function
+        // of the corresponding DIMENSION (the AL_PART_CTX NONE columns
+        // extended by the 4px value 0x1f). Sub-8 dims write the covering
+        // 8x8 cell (both siblings write the same byte, matching C's
+        // 4x4-granular arrays on readback).
+        fn dim_byte(dim: usize) -> u8 {
+            match dim {
+                4 => 0x1f,
+                8 => 0x1e,
+                16 => 0x1c,
+                32 => 0x18,
+                64 => 0x10,
+                _ => 0x00, // 128
+            }
         }
-        let above_val = AL_PART_CTX[0][bl_w][0];
-        let left_val = AL_PART_CTX[1][bl_h][0];
+        let above_val = dim_byte(width);
+        let left_val = dim_byte(height);
         let xb8 = x / 8;
         let yb8 = y / 8;
-        for i in xb8..(xb8 + width / 8).min(self.above_partition.len()) {
+        for i in xb8..(xb8 + (width / 8).max(1)).min(self.above_partition.len()) {
             self.above_partition[i] = above_val;
         }
-        for i in yb8..(yb8 + height / 8).min(self.left_partition.len()) {
+        for i in yb8..(yb8 + (height / 8).max(1)).min(self.left_partition.len()) {
             self.left_partition[i] = left_val;
         }
     }
@@ -1577,11 +1587,22 @@ fn encode_block_syntax(
     // live chroma recon written by previous blocks in coding order). The
     // min-8x8 luma policy guarantees the chroma block is exactly
     // (w/2, h/2) >= 4x4 and every block is a chroma reference.
-    let chroma_blocks = chroma.as_mut().map(|cp| {
-        let cw = decision.width as usize / 2;
-        let ch = decision.height as usize / 2;
-        let cx = block_x / 2;
-        let cy = block_y / 2;
+    // C `is_chroma_reference` (common_utils.h:315): sub-8 blocks carry
+    // chroma only at odd mi in the sub-8 dimension; the chroma unit is
+    // then the PAIR block (bsize_uv dims max(dim,8)/2 at the ROUND_UV
+    // origin). Non-ref blocks code NO chroma txbs and leave the chroma
+    // entropy contexts untouched (spec residual(): the chroma loop is
+    // skipped entirely).
+    let blk_has_uv = {
+        let bw_mi = decision.width as usize / 4;
+        let bh_mi = decision.height as usize / 4;
+        ((block_y / 4) % 2 == 1 || bh_mi % 2 == 0) && ((block_x / 4) % 2 == 1 || bw_mi % 2 == 0)
+    };
+    let chroma_blocks = chroma.as_mut().filter(|_| blk_has_uv).map(|cp| {
+        let cw = (decision.width as usize).max(8) / 2;
+        let ch = (decision.height as usize).max(8) / 2;
+        let cx = ((block_x >> 3) << 3) / 2 + if decision.width >= 8 { (block_x % 8) / 2 } else { 0 };
+        let cy = ((block_y >> 3) << 3) / 2 + if decision.height >= 8 { (block_y % 8) / 2 } else { 0 };
         if let Some((u_q, v_q, u_eob, v_eob, u_rec, v_rec)) = decision.chroma_dec.as_ref() {
             // Funnel-decided chroma (M6 leaf funnel): the decision phase
             // already predicted (per the decided uv_mode), quantized and
@@ -1888,12 +1909,13 @@ fn encode_block_syntax(
         }
 
         // Chroma txbs: plane 1 (U) then plane 2 (V), each one full-size
-        // (w/2 x h/2) transform with its own neighbor context state.
+        // (bsize_uv) transform with its own neighbor context state —
+        // PAIR dims/origin for sub-8 chroma-ref blocks.
         if let Some((u_q, _u_eob, v_q, _v_eob)) = chroma_blocks.as_ref() {
-            let cw = w / 2;
-            let ch = h / 2;
-            let cx = block_x / 2;
-            let cy = block_y / 2;
+            let cw = w.max(8) / 2;
+            let ch = h.max(8) / 2;
+            let cx = ((block_x >> 3) << 3) / 2 + if w >= 8 { (block_x % 8) / 2 } else { 0 };
+            let cy = ((block_y >> 3) << 3) / 2 + if h >= 8 { (block_y % 8) / 2 } else { 0 };
             let uv_tt = crate::leaf_funnel::uv_tx_type(decision.uv_mode, cw, ch);
             write_chroma_txb(
                 writer, coeff_fc, ectx, 0, cx, cy, cw, ch, u_q, base_q_idx, uv_tt,
@@ -1916,10 +1938,12 @@ fn encode_block_syntax(
             0,
         );
         if chroma_blocks.is_some() {
-            let cw = decision.width as usize / 2;
-            let ch = decision.height as usize / 2;
-            let cx = block_x / 2;
-            let cy = block_y / 2;
+            let cw = (decision.width as usize).max(8) / 2;
+            let ch = (decision.height as usize).max(8) / 2;
+            let cx =
+                ((block_x >> 3) << 3) / 2 + if decision.width >= 8 { (block_x % 8) / 2 } else { 0 };
+            let cy = ((block_y >> 3) << 3) / 2
+                + if decision.height >= 8 { (block_y % 8) / 2 } else { 0 };
             ectx.record_coeff_uv(0, cx, cy, cw, ch, 0);
             ectx.record_coeff_uv(1, cx, cy, cw, ch, 0);
         }
@@ -2055,7 +2079,19 @@ fn encode_partition_tree(
             match (*partition_type, children.len()) {
                 (crate::partition::PartitionType::Split, 4) => {
                     // PARTITION_SPLIT: 4 equal quarter-size children in Z-order.
-                    // Don't update partition context here — children do it.
+                    // Don't update partition context here — children do it —
+                    // EXCEPT the terminal 8x8 split (4x4 children write no
+                    // partition bytes; the decoder sets the 8x8 cell to the
+                    // SPLIT value, dav1d decode_sb BL_8X8).
+                    if half_w == 4 {
+                        ectx.update_partition_ctx(
+                            block_x,
+                            block_y,
+                            w,
+                            h,
+                            crate::partition::PartitionType::Split,
+                        );
+                    }
                     encode_partition_tree(
                         &children[0],
                         writer,
