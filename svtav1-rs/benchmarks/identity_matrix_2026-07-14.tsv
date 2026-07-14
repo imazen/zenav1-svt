@@ -65,7 +65,7 @@ uniform	128	55	7	IDENTICAL	-	-
 uniform	128	55	8	IDENTICAL	-	-
 uniform	128	55	9	IDENTICAL	-	-
 uniform	128	55	10	IDENTICAL	-	-
-gradient	64	20	0	DIFFERS	FH	cdef_y_sec_strength[0] C=2 Rust=3
+gradient	64	20	0	DIFFERS	tile	tile payload C=836B Rust=837B
 gradient	64	20	1	IDENTICAL	-	-
 gradient	64	20	2	IDENTICAL	-	-
 gradient	64	20	3	IDENTICAL	-	-
@@ -76,7 +76,7 @@ gradient	64	20	7	IDENTICAL	-	-
 gradient	64	20	8	IDENTICAL	-	-
 gradient	64	20	9	IDENTICAL	-	-
 gradient	64	20	10	IDENTICAL	-	-
-gradient	64	40	0	DIFFERS	FH	cdef_y_pri_strength[0] C=4 Rust=9
+gradient	64	40	0	IDENTICAL	-	-
 gradient	64	40	1	IDENTICAL	-	-
 gradient	64	40	2	IDENTICAL	-	-
 gradient	64	40	3	IDENTICAL	-	-
@@ -87,7 +87,7 @@ gradient	64	40	7	IDENTICAL	-	-
 gradient	64	40	8	IDENTICAL	-	-
 gradient	64	40	9	IDENTICAL	-	-
 gradient	64	40	10	IDENTICAL	-	-
-gradient	64	55	0	DIFFERS	FH	loop_filter_level[0] C=0 Rust=34
+gradient	64	55	0	IDENTICAL	-	-
 gradient	64	55	1	IDENTICAL	-	-
 gradient	64	55	2	IDENTICAL	-	-
 gradient	64	55	3	IDENTICAL	-	-
@@ -98,7 +98,7 @@ gradient	64	55	7	IDENTICAL	-	-
 gradient	64	55	8	IDENTICAL	-	-
 gradient	64	55	9	IDENTICAL	-	-
 gradient	64	55	10	IDENTICAL	-	-
-gradient	128	20	0	DIFFERS	FH	loop_filter_level[0] C=0 Rust=10
+gradient	128	20	0	DIFFERS	tile	tile payload C=2480B Rust=2485B
 gradient	128	20	1	IDENTICAL	-	-
 gradient	128	20	2	IDENTICAL	-	-
 gradient	128	20	3	IDENTICAL	-	-
@@ -109,7 +109,7 @@ gradient	128	20	7	IDENTICAL	-	-
 gradient	128	20	8	IDENTICAL	-	-
 gradient	128	20	9	IDENTICAL	-	-
 gradient	128	20	10	IDENTICAL	-	-
-gradient	128	40	0	DIFFERS	FH	loop_filter_level[0] C=0 Rust=22
+gradient	128	40	0	IDENTICAL	-	-
 gradient	128	40	1	IDENTICAL	-	-
 gradient	128	40	2	IDENTICAL	-	-
 gradient	128	40	3	IDENTICAL	-	-
@@ -120,7 +120,7 @@ gradient	128	40	7	IDENTICAL	-	-
 gradient	128	40	8	IDENTICAL	-	-
 gradient	128	40	9	IDENTICAL	-	-
 gradient	128	40	10	IDENTICAL	-	-
-gradient	128	55	0	DIFFERS	FH	cdef_y_pri_strength[0] C=6 Rust=13
+gradient	128	55	0	IDENTICAL	-	-
 gradient	128	55	1	IDENTICAL	-	-
 gradient	128	55	2	IDENTICAL	-	-
 gradient	128	55	3	IDENTICAL	-	-
