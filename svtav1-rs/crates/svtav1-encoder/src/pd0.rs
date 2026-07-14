@@ -592,8 +592,14 @@ pub struct TxTypeRatesDc {
 }
 
 pub(crate) fn build_tx_type_rates_dc() -> TxTypeRatesDc {
+    let fc = svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(0);
+    build_tx_type_rates_dc_from_fc(&fc)
+}
+
+pub(crate) fn build_tx_type_rates_dc_from_fc(
+    fc: &svtav1_entropy::coeff_c::CoeffFc,
+) -> TxTypeRatesDc {
     use svtav1_entropy::coeff_c as cc;
-    let fc = cc::CoeffFc::default_for_qindex(0);
     let mut rates = TxTypeRatesDc { tx8: 0, tx16: 0 };
     for (tx_size, slot) in [(1usize, 0usize), (2, 1)] {
         // TX_8X8 = 1, TX_16X16 = 2 in the C TxSize enum.
@@ -872,13 +878,72 @@ enum Pd0Mode {
 pub struct M6Pd0Tables {
     pub coeff: alloc::boxed::Box<crate::quant::CoeffCostTables>,
     tx_rates: TxTypeRatesDc,
+    /// PARTITION_SPLIT rate per square size (index by log2(sq) - 3:
+    /// 8/16/32/64), from THIS SB's chained partition CDFs (ctx row 0).
+    split_bits: [u64; 4],
+    /// `partition_fac_bits[0][PARTITION_NONE]` (context index 0 — the
+    /// 8x8-class row, rd_cost.c:1344-1349 approximation).
+    none_bits_ctx0: u64,
+    /// `skip_fac_bits[0][0]`.
+    skip0_bits: u64,
 }
 
 /// Build the PD0_LVL_1 tables for a frame (default CDFs at `qindex`).
 pub fn build_m6_pd0_tables(qindex: u8) -> M6Pd0Tables {
+    let fc = svtav1_entropy::context::FrameContext::new_default();
+    let cfc = svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(qindex);
+    build_m6_pd0_tables_from_ctx(&fc, &cfc)
+}
+
+/// [`build_m6_pd0_tables`] over an ARBITRARY (chained) context pair — the
+/// per-SB `ec_ctx_array[sb]` rate refresh C runs at update_cdf_level 2
+/// (enc_dec_process.c:3024-3043; the drifting 64x64 SPLIT rates
+/// 1195 -> 1221 -> 1244 -> 1268 across g128 q55's SBs come from here).
+pub fn build_m6_pd0_tables_from_ctx(
+    fc: &svtav1_entropy::context::FrameContext,
+    cfc: &svtav1_entropy::coeff_c::CoeffFc,
+) -> M6Pd0Tables {
+    // partition ctx row for sub-context 0 of each size class: bsl*4
+    // (pipeline EntropyCtx::partition_ctx semantics; nsyms 10 for the
+    // square 8..64 classes at ctx rows 0..=15 except row 0 = 4 syms).
+    let mut split_bits = [0u64; 4];
+    let mut none_bits_ctx0 = 0u64;
+    for (slot, sq) in [(0usize, 8usize), (1, 16), (2, 32), (3, 64)] {
+        let bsl = match sq {
+            8 => 0usize,
+            16 => 1,
+            32 => 2,
+            _ => 3,
+        };
+        let ctx = bsl * 4;
+        let nsyms = if ctx <= 3 { 4 } else { 10 };
+        let mut costs = [0i32; 10];
+        crate::quant::syntax_rate_from_cdf(&mut costs[..nsyms], &fc.partition_cdf[ctx]);
+        split_bits[slot] = costs[crate::partition::PartitionType::Split as usize] as u64;
+        if sq == 8 {
+            none_bits_ctx0 = costs[crate::partition::PartitionType::None as usize] as u64;
+        }
+    }
+    let mut skip_costs = [0i32; 2];
+    crate::quant::syntax_rate_from_cdf(&mut skip_costs, &fc.skip_cdf[0]);
     M6Pd0Tables {
-        coeff: crate::quant::build_coeff_cost_tables(qindex),
-        tx_rates: build_tx_type_rates_dc(),
+        coeff: crate::quant::build_coeff_cost_tables_from_fc(cfc),
+        tx_rates: build_tx_type_rates_dc_from_fc(cfc),
+        split_bits,
+        none_bits_ctx0,
+        skip0_bits: skip_costs[0] as u64,
+    }
+}
+
+impl M6Pd0Tables {
+    #[inline]
+    fn split_bits(&self, sq_size: usize) -> u64 {
+        self.split_bits[match sq_size {
+            8 => 0,
+            16 => 1,
+            32 => 2,
+            _ => 3,
+        }]
     }
 }
 
@@ -1032,7 +1097,7 @@ impl<'a> Pd0Ctx<'a> {
         } else {
             cost_coeffs_txb_pd0(&qcoeff, eob, c_tx, &tables.coeff, &tables.tx_rates) as u64
         };
-        let rate = bits + skip0_bits() + partition_none_bits_ctx0();
+        let rate = bits + tables.skip0_bits + tables.none_bits_ctx0;
         rdcost(self.lambda, rate, dist)
     }
 
@@ -1067,7 +1132,11 @@ impl<'a> Pd0Ctx<'a> {
         let mut split_cost = match self.mode {
             Pd0Mode::Lvl6 => 0,
             Pd0Mode::Lvl5 => rdcost(self.lambda, 2 * partition_split_bits(sq_size), 0),
-            Pd0Mode::Lvl1 => rdcost(self.lambda, partition_split_bits(sq_size), 0),
+            Pd0Mode::Lvl1 => rdcost(
+                self.lambda,
+                self.lvl1.expect("LVL_1 requires tables").split_bits(sq_size),
+                0,
+            ),
         };
 
         let half = sq_size / 2;

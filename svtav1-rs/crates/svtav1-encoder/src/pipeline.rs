@@ -2160,6 +2160,7 @@ fn encode_tile_rows(
         } else {
             None
         };
+        #[allow(unused_mut)]
         let fun_frame = if use_funnel {
             let cq = c_quant.as_ref().unwrap();
             Some(crate::leaf_funnel::FunnelFrame {
@@ -2171,6 +2172,32 @@ fn encode_tile_rows(
         } else {
             None
         };
+        // Per-SB CDF refresh chain (C update_cdf_level 2 at M4..M6:
+        // ec_ctx_array[sb] copied per the left/top-right rule at SB
+        // configure, evolved by that SB's coded symbols, and the MD rate
+        // tables rebuilt from the copy — enc_dec_process.c:2991-3043).
+        // The evolution is simulated by re-coding each decided SB through
+        // the real entropy walk against the chain contexts (bypass-encdec
+        // makes MD symbols == coded symbols, so the funnel-consumed CDF
+        // rows — kf_y/uv/angle/fi/skip/tx_size/coeff — evolve exactly like
+        // C's). Frames wider than 2 SBs would need avg_cdf_symbols
+        // (left 3x + top-right 1x) — unimplemented: such SBs fall back to
+        // the left-only copy (no identity-matrix frame is that wide).
+        let multi_sb = sb_cols * sb_rows > 1;
+        let mut chain_snaps: Vec<(
+            svtav1_entropy::context::FrameContext,
+            alloc::boxed::Box<svtav1_entropy::coeff_c::CoeffFc>,
+        )> = Vec::new();
+        let mut sim_ectx = if use_funnel && multi_sb {
+            Some(EntropyCtx::new(w / 4, h / 4, true))
+        } else {
+            None
+        };
+        let mut sim_geom = crate::deblock::DeblockGeom::new(w, h);
+        let mut sim_u = alloc::vec![128u8; if use_funnel && multi_sb { cwid * chgt } else { 0 }];
+        let mut sim_v = alloc::vec![128u8; if use_funnel && multi_sb { cwid * chgt } else { 0 }];
+        let mut sim_prev_sb_row = usize::MAX;
+        let mut fun_rates = fun_rates;
         let mut tile_decisions: Vec<crate::partition::BlockDecision> = Vec::new();
         let mut tile_trees: Vec<crate::partition::PartitionTree> = Vec::new();
         let mut tile_frame_recon = alloc::vec![128u8; w * h];
@@ -2252,6 +2279,39 @@ fn encode_tile_rows(
                 // directly into — the live frame buffer, exactly like the
                 // decoder (fixes within-SB predictions that previously fell
                 // back to 128).
+                // Chain: select this SB's context base per the C rule and
+                // rebuild the funnel rate tables from it.
+                let sb_index = sb_row * sb_cols + sb_col;
+                let chain_base = if use_funnel && multi_sb {
+                    let left_avail = sb_col > 0;
+                    let topright_avail = sb_row > 0 && sb_col + 1 < sb_cols;
+                    if left_avail {
+                        // (both-available would additionally avg the
+                        // top-right at 3:1 — left-only fallback, see above)
+                        Some(chain_snaps[sb_index - 1].clone())
+                    } else if topright_avail {
+                        Some(chain_snaps[sb_index - sb_cols + 1].clone())
+                    } else if sb_row > 0 && sb_cols == 1 {
+                        // single-column frame: C's top-right is unavailable
+                        // and left is unavailable -> md_frame_context
+                        None
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                if use_funnel && multi_sb {
+                    fun_rates = Some(match &chain_base {
+                        Some((fc, cfc)) => crate::leaf_funnel::build_md_rates(fc, cfc),
+                        None => {
+                            let fc = svtav1_entropy::context::FrameContext::new_default();
+                            let cfc =
+                                svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex);
+                            crate::leaf_funnel::build_md_rates(&fc, &cfc)
+                        }
+                    });
+                }
                 let sb_result = if use_pd0 {
                     let tree = if speed_config.preset >= 9 {
                         crate::pd0::pd0_pick_sb_partition(
@@ -2263,6 +2323,25 @@ fn encode_tile_rows(
                             sb_qindex,
                         )
                     } else {
+                        // Per-SB PD0 rate tables from the chain (C rebuilds
+                        // rate_est_table from ec_ctx_array[sb] BEFORE the
+                        // SB's PD0 runs — the drifting SPLIT rates).
+                        let chained_tables = if use_funnel && multi_sb {
+                            Some(match &chain_base {
+                                Some((fc, cfc)) => {
+                                    crate::pd0::build_m6_pd0_tables_from_ctx(fc, cfc)
+                                }
+                                None => crate::pd0::build_m6_pd0_tables(sb_qindex),
+                            })
+                        } else {
+                            None
+                        };
+                        let tables = match &chained_tables {
+                            Some(t) => t,
+                            None => m6_pd0_tables.get_or_insert_with(|| {
+                                crate::pd0::build_m6_pd0_tables(sb_qindex)
+                            }),
+                        };
                         crate::pd0::pd0_pick_sb_partition_m6(
                             encode_input,
                             w,
@@ -2270,9 +2349,7 @@ fn encode_tile_rows(
                             y0,
                             cli_qp as u32,
                             sb_qindex,
-                            m6_pd0_tables.get_or_insert_with(|| {
-                                crate::pd0::build_m6_pd0_tables(sb_qindex)
-                            }),
+                            tables,
                         )
                     };
                     // The same per-SB variance map C's picture analysis
@@ -2327,6 +2404,52 @@ fn encode_tile_rows(
                         ref_ctx.as_ref(),
                     )
                 };
+
+                // Chain: evolve this SB's contexts by re-coding the decided
+                // tree (throwaway arithmetic state; only the CDF updates
+                // matter) and snapshot them for the following SBs.
+                if use_funnel && multi_sb {
+                    let (mut fc, mut cfc) = chain_base.unwrap_or_else(|| {
+                        (
+                            svtav1_entropy::context::FrameContext::new_default(),
+                            svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex),
+                        )
+                    });
+                    if let Some(tree) = sb_result.tree.as_ref() {
+                        let se = sim_ectx.as_mut().unwrap();
+                        if sb_row != sim_prev_sb_row {
+                            se.reset_left_for_sb_row();
+                            sim_prev_sb_row = sb_row;
+                        }
+                        let (u_src, v_src) = chroma_src.unwrap();
+                        let mut sim_writer =
+                            svtav1_entropy::writer::AomWriter::new(w * h * 2 + 256);
+                        let mut sim_chroma = Some(ChromaPass {
+                            u_src,
+                            v_src,
+                            u_recon: &mut sim_u,
+                            v_recon: &mut sim_v,
+                            stride: cwid,
+                            qindex: base_qindex,
+                            c_quant: None,
+                        });
+                        encode_partition_tree(
+                            tree,
+                            &mut sim_writer,
+                            &mut fc,
+                            &mut cfc,
+                            base_qindex,
+                            se,
+                            true,
+                            x0,
+                            y0,
+                            &mut sim_chroma,
+                            &mut sim_geom,
+                        );
+                    }
+                    chain_snaps.push((fc, cfc));
+                    debug_assert_eq!(chain_snaps.len(), sb_index + 1);
+                }
 
                 // Keep the per-SB recon list layout for downstream consumers.
                 let mut sb_recon = alloc::vec![0u8; cur_w * cur_h];
