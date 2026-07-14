@@ -2159,3 +2159,99 @@ of the x=36/x=44 4x16 blocks at M0 q20 (which fi/H candidate C ranks where).
   matrix re-verified byte-identical at opt-2 (opt-level does not affect
   bit-exactness — no FMA contraction without target-feature=+fma), ~faster
   rebuilds for iteration.
+
+## 2026-07-14 (wave2, real-image M10 chunk): PD0 partition RD — the input-resolution coeff-rate term (first real-content C-exactness fix)
+
+First diagnosis + fix driven by the CID22 real-image harness
+(`tools/real_image_matrix.sh`, 0/66 byte-identical vs 130/132 synthetic).
+Target: **preset 10 (eff-M9)**, the cleanest real cell — its FH already
+matches C (closed-form LF + qp CDEF ported), so the divergence is pure
+partition/mode/tx RD. Cell: `1001682.png 512x512 q40 p10`.
+
+### Localization (differ + tree dump, no code change)
+
+- Differ first divergence: **tile op 9460**, a 64x64 partition symbol
+  (CDF nsyms=10, `icdf=[8303,7518,6666]`, `rng=47188` — identical CDF+state
+  on both sides): **C codes s=0 (PARTITION_NONE), Rust codes s=3
+  (PARTITION_SPLIT)**. Pure decision divergence; 68 partition symbols
+  matched before it.
+- `SVTAV1_DUMP_TREE=1` + partition-symbol counting maps op 9460 to the
+  **64x64 superblock at (x=256, y=192)** = sb_index 28, mi(48,64). At
+  preset >= 9 the whole tree is `pd0::pd0_pick_sb_partition`
+  (`encode_fixed_tree`), so this is a PD0 partition-tree divergence.
+
+### Root cause (scratch-C instrumented, byte-identical-verified, then deleted)
+
+Instrumented `/root/svtav1-instr` (2 TUs recompiled with the exact CODEC
+flags, `ar r` into a *copy* of `libSvtAv1Enc.a`; env-gated prints; OBUs
+byte-identical to baseline with the env unset — proven before trusting).
+Captured C's per-block PD0 costs for SB 28 vs Rust's (`SVTAV1_PD0DBG`):
+
+- Variance + detector **byte-identical**: `var64=314 var32=1140 var16=4096
+  th=4762 -> demote to PD0_LVL_5` on both sides. Not the cause.
+- Every LVL_5 block cost was **uniformly lower in Rust by exactly 775,647**
+  (64x64, all 32x32, all 16x16, all 8x8 — same delta everywhere). An
+  exactly-constant offset proves the transform/quant/distortion/eob are
+  already C-exact; only a fixed per-block **rate** term differs.
+  `775,647 = (1600*lambda + 256) >> 9` at lambda 248207 -> the missing
+  rate is **1600 per block**.
+- 64x64 decision (C | Rust before fix):
+  parent `767,309,306 | 766,533,659`; split `773,289,166 | 765,532,696`.
+  The per-leaf 1600 accumulates: the 10-leaf split loses `10 * 775,647 =
+  7,756,470` while the NONE parent loses only `1x` -> C picks NONE (parent
+  < split by 0.78%), Rust flips to SPLIT.
+
+**The bug:** `perform_tx_pd0` at `coeff_rate_est_lvl == 0`
+(product_coding_loop.c:4579) sets
+`y_coeff_bits = 5000 + input_resolution_factor[input_resolution]*1600 +
+100*eob`, with `input_resolution_factor[7] = {0,1,2,3,4,4,4}`. Rust's
+`pd0::lvl5_block_cost` hardcoded `5000 + 100*eob` (factor 0). For 512x512
+the picture is `INPUT_SIZE_360p_RANGE` (262144 px; `240p_TH(0x28500) <=
+262144 < 360p_TH(0x4CE00)`, sequence_control_set.c:120) -> factor **1** ->
++1600/block. The 64/128 synthetic cells are both < 240p_TH -> factor 0,
+which is exactly why synthetic identity never exposed this.
+
+### The fix (`pd0.rs`, `pipeline.rs`)
+
+- New `pd0::input_resolution_factor(pixels)` — verbatim
+  `svt_aom_derive_input_resolution` thresholds mapped through the factor
+  table.
+- Threaded `ires_factor` into `Pd0Ctx`; `lvl5_block_cost` now uses
+  `5000 + self.ires_factor*1600 + 100*eob`. Pipeline computes it from the
+  frame `w*h` (LVL_1/LVL_6 paths pass 0 — the term is LVL_5-only).
+- Post-fix SB 28 costs reproduce C **exactly** (parent 767,309,306, split
+  773,289,166 -> NONE), verified with the same instrumentation.
+
+### Differ delta + gates
+
+- `1001682 q40 p10`: first divergence **op 9460 -> op 20836** (2.2x more
+  matching ops); Rust tile 10,904 -> 10,769 B (C 10,874), op count
+  100,603 -> 98,838 (C 99,104). The partition tree now tracks C through
+  the fixed-tree walk.
+- Multi-cell (p10): `1424246 q40` first divergence at **op 49440** (Rust
+  6967 B vs C 6966 — off by one byte); `1147124 q40` at **op 553** — its 6
+  partition symbols all match C, the divergence is the CDF3 leaf below.
+  Across images the partition layer now agrees with C; what's left is a
+  single new class (below).
+- Synthetic identity matrix (presets 0-10): **130/132** — unchanged (2 =
+  pre-existing M0 gradient q20 residual). Factor 0 for all 64/128 cells.
+- `cargo test --workspace`: **662/0** (pd0 cost tests
+  `lvl5_block_costs_match_c_q40`, `gradient64_trees_match_c` etc. green —
+  they pass ires_factor 0 for 64x64 frames).
+- recon_parity: **432/0** (AOMDEC=/root/aomdec-build/aomdec; CDEF fired on
+  236/432, wiener on 137/432 — the fix is on the still allintra path only).
+
+### Next divergence (op 20836 — NOT this chunk)
+
+After the fix the remaining first divergence is consistently a **CDF
+nsyms=3, C s=1 vs Rust s=0** (same CDF+rng) on a PARTITION_NONE leaf,
+right after partition/skip/y_mode(DC)/uv_mode(DC) — seen at op 20836 for
+`1001682` and op 553 for `1147124`. That CDF3 is the **tx_depth / tx-size
+symbol** (`tx_size_cdf`): C picks depth 1 (split the TX once), Rust picks
+depth 0 (largest TX). So the next real-content gap is the **per-leaf
+TX-size RD at eff-M9** (the funnel's TXS decision in
+`leaf_funnel.rs`/`quant.rs`): C evaluates splitting the transform and its
+RD favors depth 1 on these blocks where ours keeps depth 0. Needs the
+same per-candidate C capture (tx_size RD for the diverging leaf) to pin
+whether it's a missing TXS candidate, a cost term, or a threshold. Left
+documented, not chased (this chunk = smallest fully-verified fix).
