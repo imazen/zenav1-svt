@@ -1808,3 +1808,158 @@ M0 (cplx 0 -> CFL evaluated per block: the CFL port becomes binding),
 fi_max 4 at M0 (all five filter-intra modes). Attack order per the
 prior plan: M2/M3 first (nsq_search + bypass_encdec=0 + 4x4 on top of
 the now-complete M4 base), then M1/M0.
+
+## 2026-07-14 (wave2, M2+M3 NSQ chunk): presets 2 and 3 COMPLETE — matrix 108 -> 120/132, presets 2-10 all 108/108
+
+Session scope: the 12 gradient M2/M3 cells (M3 first per the plan).
+Fresh instrumentation in `/root/svtav1-instr` (SVT_NSQDBG prints:
+per-shape BLK/SKIP/SHAPE/ABORT rows with gate ids, TS/TSX inter-depth
+compares, TREE dumps, PD0B per-node PD0 evals, NSQCFG runtime rows,
+PSQ residual checksums + buffer-pointer traces; **all instrumented
+OBUs byte-identical to baseline** before trusting any dump; scratch
+deleted after). Captures committed:
+`docs/captures/nsq_m2m3/*.nsq` (12 cells). Rust mirrors the dump
+format under `SVTAV1_NSQDBG=1` (depth_refine.rs) so MD walks diff
+line-by-line against C.
+
+### Verified M2/M3 deltas vs M4 (C cites + capture evidence)
+
+- **nsq_geom level 2** (svt_aom_set_nsq_geom_ctrls case 2,
+  enc_mode_config.c:6427): min_nsq 0, allow_HV4 1, **allow_HVA_HVB 0**
+  — the d1 shape set is N/H/V/H4/V4 only (Part-enum order, H4/V4
+  before the AB shapes; set_blocks_to_test enc_dec_process.c:1403);
+  8x8 nodes test N/H/V; 4x4 none.
+- **nsq_search levels** (svt_aom_get_nsq_search_level_allintra
+  :11936: base M2 14 / M3 16; seq_qp_mod=2 unconditional,
+  enc_handle.c:4221 -> +3/+2/+1 at qp<=39/45/48, -1 at qp>59):
+  M3 19/18/16 and M2 17/16/14 at qp 20/40/55 — NSQCFG
+  capture-verified. set_nsq_search_ctrls rows :6496-6786 + the tail:
+  nsq_qp_based_th_scaling=0 for allintra <= M3
+  (set_qp_based_th_scaling_ctrls_all_intra, enc_handle.c:4085) so
+  thresholds stay RAW except the unconditional max_part0_to_part1_dev
+  -= 5 (:6797).
+- **The four NSQ gates** (get_skip_processing_nsq_block :10826, in
+  order): split-rate cluster (:10181 — nsq_split_cost_th with the
+  lte16 offset SUBTRACTED min 1, H_vs_V/non_HV rate ratios with the
+  offset ADDED, lower_depth_split_cost_th on split_flag nodes,
+  component_multiple_th over RDCOST(rate,0) vs RDCOST(0,dist));
+  parent-SQ TXS (:10533, psq lvl 1 at search levels 17-19: hv_to_sq
+  1000 / h_to_v 100 over `non_normative_txs` min-eob H/V re-splits);
+  recon-dist quadrants (:10317 — parent-mode modulated max_dev, C's
+  ratio-assignment quirk in the >max_ratio arm ported verbatim);
+  sq/hv-weight (:10454, CONSERVATIVE_OFFSET_0=5 for H4/V4; the HA/HB
+  coeff arms are geometry-dead). faster_md_settings_nsq is
+  I-slice-dead (:11470 gates on slice_type != I_SLICE).
+- **test_depth d1 loop** (:11396): per-shape partition rate at the
+  node's real (left, above) contexts, per-child funnel evals with
+  neighbour commits between children, the running-best abort
+  (part_cost >= rdc.rd_cost AFTER adding each child), and the
+  copy_neighbour_arrays [0]<->[1] save/restore — expressed as node
+  snapshots (EntropyCtx clone + recon rects) restored at each
+  subsequent shape / before the split walk / before the winner
+  commit (state-equivalent: every write spans exactly its block).
+- **txt_level 2** (case 2): satd_early_exit_th_intra 20 (vs 15),
+  groups 6/6 + rate_th 250 unchanged. **txs_level 2**
+  (set_txs_controls :7992): intra max depth sq/nsq 2/2 (vs 1/0),
+  depth1/2_txt_group_offset 0/0 (vs 3/3). TX geometry for rect + depth
+  2 from tx_depth_to_tx_size / tx_blocks_per_depth / intra tx_org
+  (common_utils.c:95 / transforms.c:22,48 — instrument-dumped, plain
+  raster everywhere, sub_tx chain halves the long dim; pinned by
+  txb_geometry_matches_c_tables).
+- **update_cdf_level 1 vs 2**: set_cdf_controls (:12047) differs only
+  in update_mv, forced 0 on I-slices — NO funnel/chain impact (the
+  per-SB CDF chain gate extended 2..=6).
+- **bypass_encdec=0** (svt_aom_get_bypass_encdec_allintra :12037,
+  <= M3): the encode pass re-runs prediction/TX/quant per block
+  (perform_intra_coding_loop, coding_loop.c:722) — verified a NO-OP
+  for our still/420 path: same quantize_inv_quantize (is_encode_pass
+  only bypasses the rdoq dct_dct_only/skip_uv exemptions, both 0
+  here; full_loop.c:1750-1760), same contexts once trees match, and
+  MD recon is already conformant. Zero port surface; byte-identity
+  confirms.
+- **PD0 at M2/M3**: identical LPD0 config to M4/M5 EXCEPT
+  disallow_4x4=0 (svt_aom_get_disallow_4x4_allintra :11638 <= M3 ->
+  false) -> min_sq 4 (set_blocks_to_be_tested, enc_dec_process.c:
+  1494): C's PD0 evaluates 4x4 blocks (PD0B dumps: 2903 4x4 evals
+  across the 12 cells) — pd0.rs walks one more level (Tx4x4 in
+  tx_quant_core). PD1 refinement e-caps drop the disallow_4x4 arms
+  (set_start_end_depth :1811). PD0 trees still bottom out at 32x32
+  on every tracked cell; PD1 never admits below 16x16.
+- **wn_filter level 3** (get_wn_filter_level_allintra :1928 <= M3):
+  use_refinement=1 + max_one_refinement_step — already ported
+  (restoration.rs finer_tile_search_wiener); binds on the cells where
+  wiener signals.
+
+### The two C quirks the differ caught
+
+1. **psq residual = the LAST MDS3 candidate's depth-0 residual** —
+   NOT the winner's. Buffer-pointer instrumentation proved ALL MDS3
+   candidates share ONE residual workspace (the per-candidate RESW
+   rows show PAETH 25097 -> H 25526 -> DC 30140 into the same
+   pointer, and non_normative_txs reads 30140); depth-1/2 trials
+   write the per-depth scratch buffers (init_tx_cand_bf copies OUT,
+   :5160), so the base buffer keeps the last candidate's DEPTH-0
+   residual. LeafEval.psq_resid implements exactly that.
+2. **Multi-strength CDEF finally binds** (g128 q40 p3: C picks
+   nb_strengths=2). Landed the full finish_cdef_search nb loop +
+   per-fb best_gi (enc_cdef.c:1369-1435, zero_fs_cost_bias=0 at
+   allintra <= M7 per cdef_recon_level 0 :3602), FH cdef_bits +
+   (1<<bits) strength pairs (obu::CdefSignal), the per-SB cdef_idx
+   literal at the first non-skip block (write_cdef,
+   entropy_coding.c:4034-4065; EntropyCtx.cdef_pending armed per SB),
+   per-fb application, and a cdef re-walk when bits > 0 (recon-
+   neutral, same pattern as the LR re-walk; the LR re-walk carries
+   the cdef state too). Gap 2a is now CLOSED for the still path.
+
+### M2 extras (the 3 cells the M3 port didn't already close)
+
+- **is_chroma_reference pairing** (common_utils.h:315): the V4-at-16
+  4x16 children (12 evals, q40 cells only) carry chroma only at odd
+  mi_col; chroma-ref children evaluate the PAIR block (bsize_uv
+  max(dim,8)/2 at ROUND_UV origins), non-ref children price ZERO
+  chroma (fast rate rd_cost.c:619 has_uv gate; no chroma full loop,
+  no skip-txb bits, no commit writes).
+- **64x16/16x64 three_quad folds** (svt_handle_transform64x16_c,
+  transforms.c:3223): cols 32.. over h rows — the H4-at-64 eval read
+  past the coefficient buffer before this fix.
+
+### Gates (all green, verbatim tallies)
+
+- identity matrix FULL sweep: **120 / 132 byte-identical**
+  (benchmarks/identity_matrix_2026-07-14.tsv + .meta regenerated) —
+  presets 2-10: 108/108; presets 0-1: every uniform cell identical,
+  all 12 gradient cells divergent.
+- `IM_PRESETS="3 4 5 6 7 8 9 10" identity_matrix.sh check`: **96/96**
+  (mid-session), `IM_PRESETS="2 3 4 5 6 7 8 9 10"`: **108/108**
+  (close-out).
+- recon_parity: **324 passed, 0 failed** (speed 3 ADDED to the gate —
+  the funnel now owns presets 2/3; CDEF fired 176/324 streams,
+  2313760 px filtered / 920602 changed; LR wiener 104/324, 178 RUs).
+- decode conformance (aomdec AND dav1d, speed 3 added): mono
+  **735/0**, chroma **980/0**.
+- `cargo test --workspace --no-fail-fast`: **36 suites, 628 passed,
+  0 failed** (+3 pins: txb geometry vs the C dump, M2/M3 funnel cfg,
+  NsqCfg rows vs the NSQCFG captures; finish_cdef_rd pins updated to
+  the new full-lev return SHAPE, same values).
+
+### Remaining for M0-M1 (the 12 gradient cells)
+
+- **PD0_LVL_0** at M0/M1 (capture pd0=0): the light-PD0 walk with
+  intra_level = MAX_INTRA_LEVEL-1 (svt_aom_sig_deriv_enc_dec_light_
+  pd0 :9310 — more PD0 intra candidates than LVL_1's set). NSQ stays
+  PD0-disabled (md_disallow_nsq_search=1 unconditional, :9257).
+- **nic_level 1 at M0 / 3 at M1** (M0: scal 20, mds1_base MAX ->
+  no mds1 pruning, mds2/3 base 50; M1 == M2's case 3).
+- **chroma ind-uv at mds0/mds1** (M0 ind_last_mds=0 uv_nic 16; M1
+  ind_last_mds=1 uv_nic 8 — search_best_independent_uv_mode
+  :7778 BEFORE the stages, not the mds3 variant).
+- **cfl_level 1 at M0** (cfl_itr 2, cplx 0 -> CFL evaluated for every
+  <= 32x32 block: the CFL port becomes binding).
+- **fi_max 4 at M0** (all five filter-intra modes as candidates).
+- **intra_level 1 with dist_ang... M0/M1 both already mode_end 12 /
+  ang 1** (same candidate set as M3/M4).
+- nsq_search levels: M0 3 (+offsets -> 6/5/3), M1 10 (13/12/10).
+- 4x4-depth PD1 admissions could now bind (PD0 trees may bottom at
+  8x8 on M0/M1's richer PD0) — the sub-8x8 walk/writer surface
+  (partition ctx at 4x4 granularity, 4x4 tx_depth syntax, sub-8
+  chroma in the WALK) is still unproven.
