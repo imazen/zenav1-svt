@@ -51,22 +51,14 @@ for content in "${CONTENTS[@]}"; do
             "$content" "$sz" "$qp" "$preset" "$CELL_TIMEOUT" >>"$OUT"
           continue
         fi
-        # Classify the first divergence stage from the differ report.
+        # Classify from the differ's concise `STAGE: <stage> | <detail>` line.
         stage="unknown"; detail="-"
         if [[ -f "$rep" ]]; then
-          if grep -q "SEQUENCE_HEADER: .* -> DIFFERS" "$rep"; then
-            stage="SH"
-            detail=$(grep -m1 -oE "seq_level_idx.*|color_.*|enable_.*|separate_uv.*|film_grain.*" "$rep" | head -1)
-          elif grep -q "FRAME.* -> DIFFERS" "$rep" && grep -q "FRAME field walk" "$rep" \
-               && grep -qE "DIFF #.*: C @" "$rep"; then
-            stage="FH"
-            detail=$(grep -m1 -oE "base_q_idx.*|loop_filter.*|cdef_.*|lr_type.*|tx_mode.*|delta_q.*" "$rep" | head -1)
-          elif grep -q "first divergence at op" "$rep"; then
-            stage="tile-op"
-            detail=$(grep -m1 "first divergence at op" "$rep" | grep -oE "op [0-9]+")
-          elif grep -q "op counts" "$rep"; then
-            stage="tile-count"
-            detail=$(grep -m1 "op counts" "$rep")
+          line=$(grep -m1 "^STAGE: " "$rep" || true)
+          if [[ -n "$line" ]]; then
+            rest="${line#STAGE: }"
+            stage="${rest%% | *}"
+            detail="${rest#* | }"
           fi
         fi
         printf '%s\t%s\t%s\t%s\tDIFFERS\t%s\t%s\n' \

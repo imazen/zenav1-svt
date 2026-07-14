@@ -356,10 +356,18 @@ def field_at(fields, bitpos):
     return None
 
 
-def print_field_walk_diff(name, cw, rw):
-    """Side-by-side field walk comparison; returns True if all equal."""
+def field_walk_diff(name, cw, rw, verbose=False):
+    """Side-by-side field walk comparison.
+
+    Returns (same, first_diff) where first_diff is a one-line concise
+    string naming the first mismatching field (or None if identical).
+    The full side-by-side walk prints only in verbose mode — the concise
+    default carries just the first divergence, which is what callers act
+    on (and what the matrix classifier greps)."""
     same = True
-    print(f"    {name} field walk (C | Rust):")
+    first = None
+    if verbose:
+        print(f"    {name} field walk (C | Rust):")
     n = max(len(cw.fields), len(rw.fields))
     for i in range(n):
         cf = cw.fields[i] if i < len(cw.fields) else None
@@ -369,11 +377,17 @@ def print_field_walk_diff(name, cw, rw):
         same = False
         cs = f"@{cf[0]:<4} {cf[2]}={cf[3]}" if cf else "(end)"
         rs = f"@{rf[0]:<4} {rf[2]}={rf[3]}" if rf else "(end)"
-        print(f"      DIFF #{i}: C {cs:<44} | R {rs}")
-    if same:
+        if first is None:
+            fn = (cf or rf)[2]
+            cv = cf[3] if cf else "(end)"
+            rv = rf[3] if rf else "(end)"
+            first = f"{fn} C={cv} Rust={rv}"
+        if verbose:
+            print(f"      DIFF #{i}: C {cs:<44} | R {rs}")
+    if same and verbose:
         print("      all decoded fields identical "
               f"({len(cw.fields)} fields, {cw.pos} bits)")
-    return same
+    return same, first
 
 
 # ----------------------------------------------------------------------------
@@ -448,21 +462,41 @@ def main():
     ap.add_argument("--c-trace")
     ap.add_argument("--rust-trace")
     ap.add_argument("--context", type=int, default=8)
+    ap.add_argument("-v", "--verbose", action="store_true",
+                    help="full OBU list, side-by-side field walks, payload "
+                         "hex, and op-context dumps. Default output is a "
+                         "concise STAGE + VERDICT summary (token-frugal — this "
+                         "runs per matrix cell and per agent).")
     args = ap.parse_args()
+    V = args.verbose
+
+    def vprint(*a):
+        if V:
+            print(*a)
 
     c_data = open(args.c_obu, "rb").read()
     r_data = open(args.rust_obu, "rb").read()
 
-    print("=" * 78)
-    print(f"OBU-LEVEL COMPARISON   C={len(c_data)}B  Rust={len(r_data)}B")
-    print("=" * 78)
+    vprint("=" * 78)
+    vprint(f"OBU-LEVEL COMPARISON   C={len(c_data)}B  Rust={len(r_data)}B")
+    vprint("=" * 78)
     c_obus = parse_obus(c_data, "C")
     r_obus = parse_obus(r_data, "Rust")
-    print(f"  C stream:    {[(o['name'], o['size']) for o in c_obus]}")
-    print(f"  Rust stream: {[(o['name'], o['size']) for o in r_obus]}")
+    vprint(f"  C stream:    {[(o['name'], o['size']) for o in c_obus]}")
+    vprint(f"  Rust stream: {[(o['name'], o['size']) for o in r_obus]}")
 
     identical_stream = c_data == r_data
-    print(f"  streams byte-identical: {identical_stream}")
+    vprint(f"  streams byte-identical: {identical_stream}")
+
+    # First diverging pipeline stage (SH -> FH -> tile), for the concise
+    # summary. Set once, at the earliest divergence.
+    stage = None
+    detail = ""
+
+    def set_stage(s, d):
+        nonlocal stage, detail
+        if stage is None:
+            stage, detail = s, d
 
     npairs = max(len(c_obus), len(r_obus))
     sh_info_c = sh_info_r = None
@@ -470,16 +504,19 @@ def main():
         co = c_obus[i] if i < len(c_obus) else None
         ro = r_obus[i] if i < len(r_obus) else None
         if co is None or ro is None:
-            print(f"\n[OBU {i}] only present on one side: "
-                  f"C={co['name'] if co else '-'} Rust={ro['name'] if ro else '-'}")
+            cn = co['name'] if co else '-'
+            rn = ro['name'] if ro else '-'
+            vprint(f"\n[OBU {i}] only present on one side: C={cn} Rust={rn}")
+            set_stage("obu-count", f"OBU {i} C={cn} Rust={rn}")
             continue
         tag = f"[OBU {i}] {co['name']}"
         if co["name"] != ro["name"]:
-            print(f"\n{tag}: TYPE MISMATCH C={co['name']} Rust={ro['name']}")
+            vprint(f"\n{tag}: TYPE MISMATCH C={co['name']} Rust={ro['name']}")
+            set_stage("obu-type", f"C={co['name']} Rust={ro['name']}")
             continue
         cpay, rpay = co["payload"], ro["payload"]
         status = "IDENTICAL" if cpay == rpay else "DIFFERS"
-        print(f"\n{tag}: C {co['size']}B, Rust {ro['size']}B -> {status}")
+        vprint(f"\n{tag}: C {co['size']}B, Rust {ro['size']}B -> {status}")
         walked = None
         # Field walks (also needed for FH tile-offset even when identical)
         if co["type"] == 1:  # SH
@@ -494,7 +531,7 @@ def main():
                             i_[nm] = v
                 walked = (cw, rw)
             except Exception as e:  # noqa: BLE001 — report and continue
-                print(f"    (SH field walk failed: {e})")
+                vprint(f"    (SH field walk failed: {e})")
         elif co["type"] == 6 and sh_info_c is not None:  # FRAME
             try:
                 np_c = 1 if sh_info_c.get("mono") else 3
@@ -503,49 +540,55 @@ def main():
                 rw = decode_fh(rpay, sh_info_r, np_r)
                 walked = (cw, rw)
             except Exception as e:  # noqa: BLE001
-                print(f"    (FH field walk failed: {e})")
+                vprint(f"    (FH field walk failed: {e})")
         if walked:
             cw, rw = walked
-            print_field_walk_diff(co["name"], cw, rw)
+            fsame, ffirst = field_walk_diff(co["name"], cw, rw, V)
+            if not fsame:
+                st = "SH" if co["type"] == 1 else "FH"
+                set_stage(st, ffirst or "(field walk)")
             if co["type"] == 6:
                 # Tile payload = FH bits rounded up to byte boundary, rest of OBU
                 c_tile_off = (cw.pos + 7) // 8
                 r_tile_off = (rw.pos + 7) // 8
                 ct, rt = cpay[c_tile_off:], rpay[r_tile_off:]
-                print(f"    FH decoded length: C {cw.pos} bits ({c_tile_off}B), "
-                      f"Rust {rw.pos} bits ({r_tile_off}B)")
+                vprint(f"    FH decoded length: C {cw.pos} bits ({c_tile_off}B), "
+                       f"Rust {rw.pos} bits ({r_tile_off}B)")
                 tstat = "IDENTICAL" if ct == rt else "DIFFERS"
-                print(f"    tile payload: C {len(ct)}B, Rust {len(rt)}B -> {tstat}")
+                vprint(f"    tile payload: C {len(ct)}B, Rust {len(rt)}B -> {tstat}")
                 if ct != rt:
                     d = bit_diff_pos(ct, rt)
                     if d and d[0] < min(len(ct), len(rt)):
-                        print(f"      first tile byte diff at +{d[0]} (bit {d[1]}):")
-                        print(f"        C:    {hexctx(ct, d[0])}")
-                        print(f"        Rust: {hexctx(rt, d[0])}")
+                        vprint(f"      first tile byte diff at +{d[0]} (bit {d[1]}):")
+                        vprint(f"        C:    {hexctx(ct, d[0])}")
+                        vprint(f"        Rust: {hexctx(rt, d[0])}")
+                    # Recorded as tile stage only if traces are unavailable;
+                    # the op-trace pass below gives a far better tile detail.
+                    set_stage("tile", f"tile payload C={len(ct)}B Rust={len(rt)}B")
         if cpay != rpay:
             d = bit_diff_pos(cpay, rpay)
             if d and d[0] < min(len(cpay), len(rpay)):
                 off, bit = d
                 bitpos = off * 8 + bit
-                print(f"    first payload diff: byte +{off} bit {bit} (bitpos {bitpos})")
-                print(f"      C:    {hexctx(cpay, off)}")
-                print(f"      Rust: {hexctx(rpay, off)}")
+                vprint(f"    first payload diff: byte +{off} bit {bit} (bitpos {bitpos})")
+                vprint(f"      C:    {hexctx(cpay, off)}")
+                vprint(f"      Rust: {hexctx(rpay, off)}")
                 if walked:
                     for side, w_ in (("C", walked[0]), ("Rust", walked[1])):
                         fa = field_at(w_.fields, bitpos)
                         if fa:
-                            print(f"      {side} field at that bit: {fa[2]}={fa[3]} "
-                                  f"(bits {fa[0]}..{fa[0]+fa[1]-1})")
+                            vprint(f"      {side} field at that bit: {fa[2]}={fa[3]} "
+                                   f"(bits {fa[0]}..{fa[0]+fa[1]-1})")
             else:
-                print(f"    payloads share a {min(len(cpay), len(rpay))}B prefix; "
-                      f"sizes differ")
+                vprint(f"    payloads share a {min(len(cpay), len(rpay))}B prefix; "
+                       f"sizes differ")
 
     # ------------------------------------------------------------------
     if args.c_trace and args.rust_trace:
-        print()
-        print("=" * 78)
-        print("TILE OP-TRACE COMPARISON (canonicalized arithmetic-coder ops)")
-        print("=" * 78)
+        vprint()
+        vprint("=" * 78)
+        vprint("TILE OP-TRACE COMPARISON (canonicalized arithmetic-coder ops)")
+        vprint("=" * 78)
         c_ops, c_marks = parse_trace(args.c_trace)
         r_ops, r_marks = parse_trace(args.rust_trace)
 
@@ -576,45 +619,69 @@ def main():
 
         c_ops = last_segment(c_ops, c_marks)
         r_ops = last_segment(r_ops, r_marks)
-        print(f"  op counts: C={len(c_ops)}  Rust={len(r_ops)}")
+        vprint(f"  op counts: C={len(c_ops)}  Rust={len(r_ops)}")
         c_done = [m for m in c_marks if "DONE" in m[1]]
         r_done = [m for m in r_marks if "DONE" in m[1]]
-        print(f"  markers: C {len(c_marks)} (DONE: {[m[1].split(' ec=')[0] for m in c_done]})"
-              f" | Rust {len(r_marks)} (DONE: {[m[1].split(' head=')[0] for m in r_done]})")
+        vprint(f"  markers: C {len(c_marks)} (DONE: {[m[1].split(' ec=')[0] for m in c_done]})"
+               f" | Rust {len(r_marks)} (DONE: {[m[1].split(' head=')[0] for m in r_done]})")
+
+        def op_short(canon):
+            # Compact one-token op form for the concise detail line.
+            if canon[0] == "C":
+                return f"CDF{canon[1]}:s{canon[2]}"
+            return f"B:v{canon[1]}"
 
         div, rng_only, hist = diff_traces(c_ops, r_ops, args.context)
         if div is None:
-            print(f"  RESULT: traces IDENTICAL for all {len(c_ops)} ops (incl. rng state)")
+            vprint(f"  RESULT: traces IDENTICAL for all {len(c_ops)} ops (incl. rng state)")
         else:
             both = div < min(len(c_ops), len(r_ops))
             if not both:
-                print(f"  RESULT: identical for {div} ops, then op-count mismatch "
-                      f"(C={len(c_ops)}, Rust={len(r_ops)})")
+                set_stage("tile-count", f"identical {div} ops then "
+                          f"C={len(c_ops)} Rust={len(r_ops)}")
+                vprint(f"  RESULT: identical for {div} ops, then op-count mismatch "
+                       f"(C={len(c_ops)}, Rust={len(r_ops)})")
             elif rng_only:
-                print(f"  RESULT: first divergence at op {div}: SAME op fields but rng "
-                      f"differs (C rng={c_ops[div][1]}, Rust rng={r_ops[div][1]}) — an op "
-                      f"escaped one trace or engines diverge; INVESTIGATE")
+                set_stage("tile-op", f"op {div} rng C={c_ops[div][1]} "
+                          f"Rust={r_ops[div][1]} (fields match; INVESTIGATE)")
+                vprint(f"  RESULT: first divergence at op {div}: SAME op fields but rng "
+                       f"differs (C rng={c_ops[div][1]}, Rust rng={r_ops[div][1]}) — an op "
+                       f"escaped one trace or engines diverge; INVESTIGATE")
             else:
-                print(f"  RESULT: first divergence at op {div}")
-            print(f"  op-kind histogram up to divergence: "
-                  f"{dict(sorted(hist.items()))}")
-            ctx = args.context
-            lo = max(0, div - ctx)
-            print(f"\n  C ops [{lo}..{min(div + ctx, len(c_ops)) - 1}]:")
-            for i in range(lo, min(div + ctx, len(c_ops))):
-                mark = " <-- DIVERGENCE" if i == div else ""
-                print(f"    {i:>5}: {c_ops[i][2]}{mark}")
-            print(f"\n  Rust ops [{lo}..{min(div + ctx, len(r_ops)) - 1}]:")
-            for i in range(lo, min(div + ctx, len(r_ops))):
-                mark = " <-- DIVERGENCE" if i == div else ""
-                print(f"    {i:>5}: {r_ops[i][2]}{mark}")
+                set_stage("tile-op", f"op {div} C={op_short(c_ops[div][0])} "
+                          f"Rust={op_short(r_ops[div][0])}")
+                vprint(f"  RESULT: first divergence at op {div}")
+            vprint(f"  op-kind histogram up to divergence: "
+                   f"{dict(sorted(hist.items()))}")
+            if V:
+                ctx = args.context
+                lo = max(0, div - ctx)
+                print(f"\n  C ops [{lo}..{min(div + ctx, len(c_ops)) - 1}]:")
+                for i in range(lo, min(div + ctx, len(c_ops))):
+                    mark = " <-- DIVERGENCE" if i == div else ""
+                    print(f"    {i:>5}: {c_ops[i][2]}{mark}")
+                print(f"\n  Rust ops [{lo}..{min(div + ctx, len(r_ops)) - 1}]:")
+                for i in range(lo, min(div + ctx, len(r_ops))):
+                    mark = " <-- DIVERGENCE" if i == div else ""
+                    print(f"    {i:>5}: {r_ops[i][2]}{mark}")
 
-    print()
-    print("=" * 78)
-    verdict = "IDENTICAL" if identical_stream else "NOT IDENTICAL"
-    print(f"VERDICT: streams {verdict}")
-    print("=" * 78)
-    return 0 if identical_stream else 1
+    # ---- Concise summary (always printed; verbose adds the detail above) ----
+    vprint()
+    vprint("=" * 78)
+    if identical_stream:
+        # One line: byte size + tile-op count when a trace was available.
+        nops = ""
+        if args.c_trace and args.rust_trace:
+            nops = f", {len(c_ops)} tile ops"
+        print(f"VERDICT: IDENTICAL ({len(c_data)}B{nops})")
+        return 0
+    if stage is None:
+        # Bytes differ but no field/op walk pinned it (shouldn't normally
+        # happen); fall back to a byte-size line.
+        stage, detail = "bytes", f"C={len(c_data)}B Rust={len(r_data)}B"
+    print(f"STAGE: {stage} | {detail}")
+    print(f"VERDICT: NOT IDENTICAL (C={len(c_data)}B Rust={len(r_data)}B)")
+    return 1
 
 
 if __name__ == "__main__":
