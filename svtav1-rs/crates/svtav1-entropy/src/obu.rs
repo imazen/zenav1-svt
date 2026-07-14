@@ -652,7 +652,11 @@ pub fn write_key_frame_header_full(
         reduced_sh,
         monochrome,
         lf_levels,
-        cdef,
+        &CdefSignal {
+            damping: cdef[0],
+            bits: 0,
+            strengths: alloc::vec![(cdef[1], cdef[2])],
+        },
         &LrSignal::none(enable_restoration),
     )
 }
@@ -688,6 +692,14 @@ impl LrSignal {
 
 /// [`write_key_frame_header_full`] with full lr_params() signaling.
 #[allow(clippy::too_many_arguments)]
+/// The cdef_params() inputs (spec 5.9.19): damping 3..=6, `cdef_bits`
+/// 0..=3, and the `1 << cdef_bits` packed (y, uv) strength pairs.
+pub struct CdefSignal {
+    pub damping: u8,
+    pub bits: u8,
+    pub strengths: Vec<(u8, u8)>,
+}
+
 pub fn write_key_frame_header_full_lr(
     width: u32,
     height: u32,
@@ -695,7 +707,7 @@ pub fn write_key_frame_header_full_lr(
     reduced_sh: bool,
     monochrome: bool,
     lf_levels: [u8; 4],
-    cdef: [u8; 3],
+    cdef: &CdefSignal,
     lr: &LrSignal,
 ) -> Vec<u8> {
     let mut wb = key_frame_header_bits_lr(
@@ -739,7 +751,11 @@ fn key_frame_header_bits(
         reduced_sh,
         monochrome,
         lf_levels,
-        cdef,
+        &CdefSignal {
+            damping: cdef[0],
+            bits: 0,
+            strengths: alloc::vec![(cdef[1], cdef[2])],
+        },
         &LrSignal::none(enable_restoration),
     )
 }
@@ -753,7 +769,7 @@ fn key_frame_header_bits_lr(
     reduced_sh: bool,
     monochrome: bool,
     lf_levels: [u8; 4],
-    cdef: [u8; 3],
+    cdef: &CdefSignal,
     lr: &LrSignal,
 ) -> BitWriter {
     let mut wb = BitWriter::new();
@@ -855,14 +871,17 @@ fn key_frame_header_bits_lr(
     // signals enable_cdef=1 and this header is neither CodedLossless
     // (base_q_idx > 0 in practice — same standing assumption as
     // loop_filter_params above) nor allow_intrabc.
-    debug_assert!((3..=6).contains(&cdef[0]), "cdef_damping out of range");
-    wb.write_bits((cdef[0] - 3) as u32, 2); // cdef_damping_minus_3
-    wb.write_bits(0, 2); // cdef_bits = 0 -> (1 << 0) = 1 strength set
-    wb.write_bits(cdef[1] as u32, 6); // cdef_y_pri(4) + cdef_y_sec(2) packed
-    if !monochrome {
-        // NumPlanes=3 only: libaom reads uv strengths iff num_planes > 1
-        // (C SVT always writes both — it cannot emit monochrome).
-        wb.write_bits(cdef[2] as u32, 6); // cdef_uv_pri(4) + cdef_uv_sec(2)
+    debug_assert!((3..=6).contains(&cdef.damping), "cdef_damping out of range");
+    debug_assert_eq!(cdef.strengths.len(), 1usize << cdef.bits);
+    wb.write_bits((cdef.damping - 3) as u32, 2); // cdef_damping_minus_3
+    wb.write_bits(cdef.bits as u32, 2); // cdef_bits -> (1 << bits) strength sets
+    for &(y, uv) in &cdef.strengths {
+        wb.write_bits(y as u32, 6); // cdef_y_pri(4) + cdef_y_sec(2) packed
+        if !monochrome {
+            // NumPlanes=3 only: libaom reads uv strengths iff num_planes > 1
+            // (C SVT always writes both — it cannot emit monochrome).
+            wb.write_bits(uv as u32, 6); // cdef_uv_pri(4) + cdef_uv_sec(2)
+        }
     }
 
     // ---- lr_params() ----
