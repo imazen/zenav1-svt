@@ -1127,3 +1127,129 @@ q55's SBs. The PD0_LVL_1 port prices every SB with the default tables
 (exact for SB 0 / all single-SB frames); the g128 partition symbols
 happen to match C anyway on all tracked cells (differ-verified), but
 any future 128-cell tree flip should suspect this first.
+
+## 2026-07-14 (wave2, LR-wiener chunk): Wiener loop restoration END-TO-END — search proven C-exact on C's inputs; all 4 lr cells move strictly later into the M6 leaf funnel
+
+Four commits (`a724ebdc0` kernel+machinery+tap-coding, `d3c6bb20e`
+search+signaling+application+pipeline, `bbf1ddb69` LR counters,
+`6ccc102f9` golden-test tracking). Matrix
+`benchmarks/identity_matrix_check.tsv`: **30/36 held, zero regressions**,
+every gradient-p6 first divergence strictly later and tile-op-classified.
+
+### What landed (all differentially proven)
+
+1. **Kernel + stripe machinery** (`svtav1-dsp/src/restoration.rs` +
+   `tests/c_parity_wiener.rs`): `svt_av1_wiener_convolve_add_src_c` port
+   (the InterpKernel base/offset pointer dance cancels exactly — fuzz
+   proves it), `svt_av1_compute_stats_c`, the full solver chain
+   (`linsolve_wiener`/`update_{a,b}_sep_sym`/`wiener_decompose_sep_sym`/
+   `finalize_sym_filter`/`compute_score`), `svt_extend_frame`, and the
+   COMPLETE `svt_av1_loop_restoration_filter_unit` stripe walk
+   (RESTORATION_UNIT_OFFSET=8 geometry, setup/restore of the
+   deblock/CDEF boundary lines, 16px proc-unit width round-up).
+   400-case kernel fuzz over the full signalable tap space + 200-case
+   filter_unit fuzz (luma+chroma geometry, both need_boundaries arms,
+   random boundary lines; dst AND post-call data byte-equal — the
+   setup/restore round trip restores exactly). Boundary capture ports
+   (`save_{deblock,cdef,tile_row}_boundary_lines`) follow the two-pass
+   scheme (dlf_process.c:134 after_cdef=0, cdef_process.c:707 =1).
+2. **Tap-coding chain** (`svtav1-entropy/src/lr.rs` +
+   `tests/c_parity_lr_syntax.rs`): recenter/quniform/subexpfin/
+   refsubexpfin write+count (entropy_coding.c:2895-3046) — EXHAUSTIVE
+   (ref, v) byte+count parity over all three tap alphabets through a
+   fresh od_ec coder; `write_wiener_filter` ref chaining
+   (entropy_coding.c:4074); `count_wiener_bits`
+   (restoration_pick.c:1005). `FrameContext.wiener_restore_cdf` =
+   AOM_CDF2(11570) (ICDF 21198 = the trace fingerprint).
+3. **Search** (`svtav1-encoder/src/restoration.rs`):
+   `search_restoration_still` = restoration_seg_search +
+   rest_finish_search at the allintra controls
+   (`wn_filter_ctrls_allintra`: lvl 3 presets <=3 with one-step
+   refinement, lvl 4 <=6 without; **sgrproj NEVER searched**,
+   sg_filter_lvl=0). Key C facts baked in: try-unit filtering runs
+   need_boundaries=0 (`use_boundaries_in_rest_search = 0`,
+   enc_handle.c:4483) on the 4/3-extended post-CDEF recon; the NONE
+   frame walk carries ZERO bits (search_norestore_finish); the per-unit
+   compare prices the wiener_restore flag ([768, 320] from the default
+   CDF — pinned) + `count_wiener_bits` at the SEARCH window (win-5 luma
+   at these presets) against the ref-chained previous WIENER pick;
+   RDCOST_DBL at `x->rdmult` = the unweighted kf lambda
+   (21888/211804/1303771 @ qindex 80/160/220 — pinned).
+4. **Signaling**: FH lr_params (spec 5.9.20 — per-plane lr_type pairs,
+   unit-size bits 256 -> (1,1), lr_uv_shift when chroma restores) via
+   `LrSignal`/`write_key_frame_header_full_lr`; per-SB tile syntax
+   (`corners_in_sb` + `write_lr_for_sb` at the head of the SB walk,
+   BEFORE the partition symbol — decoder order decodeframe.c:1325;
+   refs reset per tile like svt_av1_reset_loop_restoration). The tile
+   is RE-walked when the search signals wiener (the walk is a
+   re-runnable pass; decisions are entropy-state-independent, verified
+   by debug_assert on the chroma recon) — C's EC kernel runs after
+   rest_process and sees the same state.
+5. **Application**: `apply_restoration_frame` =
+   svt_av1_loop_restoration_filter_frame (extend 3/3, per-unit filter
+   WITH boundaries into a dst buffer, crop copy-back) on the OUTPUT
+   recon only; prediction sources untouched.
+
+### Instrumented ground truth + the C-dgd validation (the chunk's key experiment)
+
+Scratch build `/root/svtav1-instr` (SVT_LRDBG prints in
+restoration_pick.c; **instrumented OBUs byte-identical to baseline on
+all 6 gradient-p6 cells** before trusting any dump; deleted after).
+Captures at `docs/captures/gradient_*_p6.lrdbg.txt`: per-cell solved
+taps (pre/post finalize), compute_score, sse_none/sse_wn, bits/rdmult/
+RDCOST decomposition, per-unit + frame picks.
+
+**Feeding OUR search C's exact post-CDEF dgd reproduces C's solved taps,
+per-unit picks and frame types on ALL SIX cells** (incl. the 128x128
+unit geometry). Two 4KB dgd fixtures + tap expectations are pinned as
+`svtav1-encoder/tests/lr_search_c_capture.rs`; RD-arithmetic pins
+(restore costs 768/320, RDCOST_DBL rows, ctrls table) live in-module.
+Frame-type decisions match C at every cell even from OUR recon
+(WIENER luma at g64 q20/q40 + g128 q40/q55; NONE at g64 q55 + g128
+q20; chroma NONE everywhere — the flat-chroma ill-posed solve keeps
+default taps with score 0, also pinned).
+
+### Gates (all green, LR firing)
+
+- recon-parity **216/0** with **59/216 streams signaling wiener, 107
+  RUs restored** (incl. chroma units; speeds 2/4/6 run the search,
+  speed 2 exercises the refinement arm) — the applied LR equals
+  aomdec's byte-for-byte everywhere it fires.
+- decode conformance **525/0 mono + 700/0 chroma** under aomdec AND
+  dav1d (LR syntax parses on both reference decoders).
+- `cargo test --workspace` **605/0** (+17 new; the one pre-existing
+  test touched — golden `wiener_filter_identity` — now drives the
+  C-exact kernel with a STRICTER exact-equality assertion, replacing
+  the deleted sketch's +-1-tolerance check).
+- identity matrix **30/36**, zero regressions.
+- Differ hardening: `identity_diff.py` compares the LAST coder segment
+  (RESET..DONE) per side — the two-pass walk logs both passes.
+
+### Honest close-out: the 4 lr cells did NOT reach IDENTICAL — and exactly why
+
+The brief's target (34/36) assumed lr_type was these cells' ONLY gap;
+it was only their FIRST. With LR C-exact end-to-end, each first
+divergence moved strictly later, into TAP BITS whose values derive
+from the recon:
+
+| cell | was | now | first-diverging syntax |
+|------|-----|-----|------------------------|
+| g64 q20 | FH `lr_type[0]` | tile op 10 | luma tap bit (v-taps) |
+| g64 q40 | FH `lr_type[0]` | tile op 17 | luma tap bit (v-tap2 literal) |
+| g128 q40 | FH `lr_type[0]` | tile op 7 | luma tap bit |
+| g128 q55 | FH `lr_type[0]` | tile op 11 | luma tap bit |
+| g64 q55 | tile op 2 | tile op 2 (unchanged) | leaf y_mode (MDS3 compare) |
+| g128 q20 | tile op 2565 | tile op 2565 (unchanged) | use_filter_intra |
+
+The tap values are pure functions of the post-CDEF recon, and C's
+recon at these cells embeds M6 leaf picks our funnel doesn't make yet
+(g64 q40: 32x32 leaf (0,0) FILTER_DC_PRED + H_PRED leaves — with C's
+taps substituted our stream matches C op-for-op THROUGH the LR syntax,
+partition and first-leaf prefix up to op 37 = `use_filter_intra`;
+g64 q20: H_PRED leaves; g128: leaf deltas). The C-dgd fixtures prove
+the search contributes zero divergence. **All six residual cells are
+owned by one subsystem: the M6 leaf funnel** (filter-intra RDO + MDS0
+SATD/NIC pruning + MDS3 4-candidate compare with chroma-in-decision,
+spec'd as next-op spec A above) — landing it closes the leaf picks,
+which fixes the recons, which makes the already-C-exact search emit
+C's taps: potentially all 6 cells at once.
