@@ -208,6 +208,17 @@ uint32_t ref_encode_mv_seq(const int32_t* mv_y, const int32_t* mv_x, const int32
     return nbytes;
 }
 
+/* ---- Temporal-filter noise estimator (AUDIT 2026-07-14) ----
+ * svt_estimate_noise_fp16_c (temporal_filtering.c:3555) is public/linkable and
+ * unchanged 4.1->4.2 (the nearby bit-affecting hunk only adds VMAF RTCD decls).
+ */
+int32_t svt_estimate_noise_fp16_c(const uint8_t* src, uint16_t width, uint16_t height,
+                                  uint16_t y_stride);
+int32_t ref_estimate_noise_fp16(const uint8_t* src, uint16_t width, uint16_t height,
+                                uint16_t y_stride) {
+    return svt_estimate_noise_fp16_c(src, width, height, y_stride);
+}
+
 /* ---- Scan orders + coefficient-context helpers ---- */
 
 #include "coefficients.h"

@@ -245,6 +245,20 @@ unsafe extern "C" {
     ) -> u32;
 }
 
+// ---- Temporal-filter noise estimator oracle (AUDIT 2026-07-14) ----
+
+unsafe extern "C" {
+    fn ref_estimate_noise_fp16(src: *const u8, width: u16, height: u16, y_stride: u16) -> i32;
+}
+
+/// Reference `svt_estimate_noise_fp16_c` (temporal_filtering.c): FP16
+/// noise-level estimate of a luma plane (Sobel edge rejection + Laplacian),
+/// or `-65536` (-1 in fp16) if too few smooth pixels.
+pub fn estimate_noise_fp16(src: &[u8], width: usize, height: usize, y_stride: usize) -> i32 {
+    assert!(src.len() >= (height - 1) * y_stride + width);
+    unsafe { ref_estimate_noise_fp16(src.as_ptr(), width as u16, height as u16, y_stride as u16) }
+}
+
 /// Reference `svt_av1_get_mv_class(z)`: returns `(class, offset)`.
 pub fn get_mv_class(z: i32) -> (i32, i32) {
     let mut offset = 0i32;

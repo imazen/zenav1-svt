@@ -2,11 +2,25 @@
 //!
 //! Spec 17 (temporal-filtering.md): Alt-ref frame generation.
 //!
-//! Temporal filtering averages multiple frames to create a denoised
-//! "alt-ref" reference frame. This improves compression by providing
-//! a cleaner prediction source.
+//! AUDIT 2026-07-14 (pre-v4.2-bump port correctness). Status by function:
 //!
-//! Ported from SVT-AV1's temporal_filtering.c.
+//! - [`estimate_noise_fp16`] — bit-exact port of C `svt_estimate_noise_fp16_c`
+//!   (temporal_filtering.c:3555), validated in `tests/c_parity_temporal.rs`.
+//!   The function body is unchanged 4.1->4.2 (the nearby bit-affecting hunk
+//!   only adds VMAF RTCD declarations).
+//! - [`temporal_filter`] — HOMEGROWN similarity-weighted average; NOT a port
+//!   of C `svt_av1_apply_temporal_filter_planewise_medium_partial_c` (which
+//!   uses exp()-decayed per-block weights driven by ME + block variance).
+//!   Non-normative (TF only changes the alt-ref *content*, i.e. which bits get
+//!   coded, never the bitstream format). Reachability: `pipeline.rs` inter
+//!   path only (`enable_temporal_filter && !is_key`) — dormant for the
+//!   key/still-frame conformance + identity gates.
+//! - [`estimate_noise`] — HOMEGROWN f64 5-tap-Laplacian heuristic, currently
+//!   unused; superseded by the exact [`estimate_noise_fp16`] port. Kept as a
+//!   simple activity proxy; NOT the C noise estimator.
+//!
+//! `temporal_filtering.c` is bit-affecting-changed 4.1->4.2, so a future full
+//! port of `produce_temporally_filtered_pic` must track the v4.2 source.
 
 /// Temporal filter configuration.
 #[derive(Debug, Clone)]
@@ -117,10 +131,60 @@ pub fn temporal_filter(
     }
 }
 
-/// Estimate noise level of a frame for temporal filter strength selection.
+/// FP16 constants from `temporal_filtering.h`.
+const EDGE_THRESHOLD: i32 = 50;
+const SQRT_PI_BY_2_FP16: i64 = 82137;
+const SMOOTH_THRESHOLD: i64 = 16;
+
+/// Estimate the noise level of a luma plane as an FP16 fixed-point value.
 ///
-/// Uses the Laplacian method: compute the average absolute Laplacian
-/// response, which correlates with noise level.
+/// Bit-exact port of C `svt_estimate_noise_fp16_c` (temporal_filtering.c:3555):
+/// for every interior pixel, a Sobel gradient rejects edge pixels
+/// (`|g_x| + |g_y| >= EDGE_THRESHOLD`), and the remaining smooth pixels
+/// contribute `|Laplacian|` (9-tap: `4*c - 2*(4 edges) + (4 corners)`). The
+/// result is `sum * SQRT_PI_BY_2_FP16 / (6 * num)` in FP16, or `-65536`
+/// (-1 in FP16) when fewer than `SMOOTH_THRESHOLD` smooth pixels are found.
+/// Degenerate sizes (`< 3` in either dimension) yield the same -1 sentinel
+/// (num would be 0). Validated in `tests/c_parity_temporal.rs`.
+pub fn estimate_noise_fp16(src: &[u8], width: usize, height: usize, y_stride: usize) -> i32 {
+    if width < 3 || height < 3 {
+        return -65536;
+    }
+    let mut sum: i64 = 0;
+    let mut num: i64 = 0;
+    for i in 1..height - 1 {
+        for j in 1..width - 1 {
+            let k = i * y_stride + j;
+            let p = |off: usize| src[off] as i32;
+            // Sobel gradients (reject edge pixels).
+            let g_x = (p(k - y_stride - 1) - p(k - y_stride + 1))
+                + (p(k + y_stride - 1) - p(k + y_stride + 1))
+                + 2 * (p(k - 1) - p(k + 1));
+            let g_y = (p(k - y_stride - 1) - p(k + y_stride - 1))
+                + (p(k - y_stride + 1) - p(k + y_stride + 1))
+                + 2 * (p(k - y_stride) - p(k + y_stride));
+            let ga = g_x.abs() + g_y.abs();
+            if ga < EDGE_THRESHOLD {
+                // 9-tap Laplacian.
+                let v = 4 * p(k) - 2 * (p(k - 1) + p(k + 1) + p(k - y_stride) + p(k + y_stride))
+                    + (p(k - y_stride - 1)
+                        + p(k - y_stride + 1)
+                        + p(k + y_stride - 1)
+                        + p(k + y_stride + 1));
+                sum += v.unsigned_abs() as i64;
+                num += 1;
+            }
+        }
+    }
+    if num < SMOOTH_THRESHOLD {
+        return -65536; // -1 in FP16: estimate unreliable
+    }
+    ((sum * SQRT_PI_BY_2_FP16) / (6 * num)) as i32
+}
+
+/// Homegrown activity/noise proxy (NOT the C estimator — see
+/// [`estimate_noise_fp16`] for the bit-exact port). Average absolute 5-tap
+/// Laplacian over interior pixels, as an f64. Currently unused.
 pub fn estimate_noise(frame: &[u8], width: usize, height: usize, stride: usize) -> f64 {
     let mut sum: u64 = 0;
     let mut count: u64 = 0;
