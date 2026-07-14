@@ -101,6 +101,14 @@ pub struct FrameContext {
     /// decoder: read_filter_intra_mode_info).
     pub filter_intra_cdfs: [[AomCdfProb; 3]; BLOCK_SIZES_ALL],
 
+    /// FRAME_CONTEXT.filter_intra_mode_cdf — the CDF5 filter_intra_mode
+    /// symbol coded right after use_filter_intra == 1
+    /// (entropy_coding.c:5105-5110; decoder read_filter_intra_mode_info).
+    /// Default AOM_CDF5(8949, 12776, 17211, 29558):
+    /// ICDF [23819, 19992, 15557, 3210] — the trace fingerprint of C's
+    /// FILTER_DC leaves at gradient-64 q40 p6.
+    pub filter_intra_mode_cdf: [AomCdfProb; 6],
+
     /// Per-RU `wiener_restore` flag CDF — C FRAME_CONTEXT.wiener_restore_cdf
     /// (default AOM_CDF2(11570), cabac_context_model.c:629), coded by
     /// loop_restoration_write_sb_coeffs when the frame restoration type is
@@ -346,6 +354,7 @@ impl FrameContext {
             // the decoder initializes filter_intra_cdfs with these; wrong
             // values desync the stream on the first use_filter_intra flag.
             filter_intra_cdfs: crate::default_cdfs::FILTER_INTRA_CDF,
+            filter_intra_mode_cdf: crate::default_cdfs::FILTER_INTRA_MODE_CDF,
             // AOM_CDF2(11570) in ICDF storage (32768 - 11570 = 21198) —
             // matches the C trace fingerprint `BOOL f=21198` on the
             // wiener_restore flag.
@@ -658,9 +667,8 @@ pub fn block_size_index(width: usize, height: usize) -> usize {
 /// (mode_decision.c:102-108): SH filter_intra level != 0, `mode == DC_PRED`,
 /// `palette_size == 0`, and `block_size_wide/high[bsize] <= 32`
 /// (`svt_aom_filter_intra_allowed_bsize`). `bsize_idx` is the
-/// [`block_size_index`] of the LUMA block. When `used` (never, for this
-/// encoder — filter-intra prediction is not performed), C follows with a
-/// filter_intra_mode symbol; that arm is deliberately unimplemented here.
+/// [`block_size_index`] of the LUMA block. When `used`, C follows with a
+/// CDF5 filter_intra_mode symbol — [`write_filter_intra_mode`].
 pub fn write_use_filter_intra(
     w: &mut AomWriter,
     fc: &mut FrameContext,
@@ -668,8 +676,18 @@ pub fn write_use_filter_intra(
     used: bool,
 ) {
     debug_assert!(bsize_idx < BLOCK_SIZES_ALL);
-    debug_assert!(!used, "filter-intra prediction is not implemented");
     w.write_symbol(usize::from(used), &mut fc.filter_intra_cdfs[bsize_idx], 2);
+}
+
+/// Encode the filter_intra_mode symbol (0..4: FILTER_DC / V / H / D157 /
+/// PAETH) following `use_filter_intra == 1`.
+///
+/// C: `aom_write_symbol(ec_writer, filter_intra_mode,
+/// frame_context->filter_intra_mode_cdf, FILTER_INTRA_MODES)`
+/// (entropy_coding.c:5105-5110; decoder read_filter_intra_mode_info).
+pub fn write_filter_intra_mode(w: &mut AomWriter, fc: &mut FrameContext, fi_mode: u8) {
+    debug_assert!(fi_mode < 5);
+    w.write_symbol(fi_mode as usize, &mut fc.filter_intra_mode_cdf, 5);
 }
 
 /// Encode the angle delta for a directional intra mode.

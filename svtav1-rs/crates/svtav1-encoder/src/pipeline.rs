@@ -397,6 +397,7 @@ impl EncodePipeline {
             &sb_qp_offsets,
             chroma.is_some(),
             c_quant.clone(),
+            chroma.as_ref().map(|c| (c.0, c.1)),
         );
 
         let mut per_tile_decisions: Vec<Vec<crate::partition::BlockDecision>> = Vec::new();
@@ -934,7 +935,7 @@ impl EncodePipeline {
 /// Also tracks partition context at 8x8 granularity, matching the rav1d
 /// decoder's `BlockContext.partition` arrays. This is essential for multi-SB
 /// frames where the partition context of one SB depends on its neighbors.
-struct EntropyCtx {
+pub(crate) struct EntropyCtx {
     /// Above row modes (at 4x4 granularity), indexed by column in 4x4 units.
     /// Updated after each block is encoded.
     above_mode: Vec<u8>,
@@ -1029,7 +1030,7 @@ static AL_PART_CTX: [[[u8; 10]; 5]; 2] = [
 ];
 
 impl EntropyCtx {
-    fn new(width_4x4: usize, height_4x4: usize, seq_filter_intra: bool) -> Self {
+    pub(crate) fn new(width_4x4: usize, height_4x4: usize, seq_filter_intra: bool) -> Self {
         let width_8x8 = (width_4x4 + 1) / 2;
         let height_8x8 = (height_4x4 + 1) / 2;
         // Chroma-plane 4x4 units: (w/2)/4 = width_4x4/2 (frames are
@@ -1060,7 +1061,7 @@ impl EntropyCtx {
 
     /// Coefficient neighbor spans for a transform at (x, y) of w x h pixels,
     /// in 4x4 units, clipped to the frame like C svt_aom_get_txb_ctx.
-    fn coeff_neighbors(&self, x: usize, y: usize, w: usize, h: usize) -> (&[u8], &[u8]) {
+    pub(crate) fn coeff_neighbors(&self, x: usize, y: usize, w: usize, h: usize) -> (&[u8], &[u8]) {
         let x4 = x / 4;
         let y4 = y / 4;
         let w4 = (w / 4).min(self.above_coeff.len().saturating_sub(x4));
@@ -1074,7 +1075,7 @@ impl EntropyCtx {
     /// Record a coded transform block's `(dc_sign << 6) | cul_level` byte
     /// over its 4x4 span (C: neighbor array unit write after
     /// av1_write_coeffs_txb_1d).
-    fn record_coeff(&mut self, x: usize, y: usize, w: usize, h: usize, val: u8) {
+    pub(crate) fn record_coeff(&mut self, x: usize, y: usize, w: usize, h: usize, val: u8) {
         let x4 = x / 4;
         let y4 = y / 4;
         for i in x4..(x4 + w / 4).min(self.above_coeff.len()) {
@@ -1088,7 +1089,7 @@ impl EntropyCtx {
     /// Chroma-plane coefficient neighbor spans for a transform at chroma
     /// coords (cx, cy) of cw x ch chroma pixels, in chroma 4x4 units,
     /// clipped to the plane like the luma variant. `uv`: 0 = U, 1 = V.
-    fn coeff_neighbors_uv(
+    pub(crate) fn coeff_neighbors_uv(
         &self,
         uv: usize,
         cx: usize,
@@ -1108,7 +1109,7 @@ impl EntropyCtx {
 
     /// Record a chroma transform block's neighbor byte over its chroma
     /// 4x4 span (per-plane, like the decoder's per-plane entropy contexts).
-    fn record_coeff_uv(&mut self, uv: usize, cx: usize, cy: usize, cw: usize, ch: usize, val: u8) {
+    pub(crate) fn record_coeff_uv(&mut self, uv: usize, cx: usize, cy: usize, cw: usize, ch: usize, val: u8) {
         let x4 = cx / 4;
         let y4 = cy / 4;
         for i in x4..(x4 + cw / 4).min(self.above_coeff_uv[uv].len()) {
@@ -1121,7 +1122,7 @@ impl EntropyCtx {
 
     /// Reset left context at the start of each SB row.
     /// In rav1d, `t.l` is reset per tile row (= SB row for single-tile).
-    fn reset_left_for_sb_row(&mut self) {
+    pub(crate) fn reset_left_for_sb_row(&mut self) {
         self.left_partition.fill(0);
     }
 
@@ -1163,7 +1164,7 @@ impl EntropyCtx {
     }
 
     /// Get the partition context (ctx, nsymbs) for a block at (x, y) with given width.
-    fn partition_ctx(&self, x: usize, y: usize, width: usize) -> (usize, usize) {
+    pub(crate) fn partition_ctx(&self, x: usize, y: usize, width: usize) -> (usize, usize) {
         let bsl = Self::bsl(width);
         let sub = self.partition_sub(x, y, bsl);
         let ctx = bsl * 4 + sub;
@@ -1180,7 +1181,7 @@ impl EntropyCtx {
 
     /// Update partition context after encoding a non-SPLIT partition.
     /// For SPLIT, the children update the context — don't call this for SPLIT.
-    fn update_partition_ctx(
+    pub(crate) fn update_partition_ctx(
         &mut self,
         x: usize,
         y: usize,
@@ -1213,7 +1214,7 @@ impl EntropyCtx {
     }
 
     /// Record a block's mode and skip status in the context maps.
-    fn record_block(&mut self, x: usize, y: usize, w: usize, h: usize, mode: u8, skip: bool) {
+    pub(crate) fn record_block(&mut self, x: usize, y: usize, w: usize, h: usize, mode: u8, skip: bool) {
         let x4 = x / 4;
         let y4 = y / 4;
         let w4 = w / 4;
@@ -1231,7 +1232,7 @@ impl EntropyCtx {
     }
 
     /// Get the above mode context at position (x, y) in pixel coordinates.
-    fn above_mode_ctx(&self, x: usize) -> usize {
+    pub(crate) fn above_mode_ctx(&self, x: usize) -> usize {
         let x4 = x / 4;
         let mode = if x4 < self.above_mode.len() {
             self.above_mode[x4]
@@ -1242,7 +1243,7 @@ impl EntropyCtx {
     }
 
     /// Get the left mode context at position (x, y) in pixel coordinates.
-    fn left_mode_ctx(&self, y: usize) -> usize {
+    pub(crate) fn left_mode_ctx(&self, y: usize) -> usize {
         let y4 = y / 4;
         let mode = if y4 < self.left_mode.len() {
             self.left_mode[y4]
@@ -1253,7 +1254,7 @@ impl EntropyCtx {
     }
 
     /// Get the skip context at position (x, y).
-    fn skip_ctx(&self, x: usize, y: usize) -> usize {
+    pub(crate) fn skip_ctx(&self, x: usize, y: usize) -> usize {
         let x4 = x / 4;
         let y4 = y / 4;
         let above = x4 < self.above_skip.len() && self.above_skip[x4];
@@ -1272,7 +1273,7 @@ impl EntropyCtx {
     /// override (use the neighbor's BLOCK dims instead of its TX dims)
     /// can't fire here: tx_depth is only coded on key frames, where every
     /// neighbor is intra.
-    fn tx_size_ctx(&self, x: usize, y: usize, w: usize, h: usize) -> usize {
+    pub(crate) fn tx_size_ctx(&self, x: usize, y: usize, w: usize, h: usize) -> usize {
         // Availability == C xd->up_available / left_available
         // (set_mi_row_col: mi_row/col > tile start; single tile here).
         let has_above = y > 0;
@@ -1296,15 +1297,46 @@ impl EntropyCtx {
     /// av1_code_tx_size), signaling or not. Our blocks always use the
     /// full-block TX and the skip||inter override stores block dims —
     /// identical values here either way.
-    fn record_txfm(&mut self, x: usize, y: usize, w: usize, h: usize) {
+    pub(crate) fn record_txfm(&mut self, x: usize, y: usize, w: usize, h: usize) {
+        self.record_txfm_dims(x, y, w, h, w, h);
+    }
+
+    /// C `set_txfm_ctxs(tx_size, n8_w, n8_h, 0, xd)` with an explicit
+    /// CHOSEN tx size — above cells take tx_size_wide, left cells
+    /// tx_size_high, over the block's mi span (entropy_coding.c:4614;
+    /// MD mirror mode_decision_update_neighbor_arrays,
+    /// product_coding_loop.c:246-256).
+    pub(crate) fn record_txfm_dims(
+        &mut self,
+        x: usize,
+        y: usize,
+        w: usize,
+        h: usize,
+        tx_w: usize,
+        tx_h: usize,
+    ) {
         let x4 = x / 4;
         let y4 = y / 4;
         for i in x4..(x4 + w / 4).min(self.above_txfm.len()) {
-            self.above_txfm[i] = w as u8;
+            self.above_txfm[i] = tx_w as u8;
         }
         for i in y4..(y4 + h / 4).min(self.left_txfm.len()) {
-            self.left_txfm[i] = h as u8;
+            self.left_txfm[i] = tx_h as u8;
         }
+    }
+
+    /// The block's above coefficient-context byte span (4x4 units),
+    /// clipped to the frame — the seed of the MD TX-local overlay
+    /// (C tx_reset_neighbor_arrays copies the committed arrays).
+    pub(crate) fn above_coeff_span(&self, x: usize, w: usize) -> &[u8] {
+        let x4 = x / 4;
+        &self.above_coeff[x4..(x4 + w / 4).min(self.above_coeff.len())]
+    }
+
+    /// The block's left coefficient-context byte span (4x4 units).
+    pub(crate) fn left_coeff_span(&self, y: usize, h: usize) -> &[u8] {
+        let y4 = y / 4;
+        &self.left_coeff[y4..(y4 + h / 4).min(self.left_coeff.len())]
     }
 }
 
@@ -1338,6 +1370,7 @@ fn write_chroma_txb(
     ch: usize,
     qcoeffs: &[i32],
     base_q_idx: u8,
+    uv_tx_type: usize,
 ) {
     use svtav1_entropy::coeff_c;
     let tx_size = coeff_c::tx_size_from_dims(cw, ch);
@@ -1348,10 +1381,13 @@ fn write_chroma_txb(
     // libaom get_txb_ctx num_pels comparison). The 4th arg is the luma-only
     // fast-path flag, unused for plane != 0.
     let (txb_skip_ctx, dc_sign_ctx) = coeff_c::get_txb_ctx(1, above, left, true, false);
-    // eob relative to the DCT_DCT (default) scan for this tx size.
+    // eob relative to the scan of the DERIVED chroma tx type (the decoder
+    // computes it from UVMode via Mode_To_Txfm — spec compute_tx_type,
+    // plane > 0 intra: UV_DC -> DCT_DCT, UV_V -> ADST_DCT,
+    // UV_H -> DCT_ADST, UV_SMOOTH -> ADST_ADST; DCT-only above 16x16).
     let scan = svtav1_entropy::scan_tables::scan(
         tx_size,
-        svtav1_entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[coeff_c::DCT_DCT] as usize,
+        svtav1_entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[uv_tx_type] as usize,
     );
     let mut eob = 0i32;
     for (i, &pos) in scan.iter().enumerate() {
@@ -1363,7 +1399,7 @@ fn write_chroma_txb(
         coeff_fc,
         writer,
         tx_size,
-        coeff_c::DCT_DCT,
+        uv_tx_type,
         1, // plane_type: U and V both use the chroma tables
         txb_skip_ctx,
         dc_sign_ctx,
@@ -1404,13 +1440,27 @@ fn encode_block_syntax(
         let ch = decision.height as usize / 2;
         let cx = block_x / 2;
         let cy = block_y / 2;
-        let (u_q, u_eob) = crate::partition::encode_chroma_block_dc(
-            cp.u_src, cp.u_recon, cp.stride, cx, cy, cw, ch, cp.qindex, cp.c_quant,
-        );
-        let (v_q, v_eob) = crate::partition::encode_chroma_block_dc(
-            cp.v_src, cp.v_recon, cp.stride, cx, cy, cw, ch, cp.qindex, cp.c_quant,
-        );
-        (u_q, u_eob, v_q, v_eob)
+        if let Some((u_q, v_q, u_eob, v_eob, u_rec, v_rec)) = decision.chroma_dec.as_ref() {
+            // Funnel-decided chroma (M6 leaf funnel): the decision phase
+            // already predicted (per the decided uv_mode), quantized and
+            // reconstructed both planes with the C MDS3 path — copy its
+            // recon into the walk planes so the plane evolution is
+            // byte-identical, and code the decided coefficients.
+            for r in 0..ch {
+                let dst = (cy + r) * cp.stride + cx;
+                cp.u_recon[dst..dst + cw].copy_from_slice(&u_rec[r * cw..(r + 1) * cw]);
+                cp.v_recon[dst..dst + cw].copy_from_slice(&v_rec[r * cw..(r + 1) * cw]);
+            }
+            (u_q.clone(), *u_eob, v_q.clone(), *v_eob)
+        } else {
+            let (u_q, u_eob) = crate::partition::encode_chroma_block_dc(
+                cp.u_src, cp.u_recon, cp.stride, cx, cy, cw, ch, cp.qindex, cp.c_quant,
+            );
+            let (v_q, v_eob) = crate::partition::encode_chroma_block_dc(
+                cp.v_src, cp.v_recon, cp.stride, cx, cy, cw, ch, cp.qindex, cp.c_quant,
+            );
+            (u_q, u_eob, v_q, v_eob)
+        }
     });
 
     // The block-level skip flag means ALL planes are zero (the decoder
@@ -1488,8 +1538,16 @@ fn encode_block_syntax(
             frame_ctx,
             cfl_allowed,
             decision.intra_mode,
-            0, // UV_DC_PRED
+            decision.uv_mode,
         );
+        // angle_delta_uv follows directional UV modes on >= 8x8 blocks
+        // (read_intra_frame_mode_info, decodemv.c:833; delta always 0 —
+        // the M6 candidate set has no uv angle deltas).
+        if use_angle_delta(decision.width, decision.height)
+            && svtav1_entropy::context::is_directional_mode(decision.uv_mode)
+        {
+            svtav1_entropy::context::write_angle_delta(writer, frame_ctx, decision.uv_mode, 0);
+        }
     }
 
     // use_filter_intra flag — C writes it right after the uv/palette
@@ -1515,7 +1573,15 @@ fn encode_block_syntax(
             decision.width as usize,
             decision.height as usize,
         );
-        svtav1_entropy::context::write_use_filter_intra(writer, frame_ctx, bsize_idx, false);
+        let used = decision.filter_intra_mode != 5;
+        svtav1_entropy::context::write_use_filter_intra(writer, frame_ctx, bsize_idx, used);
+        if used {
+            svtav1_entropy::context::write_filter_intra_mode(
+                writer,
+                frame_ctx,
+                decision.filter_intra_mode,
+            );
+        }
     }
 
     // tx_size syntax — C av1_code_tx_size (entropy_coding.c:4697) called
@@ -1530,11 +1596,14 @@ fn encode_block_syntax(
     {
         let w = decision.width as usize;
         let h = decision.height as usize;
+        let depth = decision.tx_depth as usize;
         if is_key && !(w == 4 && h == 4) {
             let ctx = ectx.tx_size_ctx(block_x, block_y, w, h);
-            svtav1_entropy::context::write_tx_depth(writer, frame_ctx, w, h, ctx, 0);
+            svtav1_entropy::context::write_tx_depth(writer, frame_ctx, w, h, ctx, depth);
         }
-        ectx.record_txfm(block_x, block_y, w, h);
+        // set_txfm_ctxs records the CHOSEN tx dims (w >> depth for our
+        // square blocks) — the next blocks' tx_size contexts read them.
+        ectx.record_txfm_dims(block_x, block_y, w, h, w >> depth, h >> depth);
     }
 
     if !skip {
@@ -1553,53 +1622,99 @@ fn encode_block_syntax(
         use svtav1_entropy::coeff_c;
         let w = decision.width as usize;
         let h = decision.height as usize;
-        let tx_size = coeff_c::tx_size_from_dims(w, h);
-        let (above, left) = ectx.coeff_neighbors(block_x, block_y, w, h);
-        let (txb_skip_ctx, dc_sign_ctx) = coeff_c::get_txb_ctx(0, above, left, true, false);
-        // 64-dim transforms keep only the 32-capped low-frequency quadrant;
-        // the C writer expects that quadrant packed at the adjusted stride.
-        let aw = coeff_c::txb_wide(tx_size);
-        let ah = coeff_c::txb_high(tx_size);
-        let packed;
-        let coeffs: &[i32] = if aw == w && ah == h {
-            &decision.qcoeffs
-        } else {
-            let mut v = alloc::vec![0i32; aw * ah];
-            for r in 0..ah {
-                v[r * aw..r * aw + aw].copy_from_slice(&decision.qcoeffs[r * w..r * w + aw]);
+        if decision.tx_depth == 0 {
+            let tx_size = coeff_c::tx_size_from_dims(w, h);
+            let (above, left) = ectx.coeff_neighbors(block_x, block_y, w, h);
+            let (txb_skip_ctx, dc_sign_ctx) = coeff_c::get_txb_ctx(0, above, left, true, false);
+            // 64-dim transforms keep only the 32-capped low-frequency
+            // quadrant; the C writer expects that quadrant packed at the
+            // adjusted stride.
+            let aw = coeff_c::txb_wide(tx_size);
+            let ah = coeff_c::txb_high(tx_size);
+            let packed;
+            let coeffs: &[i32] = if aw == w && ah == h {
+                &decision.qcoeffs
+            } else {
+                let mut v = alloc::vec![0i32; aw * ah];
+                for r in 0..ah {
+                    v[r * aw..r * aw + aw]
+                        .copy_from_slice(&decision.qcoeffs[r * w..r * w + aw]);
+                }
+                packed = v;
+                &packed
+            };
+            // The decision's eob was derived from the mode-decision scan;
+            // the bitstream eob must be relative to the C scan order for
+            // this (tx_size, tx_type).
+            let tx_type = decision.tx_type as usize;
+            let scan = svtav1_entropy::scan_tables::scan(
+                tx_size,
+                svtav1_entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type] as usize,
+            );
+            let mut eob = 0i32;
+            for (i, &pos) in scan.iter().enumerate() {
+                if coeffs[pos as usize] != 0 {
+                    eob = i as i32 + 1;
+                }
             }
-            packed = v;
-            &packed
-        };
-        // The decision's eob was derived from the mode-decision scan; the
-        // bitstream eob must be relative to the C scan order for this
-        // (tx_size, tx_type).
-        let tx_type = decision.tx_type as usize;
-        let scan = svtav1_entropy::scan_tables::scan(
-            tx_size,
-            svtav1_entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type] as usize,
-        );
-        let mut eob = 0i32;
-        for (i, &pos) in scan.iter().enumerate() {
-            if coeffs[pos as usize] != 0 {
-                eob = i as i32 + 1;
+            let cul_level = coeff_c::write_coeffs_txb_1d(
+                coeff_fc,
+                writer,
+                tx_size,
+                tx_type,
+                0,
+                txb_skip_ctx,
+                dc_sign_ctx,
+                coeffs,
+                eob,
+                decision.intra_mode as usize,
+                base_q_idx,
+                false,
+            );
+            ectx.record_coeff(block_x, block_y, w, h, cul_level as u8);
+        } else {
+            // tx_depth 1: four quartered txbs in raster order (spec
+            // residual() / C av1_write_coeffs_mb over the tx grid), each
+            // with its own neighbor contexts and tx type; the per-txb
+            // contexts read the bytes recorded by the previous txbs.
+            debug_assert_eq!(decision.tx_depth, 1);
+            let tx = w >> 1;
+            let tx_size = coeff_c::tx_size_from_dims(tx, tx);
+            for txb in 0..4usize {
+                let tx_x = block_x + (txb & 1) * tx;
+                let tx_y = block_y + (txb >> 1) * tx;
+                let (above, left) = ectx.coeff_neighbors(tx_x, tx_y, tx, tx);
+                let (txb_skip_ctx, dc_sign_ctx) =
+                    coeff_c::get_txb_ctx(0, above, left, false, false);
+                let tx_type = decision.txb_tx_types[txb] as usize;
+                let coeffs = &decision.txb_qcoeffs[txb];
+                let scan = svtav1_entropy::scan_tables::scan(
+                    tx_size,
+                    svtav1_entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type] as usize,
+                );
+                let mut eob = 0i32;
+                for (i, &pos) in scan.iter().enumerate() {
+                    if coeffs[pos as usize] != 0 {
+                        eob = i as i32 + 1;
+                    }
+                }
+                let cul_level = coeff_c::write_coeffs_txb_1d(
+                    coeff_fc,
+                    writer,
+                    tx_size,
+                    tx_type,
+                    0,
+                    txb_skip_ctx,
+                    dc_sign_ctx,
+                    coeffs,
+                    eob,
+                    decision.intra_mode as usize,
+                    base_q_idx,
+                    false,
+                );
+                ectx.record_coeff(tx_x, tx_y, tx, tx, cul_level as u8);
             }
         }
-        let cul_level = coeff_c::write_coeffs_txb_1d(
-            coeff_fc,
-            writer,
-            tx_size,
-            tx_type,
-            0,
-            txb_skip_ctx,
-            dc_sign_ctx,
-            coeffs,
-            eob,
-            decision.intra_mode as usize,
-            base_q_idx,
-            false,
-        );
-        ectx.record_coeff(block_x, block_y, w, h, cul_level as u8);
 
         // Chroma txbs: plane 1 (U) then plane 2 (V), each one full-size
         // (w/2 x h/2) transform with its own neighbor context state.
@@ -1608,8 +1723,13 @@ fn encode_block_syntax(
             let ch = h / 2;
             let cx = block_x / 2;
             let cy = block_y / 2;
-            write_chroma_txb(writer, coeff_fc, ectx, 0, cx, cy, cw, ch, u_q, base_q_idx);
-            write_chroma_txb(writer, coeff_fc, ectx, 1, cx, cy, cw, ch, v_q, base_q_idx);
+            let uv_tt = crate::leaf_funnel::uv_tx_type(decision.uv_mode, cw, ch);
+            write_chroma_txb(
+                writer, coeff_fc, ectx, 0, cx, cy, cw, ch, u_q, base_q_idx, uv_tt,
+            );
+            write_chroma_txb(
+                writer, coeff_fc, ectx, 1, cx, cy, cw, ch, v_q, base_q_idx, uv_tt,
+            );
         }
     } else {
         // Skipped blocks contribute zero cul_level neighbors (C writes the
@@ -1650,14 +1770,31 @@ fn encode_block_syntax(
     // Deblocking geometry: exactly what the decoder derives per mi from
     // the parsed block — dims (single TX per block), signaled skip, and
     // inter-ness (skip only suppresses deblocking for inter blocks).
-    geom.record_block(
-        block_x,
-        block_y,
-        decision.width as usize,
-        decision.height as usize,
-        decision.is_inter,
-        skip,
-    );
+    if decision.tx_depth == 0 {
+        geom.record_block(
+            block_x,
+            block_y,
+            decision.width as usize,
+            decision.height as usize,
+            decision.is_inter,
+            skip,
+        );
+    } else {
+        // tx_depth 1: the decoder's filter masks see TX edges at the
+        // quartered grid — record each txb with its TX dims (skip is the
+        // block-level flag; intra blocks filter regardless).
+        let tx = decision.width as usize >> 1;
+        for txb in 0..4usize {
+            geom.record_block(
+                block_x + (txb & 1) * tx,
+                block_y + (txb >> 1) * tx,
+                tx,
+                tx,
+                decision.is_inter,
+                skip,
+            );
+        }
+    }
 }
 
 /// Extract the leaf decision from a partition tree node.
@@ -1978,6 +2115,7 @@ fn encode_tile_rows(
     sb_qp_offsets: &[i8],
     chroma_420: bool,
     c_quant: Option<alloc::sync::Arc<crate::quant::CodingQuantCfg>>,
+    chroma_src: Option<(&[u8], &[u8])>,
 ) -> Vec<(
     Vec<u8>,
     Vec<crate::partition::BlockDecision>,
@@ -1995,6 +2133,44 @@ fn encode_tile_rows(
         // PD0_LVL_1 rate tables (presets 6..8), built once per tile on
         // first use — default CDFs at the frame qindex (C md_frame_context).
         let mut m6_pd0_tables: Option<crate::pd0::M6Pd0Tables> = None;
+        // M6 leaf funnel state (preset 6, 4:2:0 still): decision-phase
+        // chroma recon planes + neighbor-context state + rate tables.
+        // Single-SB frames use the default contexts (C md_frame_context);
+        // multi-SB frames currently reuse them for every SB — C chains
+        // per-SB contexts (ec_ctx_array averaging), a documented residual
+        // gap for the 128-cell decisions.
+        let use_funnel = speed_config.preset == 6
+            && chroma_420
+            && chroma_src.is_some()
+            && ref_frame_data.is_none()
+            && c_quant.is_some();
+        let cwid = w / 2;
+        let chgt = h / 2;
+        let mut fun_u_recon = alloc::vec![128u8; if use_funnel { cwid * chgt } else { 0 }];
+        let mut fun_v_recon = alloc::vec![128u8; if use_funnel { cwid * chgt } else { 0 }];
+        let mut fun_ectx = if use_funnel {
+            Some(EntropyCtx::new(w / 4, h / 4, true))
+        } else {
+            None
+        };
+        let fun_rates = if use_funnel {
+            let fc = svtav1_entropy::context::FrameContext::new_default();
+            let cfc = svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex);
+            Some(crate::leaf_funnel::build_md_rates(&fc, &cfc))
+        } else {
+            None
+        };
+        let fun_frame = if use_funnel {
+            let cq = c_quant.as_ref().unwrap();
+            Some(crate::leaf_funnel::FunnelFrame {
+                lambda: cq.lambda as u64,
+                cli_qp: cli_qp as u32,
+                rdoq_level: cq.rdoq_level,
+                base_qindex,
+            })
+        } else {
+            None
+        };
         let mut tile_decisions: Vec<crate::partition::BlockDecision> = Vec::new();
         let mut tile_trees: Vec<crate::partition::PartitionTree> = Vec::new();
         let mut tile_frame_recon = alloc::vec![128u8; w * h];
@@ -2104,6 +2280,21 @@ fn encode_tile_rows(
                     // fixed-tree leaves use it to force the C-exact
                     // DC-only intra candidate set where the gate fires.
                     let sb_vars = crate::pd0::compute_b64_variance(encode_input, w, x0, y0);
+                    let mut funnel_ctx = if use_funnel {
+                        let (u_src, v_src) = chroma_src.unwrap();
+                        Some(crate::leaf_funnel::FunnelCtx {
+                            u_src,
+                            v_src,
+                            u_recon: &mut fun_u_recon,
+                            v_recon: &mut fun_v_recon,
+                            c_stride: cwid,
+                            ectx: fun_ectx.as_mut().unwrap(),
+                            rates: fun_rates.as_deref().unwrap(),
+                            frame: fun_frame.as_ref().unwrap(),
+                        })
+                    } else {
+                        None
+                    };
                     crate::partition::encode_fixed_tree(
                         &encode_input[y0 * w + x0..],
                         w,
@@ -2117,6 +2308,7 @@ fn encode_tile_rows(
                         y0,
                         &sb_vars,
                         (x0, y0),
+                        funnel_ctx.as_mut(),
                     )
                 } else {
                     crate::partition::partition_search_with_config(

@@ -291,6 +291,16 @@ pub(crate) fn syntax_rate_from_cdf(costs: &mut [i32], cdf: &[u16]) {
 /// tables eff-M9 MD uses all frame (update_cdf_level = 0).
 pub fn build_coeff_cost_tables(base_qindex: u8) -> alloc::boxed::Box<CoeffCostTables> {
     let fc = coeff_c::CoeffFc::default_for_qindex(base_qindex);
+    build_coeff_cost_tables_from_fc(&fc)
+}
+
+/// [`build_coeff_cost_tables`] over an ARBITRARY coefficient frame context
+/// — the per-SB chained contexts of C's `update_cdf_level = 2` presets
+/// (M4..M6: `svt_aom_estimate_coefficients_rate` over
+/// `pcs->ec_ctx_array[sb]`, enc_dec_process.c:3039-3042).
+pub fn build_coeff_cost_tables_from_fc(
+    fc: &coeff_c::CoeffFc,
+) -> alloc::boxed::Box<CoeffCostTables> {
     let mut tables = alloc::boxed::Box::new(CoeffCostTables {
         txb: alloc::vec![
             TxbCosts {
