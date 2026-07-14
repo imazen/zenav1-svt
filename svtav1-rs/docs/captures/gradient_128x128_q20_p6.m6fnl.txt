@@ -1,0 +1,656 @@
+M6FNL BLK sb=0 org=(0,0) bsize=9 sq=32 shape=0 ncand=5 qidx=80
+M6FNL CAND i=0 mode=0 fi=5 uv=0 angY=0 angUV=0 cls=0 ttuv=0
+M6FNL CAND i=1 mode=1 fi=5 uv=1 angY=0 angUV=0 cls=0 ttuv=1
+M6FNL CAND i=2 mode=2 fi=5 uv=2 angY=0 angUV=0 cls=0 ttuv=2
+M6FNL CAND i=3 mode=9 fi=5 uv=9 angY=0 angUV=0 cls=0 ttuv=3
+M6FNL CAND i=4 mode=0 fi=0 uv=0 angY=0 angUV=0 cls=0 ttuv=0
+M6FNL NICS c0 mds1=8 mds2=4 mds3=2 bypass1=0 bypass2=1
+M6FNL MDS0 itr=0 ci=0 buf=0 mode=0 fi=5 dist=45856 flr=828 fcr=845 fc=93996901
+M6FNL MDS0 itr=0 ci=1 buf=1 mode=1 fi=5 dist=45728 flr=2874 fcr=1132 fc=93851635
+M6FNL MDS0 itr=0 ci=2 buf=2 mode=2 fi=5 dist=45984 flr=2555 fcr=1182 fc=94362447
+M6FNL MDS0 itr=0 ci=3 buf=3 mode=9 fi=5 dist=46062 flr=1556 fcr=1362 fc=94481161
+M6FNL MDS0 itr=0 ci=4 buf=4 mode=0 fi=0 dist=45992 flr=2350 fcr=845 fc=94351678
+M6FNL POST0 n1_c0=5 tot1=5 perform_mds1=1 best=93851635 order: [0]=buf1 m1 fi5 fc=93851635 [1]=buf0 m0 fi5 fc=93996901 [2]=buf4 m0 fi0 fc=94351678 [3]=buf2 m2 fi5 fc=94362447 [4]=buf3 m9 fi5 fc=94481161
+M6FNL FLC st=1 mode=1 fi=5 uv=1 txdep=0 ybits=641149 cbbits=0 crbits=0 ydist=147104 cbdist=0 crdist=0 flr=2874 fcr=1132 skipctx=0 nsk_txsz=683 sk_txsz=683 lambda=25650 full=51185585 chroma=0
+M6FNL MDS1 buf=1 mode=1 fi=5 full=51185585 dist=147104 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=0 fi=5 uv=0 txdep=0 ybits=641149 cbbits=0 crbits=0 ydist=147167 cbdist=0 crdist=0 flr=828 fcr=845 skipctx=0 nsk_txsz=683 sk_txsz=683 lambda=25650 full=51076771 chroma=0
+M6FNL MDS1 buf=0 mode=0 fi=5 full=51076771 dist=147167 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=0 fi=0 uv=0 txdep=0 ybits=648911 cbbits=0 crbits=0 ydist=147364 cbdist=0 crdist=0 flr=2350 fcr=845 skipctx=0 nsk_txsz=683 sk_txsz=683 lambda=25650 full=51567093 chroma=0
+M6FNL MDS1 buf=4 mode=0 fi=0 full=51567093 dist=147364 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=2 fi=5 uv=2 txdep=0 ybits=641149 cbbits=0 crbits=0 ydist=146845 cbdist=0 crdist=0 flr=2555 fcr=1182 skipctx=0 nsk_txsz=683 sk_txsz=683 lambda=25650 full=51138956 chroma=0
+M6FNL MDS1 buf=2 mode=2 fi=5 full=51138956 dist=146845 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=9 fi=5 uv=9 txdep=0 ybits=648091 cbbits=0 crbits=0 ydist=147816 cbdist=0 crdist=0 flr=1556 fcr=1362 skipctx=0 nsk_txsz=683 sk_txsz=683 lambda=25650 full=51569992 chroma=0
+M6FNL MDS1 buf=3 mode=9 fi=5 full=51569992 dist=147816 eob0=966 hascoeff=1 txdep=0
+M6FNL POST2 n2_c0=4 n3_c0=2 tot3=2 order: buf0:m0:fi5 buf2:m2:fi5
+M6FNL TXT st=3 dep=0 txb=0 tt=0 eob=904 bits=650191 dist=140704 cost=50583157 tsc=0 dsc=0
+M6FNL TXSDEP dep=0 ybits=650191 tszbit=683 dist=140704 cost=50617374
+M6FNL TXT st=3 dep=1 txb=0 tt=0 eob=228 bits=165400 dist=39744 cost=13373384 tsc=1 dsc=0
+M6FNL TXT st=3 dep=1 txb=1 tt=0 eob=228 bits=157973 dist=37248 cost=12681821 tsc=3 dsc=1
+M6FNL TXT st=3 dep=1 txb=2 tt=0 eob=228 bits=235338 dist=42208 cost=17192506 tsc=3 dsc=1
+M6FNL TXT st=3 dep=1 txb=3 tt=0 eob=228 bits=179202 dist=39104 cost=13982912 tsc=6 dsc=0
+M6FNL TXSDEP dep=1 ybits=737913 tszbit=1998 dist=158304 cost=57330719
+M6FNL CHR st=3 mode=0 chroma_cplx=0 cfl_cplx=0
+M6FNL FLC st=3 mode=0 fi=5 uv=0 txdep=0 ybits=650191 cbbits=86 crbits=86 ydist=140704 cbdist=0 crdist=0 flr=828 fcr=845 skipctx=0 nsk_txsz=683 sk_txsz=683 lambda=25650 full=50711107 chroma=1
+M6FNL TXT st=3 dep=0 txb=0 tt=0 eob=904 bits=648872 dist=143584 cost=50885718 tsc=0 dsc=0
+M6FNL TXSDEP dep=0 ybits=648872 tszbit=683 dist=143584 cost=50919935
+M6FNL TXT st=3 dep=1 txb=0 tt=0 eob=228 bits=165953 dist=40000 cost=13433856 tsc=1 dsc=0
+M6FNL TXT st=3 dep=1 txb=1 tt=0 eob=228 bits=175266 dist=37312 cost=13556352 tsc=3 dsc=1
+M6FNL TXT st=3 dep=1 txb=2 tt=0 eob=228 bits=237939 dist=40928 cost=17158970 tsc=3 dsc=1
+M6FNL TXT st=3 dep=1 txb=3 tt=0 eob=228 bits=201534 dist=39280 cost=15124221 tsc=6 dsc=0
+M6FNL TXSDEP dep=1 ybits=780692 tszbit=1998 dist=157520 cost=59373495
+M6FNL CHR st=3 mode=2 chroma_cplx=0 cfl_cplx=0
+M6FNL FLC st=3 mode=2 fi=5 uv=2 txdep=0 ybits=648872 cbbits=3042 crbits=3042 ydist=143584 cbdist=2048 crdist=2048 flr=2555 fcr=1182 skipctx=0 nsk_txsz=683 sk_txsz=683 lambda=25650 full=51937535 chroma=1
+M6FNL WIN buf=0 mode=0 fi=5 uv=0 txdep=0 tt0=0 ttuv=0 eoby0=904 eobu0=0 eobv0=0 full=50711107 rate=652745 dist=140704
+M6FNL BLK sb=0 org=(32,0) bsize=9 sq=32 shape=0 ncand=5 qidx=80
+M6FNL CAND i=0 mode=0 fi=5 uv=0 angY=0 angUV=0 cls=0 ttuv=0
+M6FNL CAND i=1 mode=1 fi=5 uv=1 angY=0 angUV=0 cls=0 ttuv=1
+M6FNL CAND i=2 mode=2 fi=5 uv=2 angY=0 angUV=0 cls=0 ttuv=2
+M6FNL CAND i=3 mode=9 fi=5 uv=9 angY=0 angUV=0 cls=0 ttuv=3
+M6FNL CAND i=4 mode=0 fi=0 uv=0 angY=0 angUV=0 cls=0 ttuv=0
+M6FNL NICS c0 mds1=8 mds2=4 mds3=2 bypass1=0 bypass2=1
+M6FNL MDS0 itr=0 ci=0 buf=0 mode=0 fi=5 dist=32744 flr=828 fcr=845 fc=67143525
+M6FNL MDS0 itr=0 ci=1 buf=1 mode=1 fi=5 dist=33512 flr=2874 fcr=1132 fc=68833267
+M6FNL MDS0 itr=0 ci=2 buf=2 mode=2 fi=5 dist=41480 flr=2555 fcr=1182 fc=85138255
+M6FNL MDS0 itr=0 ci=3 buf=3 mode=9 fi=5 dist=36976 flr=1556 fcr=1362 fc=75873033
+M6FNL MDS0 itr=0 ci=4 buf=4 mode=0 fi=0 dist=40180 flr=2350 fcr=845 fc=82448702
+M6FNL POST0 n1_c0=5 tot1=5 perform_mds1=1 best=67143525 order: [0]=buf0 m0 fi5 fc=67143525 [1]=buf1 m1 fi5 fc=68833267 [2]=buf3 m9 fi5 fc=75873033 [3]=buf4 m0 fi0 fc=82448702 [4]=buf2 m2 fi5 fc=85138255
+M6FNL FLC st=1 mode=0 fi=5 uv=0 txdep=0 ybits=676098 cbbits=0 crbits=0 ydist=142505 cbdist=0 crdist=0 flr=828 fcr=845 skipctx=0 nsk_txsz=683 sk_txsz=683 lambda=25650 full=52230898 chroma=0
+M6FNL MDS1 buf=0 mode=0 fi=5 full=52230898 dist=142505 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=1 fi=5 uv=1 txdep=0 ybits=678025 cbbits=0 crbits=0 ydist=142861 cbdist=0 crdist=0 flr=2874 fcr=1132 skipctx=0 nsk_txsz=683 sk_txsz=683 lambda=25650 full=52489882 chroma=0
+M6FNL MDS1 buf=1 mode=1 fi=5 full=52489882 dist=142861 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=9 fi=5 uv=9 txdep=0 ybits=708921 cbbits=0 crbits=0 ydist=142481 cbdist=0 crdist=0 flr=1556 fcr=1362 skipctx=0 nsk_txsz=683 sk_txsz=683 lambda=25650 full=53934553 chroma=0
+M6FNL MDS1 buf=3 mode=9 fi=5 full=53934553 dist=142481 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=0 fi=0 uv=0 txdep=0 ybits=714854 cbbits=0 crbits=0 ydist=150255 cbdist=0 crdist=0 flr=2350 fcr=845 skipctx=0 nsk_txsz=683 sk_txsz=683 lambda=25650 full=55240731 chroma=0
+M6FNL MDS1 buf=4 mode=0 fi=0 full=55240731 dist=150255 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=2 fi=5 uv=2 txdep=0 ybits=737731 cbbits=0 crbits=0 ydist=137817 cbdist=0 crdist=0 flr=2555 fcr=1182 skipctx=0 nsk_txsz=683 sk_txsz=683 lambda=25650 full=54821904 chroma=0
+M6FNL MDS1 buf=2 mode=2 fi=5 full=54821904 dist=137817 eob0=966 hascoeff=1 txdep=0
+M6FNL POST2 n2_c0=2 n3_c0=2 tot3=2 order: buf0:m0:fi5 buf1:m1:fi5
+M6FNL TXT st=3 dep=0 txb=0 tt=0 eob=904 bits=671861 dist=140464 cost=51638053 tsc=0 dsc=1
+M6FNL TXSDEP dep=0 ybits=671861 tszbit=683 dist=140464 cost=51672270
+M6FNL TXT st=3 dep=1 txb=0 tt=0 eob=228 bits=163056 dist=39904 cost=13276435 tsc=3 dsc=1
+M6FNL TXT st=3 dep=1 txb=1 tt=0 eob=228 bits=156041 dist=37168 cost=12574792 tsc=3 dsc=2
+M6FNL TXT st=3 dep=1 txb=2 tt=0 eob=228 bits=187601 dist=43616 cost=14981218 tsc=6 dsc=0
+M6FNL TXT st=3 dep=1 txb=3 tt=0 eob=228 bits=239302 dist=44976 cost=17745397 tsc=6 dsc=0
+M6FNL TXSDEP dep=1 ybits=746000 tszbit=1998 dist=165664 cost=58677939
+M6FNL CHR st=3 mode=0 chroma_cplx=0 cfl_cplx=0
+M6FNL FLC st=3 mode=0 fi=5 uv=0 txdep=0 ybits=671861 cbbits=86 crbits=86 ydist=140464 cbdist=0 crdist=0 flr=828 fcr=845 skipctx=0 nsk_txsz=683 sk_txsz=683 lambda=25650 full=51766003 chroma=1
+M6FNL TXT st=3 dep=0 txb=0 tt=0 eob=904 bits=673788 dist=140624 cost=51755072 tsc=0 dsc=1
+M6FNL TXSDEP dep=0 ybits=673788 tszbit=683 dist=140624 cost=51789288
+M6FNL TXT st=3 dep=1 txb=0 tt=0 eob=228 bits=161429 dist=40080 cost=13217455 tsc=3 dsc=1
+M6FNL TXT st=3 dep=1 txb=1 tt=0 eob=228 bits=156462 dist=36720 cost=12538539 tsc=3 dsc=2
+M6FNL TXT st=3 dep=1 txb=2 tt=0 eob=228 bits=190527 dist=43504 cost=15113468 tsc=6 dsc=0
+M6FNL TXT st=3 dep=1 txb=3 tt=0 eob=228 bits=266445 dist=46528 cost=19303854 tsc=6 dsc=0
+M6FNL TXSDEP dep=1 ybits=774863 tszbit=1998 dist=166832 cost=60273411
+M6FNL CHR st=3 mode=1 chroma_cplx=0 cfl_cplx=0
+M6FNL FLC st=3 mode=1 fi=5 uv=1 txdep=0 ybits=673788 cbbits=86 crbits=86 ydist=140624 cbdist=0 crdist=0 flr=2874 fcr=1132 skipctx=0 nsk_txsz=683 sk_txsz=683 lambda=25650 full=51999899 chroma=1
+M6FNL WIN buf=0 mode=0 fi=5 uv=0 txdep=0 tt0=0 ttuv=0 eoby0=904 eobu0=0 eobv0=0 full=51766003 rate=674415 dist=140464
+M6FNL BLK sb=0 org=(0,32) bsize=9 sq=32 shape=0 ncand=5 qidx=80
+M6FNL CAND i=0 mode=0 fi=5 uv=0 angY=0 angUV=0 cls=0 ttuv=0
+M6FNL CAND i=1 mode=1 fi=5 uv=1 angY=0 angUV=0 cls=0 ttuv=1
+M6FNL CAND i=2 mode=2 fi=5 uv=2 angY=0 angUV=0 cls=0 ttuv=2
+M6FNL CAND i=3 mode=9 fi=5 uv=9 angY=0 angUV=0 cls=0 ttuv=3
+M6FNL CAND i=4 mode=0 fi=0 uv=0 angY=0 angUV=0 cls=0 ttuv=0
+M6FNL NICS c0 mds1=8 mds2=4 mds3=2 bypass1=0 bypass2=1
+M6FNL MDS0 itr=0 ci=0 buf=0 mode=0 fi=5 dist=46304 flr=828 fcr=845 fc=94914405
+M6FNL MDS0 itr=0 ci=1 buf=1 mode=1 fi=5 dist=55664 flr=2874 fcr=1132 fc=114200563
+M6FNL MDS0 itr=0 ci=2 buf=2 mode=2 fi=5 dist=42848 flr=2555 fcr=1182 fc=87939919
+M6FNL MDS0 itr=0 ci=3 buf=3 mode=9 fi=5 dist=48754 flr=1556 fcr=1362 fc=99994377
+M6FNL MDS0 itr=0 ci=4 buf=4 mode=0 fi=0 dist=46170 flr=2350 fcr=845 fc=94716222
+M6FNL POST0 n1_c0=5 tot1=5 perform_mds1=1 best=87939919 order: [0]=buf2 m2 fi5 fc=87939919 [1]=buf4 m0 fi0 fc=94716222 [2]=buf0 m0 fi5 fc=94914405 [3]=buf3 m9 fi5 fc=99994377 [4]=buf1 m1 fi5 fc=114200563
+M6FNL FLC st=1 mode=2 fi=5 uv=2 txdep=0 ybits=805248 cbbits=0 crbits=0 ydist=152237 cbdist=0 crdist=0 flr=2555 fcr=1182 skipctx=0 nsk_txsz=683 sk_txsz=683 lambda=25650 full=60050108 chroma=0
+M6FNL MDS1 buf=2 mode=2 fi=5 full=60050108 dist=152237 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=0 fi=0 uv=0 txdep=0 ybits=766228 cbbits=0 crbits=0 ydist=156678 cbdist=0 crdist=0 flr=2350 fcr=845 skipctx=0 nsk_txsz=683 sk_txsz=683 lambda=25650 full=58636592 chroma=0
+M6FNL MDS1 buf=4 mode=0 fi=0 full=58636592 dist=156678 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=0 fi=5 uv=0 txdep=0 ybits=806272 cbbits=0 crbits=0 ydist=152428 cbdist=0 crdist=0 flr=828 fcr=845 skipctx=0 nsk_txsz=683 sk_txsz=683 lambda=25650 full=60022454 chroma=0
+M6FNL MDS1 buf=0 mode=0 fi=5 full=60022454 dist=152428 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=9 fi=5 uv=9 txdep=0 ybits=822795 cbbits=0 crbits=0 ydist=155348 cbdist=0 crdist=0 flr=1556 fcr=1362 skipctx=0 nsk_txsz=683 sk_txsz=683 lambda=25650 full=61286349 chroma=0
+M6FNL MDS1 buf=3 mode=9 fi=5 full=61286349 dist=155348 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=1 fi=5 uv=1 txdep=0 ybits=868641 cbbits=0 crbits=0 ydist=157926 cbdist=0 crdist=0 flr=2874 fcr=1132 skipctx=0 nsk_txsz=683 sk_txsz=683 lambda=25650 full=63967617 chroma=0
+M6FNL MDS1 buf=1 mode=1 fi=5 full=63967617 dist=157926 eob0=966 hascoeff=1 txdep=0
+M6FNL POST2 n2_c0=2 n3_c0=2 tot3=2 order: buf4:m0:fi0 buf0:m0:fi5
+M6FNL TXT st=3 dep=0 txb=0 tt=0 eob=904 bits=753123 dist=158800 cost=58056097 tsc=0 dsc=1
+M6FNL TXSDEP dep=0 ybits=753123 tszbit=683 dist=158800 cost=58090314
+M6FNL TXT st=3 dep=1 txb=0 tt=0 eob=228 bits=207019 dist=44208 cost=16029791 tsc=3 dsc=1
+M6FNL TXT st=3 dep=1 txb=1 tt=0 eob=228 bits=237488 dist=48416 cost=18094840 tsc=6 dsc=0
+M6FNL TXT st=3 dep=1 txb=2 tt=0 eob=228 bits=225334 dist=42672 cost=16750721 tsc=3 dsc=2
+M6FNL TXT st=3 dep=1 txb=3 tt=0 eob=228 bits=188488 dist=39104 cost=14448119 tsc=6 dsc=2
+M6FNL TXSDEP dep=1 ybits=858329 tszbit=1998 dist=174400 cost=65423566
+M6FNL CHR st=3 mode=0 chroma_cplx=0 cfl_cplx=0
+M6FNL FLC st=3 mode=0 fi=0 uv=0 txdep=0 ybits=753123 cbbits=86 crbits=86 ydist=158800 cbdist=0 crdist=0 flr=2350 fcr=845 skipctx=0 nsk_txsz=683 sk_txsz=683 lambda=25650 full=58260295 chroma=1
+M6FNL TXT st=3 dep=0 txb=0 tt=0 eob=904 bits=779874 dist=158448 cost=59351204 tsc=0 dsc=1
+M6FNL TXSDEP dep=0 ybits=779874 tszbit=683 dist=158448 cost=59385420
+M6FNL TXT st=3 dep=1 txb=0 tt=0 eob=228 bits=202337 dist=44928 cost=15887393 tsc=3 dsc=1
+M6FNL TXT st=3 dep=1 txb=1 tt=0 eob=228 bits=262175 dist=46192 cost=19046929 tsc=6 dsc=0
+M6FNL TXT st=3 dep=1 txb=2 tt=0 eob=228 bits=237505 dist=41824 cost=17251916 tsc=3 dsc=2
+M6FNL TXT st=3 dep=1 txb=3 tt=0 eob=228 bits=179082 dist=39568 cost=14036292 tsc=6 dsc=2
+M6FNL TXSDEP dep=1 ybits=881099 tszbit=1998 dist=172512 cost=66322626
+M6FNL CHR st=3 mode=0 chroma_cplx=0 cfl_cplx=0
+M6FNL FLC st=3 mode=0 fi=5 uv=0 txdep=0 ybits=779874 cbbits=86 crbits=86 ydist=158448 cbdist=0 crdist=0 flr=828 fcr=845 skipctx=0 nsk_txsz=683 sk_txsz=683 lambda=25650 full=59479153 chroma=1
+M6FNL WIN buf=4 mode=0 fi=0 uv=0 txdep=0 tt0=0 ttuv=0 eoby0=904 eobu0=0 eobv0=0 full=58260295 rate=757199 dist=158800
+M6FNL BLK sb=0 org=(32,32) bsize=9 sq=32 shape=0 ncand=5 qidx=80
+M6FNL CAND i=0 mode=0 fi=5 uv=0 angY=0 angUV=0 cls=0 ttuv=0
+M6FNL CAND i=1 mode=1 fi=5 uv=1 angY=0 angUV=0 cls=0 ttuv=1
+M6FNL CAND i=2 mode=2 fi=5 uv=2 angY=0 angUV=0 cls=0 ttuv=2
+M6FNL CAND i=3 mode=9 fi=5 uv=9 angY=0 angUV=0 cls=0 ttuv=3
+M6FNL CAND i=4 mode=0 fi=0 uv=0 angY=0 angUV=0 cls=0 ttuv=0
+M6FNL NICS c0 mds1=8 mds2=4 mds3=2 bypass1=0 bypass2=1
+M6FNL MDS0 itr=0 ci=0 buf=0 mode=0 fi=5 dist=45120 flr=828 fcr=845 fc=92489573
+M6FNL MDS0 itr=0 ci=1 buf=1 mode=1 fi=5 dist=59200 flr=2874 fcr=1132 fc=121442291
+M6FNL MDS0 itr=0 ci=2 buf=2 mode=2 fi=5 dist=43368 flr=2555 fcr=1182 fc=89004879
+M6FNL MDS0 itr=0 ci=3 buf=3 mode=9 fi=5 dist=53330 flr=1556 fcr=1362 fc=109366025
+M6FNL MDS0 itr=0 ci=4 buf=4 mode=0 fi=0 dist=53646 flr=2350 fcr=845 fc=110027070
+M6FNL POST0 n1_c0=4 tot1=4 perform_mds1=1 best=89004879 order: [0]=buf2 m2 fi5 fc=89004879 [1]=buf0 m0 fi5 fc=92489573 [2]=buf3 m9 fi5 fc=109366025 [3]=buf4 m0 fi0 fc=110027070
+M6FNL FLC st=1 mode=2 fi=5 uv=2 txdep=0 ybits=830765 cbbits=0 crbits=0 ydist=154053 cbdist=0 crdist=0 flr=2555 fcr=1182 skipctx=0 nsk_txsz=220 sk_txsz=220 lambda=25650 full=61537702 chroma=0
+M6FNL MDS1 buf=2 mode=2 fi=5 full=61537702 dist=154053 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=0 fi=5 uv=0 txdep=0 ybits=830484 cbbits=0 crbits=0 ydist=151814 cbdist=0 crdist=0 flr=828 fcr=845 skipctx=0 nsk_txsz=220 sk_txsz=220 lambda=25650 full=61133631 chroma=0
+M6FNL MDS1 buf=0 mode=0 fi=5 full=61133631 dist=151814 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=9 fi=5 uv=9 txdep=0 ybits=859513 cbbits=0 crbits=0 ydist=157387 cbdist=0 crdist=0 flr=1556 fcr=1362 skipctx=0 nsk_txsz=220 sk_txsz=220 lambda=25650 full=63363632 chroma=0
+M6FNL MDS1 buf=3 mode=9 fi=5 full=63363632 dist=157387 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=0 fi=0 uv=0 txdep=0 ybits=829912 cbbits=0 crbits=0 ydist=156738 cbdist=0 crdist=0 flr=2350 fcr=845 skipctx=0 nsk_txsz=220 sk_txsz=220 lambda=25650 full=61811496 chroma=0
+M6FNL MDS1 buf=4 mode=0 fi=0 full=61811496 dist=156738 eob0=966 hascoeff=1 txdep=0
+M6FNL POST2 n2_c0=3 n3_c0=2 tot3=2 order: buf0:m0:fi5 buf2:m2:fi5
+M6FNL TXT st=3 dep=0 txb=0 tt=0 eob=904 bits=792814 dist=158976 cost=60067051 tsc=0 dsc=2
+M6FNL TXSDEP dep=0 ybits=792814 tszbit=220 dist=158976 cost=60078073
+M6FNL TXT st=3 dep=1 txb=0 tt=0 eob=228 bits=263200 dist=42800 cost=18664103 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=1 tt=0 eob=228 bits=208840 dist=39904 cost=15570107 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=2 tt=0 eob=228 bits=188177 dist=43984 cost=15057179 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=3 tt=0 eob=228 bits=238278 dist=46288 cost=17862033 tsc=6 dsc=0
+M6FNL TXSDEP dep=1 ybits=898495 tszbit=2381 dist=172976 cost=67272704
+M6FNL CHR st=3 mode=0 chroma_cplx=0 cfl_cplx=0
+M6FNL FLC st=3 mode=0 fi=5 uv=0 txdep=0 ybits=792814 cbbits=86 crbits=86 ydist=158976 cbdist=0 crdist=0 flr=828 fcr=845 skipctx=0 nsk_txsz=220 sk_txsz=220 lambda=25650 full=60171805 chroma=1
+M6FNL TXT st=3 dep=0 txb=0 tt=0 eob=904 bits=799871 dist=158400 cost=60346862 tsc=0 dsc=2
+M6FNL TXSDEP dep=0 ybits=799871 tszbit=220 dist=158400 cost=60357884
+M6FNL TXT st=3 dep=1 txb=0 tt=0 eob=228 bits=254720 dist=41632 cost=18089771 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=1 tt=0 eob=228 bits=202946 dist=38032 cost=15035215 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=2 tt=0 eob=228 bits=209333 dist=43168 cost=16012597 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=3 tt=0 eob=228 bits=256844 dist=46352 cost=18800338 tsc=6 dsc=0
+M6FNL TXSDEP dep=1 ybits=923843 tszbit=2381 dist=169184 cost=68057204
+M6FNL CHR st=3 mode=2 chroma_cplx=0 cfl_cplx=0
+M6FNL FLC st=3 mode=2 fi=5 uv=2 txdep=0 ybits=799871 cbbits=86 crbits=86 ydist=158400 cbdist=0 crdist=0 flr=2555 fcr=1182 skipctx=0 nsk_txsz=220 sk_txsz=220 lambda=25650 full=60555018 chroma=1
+M6FNL WIN buf=0 mode=0 fi=5 uv=0 txdep=0 tt0=0 ttuv=0 eoby0=904 eobu0=0 eobv0=0 full=60171805 rate=794905 dist=158976
+M6FNL BLK sb=1 org=(64,0) bsize=9 sq=32 shape=0 ncand=5 qidx=80
+M6FNL CAND i=0 mode=0 fi=5 uv=0 angY=0 angUV=0 cls=0 ttuv=0
+M6FNL CAND i=1 mode=1 fi=5 uv=1 angY=0 angUV=0 cls=0 ttuv=1
+M6FNL CAND i=2 mode=2 fi=5 uv=2 angY=0 angUV=0 cls=0 ttuv=2
+M6FNL CAND i=3 mode=9 fi=5 uv=9 angY=0 angUV=0 cls=0 ttuv=3
+M6FNL CAND i=4 mode=0 fi=0 uv=0 angY=0 angUV=0 cls=0 ttuv=0
+M6FNL NICS c0 mds1=8 mds2=4 mds3=2 bypass1=0 bypass2=1
+M6FNL MDS0 itr=0 ci=0 buf=0 mode=0 fi=5 dist=33696 flr=724 fcr=680 fc=69079745
+M6FNL MDS0 itr=0 ci=1 buf=1 mode=1 fi=5 dist=36768 flr=2970 fcr=1132 fc=75506365
+M6FNL MDS0 itr=0 ci=2 buf=2 mode=2 fi=5 dist=38288 flr=2648 fcr=1182 fc=78605698
+M6FNL MDS0 itr=0 ci=3 buf=3 mode=9 fi=5 dist=38156 flr=1651 fcr=1362 fc=78294432
+M6FNL MDS0 itr=0 ci=4 buf=4 mode=0 fi=0 dist=40852 flr=2236 fcr=680 fc=83810981
+M6FNL POST0 n1_c0=5 tot1=5 perform_mds1=1 best=69079745 order: [0]=buf0 m0 fi5 fc=69079745 [1]=buf1 m1 fi5 fc=75506365 [2]=buf3 m9 fi5 fc=78294432 [3]=buf2 m2 fi5 fc=78605698 [4]=buf4 m0 fi0 fc=83810981
+M6FNL FLC st=1 mode=0 fi=5 uv=0 txdep=0 ybits=635012 cbbits=0 crbits=0 ydist=146822 cbdist=0 crdist=0 flr=724 fcr=680 skipctx=0 nsk_txsz=560 sk_txsz=560 lambda=25650 full=50705223 chroma=0
+M6FNL MDS1 buf=0 mode=0 fi=5 full=50705223 dist=146822 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=1 fi=5 uv=1 txdep=0 ybits=640033 cbbits=0 crbits=0 ydist=146955 cbdist=0 crdist=0 flr=2970 fcr=1132 skipctx=0 nsk_txsz=560 sk_txsz=560 lambda=25650 full=51108950 chroma=0
+M6FNL MDS1 buf=1 mode=1 fi=5 full=51108950 dist=146955 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=9 fi=5 uv=9 txdep=0 ybits=661510 cbbits=0 crbits=0 ydist=144642 cbdist=0 crdist=0 flr=1651 fcr=1362 skipctx=0 nsk_txsz=560 sk_txsz=560 lambda=25650 full=51834277 chroma=0
+M6FNL MDS1 buf=3 mode=9 fi=5 full=51834277 dist=144642 eob0=973 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=2 fi=5 uv=2 txdep=0 ybits=663783 cbbits=0 crbits=0 ydist=145547 cbdist=0 crdist=0 flr=2648 fcr=1182 skipctx=0 nsk_txsz=560 sk_txsz=560 lambda=25650 full=52104919 chroma=0
+M6FNL MDS1 buf=2 mode=2 fi=5 full=52104919 dist=145547 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=0 fi=0 uv=0 txdep=0 ybits=665112 cbbits=0 crbits=0 ydist=146056 cbdist=0 crdist=0 flr=2236 fcr=680 skipctx=0 nsk_txsz=560 sk_txsz=560 lambda=25650 full=52190862 chroma=0
+M6FNL MDS1 buf=4 mode=0 fi=0 full=52190862 dist=146056 eob0=973 hascoeff=1 txdep=0
+M6FNL POST2 n2_c0=2 n3_c0=2 tot3=2 order: buf0:m0:fi5 buf1:m1:fi5
+M6FNL TXT st=3 dep=0 txb=0 tt=0 eob=904 bits=652921 dist=138944 cost=50494644 tsc=0 dsc=2
+M6FNL TXSDEP dep=0 ybits=652921 tszbit=560 dist=138944 cost=50522699
+M6FNL TXT st=3 dep=1 txb=0 tt=0 eob=228 bits=161905 dist=39248 cost=13134805 tsc=3 dsc=2
+M6FNL TXT st=3 dep=1 txb=1 tt=0 eob=228 bits=158071 dist=37248 cost=12686731 tsc=3 dsc=1
+M6FNL TXT st=3 dep=1 txb=2 tt=0 eob=228 bits=238103 dist=42768 cost=17402706 tsc=6 dsc=0
+M6FNL TXT st=3 dep=1 txb=3 tt=0 eob=228 bits=179250 dist=39104 cost=13985317 tsc=6 dsc=0
+M6FNL TXSDEP dep=1 ybits=737329 tszbit=2093 dist=158368 cost=57314413
+M6FNL CHR st=3 mode=0 chroma_cplx=0 cfl_cplx=0
+M6FNL FLC st=3 mode=0 fi=5 uv=0 txdep=0 ybits=652921 cbbits=51 crbits=51 ydist=138944 cbdist=0 crdist=0 flr=724 fcr=680 skipctx=0 nsk_txsz=560 sk_txsz=560 lambda=25650 full=50599148 chroma=1
+M6FNL TXT st=3 dep=0 txb=0 tt=0 eob=904 bits=657942 dist=138752 cost=50721608 tsc=0 dsc=2
+M6FNL TXSDEP dep=0 ybits=657942 tszbit=560 dist=138752 cost=50749663
+M6FNL TXT st=3 dep=1 txb=0 tt=0 eob=228 bits=163350 dist=39072 cost=13184668 tsc=3 dsc=2
+M6FNL TXT st=3 dep=1 txb=1 tt=0 eob=228 bits=157468 dist=36704 cost=12586890 tsc=3 dsc=1
+M6FNL TXT st=3 dep=1 txb=2 tt=0 eob=228 bits=264991 dist=40896 cost=18510116 tsc=6 dsc=0
+M6FNL TXT st=3 dep=1 txb=3 tt=0 eob=228 bits=182674 dist=39104 cost=14156851 tsc=6 dsc=0
+M6FNL TXSDEP dep=1 ybits=768483 tszbit=2093 dist=155776 cost=58543380
+M6FNL CHR st=3 mode=1 chroma_cplx=0 cfl_cplx=0
+M6FNL FLC st=3 mode=1 fi=5 uv=1 txdep=0 ybits=657942 cbbits=51 crbits=51 ydist=138752 cbdist=0 crdist=0 flr=2970 fcr=1132 skipctx=0 nsk_txsz=560 sk_txsz=560 lambda=25650 full=50961275 chroma=1
+M6FNL WIN buf=0 mode=0 fi=5 uv=0 txdep=0 tt0=0 ttuv=0 eoby0=904 eobu0=0 eobv0=0 full=50599148 rate=655007 dist=138944
+M6FNL BLK sb=1 org=(96,0) bsize=9 sq=32 shape=0 ncand=5 qidx=80
+M6FNL CAND i=0 mode=0 fi=5 uv=0 angY=0 angUV=0 cls=0 ttuv=0
+M6FNL CAND i=1 mode=1 fi=5 uv=1 angY=0 angUV=0 cls=0 ttuv=1
+M6FNL CAND i=2 mode=2 fi=5 uv=2 angY=0 angUV=0 cls=0 ttuv=2
+M6FNL CAND i=3 mode=9 fi=5 uv=9 angY=0 angUV=0 cls=0 ttuv=3
+M6FNL CAND i=4 mode=0 fi=0 uv=0 angY=0 angUV=0 cls=0 ttuv=0
+M6FNL NICS c0 mds1=8 mds2=4 mds3=2 bypass1=0 bypass2=1
+M6FNL MDS0 itr=0 ci=0 buf=0 mode=0 fi=5 dist=32744 flr=724 fcr=680 fc=67130049
+M6FNL MDS0 itr=0 ci=1 buf=1 mode=1 fi=5 dist=33512 flr=2970 fcr=1132 fc=68838077
+M6FNL MDS0 itr=0 ci=2 buf=2 mode=2 fi=5 dist=41432 flr=2648 fcr=1182 fc=85044610
+M6FNL MDS0 itr=0 ci=3 buf=3 mode=9 fi=5 dist=36804 flr=1651 fcr=1362 fc=75525536
+M6FNL MDS0 itr=0 ci=4 buf=4 mode=0 fi=0 dist=40160 flr=2236 fcr=680 fc=82393765
+M6FNL POST0 n1_c0=5 tot1=5 perform_mds1=1 best=67130049 order: [0]=buf0 m0 fi5 fc=67130049 [1]=buf1 m1 fi5 fc=68838077 [2]=buf3 m9 fi5 fc=75525536 [3]=buf4 m0 fi0 fc=82393765 [4]=buf2 m2 fi5 fc=85044610
+M6FNL FLC st=1 mode=0 fi=5 uv=0 txdep=0 ybits=665557 cbbits=0 crbits=0 ydist=142505 cbdist=0 crdist=0 flr=724 fcr=680 skipctx=0 nsk_txsz=560 sk_txsz=560 lambda=25650 full=51682880 chroma=0
+M6FNL MDS1 buf=0 mode=0 fi=5 full=51682880 dist=142505 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=1 fi=5 uv=1 txdep=0 ybits=667625 cbbits=0 crbits=0 ydist=142861 cbdist=0 crdist=0 flr=2970 fcr=1132 skipctx=0 nsk_txsz=560 sk_txsz=560 lambda=25650 full=51967213 chroma=0
+M6FNL MDS1 buf=1 mode=1 fi=5 full=51967213 dist=142861 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=9 fi=5 uv=9 txdep=0 ybits=701698 cbbits=0 crbits=0 ydist=140944 cbdist=0 crdist=0 flr=1651 fcr=1362 skipctx=0 nsk_txsz=560 sk_txsz=560 lambda=25650 full=53374258 chroma=0
+M6FNL MDS1 buf=3 mode=9 fi=5 full=53374258 dist=140944 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=0 fi=0 uv=0 txdep=0 ybits=703912 cbbits=0 crbits=0 ydist=149180 cbdist=0 crdist=0 flr=2236 fcr=680 skipctx=0 nsk_txsz=560 sk_txsz=560 lambda=25650 full=54534523 chroma=0
+M6FNL MDS1 buf=4 mode=0 fi=0 full=54534523 dist=149180 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=2 fi=5 uv=2 txdep=0 ybits=719666 cbbits=0 crbits=0 ydist=140890 cbdist=0 crdist=0 flr=2648 fcr=1182 skipctx=0 nsk_txsz=560 sk_txsz=560 lambda=25650 full=54308431 chroma=0
+M6FNL MDS1 buf=2 mode=2 fi=5 full=54308431 dist=140890 eob0=966 hascoeff=1 txdep=0
+M6FNL POST2 n2_c0=2 n3_c0=2 tot3=2 order: buf0:m0:fi5 buf1:m1:fi5
+M6FNL TXT st=3 dep=0 txb=0 tt=0 eob=904 bits=672198 dist=136800 cost=51185944 tsc=0 dsc=1
+M6FNL TXSDEP dep=0 ybits=672198 tszbit=560 dist=136800 cost=51213999
+M6FNL TXT st=3 dep=1 txb=0 tt=0 eob=228 bits=162933 dist=39840 cost=13262081 tsc=3 dsc=1
+M6FNL TXT st=3 dep=1 txb=1 tt=0 eob=228 bits=156006 dist=37168 cost=12573039 tsc=3 dsc=2
+M6FNL TXT st=3 dep=1 txb=2 tt=0 eob=228 bits=187997 dist=43824 cost=15027681 tsc=6 dsc=0
+M6FNL TXT st=3 dep=1 txb=3 tt=0 eob=228 bits=239258 dist=44976 cost=17743193 tsc=6 dsc=0
+M6FNL TXSDEP dep=1 ybits=746194 tszbit=2093 dist=165808 cost=58710849
+M6FNL CHR st=3 mode=0 chroma_cplx=0 cfl_cplx=0
+M6FNL FLC st=3 mode=0 fi=5 uv=0 txdep=0 ybits=672198 cbbits=51 crbits=51 ydist=136800 cbdist=0 crdist=0 flr=724 fcr=680 skipctx=0 nsk_txsz=560 sk_txsz=560 lambda=25650 full=51290448 chroma=1
+M6FNL TXT st=3 dep=0 txb=0 tt=0 eob=904 bits=674266 dist=138704 cost=51533258 tsc=0 dsc=1
+M6FNL TXSDEP dep=0 ybits=674266 tszbit=560 dist=138704 cost=51561313
+M6FNL TXT st=3 dep=1 txb=0 tt=0 eob=228 bits=161306 dist=40080 cost=13211293 tsc=3 dsc=1
+M6FNL TXT st=3 dep=1 txb=1 tt=0 eob=228 bits=156427 dist=36720 cost=12536786 tsc=3 dsc=2
+M6FNL TXT st=3 dep=1 txb=2 tt=0 eob=228 bits=190483 dist=43504 cost=15111264 tsc=6 dsc=0
+M6FNL TXT st=3 dep=1 txb=3 tt=0 eob=228 bits=266401 dist=46528 cost=19301650 tsc=6 dsc=0
+M6FNL TXSDEP dep=1 ybits=774617 tszbit=2093 dist=166832 cost=60265847
+M6FNL CHR st=3 mode=1 chroma_cplx=0 cfl_cplx=0
+M6FNL FLC st=3 mode=1 fi=5 uv=1 txdep=0 ybits=674266 cbbits=51 crbits=51 ydist=138704 cbdist=0 crdist=0 flr=2970 fcr=1132 skipctx=0 nsk_txsz=560 sk_txsz=560 lambda=25650 full=51772925 chroma=1
+M6FNL WIN buf=0 mode=0 fi=5 uv=0 txdep=0 tt0=0 ttuv=0 eoby0=904 eobu0=0 eobv0=0 full=51290448 rate=674284 dist=136800
+M6FNL BLK sb=1 org=(64,32) bsize=9 sq=32 shape=0 ncand=5 qidx=80
+M6FNL CAND i=0 mode=0 fi=5 uv=0 angY=0 angUV=0 cls=0 ttuv=0
+M6FNL CAND i=1 mode=1 fi=5 uv=1 angY=0 angUV=0 cls=0 ttuv=1
+M6FNL CAND i=2 mode=2 fi=5 uv=2 angY=0 angUV=0 cls=0 ttuv=2
+M6FNL CAND i=3 mode=9 fi=5 uv=9 angY=0 angUV=0 cls=0 ttuv=3
+M6FNL CAND i=4 mode=0 fi=0 uv=0 angY=0 angUV=0 cls=0 ttuv=0
+M6FNL NICS c0 mds1=8 mds2=4 mds3=2 bypass1=0 bypass2=1
+M6FNL MDS0 itr=0 ci=0 buf=0 mode=0 fi=5 dist=42592 flr=724 fcr=680 fc=87298753
+M6FNL MDS0 itr=0 ci=1 buf=1 mode=1 fi=5 dist=55840 flr=2970 fcr=1132 fc=114565821
+M6FNL MDS0 itr=0 ci=2 buf=2 mode=2 fi=5 dist=43680 flr=2648 fcr=1182 fc=89648514
+M6FNL MDS0 itr=0 ci=3 buf=3 mode=9 fi=5 dist=50750 flr=1651 fcr=1362 fc=104086944
+M6FNL MDS0 itr=0 ci=4 buf=4 mode=0 fi=0 dist=53958 flr=2236 fcr=680 fc=110652069
+M6FNL POST0 n1_c0=4 tot1=4 perform_mds1=1 best=87298753 order: [0]=buf0 m0 fi5 fc=87298753 [1]=buf2 m2 fi5 fc=89648514 [2]=buf3 m9 fi5 fc=104086944 [3]=buf4 m0 fi0 fc=110652069
+M6FNL FLC st=1 mode=0 fi=5 uv=0 txdep=0 ybits=785354 cbbits=0 crbits=0 ydist=152617 cbdist=0 crdist=0 flr=724 fcr=680 skipctx=0 nsk_txsz=205 sk_txsz=205 lambda=25650 full=58960980 chroma=0
+M6FNL MDS1 buf=0 mode=0 fi=5 full=58960980 dist=152617 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=2 fi=5 uv=2 txdep=0 ybits=785079 cbbits=0 crbits=0 ydist=157148 cbdist=0 crdist=0 flr=2648 fcr=1182 skipctx=0 nsk_txsz=205 sk_txsz=205 lambda=25650 full=59648708 chroma=0
+M6FNL MDS1 buf=2 mode=2 fi=5 full=59648708 dist=157148 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=9 fi=5 uv=9 txdep=0 ybits=824247 cbbits=0 crbits=0 ydist=158599 cbdist=0 crdist=0 flr=1651 fcr=1362 skipctx=0 nsk_txsz=205 sk_txsz=205 lambda=25650 full=61755731 chroma=0
+M6FNL MDS1 buf=3 mode=9 fi=5 full=61755731 dist=158599 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=0 fi=0 uv=0 txdep=0 ybits=801195 cbbits=0 crbits=0 ydist=157195 cbdist=0 crdist=0 flr=2236 fcr=680 skipctx=0 nsk_txsz=205 sk_txsz=205 lambda=25650 full=60416308 chroma=0
+M6FNL MDS1 buf=4 mode=0 fi=0 full=60416308 dist=157195 eob0=966 hascoeff=1 txdep=0
+M6FNL POST2 n2_c0=1 n3_c0=1 tot3=1 order: buf0:m0:fi5
+M6FNL TXT st=3 dep=0 txb=0 tt=0 eob=904 bits=768710 dist=156240 cost=58509289 tsc=0 dsc=0
+M6FNL TXSDEP dep=0 ybits=768710 tszbit=205 dist=156240 cost=58519559
+M6FNL TXT st=3 dep=1 txb=0 tt=0 eob=228 bits=198958 dist=43984 cost=15597281 tsc=6 dsc=0
+M6FNL TXT st=3 dep=1 txb=1 tt=0 eob=228 bits=262223 dist=46192 cost=19049334 tsc=6 dsc=0
+M6FNL TXT st=3 dep=1 txb=2 tt=0 eob=228 bits=237900 dist=43040 cost=17427352 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=3 tt=0 eob=228 bits=179047 dist=39568 cost=14034539 tsc=6 dsc=2
+M6FNL TXSDEP dep=1 ybits=878128 tszbit=2433 dist=172784 cost=66230394
+M6FNL CHR st=3 mode=0 chroma_cplx=0 cfl_cplx=0
+M6FNL FLC st=3 mode=0 fi=5 uv=0 txdep=0 ybits=768710 cbbits=51 crbits=51 ydist=156240 cbdist=0 crdist=0 flr=724 fcr=680 skipctx=0 nsk_txsz=205 sk_txsz=205 lambda=25650 full=58596008 chroma=1
+M6FNL WIN buf=0 mode=0 fi=5 uv=0 txdep=0 tt0=0 ttuv=0 eoby0=904 eobu0=0 eobv0=0 full=58596008 rate=770441 dist=156240
+M6FNL BLK sb=1 org=(96,32) bsize=9 sq=32 shape=0 ncand=5 qidx=80
+M6FNL CAND i=0 mode=0 fi=5 uv=0 angY=0 angUV=0 cls=0 ttuv=0
+M6FNL CAND i=1 mode=1 fi=5 uv=1 angY=0 angUV=0 cls=0 ttuv=1
+M6FNL CAND i=2 mode=2 fi=5 uv=2 angY=0 angUV=0 cls=0 ttuv=2
+M6FNL CAND i=3 mode=9 fi=5 uv=9 angY=0 angUV=0 cls=0 ttuv=3
+M6FNL CAND i=4 mode=0 fi=0 uv=0 angY=0 angUV=0 cls=0 ttuv=0
+M6FNL NICS c0 mds1=8 mds2=4 mds3=2 bypass1=0 bypass2=1
+M6FNL MDS0 itr=0 ci=0 buf=0 mode=0 fi=5 dist=45120 flr=724 fcr=680 fc=92476097
+M6FNL MDS0 itr=0 ci=1 buf=1 mode=1 fi=5 dist=59336 flr=2970 fcr=1132 fc=121725629
+M6FNL MDS0 itr=0 ci=2 buf=2 mode=2 fi=5 dist=43424 flr=2648 fcr=1182 fc=89124226
+M6FNL MDS0 itr=0 ci=3 buf=3 mode=9 fi=5 dist=53356 flr=1651 fcr=1362 fc=109424032
+M6FNL MDS0 itr=0 ci=4 buf=4 mode=0 fi=0 dist=53538 flr=2236 fcr=680 fc=109791909
+M6FNL POST0 n1_c0=4 tot1=4 perform_mds1=1 best=89124226 order: [0]=buf2 m2 fi5 fc=89124226 [1]=buf0 m0 fi5 fc=92476097 [2]=buf3 m9 fi5 fc=109424032 [3]=buf4 m0 fi0 fc=109791909
+M6FNL FLC st=1 mode=2 fi=5 uv=2 txdep=0 ybits=805300 cbbits=0 crbits=0 ydist=156680 cbdist=0 crdist=0 flr=2648 fcr=1182 skipctx=0 nsk_txsz=205 sk_txsz=205 lambda=25650 full=60601829 chroma=0
+M6FNL MDS1 buf=2 mode=2 fi=5 full=60601829 dist=156680 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=0 fi=5 uv=0 txdep=0 ybits=803541 cbbits=0 crbits=0 ydist=151814 cbdist=0 crdist=0 flr=724 fcr=680 skipctx=0 nsk_txsz=205 sk_txsz=205 lambda=25650 full=59769322 chroma=0
+M6FNL MDS1 buf=0 mode=0 fi=5 full=59769322 dist=151814 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=9 fi=5 uv=9 txdep=0 ybits=836197 cbbits=0 crbits=0 ydist=161304 cbdist=0 crdist=0 flr=1651 fcr=1362 skipctx=0 nsk_txsz=205 sk_txsz=205 lambda=25650 full=62700638 chroma=0
+M6FNL MDS1 buf=3 mode=9 fi=5 full=62700638 dist=161304 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=0 fi=0 uv=0 txdep=0 ybits=824030 cbbits=0 crbits=0 ydist=158936 cbdist=0 crdist=0 flr=2236 fcr=680 skipctx=0 nsk_txsz=205 sk_txsz=205 lambda=25650 full=61783136 chroma=0
+M6FNL MDS1 buf=4 mode=0 fi=0 full=61783136 dist=158936 eob0=966 hascoeff=1 txdep=0
+M6FNL POST2 n2_c0=2 n3_c0=2 tot3=2 order: buf0:m0:fi5 buf2:m2:fi5
+M6FNL TXT st=3 dep=0 txb=0 tt=0 eob=904 bits=779442 dist=155904 cost=59003929 tsc=0 dsc=2
+M6FNL TXSDEP dep=0 ybits=779442 tszbit=205 dist=155904 cost=59014199
+M6FNL TXT st=3 dep=1 txb=0 tt=0 eob=228 bits=263165 dist=42256 cost=18592718 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=1 tt=0 eob=228 bits=208805 dist=39904 cost=15568353 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=2 tt=0 eob=228 bits=188226 dist=43984 cost=15059633 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=3 tt=0 eob=228 bits=238234 dist=46288 cost=17859829 tsc=6 dsc=0
+M6FNL TXSDEP dep=1 ybits=898430 tszbit=2433 dist=172432 cost=67202421
+M6FNL CHR st=3 mode=0 chroma_cplx=0 cfl_cplx=0
+M6FNL FLC st=3 mode=0 fi=5 uv=0 txdep=0 ybits=779442 cbbits=51 crbits=51 ydist=155904 cbdist=0 crdist=0 flr=724 fcr=680 skipctx=0 nsk_txsz=205 sk_txsz=205 lambda=25650 full=59090648 chroma=1
+M6FNL TXT st=3 dep=0 txb=0 tt=0 eob=904 bits=783783 dist=159312 cost=59657627 tsc=0 dsc=2
+M6FNL TXSDEP dep=0 ybits=783783 tszbit=205 dist=159312 cost=59667897
+M6FNL TXT st=3 dep=1 txb=0 tt=0 eob=228 bits=255381 dist=42512 cost=18235526 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=1 tt=0 eob=228 bits=204047 dist=39712 cost=15305412 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=2 tt=0 eob=228 bits=211196 dist=43840 cost=16191945 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=3 tt=0 eob=228 bits=255605 dist=46432 cost=18748507 tsc=6 dsc=0
+M6FNL TXSDEP dep=1 ybits=926229 tszbit=2433 dist=172496 cost=68603278
+M6FNL CHR st=3 mode=2 chroma_cplx=0 cfl_cplx=0
+M6FNL FLC st=3 mode=2 fi=5 uv=2 txdep=0 ybits=783783 cbbits=51 crbits=51 ydist=159312 cbdist=0 crdist=0 flr=2648 fcr=1182 skipctx=0 nsk_txsz=205 sk_txsz=205 lambda=25650 full=59865883 chroma=1
+M6FNL WIN buf=0 mode=0 fi=5 uv=0 txdep=0 tt0=0 ttuv=0 eoby0=904 eobu0=0 eobv0=0 full=59090648 rate=781173 dist=155904
+M6FNL BLK sb=2 org=(0,64) bsize=9 sq=32 shape=0 ncand=5 qidx=80
+M6FNL CAND i=0 mode=0 fi=5 uv=0 angY=0 angUV=0 cls=0 ttuv=0
+M6FNL CAND i=1 mode=1 fi=5 uv=1 angY=0 angUV=0 cls=0 ttuv=1
+M6FNL CAND i=2 mode=2 fi=5 uv=2 angY=0 angUV=0 cls=0 ttuv=2
+M6FNL CAND i=3 mode=9 fi=5 uv=9 angY=0 angUV=0 cls=0 ttuv=3
+M6FNL CAND i=4 mode=0 fi=0 uv=0 angY=0 angUV=0 cls=0 ttuv=0
+M6FNL NICS c0 mds1=8 mds2=4 mds3=2 bypass1=0 bypass2=1
+M6FNL MDS0 itr=0 ci=0 buf=0 mode=0 fi=5 dist=46176 flr=582 fcr=557 fc=94625509
+M6FNL MDS0 itr=0 ci=1 buf=1 mode=1 fi=5 dist=55600 flr=3060 fcr=1132 fc=114078809
+M6FNL MDS0 itr=0 ci=2 buf=2 mode=2 fi=5 dist=43104 flr=2741 fcr=1182 fc=88473525
+M6FNL MDS0 itr=0 ci=3 buf=3 mode=9 fi=5 dist=47992 flr=1745 fcr=1362 fc=98443269
+M6FNL MDS0 itr=0 ci=4 buf=4 mode=0 fi=0 dist=45688 flr=2356 fcr=557 fc=93714958
+M6FNL POST0 n1_c0=5 tot1=5 perform_mds1=1 best=88473525 order: [0]=buf2 m2 fi5 fc=88473525 [1]=buf4 m0 fi0 fc=93714958 [2]=buf0 m0 fi5 fc=94625509 [3]=buf3 m9 fi5 fc=98443269 [4]=buf1 m1 fi5 fc=114078809
+M6FNL FLC st=1 mode=2 fi=5 uv=2 txdep=0 ybits=781314 cbbits=0 crbits=0 ydist=152689 cbdist=0 crdist=0 flr=2741 fcr=1182 skipctx=0 nsk_txsz=462 sk_txsz=462 lambda=25650 full=58906622 chroma=0
+M6FNL MDS1 buf=2 mode=2 fi=5 full=58906622 dist=152689 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=0 fi=0 uv=0 txdep=0 ybits=751289 cbbits=0 crbits=0 ydist=159117 cbdist=0 crdist=0 flr=2356 fcr=557 skipctx=0 nsk_txsz=462 sk_txsz=462 lambda=25650 full=58174625 chroma=0
+M6FNL MDS1 buf=4 mode=0 fi=0 full=58174625 dist=159117 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=0 fi=5 uv=0 txdep=0 ybits=782338 cbbits=0 crbits=0 ydist=152109 cbdist=0 crdist=0 flr=582 fcr=557 skipctx=0 nsk_txsz=462 sk_txsz=462 lambda=25650 full=58744210 chroma=0
+M6FNL MDS1 buf=0 mode=0 fi=5 full=58744210 dist=152109 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=9 fi=5 uv=9 txdep=0 ybits=789358 cbbits=0 crbits=0 ydist=157269 cbdist=0 crdist=0 flr=1745 fcr=1362 skipctx=0 nsk_txsz=462 sk_txsz=462 lambda=25650 full=59854968 chroma=0
+M6FNL MDS1 buf=3 mode=9 fi=5 full=59854968 dist=157269 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=1 fi=5 uv=1 txdep=0 ybits=856753 cbbits=0 crbits=0 ydist=159175 cbdist=0 crdist=0 flr=3060 fcr=1132 skipctx=0 nsk_txsz=462 sk_txsz=462 lambda=25650 full=63529623 chroma=0
+M6FNL MDS1 buf=1 mode=1 fi=5 full=63529623 dist=159175 eob0=966 hascoeff=1 txdep=0
+M6FNL POST2 n2_c0=3 n3_c0=2 tot3=2 order: buf4:m0:fi0 buf0:m0:fi5
+M6FNL TXT st=3 dep=0 txb=0 tt=0 eob=904 bits=737231 dist=155168 cost=56795049 tsc=0 dsc=2
+M6FNL TXSDEP dep=0 ybits=737231 tszbit=462 dist=155168 cost=56818194
+M6FNL TXT st=3 dep=1 txb=0 tt=0 eob=228 bits=202537 dist=44192 cost=15803205 tsc=3 dsc=2
+M6FNL TXT st=3 dep=1 txb=1 tt=0 eob=228 bits=230346 dist=50784 cost=18040147 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=2 tt=0 eob=228 bits=230420 dist=42112 cost=16933838 tsc=3 dsc=2
+M6FNL TXT st=3 dep=1 txb=3 tt=0 eob=228 bits=191076 dist=36576 cost=14254188 tsc=6 dsc=2
+M6FNL TXSDEP dep=1 ybits=854379 tszbit=2187 dist=173664 cost=65140941
+M6FNL CHR st=3 mode=0 chroma_cplx=0 cfl_cplx=0
+M6FNL FLC st=3 mode=0 fi=0 uv=0 txdep=0 ybits=737231 cbbits=29 crbits=29 ydist=155168 cbdist=0 crdist=0 flr=2356 fcr=557 skipctx=0 nsk_txsz=462 sk_txsz=462 lambda=25650 full=56967786 chroma=1
+M6FNL TXT st=3 dep=0 txb=0 tt=0 eob=904 bits=766171 dist=156656 cost=58435339 tsc=0 dsc=2
+M6FNL TXSDEP dep=0 ybits=766171 tszbit=462 dist=156656 cost=58458485
+M6FNL TXT st=3 dep=1 txb=0 tt=0 eob=228 bits=202047 dist=44960 cost=15876961 tsc=3 dsc=2
+M6FNL TXT st=3 dep=1 txb=1 tt=0 eob=228 bits=262035 dist=46624 cost=19095211 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=2 tt=0 eob=228 bits=236467 dist=42512 cost=17287978 tsc=3 dsc=2
+M6FNL TXT st=3 dep=1 txb=3 tt=0 eob=228 bits=179062 dist=39568 cost=14035291 tsc=6 dsc=2
+M6FNL TXSDEP dep=1 ybits=879611 tszbit=2187 dist=173664 cost=66405005
+M6FNL CHR st=3 mode=0 chroma_cplx=0 cfl_cplx=0
+M6FNL FLC st=3 mode=0 fi=5 uv=0 txdep=0 ybits=766171 cbbits=29 crbits=29 ydist=156656 cbdist=0 crdist=0 flr=582 fcr=557 skipctx=0 nsk_txsz=462 sk_txsz=462 lambda=25650 full=58519203 chroma=1
+M6FNL WIN buf=4 mode=0 fi=0 uv=0 txdep=0 tt0=0 ttuv=0 eoby0=904 eobu0=0 eobv0=0 full=56967786 rate=740679 dist=155168
+M6FNL BLK sb=2 org=(32,64) bsize=9 sq=32 shape=0 ncand=5 qidx=80
+M6FNL CAND i=0 mode=0 fi=5 uv=0 angY=0 angUV=0 cls=0 ttuv=0
+M6FNL CAND i=1 mode=1 fi=5 uv=1 angY=0 angUV=0 cls=0 ttuv=1
+M6FNL CAND i=2 mode=2 fi=5 uv=2 angY=0 angUV=0 cls=0 ttuv=2
+M6FNL CAND i=3 mode=9 fi=5 uv=9 angY=0 angUV=0 cls=0 ttuv=3
+M6FNL CAND i=4 mode=0 fi=0 uv=0 angY=0 angUV=0 cls=0 ttuv=0
+M6FNL NICS c0 mds1=8 mds2=4 mds3=2 bypass1=0 bypass2=1
+M6FNL MDS0 itr=0 ci=0 buf=0 mode=0 fi=5 dist=45120 flr=582 fcr=557 fc=92462821
+M6FNL MDS0 itr=0 ci=1 buf=1 mode=1 fi=5 dist=60272 flr=3060 fcr=1132 fc=123647065
+M6FNL MDS0 itr=0 ci=2 buf=2 mode=2 fi=5 dist=42888 flr=2741 fcr=1182 fc=88031157
+M6FNL MDS0 itr=0 ci=3 buf=3 mode=9 fi=5 dist=54082 flr=1745 fcr=1362 fc=110915589
+M6FNL MDS0 itr=0 ci=4 buf=4 mode=0 fi=0 dist=53826 flr=2356 fcr=557 fc=110381582
+M6FNL POST0 n1_c0=4 tot1=4 perform_mds1=1 best=88031157 order: [0]=buf2 m2 fi5 fc=88031157 [1]=buf0 m0 fi5 fc=92462821 [2]=buf4 m0 fi0 fc=110381582 [3]=buf3 m9 fi5 fc=110915589
+M6FNL FLC st=1 mode=2 fi=5 uv=2 txdep=0 ybits=797864 cbbits=0 crbits=0 ydist=154407 cbdist=0 crdist=0 flr=2741 fcr=1182 skipctx=0 nsk_txsz=175 sk_txsz=175 lambda=25650 full=59941264 chroma=0
+M6FNL MDS1 buf=2 mode=2 fi=5 full=59941264 dist=154407 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=0 fi=5 uv=0 txdep=0 ybits=800586 cbbits=0 crbits=0 ydist=151814 cbdist=0 crdist=0 flr=582 fcr=557 skipctx=0 nsk_txsz=175 sk_txsz=175 lambda=25650 full=59606254 chroma=0
+M6FNL MDS1 buf=0 mode=0 fi=5 full=59606254 dist=151814 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=0 fi=0 uv=0 txdep=0 ybits=815063 cbbits=0 crbits=0 ydist=158316 cbdist=0 crdist=0 flr=2356 fcr=557 skipctx=0 nsk_txsz=175 sk_txsz=175 lambda=25650 full=61252647 chroma=0
+M6FNL MDS1 buf=4 mode=0 fi=0 full=61252647 dist=158316 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=9 fi=5 uv=9 txdep=0 ybits=833439 cbbits=0 crbits=0 ydist=159501 cbdist=0 crdist=0 flr=1745 fcr=1362 skipctx=0 nsk_txsz=175 sk_txsz=175 lambda=25650 full=62334641 chroma=0
+M6FNL MDS1 buf=3 mode=9 fi=5 full=62334641 dist=159501 eob0=966 hascoeff=1 txdep=0
+M6FNL POST2 n2_c0=2 n3_c0=2 tot3=2 order: buf0:m0:fi5 buf2:m2:fi5
+M6FNL TXT st=3 dep=0 txb=0 tt=0 eob=904 bits=772709 dist=155872 cost=58662526 tsc=0 dsc=2
+M6FNL TXSDEP dep=0 ybits=772709 tszbit=175 dist=155872 cost=58671293
+M6FNL TXT st=3 dep=1 txb=0 tt=0 eob=228 bits=263180 dist=42800 cost=18663101 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=1 tt=0 eob=228 bits=209844 dist=40128 cost=15649077 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=2 tt=0 eob=228 bits=188204 dist=43984 cost=15058531 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=3 tt=0 eob=228 bits=238284 dist=46288 cost=17862334 tsc=6 dsc=0
+M6FNL TXSDEP dep=1 ybits=899512 tszbit=2526 dist=173200 cost=67359590
+M6FNL CHR st=3 mode=0 chroma_cplx=0 cfl_cplx=0
+M6FNL FLC st=3 mode=0 fi=5 uv=0 txdep=0 ybits=772709 cbbits=29 crbits=29 ydist=155872 cbdist=0 crdist=0 flr=582 fcr=557 skipctx=0 nsk_txsz=175 sk_txsz=175 lambda=25650 full=58732011 chroma=1
+M6FNL TXT st=3 dep=0 txb=0 tt=0 eob=904 bits=777997 dist=155664 cost=58900818 tsc=0 dsc=2
+M6FNL TXSDEP dep=0 ybits=777997 tszbit=175 dist=155664 cost=58909585
+M6FNL TXT st=3 dep=1 txb=0 tt=0 eob=228 bits=250988 dist=42800 cost=18052311 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=1 tt=0 eob=228 bits=204611 dist=37744 cost=15081764 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=2 tt=0 eob=228 bits=209507 dist=43568 cost=16072514 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=3 tt=0 eob=228 bits=251011 dist=46928 cost=18581847 tsc=6 dsc=0
+M6FNL TXSDEP dep=1 ybits=916117 tszbit=2526 dist=171040 cost=67914981
+M6FNL CHR st=3 mode=2 chroma_cplx=0 cfl_cplx=0
+M6FNL FLC st=3 mode=2 fi=5 uv=2 txdep=0 ybits=777997 cbbits=29 crbits=29 ydist=155664 cbdist=0 crdist=0 flr=2741 fcr=1182 skipctx=0 nsk_txsz=175 sk_txsz=175 lambda=25650 full=59109776 chroma=1
+M6FNL WIN buf=0 mode=0 fi=5 uv=0 txdep=0 tt0=0 ttuv=0 eoby0=904 eobu0=0 eobv0=0 full=58732011 rate=774096 dist=155872
+M6FNL BLK sb=2 org=(0,96) bsize=9 sq=32 shape=0 ncand=5 qidx=80
+M6FNL CAND i=0 mode=0 fi=5 uv=0 angY=0 angUV=0 cls=0 ttuv=0
+M6FNL CAND i=1 mode=1 fi=5 uv=1 angY=0 angUV=0 cls=0 ttuv=1
+M6FNL CAND i=2 mode=2 fi=5 uv=2 angY=0 angUV=0 cls=0 ttuv=2
+M6FNL CAND i=3 mode=9 fi=5 uv=9 angY=0 angUV=0 cls=0 ttuv=3
+M6FNL CAND i=4 mode=0 fi=0 uv=0 angY=0 angUV=0 cls=0 ttuv=0
+M6FNL NICS c0 mds1=8 mds2=4 mds3=2 bypass1=0 bypass2=1
+M6FNL MDS0 itr=0 ci=0 buf=0 mode=0 fi=5 dist=46304 flr=582 fcr=557 fc=94887653
+M6FNL MDS0 itr=0 ci=1 buf=1 mode=1 fi=5 dist=55552 flr=3060 fcr=1132 fc=113980505
+M6FNL MDS0 itr=0 ci=2 buf=2 mode=2 fi=5 dist=42720 flr=2741 fcr=1182 fc=87687093
+M6FNL MDS0 itr=0 ci=3 buf=3 mode=9 fi=5 dist=47780 flr=1745 fcr=1362 fc=98009093
+M6FNL MDS0 itr=0 ci=4 buf=4 mode=0 fi=0 dist=46114 flr=2356 fcr=557 fc=94587406
+M6FNL POST0 n1_c0=5 tot1=5 perform_mds1=1 best=87687093 order: [0]=buf2 m2 fi5 fc=87687093 [1]=buf4 m0 fi0 fc=94587406 [2]=buf0 m0 fi5 fc=94887653 [3]=buf3 m9 fi5 fc=98009093 [4]=buf1 m1 fi5 fc=113980505
+M6FNL FLC st=1 mode=2 fi=5 uv=2 txdep=0 ybits=781314 cbbits=0 crbits=0 ydist=152344 cbdist=0 crdist=0 flr=2741 fcr=1182 skipctx=0 nsk_txsz=462 sk_txsz=462 lambda=25650 full=58862462 chroma=0
+M6FNL MDS1 buf=2 mode=2 fi=5 full=58862462 dist=152344 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=0 fi=0 uv=0 txdep=0 ybits=756545 cbbits=0 crbits=0 ydist=157079 cbdist=0 crdist=0 flr=2356 fcr=557 skipctx=0 nsk_txsz=462 sk_txsz=462 lambda=25650 full=58177074 chroma=0
+M6FNL MDS1 buf=4 mode=0 fi=0 full=58177074 dist=157079 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=0 fi=5 uv=0 txdep=0 ybits=782338 cbbits=0 crbits=0 ydist=152428 cbdist=0 crdist=0 flr=582 fcr=557 skipctx=0 nsk_txsz=462 sk_txsz=462 lambda=25650 full=58785042 chroma=0
+M6FNL MDS1 buf=0 mode=0 fi=5 full=58785042 dist=152428 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=9 fi=5 uv=9 txdep=0 ybits=798818 cbbits=0 crbits=0 ydist=156614 cbdist=0 crdist=0 flr=1745 fcr=1362 skipctx=0 nsk_txsz=462 sk_txsz=462 lambda=25650 full=60245052 chroma=0
+M6FNL MDS1 buf=3 mode=9 fi=5 full=60245052 dist=156614 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=1 fi=5 uv=1 txdep=0 ybits=851197 cbbits=0 crbits=0 ydist=159347 cbdist=0 crdist=0 flr=3060 fcr=1132 skipctx=0 nsk_txsz=462 sk_txsz=462 lambda=25650 full=63273297 chroma=0
+M6FNL MDS1 buf=1 mode=1 fi=5 full=63273297 dist=159347 eob0=966 hascoeff=1 txdep=0
+M6FNL POST2 n2_c0=3 n3_c0=2 tot3=2 order: buf4:m0:fi0 buf0:m0:fi5
+M6FNL TXT st=3 dep=0 txb=0 tt=0 eob=904 bits=739381 dist=156432 cost=57064551 tsc=0 dsc=2
+M6FNL TXSDEP dep=0 ybits=739381 tszbit=462 dist=156432 cost=57087696
+M6FNL TXT st=3 dep=1 txb=0 tt=0 eob=228 bits=203335 dist=44640 cost=15900527 tsc=3 dsc=2
+M6FNL TXT st=3 dep=1 txb=1 tt=0 eob=228 bits=241172 dist=46064 cost=17978344 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=2 tt=0 eob=228 bits=225574 dist=43680 cost=16891769 tsc=3 dsc=2
+M6FNL TXT st=3 dep=1 txb=3 tt=0 eob=228 bits=191980 dist=38112 cost=14496084 tsc=6 dsc=2
+M6FNL TXSDEP dep=1 ybits=862061 tszbit=2187 dist=172496 cost=65376287
+M6FNL CHR st=3 mode=0 chroma_cplx=0 cfl_cplx=0
+M6FNL FLC st=3 mode=0 fi=0 uv=0 txdep=0 ybits=739381 cbbits=29 crbits=29 ydist=156432 cbdist=0 crdist=0 flr=2356 fcr=557 skipctx=0 nsk_txsz=462 sk_txsz=462 lambda=25650 full=57237288 chroma=1
+M6FNL TXT st=3 dep=0 txb=0 tt=0 eob=904 bits=766171 dist=151872 cost=57822987 tsc=0 dsc=2
+M6FNL TXSDEP dep=0 ybits=766171 tszbit=462 dist=151872 cost=57846133
+M6FNL TXT st=3 dep=1 txb=0 tt=0 eob=228 bits=202047 dist=44768 cost=15852385 tsc=3 dsc=2
+M6FNL TXT st=3 dep=1 txb=1 tt=0 eob=228 bits=262035 dist=45536 cost=18955947 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=2 tt=0 eob=228 bits=237485 dist=39504 cost=16953954 tsc=3 dsc=2
+M6FNL TXT st=3 dep=1 txb=3 tt=0 eob=228 bits=179062 dist=39568 cost=14035291 tsc=6 dsc=2
+M6FNL TXSDEP dep=1 ybits=880629 tszbit=2187 dist=169376 cost=65907141
+M6FNL CHR st=3 mode=0 chroma_cplx=0 cfl_cplx=0
+M6FNL FLC st=3 mode=0 fi=5 uv=0 txdep=0 ybits=766171 cbbits=29 crbits=29 ydist=151872 cbdist=0 crdist=0 flr=582 fcr=557 skipctx=0 nsk_txsz=462 sk_txsz=462 lambda=25650 full=57906851 chroma=1
+M6FNL WIN buf=4 mode=0 fi=0 uv=0 txdep=0 tt0=0 ttuv=0 eoby0=904 eobu0=0 eobv0=0 full=57237288 rate=742829 dist=156432
+M6FNL BLK sb=2 org=(32,96) bsize=9 sq=32 shape=0 ncand=5 qidx=80
+M6FNL CAND i=0 mode=0 fi=5 uv=0 angY=0 angUV=0 cls=0 ttuv=0
+M6FNL CAND i=1 mode=1 fi=5 uv=1 angY=0 angUV=0 cls=0 ttuv=1
+M6FNL CAND i=2 mode=2 fi=5 uv=2 angY=0 angUV=0 cls=0 ttuv=2
+M6FNL CAND i=3 mode=9 fi=5 uv=9 angY=0 angUV=0 cls=0 ttuv=3
+M6FNL CAND i=4 mode=0 fi=0 uv=0 angY=0 angUV=0 cls=0 ttuv=0
+M6FNL NICS c0 mds1=8 mds2=4 mds3=2 bypass1=0 bypass2=1
+M6FNL MDS0 itr=0 ci=0 buf=0 mode=0 fi=5 dist=45120 flr=582 fcr=557 fc=92462821
+M6FNL MDS0 itr=0 ci=1 buf=1 mode=1 fi=5 dist=60096 flr=3060 fcr=1132 fc=123286617
+M6FNL MDS0 itr=0 ci=2 buf=2 mode=2 fi=5 dist=42896 flr=2741 fcr=1182 fc=88047541
+M6FNL MDS0 itr=0 ci=3 buf=3 mode=9 fi=5 dist=54144 flr=1745 fcr=1362 fc=111042565
+M6FNL MDS0 itr=0 ci=4 buf=4 mode=0 fi=0 dist=53572 flr=2356 fcr=557 fc=109861390
+M6FNL POST0 n1_c0=4 tot1=4 perform_mds1=1 best=88047541 order: [0]=buf2 m2 fi5 fc=88047541 [1]=buf0 m0 fi5 fc=92462821 [2]=buf4 m0 fi0 fc=109861390 [3]=buf3 m9 fi5 fc=111042565
+M6FNL FLC st=1 mode=2 fi=5 uv=2 txdep=0 ybits=798242 cbbits=0 crbits=0 ydist=156786 cbdist=0 crdist=0 flr=2741 fcr=1182 skipctx=0 nsk_txsz=175 sk_txsz=175 lambda=25650 full=60264713 chroma=0
+M6FNL MDS1 buf=2 mode=2 fi=5 full=60264713 dist=156786 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=0 fi=5 uv=0 txdep=0 ybits=800586 cbbits=0 crbits=0 ydist=151814 cbdist=0 crdist=0 flr=582 fcr=557 skipctx=0 nsk_txsz=175 sk_txsz=175 lambda=25650 full=59606254 chroma=0
+M6FNL MDS1 buf=0 mode=0 fi=5 full=59606254 dist=151814 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=0 fi=0 uv=0 txdep=0 ybits=813307 cbbits=0 crbits=0 ydist=157575 cbdist=0 crdist=0 flr=2356 fcr=557 skipctx=0 nsk_txsz=175 sk_txsz=175 lambda=25650 full=61069828 chroma=0
+M6FNL MDS1 buf=4 mode=0 fi=0 full=61069828 dist=157575 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=9 fi=5 uv=9 txdep=0 ybits=837146 cbbits=0 crbits=0 ydist=159996 cbdist=0 crdist=0 flr=1745 fcr=1362 skipctx=0 nsk_txsz=175 sk_txsz=175 lambda=25650 full=62583713 chroma=0
+M6FNL MDS1 buf=3 mode=9 fi=5 full=62583713 dist=159996 eob0=966 hascoeff=1 txdep=0
+M6FNL POST2 n2_c0=2 n3_c0=2 tot3=2 order: buf0:m0:fi5 buf2:m2:fi5
+M6FNL TXT st=3 dep=0 txb=0 tt=0 eob=904 bits=772709 dist=153536 cost=58363518 tsc=0 dsc=2
+M6FNL TXSDEP dep=0 ybits=772709 tszbit=175 dist=153536 cost=58372285
+M6FNL TXT st=3 dep=1 txb=0 tt=0 eob=228 bits=263180 dist=40560 cost=18376381 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=1 tt=0 eob=228 bits=209844 dist=39840 cost=15612213 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=2 tt=0 eob=228 bits=188204 dist=43744 cost=15027811 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=3 tt=0 eob=228 bits=238284 dist=45632 cost=17778366 tsc=6 dsc=0
+M6FNL TXSDEP dep=1 ybits=899512 tszbit=2526 dist=169776 cost=66921318
+M6FNL CHR st=3 mode=0 chroma_cplx=0 cfl_cplx=0
+M6FNL FLC st=3 mode=0 fi=5 uv=0 txdep=0 ybits=772709 cbbits=29 crbits=29 ydist=153536 cbdist=0 crdist=0 flr=582 fcr=557 skipctx=0 nsk_txsz=175 sk_txsz=175 lambda=25650 full=58433003 chroma=1
+M6FNL TXT st=3 dep=0 txb=0 tt=0 eob=904 bits=772652 dist=158784 cost=59032406 tsc=0 dsc=2
+M6FNL TXSDEP dep=0 ybits=772652 tszbit=175 dist=158784 cost=59041173
+M6FNL TXT st=3 dep=1 txb=0 tt=0 eob=228 bits=251934 dist=40272 cost=17776119 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=1 tt=0 eob=228 bits=203921 dist=38608 cost=15157788 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=2 tt=0 eob=228 bits=210566 dist=43472 cost=16113279 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=3 tt=0 eob=228 bits=254615 dist=45712 cost=18606751 tsc=6 dsc=0
+M6FNL TXSDEP dep=1 ybits=921036 tszbit=2526 dist=168064 cost=67780484
+M6FNL CHR st=3 mode=2 chroma_cplx=0 cfl_cplx=0
+M6FNL FLC st=3 mode=2 fi=5 uv=2 txdep=0 ybits=772652 cbbits=29 crbits=29 ydist=158784 cbdist=0 crdist=0 flr=2741 fcr=1182 skipctx=0 nsk_txsz=175 sk_txsz=175 lambda=25650 full=59241364 chroma=1
+M6FNL WIN buf=0 mode=0 fi=5 uv=0 txdep=0 tt0=0 ttuv=0 eoby0=904 eobu0=0 eobv0=0 full=58433003 rate=774096 dist=153536
+M6FNL BLK sb=3 org=(64,64) bsize=9 sq=32 shape=0 ncand=5 qidx=80
+M6FNL CAND i=0 mode=0 fi=5 uv=0 angY=0 angUV=0 cls=0 ttuv=0
+M6FNL CAND i=1 mode=1 fi=5 uv=1 angY=0 angUV=0 cls=0 ttuv=1
+M6FNL CAND i=2 mode=2 fi=5 uv=2 angY=0 angUV=0 cls=0 ttuv=2
+M6FNL CAND i=3 mode=9 fi=5 uv=9 angY=0 angUV=0 cls=0 ttuv=3
+M6FNL CAND i=4 mode=0 fi=0 uv=0 angY=0 angUV=0 cls=0 ttuv=0
+M6FNL NICS c0 mds1=8 mds2=4 mds3=2 bypass1=0 bypass2=1
+M6FNL MDS0 itr=0 ci=0 buf=0 mode=0 fi=5 dist=42720 flr=585 fcr=462 fc=87543012
+M6FNL MDS0 itr=0 ci=1 buf=1 mode=1 fi=5 dist=54912 flr=3155 fcr=1132 fc=112674545
+M6FNL MDS0 itr=0 ci=2 buf=2 mode=2 fi=5 dist=44152 flr=2836 fcr=1182 fc=90624588
+M6FNL MDS0 itr=0 ci=3 buf=3 mode=9 fi=5 dist=49140 flr=1838 fcr=1362 fc=100799033
+M6FNL MDS0 itr=0 ci=4 buf=4 mode=0 fi=0 dist=54134 flr=2038 fcr=462 fc=110991676
+M6FNL POST0 n1_c0=5 tot1=5 perform_mds1=1 best=87543012 order: [0]=buf0 m0 fi5 fc=87543012 [1]=buf2 m2 fi5 fc=90624588 [2]=buf3 m9 fi5 fc=100799033 [3]=buf4 m0 fi0 fc=110991676 [4]=buf1 m1 fi5 fc=112674545
+M6FNL FLC st=1 mode=0 fi=5 uv=0 txdep=0 ybits=781731 cbbits=0 crbits=0 ydist=152344 cbdist=0 crdist=0 flr=585 fcr=462 skipctx=0 nsk_txsz=153 sk_txsz=153 lambda=25650 full=58723641 chroma=0
+M6FNL MDS1 buf=0 mode=0 fi=5 full=58723641 dist=152344 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=2 fi=5 uv=2 txdep=0 ybits=790216 cbbits=0 crbits=0 ydist=152971 cbdist=0 crdist=0 flr=2836 fcr=1182 skipctx=0 nsk_txsz=153 sk_txsz=153 lambda=25650 full=59377816 chroma=0
+M6FNL MDS1 buf=2 mode=2 fi=5 full=59377816 dist=152971 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=9 fi=5 uv=9 txdep=0 ybits=820364 cbbits=0 crbits=0 ydist=155952 cbdist=0 crdist=0 flr=1838 fcr=1362 skipctx=0 nsk_txsz=153 sk_txsz=153 lambda=25650 full=61228748 chroma=0
+M6FNL MDS1 buf=3 mode=9 fi=5 full=61228748 dist=155952 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=0 fi=0 uv=0 txdep=0 ybits=797100 cbbits=0 crbits=0 ydist=156552 cbdist=0 crdist=0 flr=2038 fcr=462 skipctx=0 nsk_txsz=153 sk_txsz=153 lambda=25650 full=60105008 chroma=0
+M6FNL MDS1 buf=4 mode=0 fi=0 full=60105008 dist=156552 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=1 fi=5 uv=1 txdep=0 ybits=849976 cbbits=0 crbits=0 ydist=156514 cbdist=0 crdist=0 flr=3155 fcr=1132 skipctx=0 nsk_txsz=153 sk_txsz=153 lambda=25650 full=62838632 chroma=0
+M6FNL MDS1 buf=1 mode=1 fi=5 full=62838632 dist=156514 eob0=966 hascoeff=1 txdep=0
+M6FNL POST2 n2_c0=1 n3_c0=1 tot3=1 order: buf0:m0:fi5
+M6FNL TXT st=3 dep=0 txb=0 tt=0 eob=904 bits=765311 dist=154496 cost=58115775 tsc=0 dsc=2
+M6FNL TXSDEP dep=0 ybits=765311 tszbit=153 dist=154496 cost=58123440
+M6FNL TXT st=3 dep=1 txb=0 tt=0 eob=228 bits=198661 dist=43456 cost=15514818 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=1 tt=0 eob=228 bits=261926 dist=46624 cost=19089751 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=2 tt=0 eob=228 bits=237806 dist=43040 cost=17422643 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=3 tt=0 eob=228 bits=178953 dist=39568 cost=14029830 tsc=6 dsc=2
+M6FNL TXSDEP dep=1 ybits=877346 tszbit=2623 dist=172688 cost=66188448
+M6FNL CHR st=3 mode=0 chroma_cplx=0 cfl_cplx=0
+M6FNL FLC st=3 mode=0 fi=5 uv=0 txdep=0 ybits=765311 cbbits=23 crbits=23 ydist=154496 cbdist=0 crdist=0 flr=585 fcr=462 skipctx=0 nsk_txsz=153 sk_txsz=153 lambda=25650 full=58178798 chroma=1
+M6FNL WIN buf=0 mode=0 fi=5 uv=0 txdep=0 tt0=0 ttuv=0 eoby0=904 eobu0=0 eobv0=0 full=58178798 rate=766569 dist=154496
+M6FNL BLK sb=3 org=(96,64) bsize=9 sq=32 shape=0 ncand=5 qidx=80
+M6FNL CAND i=0 mode=0 fi=5 uv=0 angY=0 angUV=0 cls=0 ttuv=0
+M6FNL CAND i=1 mode=1 fi=5 uv=1 angY=0 angUV=0 cls=0 ttuv=1
+M6FNL CAND i=2 mode=2 fi=5 uv=2 angY=0 angUV=0 cls=0 ttuv=2
+M6FNL CAND i=3 mode=9 fi=5 uv=9 angY=0 angUV=0 cls=0 ttuv=3
+M6FNL CAND i=4 mode=0 fi=0 uv=0 angY=0 angUV=0 cls=0 ttuv=0
+M6FNL NICS c0 mds1=8 mds2=4 mds3=2 bypass1=0 bypass2=1
+M6FNL MDS0 itr=0 ci=0 buf=0 mode=0 fi=5 dist=45120 flr=585 fcr=462 fc=92458212
+M6FNL MDS0 itr=0 ci=1 buf=1 mode=1 fi=5 dist=60200 flr=3155 fcr=1132 fc=123504369
+M6FNL MDS0 itr=0 ci=2 buf=2 mode=2 fi=5 dist=43456 flr=2836 fcr=1182 fc=89199180
+M6FNL MDS0 itr=0 ci=3 buf=3 mode=9 fi=5 dist=53982 flr=1838 fcr=1362 fc=110715449
+M6FNL MDS0 itr=0 ci=4 buf=4 mode=0 fi=0 dist=53592 flr=2038 fcr=462 fc=109881660
+M6FNL POST0 n1_c0=4 tot1=4 perform_mds1=1 best=89199180 order: [0]=buf2 m2 fi5 fc=89199180 [1]=buf0 m0 fi5 fc=92458212 [2]=buf4 m0 fi0 fc=109881660 [3]=buf3 m9 fi5 fc=110715449
+M6FNL FLC st=1 mode=2 fi=5 uv=2 txdep=0 ybits=801582 cbbits=0 crbits=0 ydist=154735 cbdist=0 crdist=0 flr=2836 fcr=1182 skipctx=0 nsk_txsz=153 sk_txsz=153 lambda=25650 full=60173018 chroma=0
+M6FNL MDS1 buf=2 mode=2 fi=5 full=60173018 dist=154735 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=0 fi=5 uv=0 txdep=0 ybits=797249 cbbits=0 crbits=0 ydist=151814 cbdist=0 crdist=0 flr=585 fcr=462 skipctx=0 nsk_txsz=153 sk_txsz=153 lambda=25650 full=59433217 chroma=0
+M6FNL MDS1 buf=0 mode=0 fi=5 full=59433217 dist=151814 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=0 fi=0 uv=0 txdep=0 ybits=815964 cbbits=0 crbits=0 ydist=156807 cbdist=0 crdist=0 flr=2038 fcr=462 skipctx=0 nsk_txsz=153 sk_txsz=153 lambda=25650 full=61082690 chroma=0
+M6FNL MDS1 buf=4 mode=0 fi=0 full=61082690 dist=156807 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=9 fi=5 uv=9 txdep=0 ybits=844063 cbbits=0 crbits=0 ydist=156232 cbdist=0 crdist=0 flr=1838 fcr=1362 skipctx=0 nsk_txsz=153 sk_txsz=153 lambda=25650 full=62451853 chroma=0
+M6FNL MDS1 buf=3 mode=9 fi=5 full=62451853 dist=156232 eob0=966 hascoeff=1 txdep=0
+M6FNL POST2 n2_c0=2 n3_c0=2 tot3=2 order: buf0:m0:fi5 buf2:m2:fi5
+M6FNL TXT st=3 dep=0 txb=0 tt=0 eob=904 bits=767240 dist=155872 cost=58388542 tsc=0 dsc=2
+M6FNL TXSDEP dep=0 ybits=767240 tszbit=153 dist=155872 cost=58396207
+M6FNL TXT st=3 dep=1 txb=0 tt=0 eob=228 bits=263071 dist=42800 cost=18657641 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=1 tt=0 eob=228 bits=209735 dist=40128 cost=15643616 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=2 tt=0 eob=228 bits=188396 dist=43984 cost=15068150 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=3 tt=0 eob=228 bits=238284 dist=46288 cost=17862334 tsc=6 dsc=0
+M6FNL TXSDEP dep=1 ybits=899486 tszbit=2623 dist=173200 cost=67363147
+M6FNL CHR st=3 mode=0 chroma_cplx=0 cfl_cplx=0
+M6FNL FLC st=3 mode=0 fi=5 uv=0 txdep=0 ybits=767240 cbbits=23 crbits=23 ydist=155872 cbdist=0 crdist=0 flr=585 fcr=462 skipctx=0 nsk_txsz=153 sk_txsz=153 lambda=25650 full=58451565 chroma=1
+M6FNL TXT st=3 dep=0 txb=0 tt=0 eob=904 bits=784392 dist=157632 cost=59473097 tsc=0 dsc=2
+M6FNL TXSDEP dep=0 ybits=784392 tszbit=153 dist=157632 cost=59480762
+M6FNL TXT st=3 dep=1 txb=0 tt=0 eob=228 bits=253697 dist=42912 cost=18202361 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=1 tt=0 eob=228 bits=204369 dist=38528 cost=15169992 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=2 tt=0 eob=228 bits=214772 dist=41728 cost=16100758 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=3 tt=0 eob=228 bits=254076 dist=46016 cost=18618660 tsc=6 dsc=0
+M6FNL TXSDEP dep=1 ybits=926914 tszbit=2623 dist=169184 cost=68223177
+M6FNL CHR st=3 mode=2 chroma_cplx=0 cfl_cplx=0
+M6FNL FLC st=3 mode=2 fi=5 uv=2 txdep=0 ybits=784392 cbbits=23 crbits=23 ydist=157632 cbdist=0 crdist=0 flr=2836 fcr=1182 skipctx=0 nsk_txsz=153 sk_txsz=153 lambda=25650 full=59684960 chroma=1
+M6FNL WIN buf=0 mode=0 fi=5 uv=0 txdep=0 tt0=0 ttuv=0 eoby0=904 eobu0=0 eobv0=0 full=58451565 rate=768498 dist=155872
+M6FNL BLK sb=3 org=(64,96) bsize=9 sq=32 shape=0 ncand=5 qidx=80
+M6FNL CAND i=0 mode=0 fi=5 uv=0 angY=0 angUV=0 cls=0 ttuv=0
+M6FNL CAND i=1 mode=1 fi=5 uv=1 angY=0 angUV=0 cls=0 ttuv=1
+M6FNL CAND i=2 mode=2 fi=5 uv=2 angY=0 angUV=0 cls=0 ttuv=2
+M6FNL CAND i=3 mode=9 fi=5 uv=9 angY=0 angUV=0 cls=0 ttuv=3
+M6FNL CAND i=4 mode=0 fi=0 uv=0 angY=0 angUV=0 cls=0 ttuv=0
+M6FNL NICS c0 mds1=8 mds2=4 mds3=2 bypass1=0 bypass2=1
+M6FNL MDS0 itr=0 ci=0 buf=0 mode=0 fi=5 dist=42720 flr=585 fcr=462 fc=87543012
+M6FNL MDS0 itr=0 ci=1 buf=1 mode=1 fi=5 dist=54816 flr=3155 fcr=1132 fc=112477937
+M6FNL MDS0 itr=0 ci=2 buf=2 mode=2 fi=5 dist=44048 flr=2836 fcr=1182 fc=90411596
+M6FNL MDS0 itr=0 ci=3 buf=3 mode=9 fi=5 dist=49148 flr=1838 fcr=1362 fc=100815417
+M6FNL MDS0 itr=0 ci=4 buf=4 mode=0 fi=0 dist=54046 flr=2038 fcr=462 fc=110811452
+M6FNL POST0 n1_c0=5 tot1=5 perform_mds1=1 best=87543012 order: [0]=buf0 m0 fi5 fc=87543012 [1]=buf2 m2 fi5 fc=90411596 [2]=buf3 m9 fi5 fc=100815417 [3]=buf4 m0 fi0 fc=110811452 [4]=buf1 m1 fi5 fc=112477937
+M6FNL FLC st=1 mode=0 fi=5 uv=0 txdep=0 ybits=781731 cbbits=0 crbits=0 ydist=152344 cbdist=0 crdist=0 flr=585 fcr=462 skipctx=0 nsk_txsz=153 sk_txsz=153 lambda=25650 full=58723641 chroma=0
+M6FNL MDS1 buf=0 mode=0 fi=5 full=58723641 dist=152344 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=2 fi=5 uv=2 txdep=0 ybits=793748 cbbits=0 crbits=0 ydist=148932 cbdist=0 crdist=0 flr=2836 fcr=1182 skipctx=0 nsk_txsz=153 sk_txsz=153 lambda=25650 full=59037769 chroma=0
+M6FNL MDS1 buf=2 mode=2 fi=5 full=59037769 dist=148932 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=9 fi=5 uv=9 txdep=0 ybits=819543 cbbits=0 crbits=0 ydist=158326 cbdist=0 crdist=0 flr=1838 fcr=1362 skipctx=0 nsk_txsz=153 sk_txsz=153 lambda=25650 full=61491490 chroma=0
+M6FNL MDS1 buf=3 mode=9 fi=5 full=61491490 dist=158326 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=0 fi=0 uv=0 txdep=0 ybits=797879 cbbits=0 crbits=0 ydist=153786 cbdist=0 crdist=0 flr=2038 fcr=462 skipctx=0 nsk_txsz=153 sk_txsz=153 lambda=25650 full=59789986 chroma=0
+M6FNL MDS1 buf=4 mode=0 fi=0 full=59789986 dist=153786 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=1 fi=5 uv=1 txdep=0 ybits=847875 cbbits=0 crbits=0 ydist=155208 cbdist=0 crdist=0 flr=3155 fcr=1132 skipctx=0 nsk_txsz=153 sk_txsz=153 lambda=25650 full=62566209 chroma=0
+M6FNL MDS1 buf=1 mode=1 fi=5 full=62566209 dist=155208 eob0=966 hascoeff=1 txdep=0
+M6FNL POST2 n2_c0=2 n3_c0=2 tot3=2 order: buf0:m0:fi5 buf2:m2:fi5
+M6FNL TXT st=3 dep=0 txb=0 tt=0 eob=904 bits=765311 dist=152192 cost=57820863 tsc=0 dsc=2
+M6FNL TXSDEP dep=0 ybits=765311 tszbit=153 dist=152192 cost=57828528
+M6FNL TXT st=3 dep=1 txb=0 tt=0 eob=228 bits=198661 dist=43216 cost=15484098 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=1 tt=0 eob=228 bits=261926 dist=45536 cost=18950487 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=2 tt=0 eob=228 bits=237806 dist=40912 cost=17150259 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=3 tt=0 eob=228 bits=178953 dist=39568 cost=14029830 tsc=6 dsc=2
+M6FNL TXSDEP dep=1 ybits=877346 tszbit=2623 dist=169232 cost=65746080
+M6FNL CHR st=3 mode=0 chroma_cplx=0 cfl_cplx=0
+M6FNL FLC st=3 mode=0 fi=5 uv=0 txdep=0 ybits=765311 cbbits=23 crbits=23 ydist=152192 cbdist=0 crdist=0 flr=585 fcr=462 skipctx=0 nsk_txsz=153 sk_txsz=153 lambda=25650 full=57883886 chroma=1
+M6FNL TXT st=3 dep=0 txb=0 tt=0 eob=904 bits=779201 dist=148016 cost=57982192 tsc=0 dsc=2
+M6FNL TXSDEP dep=0 ybits=779201 tszbit=153 dist=148016 cost=57989857
+M6FNL TXT st=3 dep=1 txb=0 tt=0 eob=228 bits=213928 dist=41632 cost=16046187 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=1 tt=0 eob=228 bits=257087 dist=45888 cost=18753120 tsc=6 dsc=0
+M6FNL TXT st=3 dep=1 txb=2 tt=0 eob=228 bits=256692 dist=39664 cost=17936660 tsc=6 dsc=0
+M6FNL TXT st=3 dep=1 txb=3 tt=0 eob=228 bits=205393 dist=37920 cost=15143468 tsc=6 dsc=0
+M6FNL TXSDEP dep=1 ybits=933100 tszbit=2623 dist=165104 cost=68010841
+M6FNL CHR st=3 mode=2 chroma_cplx=0 cfl_cplx=0
+M6FNL FLC st=3 mode=2 fi=5 uv=2 txdep=0 ybits=779201 cbbits=23 crbits=23 ydist=148016 cbdist=0 crdist=0 flr=2836 fcr=1182 skipctx=0 nsk_txsz=153 sk_txsz=153 lambda=25650 full=58194055 chroma=1
+M6FNL WIN buf=0 mode=0 fi=5 uv=0 txdep=0 tt0=0 ttuv=0 eoby0=904 eobu0=0 eobv0=0 full=57883886 rate=766569 dist=152192
+M6FNL BLK sb=3 org=(96,96) bsize=9 sq=32 shape=0 ncand=5 qidx=80
+M6FNL CAND i=0 mode=0 fi=5 uv=0 angY=0 angUV=0 cls=0 ttuv=0
+M6FNL CAND i=1 mode=1 fi=5 uv=1 angY=0 angUV=0 cls=0 ttuv=1
+M6FNL CAND i=2 mode=2 fi=5 uv=2 angY=0 angUV=0 cls=0 ttuv=2
+M6FNL CAND i=3 mode=9 fi=5 uv=9 angY=0 angUV=0 cls=0 ttuv=3
+M6FNL CAND i=4 mode=0 fi=0 uv=0 angY=0 angUV=0 cls=0 ttuv=0
+M6FNL NICS c0 mds1=8 mds2=4 mds3=2 bypass1=0 bypass2=1
+M6FNL MDS0 itr=0 ci=0 buf=0 mode=0 fi=5 dist=45120 flr=585 fcr=462 fc=92458212
+M6FNL MDS0 itr=0 ci=1 buf=1 mode=1 fi=5 dist=60096 flr=3155 fcr=1132 fc=123291377
+M6FNL MDS0 itr=0 ci=2 buf=2 mode=2 fi=5 dist=43456 flr=2836 fcr=1182 fc=89199180
+M6FNL MDS0 itr=0 ci=3 buf=3 mode=9 fi=5 dist=53986 flr=1838 fcr=1362 fc=110723641
+M6FNL MDS0 itr=0 ci=4 buf=4 mode=0 fi=0 dist=53808 flr=2038 fcr=462 fc=110324028
+M6FNL POST0 n1_c0=4 tot1=4 perform_mds1=1 best=89199180 order: [0]=buf2 m2 fi5 fc=89199180 [1]=buf0 m0 fi5 fc=92458212 [2]=buf4 m0 fi0 fc=110324028 [3]=buf3 m9 fi5 fc=110723641
+M6FNL FLC st=1 mode=2 fi=5 uv=2 txdep=0 ybits=801582 cbbits=0 crbits=0 ydist=154735 cbdist=0 crdist=0 flr=2836 fcr=1182 skipctx=0 nsk_txsz=153 sk_txsz=153 lambda=25650 full=60173018 chroma=0
+M6FNL MDS1 buf=2 mode=2 fi=5 full=60173018 dist=154735 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=0 fi=5 uv=0 txdep=0 ybits=797249 cbbits=0 crbits=0 ydist=151814 cbdist=0 crdist=0 flr=585 fcr=462 skipctx=0 nsk_txsz=153 sk_txsz=153 lambda=25650 full=59433217 chroma=0
+M6FNL MDS1 buf=0 mode=0 fi=5 full=59433217 dist=151814 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=0 fi=0 uv=0 txdep=0 ybits=821133 cbbits=0 crbits=0 ydist=160735 cbdist=0 crdist=0 flr=2038 fcr=462 skipctx=0 nsk_txsz=153 sk_txsz=153 lambda=25650 full=61844429 chroma=0
+M6FNL MDS1 buf=4 mode=0 fi=0 full=61844429 dist=160735 eob0=966 hascoeff=1 txdep=0
+M6FNL FLC st=1 mode=9 fi=5 uv=9 txdep=0 ybits=846862 cbbits=0 crbits=0 ydist=155714 cbdist=0 crdist=0 flr=1838 fcr=1362 skipctx=0 nsk_txsz=153 sk_txsz=153 lambda=25650 full=62525772 chroma=0
+M6FNL MDS1 buf=3 mode=9 fi=5 full=62525772 dist=155714 eob0=966 hascoeff=1 txdep=0
+M6FNL POST2 n2_c0=2 n3_c0=2 tot3=2 order: buf0:m0:fi5 buf2:m2:fi5
+M6FNL TXT st=3 dep=0 txb=0 tt=0 eob=904 bits=767240 dist=153536 cost=58089534 tsc=0 dsc=2
+M6FNL TXSDEP dep=0 ybits=767240 tszbit=153 dist=153536 cost=58097199
+M6FNL TXT st=3 dep=1 txb=0 tt=0 eob=228 bits=263071 dist=40816 cost=18403689 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=1 tt=0 eob=228 bits=209735 dist=39840 cost=15606752 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=2 tt=0 eob=228 bits=188396 dist=43744 cost=15037430 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=3 tt=0 eob=228 bits=238284 dist=45632 cost=17778366 tsc=6 dsc=0
+M6FNL TXSDEP dep=1 ybits=899486 tszbit=2623 dist=170032 cost=66957643
+M6FNL CHR st=3 mode=0 chroma_cplx=0 cfl_cplx=0
+M6FNL FLC st=3 mode=0 fi=5 uv=0 txdep=0 ybits=767240 cbbits=23 crbits=23 ydist=153536 cbdist=0 crdist=0 flr=585 fcr=462 skipctx=0 nsk_txsz=153 sk_txsz=153 lambda=25650 full=58152557 chroma=1
+M6FNL TXT st=3 dep=0 txb=0 tt=0 eob=904 bits=784392 dist=156448 cost=59321545 tsc=0 dsc=2
+M6FNL TXSDEP dep=0 ybits=784392 tszbit=153 dist=156448 cost=59329210
+M6FNL TXT st=3 dep=1 txb=0 tt=0 eob=228 bits=253697 dist=40816 cost=17934073 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=1 tt=0 eob=228 bits=204369 dist=38368 cost=15149512 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=2 tt=0 eob=228 bits=214772 dist=41664 cost=16092566 tsc=6 dsc=2
+M6FNL TXT st=3 dep=1 txb=3 tt=0 eob=228 bits=253272 dist=45232 cost=18478030 tsc=6 dsc=0
+M6FNL TXSDEP dep=1 ybits=926110 tszbit=2623 dist=166080 cost=67785587
+M6FNL CHR st=3 mode=2 chroma_cplx=0 cfl_cplx=0
+M6FNL FLC st=3 mode=2 fi=5 uv=2 txdep=0 ybits=784392 cbbits=23 crbits=23 ydist=156448 cbdist=0 crdist=0 flr=2836 fcr=1182 skipctx=0 nsk_txsz=153 sk_txsz=153 lambda=25650 full=59533408 chroma=1
+M6FNL WIN buf=0 mode=0 fi=5 uv=0 txdep=0 tt0=0 ttuv=0 eoby0=904 eobu0=0 eobv0=0 full=58152557 rate=768498 dist=153536
