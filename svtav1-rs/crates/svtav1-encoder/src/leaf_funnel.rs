@@ -261,6 +261,16 @@ pub struct FunnelCfg {
     pub txt_satd_th: u64,
     /// `txt_ctrls.txt_rate_cost_th` (M6: 100; M5: 250).
     pub txt_rate_th: u64,
+    /// `txs_ctrls.intra_class_max_depth_sq` (txs_level 3 at M4..M6: 1;
+    /// txs_level 2 at M0..M3: 2). Only consulted when `txs_on`.
+    pub txs_max_sq: u8,
+    /// `txs_ctrls.intra_class_max_depth_nsq` (M4..M6: 0; M0..M3: 2).
+    pub txs_max_nsq: u8,
+    /// `txs_ctrls.depth1_txt_group_offset` / `depth2_txt_group_offset`
+    /// (txs_level 3: 3/3; txs_level 2: 0/0) — subtracted from the TXT
+    /// group count at that tx depth (min 1, get_tx_type_group).
+    pub txt_d1_off: i32,
+    pub txt_d2_off: i32,
     /// chroma_level 4 (M5): CHROMA_MODE_0 with `ind_uv_last_mds = 2` —
     /// `search_best_mds3_uv_mode` over the MDS3 survivors' uv modes
     /// (+ UV_DC), then `update_intra_chroma_mode` rewrites each MDS3
@@ -302,10 +312,69 @@ impl FunnelCfg {
             txt_group_ge16: 4,
             txt_satd_th: 10,
             txt_rate_th: 100,
+            txs_max_sq: 1,
+            txs_max_nsq: 0,
+            txt_d1_off: 3,
+            txt_d2_off: 3,
             ind_uv_mds3: false,
             edge_filter: false,
         };
         match preset {
+            // M2/M3 (still/420): the M5DBG CFG enc_mode=2/3 rows
+            // (docs/captures/m0m5_config_dlf.txt lines 12-13) — config ==
+            // M4 except:
+            // - txt_level 2 (svt_aom_set_txt_controls case 2):
+            //   satd_early_exit_th_intra 20 (vs 15), groups 6/6 + rate_th
+            //   250 unchanged.
+            // - txs_level 2 (set_txs_controls, enc_mode_config.c:7992):
+            //   intra_class_max_depth_sq/nsq = 2/2 (vs 1/0),
+            //   depth1/2_txt_group_offset = 0/0 (vs 3/3).
+            // - M2 additionally drops nic_level 5 -> 3 (set_nic_controls
+            //   case 3, enc_mode_config.c:6124): scaling level 3 -> nums
+            //   12/12/12, mds1_base 1200 rank 0, mds2_base 30 rank 0
+            //   rel_dev 0, mds3_base 25 (single intra class, staging
+            //   MODE_1 — same walk semantics as case 5's zeros).
+            // update_cdf_level 1 (vs 2) differs only in update_mv, which
+            // is forced 0 on I-slices (set_cdf_controls,
+            // enc_mode_config.c:12047-12085) — no funnel impact.
+            2 => FunnelCfg {
+                mode_end: 12,
+                angular_level: 1,
+                nic_num: (12, 12, 12),
+                mds1_rank_factor: 0,
+                mds2_cand_base_th: 30,
+                mds2_rank_factor: 0,
+                mds2_rel_dev_th: 0,
+                mds3_cand_base_th: 25,
+                txt_group_lt16: 6,
+                txt_group_ge16: 6,
+                txt_satd_th: 20,
+                txt_rate_th: 250,
+                txs_max_sq: 2,
+                txs_max_nsq: 2,
+                txt_d1_off: 0,
+                txt_d2_off: 0,
+                ind_uv_mds3: true,
+                ..m6_tail
+            },
+            3 => FunnelCfg {
+                mode_end: 12,
+                angular_level: 1,
+                mds1_rank_factor: 0,
+                mds2_cand_base_th: 20,
+                mds2_rank_factor: 0,
+                mds2_rel_dev_th: 0,
+                txt_group_lt16: 6,
+                txt_group_ge16: 6,
+                txt_satd_th: 20,
+                txt_rate_th: 250,
+                txs_max_sq: 2,
+                txs_max_nsq: 2,
+                txt_d1_off: 0,
+                txt_d2_off: 0,
+                ind_uv_mds3: true,
+                ..m6_tail
+            },
             // M4 (still/420): the M5DBG CFG enc_mode=4 dump
             // (docs/captures/m0m5_config_dlf.txt line 14) — config == M5
             // except:
@@ -542,23 +611,33 @@ fn predict_unit(
     }
 }
 
-/// C `hadamard_path` (product_coding_loop.c:1187): residual over
-/// min(32,dim)-capped tiles, aom Hadamard per tile, SATD accumulated.
-fn hadamard_satd(src: &[u8], src_stride: usize, src_off: usize, pred: &[u8], size: usize) -> u64 {
-    let tx = size.min(32);
+/// C `hadamard_path` (product_coding_loop.c:1187): residual over square
+/// tiles of `MIN(TX_32X32, eb_max_txsize_lookup[bsize])` — the largest
+/// square TX fitting the block (its MIN dimension), capped at 32 — aom
+/// Hadamard per tile, SATD accumulated (raster tile order).
+fn hadamard_satd(
+    src: &[u8],
+    src_stride: usize,
+    src_off: usize,
+    pred: &[u8],
+    w: usize,
+    h: usize,
+) -> u64 {
+    let tx = w.min(h).min(32);
     let mut satd: u64 = 0;
     let mut res = vec![0i16; tx * tx];
     let mut coeff = vec![0i32; tx * tx];
-    for ty in (0..size).step_by(tx) {
-        for tx_x in (0..size).step_by(tx) {
+    for ty in (0..h).step_by(tx) {
+        for tx_x in (0..w).step_by(tx) {
             for r in 0..tx {
                 let srow = src_off + (ty + r) * src_stride + tx_x;
-                let prow = (ty + r) * size + tx_x;
+                let prow = (ty + r) * w + tx_x;
                 for c in 0..tx {
                     res[r * tx + c] = src[srow + c] as i16 - pred[prow + c] as i16;
                 }
             }
             match tx {
+                4 => svtav1_dsp::hadamard::aom_hadamard_4x4(&res, tx, &mut coeff),
                 8 => svtav1_dsp::hadamard::aom_hadamard_8x8(&res, tx, &mut coeff),
                 16 => svtav1_dsp::hadamard::aom_hadamard_16x16(&res, tx, &mut coeff),
                 32 => svtav1_dsp::hadamard::aom_hadamard_32x32(&res, tx, &mut coeff),
@@ -1028,6 +1107,10 @@ struct Cand {
     v_recon: Vec<u8>,
     mds3_cost: u64,
     block_has_coeff: bool,
+    /// C `blk_ptr->total_rate` / `full_dist` (svt_aom_full_cost writeback)
+    /// — read by the NSQ component-multiple / recon-dist gates.
+    total_rate: u64,
+    full_dist: u64,
 }
 
 /// The chosen leaf coding, consumed by the fixed-tree walk + the entropy
@@ -1077,7 +1160,8 @@ pub(crate) struct FunnelCtx<'a> {
 pub(crate) struct LeafEval {
     pub abs_x: usize,
     pub abs_y: usize,
-    pub size: usize,
+    pub w: usize,
+    pub h: usize,
     win: Cand,
 }
 
@@ -1094,7 +1178,33 @@ impl LeafEval {
         self.win.txb_eob.iter().map(|&e| e as u32).sum()
     }
 
-    /// Winner luma recon (size x size raster).
+    /// C `blk_ptr->total_rate` (the winner's full rate) and `full_dist`
+    /// — inputs to the NSQ component-multiple gate.
+    pub(crate) fn total_rate(&self) -> u64 {
+        self.win.total_rate
+    }
+
+    pub(crate) fn full_dist(&self) -> u64 {
+        self.win.full_dist
+    }
+
+    /// Winner luma mode (C `block_mi.mode`) — the NSQ recon-dist gate's
+    /// modulation input.
+    pub(crate) fn mode(&self) -> u8 {
+        self.win.mode
+    }
+
+    pub(crate) fn block_has_coeff(&self) -> bool {
+        self.win.block_has_coeff
+    }
+
+    /// Winner luma prediction (w x h raster) — the parent-SQ TXS gate
+    /// (`non_normative_txs`) re-transforms the winner's residual.
+    pub(crate) fn y_pred(&self) -> &[u8] {
+        &self.win.pred
+    }
+
+    /// Winner luma recon (w x h raster).
     pub(crate) fn y_recon(&self) -> &[u8] {
         &self.win.y_recon
     }
@@ -1153,6 +1263,7 @@ pub(crate) fn decide_leaf(
         abs_x,
         abs_y,
         size,
+        size,
         dc_only,
     );
     let choice = ev.to_choice();
@@ -1173,7 +1284,8 @@ pub(crate) fn evaluate_leaf(
     y_stride: usize,
     abs_x: usize,
     abs_y: usize,
-    size: usize,
+    w: usize,
+    h: usize,
     // eff-M9: `is_dc_only_safe` fired for this block -> C's dc_cand_only
     // injection restricts the candidate list to {DC_PRED}
     // (mode_decision.c:3633). Always false at M6/M7/M8 (gate dead).
@@ -1181,8 +1293,6 @@ pub(crate) fn evaluate_leaf(
 ) -> LeafEval {
     let frame = fx.frame;
     let rates = fx.rates;
-    let w = size;
-    let h = size;
     let lambda = frame.lambda;
     let qt = crate::quant::build_quant_table(frame.base_qindex);
 
@@ -1297,7 +1407,7 @@ pub(crate) fn evaluate_leaf(
             filt_type_y,
             &mut pred,
         );
-        let satd = hadamard_satd(y_src, y_src_stride, y_src_off, &pred, size);
+        let satd = hadamard_satd(y_src, y_src_stride, y_src_off, &pred, w, h);
 
         let mut flr = rates.kf_y[above_ctx][left_ctx][mode as usize] as u64;
         if use_angle && matches!(mode, 1..=8) {
@@ -1350,6 +1460,8 @@ pub(crate) fn evaluate_leaf(
             v_recon: Vec::new(),
             mds3_cost: u64::MAX,
             block_has_coeff: false,
+            total_rate: 0,
+            full_dist: 0,
         });
     }
     let ncand = cands.len();
@@ -1417,7 +1529,7 @@ pub(crate) fn evaluate_leaf(
             false, // freq-domain dist
         );
         let has = out.eob > 0;
-        let tsz_cat = tx_size_cat(w);
+        let tsz_cat = tx_size_cat(w, h);
         let tsz_ctx = fx.ectx.tx_size_ctx(abs_x, abs_y, w, h);
         let tx_size_bits = rates.tx_size[tsz_cat][tsz_ctx][0] as u64;
         let coeff_rate = if has {
@@ -1496,13 +1608,18 @@ pub(crate) fn evaluate_leaf(
 
     // -- MDS3: full loop with TXS + TXT + RDOQ + spatial SSE + chroma --
     let do_rdoq = frame.rdoq_level > 0;
-    // txs_level 0 (M8) -> depth 0 only; txs_level 3 (M6/M7) -> get_end_tx_depth.
-    let end_depth = if cfg.txs_on { end_tx_depth(size) } else { 0 };
+    // txs_level 0 (M8) -> depth 0 only; else get_end_tx_depth clamped by
+    // the config's intra sq/nsq max depths.
+    let end_depth = if cfg.txs_on {
+        end_tx_depth(w, h, &cfg)
+    } else {
+        0
+    };
     let cw = w / 2;
     let chh = h / 2;
     let ccx = abs_x / 2;
     let ccy = abs_y / 2;
-    let tsz_cat = tx_size_cat(w);
+    let tsz_cat = tx_size_cat(w, h);
     let tsz_ctx = fx.ectx.tx_size_ctx(abs_x, abs_y, w, h);
 
     // Chroma txb contexts (real at rate_est_level 1; candidate-independent
@@ -1699,8 +1816,11 @@ pub(crate) fn evaluate_leaf(
             if best_coeff_count < 1 {
                 continue;
             }
-            let tx = size >> depth;
-            let txbs = if depth == 0 { 1usize } else { 4 };
+            // C tx geometry at this depth (tx_depth_to_tx_size /
+            // tx_blocks_per_depth / the intra tx_org raster).
+            let (txw, txh) = txb_dims_at_depth(w, h, depth);
+            let cols = w / txw;
+            let txbs = cols * (h / txh);
             // TX-local dc_sign/cul overlay (tx_reset_neighbor_arrays).
             let mut loc_above = fx.ectx.above_coeff_span(abs_x, w).to_vec();
             let mut loc_left = fx.ectx.left_coeff_span(abs_y, h).to_vec();
@@ -1715,13 +1835,13 @@ pub(crate) fn evaluate_leaf(
             let mut aborted = false;
 
             for txb in 0..txbs {
-                let tx_x = (txb & 1) * tx;
-                let tx_y = (txb >> 1) * tx;
+                let tx_x = (txb % cols) * txw;
+                let tx_y = (txb / cols) * txh;
                 let cand = &cands[ci];
                 // Per-txb prediction: depth 0 reuses the MDS0 pred;
-                // depth 1 predicts from the live canvas (frame recon
+                // depth > 0 predicts from the live canvas (frame recon
                 // outside the block, this depth's recon inside).
-                let mut txb_pred = vec![0u8; tx * tx];
+                let mut txb_pred = vec![0u8; txw * txh];
                 if depth == 0 {
                     txb_pred.copy_from_slice(&cand.pred);
                 } else {
@@ -1734,9 +1854,11 @@ pub(crate) fn evaluate_leaf(
                         abs_y,
                         &dep_recon,
                         w,
+                        h,
                         tx_x,
                         tx_y,
-                        tx,
+                        txw,
+                        txh,
                         cand.mode,
                         cand.delta,
                         cand.fi,
@@ -1750,7 +1872,7 @@ pub(crate) fn evaluate_leaf(
                 // 0/0 at M7/M8 where update_skip_ctx_dc_sign_ctx == 0, so
                 // cul_level never accumulates — full_loop.c:1880).
                 let (tsc, dsc) = if cfg.real_coeff_ctx {
-                    txb_ctx_from_spans(&loc_above, &loc_left, tx_x, tx_y, tx, depth == 0)
+                    txb_ctx_from_spans(&loc_above, &loc_left, tx_x, tx_y, txw, txh, depth == 0)
                 } else {
                     (0, 0)
                 };
@@ -1765,8 +1887,8 @@ pub(crate) fn evaluate_leaf(
                     y_src_stride,
                     y_src_off + tx_y * y_src_stride + tx_x,
                     &txb_pred,
-                    tx,
-                    tx,
+                    txw,
+                    txh,
                     depth,
                     tsc,
                     dsc,
@@ -1782,18 +1904,18 @@ pub(crate) fn evaluate_leaf(
                 dep_has_coeff |= out.eob > 0;
                 // tx_update_neighbor_arrays: cul byte over the txb span.
                 let a0 = tx_x / 4;
-                let a1 = (a0 + tx / 4).min(loc_above.len());
+                let a1 = (a0 + txw / 4).min(loc_above.len());
                 for v in loc_above[a0..a1].iter_mut() {
                     *v = out.cul;
                 }
                 let l0 = tx_y / 4;
-                let l1 = (l0 + tx / 4).min(loc_left.len());
+                let l1 = (l0 + txh / 4).min(loc_left.len());
                 for v in loc_left[l0..l1].iter_mut() {
                     *v = out.cul;
                 }
-                for r in 0..tx {
+                for r in 0..txh {
                     let dst = (tx_y + r) * w + tx_x;
-                    dep_recon[dst..dst + tx].copy_from_slice(&out.recon[r * tx..(r + 1) * tx]);
+                    dep_recon[dst..dst + txw].copy_from_slice(&out.recon[r * txw..(r + 1) * txw]);
                 }
                 dep_q.push(out.qcoeff);
                 dep_eob.push(out.eob);
@@ -1932,6 +2054,8 @@ pub(crate) fn evaluate_leaf(
 
         let cand = &mut cands[ci];
         cand.mds3_cost = full;
+        cand.total_rate = cand.flr + cand.fcr + coeff_rate;
+        cand.full_dist = dist;
         cand.tx_depth = best_depth;
         cand.txb_q = best_txb_q;
         cand.txb_eob = best_txb_eob;
@@ -1964,7 +2088,8 @@ pub(crate) fn evaluate_leaf(
     LeafEval {
         abs_x,
         abs_y,
-        size,
+        w,
+        h,
         win: cands.swap_remove(win),
     }
 }
@@ -1982,8 +2107,8 @@ pub(crate) fn commit_leaf(
     y_stride: usize,
     ev: &LeafEval,
 ) {
-    let (abs_x, abs_y, size) = (ev.abs_x, ev.abs_y, ev.size);
-    let (w, h) = (size, size);
+    let (abs_x, abs_y) = (ev.abs_x, ev.abs_y);
+    let (w, h) = (ev.w, ev.h);
     let cw = w / 2;
     let chh = h / 2;
     let ccx = abs_x / 2;
@@ -2003,48 +2128,160 @@ pub(crate) fn commit_leaf(
         .record_block(abs_x, abs_y, w, h, cand.mode, cand.uv, skip);
     // MD partition-context bytes (mode_decision_update_neighbor_arrays,
     // product_coding_loop.c:179-192: partition_context_lookup[bsize]
-    // written over the block span — the AL_PART_CTX NONE rows are the
-    // same values). Consumed by the depth walk's partition rates
+    // written over the block span — per-DIMENSION levels for rect NSQ
+    // children). Consumed by the depth walk's partition rates
     // (update_part_neighs); inert for the fixed-tree paths (nothing
     // reads the decision ectx's partition bytes there).
-    fx.ectx
-        .update_partition_ctx(abs_x, abs_y, w, h, crate::partition::PartitionType::None);
+    fx.ectx.update_partition_ctx_leaf(abs_x, abs_y, w, h);
     // set_txfm_ctxs with the CHOSEN tx dims (mode_decision_update:246-256).
-    let chosen_tx = size >> cand.tx_depth;
-    fx.ectx
-        .record_txfm_dims(abs_x, abs_y, w, h, chosen_tx, chosen_tx);
+    let (txw, txh) = txb_dims_at_depth(w, h, cand.tx_depth);
+    fx.ectx.record_txfm_dims(abs_x, abs_y, w, h, txw, txh);
     // Per-txb luma cul bytes; chroma culs over the chroma span.
-    let txbs = if cand.tx_depth == 0 { 1usize } else { 4 };
-    let tx = size >> cand.tx_depth;
-    for txb in 0..txbs {
-        let tx_x = (txb & 1) * tx;
-        let tx_y = (txb >> 1) * tx;
+    let cols = w / txw;
+    for (txb, &cul) in cand.txb_cul.iter().enumerate() {
+        let tx_x = (txb % cols) * txw;
+        let tx_y = (txb / cols) * txh;
         fx.ectx
-            .record_coeff(abs_x + tx_x, abs_y + tx_y, tx, tx, cand.txb_cul[txb]);
+            .record_coeff(abs_x + tx_x, abs_y + tx_y, txw, txh, cul);
     }
     fx.ectx.record_coeff_uv(0, ccx, ccy, cw, chh, cand.u_cul);
     fx.ectx.record_coeff_uv(1, ccx, ccy, cw, chh, cand.v_cul);
 }
 
 /// C `get_end_tx_depth` (product_coding_loop.c:4171) clamped by
-/// `intra_class_max_depth_sq = 1` (txs level 3).
-fn end_tx_depth(size: usize) -> u8 {
-    match size {
-        64 | 32 | 16 => 1, // min(2, 1)
-        8 => 1,            // min(1, 1)
-        _ => 0,
-    }
+/// `intra_class_max_depth_sq` / `_nsq` (get_start_end_tx_depth :6973;
+/// shape == PART_N <=> w == h — HVA/HVB shapes with square children are
+/// geometry-disabled at every funnel preset).
+fn end_tx_depth(w: usize, h: usize, cfg: &FunnelCfg) -> u8 {
+    let base: u8 = match (w, h) {
+        // 2-depth blocks (the bsize list at :4173-4176).
+        (64, 64) | (32, 32) | (16, 16) => 2,
+        (64, 32) | (32, 64) | (32, 16) | (16, 32) | (16, 8) | (8, 16) => 2,
+        (64, 16) | (16, 64) | (32, 8) | (8, 32) | (16, 4) | (4, 16) => 2,
+        (8, 8) => 1,
+        _ => 0, // 8x4, 4x8, 4x4
+    };
+    let cap = if w == h { cfg.txs_max_sq } else { cfg.txs_max_nsq };
+    base.min(cap)
 }
 
-/// C `bsize_to_tx_size_cat` for square blocks: depth of the max tx size
-/// chain above TX_4X4 minus 1, capped at MAX_TX_CATS-1.
-fn tx_size_cat(size: usize) -> usize {
-    match size {
-        8 => 0,
+/// C `bsize_to_tx_size_cat`: category of the block's max tx size chain —
+/// `TXSIZE_SQR_UP` of the max rect TX (== the larger block dim as a
+/// square), minus TX_8X8, capped at MAX_TX_CATS-1. 4x8/8x4 -> TX_8X8 ->
+/// cat 0; 4x16/16x4 -> TX_16X16 -> cat 1.
+fn tx_size_cat(w: usize, h: usize) -> usize {
+    match w.max(h) {
+        4 | 8 => 0,
         16 => 1,
         32 => 2,
         _ => 3, // 64 (TX_64X64 -> cat 3)
     }
+}
+
+/// C `tx_depth_to_tx_size[depth][bsize]` (common_utils.c:95) — the TX
+/// dims at a given depth — plus the txb count/raster geometry
+/// (`tx_blocks_per_depth` / the intra `tx_org` rows, transforms.c:48;
+/// pinned against the instrumented dump in the tests below). Positions
+/// are plain raster: x fastest, `w/txw` columns.
+pub(crate) fn txb_dims_at_depth(w: usize, h: usize, depth: u8) -> (usize, usize) {
+    let (mut tw, mut th) = (w.min(64), h.min(64));
+    for _ in 0..depth {
+        (tw, th) = sub_tx_dims(tw, th);
+    }
+    (tw, th)
+}
+
+/// C `sub_tx_size_map` chain expressed on dims: square TXs halve both
+/// dims (min 4); 2:1 rects halve the long dim; 4:1 rects halve the long
+/// dim (64x16 -> 32x16 -> 16x16 per the table).
+fn sub_tx_dims(tw: usize, th: usize) -> (usize, usize) {
+    if tw == th {
+        ((tw / 2).max(4), (th / 2).max(4))
+    } else if tw > th {
+        (tw / 2, th)
+    } else {
+        (tw, th / 2)
+    }
+}
+
+/// C `non_normative_txs` (product_coding_loop.c:9641): re-transform the
+/// SQ winner's whole-block residual with the two half-height TXs (H
+/// split) and the two half-width TXs (V split), DCT_DCT +
+/// `svt_aom_quantize_inv_quantize_light` (plain quantize_b, y tables,
+/// full_loop.c:1253), and return the min eob per split direction.
+/// `None` when the winner kept no coefficients (C leaves the ~0
+/// sentinels, so the psq gate can't fire).
+pub(crate) fn min_nz_hv(
+    ev: &LeafEval,
+    y_src: &[u8],
+    y_src_stride: usize,
+    y_src_off: usize,
+    qindex: u8,
+) -> Option<(u16, u16)> {
+    if !ev.block_has_coeff() {
+        return None;
+    }
+    let (w, h) = (ev.w, ev.h);
+    debug_assert!(w == h && w >= 8, "psq gate runs on SQ blocks only");
+    let qt = crate::quant::build_quant_table(qindex);
+    let pred = ev.y_pred();
+
+    let half_eob = |ox: usize, oy: usize, tw: usize, th: usize| -> u16 {
+        let n = tw * th;
+        let c_tx = cc::tx_size_from_dims(tw, th);
+        let mut residual = vec![0i32; n];
+        for r in 0..th {
+            let srow = y_src_off + (oy + r) * y_src_stride + ox;
+            let prow = (oy + r) * w + ox;
+            for c in 0..tw {
+                residual[r * tw + c] = y_src[srow + c] as i32 - pred[prow + c] as i32;
+            }
+        }
+        let mut coeffs = vec![0i32; n];
+        let ok = svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
+            &residual,
+            &mut coeffs,
+            tw,
+            rs_tx_size(tw, th),
+            TX_TYPE_FROM_C[cc::DCT_DCT],
+        );
+        debug_assert!(ok, "psq fwd txfm {tw}x{th}");
+        // 64-dim fold (the 64x32/32x64 halves of a 64x64 block).
+        let (pw, ph) = (tw.min(32), th.min(32));
+        let packed = if tw > 32 || th > 32 {
+            let mut v = vec![0i32; pw * ph];
+            for r in 0..ph {
+                v[r * pw..(r + 1) * pw].copy_from_slice(&coeffs[r * tw..r * tw + pw]);
+            }
+            v
+        } else {
+            coeffs
+        };
+        let scan = svtav1_entropy::scan_tables::scan(
+            c_tx,
+            svtav1_entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[cc::DCT_DCT] as usize,
+        );
+        let mut qcoeff = vec![0i32; pw * ph];
+        let mut dqcoeff = vec![0i32; pw * ph];
+        crate::quant::quantize_b(
+            &packed,
+            scan,
+            &qt,
+            TX_SCALE_TAB[c_tx],
+            &mut qcoeff,
+            &mut dqcoeff,
+        )
+    };
+
+    let mut nz_h = u16::MAX;
+    for part in 0..2usize {
+        nz_h = nz_h.min(half_eob(0, part * (h / 2), w, h / 2));
+    }
+    let mut nz_v = u16::MAX;
+    for part in 0..2usize {
+        nz_v = nz_v.min(half_eob(part * (w / 2), 0, w / 2, h));
+    }
+    Some((nz_h, nz_v))
 }
 
 /// Chroma tx type: C `svt_aom_get_intra_uv_tx_type`
@@ -2080,9 +2317,11 @@ fn predict_unit_overlay(
     blk_y: usize,
     dep_recon: &[u8],
     blk_w: usize,
+    blk_h: usize,
     tx_x: usize,
     tx_y: usize,
-    tx: usize,
+    txw: usize,
+    txh: usize,
     mode: u8,
     delta: i8,
     fi: u8,
@@ -2097,8 +2336,8 @@ fn predict_unit_overlay(
         let g = crate::intra_edge::DrGeom {
             px: blk_x + tx_x,
             py: blk_y + tx_y,
-            txw: tx,
-            txh: tx,
+            txw,
+            txh,
             mi_row: geom.mi_row,
             mi_col: geom.mi_col,
             bw_px: geom.bw_px,
@@ -2111,7 +2350,7 @@ fn predict_unit_overlay(
         };
         crate::intra_edge::dr_predict(
             |x, y| {
-                if x >= blk_x && x < blk_x + blk_w && y >= blk_y && y < blk_y + blk_w {
+                if x >= blk_x && x < blk_x + blk_w && y >= blk_y && y < blk_y + blk_h {
                     dep_recon[(y - blk_y) * blk_w + (x - blk_x)]
                 } else {
                     y_recon[y * y_stride + x]
@@ -2126,14 +2365,15 @@ fn predict_unit_overlay(
         );
         return;
     }
-    // Build a small canvas: (tx + 1) left col + (tx + 1) top row around
+    // Build a small canvas: (txh + 1) left col + (txw + 1) top row around
     // the txb, sourcing in-block pixels from dep_recon and out-of-block
     // pixels from the frame recon, then run the standard edge extraction
-    // on it. Canvas layout: (tx+1) x (tx+1) with the txb at (1, 1).
-    let cd = tx + 1;
+    // on it. Canvas layout: (txh+1) rows x (txw+1) cols, txb at (1, 1).
+    let cw_dim = txw + 1;
+    let ch_dim = txh + 1;
     let abs_tx_x = blk_x + tx_x;
     let abs_tx_y = blk_y + tx_y;
-    let mut canvas = vec![0u8; cd * cd];
+    let mut canvas = vec![0u8; cw_dim * ch_dim];
     let sample = |x: isize, y: isize| -> u8 {
         // (x, y) absolute plane coords.
         if x < 0 || y < 0 {
@@ -2141,7 +2381,7 @@ fn predict_unit_overlay(
         }
         let (x, y) = (x as usize, y as usize);
         let in_blk_x = x >= blk_x && x < blk_x + blk_w;
-        let in_blk_y = y >= blk_y && y < blk_y + blk_w;
+        let in_blk_y = y >= blk_y && y < blk_y + blk_h;
         if in_blk_x && in_blk_y {
             dep_recon[(y - blk_y) * blk_w + (x - blk_x)]
         } else {
@@ -2155,52 +2395,52 @@ fn predict_unit_overlay(
         }
     };
     // top row (incl. corner) and left col of the canvas
-    for cx in 0..cd {
+    for cx in 0..cw_dim {
         canvas[cx] = sample(abs_tx_x as isize + cx as isize - 1, abs_tx_y as isize - 1);
     }
-    for cy in 1..cd {
-        canvas[cy * cd] = sample(abs_tx_x as isize - 1, abs_tx_y as isize + cy as isize - 1);
+    for cy in 1..ch_dim {
+        canvas[cy * cw_dim] = sample(abs_tx_x as isize - 1, abs_tx_y as isize + cy as isize - 1);
     }
     // Predict at canvas coords (1, 1): availability mirrors the absolute
     // position (frame edges).
     let has_above = abs_tx_y > 0;
     let has_left = abs_tx_x > 0;
     let above: Vec<u8> = if has_above {
-        canvas[1..cd].to_vec()
+        canvas[1..cw_dim].to_vec()
     } else {
-        vec![if has_left { canvas[cd] } else { 127 }; tx]
+        vec![if has_left { canvas[cw_dim] } else { 127 }; txw]
     };
     let left: Vec<u8> = if has_left {
-        (1..cd).map(|cy| canvas[cy * cd]).collect()
+        (1..ch_dim).map(|cy| canvas[cy * cw_dim]).collect()
     } else {
-        vec![if has_above { canvas[1] } else { 129 }; tx]
+        vec![if has_above { canvas[1] } else { 129 }; txh]
     };
     let top_left = if has_above && has_left {
         canvas[0]
     } else if has_above {
         canvas[1]
     } else if has_left {
-        canvas[cd]
+        canvas[cw_dim]
     } else {
         128
     };
     if fi != FI_NONE {
-        let mut above_c = vec![0u8; tx + 1];
+        let mut above_c = vec![0u8; txw + 1];
         above_c[0] = top_left;
         above_c[1..].copy_from_slice(&above);
-        svtav1_dsp::intra_pred::predict_filter_intra(dst, tx, &above_c, &left, tx, tx, fi);
+        svtav1_dsp::intra_pred::predict_filter_intra(dst, txw, &above_c, &left, txw, txh, fi);
         return;
     }
     match mode {
-        0 => {
-            svtav1_dsp::intra_pred::predict_dc(dst, tx, &above, &left, tx, tx, has_above, has_left)
-        }
-        1 => svtav1_dsp::intra_pred::predict_v(dst, tx, &above, tx, tx),
-        2 => svtav1_dsp::intra_pred::predict_h(dst, tx, &left, tx, tx),
-        9 => svtav1_dsp::intra_pred::predict_smooth(dst, tx, &above, &left, tx, tx),
-        10 => svtav1_dsp::intra_pred::predict_smooth_v(dst, tx, &above, &left, tx, tx, tx),
-        11 => svtav1_dsp::intra_pred::predict_smooth_h(dst, tx, &above, &left, tx, tx),
-        12 => svtav1_dsp::intra_pred::predict_paeth(dst, tx, &above, &left, top_left, tx, tx),
+        0 => svtav1_dsp::intra_pred::predict_dc(
+            dst, txw, &above, &left, txw, txh, has_above, has_left,
+        ),
+        1 => svtav1_dsp::intra_pred::predict_v(dst, txw, &above, txw, txh),
+        2 => svtav1_dsp::intra_pred::predict_h(dst, txw, &left, txw, txh),
+        9 => svtav1_dsp::intra_pred::predict_smooth(dst, txw, &above, &left, txw, txh),
+        10 => svtav1_dsp::intra_pred::predict_smooth_v(dst, txw, &above, &left, txh, txh, txw),
+        11 => svtav1_dsp::intra_pred::predict_smooth_h(dst, txw, &above, &left, txw, txh),
+        12 => svtav1_dsp::intra_pred::predict_paeth(dst, txw, &above, &left, top_left, txw, txh),
         m => unreachable!("funnel mode {m}"),
     }
 }
@@ -2213,14 +2453,14 @@ fn txb_ctx_from_spans(
     left_span: &[u8],
     tx_x: usize,
     tx_y: usize,
-    tx: usize,
+    txw: usize,
+    txh: usize,
     block_eq_tx: bool,
 ) -> (usize, usize) {
     let a0 = tx_x / 4;
     let l0 = tx_y / 4;
-    let n = tx / 4;
-    let a = &above_span[a0..(a0 + n).min(above_span.len())];
-    let l = &left_span[l0..(l0 + n).min(left_span.len())];
+    let a = &above_span[a0..(a0 + txw / 4).min(above_span.len())];
+    let l = &left_span[l0..(l0 + txh / 4).min(left_span.len())];
     cc::get_txb_ctx(0, a, l, block_eq_tx, false)
 }
 
@@ -2266,9 +2506,9 @@ fn txt_search(
         frame.cfg.txt_group_lt16
     };
     if depth == 1 && !only_dct {
-        groups = (groups - 3).max(1);
+        groups = (groups - frame.cfg.txt_d1_off).max(1);
     } else if depth == 2 && !only_dct {
-        groups = (groups - 3).max(1);
+        groups = (groups - frame.cfg.txt_d2_off).max(1);
     }
 
     /// C `av1_ext_tx_used[EXT_TX_SET_TYPES][TX_TYPES]` (definitions.h).

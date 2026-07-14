@@ -1,0 +1,17 @@
+NSQDBG RD mi=(0,0) bsize=12 part=0 tested=1 cost=1791569177 s=0 e=0
+NSQDBG NSQCFG pd=1 lvl=14 en=1 sqw=95 hvw=100 dev=0 split_th=50 lower=10 hvv=60 nonhv=40 off16=10 psq=0(en=0 hv2sq=0 h2v=0) subd=1 compm=20 geom(en=1 min=0 hv4=1 hva=0) d44=0 bp=0 minsq=0
+NSQDBG BLK mi=(0,0) bsize=12 shape=0 nsi=0 cost=1949305726 rate=176958 dist=11103488 mode=0 coeff=1 nz=521
+NSQDBG SHAPE mi=(0,0) bsize=12 shape=0 valid=1 part_cost=1950382984 part_rate=361 lctx=0 actx=0 best=0/1950382984 q=[0,0,0,0] nzh=0 nzv=0
+NSQDBG BLK mi=(0,0) bsize=12 shape=1 nsi=0 cost=971342623 rate=106915 dist=5096080 mode=0 coeff=1 nz=240
+NSQDBG BLK mi=(0,0) bsize=12 shape=1 nsi=1 cost=1032895704 rate=136195 dist=4894352 mode=2 coeff=1 nz=346
+NSQDBG ABORT mi=(0,0) bsize=12 shape=1 nsi=1 part_cost=2011176345 best=1950382984
+NSQDBG SHAPE mi=(0,0) bsize=12 shape=1 valid=0 part_cost=2011176345 part_rate=2325 lctx=0 actx=0 best=0/1950382984
+NSQDBG BLK mi=(0,0) bsize=12 shape=2 nsi=0 cost=1026562972 rate=97746 dist=5741248 mode=0 coeff=1 nz=354
+NSQDBG BLK mi=(0,0) bsize=12 shape=2 nsi=1 cost=1118272047 rate=104355 dist=6303648 mode=2 coeff=1 nz=354
+NSQDBG ABORT mi=(0,0) bsize=12 shape=2 nsi=1 part_cost=2151591007 best=1950382984
+NSQDBG SHAPE mi=(0,0) bsize=12 shape=2 valid=0 part_cost=2151591007 part_rate=2264 lctx=0 actx=0 best=0/1950382984
+NSQDBG SKIP mi=(0,0) bsize=12 shape=3 gate=1
+NSQDBG SHAPE mi=(0,0) bsize=12 shape=3 valid=0 part_cost=8095846 part_rate=2713 lctx=0 actx=0 best=0/1950382984
+NSQDBG SKIP mi=(0,0) bsize=12 shape=4 gate=1
+NSQDBG SHAPE mi=(0,0) bsize=12 shape=4 valid=0 part_cost=7588550 part_rate=2543 lctx=0 actx=0 best=0/1950382984
+NSQDBG TREE mi=(0,0) bsize=12 part=0

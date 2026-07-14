@@ -1,0 +1,986 @@
+NSQDBG RD mi=(0,0) bsize=9 part=0 tested=1 cost=43175419 s=0 e=1
+NSQDBG RD mi=(0,8) bsize=9 part=0 tested=1 cost=44190975 s=0 e=1
+NSQDBG RD mi=(8,0) bsize=9 part=0 tested=1 cost=51240132 s=0 e=1
+NSQDBG RD mi=(8,8) bsize=9 part=0 tested=1 cost=52234634 s=0 e=1
+NSQDBG NSQCFG pd=1 lvl=19 en=1 sqw=90 hvw=75 dev=75 split_th=35 lower=20 hvv=85 nonhv=70 off16=15 psq=1(en=1 hv2sq=1000 h2v=100) subd=1 compm=5 geom(en=1 min=0 hv4=1 hva=0) d44=0 bp=0 minsq=0
+NSQDBG BLK mi=(0,0) bsize=9 shape=0 nsi=0 cost=50868675 rate=649145 dist=143344 mode=1 coeff=1 nz=904
+NSQDBG SHAPE mi=(0,0) bsize=9 shape=0 valid=1 part_cost=50889967 part_rate=425 lctx=0 actx=0 best=0/50889967 q=[1911,1904,2817,2327] nzh=420 nzv=484
+NSQDBG SKIP mi=(0,0) bsize=9 shape=1 gate=1
+NSQDBG SHAPE mi=(0,0) bsize=9 shape=1 valid=0 part_cost=95737 part_rate=1911 lctx=0 actx=0 best=0/50889967
+NSQDBG SKIP mi=(0,0) bsize=9 shape=2 gate=1
+NSQDBG SHAPE mi=(0,0) bsize=9 shape=2 valid=0 part_cost=99795 part_rate=1992 lctx=0 actx=0 best=0/50889967
+NSQDBG SKIP mi=(0,0) bsize=9 shape=3 gate=1
+NSQDBG SHAPE mi=(0,0) bsize=9 shape=3 valid=0 part_cost=117529 part_rate=2346 lctx=0 actx=0 best=0/50889967
+NSQDBG SKIP mi=(0,0) bsize=9 shape=4 gate=1
+NSQDBG SHAPE mi=(0,0) bsize=9 shape=4 valid=0 part_cost=121637 part_rate=2428 lctx=0 actx=0 best=0/50889967
+NSQDBG BLK mi=(0,0) bsize=6 shape=0 nsi=0 cost=13345256 rate=162631 dist=40608 mode=10 coeff=1 nz=228
+NSQDBG SHAPE mi=(0,0) bsize=6 shape=0 valid=1 part_cost=13372659 part_rate=547 lctx=0 actx=0 best=0/13372659 q=[735,327,786,690] nzh=111 nzv=122
+NSQDBG BLK mi=(0,0) bsize=6 shape=1 nsi=0 cost=5291613 rate=66381 dist=15360 mode=1 coeff=1 nz=104
+NSQDBG BLK mi=(0,0) bsize=6 shape=1 nsi=1 cost=7327355 rate=93199 dist=20768 mode=1 coeff=1 nz=96
+NSQDBG SHAPE mi=(0,0) bsize=6 shape=1 valid=1 part_cost=12686099 part_rate=1340 lctx=0 actx=0 best=1/12686099
+NSQDBG SKIP mi=(0,0) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(0,0) bsize=6 shape=2 valid=0 part_cost=81258 part_rate=1622 lctx=0 actx=0 best=1/12686099
+NSQDBG SKIP mi=(0,0) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(0,0) bsize=6 shape=3 valid=0 part_cost=118631 part_rate=2368 lctx=0 actx=0 best=1/12686099
+NSQDBG SKIP mi=(0,0) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(0,0) bsize=6 shape=4 valid=0 part_cost=134362 part_rate=2682 lctx=0 actx=0 best=1/12686099
+NSQDBG BLK mi=(0,4) bsize=6 shape=0 nsi=0 cost=12333864 rate=142647 dist=40528 mode=1 coeff=1 nz=183
+NSQDBG SHAPE mi=(0,4) bsize=6 shape=0 valid=1 part_cost=12400544 part_rate=1331 lctx=30 actx=0 best=0/12400544 q=[409,677,601,846] nzh=111 nzv=122
+NSQDBG BLK mi=(0,4) bsize=6 shape=1 nsi=0 cost=5661006 rate=64025 dist=19168 mode=1 coeff=1 nz=52
+NSQDBG BLK mi=(0,4) bsize=6 shape=1 nsi=1 cost=6741771 rate=76441 dist=22752 mode=9 coeff=1 nz=49
+NSQDBG ABORT mi=(0,4) bsize=6 shape=1 nsi=1 part_cost=12455680 best=12400544
+NSQDBG SHAPE mi=(0,4) bsize=6 shape=1 valid=0 part_cost=12455680 part_rate=1056 lctx=30 actx=0 best=0/12400544
+NSQDBG SKIP mi=(0,4) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(0,4) bsize=6 shape=2 valid=0 part_cost=106558 part_rate=2127 lctx=30 actx=0 best=0/12400544
+NSQDBG SKIP mi=(0,4) bsize=6 shape=3 gate=4
+NSQDBG SHAPE mi=(0,4) bsize=6 shape=3 valid=0 part_cost=64125 part_rate=1280 lctx=30 actx=0 best=0/12400544
+NSQDBG SKIP mi=(0,4) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(0,4) bsize=6 shape=4 valid=0 part_cost=144933 part_rate=2893 lctx=30 actx=0 best=0/12400544
+NSQDBG BLK mi=(4,0) bsize=6 shape=0 nsi=0 cost=14704700 rate=189726 dist=40624 mode=0 coeff=1 nz=126
+NSQDBG SHAPE mi=(4,0) bsize=6 shape=0 valid=1 part_cost=14732103 part_rate=547 lctx=0 actx=28 best=0/14732103 q=[765,627,636,511] nzh=111 nzv=122
+NSQDBG BLK mi=(4,0) bsize=6 shape=1 nsi=0 cost=8244931 rate=107672 dist=22272 mode=0 coeff=1 nz=70
+NSQDBG BLK mi=(4,0) bsize=6 shape=1 nsi=1 cost=6525624 rate=72290 dist=22688 mode=9 coeff=1 nz=50
+NSQDBG ABORT mi=(4,0) bsize=6 shape=1 nsi=1 part_cost=14837686 best=14732103
+NSQDBG SHAPE mi=(4,0) bsize=6 shape=1 valid=0 part_cost=14837686 part_rate=1340 lctx=0 actx=28 best=0/14732103
+NSQDBG SKIP mi=(4,0) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(4,0) bsize=6 shape=2 valid=0 part_cost=81258 part_rate=1622 lctx=0 actx=28 best=0/14732103
+NSQDBG SKIP mi=(4,0) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(4,0) bsize=6 shape=3 valid=0 part_cost=118631 part_rate=2368 lctx=0 actx=28 best=0/14732103
+NSQDBG SKIP mi=(4,0) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(4,0) bsize=6 shape=4 valid=0 part_cost=134362 part_rate=2682 lctx=0 actx=28 best=0/14732103
+NSQDBG BLK mi=(4,4) bsize=6 shape=0 nsi=0 cost=13443265 rate=185518 dist=32416 mode=0 coeff=1 nz=228
+NSQDBG SHAPE mi=(4,4) bsize=6 shape=0 valid=1 part_cost=13470668 part_rate=547 lctx=28 actx=28 best=0/13470668 q=[493,335,500,698] nzh=104 nzv=122
+NSQDBG BLK mi=(4,4) bsize=6 shape=1 nsi=0 cost=6033460 rate=81884 dist=15088 mode=0 coeff=1 nz=100
+NSQDBG BLK mi=(4,4) bsize=6 shape=1 nsi=1 cost=7597921 rate=99540 dist=20400 mode=1 coeff=1 nz=100
+NSQDBG ABORT mi=(4,4) bsize=6 shape=1 nsi=1 part_cost=13698512 best=13470668
+NSQDBG SHAPE mi=(4,4) bsize=6 shape=1 valid=0 part_cost=13698512 part_rate=1340 lctx=28 actx=28 best=0/13470668
+NSQDBG SKIP mi=(4,4) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(4,4) bsize=6 shape=2 valid=0 part_cost=81258 part_rate=1622 lctx=28 actx=28 best=0/13470668
+NSQDBG SKIP mi=(4,4) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(4,4) bsize=6 shape=3 valid=0 part_cost=118631 part_rate=2368 lctx=28 actx=28 best=0/13470668
+NSQDBG SKIP mi=(4,4) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(4,4) bsize=6 shape=4 valid=0 part_cost=134362 part_rate=2682 lctx=28 actx=28 best=0/13470668
+NSQDBG TS mi=(0,0) bsize=9 parent_valid=1 parent=50889967 split=53362807 chose=parent
+NSQDBG BLK mi=(0,8) bsize=9 shape=0 nsi=0 cost=51345408 rate=663117 dist=141600 mode=10 coeff=1 nz=904
+NSQDBG SHAPE mi=(0,8) bsize=9 shape=0 valid=1 part_cost=51366700 part_rate=425 lctx=24 actx=0 best=0/51366700 q=[1891,1950,1953,3056] nzh=420 nzv=484
+NSQDBG SKIP mi=(0,8) bsize=9 shape=1 gate=1
+NSQDBG SHAPE mi=(0,8) bsize=9 shape=1 valid=0 part_cost=95737 part_rate=1911 lctx=24 actx=0 best=0/51366700
+NSQDBG SKIP mi=(0,8) bsize=9 shape=2 gate=1
+NSQDBG SHAPE mi=(0,8) bsize=9 shape=2 valid=0 part_cost=99795 part_rate=1992 lctx=24 actx=0 best=0/51366700
+NSQDBG SKIP mi=(0,8) bsize=9 shape=3 gate=1
+NSQDBG SHAPE mi=(0,8) bsize=9 shape=3 valid=0 part_cost=117529 part_rate=2346 lctx=24 actx=0 best=0/51366700
+NSQDBG SKIP mi=(0,8) bsize=9 shape=4 gate=1
+NSQDBG SHAPE mi=(0,8) bsize=9 shape=4 valid=0 part_cost=121637 part_rate=2428 lctx=24 actx=0 best=0/51366700
+NSQDBG BLK mi=(0,8) bsize=6 shape=0 nsi=0 cost=12890145 rate=152361 dist=41072 mode=1 coeff=1 nz=93
+NSQDBG SHAPE mi=(0,8) bsize=6 shape=0 valid=1 part_cost=12917548 part_rate=547 lctx=24 actx=0 best=0/12917548 q=[579,675,762,551] nzh=111 nzv=122
+NSQDBG BLK mi=(0,8) bsize=6 shape=1 nsi=0 cost=6209004 rate=80278 dist=17088 mode=1 coeff=1 nz=75
+NSQDBG BLK mi=(0,8) bsize=6 shape=1 nsi=1 cost=7057856 rate=87656 dist=20832 mode=1 coeff=1 nz=56
+NSQDBG ABORT mi=(0,8) bsize=6 shape=1 nsi=1 part_cost=13333991 best=12917548
+NSQDBG SHAPE mi=(0,8) bsize=6 shape=1 valid=0 part_cost=13333991 part_rate=1340 lctx=24 actx=0 best=0/12917548
+NSQDBG SKIP mi=(0,8) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(0,8) bsize=6 shape=2 valid=0 part_cost=81258 part_rate=1622 lctx=24 actx=0 best=0/12917548
+NSQDBG SKIP mi=(0,8) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(0,8) bsize=6 shape=3 valid=0 part_cost=118631 part_rate=2368 lctx=24 actx=0 best=0/12917548
+NSQDBG SKIP mi=(0,8) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(0,8) bsize=6 shape=4 valid=0 part_cost=134362 part_rate=2682 lctx=24 actx=0 best=0/12917548
+NSQDBG BLK mi=(0,12) bsize=6 shape=0 nsi=0 cost=12286272 rate=140675 dist=40928 mode=0 coeff=1 nz=183
+NSQDBG SHAPE mi=(0,12) bsize=6 shape=0 valid=1 part_cost=12313675 part_rate=547 lctx=28 actx=0 best=0/12313675 q=[402,615,614,927] nzh=111 nzv=122
+NSQDBG BLK mi=(0,12) bsize=6 shape=1 nsi=0 cost=5098885 rate=62861 dist=15232 mode=1 coeff=1 nz=104
+NSQDBG BLK mi=(0,12) bsize=6 shape=1 nsi=1 cost=7400708 rate=98138 dist=19408 mode=12 coeff=1 nz=55
+NSQDBG ABORT mi=(0,12) bsize=6 shape=1 nsi=1 part_cost=12566724 best=12313675
+NSQDBG SHAPE mi=(0,12) bsize=6 shape=1 valid=0 part_cost=12566724 part_rate=1340 lctx=28 actx=0 best=0/12313675
+NSQDBG SKIP mi=(0,12) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(0,12) bsize=6 shape=2 valid=0 part_cost=81258 part_rate=1622 lctx=28 actx=0 best=0/12313675
+NSQDBG SKIP mi=(0,12) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(0,12) bsize=6 shape=3 valid=0 part_cost=118631 part_rate=2368 lctx=28 actx=0 best=0/12313675
+NSQDBG SKIP mi=(0,12) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(0,12) bsize=6 shape=4 valid=0 part_cost=134362 part_rate=2682 lctx=28 actx=0 best=0/12313675
+NSQDBG BLK mi=(4,8) bsize=6 shape=0 nsi=0 cost=14507667 rate=202513 dist=34080 mode=0 coeff=1 nz=182
+NSQDBG SHAPE mi=(4,8) bsize=6 shape=0 valid=1 part_cost=14535070 part_rate=547 lctx=24 actx=28 best=0/14535070 q=[576,452,686,416] nzh=104 nzv=122
+NSQDBG BLK mi=(4,8) bsize=6 shape=1 nsi=0 cost=6635369 rate=88339 dist=17264 mode=0 coeff=1 nz=104
+NSQDBG BLK mi=(4,8) bsize=6 shape=1 nsi=1 cost=6928351 rate=90508 dist=18704 mode=1 coeff=1 nz=100
+NSQDBG SHAPE mi=(4,8) bsize=6 shape=1 valid=1 part_cost=13630851 part_rate=1340 lctx=24 actx=28 best=1/13630851
+NSQDBG SKIP mi=(4,8) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(4,8) bsize=6 shape=2 valid=0 part_cost=81258 part_rate=1622 lctx=24 actx=28 best=1/13630851
+NSQDBG SKIP mi=(4,8) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(4,8) bsize=6 shape=3 valid=0 part_cost=118631 part_rate=2368 lctx=24 actx=28 best=1/13630851
+NSQDBG SKIP mi=(4,8) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(4,8) bsize=6 shape=4 valid=0 part_cost=134362 part_rate=2682 lctx=24 actx=28 best=1/13630851
+NSQDBG BLK mi=(4,12) bsize=6 shape=0 nsi=0 cost=14668540 rate=187369 dist=41264 mode=0 coeff=1 nz=112
+NSQDBG SHAPE mi=(4,12) bsize=6 shape=0 valid=1 part_cost=14735220 part_rate=1331 lctx=30 actx=28 best=0/14735220 q=[628,659,754,538] nzh=111 nzv=122
+NSQDBG BLK mi=(4,12) bsize=6 shape=1 nsi=0 cost=7977789 rate=106632 dist=20592 mode=0 coeff=1 nz=57
+NSQDBG BLK mi=(4,12) bsize=6 shape=1 nsi=1 cost=6619990 rate=82922 dist=19264 mode=9 coeff=1 nz=57
+NSQDBG SHAPE mi=(4,12) bsize=6 shape=1 valid=1 part_cost=14650682 part_rate=1056 lctx=30 actx=28 best=1/14650682
+NSQDBG SKIP mi=(4,12) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(4,12) bsize=6 shape=2 valid=0 part_cost=106558 part_rate=2127 lctx=30 actx=28 best=1/14650682
+NSQDBG SKIP mi=(4,12) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(4,12) bsize=6 shape=3 valid=0 part_cost=64125 part_rate=1280 lctx=30 actx=28 best=1/14650682
+NSQDBG SKIP mi=(4,12) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(4,12) bsize=6 shape=4 valid=0 part_cost=144933 part_rate=2893 lctx=30 actx=28 best=1/14650682
+NSQDBG TS mi=(0,8) bsize=9 parent_valid=1 parent=51366700 split=53586149 chose=parent
+NSQDBG BLK mi=(8,0) bsize=9 shape=0 nsi=0 cost=59618150 rate=775146 dist=162384 mode=2 coeff=1 nz=904
+NSQDBG SHAPE mi=(8,0) bsize=9 shape=0 valid=1 part_cost=59639442 part_rate=425 lctx=0 actx=24 best=0/59639442 q=[2013,3235,2581,2320] nzh=456 nzv=484
+NSQDBG SKIP mi=(8,0) bsize=9 shape=1 gate=1
+NSQDBG SHAPE mi=(8,0) bsize=9 shape=1 valid=0 part_cost=95737 part_rate=1911 lctx=0 actx=24 best=0/59639442
+NSQDBG SKIP mi=(8,0) bsize=9 shape=2 gate=1
+NSQDBG SHAPE mi=(8,0) bsize=9 shape=2 valid=0 part_cost=99795 part_rate=1992 lctx=0 actx=24 best=0/59639442
+NSQDBG SKIP mi=(8,0) bsize=9 shape=3 gate=1
+NSQDBG SHAPE mi=(8,0) bsize=9 shape=3 valid=0 part_cost=117529 part_rate=2346 lctx=0 actx=24 best=0/59639442
+NSQDBG SKIP mi=(8,0) bsize=9 shape=4 gate=1
+NSQDBG SHAPE mi=(8,0) bsize=9 shape=4 valid=0 part_cost=121637 part_rate=2428 lctx=0 actx=24 best=0/59639442
+NSQDBG BLK mi=(8,0) bsize=6 shape=0 nsi=0 cost=13336463 rate=180361 dist=33600 mode=2 coeff=1 nz=183
+NSQDBG SHAPE mi=(8,0) bsize=6 shape=0 valid=1 part_cost=13363866 part_rate=547 lctx=0 actx=24 best=0/13363866 q=[601,552,559,388] nzh=104 nzv=122
+NSQDBG BLK mi=(8,0) bsize=6 shape=1 nsi=0 cost=6240097 rate=85559 dist=15264 mode=2 coeff=1 nz=100
+NSQDBG BLK mi=(8,0) bsize=6 shape=1 nsi=1 cost=7337819 rate=88584 dist=22656 mode=9 coeff=1 nz=47
+NSQDBG ABORT mi=(8,0) bsize=6 shape=1 nsi=1 part_cost=13645047 best=13363866
+NSQDBG SHAPE mi=(8,0) bsize=6 shape=1 valid=0 part_cost=13645047 part_rate=1340 lctx=0 actx=24 best=0/13363866
+NSQDBG SKIP mi=(8,0) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(8,0) bsize=6 shape=2 valid=0 part_cost=81258 part_rate=1622 lctx=0 actx=24 best=0/13363866
+NSQDBG SKIP mi=(8,0) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(8,0) bsize=6 shape=3 valid=0 part_cost=118631 part_rate=2368 lctx=0 actx=24 best=0/13363866
+NSQDBG SKIP mi=(8,0) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(8,0) bsize=6 shape=4 valid=0 part_cost=134362 part_rate=2682 lctx=0 actx=24 best=0/13363866
+NSQDBG BLK mi=(8,4) bsize=6 shape=0 nsi=0 cost=15207808 rate=211215 dist=36144 mode=12 coeff=1 nz=228
+NSQDBG SHAPE mi=(8,4) bsize=6 shape=0 valid=1 part_cost=15235211 part_rate=547 lctx=28 actx=24 best=0/15235211 q=[735,449,468,607] nzh=111 nzv=122
+NSQDBG BLK mi=(8,4) bsize=6 shape=1 nsi=0 cost=8192397 rate=104702 dist=23024 mode=12 coeff=1 nz=61
+NSQDBG BLK mi=(8,4) bsize=6 shape=1 nsi=1 cost=6665175 rate=79368 dist=21008 mode=0 coeff=1 nz=43
+NSQDBG SHAPE mi=(8,4) bsize=6 shape=1 valid=1 part_cost=14924703 part_rate=1340 lctx=28 actx=24 best=1/14924703
+NSQDBG SKIP mi=(8,4) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(8,4) bsize=6 shape=2 valid=0 part_cost=81258 part_rate=1622 lctx=28 actx=24 best=1/14924703
+NSQDBG SKIP mi=(8,4) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(8,4) bsize=6 shape=3 valid=0 part_cost=118631 part_rate=2368 lctx=28 actx=24 best=1/14924703
+NSQDBG SKIP mi=(8,4) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(8,4) bsize=6 shape=4 valid=0 part_cost=134362 part_rate=2682 lctx=28 actx=24 best=1/14924703
+NSQDBG BLK mi=(12,0) bsize=6 shape=0 nsi=0 cost=14320911 rate=167798 dist=46208 mode=0 coeff=1 nz=102
+NSQDBG SHAPE mi=(12,0) bsize=6 shape=0 valid=1 part_cost=14348314 part_rate=547 lctx=0 actx=28 best=0/14348314 q=[869,673,694,652] nzh=111 nzv=122
+NSQDBG BLK mi=(12,0) bsize=6 shape=1 nsi=0 cost=8005165 rate=96754 dist=24672 mode=0 coeff=1 nz=56
+NSQDBG BLK mi=(12,0) bsize=6 shape=1 nsi=1 cost=6464744 rate=73732 dist=21648 mode=0 coeff=1 nz=99
+NSQDBG ABORT mi=(12,0) bsize=6 shape=1 nsi=1 part_cost=14537040 best=14348314
+NSQDBG SHAPE mi=(12,0) bsize=6 shape=1 valid=0 part_cost=14537040 part_rate=1340 lctx=0 actx=28 best=0/14348314
+NSQDBG SKIP mi=(12,0) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(12,0) bsize=6 shape=2 valid=0 part_cost=81258 part_rate=1622 lctx=0 actx=28 best=0/14348314
+NSQDBG SKIP mi=(12,0) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(12,0) bsize=6 shape=3 valid=0 part_cost=118631 part_rate=2368 lctx=0 actx=28 best=0/14348314
+NSQDBG SKIP mi=(12,0) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(12,0) bsize=6 shape=4 valid=0 part_cost=134362 part_rate=2682 lctx=0 actx=28 best=0/14348314
+NSQDBG BLK mi=(12,4) bsize=6 shape=0 nsi=0 cost=13428870 rate=187847 dist=31392 mode=0 coeff=1 nz=228
+NSQDBG SHAPE mi=(12,4) bsize=6 shape=0 valid=1 part_cost=13456273 part_rate=547 lctx=28 actx=28 best=0/13456273 q=[596,277,465,624] nzh=111 nzv=122
+NSQDBG BLK mi=(12,4) bsize=6 shape=1 nsi=0 cost=6412757 rate=83364 dist=17472 mode=0 coeff=1 nz=100
+NSQDBG BLK mi=(12,4) bsize=6 shape=1 nsi=1 cost=7447836 rate=99324 dist=19312 mode=1 coeff=1 nz=100
+NSQDBG ABORT mi=(12,4) bsize=6 shape=1 nsi=1 part_cost=13927724 best=13456273
+NSQDBG SHAPE mi=(12,4) bsize=6 shape=1 valid=0 part_cost=13927724 part_rate=1340 lctx=28 actx=28 best=0/13456273
+NSQDBG SKIP mi=(12,4) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(12,4) bsize=6 shape=2 valid=0 part_cost=81258 part_rate=1622 lctx=28 actx=28 best=0/13456273
+NSQDBG SKIP mi=(12,4) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(12,4) bsize=6 shape=3 valid=0 part_cost=118631 part_rate=2368 lctx=28 actx=28 best=0/13456273
+NSQDBG SKIP mi=(12,4) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(12,4) bsize=6 shape=4 valid=0 part_cost=134362 part_rate=2682 lctx=28 actx=28 best=0/13456273
+NSQDBG TS mi=(8,0) bsize=9 parent_valid=1 parent=59639442 split=56166549 chose=split
+NSQDBG BLK mi=(8,8) bsize=9 shape=0 nsi=0 cost=59892452 rate=782788 dist=161536 mode=2 coeff=1 nz=904
+NSQDBG SHAPE mi=(8,8) bsize=9 shape=0 valid=1 part_cost=59955174 part_rate=1252 lctx=30 actx=24 best=0/59955174 q=[3144,2134,2238,2580] nzh=456 nzv=484
+NSQDBG SKIP mi=(8,8) bsize=9 shape=1 gate=1
+NSQDBG SHAPE mi=(8,8) bsize=9 shape=1 valid=0 part_cost=88573 part_rate=1768 lctx=30 actx=24 best=0/59955174
+NSQDBG SKIP mi=(8,8) bsize=9 shape=2 gate=1
+NSQDBG SHAPE mi=(8,8) bsize=9 shape=2 valid=0 part_cost=127098 part_rate=2537 lctx=30 actx=24 best=0/59955174
+NSQDBG SKIP mi=(8,8) bsize=9 shape=3 gate=1
+NSQDBG SHAPE mi=(8,8) bsize=9 shape=3 valid=0 part_cost=73393 part_rate=1465 lctx=30 actx=24 best=0/59955174
+NSQDBG SKIP mi=(8,8) bsize=9 shape=4 gate=1
+NSQDBG SHAPE mi=(8,8) bsize=9 shape=4 valid=0 part_cost=141275 part_rate=2820 lctx=30 actx=24 best=0/59955174
+NSQDBG BLK mi=(8,8) bsize=6 shape=0 nsi=0 cost=17877309 rate=251174 dist=41360 mode=2 coeff=1 nz=183
+NSQDBG SHAPE mi=(8,8) bsize=6 shape=0 valid=1 part_cost=17943989 part_rate=1331 lctx=30 actx=24 best=0/17943989 q=[623,572,711,679] nzh=111 nzv=122
+NSQDBG BLK mi=(8,8) bsize=6 shape=1 nsi=0 cost=7955285 rate=110884 dist=18752 mode=12 coeff=1 nz=100
+NSQDBG BLK mi=(8,8) bsize=6 shape=1 nsi=1 cost=7266726 rate=85775 dist=23200 mode=1 coeff=1 nz=96
+NSQDBG SHAPE mi=(8,8) bsize=6 shape=1 valid=1 part_cost=15274914 part_rate=1056 lctx=30 actx=24 best=1/15274914
+NSQDBG SKIP mi=(8,8) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(8,8) bsize=6 shape=2 valid=0 part_cost=106558 part_rate=2127 lctx=30 actx=24 best=1/15274914
+NSQDBG SKIP mi=(8,8) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(8,8) bsize=6 shape=3 valid=0 part_cost=64125 part_rate=1280 lctx=30 actx=24 best=1/15274914
+NSQDBG SKIP mi=(8,8) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(8,8) bsize=6 shape=4 valid=0 part_cost=144933 part_rate=2893 lctx=30 actx=24 best=1/15274914
+NSQDBG BLK mi=(8,12) bsize=6 shape=0 nsi=0 cost=14265176 rate=210509 dist=29056 mode=2 coeff=1 nz=228
+NSQDBG SHAPE mi=(8,12) bsize=6 shape=0 valid=1 part_cost=14331856 part_rate=1331 lctx=30 actx=24 best=0/14331856 q=[467,243,385,721] nzh=104 nzv=122
+NSQDBG BLK mi=(8,12) bsize=6 shape=1 nsi=0 cost=6842411 rate=89324 dist=18496 mode=2 coeff=1 nz=100
+NSQDBG BLK mi=(8,12) bsize=6 shape=1 nsi=1 cost=7380883 rate=100563 dist=18304 mode=1 coeff=1 nz=100
+NSQDBG SHAPE mi=(8,12) bsize=6 shape=1 valid=1 part_cost=14276197 part_rate=1056 lctx=30 actx=24 best=1/14276197
+NSQDBG SKIP mi=(8,12) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(8,12) bsize=6 shape=2 valid=0 part_cost=106558 part_rate=2127 lctx=30 actx=24 best=1/14276197
+NSQDBG SKIP mi=(8,12) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(8,12) bsize=6 shape=3 valid=0 part_cost=64125 part_rate=1280 lctx=30 actx=24 best=1/14276197
+NSQDBG SKIP mi=(8,12) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(8,12) bsize=6 shape=4 valid=0 part_cost=144933 part_rate=2893 lctx=30 actx=24 best=1/14276197
+NSQDBG BLK mi=(12,8) bsize=6 shape=0 nsi=0 cost=14250710 rate=175513 dist=42640 mode=9 coeff=1 nz=103
+NSQDBG SHAPE mi=(12,8) bsize=6 shape=0 valid=1 part_cost=14278113 part_rate=547 lctx=28 actx=28 best=0/14278113 q=[795,602,603,665] nzh=104 nzv=122
+NSQDBG BLK mi=(12,8) bsize=6 shape=1 nsi=0 cost=6629910 rate=87903 dist=17392 mode=0 coeff=1 nz=104
+NSQDBG BLK mi=(12,8) bsize=6 shape=1 nsi=1 cost=7030606 rate=91568 dist=19088 mode=1 coeff=1 nz=100
+NSQDBG SHAPE mi=(12,8) bsize=6 shape=1 valid=1 part_cost=13727647 part_rate=1340 lctx=28 actx=28 best=1/13727647
+NSQDBG SKIP mi=(12,8) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(12,8) bsize=6 shape=2 valid=0 part_cost=81258 part_rate=1622 lctx=28 actx=28 best=1/13727647
+NSQDBG SKIP mi=(12,8) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(12,8) bsize=6 shape=3 valid=0 part_cost=118631 part_rate=2368 lctx=28 actx=28 best=1/13727647
+NSQDBG SKIP mi=(12,8) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(12,8) bsize=6 shape=4 valid=0 part_cost=134362 part_rate=2682 lctx=28 actx=28 best=1/13727647
+NSQDBG BLK mi=(12,12) bsize=6 shape=0 nsi=0 cost=14940361 rate=185232 dist=44224 mode=0 coeff=1 nz=105
+NSQDBG SHAPE mi=(12,12) bsize=6 shape=0 valid=1 part_cost=15007041 part_rate=1331 lctx=30 actx=28 best=0/15007041 q=[547,738,655,824] nzh=111 nzv=122
+NSQDBG BLK mi=(12,12) bsize=6 shape=1 nsi=0 cost=8246876 rate=112085 dist=20560 mode=0 coeff=1 nz=63
+NSQDBG BLK mi=(12,12) bsize=6 shape=1 nsi=1 cost=7060912 rate=86695 dist=21232 mode=9 coeff=1 nz=58
+NSQDBG ABORT mi=(12,12) bsize=6 shape=1 nsi=1 part_cost=15360691 best=15007041
+NSQDBG SHAPE mi=(12,12) bsize=6 shape=1 valid=0 part_cost=15360691 part_rate=1056 lctx=30 actx=28 best=0/15007041
+NSQDBG SKIP mi=(12,12) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(12,12) bsize=6 shape=2 valid=0 part_cost=106558 part_rate=2127 lctx=30 actx=28 best=0/15007041
+NSQDBG SKIP mi=(12,12) bsize=6 shape=3 gate=4
+NSQDBG SHAPE mi=(12,12) bsize=6 shape=3 valid=0 part_cost=64125 part_rate=1280 lctx=30 actx=28 best=0/15007041
+NSQDBG SKIP mi=(12,12) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(12,12) bsize=6 shape=4 valid=0 part_cost=144933 part_rate=2893 lctx=30 actx=28 best=0/15007041
+NSQDBG TS mi=(8,8) bsize=9 parent_valid=1 parent=59955174 split=58316058 chose=split
+NSQDBG TS mi=(0,0) bsize=12 parent_valid=0 parent=190901027 split=216799141 chose=split
+NSQDBG TREE mi=(0,0) bsize=12 part=3
+NSQDBG TREE mi=(0,0) bsize=9 part=0
+NSQDBG TREE mi=(0,8) bsize=9 part=0
+NSQDBG TREE mi=(8,0) bsize=9 part=3
+NSQDBG TREE mi=(8,0) bsize=6 part=0
+NSQDBG TREE mi=(8,4) bsize=6 part=1
+NSQDBG TREE mi=(12,0) bsize=6 part=0
+NSQDBG TREE mi=(12,4) bsize=6 part=0
+NSQDBG TREE mi=(8,8) bsize=9 part=3
+NSQDBG TREE mi=(8,8) bsize=6 part=1
+NSQDBG TREE mi=(8,12) bsize=6 part=1
+NSQDBG TREE mi=(12,8) bsize=6 part=1
+NSQDBG TREE mi=(12,12) bsize=6 part=0
+NSQDBG RD mi=(0,16) bsize=9 part=0 tested=1 cost=42420824 s=0 e=1
+NSQDBG RD mi=(0,24) bsize=9 part=0 tested=1 cost=43297734 s=0 e=1
+NSQDBG RD mi=(8,16) bsize=9 part=0 tested=1 cost=50676080 s=0 e=1
+NSQDBG RD mi=(8,24) bsize=9 part=0 tested=1 cost=51797432 s=0 e=1
+NSQDBG NSQCFG pd=1 lvl=19 en=1 sqw=90 hvw=75 dev=75 split_th=35 lower=20 hvv=85 nonhv=70 off16=15 psq=1(en=1 hv2sq=1000 h2v=100) subd=1 compm=5 geom(en=1 min=0 hv4=1 hva=0) d44=0 bp=0 minsq=0
+NSQDBG BLK mi=(0,16) bsize=9 shape=0 nsi=0 cost=49867311 rate=621226 dist=146448 mode=0 coeff=1 nz=904
+NSQDBG SHAPE mi=(0,16) bsize=9 shape=0 valid=1 part_cost=49888102 part_rate=415 lctx=24 actx=0 best=0/49888102 q=[1979,1970,2901,2303] nzh=420 nzv=484
+NSQDBG SKIP mi=(0,16) bsize=9 shape=1 gate=1
+NSQDBG SHAPE mi=(0,16) bsize=9 shape=1 valid=0 part_cost=99294 part_rate=1982 lctx=24 actx=0 best=0/49888102
+NSQDBG SKIP mi=(0,16) bsize=9 shape=2 gate=1
+NSQDBG SHAPE mi=(0,16) bsize=9 shape=2 valid=0 part_cost=103502 part_rate=2066 lctx=24 actx=0 best=0/49888102
+NSQDBG SKIP mi=(0,16) bsize=9 shape=3 gate=1
+NSQDBG SHAPE mi=(0,16) bsize=9 shape=3 valid=0 part_cost=121186 part_rate=2419 lctx=24 actx=0 best=0/49888102
+NSQDBG SKIP mi=(0,16) bsize=9 shape=4 gate=1
+NSQDBG SHAPE mi=(0,16) bsize=9 shape=4 valid=0 part_cost=125194 part_rate=2499 lctx=24 actx=0 best=0/49888102
+NSQDBG BLK mi=(0,16) bsize=6 shape=0 nsi=0 cost=12767198 rate=159064 dist=37488 mode=1 coeff=1 nz=90
+NSQDBG SHAPE mi=(0,16) bsize=6 shape=0 valid=1 part_cost=12793299 part_rate=521 lctx=24 actx=0 best=0/12793299 q=[623,569,614,537] nzh=111 nzv=122
+NSQDBG BLK mi=(0,16) bsize=6 shape=1 nsi=0 cost=5169230 rate=66023 dist=14544 mode=1 coeff=1 nz=104
+NSQDBG BLK mi=(0,16) bsize=6 shape=1 nsi=1 cost=6773764 rate=85133 dist=19600 mode=1 coeff=1 nz=100
+NSQDBG SHAPE mi=(0,16) bsize=6 shape=1 valid=1 part_cost=12002861 part_rate=1195 lctx=24 actx=0 best=1/12002861
+NSQDBG SKIP mi=(0,16) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(0,16) bsize=6 shape=2 valid=0 part_cost=87220 part_rate=1741 lctx=24 actx=0 best=1/12002861
+NSQDBG SKIP mi=(0,16) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(0,16) bsize=6 shape=3 valid=0 part_cost=124392 part_rate=2483 lctx=24 actx=0 best=1/12002861
+NSQDBG SKIP mi=(0,16) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(0,16) bsize=6 shape=4 valid=0 part_cost=140273 part_rate=2800 lctx=24 actx=0 best=1/12002861
+NSQDBG BLK mi=(0,20) bsize=6 shape=0 nsi=0 cost=12331110 rate=148397 dist=38256 mode=1 coeff=1 nz=183
+NSQDBG SHAPE mi=(0,20) bsize=6 shape=0 valid=1 part_cost=12394233 part_rate=1260 lctx=30 actx=0 best=0/12394233 q=[452,654,486,799] nzh=111 nzv=122
+NSQDBG BLK mi=(0,20) bsize=6 shape=1 nsi=0 cost=5750199 rate=63884 dist=19920 mode=1 coeff=1 nz=52
+NSQDBG BLK mi=(0,20) bsize=6 shape=1 nsi=1 cost=6607277 rate=71835 dist=23504 mode=0 coeff=1 nz=42
+NSQDBG ABORT mi=(0,20) bsize=6 shape=1 nsi=1 part_cost=12404918 best=12394233
+NSQDBG SHAPE mi=(0,20) bsize=6 shape=1 valid=0 part_cost=12404918 part_rate=947 lctx=30 actx=0 best=0/12394233
+NSQDBG SKIP mi=(0,20) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(0,20) bsize=6 shape=2 valid=0 part_cost=110115 part_rate=2198 lctx=30 actx=0 best=0/12394233
+NSQDBG SKIP mi=(0,20) bsize=6 shape=3 gate=4
+NSQDBG SHAPE mi=(0,20) bsize=6 shape=3 valid=0 part_cost=67782 part_rate=1353 lctx=30 actx=0 best=0/12394233
+NSQDBG SKIP mi=(0,20) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(0,20) bsize=6 shape=4 valid=0 part_cost=148540 part_rate=2965 lctx=30 actx=0 best=0/12394233
+NSQDBG BLK mi=(4,16) bsize=6 shape=0 nsi=0 cost=14845214 rate=191100 dist=41184 mode=0 coeff=1 nz=128
+NSQDBG SHAPE mi=(4,16) bsize=6 shape=0 valid=1 part_cost=14871315 part_rate=521 lctx=24 actx=28 best=0/14871315 q=[735,657,560,622] nzh=111 nzv=122
+NSQDBG BLK mi=(4,16) bsize=6 shape=1 nsi=0 cost=7886332 rate=100514 dist=22272 mode=0 coeff=1 nz=71
+NSQDBG BLK mi=(4,16) bsize=6 shape=1 nsi=1 cost=6966847 rate=86984 dist=20384 mode=1 coeff=1 nz=65
+NSQDBG ABORT mi=(4,16) bsize=6 shape=1 nsi=1 part_cost=14913046 best=14871315
+NSQDBG SHAPE mi=(4,16) bsize=6 shape=1 valid=0 part_cost=14913046 part_rate=1195 lctx=24 actx=28 best=0/14871315
+NSQDBG SKIP mi=(4,16) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(4,16) bsize=6 shape=2 valid=0 part_cost=87220 part_rate=1741 lctx=24 actx=28 best=0/14871315
+NSQDBG SKIP mi=(4,16) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(4,16) bsize=6 shape=3 valid=0 part_cost=124392 part_rate=2483 lctx=24 actx=28 best=0/14871315
+NSQDBG SKIP mi=(4,16) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(4,16) bsize=6 shape=4 valid=0 part_cost=140273 part_rate=2800 lctx=24 actx=28 best=0/14871315
+NSQDBG BLK mi=(4,20) bsize=6 shape=0 nsi=0 cost=13131116 rate=180718 dist=31856 mode=0 coeff=1 nz=228
+NSQDBG SHAPE mi=(4,20) bsize=6 shape=0 valid=1 part_cost=13157217 part_rate=521 lctx=28 actx=28 best=0/13157217 q=[646,284,419,642] nzh=111 nzv=122
+NSQDBG BLK mi=(4,20) bsize=6 shape=1 nsi=0 cost=6219535 rate=85680 dist=15056 mode=0 coeff=1 nz=100
+NSQDBG BLK mi=(4,20) bsize=6 shape=1 nsi=1 cost=7204863 rate=97213 dist=18240 mode=1 coeff=1 nz=100
+NSQDBG ABORT mi=(4,20) bsize=6 shape=1 nsi=1 part_cost=13484265 best=13157217
+NSQDBG SHAPE mi=(4,20) bsize=6 shape=1 valid=0 part_cost=13484265 part_rate=1195 lctx=28 actx=28 best=0/13157217
+NSQDBG SKIP mi=(4,20) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(4,20) bsize=6 shape=2 valid=0 part_cost=87220 part_rate=1741 lctx=28 actx=28 best=0/13157217
+NSQDBG SKIP mi=(4,20) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(4,20) bsize=6 shape=3 valid=0 part_cost=124392 part_rate=2483 lctx=28 actx=28 best=0/13157217
+NSQDBG SKIP mi=(4,20) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(4,20) bsize=6 shape=4 valid=0 part_cost=140273 part_rate=2800 lctx=28 actx=28 best=0/13157217
+NSQDBG TS mi=(0,16) bsize=9 parent_valid=1 parent=49888102 split=52494109 chose=parent
+NSQDBG BLK mi=(0,24) bsize=9 shape=0 nsi=0 cost=50522734 rate=638029 dist=144992 mode=1 coeff=1 nz=904
+NSQDBG SHAPE mi=(0,24) bsize=9 shape=0 valid=1 part_cost=50543525 part_rate=415 lctx=24 actx=0 best=0/50543525 q=[1949,2041,2107,2965] nzh=420 nzv=484
+NSQDBG SKIP mi=(0,24) bsize=9 shape=1 gate=1
+NSQDBG SHAPE mi=(0,24) bsize=9 shape=1 valid=0 part_cost=99294 part_rate=1982 lctx=24 actx=0 best=0/50543525
+NSQDBG SKIP mi=(0,24) bsize=9 shape=2 gate=1
+NSQDBG SHAPE mi=(0,24) bsize=9 shape=2 valid=0 part_cost=103502 part_rate=2066 lctx=24 actx=0 best=0/50543525
+NSQDBG SKIP mi=(0,24) bsize=9 shape=3 gate=1
+NSQDBG SHAPE mi=(0,24) bsize=9 shape=3 valid=0 part_cost=121186 part_rate=2419 lctx=24 actx=0 best=0/50543525
+NSQDBG SKIP mi=(0,24) bsize=9 shape=4 gate=1
+NSQDBG SHAPE mi=(0,24) bsize=9 shape=4 valid=0 part_cost=125194 part_rate=2499 lctx=24 actx=0 best=0/50543525
+NSQDBG BLK mi=(0,24) bsize=6 shape=0 nsi=0 cost=12624495 rate=147181 dist=41024 mode=1 coeff=1 nz=74
+NSQDBG SHAPE mi=(0,24) bsize=6 shape=0 valid=1 part_cost=12650596 part_rate=521 lctx=24 actx=0 best=0/12650596 q=[575,562,698,729] nzh=111 nzv=122
+NSQDBG BLK mi=(0,24) bsize=6 shape=1 nsi=0 cost=6020852 rate=71167 dist=19184 mode=1 coeff=1 nz=25
+NSQDBG BLK mi=(0,24) bsize=6 shape=1 nsi=1 cost=6717412 rate=81678 dist=20512 mode=0 coeff=1 nz=51
+NSQDBG ABORT mi=(0,24) bsize=6 shape=1 nsi=1 part_cost=12798131 best=12650596
+NSQDBG SHAPE mi=(0,24) bsize=6 shape=1 valid=0 part_cost=12798131 part_rate=1195 lctx=24 actx=0 best=0/12650596
+NSQDBG SKIP mi=(0,24) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(0,24) bsize=6 shape=2 valid=0 part_cost=87220 part_rate=1741 lctx=24 actx=0 best=0/12650596
+NSQDBG SKIP mi=(0,24) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(0,24) bsize=6 shape=3 valid=0 part_cost=124392 part_rate=2483 lctx=24 actx=0 best=0/12650596
+NSQDBG SKIP mi=(0,24) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(0,24) bsize=6 shape=4 valid=0 part_cost=140273 part_rate=2800 lctx=24 actx=0 best=0/12650596
+NSQDBG BLK mi=(0,28) bsize=6 shape=0 nsi=0 cost=12204913 rate=148944 dist=37056 mode=0 coeff=1 nz=183
+NSQDBG SHAPE mi=(0,28) bsize=6 shape=0 valid=1 part_cost=12231014 part_rate=521 lctx=28 actx=0 best=0/12231014 q=[482,561,470,803] nzh=111 nzv=122
+NSQDBG BLK mi=(0,28) bsize=6 shape=1 nsi=0 cost=5103708 rate=65778 dist=14128 mode=1 coeff=1 nz=104
+NSQDBG BLK mi=(0,28) bsize=6 shape=1 nsi=1 cost=6854049 rate=91028 dist=17920 mode=12 coeff=1 nz=100
+NSQDBG SHAPE mi=(0,28) bsize=6 shape=1 valid=1 part_cost=12017624 part_rate=1195 lctx=28 actx=0 best=1/12017624
+NSQDBG SKIP mi=(0,28) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(0,28) bsize=6 shape=2 valid=0 part_cost=87220 part_rate=1741 lctx=28 actx=0 best=1/12017624
+NSQDBG SKIP mi=(0,28) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(0,28) bsize=6 shape=3 valid=0 part_cost=124392 part_rate=2483 lctx=28 actx=0 best=1/12017624
+NSQDBG SKIP mi=(0,28) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(0,28) bsize=6 shape=4 valid=0 part_cost=140273 part_rate=2800 lctx=28 actx=0 best=1/12017624
+NSQDBG BLK mi=(4,24) bsize=6 shape=0 nsi=0 cost=14339456 rate=194495 dist=35904 mode=12 coeff=1 nz=228
+NSQDBG SHAPE mi=(4,24) bsize=6 shape=0 valid=1 part_cost=14365557 part_rate=521 lctx=24 actx=28 best=0/14365557 q=[431,585,654,574] nzh=104 nzv=122
+NSQDBG BLK mi=(4,24) bsize=6 shape=1 nsi=0 cost=6500370 rate=84377 dist=17760 mode=0 coeff=1 nz=104
+NSQDBG BLK mi=(4,24) bsize=6 shape=1 nsi=1 cost=6855067 rate=92520 dist=17344 mode=1 coeff=1 nz=100
+NSQDBG SHAPE mi=(4,24) bsize=6 shape=1 valid=1 part_cost=13415304 part_rate=1195 lctx=24 actx=28 best=1/13415304
+NSQDBG SKIP mi=(4,24) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(4,24) bsize=6 shape=2 valid=0 part_cost=87220 part_rate=1741 lctx=24 actx=28 best=1/13415304
+NSQDBG SKIP mi=(4,24) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(4,24) bsize=6 shape=3 valid=0 part_cost=124392 part_rate=2483 lctx=24 actx=28 best=1/13415304
+NSQDBG SKIP mi=(4,24) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(4,24) bsize=6 shape=4 valid=0 part_cost=140273 part_rate=2800 lctx=24 actx=28 best=1/13415304
+NSQDBG BLK mi=(4,28) bsize=6 shape=0 nsi=0 cost=14346518 rate=183026 dist=40448 mode=0 coeff=1 nz=106
+NSQDBG SHAPE mi=(4,28) bsize=6 shape=0 valid=1 part_cost=14409641 part_rate=1260 lctx=30 actx=28 best=0/14409641 q=[496,717,644,671] nzh=111 nzv=122
+NSQDBG BLK mi=(4,28) bsize=6 shape=1 nsi=0 cost=7712666 rate=104365 dist=19408 mode=0 coeff=1 nz=55
+NSQDBG BLK mi=(4,28) bsize=6 shape=1 nsi=1 cost=6689672 rate=80879 dist=20608 mode=9 coeff=1 nz=54
+NSQDBG ABORT mi=(4,28) bsize=6 shape=1 nsi=1 part_cost=14449780 best=14409641
+NSQDBG SHAPE mi=(4,28) bsize=6 shape=1 valid=0 part_cost=14449780 part_rate=947 lctx=30 actx=28 best=0/14409641
+NSQDBG SKIP mi=(4,28) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(4,28) bsize=6 shape=2 valid=0 part_cost=110115 part_rate=2198 lctx=30 actx=28 best=0/14409641
+NSQDBG SKIP mi=(4,28) bsize=6 shape=3 gate=4
+NSQDBG SHAPE mi=(4,28) bsize=6 shape=3 valid=0 part_cost=67782 part_rate=1353 lctx=30 actx=28 best=0/14409641
+NSQDBG SKIP mi=(4,28) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(4,28) bsize=6 shape=4 valid=0 part_cost=148540 part_rate=2965 lctx=30 actx=28 best=0/14409641
+NSQDBG TS mi=(0,24) bsize=9 parent_valid=1 parent=50543525 split=52561648 chose=parent
+NSQDBG BLK mi=(8,16) bsize=9 shape=0 nsi=0 cost=54188502 rate=673837 dist=159616 mode=12 coeff=1 nz=904
+NSQDBG SHAPE mi=(8,16) bsize=9 shape=0 valid=1 part_cost=54252427 part_rate=1276 lctx=30 actx=24 best=0/54252427 q=[2230,2402,2982,2362] nzh=442 nzv=484
+NSQDBG SKIP mi=(8,16) bsize=9 shape=1 gate=1
+NSQDBG SHAPE mi=(8,16) bsize=9 shape=1 valid=0 part_cost=89775 part_rate=1792 lctx=30 actx=24 best=0/54252427
+NSQDBG SKIP mi=(8,16) bsize=9 shape=2 gate=1
+NSQDBG SHAPE mi=(8,16) bsize=9 shape=2 valid=0 part_cost=128400 part_rate=2563 lctx=30 actx=24 best=0/54252427
+NSQDBG SKIP mi=(8,16) bsize=9 shape=3 gate=1
+NSQDBG SHAPE mi=(8,16) bsize=9 shape=3 valid=0 part_cost=74445 part_rate=1486 lctx=30 actx=24 best=0/54252427
+NSQDBG SKIP mi=(8,16) bsize=9 shape=4 gate=1
+NSQDBG SHAPE mi=(8,16) bsize=9 shape=4 valid=0 part_cost=142327 part_rate=2841 lctx=30 actx=24 best=0/54252427
+NSQDBG BLK mi=(8,16) bsize=6 shape=0 nsi=0 cost=13403390 rate=169392 dist=38416 mode=0 coeff=1 nz=183
+NSQDBG SHAPE mi=(8,16) bsize=6 shape=0 valid=1 part_cost=13466513 part_rate=1260 lctx=30 actx=24 best=0/13466513 q=[626,463,913,399] nzh=111 nzv=122
+NSQDBG BLK mi=(8,16) bsize=6 shape=1 nsi=0 cost=6184134 rate=85096 dist=15008 mode=0 coeff=1 nz=100
+NSQDBG BLK mi=(8,16) bsize=6 shape=1 nsi=1 cost=6924895 rate=83285 dist=21504 mode=1 coeff=1 nz=100
+NSQDBG SHAPE mi=(8,16) bsize=6 shape=1 valid=1 part_cost=13156471 part_rate=947 lctx=30 actx=24 best=1/13156471
+NSQDBG SKIP mi=(8,16) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(8,16) bsize=6 shape=2 valid=0 part_cost=110115 part_rate=2198 lctx=30 actx=24 best=1/13156471
+NSQDBG SKIP mi=(8,16) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(8,16) bsize=6 shape=3 valid=0 part_cost=67782 part_rate=1353 lctx=30 actx=24 best=1/13156471
+NSQDBG SKIP mi=(8,16) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(8,16) bsize=6 shape=4 valid=0 part_cost=148540 part_rate=2965 lctx=30 actx=24 best=1/13156471
+NSQDBG BLK mi=(8,20) bsize=6 shape=0 nsi=0 cost=15163652 rate=212582 dist=35264 mode=12 coeff=1 nz=228
+NSQDBG SHAPE mi=(8,20) bsize=6 shape=0 valid=1 part_cost=15226775 part_rate=1260 lctx=30 actx=24 best=0/15226775 q=[759,430,452,563] nzh=111 nzv=122
+NSQDBG BLK mi=(8,20) bsize=6 shape=1 nsi=0 cost=7992039 rate=109451 dist=19600 mode=12 coeff=1 nz=71
+NSQDBG BLK mi=(8,20) bsize=6 shape=1 nsi=1 cost=6518811 rate=68066 dist=24288 mode=0 coeff=1 nz=37
+NSQDBG SHAPE mi=(8,20) bsize=6 shape=1 valid=1 part_cost=14558292 part_rate=947 lctx=30 actx=24 best=1/14558292
+NSQDBG SKIP mi=(8,20) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(8,20) bsize=6 shape=2 valid=0 part_cost=110115 part_rate=2198 lctx=30 actx=24 best=1/14558292
+NSQDBG SKIP mi=(8,20) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(8,20) bsize=6 shape=3 valid=0 part_cost=67782 part_rate=1353 lctx=30 actx=24 best=1/14558292
+NSQDBG SKIP mi=(8,20) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(8,20) bsize=6 shape=4 valid=0 part_cost=148540 part_rate=2965 lctx=30 actx=24 best=1/14558292
+NSQDBG BLK mi=(12,16) bsize=6 shape=0 nsi=0 cost=14392330 rate=188192 dist=38784 mode=0 coeff=1 nz=123
+NSQDBG SHAPE mi=(12,16) bsize=6 shape=0 valid=1 part_cost=14418431 part_rate=521 lctx=28 actx=28 best=0/14418431 q=[696,583,529,616] nzh=111 nzv=122
+NSQDBG BLK mi=(12,16) bsize=6 shape=1 nsi=0 cost=7736066 rate=102134 dist=20464 mode=0 coeff=1 nz=71
+NSQDBG BLK mi=(12,16) bsize=6 shape=1 nsi=1 cost=6867476 rate=90274 dist=18320 mode=0 coeff=1 nz=52
+NSQDBG ABORT mi=(12,16) bsize=6 shape=1 nsi=1 part_cost=14663409 best=14418431
+NSQDBG SHAPE mi=(12,16) bsize=6 shape=1 valid=0 part_cost=14663409 part_rate=1195 lctx=28 actx=28 best=0/14418431
+NSQDBG SKIP mi=(12,16) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(12,16) bsize=6 shape=2 valid=0 part_cost=87220 part_rate=1741 lctx=28 actx=28 best=0/14418431
+NSQDBG SKIP mi=(12,16) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(12,16) bsize=6 shape=3 valid=0 part_cost=124392 part_rate=2483 lctx=28 actx=28 best=0/14418431
+NSQDBG SKIP mi=(12,16) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(12,16) bsize=6 shape=4 valid=0 part_cost=140273 part_rate=2800 lctx=28 actx=28 best=0/14418431
+NSQDBG BLK mi=(12,20) bsize=6 shape=0 nsi=0 cost=13144558 rate=184502 dist=30480 mode=9 coeff=1 nz=228
+NSQDBG SHAPE mi=(12,20) bsize=6 shape=0 valid=1 part_cost=13170659 part_rate=521 lctx=28 actx=28 best=0/13170659 q=[494,362,463,586] nzh=111 nzv=122
+NSQDBG BLK mi=(12,20) bsize=6 shape=1 nsi=0 cost=6140502 rate=88681 dist=13264 mode=0 coeff=1 nz=100
+NSQDBG BLK mi=(12,20) bsize=6 shape=1 nsi=1 cost=7103400 rate=95760 dist=18016 mode=1 coeff=1 nz=100
+NSQDBG ABORT mi=(12,20) bsize=6 shape=1 nsi=1 part_cost=13303769 best=13170659
+NSQDBG SHAPE mi=(12,20) bsize=6 shape=1 valid=0 part_cost=13303769 part_rate=1195 lctx=28 actx=28 best=0/13170659
+NSQDBG SKIP mi=(12,20) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(12,20) bsize=6 shape=2 valid=0 part_cost=87220 part_rate=1741 lctx=28 actx=28 best=0/13170659
+NSQDBG SKIP mi=(12,20) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(12,20) bsize=6 shape=3 valid=0 part_cost=124392 part_rate=2483 lctx=28 actx=28 best=0/13170659
+NSQDBG SKIP mi=(12,20) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(12,20) bsize=6 shape=4 valid=0 part_cost=140273 part_rate=2800 lctx=28 actx=28 best=0/13170659
+NSQDBG TS mi=(8,16) bsize=9 parent_valid=1 parent=54252427 split=55332659 chose=parent
+NSQDBG BLK mi=(8,24) bsize=9 shape=0 nsi=0 cost=59748247 rate=779746 dist=161600 mode=0 coeff=1 nz=904
+NSQDBG SHAPE mi=(8,24) bsize=9 shape=0 valid=1 part_cost=59769038 part_rate=415 lctx=24 actx=24 best=0/59769038 q=[2988,2204,2417,2491] nzh=488 nzv=484
+NSQDBG SKIP mi=(8,24) bsize=9 shape=1 gate=1
+NSQDBG SHAPE mi=(8,24) bsize=9 shape=1 valid=0 part_cost=99294 part_rate=1982 lctx=24 actx=24 best=0/59769038
+NSQDBG SKIP mi=(8,24) bsize=9 shape=2 gate=1
+NSQDBG SHAPE mi=(8,24) bsize=9 shape=2 valid=0 part_cost=103502 part_rate=2066 lctx=24 actx=24 best=0/59769038
+NSQDBG SKIP mi=(8,24) bsize=9 shape=3 gate=1
+NSQDBG SHAPE mi=(8,24) bsize=9 shape=3 valid=0 part_cost=121186 part_rate=2419 lctx=24 actx=24 best=0/59769038
+NSQDBG SKIP mi=(8,24) bsize=9 shape=4 gate=1
+NSQDBG SHAPE mi=(8,24) bsize=9 shape=4 valid=0 part_cost=125194 part_rate=2499 lctx=24 actx=24 best=0/59769038
+NSQDBG BLK mi=(8,24) bsize=6 shape=0 nsi=0 cost=14791919 rate=175769 dist=46768 mode=12 coeff=1 nz=128
+NSQDBG SHAPE mi=(8,24) bsize=6 shape=0 valid=1 part_cost=14818020 part_rate=521 lctx=24 actx=24 best=0/14818020 q=[639,759,748,777] nzh=111 nzv=122
+NSQDBG BLK mi=(8,24) bsize=6 shape=1 nsi=0 cost=7956783 rate=101675 dist=22368 mode=12 coeff=1 nz=75
+NSQDBG BLK mi=(8,24) bsize=6 shape=1 nsi=1 cost=6952957 rate=90713 dist=18816 mode=0 coeff=1 nz=61
+NSQDBG ABORT mi=(8,24) bsize=6 shape=1 nsi=1 part_cost=14969607 best=14818020
+NSQDBG SHAPE mi=(8,24) bsize=6 shape=1 valid=0 part_cost=14969607 part_rate=1195 lctx=24 actx=24 best=0/14818020
+NSQDBG SKIP mi=(8,24) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(8,24) bsize=6 shape=2 valid=0 part_cost=87220 part_rate=1741 lctx=24 actx=24 best=0/14818020
+NSQDBG SKIP mi=(8,24) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(8,24) bsize=6 shape=3 valid=0 part_cost=124392 part_rate=2483 lctx=24 actx=24 best=0/14818020
+NSQDBG SKIP mi=(8,24) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(8,24) bsize=6 shape=4 valid=0 part_cost=140273 part_rate=2800 lctx=24 actx=24 best=0/14818020
+NSQDBG BLK mi=(8,28) bsize=6 shape=0 nsi=0 cost=13854849 rate=197699 dist=30864 mode=2 coeff=1 nz=228
+NSQDBG SHAPE mi=(8,28) bsize=6 shape=0 valid=1 part_cost=13880950 part_rate=521 lctx=28 actx=24 best=0/13880950 q=[452,433,405,639] nzh=111 nzv=122
+NSQDBG BLK mi=(8,28) bsize=6 shape=1 nsi=0 cost=6504028 rate=89233 dist=15888 mode=2 coeff=1 nz=100
+NSQDBG BLK mi=(8,28) bsize=6 shape=1 nsi=1 cost=6872713 rate=96020 dist=16112 mode=1 coeff=1 nz=100
+NSQDBG SHAPE mi=(8,28) bsize=6 shape=1 valid=1 part_cost=13436608 part_rate=1195 lctx=28 actx=24 best=1/13436608
+NSQDBG SKIP mi=(8,28) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(8,28) bsize=6 shape=2 valid=0 part_cost=87220 part_rate=1741 lctx=28 actx=24 best=1/13436608
+NSQDBG SKIP mi=(8,28) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(8,28) bsize=6 shape=3 valid=0 part_cost=124392 part_rate=2483 lctx=28 actx=24 best=1/13436608
+NSQDBG SKIP mi=(8,28) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(8,28) bsize=6 shape=4 valid=0 part_cost=140273 part_rate=2800 lctx=28 actx=24 best=1/13436608
+NSQDBG BLK mi=(12,24) bsize=6 shape=0 nsi=0 cost=14494468 rate=185039 dist=40816 mode=0 coeff=1 nz=199
+NSQDBG SHAPE mi=(12,24) bsize=6 shape=0 valid=1 part_cost=14520569 part_rate=521 lctx=24 actx=28 best=0/14520569 q=[488,573,963,527] nzh=111 nzv=122
+NSQDBG BLK mi=(12,24) bsize=6 shape=1 nsi=0 cost=6488096 rate=84132 dist=17760 mode=0 coeff=1 nz=104
+NSQDBG BLK mi=(12,24) bsize=6 shape=1 nsi=1 cost=6936987 rate=92520 dist=17984 mode=1 coeff=1 nz=100
+NSQDBG SHAPE mi=(12,24) bsize=6 shape=1 valid=1 part_cost=13484950 part_rate=1195 lctx=24 actx=28 best=1/13484950
+NSQDBG SKIP mi=(12,24) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(12,24) bsize=6 shape=2 valid=0 part_cost=87220 part_rate=1741 lctx=24 actx=28 best=1/13484950
+NSQDBG SKIP mi=(12,24) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(12,24) bsize=6 shape=3 valid=0 part_cost=124392 part_rate=2483 lctx=24 actx=28 best=1/13484950
+NSQDBG SKIP mi=(12,24) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(12,24) bsize=6 shape=4 valid=0 part_cost=140273 part_rate=2800 lctx=24 actx=28 best=1/13484950
+NSQDBG BLK mi=(12,28) bsize=6 shape=0 nsi=0 cost=14658020 rate=184093 dist=42464 mode=0 coeff=1 nz=111
+NSQDBG SHAPE mi=(12,28) bsize=6 shape=0 valid=1 part_cost=14721143 part_rate=1260 lctx=30 actx=28 best=0/14721143 q=[537,727,651,739] nzh=111 nzv=122
+NSQDBG BLK mi=(12,28) bsize=6 shape=1 nsi=0 cost=7900326 rate=106026 dist=20224 mode=0 coeff=1 nz=60
+NSQDBG BLK mi=(12,28) bsize=6 shape=1 nsi=1 cost=6647948 rate=72933 dist=23392 mode=9 coeff=1 nz=43
+NSQDBG SHAPE mi=(12,28) bsize=6 shape=1 valid=1 part_cost=14595716 part_rate=947 lctx=30 actx=28 best=1/14595716
+NSQDBG SKIP mi=(12,28) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(12,28) bsize=6 shape=2 valid=0 part_cost=110115 part_rate=2198 lctx=30 actx=28 best=1/14595716
+NSQDBG SKIP mi=(12,28) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(12,28) bsize=6 shape=3 valid=0 part_cost=67782 part_rate=1353 lctx=30 actx=28 best=1/14595716
+NSQDBG SKIP mi=(12,28) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(12,28) bsize=6 shape=4 valid=0 part_cost=148540 part_rate=2965 lctx=30 actx=28 best=1/14595716
+NSQDBG TS mi=(8,24) bsize=9 parent_valid=1 parent=59769038 split=56403777 chose=split
+NSQDBG TS mi=(0,16) bsize=12 parent_valid=0 parent=188247678 split=211105465 chose=split
+NSQDBG TREE mi=(0,16) bsize=12 part=3
+NSQDBG TREE mi=(0,16) bsize=9 part=0
+NSQDBG TREE mi=(0,24) bsize=9 part=0
+NSQDBG TREE mi=(8,16) bsize=9 part=0
+NSQDBG TREE mi=(8,24) bsize=9 part=3
+NSQDBG TREE mi=(8,24) bsize=6 part=0
+NSQDBG TREE mi=(8,28) bsize=6 part=1
+NSQDBG TREE mi=(12,24) bsize=6 part=1
+NSQDBG TREE mi=(12,28) bsize=6 part=1
+NSQDBG RD mi=(16,0) bsize=9 part=0 tested=1 cost=50420635 s=0 e=1
+NSQDBG RD mi=(16,8) bsize=9 part=0 tested=1 cost=51754448 s=0 e=1
+NSQDBG RD mi=(24,0) bsize=9 part=0 tested=1 cost=50420635 s=0 e=1
+NSQDBG RD mi=(24,8) bsize=9 part=0 tested=1 cost=51754448 s=0 e=1
+NSQDBG NSQCFG pd=1 lvl=19 en=1 sqw=90 hvw=75 dev=75 split_th=35 lower=20 hvv=85 nonhv=70 off16=15 psq=1(en=1 hv2sq=1000 h2v=100) subd=1 compm=5 geom(en=1 min=0 hv4=1 hva=0) d44=0 bp=0 minsq=0
+NSQDBG BLK mi=(16,0) bsize=9 shape=0 nsi=0 cost=58075080 rate=752112 dist=159344 mode=2 coeff=1 nz=904
+NSQDBG SHAPE mi=(16,0) bsize=9 shape=0 valid=1 part_cost=58128785 part_rate=1072 lctx=0 actx=28 best=0/58128785 q=[1908,3082,2574,2395] nzh=456 nzv=484
+NSQDBG SKIP mi=(16,0) bsize=9 shape=1 gate=1
+NSQDBG SHAPE mi=(16,0) bsize=9 shape=1 valid=0 part_cost=117529 part_rate=2346 lctx=0 actx=28 best=0/58128785
+NSQDBG SKIP mi=(16,0) bsize=9 shape=2 gate=1
+NSQDBG SHAPE mi=(16,0) bsize=9 shape=2 valid=0 part_cost=88573 part_rate=1768 lctx=0 actx=28 best=0/58128785
+NSQDBG SKIP mi=(16,0) bsize=9 shape=3 gate=1
+NSQDBG SHAPE mi=(16,0) bsize=9 shape=3 valid=0 part_cost=128701 part_rate=2569 lctx=0 actx=28 best=0/58128785
+NSQDBG SKIP mi=(16,0) bsize=9 shape=4 gate=1
+NSQDBG SHAPE mi=(16,0) bsize=9 shape=4 valid=0 part_cost=80607 part_rate=1609 lctx=0 actx=28 best=0/58128785
+NSQDBG BLK mi=(16,0) bsize=6 shape=0 nsi=0 cost=12933012 rate=174597 dist=32704 mode=2 coeff=1 nz=183
+NSQDBG SHAPE mi=(16,0) bsize=6 shape=0 valid=1 part_cost=12960265 part_rate=544 lctx=0 actx=28 best=0/12960265 q=[460,482,717,385] nzh=111 nzv=122
+NSQDBG BLK mi=(16,0) bsize=6 shape=1 nsi=0 cost=5960425 rate=77401 dist=16272 mode=2 coeff=1 nz=100
+NSQDBG BLK mi=(16,0) bsize=6 shape=1 nsi=1 cost=7057431 rate=88506 dist=20496 mode=1 coeff=1 nz=100
+NSQDBG ABORT mi=(16,0) bsize=6 shape=1 nsi=1 part_cost=13070308 best=12960265
+NSQDBG SHAPE mi=(16,0) bsize=6 shape=1 valid=0 part_cost=13070308 part_rate=1047 lctx=0 actx=28 best=0/12960265
+NSQDBG SKIP mi=(16,0) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(16,0) bsize=6 shape=2 valid=0 part_cost=90627 part_rate=1809 lctx=0 actx=28 best=0/12960265
+NSQDBG SKIP mi=(16,0) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(16,0) bsize=6 shape=3 valid=0 part_cost=127949 part_rate=2554 lctx=0 actx=28 best=0/12960265
+NSQDBG SKIP mi=(16,0) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(16,0) bsize=6 shape=4 valid=0 part_cost=143630 part_rate=2867 lctx=0 actx=28 best=0/12960265
+NSQDBG BLK mi=(16,4) bsize=6 shape=0 nsi=0 cost=14666198 rate=192187 dist=39360 mode=12 coeff=1 nz=143
+NSQDBG SHAPE mi=(16,4) bsize=6 shape=0 valid=1 part_cost=14693451 part_rate=544 lctx=28 actx=28 best=0/14693451 q=[528,659,752,521] nzh=111 nzv=122
+NSQDBG BLK mi=(16,4) bsize=6 shape=1 nsi=0 cost=7440040 rate=99986 dist=18992 mode=12 coeff=1 nz=76
+NSQDBG BLK mi=(16,4) bsize=6 shape=1 nsi=1 cost=6842678 rate=74776 dist=24192 mode=9 coeff=1 nz=40
+NSQDBG SHAPE mi=(16,4) bsize=6 shape=1 valid=1 part_cost=14335170 part_rate=1047 lctx=28 actx=28 best=1/14335170
+NSQDBG SKIP mi=(16,4) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(16,4) bsize=6 shape=2 valid=0 part_cost=90627 part_rate=1809 lctx=28 actx=28 best=1/14335170
+NSQDBG SKIP mi=(16,4) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(16,4) bsize=6 shape=3 valid=0 part_cost=127949 part_rate=2554 lctx=28 actx=28 best=1/14335170
+NSQDBG SKIP mi=(16,4) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(16,4) bsize=6 shape=4 valid=0 part_cost=143630 part_rate=2867 lctx=28 actx=28 best=1/14335170
+NSQDBG BLK mi=(20,0) bsize=6 shape=0 nsi=0 cost=13945216 rate=171132 dist=41968 mode=0 coeff=1 nz=118
+NSQDBG SHAPE mi=(20,0) bsize=6 shape=0 valid=1 part_cost=13972469 part_rate=544 lctx=0 actx=28 best=0/13972469 q=[673,597,653,700] nzh=111 nzv=122
+NSQDBG BLK mi=(20,0) bsize=6 shape=1 nsi=0 cost=7583272 rate=99452 dist=20320 mode=0 coeff=1 nz=67
+NSQDBG BLK mi=(20,0) bsize=6 shape=1 nsi=1 cost=6514259 rate=71777 dist=22800 mode=9 coeff=1 nz=47
+NSQDBG ABORT mi=(20,0) bsize=6 shape=1 nsi=1 part_cost=14149983 best=13972469
+NSQDBG SHAPE mi=(20,0) bsize=6 shape=1 valid=0 part_cost=14149983 part_rate=1047 lctx=0 actx=28 best=0/13972469
+NSQDBG SKIP mi=(20,0) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(20,0) bsize=6 shape=2 valid=0 part_cost=90627 part_rate=1809 lctx=0 actx=28 best=0/13972469
+NSQDBG SKIP mi=(20,0) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(20,0) bsize=6 shape=3 valid=0 part_cost=127949 part_rate=2554 lctx=0 actx=28 best=0/13972469
+NSQDBG SKIP mi=(20,0) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(20,0) bsize=6 shape=4 valid=0 part_cost=143630 part_rate=2867 lctx=0 actx=28 best=0/13972469
+NSQDBG BLK mi=(20,4) bsize=6 shape=0 nsi=0 cost=13419051 rate=180824 dist=34064 mode=0 coeff=1 nz=228
+NSQDBG SHAPE mi=(20,4) bsize=6 shape=0 valid=1 part_cost=13446304 part_rate=544 lctx=28 actx=28 best=0/13446304 q=[496,466,435,732] nzh=111 nzv=122
+NSQDBG BLK mi=(20,4) bsize=6 shape=1 nsi=0 cost=6200173 rate=86152 dist=14720 mode=0 coeff=1 nz=100
+NSQDBG BLK mi=(20,4) bsize=6 shape=1 nsi=1 cost=6686326 rate=92136 dist=16176 mode=1 coeff=1 nz=100
+NSQDBG SHAPE mi=(20,4) bsize=6 shape=1 valid=1 part_cost=12938951 part_rate=1047 lctx=28 actx=28 best=1/12938951
+NSQDBG SKIP mi=(20,4) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(20,4) bsize=6 shape=2 valid=0 part_cost=90627 part_rate=1809 lctx=28 actx=28 best=1/12938951
+NSQDBG SKIP mi=(20,4) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(20,4) bsize=6 shape=3 valid=0 part_cost=127949 part_rate=2554 lctx=28 actx=28 best=1/12938951
+NSQDBG SKIP mi=(20,4) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(20,4) bsize=6 shape=4 valid=0 part_cost=143630 part_rate=2867 lctx=28 actx=28 best=1/12938951
+NSQDBG TS mi=(16,0) bsize=9 parent_valid=1 parent=58128785 split=54241272 chose=split
+NSQDBG BLK mi=(16,8) bsize=9 shape=0 nsi=0 cost=59419101 rate=774852 dist=160944 mode=0 coeff=1 nz=904
+NSQDBG SHAPE mi=(16,8) bsize=9 shape=0 valid=1 part_cost=59535979 part_rate=2333 lctx=30 actx=28 best=0/59535979 q=[3077,2032,2255,2695] nzh=456 nzv=484
+NSQDBG SKIP mi=(16,8) bsize=9 shape=1 gate=1
+NSQDBG SHAPE mi=(16,8) bsize=9 shape=1 valid=0 part_cost=136666 part_rate=2728 lctx=30 actx=28 best=0/59535979
+NSQDBG SKIP mi=(16,8) bsize=9 shape=2 gate=1
+NSQDBG SHAPE mi=(16,8) bsize=9 shape=2 valid=0 part_cost=148790 part_rate=2970 lctx=30 actx=28 best=0/59535979
+NSQDBG SKIP mi=(16,8) bsize=9 shape=3 gate=1
+NSQDBG SHAPE mi=(16,8) bsize=9 shape=3 valid=0 part_cost=109213 part_rate=2180 lctx=30 actx=28 best=0/59535979
+NSQDBG SKIP mi=(16,8) bsize=9 shape=4 gate=1
+NSQDBG SHAPE mi=(16,8) bsize=9 shape=4 valid=0 part_cost=134362 part_rate=2682 lctx=30 actx=28 best=0/59535979
+NSQDBG BLK mi=(16,8) bsize=6 shape=0 nsi=0 cost=17519608 rate=232751 dist=45776 mode=2 coeff=1 nz=138
+NSQDBG SHAPE mi=(16,8) bsize=6 shape=0 valid=1 part_cost=17583933 part_rate=1284 lctx=30 actx=28 best=0/17583933 q=[668,618,828,747] nzh=111 nzv=122
+NSQDBG BLK mi=(16,8) bsize=6 shape=1 nsi=0 cost=8743187 rate=121951 dist=20576 mode=2 coeff=1 nz=70
+NSQDBG BLK mi=(16,8) bsize=6 shape=1 nsi=1 cost=6865923 rate=78306 dist=22992 mode=1 coeff=1 nz=49
+NSQDBG SHAPE mi=(16,8) bsize=6 shape=1 valid=1 part_cost=15653547 part_rate=887 lctx=30 actx=28 best=1/15653547
+NSQDBG SKIP mi=(16,8) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(16,8) bsize=6 shape=2 valid=0 part_cost=111167 part_rate=2219 lctx=30 actx=28 best=1/15653547
+NSQDBG SKIP mi=(16,8) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(16,8) bsize=6 shape=3 valid=0 part_cost=68934 part_rate=1376 lctx=30 actx=28 best=1/15653547
+NSQDBG SKIP mi=(16,8) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(16,8) bsize=6 shape=4 valid=0 part_cost=149542 part_rate=2985 lctx=30 actx=28 best=1/15653547
+NSQDBG BLK mi=(16,12) bsize=6 shape=0 nsi=0 cost=14014440 rate=197001 dist=32384 mode=2 coeff=1 nz=228
+NSQDBG SHAPE mi=(16,12) bsize=6 shape=0 valid=1 part_cost=14078765 part_rate=1284 lctx=30 actx=28 best=0/14078765 q=[498,352,524,650] nzh=104 nzv=122
+NSQDBG BLK mi=(16,12) bsize=6 shape=1 nsi=0 cost=6548283 rate=87173 dist=17040 mode=2 coeff=1 nz=100
+NSQDBG BLK mi=(16,12) bsize=6 shape=1 nsi=1 cost=6743275 rate=93191 dist=16208 mode=1 coeff=1 nz=100
+NSQDBG SHAPE mi=(16,12) bsize=6 shape=1 valid=1 part_cost=13335995 part_rate=887 lctx=30 actx=28 best=1/13335995
+NSQDBG SKIP mi=(16,12) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(16,12) bsize=6 shape=2 valid=0 part_cost=111167 part_rate=2219 lctx=30 actx=28 best=1/13335995
+NSQDBG SKIP mi=(16,12) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(16,12) bsize=6 shape=3 valid=0 part_cost=68934 part_rate=1376 lctx=30 actx=28 best=1/13335995
+NSQDBG SKIP mi=(16,12) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(16,12) bsize=6 shape=4 valid=0 part_cost=149542 part_rate=2985 lctx=30 actx=28 best=1/13335995
+NSQDBG BLK mi=(20,8) bsize=6 shape=0 nsi=0 cost=14440284 rate=195363 dist=36352 mode=1 coeff=1 nz=228
+NSQDBG SHAPE mi=(20,8) bsize=6 shape=0 valid=1 part_cost=14504609 part_rate=1284 lctx=30 actx=28 best=0/14504609 q=[339,537,842,554] nzh=104 nzv=122
+NSQDBG BLK mi=(20,8) bsize=6 shape=1 nsi=0 cost=6450507 rate=81910 dist=18336 mode=0 coeff=1 nz=104
+NSQDBG BLK mi=(20,8) bsize=6 shape=1 nsi=1 cost=6598221 rate=85717 dist=18000 mode=1 coeff=1 nz=100
+NSQDBG SHAPE mi=(20,8) bsize=6 shape=1 valid=1 part_cost=13093165 part_rate=887 lctx=30 actx=28 best=1/13093165
+NSQDBG SKIP mi=(20,8) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(20,8) bsize=6 shape=2 valid=0 part_cost=111167 part_rate=2219 lctx=30 actx=28 best=1/13093165
+NSQDBG SKIP mi=(20,8) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(20,8) bsize=6 shape=3 valid=0 part_cost=68934 part_rate=1376 lctx=30 actx=28 best=1/13093165
+NSQDBG SKIP mi=(20,8) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(20,8) bsize=6 shape=4 valid=0 part_cost=149542 part_rate=2985 lctx=30 actx=28 best=1/13093165
+NSQDBG BLK mi=(20,12) bsize=6 shape=0 nsi=0 cost=14439150 rate=173633 dist=44848 mode=0 coeff=1 nz=104
+NSQDBG SHAPE mi=(20,12) bsize=6 shape=0 valid=1 part_cost=14503475 part_rate=1284 lctx=30 actx=28 best=0/14503475 q=[574,709,718,802] nzh=111 nzv=122
+NSQDBG BLK mi=(20,12) bsize=6 shape=1 nsi=0 cost=7762193 rate=102492 dist=20528 mode=0 coeff=1 nz=61
+NSQDBG BLK mi=(20,12) bsize=6 shape=1 nsi=1 cost=6628424 rate=74342 dist=22688 mode=9 coeff=1 nz=43
+NSQDBG SHAPE mi=(20,12) bsize=6 shape=1 valid=1 part_cost=14435054 part_rate=887 lctx=30 actx=28 best=1/14435054
+NSQDBG SKIP mi=(20,12) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(20,12) bsize=6 shape=2 valid=0 part_cost=111167 part_rate=2219 lctx=30 actx=28 best=1/14435054
+NSQDBG SKIP mi=(20,12) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(20,12) bsize=6 shape=3 valid=0 part_cost=68934 part_rate=1376 lctx=30 actx=28 best=1/14435054
+NSQDBG SKIP mi=(20,12) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(20,12) bsize=6 shape=4 valid=0 part_cost=149542 part_rate=2985 lctx=30 actx=28 best=1/14435054
+NSQDBG TS mi=(16,8) bsize=9 parent_valid=1 parent=59535979 split=56526528 chose=split
+NSQDBG BLK mi=(24,0) bsize=9 shape=0 nsi=0 cost=57884853 rate=752362 dist=157760 mode=2 coeff=1 nz=904
+NSQDBG SHAPE mi=(24,0) bsize=9 shape=0 valid=1 part_cost=57938558 part_rate=1072 lctx=0 actx=28 best=0/57938558 q=[1900,3063,2531,2366] nzh=456 nzv=484
+NSQDBG SKIP mi=(24,0) bsize=9 shape=1 gate=1
+NSQDBG SHAPE mi=(24,0) bsize=9 shape=1 valid=0 part_cost=117529 part_rate=2346 lctx=0 actx=28 best=0/57938558
+NSQDBG SKIP mi=(24,0) bsize=9 shape=2 gate=1
+NSQDBG SHAPE mi=(24,0) bsize=9 shape=2 valid=0 part_cost=88573 part_rate=1768 lctx=0 actx=28 best=0/57938558
+NSQDBG SKIP mi=(24,0) bsize=9 shape=3 gate=1
+NSQDBG SHAPE mi=(24,0) bsize=9 shape=3 valid=0 part_cost=128701 part_rate=2569 lctx=0 actx=28 best=0/57938558
+NSQDBG SKIP mi=(24,0) bsize=9 shape=4 gate=1
+NSQDBG SHAPE mi=(24,0) bsize=9 shape=4 valid=0 part_cost=80607 part_rate=1609 lctx=0 actx=28 best=0/57938558
+NSQDBG BLK mi=(24,0) bsize=6 shape=0 nsi=0 cost=13299354 rate=175614 dist=35168 mode=6 coeff=1 nz=183
+NSQDBG SHAPE mi=(24,0) bsize=6 shape=0 valid=1 part_cost=13326607 part_rate=544 lctx=0 actx=28 best=0/13326607 q=[484,585,785,344] nzh=104 nzv=122
+NSQDBG BLK mi=(24,0) bsize=6 shape=1 nsi=0 cost=6410697 rate=84304 dist=17088 mode=2 coeff=1 nz=100
+NSQDBG BLK mi=(24,0) bsize=6 shape=1 nsi=1 cost=7055844 rate=88924 dist=20320 mode=1 coeff=1 nz=100
+NSQDBG ABORT mi=(24,0) bsize=6 shape=1 nsi=1 part_cost=13518993 best=13326607
+NSQDBG SHAPE mi=(24,0) bsize=6 shape=1 valid=0 part_cost=13518993 part_rate=1047 lctx=0 actx=28 best=0/13326607
+NSQDBG SKIP mi=(24,0) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(24,0) bsize=6 shape=2 valid=0 part_cost=90627 part_rate=1809 lctx=0 actx=28 best=0/13326607
+NSQDBG SKIP mi=(24,0) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(24,0) bsize=6 shape=3 valid=0 part_cost=127949 part_rate=2554 lctx=0 actx=28 best=0/13326607
+NSQDBG SKIP mi=(24,0) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(24,0) bsize=6 shape=4 valid=0 part_cost=143630 part_rate=2867 lctx=0 actx=28 best=0/13326607
+NSQDBG BLK mi=(24,4) bsize=6 shape=0 nsi=0 cost=14536087 rate=169068 dist=47392 mode=12 coeff=1 nz=109
+NSQDBG SHAPE mi=(24,4) bsize=6 shape=0 valid=1 part_cost=14563340 part_rate=544 lctx=28 actx=28 best=0/14563340 q=[532,763,764,903] nzh=111 nzv=122
+NSQDBG BLK mi=(24,4) bsize=6 shape=1 nsi=0 cost=7300922 rate=92794 dist=20720 mode=12 coeff=1 nz=56
+NSQDBG BLK mi=(24,4) bsize=6 shape=1 nsi=1 cost=6760929 rate=72531 dist=24432 mode=9 coeff=1 nz=43
+NSQDBG SHAPE mi=(24,4) bsize=6 shape=1 valid=1 part_cost=14114303 part_rate=1047 lctx=28 actx=28 best=1/14114303
+NSQDBG SKIP mi=(24,4) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(24,4) bsize=6 shape=2 valid=0 part_cost=90627 part_rate=1809 lctx=28 actx=28 best=1/14114303
+NSQDBG SKIP mi=(24,4) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(24,4) bsize=6 shape=3 valid=0 part_cost=127949 part_rate=2554 lctx=28 actx=28 best=1/14114303
+NSQDBG SKIP mi=(24,4) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(24,4) bsize=6 shape=4 valid=0 part_cost=143630 part_rate=2867 lctx=28 actx=28 best=1/14114303
+NSQDBG BLK mi=(28,0) bsize=6 shape=0 nsi=0 cost=13303723 rate=152236 dist=44352 mode=0 coeff=1 nz=108
+NSQDBG SHAPE mi=(28,0) bsize=6 shape=0 valid=1 part_cost=13330976 part_rate=544 lctx=0 actx=28 best=0/13330976 q=[665,664,730,713] nzh=111 nzv=122
+NSQDBG BLK mi=(28,0) bsize=6 shape=1 nsi=0 cost=7284286 rate=91072 dist=21264 mode=0 coeff=1 nz=66
+NSQDBG BLK mi=(28,0) bsize=6 shape=1 nsi=1 cost=6226942 rate=65306 dist=23088 mode=0 coeff=1 nz=42
+NSQDBG ABORT mi=(28,0) bsize=6 shape=1 nsi=1 part_cost=13563680 best=13330976
+NSQDBG SHAPE mi=(28,0) bsize=6 shape=1 valid=0 part_cost=13563680 part_rate=1047 lctx=0 actx=28 best=0/13330976
+NSQDBG SKIP mi=(28,0) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(28,0) bsize=6 shape=2 valid=0 part_cost=90627 part_rate=1809 lctx=0 actx=28 best=0/13330976
+NSQDBG SKIP mi=(28,0) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(28,0) bsize=6 shape=3 valid=0 part_cost=127949 part_rate=2554 lctx=0 actx=28 best=0/13330976
+NSQDBG SKIP mi=(28,0) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(28,0) bsize=6 shape=4 valid=0 part_cost=143630 part_rate=2867 lctx=0 actx=28 best=0/13330976
+NSQDBG BLK mi=(28,4) bsize=6 shape=0 nsi=0 cost=13558376 rate=184995 dist=33520 mode=12 coeff=1 nz=228
+NSQDBG SHAPE mi=(28,4) bsize=6 shape=0 valid=1 part_cost=13585629 part_rate=544 lctx=28 actx=28 best=0/13585629 q=[534,422,552,587] nzh=111 nzv=122
+NSQDBG BLK mi=(28,4) bsize=6 shape=1 nsi=0 cost=6220012 rate=85526 dist=15120 mode=0 coeff=1 nz=100
+NSQDBG BLK mi=(28,4) bsize=6 shape=1 nsi=1 cost=6867289 rate=91047 dist=18016 mode=1 coeff=1 nz=100
+NSQDBG SHAPE mi=(28,4) bsize=6 shape=1 valid=1 part_cost=13139753 part_rate=1047 lctx=28 actx=28 best=1/13139753
+NSQDBG SKIP mi=(28,4) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(28,4) bsize=6 shape=2 valid=0 part_cost=90627 part_rate=1809 lctx=28 actx=28 best=1/13139753
+NSQDBG SKIP mi=(28,4) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(28,4) bsize=6 shape=3 valid=0 part_cost=127949 part_rate=2554 lctx=28 actx=28 best=1/13139753
+NSQDBG SKIP mi=(28,4) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(28,4) bsize=6 shape=4 valid=0 part_cost=143630 part_rate=2867 lctx=28 actx=28 best=1/13139753
+NSQDBG TS mi=(24,0) bsize=9 parent_valid=1 parent=57938558 split=53946056 chose=split
+NSQDBG BLK mi=(24,8) bsize=9 shape=0 nsi=0 cost=58984703 rate=775379 dist=157344 mode=2 coeff=1 nz=904
+NSQDBG SHAPE mi=(24,8) bsize=9 shape=0 valid=1 part_cost=59101581 part_rate=2333 lctx=30 actx=28 best=0/59101581 q=[3107,1986,2187,2554] nzh=488 nzv=484
+NSQDBG SKIP mi=(24,8) bsize=9 shape=1 gate=1
+NSQDBG SHAPE mi=(24,8) bsize=9 shape=1 valid=0 part_cost=136666 part_rate=2728 lctx=30 actx=28 best=0/59101581
+NSQDBG SKIP mi=(24,8) bsize=9 shape=2 gate=1
+NSQDBG SHAPE mi=(24,8) bsize=9 shape=2 valid=0 part_cost=148790 part_rate=2970 lctx=30 actx=28 best=0/59101581
+NSQDBG SKIP mi=(24,8) bsize=9 shape=3 gate=1
+NSQDBG SHAPE mi=(24,8) bsize=9 shape=3 valid=0 part_cost=109213 part_rate=2180 lctx=30 actx=28 best=0/59101581
+NSQDBG SKIP mi=(24,8) bsize=9 shape=4 gate=1
+NSQDBG SHAPE mi=(24,8) bsize=9 shape=4 valid=0 part_cost=134362 part_rate=2682 lctx=30 actx=28 best=0/59101581
+NSQDBG BLK mi=(24,8) bsize=6 shape=0 nsi=0 cost=15219384 rate=196116 dist=42144 mode=0 coeff=1 nz=119
+NSQDBG SHAPE mi=(24,8) bsize=6 shape=0 valid=1 part_cost=15283709 part_rate=1284 lctx=30 actx=28 best=0/15283709 q=[542,647,696,749] nzh=111 nzv=122
+NSQDBG BLK mi=(24,8) bsize=6 shape=1 nsi=0 cost=9278310 rate=123966 dist=23968 mode=2 coeff=1 nz=69
+NSQDBG BLK mi=(24,8) bsize=6 shape=1 nsi=1 cost=6661056 rate=82965 dist=19568 mode=1 coeff=1 nz=96
+NSQDBG ABORT mi=(24,8) bsize=6 shape=1 nsi=1 part_cost=15983803 best=15283709
+NSQDBG SHAPE mi=(24,8) bsize=6 shape=1 valid=0 part_cost=15983803 part_rate=887 lctx=30 actx=28 best=0/15283709
+NSQDBG SKIP mi=(24,8) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(24,8) bsize=6 shape=2 valid=0 part_cost=111167 part_rate=2219 lctx=30 actx=28 best=0/15283709
+NSQDBG SKIP mi=(24,8) bsize=6 shape=3 gate=4
+NSQDBG SHAPE mi=(24,8) bsize=6 shape=3 valid=0 part_cost=68934 part_rate=1376 lctx=30 actx=28 best=0/15283709
+NSQDBG SKIP mi=(24,8) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(24,8) bsize=6 shape=4 valid=0 part_cost=149542 part_rate=2985 lctx=30 actx=28 best=0/15283709
+NSQDBG BLK mi=(24,12) bsize=6 shape=0 nsi=0 cost=14077287 rate=208312 dist=28448 mode=2 coeff=1 nz=228
+NSQDBG SHAPE mi=(24,12) bsize=6 shape=0 valid=1 part_cost=14104540 part_rate=544 lctx=28 actx=28 best=0/14104540 q=[574,235,374,595] nzh=111 nzv=122
+NSQDBG BLK mi=(24,12) bsize=6 shape=1 nsi=0 cost=6605461 rate=85698 dist=18064 mode=2 coeff=1 nz=100
+NSQDBG BLK mi=(24,12) bsize=6 shape=1 nsi=1 cost=7036559 rate=97083 dist=16976 mode=1 coeff=1 nz=100
+NSQDBG SHAPE mi=(24,12) bsize=6 shape=1 valid=1 part_cost=13694472 part_rate=1047 lctx=28 actx=28 best=1/13694472
+NSQDBG SKIP mi=(24,12) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(24,12) bsize=6 shape=2 valid=0 part_cost=90627 part_rate=1809 lctx=28 actx=28 best=1/13694472
+NSQDBG SKIP mi=(24,12) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(24,12) bsize=6 shape=3 valid=0 part_cost=127949 part_rate=2554 lctx=28 actx=28 best=1/13694472
+NSQDBG SKIP mi=(24,12) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(24,12) bsize=6 shape=4 valid=0 part_cost=143630 part_rate=2867 lctx=28 actx=28 best=1/13694472
+NSQDBG BLK mi=(28,8) bsize=6 shape=0 nsi=0 cost=14232715 rate=176789 dist=42000 mode=8 coeff=1 nz=103
+NSQDBG SHAPE mi=(28,8) bsize=6 shape=0 valid=1 part_cost=14297040 part_rate=1284 lctx=30 actx=28 best=0/14297040 q=[596,646,702,681] nzh=104 nzv=122
+NSQDBG BLK mi=(28,8) bsize=6 shape=1 nsi=0 cost=6417007 rate=82713 dist=17760 mode=0 coeff=1 nz=104
+NSQDBG BLK mi=(28,8) bsize=6 shape=1 nsi=1 cost=6856424 rate=91893 dist=17600 mode=1 coeff=1 nz=100
+NSQDBG SHAPE mi=(28,8) bsize=6 shape=1 valid=1 part_cost=13317868 part_rate=887 lctx=30 actx=28 best=1/13317868
+NSQDBG SKIP mi=(28,8) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(28,8) bsize=6 shape=2 valid=0 part_cost=111167 part_rate=2219 lctx=30 actx=28 best=1/13317868
+NSQDBG SKIP mi=(28,8) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(28,8) bsize=6 shape=3 valid=0 part_cost=68934 part_rate=1376 lctx=30 actx=28 best=1/13317868
+NSQDBG SKIP mi=(28,8) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(28,8) bsize=6 shape=4 valid=0 part_cost=149542 part_rate=2985 lctx=30 actx=28 best=1/13317868
+NSQDBG BLK mi=(28,12) bsize=6 shape=0 nsi=0 cost=14386091 rate=191297 dist=37520 mode=0 coeff=1 nz=123
+NSQDBG SHAPE mi=(28,12) bsize=6 shape=0 valid=1 part_cost=14450416 part_rate=1284 lctx=30 actx=28 best=0/14450416 q=[559,563,636,587] nzh=111 nzv=122
+NSQDBG BLK mi=(28,12) bsize=6 shape=1 nsi=0 cost=7875328 rate=111332 dist=17952 mode=0 coeff=1 nz=71
+NSQDBG BLK mi=(28,12) bsize=6 shape=1 nsi=1 cost=6682101 rate=74882 dist=22896 mode=9 coeff=1 nz=43
+NSQDBG ABORT mi=(28,12) bsize=6 shape=1 nsi=1 part_cost=14601866 best=14450416
+NSQDBG SHAPE mi=(28,12) bsize=6 shape=1 valid=0 part_cost=14601866 part_rate=887 lctx=30 actx=28 best=0/14450416
+NSQDBG SKIP mi=(28,12) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(28,12) bsize=6 shape=2 valid=0 part_cost=111167 part_rate=2219 lctx=30 actx=28 best=0/14450416
+NSQDBG SKIP mi=(28,12) bsize=6 shape=3 gate=4
+NSQDBG SHAPE mi=(28,12) bsize=6 shape=3 valid=0 part_cost=68934 part_rate=1376 lctx=30 actx=28 best=0/14450416
+NSQDBG SKIP mi=(28,12) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(28,12) bsize=6 shape=4 valid=0 part_cost=149542 part_rate=2985 lctx=30 actx=28 best=0/14450416
+NSQDBG TS mi=(24,8) bsize=9 parent_valid=1 parent=59101581 split=56755232 chose=split
+NSQDBG TS mi=(16,0) bsize=12 parent_valid=0 parent=204405774 split=221490380 chose=split
+NSQDBG TREE mi=(16,0) bsize=12 part=3
+NSQDBG TREE mi=(16,0) bsize=9 part=3
+NSQDBG TREE mi=(16,0) bsize=6 part=0
+NSQDBG TREE mi=(16,4) bsize=6 part=1
+NSQDBG TREE mi=(20,0) bsize=6 part=0
+NSQDBG TREE mi=(20,4) bsize=6 part=1
+NSQDBG TREE mi=(16,8) bsize=9 part=3
+NSQDBG TREE mi=(16,8) bsize=6 part=1
+NSQDBG TREE mi=(16,12) bsize=6 part=1
+NSQDBG TREE mi=(20,8) bsize=6 part=1
+NSQDBG TREE mi=(20,12) bsize=6 part=1
+NSQDBG TREE mi=(24,0) bsize=9 part=3
+NSQDBG TREE mi=(24,0) bsize=6 part=0
+NSQDBG TREE mi=(24,4) bsize=6 part=1
+NSQDBG TREE mi=(28,0) bsize=6 part=0
+NSQDBG TREE mi=(28,4) bsize=6 part=1
+NSQDBG TREE mi=(24,8) bsize=9 part=3
+NSQDBG TREE mi=(24,8) bsize=6 part=0
+NSQDBG TREE mi=(24,12) bsize=6 part=1
+NSQDBG TREE mi=(28,8) bsize=6 part=1
+NSQDBG TREE mi=(28,12) bsize=6 part=0
+NSQDBG RD mi=(16,16) bsize=9 part=0 tested=1 cost=50438817 s=0 e=1
+NSQDBG RD mi=(16,24) bsize=9 part=0 tested=1 cost=51758907 s=0 e=1
+NSQDBG RD mi=(24,16) bsize=9 part=0 tested=1 cost=50438817 s=0 e=1
+NSQDBG RD mi=(24,24) bsize=9 part=0 tested=1 cost=51758907 s=0 e=1
+NSQDBG NSQCFG pd=1 lvl=19 en=1 sqw=90 hvw=75 dev=75 split_th=35 lower=20 hvv=85 nonhv=70 off16=15 psq=1(en=1 hv2sq=1000 h2v=100) subd=1 compm=5 geom(en=1 min=0 hv4=1 hva=0) d44=0 bp=0 minsq=0
+NSQDBG BLK mi=(16,16) bsize=9 shape=0 nsi=0 cost=52871352 rate=671542 dist=150224 mode=12 coeff=1 nz=904
+NSQDBG SHAPE mi=(16,16) bsize=9 shape=0 valid=1 part_cost=52930317 part_rate=1177 lctx=30 actx=24 best=0/52930317 q=[2330,1996,2860,2203] nzh=420 nzv=484
+NSQDBG SKIP mi=(16,16) bsize=9 shape=1 gate=1
+NSQDBG SHAPE mi=(16,16) bsize=9 shape=1 valid=0 part_cost=90827 part_rate=1813 lctx=30 actx=24 best=0/52930317
+NSQDBG SKIP mi=(16,16) bsize=9 shape=2 gate=1
+NSQDBG SHAPE mi=(16,16) bsize=9 shape=2 valid=0 part_cost=129553 part_rate=2586 lctx=30 actx=24 best=0/52930317
+NSQDBG SKIP mi=(16,16) bsize=9 shape=3 gate=1
+NSQDBG SHAPE mi=(16,16) bsize=9 shape=3 valid=0 part_cost=75547 part_rate=1508 lctx=30 actx=24 best=0/52930317
+NSQDBG SKIP mi=(16,16) bsize=9 shape=4 gate=1
+NSQDBG SHAPE mi=(16,16) bsize=9 shape=4 valid=0 part_cost=143379 part_rate=2862 lctx=30 actx=24 best=0/52930317
+NSQDBG BLK mi=(16,16) bsize=6 shape=0 nsi=0 cost=13326871 rate=169091 dist=37936 mode=0 coeff=1 nz=183
+NSQDBG SHAPE mi=(16,16) bsize=6 shape=0 valid=1 part_cost=13386237 part_rate=1185 lctx=30 actx=24 best=0/13386237 q=[590,466,891,424] nzh=111 nzv=122
+NSQDBG BLK mi=(16,16) bsize=6 shape=1 nsi=0 cost=6197220 rate=85766 dist=14848 mode=0 coeff=1 nz=100
+NSQDBG BLK mi=(16,16) bsize=6 shape=1 nsi=1 cost=6617417 rate=81726 dist=19712 mode=1 coeff=1 nz=100
+NSQDBG SHAPE mi=(16,16) bsize=6 shape=1 valid=1 part_cost=12850557 part_rate=717 lctx=30 actx=24 best=1/12850557
+NSQDBG SKIP mi=(16,16) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(16,16) bsize=6 shape=2 valid=0 part_cost=119533 part_rate=2386 lctx=30 actx=24 best=1/12850557
+NSQDBG SKIP mi=(16,16) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(16,16) bsize=6 shape=3 valid=0 part_cost=77100 part_rate=1539 lctx=30 actx=24 best=1/12850557
+NSQDBG SKIP mi=(16,16) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(16,16) bsize=6 shape=4 valid=0 part_cost=157407 part_rate=3142 lctx=30 actx=24 best=1/12850557
+NSQDBG BLK mi=(16,20) bsize=6 shape=0 nsi=0 cost=15099835 rate=206239 dist=37248 mode=12 coeff=1 nz=228
+NSQDBG SHAPE mi=(16,20) bsize=6 shape=0 valid=1 part_cost=15159201 part_rate=1185 lctx=30 actx=24 best=0/15159201 q=[668,566,365,729] nzh=111 nzv=122
+NSQDBG BLK mi=(16,20) bsize=6 shape=1 nsi=0 cost=7515173 rate=99687 dist=19696 mode=12 coeff=1 nz=100
+NSQDBG BLK mi=(16,20) bsize=6 shape=1 nsi=1 cost=7392593 rate=93888 dist=21008 mode=0 coeff=1 nz=112
+NSQDBG SHAPE mi=(16,20) bsize=6 shape=1 valid=1 part_cost=14943686 part_rate=717 lctx=30 actx=24 best=1/14943686
+NSQDBG SKIP mi=(16,20) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(16,20) bsize=6 shape=2 valid=0 part_cost=119533 part_rate=2386 lctx=30 actx=24 best=1/14943686
+NSQDBG SKIP mi=(16,20) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(16,20) bsize=6 shape=3 valid=0 part_cost=77100 part_rate=1539 lctx=30 actx=24 best=1/14943686
+NSQDBG SKIP mi=(16,20) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(16,20) bsize=6 shape=4 valid=0 part_cost=157407 part_rate=3142 lctx=30 actx=24 best=1/14943686
+NSQDBG BLK mi=(20,16) bsize=6 shape=0 nsi=0 cost=14510944 rate=178500 dist=43504 mode=0 coeff=1 nz=127
+NSQDBG SHAPE mi=(20,16) bsize=6 shape=0 valid=1 part_cost=14570310 part_rate=1185 lctx=30 actx=28 best=0/14570310 q=[766,565,711,677] nzh=111 nzv=122
+NSQDBG BLK mi=(20,16) bsize=6 shape=1 nsi=0 cost=7687660 rate=99042 dist=21296 mode=0 coeff=1 nz=70
+NSQDBG BLK mi=(20,16) bsize=6 shape=1 nsi=1 cost=7008445 rate=83154 dist=22208 mode=0 coeff=1 nz=57
+NSQDBG ABORT mi=(20,16) bsize=6 shape=1 nsi=1 part_cost=14732025 best=14570310
+NSQDBG SHAPE mi=(20,16) bsize=6 shape=1 valid=0 part_cost=14732025 part_rate=717 lctx=30 actx=28 best=0/14570310
+NSQDBG SKIP mi=(20,16) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(20,16) bsize=6 shape=2 valid=0 part_cost=119533 part_rate=2386 lctx=30 actx=28 best=0/14570310
+NSQDBG SKIP mi=(20,16) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(20,16) bsize=6 shape=3 valid=0 part_cost=77100 part_rate=1539 lctx=30 actx=28 best=0/14570310
+NSQDBG SKIP mi=(20,16) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(20,16) bsize=6 shape=4 valid=0 part_cost=157407 part_rate=3142 lctx=30 actx=28 best=0/14570310
+NSQDBG BLK mi=(20,20) bsize=6 shape=0 nsi=0 cost=13104116 rate=186679 dist=29312 mode=0 coeff=1 nz=228
+NSQDBG SHAPE mi=(20,20) bsize=6 shape=0 valid=1 part_cost=13131870 part_rate=554 lctx=28 actx=28 best=0/13131870 q=[493,303,416,620] nzh=111 nzv=122
+NSQDBG BLK mi=(20,20) bsize=6 shape=1 nsi=0 cost=6392967 rate=80230 dist=18544 mode=0 coeff=1 nz=104
+NSQDBG BLK mi=(20,20) bsize=6 shape=1 nsi=1 cost=7139627 rate=92436 dist=19600 mode=1 coeff=1 nz=100
+NSQDBG ABORT mi=(20,20) bsize=6 shape=1 nsi=1 part_cost=13575628 best=13131870
+NSQDBG SHAPE mi=(20,20) bsize=6 shape=1 valid=0 part_cost=13575628 part_rate=859 lctx=28 actx=28 best=0/13131870
+NSQDBG SKIP mi=(20,20) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(20,20) bsize=6 shape=2 valid=0 part_cost=100646 part_rate=2009 lctx=28 actx=28 best=0/13131870
+NSQDBG SKIP mi=(20,20) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(20,20) bsize=6 shape=3 valid=0 part_cost=137969 part_rate=2754 lctx=28 actx=28 best=0/13131870
+NSQDBG SKIP mi=(20,20) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(20,20) bsize=6 shape=4 valid=0 part_cost=153349 part_rate=3061 lctx=28 actx=28 best=0/13131870
+NSQDBG TS mi=(16,16) bsize=9 parent_valid=1 parent=52930317 split=55526381 chose=parent
+NSQDBG BLK mi=(16,24) bsize=9 shape=0 nsi=0 cost=59382079 rate=774113 dist=160944 mode=0 coeff=1 nz=904
+NSQDBG SHAPE mi=(16,24) bsize=9 shape=0 valid=1 part_cost=59437988 part_rate=1116 lctx=24 actx=28 best=0/59437988 q=[3077,2032,2255,2695] nzh=456 nzv=484
+NSQDBG SKIP mi=(16,24) bsize=9 shape=1 gate=1
+NSQDBG SHAPE mi=(16,24) bsize=9 shape=1 valid=0 part_cost=119783 part_rate=2391 lctx=24 actx=28 best=0/59437988
+NSQDBG SKIP mi=(16,24) bsize=9 shape=2 gate=1
+NSQDBG SHAPE mi=(16,24) bsize=9 shape=2 valid=0 part_cost=90827 part_rate=1813 lctx=24 actx=28 best=0/59437988
+NSQDBG SKIP mi=(16,24) bsize=9 shape=3 gate=1
+NSQDBG SHAPE mi=(16,24) bsize=9 shape=3 valid=0 part_cost=131106 part_rate=2617 lctx=24 actx=28 best=0/59437988
+NSQDBG SKIP mi=(16,24) bsize=9 shape=4 gate=1
+NSQDBG SHAPE mi=(16,24) bsize=9 shape=4 valid=0 part_cost=82912 part_rate=1655 lctx=24 actx=28 best=0/59437988
+NSQDBG BLK mi=(16,24) bsize=6 shape=0 nsi=0 cost=15428179 rate=200202 dist=42176 mode=0 coeff=1 nz=138
+NSQDBG SHAPE mi=(16,24) bsize=6 shape=0 valid=1 part_cost=15455933 part_rate=554 lctx=24 actx=28 best=0/15455933 q=[694,654,679,609] nzh=111 nzv=122
+NSQDBG BLK mi=(16,24) bsize=6 shape=1 nsi=0 cost=7708831 rate=99669 dist=21216 mode=12 coeff=1 nz=76
+NSQDBG BLK mi=(16,24) bsize=6 shape=1 nsi=1 cost=6939228 rate=87700 dist=19888 mode=0 coeff=1 nz=62
+NSQDBG SHAPE mi=(16,24) bsize=6 shape=1 valid=1 part_cost=14691093 part_rate=859 lctx=24 actx=28 best=1/14691093
+NSQDBG SKIP mi=(16,24) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(16,24) bsize=6 shape=2 valid=0 part_cost=100646 part_rate=2009 lctx=24 actx=28 best=1/14691093
+NSQDBG SKIP mi=(16,24) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(16,24) bsize=6 shape=3 valid=0 part_cost=137969 part_rate=2754 lctx=24 actx=28 best=1/14691093
+NSQDBG SKIP mi=(16,24) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(16,24) bsize=6 shape=4 valid=0 part_cost=153349 part_rate=3061 lctx=24 actx=28 best=1/14691093
+NSQDBG BLK mi=(16,28) bsize=6 shape=0 nsi=0 cost=14163896 rate=200761 dist=32080 mode=2 coeff=1 nz=228
+NSQDBG SHAPE mi=(16,28) bsize=6 shape=0 valid=1 part_cost=14223262 part_rate=1185 lctx=30 actx=28 best=0/14223262 q=[482,386,504,633] nzh=111 nzv=122
+NSQDBG BLK mi=(16,28) bsize=6 shape=1 nsi=0 cost=6286939 rate=86494 dist=15264 mode=2 coeff=1 nz=100
+NSQDBG BLK mi=(16,28) bsize=6 shape=1 nsi=1 cost=6747453 rate=91026 dist=17088 mode=1 coeff=1 nz=100
+NSQDBG SHAPE mi=(16,28) bsize=6 shape=1 valid=1 part_cost=13070312 part_rate=717 lctx=30 actx=28 best=1/13070312
+NSQDBG SKIP mi=(16,28) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(16,28) bsize=6 shape=2 valid=0 part_cost=119533 part_rate=2386 lctx=30 actx=28 best=1/13070312
+NSQDBG SKIP mi=(16,28) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(16,28) bsize=6 shape=3 valid=0 part_cost=77100 part_rate=1539 lctx=30 actx=28 best=1/13070312
+NSQDBG SKIP mi=(16,28) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(16,28) bsize=6 shape=4 valid=0 part_cost=157407 part_rate=3142 lctx=30 actx=28 best=1/13070312
+NSQDBG BLK mi=(20,24) bsize=6 shape=0 nsi=0 cost=14353269 rate=195016 dist=35808 mode=12 coeff=1 nz=228
+NSQDBG SHAPE mi=(20,24) bsize=6 shape=0 valid=1 part_cost=14381023 part_rate=554 lctx=24 actx=28 best=0/14381023 q=[638,527,554,519] nzh=104 nzv=122
+NSQDBG BLK mi=(20,24) bsize=6 shape=1 nsi=0 cost=6341160 rate=81199 dist=17760 mode=0 coeff=1 nz=104
+NSQDBG BLK mi=(20,24) bsize=6 shape=1 nsi=1 cost=6784215 rate=89307 dist=18048 mode=1 coeff=1 nz=100
+NSQDBG SHAPE mi=(20,24) bsize=6 shape=1 valid=1 part_cost=13168409 part_rate=859 lctx=24 actx=28 best=1/13168409
+NSQDBG SKIP mi=(20,24) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(20,24) bsize=6 shape=2 valid=0 part_cost=100646 part_rate=2009 lctx=24 actx=28 best=1/13168409
+NSQDBG SKIP mi=(20,24) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(20,24) bsize=6 shape=3 valid=0 part_cost=137969 part_rate=2754 lctx=24 actx=28 best=1/13168409
+NSQDBG SKIP mi=(20,24) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(20,24) bsize=6 shape=4 valid=0 part_cost=153349 part_rate=3061 lctx=24 actx=28 best=1/13168409
+NSQDBG BLK mi=(20,28) bsize=6 shape=0 nsi=0 cost=14316026 rate=173669 dist=43872 mode=0 coeff=1 nz=117
+NSQDBG SHAPE mi=(20,28) bsize=6 shape=0 valid=1 part_cost=14375392 part_rate=1185 lctx=30 actx=28 best=0/14375392 q=[629,664,726,723] nzh=111 nzv=122
+NSQDBG BLK mi=(20,28) bsize=6 shape=1 nsi=0 cost=7328638 rate=93429 dist=20688 mode=0 coeff=1 nz=63
+NSQDBG BLK mi=(20,28) bsize=6 shape=1 nsi=1 cost=6656545 rate=74331 dist=22912 mode=9 coeff=1 nz=49
+NSQDBG SHAPE mi=(20,28) bsize=6 shape=1 valid=1 part_cost=14021103 part_rate=717 lctx=30 actx=28 best=1/14021103
+NSQDBG SKIP mi=(20,28) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(20,28) bsize=6 shape=2 valid=0 part_cost=119533 part_rate=2386 lctx=30 actx=28 best=1/14021103
+NSQDBG SKIP mi=(20,28) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(20,28) bsize=6 shape=3 valid=0 part_cost=77100 part_rate=1539 lctx=30 actx=28 best=1/14021103
+NSQDBG SKIP mi=(20,28) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(20,28) bsize=6 shape=4 valid=0 part_cost=157407 part_rate=3142 lctx=30 actx=28 best=1/14021103
+NSQDBG TS mi=(16,24) bsize=9 parent_valid=1 parent=59437988 split=54982028 chose=split
+NSQDBG BLK mi=(24,16) bsize=9 shape=0 nsi=0 cost=53361643 rate=674747 dist=152800 mode=12 coeff=1 nz=904
+NSQDBG SHAPE mi=(24,16) bsize=9 shape=0 valid=1 part_cost=53420608 part_rate=1177 lctx=30 actx=24 best=0/53420608 q=[2412,2181,2728,2229] nzh=442 nzv=484
+NSQDBG SKIP mi=(24,16) bsize=9 shape=1 gate=1
+NSQDBG SHAPE mi=(24,16) bsize=9 shape=1 valid=0 part_cost=90827 part_rate=1813 lctx=30 actx=24 best=0/53420608
+NSQDBG SKIP mi=(24,16) bsize=9 shape=2 gate=1
+NSQDBG SHAPE mi=(24,16) bsize=9 shape=2 valid=0 part_cost=129553 part_rate=2586 lctx=30 actx=24 best=0/53420608
+NSQDBG SKIP mi=(24,16) bsize=9 shape=3 gate=1
+NSQDBG SHAPE mi=(24,16) bsize=9 shape=3 valid=0 part_cost=75547 part_rate=1508 lctx=30 actx=24 best=0/53420608
+NSQDBG SKIP mi=(24,16) bsize=9 shape=4 gate=1
+NSQDBG SHAPE mi=(24,16) bsize=9 shape=4 valid=0 part_cost=143379 part_rate=2862 lctx=30 actx=24 best=0/53420608
+NSQDBG BLK mi=(24,16) bsize=6 shape=0 nsi=0 cost=13187607 rate=169091 dist=36848 mode=0 coeff=1 nz=183
+NSQDBG SHAPE mi=(24,16) bsize=6 shape=0 valid=1 part_cost=13246973 part_rate=1185 lctx=30 actx=24 best=0/13246973 q=[590,466,891,356] nzh=111 nzv=122
+NSQDBG BLK mi=(24,16) bsize=6 shape=1 nsi=0 cost=6197220 rate=85766 dist=14848 mode=0 coeff=1 nz=100
+NSQDBG BLK mi=(24,16) bsize=6 shape=1 nsi=1 cost=6615369 rate=81726 dist=19696 mode=1 coeff=1 nz=100
+NSQDBG SHAPE mi=(24,16) bsize=6 shape=1 valid=1 part_cost=12848509 part_rate=717 lctx=30 actx=24 best=1/12848509
+NSQDBG SKIP mi=(24,16) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(24,16) bsize=6 shape=2 valid=0 part_cost=119533 part_rate=2386 lctx=30 actx=24 best=1/12848509
+NSQDBG SKIP mi=(24,16) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(24,16) bsize=6 shape=3 valid=0 part_cost=77100 part_rate=1539 lctx=30 actx=24 best=1/12848509
+NSQDBG SKIP mi=(24,16) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(24,16) bsize=6 shape=4 valid=0 part_cost=157407 part_rate=3142 lctx=30 actx=24 best=1/12848509
+NSQDBG BLK mi=(24,20) bsize=6 shape=0 nsi=0 cost=14613191 rate=169953 dist=47648 mode=12 coeff=1 nz=120
+NSQDBG SHAPE mi=(24,20) bsize=6 shape=0 valid=1 part_cost=14672557 part_rate=1185 lctx=30 actx=24 best=0/14672557 q=[756,735,779,708] nzh=111 nzv=122
+NSQDBG BLK mi=(24,20) bsize=6 shape=1 nsi=0 cost=7527405 rate=101689 dist=19008 mode=12 coeff=1 nz=100
+NSQDBG BLK mi=(24,20) bsize=6 shape=1 nsi=1 cost=6968094 rate=69921 dist=27072 mode=9 coeff=1 nz=44
+NSQDBG SHAPE mi=(24,20) bsize=6 shape=1 valid=1 part_cost=14531419 part_rate=717 lctx=30 actx=24 best=1/14531419
+NSQDBG SKIP mi=(24,20) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(24,20) bsize=6 shape=2 valid=0 part_cost=119533 part_rate=2386 lctx=30 actx=24 best=1/14531419
+NSQDBG SKIP mi=(24,20) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(24,20) bsize=6 shape=3 valid=0 part_cost=77100 part_rate=1539 lctx=30 actx=24 best=1/14531419
+NSQDBG SKIP mi=(24,20) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(24,20) bsize=6 shape=4 valid=0 part_cost=157407 part_rate=3142 lctx=30 actx=24 best=1/14531419
+NSQDBG BLK mi=(28,16) bsize=6 shape=0 nsi=0 cost=14342469 rate=177549 dist=42560 mode=0 coeff=1 nz=128
+NSQDBG SHAPE mi=(28,16) bsize=6 shape=0 valid=1 part_cost=14370223 part_rate=554 lctx=28 actx=28 best=0/14370223 q=[814,577,628,641] nzh=111 nzv=122
+NSQDBG BLK mi=(28,16) bsize=6 shape=1 nsi=0 cost=7805580 rate=98943 dist=22256 mode=0 coeff=1 nz=71
+NSQDBG BLK mi=(28,16) bsize=6 shape=1 nsi=1 cost=6938696 rate=84746 dist=21040 mode=1 coeff=1 nz=65
+NSQDBG ABORT mi=(28,16) bsize=6 shape=1 nsi=1 part_cost=14787310 best=14370223
+NSQDBG SHAPE mi=(28,16) bsize=6 shape=1 valid=0 part_cost=14787310 part_rate=859 lctx=28 actx=28 best=0/14370223
+NSQDBG SKIP mi=(28,16) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(28,16) bsize=6 shape=2 valid=0 part_cost=100646 part_rate=2009 lctx=28 actx=28 best=0/14370223
+NSQDBG SKIP mi=(28,16) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(28,16) bsize=6 shape=3 valid=0 part_cost=137969 part_rate=2754 lctx=28 actx=28 best=0/14370223
+NSQDBG SKIP mi=(28,16) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(28,16) bsize=6 shape=4 valid=0 part_cost=153349 part_rate=3061 lctx=28 actx=28 best=0/14370223
+NSQDBG BLK mi=(28,20) bsize=6 shape=0 nsi=0 cost=13316335 rate=186173 dist=31168 mode=0 coeff=1 nz=228
+NSQDBG SHAPE mi=(28,20) bsize=6 shape=0 valid=1 part_cost=13344089 part_rate=554 lctx=28 actx=28 best=0/13344089 q=[640,276,402,630] nzh=104 nzv=122
+NSQDBG BLK mi=(28,20) bsize=6 shape=1 nsi=0 cost=6074590 rate=86793 dist=13488 mode=0 coeff=1 nz=100
+NSQDBG BLK mi=(28,20) bsize=6 shape=1 nsi=1 cost=6762289 rate=89319 dist=17872 mode=1 coeff=1 nz=100
+NSQDBG SHAPE mi=(28,20) bsize=6 shape=1 valid=1 part_cost=12879913 part_rate=859 lctx=28 actx=28 best=1/12879913
+NSQDBG SKIP mi=(28,20) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(28,20) bsize=6 shape=2 valid=0 part_cost=100646 part_rate=2009 lctx=28 actx=28 best=1/12879913
+NSQDBG SKIP mi=(28,20) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(28,20) bsize=6 shape=3 valid=0 part_cost=137969 part_rate=2754 lctx=28 actx=28 best=1/12879913
+NSQDBG SKIP mi=(28,20) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(28,20) bsize=6 shape=4 valid=0 part_cost=153349 part_rate=3061 lctx=28 actx=28 best=1/12879913
+NSQDBG TS mi=(24,16) bsize=9 parent_valid=1 parent=53420608 split=54660022 chose=parent
+NSQDBG BLK mi=(24,24) bsize=9 shape=0 nsi=0 cost=59201855 rate=774113 dist=159536 mode=0 coeff=1 nz=904
+NSQDBG SHAPE mi=(24,24) bsize=9 shape=0 valid=1 part_cost=59257764 part_rate=1116 lctx=24 actx=28 best=0/59257764 q=[3052,1994,2255,2670] nzh=456 nzv=484
+NSQDBG SKIP mi=(24,24) bsize=9 shape=1 gate=1
+NSQDBG SHAPE mi=(24,24) bsize=9 shape=1 valid=0 part_cost=119783 part_rate=2391 lctx=24 actx=28 best=0/59257764
+NSQDBG SKIP mi=(24,24) bsize=9 shape=2 gate=1
+NSQDBG SHAPE mi=(24,24) bsize=9 shape=2 valid=0 part_cost=90827 part_rate=1813 lctx=24 actx=28 best=0/59257764
+NSQDBG SKIP mi=(24,24) bsize=9 shape=3 gate=1
+NSQDBG SHAPE mi=(24,24) bsize=9 shape=3 valid=0 part_cost=131106 part_rate=2617 lctx=24 actx=28 best=0/59257764
+NSQDBG SKIP mi=(24,24) bsize=9 shape=4 gate=1
+NSQDBG SHAPE mi=(24,24) bsize=9 shape=4 valid=0 part_cost=82912 part_rate=1655 lctx=24 actx=28 best=0/59257764
+NSQDBG BLK mi=(24,24) bsize=6 shape=0 nsi=0 cost=15192138 rate=191525 dist=43728 mode=0 coeff=1 nz=124
+NSQDBG SHAPE mi=(24,24) bsize=6 shape=0 valid=1 part_cost=15219892 part_rate=554 lctx=24 actx=28 best=0/15219892 q=[647,719,578,789] nzh=111 nzv=122
+NSQDBG BLK mi=(24,24) bsize=6 shape=1 nsi=0 cost=7726985 rate=97088 dist=22368 mode=12 coeff=1 nz=84
+NSQDBG BLK mi=(24,24) bsize=6 shape=1 nsi=1 cost=6664795 rate=84961 dist=18816 mode=0 coeff=1 nz=52
+NSQDBG SHAPE mi=(24,24) bsize=6 shape=1 valid=1 part_cost=14434814 part_rate=859 lctx=24 actx=28 best=1/14434814
+NSQDBG SKIP mi=(24,24) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(24,24) bsize=6 shape=2 valid=0 part_cost=100646 part_rate=2009 lctx=24 actx=28 best=1/14434814
+NSQDBG SKIP mi=(24,24) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(24,24) bsize=6 shape=3 valid=0 part_cost=137969 part_rate=2754 lctx=24 actx=28 best=1/14434814
+NSQDBG SKIP mi=(24,24) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(24,24) bsize=6 shape=4 valid=0 part_cost=153349 part_rate=3061 lctx=24 actx=28 best=1/14434814
+NSQDBG BLK mi=(24,28) bsize=6 shape=0 nsi=0 cost=14021431 rate=201760 dist=30576 mode=2 coeff=1 nz=228
+NSQDBG SHAPE mi=(24,28) bsize=6 shape=0 valid=1 part_cost=14080797 part_rate=1185 lctx=30 actx=28 best=0/14080797 q=[519,380,370,642] nzh=104 nzv=122
+NSQDBG BLK mi=(24,28) bsize=6 shape=1 nsi=0 cost=6415964 rate=89233 dist=15200 mode=2 coeff=1 nz=100
+NSQDBG BLK mi=(24,28) bsize=6 shape=1 nsi=1 cost=6749974 rate=92548 dist=16512 mode=1 coeff=1 nz=100
+NSQDBG SHAPE mi=(24,28) bsize=6 shape=1 valid=1 part_cost=13201858 part_rate=717 lctx=30 actx=28 best=1/13201858
+NSQDBG SKIP mi=(24,28) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(24,28) bsize=6 shape=2 valid=0 part_cost=119533 part_rate=2386 lctx=30 actx=28 best=1/13201858
+NSQDBG SKIP mi=(24,28) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(24,28) bsize=6 shape=3 valid=0 part_cost=77100 part_rate=1539 lctx=30 actx=28 best=1/13201858
+NSQDBG SKIP mi=(24,28) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(24,28) bsize=6 shape=4 valid=0 part_cost=157407 part_rate=3142 lctx=30 actx=28 best=1/13201858
+NSQDBG BLK mi=(28,24) bsize=6 shape=0 nsi=0 cost=14121798 rate=163660 dist=46272 mode=1 coeff=1 nz=104
+NSQDBG SHAPE mi=(28,24) bsize=6 shape=0 valid=1 part_cost=14149552 part_rate=554 lctx=24 actx=28 best=0/14149552 q=[769,725,656,742] nzh=104 nzv=122
+NSQDBG BLK mi=(28,24) bsize=6 shape=1 nsi=0 cost=6341160 rate=81199 dist=17760 mode=0 coeff=1 nz=104
+NSQDBG BLK mi=(28,24) bsize=6 shape=1 nsi=1 cost=6726871 rate=89307 dist=17600 mode=1 coeff=1 nz=100
+NSQDBG SHAPE mi=(28,24) bsize=6 shape=1 valid=1 part_cost=13111065 part_rate=859 lctx=24 actx=28 best=1/13111065
+NSQDBG SKIP mi=(28,24) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(28,24) bsize=6 shape=2 valid=0 part_cost=100646 part_rate=2009 lctx=24 actx=28 best=1/13111065
+NSQDBG SKIP mi=(28,24) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(28,24) bsize=6 shape=3 valid=0 part_cost=137969 part_rate=2754 lctx=24 actx=28 best=1/13111065
+NSQDBG SKIP mi=(28,24) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(28,24) bsize=6 shape=4 valid=0 part_cost=153349 part_rate=3061 lctx=24 actx=28 best=1/13111065
+NSQDBG BLK mi=(28,28) bsize=6 shape=0 nsi=0 cost=14021138 rate=171789 dist=42304 mode=0 coeff=1 nz=105
+NSQDBG SHAPE mi=(28,28) bsize=6 shape=0 valid=1 part_cost=14080504 part_rate=1185 lctx=30 actx=28 best=0/14080504 q=[552,587,674,831] nzh=111 nzv=122
+NSQDBG BLK mi=(28,28) bsize=6 shape=1 nsi=0 cost=7374099 rate=100632 dist=18224 mode=0 coeff=1 nz=62
+NSQDBG BLK mi=(28,28) bsize=6 shape=1 nsi=1 cost=6561822 rate=74566 dist=22080 mode=9 coeff=1 nz=49
+NSQDBG SHAPE mi=(28,28) bsize=6 shape=1 valid=1 part_cost=13971841 part_rate=717 lctx=30 actx=28 best=1/13971841
+NSQDBG SKIP mi=(28,28) bsize=6 shape=2 gate=1
+NSQDBG SHAPE mi=(28,28) bsize=6 shape=2 valid=0 part_cost=119533 part_rate=2386 lctx=30 actx=28 best=1/13971841
+NSQDBG SKIP mi=(28,28) bsize=6 shape=3 gate=1
+NSQDBG SHAPE mi=(28,28) bsize=6 shape=3 valid=0 part_cost=77100 part_rate=1539 lctx=30 actx=28 best=1/13971841
+NSQDBG SKIP mi=(28,28) bsize=6 shape=4 gate=1
+NSQDBG SHAPE mi=(28,28) bsize=6 shape=4 valid=0 part_cost=157407 part_rate=3142 lctx=30 actx=28 best=1/13971841
+NSQDBG TS mi=(24,24) bsize=9 parent_valid=1 parent=59257764 split=54750689 chose=split
+NSQDBG TS mi=(16,16) bsize=12 parent_valid=0 parent=204451056 split=216087299 chose=split
+NSQDBG TREE mi=(16,16) bsize=12 part=3
+NSQDBG TREE mi=(16,16) bsize=9 part=0
+NSQDBG TREE mi=(16,24) bsize=9 part=3
+NSQDBG TREE mi=(16,24) bsize=6 part=1
+NSQDBG TREE mi=(16,28) bsize=6 part=1
+NSQDBG TREE mi=(20,24) bsize=6 part=1
+NSQDBG TREE mi=(20,28) bsize=6 part=1
+NSQDBG TREE mi=(24,16) bsize=9 part=0
+NSQDBG TREE mi=(24,24) bsize=9 part=3
+NSQDBG TREE mi=(24,24) bsize=6 part=1
+NSQDBG TREE mi=(24,28) bsize=6 part=1
+NSQDBG TREE mi=(28,24) bsize=6 part=1
+NSQDBG TREE mi=(28,28) bsize=6 part=1

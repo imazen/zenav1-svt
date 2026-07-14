@@ -93,6 +93,10 @@ pub struct DrCtrls {
     pub limit_to_pd0: usize,
     /// `pd0_unavail_mode_depth` (M4: 2, M5: 0).
     pub unavail_mode: u8,
+    /// `ctx->disallow_4x4` (svt_aom_get_disallow_4x4_allintra,
+    /// enc_mode_config.c:11638: <= M3 -> false). Gates the e-depth caps
+    /// (set_start_end_depth :1811) and the refined-scan child marking.
+    pub disallow_4x4: bool,
 }
 
 impl DrCtrls {
@@ -113,6 +117,7 @@ impl DrCtrls {
                 split_rate_th: 10,
                 limit_to_pd0: 1,
                 unavail_mode: 2,
+                disallow_4x4: preset >= 4,
             },
             5 => DrCtrls {
                 adaptive: true,
@@ -127,6 +132,7 @@ impl DrCtrls {
                 split_rate_th: 5,
                 limit_to_pd0: 1,
                 unavail_mode: 0,
+                disallow_4x4: true,
             },
             _ => DrCtrls {
                 adaptive: false,
@@ -141,6 +147,7 @@ impl DrCtrls {
                 split_rate_th: 0,
                 limit_to_pd0: 0,
                 unavail_mode: 0,
+                disallow_4x4: true,
             },
         }
     }
@@ -173,9 +180,9 @@ impl RefScan {
 
     /// C `set_child_to_be_tested` (enc_dec_process.c:1522): mark the
     /// child depth for evaluation (`disallow_4x4` blocks 8x8 -> 4x4).
-    fn set_children_tested(&mut self, e_depth: i32) {
-        // disallow_4x4 = 1 on the 420 path: 8x8 has no testable children.
-        if self.sq <= 8 {
+    fn set_children_tested(&mut self, e_depth: i32, disallow_4x4: bool) {
+        // disallow_4x4 blocks 8x8 -> 4x4; 4x4 never has children.
+        if self.sq <= 4 || (disallow_4x4 && self.sq <= 8) {
             return;
         }
         self.split_flag = true;
@@ -189,7 +196,7 @@ impl RefScan {
         for c in ch.iter_mut() {
             c.test_this = true;
             if e_depth > 1 {
-                c.set_children_tested(e_depth - 1);
+                c.set_children_tested(e_depth - 1, disallow_4x4);
             }
         }
         self.children = Some(Box::new(ch));
@@ -224,13 +231,21 @@ fn set_start_end_depth(
     let sq = node.sq;
     let mut s: i32 = -2;
     let mut e: i32 = 2;
-    // 4x4 has no children; disallow_4x4 = 1 caps the sub-depths
-    // (enc_dec_process.c:1811-1813).
-    e = match sq {
-        4 | 8 => 0,
-        16 => e.min(1),
-        32 => e.min(2),
-        _ => e,
+    // 4x4 has no children; disallow_4x4 caps the sub-depths
+    // (set_start_end_depth, enc_dec_process.c:1799-1813). With 4x4
+    // allowed (M0-M3) only the 4x4-has-no-children cap applies.
+    e = if ctrls.disallow_4x4 {
+        match sq {
+            4 | 8 => 0,
+            16 => e.min(1),
+            32 => e.min(2),
+            _ => e,
+        }
+    } else {
+        match sq {
+            4 => 0,
+            _ => e,
+        }
     };
     // max_sq_size = 64 (max_block_size 64 below M8, I_SLICE cap 64,
     // default max_tx_size): :1835-1839.
@@ -399,7 +414,7 @@ fn refine_depth(env: &RefineEnv<'_>, node: &Pd0Eval, parent: Option<&Pd0Eval>) -
         scan.test_this = true;
         let (s, e) = set_start_end_depth(env, node, parent);
         if e > 0 {
-            scan.set_children_tested(e);
+            scan.set_children_tested(e, env.ctrls.disallow_4x4);
         }
         (scan, s)
     } else {
@@ -487,6 +502,178 @@ impl PartRates {
 }
 
 // ---------------------------------------------------------------------------
+// NSQ geometry + search controls (C NsqGeomCtrls / NsqSearchCtrls)
+// ---------------------------------------------------------------------------
+
+/// The still-funnel NSQ controls: geometry level 2 fields
+/// (`svt_aom_set_nsq_geom_ctrls`, enc_mode_config.c:6408 — min_nsq 0,
+/// allow_HV4 1, allow_HVA_HVB 0 at M0..M3) + the `set_nsq_search_ctrls`
+/// (:6464) level fields after the tail adjustments:
+/// `nsq_qp_based_th_scaling = 0` for allintra <= M3
+/// (set_qp_based_th_scaling_ctrls_all_intra, enc_handle.c:4085) so
+/// component/split thresholds stay RAW, and the unconditional
+/// `max_part0_to_part1_dev -= 5` offset (:6797-6801, offset scaled by the
+/// same disabled factors).
+///
+/// The runtime values were capture-verified per cell (NSQCFG rows,
+/// docs/captures/nsq_m2m3/): M3 lvl 19/18/16 at qp 20/40/55, M2 lvl
+/// 17/16/14.
+pub(crate) struct NsqCfg {
+    pub enabled: bool,
+    pub min_nsq: usize,
+    pub allow_hv4: bool,
+    pub sq_weight: u64,
+    pub hv_weight: u64,
+    pub max_part0_to_part1_dev: u64,
+    pub nsq_split_cost_th: u64,
+    pub lower_depth_split_cost_th: u64,
+    pub h_vs_v_split_rate_th: u64,
+    pub non_hv_split_rate_th: u64,
+    pub rate_th_offset_lte16: u64,
+    /// `psq_txs_lvl` != 0 (levels 17..19 use lvl 1: hv_to_sq_th 1000,
+    /// h_to_v_th 100 — set_sq_txs_ctrls case 1, enc_mode_config.c:5266).
+    pub psq_txs: bool,
+    pub component_multiple_th: u64,
+}
+
+impl NsqCfg {
+    /// Disabled (presets >= 4 or non-funnel paths).
+    pub(crate) fn off() -> Self {
+        NsqCfg {
+            enabled: false,
+            min_nsq: 0,
+            allow_hv4: false,
+            sq_weight: u64::MAX,
+            hv_weight: u64::MAX,
+            max_part0_to_part1_dev: 0,
+            nsq_split_cost_th: 0,
+            lower_depth_split_cost_th: 0,
+            h_vs_v_split_rate_th: 0,
+            non_hv_split_rate_th: 0,
+            rate_th_offset_lte16: 0,
+            psq_txs: false,
+            component_multiple_th: 0,
+        }
+    }
+
+    /// `svt_aom_get_nsq_search_level_allintra` (enc_mode_config.c:11936):
+    /// base level M0 3 / M1 10 / M2 14 / M3 16, then the seq_qp_mod
+    /// offsets (mod 2|3: qp <= 39 +3, <= 45 +2, <= 48 +1; mod 1|2:
+    /// qp > 59 -1) — capture-verified (+3/+2/+0 at qp 20/40/55).
+    pub(crate) fn for_preset_qp(preset: u8, cli_qp: u32) -> Self {
+        let base: i32 = match preset {
+            0 => 3,
+            1 => 10,
+            2 => 14,
+            3 => 16,
+            _ => 0,
+        };
+        if base == 0 {
+            return Self::off();
+        }
+        let mut level = base;
+        if cli_qp <= 39 {
+            level = if level + 3 > 19 { 0 } else { level + 3 };
+        } else if cli_qp <= 45 {
+            level = if level + 2 > 19 { 0 } else { level + 2 };
+        } else if cli_qp <= 48 {
+            level = if level + 1 > 19 { 0 } else { level + 1 };
+        } else if cli_qp > 59 {
+            // seq_qp_mod = 2 unconditionally (enc_handle.c:4221) — the
+            // mod 1|2 arm applies.
+            level = (level - 1).max(1);
+        }
+        if level == 0 {
+            return Self::off();
+        }
+
+        // set_nsq_search_ctrls level rows (enc_mode_config.c:6496-6786),
+        // levels reachable from the allintra bases + offsets (3..=19).
+        // (sq_w, max_dev, split_th, lower_th, hvv, nonhv, off16, psq, comp, hv_w)
+        let row: (u64, u64, u64, u64, u64, u64, u64, u8, u64, u64) = match level {
+            3 => (105, 0, 100, 3, 0, 0, 10, 0, 0, 115),
+            4 => (100, 0, 100, 3, 0, 0, 10, 0, 80, 115),
+            5 => (100, 0, 100, 5, 0, 0, 10, 0, 80, 110),
+            6 => (100, 0, 100, 5, 0, 0, 10, 0, 80, 100),
+            7 => (95, 0, 80, 5, 0, 0, 10, 0, 80, 100),
+            8 => (95, 0, 80, 5, 30, 20, 10, 0, 80, 100),
+            9 => (95, 0, 80, 5, 40, 30, 10, 0, 60, 100),
+            10 => (95, 0, 60, 10, 40, 30, 10, 0, 60, 100),
+            11 => (95, 0, 60, 10, 50, 30, 10, 0, 40, 100),
+            12 => (95, 0, 60, 10, 50, 30, 10, 0, 20, 100),
+            13 => (95, 0, 60, 10, 60, 40, 10, 0, 20, 100),
+            14 => (95, 5, 50, 10, 60, 40, 10, 0, 20, 100),
+            15 => (90, 20, 40, 20, 60, 50, 10, 0, 15, 75),
+            16 => (90, 50, 40, 20, 70, 60, 10, 0, 15, 75),
+            17 => (90, 50, 40, 20, 70, 60, 15, 1, 10, 75),
+            18 => (90, 75, 40, 20, 80, 70, 15, 1, 5, 75),
+            19 => (90, 80, 35, 20, 85, 70, 15, 1, 5, 75),
+            _ => unreachable!("nsq search level {level}"),
+        };
+        // Tail (:6788-6801): qp-based scaling factors are 1/1 (the nsq
+        // flag is 0 for allintra <= M3), so only the -5 dev offset lands.
+        let dev = row.1.saturating_sub(5);
+        NsqCfg {
+            enabled: true,
+            min_nsq: 0,
+            allow_hv4: true,
+            sq_weight: row.0,
+            max_part0_to_part1_dev: dev,
+            nsq_split_cost_th: row.2,
+            lower_depth_split_cost_th: row.3,
+            h_vs_v_split_rate_th: row.4,
+            non_hv_split_rate_th: row.5,
+            rate_th_offset_lte16: row.6,
+            psq_txs: row.7 != 0,
+            component_multiple_th: row.8,
+            hv_weight: row.9,
+        }
+    }
+}
+
+/// The d1 shapes tested at a SQ node, in the C Part-enum iteration order
+/// (`set_blocks_to_test`, enc_dec_process.c:1403: N, H, V, H4, V4 —
+/// HA/HB/VA/VB filtered by `allow_HVA_HVB = 0` at every geom level 2/3
+/// preset; H4/V4 by `allow_HV4` and never at sq 8 or 128).
+fn shapes_for_size(size: usize, nsq: &NsqCfg) -> &'static [PartitionType] {
+    const N_ONLY: [PartitionType; 1] = [PartitionType::None];
+    const NHV: [PartitionType; 3] = [
+        PartitionType::None,
+        PartitionType::Horz,
+        PartitionType::Vert,
+    ];
+    const NHV4: [PartitionType; 5] = [
+        PartitionType::None,
+        PartitionType::Horz,
+        PartitionType::Vert,
+        PartitionType::Horz4,
+        PartitionType::Vert4,
+    ];
+    if !nsq.enabled || size <= nsq.min_nsq || size == 4 {
+        &N_ONLY
+    } else if size == 8 || !nsq.allow_hv4 || size == 128 {
+        &NHV
+    } else {
+        &NHV4
+    }
+}
+
+/// Child geometry of a shape at a `size` SQ node: (dx, dy, w, h) in
+/// coding order (C `partition_mi_offset` + `num_ns_per_shape`).
+fn shape_children(size: usize, p: PartitionType) -> Vec<(usize, usize, usize, usize)> {
+    let half = size / 2;
+    let quarter = size / 4;
+    match p {
+        PartitionType::None => alloc::vec![(0, 0, size, size)],
+        PartitionType::Horz => alloc::vec![(0, 0, size, half), (0, half, size, half)],
+        PartitionType::Vert => alloc::vec![(0, 0, half, size), (half, 0, half, size)],
+        PartitionType::Horz4 => (0..4).map(|i| (0, i * quarter, size, quarter)).collect(),
+        PartitionType::Vert4 => (0..4).map(|i| (i * quarter, 0, quarter, size)).collect(),
+        other => unreachable!("funnel shape {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The PD1 depth walk
 // ---------------------------------------------------------------------------
 
@@ -510,6 +697,10 @@ pub(crate) struct DepthWalk<'a, 'b> {
     pub y_stride: usize,
     pub lambda: u64,
     pub part_rates: &'a PartRates,
+    pub nsq: &'a NsqCfg,
+    /// `ctx->disallow_4x4` — the skip_sub quadrant-arm's 8x8 clause
+    /// (product_coding_loop.c:10156-10158).
+    pub disallow_4x4: bool,
 }
 
 struct NodeRes {
@@ -527,10 +718,36 @@ enum SplitOut {
     Chosen(Box<NodeRes>),
 }
 
+/// Snapshot of the node-rect decision state — C's
+/// `svt_aom_copy_neighbour_arrays` [0] <-> [1] save/restore around NSQ
+/// shape evaluation, expressed on our full-plane model: the whole
+/// EntropyCtx (cheap: per-frame line buffers) + the node's recon rects.
+struct NodeSnap {
+    ectx: crate::pipeline::EntropyCtx,
+    y: Vec<u8>,
+    u: Vec<u8>,
+    v: Vec<u8>,
+}
+
+/// The SQ (PART_N) evaluation of the current node + the derived gate
+/// inputs (C pc_tree->block_data[PART_N][0] and ctx side-products).
+struct SqInfo {
+    ev: LeafEval,
+    /// `ctx->rec_dist_per_quadrant` (calc_scr_to_recon_dist_per_quadrant
+    /// on the winner, product_coding_loop.c:10153-10160) when armed.
+    quad: Option<[u64; 4]>,
+    /// `ctx->min_nz_h / min_nz_v` (non_normative_txs :9641) when psq
+    /// armed and the winner kept coefficients.
+    min_nz: Option<(u16, u16)>,
+}
+
 impl DepthWalk<'_, '_> {
     const PARENT_COST_BIAS: u64 = 995; // ctx->parent_cost_bias, allintra
     const EE_SPLIT_TH: u64 = 50; // depth_early_exit level 1
     const EE_EARLY_TH: u64 = 1000; // early_exit_th 0 -> 1000
+    /// C `CONSERVATIVE_OFFSET_0` / `AGGRESSIVE_OFFSET_1` (definitions.h:
+    /// 255/258) — sq_weight adjustments in update_skip_nsq_shapes.
+    const CONSERVATIVE_OFFSET_0: u64 = 5;
 
     fn skip_sub() -> SkipSubCtrls {
         SkipSubCtrls {
@@ -540,13 +757,12 @@ impl DepthWalk<'_, '_> {
         }
     }
 
-    /// C `eval_sub_depth_skip_cond1` (product_coding_loop.c:10353 area):
-    /// f32 std-deviation of the winner's per-quadrant recon SSE (luma +
-    /// both chroma planes at quadrant > 4px) vs the source, and the
-    /// nonzero-coefficient percentage.
-    fn sub_depth_skip_cond1(&self, ev: &LeafEval) -> bool {
-        let ss = Self::skip_sub();
-        let sq = ev.size;
+    /// C `calc_scr_to_recon_dist_per_quadrant` (product_coding_loop.c:
+    /// 8290): per-quadrant SSE of the winner's recon vs the source —
+    /// luma always, both chroma planes when quadrant_size > 4 (chroma
+    /// dims quartered).
+    fn quad_rec_dists(&self, ev: &LeafEval) -> [u64; 4] {
+        let sq = ev.w;
         let quad = sq / 2;
         let mut dists = [0u64; 4];
         let yrec = ev.y_recon();
@@ -580,11 +796,19 @@ impl DepthWalk<'_, '_> {
                 dists[r * 2 + c] = d;
             }
         }
+        dists
+    }
+
+    /// C `eval_sub_depth_skip_cond1` (product_coding_loop.c:10871): f32
+    /// std-deviation of the winner's per-quadrant recon SSE and the
+    /// nonzero-coefficient percentage.
+    fn sub_depth_skip_cond1(&self, ev: &LeafEval, quad: &[u64; 4]) -> bool {
+        let ss = Self::skip_sub();
         // C float arithmetic (sum/average/pow/sqrtf).
         let n = 4f32;
-        let sum: f32 = dists.iter().map(|&d| d as f32).sum();
+        let sum: f32 = quad.iter().map(|&d| d as f32).sum();
         let average = sum / n;
-        let sum1: f32 = dists
+        let sum1: f32 = quad
             .iter()
             .map(|&d| {
                 let x = d as f32 - average;
@@ -593,60 +817,574 @@ impl DepthWalk<'_, '_> {
             .sum();
         let variance = sum1 / n;
         let std_deviation = variance.sqrt();
-        let total_samples = (sq * sq) as u32;
+        let total_samples = (ev.w * ev.h) as u32;
         let coeff_perc = ev.cnt_nz_coeff() * 100 / total_samples;
         std_deviation < ss.quad_deviation_th && coeff_perc < ss.coeff_perc
     }
 
-    /// C `svt_aom_pick_partition` (product_coding_loop.c:11549).
+    fn take_snap(&self, abs_x: usize, abs_y: usize, size: usize) -> NodeSnap {
+        let mut y = alloc::vec![0u8; size * size];
+        for r in 0..size {
+            let src = (abs_y + r) * self.y_stride + abs_x;
+            y[r * size..(r + 1) * size].copy_from_slice(&self.y_recon[src..src + size]);
+        }
+        let half = size / 2;
+        let (cx, cy) = (abs_x / 2, abs_y / 2);
+        let mut u = alloc::vec![0u8; half * half];
+        let mut v = alloc::vec![0u8; half * half];
+        for r in 0..half {
+            let src = (cy + r) * self.fx.c_stride + cx;
+            u[r * half..(r + 1) * half].copy_from_slice(&self.fx.u_recon[src..src + half]);
+            v[r * half..(r + 1) * half].copy_from_slice(&self.fx.v_recon[src..src + half]);
+        }
+        NodeSnap {
+            ectx: self.fx.ectx.clone(),
+            y,
+            u,
+            v,
+        }
+    }
+
+    fn restore_snap(&mut self, snap: &NodeSnap, abs_x: usize, abs_y: usize, size: usize) {
+        *self.fx.ectx = snap.ectx.clone();
+        for r in 0..size {
+            let dst = (abs_y + r) * self.y_stride + abs_x;
+            self.y_recon[dst..dst + size].copy_from_slice(&snap.y[r * size..(r + 1) * size]);
+        }
+        let half = size / 2;
+        let (cx, cy) = (abs_x / 2, abs_y / 2);
+        for r in 0..half {
+            let dst = (cy + r) * self.fx.c_stride + cx;
+            self.fx.u_recon[dst..dst + half].copy_from_slice(&snap.u[r * half..(r + 1) * half]);
+            self.fx.v_recon[dst..dst + half].copy_from_slice(&snap.v[r * half..(r + 1) * half]);
+        }
+    }
+
+    /// C `update_skip_nsq_based_on_split_rate` (product_coding_loop.c:
+    /// 10181): the four partition-rate sub-gates.
+    #[allow(clippy::too_many_arguments)]
+    fn skip_by_split_rate(
+        &self,
+        shape: PartitionType,
+        sq: &SqInfo,
+        best_part: PartitionType,
+        ctx_row: usize,
+        sq_size: usize,
+        split_flag: bool,
+    ) -> bool {
+        let nsq = self.nsq;
+        let sq_cost = sq.ev.block_cost();
+
+        let mut nsq_split_cost_th = nsq.nsq_split_cost_th;
+        if nsq_split_cost_th != 0 {
+            if sq_size <= 16 {
+                nsq_split_cost_th = nsq_split_cost_th
+                    .saturating_sub(nsq.rate_th_offset_lte16)
+                    .max(1);
+            }
+            let split_rate = self.part_rates.bits(ctx_row, shape);
+            let part_cost = rdcost(self.lambda, split_rate, 0);
+            if part_cost * 1000 > sq_cost * nsq_split_cost_th {
+                return true;
+            }
+        }
+
+        let mut h_vs_v_th = nsq.h_vs_v_split_rate_th;
+        if h_vs_v_th != 0 && matches!(shape, PartitionType::Horz | PartitionType::Vert) {
+            if sq_size <= 16 {
+                h_vs_v_th += nsq.rate_th_offset_lte16;
+            }
+            let h_cost = rdcost(
+                self.lambda,
+                self.part_rates.bits(ctx_row, PartitionType::Horz),
+                0,
+            );
+            let v_cost = rdcost(
+                self.lambda,
+                self.part_rates.bits(ctx_row, PartitionType::Vert),
+                0,
+            );
+            if shape == PartitionType::Horz && h_cost * h_vs_v_th > v_cost * 100 {
+                return true;
+            }
+            if shape == PartitionType::Vert && v_cost * h_vs_v_th > h_cost * 100 {
+                return true;
+            }
+        }
+
+        let mut non_hv_th = nsq.non_hv_split_rate_th;
+        if non_hv_th != 0 && !matches!(shape, PartitionType::Horz | PartitionType::Vert) {
+            if sq_size <= 16 {
+                non_hv_th += nsq.rate_th_offset_lte16;
+            }
+            let part_cost = rdcost(self.lambda, self.part_rates.bits(ctx_row, shape), 0);
+            let best_cost = rdcost(self.lambda, self.part_rates.bits(ctx_row, best_part), 0);
+            if part_cost * non_hv_th > best_cost * 100 {
+                return true;
+            }
+        }
+
+        let mut lower_th = nsq.lower_depth_split_cost_th;
+        if lower_th != 0 && split_flag {
+            if sq_size <= 16 {
+                lower_th += nsq.rate_th_offset_lte16;
+            }
+            let split_cost = rdcost(
+                self.lambda,
+                self.part_rates.bits(ctx_row, PartitionType::Split),
+                0,
+            );
+            if split_cost * 10000 < sq_cost * lower_th {
+                return true;
+            }
+        }
+
+        if nsq.component_multiple_th != 0 {
+            let rate_cost = rdcost(self.lambda, sq.ev.total_rate(), 0);
+            let dist_cost = rdcost(self.lambda, 0, sq.ev.full_dist());
+            let max_comp = rate_cost.max(dist_cost);
+            let min_comp = rate_cost.min(dist_cost);
+            if max_comp > nsq.component_multiple_th * min_comp {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// C `update_skip_nsq_based_on_sq_txs` (:10533): parent-SQ TX-split
+    /// nonzero counts vs the SQ winner's count.
+    fn skip_by_sq_txs(&self, shape: PartitionType, sq: &SqInfo) -> bool {
+        if !self.nsq.psq_txs {
+            return false;
+        }
+        let Some((nz_h, nz_v)) = sq.min_nz else {
+            return false;
+        };
+        let cnt_nz = sq.ev.cnt_nz_coeff() as u64;
+        // psq_txs_lvl 1: hv_to_sq_th 1000, h_to_v_th 100.
+        let (hv_to_sq_th, h_to_v_th) = (1000u64, 100u64);
+        let cnt_h_best = (nz_h as u64) << 1;
+        let cnt_v_best = (nz_v as u64) << 1;
+        if cnt_h_best >= cnt_nz * hv_to_sq_th / 100 && cnt_v_best >= cnt_nz * hv_to_sq_th / 100 {
+            return true;
+        }
+        if matches!(shape, PartitionType::Horz | PartitionType::Horz4)
+            && cnt_v_best <= cnt_h_best
+            && cnt_h_best >= cnt_nz * h_to_v_th / 100
+        {
+            return true;
+        }
+        if matches!(shape, PartitionType::Vert | PartitionType::Vert4)
+            && cnt_h_best <= cnt_v_best
+            && cnt_v_best >= cnt_nz * h_to_v_th / 100
+        {
+            return true;
+        }
+        false
+    }
+
+    /// C `update_skip_nsq_based_on_sq_recon_dist` (:10317).
+    fn skip_by_recon_dist(&self, shape: PartitionType, sq: &SqInfo) -> bool {
+        let mut max_dev = self.nsq.max_part0_to_part1_dev;
+        if max_dev == 0 {
+            return false;
+        }
+        let Some(quad) = &sq.quad else {
+            return false;
+        };
+        let full_lambda = self.lambda;
+        let dist = rdcost(full_lambda, 0, sq.ev.full_dist());
+        let cost = sq.ev.block_cost();
+        let dist_cost_ratio = (dist * 100) / cost;
+        let (min_ratio, max_ratio) = (50u64, 100u64);
+        let modulated_th = if dist_cost_ratio > min_ratio {
+            (100 * (dist_cost_ratio - min_ratio)) / (max_ratio - min_ratio)
+        } else {
+            0 // unused: the <= min_ratio arm forces the threshold to 0
+        };
+
+        // Parent SQ mode modulation (C PredictionMode indices: DC 0, V 1,
+        // H 2, D45..D67 3..8, SMOOTH* 9..11, PAETH 12).
+        let mode = sq.ev.mode();
+        match mode {
+            0 | 1 | 2 => max_dev *= 2,
+            3..=12 => max_dev <<= 2,
+            _ => {}
+        }
+
+        let dq: [u64; 4] = [
+            quad[0].max(1),
+            quad[1].max(1),
+            quad[2].max(1),
+            quad[3].max(1),
+        ];
+        if matches!(shape, PartitionType::Horz | PartitionType::Horz4) {
+            // V/D67/D113/D45/D135 -> x4; H -> 0.
+            if matches!(mode, 1 | 8 | 5 | 3 | 4) {
+                max_dev <<= 2;
+            } else if mode == 2 {
+                max_dev = 0;
+            }
+            let dist_h0 = dq[0] + dq[1];
+            let dist_h1 = dq[2] + dq[3];
+            let dev =
+                ((dist_h0 as i64 - dist_h1 as i64).unsigned_abs() * 100) / dist_h0.min(dist_h1);
+            let quad_dev_t =
+                ((dq[0] as i64 - dq[1] as i64).unsigned_abs() * 100) / dq[0].min(dq[1]);
+            let quad_dev_b =
+                ((dq[2] as i64 - dq[3] as i64).unsigned_abs() * 100) / dq[2].min(dq[3]);
+            max_dev += max_dev * quad_dev_t.min(quad_dev_b) / 100;
+            max_dev = if dist_cost_ratio <= min_ratio {
+                0
+            } else if dist_cost_ratio <= max_ratio {
+                (max_dev * modulated_th) / 100
+            } else {
+                dist_cost_ratio
+            };
+            if dev < max_dev {
+                return true;
+            }
+        }
+        if matches!(shape, PartitionType::Vert | PartitionType::Vert4) {
+            // H/D157/D203/D45/D135 -> x4; V -> 0.
+            if matches!(mode, 2 | 6 | 7 | 3 | 4) {
+                max_dev <<= 2;
+            } else if mode == 1 {
+                max_dev = 0;
+            }
+            let dist_v0 = dq[0] + dq[2];
+            let dist_v1 = dq[1] + dq[3];
+            let dev =
+                ((dist_v0 as i64 - dist_v1 as i64).unsigned_abs() * 100) / dist_v0.min(dist_v1);
+            let quad_dev_l =
+                ((dq[0] as i64 - dq[2] as i64).unsigned_abs() * 100) / dq[0].min(dq[2]);
+            let quad_dev_r =
+                ((dq[1] as i64 - dq[3] as i64).unsigned_abs() * 100) / dq[1].min(dq[3]);
+            max_dev += max_dev * quad_dev_l.min(quad_dev_r) / 100;
+            max_dev = if dist_cost_ratio <= min_ratio {
+                0
+            } else if dist_cost_ratio <= max_ratio {
+                (max_dev * modulated_th) / 100
+            } else {
+                dist_cost_ratio
+            };
+            if dev < max_dev {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// C `update_skip_nsq_shapes` (:10454): SQ-vs-H/V relative-cost skip
+    /// for the non-HV shapes (H4/V4 here; HA/HB/VA/VB are geometry-off).
+    fn skip_by_shapes(
+        &self,
+        shape: PartitionType,
+        sq: &SqInfo,
+        h_children: &Option<[(u64, bool); 2]>,
+        v_children: &Option<[(u64, bool); 2]>,
+    ) -> bool {
+        let mut sq_weight = self.nsq.sq_weight;
+        if sq_weight == u64::MAX {
+            return false;
+        }
+        if matches!(shape, PartitionType::Horz4 | PartitionType::Vert4) {
+            sq_weight += Self::CONSERVATIVE_OFFSET_0;
+        }
+        let sq_cost = sq.ev.block_cost();
+        if shape == PartitionType::Horz4 {
+            if let Some(h) = h_children {
+                let h_cost = h[0].0 + h[1].0;
+                let mut skip = h_cost > (sq_cost * sq_weight) / 100;
+                if !skip {
+                    if let Some(v) = v_children {
+                        let v_cost = v[0].0 + v[1].0;
+                        skip = h_cost > (v_cost * self.nsq.hv_weight) / 100;
+                    }
+                }
+                return skip;
+            }
+        }
+        if shape == PartitionType::Vert4 {
+            if let Some(v) = v_children {
+                let v_cost = v[0].0 + v[1].0;
+                let mut skip = v_cost > (sq_cost * sq_weight) / 100;
+                if !skip {
+                    if let Some(h) = h_children {
+                        let h_cost = h[0].0 + h[1].0;
+                        skip = v_cost > (h_cost * self.nsq.hv_weight) / 100;
+                    }
+                }
+                return skip;
+            }
+        }
+        false
+    }
+
+    /// C `get_skip_processing_nsq_block` (:10826): the gates in order.
+    #[allow(clippy::too_many_arguments)]
+    fn skip_processing_nsq(
+        &self,
+        shape: PartitionType,
+        sq: &SqInfo,
+        best_part: PartitionType,
+        ctx_row: usize,
+        sq_size: usize,
+        split_flag: bool,
+        h_children: &Option<[(u64, bool); 2]>,
+        v_children: &Option<[(u64, bool); 2]>,
+    ) -> bool {
+        if self.skip_by_split_rate(shape, sq, best_part, ctx_row, sq_size, split_flag) {
+            return true;
+        }
+        if self.skip_by_sq_txs(shape, sq) {
+            return true;
+        }
+        if self.skip_by_recon_dist(shape, sq) {
+            return true;
+        }
+        if self.skip_by_shapes(shape, sq, h_children, v_children) {
+            return true;
+        }
+        false
+    }
+
+    /// C `svt_aom_pick_partition` (product_coding_loop.c:11549) —
+    /// test_depth (:11396, the d1 shape loop) + the sub-depth walk.
     fn pick(&mut self, scan: &RefScan, abs_x: usize, abs_y: usize) -> NodeRes {
         let size = scan.sq;
         let mut split_flag = scan.split_flag;
-        let mut cur: Option<(u64, LeafEval)> = None;
+
+        // C test_depth state: rdc (best partition so far), the SQ info,
+        // the H/V child costs for the H4/V4 gates, and the winning
+        // shape's evaluations for the final commit.
+        let mut best: Option<(PartitionType, u64, Vec<LeafEval>)> = None;
+        let mut sq_info: Option<SqInfo> = None;
+        let mut h_children: Option<[(u64, bool); 2]> = None;
+        let mut v_children: Option<[(u64, bool); 2]> = None;
+        let mut snap: Option<NodeSnap> = None;
+        let mut committed_since_snap = false;
 
         if scan.test_this {
-            // update_part_neighs + test_depth's PART_N shape: partition
-            // rate at the real contexts, funnel block cost.
+            // update_part_neighs: partition contexts read once per node.
             let (ctx_row, _) = self.fx.ectx.partition_ctx(abs_x, abs_y, size);
-            let part_rate = self.part_rates.bits(ctx_row, PartitionType::None);
-            let ev = evaluate_leaf(
-                self.fx,
-                self.y_src,
-                self.y_src_stride,
-                abs_y * self.y_src_stride + abs_x,
-                self.y_recon,
-                self.y_stride,
-                abs_x,
-                abs_y,
-                size,
-                false, // is_dc_only gate: eff-M9 only, dead at M4/M5
-            );
-            let rd = rdcost(self.lambda, part_rate, 0) + ev.block_cost();
-            // skip_sub_depth cond1 (svt_aom_pick_partition:11563-11568).
-            if split_flag && size <= Self::skip_sub().max_size && self.sub_depth_skip_cond1(&ev) {
-                split_flag = false;
-            }
-            cur = Some((rd, ev));
-        }
 
-        if split_flag {
-            match self.test_split(scan, abs_x, abs_y, cur.as_ref().map(|c| c.0)) {
-                SplitOut::Chosen(res) => return *res,
-                SplitOut::ParentKept | SplitOut::Invalid => {
-                    // Parent stays; fall through to the leaf commit
-                    // (test_split_partition's winner overwrite /
-                    // pick_partition:11589-11591).
+            let shapes = shapes_for_size(size, self.nsq);
+            for &shape in shapes {
+                // Restore the pre-shape state (C: copy [1] -> [0] at
+                // nsi == 0 when a previous shape saved it).
+                if committed_since_snap {
+                    if let Some(sn) = snap.take() {
+                        self.restore_snap(&sn, abs_x, abs_y, size);
+                        snap = Some(sn);
+                        committed_since_snap = false;
+                    }
+                }
+
+                let part_rate = self.part_rates.bits(ctx_row, shape);
+                let mut part_cost = rdcost(self.lambda, part_rate, 0);
+                let children = shape_children(size, shape);
+                let mut evals: Vec<LeafEval> = Vec::with_capacity(children.len());
+                let mut valid = true;
+
+                for (nsi, &(dx, dy, cw, ch)) in children.iter().enumerate() {
+                    if shape != PartitionType::None && nsi == 0 {
+                        // faster_md_settings_nsq: I-slice-dead (C gates
+                        // the call on slice_type != I_SLICE, :11470).
+                        let sq = sq_info.as_ref().expect("PART_N tested first");
+                        let best_part = best
+                            .as_ref()
+                            .map(|(p, _, _)| *p)
+                            .unwrap_or(PartitionType::None);
+                        if self.skip_processing_nsq(
+                            shape,
+                            sq,
+                            best_part,
+                            ctx_row,
+                            size,
+                            scan.split_flag,
+                            &h_children,
+                            &v_children,
+                        ) {
+                            valid = false;
+                            break;
+                        }
+                    }
+
+                    let cx = abs_x + dx;
+                    let cy = abs_y + dy;
+                    let ev = evaluate_leaf(
+                        self.fx,
+                        self.y_src,
+                        self.y_src_stride,
+                        cy * self.y_src_stride + cx,
+                        self.y_recon,
+                        self.y_stride,
+                        cx,
+                        cy,
+                        cw,
+                        ch,
+                        false, // is_dc_only gate: eff-M9 only
+                    );
+                    part_cost += ev.block_cost();
+                    evals.push(ev);
+
+                    if let Some((_, best_rd, _)) = &best {
+                        if part_cost >= *best_rd {
+                            valid = false;
+                            break;
+                        }
+                    }
+
+                    if nsi + 1 < children.len() {
+                        if snap.is_none() {
+                            snap = Some(self.take_snap(abs_x, abs_y, size));
+                        }
+                        committed_since_snap = true;
+                        let ev = evals.last().unwrap();
+                        commit_leaf(self.fx, self.y_recon, self.y_stride, ev);
+                    }
+                }
+
+                // Track H/V child costs for the H4/V4 gates (C
+                // tested_blk[PART_H/V][0..1] + block_has_coeff).
+                if matches!(shape, PartitionType::Horz | PartitionType::Vert) && evals.len() == 2 {
+                    let pair = [
+                        (evals[0].block_cost(), evals[0].block_has_coeff()),
+                        (evals[1].block_cost(), evals[1].block_has_coeff()),
+                    ];
+                    if shape == PartitionType::Horz {
+                        h_children = Some(pair);
+                    } else {
+                        v_children = Some(pair);
+                    }
+                }
+
+                if shape == PartitionType::None {
+                    debug_assert!(valid, "PART_N cannot abort (rdc starts invalid)");
+                    let ev = &evals[0];
+                    // rec_dist_per_quadrant (C gate :10153): the NSQ
+                    // recon-dist arm OR the skip_sub arm.
+                    let nsq_arm = self.nsq.enabled
+                        && self.nsq.max_part0_to_part1_dev != 0
+                        && size >= 8
+                        && size > self.nsq.min_nsq;
+                    let ss = Self::skip_sub();
+                    let skip_sub_arm = size <= ss.max_size
+                        && scan.split_flag
+                        && (size >= 16 || (!self.disallow_4x4 && size == 8));
+                    let quad = if nsq_arm || skip_sub_arm {
+                        Some(self.quad_rec_dists(ev))
+                    } else {
+                        None
+                    };
+                    // non_normative_txs (C gate :10174).
+                    let min_nz = if self.nsq.enabled
+                        && self.nsq.psq_txs
+                        && size >= 8
+                        && size > self.nsq.min_nsq
+                    {
+                        crate::leaf_funnel::min_nz_hv(
+                            ev,
+                            self.y_src,
+                            self.y_src_stride,
+                            abs_y * self.y_src_stride + abs_x,
+                            self.fx.frame.base_qindex,
+                        )
+                    } else {
+                        None
+                    };
+                    sq_info = Some(SqInfo {
+                        ev: evals.pop().unwrap(),
+                        quad,
+                        min_nz,
+                    });
+                    if valid {
+                        best = Some((PartitionType::None, part_cost, Vec::new()));
+                    }
+                } else if valid {
+                    let better = match &best {
+                        None => true,
+                        Some((_, rd, _)) => part_cost < *rd,
+                    };
+                    if better {
+                        best = Some((shape, part_cost, evals));
+                    }
+                }
+            }
+
+            // skip_sub_depth cond1 (svt_aom_pick_partition:11563-11568) —
+            // on the SQ winner's quadrant dists.
+            if let Some(sq) = &sq_info {
+                if split_flag && size <= Self::skip_sub().max_size {
+                    if let Some(quad) = &sq.quad {
+                        if self.sub_depth_skip_cond1(&sq.ev, quad) {
+                            split_flag = false;
+                        }
+                    }
+                }
+            }
+
+            // C: restore [1] -> [0] before the sub-depth walk.
+            if committed_since_snap && split_flag {
+                if let Some(sn) = snap.take() {
+                    self.restore_snap(&sn, abs_x, abs_y, size);
+                    snap = Some(sn);
+                    committed_since_snap = false;
                 }
             }
         }
 
-        let (rd, ev) = cur.expect("refined scan node with neither shape nor valid split");
-        commit_leaf(self.fx, self.y_recon, self.y_stride, &ev);
-        let decision = crate::partition::funnel_block_decision(ev.to_choice(), size);
+        let parent_rd = best.as_ref().map(|(_, rd, _)| *rd);
+        if split_flag {
+            match self.test_split(scan, abs_x, abs_y, parent_rd) {
+                SplitOut::Chosen(res) => return *res,
+                SplitOut::ParentKept | SplitOut::Invalid => {
+                    // Parent (best shape) stays; fall through to its
+                    // commit (test_split_partition's winner overwrite).
+                }
+            }
+        }
+
+        // Commit the winning shape (C md_update_all_neighbour_arrays_
+        // multiple over the chosen partition's blocks). If a losing
+        // shape's partial commits are still live, restore first —
+        // equivalent to C's winner-overwrite since every write spans
+        // exactly the block.
+        if committed_since_snap {
+            if let Some(sn) = snap.take() {
+                self.restore_snap(&sn, abs_x, abs_y, size);
+            }
+        }
+        let (win_part, win_rd, win_evals) = best.expect("refined node with no valid shape");
+        if win_part == PartitionType::None {
+            let sq = sq_info.expect("SQ info for PART_N winner");
+            commit_leaf(self.fx, self.y_recon, self.y_stride, &sq.ev);
+            let decision =
+                crate::partition::funnel_block_decision(sq.ev.to_choice(), size, size);
+            return NodeRes {
+                rd: win_rd,
+                tree: PartitionTree::Leaf(decision.clone()),
+                decisions: alloc::vec![decision],
+            };
+        }
+        let mut decisions: Vec<BlockDecision> = Vec::with_capacity(win_evals.len());
+        let mut child_trees: Vec<PartitionTree> = Vec::with_capacity(win_evals.len());
+        for ev in &win_evals {
+            commit_leaf(self.fx, self.y_recon, self.y_stride, ev);
+            let d = crate::partition::funnel_block_decision(ev.to_choice(), ev.w, ev.h);
+            decisions.push(d.clone());
+            child_trees.push(PartitionTree::Leaf(d));
+        }
         NodeRes {
-            rd,
-            tree: PartitionTree::Leaf(decision.clone()),
-            decisions: alloc::vec![decision],
+            rd: win_rd,
+            tree: PartitionTree::Split {
+                partition_type: win_part,
+                width: size as u16,
+                height: size as u16,
+                children: child_trees,
+            },
+            decisions,
         }
     }
 
@@ -660,7 +1398,7 @@ impl DepthWalk<'_, '_> {
     ) -> SplitOut {
         let size = scan.sq;
         let (ctx_row, _) = self.fx.ectx.partition_ctx(abs_x, abs_y, size);
-        // use_accurate_part_ctx = 1 at M4/M5: no x2 bias.
+        // use_accurate_part_ctx = 1: no x2 bias.
         let split_rate = self.part_rates.bits(ctx_row, PartitionType::Split);
         let mut split_cost = rdcost(self.lambda, split_rate, 0);
 
@@ -724,6 +1462,8 @@ pub(crate) fn decide_sb_refined(
     y_stride: usize,
     lambda: u64,
     part_rates: &PartRates,
+    nsq: &NsqCfg,
+    disallow_4x4: bool,
     sb_x: usize,
     sb_y: usize,
 ) -> crate::partition::PartitionResult {
@@ -735,6 +1475,8 @@ pub(crate) fn decide_sb_refined(
         y_stride,
         lambda,
         part_rates,
+        nsq,
+        disallow_4x4,
     };
     let res = walk.pick(scan, sb_x, sb_y);
     let num_blocks = res.decisions.len() as u32;
@@ -810,7 +1552,7 @@ mod tests {
         let ctrls = DrCtrls::for_preset(5);
         for (qp, qindex, lambda) in [(20u32, 80u8, 25650u64), (40, 160, 248207)] {
             let tables = crate::pd0::build_m6_pd0_tables(qindex);
-            let eval = crate::pd0::pd0_pick_sb_partition_m6_eval(&y, 64, 0, 0, qp, qindex, &tables);
+            let eval = crate::pd0::pd0_pick_sb_partition_m6_eval(&y, 64, 0, 0, qp, qindex, &tables, 8);
             assert!(eval.split, "q{qp}: PD0 splits the 64");
             let scan = build_refined_scan(&eval, &ctrls, lambda, &tables);
             assert!(!scan.test_this, "q{qp}: no 64x64 parent-depth eval");
@@ -824,7 +1566,7 @@ mod tests {
         }
         // q55: 64x64 NONE, no deeper evals.
         let tables = crate::pd0::build_m6_pd0_tables(220);
-        let eval = crate::pd0::pd0_pick_sb_partition_m6_eval(&y, 64, 0, 0, 55, 220, &tables);
+        let eval = crate::pd0::pd0_pick_sb_partition_m6_eval(&y, 64, 0, 0, 55, 220, &tables, 8);
         assert!(!eval.split);
         let scan = build_refined_scan(&eval, &ctrls, 1527856, &tables);
         assert!(scan.test_this && !scan.split_flag && scan.children.is_none());
@@ -840,7 +1582,7 @@ mod tests {
         let y = gradient64();
         let ctrls = DrCtrls::for_preset(4);
         let tables = crate::pd0::build_m6_pd0_tables(80);
-        let eval = crate::pd0::pd0_pick_sb_partition_m6_eval(&y, 64, 0, 0, 20, 80, &tables);
+        let eval = crate::pd0::pd0_pick_sb_partition_m6_eval(&y, 64, 0, 0, 20, 80, &tables, 8);
         assert!(eval.split);
         let scan = build_refined_scan(&eval, &ctrls, 25650, &tables);
         assert!(!scan.test_this && scan.split_flag);

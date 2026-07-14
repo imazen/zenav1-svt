@@ -1345,6 +1345,11 @@ pub fn pd0_pick_sb_partition_m6(
 /// [`pd0_pick_sb_partition_m6`] returning the full evaluation record —
 /// the PD1 depth refinement's input (per-node tested/cost like C's
 /// `pc_tree` after PD0).
+///
+/// `min_sq`: 8 when `disallow_4x4` (presets >= 4), else 4 — C
+/// `set_blocks_to_be_tested` (enc_dec_process.c:1494: depth removal off
+/// on the allintra still path, `ctx->disallow_4x4 ? 8 : 4`); the PD0B
+/// capture rows confirm C's LPD0 evaluates 4x4 blocks at M2/M3.
 pub fn pd0_pick_sb_partition_m6_eval(
     src: &[u8],
     stride: usize,
@@ -1353,6 +1358,7 @@ pub fn pd0_pick_sb_partition_m6_eval(
     qp: u32,
     qindex: u8,
     tables: &M6Pd0Tables,
+    min_sq: usize,
 ) -> Pd0Eval {
     let vars = compute_b64_variance(src, stride, sb_x, sb_y);
     let lambda = kf_full_lambda_8bit(qindex, qp) as u64;
@@ -1368,7 +1374,7 @@ pub fn pd0_pick_sb_partition_m6_eval(
         mode: Pd0Mode::Lvl1,
         lvl1: Some(tables),
         max_sq: 64,
-        min_sq: 8,
+        min_sq,
         is_subres_safe: 255,
     };
     let (_cost, eval) = ctx.pick(64, 0, 0);
