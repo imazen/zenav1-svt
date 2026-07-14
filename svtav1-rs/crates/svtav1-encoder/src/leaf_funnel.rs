@@ -1716,3 +1716,73 @@ fn chroma_detector_fires(
 }
 
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Instrumented-capture pins: `M6FNL NICS c0` lines — mds1/2/3
+    /// counts at CLI qp 20/40/55 (q-scaled 24/12/6 base).
+    #[test]
+    fn nic_counts_match_c() {
+        assert_eq!(nic_counts(20), (8, 4, 2));
+        assert_eq!(nic_counts(40), (15, 8, 4));
+        assert_eq!(nic_counts(55), (22, 11, 5));
+    }
+
+    /// RDCOST identity from the captured g64 q55 MDS3 rows: the DC
+    /// candidate's full cost decomposition
+    /// (rate 547+273+176560+112+112+1280+26, dist 10963760).
+    #[test]
+    fn rdcost_matches_capture() {
+        assert_eq!(rdcost(1527856, 178910, 10963760), 1937245493);
+        // H row: rate 181608, dist 10996528 -> 1949490882.
+        assert_eq!(rdcost(1527856, 181608, 10996528), 1949490882);
+        // MDS0 fast cost, DC @ q55: rate 820, satd 204088 << 4.
+        assert_eq!(rdcost(1527856, 820, 204088 << 4), 420419181);
+    }
+
+    /// Mode/uv/fi/tx_size rate pins from the M6FNL MDS0/FLC dumps
+    /// (default contexts, coeff tables at the respective qindexes).
+    #[test]
+    fn md_rates_match_c_captures() {
+        let fc = svtav1_entropy::context::FrameContext::new_default();
+        let cfc = svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(220);
+        let r = build_md_rates(&fc, &cfc);
+        // kf y mode at ctx (0,0): DC 547, SMOOTH 1556 (q55 64x64 flr).
+        assert_eq!(r.kf_y[0][0][0], 547);
+        assert_eq!(r.kf_y[0][0][9], 1556);
+        // V/H flr include the angle0 symbol: 2874 / 2555.
+        assert_eq!(r.kf_y[0][0][1] + r.angle[0][3], 2874);
+        assert_eq!(r.kf_y[0][0][2] + r.angle[1][3], 2555);
+        // uv fcr rows: 64x64 (CFL-disallowed) DC 273, V 1033, H 1009;
+        // 32x32 (CFL-allowed) DC 845, SMOOTH 1362.
+        assert_eq!(r.uv[0][0][0], 273);
+        assert_eq!(r.uv[0][1][1] + r.angle[0][3], 1033);
+        assert_eq!(r.uv[0][2][2] + r.angle[1][3], 1009);
+        assert_eq!(r.uv[1][0][0], 845);
+        assert_eq!(r.uv[1][9][9], 1362);
+        // filter-intra at 32x32 (bsize_idx 9): flag-off 281 (DC flr
+        // 828 - 547), flag-on + FILTER_DC mode = 1803 (FI flr 2350).
+        assert_eq!(r.fi_flag[9][0], 281);
+        assert_eq!(r.fi_flag[9][1] + r.fi_mode[0], 1803);
+        // skip=0 at ctx 0: 26.
+        assert_eq!(r.skip[0][0], 26);
+        // tx_size bits: 64x64 ctx0 depth0/1 = 1280/1292; 32x32 ctx0
+        // depth0 = 683 (q40 FLC nsk_txsz).
+        assert_eq!(r.tx_size[3][0][0], 1280);
+        assert_eq!(r.tx_size[3][0][1], 1292);
+        assert_eq!(r.tx_size[2][0][0], 683);
+    }
+
+    /// The chroma tx type derivation confirmed by the WIN dumps
+    /// (ttuv 0/1/2/3 for DC/V/H/SMOOTH; DCT-only at >= 32).
+    #[test]
+    fn uv_tx_type_matches_c() {
+        assert_eq!(uv_tx_type(0, 16, 16), 0);
+        assert_eq!(uv_tx_type(1, 16, 16), 1);
+        assert_eq!(uv_tx_type(2, 16, 16), 2);
+        assert_eq!(uv_tx_type(9, 16, 16), 3);
+        assert_eq!(uv_tx_type(2, 32, 32), 0); // 64x64 luma -> DCT only
+    }
+}
