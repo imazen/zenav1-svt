@@ -66,6 +66,262 @@ pub fn pick_filter_levels_key_frame(qindex: u8) -> LfLevels {
     }
 }
 
+/// Inputs to the full-image deblock-level search (`LPF_PICK_FROM_FULL_IMAGE`).
+pub struct DlfSearchInput<'a> {
+    /// Source planes (`enhanced_pic`): the encoder input.
+    pub y_src: &'a [u8],
+    pub u_src: &'a [u8],
+    pub v_src: &'a [u8],
+    /// Post-encode reconstruction, BEFORE any deblocking.
+    pub y_recon: &'a [u8],
+    pub u_recon: &'a [u8],
+    pub v_recon: &'a [u8],
+    pub width: usize,
+    pub height: usize,
+    pub chroma_420: bool,
+    pub geom: &'a DeblockGeom,
+    /// `dlf_ctrls.early_exit_convergence` — 0 at allintra presets <= M3
+    /// (dlf_level 1), 1 at M4/M5 (dlf_level 2); `svt_aom_set_dlf_controls`
+    /// enc_mode_config.c:2235.
+    pub early_exit_convergence: i32,
+}
+
+/// Sum of squared differences over one plane —
+/// `svt_spatial_full_distortion_kernel` as called by
+/// `picture_sse_calculations` (deblocking_filter.c:743) with the full
+/// aligned plane dims (our frames are 64-aligned by construction).
+fn plane_sse(a: &[u8], b: &[u8], w: usize, h: usize) -> i64 {
+    debug_assert!(a.len() >= w * h && b.len() >= w * h);
+    let mut sum = 0u64;
+    for r in 0..h {
+        let ar = &a[r * w..r * w + w];
+        let br = &b[r * w..r * w + w];
+        for (pa, pb) in ar.iter().zip(br.iter()) {
+            let d = i64::from(*pa) - i64::from(*pb);
+            sum += (d * d) as u64;
+        }
+    }
+    sum as i64
+}
+
+/// C `try_filter_frame` (deblocking_filter.c:777) for one plane: apply the
+/// candidate level(s) to a scratch copy of the unfiltered recon and return
+/// the SSE vs the source. C filters the live recon then restores it from
+/// `temp_lf_recon_buffer`; filtering a scratch clone is arithmetically
+/// identical (the kernels are pure functions of the pre-filter plane).
+#[allow(clippy::too_many_arguments)]
+fn try_filter_plane(
+    input: &DlfSearchInput,
+    scratch: &mut Vec<u8>,
+    plane: usize,
+    lvl0: u8,
+    lvl1: u8,
+) -> i64 {
+    let (src, recon, w, h, subs) = match plane {
+        0 => (input.y_src, input.y_recon, input.width, input.height, 0),
+        1 => (
+            input.u_src,
+            input.u_recon,
+            input.width / 2,
+            input.height / 2,
+            1,
+        ),
+        _ => (
+            input.v_src,
+            input.v_recon,
+            input.width / 2,
+            input.height / 2,
+            1,
+        ),
+    };
+    scratch.clear();
+    scratch.extend_from_slice(&recon[..w * h]);
+    // svt_av1_loop_filter_frame(recon, pcs, plane, plane + 1): zero levels
+    // leave the plane untouched (the per-SB walk skips planes whose level
+    // is 0 — svt_aom_loop_filter_sb plane gating).
+    if lvl0 != 0 || lvl1 != 0 {
+        filter_plane(
+            scratch, w, w, h, plane, subs, lvl0, lvl1, input.geom,
+            0, // sharpness 0 (matched config; sharpness_level = CLIP3(0,7,0))
+        );
+    }
+    plane_sse(src, scratch, w, h)
+}
+
+/// C `search_filter_level` (deblocking_filter.c:832) — the
+/// LPF_PICK_FROM_FULL_IMAGE hill-climb over candidate levels with real
+/// filtering trials, specialized to STILL/KEY frames:
+/// - `last_frame_filter_level` is all-zero (nothing writes the FH lf levels
+///   before dlf_process on the sb_based_dlf=0 path; instrumented C confirms
+///   `SEARCH last=[0,0,0,0] filt_mid=0 step=4` on every tracked cell), so
+///   the start level and the plane-0 dir-2 average are 0.
+/// - `bias >>= 1` unconditionally: tx_mode is always TX_MODE_SELECT
+///   (!= ONLY_4X4) under FTR_COUPLE_VLPD0_TXS_PER_SB.
+///
+/// Returns (best level, ss_err[0], ss_err[best]) — the zero/best SSEs feed
+/// the caller's bookkeeping (pcs->zero_filt_sse / best_filt_sse).
+fn search_filter_level(
+    input: &DlfSearchInput,
+    scratch: &mut Vec<u8>,
+    plane: usize,
+    dir: i32,
+    last_frame_filter_level: [i32; 4],
+    conv_th: i32,
+) -> (i32, i64, i64) {
+    let min_filter_level = 0i32;
+    let max_filter_level = MAX_LOOP_FILTER;
+    let mut filt_direction = 0i32;
+
+    let lvl = match plane {
+        0 => {
+            if dir > 1 {
+                (last_frame_filter_level[0] + last_frame_filter_level[1] + 1) >> 1
+            } else {
+                last_frame_filter_level[dir as usize]
+            }
+        }
+        1 => last_frame_filter_level[2],
+        _ => last_frame_filter_level[3],
+    };
+    let mut filt_mid = lvl.clamp(min_filter_level, max_filter_level);
+    let mut filter_step = if filt_mid < 16 { 4 } else { filt_mid / 4 };
+
+    // ss_err[level] = -1 means "not evaluated".
+    let mut ss_err = [-1i64; (MAX_LOOP_FILTER + 1) as usize];
+
+    // try_filter_frame at filt_mid. For plane 0 with dir == 2 both luma
+    // levels take the candidate; chroma planes carry one level.
+    let try_level = |input: &DlfSearchInput, scratch: &mut Vec<u8>, level: i32| -> i64 {
+        let (l0, l1) = if plane == 0 {
+            // dir == 2 on the still path (dir 0/1 would mix in the frame
+            // header's other-direction level, which is only exercised by
+            // LPF_PICK_FROM_SUBIMAGE — not ported).
+            debug_assert_eq!(dir, 2);
+            (level as u8, level as u8)
+        } else {
+            debug_assert_eq!(dir, 0);
+            (level as u8, level as u8)
+        };
+        try_filter_plane(input, scratch, plane, l0, l1)
+    };
+
+    let mut best_err = try_level(input, scratch, filt_mid);
+    let mut filt_best = filt_mid;
+    ss_err[filt_mid as usize] = best_err;
+
+    let mut tot_convergence = 0i32;
+    while filter_step > 0 {
+        let filt_high = (filt_mid + filter_step).min(max_filter_level);
+        let filt_low = (filt_mid - filter_step).max(min_filter_level);
+
+        // Bias against raising the level in favour of lowering it.
+        let mut bias = (best_err >> (15 - (filt_mid / 8))) * i64::from(filter_step);
+        // tx_mode != ONLY_4X4 (always TX_MODE_SELECT): bias less for large
+        // block sizes.
+        bias >>= 1;
+
+        if filt_direction <= 0 && filt_low != filt_mid {
+            if ss_err[filt_low as usize] < 0 {
+                ss_err[filt_low as usize] = try_level(input, scratch, filt_low);
+            }
+            // Bias toward the lower loop-filter value when close.
+            if ss_err[filt_low as usize] < (best_err + bias) {
+                if ss_err[filt_low as usize] < best_err {
+                    best_err = ss_err[filt_low as usize];
+                }
+                filt_best = filt_low;
+            }
+        }
+        if filt_direction >= 0 && filt_high != filt_mid {
+            if ss_err[filt_high as usize] < 0 {
+                ss_err[filt_high as usize] = try_level(input, scratch, filt_high);
+            }
+            // Raising the level must beat the bias.
+            if ss_err[filt_high as usize] < (best_err - bias) {
+                best_err = ss_err[filt_high as usize];
+                filt_best = filt_high;
+            }
+        }
+
+        if filt_best == filt_mid {
+            tot_convergence += 1;
+            if tot_convergence == conv_th {
+                filter_step = 0;
+            } else {
+                filter_step /= 2;
+            }
+            filt_direction = 0;
+        } else {
+            filt_direction = if filt_best < filt_mid { -1 } else { 1 };
+            filt_mid = filt_best;
+        }
+    }
+    best_err = ss_err[filt_best as usize];
+
+    (filt_best, ss_err[0], best_err)
+}
+
+/// C-exact `svt_av1_pick_filter_level(.., LPF_PICK_FROM_FULL_IMAGE)`
+/// (deblocking_filter.c:1138) + the dlf_process zero-SSE guard
+/// (dlf_process.c:103), for STILL/KEY frames at allintra presets <= M5
+/// (`get_dlf_level_allintra` 1/2 -> `sb_based_dlf = 0`,
+/// enc_mode_config.c:2214).
+///
+/// Key-frame facts baked in (each verified on the instrumented library —
+/// `DLFDBG SEARCH/STEP/PICK/FINAL/GUARD` captures, docs/captures):
+/// - sharpness_level = 0 (config sharpness 0, tune != VQ/IQ/MS_SSIM).
+/// - The dlf_avg reference-average block is skipped
+///   (`tot_ref_frame_types == 0` — captured `GUARD .. tot_refs=0`).
+/// - `me_based_dlf_skip` returns immediately for I_SLICE (do_y = do_uv).
+/// - `frame_is_boosted` is true for key frames, so luma ALWAYS searches
+///   (never the use_ref_avg_y arm) and chroma searches whenever luma picked
+///   a nonzero level (never the use_ref_avg_uv arm).
+/// - The dlf_process zero-SSE guard (`zero_filt_sse == -1` recompute) can
+///   never fire: the luma search starts at level 0, so ss_err[0] is always
+///   evaluated and zero_filt_sse != -1. Not ported (documented no-op).
+pub fn pick_filter_levels_full_search(input: &DlfSearchInput) -> LfLevels {
+    let mut scratch: Vec<u8> = Vec::with_capacity(input.width * input.height);
+    let last = [0i32; 4];
+
+    // Luma: one level for both edge directions (dir = 2).
+    let (filt_y, _zero_sse, _best_sse) = search_filter_level(
+        input,
+        &mut scratch,
+        0,
+        2,
+        last,
+        input.early_exit_convergence,
+    );
+
+    // Chroma filtering is not allowed when the luma filters are off; when
+    // luma is on, key frames search U and V independently (dir = 0).
+    let (filt_u, filt_v) = if filt_y == 0 || !input.chroma_420 {
+        (0, 0)
+    } else {
+        let (u, _, _) = search_filter_level(
+            input,
+            &mut scratch,
+            1,
+            0,
+            last,
+            input.early_exit_convergence,
+        );
+        let (v, _, _) = search_filter_level(
+            input,
+            &mut scratch,
+            2,
+            0,
+            last,
+            input.early_exit_convergence,
+        );
+        (u, v)
+    };
+
+    LfLevels {
+        levels: [filt_y as u8, filt_y as u8, filt_u as u8, filt_v as u8],
+    }
+}
+
 /// Per-4x4 (mode-info unit) frame geometry for deblocking, recorded during
 /// the entropy walk — the same data a decoder derives from parsed
 /// partitions/modes: which coded block covers each mi, the block dims
