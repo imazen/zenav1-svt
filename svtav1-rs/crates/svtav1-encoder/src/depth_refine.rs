@@ -1598,6 +1598,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn nsq_cfg_matches_instrumented_captures() {
+        // NSQCFG rows (docs/captures/nsq_m2m3/): M3 levels 19/18/16 at
+        // qp 20/40/55, M2 levels 17/16/14 — post-tail values (dev - 5).
+        let c = NsqCfg::for_preset_qp(3, 20);
+        assert!(c.enabled && c.allow_hv4 && c.psq_txs);
+        assert_eq!(
+            (c.sq_weight, c.hv_weight, c.max_part0_to_part1_dev),
+            (90, 75, 75)
+        );
+        assert_eq!((c.nsq_split_cost_th, c.lower_depth_split_cost_th), (35, 20));
+        assert_eq!((c.h_vs_v_split_rate_th, c.non_hv_split_rate_th), (85, 70));
+        assert_eq!((c.rate_th_offset_lte16, c.component_multiple_th), (15, 5));
+        let c = NsqCfg::for_preset_qp(3, 40);
+        assert_eq!((c.max_part0_to_part1_dev, c.nsq_split_cost_th), (70, 40));
+        assert_eq!((c.h_vs_v_split_rate_th, c.non_hv_split_rate_th), (80, 70));
+        assert!(c.psq_txs);
+        let c = NsqCfg::for_preset_qp(3, 55);
+        assert_eq!((c.max_part0_to_part1_dev, c.component_multiple_th), (45, 15));
+        assert!(!c.psq_txs); // level 16
+        let c = NsqCfg::for_preset_qp(2, 20);
+        assert!(c.psq_txs); // level 17
+        assert_eq!((c.max_part0_to_part1_dev, c.rate_th_offset_lte16), (45, 15));
+        let c = NsqCfg::for_preset_qp(2, 40);
+        assert!(!c.psq_txs); // level 16
+        assert_eq!(c.max_part0_to_part1_dev, 45);
+        let c = NsqCfg::for_preset_qp(2, 55);
+        assert_eq!((c.max_part0_to_part1_dev, c.component_multiple_th), (0, 20));
+        assert_eq!((c.sq_weight, c.hv_weight), (95, 100));
+        // Presets >= 4: search off.
+        assert!(!NsqCfg::for_preset_qp(4, 40).enabled);
+    }
+
+    #[test]
     fn dr_ctrls_match_capture() {
         // M5DBG CFG enc_mode=4: dr_s1=15 dr_e1=15 dr_maxmult=10
         // dr_bandmod=0 dr_lowsplit=20 dr_splitrate=10 dr_limitpd0=1
