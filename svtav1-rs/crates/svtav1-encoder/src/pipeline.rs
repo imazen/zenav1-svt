@@ -2150,10 +2150,11 @@ fn encode_tile_rows(
         // per-SB contexts (ec_ctx_array averaging), a documented residual
         // gap for the 128-cell decisions.
         // The C-exact leaf intra funnel covers still/420 allintra presets
-        // 6, 7, 8 (intra_level 6 and 7). Preset 6 uses update_cdf_level 2
-        // (per-SB CDF chain); presets 7/8 use update_cdf_level 0 (static
-        // default tables all frame — `funnel_chain` below is M6-only).
-        let use_funnel = (6..=8).contains(&speed_config.preset)
+        // 6, 7, 8, and eff-M9 (presets >= 9 clamp to M9). Preset 6 uses
+        // update_cdf_level 2 (per-SB CDF chain); 7/8/9+ use update_cdf_level 0
+        // (static default tables all frame — `funnel_chain` below is M6-only).
+        // eff-M9 (intra_level 8) arms the is_dc_only gate inside the funnel.
+        let use_funnel = speed_config.preset >= 6
             && chroma_420
             && chroma_src.is_some()
             && ref_frame_data.is_none()
@@ -2201,9 +2202,11 @@ fn encode_tile_rows(
         // the left-only copy (no identity-matrix frame is that wide).
         let multi_sb = sb_cols * sb_rows > 1;
         // The per-SB CDF-refresh chain is only C-correct at M6
-        // (update_cdf_level 2). M7/M8 (update_cdf_level 0) keep the static
-        // default rate tables for every SB, so they never chain.
-        let funnel_chain = speed_config.preset == 6 && multi_sb;
+        // (update_cdf_level 2). M7/M8/eff-M9 (update_cdf_level 0) keep the
+        // static default rate tables for every SB, so they never chain.
+        // Gated on use_funnel so it only fires for the chroma/420 funnel
+        // path (chroma_src is Some) — mono M6 never chains.
+        let funnel_chain = use_funnel && speed_config.preset == 6 && multi_sb;
         let mut chain_snaps: Vec<(
             svtav1_entropy::context::FrameContext,
             alloc::boxed::Box<svtav1_entropy::coeff_c::CoeffFc>,

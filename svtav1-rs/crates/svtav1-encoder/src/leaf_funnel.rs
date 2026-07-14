@@ -217,12 +217,21 @@ pub struct FunnelCfg {
     /// TX-size search on (M6/M7 txs_level 3) vs off (M8 txs_level 0 ->
     /// depth 0 only).
     pub txs_on: bool,
+    /// `intra_ctrls.prune_using_edge_info` (intra_level 8 / eff-M9 only):
+    /// arms the `is_dc_only_safe` variance gate (mode_decision.c:845). When
+    /// it fires for a block the candidate set is forced to {DC_PRED}. Off
+    /// for M6/M7/M8 (intra_level 6/7 -> the gate is dead).
+    pub dc_only_gate: bool,
+    /// TXT search on (M6 txt_level 8 / M7/M8 txt_level 10) vs off (eff-M9
+    /// txt_level 0 -> DCT_DCT only for every tx size, incl. < 32 blocks
+    /// where an ext-tx set would otherwise be searched).
+    pub txt_on: bool,
 }
 
 impl FunnelCfg {
     /// C-exact per-preset derivation for the still/420 allintra path.
-    /// Presets 6/7/8 only (the funnel scope); other presets never
-    /// construct one.
+    /// Presets 6/7/8/9+ (the funnel scope); other presets never construct
+    /// one. Presets >= 9 clamp to eff-M9 (enc_handle.c:4634).
     pub fn for_preset(preset: u8) -> Self {
         match preset {
             6 => FunnelCfg {
@@ -236,6 +245,8 @@ impl FunnelCfg {
                 mds3_cand_base_th: 15,
                 real_coeff_ctx: true,
                 txs_on: true,
+                dc_only_gate: false,
+                txt_on: true,
             },
             7 => FunnelCfg {
                 filter_intra: false,
@@ -248,10 +259,32 @@ impl FunnelCfg {
                 mds3_cand_base_th: 15,
                 real_coeff_ctx: false,
                 txs_on: true,
+                dc_only_gate: false,
+                txt_on: true,
             },
             // preset 8: nic_level 11 (scaling 15 -> nums 0/0/0 -> 1/1/1),
             // all cand thresholds 1, enable_skipping_mds1 (n1==1 makes it a
             // no-op for the pick), txs_level 0.
+            8 => FunnelCfg {
+                filter_intra: false,
+                prune_best_mode: true,
+                nic_num: (0, 0, 0),
+                mds1_cand_base_th: 1,
+                mds1_rank_factor: 3,
+                mds2_cand_base_th: 1,
+                mds2_rel_dev_th: 5,
+                mds3_cand_base_th: 1,
+                real_coeff_ctx: false,
+                txs_on: false,
+                dc_only_gate: false,
+                txt_on: true,
+            },
+            // eff-M9 (presets 9+): intra_level 8 arms the is_dc_only gate
+            // (dc_only_gate); the non-DC funnel body is identical to M8
+            // (nic 1/1/1, prune_best, 0/0 ctx, txs off). coeff_rate_est_lvl
+            // differs (0 vs 2) but never affects a single-candidate MDS3
+            // (mode = MDS0 SATD winner; coeffs are RDOQ), so the M8 chroma
+            // approximation is reused.
             _ => FunnelCfg {
                 filter_intra: false,
                 prune_best_mode: true,
@@ -263,6 +296,8 @@ impl FunnelCfg {
                 mds3_cand_base_th: 1,
                 real_coeff_ctx: false,
                 txs_on: false,
+                dc_only_gate: true,
+                txt_on: false,
             },
         }
     }
@@ -882,6 +917,10 @@ pub(crate) fn decide_leaf(
     abs_x: usize,
     abs_y: usize,
     size: usize,
+    // eff-M9: `is_dc_only_safe` fired for this block -> C's dc_cand_only
+    // injection restricts the candidate list to {DC_PRED}
+    // (mode_decision.c:3633). Always false at M6/M7/M8 (gate dead).
+    dc_only: bool,
 ) -> LeafChoice {
     let frame = fx.frame;
     let rates = fx.rates;
@@ -913,9 +952,13 @@ pub(crate) fn decide_leaf(
     // then filter-intra (inject_filter_intra_candidates).
     let cfg = frame.cfg;
     let fi_elig = cfg.filter_intra && fi_allowed_bsize;
-    let mut cand_modes: Vec<(u8, u8)> =
-        alloc::vec![(0, FI_NONE), (1, FI_NONE), (2, FI_NONE), (9, FI_NONE)];
-    if fi_elig {
+    let mut cand_modes: Vec<(u8, u8)> = if dc_only {
+        // eff-M9 dc_cand_only injection: exactly {DC_PRED}, no filter-intra.
+        alloc::vec![(0, FI_NONE)]
+    } else {
+        alloc::vec![(0, FI_NONE), (1, FI_NONE), (2, FI_NONE), (9, FI_NONE)]
+    };
+    if fi_elig && !dc_only {
         cand_modes.push((0, 0)); // FILTER_DC_PRED
     }
 
@@ -1671,9 +1714,11 @@ fn txt_search(
     lambda: u64,
 ) -> (TxUnitOut, usize) {
     let c_tx = cc::tx_size_from_dims(w, h);
-    // search_dct_dct_only (product_coding_loop.c:4601): dims > 32, a
-    // single-type ext set, or ext set index 0.
-    let only_dct = w > 32
+    // search_dct_dct_only (product_coding_loop.c:4601): txt disabled
+    // (eff-M9 txt_level 0 -> !mds_do_txt), dims > 32, a single-type ext
+    // set, or ext set index 0.
+    let only_dct = !frame.cfg.txt_on
+        || w > 32
         || h > 32
         || cc::ext_tx_types(c_tx, false, false) == 1
         || cc::ext_tx_set(c_tx, false, false) == 0;
