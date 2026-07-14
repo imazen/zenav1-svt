@@ -1,0 +1,133 @@
+content	size	cli_qp	preset	verdict	stage	detail
+uniform	64	20	0	DIFFERS	FH	loop_filter_level[0]=0                 | R @18   loop_filter_level[0]=4
+uniform	64	20	1	DIFFERS	FH	loop_filter_level[0]=0                 | R @18   loop_filter_level[0]=4
+uniform	64	20	2	DIFFERS	FH	loop_filter_level[0]=0                 | R @18   loop_filter_level[0]=4
+uniform	64	20	3	DIFFERS	FH	loop_filter_level[0]=0                 | R @18   loop_filter_level[0]=4
+uniform	64	20	4	DIFFERS	FH	loop_filter_level[0]=0                 | R @18   loop_filter_level[0]=4
+uniform	64	20	5	DIFFERS	SH	enable_intra_edge_filter=1             | R @32   enable_intra_edge_filter=0
+uniform	64	20	6	IDENTICAL	-	-
+uniform	64	20	7	IDENTICAL	-	-
+uniform	64	20	8	IDENTICAL	-	-
+uniform	64	20	9	IDENTICAL	-	-
+uniform	64	20	10	IDENTICAL	-	-
+uniform	64	40	0	DIFFERS	FH	loop_filter_level[0]=0                 | R @18   loop_filter_level[0]=19
+uniform	64	40	1	DIFFERS	FH	loop_filter_level[0]=0                 | R @18   loop_filter_level[0]=19
+uniform	64	40	2	DIFFERS	FH	loop_filter_level[0]=0                 | R @18   loop_filter_level[0]=19
+uniform	64	40	3	DIFFERS	FH	loop_filter_level[0]=0                 | R @18   loop_filter_level[0]=19
+uniform	64	40	4	DIFFERS	FH	loop_filter_level[0]=0                 | R @18   loop_filter_level[0]=19
+uniform	64	40	5	DIFFERS	SH	enable_intra_edge_filter=1             | R @32   enable_intra_edge_filter=0
+uniform	64	40	6	IDENTICAL	-	-
+uniform	64	40	7	IDENTICAL	-	-
+uniform	64	40	8	IDENTICAL	-	-
+uniform	64	40	9	IDENTICAL	-	-
+uniform	64	40	10	IDENTICAL	-	-
+uniform	64	55	0	DIFFERS	FH	loop_filter_level[0]=0                 | R @18   loop_filter_level[0]=61
+uniform	64	55	1	DIFFERS	FH	loop_filter_level[0]=0                 | R @18   loop_filter_level[0]=61
+uniform	64	55	2	DIFFERS	FH	loop_filter_level[0]=0                 | R @18   loop_filter_level[0]=61
+uniform	64	55	3	DIFFERS	FH	loop_filter_level[0]=0                 | R @18   loop_filter_level[0]=61
+uniform	64	55	4	DIFFERS	FH	loop_filter_level[0]=0                 | R @18   loop_filter_level[0]=61
+uniform	64	55	5	DIFFERS	SH	enable_intra_edge_filter=1             | R @32   enable_intra_edge_filter=0
+uniform	64	55	6	IDENTICAL	-	-
+uniform	64	55	7	IDENTICAL	-	-
+uniform	64	55	8	IDENTICAL	-	-
+uniform	64	55	9	IDENTICAL	-	-
+uniform	64	55	10	IDENTICAL	-	-
+uniform	128	20	0	DIFFERS	FH	loop_filter_level[0]=0                 | R @20   loop_filter_level[0]=4
+uniform	128	20	1	DIFFERS	FH	loop_filter_level[0]=0                 | R @20   loop_filter_level[0]=4
+uniform	128	20	2	DIFFERS	FH	loop_filter_level[0]=0                 | R @20   loop_filter_level[0]=4
+uniform	128	20	3	DIFFERS	FH	loop_filter_level[0]=0                 | R @20   loop_filter_level[0]=4
+uniform	128	20	4	DIFFERS	FH	loop_filter_level[0]=0                 | R @20   loop_filter_level[0]=4
+uniform	128	20	5	DIFFERS	SH	enable_intra_edge_filter=1             | R @34   enable_intra_edge_filter=0
+uniform	128	20	6	IDENTICAL	-	-
+uniform	128	20	7	IDENTICAL	-	-
+uniform	128	20	8	IDENTICAL	-	-
+uniform	128	20	9	IDENTICAL	-	-
+uniform	128	20	10	IDENTICAL	-	-
+uniform	128	40	0	DIFFERS	FH	loop_filter_level[0]=0                 | R @20   loop_filter_level[0]=19
+uniform	128	40	1	DIFFERS	FH	loop_filter_level[0]=0                 | R @20   loop_filter_level[0]=19
+uniform	128	40	2	DIFFERS	FH	loop_filter_level[0]=0                 | R @20   loop_filter_level[0]=19
+uniform	128	40	3	DIFFERS	FH	loop_filter_level[0]=0                 | R @20   loop_filter_level[0]=19
+uniform	128	40	4	DIFFERS	FH	loop_filter_level[0]=0                 | R @20   loop_filter_level[0]=19
+uniform	128	40	5	DIFFERS	SH	enable_intra_edge_filter=1             | R @34   enable_intra_edge_filter=0
+uniform	128	40	6	IDENTICAL	-	-
+uniform	128	40	7	IDENTICAL	-	-
+uniform	128	40	8	IDENTICAL	-	-
+uniform	128	40	9	IDENTICAL	-	-
+uniform	128	40	10	IDENTICAL	-	-
+uniform	128	55	0	DIFFERS	FH	loop_filter_level[0]=0                 | R @20   loop_filter_level[0]=61
+uniform	128	55	1	DIFFERS	FH	loop_filter_level[0]=0                 | R @20   loop_filter_level[0]=61
+uniform	128	55	2	DIFFERS	FH	loop_filter_level[0]=0                 | R @20   loop_filter_level[0]=61
+uniform	128	55	3	DIFFERS	FH	loop_filter_level[0]=0                 | R @20   loop_filter_level[0]=61
+uniform	128	55	4	DIFFERS	FH	loop_filter_level[0]=0                 | R @20   loop_filter_level[0]=61
+uniform	128	55	5	DIFFERS	SH	enable_intra_edge_filter=1             | R @34   enable_intra_edge_filter=0
+uniform	128	55	6	IDENTICAL	-	-
+uniform	128	55	7	IDENTICAL	-	-
+uniform	128	55	8	IDENTICAL	-	-
+uniform	128	55	9	IDENTICAL	-	-
+uniform	128	55	10	IDENTICAL	-	-
+gradient	64	20	0	DIFFERS	FH	loop_filter_level[0]=0                 | R @18   loop_filter_level[0]=4
+gradient	64	20	1	DIFFERS	FH	loop_filter_level[0]=0                 | R @18   loop_filter_level[0]=4
+gradient	64	20	2	DIFFERS	FH	loop_filter_level[0]=0                 | R @18   loop_filter_level[0]=4
+gradient	64	20	3	DIFFERS	FH	loop_filter_level[0]=0                 | R @18   loop_filter_level[0]=4
+gradient	64	20	4	DIFFERS	FH	loop_filter_level[0]=0                 | R @18   loop_filter_level[0]=4
+gradient	64	20	5	DIFFERS	SH	enable_intra_edge_filter=1             | R @32   enable_intra_edge_filter=0
+gradient	64	20	6	IDENTICAL	-	-
+gradient	64	20	7	IDENTICAL	-	-
+gradient	64	20	8	IDENTICAL	-	-
+gradient	64	20	9	IDENTICAL	-	-
+gradient	64	20	10	IDENTICAL	-	-
+gradient	64	40	0	DIFFERS	FH	loop_filter_level[0]=0                 | R @18   loop_filter_level[0]=19
+gradient	64	40	1	DIFFERS	FH	loop_filter_level[0]=0                 | R @18   loop_filter_level[0]=19
+gradient	64	40	2	DIFFERS	FH	loop_filter_level[0]=0                 | R @18   loop_filter_level[0]=19
+gradient	64	40	3	DIFFERS	FH	loop_filter_level[0]=0                 | R @18   loop_filter_level[0]=19
+gradient	64	40	4	DIFFERS	FH	loop_filter_level[0]=0                 | R @18   loop_filter_level[0]=19
+gradient	64	40	5	DIFFERS	SH	enable_intra_edge_filter=1             | R @32   enable_intra_edge_filter=0
+gradient	64	40	6	IDENTICAL	-	-
+gradient	64	40	7	IDENTICAL	-	-
+gradient	64	40	8	IDENTICAL	-	-
+gradient	64	40	9	IDENTICAL	-	-
+gradient	64	40	10	IDENTICAL	-	-
+gradient	64	55	0	DIFFERS	FH	loop_filter_level[0]=0                 | R @18   loop_filter_level[0]=61
+gradient	64	55	1	DIFFERS	FH	loop_filter_level[0]=0                 | R @18   loop_filter_level[0]=61
+gradient	64	55	2	DIFFERS	FH	loop_filter_level[0]=0                 | R @18   loop_filter_level[0]=61
+gradient	64	55	3	DIFFERS	FH	loop_filter_level[0]=0                 | R @18   loop_filter_level[0]=61
+gradient	64	55	4	DIFFERS	FH	loop_filter_level[0]=0                 | R @18   loop_filter_level[0]=61
+gradient	64	55	5	DIFFERS	SH	enable_intra_edge_filter=1             | R @32   enable_intra_edge_filter=0
+gradient	64	55	6	IDENTICAL	-	-
+gradient	64	55	7	IDENTICAL	-	-
+gradient	64	55	8	IDENTICAL	-	-
+gradient	64	55	9	IDENTICAL	-	-
+gradient	64	55	10	IDENTICAL	-	-
+gradient	128	20	0	DIFFERS	FH	loop_filter_level[0]=0                 | R @20   loop_filter_level[0]=4
+gradient	128	20	1	DIFFERS	FH	loop_filter_level[0]=0                 | R @20   loop_filter_level[0]=4
+gradient	128	20	2	DIFFERS	FH	loop_filter_level[0]=0                 | R @20   loop_filter_level[0]=4
+gradient	128	20	3	DIFFERS	FH	loop_filter_level[0]=0                 | R @20   loop_filter_level[0]=4
+gradient	128	20	4	DIFFERS	FH	loop_filter_level[0]=0                 | R @20   loop_filter_level[0]=4
+gradient	128	20	5	DIFFERS	SH	enable_intra_edge_filter=1             | R @34   enable_intra_edge_filter=0
+gradient	128	20	6	IDENTICAL	-	-
+gradient	128	20	7	IDENTICAL	-	-
+gradient	128	20	8	IDENTICAL	-	-
+gradient	128	20	9	IDENTICAL	-	-
+gradient	128	20	10	IDENTICAL	-	-
+gradient	128	40	0	DIFFERS	FH	loop_filter_level[0]=0                 | R @20   loop_filter_level[0]=19
+gradient	128	40	1	DIFFERS	FH	loop_filter_level[0]=15                | R @20   loop_filter_level[0]=19
+gradient	128	40	2	DIFFERS	FH	loop_filter_level[0]=15                | R @20   loop_filter_level[0]=19
+gradient	128	40	3	DIFFERS	FH	loop_filter_level[0]=5                 | R @20   loop_filter_level[0]=19
+gradient	128	40	4	DIFFERS	FH	loop_filter_level[0]=0                 | R @20   loop_filter_level[0]=19
+gradient	128	40	5	DIFFERS	SH	enable_intra_edge_filter=1             | R @34   enable_intra_edge_filter=0
+gradient	128	40	6	IDENTICAL	-	-
+gradient	128	40	7	IDENTICAL	-	-
+gradient	128	40	8	IDENTICAL	-	-
+gradient	128	40	9	IDENTICAL	-	-
+gradient	128	40	10	IDENTICAL	-	-
+gradient	128	55	0	DIFFERS	FH	loop_filter_level[0]=0                 | R @20   loop_filter_level[0]=61
+gradient	128	55	1	DIFFERS	FH	loop_filter_level[0]=0                 | R @20   loop_filter_level[0]=61
+gradient	128	55	2	DIFFERS	FH	loop_filter_level[0]=0                 | R @20   loop_filter_level[0]=61
+gradient	128	55	3	DIFFERS	FH	loop_filter_level[0]=0                 | R @20   loop_filter_level[0]=61
+gradient	128	55	4	DIFFERS	FH	loop_filter_level[0]=0                 | R @20   loop_filter_level[0]=61
+gradient	128	55	5	DIFFERS	SH	enable_intra_edge_filter=1             | R @34   enable_intra_edge_filter=0
+gradient	128	55	6	IDENTICAL	-	-
+gradient	128	55	7	IDENTICAL	-	-
+gradient	128	55	8	IDENTICAL	-	-
+gradient	128	55	9	IDENTICAL	-	-
+gradient	128	55	10	IDENTICAL	-	-
