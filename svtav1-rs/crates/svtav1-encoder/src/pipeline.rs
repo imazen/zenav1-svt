@@ -2575,6 +2575,9 @@ fn encode_tile_rows(
                             y0,
                             cli_qp as u32,
                             sb_qindex,
+                            // C `input_resolution_factor[input_resolution]`:
+                            // per-picture coeff-rate addend keyed on w*h.
+                            crate::pd0::input_resolution_factor(w * h),
                         );
                         // The same per-SB variance map C's picture analysis
                         // feeds to is_dc_only_safe (pcs->ppcs->variance): the

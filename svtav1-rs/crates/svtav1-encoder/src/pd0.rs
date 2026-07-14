@@ -250,6 +250,36 @@ pub(crate) fn max_block_size_allintra(var64: u16, qp: u32) -> usize {
     if var64 <= var_th_cap { 64 } else { 32 }
 }
 
+/// C `svt_aom_derive_input_resolution` (sequence_control_set.c:120) mapped
+/// through `input_resolution_factor[INPUT_SIZE_COUNT] = {0,1,2,3,4,4,4}`
+/// (perform_tx_pd0, product_coding_loop.c:4579). At `coeff_rate_est_lvl == 0`
+/// (the PD0_LVL_5 closed-form coeff rate) C adds `factor * 1600` bits to
+/// EVERY block's coeff rate; the factor is a per-picture constant keyed on
+/// the luma pixel count `width * height` (the padded encode dims — C uses
+/// `picture_width * picture_height`, pcs.c:105). The thresholds are the
+/// verbatim `INPUT_SIZE_*_TH` hex constants (definitions.h:1851-1857).
+/// 64x64 (4096) and 128x128 (16384) are both < 240p_TH -> factor 0, so the
+/// synthetic identity matrix is unaffected; 512x512 (262144) is 360p -> 1.
+pub(crate) fn input_resolution_factor(pixels: usize) -> u64 {
+    const FACTOR: [u64; 7] = [0, 1, 2, 3, 4, 4, 4];
+    let res = if pixels < 0x28500 {
+        0 // 240p range
+    } else if pixels < 0x4CE00 {
+        1 // 360p range
+    } else if pixels < 0xA1400 {
+        2 // 480p range
+    } else if pixels < 0x16DA00 {
+        3 // 720p range
+    } else if pixels < 0x535200 {
+        4 // 1080p range
+    } else if pixels < 0x140A000 {
+        5 // 4K range
+    } else {
+        6 // 8K range
+    };
+    FACTOR[res]
+}
+
 /// C `is_dc_only_safe` (mode_decision.c:845) — the variance half, verbatim.
 ///
 /// At allintra effective-M9 the PD1 intra controls are
@@ -1020,6 +1050,10 @@ struct Pd0Ctx<'a> {
     /// 64x64 block determines it); the effective per-block step is 0
     /// unless this is exactly 1.
     is_subres_safe: u8,
+    /// C `input_resolution_factor[pcs->ppcs->input_resolution]`
+    /// (perform_tx_pd0): the per-picture `factor * 1600` addend on the
+    /// PD0_LVL_5 closed-form coeff rate. 0 for <= 240p pictures.
+    ires_factor: u64,
 }
 
 /// C `svt_aom_partition_rate_cost` at PD0: neighbor partition contexts are
@@ -1107,10 +1141,11 @@ impl<'a> Pd0Ctx<'a> {
         }
         let qindex_off = (self.qindex as u32 + 8).min(255) as u8; // lpd0_qp_offset = 8
         let (eob, dist, _qcoeff, _c_tx) = tx_quant_core(&residual, sq_size, tx_h, qindex_off, step);
-        // coeff_rate_est_lvl == 0 closed form (perform_tx_pd0): input
-        // resolution factor is 0 for every <= 240p-range picture (all
-        // identity/gate frames).
-        let bits = 5000 + 100 * eob as u64;
+        // coeff_rate_est_lvl == 0 closed form (perform_tx_pd0,
+        // product_coding_loop.c:4579): 5000 + input_resolution_factor*1600 +
+        // 100*eob. The resolution factor is a per-picture constant (0 for
+        // <= 240p, e.g. all 64/128 synthetic cells; 1 at 360p incl. 512x512).
+        let bits = 5000 + self.ires_factor * 1600 + 100 * eob as u64;
         // svt_aom_full_cost_pd0: rate = coeff bits + skip(0) bits +
         // PARTITION_NONE bits at context 0.
         let rate = bits + skip0_bits() + partition_none_bits_ctx0();
@@ -1268,6 +1303,7 @@ pub fn pd0_pick_sb_partition(
     sb_y: usize,
     qp: u32,
     qindex: u8,
+    ires_factor: u64,
 ) -> Pd0Tree {
     let vars = compute_b64_variance(src, stride, sb_x, sb_y);
     let max_sq = max_block_size_allintra(vars.0[0], qp);
@@ -1293,6 +1329,7 @@ pub fn pd0_pick_sb_partition(
         // disallow_8x8_allintra() = false, no depth removal flags.
         min_sq: 8,
         is_subres_safe: 255,
+        ires_factor,
     };
     let (_cost, eval) = ctx.pick(64, 0, 0);
     eval.tree()
@@ -1338,6 +1375,7 @@ pub fn pd0_pick_sb_partition_m6(
         max_sq: 64,
         min_sq: 8,
         is_subres_safe: 255,
+        ires_factor: 0,
     };
     let (_cost, eval) = ctx.pick(64, 0, 0);
     eval.tree()
@@ -1377,6 +1415,7 @@ pub fn pd0_pick_sb_partition_m6_eval(
         max_sq: 64,
         min_sq,
         is_subres_safe: 255,
+        ires_factor: 0,
     };
     let (_cost, eval) = ctx.pick(64, 0, 0);
     eval
@@ -1508,6 +1547,7 @@ mod tests {
             max_sq: 32,
             min_sq: 8,
             is_subres_safe: 255,
+            ires_factor: 0,
         };
         for (sq, ox, oy, cost) in [
             (32usize, 0usize, 0usize, 187677438u64),
@@ -1545,6 +1585,7 @@ mod tests {
             max_sq: 64,
             min_sq: 8,
             is_subres_safe: 255,
+            ires_factor: 0,
         };
         assert_eq!(ctx.lvl5_block_cost(64, 0, 0), 1708208432);
         assert_eq!(
@@ -1607,18 +1648,18 @@ mod tests {
         // q20 (qindex 80): LVL_6, max 32 -> forced SPLIT at 64, every 32
         // SPLITs again, 16x16 leaves everywhere (C stream: op0 SPLIT,
         // op1 SPLIT, op2 NONE...).
-        let t20 = pd0_pick_sb_partition(&y, 64, 0, 0, 20, 80);
+        let t20 = pd0_pick_sb_partition(&y, 64, 0, 0, 20, 80, 0);
         assert_eq!(t20.leaf_sizes(), vec![16; 16]);
         // q40 (qindex 160): LVL_5, max 32 -> forced SPLIT at 64, all four
         // 32x32 keep PARENT (C: op0 SPLIT, op1 NONE).
-        let t40 = pd0_pick_sb_partition(&y, 64, 0, 0, 40, 160);
+        let t40 = pd0_pick_sb_partition(&y, 64, 0, 0, 40, 160, 0);
         assert_eq!(t40.leaf_sizes(), vec![32; 4]);
         // q55 (qindex 220): LVL_5, 64 in set and PARENT wins outright.
-        let t55 = pd0_pick_sb_partition(&y, 64, 0, 0, 55, 220);
+        let t55 = pd0_pick_sb_partition(&y, 64, 0, 0, 55, 220, 0);
         assert_eq!(t55, Pd0Tree::Leaf(64));
         // Uniform: LVL_5 with zero residual everywhere -> 64x64 NONE.
         let u = vec![128u8; 64 * 64];
-        let tu = pd0_pick_sb_partition(&u, 64, 0, 0, 40, 160);
+        let tu = pd0_pick_sb_partition(&u, 64, 0, 0, 40, 160, 0);
         assert_eq!(tu, Pd0Tree::Leaf(64));
     }
 
@@ -1643,6 +1684,7 @@ mod tests {
             max_sq: 64,
             min_sq: 8,
             is_subres_safe: 255,
+            ires_factor: 0,
         };
         for (sq, ox, oy, cost) in [
             (64usize, 0usize, 0usize, 1791569177u64),
@@ -1676,6 +1718,7 @@ mod tests {
             max_sq: 64,
             min_sq: 8,
             is_subres_safe: 255,
+            ires_factor: 0,
         };
         for (sq, ox, oy, cost) in [
             (64usize, 0usize, 0usize, 1176293547u64),
@@ -1705,6 +1748,7 @@ mod tests {
             max_sq: 64,
             min_sq: 8,
             is_subres_safe: 255,
+            ires_factor: 0,
         };
         for (sq, ox, oy, cost) in [
             (64usize, 0usize, 0usize, 903280295u64),
