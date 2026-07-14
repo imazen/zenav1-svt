@@ -1140,34 +1140,34 @@ fn cdef_filter_preserves_flat() {
 
 #[test]
 fn wiener_filter_identity() {
-    // Spec 08 Section 7.17: Wiener restoration with identity kernel
-    // Coefficients [0, 0, 128] → center tap only → identity
-    // Actually the kernel is symmetric: [c2, c1, c0, center, c0, c1, c2]
-    // where center = 128 - 2*(c0+c1+c2)
-    // With c0=c1=c2=0: center = 128 → identity (pass-through)
-    let src = vec![100u8; 64]; // 8x8
-    let mut dst = vec![0u8; 64];
-
-    svtav1_dsp::loop_filter::wiener_filter(
-        &src,
-        8,
-        &mut dst,
-        8,
-        8,
-        8,
-        [0, 0, 0], // h_coeffs (all zero → identity)
-        [0, 0, 0], // v_coeffs
-    );
-
-    // With identity kernel, output should match input
-    for i in 0..64 {
-        let diff = (dst[i] as i32 - src[i] as i32).abs();
-        assert!(
-            diff <= 1,
-            "identity Wiener should preserve values: src={} dst={}",
-            src[i],
-            dst[i]
-        );
+    // Spec 08 Section 7.17: Wiener restoration with the identity kernel
+    // (all signalable side taps zero — the implicit +128 center tap alone)
+    // must reproduce the input EXACTLY. Uses the C-exact kernel
+    // (svt_av1_wiener_convolve_add_src_c port, differentially fuzzed in
+    // svtav1-dsp/tests/c_parity_wiener.rs) on a padded plane; this
+    // replaced the pre-port sketch whose test tolerated +-1.
+    use svtav1_dsp::restoration as rst;
+    let (w, h, b) = (8usize, 8usize, 4usize);
+    let stride = w + 2 * b;
+    let origin = b * stride + b;
+    let mut src = vec![0u8; stride * (h + 2 * b)];
+    for r in 0..h {
+        for c in 0..w {
+            src[origin + r * stride + c] = (90 + r * 7 + c * 3) as u8;
+        }
+    }
+    rst::extend_frame(&mut src, origin, w, h, stride, 4, 3);
+    let zero = [0i16; 8];
+    let mut dst = vec![0u8; stride * (h + 2 * b)];
+    rst::wiener_convolve_add_src(&src, origin, stride, &mut dst, origin, stride, &zero, &zero, w, h);
+    for r in 0..h {
+        for c in 0..w {
+            assert_eq!(
+                dst[origin + r * stride + c],
+                src[origin + r * stride + c],
+                "identity Wiener must preserve values exactly at ({r},{c})"
+            );
+        }
     }
 }
 
