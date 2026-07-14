@@ -278,6 +278,35 @@ pub struct FunnelCfg {
     /// group count at that tx depth (min 1, get_tx_type_group).
     pub txt_d1_off: i32,
     pub txt_d2_off: i32,
+    /// `txs_ctrls.prev_depth_coeff_exit_th` (txs_level <=4: 1; txs_level 5 /
+    /// eff-M9 VLPD0 bump: 100): a deeper TX depth is skipped when the best
+    /// depth so far kept fewer than this many non-zero coeffs
+    /// (perform_tx_partitioning, product_coding_loop.c:5356). On flat
+    /// content depth-0 eob < 100 -> depth 1 never tried (why synthetic
+    /// identity is unaffected); rich AC (eob >= 100) evaluates the split.
+    pub txs_prev_depth_exit: u32,
+    /// `txs_ctrls.quadrant_th_sf` (txs_level 5: 100; else 0): per-txb
+    /// early-abort of a deeper TX depth when the accumulated cost already
+    /// exceeds its proportional share of the best depth cost
+    /// (product_coding_loop.c:5437). 0 disables the check.
+    pub txs_quadrant_sf: u64,
+    /// eff-M9 only: TXS is enabled per-SB, gated on the SB staying at
+    /// PD0_LVL_6 (undemoted by `pd0_detector_allintra`). C's
+    /// `svt_aom_sig_deriv_enc_dec_allintra` bumps `pcs->txs_level` from 0 to
+    /// MAX_TXS_LEVEL-1 (=5) only when `ctx->pd0_ctrls.pd0_level == PD0_LVL_6`
+    /// (enc_mode_config.c:11366, FTR_COUPLE_VLPD0_TXS_PER_SB). false at
+    /// M0..M8 (txs is uniform across SBs, no per-SB gate).
+    pub txs_lvl6_gate: bool,
+    /// `rate_est_ctrls.coeff_rate_est_lvl` (set_rate_est_ctrls,
+    /// enc_mode_config.c:8342): the luma coeff-RATE estimator used in the RD
+    /// compare. 1 (M6) / >=2 (M7/M8) -> the real `cost_coeffs_txb` (the
+    /// funnel's `tx_unit` bits); 0 (eff-M9, rate_est_level 0) -> the fast
+    /// per-txb approximation in `tx_type_search` (product_coding_loop.c:4976):
+    /// `th = (txw*txh)>>6; eob < th ? 6000+eob*1000 : 3000+eob*100`. Only the
+    /// lvl-0 approximation is ported here (needed so the eff-M9 TXS depth
+    /// compare matches C); other levels keep the real estimate (their
+    /// identity is already closed on synthetic content).
+    pub coeff_rate_est_lvl: u8,
     /// chroma_level 4 (M5): CHROMA_MODE_0 with `ind_uv_last_mds = 2` —
     /// `search_best_mds3_uv_mode` over the MDS3 survivors' uv modes
     /// (+ UV_DC), then `update_intra_chroma_mode` rewrites each MDS3
@@ -335,6 +364,10 @@ impl FunnelCfg {
             txs_max_nsq: 0,
             txt_d1_off: 3,
             txt_d2_off: 3,
+            txs_prev_depth_exit: 1,
+            txs_quadrant_sf: 0,
+            txs_lvl6_gate: false,
+            coeff_rate_est_lvl: 1,
             ind_uv_mds3: false,
             ind_uv_independent: None,
             fi_max: 0,
@@ -570,7 +603,20 @@ impl FunnelCfg {
                 mds2_cand_base_th: 1,
                 mds3_cand_base_th: 1,
                 real_coeff_ctx: false,
-                txs_on: false,
+                // eff-M9: pcs->txs_level is 0 at the picture level, but the
+                // FTR_COUPLE_VLPD0_TXS_PER_SB coupling bumps it per-SB to
+                // MAX_TXS_LEVEL-1 (=5) for SBs the pd0 detector leaves at
+                // PD0_LVL_6 (undemoted) — set_txs_controls case 5: intra
+                // sq/nsq max depth 1, prev_depth_coeff_exit 100,
+                // quadrant_th_sf 100 (enc_mode_config.c:8024, :11366). The
+                // per-SB gate is applied in evaluate_leaf via txs_lvl6_gate.
+                txs_on: true,
+                txs_max_sq: 1,
+                txs_max_nsq: 1,
+                txs_prev_depth_exit: 100,
+                txs_quadrant_sf: 100,
+                txs_lvl6_gate: true,
+                coeff_rate_est_lvl: 0,
                 dc_only_gate: true,
                 txt_on: false,
                 ..m6_tail
@@ -1435,6 +1481,10 @@ pub(crate) fn decide_leaf(
     abs_y: usize,
     size: usize,
     dc_only: bool,
+    // eff-M9 per-SB TXS gate: the SB stayed at PD0_LVL_6 (undemoted). Only
+    // consulted when the config's `txs_lvl6_gate` is set (eff-M9); ignored
+    // at M0..M8 where TXS is uniform.
+    sb_is_lvl6: bool,
 ) -> LeafChoice {
     let ev = evaluate_leaf(
         fx,
@@ -1448,6 +1498,7 @@ pub(crate) fn decide_leaf(
         size,
         size,
         dc_only,
+        sb_is_lvl6,
     );
     let choice = ev.to_choice();
     commit_leaf(fx, y_recon, y_stride, &ev);
@@ -1473,6 +1524,10 @@ pub(crate) fn evaluate_leaf(
     // injection restricts the candidate list to {DC_PRED}
     // (mode_decision.c:3633). Always false at M6/M7/M8 (gate dead).
     dc_only: bool,
+    // eff-M9 per-SB TXS gate: the SB stayed at PD0_LVL_6 (the pd0 detector
+    // did not demote it to PD0_LVL_5). Consulted only when the config's
+    // `txs_lvl6_gate` is set.
+    sb_is_lvl6: bool,
 ) -> LeafEval {
     let frame = fx.frame;
     let rates = fx.rates;
@@ -1830,8 +1885,11 @@ pub(crate) fn evaluate_leaf(
     // -- MDS3: full loop with TXS + TXT + RDOQ + spatial SSE + chroma --
     let do_rdoq = frame.rdoq_level > 0;
     // txs_level 0 (M8) -> depth 0 only; else get_end_tx_depth clamped by
-    // the config's intra sq/nsq max depths.
-    let end_depth = if cfg.txs_on {
+    // the config's intra sq/nsq max depths. At eff-M9 the enable is per-SB
+    // (txs_lvl6_gate): C only bumps txs on for SBs the pd0 detector left at
+    // PD0_LVL_6 (undemoted); demoted PD0_LVL_5 SBs keep TXS off (depth 0).
+    let txs_active = cfg.txs_on && (!cfg.txs_lvl6_gate || sb_is_lvl6);
+    let end_depth = if txs_active {
         end_tx_depth(w, h, &cfg)
     } else {
         0
@@ -2154,9 +2212,10 @@ pub(crate) fn evaluate_leaf(
         let mut best_coeff_count = u32::MAX;
 
         for depth in 0..=end_depth {
-            // prev_depth_coeff_exit_th = 1: skip deeper depths when the
-            // previous depth kept no coefficients.
-            if best_coeff_count < 1 {
+            // prev_depth_coeff_exit_th (1 at txs_level <=4; 100 at eff-M9
+            // txs_level 5): skip a deeper depth when the best depth so far
+            // kept fewer than the threshold's worth of non-zero coeffs.
+            if best_coeff_count < cfg.txs_prev_depth_exit {
                 continue;
             }
             // C tx geometry at this depth (tx_depth_to_tx_size /
@@ -2242,7 +2301,26 @@ pub(crate) fn evaluate_leaf(
                     do_rdoq,
                     lambda,
                 );
-                dep_bits += out.bits as u64;
+                // eff-M9 (coeff_rate_est_lvl 0) prices the luma coeff RATE in
+                // the RD compare with the fast per-txb approximation from C
+                // `tx_type_search` (product_coding_loop.c:4976), NOT the real
+                // cost_coeffs_txb: th = (txw*txh)>>6; eob<th ? 6000+eob*1000
+                // : 3000+eob*100. The real bits still drove RDOQ/eob inside
+                // `tx_unit` (unchanged). Gated on end_depth>0 == C's
+                // perform_tx_partitioning path; end_depth==0 blocks go through
+                // perform_dct_dct_tx and keep the funnel's estimate (their
+                // single-candidate decision is rate-invariant).
+                let txb_bits = if cfg.coeff_rate_est_lvl == 0 && end_depth > 0 {
+                    let th = (txw * txh) >> 6;
+                    if (out.eob as usize) < th {
+                        6000 + out.eob as u64 * 1000
+                    } else {
+                        3000 + out.eob as u64 * 100
+                    }
+                } else {
+                    out.bits as u64
+                };
+                dep_bits += txb_bits;
                 dep_dist += out.dist;
                 dep_has_coeff |= out.eob > 0;
                 // tx_update_neighbor_arrays: cul byte over the txb span.
@@ -2270,6 +2348,22 @@ pub(crate) fn evaluate_leaf(
                 if rdcost(lambda, dep_bits, dep_dist) > best_cost {
                     aborted = true;
                     break;
+                }
+                // C quadrant early-abort (txs_ctrls.quadrant_th_sf,
+                // product_coding_loop.c:5437): for a deeper depth, if the
+                // accumulated cost (incl. this depth's full tx_size bits)
+                // already exceeds its proportional share of the best depth
+                // cost, drop the depth. `svt_aom_get_tx_size_bits` for intra
+                // == the tx_size rate at (cat, ctx, depth) (skip/has-coeff
+                // only gate the inter path).
+                if cfg.txs_quadrant_sf != 0 && depth > 0 {
+                    let normlized = ((txb as u64 + 1) * best_cost) / txbs as u64;
+                    let tsb = rates.tx_size[tsz_cat][tsz_ctx][depth as usize] as u64;
+                    let cost_tmp = rdcost(lambda, dep_bits + tsb, dep_dist);
+                    if cost_tmp * 100 > normlized * cfg.txs_quadrant_sf {
+                        aborted = true;
+                        break;
+                    }
                 }
             }
             if aborted && depth > 0 {

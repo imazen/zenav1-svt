@@ -1273,6 +1273,9 @@ impl DepthWalk<'_, '_> {
                         cw,
                         ch,
                         false, // is_dc_only gate: eff-M9 only
+                        // sb_is_lvl6: ignored here (txs_lvl6_gate is false for
+                        // every preset that reaches the depth-refine walk).
+                        true,
                     );
                     if nsqdbg_on() {
                         eprintln!(

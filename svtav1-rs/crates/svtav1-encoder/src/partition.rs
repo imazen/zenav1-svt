@@ -1416,6 +1416,15 @@ pub(crate) fn encode_fixed_tree(
                         abs_x - sb_org.0,
                         abs_y - sb_org.1,
                     );
+                // eff-M9 per-SB TXS gate (FTR_COUPLE_VLPD0_TXS_PER_SB): C
+                // only turns the VLPD0 txs bump on for SBs the pd0 detector
+                // leaves at PD0_LVL_6 (undemoted). Recompute the exact same
+                // decision the tree build used (compute_b64_variance +
+                // pd0_detector_allintra_demotes at the CLI qp) so demoted
+                // PD0_LVL_5 SBs keep TXS off. Ignored unless the funnel
+                // config sets `txs_lvl6_gate` (eff-M9 only).
+                let sb_is_lvl6 =
+                    !crate::pd0::pd0_detector_allintra_demotes(sb_vars, fx.frame.cli_qp);
                 let choice = crate::leaf_funnel::decide_leaf(
                     fx,
                     src,
@@ -1427,6 +1436,7 @@ pub(crate) fn encode_fixed_tree(
                     abs_y,
                     size,
                     dc_only,
+                    sb_is_lvl6,
                 );
                 let decision = funnel_block_decision(choice, size, size);
                 let tree = PartitionTree::Leaf(decision.clone());
