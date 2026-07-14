@@ -66,6 +66,10 @@ pub struct EncodePipeline {
     /// CDEF evidence counters for the last encoded frame (non-vacuity
     /// reporting: how many pixels the signaled strengths actually touched).
     pub last_cdef_stats: crate::cdef::CdefStats,
+    /// Loop-restoration evidence for the last encoded frame: per-plane
+    /// frame types (0 NONE / 1 WIENER) + the number of RUs that signaled
+    /// wiener. Zeroed when the search does not run.
+    pub last_lr_stats: ([u8; 3], usize),
 }
 
 impl EncodePipeline {
@@ -100,6 +104,7 @@ impl EncodePipeline {
             last_recon_unfiltered: None,
             last_recon_pre_cdef: None,
             last_cdef_stats: crate::cdef::CdefStats::default(),
+            last_lr_stats: ([0; 3], 0),
         }
     }
 
@@ -730,6 +735,7 @@ impl EncodePipeline {
         // output copy gets the decoder-exact stripe-boundary filter pass
         // (svt_av1_loop_restoration_filter_frame). Prediction sources are
         // untouched — the decoder's split.
+        self.last_lr_stats = ([0; 3], 0);
         let mut lr_signal = svtav1_entropy::obu::LrSignal::none(seq_tools.enable_restoration);
         if is_key && seq_tools.enable_restoration {
             let ctrls = crate::restoration::wn_filter_ctrls_allintra(self.speed_config.preset);
@@ -799,6 +805,19 @@ impl EncodePipeline {
                         &bounds,
                     );
                 }
+                self.last_lr_stats = (
+                    [
+                        rest_info.planes[0].frame_rtype,
+                        rest_info.planes[1].frame_rtype,
+                        rest_info.planes[2].frame_rtype,
+                    ],
+                    rest_info
+                        .planes
+                        .iter()
+                        .flat_map(|p| p.units.iter())
+                        .filter(|u| u.rtype == svtav1_dsp::restoration::RESTORE_WIENER)
+                        .count(),
+                );
                 lr_signal = svtav1_entropy::obu::LrSignal {
                     enabled: true,
                     frame_types: [

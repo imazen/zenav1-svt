@@ -102,6 +102,8 @@ fn main() {
     let mut cdef_filtered_px = 0u64;
     let mut cdef_changed_px = 0u64;
     let mut cdef_active_streams = 0usize;
+    let mut lr_active_streams = 0usize;
+    let mut lr_wiener_units = 0usize;
 
     for chroma in [false, true] {
         for content in ["gradient", "uniform", "edges"] {
@@ -150,6 +152,9 @@ fn main() {
                             p.encode_frame(&y, enc)
                         };
                         let (ry, ru, rv) = p.last_recon.clone().expect("recon published");
+                        let (lr_types, lr_units) = p.last_lr_stats;
+                        lr_wiener_units += lr_units;
+                        lr_active_streams += usize::from(lr_types.iter().any(|&t| t != 0));
                         let cs = p.last_cdef_stats;
                         cdef_filtered_px += cs.filtered_px;
                         cdef_changed_px += cs.changed_px;
@@ -218,6 +223,11 @@ fn main() {
     println!(
         "CDEF evidence: {cdef_active_streams}/{} streams fired, \
          {cdef_filtered_px} px filtered, {cdef_changed_px} px changed",
+        pass + fail
+    );
+    println!(
+        "LR evidence: {lr_active_streams}/{} streams signal wiener, \
+         {lr_wiener_units} RUs restored",
         pass + fail
     );
     println!("recon parity: {pass} passed, {fail} failed");
