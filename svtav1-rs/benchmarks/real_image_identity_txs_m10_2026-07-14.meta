@@ -1,0 +1,8 @@
+date: 2026-07-14
+tool: RIM_PRESETS=10 tools/real_image_matrix.sh (identity_run.rs file:<png> mode)
+base_commit: 962d0d055 (pre-fix) + this chunk's eff-M9 per-SB TXS bump + lvl-0 coeff-rate
+corpus: CID22-512 (/root/work/codec-corpus/CID22/CID22-512/training), 20 evenly-spaced photos x q{20,40,55}
+c_reference: SvtAv1EncApp v4.2.0-rc, matched still/AVIF CQP --lp 1, shared I420 (BT.601 limited)
+result: 60/60 byte-identical on REAL content at preset 10 (was 0/66 before the eff-M9 TXS + PD0 fixes)
+  fix: eff-M9 per-SB VLPD0 TXS bump (txs_level 5 for PD0_LVL_6 SBs) + coeff_rate_est_lvl 0
+    luma approximation + quadrant early-exit (leaf_funnel.rs, partition.rs).

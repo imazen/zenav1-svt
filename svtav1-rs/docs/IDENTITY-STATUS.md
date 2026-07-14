@@ -2255,3 +2255,100 @@ RD favors depth 1 on these blocks where ours keeps depth 0. Needs the
 same per-candidate C capture (tx_size RD for the diverging leaf) to pin
 whether it's a missing TXS candidate, a cost term, or a threshold. Left
 documented, not chased (this chunk = smallest fully-verified fix).
+
+## 2026-07-14 (wave2, real-image M10 chunk 2): eff-M9 per-SB TXS bump + lvl-0 coeff-rate — REAL M10 now 60/60 byte-identical
+
+Closed the tx_depth/TXS divergence the prior chunk documented (op 20836).
+**Every tracked real CID22 preset-10 cell is now byte-identical: RIM
+`RIM_PRESETS=10` = 60/60 (20 images x q{20,40,55}), up from 0/66.**
+`1001682 q40 p10` was VERDICT IDENTICAL directly; `1147124` (was op 553)
+and `1424246` (was op 49440) also IDENTICAL. Diagnosed with the differ +
+scratch-C instrumentation of `perform_tx_partitioning` (OBUs verified
+byte-identical to baseline with the env unset, scratch then deleted).
+
+### Root cause: eff-M9 turns TXS ON per-SB (VLPD0 coupling), the funnel had it OFF
+
+At allintra eff-M9 `pcs->txs_level = 0` at the picture level
+(sig_deriv_mode_decision_config_allintra, enc_mode_config.c:15112), but
+with `FTR_COUPLE_VLPD0_TXS_PER_SB` (=1) two things fire:
+- `frm_hdr->tx_mode = TX_MODE_SELECT` unconditionally (:15143).
+- `svt_aom_sig_deriv_enc_dec_allintra` bumps the per-SB txs_level from 0 to
+  `MAX_TXS_LEVEL-1 = 5` **iff `ctx->pd0_ctrls.pd0_level == PD0_LVL_6`**
+  (:11366, CLN_RENAME_PD0). eff-M9's `pic_pd0_lvl = 7` -> base PD0_LVL_6
+  (set_pd0_ctrls case 7, :7127), which `pd0_detector_allintra`
+  (enc_dec_process.c:2373) **demotes to PD0_LVL_5** per-SB when the
+  variance profile lacks a dominant depth (flat SBs). So: **undemoted
+  (PD0_LVL_6) SBs -> TXS on (level 5); demoted (PD0_LVL_5) SBs -> TXS
+  off.** The demoted `pd0_level` set in PD0 persists into the PD1 sig_deriv,
+  so the bump reads the per-SB value. (This is why synthetic identity never
+  exposed it: flat/uniform content demotes every SB -> TXS off -> depth 0.)
+
+set_txs_controls case 5 (:8024): `intra_class_max_depth_sq/nsq = 1`
+(evaluate depth 0 + 1), `prev_depth_coeff_exit_th = 100`,
+`quadrant_th_sf = 100`.
+
+Instrumentation confirmed on `1001682 q40 p10`: 484 PD1 intra leaves ->
+**352 at PD0_LVL_6 (TXS on, end_depth 1), 132 at PD0_LVL_5 (TXS off)**; of
+the 352, **21 pick tx_depth=1** (the C-vs-Rust divergences), 331 keep 0.
+
+### Second cause: eff-M9 luma coeff-RATE uses the fast approximation (coeff_rate_est_lvl 0)
+
+Enabling TXS surfaced a coeff-rate mismatch (~5x). eff-M9 has
+`rate_est_level = 0` (:15043) -> `coeff_rate_est_lvl = 0`
+(set_rate_est_ctrls, :8349). In `tx_type_search` (product_coding_loop.c
+:4976) the luma coeff bits are the fast per-txb estimate
+`th=(txw*txh)>>6; eob<th ? 6000+eob*1000 : 3000+eob*100`, NOT the real
+`cost_coeffs_txb` the funnel computed (built for M6's lvl 1). Captured C
+for the diverging leaf x=176 y=256 16x16 DC: depth0 cbits **19300** = 3000
++ 163*100 (eob 163), depth1 cbits **20700** = 4*3000 + 87*100 (eob 87,
+4x8x8) — reproduced exactly. depth0 cost 54,689,200 vs depth1 50,581,790 ->
+C (and now Rust) picks depth 1. The quadrant early-exit also fires on
+other LVL_6 blocks (e.g. x=128 y=256 32x32 -> depth 1 aborted -> keeps
+depth 0), reproduced exactly.
+
+### The fix (funnel only; C read-only)
+
+`leaf_funnel.rs` — 4 new `FunnelCfg` fields, eff-M9 config gains them:
+- `txs_on = true, txs_max_sq = 1, txs_max_nsq = 1` (was off).
+- `txs_prev_depth_exit = 100` (was hardcoded 1 in the depth loop; now
+  config-driven — depth 1 only tried when depth-0 total eob >= 100, so
+  flat blocks stay depth 0 and synthetic identity is unchanged).
+- `txs_quadrant_sf = 100` — new per-txb quadrant early-abort of a deeper
+  depth (product_coding_loop.c:5437), ported into the depth loop.
+- `txs_lvl6_gate = true` — the per-SB gate. `evaluate_leaf` now takes
+  `sb_is_lvl6`; `end_depth` is 0 unless `!lvl6_gate || sb_is_lvl6`.
+- `coeff_rate_est_lvl = 0` — the depth loop prices the luma coeff rate with
+  the lvl-0 approximation above (only when `end_depth > 0`, i.e. C's
+  perform_tx_partitioning path); the real `tx_unit` bits still drive
+  RDOQ/eob. M6/M7/M8 keep `coeff_rate_est_lvl = 1` (real) — unchanged.
+
+`partition.rs` `encode_fixed_tree`: computes
+`sb_is_lvl6 = !pd0_detector_allintra_demotes(sb_vars, cli_qp)` (the exact
+decision the PD0 tree build used — same fn, same inputs) and passes it to
+`decide_leaf`. `depth_refine.rs`: pass-through (gate off for presets <=8).
+
+### Gates (all green, verbatim)
+
+- `1001682 q40 p10` differ: **op 20836 -> VERDICT IDENTICAL** (10897B,
+  99104 tile ops). `1147124 q40 p10` IDENTICAL (14117B); `1424246 q40 p10`
+  IDENTICAL (6966B).
+- **real-image M10: 60 / 60 byte-identical** (`RIM_PRESETS=10`,
+  benchmarks/real_image_identity_txs_m10_2026-07-14.tsv) — was 0/66.
+- synthetic identity matrix (presets 0-10): **130/132** — unchanged (2 =
+  pre-existing M0 gradient q20 residual; flat content demotes to PD0_LVL_5
+  so TXS stays off, factor unchanged).
+- recon_parity (AOMDEC): **432 passed, 0 failed** (CDEF 236/432, LR
+  wiener 137/432).
+- `cargo test --workspace`: **662 passed, 0 failed**.
+- C tree pristine (`git -C /root/svtav1 status` clean of non-svtav1-rs);
+  scratch `/root/svtav1-instr` deleted.
+
+### Next real-content divergence (NOT this chunk)
+
+M10 real content is closed for the tracked corpus. The next real-content
+target is the other presets: M7/M8 real content will hit the same
+coeff-rate class (they use `coeff_rate_est_lvl 2` in C — `eob<th ?
+6000+eob*1000 : real` — while the funnel uses the real cost; latent, not
+yet stressed since only synthetic M7/M8 is tracked), and M2-M6 real
+content adds NSQ / depth-refine RD. Run `RIM_PRESETS="2 6"` to surface the
+next class.
