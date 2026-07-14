@@ -286,13 +286,13 @@ impl EncodePipeline {
         // (pic_avg_variance = mean of the per-B64 64x64 variances,
         // pic_analysis_process.c:608, truncated to u16) via the allintra
         // policy, the KF full lambda, and the default-CDF coefficient cost
-        // tables. Only key/still frames at presets >= 6 (the PD0
-        // fixed-tree paths: eff-M9 above 8, PD0_LVL_1 at 6..8 — the C
+        // tables. Only key/still frames at presets >= 4 (the PD0
+        // fixed-tree paths: eff-M9 above 8, PD0_LVL_1 at 4..8 — the C
         // rdoq policy line `<=M5 -> 1, else f(coeff_lvl)` covers both,
         // enc_mode_config.c:14931) on 64-aligned dims — everywhere else
         // the legacy dead-zone quantizer stays.
         let c_quant: Option<alloc::sync::Arc<crate::quant::CodingQuantCfg>> =
-            if is_key && self.speed_config.preset >= 5 && w % 64 == 0 && h % 64 == 0 {
+            if is_key && self.speed_config.preset >= 4 && w % 64 == 0 && h % 64 == 0 {
                 let mut tot: u64 = 0;
                 let mut cnt: u64 = 0;
                 for sy in (0..h).step_by(64) {
@@ -500,8 +500,10 @@ impl EncodePipeline {
         // SH signals the tool, so all three consumers MUST see one value.
         let is_single_frame = self.gop.intra_period <= 1;
         let seq_tools = {
-            let mut t =
-                crate::speed_config::seq_tools_for_preset(self.speed_config.preset, is_single_frame);
+            let mut t = crate::speed_config::seq_tools_for_preset(
+                self.speed_config.preset,
+                is_single_frame,
+            );
             // enable_intra_edge_filter's C-parity surface is still/420
             // (the C matched config). The mono extension keeps 0: C cannot
             // emit mono, and the mono leaf coder predicts without edge
@@ -719,8 +721,7 @@ impl EncodePipeline {
                     // the tile writer lacks) falls back to the qp fast
                     // path — self-consistent, documented divergence.
                     let (su, sv) = chroma.unwrap_or((&[][..], &[][..]));
-                    let cfg =
-                        crate::cdef::cdef_search_cfg_for_preset(self.speed_config.preset);
+                    let cfg = crate::cdef::cdef_search_cfg_for_preset(self.speed_config.preset);
                     match crate::cdef::cdef_search_still(
                         &cfg,
                         &recon,
@@ -2229,11 +2230,12 @@ fn encode_tile_rows(
         // per-SB contexts (ec_ctx_array averaging), a documented residual
         // gap for the 128-cell decisions.
         // The C-exact leaf intra funnel covers still/420 allintra presets
-        // 6, 7, 8, and eff-M9 (presets >= 9 clamp to M9). Preset 6 uses
-        // update_cdf_level 2 (per-SB CDF chain); 7/8/9+ use update_cdf_level 0
-        // (static default tables all frame — `funnel_chain` below is M6-only).
+        // 4, 5, 6, 7, 8, and eff-M9 (presets >= 9 clamp to M9). Presets
+        // 4..=6 use update_cdf_level 2 (per-SB CDF chain,
+        // enc_mode_config.c:12154); 7/8/9+ use update_cdf_level 0 (static
+        // default tables all frame — `funnel_chain` below is 4..=6).
         // eff-M9 (intra_level 8) arms the is_dc_only gate inside the funnel.
-        let use_funnel = speed_config.preset >= 5
+        let use_funnel = speed_config.preset >= 4
             && chroma_420
             && chroma_src.is_some()
             && ref_frame_data.is_none()
@@ -2280,13 +2282,13 @@ fn encode_tile_rows(
         // (left 3x + top-right 1x) — unimplemented: such SBs fall back to
         // the left-only copy (no identity-matrix frame is that wide).
         let multi_sb = sb_cols * sb_rows > 1;
-        // The per-SB CDF-refresh chain is only C-correct at M6
-        // (update_cdf_level 2). M7/M8/eff-M9 (update_cdf_level 0) keep the
-        // static default rate tables for every SB, so they never chain.
+        // The per-SB CDF-refresh chain is only C-correct at M4..M6
+        // (update_cdf_level 2, svt_aom_get_update_cdf_level_allintra
+        // enc_mode_config.c:12154). M7/M8/eff-M9 (update_cdf_level 0) keep
+        // the static default rate tables for every SB, so they never chain.
         // Gated on use_funnel so it only fires for the chroma/420 funnel
-        // path (chroma_src is Some) — mono M6 never chains.
-        let funnel_chain =
-            use_funnel && matches!(speed_config.preset, 5 | 6) && multi_sb;
+        // path (chroma_src is Some) — mono never chains.
+        let funnel_chain = use_funnel && matches!(speed_config.preset, 4..=6) && multi_sb;
         let mut chain_snaps: Vec<(
             svtav1_entropy::context::FrameContext,
             alloc::boxed::Box<svtav1_entropy::coeff_c::CoeffFc>,
@@ -2355,7 +2357,8 @@ fn encode_tile_rows(
                 // C-exact partition source gate (see the comment below);
                 // computed here because the leaf lambda depends on it.
                 let use_pd0 = ref_ctx.is_none()
-                    && (speed_config.preset >= 6 || (speed_config.preset == 5 && use_funnel))
+                    && (speed_config.preset >= 6
+                        || (matches!(speed_config.preset, 4 | 5) && use_funnel))
                     && cur_w == sb_size
                     && cur_h == sb_size;
                 // CLI-qp-calibrated lambda via the exact inverse mapping
@@ -2430,14 +2433,49 @@ fn encode_tile_rows(
                     });
                 }
                 let sb_result = if use_pd0 {
-                    let tree = if speed_config.preset >= 9 {
-                        crate::pd0::pd0_pick_sb_partition(
+                    if speed_config.preset >= 9 {
+                        let tree = crate::pd0::pd0_pick_sb_partition(
                             encode_input,
                             w,
                             x0,
                             y0,
                             cli_qp as u32,
                             sb_qindex,
+                        );
+                        // The same per-SB variance map C's picture analysis
+                        // feeds to is_dc_only_safe (pcs->ppcs->variance): the
+                        // fixed-tree leaves use it to force the C-exact
+                        // DC-only intra candidate set where the gate fires.
+                        let sb_vars = crate::pd0::compute_b64_variance(encode_input, w, x0, y0);
+                        let mut funnel_ctx = if use_funnel {
+                            let (u_src, v_src) = chroma_src.unwrap();
+                            Some(crate::leaf_funnel::FunnelCtx {
+                                u_src,
+                                v_src,
+                                u_recon: &mut fun_u_recon,
+                                v_recon: &mut fun_v_recon,
+                                c_stride: cwid,
+                                ectx: fun_ectx.as_mut().unwrap(),
+                                rates: fun_rates.as_deref().unwrap(),
+                                frame: fun_frame.as_ref().unwrap(),
+                            })
+                        } else {
+                            None
+                        };
+                        crate::partition::encode_fixed_tree(
+                            &encode_input[y0 * w + x0..],
+                            w,
+                            &mut tile_frame_recon,
+                            w,
+                            &tree,
+                            sb_size,
+                            sb_qindex,
+                            &part_config,
+                            x0,
+                            y0,
+                            &sb_vars,
+                            (x0, y0),
+                            funnel_ctx.as_mut(),
                         )
                     } else {
                         // Per-SB PD0 rate tables from the chain (C rebuilds
@@ -2458,51 +2496,109 @@ fn encode_tile_rows(
                             None => m6_pd0_tables
                                 .get_or_insert_with(|| crate::pd0::build_m6_pd0_tables(sb_qindex)),
                         };
-                        crate::pd0::pd0_pick_sb_partition_m6(
-                            encode_input,
-                            w,
-                            x0,
-                            y0,
-                            cli_qp as u32,
-                            sb_qindex,
-                            tables,
-                        )
-                    };
-                    // The same per-SB variance map C's picture analysis
-                    // feeds to is_dc_only_safe (pcs->ppcs->variance): the
-                    // fixed-tree leaves use it to force the C-exact
-                    // DC-only intra candidate set where the gate fires.
-                    let sb_vars = crate::pd0::compute_b64_variance(encode_input, w, x0, y0);
-                    let mut funnel_ctx = if use_funnel {
-                        let (u_src, v_src) = chroma_src.unwrap();
-                        Some(crate::leaf_funnel::FunnelCtx {
-                            u_src,
-                            v_src,
-                            u_recon: &mut fun_u_recon,
-                            v_recon: &mut fun_v_recon,
-                            c_stride: cwid,
-                            ectx: fun_ectx.as_mut().unwrap(),
-                            rates: fun_rates.as_deref().unwrap(),
-                            frame: fun_frame.as_ref().unwrap(),
-                        })
-                    } else {
-                        None
-                    };
-                    crate::partition::encode_fixed_tree(
-                        &encode_input[y0 * w + x0..],
-                        w,
-                        &mut tile_frame_recon,
-                        w,
-                        &tree,
-                        sb_size,
-                        sb_qindex,
-                        &part_config,
-                        x0,
-                        y0,
-                        &sb_vars,
-                        (x0, y0),
-                        funnel_ctx.as_mut(),
-                    )
+                        let refined = matches!(speed_config.preset, 4 | 5) && use_funnel;
+                        if refined {
+                            // M4/M5 (`dr_mode = 1`, PD0_DEPTH_ADAPTIVE):
+                            // PD1 re-decides depths around the PD0 tree —
+                            // depth_refine.rs. The refinement gates run on
+                            // the PD0 PART_N costs; the walk evaluates the
+                            // admitted depths through the leaf funnel and
+                            // compares with real partition rates
+                            // (bias 995). M6+ (PRED_PART_ONLY) keeps the
+                            // fixed-tree path below (identical outcome:
+                            // s = e = 0 everywhere).
+                            let eval = crate::pd0::pd0_pick_sb_partition_m6_eval(
+                                encode_input,
+                                w,
+                                x0,
+                                y0,
+                                cli_qp as u32,
+                                sb_qindex,
+                                tables,
+                            );
+                            let dr = crate::depth_refine::DrCtrls::for_preset(speed_config.preset);
+                            let cq = c_quant.as_ref().unwrap();
+                            let scan = crate::depth_refine::build_refined_scan(
+                                &eval,
+                                &dr,
+                                cq.lambda as u64,
+                                tables,
+                            );
+                            // Partition rates at the real contexts, from
+                            // the same (possibly chained) frame context as
+                            // the funnel's syntax rates.
+                            let part_rates = match &chain_base {
+                                Some((fc, _)) => crate::depth_refine::PartRates::from_fc(fc),
+                                None => crate::depth_refine::PartRates::from_fc(
+                                    &svtav1_entropy::context::FrameContext::new_default(),
+                                ),
+                            };
+                            let (u_src, v_src) = chroma_src.unwrap();
+                            let mut fx = crate::leaf_funnel::FunnelCtx {
+                                u_src,
+                                v_src,
+                                u_recon: &mut fun_u_recon,
+                                v_recon: &mut fun_v_recon,
+                                c_stride: cwid,
+                                ectx: fun_ectx.as_mut().unwrap(),
+                                rates: fun_rates.as_deref().unwrap(),
+                                frame: fun_frame.as_ref().unwrap(),
+                            };
+                            crate::depth_refine::decide_sb_refined(
+                                &scan,
+                                &mut fx,
+                                encode_input,
+                                w,
+                                &mut tile_frame_recon,
+                                w,
+                                cq.lambda as u64,
+                                &part_rates,
+                                x0,
+                                y0,
+                            )
+                        } else {
+                            let tree = crate::pd0::pd0_pick_sb_partition_m6(
+                                encode_input,
+                                w,
+                                x0,
+                                y0,
+                                cli_qp as u32,
+                                sb_qindex,
+                                tables,
+                            );
+                            let sb_vars = crate::pd0::compute_b64_variance(encode_input, w, x0, y0);
+                            let mut funnel_ctx = if use_funnel {
+                                let (u_src, v_src) = chroma_src.unwrap();
+                                Some(crate::leaf_funnel::FunnelCtx {
+                                    u_src,
+                                    v_src,
+                                    u_recon: &mut fun_u_recon,
+                                    v_recon: &mut fun_v_recon,
+                                    c_stride: cwid,
+                                    ectx: fun_ectx.as_mut().unwrap(),
+                                    rates: fun_rates.as_deref().unwrap(),
+                                    frame: fun_frame.as_ref().unwrap(),
+                                })
+                            } else {
+                                None
+                            };
+                            crate::partition::encode_fixed_tree(
+                                &encode_input[y0 * w + x0..],
+                                w,
+                                &mut tile_frame_recon,
+                                w,
+                                &tree,
+                                sb_size,
+                                sb_qindex,
+                                &part_config,
+                                x0,
+                                y0,
+                                &sb_vars,
+                                (x0, y0),
+                                funnel_ctx.as_mut(),
+                            )
+                        }
+                    }
                 } else {
                     crate::partition::partition_search_with_config(
                         &encode_input[y0 * w + x0..],

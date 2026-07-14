@@ -1317,6 +1317,72 @@ pub fn partition_search_with_config(
 /// the partition structure comes from PD0 (pred_depth_only, nsq search
 /// off), and only per-block mode/coeff decisions remain.
 #[allow(clippy::too_many_arguments)]
+/// Build the walk/entropy-pass [`BlockDecision`] for a funnel leaf choice
+/// (shared by the fixed-tree path and the depth-refined walk).
+pub(crate) fn funnel_block_decision(
+    choice: crate::leaf_funnel::LeafChoice,
+    size: usize,
+) -> BlockDecision {
+    let (qcoeffs, eob, tx_type) = if choice.tx_depth == 0 {
+        // Unpack the packed (<= 32-capped) txb into the full
+        // w x h raster the depth-0 walk path expects.
+        let (pw, ph) = (size.min(32), size.min(32));
+        let mut full = alloc::vec![0i32; size * size];
+        let mut eob = 0u16;
+        for r in 0..ph {
+            for c in 0..pw {
+                let q = choice.txb_qcoeffs[0][r * pw + c];
+                full[r * size + c] = q;
+                if q != 0 {
+                    eob = (r * size + c + 1) as u16;
+                }
+            }
+        }
+        (full, eob, choice.txb_tx_types[0])
+    } else {
+        let total: u32 = choice.txb_eobs.iter().map(|&e| e as u32).sum();
+        (alloc::vec::Vec::new(), total.min(u16::MAX as u32) as u16, 0)
+    };
+    BlockDecision {
+        partition_type: PartitionType::None,
+        intra_mode: choice.mode,
+        tx_type,
+        qcoeffs,
+        eob,
+        width: size as u16,
+        height: size as u16,
+        filter_intra_mode: choice.fi_mode,
+        uv_mode: choice.uv_mode,
+        angle_delta: choice.angle_delta,
+        uv_angle_delta: choice.uv_angle_delta,
+        tx_depth: choice.tx_depth,
+        txb_qcoeffs: if choice.tx_depth > 0 {
+            choice.txb_qcoeffs
+        } else {
+            alloc::vec::Vec::new()
+        },
+        txb_eobs: if choice.tx_depth > 0 {
+            choice.txb_eobs
+        } else {
+            alloc::vec::Vec::new()
+        },
+        txb_tx_types: if choice.tx_depth > 0 {
+            choice.txb_tx_types
+        } else {
+            alloc::vec::Vec::new()
+        },
+        chroma_dec: Some((
+            choice.u_qcoeffs,
+            choice.v_qcoeffs,
+            choice.u_eob,
+            choice.v_eob,
+            choice.u_recon,
+            choice.v_recon,
+        )),
+        ..Default::default()
+    }
+}
+
 pub(crate) fn encode_fixed_tree(
     src: &[u8],
     src_stride: usize,
@@ -1361,64 +1427,7 @@ pub(crate) fn encode_fixed_tree(
                     size,
                     dc_only,
                 );
-                let (qcoeffs, eob, tx_type) = if choice.tx_depth == 0 {
-                    // Unpack the packed (<= 32-capped) txb into the full
-                    // w x h raster the depth-0 walk path expects.
-                    let (pw, ph) = (size.min(32), size.min(32));
-                    let mut full = alloc::vec![0i32; size * size];
-                    let mut eob = 0u16;
-                    for r in 0..ph {
-                        for c in 0..pw {
-                            let q = choice.txb_qcoeffs[0][r * pw + c];
-                            full[r * size + c] = q;
-                            if q != 0 {
-                                eob = (r * size + c + 1) as u16;
-                            }
-                        }
-                    }
-                    (full, eob, choice.txb_tx_types[0])
-                } else {
-                    let total: u32 = choice.txb_eobs.iter().map(|&e| e as u32).sum();
-                    (alloc::vec::Vec::new(), total.min(u16::MAX as u32) as u16, 0)
-                };
-                let decision = BlockDecision {
-                    partition_type: PartitionType::None,
-                    intra_mode: choice.mode,
-                    tx_type,
-                    qcoeffs,
-                    eob,
-                    width: size as u16,
-                    height: size as u16,
-                    filter_intra_mode: choice.fi_mode,
-                    uv_mode: choice.uv_mode,
-                    angle_delta: choice.angle_delta,
-                    uv_angle_delta: choice.uv_angle_delta,
-                    tx_depth: choice.tx_depth,
-                    txb_qcoeffs: if choice.tx_depth > 0 {
-                        choice.txb_qcoeffs
-                    } else {
-                        alloc::vec::Vec::new()
-                    },
-                    txb_eobs: if choice.tx_depth > 0 {
-                        choice.txb_eobs
-                    } else {
-                        alloc::vec::Vec::new()
-                    },
-                    txb_tx_types: if choice.tx_depth > 0 {
-                        choice.txb_tx_types
-                    } else {
-                        alloc::vec::Vec::new()
-                    },
-                    chroma_dec: Some((
-                        choice.u_qcoeffs,
-                        choice.v_qcoeffs,
-                        choice.u_eob,
-                        choice.v_eob,
-                        choice.u_recon,
-                        choice.v_recon,
-                    )),
-                    ..Default::default()
-                };
+                let decision = funnel_block_decision(choice, size);
                 let tree = PartitionTree::Leaf(decision.clone());
                 return PartitionResult {
                     partition_type: PartitionType::None,
