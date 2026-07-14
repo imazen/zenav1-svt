@@ -334,6 +334,44 @@ cref oracles + `tests/c_parity_{sad,variance,inter_pred,obmc,warp,scale,superres
 Gates after the OBMC fix: workspace tests 647/0, recon_parity 378/0,
 decode_conformance 840/0.
 
+### Inter/Analysis Encoder-Module Audit vs v4.2 C (2026-07-14, wave2/entropy-c-parity)
+Audited the 5 pre-v4.2-bump modules with inline tests but ZERO cref coverage
+(motion_est, film_grain, temporal_filter, multipass, mv_coding). Change-status
+from `mainline_v4.2.bit-affecting.diff`. cref oracles + new c_parity suites.
+
+- **mv_coding.rs (NORMATIVE) — was BROKEN, now FIXED bit-exact.** The old port
+  wrote raw literals for joint/class/sign/bits (and coded X before Y) instead of
+  CDF symbols — non-decodable. Dormant on the still gates (write_mv only under
+  `decision.is_inter`; pipeline.rs:1718 debug_asserts the 420/still path is
+  intra-only), so the conformance matrix never caught it. Rewrote as a bit-exact
+  port of svt_av1_encode_mv + encode_mv_component + svt_av1_get_mv_class + the
+  default_nmv_context CDFs. The MV-encode path itself is UNCHANGED 4.1->4.2
+  (pre-existing wrong port, not drift). cref: ref_encode_mv_seq + ref_get_mv_class
+  + FcTable::Nmvc; tests/c_parity_mv.rs (exhaustive class, 143-entry nmvc drift,
+  byte-exact seqs w/ CDF adaptation across all 3 precisions). Follow-up: the
+  inter path still needs a persisted per-frame nmvc + real ref_mv subtraction
+  (write_mv uses fresh default CDFs per call — documented).
+- **temporal_filter.rs — estimate_noise_fp16 PORTED bit-exact** vs
+  svt_estimate_noise_fp16_c (temporal_filtering.c; body unchanged 4.1->4.2 —
+  nearby bit-affecting hunk is VMAF RTCD decls only). cref ref_estimate_noise_fp16
+  + tests/c_parity_temporal.rs. The temporal_filter() planewise blend + old f64
+  estimate_noise are HOMEGROWN heuristics (NOT svt_av1_apply_temporal_filter_
+  planewise_medium), non-normative, inter-only/dormant.
+- **motion_est.rs — HOMEGROWN, not a port.** Full-pel raster SAD + BILINEAR
+  subpel; C svt_aom_motion_estimation_b64 / mcomp subpel / av1me are all
+  bit-affecting-changed 4.1->4.2 and untracked. Inline SAD IS C-equivalent:
+  tests/c_parity_motion_est.rs pins full_pel_search distortion == svt_aom_sad at
+  the chosen MV. Non-normative, inter-only/dormant.
+- **film_grain.rs — HOMEGROWN + INERT.** estimate_film_grain output is discarded
+  (pipeline `_grain_params`) and obu.rs always emits film_grain_params_present=0.
+  Not a port of noise_model.c/grainSynthesis.c (bit-affecting-changed). No FH
+  grain write path exists; no single-fn oracle. Documented.
+- **multipass.rs — HOMEGROWN + UNWIRED (zero callers).** Not a port of
+  firstpass.c (unchanged) / initial_rc_process.c / pass2_strategy.c (changed).
+  Non-normative. Documented.
+Gates after: workspace tests 662/0. Still-image gates provably unaffected
+(intra-only still path). C tree pristine.
+
 ### Performance
 Release-mode benchmarks (x86_64 AVX2):
 - SAD 16x16: ~18 Gpix/s (archmage auto-vectorization)
