@@ -93,19 +93,24 @@ under the AV1 reference decoder as of 2026-07-13, C baseline v4.2.0-rc)
 > seq_tools_for_preset), FH lr_params all-RESTORE_NONE syntax,
 > per-block use_filter_intra flag (DC <=32x32, always 0), CDEF
 > all-skip-frame search outcome (bits=0/strengths 0).
+> **MATRIX COMPLETE 36/36 — 2026-07-14** (M6 leaf funnel chunk:
+> captures 265830cf7, kernels 2fc88e564, funnel 725fd3b09, per-SB CDF
+> chain 661efa7bc): the C-exact M6 leaf intra funnel (MDS0 Hadamard
+> fast loop -> NIC pruning -> MDS1 quantize_b full loop -> MDS3
+> TXS/TXT/RDOQ/chroma full loop, filter-intra candidates, uv-follows-
+> luma chroma decisions, per-SB rate-table refresh into both the
+> funnel and the M6 PD0) closed ALL 6 gradient preset-6 cells. Every
+> tracked identity cell is byte-identical. Residual non-cell gaps:
+> CFL evaluation when the chroma detector arms (never on tracked
+> content), avg_cdf_symbols for frames > 2 SBs wide, funnel scope
+> preset 6/420-still only. See docs/IDENTITY-STATUS.md 2026-07-14.
 > **GRADIENT M13/M10 IDENTICAL 2026-07-13** (PD0 partition port
 > ffb73bcf2+60b006b85, is_dc_only_safe leaf gate b7f362af4, C-exact
 > coding quantizer ee18fed11 — quant.rs: quantize_b / quantize_fp +
 > svt_av1_optimize_b RDOQ trellis + coeff_lvl->rdoq_level policy):
 > matrix now **30/36** — every uniform AND every gradient M13/M10 cell
-> is byte-identical. Remaining (map has details): the 6 gradient
-> preset-6 cells, ALL owned by the M6 leaf funnel (filter-intra RDO +
-> MDS0/NIC pruning + MDS3 leaf compare) after the 2026-07-14 chunks
-> landed M6 PD0 (partitions match), the CDEF live-block search (FH
-> matches) and Wiener loop restoration end-to-end (lr_type/flag/tap
-> SYNTAX matches; the remaining 4 lr cells diverge only on tap VALUES,
-> which derive from the leaf-funnel recon gap — the search itself is
-> proven C-exact on C's inputs, tests/lr_search_c_capture.rs).
+> is byte-identical. Remaining: NONE — the M6 leaf funnel
+> (2026-07-14) closed the final 6 cells; the matrix is 36/36.
 0a. **[FIXED 2026-07-13] Edges-content divergence** — root cause was NOT the
    transforms (all named + dispatch wrapper paths are now pinned bit-exact
    vs C by c_parity_txfm, incl. rect + flat-DC shapes): extract_neighbors
@@ -208,12 +213,12 @@ under the AV1 reference decoder as of 2026-07-13, C baseline v4.2.0-rc)
    (2a), and sgrproj (out of scope — C never searches it at any
    representable allintra preset).
 3. **Decision-layer parity** — CLOSED for the still M13/M10 path
-   (2026-07-13): partitions come from the C-exact PD0 port (pd0.rs),
-   leaf modes from the is_dc_only_safe gate + candidate funnel, and
-   qcoeffs from the C-exact coding quantizer (quant.rs: quantize_b /
-   quantize_fp + svt_av1_optimize_b RDOQ). Still homegrown: preset <= 8
-   decisions (M6 PD0 architecture + nsq), inter frames, and the
-   non-DC-only leaf cost funnel (currently agrees at every tracked cell).
+   (2026-07-13) AND the still M6 path (2026-07-14: leaf_funnel.rs —
+   the C-exact MDS0/MDS1/MDS3 funnel with filter-intra, chroma-in-RD
+   and the per-SB CDF chain; matrix 36/36). Still homegrown: presets
+   7/8 leaf decisions (intra_level 7 constants unverified), presets
+   <= 5, mono leaf decisions (C cannot emit mono), inter frames, and
+   CFL evaluation when the chroma detector arms.
 4. **[FIXED 2026-07-13] Intra edge preparation** — directional
    predictions padded extension arrays with 128 where the decoder
    replicates edges / uses real above-right/bottom-left pixels. Fixed by
