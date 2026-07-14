@@ -6,6 +6,7 @@ extern crate alloc;
 
 pub mod cdef;
 pub mod deblock;
+pub mod depth_refine;
 pub mod encode_loop;
 pub mod film_grain;
 pub mod intra_edge;
