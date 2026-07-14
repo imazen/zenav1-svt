@@ -75,15 +75,11 @@ fn main() {
     let cw = enc / 2;
     // Pre-deblock window around the diverging edges.
     for r in 46..60 {
-        let row: Vec<String> = (36..44)
-            .map(|c| format!("{:3}", uu[r * cw + c]))
-            .collect();
+        let row: Vec<String> = (36..44).map(|c| format!("{:3}", uu[r * cw + c])).collect();
         println!("preU r{r}: {}", row.join(" "));
     }
     for r in 46..60 {
-        let row: Vec<String> = (36..44)
-            .map(|c| format!("{:3}", pu[r * cw + c]))
-            .collect();
+        let row: Vec<String> = (36..44).map(|c| format!("{:3}", pu[r * cw + c])).collect();
         println!("postdblkU r{r}: {}", row.join(" "));
     }
     for (plane, dec, encp) in [("U", du, &ru[..]), ("V", dv, &rv[..])] {

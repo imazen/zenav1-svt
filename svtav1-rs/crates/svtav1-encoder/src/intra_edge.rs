@@ -690,7 +690,11 @@ pub fn build_directional_edges(
     // C early exit: the required edge has no real pixels → flat fill.
     if (!need_above && n_left_px == 0) || (!need_left && n_top_px == 0) {
         let val = if need_left {
-            if n_top_px > 0 { above_ref(0) } else { 129 }
+            if n_top_px > 0 {
+                above_ref(0)
+            } else {
+                129
+            }
         } else if n_left_px > 0 {
             left_ref(0)
         } else {
@@ -941,7 +945,11 @@ pub fn dr_predict<S: Fn(usize, usize) -> u8>(
     // Early flat exit (:86-99).
     if (!need_above && n_left_px == 0) || (!need_left && n_top_px == 0) {
         let val = if need_left {
-            if n_top_px > 0 { above_ref(0) } else { 129 }
+            if n_top_px > 0 {
+                above_ref(0)
+            } else {
+                129
+            }
         } else if n_left_px > 0 {
             left_ref(0)
         } else {
@@ -1030,15 +1038,24 @@ pub fn dr_predict<S: Fn(usize, usize) -> u8>(
                 ip::filter_intra_edge_corner(&mut above, &mut left, origin);
             }
             if need_above && n_top_px > 0 {
-                let strength =
-                    ip::intra_edge_filter_strength(txwpx as i32, txhpx as i32, p_angle - 90, filt_type);
+                let strength = ip::intra_edge_filter_strength(
+                    txwpx as i32,
+                    txhpx as i32,
+                    p_angle - 90,
+                    filt_type,
+                );
                 let n_px = (n_top_px + ab_le as i64 + if need_right { txhpx } else { 0 }) as usize;
                 ip::filter_intra_edge(&mut above, origin - ab_le, n_px, strength);
             }
             if need_left && n_left_px > 0 {
-                let strength =
-                    ip::intra_edge_filter_strength(txhpx as i32, txwpx as i32, p_angle - 180, filt_type);
-                let n_px = (n_left_px + ab_le as i64 + if need_bottom { txwpx } else { 0 }) as usize;
+                let strength = ip::intra_edge_filter_strength(
+                    txhpx as i32,
+                    txwpx as i32,
+                    p_angle - 180,
+                    filt_type,
+                );
+                let n_px =
+                    (n_left_px + ab_le as i64 + if need_bottom { txwpx } else { 0 }) as usize;
                 ip::filter_intra_edge(&mut left, origin - ab_le, n_px, strength);
             }
         }

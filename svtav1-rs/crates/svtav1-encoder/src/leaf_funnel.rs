@@ -852,7 +852,11 @@ fn tx_unit(
         }
         d += three_quad_energy;
         let shift = (1 - log_scale as i32) * 2;
-        if shift < 0 { d << (-shift) } else { d >> shift }
+        if shift < 0 {
+            d << (-shift)
+        } else {
+            d >> shift
+        }
     };
 
     let bits = if eob > 0 {
@@ -1473,7 +1477,10 @@ pub(crate) fn decide_leaf(
         let mut uv_rd: Vec<(u64, u64)> = Vec::with_capacity(uv_list.len());
         for &(uvm, uvd) in &uv_list {
             let (u_out, v_out) = chroma_eval(fx, uvm, uvd);
-            uv_rd.push((u_out.bits as u64 + v_out.bits as u64, u_out.dist + v_out.dist));
+            uv_rd.push((
+                u_out.bits as u64 + v_out.bits as u64,
+                u_out.dist + v_out.dist,
+            ));
         }
 
         // Per distinct surviving luma mode (survivor order), pick the

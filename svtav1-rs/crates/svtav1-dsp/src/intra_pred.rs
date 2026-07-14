@@ -1449,7 +1449,7 @@ mod dispatch_tests {
     use super::*;
     use alloc::vec;
     use alloc::vec::Vec;
-    use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+    use archmage::testing::{for_each_token_permutation, CompileTimePolicy};
 
     #[test]
     fn paeth_all_dispatch_levels() {
