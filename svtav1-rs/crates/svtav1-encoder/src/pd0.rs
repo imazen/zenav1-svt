@@ -850,6 +850,66 @@ impl Pd0Tree {
     }
 }
 
+/// PD0 evaluation record for one square node — the C `pc_tree` fields the
+/// PD1 depth refinement reads (`tested_blk[PART_N][0]`,
+/// `block_data[PART_N][0]->cost`, `partition`): every node the PD0 walk
+/// visited carries whether its PART_N block was costed and that cost.
+/// Children exist whenever the split test recursed into them (quadrants
+/// skipped by the split-cost early exit stay `tested = false` with no
+/// children, exactly like C's untouched `pc_tree->split[i]`).
+#[derive(Debug, Clone)]
+pub struct Pd0Eval {
+    pub sq: usize,
+    /// C `tested_blk[PART_N][0]` — PART_N was costed at this node.
+    pub tested: bool,
+    /// C `block_data[PART_N][0]->cost` (valid iff `tested`).
+    pub cost: u64,
+    /// PD0 picked SPLIT at this node (`pc_tree->partition`).
+    pub split: bool,
+    pub children: Option<Box<[Pd0Eval; 4]>>,
+}
+
+impl Pd0Eval {
+    fn untested(sq: usize) -> Self {
+        Pd0Eval {
+            sq,
+            tested: false,
+            cost: 0,
+            split: false,
+            children: None,
+        }
+    }
+
+    /// The picked partition tree this eval corresponds to.
+    pub fn tree(&self) -> Pd0Tree {
+        if self.split {
+            let ch = self.children.as_ref().expect("split node has children");
+            Pd0Tree::Split(Box::new([
+                ch[0].tree(),
+                ch[1].tree(),
+                ch[2].tree(),
+                ch[3].tree(),
+            ]))
+        } else {
+            Pd0Tree::Leaf(self.sq)
+        }
+    }
+
+    /// C `get_max_min_pd0_depths` (enc_dec_process.c:1959): max/min PICKED
+    /// leaf sizes over the tree (in-bounds walk; our frames are 64-aligned
+    /// so every node is in bounds).
+    pub fn max_min_picked(&self, max: &mut usize, min: &mut usize) {
+        if self.split {
+            for c in self.children.as_ref().expect("split children").iter() {
+                c.max_min_picked(max, min);
+            }
+        } else {
+            *max = (*max).max(self.sq);
+            *min = (*min).min(self.sq);
+        }
+    }
+}
+
 /// Which PD0 block-encode path prices a block (C `Pd0Level`, collapsed to
 /// the three configurations reachable from the allintra preset ladder).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -932,7 +992,7 @@ pub fn build_m6_pd0_tables_from_ctx(
 
 impl M6Pd0Tables {
     #[inline]
-    fn split_bits(&self, sq_size: usize) -> u64 {
+    pub(crate) fn split_bits(&self, sq_size: usize) -> u64 {
         self.split_bits[match sq_size {
             8 => 0,
             16 => 1,
@@ -1105,19 +1165,27 @@ impl<'a> Pd0Ctx<'a> {
     }
 
     /// C `svt_aom_pick_partition_pd0` + `test_split_partition_pd0`:
-    /// parent-first DFS returning (cost, tree) for this square node.
-    fn pick(&mut self, sq_size: usize, org_x: usize, org_y: usize) -> (u64, Pd0Tree) {
+    /// parent-first DFS returning (cost, eval record) for this square
+    /// node; the picked tree is `eval.tree()`.
+    fn pick(&mut self, sq_size: usize, org_x: usize, org_y: usize) -> (u64, Pd0Eval) {
         let tested = sq_size <= self.max_sq && sq_size >= self.min_sq;
         let parent_cost = if tested {
             Some(self.block_cost(sq_size, org_x, org_y))
         } else {
             None
         };
+        let mut eval = Pd0Eval {
+            sq: sq_size,
+            tested,
+            cost: parent_cost.unwrap_or(0),
+            split: false,
+            children: None,
+        };
 
         let split_flag = sq_size > self.min_sq;
         if !split_flag {
             let cost = parent_cost.expect("leaf must be tested (min_sq <= size <= max_sq)");
-            return (cost, Pd0Tree::Leaf(sq_size));
+            return (cost, eval);
         }
 
         // test_split_partition_pd0: split rate term (0 at LVL_6 allintra;
@@ -1137,7 +1205,7 @@ impl<'a> Pd0Ctx<'a> {
         };
 
         let half = sq_size / 2;
-        let mut children: Vec<Pd0Tree> = Vec::with_capacity(4);
+        let mut children: Vec<Pd0Eval> = Vec::with_capacity(4);
         let mut split_valid = true;
         for i in 0..4 {
             let cx = org_x + (i & 1) * half;
@@ -1155,24 +1223,35 @@ impl<'a> Pd0Ctx<'a> {
                     }
                 }
             }
-            let (child_cost, child_tree) = self.pick(half, cx, cy);
+            let (child_cost, child_eval) = self.pick(half, cx, cy);
             split_cost += child_cost;
-            children.push(child_tree);
+            children.push(child_eval);
+        }
+
+        // Record the visited children (C: their pc_tree nodes were
+        // populated by the recursion even when the parent ends NONE);
+        // quadrants skipped by the early exit stay untested.
+        if !children.is_empty() {
+            while children.len() < 4 {
+                children.push(Pd0Eval::untested(half));
+            }
+            let ch: [Pd0Eval; 4] = children.try_into().expect("4 children");
+            eval.children = Some(Box::new(ch));
         }
 
         if !split_valid {
             let cost = parent_cost.expect("early exit requires a valid parent");
-            return (cost, Pd0Tree::Leaf(sq_size));
+            return (cost, eval);
         }
 
         // parent_cost_bias = 1000 (allintra): parent wins on <=.
         if let Some(pc) = parent_cost {
             if pc * 1000 <= split_cost * 1000 {
-                return (pc, Pd0Tree::Leaf(sq_size));
+                return (pc, eval);
             }
         }
-        let ch: [Pd0Tree; 4] = children.try_into().expect("4 children");
-        (split_cost, Pd0Tree::Split(Box::new(ch)))
+        eval.split = true;
+        (split_cost, eval)
     }
 }
 
@@ -1214,8 +1293,8 @@ pub fn pd0_pick_sb_partition(
         min_sq: 8,
         is_subres_safe: 255,
     };
-    let (_cost, tree) = ctx.pick(64, 0, 0);
-    tree
+    let (_cost, eval) = ctx.pick(64, 0, 0);
+    eval.tree()
 }
 
 /// Decide the partition tree of one 64x64 superblock exactly like the C
@@ -1259,8 +1338,41 @@ pub fn pd0_pick_sb_partition_m6(
         min_sq: 8,
         is_subres_safe: 255,
     };
-    let (_cost, tree) = ctx.pick(64, 0, 0);
-    tree
+    let (_cost, eval) = ctx.pick(64, 0, 0);
+    eval.tree()
+}
+
+/// [`pd0_pick_sb_partition_m6`] returning the full evaluation record —
+/// the PD1 depth refinement's input (per-node tested/cost like C's
+/// `pc_tree` after PD0).
+pub fn pd0_pick_sb_partition_m6_eval(
+    src: &[u8],
+    stride: usize,
+    sb_x: usize,
+    sb_y: usize,
+    qp: u32,
+    qindex: u8,
+    tables: &M6Pd0Tables,
+) -> Pd0Eval {
+    let vars = compute_b64_variance(src, stride, sb_x, sb_y);
+    let lambda = kf_full_lambda_8bit(qindex, qp) as u64;
+    let mut ctx = Pd0Ctx {
+        src,
+        stride,
+        sb_x,
+        sb_y,
+        vars,
+        qp,
+        qindex,
+        lambda,
+        mode: Pd0Mode::Lvl1,
+        lvl1: Some(tables),
+        max_sq: 64,
+        min_sq: 8,
+        is_subres_safe: 255,
+    };
+    let (_cost, eval) = ctx.pick(64, 0, 0);
+    eval
 }
 
 #[cfg(test)]
