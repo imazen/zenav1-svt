@@ -455,70 +455,14 @@ impl EncodePipeline {
         // edge walk needs — see `deblock_geom` / apply_deblock_frame).
         //
         // CDEF is SIGNALED and applied decoder-exactly after deblocking
-        // (step 6a'). Wiener / sgrproj remain DISABLED until their C
-        // search + signaling ports land: the SH signals no restoration, so
-        // the decoder applies none; applying them here would make the
-        // encoder's DPB recon diverge from what any conforming decoder
-        // reconstructs (pixel integrity rule: two paths producing
-        // different pixels is a bug). Their sketches below are kept for
-        // the faithful ports, which must signal parameters and filter
-        // identically to C.
-        const APPLY_UNSIGNALED_FILTERS: bool = false;
-        if APPLY_UNSIGNALED_FILTERS {
-            // (CDEF's old approximation block was deleted when the C-exact
-            // port landed — CDEF is now signaled + applied decoder-exactly
-            // in step 6a below, alongside deblocking.)
-
-            // 5c: Wiener restoration (if enabled)
-            // Optimizes coefficients per-frame by searching for the set that
-            // minimizes SSE between filtered reconstruction and source.
-            if self.speed_config.enable_restoration {
-                let mut restored = recon.clone();
-                let (h_coeffs, v_coeffs) = svtav1_dsp::loop_filter::optimize_wiener_coefficients(
-                    &encode_input,
-                    w,
-                    &recon,
-                    w,
-                    w,
-                    h,
-                );
-                svtav1_dsp::loop_filter::wiener_filter(
-                    &recon,
-                    w,
-                    &mut restored,
-                    w,
-                    w,
-                    h,
-                    h_coeffs,
-                    v_coeffs,
-                );
-                recon = restored;
-            }
-
-            // 5d: Self-guided restoration (sgrproj) — applies variance-adaptive
-            // denoising that preserves edges. (Spec 08, Section 7.17)
-            // Only enabled at low presets where quality matters more than speed.
-            if self.speed_config.enable_restoration && self.speed_config.preset <= 6 {
-                let mut sgrproj_out = recon.clone();
-                let params = svtav1_dsp::loop_filter::SgrprojParams {
-                    r0: 2,
-                    r1: 1,
-                    s0: (10 + pcs.qp as i32 / 2).min(100),
-                    s1: (5 + pcs.qp as i32 / 4).min(50),
-                    xqd: [32, 32], // Equal blend of both passes with source
-                };
-                svtav1_dsp::loop_filter::sgrproj_filter(
-                    &recon,
-                    w,
-                    &mut sgrproj_out,
-                    w,
-                    w,
-                    h,
-                    &params,
-                );
-                recon = sgrproj_out;
-            }
-        }
+        // (step 6a'). Wiener loop restoration is SIGNALED and applied
+        // decoder-exactly after CDEF (step 6a''): the C-exact search picks
+        // per-RU taps against the post-CDEF recon, and when any plane
+        // signals RESTORE_WIENER the tile is re-walked with the per-SB LR
+        // syntax and the output copy gets the decoder's stripe-boundary
+        // filter pass. sgrproj is never searched at the ported presets
+        // (sg_filter_lvl = 0 — C enc_mode_config.c:2000) and stays
+        // unported.
 
         // Step 6: Entropy coding — recursive partition tree encoding.
         // Walk each SB's partition tree in spec order (depth-first),
