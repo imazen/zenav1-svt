@@ -1,0 +1,287 @@
+# Instrumented C captures — M0-M5 allintra config + DLF full-image search + M5 leaf winners
+# Source: scratch build /root/svtav1-instr (SVT_M5DBG + SVT_DLFDBG env-gated prints in
+# enc_mode_config.c sig_deriv_enc_dec_allintra tail, deblocking_filter.c search_filter_level/
+# try_filter_frame, dlf_process.c, mode_decision.c product_full_mode_decision +
+# generate_md_stage_0_cand, product_coding_loop.c ind-uv). All 24 instrumented OBUs
+# verified byte-identical to the pristine baseline before trusting any dump.
+# C v4.2.0-rc. Input cells: {uniform q40, gradient q20/q40/q55} x 64x64 x presets 0-5.
+
+## Config dump (one line per enc_mode, gradient q40 cells)
+M5DBG CFG enc_mode=0 intra_level=1 dist_ang=0 mode_end=12 ang=1 prune_best=0 prune_edge=0 skipang_d1=-1 d2=-1 d3=-1 fi_en=1 fi_max=4 nic_level=1 scal1=20 scal2=20 scal3=20 staging=1 mds1_base_th=18446744073709551615 rankf=0 mds2_base_th=50 reldev=0 mds3_base_th=50 mds1_cls=18446744073709551615 mds2_cls=25 mds3_cls=25 imds3mult=50 txt_en=1 txt_lt16=6 txt_ge16=6 txt_satd_intra=20 txt_qw=1 txt_rate_th=250 txt_ee_dist=0 txt_ee_coeff=0 txs_en=1 txs_sq=2 txs_nsq=2 prevcoeff_exit=1 d1_txt_off=0 d2_txt_off=0 quad_sf=0 rdoq_level=1 rdoq_en=1 cutnum=0 cutden=0 skip_uv=0 dctonly=0 eob_th=255 eob_fast=255 rate_est_level=1 upd_skip_dc=1 upd_skip_coeff=1 coeff_rate_lvl=1 lpd0_qpoff=0 pd0_fast=1 uv_mode=0 ind_last_mds=0 skip_ind_dc=0 uv_nic=16 cfl_en=1 cfl_itr=2 cfl_cplx=0 dr_mode=1 dr_s1=15 dr_s2=255 dr_e1=15 dr_e2=255 dr_maxmult=10 dr_coeffmod=1 dr_bandmod=0 dr_maxcostmult=0 dr_bands=0 dr_lowsplit=20 dr_splitrate=10 dr_limitpd0=1 dr_useref=0 dr_qw=1 dr_unavail=2 nsq_geom_en=1 nsq_min=0 hv4=1 hva=0 nsq_search_en=1 pd0=0 parent_bias=995 sse=2 subres=0 mds0_dist=0 coeff_lvl=2 bypass_ed=0 cdf_en=1 cdf_se=1 cdf_coef=1 lambda_w=150 dlf_en=1 dlf_sb=0 dlf_avg=0 dlf_refy=0 dlf_refuv=0 dlf_conv=0 dlf_zero_lvl=0 cdef_lvl=2 d4x4=0 acc_part=1 fi_pic=1 depth_ref_lvl=6 nic_pic=1 txt_pic=2 txs_pic=2 chroma_pic=1 cfl_pic=1 rdoq_pic=1 nsq_geom_pic=2 nsq_search_pic=5
+M5DBG CFG enc_mode=1 intra_level=1 dist_ang=0 mode_end=12 ang=1 prune_best=0 prune_edge=0 skipang_d1=-1 d2=-1 d3=-1 fi_en=1 fi_max=0 nic_level=3 scal1=12 scal2=12 scal3=12 staging=1 mds1_base_th=1200 rankf=0 mds2_base_th=30 reldev=0 mds3_base_th=25 mds1_cls=18446744073709551615 mds2_cls=25 mds3_cls=25 imds3mult=50 txt_en=1 txt_lt16=6 txt_ge16=6 txt_satd_intra=20 txt_qw=1 txt_rate_th=250 txt_ee_dist=0 txt_ee_coeff=0 txs_en=1 txs_sq=2 txs_nsq=2 prevcoeff_exit=1 d1_txt_off=0 d2_txt_off=0 quad_sf=0 rdoq_level=1 rdoq_en=1 cutnum=0 cutden=0 skip_uv=0 dctonly=0 eob_th=255 eob_fast=255 rate_est_level=1 upd_skip_dc=1 upd_skip_coeff=1 coeff_rate_lvl=1 lpd0_qpoff=0 pd0_fast=1 uv_mode=0 ind_last_mds=1 skip_ind_dc=0 uv_nic=8 cfl_en=1 cfl_itr=1 cfl_cplx=10 dr_mode=1 dr_s1=15 dr_s2=255 dr_e1=15 dr_e2=255 dr_maxmult=10 dr_coeffmod=1 dr_bandmod=0 dr_maxcostmult=0 dr_bands=0 dr_lowsplit=20 dr_splitrate=10 dr_limitpd0=1 dr_useref=0 dr_qw=1 dr_unavail=2 nsq_geom_en=1 nsq_min=0 hv4=1 hva=0 nsq_search_en=1 pd0=0 parent_bias=995 sse=2 subres=0 mds0_dist=0 coeff_lvl=2 bypass_ed=0 cdf_en=1 cdf_se=1 cdf_coef=1 lambda_w=150 dlf_en=1 dlf_sb=0 dlf_avg=0 dlf_refy=0 dlf_refuv=0 dlf_conv=0 dlf_zero_lvl=0 cdef_lvl=3 d4x4=0 acc_part=1 fi_pic=2 depth_ref_lvl=6 nic_pic=3 txt_pic=2 txs_pic=2 chroma_pic=2 cfl_pic=4 rdoq_pic=1 nsq_geom_pic=2 nsq_search_pic=12
+M5DBG CFG enc_mode=2 intra_level=1 dist_ang=0 mode_end=12 ang=1 prune_best=0 prune_edge=0 skipang_d1=-1 d2=-1 d3=-1 fi_en=1 fi_max=0 nic_level=3 scal1=12 scal2=12 scal3=12 staging=1 mds1_base_th=1200 rankf=0 mds2_base_th=30 reldev=0 mds3_base_th=25 mds1_cls=18446744073709551615 mds2_cls=25 mds3_cls=25 imds3mult=50 txt_en=1 txt_lt16=6 txt_ge16=6 txt_satd_intra=20 txt_qw=1 txt_rate_th=250 txt_ee_dist=0 txt_ee_coeff=0 txs_en=1 txs_sq=2 txs_nsq=2 prevcoeff_exit=1 d1_txt_off=0 d2_txt_off=0 quad_sf=0 rdoq_level=1 rdoq_en=1 cutnum=0 cutden=0 skip_uv=0 dctonly=0 eob_th=255 eob_fast=255 rate_est_level=1 upd_skip_dc=1 upd_skip_coeff=1 coeff_rate_lvl=1 lpd0_qpoff=0 pd0_fast=1 uv_mode=0 ind_last_mds=2 skip_ind_dc=1 uv_nic=1 cfl_en=1 cfl_itr=1 cfl_cplx=10 dr_mode=1 dr_s1=15 dr_s2=255 dr_e1=15 dr_e2=255 dr_maxmult=10 dr_coeffmod=1 dr_bandmod=0 dr_maxcostmult=0 dr_bands=0 dr_lowsplit=20 dr_splitrate=10 dr_limitpd0=1 dr_useref=0 dr_qw=1 dr_unavail=2 nsq_geom_en=1 nsq_min=0 hv4=1 hva=0 nsq_search_en=1 pd0=1 parent_bias=995 sse=2 subres=0 mds0_dist=0 coeff_lvl=2 bypass_ed=0 cdf_en=1 cdf_se=1 cdf_coef=1 lambda_w=150 dlf_en=1 dlf_sb=0 dlf_avg=0 dlf_refy=0 dlf_refuv=0 dlf_conv=0 dlf_zero_lvl=0 cdef_lvl=3 d4x4=0 acc_part=1 fi_pic=2 depth_ref_lvl=6 nic_pic=3 txt_pic=2 txs_pic=2 chroma_pic=4 cfl_pic=4 rdoq_pic=1 nsq_geom_pic=2 nsq_search_pic=16
+M5DBG CFG enc_mode=3 intra_level=1 dist_ang=0 mode_end=12 ang=1 prune_best=0 prune_edge=0 skipang_d1=-1 d2=-1 d3=-1 fi_en=1 fi_max=0 nic_level=5 scal1=6 scal2=6 scal3=6 staging=1 mds1_base_th=1200 rankf=0 mds2_base_th=20 reldev=0 mds3_base_th=15 mds1_cls=300 mds2_cls=25 mds3_cls=15 imds3mult=50 txt_en=1 txt_lt16=6 txt_ge16=6 txt_satd_intra=20 txt_qw=1 txt_rate_th=250 txt_ee_dist=0 txt_ee_coeff=0 txs_en=1 txs_sq=2 txs_nsq=2 prevcoeff_exit=1 d1_txt_off=0 d2_txt_off=0 quad_sf=0 rdoq_level=1 rdoq_en=1 cutnum=0 cutden=0 skip_uv=0 dctonly=0 eob_th=255 eob_fast=255 rate_est_level=1 upd_skip_dc=1 upd_skip_coeff=1 coeff_rate_lvl=1 lpd0_qpoff=0 pd0_fast=1 uv_mode=0 ind_last_mds=2 skip_ind_dc=1 uv_nic=1 cfl_en=1 cfl_itr=1 cfl_cplx=10 dr_mode=1 dr_s1=15 dr_s2=255 dr_e1=15 dr_e2=255 dr_maxmult=10 dr_coeffmod=1 dr_bandmod=0 dr_maxcostmult=0 dr_bands=0 dr_lowsplit=20 dr_splitrate=10 dr_limitpd0=1 dr_useref=0 dr_qw=1 dr_unavail=2 nsq_geom_en=1 nsq_min=0 hv4=1 hva=0 nsq_search_en=1 pd0=1 parent_bias=995 sse=2 subres=0 mds0_dist=0 coeff_lvl=2 bypass_ed=0 cdf_en=1 cdf_se=1 cdf_coef=1 lambda_w=150 dlf_en=1 dlf_sb=0 dlf_avg=0 dlf_refy=0 dlf_refuv=0 dlf_conv=0 dlf_zero_lvl=0 cdef_lvl=3 d4x4=0 acc_part=1 fi_pic=2 depth_ref_lvl=6 nic_pic=5 txt_pic=2 txs_pic=2 chroma_pic=4 cfl_pic=4 rdoq_pic=1 nsq_geom_pic=2 nsq_search_pic=18
+M5DBG CFG enc_mode=4 intra_level=1 dist_ang=0 mode_end=12 ang=1 prune_best=0 prune_edge=0 skipang_d1=-1 d2=-1 d3=-1 fi_en=1 fi_max=0 nic_level=5 scal1=6 scal2=6 scal3=6 staging=1 mds1_base_th=1200 rankf=0 mds2_base_th=20 reldev=0 mds3_base_th=15 mds1_cls=300 mds2_cls=25 mds3_cls=15 imds3mult=50 txt_en=1 txt_lt16=6 txt_ge16=6 txt_satd_intra=15 txt_qw=1 txt_rate_th=250 txt_ee_dist=0 txt_ee_coeff=0 txs_en=1 txs_sq=1 txs_nsq=0 prevcoeff_exit=1 d1_txt_off=3 d2_txt_off=3 quad_sf=0 rdoq_level=1 rdoq_en=1 cutnum=0 cutden=0 skip_uv=0 dctonly=0 eob_th=255 eob_fast=255 rate_est_level=1 upd_skip_dc=1 upd_skip_coeff=1 coeff_rate_lvl=1 lpd0_qpoff=0 pd0_fast=1 uv_mode=0 ind_last_mds=2 skip_ind_dc=1 uv_nic=1 cfl_en=1 cfl_itr=1 cfl_cplx=10 dr_mode=1 dr_s1=15 dr_s2=255 dr_e1=15 dr_e2=255 dr_maxmult=10 dr_coeffmod=1 dr_bandmod=0 dr_maxcostmult=0 dr_bands=0 dr_lowsplit=20 dr_splitrate=10 dr_limitpd0=1 dr_useref=0 dr_qw=1 dr_unavail=2 nsq_geom_en=1 nsq_min=8 hv4=0 hva=0 nsq_search_en=0 pd0=1 parent_bias=995 sse=2 subres=0 mds0_dist=0 coeff_lvl=2 bypass_ed=1 cdf_en=1 cdf_se=1 cdf_coef=1 lambda_w=150 dlf_en=1 dlf_sb=0 dlf_avg=1 dlf_refy=0 dlf_refuv=1 dlf_conv=1 dlf_zero_lvl=0 cdef_lvl=5 d4x4=1 acc_part=1 fi_pic=2 depth_ref_lvl=6 nic_pic=5 txt_pic=3 txs_pic=3 chroma_pic=4 cfl_pic=4 rdoq_pic=1 nsq_geom_pic=3 nsq_search_pic=0
+M5DBG CFG enc_mode=5 intra_level=2 dist_ang=0 mode_end=12 ang=2 prune_best=0 prune_edge=0 skipang_d1=-1 d2=-1 d3=-1 fi_en=1 fi_max=0 nic_level=6 scal1=6 scal2=6 scal3=6 staging=1 mds1_base_th=1200 rankf=3 mds2_base_th=15 reldev=5 mds3_base_th=15 mds1_cls=200 mds2_cls=10 mds3_cls=5 imds3mult=50 txt_en=1 txt_lt16=6 txt_ge16=6 txt_satd_intra=15 txt_qw=1 txt_rate_th=250 txt_ee_dist=0 txt_ee_coeff=0 txs_en=1 txs_sq=1 txs_nsq=0 prevcoeff_exit=1 d1_txt_off=3 d2_txt_off=3 quad_sf=0 rdoq_level=1 rdoq_en=1 cutnum=0 cutden=0 skip_uv=0 dctonly=0 eob_th=255 eob_fast=255 rate_est_level=1 upd_skip_dc=1 upd_skip_coeff=1 coeff_rate_lvl=1 lpd0_qpoff=0 pd0_fast=1 uv_mode=0 ind_last_mds=2 skip_ind_dc=1 uv_nic=1 cfl_en=1 cfl_itr=1 cfl_cplx=10 dr_mode=1 dr_s1=10 dr_s2=255 dr_e1=10 dr_e2=255 dr_maxmult=0 dr_coeffmod=1 dr_bandmod=1 dr_maxcostmult=400 dr_bands=4 dr_lowsplit=100 dr_splitrate=5 dr_limitpd0=1 dr_useref=1 dr_qw=1 dr_unavail=0 nsq_geom_en=1 nsq_min=8 hv4=0 hva=0 nsq_search_en=0 pd0=1 parent_bias=995 sse=2 subres=0 mds0_dist=0 coeff_lvl=2 bypass_ed=1 cdf_en=1 cdf_se=1 cdf_coef=1 lambda_w=150 dlf_en=1 dlf_sb=0 dlf_avg=1 dlf_refy=0 dlf_refuv=1 dlf_conv=1 dlf_zero_lvl=0 cdef_lvl=5 d4x4=1 acc_part=1 fi_pic=2 depth_ref_lvl=9 nic_pic=6 txt_pic=3 txs_pic=3 chroma_pic=4 cfl_pic=4 rdoq_pic=1 nsq_geom_pic=3 nsq_search_pic=0
+
+## DLF search: gradient_q20_p0
+DLFDBG SEARCH plane=0 dir=2 lvl_start=0 last=[0,0,0,0] filt_mid=0 step=4 conv_th=0
+DLFDBG TRY plane=0 lvl0=0 lvl1=0 err=32427
+DLFDBG TRY plane=0 lvl0=4 lvl1=4 err=32620
+DLFDBG STEP plane=0 mid=0 step=4 bias=0 low=0 errlow=32427 high=4 errhigh=32620 best=0 besterr=32427 dirn=0
+DLFDBG TRY plane=0 lvl0=2 lvl1=2 err=32473
+DLFDBG STEP plane=0 mid=0 step=2 bias=0 low=0 errlow=32427 high=2 errhigh=32473 best=0 besterr=32427 dirn=0
+DLFDBG TRY plane=0 lvl0=1 lvl1=1 err=32427
+DLFDBG STEP plane=0 mid=0 step=1 bias=0 low=0 errlow=32427 high=1 errhigh=32427 best=0 besterr=32427 dirn=0
+DLFDBG PICK plane=0 dir=2 filt_best=0 best_err=32427 ss0=32427
+DLFDBG FINAL method=0 sharp=0 lf=[0,0,0,0]
+DLFDBG GUARD zero_sse=32427 best_sse=32427 lf=[0,0,0,0] tot_refs=0
+
+## DLF search: gradient_q40_p3
+DLFDBG SEARCH plane=0 dir=2 lvl_start=0 last=[0,0,0,0] filt_mid=0 step=4 conv_th=0
+DLFDBG TRY plane=0 lvl0=0 lvl1=0 err=236955
+DLFDBG TRY plane=0 lvl0=4 lvl1=4 err=236955
+DLFDBG STEP plane=0 mid=0 step=4 bias=14 low=0 errlow=236955 high=4 errhigh=236955 best=0 besterr=236955 dirn=0
+DLFDBG TRY plane=0 lvl0=2 lvl1=2 err=236955
+DLFDBG STEP plane=0 mid=0 step=2 bias=7 low=0 errlow=236955 high=2 errhigh=236955 best=0 besterr=236955 dirn=0
+DLFDBG TRY plane=0 lvl0=1 lvl1=1 err=236955
+DLFDBG STEP plane=0 mid=0 step=1 bias=3 low=0 errlow=236955 high=1 errhigh=236955 best=0 besterr=236955 dirn=0
+DLFDBG PICK plane=0 dir=2 filt_best=0 best_err=236955 ss0=236955
+DLFDBG FINAL method=0 sharp=0 lf=[0,0,0,0]
+DLFDBG GUARD zero_sse=236955 best_sse=236955 lf=[0,0,0,0] tot_refs=0
+
+## DLF search: gradient_q40_p5
+DLFDBG SEARCH plane=0 dir=2 lvl_start=0 last=[0,0,0,0] filt_mid=0 step=4 conv_th=1
+DLFDBG TRY plane=0 lvl0=0 lvl1=0 err=236955
+DLFDBG TRY plane=0 lvl0=4 lvl1=4 err=236955
+DLFDBG STEP plane=0 mid=0 step=4 bias=14 low=0 errlow=236955 high=4 errhigh=236955 best=0 besterr=236955 dirn=0
+DLFDBG PICK plane=0 dir=2 filt_best=0 best_err=236955 ss0=236955
+DLFDBG FINAL method=0 sharp=0 lf=[0,0,0,0]
+DLFDBG GUARD zero_sse=236955 best_sse=236955 lf=[0,0,0,0] tot_refs=0
+
+## DLF search: gradient_q55_p5
+DLFDBG SEARCH plane=0 dir=2 lvl_start=0 last=[0,0,0,0] filt_mid=0 step=4 conv_th=1
+DLFDBG TRY plane=0 lvl0=0 lvl1=0 err=693968
+DLFDBG TRY plane=0 lvl0=4 lvl1=4 err=693968
+DLFDBG STEP plane=0 mid=0 step=4 bias=42 low=0 errlow=693968 high=4 errhigh=693968 best=0 besterr=693968 dirn=0
+DLFDBG PICK plane=0 dir=2 filt_best=0 best_err=693968 ss0=693968
+DLFDBG FINAL method=0 sharp=0 lf=[0,0,0,0]
+DLFDBG GUARD zero_sse=693968 best_sse=693968 lf=[0,0,0,0] tot_refs=0
+
+## DLF search: uniform_q40_p5
+DLFDBG SEARCH plane=0 dir=2 lvl_start=0 last=[0,0,0,0] filt_mid=0 step=4 conv_th=1
+DLFDBG TRY plane=0 lvl0=0 lvl1=0 err=0
+DLFDBG TRY plane=0 lvl0=4 lvl1=4 err=0
+DLFDBG STEP plane=0 mid=0 step=4 bias=0 low=0 errlow=0 high=4 errhigh=0 best=0 besterr=0 dirn=0
+DLFDBG PICK plane=0 dir=2 filt_best=0 best_err=0 ss0=0
+DLFDBG FINAL method=0 sharp=0 lf=[0,0,0,0]
+DLFDBG GUARD zero_sse=0 best_sse=0 lf=[0,0,0,0] tot_refs=0
+
+## DLF search: uniform_q40_p0
+DLFDBG SEARCH plane=0 dir=2 lvl_start=0 last=[0,0,0,0] filt_mid=0 step=4 conv_th=0
+DLFDBG TRY plane=0 lvl0=0 lvl1=0 err=0
+DLFDBG TRY plane=0 lvl0=4 lvl1=4 err=0
+DLFDBG STEP plane=0 mid=0 step=4 bias=0 low=0 errlow=0 high=4 errhigh=0 best=0 besterr=0 dirn=0
+DLFDBG TRY plane=0 lvl0=2 lvl1=2 err=0
+DLFDBG STEP plane=0 mid=0 step=2 bias=0 low=0 errlow=0 high=2 errhigh=0 best=0 besterr=0 dirn=0
+DLFDBG TRY plane=0 lvl0=1 lvl1=1 err=0
+DLFDBG STEP plane=0 mid=0 step=1 bias=0 low=0 errlow=0 high=1 errhigh=0 best=0 besterr=0 dirn=0
+DLFDBG PICK plane=0 dir=2 filt_best=0 best_err=0 ss0=0
+DLFDBG FINAL method=0 sharp=0 lf=[0,0,0,0]
+DLFDBG GUARD zero_sse=0 best_sse=0 lf=[0,0,0,0] tot_refs=0
+
+## M5 (preset 5) per-leaf winners + independent-uv picks (the funnel ground truth)
+-- gradient q20 p5 --
+M5DBG INDUV org=(0,0) sq=32 luma=0 best_uv=0 uvang=0 cost=50949
+M5DBG INDUV org=(0,0) sq=32 luma=1 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,0) sq=32 luma=2 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,0) sq=32 luma=3 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,0) sq=32 luma=4 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,0) sq=32 luma=5 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,0) sq=32 luma=6 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,0) sq=32 luma=7 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,0) sq=32 luma=8 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,0) sq=32 luma=9 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,0) sq=32 luma=10 best_uv=0 uvang=0 cost=50749
+M5DBG INDUV org=(0,0) sq=32 luma=11 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,0) sq=32 luma=12 best_uv=0 uvang=0 cost=0
+M5DBG WIN org=(0,0) bsize=9 sq=32 mode=0 ang=0 fi=5 uv=0 uvang=0 txdep=0 tt0=0 ttuv=0 rate=820519 dist=150304 cost=60344991 mds3cnt=2
+M5DBG INDUV org=(32,0) sq=32 luma=0 best_uv=0 uvang=0 cost=50949
+M5DBG INDUV org=(32,0) sq=32 luma=1 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,0) sq=32 luma=2 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,0) sq=32 luma=3 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,0) sq=32 luma=4 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,0) sq=32 luma=5 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,0) sq=32 luma=6 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,0) sq=32 luma=7 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,0) sq=32 luma=8 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,0) sq=32 luma=9 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,0) sq=32 luma=10 best_uv=0 uvang=0 cost=50749
+M5DBG INDUV org=(32,0) sq=32 luma=11 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,0) sq=32 luma=12 best_uv=0 uvang=0 cost=0
+M5DBG WIN org=(32,0) bsize=9 sq=32 mode=0 ang=0 fi=5 uv=0 uvang=0 txdep=0 tt0=0 ttuv=0 rate=829593 dist=166464 cost=62868057 mds3cnt=2
+M5DBG WIN org=(32,0) bsize=6 sq=16 mode=0 ang=0 fi=5 uv=0 uvang=0 txdep=0 tt0=0 ttuv=0 rate=209517 dist=35360 cost=15022391 mds3cnt=1
+M5DBG WIN org=(48,0) bsize=6 sq=16 mode=0 ang=0 fi=5 uv=0 uvang=0 txdep=0 tt0=0 ttuv=0 rate=233665 dist=40624 cost=16905941 mds3cnt=1
+M5DBG INDUV org=(32,16) sq=16 luma=0 best_uv=0 uvang=0 cost=49647
+M5DBG INDUV org=(32,16) sq=16 luma=1 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,16) sq=16 luma=2 best_uv=0 uvang=0 cost=74846
+M5DBG INDUV org=(32,16) sq=16 luma=3 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,16) sq=16 luma=4 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,16) sq=16 luma=5 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,16) sq=16 luma=6 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,16) sq=16 luma=7 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,16) sq=16 luma=8 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,16) sq=16 luma=9 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,16) sq=16 luma=10 best_uv=0 uvang=0 cost=50749
+M5DBG INDUV org=(32,16) sq=16 luma=11 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,16) sq=16 luma=12 best_uv=0 uvang=0 cost=0
+M5DBG WIN org=(32,16) bsize=6 sq=16 mode=2 ang=3 fi=5 uv=0 uvang=0 txdep=0 tt0=0 ttuv=0 rate=273239 dist=44448 cost=19377977 mds3cnt=2
+M5DBG INDUV org=(48,16) sq=16 luma=0 best_uv=0 uvang=0 cost=49647
+M5DBG INDUV org=(48,16) sq=16 luma=1 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(48,16) sq=16 luma=2 best_uv=0 uvang=0 cost=74846
+M5DBG INDUV org=(48,16) sq=16 luma=3 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(48,16) sq=16 luma=4 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(48,16) sq=16 luma=5 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(48,16) sq=16 luma=6 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(48,16) sq=16 luma=7 best_uv=0 uvang=0 cost=66480
+M5DBG INDUV org=(48,16) sq=16 luma=8 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(48,16) sq=16 luma=9 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(48,16) sq=16 luma=10 best_uv=0 uvang=0 cost=50749
+M5DBG INDUV org=(48,16) sq=16 luma=11 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(48,16) sq=16 luma=12 best_uv=0 uvang=0 cost=0
+M5DBG WIN org=(48,16) bsize=6 sq=16 mode=2 ang=3 fi=5 uv=0 uvang=0 txdep=0 tt0=0 ttuv=0 rate=264142 dist=43344 cost=18780927 mds3cnt=2
+M5DBG INDUV org=(0,32) sq=32 luma=0 best_uv=0 uvang=0 cost=50949
+M5DBG INDUV org=(0,32) sq=32 luma=1 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,32) sq=32 luma=2 best_uv=2 uvang=0 cost=67832
+M5DBG INDUV org=(0,32) sq=32 luma=3 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,32) sq=32 luma=4 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,32) sq=32 luma=5 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,32) sq=32 luma=6 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,32) sq=32 luma=7 best_uv=0 uvang=0 cost=66480
+M5DBG INDUV org=(0,32) sq=32 luma=8 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,32) sq=32 luma=9 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,32) sq=32 luma=10 best_uv=0 uvang=0 cost=50749
+M5DBG INDUV org=(0,32) sq=32 luma=11 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,32) sq=32 luma=12 best_uv=0 uvang=0 cost=0
+M5DBG WIN org=(0,32) bsize=9 sq=32 mode=2 ang=0 fi=5 uv=2 uvang=0 txdep=0 tt0=0 ttuv=2 rate=856173 dist=131408 cost=59712485 mds3cnt=2
+M5DBG INDUV org=(32,32) sq=32 luma=0 best_uv=0 uvang=0 cost=50949
+M5DBG INDUV org=(32,32) sq=32 luma=1 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,32) sq=32 luma=2 best_uv=2 uvang=0 cost=67832
+M5DBG INDUV org=(32,32) sq=32 luma=3 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,32) sq=32 luma=4 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,32) sq=32 luma=5 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,32) sq=32 luma=6 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,32) sq=32 luma=7 best_uv=0 uvang=0 cost=66480
+M5DBG INDUV org=(32,32) sq=32 luma=8 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,32) sq=32 luma=9 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,32) sq=32 luma=10 best_uv=0 uvang=0 cost=50749
+M5DBG INDUV org=(32,32) sq=32 luma=11 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,32) sq=32 luma=12 best_uv=0 uvang=0 cost=0
+M5DBG WIN org=(32,32) bsize=9 sq=32 mode=0 ang=0 fi=5 uv=0 uvang=0 txdep=0 tt0=0 ttuv=0 rate=897634 dist=115264 cost=59723152 mds3cnt=2
+-- gradient q40 p5 --
+M5DBG INDUV org=(0,0) sq=32 luma=0 best_uv=0 uvang=0 cost=489142
+M5DBG INDUV org=(0,0) sq=32 luma=1 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,0) sq=32 luma=2 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,0) sq=32 luma=3 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,0) sq=32 luma=4 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,0) sq=32 luma=5 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,0) sq=32 luma=6 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,0) sq=32 luma=7 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,0) sq=32 luma=8 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,0) sq=32 luma=9 best_uv=0 uvang=0 cost=480901
+M5DBG INDUV org=(0,0) sq=32 luma=10 best_uv=0 uvang=0 cost=487203
+M5DBG INDUV org=(0,0) sq=32 luma=11 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,0) sq=32 luma=12 best_uv=0 uvang=0 cost=0
+M5DBG WIN org=(0,0) bsize=9 sq=32 mode=10 ang=0 fi=5 uv=0 uvang=0 txdep=0 tt0=0 ttuv=0 rate=257734 dist=898384 cost=239937259 mds3cnt=4
+M5DBG INDUV org=(32,0) sq=32 luma=0 best_uv=0 uvang=0 cost=489142
+M5DBG INDUV org=(32,0) sq=32 luma=1 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,0) sq=32 luma=2 best_uv=2 uvang=0 cost=652513
+M5DBG INDUV org=(32,0) sq=32 luma=3 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,0) sq=32 luma=4 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,0) sq=32 luma=5 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,0) sq=32 luma=6 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,0) sq=32 luma=7 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,0) sq=32 luma=8 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,0) sq=32 luma=9 best_uv=0 uvang=0 cost=480901
+M5DBG INDUV org=(32,0) sq=32 luma=10 best_uv=0 uvang=0 cost=487203
+M5DBG INDUV org=(32,0) sq=32 luma=11 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,0) sq=32 luma=12 best_uv=12 uvang=0 cost=283111
+M5DBG WIN org=(32,0) bsize=9 sq=32 mode=10 ang=0 fi=5 uv=0 uvang=0 txdep=0 tt0=0 ttuv=0 rate=240234 dist=1018560 cost=246836150 mds3cnt=4
+M5DBG WIN org=(32,0) bsize=6 sq=16 mode=0 ang=0 fi=5 uv=0 uvang=0 txdep=0 tt0=0 ttuv=0 rate=45045 dist=299968 cost=60232787 mds3cnt=1
+M5DBG INDUV org=(48,0) sq=16 luma=0 best_uv=0 uvang=0 cost=473629
+M5DBG INDUV org=(48,0) sq=16 luma=1 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(48,0) sq=16 luma=2 best_uv=0 uvang=0 cost=717473
+M5DBG INDUV org=(48,0) sq=16 luma=3 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(48,0) sq=16 luma=4 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(48,0) sq=16 luma=5 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(48,0) sq=16 luma=6 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(48,0) sq=16 luma=7 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(48,0) sq=16 luma=8 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(48,0) sq=16 luma=9 best_uv=0 uvang=0 cost=480901
+M5DBG INDUV org=(48,0) sq=16 luma=10 best_uv=0 uvang=0 cost=487203
+M5DBG INDUV org=(48,0) sq=16 luma=11 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(48,0) sq=16 luma=12 best_uv=12 uvang=0 cost=283111
+M5DBG WIN org=(48,0) bsize=6 sq=16 mode=2 ang=3 fi=5 uv=0 uvang=0 txdep=0 tt0=0 ttuv=0 rate=48098 dist=315424 cost=63691187 mds3cnt=2
+M5DBG INDUV org=(32,16) sq=16 luma=0 best_uv=0 uvang=0 cost=473629
+M5DBG INDUV org=(32,16) sq=16 luma=1 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,16) sq=16 luma=2 best_uv=0 uvang=0 cost=717473
+M5DBG INDUV org=(32,16) sq=16 luma=3 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,16) sq=16 luma=4 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,16) sq=16 luma=5 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,16) sq=16 luma=6 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,16) sq=16 luma=7 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,16) sq=16 luma=8 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,16) sq=16 luma=9 best_uv=0 uvang=0 cost=465388
+M5DBG INDUV org=(32,16) sq=16 luma=10 best_uv=0 uvang=0 cost=487203
+M5DBG INDUV org=(32,16) sq=16 luma=11 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,16) sq=16 luma=12 best_uv=12 uvang=0 cost=283111
+M5DBG WIN org=(32,16) bsize=6 sq=16 mode=0 ang=0 fi=0 uv=0 uvang=0 txdep=0 tt0=0 ttuv=0 rate=94258 dist=264816 cost=79590775 mds3cnt=3
+M5DBG INDUV org=(48,16) sq=16 luma=0 best_uv=0 uvang=0 cost=473629
+M5DBG INDUV org=(48,16) sq=16 luma=1 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(48,16) sq=16 luma=2 best_uv=0 uvang=0 cost=717473
+M5DBG INDUV org=(48,16) sq=16 luma=3 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(48,16) sq=16 luma=4 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(48,16) sq=16 luma=5 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(48,16) sq=16 luma=6 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(48,16) sq=16 luma=7 best_uv=0 uvang=0 cost=636515
+M5DBG INDUV org=(48,16) sq=16 luma=8 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(48,16) sq=16 luma=9 best_uv=0 uvang=0 cost=465388
+M5DBG INDUV org=(48,16) sq=16 luma=10 best_uv=0 uvang=0 cost=487203
+M5DBG INDUV org=(48,16) sq=16 luma=11 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(48,16) sq=16 luma=12 best_uv=12 uvang=0 cost=283111
+M5DBG WIN org=(48,16) bsize=6 sq=16 mode=2 ang=-3 fi=5 uv=0 uvang=0 txdep=0 tt0=3 ttuv=0 rate=79454 dist=276640 cost=73927574 mds3cnt=3
+M5DBG INDUV org=(0,32) sq=32 luma=0 best_uv=0 uvang=0 cost=489142
+M5DBG INDUV org=(0,32) sq=32 luma=1 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,32) sq=32 luma=2 best_uv=2 uvang=0 cost=652513
+M5DBG INDUV org=(0,32) sq=32 luma=3 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,32) sq=32 luma=4 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,32) sq=32 luma=5 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,32) sq=32 luma=6 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,32) sq=32 luma=7 best_uv=0 uvang=0 cost=652028
+M5DBG INDUV org=(0,32) sq=32 luma=8 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,32) sq=32 luma=9 best_uv=0 uvang=0 cost=465388
+M5DBG INDUV org=(0,32) sq=32 luma=10 best_uv=0 uvang=0 cost=487203
+M5DBG INDUV org=(0,32) sq=32 luma=11 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,32) sq=32 luma=12 best_uv=12 uvang=0 cost=283111
+M5DBG WIN org=(0,32) bsize=9 sq=32 mode=0 ang=0 fi=5 uv=0 uvang=0 txdep=0 tt0=0 ttuv=0 rate=263526 dist=929024 cost=246667021 mds3cnt=4
+M5DBG INDUV org=(32,32) sq=32 luma=0 best_uv=0 uvang=0 cost=489142
+M5DBG INDUV org=(32,32) sq=32 luma=1 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,32) sq=32 luma=2 best_uv=2 uvang=0 cost=652513
+M5DBG INDUV org=(32,32) sq=32 luma=3 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,32) sq=32 luma=4 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,32) sq=32 luma=5 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,32) sq=32 luma=6 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,32) sq=32 luma=7 best_uv=0 uvang=0 cost=652028
+M5DBG INDUV org=(32,32) sq=32 luma=8 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,32) sq=32 luma=9 best_uv=0 uvang=0 cost=465388
+M5DBG INDUV org=(32,32) sq=32 luma=10 best_uv=0 uvang=0 cost=487203
+M5DBG INDUV org=(32,32) sq=32 luma=11 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(32,32) sq=32 luma=12 best_uv=12 uvang=0 cost=283111
+M5DBG WIN org=(32,32) bsize=9 sq=32 mode=2 ang=0 fi=5 uv=2 uvang=0 txdep=0 tt0=0 ttuv=2 rate=255481 dist=945312 cost=244851836 mds3cnt=2
+-- gradient q55 p5 --
+M5DBG INDUV org=(0,0) sq=64 luma=0 best_uv=0 uvang=0 cost=1483095
+M5DBG INDUV org=(0,0) sq=64 luma=1 best_uv=0 uvang=0 cost=3389931
+M5DBG INDUV org=(0,0) sq=64 luma=2 best_uv=0 uvang=0 cost=3315328
+M5DBG INDUV org=(0,0) sq=64 luma=3 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,0) sq=64 luma=4 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,0) sq=64 luma=5 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,0) sq=64 luma=6 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,0) sq=64 luma=7 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,0) sq=64 luma=8 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,0) sq=64 luma=9 best_uv=0 uvang=0 cost=1862075
+M5DBG INDUV org=(0,0) sq=64 luma=10 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,0) sq=64 luma=11 best_uv=0 uvang=0 cost=0
+M5DBG INDUV org=(0,0) sq=64 luma=12 best_uv=12 uvang=0 cost=2223150
+M5DBG WIN org=(0,0) bsize=12 sq=64 mode=0 ang=0 fi=5 uv=0 uvang=0 txdep=0 tt0=0 ttuv=0 rate=176958 dist=11103488 cost=1949305726 mds3cnt=5
+-- uniform q40 p5 --
+M5DBG WIN org=(0,0) bsize=12 sq=64 mode=0 ang=0 fi=5 uv=0 uvang=0 txdep=0 tt0=0 ttuv=0 rate=4610 dist=0 cost=2234833 mds3cnt=1

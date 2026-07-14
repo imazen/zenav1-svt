@@ -1461,3 +1461,109 @@ elsewhere -> static default tables).
   fast-path leaves. No tracked cell mixes (g64 q55 is a single leaf);
   routing all eff-M9 leaves through the funnel avoids the seam entirely.
 - CFL, avg_cdf_symbols (>2-SB-wide chains), mono: as before.
+
+## 2026-07-14 (wave2, M0-M5 chunk): FH filter searches ported — matrix 60 -> 96/132, every uniform cell at every preset byte-identical
+
+Session scope: the M0-M5 frontier (was 0/12 per preset). Instrumented
+scratch build `/root/svtav1-instr` (SVT_M5DBG + SVT_DLFDBG prints;
+**all 24 instrumented OBUs byte-identical to baseline** before trusting
+dumps; deleted after). Ground truth: `docs/captures/m0m5_config_dlf.txt`
+(the complete per-preset config dump, the DLF search walks, and the M5
+per-leaf winner + independent-uv captures for the funnel port).
+
+### Verified per-preset config map (M5DBG CFG, source-cross-checked)
+
+| field | M0 | M1 | M2 | M3 | M4 | M5 | M6 ref |
+|---|---|---|---|---|---|---|---|
+| intra_level / mode_end / ang | 1/12/1 | 1/12/1 | 1/12/1 | 1/12/1 | 1/12/1 | **2/12/2** | 6/9/4 |
+| filter_intra lvl (fi_max) | 1 (4=all) | 2 (0) | 2 | 2 | 2 | 2 | 2 |
+| nic_level (scal, mds1/2/3 cls) | 1 (20; ~0/25/25) | 3 (12; ~0/25/25) | 3 | 5 (6; 300/25/15) | 5 | **6 (6; 200/10/5)** | 6 |
+| txt_level (groups, satd, rate_th) | 2 (6/6, 20, 250) | 2 | 2 | 2 | 3 (6/6, 15, 250) | **3** | 8 (5/4, 10, 100) |
+| txs_level (sq depth, d1_off) | 2 (2, 0) | 2 | 2 | 2 | 3 (1, 3) | 3 (1, 3) | 3 |
+| rdoq_level (ctrls) | 1 (cutnum 0, skip_uv 0, dct_only 0) | 1 | 1 | 1 | 1 | **1** | f(coeff_lvl) |
+| rate_est_level | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
+| update_cdf_level | 1 | 1 | 1 | 1 | 2 | 2 | 2 |
+| chroma_level (uv ctrls) | 1 (ind mds0, nic 16) | 2 (ind mds1, nic 8) | 4 (ind mds2, skip-dc, nic 1) | 4 | 4 | **4** | 5 (uv=luma) |
+| cfl_level | 1 (itr 2, cplx 0) | 4 | 4 | 4 | 4 | 4 | 4 |
+| depth refinement lvl (mode) | 6 (ADAPTIVE s1/e1 15) | 6 | 6 | 6 | 6 | **9 (ADAPTIVE s1/e1 10)** | 10 (PRED_ONLY) |
+| nsq geom (min, hv4) / search | 2 (0, 1) / 5* | 2 / 12* | 2 / 16* | 2 / 18* | 3 (8, 0) / 0 | 3 / 0 | 3 / 0 |
+| pd0_lvl | 0 | 0 | 1 | 1 | 1 | 1 | 1 |
+| bypass_encdec | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
+| disallow_4x4 | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
+| dlf_level (conv_th) | 1 (0) | 1 | 1 | 1 | 2 (1) | 2 (1) | 5 (q path) |
+| cdef search level | 2 | 3 | 3 | 3 | 5 | 5 | 7 |
+| wn_filter lvl | 3 (refine) | 3 | 3 | 3 | 4 | 4 | 4 |
+| SH intra_edge_filter | 0 | 0 | 0 | 0 | 0 | **1** | 0 |
+
+*nsq_search levels shown at CLI qp 40 (seq_qp_mod offsets +2 applied by
+`svt_aom_get_nsq_search_level_allintra`; qp <= 39 -> +3, qp 55 -> +0).
+
+### Landed this session (each differ-verified, gates green)
+
+1. `e2ae6569d` — **full-image deblock-level search** (still presets <= 5):
+   C-exact `search_filter_level` hill-climb with real per-plane filter
+   trials + SSE vs source, conv_th 0/1 split, chroma forced 0 when luma
+   picks 0. Killed the FH `loop_filter_level C=0` class on every uniform
+   cell (all M0-M4 uniform q40 cells went IDENTICAL immediately).
+2. `46c5531c9` — **SH enable_intra_edge_filter=1 at M5** (the only
+   allintra preset with the bit: intra_level 2 -> angular_pred_level 2,
+   enc_mode_config.c:4036/6907/:18). All 6 uniform M5 cells IDENTICAL.
+3. `5e4559a73` — **CDEF search candidate sets for levels 2/3/5** (M0 /
+   M1-M3 / M4-M5: 48/20/6 candidate strengths, subsampling 1, uv
+   sentinel on second-pass slots; search machinery generalized to N
+   candidates).
+4. `6999c0933` — **preset-5 recon containment + gate strengthening**:
+   SH bit gated to still/420 (mono keeps 0), homegrown preset-5 leaf
+   coder drops D45..D203 (V/H are exactly 90/180 deg — the decoder's
+   edge filter skips them) until the M5 funnel predicts with the C edge
+   filter. recon_parity + decode_conformance extended with speed 5
+   (270 recon cases, 630 mono + 840 chroma streams — all green under
+   aomdec AND dav1d).
+
+### Matrix: 96/132 (`benchmarks/identity_matrix_allpresets.tsv`)
+
+Presets 6-10: 60/60 (zero regressions). M0-M5: 36/72 — **every uniform
+cell at every preset is byte-identical**; all 36 remaining cells are
+gradient, all first-diverge at FH (35) or tile (1: g128 q55 p3), and
+every class is a RECON CASCADE: the dlf/cdef/lr searches are C-exact on
+C's inputs, but they run on OUR recon, which still embeds non-C leaf
+decisions at M0-M5 (the funnel covers presets >= 6 only).
+
+### The one subsystem that owns all 36 cells: the M0-M5 leaf decision layer
+
+Verified facts for the port (captures in m0m5_config_dlf.txt):
+
+- **Partition trees need NO new machinery for the tracked cells**: C's
+  final M5 partition streams equal the M6/PD0 trees on ALL 12 gradient
+  cells (partition-symbol streams p5 == p6 verified from the traces;
+  same for M2-M4 pd0_lvl 1). Depth refinement (ADAPTIVE 6/9) evaluated
+  extra depths — the M5DBG WIN dumps show 16x16 winners under 32x32
+  PD0 picks — but they LOSE the inter-depth compare everywhere tracked.
+  Port later as a latent-correctness item (like the >2-SB CDF chain).
+- **M5 funnel deltas vs M6** (all in the config table): mode_end PAETH
+  (13 modes), angular_pred_level 2 = deltas {-3, 0, +3} for all 8
+  directional modes (`inject_intra_candidates` skips |delta| 1/2 at
+  level >= 2, mode_decision.c:3268), SH-driven EDGE-FILTERED prediction
+  (corner filter + per-side strength + <=8x8 upsample —
+  enc_intra_prediction.c:181-215, kernels intra_prediction.c:156/
+  C_DEFAULT:39), independent-uv search before MDS3 over the luma modes
+  that reached MDS3 (`search_best_independent_uv_mode`,
+  product_coding_loop.c:7778; skip when only-DC; uv_nic_scaling 1),
+  txt groups 6/6 with satd th 15 / rate th 250, rdoq_level 1 (cut_off
+  0 = full trellis; skip_uv 0; dct_dct_only 0), update_cdf chain also
+  at preset 5 (M4..M6). M5 winners include SMOOTH_V (q40) and H+3
+  angle deltas (q20) — capture-verified with full rate/dist/cost rows.
+- **M0-M4 further deltas**: intra_level 1 (ALL 7 deltas injected),
+  NSQ search at M0-M3 (levels 5-18 qp-dependent), 4x4 partitions at
+  M0-M3, PD0_LVL_0 at M0/M1 (full PD0 with its own candidate search),
+  bypass_encdec=0 at M0-M3 (the encode pass re-runs — MD == final only
+  because intra MD already predicts from real recon; verify when
+  chasing), filter-intra ALL 5 modes at M0, chroma ind-uv at mds0/mds1
+  for M0/M1, cfl_level 1 at M0 (cplx_th 0 -> CFL evaluated for every
+  <= 32x32 block: the CFL port becomes binding at M0).
+
+Recommended attack order (next session): M5 funnel extension (candidates
++ edge-filtered prediction + ind-uv + txt/rdoq cfg — closes up to 6
+cells), then M4 (identical config minus intra_level 2 -> 1 and depth
+refinement 9 -> 6), then M2/M3 (+nsq search + bypass_encdec=0), then
+M1/M0 (+PD0_LVL_0, +cfl_level 1, +fi all-modes, 4x4).
