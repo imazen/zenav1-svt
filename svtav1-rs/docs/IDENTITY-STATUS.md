@@ -1008,3 +1008,122 @@ cell before trusting any dump). Corrections to the going-in theory:
    Fix order this chunk: differ-walker fix -> PD0_LVL_1 port (drives all
    p6 still trees) -> CDEF live search port (closes g64 q55) -> LR /
    leaf-funnel documented as the next subsystems.
+
+## 2026-07-14 (M6 chunk, landed): PD0_LVL_1 + CDEF search — matrix holds 30/36, every p6 divergence moved strictly later and is component-classified
+
+Three commits (each differ-verified, gates green):
+
+1. `0e5b9a129` — differ FH walker fix (tile_info increment bits for
+   multi-SB frames per spec 5.9.15 + lr unit-size fields per 5.9.20).
+   All 6 gradient-p6 FH walks now decode correctly and match the
+   instrumented ground truth.
+2. `4fe2b1bec` — **prediction-based PD0 (PD0_LVL_1) ported**
+   (pd0.rs: tx_quant_core split out; cost_coeffs_txb_pd0 = verbatim
+   svt_av1_cost_coeffs_txb at zero contexts with the fast_coeff_est=2
+   half-scan slice + intra DCT_DCT tx-type rate for 8x8/16x16;
+   lvl1_block_cost at qindex+0/no-subres; undoubled split rate; no
+   depth-set variance cap). Pipeline: still frames at presets 6..8 now
+   drive partitions from the M6 PD0 + the existing fixed-tree leaf
+   coder, c_quant extended to >= 6, leaf lambda preset-pinned on the
+   PD0 path. 17 instrumented block costs + 3 trees pinned in unit tests.
+   **Every partition symbol in every gradient p6 stream now matches C.**
+3. `87045f52f` — **CDEF RDO search ported** (cdef.rs: packed
+   svt_cdef_filter_fb search mode, subsample-4 luma / full chroma mse,
+   uv sentinel, joint_strength_search_dual + finish RD with the
+   unweighted kf lambda). finish_cdef_rd pinned against 3 instrumented
+   capture sets. **No cdef FH field differs on any cell any more.**
+   cdef_bits>0 outcome falls back to the qp path (per-SB cdef_idx
+   syntax unported — documented; all tracked cells pick bits=0).
+
+Matrix `benchmarks/identity_matrix_2026-07-14.tsv`: **30/36**, zero
+regressions (all uniform + all gradient M10/M13 IDENTICAL). Gates:
+recon-parity 216/0 (CDEF firing on 127 streams — count moved because
+s6/s8 now use searched strengths), decode conformance 525/0 mono +
+700/0 chroma under aomdec AND dav1d, `cargo test --workspace` 588/0
+(no test-input changes).
+
+### Remaining divergence per cell (all strictly later than before)
+
+| cell | first divergence | owning subsystem |
+|------|------------------|------------------|
+| g64 q20 | FH `lr_type[0]` C=2(WIENER) vs 0 | LR wiener search |
+| g64 q40 | FH `lr_type[0]` | LR wiener search |
+| g128 q40 | FH `lr_type[0]` | LR wiener search |
+| g128 q55 | FH `lr_type[0]` | LR wiener search |
+| g64 q55 | tile op 2: leaf y_mode C=DC vs SMOOTH | MDS3 leaf compare |
+| g128 q20 | tile op 2565: use_filter_intra C=1 vs 0 (one 32x32 leaf; 2565 ops match incl. every partition + all leaf y_modes before it) | filter-intra RDO |
+
+### Next-op spec A: MDS3 leaf compare (closes g64 q55)
+
+Instrumented per-candidate decomposition (MDS3CAND/MDS3RATE dumps,
+g64 q55, MDS3 set {SMOOTH,DC,V,H} in that order, all reaching MDS3):
+
+| mode | fast_luma | fast_chroma | ybits | cb/cr bits | ydist | cb/crdist | full |
+|------|-----------|-------------|-------|------------|-------|-----------|------|
+| SMOOTH | 1556 | 1292 | 177025 | 112/112 | 11043824 | 4384/4384 | 1956055335 |
+| DC | 547 | 273 | 176560 | 112/112 | 10963760 | 0/0 | **1937245493** |
+| V | 2874 | 1033 | 175503 | 112/112 | 10963760 | 16384/16384 | 1947497507 |
+| H | 2555 | 1009 | 176514 | 112/112 | 10963760 | 16384/16384 | 1949490882 |
+
+- `full = RDCOST(1527856, flr + fcr + ybits + cbbits + crbits +
+  tx_size_bits(1280 = tx_depth CDF3 sym0 @ icdf 26986) +
+  skip_fac[0][0](26), ydist + cbdist + crdist)` — verified additive on
+  all four rows (svt_aom_full_cost, rd_cost.c:1417-1430;
+  block_has_coeff path, skip_coeff_ctx 0).
+- dists are spatial SSE << 4; the chroma dists are pure EDGE-FILL
+  artifacts (first block, no neighbors): V = (128-127)^2*1024 << 4 =
+  16384, H via the 129 left fill, DC exact -> 0. eob 521 on every
+  candidate (the RDOQ path), cb/cr eob 0 -> skip-txb cost 112 each.
+- ybits = svt_av1_cost_coeffs_txb over the RDOQ-optimized levels at
+  ctx0 with `mds_fast_coeff_est_level = 1` (FULL scan — the PD0 port's
+  /2 slice must be parameterized).
+- flr = kf_y_mode cost at ctx (0,0) + angle0 (CDF7 sym 3) for V/H;
+  fcr = uv_mode cost (CFL-allowed row conditioned on y) + uv angle0
+  for V/H. All from default CDFs already in the entropy crate.
+- Architectural prerequisite: CHROMA terms in the decision stage —
+  today chroma is predicted/coded only inside the entropy walk, so the
+  decision stage lacks chroma neighbor state (first-block cells like
+  g64 q55 need only the 127/129/128 fills; general blocks need the
+  walk's chroma recon at decision time).
+- NIC boundary: at q40 g64 the MDS3 set is pruned to 3/3/2 candidates
+  per block (PD1WIN ncand) by MDS0 SATD ranking + nic_level 6 — the
+  funnel port is required for cells where a pruned candidate would
+  win the naive 4-way compare.
+
+### Next-op spec B: LR wiener search (closes the 4 lr_type cells)
+
+M6 controls (source + dumps): `wn_filter_lvl 4` -> enabled, use_chroma,
+filter_tap_lvl 2 (**5x5 taps for luma AND chroma** — WIENER_WIN_CHROMA),
+use_refinement 0 (no finer search: taps come straight from the solve);
+`sg_filter_lvl 0` -> sgrproj NEVER searched (rest_finish force-type
+WIENER-vs-NONE only, restoration_pick.c:1565). Pipeline to port:
+1. `svt_av1_compute_stats` (integer M/H over dgd=POST-CDEF recon vs
+   src, restoration_pick.c:652) per 256-unit (single unit at 64/128).
+2. `wiener_decompose_sep_sym` (double linsolve) + `finalize_sym_filter`
+   (tap quantize/clamp) + `compute_score > 0` revert
+   (restoration_pick.c:1360-1370).
+3. `finer_tile_search_wiener_seg` at use_refinement=0 = one
+   `try_restoration_unit` = wiener apply + SSE (needs
+   av1_wiener_convolve_add_src + stripe boundary setup).
+4. `search_wiener_finish`: bits_none=768 / bits_wn = 13120-ish via
+   count_wiener_bits<<4 vs x->wiener_restore_cost, RDCOST_DBL at
+   rdmult = unweighted kf lambda (1303771 @ q220); frame pick in
+   rest_finish_search. Captured picks: luma WIENER at g64 q20/q40 +
+   g128 q40/q55 with taps in the LRWNSEG dumps (e.g. g64 q55
+   v=[0,8,-17,18,-17,8,0] h=[0,-8,26,-36,26,-8,0], sse 671191->670249,
+   cost loses -> NONE at that one cell).
+5. FH lr_params unit-size bits (shift 2 -> 256) + per-LRU tile syntax
+   (wiener_restore bool CDF 11570 + refsubexpfin tap deltas at the
+   LRU-covering SB) + the decoder-exact APPLICATION (stripe machinery)
+   for recon parity.
+
+### Latent for the 128 cells: per-SB MD rate-table refresh
+
+`cdf_ctrl.enabled` at M6 (update_cdf_level 2): rate_est_table rebuilt
+per SB from ec_ctx_array chained md_frame_context -> left(3x)/
+topright(1x) avg (enc_dec_process.c:2991; serial for 2-SB-wide frames).
+Observed: 64x64 SPLIT rate 1195 -> 1221 -> 1244 -> 1268 across g128
+q55's SBs. The PD0_LVL_1 port prices every SB with the default tables
+(exact for SB 0 / all single-SB frames); the g128 partition symbols
+happen to match C anyway on all tracked cells (differ-verified), but
+any future 128-cell tree flip should suspect this first.

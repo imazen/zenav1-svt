@@ -1,0 +1,37 @@
+content	size	cli_qp	preset	verdict	stage	detail
+uniform	64	20	13	IDENTICAL	-	-
+uniform	64	20	10	IDENTICAL	-	-
+uniform	64	20	6	IDENTICAL	-	-
+uniform	64	40	13	IDENTICAL	-	-
+uniform	64	40	10	IDENTICAL	-	-
+uniform	64	40	6	IDENTICAL	-	-
+uniform	64	55	13	IDENTICAL	-	-
+uniform	64	55	10	IDENTICAL	-	-
+uniform	64	55	6	IDENTICAL	-	-
+uniform	128	20	13	IDENTICAL	-	-
+uniform	128	20	10	IDENTICAL	-	-
+uniform	128	20	6	IDENTICAL	-	-
+uniform	128	40	13	IDENTICAL	-	-
+uniform	128	40	10	IDENTICAL	-	-
+uniform	128	40	6	IDENTICAL	-	-
+uniform	128	55	13	IDENTICAL	-	-
+uniform	128	55	10	IDENTICAL	-	-
+uniform	128	55	6	IDENTICAL	-	-
+gradient	64	20	13	IDENTICAL	-	-
+gradient	64	20	10	IDENTICAL	-	-
+gradient	64	20	6	DIFFERS	FH	lr_type[0]=2                           | R @62   lr_type[0]=0
+gradient	64	40	13	IDENTICAL	-	-
+gradient	64	40	10	IDENTICAL	-	-
+gradient	64	40	6	DIFFERS	FH	lr_type[0]=2                           | R @62   lr_type[0]=0
+gradient	64	55	13	IDENTICAL	-	-
+gradient	64	55	10	IDENTICAL	-	-
+gradient	64	55	6	DIFFERS	tile-op	op 2
+gradient	128	20	13	IDENTICAL	-	-
+gradient	128	20	10	IDENTICAL	-	-
+gradient	128	20	6	DIFFERS	tile-op	op 2565
+gradient	128	40	13	IDENTICAL	-	-
+gradient	128	40	10	IDENTICAL	-	-
+gradient	128	40	6	DIFFERS	FH	lr_type[0]=2                           | R @64   lr_type[0]=0
+gradient	128	55	13	IDENTICAL	-	-
+gradient	128	55	10	IDENTICAL	-	-
+gradient	128	55	6	DIFFERS	FH	lr_type[0]=2                           | R @64   lr_type[0]=0
