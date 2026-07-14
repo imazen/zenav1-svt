@@ -589,7 +589,8 @@ fn filter_fb_packed(
             let mut iy = 0usize;
             while iy < (1 << bsizey) {
                 for ix in 0..(1 << bsizex) {
-                    tmp[doff + (iy << bsizex) + ix] = src_pad[ioff + iy * k::CDEF_BSTRIDE + ix] as u8;
+                    tmp[doff + (iy << bsizex) + ix] =
+                        src_pad[ioff + iy * k::CDEF_BSTRIDE + ix] as u8;
                 }
                 iy += subsampling;
             }
@@ -784,16 +785,8 @@ pub fn cdef_search_still_level7(
                             &mut var,
                             &mut dirinit,
                         );
-                        let d = dist_packed(
-                            &tmp,
-                            src_c,
-                            cw,
-                            fbr * 32,
-                            fbc * 32,
-                            &dlist,
-                            false,
-                            sub_uv,
-                        );
+                        let d =
+                            dist_packed(&tmp, src_c, cw, fbr * 32, fbc * 32, &dlist, false, sub_uv);
                         row[1][gi] += d * sub_uv as u64;
                     }
                 }

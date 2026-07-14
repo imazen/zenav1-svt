@@ -313,7 +313,9 @@ pub fn build_coeff_cost_tables_from_fc(
             };
             10
         ],
-        eob: [[EobCosts { eob_cost: [[0; 11]; 2] }; 2]; 7],
+        eob: [[EobCosts {
+            eob_cost: [[0; 11]; 2],
+        }; 2]; 7],
     });
 
     for eob_multi_size in 0..7 {
@@ -701,14 +703,7 @@ fn update_coeff_general(
     let qc = qcoeff[ci];
     let is_last = si == (eob as usize - 1);
     let coeff_ctx = coeff_c::lower_levels_ctx_general(
-        levels_buf,
-        ci,
-        bwl,
-        height,
-        si,
-        is_last,
-        o.tx_size,
-        o.tx_class,
+        levels_buf, ci, bwl, height, si, is_last, o.tx_size, o.tx_class,
     );
     if qc == 0 {
         *accu_rate += o.txb_costs.base_cost[coeff_ctx][0];
@@ -913,7 +908,11 @@ fn update_coeff_eob(
                 o.tx_class,
                 levels_buf,
             );
-            rd_low = rdcost(o.rdmult, (*accu_rate + rate_low) as i64, *accu_dist + dist_low);
+            rd_low = rdcost(
+                o.rdmult,
+                (*accu_rate + rate_low) as i64,
+                *accu_dist + dist_low,
+            );
         }
 
         let mut lower_level_new_eob = false;
@@ -1145,7 +1144,8 @@ pub fn optimize_b(
     let mut si_end = 1i32; // default: full RDOQ
     if o.cut_off_num != 0 {
         let cut_off_coeff = (((width * height) >> 7) as u32)
-            .max((*eob as u32 * o.cut_off_num) / o.cut_off_denum) as i32;
+            .max((*eob as u32 * o.cut_off_num) / o.cut_off_denum)
+            as i32;
         si_end = (*eob as i32 - cut_off_coeff).max(1);
     }
     while si >= si_end {
@@ -1206,7 +1206,12 @@ pub enum CoeffLvl {
 /// 64-aligned still we encode today; x1.3 to 480p, x1.2 to 720p per
 /// `svt_aom_derive_input_resolution` sequence_control_set.c:120 with
 /// pixel-count breaks 0x28500/0x4CE00/0xA1400/0x16DA00).
-pub fn derive_intra_coeff_level(pic_avg_variance: u16, cli_qp: u32, w: usize, h: usize) -> CoeffLvl {
+pub fn derive_intra_coeff_level(
+    pic_avg_variance: u16,
+    cli_qp: u32,
+    w: usize,
+    h: usize,
+) -> CoeffLvl {
     let pixels = w * h;
     let (mut vlow, mut low, mut high) = (25.0f64, 50.0f64, 150.0f64);
     if pixels < 0x28500 {
@@ -1412,18 +1417,21 @@ mod tests {
         let cfg = CodingQuantCfg::new(3, 248207, 160);
         let mut q = alloc::vec![0i32; n];
         let mut dq = alloc::vec![0i32; n];
-        let eob = quantize_inv_quantize_still(
-            &cfg, &tcoeffs, &mut q, &mut dq, scan, 160, 2, 0, 0, 256,
-        );
+        let eob =
+            quantize_inv_quantize_still(&cfg, &tcoeffs, &mut q, &mut dq, scan, 160, 2, 0, 0, 256);
         let t = build_quant_table(160);
         for i in 0..n {
-            let expect = ((q[i].unsigned_abs() as i64 * t.dequant[usize::from(i != 0)] as i64)
-                >> 0) as i32;
+            let expect =
+                ((q[i].unsigned_abs() as i64 * t.dequant[usize::from(i != 0)] as i64) >> 0) as i32;
             assert_eq!(dq[i].abs(), expect, "dq mirror at {i}");
             assert_eq!(dq[i] < 0, q[i] < 0 && q[i] != 0, "sign at {i}");
         }
         if eob > 0 {
-            assert_ne!(q[scan[eob as usize - 1] as usize], 0, "eob-1 must be nonzero");
+            assert_ne!(
+                q[scan[eob as usize - 1] as usize],
+                0,
+                "eob-1 must be nonzero"
+            );
         }
     }
 }

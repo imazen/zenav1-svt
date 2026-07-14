@@ -36,12 +36,12 @@
 //! pinned in the unit tests below.
 
 use svtav1_dsp::restoration::{
-    alloc_stripe_boundaries, compute_score, compute_stats, extend_frame, finalize_sym_filter,
-    foreach_rest_unit_in_tile, loop_restoration_filter_unit, save_tile_row_boundary_lines,
-    sse_region, wiener_decompose_sep_sym, PixelRect, StripeBoundaries, TileLimits, WienerInfo,
-    RESTORATION_UNITSIZE_MAX, RESTORE_NONE, RESTORE_WIENER, WIENER_FILT_TAP0_MAXV,
-    WIENER_FILT_TAP0_MINV, WIENER_FILT_TAP1_MAXV, WIENER_FILT_TAP1_MINV, WIENER_FILT_TAP2_MAXV,
-    WIENER_FILT_TAP2_MINV, WIENER_WIN, WIENER_WIN_CHROMA,
+    PixelRect, RESTORATION_UNITSIZE_MAX, RESTORE_NONE, RESTORE_WIENER, StripeBoundaries,
+    TileLimits, WIENER_FILT_TAP0_MAXV, WIENER_FILT_TAP0_MINV, WIENER_FILT_TAP1_MAXV,
+    WIENER_FILT_TAP1_MINV, WIENER_FILT_TAP2_MAXV, WIENER_FILT_TAP2_MINV, WIENER_WIN,
+    WIENER_WIN_CHROMA, WienerInfo, alloc_stripe_boundaries, compute_score, compute_stats,
+    extend_frame, finalize_sym_filter, foreach_rest_unit_in_tile, loop_restoration_filter_unit,
+    save_tile_row_boundary_lines, sse_region, wiener_decompose_sep_sym,
 };
 
 /// C `WnFilterCtrls` (the fields the still path consumes).
@@ -434,7 +434,11 @@ pub fn search_restoration_still(
             1 => (src_u, recon_u),
             _ => (src_v, recon_v),
         };
-        let wiener_win = if plane == 0 { wn_luma } else { WIENER_WIN_CHROMA };
+        let wiener_win = if plane == 0 {
+            wn_luma
+        } else {
+            WIENER_WIN_CHROMA
+        };
         let rect = plane_rect(pw as i32, ph as i32);
 
         // svt_extend_frame(dgd, ..) with RESTORATION_BORDER+1(+pad16) horz /
@@ -773,7 +777,11 @@ pub fn write_lr_for_sb(
                 let used = u.rtype != RESTORE_NONE;
                 w.write_symbol(usize::from(used), &mut fc.wiener_restore_cdf, 2);
                 if used {
-                    let win = if plane > 0 { WIENER_WIN_CHROMA } else { WIENER_WIN };
+                    let win = if plane > 0 {
+                        WIENER_WIN_CHROMA
+                    } else {
+                        WIENER_WIN
+                    };
                     let r = &mut refs.wiener[plane];
                     svtav1_entropy::lr::write_wiener_filter(
                         w,

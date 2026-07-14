@@ -1129,7 +1129,9 @@ impl<'a> Pd0Ctx<'a> {
             Pd0Mode::Lvl5 => rdcost(self.lambda, 2 * partition_split_bits(sq_size), 0),
             Pd0Mode::Lvl1 => rdcost(
                 self.lambda,
-                self.lvl1.expect("LVL_1 requires tables").split_bits(sq_size),
+                self.lvl1
+                    .expect("LVL_1 requires tables")
+                    .split_bits(sq_size),
                 0,
             ),
         };
@@ -1533,7 +1535,11 @@ mod tests {
             (8, 0, 8, 37535984),
             (8, 8, 8, 60514499),
         ] {
-            assert_eq!(ctx.lvl1_block_cost(sq, ox, oy), cost, "q55 sq={sq} ({ox},{oy})");
+            assert_eq!(
+                ctx.lvl1_block_cost(sq, ox, oy),
+                cost,
+                "q55 sq={sq} ({ox},{oy})"
+            );
         }
 
         let tables40 = build_m6_pd0_tables(160);
@@ -1558,7 +1564,11 @@ mod tests {
             (16, 0, 0, 62496975),
             (8, 0, 0, 16077204),
         ] {
-            assert_eq!(ctx40.lvl1_block_cost(sq, ox, oy), cost, "q40 sq={sq} ({ox},{oy})");
+            assert_eq!(
+                ctx40.lvl1_block_cost(sq, ox, oy),
+                cost,
+                "q40 sq={sq} ({ox},{oy})"
+            );
         }
 
         let tables20 = build_m6_pd0_tables(80);
@@ -1584,7 +1594,11 @@ mod tests {
             (8, 0, 0, 3483565),
             (8, 8, 0, 3484388),
         ] {
-            assert_eq!(ctx20.lvl1_block_cost(sq, ox, oy), cost, "q20 sq={sq} ({ox},{oy})");
+            assert_eq!(
+                ctx20.lvl1_block_cost(sq, ox, oy),
+                cost,
+                "q20 sq={sq} ({ox},{oy})"
+            );
         }
     }
 

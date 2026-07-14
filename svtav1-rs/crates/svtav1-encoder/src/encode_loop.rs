@@ -68,7 +68,16 @@ pub fn encode_block_tx(
     tx_type: svtav1_types::transform::TxType,
 ) -> EncodeBlockResult {
     encode_block_tx_cq(
-        src, src_stride, pred, pred_stride, width, height, qindex, tx_type, None, 0,
+        src,
+        src_stride,
+        pred,
+        pred_stride,
+        width,
+        height,
+        qindex,
+        tx_type,
+        None,
+        0,
     )
 }
 
