@@ -1567,3 +1567,111 @@ Recommended attack order (next session): M5 funnel extension (candidates
 cells), then M4 (identical config minus intra_level 2 -> 1 and depth
 refinement 9 -> 6), then M2/M3 (+nsq search + bypass_encdec=0), then
 M1/M0 (+PD0_LVL_0, +cfl_level 1, +fi all-modes, 4x4).
+
+## 2026-07-14 (wave2, M5 leaf-funnel chunk): preset 5 COMPLETE — matrix 96 -> 102/132, presets 5-10 all 72/72
+
+Session scope: the 6 gradient M5 cells (the prior chunk's attack order).
+No fresh C instrumentation was needed: every briefed config delta was
+re-verified against the C SOURCE this session (file:line below) and the
+prior chunk's per-leaf captures (m0m5_config_dlf.txt WIN/INDUV rows)
+supplied the ground truth; all 12 preset-5 cells went byte-identical on
+the first full run after routing, so the captures were never
+contradicted. C tree untouched (read-only greps only).
+
+### Verified M5 funnel deltas vs M6 (C cites, all re-read this session)
+
+- **Candidates**: intra_level 2 -> mode_end PAETH + angular_pred_level 2
+  (set_intra_ctrls case 2, enc_mode_config.c:8477). Injection order
+  (inject_intra_candidates, mode_decision.c:3254-3306): DC, then each
+  directional mode V,H,D45,D135,D113,D157,D203,D67 with the delta
+  counter loop -3..+3 skipping |1|/|2| at level >= 2 (:3268-3271) —
+  per-mode delta order **-3, 0, +3** — then SMOOTH, SMOOTH_V, SMOOTH_H,
+  PAETH, then FILTER_DC (fi level 2, fi_max 0). 30 candidates >= 8x8.
+  The angular mask at level >= 4 covers D45..D67 ONLY (:3246-3250) —
+  V/H stay in the M6/M7/M8 sets (the one regression this session
+  caught: 14 cells, fixed 1099a6aa8).
+- **Edge-filtered prediction** (SH enable_intra_edge_filter=1):
+  build_intra_predictors' dr branch (enc_intra_prediction.c:181-215) —
+  corner filter at txw+txh >= 24, per-side strength
+  (svt_aom_intra_edge_filter_strength, intra_prediction.c:180),
+  <=16-blk_wh upsampling (svt_aom_use_intra_edge_upsample :144,
+  svt_av1_upsample_intra_edge C_DEFAULT/intra_prediction_c.c:39), all
+  gated on p_angle != 90/180; filt_type = get_filt_type
+  (enc_intra_prediction.c:20) = above/left COBED-BLOCK smoothness per
+  plane (EntropyCtx above/left_uv_mode arrays added for the chroma
+  side). Kernels differentially fuzzed vs libSvtAv1Enc.a
+  (tests/c_parity_intra_edge.rs, 4 suites). Whole-block, sub-txb
+  (av1_intra_luma_prediction, product_coding_loop.c:4072 — row_off/
+  col_off geometry) and chroma (ss=1) all route through
+  intra_edge::dr_predict.
+- **Independent-uv at MDS3** (chroma_level 4, set_chroma_controls
+  enc_mode_config.c:5779: ind_uv_last_mds=2, skip_ind_uv_if_only_dc=1,
+  inter_vs_intra_cost_th=100, uv_nic 1): gate
+  perform_ind_uv_search_last_mds (product_coding_loop.c:1461) — at
+  least one MDS3 survivor with injected uv != UV_DC; the
+  inter-vs-intra arm is I-slice-dead (MAX_MODE_COST*100 = 1.1e16, no
+  u64 overflow). search_best_mds3_uv_mode (:7561): distinct survivor
+  (uv, uv_delta) pairs in order + UV_DC appended, each full-looped once
+  (rdoq on, spatial SSE, real ctx); per surviving luma mode the best
+  pair by RDCOST(coeff_rate + svt_aom_get_intra_uv_fast_rate
+  (rd_cost.c:476), dist), strict less. update_intra_chroma_mode
+  (:7326) rewrites each MDS3 candidate's uv/uv_delta/fast chroma rate.
+  Candidates are INJECTED with uv-follows-luma + the LUMA delta
+  (ind_uv_avail reset per block, :9866).
+- **txt_level 3**: groups 6/6 (get_tx_type_group :4358 over the
+  tx_type_group table definitions.h:1094 — group 6 order FLIPADST_DCT,
+  DCT_FLIPADST, ADST_FLIPADST, FLIPADST_ADST, V_ADST, H_ADST,
+  V_FLIPADST, H_FLIPADST), satd_early_exit_th_intra 15 (:4724
+  qp-scaled), txt_rate_cost_th 250 (:4787: RDCOST(rate,0)*1000 >
+  dct_cost*th), d1 offset 3 (unchanged).
+- **Unchanged vs M6** (dump-verified): nic_level 6 (same 1200/3, 15/5,
+  15 pruning ths — set_nic_controls case 6, enable_skipping_mds1=0),
+  staging MDS1+bypass-MDS2, rdoq_level 1 full trellis, rate_est_level
+  1 (real contexts), txs_sq depth 1 + prevcoeff_exit, update_cdf 2
+  (per-SB chain — gate extended to 5..=6), FILTER_DC candidate.
+- **uv tx type**: full g_intra_mode_to_tx_type (mode_decision.c:2991)
+  replaces the 4-mode subset (SMOOTH_V->ADST_DCT etc.).
+- **Routing**: PD0 fixed tree + c_quant + funnel gates extended to
+  preset 5 still/420. M5 depth refinement (ADAPTIVE lvl 9, s1/e1 10)
+  evaluates extra depths but they lose the inter-depth compare on
+  every tracked cell — coded tree == PD0 tree (capture partition
+  streams p5 == p6, re-confirmed by 12/12 byte-identity incl. both
+  128x128 chain cells).
+- **Angle deltas end-to-end**: Cand/LeafChoice/BlockDecision carry
+  y/uv deltas; the walk signals write_angle_delta with real values
+  (was hardcoded 0).
+
+### The recon-parity catch: deblock chroma TX dims (c8dd27091)
+
+New-surface bug, pre-existing latent: the walk recorded tx_depth-1
+blocks into DeblockGeom as four per-txb pseudo-blocks, so the chroma
+edge mask derived chroma TX = luma_tx/2 (4px) where the decoder uses
+the bsize-based av1_get_max_uv_txsize (block/2 — chroma never splits
+with luma tx_depth): chroma filter length 4 vs C's 6 at block edges
+flanked by depth-1 16x16 blocks. First armed by the M5 funnel
+(c420_gradient_96pad_q20_s5: 28 U px off by 1-2 in boundary column
+pairs; svtav1/examples/m5_chroma_repro.rs bisected it). DeblockGeom
+now carries block dims (chroma TX + pu_edge) AND a per-mi luma TX grid.
+
+### Gates (all green, verbatim tallies)
+
+- identity matrix FULL sweep: **102 / 132 byte-identical**
+  (benchmarks/identity_matrix_2026-07-14.tsv + .meta) — presets 5-10:
+  72/72; presets 0-4: every uniform cell identical, all 30 gradient
+  cells divergent (29 FH + 1 tile g128q55p3).
+- `IM_PRESETS="5 6 7 8 9 10" identity_matrix.sh check`: 72/72.
+- recon_parity: **270 passed, 0 failed** (CDEF fired 154/270 streams,
+  2104864 px filtered / 879030 changed; LR wiener 87/270, 150 RUs).
+- decode conformance (aomdec AND dav1d 1.5.1): mono **630/0**, chroma
+  **840/0**.
+- cargo test --workspace: 36/36 suites, 0 failures (new:
+  c_parity_intra_edge 4 suites, m5 config pins, full uv-tx rows).
+
+### Remaining for M0-M4 (the 30 gradient cells)
+
+Unchanged from the prior chunk's plan (attack order M4 first: config
+== M5 minus intra_level 2->1 — ALL 7 angle deltas per directional
+mode — and dr 9->6; then M2/M3 +nsq_search +bypass_encdec=0 +4x4;
+then M1/M0 +PD0_LVL_0 +cfl_level 1 +fi all-modes +ind-uv at mds0/1
+with uv_nic 16/8 — search_best_independent_uv_mode :7778, whose
+allintra nfl count needs an is_highest_layer instrument check).

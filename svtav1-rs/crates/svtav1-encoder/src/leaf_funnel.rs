@@ -1,5 +1,12 @@
-//! C-exact M6 leaf intra-mode decision funnel (allintra presets <= M6,
+//! C-exact leaf intra-mode decision funnel (allintra presets 5..=10,
 //! still/PD1 fixed-tree path).
+//!
+//! Per-preset configuration lives in [`FunnelCfg::for_preset`]; the M5
+//! extension (mode_end PAETH, angular deltas {-3,0,+3}, SH-gated edge-
+//! filtered directional prediction, independent-uv at MDS3, txt 6/6
+//! satd 15 rate 250) is documented against its C cites there and in
+//! docs/IDENTITY-STATUS.md 2026-07-14. The staging skeleton below is
+//! the M6 baseline the other presets specialize:
 //!
 //! Ports the REGULAR-PD1 `md_encode_block` staging for the allintra M6
 //! configuration, verified against instrumented-library captures

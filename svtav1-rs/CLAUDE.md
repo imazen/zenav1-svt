@@ -93,6 +93,11 @@ under the AV1 reference decoder as of 2026-07-13, C baseline v4.2.0-rc)
 > seq_tools_for_preset), FH lr_params all-RESTORE_NONE syntax,
 > per-block use_filter_intra flag (DC <=32x32, always 0), CDEF
 > all-skip-frame search outcome (bits=0/strengths 0).
+> **PRESET-5 FUNNEL 2026-07-14 (later)**: matrix 102/132 — presets
+> 5-10 all 72/72 (M5 leaf funnel: PAETH mode_end + angular deltas +
+> SH edge-filtered prediction + MDS3 ind-uv + txt 6/6/15/250; deblock
+> chroma-TX-from-block-dims fix). Remaining 30 = gradient at M0-M4.
+> See docs/IDENTITY-STATUS.md 2026-07-14 M5 chunk.
 > **MATRIX COMPLETE 36/36 — 2026-07-14** (M6 leaf funnel chunk:
 > captures 265830cf7, kernels 2fc88e564, funnel 725fd3b09, per-SB CDF
 > chain 661efa7bc): the C-exact M6 leaf intra funnel (MDS0 Hadamard
