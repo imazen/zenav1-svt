@@ -226,6 +226,65 @@ fc_tables! {
     (DeltaQ, ref_fc_sizeof_delta_q_cdf, ref_fc_copy_delta_q_cdf),
     (IntraBc, ref_fc_sizeof_intrabc_cdf, ref_fc_copy_intrabc_cdf),
     (YMode, ref_fc_sizeof_y_mode_cdf, ref_fc_copy_y_mode_cdf),
+    (Nmvc, ref_fc_sizeof_nmvc, ref_fc_copy_nmvc),
+}
+
+// ---- MV entropy encode oracle (AUDIT 2026-07-14) ----
+
+unsafe extern "C" {
+    fn ref_get_mv_class(z: i32, offset: *mut i32) -> i32;
+    fn ref_encode_mv_seq(
+        mv_y: *const i32,
+        mv_x: *const i32,
+        ref_y: *const i32,
+        ref_x: *const i32,
+        n: i32,
+        precision: i32,
+        out: *mut u8,
+        cap: u32,
+    ) -> u32;
+}
+
+/// Reference `svt_av1_get_mv_class(z)`: returns `(class, offset)`.
+pub fn get_mv_class(z: i32) -> (i32, i32) {
+    let mut offset = 0i32;
+    let c = unsafe { ref_get_mv_class(z, &mut offset) };
+    (c, offset)
+}
+
+/// Reference MV-difference entropy encode of a whole sequence through one
+/// adapting `NmvContext` (default CDFs), in C encode order (vertical/Y first).
+/// Faithful transcription of `svt_av1_encode_mv` + `encode_mv_component`
+/// driving the real `svt_av1_get_mv_class` + `aom_write_symbol`. `precision`
+/// is the `MvSubpelPrecision` int (-1 none, 0 low, 1 high). Returns the
+/// finalized od_ec byte stream.
+pub fn encode_mv_seq(
+    mvs: &[(i16, i16)],
+    refs: &[(i16, i16)],
+    precision: i32,
+) -> Vec<u8> {
+    assert_eq!(mvs.len(), refs.len());
+    let n = mvs.len();
+    let mv_y: Vec<i32> = mvs.iter().map(|m| m.1 as i32).collect();
+    let mv_x: Vec<i32> = mvs.iter().map(|m| m.0 as i32).collect();
+    let ref_y: Vec<i32> = refs.iter().map(|m| m.1 as i32).collect();
+    let ref_x: Vec<i32> = refs.iter().map(|m| m.0 as i32).collect();
+    let mut out = vec![0u8; 4096];
+    let nbytes = unsafe {
+        ref_encode_mv_seq(
+            mv_y.as_ptr(),
+            mv_x.as_ptr(),
+            ref_y.as_ptr(),
+            ref_x.as_ptr(),
+            n as i32,
+            precision,
+            out.as_mut_ptr(),
+            out.len() as u32,
+        )
+    };
+    assert!(nbytes as usize <= out.len(), "MV seq exceeded oracle buffer");
+    out.truncate(nbytes as usize);
+    out
 }
 
 // ---- Scan orders + coefficient-context helpers ----
