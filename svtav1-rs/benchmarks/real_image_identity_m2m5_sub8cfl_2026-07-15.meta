@@ -1,0 +1,10 @@
+date: 2026-07-15
+tool: tools/real_image_matrix.sh, CID22-512, C=SvtAv1EncApp v4.2.0-rc
+grid: 8 images x presets {2,3,4,5} x cli_qp {20,40,55} = 96 cells
+commit: 5d046ae1d (fix: sub-8 CfL AC uses chroma-pair luma)
+result: TOTAL 52/96 IDENTICAL (up from 48/96 after the ind-uv CfL fix; 0/8 pre-CfL).
+  p2 11/24, p3 8/24, p4 18/24, p5 15/24. The sub-8 CfL pair-luma fix closed +4.
+residual stages: 34 FH (loop_filter_level recon-derived + few cdef/lr search),
+  10 tile (mode cascade). Diverse long tail: more diverging blocks per cell.
+gates: svtav1-encoder 134 tests; synthetic M0-M6 82/84 (pre-existing M0 sub-8);
+  real M6/M7/M8/M10 IDENTICAL (no regression).
