@@ -1239,7 +1239,12 @@ impl DepthWalk<'_, '_> {
                         ) {
                             if nsqdbg_on() {
                                 let g = if self.skip_by_split_rate(
-                                    shape, sq, best_part, ctx_row, size, scan.split_flag,
+                                    shape,
+                                    sq,
+                                    best_part,
+                                    ctx_row,
+                                    size,
+                                    scan.split_flag,
                                 ) {
                                     1
                                 } else if self.skip_by_sq_txs(shape, sq) {
@@ -1251,7 +1256,11 @@ impl DepthWalk<'_, '_> {
                                 };
                                 eprintln!(
                                     "NSQDBG SKIP mi=({},{}) bsize={} shape={} gate={}",
-                                    abs_y / 4, abs_x / 4, c_bsize_sq(size), c_part(shape), g,
+                                    abs_y / 4,
+                                    abs_x / 4,
+                                    c_bsize_sq(size),
+                                    c_part(shape),
+                                    g,
                                 );
                             }
                             valid = false;
@@ -1279,10 +1288,20 @@ impl DepthWalk<'_, '_> {
                     );
                     if nsqdbg_on() {
                         eprintln!(
-                            "NSQDBG BLK mi=({},{}) bsize={} shape={} nsi={} cost={} rate={} dist={} mode={} coeff={} nz={}",
-                            abs_y / 4, abs_x / 4, c_bsize_sq(size), c_part(shape), nsi,
-                            ev.block_cost(), ev.total_rate(), ev.full_dist(), ev.mode(),
-                            u8::from(ev.block_has_coeff()), ev.cnt_nz_coeff(),
+                            "NSQDBG BLK mi=({},{}) bsize={} shape={} nsi={} cost={} rate={} dist={} mode={} coeff={} nz={} txd={} uv={}",
+                            abs_y / 4,
+                            abs_x / 4,
+                            c_bsize_sq(size),
+                            c_part(shape),
+                            nsi,
+                            ev.block_cost(),
+                            ev.total_rate(),
+                            ev.full_dist(),
+                            ev.mode(),
+                            u8::from(ev.block_has_coeff()),
+                            ev.cnt_nz_coeff(),
+                            ev.tx_depth(),
+                            ev.uv_mode(),
                         );
                     }
                     part_cost += ev.block_cost();
@@ -1293,8 +1312,13 @@ impl DepthWalk<'_, '_> {
                             if nsqdbg_on() {
                                 eprintln!(
                                     "NSQDBG ABORT mi=({},{}) bsize={} shape={} nsi={} part_cost={} best={}",
-                                    abs_y / 4, abs_x / 4, c_bsize_sq(size), c_part(shape), nsi,
-                                    part_cost, best_rd,
+                                    abs_y / 4,
+                                    abs_x / 4,
+                                    c_bsize_sq(size),
+                                    c_part(shape),
+                                    nsi,
+                                    part_cost,
+                                    best_rd,
                                 );
                             }
                             valid = false;
@@ -1378,8 +1402,15 @@ impl DepthWalk<'_, '_> {
                         .unwrap_or((255, 0));
                     eprint!(
                         "NSQDBG SHAPE mi=({},{}) bsize={} shape={} valid={} part_cost={} part_rate={} best={}/{}",
-                        abs_y / 4, abs_x / 4, c_bsize_sq(size), c_part(shape),
-                        u8::from(valid), part_cost, part_rate, bp, brd,
+                        abs_y / 4,
+                        abs_x / 4,
+                        c_bsize_sq(size),
+                        c_part(shape),
+                        u8::from(valid),
+                        part_cost,
+                        part_rate,
+                        bp,
+                        brd,
                     );
                     if shape == PartitionType::None {
                         let sq = sq_info.as_ref().unwrap();
@@ -1441,8 +1472,7 @@ impl DepthWalk<'_, '_> {
         if win_part == PartitionType::None {
             let sq = sq_info.expect("SQ info for PART_N winner");
             commit_leaf(self.fx, self.y_recon, self.y_stride, &sq.ev);
-            let decision =
-                crate::partition::funnel_block_decision(sq.ev.to_choice(), size, size);
+            let decision = crate::partition::funnel_block_decision(sq.ev.to_choice(), size, size);
             return NodeRes {
                 rd: win_rd,
                 tree: PartitionTree::Leaf(decision.clone()),
@@ -1502,7 +1532,12 @@ impl DepthWalk<'_, '_> {
                     if nsqdbg_on() {
                         eprintln!(
                             "NSQDBG TSX mi=({},{}) bsize={} i={} parent={} split={}",
-                            abs_y / 4, abs_x / 4, c_bsize_sq(size), i, prd, split_cost,
+                            abs_y / 4,
+                            abs_x / 4,
+                            c_bsize_sq(size),
+                            i,
+                            prd,
+                            split_cost,
                         );
                     }
                     return SplitOut::Invalid;
@@ -1530,9 +1565,13 @@ impl DepthWalk<'_, '_> {
             };
             eprintln!(
                 "NSQDBG TS mi=({},{}) bsize={} parent_valid={} parent={} split={} chose={}",
-                abs_y / 4, abs_x / 4, c_bsize_sq(size),
+                abs_y / 4,
+                abs_x / 4,
+                c_bsize_sq(size),
                 u8::from(parent_rd.is_some()),
-                parent_rd.unwrap_or(0), split_cost, chose,
+                parent_rd.unwrap_or(0),
+                split_cost,
+                chose,
             );
         }
         if let Some(prd) = parent_rd {
@@ -1620,7 +1659,10 @@ mod tests {
         assert_eq!((c.h_vs_v_split_rate_th, c.non_hv_split_rate_th), (80, 70));
         assert!(c.psq_txs);
         let c = NsqCfg::for_preset_qp(3, 55);
-        assert_eq!((c.max_part0_to_part1_dev, c.component_multiple_th), (45, 15));
+        assert_eq!(
+            (c.max_part0_to_part1_dev, c.component_multiple_th),
+            (45, 15)
+        );
         assert!(!c.psq_txs); // level 16
         let c = NsqCfg::for_preset_qp(2, 20);
         assert!(c.psq_txs); // level 17
@@ -1689,7 +1731,8 @@ mod tests {
         let ctrls = DrCtrls::for_preset(5);
         for (qp, qindex, lambda) in [(20u32, 80u8, 25650u64), (40, 160, 248207)] {
             let tables = crate::pd0::build_m6_pd0_tables(qindex);
-            let eval = crate::pd0::pd0_pick_sb_partition_m6_eval(&y, 64, 0, 0, qp, qindex, &tables, 8, 1);
+            let eval =
+                crate::pd0::pd0_pick_sb_partition_m6_eval(&y, 64, 0, 0, qp, qindex, &tables, 8, 1);
             assert!(eval.split, "q{qp}: PD0 splits the 64");
             let scan = build_refined_scan(&eval, &ctrls, lambda, &tables);
             assert!(!scan.test_this, "q{qp}: no 64x64 parent-depth eval");
