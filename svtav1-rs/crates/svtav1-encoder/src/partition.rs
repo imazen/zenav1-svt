@@ -349,8 +349,12 @@ pub struct BlockDecision {
     /// filter_intra_mode (FILTER_INTRA_MODES sentinel). When used, the
     /// block codes y_mode DC + use_filter_intra=1 + the CDF5 mode symbol.
     pub filter_intra_mode: u8,
-    /// UV prediction mode (0 = UV_DC; follows luma on M6 funnel leaves).
+    /// UV prediction mode (0 = UV_DC; follows luma on M6 funnel leaves;
+    /// 13 = UV_CFL_PRED when the CfL search won the chroma decision).
     pub uv_mode: u8,
+    /// CfL alpha idx/signs — coded by write_cfl_alphas when uv_mode == 13.
+    pub cfl_alpha_idx: u8,
+    pub cfl_alpha_signs: u8,
     /// Luma angle delta (directional modes on >= 8x8 blocks; 0 elsewhere).
     pub angle_delta: i8,
     /// Chroma angle delta (directional uv modes on >= 8x8 blocks).
@@ -393,6 +397,8 @@ impl Default for BlockDecision {
             height: 0,
             filter_intra_mode: 5,
             uv_mode: 0,
+            cfl_alpha_idx: 0,
+            cfl_alpha_signs: 0,
             angle_delta: 0,
             uv_angle_delta: 0,
             tx_depth: 0,
@@ -1368,6 +1374,8 @@ pub(crate) fn funnel_block_decision(
         height: h as u16,
         filter_intra_mode: choice.fi_mode,
         uv_mode: choice.uv_mode,
+        cfl_alpha_idx: choice.cfl_alpha_idx,
+        cfl_alpha_signs: choice.cfl_alpha_signs,
         angle_delta: choice.angle_delta,
         uv_angle_delta: choice.uv_angle_delta,
         tx_depth: choice.tx_depth,
