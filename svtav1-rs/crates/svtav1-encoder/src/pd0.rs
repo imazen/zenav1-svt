@@ -1054,6 +1054,12 @@ struct Pd0Ctx<'a> {
     /// (perform_tx_pd0): the per-picture `factor * 1600` addend on the
     /// PD0_LVL_5 closed-form coeff rate. 0 for <= 240p pictures.
     ires_factor: u64,
+    /// C `rate_est_ctrls.coeff_rate_est_lvl` at PD0 (perform_tx_pd0): 1
+    /// (M2..M6) prices the real coeff rate; 2 (M7/M8, rate_est_level 4)
+    /// uses the fast approximation `eob < th ? 6000 + eob*500 : real`
+    /// (`th = (bw*bh)>>5`, bw/bh capped at 32). Only consulted by the
+    /// LVL_1 block cost; LVL_5/6 use their own closed forms.
+    coeff_rate_est_lvl: u8,
 }
 
 /// C `svt_aom_partition_rate_cost` at PD0: neighbor partition contexts are
@@ -1183,7 +1189,19 @@ impl<'a> Pd0Ctx<'a> {
         }
         let (eob, dist, qcoeff, c_tx) = tx_quant_core(&residual, sq_size, sq_size, self.qindex, 0);
         let tables = self.lvl1.expect("LVL_1 requires tables");
-        let bits = if eob == 0 {
+        // C `perform_tx_pd0` luma coeff rate (single-txb, product_coding_
+        // loop.c:4576): `th = (bw*bh)>>5`, bw = bh = min(sq_size,32) (the
+        // capped distortion dims). coeff_rate_est_lvl 2 (M7/M8) prices
+        // `eob < th ? 6000 + eob*500 : real`; the eob==0 -> 6000 case folds
+        // into `eob < th` (th >= 2 for every >= 8x8 square). Level 1 (M2..M6)
+        // keeps the real cost / skip cost (unchanged). The real fallback's
+        // eob/2 middle loop (loop_cost_eob_pd0) already matches M7/M8's
+        // pd0_fast_coeff_est_level 2.
+        let bw = if sq_size < 64 { sq_size } else { 32 };
+        let th = (bw * bw) >> 5;
+        let bits = if self.coeff_rate_est_lvl >= 2 && (eob as usize) < th {
+            6000 + eob as u64 * 500
+        } else if eob == 0 {
             cost_skip_txb_pd0(c_tx, &tables.coeff) as u64
         } else {
             cost_coeffs_txb_pd0(&qcoeff, eob, c_tx, &tables.coeff, &tables.tx_rates) as u64
@@ -1330,6 +1348,8 @@ pub fn pd0_pick_sb_partition(
         min_sq: 8,
         is_subres_safe: 255,
         ires_factor,
+        // LVL_5/6 use their own closed-form coeff rates; unused here.
+        coeff_rate_est_lvl: 0,
     };
     let (_cost, eval) = ctx.pick(64, 0, 0);
     eval.tree()
@@ -1358,6 +1378,7 @@ pub fn pd0_pick_sb_partition_m6(
     qp: u32,
     qindex: u8,
     tables: &M6Pd0Tables,
+    coeff_rate_est_lvl: u8,
 ) -> Pd0Tree {
     let vars = compute_b64_variance(src, stride, sb_x, sb_y);
     let lambda = kf_full_lambda_8bit(qindex, qp) as u64;
@@ -1376,6 +1397,7 @@ pub fn pd0_pick_sb_partition_m6(
         min_sq: 8,
         is_subres_safe: 255,
         ires_factor: 0,
+        coeff_rate_est_lvl,
     };
     let (_cost, eval) = ctx.pick(64, 0, 0);
     eval.tree()
@@ -1398,6 +1420,7 @@ pub fn pd0_pick_sb_partition_m6_eval(
     qindex: u8,
     tables: &M6Pd0Tables,
     min_sq: usize,
+    coeff_rate_est_lvl: u8,
 ) -> Pd0Eval {
     let vars = compute_b64_variance(src, stride, sb_x, sb_y);
     let lambda = kf_full_lambda_8bit(qindex, qp) as u64;
@@ -1416,6 +1439,7 @@ pub fn pd0_pick_sb_partition_m6_eval(
         min_sq,
         is_subres_safe: 255,
         ires_factor: 0,
+        coeff_rate_est_lvl,
     };
     let (_cost, eval) = ctx.pick(64, 0, 0);
     eval
@@ -1543,6 +1567,7 @@ mod tests {
             qindex: 160,
             lambda: kf_full_lambda_8bit(160, 40) as u64,
             mode: Pd0Mode::Lvl5,
+            coeff_rate_est_lvl: 0,
             lvl1: None,
             max_sq: 32,
             min_sq: 8,
@@ -1581,6 +1606,7 @@ mod tests {
             qindex: 220,
             lambda: kf_full_lambda_8bit(220, 55) as u64,
             mode: Pd0Mode::Lvl5,
+            coeff_rate_est_lvl: 0,
             lvl1: None,
             max_sq: 64,
             min_sq: 8,
@@ -1680,6 +1706,7 @@ mod tests {
             qindex: 220,
             lambda: kf_full_lambda_8bit(220, 55) as u64,
             mode: Pd0Mode::Lvl1,
+            coeff_rate_est_lvl: 1,
             lvl1: Some(&tables),
             max_sq: 64,
             min_sq: 8,
@@ -1714,6 +1741,7 @@ mod tests {
             qindex: 160,
             lambda: kf_full_lambda_8bit(160, 40) as u64,
             mode: Pd0Mode::Lvl1,
+            coeff_rate_est_lvl: 1,
             lvl1: Some(&tables40),
             max_sq: 64,
             min_sq: 8,
@@ -1744,6 +1772,7 @@ mod tests {
             qindex: 80,
             lambda: kf_full_lambda_8bit(80, 20) as u64,
             mode: Pd0Mode::Lvl1,
+            coeff_rate_est_lvl: 1,
             lvl1: Some(&tables20),
             max_sq: 64,
             min_sq: 8,
@@ -1771,16 +1800,16 @@ mod tests {
     #[test]
     fn m6_gradient64_trees_match_c() {
         let y = gradient64();
-        let t20 = pd0_pick_sb_partition_m6(&y, 64, 0, 0, 20, 80, &build_m6_pd0_tables(80));
+        let t20 = pd0_pick_sb_partition_m6(&y, 64, 0, 0, 20, 80, &build_m6_pd0_tables(80), 1);
         assert_eq!(t20.leaf_sizes(), vec![32; 4]);
-        let t40 = pd0_pick_sb_partition_m6(&y, 64, 0, 0, 40, 160, &build_m6_pd0_tables(160));
+        let t40 = pd0_pick_sb_partition_m6(&y, 64, 0, 0, 40, 160, &build_m6_pd0_tables(160), 1);
         assert_eq!(t40.leaf_sizes(), vec![32; 4]);
-        let t55 = pd0_pick_sb_partition_m6(&y, 64, 0, 0, 55, 220, &build_m6_pd0_tables(220));
+        let t55 = pd0_pick_sb_partition_m6(&y, 64, 0, 0, 55, 220, &build_m6_pd0_tables(220), 1);
         assert_eq!(t55, Pd0Tree::Leaf(64));
         // Uniform content: exact DC prediction, zero residual -> 64 NONE
         // (keeps every uniform p6 identity cell byte-identical).
         let u = vec![128u8; 64 * 64];
-        let tu = pd0_pick_sb_partition_m6(&u, 64, 0, 0, 40, 160, &build_m6_pd0_tables(160));
+        let tu = pd0_pick_sb_partition_m6(&u, 64, 0, 0, 40, 160, &build_m6_pd0_tables(160), 1);
         assert_eq!(tu, Pd0Tree::Leaf(64));
     }
 }

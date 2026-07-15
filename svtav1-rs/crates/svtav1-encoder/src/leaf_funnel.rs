@@ -302,10 +302,13 @@ pub struct FunnelCfg {
     /// compare. 1 (M6) / >=2 (M7/M8) -> the real `cost_coeffs_txb` (the
     /// funnel's `tx_unit` bits); 0 (eff-M9, rate_est_level 0) -> the fast
     /// per-txb approximation in `tx_type_search` (product_coding_loop.c:4976):
-    /// `th = (txw*txh)>>6; eob < th ? 6000+eob*1000 : 3000+eob*100`. Only the
-    /// lvl-0 approximation is ported here (needed so the eff-M9 TXS depth
-    /// compare matches C); other levels keep the real estimate (their
-    /// identity is already closed on synthetic content).
+    /// `th = (txw*txh)>>6; eob < th ? 6000+eob*1000 : 3000+eob*100`. The
+    /// lvl-0 approximation is applied in the eff-M9 depth loop (so the TXS
+    /// depth compare matches C). The lvl-2 approximation (M7/M8:
+    /// `eob < th ? 6000+eob*1000 : real`) is applied per-txb in `tx_unit`
+    /// (LUMA only), so it prices both the MDS1 NIC pruning and the MDS3
+    /// mode/tx-type decision like C's shared `full_loop_core`. Level 1 (M6)
+    /// keeps the real estimate.
     pub coeff_rate_est_lvl: u8,
     /// chroma_level 4 (M5): CHROMA_MODE_0 with `ind_uv_last_mds = 2` —
     /// `search_best_mds3_uv_mode` over the MDS3 survivors' uv modes
@@ -568,16 +571,37 @@ impl FunnelCfg {
                 ..m6_tail
             },
             6 => m6_tail,
+            // M7 (still/420): intra_level 7 (set_intra_ctrls case 7:
+            // mode_end SMOOTH, angular 4, prune_using_best_mode 1,
+            // prune_using_edge_info 0; enc_mode_config.c:8577), nic_level 7
+            // (scaling 8 -> nums 4/4/4; set_nic_controls case 7 mds1_base
+            // 1200/rank3, mds2 15/1/5, mds3 15 == M6), txs_level 3 (== M6),
+            // filter_intra 0 (get_filter_intra_level_allintra > ENC_M6).
+            // Deltas from m6_tail that were previously MISSED (latent on
+            // synthetic, binding on real content):
+            // - rate_est_level 4 (enc_mode_config.c:15040 `<= ENC_M8`) ->
+            //   set_rate_est_ctrls case 4: coeff_rate_est_lvl 2 (the LUMA
+            //   fast approximation, applied in tx_unit), update_skip_*_ctx
+            //   0/0 (real_coeff_ctx false).
+            // - txt_level 10 (enc_mode_config.c:15000 `<= ENC_M8`) ->
+            //   set_txt_controls case 10: txt_group_intra lt16 3 / ge16 2,
+            //   txt_rate_cost_th 50 (satd_early_exit 10 == M6's case 8).
             7 => FunnelCfg {
                 filter_intra: false,
                 prune_best_mode: true,
                 nic_num: (4, 4, 4),
                 real_coeff_ctx: false,
+                coeff_rate_est_lvl: 2,
+                txt_group_lt16: 3,
+                txt_group_ge16: 2,
+                txt_rate_th: 50,
                 ..m6_tail
             },
             // preset 8: nic_level 11 (scaling 15 -> nums 0/0/0 -> 1/1/1),
             // all cand thresholds 1, enable_skipping_mds1 (n1==1 makes it a
-            // no-op for the pick), txs_level 0.
+            // no-op for the pick), txs_level 0. Shares M7's rate_est_level 4
+            // (coeff_rate_est_lvl 2) and txt_level 10 (groups 3/2, rate_th
+            // 50) — the same previously-missed real-content deltas.
             8 => FunnelCfg {
                 filter_intra: false,
                 prune_best_mode: true,
@@ -587,6 +611,10 @@ impl FunnelCfg {
                 mds3_cand_base_th: 1,
                 real_coeff_ctx: false,
                 txs_on: false,
+                coeff_rate_est_lvl: 2,
+                txt_group_lt16: 3,
+                txt_group_ge16: 2,
+                txt_rate_th: 50,
                 ..m6_tail
             },
             // eff-M9 (presets 9+): intra_level 8 arms the is_dc_only gate
@@ -1181,7 +1209,7 @@ fn tx_unit(
         if shift < 0 { d << (-shift) } else { d >> shift }
     };
 
-    let bits = if eob > 0 {
+    let real_bits = if eob > 0 {
         cost_coeffs_txb(
             &qcoeff,
             eob,
@@ -1195,6 +1223,29 @@ fn tx_unit(
         )
     } else {
         cost_skip_txb(c_tx, plane_type, txb_skip_ctx, rates)
+    };
+    // C `coeff_rate_est_lvl == 2` (M7/M8 allintra, rate_est_level 4): the
+    // LUMA coeff RATE used in the RD compare is the fast per-txb
+    // approximation, not the real entropy cost — `th = (txw*txh)>>6`,
+    // `eob < th ? 6000 + eob*1000 : real`. C applies it identically in
+    // every luma tx path (tx_type_search product_coding_loop.c:4976,
+    // perform_dct_dct_tx :5619, the multi-txb loop :5951), all reached from
+    // the shared `full_loop_core`, so it prices BOTH the MDS1 NIC pruning
+    // and the MDS3 mode/tx-type decision. Chroma keeps the real cost here;
+    // its own eob-approximation (`skip_chroma_rate_est`, full_loop.c:1922)
+    // is applied by the caller. Level 0 (eff-M9) is handled in the depth
+    // loop (unchanged); level 1 (M6) keeps the real cost. `eob==0` folds
+    // into `eob < th` (th >= 1 for every >= 8x8 TX) -> 6000, matching C's
+    // tx_type_search / coeff-shaving eob==0 luma price.
+    let bits = if plane_type == 0 && frame.cfg.coeff_rate_est_lvl == 2 {
+        let th = (w * h) >> 6;
+        if (eob as usize) < th {
+            6000 + eob as i32 * 1000
+        } else {
+            real_bits
+        }
+    } else {
+        real_bits
     };
     let cul = compute_cul_level(scan, &qcoeff, eob);
 

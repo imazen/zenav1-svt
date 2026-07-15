@@ -2654,6 +2654,10 @@ fn encode_tile_rows(
                                 sb_qindex,
                                 tables,
                                 if dr.disallow_4x4 { 8 } else { 4 },
+                                // M4/M5: rate_est_level 1 -> coeff_rate_est_lvl 1
+                                // (real PD0 coeff rate). M7/M8's level-2 PD0
+                                // approximation only fires when this is >= 2.
+                                funnel_cfg.coeff_rate_est_lvl,
                             );
                             let cq = c_quant.as_ref().unwrap();
                             let scan = crate::depth_refine::build_refined_scan(
@@ -2709,6 +2713,12 @@ fn encode_tile_rows(
                                 cli_qp as u32,
                                 sb_qindex,
                                 tables,
+                                // M6: coeff_rate_est_lvl 1 (real PD0 coeff
+                                // rate, unchanged). M7/M8: 2 -> the C
+                                // perform_tx_pd0 `eob<th ? 6000+eob*500`
+                                // approximation that lowers the parent-NONE
+                                // cost and matches C's partition depth.
+                                funnel_cfg.coeff_rate_est_lvl,
                             );
                             let sb_vars = crate::pd0::compute_b64_variance(encode_input, w, x0, y0);
                             let mut funnel_ctx = if use_funnel {
