@@ -1,20 +1,29 @@
 date: 2026-07-15
 tool: RIM_PRESETS="7 8" tools/real_image_matrix.sh 2026-07-15
-parent_commit: 6c11ac2cd (pre-fix HEAD; this tsv measures the M7/M8 coeff_rate_est_lvl-2 + txt-10 + PD0-lvl2 fixes landed in the following commit)
+commits: 59e33c948 (coeff_rate_est_lvl 2 + txt-10 + PD0 lvl-2) + 0a7ead360 (chroma all-or-nothing skip_chroma_rate_est)
 corpus: CID22-512 training subset (/root/work/codec-corpus/CID22/CID22-512/training), 20 evenly-spaced photos x 3 qps (20/40/55)
 c_reference: SvtAv1EncApp v4.2.0-rc, matched still/AVIF CQP --lp 1, shared I420 (BT.601 limited)
-result: 60/120 byte-identical (preset 8: 59/60; preset 7: 1/60)
-  Change vs the 2026-07-14 baseline (0/66 real): M7/M8 now use their C-exact
-  rate_est_level-4 config — coeff_rate_est_lvl 2 (luma eob<th?6000+eob*1000:real
-  in tx_unit; PD0 eob<th?6000+eob*500:real in lvl1_block_cost) + txt_level 10
-  (intra groups 3/2, rate_th 50). These were latent because only synthetic M7/M8
-  was tracked before.
-  preset 8 (nic 1/1/1, txs off): essentially closed (59/60); the 1 residual is
-    6763758 q20 (a high-bitrate 27 KB tile).
-  preset 7 (nic 4/4/4, txs on): 1/60 — the config fixes move the first divergence
-    from op ~190 (leaf y_mode) to op ~2590 (deep leaf y_mode DC-vs-V) on the
-    validation probe; a residual leaf mode-decision divergence (candidate-set /
-    coeff-shaving suspected) remains across most cells. Next: instrument scratch C
-    at the diverging block.
+result: 95/120 byte-identical (preset 8: 59/60; preset 7: 36/60)
+  Baseline (2026-07-14, pre-work): 0/66 real byte-identical.
+  Landed this session, all C-exact ports verified against the tree at v4.2.0-rc:
+  1. M7/M8 rate_est_level 4 -> coeff_rate_est_lvl 2 (luma eob<th?6000+eob*1000:real
+     in tx_unit; PD0 eob<th?6000+eob*500:real in lvl1_block_cost) + txt_level 10
+     (intra groups 3/2, rate_th 50). These were latent (only synthetic M7/M8 tracked).
+     -> preset 8 0/60 -> 59/60; preset 7 0/60 -> 1/60 (first divergence op ~190 -> ~2590).
+  2. Chroma coeff-rate all-or-nothing (skip_chroma_rate_est, full_loop.c:1922): the
+     eob approximation applies to BOTH chroma planes only when BOTH eob < th; else
+     both use the full estimate. Was pricing planes independently (6592-unit gap).
+     -> preset 7 1/60 -> 36/60 (first divergence op ~2590 -> ~8850).
+  Root causes pinned by instrumented scratch C (per-candidate MDS3 cost/rate/dist
+  dumps diffed against the funnel, deleted at end).
+residual (documented, next tier):
+  - preset 7 (24/60 non-identical): all remaining first-divergences are leaf
+    y_mode picks on blocks whose winning uv mode is H_PRED (DCT_ADST chroma).
+    Instrumented SB(224,192) 32x32: luma coeff bits + dist + mode-rate all match
+    C exactly; C's chroma cb=10746 vs ours 6246 for the u plane (eob=3, DCT_ADST)
+    -- a ~4500 chroma coeff-cost divergence isolated to the DCT_ADST/uv=2 path
+    (uv=1/ADST_DCT already matches). Not CFL (cfl_performed=0). Needs per-plane
+    chroma qcoeff-level diff.
+  - preset 8 (1/60): 6763758 q20, a 27 KB high-bitrate tile (separate divergence).
 gates: recon_parity 432/0; cargo test --workspace green; synthetic identity_matrix
   130/132 (unchanged); real M10 preset-10 IDENTICAL (no regression).
