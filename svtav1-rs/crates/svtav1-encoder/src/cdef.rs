@@ -917,6 +917,29 @@ pub fn cdef_search_still(
         return CdefSearchPick::AllSkip;
     }
     let (bits, lev0, lev1) = finish_cdef_rd(&mse, n_cand, qindex);
+    // Diagnostic aid (SVTAV1_CDEF_DBG): dump the per-fb candidate-slot mse
+    // rows (luma + joint UV) + the aggregate sums + the RD pick, to diff
+    // against the instrumented C `cdef_seg_search`/`finish_cdef_search`
+    // (C_CDEF_FB/SUM/FINAL). Used to verify the search is C-exact on real
+    // content: at every fb whose post-deblock recon matches C the mse rows
+    // are byte-identical. No effect on the encoded stream.
+    if std::env::var_os("SVTAV1_CDEF_DBG").is_some() {
+        let mut ysum = alloc::vec![0u64; n_cand];
+        let mut uvsum = alloc::vec![0u64; n_cand];
+        for (i, &(fbr, fbc)) in fb_addr.iter().enumerate() {
+            eprintln!("RS_CDEF_FB fbr={fbr} fbc={fbc} Y={:?} UV={:?}", mse[i][0], mse[i][1]);
+            for gi in 0..n_cand {
+                ysum[gi] += mse[i][0][gi];
+                uvsum[gi] += mse[i][1][gi];
+            }
+        }
+        eprintln!(
+            "RS_CDEF_SUM sb_count={} fs={:?} Ysum={ysum:?} UVsum={uvsum:?}",
+            mse.len(),
+            cfg.fs
+        );
+        eprintln!("RS_CDEF_PICK bits={bits} lev0={lev0:?} lev1={lev1:?}");
+    }
     // Per-fb best strength index (finish_cdef_search, enc_cdef.c:
     // 1397-1412): min over gi of luma+uv candidate-slot mse; skip fbs
     // keep index 0 (never transmitted or applied).

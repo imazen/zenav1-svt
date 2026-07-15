@@ -2541,3 +2541,110 @@ structurally unaffected, but the synthetic gate must still be re-run).
 - Repo change: diagnostic aids only — `identity_run` env-gated recon dump
   (`SVTAV1_RECON_DUMP`) + `tx_depth` added to the `SVTAV1_DUMP_TREE` leaf line.
   No encoder-output change.
+
+## 2026-07-15 (wave2, real-image M6 chunk 2): CDEF UV search VERIFIED C-exact — the real M6 blocker is a RESIDUAL recon cascade (avg_cdf fix incomplete), not the CDEF search
+
+VERIFY-BEFORE-PORTING result on `1001682.png 512x512 q40 p6` (the cell whose
+differ first-divergence is `FH | cdef_uv_pri_strength[0] C=0 Rust=15`). The
+briefed premise was "our CDEF UV strength search is not yet C-exact on real
+content." **That premise is wrong: the CDEF search is already C-exact.** The
+`cdef_uv` FH field is only the first *bitstream* symptom of a deeper problem —
+the post-deblock recon that feeds the CDEF/LR searches still diverges from C on
+real content, because the `avg_cdf_symbols` fix (9563ac471) resolved only SB
+rows 0-2, and rows 3+ still cascade.
+
+### CDEF search is C-exact (proven, not asserted)
+
+Scratch-C instrumented `cdef_seg_search` + `finish_cdef_search`
+(`/root/svtav1-instr`, surgically recompiled `cdef_process.c.o`/`enc_cdef.c.o`
+into a copy of `Bin/Release/libSvtAv1Enc.a` — no full-tree rebuild; env-gated
+`CDEFDBG`/`CDEFRECON`; deleted at end). Dumped, for 1001682 q40 p6, the per-fb
+per-candidate mse rows (luma + joint UV), the config, and the RD pick; compared
+to the Rust `cdef_search_still` (new env-gated `SVTAV1_CDEF_DBG` aid, `cdef.rs`):
+
+- **Config identical**: `fs=[0,60,2,62]`, `first_pass=2`, `second_pass=2`,
+  `subsampling=4`, `zero_fs_cost_bias=0`, `uv_from_y=0`, `use_reference_cdef_fs=0`,
+  `use_qp_strength=0`, `lambda=211804`. (Confirms `cdef_search_cfg_for_preset`,
+  the `search_one_dual`/`joint_strength_search_dual` port, the `default_mse_uv*64`
+  sentinel, and the M6=level-7 `set_cdef_search_controls` mapping are all correct.)
+- **Every fb whose post-deblock recon matches C produces byte-identical mse
+  rows.** fbs 0-15 (SB rows 0-1): C and Rust Y and UV rows are exactly equal
+  (e.g. fb0 Y=[2020,1992,1980,1976] UV=[1730,1730,S,S] both sides). The search
+  math (filter kernel, `dist_packed`, subsampling, dir reuse, chroma damping-1)
+  is C-exact.
+- The final `UVsum` differs (**C=[831224,871785,S,S]** picks uv-idx 0;
+  **Rust=[1311110,1303964,S,S]** picks uv-idx 1) *only because the recon it
+  measures differs from fb row 2 on* — not because of any search-code delta.
+
+### The real blocker: post-deblock recon still diverges (rows 3+ luma, row 2+ chroma)
+
+Dumped C's `cdef_input_recon`/`cdef_input_source` (tightly packed Y|U|V) and
+diffed vs the Rust `SVTAV1_RECON_DUMP` post-deblock recon:
+
+- **Source is identical**: C `cdef_input_source` == the shared `rs.yuv`, 0 bytes
+  differ. (Rules out any RGB->YUV / chroma-source mismatch.)
+- **Post-deblock recon differs by ~half the frame**: 183309/393216 bytes
+  (Y 119057/262144=45%, U 30673/65536=47%, V 33579/65536=51%).
+- **Luma interior coeff-divergence map (deblock-untouched pixels, `rs.pre==rs.post`
+  but `crec!=rs.post`): SB rows 0-2 CLEAN, rows 3-7 all diverge.** First genuine
+  luma coeff divergence at **SB(3,0)**. Chroma diverges one row earlier (row 2:
+  the small `UV[0]` deltas that flip the razor-thin CDEF UV pick).
+- Deblock is not the cause: the LF levels are deterministic per qindex and the
+  kernel is `c_parity_lpf`-validated; a 45% post-deblock delta means the
+  **pre-deblock (coeff/mode) recon** diverges, and deblock merely smears it into
+  the SB-row-2 bottom edge (`y=191`).
+
+### Hypotheses ruled out this chunk (all verified, not argued)
+
+1. **CDEF search code** — byte-identical mse on matching-recon fbs (above).
+2. **Source / chroma conversion** — C source == rs.yuv, 0 diffs.
+3. **Deblock kernel / levels** — validated + deterministic; divergence is in
+   deblock-untouched interior pixels.
+4. **Broken chain evolution** — the per-SB evolved chroma coeff CDF
+   (`chain_snaps[sb].1.coeff_base_eob_cdf` plane-1 checksum) *does* vary per SB,
+   so the sim re-code is evolving chroma, not stuck at default. The chain
+   neighbor rule + `avg_cdf_with` + 2D store structurally match C
+   (enc_dec_process.c:3002-3022; C `ec_ctx_array[sb]` is evolved in place by the
+   coding_loop.c encode pass, matching the Rust `encode_partition_tree` sim).
+5. **CFL** — `chroma_detector_fires` (`leaf_funnel.rs:2491`, result currently
+   discarded, a known unported gap) arms only at SB (1,1)/(1,3)/(1,4) [row 1,
+   which is CLEAN] and (7,3) [already cascaded]; it **never arms at row 2/row 3**
+   where the recon first diverges. Not the first-divergence cause.
+
+### M2-M6 real all diverge at FH — same root cause, different first symptom
+
+`RIM_PRESETS="2 3 4 5 6" RIM_QPS=40 RIM_IMAGES=3`: **0/15 identical**, all FH.
+M2-M5 first-diverge at `loop_filter_level[*]` (the LF-level search reads the
+diverged recon), M6 at `cdef_uv_pri_strength[0]` or `lr_type[*]` (the CDEF/LR
+searches read it). Every one is downstream of the residual recon cascade —
+consistent with all of presets 0-6 running the `funnel_chain` per-SB CDF path.
+(A separate, latent question for M2-M5: whether the LF-level *search* itself is
+fully ported — CLAUDE.md notes "we ship LPF_PICK_FROM_Q only" — vs. purely
+reflecting the diverged recon; not disentangled this chunk.)
+
+### Next step (well-defined, NOT this chunk)
+
+The residual is a **chroma-specific coeff/mode divergence at the first row-2
+chroma-reference leaf** (first symptom), then luma at SB(3,0). Repeat the prior
+chunk's leaf-level method there: `SVTAV1_DUMP_TREE` + scratch-C `write_modes_b`
+leaf dump to confirm the tree matches, then a per-coeff `update_coeff_general`
+RDOQ compare (C vs Rust) at the first divergent chroma txb to find whether it is
+(a) a residual `avg_cdf` coverage gap in a chroma-relevant CDF whose
+`AVG_CDF_STRIDE` (padded, e.g. `uv_mode_cdf[0]`) is over-averaged by Rust's
+flatten-everything `avg_cdf_with` vs C's `j<=nsymbs` per-cdf loop, or (b) a
+chroma RDOQ/context bug that only bites on non-flat chroma. Then re-check that
+real M6 advances past the recon cascade; M2-M5 share it.
+
+### Gates (this chunk — verification only, no encoder-output change)
+
+- `cargo test --workspace`: **664 passed / 0 failed**.
+- recon_parity (AOMDEC): **432 passed / 0 failed** (CDEF 236/432, wiener 137/432).
+- synthetic `identity_matrix` (presets 0-10): **130/132** (unchanged).
+- real M7/M8/M10 spot (4 imgs q40): **12/12 IDENTICAL** (no regression).
+- real M2-M6 (3 imgs q40): **0/15**, all FH (honest baseline; unchanged by this
+  chunk — output byte-for-byte the same as 9563ac471, so the committed
+  `benchmarks/real_image_identity_2026-07-15.tsv` remains current).
+- C tree pristine (`git -C /root/svtav1 status --short` clean of non-svtav1-rs);
+  scratch `/root/svtav1-instr` deleted.
+- Repo change: one diagnostic aid — `cdef.rs` env-gated `SVTAV1_CDEF_DBG`
+  (per-fb mse rows + RD pick). No encoder-output change.

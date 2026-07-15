@@ -190,24 +190,27 @@ under the AV1 reference decoder as of 2026-07-13, C baseline v4.2.0-rc)
    pre-CDEF snapshot replaces the linebuf/colbuf machinery — provably
    identical single-threaded). Recon-parity 216/0 with CDEF FIRING
    (168/216 streams, 2.34M px filtered, 882k changed).
-   2a. **CDEF strength policy matches C per preset EXCEPT the live-block
-       search**: C's allintra policy is preset-split (enc_mode_config.c:
-       3543-3600) — presets >= M7 use the use_qp_strength fast path
+   2a. **CDEF strength policy matches C per preset; the full live-block
+       search is ported AND VERIFIED C-exact (2026-07-15 M6 chunk 2)**:
+       C's allintra policy is preset-split (enc_mode_config.c:3543-3600)
+       — presets >= M7 use the use_qp_strength fast path
        (pick_cdef_params_key_frame ports svt_pick_cdef_from_qp
-       enc_cdef.c:849 intra branch bit-exactly, f32 fits pinned for all
-       256 qindexes, tests/c_parity_cdef_pick.rs; damping 3+(qindex>>6),
-       enc_cdef.c:923) and presets <= M6 run svt_av1_cdef_search. Of the
-       search, ONLY the sb_count==0 outcome is ported (every filter
-       block all-skip -> cdef_bits=0, strengths 0/0 — deterministic,
-       enc_cdef.c:1296-1449; cdef.rs pick_cdef_params_all_skip_search):
-       C-exact for flat/all-skip frames (uniform p6 identity cells prove
-       it). Frames with ANY live filter block at presets <= M6 still
-       take the qp fast path — self-consistent (signal == apply) but
-       divergent from C's searched strengths (1 of 16 matrix stages:
-       gradient64 q55 p6 FH). The per-fb mse search port (64 strengths x
-       joint_strength_search_dual + lambda rate) lands with
-       decision-layer parity (gap 3). Inter frames signal zero
-       strengths (no CDEF), like inter deblock levels.
+       enc_cdef.c:849 intra branch bit-exactly, tests/c_parity_cdef_pick.rs;
+       damping 3+(qindex>>6)) and presets <= M6 run the full
+       svt_av1_cdef_search (cdef.rs cdef_search_still + finish_cdef_rd +
+       joint_strength_search_dual + the default_mse_uv*64 sentinel + the
+       M6=level-7 set_cdef_search_controls candidate set fs=[0,60,2,62]).
+       Scratch-C instrumentation of cdef_seg_search/finish_cdef_search on
+       real content (1001682 q40 p6) proves it: every 64x64 filter block
+       whose post-deblock recon matches C produces BYTE-IDENTICAL per-fb
+       luma+UV mse rows and the RD pick logic matches. So the search is
+       NOT the real-content gap. The `FH | cdef_uv_pri_strength[0] C=0
+       Rust=15` divergence is a *downstream symptom*: the post-deblock
+       recon feeding the search still diverges (avg_cdf fix 9563ac471
+       fixed SB rows 0-2, rows 3+ still cascade). See
+       docs/IDENTITY-STATUS.md "2026-07-15 ... M6 chunk 2" for the full
+       ruled-out list and the leaf-level next step. Inter frames signal
+       zero strengths (no CDEF), like inter deblock levels.
    **Wiener loop restoration DONE 2026-07-14** (commits
    a724ebdc0..bbf1ddb69): C-exact kernel + stripe machinery
    (svt_av1_wiener_convolve_add_src_c / svt_av1_loop_restoration_
