@@ -2352,3 +2352,73 @@ coeff-rate class (they use `coeff_rate_est_lvl 2` in C — `eob<th ?
 yet stressed since only synthetic M7/M8 is tracked), and M2-M6 real
 content adds NSQ / depth-refine RD. Run `RIM_PRESETS="2 6"` to surface the
 next class.
+
+## 2026-07-15 (wave2, real-image M7 chunk): chroma coeff-rate CB double-count — real M7 36 -> 57/60
+
+Root-caused and fixed the M7 real-content residual (task #70). The prior
+chunk (0a7ead360) framed it as a "DCT_ADST chroma coeff-cost divergence"
+(C cb=10746 vs ours 6246). Instrumented scratch C (`/root/svtav1-instr`,
+`-Wl,--wrap` of `svt_aom_txb_estimate_coeff_bits` + `svt_aom_full_cost` —
+no lib rebuild, OBUs byte-identical to baseline, deleted after) DISPROVED
+that framing: `svt_av1_cost_coeffs_txb` returns the exact SAME chroma bits
+as ours for every candidate. The 10746 is an accumulator artifact.
+
+### The diverging leaf (CID22 2775196 q40 p7, SB(224,192) 32x32)
+
+Chroma 16x16, `th = (16*16) >> 6 = 4`. C commits y=DC; Rust committed
+y=H (op 8850 y_mode flip: C s=0 DC, Rust s=2 H). Every RD input matches C:
+
+| candidate | luma y_bits | C cb (full) | C cr (full) | C full_cost | Rust cost |
+|---|---|---|---|---|---|
+| DC (uv=DC, DCT_DCT, cb_eob=6/cr_eob=9) | 40617 | 7621 | 11736 | 80283353 | 80283353 |
+| H  (uv=H, DCT_ADST, cb_eob=3/cr_eob=4) | 40222 | **10746** | 12848 | 82229386 | 80047879 |
+
+`svt_av1_cost_coeffs_txb` for the H u-plane returns **6246** (== ours), but
+`svt_aom_full_cost` sees **cb = 10746 = 4500 + 6246**.
+
+### Root cause: order-dependent CB approximation leak + accumulate-add
+
+C `skip_chroma_rate_est` (full_loop.c:1922, coeff_rate_est_lvl 2) processes
+CB first: `cb_eob (3) < th (4)` so it writes `*cb_coeff_bits = 3000+3*500 =
+4500` STRAIGHT INTO the accumulator, then processes CR: `cr_eob (4) >= th`,
+lvl 2 -> `return false` — WITHOUT clearing the CB write. The caller
+`svt_aom_full_loop_uv` (full_loop.c:2636-2661) then runs the full estimate
+and ADDS it: `*cb_coeff_bits += cb_txb_coeff_bits` -> 4500 + 6246 = 10746.
+So CB is priced as approx + full, but ONLY in the `cb_eob < th &&
+cr_eob >= th` case (CB is checked first; a `>= th` CB returns before
+leaking, so CR can never double-count; the DC candidate's cb_eob=6 >= th so
+its CB is clean). Undercharging our H cb by ~4500 (~2.18M RD at
+lambda 248207 = the exact 82229386-80047879 gap) flipped the leaf y_mode.
+
+### Fix (funnel only; C read-only)
+
+`leaf_funnel.rs` (the `!real_coeff_ctx` chroma coeff-rate branch, ~2532):
+replaced the "all-or-nothing use_approx" logic with a byte-exact replica of
+`skip_chroma_rate_est`'s order-dependent per-plane control flow + the
+caller's accumulate-add. The CB leak is retained and added to the full
+estimate exactly in the `cb_eob < th && cr_eob >= th` case; every other
+case is unchanged (both < th -> per-plane approx; a `>= th` CB -> both
+full; lvl 0 -> per-plane approx). Commit 5e0937ef4.
+
+### Gates (all green, verbatim)
+
+- real-image matrix `RIM_PRESETS="7 8 10"` (CID22-512 training, 20 imgs x 3
+  qps = 180): **176/180** — **M7 57/60** (was 36/60), M8 59/60, M10 60/60
+  (no regression). CID22 validation probe 2775196 q40 p7: VERDICT IDENTICAL.
+- `cargo test --workspace`: **662 passed / 0 failed**.
+- synthetic `identity_matrix` (presets 0-10): **130/132** (unchanged — the 2
+  pre-existing M0 gradient q20 cells).
+- recon_parity (AOMDEC): **432 passed / 0 failed** (CDEF 236/432, wiener 137/432).
+- C tree pristine; scratch `/root/svtav1-instr` deleted.
+
+### Residual (next tier, DISTINCT class — not chroma coeff-cost)
+
+- **EPICA Delta D Plot p7 (3 cells: q20/q40/q55)** — a screen-content plot.
+  Diverges at tile **op 4** with a syntax-TYPE mismatch: after y_mode +
+  uv_mode (both match), C emits two extra bools (f=318, f=307 — palette /
+  screen-content-tools per-block signaling) where Rust emits none. This is
+  the screen-content/palette path, NOT the chroma coeff-cost class.
+  Pre-existing (identical op-4 divergence in the 2026-07-14 tsv). This is
+  the only M7 residual left on the tracked corpus.
+- **6763758 q20 p8 (1 cell)** — the known 27 KB high-bitrate tile divergence
+  (documented in the prior chunk; separate class).
