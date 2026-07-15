@@ -2516,26 +2516,41 @@ pub(crate) fn evaluate_leaf(
         let tx_size_bits_final = rates.tx_size[tsz_cat][tsz_ctx][best_depth as usize] as u64;
         // Chroma coeff rate: M6 (coeff_rate_est_lvl 1) prices the real
         // cost_coeffs_txb / cost_skip_txb (already in u_out.bits/v_out.bits).
-        // M7/M8 (coeff_rate_est_lvl 2, OPT_APPROX_COEFF_RATE) use the
-        // eob-based chroma approximation (`skip_chroma_rate_est`,
-        // full_loop.c:1922): th = (tx_w_uv * tx_h_uv) >> 6; eob == 0 -> 0,
-        // eob < th -> 3000 + eob*500, eob >= th -> full estimation.
+        // M7/M8 (lvl 2) + eff-M9 (lvl 0) use C `skip_chroma_rate_est`
+        // (full_loop.c:1922): th = (tx_w_uv * tx_h_uv) >> 6; a plane with
+        // eob < th costs `eob ? 3000+eob*500 : 0`.
+        //
+        // CRITICAL: the C function is ALL-OR-NOTHING at level 2 — the moment
+        // EITHER plane has eob >= th it `return false`s, and the caller then
+        // runs the FULL estimate over BOTH cb and cr (full_loop.c:2135). So a
+        // below-threshold plane must NOT be cheapened while its sibling is
+        // above threshold. (Pricing planes independently made C's cb=11092
+        // read as 4500 here — a 6592-unit gap that flipped SB(160,160)'s
+        // 32x32 leaf from C's DC to our V. Instrumented capture 2026-07-15.)
+        // At level 0 the function never returns false — each plane instead
+        // falls back to `1500+eob*50` for eob >= th — so it stays per-plane.
         let (u_bits, v_bits) = if cfg.real_coeff_ctx {
             (u_out.bits as u64, v_out.bits as u64)
         } else {
             let uv_th = ((cw * chh) >> 6) as u16;
-            let approx = |eob: u16, full: u64| -> u64 {
-                if eob == 0 {
+            let use_approx =
+                cfg.coeff_rate_est_lvl == 0 || (u_out.eob < uv_th && v_out.eob < uv_th);
+            let plane = |eob: u16, full: u64| -> u64 {
+                if !use_approx {
+                    full
+                } else if eob == 0 {
                     0
                 } else if eob < uv_th {
                     3000 + eob as u64 * 500
                 } else {
-                    full
+                    // eff-M9 (level 0) eob >= th fallback; unreachable at
+                    // level 2 (use_approx already required eob < th there).
+                    1500 + eob as u64 * 50
                 }
             };
             (
-                approx(u_out.eob, u_out.bits as u64),
-                approx(v_out.eob, v_out.bits as u64),
+                plane(u_out.eob, u_out.bits as u64),
+                plane(v_out.eob, v_out.bits as u64),
             )
         };
         let coeff_rate = if block_has_coeff {
