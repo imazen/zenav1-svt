@@ -2648,3 +2648,114 @@ real M6 advances past the recon cascade; M2-M5 share it.
   scratch `/root/svtav1-instr` deleted.
 - Repo change: one diagnostic aid — `cdef.rs` env-gated `SVTAV1_CDEF_DBG`
   (per-fb mse rows + RD pick). No encoder-output change.
+
+## 2026-07-15 (wave2, real-image M6 chunk 3): the avg_cdf chain is C-EXACT — the M6 blocker is a LEAF coeff (EOB over-retention) at SB(3,0), NOT the CDF chain
+
+VERIFY-BEFORE-PORTING on `1001682.png 512x512 q40 p6`, targeting the prior
+chunk's two leads (avg_cdf padding over-average; leaf drill at SB(3,0)). **Both
+leads' framing — "the per-SB avg_cdf chain is wrong" — is REFUTED.** The chain is
+bit-exact vs C at and beyond the divergent SB; the divergence is a leaf
+coefficient decision downstream of a *correct* rate context.
+
+### Lead 1 (avg_cdf padding / counter) — RULED OUT (rigorous + empirical)
+
+`avg_cdf_symbol` (enc_dec_process.c:2668-2679) loops `j <= nsymbs` per CDF, i.e.
+it averages exactly `CDF_SIZE(nsymbs)` entries = all probs + the always-0 + the
+adaptation counter at `[nsymbs]`, skipping only storage padding beyond that.
+Rust's `avg_cdf_entries` (cdf.rs:46) flat-averages the whole stored array. The
+"padding over-average" is a proven NO-OP:
+- `update_cdf` only ever writes `[0..nsymbs-2]` and the counter `[nsymbs]`; it
+  NEVER touches padding beyond `CDF_SIZE(nsymbs)`. Padding therefore stays at its
+  init value, identical on both left and top-right neighbors -> `avg(x,x)=x` ->
+  Rust's padding == C's untouched padding, and nothing ever reads it.
+- The counter at `[nsymbs]` is averaged identically by both.
+- The arrays C averages that Rust lacks (cfl_sign/alpha, sgrproj/switchable
+  restore, seg, delta_lf, intrabc) are not in the Rust `FrameContext` at all, so
+  they cannot be an averaging bug.
+
+### The avg_cdf chain is C-EXACT (instrumented C; OBUs byte-identical baseline; deleted)
+
+Scratch C `/root/svtav1-instr` (enc_dec_process.c: dump `ec_ctx_array[sb]`
+post-configure per SB — the exact chain_base seed; every build verified to
+reproduce the baseline OBU byte-for-byte with env unset; deleted at end, C tree
+pristine). Compared chroma `coeff_base_eob_cdf[0][1][0..3]` (cbeobU) + luma
+`[0][0]` (cbeobY) per SB to a matching Rust `SVTAV1_CHAIN_DUMP` (new committed
+env-gated aid, pipeline.rs) of chain_base:
+
+- **chain_base at SB(3,0)=sb24 matches C EXACTLY** (both default:
+  cbeobY 10271,1570… cbeobU 4891,1184…). Neighbor rule + `avg_cdf_with` + 2D
+  store are all correct.
+- **chain_base first diverges only at sb37 (chroma) / sb46 (luma)** — both LATER
+  than the recon divergence. C's per-SB coeff CDFs stay DEFAULT through row 2
+  (txbskpU first non-default at sb25, cbeobU at sb35): with few coded coeffs the
+  chain barely evolves, so through SB(3,0) BOTH sides feed the RDOQ the SAME
+  default coeff rate tables. The sb37/46 chain divergence is a DOWNSTREAM
+  CONSEQUENCE of the leaf divergence (the sim re-code of a divergent leaf evolves
+  the CDF differently), not a cause.
+- The funnel RDOQ correctly consumes the chained tables (`optimize_b(…,
+  rates.coeff …)`, leaf_funnel.rs:1134; `rates.coeff` = `build_coeff_cost_tables_from_fc(chain_base.cfc)`).
+  So the RDOQ rate context at SB(3,0) is C-exact (= default on both sides).
+
+### The real blocker: leaf EOB over-retention at SB(3,0), the first textured SB row
+
+Pre-CDEF recon dump (instrumented enc_cdef.c `svt_av1_cdef_frame`; C
+`cdef_input_source` == rs.yuv; deleted) vs Rust `SVTAV1_RECON_DUMP`:
+- **First genuine (deblock-untouched) recon divergence at SB(3,0)=sb24.**
+  Per-SB-row untouched-luma diverging-px: rows 0-2 = 0 (row 2's 43 px at y=191
+  are a deblock smear from row 3), row 3 = 19813, rows 4-7 ~20k each. Within
+  SB(3,0) the x0-31 leaves are clean; the x32-63 32x32 leaves carry it. Interior
+  diff VARIES (mean 0.3, stdev 3.4, ±13) — a coeff difference, NOT a constant
+  DC-prediction shift.
+- **C leaf decisions (write_modes_b) vs Rust tree at SB(3,0): partition tree,
+  y-mode, uv-mode ALL MATCH; luma EOB is inflated ~2-3x in Rust:**
+
+  | leaf (x,y) | size/mode | C eobY | Rust eob |
+  |-----------|-----------|--------|----------|
+  | 0,192  | 16x16 DC | 36  | 113 |
+  | 16,192 | 16x16 H  | 14  | 48  |
+  | 0,208  | 8x8 DC   | 4   | 17  |
+  | 32,192 | 32x32 DC | 299 | 706 |
+  | 0,224  | 32x32 DC | 359 | 802 |
+  | 32,224 | 32x32 DC | 466 | 961 |
+
+  Rust retains ~2-3x more (small, high-freq) coefficients than C on EVERY SB(3,0)
+  leaf — including the frame-left-edge x0y192 block (minimal neighbor
+  dependency), which rules out a localized prediction cascade. It is
+  content-dependent: flat rows 0-2 (few coeffs, e.g. SB(2,0) 64x64 txb0 eob 10)
+  match C exactly; the first TEXTURED row (row 3) is where the over-retention
+  bites.
+
+### Conclusion + next drill (well-defined, NOT this chunk)
+
+The M6 (and, by the shared path, M2-M5 / M0-M1) real-content blocker is **leaf
+coefficient over-retention** — Rust's coding quantizer / RDOQ (`quantize_fp` then
+`optimize_b`, leaf_funnel.rs:1127-1149 / quant.rs) keeps far more high-frequency
+coefficients than C's `svt_aom_quantize_inv_quantize` + `av1_optimize_txb` on
+textured blocks, with an IDENTICAL (default) rate context. Entirely independent
+of avg_cdf. M7/M8/M10 real = 24/24 because their tracked content/config doesn't
+hit this here (and they never chain), but the quantizer is shared — so the
+divergence is specific to the higher-eob 32x32 blocks M6 encodes here, or an
+eob/size-dependent RDOQ path.
+
+Next: instrument full_loop.c `svt_aom_quantize_inv_quantize` + `av1_optimize_txb`
+(`update_coeff_general`) at the x32y192 TX_32X32 leaf and compare, in order:
+(1) pre-quant transform coeffs — settles residual/prediction/transform vs quant
+(if equal, prediction+transform are C-exact and it is purely the
+quantizer/RDOQ); (2) post-`quantize_fp` levels+eob — settles quantizer
+rounding/deadzone; (3) post-`optimize_b` levels+eob — settles RDOQ
+tail-truncation. The uniform 2-3x eob inflation points at (3) or (2), not (1).
+
+### Gates (this chunk — diagnosis only; one committed env-gated aid, no output change)
+
+- Rust encoder output byte-identical (`1001682 q40 p6` = 10706 B, unchanged)
+  with and without the aid.
+- `cargo test --workspace`: **664 passed / 0 failed**.
+- recon_parity (AOMDEC): **432 passed / 0 failed** (CDEF 236/432, wiener 137/432).
+- synthetic `identity_matrix` (presets 0-10): **130/132** (unchanged; 2 tile =
+  known M0/M1 gradient).
+- real M7/M8/M10 spot (4 imgs q40): **12/12 IDENTICAL** (no regression).
+- C tree pristine (`git -C /root/svtav1 status --short` shows only
+  `svtav1-rs/.../pipeline.rs`, the `SVTAV1_CHAIN_DUMP` aid); scratch
+  `/root/svtav1-instr` deleted.
+- Repo change: one diagnostic aid — pipeline.rs env-gated `SVTAV1_CHAIN_DUMP`
+  (per-SB chain_base coeff CDF). No encoder-output change.

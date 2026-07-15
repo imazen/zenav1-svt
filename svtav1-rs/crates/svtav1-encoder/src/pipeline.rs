@@ -2571,6 +2571,38 @@ fn encode_tile_rows(
                 } else {
                     None
                 };
+                // Diagnostic aid: SVTAV1_CHAIN_DUMP=1 prints each SB's
+                // post-configure (chain_base) coeff CDF — the exact
+                // per-SB rate-estimation context C builds from
+                // ec_ctx_array[sb] (enc_dec_process.c:3010-3022). Used to
+                // verify the avg_cdf chain against instrumented C
+                // (2026-07-15 M6 diagnosis: chain proven C-exact through
+                // sb36; the recon divergence is a downstream leaf-coeff
+                // issue, NOT the chain). No encoder-output change.
+                #[cfg(feature = "std")]
+                if funnel_chain && std::env::var_os("SVTAV1_CHAIN_DUMP").is_some() {
+                    let dflt_cfc;
+                    let cfc: &svtav1_entropy::coeff_c::CoeffFc = match &chain_base {
+                        Some((_, cfc)) => cfc.as_ref(),
+                        None => {
+                            dflt_cfc =
+                                svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex);
+                            &dflt_cfc
+                        }
+                    };
+                    eprint!("CHAINDUMP CFG sb={sb_index} col={sb_col} row={sb_row}");
+                    eprint!(" cbeobY");
+                    for c in 0..4 {
+                        let e = &cfc.coeff_base_eob_cdf[c];
+                        eprint!(" {},{}", e[0], e[1]);
+                    }
+                    eprint!(" cbeobU");
+                    for c in 0..4 {
+                        let e = &cfc.coeff_base_eob_cdf[4 + c];
+                        eprint!(" {},{}", e[0], e[1]);
+                    }
+                    eprintln!();
+                }
                 if funnel_chain {
                     fun_rates = Some(match &chain_base {
                         Some((fc, cfc)) => crate::leaf_funnel::build_md_rates(fc, cfc),
