@@ -2514,44 +2514,66 @@ pub(crate) fn evaluate_leaf(
         // ---- svt_aom_full_cost (rd_cost.c:1357) ----
         let block_has_coeff = best_coeff_count > 0 || u_out.eob > 0 || v_out.eob > 0;
         let tx_size_bits_final = rates.tx_size[tsz_cat][tsz_ctx][best_depth as usize] as u64;
-        // Chroma coeff rate: M6 (coeff_rate_est_lvl 1) prices the real
-        // cost_coeffs_txb / cost_skip_txb (already in u_out.bits/v_out.bits).
-        // M7/M8 (lvl 2) + eff-M9 (lvl 0) use C `skip_chroma_rate_est`
-        // (full_loop.c:1922): th = (tx_w_uv * tx_h_uv) >> 6; a plane with
-        // eob < th costs `eob ? 3000+eob*500 : 0`.
+        // Chroma coeff rate. M6 (coeff_rate_est_lvl 1) prices the real
+        // cost_coeffs_txb / cost_skip_txb (already in u_out.bits/v_out.bits):
+        // C `skip_chroma_rate_est` returns false immediately at lvl 1, so the
+        // caller runs the full estimate into a zeroed accumulator — clean.
         //
-        // CRITICAL: the C function is ALL-OR-NOTHING at level 2 — the moment
-        // EITHER plane has eob >= th it `return false`s, and the caller then
-        // runs the FULL estimate over BOTH cb and cr (full_loop.c:2135). So a
-        // below-threshold plane must NOT be cheapened while its sibling is
-        // above threshold. (Pricing planes independently made C's cb=11092
-        // read as 4500 here — a 6592-unit gap that flipped SB(160,160)'s
-        // 32x32 leaf from C's DC to our V. Instrumented capture 2026-07-15.)
-        // At level 0 the function never returns false — each plane instead
-        // falls back to `1500+eob*50` for eob >= th — so it stays per-plane.
+        // M7/M8 (lvl 2) + eff-M9 (lvl 0) go through C `skip_chroma_rate_est`
+        // (full_loop.c:1922, th = (tx_w_uv * tx_h_uv) >> 6) — which we must
+        // replicate byte-for-byte INCLUDING an order-dependent CB double-count.
+        // skip_chroma_rate_est writes the CB approximation STRAIGHT INTO the
+        // `*cb_coeff_bits` accumulator when `cb_eob < th`, then (lvl 2)
+        // `return false` at the CR check when `cr_eob >= th` WITHOUT clearing
+        // the CB write; the caller (svt_aom_full_loop_uv, full_loop.c:2636-2661)
+        // then does `*cb_coeff_bits += cb_txb_coeff_bits` (the full estimate).
+        // So in the `cb_eob < th && cr_eob >= th` case ONLY, CB is priced as
+        // approx + full. CR never double-counts (CB is checked first; a `>= th`
+        // CB `return false`s before the CR branch writes anything). At lvl 0 the
+        // function never returns false — each plane gets `1500+eob*50` for
+        // eob >= th — so it stays a clean per-plane approximation.
+        // Instrumented C 2026-07-15: SB(224,192) q40 p7 H_PRED chroma
+        // cb = 4500 approx + 6246 full = 10746, cr = 12848 (DC candidate cb
+        // clean: cb_eob=6 >= th so CB returns before leaking). Pricing CB
+        // clean (6246) undercharged the H candidate ~4500 and flipped the
+        // leaf y_mode from C's DC to our H.
         let (u_bits, v_bits) = if cfg.real_coeff_ctx {
             (u_out.bits as u64, v_out.bits as u64)
         } else {
-            let uv_th = ((cw * chh) >> 6) as u16;
-            let use_approx =
-                cfg.coeff_rate_est_lvl == 0 || (u_out.eob < uv_th && v_out.eob < uv_th);
-            let plane = |eob: u16, full: u64| -> u64 {
-                if !use_approx {
-                    full
-                } else if eob == 0 {
+            let lvl = cfg.coeff_rate_est_lvl;
+            let th = ((cw * chh) >> 6) as u16;
+            let approx = |eob: u16| -> u64 {
+                if eob == 0 {
                     0
-                } else if eob < uv_th {
+                } else if eob < th {
                     3000 + eob as u64 * 500
                 } else {
-                    // eff-M9 (level 0) eob >= th fallback; unreachable at
-                    // level 2 (use_approx already required eob < th there).
-                    1500 + eob as u64 * 50
+                    1500 + eob as u64 * 50 // lvl-0 `eob >= th` fallback
                 }
             };
-            (
-                plane(u_out.eob, u_out.bits as u64),
-                plane(v_out.eob, v_out.bits as u64),
-            )
+            let mut cb_leak = 0u64;
+            let mut cr_leak = 0u64;
+            let mut need_full = false;
+            // CB branch of skip_chroma_rate_est (checked first).
+            if u_out.eob < th || lvl == 0 {
+                cb_leak = approx(u_out.eob);
+            } else {
+                need_full = true; // lvl-2, cb_eob >= th -> return false (nothing leaked)
+            }
+            // CR branch — only reached when CB didn't already force full.
+            if !need_full {
+                if v_out.eob < th || lvl == 0 {
+                    cr_leak = approx(v_out.eob);
+                } else {
+                    need_full = true; // lvl-2, cr_eob >= th -> return false (CB leak stays)
+                }
+            }
+            if need_full {
+                // Caller runs the full estimate and ADDS it to the accumulator.
+                (cb_leak + u_out.bits as u64, cr_leak + v_out.bits as u64)
+            } else {
+                (cb_leak, cr_leak)
+            }
         };
         let coeff_rate = if block_has_coeff {
             best_bits + u_bits + v_bits + tx_size_bits_final + rates.skip[skip_ctx][0] as u64
