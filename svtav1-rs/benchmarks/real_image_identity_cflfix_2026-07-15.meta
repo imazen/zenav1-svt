@@ -1,0 +1,15 @@
+date: 2026-07-15
+tool: tools/real_image_matrix.sh, CID22-512, C=SvtAv1EncApp v4.2.0-rc
+grid: 8 images x presets {6,7,8,10} x cli_qp {20,40,55} = 96 cells
+commit: 1c1190b3f (fix: CfL selection uses transform-domain distortion)
+result: TOTAL 95/96 IDENTICAL (up from 78/96).
+  p6 23/24 (up from 6/24), p7 24/24, p8 24/24, p10 24/24 -- ZERO regression.
+  Root cause closed: C cfl_prediction scores non_cfl_cost + cfl_rd with
+  svt_aom_full_loop_uv(is_full_loop=0) = TRANSFORM-domain distortion; the port
+  used spatial pixel-SSE for the CfL selection. Fix: leaf_funnel.rs
+  md_cfl_rd_pick_alpha + non_cfl_cost now use spatial_dist=false (freq domain);
+  the final block RD keeps spatial SSE, exactly as C.
+remaining: 5739122 q20 p6 diverges at FH stage (different root cause than CfL;
+  q20 high-quality frame-header divergence) -- tracked as task #82.
+gates: cargo test -p svtav1-encoder 146/0; synthetic identity_matrix 36/36;
+  drill cell 1001682 q40 p6 = IDENTICAL (10720B) on a PRISTINE C tree.
