@@ -1,0 +1,79 @@
+date: 2026-07-15
+tool: tools/real_image_matrix.sh, CID22-512, C=SvtAv1EncApp v4.2.0-rc
+grid: 8 images x presets {2,3,4,5} x cli_qp {20,40,55} = 96 cells
+commit: (this commit) fix: key the CfL decision path off per-block ind_uv_avail
+result: TOTAL 65/96 IDENTICAL (up from 56/96 at ef8fed79c PD0 TX_4X4 ext-tx rate).
+  p2 13/24, p3 11/24, p4 19/24, p5 22/24.
+  Per-cell diff vs the ef8fed79c baseline: 0 REGRESSIONS, +9 newly IDENTICAL --
+  1001682 q20 p5, 1459534 q20 p4, 1459534 q20 p5, 1459534 q40 p5,
+  1963557 q40 p5, 258947 q40 p3, 3571065 q20 p5, 3571065 q40 p5,
+  5739122 q20 p5.
+
+root cause: the port modeled C's `ctx->ind_uv_avail` as a STATIC PER-PRESET
+  CONFIG FLAG; in C it is PER-BLOCK RUNTIME state. C resets it to 0 for every
+  block (product_coding_loop.c:9931) and sets it to 1 only when the
+  independent-uv search actually RUNS, gated at :10165 on
+  `uv_ctrls.uv_mode == CHROMA_MODE_0 && uv_ctrls.ind_uv_last_mds &&
+   blk_geom->sq_size < 128 && ctx->has_uv &&
+   perform_ind_uv_search_last_mds(ctx, cand_bf_ptr_array, best_cand_idx_array)`.
+  That predicate (:1470) counts MDS3 intra candidates as
+  `!is_inter && (!uv_ctrls.skip_ind_uv_if_only_dc || cand->block_mi.uv_mode !=
+   UV_DC_PRED)` and returns `count > 0` (its inter_vs_intra_cost_th arm is inert
+  on I-slices: best_inter_cost stays MAX_MODE_COST). At M2..M5 the chroma level
+  (enc_mode_config.c:5781) is `ind_uv_last_mds=2, inter_vs_intra_cost_th=100,
+  skip_ind_uv_if_only_dc=1`, so when EVERY MDS3 candidate is UV_DC the search is
+  skipped and ind_uv_avail stays 0. C then reaches
+  `if (cfl_performed) { if (ctx->ind_uv_avail) check_best_indepedant_cfl(...) }`
+  (:7258) with a FALSE ind_uv_avail, so NO revert runs and CfL is decided by the
+  uv-follows-luma TRANSFORM-domain compare inside cfl_prediction instead of the
+  ind-uv SPATIAL compare. The port always took the SPATIAL path at M2..M5,
+  including on the 263/7323 MDS3 blocks where C has ind_uv_avail == 0, and so
+  picked CfL where C keeps DC.
+
+fix: leaf_funnel.rs -- `cfl_uv_follows = ind_uv.is_none()` /
+  `cfl_ind_uv = ind_uv.is_some()` (was keyed off cfg.ind_uv_mds3 /
+  cfg.ind_uv_independent). `ind_uv` is already Some iff that same search ran --
+  its `any(uv != 0)` gate IS perform_ind_uv_search_last_mds for
+  skip_ind_uv_if_only_dc = 1, and the port's `update_intra_chroma_mode`
+  equivalent already gates on it (mirroring C :7435
+  `if (ctx->ind_uv_avail && ind_uv_last_mds) update_intra_chroma_mode(...)`).
+  Provably a no-op outside M2..M5: M6-M10 have ind_uv_mds3=false +
+  ind_uv_independent=None so ind_uv is always None (old expr also true), and
+  M0/M1 have ind_uv_independent=Some so ind_uv is always Some inside the
+  has_uv-gated CfL block (old expr also true).
+
+evidence (258947 q40 p3, 512x512 bd8 4:2:0, 8169/8169 bytes but DIFFERS):
+  4-way dump (port chain / port pack / C rate-est / C bitstream) joined on
+  (x,y,w,h) over all 889 chroma-reference blocks gave EXACTLY ONE uv_mode
+  mismatch in the frame: x328 y432 8x8 -- port uv=13(UV_CFL_PRED) js=4 idx=16,
+  C uv=0(UV_DC_PRED). C's CGATE there: `cfl_cplx=1 cplx_th=10 is_inter=0 mds=3
+  enabled=1 maxdim=8 arm1=1 ind_uv_avail=0`, its only MDS3 cand being lm=0 with
+  cand_uv=0. Cell is now byte-identical.
+
+DISPROVES the previously-recorded "per-SB rate-est CfL CDF chain drift" theory:
+  C's rate-est (sum_intra_stats) uv_mode == C's bitstream uv_mode on ALL 889
+  blocks (0 diffs), has_uv == is_chroma_reference exactly (889 == 889), and the
+  port's chain codes the same 889 cfl events as C. There is no chain drift; the
+  port's BITSTREAM itself was wrong at that one block, and op 48810 IS x328 y432
+  (earlier notes misattributed it to x416 y408, which never flips).
+
+residual stages: 31 non-identical = 28 FH (mostly loop_filter_level -- the LF
+  search reads the recon, so these are DOWNSTREAM symptoms of a remaining
+  per-block recon/mode difference), 3 tile (direct mode cascade). mean Rust/C
+  size ratio over non-identical cells: 1.0004.
+
+gates: svtav1-encoder 146 tests pass, 0 failed; synthetic identity M0-M6 82/84
+  (unchanged -- the only 2 non-identical are the pre-existing M0 sub-8 gaps
+  #58/#59, both preset-0 gradient); C tree verified pristine (all
+  instrumentation reverted).
+
+known latent bug found while root-causing this (task #85, NOT fixed here): the
+  CfL chroma-complexity detector's SAD arm mismatches C on 74/7323 MDS3 blocks.
+  C's chroma_complexity_check_pred (product_coding_loop.c:6117) reads
+  cand_bf->pred->u_buffer, which md_stage_3 (:7435) does NOT re-predict before
+  full_loop_core -- so it holds a STALE prediction from an earlier MD stage --
+  while the port re-predicts fresh from cand.uv. Measured at x328 y440 8x8 lm=10:
+  C y_dist2=122 cb_dist=142 cr_dist=10 sad_arm=1 vs port y_dist2=122 cb_dist=110
+  cr_dist=6 sad_arm=0 (LUMA sad matches exactly; only the CHROMA sads differ).
+  The variance arm is byte-exact (0/7323 mismatches). Currently latent: it causes
+  0 visible uv divergences on this cell.

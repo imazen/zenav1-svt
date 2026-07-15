@@ -2759,3 +2759,141 @@ tail-truncation. The uniform 2-3x eob inflation points at (3) or (2), not (1).
   `/root/svtav1-instr` deleted.
 - Repo change: one diagnostic aid — pipeline.rs env-gated `SVTAV1_CHAIN_DUMP`
   (per-SB chain_base coeff CDF). No encoder-output change.
+
+## 2026-07-15 (wave2, real-image M2-M5 chunk): `ind_uv_avail` is PER-BLOCK, not a preset constant — real M2-M5 56 -> 65/96
+
+**The "per-SB rate-est CfL CDF chain drift" theory recorded by the previous
+session is WRONG and is retracted here.** Re-measured from scratch with a 4-way
+dump (port chain / port pack / C rate-est / C bitstream) on the repro cell
+`258947 q40 p3` (512×512 bd8 4:2:0; 8169/8169 bytes but DIFFERS):
+
+- C is internally **consistent**: `has_uv == is_chroma_reference` exactly
+  (889 == 889 blocks) and C's rate-est (`sum_intra_stats`) `uv_mode` equals C's
+  bitstream `uv_mode` on **all 889** blocks (0 diffs). `sum_intra_stats` was never
+  the problem.
+- The port's chain codes the **same 889** cfl events as C, and the chain == the
+  pack by construction (both walk `all_trees` through `encode_block_syntax`,
+  which just codes `decision.uv_mode` — there is no revert logic there).
+- Joining port-chain vs C-rate-est over all 889 blocks yields **exactly ONE**
+  real `uv_mode` mismatch in the whole frame: **x328 y432 8×8 — port
+  `uv=13 (UV_CFL_PRED)` js=4 idx=16, C `uv=0 (UV_DC_PRED)`**. (230 other
+  "mismatches" are noise: `uv_mode` matches and only the don't-care `js`/`idx`
+  differ, because C leaves stale cfl garbage on non-CfL blocks while the port
+  zeroes them.)
+
+So there is **no chain drift** — the port's *bitstream itself* was wrong at that
+one block, `x416 y408` never flips, and op 48810 **is** x328 y432 (the earlier
+note misattributed it).
+
+### Root cause (a real structural stub)
+
+The port modeled C's `ctx->ind_uv_avail` as a **static per-preset config flag**;
+in C it is **per-block runtime state**. C resets it to 0 for every block
+(`product_coding_loop.c:9931`) and sets it to 1 only when the independent-uv
+search actually **runs**, gated at `:10165` on
+
+```c
+uv_ctrls.uv_mode == CHROMA_MODE_0 && uv_ctrls.ind_uv_last_mds &&
+blk_geom->sq_size < 128 && ctx->has_uv &&
+perform_ind_uv_search_last_mds(ctx, cand_bf_ptr_array, best_cand_idx_array)
+```
+
+`perform_ind_uv_search_last_mds` (`:1470`) counts MDS3 intra candidates as
+`!is_inter && (!uv_ctrls.skip_ind_uv_if_only_dc || cand->block_mi.uv_mode !=
+UV_DC_PRED)` and returns `count > 0` (its `inter_vs_intra_cost_th` arm is inert
+on I-slices — `best_inter_cost` stays `MAX_MODE_COST`). At M2..M5 the chroma
+level (`enc_mode_config.c:5781`) is `ind_uv_last_mds=2,
+inter_vs_intra_cost_th=100, **skip_ind_uv_if_only_dc=1**` — so when **every**
+MDS3 candidate is UV_DC the search is skipped and `ind_uv_avail` stays 0. C then
+reaches
+
+```c
+if (cfl_performed) { if (ctx->ind_uv_avail) check_best_indepedant_cfl(...); }   // :7258
+```
+
+with a FALSE `ind_uv_avail`, so **no revert runs** and CfL is decided by the
+uv-follows-luma **TRANSFORM-domain** compare inside `cfl_prediction` — not the
+ind-uv **SPATIAL** compare. Measured: **263 of 7323** MDS3 blocks have
+`ind_uv_avail == 0` (not size-determined — 16×16 appears with both values). At
+x328 y432 C's gate reads `cfl_cplx=1 cplx_th=10 is_inter=0 mds=3 enabled=1
+maxdim=8 arm1=1 **ind_uv_avail=0**`, its only MDS3 candidate being lm=0 with
+`cand_uv=0`. The port always took the SPATIAL path at M2..M5 → picked CfL where
+C keeps DC.
+
+### Fix
+
+`leaf_funnel.rs`: `cfl_uv_follows = ind_uv.is_none()` / `cfl_ind_uv =
+ind_uv.is_some()` (was keyed off `cfg.ind_uv_mds3` / `cfg.ind_uv_independent`).
+`ind_uv` is already `Some` iff that same search ran — its `any(uv != 0)` gate
+**is** `perform_ind_uv_search_last_mds` for `skip_ind_uv_if_only_dc = 1`, and the
+port's `update_intra_chroma_mode` equivalent already gates on it, mirroring C
+`:7435` `if (ctx->ind_uv_avail && ind_uv_last_mds) update_intra_chroma_mode(...)`.
+So `ind_uv.is_some()` **is** `ind_uv_avail`; it simply was not wired to the CfL
+path selection.
+
+Provably a no-op outside M2..M5: M6-M10 have `ind_uv_mds3=false` +
+`ind_uv_independent=None` so `ind_uv` is always `None` (old expression also
+`true`); M0/M1 have `ind_uv_independent=Some` so `ind_uv` is always `Some` inside
+the `has_uv`-gated CfL block (old expression also `true`).
+
+### Results
+
+- **real M2-M5: 65/96 IDENTICAL** (was 56/96 at `ef8fed79c`). Per-cell diff vs
+  that baseline: **0 regressions, +9 newly identical** — 1001682 q20 p5,
+  1459534 q20 p4/q20 p5/q40 p5, 1963557 q40 p5, **258947 q40 p3** (the repro),
+  3571065 q20 p5/q40 p5, **5739122 q20 p5** (the second cell the prior session
+  flagged as "the identical root" — confirmed).
+  p2 13/24, p3 11/24, p4 19/24, p5 22/24.
+- synthetic identity M0-M6: **82/84, unchanged** (the only 2 non-identical are
+  the pre-existing M0 sub-8 gaps #58/#59, both preset-0 gradient).
+- `cargo test -p svtav1-encoder`: **146 passed, 0 failed**.
+- C tree verified pristine; all instrumentation reverted.
+- Residual 31 = 28 FH (mostly `loop_filter_level` — the LF search reads the
+  recon, so DOWNSTREAM of a remaining per-block recon/mode difference) + 3 tile.
+  Mean Rust/C size ratio over non-identical cells: 1.0004.
+
+### Latent bug found while root-causing (task #85, NOT fixed here)
+
+The CfL chroma-complexity detector's **SAD arm** mismatches C on **74/7323** MDS3
+blocks. C's `chroma_complexity_check_pred` (`product_coding_loop.c:6117`) reads
+`cand_bf->pred->u_buffer`, and `md_stage_3` (`:7435`) does **not** re-predict
+chroma before `full_loop_core` — so that buffer holds a **stale** prediction from
+an earlier MD stage — while the port re-predicts fresh from `cand.uv`. Measured
+at x328 y440 8×8 lm=10: C `y_dist2=122 cb_dist=142 cr_dist=10 sad_arm=1` vs port
+`y_dist2=122 cb_dist=110 cr_dist=6 sad_arm=0` — the **luma** SAD matches exactly,
+only the **chroma** SADs differ. The **variance arm is byte-exact** (0/7323
+mismatches), and `chroma_detector_fires`' shift/rows/cw/`y_dist<<1` structure is
+C-exact. Currently latent: 0 visible uv divergences on this cell (at x328 y440
+both sides still land on DC).
+
+### Method note
+
+C dumps `SVT_CFLDUMP` / `SVT_CFLRD` / `SVT_CFLDET` / `SVT_CFLGATE` vs port
+`SVTAV1_CFLDUMP` / `SVTAV1_CFLRD` / `SVTAV1_CFLDET`, joined on `(x,y,w,h,lm)`.
+
+**Stale binaries can no longer haunt this harness — made structurally
+impossible.** The trap that cost a cycle here: the C lib was rebuilt with new
+instrumentation, but `capture_c_trace` still linked the PREVIOUS archive, so the
+dump printed nothing and "C never calls this function" was briefly concluded from
+a binary that predated the lib. Nothing failed loudly. The fix is not a reminder:
+
+- `tools/capture_c_trace/capture_c_trace` is now a **tracked wrapper script**;
+  the real binary is `capture_c_trace.bin` (gitignored). The wrapper always runs
+  `build.sh` and then execs, so the driver cannot be invoked without a freshness
+  check — the raw binary is no longer sitting at the path you'd type.
+- `build.sh` now also runs `cmake --build cbuild-static` first (a fast no-op when
+  current), closing the other half: `Source/*.c` edited but the lib not rebuilt.
+  A failed C build now **aborts** instead of silently reusing the old archive.
+- `tools/identity_run` is the same guarantee for the Rust side (`cargo build`,
+  then exec) — running `target/release/examples/identity_run` directly could
+  otherwise compare C against a PREVIOUS Rust encoder.
+- Both wrappers **buffer build output and emit it only on failure**. This is
+  required, not cosmetic: `identity_diff.sh` captures the runner's stderr into
+  `rs.trace` (the op stream the differ parses), so unconditional build chatter
+  would corrupt every comparison.
+- `identity_diff.sh` no longer builds anything itself; it just calls the
+  wrappers. Do not "optimize" it back to the raw binaries.
+
+Verified: touching `Source/Lib/Codec/md_rate_estimation.c` and then invoking only
+the wrapper relinked `capture_c_trace.bin` with zero human action and kept the
+output byte-correct; `rs.trace` contains 0 cargo-chatter lines.
