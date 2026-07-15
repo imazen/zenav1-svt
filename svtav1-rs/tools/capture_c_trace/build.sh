@@ -1,16 +1,47 @@
 #!/usr/bin/env bash
 # Build the C-side trace driver against the in-tree static reference library.
-# NOT part of the cargo workspace build — identity_diff.sh calls this on demand.
+# NOT part of the cargo workspace build.
+#
+# You normally do NOT call this directly — run the `capture_c_trace` wrapper,
+# which calls this first and then execs the binary, so a stale driver can never
+# be used. See the STALENESS CONTRACT below.
 #
 # Usage: build.sh [output-binary]
 # Env:   SVT_CREF_LIB_DIR — dir containing libSvtAv1Enc.a (default <repo>/Bin/Release)
+#        SVT_BUILD_JOBS   — parallelism for the C lib rebuild (default 8)
+#        SVT_NO_AUTO_CMAKE=1 — skip the automatic C-lib rebuild (see below)
+#
+# STALENESS CONTRACT (do not weaken — this exists because it bit us):
+#   Every C-vs-Rust comparison is only meaningful if the C driver reflects the
+#   CURRENT Source/ tree. There are two ways a stale binary can silently lie:
+#     1. Source/*.c edited but libSvtAv1Enc.a not rebuilt  -> handled by the
+#        `cmake --build` below (a ~0.5s no-op when already current).
+#     2. libSvtAv1Enc.a rebuilt but the driver not relinked -> handled by the
+#        mtime guard further down ("$OUT" -nt "$LIB").
+#   Both must hold. On 2026-07-15 (2) silently produced an EMPTY instrumentation
+#   dump for a whole debug cycle: the C lib had been rebuilt with new fprintf
+#   dumps, but capture_c_trace still linked the previous archive, so the dump
+#   printed nothing and the (wrong) conclusion drawn was "C never calls this
+#   function". Nothing failed loudly; the binary just quietly predated the lib.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../../.." && pwd) # <repo> (svtav1-rs/tools/capture_c_trace -> repo root)
-OUT="${1:-$HERE/capture_c_trace}"
+OUT="${1:-$HERE/capture_c_trace.bin}"
 LIB_DIR="${SVT_CREF_LIB_DIR:-$ROOT/Bin/Release}"
 LIB="$LIB_DIR/libSvtAv1Enc.a"
+
+# Hole #1: make the static lib itself current with Source/. Only for the
+# in-tree default — an explicit SVT_CREF_LIB_DIR is the caller's own artifact
+# and we must not build into it.
+if [[ -z "${SVT_CREF_LIB_DIR:-}" && -z "${SVT_NO_AUTO_CMAKE:-}" && -d "$ROOT/cbuild-static" ]]; then
+    if ! cmake --build "$ROOT/cbuild-static" -j "${SVT_BUILD_JOBS:-8}" >/dev/null 2>&1; then
+        echo "error: 'cmake --build $ROOT/cbuild-static' FAILED — refusing to run against a" >&2
+        echo "       possibly stale $LIB. Fix the C build first, or re-run with" >&2
+        echo "       SVT_NO_AUTO_CMAKE=1 if you know the lib is current." >&2
+        exit 1
+    fi
+fi
 
 if [[ ! -f "$LIB" ]]; then
     echo "error: $LIB not found. Build the C reference first:" >&2

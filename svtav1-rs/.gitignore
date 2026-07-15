@@ -5,8 +5,11 @@ Cargo.lock
 *~
 .DS_Store
 
-# identity harness: locally built C trace driver (tools/capture_c_trace/build.sh)
-tools/capture_c_trace/capture_c_trace
+# identity harness: locally built C trace driver (tools/capture_c_trace/build.sh).
+# Only the BINARY is ignored — `tools/capture_c_trace/capture_c_trace` is now a
+# TRACKED wrapper script that forces a freshness check before exec'ing this, so
+# a stale driver can never be run. Do not re-ignore the wrapper.
+tools/capture_c_trace/capture_c_trace.bin
 
 # agent work marker (never committed)
 .workongoing

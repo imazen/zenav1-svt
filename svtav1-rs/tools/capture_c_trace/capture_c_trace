@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Always-fresh entry point for the C-side trace driver.
+#
+# WHY THIS WRAPPER EXISTS (do not replace it with the raw binary):
+#   The real executable is `capture_c_trace.bin` (gitignored). This wrapper is
+#   what everything — identity_diff.sh, real_image_matrix.sh, and you at a
+#   shell — actually invokes, and it ALWAYS runs build.sh first. build.sh
+#   rebuilds the C lib from Source/ and relinks the driver iff either is newer,
+#   so it is structurally impossible to run a driver that predates the C tree.
+#
+#   Before this wrapper, the binary sat at THIS path and could be executed
+#   directly, bypassing build.sh entirely. On 2026-07-15 that silently burned a
+#   debug cycle: the C lib was rebuilt with new instrumentation, the driver was
+#   NOT relinked, the dump printed nothing, and "C never calls this function"
+#   was briefly concluded from a stale binary. A comment saying "remember to
+#   re-run build.sh" is not a fix — being unable to skip it is.
+#
+#   The build is a fast no-op when everything is current, so this costs
+#   ~nothing per cell.
+#
+# Usage: capture_c_trace <width> <height> <cli_qp 0..63> <preset> <in.yuv> <out.obu>
+# Env:   passthrough to build.sh (SVT_CREF_LIB_DIR, SVT_BUILD_JOBS,
+#        SVT_NO_AUTO_CMAKE) and to the driver (SVT_TRACE_OUT, ...).
+set -euo pipefail
+
+HERE=$(cd "$(dirname "$0")" && pwd)
+
+# Freshness first — always.
+#
+# Build chatter is buffered and only emitted ON FAILURE. This matters: callers
+# capture this process's stderr as DATA (identity_diff.sh -> c.stderr, and the
+# env-gated instrumentation dumps are read off stderr), so unconditional build
+# output would contaminate it. Silent on success, loud on failure — and a build
+# failure aborts rather than silently falling back to the previous binary.
+_bl=$(mktemp)
+if ! "$HERE/build.sh" >"$_bl" 2>&1; then
+    cat "$_bl" >&2
+    rm -f "$_bl"
+    echo "capture_c_trace: BUILD FAILED — refusing to run a possibly stale driver." >&2
+    exit 1
+fi
+rm -f "$_bl"
+
+exec "$HERE/capture_c_trace.bin" "$@"

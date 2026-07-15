@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Always-fresh entry point for the Rust-side identity encoder.
+#
+# WHY THIS WRAPPER EXISTS: the same staleness trap as capture_c_trace, in the
+# other direction. `target/release/examples/identity_run` is directly runnable,
+# and running it after editing the encoder — but before `cargo build` — silently
+# compares the C reference against a PREVIOUS Rust encoder. Nothing fails; the
+# verdict is just quietly about code that no longer exists.
+#
+# cargo already tracks staleness correctly; the hole is only that the binary can
+# be invoked without asking cargo. So: ask cargo, always, then exec. It is a
+# no-op when current.
+#
+# Usage: identity_run <content> <width> <height> <cli_qp 0..63> <preset> <out_prefix>
+#   content: uniform | gradient | file:<path-to-png>
+# Env: CARGO_BUILD_JOBS (default 8) — keep parallelism capped; heavy builds must
+#      never saturate the box.
+set -euo pipefail
+
+HERE=$(cd "$(dirname "$0")" && pwd)
+RS_ROOT=$(cd "$HERE/.." && pwd)
+
+# Freshness first — always.
+#
+# Build chatter is buffered and only emitted ON FAILURE. This is REQUIRED, not
+# cosmetic: identity_diff.sh captures this process's stderr into rs.trace, which
+# is the symtrace op stream the differ parses — unconditional cargo output would
+# corrupt it and break every comparison. Silent on success, loud on failure; a
+# build failure aborts rather than falling back to the previous binary.
+_bl=$(mktemp)
+if ! (
+    cd "$RS_ROOT" && CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}" \
+        cargo build --release -p svtav1 --features symtrace --example identity_run
+) >"$_bl" 2>&1; then
+    cat "$_bl" >&2
+    rm -f "$_bl"
+    echo "identity_run: BUILD FAILED — refusing to run a possibly stale encoder." >&2
+    exit 1
+fi
+rm -f "$_bl"
+
+exec "$RS_ROOT/target/release/examples/identity_run" "$@"
