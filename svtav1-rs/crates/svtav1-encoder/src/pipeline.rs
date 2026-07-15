@@ -2412,9 +2412,10 @@ fn encode_tile_rows(
         // the real entropy walk against the chain contexts (bypass-encdec
         // makes MD symbols == coded symbols, so the funnel-consumed CDF
         // rows — kf_y/uv/angle/fi/skip/tx_size/coeff — evolve exactly like
-        // C's). Frames wider than 2 SBs would need avg_cdf_symbols
-        // (left 3x + top-right 1x) — unimplemented: such SBs fall back to
-        // the left-only copy (no identity-matrix frame is that wide).
+        // C's). For frames wider than 2 SBs the both-neighbors case seeds
+        // each SB's rate CDF with avg_cdf_symbols (left 3x + top-right 1x,
+        // FrameContext::avg_cdf_with + CoeffFc::avg_cdf_with) per the C
+        // neighbor rule below — matching enc_dec_process.c:3002-3022.
         let multi_sb = sb_cols * sb_rows > 1;
         // The per-SB CDF-refresh chain is only C-correct at M4..M6
         // (update_cdf_level 2, svt_aom_get_update_cdf_level_allintra
@@ -2537,19 +2538,34 @@ fn encode_tile_rows(
                 // rebuild the funnel rate tables from it.
                 let sb_index = sb_row * sb_cols + sb_col;
                 let chain_base = if funnel_chain {
+                    // C `ec_ctx_array[sb]` neighbor rule for the rate-estimation
+                    // CDF (enc_dec_process.c:3002-3022). `pic_based_rate_est` is
+                    // only ever false (enc_handle.c), so the weighted-average
+                    // branch always runs. Availability predicates match C for a
+                    // single-tile SB-aligned frame: left = not tile-left column,
+                    // top-right = not tile-top row AND the SB one to the right
+                    // exists (so the last column has no top-right).
                     let left_avail = sb_col > 0;
                     let topright_avail = sb_row > 0 && sb_col + 1 < sb_cols;
-                    if left_avail {
-                        // (both-available would additionally avg the
-                        // top-right at 3:1 — left-only fallback, see above)
+                    if left_avail && topright_avail {
+                        // both -> copy left, then avg with top-right (3:1).
+                        // C AVG_CDF_WEIGHT_LEFT / AVG_CDF_WEIGHT_TOP
+                        // (enc_dec_process.c:2665-2666, :3016-3021).
+                        const WT_LEFT: i32 = 3;
+                        const WT_TOP: i32 = 1;
+                        let mut base = chain_snaps[sb_index - 1].clone();
+                        let tr = &chain_snaps[sb_index - sb_cols + 1];
+                        base.0.avg_cdf_with(&tr.0, WT_LEFT, WT_TOP);
+                        base.1.avg_cdf_with(tr.1.as_ref(), WT_LEFT, WT_TOP);
+                        Some(base)
+                    } else if left_avail {
+                        // left only -> copy left (sb-1)
                         Some(chain_snaps[sb_index - 1].clone())
                     } else if topright_avail {
+                        // top-right only -> copy top-right (sb - sb_cols + 1)
                         Some(chain_snaps[sb_index - sb_cols + 1].clone())
-                    } else if sb_row > 0 && sb_cols == 1 {
-                        // single-column frame: C's top-right is unavailable
-                        // and left is unavailable -> md_frame_context
-                        None
                     } else {
+                        // neither -> md_frame_context (default)
                         None
                     }
                 } else {

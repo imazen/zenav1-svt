@@ -1,37 +1,7 @@
 date: 2026-07-15
-tool: RIM_PRESETS="7 8 10" tools/real_image_matrix.sh 2026-07-15
-commits: 5e0937ef4 (M7/M8 chroma coeff-rate CB double-count fix) on top of
-  59e33c948 (coeff_rate_est_lvl 2 + txt-10 + PD0 lvl-2) + 0a7ead360
-  (chroma all-or-nothing skip_chroma_rate_est) + 6c11ac2cd (eff-M9 TXS / M10)
-corpus: CID22-512 training subset (/root/work/codec-corpus/CID22/CID22-512/training),
-  20 evenly-spaced photos x 3 qps (20/40/55)
-c_reference: SvtAv1EncApp v4.2.0-rc, matched still/AVIF CQP --lp 1, shared I420 (BT.601 limited)
-result: 176/180 byte-identical (preset 7: 57/60; preset 8: 59/60; preset 10: 60/60)
-  Prior (0c1a01786, 2026-07-15 earlier): preset 7 36/60, preset 8 59/60 (120-cell run).
-  Landed this session (5e0937ef4), C-exact port verified against v4.2.0-rc:
-  - M7/M8 chroma coeff-rate CB double-count. C `skip_chroma_rate_est`
-    (full_loop.c:1922, coeff_rate_est_lvl 2) writes the CB approximation
-    (3000+cb_eob*500) directly into the *cb_coeff_bits accumulator when
-    cb_eob < th, then `return false` at the CR check when cr_eob >= th WITHOUT
-    clearing it; the caller (svt_aom_full_loop_uv, full_loop.c:2660) then adds
-    the full estimate: *cb_coeff_bits += cb_txb_coeff_bits. So CB is priced
-    approx + full ONLY in the cb_eob<th && cr_eob>=th case (CB checked first).
-    The funnel priced CB clean -> undercharged H-mode candidates ~4500 ->
-    flipped leaf y_mode. -> preset 7 36/60 -> 57/60 (first divergence op ~8850
-    for SB(224,192) now IDENTICAL); preset 8 + 10 unchanged (no regression).
-  Root cause pinned by instrumented scratch C (-Wl,--wrap of
-  svt_aom_txb_estimate_coeff_bits + svt_aom_full_cost + per-candidate MDS3
-  cost/rate/dist dumps diffed against the funnel, OBUs byte-identical, deleted
-  at end). See docs/IDENTITY-STATUS.md 2026-07-15 M7 chunk.
-residual (documented, next tier — DISTINCT class):
-  - preset 7 (3/60 non-identical): all 3 are one image, "EPICA Delta D Plot"
-    (a screen-content plot), at q20/q40/q55. Diverges at tile op 4 with a
-    syntax-TYPE mismatch -- after y_mode + uv_mode (match), C emits two extra
-    bools (f=318, f=307: palette / screen-content-tools per-block signaling)
-    that our encoder does not emit. NOT the chroma coeff-cost class; needs the
-    screen-content tool / palette-mode path. Pre-existing (same op-4 divergence
-    in the prior tsv).
-  - preset 8 (1/60): 6763758 q20, a 27 KB high-bitrate tile (separate
-    divergence, documented in the prior chunk).
-gates: recon_parity 432/0; cargo test --workspace 662/0 green; synthetic
-  identity_matrix 130/132 (unchanged); real M8 + M10 no regression.
+tool: tools/real_image_matrix.sh, CID22-512, C=SvtAv1EncApp v4.2.0-rc
+result after avg_cdf_symbols port: M7 24/24, M8 24/24, M10 24/24 IDENTICAL; M6 0/24
+  (M6 divergence ADVANCED from the deep coeff-cascade to FH cdef_uv_pri_strength
+   [C=0 Rust=15] — avg_cdf_symbols fixed the per-SB rate-CDF root cause; the
+   remaining M6 gap is the CDEF UV strength search on real content, next chunk).
+gates: recon-parity 432/0, workspace 664/0, synthetic identity_matrix 130/132.
