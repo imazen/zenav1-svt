@@ -613,11 +613,16 @@ const fn cost_literal(n: i32) -> i32 {
 
 /// Intra tx-type signalling rate for DCT_DCT at a DC-predicted block —
 /// `av1_transform_type_rate_estimation` (rd_cost.c:107): nonzero only for
-/// tx sizes whose intra ext-tx set has > 1 type (8x8 and 16x16 among the
-/// square PD0 sizes; 32/64 are DCT-only). Costs derive from the DEFAULT
+/// tx sizes whose intra ext-tx set has > 1 type (4x4, 8x8 and 16x16 among
+/// the square PD0 sizes; 32/64 are DCT-only). Costs derive from the DEFAULT
 /// `intra_ext_tx_cdf` rows (qindex-independent) at intra_dir = DC.
+///
+/// TX_4X4 matters for M0-M3, whose PD0 admits 4x4 leaves (`disallow_4x4` is
+/// false ≤ M3). Omitting it made every PD0 4x4 leaf cost `tx4` bits too
+/// cheap, systematically biasing PD0 toward SPLIT (real-content M2/M3).
 #[derive(Debug, Clone, Copy)]
 pub struct TxTypeRatesDc {
+    tx4: i32,
     tx8: i32,
     tx16: i32,
 }
@@ -626,9 +631,9 @@ pub(crate) fn build_tx_type_rates_dc_from_fc(
     fc: &svtav1_entropy::coeff_c::CoeffFc,
 ) -> TxTypeRatesDc {
     use svtav1_entropy::coeff_c as cc;
-    let mut rates = TxTypeRatesDc { tx8: 0, tx16: 0 };
-    for (tx_size, slot) in [(1usize, 0usize), (2, 1)] {
-        // TX_8X8 = 1, TX_16X16 = 2 in the C TxSize enum.
+    let mut rates = TxTypeRatesDc { tx4: 0, tx8: 0, tx16: 0 };
+    for tx_size in [0usize, 1, 2] {
+        // TX_4X4 = 0, TX_8X8 = 1, TX_16X16 = 2 in the C TxSize enum.
         let set_type = cc::ext_tx_set_type(tx_size, false, false);
         let eset = cc::EXT_TX_SET_INDEX[0][set_type];
         debug_assert!(eset > 0);
@@ -638,10 +643,10 @@ pub(crate) fn build_tx_type_rates_dc_from_fc(
         crate::quant::syntax_rate_from_cdf(&mut costs, row);
         let sym = cc::AV1_EXT_TX_IND[set_type][cc::DCT_DCT];
         let r = costs[sym];
-        if slot == 0 {
-            rates.tx8 = r;
-        } else {
-            rates.tx16 = r;
+        match tx_size {
+            0 => rates.tx4 = r,
+            1 => rates.tx8 = r,
+            _ => rates.tx16 = r,
         }
     }
     rates
@@ -651,6 +656,7 @@ impl TxTypeRatesDc {
     #[inline]
     fn rate_for(&self, c_tx_size: usize) -> i32 {
         match c_tx_size {
+            0 => self.tx4,  // TX_4X4
             1 => self.tx8,  // TX_8X8
             2 => self.tx16, // TX_16X16
             _ => 0,         // TX_32X32 / TX_64X64: DCT-only intra set
