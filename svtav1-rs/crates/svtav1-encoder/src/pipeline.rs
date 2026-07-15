@@ -1738,6 +1738,17 @@ fn encode_block_syntax(
             decision.intra_mode,
             decision.uv_mode,
         );
+        // CfL alphas follow a UV_CFL_PRED chroma mode (encode_intra_chroma_
+        // mode_av1, entropy_coding.c:1181; decoder read_cfl_alphas). CFL is
+        // never directional, so angle_delta_uv is skipped for it.
+        if decision.uv_mode == svtav1_entropy::context::UV_CFL_PRED {
+            svtav1_entropy::context::write_cfl_alphas(
+                writer,
+                frame_ctx,
+                decision.cfl_alpha_idx,
+                decision.cfl_alpha_signs,
+            );
+        }
         // angle_delta_uv follows directional UV modes on >= 8x8 blocks
         // (read_intra_frame_mode_info, decodemv.c:833) — nonzero only
         // when the M5 ind-uv search picked a delta'd uv mode.

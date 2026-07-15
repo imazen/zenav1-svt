@@ -92,6 +92,10 @@ pub struct MdRates {
     /// intra tx-type signalling: costs derived on demand from this
     /// context's `intra_ext_tx_cdf` (av1_transform_type_rate_estimation).
     pub intra_ext_tx: [[i32; 17]; 13 * 4 * 3],
+    /// CfL alpha rate: [joint_sign][plane][alpha_idx] (cfl_alpha_fac_bits,
+    /// md_rate_estimation.c:192-213). Plane U already carries the joint-sign
+    /// rate added in; plane V is the magnitude cost alone.
+    pub cfl_alpha_fac_bits: [[[i32; 16]; 2]; 8],
     /// Coefficient cost tables (svt_aom_estimate_coefficients_rate).
     pub coeff: alloc::boxed::Box<CoeffCostTables>,
 }
@@ -114,6 +118,7 @@ pub fn build_md_rates(fc: &FrameContext, cfc: &cc::CoeffFc) -> alloc::boxed::Box
         skip: [[0; 2]; 3],
         tx_size: [[[0; 3]; 3]; 4],
         intra_ext_tx: [[0; 17]; 13 * 4 * 3],
+        cfl_alpha_fac_bits: [[[0; 16]; 2]; 8],
         coeff: crate::quant::build_coeff_cost_tables_from_fc(cfc),
     });
     for a in 0..5 {
@@ -153,6 +158,33 @@ pub fn build_md_rates(fc: &FrameContext, cfc: &cc::CoeffFc) -> alloc::boxed::Box
     }
     for row in 0..(13 * 4 * 3) {
         r.intra_ext_tx[row] = costs_from_cdf(&cfc.intra_ext_tx_cdf[row]);
+    }
+    // CfL alpha rate table (md_rate_estimation.c:192-213). sign_fac_bits
+    // over cfl_sign_cdf; per joint_sign, each plane's magnitude costs from
+    // cfl_alpha_cdf[CFL_CONTEXT_{U,V}] (zero-sign plane -> all-0); then the
+    // joint-sign rate is folded into plane U only (matching the syntax:
+    // sign coded once, U/V magnitudes follow).
+    {
+        use svtav1_entropy::context as ctx;
+        let mut sign_fac_bits = [0i32; ctx::CFL_JOINT_SIGNS];
+        crate::quant::syntax_rate_from_cdf(&mut sign_fac_bits, &fc.cfl_sign_cdf);
+        for js in 0..ctx::CFL_JOINT_SIGNS {
+            if ctx::cfl_sign_u(js) != 0 {
+                crate::quant::syntax_rate_from_cdf(
+                    &mut r.cfl_alpha_fac_bits[js][0],
+                    &fc.cfl_alpha_cdf[ctx::cfl_context_u(js)],
+                );
+            }
+            if ctx::cfl_sign_v(js) != 0 {
+                crate::quant::syntax_rate_from_cdf(
+                    &mut r.cfl_alpha_fac_bits[js][1],
+                    &fc.cfl_alpha_cdf[ctx::cfl_context_v(js)],
+                );
+            }
+            for u in 0..16 {
+                r.cfl_alpha_fac_bits[js][0][u] += sign_fac_bits[js];
+            }
+        }
     }
     r
 }
@@ -333,6 +365,16 @@ pub struct FunnelCfg {
     /// predictions run the corner/edge filters + upsampling
     /// (enc_intra_prediction.c:181-215).
     pub edge_filter: bool,
+    /// `cfl_ctrls.enabled` (set_cfl_ctrls, enc_mode_config.c:8304). In the
+    /// still/allintra path (OPT_NSC_STILL_IMAGE) cfl_level is 1 for M0, 4
+    /// for M1..M6, 0 for M7+. The leaf only runs the CfL search on the
+    /// uv-follows-luma path (`!ind_uv_mds3 && ind_uv_independent.is_none()`,
+    /// == C `!ind_uv_avail`) — so among the funnel presets CfL is only ever
+    /// evaluated at M6 (M0..M5 do independent chroma; M7+ disable cfl).
+    pub cfl_enabled: bool,
+    /// `cfl_ctrls.itr_th` (cfl_level 4 -> 1): the alpha-search early-exit
+    /// threshold in md_cfl_rd_pick_alpha.
+    pub cfl_itr_th: u8,
 }
 
 impl FunnelCfg {
@@ -375,6 +417,12 @@ impl FunnelCfg {
             ind_uv_independent: None,
             fi_max: 0,
             edge_filter: false,
+            // M6 cfl_level 4: enabled, itr_th 1, cplx_th 10 (detector-gated
+            // — see chroma path). Presets that spread m6_tail but do
+            // independent chroma (M0..M5) are excluded by the uv-follows-luma
+            // gate; M7/M8/eff-M9 override to false (cfl_level 0).
+            cfl_enabled: true,
+            cfl_itr_th: 1,
         };
         match preset {
             // M1 (still/420): the svt_aom_get_*_allintra rows for enc_mode=1
@@ -595,6 +643,7 @@ impl FunnelCfg {
                 txt_group_lt16: 3,
                 txt_group_ge16: 2,
                 txt_rate_th: 50,
+                cfl_enabled: false,
                 ..m6_tail
             },
             // preset 8: nic_level 11 (scaling 15 -> nums 0/0/0 -> 1/1/1),
@@ -615,6 +664,7 @@ impl FunnelCfg {
                 txt_group_lt16: 3,
                 txt_group_ge16: 2,
                 txt_rate_th: 50,
+                cfl_enabled: false,
                 ..m6_tail
             },
             // eff-M9 (presets 9+): intra_level 8 arms the is_dc_only gate
@@ -647,6 +697,7 @@ impl FunnelCfg {
                 coeff_rate_est_lvl: 0,
                 dc_only_gate: true,
                 txt_on: false,
+                cfl_enabled: false,
                 ..m6_tail
             },
         }
@@ -1331,6 +1382,191 @@ fn uv_from_y(mode: u8) -> u8 {
     mode
 }
 
+/// C `MAX_MODE_COST` (coding_unit.h:37) — the RD-cost sentinel for
+/// "not set" used by md_cfl_rd_pick_alpha / cfl_prediction.
+const MAX_MODE_COST: u64 = 13754408443200 * 8;
+
+/// C `cfl_idx_to_alpha` (intra_prediction.h:134): signed Q3 alpha for a
+/// (idx, joint_sign, plane). plane 0 = Cb (U), 1 = Cr (V).
+#[inline]
+fn cfl_idx_to_alpha(alpha_idx: u8, joint_sign: u8, plane: usize) -> i32 {
+    use svtav1_entropy::context::{cfl_sign_u, cfl_sign_v};
+    let js = joint_sign as usize;
+    let alpha_sign = if plane == 0 { cfl_sign_u(js) } else { cfl_sign_v(js) };
+    if alpha_sign == 0 {
+        // CFL_SIGN_ZERO
+        return 0;
+    }
+    let abs_alpha = if plane == 0 {
+        (alpha_idx >> 4) as i32 // CFL_IDX_U
+    } else {
+        (alpha_idx & 15) as i32 // CFL_IDX_V
+    };
+    if alpha_sign == 2 {
+        abs_alpha + 1 // CFL_SIGN_POS
+    } else {
+        -abs_alpha - 1 // CFL_SIGN_NEG
+    }
+}
+
+/// C `PLANE_SIGN_TO_JOINT_SIGN(plane, a, b)` (product_coding_loop.c:3612):
+/// `plane == U ? a*CFL_SIGNS + b - 1 : b*CFL_SIGNS + a - 1`.
+#[inline]
+fn plane_sign_to_joint_sign(plane: usize, a: usize, b: usize) -> u8 {
+    let js = if plane == 0 {
+        a * 3 + b - 1
+    } else {
+        b * 3 + a - 1
+    };
+    js as u8
+}
+
+/// C `md_cfl_rd_pick_alpha` (product_coding_loop.c:3615). Searches the CfL
+/// alpha (magnitude + joint sign) that minimises the two-plane RD, using
+/// `av1_cost_calc_cfl`'s per-(plane, alpha) cost = (CfL residual TX/quant
+/// SSD, coeff bits). Returns `(cfl_alpha_idx, cfl_alpha_signs, best_rd)`
+/// where `best_rd` includes the UV_CFL_PRED mode rate (`mode_rd`) so it is
+/// directly comparable to `non_cfl_cost`. `pred_buf_q3` is the AC luma
+/// (from compute_cfl_ac_components); `u_dc`/`v_dc` the DC chroma base.
+#[allow(clippy::too_many_arguments)]
+fn md_cfl_rd_pick_alpha(
+    pred_buf_q3: &[i16],
+    u_dc: &[u8],
+    v_dc: &[u8],
+    u_src: &[u8],
+    v_src: &[u8],
+    c_stride: usize,
+    c_off: usize,
+    cw: usize,
+    chh: usize,
+    cb_tsc: usize,
+    cb_dsc: usize,
+    cr_tsc: usize,
+    cr_dsc: usize,
+    qt: &QuantTable,
+    frame: &FunnelFrame,
+    rates: &MdRates,
+    do_rdoq: bool,
+    lambda: u64,
+    luma_mode: usize,
+    itr_th: u8,
+) -> (u8, u8, u64) {
+    // Per-(plane, alpha_q3) CfL cost: CfL-predict the plane from the DC
+    // base + AC luma, TX/quant/recon the residual (same path the non-CFL
+    // chroma uses), return (SSD residual distortion, coeff bits). Mirrors
+    // av1_cost_calc_cfl (product_coding_loop.c:3445) for one component.
+    let plane_cost = |plane: usize, alpha_q3: i32| -> (u64, i32) {
+        let (src, dc, tsc, dsc) = if plane == 0 {
+            (u_src, u_dc, cb_tsc, cb_dsc)
+        } else {
+            (v_src, v_dc, cr_tsc, cr_dsc)
+        };
+        let mut cfl_pred = vec![0u8; cw * chh];
+        svtav1_dsp::intra_pred::cfl_predict_lbd(
+            pred_buf_q3,
+            dc,
+            cw,
+            &mut cfl_pred,
+            cw,
+            alpha_q3,
+            cw,
+            chh,
+        );
+        let out = tx_unit(
+            src, c_stride, c_off, &cfl_pred, cw, 0, cw, chh, 0, 1, tsc, dsc, 0, qt, frame, rates,
+            do_rdoq, true,
+        );
+        (out.dist, out.bits)
+    };
+
+    let mode_rd = rdcost(
+        lambda,
+        rates.uv[1][luma_mode][UV_CFL_PRED_IDX] as u64,
+        0,
+    );
+    let mut best_rd = MAX_MODE_COST;
+    let mut best_rd_uv = [[MAX_MODE_COST; 2]; 8]; // [joint_sign][plane]
+    let mut best_c = [[0u8; 2]; 8];
+    let mut best_joint_sign = 0u8;
+    let mut best_joint_sign_found = false;
+
+    // Alpha-zero pass: seed best_rd_uv for the joint signs with a zero
+    // component in this plane (CFL_SIGN_ZERO,{NEG,POS}).
+    for plane in 0..2 {
+        let jsn = plane_sign_to_joint_sign(plane, 0, 1); // ZERO, NEG
+        let alpha0 = cfl_idx_to_alpha(0, jsn, plane); // == 0
+        let (dist, cbits) = plane_cost(plane, alpha0);
+        let arate_neg = rates.cfl_alpha_fac_bits[jsn as usize][plane][0] as u64;
+        best_rd_uv[jsn as usize][plane] = rdcost(lambda, cbits as u64 + arate_neg, dist);
+        let jsp = plane_sign_to_joint_sign(plane, 0, 2); // ZERO, POS
+        let arate_pos = rates.cfl_alpha_fac_bits[jsp as usize][plane][0] as u64;
+        best_rd_uv[jsp as usize][plane] = rdcost(lambda, cbits as u64 + arate_pos, dist);
+    }
+
+    // Main search over plane, sign, magnitude c (with the itr_th early exit).
+    for plane in 0..2 {
+        for pn_sign in 1..3usize {
+            // NEG=1, POS=2
+            let mut progress = 0u8;
+            for c in 0..16usize {
+                let mut flag = 0u8;
+                if c as u8 > itr_th && progress < c as u8 {
+                    break;
+                }
+                let mut dist = 0u64;
+                let mut cbits = 0i32;
+                for i in 0..3usize {
+                    // CFL_SIGNS
+                    let joint_sign = plane_sign_to_joint_sign(plane, pn_sign, i);
+                    if i == 0 {
+                        let idx = ((c << 4) + c) as u8;
+                        let alpha = cfl_idx_to_alpha(idx, joint_sign, plane);
+                        let (d, b) = plane_cost(plane, alpha);
+                        dist = d;
+                        cbits = b;
+                    }
+                    let arate = rates.cfl_alpha_fac_bits[joint_sign as usize][plane][c] as u64;
+                    let this_rd = rdcost(lambda, cbits as u64 + arate, dist);
+                    if this_rd >= best_rd_uv[joint_sign as usize][plane] {
+                        continue;
+                    }
+                    best_rd_uv[joint_sign as usize][plane] = this_rd;
+                    best_c[joint_sign as usize][plane] = c as u8;
+                    flag = itr_th;
+                    let other = 1 - plane;
+                    if best_rd_uv[joint_sign as usize][other] == MAX_MODE_COST {
+                        continue;
+                    }
+                    let combined = this_rd + mode_rd + best_rd_uv[joint_sign as usize][other];
+                    if combined >= best_rd {
+                        continue;
+                    }
+                    best_rd = combined;
+                    best_joint_sign = joint_sign;
+                    best_joint_sign_found = true;
+                }
+                progress += flag;
+            }
+        }
+    }
+
+    let (mut cfl_idx, mut cfl_signs) = (0u8, 0u8);
+    if best_rd != MAX_MODE_COST {
+        let mut ind = 0u8;
+        if best_joint_sign_found {
+            let u = best_c[best_joint_sign as usize][0];
+            let v = best_c[best_joint_sign as usize][1];
+            ind = (u << 4) + v;
+        }
+        cfl_idx = ind;
+        cfl_signs = best_joint_sign;
+    }
+    (cfl_idx, cfl_signs, best_rd)
+}
+
+/// C `UV_CFL_PRED` chroma-mode index.
+const UV_CFL_PRED_IDX: usize = 13;
+
 /// C `fimode_to_intradir` (common_utils.c:33).
 pub(crate) const FIMODE_TO_INTRADIR: [u8; 5] = [0, 1, 2, 6, 0];
 
@@ -1369,6 +1605,10 @@ struct Cand {
     v_cul: u8,
     u_recon: Vec<u8>,
     v_recon: Vec<u8>,
+    /// CfL alpha idx/signs when the MDS3 chroma decision picked
+    /// UV_CFL_PRED (uv == 13); both 0 otherwise (C block_mi.cfl_alpha_*).
+    cfl_alpha_idx: u8,
+    cfl_alpha_signs: u8,
     mds3_cost: u64,
     block_has_coeff: bool,
     /// C `blk_ptr->total_rate` / `full_dist` (svt_aom_full_cost writeback)
@@ -1403,6 +1643,10 @@ pub struct LeafChoice {
     /// recon evolution is byte-identical to the decision phase's.
     pub u_recon: Vec<u8>,
     pub v_recon: Vec<u8>,
+    /// CfL alpha idx/signs for a UV_CFL_PRED (uv_mode == 13) leaf; the
+    /// entropy writer emits `write_cfl_alphas` from these. 0/0 otherwise.
+    pub cfl_alpha_idx: u8,
+    pub cfl_alpha_signs: u8,
 }
 
 /// Per-frame/SB mutable funnel context threaded through the fixed tree.
@@ -1513,6 +1757,8 @@ impl LeafEval {
             v_eob: cand.v_eob,
             u_recon: cand.u_recon.clone(),
             v_recon: cand.v_recon.clone(),
+            cfl_alpha_idx: cand.cfl_alpha_idx,
+            cfl_alpha_signs: cand.cfl_alpha_signs,
         }
     }
 }
@@ -1778,6 +2024,8 @@ pub(crate) fn evaluate_leaf(
             v_cul: 0,
             u_recon: Vec::new(),
             v_recon: Vec::new(),
+            cfl_alpha_idx: 0,
+            cfl_alpha_signs: 0,
             mds3_cost: u64::MAX,
             block_has_coeff: false,
             total_rate: 0,
@@ -2443,19 +2691,22 @@ pub(crate) fn evaluate_leaf(
         //      Skipped entirely for non-chroma-ref blocks (C gates every
         //      chroma stage on ctx->has_uv).
         let cand = &cands[ci];
-        let (u_out, v_out) = if has_uv {
+        let (mut u_out, mut v_out) = if has_uv {
             chroma_eval(fx, cand.uv, cand.uv_delta)
         } else {
             (TxUnitOut::absent(), TxUnitOut::absent())
         };
+        // CfL override state, applied at the mutable-borrow writeback below.
+        let mut uv_mode_final = cand.uv;
+        let mut fcr_final = cand.fcr;
+        let mut cfl_idx_final = 0u8;
+        let mut cfl_signs_final = 0u8;
         if has_uv {
             // Chroma complexity detector (chroma_complexity_check_pred,
-            // product_coding_loop.c:6095) — its only funnel-visible effect
-            // is the CFL gate (tx shortcuts are level 0). When it fires C
-            // would evaluate cfl_prediction for <= 32x32 blocks; CFL
-            // search is unported, so the non-CFL uv mode is kept and the
-            // event recorded (never fires on flat-chroma content — all
-            // tracked identity cells).
+            // product_coding_loop.c:6095), use_var=1: cfl_complexity ==
+            // COMPONENT_CHROMA iff the SAD arm (cb/cr pred SAD > 2x luma
+            // pred SAD) OR the variance arm (per-pixel source variance >
+            // cplx_th) fires. Uses the candidate's uv PREDICTION.
             let mut u_pred = vec![0u8; cw * chh];
             let mut v_pred = vec![0u8; cw * chh];
             predict_unit(
@@ -2488,7 +2739,8 @@ pub(crate) fn evaluate_leaf(
                 filt_type_uv,
                 &mut v_pred,
             );
-            let cfl_would_run = chroma_detector_fires(
+            let c_off = ccy * fx.c_stride + ccx;
+            let sad_arm = chroma_detector_fires(
                 y_src,
                 y_src_stride,
                 y_src_off,
@@ -2499,16 +2751,109 @@ pub(crate) fn evaluate_leaf(
                 &u_pred,
                 &v_pred,
                 fx.c_stride,
-                ccy * fx.c_stride + ccx,
+                c_off,
                 cw,
                 chh,
             );
-            // When the gate arms on <= 32x32 blocks C would run
-            // cfl_prediction and possibly pick UV_CFL — unported: we keep
-            // the non-CFL uv mode. Tracked cells never arm it (flat
-            // chroma); arming on other content yields a valid
-            // (non-C-identical) stream.
-            let _ = cfl_would_run;
+            // M6 cfl_level 4 -> cplx_th 10. Both detector arms use it: the
+            // caller gates CfL on cfl_complexity == COMPONENT_CHROMA when
+            // cplx_th != 0 (product_coding_loop.c:7183).
+            const CFL_CPLX_TH: u32 = 10;
+            let var_arm =
+                chroma_var_arm_fires(fx.u_src, fx.v_src, fx.c_stride, c_off, cw, chh, CFL_CPLX_TH);
+            let cfl_would_run = sad_arm || var_arm;
+            // Only the uv-follows-luma path (== C !ind_uv_avail) is handled;
+            // among the funnel presets that + cfl_enabled is M6 alone.
+            let cfl_uv_follows = !cfg.ind_uv_mds3 && cfg.ind_uv_independent.is_none();
+            if cfg.cfl_enabled && cfl_uv_follows && cfl_would_run && w <= 32 && h <= 32 {
+                // ---- cfl_prediction (product_coding_loop.c:3795) ----
+                // non_cfl_cost = RDCOST(coeff_bits + uv fast rate, dist) over
+                // the non-CFL chroma (u_out/v_out); cand.fcr is that fast
+                // rate on the uv-follows-luma path.
+                let non_cfl_cost = rdcost(
+                    lambda,
+                    u_out.bits as u64 + v_out.bits as u64 + cand.fcr,
+                    u_out.dist + v_out.dist,
+                );
+                // compute_cfl_ac_components: subsample the winning luma recon
+                // (whole block, origin 0) and subtract its DC.
+                let mut pred_buf_q3 =
+                    vec![0i16; svtav1_dsp::intra_pred::CFL_BUF_LINE * chh.max(1)];
+                svtav1_dsp::intra_pred::cfl_luma_subsampling_420(
+                    &best_recon,
+                    w,
+                    &mut pred_buf_q3,
+                    w,
+                    h,
+                );
+                svtav1_dsp::intra_pred::cfl_subtract_average(&mut pred_buf_q3, cw, chh);
+                // CfL base is the DC chroma prediction (C regenerates it when
+                // the non-CFL uv mode != DC).
+                let mut u_dc = vec![0u8; cw * chh];
+                let mut v_dc = vec![0u8; cw * chh];
+                predict_unit(
+                    fx.u_recon, fx.c_stride, ccx, ccy, cw, chh, 0, 0, FI_NONE, &uv_geom,
+                    cfg.edge_filter, filt_type_uv, &mut u_dc,
+                );
+                predict_unit(
+                    fx.v_recon, fx.c_stride, ccx, ccy, cw, chh, 0, 0, FI_NONE, &uv_geom,
+                    cfg.edge_filter, filt_type_uv, &mut v_dc,
+                );
+                let (cfl_idx, cfl_signs, cfl_rd) = md_cfl_rd_pick_alpha(
+                    &pred_buf_q3,
+                    &u_dc,
+                    &v_dc,
+                    fx.u_src,
+                    fx.v_src,
+                    fx.c_stride,
+                    c_off,
+                    cw,
+                    chh,
+                    cb_tsc,
+                    cb_dsc,
+                    cr_tsc,
+                    cr_dsc,
+                    &qt,
+                    frame,
+                    rates,
+                    do_rdoq,
+                    lambda,
+                    cand.mode as usize,
+                    cfg.cfl_itr_th,
+                );
+                if cfl_rd != MAX_MODE_COST && cfl_rd < non_cfl_cost {
+                    // CfL wins: redo chroma with the winning alpha (DCT_DCT)
+                    // for the full TX path, and swap in the CFL mode + rate.
+                    let alpha_cb = cfl_idx_to_alpha(cfl_idx, cfl_signs, 0);
+                    let alpha_cr = cfl_idx_to_alpha(cfl_idx, cfl_signs, 1);
+                    let mut u_cfl = vec![0u8; cw * chh];
+                    let mut v_cfl = vec![0u8; cw * chh];
+                    svtav1_dsp::intra_pred::cfl_predict_lbd(
+                        &pred_buf_q3, &u_dc, cw, &mut u_cfl, cw, alpha_cb, cw, chh,
+                    );
+                    svtav1_dsp::intra_pred::cfl_predict_lbd(
+                        &pred_buf_q3, &v_dc, cw, &mut v_cfl, cw, alpha_cr, cw, chh,
+                    );
+                    u_out = tx_unit(
+                        fx.u_src, fx.c_stride, c_off, &u_cfl, cw, 0, cw, chh, 0, 1, cb_tsc, cb_dsc,
+                        0, &qt, frame, rates, do_rdoq, true,
+                    );
+                    v_out = tx_unit(
+                        fx.v_src, fx.c_stride, c_off, &v_cfl, cw, 0, cw, chh, 0, 1, cr_tsc, cr_dsc,
+                        0, &qt, frame, rates, do_rdoq, true,
+                    );
+                    uv_mode_final = UV_CFL_PRED_IDX as u8;
+                    cfl_idx_final = cfl_idx;
+                    cfl_signs_final = cfl_signs;
+                    // Updated uv fast rate (get_intra_uv_fast_rate,
+                    // use_accurate_cfl=1): UV_CFL_PRED mode bits + alpha bits.
+                    fcr_final = rates.uv[cfl_allowed][cand.mode as usize][UV_CFL_PRED_IDX] as u64
+                        + rates.cfl_alpha_fac_bits[cfl_signs as usize][0][(cfl_idx >> 4) as usize]
+                            as u64
+                        + rates.cfl_alpha_fac_bits[cfl_signs as usize][1][(cfl_idx & 15) as usize]
+                            as u64;
+                }
+            }
         }
 
         // ---- svt_aom_full_cost (rd_cost.c:1357) ----
@@ -2581,12 +2926,18 @@ pub(crate) fn evaluate_leaf(
             rates.skip[skip_ctx][1] as u64 + tx_size_bits_final
         };
         let dist = best_dist + u_out.dist + v_out.dist;
-        let full = rdcost(lambda, cand.flr + cand.fcr + coeff_rate, dist);
+        // fcr_final == cand.fcr unless CfL was selected above (then the
+        // UV_CFL_PRED mode + alpha rate replaces the non-CFL uv fast rate).
+        let full = rdcost(lambda, cand.flr + fcr_final + coeff_rate, dist);
 
         let cand = &mut cands[ci];
         cand.mds3_cost = full;
-        cand.total_rate = cand.flr + cand.fcr + coeff_rate;
+        cand.total_rate = cand.flr + fcr_final + coeff_rate;
         cand.full_dist = dist;
+        cand.uv = uv_mode_final;
+        cand.fcr = fcr_final;
+        cand.cfl_alpha_idx = cfl_idx_final;
+        cand.cfl_alpha_signs = cfl_signs_final;
         cand.tx_depth = best_depth;
         cand.txb_q = best_txb_q;
         cand.txb_eob = best_txb_eob;
@@ -2839,6 +3190,11 @@ pub(crate) fn uv_tx_type(uv: u8, cw: usize, chh: usize) -> usize {
     /// C `g_intra_mode_to_tx_type[INTRA_MODES]` (DCT=0, ADST_DCT=1,
     /// DCT_ADST=2, ADST_ADST=3).
     const MODE_TO_TX: [usize; 13] = [0, 1, 2, 0, 3, 1, 2, 2, 1, 3, 1, 2, 3];
+    // UV_CFL_PRED (13): C forces transform_type_uv = DCT_DCT
+    // (product_coding_loop.c:3789); the decoder derives DCT_DCT for CfL too.
+    if uv as usize == UV_CFL_PRED_IDX {
+        return cc::DCT_DCT;
+    }
     let t = MODE_TO_TX[uv as usize];
     // DCT-only tx sizes (>= 32 in either dim).
     if cw >= 32 || chh >= 32 {
@@ -3244,6 +3600,41 @@ fn chroma_detector_fires(
     let cb_dist = sad(u_src, c_off, c_stride, u_pred, 0, cw);
     let cr_dist = sad(v_src, c_off, c_stride, v_pred, 0, cw);
     cb_dist > y_dist || cr_dist > y_dist
+}
+
+/// C `chroma_complexity_check_pred` variance arm (product_coding_loop.c:6172,
+/// `use_var == 1`): sets `cfl_complexity = COMPONENT_CHROMA` when either
+/// chroma plane's per-pixel source variance exceeds `cplx_th`. Variance is
+/// `svt_aom_varianceWxH_c` against a flat-128 reference (== variance around
+/// the block mean), then `ROUND_POWER_OF_TWO(var, log2(cw*chh))`.
+fn chroma_var_arm_fires(
+    u_src: &[u8],
+    v_src: &[u8],
+    c_stride: usize,
+    c_off: usize,
+    cw: usize,
+    chh: usize,
+    cplx_th: u32,
+) -> bool {
+    let block_var = |src: &[u8]| -> u32 {
+        let mut sum: i64 = 0;
+        let mut sse: i64 = 0;
+        for r in 0..chh {
+            let row = c_off + r * c_stride;
+            for c in 0..cw {
+                let diff = src[row + c] as i64 - 128;
+                sum += diff;
+                sse += diff * diff;
+            }
+        }
+        let n = (cw * chh) as i64;
+        // svt_aom_varianceWxH_c: *sse - (uint32)((int64)sum*sum / (w*h)).
+        let var = (sse - (sum * sum) / n) as u32;
+        // block_var = ROUND_POWER_OF_TWO(var, log2(cw*chh)).
+        let log2n = n.trailing_zeros();
+        (var + (1 << (log2n - 1))) >> log2n
+    };
+    block_var(u_src) > cplx_th || block_var(v_src) > cplx_th
 }
 
 #[cfg(test)]
