@@ -27,6 +27,33 @@ pub const fn cdf_size(nsymbs: usize) -> usize {
     nsymbs + 1
 }
 
+/// Weighted per-entry average of two CDF arrays, in place into `left`.
+///
+/// Exact port of `avg_cdf_symbol` (`enc_dec_process.c:2668-2679`): each
+/// entry becomes `(left*wt_left + tr*wt_tr + (wt_left+wt_tr)/2) / (wt_left+wt_tr)`
+/// with integer arithmetic. C's `avg_cdf_symbols` invokes this over `j` in
+/// `0..=nsymbs` per CDF with `stride == CDF_SIZE(nsymbs)`, i.e. it touches
+/// *every* element of each averaged array — including the adaptation counter
+/// at `[nsymbs]` — so a flat element-wise pass over the whole contiguous
+/// array reproduces it. For the few `AVG_CDF_STRIDE` calls where the C stride
+/// exceeds `CDF_SIZE(nsymbs)` (e.g. `uv_mode_cdf[0]`, the 4-way
+/// `partition_cdf` contexts) the skipped tail slots are unused padding beyond
+/// that context's alphabet, so averaging them here is a harmless no-op on any
+/// value a rate builder reads.
+///
+/// The two weights C ever uses are `AVG_CDF_WEIGHT_LEFT=3` / `AVG_CDF_WEIGHT_TOP=1`.
+#[inline]
+pub fn avg_cdf_entries(left: &mut [AomCdfProb], tr: &[AomCdfProb], wt_left: i32, wt_tr: i32) {
+    debug_assert_eq!(left.len(), tr.len());
+    let denom = wt_left + wt_tr;
+    let bias = denom / 2;
+    for (l, r) in left.iter_mut().zip(tr.iter()) {
+        // Result of averaging two values each < CDF_PROB_TOP is < CDF_PROB_TOP,
+        // so it always fits AomCdfProb (matches C's `(AomCdfProb)` cast + assert).
+        *l = ((i32::from(*l) * wt_left + i32::from(*r) * wt_tr + bias) / denom) as u16;
+    }
+}
+
 /// Update CDF probabilities after encoding/decoding a symbol.
 ///
 /// Exact port of `update_cdf` from `cabac_context_model.h` (C layout:
@@ -119,5 +146,41 @@ mod tests {
         assert!(cdf[1] > 21000 && cdf[1] < 22000);
         assert!(cdf[2] > 10000 && cdf[2] < 11000);
         assert_eq!(cdf[4], 0);
+    }
+
+    #[test]
+    fn avg_cdf_entries_matches_c_formula() {
+        // C `avg_cdf_symbol` (enc_dec_process.c:2668-2679) with
+        // wt_left=3, wt_tr=1: entry = (left*3 + tr*1 + (3+1)/2) / (3+1)
+        //                            = (left*3 + tr + 2) / 4  (integer).
+        let expect = |l: u32, t: u32| ((l * 3 + t + 2) / 4) as u16;
+        let cases = [(100u16, 200u16), (200, 100), (10, 20), (0, 0), (32767, 32767), (32767, 0)];
+        for (l, t) in cases {
+            let mut left = [l];
+            avg_cdf_entries(&mut left, &[t], 3, 1);
+            assert_eq!(left[0], expect(u32::from(l), u32::from(t)), "avg({l},{t}) with 3:1");
+        }
+        // The pass is element-wise across the whole array (including the
+        // adaptation counter at the tail), exactly like C's `j <= nsymbs`
+        // loop over a CDF_SIZE(nsymbs)-strided array.
+        let mut left = [12631u16, 11221, 9690, 4]; // ...counter = 4
+        let tr = [14306u16, 11848, 9644, 8]; //     counter = 8
+        avg_cdf_entries(&mut left, &tr, 3, 1);
+        assert_eq!(left[0], (12631 * 3 + 14306 + 2) / 4);
+        assert_eq!(left[1], (11221 * 3 + 11848 + 2) / 4);
+        assert_eq!(left[2], (9690 * 3 + 9644 + 2) / 4);
+        assert_eq!(left[3], (4 * 3 + 8 + 2) / 4); // counter averaged too -> 5
+    }
+
+    #[test]
+    fn avg_cdf_equal_contexts_is_identity() {
+        // Averaging a context with an identical one must be a no-op — this is
+        // why averaging the intra-frame-inert (inter/MV) CDF fields in
+        // FrameContext::avg_cdf_with is harmless: both neighbors hold equal
+        // defaults there.
+        let mut a = [30000u16, 20000, 10000, 0, 31, 1, 4, 12345];
+        let b = a;
+        avg_cdf_entries(&mut a, &b, 3, 1);
+        assert_eq!(a, b);
     }
 }

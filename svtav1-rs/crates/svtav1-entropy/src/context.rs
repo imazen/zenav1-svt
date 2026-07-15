@@ -392,6 +392,47 @@ impl FrameContext {
             ],
         }
     }
+
+    /// In-place weighted per-entry average of `self` (left, ×`wt_left`) with a
+    /// top-right neighbor context (×`wt_tr`) — the FRAME_CONTEXT half of
+    /// `avg_cdf_symbols` (`enc_dec_process.c:2710-2805`). Used to seed a
+    /// super-block's rate-estimation context from its left×3 + top-right×1
+    /// neighbors when both are available (`pic_based_rate_est == false`, the
+    /// only mode C ships). Every CDF array is averaged element-wise (see
+    /// [`crate::cdf::avg_cdf_entries`]); inter/MV/segmentation fields that never
+    /// evolve in an intra frame hold equal defaults on both neighbors, so
+    /// averaging them is a no-op there and this stays exact for still frames.
+    pub fn avg_cdf_with(&mut self, tr: &FrameContext, wt_left: i32, wt_tr: i32) {
+        use crate::cdf::avg_cdf_entries as avg;
+        // 1D
+        avg(&mut self.filter_intra_mode_cdf, &tr.filter_intra_mode_cdf, wt_left, wt_tr);
+        avg(&mut self.wiener_restore_cdf, &tr.wiener_restore_cdf, wt_left, wt_tr);
+        avg(&mut self.delta_q_cdf, &tr.delta_q_cdf, wt_left, wt_tr);
+        // 2D
+        avg(self.partition_cdf.as_flattened_mut(), tr.partition_cdf.as_flattened(), wt_left, wt_tr);
+        avg(self.skip_cdf.as_flattened_mut(), tr.skip_cdf.as_flattened(), wt_left, wt_tr);
+        avg(self.skip_mode_cdf.as_flattened_mut(), tr.skip_mode_cdf.as_flattened(), wt_left, wt_tr);
+        avg(self.intra_inter_cdf.as_flattened_mut(), tr.intra_inter_cdf.as_flattened(), wt_left, wt_tr);
+        avg(self.y_mode_cdf.as_flattened_mut(), tr.y_mode_cdf.as_flattened(), wt_left, wt_tr);
+        avg(self.angle_delta_cdf.as_flattened_mut(), tr.angle_delta_cdf.as_flattened(), wt_left, wt_tr);
+        avg(self.filter_intra_cdfs.as_flattened_mut(), tr.filter_intra_cdfs.as_flattened(), wt_left, wt_tr);
+        avg(self.inter_compound_mode_cdf.as_flattened_mut(), tr.inter_compound_mode_cdf.as_flattened(), wt_left, wt_tr);
+        avg(self.newmv_cdf.as_flattened_mut(), tr.newmv_cdf.as_flattened(), wt_left, wt_tr);
+        avg(self.globalmv_cdf.as_flattened_mut(), tr.globalmv_cdf.as_flattened(), wt_left, wt_tr);
+        avg(self.refmv_cdf.as_flattened_mut(), tr.refmv_cdf.as_flattened(), wt_left, wt_tr);
+        avg(self.drl_cdf.as_flattened_mut(), tr.drl_cdf.as_flattened(), wt_left, wt_tr);
+        avg(self.txb_skip_cdf.as_flattened_mut(), tr.txb_skip_cdf.as_flattened(), wt_left, wt_tr);
+        avg(self.interp_filter_cdf.as_flattened_mut(), tr.interp_filter_cdf.as_flattened(), wt_left, wt_tr);
+        avg(self.comp_inter_cdf.as_flattened_mut(), tr.comp_inter_cdf.as_flattened(), wt_left, wt_tr);
+        // 3D
+        avg(self.kf_y_mode_cdf.as_flattened_mut().as_flattened_mut(), tr.kf_y_mode_cdf.as_flattened().as_flattened(), wt_left, wt_tr);
+        avg(self.uv_mode_cdf.as_flattened_mut().as_flattened_mut(), tr.uv_mode_cdf.as_flattened().as_flattened(), wt_left, wt_tr);
+        avg(self.tx_size_cdf.as_flattened_mut().as_flattened_mut(), tr.tx_size_cdf.as_flattened().as_flattened(), wt_left, wt_tr);
+        avg(self.dc_sign_cdf.as_flattened_mut().as_flattened_mut(), tr.dc_sign_cdf.as_flattened().as_flattened(), wt_left, wt_tr);
+        avg(self.eob_flag_cdf.as_flattened_mut().as_flattened_mut(), tr.eob_flag_cdf.as_flattened().as_flattened(), wt_left, wt_tr);
+        avg(self.single_ref_cdf.as_flattened_mut().as_flattened_mut(), tr.single_ref_cdf.as_flattened().as_flattened(), wt_left, wt_tr);
+        avg(self.comp_ref_cdf.as_flattened_mut().as_flattened_mut(), tr.comp_ref_cdf.as_flattened().as_flattened(), wt_left, wt_tr);
+    }
 }
 
 // =============================================================================
