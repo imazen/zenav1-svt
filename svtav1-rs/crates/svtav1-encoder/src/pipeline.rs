@@ -1859,6 +1859,16 @@ fn encode_block_syntax(
                     eob = i as i32 + 1;
                 }
             }
+            // Diagnostic aid: SVTAV1_CODED_EOB=1 prints the TRUE coded
+            // scan-order eob per depth-0 leaf (the tree dump's d.eob is a
+            // raster-order artifact). No output change.
+            #[cfg(feature = "std")]
+            if std::env::var_os("SVTAV1_CODED_EOB").is_some() {
+                let nz = coeffs.iter().filter(|&&c| c != 0).count();
+                eprintln!(
+                    "CODED x{block_x} y{block_y} {w}x{h} tx{tx_type} scan_eob={eob} nz={nz}"
+                );
+            }
             let cul_level = coeff_c::write_coeffs_txb_1d(
                 coeff_fc,
                 writer,
@@ -1929,6 +1939,30 @@ fn encode_block_syntax(
             let cx = ((block_x >> 3) << 3) / 2 + if w >= 8 { (block_x % 8) / 2 } else { 0 };
             let cy = ((block_y >> 3) << 3) / 2 + if h >= 8 { (block_y % 8) / 2 } else { 0 };
             let uv_tt = crate::leaf_funnel::uv_tx_type(decision.uv_mode, cw, ch);
+            #[cfg(feature = "std")]
+            if std::env::var_os("SVTAV1_CODED_EOB").is_some() {
+                let uv_ts = svtav1_entropy::coeff_c::tx_size_from_dims(cw, ch);
+                let sidx =
+                    svtav1_entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[uv_tt as usize] as usize;
+                let uv_scan = svtav1_entropy::scan_tables::scan(uv_ts, sidx);
+                let eob_of = |q: &[i32]| {
+                    let mut e = 0usize;
+                    for (i, &p) in uv_scan.iter().enumerate() {
+                        if q[p as usize] != 0 {
+                            e = i + 1;
+                        }
+                    }
+                    e
+                };
+                let sum_of = |q: &[i32]| q.iter().map(|c| c.unsigned_abs() as u64).sum::<u64>();
+                eprintln!(
+                    "CODEDUV x{block_x} y{block_y} cw{cw} ch{ch} u_eob={} v_eob={} u_sum={} v_sum={}",
+                    eob_of(u_q),
+                    eob_of(v_q),
+                    sum_of(u_q),
+                    sum_of(v_q),
+                );
+            }
             write_chroma_txb(
                 writer, coeff_fc, ectx, 0, cx, cy, cw, ch, u_q, base_q_idx, uv_tt,
             );

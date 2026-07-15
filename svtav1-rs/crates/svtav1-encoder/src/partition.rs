@@ -1329,17 +1329,31 @@ pub(crate) fn funnel_block_decision(
         // w x h raster the depth-0 walk path expects.
         let (pw, ph) = (w.min(32), h.min(32));
         let mut full = alloc::vec![0i32; w * h];
-        let mut eob = 0u16;
         for r in 0..ph {
             for c in 0..pw {
-                let q = choice.txb_qcoeffs[0][r * pw + c];
-                full[r * w + c] = q;
-                if q != 0 {
-                    eob = (r * w + c + 1) as u16;
-                }
+                full[r * w + c] = choice.txb_qcoeffs[0][r * pw + c];
             }
         }
-        (full, eob, choice.txb_tx_types[0])
+        let tx_type = choice.txb_tx_types[0];
+        // AV1 eob is a SCAN-ORDER quantity. The previous raster-order
+        // last-nonzero was only ever consumed as `== 0` (correct either way),
+        // but it made the SVTAV1_DUMP_TREE `eob` field wildly misleading — a
+        // 32x32 leaf whose true scan-order eob is 299 showed as ~706 (the
+        // raster index of the last retained diagonal coeff). Compute the real
+        // scan-order eob from the packed txb with the coder's scan so the
+        // dump matches the bitstream (the coder re-derives it identically at
+        // pipeline.rs `write_coeffs_txb_1d`).
+        let tx_size = svtav1_entropy::coeff_c::tx_size_from_dims(pw, ph);
+        let sidx =
+            svtav1_entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type as usize] as usize;
+        let scan = svtav1_entropy::scan_tables::scan(tx_size, sidx);
+        let mut eob = 0u16;
+        for (i, &pos) in scan.iter().enumerate() {
+            if choice.txb_qcoeffs[0][pos as usize] != 0 {
+                eob = (i + 1) as u16;
+            }
+        }
+        (full, eob, tx_type)
     } else {
         let total: u32 = choice.txb_eobs.iter().map(|&e| e as u32).sum();
         (alloc::vec::Vec::new(), total.min(u16::MAX as u32) as u16, 0)
