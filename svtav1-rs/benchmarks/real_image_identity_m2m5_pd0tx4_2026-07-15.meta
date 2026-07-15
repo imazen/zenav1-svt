@@ -1,0 +1,24 @@
+date: 2026-07-15
+tool: tools/real_image_matrix.sh, CID22-512, C=SvtAv1EncApp v4.2.0-rc
+grid: 8 images x presets {2,3,4,5} x cli_qp {20,40,55} = 96 cells
+commit: ef8fed79c (fix: PD0 charges intra ext-tx-type rate for TX_4X4, M0-M3)
+result: TOTAL 56/96 IDENTICAL (up from 52/96 at d122948e5 sub-8 CfL pair-luma;
+  48/96 at the ind-uv CfL fix dcac08645).
+  p2 13/24, p3 10/24, p4 18/24, p5 15/24.
+  PD0 charged ZERO intra ext-tx-type rate for TX_4X4 leaves (TxTypeRatesDc
+  only built tx8/tx16; rate_for(0) fell through to the DCT-only _=>0 arm), so
+  every PD0 4x4 leaf was 1554 rate (77852 cost @ lambda 25650) too cheap and
+  PD0 over-split 8x8->4x4. Only M0-M3 admit 4x4 in PD0 (disallow_4x4), so p4/p5
+  are unaffected; the +4 net closures are all p2/p3.
+residual stages: 33 FH (mostly loop_filter_level = recon-derived; a few
+  cdef_*/lr_type = CDEF/LR search), 7 tile (direct mode cascade). loop_filter/
+  cdef/lr are downstream symptoms of a remaining per-block recon difference;
+  the tile cells are direct mode divergences.
+next drill: 258947 q40 p3 (byte-count-equal, DIFFERS at op 48810) root-caused
+  to an ind-uv CfL-vs-DC RD near-tie -- C keeps UV_DC_PRED, the port picks
+  UV_CFL_PRED (leaf_funnel.rs:3254 check_best_indepedant_cfl). Same class as
+  KB #81 (M6 CfL near-tie) but inverted; CfL is a recurring M2-M5 hotspot
+  (5d046ae1d sub-8 CfL AC, dcac08645 ind-uv CfL both landed here).
+gates: svtav1-encoder 146 tests pass; synthetic identity M0-M6 82/84 (only the
+  pre-existing M0 sub-8 gaps #58/#59); real M6-M10 24/24 IDENTICAL (the PD0
+  TX_4X4 path is a no-op for M4+, so no regression).
