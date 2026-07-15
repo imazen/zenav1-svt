@@ -28,14 +28,15 @@ RS_ROOT=$(cd "$HERE/.." && pwd)               # svtav1-rs
 OUTDIR="${6:-$RS_ROOT/target/identity/${CONTENT}_${W}x${H}_q${QP}_p${PRESET}}"
 mkdir -p "$OUTDIR"
 
-# 1. C driver (external build, never part of the cargo workspace).
-"$HERE/capture_c_trace/build.sh" >&2
-
-# 2. Rust runner with the symtrace feature.
-(cd "$RS_ROOT" && cargo build --release -p svtav1 --features symtrace --example identity_run) >&2
+# 1-2. Builds are NOT done here any more: both `capture_c_trace` and
+# `identity_run` are wrapper scripts that force their own freshness check (C lib
+# from Source/ + relink; cargo build) before exec'ing the real binary. That is
+# deliberate — it makes it structurally impossible for this harness, or anyone
+# at a shell, to compare against a stale C driver or a stale Rust encoder.
+# Do not "optimize" by calling the raw binaries directly.
 
 # 3. Rust encode: writes rs.yuv (shared input) + rs.obu; trace on stderr.
-"$RS_ROOT/target/release/examples/identity_run" \
+"$HERE/identity_run" \
     "$CONTENT" "$W" "$H" "$QP" "$PRESET" "$OUTDIR/rs" 2>"$OUTDIR/rs.trace"
 
 # 4. C encode of the SAME yuv bytes.
