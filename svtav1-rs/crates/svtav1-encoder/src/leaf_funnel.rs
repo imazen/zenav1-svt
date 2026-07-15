@@ -2877,8 +2877,30 @@ pub(crate) fn evaluate_leaf(
             //    `cfl_uv_cost` vs `best_uv_cost[mode]` — BOTH via full_loop_uv
             //    is_full_loop=1 (SPATIAL @ SSSE_MDS3 for allintra), the
             //    spatial decision in the else-if below.
-            let cfl_uv_follows = !cfg.ind_uv_mds3 && cfg.ind_uv_independent.is_none();
-            let cfl_ind_uv = cfg.ind_uv_mds3 || cfg.ind_uv_independent.is_some();
+            // C `ctx->ind_uv_avail` is PER-BLOCK RUNTIME state, not a preset
+            // constant: it is reset to 0 for every block (:9931) and set to 1
+            // only when the independent-uv search actually RUNS — gated at
+            // :10165 on `uv_mode == CHROMA_MODE_0 && ind_uv_last_mds &&
+            // sq_size < 128 && has_uv && perform_ind_uv_search_last_mds(...)`.
+            // That predicate (:1470) counts MDS3 intra candidates as
+            // `!is_inter && (!skip_ind_uv_if_only_dc || uv_mode != UV_DC_PRED)`
+            // and returns `count > 0`; at M2..M5 (chroma_level 4,
+            // enc_mode_config.c:5781) `skip_ind_uv_if_only_dc = 1`, so when
+            // EVERY MDS3 candidate is UV_DC the search is skipped and
+            // ind_uv_avail stays 0. C then reaches `if (cfl_performed) { if
+            // (ctx->ind_uv_avail) check_best_indepedant_cfl(...) }` (:7258)
+            // with a FALSE ind_uv_avail, so no `check_best_indepedant_cfl`
+            // revert runs and CfL is decided by the uv-follows-luma
+            // TRANSFORM-domain compare inside `cfl_prediction` instead of the
+            // ind-uv SPATIAL compare. `ind_uv` above is Some iff that same
+            // search ran (its `any(uv != 0)` gate IS
+            // perform_ind_uv_search_last_mds for skip_ind_uv_if_only_dc = 1,
+            // and the M0/M1 independent branch always runs) — so it is
+            // exactly `ind_uv_avail`. Keying the two CfL paths off the preset
+            // flags instead made the port take the SPATIAL path on the 263/7323
+            // blocks where C has ind_uv_avail == 0, picking CfL where C keeps DC.
+            let cfl_uv_follows = ind_uv.is_none();
+            let cfl_ind_uv = ind_uv.is_some();
             let cfl_gate = cfg.cfl_enabled && cfl_would_run && w <= 32 && h <= 32;
             if cfl_gate && cfl_uv_follows {
                 // ---- cfl_prediction (product_coding_loop.c:3795) ----
