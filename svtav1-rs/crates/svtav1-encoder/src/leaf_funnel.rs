@@ -1395,6 +1395,54 @@ fn uv_from_y(mode: u8) -> u8 {
 /// "not set" used by md_cfl_rd_pick_alpha / cfl_prediction.
 const MAX_MODE_COST: u64 = 13754408443200 * 8;
 
+/// CfL AC luma subsampling with C's chroma-PAIR geometry
+/// (`compute_cfl_ac_components`, product_coding_loop.c:3750). C subsamples
+/// `cfl_temp_luma_recon` at the ROUND_UV (8-aligned) origin over
+/// `max(w,8) x max(h,8)` — i.e. the whole chroma-reference PAIR for a sub-8
+/// block (an 8x4/4x8/4x4 chroma-ref block's chroma covers the 8x8 pair, so
+/// its CfL luma is the pair, not just the block). `cfl_temp_luma_recon`
+/// accumulates every block's recon in the SB, so the pair holds the already-
+/// committed sibling(s) plus this block. Here `y_recon` carries the committed
+/// siblings (the walk commits child N before evaluating child N+1) and
+/// `best_recon` is this block's (uncommitted) winning-depth luma recon.
+///
+/// For `w >= 8 && h >= 8` the pair reduces to the block itself → identical to
+/// subsampling `best_recon` directly (fast path, zero change for >=8 blocks).
+fn cfl_ac_subsample(
+    y_recon: &[u8],
+    y_stride: usize,
+    best_recon: &[u8],
+    abs_x: usize,
+    abs_y: usize,
+    w: usize,
+    h: usize,
+    pred_buf_q3: &mut [i16],
+) {
+    if w >= 8 && h >= 8 {
+        svtav1_dsp::intra_pred::cfl_luma_subsampling_420(best_recon, w, pred_buf_q3, w, h);
+        return;
+    }
+    // Sub-8 chroma-ref: assemble the max(w,8) x max(h,8) pair at the
+    // ROUND_UV origin from the committed frame recon, then overlay this
+    // block's uncommitted recon (== C's cfl_temp_luma_recon state).
+    let luma_w = w.max(8);
+    let luma_h = h.max(8);
+    let pair_x = abs_x & !7;
+    let pair_y = abs_y & !7;
+    let off_x = abs_x - pair_x;
+    let off_y = abs_y - pair_y;
+    let mut pair = alloc::vec![0u8; luma_w * luma_h];
+    for r in 0..luma_h {
+        let src = (pair_y + r) * y_stride + pair_x;
+        pair[r * luma_w..r * luma_w + luma_w].copy_from_slice(&y_recon[src..src + luma_w]);
+    }
+    for r in 0..h {
+        let db = (off_y + r) * luma_w + off_x;
+        pair[db..db + w].copy_from_slice(&best_recon[r * w..r * w + w]);
+    }
+    svtav1_dsp::intra_pred::cfl_luma_subsampling_420(&pair, luma_w, pred_buf_q3, luma_w, luma_h);
+}
+
 /// C `cfl_idx_to_alpha` (intra_prediction.h:134): signed Q3 alpha for a
 /// (idx, joint_sign, plane). plane 0 = Cb (U), 1 = Cr (V).
 #[inline]
@@ -2892,12 +2940,15 @@ pub(crate) fn evaluate_leaf(
                 // compute_cfl_ac_components: subsample the winning luma recon
                 // (whole block, origin 0) and subtract its DC.
                 let mut pred_buf_q3 = vec![0i16; svtav1_dsp::intra_pred::CFL_BUF_LINE * chh.max(1)];
-                svtav1_dsp::intra_pred::cfl_luma_subsampling_420(
+                cfl_ac_subsample(
+                    y_recon,
+                    y_stride,
                     &best_recon,
-                    w,
-                    &mut pred_buf_q3,
+                    abs_x,
+                    abs_y,
                     w,
                     h,
+                    &mut pred_buf_q3,
                 );
                 svtav1_dsp::intra_pred::cfl_subtract_average(&mut pred_buf_q3, cw, chh);
                 // CfL base is the DC chroma prediction (C regenerates it when
@@ -3050,12 +3101,15 @@ pub(crate) fn evaluate_leaf(
                 );
                 // compute_cfl_ac_components: subsample the winning luma recon.
                 let mut pred_buf_q3 = vec![0i16; svtav1_dsp::intra_pred::CFL_BUF_LINE * chh.max(1)];
-                svtav1_dsp::intra_pred::cfl_luma_subsampling_420(
+                cfl_ac_subsample(
+                    y_recon,
+                    y_stride,
                     &best_recon,
-                    w,
-                    &mut pred_buf_q3,
+                    abs_x,
+                    abs_y,
                     w,
                     h,
+                    &mut pred_buf_q3,
                 );
                 svtav1_dsp::intra_pred::cfl_subtract_average(&mut pred_buf_q3, cw, chh);
                 // CfL base is the DC chroma prediction (C regenerates DC pred
