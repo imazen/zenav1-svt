@@ -2286,8 +2286,8 @@ fn dump_tree_leaves(tree: &crate::partition::PartitionTree, x: usize, y: usize) 
     match tree {
         crate::partition::PartitionTree::Leaf(d) => {
             eprintln!(
-                "LEAF x{:4} y{:4} {}x{} mode {:2} tx {} eob {}",
-                x, y, d.width, d.height, d.intra_mode, d.tx_type, d.eob
+                "LEAF x{:4} y{:4} {}x{} mode {:2} tx {} eob {} txd {}",
+                x, y, d.width, d.height, d.intra_mode, d.tx_type, d.eob, d.tx_depth
             );
         }
         crate::partition::PartitionTree::Split {

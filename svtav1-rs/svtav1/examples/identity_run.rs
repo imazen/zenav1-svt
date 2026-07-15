@@ -198,6 +198,23 @@ fn main() {
         EncodePipeline::new(w as u32, h as u32, preset, rc, 0, 1).with_chroma_420(true);
     let obu = pipeline.encode_frame_420(&y, &u, &v, w);
     std::fs::write(format!("{prefix}.obu"), &obu).expect("write .obu");
+
+    // SCRATCH: env-gated recon dump for the C-vs-Rust recon diff (tightly
+    // packed Y|U|V, same layout as the instrumented C dlf_process dump).
+    if let Ok(pfx) = std::env::var("SVTAV1_RECON_DUMP") {
+        let dump = |name: &str, r: &Option<(Vec<u8>, Vec<u8>, Vec<u8>)>| {
+            if let Some((yy, uu, vv)) = r {
+                let mut b = Vec::new();
+                b.extend_from_slice(yy);
+                b.extend_from_slice(uu);
+                b.extend_from_slice(vv);
+                std::fs::write(format!("{pfx}.{name}.bin"), &b).expect("write recon dump");
+                eprintln!("SVTAV1_RECON_DUMP {name} -> {pfx}.{name}.bin ({} bytes)", b.len());
+            }
+        };
+        dump("pre", &pipeline.last_recon_unfiltered);
+        dump("post", &pipeline.last_recon_pre_cdef);
+    }
     println!(
         "identity_run: {content} {w}x{h} qp={qp} preset={preset} -> {} bytes",
         obu.len()

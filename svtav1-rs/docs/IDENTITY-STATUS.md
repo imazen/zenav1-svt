@@ -2422,3 +2422,122 @@ full; lvl 0 -> per-plane approx). Commit 5e0937ef4.
   the only M7 residual left on the tracked corpus.
 - **6763758 q20 p8 (1 cell)** — the known 27 KB high-bitrate tile divergence
   (documented in the prior chunk; separate class).
+
+## 2026-07-15 (wave2, real-image M6 chunk): ROOT CAUSE — per-SB CDF averaging (`avg_cdf_symbols`) unimplemented for frames > 2 SBs wide
+
+Diagnosis only (no fix landed — the fix is large and regression-risky; banked
+as an honest, fully-verified root cause). Target: **preset 6 real content**
+(CID22-512, the next tier below M7/M8/M10). Preset 6 is the first allintra
+preset that runs the CDEF *search* (presets <= M6, enc_mode_config.c:3543-3600)
+and `update_cdf_level 2` per-SB CDF chaining — neither exercised by the 64/128
+synthetic identity cells (1-2 SBs wide), so both are latent there and binding
+on real 512x512 (8x8 SBs).
+
+### The M6 real divergence classes (differ scan, 4 imgs x 3 qps)
+
+`RIM_PRESETS=6` cells diverge in three stream-order classes:
+`FH | cdef_*` (CDEF search over live blocks), `FH | lr_type` (Wiener search),
+`tile-op` (leaf coeff/RDOQ). **All three are DOWNSTREAM of one root cause: the
+post-deblock recon diverges from C**, so both filter searches (which read the
+recon) and the tile coding diverge. This corrects the briefed framing — the
+CDEF/LR *search code already exists* (cdef.rs `cdef_search_still`,
+restoration.rs) and is not the primary M6 gap; the recon feeding it is.
+
+### Localization (scratch-C instrumented; OBUs byte-identical baseline; deleted)
+
+Instrumented `/root/svtav1-instr` (dlf_process.c recon dump at the pre-cdef-prep
+point; entropy_coding.c `write_modes_b` leaf dump; full_loop.c
+`svt_aom_quantize_inv_quantize` + `svt_av1_optimize_b` `update_coeff_general`
+per-coeff dump — every build verified to reproduce baseline OBUs byte-for-byte
+with the env unset, scratch then rm'd, C tree pristine). Cell
+`1001682.png 512x512 q40 p6`:
+
+- **Post-deblock recon (C vs Rust) differs.** First difference SB row 0 clean
+  (SB(0,7)'s 54 px are all rows 59-63 = bottom-edge deblock smear from SB(1,7)),
+  first REAL divergence = **SB(1,5)** (x320 y64), then cascades (SB rows 2+ all
+  diverge). Clean top-left + whole-block interior divergence = a leaf-decision
+  cascade via intra prediction, not deblock (which smears edges).
+- **Leaf tree at SB(1,5) MATCHES C**: 64x64 V_PRED, tx_depth 1, per-txb tx_type
+  all DCT_DCT, per-txb eob (1,1,3,4) — ALL identical to C. So partition / mode /
+  TXS / TXT / eob decisions are all C-exact.
+- **Divergence = one quantized coefficient.** txb3 (352,96), raster position 64
+  (row 2 col 0, the eob coeff): **C level 3, Rust level 2**. Every other coeff in
+  the block matches.
+
+### Root cause (fully pinned, verified both sides)
+
+Drilled the quantizer for txb3 pos 64 (both `SVTAV1_PQ_DUMP` / `SVTAV1_RDOQ_DUMP`
+captures):
+
+| quantity | C | Rust | match |
+|----------|-----|------|-------|
+| pre-quant transform coeff | 413 | 413 | YES (transform+prediction identical) |
+| quantize_fp level | 3 | 3 | YES (formula `(413+76)*214>>15`=3 both) |
+| rdmult | 1054880 | 1054880 | YES (lambda 248207, prm 17, rweight 100, rshift 2) |
+| dist(lvl3) / dist_low(lvl2) | 7744 / 46656 | 7744 / 46656 | YES |
+| **rate(lvl3)** | **5458** | **5797** | **NO (+339)** |
+| **rate_low(lvl2)** | **3706** | **3044** | **NO (-662)** |
+| optimize_b decision | KEEP 3 | LOWER to 2 | divergent |
+
+The RD compare (`update_coeff_general`, full_loop.c:851 / quant.rs:696) is
+`rd_low < rd`. dist matches; only the **rate** differs, and it traces to the
+`base_eob_cost` rate table row (same coeff_ctx=1 on both sides):
+`base_eob_cost[1] = [_, 3194, 4694]` (C) vs `[_, 2532, 5033]` (Rust). That table
+is built by `syntax_rate_from_cdf(&fc.coeff_base_eob_cdf[...])` — so **the CDF
+STATE feeding the per-SB RDOQ rate tables differs at SB(1,5).**
+
+**The mechanism:** C configures each SB's rate-estimation CDF
+(`pcs->ec_ctx_array[sb_index]`, enc_dec_process.c:2991-3022) from its neighbors
+because `scs->pic_based_rate_est == false` (only ever set false,
+enc_handle.c:4617) so the `avg_cdf` branch (`:2999`) is taken:
+- neither left nor top-right available -> `md_frame_context` (default);
+- left only -> copy left (`sb_index-1`);
+- top-right only -> copy top-right (`sb_index - pic_width_in_sb + 1`);
+- **both -> copy left, then `avg_cdf_symbols(left, top_right, 3, 1)`**
+  (enc_dec_process.c:2668-2710: each CDF entry
+  `= (left*3 + tr*1 + 2) / 4` over EVERY FRAME_CONTEXT cdf array + the coeff
+  CDFs). Weights `AVG_CDF_WEIGHT_LEFT=3`, `AVG_CDF_WEIGHT_TOP=1`.
+
+Rust's per-SB CDF chain (`pipeline.rs:2407-2425`, `funnel_chain`) only implements
+the **left-only copy** — the doc comment there (`:2415-2417`) already flags
+"Frames wider than 2 SBs would need avg_cdf_symbols ... unimplemented: such SBs
+fall back to the left-only copy (no identity-matrix frame is that wide)". Every
+512x512 real cell is 8 SBs wide, so from SB row 1 on, every SB with a top-right
+neighbor gets the wrong (un-averaged) CDF. SB(1,5) = sb_index 13 has left
+(idx 12) AND top-right (idx 6 = 13-8+1); C averages, Rust doesn't -> the
+`base_eob_cost` divergence -> RDOQ over-reduces -> recon cascade -> CDEF/LR/tile.
+This is the "avg_cdf_symbols for frames > 2 SBs wide" residual noted at the top
+of this doc; it is the M6 (and, by construction, M2-M5 and M0/M1) real-content
+blocker.
+
+### The fix (next chunk — well-defined, NOT landed)
+
+Port `avg_cdf_symbols` into the Rust per-SB CDF chain:
+1. Store each decided SB's evolved rate-CDF (FrameContext + CoeffFc) in a 2D
+   `ec_ctx_array`-equivalent indexed by sb_index (currently only a running left
+   snapshot is kept), so top-right (`sb_index - sb_cols + 1`) is reachable.
+2. Implement the neighbor-selection rule (enc_dec_process.c:3002-3022) using
+   the tile-relative availability tests.
+3. Implement `avg_cdf_symbols` (verbatim `(left*3 + tr*1 + 2) / 4` per entry,
+   over the SAME CDF-array list C averages — every FRAME_CONTEXT cdf +
+   the coeff CDFs) and apply it in the both-neighbors case.
+4. Rebuild the MD rate tables (`build_md_rates`) from the configured/averaged
+   context per SB.
+Verify: SB(1,5) `base_eob_cost[1]` == C `[_, 3194, 4694]`, then
+`1001682 q40 p6` moves past the recon cascade. GATE RISK: this touches the
+rate-estimation CDF that drives every MD decision — must keep synthetic
+identity 130/132 and recon_parity 432/0 (the change is MD-rate-only; it does
+NOT touch the entropy coder's running CDF, so decode conformance is
+structurally unaffected, but the synthetic gate must still be re-run).
+
+### Gates (this chunk — diagnosis only, no functional change)
+
+- `cargo test --workspace`: **662 passed / 0 failed**.
+- recon_parity (AOMDEC): **432 passed / 0 failed** (CDEF 236/432, wiener 137/432).
+- synthetic `identity_matrix` (presets 0-10): **130/132** (unchanged).
+- real M7/M8/M10 spot (4 imgs q40): **12/12 IDENTICAL** (no regression); real
+  M6 same imgs **0/4** (honest baseline: 3 FH / 1 tile, all the avg_cdf cascade).
+- C tree pristine; scratch `/root/svtav1-instr` deleted.
+- Repo change: diagnostic aids only — `identity_run` env-gated recon dump
+  (`SVTAV1_RECON_DUMP`) + `tx_depth` added to the `SVTAV1_DUMP_TREE` leaf line.
+  No encoder-output change.
