@@ -56,6 +56,58 @@ pub const DIRECTIONAL_MODES: usize = 8;
 /// Number of angle delta symbols (delta -3 to +3 = 7 values).
 pub const ANGLE_DELTA_SYMS: usize = 7;
 
+// --- CfL (chroma-from-luma) constants (C definitions.h) ---
+/// `CFL_ALPHABET_SIZE_LOG2` — alpha magnitude index is 4 bits.
+pub const CFL_ALPHABET_SIZE_LOG2: usize = 4;
+/// `CFL_ALPHABET_SIZE` — 16 alpha magnitudes per plane.
+pub const CFL_ALPHABET_SIZE: usize = 1 << CFL_ALPHABET_SIZE_LOG2;
+/// `CFL_JOINT_SIGNS` — CFL_SIGNS*CFL_SIGNS - 1 = 8 (zero,zero invalid).
+pub const CFL_JOINT_SIGNS: usize = 8;
+/// `CFL_ALPHA_CONTEXTS` — CFL_JOINT_SIGNS + 1 - CFL_SIGNS = 6.
+pub const CFL_ALPHA_CONTEXTS: usize = 6;
+/// `UV_CFL_PRED` — the chroma mode index that signals CfL (after the 13
+/// non-CFL uv modes DC..PAETH).
+pub const UV_CFL_PRED: u8 = 13;
+
+/// C `CFL_SIGN_U(js)` = `((js + 1) * 11) >> 5` (== (js+1)/3 for js 0..8).
+#[inline]
+pub fn cfl_sign_u(js: usize) -> usize {
+    ((js + 1) * 11) >> 5
+}
+/// C `CFL_SIGN_V(js)` = `(js + 1) - CFL_SIGNS * CFL_SIGN_U(js)`.
+#[inline]
+pub fn cfl_sign_v(js: usize) -> usize {
+    (js + 1) - 3 * cfl_sign_u(js)
+}
+/// C `CFL_CONTEXT_U(js)` = `js + 1 - CFL_SIGNS`.
+#[inline]
+pub fn cfl_context_u(js: usize) -> usize {
+    js + 1 - 3
+}
+/// C `CFL_CONTEXT_V(js)` = `CFL_SIGN_V(js)*CFL_SIGNS + CFL_SIGN_U(js) - CFL_SIGNS`.
+#[inline]
+pub fn cfl_context_v(js: usize) -> usize {
+    cfl_sign_v(js) * 3 + cfl_sign_u(js) - 3
+}
+
+/// C `default_cfl_sign_cdf` (cabac_context_model.c:335,
+/// `AOM_CDF8(1418,2123,13340,18405,26972,28343,32294)`) in ICDF storage.
+#[rustfmt::skip]
+pub static CFL_SIGN_CDF_DEFAULT: [AomCdfProb; CFL_JOINT_SIGNS + 1] =
+    [31350, 30645, 19428, 14363, 5796, 4425, 474, 0, 0];
+
+/// C `default_cfl_alpha_cdf` (cabac_context_model.c:339, 6 `AOM_CDF16`
+/// rows) in ICDF storage.
+#[rustfmt::skip]
+pub static CFL_ALPHA_CDF_DEFAULT: [[AomCdfProb; CFL_ALPHABET_SIZE + 1]; CFL_ALPHA_CONTEXTS] = [
+    [25131, 12049, 1367, 287, 111, 80, 76, 72, 68, 64, 60, 56, 52, 48, 44, 0, 0],
+    [18403, 9165, 4633, 1600, 601, 373, 281, 195, 148, 121, 100, 96, 92, 88, 84, 0, 0],
+    [21236, 10388, 4323, 1408, 419, 245, 184, 119, 95, 91, 87, 83, 79, 75, 71, 0, 0],
+    [5778, 1366, 486, 197, 76, 72, 68, 64, 60, 56, 52, 48, 44, 40, 36, 0, 0],
+    [15520, 6710, 3864, 2160, 1463, 891, 642, 447, 374, 304, 252, 208, 192, 175, 146, 0, 0],
+    [18030, 11090, 6989, 4867, 3744, 2466, 1788, 925, 624, 355, 248, 174, 146, 112, 108, 0, 0],
+];
+
 // =============================================================================
 // Frame context — all CDF tables for a frame/tile
 // =============================================================================
@@ -108,6 +160,18 @@ pub struct FrameContext {
     /// ICDF [23819, 19992, 15557, 3210] — the trace fingerprint of C's
     /// FILTER_DC leaves at gradient-64 q40 p6.
     pub filter_intra_mode_cdf: [AomCdfProb; 6],
+
+    /// CfL joint-sign CDF — C FRAME_CONTEXT.cfl_sign_cdf
+    /// (default_cfl_sign_cdf, cabac_context_model.c:335), CDF over the 8
+    /// joint (Cb,Cr) sign codes. Coded first by write_cfl_alphas when
+    /// uv_mode == UV_CFL_PRED.
+    pub cfl_sign_cdf: [AomCdfProb; CFL_JOINT_SIGNS + 1],
+
+    /// CfL alpha-magnitude CDFs [CFL_ALPHA_CONTEXTS][CFL_ALPHABET_SIZE+1] —
+    /// C FRAME_CONTEXT.cfl_alpha_cdf (default_cfl_alpha_cdf,
+    /// cabac_context_model.c:339). Coded per nonzero-sign plane by
+    /// write_cfl_alphas, context selected by CFL_CONTEXT_U/V(joint_sign).
+    pub cfl_alpha_cdf: [[AomCdfProb; CFL_ALPHABET_SIZE + 1]; CFL_ALPHA_CONTEXTS],
 
     /// Per-RU `wiener_restore` flag CDF — C FRAME_CONTEXT.wiener_restore_cdf
     /// (default AOM_CDF2(11570), cabac_context_model.c:629), coded by
@@ -355,6 +419,8 @@ impl FrameContext {
             // values desync the stream on the first use_filter_intra flag.
             filter_intra_cdfs: crate::default_cdfs::FILTER_INTRA_CDF,
             filter_intra_mode_cdf: crate::default_cdfs::FILTER_INTRA_MODE_CDF,
+            cfl_sign_cdf: CFL_SIGN_CDF_DEFAULT,
+            cfl_alpha_cdf: CFL_ALPHA_CDF_DEFAULT,
             // AOM_CDF2(11570) in ICDF storage (32768 - 11570 = 21198) —
             // matches the C trace fingerprint `BOOL f=21198` on the
             // wiener_restore flag.
@@ -406,6 +472,8 @@ impl FrameContext {
         use crate::cdf::avg_cdf_entries as avg;
         // 1D
         avg(&mut self.filter_intra_mode_cdf, &tr.filter_intra_mode_cdf, wt_left, wt_tr);
+        avg(&mut self.cfl_sign_cdf, &tr.cfl_sign_cdf, wt_left, wt_tr);
+        avg(self.cfl_alpha_cdf.as_flattened_mut(), tr.cfl_alpha_cdf.as_flattened(), wt_left, wt_tr);
         avg(&mut self.wiener_restore_cdf, &tr.wiener_restore_cdf, wt_left, wt_tr);
         avg(&mut self.delta_q_cdf, &tr.delta_q_cdf, wt_left, wt_tr);
         // 2D
@@ -729,6 +797,30 @@ pub fn write_use_filter_intra(
 pub fn write_filter_intra_mode(w: &mut AomWriter, fc: &mut FrameContext, fi_mode: u8) {
     debug_assert!(fi_mode < 5);
     w.write_symbol(fi_mode as usize, &mut fc.filter_intra_mode_cdf, 5);
+}
+
+/// Encode the CfL alpha syntax following a `UV_CFL_PRED` chroma mode.
+///
+/// C `write_cfl_alphas` (entropy_coding.c:1159): code the joint sign, then
+/// the Cb magnitude (if its sign is nonzero) and the Cr magnitude (if its
+/// sign is nonzero). `idx` is `(CFL_IDX_U << 4) | CFL_IDX_V`, `joint_sign`
+/// the 0..7 joint-sign code. Decoder mirror: read_cfl_alphas.
+pub fn write_cfl_alphas(w: &mut AomWriter, fc: &mut FrameContext, idx: u8, joint_sign: u8) {
+    let js = joint_sign as usize;
+    debug_assert!(js < CFL_JOINT_SIGNS);
+    w.write_symbol(js, &mut fc.cfl_sign_cdf, CFL_JOINT_SIGNS);
+    if cfl_sign_u(js) != 0 {
+        let cdf_u = &mut fc.cfl_alpha_cdf[cfl_context_u(js)];
+        w.write_symbol((idx >> CFL_ALPHABET_SIZE_LOG2) as usize, cdf_u, CFL_ALPHABET_SIZE);
+    }
+    if cfl_sign_v(js) != 0 {
+        let cdf_v = &mut fc.cfl_alpha_cdf[cfl_context_v(js)];
+        w.write_symbol(
+            (idx & (CFL_ALPHABET_SIZE as u8 - 1)) as usize,
+            cdf_v,
+            CFL_ALPHABET_SIZE,
+        );
+    }
 }
 
 /// Encode the angle delta for a directional intra mode.
