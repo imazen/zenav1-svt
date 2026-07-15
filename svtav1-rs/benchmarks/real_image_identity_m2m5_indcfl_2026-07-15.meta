@@ -1,0 +1,16 @@
+date: 2026-07-15
+tool: tools/real_image_matrix.sh, CID22-512, C=SvtAv1EncApp v4.2.0-rc
+grid: 8 images x presets {2,3,4,5} x cli_qp {20,40,55} = 96 cells
+commit: dcac08645 (fix: evaluate CfL on the independent-uv path, M0-M5)
+result: TOTAL 48/96 IDENTICAL (up from 0/8 in the pre-fix M2-M5 survey).
+  p2 8/24, p3 7/24, p4 18/24, p5 15/24.
+  The ind-uv CfL fix (C cfl_prediction + check_best_indepedant_cfl for the
+  independent-uv presets) closed roughly half of the M2-M5 real cascade.
+residual stages: 38 FH (mostly loop_filter_level = recon-derived; a few
+  cdef_*/lr_type = CDEF/LR search), 10 tile (mode cascade). loop_filter/cdef
+  are downstream symptoms of a remaining per-block recon difference; the tile
+  cells are direct mode divergences. Next drill: C SVT_PART_DUMP (write_modes_b
+  final block mode/uv/txd) vs port SVTAV1_DUMP_TREE to locate the next
+  diverging block, same method that isolated the CfL block (0,160).
+gates: svtav1-encoder 134 tests pass; synthetic identity M1-M6 clean (82/84,
+  only pre-existing M0 sub-8 gaps); real M6/M7/M8/M10 IDENTICAL (no regression).
