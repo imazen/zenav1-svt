@@ -1472,9 +1472,12 @@ fn md_cfl_rd_pick_alpha(
             cw,
             chh,
         );
+        // C `av1_cost_calc_cfl` costs each alpha via svt_aom_full_loop_uv with
+        // is_full_loop=0 -> TRANSFORM-domain distortion, NOT the spatial SSE
+        // that feeds the final block RD. spatial_dist=false mirrors that.
         let out = tx_unit(
             src, c_stride, c_off, &cfl_pred, cw, 0, cw, chh, 0, 1, tsc, dsc, 0, qt, frame, rates,
-            do_rdoq, true,
+            do_rdoq, false,
         );
         (out.dist, out.bits)
     };
@@ -2768,12 +2771,27 @@ pub(crate) fn evaluate_leaf(
             if cfg.cfl_enabled && cfl_uv_follows && cfl_would_run && w <= 32 && h <= 32 {
                 // ---- cfl_prediction (product_coding_loop.c:3795) ----
                 // non_cfl_cost = RDCOST(coeff_bits + uv fast rate, dist) over
-                // the non-CFL chroma (u_out/v_out); cand.fcr is that fast
-                // rate on the uv-follows-luma path.
+                // the non-CFL chroma. C recomputes it with svt_aom_full_loop_uv
+                // is_full_loop=0 -> TRANSFORM-domain distortion (product_coding
+                // _loop.c:3800-3860), which is NOT the spatial SSE u_out/v_out
+                // carry (those feed the final block RD). Re-run the non-CFL
+                // chroma TX with spatial_dist=false to get the matching freq
+                // distortion; coeffs/bits are unchanged by the dist domain so
+                // the rate stays u_out/v_out.bits. cand.fcr is the uv fast rate
+                // on the uv-follows-luma path.
+                let nc_tt = uv_tx_type(cand.uv, cw, chh);
+                let u_nc = tx_unit(
+                    fx.u_src, fx.c_stride, c_off, &u_pred, cw, 0, cw, chh, nc_tt, 1, cb_tsc, cb_dsc,
+                    0, &qt, frame, rates, do_rdoq, false,
+                );
+                let v_nc = tx_unit(
+                    fx.v_src, fx.c_stride, c_off, &v_pred, cw, 0, cw, chh, nc_tt, 1, cr_tsc, cr_dsc,
+                    0, &qt, frame, rates, do_rdoq, false,
+                );
                 let non_cfl_cost = rdcost(
                     lambda,
                     u_out.bits as u64 + v_out.bits as u64 + cand.fcr,
-                    u_out.dist + v_out.dist,
+                    u_nc.dist + v_nc.dist,
                 );
                 // compute_cfl_ac_components: subsample the winning luma recon
                 // (whole block, origin 0) and subtract its DC.
