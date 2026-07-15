@@ -1583,6 +1583,20 @@ fn encode_block_syntax(
     chroma: &mut Option<ChromaPass<'_>>,
     geom: &mut crate::deblock::DeblockGeom,
 ) {
+    // Diagnostic (SVTAV1_PART_DUMP): every coded leaf's geometry + skip, to
+    // diff the partition tree against the C entropy coder. No output change.
+    #[cfg(feature = "std")]
+    if std::env::var_os("SVTAV1_PART_DUMP").is_some() {
+        eprintln!(
+            "RSPART x{block_x} y{block_y} {}x{} skip={} ymode={} uvmode={} txd={}",
+            decision.width,
+            decision.height,
+            decision.eob == 0,
+            decision.intra_mode as u8,
+            decision.uv_mode as u8,
+            decision.tx_depth
+        );
+    }
     // 4:2:0: encode this block's chroma pair FIRST (prediction reads the
     // live chroma recon written by previous blocks in coding order). The
     // min-8x8 luma policy guarantees the chroma block is exactly
