@@ -26,6 +26,7 @@ pub mod picture;
 pub mod pipeline;
 pub mod sc_detect;
 pub mod quant;
+pub mod sb_qindex;
 pub mod rate_control;
 pub mod restoration;
 pub mod speed_config;
