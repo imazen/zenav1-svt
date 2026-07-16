@@ -2814,11 +2814,13 @@ fn encode_tile_rows(
                                 funnel_cfg.coeff_rate_est_lvl,
                             );
                             let cq = c_quant.as_ref().unwrap();
-                            let scan = crate::depth_refine::build_refined_scan(
+                            let scan = crate::depth_refine::build_refined_scan_at(
                                 &eval,
                                 &dr,
                                 cq.lambda as u64,
                                 tables,
+                                x0,
+                                y0,
                             );
                             // Partition rates at the real contexts, from
                             // the same (possibly chained) frame context as

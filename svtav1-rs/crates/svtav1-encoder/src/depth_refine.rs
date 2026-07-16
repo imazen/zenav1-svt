@@ -223,6 +223,8 @@ fn set_start_end_depth(
     env: &RefineEnv<'_>,
     node: &Pd0Eval,
     parent: Option<&Pd0Eval>,
+    abs_x: usize,
+    abs_y: usize,
 ) -> (i32, i32) {
     let ctrls = env.ctrls;
     if !ctrls.adaptive {
@@ -401,6 +403,29 @@ fn set_start_end_depth(
         }
     }
 
+    if nsqdbg_here(abs_x, abs_y) {
+        let ch_costs: Vec<u64> = node
+            .children
+            .as_ref()
+            .map(|ch| ch.iter().filter(|c| c.tested).map(|c| c.cost).collect())
+            .unwrap_or_default();
+        eprintln!(
+            "NSQDBG REFINE mi=({},{}) sq={} tested={} cost={} pcost={} maxpd0={} minpd0={} sb={} psb={} ch={:?} s={} e={}",
+            abs_y / 4,
+            abs_x / 4,
+            sq,
+            u8::from(node.tested),
+            node.cost,
+            parent.map(|p| p.cost as i64).unwrap_or(-1),
+            env.max_pd0,
+            env.min_pd0,
+            env.tables.split_bits(sq),
+            parent.map(|p| env.tables.split_bits(p.sq) as i64).unwrap_or(-1),
+            ch_costs,
+            if add_parent { s } else { 0 },
+            if add_sub { e } else { 0 },
+        );
+    }
     (if add_parent { s } else { 0 }, if add_sub { e } else { 0 })
 }
 
@@ -408,11 +433,17 @@ fn set_start_end_depth(
 /// build the refined MdScan marks. Returns the subtree's s_depth
 /// propagation (parent-depth admissions bubble up: a SPLIT node whose
 /// children admit their parent evaluates ITS PART_N, :1947-1953).
-fn refine_depth(env: &RefineEnv<'_>, node: &Pd0Eval, parent: Option<&Pd0Eval>) -> (RefScan, i32) {
+fn refine_depth(
+    env: &RefineEnv<'_>,
+    node: &Pd0Eval,
+    parent: Option<&Pd0Eval>,
+    abs_x: usize,
+    abs_y: usize,
+) -> (RefScan, i32) {
     let mut scan = RefScan::leaf(node.sq);
     if !node.split {
         scan.test_this = true;
-        let (s, e) = set_start_end_depth(env, node, parent);
+        let (s, e) = set_start_end_depth(env, node, parent, abs_x, abs_y);
         if e > 0 {
             scan.set_children_tested(e, env.ctrls.disallow_4x4);
         }
@@ -428,7 +459,13 @@ fn refine_depth(env: &RefineEnv<'_>, node: &Pd0Eval, parent: Option<&Pd0Eval>) -
             RefScan::leaf(half),
         ];
         for (i, cev) in ch_evals.iter().enumerate() {
-            let (cs, s_child) = refine_depth(env, cev, Some(node));
+            let (cs, s_child) = refine_depth(
+                env,
+                cev,
+                Some(node),
+                abs_x + (i & 1) * half,
+                abs_y + (i >> 1) * half,
+            );
             ch[i] = cs;
             s_min = s_min.min(s_child);
         }
@@ -451,6 +488,19 @@ pub(crate) fn build_refined_scan(
     lambda: u64,
     tables: &M6Pd0Tables,
 ) -> RefScan {
+    build_refined_scan_at(root, ctrls, lambda, tables, 0, 0)
+}
+
+/// [`build_refined_scan`] with the SB's pixel origin, so the NSQDBG REFINE
+/// dump (gated by SVTAV1_DBG_MI) can label nodes with absolute mi coords.
+pub(crate) fn build_refined_scan_at(
+    root: &Pd0Eval,
+    ctrls: &DrCtrls,
+    lambda: u64,
+    tables: &M6Pd0Tables,
+    sb_x: usize,
+    sb_y: usize,
+) -> RefScan {
     let mut max_pd0 = 0usize;
     let mut min_pd0 = 255usize;
     if ctrls.limit_to_pd0 != 0 {
@@ -466,7 +516,7 @@ pub(crate) fn build_refined_scan(
         max_pd0,
         min_pd0,
     };
-    refine_depth(&env, root, None).0
+    refine_depth(&env, root, None, sb_x, sb_y).0
 }
 
 // ---------------------------------------------------------------------------
@@ -847,6 +897,65 @@ impl DepthWalk<'_, '_> {
                     }
                 }
                 dists[r * 2 + c] = d;
+            }
+        }
+        if nsqdbg_here(ev.abs_x, ev.abs_y) {
+            // Luma-only re-pass for the SKIPSUBQ-parity dump.
+            let mut luma = [0u64; 4];
+            for r in 0..2usize {
+                for c in 0..2usize {
+                    let mut d: u64 = 0;
+                    for y in 0..quad {
+                        let sy = (ev.abs_y + r * quad + y) * self.y_src_stride + ev.abs_x + c * quad;
+                        let ry = (r * quad + y) * sq + c * quad;
+                        for x in 0..quad {
+                            let diff = self.y_src[sy + x] as i64 - yrec[ry + x] as i64;
+                            d += (diff * diff) as u64;
+                        }
+                    }
+                    luma[r * 2 + c] = d;
+                }
+            }
+            // Pred-vs-input quads from the whole-block depth-0 prediction —
+            // the C-side probe's predq counterpart (what cand_bf->pred holds
+            // at C's fill time is the open question this answers).
+            let pred = ev.dbg_pred();
+            let mut predq = [0u64; 4];
+            for r in 0..2usize {
+                for c in 0..2usize {
+                    let mut d: u64 = 0;
+                    for y in 0..quad {
+                        let sy = (ev.abs_y + r * quad + y) * self.y_src_stride + ev.abs_x + c * quad;
+                        let ry = (r * quad + y) * sq + c * quad;
+                        for x in 0..quad {
+                            let diff = self.y_src[sy + x] as i64 - pred[ry + x] as i64;
+                            d += (diff * diff) as u64;
+                        }
+                    }
+                    predq[r * 2 + c] = d;
+                }
+            }
+            eprintln!(
+                "NSQDBG SKIPSUBQ mi=({},{}) sq={} luma={:?} tot={:?} predq={:?}",
+                ev.abs_y / 4,
+                ev.abs_x / 4,
+                sq,
+                luma,
+                dists,
+                predq,
+            );
+            if sq == 16 && ev.abs_y / 4 == 76 && ev.abs_x / 4 == 96 {
+                for row in 0..16 {
+                    let mut line = format!("PPRED {row:02} ");
+                    for col in 0..16 {
+                        line.push_str(&format!("{:3} ", pred[row * sq + col]));
+                    }
+                    line.push_str("| PREC ");
+                    for col in 0..16 {
+                        line.push_str(&format!("{:3} ", yrec[row * sq + col]));
+                    }
+                    eprintln!("{line}");
+                }
             }
         }
         dists
