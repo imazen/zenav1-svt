@@ -143,6 +143,16 @@ pub struct FrameContext {
     /// UV-mode CDFs [2][INTRA_MODES][UV_INTRA_MODES+1] (CFL and non-CFL)
     pub uv_mode_cdf: [[[AomCdfProb; UV_INTRA_MODES + 1]; INTRA_MODES]; 2],
 
+    /// palette_y_mode flag CDFs [palette bsize ctx 0..6][neighbor ctx 0..2]
+    /// (C FRAME_CONTEXT.palette_y_mode_cdf; coded for every DC_PRED intra
+    /// block where svt_aom_allow_palette holds).
+    pub palette_y_mode_cdf: [[[AomCdfProb; 3]; 3]; 7],
+
+    /// palette_uv_mode flag CDFs [y-palette-used ctx 0..1] (C
+    /// FRAME_CONTEXT.palette_uv_mode_cdf; coded for every UV_DC_PRED
+    /// chroma-ref block where svt_aom_allow_palette holds).
+    pub palette_uv_mode_cdf: [[AomCdfProb; 3]; 2],
+
     /// Angle delta CDFs [DIRECTIONAL_MODES][ANGLE_DELTA_SYMS+1]
     /// For directional modes (V_PRED..D67_PRED), encodes angle offset -3..+3.
     pub angle_delta_cdf: [[AomCdfProb; ANGLE_DELTA_SYMS + 1]; DIRECTIONAL_MODES],
@@ -409,6 +419,8 @@ impl FrameContext {
             // default_uv_mode_cdf), so an all-zero table desyncs the stream
             // on the first uv_mode symbol.
             uv_mode_cdf: crate::default_cdfs::UV_MODE_CDF,
+            palette_y_mode_cdf: crate::default_cdfs::PALETTE_Y_MODE_CDF,
+            palette_uv_mode_cdf: crate::default_cdfs::PALETTE_UV_MODE_CDF,
             // Real AV1 defaults extracted from the C reference — the decoder
             // initializes angle_delta_cdf with these, so a uniform table
             // desyncs the stream on the first directional mode.
@@ -492,6 +504,9 @@ impl FrameContext {
         avg(self.txb_skip_cdf.as_flattened_mut(), tr.txb_skip_cdf.as_flattened(), wt_left, wt_tr);
         avg(self.interp_filter_cdf.as_flattened_mut(), tr.interp_filter_cdf.as_flattened(), wt_left, wt_tr);
         avg(self.comp_inter_cdf.as_flattened_mut(), tr.comp_inter_cdf.as_flattened(), wt_left, wt_tr);
+        // palette flag CDFs (C enc_dec_process.c:2608-2609)
+        avg(self.palette_uv_mode_cdf.as_flattened_mut(), tr.palette_uv_mode_cdf.as_flattened(), wt_left, wt_tr);
+        avg(self.palette_y_mode_cdf.as_flattened_mut().as_flattened_mut(), tr.palette_y_mode_cdf.as_flattened().as_flattened(), wt_left, wt_tr);
         // 3D
         avg(self.kf_y_mode_cdf.as_flattened_mut().as_flattened_mut(), tr.kf_y_mode_cdf.as_flattened().as_flattened(), wt_left, wt_tr);
         avg(self.uv_mode_cdf.as_flattened_mut().as_flattened_mut(), tr.uv_mode_cdf.as_flattened().as_flattened(), wt_left, wt_tr);
@@ -730,6 +745,49 @@ pub fn write_uv_mode(
         &mut fc.uv_mode_cdf[usize::from(cfl_allowed)][y],
         nsymbs,
     );
+}
+
+/// C `svt_aom_allow_palette` (entropy_coding.c:4211): screen-content tools
+/// on, both dims <= 64, and `bsize >= BLOCK_8X8` — which in enum order
+/// EXCLUDES only 4x4/4x8/8x4 (the extended 4:1 rects sort after 128x128
+/// and are palette-eligible).
+pub fn allow_palette(allow_screen_content_tools: bool, width: usize, height: usize) -> bool {
+    allow_screen_content_tools
+        && width <= 64
+        && height <= 64
+        && block_size_index(width, height) >= 3
+}
+
+/// palette bsize ctx (C `svt_aom_get_palette_bsize_ctx`):
+/// `num_pels_log2[bsize] - num_pels_log2[BLOCK_8X8]`, 0..=6.
+pub fn palette_bsize_ctx(width: usize, height: usize) -> usize {
+    (width * height).trailing_zeros() as usize - 6
+}
+
+/// Code the no-palette flags for an intra block (C `write_palette_mode_info`,
+/// entropy_coding.c:4343, with palette_size 0 — the flags-only slice; call
+/// only when [`allow_palette`] holds). The y flag is coded for DC_PRED luma;
+/// the uv flag for UV_DC_PRED on chroma-ref blocks. `neighbor_ctx` is
+/// `svt_aom_get_palette_mode_ctx` (count of above/left neighbors using
+/// palette, 0..=2 — 0 until the port codes palette blocks).
+pub fn write_no_palette_flags(
+    w: &mut AomWriter,
+    fc: &mut FrameContext,
+    width: usize,
+    height: usize,
+    y_mode: u8,
+    uv_mode: u8,
+    is_chroma_ref: bool,
+    neighbor_ctx: usize,
+) {
+    if y_mode == 0 {
+        let bctx = palette_bsize_ctx(width, height);
+        w.write_symbol(0, &mut fc.palette_y_mode_cdf[bctx][neighbor_ctx], 2);
+    }
+    if uv_mode == 0 && is_chroma_ref {
+        // uv ctx = (y palette used) — 0 while the port never picks palette.
+        w.write_symbol(0, &mut fc.palette_uv_mode_cdf[0], 2);
+    }
 }
 
 /// C `BlockSize` / spec BLOCK_SIZES_ALL index for a (width, height) pair —
