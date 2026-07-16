@@ -666,6 +666,10 @@ pub struct OptimizeCtx<'a> {
     pub tx_class: usize,
     pub txb_skip_ctx: usize,
     pub dc_sign_ctx: usize,
+    /// [SVT_HDR_MODE] C local `sharpness = 1` (sharp-tx active on luma with
+    /// delta_q_present): disables the trellis eob-shortening branches
+    /// (full_loop.c:822/955 `sharpness == 0 &&` gates).
+    pub sharpness_flag: bool,
     /// `rdoq_ctrls.cut_off_num / denum` (0 num = full RDOQ).
     pub cut_off_num: u32,
     pub cut_off_denum: u32,
@@ -686,9 +690,26 @@ pub fn rdoq_rdmult(lambda: u32, plane_type: usize) -> i64 {
 /// (rweight=0 + local sharpness=1 into update_coeff_general) is DORMANT in
 /// this port until per-SB delta-q lands — tracked in docs/HDR-ON-4.2.md.
 pub fn rdoq_rdmult_sharp(lambda: u32, plane_type: usize, sharpness: i8, light_rdoq: bool) -> i64 {
+    rdoq_rdmult_full(lambda, plane_type, sharpness, light_rdoq, false)
+}
+
+/// Full form incl. the sharp-tx `rweight = 0` path (C full_loop.c:1075).
+pub fn rdoq_rdmult_full(
+    lambda: u32,
+    plane_type: usize,
+    sharpness: i8,
+    light_rdoq: bool,
+    sharp_tx_active: bool,
+) -> i64 {
     let sharpness_val = i64::from(sharpness).clamp(0, 7);
     let rshift = sharpness_val.max(2) as u32;
-    let rweight: i64 = if light_rdoq { 10 } else { 100 };
+    let rweight: i64 = if light_rdoq {
+        10
+    } else if sharp_tx_active {
+        0
+    } else {
+        100
+    };
     let prm: i64 = if plane_type == 0 { 17 } else { 13 };
     ((lambda as i64 * prm * rweight) / 100 + 2) >> rshift
 }
@@ -997,8 +1018,8 @@ fn update_coeff_eob(
             dist = dist_low;
         }
 
-        // sharpness == 0 on this path.
-        if rd_new_eob < if rd_low < rd { rd_low } else { rd } {
+        // C gate: `sharpness == 0 && rd_new_eob < rd` (sharp-tx sets 1).
+        if !o.sharpness_flag && rd_new_eob < if rd_low < rd { rd_low } else { rd } {
             for &last_ci in nz_ci.iter().take(*nz_num) {
                 levels_buf[levels_idx(last_ci, bwl)] = 0;
                 qcoeff[last_ci] = 0;
@@ -1039,10 +1060,11 @@ fn update_skip(
     non_skip_cost: i32,
     qcoeff: &mut [i32],
     dqcoeff: &mut [i32],
+    sharpness_flag: bool,
 ) {
     let rd = rdcost(rdmult, (*accu_rate + non_skip_cost) as i64, accu_dist);
     let rd_new_eob = rdcost(rdmult, skip_cost as i64, 0);
-    if rd_new_eob < rd {
+    if !sharpness_flag && rd_new_eob < rd {
         for &ci in nz_ci.iter().take(nz_num) {
             qcoeff[ci] = 0;
             dqcoeff[ci] = 0;
@@ -1172,6 +1194,8 @@ pub fn optimize_b(
             non_skip_cost,
             qcoeff,
             dqcoeff,
+        
+            o.sharpness_flag,
         );
     }
 
@@ -1315,6 +1339,9 @@ pub struct CodingQuantCfg {
     /// Fork `--noise-norm-strength` (0 = off; fork default 1). Encode-pass
     /// luma-only coefficient revival after quantization/RDOQ.
     pub noise_norm_strength: u8,
+    /// [SVT_HDR_MODE] sharp-tx RDOQ active (fork sharp_tx=1 + delta_q
+    /// present): luma trellis gets rweight=0 + eob-shortening disabled.
+    pub sharp_tx_active: bool,
     /// `full_lambda_md[EB_8_BIT_MD]` (the KF chain — pd0's
     /// `kf_full_lambda_8bit` at the frame qindex).
     pub lambda: u32,
@@ -1339,6 +1366,7 @@ impl CodingQuantCfg {
             sharpness: 0,
             is_encode_pass: true,
             noise_norm_strength: 0,
+            sharp_tx_active: false,
             lambda,
             costs: build_coeff_cost_tables(base_qindex),
         }
@@ -1421,7 +1449,14 @@ pub fn quantize_inv_quantize_still(
         let o = OptimizeCtx {
             txb_costs: cfg.costs.txb(txs_ctx, plane_type),
             eob_costs: &cfg.costs.eob[coeff_c::TXSIZE_LOG2_MINUS4[c_tx_size]][plane_type],
-            rdmult: rdoq_rdmult_sharp(cfg.lambda, plane_type, cfg.sharpness, light_rdoq),
+            rdmult: rdoq_rdmult_full(
+                cfg.lambda,
+                plane_type,
+                cfg.sharpness,
+                light_rdoq,
+                cfg.sharp_tx_active && plane_type == 0,
+            ),
+            sharpness_flag: cfg.sharp_tx_active && plane_type == 0,
             tx_size: c_tx_size,
             tx_class,
             txb_skip_ctx: 0,

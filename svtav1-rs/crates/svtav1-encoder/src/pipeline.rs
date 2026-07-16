@@ -346,7 +346,7 @@ impl EncodePipeline {
         // rdoq policy line `<=M5 -> 1, else f(coeff_lvl)` covers both,
         // enc_mode_config.c:14931) on 64-aligned dims — everywhere else
         // the legacy dead-zone quantizer stays.
-        let c_quant: Option<alloc::sync::Arc<crate::quant::CodingQuantCfg>> =
+        let mut c_quant: Option<alloc::sync::Arc<crate::quant::CodingQuantCfg>> =
             if is_key && w % 64 == 0 && h % 64 == 0 {
                 let mut tot: u64 = 0;
                 let mut cnt: u64 = 0;
@@ -450,6 +450,23 @@ impl EncodePipeline {
         // The variance plan (sb_qindex::variance_adjust_qp) swaps in when
         // per-SB quantization threading lands (docs/HDR-ON-4.2.md).
         let delta_q_res_signal = sb_plan.as_ref().map(|p| p.delta_q_res);
+        // sharp-tx RDOQ activates only with per-SB delta-q present (C gate
+        // `(use_sharpness || sharp_tx) && delta_q_present && plane==0`).
+        let sharp_tx_active = self.hdr.is_fork() && self.hdr.sharp_tx == 1 && sb_plan.is_some();
+        // Stamp the fork RDOQ knobs onto the encode-pass quant config (C
+        // reads them off static_config inside svt_av1_optimize_txb; the
+        // sharp-tx gate `(use_sharpness||sharp_tx) && delta_q_present &&
+        // plane==0` is unconditional for sharp_tx=1, full_loop.c:1070-1078).
+        if self.hdr.is_fork() {
+            if let Some(cq) = c_quant.as_mut() {
+                let cfg = alloc::sync::Arc::get_mut(cq)
+                    .expect("c_quant is unshared before tile encoding starts");
+                cfg.hdr_fork = true;
+                cfg.sharpness = self.hdr.sharpness;
+                cfg.noise_norm_strength = self.hdr.noise_norm_strength;
+                cfg.sharp_tx_active = sharp_tx_active;
+            }
+        }
         let tile_recons = encode_tile_rows(
             &encode_input,
             w,
@@ -465,6 +482,8 @@ impl EncodePipeline {
             ac_bias_eff,
             sb_plan.as_ref().map(|p| p.sb_qindex.as_slice()),
             (chroma_deltas.u_ac, chroma_deltas.v_ac),
+            sharp_tx_active,
+            if self.hdr.is_fork() { self.hdr.noise_norm_strength } else { 0 },
             tpl_adjusted_qp,
             self.hdr.sharpness,
             lambda,
@@ -2711,6 +2730,8 @@ fn encode_tile_rows(
     // AC deltas: the search must quantize each SB at its planned qindex.
     sb_qindex_plan: Option<&[u8]>,
     chroma_ac_deltas: (i8, i8),
+    sharp_tx_active: bool,
+    hdr_noise_norm: u8,
     cli_qp: u8,
     hdr_sharpness: i8,
     _lambda: u64, // Per-SB lambda computed from sb_qp_offsets
@@ -2796,6 +2817,8 @@ fn encode_tile_rows(
             let cq = c_quant.as_ref().unwrap();
             Some(crate::leaf_funnel::FunnelFrame {
                 sharpness: hdr_sharpness,
+                sharp_tx_active,
+                noise_norm_strength: hdr_noise_norm,
                 lambda: cq.lambda as u64,
                 cli_qp: cli_qp as u32,
                 rdoq_level: cq.rdoq_level,

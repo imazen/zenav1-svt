@@ -252,6 +252,15 @@ pub struct FunnelFrame {
     /// Config sharpness for the RDOQ rshift formula (0 mainline; fork
     /// default 1 — departs from mainline only at >= 3).
     pub sharpness: i8,
+    /// [SVT_HDR_MODE] sharp-tx RDOQ active (fork sharp_tx=1 + delta-q).
+    pub sharp_tx_active: bool,
+    /// [SVT_HDR_MODE] fork `--noise-norm-strength` (0 = off). Applied to
+    /// the quantized luma coefficients in `tx_unit` — C runs it in the
+    /// encode pass on the winner (full_loop.c:2017, `is_encode_pass &&
+    /// eob!=0 && tx_type!=IDTX && LUMA`); this single-pass port applies it
+    /// at MD quantization so dist/recon/coded levels stay consistent (fork
+    /// mode carries no byte-vs-C gate; the kernel itself is parity-tested).
+    pub noise_norm_strength: u8,
     /// Per-preset intra-leaf config (M6 vs intra_level-7 M7/M8).
     pub cfg: FunnelCfg,
 }
@@ -1309,7 +1318,14 @@ fn tx_unit(
             let o = crate::quant::OptimizeCtx {
                 txb_costs: rates.coeff.txb(cc::txsize_entropy_ctx(c_tx), plane_type),
                 eob_costs: &rates.coeff.eob[cc::TXSIZE_LOG2_MINUS4[c_tx]][plane_type],
-                rdmult: crate::quant::rdoq_rdmult_sharp(frame.lambda as u32, plane_type, frame.sharpness, false),
+                rdmult: crate::quant::rdoq_rdmult_full(
+                    frame.lambda as u32,
+                    plane_type,
+                    frame.sharpness,
+                    false,
+                    frame.sharp_tx_active && plane_type == 0,
+                ),
+                sharpness_flag: frame.sharp_tx_active && plane_type == 0,
                 tx_size: c_tx,
                 tx_class,
                 txb_skip_ctx,
@@ -1325,6 +1341,19 @@ fn tx_unit(
     };
     let _ = &mut packed;
     let _ = &mut eob;
+    // [SVT_HDR_MODE] fork noise normalization (see FunnelFrame field doc).
+    if frame.noise_norm_strength > 0 && plane_type == 0 && eob != 0 && tx_type != 9 {
+        crate::noise_norm::perform_noise_normalization(
+            &qt.dequant,
+            &packed,
+            &mut qcoeff,
+            &mut dqcoeff,
+            &mut eob,
+            scan,
+            c_tx,
+            frame.noise_norm_strength,
+        );
+    }
 
     // Reconstruction (needed for spatial dist AND for depth-1 neighbor
     // prediction — C inverts whenever spatial SSE or intra tx_depth > 0).
