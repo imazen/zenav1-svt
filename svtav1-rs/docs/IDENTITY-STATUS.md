@@ -1,7 +1,10 @@
 # Bitstream Identity Status — Rust `EncodePipeline` vs C SVT-AV1
 
 Date: 2026-07-13 · branch `wave2/entropy-c-parity` · C baseline: in-tree
-v4.2.0-rc `Bin/Release/libSvtAv1Enc.a` · goal gate: **byte-identical streams
+**v4.2.0 (final tag, retargeted 2026-07-16 from v4.2.0-rc — all-intra output
+byte-identical between the two; 669/669 workspace differential tests +
+multi-preset real-image spot cells re-verified green on the final lib)**
+`Bin/Release/libSvtAv1Enc.a` · goal gate: **byte-identical streams
 at matched configs** (still-picture/AVIF, CQP, `--lp 1`).
 
 This document is the divergence map of the identity campaign. **2026-07-13
