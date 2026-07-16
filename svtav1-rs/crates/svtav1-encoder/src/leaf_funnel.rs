@@ -237,6 +237,11 @@ pub struct FunnelFrame {
     /// Frame rdoq level (0 = quantize_b at MDS3 too).
     pub rdoq_level: u8,
     pub base_qindex: u8,
+    /// Per-plane chroma quantization qindexes: clamp(base + FH delta_q_ac
+    /// [plane]). == base_qindex in mainline mode (all FH chroma deltas 0);
+    /// the fork's chroma-q path sets U/V independently (chroma_q.rs).
+    pub qindex_u: u8,
+    pub qindex_v: u8,
     /// Config sharpness for the RDOQ rshift formula (0 mainline; fork
     /// default 1 — departs from mainline only at >= 3).
     pub sharpness: i8,
@@ -1608,7 +1613,8 @@ fn md_cfl_rd_pick_alpha(
     cb_dsc: usize,
     cr_tsc: usize,
     cr_dsc: usize,
-    qt: &QuantTable,
+    qt_u: &QuantTable,
+    qt_v: &QuantTable,
     frame: &FunnelFrame,
     rates: &MdRates,
     do_rdoq: bool,
@@ -1641,7 +1647,8 @@ fn md_cfl_rd_pick_alpha(
         // is_full_loop=0 -> TRANSFORM-domain distortion, NOT the spatial SSE
         // that feeds the final block RD. spatial_dist=false mirrors that.
         let out = tx_unit(
-            src, c_stride, c_off, &cfl_pred, cw, 0, cw, chh, 0, 1, tsc, dsc, 0, qt, frame, rates,
+            src, c_stride, c_off, &cfl_pred, cw, 0, cw, chh, 0, 1, tsc, dsc, 0,
+            if plane == 0 { qt_u } else { qt_v }, frame, rates,
             do_rdoq, false,
         );
         (out.dist, out.bits)
@@ -2069,6 +2076,9 @@ pub(crate) fn evaluate_leaf(
     let rates = fx.rates;
     let lambda = frame.lambda;
     let qt = crate::quant::build_quant_table(frame.base_qindex);
+    // Per-plane chroma tables (== qt when the FH chroma deltas are 0).
+    let qt_u = crate::quant::build_quant_table(frame.qindex_u);
+    let qt_v = crate::quant::build_quant_table(frame.qindex_v);
 
     // -- Block-level contexts (svt_aom_coding_loop_context_generation) --
     // Intra-mode and tx-size contexts are always neighbour-derived; the
@@ -2200,7 +2210,7 @@ pub(crate) fn evaluate_leaf(
             cb_tsc,
             cb_dsc,
             0,
-            &qt,
+            &qt_u,
             frame,
             rates,
             do_rdoq,
@@ -2220,7 +2230,7 @@ pub(crate) fn evaluate_leaf(
             cr_tsc,
             cr_dsc,
             0,
-            &qt,
+            &qt_v,
             frame,
             rates,
             do_rdoq,
@@ -3335,7 +3345,7 @@ pub(crate) fn evaluate_leaf(
                     cb_tsc,
                     cb_dsc,
                     0,
-                    &qt,
+                    &qt_u,
                     frame,
                     rates,
                     do_rdoq,
@@ -3355,7 +3365,7 @@ pub(crate) fn evaluate_leaf(
                     cr_tsc,
                     cr_dsc,
                     0,
-                    &qt,
+                    &qt_v,
                     frame,
                     rates,
                     do_rdoq,
@@ -3428,7 +3438,8 @@ pub(crate) fn evaluate_leaf(
                     cb_dsc,
                     cr_tsc,
                     cr_dsc,
-                    &qt,
+                    &qt_u,
+                    &qt_v,
                     frame,
                     rates,
                     do_rdoq,
@@ -3477,7 +3488,7 @@ pub(crate) fn evaluate_leaf(
                         cb_tsc,
                         cb_dsc,
                         0,
-                        &qt,
+                        &qt_u,
                         frame,
                         rates,
                         do_rdoq,
@@ -3497,7 +3508,7 @@ pub(crate) fn evaluate_leaf(
                         cr_tsc,
                         cr_dsc,
                         0,
-                        &qt,
+                        &qt_v,
                         frame,
                         rates,
                         do_rdoq,
@@ -3616,7 +3627,8 @@ pub(crate) fn evaluate_leaf(
                     cb_dsc,
                     cr_tsc,
                     cr_dsc,
-                    &qt,
+                    &qt_u,
+                    &qt_v,
                     frame,
                     rates,
                     do_rdoq,
@@ -3665,7 +3677,7 @@ pub(crate) fn evaluate_leaf(
                         cb_tsc,
                         cb_dsc,
                         0,
-                        &qt,
+                        &qt_u,
                         frame,
                         rates,
                         do_rdoq,
@@ -3685,7 +3697,7 @@ pub(crate) fn evaluate_leaf(
                         cr_tsc,
                         cr_dsc,
                         0,
-                        &qt,
+                        &qt_v,
                         frame,
                         rates,
                         do_rdoq,
