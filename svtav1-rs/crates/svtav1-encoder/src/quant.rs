@@ -1312,6 +1312,9 @@ pub struct CodingQuantCfg {
     /// True on the encode/pack pass (C `is_encode_pass`) — the fork's
     /// light-RDOQ trigger is encode-pass-only.
     pub is_encode_pass: bool,
+    /// Fork `--noise-norm-strength` (0 = off; fork default 1). Encode-pass
+    /// luma-only coefficient revival after quantization/RDOQ.
+    pub noise_norm_strength: u8,
     /// `full_lambda_md[EB_8_BIT_MD]` (the KF chain — pd0's
     /// `kf_full_lambda_8bit` at the frame qindex).
     pub lambda: u32,
@@ -1335,6 +1338,7 @@ impl CodingQuantCfg {
             hdr_fork: false,
             sharpness: 0,
             is_encode_pass: true,
+            noise_norm_strength: 0,
             lambda,
             costs: build_coeff_cost_tables(base_qindex),
         }
@@ -1364,8 +1368,32 @@ pub fn quantize_inv_quantize_still(
 ) -> u16 {
     let t = build_quant_table(qindex);
     let log_scale = TX_SCALE_TAB[c_tx_size];
+    // [SVT_HDR_MODE] fork noise normalization: encode-pass luma, non-IDTX,
+    // after ALL quantization/RDOQ (C svt_aom_quantize_inv_quantize tail).
+    let run_noise_norm = |qc: &mut [i32], dqc: &mut [i32], e: &mut u16| {
+        if cfg.hdr_fork
+            && cfg.noise_norm_strength > 0
+            && cfg.is_encode_pass
+            && *e != 0
+            && !is_idtx
+            && plane_type == 0
+        {
+            crate::noise_norm::perform_noise_normalization(
+                &t.dequant,
+                tcoeffs,
+                qc,
+                dqc,
+                e,
+                scan,
+                c_tx_size,
+                cfg.noise_norm_strength,
+            );
+        }
+    };
     if cfg.rdoq_level == 0 {
-        return quantize_b(tcoeffs, scan, &t, log_scale, qcoeff, dqcoeff);
+        let mut eob = quantize_b(tcoeffs, scan, &t, log_scale, qcoeff, dqcoeff);
+        run_noise_norm(qcoeff, dqcoeff, &mut eob);
+        return eob;
     }
     let mut eob = quantize_fp(tcoeffs, scan, &t, log_scale, qcoeff, dqcoeff);
     if eob != 0 {
@@ -1403,6 +1431,7 @@ pub fn quantize_inv_quantize_still(
         };
         optimize_b(tcoeffs, qcoeff, dqcoeff, &mut eob, scan, &t, &o);
     }
+    run_noise_norm(qcoeff, dqcoeff, &mut eob);
     eob
 }
 

@@ -479,6 +479,48 @@ pub fn effective_ac_bias(ac_bias: f64, is_islice: bool, temporal_layer_index: u8
 }
 
 unsafe extern "C" {
+    fn ref_noise_normalization(
+        dequant_dc: i16,
+        dequant_ac: i16,
+        coeff: *const i32,
+        qcoeff: *mut i32,
+        dqcoeff: *mut i32,
+        eob: *mut u16,
+        tx_size: i32,
+        tx_type: i32,
+        strength: u8,
+    );
+}
+
+/// Fork `svt_av1_perform_noise_normalization` via a minimal-struct shim
+/// (no QM). Buffers are packed rasters like the quantizer's.
+#[allow(clippy::too_many_arguments)]
+pub fn noise_normalization(
+    dequant: [i16; 2],
+    coeff: &[i32],
+    qcoeff: &mut [i32],
+    dqcoeff: &mut [i32],
+    eob: &mut u16,
+    tx_size: i32,
+    tx_type: i32,
+    strength: u8,
+) {
+    unsafe {
+        ref_noise_normalization(
+            dequant[0],
+            dequant[1],
+            coeff.as_ptr(),
+            qcoeff.as_mut_ptr(),
+            dqcoeff.as_mut_ptr(),
+            eob,
+            tx_size,
+            tx_type,
+            strength,
+        )
+    }
+}
+
+unsafe extern "C" {
     fn ref_spatial_facade(
         input: *const u8,
         input_stride: u32,
