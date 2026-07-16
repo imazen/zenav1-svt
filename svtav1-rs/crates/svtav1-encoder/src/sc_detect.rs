@@ -348,3 +348,113 @@ pub fn is_screen_content_antialiasing_aware(
         && c8.count_intrabc * BLK_AREA8 * 23 > area;
     out
 }
+
+/// Per-picture screen-content derivation for the allintra still path —
+/// the detection slice of `svt_aom_sig_deriv_multi_processes_allintra`
+/// (enc_mode_config.c:2337-2393) plus the scm-mode rule
+/// (enc_handle.c:4514-4527).
+#[derive(Default, Clone, Copy, Debug)]
+pub struct ScDerivation {
+    pub classes: ScClasses,
+    /// C `pcs->palette_level` (enc_mode_config.c:2374-2390, sc_class5-gated:
+    /// M0-M2 -> 2, M3 -> 3, M4-M5 -> 4, M6 -> 5, M7 -> 7, M8+ -> 0).
+    pub palette_level: u8,
+    /// C's intrabc level table value (:2346-2370, sc_class5-gated: MR -> 1,
+    /// M0 -> 3, M1 -> 4, M2 -> 5, M3 -> 6, M4 -> 7, M5+ -> 0). Recorded for
+    /// the IBC vertical; `allow_intrabc` below stays false until the port
+    /// codes IBC blocks — signaling a tool the tile never uses would be
+    /// legal but C-divergent in a different way, and the FH intrabc bit
+    /// also suppresses LF/CDEF/LR params (spec 5.9.11/19/20).
+    pub intrabc_level: u8,
+    /// FH bit. C: `pcs->intrabc_ctrls.enabled`. Port: false (see above) —
+    /// M2-M4 sc_class5 cells stay divergent until the IBC vertical (#71).
+    pub allow_intrabc: bool,
+    /// FH bit. C: `(palette_level || allow_intrabc) ? 1 : 0` (:2393).
+    pub allow_screen_content_tools: bool,
+}
+
+/// Edge-replicate a luma plane to multiples of 8 in both dimensions
+/// (C `pad_picture_to_multiple_of_min_blk_size_dimensions` →
+/// `pad_input_picture`, pic_operators.c:393; MIN_BLOCK_SIZE = 8). Returns
+/// `None` when already aligned (use the original plane).
+pub fn pad_to_multiple_of_8(
+    y: &[u8],
+    y_stride: usize,
+    width: usize,
+    height: usize,
+) -> Option<(alloc::vec::Vec<u8>, usize, usize, usize)> {
+    let pw = (width + 7) & !7;
+    let ph = (height + 7) & !7;
+    if pw == width && ph == height {
+        return None;
+    }
+    let mut out = alloc::vec::Vec::with_capacity(pw * ph);
+    for r in 0..ph {
+        let sr = r.min(height - 1);
+        let row = &y[sr * y_stride..sr * y_stride + width];
+        out.extend_from_slice(row);
+        let edge = row[width - 1];
+        out.resize(out.len() + (pw - width), edge);
+    }
+    Some((out, pw, pw, ph))
+}
+
+/// `preset` is the still/allintra enc_mode. `y` is the SOURCE luma plane
+/// (8-bit; the detector never sees the 10-bit LSBs — C reads the MSB
+/// plane).
+pub fn derive_allintra_sc(
+    preset: u8,
+    y: &[u8],
+    y_stride: usize,
+    width: usize,
+    height: usize,
+) -> ScDerivation {
+    // scm mode (enc_handle.c:4514-4527): the CLI default (2) is overridden
+    // for allintra — <= M7 auto-detects with the AA-aware detector (3),
+    // M8+ forces detection off (0). (User-forced 0/1 and TUNE_IQ are not
+    // exposed by this encoder's config surface yet.)
+    let classes = if preset <= 7 {
+        let fast_detection = preset >= 3; // enc_handle.c:4257
+        match pad_to_multiple_of_8(y, y_stride, width, height) {
+            Some((padded, ps, pw, ph)) => {
+                is_screen_content_antialiasing_aware(&padded, ps, pw, ph, fast_detection)
+            }
+            None => is_screen_content_antialiasing_aware(y, y_stride, width, height, fast_detection),
+        }
+    } else {
+        ScClasses::default()
+    };
+
+    let palette_level = if classes.sc_class5 {
+        match preset {
+            0..=2 => 2,
+            3 => 3,
+            4..=5 => 4,
+            6 => 5,
+            7 => 7,
+            _ => 0,
+        }
+    } else {
+        0
+    };
+    let intrabc_level = if classes.sc_class5 {
+        match preset {
+            0 => 3,
+            1 => 4,
+            2 => 5,
+            3 => 6,
+            4 => 7,
+            _ => 0, // MR (=preset "-1") -> 1 is unreachable here
+        }
+    } else {
+        0
+    };
+    let allow_intrabc = false; // IBC unported — see field doc
+    ScDerivation {
+        classes,
+        palette_level,
+        intrabc_level,
+        allow_intrabc,
+        allow_screen_content_tools: palette_level != 0 || allow_intrabc,
+    }
+}

@@ -658,6 +658,7 @@ pub fn write_key_frame_header_full(
             strengths: alloc::vec![(cdef[1], cdef[2])],
         },
         &LrSignal::none(enable_restoration),
+        ScSignal::default(),
     )
 }
 
@@ -690,6 +691,19 @@ impl LrSignal {
     }
 }
 
+/// Frame-header screen-content signaling (spec 5.9.11/5.9.13; C writer
+/// entropy_coding.c:3345-3359 + :3464-3466). `allow_screen_content_tools`
+/// costs one bit (seq_force = SELECT) plus, when set, the
+/// `force_integer_mv` bit (always 0 — resource_coordination_process.c:362)
+/// and, on KEY frames at unscaled superres, the `allow_intrabc` bit. When
+/// `allow_intrabc` is set the loop_filter/cdef/lr param blocks are NOT
+/// coded (spec sets their defaults).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ScSignal {
+    pub allow_screen_content_tools: bool,
+    pub allow_intrabc: bool,
+}
+
 /// [`write_key_frame_header_full`] with full lr_params() signaling.
 #[allow(clippy::too_many_arguments)]
 /// The cdef_params() inputs (spec 5.9.19): damping 3..=6, `cdef_bits`
@@ -709,6 +723,7 @@ pub fn write_key_frame_header_full_lr(
     lf_levels: [u8; 4],
     cdef: &CdefSignal,
     lr: &LrSignal,
+    sc: ScSignal,
 ) -> Vec<u8> {
     let mut wb = key_frame_header_bits_lr(
         width,
@@ -719,6 +734,7 @@ pub fn write_key_frame_header_full_lr(
         lf_levels,
         cdef,
         lr,
+        sc,
     );
     // This header is embedded in an OBU_FRAME: the spec requires
     // byte_alignment() (zero bits only) between frame_header and tile_group —
@@ -757,6 +773,7 @@ fn key_frame_header_bits(
             strengths: alloc::vec![(cdef[1], cdef[2])],
         },
         &LrSignal::none(enable_restoration),
+        ScSignal::default(),
     )
 }
 
@@ -771,6 +788,7 @@ fn key_frame_header_bits_lr(
     lf_levels: [u8; 4],
     cdef: &CdefSignal,
     lr: &LrSignal,
+    sc: ScSignal,
 ) -> BitWriter {
     let mut wb = BitWriter::new();
 
@@ -791,8 +809,16 @@ fn key_frame_header_bits_lr(
     wb.write_bit(false); // disable_cdf_update = 0
 
     // allow_screen_content_tools: seq_force = SELECT → read 1 bit
-    wb.write_bit(false); // allow_screen_content_tools = 0
-    // Since allow_screen_content_tools=0: force_integer_mv not signaled
+    // (C entropy_coding.c:3345-3348; value from sig_deriv_multi_processes
+    // _allintra :2393 = palette_level || allow_intrabc).
+    wb.write_bit(sc.allow_screen_content_tools);
+    if sc.allow_screen_content_tools {
+        // seq_force_integer_mv = SELECT (2, sequence_control_set.c:101) →
+        // the frame force_integer_mv bit follows; C keeps
+        // frm_hdr->force_integer_mv = 0 unconditionally
+        // (resource_coordination_process.c:362, never reassigned).
+        wb.write_bit(false); // force_integer_mv = 0
+    }
 
     if !reduced_sh {
         wb.write_bit(false); // frame_size_override_flag = 0
@@ -809,7 +835,12 @@ fn key_frame_header_bits_lr(
     // ---- render_size() ----
     wb.write_bit(false); // render_and_frame_size_different = 0
 
-    // allow_intrabc: NOT signaled (allow_screen_content_tools=0 → implicit 0)
+    // allow_intrabc: signaled iff allow_screen_content_tools (superres is
+    // always unscaled here) — C entropy_coding.c:3464-3466, after
+    // write_frame_size.
+    if sc.allow_screen_content_tools {
+        wb.write_bit(sc.allow_intrabc);
+    }
 
     // ---- tile_info() ----
     write_tile_info(&mut wb, width, height);
@@ -846,24 +877,26 @@ fn key_frame_header_bits_lr(
     // ---- loop_filter_params() ----
     // CodedLossless is only true when base_q_idx=0 AND all delta-Q=0 AND
     // all segments have qindex 0. With base_q_idx>0 in practice, not lossless.
-    // allow_intrabc=0, so we always write loop filter params.
+    // When allow_intrabc: NO loop filter bits (spec 5.9.11 sets defaults).
     // Field set matches C encode_loopfilter (entropy_coding.c:2338) and
     // spec 5.9.11; libaom setup_loopfilter (decodeframe.c:1766) reads it.
-    wb.write_bits(lf_levels[0] as u32, 6); // loop_filter_level[0]
-    wb.write_bits(lf_levels[1] as u32, 6); // loop_filter_level[1]
-    // NumPlanes=1: no loop_filter_level[2]/[3].
-    // NumPlanes=3: levels [2] (U) and [3] (V) are only coded when
-    // (loop_filter_level[0] || loop_filter_level[1]).
-    if !monochrome && (lf_levels[0] != 0 || lf_levels[1] != 0) {
-        wb.write_bits(lf_levels[2] as u32, 6); // loop_filter_level[2] (U)
-        wb.write_bits(lf_levels[3] as u32, 6); // loop_filter_level[3] (V)
+    if !sc.allow_intrabc {
+        wb.write_bits(lf_levels[0] as u32, 6); // loop_filter_level[0]
+        wb.write_bits(lf_levels[1] as u32, 6); // loop_filter_level[1]
+        // NumPlanes=1: no loop_filter_level[2]/[3].
+        // NumPlanes=3: levels [2] (U) and [3] (V) are only coded when
+        // (loop_filter_level[0] || loop_filter_level[1]).
+        if !monochrome && (lf_levels[0] != 0 || lf_levels[1] != 0) {
+            wb.write_bits(lf_levels[2] as u32, 6); // loop_filter_level[2] (U)
+            wb.write_bits(lf_levels[3] as u32, 6); // loop_filter_level[3] (V)
+        }
+        wb.write_bits(0, 3); // loop_filter_sharpness = 0
+        // loop_filter_delta_enabled = 0: the C encoder runs with
+        // mode_ref_delta_enabled = 0 (resource_coordination_process.c:393) and
+        // encode_loopfilter writes the flag verbatim, so no ref/mode deltas are
+        // signaled or applied — the filter level is uniform per plane/direction.
+        wb.write_bit(false); // loop_filter_delta_enabled = 0
     }
-    wb.write_bits(0, 3); // loop_filter_sharpness = 0
-    // loop_filter_delta_enabled = 0: the C encoder runs with
-    // mode_ref_delta_enabled = 0 (resource_coordination_process.c:393) and
-    // encode_loopfilter writes the flag verbatim, so no ref/mode deltas are
-    // signaled or applied — the filter level is uniform per plane/direction.
-    wb.write_bit(false); // loop_filter_delta_enabled = 0
 
     // ---- cdef_params() ----
     // Spec 5.9.19; C write path encode_cdef (entropy_coding.c:2398), read
@@ -871,16 +904,19 @@ fn key_frame_header_bits_lr(
     // signals enable_cdef=1 and this header is neither CodedLossless
     // (base_q_idx > 0 in practice — same standing assumption as
     // loop_filter_params above) nor allow_intrabc.
-    debug_assert!((3..=6).contains(&cdef.damping), "cdef_damping out of range");
-    debug_assert_eq!(cdef.strengths.len(), 1usize << cdef.bits);
-    wb.write_bits((cdef.damping - 3) as u32, 2); // cdef_damping_minus_3
-    wb.write_bits(cdef.bits as u32, 2); // cdef_bits -> (1 << bits) strength sets
-    for &(y, uv) in &cdef.strengths {
-        wb.write_bits(y as u32, 6); // cdef_y_pri(4) + cdef_y_sec(2) packed
-        if !monochrome {
-            // NumPlanes=3 only: libaom reads uv strengths iff num_planes > 1
-            // (C SVT always writes both — it cannot emit monochrome).
-            wb.write_bits(uv as u32, 6); // cdef_uv_pri(4) + cdef_uv_sec(2)
+    // When allow_intrabc: NO cdef bits (spec 5.9.19 early-out).
+    if !sc.allow_intrabc {
+        debug_assert!((3..=6).contains(&cdef.damping), "cdef_damping out of range");
+        debug_assert_eq!(cdef.strengths.len(), 1usize << cdef.bits);
+        wb.write_bits((cdef.damping - 3) as u32, 2); // cdef_damping_minus_3
+        wb.write_bits(cdef.bits as u32, 2); // cdef_bits -> (1 << bits) strength sets
+        for &(y, uv) in &cdef.strengths {
+            wb.write_bits(y as u32, 6); // cdef_y_pri(4) + cdef_y_sec(2) packed
+            if !monochrome {
+                // NumPlanes=3 only: libaom reads uv strengths iff num_planes > 1
+                // (C SVT always writes both — it cannot emit monochrome).
+                wb.write_bits(uv as u32, 6); // cdef_uv_pri(4) + cdef_uv_sec(2)
+            }
         }
     }
 
@@ -899,7 +935,9 @@ fn key_frame_header_bits_lr(
     // NumPlanes = 1 for mono, 3 for 4:2:0 (C is always 3-plane; the
     // decoder reads NumPlanes lr_types — libaom decode_restoration_mode,
     // decodeframe.c).
-    if lr.enabled {
+    // When allow_intrabc: NO lr bits (spec 5.9.20 folds allow_intrabc into
+    // the same early-out as !enable_restoration).
+    if lr.enabled && !sc.allow_intrabc {
         let num_planes = if monochrome { 1 } else { 3 };
         let mut all_none = true;
         let mut chroma_none = true;
