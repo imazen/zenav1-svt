@@ -1,0 +1,4 @@
+date: 2026-07-16
+commit-under-test: pool fix (uncommitted at run time; landing commit follows)
+result: 174/180 (20 images x p2/6/10 x q20/40/55); ALL 6 DIFFERS = EPICA screen-content (palette/IBC unported, #71)
+battery: 132/132 synthetic matrix; 7/7 photographic spots; 1624307 IDENTICAL at q12/20/32/55 (was the #90 cell); 674/674 tests

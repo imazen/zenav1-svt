@@ -2580,13 +2580,66 @@ pub(crate) fn evaluate_leaf(
     }
     let ncand = cands.len();
 
-    // -- Sort by fast cost (stable == C's strict-less bubble) --
-    let mut order: Vec<usize> = (0..ncand).collect();
+    // -- MDS0 -> MDS1 MEMBERSHIP: C's replacement POOL, not a sort. --
+    // md_stage_0 keeps candidates in max_buffers = md_stage_1_count + 1
+    // slots (product_coding_loop.c:9342): the first max_buffers candidates
+    // fill slots in PROCESSING order; every later candidate OVERWRITES the
+    // current worst slot, where the victim scan is a FIRST-argmax with
+    // strict `>` (:1692-1699) — so when two candidates TIE on fast cost at
+    // the pool boundary, the EARLIER-processed one is the victim and the
+    // LATER-processed one survives. After the last candidate the current
+    // victim is discarded (cost set to MAX, :1708). A stable
+    // sort + take(n1) keeps the EARLIER tied candidate instead — one
+    // swapped survivor flips the whole SB downstream (1624307 q32 p2
+    // mi(66,108): (mode5,d-1) vs (mode5,d+3) tied at fast 19175060; C
+    // carries d+3, the sort carried d-1, the mds3 uv table then lost its
+    // uv=2 row and tbl[SMOOTH] flipped H->SMOOTH).
+    // NOTE: ties BETWEEN adjacent same-mode deltas share our injection
+    // order with C; cross-mode/cross-iteration ties additionally depend on
+    // C's two-iteration MDS0 order (regulars, then angular+fi, :1600) —
+    // refine if a cell ever demands it.
+    let (nic1, nic2, nic3) = nic_counts(frame.cli_qp, cfg.nic_num);
+    let n1_init = (ncand as u32).min(nic1) as usize;
+    let mut order: Vec<usize> = if ncand > n1_init {
+        let cap = n1_init + 1;
+        let argmax_first = |pool: &[usize], cands: &[Cand]| -> usize {
+            let mut vi = 0usize;
+            let mut vc = cands[pool[0]].fast_cost;
+            for (i, &ci) in pool.iter().enumerate().skip(1) {
+                if cands[ci].fast_cost > vc {
+                    vi = i;
+                    vc = cands[ci].fast_cost;
+                }
+            }
+            vi
+        };
+        let mut pool: Vec<usize> = Vec::with_capacity(cap);
+        let mut victim = 0usize;
+        for ci in 0..ncand {
+            if pool.len() < cap {
+                pool.push(ci);
+                if pool.len() == cap {
+                    victim = argmax_first(&pool, &cands);
+                }
+            } else {
+                pool[victim] = ci;
+                victim = argmax_first(&pool, &cands);
+            }
+        }
+        if pool.len() == cap {
+            pool.remove(victim);
+        }
+        pool
+    } else {
+        (0..ncand).collect()
+    };
+
+    // -- Sort the survivors by fast cost (stable == C's strict-less sort
+    //    over the surviving pool) --
     order.sort_by_key(|&i| cands[i].fast_cost);
     let mds0_best_idx = order[0];
 
     // -- post_mds0_nic_pruning (product_coding_loop.c:8045) --
-    let (nic1, nic2, nic3) = nic_counts(frame.cli_qp, cfg.nic_num);
     let (qw, qwd) = qp_scale_factors(frame.cli_qp);
     // nic_level 1 (M0) sets mds1_cand_base_th_intra = (uint64_t)~0 (no mds1
     // cand pruning); the qp-scaled threshold stays saturated so the loop
@@ -2834,6 +2887,16 @@ pub(crate) fn evaluate_leaf(
                 }
                 let (bits, dist) = uv_rd[k];
                 let cost = rdcost(lambda, bits + fcr2, dist);
+                #[cfg(feature = "std")]
+                if std::env::var_os("SVTAV1_CANDDBG").is_some()
+                    && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
+                {
+                    eprintln!(
+                        "NSQDBG UVTAB2 mi=({},{}) luma={luma} uv={uvm} uvd={uvd} bits={bits} dist={dist} fcr={fcr2} cost={cost}",
+                        abs_y / 4,
+                        abs_x / 4,
+                    );
+                }
                 if cost < best_cost {
                     best_cost = cost;
                     table[luma] = (uvm, uvd);
