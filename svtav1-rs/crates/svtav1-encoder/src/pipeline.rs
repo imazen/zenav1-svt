@@ -1004,6 +1004,10 @@ impl EncodePipeline {
                 // ones the tile signals and the output recon had applied.
                 &lr_signal,
                 sc_signal,
+                // chroma_q deltas: None until the per-plane chroma quant
+                // threading lands (see chroma_q.rs ACTIVATION STATUS) — never
+                // signal deltas the quantizer does not apply.
+                None,
             );
             // tile_data is already a complete tile_group (with TG header)
             let mut frame_payload = alloc::vec::Vec::new();

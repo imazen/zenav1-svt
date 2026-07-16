@@ -196,6 +196,7 @@ pub fn seq_tools_for_preset(preset: u8, allintra: bool) -> svtav1_entropy::obu::
     // enc_mode 5, ang=1 at <=4, ang=4 at >=6).
     let enable_intra_edge_filter = preset == 5;
     svtav1_entropy::obu::SeqTools {
+        separate_uv_delta_q: false, // mainline (fork wiring pending chroma-q quant threading)
         enable_filter_intra: filter_intra_level != 0,
         enable_intra_edge_filter,
         enable_restoration: wn > 0 || sg > 0,
