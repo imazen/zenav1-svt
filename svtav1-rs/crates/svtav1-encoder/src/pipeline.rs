@@ -3008,6 +3008,10 @@ fn encode_tile_rows(
                                 // (real PD0 coeff rate). M7/M8's level-2 PD0
                                 // approximation only fires when this is >= 2.
                                 funnel_cfg.coeff_rate_est_lvl,
+                                // max-block variance cap: M8+ only
+                                // (get_max_block_size_allintra base th ~0
+                                // through M7) — never on this p<=5 branch.
+                                false,
                             );
                             let cq = c_quant.as_ref().unwrap();
                             let scan = crate::depth_refine::build_refined_scan_at(
@@ -3057,7 +3061,14 @@ fn encode_tile_rows(
                                 y0,
                             )
                         } else {
-                            let tree = crate::pd0::pd0_pick_sb_partition_m6(
+                            // Same computation as pd0_pick_sb_partition_m6
+                            // (that fn is exactly _eval(min_sq=8).tree()),
+                            // via the eval form so the per-node PD0 costs
+                            // are dumpable (SVTAV1_PD0DBG + SVTAV1_DBG_MI)
+                            // for depth-flip drills at M6-M8 — the C
+                            // counterpart is the PICKPART wrap, which fires
+                            // at every preset.
+                            let eval = crate::pd0::pd0_pick_sb_partition_m6_eval(
                                 encode_input,
                                 w,
                                 x0,
@@ -3065,13 +3076,45 @@ fn encode_tile_rows(
                                 cli_qp as u32,
                                 sb_qindex,
                                 tables,
+                                8,
                                 // M6: coeff_rate_est_lvl 1 (real PD0 coeff
                                 // rate, unchanged). M7/M8: 2 -> the C
                                 // perform_tx_pd0 `eob<th ? 6000+eob*500`
                                 // approximation that lowers the parent-NONE
                                 // cost and matches C's partition depth.
                                 funnel_cfg.coeff_rate_est_lvl,
+                                // C get_max_block_size_allintra: the
+                                // 64-variance cap fires at M8+ only, and
+                                // stays at sb_size for incomplete edge SBs.
+                                speed_config.preset >= 8
+                                    && x0 + 64 <= w
+                                    && y0 + 64 <= h,
                             );
+                            #[cfg(feature = "std")]
+                            if std::env::var_os("SVTAV1_PD0DBG").is_some()
+                                && crate::depth_refine::nsqdbg_here(x0, y0)
+                            {
+                                fn walk(e: &crate::pd0::Pd0Eval, x: usize, y: usize) {
+                                    eprintln!(
+                                        "NSQDBG PD0 mi=({},{}) sq={} tested={} cost={} split={}",
+                                        y / 4,
+                                        x / 4,
+                                        e.sq,
+                                        e.tested,
+                                        e.cost,
+                                        e.split
+                                    );
+                                    if let Some(ch) = e.children.as_ref() {
+                                        let h = e.sq / 2;
+                                        walk(&ch[0], x, y);
+                                        walk(&ch[1], x + h, y);
+                                        walk(&ch[2], x, y + h);
+                                        walk(&ch[3], x + h, y + h);
+                                    }
+                                }
+                                walk(&eval, x0, y0);
+                            }
+                            let tree = eval.tree();
                             let sb_vars = crate::pd0::compute_b64_variance(encode_input, w, x0, y0);
                             let mut funnel_ctx = if use_funnel {
                                 let (u_src, v_src) = chroma_src.unwrap();
