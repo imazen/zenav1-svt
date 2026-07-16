@@ -666,6 +666,7 @@ pub fn write_key_frame_header_full(
         &LrSignal::none(enable_restoration),
         ScSignal::default(),
         None, // chroma_q: mainline zero-delta bit pattern
+        None, // delta_q_res: no per-SB delta-q
     )
 }
 
@@ -733,6 +734,7 @@ pub fn write_key_frame_header_full_lr(
     lr: &LrSignal,
     sc: ScSignal,
     chroma_q: Option<[i8; 4]>,
+    delta_q_res: Option<u8>,
 ) -> Vec<u8> {
     let mut wb = key_frame_header_bits_lr(
         width,
@@ -746,6 +748,7 @@ pub fn write_key_frame_header_full_lr(
         lr,
         sc,
         chroma_q,
+        delta_q_res,
     );
     // This header is embedded in an OBU_FRAME: the spec requires
     // byte_alignment() (zero bits only) between frame_header and tile_group —
@@ -787,6 +790,7 @@ fn key_frame_header_bits(
         &LrSignal::none(enable_restoration),
         ScSignal::default(),
         None, // chroma_q: mainline zero-delta bit pattern
+        None, // delta_q_res: no per-SB delta-q
     )
 }
 
@@ -804,6 +808,7 @@ fn key_frame_header_bits_lr(
     lr: &LrSignal,
     sc: ScSignal,
     chroma_q: Option<[i8; 4]>,
+    delta_q_res: Option<u8>,
 ) -> BitWriter {
     let mut wb = BitWriter::new();
 
@@ -905,8 +910,22 @@ fn key_frame_header_bits_lr(
 
     // ---- delta_q_params() ----
     // Spec: delta_q_present is only signaled when base_q_idx > 0.
+    // [SVT_HDR_MODE] fork variance boost signals per-SB delta-q:
+    // delta_q_present=1 + 2-bit log2(delta_q_res) (spec 5.9.17).
     if base_qindex > 0 {
-        wb.write_bit(false); // delta_q_present = 0
+        match delta_q_res {
+            None => wb.write_bit(false), // delta_q_present = 0
+            Some(res) => {
+                debug_assert!(matches!(res, 1 | 2 | 4 | 8));
+                wb.write_bit(true); // delta_q_present = 1
+                wb.write_bits(u32::from(res.trailing_zeros()), 2); // delta_q_res log2
+                // delta_lf_params(): read only when delta_q_present &&
+                // !allow_intrabc (spec 5.9.18).
+                if !sc.allow_intrabc {
+                    wb.write_bit(false); // delta_lf_present = 0
+                }
+            }
+        }
     }
     // delta_lf_params(): not signaled when delta_q_present=0
 

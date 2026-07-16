@@ -410,6 +410,17 @@ impl EncodePipeline {
         let qindex_v = (i32::from(base_qindex) + i32::from(chroma_deltas.v_ac)).clamp(0, 255) as u8;
         // Stills are I-slices at temporal layer 0: effective = ac_bias * 0.3.
         let ac_bias_eff = svtav1_dsp::ac_bias::effective_ac_bias(self.hdr.ac_bias, true, 0);
+        // [SVT_HDR_MODE] per-SB delta-q signaling (variance boost). This
+        // chunk arms the FULL SYNTAX chain with a UNIFORM plan (every SB at
+        // base qindex -> all delta symbols are 0): decoder-valid, exercises
+        // FH delta_q_params + the per-SB delta_q_cdf symbols end to end.
+        // The variance plan (sb_qindex::variance_adjust_qp) swaps in when
+        // per-SB quantization threading lands (docs/HDR-ON-4.2.md).
+        let delta_q_res_signal = if self.hdr.is_fork() && self.hdr.enable_variance_boost {
+            Some(crate::sb_qindex::delta_q_res_for(tpl_adjusted_qp, true))
+        } else {
+            None
+        };
         let tile_recons = encode_tile_rows(
             &encode_input,
             w,
@@ -597,6 +608,12 @@ impl EncodePipeline {
                 seq_tools.enable_filter_intra,
                 sc_derivation.allow_screen_content_tools,
             );
+            // [SVT_HDR_MODE] arm per-SB delta-q: prev starts at the FH base
+            // (C prev_qindex tile-init); uniform plan = every SB at base.
+            if let Some(res) = delta_q_res_signal {
+                ectx.delta_q_state = Some((res, i32::from(base_qindex)));
+                ectx.delta_q_sb_qindex = i32::from(base_qindex);
+            }
             let mut chroma_pass = chroma.map(|(u_src, v_src)| ChromaPass {
                 u_src,
                 v_src,
@@ -1039,6 +1056,9 @@ impl EncodePipeline {
                 } else {
                     None
                 },
+                // [SVT_HDR_MODE] per-SB delta-q res (variance boost). The
+                // same value gates the walk's per-SB delta symbols.
+                delta_q_res_signal,
             );
             // tile_data is already a complete tile_group (with TG header)
             let mut frame_payload = alloc::vec::Vec::new();
@@ -1151,6 +1171,15 @@ pub(crate) struct EntropyCtx {
     /// FH `allow_screen_content_tools` — gates the per-block no-palette
     /// flag coding (C write_palette_mode_info gate, entropy_coding.c:5026).
     allow_sct: bool,
+    /// [SVT_HDR_MODE] per-SB delta-q emission state (C write_modes_b,
+    /// entropy_coding.c:4997): `Some((delta_q_res, prev_qindex))` when the
+    /// FH signaled delta_q_present. The walk arms `delta_q_pending` with
+    /// the SB's target qindex at each SB start; the FIRST block whose
+    /// origin is the SB corner (and bsize != SB size || !skip) emits
+    /// `(cur - prev) / res` via av1_write_delta_q_index and updates prev.
+    pub delta_q_state: Option<(u8, i32)>,
+    /// The current SB's target qindex, set by the walk at SB start.
+    pub delta_q_sb_qindex: i32,
     /// Pending per-SB `cdef_idx` emission (C write_cdef,
     /// entropy_coding.c:4034: `aom_write_literal(w, mbmi->cdef_strength,
     /// cdef_bits)` at the FIRST NON-SKIP block of each 64x64). Set at SB
@@ -1241,6 +1270,8 @@ impl EntropyCtx {
             left_txfm: alloc::vec![0u8; height_4x4],
             seq_filter_intra,
             allow_sct,
+            delta_q_state: None,
+            delta_q_sb_qindex: 0,
             cdef_pending: None,
         }
     }
@@ -1853,6 +1884,24 @@ fn encode_block_syntax(
     if !skip {
         if let Some((bits, idx)) = ectx.cdef_pending.take() {
             writer.write_literal(idx as u32, bits as u32);
+        }
+    }
+
+    // [SVT_HDR_MODE] per-SB delta-q (C entropy_coding.c:4997, spec 5.11.41
+    // mode_info -> read_delta_qindex): only at the SB's upper-left block,
+    // and only when (bsize != sb_size || !skip). sb_size is 64 here.
+    if let Some((res, prev)) = ectx.delta_q_state {
+        let super_block_upper_left = block_x % 64 == 0 && block_y % 64 == 0;
+        let is_sb_sized = decision.width == 64 && decision.height == 64;
+        if super_block_upper_left && (!is_sb_sized || !skip) {
+            let cur = ectx.delta_q_sb_qindex;
+            let reduced = (cur - prev) / i32::from(res);
+            svtav1_entropy::mv_coding::write_delta_q_index(
+                writer,
+                &mut frame_ctx.delta_q_cdf,
+                reduced,
+            );
+            ectx.delta_q_state = Some((res, cur));
         }
     }
 
