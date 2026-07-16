@@ -145,3 +145,29 @@ cmake --build cbuild -j8
 # stock reference:
 git -C /root/svt-av1-hdr-on-4.2 worktree add /root/svt-av1-stock-4.2 v4.2.0-rc
 ```
+
+# Rust-side port status (branch `hdr-hybrid`)
+
+The Rust mirror of the switch is `svtav1_encoder::hdr_mode::{SvtHdrMode, HdrForkConfig}`
+(RUNTIME config; `EncodePipeline.hdr`, default Mainline). Byte-identity targets:
+Mainline mode → stock v4.2.0-final; HdrFork mode → the C hybrid's MODE1 lib
+(build with `-DSVT_HDR_MODE=ON -DSVT_AV1_LTO=OFF`, point `SVT_CREF_LIB_DIR` at it).
+
+| Fork behavior | Rust status | Witness |
+|---|---|---|
+| Config surface + per-mode defaults | **DONE** (`hdr_mode.rs`) | unit pins vs enc_settings.c branches |
+| light-RDOQ (low-DC chroma, encode pass) | **DONE** (`quant.rs light_rdoq_low_dc_chroma`) | fires only in fork mode; formula per C |
+| RDOQ rweight/rshift incl. sharpness | **DONE** (`rdoq_rdmult_sharp`) | sharp-tx rweight=0 block DORMANT until per-SB delta-q (C gate `delta_q_present && plane==0`) |
+| loop_filter_sharpness (fork default 1) | **DONE** — search trials + application + FH bits agree | suite green in mainline mode (sharpness 0 = prior bytes) |
+| variance-boost math, curves 0–3 + PQ dark attenuation | **DONE** (`var_boost.rs`) | helpers C-parity-tested vs the linked lib (c_parity_var_boost.rs); curve table unit-pinned |
+| **per-SB delta-q wiring** (delta_q_present=1, tile delta-q syntax + rate est, `variance_adjust_qp` loop, f64 variance producer) | **OPEN — long pole #1** | gates ALL HdrFork e2e identity (fork defaults varboost ON) |
+| **QM** (fork default ON, luma min 6 / chroma min 8): tables, FH syntax, fwd-quant, RD costing | **OPEN — long pole #2** | required for HdrFork e2e identity |
+| fork chroma-qindex path (4:2:0/PQ/P3/BT.2020 boosts, Cb +12, separate_uv_delta_q=1 + diff_uv_delta=1 syntax, per-plane dequant) | **OPEN** (task #3) | FH-level witness possible before delta-q lands |
+| ac_bias/tx_bias distortion facade | **OPEN** (task #6) | fork default ac_bias=1.0 → affects all-intra MD |
+| photon-noise synthesis (`--noise*`), noise-norm AC boost | OPEN (inert at defaults... noise_norm fork default 1 → NEEDED for e2e) | |
+| kf_tf_strength / TF formula | OPEN — needs TF (all-intra immune) | |
+| complex_hvs / mds0, alt_lambda_factors, alt_ssim_tuning, cdef_scaling, tune 6 policy | OPEN — inert at fork defaults except alt_lambda (default ON → needed when its rd path is reachable) | |
+
+Recommended landing order for e2e HdrFork identity on the all-intra path:
+chroma-qindex (FH-witnessable now) → ac_bias facade → noise-norm →
+per-SB delta-q wiring (+ sharp-tx activation) → QM → full e2e matrix vs MODE1.
