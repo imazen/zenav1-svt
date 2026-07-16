@@ -667,6 +667,7 @@ pub fn write_key_frame_header_full(
         ScSignal::default(),
         None, // chroma_q: mainline zero-delta bit pattern
         None, // delta_q_res: no per-SB delta-q
+        None, // qm: quant matrices off
     )
 }
 
@@ -735,6 +736,7 @@ pub fn write_key_frame_header_full_lr(
     sc: ScSignal,
     chroma_q: Option<[i8; 4]>,
     delta_q_res: Option<u8>,
+    qm: Option<[u8; 3]>,
 ) -> Vec<u8> {
     let mut wb = key_frame_header_bits_lr(
         width,
@@ -749,6 +751,7 @@ pub fn write_key_frame_header_full_lr(
         sc,
         chroma_q,
         delta_q_res,
+        qm,
     );
     // This header is embedded in an OBU_FRAME: the spec requires
     // byte_alignment() (zero bits only) between frame_header and tile_group —
@@ -791,6 +794,7 @@ fn key_frame_header_bits(
         ScSignal::default(),
         None, // chroma_q: mainline zero-delta bit pattern
         None, // delta_q_res: no per-SB delta-q
+        None, // qm: quant matrices off
     )
 }
 
@@ -809,6 +813,7 @@ fn key_frame_header_bits_lr(
     sc: ScSignal,
     chroma_q: Option<[i8; 4]>,
     delta_q_res: Option<u8>,
+    qm: Option<[u8; 3]>,
 ) -> BitWriter {
     let mut wb = BitWriter::new();
 
@@ -903,7 +908,22 @@ fn key_frame_header_bits_lr(
         }
     }
     // NumPlanes=1 (mono_chrome): no DeltaQUDc, DeltaQUAc
-    wb.write_bit(false); // using_qmatrix = 0
+    // [SVT_HDR_MODE] quantizer matrices (spec 5.9.12; C entropy_coding.c:
+    // 2451): qm_y + qm_u always, qm_v only when the SH signaled
+    // separate_uv_delta_q=1 (the fork chroma-q path — chroma_q Some).
+    match qm {
+        None => wb.write_bit(false), // using_qmatrix = 0
+        Some([qm_y, qm_u, qm_v]) => {
+            wb.write_bit(true); // using_qmatrix = 1
+            wb.write_bits(u32::from(qm_y), 4);
+            wb.write_bits(u32::from(qm_u), 4);
+            if chroma_q.is_some() {
+                wb.write_bits(u32::from(qm_v), 4);
+            } else {
+                debug_assert_eq!(qm_u, qm_v, "qm_v needs separate_uv_delta_q");
+            }
+        }
+    }
 
     // ---- segmentation_params() ----
     wb.write_bit(false); // segmentation_enabled = 0

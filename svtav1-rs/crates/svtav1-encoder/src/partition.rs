@@ -1578,6 +1578,7 @@ pub fn encode_chroma_block_dc(
     ch: usize,
     qindex: u8,
     cq: Option<&crate::quant::CodingQuantCfg>,
+    qm_level: u8,
 ) -> (alloc::vec::Vec<i32>, u16) {
     let (above, left, _top_left, has_above, has_left) =
         extract_neighbors(recon, stride, cx, cy, cw, ch);
@@ -1596,6 +1597,7 @@ pub fn encode_chroma_block_dc(
         svtav1_types::transform::TxType::DctDct,
         cq,
         1,
+        qm_level,
     );
 
     for r in 0..ch {
@@ -1930,6 +1932,7 @@ fn encode_single_block(
             svtav1_types::transform::TxType::DctDct,
             config.c_quant.as_deref(),
             0,
+            config.c_quant.as_deref().map_or(15, |c| c.qm_levels[0]),
         );
         let cost_dct = enc_dct.distortion + ((lambda * enc_dct.rate as u64) >> 8);
 
@@ -1985,6 +1988,7 @@ fn encode_single_block(
                     alt_tx,
                     config.c_quant.as_deref(),
                     0,
+                    config.c_quant.as_deref().map_or(15, |c| c.qm_levels[0]),
                 );
                 let cost_alt = enc_alt.distortion + ((lambda * enc_alt.rate as u64) >> 8);
                 if cost_alt < best_cost {
@@ -2114,6 +2118,7 @@ fn encode_single_block(
             svtav1_types::transform::TxType::DctDct,
             config.c_quant.as_deref(),
             0,
+            config.c_quant.as_deref().map_or(15, |c| c.qm_levels[0]),
         )
     });
 

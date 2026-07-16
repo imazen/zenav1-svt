@@ -261,6 +261,10 @@ pub struct FunnelFrame {
     /// at MD quantization so dist/recon/coded levels stay consistent (fork
     /// mode carries no byte-vs-C gate; the kernel itself is parity-tested).
     pub noise_norm_strength: u8,
+    /// [SVT_HDR_MODE] per-plane frame QM levels [Y, U, V] (15 = off);
+    /// stamped onto the per-plane `QuantTable`s so every quantize site
+    /// resolves the right matrices without extra threading.
+    pub qm_levels: [u8; 3],
     /// Per-preset intra-leaf config (M6 vs intra_level-7 M7/M8).
     pub cfg: FunnelCfg,
 }
@@ -1307,11 +1311,25 @@ fn tx_unit(
         svtav1_entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type] as usize,
     );
     let log_scale = TX_SCALE_TAB[c_tx];
+    // [SVT_HDR_MODE] QM slices for this txb (2D transforms only; U and V
+    // share the chroma table class, the LEVEL is plane-selected by the
+    // caller via `qt.qm_level`).
+    let qm = if tx_type < 9 && qt.qm_level < 15 {
+        crate::qm::qm_slices(usize::from(qt.qm_level), plane_type == 1, c_tx)
+    } else {
+        None
+    };
     let mut qcoeff = vec![0i32; pw * ph];
     let mut dqcoeff = vec![0i32; pw * ph];
     let mut eob = if do_rdoq {
-        let mut e =
-            crate::quant::quantize_fp(&packed, scan, qt, log_scale, &mut qcoeff, &mut dqcoeff);
+        let mut e = match qm {
+            Some((wt, iwt)) => crate::qm::quantize_fp_qm(
+                &packed, scan, qt, log_scale, wt, iwt, &mut qcoeff, &mut dqcoeff,
+            ),
+            None => {
+                crate::quant::quantize_fp(&packed, scan, qt, log_scale, &mut qcoeff, &mut dqcoeff)
+            }
+        };
         if e != 0 {
             let (cut_off_num, cut_off_denum) = crate::quant::rdoq_cutoffs(frame.rdoq_level);
             let tx_class = cc::TX_TYPE_TO_CLASS[tx_type];
@@ -1326,6 +1344,7 @@ fn tx_unit(
                     frame.sharp_tx_active && plane_type == 0,
                 ),
                 sharpness_flag: frame.sharp_tx_active && plane_type == 0,
+                iwt: qm.map(|(_, iwt)| iwt),
                 tx_size: c_tx,
                 tx_class,
                 txb_skip_ctx,
@@ -1337,7 +1356,14 @@ fn tx_unit(
         }
         e
     } else {
-        crate::quant::quantize_b(&packed, scan, qt, log_scale, &mut qcoeff, &mut dqcoeff)
+        match qm {
+            Some((wt, iwt)) => crate::qm::quantize_b_qm(
+                &packed, scan, qt, log_scale, wt, iwt, &mut qcoeff, &mut dqcoeff,
+            ),
+            None => {
+                crate::quant::quantize_b(&packed, scan, qt, log_scale, &mut qcoeff, &mut dqcoeff)
+            }
+        }
     };
     let _ = &mut packed;
     let _ = &mut eob;
@@ -1345,6 +1371,7 @@ fn tx_unit(
     if frame.noise_norm_strength > 0 && plane_type == 0 && eob != 0 && tx_type != 9 {
         crate::noise_norm::perform_noise_normalization(
             &qt.dequant,
+            qm.map(|(_, iwt)| iwt),
             &packed,
             &mut qcoeff,
             &mut dqcoeff,
@@ -2128,10 +2155,13 @@ pub(crate) fn evaluate_leaf(
     let frame = fx.frame;
     let rates = fx.rates;
     let lambda = frame.lambda;
-    let qt = crate::quant::build_quant_table(frame.base_qindex);
+    let mut qt = crate::quant::build_quant_table(frame.base_qindex);
+    qt.qm_level = frame.qm_levels[0];
     // Per-plane chroma tables (== qt when the FH chroma deltas are 0).
-    let qt_u = crate::quant::build_quant_table(frame.qindex_u);
-    let qt_v = crate::quant::build_quant_table(frame.qindex_v);
+    let mut qt_u = crate::quant::build_quant_table(frame.qindex_u);
+    qt_u.qm_level = frame.qm_levels[1];
+    let mut qt_v = crate::quant::build_quant_table(frame.qindex_v);
+    qt_v.qm_level = frame.qm_levels[2];
 
     // -- Block-level contexts (svt_aom_coding_loop_context_generation) --
     // Intra-mode and tx-size contexts are always neighbour-derived; the
@@ -4104,13 +4134,15 @@ fn sub_tx_dims(tw: usize, th: usize) -> (usize, usize) {
 /// the min eob per split direction. `None` when the winner kept no
 /// coefficients (C leaves the ~0 sentinels, so the psq gate can't
 /// fire).
-pub(crate) fn min_nz_hv(ev: &LeafEval, qindex: u8) -> Option<(u16, u16)> {
+pub(crate) fn min_nz_hv(ev: &LeafEval, qindex: u8, qm_level_y: u8) -> Option<(u16, u16)> {
     if !ev.block_has_coeff() {
         return None;
     }
     let (w, h) = (ev.w, ev.h);
     debug_assert!(w == h && w >= 8, "psq gate runs on SQ blocks only");
-    let qt = crate::quant::build_quant_table(qindex);
+    let mut qt = crate::quant::build_quant_table(qindex);
+    // C's light quantize applies the PLANE_Y QM here too (full_loop.c:1282).
+    qt.qm_level = qm_level_y;
     let resid = ev.psq_resid();
     debug_assert_eq!(resid.len(), w * h);
 
@@ -4148,14 +4180,30 @@ pub(crate) fn min_nz_hv(ev: &LeafEval, qindex: u8) -> Option<(u16, u16)> {
         );
         let mut qcoeff = vec![0i32; pw * ph];
         let mut dqcoeff = vec![0i32; pw * ph];
-        crate::quant::quantize_b(
-            &packed,
-            scan,
-            &qt,
-            TX_SCALE_TAB[c_tx],
-            &mut qcoeff,
-            &mut dqcoeff,
-        )
+        match if qt.qm_level < 15 {
+            crate::qm::qm_slices(usize::from(qt.qm_level), false, c_tx)
+        } else {
+            None
+        } {
+            Some((wt, iwt)) => crate::qm::quantize_b_qm(
+                &packed,
+                scan,
+                &qt,
+                TX_SCALE_TAB[c_tx],
+                wt,
+                iwt,
+                &mut qcoeff,
+                &mut dqcoeff,
+            ),
+            None => crate::quant::quantize_b(
+                &packed,
+                scan,
+                &qt,
+                TX_SCALE_TAB[c_tx],
+                &mut qcoeff,
+                &mut dqcoeff,
+            ),
+        }
     };
 
     let mut nz_h = u16::MAX;

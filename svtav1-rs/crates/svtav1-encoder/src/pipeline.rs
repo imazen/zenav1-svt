@@ -453,6 +453,34 @@ impl EncodePipeline {
         // sharp-tx RDOQ activates only with per-SB delta-q present (C gate
         // `(use_sharpness || sharp_tx) && delta_q_present && plane==0`).
         let sharp_tx_active = self.hdr.is_fork() && self.hdr.sharp_tx == 1 && sb_plan.is_some();
+        // [SVT_HDR_MODE] frame QM levels (svt_av1_qm_init,
+        // md_config_process.c:249): the linear qindex map (default tune =
+        // PSNR in the fork); chroma levels derive from base + the FH
+        // chroma AC deltas. [15;3] = QM off (identity).
+        let qm_levels: [u8; 3] = if self.hdr.is_fork() && self.hdr.enable_qm {
+            let lvl = |q: i32, lo: u8, hi: u8| {
+                crate::qm::aom_get_qmlevel(q, i32::from(lo), i32::from(hi)) as u8
+            };
+            [
+                lvl(
+                    i32::from(base_qindex),
+                    self.hdr.min_qm_level,
+                    self.hdr.max_qm_level,
+                ),
+                lvl(
+                    i32::from(base_qindex) + i32::from(chroma_deltas.u_ac),
+                    self.hdr.min_chroma_qm_level,
+                    self.hdr.max_chroma_qm_level,
+                ),
+                lvl(
+                    i32::from(base_qindex) + i32::from(chroma_deltas.v_ac),
+                    self.hdr.min_chroma_qm_level,
+                    self.hdr.max_chroma_qm_level,
+                ),
+            ]
+        } else {
+            [15; 3]
+        };
         // Stamp the fork RDOQ knobs onto the encode-pass quant config (C
         // reads them off static_config inside svt_av1_optimize_txb; the
         // sharp-tx gate `(use_sharpness||sharp_tx) && delta_q_present &&
@@ -465,6 +493,7 @@ impl EncodePipeline {
                 cfg.sharpness = self.hdr.sharpness;
                 cfg.noise_norm_strength = self.hdr.noise_norm_strength;
                 cfg.sharp_tx_active = sharp_tx_active;
+                cfg.qm_levels = qm_levels;
             }
         }
         let tile_recons = encode_tile_rows(
@@ -484,6 +513,7 @@ impl EncodePipeline {
             (chroma_deltas.u_ac, chroma_deltas.v_ac),
             sharp_tx_active,
             if self.hdr.is_fork() { self.hdr.noise_norm_strength } else { 0 },
+            qm_levels,
             tpl_adjusted_qp,
             self.hdr.sharpness,
             lambda,
@@ -672,6 +702,8 @@ impl EncodePipeline {
                 stride: cw,
                 qindex_u,
                 qindex_v,
+                qm_u: qm_levels[1],
+                qm_v: qm_levels[2],
                 c_quant: c_quant.as_deref(),
             });
             // LR tap references reset at the tile start (C
@@ -1123,6 +1155,9 @@ impl EncodePipeline {
                 // [SVT_HDR_MODE] per-SB delta-q res (variance boost). The
                 // same value gates the walk's per-SB delta symbols.
                 delta_q_res_signal,
+                // [SVT_HDR_MODE] frame QM levels (fork enable_qm); None in
+                // mainline mode. The quantizers used the SAME levels.
+                if qm_levels == [15; 3] { None } else { Some(qm_levels) },
             );
             // tile_data is already a complete tile_group (with TG header)
             let mut frame_payload = alloc::vec::Vec::new();
@@ -1268,6 +1303,9 @@ struct ChromaPass<'a> {
     /// and the FH signals the deltas (chroma_q.rs).
     qindex_u: u8,
     qindex_v: u8,
+    /// [SVT_HDR_MODE] per-plane chroma QM levels (15 = off).
+    qm_u: u8,
+    qm_v: u8,
     /// Frame-level C-exact coding quantizer (still path) — C's MDS3 RDOQ
     /// covers chroma too (skip_uv cleared when enc-dec is bypassed).
     c_quant: Option<&'a crate::quant::CodingQuantCfg>,
@@ -1920,9 +1958,11 @@ fn encode_block_syntax(
         } else {
             let (u_q, u_eob) = crate::partition::encode_chroma_block_dc(
                 cp.u_src, cp.u_recon, cp.stride, cx, cy, cw, ch, cp.qindex_u, cp.c_quant,
+                cp.qm_u,
             );
             let (v_q, v_eob) = crate::partition::encode_chroma_block_dc(
                 cp.v_src, cp.v_recon, cp.stride, cx, cy, cw, ch, cp.qindex_v, cp.c_quant,
+                cp.qm_v,
             );
             (u_q, u_eob, v_q, v_eob)
         }
@@ -2732,6 +2772,7 @@ fn encode_tile_rows(
     chroma_ac_deltas: (i8, i8),
     sharp_tx_active: bool,
     hdr_noise_norm: u8,
+    qm_levels: [u8; 3],
     cli_qp: u8,
     hdr_sharpness: i8,
     _lambda: u64, // Per-SB lambda computed from sb_qp_offsets
@@ -2819,6 +2860,7 @@ fn encode_tile_rows(
                 sharpness: hdr_sharpness,
                 sharp_tx_active,
                 noise_norm_strength: hdr_noise_norm,
+                qm_levels,
                 lambda: cq.lambda as u64,
                 cli_qp: cli_qp as u32,
                 rdoq_level: cq.rdoq_level,
@@ -3390,6 +3432,8 @@ fn encode_tile_rows(
                             stride: cwid,
                             qindex_u,
                             qindex_v,
+                            qm_u: qm_levels[1],
+                            qm_v: qm_levels[2],
                             c_quant: None,
                         });
                         encode_partition_tree(

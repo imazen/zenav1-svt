@@ -88,6 +88,7 @@ fn noise_norm_matches_c() {
                 let mut eob_r = eob0;
                 noise_norm::perform_noise_normalization(
                     &[i32::from(dequant[0]), i32::from(dequant[1])],
+                    None, // iqmatrix: the C shim passes NULL too
                     &coeff,
                     &mut q_r,
                     &mut dq_r,
