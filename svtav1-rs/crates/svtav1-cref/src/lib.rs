@@ -1767,6 +1767,38 @@ unsafe extern "C" {
         log_scale: i32,
         dispatch: i32,
     ) -> u16;
+    fn ref_quantize_b_qm(
+        coeff: *const i32,
+        n_coeffs: isize,
+        zbin: *const i16,
+        round: *const i16,
+        quant: *const i16,
+        quant_shift: *const i16,
+        qcoeff: *mut i32,
+        dqcoeff: *mut i32,
+        dequant: *const i16,
+        scan: *const i16,
+        iscan: *const i16,
+        qm: *const u8,
+        iqm: *const u8,
+        log_scale: i32,
+    ) -> u16;
+    fn ref_quantize_fp_qm(
+        coeff: *const i32,
+        n_coeffs: isize,
+        zbin: *const i16,
+        round_fp: *const i16,
+        quant_fp: *const i16,
+        quant_shift: *const i16,
+        qcoeff: *mut i32,
+        dqcoeff: *mut i32,
+        dequant: *const i16,
+        scan: *const i16,
+        iscan: *const i16,
+        qm: *const u8,
+        iqm: *const u8,
+        log_scale: i32,
+    ) -> u16;
     fn ref_quantize_b(
         coeff: *const i32,
         n_coeffs: isize,
@@ -1907,6 +1939,80 @@ pub fn quantize_b(
             iscan.as_ptr(),
             log_scale,
             i32::from(dispatch),
+        )
+    }
+}
+
+/// Drives `svt_aom_quantize_b_c` with non-NULL qm/iqm (the QM branch).
+#[allow(clippy::too_many_arguments)]
+pub fn quantize_b_qm(
+    coeff: &[i32],
+    row: &QuantRow,
+    scan: &[u16],
+    log_scale: i32,
+    qm: &[u8],
+    iqm: &[u8],
+    qcoeff: &mut [i32],
+    dqcoeff: &mut [i32],
+) -> u16 {
+    assert_eq!(coeff.len(), scan.len());
+    assert!(qm.len() >= coeff.len() && iqm.len() >= coeff.len());
+    assert!(qcoeff.len() >= coeff.len() && dqcoeff.len() >= coeff.len());
+    let iscan = build_iscan(scan);
+    let scan_i16: Vec<i16> = scan.iter().map(|&v| v as i16).collect();
+    unsafe {
+        ref_quantize_b_qm(
+            coeff.as_ptr(),
+            coeff.len() as isize,
+            row.zbin.as_ptr(),
+            row.round.as_ptr(),
+            row.quant.as_ptr(),
+            row.quant_shift.as_ptr(),
+            qcoeff.as_mut_ptr(),
+            dqcoeff.as_mut_ptr(),
+            row.dequant.as_ptr(),
+            scan_i16.as_ptr(),
+            iscan.as_ptr(),
+            qm.as_ptr(),
+            iqm.as_ptr(),
+            log_scale,
+        )
+    }
+}
+
+/// Drives `svt_av1_quantize_fp_qm_c` (the fp QM branch). Returns eob.
+#[allow(clippy::too_many_arguments)]
+pub fn quantize_fp_qm(
+    coeff: &[i32],
+    row: &QuantRow,
+    scan: &[u16],
+    log_scale: i32,
+    qm: &[u8],
+    iqm: &[u8],
+    qcoeff: &mut [i32],
+    dqcoeff: &mut [i32],
+) -> u16 {
+    assert_eq!(coeff.len(), scan.len());
+    assert!(qm.len() >= coeff.len() && iqm.len() >= coeff.len());
+    assert!(qcoeff.len() >= coeff.len() && dqcoeff.len() >= coeff.len());
+    let iscan = build_iscan(scan);
+    let scan_i16: Vec<i16> = scan.iter().map(|&v| v as i16).collect();
+    unsafe {
+        ref_quantize_fp_qm(
+            coeff.as_ptr(),
+            coeff.len() as isize,
+            row.zbin.as_ptr(),
+            row.round_fp.as_ptr(),
+            row.quant_fp.as_ptr(),
+            row.quant_shift.as_ptr(),
+            qcoeff.as_mut_ptr(),
+            dqcoeff.as_mut_ptr(),
+            row.dequant.as_ptr(),
+            scan_i16.as_ptr(),
+            iscan.as_ptr(),
+            qm.as_ptr(),
+            iqm.as_ptr(),
+            log_scale,
         )
     }
 }
