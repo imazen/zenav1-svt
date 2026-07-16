@@ -984,8 +984,18 @@ impl EncodePipeline {
         // search, ours re-runs the deterministic walk).
         if cdef_params.bits > 0 {
             let (tile_cdef, _geom_c, u_c, v_c) = run_entropy_walk(None, Some(&cdef_params));
-            debug_assert_eq!(u_c, u_recon, "cdef re-walk chroma recon must be identical");
-            debug_assert_eq!(v_c, v_recon, "cdef re-walk chroma recon must be identical");
+            // The re-walk reproduces the PRE-filter recon; u_recon/v_recon
+            // were deblocked IN PLACE above, so compare against the
+            // pre-deblock copy (the old `== u_recon` form only held on
+            // content where chroma deblock was a no-op — it fired
+            // spuriously on flat+textured content at mid qp, mainline
+            // included, pre-dating the fork work).
+            #[cfg(debug_assertions)]
+            if let Some((_, u_unf, v_unf)) = self.last_recon_unfiltered.as_ref() {
+                debug_assert_eq!(&u_c, u_unf, "cdef re-walk chroma recon must be identical");
+                debug_assert_eq!(&v_c, v_unf, "cdef re-walk chroma recon must be identical");
+            }
+            let _ = (&u_c, &v_c);
             tile_data = tile_cdef;
         }
         self.last_recon_pre_cdef = Some((recon.clone(), u_recon.clone(), v_recon.clone()));
@@ -1049,8 +1059,15 @@ impl EncodePipeline {
                     let cdef_walk_opt = (cdef_params.bits > 0).then_some(&cdef_params);
                     let (tile_lr, _geom2, u2, v2) =
                         run_entropy_walk(Some(&rest_info), cdef_walk_opt);
-                    debug_assert_eq!(u2, u_recon, "re-walk chroma recon must be identical");
-                    debug_assert_eq!(v2, v_recon, "re-walk chroma recon must be identical");
+                    // Same pre-deblock reference as the CDEF re-walk assert:
+                    // u_recon/v_recon have been deblocked (and CDEF'd) in
+                    // place by now; the walk reproduces the pre-filter state.
+                    #[cfg(debug_assertions)]
+                    if let Some((_, u_unf, v_unf)) = self.last_recon_unfiltered.as_ref() {
+                        debug_assert_eq!(&u2, u_unf, "LR re-walk chroma recon must be identical");
+                        debug_assert_eq!(&v2, v_unf, "LR re-walk chroma recon must be identical");
+                    }
+                    let _ = (&u2, &v2);
                     tile_data = tile_lr;
 
                     // Decoder-exact application to the output copy: stripe
