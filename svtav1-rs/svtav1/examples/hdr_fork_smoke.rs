@@ -26,10 +26,19 @@ fn ivf(w: u32, h: u32, frame: &[u8]) -> Vec<u8> {
     v
 }
 
-fn run(mode: &str, qp: u8, out_prefix: &str) {
+fn run(mode: &str, qp: u8, preset: u8, out_prefix: &str) {
     let (w, h) = (128u32, 128u32);
+    // Top half FLAT (low variance -> variance-boost fires), bottom half
+    // textured — so fork-mode delta-q emits real nonzero per-SB deltas.
     let y: Vec<u8> = (0..(w * h) as usize)
-        .map(|i| (((i % w as usize) * 3 + (i / w as usize) * 5 + ((i % w as usize) * (i / w as usize)) / 64) % 256) as u8)
+        .map(|i| {
+            let (x, yy) = (i % w as usize, i / w as usize);
+            if yy < (h as usize) / 2 {
+                100u8
+            } else {
+                ((x * 3 + yy * 5 + (x * yy) / 64) % 256) as u8
+            }
+        })
         .collect();
     let cwh = ((w / 2) * (h / 2)) as usize;
     let u: Vec<u8> = (0..cwh).map(|i| ((i % 64) + 96) as u8).collect();
@@ -38,7 +47,7 @@ fn run(mode: &str, qp: u8, out_prefix: &str) {
     let mut p = EncodePipeline::new(
         w,
         h,
-        6,
+        preset,
         RcConfig { mode: RcMode::Cqp, qp, ..RcConfig::default() },
         4,
         1,
@@ -65,8 +74,12 @@ fn run(mode: &str, qp: u8, out_prefix: &str) {
 fn main() {
     let dir = std::env::args().nth(1).unwrap_or_else(|| "/tmp/hdr_fork_smoke".into());
     std::fs::create_dir_all(&dir).unwrap();
+    let preset: u8 = std::env::args()
+        .nth(2)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(6);
     for qp in [20u8, 40, 55] {
-        run("mainline", qp, &format!("{dir}/main_q{qp}"));
-        run("fork", qp, &format!("{dir}/fork_q{qp}"));
+        run("mainline", qp, preset, &format!("{dir}/main_q{qp}"));
+        run("fork", qp, preset, &format!("{dir}/fork_q{qp}"));
     }
 }
