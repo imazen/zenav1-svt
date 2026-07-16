@@ -122,3 +122,29 @@ fn qm_is_live_in_fork_mode() {
         assert_ne!(a, b, "p{preset} qp{qp}: enable_qm knob is inert");
     }
 }
+
+#[test]
+fn tx_bias_is_live_in_fork_mode() {
+    // Non-default fork knob (--tx-bias, default 0): biases the full-loop
+    // spatial SSE by mode class + tx size (pic_operators.c facade).
+    // With the fork default ac_bias=1.0 the facade's strong mode-class
+    // biases are gated off (C requires ac_bias == 0.0) and only the
+    // uniform 17/16 small-block scale remains — too weak to flip a
+    // decision on every cell. Isolate the knob the way C exposes it:
+    // ac_bias=0 activates the class biases.
+    let mut flipped = 0;
+    for (preset, qp) in [(2u8, 20u8), (2, 40), (6, 20), (6, 40), (6, 55)] {
+        let mut on = HdrForkConfig::hdr_fork();
+        on.tx_bias = 1;
+        on.ac_bias = 0.0;
+        let mut off = HdrForkConfig::hdr_fork();
+        off.ac_bias = 0.0;
+        assert_eq!(off.tx_bias, 0, "fork default must stay 0");
+        let a = encode_with(Some(on), qp, preset);
+        let b = encode_with(Some(off), qp, preset);
+        if a != b {
+            flipped += 1;
+        }
+    }
+    assert!(flipped > 0, "tx_bias knob is inert on all 5 cells");
+}
