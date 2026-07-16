@@ -1734,3 +1734,80 @@ pub fn quantize_b(
         )
     }
 }
+
+// ---------------------------------------------------------------------------
+// Screen-content detection primitives (pic_analysis_process.c) — the leaf
+// functions of the AA-aware detector (#71). All exported `T` symbols.
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn svt_av1_count_colors_with_threshold(
+        src: *const u8,
+        stride: i32,
+        rows: i32,
+        cols: i32,
+        num_colors_threshold: i32,
+        num_colors: *mut i32,
+    ) -> bool;
+    fn svt_av1_find_dominant_value(src: *const u8, stride: i32, rows: i32, cols: i32) -> u8;
+    fn svt_av1_dilate_block(
+        src: *const u8,
+        src_stride: i32,
+        dilated: *mut u8,
+        dilated_stride: i32,
+        rows: i32,
+        cols: i32,
+    );
+}
+
+/// Reference `svt_av1_count_colors_with_threshold` (pic_analysis_process.c:911).
+pub fn count_colors_with_threshold(
+    src: &[u8],
+    stride: usize,
+    rows: usize,
+    cols: usize,
+    threshold: i32,
+) -> (bool, i32) {
+    assert!(src.len() >= (rows - 1) * stride + cols);
+    let mut n: i32 = 0;
+    let ok = unsafe {
+        svt_av1_count_colors_with_threshold(
+            src.as_ptr(),
+            stride as i32,
+            rows as i32,
+            cols as i32,
+            threshold,
+            &mut n,
+        )
+    };
+    (ok, n)
+}
+
+/// Reference `svt_av1_find_dominant_value` (pic_analysis_process.c:986).
+pub fn find_dominant_value(src: &[u8], stride: usize, rows: usize, cols: usize) -> u8 {
+    assert!(src.len() >= (rows - 1) * stride + cols);
+    unsafe { svt_av1_find_dominant_value(src.as_ptr(), stride as i32, rows as i32, cols as i32) }
+}
+
+/// Reference `svt_av1_dilate_block` (pic_analysis_process.c:1024).
+pub fn dilate_block(
+    src: &[u8],
+    src_stride: usize,
+    dilated: &mut [u8],
+    dilated_stride: usize,
+    rows: usize,
+    cols: usize,
+) {
+    assert!(src.len() >= (rows - 1) * src_stride + cols);
+    assert!(dilated.len() >= (rows - 1) * dilated_stride + cols);
+    unsafe {
+        svt_av1_dilate_block(
+            src.as_ptr(),
+            src_stride as i32,
+            dilated.as_mut_ptr(),
+            dilated_stride as i32,
+            rows as i32,
+            cols as i32,
+        )
+    }
+}

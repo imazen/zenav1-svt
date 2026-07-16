@@ -19,6 +19,7 @@ pub mod pd0;
 pub mod perceptual;
 pub mod picture;
 pub mod pipeline;
+pub mod sc_detect;
 pub mod quant;
 pub mod rate_control;
 pub mod restoration;
