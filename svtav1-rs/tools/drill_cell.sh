@@ -53,6 +53,12 @@ set +e
 MI=$(python3 "$HERE/drill_join.py" --locate "$D" "$W" "$H")
 rc=$?
 set -e
+if [[ $rc -eq 2 ]]; then
+    echo "recon planes MISSING (rc 2) — the port recon dump (SVTAV1_RECONDBG in"
+    echo "pick_filter_levels_full_search) only fires on the full-DLF-search path;"
+    echo "at presets whose dlf level uses the cheaper search it never runs."
+    exit 2
+fi
 if [[ $rc -eq 3 || -z "$MI" ]]; then
     echo "recon planes IDENTICAL -> divergence is post-recon (LF/CDEF/LR search); use identity_diff.sh"
     exit 3
