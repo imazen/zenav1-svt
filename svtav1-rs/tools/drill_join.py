@@ -72,12 +72,13 @@ def join(c_path, p_path):
             r, c, b, part, rd = map(int, m.groups())
             c_nodes[(r, c, b)] = (part, rd)
         m = re.match(r"CLEAF mi=\((\d+),(\d+)\) bsize=(\d+) shape=(\d+) nsi=(\d+) mode=(\d+) uv=(\d+) txd=(\d+)"
-                     r".*? txt=\[([\d,-]+)\] ye=\[([\d,]+)\] ue=(\d+) ve=(\d+)", line)
+                     r" ady=(-?\d+) aduv=(-?\d+) txt=\[([\d,-]+)\] ye=\[([\d,]+)\] ue=(\d+) ve=(\d+)", line)
         if m:
             g = m.groups()
             r, c, b = int(g[0]), int(g[1]), int(g[2])
             c_leaves[(r, c, b)] = dict(mode=int(g[5]), uv=int(g[6]), txd=int(g[7]),
-                                       txt=g[8].split(","), ye=g[9].split(","), ue=g[10], ve=g[11])
+                                       ady=g[8], aduv=g[9],
+                                       txt=g[10].split(","), ye=g[11].split(","), ue=g[12], ve=g[13])
 
     p_ts, p_blk, p_shape = {}, {}, {}
     for line in open(p_path):
@@ -96,14 +97,15 @@ def join(c_path, p_path):
         m = re.match(
             r"NSQDBG BLK mi=\((\d+),(\d+)\) bsize=(\d+) shape=(\d+) nsi=(\d+) cost=(\d+) rate=(\d+)"
             r" dist=(\d+) mode=(\d+) coeff=(\d+) nz=(\d+) txd=(\d+) uv=(\d+)"
-            r"(?: txt=\[([\d,]*)\] ye=\[([\d,]*)\] ue=(\d+) ve=(\d+))?", line)
+            r"(?: txt=\[([\d,]*)\] ye=\[([\d,]*)\] ue=(\d+) ve=(\d+)(?: fi=(\d+) ady=(-?\d+) aduv=(-?\d+))?)?", line)
         if m:
             g = m.groups()
             v = list(map(int, g[:13]))
             p_blk[(v[0], v[1], v[2], v[3], v[4])] = dict(
                 cost=v[5], rate=v[6], dist=v[7], mode=v[8], txd=v[11], uv=v[12],
                 txt=(g[13] or "").split(",") if g[13] else None,
-                ye=(g[14] or "").split(",") if g[14] else None, ue=g[15], ve=g[16])
+                ye=(g[14] or "").split(",") if g[14] else None, ue=g[15], ve=g[16],
+                fi=g[17], ady=g[18], aduv=g[19])
 
     # 1. Structural flips: C's parent-vs-split choice per square node vs port TS.
     flips, matches = [], 0
@@ -136,9 +138,11 @@ def join(c_path, p_path):
         pcost = p_shape.get((r, c, b, 0), pb["cost"])
         d = pcost - rd
         deltas.append((abs(d), d, r, c, b))
-        if (pb["mode"], pb["uv"], pb["txd"]) != (cl["mode"], cl["uv"], cl["txd"]):
-            mode_flips.append(f"  mi=({r},{c}) {b}: C mode/uv/txd=({cl['mode']},{cl['uv']},{cl['txd']}) | "
-                              f"port=({pb['mode']},{pb['uv']},{pb['txd']}) Crd={rd} Pcost={pb['cost']}")
+        if (pb["mode"], pb["uv"], pb["txd"]) != (cl["mode"], cl["uv"], cl["txd"]) or (
+                pb.get("ady") is not None and (pb["ady"], pb["aduv"]) != (cl["ady"], cl["aduv"])):
+            mode_flips.append(f"  mi=({r},{c}) {b}: C m/uv/txd/ady/aduv=({cl['mode']},{cl['uv']},{cl['txd']},"
+                              f"{cl['ady']},{cl['aduv']}) | port=({pb['mode']},{pb['uv']},{pb['txd']},"
+                              f"{pb.get('ady')},{pb.get('aduv')}) Crd={rd} Pcost={pb['cost']}")
         elif pb["txt"] is not None:
             # Same mode/uv/txd: compare coeff-level state on the used txbs.
             n = len(pb["txt"])
@@ -167,13 +171,14 @@ def join(c_path, p_path):
             cur_parent = (int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4)))
             continue
         m = re.match(r"CLEAF mi=\((\d+),(\d+)\) bsize=(\d+) shape=(\d+) nsi=(\d+) mode=(\d+) uv=(\d+) txd=(\d+)"
-                     r".*? txt=\[([\d,-]+)\] ye=\[([\d,]+)\] ue=(\d+) ve=(\d+)", line)
+                     r" ady=(-?\d+) aduv=(-?\d+) txt=\[([\d,-]+)\] ye=\[([\d,]+)\] ue=(\d+) ve=(\d+)", line)
         if m and int(m.group(4)) != 0 and cur_parent is not None:
             g = m.groups()
             pr, pc, pb_, _ = cur_parent
             c_nsq[(pr, pc, pb_, int(g[3]), int(g[4]))] = dict(
                 child=(int(g[0]), int(g[1])), mode=int(g[5]), uv=int(g[6]), txd=int(g[7]),
-                txt=g[8].split(","), ye=g[9].split(","), ue=g[10], ve=g[11])
+                ady=g[8], aduv=g[9],
+                txt=g[10].split(","), ye=g[11].split(","), ue=g[12], ve=g[13])
     nsq_flips = 0
     shown = 0
     for key, cl in sorted(c_nsq.items()):

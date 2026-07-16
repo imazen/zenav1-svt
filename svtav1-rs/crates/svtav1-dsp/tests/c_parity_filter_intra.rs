@@ -28,7 +28,25 @@ impl Rng {
 
 /// (C TxSize index, width, height) for the square sizes filter-intra can
 /// code (4x4..32x32; the flag is gated to blocks with w,h <= 32).
-const SIZES: [(usize, usize, usize); 4] = [(0, 4, 4), (1, 8, 8), (2, 16, 16), (3, 32, 32)];
+const SIZES: [(usize, usize, usize); 14] = [
+    (0, 4, 4),
+    (1, 8, 8),
+    (2, 16, 16),
+    (3, 32, 32),
+    // Rectangular TXs (C TxSize enum ids) — the fi flag allows any w,h <= 32,
+    // and the M0 g128-q20 drill proved the 16x4 kernel diverged while the
+    // square-only sweep stayed green: rects were never differentially tested.
+    (5, 4, 8),
+    (6, 8, 4),
+    (7, 8, 16),
+    (8, 16, 8),
+    (9, 16, 32),
+    (10, 32, 16),
+    (13, 4, 16),
+    (14, 16, 4),
+    (15, 8, 32),
+    (16, 32, 8),
+];
 
 #[test]
 fn filter_intra_predictor_matches_c() {
