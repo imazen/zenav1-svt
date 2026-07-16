@@ -956,6 +956,50 @@ uint16_t ref_quantize_b(const int32_t* coeff, intptr_t n_coeffs, const int16_t* 
     return eob;
 }
 
+/* ---- QM quantize kernels (full_loop.c QM branches) ----
+   Direct pass-through to the exported scalar kernels with non-NULL qm/iqm
+   pointers, validating BOTH the Rust QM kernels and the transcribed
+   wt/iwt_matrix_ref tables the test feeds from the Rust side. */
+
+void svt_av1_quantize_fp_qm_c(const int32_t* coeff_ptr, intptr_t n_coeffs, const int16_t* zbin_ptr,
+                              const int16_t* round_ptr, const int16_t* quant_ptr, const int16_t* quant_shift_ptr,
+                              int32_t* qcoeff_ptr, int32_t* dqcoeff_ptr, const int16_t* dequant_ptr,
+                              uint16_t* eob_ptr, const int16_t* scan, const int16_t* iscan, const uint8_t* qm_ptr,
+                              const uint8_t* iqm_ptr, int16_t log_scale);
+
+uint16_t ref_quantize_b_qm(const int32_t* coeff, intptr_t n_coeffs, const int16_t* zbin, const int16_t* round,
+                           const int16_t* quant, const int16_t* quant_shift, int32_t* qcoeff, int32_t* dqcoeff,
+                           const int16_t* dequant, const int16_t* scan, const int16_t* iscan, const uint8_t* qm,
+                           const uint8_t* iqm, int32_t log_scale) {
+    uint16_t eob = 0;
+    svt_aom_quantize_b_c(
+        coeff, n_coeffs, zbin, round, quant, quant_shift, qcoeff, dqcoeff, dequant, &eob, scan, iscan, qm, iqm, log_scale);
+    return eob;
+}
+
+uint16_t ref_quantize_fp_qm(const int32_t* coeff, intptr_t n_coeffs, const int16_t* zbin, const int16_t* round_fp,
+                            const int16_t* quant_fp, const int16_t* quant_shift, int32_t* qcoeff, int32_t* dqcoeff,
+                            const int16_t* dequant, const int16_t* scan, const int16_t* iscan, const uint8_t* qm,
+                            const uint8_t* iqm, int32_t log_scale) {
+    uint16_t eob = 0;
+    svt_av1_quantize_fp_qm_c(coeff,
+                             n_coeffs,
+                             zbin,
+                             round_fp,
+                             quant_fp,
+                             quant_shift,
+                             qcoeff,
+                             dqcoeff,
+                             dequant,
+                             &eob,
+                             scan,
+                             iscan,
+                             qm,
+                             iqm,
+                             (int16_t)log_scale);
+    return eob;
+}
+
 /* ---- AC-bias psychovisual kernels (ac_bias.c) ----
    svt_psy_distortion calls svt_aom_hadamard_{4x4,8x8}/svt_aom_satd through
    the aom_dsp RTCD dispatch table, which is NULL until setup — wrap with
