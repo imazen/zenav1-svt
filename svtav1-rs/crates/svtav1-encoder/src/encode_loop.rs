@@ -207,6 +207,7 @@ pub fn encode_block_tx_cq(
             tx_class,
             plane_type,
             (width * height) as u32,
+            tx_type as usize == 9, // TX_TYPE IDTX (identity)
         );
         // Unpack into the full raster (zeros outside the kept quadrant)
         // and derive the raster-domain eob the rest of this function uses

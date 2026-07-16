@@ -19,6 +19,11 @@ use alloc::vec::Vec;
 
 /// Encoder pipeline state.
 pub struct EncodePipeline {
+    /// SVT_HDR_MODE mirror: which C oracle this encode targets (mainline
+    /// v4.2.0 vs the svt-av1-hdr fork hybrid MODE1) + the fork knobs.
+    /// Defaults to Mainline = all fork behavior off; callers opt in with
+    /// `pipe.hdr = HdrForkConfig::hdr_fork()` after construction.
+    pub hdr: crate::hdr_mode::HdrForkConfig,
     /// Speed configuration.
     pub speed_config: SpeedConfig,
     /// Rate control configuration.
@@ -83,6 +88,7 @@ impl EncodePipeline {
         intra_period: u32,
     ) -> Self {
         Self {
+            hdr: crate::hdr_mode::HdrForkConfig::default(),
             speed_config: SpeedConfig::from_preset(preset),
             rc_config,
             rc_state: RcState::default(),
@@ -404,6 +410,7 @@ impl EncodePipeline {
             tile_rows,
             base_qindex,
             tpl_adjusted_qp,
+            self.hdr.sharpness,
             lambda,
             &self.speed_config,
             ref_frame_data.as_deref(),
@@ -2560,6 +2567,7 @@ fn encode_tile_rows(
     tile_rows: usize,
     base_qindex: u8,
     cli_qp: u8,
+    hdr_sharpness: i8,
     _lambda: u64, // Per-SB lambda computed from sb_qp_offsets
     speed_config: &crate::speed_config::SpeedConfig,
     ref_frame_data: Option<&[u8]>,
@@ -2642,6 +2650,7 @@ fn encode_tile_rows(
         let fun_frame = if use_funnel {
             let cq = c_quant.as_ref().unwrap();
             Some(crate::leaf_funnel::FunnelFrame {
+                sharpness: hdr_sharpness,
                 lambda: cq.lambda as u64,
                 cli_qp: cli_qp as u32,
                 rdoq_level: cq.rdoq_level,
