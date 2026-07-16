@@ -399,6 +399,15 @@ impl EncodePipeline {
         let tile_rows = 1;
         let rows_per_tile = sb_rows.div_ceil(tile_rows);
 
+        // [SVT_HDR_MODE] fork chroma-q: derive the FH per-plane deltas and
+        // the plane qindexes the quantizer must use. Mainline: all zero.
+        let chroma_deltas = if self.hdr.is_fork() {
+            crate::chroma_q::fork_chroma_q_deltas(base_qindex, &self.color_description)
+        } else {
+            crate::chroma_q::ChromaQDeltas::default()
+        };
+        let qindex_u = (i32::from(base_qindex) + i32::from(chroma_deltas.u_ac)).clamp(0, 255) as u8;
+        let qindex_v = (i32::from(base_qindex) + i32::from(chroma_deltas.v_ac)).clamp(0, 255) as u8;
         let tile_recons = encode_tile_rows(
             &encode_input,
             w,
@@ -409,6 +418,8 @@ impl EncodePipeline {
             rows_per_tile,
             tile_rows,
             base_qindex,
+            qindex_u,
+            qindex_v,
             tpl_adjusted_qp,
             self.hdr.sharpness,
             lambda,
@@ -527,6 +538,12 @@ impl EncodePipeline {
                 self.speed_config.preset,
                 is_single_frame,
             );
+            // [SVT_HDR_MODE] the fork ALWAYS signals separate_uv_delta_q
+            // (its FH writes independent U/V deltas — entropy_coding.c
+            // fork block hardcodes both flags true).
+            if self.hdr.is_fork() {
+                t.separate_uv_delta_q = true;
+            }
             // enable_intra_edge_filter's C-parity surface is still/420
             // (the C matched config). The mono extension keeps 0: C cannot
             // emit mono, and the mono leaf coder predicts without edge
@@ -583,7 +600,8 @@ impl EncodePipeline {
                 u_recon: &mut u_recon,
                 v_recon: &mut v_recon,
                 stride: cw,
-                qindex: base_qindex,
+                qindex_u,
+                qindex_v,
                 c_quant: c_quant.as_deref(),
             });
             // LR tap references reset at the tile start (C
@@ -1004,10 +1022,20 @@ impl EncodePipeline {
                 // ones the tile signals and the output recon had applied.
                 &lr_signal,
                 sc_signal,
-                // chroma_q deltas: None until the per-plane chroma quant
-                // threading lands (see chroma_q.rs ACTIVATION STATUS) — never
-                // signal deltas the quantizer does not apply.
-                None,
+                // [SVT_HDR_MODE] fork chroma-q deltas: the quantizer above
+                // used qindex_u/qindex_v built from EXACTLY these deltas, so
+                // signaling and application agree (chroma_q.rs). Mainline
+                // passes None = the zero-delta bit pattern.
+                if self.hdr.is_fork() {
+                    Some([
+                        chroma_deltas.u_dc,
+                        chroma_deltas.u_ac,
+                        chroma_deltas.v_dc,
+                        chroma_deltas.v_ac,
+                    ])
+                } else {
+                    None
+                },
             );
             // tile_data is already a complete tile_group (with TG header)
             let mut frame_payload = alloc::vec::Vec::new();
@@ -1138,9 +1166,12 @@ struct ChromaPass<'a> {
     v_recon: &'a mut [u8],
     /// Chroma plane stride (= frame_width / 2).
     stride: usize,
-    /// qindex (0..255) for chroma quantization — same tables as luma,
-    /// since the frame header signals DeltaQUDc = DeltaQUAc = 0.
-    qindex: u8,
+    /// Per-plane chroma quantization qindexes: clamp(base + FH
+    /// delta_q_ac[plane]). Both == base_qindex in mainline mode (all FH
+    /// chroma deltas 0); the fork's chroma-q path sets them independently
+    /// and the FH signals the deltas (chroma_q.rs).
+    qindex_u: u8,
+    qindex_v: u8,
     /// Frame-level C-exact coding quantizer (still path) — C's MDS3 RDOQ
     /// covers chroma too (skip_uv cleared when enc-dec is bypassed).
     c_quant: Option<&'a crate::quant::CodingQuantCfg>,
@@ -1790,10 +1821,10 @@ fn encode_block_syntax(
             (u_q.clone(), *u_eob, v_q.clone(), *v_eob)
         } else {
             let (u_q, u_eob) = crate::partition::encode_chroma_block_dc(
-                cp.u_src, cp.u_recon, cp.stride, cx, cy, cw, ch, cp.qindex, cp.c_quant,
+                cp.u_src, cp.u_recon, cp.stride, cx, cy, cw, ch, cp.qindex_u, cp.c_quant,
             );
             let (v_q, v_eob) = crate::partition::encode_chroma_block_dc(
-                cp.v_src, cp.v_recon, cp.stride, cx, cy, cw, ch, cp.qindex, cp.c_quant,
+                cp.v_src, cp.v_recon, cp.stride, cx, cy, cw, ch, cp.qindex_v, cp.c_quant,
             );
             (u_q, u_eob, v_q, v_eob)
         }
@@ -2574,6 +2605,9 @@ fn encode_tile_rows(
     rows_per_tile: usize,
     tile_rows: usize,
     base_qindex: u8,
+    // Per-plane chroma qindexes (== base_qindex in mainline mode).
+    qindex_u: u8,
+    qindex_v: u8,
     cli_qp: u8,
     hdr_sharpness: i8,
     _lambda: u64, // Per-SB lambda computed from sb_qp_offsets
@@ -2663,6 +2697,8 @@ fn encode_tile_rows(
                 cli_qp: cli_qp as u32,
                 rdoq_level: cq.rdoq_level,
                 base_qindex,
+                qindex_u,
+                qindex_v,
                 cfg: funnel_cfg,
             })
         } else {
@@ -3165,7 +3201,8 @@ fn encode_tile_rows(
                             u_recon: &mut sim_u,
                             v_recon: &mut sim_v,
                             stride: cwid,
-                            qindex: base_qindex,
+                            qindex_u,
+                            qindex_v,
                             c_quant: None,
                         });
                         encode_partition_tree(
