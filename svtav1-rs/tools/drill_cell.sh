@@ -19,19 +19,25 @@
 set -euo pipefail
 
 if [[ $# -lt 5 ]]; then
-    echo "usage: $0 <png> <w> <h> <cli_qp 0..63> <preset> [outdir]" >&2
+    echo "usage: $0 <png|uniform|gradient> <w> <h> <cli_qp 0..63> <preset> [outdir]" >&2
     exit 2
 fi
 IMG=$1 W=$2 H=$3 QP=$4 P=$5
 HERE=$(cd "$(dirname "$0")" && pwd)
-D="${6:-$HERE/../target/drill/$(basename "$IMG" .png)_q${QP}_p${P}}"
+# identity_run content arg: synthetic generators pass through verbatim;
+# anything else is a PNG path.
+case "$IMG" in
+uniform | gradient) CONTENT=$IMG NAME=$IMG ;;
+*) CONTENT="file:$IMG" NAME=$(basename "$IMG" .png) ;;
+esac
+D="${6:-$HERE/../target/drill/${NAME}_${W}x${H}_q${QP}_p${P}}"
 mkdir -p "$D"
 
 # 1+2: encodes with recon dumps (wrappers force freshness). The port's stderr
 # IS its symtrace op stream; C's comes from SVT_TRACE_OUT — both captured here
 # so the op-level differ below costs no extra encodes.
 SVTAV1_RECONDBG=1 SVTAV1_RECON_BIN="$D/p" \
-    "$HERE/identity_run" "file:$IMG" "$W" "$H" "$QP" "$P" "$D/rs" >/dev/null 2>"$D/rs.trace"
+    "$HERE/identity_run" "$CONTENT" "$W" "$H" "$QP" "$P" "$D/rs" >/dev/null 2>"$D/rs.trace"
 SVT_RECON_OUT="$D/c.sse" SVT_RECON_BIN="$D/c" SVT_TRACE_OUT="$D/c.trace" \
     "$HERE/capture_c_trace/capture_c_trace" "$W" "$H" "$QP" "$P" "$D/rs.yuv" "$D/c.obu" >/dev/null 2>"$D/c.log"
 
@@ -56,7 +62,7 @@ echo "drilling SB root mi=($MIROW,$MICOL)"
 
 # 5: SB-filtered decision dumps.
 SVTAV1_NSQDBG=1 SVTAV1_DBG_MI="$MIROW,$MICOL" \
-    "$HERE/identity_run" "file:$IMG" "$W" "$H" "$QP" "$P" "$D/rs2" >/dev/null 2>"$D/rs.nsqraw"
+    "$HERE/identity_run" "$CONTENT" "$W" "$H" "$QP" "$P" "$D/rs2" >/dev/null 2>"$D/rs.nsqraw"
 grep -E 'NSQDBG (TS|BLK|SHAPE|SKIP|TSX)' "$D/rs.nsqraw" >"$D/rs.sbdump" || true
 SVT_PICKPART_OUT="$D/c.pickpart" SVT_PICKPART_MIROW="$MIROW" SVT_PICKPART_MICOL="$MICOL" \
     "$HERE/capture_c_trace/capture_c_trace" "$W" "$H" "$QP" "$P" "$D/rs.yuv" "$D/c.obu" >/dev/null 2>&1
