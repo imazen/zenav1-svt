@@ -153,6 +153,13 @@ pub struct FrameContext {
     /// chroma-ref block where svt_aom_allow_palette holds).
     pub palette_uv_mode_cdf: [[AomCdfProb; 3]; 2],
 
+    /// palette_y_size CDFs [palette bsize ctx 0..6], 7 symbols (n-2).
+    pub palette_y_size_cdf: [[AomCdfProb; 8]; 7],
+
+    /// palette_y_color_index CDFs [n-2][color ctx 0..4]; n symbols per
+    /// row, count slot at index n (tails structurally zero).
+    pub palette_y_color_index_cdf: [[[AomCdfProb; 9]; 5]; 7],
+
     /// Angle delta CDFs [DIRECTIONAL_MODES][ANGLE_DELTA_SYMS+1]
     /// For directional modes (V_PRED..D67_PRED), encodes angle offset -3..+3.
     pub angle_delta_cdf: [[AomCdfProb; ANGLE_DELTA_SYMS + 1]; DIRECTIONAL_MODES],
@@ -421,6 +428,8 @@ impl FrameContext {
             uv_mode_cdf: crate::default_cdfs::UV_MODE_CDF,
             palette_y_mode_cdf: crate::default_cdfs::PALETTE_Y_MODE_CDF,
             palette_uv_mode_cdf: crate::default_cdfs::PALETTE_UV_MODE_CDF,
+            palette_y_size_cdf: crate::default_cdfs::PALETTE_Y_SIZE_CDF,
+            palette_y_color_index_cdf: crate::default_cdfs::PALETTE_Y_COLOR_INDEX_CDF,
             // Real AV1 defaults extracted from the C reference — the decoder
             // initializes angle_delta_cdf with these, so a uniform table
             // desyncs the stream on the first directional mode.
@@ -504,9 +513,14 @@ impl FrameContext {
         avg(self.txb_skip_cdf.as_flattened_mut(), tr.txb_skip_cdf.as_flattened(), wt_left, wt_tr);
         avg(self.interp_filter_cdf.as_flattened_mut(), tr.interp_filter_cdf.as_flattened(), wt_left, wt_tr);
         avg(self.comp_inter_cdf.as_flattened_mut(), tr.comp_inter_cdf.as_flattened(), wt_left, wt_tr);
-        // palette flag CDFs (C enc_dec_process.c:2608-2609)
+        // palette CDFs (C enc_dec_process.c:2595-2609; the color-index
+        // rows use AVG_CDF_STRIDE with nsymbs=j+2, which full-row
+        // averaging reproduces because the per-row tails are zero on
+        // both inputs and each row's count slot is at the same index).
         avg(self.palette_uv_mode_cdf.as_flattened_mut(), tr.palette_uv_mode_cdf.as_flattened(), wt_left, wt_tr);
         avg(self.palette_y_mode_cdf.as_flattened_mut().as_flattened_mut(), tr.palette_y_mode_cdf.as_flattened().as_flattened(), wt_left, wt_tr);
+        avg(self.palette_y_size_cdf.as_flattened_mut(), tr.palette_y_size_cdf.as_flattened(), wt_left, wt_tr);
+        avg(self.palette_y_color_index_cdf.as_flattened_mut().as_flattened_mut(), tr.palette_y_color_index_cdf.as_flattened().as_flattened(), wt_left, wt_tr);
         // 3D
         avg(self.kf_y_mode_cdf.as_flattened_mut().as_flattened_mut(), tr.kf_y_mode_cdf.as_flattened().as_flattened(), wt_left, wt_tr);
         avg(self.uv_mode_cdf.as_flattened_mut().as_flattened_mut(), tr.uv_mode_cdf.as_flattened().as_flattened(), wt_left, wt_tr);

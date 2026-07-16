@@ -105,6 +105,17 @@ pub struct MdRates {
     /// EVERY UV_DC chroma fast rate when allow_palette (C computes it
     /// inside svt_aom_get_intra_uv_fast_rate, rd_cost.c:514-520).
     pub palette_uv_no: i32,
+    /// palette_y_mode YES flag cost per bsize ctx (neighbor ctx 0) — the
+    /// n>0 arm palette candidates price (rd_cost.c:585).
+    /// PORT-NOTE(unverified): consumed by the palette RD integration
+    /// (#71 chunk 4); verify via an EPICA identity cell once the search
+    /// lands.
+    pub palette_y_yes: [i32; 7],
+    /// palette_y_size fac bits [bsize ctx][n-2] (md_rate_estimation.c:167).
+    pub palette_ysize: [[i32; 7]; 7],
+    /// palette_y_color_index fac bits [n-2][color ctx][idx<n]
+    /// (md_rate_estimation.c:~180; row width = n symbols).
+    pub palette_ycolor: [[[i32; 8]; 5]; 7],
     /// Coefficient cost tables (svt_aom_estimate_coefficients_rate).
     pub coeff: alloc::boxed::Box<CoeffCostTables>,
 }
@@ -130,12 +141,30 @@ pub fn build_md_rates(fc: &FrameContext, cfc: &cc::CoeffFc) -> alloc::boxed::Box
         cfl_alpha_fac_bits: [[[0; 16]; 2]; 8],
         palette_y_no: [0; 7],
         palette_uv_no: 0,
+        palette_y_yes: [0; 7],
+        palette_ysize: [[0; 7]; 7],
+        palette_ycolor: [[[0; 8]; 5]; 7],
         coeff: crate::quant::build_coeff_cost_tables_from_fc(cfc),
     });
     for b in 0..7 {
-        r.palette_y_no[b] = costs_from_cdf::<2>(&fc.palette_y_mode_cdf[b][0])[0];
+        let c2 = costs_from_cdf::<2>(&fc.palette_y_mode_cdf[b][0]);
+        r.palette_y_no[b] = c2[0];
+        r.palette_y_yes[b] = c2[1];
+        r.palette_ysize[b] = costs_from_cdf::<7>(&fc.palette_y_size_cdf[b]);
     }
     r.palette_uv_no = costs_from_cdf::<2>(&fc.palette_uv_mode_cdf[0])[0];
+    for n in 0..7 {
+        for c in 0..5 {
+            // Row width = n+2 symbols; syntax_rate_from_cdf reads to the
+            // terminator, so slice per-row like the uv 13/14 handling.
+            let nsym = n + 2;
+            let mut full = [0i32; 8];
+            let mut tmp = alloc::vec![0i32; nsym];
+            crate::quant::syntax_rate_from_cdf(&mut tmp, &fc.palette_y_color_index_cdf[n][c]);
+            full[..nsym].copy_from_slice(&tmp);
+            r.palette_ycolor[n][c] = full;
+        }
+    }
     for a in 0..5 {
         for l in 0..5 {
             r.kf_y[a][l] = costs_from_cdf(&fc.kf_y_mode_cdf[a][l]);
