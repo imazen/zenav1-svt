@@ -19,6 +19,19 @@ endif()
 project(svt-av1 VERSION 4.2.0
     LANGUAGES C CXX)
 
+# --- svt-av1-hdr fork mode switch -------------------------------------------
+#   -DSVT_HDR_MODE=OFF (default): bit-identical to mainline SVT-AV1 v4.2.0-rc
+#   -DSVT_HDR_MODE=ON            : svt-av1-hdr (Chromedome) semantics on the v4.2 base
+option(SVT_HDR_MODE "Build with svt-av1-hdr fork behavior instead of mainline" OFF)
+if(SVT_HDR_MODE)
+    add_compile_definitions(SVT_HDR_MODE=1)
+    message(STATUS "SVT_HDR_MODE=1 : svt-av1-hdr fork behavior")
+else()
+    add_compile_definitions(SVT_HDR_MODE=0)
+    message(STATUS "SVT_HDR_MODE=0 : mainline v4.2.0-rc behavior")
+endif()
+# ---------------------------------------------------------------------------
+
 set(VERSION_TAG "rc")
 
 set(CMAKE_C_VISIBILITY_PRESET hidden)

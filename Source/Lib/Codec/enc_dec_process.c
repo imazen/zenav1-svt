@@ -2053,7 +2053,8 @@ static void recode_loop_decision_maker(PictureControlSet* pcs, SequenceControlSe
 
         // adjust SB qindex based on variance
         if (scs->static_config.enable_variance_boost) {
-            svt_av1_variance_adjust_qp(pcs);
+            // Don't readjust base qindex to make it play nice with the recode loop quality bookkeeping logic
+            svt_av1_variance_adjust_qp(pcs, false);
         }
 
         // 2pass QPM with tpl_la
@@ -2342,32 +2343,47 @@ static void pd0_detector_allintra(PictureControlSet* pcs, ModeDecisionContext* m
         return;
     }
 
-    uint16_t* sb_var = pcs->ppcs->variance[md_ctx->sb_index];
+    SvtVarType* sb_var = pcs->ppcs->variance[md_ctx->sb_index];
 
     // Variance accumulation
+    // [SVT_HDR_MODE] mainline accumulates in int32 and normalizes with >>;
+    // the svt-av1-hdr fork accumulates in double and normalizes with /.
+#if SVT_HDR_MODE
+    double var64 = sb_var[ME_TIER_ZERO_PU_64x64];
+    double var32 = 0;
+#else
     int32_t var64 = sb_var[ME_TIER_ZERO_PU_64x64];
-
     int32_t var32 = 0;
+#endif
     for (int i = ME_TIER_ZERO_PU_32x32_0; i <= ME_TIER_ZERO_PU_32x32_3; ++i) {
         var32 += sb_var[i];
     }
 
+#if SVT_HDR_MODE
+    double var16 = 0;
+#else
     int32_t var16 = 0;
+#endif
     for (int i = ME_TIER_ZERO_PU_16x16_0; i <= ME_TIER_ZERO_PU_16x16_15; ++i) {
         var16 += sb_var[i];
     }
 
     // Normalize per block
+#if SVT_HDR_MODE
+    var32 /= 4; // 4 x 32x32
+    var16 /= 16; // 16 x 16x16
+#else
     var32 >>= 2; // 4 x 32x32
     var16 >>= 4; // 16 x 16x16
+#endif
 
     // Normalize per pixel
     const int32_t scale_32 = (64 * 64) / (32 * 32); // 4
     const int32_t scale_16 = (64 * 64) / (16 * 16); // 16
 
-    int32_t norm_v64 = var64;
-    int32_t norm_v32 = var32 * scale_32;
-    int32_t norm_v16 = var16 * scale_16;
+    int32_t norm_v64 = (int32_t)var64;
+    int32_t norm_v32 = (int32_t)(var32 * scale_32);
+    int32_t norm_v16 = (int32_t)(var16 * scale_16);
 
     // QP-scaled thresholds
     uint32_t q_weight, q_weight_denom;

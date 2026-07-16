@@ -337,9 +337,15 @@ EbErrorType svt_av1_verify_settings(SequenceControlSet* scs) {
         return_error = EB_ErrorBadParameter;
     }
 
+    if (scs->frame_rate > 300) {
+        SVT_WARN(
+            "Frame rate is greater than 300 fps. Output might not play back correctly with some players that use "
+            "hardware decoding.\n");
+    }
+
     // Check if the current input video is conformant with the Level constraint
-    if (scs->frame_rate > 240) {
-        SVT_ERROR("The maximum allowed frame rate is 240 fps\n");
+    if (scs->frame_rate > 480) {
+        SVT_ERROR("The maximum allowed frame rate is 480 fps\n");
         return_error = EB_ErrorBadParameter;
     }
     // Check that the frame_rate is non-zero
@@ -529,9 +535,9 @@ EbErrorType svt_av1_verify_settings(SequenceControlSet* scs) {
             config->fast_decode);
         return_error = EB_ErrorBadParameter;
     }
-    if (config->tune > TUNE_VMAF) {
+    if (config->tune > TUNE_FILM_GRAIN) {
         SVT_ERROR(
-            "Invalid tune flag [0 - 5, 0 for VQ, 1 for PSNR, 2 for SSIM, 3 for IQ, 4 for MS_SSIM, and 5 for VMAF], "
+            "Invalid tune flag [0 - 5, 0 for VQ, 1 for PSNR, 2 for SSIM, 3 for IQ, 4 for MS_SSIM, 5 for VMAF, and 6 for Film Grain], "
             "your input: "
             "%d\n",
             config->tune);
@@ -574,6 +580,11 @@ EbErrorType svt_av1_verify_settings(SequenceControlSet* scs) {
         SVT_WARN("Tune IQ with low delay prediction structure is experimental\n");
     }
 
+    if (config->tune == TUNE_FILM_GRAIN) {
+        SVT_WARN(
+            "This tune is optimized for content that has moderate to heavy film grain. "
+            "Keep in mind for benchmarking analysis that this configuration will likely harm metric performance.\n");
+    }
     if (config->superres_mode > SUPERRES_AUTO) {
         SVT_ERROR("invalid superres-mode %d, should be in the range [%d - %d]\n",
                   config->superres_mode,
@@ -658,8 +669,14 @@ EbErrorType svt_av1_verify_settings(SequenceControlSet* scs) {
     // Block the use of M4 or lower for resolutions higher than 4K, unless allintra coding is used (due to memory constraints)
     if (!scs->allintra && (uint64_t)(scs->max_input_luma_width * scs->max_input_luma_height) > INPUT_SIZE_4K_TH &&
         config->enc_mode <= ENC_M4) {
-        SVT_ERROR("8k+ resolution support is limited to M5 and faster presets.\n");
-        return_error = EB_ErrorBadParameter;
+        if (config->enc_mode >= ENC_M2) {
+            SVT_WARN(
+                "8K+ resolution support below M5 isn't officially supported. 64 GB of available memory are "
+                "recommended.\n");
+        } else {
+            SVT_ERROR("8K+ resolution support is limited to M2 and faster presets.\n");
+            return_error = EB_ErrorBadParameter;
+        }
     }
     if (config->pass > 0 && scs->static_config.enable_overlays) {
         SVT_ERROR(
@@ -773,6 +790,23 @@ EbErrorType svt_av1_verify_settings(SequenceControlSet* scs) {
         return_error = EB_ErrorBadParameter;
     }
 
+    if (config->noise_strength > 200) {
+        SVT_ERROR("Noise strength value should be in the range [0 - 200]\n");
+        return_error = EB_ErrorBadParameter;
+    }
+    if (config->noise_strength_chroma < -1 || config->noise_strength_chroma > 200) {
+        SVT_ERROR("Chroma noise strength value should be in the range [-1 - 200]\n");
+        return_error = EB_ErrorBadParameter;
+    }
+    if (config->noise_chroma_from_luma > 1) {
+        SVT_ERROR("Chroma from luma setting value should be either 0 or 1\n");
+        return_error = EB_ErrorBadParameter;
+    }
+    if (config->noise_size < -1 || config->noise_size > 13) {
+        SVT_ERROR("Noise size value should be in range [-1 - 13]\n");
+        return_error = EB_ErrorBadParameter;
+    }
+
     // Limit 8K & 16K support
     if ((uint64_t)(scs->max_input_luma_width * scs->max_input_luma_height) > INPUT_SIZE_4K_TH) {
         SVT_WARN(
@@ -782,8 +816,8 @@ EbErrorType svt_av1_verify_settings(SequenceControlSet* scs) {
     }
 
     if (config->pred_structure == LOW_DELAY) {
-        if (config->tune == TUNE_VQ) {
-            SVT_WARN("Tune 0 is not applicable for low-delay, tune will be forced to 1.\n");
+        if (config->tune == TUNE_VQ || config->tune == TUNE_FILM_GRAIN) {
+            SVT_WARN("Tune %i is not applicable for low-delay, tune will be forced to 1.\n", config->tune);
             config->tune = TUNE_PSNR;
         }
 
@@ -862,8 +896,8 @@ EbErrorType svt_av1_verify_settings(SequenceControlSet* scs) {
         return_error = EB_ErrorBadParameter;
     }
 
-    if (config->variance_boost_curve > 2) {
-        SVT_ERROR("Variance Boost curve must be between 0 and 2\n");
+    if (config->variance_boost_curve > 3) {
+        SVT_ERROR("Variance Boost curve must be between 0 and 3\n");
         return_error = EB_ErrorBadParameter;
     }
 
@@ -877,9 +911,12 @@ EbErrorType svt_av1_verify_settings(SequenceControlSet* scs) {
         return_error = EB_ErrorBadParameter;
     }
 
-    if (config->qp_scale_compress_strength > 3) {
-        SVT_ERROR("QP scale compress strength must be between 0 and 3\n");
+    if (config->qp_scale_compress_strength < 0.0 || config->qp_scale_compress_strength > 8.0) {
+        SVT_ERROR("QP scale compress strength must be between 0.0 and 8.0\n");
         return_error = EB_ErrorBadParameter;
+    } else if (config->qp_scale_compress_strength > 3.0) {
+        SVT_WARN(
+            "Using a high QP Scale Compress Strength is only useful under specific situations. Use with caution!\n");
     }
 
     if (config->max_tx_size != 32 && config->max_tx_size != 64) {
@@ -904,6 +941,42 @@ EbErrorType svt_av1_verify_settings(SequenceControlSet* scs) {
         return_error = EB_ErrorBadParameter;
     }
 
+    /* --- svt-av1-hdr fork param validation --- */
+    if (config->noise_norm_strength > 4) {
+        SVT_ERROR("Noise normalization strength must be between 0 and 4\n");
+        return_error = EB_ErrorBadParameter;
+    }
+
+    if (config->kf_tf_strength > 4) {
+        SVT_ERROR("Keyframe temporal filtering strength must be between 0 and 4\n");
+        return_error = EB_ErrorBadParameter;
+    }
+
+    if (config->sharp_tx > 1) {
+        SVT_ERROR("Sharp-tx must be either 0 and 1\n");
+        return_error = EB_ErrorBadParameter;
+    }
+
+    if (config->tx_bias > 3) {
+        SVT_ERROR("TX bias must be between 0 and 3\n");
+        return_error = EB_ErrorBadParameter;
+    }
+
+    if (config->complex_hvs > 1) {
+        SVT_ERROR("Complex-hvs must be between 0 and 1\n");
+        return_error = EB_ErrorBadParameter;
+    }
+
+    if (config->noise_adaptive_filtering > 4) {
+        SVT_ERROR("Noise-adaptive-filtering must be between 0 and 4\n");
+        return_error = EB_ErrorBadParameter;
+    }
+
+    if (config->cdef_scaling < 1 || config->cdef_scaling > 30) {
+        SVT_ERROR("Cdef-scaling must be between 1 and 30\n");
+        return_error = EB_ErrorBadParameter;
+    }
+
     return return_error;
 }
 
@@ -919,7 +992,11 @@ EbErrorType svt_av1_set_default_params(EbSvtAv1EncConfiguration* config_ptr) {
     }
     config_ptr->frame_rate_numerator     = 60000;
     config_ptr->frame_rate_denominator   = 1000;
-    config_ptr->encoder_bit_depth        = 8;
+#if SVT_HDR_MODE
+    config_ptr->encoder_bit_depth = 10; // [fork default] default bit depth
+#else
+    config_ptr->encoder_bit_depth = 8; // [mainline v4.2 default] default bit depth
+#endif
     config_ptr->source_width             = 0;
     config_ptr->source_height            = 0;
     config_ptr->forced_max_frame_width   = 0;
@@ -952,7 +1029,11 @@ EbErrorType svt_av1_set_default_params(EbSvtAv1EncConfiguration* config_ptr) {
     config_ptr->max_qp_allowed               = 63;
     config_ptr->min_qp_allowed               = MIN_QP_AUTO;
     config_ptr->aq_mode                      = 2;
-    config_ptr->enc_mode                     = ENC_M8;
+#if SVT_HDR_MODE
+    config_ptr->enc_mode = ENC_M4; // [fork default] default preset
+#else
+    config_ptr->enc_mode = ENC_M8; // [mainline v4.2 default] default preset
+#endif
     config_ptr->intra_period_length          = -2;
     config_ptr->multiply_keyint              = false;
     config_ptr->intra_refresh_type           = 2;
@@ -991,6 +1072,10 @@ EbErrorType svt_av1_set_default_params(EbSvtAv1EncConfiguration* config_ptr) {
     // Film grain denoising
     config_ptr->film_grain_denoise_strength = 0;
     config_ptr->film_grain_denoise_apply    = 0;
+    config_ptr->noise_strength              = 0;
+    config_ptr->noise_strength_chroma       = -1;
+    config_ptr->noise_chroma_from_luma      = 0;
+    config_ptr->noise_size                  = -1;
 
     // CPU Flags
     config_ptr->use_cpu_flags = EB_CPU_FLAGS_ALL;
@@ -1023,6 +1108,7 @@ EbErrorType svt_av1_set_default_params(EbSvtAv1EncConfiguration* config_ptr) {
     config_ptr->transfer_characteristics = 2;
     config_ptr->matrix_coefficients      = 2;
     config_ptr->color_range              = EB_CR_STUDIO_RANGE;
+    config_ptr->color_range_provided     = false;
     config_ptr->chroma_sample_position   = EB_CSP_UNKNOWN;
     config_ptr->pass                     = 0;
     memset(&config_ptr->mastering_display, 0, sizeof(config_ptr->mastering_display));
@@ -1034,9 +1120,21 @@ EbErrorType svt_av1_set_default_params(EbSvtAv1EncConfiguration* config_ptr) {
     config_ptr->force_key_frames = 0;
 
     // Quant Matrices (QM)
-    config_ptr->enable_qm           = 0;
-    config_ptr->min_qm_level        = 8;
-    config_ptr->max_qm_level        = 15;
+#if SVT_HDR_MODE
+    config_ptr->enable_qm = 1; // [fork default] quant matrices
+#else
+    config_ptr->enable_qm = 0; // [mainline v4.2 default] quant matrices
+#endif
+#if SVT_HDR_MODE
+    config_ptr->min_qm_level = 6; // [fork default] qm min
+#else
+    config_ptr->min_qm_level = 8; // [mainline v4.2 default] qm min
+#endif
+#if SVT_HDR_MODE
+    config_ptr->max_qm_level = 10; // [fork default] qm max
+#else
+    config_ptr->max_qm_level = 15; // [mainline v4.2 default] qm max
+#endif
     config_ptr->min_chroma_qm_level = 8;
     config_ptr->max_chroma_qm_level = 15;
 
@@ -1048,16 +1146,28 @@ EbErrorType svt_av1_set_default_params(EbSvtAv1EncConfiguration* config_ptr) {
     config_ptr->frame_scale_evts.start_frame_nums = NULL;
     config_ptr->enable_roi_map                    = false;
     config_ptr->fgs_table                         = NULL;
-    config_ptr->enable_variance_boost             = false;
+#if SVT_HDR_MODE
+    config_ptr->enable_variance_boost = true; // [fork default] variance boost
+#else
+    config_ptr->enable_variance_boost = false; // [mainline v4.2 default] variance boost
+#endif
     config_ptr->variance_boost_strength           = 2;
     config_ptr->variance_octile                   = 5;
-    config_ptr->tf_strength                       = 3;
+#if SVT_HDR_MODE
+    config_ptr->tf_strength = 1; // [fork default] tf strength
+#else
+    config_ptr->tf_strength = 3; // [mainline v4.2 default] tf strength
+#endif
     config_ptr->variance_boost_curve              = 0;
     config_ptr->luminance_qp_bias                 = 0;
-    config_ptr->sharpness                         = 0;
+#if SVT_HDR_MODE
+    config_ptr->sharpness = 1; // [fork default] sharpness
+#else
+    config_ptr->sharpness = 0; // [mainline v4.2 default] sharpness
+#endif
     config_ptr->lossless                          = false;
     config_ptr->avif                              = false;
-    config_ptr->qp_scale_compress_strength        = 0;
+    config_ptr->qp_scale_compress_strength        = 1.0;
     config_ptr->sframe_posi.sframe_num            = 0;
     config_ptr->sframe_posi.sframe_posis          = NULL;
     config_ptr->sframe_posi.sframe_qp_num         = 0;
@@ -1068,12 +1178,30 @@ EbErrorType svt_av1_set_default_params(EbSvtAv1EncConfiguration* config_ptr) {
     config_ptr->adaptive_film_grain               = true;
     config_ptr->max_tx_size                       = 64;
     config_ptr->extended_crf_qindex_offset        = 0;
-    config_ptr->ac_bias                           = 0.0;
-    config_ptr->hbd_mds                           = DEFAULT;
+    config_ptr->ac_bias                           = 0.0; // [parity] mainline v4.2 default (fork ships 1.0)
+    config_ptr->hbd_mds                           = DEFAULT; // [parity] mainline (fork ships 0)
 
-    // Ref-frame management disabled by default → legacy bit-exact behavior
+    // Ref-frame management disabled by default -> legacy bit-exact behavior
     // and no extra ref-buffer memory allocated.
     config_ptr->max_managed_refs = 0;
+
+    /* --- svt-av1-hdr fork features: default to NEUTRAL so stock output stays
+       byte-identical to mainline v4.2. Fork defaults noted per line. --- */
+    config_ptr->noise_norm_strength               = 0;     // off      (fork default 1)
+    config_ptr->kf_tf_strength                    = 3;     // mainline (fork default 1)
+    config_ptr->alt_lambda_factors                = 0;     // regular  (fork default 1)
+    config_ptr->sharp_tx                          = 0;     // off      (fork default 1)
+    config_ptr->alt_ssim_tuning                   = false; // same as fork
+    config_ptr->tx_bias                           = 0;     // same as fork
+    config_ptr->complex_hvs                       = 0;     // same as fork
+    config_ptr->noise_adaptive_filtering          = 2;     // "default tune behavior" (same as fork)
+    config_ptr->cdef_scaling                      = 15;    // 1x scaling = neutral (same as fork)
+    config_ptr->noise_strength                    = 0;     // off
+    config_ptr->noise_strength_chroma             = -1;
+    config_ptr->noise_chroma_from_luma            = 0;
+    config_ptr->noise_size                        = -1;
+    config_ptr->qp_scale_compress_strength        = 0.0;   // mainline (fork default 1.0)
+    config_ptr->color_range_provided              = false;
 
     return return_error;
 }
@@ -1214,27 +1342,49 @@ void svt_av1_print_lib_params(SequenceControlSet* scs) {
                     config->film_grain_denoise_strength);
             }
         }
+        if (config->noise_strength > 0) {
+            SVT_INFO("SVT [config]: noise table gen / luma / chroma / size \t\t\t: %s / %d / %s%.0d%s / %s%.0d\n",
+                     "on",
+                     config->noise_strength,
+                     config->noise_strength_chroma == -1 ? "auto" : (config->noise_strength_chroma == 0 ? "off" : ""),
+                     config->noise_strength_chroma > 0 ? config->noise_strength_chroma : 0,
+                     config->noise_chroma_from_luma == 1 ? " (from luma)" : "",
+                     config->noise_size == -1 ? "auto" : (config->noise_size == 0 ? "0" : ""),
+                     config->noise_size > 0 ? config->noise_size : 0);
+        }
         SVT_INFO("SVT [config]: sharpness / luminance-based QP bias \t\t\t\t: %d / %d\n",
                  config->sharpness,
                  config->luminance_qp_bias);
 
         switch (config->enable_tf) {
         case 1:
-            if (config->tf_strength != 3) {
-                SVT_INFO("SVT [config]: temporal filtering strength \t\t\t\t\t: %d\n", config->tf_strength);
-            }
+            SVT_INFO("SVT [config]: Temporal Filtering / keyframe strength \t\t\t: %d / %d \n",
+                     config->tf_strength,
+                     config->kf_tf_strength);
             break;
         case 2:
-            SVT_INFO("SVT [config]: temporal filtering strength \t\t\t\t\t: auto\n");
-            break;
-        default:
+            SVT_INFO("SVT [config]: Temporal Filtering strength\t\t\t\t\t: auto\n");
             break;
         }
 
-        SVT_INFO("SVT [config]: QP scale compress strength \t\t\t\t\t: %d\n", config->qp_scale_compress_strength);
+        SVT_INFO("SVT [config]: QP scale compress strength \t\t\t\t\t: %.2f\n", config->qp_scale_compress_strength);
 
-        if (config->ac_bias) {
-            SVT_INFO("SVT [config]: AC Bias Strength \t\t\t\t\t\t: %.2f\n", config->ac_bias);
+        if (config->ac_bias || config->tx_bias) {
+            SVT_INFO("SVT [config]: AC Bias Strength / TX Bias \t\t\t\t\t: %.2f / %s\n",
+                     config->ac_bias,
+                     config->tx_bias == 1
+                         ? "full"
+                         : (config->tx_bias == 2 ? "size only" : (config->tx_bias == 3 ? "interp. only" : "off")));
+        }
+
+        if (config->noise_norm_strength > 0) {
+            SVT_INFO("SVT [config]: Noise Normalization Strength \t\t\t\t\t: %d\n", config->noise_norm_strength);
+        }
+
+        if (config->cdef_scaling != 15 && config->cdef_level != 0) {
+            SVT_INFO("SVT [config]: CDEF scaling (ratio) \t\t\t\t\t\t: %d (%.2fx)\n",
+                     config->cdef_scaling,
+                     config->cdef_scaling / 15.0);
         }
 
         if (config->hbd_mds != DEFAULT) {
@@ -2191,7 +2341,22 @@ EB_API EbErrorType svt_av1_enc_parse_parameter(EbSvtAv1EncConfiguration* config_
     COLOR_OPT("color-primaries", color_primaries);
     COLOR_OPT("transfer-characteristics", transfer_characteristics);
     COLOR_OPT("matrix-coefficients", matrix_coefficients);
-    COLOR_OPT("color-range", color_range);
+
+    if (!strcmp(name, "color-range")) {
+        return_error = str_to_color_range(value, &config_struct->color_range);
+        if (return_error == EB_ErrorNone) {
+            config_struct->color_range_provided = true;
+            return return_error;
+        }
+        uint32_t val;
+        return_error = str_to_uint(value, &val, NULL);
+        if (return_error == EB_ErrorNone) {
+            config_struct->color_range          = val;
+            config_struct->color_range_provided = true;
+        }
+        return return_error;
+    }
+
     COLOR_OPT("chroma-sample-position", chroma_sample_position);
 
     // custom struct fields
@@ -2293,6 +2458,8 @@ EB_API EbErrorType svt_av1_enc_parse_parameter(EbSvtAv1EncConfiguration* config_
         {"superres-kf-denom", &config_struct->superres_kf_denom},
         {"tune", &config_struct->tune},
         {"film-grain-denoise", &config_struct->film_grain_denoise_apply},
+        {"noise", &config_struct->noise_strength},
+        {"noise-chroma-from-luma", &config_struct->noise_chroma_from_luma},
         {"enable-dlf", &config_struct->enable_dlf_flag},
         {"resize-mode", &config_struct->resize_mode},
         {"resize-denom", &config_struct->resize_denom},
@@ -2306,12 +2473,18 @@ EB_API EbErrorType svt_av1_enc_parse_parameter(EbSvtAv1EncConfiguration* config_
         {"variance-boost-strength", &config_struct->variance_boost_strength},
         {"variance-octile", &config_struct->variance_octile},
         {"variance-boost-curve", &config_struct->variance_boost_curve},
-        {"qp-scale-compress-strength", &config_struct->qp_scale_compress_strength},
         {"fast-decode", &config_struct->fast_decode},
         {"luminance-qp-bias", &config_struct->luminance_qp_bias},
         {"enable-tf", &config_struct->enable_tf},
         {"tf-strength", &config_struct->tf_strength},
         {"max-tx-size", &config_struct->max_tx_size},
+        {"noise-norm-strength", &config_struct->noise_norm_strength},
+        {"kf-tf-strength", &config_struct->kf_tf_strength},
+        {"sharp-tx", &config_struct->sharp_tx},
+        {"tx-bias", &config_struct->tx_bias},
+        {"complex-hvs", &config_struct->complex_hvs},
+        {"noise-adaptive-filtering", &config_struct->noise_adaptive_filtering},
+        {"cdef-scaling", &config_struct->cdef_scaling},
     };
 
     const size_t uint8_opts_size = sizeof(uint8_opts) / sizeof(uint8_opts[0]);
@@ -2354,6 +2527,7 @@ EB_API EbErrorType svt_av1_enc_parse_parameter(EbSvtAv1EncConfiguration* config_
         const char* name;
         double*     out;
     } double_opts[] = {
+        {"qp-scale-compress-strength", &config_struct->qp_scale_compress_strength},
         {"ac-bias", &config_struct->ac_bias},
     };
 
@@ -2386,6 +2560,7 @@ EB_API EbErrorType svt_av1_enc_parse_parameter(EbSvtAv1EncConfiguration* config_
         {"tile-columns", &config_struct->tile_columns},
         {"sframe-dist", &config_struct->sframe_dist},
         {"hbd-mds", &config_struct->hbd_mds},
+        {"noise-chroma", &config_struct->noise_strength_chroma},
     };
 
     const size_t int_opts_size = sizeof(int_opts) / sizeof(int_opts[0]);
@@ -2404,6 +2579,7 @@ EB_API EbErrorType svt_av1_enc_parse_parameter(EbSvtAv1EncConfiguration* config_
         {"preset", &config_struct->enc_mode},
         {"sharpness", &config_struct->sharpness},
         {"startup-qp-offset", &config_struct->startup_qp_offset},
+        {"noise-size", &config_struct->noise_size},
     };
 
     const size_t int8_opts_size = sizeof(int8_opts) / sizeof(int8_opts[0]);
@@ -2443,6 +2619,8 @@ EB_API EbErrorType svt_av1_enc_parse_parameter(EbSvtAv1EncConfiguration* config_
         {"adaptive-film-grain", &config_struct->adaptive_film_grain},
         {"enable-kf-tf", &config_struct->enable_tf_key},
         {"enable-intrabc", &config_struct->enable_intrabc},
+        {"alt-lambda-factors", &config_struct->alt_lambda_factors},
+        {"alt-ssim-tuning", &config_struct->alt_ssim_tuning},
     };
     const size_t bool_opts_size = sizeof(bool_opts) / sizeof(bool_opts[0]);
 

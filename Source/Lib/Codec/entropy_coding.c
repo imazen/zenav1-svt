@@ -2369,9 +2369,15 @@ static void encode_quantization(const PictureParentControlSet* const pcs, AomWri
     const FrameHeader* frm_hdr = &pcs->frm_hdr;
     svt_aom_wb_write_literal(wb, frm_hdr->quantization_params.base_q_idx, QINDEX_BITS);
     write_delta_q(wb, frm_hdr->quantization_params.delta_q_dc[PLANE_Y]);
+    /* [SVT_HDR_MODE] mainline derives diff_uv_delta from the actual U/V deltas;
+       the svt-av1-hdr fork always signals it (costs a bit, enables per-plane deltas). */
+#if SVT_HDR_MODE
+    int32_t diff_uv_delta = true;
+#else
     int32_t diff_uv_delta = (frm_hdr->quantization_params.delta_q_dc[PLANE_U] !=
                              frm_hdr->quantization_params.delta_q_dc[PLANE_V]) ||
         (frm_hdr->quantization_params.delta_q_ac[PLANE_U] != frm_hdr->quantization_params.delta_q_ac[PLANE_V]);
+#endif
 
     if (diff_uv_delta) {
         svt_aom_wb_write_bit(wb, diff_uv_delta);
@@ -2737,10 +2743,16 @@ static AOM_INLINE void write_color_config(const SequenceControlSet* const scs, A
             svt_aom_wb_write_literal(wb, scs->static_config.chroma_sample_position, 2);
         }
     }
+    /* [SVT_HDR_MODE] mainline derives separate_uv_delta_q from the chroma qindex
+       offsets; the svt-av1-hdr fork always sets it in the sequence header. */
+#if SVT_HDR_MODE
+    bool separate_uv_delta_q = true;
+#else
     bool separate_uv_delta_q = (scs->static_config.chroma_u_ac_qindex_offset !=
                                     scs->static_config.chroma_v_ac_qindex_offset ||
                                 scs->static_config.chroma_u_dc_qindex_offset !=
                                     scs->static_config.chroma_v_dc_qindex_offset);
+#endif
     svt_aom_wb_write_bit(wb, separate_uv_delta_q);
 }
 

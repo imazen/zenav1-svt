@@ -9230,6 +9230,16 @@ void svt_aom_sig_deriv_mode_decision_config_default(SequenceControlSet* scs, Pic
     }
     // Set the level for mds0
     pcs->mds0_level = 0;
+    /* [SVT_HDR_MODE] svt-av1-hdr: complex-hvs selects the highest-fidelity HVS model
+       (SSD-Psy). Compiled out in mainline mode so the v4.2 banding below is untouched.
+       Fork wires this in _default only (its post-Chromedome 80b48b9 also wires _allintra
+       — not carried). The fork's own preset RE-TUNING in this file is intentionally NOT
+       carried; mode 1 = v4.2 preset ladder + fork features. See docs/HDR-ON-4.2.md. */
+#if SVT_HDR_MODE
+    if (pcs->scs->static_config.complex_hvs == 1) {
+        pcs->mds0_level = 3;
+    } else
+#endif
     if (enc_mode <= ENC_M2) {
         pcs->mds0_level = 0;
     } else if (enc_mode <= ENC_M5) {

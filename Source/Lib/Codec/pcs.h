@@ -840,7 +840,11 @@ typedef struct PictureParentControlSet {
     // Pre Analysis
     EbObjectWrapper* ref_pa_pic_ptr_array[MAX_NUM_OF_REF_PIC_LIST][REF_LIST_MAX_DEPTH];
     uint64_t         ref_pic_poc_array[MAX_NUM_OF_REF_PIC_LIST][REF_LIST_MAX_DEPTH];
-    uint16_t**       variance;
+    /* [SVT_HDR_MODE] mainline stores 8x8 variances as uint16_t; the svt-av1-hdr
+       fork retypes the whole pipeline to double (and changes integer ops such as
+       (a+b)>>1 into (a+b)/2). SvtVarType keeps both spellings bit-exact. */
+    SvtVarType**     variance;
+    uint64_t*        mean;
     uint32_t         pre_assignment_buffer_count;
     uint16_t         pic_avg_variance;
 
@@ -1231,7 +1235,15 @@ typedef struct PictureControlSetInitData {
     bool    allintra;
     bool    adaptive_film_grain;
     bool    use_flat_ipp;
-    int     hbd_mds;
+    int     hbd_mds; // [mainline v4.2 MR!2644 — int; fork's uint8_t hbd_mds dropped as duplicate]
+    // --- svt-av1-hdr fork additions ---
+    uint8_t noise_norm_strength;
+    uint8_t kf_tf_strength;
+    uint8_t alt_lambda_factors;
+    uint8_t sharp_tx;
+    bool    alt_ssim_tuning;
+    uint8_t tx_bias;
+    uint8_t complex_hvs;
 } PictureControlSetInitData;
 
 /**************************************
