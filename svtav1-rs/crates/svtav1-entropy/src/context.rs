@@ -461,13 +461,9 @@ impl FrameContext {
             single_ref_cdf: DEFAULT_SINGLE_REF_CDF,
             comp_ref_cdf: DEFAULT_COMP_REF_CDF,
             comp_inter_cdf: DEFAULT_COMP_INTER_CDF,
-            delta_q_cdf: [
-                CDF_PROB_TOP / 4 * 3,
-                CDF_PROB_TOP / 4 * 2,
-                CDF_PROB_TOP / 4,
-                0,
-                0,
-            ],
+            // AV1 default_delta_q_cdf = AOM_CDF4(28160, 32120, 32677)
+            // (cabac_context_model.c:637) in ICDF form: 32768 - cum.
+            delta_q_cdf: [4608, 648, 91, 0, 0],
         }
     }
 
