@@ -2228,7 +2228,12 @@ pub(crate) fn evaluate_leaf(
         let has = out.eob > 0;
         let tsz_cat = tx_size_cat(w, h);
         let tsz_ctx = fx.ectx.tx_size_ctx(abs_x, abs_y, w, h);
-        let tx_size_bits = rates.tx_size[tsz_cat][tsz_ctx][0] as u64;
+        // C: 4x4 codes no tx_size symbol (block_signals_txsize == bsize > 4x4).
+        let tx_size_bits = if block_signals_txsize(w, h) {
+            rates.tx_size[tsz_cat][tsz_ctx][0] as u64
+        } else {
+            0
+        };
         let coeff_rate = if has {
             out.bits as u64 + tx_size_bits + rates.skip[skip_ctx][0] as u64
         } else {
@@ -2826,7 +2831,12 @@ pub(crate) fn evaluate_leaf(
             if aborted && depth > 0 {
                 continue;
             }
-            let tx_size_bits = rates.tx_size[tsz_cat][tsz_ctx][depth as usize] as u64;
+            // C: 4x4 codes no tx_size symbol (block_signals_txsize == bsize > 4x4).
+            let tx_size_bits = if block_signals_txsize(w, h) {
+                rates.tx_size[tsz_cat][tsz_ctx][depth as usize] as u64
+            } else {
+                0
+            };
             let cost = rdcost(lambda, dep_bits + tx_size_bits, dep_dist);
             if cost < best_cost {
                 best_cost = cost;
@@ -3374,7 +3384,12 @@ pub(crate) fn evaluate_leaf(
 
         // ---- svt_aom_full_cost (rd_cost.c:1357) ----
         let block_has_coeff = best_coeff_count > 0 || u_out.eob > 0 || v_out.eob > 0;
-        let tx_size_bits_final = rates.tx_size[tsz_cat][tsz_ctx][best_depth as usize] as u64;
+        // C: 4x4 codes no tx_size symbol (block_signals_txsize == bsize > 4x4).
+        let tx_size_bits_final = if block_signals_txsize(w, h) {
+            rates.tx_size[tsz_cat][tsz_ctx][best_depth as usize] as u64
+        } else {
+            0
+        };
         // Chroma coeff rate. M6 (coeff_rate_est_lvl 1) prices the real
         // cost_coeffs_txb / cost_skip_txb (already in u_out.bits/v_out.bits):
         // C `skip_chroma_rate_est` returns false immediately at lvl 1, so the
@@ -3597,6 +3612,16 @@ fn tx_size_cat(w: usize, h: usize) -> usize {
         32 => 2,
         _ => 3, // 64 (TX_64X64 -> cat 3)
     }
+}
+
+/// C `block_signals_txsize` (rd_cost.c:1508): `bsize > BLOCK_4X4`. Every block
+/// EXCEPT the 4x4 codes a tx_size symbol; for the 4x4 `svt_aom_tx_size_bits`
+/// (rd_cost.c:1761) returns 0. The RD of a 4x4 leaf must therefore carry NO
+/// tx_size rate — the port previously added `tx_size[cat 0][ctx][0]` (~365 rate
+/// units) unconditionally, inflating every 4x4's cost and wrongly keeping an
+/// 8x8 where C splits it to four 4x4 (first real-content M2/M3 partition flip).
+fn block_signals_txsize(w: usize, h: usize) -> bool {
+    !(w == 4 && h == 4)
 }
 
 /// C `tx_depth_to_tx_size[depth][bsize]` (common_utils.c:95) — the TX

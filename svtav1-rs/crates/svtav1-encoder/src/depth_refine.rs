@@ -1212,7 +1212,15 @@ impl DepthWalk<'_, '_> {
                     }
                 }
 
-                let part_rate = self.part_rates.bits(ctx_row, shape);
+                // C `svt_aom_partition_rate_cost` (rd_cost.c:1837) returns 0 for
+                // `bsize < BLOCK_8X8`: a 4x4 codes NO partition symbol. The only
+                // square `size` node below 8 is the 4x4 (4x8/8x4 are NSQ children,
+                // not square nodes), so gate the partition rate there.
+                let part_rate = if size >= 8 {
+                    self.part_rates.bits(ctx_row, shape)
+                } else {
+                    0
+                };
                 let mut part_cost = rdcost(self.lambda, part_rate, 0);
                 let children = shape_children(size, shape);
                 let mut evals: Vec<LeafEval> = Vec::with_capacity(children.len());
