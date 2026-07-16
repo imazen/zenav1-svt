@@ -1716,10 +1716,11 @@ fn encode_block_syntax(
                 .map(|c| (fmt_nz(&c.0, 12), fmt_nz(&c.1, 12)))
                 .unwrap_or_default();
             eprintln!(
-                "PCOEF mi=({},{}) yeob={} ynz=[{}] unz=[{}] vnz=[{}]",
+                "PCOEF mi=({},{}) yeob={} txt={} ynz=[{}] unz=[{}] vnz=[{}]",
                 block_y / 4,
                 block_x / 4,
                 decision.eob,
+                decision.tx_type,
                 fmt_nz(&decision.qcoeffs, 24),
                 unz,
                 vnz

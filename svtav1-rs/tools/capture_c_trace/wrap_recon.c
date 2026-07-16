@@ -228,8 +228,8 @@ EbErrorType __wrap_svt_aom_txb_estimate_coeff_bits(
                 const int32_t* qv = ((const int32_t*)coeff_buffer_sb->v_buffer) + txb_chroma_origin_index;
                 const int      ny = tx_size_wide[txsize] * tx_size_high[txsize];
                 const int      nc = tx_size_wide[txsize_uv] * tx_size_high[txsize_uv];
-                fprintf(qf, "CCOEF org=(%u,%u) yeob=%u cbeob=%u creob=%u ynz=[", (unsigned)ctx->blk_org_x,
-                        (unsigned)ctx->blk_org_y, y_eob, cb_eob, cr_eob);
+                fprintf(qf, "CCOEF org=(%u,%u) yeob=%u cbeob=%u creob=%u txt=%d txtuv=%d ynz=[", (unsigned)ctx->blk_org_x,
+                        (unsigned)ctx->blk_org_y, y_eob, cb_eob, cr_eob, (int)tx_type, (int)tx_type_uv);
                 /* All nonzero (raster_idx:level) pairs, capped — the full
                  * symbol content of the txb in a bounded line. */
                 int emitted = 0;

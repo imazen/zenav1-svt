@@ -11,9 +11,9 @@ publish = false
 [workspace]
 
 [dependencies]
-# The sibling pure-Rust AV1 decoder (bit-identical to libaom, Gate 1) as
-# the decode oracle: decoding BOTH encoders' OBUs and diffing the outputs
-# localizes the first divergent pixel/SB with zero instrumentation, at
-# every preset — unlike the internal recon dumps, whose C-side hook point
-# is preset-dependent (valid <= M5 only; see #90).
-aom-decoder-rs = { path = "/root/work/aom-decoder-rs" }
+# The aom-rs decoder (the ACTIVELY-GATED sibling port: Gate-1 byte-identity
+# + golden MD5 across the AV1 conformance corpus, CI-wired) as the decode
+# oracle. Supersedes the older /root/work/aom-decoder-rs, which silently
+# desyncs on Wiener-active streams; aom-decode fails LOUDLY (Result) on
+# anything it cannot decode instead of fabricating pixels.
+aom-decode = { path = "/root/aom-rs/crates/aom-decode" }
