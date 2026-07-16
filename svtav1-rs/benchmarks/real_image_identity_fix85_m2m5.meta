@@ -1,0 +1,51 @@
+date: 2026-07-16
+tool: tools/real_image_matrix.sh, CID22-512, C=SvtAv1EncApp v4.2.0-rc
+grid: 8 images x presets {2,3,4,5} x cli_qp {20,40,55} = 96 cells
+commit: (this commit) fix: CfL chroma detector must SAD the WINNING tx_depth's luma pred
+result: TOTAL 66/96 IDENTICAL (up from 65/96 at 277e91089, the #84 ind_uv_avail fix).
+  p2 13/24, p3 11/24, p4 20/24, p5 22/24.
+  Per-cell diff vs the 277e91089 baseline: 0 REGRESSIONS, +1 newly IDENTICAL --
+  1001682 q20 p4.
+
+root cause: C's chroma-complexity detector (chroma_complexity_check_pred,
+  product_coding_loop.c:6095) SADs the source against `cand_buffer->pred->y_buffer`
+  (:6106) and runs at :7178, AFTER the luma TX loop (:7139). What that buffer
+  holds depends on the WINNING tx_depth:
+    - depth 0: the TX loop re-predicts only `if (ctx->tx_depth)` (:5393-5395), and
+      at depth 0 `tx_cand_bf == cand_bf` (:5363-5365) -> the buffer still holds the
+      MDS0 whole-block prediction.
+    - depth > 0: each txb is re-predicted from RECON neighbours into a SEPARATE
+      scratch buffer (ctx->cand_bf_tx_depth_1/2); on winning, `update_tx_cand_bf`
+      (:5269, called :5487) memcpy's that scratch pred back over the full
+      bheight x bwidth of cand_bf->pred->y_buffer.
+  The port always passed `cand.pred` (the MDS0 whole-block pred), so its `y_dist`
+  was wrong on every candidate whose winning depth was > 0.
+
+fix: leaf_funnel.rs -- accumulate `dep_pred` per depth from each txb's `txb_pred`,
+  commit `best_pred = dep_pred` with the depth winner, pass `&best_pred` to
+  chroma_detector_fires. At depth 0 txbs == 1 so `dep_pred` reproduces `cand.pred`
+  byte-for-byte => provably a no-op for depth-0 winners.
+
+evidence (258947 q40 p3, 7323 detector records per side, streams byte-identical):
+                      ydist2 DIFFERS   ydist2 SAME
+      tx_depth > 0         1040           1233
+      tx_depth == 0           0           5004
+  Every luma-SAD mismatch has tx_depth > 0; ZERO at depth 0 -- exactly what the C
+  code predicts. Those flipped `sad_arm` (whether CfL is evaluated at all) on 22.
+  Chroma (cb/cr) matched on EVERY record: the filed "#85 chroma SAD" bug did not
+  exist post-#84 and is retracted in docs/IDENTITY-STATUS.md.
+  After the fix: 0 mismatches on every field across all 7323 records.
+
+blast radius: `sad_arm` is consulted only when cfl_cplx_th != 0 AND cfl_enabled.
+  m6_tail sets cfl_cplx_th: 10 (M1..M6); M0 overrides to 0 (detector bypassed,
+  sad_arm unused); M7/M8/eff-M9 set cfl_enabled: false. Only M1..M6 can change --
+  hence the M1 (synth) and M6 (real m6m10) gates run alongside this one.
+
+remaining 30 diverging cells (triage, measured): 30/31 of the #84-baseline
+  divergences have DIFFERENT byte counts => tile data genuinely differs => recon
+  cascades; the "FH loop_filter_level" first-divergences are downstream symptoms
+  (LF level does not change coded tile bytes). The one same-size cell
+  (1963557 q20 p2) was checked: cmp -l = 11158 differing bytes => also a recon
+  cascade, NOT a pure LF bug. LF search reviewed line-by-line vs
+  deblocking_filter.c:829-937 -- C-exact. Next drill = smallest stream
+  (AgilityCourseElements q55 p2, C=2112B), task #87.
