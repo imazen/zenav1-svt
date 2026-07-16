@@ -4432,6 +4432,22 @@ pub static FILTER_INTRA_CDF: [[AomCdfProb; 3]; 22] = [
 #[rustfmt::skip]
 pub static FILTER_INTRA_MODE_CDF: [AomCdfProb; 6] = [23819, 19992, 15557, 3210, 0, 0];
 
+/// C `default_palette_y_mode_cdf` (cabac_context_model.c:497):
+/// \[palette bsize ctx 0..6\]\[neighbor-palette-count ctx 0..2\], 2 symbols.
+pub static PALETTE_Y_MODE_CDF: [[[AomCdfProb; 3]; 3]; 7] = [
+    [[1092, 0, 0], [29349, 0, 0], [31507, 0, 0]],
+    [[856, 0, 0], [29909, 0, 0], [31788, 0, 0]],
+    [[945, 0, 0], [29368, 0, 0], [31987, 0, 0]],
+    [[738, 0, 0], [29207, 0, 0], [31864, 0, 0]],
+    [[459, 0, 0], [25431, 0, 0], [31306, 0, 0]],
+    [[503, 0, 0], [28753, 0, 0], [31247, 0, 0]],
+    [[318, 0, 0], [24822, 0, 0], [32639, 0, 0]],
+];
+
+/// C `default_palette_uv_mode_cdf` (cabac_context_model.c:507):
+/// \[y-palette-used ctx 0..1\], 2 symbols.
+pub static PALETTE_UV_MODE_CDF: [[AomCdfProb; 3]; 2] = [[307, 0, 0], [11280, 0, 0]];
+
 #[rustfmt::skip]
 pub static DELTA_Q_CDF: [AomCdfProb; 5] = [4608, 648, 91, 0, 0];
 

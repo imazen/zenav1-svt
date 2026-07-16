@@ -229,6 +229,22 @@ impl EncodePipeline {
                 y_plane[..n].to_vec()
             };
 
+        // Screen-content derivation (allintra): scm 3 auto-detect at
+        // preset <= 7 (enc_handle.c:4514-4527), off at M8+; palette level
+        // + FH allow_screen_content_tools from sc_class5
+        // (enc_mode_config.c:2374-2393). Runs on the SOURCE luma (C
+        // pcs->enhanced_pic) before everything downstream: the flag gates
+        // the per-block no-palette flag coding in the tile pack, the MD
+        // rates (via the tile driver's own identical derivation), and the
+        // FH bits.
+        let sc_derivation = crate::sc_detect::derive_allintra_sc(
+            self.speed_config.preset,
+            &encode_input,
+            w,
+            w,
+            h,
+        );
+
         // Step 3c: Frame-level adaptive QP — OPT-IN via RcConfig.aq_mode.
         //
         // aq_mode == 0 (the default, matching the C encoder's
@@ -548,7 +564,12 @@ impl EncodePipeline {
             // Mode/skip context tracking at 4x4 granularity
             let w4 = w.div_ceil(4);
             let h4 = h.div_ceil(4);
-            let mut ectx = EntropyCtx::new(w4, h4, seq_tools.enable_filter_intra);
+            let mut ectx = EntropyCtx::new(
+                w4,
+                h4,
+                seq_tools.enable_filter_intra,
+                sc_derivation.allow_screen_content_tools,
+            );
             let mut chroma_pass = chroma.map(|(u_src, v_src)| ChromaPass {
                 u_src,
                 v_src,
@@ -905,22 +926,12 @@ impl EncodePipeline {
         // still-picture header only for single-frame mode. is_single_frame
         // + seq_tools were derived before the entropy walk (the walk codes
         // use_filter_intra flags iff the SH will signal the tool).
-        // Screen-content derivation (allintra): scm 3 auto-detect at
-        // preset <= 7 (enc_handle.c:4514-4527), off at M8+; palette level
-        // + the FH allow_screen_content_tools bit from sc_class5
-        // (sig_deriv_multi_processes_allintra, enc_mode_config.c:2374-2393).
-        // The detector reads the SOURCE luma (C pcs->enhanced_pic). MD
-        // palette/IBC candidates are NOT ported yet (#71) — frames the
-        // detector fires on still diverge in the tile (their FH now
-        // matches C for the palette-only presets M5-M7; M2-M4 need the
-        // IBC vertical); frames it does not fire on are unaffected.
-        let sc_derivation = crate::sc_detect::derive_allintra_sc(
-            self.speed_config.preset,
-            &encode_input,
-            w,
-            w,
-            h,
-        );
+        // FH screen-content bits from the pre-walk derivation (see the
+        // EntropyCtx::new site): MD palette/IBC candidates are NOT ported
+        // yet (#71) — frames the detector fires on still diverge in the
+        // tile, but their FH + no-palette flag stream now match C for the
+        // palette-only presets M5-M7; M2-M4 additionally need the IBC
+        // vertical. Frames it does not fire on are unaffected.
         let sc_signal = svtav1_entropy::obu::ScSignal {
             allow_screen_content_tools: sc_derivation.allow_screen_content_tools,
             allow_intrabc: sc_derivation.allow_intrabc,
@@ -1073,6 +1084,9 @@ pub(crate) struct EntropyCtx {
     /// symbol. Sequence-level walk config, not per-block state — carried
     /// here because the walk already threads this context everywhere.
     seq_filter_intra: bool,
+    /// FH `allow_screen_content_tools` — gates the per-block no-palette
+    /// flag coding (C write_palette_mode_info gate, entropy_coding.c:5026).
+    allow_sct: bool,
     /// Pending per-SB `cdef_idx` emission (C write_cdef,
     /// entropy_coding.c:4034: `aom_write_literal(w, mbmi->cdef_strength,
     /// cdef_bits)` at the FIRST NON-SKIP block of each 64x64). Set at SB
@@ -1126,7 +1140,12 @@ static AL_PART_CTX: [[[u8; 10]; 5]; 2] = [
 ];
 
 impl EntropyCtx {
-    pub(crate) fn new(width_4x4: usize, height_4x4: usize, seq_filter_intra: bool) -> Self {
+    pub(crate) fn new(
+        width_4x4: usize,
+        height_4x4: usize,
+        seq_filter_intra: bool,
+        allow_sct: bool,
+    ) -> Self {
         let width_8x8 = (width_4x4 + 1) / 2;
         let height_8x8 = (height_4x4 + 1) / 2;
         // Chroma-plane 4x4 units: (w/2)/4 = width_4x4/2 (frames are
@@ -1154,6 +1173,7 @@ impl EntropyCtx {
             above_txfm: alloc::vec![0u8; width_4x4],
             left_txfm: alloc::vec![0u8; height_4x4],
             seq_filter_intra,
+            allow_sct,
             cdef_pending: None,
         }
     }
@@ -1784,6 +1804,33 @@ fn encode_block_syntax(
                 decision.uv_angle_delta,
             );
         }
+    }
+
+    // Palette flags: C codes them between the chroma mode-info slice and
+    // the filter_intra flag (write_palette_mode_info, gated at
+    // entropy_coding.c:5026 on !use_intrabc && svt_aom_allow_palette).
+    // The port codes no palette blocks yet, so both flags take the
+    // symbol-0 arm and the neighbor ctx is 0 (no neighbor ever has
+    // palette_size > 0); the CDF updates + per-SB avg chain still run,
+    // which is what keeps the arithmetic stream aligned with C on
+    // screen-content frames.
+    if !decision.is_inter
+        && svtav1_entropy::context::allow_palette(
+            ectx.allow_sct,
+            decision.width as usize,
+            decision.height as usize,
+        )
+    {
+        svtav1_entropy::context::write_no_palette_flags(
+            writer,
+            frame_ctx,
+            decision.width as usize,
+            decision.height as usize,
+            decision.intra_mode,
+            decision.uv_mode,
+            chroma_blocks.is_some(),
+            0,
+        );
     }
 
     // use_filter_intra flag — C writes it right after the uv/palette
@@ -2455,13 +2502,30 @@ fn encode_tile_rows(
             && chroma_src.is_some()
             && ref_frame_data.is_none()
             && c_quant.is_some();
-        let funnel_cfg = crate::leaf_funnel::FunnelCfg::for_preset(speed_config.preset);
+        // Same sc derivation as the pack side (identical inputs -> identical
+        // result): the MD walk's rates + its per-SB CDF evolution must see
+        // the same allow_sct as the real pack or the chains desync on
+        // screen-content frames.
+        let tile_sc = crate::sc_detect::derive_allintra_sc(
+            speed_config.preset,
+            encode_input,
+            w,
+            w,
+            h,
+        );
+        let mut funnel_cfg = crate::leaf_funnel::FunnelCfg::for_preset(speed_config.preset);
+        funnel_cfg.allow_sct = tile_sc.allow_screen_content_tools;
         let cwid = w / 2;
         let chgt = h / 2;
         let mut fun_u_recon = alloc::vec![128u8; if use_funnel { cwid * chgt } else { 0 }];
         let mut fun_v_recon = alloc::vec![128u8; if use_funnel { cwid * chgt } else { 0 }];
         let mut fun_ectx = if use_funnel {
-            Some(EntropyCtx::new(w / 4, h / 4, true))
+            Some(EntropyCtx::new(
+                w / 4,
+                h / 4,
+                true,
+                tile_sc.allow_screen_content_tools,
+            ))
         } else {
             None
         };
@@ -2510,7 +2574,15 @@ fn encode_tile_rows(
             alloc::boxed::Box<svtav1_entropy::coeff_c::CoeffFc>,
         )> = Vec::new();
         let mut sim_ectx = if funnel_chain {
-            Some(EntropyCtx::new(w / 4, h / 4, true))
+            // The chain simulation re-codes each SB's symbols to evolve the
+            // per-SB frame contexts — it must code the same no-palette
+            // flags as the real pack or the palette CDF rows drift.
+            Some(EntropyCtx::new(
+                w / 4,
+                h / 4,
+                true,
+                tile_sc.allow_screen_content_tools,
+            ))
         } else {
             None
         };

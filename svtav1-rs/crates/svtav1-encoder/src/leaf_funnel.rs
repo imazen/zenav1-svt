@@ -96,6 +96,15 @@ pub struct MdRates {
     /// md_rate_estimation.c:192-213). Plane U already carries the joint-sign
     /// rate added in; plane V is the magnitude cost alone.
     pub cfl_alpha_fac_bits: [[[i32; 16]; 2]; 8],
+    /// No-palette y flag cost per palette bsize ctx (palette_ymode_fac_bits
+    /// [bctx][neighbor ctx 0][0] — neighbor ctx is 0 until palette blocks
+    /// exist). Priced into DC candidates' luma rate when allow_palette
+    /// (rd_cost.c:579-585).
+    pub palette_y_no: [i32; 7],
+    /// No-palette uv flag cost (palette_uv_mode_fac_bits[0][0]) — part of
+    /// EVERY UV_DC chroma fast rate when allow_palette (C computes it
+    /// inside svt_aom_get_intra_uv_fast_rate, rd_cost.c:514-520).
+    pub palette_uv_no: i32,
     /// Coefficient cost tables (svt_aom_estimate_coefficients_rate).
     pub coeff: alloc::boxed::Box<CoeffCostTables>,
 }
@@ -119,8 +128,14 @@ pub fn build_md_rates(fc: &FrameContext, cfc: &cc::CoeffFc) -> alloc::boxed::Box
         tx_size: [[[0; 3]; 3]; 4],
         intra_ext_tx: [[0; 17]; 13 * 4 * 3],
         cfl_alpha_fac_bits: [[[0; 16]; 2]; 8],
+        palette_y_no: [0; 7],
+        palette_uv_no: 0,
         coeff: crate::quant::build_coeff_cost_tables_from_fc(cfc),
     });
+    for b in 0..7 {
+        r.palette_y_no[b] = costs_from_cdf::<2>(&fc.palette_y_mode_cdf[b][0])[0];
+    }
+    r.palette_uv_no = costs_from_cdf::<2>(&fc.palette_uv_mode_cdf[0])[0];
     for a in 0..5 {
         for l in 0..5 {
             r.kf_y[a][l] = costs_from_cdf(&fc.kf_y_mode_cdf[a][l]);
@@ -399,6 +414,14 @@ pub struct FunnelCfg {
     /// 1/2, M0) BYPASSES the detector — CfL is always evaluated (C :7183
     /// `!cplx_th`); 10 (cfl_level 4, M1..M6) gates CfL on the detector firing.
     pub cfl_cplx_th: u32,
+    /// FH `allow_screen_content_tools` for THIS frame (not a preset knob —
+    /// the pipeline stamps it from the sc detector after `for_preset`).
+    /// Gates the no-palette flag rates: C prices palette_ymode_fac_bits
+    /// \[bctx\]\[ctx\]\[0\] into every DC candidate's luma rate
+    /// (rd_cost.c:579) and palette_uv_mode_fac_bits\[0\]\[0\] into every
+    /// UV_DC chroma fast rate (inside svt_aom_get_intra_uv_fast_rate,
+    /// rd_cost.c:514) when `svt_aom_allow_palette` holds.
+    pub allow_sct: bool,
 }
 
 impl FunnelCfg {
@@ -450,6 +473,7 @@ impl FunnelCfg {
             cfl_enabled: true,
             cfl_itr_th: 1,
             cfl_cplx_th: 10,
+            allow_sct: false,
         };
         let mut cfg = match preset {
             // M1 (still/420): the svt_aom_get_*_allintra rows for enc_mode=1
@@ -2202,6 +2226,18 @@ pub(crate) fn evaluate_leaf(
         (u_out, v_out)
     };
 
+    // No-palette flag pricing for this leaf (C svt_aom_allow_palette on the
+    // LUMA bsize; both dims <= 64 and not 4x4/4x8/8x4). ctx rows are 0 —
+    // no neighbor ever carries palette until the palette search lands.
+    let allow_pal =
+        svtav1_entropy::context::allow_palette(cfg.allow_sct, w, h);
+    let pal_y_no = if allow_pal {
+        rates.palette_y_no[svtav1_entropy::context::palette_bsize_ctx(w, h)] as u64
+    } else {
+        0
+    };
+    let pal_uv_no = if allow_pal { rates.palette_uv_no as u64 } else { 0 };
+
     let mut ind_uv: Option<[(u8, i8); 13]> = None;
     // C: at ind_uv_last_mds == 0 (the M0/M1 chroma config) the independent
     // uv search runs BEFORE MDS0 (product_coding_loop.c:9260, ind_uv_avail=1
@@ -2331,6 +2367,9 @@ pub(crate) fn evaluate_leaf(
                 if use_angle && matches!(uvm, 1..=8) {
                     fcr2 += rates.angle[uvm as usize - 1][(3 + uvd) as usize] as u64;
                 }
+                if uvm == 0 {
+                    fcr2 += pal_uv_no; // rd_cost.c:514 (inside uv fast rate)
+                }
                 let cost = rdcost(lambda, bits + fcr2, dist);
                 if cost < best_cost {
                     best_cost = cost;
@@ -2455,6 +2494,12 @@ pub(crate) fn evaluate_leaf(
                 flr += rates.fi_mode[fi as usize] as u64;
             }
         }
+        // No-palette y flag (rd_cost.c:579-585): every DC-coded candidate
+        // (fi included) prices palette_ymode_fac_bits[bctx][0][0] when
+        // allow_palette. pal_y_no is 0 when palette is disallowed.
+        if mode == 0 {
+            flr += pal_y_no;
+        }
         let mut fcr = if has_uv {
             rates.uv[cfl_allowed][mode as usize][uv as usize] as u64
         } else {
@@ -2464,6 +2509,9 @@ pub(crate) fn evaluate_leaf(
         };
         if has_uv && use_angle && matches!(uv, 1..=8) {
             fcr += rates.angle[uv as usize - 1][(3 + uv_delta) as usize] as u64;
+        }
+        if has_uv && uv == 0 {
+            fcr += pal_uv_no; // rd_cost.c:514 (inside uv fast rate)
         }
         let fast_cost = rdcost(lambda, flr + fcr, satd << 4);
         #[cfg(feature = "std")]
@@ -2781,6 +2829,9 @@ pub(crate) fn evaluate_leaf(
                 if use_angle && matches!(uvm, 1..=8) {
                     fcr2 += rates.angle[uvm as usize - 1][(3 + uvd) as usize] as u64;
                 }
+                if uvm == 0 {
+                    fcr2 += pal_uv_no; // rd_cost.c:514 (inside uv fast rate)
+                }
                 let (bits, dist) = uv_rd[k];
                 let cost = rdcost(lambda, bits + fcr2, dist);
                 if cost < best_cost {
@@ -2816,6 +2867,9 @@ pub(crate) fn evaluate_leaf(
             let mut fcr = rates.uv[cfl_allowed][c.mode as usize][uvm as usize] as u64;
             if use_angle && matches!(uvm, 1..=8) {
                 fcr += rates.angle[uvm as usize - 1][(3 + uvd) as usize] as u64;
+            }
+            if uvm == 0 {
+                fcr += pal_uv_no; // rd_cost.c:514 (inside uv fast rate)
             }
             c.fcr = fcr;
             }
@@ -3422,6 +3476,9 @@ pub(crate) fn evaluate_leaf(
                         rates.uv[cfl_allowed][cand.mode as usize][arb_uv as usize] as u64;
                     if use_angle && matches!(arb_uv, 1..=8) {
                         f += rates.angle[arb_uv as usize - 1][(3 + arb_uvd) as usize] as u64;
+                    }
+                    if arb_uv == 0 {
+                        f += pal_uv_no; // rd_cost.c:514 (inside uv fast rate)
                     }
                     fcr_final = f;
                 }
