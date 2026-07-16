@@ -749,6 +749,28 @@ fn nsqdbg_on() -> bool {
     std::env::var_os("SVTAV1_NSQDBG").is_some()
 }
 
+/// SVTAV1_DBG_MI="mi_row,mi_col": restrict NSQDBG output to the one 64px SB
+/// containing that mi (e.g. `64,112`). Unset = whole frame. Frame-wide dumps
+/// are ~45 MB / 35k lines on a 512x512 photo; one SB is ~50 lines — always
+/// set this when drilling a known divergence (drill_cell.sh does).
+fn nsqdbg_sb() -> Option<(usize, usize)> {
+    static SB: std::sync::OnceLock<Option<(usize, usize)>> = std::sync::OnceLock::new();
+    *SB.get_or_init(|| {
+        let v = std::env::var("SVTAV1_DBG_MI").ok()?;
+        let (r, c) = v.split_once(',')?;
+        Some((r.trim().parse().ok()?, c.trim().parse().ok()?))
+    })
+}
+
+/// Dump gate for a record about the block at pixel (abs_x, abs_y).
+fn nsqdbg_here(abs_x: usize, abs_y: usize) -> bool {
+    nsqdbg_on()
+        && match nsqdbg_sb() {
+            None => true,
+            Some((r, c)) => (abs_y >> 6, abs_x >> 6) == (r >> 4, c >> 4),
+        }
+}
+
 /// C BLOCK_SIZES enum value of a square block (dump parity).
 fn c_bsize_sq(size: usize) -> u32 {
     match size {
@@ -1245,7 +1267,7 @@ impl DepthWalk<'_, '_> {
                             &h_children,
                             &v_children,
                         ) {
-                            if nsqdbg_on() {
+                            if nsqdbg_here(abs_x, abs_y) {
                                 let g = if self.skip_by_split_rate(
                                     shape,
                                     sq,
@@ -1294,9 +1316,9 @@ impl DepthWalk<'_, '_> {
                         // every preset that reaches the depth-refine walk).
                         true,
                     );
-                    if nsqdbg_on() {
+                    if nsqdbg_here(abs_x, abs_y) {
                         eprintln!(
-                            "NSQDBG BLK mi=({},{}) bsize={} shape={} nsi={} cost={} rate={} dist={} mode={} coeff={} nz={} txd={} uv={}",
+                            "NSQDBG BLK mi=({},{}) bsize={} shape={} nsi={} cost={} rate={} dist={} mode={} coeff={} nz={} txd={} uv={} txt=[{}] ye=[{}] ue={} ve={}",
                             abs_y / 4,
                             abs_x / 4,
                             c_bsize_sq(size),
@@ -1310,6 +1332,10 @@ impl DepthWalk<'_, '_> {
                             ev.cnt_nz_coeff(),
                             ev.tx_depth(),
                             ev.uv_mode(),
+                            ev.dbg_txb_types(),
+                            ev.dbg_txb_eobs(),
+                            ev.dbg_uv_eobs().0,
+                            ev.dbg_uv_eobs().1,
                         );
                     }
                     part_cost += ev.block_cost();
@@ -1317,7 +1343,7 @@ impl DepthWalk<'_, '_> {
 
                     if let Some((_, best_rd, _)) = &best {
                         if part_cost >= *best_rd {
-                            if nsqdbg_on() {
+                            if nsqdbg_here(abs_x, abs_y) {
                                 eprintln!(
                                     "NSQDBG ABORT mi=({},{}) bsize={} shape={} nsi={} part_cost={} best={}",
                                     abs_y / 4,
@@ -1403,7 +1429,7 @@ impl DepthWalk<'_, '_> {
                         best = Some((shape, part_cost, evals));
                     }
                 }
-                if nsqdbg_on() {
+                if nsqdbg_here(abs_x, abs_y) {
                     let (bp, brd) = best
                         .as_ref()
                         .map(|(p, rd, _)| (*p as u32, *rd))
@@ -1525,6 +1551,7 @@ impl DepthWalk<'_, '_> {
         let children = scan.children.as_ref().expect("split_flag children");
         let mut trees: Vec<PartitionTree> = Vec::with_capacity(4);
         let mut decisions: Vec<BlockDecision> = Vec::new();
+        let mut child_rd = [0u64; 4]; // NSQDBG only: per-quadrant pick() RD
         for (i, child) in children.iter().enumerate() {
             // Per-quadrant early exit vs the parent depth cost
             // (:11346-11360; th 50 for i == 0, else 1000; bias 995).
@@ -1537,7 +1564,7 @@ impl DepthWalk<'_, '_> {
                 if (prd as u128) * (th as u128) * (Self::PARENT_COST_BIAS as u128)
                     <= (split_cost as u128) * 1_000_000
                 {
-                    if nsqdbg_on() {
+                    if nsqdbg_here(abs_x, abs_y) {
                         eprintln!(
                             "NSQDBG TSX mi=({},{}) bsize={} i={} parent={} split={}",
                             abs_y / 4,
@@ -1554,6 +1581,7 @@ impl DepthWalk<'_, '_> {
             let cx = abs_x + (i & 1) * half;
             let cy = abs_y + (i >> 1) * half;
             let res = self.pick(child, cx, cy);
+            child_rd[i] = res.rd;
             split_cost += res.rd;
             trees.push(res.tree);
             decisions.extend(res.decisions);
@@ -1561,7 +1589,7 @@ impl DepthWalk<'_, '_> {
 
         // Final compare (:11375): parent wins on
         // bias * parent_rd <= split_cost * 1000.
-        if nsqdbg_on() {
+        if nsqdbg_here(abs_x, abs_y) {
             let chose = match parent_rd {
                 Some(prd)
                     if (Self::PARENT_COST_BIAS as u128) * (prd as u128)
@@ -1572,13 +1600,18 @@ impl DepthWalk<'_, '_> {
                 _ => "split",
             };
             eprintln!(
-                "NSQDBG TS mi=({},{}) bsize={} parent_valid={} parent={} split={} chose={}",
+                "NSQDBG TS mi=({},{}) bsize={} parent_valid={} parent={} split={} sr={} c=[{},{},{},{}] chose={}",
                 abs_y / 4,
                 abs_x / 4,
                 c_bsize_sq(size),
                 u8::from(parent_rd.is_some()),
                 parent_rd.unwrap_or(0),
                 split_cost,
+                split_rate,
+                child_rd[0],
+                child_rd[1],
+                child_rd[2],
+                child_rd[3],
                 chose,
             );
         }
