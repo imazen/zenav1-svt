@@ -109,6 +109,17 @@ static void dump_pc_tree(FILE* f, const PC_TREE* t) {
         return;
     fprintf(f, "PICKPART mi=(%d,%d) bsize=%d partition=%d rd=%lld valid=%d\n", t->mi_row, t->mi_col, (int)t->bsize,
             (int)t->partition, (long long)t->rdc.rd_cost, (int)t->rdc.valid);
+    /* The PART_N (square NONE) evaluation exists for every TESTED node even
+     * when SPLIT wins — it feeds the skip-sub-depth cond1 gate (quad-dist
+     * std-dev + nz%), so dump it for direct comparison with the port's BLK
+     * records at non-chosen nodes too. */
+    if (t->tested_blk[PART_N][0] && t->block_data[PART_N][0]) {
+        const BlkStruct* n = t->block_data[PART_N][0];
+        fprintf(f, "CSQ mi=(%d,%d) bsize=%d cost=%llu mode=%d uv=%d txd=%d nz=%u ye=[%u,%u,%u,%u]\n", t->mi_row,
+                t->mi_col, (int)t->bsize, (unsigned long long)n->cost, (int)n->block_mi.mode, (int)n->block_mi.uv_mode,
+                (int)n->block_mi.tx_depth, (unsigned)n->cnt_nz_coeff, n->eob.y[0], n->eob.y[1], n->eob.y[2],
+                n->eob.y[3]);
+    }
     if (t->partition == PARTITION_SPLIT) {
         for (int i = 0; i < 4; ++i)
             dump_pc_tree(f, t->split[i]);
@@ -297,6 +308,13 @@ void __wrap_svt_av1_loop_filter_init(PictureControlSet* pcs) {
     FILE* f = fopen(path, "a");
     if (!f)
         return;
+
+    /* Per-picture adaptivity inputs the depth refinement (and other levels)
+     * key off — C selects pic_block_based_depth_refinement_level per picture
+     * from coeff_lvl (+ r0), NOT per preset. One line per call. */
+    fprintf(f, "PICCFG coeff_lvl=%d depth_refine_lvl=%d r0_gen=%d r0=%.4f pic_avg_variance=%u qp=%u\n",
+            (int)pcs->coeff_lvl, (int)pcs->pic_block_based_depth_refinement_level, (int)pcs->ppcs->r0_gen,
+            pcs->ppcs->r0, (unsigned)pcs->ppcs->pic_avg_variance, (unsigned)pcs->scs->static_config.qp);
 
     static int call_idx = 0;
     const int  n        = call_idx++;
