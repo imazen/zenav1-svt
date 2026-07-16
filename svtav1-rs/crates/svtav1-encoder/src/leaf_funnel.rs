@@ -921,6 +921,49 @@ fn hadamard_satd(
 // Coefficient rate (svt_av1_cost_coeffs_txb, full scan, real contexts)
 // ---------------------------------------------------------------------------
 
+/// SVTAV1_CCOSTDBG: mirror the C --wrap interposer
+/// (tools/capture_c_trace/wrap_recon.c __wrap_svt_av1_cost_coeffs_txb) so the
+/// port's coeff-rate estimate can be diffed against C's for identical qcoeff
+/// (the first coding block feeds both the same residual). Answers whether an
+/// M2/M3 partition near-tie flips on RATE (this estimator) vs DISTORTION.
+#[cfg(feature = "std")]
+fn ccost_log(
+    plane: usize,
+    c_tx_size: usize,
+    tx_type: usize,
+    eob: u16,
+    skip: usize,
+    dc: usize,
+    qcoeff: &[i32],
+    width: usize,
+    height: usize,
+    cost: i32,
+) {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::OnceLock;
+    // Cache the env lookup — this fn is on the per-txb hot path, so a getenv
+    // per call would be a real regression. OnceLock => one atomic load when off.
+    static ON: OnceLock<bool> = OnceLock::new();
+    if !*ON.get_or_init(|| std::env::var_os("SVTAV1_CCOSTDBG").is_some()) {
+        return;
+    }
+    static N: AtomicUsize = AtomicUsize::new(0);
+    let i = N.fetch_add(1, Ordering::Relaxed);
+    if i >= 200 {
+        return;
+    }
+    let n = (width * height).min(qcoeff.len());
+    let sumabs: i64 = qcoeff[..n].iter().map(|&v| (v as i64).abs()).sum();
+    let q = |k: usize| if n > k { qcoeff[k] } else { 0 };
+    eprintln!(
+        "CCOST i={i} plane={plane} txs={c_tx_size} txt={tx_type} eob={eob} skip={skip} dc={dc} \
+         sumabs={sumabs} q0={} q1={} q2={} cost={cost}",
+        q(0),
+        q(1),
+        q(2),
+    );
+}
+
 /// C `svt_av1_cost_coeffs_txb` (rd_cost.c:355) at
 /// `mds_fast_coeff_est_level = 1` (FULL middle loop), arbitrary plane /
 /// tx type / contexts. `eob > 0`.
@@ -1005,6 +1048,11 @@ pub(crate) fn cost_coeffs_txb(
 
     if eob_us == 1 {
         level_cost(&mut cost, 0, qcoeff[0], true, true, &levels_buf);
+        #[cfg(feature = "std")]
+        ccost_log(
+            plane_type, c_tx_size, tx_type, eob, txb_skip_ctx, dc_sign_ctx, qcoeff, width, height,
+            cost,
+        );
         return cost;
     }
     // eob - 1 (base_eob context), then DC, then the full middle loop —
@@ -1036,6 +1084,10 @@ pub(crate) fn cost_coeffs_txb(
             cost += costs.base_cost[coeff_contexts[pos] as usize][level as usize];
         }
     }
+    #[cfg(feature = "std")]
+    ccost_log(
+        plane_type, c_tx_size, tx_type, eob, txb_skip_ctx, dc_sign_ctx, qcoeff, width, height, cost,
+    );
     cost
 }
 

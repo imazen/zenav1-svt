@@ -78,6 +78,7 @@ cc -O2 -g -o "$OUT" \
     -Wl,--wrap=svt_od_ec_enc_reset \
     -Wl,--wrap=svt_od_ec_enc_done \
     -Wl,--wrap=svt_av1_loop_filter_init \
+    -Wl,--wrap=svt_aom_txb_estimate_coeff_bits \
     "$LIB" -lpthread -lm
 
 echo "capture_c_trace: built $OUT"
