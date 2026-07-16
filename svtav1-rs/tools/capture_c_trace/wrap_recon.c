@@ -76,11 +76,68 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "common_utils.h"
 #include "deblocking_filter.h"
 #include "enc_inter_prediction.h"
 #include "pcs.h"
 
 void __real_svt_av1_loop_filter_init(PictureControlSet* pcs);
+
+/* ---- coeff-rate estimator interposer -----------------------------------
+ * svt_av1_cost_coeffs_txb (rd_cost.c:355) is what the port's cost_coeffs_txb
+ * transcribes, but it is called ONLY from within rd_cost.c (intra-TU), so the
+ * compiler binds it direct and --wrap cannot reach it. Its cross-TU wrapper is
+ * svt_aom_txb_estimate_coeff_bits (entropy_coding.h:47, defined rd_cost.c,
+ * called from full_loop.c / product_coding_loop.c), which stores the very
+ * value cost_coeffs_txb returns into *y_txb_coeff_bits (rd_cost.c:1214). So we
+ * wrap THAT and log the per-txb luma coeff RATE.
+ *
+ * The port dumps its cost_coeffs_txb return per txb (SVTAV1_CCOSTDBG). On the
+ * first coding block (0,0) both encoders feed identical qcoeff (no neighbours
+ * => flat 128 pred => same residual => quant proven faithful), so calls
+ * matched by (eob, txsize, tx_type) MUST return the same rate unless the
+ * estimator diverges. This decides whether the M2/M3 partition near-tie flips
+ * on RATE (this estimator) or on DISTORTION (the recon). Env: SVT_CCOST_OUT.
+ */
+EbErrorType __real_svt_aom_txb_estimate_coeff_bits(
+    ModeDecisionContext* ctx, uint8_t allow_update_cdf, FRAME_CONTEXT* ec_ctx, PictureControlSet* pcs,
+    ModeDecisionCandidateBuffer* cand_bf, uint32_t txb_origin_index, uint32_t txb_chroma_origin_index,
+    EbPictureBufferDesc* coeff_buffer_sb, uint32_t y_eob, uint32_t cb_eob, uint32_t cr_eob,
+    uint64_t* y_txb_coeff_bits, uint64_t* cb_txb_coeff_bits, uint64_t* cr_txb_coeff_bits, TxSize txsize,
+    TxSize txsize_uv, TxType tx_type, TxType tx_type_uv, COMPONENT_TYPE component_type);
+
+EbErrorType __wrap_svt_aom_txb_estimate_coeff_bits(
+    ModeDecisionContext* ctx, uint8_t allow_update_cdf, FRAME_CONTEXT* ec_ctx, PictureControlSet* pcs,
+    ModeDecisionCandidateBuffer* cand_bf, uint32_t txb_origin_index, uint32_t txb_chroma_origin_index,
+    EbPictureBufferDesc* coeff_buffer_sb, uint32_t y_eob, uint32_t cb_eob, uint32_t cr_eob,
+    uint64_t* y_txb_coeff_bits, uint64_t* cb_txb_coeff_bits, uint64_t* cr_txb_coeff_bits, TxSize txsize,
+    TxSize txsize_uv, TxType tx_type, TxType tx_type_uv, COMPONENT_TYPE component_type) {
+    EbErrorType ret = __real_svt_aom_txb_estimate_coeff_bits(
+        ctx, allow_update_cdf, ec_ctx, pcs, cand_bf, txb_origin_index, txb_chroma_origin_index, coeff_buffer_sb, y_eob,
+        cb_eob, cr_eob, y_txb_coeff_bits, cb_txb_coeff_bits, cr_txb_coeff_bits, txsize, txsize_uv, tx_type, tx_type_uv,
+        component_type);
+    const char* path = getenv("SVT_CCOST_OUT");
+    if (!path || !*path || allow_update_cdf)
+        return ret;
+    static int   nlog = 0;
+    static FILE* cf   = NULL;
+    if (nlog == 0)
+        cf = fopen(path, "w");
+    if (cf && nlog < 300) {
+        if (y_eob > 0 && y_txb_coeff_bits)
+            fprintf(cf, "CCOST i=%d plane=0 txs=%d txt=%d eob=%u cost=%llu\n", nlog, (int)txsize, (int)tx_type, y_eob,
+                    (unsigned long long)*y_txb_coeff_bits);
+        if (cb_eob > 0 && cb_txb_coeff_bits)
+            fprintf(cf, "CCOST i=%d plane=1 txs=%d txt=%d eob=%u cost=%llu\n", nlog, (int)txsize_uv, (int)tx_type_uv,
+                    cb_eob, (unsigned long long)*cb_txb_coeff_bits);
+        if (cr_eob > 0 && cr_txb_coeff_bits)
+            fprintf(cf, "CCOST i=%d plane=2 txs=%d txt=%d eob=%u cost=%llu\n", nlog, (int)txsize_uv, (int)tx_type_uv,
+                    cr_eob, (unsigned long long)*cr_txb_coeff_bits);
+        fflush(cf);
+        nlog++;
+    }
+    return ret;
+}
 
 void __wrap_svt_av1_loop_filter_init(PictureControlSet* pcs) {
     __real_svt_av1_loop_filter_init(pcs);
