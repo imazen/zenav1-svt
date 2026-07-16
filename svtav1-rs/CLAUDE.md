@@ -383,3 +383,24 @@ Release-mode benchmarks (x86_64 AVX2):
 - fwd_txfm 4x4: ~170 Mpix/s
 - fwd_txfm 8x8: ~215 Mpix/s
 These numbers are MEASURED, not estimated.
+
+## BULK-PORT MODE (user directive 2026-07-16)
+
+Port ALL remaining C machinery with detailed, careful source-to-source
+transcription FIRST; full per-cell verification batteries are REVISITED
+after the code is in. Rules:
+
+- Every spot whose bit-exactness is NOT yet verified against C carries a
+  marker comment: `// PORT-NOTE(unverified): <what + C file:line + how to
+  verify>`. Grep `PORT-NOTE(unverified)` = the complete debt list.
+- When a piece BECOMES verified (FFI parity test, identity cell, or
+  differential), delete the marker in the same commit as the evidence.
+- The index below tracks AREAS with outstanding markers — update it when
+  adding/clearing markers in a module.
+- Development happens ON MASTER now (wave2/entropy-c-parity is merged and
+  frozen; push origin HEAD:master). The HDR fork mode lands via PR #2
+  (hdr-hybrid branch) — do not touch SVT_HDR_MODE code paths here.
+
+### PORT-NOTE(unverified) index
+
+- (none yet — palette pipeline port starting; see docs/palette-port-map.md)
