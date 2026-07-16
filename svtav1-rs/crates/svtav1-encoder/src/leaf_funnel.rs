@@ -232,6 +232,12 @@ pub struct FunnelFrame {
 /// `enc_mode`; the M6 values reproduce the original hardcoded funnel exactly.
 #[derive(Clone, Copy, Debug)]
 pub struct FunnelCfg {
+    /// C `pcs->pic_bypass_encdec` (svt_aom_get_bypass_encdec_allintra:
+    /// `enc_mode <= ENC_M3` -> 0, else 1). Decides whether the MDS3 winner
+    /// rebuild (av1_perform_inverse_transform_recon) lands in the shared
+    /// `cand_bf->recon` (bypass=0) or is redirected away (bypass=1) — which
+    /// switches WHAT the quad-dist gates measure (see `evaluate_leaf`).
+    pub bypass_encdec: bool,
     /// filter-intra candidate + `use_filter_intra` syntax (M6: on level 2;
     /// M7/M8: `get_filter_intra_level_allintra` == 0 -> off).
     pub filter_intra: bool,
@@ -390,6 +396,7 @@ impl FunnelCfg {
         // level 4, txt groups 5/4 satd 10 rate 100, uv follows luma, no
         // SH edge filter bit).
         let m6_tail = FunnelCfg {
+            bypass_encdec: true, // overridden from `preset` below
             filter_intra: true,
             prune_best_mode: false,
             nic_num: (6, 6, 6),
@@ -429,7 +436,7 @@ impl FunnelCfg {
             cfl_itr_th: 1,
             cfl_cplx_th: 10,
         };
-        match preset {
+        let mut cfg = match preset {
             // M1 (still/420): the svt_aom_get_*_allintra rows for enc_mode=1
             // give the SAME funnel-relevant config as M2 — nic_level 3
             // (svt_aom_get_nic_level_allintra :5994 `<= ENC_M2` -> 3),
@@ -709,7 +716,9 @@ impl FunnelCfg {
                 cfl_enabled: false,
                 ..m6_tail
             },
-        }
+        };
+        cfg.bypass_encdec = preset >= 4;
+        cfg
     }
 }
 
@@ -1707,6 +1716,10 @@ struct Cand {
     txb_cul: Vec<u8>,
     txb_type: Vec<u8>,
     y_recon: Vec<u8>,
+    /// The tx_depth-0 luma recon (C's shared `cand_bf->recon` state after the
+    /// TX loop — deeper depths reconstruct in aux buffers and are never
+    /// copied back, so the quad-dist gates measure THIS, not `y_recon`).
+    y_recon_d0: Vec<u8>,
     y_bits: u64,
     y_dist: u64,
     u_q: Vec<i32>,
@@ -1791,6 +1804,14 @@ pub(crate) struct LeafEval {
     cw: usize,
     chh: usize,
     win: Cand,
+    /// The shared `cand_bf->recon` state the quad-dist gates measure
+    /// (skip-sub-depth cond1 + the NSQ recon-dist gates): bypass_encdec=0
+    /// -> the winner rebuild (== winner final recon+chroma); bypass=1 ->
+    /// the LAST MDS3 candidate's depth-0 luma recon + its chroma (the
+    /// rebuild is redirected away and never reaches the shared buffer).
+    gate_y: Vec<u8>,
+    gate_u: Vec<u8>,
+    gate_v: Vec<u8>,
     /// C `cand_bf->residual` content at `non_normative_txs` time: ALL
     /// MDS3 candidates share ONE residual workspace (verified by buffer-
     /// pointer instrumentation — docs/captures/nsq_m2m3), so the buffer
@@ -1863,6 +1884,15 @@ impl LeafEval {
     /// NSQDBG only: the winner's whole-block depth-0 luma prediction.
     pub(crate) fn dbg_pred(&self) -> &[u8] {
         &self.win.pred
+    }
+
+    /// The quad-dist gate recon planes (see the `gate_y` field doc).
+    pub(crate) fn gate_y(&self) -> &[u8] {
+        &self.gate_y
+    }
+
+    pub(crate) fn gate_uv(&self) -> (&[u8], &[u8]) {
+        (&self.gate_u, &self.gate_v)
     }
 
     /// The shared MDS3 residual-workspace state (C `cand_bf->residual`,
@@ -2158,6 +2188,7 @@ pub(crate) fn evaluate_leaf(
             txb_cul: Vec::new(),
             txb_type: Vec::new(),
             y_recon: Vec::new(),
+            y_recon_d0: Vec::new(),
             y_bits: 0,
             y_dist: 0,
             u_q: Vec::new(),
@@ -2684,6 +2715,17 @@ pub(crate) fn evaluate_leaf(
         // (the MDS0 whole-block pred) whenever the winning depth > 0 — see the
         // detector call below for why the difference is observable.
         let mut best_pred: Vec<u8> = Vec::new();
+        // The tx_depth-0 (whole-block-pred) recon, kept regardless of which
+        // depth wins. C's `cand_bf->recon` is the SHARED ctx temp buffer:
+        // deeper depths reconstruct into the AUX tx-depth buffers and
+        // update_tx_cand_bf copies pred/coeffs/eob back but NEVER the recon —
+        // so after the TX loop the shared recon still holds the DEPTH-0
+        // recon, and that is what `calc_scr_to_recon_dist_per_quadrant`
+        // (skip-sub-depth cond1 + the NSQ recon-dist gates) measures.
+        // Proven on 1147124 q20 p4 (76,96): C fill luma quads sum 971<<4 ==
+        // C's OWN depth-0 dist 15536, while the winning depth-1 dist is
+        // 11904 (== this port's winner recon SSE).
+        let mut d0_recon: Vec<u8> = Vec::new();
         let mut best_coeff_count = u32::MAX;
 
         for depth in 0..=end_depth {
@@ -2860,6 +2902,11 @@ pub(crate) fn evaluate_leaf(
                 0
             };
             let cost = rdcost(lambda, dep_bits + tx_size_bits, dep_dist);
+            // Depth 0 never aborts (the abort guard is `depth > 0`), so this
+            // is always populated for every candidate that reaches MDS3.
+            if depth == 0 {
+                d0_recon = dep_recon.clone();
+            }
             if cost < best_cost {
                 best_cost = cost;
                 best_depth = depth;
@@ -3497,6 +3544,7 @@ pub(crate) fn evaluate_leaf(
         cand.txb_cul = best_txb_cul;
         cand.txb_type = best_txb_type;
         cand.y_recon = best_recon;
+        cand.y_recon_d0 = d0_recon;
         cand.y_bits = best_bits;
         cand.y_dist = best_dist;
         cand.u_q = u_out.qcoeff;
@@ -3532,6 +3580,23 @@ pub(crate) fn evaluate_leaf(
         }
     }
 
+    // The shared cand_bf->recon state at gate time (see the gate_y field
+    // doc): winner rebuild at bypass=0; last MDS3 candidate's depth-0 luma
+    // + chroma at bypass=1. Proven on 1147124 q20 p4 (76,96): C's fill luma
+    // quads sum to its OWN depth-0 dist (971<<4 == 15536), not the winning
+    // depth-1 recon's (744<<4).
+    let (gate_y, gate_u, gate_v) = if cfg.bypass_encdec {
+        let last = &cands[order1[n3 - 1]];
+        (
+            last.y_recon_d0.clone(),
+            last.u_recon.clone(),
+            last.v_recon.clone(),
+        )
+    } else {
+        let wc = &cands[win];
+        (wc.y_recon.clone(), wc.u_recon.clone(), wc.v_recon.clone())
+    };
+
     LeafEval {
         abs_x,
         abs_y,
@@ -3543,6 +3608,9 @@ pub(crate) fn evaluate_leaf(
         cw,
         chh,
         win: cands.swap_remove(win),
+        gate_y,
+        gate_u,
+        gate_v,
         psq_resid,
     }
 }
