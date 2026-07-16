@@ -37,7 +37,60 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 3 {
         eprintln!("usage: decode_diff <c.obu> <rs.obu> [sb_size]");
+        eprintln!("       decode_diff --vs-raw <stream.obu> <plane_prefix>");
+        eprintln!("         (compares the decode against <prefix>.p{{0,1,2}} raw");
+        eprintln!("          tightly-packed planes — ORACLE ABSOLUTE VALIDATION");
+        eprintln!("          against an encoder-internal dump on a cell whose");
+        eprintln!("          in-loop filters are no-ops)");
         std::process::exit(2);
+    }
+    if args[1] == "--vs-raw" {
+        let f = decode(&args[2]);
+        let w = f.width as usize;
+        let h = f.height as usize;
+        let cw = w >> f.subsampling_x;
+        let ch = h >> f.subsampling_y;
+        let planes: [(&[u16], usize, usize, usize); 3] = [
+            (&f.y_plane, w, h, f.y_stride),
+            (&f.cb_plane, cw, ch, f.c_stride),
+            (&f.cr_plane, cw, ch, f.c_stride),
+        ];
+        let mut bad = false;
+        for (p, (dp, pw, ph, st)) in planes.iter().enumerate() {
+            let raw = match std::fs::read(format!("{}.p{p}", args[3])) {
+                Ok(r) => r,
+                Err(e) => {
+                    println!("plane{p}: raw read failed: {e}");
+                    bad = true;
+                    continue;
+                }
+            };
+            if raw.len() != pw * ph {
+                println!("plane{p}: raw size {} != {}x{}", raw.len(), pw, ph);
+                bad = true;
+                continue;
+            }
+            let mut first = None;
+            let mut n = 0u64;
+            for y in 0..*ph {
+                for x in 0..*pw {
+                    if dp[y * st + x] != raw[y * pw + x] as u16 {
+                        n += 1;
+                        if first.is_none() {
+                            first = Some((x, y, raw[y * pw + x], dp[y * st + x]));
+                        }
+                    }
+                }
+            }
+            match first {
+                None => println!("plane{p}: decode == raw ({pw}x{ph})"),
+                Some((x, y, r, d)) => {
+                    println!("plane{p}: {n} diffs, first at ({x},{y}) raw={r} decoded={d}");
+                    bad = true;
+                }
+            }
+        }
+        std::process::exit(if bad { 1 } else { 0 });
     }
     let sb: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(64);
     let c = decode(&args[1]);
@@ -63,6 +116,29 @@ fn main() {
         (&c.cb_plane, &r.cb_plane, cw, ch, c.c_stride, r.c_stride),
         (&c.cr_plane, &r.cr_plane, cw, ch, c.c_stride, r.c_stride),
     ];
+    // ORACLE GUARD: aom-decoder-rs (as of 2026-07-16) silently mis-decodes
+    // streams with ACTIVE Wiener restoration units — the tile desyncs and
+    // the luma plane comes back overwhelmingly 128-gray from the origin
+    // (flat/none-LR SVT streams decode bit-exactly; every Wiener-active
+    // stream tested decodes gray). Refuse to report a locate when either
+    // side shows that signature: a false locate costs a drilling session.
+    for (side, (yp, st)) in [("C", (&c.y_plane, c.y_stride)), ("port", (&r.y_plane, r.y_stride))] {
+        let mut gray = 0u64;
+        for y in 0..h {
+            for x in 0..w {
+                gray += u64::from(yp[y * st + x] == 128);
+            }
+        }
+        if gray * 100 > (w as u64 * h as u64) * 40 {
+            println!(
+                "ORACLE-SUSPECT side={side}: {}% of luma decoded exactly 128 — known \
+                 aom-decoder-rs failure on Wiener-active streams; DO NOT trust this \
+                 locate (use tree_diff / the recon dumps instead)",
+                gray * 100 / (w as u64 * h as u64)
+            );
+            std::process::exit(3);
+        }
+    }
     let mut ndiff = [0u64; 3];
     for (p, (cp, rp, pw, ph, cs, rs)) in planes.iter().enumerate() {
         for y in 0..*ph {
