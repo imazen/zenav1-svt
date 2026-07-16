@@ -1,0 +1,5 @@
+commit: 316753501 (pre-landing tree)
+cmd: IM_PRESETS="0 1 2 3 4 5 6 7 8 9 10" bash tools/identity_matrix.sh
+result: 129/132 byte-identical (was 120 before ind-uv+fi fixes)
+remaining: gradient p1 x3 (64q20 tile 1B, 128q20 cdef_y_sec, 128q40 lf_level)
+host: dev-32gb

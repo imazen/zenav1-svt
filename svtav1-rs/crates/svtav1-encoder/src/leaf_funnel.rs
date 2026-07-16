@@ -1881,6 +1881,23 @@ impl LeafEval {
         (self.win.u_eob, self.win.v_eob)
     }
 
+    /// NSQDBG only: the winner's filter-intra mode (0 == FI off/none for
+    /// non-DC winners; distinguishes FILTER_* candidates from plain DC).
+    pub(crate) fn dbg_fi(&self) -> u8 {
+        self.win.fi
+    }
+
+    /// NSQDBG only: the winner's luma + chroma angle deltas.
+    pub(crate) fn dbg_deltas(&self) -> (i8, i8) {
+        (self.win.delta, self.win.uv_delta)
+    }
+
+    /// NSQDBG only: the winner's per-txb quantized DC levels.
+    pub(crate) fn dbg_qdcs(&self) -> String {
+        let v: Vec<String> = self.win.txb_q.iter().map(|q| q[0].to_string()).collect();
+        v.join(",")
+    }
+
     /// NSQDBG only: the winner's whole-block depth-0 luma prediction.
     pub(crate) fn dbg_pred(&self) -> &[u8] {
         &self.win.pred
@@ -2054,6 +2071,11 @@ pub(crate) fn evaluate_leaf(
     };
     let filt_type_y = fx.ectx.filt_type_y(abs_x, abs_y);
     let filt_type_uv = fx.ectx.filt_type_uv(abs_x, abs_y);
+    // Chroma pair geometry (C blk_geom bsize_uv + ROUND_UV origins).
+    let cw = w.max(8) / 2;
+    let chh = h.max(8) / 2;
+    let ccx = ((abs_x >> 3) << 3) / 2 + if w >= 8 { (abs_x % 8) / 2 } else { 0 };
+    let ccy = ((abs_y >> 3) << 3) / 2 + if h >= 8 { (abs_y % 8) / 2 } else { 0 };
 
     // -- Candidate injection + MDS0 --
     // C order (`generate_md_stage_0_cand`): regular intra modes DC ..
@@ -2062,325 +2084,7 @@ pub(crate) fn evaluate_leaf(
     // mode_decision.c:3254-3271), then filter-intra
     // (inject_filter_intra_candidates — FILTER_DC only at fi level 2).
     let cfg = frame.cfg;
-    let fi_elig = cfg.filter_intra && fi_allowed_bsize;
-    let mut cand_modes: Vec<(u8, i8, u8)> = Vec::new();
-    if dc_only {
-        // eff-M9 dc_cand_only injection: exactly {DC_PRED}, no filter-intra.
-        cand_modes.push((0, 0, FI_NONE));
-    } else {
-        for mode in 0..=cfg.mode_end {
-            let directional = matches!(mode, 1..=8);
-            // directional_mode_skip_mask at angular_pred_level >= 4 masks
-            // D45_PRED (3) .. D67_PRED (8) — V/H stay
-            // (inject_intra_candidates, mode_decision.c:3246-3250).
-            if matches!(mode, 3..=8) && cfg.angular_level >= 4 {
-                continue;
-            }
-            if directional && cfg.angular_level <= 2 && use_angle {
-                for d in -3i8..=3 {
-                    if cfg.angular_level >= 2 && matches!(d, -2 | -1 | 1 | 2) {
-                        continue;
-                    }
-                    cand_modes.push((mode, d, FI_NONE));
-                }
-            } else {
-                cand_modes.push((mode, 0, FI_NONE));
-            }
-        }
-    }
-    if fi_elig && !dc_only {
-        // Inject FILTER_DC_PRED..max_filter_intra_mode (each is a DC_PRED
-        // block carrying filter_intra_mode 0..N). fi_max 0 = FILTER_DC only
-        // (M1..M6); fi_max 4 = all five filter-intra modes (M0, filter_intra
-        // level 1). inject_filter_intra_candidates, mode_decision.c:3318-3330.
-        for fi_mode in 0..=cfg.fi_max {
-            cand_modes.push((0, 0, fi_mode));
-        }
-    }
-
-    let mut cands: Vec<Cand> = Vec::with_capacity(cand_modes.len());
-    // MDS0 with `prune_using_best_mode` (product_coding_loop.c:1680-1737):
-    // candidates are evaluated in injection order; the running best REGULAR
-    // (class-0, non-filter-intra) mode by fast cost is tracked and used to
-    // SKIP later candidates — H when V is currently best, SMOOTH when DC is
-    // still best. Skipped candidates never get a fast cost (never enter the
-    // pool). At M6 (prune off) every candidate is evaluated, identical to
-    // the original funnel.
-    let mut best_reg_cost = u64::MAX;
-    let mut best_reg_mode: i32 = -1;
-    for &(mode, delta, fi) in &cand_modes {
-        if cfg.prune_best_mode && fi == FI_NONE {
-            // intra_mode_end SMOOTH >= H_PRED, so the gate is armed.
-            if mode == 2 && best_reg_mode == 1 {
-                continue; // V better than DC -> skip H
-            }
-            if mode == 9 && best_reg_mode == 0 {
-                continue; // DC still best -> skip SMOOTH
-            }
-        }
-        // uv = intra_luma_to_chroma[mode] at injection (ind_uv_avail is 0 —
-        // mode_decision.c:3280; the ind-uv rewrite happens later via
-        // update_intra_chroma_mode). Filter-intra candidates carry uv=DC at
-        // this stage (their coded luma mode is DC); the CORRESPONDING intra
-        // mode's chroma is applied by the ind-uv rewrite below.
-        let uv = uv_from_y(if fi != FI_NONE { 0 } else { mode });
-        let uv_delta = if fi != FI_NONE { 0 } else { delta };
-        let mut pred = vec![0u8; w * h];
-        predict_unit(
-            y_recon,
-            y_stride,
-            abs_x,
-            abs_y,
-            w,
-            h,
-            mode,
-            delta,
-            fi,
-            &y_geom,
-            cfg.edge_filter,
-            filt_type_y,
-            &mut pred,
-        );
-        let satd = hadamard_satd(y_src, y_src_stride, y_src_off, &pred, w, h);
-
-        let mut flr = rates.kf_y[above_ctx][left_ctx][mode as usize] as u64;
-        if use_angle && matches!(mode, 1..=8) {
-            flr += rates.angle[mode as usize - 1][(3 + delta) as usize] as u64;
-        }
-        if fi_elig && mode == 0 {
-            flr += rates.fi_flag[bsize_idx][usize::from(fi != FI_NONE)] as u64;
-            if fi != FI_NONE {
-                flr += rates.fi_mode[fi as usize] as u64;
-            }
-        }
-        let mut fcr = if has_uv {
-            rates.uv[cfl_allowed][mode as usize][uv as usize] as u64
-        } else {
-            // C fast cost: chroma_rate only when ctx->has_uv
-            // (av1_intra_fast_cost, rd_cost.c:619).
-            0
-        };
-        if has_uv && use_angle && matches!(uv, 1..=8) {
-            fcr += rates.angle[uv as usize - 1][(3 + uv_delta) as usize] as u64;
-        }
-        let fast_cost = rdcost(lambda, flr + fcr, satd << 4);
-        // C updates best_reg_intra_mode after fast_loop_core for regular
-        // class-0 candidates when prune is armed (line 1727).
-        if cfg.prune_best_mode && fi == FI_NONE && fast_cost < best_reg_cost {
-            best_reg_cost = fast_cost;
-            best_reg_mode = mode as i32;
-        }
-        cands.push(Cand {
-            mode,
-            delta,
-            fi,
-            uv,
-            uv_delta,
-            pred,
-            flr,
-            fcr,
-            fast_cost,
-            full_cost: u64::MAX,
-            mds1_has_coeff: false,
-            tx_depth: 0,
-            txb_q: Vec::new(),
-            txb_eob: Vec::new(),
-            txb_cul: Vec::new(),
-            txb_type: Vec::new(),
-            y_recon: Vec::new(),
-            y_recon_d0: Vec::new(),
-            y_bits: 0,
-            y_dist: 0,
-            u_q: Vec::new(),
-            v_q: Vec::new(),
-            u_eob: 0,
-            v_eob: 0,
-            u_cul: 0,
-            v_cul: 0,
-            u_recon: Vec::new(),
-            v_recon: Vec::new(),
-            cfl_alpha_idx: 0,
-            cfl_alpha_signs: 0,
-            mds3_cost: u64::MAX,
-            block_has_coeff: false,
-            total_rate: 0,
-            full_dist: 0,
-        });
-    }
-    let ncand = cands.len();
-
-    // -- Sort by fast cost (stable == C's strict-less bubble) --
-    let mut order: Vec<usize> = (0..ncand).collect();
-    order.sort_by_key(|&i| cands[i].fast_cost);
-    let mds0_best_idx = order[0];
-
-    // -- post_mds0_nic_pruning (product_coding_loop.c:8045) --
-    let (nic1, nic2, nic3) = nic_counts(frame.cli_qp, cfg.nic_num);
-    let (qw, qwd) = qp_scale_factors(frame.cli_qp);
-    // nic_level 1 (M0) sets mds1_cand_base_th_intra = (uint64_t)~0 (no mds1
-    // cand pruning); the qp-scaled threshold stays saturated so the loop
-    // below never prunes (guard avoids the base*qw overflow).
-    let mds1_cand_th = if cfg.mds1_cand_base_th == u64::MAX {
-        u64::MAX
-    } else {
-        div_round(cfg.mds1_cand_base_th * qw, qwd)
-    };
-    let mut n1 = (ncand as u32).min(nic1) as usize;
-    {
-        let best = cands[order[0]].fast_cost;
-        let mut count = 1usize;
-        if best > 0 {
-            while count < n1 {
-                let dev = (cands[order[count]].fast_cost - best) * 100 / best;
-                // C: `mds1_cand_th / (rank ? rank * cand_count : 1)`
-                // (product_coding_loop.c:8095) — rank 0 (M4 nic case 5)
-                // means the raw threshold, NOT a zero divisor.
-                let div = if cfg.mds1_rank_factor != 0 {
-                    cfg.mds1_rank_factor * count as u64
-                } else {
-                    1
-                };
-                if dev >= mds1_cand_th / div {
-                    break;
-                }
-                count += 1;
-            }
-            n1 = count;
-        }
-    }
-
-    // -- MDS1: luma-only full loop (freq dist, quantize_b, DCT, depth 0) --
-    for &ci in order.iter().take(n1) {
-        let cand = &mut cands[ci];
-        let (txb_skip_ctx, dc_sign_ctx) = if cfg.real_coeff_ctx {
-            let (above, left) = fx.ectx.coeff_neighbors(abs_x, abs_y, w, h);
-            cc::get_txb_ctx(0, above, left, true, false)
-        } else {
-            (0, 0)
-        };
-        let out = tx_unit(
-            y_src,
-            y_src_stride,
-            y_src_off,
-            &cand.pred,
-            w,
-            0,
-            w,
-            h,
-            cc::DCT_DCT,
-            0,
-            txb_skip_ctx,
-            dc_sign_ctx,
-            cand.mode as usize,
-            &qt,
-            frame,
-            rates,
-            false, // no RDOQ at MDS1
-            false, // freq-domain dist
-        );
-        let has = out.eob > 0;
-        let tsz_cat = tx_size_cat(w, h);
-        let tsz_ctx = fx.ectx.tx_size_ctx(abs_x, abs_y, w, h);
-        // C: 4x4 codes no tx_size symbol (block_signals_txsize == bsize > 4x4).
-        let tx_size_bits = if block_signals_txsize(w, h) {
-            rates.tx_size[tsz_cat][tsz_ctx][0] as u64
-        } else {
-            0
-        };
-        let coeff_rate = if has {
-            out.bits as u64 + tx_size_bits + rates.skip[skip_ctx][0] as u64
-        } else {
-            rates.skip[skip_ctx][1] as u64 + tx_size_bits
-        };
-        cand.mds1_has_coeff = has;
-        cand.full_cost = rdcost(lambda, cand.flr + cand.fcr + coeff_rate, out.dist);
-    }
-
-    // -- Sort survivors by full cost --
-    let mut order1: Vec<usize> = order[..n1].to_vec();
-    order1.sort_by_key(|&i| cands[i].full_cost);
-    let mds1_best_idx = order1[0];
-
-    // -- post_mds1_nic_pruning (:8111) --
-    let mds2_cand_th = div_round(cfg.mds2_cand_base_th * qw, qwd);
-    let mut n2 = (n1 as u32).min(nic2) as usize;
-    {
-        let best = cands[order1[0]].full_cost;
-        let mut count = 1usize;
-        if best > 0 && count < n2 {
-            // C rank staging (product_coding_loop.c:8158-8166): only when
-            // the config factor is nonzero — same class (the inter-class
-            // +3 arm is dead: single intra class == the mds1 best class),
-            // +2 when the MDS0 and MDS1 winners coincide.
-            let mut rank_factor = cfg.mds2_rank_factor;
-            if rank_factor != 0 && mds0_best_idx == mds1_best_idx {
-                rank_factor += 2;
-            }
-            let mut prev_dev = (cands[order1[count]].full_cost - best) * 100 / best;
-            let mut dev = prev_dev;
-            // C while (:8169-8171): `(!mds2_relative_dev_th || dev <=
-            // prev_dev + mds2_relative_dev_th) && dev < mds2_cand_th /
-            // (rank ? rank * cand_count : 1)` — rel-dev th 0 (M4) DISABLES
-            // the relative-dev exit; rank 0 means divisor 1.
-            while (cfg.mds2_rel_dev_th == 0 || dev <= prev_dev + cfg.mds2_rel_dev_th)
-                && dev
-                    < mds2_cand_th
-                        / (if rank_factor != 0 {
-                            rank_factor * count as u64
-                        } else {
-                            1
-                        })
-            {
-                count += 1;
-                if count >= n2 {
-                    break;
-                }
-                prev_dev = dev;
-                dev = (cands[order1[count]].full_cost - best) * 100 / best;
-            }
-            n2 = count;
-        }
-    }
-
-    // -- post_mds2_nic_pruning (:8189) on the SAME MDS1 costs (MDS2
-    //    bypassed at staging mode 1) --
-    let mds3_cand_th = div_round(cfg.mds3_cand_base_th * qw, qwd);
-    let mut n3 = (n2 as u32).min(nic3) as usize;
-    {
-        let best = cands[order1[0]].full_cost;
-        let mut count = 1usize;
-        if best > 0 {
-            while count < n3 {
-                let dev = (cands[order1[count]].full_cost - best) * 100 / best;
-                if dev >= mds3_cand_th {
-                    break;
-                }
-                count += 1;
-            }
-            n3 = count;
-        }
-    }
-
-    // -- MDS3: full loop with TXS + TXT + RDOQ + spatial SSE + chroma --
     let do_rdoq = frame.rdoq_level > 0;
-    // txs_level 0 (M8) -> depth 0 only; else get_end_tx_depth clamped by
-    // the config's intra sq/nsq max depths. At eff-M9 the enable is per-SB
-    // (txs_lvl6_gate): C only bumps txs on for SBs the pd0 detector left at
-    // PD0_LVL_6 (undemoted); demoted PD0_LVL_5 SBs keep TXS off (depth 0).
-    let txs_active = cfg.txs_on && (!cfg.txs_lvl6_gate || sb_is_lvl6);
-    let end_depth = if txs_active {
-        end_tx_depth(w, h, &cfg)
-    } else {
-        0
-    };
-    // Chroma pair geometry (C blk_geom bsize_uv + ROUND_UV origins).
-    let cw = w.max(8) / 2;
-    let chh = h.max(8) / 2;
-    let ccx = ((abs_x >> 3) << 3) / 2 + if w >= 8 { (abs_x % 8) / 2 } else { 0 };
-    let ccy = ((abs_y >> 3) << 3) / 2 + if h >= 8 { (abs_y % 8) / 2 } else { 0 };
-    let tsz_cat = tx_size_cat(w, h);
-    let tsz_ctx = fx.ectx.tx_size_ctx(abs_x, abs_y, w, h);
-
     // Chroma txb contexts (real at rate_est_level 1; candidate-independent
     // — the neighbour bytes don't change during this block's search).
     let (cb_tsc, cb_dsc) = if cfg.real_coeff_ctx {
@@ -2477,69 +2181,13 @@ pub(crate) fn evaluate_leaf(
         (u_out, v_out)
     };
 
-    // -- Independent chroma search before MDS3 (chroma_level 4:
-    //    `search_best_mds3_uv_mode`, product_coding_loop.c:7561, invoked
-    //    per :10098-10105 when `perform_ind_uv_search_last_mds` — at
-    //    least one MDS3 intra candidate whose (injected, uv-follows-luma)
-    //    uv mode is not UV_DC (skip_ind_uv_if_only_dc = 1; the
-    //    inter_vs_intra_cost_th=100 arm never fires on I-slices:
-    //    MAX_MODE_COST * 100 does not overflow and dwarfs any intra
-    //    cost). Produces best_uv[(luma mode)] -> (uv mode, uv delta);
-    //    `update_intra_chroma_mode` (:7326) then rewrites each MDS3
-    //    candidate before its full loop. --
     let mut ind_uv: Option<[(u8, i8); 13]> = None;
-    if cfg.ind_uv_mds3 && has_uv && order1.iter().take(n3).any(|&ci| cands[ci].uv != 0) {
-        // Distinct (uv, uv_delta) pairs of the MDS3 survivors, in
-        // survivor order, excluding UV_DC; then UV_DC (delta 0) last.
-        let mut tested = [[false; 7]; 13];
-        let mut uv_list: Vec<(u8, i8)> = Vec::new();
-        for &ci in order1.iter().take(n3) {
-            let (uvm, uvd) = (cands[ci].uv, cands[ci].uv_delta);
-            if uvm == 0 || tested[uvm as usize][(3 + uvd) as usize] {
-                continue;
-            }
-            tested[uvm as usize][(3 + uvd) as usize] = true;
-            uv_list.push((uvm, uvd));
-        }
-        uv_list.push((0, 0));
-
-        // Full loop per uv candidate: coeff_rate + SSD distortion
-        // (DIST_CALC_RESIDUAL — both planes summed).
-        let mut uv_rd: Vec<(u64, u64)> = Vec::with_capacity(uv_list.len());
-        for &(uvm, uvd) in &uv_list {
-            let (u_out, v_out) = chroma_eval(fx, uvm, uvd);
-            uv_rd.push((
-                u_out.bits as u64 + v_out.bits as u64,
-                u_out.dist + v_out.dist,
-            ));
-        }
-
-        // Per distinct surviving luma mode (survivor order), pick the
-        // lowest-cost uv pair (strict less, list order on ties).
-        let mut table = [(0u8, 0i8); 13];
-        let mut mode_seen = [false; 13];
-        for &ci in order1.iter().take(n3) {
-            let luma = cands[ci].mode as usize;
-            if mode_seen[luma] {
-                continue;
-            }
-            mode_seen[luma] = true;
-            let mut best_cost = u64::MAX;
-            for (k, &(uvm, uvd)) in uv_list.iter().enumerate() {
-                let mut fcr2 = rates.uv[cfl_allowed][luma][uvm as usize] as u64;
-                if use_angle && matches!(uvm, 1..=8) {
-                    fcr2 += rates.angle[uvm as usize - 1][(3 + uvd) as usize] as u64;
-                }
-                let (bits, dist) = uv_rd[k];
-                let cost = rdcost(lambda, bits + fcr2, dist);
-                if cost < best_cost {
-                    best_cost = cost;
-                    table[luma] = (uvm, uvd);
-                }
-            }
-        }
-        ind_uv = Some(table);
-    } else if has_uv && cfg.ind_uv_independent.is_some() {
+    // C: at ind_uv_last_mds == 0 (the M0/M1 chroma config) the independent
+    // uv search runs BEFORE MDS0 (product_coding_loop.c:9260, ind_uv_avail=1
+    // at injection) so every candidate's MDS0 fast cost prices its FINAL uv
+    // pair — which drives the NIC survivor order. The table itself is
+    // candidate-independent, so building it here is timing-exact.
+    if has_uv && cfg.ind_uv_independent.is_some() {
         // C `search_best_independent_uv_mode` (product_coding_loop.c:7778),
         // chroma_level 1/2 (ind_uv_last_mds 0/1): a FULL independent uv
         // search over ALL uv modes, not just the survivors' uv-follows-luma
@@ -2671,25 +2319,470 @@ pub(crate) fn evaluate_leaf(
         }
         ind_uv = Some(table);
     }
+    #[cfg(feature = "std")]
+    if std::env::var_os("SVTAV1_NSQDBG").is_some() && crate::depth_refine::nsqdbg_here(abs_x, abs_y) {
+        if let Some(t) = &ind_uv {
+            eprintln!("NSQDBG UVTAB mi=({},{}) {}x{} t={:?}", abs_y / 4, abs_x / 4, w, h, t);
+        }
+    }
+    let fi_elig = cfg.filter_intra && fi_allowed_bsize;
+    let mut cand_modes: Vec<(u8, i8, u8)> = Vec::new();
+    if dc_only {
+        // eff-M9 dc_cand_only injection: exactly {DC_PRED}, no filter-intra.
+        cand_modes.push((0, 0, FI_NONE));
+    } else {
+        for mode in 0..=cfg.mode_end {
+            let directional = matches!(mode, 1..=8);
+            // directional_mode_skip_mask at angular_pred_level >= 4 masks
+            // D45_PRED (3) .. D67_PRED (8) — V/H stay
+            // (inject_intra_candidates, mode_decision.c:3246-3250).
+            if matches!(mode, 3..=8) && cfg.angular_level >= 4 {
+                continue;
+            }
+            if directional && cfg.angular_level <= 2 && use_angle {
+                for d in -3i8..=3 {
+                    if cfg.angular_level >= 2 && matches!(d, -2 | -1 | 1 | 2) {
+                        continue;
+                    }
+                    cand_modes.push((mode, d, FI_NONE));
+                }
+            } else {
+                cand_modes.push((mode, 0, FI_NONE));
+            }
+        }
+    }
+    if fi_elig && !dc_only {
+        // Inject FILTER_DC_PRED..max_filter_intra_mode (each is a DC_PRED
+        // block carrying filter_intra_mode 0..N). fi_max 0 = FILTER_DC only
+        // (M1..M6); fi_max 4 = all five filter-intra modes (M0, filter_intra
+        // level 1). inject_filter_intra_candidates, mode_decision.c:3318-3330.
+        for fi_mode in 0..=cfg.fi_max {
+            cand_modes.push((0, 0, fi_mode));
+        }
+    }
+
+    let mut cands: Vec<Cand> = Vec::with_capacity(cand_modes.len());
+    // MDS0 with `prune_using_best_mode` (product_coding_loop.c:1680-1737):
+    // candidates are evaluated in injection order; the running best REGULAR
+    // (class-0, non-filter-intra) mode by fast cost is tracked and used to
+    // SKIP later candidates — H when V is currently best, SMOOTH when DC is
+    // still best. Skipped candidates never get a fast cost (never enter the
+    // pool). At M6 (prune off) every candidate is evaluated, identical to
+    // the original funnel.
+    let mut best_reg_cost = u64::MAX;
+    let mut best_reg_mode: i32 = -1;
+    for &(mode, delta, fi) in &cand_modes {
+        if cfg.prune_best_mode && fi == FI_NONE {
+            // intra_mode_end SMOOTH >= H_PRED, so the gate is armed.
+            if mode == 2 && best_reg_mode == 1 {
+                continue; // V better than DC -> skip H
+            }
+            if mode == 9 && best_reg_mode == 0 {
+                continue; // DC still best -> skip SMOOTH
+            }
+        }
+        // C injection (inject_intra_candidates / inject_filter_intra_candidates,
+        // mode_decision.c:3286-3292): uv = ind_uv_avail ? best_uv_mode[map]
+        // : intra_luma_to_chroma[map], angle_uv = ind_uv_avail ?
+        // best_uv_angle[map] : angle_y — with map = fimode_to_intramode[fi]
+        // for FILTER candidates (their coded luma mode is DC, but the chroma
+        // follows the fi-mapped DIRECTION). ind_uv_avail at injection is 1
+        // exactly for the ind_uv_last_mds==0 (independent) presets, whose
+        // table was built above; the ind_uv_mds3 presets stay on the
+        // luma_to_chroma mapping here and rewrite at MDS3 (C :7063).
+        let map_mode = if fi != FI_NONE {
+            FIMODE_TO_INTRADIR[fi as usize]
+        } else {
+            mode
+        };
+        let (uv, uv_delta) = match &ind_uv {
+            Some(tbl) => tbl[map_mode as usize],
+            None => (
+                uv_from_y(map_mode),
+                if fi != FI_NONE { 0 } else { delta },
+            ),
+        };
+        let mut pred = vec![0u8; w * h];
+        predict_unit(
+            y_recon,
+            y_stride,
+            abs_x,
+            abs_y,
+            w,
+            h,
+            mode,
+            delta,
+            fi,
+            &y_geom,
+            cfg.edge_filter,
+            filt_type_y,
+            &mut pred,
+        );
+        let satd = hadamard_satd(y_src, y_src_stride, y_src_off, &pred, w, h);
+
+        let mut flr = rates.kf_y[above_ctx][left_ctx][mode as usize] as u64;
+        if use_angle && matches!(mode, 1..=8) {
+            flr += rates.angle[mode as usize - 1][(3 + delta) as usize] as u64;
+        }
+        if fi_elig && mode == 0 {
+            flr += rates.fi_flag[bsize_idx][usize::from(fi != FI_NONE)] as u64;
+            if fi != FI_NONE {
+                flr += rates.fi_mode[fi as usize] as u64;
+            }
+        }
+        let mut fcr = if has_uv {
+            rates.uv[cfl_allowed][mode as usize][uv as usize] as u64
+        } else {
+            // C fast cost: chroma_rate only when ctx->has_uv
+            // (av1_intra_fast_cost, rd_cost.c:619).
+            0
+        };
+        if has_uv && use_angle && matches!(uv, 1..=8) {
+            fcr += rates.angle[uv as usize - 1][(3 + uv_delta) as usize] as u64;
+        }
+        let fast_cost = rdcost(lambda, flr + fcr, satd << 4);
+        #[cfg(feature = "std")]
+        if std::env::var_os("SVTAV1_CANDDBG").is_some()
+            && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
+        {
+            eprintln!(
+                "NSQDBG PFAST mi=({},{}) {}x{} mode={} fi={} delta={} uv={} uvd={} flr={} fcr={} satd={} fast={}",
+                abs_y / 4,
+                abs_x / 4,
+                w,
+                h,
+                mode,
+                fi,
+                delta,
+                uv,
+                uv_delta,
+                flr,
+                fcr,
+                satd,
+                fast_cost,
+            );
+        }
+        // C updates best_reg_intra_mode after fast_loop_core for regular
+        // class-0 candidates when prune is armed (line 1727).
+        if cfg.prune_best_mode && fi == FI_NONE && fast_cost < best_reg_cost {
+            best_reg_cost = fast_cost;
+            best_reg_mode = mode as i32;
+        }
+        cands.push(Cand {
+            mode,
+            delta,
+            fi,
+            uv,
+            uv_delta,
+            pred,
+            flr,
+            fcr,
+            fast_cost,
+            full_cost: u64::MAX,
+            mds1_has_coeff: false,
+            tx_depth: 0,
+            txb_q: Vec::new(),
+            txb_eob: Vec::new(),
+            txb_cul: Vec::new(),
+            txb_type: Vec::new(),
+            y_recon: Vec::new(),
+            y_recon_d0: Vec::new(),
+            y_bits: 0,
+            y_dist: 0,
+            u_q: Vec::new(),
+            v_q: Vec::new(),
+            u_eob: 0,
+            v_eob: 0,
+            u_cul: 0,
+            v_cul: 0,
+            u_recon: Vec::new(),
+            v_recon: Vec::new(),
+            cfl_alpha_idx: 0,
+            cfl_alpha_signs: 0,
+            mds3_cost: u64::MAX,
+            block_has_coeff: false,
+            total_rate: 0,
+            full_dist: 0,
+        });
+    }
+    let ncand = cands.len();
+
+    // -- Sort by fast cost (stable == C's strict-less bubble) --
+    let mut order: Vec<usize> = (0..ncand).collect();
+    order.sort_by_key(|&i| cands[i].fast_cost);
+    let mds0_best_idx = order[0];
+
+    // -- post_mds0_nic_pruning (product_coding_loop.c:8045) --
+    let (nic1, nic2, nic3) = nic_counts(frame.cli_qp, cfg.nic_num);
+    let (qw, qwd) = qp_scale_factors(frame.cli_qp);
+    // nic_level 1 (M0) sets mds1_cand_base_th_intra = (uint64_t)~0 (no mds1
+    // cand pruning); the qp-scaled threshold stays saturated so the loop
+    // below never prunes (guard avoids the base*qw overflow).
+    let mds1_cand_th = if cfg.mds1_cand_base_th == u64::MAX {
+        u64::MAX
+    } else {
+        div_round(cfg.mds1_cand_base_th * qw, qwd)
+    };
+    let mut n1 = (ncand as u32).min(nic1) as usize;
+    {
+        let best = cands[order[0]].fast_cost;
+        let mut count = 1usize;
+        if best > 0 {
+            while count < n1 {
+                let dev = (cands[order[count]].fast_cost - best) * 100 / best;
+                // C: `mds1_cand_th / (rank ? rank * cand_count : 1)`
+                // (product_coding_loop.c:8095) — rank 0 (M4 nic case 5)
+                // means the raw threshold, NOT a zero divisor.
+                let div = if cfg.mds1_rank_factor != 0 {
+                    cfg.mds1_rank_factor * count as u64
+                } else {
+                    1
+                };
+                if dev >= mds1_cand_th / div {
+                    break;
+                }
+                count += 1;
+            }
+            n1 = count;
+        }
+    }
+
+    // -- MDS1: luma-only full loop (freq dist, quantize_b, DCT, depth 0) --
+    for &ci in order.iter().take(n1) {
+        let cand = &mut cands[ci];
+        let (txb_skip_ctx, dc_sign_ctx) = if cfg.real_coeff_ctx {
+            let (above, left) = fx.ectx.coeff_neighbors(abs_x, abs_y, w, h);
+            cc::get_txb_ctx(0, above, left, true, false)
+        } else {
+            (0, 0)
+        };
+        // The intra dir feeding the ext-tx-type rate row: C prices FILTER
+        // candidates at the fi-MAPPED direction (fimode_to_intradir; rd_cost.c
+        // :135) at EVERY stage. MDS3's txt_search already mapped it — MDS1
+        // didn't, under-pricing fi=V/H/D157 coeff rates by the row delta
+        // (g128 q20 p0 16x4@(2,0): C ycb higher by exactly 630/684/736 for
+        // fi=1/2/3 with bit-equal dists; fi=0/4 map to DC and matched).
+        let intra_dir = if cand.fi != FI_NONE {
+            FIMODE_TO_INTRADIR[cand.fi as usize] as usize
+        } else {
+            cand.mode as usize
+        };
+        let out = tx_unit(
+            y_src,
+            y_src_stride,
+            y_src_off,
+            &cand.pred,
+            w,
+            0,
+            w,
+            h,
+            cc::DCT_DCT,
+            0,
+            txb_skip_ctx,
+            dc_sign_ctx,
+            intra_dir,
+            &qt,
+            frame,
+            rates,
+            false, // no RDOQ at MDS1
+            false, // freq-domain dist
+        );
+        let has = out.eob > 0;
+        let tsz_cat = tx_size_cat(w, h);
+        let tsz_ctx = fx.ectx.tx_size_ctx(abs_x, abs_y, w, h);
+        // C: 4x4 codes no tx_size symbol (block_signals_txsize == bsize > 4x4).
+        let tx_size_bits = if block_signals_txsize(w, h) {
+            rates.tx_size[tsz_cat][tsz_ctx][0] as u64
+        } else {
+            0
+        };
+        let coeff_rate = if has {
+            out.bits as u64 + tx_size_bits + rates.skip[skip_ctx][0] as u64
+        } else {
+            rates.skip[skip_ctx][1] as u64 + tx_size_bits
+        };
+        cand.mds1_has_coeff = has;
+        cand.full_cost = rdcost(lambda, cand.flr + cand.fcr + coeff_rate, out.dist);
+        #[cfg(feature = "std")]
+        if std::env::var_os("SVTAV1_CANDDBG").is_some()
+            && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
+        {
+            eprintln!(
+                "NSQDBG PMDS1 mi=({},{}) {}x{} mode={} fi={} delta={} uv={} coeff_rate={} dist={} full={}",
+                abs_y / 4,
+                abs_x / 4,
+                w,
+                h,
+                cand.mode,
+                cand.fi,
+                cand.delta,
+                cand.uv,
+                coeff_rate,
+                out.dist,
+                cand.full_cost,
+            );
+        }
+    }
+
+    // -- Sort survivors by full cost --
+    let mut order1: Vec<usize> = order[..n1].to_vec();
+    order1.sort_by_key(|&i| cands[i].full_cost);
+    let mds1_best_idx = order1[0];
+
+    // -- post_mds1_nic_pruning (:8111) --
+    let mds2_cand_th = div_round(cfg.mds2_cand_base_th * qw, qwd);
+    let mut n2 = (n1 as u32).min(nic2) as usize;
+    {
+        let best = cands[order1[0]].full_cost;
+        let mut count = 1usize;
+        if best > 0 && count < n2 {
+            // C rank staging (product_coding_loop.c:8158-8166): only when
+            // the config factor is nonzero — same class (the inter-class
+            // +3 arm is dead: single intra class == the mds1 best class),
+            // +2 when the MDS0 and MDS1 winners coincide.
+            let mut rank_factor = cfg.mds2_rank_factor;
+            if rank_factor != 0 && mds0_best_idx == mds1_best_idx {
+                rank_factor += 2;
+            }
+            let mut prev_dev = (cands[order1[count]].full_cost - best) * 100 / best;
+            let mut dev = prev_dev;
+            // C while (:8169-8171): `(!mds2_relative_dev_th || dev <=
+            // prev_dev + mds2_relative_dev_th) && dev < mds2_cand_th /
+            // (rank ? rank * cand_count : 1)` — rel-dev th 0 (M4) DISABLES
+            // the relative-dev exit; rank 0 means divisor 1.
+            while (cfg.mds2_rel_dev_th == 0 || dev <= prev_dev + cfg.mds2_rel_dev_th)
+                && dev
+                    < mds2_cand_th
+                        / (if rank_factor != 0 {
+                            rank_factor * count as u64
+                        } else {
+                            1
+                        })
+            {
+                count += 1;
+                if count >= n2 {
+                    break;
+                }
+                prev_dev = dev;
+                dev = (cands[order1[count]].full_cost - best) * 100 / best;
+            }
+            n2 = count;
+        }
+    }
+
+    // -- post_mds2_nic_pruning (:8189) on the SAME MDS1 costs (MDS2
+    //    bypassed at staging mode 1) --
+    let mds3_cand_th = div_round(cfg.mds3_cand_base_th * qw, qwd);
+    let mut n3 = (n2 as u32).min(nic3) as usize;
+    {
+        let best = cands[order1[0]].full_cost;
+        let mut count = 1usize;
+        if best > 0 {
+            while count < n3 {
+                let dev = (cands[order1[count]].full_cost - best) * 100 / best;
+                if dev >= mds3_cand_th {
+                    break;
+                }
+                count += 1;
+            }
+            n3 = count;
+        }
+    }
+
+    // -- MDS3: full loop with TXS + TXT + RDOQ + spatial SSE + chroma --
+    // txs_level 0 (M8) -> depth 0 only; else get_end_tx_depth clamped by
+    // the config's intra sq/nsq max depths. At eff-M9 the enable is per-SB
+    // (txs_lvl6_gate): C only bumps txs on for SBs the pd0 detector left at
+    // PD0_LVL_6 (undemoted); demoted PD0_LVL_5 SBs keep TXS off (depth 0).
+    let txs_active = cfg.txs_on && (!cfg.txs_lvl6_gate || sb_is_lvl6);
+    let end_depth = if txs_active {
+        end_tx_depth(w, h, &cfg)
+    } else {
+        0
+    };
+    let tsz_cat = tx_size_cat(w, h);
+    let tsz_ctx = fx.ectx.tx_size_ctx(abs_x, abs_y, w, h);
+
+
+    // -- Independent chroma search before MDS3 (chroma_level 4:
+    //    `search_best_mds3_uv_mode`, product_coding_loop.c:7561, invoked
+    //    per :10098-10105 when `perform_ind_uv_search_last_mds` — at
+    //    least one MDS3 intra candidate whose (injected, uv-follows-luma)
+    //    uv mode is not UV_DC (skip_ind_uv_if_only_dc = 1; the
+    //    inter_vs_intra_cost_th=100 arm never fires on I-slices:
+    //    MAX_MODE_COST * 100 does not overflow and dwarfs any intra
+    //    cost). Produces best_uv[(luma mode)] -> (uv mode, uv delta);
+    //    `update_intra_chroma_mode` (:7326) then rewrites each MDS3
+    //    candidate before its full loop. --
+    if cfg.ind_uv_mds3 && has_uv && order1.iter().take(n3).any(|&ci| cands[ci].uv != 0) {
+        // Distinct (uv, uv_delta) pairs of the MDS3 survivors, in
+        // survivor order, excluding UV_DC; then UV_DC (delta 0) last.
+        let mut tested = [[false; 7]; 13];
+        let mut uv_list: Vec<(u8, i8)> = Vec::new();
+        for &ci in order1.iter().take(n3) {
+            let (uvm, uvd) = (cands[ci].uv, cands[ci].uv_delta);
+            if uvm == 0 || tested[uvm as usize][(3 + uvd) as usize] {
+                continue;
+            }
+            tested[uvm as usize][(3 + uvd) as usize] = true;
+            uv_list.push((uvm, uvd));
+        }
+        uv_list.push((0, 0));
+
+        // Full loop per uv candidate: coeff_rate + SSD distortion
+        // (DIST_CALC_RESIDUAL — both planes summed).
+        let mut uv_rd: Vec<(u64, u64)> = Vec::with_capacity(uv_list.len());
+        for &(uvm, uvd) in &uv_list {
+            let (u_out, v_out) = chroma_eval(fx, uvm, uvd);
+            uv_rd.push((
+                u_out.bits as u64 + v_out.bits as u64,
+                u_out.dist + v_out.dist,
+            ));
+        }
+
+        // Per distinct surviving luma mode (survivor order), pick the
+        // lowest-cost uv pair (strict less, list order on ties).
+        let mut table = [(0u8, 0i8); 13];
+        let mut mode_seen = [false; 13];
+        for &ci in order1.iter().take(n3) {
+            let luma = cands[ci].mode as usize;
+            if mode_seen[luma] {
+                continue;
+            }
+            mode_seen[luma] = true;
+            let mut best_cost = u64::MAX;
+            for (k, &(uvm, uvd)) in uv_list.iter().enumerate() {
+                let mut fcr2 = rates.uv[cfl_allowed][luma][uvm as usize] as u64;
+                if use_angle && matches!(uvm, 1..=8) {
+                    fcr2 += rates.angle[uvm as usize - 1][(3 + uvd) as usize] as u64;
+                }
+                let (bits, dist) = uv_rd[k];
+                let cost = rdcost(lambda, bits + fcr2, dist);
+                if cost < best_cost {
+                    best_cost = cost;
+                    table[luma] = (uvm, uvd);
+                }
+            }
+        }
+        ind_uv = Some(table);
+    }
 
     for &ci in order1.iter().take(n3) {
         // `update_intra_chroma_mode`: rewrite the candidate's chroma from
         // the ind-uv table (fast chroma rate recomputed for the luma
         // mode + new uv pair — same formula as injection, so an
         // unconditional recompute is C-identical).
+        // C `update_intra_chroma_mode` runs at MDS3 for BOTH ind-uv configs
+        // (A/B-verified: gating it off at ind_uv_last_mds==0 broke q40-64
+        // while injection-only was enough for q20-64 — both layers exist in
+        // C). Key the table on the fi-MAPPED direction exactly like the
+        // injection (mode_decision.c:3332 uses fimode_to_intramode); the
+        // historic "mapping the rewrite regressed q40" happened only because
+        // the pre-MDS0 injection pricing was missing then.
         if let Some(tbl) = &ind_uv {
-            // NOTE (M0 residual): C `update_intra_chroma_mode`
-            // (mode_decision.c:3332) keys the best-uv table on
-            // `fimode_to_intramode[filter_intra_mode]` for filter-intra
-            // candidates (block_mi.mode == DC_PRED) — so FILTER_H should take
-            // best_uv[H], not best_uv[DC]. Applying that refinement in
-            // isolation regressed the M0 q40 cell (a deeper independent-uv
-            // best_uv_mode / ind_uv_last_mds=0 timing divergence on
-            // sub-8-width blocks), so the table[cand.mode] approximation is
-            // kept for now (exact for every fi_max==0 preset — M1..M6 — where
-            // the only fi candidate is FILTER_DC and fimode_to_intramode[0]
-            // == DC). Closing M0's 2 residual q20 cells needs C-side
-            // best_uv_mode instrumentation. See docs/IDENTITY-STATUS.md.
+            // A/B-verified pair (g64 p0): the rewrite keys on the CODED luma
+            // mode (DC for FILTER candidates) — mapping it broke q40 while
+            // the unmapped key + mapped INJECTION passes both q20 and q40.
             let (uvm, uvd) = tbl[cands[ci].mode as usize];
             let c = &mut cands[ci];
             c.uv = uvm;
@@ -3529,6 +3622,28 @@ pub(crate) fn evaluate_leaf(
         // fcr_final == cand.fcr unless CfL was selected above (then the
         // UV_CFL_PRED mode + alpha rate replaces the non-CFL uv fast rate).
         let full = rdcost(lambda, cand.flr + fcr_final + coeff_rate, dist);
+        #[cfg(feature = "std")]
+        if std::env::var_os("SVTAV1_CANDDBG").is_some()
+            && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
+        {
+            eprintln!(
+                "NSQDBG CAND mi=({},{}) {}x{} ci={} mode={} fi={} delta={} uv={} flr={} fcr={} coeff_rate={} dist={} full={}",
+                abs_y / 4,
+                abs_x / 4,
+                w,
+                h,
+                ci,
+                cand.mode,
+                cand.fi,
+                cand.delta,
+                uv_mode_final,
+                cand.flr,
+                fcr_final,
+                coeff_rate,
+                dist,
+                full,
+            );
+        }
 
         let cand = &mut cands[ci];
         cand.mds3_cost = full;

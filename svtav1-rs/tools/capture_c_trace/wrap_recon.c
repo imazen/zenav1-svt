@@ -115,10 +115,14 @@ static void dump_pc_tree(FILE* f, const PC_TREE* t) {
      * records at non-chosen nodes too. */
     if (t->tested_blk[PART_N][0] && t->block_data[PART_N][0]) {
         const BlkStruct* n = t->block_data[PART_N][0];
-        fprintf(f, "CSQ mi=(%d,%d) bsize=%d cost=%llu mode=%d uv=%d txd=%d nz=%u ye=[%u,%u,%u,%u]\n", t->mi_row,
-                t->mi_col, (int)t->bsize, (unsigned long long)n->cost, (int)n->block_mi.mode, (int)n->block_mi.uv_mode,
-                (int)n->block_mi.tx_depth, (unsigned)n->cnt_nz_coeff, n->eob.y[0], n->eob.y[1], n->eob.y[2],
-                n->eob.y[3]);
+        fprintf(f,
+                "CSQ mi=(%d,%d) bsize=%d cost=%llu mode=%d uv=%d txd=%d nz=%u ye=[%u,%u,%u,%u] dcq=[%u,%u,%u,%u]"
+                " ady=%d aduv=%d rate=%llu dist=%llu\n",
+                t->mi_row, t->mi_col, (int)t->bsize, (unsigned long long)n->cost, (int)n->block_mi.mode,
+                (int)n->block_mi.uv_mode, (int)n->block_mi.tx_depth, (unsigned)n->cnt_nz_coeff, n->eob.y[0],
+                n->eob.y[1], n->eob.y[2], n->eob.y[3], (unsigned)n->quant_dc.y[0], (unsigned)n->quant_dc.y[1],
+                (unsigned)n->quant_dc.y[2], (unsigned)n->quant_dc.y[3], (int)n->block_mi.angle_delta[0],
+                (int)n->block_mi.angle_delta[1], (unsigned long long)n->total_rate, (unsigned long long)n->full_dist);
     }
     if (t->partition == PARTITION_SPLIT) {
         for (int i = 0; i < 4; ++i)
@@ -297,6 +301,87 @@ void __wrap_svt_aom_estimate_syntax_rate(MdRateEstimationContext* r, bool is_i_s
             fc->cfl_alpha_cdf[0][1], fc->cfl_alpha_cdf[0][2], fc->intra_ext_tx_cdf[1][0][0][0],
             fc->intra_ext_tx_cdf[1][0][0][1], fc->intra_ext_tx_cdf[1][0][0][2]);
     fflush(sf);
+}
+
+/* ---- per-candidate intra fast-cost interposer ---------------------------
+ * svt_aom_intra_fast_cost (rd_cost.h, cross-TU from mode_decision.c's MDS0)
+ * prices each intra candidate's SIGNALING (luma mode + fi + angle + uv).
+ * Logging (block org/dims, mode, fi, angle, uv, returned cost) at a pinned
+ * block quantifies C's candidate rates for direct comparison with the port's
+ * SVTAV1_CANDDBG flr/fcr dump. Env: SVT_FASTCOST_OUT + SVT_FASTCOST_XY="x,y"
+ * (block origin in pixels). */
+uint64_t __real_svt_aom_intra_fast_cost(PictureControlSet* pcs, ModeDecisionContext* ctx,
+                                        ModeDecisionCandidateBuffer* cand_bf, uint64_t lambda,
+                                        uint64_t luma_distortion);
+
+uint64_t __wrap_svt_aom_intra_fast_cost(PictureControlSet* pcs, ModeDecisionContext* ctx,
+                                        ModeDecisionCandidateBuffer* cand_bf, uint64_t lambda,
+                                        uint64_t luma_distortion) {
+    uint64_t    ret  = __real_svt_aom_intra_fast_cost(pcs, ctx, cand_bf, lambda, luma_distortion);
+    const char* path = getenv("SVT_FASTCOST_OUT");
+    const char* xy   = getenv("SVT_FASTCOST_XY");
+    if (path && *path && xy) {
+        int px = -1, py = -1;
+        sscanf(xy, "%d,%d", &px, &py);
+        if ((int)ctx->blk_org_x == px && (int)ctx->blk_org_y == py) {
+            static FILE* f = NULL;
+            if (!f)
+                f = fopen(path, "w");
+            if (f) {
+                fprintf(f, "CFAST org=(%u,%u) %ux%u mode=%d fi=%d ang=%d uv=%d uvang=%d dist=%llu cost=%llu\n",
+                        (unsigned)ctx->blk_org_x, (unsigned)ctx->blk_org_y, block_size_wide[ctx->blk_geom->bsize],
+                        block_size_high[ctx->blk_geom->bsize], (int)cand_bf->cand->block_mi.mode,
+                        (int)cand_bf->cand->block_mi.filter_intra_mode, (int)cand_bf->cand->block_mi.angle_delta[0],
+                        (int)cand_bf->cand->block_mi.uv_mode, (int)cand_bf->cand->block_mi.angle_delta[1],
+                        (unsigned long long)luma_distortion, (unsigned long long)ret);
+                fflush(f);
+            }
+        }
+    }
+    return ret;
+}
+
+/* ---- per-candidate full-cost interposer ---------------------------------
+ * svt_aom_full_cost (rd_cost.h, cross-TU from full_loop.c) writes the
+ * candidate's full cost at MDS1/MDS3. Logging (block org/dims, md_stage,
+ * mode/fi/delta, resulting *cand_bf->full_cost) at a pinned block quantifies
+ * C's per-candidate MDS1 costs for comparison with the port's PMDS1 dump.
+ * Env: SVT_FULLCOST_OUT + SVT_FULLCOST_XY="x,y". */
+void __real_svt_aom_full_cost(PictureControlSet* pcs, ModeDecisionContext* ctx, ModeDecisionCandidateBuffer* cand_bf,
+                              uint64_t lambda, uint64_t y_distortion[DIST_TOTAL][DIST_CALC_TOTAL],
+                              uint64_t cb_distortion[DIST_TOTAL][DIST_CALC_TOTAL],
+                              uint64_t cr_distortion[DIST_TOTAL][DIST_CALC_TOTAL], uint64_t* y_coeff_bits,
+                              uint64_t* cb_coeff_bits, uint64_t* cr_coeff_bits);
+
+void __wrap_svt_aom_full_cost(PictureControlSet* pcs, ModeDecisionContext* ctx, ModeDecisionCandidateBuffer* cand_bf,
+                              uint64_t lambda, uint64_t y_distortion[DIST_TOTAL][DIST_CALC_TOTAL],
+                              uint64_t cb_distortion[DIST_TOTAL][DIST_CALC_TOTAL],
+                              uint64_t cr_distortion[DIST_TOTAL][DIST_CALC_TOTAL], uint64_t* y_coeff_bits,
+                              uint64_t* cb_coeff_bits, uint64_t* cr_coeff_bits) {
+    __real_svt_aom_full_cost(
+        pcs, ctx, cand_bf, lambda, y_distortion, cb_distortion, cr_distortion, y_coeff_bits, cb_coeff_bits,
+        cr_coeff_bits);
+    const char* path = getenv("SVT_FULLCOST_OUT");
+    const char* xy   = getenv("SVT_FULLCOST_XY");
+    if (path && *path && xy) {
+        int px = -1, py = -1;
+        sscanf(xy, "%d,%d", &px, &py);
+        if ((int)ctx->blk_org_x == px && (int)ctx->blk_org_y == py) {
+            static FILE* f = NULL;
+            if (!f)
+                f = fopen(path, "w");
+            if (f) {
+                fprintf(f,
+                        "CFULL org=(%u,%u) %ux%u st=%d mode=%d fi=%d ang=%d uv=%d ycb=%llu ydist=%llu cost=%llu\n",
+                        (unsigned)ctx->blk_org_x, (unsigned)ctx->blk_org_y, block_size_wide[ctx->blk_geom->bsize],
+                        block_size_high[ctx->blk_geom->bsize], (int)ctx->md_stage, (int)cand_bf->cand->block_mi.mode,
+                        (int)cand_bf->cand->block_mi.filter_intra_mode, (int)cand_bf->cand->block_mi.angle_delta[0],
+                        (int)cand_bf->cand->block_mi.uv_mode, (unsigned long long)*y_coeff_bits,
+                        (unsigned long long)y_distortion[0][0], (unsigned long long)*(cand_bf->full_cost));
+                fflush(f);
+            }
+        }
+    }
 }
 
 void __wrap_svt_av1_loop_filter_init(PictureControlSet* pcs) {

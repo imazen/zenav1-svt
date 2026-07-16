@@ -813,7 +813,7 @@ fn nsqdbg_sb() -> Option<(usize, usize)> {
 }
 
 /// Dump gate for a record about the block at pixel (abs_x, abs_y).
-fn nsqdbg_here(abs_x: usize, abs_y: usize) -> bool {
+pub(crate) fn nsqdbg_here(abs_x: usize, abs_y: usize) -> bool {
     nsqdbg_on()
         && match nsqdbg_sb() {
             None => true,
@@ -1423,7 +1423,7 @@ impl DepthWalk<'_, '_> {
                     );
                     if nsqdbg_here(abs_x, abs_y) {
                         eprintln!(
-                            "NSQDBG BLK mi=({},{}) bsize={} shape={} nsi={} cost={} rate={} dist={} mode={} coeff={} nz={} txd={} uv={} txt=[{}] ye=[{}] ue={} ve={}",
+                            "NSQDBG BLK mi=({},{}) bsize={} shape={} nsi={} cost={} rate={} dist={} mode={} coeff={} nz={} txd={} uv={} txt=[{}] ye=[{}] ue={} ve={} fi={} ady={} aduv={} qdc=[{}]",
                             abs_y / 4,
                             abs_x / 4,
                             c_bsize_sq(size),
@@ -1441,6 +1441,10 @@ impl DepthWalk<'_, '_> {
                             ev.dbg_txb_eobs(),
                             ev.dbg_uv_eobs().0,
                             ev.dbg_uv_eobs().1,
+                            ev.dbg_fi(),
+                            ev.dbg_deltas().0,
+                            ev.dbg_deltas().1,
+                            ev.dbg_qdcs(),
                         );
                     }
                     part_cost += ev.block_cost();
