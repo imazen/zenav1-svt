@@ -1860,6 +1860,11 @@ impl LeafEval {
         (self.win.u_eob, self.win.v_eob)
     }
 
+    /// NSQDBG only: the winner's whole-block depth-0 luma prediction.
+    pub(crate) fn dbg_pred(&self) -> &[u8] {
+        &self.win.pred
+    }
+
     /// The shared MDS3 residual-workspace state (C `cand_bf->residual`,
     /// consumed by the psq gate): the LAST MDS3 candidate's depth-0
     /// residual.
