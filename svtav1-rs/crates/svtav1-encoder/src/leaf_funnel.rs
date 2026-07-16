@@ -1690,6 +1690,11 @@ const UV_CFL_PRED_IDX: usize = 13;
 
 /// C `fimode_to_intradir` (common_utils.c:33).
 pub(crate) const FIMODE_TO_INTRADIR: [u8; 5] = [0, 1, 2, 6, 0];
+/// C `fimode_to_intramode` (definitions.h:1301) — differs from INTRADIR in the
+/// last entry: FILTER_PAETH maps to PAETH (12), not DC. C uses THIS table for
+/// the injection-time uv/uv_delta assignment; the tx/ext-tx rate paths use
+/// INTRADIR (common_utils.c:33 via rd_cost.c:135).
+pub(crate) const FIMODE_TO_INTRAMODE: [u8; 5] = [0, 1, 2, 6, 12];
 
 /// One funnel candidate's evolving state.
 struct Cand {
@@ -2391,7 +2396,7 @@ pub(crate) fn evaluate_leaf(
         // table was built above; the ind_uv_mds3 presets stay on the
         // luma_to_chroma mapping here and rewrite at MDS3 (C :7063).
         let map_mode = if fi != FI_NONE {
-            FIMODE_TO_INTRADIR[fi as usize]
+            FIMODE_TO_INTRAMODE[fi as usize]
         } else {
             mode
         };
