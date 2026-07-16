@@ -81,7 +81,53 @@
 #include "enc_inter_prediction.h"
 #include "pcs.h"
 
+#include "coding_loop.h"
+#include "md_process.h"
+
 void __real_svt_av1_loop_filter_init(PictureControlSet* pcs);
+
+/* ---- partition-tree interposer -----------------------------------------
+ * svt_aom_pick_partition (coding_loop.h:34, defined product_coding_loop.c:11549)
+ * is the depth-recursion entry, but it recurses via test_split_partition ->
+ * svt_aom_pick_partition INTRA-TU (product_coding_loop.c:11362), so --wrap only
+ * catches the CROSS-TU top-level SB-root call from enc_dec_process.c:3239/3342.
+ * That is enough: after the root returns, the ENTIRE pc_tree is populated with
+ * each node's CHOSEN partition and winning rd_cost, so we walk it here. This is
+ * the C-side analogue of the port's SVTAV1_NSQDBG "TS ... chose=parent/split"
+ * dump: it reveals whether C keeps a block (partition != SPLIT) where the port
+ * splits it, i.e. the first partition-structure flip. Env: SVT_PICKPART_OUT.
+ * Recurses only into the winning SPLIT path (the fully-searched, populated one).
+ */
+bool __real_svt_aom_pick_partition(SequenceControlSet* scs, PictureControlSet* pcs, ModeDecisionContext* ctx,
+                                   MdScan* mds, PC_TREE* pc_tree, int mi_row, int mi_col);
+
+static void dump_pc_tree(FILE* f, const PC_TREE* t) {
+    if (!t)
+        return;
+    fprintf(f, "PICKPART mi=(%d,%d) bsize=%d partition=%d rd=%lld valid=%d\n", t->mi_row, t->mi_col, (int)t->bsize,
+            (int)t->partition, (long long)t->rdc.rd_cost, (int)t->rdc.valid);
+    if (t->partition == PARTITION_SPLIT) {
+        for (int i = 0; i < 4; ++i)
+            dump_pc_tree(f, t->split[i]);
+    }
+}
+
+bool __wrap_svt_aom_pick_partition(SequenceControlSet* scs, PictureControlSet* pcs, ModeDecisionContext* ctx,
+                                   MdScan* mds, PC_TREE* pc_tree, int mi_row, int mi_col) {
+    bool r = __real_svt_aom_pick_partition(scs, pcs, ctx, mds, pc_tree, mi_row, mi_col);
+    const char* path = getenv("SVT_PICKPART_OUT");
+    /* First SB only (top-level root call is at mi=(0,0)). */
+    if (path && *path && mi_row == 0 && mi_col == 0) {
+        static FILE* f = NULL;
+        if (!f)
+            f = fopen(path, "w");
+        if (f) {
+            dump_pc_tree(f, pc_tree);
+            fflush(f);
+        }
+    }
+    return r;
+}
 
 /* ---- coeff-rate estimator interposer -----------------------------------
  * svt_av1_cost_coeffs_txb (rd_cost.c:355) is what the port's cost_coeffs_txb
@@ -135,6 +181,43 @@ EbErrorType __wrap_svt_aom_txb_estimate_coeff_bits(
                     cr_eob, (unsigned long long)*cr_txb_coeff_bits);
         fflush(cf);
         nlog++;
+    }
+    return ret;
+}
+
+/* ---- partition-search interposer ---------------------------------------
+ * svt_aom_partition_rate_cost (rd_cost.h:106, defined rd_cost.c, called
+ * cross-TU from the partition search) is invoked per candidate partition of
+ * each block C evaluates. Logging (bsize, mi_row, mi_col, partition_type)
+ * reveals the SET of block sizes + partitions C's partition search visits at
+ * a given SB — which the port's SVTAV1_NSQDBG dump can be diffed against. The
+ * port's NSQDBG for SB(0,0) started at bsize 16x16 (not 64/32); if C visits
+ * 64x64/32x32 there, the depth-refinement predicted a different depth range
+ * (a partition-structure divergence upstream of the tx search). Env:
+ * SVT_PART_OUT. Rate-only (no winner), but the visited-set alone localizes a
+ * depth-range or shape-set divergence.
+ */
+int64_t __real_svt_aom_partition_rate_cost(PictureParentControlSet* pcs, const BlockSize bsize, const int mi_row,
+                                           const int mi_col, MdRateEstimationContext* md_rate_est_ctx, PartitionType p,
+                                           const PartitionContextType left_ctx, const PartitionContextType above_ctx);
+
+int64_t __wrap_svt_aom_partition_rate_cost(PictureParentControlSet* pcs, const BlockSize bsize, const int mi_row,
+                                           const int mi_col, MdRateEstimationContext* md_rate_est_ctx, PartitionType p,
+                                           const PartitionContextType left_ctx, const PartitionContextType above_ctx) {
+    int64_t ret = __real_svt_aom_partition_rate_cost(
+        pcs, bsize, mi_row, mi_col, md_rate_est_ctx, p, left_ctx, above_ctx);
+    const char* path = getenv("SVT_PART_OUT");
+    if (path && *path) {
+        static FILE* pf = NULL;
+        static int   opened = 0;
+        if (!opened) {
+            pf     = fopen(path, "w");
+            opened = 1;
+        }
+        /* Only the first SB (mi_row,mi_col within the top-left 64x64 = mi<16). */
+        if (pf && mi_row < 16 && mi_col < 16)
+            fprintf(pf, "PART bsize=%d mi=(%d,%d) part=%d rate=%lld\n", (int)bsize, mi_row, mi_col, (int)p,
+                    (long long)ret);
     }
     return ret;
 }
