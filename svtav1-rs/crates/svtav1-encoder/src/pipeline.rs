@@ -514,6 +514,7 @@ impl EncodePipeline {
             sharp_tx_active,
             if self.hdr.is_fork() { self.hdr.noise_norm_strength } else { 0 },
             qm_levels,
+            if self.hdr.is_fork() { self.hdr.tx_bias } else { 0 },
             tpl_adjusted_qp,
             self.hdr.sharpness,
             lambda,
@@ -2773,6 +2774,7 @@ fn encode_tile_rows(
     sharp_tx_active: bool,
     hdr_noise_norm: u8,
     qm_levels: [u8; 3],
+    hdr_tx_bias: u8,
     cli_qp: u8,
     hdr_sharpness: i8,
     _lambda: u64, // Per-SB lambda computed from sb_qp_offsets
@@ -2861,6 +2863,7 @@ fn encode_tile_rows(
                 sharp_tx_active,
                 noise_norm_strength: hdr_noise_norm,
                 qm_levels,
+                tx_bias: hdr_tx_bias,
                 lambda: cq.lambda as u64,
                 cli_qp: cli_qp as u32,
                 rdoq_level: cq.rdoq_level,

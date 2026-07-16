@@ -265,6 +265,11 @@ pub struct FunnelFrame {
     /// stamped onto the per-plane `QuantTable`s so every quantize site
     /// resolves the right matrices without extra threading.
     pub qm_levels: [u8; 3],
+    /// [SVT_HDR_MODE] fork `--tx-bias` (0 = off, the fork default). When
+    /// set, the mds0/full-loop spatial SSE runs through the fork's
+    /// distortion facade bias layer (tx_bias.rs; C
+    /// svt_spatial_full_distortion_kernel_facade, pic_operators.c:252).
+    pub tx_bias: u8,
     /// Per-preset intra-leaf config (M6 vs intra_level-7 M7/M8).
     pub cfg: FunnelCfg,
 }
@@ -1420,6 +1425,31 @@ fn tx_unit(
                 let d = src[srow + c] as i64 - recon[r * w + c] as i64;
                 sse += (d * d) as u64;
             }
+        }
+        // [SVT_HDR_MODE] fork tx-bias facade layer (pic_operators.c:252):
+        // the spatial SSE is biased by prediction-mode class + tx size
+        // BEFORE the psy add (the facade IS the SSE producer at the C call
+        // sites; get_svt_psy_full_dist is added by the caller after). The
+        // luma and chroma mode-class index sets are identical (DC/SMOOTH*
+        // blurry, V/H/PAETH neutral), so one mapping serves both planes.
+        // Stills are temporal layer 0, and the facade's ac_bias param only
+        // feeds an `== 0.0` gate, so the effective flag is equivalent.
+        if frame.tx_bias > 0 {
+            let class = match intra_dir {
+                0 | 9 | 10 | 11 => crate::tx_bias::BiasModeClass::IntraBlurry,
+                1 | 2 | 12 => crate::tx_bias::BiasModeClass::IntraNeutral,
+                _ => crate::tx_bias::BiasModeClass::IntraOther,
+            };
+            sse = crate::tx_bias::facade_bias(
+                sse as i64,
+                class,
+                true,
+                w as u32,
+                h as u32,
+                0,
+                if frame.ac_bias_eff > 0.0 { 1.0 } else { 0.0 },
+                frame.tx_bias,
+            ) as u64;
         }
         // [ac-bias] C adds llrint(psy_distortion * effective_ac_bias) to
         // the spatial SSE BEFORE the <<4 (get_svt_psy_full_dist call sites
