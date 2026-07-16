@@ -15,10 +15,8 @@
 
 #include "aom_dsp_rtcd.h"
 #include "definitions.h"
-#if OPT_TUNE_VMAF
 #include <math.h>
 #include "temporal_filtering.h"
-#endif
 #include "enc_handle.h"
 #include "sys_resource_manager.h"
 #include "pcs.h"
@@ -41,13 +39,21 @@
  * Context
  **************************************/
 typedef struct PictureAnalysisContext {
-    EbFifo* resource_coordination_results_input_fifo_ptr;
-    EbFifo* picture_analysis_results_output_fifo_ptr;
+    EbFifo*  resource_coordination_results_input_fifo_ptr;
+    EbFifo*  picture_analysis_results_output_fifo_ptr;
+    int16_t* vmaf_hring[5];
+    int      vmaf_padded_w;
+    uint8_t* vmaf_blur_plane;
+    int      vmaf_blur_pixels;
 } PictureAnalysisContext;
 
 static void picture_analysis_context_dctor(EbPtr p) {
     EbThreadContext*        thread_ctx = (EbThreadContext*)p;
     PictureAnalysisContext* obj        = (PictureAnalysisContext*)thread_ctx->priv;
+    for (int i = 0; i < 5; i++) {
+        EB_FREE_ARRAY(obj->vmaf_hring[i]);
+    }
+    EB_FREE_ARRAY(obj->vmaf_blur_plane);
     EB_FREE_ARRAY(obj);
 }
 
@@ -1305,25 +1311,14 @@ void svt_aom_is_screen_content_antialiasing_aware(PictureParentControlSet* pcs) 
     int           pass        = 0;
 
     for (int i = 0; i < 4; ++i) {
-#if OPT_SC_STILL_IMAGE
         if ((counts_8X8.region_palette[i] * blk_area8 * 10 > region_area) &&
             (counts_8X8.region_intrabc[i] * blk_area8 * 25 > region_area)) {
-#else
-        if ((counts_8X8.region_palette[i] * blk_area8 * 18 > region_area) &&
-            (counts_8X8.region_intrabc[i] * blk_area8 * 50 > region_area)) {
-#endif
             pass++;
         }
     }
     pcs->sc_class4 = (pass >= 3) && (count_palette_8 * blk_area8 * 5 > area);
-#if OPT_SC_STILL_IMAGE
     pcs->sc_class5 = (pass >= 3) &&
         ((count_palette_8 * blk_area8 * 10 > area) && (count_intrabc_8 * blk_area8 * 23 > area));
-#else
-    pcs->sc_class5 = (pass >= 2) &&
-        ((count_palette_8 * blk_area8 * 18 > area) && (count_intrabc_8 * blk_area8 * 50 > area));
-
-#endif
 #if DEBUG_AA_SCM
     fprintf(stats_file,
             "block count palette: %" PRId64 ", count intrabc: %" PRId64 ", count photo: %" PRId64 ", total: %d\n",
@@ -1433,13 +1428,16 @@ void svt_aom_is_screen_content(PictureParentControlSet* pcs) {
         (counts_2 * blk_h * blk_w * 20 > input_pic->width * input_pic->height);
 }
 
-#if OPT_LPD1_TX_SKIP_DECISION
-#define PD_FRAME_GRAYLIKE_SAMPLE_STEP 8
-#define PD_FRAME_GRAYLIKE_NEUTRAL_THR 6
-#define PD_FRAME_GRAYLIKE_UV_DIFF_THR 4
-#define PD_FRAME_GRAYLIKE_MIN_PASS_PCT 75
+#define FRAME_LUMA_DOMINANT_SAMPLE_STEP 8
+#define FRAME_LUMA_DOMINANT_CORE_THR 16
+#define FRAME_LUMA_DOMINANT_TAIL_THR 18
+#define FRAME_LUMA_DOMINANT_MIN_CORE_PCT 85
+#define FRAME_LUMA_DOMINANT_MIN_TAIL_PCT 95
+#define FRAME_LUMA_DOMINANT_NEUTRAL_THR 6
+#define FRAME_LUMA_DOMINANT_UV_DIFF_THR 4
+#define FRAME_LUMA_DOMINANT_MIN_NEUTRAL_PCT 75
 
-bool svt_aom_is_input_grayscale_like(const EbPictureBufferDesc* input_pic) {
+bool svt_aom_is_input_luma_dominant(const EbPictureBufferDesc* input_pic) {
     if (!input_pic || input_pic->color_format == EB_YUV400 || !input_pic->u_buffer || !input_pic->v_buffer) {
         return false;
     }
@@ -1452,20 +1450,36 @@ bool svt_aom_is_input_grayscale_like(const EbPictureBufferDesc* input_pic) {
     }
 
     uint32_t sample_cnt  = 0;
+    uint32_t core_cnt    = 0;
+    uint32_t tail_cnt    = 0;
     uint32_t neutral_cnt = 0;
 
-    for (uint32_t y = 0; y < uv_h; y += PD_FRAME_GRAYLIKE_SAMPLE_STEP) {
+    const uint32_t core_thr_sq = FRAME_LUMA_DOMINANT_CORE_THR * FRAME_LUMA_DOMINANT_CORE_THR;
+    const uint32_t tail_thr_sq = FRAME_LUMA_DOMINANT_TAIL_THR * FRAME_LUMA_DOMINANT_TAIL_THR;
+
+    for (uint32_t y = 0; y < uv_h; y += FRAME_LUMA_DOMINANT_SAMPLE_STEP) {
         const uint8_t* const ub = input_pic->u_buffer + y * input_pic->u_stride;
         const uint8_t* const vb = input_pic->v_buffer + y * input_pic->v_stride;
 
-        for (uint32_t x = 0; x < uv_w; x += PD_FRAME_GRAYLIKE_SAMPLE_STEP) {
-            const int32_t du = (int32_t)ub[x] - 128;
-            const int32_t dv = (int32_t)vb[x] - 128;
-            const int32_t uv = (int32_t)ub[x] - (int32_t)vb[x];
+        for (uint32_t x = 0; x < uv_w; x += FRAME_LUMA_DOMINANT_SAMPLE_STEP) {
+            const int32_t  du            = (int32_t)ub[x] - 128;
+            const int32_t  dv            = (int32_t)vb[x] - 128;
+            const int32_t  uv            = (int32_t)ub[x] - (int32_t)vb[x];
+            const uint32_t chroma_mag_sq = (uint32_t)(du * du + dv * dv);
+            const int32_t  abs_du        = du < 0 ? -du : du;
+            const int32_t  abs_dv        = dv < 0 ? -dv : dv;
+            const int32_t  abs_uv        = uv < 0 ? -uv : uv;
 
-            if ((du < 0 ? -du : du) <= PD_FRAME_GRAYLIKE_NEUTRAL_THR &&
-                (dv < 0 ? -dv : dv) <= PD_FRAME_GRAYLIKE_NEUTRAL_THR &&
-                (uv < 0 ? -uv : uv) <= PD_FRAME_GRAYLIKE_UV_DIFF_THR) {
+            // Most samples must stay inside a tight near-neutral chroma region,
+            // and almost all samples must stay inside a slightly looser region.
+            if (chroma_mag_sq <= core_thr_sq) {
+                core_cnt++;
+            }
+            if (chroma_mag_sq <= tail_thr_sq) {
+                tail_cnt++;
+            }
+            if (abs_du <= FRAME_LUMA_DOMINANT_NEUTRAL_THR && abs_dv <= FRAME_LUMA_DOMINANT_NEUTRAL_THR &&
+                abs_uv <= FRAME_LUMA_DOMINANT_UV_DIFF_THR) {
                 neutral_cnt++;
             }
 
@@ -1473,9 +1487,10 @@ bool svt_aom_is_input_grayscale_like(const EbPictureBufferDesc* input_pic) {
         }
     }
 
-    return sample_cnt && (neutral_cnt * 100 >= sample_cnt * PD_FRAME_GRAYLIKE_MIN_PASS_PCT);
+    return sample_cnt && core_cnt * 100 >= sample_cnt * FRAME_LUMA_DOMINANT_MIN_CORE_PCT &&
+        (tail_cnt * 100 >= sample_cnt * FRAME_LUMA_DOMINANT_MIN_TAIL_PCT ||
+         neutral_cnt * 100 >= sample_cnt * FRAME_LUMA_DOMINANT_MIN_NEUTRAL_PCT);
 }
-#endif
 
 /************************************************
  * 1/4 & 1/16 input picture downsampling (filtering)
@@ -1599,7 +1614,6 @@ void svt_aom_pad_input_pictures(SequenceControlSet* scs, EbPictureBufferDesc* in
     }
 }
 
-#if OPT_TUNE_VMAF
 /*********************************************************************************
  *
  * @brief
@@ -1737,9 +1751,7 @@ static int32_t vmaf_get_delta_clip(int32_t base_qp, int busy_frame) {
 
     return busy_frame ? qp_delta - 4 : qp_delta;
 }
-#endif
 
-#if FTR_TUNE_VMAF
 /*********************************************************************************
  *
  * @brief
@@ -1757,50 +1769,32 @@ static int32_t vmaf_get_delta_clip(int32_t base_qp, int busy_frame) {
  *  mask.
  *
  ********************************************************************************/
-static void vmaf_box_blur_frame(const uint8_t* luma_plane, int stride, int16_t* blur_plane, int width, int height) {
-    const int steps_x      = 2;
-    const int steps_y      = 2;
-    const int padded_width = width + 2 * steps_x;
+static void vmaf_box_blur_frame(const uint8_t* luma_plane, int stride, uint8_t* blur_plane, int width, int height,
+                                int16_t* const hring[5]) {
+    const int steps_x = 2;
+    const int steps_y = 2;
 
-    uint32_t* h_row = NULL;
-    EB_MALLOC_ARRAY_NO_CHECK(h_row, padded_width);
-    if (!h_row) {
-        return;
+    int16_t* r[5] = {hring[0], hring[1], hring[2], hring[3], hring[4]};
+    for (int k = 0; k < 4; k++) {
+        int row = k - steps_y;
+        row     = row < 0 ? 0 : (row >= height ? height - 1 : row);
+        svt_vmaf_hpass_row(luma_plane + (size_t)row * stride, width, r[k]);
     }
 
-    uint32_t* v_acc[4] = {NULL};
-    for (int i = 0; i < 4; i++) {
-        EB_CALLOC_ARRAY_NO_CHECK(v_acc[i], padded_width);
-        if (!v_acc[i]) {
-            for (int j = 0; j < i; j++) {
-                EB_FREE_ARRAY(v_acc[j]);
-            }
-            EB_FREE_ARRAY(h_row);
-            return;
-        }
+    for (int m = 0; m < height; m++) {
+        int row = m + steps_y;
+        row     = row >= height ? height - 1 : row;
+        svt_vmaf_hpass_row(luma_plane + (size_t)row * stride, width, r[4]);
+
+        svt_vmaf_vpass_row(r[0], r[1], r[2], r[3], r[4], blur_plane + (size_t)m * width, width, steps_x);
+
+        int16_t* oldest = r[0];
+        r[0]            = r[1];
+        r[1]            = r[2];
+        r[2]            = r[3];
+        r[3]            = r[4];
+        r[4]            = oldest;
     }
-
-    const uint8_t* luma_row = luma_plane;
-
-    for (int y = -steps_y; y < steps_y + height; y++) {
-        /* H-pass */
-        svt_vmaf_hpass_row(luma_row, width, h_row);
-
-        /* V-pass */
-        const int do_write = (y >= steps_y) ? 1 : 0;
-        int16_t*  blur_row = do_write ? blur_plane + (y - steps_y) * width : blur_plane;
-        svt_vmaf_vpass_row(
-            h_row, v_acc[0], v_acc[1], v_acc[2], v_acc[3], blur_row, padded_width, width, steps_x, do_write);
-
-        if (y >= 0 && y < height - 1) {
-            luma_row += stride;
-        }
-    }
-
-    for (int i = 0; i < 4; i++) {
-        EB_FREE_ARRAY(v_acc[i]);
-    }
-    EB_FREE_ARRAY(h_row);
 }
 
 /*********************************************************************************
@@ -1817,7 +1811,7 @@ static void vmaf_box_blur_frame(const uint8_t* luma_plane, int stride, int16_t* 
  *  written directly into the destination buffer.
  *
  ********************************************************************************/
-static void vmaf_unsharp_apply_frame(const uint8_t* src, const int16_t* blur_plane, uint8_t* dst, int width, int height,
+static void vmaf_unsharp_apply_frame(const uint8_t* src, const uint8_t* blur_plane, uint8_t* dst, int width, int height,
                                      int stride, int sharp_amount, int32_t delta_clip) {
     for (int y = 0; y < height; y++) {
         svt_vmaf_apply_unsharp_row(
@@ -1844,7 +1838,7 @@ static void vmaf_unsharp_apply_frame(const uint8_t* src, const int16_t* blur_pla
  *       sharpened luma back over the source.
  *
  ********************************************************************************/
-static void vmaf_preprocess_frame(PictureParentControlSet* pcs) {
+static void vmaf_preprocess_frame(PictureAnalysisContext* pa_ctx, PictureParentControlSet* pcs) {
     EbPictureBufferDesc* pic_ptr    = pcs->enhanced_pic;
     const int            pic_width  = pic_ptr->width;
     const int            pic_height = pic_ptr->height;
@@ -1858,13 +1852,36 @@ static void vmaf_preprocess_frame(PictureParentControlSet* pcs) {
     pcs->vmaf_sharpening_amount = sharp_amount;
 
     /* Step 2: build the low-pass reference by box-blurring the luma plane. */
-    uint8_t* luma       = pic_ptr->y_buffer;
-    int16_t* blur_plane = NULL;
-    EB_MALLOC_ARRAY_NO_CHECK(blur_plane, (size_t)pic_width * pic_height);
-    if (!blur_plane) {
-        return;
+    const int padded_width = pic_width + 2 * 2; /* 2 * steps_x */
+    if (pa_ctx->vmaf_padded_w < padded_width) {
+        for (int i = 0; i < 5; i++) {
+            EB_FREE_ARRAY(pa_ctx->vmaf_hring[i]);
+        }
+        pa_ctx->vmaf_padded_w = 0;
+        for (int i = 0; i < 5; i++) {
+            EB_MALLOC_ARRAY_NO_CHECK(pa_ctx->vmaf_hring[i], padded_width);
+        }
+        if (!pa_ctx->vmaf_hring[0] || !pa_ctx->vmaf_hring[1] || !pa_ctx->vmaf_hring[2] || !pa_ctx->vmaf_hring[3] ||
+            !pa_ctx->vmaf_hring[4]) {
+            return;
+        }
+        pa_ctx->vmaf_padded_w = padded_width;
     }
-    vmaf_box_blur_frame(luma, y_stride, blur_plane, pic_width, pic_height);
+
+    const int blur_pixels = pic_width * pic_height;
+    if (pa_ctx->vmaf_blur_pixels < blur_pixels) {
+        EB_FREE_ARRAY(pa_ctx->vmaf_blur_plane);
+        pa_ctx->vmaf_blur_pixels = 0;
+        EB_MALLOC_ARRAY_NO_CHECK(pa_ctx->vmaf_blur_plane, (size_t)blur_pixels);
+        if (!pa_ctx->vmaf_blur_plane) {
+            return;
+        }
+        pa_ctx->vmaf_blur_pixels = blur_pixels;
+    }
+
+    uint8_t* luma       = pic_ptr->y_buffer;
+    uint8_t* blur_plane = pa_ctx->vmaf_blur_plane;
+    vmaf_box_blur_frame(luma, y_stride, blur_plane, pic_width, pic_height, pa_ctx->vmaf_hring);
 
     /* Step 3: flag busy frames (under 85% flat pixels) and derive the per-pixel delta clip. */
     const int32_t  flat_detail_thr   = 12;
@@ -1879,10 +1896,7 @@ static void vmaf_preprocess_frame(PictureParentControlSet* pcs) {
 
     /* Step 4: apply the unsharp mask in place, writing the sharpened luma back over the source. */
     vmaf_unsharp_apply_frame(luma, blur_plane, luma, pic_width, pic_height, y_stride, sharp_amount, delta_clip);
-
-    EB_FREE_ARRAY(blur_plane);
 }
-#endif
 
 /* Picture Analysis Kernel */
 
@@ -1927,9 +1941,7 @@ EbErrorType svt_aom_picture_analysis_kernel_iter(void* context) {
     in_results_ptr = (ResourceCoordinationResults*)in_results_wrapper_ptr->object_ptr;
     pcs            = (PictureParentControlSet*)in_results_ptr->pcs_wrapper->object_ptr;
 
-#if OPT_LPD1_TX_SKIP_DECISION
-    pcs->is_grayscale_like_input = false;
-#endif
+    pcs->is_luma_dominant_input = false;
 
     // Mariana : save enhanced picture ptr, move this from here
     pcs->enhanced_unscaled_pic = pcs->enhanced_pic;
@@ -1941,11 +1953,9 @@ EbErrorType svt_aom_picture_analysis_kernel_iter(void* context) {
         input_pic               = pcs->enhanced_pic;
         EbPictureBufferDesc* input_padded_pic;
         {
-#if FTR_TUNE_VMAF
             if (scs->static_config.tune == TUNE_VMAF) {
-                vmaf_preprocess_frame(pcs);
+                vmaf_preprocess_frame(pa_ctx, pcs);
             }
-#endif
             // Padding for input pictures
             svt_aom_pad_input_pictures(scs, input_pic);
 
@@ -1995,21 +2005,12 @@ EbErrorType svt_aom_picture_analysis_kernel_iter(void* context) {
         // If running multi-threaded mode, perform SC detection in svt_aom_picture_analysis_kernel, else in svt_aom_picture_decision_kernel
         if (scs->static_config.level_of_parallelism != 1) {
             switch (scs->static_config.screen_content_mode) {
-#if OPT_SC_STILL_IMAGE
             case 0:
                 pcs->sc_class0 = pcs->sc_class1 = pcs->sc_class2 = pcs->sc_class3 = pcs->sc_class4 = pcs->sc_class5 = 0;
                 break;
             case 1:
                 pcs->sc_class0 = pcs->sc_class1 = pcs->sc_class2 = pcs->sc_class3 = pcs->sc_class4 = pcs->sc_class5 = 1;
                 break;
-#else
-            case 0:
-                pcs->sc_class0 = pcs->sc_class1 = pcs->sc_class2 = pcs->sc_class3 = pcs->sc_class4 = 0;
-                break;
-            case 1:
-                pcs->sc_class0 = pcs->sc_class1 = pcs->sc_class2 = pcs->sc_class3 = pcs->sc_class4 = 1;
-                break;
-#endif
             case 2:
                 // SC Detection is OFF for 4K and higher
                 if (scs->input_resolution <= INPUT_SIZE_1080p_RANGE) {
@@ -2020,12 +2021,10 @@ EbErrorType svt_aom_picture_analysis_kernel_iter(void* context) {
                 svt_aom_is_screen_content_antialiasing_aware(pcs);
                 break;
             }
-#if OPT_LPD1_TX_SKIP_DECISION
-            // Grayscale-like detection in MT mode
-            if (scs->detect_grayscale_like_input) {
-                pcs->is_grayscale_like_input = svt_aom_is_input_grayscale_like(pcs->chroma_downsampled_pic);
+            // Luma-dominant detection in MT mode
+            if (scs->detect_luma_dominant_input) {
+                pcs->is_luma_dominant_input = svt_aom_is_input_luma_dominant(pcs->chroma_downsampled_pic);
             }
-#endif
         }
     }
 

@@ -105,9 +105,6 @@ typedef struct {
     uint8_t      resize_denom;
 } ResizePendingParams;
 
-EbErrorType svt_aom_rate_control_coded_frames_stats_context_ctor(coded_frames_stats_entry* entry_ptr,
-                                                                 uint64_t                  picture_number);
-
 typedef struct RATE_CONTROL {
     int     last_boosted_qindex; // Last boosted GF/KF/ARF q
     int     gfu_boost;
@@ -117,9 +114,7 @@ typedef struct RATE_CONTROL {
     int     constrained_gf_group;
     int     frames_to_key;
     int     frames_since_key;
-#if FIX_RTC_M13
-    int frames_since_cdf_update;
-#endif
+    int     frames_since_cdf_update;
     int     this_key_frame_forced;
     int     avg_frame_bandwidth; // Average frame size target for clip
     int     max_frame_bandwidth; // Maximum burst rate allowed for a frame.
@@ -172,6 +167,7 @@ typedef struct RATE_CONTROL {
     int64_t gf_group_bits;
     // Rate Control stat Queue
     coded_frames_stats_entry** coded_frames_stat_queue;
+    coded_frames_stats_entry*  coded_frames_stat_pool; // backs coded_frames_stat_queue[] with one allocation
     uint32_t                   coded_frames_stat_queue_head_index;
 
 #if DEBUG_RC_CAP_LOG
@@ -193,22 +189,14 @@ typedef struct RATE_CONTROL {
     uint32_t prev_avg_base_me_dist;
 
     // RTC CBR
-    int mini_qop_size;
-    int min_ref_base_q_idx;
-#if USE_FRAME_TYPE_BOOST
-    int rc_mini_gop_pos; // RC virtual mini-GoP position (0..mini_qop_size-1)
-    int rc_num_layers; // RC virtual layer count, independent of encoder pred structure
-#endif
+    int    mini_qop_size;
+    int    min_ref_base_q_idx;
+    int    rc_mini_gop_pos; // RC virtual mini-GoP position (0..mini_qop_size-1)
+    int    rc_num_layers; // RC virtual layer count, independent of encoder pred structure
     double target_size_factors[1 + MAX_TEMPORAL_LAYERS];
 
-#if USE_FRAME_TYPE_BOOST
     // Rate correction factors for RTC CBR are tracked per RC virtual mini-GoP position
     double rcf_values[1 + MAX_MINIGOP_SIZE]; // RCF per position in RC virtual mini-gop
-#else
-    // Rate correction factors for RTC CBR are tracked per pred_struct_index
-    // because besides layer index the position in minigop affect compression too
-    double rcf_values[1 + MAX_MINIGOP_SIZE]; // RCF per frame in mini-gop
-#endif
     double rcf_kalman_P[1 + MAX_MINIGOP_SIZE]; // estimation variance per layer
     double rcf_kalman_R[1 + MAX_MINIGOP_SIZE]; // adaptive measurement noise per layer
 } RATE_CONTROL;
