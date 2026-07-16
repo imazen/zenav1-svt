@@ -408,6 +408,8 @@ impl EncodePipeline {
         };
         let qindex_u = (i32::from(base_qindex) + i32::from(chroma_deltas.u_ac)).clamp(0, 255) as u8;
         let qindex_v = (i32::from(base_qindex) + i32::from(chroma_deltas.v_ac)).clamp(0, 255) as u8;
+        // Stills are I-slices at temporal layer 0: effective = ac_bias * 0.3.
+        let ac_bias_eff = svtav1_dsp::ac_bias::effective_ac_bias(self.hdr.ac_bias, true, 0);
         let tile_recons = encode_tile_rows(
             &encode_input,
             w,
@@ -420,6 +422,7 @@ impl EncodePipeline {
             base_qindex,
             qindex_u,
             qindex_v,
+            ac_bias_eff,
             tpl_adjusted_qp,
             self.hdr.sharpness,
             lambda,
@@ -2608,6 +2611,8 @@ fn encode_tile_rows(
     // Per-plane chroma qindexes (== base_qindex in mainline mode).
     qindex_u: u8,
     qindex_v: u8,
+    // Effective AC bias for MD spatial distortion (0.0 = mainline default).
+    ac_bias_eff: f64,
     cli_qp: u8,
     hdr_sharpness: i8,
     _lambda: u64, // Per-SB lambda computed from sb_qp_offsets
@@ -2699,6 +2704,7 @@ fn encode_tile_rows(
                 base_qindex,
                 qindex_u,
                 qindex_v,
+                ac_bias_eff,
                 cfg: funnel_cfg,
             })
         } else {

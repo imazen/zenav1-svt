@@ -242,6 +242,13 @@ pub struct FunnelFrame {
     /// the fork's chroma-q path sets U/V independently (chroma_q.rs).
     pub qindex_u: u8,
     pub qindex_v: u8,
+    /// Effective AC bias for MD spatial distortion (mainline v4.2 feature,
+    /// fork default 1.0): `get_effective_ac_bias(ac_bias, is_islice,
+    /// layer)` — stills are I-slices, so ac_bias * 0.3. 0.0 = off = the
+    /// prior spatial SSE bit-exactly. The C sites add
+    /// `get_svt_psy_full_dist` to the spatial dist BEFORE the <<4
+    /// (full_loop.c svt_aom_full_loop_uv + the luma MDS3 path).
+    pub ac_bias_eff: f64,
     /// Config sharpness for the RDOQ rshift formula (0 mainline; fork
     /// default 1 — departs from mainline only at >= 3).
     pub sharpness: i8,
@@ -1357,6 +1364,23 @@ fn tx_unit(
                 let d = src[srow + c] as i64 - recon[r * w + c] as i64;
                 sse += (d * d) as u64;
             }
+        }
+        // [ac-bias] C adds llrint(psy_distortion * effective_ac_bias) to
+        // the spatial SSE BEFORE the <<4 (get_svt_psy_full_dist call sites
+        // in full_loop.c). tx_bias=0 (fork default) keeps the facade a
+        // plain SSE, so this is the whole fork-default delta here.
+        if frame.ac_bias_eff > 0.0 {
+            sse += svtav1_dsp::ac_bias::psy_full_dist(
+                src,
+                src_off,
+                src_stride,
+                &recon,
+                0,
+                w,
+                w,
+                h,
+                frame.ac_bias_eff,
+            );
         }
         sse << 4
     } else {
