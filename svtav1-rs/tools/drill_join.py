@@ -153,6 +153,52 @@ def join(c_path, p_path):
     print(f"COEFF-LEVEL (same mode, differing tx_type/eob): {len(coeff_flips)}")
     for f in coeff_flips[:10]:
         print(f)
+
+    # 2b. NSQ-shaped winners. CLEAF rows follow their owning PICKPART line in
+    # the dump, so attach each to the last-seen parent node; the port's BLK
+    # records use the SAME parent-mi keying with (shape, nsi) — the CLEAF
+    # `shape` field is C's Part enum, which matches the port's funnel shape
+    # ids for N/H/V/H4/V4 exactly.
+    c_nsq = {}
+    cur_parent = None
+    for line in open(c_path):
+        m = re.match(r"PICKPART mi=\((\d+),(\d+)\) bsize=(\d+) partition=(\d+)", line)
+        if m:
+            cur_parent = (int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4)))
+            continue
+        m = re.match(r"CLEAF mi=\((\d+),(\d+)\) bsize=(\d+) shape=(\d+) nsi=(\d+) mode=(\d+) uv=(\d+) txd=(\d+)"
+                     r".*? txt=\[([\d,-]+)\] ye=\[([\d,]+)\] ue=(\d+) ve=(\d+)", line)
+        if m and int(m.group(4)) != 0 and cur_parent is not None:
+            g = m.groups()
+            pr, pc, pb_, _ = cur_parent
+            c_nsq[(pr, pc, pb_, int(g[3]), int(g[4]))] = dict(
+                child=(int(g[0]), int(g[1])), mode=int(g[5]), uv=int(g[6]), txd=int(g[7]),
+                txt=g[8].split(","), ye=g[9].split(","), ue=g[10], ve=g[11])
+    nsq_flips = 0
+    shown = 0
+    for key, cl in sorted(c_nsq.items()):
+        hit = p_blk.get(key)
+        if hit is None:
+            nsq_flips += 1
+            if shown < 10:
+                print(f"  NSQ {key}: C strip child={cl['child']} has NO port BLK (shape never evaluated?)")
+                shown += 1
+            continue
+        if (hit["mode"], hit["uv"], hit["txd"]) != (cl["mode"], cl["uv"], cl["txd"]):
+            nsq_flips += 1
+            if shown < 10:
+                print(f"  NSQ {key} child={cl['child']}: C mode/uv/txd=({cl['mode']},{cl['uv']},{cl['txd']}) | "
+                      f"port=({hit['mode']},{hit['uv']},{hit['txd']})")
+                shown += 1
+        elif hit["txt"] is not None:
+            n = len(hit["txt"])
+            if hit["txt"] != cl["txt"][:n] or hit["ye"] != cl["ye"][:n]:
+                nsq_flips += 1
+                if shown < 10:
+                    print(f"  NSQ-coeff {key} child={cl['child']}: C txt={cl['txt'][:n]} ye={cl['ye'][:n]} | "
+                          f"port txt={hit['txt']} ye={hit['ye']}")
+                    shown += 1
+    print(f"NSQ LEAVES: {len(c_nsq)} C strips, {nsq_flips} flip(s)")
     deltas.sort(reverse=True)
     nz = [x for x in deltas if x[0] != 0]
     print(f"RD DELTAS (port-C) nonzero on {len(nz)}/{len(deltas)} leaves; top:")
