@@ -205,6 +205,49 @@ EbErrorType __wrap_svt_aom_txb_estimate_coeff_bits(
         ctx, allow_update_cdf, ec_ctx, pcs, cand_bf, txb_origin_index, txb_chroma_origin_index, coeff_buffer_sb, y_eob,
         cb_eob, cr_eob, y_txb_coeff_bits, cb_txb_coeff_bits, cr_txb_coeff_bits, txsize, txsize_uv, tx_type, tx_type_uv,
         component_type);
+    /* SVT_CCOEF_OUT + SVT_CCOEF_XY="x,y": dump the FINAL coded coefficient
+     * LEVELS at a pinned block. allow_update_cdf==1 marks the encdec
+     * CDF-update pass (update_coeff_cdf, coding_loop.c:1543 — reading the
+     * final quantized_coeff buffer at coded_area offsets), i.e. exactly
+     * the coeffs the pack writes; MD candidate calls pass 0. update_coeff_
+     * cdf itself is same-TU with its caller and cannot be --wrap'd — this
+     * cross-TU callee sees the same buffer+offsets. Answers "same eob,
+     * which LEVELS differ?" (the 1624307 class). One line per txb. */
+    const char* cpath = getenv("SVT_CCOEF_OUT");
+    const char* cxy   = getenv("SVT_CCOEF_XY");
+    if (cpath && *cpath && cxy && allow_update_cdf) {
+        int px = -1, py = -1;
+        sscanf(cxy, "%d,%d", &px, &py);
+        if ((int)ctx->blk_org_x == px && (int)ctx->blk_org_y == py) {
+            static FILE* qf = NULL;
+            if (!qf)
+                qf = fopen(cpath, "w");
+            if (qf) {
+                const int32_t* qy = ((const int32_t*)coeff_buffer_sb->y_buffer) + txb_origin_index;
+                const int32_t* qu = ((const int32_t*)coeff_buffer_sb->u_buffer) + txb_chroma_origin_index;
+                const int32_t* qv = ((const int32_t*)coeff_buffer_sb->v_buffer) + txb_chroma_origin_index;
+                const int      ny = tx_size_wide[txsize] * tx_size_high[txsize];
+                const int      nc = tx_size_wide[txsize_uv] * tx_size_high[txsize_uv];
+                fprintf(qf, "CCOEF org=(%u,%u) yeob=%u cbeob=%u creob=%u ynz=[", (unsigned)ctx->blk_org_x,
+                        (unsigned)ctx->blk_org_y, y_eob, cb_eob, cr_eob);
+                /* All nonzero (raster_idx:level) pairs, capped — the full
+                 * symbol content of the txb in a bounded line. */
+                int emitted = 0;
+                for (int i = 0; i < ny && emitted < 24; ++i)
+                    if (qy[i]) fprintf(qf, "%s%d:%d", emitted++ ? "," : "", i, qy[i]);
+                fprintf(qf, "] unz=[");
+                emitted = 0;
+                for (int i = 0; i < nc && emitted < 12; ++i)
+                    if (qu[i]) fprintf(qf, "%s%d:%d", emitted++ ? "," : "", i, qu[i]);
+                fprintf(qf, "] vnz=[");
+                emitted = 0;
+                for (int i = 0; i < nc && emitted < 12; ++i)
+                    if (qv[i]) fprintf(qf, "%s%d:%d", emitted++ ? "," : "", i, qv[i]);
+                fprintf(qf, "]\n");
+                fflush(qf);
+            }
+        }
+    }
     const char* path = getenv("SVT_CCOST_OUT");
     if (!path || !*path || allow_update_cdf)
         return ret;

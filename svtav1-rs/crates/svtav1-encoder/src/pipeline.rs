@@ -1687,6 +1687,45 @@ fn encode_block_syntax(
             );
         }
     }
+    // Diagnostic (SVTAV1_PACKTREE_COEFF="mi_row,mi_col"): the pinned
+    // block's PACKED nonzero luma+chroma levels as (raster_idx:level)
+    // pairs — the port counterpart of the C CCOEF wrap dump (final coded
+    // levels), bounded to one stderr line per block.
+    #[cfg(feature = "std")]
+    if let Ok(xy) = std::env::var("SVTAV1_PACKTREE_COEFF") {
+        let want: alloc::vec::Vec<usize> =
+            xy.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+        if want.len() == 2 && want[0] == block_y / 4 && want[1] == block_x / 4 {
+            let fmt_nz = |q: &[i32], cap: usize| -> alloc::string::String {
+                let mut s = alloc::string::String::new();
+                let mut n = 0;
+                for (i, &v) in q.iter().enumerate() {
+                    if v != 0 && n < cap {
+                        if n > 0 {
+                            s.push(',');
+                        }
+                        s.push_str(&alloc::format!("{i}:{v}"));
+                        n += 1;
+                    }
+                }
+                s
+            };
+            let (unz, vnz) = decision
+                .chroma_dec
+                .as_ref()
+                .map(|c| (fmt_nz(&c.0, 12), fmt_nz(&c.1, 12)))
+                .unwrap_or_default();
+            eprintln!(
+                "PCOEF mi=({},{}) yeob={} ynz=[{}] unz=[{}] vnz=[{}]",
+                block_y / 4,
+                block_x / 4,
+                decision.eob,
+                fmt_nz(&decision.qcoeffs, 24),
+                unz,
+                vnz
+            );
+        }
+    }
     // Diagnostic (SVTAV1_PART_DUMP): every coded leaf's geometry + skip, to
     // diff the partition tree against the C entropy coder. No output change.
     #[cfg(feature = "std")]

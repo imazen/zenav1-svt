@@ -64,13 +64,31 @@ set +e
 DIFFOUT=$("$DD" "$D/c.obu" "$D/rs.obu")
 rc=$?
 set -e
+# ORACLE LIMITATION (2026-07-16): aom-decoder-rs silently desyncs on
+# Wiener-ACTIVE streams (LR-none/flat streams decode bit-exactly; every
+# Wiener-tap-carrying stream tested decodes partially gray). The in-tool
+# 128-gray guard only catches gross cases; the robust drill-side check is
+# the stream itself: a final-session first op with icdf 21198
+# (wiener_restore) + a taken restore flag means the locate is UNRELIABLE.
+if grep -aq "f=21198" "$D/c.trace" 2>/dev/null && [[ $rc -eq 1 ]]; then
+    echo "WARNING: Wiener-active stream — decode-diff locate is UNRELIABLE"
+    echo "(known aom-decoder-rs desync on active Wiener LR; see #92)."
+    echo "Trust the tree diff + the <=M5 recon dumps below instead."
+fi
 if [[ $rc -eq 0 ]]; then
     echo "decoded outputs IDENTICAL -> streams differ only in signaling that"
     echo "does not change pixels (recon-invisible symbol/context split); use"
     echo "identity_diff.sh / the op differ."
     exit 3
 fi
-if [[ $rc -ne 1 ]]; then
+if [[ $rc -eq 3 ]]; then
+    echo "$DIFFOUT"
+    echo "oracle unusable on this stream (Wiener-active) — falling back to the"
+    echo "final-tree diff below for decision-level localization; the raw recon"
+    echo "dump compare (p.p*/c.p*) is valid at presets <= M5."
+    MIROW=0
+    MICOL=0
+elif [[ $rc -ne 1 ]]; then
     echo "decode-diff failed (rc $rc):"
     echo "$DIFFOUT"
     exit 2
