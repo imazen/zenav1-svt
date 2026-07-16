@@ -34,6 +34,25 @@
 extern "C" {
 #endif // __cplusplus
 
+/* ============================================================================
+ * SVT_HDR_MODE — switch between mainline and svt-av1-hdr fork behavior.
+ *
+ *   0 (default) = MAINLINE: bit-identical to upstream SVT-AV1 v4.2.0 (final tag).
+ *   1           = HDR FORK: svt-av1-hdr (Chromedome) semantics on the v4.2 base
+ *                 (double-precision variance pipeline, retuned variance-boost
+ *                 curves, unconditional loop filter, fork chroma-qindex path, ...).
+ *
+ * Fork *features* reachable only via explicit config (--noise*, --cdef-scaling,
+ * --tx-bias, --complex-hvs, --variance-boost-curve 3, tune Film Grain) are
+ * compiled in for BOTH modes; they stay inert at their neutral defaults.
+ * Only behavior the fork changed UNCONDITIONALLY is gated by SVT_HDR_MODE.
+ * NOTE: v4.2.0-final's macro cleanup deleted the old TUNE_CHROMA_SSIM /
+ * TUNE_CQP_CHROMA_SSIM=0 conditionals; the fork paths they used to guard are
+ * reintroduced below as direct #if SVT_HDR_MODE blocks (see rc_crf_cqp.c).
+ * ==========================================================================*/
+#ifndef SVT_HDR_MODE
+#define SVT_HDR_MODE 0
+#endif
 //FOR DEBUGGING - Do not remove
 
 
@@ -41,8 +60,16 @@ extern "C" {
 #define DEBUG_TPL               0 // Prints to debug TPL
 #define DETAILED_FRAME_OUTPUT   0 // Prints detailed frame output from the library for debugging
 #define DEBUG_BUFFERS           0 // Print process count and segments info
-#define TUNE_CHROMA_SSIM        0 // Allows for Chroma and SSIM BDR-based Tuning
-#define TUNE_CQP_CHROMA_SSIM    0 // Tune CQP qp scaling towards improved chroma and SSIM BDR
+/* [SVT_HDR_MODE] both macros exist in mainline v4.2 with value 0; the svt-av1-hdr
+   fork flips them to 1 (chroma/SSIM-tuned QP scaling — changes qindex derivation
+   for non-I frames and the chroma qindex path). */
+#if SVT_HDR_MODE
+#define TUNE_CHROMA_SSIM        1 // Allows for Chroma and SSIM BDR-based Tuning
+#define TUNE_CQP_CHROMA_SSIM    1 // Tune CQP qp scaling towards improved chroma and SSIM BDR
+#else
+#define TUNE_CHROMA_SSIM        0 // mainline v4.2 default
+#define TUNE_CQP_CHROMA_SSIM    0 // mainline v4.2 default
+#endif
 
 #define MIN_PIC_PARALLELIZATION 0 // Use the minimum amount of picture parallelization
 #define SRM_REPORT              0 // Report SRM status

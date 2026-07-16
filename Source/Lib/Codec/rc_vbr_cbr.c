@@ -1202,9 +1202,8 @@ static int rc_pick_q_and_bounds(PictureControlSet* pcs) {
         unsigned int r0_weight_idx = !frame_is_intra_only(ppcs);
         assert(r0_weight_idx <= 2);
         double weight      = svt_av1_r0_weight[r0_weight_idx];
-        double qstep_ratio = sqrt(ppcs->r0) * weight *
-            svt_av1_qp_scale_compress_weight[scs->static_config.qp_scale_compress_strength];
-        if (scs->static_config.qp_scale_compress_strength) {
+        double qstep_ratio = sqrt(ppcs->r0) * weight * SVT_QP_SCALE_WEIGHT(scs->static_config);
+        if (SVT_QP_SCALE_ON(scs->static_config)) {
             // clamp qstep_ratio so it doesn't get past the weight value
             qstep_ratio = MIN(weight, qstep_ratio);
         }

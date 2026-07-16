@@ -229,6 +229,30 @@ typedef struct TfControls {
     uint8_t qp_opt;
 } TfControls;
 
+#include "EbDebugMacros.h"
+
+/* [SVT_HDR_MODE] variance-sample type: mainline uint16_t, svt-av1-hdr fork double. */
+#if SVT_HDR_MODE
+typedef double   SvtVarType;
+#define SVT_VAR_AVG2(a, b) (((a) + (b)) / 2)
+#define SVT_VAR_STORE(x, sh) ((double)(x) / (1 << (sh)))
+#else
+typedef uint16_t SvtVarType;
+#define SVT_VAR_AVG2(a, b) (((a) + (b)) >> 1)
+#define SVT_VAR_STORE(x, sh) ((uint16_t)((x) >> (sh)))
+#endif
+
+/* [SVT_HDR_MODE] qp-scale-compress: mainline indexes svt_av1_qp_scale_compress_weight[]
+   with a uint8 strength; the svt-av1-hdr fork deprecated that field (kept as
+   `qp_scale_compress_strength_unused` for ABI) and uses a double + linear formula. */
+#if SVT_HDR_MODE
+#define SVT_QP_SCALE_WEIGHT(cfg) (1.000 + (cfg).qp_scale_compress_strength * 0.125)
+#define SVT_QP_SCALE_ON(cfg) ((cfg).qp_scale_compress_strength > 0.0)
+#else
+#define SVT_QP_SCALE_WEIGHT(cfg) (svt_av1_qp_scale_compress_weight[(cfg).qp_scale_compress_strength_unused])
+#define SVT_QP_SCALE_ON(cfg) ((cfg).qp_scale_compress_strength_unused)
+#endif
+
 typedef enum GM_LEVEL {
     GM_FULL   = 0, // Exhaustive search mode.
     GM_DOWN   = 1, // Downsampled search mode, with a downsampling factor of 2 in each dimension
@@ -1855,8 +1879,9 @@ typedef enum Tune {
     TUNE_PSNR = 1, // Average of (PSNR, SSIM, VMAF)
     TUNE_SSIM = 2, // SSIM-optimized
     TUNE_IQ   = 3, // Image Quality
-    TUNE_MS_SSIM = 4,  // MS_SSIM and SSIMULACRA2 optimized
-    TUNE_VMAF    = 5   // VMAF preprocessing (unsharp filter on luma)
+    TUNE_MS_SSIM    = 4, // MS_SSIM and SSIMULACRA2 optimized
+    TUNE_VMAF       = 5, // VMAF preprocessing (unsharp filter on luma)  [mainline v4.2]
+    TUNE_FILM_GRAIN = 6  // Film Grain optimized  [svt-av1-hdr fork; renumbered 5->6, mainline owns 5]
 } Tune;
 
 /*
@@ -2174,6 +2199,9 @@ typedef enum {
 
 // Both SFRAME_FLEXIBLE_BASE and SFRAME_DEC_POSI_BASE use flexible insertion
 #define IS_SFRAME_FLEXIBLE_INSERT(mode) (mode == SFRAME_FLEXIBLE_BASE || mode == SFRAME_DEC_POSI_BASE)
+
+#define CONVERT_TO_STR_COMPILE_TIME_HELPER(x) #x
+#define CONVERT_TO_STR_COMPILE_TIME(x) CONVERT_TO_STR_COMPILE_TIME_HELPER(x)
 
 #ifdef __cplusplus
 }

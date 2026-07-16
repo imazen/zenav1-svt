@@ -2779,12 +2779,19 @@ static EbErrorType produce_temporally_filtered_pic(PictureParentControlSet** pcs
         const uint8_t tf_shift_factor = 10 + (4 - scs->static_config.tf_strength);
         assert(tf_shift_factor <= 14);
 
+        /* [SVT_HDR_MODE] fork: user-set --kf-tf-strength (10 + (4 - s)); mainline:
+           tf_shift_factor, +1 under Tune VQ sharpness ctrls. */
+#if SVT_HDR_MODE
+        const uint8_t kf_tf_shift_factor = 10 + (4 - scs->static_config.kf_tf_strength);
+        assert(kf_tf_shift_factor <= 14);
+#else
         // kf_tf_shift_factor is 1 + tf strength when using Tune 0 (VQ)
         uint8_t kf_tf_shift_factor = tf_shift_factor;
         if (scs->vq_ctrls.sharpness_ctrls.tf) {
             kf_tf_shift_factor = MIN(14, tf_shift_factor + 1);
         }
         assert(kf_tf_shift_factor <= 14);
+#endif
 
         // when kf_tf_shift_factor is 14, we disable tf on keyframes
         if (frame_update_type == SVT_AV1_KF_UPDATE && kf_tf_shift_factor == 14) {
@@ -3307,12 +3314,19 @@ static EbErrorType produce_temporally_filtered_pic_ld(PictureParentControlSet** 
         const uint8_t tf_shift_factor = 10 + (4 - scs->static_config.tf_strength);
         assert(tf_shift_factor <= 14);
 
+        /* [SVT_HDR_MODE] fork: user-set --kf-tf-strength (10 + (4 - s)); mainline:
+           tf_shift_factor, +1 under Tune VQ sharpness ctrls. */
+#if SVT_HDR_MODE
+        const uint8_t kf_tf_shift_factor = 10 + (4 - scs->static_config.kf_tf_strength);
+        assert(kf_tf_shift_factor <= 14);
+#else
         // kf_tf_shift_factor is 1 + tf strength when using Tune 0 (VQ)
         uint8_t kf_tf_shift_factor = tf_shift_factor;
         if (scs->vq_ctrls.sharpness_ctrls.tf) {
             kf_tf_shift_factor = MIN(14, tf_shift_factor + 1);
         }
         assert(kf_tf_shift_factor <= 14);
+#endif
 
         // when kf_tf_shift_factor is 14, we disable tf on keyframes
         if (frame_update_type == SVT_AV1_KF_UPDATE && kf_tf_shift_factor == 14) {

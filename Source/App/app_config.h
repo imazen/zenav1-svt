@@ -14,6 +14,12 @@
 
 #include <stdio.h>
 #include <stdbool.h>
+#ifdef LIBDOVI_FOUND
+#include <libdovi/rpu_parser.h>
+#endif
+#ifdef LIBHDR10PLUS_RS_FOUND
+#include <libhdr10plus-rs/hdr10plus.h>
+#endif
 
 #include "EbSvtAv1Enc.h"
 
@@ -199,8 +205,16 @@ typedef struct EbConfig {
 
     FILE*         roi_map_file;
     SvtAv1RoiMap* roi_map;
+#ifdef LIBDOVI_FOUND
+    const DoviRpuOpaqueList* dovi_rpus;
+#endif
+#ifdef LIBHDR10PLUS_RS_FOUND
+    Hdr10PlusRsJsonOpaque* hdr10plus_json;
+#endif
 
     char* fgs_table_path;
+
+    bool color;
 } EbConfig;
 
 typedef struct EncChannel {
@@ -222,13 +236,13 @@ typedef struct EncApp {
     SvtAv1FixedBuf rc_twopasses_stats;
 } EncApp;
 
-EbConfig* svt_config_ctor();
+EbConfig* svt_config_ctor(bool color);
 void      svt_config_dtor(EbConfig* app_cfg);
 
-EbErrorType     enc_channel_ctor(EncChannel* c);
+EbErrorType     enc_channel_ctor(EncChannel* c, bool color);
 void            enc_channel_dctor(EncChannel* c);
 EbErrorType     read_command_line(int32_t argc, char* const argv[], EncChannel* channel);
-int             get_version(int argc, char* const argv[]);
+int             get_version(int argc, char* const argv[], bool color);
 extern uint32_t get_help(int32_t argc, char* const argv[]);
 extern uint32_t get_color_help(int32_t argc, char* const argv[]);
 uint32_t        get_passes(int32_t argc, char* const argv[], EncPass enc_pass[MAX_ENC_PASS]);

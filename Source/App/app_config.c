@@ -90,6 +90,10 @@
 #define LEVEL_TOKEN "--level"
 #define FILM_GRAIN_TOKEN "--film-grain"
 #define FILM_GRAIN_DENOISE_APPLY_TOKEN "--film-grain-denoise"
+#define NOISE_TOKEN "--noise"
+#define NOISE_CHROMA_TOKEN "--noise-chroma"
+#define NOISE_CHROMA_FROM_LUMA_TOKEN "--noise-chroma-from-luma"
+#define NOISE_SIZE_TOKEN "--noise-size"
 #define INTRA_REFRESH_TYPE_TOKEN "--irefresh-type" // no Eval
 #define CDEF_ENABLE_TOKEN "--enable-cdef"
 #define SCREEN_CONTENT_TOKEN "--scm"
@@ -180,6 +184,12 @@
 #define MASTERING_DISPLAY_TOKEN "--mastering-display"
 #define CONTENT_LIGHT_LEVEL_TOKEN "--content-light"
 #define FGS_TABLE_TOKEN "--fgs-table"
+#ifdef LIBDOVI_FOUND
+#define DOLBY_VISION_RPU_TOKEN "--dolby-vision-rpu"
+#endif
+#ifdef LIBHDR10PLUS_RS_FOUND
+#define HDR10PLUS_JSON_TOKEN "--hdr10plus-json"
+#endif
 
 #define SFRAME_DIST_TOKEN "--sframe-dist"
 #define SFRAME_MODE_TOKEN "--sframe-mode"
@@ -213,6 +223,16 @@
 #define AC_BIAS_TOKEN "--ac-bias"
 #define HBD_MDS_TOKEN "--hbd-mds"
 #define ENABLE_INTRABC_TOKEN "--enable-intrabc"
+/* --- svt-av1-hdr fork tokens --- */
+#define NOISE_NORM_STRENGTH_TOKEN "--noise-norm-strength"
+#define KF_TF_STRENGTH_FILTER_TOKEN "--kf-tf-strength"
+#define ALT_LAMBDA_FACTORS_TOKEN "--alt-lambda-factors"
+#define SHARP_TX_TOKEN "--sharp-tx"
+#define ALT_SSIM_TUNING_TOKEN "--alt-ssim-tuning"
+#define TX_BIAS_TOKEN "--tx-bias"
+#define COMPLEX_HVS_TOKEN "--complex-hvs"
+#define NOISE_ADAPTIVE_FILTERING_TOKEN "--noise-adaptive-filtering"
+#define CDEF_SCALING_TOKEN "--cdef-scaling"
 
 static EbErrorType validate_error(EbErrorType err, const char* token, const char* value) {
     switch (err) {
@@ -464,6 +484,37 @@ static EbErrorType set_cfg_fgs_table_path(EbConfig* cfg, const char* token, cons
     return str_to_str(value, &cfg->fgs_table_path, token);
 }
 #endif
+#ifdef LIBDOVI_FOUND
+static EbErrorType set_cfg_dovi_rpu(EbConfig* cfg, const char* token, const char* value) {
+    printf("Svt[info]: Parsing Dolby Vision RPU file...\n");
+    const DoviRpuOpaqueList* rpus = dovi_parse_rpu_bin_file(value);
+    if (rpus->error) {
+        fprintf(stderr, "%s\n", rpus->error);
+        dovi_rpu_list_free(rpus);
+        return validate_error(EB_ErrorBadParameter, token, value);
+    }
+    printf("Svt[info]: Loaded %zu DoVi RPUs\n", rpus->len);
+    cfg->dovi_rpus = rpus;
+    return EB_ErrorNone;
+}
+#endif
+
+#ifdef LIBHDR10PLUS_RS_FOUND
+static EbErrorType set_cfg_hdr10plus_json(EbConfig* cfg, const char* token, const char* value) {
+    printf("Svt[info]: Parsing HDR10+ JSON file...\n");
+    Hdr10PlusRsJsonOpaque* hdr10plus_json = hdr10plus_rs_parse_json(value);
+    const char*            error          = hdr10plus_rs_json_get_error(hdr10plus_json);
+    if (error) {
+        fprintf(stderr, "%s\n", error);
+        hdr10plus_rs_json_free(hdr10plus_json);
+        return validate_error(EB_ErrorBadParameter, token, value);
+    }
+    printf("Svt[info]: Loaded HDR10+ JSON file\n");
+    cfg->hdr10plus_json = hdr10plus_json;
+    return EB_ErrorNone;
+}
+#endif
+
 static EbErrorType set_two_pass_stats(EbConfig* cfg, const char* token, const char* value) {
     return str_to_str(value, (char**)&cfg->stats, token);
 }
@@ -732,8 +783,8 @@ ConfigDescription config_entry_options[] = {
      "Do not print out progress, default is 0 [1: `" PROGRESS_TOKEN " 0`, 0: `" PROGRESS_TOKEN " 1`]"},
 
     {PRESET_TOKEN,
-     "Encoder preset, presets < 0 are for debugging. Higher presets means faster encodes, but with "
-     "a quality tradeoff, default is 8 [-1-13]"},
+     "Encoder preset, presets < 0 are for research purposes. Higher presets means faster encodes, but with "
+     "a quality tradeoff, default is 4 [-3-13]"},
 
     {SVTAV1_PARAMS, "colon separated list of key=value pairs of parameters with keys based on config file options"},
 
@@ -772,7 +823,7 @@ ConfigDescription config_entry_global_options[] = {
      "2.0-7.3]"},
     {FRAME_RATE_NUMERATOR_TOKEN, "Input video frame rate numerator, default is 60000 [0-2^32-1]"},
     {FRAME_RATE_DENOMINATOR_TOKEN, "Input video frame rate denominator, default is 1000 [0-2^32-1]"},
-    {INPUT_DEPTH_TOKEN, "Input video file and output bitstream bit-depth, default is 8 [8, 10]"},
+    {INPUT_DEPTH_TOKEN, "Input video file and output bitstream bit-depth, default is 10 [8, 10]"},
     // Latency
     {INJECTOR_TOKEN, "Inject pictures to the library at defined frame rate, default is 0 [0-1]"},
     {INJECTOR_FRAMERATE_TOKEN, "Set injector frame rate, only applicable with `--inj 1`, default is 60 [0-240]"},
@@ -869,19 +920,19 @@ ConfigDescription config_entry_rc[] = {
     {VBR_MAX_SECTION_PCT_TOKEN,
      "GOP max bitrate (expressed as a percentage of the target rate), default is 2000 [0-10000]"},
 #if CONFIG_ENABLE_QUANT_MATRIX
-    {ENABLE_QM_TOKEN, "Enable quantisation matrices, default is 0 [0-1]"},
-    {MIN_QM_LEVEL_TOKEN, "Min quant matrix flatness, default is 8 [0-15]"},
-    {MAX_QM_LEVEL_TOKEN, "Max quant matrix flatness, default is 15 [0-15]"},
+    {ENABLE_QM_TOKEN, "Enable quantisation matrices, default is 1 [0-1]"},
+    {MIN_QM_LEVEL_TOKEN, "Min quant matrix flatness, default is 6 [0-15]"},
+    {MAX_QM_LEVEL_TOKEN, "Max quant matrix flatness, default is 10 [0-15]"},
     {MIN_CHROMA_QM_LEVEL_TOKEN, "Min chroma quant matrix flatness, default is 8 [0-15]"},
     {MAX_CHROMA_QM_LEVEL_TOKEN, "Max chroma quant matrix flatness, default is 15 [0-15]"},
 #endif
     {ROI_MAP_FILE_TOKEN, "Enable Region Of Interest and specify a picture based QP Offset map file, default is off"},
     // TF Strength
-    {TF_STRENGTH_FILTER_TOKEN, "Adjust temporal filtering strength, default is 3 [0-4]"},
+    {TF_STRENGTH_FILTER_TOKEN, "Adjust temporal filtering strength, default is 1 [0-4]"},
     // Frame-level luminance-based QP bias
     {LUMINANCE_QP_BIAS_TOKEN, "Adjusts a frame's QP based on its average luma value, default is 0 [0-100]"},
     // Sharpness
-    {SHARPNESS_TOKEN, "Bias towards decreased/increased sharpness, default is 0 [-7 to 7]"},
+    {SHARPNESS_TOKEN, "Bias towards decreased/increased sharpness, default is 1 [-7 to 7]"},
     // Termination
     {NULL, NULL}};
 
@@ -899,7 +950,7 @@ ConfigDescription config_entry_2p[] = {
 
 ConfigDescription config_entry_intra_refresh[] = {
     {KEYINT_TOKEN,
-     "GOP size (frames), default is -2 [-2: ~5 seconds, -1: \"infinite\" and only applicable for "
+     "GOP size (frames), default is -2 [-2: ~10 seconds - up to 305 frames), -1: \"infinite\" and only applicable for "
      "CRF, 0: same as -1]"},
     {INTRA_REFRESH_TYPE_TOKEN, "Intra refresh type, default is 2 [1: FWD Frame (Open GOP), 2: KEY Frame (Closed GOP)]"},
     {SCENE_CHANGE_DETECTION_TOKEN, "Scene change detection control, default is 0 [0-1]"},
@@ -946,7 +997,7 @@ ConfigDescription config_entry_specific[] = {
     // --- end: ALTREF_FILTERING_SUPPORT
     {TUNE_TOKEN,
      "Optimize the encoding process for different desired outcomes [0 = VQ, 1 = PSNR, 2 = SSIM, 3 = IQ (Image "
-     "Quality), 4 = MS_SSIM (MS_SSIM and SSIMULACRA2 optimized mode), 5 = VMAF], default is 1 [0-5]"},
+     "Quality), 4 = MS_SSIM (MS_SSIM and SSIMULACRA2 optimized mode), 5 = VMAF, 6 = Film Grain], default is 1 [0-6]"},
     // MD Parameters
     {SCREEN_CONTENT_TOKEN,
      "Set screen content detection level, default is 2 [0: off, 1: on, 2: content adaptive, 3: content adaptive "
@@ -961,6 +1012,22 @@ ConfigDescription config_entry_specific[] = {
      "still in frame header, 1: level of denoising is set by the film-grain parameter]"},
 
     {FGS_TABLE_TOKEN, "Set the film grain model table path"},
+
+    {NOISE_TOKEN,
+     "Generate noise table for film grain. 50 is roughly equivalent to `--film-grain 50`, default is 0 [0: off, 1-200: "
+     "strength value]"},
+
+    {NOISE_CHROMA_TOKEN,
+     "Chroma noise with strength based on `--noise` setting (-1) or set its strength independently (0-200), default is "
+     "-1 [-1: ~60% of luma, 0: off, 1-200: strength value]"},
+
+    {NOISE_CHROMA_FROM_LUMA_TOKEN,
+     "Apply noise to chroma planes based on the luma plane, default is 0 [0: off, 1: on]"},
+
+    {NOISE_SIZE_TOKEN,
+     "Set size of noise grain. Higher value results in a larger-looking noise, default is -1 [-1: auto, 0-13: set "
+     "grain size]"},
+
 #endif
     // --- start: SUPER-RESOLUTION SUPPORT
     {SUPERRES_MODE_INPUT,
@@ -1027,18 +1094,24 @@ ConfigDescription config_entry_color_description[] = {
 
     {CONTENT_LIGHT_LEVEL_TOKEN,
      "Set content light level in the format of \"max_cll,max_fall\", refer to the user guide Appendix A.2"},
-
+// Dolby Vision RPU
+#ifdef LIBDOVI_FOUND
+    {DOLBY_VISION_RPU_TOKEN, "Set the Dolby Vision RPU path"},
+#endif
+#ifdef LIBHDR10PLUS_RS_FOUND
+    {HDR10PLUS_JSON_TOKEN, "Set the HDR10+ JSON file path"},
+#endif
     // Termination
     {NULL, NULL}};
 
 ConfigDescription config_entry_psychovisual[] = {
     // Variance Boost
-    {ENABLE_VARIANCE_BOOST_TOKEN, "Enable Variance Boost, default is 0 [0-1]"},
+    {ENABLE_VARIANCE_BOOST_TOKEN, "Enable Variance Boost, default is 1 [0-1]"},
     {VARIANCE_BOOST_STRENGTH_TOKEN, "Variance Boost strength, default is 2 [1-4]"},
     {VARIANCE_OCTILE_TOKEN, "Octile for Variance Boost, default is 5 [1-8]"},
-    {VARIANCE_BOOST_CURVE_TOKEN, "Curve for Variance Boost, default is 0 [0-2]"},
+    {VARIANCE_BOOST_CURVE_TOKEN, "Curve for Variance Boost, default is 0 [0-3]"},
     // QP scale compress
-    {QP_SCALE_COMPRESS_STRENGTH_TOKEN, "QP scale compress strength, default is 0 [0-3]"},
+    {QP_SCALE_COMPRESS_STRENGTH_TOKEN, "QP scale compress strength, default is 1.0 [0.0-8.0]"},
     // Adaptive film grain
     {ADAPTIVE_FILM_GRAIN_TOKEN, "Adapts film grain blocksize based on video resolution, default is 1 [0-1]"},
     // Max TX size
@@ -1048,6 +1121,9 @@ ConfigDescription config_entry_psychovisual[] = {
     //HBD-MDS
     {HBD_MDS_TOKEN,
      "High Bit-Depth Mode Decision, default is -1 [-1: preset-determined, 0 = 8-bit, 1 = 10-bit, 2 = hybrid 8/10-bit]"},
+
+    /* --- svt-av1-hdr fork --- */
+
     // Termination
     {NULL, NULL}};
 
@@ -1186,6 +1262,13 @@ ConfigEntry config_entry[] = {
     {FILM_GRAIN_TOKEN, "FilmGrain", set_cfg_generic_token},
     {FILM_GRAIN_DENOISE_APPLY_TOKEN, "FilmGrainDenoise", set_cfg_generic_token},
     {FGS_TABLE_TOKEN, "FilmGrainTable", set_cfg_fgs_table_path},
+    {NOISE_TOKEN, "Noise", set_cfg_generic_token},
+    {NOISE_CHROMA_TOKEN, "NoiseChroma", set_cfg_generic_token},
+    {NOISE_CHROMA_FROM_LUMA_TOKEN, "NoiseChromaFromLuma", set_cfg_generic_token},
+    {NOISE_SIZE_TOKEN, "NoiseSize", set_cfg_generic_token},
+#endif
+#ifdef LIBHDR10PLUS_RS_FOUND
+    {HDR10PLUS_JSON_TOKEN, "Hdr10PlusJson", set_cfg_hdr10plus_json},
 #endif
 
     //   Super-resolution support
@@ -1218,6 +1301,9 @@ ConfigEntry config_entry[] = {
     {CHROMA_SAMPLE_POSITION_TOKEN, "ChromaSamplePosition", set_cfg_generic_token},
     {MASTERING_DISPLAY_TOKEN, "MasteringDisplay", set_cfg_generic_token},
     {CONTENT_LIGHT_LEVEL_TOKEN, "ContentLightLevel", set_cfg_generic_token},
+#ifdef LIBDOVI_FOUND
+    {DOLBY_VISION_RPU_TOKEN, "DolbyVisionRpu", set_cfg_dovi_rpu},
+#endif
 
 #if CONFIG_ENABLE_QUANT_MATRIX
     // QM
@@ -1266,13 +1352,41 @@ ConfigEntry config_entry[] = {
     // HBD MDS
     {HBD_MDS_TOKEN, "HBDMDS", set_cfg_generic_token},
 
+
+    /* --- svt-av1-hdr fork --- */
+    // Noise normalization strength
+    {NOISE_NORM_STRENGTH_TOKEN, "NoiseNormStrength", set_cfg_generic_token},
+
+    //Keyframe temporal filtering strength
+    {KF_TF_STRENGTH_FILTER_TOKEN, "KeyframeTemporalFilteringStrength", set_cfg_generic_token},
+
+    // Alt lambda factors
+    {ALT_LAMBDA_FACTORS_TOKEN, "AltLambdaFactors", set_cfg_generic_token},
+
+    // Sharp TX
+    {SHARP_TX_TOKEN, "SharpTX", set_cfg_generic_token},
+
+    // Alternative SSIM tuning
+    {ALT_SSIM_TUNING_TOKEN, "AltSSIMTuning", set_cfg_generic_token},
+
+    // TX bias
+    {TX_BIAS_TOKEN, "TxBias", set_cfg_generic_token},
+
+    // Complex HVS
+    {COMPLEX_HVS_TOKEN, "ComplexHVS", set_cfg_generic_token},
+
+    // Noise adaptive filtering
+    {NOISE_ADAPTIVE_FILTERING_TOKEN, "NoiseAdaptiveFiltering", set_cfg_generic_token},
+
+    // CDEF scaling
+    {CDEF_SCALING_TOKEN, "CDEFScaling", set_cfg_generic_token},
     // Termination
     {NULL, NULL, NULL}};
 
 /**********************************
  * Constructor
  **********************************/
-EbConfig* svt_config_ctor() {
+EbConfig* svt_config_ctor(bool color) {
     EbConfig* app_cfg = (EbConfig*)calloc(1, sizeof(EbConfig));
     if (!app_cfg) {
         return NULL;
@@ -1284,6 +1398,13 @@ EbConfig* svt_config_ctor() {
     app_cfg->roi_map_file        = NULL;
     app_cfg->fgs_table_path      = NULL;
     app_cfg->mmap.allow          = true;
+#ifdef LIBDOVI_FOUND
+    app_cfg->dovi_rpus = NULL;
+#endif
+#ifdef LIBHDR10PLUS_RS_FOUND
+    app_cfg->hdr10plus_json = NULL;
+#endif
+    app_cfg->color = color;
 
     return app_cfg;
 }
@@ -1343,6 +1464,19 @@ void svt_config_dtor(EbConfig* app_cfg) {
         app_cfg->roi_map_file = NULL;
     }
 
+#ifdef LIBDOVI_FOUND
+    if (app_cfg->dovi_rpus) {
+        dovi_rpu_list_free(app_cfg->dovi_rpus);
+        app_cfg->dovi_rpus = NULL;
+    }
+#endif
+#ifdef LIBHDR10PLUS_RS_FOUND
+    if (app_cfg->hdr10plus_json) {
+        hdr10plus_rs_json_free(app_cfg->hdr10plus_json);
+        app_cfg->hdr10plus_json = NULL;
+    }
+#endif
+
     if (app_cfg->fgs_table_path) {
         free(app_cfg->fgs_table_path);
         app_cfg->fgs_table_path = NULL;
@@ -1359,8 +1493,8 @@ void svt_config_dtor(EbConfig* app_cfg) {
     return;
 }
 
-EbErrorType enc_channel_ctor(EncChannel* c) {
-    c->app_cfg = svt_config_ctor();
+EbErrorType enc_channel_ctor(EncChannel* c, bool color) {
+    c->app_cfg = svt_config_ctor(color);
     if (!c->app_cfg) {
         return EB_ErrorInsufficientResources;
     }
@@ -1666,8 +1800,8 @@ static EbErrorType app_verify_config(EbConfig* app_cfg) {
         return_error = EB_ErrorBadParameter;
     }
 
-    if (app_cfg->injector_frame_rate > 240 && app_cfg->injector) {
-        fprintf(app_cfg->error_log_file, "Error: The maximum allowed injector_frame_rate is 240 fps\n");
+    if (app_cfg->injector_frame_rate > 480 && app_cfg->injector) {
+        fprintf(app_cfg->error_log_file, "Error: The maximum allowed injector_frame_rate is 480 fps\n");
         return_error = EB_ErrorBadParameter;
     }
     // Check that the injector frame_rate is non-zero
@@ -1680,8 +1814,8 @@ static EbErrorType app_verify_config(EbConfig* app_cfg) {
                 "Error: The frame_rate_numerator and frame_rate_denominator should be "
                 "greater than 0\n");
         return_error = EB_ErrorBadParameter;
-    } else if (app_cfg->config.frame_rate_numerator / app_cfg->config.frame_rate_denominator > 240) {
-        fprintf(app_cfg->error_log_file, "Error: The maximum allowed frame_rate is 240 fps\n");
+    } else if (app_cfg->config.frame_rate_numerator / app_cfg->config.frame_rate_denominator > 480) {
+        fprintf(app_cfg->error_log_file, "Error: The maximum allowed frame_rate is 480 fps\n");
         return_error = EB_ErrorBadParameter;
     }
 
@@ -1757,7 +1891,7 @@ static bool check_long(const ConfigDescription* cfg_entry, const ConfigDescripti
 }
 
 static void print_options(const char* title, const ConfigDescription* options) {
-    printf("\n%s:\n", title);
+    printf("\n\x1b[1;4m%s\x1b[0m:\n", title);
 
     for (const ConfigDescription* index = options; index->token; ++index) {
         // this only works if short and long token are one after another
@@ -1770,7 +1904,7 @@ static void print_options(const char* title, const ConfigDescription* options) {
     }
 }
 
-int get_version(int argc, char* const argv[]) {
+int get_version(int argc, char* const argv[], bool color) {
 #ifdef NDEBUG
 #define BUILD_TYPE_STRING "release"
 #else
@@ -1779,7 +1913,24 @@ int get_version(int argc, char* const argv[]) {
     if (find_token(argc, argv, VERSION_TOKEN, NULL)) {
         return 0;
     }
-    printf("SVT-AV1 %s (" BUILD_TYPE_STRING ")\n", svt_av1_get_version());
+    printf("SVT-AV1-HDR %s (" BUILD_TYPE_STRING ")\n", svt_av1_get_version());
+#if defined(_WIN64) || defined(_MSC_VER) || defined(_WIN32)
+    printf("HDR Release: %s\n", svt_hdr_get_version());
+#else
+    if (strcmp(svt_hdr_get_version(), "N/A")) {
+        if (color) {
+            printf("HDR Release: \x1b[32m%s\x1b[0m\n", svt_hdr_get_version());
+        } else {
+            printf("HDR Release: %s\n", svt_hdr_get_version());
+        }
+    } else {
+        if (color) {
+            printf("HDR Release: \x1b[38;5;248m%s\x1b[0m\n", svt_hdr_get_version());
+        } else {
+            printf("HDR Release: %s\n", svt_hdr_get_version());
+        }
+    }
+#endif
     return 1;
 #undef BUILD_TYPE_STRING
 }
@@ -1791,9 +1942,9 @@ uint32_t get_help(int32_t argc, char* const argv[]) {
     }
 
     printf(
-        "Usage: SvtAv1EncApp <options> <-b dst_filename> -i src_filename\n"
+        "\x1b[1;4mUsage\x1b[0m: SvtAv1EncApp <options> <-b dst_filename> -i src_filename\n"
         "\n"
-        "Examples:\n"
+        "\x1b[1;4mExamples\x1b[0m:\n"
         "Multi-pass encode (VBR):\n"
         "    SvtAv1EncApp <--stats svtav1_2pass.log> --passes 2 --rc 1 --tbr 1000 -b dst_filename "
         "-i src_filename\n"
@@ -2042,8 +2193,8 @@ uint32_t get_passes(int32_t argc, char* const argv[], EncPass enc_pass[MAX_ENC_P
     }
     if (find_token(argc, argv, PRESET_TOKEN, config_string) == 0) {
         enc_mode = strtol(config_string, NULL, 0);
-        if (enc_mode > MAX_ENC_PRESET || enc_mode < -1) {
-            fprintf(stderr, "Error: EncoderMode must be in the range of [-1-%d]\n", MAX_ENC_PRESET);
+        if (enc_mode > MAX_ENC_PRESET || enc_mode < -3) {
+            fprintf(stderr, "Error: EncoderMode must be in the range of [-3-%d]\n", MAX_ENC_PRESET);
             return 0;
         }
     }

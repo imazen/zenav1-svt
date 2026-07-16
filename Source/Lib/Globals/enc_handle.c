@@ -55,6 +55,7 @@
 #include "rc_results.h"
 #include "definitions.h"
 #include "metadata_handle.h"
+#include "noise_generation.h"
 
 #include "pack_unpack_c.h"
 #include "enc_mode_config.h"
@@ -1361,6 +1362,14 @@ EB_API EbErrorType svt_av1_enc_init(EbComponentType* svt_enc_component) {
         input_data.variance_octile     = scs->static_config.variance_octile;
         input_data.adaptive_film_grain = scs->static_config.adaptive_film_grain;
         input_data.hbd_mds             = scs->static_config.hbd_mds;
+    /* --- svt-av1-hdr fork --- */
+        input_data.noise_norm_strength = scs->static_config.noise_norm_strength;
+        input_data.kf_tf_strength      = scs->static_config.kf_tf_strength;
+        input_data.alt_lambda_factors  = scs->static_config.alt_lambda_factors;
+        input_data.sharp_tx            = scs->static_config.sharp_tx;
+        input_data.alt_ssim_tuning     = scs->static_config.alt_ssim_tuning;
+        input_data.tx_bias             = scs->static_config.tx_bias;
+        input_data.complex_hvs         = scs->static_config.complex_hvs;
         input_data.static_config       = scs->static_config;
         input_data.allintra            = scs->allintra;
         input_data.use_flat_ipp        = scs->static_config.rtc && scs->static_config.hierarchical_levels == 0;
@@ -2359,8 +2368,43 @@ EB_API EbErrorType svt_av1_enc_deinit_handle(EbComponentType* svt_enc_component)
     return EB_ErrorInvalidComponent;
 }
 
-// Sets the default intra period the closest possible to 1 second without breaking the minigop
-static int32_t compute_default_intra_period(SequenceControlSet* scs) {
+// Sets the default intra period the closest possible to 10 seconds without breaking the minigop
+static int32_t compute_default_intra_period_fork(SequenceControlSet* scs) {
+    EbSvtAv1EncConfiguration* config = &scs->static_config;
+
+    double  fps           = scs->frame_rate;
+    int32_t mini_gop_size = (1 << (config->hierarchical_levels));
+
+    // If mini_gop_size = 32, pretend that the minigop size is 16 instead
+    // The calculated intra period will result in either one of these outcomes:
+    // - intra_period is mod 16: every minigop will be 32 except the very last one (i.e. 16)
+    // - intra_period is mod 32: every minigop will be 32 including the very last one
+    if (mini_gop_size == 32) {
+        mini_gop_size = 16;
+    }
+
+    /* Use a 10-sec GOP by default (SVT-AV1-HDR) */
+    int32_t intra_period = (((int)(fps * 10 + mini_gop_size - 1) / mini_gop_size) * (mini_gop_size));
+
+    // Cap intra period to the nearest one that has at least 300 frames that doesn't break the minigop
+    // (to avoid gops that are too big and could cause seeking issues with some players)
+    if (intra_period > 300) {
+        if (mini_gop_size >= 8) {
+            intra_period = 304;
+        } else {
+            // if mini_gop_size <= 4, 300 will result in complete minigops
+            intra_period = 300;
+        }
+    }
+
+    if (config->intra_refresh_type == 1) {
+        intra_period -= 1;
+    }
+
+    return intra_period;
+}
+
+static int32_t compute_default_intra_period_mainline(SequenceControlSet* scs) {
     EbSvtAv1EncConfiguration* config = &scs->static_config;
 
     double  fps           = scs->frame_rate;
@@ -2373,6 +2417,16 @@ static int32_t compute_default_intra_period(SequenceControlSet* scs) {
     }
 
     return intra_period;
+}
+
+/* [SVT_HDR_MODE] mainline uses a 5-sec default GOP; the svt-av1-hdr fork uses a
+   10-sec GOP (capped near 300 frames) and pretends minigop 32 is 16. */
+static int32_t compute_default_intra_period(SequenceControlSet* scs) {
+#if SVT_HDR_MODE
+    return compute_default_intra_period_fork(scs);
+#else
+    return compute_default_intra_period_mainline(scs);
+#endif
 }
 
 /*
@@ -3222,7 +3276,8 @@ void tf_controls(SequenceControlSet* scs, uint8_t tf_level) {
 static void derive_vq_params(SequenceControlSet* scs) {
     VqCtrls* vq_ctrl = &scs->vq_ctrls;
 
-    if (scs->static_config.tune == TUNE_VQ) {
+    if (scs->static_config.tune == TUNE_VQ || scs->static_config.tune == TUNE_FILM_GRAIN ||
+        (scs->static_config.alt_ssim_tuning && scs->static_config.tune == TUNE_SSIM)) {
         // Sharpness
         vq_ctrl->sharpness_ctrls.scene_transition = 1;
         vq_ctrl->sharpness_ctrls.tf               = 1;
@@ -3241,6 +3296,31 @@ static void derive_vq_params(SequenceControlSet* scs) {
         vq_ctrl->sharpness_ctrls.restoration      = 0;
         vq_ctrl->sharpness_ctrls.rdoq             = 0;
     }
+
+    switch (scs->static_config.noise_adaptive_filtering) {
+    case 0:
+        vq_ctrl->sharpness_ctrls.cdef        = 0;
+        vq_ctrl->sharpness_ctrls.restoration = 0;
+        break;
+    case 1:
+        vq_ctrl->sharpness_ctrls.cdef        = 1;
+        vq_ctrl->sharpness_ctrls.restoration = 1;
+        break;
+    case 2:
+        // No override; honor tune defaults
+        break;
+    case 3:
+        vq_ctrl->sharpness_ctrls.cdef        = 1;
+        vq_ctrl->sharpness_ctrls.restoration = 0;
+        break;
+    case 4:
+        vq_ctrl->sharpness_ctrls.cdef        = 0;
+        vq_ctrl->sharpness_ctrls.restoration = 1;
+        break;
+    default:
+        break;
+    }
+
     // Do not use scene_transition if LD or 1st pass or middle pass
     if (scs->static_config.pred_structure != RANDOM_ACCESS || scs->static_config.pass == ENC_FIRST_PASS) {
         vq_ctrl->sharpness_ctrls.scene_transition = 0;
@@ -3977,7 +4057,7 @@ static void set_param_based_on_input(SequenceControlSet* scs) {
 
         // special conditions for higher resolutions in order to decrease memory usage for tpl_lad_mg
         if (scs->input_resolution >= INPUT_SIZE_8K_RANGE) {
-            tpl_lad_mg = 0;
+            tpl_lad_mg = MIN(1, tpl_lad_mg);
         }
         scs->tpl_lad_mg = MIN(
             2, tpl_lad_mg); // lad_mg is capped to 2 because tpl was optimised only for 1,2 and 3 mini-gops
@@ -4048,11 +4128,51 @@ static void set_param_based_on_input(SequenceControlSet* scs) {
             "Restricting transform sizes to a max of 32x32 might reduce coding efficiency at low to medium fidelity "
             "settings. Use with caution!\n");
     }
+    if (scs->static_config.alt_ssim_tuning && scs->static_config.tune != TUNE_SSIM) {
+        SVT_WARN("Alternative SSIM tuning only applies to tune 2 (SSIM)!\n");
+    }
     if (scs->static_config.intra_refresh_type == SVT_AV1_FWDKF_REFRESH && scs->static_config.hierarchical_levels != 4) {
         scs->static_config.hierarchical_levels = 4;
         SVT_WARN(
             "Fwd key frame is only supported for hierarchical levels 4 at this point. Hierarchical levels are set to "
             "4\n");
+    }
+    if (scs->static_config.noise_strength > 0) {
+        // Check if film-grain-denoise is also enabled (should be disabled if fgs_table is present)
+        if (scs->static_config.film_grain_denoise_strength > 0) {
+            SVT_WARN(
+                "Both film-grain-denoise and noise strength were specified; film-grain-denoise will be disabled.\n");
+            scs->static_config.film_grain_denoise_strength = 0;
+        }
+        // Check if fgs_table is present
+        if (scs->static_config.fgs_table) {
+            SVT_WARN(
+                "Both noise strength and fgs-table were specified; build-in noise table generation will be "
+                "disabled.\n");
+            scs->static_config.noise_strength         = 0;
+            scs->static_config.noise_strength_chroma  = -1;
+            scs->static_config.noise_chroma_from_luma = 0;
+            scs->static_config.noise_size             = -1;
+        } else {
+            if (scs->static_config.noise_strength_chroma == 0 && scs->static_config.noise_chroma_from_luma == 1) {
+                SVT_WARN("Noise chroma from luma setting has no effect when chroma noise strength is set to 0.\n");
+                scs->static_config.noise_chroma_from_luma = 0;
+            }
+            svt_av1_generate_noise_table(&scs->static_config);
+        }
+    } else {
+        if (scs->static_config.noise_strength_chroma != -1) {
+            SVT_WARN("Chroma noise strength signal is going to be ignored when noise strength level is 0.\n");
+            scs->static_config.noise_strength_chroma = -1;
+        }
+        if (scs->static_config.noise_chroma_from_luma == 1) {
+            SVT_WARN("Noise chroma from luma signal is going to be ignored when noise strength level is 0.\n");
+            scs->static_config.noise_chroma_from_luma = 0;
+        }
+        if (scs->static_config.noise_size != -1) {
+            SVT_WARN("Noise size signal is going to be ignored when noise strength level is 0.\n");
+            scs->static_config.noise_size = -1;
+        }
     }
     bool    disallow_nsq  = true;
     uint8_t allow_HVA_HVB = 0;
@@ -4389,6 +4509,10 @@ static void copy_api_from_app(SequenceControlSet* scs, EbSvtAv1EncConfiguration*
     }
     scs->seq_header.film_grain_params_present = (uint8_t)(scs->static_config.film_grain_denoise_strength > 0);
     scs->static_config.fgs_table              = config_struct->fgs_table;
+    scs->static_config.noise_strength         = config_struct->noise_strength;
+    scs->static_config.noise_strength_chroma  = config_struct->noise_strength_chroma;
+    scs->static_config.noise_chroma_from_luma = config_struct->noise_chroma_from_luma;
+    scs->static_config.noise_size             = config_struct->noise_size;
 
     // MD Parameters
     scs->enable_hbd_mode_decision = config_struct->encoder_bit_depth > 8 ? DEFAULT : 0;
@@ -4655,6 +4779,7 @@ static void copy_api_from_app(SequenceControlSet* scs, EbSvtAv1EncConfiguration*
     scs->static_config.transfer_characteristics = config_struct->transfer_characteristics;
     scs->static_config.matrix_coefficients      = config_struct->matrix_coefficients;
     scs->static_config.color_range              = config_struct->color_range;
+    scs->static_config.color_range_provided     = config_struct->color_range_provided;
     scs->static_config.chroma_sample_position   = config_struct->chroma_sample_position;
     scs->static_config.mastering_display        = config_struct->mastering_display;
     scs->static_config.content_light_level      = config_struct->content_light_level;
@@ -4733,6 +4858,34 @@ static void copy_api_from_app(SequenceControlSet* scs, EbSvtAv1EncConfiguration*
 
     // Ref-frame management: propagate caller's max-anchors hint (0 = disabled).
     scs->static_config.max_managed_refs = config_struct->max_managed_refs;
+    /* --- svt-av1-hdr fork --- */
+    // Noise normalization strength
+    scs->static_config.noise_norm_strength = config_struct->noise_norm_strength;
+    //Alt-ref keyframe temporal filtering strength
+    scs->static_config.kf_tf_strength = config_struct->kf_tf_strength;
+
+    // Alt lambda factors
+    scs->static_config.alt_lambda_factors = config_struct->alt_lambda_factors;
+
+    // Sharp TX
+    scs->static_config.sharp_tx = config_struct->sharp_tx;
+
+    // HBD-MD
+
+    // Alternative SSIM tuning
+    scs->static_config.alt_ssim_tuning = config_struct->alt_ssim_tuning;
+
+    // TX bias
+    scs->static_config.tx_bias = config_struct->tx_bias;
+
+    // Complex HVS
+    scs->static_config.complex_hvs = config_struct->complex_hvs;
+
+    // Noise adaptive filtering
+    scs->static_config.noise_adaptive_filtering = config_struct->noise_adaptive_filtering;
+
+    // CDEF scaling
+    scs->static_config.cdef_scaling = config_struct->cdef_scaling;
 
     // Override settings for Still IQ tune
     if (scs->static_config.tune == TUNE_IQ) {
@@ -4763,6 +4916,27 @@ static void copy_api_from_app(SequenceControlSet* scs, EbSvtAv1EncConfiguration*
         scs->static_config.variance_boost_curve    = 2;
     } else if (scs->static_config.tune == TUNE_VMAF) {
         SVT_WARN("Tune VMAF: a pre-processing / unsharp masking is applied\n");
+    }
+    /* --- svt-av1-hdr fork --- */
+    // Override settings for Film Grain tune (fork tune 5 -> renumbered to TUNE_FILM_GRAIN = 6 here)
+    if (scs->static_config.tune == TUNE_FILM_GRAIN) {
+        SVT_WARN("Tune: Film Grain is opinionated! Works best with 1080p, 4k and 8k content.\n");
+        SVT_WARN(
+            "Tune 5: Film Grain turns off: TF, CDEF, rest. filtering, and enables complex HVS, TX bias and strong AC "
+            "bias.\n");
+        scs->static_config.enable_tf                    = 0;
+        scs->static_config.cdef_level                   = 0;
+        scs->static_config.enable_restoration_filtering = 0;
+        scs->static_config.complex_hvs                  = 1;
+        scs->static_config.ac_bias                      = 4.0;
+        scs->static_config.tx_bias                      = 1;
+    }
+
+    // Override Variance Boost curve for PQ transfer
+    if (scs->static_config.enable_variance_boost &&
+        scs->static_config.transfer_characteristics == EB_CICP_TC_SMPTE_2084) {
+        SVT_INFO("HDR content with PQ transfer detected, switching to PQ-optimized curve\n");
+        scs->static_config.variance_boost_curve = 3;
     }
     return;
 }
@@ -5777,12 +5951,19 @@ EB_API const char* svt_av1_get_version(void) {
     return SVT_AV1_CVS_VERSION;
 }
 
+EB_API const char* svt_hdr_get_version(void) {
+    return SVT_AV1_HDR_RELEASE;
+}
+
 EB_API void svt_av1_print_version(void) {
     SVT_INFO("-------------------------------------------\n");
-    SVT_INFO("SVT [version]:\tSVT-AV1 Encoder Lib %s\n", SVT_AV1_CVS_VERSION);
+    SVT_INFO("SVT [version]:\tSVT-AV1-HDR Encoder Lib %s \"Chromedome\"\n", SVT_AV1_CVS_VERSION);
     const char* compiler =
-#if defined(__clang__)
+#if defined(__clang__) && defined(__apple_build_version__)
         __VERSION__ "\t"
+#elif defined(__clang__)
+        "Clang " CONVERT_TO_STR_COMPILE_TIME(__clang_major__) "." CONVERT_TO_STR_COMPILE_TIME(
+            __clang_minor__) "." CONVERT_TO_STR_COMPILE_TIME(__clang_patchlevel__) "\t"
 #elif defined(__GNUC__)
         "GCC " __VERSION__ "\t"
 #elif defined(_MSC_VER) && (_MSC_VER >= 1950)

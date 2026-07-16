@@ -287,9 +287,8 @@ static int crf_qindex_calc(PictureControlSet* pcs, RATE_CONTROL* rc, int qindex)
             weight = MIN(weight + 0.1, 1);
         }
 
-        double qstep_ratio = sqrt(ppcs->r0) * weight *
-            svt_av1_qp_scale_compress_weight[scs->static_config.qp_scale_compress_strength];
-        if (scs->static_config.qp_scale_compress_strength) {
+        double qstep_ratio = sqrt(ppcs->r0) * weight * SVT_QP_SCALE_WEIGHT(scs->static_config);
+        if (SVT_QP_SCALE_ON(scs->static_config)) {
             // clamp qstep_ratio so it doesn't get past the weight value
             qstep_ratio = MIN(weight, qstep_ratio);
         }
@@ -364,6 +363,7 @@ static int crf_qindex_calc(PictureControlSet* pcs, RATE_CONTROL* rc, int qindex)
     return active_best_quality;
 }
 
+#if !TUNE_CQP_CHROMA_SSIM
 /******************************************************
  * non_base_boost
  * Compute a non-base frame boost.
@@ -383,6 +383,7 @@ static int8_t non_base_boost(PictureControlSet* pcs) {
     }
     return q_boost;
 }
+#endif
 
 /******************************************************
  * cqp_qindex_calc
@@ -406,7 +407,7 @@ static int cqp_qindex_calc(PictureControlSet* pcs, int qindex) {
     if (pcs->temporal_layer_index == 0) {
         double qratio_grad = ppcs->hierarchical_levels <= 4 ? 0.3 : 0.2;
         double qstep_ratio = (0.2 + (1.0 - (double)active_worst_quality / MAXQ) * qratio_grad) *
-            qp_scale_compress_weight[scs->static_config.qp_scale_compress_strength];
+            SVT_QP_SCALE_WEIGHT(scs->static_config);
         q = scs->cqp_base_q = svt_av1_get_q_index_from_qstep_ratio(active_worst_quality, qstep_ratio, bit_depth);
     } else if (ppcs->is_ref && pcs->temporal_layer_index < ppcs->hierarchical_levels) {
         int this_height = ppcs->temporal_layer_index + 1;
@@ -544,6 +545,51 @@ void svt_av1_rc_calc_qindex_crf_cqp(PictureControlSet* pcs, SequenceControlSet* 
         chroma_qindex += scs->static_config.chroma_qindex_offsets[pcs->temporal_layer_index];
     }
 
+    /* [SVT_HDR_MODE] chroma qindex derivation. The svt-av1-hdr fork adds a TUNE_SSIM
+       branch, UNCONDITIONAL chroma boosts (general 4:2:0, PQ transfer, P3/BT.2020
+       primaries) and a +12 on the Cb delta_q. Mainline only boosts under TUNE_IQ.
+       This is the main un-gated bitstream divergence: it changes chroma delta_q on
+       every encode, which flips separate_uv_delta_q/diff_uv_delta in the headers. */
+#if SVT_HDR_MODE
+    int32_t chroma_qindex_adjustment = chroma_qindex;
+    int32_t tune2_chroma_qindex;
+
+    switch (scs->static_config.tune) {
+    case TUNE_SSIM:
+        tune2_chroma_qindex = MAX(0, chroma_qindex_adjustment - 48);
+        chroma_qindex -= CLIP3(0, 12, (int32_t)rint(pow(tune2_chroma_qindex, 1.4) / 9.0));
+        break;
+    case TUNE_IQ:
+        // Constant chroma boost with gradual ramp-down for very high qindex levels
+        chroma_qindex -= CLIP3(0, 12, (chroma_qindex_adjustment / 2) - 14);
+        break;
+    }
+
+    // Tune-independent chroma boosts
+    // Boost chroma in general (4:2:0) with ramp down
+    chroma_qindex -= CLIP3(0, 8, chroma_qindex_adjustment / 2);
+
+    // Boost chroma on PQ transfer with ramp down
+    if (scs->static_config.transfer_characteristics == EB_CICP_TC_SMPTE_2084) {
+        chroma_qindex -= CLIP3(0, 4, (chroma_qindex_adjustment / 6) - 8);
+    }
+
+    // Boost chroma on wide color (P3) primary with ramp down
+    if (scs->static_config.color_primaries == EB_CICP_CP_SMPTE_431 ||
+        scs->static_config.color_primaries == EB_CICP_CP_SMPTE_432) {
+        chroma_qindex -= CLIP3(0, 4, (chroma_qindex_adjustment / 6) - 8);
+    }
+
+    // Boost chroma on wide color (BT.2020) primary with ramp down
+    if (scs->static_config.color_primaries == EB_CICP_CP_BT_2020) {
+        chroma_qindex -= CLIP3(0, 8, (chroma_qindex_adjustment / 6) - 8);
+    }
+    chroma_qindex = clamp_qindex(scs, chroma_qindex);
+
+    // Calculate chroma delta q for Cb and Cr
+    q_params->delta_q_dc[1] = q_params->delta_q_ac[1] = CLIP3(-64, 63, chroma_qindex - new_qindex + 12);
+    q_params->delta_q_dc[2] = q_params->delta_q_ac[2] = CLIP3(-64, 63, chroma_qindex - new_qindex);
+#else /* mainline v4.2.0-rc */
     if (scs->static_config.tune == TUNE_IQ) {
         // Constant chroma boost with gradual ramp-down for very high qindex levels
         chroma_qindex -= CLIP3(0, 16, new_qindex / 2 - 14);
@@ -553,6 +599,7 @@ void svt_av1_rc_calc_qindex_crf_cqp(PictureControlSet* pcs, SequenceControlSet* 
     // Calculate chroma delta q for Cb and Cr
     q_params->delta_q_dc[1] = q_params->delta_q_ac[1] = CLIP3(-64, 63, chroma_qindex - new_qindex);
     q_params->delta_q_dc[2] = q_params->delta_q_ac[2] = CLIP3(-64, 63, chroma_qindex - new_qindex);
+#endif /* SVT_HDR_MODE */
     if (scs->static_config.tune == TUNE_VMAF) {
         const int   cfg_offset         = frame_is_intra_only(ppcs)
                       ? scs->static_config.key_frame_chroma_qindex_offset

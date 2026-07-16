@@ -18,6 +18,9 @@
 #include <string.h>
 #include <math.h>
 #include <ctype.h>
+#if defined(LIBDOVI_FOUND) || defined(LIBHDR10PLUS_RS_FOUND)
+#include "EbSvtAv1Metadata.h"
+#endif
 #include "app_context.h"
 #include "app_config.h"
 #include "EbSvtAv1ErrorCodes.h"
@@ -667,6 +670,46 @@ static EbErrorType retrieve_roi_map_event(SvtAv1RoiMap* roi_map, uint64_t pic_nu
     return EB_ErrorNone;
 }
 
+#ifdef LIBDOVI_FOUND
+static EbErrorType retrieve_dovi_rpu_for_frame(const DoviRpuOpaqueList* rpus, uint64_t pic_num,
+                                               EbBufferHeaderType* header_ptr) {
+    if (rpus == NULL) {
+        return EB_ErrorNone;
+    }
+    if (pic_num > rpus->len - 1) {
+        return EB_ErrorNone;
+    }
+    DoviRpuOpaque*  rpu         = rpus->list[pic_num];
+    const DoviData* rpu_payload = dovi_write_av1_rpu_metadata_obu_t35_complete(rpu);
+    if (svt_add_metadata(header_ptr, EB_AV1_METADATA_TYPE_ITUT_T35, rpu_payload->data, rpu_payload->len)) {
+        dovi_data_free(rpu_payload);
+        return EB_ErrorInsufficientResources;
+    }
+    dovi_data_free(rpu_payload);
+    return EB_ErrorNone;
+}
+#endif
+#ifdef LIBHDR10PLUS_RS_FOUND
+static EbErrorType retrieve_hdr10plus_payload_for_frame(Hdr10PlusRsJsonOpaque* hdr10plus_json, uint64_t pic_num,
+                                                        EbBufferHeaderType* header_ptr) {
+    if (hdr10plus_json == NULL) {
+        return EB_ErrorNone;
+    }
+
+    const Hdr10PlusRsData* payload = hdr10plus_rs_write_av1_metadata_obu_t35_complete(hdr10plus_json, pic_num);
+    if (!payload) {
+        return EB_ErrorNone;
+    }
+
+    if (svt_add_metadata(header_ptr, EB_AV1_METADATA_TYPE_ITUT_T35, payload->data, payload->len)) {
+        hdr10plus_rs_data_free(payload);
+        return EB_ErrorInsufficientResources;
+    }
+    hdr10plus_rs_data_free(payload);
+    return EB_ErrorNone;
+}
+#endif
+
 static void free_private_data_list(void* node_head) {
     while (node_head) {
         EbPrivDataNode* node = (EbPrivDataNode*)node_head;
@@ -755,6 +798,12 @@ void process_input_buffer(EncChannel* channel) {
             test_update_mg_size_info(header_ptr->pts, header_ptr);
 #endif
             retrieve_roi_map_event(app_cfg->roi_map, header_ptr->pts, header_ptr);
+#ifdef LIBDOVI_FOUND
+            retrieve_dovi_rpu_for_frame(app_cfg->dovi_rpus, header_ptr->pts, header_ptr);
+#endif
+#ifdef LIBHDR10PLUS_RS_FOUND
+            retrieve_hdr10plus_payload_for_frame(app_cfg->hdr10plus_json, header_ptr->pts, header_ptr);
+#endif
             // Send the picture
             if (svt_av1_enc_send_picture(component_handle, header_ptr) != EB_ErrorNone) {
                 return_value = APP_ExitConditionFinished;
@@ -1164,18 +1213,32 @@ void process_output_stream_buffer(EncChannel* channel, EncApp* enc_app, int32_t*
 
                 if ((int)app_cfg->frames_to_be_encoded == -1) {
                     // Encoder doesn't know how many frames are to be encoded, therefore an ETA can't be calculated
-                    fprintf(stderr,
-                            "\rEncoding: \x1b[33m%4d Frames\x1b[0m @ \x1b[32m%.2f\x1b[0m fp%c | \x1b[35m%.2f "
-                            "kb/s\x1b[0m | Size: \x1b[31m%.2f MB\x1b[0m | Time: \x1b[36m%d:%02d:%02d\x1b[0m ",
-                            *frame_count,
-                            fps >= 1.0 ? fps : fps * 60,
-                            fps >= 1.0 ? 's' : 'm',
-                            ((double)(app_cfg->performance_context.byte_count << 3) * frame_rate /
-                             (app_cfg->frames_encoded * 1000)),
-                            size,
-                            ete_hours,
-                            ete_minutes,
-                            ete_seconds);
+                    if (app_cfg->color) {
+                        fprintf(stderr,
+                                "\rEncoding: \x1b[33m%4d Frames\x1b[0m @ \x1b[32m%.2f\x1b[0m fp%c | \x1b[35m%.2f "
+                                "kb/s\x1b[0m | Size: \x1b[31m%.2f MB\x1b[0m | Time: \x1b[36m%d:%02d:%02d\x1b[0m ",
+                                *frame_count,
+                                fps >= 1.0 ? fps : fps * 60,
+                                fps >= 1.0 ? 's' : 'm',
+                                ((double)(app_cfg->performance_context.byte_count << 3) * frame_rate /
+                                 (app_cfg->frames_encoded * 1000)),
+                                size,
+                                ete_hours,
+                                ete_minutes,
+                                ete_seconds);
+                    } else {
+                        fprintf(stderr,
+                                "\rEncoding: %4d Frames @ %.2f fp%c | %.2f kb/s | Size: %.2f MB | Time: %d:%02d:%02d ",
+                                *frame_count,
+                                fps >= 1.0 ? fps : fps * 60,
+                                fps >= 1.0 ? 's' : 'm',
+                                ((double)(app_cfg->performance_context.byte_count << 3) * frame_rate /
+                                 (app_cfg->frames_encoded * 1000)),
+                                size,
+                                ete_hours,
+                                ete_minutes,
+                                ete_seconds);
+                    }
                 } else {
                     const double eta = (app_cfg->performance_context.total_encode_time / *frame_count) *
                         (app_cfg->frames_to_be_encoded - *frame_count);
@@ -1186,24 +1249,44 @@ void process_output_stream_buffer(EncChannel* channel, EncApp* enc_app, int32_t*
                     const double estsz       = size * app_cfg->frames_to_be_encoded / *frame_count;
 
                     // Encoder knows how many frames are to be encoded, therefore an ETA can be calculated
-                    fprintf(stderr,
-                            "\rEncoding: \x1b[33m%4d/%d Frames\x1b[0m @ \x1b[32m%.2f\x1b[0m fp%c | \x1b[35m%.2f "
-                            "kb/s\x1b[0m | Size: \x1b[31m%.2f MB\x1b[0m \x1b[38;5;248m[%.2f MB]\x1b[0m | Time: "
-                            "\x1b[36m%d:%02d:%02d\x1b[0m \x1b[38;5;248m[-%d:%02d:%02d]\x1b[0m ",
-                            *frame_count,
-                            (int)app_cfg->frames_to_be_encoded,
-                            fps >= 1.0 ? fps : fps * 60,
-                            fps >= 1.0 ? 's' : 'm',
-                            ((double)(app_cfg->performance_context.byte_count << 3) * frame_rate /
-                             (app_cfg->frames_encoded * 1000)),
-                            size,
-                            estsz,
-                            ete_hours,
-                            ete_minutes,
-                            ete_seconds,
-                            eta_hours,
-                            eta_minutes,
-                            eta_seconds);
+                    if (app_cfg->color) {
+                        fprintf(stderr,
+                                "\rEncoding: \x1b[33m%4d/%d Frames\x1b[0m @ \x1b[32m%.2f\x1b[0m fp%c | \x1b[35m%.2f "
+                                "kb/s\x1b[0m | Size: \x1b[31m%.2f MB\x1b[0m \x1b[38;5;248m[%.2f MB]\x1b[0m | Time: "
+                                "\x1b[36m%d:%02d:%02d\x1b[0m \x1b[38;5;248m[-%d:%02d:%02d]\x1b[0m ",
+                                *frame_count,
+                                (int)app_cfg->frames_to_be_encoded,
+                                fps >= 1.0 ? fps : fps * 60,
+                                fps >= 1.0 ? 's' : 'm',
+                                ((double)(app_cfg->performance_context.byte_count << 3) * frame_rate /
+                                 (app_cfg->frames_encoded * 1000)),
+                                size,
+                                estsz,
+                                ete_hours,
+                                ete_minutes,
+                                ete_seconds,
+                                eta_hours,
+                                eta_minutes,
+                                eta_seconds);
+                    } else {
+                        fprintf(stderr,
+                                "\rEncoding: %4d/%d Frames @ %.2f fp%c | %.2f kb/s | Size: %.2f MB [%.2f MB] | Time: "
+                                "%d:%02d:%02d [-%d:%02d:%02d] ",
+                                *frame_count,
+                                (int)app_cfg->frames_to_be_encoded,
+                                fps >= 1.0 ? fps : fps * 60,
+                                fps >= 1.0 ? 's' : 'm',
+                                ((double)(app_cfg->performance_context.byte_count << 3) * frame_rate /
+                                 (app_cfg->frames_encoded * 1000)),
+                                size,
+                                estsz,
+                                ete_hours,
+                                ete_minutes,
+                                ete_seconds,
+                                eta_hours,
+                                eta_minutes,
+                                eta_seconds);
+                    }
                 }
             } break;
             default:

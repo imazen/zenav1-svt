@@ -769,7 +769,7 @@ void svt_av1_warp_affine_c(const int32_t* mat, const uint8_t* ref, int width, in
 void ref_warp_affine(const int32_t* mat, const uint8_t* ref, int32_t width, int32_t height, int32_t stride,
                      uint8_t* pred, int32_t p_col, int32_t p_row, int32_t p_width, int32_t p_height, int32_t p_stride,
                      int16_t alpha, int16_t beta, int16_t gamma, int16_t delta) {
-    ConvolveParams cp = get_conv_params(0, 0, 0, 8); /* non-compound, 8-bit */
+    ConvolveParams cp = get_conv_params(0, 8); /* non-compound, 8-bit (v4.2.0-final 2-arg signature) */
     svt_av1_warp_affine_c(mat, ref, width, height, stride, pred, p_col, p_row, p_width, p_height, p_stride, 0, 0, &cp,
                           alpha, beta, gamma, delta);
 }
@@ -787,7 +787,7 @@ void ref_convolve_2d_scale(const uint8_t* src, int32_t src_stride, uint8_t* dst,
                            int32_t h, int32_t subpel_x_qn, int32_t x_step_qn, int32_t subpel_y_qn, int32_t y_step_qn) {
     const InterpFilterParams* fx = &av1_interp_filter_params_list[EIGHTTAP_REGULAR];
     const InterpFilterParams* fy = &av1_interp_filter_params_list[EIGHTTAP_REGULAR];
-    ConvolveParams            cp = get_conv_params(0, 0, 0, 8);
+    ConvolveParams            cp = get_conv_params(0, 8); /* v4.2.0-final 2-arg signature */
     svt_av1_convolve_2d_scale_c(src, src_stride, dst, dst_stride, w, h, fx, fy, subpel_x_qn, x_step_qn, subpel_y_qn,
                                 y_step_qn, &cp);
 }
