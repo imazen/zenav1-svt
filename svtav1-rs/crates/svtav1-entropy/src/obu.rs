@@ -125,6 +125,11 @@ impl ColorDescription {
 /// convenience wrappers' historical behavior.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SeqTools {
+    /// SH `separate_uv_delta_q` (spec 5.5.2 color_config): the svt-av1-hdr
+    /// fork ALWAYS signals 1 (its chroma-qindex path writes distinct U/V
+    /// deltas); mainline derives it from the chroma offsets (0 in this
+    /// port's envelope). When true, the FH may carry per-plane deltas.
+    pub separate_uv_delta_q: bool,
     /// SH `enable_filter_intra` (spec 5.5.1): gates the per-block
     /// `use_filter_intra` symbol for eligible intra blocks
     /// ([`crate::context::write_use_filter_intra`]).
@@ -587,7 +592,7 @@ fn write_sequence_header_inner(
         wb.write_bit(color.full_range); // color_range
         // seq_profile 0: subsampling_x = subsampling_y = 1 implied, no bits.
         wb.write_bits(0, 2); // chroma_sample_position = 0 (CSP_UNKNOWN)
-        wb.write_bit(false); // separate_uv_delta_q = 0
+        wb.write_bit(tools.separate_uv_delta_q); // separate_uv_delta_q (fork: 1)
     }
 
     wb.write_bit(false); // film_grain_params_present = 0
@@ -660,6 +665,7 @@ pub fn write_key_frame_header_full(
         },
         &LrSignal::none(enable_restoration),
         ScSignal::default(),
+        None, // chroma_q: mainline zero-delta bit pattern
     )
 }
 
@@ -726,6 +732,7 @@ pub fn write_key_frame_header_full_lr(
     cdef: &CdefSignal,
     lr: &LrSignal,
     sc: ScSignal,
+    chroma_q: Option<[i8; 4]>,
 ) -> Vec<u8> {
     let mut wb = key_frame_header_bits_lr(
         width,
@@ -738,6 +745,7 @@ pub fn write_key_frame_header_full_lr(
         cdef,
         lr,
         sc,
+        chroma_q,
     );
     // This header is embedded in an OBU_FRAME: the spec requires
     // byte_alignment() (zero bits only) between frame_header and tile_group —
@@ -778,6 +786,7 @@ fn key_frame_header_bits(
         },
         &LrSignal::none(enable_restoration),
         ScSignal::default(),
+        None, // chroma_q: mainline zero-delta bit pattern
     )
 }
 
@@ -794,6 +803,7 @@ fn key_frame_header_bits_lr(
     cdef: &CdefSignal,
     lr: &LrSignal,
     sc: ScSignal,
+    chroma_q: Option<[i8; 4]>,
 ) -> BitWriter {
     let mut wb = BitWriter::new();
 
@@ -863,8 +873,29 @@ fn key_frame_header_bits_lr(
         // diff_uv_delta==0 the V plane reuses the U deltas — no V bits.
         // (libaom decodeframe.c:1823-1834; C write path writes the same
         // two zero delta_coded bits for u_dc/u_ac.)
-        wb.write_bit(false); // DeltaQUDc: delta_coded = 0
-        wb.write_bit(false); // DeltaQUAc: delta_coded = 0
+        // With SH separate_uv_delta_q=1 the decoder first reads
+        // diff_uv_delta, then U and (if diff) V deltas. delta_q syntax
+        // (spec 5.9.13 read_delta_q): 1-bit delta_coded, then su(1+6)
+        // = 7-bit two's-complement inv_signed_literal.
+        match chroma_q {
+            None => {
+                wb.write_bit(false); // DeltaQUDc: delta_coded = 0
+                wb.write_bit(false); // DeltaQUAc: delta_coded = 0
+            }
+            Some([u_dc, u_ac, v_dc, v_ac]) => {
+                // Requires the SH to have signaled separate_uv_delta_q=1
+                // (the fork always does): diff_uv_delta = 1.
+                wb.write_bit(true); // diff_uv_delta
+                for d in [u_dc, u_ac, v_dc, v_ac] {
+                    if d == 0 {
+                        wb.write_bit(false); // delta_coded = 0
+                    } else {
+                        wb.write_bit(true); // delta_coded = 1
+                        wb.write_bits((d as i32 & 0x7f) as u32, 7); // su(1+6)
+                    }
+                }
+            }
+        }
     }
     // NumPlanes=1 (mono_chrome): no DeltaQUDc, DeltaQUAc
     wb.write_bit(false); // using_qmatrix = 0
@@ -1398,6 +1429,7 @@ mod tests {
             false,
             30.0,
             SeqTools {
+        separate_uv_delta_q: false,
                 enable_filter_intra: true,
                 enable_intra_edge_filter: false,
                 enable_restoration: true,

@@ -11,6 +11,7 @@ pub mod encode_loop;
 pub mod film_grain;
 pub mod hdr_mode;
 pub mod var_boost;
+pub mod chroma_q;
 pub mod intra_edge;
 pub mod leaf_funnel;
 pub mod mode_decision;
