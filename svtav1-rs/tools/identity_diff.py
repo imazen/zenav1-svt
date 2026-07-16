@@ -455,6 +455,131 @@ def diff_traces(c_ops, r_ops, ctx):
     return div, rng_only, hist
 
 
+# ----------------------------------------------------------------------------
+# Op-class annotation (heuristic, first-divergent-op only)
+# ----------------------------------------------------------------------------
+#
+# write_modes_sb() emits the per-superblock loop-restoration syntax (a
+# restore-type flag per active plane, then -- if set -- the Wiener/SGR filter
+# tap values as a run of equiprobable literal bits) BEFORE the SB's partition
+# symbol. So LR syntax sits at the very front of a tile's op stream, and a
+# divergence there reads exactly like a fundamental early bug when it is
+# usually just an upstream LR-search disagreement (one side restores, the
+# other doesn't, or a tap value differs). This annotates the first divergent
+# op with that context so a reader isn't misled -- the same misreading risk
+# `tile_note` guards against one layer up (see the comment above `set_stage`).
+#
+# icdf[0] values below are AOM_ICDF(a0) = CDF_PROB_TOP - a0 (CDF_PROB_TOP =
+# 32768), read from the default CDFs in
+# /root/svtav1/Source/Lib/Codec/cabac_context_model.c (verified 2026-07-16):
+#   default_wiener_restore_cdf     = AOM_CDF2(11570)       -> icdf[0]=21198
+#   default_sgrproj_restore_cdf    = AOM_CDF2(16855)       -> icdf[0]=15913
+#   default_switchable_restore_cdf = AOM_CDF3(9413, 22581) -> icdf[0]=23355
+# (The task that requested this table guessed 25844 for sgrproj_restore --
+# that was wrong; 15913 is what the source gives.)
+#
+# These are *default* (freshly-reset) CDF states. The same context read a
+# second time in the same tile has adapted away from these exact values (a
+# rate-4 nudge toward the observed symbol on each use: cdf += (32768-cdf)>>4),
+# so a straight table lookup only catches the FIRST use of a given
+# restore-flag context in the tile -- e.g. 21921 is EXACTLY
+# 21198 + ((32768-21198)>>4), one adaptation step off wiener_restore's
+# default. See (c) below for how a later, adapted read of the same context
+# is still recognized by tracing back to its unadapted ancestor.
+RESTORE_FLAG_ICDF0 = {
+    21198: "wiener_restore",
+    15913: "sgrproj_restore",
+    23355: "switchable_restore",
+}
+
+# (a) "LR syntax leads the tile": only treat a divergence within this many
+# ops of the tile start as an LR candidate at all. A coincidental icdf[0]
+# collision deep into real mode/coeff syntax is far less interesting than a
+# genuinely early divergence, and gating on position keeps the fallback
+# generic-cdf label from ever getting shadowed by a stray value collision.
+LEADING_OP_WINDOW = 200
+
+# When walking backward from the divergence looking for the restore-flag CDF
+# that gates the current literal run, tolerate up to this many intervening
+# 2-outcome ops that are themselves adapted restore-flag reads for an
+# earlier/adjacent LR unit or plane (same family, drifted off the pristine
+# default) before giving up.
+MAX_SKIP_THROUGH = 8
+
+
+def _op_icdf0(canon):
+    """First icdf entry of a canonical op tuple, whichever kind it is."""
+    return canon[2] if canon[0] == "B" else canon[3]
+
+
+def _is_literal_bool(canon):
+    """Equiprobable literal bit: BOOLEQ, or BOOL f=16384 -- both canonicalize
+    to ("B", v, 16384) in parse_trace."""
+    return canon[0] == "B" and canon[2] == 16384
+
+
+def classify_divergent_op(c_ops, r_ops, div):
+    """Heuristic symbol-class label for the first divergent op at index
+    `div` (into the last-segment-sliced op lists `diff_traces` compared).
+
+    Returns a detail string with no "op-class: " prefix (e.g.
+    "lr-taps (wiener_restore + literal run)" or
+    "cdf (icdf0=12631, unrecognized family)"), or None if there is no op to
+    classify (defensive; callers already guard `div is not None`).
+    """
+    c_canon = c_ops[div][0] if div < len(c_ops) else None
+    r_canon = r_ops[div][0] if div < len(r_ops) else None
+    if c_canon is None and r_canon is None:
+        return None
+    leading = div < LEADING_OP_WINDOW
+
+    if leading:
+        # (b) the op AT div is itself a recognizable restore-flag/-select
+        # CDF (its icdf[0] matches a pristine default on at least one side).
+        for canon in (c_canon, r_canon):
+            if canon is None:
+                continue
+            fam = RESTORE_FLAG_ICDF0.get(_op_icdf0(canon))
+            if fam:
+                return f"lr-taps ({fam} + literal run)"
+
+        # (c) div sits in a run of equiprobable literal bools (BOOLEQ / a
+        # BOOL with f=16384) that traces back to a restore-flag CDF earlier
+        # in the matched (identical-so-far) prefix, tolerating a few
+        # intervening adapted restore-flag reads for other LR units/planes
+        # along the way.
+        #
+        # Guard: only when div itself is a 2-outcome op on every side it
+        # exists. A multi-symbol CDF (partition, mode, tx-type, ...) can
+        # never be "mid literal-run" regardless of what precedes it -- and
+        # every SB's first partition read structurally follows LR syntax,
+        # so without this guard every partition-CDF divergence would be
+        # misclassified as lr-taps just for sitting right after it.
+        multisym_at_div = (c_canon is not None and c_canon[0] == "C") or (
+            r_canon is not None and r_canon[0] == "C"
+        )
+        if not multisym_at_div:
+            skips = 0
+            for i in range(div - 1, -1, -1):
+                canon = c_ops[i][0]  # prefix is identical on both sides --
+                                     # that is the definition of `div` as
+                                     # first diff
+                fam = RESTORE_FLAG_ICDF0.get(_op_icdf0(canon))
+                if fam:
+                    return f"lr-taps ({fam} + literal run)"
+                if canon[0] != "B":
+                    break  # multi-symbol CDF, unrecognized: past the LR
+                           # region (partition/mode), not an adapted LR read
+                if not _is_literal_bool(canon):
+                    skips += 1
+                    if skips > MAX_SKIP_THROUGH:
+                        break
+
+    # (d) fallback: a recognizable-kind op with no known-family match.
+    canon = c_canon if c_canon is not None else r_canon
+    return f"cdf (icdf0={_op_icdf0(canon)}, unrecognized family)"
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--c-obu", required=True)
@@ -492,6 +617,10 @@ def main():
     # summary. Set once, at the earliest divergence.
     stage = None
     detail = ""
+    # Heuristic symbol-class label for the first divergent tile OP (not the
+    # pipeline stage above) -- set alongside the tile-op/tile-count verdict
+    # below, printed next to whichever of STAGE/ALSO carries that verdict.
+    op_class = None
 
     # The tile verdict, recorded SEPARATELY from `stage`.
     #
@@ -672,6 +801,7 @@ def main():
                 tile_note = ("tile-identical", f"all {len(c_ops)} tile ops match")
             vprint(f"  RESULT: traces IDENTICAL for all {len(c_ops)} ops (incl. rng state)")
         else:
+            op_class = classify_divergent_op(c_ops, r_ops, div)
             both = div < min(len(c_ops), len(r_ops))
             if not both:
                 set_stage("tile-count", f"identical {div} ops then "
@@ -722,6 +852,11 @@ def main():
     # tile did too, so a downstream FH symptom is never mistaken for the root.
     if tile_note is not None and not stage.startswith("tile"):
         print(f"ALSO: {tile_note[0]} | {tile_note[1]}")
+    # Symbol-class annotation for the first divergent tile op, wherever its
+    # verdict landed (directly in STAGE, or in ALSO when an SH/FH divergence
+    # is upstream of it in bitstream order) -- see classify_divergent_op.
+    if op_class is not None and tile_note is not None and tile_note[0] in ("tile-op", "tile-count"):
+        print(f"  op-class: {op_class}")
     print(f"VERDICT: NOT IDENTICAL (C={len(c_data)}B Rust={len(r_data)}B)")
     return 1
 
