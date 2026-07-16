@@ -1,0 +1,5 @@
+generated: 2026-07-16 (rim_after_fix3)
+commit: f8191d09a (wave2/entropy-c-parity; includes c243588 4x4-rate fix + 1449ce606 shared-recon gate fix; C baseline = v4.2.0 FINAL tag via merge c3b649137)
+grid: RIM_PRESETS="2 3 4 5 6 7 8 9 10" RIM_QPS="12 20 32 55" RIM_IMAGES=20 (CID22-512 training, evenly sampled)
+totals: 720 cells, 693 IDENTICAL, 27 DIFFERS (96.25%)
+residue: 24x "EPICA Delta D Plot" (screen-content/palette, task #71, p2-p7 all qps), 1624307 q32 p2 (op-40 recon-invisible symbol flip, task #90), 6763758 q12+q20 p8 (task #90)
