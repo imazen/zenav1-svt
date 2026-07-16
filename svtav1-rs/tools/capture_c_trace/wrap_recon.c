@@ -1,0 +1,130 @@
+/*
+ * wrap_recon.c — ld --wrap interceptor that dumps C's PRE-DEBLOCK recon
+ * distortion, so a real-content divergence can be attributed to the right
+ * side of the encoder.
+ *
+ * WHY THIS EXISTS
+ * ---------------
+ * On real content the frame header's `loop_filter_level` diverges from C on
+ * most M2/M3 cells, and the tile's first divergence is a Wiener-tap bit in
+ * SB0's loop-restoration syntax. Both are POST-recon searches, and the
+ * encoder's chain is
+ *
+ *   mode decision -> recon -> LF search -> CDEF search -> LR search
+ *
+ * so a divergence at LF/CDEF/LR is consistent with EITHER a bug in those
+ * searches OR a recon that already differs (which would mean the real root is
+ * mode decision). Reading the bitstream cannot separate the two: the per-SB LR
+ * syntax is written BEFORE the partition symbol, so a mode-decision divergence
+ * and a filter-search divergence BOTH surface first as a low tile-op flip.
+ * Source-to-source inspection has shown `search_filter_level` is faithful to
+ * C line-for-line, which makes its INPUT the open question.
+ *
+ * `ss_err[0]` is the discriminator. The search always evaluates it (filt_mid
+ * starts at 0 for a KEY frame, so the first `try_filter_frame` runs at level
+ * 0), and at level 0 the deblocker is a no-op — so ss_err[0] is exactly
+ * SSE(source, UNFILTERED recon), with no filtering and no geometry involved.
+ *   * C's ss_err[0] != the port's  => the recon already differs => the root is
+ *     mode decision, and the LF/LR divergences are downstream symptoms.
+ *   * They match                   => the recon agrees and the root is in the
+ *     filter searches themselves.
+ *
+ * NOTE (evidence tier): equal SSE is strong evidence of an equal recon, not
+ * proof — SSE is a summary statistic and two different planes can share one.
+ * A MISMATCH, however, is proof of a differing recon. This tool is built to
+ * answer the mismatch direction decisively; treat a match as "consistent with
+ * identical" and confirm any recon-identity claim per-plane before relying on
+ * it.
+ *
+ * WHY WRAP `svt_av1_loop_filter_init`
+ * -----------------------------------
+ * dlf_process.c:99-102 runs
+ *     svt_aom_get_recon_pic(pcs, &recon_buffer, is_16bit);
+ *     svt_av1_loop_filter_init(pcs);
+ *     svt_av1_pick_filter_level(..., LPF_PICK_FROM_FULL_IMAGE);
+ * so at loop_filter_init the recon is final and NOT yet deblocked — precisely
+ * the state whose SSE the search's first trial measures. It is a cross-TU call
+ * (declared deblocking_filter.h:40, defined deblocking_filter.c:84), which is
+ * what makes it reachable by --wrap at all: `try_filter_frame` calls
+ * `picture_sse_calculations` INSIDE deblocking_filter.c, and an intra-TU call
+ * is bound direct by the compiler and cannot be wrapped.
+ *
+ * We report by calling C's own `picture_sse_calculations` (deblocking_filter.h
+ * :53) rather than reimplementing it, so the number is definitionally the one
+ * the search uses (same aligned dims, same distortion kernel, same source pic).
+ *
+ * The C tree stays PRISTINE: this is a link-time interposer in the harness, not
+ * an edit to Source/.
+ *
+ * Output (appended to $SVT_RECON_OUT; pure pass-through when unset):
+ *   RECON_SSE call=<n> plane=<p> sse=<v>
+ * `call` distinguishes the dlf_process invocation from enc_dec_process.c:3401,
+ * which also calls loop_filter_init on the sb_based_dlf path.
+ *
+ * Additionally, if $SVT_RECON_BIN is set, call 0's planes are written raw to
+ * <$SVT_RECON_BIN>.p<plane> as tightly-packed rows (stride removed). That is
+ * the SSE probe's strict superset: it localizes the FIRST DIFFERING PIXEL, and
+ * hence the first divergent superblock/block, instead of only proving that
+ * some pixel differs. Safe because `buffer[plane]` already points at the
+ * picture origin (pic_buffer_desc.h:37: "Buffer Ptrs point to the start of the
+ * picture. If there are borders, the left and above borders will be accessed
+ * using a negative offset"), so a row is buffer[p] + r*stride[p] and maps
+ * directly onto the port's tightly-packed recon[r*w + c].
+ */
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+#include "deblocking_filter.h"
+#include "enc_inter_prediction.h"
+#include "pcs.h"
+
+void __real_svt_av1_loop_filter_init(PictureControlSet* pcs);
+
+void __wrap_svt_av1_loop_filter_init(PictureControlSet* pcs) {
+    __real_svt_av1_loop_filter_init(pcs);
+
+    const char* path = getenv("SVT_RECON_OUT");
+    if (!path || !*path)
+        return;
+    FILE* f = fopen(path, "a");
+    if (!f)
+        return;
+
+    static int call_idx = 0;
+    const int  n        = call_idx++;
+
+    const bool           is_16bit = pcs->ppcs->scs->is_16bit_pipeline;
+    EbPictureBufferDesc* recon    = NULL;
+    svt_aom_get_recon_pic(pcs, &recon, is_16bit);
+    if (recon) {
+        for (int p = 0; p < 3; ++p) {
+            const uint64_t sse = picture_sse_calculations(pcs, recon, p);
+            fprintf(f, "RECON_SSE call=%d plane=%d sse=%llu\n", n, p, (unsigned long long)sse);
+        }
+
+        /* Raw planes for the first (dlf_process) call only — the state whose
+         * SSE the search's level-0 trial measures. */
+        const char* binpath = getenv("SVT_RECON_BIN");
+        if (n == 0 && binpath && *binpath) {
+            const uint32_t ss_x = pcs->ppcs->scs->subsampling_x;
+            const uint32_t ss_y = pcs->ppcs->scs->subsampling_y;
+            for (int p = 0; p < 3; ++p) {
+                const uint32_t pw = p ? (pcs->ppcs->aligned_width >> ss_x) : pcs->ppcs->aligned_width;
+                const uint32_t ph = p ? (pcs->ppcs->aligned_height >> ss_y) : pcs->ppcs->aligned_height;
+                char           path[4096];
+                snprintf(path, sizeof(path), "%s.p%d", binpath, p);
+                FILE* bf = fopen(path, "wb");
+                if (!bf)
+                    continue;
+                for (uint32_t r = 0; r < ph; ++r)
+                    fwrite(recon->buffer[p] + (size_t)r * recon->stride[p], 1, pw, bf);
+                fclose(bf);
+                fprintf(f, "RECON_BIN plane=%d w=%u h=%u -> %s\n", p, pw, ph, path);
+            }
+        }
+    }
+    fflush(f);
+    fclose(f);
+}
