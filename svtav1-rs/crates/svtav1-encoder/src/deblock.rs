@@ -84,6 +84,11 @@ pub struct DlfSearchInput<'a> {
     /// (dlf_level 1), 1 at M4/M5 (dlf_level 2); `svt_aom_set_dlf_controls`
     /// enc_mode_config.c:2235.
     pub early_exit_convergence: i32,
+    /// Signaled loop_filter_sharpness (CLIP3(0,7,config.sharpness)).
+    /// 0 in mainline mode; the svt-av1-hdr fork defaults sharpness to 1,
+    /// which changes the deblock thresholds used by BOTH the level search
+    /// trials and the final application (and the FH sharpness bits).
+    pub sharpness: u8,
 }
 
 /// Sum of squared differences over one plane —
@@ -142,7 +147,7 @@ fn try_filter_plane(
     if lvl0 != 0 || lvl1 != 0 {
         filter_plane(
             scratch, w, w, h, plane, subs, lvl0, lvl1, input.geom,
-            0, // sharpness 0 (matched config; sharpness_level = CLIP3(0,7,0))
+            input.sharpness, // = signaled loop_filter_sharpness (fork default 1)
         );
     }
     plane_sse(src, scratch, w, h)
