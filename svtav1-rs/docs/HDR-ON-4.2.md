@@ -164,7 +164,10 @@ Mainline mode → stock v4.2.0-final; HdrFork mode → the C hybrid's MODE1 lib
 | **QM** (fork default ON, luma min 6 / chroma min 8): tables, FH syntax, fwd-quant, RD costing | **OPEN — long pole #2** | required for HdrFork e2e identity |
 | fork chroma-qindex path (4:2:0/PQ/P3/BT.2020 boosts, Cb +12, separate_uv_delta_q=1 + diff_uv_delta=1 syntax, per-plane dequant) | **PARTIAL** — derivation (`chroma_q.rs`) + SH/FH syntax DONE and unit-pinned, kept INERT; remaining: per-plane chroma quant threading, then flip the SH bit + pass Some(deltas) in fork mode | suite 682/682; activation gated on quant threading (never signal deltas the quantizer ignores) |
 | ac_bias/tx_bias distortion facade | **OPEN** (task #6) | fork default ac_bias=1.0 → affects all-intra MD |
-| photon-noise synthesis (`--noise*`), noise-norm AC boost | OPEN (inert at defaults... noise_norm fork default 1 → NEEDED for e2e) | |
+| noise-norm AC boost (fork default 1) | **DONE** (`noise_norm.rs` + encode-pass wiring in `quantize_inv_quantize_still`, hdr_fork-gated) | c_parity_noise_norm.rs: 7,200 randomized cells vs the exported C fn (minimal-struct shim) |
+| ac_bias psy kernels (mainline v4.2 feature; fork default 1.0) | **DONE as kernels** (`svtav1-dsp::ac_bias`) — MD wiring (get_svt_psy_full_dist call sites in the leaf funnel) still OPEN | c_parity_ac_bias.rs vs exported C (both RTCD tables must be inited — common for hadamard, aom_dsp for satd) |
+| fork mds0 tx-bias facade | **DONE as bias layer** (`tx_bias.rs`) — mds0 wiring OPEN (fires when mds0_dist_type != VAR in fork mode) | c_parity_tx_bias.rs: 2,160 cells end-to-end vs the REAL C facade via synthetic-BlockModeInfo shim |
+| photon-noise synthesis (`--noise*`) | OPEN (inert at defaults) | |
 | kf_tf_strength / TF formula | OPEN — needs TF (all-intra immune) | |
 | complex_hvs / mds0, alt_lambda_factors, alt_ssim_tuning, cdef_scaling, tune 6 policy | OPEN — inert at fork defaults except alt_lambda (default ON → needed when its rd path is reachable) | |
 
