@@ -221,9 +221,36 @@ pub(crate) fn kf_full_lambda_8bit_unweighted(qindex: u8) -> u32 {
 }
 
 pub(crate) fn kf_full_lambda_8bit(qindex: u8, cli_qp: u32) -> u32 {
+    kf_full_lambda_8bit_ex(qindex, cli_qp, false, 0)
+}
+
+/// [SVT_HDR_MODE] full form of the KF lambda chain (C `update_lambda`,
+/// rc_process.c:401):
+/// * `alt_lambda_factors` (fork default 1) swaps the KF frame-type factor
+///   150 -> `rd_frame_type_factor_alt[KF_UPDATE]` = 140 (rc_process.c:398).
+/// * With per-SB delta-q present, the stats-based SB factor is no longer
+///   the 128 no-op: `qdiff = q_index - base_q_idx` picks {<=-8: 90,
+///   <0: 115, <=8 above: 135, >8: 150} (rc_process.c:437-446). The frame
+///   `lambda_weight` multiply follows, as in C's av1_lambda_assign_md.
+pub(crate) fn kf_full_lambda_8bit_ex(
+    qindex: u8,
+    cli_qp: u32,
+    alt_lambda_factors: bool,
+    qdiff_vs_base: i32,
+) -> u32 {
     let dc_q = svtav1_dsp::quant_tables::DC_QLOOKUP_8[qindex as usize] as i64;
     let rdmult = ((3.3 + 0.0015 * dc_q as f64) * (dc_q as f64) * (dc_q as f64)) as i64;
-    let mut lambda = ((rdmult * 150) >> 7) as u32;
+    let ftf: i64 = if alt_lambda_factors { 140 } else { 150 };
+    let mut rdmult = (rdmult * ftf) >> 7;
+    let stats_factor: i64 = if qdiff_vs_base < 0 {
+        if qdiff_vs_base <= -8 { 90 } else { 115 }
+    } else if qdiff_vs_base > 0 {
+        if qdiff_vs_base <= 8 { 135 } else { 150 }
+    } else {
+        128
+    };
+    rdmult = (rdmult * stats_factor) >> 7;
+    let mut lambda = rdmult as u32;
     let lambda_weight: u32 = if cli_qp >= 56 {
         175
     } else if cli_qp >= 16 {
@@ -1832,5 +1859,18 @@ mod tests {
         let u = vec![128u8; 64 * 64];
         let tu = pd0_pick_sb_partition_m6(&u, 64, 0, 0, 40, 160, &build_m6_pd0_tables(160), 1);
         assert_eq!(tu, Pd0Tree::Leaf(64));
+    }
+}
+
+#[cfg(test)]
+mod alt_lambda_tests {
+    #[test]
+    fn alt_factor_changes_lambda() {
+        let base = super::kf_full_lambda_8bit_ex(160, 40, false, 0);
+        let alt = super::kf_full_lambda_8bit_ex(160, 40, true, 0);
+        assert!(alt < base, "{alt} vs {base}");
+        assert_eq!(base, super::kf_full_lambda_8bit(160, 40));
+        let qd = super::kf_full_lambda_8bit_ex(160, 40, false, 9);
+        assert!(qd > base);
     }
 }

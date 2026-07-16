@@ -769,7 +769,7 @@ void svt_av1_warp_affine_c(const int32_t* mat, const uint8_t* ref, int width, in
 void ref_warp_affine(const int32_t* mat, const uint8_t* ref, int32_t width, int32_t height, int32_t stride,
                      uint8_t* pred, int32_t p_col, int32_t p_row, int32_t p_width, int32_t p_height, int32_t p_stride,
                      int16_t alpha, int16_t beta, int16_t gamma, int16_t delta) {
-    ConvolveParams cp = get_conv_params(0, 0, 0, 8); /* non-compound, 8-bit */
+    ConvolveParams cp = get_conv_params(0, 8); /* non-compound, 8-bit (v4.2.0-final 2-arg signature) */
     svt_av1_warp_affine_c(mat, ref, width, height, stride, pred, p_col, p_row, p_width, p_height, p_stride, 0, 0, &cp,
                           alpha, beta, gamma, delta);
 }
@@ -787,7 +787,7 @@ void ref_convolve_2d_scale(const uint8_t* src, int32_t src_stride, uint8_t* dst,
                            int32_t h, int32_t subpel_x_qn, int32_t x_step_qn, int32_t subpel_y_qn, int32_t y_step_qn) {
     const InterpFilterParams* fx = &av1_interp_filter_params_list[EIGHTTAP_REGULAR];
     const InterpFilterParams* fy = &av1_interp_filter_params_list[EIGHTTAP_REGULAR];
-    ConvolveParams            cp = get_conv_params(0, 0, 0, 8);
+    ConvolveParams            cp = get_conv_params(0, 8); /* v4.2.0-final 2-arg signature */
     svt_av1_convolve_2d_scale_c(src, src_stride, dst, dst_stride, w, h, fx, fy, subpel_x_qn, x_step_qn, subpel_y_qn,
                                 y_step_qn, &cp);
 }
@@ -954,4 +954,183 @@ uint16_t ref_quantize_b(const int32_t* coeff, intptr_t n_coeffs, const int16_t* 
     memcpy(qcoeff, a_qcoeff, (size_t)n_coeffs * sizeof(int32_t));
     memcpy(dqcoeff, a_dqcoeff, (size_t)n_coeffs * sizeof(int32_t));
     return eob;
+}
+
+/* ---- Photon-noise film-grain table generation (noise_generation.c) ----
+   Drives the exported svt_av1_generate_noise_table with a real (zeroed)
+   EbSvtAv1EncConfiguration, then flattens the returned AomFilmGrain into an
+   int32 buffer for the Rust differential. The shim includes the real API
+   header, so struct layout/ABI is the library's own. */
+#include "EbSvtAv1Enc.h"
+
+EbErrorType svt_av1_generate_noise_table(EbSvtAv1EncConfiguration* config);
+
+/* out layout (all int32): apply_grain, num_y_points, y[14][2],
+   chroma_scaling_from_luma, num_cb, cb[10][2], num_cr, cr[10][2],
+   scaling_shift, ar_coeff_lag, ar_y[24], ar_cb[25], ar_cr[25],
+   ar_coeff_shift, grain_scale_shift, cb_mult, cb_luma_mult, cb_offset,
+   cr_mult, cr_luma_mult, cr_offset, overlap_flag, clip_to_restricted_range
+   = 1+1+28+1+1+20+1+20+1+1+24+25+25+1+1+3+3+1+1 = 159 entries. */
+int32_t ref_generate_noise_table(uint32_t width, uint32_t height, uint32_t noise_strength,
+                                 int32_t noise_strength_chroma, int32_t noise_chroma_from_luma,
+                                 int32_t noise_size, int32_t color_range_provided, int32_t color_range,
+                                 int32_t avif, int32_t* out) {
+    EbSvtAv1EncConfiguration cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.source_width           = width;
+    cfg.source_height          = height;
+    cfg.noise_strength         = noise_strength;
+    cfg.noise_strength_chroma  = noise_strength_chroma;
+    cfg.noise_chroma_from_luma = (uint8_t)noise_chroma_from_luma;
+    cfg.noise_size             = (int8_t)noise_size;
+    cfg.color_range_provided   = color_range_provided;
+    cfg.color_range            = (EbColorRange)color_range;
+    cfg.avif                   = (bool)avif;
+    if (svt_av1_generate_noise_table(&cfg) != EB_ErrorNone || !cfg.fgs_table) {
+        return -1;
+    }
+    AomFilmGrain* fg = cfg.fgs_table;
+    int32_t*      o  = out;
+    *o++ = fg->apply_grain;
+    *o++ = fg->num_y_points;
+    for (int i = 0; i < 14; i++) { *o++ = fg->scaling_points_y[i][0]; *o++ = fg->scaling_points_y[i][1]; }
+    *o++ = fg->chroma_scaling_from_luma;
+    *o++ = fg->num_cb_points;
+    for (int i = 0; i < 10; i++) { *o++ = fg->scaling_points_cb[i][0]; *o++ = fg->scaling_points_cb[i][1]; }
+    *o++ = fg->num_cr_points;
+    for (int i = 0; i < 10; i++) { *o++ = fg->scaling_points_cr[i][0]; *o++ = fg->scaling_points_cr[i][1]; }
+    *o++ = fg->scaling_shift;
+    *o++ = fg->ar_coeff_lag;
+    for (int i = 0; i < 24; i++) { *o++ = fg->ar_coeffs_y[i]; }
+    for (int i = 0; i < 25; i++) { *o++ = fg->ar_coeffs_cb[i]; }
+    for (int i = 0; i < 25; i++) { *o++ = fg->ar_coeffs_cr[i]; }
+    *o++ = fg->ar_coeff_shift;
+    *o++ = fg->grain_scale_shift;
+    *o++ = fg->cb_mult;
+    *o++ = fg->cb_luma_mult;
+    *o++ = fg->cb_offset;
+    *o++ = fg->cr_mult;
+    *o++ = fg->cr_luma_mult;
+    *o++ = fg->cr_offset;
+    *o++ = fg->overlap_flag;
+    *o++ = fg->clip_to_restricted_range;
+    free(fg);
+    return (int32_t)(o - out);
+}
+
+/* ---- QM quantize kernels (full_loop.c QM branches) ----
+   Direct pass-through to the exported scalar kernels with non-NULL qm/iqm
+   pointers, validating BOTH the Rust QM kernels and the transcribed
+   wt/iwt_matrix_ref tables the test feeds from the Rust side. */
+
+void svt_av1_quantize_fp_qm_c(const int32_t* coeff_ptr, intptr_t n_coeffs, const int16_t* zbin_ptr,
+                              const int16_t* round_ptr, const int16_t* quant_ptr, const int16_t* quant_shift_ptr,
+                              int32_t* qcoeff_ptr, int32_t* dqcoeff_ptr, const int16_t* dequant_ptr,
+                              uint16_t* eob_ptr, const int16_t* scan, const int16_t* iscan, const uint8_t* qm_ptr,
+                              const uint8_t* iqm_ptr, int16_t log_scale);
+
+uint16_t ref_quantize_b_qm(const int32_t* coeff, intptr_t n_coeffs, const int16_t* zbin, const int16_t* round,
+                           const int16_t* quant, const int16_t* quant_shift, int32_t* qcoeff, int32_t* dqcoeff,
+                           const int16_t* dequant, const int16_t* scan, const int16_t* iscan, const uint8_t* qm,
+                           const uint8_t* iqm, int32_t log_scale) {
+    uint16_t eob = 0;
+    svt_aom_quantize_b_c(
+        coeff, n_coeffs, zbin, round, quant, quant_shift, qcoeff, dqcoeff, dequant, &eob, scan, iscan, qm, iqm, log_scale);
+    return eob;
+}
+
+uint16_t ref_quantize_fp_qm(const int32_t* coeff, intptr_t n_coeffs, const int16_t* zbin, const int16_t* round_fp,
+                            const int16_t* quant_fp, const int16_t* quant_shift, int32_t* qcoeff, int32_t* dqcoeff,
+                            const int16_t* dequant, const int16_t* scan, const int16_t* iscan, const uint8_t* qm,
+                            const uint8_t* iqm, int32_t log_scale) {
+    uint16_t eob = 0;
+    svt_av1_quantize_fp_qm_c(coeff,
+                             n_coeffs,
+                             zbin,
+                             round_fp,
+                             quant_fp,
+                             quant_shift,
+                             qcoeff,
+                             dqcoeff,
+                             dequant,
+                             &eob,
+                             scan,
+                             iscan,
+                             qm,
+                             iqm,
+                             (int16_t)log_scale);
+    return eob;
+}
+
+/* ---- AC-bias psychovisual kernels (ac_bias.c) ----
+   svt_psy_distortion calls svt_aom_hadamard_{4x4,8x8}/svt_aom_satd through
+   the aom_dsp RTCD dispatch table, which is NULL until setup — wrap with
+   the init-once guard. */
+uint64_t svt_psy_distortion(const uint8_t* input, uint32_t input_stride, const uint8_t* recon, uint32_t recon_stride,
+                            uint32_t width, uint32_t height);
+
+uint64_t ref_psy_distortion(const uint8_t* input, uint32_t input_stride, const uint8_t* recon, uint32_t recon_stride,
+                            uint32_t width, uint32_t height) {
+    /* hadamard_{4x4,8x8} live in COMMON dsp rtcd; satd in aom_dsp rtcd —
+       init both tables. */
+    if (!g_rtcd_ready) {
+        svt_aom_setup_common_rtcd_internal(svt_aom_get_cpu_flags_to_use());
+        g_rtcd_ready = 1;
+    }
+    ref_dsp_rtcd_once();
+    return svt_psy_distortion(input, input_stride, recon, recon_stride, width, height);
+}
+
+/* ---- fork mds0 distortion facade (pic_operators.c, SVT_HDR_MODE feature) ----
+   Drive the real facade with a synthetic BlockModeInfo built from scalars so
+   the Rust bias-layer port can be pinned against the C mode-enum logic. */
+#include "block_structures.h"
+#include "pic_operators.h"
+
+uint64_t ref_spatial_facade(const uint8_t* input, uint32_t input_stride, const uint8_t* recon, uint32_t recon_stride,
+                            uint32_t width, uint32_t height, uint8_t mode, uint8_t uv_mode, uint8_t is_chroma,
+                            uint8_t is_interintra, uint8_t comp_type, uint8_t temporal_layer_index, double ac_bias,
+                            uint8_t tx_bias) {
+    if (!g_rtcd_ready) {
+        svt_aom_setup_common_rtcd_internal(svt_aom_get_cpu_flags_to_use());
+        g_rtcd_ready = 1;
+    }
+    BlockModeInfo bmi;
+    memset(&bmi, 0, sizeof(bmi));
+    bmi.mode                 = (PredictionMode)mode;
+    bmi.uv_mode              = (UvPredictionMode)uv_mode;
+    bmi.is_interintra_used   = is_interintra;
+    bmi.interinter_comp.type = (CompoundType)comp_type;
+    return svt_spatial_full_distortion_kernel_facade((uint8_t*)input, 0, input_stride, (uint8_t*)recon, 0,
+                                                     recon_stride, width, height, false, &bmi, is_chroma != 0,
+                                                     temporal_layer_index, ac_bias, tx_bias);
+}
+
+/* ---- fork noise normalization (full_loop.c, SVT_HDR_MODE feature) ----
+   The real function reads only: p->dequant_qtx (per-position DC/AC),
+   qparam->iqmatrix (NULL = no QM), pcs->scs->static_config
+   .noise_norm_strength, tx_size/tx_type/eob and the coefficient buffers.
+   Build the minimal struct chain and forward. */
+#include "pcs.h"
+#include "transforms.h"
+void svt_av1_perform_noise_normalization(MacroblockPlane* p, QuantParam* qparam, TranLow* coeff_ptr,
+                                         TranLow* qcoeff_ptr, TranLow* dqcoeff_ptr, TxSize tx_size, TxType tx_type,
+                                         uint16_t* eob, PictureControlSet* pcs);
+
+void ref_noise_normalization(const int16_t dequant_dc, const int16_t dequant_ac, const int32_t* coeff,
+                             int32_t* qcoeff, int32_t* dqcoeff, uint16_t* eob, int32_t tx_size, int32_t tx_type,
+                             uint8_t strength) {
+    static SequenceControlSet g_nn_scs;
+    static PictureControlSet  g_nn_pcs;
+    int16_t                   dequant[2] = {dequant_dc, dequant_ac};
+    MacroblockPlane           p;
+    QuantParam                qp;
+    memset(&p, 0, sizeof(p));
+    memset(&qp, 0, sizeof(qp));
+    p.dequant_qtx                              = dequant;
+    qp.iqmatrix                                = NULL;
+    g_nn_pcs.scs                               = &g_nn_scs;
+    g_nn_scs.static_config.noise_norm_strength = strength;
+    svt_av1_perform_noise_normalization(
+        &p, &qp, (TranLow*)coeff, qcoeff, dqcoeff, (TxSize)tx_size, (TxType)tx_type, eob, &g_nn_pcs);
 }

@@ -424,6 +424,182 @@ pub fn ac_quant_qtx(qindex: i32) -> i16 {
     unsafe { ref_ac_quant_qtx(qindex) }
 }
 
+// ---- variance-boost helper wrappers (rc_aq.c, exported in both modes) ----
+
+unsafe extern "C" {
+    fn svt_av1_convert_qindex_to_q_fp8(qindex: i32, bit_depth: i32) -> i32;
+    fn svt_av1_compute_qdelta_fp(qstart_fp8: i32, qtarget_fp8: i32, bit_depth: i32) -> i32;
+}
+
+/// C `svt_av1_convert_qindex_to_q_fp8`. `bit_depth` is the EbBitDepth enum
+/// value (8/10/12).
+pub fn convert_qindex_to_q_fp8(qindex: i32, bit_depth: i32) -> i32 {
+    unsafe { svt_av1_convert_qindex_to_q_fp8(qindex, bit_depth) }
+}
+
+/// C `svt_av1_compute_qdelta_fp`.
+pub fn compute_qdelta_fp(qstart_fp8: i32, qtarget_fp8: i32, bit_depth: i32) -> i32 {
+    unsafe { svt_av1_compute_qdelta_fp(qstart_fp8, qtarget_fp8, bit_depth) }
+}
+
+// ---- AC-bias wrappers (ac_bias.c, exported; feature code in both modes) ----
+
+unsafe extern "C" {
+    fn ref_psy_distortion(
+        input: *const u8,
+        input_stride: u32,
+        recon: *const u8,
+        recon_stride: u32,
+        width: u32,
+        height: u32,
+    ) -> u64;
+    fn svt_psy_adjust_rate_light(
+        coeff: *const i32,
+        coeff_bits: u64,
+        width: u32,
+        height: u32,
+        ac_bias: f64,
+    ) -> u64;
+    fn get_effective_ac_bias(ac_bias: f64, is_islice: bool, temporal_layer_index: u8) -> f64;
+}
+
+/// C `svt_psy_distortion` (8-bit).
+pub fn psy_distortion(input: &[u8], input_stride: u32, recon: &[u8], recon_stride: u32, width: u32, height: u32) -> u64 {
+    unsafe { ref_psy_distortion(input.as_ptr(), input_stride, recon.as_ptr(), recon_stride, width, height) }
+}
+
+/// C `svt_psy_adjust_rate_light`.
+pub fn psy_adjust_rate_light(coeff: &[i32], coeff_bits: u64, width: u32, height: u32, ac_bias: f64) -> u64 {
+    unsafe { svt_psy_adjust_rate_light(coeff.as_ptr(), coeff_bits, width, height, ac_bias) }
+}
+
+/// C `get_effective_ac_bias`.
+pub fn effective_ac_bias(ac_bias: f64, is_islice: bool, temporal_layer_index: u8) -> f64 {
+    unsafe { get_effective_ac_bias(ac_bias, is_islice, temporal_layer_index) }
+}
+
+// ---- picture-analysis sub-sampled mean producers (pic_analysis_process.c) ----
+
+unsafe extern "C" {
+    fn svt_compute_sub_mean_8x8_c(input_samples: *const u8, input_stride: u16) -> u64;
+    fn svt_aom_compute_sub_mean_squared_values_c(
+        input_samples: *const u8,
+        input_stride: u32,
+        input_area_width: u32,
+        input_area_height: u32,
+    ) -> u64;
+}
+
+/// C `svt_compute_sub_mean_8x8_c` (fp8 sub-sampled 8x8 mean).
+pub fn sub_mean_8x8(block: &[u8], stride: u16) -> u64 {
+    unsafe { svt_compute_sub_mean_8x8_c(block.as_ptr(), stride) }
+}
+
+/// C `svt_aom_compute_sub_mean_squared_values_c` (fp16 sub-sampled mean of squares).
+pub fn sub_mean_squared_8x8(block: &[u8], stride: u32) -> u64 {
+    unsafe { svt_aom_compute_sub_mean_squared_values_c(block.as_ptr(), stride, 8, 8) }
+}
+
+unsafe extern "C" {
+    fn ref_noise_normalization(
+        dequant_dc: i16,
+        dequant_ac: i16,
+        coeff: *const i32,
+        qcoeff: *mut i32,
+        dqcoeff: *mut i32,
+        eob: *mut u16,
+        tx_size: i32,
+        tx_type: i32,
+        strength: u8,
+    );
+}
+
+/// Fork `svt_av1_perform_noise_normalization` via a minimal-struct shim
+/// (no QM). Buffers are packed rasters like the quantizer's.
+#[allow(clippy::too_many_arguments)]
+pub fn noise_normalization(
+    dequant: [i16; 2],
+    coeff: &[i32],
+    qcoeff: &mut [i32],
+    dqcoeff: &mut [i32],
+    eob: &mut u16,
+    tx_size: i32,
+    tx_type: i32,
+    strength: u8,
+) {
+    unsafe {
+        ref_noise_normalization(
+            dequant[0],
+            dequant[1],
+            coeff.as_ptr(),
+            qcoeff.as_mut_ptr(),
+            dqcoeff.as_mut_ptr(),
+            eob,
+            tx_size,
+            tx_type,
+            strength,
+        )
+    }
+}
+
+unsafe extern "C" {
+    fn ref_spatial_facade(
+        input: *const u8,
+        input_stride: u32,
+        recon: *const u8,
+        recon_stride: u32,
+        width: u32,
+        height: u32,
+        mode: u8,
+        uv_mode: u8,
+        is_chroma: u8,
+        is_interintra: u8,
+        comp_type: u8,
+        temporal_layer_index: u8,
+        ac_bias: f64,
+        tx_bias: u8,
+    ) -> u64;
+}
+
+/// Fork mds0 distortion facade (`svt_spatial_full_distortion_kernel_facade`)
+/// driven with a synthetic BlockModeInfo. 8-bit, offsets 0.
+#[allow(clippy::too_many_arguments)]
+pub fn spatial_facade(
+    input: &[u8],
+    input_stride: u32,
+    recon: &[u8],
+    recon_stride: u32,
+    width: u32,
+    height: u32,
+    mode: u8,
+    uv_mode: u8,
+    is_chroma: bool,
+    is_interintra: bool,
+    comp_type: u8,
+    temporal_layer_index: u8,
+    ac_bias: f64,
+    tx_bias: u8,
+) -> u64 {
+    unsafe {
+        ref_spatial_facade(
+            input.as_ptr(),
+            input_stride,
+            recon.as_ptr(),
+            recon_stride,
+            width,
+            height,
+            mode,
+            uv_mode,
+            u8::from(is_chroma),
+            u8::from(is_interintra),
+            comp_type,
+            temporal_layer_index,
+            ac_bias,
+            tx_bias,
+        )
+    }
+}
+
 // ---- 2D transform wrappers ----
 
 unsafe extern "C" {
@@ -1591,6 +1767,50 @@ unsafe extern "C" {
         log_scale: i32,
         dispatch: i32,
     ) -> u16;
+    fn ref_generate_noise_table(
+        width: u32,
+        height: u32,
+        noise_strength: u32,
+        noise_strength_chroma: i32,
+        noise_chroma_from_luma: i32,
+        noise_size: i32,
+        color_range_provided: i32,
+        color_range: i32,
+        avif: i32,
+        out: *mut i32,
+    ) -> i32;
+    fn ref_quantize_b_qm(
+        coeff: *const i32,
+        n_coeffs: isize,
+        zbin: *const i16,
+        round: *const i16,
+        quant: *const i16,
+        quant_shift: *const i16,
+        qcoeff: *mut i32,
+        dqcoeff: *mut i32,
+        dequant: *const i16,
+        scan: *const i16,
+        iscan: *const i16,
+        qm: *const u8,
+        iqm: *const u8,
+        log_scale: i32,
+    ) -> u16;
+    fn ref_quantize_fp_qm(
+        coeff: *const i32,
+        n_coeffs: isize,
+        zbin: *const i16,
+        round_fp: *const i16,
+        quant_fp: *const i16,
+        quant_shift: *const i16,
+        qcoeff: *mut i32,
+        dqcoeff: *mut i32,
+        dequant: *const i16,
+        scan: *const i16,
+        iscan: *const i16,
+        qm: *const u8,
+        iqm: *const u8,
+        log_scale: i32,
+    ) -> u16;
     fn ref_quantize_b(
         coeff: *const i32,
         n_coeffs: isize,
@@ -1731,6 +1951,113 @@ pub fn quantize_b(
             iscan.as_ptr(),
             log_scale,
             i32::from(dispatch),
+        )
+    }
+}
+
+/// Drives the exported `svt_av1_generate_noise_table` (photon-noise film
+/// grain, noise_generation.c) and returns the flattened AomFilmGrain as
+/// 159 i32s (see the shim comment for the layout).
+#[allow(clippy::too_many_arguments)]
+pub fn generate_noise_table(
+    width: u32,
+    height: u32,
+    noise_strength: u32,
+    noise_strength_chroma: i32,
+    noise_chroma_from_luma: i32,
+    noise_size: i32,
+    color_range_provided: bool,
+    full_range: bool,
+    avif: bool,
+) -> Option<Vec<i32>> {
+    let mut out = vec![0i32; 159];
+    let n = unsafe {
+        ref_generate_noise_table(
+            width,
+            height,
+            noise_strength,
+            noise_strength_chroma,
+            noise_chroma_from_luma,
+            noise_size,
+            i32::from(color_range_provided),
+            i32::from(full_range),
+            i32::from(avif),
+            out.as_mut_ptr(),
+        )
+    };
+    (n == 159).then_some(out)
+}
+
+/// Drives `svt_aom_quantize_b_c` with non-NULL qm/iqm (the QM branch).
+#[allow(clippy::too_many_arguments)]
+pub fn quantize_b_qm(
+    coeff: &[i32],
+    row: &QuantRow,
+    scan: &[u16],
+    log_scale: i32,
+    qm: &[u8],
+    iqm: &[u8],
+    qcoeff: &mut [i32],
+    dqcoeff: &mut [i32],
+) -> u16 {
+    assert_eq!(coeff.len(), scan.len());
+    assert!(qm.len() >= coeff.len() && iqm.len() >= coeff.len());
+    assert!(qcoeff.len() >= coeff.len() && dqcoeff.len() >= coeff.len());
+    let iscan = build_iscan(scan);
+    let scan_i16: Vec<i16> = scan.iter().map(|&v| v as i16).collect();
+    unsafe {
+        ref_quantize_b_qm(
+            coeff.as_ptr(),
+            coeff.len() as isize,
+            row.zbin.as_ptr(),
+            row.round.as_ptr(),
+            row.quant.as_ptr(),
+            row.quant_shift.as_ptr(),
+            qcoeff.as_mut_ptr(),
+            dqcoeff.as_mut_ptr(),
+            row.dequant.as_ptr(),
+            scan_i16.as_ptr(),
+            iscan.as_ptr(),
+            qm.as_ptr(),
+            iqm.as_ptr(),
+            log_scale,
+        )
+    }
+}
+
+/// Drives `svt_av1_quantize_fp_qm_c` (the fp QM branch). Returns eob.
+#[allow(clippy::too_many_arguments)]
+pub fn quantize_fp_qm(
+    coeff: &[i32],
+    row: &QuantRow,
+    scan: &[u16],
+    log_scale: i32,
+    qm: &[u8],
+    iqm: &[u8],
+    qcoeff: &mut [i32],
+    dqcoeff: &mut [i32],
+) -> u16 {
+    assert_eq!(coeff.len(), scan.len());
+    assert!(qm.len() >= coeff.len() && iqm.len() >= coeff.len());
+    assert!(qcoeff.len() >= coeff.len() && dqcoeff.len() >= coeff.len());
+    let iscan = build_iscan(scan);
+    let scan_i16: Vec<i16> = scan.iter().map(|&v| v as i16).collect();
+    unsafe {
+        ref_quantize_fp_qm(
+            coeff.as_ptr(),
+            coeff.len() as isize,
+            row.zbin.as_ptr(),
+            row.round_fp.as_ptr(),
+            row.quant_fp.as_ptr(),
+            row.quant_shift.as_ptr(),
+            qcoeff.as_mut_ptr(),
+            dqcoeff.as_mut_ptr(),
+            row.dequant.as_ptr(),
+            scan_i16.as_ptr(),
+            iscan.as_ptr(),
+            qm.as_ptr(),
+            iqm.as_ptr(),
+            log_scale,
         )
     }
 }

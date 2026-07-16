@@ -19,6 +19,11 @@ use alloc::vec::Vec;
 
 /// Encoder pipeline state.
 pub struct EncodePipeline {
+    /// SVT_HDR_MODE mirror: which C oracle this encode targets (mainline
+    /// v4.2.0 vs the svt-av1-hdr fork hybrid MODE1) + the fork knobs.
+    /// Defaults to Mainline = all fork behavior off; callers opt in with
+    /// `pipe.hdr = HdrForkConfig::hdr_fork()` after construction.
+    pub hdr: crate::hdr_mode::HdrForkConfig,
     /// Speed configuration.
     pub speed_config: SpeedConfig,
     /// Rate control configuration.
@@ -83,6 +88,7 @@ impl EncodePipeline {
         intra_period: u32,
     ) -> Self {
         Self {
+            hdr: crate::hdr_mode::HdrForkConfig::default(),
             speed_config: SpeedConfig::from_preset(preset),
             rc_config,
             rc_state: RcState::default(),
@@ -255,7 +261,8 @@ impl EncodePipeline {
         // heuristics (not ports of C's segment-based aq-mode 1/2) and used
         // to fire unconditionally, shifting base_q_idx on every stream —
         // the F1 divergence in docs/IDENTITY-STATUS.md.
-        let tpl_adjusted_qp = if self.rc_config.aq_mode != 0 {
+        #[allow(unused_mut)]
+        let mut tpl_adjusted_qp = if self.rc_config.aq_mode != 0 {
             // Compute VAQ activity map for adaptive QP
             let activity_map = crate::perceptual::ActivityMap::compute(&encode_input, w, h, w);
 
@@ -295,7 +302,39 @@ impl EncodePipeline {
         // deblock level picker, FH base_q_idx) consumes ONLY this qindex.
         // Lambda is the documented exception: it stays CLI-qp-calibrated
         // (see qp_to_lambda) until C's lambda_rate_tables.h port lands.
-        let base_qindex = crate::rate_control::qp_to_qindex(tpl_adjusted_qp);
+        #[allow(unused_mut)]
+        let mut base_qindex = crate::rate_control::qp_to_qindex(tpl_adjusted_qp);
+        // [SVT_HDR_MODE] fork Variance Boost: derive the per-SB qindex plan
+        // (sb_qindex.rs = C variance_adjust_qp(readjust=true) chain). The
+        // recentered base REPLACES base_qindex BEFORE every downstream
+        // consumer (lambda, CDF bucket, deblock, FH) — C order: rc_aq runs
+        // in rc_init_sb_qindex ahead of MD. picture_qp follows C's
+        // (base+2)>>2 update.
+        let sb_plan = if self.hdr.is_fork() && self.hdr.enable_variance_boost {
+            let sb_cols_p = w.div_ceil(64);
+            let sb_rows_p = h.div_ceil(64);
+            let mut vars = alloc::vec::Vec::with_capacity(sb_cols_p * sb_rows_p);
+            for r in 0..sb_rows_p {
+                for c in 0..sb_cols_p {
+                    vars.push(crate::sb_qindex::compute_sb_variances(
+                        &encode_input, w, w, h, c * 64, r * 64,
+                    ));
+                }
+            }
+            let plan = crate::sb_qindex::variance_adjust_qp(
+                base_qindex,
+                &vars,
+                self.hdr.variance_boost_strength,
+                self.hdr.variance_octile,
+                self.hdr.variance_boost_curve,
+                tpl_adjusted_qp,
+            );
+            base_qindex = plan.base_qindex;
+            tpl_adjusted_qp = ((i32::from(plan.base_qindex) + 2) >> 2).clamp(0, 63) as u8;
+            Some(plan)
+        } else {
+            None
+        };
 
         // C-exact coding quantizer for the still/PD1 path (quant.rs): the
         // frame-level rdoq_level from `derive_intra_coeff_level`
@@ -307,7 +346,7 @@ impl EncodePipeline {
         // rdoq policy line `<=M5 -> 1, else f(coeff_lvl)` covers both,
         // enc_mode_config.c:14931) on 64-aligned dims — everywhere else
         // the legacy dead-zone quantizer stays.
-        let c_quant: Option<alloc::sync::Arc<crate::quant::CodingQuantCfg>> =
+        let mut c_quant: Option<alloc::sync::Arc<crate::quant::CodingQuantCfg>> =
             if is_key && w % 64 == 0 && h % 64 == 0 {
                 let mut tot: u64 = 0;
                 let mut cnt: u64 = 0;
@@ -328,7 +367,12 @@ impl EncodePipeline {
                 // C clamps allintra presets above M9 to M9 (enc_handle.c:4634).
                 let eff_mode = self.speed_config.preset.min(9);
                 let rdoq_level = crate::quant::rdoq_level_allintra(eff_mode, coeff_lvl);
-                let lambda = crate::pd0::kf_full_lambda_8bit(base_qindex, tpl_adjusted_qp as u32);
+                let lambda = crate::pd0::kf_full_lambda_8bit_ex(
+                    base_qindex,
+                    tpl_adjusted_qp as u32,
+                    self.hdr.is_fork() && self.hdr.alt_lambda_factors,
+                    0,
+                );
                 Some(alloc::sync::Arc::new(crate::quant::CodingQuantCfg::new(
                     rdoq_level,
                     lambda,
@@ -393,6 +437,95 @@ impl EncodePipeline {
         let tile_rows = 1;
         let rows_per_tile = sb_rows.div_ceil(tile_rows);
 
+        // [SVT_HDR_MODE] fork chroma-q: derive the FH per-plane deltas and
+        // the plane qindexes the quantizer must use. Mainline: all zero.
+        let chroma_deltas = if self.hdr.is_fork() {
+            crate::chroma_q::fork_chroma_q_deltas(base_qindex, &self.color_description)
+        } else {
+            crate::chroma_q::ChromaQDeltas::default()
+        };
+        let qindex_u = (i32::from(base_qindex) + i32::from(chroma_deltas.u_ac)).clamp(0, 255) as u8;
+        let qindex_v = (i32::from(base_qindex) + i32::from(chroma_deltas.v_ac)).clamp(0, 255) as u8;
+        // Stills are I-slices at temporal layer 0: effective = ac_bias * 0.3.
+        let ac_bias_eff = svtav1_dsp::ac_bias::effective_ac_bias(self.hdr.ac_bias, true, 0);
+        // [SVT_HDR_MODE] per-SB delta-q signaling (variance boost). This
+        // chunk arms the FULL SYNTAX chain with a UNIFORM plan (every SB at
+        // base qindex -> all delta symbols are 0): decoder-valid, exercises
+        // FH delta_q_params + the per-SB delta_q_cdf symbols end to end.
+        // The variance plan (sb_qindex::variance_adjust_qp) swaps in when
+        // per-SB quantization threading lands (docs/HDR-ON-4.2.md).
+        let delta_q_res_signal = sb_plan.as_ref().map(|p| p.delta_q_res);
+        // sharp-tx RDOQ activates only with per-SB delta-q present (C gate
+        // `(use_sharpness || sharp_tx) && delta_q_present && plane==0`).
+        let sharp_tx_active = self.hdr.is_fork() && self.hdr.sharp_tx == 1 && sb_plan.is_some();
+        // [SVT_HDR_MODE] frame QM levels (svt_av1_qm_init,
+        // md_config_process.c:249): the linear qindex map (default tune =
+        // PSNR in the fork); chroma levels derive from base + the FH
+        // chroma AC deltas. [15;3] = QM off (identity).
+        let qm_levels: [u8; 3] = if self.hdr.is_fork() && self.hdr.enable_qm {
+            let lvl = |q: i32, lo: u8, hi: u8| {
+                crate::qm::aom_get_qmlevel(q, i32::from(lo), i32::from(hi)) as u8
+            };
+            [
+                lvl(
+                    i32::from(base_qindex),
+                    self.hdr.min_qm_level,
+                    self.hdr.max_qm_level,
+                ),
+                lvl(
+                    i32::from(base_qindex) + i32::from(chroma_deltas.u_ac),
+                    self.hdr.min_chroma_qm_level,
+                    self.hdr.max_chroma_qm_level,
+                ),
+                lvl(
+                    i32::from(base_qindex) + i32::from(chroma_deltas.v_ac),
+                    self.hdr.min_chroma_qm_level,
+                    self.hdr.max_chroma_qm_level,
+                ),
+            ]
+        } else {
+            [15; 3]
+        };
+        // [SVT_HDR_MODE] photon-noise film grain (--noise*): synthesize
+        // the table per frame; seed 7391 + 3381*frame (C resource_
+        // coordination assign_film_grain_random_seed; zero is bumped).
+        let film_grain: Option<svtav1_entropy::obu::FilmGrainParams> =
+            if self.hdr.is_fork() && self.hdr.noise_strength > 0 {
+                let mut fg = crate::noise_gen::generate_noise_table(
+                    self.width,
+                    self.height,
+                    u32::from(self.hdr.noise_strength),
+                    self.hdr.noise_strength_chroma,
+                    self.hdr.noise_chroma_from_luma as i8,
+                    self.hdr.noise_size,
+                    self.color_description.full_range,
+                );
+                let mut seed = 7391u16.wrapping_add(
+                    3381u16.wrapping_mul(self.frame_count as u16),
+                );
+                if seed == 0 {
+                    seed = 7391;
+                }
+                fg.random_seed = seed;
+                Some(fg)
+            } else {
+                None
+            };
+        // Stamp the fork RDOQ knobs onto the encode-pass quant config (C
+        // reads them off static_config inside svt_av1_optimize_txb; the
+        // sharp-tx gate `(use_sharpness||sharp_tx) && delta_q_present &&
+        // plane==0` is unconditional for sharp_tx=1, full_loop.c:1070-1078).
+        if self.hdr.is_fork() {
+            if let Some(cq) = c_quant.as_mut() {
+                let cfg = alloc::sync::Arc::get_mut(cq)
+                    .expect("c_quant is unshared before tile encoding starts");
+                cfg.hdr_fork = true;
+                cfg.sharpness = self.hdr.sharpness;
+                cfg.noise_norm_strength = self.hdr.noise_norm_strength;
+                cfg.sharp_tx_active = sharp_tx_active;
+                cfg.qm_levels = qm_levels;
+            }
+        }
         let tile_recons = encode_tile_rows(
             &encode_input,
             w,
@@ -403,7 +536,19 @@ impl EncodePipeline {
             rows_per_tile,
             tile_rows,
             base_qindex,
+            qindex_u,
+            qindex_v,
+            ac_bias_eff,
+            sb_plan.as_ref().map(|p| p.sb_qindex.as_slice()),
+            (chroma_deltas.u_ac, chroma_deltas.v_ac),
+            sharp_tx_active,
+            if self.hdr.is_fork() { self.hdr.noise_norm_strength } else { 0 },
+            qm_levels,
+            if self.hdr.is_fork() { self.hdr.tx_bias } else { 0 },
+            self.hdr.is_fork() && self.hdr.alt_lambda_factors,
+            base_qindex,
             tpl_adjusted_qp,
+            self.hdr.sharpness,
             lambda,
             &self.speed_config,
             ref_frame_data.as_deref(),
@@ -520,6 +665,14 @@ impl EncodePipeline {
                 self.speed_config.preset,
                 is_single_frame,
             );
+            // [SVT_HDR_MODE] the fork ALWAYS signals separate_uv_delta_q
+            // (its FH writes independent U/V deltas — entropy_coding.c
+            // fork block hardcodes both flags true).
+            if self.hdr.is_fork() {
+                t.separate_uv_delta_q = true;
+                // Photon noise signals grain tables per frame.
+                t.film_grain_params_present = self.hdr.noise_strength > 0;
+            }
             // enable_intra_edge_filter's C-parity surface is still/420
             // (the C matched config). The mono extension keeps 0: C cannot
             // emit mono, and the mono leaf coder predicts without edge
@@ -570,13 +723,22 @@ impl EncodePipeline {
                 seq_tools.enable_filter_intra,
                 sc_derivation.allow_screen_content_tools,
             );
+            // [SVT_HDR_MODE] arm per-SB delta-q: prev starts at the FH base
+            // (C prev_qindex tile-init); uniform plan = every SB at base.
+            if let Some(res) = delta_q_res_signal {
+                ectx.delta_q_state = Some((res, i32::from(base_qindex)));
+                ectx.delta_q_sb_qindex = i32::from(base_qindex);
+            }
             let mut chroma_pass = chroma.map(|(u_src, v_src)| ChromaPass {
                 u_src,
                 v_src,
                 u_recon: &mut u_recon,
                 v_recon: &mut v_recon,
                 stride: cw,
-                qindex: base_qindex,
+                qindex_u,
+                qindex_v,
+                qm_u: qm_levels[1],
+                qm_v: qm_levels[2],
                 c_quant: c_quant.as_deref(),
             });
             // LR tap references reset at the tile start (C
@@ -594,6 +756,20 @@ impl EncodePipeline {
             );
             let mut prev_sb_row = usize::MAX;
             for (sb_idx, tree) in all_trees.iter().enumerate() {
+                // [SVT_HDR_MODE] per-SB delta-q: the SB's planned qindex
+                // drives both the delta symbol and (via the search, which
+                // used the same plan) the coded coefficients. Chroma dequant
+                // per SB = sb_qindex + the FRAME chroma deltas.
+                if let Some(plan) = sb_plan.as_ref() {
+                    let sbq = i32::from(plan.sb_qindex[sb_idx]);
+                    ectx.delta_q_sb_qindex = sbq;
+                    if let Some(cp) = chroma_pass.as_mut() {
+                        cp.qindex_u =
+                            (sbq + i32::from(chroma_deltas.u_ac)).clamp(0, 255) as u8;
+                        cp.qindex_v =
+                            (sbq + i32::from(chroma_deltas.v_ac)).clamp(0, 255) as u8;
+                    }
+                }
                 let sb_col = sb_idx % sb_cols;
                 let sb_row = sb_idx / sb_cols;
                 let bx = sb_col * sb_size;
@@ -699,6 +875,7 @@ impl EncodePipeline {
             if is_single_frame && self.speed_config.preset <= 5 {
                 let (su, sv) = chroma.unwrap_or((&[][..], &[][..]));
                 let input = crate::deblock::DlfSearchInput {
+                    sharpness: self.hdr.sharpness.clamp(0, 7) as u8,
                     y_src: &encode_input,
                     u_src: su,
                     v_src: sv,
@@ -729,7 +906,7 @@ impl EncodePipeline {
                 chroma.is_some(),
                 &deblock_geom,
                 &lf_levels,
-                0, // sharpness: matches the signaled loop_filter_sharpness
+                self.hdr.sharpness.clamp(0, 7) as u8, // = signaled loop_filter_sharpness
             );
         }
 
@@ -807,8 +984,18 @@ impl EncodePipeline {
         // search, ours re-runs the deterministic walk).
         if cdef_params.bits > 0 {
             let (tile_cdef, _geom_c, u_c, v_c) = run_entropy_walk(None, Some(&cdef_params));
-            debug_assert_eq!(u_c, u_recon, "cdef re-walk chroma recon must be identical");
-            debug_assert_eq!(v_c, v_recon, "cdef re-walk chroma recon must be identical");
+            // The re-walk reproduces the PRE-filter recon; u_recon/v_recon
+            // were deblocked IN PLACE above, so compare against the
+            // pre-deblock copy (the old `== u_recon` form only held on
+            // content where chroma deblock was a no-op — it fired
+            // spuriously on flat+textured content at mid qp, mainline
+            // included, pre-dating the fork work).
+            #[cfg(debug_assertions)]
+            if let Some((_, u_unf, v_unf)) = self.last_recon_unfiltered.as_ref() {
+                debug_assert_eq!(&u_c, u_unf, "cdef re-walk chroma recon must be identical");
+                debug_assert_eq!(&v_c, v_unf, "cdef re-walk chroma recon must be identical");
+            }
+            let _ = (&u_c, &v_c);
             tile_data = tile_cdef;
         }
         self.last_recon_pre_cdef = Some((recon.clone(), u_recon.clone(), v_recon.clone()));
@@ -872,8 +1059,15 @@ impl EncodePipeline {
                     let cdef_walk_opt = (cdef_params.bits > 0).then_some(&cdef_params);
                     let (tile_lr, _geom2, u2, v2) =
                         run_entropy_walk(Some(&rest_info), cdef_walk_opt);
-                    debug_assert_eq!(u2, u_recon, "re-walk chroma recon must be identical");
-                    debug_assert_eq!(v2, v_recon, "re-walk chroma recon must be identical");
+                    // Same pre-deblock reference as the CDEF re-walk assert:
+                    // u_recon/v_recon have been deblocked (and CDEF'd) in
+                    // place by now; the walk reproduces the pre-filter state.
+                    #[cfg(debug_assertions)]
+                    if let Some((_, u_unf, v_unf)) = self.last_recon_unfiltered.as_ref() {
+                        debug_assert_eq!(&u2, u_unf, "LR re-walk chroma recon must be identical");
+                        debug_assert_eq!(&v2, v_unf, "LR re-walk chroma recon must be identical");
+                    }
+                    let _ = (&u2, &v2);
                     tile_data = tile_lr;
 
                     // Decoder-exact application to the output copy: stripe
@@ -983,6 +1177,9 @@ impl EncodePipeline {
                 // and application MUST agree or the recon desyncs from
                 // every conforming decoder.
                 lf_levels.levels,
+                // Signaled loop_filter_sharpness — must match the value the
+                // deblock search + application used (fork default 1).
+                self.hdr.sharpness.clamp(0, 7) as u8,
                 // The CDEF strengths applied to the output recon above —
                 // like the deblock levels, signaling and application MUST
                 // agree or the recon desyncs from every conforming decoder.
@@ -993,6 +1190,27 @@ impl EncodePipeline {
                 // ones the tile signals and the output recon had applied.
                 &lr_signal,
                 sc_signal,
+                // [SVT_HDR_MODE] fork chroma-q deltas: the quantizer above
+                // used qindex_u/qindex_v built from EXACTLY these deltas, so
+                // signaling and application agree (chroma_q.rs). Mainline
+                // passes None = the zero-delta bit pattern.
+                if self.hdr.is_fork() {
+                    Some([
+                        chroma_deltas.u_dc,
+                        chroma_deltas.u_ac,
+                        chroma_deltas.v_dc,
+                        chroma_deltas.v_ac,
+                    ])
+                } else {
+                    None
+                },
+                // [SVT_HDR_MODE] per-SB delta-q res (variance boost). The
+                // same value gates the walk's per-SB delta symbols.
+                delta_q_res_signal,
+                // [SVT_HDR_MODE] frame QM levels (fork enable_qm); None in
+                // mainline mode. The quantizers used the SAME levels.
+                if qm_levels == [15; 3] { None } else { Some(qm_levels) },
+                film_grain.as_ref(),
             );
             // tile_data is already a complete tile_group (with TG header)
             let mut frame_payload = alloc::vec::Vec::new();
@@ -1105,6 +1323,15 @@ pub(crate) struct EntropyCtx {
     /// FH `allow_screen_content_tools` — gates the per-block no-palette
     /// flag coding (C write_palette_mode_info gate, entropy_coding.c:5026).
     allow_sct: bool,
+    /// [SVT_HDR_MODE] per-SB delta-q emission state (C write_modes_b,
+    /// entropy_coding.c:4997): `Some((delta_q_res, prev_qindex))` when the
+    /// FH signaled delta_q_present. The walk arms `delta_q_pending` with
+    /// the SB's target qindex at each SB start; the FIRST block whose
+    /// origin is the SB corner (and bsize != SB size || !skip) emits
+    /// `(cur - prev) / res` via av1_write_delta_q_index and updates prev.
+    pub delta_q_state: Option<(u8, i32)>,
+    /// The current SB's target qindex, set by the walk at SB start.
+    pub delta_q_sb_qindex: i32,
     /// Pending per-SB `cdef_idx` emission (C write_cdef,
     /// entropy_coding.c:4034: `aom_write_literal(w, mbmi->cdef_strength,
     /// cdef_bits)` at the FIRST NON-SKIP block of each 64x64). Set at SB
@@ -1123,9 +1350,15 @@ struct ChromaPass<'a> {
     v_recon: &'a mut [u8],
     /// Chroma plane stride (= frame_width / 2).
     stride: usize,
-    /// qindex (0..255) for chroma quantization — same tables as luma,
-    /// since the frame header signals DeltaQUDc = DeltaQUAc = 0.
-    qindex: u8,
+    /// Per-plane chroma quantization qindexes: clamp(base + FH
+    /// delta_q_ac[plane]). Both == base_qindex in mainline mode (all FH
+    /// chroma deltas 0); the fork's chroma-q path sets them independently
+    /// and the FH signals the deltas (chroma_q.rs).
+    qindex_u: u8,
+    qindex_v: u8,
+    /// [SVT_HDR_MODE] per-plane chroma QM levels (15 = off).
+    qm_u: u8,
+    qm_v: u8,
     /// Frame-level C-exact coding quantizer (still path) — C's MDS3 RDOQ
     /// covers chroma too (skip_uv cleared when enc-dec is bypassed).
     c_quant: Option<&'a crate::quant::CodingQuantCfg>,
@@ -1192,6 +1425,8 @@ impl EntropyCtx {
             left_txfm: alloc::vec![0u8; height_4x4],
             seq_filter_intra,
             allow_sct,
+            delta_q_state: None,
+            delta_q_sb_qindex: 0,
             cdef_pending: None,
         }
     }
@@ -1775,10 +2010,12 @@ fn encode_block_syntax(
             (u_q.clone(), *u_eob, v_q.clone(), *v_eob)
         } else {
             let (u_q, u_eob) = crate::partition::encode_chroma_block_dc(
-                cp.u_src, cp.u_recon, cp.stride, cx, cy, cw, ch, cp.qindex, cp.c_quant,
+                cp.u_src, cp.u_recon, cp.stride, cx, cy, cw, ch, cp.qindex_u, cp.c_quant,
+                cp.qm_u,
             );
             let (v_q, v_eob) = crate::partition::encode_chroma_block_dc(
-                cp.v_src, cp.v_recon, cp.stride, cx, cy, cw, ch, cp.qindex, cp.c_quant,
+                cp.v_src, cp.v_recon, cp.stride, cx, cy, cw, ch, cp.qindex_v, cp.c_quant,
+                cp.qm_v,
             );
             (u_q, u_eob, v_q, v_eob)
         }
@@ -1804,6 +2041,24 @@ fn encode_block_syntax(
     if !skip {
         if let Some((bits, idx)) = ectx.cdef_pending.take() {
             writer.write_literal(idx as u32, bits as u32);
+        }
+    }
+
+    // [SVT_HDR_MODE] per-SB delta-q (C entropy_coding.c:4997, spec 5.11.41
+    // mode_info -> read_delta_qindex): only at the SB's upper-left block,
+    // and only when (bsize != sb_size || !skip). sb_size is 64 here.
+    if let Some((res, prev)) = ectx.delta_q_state {
+        let super_block_upper_left = block_x % 64 == 0 && block_y % 64 == 0;
+        let is_sb_sized = decision.width == 64 && decision.height == 64;
+        if super_block_upper_left && (!is_sb_sized || !skip) {
+            let cur = ectx.delta_q_sb_qindex;
+            let reduced = (cur - prev) / i32::from(res);
+            svtav1_entropy::mv_coding::write_delta_q_index(
+                writer,
+                &mut frame_ctx.delta_q_cdf,
+                reduced,
+            );
+            ectx.delta_q_state = Some((res, cur));
         }
     }
 
@@ -2559,7 +2814,23 @@ fn encode_tile_rows(
     rows_per_tile: usize,
     tile_rows: usize,
     base_qindex: u8,
+    // Per-plane chroma qindexes (== base_qindex in mainline mode).
+    qindex_u: u8,
+    qindex_v: u8,
+    // Effective AC bias for MD spatial distortion (0.0 = mainline default).
+    ac_bias_eff: f64,
+    // [SVT_HDR_MODE] per-SB qindex plan (variance boost) + frame chroma
+    // AC deltas: the search must quantize each SB at its planned qindex.
+    sb_qindex_plan: Option<&[u8]>,
+    chroma_ac_deltas: (i8, i8),
+    sharp_tx_active: bool,
+    hdr_noise_norm: u8,
+    qm_levels: [u8; 3],
+    hdr_tx_bias: u8,
+    hdr_alt_lambda: bool,
+    fh_base_qindex: u8,
     cli_qp: u8,
+    hdr_sharpness: i8,
     _lambda: u64, // Per-SB lambda computed from sb_qp_offsets
     speed_config: &crate::speed_config::SpeedConfig,
     ref_frame_data: Option<&[u8]>,
@@ -2639,13 +2910,21 @@ fn encode_tile_rows(
             None
         };
         #[allow(unused_mut)]
-        let fun_frame = if use_funnel {
+        let mut fun_frame = if use_funnel {
             let cq = c_quant.as_ref().unwrap();
             Some(crate::leaf_funnel::FunnelFrame {
+                sharpness: hdr_sharpness,
+                sharp_tx_active,
+                noise_norm_strength: hdr_noise_norm,
+                qm_levels,
+                tx_bias: hdr_tx_bias,
                 lambda: cq.lambda as u64,
                 cli_qp: cli_qp as u32,
                 rdoq_level: cq.rdoq_level,
                 base_qindex,
+                qindex_u,
+                qindex_v,
+                ac_bias_eff,
                 cfg: funnel_cfg,
             })
         } else {
@@ -2724,6 +3003,43 @@ fn encode_tile_rows(
                 let y0 = sb_row * sb_size;
                 let cur_w = sb_size.min(w - x0);
                 let cur_h = sb_size.min(h - y0);
+
+                // [SVT_HDR_MODE] variance boost: this SB searches/quantizes
+                // at its PLANNED qindex (luma + per-plane chroma) with the
+                // matching lambda (C per-SB svt_aom_lambda_assign). The
+                // frame-level CDF bucket stays at the FH base (C behavior).
+                if let (Some(plan), Some(f)) = (sb_qindex_plan, fun_frame.as_mut()) {
+                    let sbq = plan[sb_row * sb_cols + sb_col];
+                    f.base_qindex = sbq;
+                    f.qindex_u = (i32::from(sbq) + i32::from(chroma_ac_deltas.0))
+                        .clamp(0, 255) as u8;
+                    f.qindex_v = (i32::from(sbq) + i32::from(chroma_ac_deltas.1))
+                        .clamp(0, 255) as u8;
+                    // [SVT_HDR_MODE] per-SB lambda: alt KF factor (fork
+                    // default) + the delta-q qdiff stats factor
+                    // (rc_process.c:437-446; this path is fork-only).
+                    #[cfg(feature = "std")]
+                    if std::env::var("SVTAV1_LAMBDA_DBG").is_ok() {
+                        std::eprintln!(
+                            "sb lam alt={} sbq={} base={} -> {}",
+                            hdr_alt_lambda,
+                            sbq,
+                            fh_base_qindex,
+                            crate::pd0::kf_full_lambda_8bit_ex(
+                                sbq,
+                                u32::from(crate::rate_control::qindex_to_qp(sbq)),
+                                hdr_alt_lambda,
+                                i32::from(sbq) - i32::from(fh_base_qindex),
+                            )
+                        );
+                    }
+                    f.lambda = u64::from(crate::pd0::kf_full_lambda_8bit_ex(
+                        sbq,
+                        u32::from(crate::rate_control::qindex_to_qp(sbq)),
+                        hdr_alt_lambda,
+                        i32::from(sbq) - i32::from(fh_base_qindex),
+                    ));
+                }
 
                 let ref_ctx = ref_frame_data.map(|rf| crate::partition::RefFrameCtx {
                     y_plane: rf,
@@ -3191,7 +3507,10 @@ fn encode_tile_rows(
                             u_recon: &mut sim_u,
                             v_recon: &mut sim_v,
                             stride: cwid,
-                            qindex: base_qindex,
+                            qindex_u,
+                            qindex_v,
+                            qm_u: qm_levels[1],
+                            qm_v: qm_levels[2],
                             c_quant: None,
                         });
                         encode_partition_tree(

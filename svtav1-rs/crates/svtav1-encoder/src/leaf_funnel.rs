@@ -266,6 +266,39 @@ pub struct FunnelFrame {
     /// Frame rdoq level (0 = quantize_b at MDS3 too).
     pub rdoq_level: u8,
     pub base_qindex: u8,
+    /// Per-plane chroma quantization qindexes: clamp(base + FH delta_q_ac
+    /// [plane]). == base_qindex in mainline mode (all FH chroma deltas 0);
+    /// the fork's chroma-q path sets U/V independently (chroma_q.rs).
+    pub qindex_u: u8,
+    pub qindex_v: u8,
+    /// Effective AC bias for MD spatial distortion (mainline v4.2 feature,
+    /// fork default 1.0): `get_effective_ac_bias(ac_bias, is_islice,
+    /// layer)` — stills are I-slices, so ac_bias * 0.3. 0.0 = off = the
+    /// prior spatial SSE bit-exactly. The C sites add
+    /// `get_svt_psy_full_dist` to the spatial dist BEFORE the <<4
+    /// (full_loop.c svt_aom_full_loop_uv + the luma MDS3 path).
+    pub ac_bias_eff: f64,
+    /// Config sharpness for the RDOQ rshift formula (0 mainline; fork
+    /// default 1 — departs from mainline only at >= 3).
+    pub sharpness: i8,
+    /// [SVT_HDR_MODE] sharp-tx RDOQ active (fork sharp_tx=1 + delta-q).
+    pub sharp_tx_active: bool,
+    /// [SVT_HDR_MODE] fork `--noise-norm-strength` (0 = off). Applied to
+    /// the quantized luma coefficients in `tx_unit` — C runs it in the
+    /// encode pass on the winner (full_loop.c:2017, `is_encode_pass &&
+    /// eob!=0 && tx_type!=IDTX && LUMA`); this single-pass port applies it
+    /// at MD quantization so dist/recon/coded levels stay consistent (fork
+    /// mode carries no byte-vs-C gate; the kernel itself is parity-tested).
+    pub noise_norm_strength: u8,
+    /// [SVT_HDR_MODE] per-plane frame QM levels [Y, U, V] (15 = off);
+    /// stamped onto the per-plane `QuantTable`s so every quantize site
+    /// resolves the right matrices without extra threading.
+    pub qm_levels: [u8; 3],
+    /// [SVT_HDR_MODE] fork `--tx-bias` (0 = off, the fork default). When
+    /// set, the mds0/full-loop spatial SSE runs through the fork's
+    /// distortion facade bias layer (tx_bias.rs; C
+    /// svt_spatial_full_distortion_kernel_facade, pic_operators.c:252).
+    pub tx_bias: u8,
     /// Per-preset intra-leaf config (M6 vs intra_level-7 M7/M8).
     pub cfg: FunnelCfg,
 }
@@ -1312,18 +1345,40 @@ fn tx_unit(
         svtav1_entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type] as usize,
     );
     let log_scale = TX_SCALE_TAB[c_tx];
+    // [SVT_HDR_MODE] QM slices for this txb (2D transforms only; U and V
+    // share the chroma table class, the LEVEL is plane-selected by the
+    // caller via `qt.qm_level`).
+    let qm = if tx_type < 9 && qt.qm_level < 15 {
+        crate::qm::qm_slices(usize::from(qt.qm_level), plane_type == 1, c_tx)
+    } else {
+        None
+    };
     let mut qcoeff = vec![0i32; pw * ph];
     let mut dqcoeff = vec![0i32; pw * ph];
     let mut eob = if do_rdoq {
-        let mut e =
-            crate::quant::quantize_fp(&packed, scan, qt, log_scale, &mut qcoeff, &mut dqcoeff);
+        let mut e = match qm {
+            Some((wt, iwt)) => crate::qm::quantize_fp_qm(
+                &packed, scan, qt, log_scale, wt, iwt, &mut qcoeff, &mut dqcoeff,
+            ),
+            None => {
+                crate::quant::quantize_fp(&packed, scan, qt, log_scale, &mut qcoeff, &mut dqcoeff)
+            }
+        };
         if e != 0 {
             let (cut_off_num, cut_off_denum) = crate::quant::rdoq_cutoffs(frame.rdoq_level);
             let tx_class = cc::TX_TYPE_TO_CLASS[tx_type];
             let o = crate::quant::OptimizeCtx {
                 txb_costs: rates.coeff.txb(cc::txsize_entropy_ctx(c_tx), plane_type),
                 eob_costs: &rates.coeff.eob[cc::TXSIZE_LOG2_MINUS4[c_tx]][plane_type],
-                rdmult: crate::quant::rdoq_rdmult(frame.lambda as u32, plane_type),
+                rdmult: crate::quant::rdoq_rdmult_full(
+                    frame.lambda as u32,
+                    plane_type,
+                    frame.sharpness,
+                    false,
+                    frame.sharp_tx_active && plane_type == 0,
+                ),
+                sharpness_flag: frame.sharp_tx_active && plane_type == 0,
+                iwt: qm.map(|(_, iwt)| iwt),
                 tx_size: c_tx,
                 tx_class,
                 txb_skip_ctx,
@@ -1335,10 +1390,31 @@ fn tx_unit(
         }
         e
     } else {
-        crate::quant::quantize_b(&packed, scan, qt, log_scale, &mut qcoeff, &mut dqcoeff)
+        match qm {
+            Some((wt, iwt)) => crate::qm::quantize_b_qm(
+                &packed, scan, qt, log_scale, wt, iwt, &mut qcoeff, &mut dqcoeff,
+            ),
+            None => {
+                crate::quant::quantize_b(&packed, scan, qt, log_scale, &mut qcoeff, &mut dqcoeff)
+            }
+        }
     };
     let _ = &mut packed;
     let _ = &mut eob;
+    // [SVT_HDR_MODE] fork noise normalization (see FunnelFrame field doc).
+    if frame.noise_norm_strength > 0 && plane_type == 0 && eob != 0 && tx_type != 9 {
+        crate::noise_norm::perform_noise_normalization(
+            &qt.dequant,
+            qm.map(|(_, iwt)| iwt),
+            &packed,
+            &mut qcoeff,
+            &mut dqcoeff,
+            &mut eob,
+            scan,
+            c_tx,
+            frame.noise_norm_strength,
+        );
+    }
 
     // Reconstruction (needed for spatial dist AND for depth-1 neighbor
     // prediction — C inverts whenever spatial SSE or intra tx_depth > 0).
@@ -1378,6 +1454,48 @@ fn tx_unit(
                 let d = src[srow + c] as i64 - recon[r * w + c] as i64;
                 sse += (d * d) as u64;
             }
+        }
+        // [SVT_HDR_MODE] fork tx-bias facade layer (pic_operators.c:252):
+        // the spatial SSE is biased by prediction-mode class + tx size
+        // BEFORE the psy add (the facade IS the SSE producer at the C call
+        // sites; get_svt_psy_full_dist is added by the caller after). The
+        // luma and chroma mode-class index sets are identical (DC/SMOOTH*
+        // blurry, V/H/PAETH neutral), so one mapping serves both planes.
+        // Stills are temporal layer 0, and the facade's ac_bias param only
+        // feeds an `== 0.0` gate, so the effective flag is equivalent.
+        if frame.tx_bias > 0 {
+            let class = match intra_dir {
+                0 | 9 | 10 | 11 => crate::tx_bias::BiasModeClass::IntraBlurry,
+                1 | 2 | 12 => crate::tx_bias::BiasModeClass::IntraNeutral,
+                _ => crate::tx_bias::BiasModeClass::IntraOther,
+            };
+            sse = crate::tx_bias::facade_bias(
+                sse as i64,
+                class,
+                true,
+                w as u32,
+                h as u32,
+                0,
+                if frame.ac_bias_eff > 0.0 { 1.0 } else { 0.0 },
+                frame.tx_bias,
+            ) as u64;
+        }
+        // [ac-bias] C adds llrint(psy_distortion * effective_ac_bias) to
+        // the spatial SSE BEFORE the <<4 (get_svt_psy_full_dist call sites
+        // in full_loop.c). tx_bias=0 (fork default) keeps the facade a
+        // plain SSE, so this is the whole fork-default delta here.
+        if frame.ac_bias_eff > 0.0 {
+            sse += svtav1_dsp::ac_bias::psy_full_dist(
+                src,
+                src_off,
+                src_stride,
+                &recon,
+                0,
+                w,
+                w,
+                h,
+                frame.ac_bias_eff,
+            );
         }
         sse << 4
     } else {
@@ -1634,7 +1752,8 @@ fn md_cfl_rd_pick_alpha(
     cb_dsc: usize,
     cr_tsc: usize,
     cr_dsc: usize,
-    qt: &QuantTable,
+    qt_u: &QuantTable,
+    qt_v: &QuantTable,
     frame: &FunnelFrame,
     rates: &MdRates,
     do_rdoq: bool,
@@ -1667,7 +1786,8 @@ fn md_cfl_rd_pick_alpha(
         // is_full_loop=0 -> TRANSFORM-domain distortion, NOT the spatial SSE
         // that feeds the final block RD. spatial_dist=false mirrors that.
         let out = tx_unit(
-            src, c_stride, c_off, &cfl_pred, cw, 0, cw, chh, 0, 1, tsc, dsc, 0, qt, frame, rates,
+            src, c_stride, c_off, &cfl_pred, cw, 0, cw, chh, 0, 1, tsc, dsc, 0,
+            if plane == 0 { qt_u } else { qt_v }, frame, rates,
             do_rdoq, false,
         );
         (out.dist, out.bits)
@@ -2094,7 +2214,13 @@ pub(crate) fn evaluate_leaf(
     let frame = fx.frame;
     let rates = fx.rates;
     let lambda = frame.lambda;
-    let qt = crate::quant::build_quant_table(frame.base_qindex);
+    let mut qt = crate::quant::build_quant_table(frame.base_qindex);
+    qt.qm_level = frame.qm_levels[0];
+    // Per-plane chroma tables (== qt when the FH chroma deltas are 0).
+    let mut qt_u = crate::quant::build_quant_table(frame.qindex_u);
+    qt_u.qm_level = frame.qm_levels[1];
+    let mut qt_v = crate::quant::build_quant_table(frame.qindex_v);
+    qt_v.qm_level = frame.qm_levels[2];
 
     // -- Block-level contexts (svt_aom_coding_loop_context_generation) --
     // Intra-mode and tx-size contexts are always neighbour-derived; the
@@ -2226,7 +2352,7 @@ pub(crate) fn evaluate_leaf(
             cb_tsc,
             cb_dsc,
             0,
-            &qt,
+            &qt_u,
             frame,
             rates,
             do_rdoq,
@@ -2246,7 +2372,7 @@ pub(crate) fn evaluate_leaf(
             cr_tsc,
             cr_dsc,
             0,
-            &qt,
+            &qt_v,
             frame,
             rates,
             do_rdoq,
@@ -3361,7 +3487,7 @@ pub(crate) fn evaluate_leaf(
                     cb_tsc,
                     cb_dsc,
                     0,
-                    &qt,
+                    &qt_u,
                     frame,
                     rates,
                     do_rdoq,
@@ -3381,7 +3507,7 @@ pub(crate) fn evaluate_leaf(
                     cr_tsc,
                     cr_dsc,
                     0,
-                    &qt,
+                    &qt_v,
                     frame,
                     rates,
                     do_rdoq,
@@ -3454,7 +3580,8 @@ pub(crate) fn evaluate_leaf(
                     cb_dsc,
                     cr_tsc,
                     cr_dsc,
-                    &qt,
+                    &qt_u,
+                    &qt_v,
                     frame,
                     rates,
                     do_rdoq,
@@ -3503,7 +3630,7 @@ pub(crate) fn evaluate_leaf(
                         cb_tsc,
                         cb_dsc,
                         0,
-                        &qt,
+                        &qt_u,
                         frame,
                         rates,
                         do_rdoq,
@@ -3523,7 +3650,7 @@ pub(crate) fn evaluate_leaf(
                         cr_tsc,
                         cr_dsc,
                         0,
-                        &qt,
+                        &qt_v,
                         frame,
                         rates,
                         do_rdoq,
@@ -3642,7 +3769,8 @@ pub(crate) fn evaluate_leaf(
                     cb_dsc,
                     cr_tsc,
                     cr_dsc,
-                    &qt,
+                    &qt_u,
+                    &qt_v,
                     frame,
                     rates,
                     do_rdoq,
@@ -3691,7 +3819,7 @@ pub(crate) fn evaluate_leaf(
                         cb_tsc,
                         cb_dsc,
                         0,
-                        &qt,
+                        &qt_u,
                         frame,
                         rates,
                         do_rdoq,
@@ -3711,7 +3839,7 @@ pub(crate) fn evaluate_leaf(
                         cr_tsc,
                         cr_dsc,
                         0,
-                        &qt,
+                        &qt_v,
                         frame,
                         rates,
                         do_rdoq,
@@ -4065,13 +4193,15 @@ fn sub_tx_dims(tw: usize, th: usize) -> (usize, usize) {
 /// the min eob per split direction. `None` when the winner kept no
 /// coefficients (C leaves the ~0 sentinels, so the psq gate can't
 /// fire).
-pub(crate) fn min_nz_hv(ev: &LeafEval, qindex: u8) -> Option<(u16, u16)> {
+pub(crate) fn min_nz_hv(ev: &LeafEval, qindex: u8, qm_level_y: u8) -> Option<(u16, u16)> {
     if !ev.block_has_coeff() {
         return None;
     }
     let (w, h) = (ev.w, ev.h);
     debug_assert!(w == h && w >= 8, "psq gate runs on SQ blocks only");
-    let qt = crate::quant::build_quant_table(qindex);
+    let mut qt = crate::quant::build_quant_table(qindex);
+    // C's light quantize applies the PLANE_Y QM here too (full_loop.c:1282).
+    qt.qm_level = qm_level_y;
     let resid = ev.psq_resid();
     debug_assert_eq!(resid.len(), w * h);
 
@@ -4109,14 +4239,30 @@ pub(crate) fn min_nz_hv(ev: &LeafEval, qindex: u8) -> Option<(u16, u16)> {
         );
         let mut qcoeff = vec![0i32; pw * ph];
         let mut dqcoeff = vec![0i32; pw * ph];
-        crate::quant::quantize_b(
-            &packed,
-            scan,
-            &qt,
-            TX_SCALE_TAB[c_tx],
-            &mut qcoeff,
-            &mut dqcoeff,
-        )
+        match if qt.qm_level < 15 {
+            crate::qm::qm_slices(usize::from(qt.qm_level), false, c_tx)
+        } else {
+            None
+        } {
+            Some((wt, iwt)) => crate::qm::quantize_b_qm(
+                &packed,
+                scan,
+                &qt,
+                TX_SCALE_TAB[c_tx],
+                wt,
+                iwt,
+                &mut qcoeff,
+                &mut dqcoeff,
+            ),
+            None => crate::quant::quantize_b(
+                &packed,
+                scan,
+                &qt,
+                TX_SCALE_TAB[c_tx],
+                &mut qcoeff,
+                &mut dqcoeff,
+            ),
+        }
     };
 
     let mut nz_h = u16::MAX;

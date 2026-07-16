@@ -59,6 +59,10 @@ pub struct QuantTable {
     /// `y_quant_fp`: `(1 << 16) / q`.
     pub quant_fp: [i32; 2],
     pub dequant: [i32; 2],
+    /// [SVT_HDR_MODE] QM level for the plane this table quantizes (15 =
+    /// identity/no matrices — the non-QM kernels run). Set by the pipeline
+    /// when fork `enable_qm` is on; `build_quant_table` defaults it to 15.
+    pub qm_level: u8,
 }
 
 /// C `svt_aom_invert_quant` (inv_transforms.c:3507).
@@ -98,6 +102,7 @@ pub fn build_quant_table(qindex: u8) -> QuantTable {
         round_fp: [0; 2],
         quant_fp: [0; 2],
         dequant: [0; 2],
+        qm_level: 15,
     };
     for (i, quant_qtx) in [dc, ac].into_iter().enumerate() {
         let (quant, shift) = invert_quant(quant_qtx);
@@ -666,6 +671,14 @@ pub struct OptimizeCtx<'a> {
     pub tx_class: usize,
     pub txb_skip_ctx: usize,
     pub dc_sign_ctx: usize,
+    /// [SVT_HDR_MODE] C local `sharpness = 1` (sharp-tx active on luma with
+    /// delta_q_present): disables the trellis eob-shortening branches
+    /// (full_loop.c:822/955 `sharpness == 0 &&` gates).
+    pub sharpness_flag: bool,
+    /// [SVT_HDR_MODE] QM inverse-weight slice for this txb (None = no QM).
+    /// The trellis reads every dequant through C `get_dqv`
+    /// (full_loop.c:741), which applies this weight.
+    pub iwt: Option<&'a [u8]>,
     /// `rdoq_ctrls.cut_off_num / denum` (0 num = full RDOQ).
     pub cut_off_num: u32,
     pub cut_off_denum: u32,
@@ -676,8 +689,59 @@ pub struct OptimizeCtx<'a> {
 /// `plane_rd_mult[allintra=1][is_inter=0][plane_type]` = 17 luma, 13
 /// chroma (both `TUNE_CHROMA_SSIM` variants agree on that row).
 pub fn rdoq_rdmult(lambda: u32, plane_type: usize) -> i64 {
+    rdoq_rdmult_sharp(lambda, plane_type, 0, false)
+}
+
+/// Full C rweight/rshift derivation (full_loop.c `svt_av1_optimize_b`):
+/// `rshift = MAX(2, CLIP3(0,7,sharpness))`; `rweight` 100 normally, **10
+/// under the fork's light-RDOQ** (low-DC chroma, `#if SVT_HDR_MODE`).
+/// The `(use_sharpness || sharp_tx) && delta_q_present && plane==0` block
+/// (rweight=0 + local sharpness=1 into update_coeff_general) is DORMANT in
+/// this port until per-SB delta-q lands — tracked in docs/HDR-ON-4.2.md.
+pub fn rdoq_rdmult_sharp(lambda: u32, plane_type: usize, sharpness: i8, light_rdoq: bool) -> i64 {
+    rdoq_rdmult_full(lambda, plane_type, sharpness, light_rdoq, false)
+}
+
+/// Full form incl. the sharp-tx `rweight = 0` path (C full_loop.c:1075).
+pub fn rdoq_rdmult_full(
+    lambda: u32,
+    plane_type: usize,
+    sharpness: i8,
+    light_rdoq: bool,
+    sharp_tx_active: bool,
+) -> i64 {
+    let sharpness_val = i64::from(sharpness).clamp(0, 7);
+    let rshift = sharpness_val.max(2) as u32;
+    let rweight: i64 = if light_rdoq {
+        10
+    } else if sharp_tx_active {
+        0
+    } else {
+        100
+    };
     let prm: i64 = if plane_type == 0 { 17 } else { 13 };
-    ((lambda as i64 * prm * 100) / 100 + 2) >> 2
+    ((lambda as i64 * prm * rweight) / 100 + 2) >> rshift
+}
+
+/// Fork-only light-RDOQ trigger (C hybrid full_loop.c, `#if SVT_HDR_MODE`):
+/// on the ENCODE pass, chroma blocks with a near-zero DC and a sparse tail
+/// get a weakened RDOQ (rweight 10) to prevent color blotching from
+/// aggressive coefficient decimation. `n_coeffs` = `av1_get_max_eob`
+/// (= adjusted `txb_wide * txb_high`, 32-capped).
+pub fn light_rdoq_low_dc_chroma(
+    fork_mode: bool,
+    is_encode_pass: bool,
+    is_idtx: bool,
+    plane_type: usize,
+    dc: i32,
+    eob: u16,
+    n_coeffs: u32,
+) -> bool {
+    if !fork_mode || !is_encode_pass || is_idtx || plane_type == 0 || eob == 0 {
+        return false;
+    }
+    ((-1..=1).contains(&dc) && u32::from(eob) <= n_coeffs / 16)
+        || ((-4..=4).contains(&dc) && eob <= 1)
 }
 
 /// C `update_coeff_general` (full_loop.c:851).
@@ -691,6 +755,7 @@ fn update_coeff_general(
     bwl: usize,
     height: usize,
     dequant: &[i32; 2],
+    iwt: Option<&[u8]>,
     shift: i32,
     scan: &[u16],
     tcoeff: &[i32],
@@ -699,7 +764,7 @@ fn update_coeff_general(
     levels_buf: &mut [u8],
 ) {
     let ci = scan[si] as usize;
-    let dqv = dequant[usize::from(ci != 0)];
+    let dqv = crate::qm::dqv_qm(dequant, ci, iwt);
     let qc = qcoeff[ci];
     let is_last = si == (eob as usize - 1);
     let coeff_ctx = coeff_c::lower_levels_ctx_general(
@@ -777,6 +842,7 @@ fn update_coeff_simple(
     o: &OptimizeCtx,
     bwl: usize,
     dequant: &[i32; 2],
+    iwt: Option<&[u8]>,
     shift: i32,
     scan: &[u16],
     tcoeff: &[i32],
@@ -786,7 +852,7 @@ fn update_coeff_simple(
 ) {
     debug_assert!(si > 0);
     let ci = scan[si] as usize;
-    let dqv = dequant[usize::from(ci != 0)];
+    let dqv = crate::qm::dqv_qm(dequant, ci, iwt);
     let qc = qcoeff[ci];
     let coeff_ctx =
         coeff_c::lower_levels_ctx_general(levels_buf, ci, bwl, 0, si, false, o.tx_size, o.tx_class);
@@ -845,6 +911,7 @@ fn update_coeff_eob(
     bwl: usize,
     height: usize,
     dequant: &[i32; 2],
+    iwt: Option<&[u8]>,
     shift: i32,
     scan: &[u16],
     tcoeff: &[i32],
@@ -854,7 +921,7 @@ fn update_coeff_eob(
 ) {
     debug_assert!(si != *eob as usize - 1);
     let ci = scan[si] as usize;
-    let dqv = dequant[usize::from(ci != 0)];
+    let dqv = crate::qm::dqv_qm(dequant, ci, iwt);
     let qc = qcoeff[ci];
     let coeff_ctx =
         coeff_c::lower_levels_ctx_general(levels_buf, ci, bwl, 0, si, false, o.tx_size, o.tx_class);
@@ -963,8 +1030,8 @@ fn update_coeff_eob(
             dist = dist_low;
         }
 
-        // sharpness == 0 on this path.
-        if rd_new_eob < if rd_low < rd { rd_low } else { rd } {
+        // C gate: `sharpness == 0 && rd_new_eob < rd` (sharp-tx sets 1).
+        if !o.sharpness_flag && rd_new_eob < if rd_low < rd { rd_low } else { rd } {
             for &last_ci in nz_ci.iter().take(*nz_num) {
                 levels_buf[levels_idx(last_ci, bwl)] = 0;
                 qcoeff[last_ci] = 0;
@@ -1005,10 +1072,11 @@ fn update_skip(
     non_skip_cost: i32,
     qcoeff: &mut [i32],
     dqcoeff: &mut [i32],
+    sharpness_flag: bool,
 ) {
     let rd = rdcost(rdmult, (*accu_rate + non_skip_cost) as i64, accu_dist);
     let rd_new_eob = rdcost(rdmult, skip_cost as i64, 0);
-    if rd_new_eob < rd {
+    if !sharpness_flag && rd_new_eob < rd {
         for &ci in nz_ci.iter().take(nz_num) {
             qcoeff[ci] = 0;
             dqcoeff[ci] = 0;
@@ -1066,6 +1134,7 @@ pub fn optimize_b(
             bwl,
             height,
             &t.dequant,
+            o.iwt,
             shift,
             scan,
             tcoeffs,
@@ -1116,6 +1185,7 @@ pub fn optimize_b(
             bwl,
             height,
             &t.dequant,
+            o.iwt,
             shift,
             scan,
             tcoeffs,
@@ -1138,6 +1208,8 @@ pub fn optimize_b(
             non_skip_cost,
             qcoeff,
             dqcoeff,
+        
+            o.sharpness_flag,
         );
     }
 
@@ -1155,6 +1227,7 @@ pub fn optimize_b(
             o,
             bwl,
             &t.dequant,
+            o.iwt,
             shift,
             scan,
             tcoeffs,
@@ -1177,6 +1250,7 @@ pub fn optimize_b(
             bwl,
             height,
             &t.dequant,
+            o.iwt,
             shift,
             scan,
             tcoeffs,
@@ -1270,6 +1344,22 @@ pub fn rdoq_cutoffs(rdoq_level: u8) -> (u32, u32) {
 pub struct CodingQuantCfg {
     /// 0 = quantize_b (no RDOQ); >= 1 = quantize_fp + optimize_b.
     pub rdoq_level: u8,
+    /// SVT_HDR_MODE: fork behaviors (light-RDOQ) may fire when true.
+    pub hdr_fork: bool,
+    /// Config sharpness (fork default 1; feeds the rshift formula, which
+    /// only departs from mainline at sharpness >= 3).
+    pub sharpness: i8,
+    /// True on the encode/pack pass (C `is_encode_pass`) — the fork's
+    /// light-RDOQ trigger is encode-pass-only.
+    pub is_encode_pass: bool,
+    /// Fork `--noise-norm-strength` (0 = off; fork default 1). Encode-pass
+    /// luma-only coefficient revival after quantization/RDOQ.
+    pub noise_norm_strength: u8,
+    /// [SVT_HDR_MODE] sharp-tx RDOQ active (fork sharp_tx=1 + delta_q
+    /// present): luma trellis gets rweight=0 + eob-shortening disabled.
+    pub sharp_tx_active: bool,
+    /// [SVT_HDR_MODE] per-plane QM levels [Y, U, V] (15 = identity/off).
+    pub qm_levels: [u8; 3],
     /// `full_lambda_md[EB_8_BIT_MD]` (the KF chain — pd0's
     /// `kf_full_lambda_8bit` at the frame qindex).
     pub lambda: u32,
@@ -1290,6 +1380,12 @@ impl CodingQuantCfg {
     pub fn new(rdoq_level: u8, lambda: u32, base_qindex: u8) -> Self {
         Self {
             rdoq_level,
+            hdr_fork: false,
+            sharpness: 0,
+            is_encode_pass: true,
+            noise_norm_strength: 0,
+            sharp_tx_active: false,
+            qm_levels: [15; 3],
             lambda,
             costs: build_coeff_cost_tables(base_qindex),
         }
@@ -1315,14 +1411,71 @@ pub fn quantize_inv_quantize_still(
     tx_class: usize,
     plane_type: usize,
     real_pels: u32,
+    is_idtx: bool,
+    qm_level: u8,
 ) -> u16 {
     let t = build_quant_table(qindex);
     let log_scale = TX_SCALE_TAB[c_tx_size];
+    // [SVT_HDR_MODE] QM applies to 2D transforms only; the caller passes
+    // qm_level 15 for non-2D tx types (IS_2D_TRANSFORM gate).
+    let qm = if !is_idtx && qm_level < 15 {
+        crate::qm::qm_slices(usize::from(qm_level), plane_type == 1, c_tx_size)
+    } else {
+        None
+    };
+    // [SVT_HDR_MODE] fork noise normalization: encode-pass luma, non-IDTX,
+    // after ALL quantization/RDOQ (C svt_aom_quantize_inv_quantize tail).
+    let run_noise_norm = |qc: &mut [i32], dqc: &mut [i32], e: &mut u16| {
+        if cfg.hdr_fork
+            && cfg.noise_norm_strength > 0
+            && cfg.is_encode_pass
+            && *e != 0
+            && !is_idtx
+            && plane_type == 0
+        {
+            crate::noise_norm::perform_noise_normalization(
+                &t.dequant,
+                qm.map(|(_, iwt)| iwt),
+                tcoeffs,
+                qc,
+                dqc,
+                e,
+                scan,
+                c_tx_size,
+                cfg.noise_norm_strength,
+            );
+        }
+    };
     if cfg.rdoq_level == 0 {
-        return quantize_b(tcoeffs, scan, &t, log_scale, qcoeff, dqcoeff);
+        let mut eob = match qm {
+            Some((wt, iwt)) => {
+                crate::qm::quantize_b_qm(tcoeffs, scan, &t, log_scale, wt, iwt, qcoeff, dqcoeff)
+            }
+            None => quantize_b(tcoeffs, scan, &t, log_scale, qcoeff, dqcoeff),
+        };
+        run_noise_norm(qcoeff, dqcoeff, &mut eob);
+        return eob;
     }
-    let mut eob = quantize_fp(tcoeffs, scan, &t, log_scale, qcoeff, dqcoeff);
+    let mut eob = match qm {
+        Some((wt, iwt)) => {
+            crate::qm::quantize_fp_qm(tcoeffs, scan, &t, log_scale, wt, iwt, qcoeff, dqcoeff)
+        }
+        None => quantize_fp(tcoeffs, scan, &t, log_scale, qcoeff, dqcoeff),
+    };
     if eob != 0 {
+        // [SVT_HDR_MODE] fork light-RDOQ: weakened trellis on low-DC chroma
+        // (encode pass only). n_coeffs = adjusted txb pels (av1_get_max_eob).
+        let n_coeffs =
+            (coeff_c::txb_wide(c_tx_size) * coeff_c::txb_high(c_tx_size)) as u32;
+        let light_rdoq = light_rdoq_low_dc_chroma(
+            cfg.hdr_fork,
+            cfg.is_encode_pass,
+            is_idtx,
+            plane_type,
+            qcoeff[scan[0] as usize],
+            eob,
+            n_coeffs,
+        );
         // eob_th / eob_fast_th are 255 at rdoq levels 1..3: eob_perc
         // (<= 100) can never reach them, so no quantize_b fallback and no
         // fast path. Keep the C check shape for documentation.
@@ -1334,7 +1487,15 @@ pub fn quantize_inv_quantize_still(
         let o = OptimizeCtx {
             txb_costs: cfg.costs.txb(txs_ctx, plane_type),
             eob_costs: &cfg.costs.eob[coeff_c::TXSIZE_LOG2_MINUS4[c_tx_size]][plane_type],
-            rdmult: rdoq_rdmult(cfg.lambda, plane_type),
+            rdmult: rdoq_rdmult_full(
+                cfg.lambda,
+                plane_type,
+                cfg.sharpness,
+                light_rdoq,
+                cfg.sharp_tx_active && plane_type == 0,
+            ),
+            sharpness_flag: cfg.sharp_tx_active && plane_type == 0,
+            iwt: qm.map(|(_, iwt)| iwt),
             tx_size: c_tx_size,
             tx_class,
             txb_skip_ctx: 0,
@@ -1344,6 +1505,7 @@ pub fn quantize_inv_quantize_still(
         };
         optimize_b(tcoeffs, qcoeff, dqcoeff, &mut eob, scan, &t, &o);
     }
+    run_noise_norm(qcoeff, dqcoeff, &mut eob);
     eob
 }
 
@@ -1418,7 +1580,9 @@ mod tests {
         let mut q = alloc::vec![0i32; n];
         let mut dq = alloc::vec![0i32; n];
         let eob =
-            quantize_inv_quantize_still(&cfg, &tcoeffs, &mut q, &mut dq, scan, 160, 2, 0, 0, 256);
+            quantize_inv_quantize_still(
+            &cfg, &tcoeffs, &mut q, &mut dq, scan, 160, 2, 0, 0, 256, false, 15,
+        );
         let t = build_quant_table(160);
         for i in 0..n {
             let expect =

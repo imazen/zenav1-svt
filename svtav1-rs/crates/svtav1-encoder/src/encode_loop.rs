@@ -78,6 +78,7 @@ pub fn encode_block_tx(
         tx_type,
         None,
         0,
+        15,
     )
 }
 
@@ -100,6 +101,7 @@ pub fn encode_block_tx_cq(
     tx_type: svtav1_types::transform::TxType,
     cq: Option<&crate::quant::CodingQuantCfg>,
     plane_type: usize,
+    qm_level: u8,
 ) -> EncodeBlockResult {
     let n = width * height;
 
@@ -207,6 +209,9 @@ pub fn encode_block_tx_cq(
             tx_class,
             plane_type,
             (width * height) as u32,
+            tx_type as usize == 9, // TX_TYPE IDTX (identity)
+            // QM applies to 2D transforms only (IS_2D_TRANSFORM = < IDTX).
+            if (tx_type as usize) < 9 { qm_level } else { 15 },
         );
         // Unpack into the full raster (zeros outside the kept quadrant)
         // and derive the raster-domain eob the rest of this function uses

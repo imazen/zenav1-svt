@@ -125,6 +125,14 @@ impl ColorDescription {
 /// convenience wrappers' historical behavior.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SeqTools {
+    /// SH `separate_uv_delta_q` (spec 5.5.2 color_config): the svt-av1-hdr
+    /// fork ALWAYS signals 1 (its chroma-qindex path writes distinct U/V
+    /// deltas); mainline derives it from the chroma offsets (0 in this
+    /// port's envelope). When true, the FH may carry per-plane deltas.
+    pub separate_uv_delta_q: bool,
+    /// SH `film_grain_params_present` (spec 5.5.1): the fork's photon
+    /// noise (`--noise*`) signals a synthesized grain table per frame.
+    pub film_grain_params_present: bool,
     /// SH `enable_filter_intra` (spec 5.5.1): gates the per-block
     /// `use_filter_intra` symbol for eligible intra blocks
     /// ([`crate::context::write_use_filter_intra`]).
@@ -348,6 +356,113 @@ pub fn write_sequence_header_ex(
         fps,
         tools,
     )
+}
+
+
+/// [SVT_HDR_MODE] FH `film_grain_params` (spec 5.9.30) — the photon-noise
+/// table the fork's `--noise*` synthesizes (svtav1-encoder::noise_gen).
+/// KEY-frame form only (update_parameters is implicit 1).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FilmGrainParams {
+    pub apply_grain: bool,
+    /// 16-bit seed; C starts at 7391 and adds 3381 per frame
+    /// (resource_coordination_process.c:314, sequence_control_set.c:76).
+    pub random_seed: u16,
+    pub num_y_points: usize,
+    pub scaling_points_y: [[u8; 2]; 14],
+    pub chroma_scaling_from_luma: bool,
+    pub num_cb_points: usize,
+    pub scaling_points_cb: [[u8; 2]; 10],
+    pub num_cr_points: usize,
+    pub scaling_points_cr: [[u8; 2]; 10],
+    /// Signaled as `scaling_shift - 8` (2 bits).
+    pub scaling_shift: u8,
+    pub ar_coeff_lag: u8,
+    pub ar_coeffs_y: [i16; 24],
+    pub ar_coeffs_cb: [i16; 25],
+    pub ar_coeffs_cr: [i16; 25],
+    /// Signaled as `ar_coeff_shift - 6` (2 bits).
+    pub ar_coeff_shift: u8,
+    pub grain_scale_shift: u8,
+    pub cb_mult: u8,
+    pub cb_luma_mult: u8,
+    pub cb_offset: u16,
+    pub cr_mult: u8,
+    pub cr_luma_mult: u8,
+    pub cr_offset: u16,
+    pub overlap_flag: bool,
+    pub clip_to_restricted_range: bool,
+}
+
+/// Write FH `film_grain_params` for a KEY frame (spec 5.9.30; C
+/// `write_film_grain_params`, entropy_coding.c:3165 — the INTER
+/// update_parameters/ref_idx arm does not apply to KEY frames).
+/// 4:2:0 non-mono form: chroma points are written unless
+/// `num_y_points == 0` forces them off (the subsampling-1,1 rule) or
+/// chroma_scaling_from_luma is set.
+fn write_film_grain_params(wb: &mut BitWriter, fg: &FilmGrainParams) {
+    wb.write_bit(fg.apply_grain);
+    if !fg.apply_grain {
+        return;
+    }
+    wb.write_bits(u32::from(fg.random_seed), 16);
+    wb.write_bits(fg.num_y_points as u32, 4);
+    for p in &fg.scaling_points_y[..fg.num_y_points] {
+        wb.write_bits(u32::from(p[0]), 8);
+        wb.write_bits(u32::from(p[1]), 8);
+    }
+    wb.write_bit(fg.chroma_scaling_from_luma);
+    let chroma_off = fg.chroma_scaling_from_luma || fg.num_y_points == 0;
+    let (num_cb, num_cr) = if chroma_off {
+        (0, 0)
+    } else {
+        (fg.num_cb_points, fg.num_cr_points)
+    };
+    if !chroma_off {
+        wb.write_bits(num_cb as u32, 4);
+        for p in &fg.scaling_points_cb[..num_cb] {
+            wb.write_bits(u32::from(p[0]), 8);
+            wb.write_bits(u32::from(p[1]), 8);
+        }
+        wb.write_bits(num_cr as u32, 4);
+        for p in &fg.scaling_points_cr[..num_cr] {
+            wb.write_bits(u32::from(p[0]), 8);
+            wb.write_bits(u32::from(p[1]), 8);
+        }
+    }
+    wb.write_bits(u32::from(fg.scaling_shift - 8), 2);
+    wb.write_bits(u32::from(fg.ar_coeff_lag), 2);
+    let num_pos_luma = 2 * usize::from(fg.ar_coeff_lag) * (usize::from(fg.ar_coeff_lag) + 1);
+    let num_pos_chroma = num_pos_luma + usize::from(fg.num_y_points > 0);
+    if fg.num_y_points > 0 {
+        for &c in &fg.ar_coeffs_y[..num_pos_luma] {
+            wb.write_bits((c + 128) as u32, 8);
+        }
+    }
+    if num_cb > 0 || fg.chroma_scaling_from_luma {
+        for &c in &fg.ar_coeffs_cb[..num_pos_chroma] {
+            wb.write_bits((c + 128) as u32, 8);
+        }
+    }
+    if num_cr > 0 || fg.chroma_scaling_from_luma {
+        for &c in &fg.ar_coeffs_cr[..num_pos_chroma] {
+            wb.write_bits((c + 128) as u32, 8);
+        }
+    }
+    wb.write_bits(u32::from(fg.ar_coeff_shift - 6), 2);
+    wb.write_bits(u32::from(fg.grain_scale_shift), 2);
+    if num_cb > 0 {
+        wb.write_bits(u32::from(fg.cb_mult), 8);
+        wb.write_bits(u32::from(fg.cb_luma_mult), 8);
+        wb.write_bits(u32::from(fg.cb_offset), 9);
+    }
+    if num_cr > 0 {
+        wb.write_bits(u32::from(fg.cr_mult), 8);
+        wb.write_bits(u32::from(fg.cr_luma_mult), 8);
+        wb.write_bits(u32::from(fg.cr_offset), 9);
+    }
+    wb.write_bit(fg.overlap_flag);
+    wb.write_bit(fg.clip_to_restricted_range);
 }
 
 /// Write AV1 trailing bits: a mandatory 1-bit followed by zeros to byte-align.
@@ -587,10 +702,10 @@ fn write_sequence_header_inner(
         wb.write_bit(color.full_range); // color_range
         // seq_profile 0: subsampling_x = subsampling_y = 1 implied, no bits.
         wb.write_bits(0, 2); // chroma_sample_position = 0 (CSP_UNKNOWN)
-        wb.write_bit(false); // separate_uv_delta_q = 0
+        wb.write_bit(tools.separate_uv_delta_q); // separate_uv_delta_q (fork: 1)
     }
 
-    wb.write_bit(false); // film_grain_params_present = 0
+    wb.write_bit(tools.film_grain_params_present); // film_grain_params_present
 
     write_trailing_bits(&mut wb);
 
@@ -652,6 +767,7 @@ pub fn write_key_frame_header_full(
         reduced_sh,
         monochrome,
         lf_levels,
+        0, // loop_filter_sharpness (legacy wrapper: mainline default)
         &CdefSignal {
             damping: cdef[0],
             bits: 0,
@@ -659,6 +775,10 @@ pub fn write_key_frame_header_full(
         },
         &LrSignal::none(enable_restoration),
         ScSignal::default(),
+        None, // chroma_q: mainline zero-delta bit pattern
+        None, // delta_q_res: no per-SB delta-q
+        None, // qm: quant matrices off
+        None, // fgs: no film grain
     )
 }
 
@@ -721,9 +841,14 @@ pub fn write_key_frame_header_full_lr(
     reduced_sh: bool,
     monochrome: bool,
     lf_levels: [u8; 4],
+    lf_sharpness: u8,
     cdef: &CdefSignal,
     lr: &LrSignal,
     sc: ScSignal,
+    chroma_q: Option<[i8; 4]>,
+    delta_q_res: Option<u8>,
+    qm: Option<[u8; 3]>,
+    fgs: Option<&FilmGrainParams>,
 ) -> Vec<u8> {
     let mut wb = key_frame_header_bits_lr(
         width,
@@ -732,9 +857,14 @@ pub fn write_key_frame_header_full_lr(
         reduced_sh,
         monochrome,
         lf_levels,
+        lf_sharpness,
         cdef,
         lr,
         sc,
+        chroma_q,
+        delta_q_res,
+        qm,
+        fgs,
     );
     // This header is embedded in an OBU_FRAME: the spec requires
     // byte_alignment() (zero bits only) between frame_header and tile_group —
@@ -767,6 +897,7 @@ fn key_frame_header_bits(
         reduced_sh,
         monochrome,
         lf_levels,
+        0, // loop_filter_sharpness (test wrapper: mainline default)
         &CdefSignal {
             damping: cdef[0],
             bits: 0,
@@ -774,6 +905,10 @@ fn key_frame_header_bits(
         },
         &LrSignal::none(enable_restoration),
         ScSignal::default(),
+        None, // chroma_q: mainline zero-delta bit pattern
+        None, // delta_q_res: no per-SB delta-q
+        None, // qm: quant matrices off
+        None, // fgs: no film grain
     )
 }
 
@@ -786,9 +921,14 @@ fn key_frame_header_bits_lr(
     reduced_sh: bool,
     monochrome: bool,
     lf_levels: [u8; 4],
+    lf_sharpness: u8,
     cdef: &CdefSignal,
     lr: &LrSignal,
     sc: ScSignal,
+    chroma_q: Option<[i8; 4]>,
+    delta_q_res: Option<u8>,
+    qm: Option<[u8; 3]>,
+    fgs: Option<&FilmGrainParams>,
 ) -> BitWriter {
     let mut wb = BitWriter::new();
 
@@ -858,19 +998,69 @@ fn key_frame_header_bits_lr(
         // diff_uv_delta==0 the V plane reuses the U deltas — no V bits.
         // (libaom decodeframe.c:1823-1834; C write path writes the same
         // two zero delta_coded bits for u_dc/u_ac.)
-        wb.write_bit(false); // DeltaQUDc: delta_coded = 0
-        wb.write_bit(false); // DeltaQUAc: delta_coded = 0
+        // With SH separate_uv_delta_q=1 the decoder first reads
+        // diff_uv_delta, then U and (if diff) V deltas. delta_q syntax
+        // (spec 5.9.13 read_delta_q): 1-bit delta_coded, then su(1+6)
+        // = 7-bit two's-complement inv_signed_literal.
+        match chroma_q {
+            None => {
+                wb.write_bit(false); // DeltaQUDc: delta_coded = 0
+                wb.write_bit(false); // DeltaQUAc: delta_coded = 0
+            }
+            Some([u_dc, u_ac, v_dc, v_ac]) => {
+                // Requires the SH to have signaled separate_uv_delta_q=1
+                // (the fork always does): diff_uv_delta = 1.
+                wb.write_bit(true); // diff_uv_delta
+                for d in [u_dc, u_ac, v_dc, v_ac] {
+                    if d == 0 {
+                        wb.write_bit(false); // delta_coded = 0
+                    } else {
+                        wb.write_bit(true); // delta_coded = 1
+                        wb.write_bits((d as i32 & 0x7f) as u32, 7); // su(1+6)
+                    }
+                }
+            }
+        }
     }
     // NumPlanes=1 (mono_chrome): no DeltaQUDc, DeltaQUAc
-    wb.write_bit(false); // using_qmatrix = 0
+    // [SVT_HDR_MODE] quantizer matrices (spec 5.9.12; C entropy_coding.c:
+    // 2451): qm_y + qm_u always, qm_v only when the SH signaled
+    // separate_uv_delta_q=1 (the fork chroma-q path — chroma_q Some).
+    match qm {
+        None => wb.write_bit(false), // using_qmatrix = 0
+        Some([qm_y, qm_u, qm_v]) => {
+            wb.write_bit(true); // using_qmatrix = 1
+            wb.write_bits(u32::from(qm_y), 4);
+            wb.write_bits(u32::from(qm_u), 4);
+            if chroma_q.is_some() {
+                wb.write_bits(u32::from(qm_v), 4);
+            } else {
+                debug_assert_eq!(qm_u, qm_v, "qm_v needs separate_uv_delta_q");
+            }
+        }
+    }
 
     // ---- segmentation_params() ----
     wb.write_bit(false); // segmentation_enabled = 0
 
     // ---- delta_q_params() ----
     // Spec: delta_q_present is only signaled when base_q_idx > 0.
+    // [SVT_HDR_MODE] fork variance boost signals per-SB delta-q:
+    // delta_q_present=1 + 2-bit log2(delta_q_res) (spec 5.9.17).
     if base_qindex > 0 {
-        wb.write_bit(false); // delta_q_present = 0
+        match delta_q_res {
+            None => wb.write_bit(false), // delta_q_present = 0
+            Some(res) => {
+                debug_assert!(matches!(res, 1 | 2 | 4 | 8));
+                wb.write_bit(true); // delta_q_present = 1
+                wb.write_bits(u32::from(res.trailing_zeros()), 2); // delta_q_res log2
+                // delta_lf_params(): read only when delta_q_present &&
+                // !allow_intrabc (spec 5.9.18).
+                if !sc.allow_intrabc {
+                    wb.write_bit(false); // delta_lf_present = 0
+                }
+            }
+        }
     }
     // delta_lf_params(): not signaled when delta_q_present=0
 
@@ -890,7 +1080,7 @@ fn key_frame_header_bits_lr(
             wb.write_bits(lf_levels[2] as u32, 6); // loop_filter_level[2] (U)
             wb.write_bits(lf_levels[3] as u32, 6); // loop_filter_level[3] (V)
         }
-        wb.write_bits(0, 3); // loop_filter_sharpness = 0
+        wb.write_bits(u32::from(lf_sharpness), 3); // loop_filter_sharpness (fork default 1)
         // loop_filter_delta_enabled = 0: the C encoder runs with
         // mode_ref_delta_enabled = 0 (resource_coordination_process.c:393) and
         // encode_loopfilter writes the flag verbatim, so no ref/mode deltas are
@@ -984,6 +1174,13 @@ fn key_frame_header_bits_lr(
     // For intra frames: no reference_select, skip_mode, warped_motion, global_motion
 
     wb.write_bit(false); // reduced_tx_set = 0
+
+    // ---- film_grain_params() (spec 5.9.30) ---- read only when the SH
+    // signaled film_grain_params_present && show_frame (C
+    // entropy_coding.c:3698). The SH bit and this Option MUST agree.
+    if let Some(fg) = fgs {
+        write_film_grain_params(&mut wb, fg);
+    }
 
     // NOTE: byte_alignment() is applied by the caller
     // (write_key_frame_header_full) so tests can observe the raw bit count.
@@ -1393,6 +1590,8 @@ mod tests {
             false,
             30.0,
             SeqTools {
+                separate_uv_delta_q: false,
+                film_grain_params_present: false,
                 enable_filter_intra: true,
                 enable_intra_edge_filter: false,
                 enable_restoration: true,
