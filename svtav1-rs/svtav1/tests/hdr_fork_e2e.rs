@@ -148,3 +148,25 @@ fn tx_bias_is_live_in_fork_mode() {
     }
     assert!(flipped > 0, "tx_bias knob is inert on all 5 cells");
 }
+
+#[test]
+fn photon_noise_is_live_in_fork_mode() {
+    // --noise N (fork knob, default 0): SH film_grain_params_present + FH
+    // film_grain_params with the synthesized table. Streams must differ
+    // from noise-off and grow by roughly the table size (~100+ bits).
+    for (preset, qp) in [(6u8, 40u8)] {
+        let mut on = HdrForkConfig::hdr_fork();
+        on.noise_strength = 12;
+        let off = HdrForkConfig::hdr_fork();
+        assert_eq!(off.noise_strength, 0, "fork default must stay 0");
+        let a = encode_with(Some(on), qp, preset);
+        let b = encode_with(Some(off), qp, preset);
+        assert_ne!(a, b, "p{preset} qp{qp}: noise_strength knob is inert");
+        assert!(
+            a.len() > b.len(),
+            "grain table must add bytes ({} <= {})",
+            a.len(),
+            b.len()
+        );
+    }
+}

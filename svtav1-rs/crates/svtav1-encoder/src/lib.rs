@@ -12,6 +12,7 @@ pub mod film_grain;
 pub mod hdr_mode;
 pub mod var_boost;
 pub mod chroma_q;
+pub mod noise_gen;
 pub mod noise_norm;
 pub mod qm;
 pub mod qm_tables;

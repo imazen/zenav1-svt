@@ -481,6 +481,31 @@ impl EncodePipeline {
         } else {
             [15; 3]
         };
+        // [SVT_HDR_MODE] photon-noise film grain (--noise*): synthesize
+        // the table per frame; seed 7391 + 3381*frame (C resource_
+        // coordination assign_film_grain_random_seed; zero is bumped).
+        let film_grain: Option<svtav1_entropy::obu::FilmGrainParams> =
+            if self.hdr.is_fork() && self.hdr.noise_strength > 0 {
+                let mut fg = crate::noise_gen::generate_noise_table(
+                    self.width,
+                    self.height,
+                    u32::from(self.hdr.noise_strength),
+                    self.hdr.noise_strength_chroma,
+                    self.hdr.noise_chroma_from_luma as i8,
+                    self.hdr.noise_size,
+                    self.color_description.full_range,
+                );
+                let mut seed = 7391u16.wrapping_add(
+                    3381u16.wrapping_mul(self.frame_count as u16),
+                );
+                if seed == 0 {
+                    seed = 7391;
+                }
+                fg.random_seed = seed;
+                Some(fg)
+            } else {
+                None
+            };
         // Stamp the fork RDOQ knobs onto the encode-pass quant config (C
         // reads them off static_config inside svt_av1_optimize_txb; the
         // sharp-tx gate `(use_sharpness||sharp_tx) && delta_q_present &&
@@ -638,6 +663,8 @@ impl EncodePipeline {
             // fork block hardcodes both flags true).
             if self.hdr.is_fork() {
                 t.separate_uv_delta_q = true;
+                // Photon noise signals grain tables per frame.
+                t.film_grain_params_present = self.hdr.noise_strength > 0;
             }
             // enable_intra_edge_filter's C-parity surface is still/420
             // (the C matched config). The mono extension keeps 0: C cannot
@@ -1159,6 +1186,7 @@ impl EncodePipeline {
                 // [SVT_HDR_MODE] frame QM levels (fork enable_qm); None in
                 // mainline mode. The quantizers used the SAME levels.
                 if qm_levels == [15; 3] { None } else { Some(qm_levels) },
+                film_grain.as_ref(),
             );
             // tile_data is already a complete tile_group (with TG header)
             let mut frame_payload = alloc::vec::Vec::new();
