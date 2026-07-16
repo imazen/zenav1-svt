@@ -107,3 +107,18 @@ fn noise_norm_is_live_in_fork_mode() {
         );
     }
 }
+
+#[test]
+fn qm_is_live_in_fork_mode() {
+    // Fork default enable_qm=1 (luma levels 6..10, chroma 8..15): the FH
+    // signals using_qmatrix and every quantize path weights per position.
+    for (preset, qp) in [(2u8, 20u8), (6, 40)] {
+        let mut on = HdrForkConfig::hdr_fork();
+        on.enable_qm = true;
+        let mut off = HdrForkConfig::hdr_fork();
+        off.enable_qm = false;
+        let a = encode_with(Some(on), qp, preset);
+        let b = encode_with(Some(off), qp, preset);
+        assert_ne!(a, b, "p{preset} qp{qp}: enable_qm knob is inert");
+    }
+}

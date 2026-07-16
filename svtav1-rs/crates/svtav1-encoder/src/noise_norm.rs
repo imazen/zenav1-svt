@@ -32,11 +32,11 @@ fn qc_dqc_low(abs_qc: i32, sign: bool, dqv: i32, shift: i32) -> (i32, i32) {
     }
 }
 
-/// C `get_dqv` without QM (`iqmatrix == NULL` in this port — QM is the
-/// tracked long pole): plain per-position dequant select.
+/// C `get_dqv` (full_loop.c:741) — per-position dequant with the QM
+/// inverse weight applied when matrices are active.
 #[inline]
-fn dqv_for(dequant: &[i32; 2], coeff_idx: usize) -> i32 {
-    dequant[usize::from(coeff_idx != 0)]
+fn dqv_for(dequant: &[i32; 2], coeff_idx: usize, iwt: Option<&[u8]>) -> i32 {
+    crate::qm::dqv_qm(dequant, coeff_idx, iwt)
 }
 
 /// C `svt_av1_perform_noise_normalization` body. `c_tx_size` is the REAL
@@ -46,6 +46,7 @@ fn dqv_for(dequant: &[i32; 2], coeff_idx: usize) -> i32 {
 #[allow(clippy::too_many_arguments)]
 pub fn perform_noise_normalization(
     dequant: &[i32; 2],
+    iwt: Option<&[u8]>,
     coeff: &[i32],
     qcoeff: &mut [i32],
     dqcoeff: &mut [i32],
@@ -87,7 +88,7 @@ pub fn perform_noise_normalization(
             let sign = tqc < 0;
 
             if dqc != 0 && (tqc.abs() - dqc.abs()) > 0 {
-                let dqv = dqv_for(dequant, ci);
+                let dqv = dqv_for(dequant, ci, iwt);
                 let abs_qc = (qc.abs() + 1) + 1; // +1: qc_dqc_low expects it
                 let (qc_low, dqc_low) = qc_dqc_low(abs_qc, sign, dqv, shift);
 
@@ -113,7 +114,7 @@ pub fn perform_noise_normalization(
             let sign = tqc < 0;
 
             if dqc == 0 && tqc != 0 {
-                let dqv = dqv_for(dequant, ci);
+                let dqv = dqv_for(dequant, ci, iwt);
                 let abs_qc = 1 + 1;
                 let (qc_low, dqc_low) = qc_dqc_low(abs_qc, sign, dqv, shift);
 
@@ -159,14 +160,14 @@ mod tests {
         let mut dq = [50i32; 16];
         let mut eob = 5u16;
         let q0 = q;
-        perform_noise_normalization(&[100, 100], &coeff, &mut q, &mut dq, &mut eob, scan, 0, 4);
+        perform_noise_normalization(&[100, 100], None, &coeff, &mut q, &mut dq, &mut eob, scan, 0, 4);
         assert_eq!(q, q0, "4x4 must early-exit");
         let scan = scan_for(1); // TX_8X8
         let coeff = [100i32; 64];
         let mut q = [1i32; 64];
         let mut dq = [50i32; 64];
         let q0 = q;
-        perform_noise_normalization(&[100, 100], &coeff, &mut q, &mut dq, &mut eob, scan, 1, 0);
+        perform_noise_normalization(&[100, 100], None, &coeff, &mut q, &mut dq, &mut eob, scan, 1, 0);
         assert_eq!(q, q0, "strength 0 must early-exit");
     }
 
@@ -184,7 +185,7 @@ mod tests {
         // = 100): gap 4, step 100, ratio = (96<<4)/100 = 15 >= 9.
         coeff[scan[1] as usize] = 96;
         let mut eob = 1u16;
-        perform_noise_normalization(&[100, 100], &coeff, &mut q, &mut dq, &mut eob, scan, 1, 1);
+        perform_noise_normalization(&[100, 100], None, &coeff, &mut q, &mut dq, &mut eob, scan, 1, 1);
         assert_eq!(q[scan[1] as usize], 1);
         assert_eq!(dq[scan[1] as usize], 100);
         assert_eq!(eob, 2);

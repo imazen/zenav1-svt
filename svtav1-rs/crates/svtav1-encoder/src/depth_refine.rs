@@ -1517,7 +1517,11 @@ impl DepthWalk<'_, '_> {
                         && size >= 8
                         && size > self.nsq.min_nsq
                     {
-                        crate::leaf_funnel::min_nz_hv(ev, self.fx.frame.base_qindex)
+                        crate::leaf_funnel::min_nz_hv(
+                            ev,
+                            self.fx.frame.base_qindex,
+                            self.fx.frame.qm_levels[0],
+                        )
                     } else {
                         None
                     };

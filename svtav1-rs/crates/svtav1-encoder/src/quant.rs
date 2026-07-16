@@ -59,6 +59,10 @@ pub struct QuantTable {
     /// `y_quant_fp`: `(1 << 16) / q`.
     pub quant_fp: [i32; 2],
     pub dequant: [i32; 2],
+    /// [SVT_HDR_MODE] QM level for the plane this table quantizes (15 =
+    /// identity/no matrices — the non-QM kernels run). Set by the pipeline
+    /// when fork `enable_qm` is on; `build_quant_table` defaults it to 15.
+    pub qm_level: u8,
 }
 
 /// C `svt_aom_invert_quant` (inv_transforms.c:3507).
@@ -98,6 +102,7 @@ pub fn build_quant_table(qindex: u8) -> QuantTable {
         round_fp: [0; 2],
         quant_fp: [0; 2],
         dequant: [0; 2],
+        qm_level: 15,
     };
     for (i, quant_qtx) in [dc, ac].into_iter().enumerate() {
         let (quant, shift) = invert_quant(quant_qtx);
@@ -670,6 +675,10 @@ pub struct OptimizeCtx<'a> {
     /// delta_q_present): disables the trellis eob-shortening branches
     /// (full_loop.c:822/955 `sharpness == 0 &&` gates).
     pub sharpness_flag: bool,
+    /// [SVT_HDR_MODE] QM inverse-weight slice for this txb (None = no QM).
+    /// The trellis reads every dequant through C `get_dqv`
+    /// (full_loop.c:741), which applies this weight.
+    pub iwt: Option<&'a [u8]>,
     /// `rdoq_ctrls.cut_off_num / denum` (0 num = full RDOQ).
     pub cut_off_num: u32,
     pub cut_off_denum: u32,
@@ -746,6 +755,7 @@ fn update_coeff_general(
     bwl: usize,
     height: usize,
     dequant: &[i32; 2],
+    iwt: Option<&[u8]>,
     shift: i32,
     scan: &[u16],
     tcoeff: &[i32],
@@ -754,7 +764,7 @@ fn update_coeff_general(
     levels_buf: &mut [u8],
 ) {
     let ci = scan[si] as usize;
-    let dqv = dequant[usize::from(ci != 0)];
+    let dqv = crate::qm::dqv_qm(dequant, ci, iwt);
     let qc = qcoeff[ci];
     let is_last = si == (eob as usize - 1);
     let coeff_ctx = coeff_c::lower_levels_ctx_general(
@@ -832,6 +842,7 @@ fn update_coeff_simple(
     o: &OptimizeCtx,
     bwl: usize,
     dequant: &[i32; 2],
+    iwt: Option<&[u8]>,
     shift: i32,
     scan: &[u16],
     tcoeff: &[i32],
@@ -841,7 +852,7 @@ fn update_coeff_simple(
 ) {
     debug_assert!(si > 0);
     let ci = scan[si] as usize;
-    let dqv = dequant[usize::from(ci != 0)];
+    let dqv = crate::qm::dqv_qm(dequant, ci, iwt);
     let qc = qcoeff[ci];
     let coeff_ctx =
         coeff_c::lower_levels_ctx_general(levels_buf, ci, bwl, 0, si, false, o.tx_size, o.tx_class);
@@ -900,6 +911,7 @@ fn update_coeff_eob(
     bwl: usize,
     height: usize,
     dequant: &[i32; 2],
+    iwt: Option<&[u8]>,
     shift: i32,
     scan: &[u16],
     tcoeff: &[i32],
@@ -909,7 +921,7 @@ fn update_coeff_eob(
 ) {
     debug_assert!(si != *eob as usize - 1);
     let ci = scan[si] as usize;
-    let dqv = dequant[usize::from(ci != 0)];
+    let dqv = crate::qm::dqv_qm(dequant, ci, iwt);
     let qc = qcoeff[ci];
     let coeff_ctx =
         coeff_c::lower_levels_ctx_general(levels_buf, ci, bwl, 0, si, false, o.tx_size, o.tx_class);
@@ -1122,6 +1134,7 @@ pub fn optimize_b(
             bwl,
             height,
             &t.dequant,
+            o.iwt,
             shift,
             scan,
             tcoeffs,
@@ -1172,6 +1185,7 @@ pub fn optimize_b(
             bwl,
             height,
             &t.dequant,
+            o.iwt,
             shift,
             scan,
             tcoeffs,
@@ -1213,6 +1227,7 @@ pub fn optimize_b(
             o,
             bwl,
             &t.dequant,
+            o.iwt,
             shift,
             scan,
             tcoeffs,
@@ -1235,6 +1250,7 @@ pub fn optimize_b(
             bwl,
             height,
             &t.dequant,
+            o.iwt,
             shift,
             scan,
             tcoeffs,
@@ -1342,6 +1358,8 @@ pub struct CodingQuantCfg {
     /// [SVT_HDR_MODE] sharp-tx RDOQ active (fork sharp_tx=1 + delta_q
     /// present): luma trellis gets rweight=0 + eob-shortening disabled.
     pub sharp_tx_active: bool,
+    /// [SVT_HDR_MODE] per-plane QM levels [Y, U, V] (15 = identity/off).
+    pub qm_levels: [u8; 3],
     /// `full_lambda_md[EB_8_BIT_MD]` (the KF chain — pd0's
     /// `kf_full_lambda_8bit` at the frame qindex).
     pub lambda: u32,
@@ -1367,6 +1385,7 @@ impl CodingQuantCfg {
             is_encode_pass: true,
             noise_norm_strength: 0,
             sharp_tx_active: false,
+            qm_levels: [15; 3],
             lambda,
             costs: build_coeff_cost_tables(base_qindex),
         }
@@ -1393,9 +1412,17 @@ pub fn quantize_inv_quantize_still(
     plane_type: usize,
     real_pels: u32,
     is_idtx: bool,
+    qm_level: u8,
 ) -> u16 {
     let t = build_quant_table(qindex);
     let log_scale = TX_SCALE_TAB[c_tx_size];
+    // [SVT_HDR_MODE] QM applies to 2D transforms only; the caller passes
+    // qm_level 15 for non-2D tx types (IS_2D_TRANSFORM gate).
+    let qm = if !is_idtx && qm_level < 15 {
+        crate::qm::qm_slices(usize::from(qm_level), plane_type == 1, c_tx_size)
+    } else {
+        None
+    };
     // [SVT_HDR_MODE] fork noise normalization: encode-pass luma, non-IDTX,
     // after ALL quantization/RDOQ (C svt_aom_quantize_inv_quantize tail).
     let run_noise_norm = |qc: &mut [i32], dqc: &mut [i32], e: &mut u16| {
@@ -1408,6 +1435,7 @@ pub fn quantize_inv_quantize_still(
         {
             crate::noise_norm::perform_noise_normalization(
                 &t.dequant,
+                qm.map(|(_, iwt)| iwt),
                 tcoeffs,
                 qc,
                 dqc,
@@ -1419,11 +1447,21 @@ pub fn quantize_inv_quantize_still(
         }
     };
     if cfg.rdoq_level == 0 {
-        let mut eob = quantize_b(tcoeffs, scan, &t, log_scale, qcoeff, dqcoeff);
+        let mut eob = match qm {
+            Some((wt, iwt)) => {
+                crate::qm::quantize_b_qm(tcoeffs, scan, &t, log_scale, wt, iwt, qcoeff, dqcoeff)
+            }
+            None => quantize_b(tcoeffs, scan, &t, log_scale, qcoeff, dqcoeff),
+        };
         run_noise_norm(qcoeff, dqcoeff, &mut eob);
         return eob;
     }
-    let mut eob = quantize_fp(tcoeffs, scan, &t, log_scale, qcoeff, dqcoeff);
+    let mut eob = match qm {
+        Some((wt, iwt)) => {
+            crate::qm::quantize_fp_qm(tcoeffs, scan, &t, log_scale, wt, iwt, qcoeff, dqcoeff)
+        }
+        None => quantize_fp(tcoeffs, scan, &t, log_scale, qcoeff, dqcoeff),
+    };
     if eob != 0 {
         // [SVT_HDR_MODE] fork light-RDOQ: weakened trellis on low-DC chroma
         // (encode pass only). n_coeffs = adjusted txb pels (av1_get_max_eob).
@@ -1457,6 +1495,7 @@ pub fn quantize_inv_quantize_still(
                 cfg.sharp_tx_active && plane_type == 0,
             ),
             sharpness_flag: cfg.sharp_tx_active && plane_type == 0,
+            iwt: qm.map(|(_, iwt)| iwt),
             tx_size: c_tx_size,
             tx_class,
             txb_skip_ctx: 0,
@@ -1541,7 +1580,9 @@ mod tests {
         let mut q = alloc::vec![0i32; n];
         let mut dq = alloc::vec![0i32; n];
         let eob =
-            quantize_inv_quantize_still(&cfg, &tcoeffs, &mut q, &mut dq, scan, 160, 2, 0, 0, 256, false);
+            quantize_inv_quantize_still(
+            &cfg, &tcoeffs, &mut q, &mut dq, scan, 160, 2, 0, 0, 256, false, 15,
+        );
         let t = build_quant_table(160);
         for i in 0..n {
             let expect =
