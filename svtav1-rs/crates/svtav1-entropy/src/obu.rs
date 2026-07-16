@@ -652,6 +652,7 @@ pub fn write_key_frame_header_full(
         reduced_sh,
         monochrome,
         lf_levels,
+        0, // loop_filter_sharpness (legacy wrapper: mainline default)
         &CdefSignal {
             damping: cdef[0],
             bits: 0,
@@ -721,6 +722,7 @@ pub fn write_key_frame_header_full_lr(
     reduced_sh: bool,
     monochrome: bool,
     lf_levels: [u8; 4],
+    lf_sharpness: u8,
     cdef: &CdefSignal,
     lr: &LrSignal,
     sc: ScSignal,
@@ -732,6 +734,7 @@ pub fn write_key_frame_header_full_lr(
         reduced_sh,
         monochrome,
         lf_levels,
+        lf_sharpness,
         cdef,
         lr,
         sc,
@@ -767,6 +770,7 @@ fn key_frame_header_bits(
         reduced_sh,
         monochrome,
         lf_levels,
+        0, // loop_filter_sharpness (test wrapper: mainline default)
         &CdefSignal {
             damping: cdef[0],
             bits: 0,
@@ -786,6 +790,7 @@ fn key_frame_header_bits_lr(
     reduced_sh: bool,
     monochrome: bool,
     lf_levels: [u8; 4],
+    lf_sharpness: u8,
     cdef: &CdefSignal,
     lr: &LrSignal,
     sc: ScSignal,
@@ -890,7 +895,7 @@ fn key_frame_header_bits_lr(
             wb.write_bits(lf_levels[2] as u32, 6); // loop_filter_level[2] (U)
             wb.write_bits(lf_levels[3] as u32, 6); // loop_filter_level[3] (V)
         }
-        wb.write_bits(0, 3); // loop_filter_sharpness = 0
+        wb.write_bits(u32::from(lf_sharpness), 3); // loop_filter_sharpness (fork default 1)
         // loop_filter_delta_enabled = 0: the C encoder runs with
         // mode_ref_delta_enabled = 0 (resource_coordination_process.c:393) and
         // encode_loopfilter writes the flag verbatim, so no ref/mode deltas are
