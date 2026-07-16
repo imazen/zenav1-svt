@@ -162,7 +162,7 @@ Mainline mode → stock v4.2.0-final; HdrFork mode → the C hybrid's MODE1 lib
 | variance-boost math, curves 0–3 + PQ dark attenuation | **DONE** (`var_boost.rs`) | helpers C-parity-tested vs the linked lib (c_parity_var_boost.rs); curve table unit-pinned |
 | **per-SB delta-q wiring** (delta_q_present=1, tile delta-q syntax + rate est, `variance_adjust_qp` loop, f64 variance producer) | **OPEN — long pole #1** | gates ALL HdrFork e2e identity (fork defaults varboost ON) |
 | **QM** (fork default ON, luma min 6 / chroma min 8): tables, FH syntax, fwd-quant, RD costing | **OPEN — long pole #2** | required for HdrFork e2e identity |
-| fork chroma-qindex path (4:2:0/PQ/P3/BT.2020 boosts, Cb +12, separate_uv_delta_q=1 + diff_uv_delta=1 syntax, per-plane dequant) | **OPEN** (task #3) | FH-level witness possible before delta-q lands |
+| fork chroma-qindex path (4:2:0/PQ/P3/BT.2020 boosts, Cb +12, separate_uv_delta_q=1 + diff_uv_delta=1 syntax, per-plane dequant) | **PARTIAL** — derivation (`chroma_q.rs`) + SH/FH syntax DONE and unit-pinned, kept INERT; remaining: per-plane chroma quant threading, then flip the SH bit + pass Some(deltas) in fork mode | suite 682/682; activation gated on quant threading (never signal deltas the quantizer ignores) |
 | ac_bias/tx_bias distortion facade | **OPEN** (task #6) | fork default ac_bias=1.0 → affects all-intra MD |
 | photon-noise synthesis (`--noise*`), noise-norm AC boost | OPEN (inert at defaults... noise_norm fork default 1 → NEEDED for e2e) | |
 | kf_tf_strength / TF formula | OPEN — needs TF (all-intra immune) | |
