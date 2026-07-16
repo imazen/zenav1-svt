@@ -1427,9 +1427,24 @@ pub fn pd0_pick_sb_partition_m6_eval(
     tables: &M6Pd0Tables,
     min_sq: usize,
     coeff_rate_est_lvl: u8,
+    cap_max_block: bool,
 ) -> Pd0Eval {
     let vars = compute_b64_variance(src, stride, sb_x, sb_y);
     let lambda = kf_full_lambda_8bit(qindex, qp) as u64;
+    // C `get_max_block_size_allintra` (enc_mode_config.c:7042): the
+    // 64-variance cap fires ONLY at enc_mode >= M8 (base_var_th_cap is
+    // (uint16_t)~0 = unlimited through M7, 7500 at M8+). A busy SB
+    // (var64 > qp-scaled 7500) never tests the 64x64 PART_N — forced
+    // split. Missing this made p8 keep 64x64 NONE where C split
+    // (6763758 p8: port 64-NONE 120718451 beat C's 4x16x16 split total
+    // 124435885 that C never compared against a 64-NONE at all).
+    // Callers pass cap_max_block = (preset >= 8) && complete-SB (C keeps
+    // the cap at sb_size for incomplete edge SBs).
+    let max_sq = if cap_max_block {
+        max_block_size_allintra(vars.0[0], qp)
+    } else {
+        64
+    };
     let mut ctx = Pd0Ctx {
         src,
         stride,
@@ -1441,7 +1456,7 @@ pub fn pd0_pick_sb_partition_m6_eval(
         lambda,
         mode: Pd0Mode::Lvl1,
         lvl1: Some(tables),
-        max_sq: 64,
+        max_sq,
         min_sq,
         is_subres_safe: 255,
         ires_factor: 0,
