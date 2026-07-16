@@ -71,7 +71,9 @@ This applies to:
 ## Known Bugs — BLOCKING
 
 (none — decode conformance gate is green: 525/525 matrix streams decode
-under the AV1 reference decoder as of 2026-07-13, C baseline v4.2.0-rc)
+under the AV1 reference decoder as of 2026-07-13; C baseline retargeted to
+the final v4.2.0 tag 2026-07-16 — all-intra output byte-identical to the old
+v4.2.0-rc pin, so all gates carried over unchanged)
 
 ### Next structural gaps toward C bit-identity (not decode blockers)
 
