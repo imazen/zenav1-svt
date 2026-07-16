@@ -512,3 +512,47 @@ void __wrap_svt_aom_update_mi_map(PictureControlSet* pcs, ModeDecisionContext* c
             (int)m->cfl_alpha_idx, (int)m->cfl_alpha_signs);
     fflush(f);
 }
+
+/* ---- chroma full-loop interposer ----------------------------------------
+ * svt_aom_full_loop_uv (full_loop.c:2024, exported T; cross-TU callers in
+ * product_coding_loop.c incl. the mds3 independent-uv search's per-uv
+ * evaluations). Logging (cand uv/uvd + accumulated cb/cr bits+dist) at a
+ * pinned block reveals the per-(uv) RD pairs C's uv-table argmin consumes.
+ * Env: SVT_UVLOOP_OUT + SVT_UVLOOP_XY="x,y". One line per call. */
+void __real_svt_aom_full_loop_uv(PictureControlSet* pcs, ModeDecisionContext* ctx,
+                                 ModeDecisionCandidateBuffer* cand_bf, EbPictureBufferDesc* input_pic,
+                                 COMPONENT_TYPE component_type, uint32_t chroma_qindex,
+                                 uint64_t cb_full_distortion[DIST_TOTAL][DIST_CALC_TOTAL],
+                                 uint64_t cr_full_distortion[DIST_TOTAL][DIST_CALC_TOTAL], uint64_t* cb_coeff_bits,
+                                 uint64_t* cr_coeff_bits, bool is_full_loop);
+
+void __wrap_svt_aom_full_loop_uv(PictureControlSet* pcs, ModeDecisionContext* ctx,
+                                 ModeDecisionCandidateBuffer* cand_bf, EbPictureBufferDesc* input_pic,
+                                 COMPONENT_TYPE component_type, uint32_t chroma_qindex,
+                                 uint64_t cb_full_distortion[DIST_TOTAL][DIST_CALC_TOTAL],
+                                 uint64_t cr_full_distortion[DIST_TOTAL][DIST_CALC_TOTAL], uint64_t* cb_coeff_bits,
+                                 uint64_t* cr_coeff_bits, bool is_full_loop) {
+    __real_svt_aom_full_loop_uv(pcs, ctx, cand_bf, input_pic, component_type, chroma_qindex, cb_full_distortion,
+                                cr_full_distortion, cb_coeff_bits, cr_coeff_bits, is_full_loop);
+    const char* path = getenv("SVT_UVLOOP_OUT");
+    const char* xy   = getenv("SVT_UVLOOP_XY");
+    if (path && *path && xy) {
+        int px = -1, py = -1;
+        sscanf(xy, "%d,%d", &px, &py);
+        if ((int)ctx->blk_org_x == px && (int)ctx->blk_org_y == py) {
+            static FILE* f = NULL;
+            if (!f)
+                f = fopen(path, "w");
+            if (f) {
+                fprintf(f,
+                        "UVLOOP org=(%u,%u) %ux%u mode=%d uv=%d uvd=%d full=%d cbb=%llu crb=%llu cbd=%llu crd=%llu\n",
+                        (unsigned)ctx->blk_org_x, (unsigned)ctx->blk_org_y, block_size_wide[ctx->blk_geom->bsize],
+                        block_size_high[ctx->blk_geom->bsize], (int)cand_bf->cand->block_mi.mode,
+                        (int)cand_bf->cand->block_mi.uv_mode, (int)cand_bf->cand->block_mi.angle_delta[1],
+                        (int)is_full_loop, (unsigned long long)*cb_coeff_bits, (unsigned long long)*cr_coeff_bits,
+                        (unsigned long long)cb_full_distortion[0][0], (unsigned long long)cr_full_distortion[0][0]);
+                fflush(f);
+            }
+        }
+    }
+}
