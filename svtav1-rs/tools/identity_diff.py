@@ -505,8 +505,18 @@ def main():
     # divergence. (That misreading cost real time on the M2 real-content work.)
     #
     # Reporting the tile verdict unconditionally makes the distinction visible:
-    #   FH differs + tile differs    -> the tile is the root; chase that.
     #   FH differs + tile IDENTICAL  -> a genuine FH-search divergence.
+    #   FH differs + tile differs    -> the tile is upstream of the FH; look there.
+    #
+    # "tile differs" is necessary but NOT sufficient to blame mode decision: the
+    # tile also carries the per-SB loop-restoration syntax, which `write_modes_sb`
+    # emits BEFORE the SB's partition symbol and which comes from a post-hoc
+    # search over the CDEF'd recon. So a divergence at a very low op can still be
+    # an LR-search symptom rather than a mode-decision bug — e.g. a frame where
+    # one side chose RESTORE_NONE for a plane (no per-SB syntax) and the other a
+    # Wiener/SGR type emits an extra `*_restore` bool at op 0. Check the op kind
+    # at the divergence (a lone 2-symbol bool ahead of the first partition CDF is
+    # LR, not a mode) before concluding.
     tile_note = None
 
     def set_stage(s, d):
