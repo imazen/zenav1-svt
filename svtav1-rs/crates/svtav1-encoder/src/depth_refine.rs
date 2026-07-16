@@ -861,14 +861,23 @@ impl DepthWalk<'_, '_> {
     }
 
     /// C `calc_scr_to_recon_dist_per_quadrant` (product_coding_loop.c:
-    /// 8290): per-quadrant SSE of the winner's recon vs the source —
-    /// luma always, both chroma planes when quadrant_size > 4 (chroma
-    /// dims quartered).
+    /// 8290): per-quadrant SSE vs the source — luma always, both chroma
+    /// planes when quadrant_size > 4 (chroma dims quartered).
+    ///
+    /// LUMA reads the TX_DEPTH-0 recon, NOT the winning depth's: C's
+    /// `cand_bf->recon` is the shared ctx temp buffer; deeper tx depths
+    /// reconstruct into the aux tx-depth buffers and `update_tx_cand_bf`
+    /// copies pred/coeffs/eob back but never the recon, so at gate time the
+    /// shared buffer still holds the depth-0 recon. Proven on 1147124 q20 p4
+    /// SB(4,6) (76,96): C's fill luma quads sum to its OWN depth-0 dist
+    /// (971<<4 == 15536) while the winning depth-1 recon measures 744<<4.
+    /// Chroma has no tx-depth split — the winner chroma recon is correct
+    /// (and was already byte-matching C).
     fn quad_rec_dists(&self, ev: &LeafEval) -> [u64; 4] {
         let sq = ev.w;
         let quad = sq / 2;
         let mut dists = [0u64; 4];
-        let yrec = ev.y_recon();
+        let yrec = ev.gate_y();
         for r in 0..2usize {
             for c in 0..2usize {
                 let mut d: u64 = 0;
@@ -882,7 +891,7 @@ impl DepthWalk<'_, '_> {
                 }
                 if quad > 4 {
                     let cq = quad / 2;
-                    let (urec, vrec) = ev.uv_recon();
+                    let (urec, vrec) = ev.gate_uv();
                     let cw = sq / 2;
                     let ccx = ev.abs_x / 2 + c * cq;
                     let ccy = ev.abs_y / 2 + r * cq;
@@ -944,19 +953,6 @@ impl DepthWalk<'_, '_> {
                 dists,
                 predq,
             );
-            if sq == 16 && ev.abs_y / 4 == 76 && ev.abs_x / 4 == 96 {
-                for row in 0..16 {
-                    let mut line = format!("PPRED {row:02} ");
-                    for col in 0..16 {
-                        line.push_str(&format!("{:3} ", pred[row * sq + col]));
-                    }
-                    line.push_str("| PREC ");
-                    for col in 0..16 {
-                        line.push_str(&format!("{:3} ", yrec[row * sq + col]));
-                    }
-                    eprintln!("{line}");
-                }
-            }
         }
         dists
     }
