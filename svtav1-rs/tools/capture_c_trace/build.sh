@@ -13,12 +13,19 @@
 #
 # STALENESS CONTRACT (do not weaken — this exists because it bit us):
 #   Every C-vs-Rust comparison is only meaningful if the C driver reflects the
-#   CURRENT Source/ tree. There are two ways a stale binary can silently lie:
+#   CURRENT Source/ tree. There are three ways a stale binary can silently lie:
 #     1. Source/*.c edited but libSvtAv1Enc.a not rebuilt  -> handled by the
 #        `cmake --build` below (a ~0.5s no-op when already current).
 #     2. libSvtAv1Enc.a rebuilt but the driver not relinked -> handled by the
 #        mtime guard further down ("$OUT" -nt "$LIB").
-#   Both must hold. On 2026-07-15 (2) silently produced an EMPTY instrumentation
+#     3. THIS SCRIPT edited (new wrapper source, new -Wl,--wrap= flag) but the
+#        driver not relinked -> handled by ("$OUT" -nt "$HERE/build.sh").
+#        Added 2026-07-16: wrap_recon.c and its --wrap flag were added here,
+#        the guard watched only the .c files (all older than the binary), so no
+#        relink fired and `nm` showed no __wrap_ symbol — the interposer would
+#        have silently dumped nothing. Guard the recipe, not just its
+#        ingredients.
+#   All must hold. On 2026-07-15 (2) silently produced an EMPTY instrumentation
 #   dump for a whole debug cycle: the C lib had been rebuilt with new fprintf
 #   dumps, but capture_c_trace still linked the previous archive, so the dump
 #   printed nothing and the (wrong) conclusion drawn was "C never calls this
@@ -50,7 +57,8 @@ if [[ ! -f "$LIB" ]]; then
 fi
 
 # Skip rebuild when up to date (sources + lib older than binary).
-if [[ -x "$OUT" && "$OUT" -nt "$HERE/capture_c_trace.c" && "$OUT" -nt "$HERE/wrap_odec.c" && "$OUT" -nt "$LIB" ]]; then
+if [[ -x "$OUT" && "$OUT" -nt "$HERE/capture_c_trace.c" && "$OUT" -nt "$HERE/wrap_odec.c" &&
+    "$OUT" -nt "$HERE/wrap_recon.c" && "$OUT" -nt "$HERE/build.sh" && "$OUT" -nt "$LIB" ]]; then
     echo "capture_c_trace: up to date ($OUT)"
     exit 0
 fi
@@ -58,6 +66,7 @@ fi
 cc -O2 -g -o "$OUT" \
     "$HERE/capture_c_trace.c" \
     "$HERE/wrap_odec.c" \
+    "$HERE/wrap_recon.c" \
     -I"$ROOT/Source/API" \
     -I"$ROOT/Source/Lib/Codec" \
     -I"$ROOT/Source/Lib/Globals" \
@@ -68,6 +77,7 @@ cc -O2 -g -o "$OUT" \
     -Wl,--wrap=svt_od_ec_enc_init \
     -Wl,--wrap=svt_od_ec_enc_reset \
     -Wl,--wrap=svt_od_ec_enc_done \
+    -Wl,--wrap=svt_av1_loop_filter_init \
     "$LIB" -lpthread -lm
 
 echo "capture_c_trace: built $OUT"
