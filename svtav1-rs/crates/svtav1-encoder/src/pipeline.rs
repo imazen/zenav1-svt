@@ -2662,6 +2662,53 @@ fn encode_tile_rows(
                     }
                     eprintln!();
                 }
+                // SVTAV1_SEED_DUMP=1: one line per SB with salient SYNTAX-CDF
+                // seed rows, field-for-field matching the C-side SVT_SEED_OUT
+                // interposer (wrap on svt_aom_estimate_syntax_rate). diff the
+                // two files -> first SB whose rate seed diverges (the "every
+                // leaf cost in the SB shifted" divergence class).
+                #[cfg(feature = "std")]
+                if funnel_chain && std::env::var_os("SVTAV1_SEED_DUMP").is_some() {
+                    let dflt;
+                    let (fc, cfc): (
+                        &svtav1_entropy::context::FrameContext,
+                        &svtav1_entropy::coeff_c::CoeffFc,
+                    ) = match &chain_base {
+                        Some((fc, cfc)) => (fc, cfc.as_ref()),
+                        None => {
+                            dflt = (
+                                svtav1_entropy::context::FrameContext::new_default(),
+                                svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex),
+                            );
+                            (&dflt.0, &dflt.1)
+                        }
+                    };
+                    eprintln!(
+                        "SEED sb={} part0={},{},{} kf00={},{},{} txs00={},{} skip0={} ang0={},{},{} cfls={},{},{} cfla0={},{},{} xtx={},{},{}",
+                        sb_index,
+                        fc.partition_cdf[0][0],
+                        fc.partition_cdf[0][1],
+                        fc.partition_cdf[0][2],
+                        fc.kf_y_mode_cdf[0][0][0],
+                        fc.kf_y_mode_cdf[0][0][1],
+                        fc.kf_y_mode_cdf[0][0][2],
+                        fc.tx_size_cdf[0][0][0],
+                        fc.tx_size_cdf[1][0][0],
+                        fc.skip_cdf[0][0],
+                        fc.angle_delta_cdf[0][0],
+                        fc.angle_delta_cdf[0][1],
+                        fc.angle_delta_cdf[0][2],
+                        fc.cfl_sign_cdf[0],
+                        fc.cfl_sign_cdf[1],
+                        fc.cfl_sign_cdf[2],
+                        fc.cfl_alpha_cdf[0][0],
+                        fc.cfl_alpha_cdf[0][1],
+                        fc.cfl_alpha_cdf[0][2],
+                        cfc.intra_ext_tx_cdf[52][0],
+                        cfc.intra_ext_tx_cdf[52][1],
+                        cfc.intra_ext_tx_cdf[52][2],
+                    );
+                }
                 if funnel_chain {
                     fun_rates = Some(match &chain_base {
                         Some((fc, cfc)) => crate::leaf_funnel::build_md_rates(fc, cfc),

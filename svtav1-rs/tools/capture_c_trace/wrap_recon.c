@@ -101,6 +101,9 @@ void __real_svt_av1_loop_filter_init(PictureControlSet* pcs);
 bool __real_svt_aom_pick_partition(SequenceControlSet* scs, PictureControlSet* pcs, ModeDecisionContext* ctx,
                                    MdScan* mds, PC_TREE* pc_tree, int mi_row, int mi_col);
 
+/* Final blocks per shape (Part enum order: N,H,V,H4,V4,HA,HB,VA,VB). */
+static const int shape_nblk[PART_S] = {1, 2, 2, 4, 4, 3, 3, 3, 3};
+
 static void dump_pc_tree(FILE* f, const PC_TREE* t) {
     if (!t)
         return;
@@ -109,6 +112,25 @@ static void dump_pc_tree(FILE* f, const PC_TREE* t) {
     if (t->partition == PARTITION_SPLIT) {
         for (int i = 0; i < 4; ++i)
             dump_pc_tree(f, t->split[i]);
+        return;
+    }
+    /* Chosen non-split shape: dump each final block's decided modes so a mode/
+     * tx flip is visible without extra instrumentation. Geometry via C's own
+     * partition_mi_offset (common_utils.h:239). */
+    const Part shape = from_part_to_shape[t->partition];
+    for (int nsi = 0; nsi < shape_nblk[shape]; ++nsi) {
+        int              mi_row = t->mi_row, mi_col = t->mi_col;
+        const BlockSize  sb     = partition_mi_offset(t->bsize, shape, nsi, &mi_row, &mi_col);
+        const BlkStruct* b      = t->block_data[shape][nsi];
+        if (!b)
+            continue;
+        fprintf(f,
+                "CLEAF mi=(%d,%d) bsize=%d shape=%d nsi=%d mode=%d uv=%d txd=%d ady=%d aduv=%d"
+                " txt=[%d,%d,%d,%d] ye=[%u,%u,%u,%u] ue=%u ve=%u\n",
+                mi_row, mi_col, (int)sb, (int)shape, nsi, (int)b->block_mi.mode, (int)b->block_mi.uv_mode,
+                (int)b->block_mi.tx_depth, (int)b->block_mi.angle_delta[0], (int)b->block_mi.angle_delta[1],
+                (int)b->tx_type[0], (int)b->tx_type[1], (int)b->tx_type[2], (int)b->tx_type[3], b->eob.y[0],
+                b->eob.y[1], b->eob.y[2], b->eob.y[3], b->eob.u[0], b->eob.v[0]);
     }
 }
 
@@ -116,14 +138,20 @@ bool __wrap_svt_aom_pick_partition(SequenceControlSet* scs, PictureControlSet* p
                                    MdScan* mds, PC_TREE* pc_tree, int mi_row, int mi_col) {
     bool r = __real_svt_aom_pick_partition(scs, pcs, ctx, mds, pc_tree, mi_row, mi_col);
     const char* path = getenv("SVT_PICKPART_OUT");
-    /* First SB only (top-level root call is at mi=(0,0)). */
-    if (path && *path && mi_row == 0 && mi_col == 0) {
-        static FILE* f = NULL;
-        if (!f)
-            f = fopen(path, "w");
-        if (f) {
-            dump_pc_tree(f, pc_tree);
-            fflush(f);
+    /* Dump every SB-root's chosen tree (the cross-TU top-level call fires once
+     * per SB). Each node prints its mi, so grep the SB of interest. An optional
+     * SVT_PICKPART_MIROW/MICOL pair narrows the dump to one SB root. */
+    if (path && *path) {
+        const char* mr = getenv("SVT_PICKPART_MIROW");
+        const char* mc = getenv("SVT_PICKPART_MICOL");
+        if (!mr || !mc || (mi_row == atoi(mr) && mi_col == atoi(mc))) {
+            static FILE* f = NULL;
+            if (!f)
+                f = fopen(path, "w");
+            if (f) {
+                dump_pc_tree(f, pc_tree);
+                fflush(f);
+            }
         }
     }
     return r;
@@ -220,6 +248,44 @@ int64_t __wrap_svt_aom_partition_rate_cost(PictureParentControlSet* pcs, const B
                     (long long)ret);
     }
     return ret;
+}
+
+/* ---- per-SB syntax-rate SEED interposer --------------------------------
+ * svt_aom_estimate_syntax_rate (md_rate_estimation.h:175) is called once per
+ * SB from enc_dec_process.c:2933/3026 with the averaged FRAME_CONTEXT that
+ * seeds ALL of MD's syntax rate tables for that SB. Dumping a few salient CDF
+ * rows per call (call index == SB raster index on a single-tile frame) and
+ * diffing against the port's SVTAV1_CHAIN_DUMP SEED lines pins the FIRST SB
+ * whose rate seed diverges — the "every leaf cost in the SB shifted" class.
+ * Env: SVT_SEED_OUT. */
+void __real_svt_aom_estimate_syntax_rate(MdRateEstimationContext* r, bool is_i_slice, uint8_t pic_filter_intra_level,
+                                         uint8_t allow_screen_content_tools, uint8_t enable_restoration,
+                                         uint8_t allow_intrabc, FRAME_CONTEXT* fc);
+
+void __wrap_svt_aom_estimate_syntax_rate(MdRateEstimationContext* r, bool is_i_slice, uint8_t pic_filter_intra_level,
+                                         uint8_t allow_screen_content_tools, uint8_t enable_restoration,
+                                         uint8_t allow_intrabc, FRAME_CONTEXT* fc) {
+    __real_svt_aom_estimate_syntax_rate(r, is_i_slice, pic_filter_intra_level, allow_screen_content_tools,
+                                        enable_restoration, allow_intrabc, fc);
+    const char* path = getenv("SVT_SEED_OUT");
+    if (!path || !*path)
+        return;
+    static FILE* sf = NULL;
+    static int   call = 0;
+    if (!sf)
+        sf = fopen(path, "w");
+    if (!sf)
+        return;
+    fprintf(sf,
+            "SEED sb=%d part0=%u,%u,%u kf00=%u,%u,%u txs00=%u,%u skip0=%u ang0=%u,%u,%u"
+            " cfls=%u,%u,%u cfla0=%u,%u,%u xtx=%u,%u,%u\n",
+            call++, fc->partition_cdf[0][0], fc->partition_cdf[0][1], fc->partition_cdf[0][2], fc->kf_y_cdf[0][0][0],
+            fc->kf_y_cdf[0][0][1], fc->kf_y_cdf[0][0][2], fc->tx_size_cdf[0][0][0], fc->tx_size_cdf[1][0][0],
+            fc->skip_cdfs[0][0], fc->angle_delta_cdf[0][0], fc->angle_delta_cdf[0][1], fc->angle_delta_cdf[0][2],
+            fc->cfl_sign_cdf[0], fc->cfl_sign_cdf[1], fc->cfl_sign_cdf[2], fc->cfl_alpha_cdf[0][0],
+            fc->cfl_alpha_cdf[0][1], fc->cfl_alpha_cdf[0][2], fc->intra_ext_tx_cdf[1][0][0][0],
+            fc->intra_ext_tx_cdf[1][0][0][1], fc->intra_ext_tx_cdf[1][0][0][2]);
+    fflush(sf);
 }
 
 void __wrap_svt_av1_loop_filter_init(PictureControlSet* pcs) {

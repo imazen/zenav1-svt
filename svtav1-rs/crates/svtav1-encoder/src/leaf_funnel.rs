@@ -1843,6 +1843,23 @@ impl LeafEval {
         self.win.block_has_coeff
     }
 
+    /// NSQDBG only: winner per-txb tx types / luma eobs as "a,b,c" strings,
+    /// plus chroma eobs — joined against C's CLEAF dump to catch coeff-level
+    /// (tx_type/RDOQ) divergence that mode/uv/txd comparison misses.
+    pub(crate) fn dbg_txb_types(&self) -> String {
+        let v: Vec<String> = self.win.txb_type.iter().map(|t| t.to_string()).collect();
+        v.join(",")
+    }
+
+    pub(crate) fn dbg_txb_eobs(&self) -> String {
+        let v: Vec<String> = self.win.txb_eob.iter().map(|e| e.to_string()).collect();
+        v.join(",")
+    }
+
+    pub(crate) fn dbg_uv_eobs(&self) -> (u16, u16) {
+        (self.win.u_eob, self.win.v_eob)
+    }
+
     /// The shared MDS3 residual-workspace state (C `cand_bf->residual`,
     /// consumed by the psq gate): the LAST MDS3 candidate's depth-0
     /// residual.
