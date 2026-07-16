@@ -956,6 +956,68 @@ uint16_t ref_quantize_b(const int32_t* coeff, intptr_t n_coeffs, const int16_t* 
     return eob;
 }
 
+/* ---- Photon-noise film-grain table generation (noise_generation.c) ----
+   Drives the exported svt_av1_generate_noise_table with a real (zeroed)
+   EbSvtAv1EncConfiguration, then flattens the returned AomFilmGrain into an
+   int32 buffer for the Rust differential. The shim includes the real API
+   header, so struct layout/ABI is the library's own. */
+#include "EbSvtAv1Enc.h"
+
+EbErrorType svt_av1_generate_noise_table(EbSvtAv1EncConfiguration* config);
+
+/* out layout (all int32): apply_grain, num_y_points, y[14][2],
+   chroma_scaling_from_luma, num_cb, cb[10][2], num_cr, cr[10][2],
+   scaling_shift, ar_coeff_lag, ar_y[24], ar_cb[25], ar_cr[25],
+   ar_coeff_shift, grain_scale_shift, cb_mult, cb_luma_mult, cb_offset,
+   cr_mult, cr_luma_mult, cr_offset, overlap_flag, clip_to_restricted_range
+   = 1+1+28+1+1+20+1+20+1+1+24+25+25+1+1+3+3+1+1 = 159 entries. */
+int32_t ref_generate_noise_table(uint32_t width, uint32_t height, uint32_t noise_strength,
+                                 int32_t noise_strength_chroma, int32_t noise_chroma_from_luma,
+                                 int32_t noise_size, int32_t color_range_provided, int32_t color_range,
+                                 int32_t avif, int32_t* out) {
+    EbSvtAv1EncConfiguration cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.source_width           = width;
+    cfg.source_height          = height;
+    cfg.noise_strength         = noise_strength;
+    cfg.noise_strength_chroma  = noise_strength_chroma;
+    cfg.noise_chroma_from_luma = (uint8_t)noise_chroma_from_luma;
+    cfg.noise_size             = (int8_t)noise_size;
+    cfg.color_range_provided   = color_range_provided;
+    cfg.color_range            = (EbColorRange)color_range;
+    cfg.avif                   = (bool)avif;
+    if (svt_av1_generate_noise_table(&cfg) != EB_ErrorNone || !cfg.fgs_table) {
+        return -1;
+    }
+    AomFilmGrain* fg = cfg.fgs_table;
+    int32_t*      o  = out;
+    *o++ = fg->apply_grain;
+    *o++ = fg->num_y_points;
+    for (int i = 0; i < 14; i++) { *o++ = fg->scaling_points_y[i][0]; *o++ = fg->scaling_points_y[i][1]; }
+    *o++ = fg->chroma_scaling_from_luma;
+    *o++ = fg->num_cb_points;
+    for (int i = 0; i < 10; i++) { *o++ = fg->scaling_points_cb[i][0]; *o++ = fg->scaling_points_cb[i][1]; }
+    *o++ = fg->num_cr_points;
+    for (int i = 0; i < 10; i++) { *o++ = fg->scaling_points_cr[i][0]; *o++ = fg->scaling_points_cr[i][1]; }
+    *o++ = fg->scaling_shift;
+    *o++ = fg->ar_coeff_lag;
+    for (int i = 0; i < 24; i++) { *o++ = fg->ar_coeffs_y[i]; }
+    for (int i = 0; i < 25; i++) { *o++ = fg->ar_coeffs_cb[i]; }
+    for (int i = 0; i < 25; i++) { *o++ = fg->ar_coeffs_cr[i]; }
+    *o++ = fg->ar_coeff_shift;
+    *o++ = fg->grain_scale_shift;
+    *o++ = fg->cb_mult;
+    *o++ = fg->cb_luma_mult;
+    *o++ = fg->cb_offset;
+    *o++ = fg->cr_mult;
+    *o++ = fg->cr_luma_mult;
+    *o++ = fg->cr_offset;
+    *o++ = fg->overlap_flag;
+    *o++ = fg->clip_to_restricted_range;
+    free(fg);
+    return (int32_t)(o - out);
+}
+
 /* ---- QM quantize kernels (full_loop.c QM branches) ----
    Direct pass-through to the exported scalar kernels with non-NULL qm/iqm
    pointers, validating BOTH the Rust QM kernels and the transcribed

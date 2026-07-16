@@ -1767,6 +1767,18 @@ unsafe extern "C" {
         log_scale: i32,
         dispatch: i32,
     ) -> u16;
+    fn ref_generate_noise_table(
+        width: u32,
+        height: u32,
+        noise_strength: u32,
+        noise_strength_chroma: i32,
+        noise_chroma_from_luma: i32,
+        noise_size: i32,
+        color_range_provided: i32,
+        color_range: i32,
+        avif: i32,
+        out: *mut i32,
+    ) -> i32;
     fn ref_quantize_b_qm(
         coeff: *const i32,
         n_coeffs: isize,
@@ -1941,6 +1953,39 @@ pub fn quantize_b(
             i32::from(dispatch),
         )
     }
+}
+
+/// Drives the exported `svt_av1_generate_noise_table` (photon-noise film
+/// grain, noise_generation.c) and returns the flattened AomFilmGrain as
+/// 159 i32s (see the shim comment for the layout).
+#[allow(clippy::too_many_arguments)]
+pub fn generate_noise_table(
+    width: u32,
+    height: u32,
+    noise_strength: u32,
+    noise_strength_chroma: i32,
+    noise_chroma_from_luma: i32,
+    noise_size: i32,
+    color_range_provided: bool,
+    full_range: bool,
+    avif: bool,
+) -> Option<Vec<i32>> {
+    let mut out = vec![0i32; 159];
+    let n = unsafe {
+        ref_generate_noise_table(
+            width,
+            height,
+            noise_strength,
+            noise_strength_chroma,
+            noise_chroma_from_luma,
+            noise_size,
+            i32::from(color_range_provided),
+            i32::from(full_range),
+            i32::from(avif),
+            out.as_mut_ptr(),
+        )
+    };
+    (n == 159).then_some(out)
 }
 
 /// Drives `svt_aom_quantize_b_c` with non-NULL qm/iqm (the QM branch).
