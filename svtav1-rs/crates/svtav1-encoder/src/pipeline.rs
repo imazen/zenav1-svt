@@ -367,7 +367,12 @@ impl EncodePipeline {
                 // C clamps allintra presets above M9 to M9 (enc_handle.c:4634).
                 let eff_mode = self.speed_config.preset.min(9);
                 let rdoq_level = crate::quant::rdoq_level_allintra(eff_mode, coeff_lvl);
-                let lambda = crate::pd0::kf_full_lambda_8bit(base_qindex, tpl_adjusted_qp as u32);
+                let lambda = crate::pd0::kf_full_lambda_8bit_ex(
+                    base_qindex,
+                    tpl_adjusted_qp as u32,
+                    self.hdr.is_fork() && self.hdr.alt_lambda_factors,
+                    0,
+                );
                 Some(alloc::sync::Arc::new(crate::quant::CodingQuantCfg::new(
                     rdoq_level,
                     lambda,
@@ -540,6 +545,8 @@ impl EncodePipeline {
             if self.hdr.is_fork() { self.hdr.noise_norm_strength } else { 0 },
             qm_levels,
             if self.hdr.is_fork() { self.hdr.tx_bias } else { 0 },
+            self.hdr.is_fork() && self.hdr.alt_lambda_factors,
+            base_qindex,
             tpl_adjusted_qp,
             self.hdr.sharpness,
             lambda,
@@ -2803,6 +2810,8 @@ fn encode_tile_rows(
     hdr_noise_norm: u8,
     qm_levels: [u8; 3],
     hdr_tx_bias: u8,
+    hdr_alt_lambda: bool,
+    fh_base_qindex: u8,
     cli_qp: u8,
     hdr_sharpness: i8,
     _lambda: u64, // Per-SB lambda computed from sb_qp_offsets
@@ -2989,9 +2998,29 @@ fn encode_tile_rows(
                         .clamp(0, 255) as u8;
                     f.qindex_v = (i32::from(sbq) + i32::from(chroma_ac_deltas.1))
                         .clamp(0, 255) as u8;
-                    f.lambda = u64::from(crate::pd0::kf_full_lambda_8bit(
+                    // [SVT_HDR_MODE] per-SB lambda: alt KF factor (fork
+                    // default) + the delta-q qdiff stats factor
+                    // (rc_process.c:437-446; this path is fork-only).
+                    #[cfg(feature = "std")]
+                    if std::env::var("SVTAV1_LAMBDA_DBG").is_ok() {
+                        std::eprintln!(
+                            "sb lam alt={} sbq={} base={} -> {}",
+                            hdr_alt_lambda,
+                            sbq,
+                            fh_base_qindex,
+                            crate::pd0::kf_full_lambda_8bit_ex(
+                                sbq,
+                                u32::from(crate::rate_control::qindex_to_qp(sbq)),
+                                hdr_alt_lambda,
+                                i32::from(sbq) - i32::from(fh_base_qindex),
+                            )
+                        );
+                    }
+                    f.lambda = u64::from(crate::pd0::kf_full_lambda_8bit_ex(
                         sbq,
                         u32::from(crate::rate_control::qindex_to_qp(sbq)),
+                        hdr_alt_lambda,
+                        i32::from(sbq) - i32::from(fh_base_qindex),
                     ));
                 }
 
