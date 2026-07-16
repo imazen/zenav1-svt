@@ -442,6 +442,100 @@ pub fn compute_qdelta_fp(qstart_fp8: i32, qtarget_fp8: i32, bit_depth: i32) -> i
     unsafe { svt_av1_compute_qdelta_fp(qstart_fp8, qtarget_fp8, bit_depth) }
 }
 
+// ---- AC-bias wrappers (ac_bias.c, exported; feature code in both modes) ----
+
+unsafe extern "C" {
+    fn ref_psy_distortion(
+        input: *const u8,
+        input_stride: u32,
+        recon: *const u8,
+        recon_stride: u32,
+        width: u32,
+        height: u32,
+    ) -> u64;
+    fn svt_psy_adjust_rate_light(
+        coeff: *const i32,
+        coeff_bits: u64,
+        width: u32,
+        height: u32,
+        ac_bias: f64,
+    ) -> u64;
+    fn get_effective_ac_bias(ac_bias: f64, is_islice: bool, temporal_layer_index: u8) -> f64;
+}
+
+/// C `svt_psy_distortion` (8-bit).
+pub fn psy_distortion(input: &[u8], input_stride: u32, recon: &[u8], recon_stride: u32, width: u32, height: u32) -> u64 {
+    unsafe { ref_psy_distortion(input.as_ptr(), input_stride, recon.as_ptr(), recon_stride, width, height) }
+}
+
+/// C `svt_psy_adjust_rate_light`.
+pub fn psy_adjust_rate_light(coeff: &[i32], coeff_bits: u64, width: u32, height: u32, ac_bias: f64) -> u64 {
+    unsafe { svt_psy_adjust_rate_light(coeff.as_ptr(), coeff_bits, width, height, ac_bias) }
+}
+
+/// C `get_effective_ac_bias`.
+pub fn effective_ac_bias(ac_bias: f64, is_islice: bool, temporal_layer_index: u8) -> f64 {
+    unsafe { get_effective_ac_bias(ac_bias, is_islice, temporal_layer_index) }
+}
+
+unsafe extern "C" {
+    fn ref_spatial_facade(
+        input: *const u8,
+        input_stride: u32,
+        recon: *const u8,
+        recon_stride: u32,
+        width: u32,
+        height: u32,
+        mode: u8,
+        uv_mode: u8,
+        is_chroma: u8,
+        is_interintra: u8,
+        comp_type: u8,
+        temporal_layer_index: u8,
+        ac_bias: f64,
+        tx_bias: u8,
+    ) -> u64;
+}
+
+/// Fork mds0 distortion facade (`svt_spatial_full_distortion_kernel_facade`)
+/// driven with a synthetic BlockModeInfo. 8-bit, offsets 0.
+#[allow(clippy::too_many_arguments)]
+pub fn spatial_facade(
+    input: &[u8],
+    input_stride: u32,
+    recon: &[u8],
+    recon_stride: u32,
+    width: u32,
+    height: u32,
+    mode: u8,
+    uv_mode: u8,
+    is_chroma: bool,
+    is_interintra: bool,
+    comp_type: u8,
+    temporal_layer_index: u8,
+    ac_bias: f64,
+    tx_bias: u8,
+) -> u64 {
+    unsafe {
+        ref_spatial_facade(
+            input.as_ptr(),
+            input_stride,
+            recon.as_ptr(),
+            recon_stride,
+            width,
+            height,
+            mode,
+            uv_mode,
+            u8::from(is_chroma),
+            u8::from(is_interintra),
+            comp_type,
+            temporal_layer_index,
+            ac_bias,
+            tx_bias,
+        )
+    }
+}
+
 // ---- 2D transform wrappers ----
 
 unsafe extern "C" {
