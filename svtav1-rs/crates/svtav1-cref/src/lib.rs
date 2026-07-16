@@ -424,6 +424,24 @@ pub fn ac_quant_qtx(qindex: i32) -> i16 {
     unsafe { ref_ac_quant_qtx(qindex) }
 }
 
+// ---- variance-boost helper wrappers (rc_aq.c, exported in both modes) ----
+
+unsafe extern "C" {
+    fn svt_av1_convert_qindex_to_q_fp8(qindex: i32, bit_depth: i32) -> i32;
+    fn svt_av1_compute_qdelta_fp(qstart_fp8: i32, qtarget_fp8: i32, bit_depth: i32) -> i32;
+}
+
+/// C `svt_av1_convert_qindex_to_q_fp8`. `bit_depth` is the EbBitDepth enum
+/// value (8/10/12).
+pub fn convert_qindex_to_q_fp8(qindex: i32, bit_depth: i32) -> i32 {
+    unsafe { svt_av1_convert_qindex_to_q_fp8(qindex, bit_depth) }
+}
+
+/// C `svt_av1_compute_qdelta_fp`.
+pub fn compute_qdelta_fp(qstart_fp8: i32, qtarget_fp8: i32, bit_depth: i32) -> i32 {
+    unsafe { svt_av1_compute_qdelta_fp(qstart_fp8, qtarget_fp8, bit_depth) }
+}
+
 // ---- 2D transform wrappers ----
 
 unsafe extern "C" {
