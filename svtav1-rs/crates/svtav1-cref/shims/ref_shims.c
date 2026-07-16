@@ -955,3 +955,47 @@ uint16_t ref_quantize_b(const int32_t* coeff, intptr_t n_coeffs, const int16_t* 
     memcpy(dqcoeff, a_dqcoeff, (size_t)n_coeffs * sizeof(int32_t));
     return eob;
 }
+
+/* ---- AC-bias psychovisual kernels (ac_bias.c) ----
+   svt_psy_distortion calls svt_aom_hadamard_{4x4,8x8}/svt_aom_satd through
+   the aom_dsp RTCD dispatch table, which is NULL until setup — wrap with
+   the init-once guard. */
+uint64_t svt_psy_distortion(const uint8_t* input, uint32_t input_stride, const uint8_t* recon, uint32_t recon_stride,
+                            uint32_t width, uint32_t height);
+
+uint64_t ref_psy_distortion(const uint8_t* input, uint32_t input_stride, const uint8_t* recon, uint32_t recon_stride,
+                            uint32_t width, uint32_t height) {
+    /* hadamard_{4x4,8x8} live in COMMON dsp rtcd; satd in aom_dsp rtcd —
+       init both tables. */
+    if (!g_rtcd_ready) {
+        svt_aom_setup_common_rtcd_internal(svt_aom_get_cpu_flags_to_use());
+        g_rtcd_ready = 1;
+    }
+    ref_dsp_rtcd_once();
+    return svt_psy_distortion(input, input_stride, recon, recon_stride, width, height);
+}
+
+/* ---- fork mds0 distortion facade (pic_operators.c, SVT_HDR_MODE feature) ----
+   Drive the real facade with a synthetic BlockModeInfo built from scalars so
+   the Rust bias-layer port can be pinned against the C mode-enum logic. */
+#include "block_structures.h"
+#include "pic_operators.h"
+
+uint64_t ref_spatial_facade(const uint8_t* input, uint32_t input_stride, const uint8_t* recon, uint32_t recon_stride,
+                            uint32_t width, uint32_t height, uint8_t mode, uint8_t uv_mode, uint8_t is_chroma,
+                            uint8_t is_interintra, uint8_t comp_type, uint8_t temporal_layer_index, double ac_bias,
+                            uint8_t tx_bias) {
+    if (!g_rtcd_ready) {
+        svt_aom_setup_common_rtcd_internal(svt_aom_get_cpu_flags_to_use());
+        g_rtcd_ready = 1;
+    }
+    BlockModeInfo bmi;
+    memset(&bmi, 0, sizeof(bmi));
+    bmi.mode                 = (PredictionMode)mode;
+    bmi.uv_mode              = (UvPredictionMode)uv_mode;
+    bmi.is_interintra_used   = is_interintra;
+    bmi.interinter_comp.type = (CompoundType)comp_type;
+    return svt_spatial_full_distortion_kernel_facade((uint8_t*)input, 0, input_stride, (uint8_t*)recon, 0,
+                                                     recon_stride, width, height, false, &bmi, is_chroma != 0,
+                                                     temporal_layer_index, ac_bias, tx_bias);
+}
