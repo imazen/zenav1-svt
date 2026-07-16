@@ -48,21 +48,34 @@ if cmp -s "$D/rs.obu" "$D/c.obu"; then
 fi
 echo "DIFFERS: port=$(stat -c%s "$D/rs.obu")B C=$(stat -c%s "$D/c.obu")B first=$(cmp "$D/rs.obu" "$D/c.obu" 2>/dev/null | awk '{print $NF}' || true)"
 
-# 4: first divergent recon pixel -> SB root mi.
+# 4: first divergent DECODED pixel -> SB root mi, via the aom-decoder-rs
+# oracle (tools/decode_diff). Decoding both OBUs is preset-independent
+# ground truth — the internal recon dumps' C-side hook is only valid at
+# presets <= M5 (at M6+ C deblocks per-SB during the walk, so its
+# loop_filter_init-time buffer is already filtered; #90). Falls back to
+# the raw dump compare only if the decoder tool is missing.
+DD="$HERE/decode_diff/target/release/decode-diff"
+if [[ ! -x "$DD" ]]; then
+    echo "building decode-diff (first run)..."
+    (cd "$HERE/decode_diff" && cargo build --release -q)
+fi
 set +e
-MI=$(python3 "$HERE/drill_join.py" --locate "$D" "$W" "$H")
+DIFFOUT=$("$DD" "$D/c.obu" "$D/rs.obu")
 rc=$?
 set -e
-if [[ $rc -eq 2 ]]; then
-    echo "recon planes MISSING (rc 2) — the port recon dump (SVTAV1_RECONDBG in"
-    echo "pick_filter_levels_full_search) only fires on the full-DLF-search path;"
-    echo "at presets whose dlf level uses the cheaper search it never runs."
-    exit 2
-fi
-if [[ $rc -eq 3 || -z "$MI" ]]; then
-    echo "recon planes IDENTICAL -> divergence is post-recon (LF/CDEF/LR search); use identity_diff.sh"
+if [[ $rc -eq 0 ]]; then
+    echo "decoded outputs IDENTICAL -> streams differ only in signaling that"
+    echo "does not change pixels (recon-invisible symbol/context split); use"
+    echo "identity_diff.sh / the op differ."
     exit 3
 fi
+if [[ $rc -ne 1 ]]; then
+    echo "decode-diff failed (rc $rc):"
+    echo "$DIFFOUT"
+    exit 2
+fi
+echo "$DIFFOUT" | grep -E "DIFF |NDIFF"
+MI=$(echo "$DIFFOUT" | awk '/^SB /{print $2, $3}' | sed 's/mi_row=//; s/mi_col=//')
 read -r MIROW MICOL <<<"$MI"
 echo "drilling SB root mi=($MIROW,$MICOL)"
 

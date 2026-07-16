@@ -677,6 +677,24 @@ impl EncodePipeline {
         // recon); presets >= M6 get dlf_level 5 -> sb_based_dlf=1 -> the
         // LPF_PICK_FROM_Q closed form. early_exit_convergence is 0 at
         // dlf_level 1 (<= M3) and 1 at dlf_level 2 (M4/M5).
+        // Pre-DLF recon dump (SVTAV1_RECONDBG) — before the preset split so
+        // it fires at every preset (#90); matches C's dlf_process.c:101
+        // dump point (recon final, not yet deblocked).
+        #[cfg(feature = "std")]
+        {
+            let (su, sv) = chroma.unwrap_or((&[][..], &[][..]));
+            crate::deblock::recondbg_dump(
+                &encode_input,
+                su,
+                sv,
+                &recon,
+                &u_recon,
+                &v_recon,
+                w,
+                h,
+                chroma.is_some(),
+            );
+        }
         let lf_levels = if is_key {
             if is_single_frame && self.speed_config.preset <= 5 {
                 let (su, sv) = chroma.unwrap_or((&[][..], &[][..]));

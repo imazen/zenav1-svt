@@ -13,3 +13,5 @@ tools/capture_c_trace/capture_c_trace.bin
 
 # agent work marker (never committed)
 .workongoing
+tools/decode_diff/target/
+tools/decode_diff/Cargo.lock

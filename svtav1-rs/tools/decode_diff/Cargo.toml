@@ -1,0 +1,19 @@
+[package]
+name = "decode-diff"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Standalone drill tool — NOT a workspace member (see [workspace] below):
+# it pulls in the whole aom-decoder-rs dep graph, which the encoder
+# workspace's test cycle must not pay for. Built on demand by
+# tools/drill_cell.sh.
+[workspace]
+
+[dependencies]
+# The sibling pure-Rust AV1 decoder (bit-identical to libaom, Gate 1) as
+# the decode oracle: decoding BOTH encoders' OBUs and diffing the outputs
+# localizes the first divergent pixel/SB with zero instrumentation, at
+# every preset — unlike the internal recon dumps, whose C-side hook point
+# is preset-dependent (valid <= M5 only; see #90).
+aom-decoder-rs = { path = "/root/work/aom-decoder-rs" }

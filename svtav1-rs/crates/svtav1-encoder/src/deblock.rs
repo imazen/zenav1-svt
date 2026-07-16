@@ -279,37 +279,57 @@ fn search_filter_level(
 /// - The dlf_process zero-SSE guard (`zero_filt_sse == -1` recompute) can
 ///   never fire: the luma search starts at level 0, so ss_err[0] is always
 ///   evaluated and zero_filt_sse != -1. Not ported (documented no-op).
+/// SVTAV1_RECONDBG: dump SSE(source, UNFILTERED recon) per plane + the raw
+/// pre-DLF recon planes (SVTAV1_RECON_BIN=<prefix> → `<prefix>.p{0,1,2}`,
+/// tightly packed). Pure function of the recon — separates "the filter
+/// searches diverge" from "the recon they read already diverges". C's
+/// counterpart is the --wrap interposer in tools/capture_c_trace/
+/// wrap_recon.c, which reports C's own `picture_sse_calculations` at the
+/// same pipeline point (dlf_process.c:101 — recon final, not yet
+/// deblocked). Called from the pipeline BEFORE the DLF path split so it
+/// fires at EVERY preset (it used to live inside
+/// `pick_filter_levels_full_search`, dead at presets >= M6 whose dlf level
+/// uses the closed-form picker — the #90 coverage gap). Validate on a
+/// byte-identical cell before trusting a mismatch on a diverging one.
+#[cfg(feature = "std")]
+#[allow(clippy::too_many_arguments)]
+pub fn recondbg_dump(
+    y_src: &[u8],
+    u_src: &[u8],
+    v_src: &[u8],
+    y_recon: &[u8],
+    u_recon: &[u8],
+    v_recon: &[u8],
+    width: usize,
+    height: usize,
+    chroma_420: bool,
+) {
+    if std::env::var_os("SVTAV1_RECONDBG").is_none() {
+        return;
+    }
+    let (cw, ch) = (width / 2, height / 2);
+    let bin = std::env::var("SVTAV1_RECON_BIN").ok();
+    let mut planes: alloc::vec::Vec<(usize, &[u8], &[u8], usize, usize)> =
+        alloc::vec![(0, y_src, y_recon, width, height)];
+    if chroma_420 {
+        planes.push((1, u_src, u_recon, cw, ch));
+        planes.push((2, v_src, v_recon, cw, ch));
+    }
+    for (p, src, recon, w, h) in planes {
+        eprintln!("RECON_SSE plane={p} sse={}", plane_sse(src, recon, w, h));
+        // Raw plane, tightly packed — same layout the C interposer writes
+        // (its rows are buffer[p] + r*stride[p], stride removed), so the
+        // two dump files diff byte-for-byte and the first differing offset
+        // localizes the first divergent superblock.
+        if let Some(b) = &bin {
+            let _ = std::fs::write(format!("{b}.p{p}"), &recon[..w * h]);
+        }
+    }
+}
+
 pub fn pick_filter_levels_full_search(input: &DlfSearchInput) -> LfLevels {
     let mut scratch: Vec<u8> = Vec::with_capacity(input.width * input.height);
     let last = [0i32; 4];
-
-    // SVTAV1_RECONDBG: dump SSE(source, UNFILTERED recon) per plane — the
-    // level-0 trial the search always runs first, i.e. `ss_err[0]`. It is a
-    // pure function of the recon (no filtering, no geometry), so it separates
-    // "the filter searches diverge" from "the recon they read already
-    // diverges". C's counterpart is the --wrap interposer in
-    // tools/capture_c_trace/wrap_recon.c, which reports C's own
-    // `picture_sse_calculations` at the same point in the pipeline
-    // (dlf_process.c:101, recon final and not yet deblocked). Validate on a
-    // byte-identical cell before trusting a mismatch on a diverging one.
-    if std::env::var_os("SVTAV1_RECONDBG").is_some() {
-        let (cw, ch) = (input.width / 2, input.height / 2);
-        let bin = std::env::var("SVTAV1_RECON_BIN").ok();
-        for (p, src, recon, w, h) in [
-            (0, input.y_src, input.y_recon, input.width, input.height),
-            (1, input.u_src, input.u_recon, cw, ch),
-            (2, input.v_src, input.v_recon, cw, ch),
-        ] {
-            eprintln!("RECON_SSE plane={p} sse={}", plane_sse(src, recon, w, h));
-            // Raw plane, tightly packed — same layout the C interposer writes
-            // (its rows are buffer[p] + r*stride[p], stride removed), so the
-            // two dump files diff byte-for-byte and the first differing offset
-            // localizes the first divergent superblock.
-            if let Some(b) = &bin {
-                let _ = std::fs::write(format!("{b}.p{p}"), &recon[..w * h]);
-            }
-        }
-    }
 
     // Luma: one level for both edge directions (dir = 2).
     let (filt_y, _zero_sse, _best_sse) = search_filter_level(
