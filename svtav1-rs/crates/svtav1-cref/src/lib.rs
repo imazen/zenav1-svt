@@ -478,6 +478,28 @@ pub fn effective_ac_bias(ac_bias: f64, is_islice: bool, temporal_layer_index: u8
     unsafe { get_effective_ac_bias(ac_bias, is_islice, temporal_layer_index) }
 }
 
+// ---- picture-analysis sub-sampled mean producers (pic_analysis_process.c) ----
+
+unsafe extern "C" {
+    fn svt_compute_sub_mean_8x8_c(input_samples: *const u8, input_stride: u16) -> u64;
+    fn svt_aom_compute_sub_mean_squared_values_c(
+        input_samples: *const u8,
+        input_stride: u32,
+        input_area_width: u32,
+        input_area_height: u32,
+    ) -> u64;
+}
+
+/// C `svt_compute_sub_mean_8x8_c` (fp8 sub-sampled 8x8 mean).
+pub fn sub_mean_8x8(block: &[u8], stride: u16) -> u64 {
+    unsafe { svt_compute_sub_mean_8x8_c(block.as_ptr(), stride) }
+}
+
+/// C `svt_aom_compute_sub_mean_squared_values_c` (fp16 sub-sampled mean of squares).
+pub fn sub_mean_squared_8x8(block: &[u8], stride: u32) -> u64 {
+    unsafe { svt_aom_compute_sub_mean_squared_values_c(block.as_ptr(), stride, 8, 8) }
+}
+
 unsafe extern "C" {
     fn ref_noise_normalization(
         dequant_dc: i16,
