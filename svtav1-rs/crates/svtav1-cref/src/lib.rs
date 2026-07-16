@@ -1570,3 +1570,167 @@ pub fn dr_predictor_edged(
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Quantizers (full_loop.c) — `svt_av1_quantize_fp_facade` / `svt_aom_quantize_b`
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn ref_quantize_fp(
+        coeff: *const i32,
+        n_coeffs: isize,
+        zbin: *const i16,
+        round_fp: *const i16,
+        quant_fp: *const i16,
+        quant_shift: *const i16,
+        qcoeff: *mut i32,
+        dqcoeff: *mut i32,
+        dequant: *const i16,
+        scan: *const i16,
+        iscan: *const i16,
+        log_scale: i32,
+        dispatch: i32,
+    ) -> u16;
+    fn ref_quantize_b(
+        coeff: *const i32,
+        n_coeffs: isize,
+        zbin: *const i16,
+        round: *const i16,
+        quant: *const i16,
+        quant_shift: *const i16,
+        qcoeff: *mut i32,
+        dqcoeff: *mut i32,
+        dequant: *const i16,
+        scan: *const i16,
+        iscan: *const i16,
+        log_scale: i32,
+        dispatch: i32,
+    ) -> u16;
+}
+
+/// One qindex row of the C `Quants`/`Dequants` tables in the exact SHAPE the
+/// quantize kernels require: `DECLARE_ALIGNED(16, int16_t, y_quant[..][8])`
+/// (pcs.h:78, commented "8: SIMD width"), filled `[DC, AC, AC, AC, AC, AC, AC,
+/// AC]` by `svt_av1_build_quantizer` (md_config_process.c:151 copies `[1]` into
+/// `[2..8]`).
+///
+/// The 8 lanes are NOT padding. The scalar `_c` kernels only read `[0]`/`[1]`,
+/// but the SIMD ones `_mm_loadu_si128` the whole 8-lane row and
+/// `init_one_qp`/`update_qp` (av1_quantize_avx2.c:41/:69) broadcast the HIGH
+/// 64 bits — lanes `[4..8]` — as the AC quantizer for every coefficient past
+/// the first 16. A 2-lane row therefore reads 6 lanes of adjacent memory and
+/// silently mis-quantizes (or faults). Use [`QuantRow::new`].
+#[derive(Debug, Clone, Copy, Default)]
+#[repr(C, align(16))]
+pub struct QuantRow {
+    pub zbin: [i16; 8],
+    pub round: [i16; 8],
+    pub quant: [i16; 8],
+    pub quant_shift: [i16; 8],
+    pub round_fp: [i16; 8],
+    pub quant_fp: [i16; 8],
+    pub dequant: [i16; 8],
+}
+
+impl QuantRow {
+    /// Build a row from its (DC, AC) pair, replicating AC across lanes 1..8
+    /// exactly like `svt_av1_build_quantizer`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        zbin: [i16; 2],
+        round: [i16; 2],
+        quant: [i16; 2],
+        quant_shift: [i16; 2],
+        round_fp: [i16; 2],
+        quant_fp: [i16; 2],
+        dequant: [i16; 2],
+    ) -> Self {
+        let lanes = |v: [i16; 2]| -> [i16; 8] { [v[0], v[1], v[1], v[1], v[1], v[1], v[1], v[1]] };
+        Self {
+            zbin: lanes(zbin),
+            round: lanes(round),
+            quant: lanes(quant),
+            quant_shift: lanes(quant_shift),
+            round_fp: lanes(round_fp),
+            quant_fp: lanes(quant_fp),
+            dequant: lanes(dequant),
+        }
+    }
+}
+
+/// `iscan[scan[i]] = i` — the inverse scan the SIMD kernels index by.
+fn build_iscan(scan: &[u16]) -> Vec<i16> {
+    let mut iscan = vec![0i16; scan.len()];
+    for (i, &rc) in scan.iter().enumerate() {
+        iscan[rc as usize] = i as i16;
+    }
+    iscan
+}
+
+/// Drives `svt_av1_quantize_fp_facade`'s non-QM branch. `dispatch = true`
+/// calls the RTCD pointer (what a real encode runs); `false` calls the scalar
+/// `_c` reference. Returns eob.
+pub fn quantize_fp(
+    coeff: &[i32],
+    row: &QuantRow,
+    scan: &[u16],
+    log_scale: i32,
+    dispatch: bool,
+    qcoeff: &mut [i32],
+    dqcoeff: &mut [i32],
+) -> u16 {
+    assert_eq!(coeff.len(), scan.len());
+    assert!(qcoeff.len() >= coeff.len() && dqcoeff.len() >= coeff.len());
+    let iscan = build_iscan(scan);
+    let scan_i16: Vec<i16> = scan.iter().map(|&v| v as i16).collect();
+    unsafe {
+        ref_quantize_fp(
+            coeff.as_ptr(),
+            coeff.len() as isize,
+            row.zbin.as_ptr(),
+            row.round_fp.as_ptr(),
+            row.quant_fp.as_ptr(),
+            row.quant_shift.as_ptr(),
+            qcoeff.as_mut_ptr(),
+            dqcoeff.as_mut_ptr(),
+            row.dequant.as_ptr(),
+            scan_i16.as_ptr(),
+            iscan.as_ptr(),
+            log_scale,
+            i32::from(dispatch),
+        )
+    }
+}
+
+/// Drives `svt_aom_quantize_b` (QM off). Returns eob.
+pub fn quantize_b(
+    coeff: &[i32],
+    row: &QuantRow,
+    scan: &[u16],
+    log_scale: i32,
+    dispatch: bool,
+    qcoeff: &mut [i32],
+    dqcoeff: &mut [i32],
+) -> u16 {
+    assert_eq!(coeff.len(), scan.len());
+    assert!(qcoeff.len() >= coeff.len() && dqcoeff.len() >= coeff.len());
+    let iscan = build_iscan(scan);
+    let scan_i16: Vec<i16> = scan.iter().map(|&v| v as i16).collect();
+    unsafe {
+        ref_quantize_b(
+            coeff.as_ptr(),
+            coeff.len() as isize,
+            row.zbin.as_ptr(),
+            row.round.as_ptr(),
+            row.quant.as_ptr(),
+            row.quant_shift.as_ptr(),
+            qcoeff.as_mut_ptr(),
+            dqcoeff.as_mut_ptr(),
+            row.dequant.as_ptr(),
+            scan_i16.as_ptr(),
+            iscan.as_ptr(),
+            log_scale,
+            i32::from(dispatch),
+        )
+    }
+}

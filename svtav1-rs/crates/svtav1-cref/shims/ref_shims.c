@@ -825,3 +825,133 @@ void ref_superres_upscale_row(const uint8_t* input, int32_t in_width, uint8_t* o
     const int32_t x0   = ref_us_x0(in_width, out_width, step);
     upscale_normative_rect((uint8_t*)input, 1, in_width, in_width, output, 1, out_width, out_width, step, x0, 1, 1);
 }
+
+/* ---- Quantizers (full_loop.c): the MD + encode-pass quantize kernels ----
+ *
+ * `svt_av1_quantize_fp_facade` (full_loop.c:462) and the `perform_rdoq == 0`
+ * arm of `svt_aom_quantize_inv_quantize` (:1785) are what actually turn
+ * transform coefficients into (qcoeff, dqcoeff, eob) for every MD candidate.
+ * They dispatch through RTCD, so a real encode runs the AVX2 kernel — these
+ * shims expose BOTH that pointer (`dispatch = 1`) and the scalar `_c`
+ * reference (`dispatch = 0`) so the port can be pinned against the kernel the
+ * encoder really calls, and the two C paths can be cross-checked. QM is off on
+ * the allintra path, so qm/iqm are NULL (the facade's non-qm branch).
+ */
+
+#include "aom_dsp_rtcd.h"
+
+void       svt_aom_setup_rtcd_internal(EbCpuFlags flags);
+static int g_dsp_rtcd_ready = 0;
+static void ref_dsp_rtcd_once(void) {
+    if (!g_dsp_rtcd_ready) {
+        svt_aom_setup_rtcd_internal(svt_aom_get_cpu_flags_to_use());
+        g_dsp_rtcd_ready = 1;
+    }
+}
+
+uint16_t ref_quantize_fp(const int32_t* coeff, intptr_t n_coeffs, const int16_t* zbin, const int16_t* round_fp,
+                         const int16_t* quant_fp, const int16_t* quant_shift, int32_t* qcoeff, int32_t* dqcoeff,
+                         const int16_t* dequant, const int16_t* scan, const int16_t* iscan, int32_t log_scale,
+                         int32_t dispatch) {
+    uint16_t eob = 0;
+    if (dispatch) {
+        ref_dsp_rtcd_once();
+        switch (log_scale) {
+        case 0:
+            svt_av1_quantize_fp(
+                coeff, n_coeffs, zbin, round_fp, quant_fp, quant_shift, qcoeff, dqcoeff, dequant, &eob, scan, iscan);
+            break;
+        case 1:
+            svt_av1_quantize_fp_32x32(
+                coeff, n_coeffs, zbin, round_fp, quant_fp, quant_shift, qcoeff, dqcoeff, dequant, &eob, scan, iscan);
+            break;
+        default:
+            svt_av1_quantize_fp_64x64(
+                coeff, n_coeffs, zbin, round_fp, quant_fp, quant_shift, qcoeff, dqcoeff, dequant, &eob, scan, iscan);
+            break;
+        }
+    } else {
+        switch (log_scale) {
+        case 0:
+            svt_av1_quantize_fp_c(
+                coeff, n_coeffs, zbin, round_fp, quant_fp, quant_shift, qcoeff, dqcoeff, dequant, &eob, scan, iscan);
+            break;
+        case 1:
+            svt_av1_quantize_fp_32x32_c(
+                coeff, n_coeffs, zbin, round_fp, quant_fp, quant_shift, qcoeff, dqcoeff, dequant, &eob, scan, iscan);
+            break;
+        default:
+            svt_av1_quantize_fp_64x64_c(
+                coeff, n_coeffs, zbin, round_fp, quant_fp, quant_shift, qcoeff, dqcoeff, dequant, &eob, scan, iscan);
+            break;
+        }
+    }
+    return eob;
+}
+
+/* `svt_aom_quantize_b_avx2` reads the coefficients with `_mm256_load_si256`
+   (highbd_quantize_intrin_avx2.c:227/:242) — the ALIGNED load. The real
+   encoder satisfies that because every coefficient buffer is
+   EB_MALLOC_ALIGNED/DECLARE_ALIGNED; a plain Rust `Vec<i32>` is only 4-byte
+   aligned and faults. Stage through 32-byte-aligned buffers so the shim
+   reproduces the caller contract the library assumes rather than a weaker one.
+   Max adjusted coefficient count is av1_get_max_eob(TX_64X64) = 1024. */
+#define REF_QUANT_MAX_COEFFS 1024
+
+uint16_t ref_quantize_b(const int32_t* coeff, intptr_t n_coeffs, const int16_t* zbin, const int16_t* round,
+                        const int16_t* quant, const int16_t* quant_shift, int32_t* qcoeff, int32_t* dqcoeff,
+                        const int16_t* dequant, const int16_t* scan, const int16_t* iscan, int32_t log_scale,
+                        int32_t dispatch) {
+    uint16_t eob = 0;
+    if (n_coeffs > REF_QUANT_MAX_COEFFS) {
+        abort();
+    }
+    _Alignas(32) int32_t a_coeff[REF_QUANT_MAX_COEFFS];
+    _Alignas(32) int32_t a_qcoeff[REF_QUANT_MAX_COEFFS];
+    _Alignas(32) int32_t a_dqcoeff[REF_QUANT_MAX_COEFFS];
+    _Alignas(32) int16_t a_iscan[REF_QUANT_MAX_COEFFS];
+    _Alignas(32) int16_t a_scan[REF_QUANT_MAX_COEFFS];
+    memcpy(a_coeff, coeff, (size_t)n_coeffs * sizeof(int32_t));
+    memcpy(a_iscan, iscan, (size_t)n_coeffs * sizeof(int16_t));
+    memcpy(a_scan, scan, (size_t)n_coeffs * sizeof(int16_t));
+    memset(a_qcoeff, 0, (size_t)n_coeffs * sizeof(int32_t));
+    memset(a_dqcoeff, 0, (size_t)n_coeffs * sizeof(int32_t));
+
+    if (dispatch) {
+        ref_dsp_rtcd_once();
+        svt_aom_quantize_b(a_coeff,
+                           n_coeffs,
+                           zbin,
+                           round,
+                           quant,
+                           quant_shift,
+                           a_qcoeff,
+                           a_dqcoeff,
+                           dequant,
+                           &eob,
+                           a_scan,
+                           a_iscan,
+                           NULL,
+                           NULL,
+                           log_scale);
+    } else {
+        svt_aom_quantize_b_c(a_coeff,
+                             n_coeffs,
+                             zbin,
+                             round,
+                             quant,
+                             quant_shift,
+                             a_qcoeff,
+                             a_dqcoeff,
+                             dequant,
+                             &eob,
+                             a_scan,
+                             a_iscan,
+                             NULL,
+                             NULL,
+                             log_scale);
+    }
+    memcpy(qcoeff, a_qcoeff, (size_t)n_coeffs * sizeof(int32_t));
+    memcpy(dqcoeff, a_dqcoeff, (size_t)n_coeffs * sizeof(int32_t));
+    return eob;
+}
