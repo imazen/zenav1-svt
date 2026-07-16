@@ -367,6 +367,20 @@ pub struct FunnelCfg {
     /// chroma_level 1 (M0), 8 at chroma_level 2 (M1); mutually exclusive
     /// with `ind_uv_mds3`. `None` = not the independent variant.
     pub ind_uv_independent: Option<u16>,
+    /// C `ind_uv_last_mds == 1` (chroma_level 2, M1): the independent uv
+    /// search runs BEFORE MDS3, not before MDS0 (product_coding_loop.c:9477
+    /// vs :9260) — so `ind_uv_avail` is 0 at injection time and every
+    /// candidate is injected with uv-FOLLOWS-LUMA chroma
+    /// (`intra_luma_to_chroma[fimode_to_intramode[..]]`, mode_decision.c
+    /// :3288); the table only reaches candidates via the MDS3
+    /// `update_intra_chroma_mode` rewrite (:7063, gated on
+    /// `ind_uv_last_mds != 0` — so the last_mds==0 config M0 injects FROM
+    /// the table and never rewrites). The table CONTENT is identical
+    /// either way (the search reads only source + fixed neighbor recon and
+    /// sets its own rdoq/spatial-sse/coeff-est flags), so the port builds
+    /// it early for both and keys the two consumption points off this
+    /// flag. false = last_mds 0 semantics (M0).
+    pub ind_uv_last_mds1: bool,
     /// SH `enable_intra_edge_filter` (M5 still/420 only): directional
     /// predictions run the corner/edge filters + upsampling
     /// (enc_intra_prediction.c:181-215).
@@ -426,6 +440,7 @@ impl FunnelCfg {
             coeff_rate_est_lvl: 1,
             ind_uv_mds3: false,
             ind_uv_independent: None,
+            ind_uv_last_mds1: false,
             fi_max: 0,
             edge_filter: false,
             // M6 cfl_level 4: enabled, itr_th 1, cplx_th 10 (detector-gated
@@ -522,6 +537,7 @@ impl FunnelCfg {
                 txt_d2_off: 0,
                 ind_uv_mds3: false,
                 ind_uv_independent: Some(8),
+                ind_uv_last_mds1: true,
                 ..m6_tail
             },
             // M2/M3 (still/420): the M5DBG CFG enc_mode=2/3 rows
@@ -2400,9 +2416,13 @@ pub(crate) fn evaluate_leaf(
         } else {
             mode
         };
+        // At ind_uv_last_mds==1 (M1) the C search hasn't run yet at
+        // injection time (`ind_uv_avail` = 0, site :9477 is pre-MDS3), so
+        // candidates inject uv-follows-luma and only the MDS3 rewrite
+        // applies the table.
         let (uv, uv_delta) = match &ind_uv {
-            Some(tbl) => tbl[map_mode as usize],
-            None => (
+            Some(tbl) if !cfg.ind_uv_last_mds1 => tbl[map_mode as usize],
+            _ => (
                 uv_from_y(map_mode),
                 if fi != FI_NONE { 0 } else { delta },
             ),
@@ -2777,17 +2797,18 @@ pub(crate) fn evaluate_leaf(
         // the ind-uv table (fast chroma rate recomputed for the luma
         // mode + new uv pair — same formula as injection, so an
         // unconditional recompute is C-identical).
-        // C `update_intra_chroma_mode` runs at MDS3 for BOTH ind-uv configs
-        // (A/B-verified: gating it off at ind_uv_last_mds==0 broke q40-64
-        // while injection-only was enough for q20-64 — both layers exist in
-        // C). Key the table on the fi-MAPPED direction exactly like the
-        // injection (mode_decision.c:3332 uses fimode_to_intramode); the
-        // historic "mapping the rewrite regressed q40" happened only because
-        // the pre-MDS0 injection pricing was missing then.
+        // C gates the rewrite on `ind_uv_avail && ind_uv_last_mds` (:7063)
+        // — it runs for last_mds 1 (M1) and 2 (M2/M3) but NOT for
+        // last_mds 0 (M0), whose candidates were already injected FROM the
+        // table and keep it. (The earlier "A/B proved rewrite needed for
+        // both configs" note toggled M0+M1 together; the q40-64 breakage
+        // came from the M1 cells, where C does rewrite.)
         if let Some(tbl) = &ind_uv {
-            // A/B-verified pair (g64 p0): the rewrite keys on the CODED luma
-            // mode (DC for FILTER candidates) — mapping it broke q40 while
-            // the unmapped key + mapped INJECTION passes both q20 and q40.
+            if cfg.ind_uv_last_mds1 || cfg.ind_uv_mds3 {
+            // The rewrite keys on the CODED luma mode (`cand->block_mi.mode`
+            // in update_intra_chroma_mode — DC for FILTER candidates), NOT
+            // the fi-mapped direction. A/B-verified (g64 p0): mapping the
+            // key broke q40.
             let (uvm, uvd) = tbl[cands[ci].mode as usize];
             let c = &mut cands[ci];
             c.uv = uvm;
@@ -2797,6 +2818,7 @@ pub(crate) fn evaluate_leaf(
                 fcr += rates.angle[uvm as usize - 1][(3 + uvd) as usize] as u64;
             }
             c.fcr = fcr;
+            }
         }
         // ---- Luma: TX depth loop ----
         let mut best_depth = 0u8;
@@ -3034,6 +3056,7 @@ pub(crate) fn evaluate_leaf(
         };
         // CfL override state, applied at the mutable-borrow writeback below.
         let mut uv_mode_final = cand.uv;
+        let mut uv_delta_final = cand.uv_delta;
         let mut fcr_final = cand.fcr;
         let mut cfl_idx_final = 0u8;
         let mut cfl_signs_final = 0u8;
@@ -3374,15 +3397,37 @@ pub(crate) fn evaluate_leaf(
             } else if cfl_gate && cfl_ind_uv {
                 // C independent-uv CfL: cfl_prediction (ind_uv_avail branch,
                 // product_coding_loop.c:3888) forwards CfL, then
-                // check_best_indepedant_cfl (:3964, called :7237) keeps the
-                // non-CfL uv mode iff best_uv_cost[mode] < cfl_uv_cost. The
-                // ind-uv search already picked the best NON-CfL uv into cand.uv
-                // (u_out/v_out/cand.fcr = its spatial cost = best_uv_cost);
-                // both costs are SPATIAL SSE (full_loop_uv is_full_loop=1 @
-                // SSSE_MDS3), unlike the uv-follows-luma freq decision above.
+                // check_best_indepedant_cfl (:3830, called :6875) keeps the
+                // non-CfL uv mode iff best_uv_cost[mode] < cfl_uv_cost —
+                // where best_uv_cost/best_uv_mode are keyed on the CODED
+                // luma mode (DC for FILTER candidates), NOT the candidate's
+                // injected uv. At M0 (ind_uv_last_mds==0, no :7063
+                // pre-rewrite) a FILTER candidate arrives here still
+                // carrying tbl[fimode_to_intramode[fi]]; C discards that
+                // eval entirely and arbitrates CfL against the coded-mode
+                // row, assigning best_uv_mode[coded] on a non-CfL win. So:
+                // re-key the candidate to the coded-mode row before the
+                // compare (a no-op for M1/M2/M3, whose pre-MDS3 rewrite
+                // already applied it). Both costs are SPATIAL SSE
+                // (full_loop_uv is_full_loop=1 @ SSSE_MDS3), unlike the
+                // uv-follows-luma freq decision above.
+                let (arb_uv, arb_uvd) = ind_uv.as_ref().unwrap()[cand.mode as usize];
+                if (cand.uv, cand.uv_delta) != (arb_uv, arb_uvd) {
+                    let (u2, v2) = chroma_eval(fx, arb_uv, arb_uvd);
+                    u_out = u2;
+                    v_out = v2;
+                    uv_mode_final = arb_uv;
+                    uv_delta_final = arb_uvd;
+                    let mut f =
+                        rates.uv[cfl_allowed][cand.mode as usize][arb_uv as usize] as u64;
+                    if use_angle && matches!(arb_uv, 1..=8) {
+                        f += rates.angle[arb_uv as usize - 1][(3 + arb_uvd) as usize] as u64;
+                    }
+                    fcr_final = f;
+                }
                 let best_uv_cost = rdcost(
                     lambda,
-                    u_out.bits as u64 + v_out.bits as u64 + cand.fcr,
+                    u_out.bits as u64 + v_out.bits as u64 + fcr_final,
                     u_out.dist + v_out.dist,
                 );
                 // compute_cfl_ac_components: subsample the winning luma recon.
@@ -3655,6 +3700,7 @@ pub(crate) fn evaluate_leaf(
         cand.total_rate = cand.flr + fcr_final + coeff_rate;
         cand.full_dist = dist;
         cand.uv = uv_mode_final;
+        cand.uv_delta = uv_delta_final;
         cand.fcr = fcr_final;
         cand.cfl_alpha_idx = cfl_idx_final;
         cand.cfl_alpha_signs = cfl_signs_final;
