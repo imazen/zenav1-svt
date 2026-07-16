@@ -36,9 +36,10 @@ mkdir -p "$D"
 # 1+2: encodes with recon dumps (wrappers force freshness). The port's stderr
 # IS its symtrace op stream; C's comes from SVT_TRACE_OUT — both captured here
 # so the op-level differ below costs no extra encodes.
-SVTAV1_RECONDBG=1 SVTAV1_RECON_BIN="$D/p" \
+rm -f "$D/rs.ptree" # PACKTREE appends; stale rows would poison the join
+SVTAV1_RECONDBG=1 SVTAV1_RECON_BIN="$D/p" SVTAV1_PACKTREE="$D/rs.ptree" \
     "$HERE/identity_run" "$CONTENT" "$W" "$H" "$QP" "$P" "$D/rs" >/dev/null 2>"$D/rs.trace"
-SVT_RECON_OUT="$D/c.sse" SVT_RECON_BIN="$D/c" SVT_TRACE_OUT="$D/c.trace" \
+SVT_RECON_OUT="$D/c.sse" SVT_RECON_BIN="$D/c" SVT_TRACE_OUT="$D/c.trace" SVT_CTREE_OUT="$D/c.ctree" \
     "$HERE/capture_c_trace/capture_c_trace" "$W" "$H" "$QP" "$P" "$D/rs.yuv" "$D/c.obu" >/dev/null 2>"$D/c.log"
 
 # 3: byte compare.
@@ -86,7 +87,11 @@ grep -E 'NSQDBG (TS|BLK|SHAPE|SKIP|TSX)' "$D/rs.nsqraw" >"$D/rs.sbdump" || true
 SVT_PICKPART_OUT="$D/c.pickpart" SVT_PICKPART_MIROW="$MIROW" SVT_PICKPART_MICOL="$MICOL" \
     "$HERE/capture_c_trace/capture_c_trace" "$W" "$H" "$QP" "$P" "$D/rs.yuv" "$D/c.obu" >/dev/null 2>&1
 
-# 6: joined report.
+# 6: FINAL-TREE diff (every preset; C side = the update_mi_map wrap) —
+# flips-only, bounded output. The most direct decision-level localizer.
+python3 "$HERE/tree_diff.py" "$D/c.ctree" "$D/rs.ptree" || true
+
+# 6b: joined SEARCH-side report (<= M5 walk only; empty at M6+).
 python3 "$HERE/drill_join.py" --join "$D/c.pickpart" "$D/rs.sbdump"
 
 # 7: op-level first divergence (identity_diff on the ALREADY-captured traces —

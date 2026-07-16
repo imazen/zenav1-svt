@@ -83,6 +83,7 @@ cc -O2 -g -o "$OUT" \
     -Wl,--wrap=svt_aom_pick_partition \
     -Wl,--wrap=svt_aom_estimate_syntax_rate \
     -Wl,--wrap=svt_aom_intra_fast_cost \
+    -Wl,--wrap=svt_aom_update_mi_map \
     -Wl,--wrap=svt_aom_full_cost \
     "$LIB" -lpthread -lm
 

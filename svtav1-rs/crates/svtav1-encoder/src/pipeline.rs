@@ -1643,6 +1643,50 @@ fn encode_block_syntax(
     chroma: &mut Option<ChromaPass<'_>>,
     geom: &mut crate::deblock::DeblockGeom,
 ) {
+    // Diagnostic (SVTAV1_PACKTREE=<path>): one line per coded leaf — the
+    // port's FINAL tree, file-only (no stderr noise; token-frugal drills).
+    // tools/tree_diff.py joins it against the C-side CTREE dump (the
+    // svt_aom_update_mi_map --wrap, valid at every preset) and prints only
+    // the flips. Field domains mirror the C wrap: C BlockSize enum id via
+    // block_size_index; fi 5 = none; uv 13 = CFL; skip is derived on the
+    // diff side from yeob/ueob/veob (C dumps the all-plane skip bit).
+    #[cfg(feature = "std")]
+    if let Some(path) = std::env::var_os("SVTAV1_PACKTREE") {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            let (ueob, veob) = decision
+                .chroma_dec
+                .as_ref()
+                .map(|c| (c.2, c.3))
+                .unwrap_or((0, 0));
+            let _ = writeln!(
+                f,
+                "PTREE mi=({},{}) bsize={} part={} mode={} uv={} fi={} ady={} aduv={} txd={} yeob={} ueob={} veob={} cflidx={} cflsgn={}",
+                block_y / 4,
+                block_x / 4,
+                svtav1_entropy::context::block_size_index(
+                    decision.width as usize,
+                    decision.height as usize
+                ),
+                decision.partition_type as u8,
+                decision.intra_mode,
+                decision.uv_mode,
+                decision.filter_intra_mode,
+                decision.angle_delta,
+                decision.uv_angle_delta,
+                decision.tx_depth,
+                decision.eob,
+                ueob,
+                veob,
+                decision.cfl_alpha_idx,
+                decision.cfl_alpha_signs,
+            );
+        }
+    }
     // Diagnostic (SVTAV1_PART_DUMP): every coded leaf's geometry + skip, to
     // diff the partition tree against the C entropy coder. No output change.
     #[cfg(feature = "std")]
