@@ -7,6 +7,22 @@ multi-preset real-image spot cells re-verified green on the final lib)**
 `Bin/Release/libSvtAv1Enc.a` · goal gate: **byte-identical streams
 at matched configs** (still-picture/AVIF, CQP, `--lp 1`).
 
+**2026-07-16 MILESTONE: the FULL synthetic identity matrix is green —
+132/132 cells byte-identical** (uniform+gradient × 64/128px × qp 20/40/55 ×
+presets 0–10; `benchmarks/identity_matrix_132_full_2026-07-16.tsv`). The
+final unlock was the M0/M1 chroma tier, landed as three commits on origin:
+`2c76388e5` (independent-uv three-layer model + MDS1 filter-intra ext-tx
+rates, 120→129), `5340de28b` (C `fimode_to_intramode` PAETH injection map),
+`26fb03080` (three-regime ind-uv model: M0 pre-MDS0 table + CfL-arbitration
+hidden rewrite via `check_best_indepedant_cfl` re-key; M1 uv-follows-luma
+injection + pre-MDS3 search + `:7063` rewrite; M2/M3 survivor-keyed —
+129→132). Real-content regression spots 7/7 IDENTICAL, 669/669 tests.
+NEW COVERAGE FINDING the same day: real 512² at p0/p1 = 0/12, all one
+systematic first-divergence — `use_128x128_superblock` C=1 vs port=0
+(enc_handle.c:3999-4004 allintra ≤M1 picks 128-px SBs above 240p; the
+synthetic matrix is ≤240p so 64-SB everywhere). Tracked as task #91;
+`benchmarks/real_image_identity_p01_2026-07-16.tsv` is the baseline.
+
 This document is the divergence map of the identity campaign. **2026-07-13
 update: the campaign's first byte-identical stream landed** — uniform 64x64
 CLI-qp 40 preset 13 prints `VERDICT: streams IDENTICAL` (exit 0): all 22
