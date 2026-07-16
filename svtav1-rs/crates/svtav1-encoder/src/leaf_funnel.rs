@@ -237,6 +237,9 @@ pub struct FunnelFrame {
     /// Frame rdoq level (0 = quantize_b at MDS3 too).
     pub rdoq_level: u8,
     pub base_qindex: u8,
+    /// Config sharpness for the RDOQ rshift formula (0 mainline; fork
+    /// default 1 — departs from mainline only at >= 3).
+    pub sharpness: i8,
     /// Per-preset intra-leaf config (M6 vs intra_level-7 M7/M8).
     pub cfg: FunnelCfg,
 }
@@ -1294,7 +1297,7 @@ fn tx_unit(
             let o = crate::quant::OptimizeCtx {
                 txb_costs: rates.coeff.txb(cc::txsize_entropy_ctx(c_tx), plane_type),
                 eob_costs: &rates.coeff.eob[cc::TXSIZE_LOG2_MINUS4[c_tx]][plane_type],
-                rdmult: crate::quant::rdoq_rdmult(frame.lambda as u32, plane_type),
+                rdmult: crate::quant::rdoq_rdmult_sharp(frame.lambda as u32, plane_type, frame.sharpness, false),
                 tx_size: c_tx,
                 tx_class,
                 txb_skip_ctx,

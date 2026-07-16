@@ -9,6 +9,7 @@ pub mod deblock;
 pub mod depth_refine;
 pub mod encode_loop;
 pub mod film_grain;
+pub mod hdr_mode;
 pub mod intra_edge;
 pub mod leaf_funnel;
 pub mod mode_decision;
