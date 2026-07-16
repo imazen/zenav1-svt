@@ -1,0 +1,21 @@
+date: 2026-07-16
+tool: tools/identity_matrix.sh, C=SvtAv1EncApp v4.2.0-rc
+grid: {uniform,gradient} x {64,128} x cli_qp {20,40,55} x presets {0..6} = 84 cells
+commit: (this commit) fix: CfL chroma detector must SAD the WINNING tx_depth's luma pred
+result: 82/84 IDENTICAL -- UNCHANGED vs the 277e91089 (#84) baseline.
+  0 REGRESSIONS, 0 gains.
+  The 2 non-identical cells are the SAME two as the baseline, byte-for-byte
+  identical in detail:
+    gradient 64  q20 p0  tile  tile payload C=836B  Rust=837B
+    gradient 128 q20 p0  tile  tile payload C=2480B Rust=2485B
+  Both are M0 (preset 0) and are the known sub-8 partition-writer gap
+  (tasks #58/#59) -- unrelated to this fix.
+
+purpose: this matrix is the M1 GATE for the #85 fix. The detector's `sad_arm` is
+  consulted only when `cfl_cplx_th != 0` AND `cfl_enabled`; per FunnelCfg,
+  `m6_tail` sets cfl_cplx_th: 10 (M1..M6), M0 overrides to 0 (detector bypassed --
+  `cfl_would_run` short-circuits and sad_arm is unused), and M7/M8/eff-M9 set
+  cfl_enabled: false. So the fix can only change M1..M6. The M2-M5 tier is gated
+  by real_image_identity_fix85_m2m5.tsv and M6 by
+  real_image_identity_fix85_m6m10.tsv; this run covers M1 (and confirms M0 is
+  untouched, as predicted -- both M0 cells still fail identically).

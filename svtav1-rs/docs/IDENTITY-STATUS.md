@@ -2854,6 +2854,30 @@ the `has_uv`-gated CfL block (old expression also `true`).
 
 ### Latent bug found while root-causing (task #85, NOT fixed here)
 
+> **RETRACTED 2026-07-16 — this framing was WRONG on both the mechanism and the
+> measurement. See the 2026-07-16 §"#85" section below for what was actually
+> true. Kept verbatim (struck through in spirit) because the *way* it was wrong
+> is the reusable lesson: it was written from a witness captured BEFORE #84
+> landed, and joined on a key too coarse to identify a candidate.**
+>
+> Two independent errors:
+> 1. **Mechanism claim is false.** "`md_stage_3` does not re-predict chroma
+>    before `full_loop_core` — so that buffer holds a stale prediction" — no:
+>    `full_loop_core` itself predicts chroma at `product_coding_loop.c:7102-7104`
+>    (`uv_intra_comp_only = true`) immediately before the detector at `:7178`.
+>    `pred->u_buffer` is FRESH, not stale.
+> 2. **Measurement is stale.** The x328 y440 numbers below predate #84. Re-running
+>    the identical dump after #84: C `cb=142 cr=10 sad_arm=1` and port
+>    `cb=142 cr=10 sad_arm=1` — **identical**, with identical predicted bytes. The
+>    chroma mismatch was a DOWNSTREAM SYMPTOM of #84 all along (the detector SADs
+>    against `fx.u_recon`, the committed recon, so a prior block wrongly picking
+>    CfL changed this block's DC neighbours). #84 fixed it.
+>
+> The real residual was in the **luma** SAD, not chroma — a different root
+> entirely. Also note the "74/7323" count was partly an artifact of the coarse
+> `(x,y,w,h,lm)` join key below, which mis-pairs the multiple MDS3 candidates that
+> share a block.
+
 The CfL chroma-complexity detector's **SAD arm** mismatches C on **74/7323** MDS3
 blocks. C's `chroma_complexity_check_pred` (`product_coding_loop.c:6117`) reads
 `cand_bf->pred->u_buffer`, and `md_stage_3` (`:7435`) does **not** re-predict
@@ -2870,6 +2894,13 @@ both sides still land on DC).
 
 C dumps `SVT_CFLDUMP` / `SVT_CFLRD` / `SVT_CFLDET` / `SVT_CFLGATE` vs port
 `SVTAV1_CFLDUMP` / `SVTAV1_CFLRD` / `SVTAV1_CFLDET`, joined on `(x,y,w,h,lm)`.
+
+> **Join-key warning (added 2026-07-16).** `(x,y,w,h,lm)` is NOT a unique key: the
+> detector fires once per MDS3 **candidate**, so several records share a block and
+> a positional pairing after `sort` silently mis-aligns them — manufacturing
+> phantom "mismatches" (a 2090-line diff that evaporated once the key was fixed).
+> Any C-vs-port record join must put the full candidate identity in the KEY:
+> `(x, y, w, h, mode, angle_delta, filter_intra, uv_mode, uv_angle_delta)`.
 
 **Stale binaries can no longer haunt this harness — made structurally
 impossible.** The trap that cost a cycle here: the C lib was rebuilt with new
@@ -2897,3 +2928,110 @@ a binary that predated the lib. Nothing failed loudly. The fix is not a reminder
 Verified: touching `Source/Lib/Codec/md_rate_estimation.c` and then invoking only
 the wrapper relinked `capture_c_trace.bin` with zero human action and kept the
 output byte-correct; `rs.trace` contains 0 cargo-chatter lines.
+
+## 2026-07-16 (wave2, #85): the CfL detector's LUMA SAD must use the WINNING tx_depth's prediction — and the filed "chroma/stale-buffer" root cause was wrong
+
+Two findings, one fix. The headline is the fix; the retraction above matters just
+as much, because the filed bug pointed at the wrong plane *and* the wrong cause.
+
+### What #85 actually was
+
+C's chroma-complexity detector (`chroma_complexity_check_pred`,
+`product_coding_loop.c:6095`) SADs the source against `cand_buffer->pred->y_buffer`
+(`:6106`). It is called from `full_loop_core` at `:7178` — **after** the luma TX
+loop at `:7139`. What that buffer holds therefore depends on the winning tx_depth:
+
+- **depth 0** — the TX loop re-predicts luma only `if (ctx->tx_depth)`
+  (`:5393-5395`), and at depth 0 `tx_cand_bf == cand_bf` (`:5363-5365`). The
+  buffer still holds the **MDS0 whole-block** prediction.
+- **depth > 0** — each txb is re-predicted from **recon neighbours** into a
+  *separate scratch* buffer (`ctx->cand_bf_tx_depth_1/2`), and when that depth
+  wins, `update_tx_cand_bf` (`:5269`, called `:5487`) memcpy's the scratch pred
+  back over the full `bheight x bwidth` of `cand_bf->pred->y_buffer`.
+
+The port always passed `cand.pred` — the MDS0 whole-block pred (`leaf_funnel.rs`
+struct field, "Whole-block depth-0 luma prediction"). So its `y_dist` was wrong on
+every candidate whose winning depth was > 0.
+
+### Evidence (both directions, on 258947 q40 p3)
+
+Both sides emit exactly **7323** detector records; streams byte-identical.
+
+| | ydist2 DIFFERS | ydist2 SAME |
+|---|---|---|
+| **tx_depth > 0** | 1040 | 1233 |
+| **tx_depth == 0** | **0** | 5004 |
+
+Every luma-SAD mismatch has `tx_depth > 0`; **zero** at depth 0 — exactly what the
+code above predicts. Those 1042 `ydist2` mismatches flipped **`sad_arm` on 22**,
+i.e. whether CfL was evaluated at all. Chroma (`cb`/`cr`) matched on **every**
+record — the filed "chroma SAD" bug did not exist post-#84.
+
+### Fix
+
+`leaf_funnel.rs`: accumulate `dep_pred` per depth from each txb's `txb_pred`,
+commit `best_pred = dep_pred` alongside `best_recon` at the depth winner, and pass
+`&best_pred` (not `&cand.pred`) to `chroma_detector_fires`. At depth 0 `txbs == 1`,
+so `dep_pred` reproduces `cand.pred` byte-for-byte — **provably a no-op for
+depth-0 winners** (the 5004 records above). `cand.pred` itself is untouched, which
+matters: the NSQ `psq_resid` (`:3441`) legitimately wants the MDS0 pred, because
+`update_tx_cand_bf` copies back `cand`/`eob`/`quant_dc`/`pred`/`rec_coeff`/`quant`
+but **not** `residual` — so C's `cand_bf->residual` really does keep the depth-0
+residual regardless of the winning depth.
+
+### Blast radius
+
+The detector's `sad_arm` is only consulted when `cfl_cplx_th != 0`, and only
+matters when `cfl_enabled`. Per `FunnelCfg`: `m6_tail` sets `cfl_cplx_th: 10`
+(M1..M6); **M0** overrides to `0` (detector bypassed — `cfl_would_run` short-
+circuits, `sad_arm` unused); M7/M8/eff-M9 set `cfl_enabled: false`. So the fix can
+only change **M1..M6**, and is a provable no-op elsewhere.
+
+### Corroboration from a second, independent C site
+
+`product_coding_loop.c:712-758` (the CfL luma-recon builder) reconstructs
+`ctx->cfl_temp_luma_recon` by walking `tx_blocks_per_depth[bsize][tx_depth]` and
+inverse-transforming **`cand_bf->pred->y_buffer`** together with the winning
+depth's `rec_coeff`/`eob`/`transform_type[txb_itr]` (or copying `pred` straight
+across when a txb has no coeffs). Pairing that buffer with winning-depth
+coefficients is only coherent if the buffer holds the **winning depth's**
+prediction — which is exactly what `update_tx_cand_bf` guarantees, and exactly
+what #85 fixes. Two unrelated C sites therefore agree on the buffer's semantics.
+
+Corollary, checked: the port's CfL is already correct to build `pred_buf_q3` from
+`best_recon` (`leaf_funnel.rs:1414`), because C's CfL luma source is likewise the
+winning depth's recon — NOT `cand_bf->recon->y_buffer`, which `update_tx_cand_bf`
+never copies back (only `cand`/`eob`/`quant_dc`/`pred`/`rec_coeff`/`quant`; the
+two "recon" mentions in it are `rec_coeff`, the recon COEFFICIENTS).
+
+### Bonus: this validates the port's depth>0 per-TX prediction
+
+`ydist2` now matches C on all 2273 `txd>0` records, so `predict_unit_overlay`
+reproduces C's `av1_intra_luma_prediction` recon-fed per-txb output pixel-for-pixel
+(the SAD is a checksum over it). That path had no direct C-parity test before.
+
+### Results
+
+- Detector join, all 7323 records, keyed on block **and** candidate identity:
+  **0 mismatches on every field** (`ydist2`/`cb`/`cr`/`sad_arm`), down from 1042
+  `ydist2` + 22 `sad_arm`.
+- 258947 q40 p3 still byte-identical (8169 B).
+- Full workspace suite: **664 passed, 0 failed, 0 ignored**.
+- Real M2-M5 matrix: see `benchmarks/real_image_identity_fix85_m2m5.tsv`.
+- C tree pristine; all instrumentation reverted.
+
+### Triage of the remaining M2-M5 divergences (measured, for the next chunk)
+
+Of the 31 diverging cells at the #84 baseline, **30 have different C vs Rust byte
+counts** — their tile data genuinely differs, so the 28 "FH `loop_filter_level`"
+first-divergences are **downstream symptoms**, not LF bugs (LF level is derived
+from recon and does not change coded tile bytes). The single same-size cell
+(1963557 q20 p2, both 20855 B) was checked directly: `cmp -l` reports **11158
+differing bytes**, so its equal size is coincidence and it is *also* a recon
+cascade. **There is no pure-LF cell — do not re-chase one.** The LF search itself
+was reviewed line-by-line against `deblocking_filter.c:829-937` and is C-exact.
+
+Distribution: by preset p2:11 p3:13 p4:5 p5:2; by qp q20:20 q40:9 q55:2. The
+cheapest next drill is therefore the **smallest** diverging stream —
+`AgilityCourseElements q55 p2` (C=2112 B, Rust=2119 B) — fewest blocks to search
+(task #87).

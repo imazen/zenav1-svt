@@ -1,0 +1,22 @@
+date: 2026-07-16
+tool: tools/real_image_matrix.sh, CID22-512, C=SvtAv1EncApp v4.2.0-rc
+grid: 4 images {1001682,1963557,3571065,AgilityCourseElements}
+      x presets {6,7,8,10} x cli_qp {20,40,55} = 48 cells
+commit: (this commit) fix: CfL chroma detector must SAD the WINNING tx_depth's luma pred
+result: 48/48 IDENTICAL -- UNCHANGED vs the 277e91089 (#84) baseline.
+  0 REGRESSIONS, 0 gains. p6 12/12, p7 12/12, p8 12/12, p10 12/12.
+
+purpose: this matrix is the M6 GATE for the #85 fix. The detector's `sad_arm` is
+  consulted only when `cfl_cplx_th != 0` AND `cfl_enabled`; per FunnelCfg,
+  `m6_tail` sets cfl_cplx_th: 10 (M1..M6), M0 overrides to 0 (detector bypassed),
+  and M7/M8/eff-M9 set cfl_enabled: false. So M6 (p6) is the only preset in THIS
+  grid that the fix can touch -- p7/p8/p10 are structurally unaffected and are
+  included only as a control. p6 staying 12/12 is the gate.
+
+  Companion gates for the same fix:
+    - M1:    identity_matrix_fix85_synth.tsv        82/84, 0 regressions
+    - M2-M5: real_image_identity_fix85_m2m5.tsv     66/96, +1 gain, 0 regressions
+
+note: this grid does NOT include 5739122, so it does not cover task #82's cell
+  (5739122 q20 p6, FH cdef_y_sec_strength). That cell is an M6 cell and therefore
+  IS in this fix's blast radius -- it must be re-tested separately.

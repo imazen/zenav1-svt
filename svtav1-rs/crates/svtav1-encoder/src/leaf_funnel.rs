@@ -2600,6 +2600,11 @@ pub(crate) fn evaluate_leaf(
         let mut best_txb_cul: Vec<u8> = Vec::new();
         let mut best_txb_type: Vec<u8> = Vec::new();
         let mut best_recon: Vec<u8> = Vec::new();
+        // The winning depth's luma PREDICTION, i.e. C `cand_bf->pred->y_buffer`
+        // as it stands once the TX loop returns. NOT the same as `cand.pred`
+        // (the MDS0 whole-block pred) whenever the winning depth > 0 — see the
+        // detector call below for why the difference is observable.
+        let mut best_pred: Vec<u8> = Vec::new();
         let mut best_coeff_count = u32::MAX;
 
         for depth in 0..=end_depth {
@@ -2624,6 +2629,9 @@ pub(crate) fn evaluate_leaf(
             let mut dep_cul: Vec<u8> = Vec::with_capacity(txbs);
             let mut dep_type: Vec<u8> = Vec::with_capacity(txbs);
             let mut dep_recon = vec![0u8; w * h];
+            // This depth's assembled whole-block luma prediction (see
+            // `best_pred`); mirrors what C leaves in `cand_bf->pred->y_buffer`.
+            let mut dep_pred = vec![0u8; w * h];
             let mut dep_has_coeff = false;
             let mut aborted = false;
 
@@ -2660,6 +2668,12 @@ pub(crate) fn evaluate_leaf(
                         filt_type_y,
                         &mut txb_pred,
                     );
+                }
+                // Accumulate this depth's whole-block prediction. At depth 0
+                // txbs == 1, so this reproduces `cand.pred` exactly.
+                for r in 0..txh {
+                    let dst = (tx_y + r) * w + tx_x;
+                    dep_pred[dst..dst + txw].copy_from_slice(&txb_pred[r * txw..(r + 1) * txw]);
                 }
                 // Per-txb contexts from the TX-local overlay (real at M6;
                 // 0/0 at M7/M8 where update_skip_ctx_dc_sign_ctx == 0, so
@@ -2772,6 +2786,7 @@ pub(crate) fn evaluate_leaf(
                 best_txb_cul = dep_cul;
                 best_txb_type = dep_type;
                 best_recon = dep_recon;
+                best_pred = dep_pred;
                 best_coeff_count = dep_eob.iter().map(|&e| e as u32).sum();
                 let _ = dep_has_coeff;
             }
@@ -2832,11 +2847,31 @@ pub(crate) fn evaluate_leaf(
                 &mut v_pred,
             );
             let c_off = ccy * fx.c_stride + ccx;
+            // LUMA reference for the detector's SAD: C reads
+            // `cand_buffer->pred->y_buffer` (product_coding_loop.c:6106), and
+            // by the time the detector runs (:7178) the luma TX loop (:7139)
+            // has already returned. What that leaves in the buffer depends on
+            // the winning tx_depth:
+            //   - depth 0: the TX loop re-predicts only `if (ctx->tx_depth)`
+            //     (:5393-5395) and at depth 0 `tx_cand_bf == cand_bf`
+            //     (:5363-5365), so the buffer still holds the MDS0 whole-block
+            //     prediction == `cand.pred`.
+            //   - depth > 0: each txb is re-predicted from RECON neighbours
+            //     into a SEPARATE scratch buffer (`ctx->cand_bf_tx_depth_1/2`),
+            //     and on winning, `update_tx_cand_bf` (:5269, called :5487)
+            //     memcpy's that scratch pred back over the full
+            //     bheight x bwidth of `cand_bf->pred->y_buffer`.
+            // So the detector's luma SAD is against the WINNING DEPTH's
+            // prediction, not the MDS0 one. Passing `cand.pred` here made the
+            // port's `y_dist` diverge on every candidate whose winning depth
+            // was > 0 (measured: 1040/7323 records on 258947 q40 p3, and zero
+            // mismatches at depth 0), flipping `sad_arm` — and hence whether
+            // CfL is evaluated at all — on 22 of them.
             let sad_arm = chroma_detector_fires(
                 y_src,
                 y_src_stride,
                 y_src_off,
-                &cand.pred,
+                &best_pred,
                 w,
                 fx.u_src,
                 fx.v_src,
