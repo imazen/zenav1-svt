@@ -706,6 +706,7 @@ impl EncodePipeline {
             if is_single_frame && self.speed_config.preset <= 5 {
                 let (su, sv) = chroma.unwrap_or((&[][..], &[][..]));
                 let input = crate::deblock::DlfSearchInput {
+                    sharpness: self.hdr.sharpness.clamp(0, 7) as u8,
                     y_src: &encode_input,
                     u_src: su,
                     v_src: sv,
@@ -736,7 +737,7 @@ impl EncodePipeline {
                 chroma.is_some(),
                 &deblock_geom,
                 &lf_levels,
-                0, // sharpness: matches the signaled loop_filter_sharpness
+                self.hdr.sharpness.clamp(0, 7) as u8, // = signaled loop_filter_sharpness
             );
         }
 
@@ -990,6 +991,9 @@ impl EncodePipeline {
                 // and application MUST agree or the recon desyncs from
                 // every conforming decoder.
                 lf_levels.levels,
+                // Signaled loop_filter_sharpness — must match the value the
+                // deblock search + application used (fork default 1).
+                self.hdr.sharpness.clamp(0, 7) as u8,
                 // The CDEF strengths applied to the output recon above —
                 // like the deblock levels, signaling and application MUST
                 // agree or the recon desyncs from every conforming decoder.
