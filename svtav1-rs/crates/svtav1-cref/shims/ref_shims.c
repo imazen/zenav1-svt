@@ -999,3 +999,32 @@ uint64_t ref_spatial_facade(const uint8_t* input, uint32_t input_stride, const u
                                                      recon_stride, width, height, false, &bmi, is_chroma != 0,
                                                      temporal_layer_index, ac_bias, tx_bias);
 }
+
+/* ---- fork noise normalization (full_loop.c, SVT_HDR_MODE feature) ----
+   The real function reads only: p->dequant_qtx (per-position DC/AC),
+   qparam->iqmatrix (NULL = no QM), pcs->scs->static_config
+   .noise_norm_strength, tx_size/tx_type/eob and the coefficient buffers.
+   Build the minimal struct chain and forward. */
+#include "pcs.h"
+#include "transforms.h"
+void svt_av1_perform_noise_normalization(MacroblockPlane* p, QuantParam* qparam, TranLow* coeff_ptr,
+                                         TranLow* qcoeff_ptr, TranLow* dqcoeff_ptr, TxSize tx_size, TxType tx_type,
+                                         uint16_t* eob, PictureControlSet* pcs);
+
+void ref_noise_normalization(const int16_t dequant_dc, const int16_t dequant_ac, const int32_t* coeff,
+                             int32_t* qcoeff, int32_t* dqcoeff, uint16_t* eob, int32_t tx_size, int32_t tx_type,
+                             uint8_t strength) {
+    static SequenceControlSet g_nn_scs;
+    static PictureControlSet  g_nn_pcs;
+    int16_t                   dequant[2] = {dequant_dc, dequant_ac};
+    MacroblockPlane           p;
+    QuantParam                qp;
+    memset(&p, 0, sizeof(p));
+    memset(&qp, 0, sizeof(qp));
+    p.dequant_qtx                              = dequant;
+    qp.iqmatrix                                = NULL;
+    g_nn_pcs.scs                               = &g_nn_scs;
+    g_nn_scs.static_config.noise_norm_strength = strength;
+    svt_av1_perform_noise_normalization(
+        &p, &qp, (TranLow*)coeff, qcoeff, dqcoeff, (TxSize)tx_size, (TxType)tx_type, eob, &g_nn_pcs);
+}
