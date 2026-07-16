@@ -905,6 +905,27 @@ impl EncodePipeline {
         // still-picture header only for single-frame mode. is_single_frame
         // + seq_tools were derived before the entropy walk (the walk codes
         // use_filter_intra flags iff the SH will signal the tool).
+        // Screen-content derivation (allintra): scm 3 auto-detect at
+        // preset <= 7 (enc_handle.c:4514-4527), off at M8+; palette level
+        // + the FH allow_screen_content_tools bit from sc_class5
+        // (sig_deriv_multi_processes_allintra, enc_mode_config.c:2374-2393).
+        // The detector reads the SOURCE luma (C pcs->enhanced_pic). MD
+        // palette/IBC candidates are NOT ported yet (#71) — frames the
+        // detector fires on still diverge in the tile (their FH now
+        // matches C for the palette-only presets M5-M7; M2-M4 need the
+        // IBC vertical); frames it does not fire on are unaffected.
+        let sc_derivation = crate::sc_detect::derive_allintra_sc(
+            self.speed_config.preset,
+            &encode_input,
+            w,
+            w,
+            h,
+        );
+        let sc_signal = svtav1_entropy::obu::ScSignal {
+            allow_screen_content_tools: sc_derivation.allow_screen_content_tools,
+            allow_intrabc: sc_derivation.allow_intrabc,
+        };
+
         let bitstream = if is_key {
             let mut bs = alloc::vec::Vec::new();
             bs.extend_from_slice(&svtav1_entropy::obu::write_temporal_delimiter());
@@ -942,6 +963,7 @@ impl EncodePipeline {
                 // SeqTools the SH got); the per-plane types/taps are the
                 // ones the tile signals and the output recon had applied.
                 &lr_signal,
+                sc_signal,
             );
             // tile_data is already a complete tile_group (with TG header)
             let mut frame_payload = alloc::vec::Vec::new();
