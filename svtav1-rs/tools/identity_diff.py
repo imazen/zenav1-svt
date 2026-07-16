@@ -493,8 +493,31 @@ def main():
     stage = None
     detail = ""
 
+    # The tile verdict, recorded SEPARATELY from `stage`.
+    #
+    # `stage` is the first divergence in BITSTREAM order, which is not causal
+    # order: the frame header is written before the tile, but the encoder
+    # computes the tile FIRST, and the FH's loop-filter/CDEF/LR params are
+    # searched over the RECON that the tile decisions produce. So an FH-first
+    # report silently hides whether the tile diverged too, and a reader
+    # naturally mis-reads "STAGE: FH | loop_filter_level[0] C=46 Rust=47" as an
+    # LF-search bug when it is a downstream symptom of a mode-decision
+    # divergence. (That misreading cost real time on the M2 real-content work.)
+    #
+    # Reporting the tile verdict unconditionally makes the distinction visible:
+    #   FH differs + tile differs    -> the tile is the root; chase that.
+    #   FH differs + tile IDENTICAL  -> a genuine FH-search divergence.
+    tile_note = None
+
     def set_stage(s, d):
-        nonlocal stage, detail
+        nonlocal stage, detail, tile_note
+        if s.startswith("tile"):
+            # Keep the most precise tile verdict. The OBU walk sets a coarse
+            # "tile" (payload byte counts) before the trace walk can set the
+            # op-level "tile-op"/"tile-count", so let the latter upgrade it —
+            # an op index localizes the divergence, a byte count does not.
+            if tile_note is None or (tile_note[0] == "tile" and s != "tile"):
+                tile_note = (s, d)
         if stage is None:
             stage, detail = s, d
 
@@ -633,6 +656,10 @@ def main():
 
         div, rng_only, hist = diff_traces(c_ops, r_ops, args.context)
         if div is None:
+            # Tile symbols all match. If an earlier stage still diverged, this
+            # is the informative case: the divergence is NOT in mode decision.
+            if tile_note is None:
+                tile_note = ("tile-identical", f"all {len(c_ops)} tile ops match")
             vprint(f"  RESULT: traces IDENTICAL for all {len(c_ops)} ops (incl. rng state)")
         else:
             both = div < min(len(c_ops), len(r_ops))
@@ -680,6 +707,11 @@ def main():
         # happen); fall back to a byte-size line.
         stage, detail = "bytes", f"C={len(c_data)}B Rust={len(r_data)}B"
     print(f"STAGE: {stage} | {detail}")
+    # Bitstream order != causal order (see `tile_note` above): when the first
+    # divergence is upstream of the tile in the BITSTREAM (SH/FH), say what the
+    # tile did too, so a downstream FH symptom is never mistaken for the root.
+    if tile_note is not None and not stage.startswith("tile"):
+        print(f"ALSO: {tile_note[0]} | {tile_note[1]}")
     print(f"VERDICT: NOT IDENTICAL (C={len(c_data)}B Rust={len(r_data)}B)")
     return 1
 
