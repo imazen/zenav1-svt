@@ -437,3 +437,35 @@ void __wrap_svt_av1_loop_filter_init(PictureControlSet* pcs) {
     fflush(f);
     fclose(f);
 }
+
+/* ---- final coded tree interposer ----------------------------------------
+ * svt_aom_update_mi_map (adaptive_mv_pred.c:1541, exported T) stamps each
+ * FINAL coded block's BlockModeInfo into the mi grid — called once per
+ * coded block at EVERY preset (product_coding_loop.c:670 <=M5 walk, :10544
+ * M6+ path). One compact line per block to $SVT_CTREE_OUT gives C's final
+ * coded tree with zero stderr noise; tools/tree_diff.py joins it against
+ * the port's SVTAV1_PACKTREE dump and prints only the flips. */
+void __real_svt_aom_update_mi_map(PictureControlSet* pcs, ModeDecisionContext* ctx, const PartitionType part,
+                                  const BlockSize bsize, const int mi_row, const int mi_col);
+
+void __wrap_svt_aom_update_mi_map(PictureControlSet* pcs, ModeDecisionContext* ctx, const PartitionType part,
+                                  const BlockSize bsize, const int mi_row, const int mi_col) {
+    __real_svt_aom_update_mi_map(pcs, ctx, part, bsize, mi_row, mi_col);
+    const char* path = getenv("SVT_CTREE_OUT");
+    if (!path || !*path)
+        return;
+    static FILE* f = NULL;
+    if (!f)
+        f = fopen(path, "w");
+    if (!f)
+        return;
+    const BlkStruct*     b = ctx->blk_ptr;
+    const BlockModeInfo* m = &b->block_mi;
+    fprintf(f,
+            "CTREE mi=(%d,%d) bsize=%d part=%d mode=%d uv=%d fi=%d ady=%d aduv=%d txd=%d pal=%d skip=%d cflidx=%d "
+            "cflsgn=%d\n",
+            mi_row, mi_col, (int)bsize, (int)part, (int)m->mode, (int)m->uv_mode, (int)m->filter_intra_mode,
+            (int)m->angle_delta[0], (int)m->angle_delta[1], (int)m->tx_depth, (int)b->palette_size[0], (int)m->skip,
+            (int)m->cfl_alpha_idx, (int)m->cfl_alpha_signs);
+    fflush(f);
+}
