@@ -1,0 +1,6 @@
+commit: 5340de28b+chroma-restructure (pre-landing tree)
+cmd: IM_PRESETS="0 1 2 3 4 5 6 7 8 9 10" bash tools/identity_matrix.sh
+result: 132/132 byte-identical — FIRST full-matrix green
+battery: 7/7 real spots IDENTICAL (1147124 p2/3/4/6/10 q20, 1001682 p3 q40, 258947 p3 q40); 669/669 tests
+new-coverage: real p0/p1 x3 images x2 qps = 0/12 (all one root: use_128x128_superblock C=1 port=0)
+host: dev-32gb
