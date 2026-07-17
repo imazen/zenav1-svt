@@ -355,6 +355,12 @@ pub struct BlockDecision {
     /// CfL alpha idx/signs — coded by write_cfl_alphas when uv_mode == 13.
     pub cfl_alpha_idx: u8,
     pub cfl_alpha_signs: u8,
+    /// Luma palette (screen content, #71): the deduped ascending colors
+    /// (2..=8) + the full nominal-size color index map. None = no palette
+    /// (every non-DC / non-palette-winner block). The pack writes the
+    /// n>0 mode-info arm + colors + map tokens when Some; MD carries it
+    /// from the winning palette candidate.
+    pub palette: Option<(alloc::vec::Vec<u16>, alloc::vec::Vec<u8>)>,
     /// Luma angle delta (directional modes on >= 8x8 blocks; 0 elsewhere).
     pub angle_delta: i8,
     /// Chroma angle delta (directional uv modes on >= 8x8 blocks).
@@ -399,6 +405,7 @@ impl Default for BlockDecision {
             uv_mode: 0,
             cfl_alpha_idx: 0,
             cfl_alpha_signs: 0,
+            palette: None,
             angle_delta: 0,
             uv_angle_delta: 0,
             tx_depth: 0,
