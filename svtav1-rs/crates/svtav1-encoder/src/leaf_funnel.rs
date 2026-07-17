@@ -2955,10 +2955,25 @@ pub(crate) fn evaluate_leaf(
     // C's two-iteration MDS0 order (regulars, then angular+fi, :1600) —
     // refine if a cell ever demands it.
     let (nic1, nic2, nic3) = nic_counts(frame.cli_qp, cfg.nic_num);
-    let n1_init = (ncand as u32).min(nic1) as usize;
-    let mut order: Vec<usize> = if ncand > n1_init {
-        let cap = n1_init + 1;
-        let argmax_first = |pool: &[usize], cands: &[Cand]| -> usize {
+    // C runs md_stage_0's replacement pool PER CANDIDATE CLASS
+    // (svt_aom_set_nics gives each class its own mds1_count, product_
+    // coding_loop.c:1358; the pool + argmax-victim loop runs once per
+    // cand_class_it, :9330-9360). On the allintra I-slice only two intra
+    // classes are live: CAND_CLASS_0 (regular + fi intra) and
+    // CAND_CLASS_3 (palette), and MD_STAGE_NICS gives BOTH base 64
+    // (definitions.h:811), so each lane keeps up to `nic1` survivors and
+    // MDS1/MDS3 evaluate the UNION (construct_best_sorted_arrays_md_
+    // stage_3, :1455). A single shared pool let palette candidates
+    // (huge SATD advantage on screen content) flood out the regular
+    // survivors — EPICA p6 coded 2064 palette blocks vs C's 178. The
+    // per-class dist-to-cost prune (product_coding_loop.c:1309) is INERT
+    // here: allintra mds0_level == 0 (enc_mode_config.c:10042) sets
+    // pruning_method_th = 0, so no class-th cut runs.
+    let lane_pool = |lane: &[usize], cands: &[Cand], cap: usize| -> Vec<usize> {
+        if lane.len() <= cap - 1 {
+            return lane.to_vec();
+        }
+        let argmax_first = |pool: &[usize]| -> usize {
             let mut vi = 0usize;
             let mut vc = cands[pool[0]].fast_cost;
             for (i, &ci) in pool.iter().enumerate().skip(1) {
@@ -2971,31 +2986,29 @@ pub(crate) fn evaluate_leaf(
         };
         let mut pool: Vec<usize> = Vec::with_capacity(cap);
         let mut victim = 0usize;
-        for ci in 0..ncand {
+        for &ci in lane {
             if pool.len() < cap {
                 pool.push(ci);
                 if pool.len() == cap {
-                    victim = argmax_first(&pool, &cands);
+                    victim = argmax_first(&pool);
                 }
             } else {
                 pool[victim] = ci;
-                victim = argmax_first(&pool, &cands);
+                victim = argmax_first(&pool);
             }
         }
         if pool.len() == cap {
             pool.remove(victim);
         }
         pool
-    } else {
-        (0..ncand).collect()
     };
+    // Class-partition preserving injection (processing) order within each
+    // lane — the argmax-victim tie rule depends on it (the MDS0 pool
+    // fix, 1624307). Regular (C0) then palette (C3), matching C's class
+    // iteration order in construct_best_sorted_arrays.
+    let has_palette_lane = cands.iter().any(|c| c.palette.is_some());
 
-    // -- Sort the survivors by fast cost (stable == C's strict-less sort
-    //    over the surviving pool) --
-    order.sort_by_key(|&i| cands[i].fast_cost);
-    let mds0_best_idx = order[0];
-
-    // -- post_mds0_nic_pruning (product_coding_loop.c:8045) --
+    // -- post_mds0_nic_pruning (product_coding_loop.c:7819) --
     let (qw, qwd) = qp_scale_factors(frame.cli_qp);
     // nic_level 1 (M0) sets mds1_cand_base_th_intra = (uint64_t)~0 (no mds1
     // cand pruning); the qp-scaled threshold stays saturated so the loop
@@ -3005,15 +3018,28 @@ pub(crate) fn evaluate_leaf(
     } else {
         div_round(cfg.mds1_cand_base_th * qw, qwd)
     };
-    let mut n1 = (ncand as u32).min(nic1) as usize;
-    {
-        let best = cands[order[0]].fast_cost;
+    // C runs the intra dev-threshold prune PER CLASS (`for cidx`, :7840),
+    // each relative to that class's OWN best fast cost (`cand_buff[cidx]
+    // [0]`, :7845/:7868) — never the global best. The inter-class
+    // (class_th) block :7847-7862 is inert on the I-slice: mds1_class_th
+    // == ~0 (:7826) forces band_idx 0 (:7859), so no class is zeroed or
+    // band-reduced. Running this prune over the sorted UNION with the
+    // global best (as a single shared pool did) let palette — whose
+    // screen-content fast cost sits far below any regular mode — prune
+    // out every regular candidate (EPICA p6: 2064 palette blocks vs C's
+    // 178, and every port-only block's ONLY MDS1 survivors were palette).
+    // Prune each lane against its own class-best, then union + sort.
+    let dev_prune = |sorted: &[usize], cands: &[Cand]| -> usize {
+        if sorted.is_empty() {
+            return 0;
+        }
+        let best = cands[sorted[0]].fast_cost;
         let mut count = 1usize;
         if best > 0 {
-            while count < n1 {
-                let dev = (cands[order[count]].fast_cost - best) * 100 / best;
+            while count < sorted.len() {
+                let dev = (cands[sorted[count]].fast_cost - best) * 100 / best;
                 // C: `mds1_cand_th / (rank ? rank * cand_count : 1)`
-                // (product_coding_loop.c:8095) — rank 0 (M4 nic case 5)
+                // (product_coding_loop.c:7869) — rank 0 (M4 nic case 5)
                 // means the raw threshold, NOT a zero divisor.
                 let div = if cfg.mds1_rank_factor != 0 {
                     cfg.mds1_rank_factor * count as u64
@@ -3025,9 +3051,40 @@ pub(crate) fn evaluate_leaf(
                 }
                 count += 1;
             }
-            n1 = count;
         }
-    }
+        count
+    };
+    // stable sort == C's strict-less sort over each class's surviving pool
+    let sort_lane = |mut lane: Vec<usize>, cands: &[Cand]| -> Vec<usize> {
+        lane.sort_by_key(|&i| cands[i].fast_cost);
+        lane
+    };
+    let order: Vec<usize> = if has_palette_lane {
+        let cap = (ncand as u32).min(nic1).max(1) as usize + 1;
+        let lane0: Vec<usize> = (0..ncand).filter(|&i| cands[i].palette.is_none()).collect();
+        let lane3: Vec<usize> = (0..ncand).filter(|&i| cands[i].palette.is_some()).collect();
+        // Per-class MDS0 replacement pool -> sort -> per-class dev-prune.
+        let s0 = sort_lane(lane_pool(&lane0, &cands, cap), &cands);
+        let s3 = sort_lane(lane_pool(&lane3, &cands, cap), &cands);
+        let k0 = dev_prune(&s0, &cands);
+        let k3 = dev_prune(&s3, &cands);
+        // MDS1/MDS3 evaluate the UNION sorted by fast cost
+        // (construct_best_sorted_arrays_md_stage_3, :1455).
+        let mut u: Vec<usize> = s0[..k0].to_vec();
+        u.extend_from_slice(&s3[..k3]);
+        u.sort_by_key(|&i| cands[i].fast_cost);
+        u
+    } else {
+        // Single-class fast path (no palette candidates) — byte-identical
+        // to the prior single-pool behaviour: pool -> sort -> dev-prune.
+        let cap = (ncand as u32).min(nic1) as usize + 1;
+        let all: Vec<usize> = (0..ncand).collect();
+        let s = sort_lane(lane_pool(&all, &cands, cap), &cands);
+        let k = dev_prune(&s, &cands);
+        s[..k].to_vec()
+    };
+    let mds0_best_idx = order[0];
+    let n1 = order.len();
 
     // -- MDS1: luma-only full loop (freq dist, quantize_b, DCT, depth 0) --
     for &ci in order.iter().take(n1) {
