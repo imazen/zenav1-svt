@@ -294,6 +294,14 @@ pub struct FunnelFrame {
     /// stamped onto the per-plane `QuantTable`s so every quantize site
     /// resolves the right matrices without extra threading.
     pub qm_levels: [u8; 3],
+    /// [SVT_HDR_MODE] fork `--complex-hvs` (0 = off, the fork default):
+    /// mds0_level 3 (fork enc_mode_config set_mds0_controls case 3) —
+    /// the MDS0 fast-loop luma distortion switches from Hadamard SATD
+    /// (`<< 4`) to whole-block spatial SSD (UNshifted; fast_loop_core
+    /// `mds0_dist_type == SSD` arm takes precedence over hadamard,
+    /// product_coding_loop.c:1351). pruning_method_th stays 0, same as
+    /// the allintra I-slice level-0 the funnel already models.
+    pub mds0_ssd: bool,
     /// [SVT_HDR_MODE] fork `--tx-bias` (0 = off, the fork default). When
     /// set, the mds0/full-loop spatial SSE runs through the fork's
     /// distortion facade bias layer (tx_bias.rs; C
@@ -2637,7 +2645,25 @@ pub(crate) fn evaluate_leaf(
             filt_type_y,
             &mut pred,
         );
-        let satd = hadamard_satd(y_src, y_src_stride, y_src_off, &pred, w, h);
+        // [SVT_HDR_MODE] complex-hvs: plain whole-block spatial SSD, no
+        // shift (C fast_loop_core SSD arm). SATD path shifts << 4 below.
+        // PORT-NOTE(unverified): fork mds0 SSD fast cost vs C — verify by
+        // a C-side fast_loop_core dump once the C hybrid carries the
+        // fork's set_mds0_controls case 3 (the hybrid currently assert(0)s
+        // on mds0_level 3; see docs/HDR-ON-4.2.md complex-hvs row).
+        let satd = if frame.mds0_ssd {
+            let mut sse: u64 = 0;
+            for r in 0..h {
+                let srow = y_src_off + r * y_src_stride;
+                for c in 0..w {
+                    let d = i64::from(y_src[srow + c]) - i64::from(pred[r * w + c]);
+                    sse += (d * d) as u64;
+                }
+            }
+            sse
+        } else {
+            hadamard_satd(y_src, y_src_stride, y_src_off, &pred, w, h)
+        };
 
         let mut flr = rates.kf_y[above_ctx][left_ctx][mode as usize] as u64;
         if use_angle && matches!(mode, 1..=8) {
@@ -2668,7 +2694,11 @@ pub(crate) fn evaluate_leaf(
         if has_uv && uv == 0 {
             fcr += pal_uv_no; // rd_cost.c:514 (inside uv fast rate)
         }
-        let fast_cost = rdcost(lambda, flr + fcr, satd << 4);
+        let fast_cost = rdcost(
+            lambda,
+            flr + fcr,
+            if frame.mds0_ssd { satd } else { satd << 4 },
+        );
         #[cfg(feature = "std")]
         if std::env::var_os("SVTAV1_CANDDBG").is_some()
             && crate::depth_refine::nsqdbg_here(abs_x, abs_y)

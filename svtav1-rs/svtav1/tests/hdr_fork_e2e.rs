@@ -186,3 +186,23 @@ fn alt_lambda_factors_is_live_in_fork_mode() {
     }
     assert!(flipped > 0, "alt_lambda_factors is inert on all 3 cells");
 }
+
+#[test]
+fn complex_hvs_is_live_in_fork_mode() {
+    // Fork knob (default 0): mds0_level 3 — MDS0 fast-loop distortion
+    // switches from Hadamard SATD (<<4) to whole-block spatial SSD
+    // (fork set_mds0_controls case 3 + fast_loop_core SSD arm).
+    let mut flipped = 0;
+    for (preset, qp) in [(2u8, 20u8), (6, 40), (6, 55)] {
+        let mut on = HdrForkConfig::hdr_fork();
+        on.complex_hvs = 1;
+        let off = HdrForkConfig::hdr_fork();
+        assert_eq!(off.complex_hvs, 0, "fork default must stay 0");
+        let a = encode_with(Some(on), qp, preset);
+        let b = encode_with(Some(off), qp, preset);
+        if a != b {
+            flipped += 1;
+        }
+    }
+    assert!(flipped > 0, "complex_hvs is inert on all 3 cells");
+}

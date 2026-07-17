@@ -404,3 +404,6 @@ after the code is in. Rules:
 ### PORT-NOTE(unverified) index
 
 - (none yet — palette pipeline port starting; see docs/palette-port-map.md)
+- leaf_funnel.rs: fork complex-hvs MDS0 SSD fast cost (1 marker) — needs a
+  C-side fast_loop_core dump once the C hybrid carries the fork's
+  set_mds0_controls case 3 (the hybrid assert(0)s on mds0_level 3 today).
