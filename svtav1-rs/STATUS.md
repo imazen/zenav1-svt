@@ -13,6 +13,25 @@ directly, capping the reachable quantizer range at qindex 63 (top-quality
 quarter) and keeping deblock levels <= 3. All matrices below use
 CLI-domain qps.
 
+## Arbitrary dimensions — chunk 1 (task #95, 2026-07-17)
+
+Full-SB arbitrary dimensions land: the pipeline carries TWO dim systems —
+TRUE (caller-passed, header/crop) and ALIGNED (round-up-to-8, the encode
+grid). `encode_frame_420` edge-replicates the input planes TRUE->ALIGNED
+(C `pad_input_picture`), the seq header carries TRUE
+`max_frame_width/height_minus_1`, and the small-frame restoration disable
+(`enc_settings.c:214-232`, true w|h < 64) is replicated. Scope: aligned
+dims a multiple of 64 (dims {57..64} -> a single 64x64 SB, e.g. 60x60).
+
+| Gate | Result |
+|---|---|
+| 60x60 uniform+gradient vs SvtAv1EncApp, presets 13/10/6 × q20/40/55 | **18/18 byte-identical** |
+| default identity_matrix (64/128 full-SB + 60 arb-dims) | **54/54** |
+
+Partial SBs (aligned NOT a mult of 64: 56x56, 200x200, odd widths) are
+chunk 2 — partition edge-coding (has_rows/has_cols forced splits),
+sb_geom clamp, DLF floor-chroma. Both encode paths assert their scope.
+
 ## Decode conformance (AV1 reference decoder)
 
 `tools/decode_conformance.sh` — 525-stream mono matrix (gradient/uniform/
