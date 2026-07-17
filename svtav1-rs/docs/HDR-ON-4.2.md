@@ -181,3 +181,39 @@ Mainline mode → stock v4.2.0-final; HdrFork mode → the C hybrid's MODE1 lib
 Recommended landing order for e2e HdrFork identity on the all-intra path:
 chroma-qindex (FH-witnessable now) → ac_bias facade → noise-norm →
 per-SB delta-q wiring (+ sharp-tx activation) → QM → full e2e matrix vs MODE1.
+
+## Skipped from the fork — Rust-port scope decisions (2026-07-17)
+
+The complete list of fork behavior deliberately NOT in the Rust port (beyond the
+C-hybrid rebase gaps above), with reasons. This is the reference list; the README
+carries the user-facing summary.
+
+1. **Fork preset re-tuning ladder** (~25 hunks in `enc_mode_config.c`): mainline
+   v4.2.0 preset semantics kept so Mainline-mode byte-identity holds. Fork
+   features are strictly additive/opt-in on top.
+2. **Research presets −2/−3** + fork default preset 4: preset selection is
+   explicit; no default change.
+3. **Post-Chromedome fork commits** (also absent from the C hybrid, gap 2 above):
+   `4889de3` noise chroma auto-strength, `ce5178a` MDS0 ac-bias dampening,
+   `981fe12` sharpness default→1, `80b48b9` complex-hvs all-intra allow (the
+   Rust wiring already reaches complex_hvs on stills, so only the C-side gap
+   matters for cref comparisons), `5caa3e3` LPD1 skip-inter-tx.
+4. **Dormant config fields (present in `HdrForkConfig`, no effect on stills):**
+   `kf_tf_strength` / `tf_strength` / `noise_adaptive_filtering` — need the
+   temporal filter, i.e. a multi-frame window; `qp_scale_compress_strength` —
+   CRF-only (sole consumer is the rc_process.c qp-scale path; the hybrid C
+   renames the field `_unused` and the port is CQP).
+5. **HBD (10-bit) fork paths** incl. `hbd_mds` and HBD noise ramps: the port is
+   8-bit; bd10 is tracked separately (`docs/bd10-port-map.md`).
+6. **TUNE_VQ `vq_ctrls`** video-sequence machinery: tune 0 selects only VQ's
+   still-reachable policies (LF sharpness ladder etc.).
+7. **Mainline TUNE_VMAF**: the Rust `tune` field uses FORK numbering (5 =
+   FILM_GRAIN). Note the C hybrid's CLI diverges (5 = VMAF, 6 = Film Grain, gap
+   4 above) — when comparing against the hybrid binary, map tune indices.
+8. **LPD1 psy rate** (`psy_adjust_rate_light`): kernel ported in
+   `svtav1-dsp::ac_bias`, no consumer — the port has no LPD1 fast path
+   (all-intra C never takes LPD1 either: `pic_lpd1_lvl = 0` unconditionally).
+
+Remaining PORT-NOTE(unverified) debt is indexed in `svtav1-rs/CLAUDE.md`
+(complex-hvs MDS0 fast cost; alt-ssim full_cost_ssim assembly granularity;
+tune-ssim SB-vs-block lambda granularity).

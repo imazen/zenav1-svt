@@ -1,95 +1,126 @@
 # svtav1-rs
 
-A work-in-progress pure Rust AV1 encoder, ported from Intel's SVT-AV1.
+A pure-Rust, still-picture (AVIF/all-intra) port of [SVT-AV1](https://gitlab.com/AOMediaCodec/SVT-AV1) v4.2.0, verified **byte-identical** to the C encoder on its tested envelope, with the [svt-av1-hdr](https://github.com/juliobbv-p/svt-av1-hdr) fork's perceptual feature set available behind a runtime switch.
 
-**26k lines | 8 crates | 500+ tests | `#![forbid(unsafe_code)]` | BSD-2-Clause**
+**~75k lines | 9 crates | 775+ tests | `#![forbid(unsafe_code)]` | BSD-2-Clause**
 
-> **Status: experimental.** Many content/size/speed/quality combinations produce corrupt bitstreams that fail to decode. Not ready for production use. The zenavif integration is currently disabled pending further work on decode conformance.
+## Two modes, two verification bars
 
-### What works
+The encoder runs in one of two modes, selected at runtime via `EncodePipeline.hdr`:
 
-- 128x128 gradient images at low speed (4) encode and decode correctly
-- All 10 AV1 partition types, including extended T-shapes and 4:1
-- 13 intra prediction modes with directional angle delta
-- 16 transform types across 19 sizes, all bit-exact with C SVT-AV1
-- CDF-based entropy coding matching the rav1d decoder
-- Speed presets 0-13 with progressive feature gating
+| Mode | What it is | Verification bar |
+|---|---|---|
+| **Mainline** (default) | Stock SVT-AV1 v4.2.0-final behavior | **Byte-identical bitstreams** vs the real C library at matched configs (see envelope below) |
+| **HdrFork** (`HdrForkConfig::hdr_fork()`) | The svt-av1-hdr fork's feature set: psychovisual RD, quant matrices, photon-noise synthesis, variance boost, six tune policies | **Functionally verified**: per-kernel differentials against the exported C functions, per-knob liveness witnesses, and `aomdec` decode gates (encoder recon == reference-decoder output). *Not* byte-gated against a C fork binary |
 
-### What doesn't work yet
+That distinction is the honest summary of the whole project: mainline mode is a drop-in bit-exact reimplementation on the envelope we have tested; fork mode is a faithful functional port whose every kernel is differentially tested against real C code, but whose end-to-end bytes have no C twin to compare against (the fork was rebased onto v4.2.0 by us — see `docs/HDR-ON-4.2.md`).
 
-Many configurations produce corrupt bitstreams:
-- Small images (< 128x128) at most speed presets
-- High speed presets (8+) at most sizes
-- Uniform/all-skip content (zero coefficients)
-- Quality 70 with certain gradient patterns
+## What IS bit-identical (mainline mode)
 
-The root causes are CDF context interaction bugs in the coefficient encoder and frame header generation. Diagnosing these requires decoder-side range coder state tracing.
+Verified against the in-tree C build of SVT-AV1 **v4.2.0 final** (`Bin/Release/libSvtAv1Enc.a`), still-picture/AVIF, CQP, `--lp 1`, 8-bit 4:2:0, via an OBU-level differ plus a full arithmetic-coder op trace (every range-coder call compared, including coder state):
+
+- **The full 132/132 synthetic identity matrix**: {uniform, gradient} content × {64, 128} px × qp {20, 40, 55} × **presets 0–10** — every cell byte-identical (`benchmarks/identity_matrix_132_full_2026-07-16.tsv`). Presets 11–13 are covered implicitly: the C library clamps all-intra presets above M9 down to M9.
+- **Real-content regression spots**: 7/7 identical at the tracked configs.
+- **Tile rows**: frame header + tile group byte-identical to C (multi-tile-row phase 1).
+
+Every stream additionally decodes with the reference decoder (`aomdec`), and the decoder's output matches our encoder's own reconstruction byte-for-byte.
+
+### Known open identity gaps (tracked, not hidden)
+
+- **Real 512×512 content at presets 0–1**: 0/12 — one systematic first divergence: C enables 128-px superblocks above 240p at ≤M1 (`use_128x128_superblock`), the port is 64-SB only. Port map: `docs/sb128-port-map.md` (task #91).
+- **Envelope limits**: 64-aligned dimensions, 8-bit, single frame (still), single-threaded. 10-bit and arbitrary dimensions are the next priorities — port-ready maps in `docs/bd10-port-map.md` and `docs/arbitrary-dims-port-map.md`.
+
+`docs/IDENTITY-STATUS.md` is the full divergence map and campaign history.
+
+## What fork mode gives you (the advantages)
+
+Fork mode turns this into a **full-pareto still-image encoder**: 6 tune policies × presets 0–13 × qp 0–63 × an orthogonal perceptual knob set, all in safe Rust. Every feature below is live (flips bytes, gated) as of 2026-07-17:
+
+| Feature | Knob(s) | What it does |
+|---|---|---|
+| Tune policies 0–5 | `tune` | VQ / PSNR (default) / SSIM / IQ / MS-SSIM / Film-Grain — per-16×16 SSIM rdmult lambda scaling (SSIM family), IQ lambda-weight curve, per-tune chroma-q boosts, per-tune loop-filter sharpness ladders, IQ/MS-SSIM still-image QM curve |
+| Quant matrices (QM) | `qm_*` (fork default ON) | AV1 quantization matrices, luma 6..10 / chroma 8..15; tables transcribed from C and validated through the exported C quantize kernels (13,680-cell differential) |
+| Photon-noise synthesis | `noise_strength`, `noise_strength_chroma`, `noise_strength_cfl`, `noise_size` | Film-grain table generation (ISO-strength model); the decoder synthesizes grain from our table — proven by an `aomdec --skip-film-grain` gate (1,440-cell differential vs the exported C generator) |
+| Per-SB delta-q + variance boost | `variance_boost_strength`, `variance_boost_curve` | Per-superblock qindex from source variance, curves 0–3 + PQ dark-region attenuation |
+| Sharp transforms | `sharp_tx` | RDOQ rate-weight 0 + eob-shortening disable — retains more AC detail |
+| Noise normalization | `noise_norm_strength` | AC coefficient boost preserving noise energy after quantization |
+| Psychovisual distortion | `ac_bias` | AC-energy-aware distortion in mode decision (Hadamard-domain psy cost) |
+| MDS0 tx-bias facade | `tx_bias` | Transform-size/class distortion biases in the fast mode-decision stage |
+| Complex-HVS mode | `complex_hvs` | MDS0 fast-loop distortion switches Hadamard SATD → whole-block spatial SSD |
+| Alt lambda factors | `alt_lambda_factors` (fork default ON) | KF lambda factor 140 vs 150 + per-SB qdiff-stats lambda modulation |
+| Alt SSIM tuning | `alt_ssim_tuning` | Block-SSIM distortion at final mode decision + two-pass SSD-envelope→SSIM winner re-pick (reachable on stills, unlike mainline's tune=SSIM arm) |
+| CDEF scaling | `cdef_scaling` | Post-search CDEF strength rescale |
+| Chroma-q path | (fork defaults) | Fork chroma qindex boosts, Cb +12, per-plane dequant, `separate_uv_delta_q` signaling |
+| Loop-filter sharpness | `sharpness` | Search + signal + application, consistent |
+
+Verification per feature is itemized in the status table at the bottom of `docs/HDR-ON-4.2.md`. The standing gates: per-knob liveness witnesses (`svtav1/tests/hdr_fork_e2e.rs` — every knob must actually change the bitstream, which catches "dormant knob" wiring bugs), per-tune `aomdec` decode gates (36/36), and the kernel differentials in `crates/svtav1-encoder/tests/c_parity_*.rs`.
+
+## What we deliberately did NOT bring from the fork
+
+For transparency, everything in svt-av1-hdr that is absent here, and why:
+
+1. **The fork's preset re-tuning ladder** (~25 hunks re-assigning feature levels per preset). We keep mainline v4.2.0 preset semantics so mainline-mode byte-identity holds; fork features are strictly additive/opt-in.
+2. **Research presets −2/−3** and the fork's changed default preset (4). Preset selection is explicit here.
+3. **Post-"Chromedome" fork commits** (newer than our rebase base): noise chroma auto-strength adjustment (`4889de3`), dampened MDS0 ac-bias strength (`ce5178a`), sharpness default → 1 (`981fe12`), allow complex-HVS for all-intra (`80b48b9` — our wiring already reaches it on stills), LPD1 skip-inter-tx (`5caa3e3`).
+4. **Temporal-filter knobs** — `kf_tf_strength`, `tf_strength`, `noise_adaptive_filtering`: config fields exist but are dormant; a single still frame has no temporal window. Unblocks with multi-frame support.
+5. **`qp_scale_compress_strength`**: dormant — its only C consumer is the CRF rate-control qp-scale path (`rc_process.c`); this port is CQP-only.
+6. **10-bit / high-bit-depth fork paths** (`hbd_mds`, HBD noise tables): the port is 8-bit today (10-bit is a tracked next priority).
+7. **TUNE_VQ's `vq_ctrls` video machinery**: video-sequence heuristics, out of scope for stills. Tune 0 selects VQ's still-reachable policies only.
+8. **Mainline TUNE_VMAF**: the fork replaces tune slot 5 with FILM_GRAIN; we follow the fork's numbering.
+9. **LPD1 psychovisual rate**: the kernel is ported (`svtav1-dsp::ac_bias`), but the port has no LPD1 fast-decision path (all-intra never takes it in C either).
 
 ## Quick start
 
 ```rust
-use svtav1::avif::AvifEncoder;
+use svtav1_encoder::hdr_mode::HdrForkConfig;
+use svtav1_encoder::pipeline::EncodePipeline;
+use svtav1_encoder::rate_control::{RcConfig, RcMode};
 
-let pixels: Vec<u8> = make_your_image(width, height);
-let encoder = AvifEncoder::new()
-    .with_quality(70.0)   // 1-100 (higher = better quality, larger file)
-    .with_speed(8);       // 1-10 (higher = faster, lower quality)
+let (w, h) = (128u32, 128u32);
+let rc = RcConfig { mode: RcMode::Cqp, qp: 40, ..RcConfig::default() };
+let mut p = EncodePipeline::new(w, h, /*preset*/ 6, rc, 4, 1);
+p.chroma_420 = true;
 
-let result = encoder.encode_y8(&pixels, width, height, width)?;
-// result.data contains a complete AV1 OBU bitstream
+// Fork mode (optional — default is mainline, byte-identical to C):
+p.hdr = HdrForkConfig::hdr_fork();
+p.hdr.tune = 3; // 0=VQ 1=PSNR 2=SSIM 3=IQ 4=MS_SSIM 5=FilmGrain
+
+let obu_stream = p.encode_frame_420(&y_plane, &u_plane, &v_plane, /*y stride*/ 128);
 ```
 
-For YUV 4:2:0:
-
-```rust
-let result = encoder.encode_yuv420(&y, &u, &v, width, height, stride)?;
-```
+The higher-level `svtav1::avif::AvifEncoder` wrapper provides quality/speed mapping and AVIF-oriented defaults.
 
 ## Architecture
 
-Eight focused crates, minimal external dependencies (only archmage for SIMD dispatch):
+Nine focused crates, minimal external dependencies (archmage for SIMD dispatch):
 
 ```
 svtav1                  Public API, AVIF backend
-  svtav1-encoder        Pipeline, partition search, mode decision, rate control
-    svtav1-dsp          SIMD transforms, prediction, filtering (archmage)
-    svtav1-entropy      Range coder, CDF tables, OBU serialization
+  svtav1-encoder        Pipeline, PD0/partition, mode-decision funnel, RDOQ,
+                        QM, tunes, fork features, rate control
+    svtav1-dsp          SIMD transforms, prediction, filtering, psy kernels
+    svtav1-entropy      Range coder, CDF tables, OBU/FH/SH serialization
     svtav1-tables       Const lookup tables, scan orders
     svtav1-types        Core AV1 type definitions
     svtav1-disjoint-mut Region-based borrow tracking
+  svtav1-cref           Test-only FFI shims to the real C library (differentials)
   svtav1-cuda           Optional GPU bridge (stub)
 ```
 
-### Encoding pipeline
+## How verification works
 
-```
-encode_frame(y_plane)
-  temporal_filter (if inter + refs available)
-  activity_map (VAQ QP adjustment)
-  for each 64x64 superblock (raster order):
-    partition_search (tries up to 10 partition types)
-      encode_single_block at each leaf:
-        evaluate 11 intra modes with TX-type RDO
-        transform, quantize, reconstruct
-  deblock (4/8/14-tap per edge)
-  CDEF (8x8 directional filter)
-  Wiener + sgrproj restoration
-  entropy coding (CDF-based, write_coefficients_v2)
-  OBU bitstream output
+Three layers, strongest first:
+
+1. **Byte-identity harness** (`tools/identity_diff.sh`, `tools/capture_c_trace/`): drives the real C library through its public API with `--wrap`ed range-coder entry points, then compares OBU bytes field-by-field AND every arithmetic-coder operation (symbol, CDF, coder range state) against the Rust `symtrace` output. Exit 0 iff streams are byte-identical.
+2. **Kernel differentials** (`svtav1-cref` + `tests/c_parity_*.rs`): Rust kernels vs the exported C functions from the in-tree static library — quantizers, QM, noise generation, SSIM distortion, variance boost, ac-bias, and more, across randomized/gridded inputs.
+3. **Decode gates** (`aomdec`): every gated stream must decode, and the decoder's output must equal the encoder's own reconstruction byte-for-byte — the AV1-conformance floor that holds in both modes, including for streams no C twin exists for.
+
+```bash
+cargo test --workspace           # 775+ tests
+just identity 64 64 40 6 gradient  # one identity cell vs the C library
 ```
 
-The coefficient encoder (`write_coefficients_v2`) matches rav1d's exact bitstream reading order: CDF-based EOB bin + hi-bit, reverse diagonal scan, separate token phases for base/BR/signs, and Golomb residual coding. Default CDFs are extracted from rav1d for all 4 QP categories.
-
-### Speed presets
-
-| Preset | Partition depth | Intra modes | Transform types | Loop filters |
-|--------|-----------------|-------------|-----------------|--------------|
-| 0-3    | 4 (down to 4x4) | 13 (all)   | All 16          | All enabled  |
-| 4-6    | 3               | 7           | DCT + ADST      | All enabled  |
-| 7-9    | 2               | 4           | DCT + ADST      | Deblock + CDEF |
-| 10-13  | 1 (64x64 only)  | 2 (DC + V)  | DCT only        | Deblock only |
-
-The `speed` parameter on `AvifEncoder` (1-10) maps linearly to presets 0-13.
+Building the C reference (needed for differentials and identity runs): see `docs/HDR-ON-4.2.md` § Reproduce.
 
 ## Building
 
@@ -97,51 +128,21 @@ Requires Rust 1.85+ (2024 edition).
 
 ```bash
 cargo build --workspace
-cargo test --workspace          # 500+ tests, ~15s
 cargo clippy --workspace        # 0 warnings
+cargo test --workspace
 ```
-
-The `justfile` provides shortcuts:
-
-```bash
-just test      # cargo test --workspace
-just ci        # fmt + clippy + test (local sanity check)
-just bench     # cargo bench --workspace
-```
-
-## Testing
-
-All 26 forward and inverse 1D transform kernels are verified bit-exact against C SVT-AV1 golden output, extracted via `tools/extract_golden.c`. Transform parity covers DCT (4-64), ADST (4-16), and identity (4-64).
-
-Decode conformance is tested through [zenavif](https://github.com/imazen/zenavif)'s differential tests, which encode with svtav1-rs and decode with rav1d-safe.
-
-```bash
-# Run decode conformance tests (requires zenavif checkout)
-cd /path/to/zenavif
-cargo test --features "encode,encode-svtav1" --test differential_svtav1
-cargo test --features "encode,encode-svtav1" --test differential_comprehensive
-```
-
-## Known bugs
-
-1. **Content-specific decode failures at q70** — Most quality levels decode correctly. Some specific QP/content combinations fail, likely due to a CDF adaptation interaction with coefficient density. Requires decoder-side range coder state tracing to diagnose.
-
-2. **All-skip frames fail** — Uniform content where all coefficients quantize to zero produces undecodable bitstreams. Root cause undiagnosed.
-
-3. **Some multi-SB sizes at certain speeds** — 80x80, 96x96, 112x112 fail at some speed presets despite 128x128 working.
 
 ## Safety
 
-Every crate uses `#![forbid(unsafe_code)]` except `svtav1-cuda` (FFI boundary, isolated). SIMD dispatch goes through archmage's token system, which generates safe code from `#[arcane]`/`#[rite]` annotations.
-
-The `svtav1-disjoint-mut` crate provides region-based borrow tracking for concurrent superblock encoding, adapted from [rav1d-safe](https://github.com/memorysafety/rav1d)'s `rav1d-disjoint-mut`. Our version is simplified (no UnsafeCell, fully safe).
+Every crate uses `#![forbid(unsafe_code)]` except the test-only `svtav1-cref` (FFI to the C reference library, never shipped) and `svtav1-cuda` (FFI boundary, isolated, optional). SIMD goes through archmage's safe token-based dispatch.
 
 ## License
 
-BSD-2-Clause. Same license as the original SVT-AV1.
+BSD-2-Clause, same as SVT-AV1.
 
 ## Acknowledgments
 
-- [SVT-AV1](https://gitlab.com/AOMediaCodec/SVT-AV1) (Intel/Alliance for Open Media) — the C encoder this port is based on
-- [rav1d-safe](https://github.com/memorysafety/rav1d) — safe Rust AV1 decoder used for conformance testing; DisjointMut pattern borrowed
-- [archmage](https://github.com/nickelc/archmage) — SIMD dispatch via CPU feature tokens
+- [SVT-AV1](https://gitlab.com/AOMediaCodec/SVT-AV1) (Intel / Alliance for Open Media) — the battle-tested C encoder this port is built on
+- [svt-av1-hdr](https://github.com/juliobbv-p/svt-av1-hdr) (juliobbv-p) — the perceptual/HDR feature set ported in fork mode
+- [rav1d-safe](https://github.com/memorysafety/rav1d) — safe Rust AV1 decoder; DisjointMut pattern adapted
+- [archmage](https://github.com/imazen/archmage) — safe SIMD dispatch via CPU feature tokens
