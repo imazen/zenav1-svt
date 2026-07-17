@@ -16,6 +16,7 @@ pub mod noise_gen;
 pub mod noise_norm;
 pub mod palette;
 pub mod qm;
+pub mod ssim_md;
 pub mod qm_tables;
 pub mod tx_bias;
 pub mod intra_edge;

@@ -1767,6 +1767,17 @@ unsafe extern "C" {
         log_scale: i32,
         dispatch: i32,
     ) -> u16;
+    fn ref_spatial_full_distortion_ssim(
+        input: *const u8,
+        input_offset: u32,
+        input_stride: u32,
+        recon: *const u8,
+        recon_offset: i32,
+        recon_stride: u32,
+        area_width: u32,
+        area_height: u32,
+        ac_bias: f64,
+    ) -> u64;
     fn ref_generate_noise_table(
         width: u32,
         height: u32,
@@ -1951,6 +1962,37 @@ pub fn quantize_b(
             iscan.as_ptr(),
             log_scale,
             i32::from(dispatch),
+        )
+    }
+}
+
+/// Drives the exported `svt_spatial_full_distortion_ssim_kernel` (tune-SSIM
+/// MD distortion, mode_decision.c:4430), 8-bit path.
+#[allow(clippy::too_many_arguments)]
+pub fn spatial_full_distortion_ssim(
+    input: &[u8],
+    input_offset: usize,
+    input_stride: usize,
+    recon: &[u8],
+    recon_offset: usize,
+    recon_stride: usize,
+    area_width: usize,
+    area_height: usize,
+    ac_bias: f64,
+) -> u64 {
+    assert!(input.len() >= input_offset + (area_height - 1) * input_stride + area_width);
+    assert!(recon.len() >= recon_offset + (area_height - 1) * recon_stride + area_width);
+    unsafe {
+        ref_spatial_full_distortion_ssim(
+            input.as_ptr(),
+            input_offset as u32,
+            input_stride as u32,
+            recon.as_ptr(),
+            recon_offset as i32,
+            recon_stride as u32,
+            area_width as u32,
+            area_height as u32,
+            ac_bias,
         )
     }
 }

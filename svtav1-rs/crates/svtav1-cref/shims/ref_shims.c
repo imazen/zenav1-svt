@@ -956,6 +956,27 @@ uint16_t ref_quantize_b(const int32_t* coeff, intptr_t n_coeffs, const int16_t* 
     return eob;
 }
 
+/* ---- tune-SSIM MD distortion kernel (mode_decision.c:4430) ----
+   Exported symbol; internally routes svt_ssim_8x8/4x4 + svt_psy_distortion
+   through BOTH RTCD tables, so init them first (ac-bias shim pattern). */
+uint64_t svt_spatial_full_distortion_ssim_kernel(uint8_t* input, uint32_t input_offset, uint32_t input_stride,
+                                                 uint8_t* recon, int32_t recon_offset, uint32_t recon_stride,
+                                                 uint32_t area_width, uint32_t area_height, bool hbd, double ac_bias);
+
+uint64_t ref_spatial_full_distortion_ssim(uint8_t* input, uint32_t input_offset, uint32_t input_stride,
+                                          uint8_t* recon, int32_t recon_offset, uint32_t recon_stride,
+                                          uint32_t area_width, uint32_t area_height, double ac_bias) {
+    /* ssim tiles + psy hadamard live in COMMON dsp rtcd; satd in aom_dsp
+       rtcd — init both (same pattern as ref_psy_distortion). */
+    if (!g_rtcd_ready) {
+        svt_aom_setup_common_rtcd_internal(svt_aom_get_cpu_flags_to_use());
+        g_rtcd_ready = 1;
+    }
+    ref_dsp_rtcd_once();
+    return svt_spatial_full_distortion_ssim_kernel(
+        input, input_offset, input_stride, recon, recon_offset, recon_stride, area_width, area_height, false, ac_bias);
+}
+
 /* ---- Photon-noise film-grain table generation (noise_generation.c) ----
    Drives the exported svt_av1_generate_noise_table with a real (zeroed)
    EbSvtAv1EncConfiguration, then flattens the returned AomFilmGrain into an

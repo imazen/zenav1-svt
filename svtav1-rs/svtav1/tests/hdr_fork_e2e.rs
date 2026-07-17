@@ -227,3 +227,23 @@ fn cdef_scaling_is_live_in_fork_mode() {
     }
     assert!(flipped > 0, "cdef_scaling is inert on all 3 cells");
 }
+
+#[test]
+fn alt_ssim_tuning_is_live_in_fork_mode() {
+    // Fork knob (default false): SSIM_LVL_1 at PD_PASS_1 with I-slices
+    // included — parallel full_cost_ssim per MDS3 candidate + the two-pass
+    // (SSD envelope -> lowest SSIM) winner re-pick.
+    let mut flipped = 0;
+    for (preset, qp) in [(2u8, 20u8), (6, 40), (6, 55)] {
+        let mut on = HdrForkConfig::hdr_fork();
+        on.alt_ssim_tuning = true;
+        let off = HdrForkConfig::hdr_fork();
+        assert!(!off.alt_ssim_tuning, "fork default must stay false");
+        let a = encode_with(Some(on), qp, preset);
+        let b = encode_with(Some(off), qp, preset);
+        if a != b {
+            flipped += 1;
+        }
+    }
+    assert!(flipped > 0, "alt_ssim_tuning is inert on all 3 cells");
+}

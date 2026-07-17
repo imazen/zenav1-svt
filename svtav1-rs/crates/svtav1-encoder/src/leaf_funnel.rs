@@ -302,6 +302,17 @@ pub struct FunnelFrame {
     /// product_coding_loop.c:1351). pruning_method_th stays 0, same as
     /// the allintra I-slice level-0 the funnel already models.
     pub mds0_ssd: bool,
+    /// [SVT_HDR_MODE] fork `--alt-ssim-tuning`: SSIM_LVL_1 at PD_PASS_1,
+    /// I-slices INCLUDED (product_coding_loop.c:10316) — every MDS3
+    /// candidate gets a parallel `full_cost_ssim` (same lambda/rate, the
+    /// block-SSIM distortion of ssim_md.rs) and the winner is re-picked
+    /// two-pass (lowest SSD cost, then lowest SSIM cost among candidates
+    /// within `tune_ssim_threshold` x best SSD cost;
+    /// mode_decision.c:3880-3915).
+    pub tune_ssim: bool,
+    /// `derive_ssim_threshold_factor_for_full_md`: 1.03 sub-1080p, 1.02 at
+    /// >= 1080p (by luma sample count). Only read when `tune_ssim`.
+    pub tune_ssim_threshold: f64,
     /// [SVT_HDR_MODE] fork `--tx-bias` (0 = off, the fork default). When
     /// set, the mds0/full-loop spatial SSE runs through the fork's
     /// distortion facade bias layer (tx_bias.rs; C
@@ -1915,6 +1926,8 @@ struct Cand {
     fast_cost: u64,
     // MDS1:
     full_cost: u64,
+    /// [SVT_HDR_MODE] parallel SSIM full cost (only when frame.tune_ssim).
+    mds3_cost_ssim: u64,
     mds1_has_coeff: bool,
     // MDS3 winner data:
     tx_depth: u8,
@@ -2751,6 +2764,7 @@ pub(crate) fn evaluate_leaf(
             fcr,
             fast_cost,
             full_cost: u64::MAX,
+            mds3_cost_ssim: u64::MAX,
             mds1_has_coeff: false,
             tx_depth: 0,
             txb_q: Vec::new(),
@@ -4196,6 +4210,55 @@ pub(crate) fn evaluate_leaf(
         cand.u_recon = u_out.recon;
         cand.v_recon = v_out.recon;
         cand.block_has_coeff = block_has_coeff;
+        // [SVT_HDR_MODE] alt-ssim-tuning: the parallel SSIM full cost —
+        // same lambda and total rate, block-SSIM distortion on the FINAL
+        // per-plane recon (C accumulates DIST_SSIM per txb with cropped
+        // dims; whole-block equals the per-txb sum whenever the 8x8/4x4
+        // tiling aligns with txb boundaries, which holds for the funnel's
+        // square/half tx shapes).
+        // PORT-NOTE(unverified): fork alt-ssim full_cost_ssim vs C — needs
+        // a C-side MD dump with alt_ssim_tuning=1 (tune_ssim_level LVL_1).
+        if frame.tune_ssim {
+            let cand = &cands[ci];
+            let mut ssim_dist = crate::ssim_md::spatial_full_distortion_ssim(
+                y_src,
+                y_src_off,
+                y_src_stride,
+                &cand.y_recon,
+                0,
+                w,
+                w,
+                h,
+                frame.ac_bias_eff,
+            );
+            if !cand.u_recon.is_empty() {
+                let c_off = ccy * fx.c_stride + ccx;
+                ssim_dist += crate::ssim_md::spatial_full_distortion_ssim(
+                    fx.u_src,
+                    c_off,
+                    fx.c_stride,
+                    &cand.u_recon,
+                    0,
+                    cw,
+                    cw,
+                    chh,
+                    frame.ac_bias_eff,
+                );
+                ssim_dist += crate::ssim_md::spatial_full_distortion_ssim(
+                    fx.v_src,
+                    c_off,
+                    fx.c_stride,
+                    &cand.v_recon,
+                    0,
+                    cw,
+                    cw,
+                    chh,
+                    frame.ac_bias_eff,
+                );
+            }
+            let total_rate = cand.total_rate;
+            cands[ci].mds3_cost_ssim = rdcost(lambda, total_rate, ssim_dist);
+        }
     }
 
     // -- svt_aom_product_full_mode_decision: lowest cost, first wins --
@@ -4205,6 +4268,28 @@ pub(crate) fn evaluate_leaf(
         if cands[ci].mds3_cost < win_cost {
             win_cost = cands[ci].mds3_cost;
             win = ci;
+        }
+    }
+    // [SVT_HDR_MODE] alt-ssim-tuning pass two (mode_decision.c:3892-3915):
+    // among candidates whose SSD cost is within threshold x best, pick the
+    // lowest SSIM cost (ties -> lower SSD cost).
+    if frame.tune_ssim {
+        let ssd_cost_threshold = (frame.tune_ssim_threshold * win_cost as f64) as u64;
+        let mut ssim_lowest = u64::MAX;
+        let mut ssd_at_win = win_cost;
+        for &ci in order1.iter().take(n3) {
+            let ssim_cost = cands[ci].mds3_cost_ssim;
+            let ssd_cost = cands[ci].mds3_cost;
+            if ssim_cost < ssim_lowest {
+                if ssd_cost <= ssd_cost_threshold {
+                    win = ci;
+                    ssim_lowest = ssim_cost;
+                    ssd_at_win = ssd_cost;
+                }
+            } else if ssim_cost == ssim_lowest && ssd_cost < ssd_at_win {
+                win = ci;
+                ssd_at_win = ssd_cost;
+            }
         }
     }
     // The shared MDS3 residual workspace after the loop: the LAST

@@ -406,6 +406,10 @@ after the code is in. Rules:
 - leaf_funnel.rs: fork complex-hvs MDS0 SSD fast cost (1 marker) — needs a
   C-side fast_loop_core dump once the C hybrid carries the fork's
   set_mds0_controls case 3 (the hybrid assert(0)s on mds0_level 3 today).
+- leaf_funnel.rs: fork alt-ssim full_cost_ssim (1 marker) — the kernel is
+  240-cell parity-tested (c_parity_ssim_md.rs); the marker covers the
+  cost ASSEMBLY (whole-block vs C per-txb DIST_SSIM accumulation) — needs
+  a C-side MD dump with alt_ssim_tuning=1.
 - **`crates/svtav1-encoder/src/palette.rs`** (task #71, chunks 1-2 of
   docs/palette-port-map.md). FFI-verified against the real C (parity test
   `crates/svtav1-encoder/tests/c_parity_palette.rs`, all green, no markers
