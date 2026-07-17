@@ -435,7 +435,43 @@ after the code is in. Rules:
     range, allintra_hbd_md. Markers: qlookup tables NOT transcribed
     (run xtask/transcribe_bd10_qlookup.py -> include the generated
     file, replace the unimplemented!() placeholders); lambda two-stage
-    scaling needs a C dump check.
+    scaling needs a C dump check. **Cross-check finding (2026-07-17,
+    from the sibling svtav1-dsp/hbd.rs translation below): the `else`
+    arm of `qzbin_factor` returns 64, but the real C
+    `svt_aom_get_qzbin_factor` (inv_transforms.c:3492-3505) returns 80
+    there (`quant < th ? 84 : 80`, not `84 : 64`), and C also
+    unconditionally special-cases `q == 0 -> 64` before consulting
+    `quant` at all — this fn's signature has no `q` param so it cannot
+    reproduce that case. Looks like a real bug; NOT fixed (this module
+    is itself unwired/unverified) — fix when bd10.rs gets its
+    verification pass.**
+  - `crates/svtav1-dsp/src/hbd.rs` (#94 chunk 2, DSP-layer counterpart
+    to bd10.rs): highbd intra predictors (DC/V/H/Paeth/smooth family,
+    directional z1/z2/z3 with edge upsample, filter-intra, CfL 420 +
+    predict), `highbd_clip_pixel_add`/`check_range` recon-add-clip,
+    distortion (`full_distortion_kernel16_bits`, `highbd_variance`,
+    `highbd_sad_kernel`, all generic W×H), deblock
+    `lpf_{horizontal,vertical}_{4,6,8,14}_hbd`, `cdef_filter_block_hbd`
+    (a pure `u16`-store variant of `cdef::cdef_filter_block` — zero new
+    CDEF arithmetic, cited in-module), `dc_quant_qtx`/`ac_quant_qtx`
+    switch-shape dispatch (bd10/bd12 table bodies still
+    `unimplemented!()`, same as bd10.rs). Compile-checked clean (0
+    warnings) via the temporary-`pub mod hbd;` dance; lib.rs left
+    untouched. Markers: every fn (full FFI-parity + bd10 uniform-64
+    verification pass, not run by this translation). **Two correctness
+    findings surfaced while translating (documented with full detail in
+    the module's doc comment, NOT fixed — out of this chunk's scope):**
+    (1) the qzbin_factor cross-check above; (2) `intra_pred::
+    predict_paeth_core`'s tie-break order (`p_top` checked first) does
+    NOT match the real C `paeth_predictor_single`
+    (intra_prediction.c:1226-1234, shared by C's lbd AND hbd paeth) —
+    C checks `p_left` first. The two orders disagree exactly when
+    `p_top == p_left` (both the minimum), which is a real, if
+    infrequent, byte-exactness bug in the ALREADY-WIRED u8 intra
+    predictor (not itself unwired/unverified code) — worth a priority
+    look given this project's zero-conformance-regression mandate.
+    `hbd.rs`'s own `predict_paeth_hbd` is translated directly from the
+    real C order and does not reproduce the bug.
 
 
 - leaf_funnel.rs: fork complex-hvs MDS0 SSD fast cost (1 marker) — needs a

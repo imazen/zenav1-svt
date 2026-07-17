@@ -43,19 +43,25 @@ pub fn msb_truncate_plane(src10: &[u16], dst8: &mut [u8]) {
 pub const FULL_LAMBDA_BD10_MULT: u64 = 16;
 pub const FAST_LAMBDA_BD10_MULT: u64 = 4;
 
-/// C svt_aom_get_qzbin_factor (inv_transforms.c:3492-3505): the zbin
-/// oddness threshold ladder is x4 per 2 bits of depth — 148 (bd8),
-/// 592 (bd10), 2368 (bd12); factor 64 vs 84 by dc-quant magnitude.
-pub fn qzbin_factor(dc_quant_q3: i32, bd: u8) -> i32 {
+/// C svt_aom_get_qzbin_factor (inv_transforms.c:3492-3505), VERBATIM:
+/// `q == 0 ? 64 : (dc_quant(q,0,bd) < th ? 84 : 80)` with th 148 (bd8) /
+/// 592 (bd10) / 2368 (bd12). Takes the QINDEX (for the q==0 lossless
+/// special case) and the dc-quant it resolves to. (First draft wrongly
+/// returned 64 in the else arm and lacked the q==0 case — caught by the
+/// hbd translation cross-check 2026-07-17.)
+pub fn qzbin_factor(qindex: u8, dc_quant_qtx: i32, bd: u8) -> i32 {
+    if qindex == 0 {
+        return 64;
+    }
     let th = match bd {
         8 => 148,
         10 => 592,
         _ => 2368,
     };
-    if dc_quant_q3 < th {
+    if dc_quant_qtx < th {
         84
     } else {
-        64
+        80
     }
 }
 
