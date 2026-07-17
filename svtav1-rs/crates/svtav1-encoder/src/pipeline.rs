@@ -36,10 +36,22 @@ pub struct EncodePipeline {
     pub gop: GopStructure,
     /// Frame counter.
     pub frame_count: u64,
-    /// Frame width.
+    /// ALIGNED (mi-grid) frame width — the true width rounded up to a
+    /// multiple of `MIN_BLOCK_SIZE` (8). The whole encode (SB grid, mi
+    /// grid, partition tree, tile geometry, frame header) runs on these
+    /// dims. For a natively 8-aligned input `width == true_width`.
+    /// Task #95 chunk 1 scopes this to inputs whose aligned dims are also
+    /// a multiple of 64 (full SBs — no partial-SB edge coding yet).
     pub width: u32,
-    /// Frame height.
+    /// ALIGNED (mi-grid) frame height (see [`Self::width`]).
     pub height: u32,
+    /// TRUE / CODED frame width — the value the caller passed, carried to
+    /// the sequence header (`max_frame_width_minus_1`, spec 5.5.1) and the
+    /// recon output crop. Can differ from the aligned [`Self::width`] by
+    /// up to 7 px. Equals `width` for 8-aligned inputs.
+    pub true_width: u32,
+    /// TRUE / CODED frame height (see [`Self::true_width`]).
+    pub true_height: u32,
     /// Bit depth (8, 10, or 12).
     pub bit_depth: u8,
     /// CICP color description.
@@ -85,6 +97,32 @@ pub struct EncodePipeline {
     pub tile_rows_log2: u8,
 }
 
+/// Edge-replicate a plane from a valid `sw x sh` region (read at
+/// `src_stride`) up to `dw x dh` (tightly packed at stride `dw`). The
+/// per-pixel `min`-clamp reproduces C `pad_input_picture`'s
+/// replicate-last-column-then-last-row for a rectangular pad
+/// (pic_operators.c:561-604). Requires `dw >= sw`, `dh >= sh`, `sw>=1`,
+/// `sh>=1`.
+fn pad_plane_replicate(
+    src: &[u8],
+    src_stride: usize,
+    sw: usize,
+    sh: usize,
+    dw: usize,
+    dh: usize,
+) -> alloc::vec::Vec<u8> {
+    let mut out = alloc::vec![0u8; dw * dh];
+    for r in 0..dh {
+        let sr = r.min(sh - 1);
+        let base = sr * src_stride;
+        let orow = r * dw;
+        for c in 0..dw {
+            out[orow + c] = src[base + c.min(sw - 1)];
+        }
+    }
+    out
+}
+
 impl EncodePipeline {
     /// Create a new encoding pipeline.
     pub fn new(
@@ -95,6 +133,13 @@ impl EncodePipeline {
         hierarchical_levels: u8,
         intra_period: u32,
     ) -> Self {
+        // TWO boundary systems (frame_geom::FrameDims): the caller passes
+        // TRUE dims; the encode runs on ALIGNED (8-rounded) dims. The
+        // full-SB (aligned % 64 == 0) scope constraint is enforced on the
+        // 4:2:0 pad path ([`Self::encode_frame_420`]) where it matters —
+        // NOT here, so the monochrome state-tracking path keeps working at
+        // its historical sub-64 dims (aligned == true, no padding).
+        let dims = crate::frame_geom::FrameDims::new(width as usize, height as usize);
         Self {
             hdr: crate::hdr_mode::HdrForkConfig::default(),
             speed_config: SpeedConfig::from_preset(preset),
@@ -103,8 +148,10 @@ impl EncodePipeline {
             dpb: DecodedPictureBuffer::new(),
             gop: GopStructure::new(hierarchical_levels, intra_period),
             frame_count: 0,
-            width,
-            height,
+            width: dims.aligned_w as u32,
+            height: dims.aligned_h as u32,
+            true_width: width,
+            true_height: height,
             bit_depth: 8,
             // C-matched default: CICP "unspecified" (cp/tc/mc = 2/2/2,
             // studio range) — the library defaults of enc_settings.c:1043.
@@ -152,26 +199,63 @@ impl EncodePipeline {
     /// Encode a single frame through the full pipeline (monochrome).
     ///
     /// Returns the encoded bitstream data and updates internal state.
+    /// The monochrome path does not yet pad TRUE->ALIGNED (task #95 chunk
+    /// 1 wired only the 4:2:0 path); mono callers must pass 8-aligned dims.
     pub fn encode_frame(&mut self, y_plane: &[u8], y_stride: usize) -> Vec<u8> {
+        assert!(
+            self.width == self.true_width && self.height == self.true_height,
+            "monochrome encode_frame requires 8-aligned dims (arbitrary-dims padding is wired \
+             on the 4:2:0 path only so far — task #95)"
+        );
         self.encode_frame_impl(y_plane, y_stride, None)
     }
 
     /// Encode a single 4:2:0 still/key frame (NumPlanes=3).
     ///
-    /// `u`/`v` are (w/2 x h/2) planes tightly packed at stride w/2, where
-    /// (w, h) are the pipeline frame dimensions (64-aligned in practice).
+    /// `u`/`v` are (true_w/2 x true_h/2) planes at stride `true_w/2`, and
+    /// `y` is (true_w x true_h) at `y_stride`, where the TRUE dims are what
+    /// the caller passed to [`Self::new`]. When those differ from the
+    /// ALIGNED encode dims (task #95), the planes are edge-replicated up to
+    /// the aligned grid here (C `pad_input_picture`, pic_operators.c:561);
+    /// for 8-aligned inputs this is a zero-copy pass-through.
     /// Requires `chroma_420` to be enabled via [`Self::with_chroma_420`].
     pub fn encode_frame_420(&mut self, y: &[u8], u: &[u8], v: &[u8], y_stride: usize) -> Vec<u8> {
         assert!(
             self.chroma_420,
             "encode_frame_420 requires the pipeline to be built with with_chroma_420(true)"
         );
-        let cn = (self.width as usize / 2) * (self.height as usize / 2);
+        let (tw, th) = (self.true_width as usize, self.true_height as usize);
+        let (aw, ah) = (self.width as usize, self.height as usize);
+        // Task #95 chunk 1 scope: the ALIGNED dims must form full 64x64
+        // SBs. Dims in {57..64} align to 64 (60x60 padded 4px), 64/128/...
+        // pass straight through. A natively 8-aligned partial size (56x56,
+        // 200x200) is out of scope until the partial-SB edge coding lands.
         assert!(
-            u.len() >= cn && v.len() >= cn,
-            "u/v planes must be (w/2 x h/2)"
+            aw % 64 == 0 && ah % 64 == 0,
+            "encode_frame_420 (task #95 chunk 1) needs aligned dims that are a multiple of 64 \
+             (full SBs); true {}x{} aligns to {}x{} — partial-SB edge coding is chunk 2",
+            tw, th, aw, ah
         );
-        self.encode_frame_impl(y, y_stride, Some((u, v)))
+        // TRUE chroma dims (4:2:0 ceiling, matching the input .yuv layout).
+        let (tcw, tch) = ((tw + 1) / 2, (th + 1) / 2);
+        let cn_true = tcw * tch;
+        assert!(
+            u.len() >= cn_true && v.len() >= cn_true,
+            "u/v planes must be (true_w/2 x true_h/2)"
+        );
+        if aw == tw && ah == th {
+            // Natively 8-aligned: pass through unchanged (byte-identical to
+            // the pre-#95 path).
+            return self.encode_frame_impl(y, y_stride, Some((u, v)));
+        }
+        // Pad TRUE -> ALIGNED. C replicates the last valid column, then the
+        // last valid row (incl. the new right pad); the per-pixel min-clamp
+        // in `pad_plane_replicate` is equivalent for a rectangular region.
+        let (acw, ach) = (aw / 2, ah / 2);
+        let y_pad = pad_plane_replicate(y, y_stride, tw, th, aw, ah);
+        let u_pad = pad_plane_replicate(u, tcw, tcw, tch, acw, ach);
+        let v_pad = pad_plane_replicate(v, tcw, tcw, tch, acw, ach);
+        self.encode_frame_impl(&y_pad, aw, Some((&u_pad, &v_pad)))
     }
 
     /// Shared frame encode body. `chroma = Some((u, v))` selects the 4:2:0
@@ -754,6 +838,15 @@ impl EncodePipeline {
             // filtering — signaling 0 keeps our recon decoder-exact on
             // that self-consistent surface.
             t.enable_intra_edge_filter &= self.chroma_420;
+            // Small-frame implementation limit (enc_settings.c:214-232):
+            // when the TRUE source width OR height is < 64, C force-clears
+            // enable_restoration_filtering (and aq_mode, already off on the
+            // allintra path) BEFORE the SH derivation, so the SH bit is 0.
+            // Uses the TRUE (unaligned) dims — a 60x60 frame aligns to
+            // 64x64 but still trips this.
+            if self.true_width < 64 || self.true_height < 64 {
+                t.enable_restoration = false;
+            }
             t
         };
 
@@ -1311,8 +1404,14 @@ impl EncodePipeline {
             let mut bs = alloc::vec::Vec::new();
             bs.extend_from_slice(&svtav1_entropy::obu::write_temporal_delimiter());
             bs.extend_from_slice(&svtav1_entropy::obu::write_sequence_header_ex(
-                self.width,
-                self.height,
+                // TRUE (unaligned) dims flow to the sequence header:
+                // max_frame_width/height_minus_1 carry the coded size, and
+                // the level derivation keys off the real picture size (C
+                // captures max_frame_width BEFORE 8-alignment,
+                // enc_handle.c:4792). Everything else in the encode uses
+                // the aligned self.width/height.
+                self.true_width,
+                self.true_height,
                 is_single_frame,
                 self.bit_depth,
                 &self.color_description,

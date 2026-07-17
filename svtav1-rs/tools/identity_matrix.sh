@@ -17,8 +17,13 @@ mkdir -p "$RS_ROOT/benchmarks"
 
 # Overridable via env for broader sweeps, e.g.
 #   IM_PRESETS="0 1 2 3 4 5 6 7 8 9 10" IM_CONTENTS="uniform gradient photo"
+# Default sizes: 64 and 128 (full-SB), plus 60 — an arbitrary (non-64,
+# even) dimension that aligns to a single 64x64 SB, guarding the task #95
+# chunk-1 arbitrary-dimensions path (input pad + true-size seq header +
+# small-frame restoration disable). Partial-SB sizes (56, 200, ...) are
+# chunk 2 and not yet in the default gate.
 read -r -a CONTENTS <<<"${IM_CONTENTS:-uniform gradient}"
-read -r -a SIZES <<<"${IM_SIZES:-64 128}"
+read -r -a SIZES <<<"${IM_SIZES:-64 128 60}"
 read -r -a QPS <<<"${IM_QPS:-20 40 55}"
 read -r -a PRESETS <<<"${IM_PRESETS:-13 10 6}"
 # Per-cell wall-clock guard: an unported preset path may hang (as the M6

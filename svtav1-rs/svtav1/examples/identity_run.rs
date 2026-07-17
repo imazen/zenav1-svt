@@ -154,9 +154,14 @@ fn main() {
     let qp: u8 = args[4].parse().expect("cli_qp");
     let preset: u8 = args[5].parse().expect("preset");
     let prefix = &args[6];
+    // I420 needs even dims. Task #95 chunk 1: the pipeline pads TRUE ->
+    // ALIGNED (8-round) internally and enforces the in-scope constraint
+    // (aligned dims a multiple of 64 = full SBs); dims like 60x60 (-> 64)
+    // exercise arbitrary-dimension input+header without partial-SB edge
+    // coding. Partial SBs (e.g. 56x56, 200x200) are chunk 2.
     assert!(
-        w % 64 == 0 && h % 64 == 0,
-        "identity harness requires 64-aligned dims (partial-SB support pending, CLAUDE.md gap 5)"
+        w % 2 == 0 && h % 2 == 0,
+        "I420 harness requires even dims (got {w}x{h})"
     );
 
     let (y, u, v) = if let Some(path) = content.strip_prefix("file:") {
