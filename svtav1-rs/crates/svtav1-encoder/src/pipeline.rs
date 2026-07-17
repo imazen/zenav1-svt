@@ -3094,6 +3094,11 @@ fn encode_tile_rows(
         );
         let mut funnel_cfg = crate::leaf_funnel::FunnelCfg::for_preset(speed_config.preset);
         funnel_cfg.allow_sct = tile_sc.allow_screen_content_tools;
+        // THE palette flip-on: with the level stamped, the funnel injects
+        // palette candidates (chunk 4) and the pack codes the winners
+        // (chunk 5). sc_derivation.palette_level is 0 on every non-sc
+        // frame, so non-screen-content streams are untouched.
+        funnel_cfg.palette_level = tile_sc.palette_level;
         let cwid = w / 2;
         let chgt = h / 2;
         let mut fun_u_recon = alloc::vec![128u8; if use_funnel { cwid * chgt } else { 0 }];
