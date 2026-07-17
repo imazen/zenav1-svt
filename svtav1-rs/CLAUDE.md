@@ -398,6 +398,69 @@ These numbers are MEASURED, not estimated.
 4. **Performance (#93)**: LAST. Algorithmic/allocation work before SIMD
    when it does happen.
 
+
+## STANDING DIRECTIVE — KEEP GOING ON ALL REMAINING WORK (2026-07-17)
+
+Every session (including post-compaction resumes): pick up the queue below
+and CONTINUE until all gates pass. Do not wait for prompting; do not
+re-litigate priorities (they are in "PRODUCTION PRIORITIES" above).
+
+### Do-not-clobber map (concurrent HDR-fork session — read docs/HDR-ON-4.2.md first)
+
+The hdr-hybrid workstream actively lands on master. NEVER touch its
+surface: `hdr_mode.rs`, `var_boost.rs`, `chroma_q.rs`, `noise_gen.rs`,
+`noise_norm.rs`, `qm.rs`, `qm_tables.rs`, `tx_bias.rs`, `tune.rs`,
+`ssim_md.rs`, `tests/hdr_fork_e2e.rs`, the gate examples
+(`hdr_fork_smoke.rs`, `noise_gate.rs`, `tune_gate.rs`),
+`xtask/transcribe_qm.py`, and the `#if SVT_HDR_MODE` C paths. In SHARED
+files preserve their fork arms exactly: `leaf_funnel.rs` (`mds0_ssd`
+SSD-vs-SATD<<4 MDS0 arm, the noise-norm call in `tx_unit`), `pd0.rs`
+(`kf_full_lambda_8bit_ex` qdiff factors), `quant.rs` (light-RDOQ,
+rdoq_rdmult_sharp, QM routing), `pipeline.rs` (per-SB delta-q + chroma
+qindex threading), `deblock.rs` (`sharpness` param). Their invariant =
+ours: MODE0/Mainline output byte-identical to stock v4.2.0-final. Rebase
+over their commits (fetch+rebase+push retry loop); on conflict in a
+shared file, THEIR fork arms win, OUR mainline arms win.
+
+### The remaining-work queue (work top to bottom; per-item state lives in the task tracker + docs/ maps)
+
+1. **#71 palette calibration**: implement CAND_CLASS_3 per-class NIC
+   lanes in the leaf funnel (the confirmed root: port codes 2064 palette
+   blocks vs C 178 on EPICA p6 q32). Probes + expected outcome recorded
+   in task #71 metadata. Then uv [1][0] fac-bits row + neighbor
+   color-cache consumption in injection. Gate: EPICA p6/p7 q32
+   byte-match (13097B / 14736B).
+2. **#71 IBC wiring**: wire `intrabc.rs` into the funnel injection
+   (palette_hint coupling) + FH allow_intrabc for M2-M4 sc + the already
+   -dormant obu.rs LF/CDEF/LR skips. Gate: EPICA p2-p5 cells.
+3. **#86 tiles payload gaps**: per-tile LR handling + leaf_funnel
+   neighbor availability via tile_top_px (same pattern as partition.rs).
+   Gate: the 3 recorded 2-tile-row cells IDENTICAL.
+4. **#95 arbitrary dims integration** (P0): wire frame_geom into the
+   pipeline/harness per docs/arbitrary-dims-port-map.md chunk order.
+   Gates: 96x80 then 65x65 vs SvtAv1EncApp; 64-aligned byte-identical
+   per chunk.
+5. **#94 bd10 integration** (P0): u16 intake + harness axis, hbd module
+   consumption, lambda *16/*4, filters at true depth per
+   docs/bd10-port-map.md. Gate: uniform 64x64 bd10 <=M3 cell vs C.
+6. **#91 SB128 integration**: 11-chunk order in docs/sb128-port-map.md
+   (CDEF three-phase as its own reviewed chunk + unit test; flip the
+   Globals/enc_handle.c:4071 gate LAST). Gate: the 12 real p0/p1 cells.
+7. **Verification debt**: paeth tie-break FFI test (flagged, wired u8
+   code — test BEFORE changing); PORT-NOTE(unverified) audit — every
+   marker verified or carried consciously; qlookup spot-check vs C.
+8. **#96 quality pass**: leaf_funnel module split (AFTER #71 lands),
+   rustdoc invariants, dead-code sweep, tools/tests README.
+9. **Broad gates**: #44/#73 full-matrix + real-content re-sweeps after
+   each vertical; then determinism/--lp; **#93 perf LAST**
+   (algorithmic/alloc before SIMD).
+
+Rules of engagement per item: read the relevant docs/ map first; land in
+byte-identical-current-output chunks; every landing = commit + rebase +
+push + `git merge-base --is-ancestor` verify; batteries via sonnet
+agents (foreground commands, no idle waits); record drill state in task
+metadata BEFORE deep edits (compaction insurance).
+
 ## BULK-PORT MODE (user directive 2026-07-16)
 
 Port ALL remaining C machinery with detailed, careful source-to-source
