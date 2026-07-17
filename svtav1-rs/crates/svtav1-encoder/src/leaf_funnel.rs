@@ -2845,7 +2845,16 @@ pub(crate) fn evaluate_leaf(
             // use_palette=1 arm): ymode YES + size + (0,0) uniform + colors
             // + map tokens.
             let r_mode = rates.kf_y[above_ctx][left_ctx][0] as u64;
-            let r_fi = if fi_elig { rates.fi_flag[bsize_idx][0] as u64 } else { 0 };
+            // C prices NO filter-intra flag on a palette candidate:
+            // svt_aom_filter_intra_allowed (mode_decision.c:106) returns 0
+            // whenever palette_size > 0, so the use_filter_intra syntax is
+            // never written for a palette block (rd_cost.c pals the DC-mode
+            // + palette rate only). The port was adding fi_flag[bsize][0]
+            // here, over-pricing every palette candidate by that flag cost
+            // (measured 1053 at EPICA 8x8) — a real, agent-verified rate
+            // divergence vs C. Palette candidates get zero fi bits.
+            let r_fi = 0u64;
+            let _ = fi_elig; // (fi eligibility is a DC-candidate concept)
             let r_yes = rates.palette_y_yes[bctx] as u64;
             let r_size = rates.palette_ysize[bctx][n - 2] as u64;
             let r_uniform = uniform_cost(n, pc.idx_map[0]);
