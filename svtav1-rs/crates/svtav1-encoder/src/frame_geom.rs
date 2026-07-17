@@ -191,3 +191,20 @@ pub fn lr_units_in_dim(plane_size: usize) -> usize {
     const UNIT: usize = 256;
     ((plane_size + UNIT / 2) / UNIT).max(1)
 }
+
+/// Seq-header max-frame-size bit derivation (C entropy_coding.c:2760-2783):
+/// `bits = floor_log2(max); if max > 1<<bits { bits += 1 }`, then the
+/// writer emits `bits-1` as a 4-bit literal followed by `max-1` in `bits`
+/// bits. Operates on TRUE dims (captured pre-alignment,
+/// enc_handle.c:4792-4799). Returns (bits, minus_1_value).
+/// PORT-NOTE(unverified): the port's SH writer currently derives width
+/// bits its own way for 64-aligned dims — swap to this at #95 chunk 2
+/// and byte-compare the SH on a non-aligned cell.
+pub fn seq_size_bits(max_dim: usize) -> (u32, u32) {
+    debug_assert!(max_dim >= 1);
+    let mut bits = usize::BITS - 1 - max_dim.leading_zeros(); // floor log2
+    if max_dim > (1usize << bits) {
+        bits += 1;
+    }
+    (bits.max(1), (max_dim - 1) as u32)
+}

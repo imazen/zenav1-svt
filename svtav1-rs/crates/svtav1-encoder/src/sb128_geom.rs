@@ -129,3 +129,81 @@ pub fn sb_header_params(sb: usize) -> (bool, usize, u32, u32) {
         if is128 { 7 } else { 6 },    // PIXEL-domain log2
     )
 }
+
+/// C write_cdef (entropy_coding.c:3986-4017), translated exactly — the
+/// phase-4 signaling side of the CDEF contract. Per coded block:
+/// - lossless/intrabc frames: no cdef syntax at all (caller gate).
+/// - the mbmi whose cdef_strength is written is read at the mi rounded
+///   DOWN to 64-alignment: `m = ~((1<<(6-MI_SIZE_LOG2))-1)` = ~15,
+///   i.e. (mi_row & !15, mi_col & !15) — always 64-based, even at SB128.
+/// - `cdef_transmitted[4]` resets at each SB TOP-LEFT
+///   (`!(mi & (sb_mi_size-1))`, sb_mi_size 32 at SB128 / 16 at SB64).
+/// - the quadrant slot uses BIT 4 ONLY (`mask = 1<<(6-MI_SIZE_LOG2)` =
+///   16): `index = sb128 ? ((mi_col>>4)&1) + 2*((mi_row>>4)&1) : 0` —
+///   NOT the ~15 rounding mask (two different masks in one function;
+///   easy to conflate).
+/// - the literal is emitted at the FIRST NON-SKIP block of the quadrant
+///   (cdef_bits wide), then the slot latches.
+/// PORT-NOTE(unverified): the port's current writer emits cdef_idx once
+/// per 64-SB via its own path; at SB128 wiring, replace with this state
+/// machine + a synthetic 4-quadrant unit test.
+pub struct CdefTransmit {
+    transmitted: [bool; 4],
+}
+
+impl CdefTransmit {
+    pub fn new() -> Self {
+        CdefTransmit {
+            transmitted: [false; 4],
+        }
+    }
+
+    /// Call per coded block, in coding order. `sb_mi_size` 16/32.
+    /// Returns Some(mbmi_mi) — the 64-aligned mi whose cdef_strength to
+    /// write — when the cdef literal must be emitted for this block.
+    pub fn on_block(
+        &mut self,
+        mi_row: usize,
+        mi_col: usize,
+        sb_mi_size: usize,
+        sb128: bool,
+        skip: bool,
+    ) -> Option<(usize, usize)> {
+        if mi_row & (sb_mi_size - 1) == 0 && mi_col & (sb_mi_size - 1) == 0 {
+            self.transmitted = [false; 4];
+        }
+        let index = if sb128 {
+            ((mi_col >> 4) & 1) + 2 * ((mi_row >> 4) & 1)
+        } else {
+            0
+        };
+        if !self.transmitted[index] && !skip {
+            self.transmitted[index] = true;
+            Some((mi_row & !15usize, mi_col & !15usize))
+        } else {
+            None
+        }
+    }
+}
+
+impl Default for CdefTransmit {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// CDEF phase-2 strength fan-out (C propagate_cdef_strength,
+/// enc_cdef.c:874-893): the single searched strength for a 128-variant
+/// block must be EXPLICITLY written to every covered 64-quadrant grid
+/// slot — mi-grid aliasing does NOT cover it (cdef_strength is assigned
+/// post-MD). Returns the (mi_row, mi_col) offsets (in mi units, 16 = one
+/// 64-quadrant) of the EXTRA slots beyond the block's own top-left.
+/// bsize128 codes as in [`cdef_fb_is_stale_quadrant`].
+pub fn cdef_strength_fanout_offsets(bsize128: u8) -> &'static [(usize, usize)] {
+    match bsize128 {
+        1 => &[(0, 16), (16, 0), (16, 16)], // BLOCK_128X128
+        2 => &[(0, 16)],                    // BLOCK_128X64: right
+        3 => &[(16, 0)],                    // BLOCK_64X128: below
+        _ => &[],
+    }
+}
