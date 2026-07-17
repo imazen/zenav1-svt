@@ -438,20 +438,53 @@ shared file, THEIR fork arms win, OUR mainline arms win.
    uniform neighbours make every intra mode predict the same flat value
    (satd 26304, dist 47863) while palette reconstructs the text interior
    (dist 19312). C picks H_PRED there, so C's palette must cost more OR
-   its regular cost less. Next: sibling-C dump of palette-vs-H_PRED cost
-   at mi(18,60) (delegated). Then uv [1][0] fac-bits row + neighbor
-   color-cache in injection. Gate: EPICA p6/p7 q32 byte-match
-   (13097B / 14736B).
+   its regular cost less.
+   **ROOT CAUSE CORRECTED 2026-07-17 (measured via real-C leaf-fn drill,
+   OBU byte-verified — the rate premise was FALSE):** C's palette luma
+   rate at the first divergence mi(20,6) is bit-EXACT to the port —
+   map-token cost 26693 == 26693, color cost 22528 == 22528, ysize /
+   uniform / ymode all exact. `palette.rs` (`color_map_wavefront` /
+   `palette_color_index_context` / `delta_encode_bits`) is VERIFIED
+   BIT-EXACT — **do NOT touch it.** The real divergence is at **MDS3, on
+   the DC candidate**: measured C costs at (24,80) are MDS1 DC 18.9M /
+   palette-6 10.78M (palette wins MDS1 in C too, both survive), but
+   **MDS3 DC = 8,538,560** (ycb 35017, ydist 41507→**10128** via residual
+   coeff coding) vs palette-6 10,776,028 → **C's DC wins at MDS3.** The
+   port's palette MDS3 (~10.9M) ≈ C's (faithful). So the port is NOT
+   dropping its DC candidate's MDS3 cost to ~8.5M — either its MDS3
+   residual/coeff/dist path (why doesn't ydist fall 41507→10128? tx_depth?
+   coeff coding?) or DC not surviving MDS1→MDS3 while palette does. NEXT
+   DRILL: the DC_PRED MDS3 full cost, port vs C's 8,538,560. SEPARATE
+   minor bug (OPPOSITE direction): `leaf_funnel.rs` adds `fi_flag` (1053)
+   to palette candidates, but C's `svt_aom_filter_intra_allowed` returns 0
+   when palette_size>0 — the port over-prices palette by 1053; dropping
+   it makes palette CHEAPER, so it must land WITH the DC-MDS3 fix, not
+   before. The per-class dev-prune fix (ba58a3ec2) stays correct+necessary
+   (it's what lets DC reach MDS3 at all; 2064→516). Gate: EPICA p6/p7 q32
+   byte-match (13097B / 14736B).
 2. **#71 IBC wiring**: wire `intrabc.rs` into the funnel injection
    (palette_hint coupling) + FH allow_intrabc for M2-M4 sc + the already
    -dormant obu.rs LF/CDEF/LR skips. Gate: EPICA p2-p5 cells.
 3. **#86 tiles payload gaps**: per-tile LR handling + leaf_funnel
    neighbor availability via tile_top_px (same pattern as partition.rs).
    Gate: the 3 recorded 2-tile-row cells IDENTICAL.
-4. **#95 arbitrary dims integration** (P0): wire frame_geom into the
-   pipeline/harness per docs/arbitrary-dims-port-map.md chunk order.
-   Gates: 96x80 then 65x65 vs SvtAv1EncApp; 64-aligned byte-identical
-   per chunk.
+4. **#95 arbitrary dims integration** (P0): **CHUNK 1 LANDED** — the
+   pipeline now carries TWO dim systems (`true_width/height` vs the
+   ALIGNED `width/height` = round-true-up-to-8): `new()` computes aligned
+   via `frame_geom::FrameDims`, `encode_frame_420` edge-replicates the
+   input planes TRUE->ALIGNED (C `pad_input_picture`), the seq header
+   carries TRUE dims (`max_frame_width_minus_1`), and the small-frame
+   restoration disable (enc_settings.c:214-232: true w|h < 64 clears
+   `enable_restoration`) is replicated. SCOPE: aligned dims a multiple of
+   64 (full SBs) — dims in {57..64} e.g. 60x60 -> 64x64. VERIFIED: 60x60
+   uniform+gradient byte-identical vs SvtAv1EncApp across presets 13/10/6
+   × q20/40/55 (18/18); `60` added to the default identity_matrix (now
+   54/54); 64-aligned regression 36/36; 196 encoder tests green; mono
+   path preserved. NEXT (chunk 2): partial SBs (aligned NOT a mult of 64,
+   e.g. 56x56, 200x200) — the partition edge-coding (has_rows/has_cols
+   forced splits, sb_geom clamp, DLF floor-chroma at odd widths) per
+   docs/arbitrary-dims-port-map.md "Partial SBs" + "MD at edges". Gate:
+   96x80 then 65x65 (odd) vs SvtAv1EncApp.
 5. **#94 bd10 integration** (P0): u16 intake + harness axis, hbd module
    consumption, lambda *16/*4, filters at true depth per
    docs/bd10-port-map.md. Gate: uniform 64x64 bd10 <=M3 cell vs C.
