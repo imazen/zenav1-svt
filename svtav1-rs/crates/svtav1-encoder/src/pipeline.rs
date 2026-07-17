@@ -367,11 +367,13 @@ impl EncodePipeline {
                 // C clamps allintra presets above M9 to M9 (enc_handle.c:4634).
                 let eff_mode = self.speed_config.preset.min(9);
                 let rdoq_level = crate::quant::rdoq_level_allintra(eff_mode, coeff_lvl);
-                let lambda = crate::pd0::kf_full_lambda_8bit_ex(
+                let lambda = crate::pd0::kf_full_lambda_8bit_tuned(
                     base_qindex,
                     tpl_adjusted_qp as u32,
                     self.hdr.is_fork() && self.hdr.alt_lambda_factors,
                     0,
+                    (self.hdr.is_fork() && self.hdr.tune == crate::tune::TUNE_IQ)
+                        .then(|| crate::tune::iq_lambda_weight(tpl_adjusted_qp as u32)),
                 );
                 Some(alloc::sync::Arc::new(crate::quant::CodingQuantCfg::new(
                     rdoq_level,
@@ -440,7 +442,11 @@ impl EncodePipeline {
         // [SVT_HDR_MODE] fork chroma-q: derive the FH per-plane deltas and
         // the plane qindexes the quantizer must use. Mainline: all zero.
         let chroma_deltas = if self.hdr.is_fork() {
-            crate::chroma_q::fork_chroma_q_deltas(base_qindex, &self.color_description)
+            crate::chroma_q::fork_chroma_q_deltas_tuned(
+                base_qindex,
+                &self.color_description,
+                self.hdr.tune,
+            )
         } else {
             crate::chroma_q::ChromaQDeltas::default()
         };
@@ -457,14 +463,55 @@ impl EncodePipeline {
         let delta_q_res_signal = sb_plan.as_ref().map(|p| p.delta_q_res);
         // sharp-tx RDOQ activates only with per-SB delta-q present (C gate
         // `(use_sharpness || sharp_tx) && delta_q_present && plane==0`).
+        // [SVT_HDR_MODE] tune SSIM/IQ/MS_SSIM: per-16x16 SSIM rdmult
+        // scaling factors (aom_av1_set_mb_ssim_rdmult_scaling; the
+        // alt_ssim_tuning multi-scale perceptual variant when that knob is
+        // on). Applied per SB below — C scales per BLOCK from the PICTURE
+        // lambda (set_ssim_rdmult ignores the per-SB qindex lambda);
+        // PORT-NOTE(unverified): SB-granularity approximation of the
+        // per-block geometric mean — refine with a C-side lambda dump.
+        let ssim_factors: Option<(alloc::vec::Vec<f64>, usize, usize)> =
+            if self.hdr.is_fork() && crate::tune::tune_uses_ssim_rdmult(self.hdr.tune) {
+                Some(crate::tune::ssim_rdmult_factors(
+                    &encode_input,
+                    w,
+                    w,
+                    h,
+                    self.hdr.alt_ssim_tuning,
+                ))
+            } else {
+                None
+            };
+        // [SVT_HDR_MODE] per-tune LF sharpness (deblocking_filter.c:1157,
+        // KEY frames): VQ/FILM_GRAIN +2 (min 7); IQ/MS_SSIM qindex cap.
+        // Applied to the SEARCH input, the SIGNALED bits, and the walk's
+        // application consistently (one effective value).
+        let lf_sharp_eff: u8 = {
+            let base = self.hdr.sharpness.clamp(0, 7) as u8;
+            if self.hdr.is_fork() {
+                crate::tune::lf_sharpness_for_tune(base, self.hdr.tune, base_qindex)
+            } else {
+                base
+            }
+        };
         let sharp_tx_active = self.hdr.is_fork() && self.hdr.sharp_tx == 1 && sb_plan.is_some();
         // [SVT_HDR_MODE] frame QM levels (svt_av1_qm_init,
         // md_config_process.c:249): the linear qindex map (default tune =
         // PSNR in the fork); chroma levels derive from base + the FH
         // chroma AC deltas. [15;3] = QM off (identity).
         let qm_levels: [u8; 3] = if self.hdr.is_fork() && self.hdr.enable_qm {
-            let lvl = |q: i32, lo: u8, hi: u8| {
-                crate::qm::aom_get_qmlevel(q, i32::from(lo), i32::from(hi)) as u8
+            // TUNE_IQ / TUNE_MS_SSIM use the still-image polynomial
+            // (svt_av1_qm_init switch, md_config_process.c:255).
+            let still = matches!(
+                self.hdr.tune,
+                crate::tune::TUNE_IQ | crate::tune::TUNE_MS_SSIM
+            );
+            let lvl = move |q: i32, lo: u8, hi: u8| {
+                if still {
+                    crate::qm::still_get_qmlevel(q, i32::from(lo), i32::from(hi)) as u8
+                } else {
+                    crate::qm::aom_get_qmlevel(q, i32::from(lo), i32::from(hi)) as u8
+                }
             };
             [
                 lvl(
@@ -548,6 +595,9 @@ impl EncodePipeline {
             self.hdr.is_fork() && self.hdr.complex_hvs == 1,
             self.hdr.is_fork() && self.hdr.alt_ssim_tuning,
             self.hdr.is_fork() && self.hdr.alt_lambda_factors,
+            (self.hdr.is_fork() && self.hdr.tune == crate::tune::TUNE_IQ)
+                .then(|| crate::tune::iq_lambda_weight(tpl_adjusted_qp as u32)),
+            ssim_factors.as_ref(),
             base_qindex,
             tpl_adjusted_qp,
             self.hdr.sharpness,
@@ -877,7 +927,7 @@ impl EncodePipeline {
             if is_single_frame && self.speed_config.preset <= 5 {
                 let (su, sv) = chroma.unwrap_or((&[][..], &[][..]));
                 let input = crate::deblock::DlfSearchInput {
-                    sharpness: self.hdr.sharpness.clamp(0, 7) as u8,
+                    sharpness: lf_sharp_eff,
                     y_src: &encode_input,
                     u_src: su,
                     v_src: sv,
@@ -908,7 +958,7 @@ impl EncodePipeline {
                 chroma.is_some(),
                 &deblock_geom,
                 &lf_levels,
-                self.hdr.sharpness.clamp(0, 7) as u8, // = signaled loop_filter_sharpness
+                lf_sharp_eff, // = signaled loop_filter_sharpness
             );
         }
 
@@ -1188,7 +1238,7 @@ impl EncodePipeline {
                 lf_levels.levels,
                 // Signaled loop_filter_sharpness — must match the value the
                 // deblock search + application used (fork default 1).
-                self.hdr.sharpness.clamp(0, 7) as u8,
+                lf_sharp_eff,
                 // The CDEF strengths applied to the output recon above —
                 // like the deblock levels, signaling and application MUST
                 // agree or the recon desyncs from every conforming decoder.
@@ -3036,6 +3086,8 @@ fn encode_tile_rows(
     hdr_complex_hvs: bool,
     hdr_alt_ssim: bool,
     hdr_alt_lambda: bool,
+    hdr_iq_lambda_weight: Option<u32>,
+    ssim_factors: Option<&(alloc::vec::Vec<f64>, usize, usize)>,
     fh_base_qindex: u8,
     cli_qp: u8,
     hdr_sharpness: i8,
@@ -3123,6 +3175,9 @@ fn encode_tile_rows(
             None
         };
         #[allow(unused_mut)]
+        // The PICTURE lambda (pre per-SB overrides) — the base C's tune-SSIM
+        // set_ssim_rdmult scales from (ed_ctx->pic_full_lambda).
+        let pic_lambda: u64 = c_quant.as_ref().map_or(0, |cq| u64::from(cq.lambda));
         let mut fun_frame = if use_funnel {
             let cq = c_quant.as_ref().unwrap();
             Some(crate::leaf_funnel::FunnelFrame {
@@ -3224,6 +3279,26 @@ fn encode_tile_rows(
                 // at its PLANNED qindex (luma + per-plane chroma) with the
                 // matching lambda (C per-SB svt_aom_lambda_assign). The
                 // frame-level CDF bucket stays at the FH base (C behavior).
+                // [SVT_HDR_MODE] tune-SSIM per-SB lambda: C's
+                // set_ssim_rdmult scales the PICTURE lambda per block,
+                // REPLACING the qindex-derived lambda (coding_loop.c:374)
+                // — so when factors are present they own the lambda and
+                // the per-SB delta-q override below skips its lambda set
+                // (quantization still follows the per-SB qindex).
+                if let (Some((factors, num_cols, num_rows)), Some(f)) =
+                    (ssim_factors, fun_frame.as_mut())
+                {
+                    let scale = crate::tune::ssim_scale_for_block(
+                        factors,
+                        *num_cols,
+                        *num_rows,
+                        (sb_row * sb_size) / 4,
+                        (sb_col * sb_size) / 4,
+                        sb_size / 4,
+                        sb_size / 4,
+                    );
+                    f.lambda = (pic_lambda as f64 * scale + 0.5) as u64;
+                }
                 if let (Some(plan), Some(f)) = (sb_qindex_plan, fun_frame.as_mut()) {
                     let sbq = plan[sb_row * sb_cols + sb_col];
                     f.base_qindex = sbq;
@@ -3249,12 +3324,15 @@ fn encode_tile_rows(
                             )
                         );
                     }
-                    f.lambda = u64::from(crate::pd0::kf_full_lambda_8bit_ex(
-                        sbq,
-                        u32::from(crate::rate_control::qindex_to_qp(sbq)),
-                        hdr_alt_lambda,
-                        i32::from(sbq) - i32::from(fh_base_qindex),
-                    ));
+                    if ssim_factors.is_none() {
+                        f.lambda = u64::from(crate::pd0::kf_full_lambda_8bit_tuned(
+                            sbq,
+                            u32::from(crate::rate_control::qindex_to_qp(sbq)),
+                            hdr_alt_lambda,
+                            i32::from(sbq) - i32::from(fh_base_qindex),
+                            hdr_iq_lambda_weight,
+                        ));
+                    }
                 }
 
                 let ref_ctx = ref_frame_data.map(|rf| crate::partition::RefFrameCtx {

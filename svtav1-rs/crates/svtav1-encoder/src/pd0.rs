@@ -238,6 +238,20 @@ pub(crate) fn kf_full_lambda_8bit_ex(
     alt_lambda_factors: bool,
     qdiff_vs_base: i32,
 ) -> u32 {
+    kf_full_lambda_8bit_tuned(qindex, cli_qp, alt_lambda_factors, qdiff_vs_base, None)
+}
+
+/// [SVT_HDR_MODE] full form incl. the TUNE_IQ still-picture
+/// `lambda_weight` curve (enc_mode_config.c:13513) — when Some, it
+/// REPLACES the PSNR 0/150/175 ladder entirely (C sets pcs->lambda_weight
+/// from the tune before the ladder ever runs).
+pub(crate) fn kf_full_lambda_8bit_tuned(
+    qindex: u8,
+    cli_qp: u32,
+    alt_lambda_factors: bool,
+    qdiff_vs_base: i32,
+    lambda_weight_override: Option<u32>,
+) -> u32 {
     let dc_q = svtav1_dsp::quant_tables::DC_QLOOKUP_8[qindex as usize] as i64;
     let rdmult = ((3.3 + 0.0015 * dc_q as f64) * (dc_q as f64) * (dc_q as f64)) as i64;
     let ftf: i64 = if alt_lambda_factors { 140 } else { 150 };
@@ -251,13 +265,13 @@ pub(crate) fn kf_full_lambda_8bit_ex(
     };
     rdmult = (rdmult * stats_factor) >> 7;
     let mut lambda = rdmult as u32;
-    let lambda_weight: u32 = if cli_qp >= 56 {
+    let lambda_weight: u32 = lambda_weight_override.unwrap_or(if cli_qp >= 56 {
         175
     } else if cli_qp >= 16 {
         150
     } else {
         0
-    };
+    });
     if lambda_weight != 0 {
         lambda = ((lambda as u64 * lambda_weight as u64) >> 7) as u32;
     }

@@ -247,3 +247,32 @@ fn alt_ssim_tuning_is_live_in_fork_mode() {
     }
     assert!(flipped > 0, "alt_ssim_tuning is inert on all 3 cells");
 }
+
+#[test]
+fn tune_policies_are_live_in_fork_mode() {
+    // Fork --tune (default 1 = PSNR): every non-default tune must change
+    // bytes vs PSNR through its still-reachable policy set — SSIM rdmult
+    // scaling (2/3/4), chroma boosts (2/3), IQ lambda weight + still QM
+    // curve (3/4), LF sharpness ladders (0/3/4/5).
+    for tune in [0u8, 2, 3, 4, 5] {
+        let mut flipped = 0;
+        for (preset, qp) in [(2u8, 20u8), (6, 40), (6, 55)] {
+            let mut on = HdrForkConfig::hdr_fork();
+            on.tune = tune;
+            let off = HdrForkConfig::hdr_fork();
+            assert_eq!(off.tune, 1, "fork default tune must stay PSNR");
+            let a = encode_with(Some(on), qp, preset);
+            let b = encode_with(Some(off), qp, preset);
+            if a != b {
+                flipped += 1;
+            }
+        }
+        // VQ/FILM_GRAIN only differ via the LF sharpness +2 (needs LF
+        // active); the SSIM-family tunes rescale every block lambda.
+        if matches!(tune, 2 | 3 | 4) {
+            assert_eq!(flipped, 3, "tune {tune} inert on some cells");
+        } else {
+            assert!(flipped > 0, "tune {tune} inert on all cells");
+        }
+    }
+}

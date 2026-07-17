@@ -2894,6 +2894,7 @@ pub(crate) fn evaluate_leaf(
                 );
             }
             cands.push(Cand {
+                mds3_cost_ssim: u64::MAX,
                 mode: 0,
                 delta: 0,
                 fi: FI_NONE,

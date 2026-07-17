@@ -35,6 +35,9 @@ pub enum SvtHdrMode {
 
 /// Fork feature knobs + fork-overridden mainline defaults.
 ///
+/// Default tune (PSNR) — both C defaults.
+const TUNE_PSNR_DEFAULT: u8 = 1;
+
 /// Mirrors the C hybrid's config surface. Every field is honored by the
 /// code paths that have been ported; unported consumers are listed in the
 /// status table (docs/HDR-ON-4.2.md) and tracked as tasks.
@@ -51,6 +54,10 @@ pub struct HdrForkConfig {
     pub alt_lambda_factors: bool,
     /// Alternative SSIM tuning (SB-normalized rdmult scaling).
     pub alt_ssim_tuning: bool,
+    /// Fork `--tune` (0=VQ, 1=PSNR, 2=SSIM, 3=IQ, 4=MS_SSIM,
+    /// 5=FILM_GRAIN). Default 1 matches both C defaults; the tune-policy
+    /// deltas (tune.rs) apply in fork mode only.
+    pub tune: u8,
     /// TX size/type + interp-filter sharpness bias 0-3.
     pub tx_bias: u8,
     /// Highest-fidelity HVS model (SSD-Psy) in mds0.
@@ -109,6 +116,7 @@ impl HdrForkConfig {
             kf_tf_strength: 3,
             alt_lambda_factors: false,
             alt_ssim_tuning: false,
+            tune: TUNE_PSNR_DEFAULT,
             tx_bias: 0,
             complex_hvs: 0,
             noise_norm_strength: 0,
@@ -145,6 +153,7 @@ impl HdrForkConfig {
             kf_tf_strength: 1,
             alt_lambda_factors: true,
             alt_ssim_tuning: false,
+            tune: TUNE_PSNR_DEFAULT,
             tx_bias: 0,
             complex_hvs: 0,
             noise_norm_strength: 1,

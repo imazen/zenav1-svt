@@ -57,9 +57,23 @@ fn clip3(lo: i32, hi: i32, v: i32) -> i32 {
 /// The fork's chroma qindex derivation for the port's envelope
 /// (no per-layer chroma offsets, no tune). Returns the FH delta set.
 pub fn fork_chroma_q_deltas(new_qindex: u8, color: &ColorDescription) -> ChromaQDeltas {
+    fork_chroma_q_deltas_tuned(new_qindex, color, crate::tune::TUNE_PSNR)
+}
+
+/// Full form incl. the fork rc tune arms (rc_crf_cqp.c:565, SVT_HDR_MODE
+/// path): the SSIM pow-curve / IQ constant chroma boosts run BEFORE the
+/// tune-independent boosts, off the same pre-adjustment qindex.
+pub fn fork_chroma_q_deltas_tuned(
+    new_qindex: u8,
+    color: &ColorDescription,
+    tune: u8,
+) -> ChromaQDeltas {
     let new_qindex = i32::from(new_qindex);
     let mut chroma_qindex = new_qindex;
     let adj = chroma_qindex;
+
+    // Tune arms (fork rc_crf_cqp.c switch, before the general boosts).
+    chroma_qindex -= crate::tune::tune_chroma_boost(tune, adj);
 
     // Tune-independent chroma boosts (fork block, rc_crf_cqp.c).
     chroma_qindex -= clip3(0, 8, adj / 2);

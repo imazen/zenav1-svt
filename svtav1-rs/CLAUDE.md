@@ -410,6 +410,9 @@ after the code is in. Rules:
   240-cell parity-tested (c_parity_ssim_md.rs); the marker covers the
   cost ASSEMBLY (whole-block vs C per-txb DIST_SSIM accumulation) — needs
   a C-side MD dump with alt_ssim_tuning=1.
+- pipeline.rs: tune-SSIM rdmult per-SB lambda scaling (1 marker) — C
+  scales per BLOCK (set_ssim_rdmult); the port applies the geometric-mean
+  scale at SB granularity. Refine with a C-side per-block lambda dump.
 - **`crates/svtav1-encoder/src/palette.rs`** (task #71, chunks 1-2 of
   docs/palette-port-map.md). FFI-verified against the real C (parity test
   `crates/svtav1-encoder/tests/c_parity_palette.rs`, all green, no markers
