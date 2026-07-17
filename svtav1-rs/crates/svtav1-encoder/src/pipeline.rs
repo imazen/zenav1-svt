@@ -2228,7 +2228,7 @@ fn encode_block_syntax(
                 .unwrap_or((0, 0));
             let _ = writeln!(
                 f,
-                "PTREE mi=({},{}) bsize={} part={} mode={} uv={} fi={} ady={} aduv={} txd={} yeob={} ueob={} veob={} cflidx={} cflsgn={}",
+                "PTREE mi=({},{}) bsize={} part={} mode={} uv={} fi={} ady={} aduv={} txd={} yeob={} ueob={} veob={} cflidx={} cflsgn={} pal={}",
                 block_y / 4,
                 block_x / 4,
                 svtav1_entropy::context::block_size_index(
@@ -2247,6 +2247,7 @@ fn encode_block_syntax(
                 veob,
                 decision.cfl_alpha_idx,
                 decision.cfl_alpha_signs,
+                decision.palette.as_ref().map(|p| p.0.len()).unwrap_or(0),
             );
         }
     }
