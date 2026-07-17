@@ -417,9 +417,10 @@ after the code is in. Rules:
 
 ### PORT-NOTE(unverified) index
 
-- **UNWIRED chunk-1 translations (2026-07-17 token-constrained bulk
-  write — files exist, NOT in lib.rs, NEVER compiled; wiring + a build
-  is the first step of each integration session):**
+- **Bulk-translation modules — WIRED 2026-07-17 (all in lib.rs; 798/798
+  workspace tests + 36/36 matrix green post-wiring; bd10 qlookup tables
+  generated and included). Remaining per-module work = the markers
+  below (verification/integration, not translation):**
   - `crates/svtav1-encoder/src/frame_geom.rs` (#95 chunk 1): FrameDims
     true/aligned model, pad_input_plane, edge_has_rows_cols,
     cropped_tx_dims, DLF floor-chroma vs ceiling split, LR unit

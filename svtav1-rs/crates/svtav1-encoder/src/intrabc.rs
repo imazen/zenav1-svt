@@ -2210,7 +2210,13 @@ mod tests {
         assert_eq!(dv_below, Mv { x: 0, y: -16 * 4 * 8 });
         // No room above: horizontal-only, delayed by INTRABC_DELAY_PIXELS.
         let dv_top = find_ref_dv(tile, 16, 0);
-        assert_eq!(dv_top, Mv { x: (-16 * 4 - INTRABC_DELAY_PIXELS) * 8, y: 0 });
+        assert_eq!(
+            dv_top,
+            Mv {
+                x: ((-16 * 4 - INTRABC_DELAY_PIXELS) * 8) as i16,
+                y: 0
+            }
+        );
     }
 
     #[test]
@@ -2354,11 +2360,13 @@ mod tests {
 
     #[test]
     fn set_mv_search_range_narrows_only() {
+        // C's guards ONLY narrow: a computed bound of +/-MAX_FULL_PEL_VAL
+        // (1023) must NOT widen tighter input limits (+/-1000 stays).
         let mut limits = FullMvLimits { col_min: -1000, col_max: 1000, row_min: -1000, row_max: 1000 };
         let mv = Mv { x: 0, y: 0 };
         set_mv_search_range(&mut limits, mv);
-        assert_eq!(limits.col_min, -MAX_FULL_PEL_VAL);
-        assert_eq!(limits.col_max, MAX_FULL_PEL_VAL);
+        assert_eq!(limits.col_min, -1000);
+        assert_eq!(limits.col_max, 1000);
         // Narrower input bound stays narrower (intersection, not overwrite).
         let mut tight = FullMvLimits { col_min: -5, col_max: 5, row_min: -5, row_max: 5 };
         set_mv_search_range(&mut tight, mv);

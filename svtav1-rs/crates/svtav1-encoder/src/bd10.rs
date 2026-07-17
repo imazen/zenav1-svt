@@ -71,21 +71,18 @@ pub fn inv_txfm_range_max(bd: u8) -> i32 {
     (1i32 << (7 + bd)) - 1 + (914i32 << (bd - 7))
 }
 
-/// dc/ac qlookup tables for bd10 (C dc_qlookup_10_QTX / ac_qlookup_10_QTX,
-/// inv_transforms.c:3373-3506; 256 entries each, qindex domain unchanged
-/// 0..255 at every bd).
-///
-/// PORT-NOTE(unverified): VALUES NOT TRANSCRIBED YET — generate with
-/// `python3 xtask/transcribe_bd10_qlookup.py` (written alongside this
-/// module; reads the C tables, emits `bd10_qlookup_tables.rs` with
-/// `pub static DC_QLOOKUP_10: [i16; 256]` / `AC_QLOOKUP_10`), then
-/// replace this placeholder with `include!("bd10_qlookup_tables.rs")`.
-/// Kept a compile-error-free placeholder so the module is wire-able:
-pub fn dc_qlookup_10(_qindex: u8) -> i16 {
-    unimplemented!("run xtask/transcribe_bd10_qlookup.py first (PORT-NOTE above)")
+// dc/ac qlookup tables for bd10 (C dc_qlookup_10_QTX / ac_qlookup_10_QTX,
+// inv_transforms.c:3373-3506; 256 entries each, qindex 0..255 at every
+// bd). Machine-transcribed (xtask/transcribe_bd10_qlookup.py).
+// PORT-NOTE(unverified): spot-check vs C at qindex {0, 80, 128, 255} in
+// the first bd10 differential.
+include!("bd10_qlookup_tables.rs");
+
+pub fn dc_qlookup_10(qindex: u8) -> i16 {
+    DC_QLOOKUP_10[qindex as usize]
 }
-pub fn ac_qlookup_10(_qindex: u8) -> i16 {
-    unimplemented!("run xtask/transcribe_bd10_qlookup.py first (PORT-NOTE above)")
+pub fn ac_qlookup_10(qindex: u8) -> i16 {
+    AC_QLOOKUP_10[qindex as usize]
 }
 
 /// hbd_md resolution for the allintra path (C enc_mode_config.c:2476-2483
