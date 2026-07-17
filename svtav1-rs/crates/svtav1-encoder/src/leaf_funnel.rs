@@ -3179,64 +3179,145 @@ pub(crate) fn evaluate_leaf(
     order1.sort_by_key(|&i| cands[i].full_cost);
     let mds1_best_idx = order1[0];
 
-    // -- post_mds1_nic_pruning (:8111) --
+    // -- post_mds1_nic_pruning (:7885) + post_mds2_nic_pruning (:7961) --
+    // BOTH run PER CANDIDATE CLASS in C (`for cidx`, :7903/:7969), each
+    // dev-threshold relative to that class's OWN best full_cost
+    // (cand_buff[cidx][0]). Running them over the sorted UNION with the
+    // global best (as the single block below did) prunes the regular
+    // (DC/dir) candidates out before MDS3 whenever a palette candidate's
+    // lower full cost sets `best` — the MDS1/MDS3 sibling of the MDS0
+    // dev-prune fix (ba58a3ec2). Without this DC never reaches MDS3, so
+    // palette wins by default even though C's DC MDS3 (residual coded)
+    // beats it. The inter-class (class_th) block is inert on the I-slice
+    // (mds2_class_th == ~0). Only the palette (multi-class) path takes the
+    // per-lane branch; the single-class path is byte-identical to before.
     let mds2_cand_th = div_round(cfg.mds2_cand_base_th * qw, qwd);
-    let mut n2 = (n1 as u32).min(nic2) as usize;
-    {
-        let best = cands[order1[0]].full_cost;
-        let mut count = 1usize;
-        if best > 0 && count < n2 {
-            // C rank staging (product_coding_loop.c:8158-8166): only when
-            // the config factor is nonzero — same class (the inter-class
-            // +3 arm is dead: single intra class == the mds1 best class),
-            // +2 when the MDS0 and MDS1 winners coincide.
-            let mut rank_factor = cfg.mds2_rank_factor;
-            if rank_factor != 0 && mds0_best_idx == mds1_best_idx {
-                rank_factor += 2;
-            }
-            let mut prev_dev = (cands[order1[count]].full_cost - best) * 100 / best;
-            let mut dev = prev_dev;
-            // C while (:8169-8171): `(!mds2_relative_dev_th || dev <=
-            // prev_dev + mds2_relative_dev_th) && dev < mds2_cand_th /
-            // (rank ? rank * cand_count : 1)` — rel-dev th 0 (M4) DISABLES
-            // the relative-dev exit; rank 0 means divisor 1.
-            while (cfg.mds2_rel_dev_th == 0 || dev <= prev_dev + cfg.mds2_rel_dev_th)
-                && dev
-                    < mds2_cand_th
-                        / (if rank_factor != 0 {
-                            rank_factor * count as u64
-                        } else {
-                            1
-                        })
-            {
-                count += 1;
-                if count >= n2 {
-                    break;
-                }
-                prev_dev = dev;
-                dev = (cands[order1[count]].full_cost - best) * 100 / best;
-            }
-            n2 = count;
-        }
-    }
-
-    // -- post_mds2_nic_pruning (:8189) on the SAME MDS1 costs (MDS2
-    //    bypassed at staging mode 1) --
     let mds3_cand_th = div_round(cfg.mds3_cand_base_th * qw, qwd);
-    let mut n3 = (n2 as u32).min(nic3) as usize;
-    {
-        let best = cands[order1[0]].full_cost;
-        let mut count = 1usize;
-        if best > 0 {
-            while count < n3 {
-                let dev = (cands[order1[count]].full_cost - best) * 100 / best;
-                if dev >= mds3_cand_th {
-                    break;
-                }
-                count += 1;
+    let n3;
+    if order1.iter().any(|&i| cands[i].palette.is_some()) {
+        let mds1_best_is_pal = cands[mds1_best_idx].palette.is_some();
+        // post_mds1 (n2) then post_mds2 (n3) for one class lane, each
+        // against that lane's own best. Returns the post_mds2 survivor
+        // count. `cands`/`cfg`/thresholds captured by ref; no `order1`
+        // capture (lanes are copied index lists).
+        let prune_lane = |lane: &[usize]| -> usize {
+            if lane.is_empty() {
+                return 0;
             }
-            n3 = count;
+            let best = cands[lane[0]].full_cost;
+            // post_mds1 -> n2
+            let mut n2 = lane.len().min(nic2 as usize);
+            if best > 0 && 1 < n2 {
+                // C rank staging (:7934-7939): +3 when this lane is NOT
+                // the MDS1-best class, else +2 when the MDS0 and MDS1
+                // winners coincide (only if the base factor is nonzero).
+                let lane_is_pal = cands[lane[0]].palette.is_some();
+                let mut rank_factor = cfg.mds2_rank_factor;
+                if rank_factor != 0 {
+                    if lane_is_pal != mds1_best_is_pal {
+                        rank_factor += 3;
+                    } else if mds0_best_idx == mds1_best_idx {
+                        rank_factor += 2;
+                    }
+                }
+                let mut count = 1usize;
+                let mut prev_dev = (cands[lane[count]].full_cost - best) * 100 / best;
+                let mut dev = prev_dev;
+                while (cfg.mds2_rel_dev_th == 0 || dev <= prev_dev + cfg.mds2_rel_dev_th)
+                    && dev
+                        < mds2_cand_th
+                            / (if rank_factor != 0 {
+                                rank_factor * count as u64
+                            } else {
+                                1
+                            })
+                {
+                    count += 1;
+                    if count >= n2 {
+                        break;
+                    }
+                    prev_dev = dev;
+                    dev = (cands[lane[count]].full_cost - best) * 100 / best;
+                }
+                n2 = count;
+            }
+            // post_mds2 -> n3 (same lane best)
+            let mut n3l = n2.min(nic3 as usize);
+            if best > 0 {
+                let mut count = 1usize;
+                while count < n3l {
+                    let dev = (cands[lane[count]].full_cost - best) * 100 / best;
+                    if dev >= mds3_cand_th {
+                        break;
+                    }
+                    count += 1;
+                }
+                n3l = count;
+            }
+            n3l
+        };
+        let lane0: Vec<usize> = order1.iter().copied().filter(|&i| cands[i].palette.is_none()).collect();
+        let lane3: Vec<usize> = order1.iter().copied().filter(|&i| cands[i].palette.is_some()).collect();
+        let k0 = prune_lane(&lane0);
+        let k3 = prune_lane(&lane3);
+        // MDS3 evaluates the UNION sorted by full cost.
+        let mut u: Vec<usize> = lane0[..k0].to_vec();
+        u.extend_from_slice(&lane3[..k3]);
+        u.sort_by_key(|&i| cands[i].full_cost);
+        n3 = u.len();
+        order1 = u;
+    } else {
+        // Single-class fast path — byte-identical to the prior union prune.
+        let mut n2 = (n1 as u32).min(nic2) as usize;
+        {
+            let best = cands[order1[0]].full_cost;
+            let mut count = 1usize;
+            if best > 0 && count < n2 {
+                // C rank staging (product_coding_loop.c:8158-8166): only
+                // when the config factor is nonzero — same class (the
+                // inter-class +3 arm is dead: single intra class == the
+                // mds1 best class), +2 when MDS0 and MDS1 winners coincide.
+                let mut rank_factor = cfg.mds2_rank_factor;
+                if rank_factor != 0 && mds0_best_idx == mds1_best_idx {
+                    rank_factor += 2;
+                }
+                let mut prev_dev = (cands[order1[count]].full_cost - best) * 100 / best;
+                let mut dev = prev_dev;
+                while (cfg.mds2_rel_dev_th == 0 || dev <= prev_dev + cfg.mds2_rel_dev_th)
+                    && dev
+                        < mds2_cand_th
+                            / (if rank_factor != 0 {
+                                rank_factor * count as u64
+                            } else {
+                                1
+                            })
+                {
+                    count += 1;
+                    if count >= n2 {
+                        break;
+                    }
+                    prev_dev = dev;
+                    dev = (cands[order1[count]].full_cost - best) * 100 / best;
+                }
+                n2 = count;
+            }
         }
+        let mut n3v = (n2 as u32).min(nic3) as usize;
+        {
+            let best = cands[order1[0]].full_cost;
+            let mut count = 1usize;
+            if best > 0 {
+                while count < n3v {
+                    let dev = (cands[order1[count]].full_cost - best) * 100 / best;
+                    if dev >= mds3_cand_th {
+                        break;
+                    }
+                    count += 1;
+                }
+                n3v = count;
+            }
+        }
+        n3 = n3v;
     }
 
     // -- MDS3: full loop with TXS + TXT + RDOQ + spatial SSE + chroma --
