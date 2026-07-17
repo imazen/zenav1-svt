@@ -1,0 +1,82 @@
+# 10-bit (bd10) port map (task #94, extracted 2026-07-17)
+
+C baseline note: Source/ = v4.2.0 + the SVT_HDR_MODE hybrid (PR #2). The
+mainline-mode build the identity harness links is v4.2.0-equivalent
+(36/36 + real spots green post-merge). This fork's intake is PACKED u16
+only (EbSvtIOFormat unpacked-plane fields removed); enc_settings.c:996
+defaults bit_depth 10 under SVT_HDR_MODE.
+
+## Input/config
+- bd 8 or 10 only; 4:2:0 only; profile MAIN. Seq header: exactly ONE new
+  bit at bd10 (high_bitdepth, entropy_coding.c:2676-2684 write_bitdepth);
+  twelve_bit/profile-2 unreachable.
+- Ingestion splits u16 -> 8-bit MSB plane (>>2 TRUNCATION, no rounding)
+  + 2-bit plane packed 4/byte (svt_unpack_and_2bcompress). The split is
+  MEMORY LAYOUT ONLY for the input picture; input_frame16bit and every
+  other 10-bit buffer (MD cand, EncDec recon, refs, DLF/CDEF/LR) is
+  PLAIN PACKED u16. PORT: use plain u16 planes; never implement 8+2.
+
+## hbd_md (the switch) — enc_mode_config.c:2476-2483 (allintra)
+- enable_hbd_mode_decision = bd>8 ? DEFAULT : 0 (Globals/enc_handle.c
+  ~:4518); --hbd-mds NEVER read on the allintra path.
+- MR-and-faster tiers: hbd_md = 1 (true 10-bit MD). M0..M13: hbd_md = 2
+  (DUAL). DUAL == true 10-bit EVERYWHERE except 3 inter-compensation
+  helpers (IntraBC downgrades to 8-bit search under DUAL) — all other
+  consumers test truthiness/>8BIT.
+- PD_PASS_0 is UNCONDITIONALLY 8-bit at every preset (enc_dec_process.c
+  :2965 saves hbd_md, forces 0, restores before PD1). PORT WIN: pd0.rs
+  stays u8, reading the MSB-truncated plane.
+- hbd_md=0 pockets read enhanced_pic = MSB-TRUNCATED plane with 8-bit
+  lambda/variance tables. RD decisions are PRECISION-SENSITIVE: the port
+  must replicate the exact hbd_md per preset/pass/block, not just
+  produce correct pixels.
+- bypass_encdec (allintra: 0 at <=M3, 1 at M4+): at M4+ MD recon IS the
+  coded recon, so the winner is re-predicted at 10-bit + converted back
+  (product_coding_loop.c:9149-9174 / :9640-9699 save/restore dance).
+  At <=M3 the separate EncDec stage always runs at TRUE depth
+  (is_16bit_pipeline), independent of hbd_md.
+
+## Pixel pipeline
+- Highbd intra predictors (intra_prediction.c u16 family incl. dr_z1/z2,
+  filter-intra, CfL 420 hbd subsample). Residual i16 either way.
+- TX: coeffs i32 already; recon add clip = clip_pixel_highbd(bd); range
+  check (1<<(7+bd))-1+(914<<(bd-7)); tx_scale UNCHANGED (size-keyed).
+- Quant: dc/ac_qlookup_10_QTX tables; qzbin factor thresholds x4 ladder.
+  qindex domain 0..255 at every bd.
+- LAMBDA (the (bd-8)*2 site): full_lambda[10bit] *= 16, fast *= 4
+  (md_process.c:724-765 :753-754); rd_mult ROUND_POWER_OF_TWO(...,4) at
+  bd10 (rc_process.c:365-393); selection = hbd_md truthy.
+- SAD/variance: vf_hbd_10 function-pointer family (av1me.c:24-33).
+
+## Loop filters — keyed on is_16bit_pipeline (TRUE depth), NEVER hbd_md
+- DLF: highbd kernels; LEVEL SEARCH compares vs the TRUE 10-bit source
+  (input_frame16bit), even when MD searched at 8-bit.
+- CDEF: dir search u16-native already; filter dst8/dst16 dual out.
+- LR: u16 working buffers. Recon/ref buffers = plain u16 (2 B/px).
+
+## Entropy — ZERO bit-depth references in coeff coding + CDF init
+(cabac_context_model.c has none; qindex 0..255). ONE leak: palette color
+literals are written with bit_depth bits (entropy_coding.c:4256-4370) —
+our landed palette writer/cost hardcodes 8; parameterize when bd10
+meets sc content.
+
+## Scope for svtav1-rs (CORRECTED — the agent sampled /root/aom-rs)
+svtav1-rs is u8 end-to-end in svtav1-dsp (intra pred, tx/quant/recon
+kernels), svtav1-encoder (funnel pred/recon Vec<u8>, pipeline &[u8]
+planes, deblock/cdef/restoration u8), harness. svtav1-entropy needs no
+change except palette literal width. Real work:
+1. Config/harness intake: u16 planes + bit_depth knob; identity_run bd10
+   axis (y4m/raw 10-bit LE) + capture_c_trace bd10 flag.
+2. svtav1-dsp: u16 (or generic) intra pred + recon-add clip(bd) + hbd
+   SATD/SAD/variance/SSE; quant already table-driven — add the _10
+   tables + qzbin ladder.
+3. Funnel/pipeline: thread bit_depth as a no-op-for-bd8 param first
+   (chunk 1, byte-identical gate), then the u16 plane plumbing; lambda
+   *16/*4 selection; PD0 stays u8 on the truncated plane (build it at
+   ingestion).
+4. Filters: u16 DLF/CDEF/LR variants; DLF level search vs true source.
+5. The M4+ bypass_encdec re-predict dance; <=M3 EncDec walk at true
+   depth (the port's walk = the EncDec analogue).
+MILESTONE per the map: our targets are M0+ (DUAL == true 10-bit for
+intra) — smallest cell = uniform 64x64 bd10 at a <=M3 preset (bypass 0,
+no dance), single fixed partition; needs chunks 1-4 only.
