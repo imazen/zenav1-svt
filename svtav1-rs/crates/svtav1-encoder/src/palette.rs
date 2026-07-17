@@ -630,3 +630,210 @@ mod tests {
         assert_eq!(v2, (expect_state2 / 65536) % 32768);
     }
 }
+
+// ============================================================================
+// Chunk 3: per-block palette search (search_palette_luma + palette_rd_y,
+// palette.c:296-530) — bd8 path only (hbd_md == 0 on this port's target;
+// see docs/palette-port-map.md).
+// ============================================================================
+
+/// Per-level palette search knobs — C `set_palette_level`
+/// (enc_mode_config.c:1841-1915). Allintra-reachable levels are
+/// {0, 2, 3, 4, 5, 7} (sig_deriv_multi_processes_allintra :2374-2390);
+/// `centroid_refinement` is 0 for all of them, so
+/// `cache_based_centroid_refinement` is NOT ported (dead on this path).
+/// 0xFF = arm disabled, mirroring C's `(uint8_t)~0` sentinel.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PaletteCtrls {
+    pub enabled: bool,
+    pub dominant_color_step: u8,
+    pub kmean_color_step: u8,
+    pub k_means_max_itr: u32,
+}
+
+impl PaletteCtrls {
+    /// C `set_palette_level` rows for the allintra-reachable levels.
+    pub fn for_level(level: u8) -> Self {
+        match level {
+            0 => PaletteCtrls::default(),
+            2 => PaletteCtrls { enabled: true, dominant_color_step: 2, kmean_color_step: 1, k_means_max_itr: 2 },
+            3 => PaletteCtrls { enabled: true, dominant_color_step: 0xFF, kmean_color_step: 1, k_means_max_itr: 2 },
+            4 => PaletteCtrls { enabled: true, dominant_color_step: 0xFF, kmean_color_step: 2, k_means_max_itr: 2 },
+            5 => PaletteCtrls { enabled: true, dominant_color_step: 0xFF, kmean_color_step: 3, k_means_max_itr: 2 },
+            7 => PaletteCtrls { enabled: true, dominant_color_step: 0xFF, kmean_color_step: 5, k_means_max_itr: 1 },
+            // PORT-NOTE(unverified): levels 1/6/8/9 exist in C but are
+            // unreachable from the allintra derivation; transcribe if a
+            // non-allintra mode ever needs them.
+            _ => PaletteCtrls::default(),
+        }
+    }
+}
+
+/// One produced palette candidate: the deduped ascending colors and the
+/// full nominal-size (block_w x block_h) color index map.
+#[derive(Clone, Debug)]
+pub struct PaletteCand {
+    pub colors: alloc::vec::Vec<u16>,
+    pub idx_map: alloc::vec::Vec<u8>,
+}
+
+/// C `palette_rd_y` (palette.c:296-325) minus the ctx plumbing: refine +
+/// dedup the centroids, reject k < 2, then recompute the AUTHORITATIVE map
+/// against the final sorted list and extend it to nominal dims. Returns
+/// None on rejection (C leaves palette_size_array[0] = 0 and the caller
+/// reuses the slot).
+#[allow(clippy::too_many_arguments)]
+fn palette_rd_y(
+    data: &[i32],
+    centroids: &mut [i32],
+    n: usize,
+    opt_colors: bool,
+    color_cache: &[u16],
+    qp_index: u8,
+    rows: usize,
+    cols: usize,
+    block_w: usize,
+    block_h: usize,
+) -> Option<PaletteCand> {
+    if opt_colors {
+        optimize_palette_colors(color_cache, color_cache.len(), centroids, n, qp_index, 8);
+    }
+    let k = remove_duplicates(centroids, n);
+    if k < PALETTE_MIN_SIZE {
+        return None;
+    }
+    // bd8: clip_pixel (0..=255).
+    let colors: alloc::vec::Vec<u16> = centroids[..k]
+        .iter()
+        .map(|&c| c.clamp(0, 255) as u16)
+        .collect();
+    let mut idx_map = alloc::vec![0u8; block_w * block_h];
+    calc_indices_dim1(data, &centroids[..k], &mut idx_map, rows * cols, k);
+    extend_palette_color_map(&mut idx_map, cols, rows, block_w, block_h);
+    Some(PaletteCand { colors, idx_map })
+}
+
+/// C `search_palette_luma` (palette.c:388-530), bd8. `src` is the SOURCE
+/// luma plane (C enhanced_pic); `(abs_x, abs_y)` the block origin;
+/// `(rows, cols)` the within-bounds dims and `(block_w, block_h)` the
+/// nominal dims (C svt_aom_get_block_dimensions — equal except at
+/// non-aligned right/bottom picture edges). `cache` is the neighbor color
+/// cache (svt_get_palette_cache_y — chunk 6 wires the real neighbor
+/// state; empty slice = no neighbors, bit-exact for isolated blocks).
+///
+/// Appends up to 14 candidates; rejected sizes reuse their slot exactly
+/// like C's `(*tot_palette_cands)++` gating.
+///
+/// PORT-NOTE(unverified): verify end-to-end via EPICA p6/p7 identity
+/// cells once RD integration (chunk 4) lands; the dominant-color argmax
+/// tie (first-max => LOWEST pixel value wins) and the integer seed
+/// expression `lb + (2i+1)*(ub-lb)/n/2` (divide by n THEN by 2) are the
+/// two spots a careless transcription would break.
+#[allow(clippy::too_many_arguments)]
+pub fn search_palette_luma(
+    src: &[u8],
+    stride: usize,
+    abs_x: usize,
+    abs_y: usize,
+    rows: usize,
+    cols: usize,
+    block_w: usize,
+    block_h: usize,
+    ctrls: &PaletteCtrls,
+    cache: &[u16],
+    qp_index: u8,
+) -> alloc::vec::Vec<PaletteCand> {
+    let mut out = alloc::vec::Vec::new();
+    if !ctrls.enabled {
+        return out;
+    }
+    let mut count_buf = [0i32; 256];
+    let origin = abs_y * stride + abs_x;
+    let colors = count_colors(&src[origin..], stride, rows, cols, &mut count_buf) as usize;
+    if colors <= 1 || colors > 64 {
+        return out;
+    }
+    let max_n = colors.min(svtav1_types::prediction::PALETTE_MAX_SIZE);
+    let min_n = PALETTE_MIN_SIZE;
+
+    // data[] + lb/ub (palette.c:421-439). C seeds lb=ub=src[0] BEFORE the
+    // loop; the loop then min/maxes every pixel including [0] — plain
+    // min/max over the block.
+    let mut data = alloc::vec![0i32; rows * cols];
+    let mut lb = i32::from(src[origin]);
+    let mut ub = lb;
+    for r in 0..rows {
+        for c in 0..cols {
+            let v = i32::from(src[origin + r * stride + c]);
+            data[r * cols + c] = v;
+            lb = lb.min(v);
+            ub = ub.max(v);
+        }
+    }
+
+    let mut centroids = [0i32; 8];
+
+    // A) Dominant-color candidates (palette.c:440-478). The argmax scan is
+    // strict `>` ascending over j => on tied counts the LOWEST pixel value
+    // wins; each round zeroes the picked bin. NOTE: consumes count_buf.
+    if ctrls.dominant_color_step != 0xFF {
+        let mut top_colors = [0i32; 8];
+        for i in 0..max_n {
+            let mut max_count = 0i32;
+            for (j, &cnt) in count_buf.iter().enumerate() {
+                if cnt > max_count {
+                    max_count = cnt;
+                    top_colors[i] = j as i32;
+                }
+            }
+            count_buf[top_colors[i] as usize] = 0;
+        }
+        let mut n = max_n as i32;
+        while n >= min_n as i32 {
+            centroids[..n as usize].copy_from_slice(&top_colors[..n as usize]);
+            if let Some(cand) = palette_rd_y(
+                &data, &mut centroids[..n as usize], n as usize,
+                false, &[], qp_index, rows, cols, block_w, block_h,
+            ) {
+                out.push(cand);
+            }
+            n -= i32::from(ctrls.dominant_color_step);
+        }
+    }
+
+    // B) K-means candidates (palette.c:480-529).
+    if ctrls.kmean_color_step != 0xFF {
+        let mut indices = alloc::vec![0u8; rows * cols];
+        let mut n = max_n as i32;
+        while n >= min_n as i32 {
+            let nn = n as usize;
+            if colors == PALETTE_MIN_SIZE {
+                centroids[0] = lb;
+                centroids[1] = ub;
+            } else {
+                for i in 0..nn {
+                    // C: lb + (2*i+1)*(ub-lb)/n/2 — sequential integer
+                    // divisions, NOT /(2n).
+                    centroids[i] = lb + (2 * i as i32 + 1) * (ub - lb) / n / 2;
+                }
+                k_means_dim1(
+                    &data,
+                    &mut centroids,
+                    &mut indices,
+                    rows * cols,
+                    nn,
+                    ctrls.k_means_max_itr,
+                );
+            }
+            // centroid_refinement: 0 at every allintra level — not ported.
+            if let Some(cand) = palette_rd_y(
+                &data, &mut centroids[..nn], nn,
+                true, cache, qp_index, rows, cols, block_w, block_h,
+            ) {
+                out.push(cand);
+            }
+            n -= i32::from(ctrls.kmean_color_step);
+        }
+    }
+    out
+}
