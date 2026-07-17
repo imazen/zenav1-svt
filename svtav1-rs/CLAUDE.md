@@ -464,20 +464,40 @@ shared file, THEIR fork arms win, OUR mainline arms win.
    union+sort for MDS3; single-class path byte-identical. RESULT: mi(20,6)
    now codes DC like C, the first EPICA divergence advanced mi(20,6)→
    **mi(22,6)**, bytes **14409→13189** (C 13097, 0.7% off), matrix 54/54,
-   suite green. **NEW first divergence mi(22,6):** both code palette but C
-   picks n=8 colors, port n=5. NOT a config diff (C level 5 == port
-   for_level(5): kmean_step 3, itr 2, no centroid refine) and palette is
-   bit-exact (agent) — it's an MDS3 residual near-tie: port n=8 full
-   26148063 (dist 37696, low coeff 738) vs n=5 25963876 (dist 41552, coeff
-   22595); n=8's higher map/color rate just outweighs its lower dist, so
-   the port picks n=5 where C's n=8 wins. NEXT DRILL: sibling-C dump of
-   the n=8-vs-n=5 MDS3 dist+coeff at mi(22,6) — is the port's palette
-   residual dist/coeff off, or is it a true <0.7% RD near-tie? SEPARATE
-   minor bug (OPPOSITE direction, still open, apply WITH a broader palette
-   -RD pass since it makes palette cheaper): `leaf_funnel.rs` adds
-   `fi_flag` (1053) to palette candidates but C's
-   `svt_aom_filter_intra_allowed` returns 0 when palette_size>0 (does not
-   change n8-vs-n5 — both drop 1053 equally). The MDS0 + MDS1/MDS3
+   suite green. The fi_flag over-price is also FIXED (4543a3651). **NEW
+   first divergence mi(22,6) — ROOT FOUND (agent, real-C OBU-verified):
+   the neighbor palette COLOR CACHE is empty in the port's palette
+   search.** Not a near-tie: C's n=8 (25.28M) beats n=5 (28.60M) by 3.32M
+   and n=5 never even reaches MDS3 in C. The block has `n_cache=4` (above
+   +left neighbors carry palettes) where mi(20,6) had n_cache=0 (why it
+   was bit-exact). C's k-means branch (palette.c:513) runs
+   `palette_rd_y(opt_colors=TRUE, color_cache, n_cache)` →
+   `optimize_palette_colors` snaps centroids toward the neighbor cache;
+   the port passes an EMPTY cache, so its n=8/n=5 COLORS diverge (measured:
+   port n=8 total_rate ~115556 vs C 110356; port n=5 fits the block better
+   than C's, coeff 22595 vs 38458 — different palettes both sizes). coeff
+   738==738 and the map-cost machinery are bit-exact, so it is NOT a
+   residual or map-cost bug. THE FIX (a.k.a. #71 chunk 3/4 injection, most
+   infra ALREADY EXISTS): (1) `pipeline::palette_cache()` (the ported
+   `svt_get_palette_cache_y`, pipeline.rs:1537) + `record_palette`
+   (:2050) + `above/left_palette_colors` fields + `index_color_cache` are
+   all present; (2) BUT the port stamps `record_palette` only in the PACK
+   walk (:2935), so during MD the neighbor palette state is empty and the
+   leaf search sees no cache — MUST stamp each block's palette winner into
+   `fx.ectx` DURING MD (coding order, like C's per-block mbmi update) so
+   the next block's search sees it; (3) call `palette_cache(&fx.ectx,
+   abs_x, abs_y)` in `leaf_funnel.rs` (replace the `&[]` at the
+   `search_palette_luma` call ~line 2822) AND make the color-cost
+   cache-aware (`svt_av1_palette_color_cost_y`, palette.c:143:
+   `n_cache + delta_encode_cost(index_color_cache(cache,colors).new)` <<9,
+   replacing the plain `delta_encode_bits`); (4) the palette-mode neighbor
+   ctx (`palette_y_mode` ctx, currently hardcoded 0) likely needs the same
+   MD-time stamp. All parts are byte-identical at n_cache=0 (mi(20,6)
+   preserved) and correct at n_cache>0. This closes mi(22,6) and the whole
+   downstream palette cascade (port 540 vs C 178 blocks). NOTE the stale
+   PORT-NOTE at pipeline.rs:1531 ("no BlockDecision carries a palette
+   winner yet") — palette injection landed this session; update it. The
+   MDS0 + MDS1/MDS3
    per-class dev-prunes are correct+necessary. Gate: EPICA p6/p7 q32
    byte-match (13097B / 14736B).
 2. **#71 IBC wiring**: wire `intrabc.rs` into the funnel injection
