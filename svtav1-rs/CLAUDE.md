@@ -384,6 +384,20 @@ Release-mode benchmarks (x86_64 AVX2):
 - fwd_txfm 8x8: ~215 Mpix/s
 These numbers are MEASURED, not estimated.
 
+## PRODUCTION PRIORITIES (user directive 2026-07-17 — BINDING ORDER)
+
+1. **Ship-blocking correctness + coverage**: 10-BIT SUPPORT and ARBITRARY
+   DIMENSIONS are required for production. In-flight structural verticals
+   (palette/sc, tiles, SB128) continue — they are production surface.
+2. **Long-term code quality & human maintainability**: clear module
+   boundaries, documented invariants, honest PORT-NOTE index, rustdoc on
+   public surfaces, no dead code left behind, no mega-file growth
+   (leaf_funnel.rs is slated for a module split AFTER the EPICA
+   calibration lands — do not thrash hot files mid-drill).
+3. **Lossless (q0)**: LESS important — do not prioritize over the above.
+4. **Performance (#93)**: LAST. Algorithmic/allocation work before SIMD
+   when it does happen.
+
 ## BULK-PORT MODE (user directive 2026-07-16)
 
 Port ALL remaining C machinery with detailed, careful source-to-source
