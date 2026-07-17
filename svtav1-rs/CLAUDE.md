@@ -472,6 +472,59 @@ after the code is in. Rules:
     look given this project's zero-conformance-regression mandate.
     `hbd.rs`'s own `predict_paeth_hbd` is translated directly from the
     real C order and does not reproduce the bug.
+  - `crates/svtav1-encoder/src/intrabc.rs` (IntraBC/DV encoder vertical,
+    allintra KEY screen-content path): `IbcCtrls::for_level` (full
+    `set_intrabc_level` table, levels 0-7) + QP-mesh-scaling; DV validity
+    (`is_dv_valid`, spec 5.11.35 — tile containment, sub-8x8 chroma
+    margin, 256px wavefront delay, SB64/128 already-coded + SW-wavefront
+    constraints) + `is_chroma_reference`; ref-DV composition
+    (`resolve_dv_ref`/`find_ref_dv`); the FULL diamond+exhaustive-mesh
+    pixel search stack (`init_search_sites`/`diamond_search_sad`/
+    `refining_search_sad`/`exhaustive_mesh_search`/`full_pixel_diamond`/
+    `intrabc_full_pixel_exhaustive`/`full_pixel_search`, all parameterized
+    over caller-supplied `pic`/`stride`/`block_origin` — absolute-picture-
+    coordinate addressing, not raw-pointer relative offsets, see the
+    module's §4 header note); the hash-bucket SELECTION algorithm
+    (`hash_search_best_in_bucket`, hash TABLE/CRC construction NOT
+    translated — documented-only, a frame-wide precompute out of scope
+    for a per-block pure-fn skeleton); DV rate-cost tables
+    (`build_nmv_cost_table`/`mv_table_cost`/`mv_err_cost{,_light}`/
+    `mv_bit_cost{,_light}`, reusing `svtav1_entropy::mv_coding`'s already-
+    verified `NmvContext` — C seeds `ndvc` from the SAME `default_nmv_
+    context` table as `nmvc`, so no separate DV-context transcription was
+    needed); injection gating (`do_intra_bc_gate`/`eval_intrabc_after_
+    palette`/`parent_gate_allows_intrabc`) + `IbcCandidate` builder;
+    `write_intrabc_info` (thin wrapper over `svtav1_entropy::mv_coding::
+    encode_mv_diff` with `MvSubpelPrecision::None`) + `INTRABC_DEFAULT_
+    CDF`. RD integration (fast/full cost assembly, the recon-domain block-
+    copy compensation path, tx-path reuse) is DOCUMENTED ONLY (prose
+    section at the file's end, C file:line cited, not transcribed — out
+    of scope per the task that produced this file). Compile-checked clean
+    (0 warnings after one fix) via the temporary-`pub mod intrabc;` dance;
+    lib.rs left untouched. 8 `PORT-NOTE(unverified)` markers: (1)
+    `IbcCtrls::for_level`'s levels-6/7 unassigned-mesh-fields ambiguity
+    (pooled-`PictureParentControlSet`-reuse question, §1); (2) `no_std`
+    `exp()` not wired for `qp_based_th_scaling_factors` (§1); (3)
+    `MvComponentCost::cost`'s clamp is 1 ULP narrower than C's literal
+    `CLIP3(MV_LOW,MV_UPP,..)` bound — self-consistently safe, unverified
+    that the 1-ULP gap is truly unreachable (§4); (4) `mvsad_err_cost`
+    and 3 sibling `static`-in-C functions have no exported symbol,
+    weakest evidence tier (§4); (5) the `window()` helper's debug_assert
+    that every search position resolves to a non-negative absolute
+    picture coordinate — relies on `direction_mv_limits`/`frame_mv_
+    limits` being correctly tile/frame-bounded, unverified end-to-end
+    (§4); (6) `exhaustive_mesh_search`'s tail-loop off-by-one, reproduced
+    bug-for-bug from C (`end_col - c` not `+1`), unverified as truly
+    unreachable on the real `mesh_patterns` grids (§4); (7)-(8) `default_
+    cdfs.rs` migration note for `INTRABC_DEFAULT_CDF` + a `FrameContext`
+    `intrabc_cdf`/`ndvc` field pair (§7). Upgrade path for the `static`-
+    only functions: same `ref_shims.c` pattern as `palette.rs`'s six.
+    Wiring TODO (documented in the module's top doc comment): add `pub
+    mod intrabc;`, thread candidate injection into `mode_decision.rs`
+    (mirroring `palette.rs`'s eventual wiring), flip `sc_detect.rs`'s
+    hardcoded `allow_intrabc = false` to the real derivation, feed
+    `write_intrabc_info` into the PACK block-mode-info writer ahead of
+    the y-mode symbol.
 
 
 - leaf_funnel.rs: fork complex-hvs MDS0 SSD fast cost (1 marker) — needs a
