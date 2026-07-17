@@ -174,7 +174,8 @@ Mainline mode → stock v4.2.0-final; HdrFork mode → the C hybrid's MODE1 lib
 | kf_tf_strength / TF formula | OPEN — needs TF (all-intra immune; wave2 owns TF parity) | |
 | **alt_lambda_factors (fork default ON)** | **DONE + ACTIVE** — KF frame-type lambda factor 140 (rd_frame_type_factor_alt) vs mainline 150, plus the per-SB delta-q qdiff stats factor {<=-8:90,<0:115,<=8:135,>8:150} (rc_process.c:437) that activates once delta_q_present (kf_full_lambda_8bit_ex, pd0.rs) | `hdr_fork_e2e.rs alt_lambda_factors_is_live`; decode gate 12/12 |
 | **complex_hvs (fork knob, default 0)** | **DONE + ACTIVE** — mds0_level 3: MDS0 fast-loop luma dist switches Hadamard SATD(<<4) -> whole-block spatial SSD unshifted (fork set_mds0_controls case 3 + fast_loop_core SSD-precedence arm; pruning_method_th stays 0 = the level the funnel already models). PORT-NOTE(unverified) carried: C-side dump pending the hybrid growing case 3 (it assert(0)s today) | `hdr_fork_e2e.rs complex_hvs_is_live`; decode gate 6/6 |
-| alt_ssim_tuning, cdef_scaling, tune 6 policy | OPEN — inert at fork defaults; alt_ssim_tuning needs the tune-SSIM lambda machinery the port lacks | |
+| **cdef_scaling (fork knob, default 15 = neutral)** | **DONE + ACTIVE** — finish_cdef_search post-remap strength rescale (enc_cdef.c:1444: pri/sec split, sec 3->4 pre-map, (v*sc+7)/15, sec 3->2 post-map, clamps), search-path only per C | `hdr_fork_e2e.rs cdef_scaling_is_live`; scaled-stream aomdec gate 2/2 (signal==apply consistency) |
+| alt_ssim_tuning, tune 6 policy | OPEN — inert at fork defaults; alt_ssim_tuning needs the tune-SSIM lambda machinery the port lacks | |
 
 Recommended landing order for e2e HdrFork identity on the all-intra path:
 chroma-qindex (FH-witnessable now) → ac_bias facade → noise-norm →

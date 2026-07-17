@@ -158,6 +158,35 @@ pub fn pick_cdef_params_key_frame(qindex: u8) -> CdefFrameParams {
 /// `use_qp_strength = false` (search); level 10 sets it true
 /// (enc_mode_config.c:1688-1692). So in the u8 preset domain: search for
 /// presets 0..=6, qp fast path for 7+ (MR = -1 is unreachable).
+/// [SVT_HDR_MODE] fork `--cdef-scaling` (1..15, default 15 = neutral):
+/// finish_cdef_search's post-remap strength rescale (enc_cdef.c:1444) —
+/// pri/sec split, the sec 3->4 pre-map (sec strengths live in {0,1,2,4}),
+/// `(v * scaling + 7) / 15`, the sec 3->2 post-map, clamps to
+/// CDEF_PRI_STRENGTHS-1 / CDEF_SEC_STRENGTHS-1. C applies this ONLY on
+/// the RDO-search path (the qp fast path never reaches
+/// finish_cdef_search), so callers scale only search outcomes.
+pub fn scale_strengths(pick: &mut CdefPick, scaling: u8) {
+    if scaling == 15 {
+        return;
+    }
+    let sc = u32::from(scaling);
+    let scale1 = |packed: u8| -> u8 {
+        let mut pri = u32::from(packed) / 4;
+        let mut sec = u32::from(packed) % 4;
+        sec += u32::from(sec == 3); // {0,1,2,4} domain
+        pri = (pri * sc + 7) / 15;
+        sec = (sec * sc + 7) / 15;
+        sec -= u32::from(sec == 3); // back to the 2-bit field domain
+        pri = pri.min(15);
+        sec = sec.min(3);
+        (pri * 4 + sec) as u8
+    };
+    for (y, uv) in pick.strengths.iter_mut() {
+        *y = scale1(*y);
+        *uv = scale1(*uv);
+    }
+}
+
 pub fn allintra_preset_uses_cdef_search(preset: u8) -> bool {
     preset <= 6
 }

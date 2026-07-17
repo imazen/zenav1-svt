@@ -206,3 +206,24 @@ fn complex_hvs_is_live_in_fork_mode() {
     }
     assert!(flipped > 0, "complex_hvs is inert on all 3 cells");
 }
+
+#[test]
+fn cdef_scaling_is_live_in_fork_mode() {
+    // Fork knob (default 15 = neutral): rescales the RDO-searched CDEF
+    // strengths (finish_cdef_search, enc_cdef.c:1444). Needs a preset
+    // that runs the CDEF search with live filter blocks — preset 2 with
+    // the textured half qualifies; low scaling weakens the strengths.
+    let mut flipped = 0;
+    for (preset, qp) in [(2u8, 20u8), (2, 40), (2, 55)] {
+        let mut on = HdrForkConfig::hdr_fork();
+        on.cdef_scaling = 4;
+        let off = HdrForkConfig::hdr_fork();
+        assert_eq!(off.cdef_scaling, 15, "fork default must stay neutral");
+        let a = encode_with(Some(on), qp, preset);
+        let b = encode_with(Some(off), qp, preset);
+        if a != b {
+            flipped += 1;
+        }
+    }
+    assert!(flipped > 0, "cdef_scaling is inert on all 3 cells");
+}

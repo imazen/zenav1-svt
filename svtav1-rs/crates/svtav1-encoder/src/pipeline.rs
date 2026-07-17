@@ -965,7 +965,14 @@ impl EncodePipeline {
                         &deblock_geom,
                         base_qindex,
                     ) {
-                        crate::cdef::CdefSearchPick::Picked(p) => p,
+                        crate::cdef::CdefSearchPick::Picked(mut p) => {
+                            // [SVT_HDR_MODE] fork cdef-scaling: search-path
+                            // only (finish_cdef_search, enc_cdef.c:1444).
+                            if self.hdr.is_fork() {
+                                crate::cdef::scale_strengths(&mut p, self.hdr.cdef_scaling);
+                            }
+                            p
+                        }
                         crate::cdef::CdefSearchPick::AllSkip => crate::cdef::CdefPick::single(
                             crate::cdef::pick_cdef_params_all_skip_search(base_qindex),
                         ),
