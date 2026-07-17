@@ -2844,20 +2844,31 @@ pub(crate) fn evaluate_leaf(
             // for every DC candidate) + the palette slice (rd_cost.c:579-605
             // use_palette=1 arm): ymode YES + size + (0,0) uniform + colors
             // + map tokens.
-            let mut flr = rates.kf_y[above_ctx][left_ctx][0] as u64;
-            if fi_elig {
-                flr += rates.fi_flag[bsize_idx][0] as u64;
-            }
-            flr += rates.palette_y_yes[bctx] as u64;
-            flr += rates.palette_ysize[bctx][n - 2] as u64;
-            flr += uniform_cost(n, pc.idx_map[0]);
+            let r_mode = rates.kf_y[above_ctx][left_ctx][0] as u64;
+            let r_fi = if fi_elig { rates.fi_flag[bsize_idx][0] as u64 } else { 0 };
+            let r_yes = rates.palette_y_yes[bctx] as u64;
+            let r_size = rates.palette_ysize[bctx][n - 2] as u64;
+            let r_uniform = uniform_cost(n, pc.idx_map[0]);
             // Colors: empty cache -> 0 flag bits, all colors delta-coded.
-            flr += (crate::palette::delta_encode_bits(&pc.colors, 8, 1) as u64) << 9;
+            let r_colors = (crate::palette::delta_encode_bits(&pc.colors, 8, 1) as u64) << 9;
             let mut map_bits = 0u64;
             crate::palette::color_map_wavefront(&pc.idx_map, w, h, w, n, |_i, _j, ctx, idx| {
                 map_bits += rates.palette_ycolor[n - 2][ctx][idx as usize] as u64;
             });
-            flr += map_bits;
+            let flr = r_mode + r_fi + r_yes + r_size + r_uniform + r_colors + map_bits;
+            #[cfg(feature = "std")]
+            if std::env::var_os("SVTAV1_PALBRK").is_some()
+                && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
+            {
+                eprintln!(
+                    "NSQDBG PALBRK mi=({},{}) n={} mode={} fi={} yes={} size={} uniform={} colors={} map={} (63tok? map/512={})",
+                    abs_y / 4, abs_x / 4, n, r_mode, r_fi, r_yes, r_size, r_uniform, r_colors, map_bits, map_bits / 512,
+                );
+                eprintln!(
+                    "NSQDBG PALDATA mi=({},{}) n={} colors={:?} idxmap={:?}",
+                    abs_y / 4, abs_x / 4, n, pc.colors, pc.idx_map,
+                );
+            }
             // Chroma: DC (palette-uv unsupported) with the y-palette-ON uv
             // flag row. C prices palette_uv_mode_fac_bits[1][0] here
             // (rd_cost.c:514-521 use_palette_y=1).
