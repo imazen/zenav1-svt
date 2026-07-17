@@ -1263,6 +1263,87 @@ impl EncodePipeline {
 ///
 /// When the `std` feature is enabled and there are multiple tile rows,
 /// uses `std::thread::scope` for parallel encoding. Otherwise sequential.
+/// C `svt_get_palette_cache_y` (palette.c:164-210): merge the above/left
+/// neighbors' luma palettes into one sorted, deduped color cache for the
+/// palette-color writer/cost fn. Above is DROPPED when `block_y` is at an
+/// SB (64px) row top (C: `row % (1 << MIN_SB_SIZE_LOG2)` via
+/// `-xd->mb_to_top_edge`, `MIN_SB_SIZE_LOG2 == 6`) — a rule specific to
+/// this cache, NOT to [`EntropyCtx::palette_neighbor_ctx`]'s flag context.
+/// Ties in the merge advance both cursors, keeping the ABOVE value (C's
+/// `else` branch runs first and additionally drains `left` on equality).
+// PORT-NOTE(unverified): no `BlockDecision` carries a palette winner yet
+// (#71 chunk 3/4 injection), so `above_palette`/`left_palette` never hold
+// a nonzero size and this fn's merge loop is only exercised on the trivial
+// empty-cache path (`above_n == 0 && left_n == 0` early return) by the
+// current identity/real-image gates. Verify: an EPICA/identity cell with
+// adjacent palette-winning blocks once injection lands.
+pub(crate) fn palette_cache(ectx: &EntropyCtx, block_x: usize, block_y: usize) -> alloc::vec::Vec<u16> {
+    let x4 = block_x / 4;
+    let y4 = block_y / 4;
+    let mut above_n = if block_y % 64 != 0 && x4 < ectx.above_palette.len() {
+        ectx.above_palette[x4] as usize
+    } else {
+        0
+    };
+    let mut left_n = if y4 < ectx.left_palette.len() {
+        ectx.left_palette[y4] as usize
+    } else {
+        0
+    };
+    if above_n == 0 && left_n == 0 {
+        return alloc::vec::Vec::new();
+    }
+    let above_colors: &[u16] = if above_n > 0 {
+        &ectx.above_palette_colors[x4][..above_n]
+    } else {
+        &[]
+    };
+    let left_colors: &[u16] = if left_n > 0 {
+        &ectx.left_palette_colors[y4][..left_n]
+    } else {
+        &[]
+    };
+    let mut cache = alloc::vec::Vec::with_capacity(above_n + left_n);
+    fn add(cache: &mut alloc::vec::Vec<u16>, v: u16) {
+        // palette_add_to_cache (palette.c:154-161): skip a value equal to
+        // the LAST entry already in the (ascending) cache.
+        if cache.last() == Some(&v) {
+            return;
+        }
+        cache.push(v);
+    }
+    let (mut ai, mut li) = (0usize, 0usize);
+    while above_n > 0 && left_n > 0 {
+        let v_above = above_colors[ai];
+        let v_left = left_colors[li];
+        if v_left < v_above {
+            add(&mut cache, v_left);
+            li += 1;
+            left_n -= 1;
+        } else {
+            add(&mut cache, v_above);
+            ai += 1;
+            above_n -= 1;
+            if v_left == v_above {
+                li += 1;
+                left_n -= 1;
+            }
+        }
+    }
+    while above_n > 0 {
+        add(&mut cache, above_colors[ai]);
+        ai += 1;
+        above_n -= 1;
+    }
+    while left_n > 0 {
+        add(&mut cache, left_colors[li]);
+        li += 1;
+        left_n -= 1;
+    }
+    debug_assert!(cache.len() <= 2 * svtav1_types::prediction::PALETTE_MAX_SIZE);
+    cache
+}
+
 #[allow(clippy::too_many_arguments)]
 /// Mode tracking for the encoder's entropy coding context.
 ///
@@ -1321,6 +1402,23 @@ pub(crate) struct EntropyCtx {
     /// Left TXFM context at 4x4 granularity: the HEIGHT in pixels of the
     /// last coded TX in each mi row.
     left_txfm: Vec<u8>,
+    /// Above row luma palette_size (4x4 granularity), 0 = no palette — C's
+    /// `above_mbmi->palette_mode_info.palette_size` read back by
+    /// `svt_aom_get_palette_mode_ctx` / `svt_get_palette_cache_y`. Full
+    /// frame width, like `above_mode` (NOT reset per SB row — the SB-row
+    /// drop rule for the color cache lives in [`palette_cache`], not here).
+    above_palette: Vec<u8>,
+    /// Left column luma palette_size (4x4 granularity), 0 = no palette.
+    left_palette: Vec<u8>,
+    /// Above row palette colors (4x4 granularity), aligned with
+    /// `above_palette`: the first `above_palette[i]` entries of
+    /// `above_palette_colors[i]` are that neighbor's ascending palette
+    /// (C `above_mbmi->palette_mode_info.palette_colors`); the rest are
+    /// stale/zero and MUST NOT be read.
+    above_palette_colors: Vec<[u16; svtav1_types::prediction::PALETTE_MAX_SIZE]>,
+    /// Left column palette colors (4x4 granularity), aligned with
+    /// `left_palette`.
+    left_palette_colors: Vec<[u16; svtav1_types::prediction::PALETTE_MAX_SIZE]>,
     /// The sequence header's `enable_filter_intra` bit (C
     /// `scs->seq_header.filter_intra_level`, read by the block walk at
     /// entropy_coding.c:5099-5100): when set, every eligible intra block
@@ -1431,6 +1529,16 @@ impl EntropyCtx {
             ],
             above_txfm: alloc::vec![0u8; width_4x4],
             left_txfm: alloc::vec![0u8; height_4x4],
+            above_palette: alloc::vec![0u8; width_4x4],
+            left_palette: alloc::vec![0u8; height_4x4],
+            above_palette_colors: alloc::vec![
+                [0u16; svtav1_types::prediction::PALETTE_MAX_SIZE];
+                width_4x4
+            ],
+            left_palette_colors: alloc::vec![
+                [0u16; svtav1_types::prediction::PALETTE_MAX_SIZE];
+                height_4x4
+            ],
             seq_filter_intra,
             allow_sct,
             delta_q_state: None,
@@ -1667,6 +1775,47 @@ impl EntropyCtx {
             self.left_uv_mode[i] = uv_mode;
             self.left_skip[i] = skip;
         }
+    }
+
+    /// Record a block's luma palette (C's `mbmi->palette_mode_info`, read
+    /// back by `svt_aom_get_palette_mode_ctx` / `svt_get_palette_cache_y`).
+    /// `colors` is `None` for a non-palette block (palette_size 0 — every
+    /// current leaf, until #71 chunk 3/4 injection wires a winning
+    /// candidate through `BlockDecision.palette`). Stamped over the
+    /// block's full mi span, exactly like [`Self::record_block`].
+    pub(crate) fn record_palette(&mut self, x: usize, y: usize, w: usize, h: usize, colors: Option<&[u16]>) {
+        let x4 = x / 4;
+        let y4 = y / 4;
+        let w4 = w / 4;
+        let h4 = h / 4;
+        let n = colors.map_or(0, <[u16]>::len) as u8;
+        debug_assert!((n as usize) <= svtav1_types::prediction::PALETTE_MAX_SIZE);
+        let mut buf = [0u16; svtav1_types::prediction::PALETTE_MAX_SIZE];
+        if let Some(c) = colors {
+            buf[..c.len()].copy_from_slice(c);
+        }
+        for i in x4..(x4 + w4).min(self.above_palette.len()) {
+            self.above_palette[i] = n;
+            self.above_palette_colors[i] = buf;
+        }
+        for i in y4..(y4 + h4).min(self.left_palette.len()) {
+            self.left_palette[i] = n;
+            self.left_palette_colors[i] = buf;
+        }
+    }
+
+    /// C `svt_aom_get_palette_mode_ctx` (entropy_coding.c:4240-4251): count
+    /// of above/left neighbor blocks (when available — frame-edge gated,
+    /// like every other above/left context lookup here) whose luma
+    /// `palette_size > 0`. NO SB-row drop (unlike [`palette_cache`], which
+    /// has C's `svt_get_palette_cache_y` above-row exception) — this reads
+    /// the immediate neighbor exactly like `above_mode_ctx`/`left_mode_ctx`.
+    pub(crate) fn palette_neighbor_ctx(&self, x: usize, y: usize) -> usize {
+        let x4 = x / 4;
+        let y4 = y / 4;
+        let above = y > 0 && x4 < self.above_palette.len() && self.above_palette[x4] > 0;
+        let left = x > 0 && y4 < self.left_palette.len() && self.left_palette[y4] > 0;
+        usize::from(above) + usize::from(left)
     }
 
     /// C `get_filt_type(xd, plane = 0)` (enc_intra_prediction.c:20): 1
@@ -2174,11 +2323,27 @@ fn encode_block_syntax(
     // Palette flags: C codes them between the chroma mode-info slice and
     // the filter_intra flag (write_palette_mode_info, gated at
     // entropy_coding.c:5026 on !use_intrabc && svt_aom_allow_palette).
-    // The port codes no palette blocks yet, so both flags take the
-    // symbol-0 arm and the neighbor ctx is 0 (no neighbor ever has
-    // palette_size > 0); the CDF updates + per-SB avg chain still run,
-    // which is what keeps the arithmetic stream aligned with C on
-    // screen-content frames.
+    // `decision.palette` is None on every current leaf (candidate
+    // injection — #71 chunks 3/4 — doesn't wire a winner into
+    // BlockDecision yet), so today this always takes the `None` arm:
+    // BIT-IDENTICAL to the former write_no_palette_flags (symbol-0 y/uv
+    // flags; the CDF updates + per-SB avg chain still run, keeping the
+    // arithmetic stream aligned with C on screen-content frames). Once a
+    // winner is wired, the `Some` arm below activates with no further
+    // pack changes needed.
+    //
+    // cache/found/out_of_cache live in this outer scope (not just the
+    // `if allow_palette` block) so the PALETTE MAP TOKENS write further
+    // below — coded after filter_intra, per C order — can reuse them.
+    let mut pal_found: alloc::vec::Vec<bool> = alloc::vec::Vec::new();
+    let mut pal_out: alloc::vec::Vec<u16> = alloc::vec::Vec::new();
+    let mut pal_n_out = 0usize;
+    if let Some((colors, _idx_map)) = decision.palette.as_ref() {
+        let pal_cache = palette_cache(ectx, block_x, block_y);
+        pal_found = alloc::vec![false; pal_cache.len()];
+        pal_out = alloc::vec![0u16; colors.len()];
+        pal_n_out = crate::palette::index_color_cache(&pal_cache, colors, &mut pal_found, &mut pal_out);
+    }
     if !decision.is_inter
         && svtav1_entropy::context::allow_palette(
             ectx.allow_sct,
@@ -2186,7 +2351,12 @@ fn encode_block_syntax(
             decision.height as usize,
         )
     {
-        svtav1_entropy::context::write_no_palette_flags(
+        let neighbor_ctx = ectx.palette_neighbor_ctx(block_x, block_y);
+        let palette_arg = decision
+            .palette
+            .as_ref()
+            .map(|(colors, _idx_map)| (colors.as_slice(), pal_found.as_slice(), &pal_out[..pal_n_out]));
+        svtav1_entropy::context::write_palette_mode_info(
             writer,
             frame_ctx,
             decision.width as usize,
@@ -2194,7 +2364,8 @@ fn encode_block_syntax(
             decision.intra_mode,
             decision.uv_mode,
             chroma_blocks.is_some(),
-            0,
+            neighbor_ctx,
+            palette_arg,
         );
     }
 
@@ -2230,6 +2401,23 @@ fn encode_block_syntax(
                 decision.filter_intra_mode,
             );
         }
+    }
+
+    // PALETTE MAP TOKENS — C's plane loop (entropy_coding.c:5064-5089):
+    // `for plane in 0..2 { if palette_size[plane] > 0 { tokenize +
+    // pack_map_tokens } }`, coded right after filter_intra and BEFORE
+    // code_tx_size. Chroma palette is dead (`palette_size[1]` hard-0 at
+    // injection — see docs/palette-port-map.md), so only plane 0 (Y) ever
+    // fires; gated directly on `decision.palette` rather than re-deriving
+    // `allow_palette` (a palette winner can only exist where it already
+    // held, matching C's implicit invariant `palette_size > 0 =>
+    // svt_aom_allow_palette` held at injection).
+    if let Some((colors, idx_map)) = decision.palette.as_ref() {
+        let w = decision.width as usize;
+        let h = decision.height as usize;
+        svtav1_entropy::context::write_palette_map_tokens(
+            writer, frame_ctx, idx_map, w, h, w, colors.len(),
+        );
     }
 
     // tx_size syntax — C av1_code_tx_size (entropy_coding.c:4697) called
@@ -2466,6 +2654,15 @@ fn encode_block_syntax(
         mode,
         decision.uv_mode,
         skip,
+    );
+    // Palette neighbor state (C mbmi->palette_mode_info, stamped for
+    // EVERY block — palette or not, matching record_block above).
+    ectx.record_palette(
+        block_x,
+        block_y,
+        decision.width as usize,
+        decision.height as usize,
+        decision.palette.as_ref().map(|(colors, _idx_map)| colors.as_slice()),
     );
 
     // Deblocking geometry: exactly what the decoder derives per mi from

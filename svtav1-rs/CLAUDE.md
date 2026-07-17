@@ -431,3 +431,43 @@ after the code is in. Rules:
   uses for other hard-to-reach C internals), or validate indirectly once
   chunk 3+ (`search_palette_luma`/RD/PACK) lands and can be differentially
   tested end-to-end.
+- **`crates/svtav1-entropy/src/context.rs`** (task #71 chunk 5, PACK
+  writers: `write_palette_mode_info`, `write_uniform`,
+  `write_palette_map_tokens` + private helpers). Replaces the old
+  `write_no_palette_flags`; its `None` arm is bit-for-bit that function's
+  old behavior — re-verified after landing via `IM_PRESETS='2 6'
+  tools/identity_matrix.sh` (24/24) and `tools/real_image_matrix.sh`
+  (byte-identical), so the `None` path needs NO marker. Home for the
+  delta-encode writer chosen here (entropy crate) since svtav1-entropy
+  cannot depend on svtav1-encoder; the cache SPLIT
+  (`svt_av1_index_color_cache`) stays in `svtav1-encoder::palette`
+  (already FFI-verified there) and is threaded in pre-split from the
+  pipeline.rs caller. Carrying `PORT-NOTE(unverified)` markers (the `Some`
+  arm — no `BlockDecision` carries a palette winner yet, so none of this
+  runs end-to-end; covered only by same-crate unit tests):
+  - `write_palette_mode_info`'s `Some` arm (size symbol + colors) — smoke
+    test `write_palette_mode_info_some_vs_none_arm` only.
+  - `write_palette_colors_y`, `write_delta_encoded_colors` — C
+    `write_palette_colors_y` / `delta_encode_palette_colors`
+    (entropy_coding.c:4256-4341); self-consistency unit tests only.
+  - `palette_map_pixel_ctx` — DUPLICATE of `svtav1_encoder::palette::
+    palette_color_index_context` (re-transcribed, cross-crate dependency
+    direction); cross-checked against the SAME hand-derived vectors as
+    that fn's own tests (`palette_map_pixel_ctx_*_hand_vectors`), the
+    same weakest-evidence tier as its palette.rs twin.
+  - `write_palette_map_tokens` — two gaps: (1) the `Some`-arm-only
+    reachability above, and (2) the within-bounds `rows`/`cols` clip is
+    untested (no edge-clipped blocks on this port's 64-aligned frames).
+  Upgrade path: EPICA/identity cells once #71 chunk 3/4 (`search_palette_
+  luma`/RD integration) wires a winning candidate into `BlockDecision`.
+- **`crates/svtav1-encoder/src/pipeline.rs`** — `EntropyCtx` gained
+  `above_palette`/`left_palette`/`above_palette_colors`/
+  `left_palette_colors` + `record_palette`/`palette_neighbor_ctx` methods
+  and the free fn `palette_cache` (C `svt_get_palette_cache_y`,
+  palette.c:164-210). `record_palette`'s `None`-colors path and
+  `palette_neighbor_ctx` run on EVERY block today (re-verified via the
+  same identity/real-image gates above) but always see an all-zero
+  grid — carrying a `PORT-NOTE(unverified)` marker: `palette_cache`'s
+  above/left MERGE loop (the SB-row-drop + sorted-merge-with-dedup logic)
+  is only exercised on the trivial empty-cache early return until a
+  palette winner exists on an adjacent block.

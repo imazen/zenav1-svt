@@ -774,13 +774,132 @@ pub fn palette_bsize_ctx(width: usize, height: usize) -> usize {
     (width * height).trailing_zeros() as usize - 6
 }
 
-/// Code the no-palette flags for an intra block (C `write_palette_mode_info`,
-/// entropy_coding.c:4343, with palette_size 0 — the flags-only slice; call
-/// only when [`allow_palette`] holds). The y flag is coded for DC_PRED luma;
-/// the uv flag for UV_DC_PRED on chroma-ref blocks. `neighbor_ctx` is
-/// `svt_aom_get_palette_mode_ctx` (count of above/left neighbors using
-/// palette, 0..=2 — 0 until the port codes palette blocks).
-pub fn write_no_palette_flags(
+/// C `PALETTE_MIN_SIZE` (definitions.h:403) — mirrors
+/// `svtav1_encoder::palette::PALETTE_MIN_SIZE`; duplicated here (rather than
+/// imported) because svtav1-entropy cannot depend on svtav1-encoder — the
+/// dependency edge runs the other way.
+const PALETTE_MIN_SIZE: usize = 2;
+
+/// C `PALETTE_SIZES` (definitions.h:1171): 7 codable sizes (2..=8 colors).
+const PALETTE_SIZES: usize = 7;
+
+/// C `av1_ceil_log2` (cabac_context_model.h:366-371). Duplicated from
+/// `svtav1_encoder::palette::ceil_log2` (same cross-crate-dependency reason
+/// as [`PALETTE_MIN_SIZE`] above) — `0` if `n < 2`, else
+/// `floor(log2(n - 1)) + 1`.
+fn ceil_log2_pal(n: i32) -> i32 {
+    if n < 2 {
+        return 0;
+    }
+    let m = (n - 1) as u32;
+    31 - m.leading_zeros() as i32 + 1
+}
+
+/// C `delta_encode_palette_colors` (entropy_coding.c:4256-4288) — the WRITER
+/// twin of `svtav1_encoder::palette::delta_encode_steps` (identical step
+/// sequence: that fn returns bit widths for the RD cost estimate, this one
+/// emits the bits). Transcribed directly rather than shared because
+/// svtav1-entropy cannot depend on svtav1-encoder; keep both in sync by
+/// hand if either changes (cross-referenced in both directions).
+// PORT-NOTE(unverified): exercised only by a self-consistency unit test
+// (`write_delta_encoded_colors_hand_consistency`, below) — no palette
+// candidate has won yet (#71 chunk 3/4 injection), so this never runs
+// end-to-end. Verify: an EPICA/identity cell once injection lands.
+fn write_delta_encoded_colors(w: &mut AomWriter, colors: &[u16], bit_depth: u32, min_val: i32) {
+    let num = colors.len();
+    if num == 0 {
+        return;
+    }
+    debug_assert!((colors[0] as u32) < (1 << bit_depth));
+    w.write_literal(colors[0] as u32, bit_depth);
+    if num == 1 {
+        return;
+    }
+    let min_bits = bit_depth as i32 - 3;
+    let mut max_delta = 0i32;
+    // PALETTE_MAX_SIZE - 1 slots ever used (num <= 8), matching C's fixed
+    // `deltas[PALETTE_MAX_SIZE]` scratch.
+    let mut deltas = [0i32; svtav1_types::prediction::PALETTE_MAX_SIZE];
+    for i in 1..num {
+        debug_assert!((colors[i] as u32) < (1 << bit_depth));
+        let delta = colors[i] as i32 - colors[i - 1] as i32;
+        debug_assert!(delta >= min_val, "colors must be ascending with gaps >= min_val");
+        deltas[i - 1] = delta;
+        max_delta = max_delta.max(delta);
+    }
+    let mut bits = ceil_log2_pal(max_delta + 1 - min_val).max(min_bits);
+    debug_assert!(bits <= bit_depth as i32);
+    let mut range = (1i32 << bit_depth) - colors[0] as i32 - min_val;
+    w.write_literal((bits - min_bits) as u32, 2);
+    for i in 0..num - 1 {
+        w.write_literal((deltas[i] - min_val) as u32, bits as u32);
+        range -= deltas[i];
+        bits = bits.min(ceil_log2_pal(range));
+    }
+}
+
+/// C `write_palette_colors_y` (entropy_coding.c:4324-4341) minus the
+/// cache-building: the caller already ran C `svt_get_palette_cache_y` +
+/// `svt_av1_index_color_cache` (see `svtav1_encoder`'s `palette_cache` /
+/// `palette::index_color_cache`, the FFI-verified twin this reuses from the
+/// caller side, since svtav1-entropy cannot depend on svtav1-encoder).
+/// `n` is the total palette size; `cache_found` is one flag per consulted
+/// neighbor color-cache entry; `out_of_cache` is the not-in-cache colors
+/// (ascending). Writes one raw bit per `cache_found` entry, stopping early
+/// once every color is accounted for — exactly C's `i < n_cache &&
+/// n_in_cache < n` loop guard — then delta-encodes `out_of_cache` (bd8:
+/// `bit_depth = 8`, `min_val = 1`, matching every C call site for the luma
+/// palette).
+// PORT-NOTE(unverified): only reachable via the `Some` arm of
+// `write_palette_mode_info`, which no current leaf takes (see that fn's
+// note). Verify: an EPICA/identity cell once #71 chunk 3/4 injection lands.
+fn write_palette_colors_y(w: &mut AomWriter, n: usize, cache_found: &[bool], out_of_cache: &[u16]) {
+    let mut n_in_cache = 0usize;
+    for &found in cache_found {
+        if n_in_cache >= n {
+            break;
+        }
+        w.write_bit(found);
+        n_in_cache += usize::from(found);
+    }
+    debug_assert_eq!(n_in_cache + out_of_cache.len(), n);
+    write_delta_encoded_colors(w, out_of_cache, 8, 1);
+}
+
+/// Code the palette mode-info syntax for an intra block (C
+/// `write_palette_mode_info`, entropy_coding.c:4355-4379; call only when
+/// [`allow_palette`] holds). The y flag is coded for DC_PRED luma; when it
+/// is 1 (`palette` is `Some`), the size symbol + colors follow immediately
+/// (`write_palette_colors_y`, entropy_coding.c:4324-4341). The uv flag is
+/// coded for UV_DC_PRED on chroma-ref blocks — always symbol 0 (chroma
+/// palette is dead in this port: `palette_size[1]` is hard-0 at injection,
+/// see `docs/palette-port-map.md`) — with context `(this block's own y
+/// flag)`, matching C's `(blk_ptr->palette_size[0] > 0)`
+/// (entropy_coding.c:4376).
+///
+/// `neighbor_ctx` is the CALLER-derived `svt_aom_get_palette_mode_ctx`
+/// (above/left neighbor palette-used count, 0..=2) for the Y FLAG only —
+/// the uv ctx is derived internally from this call's own y flag, per C.
+///
+/// `palette`, when `Some`, is `(colors, cache_found, out_of_cache_colors)`:
+/// - `colors`: the deduped ascending palette (2..=8 entries); `colors.len()`
+///   drives the size symbol.
+/// - `cache_found` / `out_of_cache_colors`: the caller's
+///   `svt_av1_index_color_cache` split (see [`write_palette_colors_y`]).
+///
+/// This is the generalization of the former `write_no_palette_flags`: the
+/// `None` arm below is EXACTLY that function's old behavior (bit-for-bit),
+/// which is required for stream identity until palette candidates can win
+/// (docs/palette-port-map.md task #71 chunks 3-4 land the search/RD side).
+// PORT-NOTE(unverified): the `Some` arm (y size symbol + colors) is
+// verified only by a same-crate smoke test
+// (`write_palette_mode_info_some_vs_none_arm`, below) — no `BlockDecision`
+// carries `Some(palette)` yet, so this never runs against a real encode.
+// The `None` arm IS verified: `tools/identity_matrix.sh` (24/24) and
+// `tools/real_image_matrix.sh` (byte-identical) both re-ran clean after
+// this generalization landed. Verify the `Some` arm via an EPICA/identity
+// cell once #71 chunk 3/4 injection wires a winning candidate.
+pub fn write_palette_mode_info(
     w: &mut AomWriter,
     fc: &mut FrameContext,
     width: usize,
@@ -789,14 +908,216 @@ pub fn write_no_palette_flags(
     uv_mode: u8,
     is_chroma_ref: bool,
     neighbor_ctx: usize,
+    palette: Option<(&[u16], &[bool], &[u16])>,
 ) {
+    let bctx = palette_bsize_ctx(width, height);
+    let mut y_used = false;
     if y_mode == 0 {
-        let bctx = palette_bsize_ctx(width, height);
-        w.write_symbol(0, &mut fc.palette_y_mode_cdf[bctx][neighbor_ctx], 2);
+        debug_assert!(neighbor_ctx < 3);
+        y_used = palette.is_some();
+        w.write_symbol(usize::from(y_used), &mut fc.palette_y_mode_cdf[bctx][neighbor_ctx], 2);
+        if let Some((colors, cache_found, out_of_cache)) = palette {
+            let n = colors.len();
+            debug_assert!((PALETTE_MIN_SIZE..=svtav1_types::prediction::PALETTE_MAX_SIZE).contains(&n));
+            w.write_symbol(n - PALETTE_MIN_SIZE, &mut fc.palette_y_size_cdf[bctx], PALETTE_SIZES);
+            write_palette_colors_y(w, n, cache_found, out_of_cache);
+        }
     }
     if uv_mode == 0 && is_chroma_ref {
-        // uv ctx = (y palette used) — 0 while the port never picks palette.
-        w.write_symbol(0, &mut fc.palette_uv_mode_cdf[0], 2);
+        // C: palette_uv_mode_ctx = (blk_ptr->palette_size[0] > 0) — THIS
+        // block's own y flag, not a neighbor count.
+        let uv_ctx = usize::from(y_used);
+        w.write_symbol(0, &mut fc.palette_uv_mode_cdf[uv_ctx], 2);
+    }
+}
+
+/// C `get_unsigned_bits` (entropy_coding.c:4290-4292): `0` for `n == 0`,
+/// else `get_msb(n) + 1` (position of the highest set bit, 0-indexed, plus
+/// one) — `32 - n.leading_zeros()` for `n > 0` on a 32-bit host.
+fn get_unsigned_bits(n: u32) -> u32 {
+    if n == 0 { 0 } else { 32 - n.leading_zeros() }
+}
+
+/// C `write_uniform` (entropy_coding.c:4294-4306): codes `v` in `0..n` with
+/// as-equal-as-possible-width literals (the truncated-binary code) — used
+/// for the palette map's uncontextualized `(0, 0)` pixel.
+pub fn write_uniform(w: &mut AomWriter, n: u32, v: u32) {
+    let l = get_unsigned_bits(n);
+    if l == 0 {
+        return;
+    }
+    let m = (1u32 << l) - n;
+    if v < m {
+        w.write_literal(v, l - 1);
+    } else {
+        w.write_literal(m + ((v - m) >> 1), l - 1);
+        w.write_literal((v - m) & 1, 1);
+    }
+}
+
+/// C `svt_aom_palette_color_index_context_lookup` hash table
+/// (palette.c:608): every reachable hash (2, 5, 6, 7, 8) maps to `9 -
+/// hash`; kept only as a cross-check comment (see the `debug_assert` this
+/// mirrors in `svtav1_encoder::palette::palette_color_index_context`).
+const INVALID_COLOR_IDX_PAL: u8 = u8::MAX;
+
+/// C `av1_fast_palette_color_index_context` + `_on_edge`
+/// (palette.c:612-743): the rank-remapped color index and entropy context
+/// for one palette-map pixel `(i, j)` (row, col) during the wavefront pass
+/// — never called for `(0, 0)` (coded via [`write_uniform`] instead).
+/// Returns `(ctx, color_new_idx)`.
+///
+/// DUPLICATE of `svtav1_encoder::palette::palette_color_index_context`
+/// (chunk 2, already FFI/hand-vector-verified there) — re-transcribed here
+/// because svtav1-entropy cannot depend on svtav1-encoder. MUST match that
+/// copy's semantics exactly, including the edge path hardcoding ctx 0 (hash
+/// 2 -> lookup[2] == 0). Consolidate into one crate once justified.
+// PORT-NOTE(unverified): same evidence tier as the encoder-crate twin —
+// hand-derived vectors (this crate's `palette_map_pixel_ctx_*_hand_vectors`
+// tests reuse the SAME vectors as
+// `svtav1-encoder/tests/c_parity_palette.rs`), not FFI or an identity
+// cell (both static C fns, no exported symbol). Upgrade path: a
+// ref_shims.c wrapper, or an EPICA/identity cell once #71 chunk 3/4
+// injection exercises this end-to-end.
+fn palette_map_pixel_ctx(color_map: &[u8], stride: usize, i: usize, j: usize) -> (usize, u8) {
+    debug_assert!(i > 0 || j > 0);
+    let has_above = i >= 1;
+    let has_left = j >= 1;
+    debug_assert!(has_above || has_left);
+
+    if has_above != has_left {
+        // Edge case: exactly one neighbor (top row or left column).
+        let neighbor = if has_above {
+            color_map[(i - 1) * stride + j]
+        } else {
+            color_map[i * stride + (j - 1)]
+        };
+        let current = color_map[i * stride + j];
+        let idx = if neighbor > current {
+            current + 1
+        } else if neighbor == current {
+            0
+        } else {
+            current
+        };
+        // color_score=2, hash_multiplier=1 => hash=2 => lookup[2]=0.
+        return (0usize, idx);
+    }
+
+    // Interior case: three neighbors (left, top, top-left).
+    let mut color_neighbors = [
+        color_map[i * stride + (j - 1)],
+        color_map[(i - 1) * stride + j],
+        color_map[(i - 1) * stride + (j - 1)],
+    ];
+    let mut scores = [2u8, 2u8, 1u8];
+    let mut num_invalid_colors = 0u8;
+    if color_neighbors[0] == color_neighbors[1] {
+        scores[0] += scores[1];
+        color_neighbors[1] = INVALID_COLOR_IDX_PAL;
+        num_invalid_colors += 1;
+        if color_neighbors[0] == color_neighbors[2] {
+            scores[0] += scores[2];
+            num_invalid_colors += 1;
+        }
+    } else if color_neighbors[0] == color_neighbors[2] {
+        scores[0] += scores[2];
+        num_invalid_colors += 1;
+    } else if color_neighbors[1] == color_neighbors[2] {
+        scores[1] += scores[2];
+        num_invalid_colors += 1;
+    }
+    let num_valid_colors = 3 - num_invalid_colors;
+
+    if num_valid_colors > 1 {
+        if color_neighbors[1] == INVALID_COLOR_IDX_PAL {
+            scores[1] = scores[2];
+            color_neighbors[1] = color_neighbors[2];
+        }
+        if scores[0] < scores[1] || (scores[0] == scores[1] && color_neighbors[0] > color_neighbors[1]) {
+            scores.swap(0, 1);
+            color_neighbors.swap(0, 1);
+        }
+        if num_valid_colors > 2 {
+            if scores[0] < scores[2] {
+                scores.swap(0, 2);
+                color_neighbors.swap(0, 2);
+            }
+            if scores[1] < scores[2] {
+                scores.swap(1, 2);
+                color_neighbors.swap(1, 2);
+            }
+        }
+    }
+
+    let current = color_map[i * stride + j];
+    let mut color_new_idx = current;
+    for idx in 0..num_valid_colors as usize {
+        if color_neighbors[idx] > current {
+            color_new_idx += 1;
+        } else if color_neighbors[idx] == current {
+            color_new_idx = idx as u8;
+            break;
+        }
+    }
+
+    const HASH_MULTIPLIERS: [u8; 3] = [1, 2, 2];
+    let mut hash = 0u8;
+    for idx in 0..num_valid_colors as usize {
+        hash += scores[idx] * HASH_MULTIPLIERS[idx];
+    }
+    debug_assert!(hash > 0 && hash <= 8);
+    let ctx = 9 - hash as i32;
+    debug_assert!(ctx >= 0 && (ctx as usize) < 5, "PALETTE_COLOR_INDEX_CONTEXTS == 5");
+    (ctx as usize, color_new_idx)
+}
+
+/// Code the palette color-index map for one plane (C `pack_map_tokens`,
+/// entropy_coding.c:4343-4353, fed by the SAME anti-diagonal wavefront
+/// order as `svt_av1_tokenize_color_map` / `cost_and_tokenize_map`
+/// (palette.c:748-782) — the search-side twin of that traversal is
+/// `svtav1_encoder::palette::color_map_wavefront`, duplicated here for the
+/// same cross-crate reason as the rest of this block).
+///
+/// `map` is the FULL nominal-size (block_w x block_h) color-index raster at
+/// `stride`; `rows`/`cols` are the WITHIN-BOUNDS dims C derives from
+/// `svt_aom_get_block_dimensions` (only differ from the nominal dims at
+/// non-64-aligned right/bottom picture edges); `n` is the palette size
+/// (2..=8).
+///
+/// PORT-NOTE(unverified): TWO gaps. (1) This whole function only runs from
+/// `write_palette_mode_info`'s `Some` arm, never exercised end-to-end yet
+/// (see that fn's note) — covered here only by the
+/// `write_palette_mode_info_some_vs_none_arm` smoke test. (2) Even once
+/// exercised, this port has no edge-clipped blocks yet (frames are
+/// 64-aligned), so callers always pass `rows`/`cols` equal to the nominal
+/// block height/width — the within-bounds clip itself is untested.
+/// Verification: EPICA/identity cells once #71 chunk 3/4 injection lands
+/// (gap 1), and again once a non-64-aligned frame size exercises a clipped
+/// block (gap 2).
+pub fn write_palette_map_tokens(
+    w: &mut AomWriter,
+    fc: &mut FrameContext,
+    map: &[u8],
+    stride: usize,
+    rows: usize,
+    cols: usize,
+    n: usize,
+) {
+    debug_assert!((PALETTE_MIN_SIZE..=svtav1_types::prediction::PALETTE_MAX_SIZE).contains(&n));
+    debug_assert!(rows >= 1 && cols >= 1);
+    // The first color index (uncontextualized).
+    write_uniform(w, n as u32, map[0] as u32);
+    let n_idx = n - PALETTE_MIN_SIZE;
+    for k in 1..(rows + cols - 1) {
+        let j_hi = k.min(cols - 1);
+        let j_lo = k.saturating_sub(rows - 1);
+        for j in (j_lo..=j_hi).rev() {
+            let i = k - j;
+            let (ctx, color_new_idx) = palette_map_pixel_ctx(map, stride, i, j);
+            debug_assert!((color_new_idx as usize) < n);
+            w.write_symbol(color_new_idx as usize, &mut fc.palette_y_color_index_cdf[n_idx][ctx], n);
+        }
     }
 }
 
@@ -1088,5 +1409,192 @@ mod tests {
         assert_eq!(tx_size_cat(64, 64), 3);
         assert_eq!(tx_max_depth(64, 64) + 1, 3);
         assert_eq!(&fc.tx_size_cdf[3][0][..2], &[26986, 21293]);
+    }
+
+    // =========================================================================
+    // Palette PACK writers (task #71 chunk 5). `palette_map_pixel_ctx` is a
+    // duplicate of `svtav1_encoder::palette::palette_color_index_context`
+    // (see that fn's doc + docs/palette-port-map.md) — reusing the SAME
+    // hand-derived vectors from `svtav1-encoder/tests/c_parity_palette.rs`
+    // here is the cross-check that the duplication stayed faithful.
+    // =========================================================================
+
+    #[test]
+    fn ceil_log2_pal_matches_c_definition() {
+        assert_eq!(ceil_log2_pal(0), 0);
+        assert_eq!(ceil_log2_pal(1), 0);
+        assert_eq!(ceil_log2_pal(2), 1);
+        assert_eq!(ceil_log2_pal(3), 2);
+        assert_eq!(ceil_log2_pal(256), 8);
+        assert_eq!(ceil_log2_pal(257), 9);
+    }
+
+    #[test]
+    fn get_unsigned_bits_matches_c_definition() {
+        // get_msb(n)+1 for n>0, i.e. floor(log2(n))+1; 0 for n==0.
+        assert_eq!(get_unsigned_bits(0), 0);
+        assert_eq!(get_unsigned_bits(1), 1);
+        assert_eq!(get_unsigned_bits(2), 2);
+        assert_eq!(get_unsigned_bits(3), 2);
+        assert_eq!(get_unsigned_bits(4), 3);
+        assert_eq!(get_unsigned_bits(8), 4);
+    }
+
+    /// C `write_uniform` (entropy_coding.c:4294-4306) hand-computed: n=6
+    /// (palette size), l=get_unsigned_bits(6)=3, m=(1<<3)-6=2.
+    #[test]
+    fn write_uniform_hand_vectors() {
+        // v=0 < m=2 -> literal(0, l-1=2): 2 bits "00".
+        let mut w = AomWriter::new(64);
+        write_uniform(&mut w, 6, 0);
+        let out0 = w.done().to_vec();
+        // v=1 < m=2 -> literal(1, 2): 2 bits "01".
+        let mut w = AomWriter::new(64);
+        write_uniform(&mut w, 6, 1);
+        let out1 = w.done().to_vec();
+        assert_ne!(out0, out1, "distinct v < m must produce distinct bits");
+        // v=5 >= m=2 -> literal(m+((v-m)>>1), 2) then literal((v-m)&1, 1)
+        // = literal(2+1,2)=literal(3,2) then literal(1,1) — 3 bits total,
+        // vs 2 bits for v<m: just check it doesn't panic and emits output.
+        let mut w = AomWriter::new(64);
+        write_uniform(&mut w, 6, 5);
+        assert!(!w.done().is_empty());
+        // n=0 (never a real palette size, but write_uniform must no-op
+        // rather than panic — l=0 early return).
+        let mut w = AomWriter::new(64);
+        write_uniform(&mut w, 0, 0);
+        let _ = w.done();
+    }
+
+    /// C `delta_encode_palette_colors` (entropy_coding.c:4256-4288)
+    /// self-consistency: must not panic across the size range and must
+    /// depend on every input color (changing one color changes the bits).
+    #[test]
+    fn write_delta_encoded_colors_hand_consistency() {
+        let mut w = AomWriter::new(64);
+        write_delta_encoded_colors(&mut w, &[10u16, 12, 20, 21], 8, 1);
+        let out_a = w.done().to_vec();
+        let mut w = AomWriter::new(64);
+        write_delta_encoded_colors(&mut w, &[10u16, 12, 20, 22], 8, 1);
+        let out_b = w.done().to_vec();
+        assert_ne!(out_a, out_b, "changing a color must change the coded bits");
+        // Single-color and empty inputs must not panic (num<=1 early return).
+        let mut w = AomWriter::new(64);
+        write_delta_encoded_colors(&mut w, &[10u16], 8, 1);
+        let _ = w.done();
+        let mut w = AomWriter::new(64);
+        write_delta_encoded_colors(&mut w, &[], 8, 1);
+        let _ = w.done();
+    }
+
+    /// Edge case (exactly one neighbor), all three sub-branches, both
+    /// orientations — identical vectors to
+    /// `palette_color_index_context_edge_hand_vectors` in
+    /// `svtav1-encoder/tests/c_parity_palette.rs` (dropped the trailing
+    /// `palette_size` arg, which this fn's caller asserts instead).
+    #[test]
+    fn palette_map_pixel_ctx_edge_hand_vectors() {
+        let map = [10u8, 3, 10, 10];
+        assert_eq!(palette_map_pixel_ctx(&map, 4, 0, 1), (0, 4));
+        assert_eq!(palette_map_pixel_ctx(&map, 4, 0, 2), (0, 10));
+        assert_eq!(palette_map_pixel_ctx(&map, 4, 0, 3), (0, 0));
+
+        let map = [7u8, 2, 7, 7];
+        assert_eq!(palette_map_pixel_ctx(&map, 1, 1, 0), (0, 3));
+        assert_eq!(palette_map_pixel_ctx(&map, 1, 2, 0), (0, 7));
+        assert_eq!(palette_map_pixel_ctx(&map, 1, 3, 0), (0, 0));
+    }
+
+    /// Interior, all three neighbors distinct — identical vectors to
+    /// `palette_color_index_context_interior_all_distinct_hand_vectors`.
+    #[test]
+    fn palette_map_pixel_ctx_interior_all_distinct_hand_vectors() {
+        let stride = 2usize;
+        let mk = |current: u8| alloc::vec![9, 3, 5, current];
+        assert_eq!(palette_map_pixel_ctx(&mk(3), stride, 1, 1), (1, 0));
+        assert_eq!(palette_map_pixel_ctx(&mk(7), stride, 1, 1), (1, 8));
+        assert_eq!(palette_map_pixel_ctx(&mk(1), stride, 1, 1), (1, 4));
+    }
+
+    /// Interior, left==top only — identical vectors to
+    /// `palette_color_index_context_interior_left_eq_top_hand_vectors`.
+    #[test]
+    fn palette_map_pixel_ctx_interior_left_eq_top_hand_vectors() {
+        let stride = 2usize;
+        let mk = |current: u8| alloc::vec![9, 4, 4, current];
+        assert_eq!(palette_map_pixel_ctx(&mk(4), stride, 1, 1), (3, 0));
+        assert_eq!(palette_map_pixel_ctx(&mk(9), stride, 1, 1), (3, 1));
+        assert_eq!(palette_map_pixel_ctx(&mk(2), stride, 1, 1), (3, 4));
+    }
+
+    /// Interior, left==topleft only — identical vectors to
+    /// `palette_color_index_context_interior_left_eq_topleft_hand_vectors`.
+    #[test]
+    fn palette_map_pixel_ctx_interior_left_eq_topleft_hand_vectors() {
+        let stride = 2usize;
+        let mk = |current: u8| alloc::vec![6, 2, 6, current];
+        assert_eq!(palette_map_pixel_ctx(&mk(6), stride, 1, 1), (2, 0));
+        assert_eq!(palette_map_pixel_ctx(&mk(2), stride, 1, 1), (2, 1));
+        assert_eq!(palette_map_pixel_ctx(&mk(9), stride, 1, 1), (2, 9));
+    }
+
+    /// Interior, top==topleft only — identical vectors to
+    /// `palette_color_index_context_interior_top_eq_topleft_hand_vectors`.
+    #[test]
+    fn palette_map_pixel_ctx_interior_top_eq_topleft_hand_vectors() {
+        let stride = 2usize;
+        let mk = |current: u8| alloc::vec![7, 7, 1, current];
+        assert_eq!(palette_map_pixel_ctx(&mk(7), stride, 1, 1), (2, 0));
+        assert_eq!(palette_map_pixel_ctx(&mk(1), stride, 1, 1), (2, 1));
+        assert_eq!(palette_map_pixel_ctx(&mk(0), stride, 1, 1), (2, 2));
+    }
+
+    /// Interior, all three neighbors equal — identical vectors to
+    /// `palette_color_index_context_interior_all_equal_hand_vectors`.
+    #[test]
+    fn palette_map_pixel_ctx_interior_all_equal_hand_vectors() {
+        let stride = 2usize;
+        let mk = |current: u8| alloc::vec![5, 5, 5, current];
+        assert_eq!(palette_map_pixel_ctx(&mk(5), stride, 1, 1), (4, 0));
+        assert_eq!(palette_map_pixel_ctx(&mk(2), stride, 1, 1), (4, 3));
+        assert_eq!(palette_map_pixel_ctx(&mk(9), stride, 1, 1), (4, 9));
+    }
+
+    /// `write_palette_mode_info` / `write_palette_map_tokens` end-to-end
+    /// smoke test: a synthetic 4-color 2x2 map must round-trip through the
+    /// writer without panicking, and the `Some` arm must code MORE symbols
+    /// (hence produce different bytes) than the `None` (no-palette) arm on
+    /// the same block — a cheap sanity net until #71 chunk 3/4 injection
+    /// lets an EPICA identity cell exercise this end-to-end for real.
+    #[test]
+    fn write_palette_mode_info_some_vs_none_arm() {
+        let mut fc = FrameContext::new_default();
+        let mut w = AomWriter::new(256);
+        write_palette_mode_info(&mut w, &mut fc, 8, 8, 0, 0, true, 0, None);
+        let none_bytes = w.done().to_vec();
+
+        let mut fc2 = FrameContext::new_default();
+        let mut w2 = AomWriter::new(256);
+        let colors: [u16; 2] = [10, 20];
+        let cache_found: [bool; 0] = [];
+        let out_of_cache: [u16; 2] = [10, 20];
+        write_palette_mode_info(
+            &mut w2,
+            &mut fc2,
+            8,
+            8,
+            0,
+            0,
+            true,
+            0,
+            Some((&colors, &cache_found, &out_of_cache)),
+        );
+        // Map: 2x2, 2 colors, anti-diagonal pixels (1,0) and (0,1) each
+        // code one context'd symbol on top of the (0,0) write_uniform.
+        let map = [0u8, 1, 1, 0];
+        write_palette_map_tokens(&mut w2, &mut fc2, &map, 2, 2, 2, 2);
+        let some_bytes = w2.done().to_vec();
+
+        assert_ne!(none_bytes, some_bytes, "palette Some arm must code additional symbols");
     }
 }
