@@ -452,15 +452,33 @@ shared file, THEIR fork arms win, OUR mainline arms win.
    coeff coding) vs palette-6 10,776,028 → **C's DC wins at MDS3.** The
    port's palette MDS3 (~10.9M) ≈ C's (faithful). So the port is NOT
    dropping its DC candidate's MDS3 cost to ~8.5M — either its MDS3
-   residual/coeff/dist path (why doesn't ydist fall 41507→10128? tx_depth?
-   coeff coding?) or DC not surviving MDS1→MDS3 while palette does. NEXT
-   DRILL: the DC_PRED MDS3 full cost, port vs C's 8,538,560. SEPARATE
-   minor bug (OPPOSITE direction): `leaf_funnel.rs` adds `fi_flag` (1053)
-   to palette candidates, but C's `svt_aom_filter_intra_allowed` returns 0
-   when palette_size>0 — the port over-prices palette by 1053; dropping
-   it makes palette CHEAPER, so it must land WITH the DC-MDS3 fix, not
-   before. The per-class dev-prune fix (ba58a3ec2) stays correct+necessary
-   (it's what lets DC reach MDS3 at all; 2064→516). Gate: EPICA p6/p7 q32
+   residual/coeff/dist path or DC not surviving MDS1→MDS3 while palette
+   does — it was the SURVIVAL: **FIXED 2026-07-17 (765d60a7e).**
+   **DC-MDS3 ROOT = the MDS1→MDS3 per-class prune (the MDS0 fix's
+   sibling).** C's `post_mds1_nic_pruning` (:7885) + `post_mds2` (:7961)
+   loop PER CLASS against each class's own best full_cost; the port ran
+   them over the sorted UNION vs the global (palette) best, so DC (full
+   18.9M, +73% from palette 10.9M) was pruned before MDS3 and never
+   reached the stage where its residual-coded MDS3 cost (8.5M) beats
+   palette. Fix: per-lane prune (incl. C's per-class rank staging +3/+2),
+   union+sort for MDS3; single-class path byte-identical. RESULT: mi(20,6)
+   now codes DC like C, the first EPICA divergence advanced mi(20,6)→
+   **mi(22,6)**, bytes **14409→13189** (C 13097, 0.7% off), matrix 54/54,
+   suite green. **NEW first divergence mi(22,6):** both code palette but C
+   picks n=8 colors, port n=5. NOT a config diff (C level 5 == port
+   for_level(5): kmean_step 3, itr 2, no centroid refine) and palette is
+   bit-exact (agent) — it's an MDS3 residual near-tie: port n=8 full
+   26148063 (dist 37696, low coeff 738) vs n=5 25963876 (dist 41552, coeff
+   22595); n=8's higher map/color rate just outweighs its lower dist, so
+   the port picks n=5 where C's n=8 wins. NEXT DRILL: sibling-C dump of
+   the n=8-vs-n=5 MDS3 dist+coeff at mi(22,6) — is the port's palette
+   residual dist/coeff off, or is it a true <0.7% RD near-tie? SEPARATE
+   minor bug (OPPOSITE direction, still open, apply WITH a broader palette
+   -RD pass since it makes palette cheaper): `leaf_funnel.rs` adds
+   `fi_flag` (1053) to palette candidates but C's
+   `svt_aom_filter_intra_allowed` returns 0 when palette_size>0 (does not
+   change n8-vs-n5 — both drop 1053 equally). The MDS0 + MDS1/MDS3
+   per-class dev-prunes are correct+necessary. Gate: EPICA p6/p7 q32
    byte-match (13097B / 14736B).
 2. **#71 IBC wiring**: wire `intrabc.rs` into the funnel injection
    (palette_hint coupling) + FH allow_intrabc for M2-M4 sc + the already
