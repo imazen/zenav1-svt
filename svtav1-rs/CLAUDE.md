@@ -424,12 +424,24 @@ shared file, THEIR fork arms win, OUR mainline arms win.
 
 ### The remaining-work queue (work top to bottom; per-item state lives in the task tracker + docs/ maps)
 
-1. **#71 palette calibration**: implement CAND_CLASS_3 per-class NIC
-   lanes in the leaf funnel (the confirmed root: port codes 2064 palette
-   blocks vs C 178 on EPICA p6 q32). Probes + expected outcome recorded
-   in task #71 metadata. Then uv [1][0] fac-bits row + neighbor
-   color-cache consumption in injection. Gate: EPICA p6/p7 q32
-   byte-match (13097B / 14736B).
+1. **#71 palette calibration**: PARTIAL — the per-class NIC lane +
+   per-class MDS0 dev-threshold prune landed (ba58a3ec2): C's
+   `post_mds0_nic_pruning` (product_coding_loop.c:7840) prunes PER
+   candidate class against that class's own best fast cost; the port had
+   run it over the sorted union vs the global best, so palette (far lower
+   fast cost on sc) pruned out every regular mode and won by default.
+   EPICA p6 q32 palette blocks **2064 -> 516** (C: 178), bytes 14621 ->
+   14409; non-sc matrix 36/36 unchanged (fast path byte-identical by
+   construction). RESIDUAL (516 vs 178) is a genuine full-RD WIN, not
+   survivor starvation: at a port-only block (mi 18,60) all regular modes
+   now reach MDS3 but palette n=5 full=18.8M beats best regular ~26.4M —
+   uniform neighbours make every intra mode predict the same flat value
+   (satd 26304, dist 47863) while palette reconstructs the text interior
+   (dist 19312). C picks H_PRED there, so C's palette must cost more OR
+   its regular cost less. Next: sibling-C dump of palette-vs-H_PRED cost
+   at mi(18,60) (delegated). Then uv [1][0] fac-bits row + neighbor
+   color-cache in injection. Gate: EPICA p6/p7 q32 byte-match
+   (13097B / 14736B).
 2. **#71 IBC wiring**: wire `intrabc.rs` into the funnel injection
    (palette_hint coupling) + FH allow_intrabc for M2-M4 sc + the already
    -dormant obu.rs LF/CDEF/LR skips. Gate: EPICA p2-p5 cells.
