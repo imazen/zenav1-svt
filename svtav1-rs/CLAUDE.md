@@ -403,7 +403,31 @@ after the code is in. Rules:
 
 ### PORT-NOTE(unverified) index
 
-- (none yet — palette pipeline port starting; see docs/palette-port-map.md)
 - leaf_funnel.rs: fork complex-hvs MDS0 SSD fast cost (1 marker) — needs a
   C-side fast_loop_core dump once the C hybrid carries the fork's
   set_mds0_controls case 3 (the hybrid assert(0)s on mds0_level 3 today).
+- **`crates/svtav1-encoder/src/palette.rs`** (task #71, chunks 1-2 of
+  docs/palette-port-map.md). FFI-verified against the real C (parity test
+  `crates/svtav1-encoder/tests/c_parity_palette.rs`, all green, no markers
+  needed): `count_colors`, `index_color_cache`, `k_means_dim1`,
+  `calc_indices_dim1` (+ the internal `calc_centroids_dim1`/`lcg_rand16`
+  reseed path, exercised via a dedicated forced-empty-cluster scenario).
+  Carrying `PORT-NOTE(unverified)` markers (all reachable only through
+  `static` C functions with no exported symbol — validated instead by
+  hand-derived vectors traced against the C source, this project's
+  WEAKEST evidence tier):
+  - `delta_encode_steps` / `delta_encode_bits` — C `delta_encode_cost`,
+    `static` in palette.c:80-109.
+  - `remove_duplicates` — C `av1_remove_duplicates`, `static` in
+    palette.c:66-78.
+  - `optimize_palette_colors` — `static AOM_INLINE` in palette.c:250-270.
+  - `extend_palette_color_map` — `static AOM_INLINE` in palette.c:275-294.
+  - `palette_color_index_context` — C `av1_fast_palette_color_index_
+    context` + `_on_edge`, both `static inline` in palette.c:612-743.
+  - `color_map_wavefront` — its traversal loop is transcribed from inside
+    the `static` `cost_and_tokenize_map` (palette.c:748-782).
+  Upgrade path for all six: add a `ref_shims.c` wrapper exposing the
+  otherwise-static C function (the sanctioned mechanism this crate already
+  uses for other hard-to-reach C internals), or validate indirectly once
+  chunk 3+ (`search_palette_luma`/RD/PACK) lands and can be differentially
+  tested end-to-end.

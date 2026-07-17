@@ -2138,3 +2138,85 @@ pub fn dilate_block(
         )
     }
 }
+
+// ---------------------------------------------------------------------------
+// Palette pipeline primitives (#71 chunk 1): svt_av1_count_colors
+// (pic_analysis_process.c:892), svt_av1_index_color_cache /
+// svt_av1_k_means_dim1_c / svt_av1_calc_indices_dim1_c (palette.c). All
+// exported `T` symbols.
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn svt_av1_count_colors(src: *const u8, stride: i32, rows: i32, cols: i32, val_count: *mut i32) -> i32;
+    fn svt_av1_index_color_cache(
+        color_cache: *const u16,
+        n_cache: i32,
+        colors: *const u16,
+        n_colors: i32,
+        cache_color_found: *mut u8,
+        out_cache_colors: *mut i32,
+    ) -> i32;
+    fn svt_av1_k_means_dim1_c(data: *const i32, centroids: *mut i32, indices: *mut u8, n: i32, k: i32, max_itr: i32);
+    fn svt_av1_calc_indices_dim1_c(data: *const i32, centroids: *const i32, indices: *mut u8, n: i32, k: i32);
+}
+
+/// Reference `svt_av1_count_colors` (pic_analysis_process.c:892). Writes
+/// the 256-bin histogram into `val_count` and returns the distinct-color
+/// count.
+pub fn count_colors(src: &[u8], stride: usize, rows: usize, cols: usize, val_count: &mut [i32; 256]) -> i32 {
+    assert!(src.len() >= (rows - 1) * stride + cols);
+    unsafe { svt_av1_count_colors(src.as_ptr(), stride as i32, rows as i32, cols as i32, val_count.as_mut_ptr()) }
+}
+
+/// Reference `svt_av1_index_color_cache` (palette.c:111-141).
+/// `out_cache_colors` is `int*` in C (arithmetic convenience for the
+/// downstream delta-encode cost, not a wider color domain) — kept as
+/// `i32` here so the FFI boundary matches the real signature exactly;
+/// callers narrow to `u16` when comparing against the Rust port.
+pub fn index_color_cache(
+    color_cache: &[u16],
+    colors: &[u16],
+    cache_color_found: &mut [u8],
+    out_cache_colors: &mut [i32],
+) -> i32 {
+    assert!(cache_color_found.len() >= color_cache.len());
+    assert!(out_cache_colors.len() >= colors.len());
+    unsafe {
+        svt_av1_index_color_cache(
+            color_cache.as_ptr(),
+            color_cache.len() as i32,
+            colors.as_ptr(),
+            colors.len() as i32,
+            cache_color_found.as_mut_ptr(),
+            out_cache_colors.as_mut_ptr(),
+        )
+    }
+}
+
+/// Reference `svt_av1_k_means_dim1_c` (k_means_template.h, `dim=1`
+/// instantiation via palette.c:55-56). `centroids`/`indices` are mutated
+/// in place exactly as the C function does.
+pub fn k_means_dim1(data: &[i32], centroids: &mut [i32], indices: &mut [u8], k: usize, max_itr: i32) {
+    let n = data.len();
+    assert!(indices.len() >= n);
+    assert!(centroids.len() >= k);
+    unsafe {
+        svt_av1_k_means_dim1_c(
+            data.as_ptr(),
+            centroids.as_mut_ptr(),
+            indices.as_mut_ptr(),
+            n as i32,
+            k as i32,
+            max_itr,
+        )
+    }
+}
+
+/// Reference `svt_av1_calc_indices_dim1_c` (k_means_template.h, `dim=1`
+/// instantiation via palette.c:55-56).
+pub fn calc_indices_dim1(data: &[i32], centroids: &[i32], indices: &mut [u8], k: usize) {
+    let n = data.len();
+    assert!(indices.len() >= n);
+    assert!(centroids.len() >= k);
+    unsafe { svt_av1_calc_indices_dim1_c(data.as_ptr(), centroids.as_ptr(), indices.as_mut_ptr(), n as i32, k as i32) }
+}
