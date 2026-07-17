@@ -51,6 +51,14 @@ pub struct PartitionSearchConfig {
     /// MDS3/still quantize path (`quant.rs`) instead of the legacy
     /// dead-zone quantizer. None everywhere else.
     pub c_quant: Option<alloc::sync::Arc<crate::quant::CodingQuantCfg>>,
+    /// Task #86: the Y-origin (luma pixel domain) of the CURRENT TILE's
+    /// own top row. `extract_neighbors` (via [`encode_with_neighbors`])
+    /// uses this instead of the frame's absolute y=0 to decide "above"
+    /// availability, matching AV1's per-tile prediction independence
+    /// (spec: intra prediction never crosses a tile boundary). 0 = single
+    /// tile row (unchanged pre-#86 behavior — the frame's top row IS the
+    /// only tile's top row).
+    pub tile_top_px: usize,
 }
 
 impl PartitionSearchConfig {
@@ -66,6 +74,7 @@ impl PartitionSearchConfig {
             enable_filter_intra: sc.enable_filter_intra,
             min_block_dim: MIN_BLOCK_SIZE,
             c_quant: None,
+            tile_top_px: 0,
         }
     }
 
@@ -81,6 +90,7 @@ impl PartitionSearchConfig {
             enable_filter_intra: true,
             min_block_dim: MIN_BLOCK_SIZE,
             c_quant: None,
+            tile_top_px: 0,
         }
     }
 }
@@ -161,6 +171,30 @@ impl<'a> RefFrameCtx<'a> {
     }
 }
 
+/// Single-tile-row-equivalent form of [`extract_neighbors_tiled`]
+/// (`tile_top = 0`) — kept at the original signature because
+/// `leaf_funnel.rs` (a separate, off-limits workstream file, task #86
+/// scope) calls this exact form.
+///
+/// PORT-NOTE(unverified): `leaf_funnel.rs`'s own intra-edge/filter-intra
+/// prediction is therefore NOT tile-row-aware yet — it inherits the same
+/// "treats a tile's own top row as having a real above neighbor" gap
+/// [`extract_neighbors_tiled`]'s doc describes, for any leaf the M-preset
+/// funnel handles. Verify via: re-run the task #86 identity cells once the
+/// funnel gets its own `tile_top` threading (or once a funnel-covering
+/// preset's 2-tile-row identity cell is added) and confirm the divergence
+/// moves past leaf-funnel-covered blocks.
+pub(crate) fn extract_neighbors(
+    recon: &[u8],
+    stride: usize,
+    abs_x: usize,
+    abs_y: usize,
+    width: usize,
+    height: usize,
+) -> (alloc::vec::Vec<u8>, alloc::vec::Vec<u8>, u8, bool, bool) {
+    extract_neighbors_tiled(recon, stride, abs_x, abs_y, width, height, 0)
+}
+
 /// Extract prediction neighbors for a block at absolute position
 /// (abs_x, abs_y) directly from the reconstruction buffer.
 ///
@@ -181,16 +215,27 @@ impl<'a> RefFrameCtx<'a> {
 /// Filling with anything else (previously a flat 128) makes the encoder
 /// predict from pixels the decoder never sees: an edge V_PRED block coded
 /// against pred=128 decodes against pred=left_ref[0], corrupting the
-/// reconstruction by the difference.
-pub(crate) fn extract_neighbors(
+/// reconstruction by the difference. `tile_top` extends this same rule to
+/// tile-row boundaries (see [`extract_neighbors`] for the untiled form).
+pub(crate) fn extract_neighbors_tiled(
     recon: &[u8],
     stride: usize,
     abs_x: usize,
     abs_y: usize,
     width: usize,
     height: usize,
+    tile_top: usize,
 ) -> (alloc::vec::Vec<u8>, alloc::vec::Vec<u8>, u8, bool, bool) {
-    let has_above = abs_y > 0;
+    // Task #86: `tile_top` is this plane's tile-row origin (0 = single
+    // tile row / unchanged pre-#86 behavior). AV1 intra prediction never
+    // crosses a tile boundary — a block at a TILE's own top row has no
+    // "above" neighbor even when it is NOT the frame's top row (the
+    // frame-absolute `abs_y > 0` this used to read was correct only
+    // because every block used to be in the one tile spanning the whole
+    // frame). Reading real pixel data across a tile-row boundary would
+    // desync a conforming decoder — it reconstructs each tile
+    // independently and has no such pixels to read either.
+    let has_above = abs_y > tile_top;
     let has_left = abs_x > 0;
 
     // C left_ref[0] / above_ref[0]: the first sample of each neighbor edge.
@@ -1575,6 +1620,10 @@ pub(crate) fn encode_fixed_tree(
 /// runs RDOQ on chroma too when enc-dec is bypassed (`md_stage_3` clears
 /// `rdoq_ctrls.skip_uv`, product_coding_loop.c) — plane_type 1 selects the
 /// chroma cost tables and `plane_rd_mult` 13.
+/// `tile_top` is the CHROMA-plane pixel row where the current tile
+/// starts (0 = single tile row). Callers pass the luma tile-row origin
+/// halved — exact since tile rows are always 64-luma-px (SB-aligned)
+/// multiples, and 4:2:0 chroma is exactly half resolution vertically.
 #[allow(clippy::too_many_arguments)]
 pub fn encode_chroma_block_dc(
     src: &[u8],
@@ -1587,9 +1636,10 @@ pub fn encode_chroma_block_dc(
     qindex: u8,
     cq: Option<&crate::quant::CodingQuantCfg>,
     qm_level: u8,
+    tile_top: usize,
 ) -> (alloc::vec::Vec<i32>, u16) {
     let (above, left, _top_left, has_above, has_left) =
-        extract_neighbors(recon, stride, cx, cy, cw, ch);
+        extract_neighbors_tiled(recon, stride, cx, cy, cw, ch, tile_top);
 
     let mut pred = alloc::vec![0u8; cw * ch];
     svtav1_dsp::intra_pred::predict_dc(&mut pred, cw, &above, &left, cw, ch, has_above, has_left);
@@ -1646,7 +1696,7 @@ fn encode_with_neighbors(
     dc_only: bool,
 ) -> PartitionResult {
     let (above, left, top_left, has_above, has_left) =
-        extract_neighbors(recon, recon_stride, abs_x, abs_y, width, height);
+        extract_neighbors_tiled(recon, recon_stride, abs_x, abs_y, width, height, config.tile_top_px);
     encode_single_block(
         src,
         src_stride,
@@ -2314,6 +2364,75 @@ mod tests {
         for i in 0..8 {
             assert_eq!(above[i], ((63 + i) % 256) as u8);
         }
+    }
+
+    /// Task #86: the SAME position as `extract_neighbors_reads_above_row`
+    /// (abs_y=64, real non-zero data sits in row 63) but with `tile_top =
+    /// 64` — i.e. row 64 is THIS tile's own top row. `has_above` must be
+    /// false (AV1 intra prediction never crosses a tile boundary) even
+    /// though row 63 holds real, readable pixel data in the buffer — a
+    /// conforming decoder has no such row for this tile and would desync
+    /// if the encoder predicted from it.
+    #[test]
+    fn extract_neighbors_tiled_top_row_has_no_above() {
+        let w = 128;
+        let h = 128;
+        let mut frame = vec![0u8; w * h];
+        for r in 0..64 {
+            for c in 0..w {
+                frame[r * w + c] = ((r + c) % 256) as u8;
+            }
+        }
+        let (above, left, tl, has_above, has_left) =
+            extract_neighbors_tiled(&frame, w, 0, 64, 8, 8, 64);
+        assert!(!has_above, "row 64 IS this tile's own top row");
+        assert!(!has_left);
+        // Unavailable-above fallback: left_ref[0] if left exists, else 127
+        // (left is also unavailable here, abs_x=0) — matches
+        // extract_neighbors_frame_edge's plain frame-edge expectation.
+        assert!(above.iter().all(|&v| v == 127), "above = {above:?}");
+        assert!(
+            left.iter().all(|&v| v == 129),
+            "left = above_ref[0].unwrap_or(129) when neither is available: {left:?}"
+        );
+        assert_eq!(tl, 128, "top-left = 128 when neither is available");
+    }
+
+    /// Same tile boundary, but abs_x > 0 so "left" IS available — the
+    /// unavailable-above fallback must copy left_ref[0], not a flat 127.
+    #[test]
+    fn extract_neighbors_tiled_top_row_falls_back_to_left() {
+        let w = 128;
+        let mut frame = vec![0u8; w * 128];
+        // Row 64 (this tile's own top row), starting at col 4: give the
+        // "left" column (col 3) a distinct, non-127/128/129 value so the
+        // fallback is unambiguous.
+        frame[64 * w + 3] = 200;
+        let (above, _left, tl, has_above, has_left) =
+            extract_neighbors_tiled(&frame, w, 4, 64, 8, 8, 64);
+        assert!(!has_above);
+        assert!(has_left);
+        assert!(
+            above.iter().all(|&v| v == 200),
+            "above = left_ref[0] when only left exists: {above:?}"
+        );
+        assert_eq!(tl, 200, "top-left = left_ref[0] when only left exists");
+    }
+
+    /// A block strictly BELOW a tile's top row (not the first row) still
+    /// sees a real above neighbor from earlier in the SAME tile — only
+    /// the tile's OWN top row loses availability.
+    #[test]
+    fn extract_neighbors_tiled_interior_row_has_above() {
+        let w = 128;
+        let mut frame = vec![0u8; w * 128];
+        for c in 0..w {
+            frame[71 * w + c] = 77;
+        }
+        let (above, _left, _tl, has_above, _has_left) =
+            extract_neighbors_tiled(&frame, w, 0, 72, 8, 8, 64);
+        assert!(has_above, "row 72 is inside the tile (top row = 64)");
+        assert!(above.iter().all(|&v| v == 77));
     }
 
     #[test]

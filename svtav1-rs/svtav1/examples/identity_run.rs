@@ -23,6 +23,10 @@
 //! invariant is that this ONE .yuv is the exact byte stream the C driver
 //! encodes too, so the RGB->YUV choice need not match any spec — only be
 //! fixed and deterministic (both encoders see identical YUV).
+//!
+//! Env: SVTAV1_TILE_ROWS_LOG2 (default 0) — TileRowsLog2 request, same
+//! log2 units as C's cfg.tile_rows / the C driver's SVT_TILE_ROWS (task
+//! #86). 0 = single tile row (unchanged default).
 
 use svtav1_encoder::pipeline::EncodePipeline;
 use svtav1_encoder::rate_control::{RcConfig, RcMode};
@@ -194,8 +198,16 @@ fn main() {
         qp, // CLI domain 0..63, same as the C driver's cfg.qp
         ..RcConfig::default()
     };
-    let mut pipeline =
-        EncodePipeline::new(w as u32, h as u32, preset, rc, 0, 1).with_chroma_420(true);
+    // task #86: real tile rows. SVTAV1_TILE_ROWS_LOG2 (default 0) is the
+    // log2 domain directly — same units as C's cfg.tile_rows
+    // (EbSvtAv1Enc.h:607-611) and capture_c_trace's SVT_TILE_ROWS env var.
+    let tile_rows_log2: u8 = std::env::var("SVTAV1_TILE_ROWS_LOG2")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let mut pipeline = EncodePipeline::new(w as u32, h as u32, preset, rc, 0, 1)
+        .with_chroma_420(true)
+        .with_tile_rows_log2(tile_rows_log2);
     let obu = pipeline.encode_frame_420(&y, &u, &v, w);
     std::fs::write(format!("{prefix}.obu"), &obu).expect("write .obu");
 

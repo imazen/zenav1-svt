@@ -492,3 +492,124 @@ after the code is in. Rules:
   above/left MERGE loop (the SB-row-drop + sorted-merge-with-dedup logic)
   is only exercised on the trivial empty-cache early return until a
   palette winner exists on an adjacent block.
+- **Tile rows (task #86 phase 1, allintra KEY path)** —
+  `crates/svtav1-entropy/src/obu.rs` (`resolve_tile_rows_log2`,
+  `tile_row_log2_limits`, `tile_log2_blk`, `write_tile_info`,
+  `tile_size_bytes_minus_1_for`, `build_tile_group_multi`) +
+  `crates/svtav1-encoder/src/pipeline.rs` (`EncodePipeline::tile_rows_log2`
+  / `with_tile_rows_log2`, the per-tile loop inside `run_entropy_walk`) +
+  `crates/svtav1-encoder/src/partition.rs`
+  (`PartitionSearchConfig::tile_top_px`, `extract_neighbors_tiled`).
+  Tile COLUMNS are out of scope (always 1 column); default
+  `tile_rows_log2 = 0` is byte-identical to pre-#86 (36/36
+  `identity_matrix.sh`, unaffected).
+  - **FH/tile_info bits: VERIFIED byte-identical to real aomenc/SVT-AV1 C**
+    at `tile_rows_log2 = 1` (2 tile rows), both the 128x128 (hits
+    `maxLog2TileRows` exactly — no trailing stop bit) and 512x512 (doesn't
+    hit the max — has one) shapes, via `tools/identity_diff.py`'s
+    field-level FH walk: "FRAME field walk... all decoded fields
+    identical" including the `increment_tile_rows_log2`/
+    `context_update_tile_id`/`tile_size_bytes_minus_1` trailer. Verified
+    with unit tests too (`tile_info_128x128_two_tile_rows`,
+    `tile_info_512x512_two_tile_rows`, `resolve_tile_rows_log2_clamps_
+    like_c`, `tile_size_bytes_minus_1_for_thresholds`,
+    `build_tile_group_multi_variable_width_prefix`).
+  - **Real bug found+fixed while landing this (pre-existing, unreachable
+    before #86 since `tile_rows` was always 1)**: `encode_tile_rows`'s
+    `chain_snaps` per-SB CDF-chain accumulator (pipeline.rs, the
+    `funnel_chain`/M4-M6 rate-estimate path) was indexed by the ABSOLUTE
+    frame-wide `sb_index`, but is a vector that starts EMPTY at every
+    `tile_idx` — tile_idx >= 1 panicked with "index out of bounds"
+    (`chain_snaps[sb_index - 1]` when `chain_snaps.len() == 0`). Fixed by
+    indexing with a TILE-LOCAL `local_sb_index = (sb_row -
+    tile_sb_row_start) * sb_cols + sb_col` and gating `topright_avail` on
+    `sb_row > tile_sb_row_start` (was `sb_row > 0`) instead.
+  - **Real bug found+fixed (intra-prediction availability at a tile's own
+    top row)**: `partition.rs::extract_neighbors` computed `has_above =
+    abs_y > 0` (frame-absolute) instead of tile-relative — a block at a
+    TILE's own top row (not the frame's) would read stale/default-128
+    pixel data across the tile boundary as if it were a real "above"
+    neighbor, instead of falling back to the C decoder's real
+    unavailable-neighbor rule (`left_ref[0]` else 127) — a genuine
+    bitstream-CORRECTNESS bug (encoder/decoder CDF-context and
+    prediction disagreement), not merely a byte-identity nicety, for any
+    block whose tile-relative row is 0 but frame-absolute row is not.
+    Fixed via a new `tile_top: usize` param
+    (`extract_neighbors_tiled` — the original `extract_neighbors(...)`
+    6-arg signature is kept AS A THIN WRAPPER at `tile_top=0` because
+    `leaf_funnel.rs` — a separate, off-limits workstream file, task #86
+    scope — calls it directly) threaded via
+    `PartitionSearchConfig::tile_top_px` (MD search,
+    `encode_with_neighbors`) and `EntropyCtx::tile_top_px` (pack side,
+    `encode_chroma_block_dc`'s `tile_top` param — chroma-plane units,
+    `ectx.tile_top_px / 2`; also fixed `tx_size_ctx`'s equivalent
+    `y > 0` check, empirically inert for that ONE call site — a
+    freshly-reset array reads 0 either way — but wrong by the same
+    reasoning). Verified via 3 new targeted unit tests
+    (`extract_neighbors_tiled_top_row_has_no_above`,
+    `_falls_back_to_left`, `_interior_row_has_above`) proving the exact
+    before/after behavior at a tile boundary.
+  - **PORT-NOTE(unverified) — `leaf_funnel.rs` has the SAME
+    intra-availability gap, unfixed (off-limits file).** Its own
+    `extract_neighbors` call (leaf_funnel.rs:978) uses the untiled
+    wrapper (`tile_top=0` always). Because `use_funnel` (pipeline.rs) is
+    true whenever `chroma_420 && chroma_src.is_some() &&
+    ref_frame_data.is_none() && c_quant.is_some()` — which is EVERY
+    still/4:2:0/KEY/64-aligned encode, i.e. every config the identity
+    harness can produce — 100% of the task #86 acceptance cells route
+    through `leaf_funnel.rs`, so the `PartitionSearchConfig::tile_top_px`
+    fix above is real and unit-tested but DORMANT for those specific
+    cells; the dominant residual divergence they show is this gap (plus
+    the LR one below), not the fixed one. Marker at
+    `partition.rs::extract_neighbors`'s doc comment. Verify by adding
+    `tile_top` threading inside `leaf_funnel.rs` (coordinate with its
+    owning workstream) and re-running the task #86 identity cells.
+  - **PORT-NOTE(unverified) — loop-restoration RU grid is frame-wide, not
+    per-tile.** Marker at the `search_restoration_still` call site in
+    `pipeline.rs` (~line 1114, `Step 6a''`): the RU grid
+    (`svtav1_dsp::restoration::count_units_in_tile`/
+    `foreach_rest_unit_in_tile`, genuinely tile-parameterized in C per
+    restoration.c) is invoked ONCE post-tile-merge over the WHOLE frame,
+    matching C only at NumTiles==1. Empirically the dominant divergence
+    class in the task #86 acceptance cells that reach far enough to
+    signal wiener (both preset-6 cells: gradient 128x128 q32 and
+    1147124.png 512x512, both classified "op-class: lr-taps
+    (wiener_restore + literal run)" with FH byte-identical and hundreds
+    of tile-payload bytes matching before the LR-tap divergence).
+  - **Acceptance-gate results (task #86 phase 1, all at `tile_rows_log2 =
+    1` / `SVT_TILE_ROWS = 1` on the C side — see the units note below):**
+    `identity_matrix.sh` 36/36 (regression, log2=0 default, unaffected).
+    `gradient 128x128 q32 p6`: FH byte-identical (77 bits/34 fields);
+    tile payload DIFFERS at byte +958, "op-class: lr-taps" (the LR gap
+    above). `1147124.png 512x512 q20 p2`: diverges EARLIER, at a
+    `loop_filter_level[0]` VALUE mismatch (C=8, Rust=9) — a genuine
+    per-tile-independent-MD-search RD cascade (this preset does its own
+    full deblock-level SSE search over the recon, which differs once
+    upstream per-tile decisions differ — same root-cause CLASS as the
+    intra-availability bug, but inside `leaf_funnel.rs`, not proven to be
+    the exact same instance; not further isolated this session).
+    `1147124.png 512x512 q20 p6`: FH byte-identical; tile payload DIFFERS
+    at the LR layer (same "lr-taps" class as the 128x128 p6 cell).
+  - **Units note**: the C driver's `SVT_TILE_ROWS` env var (task #86
+    harness spec) is a DIRECT passthrough to `cfg.tile_rows`, which the
+    public API documents as the LOG2 value (`EbSvtAv1Enc.h:607-611`,
+    "0 means no tiling, 1 means split into 2") — i.e. `SVT_TILE_ROWS=1`
+    means the SAME "2 tile rows" as `SVTAV1_TILE_ROWS_LOG2=1`, NOT
+    `SVT_TILE_ROWS=2`. Empirically confirmed:
+    `SVT_TILE_ROWS=2` on a 512x512 cell (8 SB rows, so no coincidental
+    clamp) makes the C side pick TileRowsLog2=2 (4 actual tile rows)
+    while Rust stays at log2=1 (2 tile rows) — the differ catches it
+    precisely at the FH bit level (`STAGE: FH |
+    increment_tile_rows_log2[1] C=1 Rust=0`). All acceptance-cell numbers
+    above use the MATCHED config (`SVT_TILE_ROWS=1`).
+  - **Not yet ported (tile columns, non-uniform tile spacing, the C
+    "fewer actual tiles than `1 << TileRowsLog2` requested" edge case
+    when a request exceeds SB-row count at a non-power-of-2 split)** —
+    out of task #86's scope; `resolve_tile_rows_log2`'s min/max clamp IS
+    fully ported (mirrors `svt_av1_get_tile_limits` +
+    `svt_aom_set_tile_info`'s row half), only the ACTUAL SB-row split
+    (`rows_per_tile = sb_rows.div_ceil(tile_rows)`, pre-existing in
+    `encode_tile_rows`) keeps the simpler "exactly `1 << log2` tiles,
+    some possibly empty" shape instead of C's early-stopping loop —
+    unreachable by any in-scope test cell (both use clean, power-of-2
+    splits).

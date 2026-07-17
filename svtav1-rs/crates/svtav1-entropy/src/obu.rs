@@ -6,6 +6,7 @@
 //! the AV1 specification (av1-spec-errata1) exactly.
 
 use alloc::vec::Vec;
+use svtav1_types::bitstream::{MAX_TILE_AREA, MAX_TILE_COLS, MAX_TILE_ROWS, MAX_TILE_WIDTH};
 
 /// CICP color description for AV1 sequence headers.
 ///
@@ -779,6 +780,8 @@ pub fn write_key_frame_header_full(
         None, // delta_q_res: no per-SB delta-q
         None, // qm: quant matrices off
         None, // fgs: no film grain
+        0,    // tile_rows_log2: legacy wrapper stays single-tile
+        0,    // tile_size_bytes_minus_1: unused when tile_rows_log2 == 0
     )
 }
 
@@ -834,6 +837,14 @@ pub struct CdefSignal {
     pub strengths: Vec<(u8, u8)>,
 }
 
+/// `tile_rows_log2` MUST already be resolved via
+/// [`resolve_tile_rows_log2`] (the value the caller actually split the
+/// frame into); `tile_size_bytes_minus_1` MUST be the same value passed to
+/// [`build_tile_group_multi`] for this frame's tile bitstreams — the two
+/// are independently-computed byte-identical siblings, and disagreement
+/// between them produces a non-decodable stream. Both are unused (any
+/// value is fine, `0` by convention) when `tile_rows_log2 == 0`.
+#[allow(clippy::too_many_arguments)]
 pub fn write_key_frame_header_full_lr(
     width: u32,
     height: u32,
@@ -849,6 +860,8 @@ pub fn write_key_frame_header_full_lr(
     delta_q_res: Option<u8>,
     qm: Option<[u8; 3]>,
     fgs: Option<&FilmGrainParams>,
+    tile_rows_log2: u8,
+    tile_size_bytes_minus_1: u8,
 ) -> Vec<u8> {
     let mut wb = key_frame_header_bits_lr(
         width,
@@ -865,6 +878,8 @@ pub fn write_key_frame_header_full_lr(
         delta_q_res,
         qm,
         fgs,
+        tile_rows_log2,
+        tile_size_bytes_minus_1,
     );
     // This header is embedded in an OBU_FRAME: the spec requires
     // byte_alignment() (zero bits only) between frame_header and tile_group —
@@ -909,6 +924,8 @@ fn key_frame_header_bits(
         None, // delta_q_res: no per-SB delta-q
         None, // qm: quant matrices off
         None, // fgs: no film grain
+        0,    // tile_rows_log2: test wrapper stays single-tile
+        0,    // tile_size_bytes_minus_1: unused when tile_rows_log2 == 0
     )
 }
 
@@ -929,6 +946,8 @@ fn key_frame_header_bits_lr(
     delta_q_res: Option<u8>,
     qm: Option<[u8; 3]>,
     fgs: Option<&FilmGrainParams>,
+    tile_rows_log2: u8,
+    tile_size_bytes_minus_1: u8,
 ) -> BitWriter {
     let mut wb = BitWriter::new();
 
@@ -983,7 +1002,7 @@ fn key_frame_header_bits_lr(
     }
 
     // ---- tile_info() ----
-    write_tile_info(&mut wb, width, height);
+    write_tile_info(&mut wb, width, height, tile_rows_log2, tile_size_bytes_minus_1);
 
     // ---- quantization_params() ----
     // Spec 5.9.12; decoder authority: libaom setup_quantization
@@ -1195,21 +1214,120 @@ fn byte_align_zero(wb: &mut BitWriter) {
     }
 }
 
-/// AV1 spec Section 5.9.15: tile_info().
+/// Two-argument tile_log2 (C `tile_log2(blk_size, target)`,
+/// entropy_coding.c): smallest `k` such that `blk_size << k >= target`.
+/// The single-arg [`tile_log2`] above is this with `blk_size = 1`.
+fn tile_log2_blk(blk_size: u32, target: u32) -> u32 {
+    let mut k = 0u32;
+    while (blk_size << k) < target {
+        k += 1;
+    }
+    k
+}
+
+/// Rows-only port of `svt_av1_get_tile_limits` + the tile-rows half of
+/// `svt_aom_set_tile_info` (entropy_coding.c:2450-2579): clamps a
+/// requested `TileRowsLog2` into `[minLog2TileRows, maxLog2TileRows]`
+/// exactly like C, so an out-of-range request (e.g. more tile rows than
+/// SB rows exist) degrades identically to the C reference instead of
+/// producing a bitstream inconsistent with what was actually encoded.
 ///
-/// Writes uniform tile spacing with a single tile (no splitting).
-fn write_tile_info(wb: &mut BitWriter, width: u32, height: u32) {
+/// Tile COLUMNS are out of scope for this port (task #86 covers tile rows
+/// only) and are assumed fixed at `TileColsLog2 = 0` — true for every
+/// width this harness exercises (`minLog2TileCols` is 0 up to
+/// `MAX_TILE_WIDTH` SBs wide, i.e. 4096px). [`write_tile_info`]'s column
+/// bits are unaffected and unchanged by this function.
+pub fn resolve_tile_rows_log2(width: u32, height: u32, requested_log2: u8) -> u8 {
+    let (min_log2_tile_rows, max_log2_tile_rows) = tile_row_log2_limits(width, height);
+    (u32::from(requested_log2)).clamp(min_log2_tile_rows, max_log2_tile_rows) as u8
+}
+
+/// `(minLog2TileRows, maxLog2TileRows)` per spec 5.9.15 / C
+/// `svt_av1_get_tile_limits` (entropy_coding.c:2450), assuming
+/// `TileColsLog2 = 0` (see [`resolve_tile_rows_log2`]).
+fn tile_row_log2_limits(width: u32, height: u32) -> (u32, u32) {
     let sb_size = 64u32; // use_128x128_superblock = 0
+    // C: sb_size_log2 = log2_sb_size(MI units) + MI_SIZE_LOG2(2). For a
+    // 64px SB (use_128x128_superblock=0, the only case this port emits):
+    // log2_sb_size = log2(64/4) = 4, so sb_size_log2 = 4 + 2 = 6.
+    let sb_size_log2 = 6u32;
     let sb_cols = width.div_ceil(sb_size);
     let sb_rows = height.div_ceil(sb_size);
+
+    let max_tile_width_sb = (MAX_TILE_WIDTH as u32) >> sb_size_log2;
+    let max_tile_area_sb = (MAX_TILE_AREA as u32) >> (2 * sb_size_log2);
+    let min_log2_tile_cols = tile_log2_blk(max_tile_width_sb, sb_cols);
+    // min_log2_tiles = max(min_log2_tile_cols, tile_log2(max_tile_area_sb, sb_rows*sb_cols))
+    let min_log2_tiles = tile_log2_blk(max_tile_area_sb, sb_rows * sb_cols).max(min_log2_tile_cols);
+    // min_log2_tile_rows = max(min_log2_tiles - TileColsLog2(=0), 0)
+    let min_log2_tile_rows = min_log2_tiles;
+    let max_log2_tile_rows = tile_log2(sb_rows.min(MAX_TILE_ROWS as u32));
+    (min_log2_tile_rows, max_log2_tile_rows)
+}
+
+/// C `mem_put_varsize` (entropy_coding.c:32): pack `val` into `sz` bytes,
+/// little-endian, `sz` in `1..=4`.
+fn put_varsize(sz: u8, val: u32) -> Vec<u8> {
+    match sz {
+        1 => alloc::vec![val as u8],
+        2 => alloc::vec![val as u8, (val >> 8) as u8],
+        3 => alloc::vec![val as u8, (val >> 8) as u8, (val >> 16) as u8],
+        4 => val.to_le_bytes().to_vec(),
+        _ => unreachable!("tile_size_bytes must be 1..=4"),
+    }
+}
+
+/// C tile-size-prefix byte width selection (`write_tile_info`,
+/// entropy_coding.c:2598-2610): the number of bytes needed to hold the
+/// largest tile's RAW byte length (NOT `len - 1`) among every tile
+/// EXCEPT the last (the last tile is never size-prefixed — spec 5.11.1).
+/// Returns `tile_size_bytes_minus_1` (0..=3); the trailer literal AND
+/// the actual prefix width (`+ 1`) both derive from this one value, and
+/// BOTH the frame-header [`write_tile_info`] trailer and
+/// [`build_tile_group_multi`] must agree on it — callers compute it once
+/// (from the concrete per-tile byte lengths) and thread it to both.
+pub fn tile_size_bytes_minus_1_for(non_last_tile_lens: &[usize]) -> u8 {
+    let max_tile_size = non_last_tile_lens.iter().copied().max().unwrap_or(0) as u64;
+    if (max_tile_size >> 24) != 0 {
+        3
+    } else if (max_tile_size >> 16) != 0 {
+        2
+    } else if (max_tile_size >> 8) != 0 {
+        1
+    } else {
+        0
+    }
+}
+
+/// AV1 spec Section 5.9.15: tile_info().
+///
+/// Tile COLUMNS stay fixed at a single column (`TileColsLog2 = 0`,
+/// unchanged from before task #86 — out of scope). Tile ROWS honor
+/// `tile_rows_log2`, which the caller MUST have already resolved via
+/// [`resolve_tile_rows_log2`] (this function trusts it and does not
+/// re-clamp, so the emitted bits always match how many tiles were
+/// actually encoded).
+///
+/// `tile_size_bytes_minus_1` is only meaningful (and only written, as the
+/// spec's trailer `tile_size_bytes_minus_1 f(2)`) when `NumTiles > 1`; the
+/// caller derives it from the real per-tile byte lengths via
+/// [`tile_size_bytes_minus_1_for`] and must pass the SAME value used to
+/// build the tile group (`build_tile_group_multi`) or the FH's declared
+/// `TileSizeBytes` will disagree with the tile group's actual size
+/// prefixes.
+fn write_tile_info(wb: &mut BitWriter, width: u32, height: u32, tile_rows_log2: u8, tile_size_bytes_minus_1: u8) {
+    let sb_size = 64u32; // use_128x128_superblock = 0
+    let sb_cols = width.div_ceil(sb_size);
+    // Row limits (min/max log2 for the row sub-syntax below) come from the
+    // shared `tile_row_log2_limits` helper, which recomputes sb_rows
+    // itself — no separate local needed here.
 
     wb.write_bit(true); // uniform_tile_spacing_flag = 1
 
     // TileColsLog2 starts at minLog2TileCols.
     // For our small images, minLog2TileCols = 0.
     // maxLog2TileCols = tile_log2(min(sbCols, MAX_TILE_COLS))
-    // MAX_TILE_COLS = 64 in AV1 spec
-    let max_log2_tile_cols = tile_log2(sb_cols.min(64));
+    let max_log2_tile_cols = tile_log2(sb_cols.min(MAX_TILE_COLS as u32));
     // The decoder reads increment_tile_cols_log2 bits until a 0: a single
     // 0 keeps TileColsLog2 = 0 (single tile column). No bit at all when
     // no increment is even possible (maxLog2TileCols == 0).
@@ -1217,16 +1335,37 @@ fn write_tile_info(wb: &mut BitWriter, width: u32, height: u32) {
         wb.write_bit(false); // increment_tile_cols_log2 = 0 → stop
     }
 
-    // TileRowsLog2 starts at max(minLog2Tiles - TileColsLog2, 0) = 0
-    // maxLog2TileRows = tile_log2(min(sbRows, MAX_TILE_ROWS))
-    // MAX_TILE_ROWS = 64 in AV1 spec
-    let max_log2_tile_rows = tile_log2(sb_rows.min(64));
-    if max_log2_tile_rows > 0 {
+    // TileRowsLog2: minLog2TileRows..=maxLog2TileRows, per C
+    // write_tile_info_max_tile (entropy_coding.c:2403): `ones` "1" bits
+    // (each an increment_tile_rows_log2=1), then — UNLESS TileRowsLog2
+    // already reached maxLog2TileRows — one final "0" stop bit.
+    let (min_log2_tile_rows, max_log2_tile_rows) = tile_row_log2_limits(width, height);
+    let log2_tile_rows = u32::from(tile_rows_log2);
+    debug_assert!(
+        log2_tile_rows >= min_log2_tile_rows && log2_tile_rows <= max_log2_tile_rows,
+        "tile_rows_log2 must be pre-resolved via resolve_tile_rows_log2"
+    );
+    let ones = log2_tile_rows - min_log2_tile_rows;
+    for _ in 0..ones {
+        wb.write_bit(true); // increment_tile_rows_log2 = 1 → continue
+    }
+    if log2_tile_rows < max_log2_tile_rows {
         wb.write_bit(false); // increment_tile_rows_log2 = 0 → stop
     }
 
-    // TileColsLog2=0, TileRowsLog2=0 → NumTiles=1
-    // No context_update_tile_id or tile_size_bytes_minus_1 needed
+    // n_log2_tiles = TileRowsLog2 + TileColsLog2(=0). NumTiles > 1 iff
+    // either is nonzero (spec 5.9.15's `if (TileColsLog2 > 0 ||
+    // TileRowsLog2 > 0)`); columns are always 0 here.
+    if log2_tile_rows > 0 {
+        // context_update_tile_id: SVT always picks the LAST tile (C
+        // write_tile_info, entropy_coding.c:2593-2595: literal value
+        // `tile_cnt - 1`), which for TileColsLog2=0 is exactly
+        // `(1 << TileRowsLog2) - 1` — an all-ones pattern of
+        // `log2_tile_rows` bits.
+        let num_tiles = 1u32 << log2_tile_rows;
+        wb.write_bits(num_tiles - 1, log2_tile_rows);
+        wb.write_bits(u32::from(tile_size_bytes_minus_1), 2);
+    }
 }
 
 /// Write an inter frame header (non-reduced SH).
@@ -1329,14 +1468,36 @@ pub fn build_tile_group_single(tile_data: &[u8]) -> Vec<u8> {
 ///
 /// AV1 spec Section 5.11.1: For NumTiles > 1, write
 /// tile_start_and_end_present_flag=0 (all tiles in one TG), byte align,
-/// then for each tile except the last: 4-byte LE tile size, followed by
-/// tile data. The last tile has no size prefix.
-pub fn build_tile_group_multi(tile_bitstreams: &[Vec<u8>]) -> Vec<u8> {
+/// then for each tile except the last: `TileSizeBytes`-byte little-endian
+/// `tile_size_minus_1`, followed by the tile's data. The last tile has no
+/// size prefix (C `svt_aom_write_frame_header_av1`,
+/// entropy_coding.c:3906-3919, `mem_put_varsize`).
+///
+/// `tile_size_bytes_minus_1` MUST be [`tile_size_bytes_minus_1_for`] of
+/// `tile_bitstreams[..len-1]`'s lengths — computed by the caller (once,
+/// alongside the frame header's identical trailer field) rather than
+/// re-derived here, so the two can never silently disagree.
+pub fn build_tile_group_multi(tile_bitstreams: &[Vec<u8>], tile_size_bytes_minus_1: u8) -> Vec<u8> {
     if tile_bitstreams.len() <= 1 {
         return build_tile_group_single(
             tile_bitstreams.first().map(|v| v.as_slice()).unwrap_or(&[]),
         );
     }
+    let tile_size_bytes = tile_size_bytes_minus_1 + 1;
+    debug_assert!(
+        (1..=4).contains(&tile_size_bytes),
+        "tile_size_bytes_minus_1 must be 0..=3"
+    );
+    debug_assert_eq!(
+        tile_size_bytes_minus_1,
+        tile_size_bytes_minus_1_for(
+            &tile_bitstreams[..tile_bitstreams.len() - 1]
+                .iter()
+                .map(|t| t.len())
+                .collect::<Vec<_>>()
+        ),
+        "tile_size_bytes_minus_1 must match tile_size_bytes_minus_1_for(non-last tile lengths)"
+    );
 
     let mut wb = BitWriter::new();
     // NumTiles > 1: tile_start_and_end_present_flag = 0 (all tiles in this
@@ -1348,7 +1509,7 @@ pub fn build_tile_group_multi(tile_bitstreams: &[Vec<u8>]) -> Vec<u8> {
     let total_size: usize = header.len()
         + tile_bitstreams[..tile_bitstreams.len() - 1]
             .iter()
-            .map(|t| 4 + t.len())
+            .map(|t| tile_size_bytes as usize + t.len())
             .sum::<usize>()
         + tile_bitstreams.last().map_or(0, |t| t.len());
 
@@ -1358,7 +1519,7 @@ pub fn build_tile_group_multi(tile_bitstreams: &[Vec<u8>]) -> Vec<u8> {
     for (i, tile) in tile_bitstreams.iter().enumerate() {
         if i < tile_bitstreams.len() - 1 {
             let size_minus_1 = (tile.len() as u32).saturating_sub(1);
-            result.extend_from_slice(&size_minus_1.to_le_bytes());
+            result.extend_from_slice(&put_varsize(tile_size_bytes, size_minus_1));
         }
         result.extend_from_slice(tile);
     }
@@ -1478,20 +1639,119 @@ mod tests {
 
     #[test]
     fn tile_info_single_sb() {
-        // 64x64 = 1 SB → uniform + no increments
+        // 64x64 = 1 SB → uniform + no increments, log2=0 (regression baseline)
         let mut wb = BitWriter::new();
-        write_tile_info(&mut wb, 64, 64);
+        write_tile_info(&mut wb, 64, 64, 0, 0);
         // Should be just 1 bit (uniform_tile_spacing_flag)
         assert_eq!(wb.bit_offset, 1);
     }
 
     #[test]
     fn tile_info_four_sbs() {
-        // 128x128 = 4 SBs → uniform + 1 col increment + 1 row increment
+        // 128x128 = 4 SBs, log2=0 requested → uniform + 1 col increment +
+        // 1 row stop bit (regression baseline: task #86 must not change
+        // this byte shape when tile_rows_log2 == 0).
         let mut wb = BitWriter::new();
-        write_tile_info(&mut wb, 128, 128);
-        // uniform_flag (1) + col_increment (1) + row_increment (1) = 3
+        write_tile_info(&mut wb, 128, 128, 0, 0);
+        // uniform_flag (1) + col_increment_stop (1) + row_increment_stop (1) = 3
         assert_eq!(wb.bit_offset, 3);
+    }
+
+    #[test]
+    fn tile_info_128x128_two_tile_rows() {
+        // 128x128 = 2x2 SBs, tile_rows_log2=1 (the task #86 acceptance
+        // config): TileRowsLog2 hits maxLog2TileRows(1) exactly, so the
+        // rows sub-syntax is ONE "1" bit and NO trailing stop bit (the
+        // spec's `while (TileRowsLog2 < maxLog2TileRows)` loop condition
+        // itself terminates the syntax, unlike the col case which stops
+        // early via an explicit "0").
+        assert_eq!(resolve_tile_rows_log2(128, 128, 1), 1);
+        let mut wb = BitWriter::new();
+        write_tile_info(&mut wb, 128, 128, 1, 0);
+        // uniform(1) + col_stop(1) + row_inc(1) + context_update_tile_id
+        // (1 bit, value=(1<<1)-1=1) + tile_size_bytes_minus_1(2 bits, 0) = 6
+        assert_eq!(wb.bit_offset, 6);
+        // bit sequence MSB-first: 1,0,1, 1, 0,0 -> 0b1011_0000
+        assert_eq!(wb.data(), &[0b1011_0000]);
+    }
+
+    #[test]
+    fn tile_info_512x512_two_tile_rows() {
+        // 512x512 = 8x8 SBs: maxLog2TileRows=3, so requesting log2=1 stops
+        // BEFORE the max and needs the trailing "0" (unlike the 128x128
+        // case above, which hit its max exactly and has no stop bit).
+        assert_eq!(resolve_tile_rows_log2(512, 512, 1), 1);
+        let mut wb = BitWriter::new();
+        write_tile_info(&mut wb, 512, 512, 1, 0);
+        // uniform(1) + col: maxLog2TileCols=3>0 -> stop(1) + row: one
+        // "1" increment + one "0" stop (2 bits, since 1 < 3) +
+        // context_update_tile_id(1 bit, value=1) + tile_size_bytes(2) = 7
+        assert_eq!(wb.bit_offset, 7);
+        // 1,0, 1,0, 1, 0,0 -> 0b1010_100(0 unwritten) = 0xA8
+        assert_eq!(wb.data(), &[0b1010_1000]);
+    }
+
+    #[test]
+    fn resolve_tile_rows_log2_clamps_like_c() {
+        // 64x64 = 1 SB row: maxLog2TileRows = tile_log2(1) = 0, so any
+        // request clamps down to 0 (single tile row) — matches C's
+        // svt_aom_set_tile_info AOMMIN(log2_tile_rows, max_log2_tile_rows).
+        assert_eq!(resolve_tile_rows_log2(64, 64, 0), 0);
+        assert_eq!(resolve_tile_rows_log2(64, 64, 1), 0);
+        assert_eq!(resolve_tile_rows_log2(64, 64, 6), 0);
+        // 128x128 = 2 SB rows: max = 1.
+        assert_eq!(resolve_tile_rows_log2(128, 128, 0), 0);
+        assert_eq!(resolve_tile_rows_log2(128, 128, 1), 1);
+        assert_eq!(resolve_tile_rows_log2(128, 128, 5), 1);
+        // 512x512 = 8 SB rows: max = 3.
+        assert_eq!(resolve_tile_rows_log2(512, 512, 0), 0);
+        assert_eq!(resolve_tile_rows_log2(512, 512, 1), 1);
+        assert_eq!(resolve_tile_rows_log2(512, 512, 3), 3);
+        assert_eq!(resolve_tile_rows_log2(512, 512, 10), 3);
+    }
+
+    #[test]
+    fn tile_size_bytes_minus_1_for_thresholds() {
+        assert_eq!(tile_size_bytes_minus_1_for(&[]), 0);
+        assert_eq!(tile_size_bytes_minus_1_for(&[0]), 0);
+        assert_eq!(tile_size_bytes_minus_1_for(&[255]), 0);
+        assert_eq!(tile_size_bytes_minus_1_for(&[256]), 1);
+        assert_eq!(tile_size_bytes_minus_1_for(&[65535]), 1);
+        assert_eq!(tile_size_bytes_minus_1_for(&[65536]), 2);
+        assert_eq!(tile_size_bytes_minus_1_for(&[16_777_215]), 2);
+        assert_eq!(tile_size_bytes_minus_1_for(&[16_777_216]), 3);
+        // Only the non-last tiles matter — the max is taken over the slice
+        // the caller passes (callers pass `lens[..len-1]`).
+        assert_eq!(tile_size_bytes_minus_1_for(&[10, 65536, 20]), 2);
+    }
+
+    #[test]
+    fn build_tile_group_multi_variable_width_prefix() {
+        // First tile > 255 bytes forces a 2-byte tile_size_minus_1 prefix
+        // (matching C mem_put_varsize / the trailer this function's
+        // caller must write identically into tile_info()).
+        let tile0 = vec![0xABu8; 300];
+        let tile1 = vec![0xCDu8; 10];
+        let tsb1 = tile_size_bytes_minus_1_for(&[tile0.len()]);
+        assert_eq!(tsb1, 1); // 300 >> 8 != 0, >> 16 == 0
+        let out = build_tile_group_multi(&[tile0.clone(), tile1.clone()], tsb1);
+        // header: tile_start_and_end_present_flag(0) + byte_align -> 1 byte of 0x00
+        assert_eq!(out[0], 0x00);
+        // 2-byte LE size_minus_1 = 299
+        assert_eq!(&out[1..3], &299u16.to_le_bytes());
+        assert_eq!(&out[3..3 + 300], tile0.as_slice());
+        assert_eq!(&out[3 + 300..], tile1.as_slice());
+    }
+
+    #[test]
+    fn build_tile_group_multi_single_tile_delegates() {
+        // len <= 1 must be byte-identical to build_tile_group_single
+        // (no header bits at all) regardless of tile_size_bytes_minus_1.
+        let tile0 = vec![1u8, 2, 3];
+        assert_eq!(
+            build_tile_group_multi(&[tile0.clone()], 3),
+            build_tile_group_single(&tile0)
+        );
     }
 
     #[test]
@@ -1502,6 +1762,16 @@ mod tests {
         assert_eq!(tile_log2(3), 2);
         assert_eq!(tile_log2(4), 2);
         assert_eq!(tile_log2(5), 3);
+    }
+
+    #[test]
+    fn tile_log2_blk_matches_c_loop() {
+        // C: for (k = 0; (blk_size << k) < target; k++) {}
+        assert_eq!(tile_log2_blk(1, 0), 0);
+        assert_eq!(tile_log2_blk(1, 1), 0);
+        assert_eq!(tile_log2_blk(64, 2), 0); // 64 already >= 2
+        assert_eq!(tile_log2_blk(2304, 4), 0); // MAX_TILE_AREA_SB-scale, tiny target
+        assert_eq!(tile_log2_blk(1, 5), 3); // matches tile_log2(5) == 3
     }
 
     /// Mono SH/FH byte goldens. Originally captured before the 4:2:0 work

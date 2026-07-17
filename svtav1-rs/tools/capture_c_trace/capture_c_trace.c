@@ -16,6 +16,10 @@
  * od_ec coder — those are compared at the byte level by identity_diff.py.
  *
  * Usage: capture_c_trace <width> <height> <cli_qp 0..63> <preset> <in.yuv> <out.obu>
+ * Env: SVT_TILE_ROWS (default: unset -> library default, 0 tile rows) —
+ *      direct passthrough to cfg.tile_rows, i.e. TileRowsLog2 (task #86;
+ *      same log2 units as the Rust driver's SVTAV1_TILE_ROWS_LOG2 —
+ *      EbSvtAv1Enc.h:607-611 documents the field as "Log 2 Tile Rows").
  *
  * NOT part of the cargo workspace build — compiled on demand by build.sh.
  */
@@ -79,7 +83,18 @@ int main(int argc, char** argv) {
     cfg.encoder_color_format   = EB_YUV420;
     cfg.frame_rate_numerator   = 30; /* matches the F30:1 y4m the perf gate feeds the app */
     cfg.frame_rate_denominator = 1;
-    err                        = svt_av1_enc_set_parameter(handle, &cfg);
+    /* task #86: tile rows, log2 domain — direct passthrough into
+     * cfg.tile_rows, which the public API documents as "Log 2 Tile Rows...
+     * 0 means no tiling, 1 means split into 2" (EbSvtAv1Enc.h:607-611).
+     * Absent the env var, cfg.tile_rows stays at the DEFAULT sentinel
+     * (-1) that svt_av1_enc_init_handle populated, resolving to 0 tiles
+     * exactly like today (enc_handle.c:4520-4522) — the regression
+     * baseline is untouched. */
+    const char* tile_rows_env = getenv("SVT_TILE_ROWS");
+    if (tile_rows_env) {
+        cfg.tile_rows = atoi(tile_rows_env);
+    }
+    err = svt_av1_enc_set_parameter(handle, &cfg);
     if (err != EB_ErrorNone)
         die("svt_av1_enc_set_parameter", err);
 
