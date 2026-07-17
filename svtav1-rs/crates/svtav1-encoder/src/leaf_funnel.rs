@@ -484,6 +484,10 @@ pub struct FunnelCfg {
     /// 1/2, M0) BYPASSES the detector — CfL is always evaluated (C :7183
     /// `!cplx_th`); 10 (cfl_level 4, M1..M6) gates CfL on the detector firing.
     pub cfl_cplx_th: u32,
+    /// C `pcs->palette_level` for THIS frame (sc_class5-gated preset
+    /// table, enc_mode_config.c:2374-2390; 0 = palette off). Stamped by
+    /// the pipeline from the sc derivation next to `allow_sct`.
+    pub palette_level: u8,
     /// FH `allow_screen_content_tools` for THIS frame (not a preset knob —
     /// the pipeline stamps it from the sc detector after `for_preset`).
     /// Gates the no-palette flag rates: C prices palette_ymode_fac_bits
@@ -543,6 +547,7 @@ impl FunnelCfg {
             cfl_enabled: true,
             cfl_itr_th: 1,
             cfl_cplx_th: 10,
+            palette_level: 0,
             allow_sct: false,
         };
         let mut cfg = match preset {
@@ -1936,6 +1941,11 @@ struct Cand {
     /// UV_CFL_PRED (uv == 13); both 0 otherwise (C block_mi.cfl_alpha_*).
     cfl_alpha_idx: u8,
     cfl_alpha_signs: u8,
+    /// Luma palette candidate payload (colors, full-size idx map) — Some
+    /// only for candidates injected by `inject_palette_candidates`
+    /// (mode == DC, fi == NONE). The prediction is map->colors
+    /// SUBSTITUTION (position-only, no neighbor edges) at every stage.
+    palette: Option<(Vec<u16>, Vec<u8>)>,
     mds3_cost: u64,
     block_has_coeff: bool,
     /// C `blk_ptr->total_rate` / `full_dist` (svt_aom_full_cost writeback)
@@ -1974,6 +1984,9 @@ pub struct LeafChoice {
     /// entropy writer emits `write_cfl_alphas` from these. 0/0 otherwise.
     pub cfl_alpha_idx: u8,
     pub cfl_alpha_signs: u8,
+    /// Winning palette payload (colors, full-size idx map) — Some iff the
+    /// palette candidate won this leaf; flows into BlockDecision.palette.
+    pub palette: Option<(Vec<u16>, Vec<u8>)>,
 }
 
 /// Per-frame/SB mutable funnel context threaded through the fixed tree.
@@ -2152,6 +2165,7 @@ impl LeafEval {
             v_recon: cand.v_recon.clone(),
             cfl_alpha_idx: cand.cfl_alpha_idx,
             cfl_alpha_signs: cand.cfl_alpha_signs,
+            palette: cand.palette.clone(),
         }
     }
 }
@@ -2757,12 +2771,154 @@ pub(crate) fn evaluate_leaf(
             v_recon: Vec::new(),
             cfl_alpha_idx: 0,
             cfl_alpha_signs: 0,
+            palette: None,
             mds3_cost: u64::MAX,
             block_has_coeff: false,
             total_rate: 0,
             full_dist: 0,
         });
     }
+    // ---- inject_palette_candidates (mode_decision.c:3356-3406) ----
+    // C order: regular+fi intra first, palette after (IBC would follow).
+    // PORT-NOTE(unverified): C classes palette CAND_CLASS_3 with its own
+    // MDS lanes/pool + class dist-to-cost th 50 (enc_mode_config.c:6775);
+    // this funnel is single-class, so palette candidates share the one
+    // pool — near-tie survivor sets can differ from C. Verify on the
+    // EPICA cells; if a cell diverges on survivor membership, split the
+    // pool per class. Neighbor state (mode ctx + color cache) is wired by
+    // chunk 6; until then ctx row 0 + empty cache (bit-exact for blocks
+    // with no palette neighbors — always true until palette WINS a
+    // neighbor).
+    if svtav1_entropy::context::allow_palette(cfg.allow_sct, w, h) && cfg.palette_level > 0 {
+        let ctrls = crate::palette::PaletteCtrls::for_level(cfg.palette_level);
+        let bctx = svtav1_entropy::context::palette_bsize_ctx(w, h);
+        // C svt_aom_write_uniform_cost (entropy_coding.c:4308):
+        // truncated-binary literal bits << AV1_PROB_COST_SHIFT(9).
+        let uniform_cost = |n: usize, v: u8| -> u64 {
+            let l = usize::BITS - n.leading_zeros(); // get_unsigned_bits
+            if l == 0 {
+                return 0;
+            }
+            let m = (1usize << l) - n;
+            let bits = if (v as usize) < m { l - 1 } else { l };
+            (bits as u64) << 9
+        };
+        // The funnel receives the source as (plane, stride, block offset);
+        // decompose the offset back to plane coords for the search.
+        let pal_cands = crate::palette::search_palette_luma(
+            y_src,
+            y_src_stride,
+            y_src_off % y_src_stride,
+            y_src_off / y_src_stride,
+            h,
+            w,
+            w,
+            h,
+            &ctrls,
+            &[],
+            frame.base_qindex,
+        );
+        for pc in pal_cands {
+            let n = pc.colors.len();
+            // Substitution prediction (enc_intra_prediction.c:631-651).
+            let mut pred = vec![0u8; w * h];
+            for (o, &idx) in pc.idx_map.iter().enumerate().take(w * h) {
+                pred[o] = pc.colors[idx as usize] as u8;
+            }
+            let satd = hadamard_satd(y_src, y_src_stride, y_src_off, &pred, w, h);
+            // Luma rate: DC mode + fi-off flag (fi eligible blocks price it
+            // for every DC candidate) + the palette slice (rd_cost.c:579-605
+            // use_palette=1 arm): ymode YES + size + (0,0) uniform + colors
+            // + map tokens.
+            let mut flr = rates.kf_y[above_ctx][left_ctx][0] as u64;
+            if fi_elig {
+                flr += rates.fi_flag[bsize_idx][0] as u64;
+            }
+            flr += rates.palette_y_yes[bctx] as u64;
+            flr += rates.palette_ysize[bctx][n - 2] as u64;
+            flr += uniform_cost(n, pc.idx_map[0]);
+            // Colors: empty cache -> 0 flag bits, all colors delta-coded.
+            flr += (crate::palette::delta_encode_bits(&pc.colors, 8, 1) as u64) << 9;
+            let mut map_bits = 0u64;
+            crate::palette::color_map_wavefront(&pc.idx_map, w, h, w, n, |_i, _j, ctx, idx| {
+                map_bits += rates.palette_ycolor[n - 2][ctx][idx as usize] as u64;
+            });
+            flr += map_bits;
+            // Chroma: DC (palette-uv unsupported) with the y-palette-ON uv
+            // flag row. C prices palette_uv_mode_fac_bits[1][0] here
+            // (rd_cost.c:514-521 use_palette_y=1).
+            // PORT-NOTE(unverified): rates.palette_uv_no is the [0][0]
+            // row; the [1][0] row differs (uv ctx = y-palette-used).
+            // Wire palette_uv_no_y1 when the EPICA drill demands it.
+            let (uv, uv_delta) = match &ind_uv {
+                Some(tbl) if !cfg.ind_uv_last_mds1 => tbl[0],
+                _ => (0u8, 0i8),
+            };
+            let mut fcr = if has_uv {
+                rates.uv[cfl_allowed][0][uv as usize] as u64
+            } else {
+                0
+            };
+            if has_uv && use_angle && matches!(uv, 1..=8) {
+                fcr += rates.angle[uv as usize - 1][(3 + uv_delta) as usize] as u64;
+            }
+            if has_uv && uv == 0 {
+                fcr += pal_uv_no;
+            }
+            let fast_cost = rdcost(
+                lambda,
+                flr + fcr,
+                if frame.mds0_ssd { satd } else { satd << 4 },
+            );
+            #[cfg(feature = "std")]
+            if std::env::var_os("SVTAV1_CANDDBG").is_some()
+                && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
+            {
+                eprintln!(
+                    "NSQDBG PFAST mi=({},{}) {}x{} PAL n={} flr={} fcr={} satd={} fast={}",
+                    abs_y / 4, abs_x / 4, w, h, n, flr, fcr, satd, fast_cost,
+                );
+            }
+            cands.push(Cand {
+                mode: 0,
+                delta: 0,
+                fi: FI_NONE,
+                uv,
+                uv_delta,
+                pred,
+                flr,
+                fcr,
+                fast_cost,
+                full_cost: u64::MAX,
+                mds1_has_coeff: false,
+                tx_depth: 0,
+                txb_q: Vec::new(),
+                txb_eob: Vec::new(),
+                txb_cul: Vec::new(),
+                txb_type: Vec::new(),
+                y_recon: Vec::new(),
+                y_recon_d0: Vec::new(),
+                y_bits: 0,
+                y_dist: 0,
+                u_q: Vec::new(),
+                v_q: Vec::new(),
+                u_eob: 0,
+                v_eob: 0,
+                u_cul: 0,
+                v_cul: 0,
+                u_recon: Vec::new(),
+                v_recon: Vec::new(),
+                cfl_alpha_idx: 0,
+                cfl_alpha_signs: 0,
+                palette: Some((pc.colors, pc.idx_map)),
+                mds3_cost: u64::MAX,
+                block_has_coeff: false,
+                total_rate: 0,
+                full_dist: 0,
+            });
+        }
+    }
+
     let ncand = cands.len();
 
     // -- MDS0 -> MDS1 MEMBERSHIP: C's replacement POOL, not a sort. --
@@ -3188,6 +3344,17 @@ pub(crate) fn evaluate_leaf(
                 let mut txb_pred = vec![0u8; txw * txh];
                 if depth == 0 {
                     txb_pred.copy_from_slice(&cand.pred);
+                } else if cand.palette.is_some() {
+                    // Palette prediction is position-only substitution
+                    // (enc_intra_prediction.c:640-651 runs per tx block
+                    // over the SAME map — no neighbor edges), so a
+                    // deeper-depth txb pred is just the slice of the
+                    // whole-block substitution already in cand.pred.
+                    for r in 0..txh {
+                        let src0 = (tx_y + r) * w + tx_x;
+                        txb_pred[r * txw..(r + 1) * txw]
+                            .copy_from_slice(&cand.pred[src0..src0 + txw]);
+                    }
                 } else {
                     // Overlay canvas: temporarily splice this depth's
                     // reconstructed txbs into the frame recon.

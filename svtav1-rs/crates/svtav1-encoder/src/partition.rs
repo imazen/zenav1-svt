@@ -1383,6 +1383,7 @@ pub(crate) fn funnel_block_decision(
         uv_mode: choice.uv_mode,
         cfl_alpha_idx: choice.cfl_alpha_idx,
         cfl_alpha_signs: choice.cfl_alpha_signs,
+        palette: choice.palette,
         angle_delta: choice.angle_delta,
         uv_angle_delta: choice.uv_angle_delta,
         tx_depth: choice.tx_depth,
