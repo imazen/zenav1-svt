@@ -417,6 +417,27 @@ after the code is in. Rules:
 
 ### PORT-NOTE(unverified) index
 
+- **UNWIRED chunk-1 translations (2026-07-17 token-constrained bulk
+  write — files exist, NOT in lib.rs, NEVER compiled; wiring + a build
+  is the first step of each integration session):**
+  - `crates/svtav1-encoder/src/frame_geom.rs` (#95 chunk 1): FrameDims
+    true/aligned model, pad_input_plane, edge_has_rows_cols,
+    cropped_tx_dims, DLF floor-chroma vs ceiling split, LR unit
+    collapse, <64 restoration disable. Markers: edge predicates
+    (96x80 milestone), pad byte-compare, odd-width chroma differential.
+  - `crates/svtav1-encoder/src/sb128_geom.rs` (#91 chunk 1):
+    NS_BLK_OFFSET(_128)_MD tables, partition_cdf_length, shape
+    legality, sb128 variance-avg + me-cost-var-MAX bridges, CDEF
+    stale-quadrant predicate, sb_header_params. Marker: CDEF phase-2
+    fan-out + write_cdef quadrants must land WITH consumers + unit test.
+  - `crates/svtav1-encoder/src/bd10.rs` (#94 chunk 1): clip_pixel_highbd,
+    msb_truncate_plane, lambda *16/*4 consts, qzbin ladder, inv-txfm
+    range, allintra_hbd_md. Markers: qlookup tables NOT transcribed
+    (run xtask/transcribe_bd10_qlookup.py -> include the generated
+    file, replace the unimplemented!() placeholders); lambda two-stage
+    scaling needs a C dump check.
+
+
 - leaf_funnel.rs: fork complex-hvs MDS0 SSD fast cost (1 marker) — needs a
   C-side fast_loop_core dump once the C hybrid carries the fork's
   set_mds0_controls case 3 (the hybrid assert(0)s on mds0_level 3 today).
