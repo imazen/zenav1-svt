@@ -25,12 +25,21 @@
 # exercise the true-dim seq-header size bits + recon crop with no partial SB.
 # The 8-tall bottom partial SB near-tie is now FIXED (PD0 boundary-node cost:
 # rectangular TX-type rate + binary alike split rate) — single-edge partial
-# cells (bottom OR right) byte-match at every qp. STILL DIVERGENT: BOTH-partial
-# cells (aligned 72x72, e.g. 65x65 / 65x72 / 65x80) hit a separate PD1 intra
-# MODE near-tie (V_PRED vs DC at a bottom-SB leaf) — a follow-up.
+# cells (bottom OR right) byte-match at every qp.
 #
-# Scope: preset 6 (the PD0_LVL_1 fixed-tree path) at bd8 4:2:0. Presets >= 9
-# (LVL_5/6 boundary cost) are a documented follow-up.
+# PRESETS >= 9 (M9 LPD0 / PD0_LVL_5/6) now byte-match too — two LPD0-only roots
+# were fixed: (1) subres forced off on incomplete b64s (was over-costing +
+# over-splitting), and (2) one-false boundary nodes force-split (NSQ geom is
+# disabled at allintra enc_mode > M6, so the edge shape is not injected). Both
+# are byte-neutral for full SBs and for LVL_1 presets 0-6. A representative p9/
+# p10/p13 slice is gated in the last block below.
+#
+# STILL DIVERGENT: aligned-72x72 BOTH-partial cells (65x65 / 65x72 / 65x80) at
+# PRESET 6 ONLY hit a separate full-PD1 intra MODE near-tie (V_PRED vs DC at a
+# bottom-SB 16x8 leaf) — they byte-match at p9+ (lighter PD1). That p6 near-tie
+# is the remaining follow-up.
+#
+# Scope: bd8 4:2:0. preset 6 (PD0_LVL_1 fixed tree) + presets 9/10/13 (LPD0).
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 RS_ROOT=$(cd "$HERE/.." && pwd)
@@ -98,6 +107,35 @@ CELLS=(
   "gradient 72 88 32 6"
   "gradient 80 104 40 6"   # all-qp match
   "gradient 104 80 48 6"   # all-qp match
+  # PRESETS >= 9 (M9 LPD0 / PD0_LVL_5/6) — the higher-LVL boundary path. Two
+  # LPD0-only roots (both byte-neutral for full SBs and for LVL_1 presets 0-6):
+  #   1. subres forced OFF on an INCOMPLETE b64 (enc_mode_config.c:7326,
+  #      `!is_complete_b64`) — the port was applying subres (step 1) on partial
+  #      SBs, over-costing the LVL_5 block distortion and over-splitting;
+  #   2. one-false boundary nodes are FORCED SPLIT at LPD0 (nsq_geom_level 0 for
+  #      allintra enc_mode > M6 => enabled 0 => set_blocks_to_test tot_shapes 0;
+  #      the edge shape is NOT injected, so a thin 8-wide/8-tall edge descends
+  #      to the fitting 8x8s). LVL_1 (preset <= 6) keeps the injected edge shape.
+  # Every partial-SB cell above byte-matches at p9/p10/p13 too; a representative
+  # slice is gated here (thin edges, multi-SB, both-partial, straddle, all qp).
+  "gradient 96 80 32 9"    # the documented target, p9
+  "gradient 96 80 32 10"   # documented target p10 (was over-split)
+  "gradient 96 80 32 13"   # documented target p13
+  "gradient 96 80 20 10"
+  "gradient 96 80 55 13"
+  "gradient 88 56 32 9"
+  "gradient 72 64 32 10"   # thin 8-wide right edge (forced-split root)
+  "gradient 72 64 55 13"
+  "gradient 65 64 20 10"   # odd width, thin right edge (diverged all-qp pre-fix)
+  "gradient 65 64 40 13"
+  "gradient 64 72 40 10"   # thin 8-tall bottom edge
+  "gradient 64 65 32 13"   # odd height, thin bottom edge
+  "gradient 200 120 32 10" # multi-SB thin 8-wide right edge
+  "gradient 200 120 40 13"
+  "gradient 65 65 32 10"   # both-partial (diverges at p6 = follow-up 2; matches p9+)
+  "gradient 65 65 32 13"
+  "gradient 104 80 40 10"  # straddle-win at higher qp
+  "gradient 120 120 32 13"
 )
 for cell in "${CELLS[@]}"; do
   read -r content w h qp p <<<"$cell"

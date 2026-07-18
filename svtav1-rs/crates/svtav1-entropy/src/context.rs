@@ -335,6 +335,21 @@ pub fn partition_symbol_cost(width: usize, sub_ctx: usize, sym: usize) -> u32 {
     av1_cost_symbol(p15)
 }
 
+/// Binary SPLIT-vs-{H,V} "alike" cost at a one-false boundary node, read
+/// from the DEFAULT (frame-initial) partition CDF row `[bsl*4 + 0]` — the
+/// LPD0 (PD0_LVL_5/6) analogue of [`partition_symbol_cost`] for
+/// `PARTITION_SPLIT`. `bottom_edge` (`!has_rows`) gathers the vert-alike
+/// cdf; else (right edge, `!has_cols`) the horz-alike (the CROSS-named
+/// gather trap, cabac_context_model.h:378/393). Mirrors what the M6 tables
+/// build from an adapting `partition_cdf` row, but at ctx 0 / default CDF —
+/// which is what LPD0's `svt_aom_partition_rate_cost` prices against.
+pub fn partition_alike_split_symbol_cost(width: usize, bottom_edge: bool, is_128: bool) -> u32 {
+    debug_assert!((8..=128).contains(&width) && width.is_power_of_two());
+    let bsl = width.ilog2() as usize - 3;
+    let row = &DEFAULT_PARTITION_CDF[(bsl * 4).min(PARTITION_CONTEXTS - 1)];
+    partition_alike_split_cost(row, bottom_edge, is_128)
+}
+
 /// Default skip CDFs.
 static DEFAULT_SKIP_CDF: [[AomCdfProb; 3]; SKIP_CONTEXTS] =
     [[1097, 0, 0], [16253, 0, 0], [28192, 0, 0]];

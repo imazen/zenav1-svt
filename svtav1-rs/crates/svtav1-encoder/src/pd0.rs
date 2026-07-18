@@ -1257,6 +1257,13 @@ fn partition_split_bits(sq_size: usize) -> u64 {
     ) as u64
 }
 
+/// Binary SPLIT-vs-{H,V} "alike" rate at a one-false boundary node, on the
+/// DEFAULT partition CDF (LPD0 / PD0_LVL_5). `bottom_edge` = `!has_rows`.
+fn partition_alike_split_bits(sq_size: usize, bottom_edge: bool) -> u64 {
+    svtav1_entropy::context::partition_alike_split_symbol_cost(sq_size, bottom_edge, sq_size == 128)
+        as u64
+}
+
 /// C `partition_fac_bits[0][PARTITION_NONE]`: svt_aom_full_cost_pd0 uses
 /// **context index 0** — the bsl-0 (8x8 size class), sub-context-0 row —
 /// as an approximation for every block size (rd_cost.c:1344-1349). 400
@@ -1425,20 +1432,27 @@ impl<'a> Pd0Ctx<'a> {
         let has_rows = abs_y + half < self.aligned_h;
         let has_cols = abs_x + half < self.aligned_w;
         let one_false = !has_rows || !has_cols;
-        if !has_rows && !has_cols {
-            // BOTH-false node (extends past both edges): `set_blocks_to_test`
-            // (enc_dec_process.c:1405) yields `tot_shapes = 0` → FORCED SPLIT.
-            // PART_N is NEVER costed; recurse into the four quadrants
-            // (off-frame ones return `Off`). 8x8 nodes are never edge nodes on
-            // an 8-aligned frame, so a both-false node always has `sq_size >
-            // min_sq` and can split. Note: a node with has_rows && has_cols
-            // BOTH true can still STRADDLE the aligned extent (its sq x sq
-            // block reaching past aligned, e.g. a 64x64 SB root of a 48x56
-            // frame — 32 < 48 and 32 < 56, yet 64 > 48); C codes such straddle
-            // blocks reading its SB-extent pad and cropping the distortion, so
-            // the port sizes the recon + chroma-source buffers to the SB extent
-            // (encode_tile_rows) — a straddling block writes past aligned into
-            // the padded rows rather than out of bounds.
+        let both_false = !has_rows && !has_cols;
+        // FORCED SPLIT — `set_blocks_to_test` (enc_dec_process.c:1405) yields
+        // `tot_shapes = 0`, so PART_N is NEVER costed and the node splits with
+        // no NONE/edge candidate. This fires for:
+        //  - a BOTH-false node (extends past both edges), at every PD0 level;
+        //  - a one-false node when NSQ geom is DISABLED. At LPD0 (PD0_LVL_5/6,
+        //    allintra CLI preset >= M7 → `nsq_geom_level = 0` → `enabled = 0`,
+        //    enc_mode_config.c:8240) EVERY one-false boundary node force-splits
+        //    — C never injects the edge shape, so it descends to the fitting
+        //    sub-blocks (e.g. a thin 8-wide right edge -> all 8x8). LVL_1
+        //    (preset <= M6) keeps NSQ enabled → the one-false edge-shape path
+        //    below (`one_false && Lvl1`), matching the M6 boundary milestone.
+        // 8x8 nodes are never edge nodes on an 8-aligned frame, so a
+        // force-split node always has `sq_size > min_sq` and can split. A
+        // has_rows && has_cols node can still STRADDLE the aligned extent (its
+        // sq x sq block reaching past aligned); C codes such straddle blocks
+        // reading its SB-extent pad and cropping the distortion, so the port
+        // sizes the recon + chroma-source buffers to the SB extent — a
+        // straddling block writes into the padded rows, never out of bounds.
+        let forced_split = both_false || (one_false && self.mode != Pd0Mode::Lvl1);
+        if forced_split {
             let mut children: Vec<Pd0Eval> = Vec::with_capacity(4);
             let mut total = 0u64;
             for i in 0..4 {
@@ -1447,6 +1461,20 @@ impl<'a> Pd0Ctx<'a> {
                 let (c_cost, c_eval) = self.pick(half, cx, cy);
                 total += c_cost;
                 children.push(c_eval);
+            }
+            // SPLIT rate feeding a STRADDLING parent's decision (the failing
+            // thin-edge cells are self-contained from the SB root, where this
+            // is inert; a straddling root like 48x48 consumes it). A both-false
+            // node codes NO partition symbol -> rate 0; a one-false node codes
+            // the BINARY SPLIT-vs-{H,V} symbol -> its alike rate (doubled at
+            // LVL_5 since `use_accurate_part_ctx = 0`; 0 at LVL_6 allintra,
+            // test_split_partition_pd0:10435).
+            if !both_false {
+                let alike = 2 * partition_alike_split_bits(sq_size, !has_rows);
+                total += match self.mode {
+                    Pd0Mode::Lvl5 => rdcost(self.lambda, alike, 0),
+                    _ => 0, // Lvl6 (allintra split rate 0); Lvl1 never reaches here
+                };
             }
             let ch: [Pd0Eval; 4] = children.try_into().expect("4 children");
             let eval = Pd0Eval {
@@ -1617,7 +1645,19 @@ pub fn pd0_pick_sb_partition(
         // disallow_4x4 = 1 (pic_disallow_4x4 for these presets),
         // disallow_8x8_allintra() = false, no depth removal flags.
         min_sq: 8,
-        is_subres_safe: 255,
+        // C enc_mode_config.c:7326: LVL_5 subres is forced OFF (level 0) on an
+        // INCOMPLETE b64 (`!b64_geom->is_complete_b64`, i.e. an SB whose 64x64
+        // extent reaches past the ALIGNED frame). Seed is_subres_safe to the
+        // "determined, not safe" sentinel (0) on such SBs so the 64x64
+        // odd/even-deviation check never runs and every LVL_5 block keeps
+        // step 0 — matching C, which computes the full-res transform there.
+        // Complete SBs keep 255 (the 64x64 block determines subres exactly as
+        // before — byte-neutral for every full-SB cell).
+        is_subres_safe: if sb_x + 64 <= aligned_w && sb_y + 64 <= aligned_h {
+            255
+        } else {
+            0
+        },
         ires_factor,
         // LVL_5/6 use their own closed-form coeff rates; unused here.
         coeff_rate_est_lvl: 0,
