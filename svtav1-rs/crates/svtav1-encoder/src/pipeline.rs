@@ -1004,6 +1004,16 @@ impl EncodePipeline {
             t
         };
 
+        // Task #95 goal 1 (odd true dims): the loop-restoration RU grid is
+        // sized off the TRUE (coded) dims — C `whole_frame_rect` uses
+        // frame_height / superres_upscaled_width, CEILING for chroma
+        // (restoration.c:51-62). The aligned SB/mi grid drives everything else
+        // in the walk; only the LR corner computation (`write_lr_for_sb` ->
+        // `corners_in_sb`) and the search extent take the true dims. For
+        // 8-aligned dims true == aligned, so this is byte-neutral.
+        let lr_true_w = self.true_width as usize;
+        let lr_true_h = self.true_height as usize;
+
         // The entropy walk as a re-runnable pass: decisions are already
         // fixed (trees + luma recon from MD; chroma decisions are pure
         // functions of the sources), so a second invocation reproduces the
@@ -1157,8 +1167,11 @@ impl EncodePipeline {
                                 (by / 4) as i32,
                                 (bx / 4) as i32,
                                 (sb_size / 4) as i32,
-                                w,
-                                h,
+                                // TRUE dims: the RU grid / corner computation is
+                                // coded off the coded frame size, not the aligned
+                                // grid (byte-neutral when 8-aligned).
+                                lr_true_w,
+                                lr_true_h,
                                 chroma.is_none(),
                             );
                         }
@@ -1433,16 +1446,50 @@ impl EncodePipeline {
                 // search_restoration_still + write_lr_for_sb (one call per
                 // tile_idx, tile-relative RU indices) and re-running
                 // identity_diff on a 2-tile-row cell that signals wiener.
+                // Task #95 goal 1 (odd true dims): the search runs on the TRUE
+                // luma / CEILING chroma extent, reading the recon at its aligned
+                // buffer stride while `extend_frame` replicates the true edge —
+                // so it never sees the aligned padding (matching C, whose
+                // extend replicates the frame edge into the LR border). Extract
+                // tight true/ceil buffers from the aligned-strided recon +
+                // source (luma stride `w`, chroma stride `cw`); on an 8-aligned
+                // frame true == aligned, so these are byte-neutral copies.
+                let (lr_tcw, lr_tch) = ((lr_true_w + 1) / 2, (lr_true_h + 1) / 2);
+                let extract_tight = |src: &[u8], src_stride: usize, pw: usize, ph: usize| {
+                    let mut out = alloc::vec![0u8; pw * ph];
+                    for r in 0..ph {
+                        out[r * pw..(r + 1) * pw]
+                            .copy_from_slice(&src[r * src_stride..r * src_stride + pw]);
+                    }
+                    out
+                };
+                let lr_src_y = extract_tight(&encode_input, w, lr_true_w, lr_true_h);
+                let lr_rec_y = extract_tight(&recon, w, lr_true_w, lr_true_h);
+                let (lr_src_u, lr_src_v, lr_rec_u, lr_rec_v) = if chroma.is_some() {
+                    (
+                        extract_tight(su, cw, lr_tcw, lr_tch),
+                        extract_tight(sv, cw, lr_tcw, lr_tch),
+                        extract_tight(&u_recon, cw, lr_tcw, lr_tch),
+                        extract_tight(&v_recon, cw, lr_tcw, lr_tch),
+                    )
+                } else {
+                    (
+                        alloc::vec::Vec::new(),
+                        alloc::vec::Vec::new(),
+                        alloc::vec::Vec::new(),
+                        alloc::vec::Vec::new(),
+                    )
+                };
                 let rest_info = crate::restoration::search_restoration_still(
                     &ctrls,
-                    &encode_input,
-                    su,
-                    sv,
-                    &recon,
-                    &u_recon,
-                    &v_recon,
-                    w,
-                    h,
+                    &lr_src_y,
+                    &lr_src_u,
+                    &lr_src_v,
+                    &lr_rec_y,
+                    &lr_rec_u,
+                    &lr_rec_v,
+                    lr_true_w,
+                    lr_true_h,
                     chroma.is_some(),
                     rdmult,
                 );

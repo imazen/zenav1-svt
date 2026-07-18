@@ -154,21 +154,28 @@ fn main() {
     let qp: u8 = args[4].parse().expect("cli_qp");
     let preset: u8 = args[5].parse().expect("preset");
     let prefix = &args[6];
-    // I420 needs even dims. Task #95 chunk 1: the pipeline pads TRUE ->
-    // ALIGNED (8-round) internally and enforces the in-scope constraint
-    // (aligned dims a multiple of 64 = full SBs); dims like 60x60 (-> 64)
-    // exercise arbitrary-dimension input+header without partial-SB edge
-    // coding. Partial SBs (e.g. 56x56, 200x200) are chunk 2.
-    assert!(
-        w % 2 == 0 && h % 2 == 0,
-        "I420 harness requires even dims (got {w}x{h})"
-    );
+    // I420 chroma dims: AV1 4:2:0 uses CEILING rounding for odd luma dims
+    // ((w+1)/2), matching the port's `encode_frame_420` (which takes ceiling
+    // chroma) and the pic-buffer/app convention. Task #95 goal 1: ODD true
+    // dims (65x65, 65x64, 64x65) are now in scope for the synthetic content
+    // paths (uniform/gradient/diag, flat u=v=128 chroma — the floor-vs-ceiling
+    // choice is inert in flat chroma CONTENT; only the DLF chroma BOUND differs
+    // at odd width, which the port replicates per the port-map). The file:/raw:
+    // paths keep even dims (their 2x2 RGB averaging / floor .yuv layout needs
+    // it). For EVEN dims ceiling == floor, so every existing cell is byte-
+    // neutral. Chunk 1 (full-SB) + chunk 2 (partial-SB) already handled the
+    // aligned/8-round + partial-SB edge coding; this only adds odd true dims.
+    let (cw, ch) = ((w + 1) / 2, (h + 1) / 2);
 
     let (y, u, v) = if let Some(path) = content.strip_prefix("raw:") {
         // Raw I420 8-bit YUV file (w*h luma + 2*(w/2)*(h/2) chroma), used to
         // drive the identity/decode-both harness with EXACT content — e.g. the
         // decode_conformance failure cases (replicated-border padded content)
         // that synthetic uniform/gradient don't reproduce.
+        assert!(
+            w % 2 == 0 && h % 2 == 0,
+            "raw: I420 harness requires even dims (floor .yuv layout); got {w}x{h}"
+        );
         let bytes = std::fs::read(path).expect("read raw yuv");
         let ysz = w * h;
         let csz = (w / 2) * (h / 2);
@@ -213,8 +220,8 @@ fn main() {
                 };
             }
         }
-        let u = vec![128u8; (w / 2) * (h / 2)];
-        let v = vec![128u8; (w / 2) * (h / 2)];
+        let u = vec![128u8; cw * ch];
+        let v = vec![128u8; cw * ch];
         (y, u, v)
     };
 
@@ -228,7 +235,7 @@ fn main() {
     let bd: u8 = std::env::var("SVTAV1_BD").ok().and_then(|v| v.parse().ok()).unwrap_or(8);
     if bd > 8 {
         let shift = (bd - 8) as u32;
-        let mut yuv = Vec::with_capacity((w * h + 2 * (w / 2) * (h / 2)) * 2);
+        let mut yuv = Vec::with_capacity((w * h + 2 * cw * ch) * 2);
         for &s in y.iter().chain(u.iter()).chain(v.iter()) {
             yuv.extend_from_slice(&(((s as u16) << shift).to_le_bytes()));
         }

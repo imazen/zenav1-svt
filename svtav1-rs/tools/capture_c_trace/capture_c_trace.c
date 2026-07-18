@@ -56,7 +56,17 @@ int main(int argc, char** argv) {
     const size_t   sample_size = (bit_depth > 8) ? 2 : 1;
 
     const size_t ysz = (size_t)w * h;
-    const size_t csz = (size_t)(w / 2) * (h / 2);
+    /* AV1 4:2:0 CEILING chroma dims ((w+1)/2). The .yuv the Rust harness
+       writes is laid out ceiling-strided, matching the port's ceiling chroma
+       intake; for EVEN dims ceiling == floor, so every pre-existing caller is
+       byte-identical. Task #95 goal 1 (odd true dims, e.g. 65x65): the C
+       library internally reads FLOOR chroma (luma_width>>1) columns/rows from
+       this ceiling-strided buffer (resource_coordination_process.c:491) — for
+       the flat u=v=128 synthetic chroma the ignored last ceiling col/row are
+       128 too, so both encoders see identical chroma content. */
+    const size_t cw = ((size_t)w + 1) / 2;
+    const size_t ch = ((size_t)h + 1) / 2;
+    const size_t csz = cw * ch;
     const size_t frame_bytes = (ysz + 2 * csz) * sample_size;
 
     uint8_t* yuv = malloc(frame_bytes);
@@ -118,8 +128,8 @@ int main(int argc, char** argv) {
     io.cb        = yuv + ysz * sample_size;
     io.cr        = yuv + (ysz + csz) * sample_size;
     io.y_stride  = w; /* strides are in SAMPLES (pixels), not bytes */
-    io.cb_stride = w / 2;
-    io.cr_stride = w / 2;
+    io.cb_stride = (uint32_t)cw; /* ceiling chroma stride (matches the .yuv layout) */
+    io.cr_stride = (uint32_t)cw;
 
     EbBufferHeaderType in_hdr;
     memset(&in_hdr, 0, sizeof(in_hdr));

@@ -421,7 +421,19 @@ pub fn search_restoration_still(
     for plane in 0..3usize {
         let is_uv = plane > 0;
         let ss = i32::from(is_uv);
-        let (pw, ph) = if is_uv { (w / 2, h / 2) } else { (w, h) };
+        // C whole_frame_rect (restoration.c:58-59): the plane rect is the
+        // TRUE luma dims for Y and ROUND_POWER_OF_TWO (= CEILING (x+1)>>1) for
+        // chroma. `w`/`h` here are the TRUE dims (the caller feeds tight
+        // true/ceil buffers extracted from the aligned-strided recon so the
+        // search touches only the true region + edge replication, exactly as
+        // C's extend_frame does — task #95 goal 1, odd true dims). For even
+        // (8-aligned) true dims ceiling == floor, so every existing cell is
+        // byte-neutral.
+        let (pw, ph) = if is_uv {
+            ((w + 1) / 2, (h + 1) / 2)
+        } else {
+            (w, h)
+        };
         let hunits = svtav1_dsp::restoration::count_units_in_tile(unit_size, pw as i32);
         let vunits = svtav1_dsp::restoration::count_units_in_tile(unit_size, ph as i32);
 
