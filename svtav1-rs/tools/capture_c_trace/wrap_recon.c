@@ -556,3 +556,40 @@ void __wrap_svt_aom_full_loop_uv(PictureControlSet* pcs, ModeDecisionContext* ct
         }
     }
 }
+
+/* ---- PD0 full-cost interposer (task #95 partial-SB PD0 near-tie) ----------
+ * svt_aom_full_cost_pd0 (rd_cost.c:1330) computes the LPD0 per-block RD used by
+ * the partition pick (test_split_partition_pd0). The port models it in
+ * pd0::lvl1_block_cost_rect; a straddling bottom-edge 16x16 node's edge-shape
+ * (16x8) vs SPLIT (2x8x8) RD near-tie flips the partition on some cells. This
+ * dumps C's (org, bsize, dist, coeff_bits, full_cost) per tested PD0 block so
+ * the port's NSQDBG PD0 costs can be compared unit-for-unit. Env: SVT_PD0COST_
+ * OUT (file) + optional SVT_PD0COST_SBY (only blocks whose SB row == that y).
+ * Pure pass-through when unset — the C tree stays PRISTINE (link interposer). */
+EbErrorType __real_svt_aom_full_cost_pd0(ModeDecisionContext* ctx, ModeDecisionCandidateBuffer* cand_bf,
+                                         uint64_t* y_distortion, uint64_t lambda, uint64_t* y_coeff_bits);
+
+EbErrorType __wrap_svt_aom_full_cost_pd0(ModeDecisionContext* ctx, ModeDecisionCandidateBuffer* cand_bf,
+                                         uint64_t* y_distortion, uint64_t lambda, uint64_t* y_coeff_bits) {
+    EbErrorType ret = __real_svt_aom_full_cost_pd0(ctx, cand_bf, y_distortion, lambda, y_coeff_bits);
+    const char* path = getenv("SVT_PD0COST_OUT");
+    if (path && *path) {
+        const char* sby = getenv("SVT_PD0COST_SBY");
+        const int   sb_y_filter = sby ? atoi(sby) : -1;
+        const int   org_y = (int)ctx->blk_org_y;
+        if (sb_y_filter < 0 || (org_y & ~63) == sb_y_filter) {
+            static FILE* f = NULL;
+            if (!f)
+                f = fopen(path, "w");
+            if (f) {
+                fprintf(f, "PD0COST org=(%u,%u) %ux%u dist=%llu ybits=%llu cost=%llu lambda=%llu\n",
+                        (unsigned)ctx->blk_org_x, (unsigned)ctx->blk_org_y, block_size_wide[ctx->blk_geom->bsize],
+                        block_size_high[ctx->blk_geom->bsize], (unsigned long long)y_distortion[0],
+                        (unsigned long long)*y_coeff_bits, (unsigned long long)*(cand_bf->full_cost),
+                        (unsigned long long)lambda);
+                fflush(f);
+            }
+        }
+    }
+    return ret;
+}

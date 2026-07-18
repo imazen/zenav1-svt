@@ -86,6 +86,7 @@ cc -O2 -g -o "$OUT" \
     -Wl,--wrap=svt_aom_update_mi_map \
     -Wl,--wrap=svt_aom_full_loop_uv \
     -Wl,--wrap=svt_aom_full_cost \
+    -Wl,--wrap=svt_aom_full_cost_pd0 \
     "$LIB" -lpthread -lm
 
 echo "capture_c_trace: built $OUT"
