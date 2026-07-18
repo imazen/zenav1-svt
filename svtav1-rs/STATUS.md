@@ -31,7 +31,8 @@ dims a multiple of 64 (dims {57..64} -> a single 64x64 SB, e.g. 60x60).
 ## Arbitrary dimensions — chunk 2: PARTIAL SBs byte-match (task #95, 2026-07-18)
 
 Partial superblocks (aligned NOT a mult of 64) AND ODD dimensions now byte-match
-real C. `tools/partial_sb_gate.sh` = **37/37** (preset 6, bd8 4:2:0): the 96x80
+real C. `tools/partial_sb_gate.sh` = **101/101** (presets **6/7/8/9/10/13**, bd8
+4:2:0; includes both-partial + straddle + odd dims): the 96x80
 milestone (cmp-verified 878B) + full/straddle cells + **11 odd-dim cells** (65x64,
 64x65, ...) + 6 bottom-edge/8-aligned-partial + 5 straddle-win. Full-SB identity
 matrix stays **54/54**; bd10 36/36 + bd10-nonflat 8/8 untouched. Verified
