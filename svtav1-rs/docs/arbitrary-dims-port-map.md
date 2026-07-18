@@ -203,9 +203,8 @@ dump + the C `SVT_PD0COST`/`SVT_FULLCOST` interposers):
    (2x at LVL_5, 0 at LVL_6 allintra), via the new
    `context::partition_alike_split_symbol_cost`. LVL_1 (preset <= 6) keeps NSQ
    enabled -> the injected edge shape, unchanged. NOTE this is a preset>=7 (M7)
-   boundary, NOT M9 — presets 7/8 (LVL_1 path) also have NSQ disabled, but their
-   partial-SB cells are not yet gated (a latent item: the `one_false && Lvl1`
-   edge-shape branch is only correct for preset <= 6).
+   boundary, NOT M9 — presets 7/8 (LVL_1 path) also have NSQ disabled. **That
+   latent item is now CLOSED — see PRESETS 7 & 8 below.**
 
 Result: the FULL p9/p10/p13 gradient partial-SB sweep byte-matches — set 1
 (single-edge/multi-SB, 9 dims) 108/108, set 2 (odd/bottom/straddle, 14 dims)
@@ -214,33 +213,69 @@ the PD1 near-tie below) match at p9+. `partial_sb_gate.sh` 37 -> 55 (18 new
 p9/p10/p13 cells). identity_matrix 54/54, bd10 36/36 + 8/8, no-panic sweep
 1936/1936 clean.
 
+### PRESETS 7 & 8 (LVL_1 PD0, NSQ DISABLED) — FIXED (2026-07-18, commit 18037d00d)
+
+The latent item flagged above is CLOSED. Presets 7/8 share the LVL_1 PD0 fixed
+tree (NOT LPD0) but `svt_aom_get_nsq_geom_level_allintra` returns level 0 for
+enc_mode > M6 => NSQ geom DISABLED => `set_blocks_to_test` yields `tot_shapes =
+0` at a one-false boundary node (FORCED SPLIT, no edge shape) — like presets >=
+9, just on the LVL_1 path. FIX: replaced the mode-based force-split proxy
+(`self.mode != Lvl1`) with an explicit `nsq_enabled: bool` on `Pd0Ctx` (threaded
+from the preset: `<= 6` => enabled). One-false nodes force-split when
+`!nsq_enabled` (presets 7/8 AND 9+); presets <= 6 keep the edge shape
+(byte-neutral — `nsq_enabled = true` reproduces the prior logic exactly). The
+LVL_1 force-split codes its binary SPLIT-vs-{H,V} symbol at `boundary_split_bits`
+(undoubled, `use_accurate_part_ctx = 1` at M7/M8). `partial_sb_gate.sh` 55 -> 84
+(29 new p7/p8 cells); identity_matrix 54/54, bd10 36/36 + 8/8; panic 624/624.
+
+### BOTH-partial p6 mode flip — FIXED (2026-07-18, commit a274d0009): a recon WRAP bug, NOT a PD1 near-tie
+
+The documented preset-6 both-partial divergence (aligned-72 65x65/65x72/65x80,
+"V_PRED vs DC mode flip" at the 16x8 leaf mi=(16,4)) was ROOT-CAUSED and FIXED.
+It was NOT a full-PD1 cost near-tie — it was a **cross-SB recon corruption**:
+- The MD recon buffer (`tile_frame_recon`) is SB-extent-SIZED (`ext_w*ext_h`)
+  but ALIGNED-STRIDED (stride = aligned width). A boundary block whose edge
+  shape STRADDLES past the aligned width — e.g. an aligned-72 frame's SB(0,1)
+  VERT 32x64 at x64..96 — writes columns past the row boundary in `commit_leaf`,
+  which at the aligned stride WRAP into the NEXT row's low columns, silently
+  overwriting an already-committed neighbour SB's recon.
+- SB(1,0) then reads that corrupted row 63 as its V_PRED reference. Instrumented
+  (per-candidate MDS1 dump + MD-time buffer dump): DC and H matched C EXACTLY
+  (cost 11269612 / 11508570), but V's above reference was FLAT-243 where the
+  real SB(0,0) recon varies, so V mispredicted (satd 6128 vs C's 28416>>4=1776,
+  the best mode) → DC won → mode flip → byte divergence. **The prior
+  "column-flat 243" observation was CORRECT; its "encoder recon != bitstream"
+  framing pointed at the RIGHT buffer (the MD-time recon, not the final
+  assembled dump — those differ by exactly this wrap).**
+- FIX: clip the boundary recon write (luma + chroma) in `commit_leaf` to the
+  row's stride so a straddle never spills into the next row. C's recon buffer
+  has an SB-extent stride so the straddle lands in place; the off-aligned
+  columns are NEVER read by any in-frame block (nothing predicts/deblocks/
+  outputs past aligned), so the clip matches C's readable recon and is
+  byte-neutral where nothing straddles (`abs_x + w <= stride`, incl. every
+  full-SB and 96x80-class cell).
+- 65x72/65x80 + 65x65 q20/40/55 now byte-match; `partial_sb_gate.sh` 84 -> 101
+  (17 new both-partial cells). identity_matrix 54/54, bd10 36/36 + 8/8; panic
+  672/672 clean.
+
 REMAINING (diverge, NOT in the gate — all DECODABLE):
-- **BOTH-partial PD1 intra MODE near-tie — preset 6 ONLY** (aligned 72x72:
-  65x65 / 65x72 / 65x80). SHARPENED op-trace (65x65 q32 p6, mi=(16,4) = the
-  16x8 boundary leaf at pixel (16,64); C `SVT_FULLCOST` + `SVT_PICKPART`
-  interposers + port `SVTAV1_CANDDBG`/`PREDDBG` dumps):
-  * Tree MATCHES C; the ONLY divergence is the luma MODE — C V_PRED (mode 1,
-    eob 28, DCT_DCT), port DC (mode 0). NOT a partition/PD0 bug.
-  * At MDS1 C's V beats DC (cost 6617701 < 9348297) so V survives to MDS3 and
-    wins (ycb 16258, eob 28); the port's V LOSES to DC (10676372 > 9562657) and
-    is pruned before MDS3. Both use DCT_DCT (C `full_loop_core` non-txt path,
-    product_coding_loop.c:4441), so NOT a tx-type diff.
-  * The port's V_PRED costs coeff_rate=45833 vs C's ycb=22722 for a *similar*
-    dist (11396 vs 12380). C's eob 28 = a COMPACT residual -> its above
-    reference must carry the horizontal sawtooth. But the port's encoder recon
-    at row 63, x16-23 is **column-FLAT 243** (rows 56/60/62/63 = 214/232/240/243
-    across ALL of x0-23), and the port's OWN decoded output there is ~197, not
-    243. So the port predicts V_PRED from a recon reference that does not match
-    its own bitstream — a cross-SB ENCODER-RECON MISMATCH at the SB(0,0) bottom
-    boundary feeding the wrong V_PRED reference. NOT a coeff-rate/txt_rate bug
-    (the earlier "PD1 txt_rate handles rect tx" note stands).
-  * NEXT DRILL: the SB(0,0) block covering (x16-23, row 63) — why the port's
-    encoder recon there is column-flat where the bitstream/decoder is not
-    (the tree-join for this SB showed the recon "matching" but the reference
-    is a DIFFERENT SB's bottom row; suspect a cross-SB recon plumbing / write
-    ordering issue for the aligned-72 frame, or a lost horizontal residual in
-    the block above). This is preset-6-specific; presets 9+ match (the lighter
-    PD1 does not make V a contender at that leaf).
+- **Recon-INVISIBLE signaling split — 65x65 q32, 65x96 q20 (p6)**: after the
+  recon-wrap fix these decode to BYTE-IDENTICAL pixels but the streams still
+  differ. op-trace (identity_diff): op counts match (5639), first divergence at
+  op 5626 — a uniform bypass bit (C `BOOLEQ val=1`, port `val=0`), all
+  surrounding CDF ops identical, at tile byte +548/551 (the LAST coded block, in
+  the both-partial CORNER SB(1,1)). At true 65x65 only pixel (64,64) is valid in
+  that 8x8 SB; the rest is padding. So op 5626 is a coefficient/sign near-tie in
+  the PADDING-dominated corner block that reconstructs the padding differently
+  but the same 1 valid pixel — CROPPED out on decode (recon-invisible). A pure
+  coding near-tie in the straddle/padding coefficient path, not a recon bug;
+  qp-specific (only q32 for 65x65). NEXT: match C's exact corner-block coeff/
+  sign choice in the cropped padding region (a `SVT_CCOEF_XY` dump at mi (16,16)
+  vs the port's PACKTREE_COEFF).
+- **High-qp straddle/multi-SB near-tie — p7/p8 only**: 200x120 q40/55,
+  80x88/104x88/72x88/120x120 q55 diverge (byte-count differs). The recon-wrap
+  fix does NOT touch these (single-SB-row or the straddle doesn't corrupt a
+  later-read region); a separate genuine RD near-tie. Not gated.
 
 ## MD at edges
 - **b64 VARIANCE on a partial SB reads PAST the aligned extent — do NOT
