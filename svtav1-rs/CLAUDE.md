@@ -586,6 +586,27 @@ shared file, THEIR fork arms win, OUR mainline arms win.
    Filters need NO work: CDEF already clamps partial fbs explicitly, DLF/LR
    are mi/frame-driven (verified). Gate: 96x80 (exercises all three edge
    cases: right at SB(0,1), bottom at SB(1,0), both at SB(1,1)) then 65x65.
+   **SCOPE-CHANGING FINDING 2026-07-18 (verified) — partial SBs take the WRONG
+   partition PATH, not just wrong edge coding.** `use_pd0` (pipeline.rs:3653)
+   requires `cur_w == sb_size && cur_h == sb_size`, so a partial SB (cur_w or
+   cur_h < 64) DROPS the PD0/funnel path and falls to the homegrown recursive
+   `partition_search_with_config` (pipeline.rs:4079) — a DIFFERENT, non-C-
+   faithful search. C always uses its PD0-equivalent partition search with the
+   sb_geom-clamped extent. So even with perfect edge coding (landed), a partial
+   SB cannot byte-match C while it runs the homegrown search. The REAL chunk-2
+   core is therefore: make the PD0/funnel path (`pd0::pd0_pick_sb_partition` +
+   `decide_leaf`) handle a clamped sb_geom extent with edge-forced partition
+   decisions + cropped-RDO distortion + C-faithful padded b64 variance — i.e.
+   `use_pd0` must become true for partial SBs and that path must apply the
+   5.11.4 edge rules in its DECISION (not only in the pack). There is NO byte-
+   matching sub-chunk smaller than this whole path: the partition decision, the
+   edge coding, the cropped distortion, and the padded variance must ALL align
+   with C before a single partial-SB cell matches. Every byte-NEUTRAL piece is
+   already landed (edge pack coding ebd770d1b, mono guard c17fb1b53, frame_geom
+   wiring fc358cfdc, gate design aefbbfb5e, variance finding 99da1b318). This
+   piece is a dedicated careful pass — high risk to the 54/54 gate if rushed —
+   so it is the next #95 vertical, sequenced against continued #94 FFI-kernel
+   verification (independently landable, also P0).
 5. **#94 bd10 integration** (P0): u16 intake + harness axis, hbd module
    consumption, lambda *16/*4, filters at true depth per
    docs/bd10-port-map.md. Gate: uniform 64x64 bd10 <=M3 cell vs C.
