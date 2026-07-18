@@ -67,6 +67,11 @@ jobs:
           AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" DAV1D="$(command -v dav1d)" \
             ./tools/decode_conformance.sh target/dc-chroma chroma
 
+      - name: bd10 identity (uniform, port == real aomenc at bit depth 10)
+        working-directory: svtav1-rs
+        run: |
+          ./tools/bd10_matrix.sh
+
       - name: Recon parity (encoder recon == aomdec output, byte-exact)
         working-directory: svtav1-rs
         run: |
