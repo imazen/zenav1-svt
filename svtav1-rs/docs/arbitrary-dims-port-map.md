@@ -110,15 +110,35 @@ arms code child 1 only when it exists). Off-frame quadrants are `Pd0Tree::Off`
 (coded as nothing) and pruned by position in both the fixed-tree encode and
 the entropy walk (C `svt_aom_write_modes_sb` early-return / SPLIT `continue`).
 
-REMAINING (diverge, NOT in the gate):
+3. **The map's "leaves land fully inside ALIGNED" is FALSE in general — C
+   CODES straddling boundary blocks** (verified 2026-07-18 via C `PICKPART`).
+   For 96x80 the edge shapes fit exactly, but at most partial dims a boundary
+   block reaches PAST the aligned extent: e.g. an 88x56 frame's 32x32 NONE at
+   (64,0) reaches x=96 (aligned_w=80), and an 80x88 frame's chroma TX reaches
+   past the aligned chroma plane. A node can even have `has_rows && has_cols`
+   BOTH true (not a spec edge) yet still straddle (a 64x64 SB root of a 48x56
+   frame). C codes those blocks reading the SB-extent pad and CROPPING the RDO
+   distortion (cropped_tx_width/height). The port must therefore NOT force-
+   split straddling nodes (that regresses byte-exact cells where the straddle
+   is harmless, e.g. 88x56) — it sizes the recon working buffers + chroma
+   source to the SB-extent PRODUCT (aligned stride; a right-straddle write
+   wraps into slack rows, a bottom-straddle lands in extra rows — never OOB).
+   Panic-free across `{40..192}^2 x qp{20,32,40,55}` preset 6 (400/400); every
+   straddle cell decodes under aomdec.
+
+REMAINING (diverge, NOT in the gate — all DECODABLE):
 - **65x65 (odd true width)** — blocked at the harness: `identity_run` requires
   even dims (I420) and `capture_c_trace` reads FLOOR chroma (`w/2`) while the
   port expects CEILING; reconcile the odd-dim chroma layout, THEN the DLF
   floor-vs-ceiling-chroma (the map's flagged discrepancy) can be validated.
 - **presets >= 9 (M9 LVL_5/6)** — the edge-shape cost is wired on LVL_1 only;
   96x80 p10/p13 diverge (boundary nodes fall back to the square cost -> split).
-- **104x88** — a *smaller* VERT straddle (16x16 -> 8x16 boundary block) codes
-  ~4 bytes over C: a Tx8x16 edge-cost / VERT-vs-SPLIT near-tie at the 16-node.
+- **straddle-WIN cells** (C keeps a straddling boundary block as a leaf) — the
+  port's PD0 uses the UNCROPPED distortion and the chroma source WRAPS at the
+  aligned stride (byte-exact on uniform chroma / when the straddle loses RD:
+  48x56, 40x40, 120x120, 136x136 are gated; 80x88, 104x88, 72x88 diverge by a
+  few bytes). Full byte-exact straddle support = cropped-RDO distortion +
+  SB-extent chroma STRIDE (not just product-sized slack) — a follow-up.
 
 ## MD at edges
 - **b64 VARIANCE on a partial SB reads PAST the aligned extent — do NOT
