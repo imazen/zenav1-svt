@@ -4836,15 +4836,33 @@ pub(crate) fn commit_leaf(
     let (w, h) = (ev.w, ev.h);
     let (ccx, ccy, cw, chh) = (ev.ccx, ev.ccy, ev.cw, ev.chh);
     let cand = &ev.win;
+    // Task #95 (both-partial p6 mode flip): a boundary block whose recon
+    // STRADDLES past the aligned width writes columns `abs_x..abs_x+w` into a
+    // row of stride `y_stride` (= the aligned width). When `abs_x + w >
+    // y_stride`, the off-aligned columns spill past the row boundary and — the
+    // recon buffer being SB-extent-sized but aligned-strided — WRAP into the
+    // NEXT row's low columns, silently corrupting an already-committed
+    // neighbour SB's recon that a later SB then reads as its intra-prediction
+    // reference (e.g. an aligned-72 frame's SB(0,1) VERT 32x64 at x64..96 wraps
+    // cols 72..96 into the next row's cols 0..24, flat-filling SB(0,0)'s
+    // row-63 V_PRED reference → V mispredicts → DC wins → byte divergence).
+    // C's recon buffer has an SB-extent stride so the straddle lands in place;
+    // the off-aligned columns are never READ by any in-frame block (nothing
+    // predicts, deblocks, or outputs past the aligned extent), so clipping the
+    // write to the row boundary matches C's readable recon exactly and is
+    // byte-neutral where nothing straddles (`abs_x + w <= y_stride`).
+    let wr = w.min(y_stride.saturating_sub(abs_x));
     for r in 0..h {
         let dst = (abs_y + r) * y_stride + abs_x;
-        y_recon[dst..dst + w].copy_from_slice(&cand.y_recon[r * w..(r + 1) * w]);
+        y_recon[dst..dst + wr].copy_from_slice(&cand.y_recon[r * w..r * w + wr]);
     }
     if ev.has_uv {
+        // Same straddle clip on chroma (c_stride = the aligned chroma width).
+        let cwr = cw.min(fx.c_stride.saturating_sub(ccx));
         for r in 0..chh {
             let dst = (ccy + r) * fx.c_stride + ccx;
-            fx.u_recon[dst..dst + cw].copy_from_slice(&cand.u_recon[r * cw..(r + 1) * cw]);
-            fx.v_recon[dst..dst + cw].copy_from_slice(&cand.v_recon[r * cw..(r + 1) * cw]);
+            fx.u_recon[dst..dst + cwr].copy_from_slice(&cand.u_recon[r * cw..r * cw + cwr]);
+            fx.v_recon[dst..dst + cwr].copy_from_slice(&cand.v_recon[r * cw..r * cw + cwr]);
         }
     }
     let skip = !cand.block_has_coeff;

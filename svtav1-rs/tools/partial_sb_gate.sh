@@ -39,11 +39,15 @@
 # SPLITS (no edge shape) exactly like presets >= 9 — the nsq_enabled gate in
 # pd0::pick extends the presets >= 9 force-split to the LVL_1 presets 7/8.
 #
-# STILL DIVERGENT: aligned-72x72 BOTH-partial cells (65x65 / 65x72 / 65x80) at
-# PRESET 6 ONLY hit a separate full-PD1 intra MODE near-tie (V_PRED vs DC at a
-# bottom-SB 16x8 leaf) — they byte-match at p7/p8 (lighter PD1) and p9+. That p6
-# near-tie is the remaining follow-up; a few high-qp q55 straddle/multi-SB cells
-# at p7/p8 hit the same near-tie class and are not gated.
+# BOTH-PARTIAL p6 (the documented aligned-72 follow-up) is now FIXED: the p6
+# 65x65/65x72/65x80 "V_PRED vs DC mode flip" was NOT a PD1 near-tie but a recon
+# WRAP bug — SB(0,1)'s straddling VERT edge-shape recon wrote past the aligned
+# stride and wrapped into the next row's low columns, corrupting SB(0,0)'s
+# V_PRED reference. Fixed by clipping the boundary recon write to the row stride
+# (commit_leaf). 65x72/65x80 + 65x65 q20/40/55 now byte-match (gated below).
+# RESIDUAL: 65x65 q32 + 65x96 q20 differ only in recon-INVISIBLE signaling
+# (decoded pixels identical); a few high-qp q55 straddle/multi-SB cells at p7/p8
+# hit a separate genuine near-tie. Neither is gated.
 #
 # Scope: bd8 4:2:0. preset 6 (PD0_LVL_1 fixed tree) + presets 7/8 (LVL_1, NSQ
 # disabled) + presets 9/10/13 (LPD0).
@@ -168,6 +172,32 @@ CELLS=(
   "gradient 88 56 40 7"    # straddle
   "gradient 48 48 32 7"    # sub-64 single partial SB
   "gradient 96 96 32 7"    # 32-aligned both partial (no straddle)
+  # BOTH-PARTIAL with a SECOND SB row (the documented p6 follow-up, NOW FIXED).
+  # Aligned width 72/80 (so SB(0,1)'s VERT edge-shape 32x64 at x64..96 STRADDLES
+  # past the aligned width) AND height > 64 (so SB(1,0) exists and reads
+  # SB(0,0)'s recon for V_PRED). The straddle recon write used to WRAP past the
+  # aligned stride into the next row's low columns, corrupting SB(0,0)'s row-63
+  # reference → V mispredicted → DC won → byte divergence. Fixed by clipping the
+  # boundary recon write to the row stride (commit_leaf). All cmp-verified
+  # byte-identical. (65x65 q32 + 65x96 q20 still differ in a recon-INVISIBLE
+  # signaling split — identical decoded pixels — a separate residual, not gated.)
+  "gradient 65 72 32 6"    # was follow-up divergence; now byte-exact
+  "gradient 65 72 20 6"
+  "gradient 65 72 55 6"
+  "gradient 65 80 32 6"
+  "gradient 65 80 40 6"
+  "gradient 65 65 20 6"    # 65x65 (aligned 72x72) — q20/40/55 (q32 = residual signaling)
+  "gradient 65 65 40 6"
+  "gradient 65 65 55 6"
+  "gradient 65 96 32 6"    # taller both-partial (3 SB rows)
+  "gradient 65 96 55 6"
+  "gradient 65 104 40 6"
+  "gradient 71 72 32 6"    # width 71 (aligned 72)
+  "gradient 71 80 55 6"
+  "gradient 73 72 32 6"    # width 73 (aligned 80)
+  "gradient 73 80 20 6"
+  "gradient 67 72 20 6"    # width 67 (aligned 72)
+  "gradient 67 72 32 6"
   "gradient 96 80 32 8"    # milestone at p8
   "gradient 96 80 20 8"
   "gradient 96 80 55 8"
