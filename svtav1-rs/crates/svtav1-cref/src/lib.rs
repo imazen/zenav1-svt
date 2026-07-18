@@ -734,6 +734,16 @@ pub fn inv_txfm2d_add_rect(
 unsafe extern "C" {
     fn ref_lpf(kind: i32, buf: *mut u8, off: i32, pitch: i32, blimit: u8, limit: u8, thresh: u8);
     fn ref_lf_limits(sharpness: i32, lim_out: *mut u8, mblim_out: *mut u8);
+    fn ref_lpf_hbd(
+        kind: i32,
+        buf: *mut u16,
+        off: i32,
+        pitch: i32,
+        blimit: u8,
+        limit: u8,
+        thresh: u8,
+        bd: i32,
+    );
 }
 
 /// Which reference loop-filter kernel to run (`svt_aom_lpf_*_c`).
@@ -783,6 +793,38 @@ pub fn lpf(kind: LpfKind, buf: &mut [u8], off: usize, pitch: usize, mblim: u8, l
             mblim,
             lim,
             hev,
+        )
+    };
+}
+
+/// Run the reference C HIGH-BIT-DEPTH loop-filter kernel in place on a u16
+/// plane (`svt_aom_highbd_lpf_*_c`), `bd` in {10, 12}. Same geometry/bounds
+/// contract as [`lpf`].
+#[allow(clippy::too_many_arguments)]
+pub fn lpf_hbd(
+    kind: LpfKind,
+    buf: &mut [u16],
+    off: usize,
+    pitch: usize,
+    mblim: u8,
+    lim: u8,
+    hev: u8,
+    bd: i32,
+) {
+    let (reach, vertical) = kind.geometry();
+    let (axis_step, line_step) = if vertical { (1, pitch) } else { (pitch, 1) };
+    assert!(off >= reach * axis_step);
+    assert!(off + 3 * line_step + (reach - 1) * axis_step < buf.len());
+    unsafe {
+        ref_lpf_hbd(
+            kind as i32,
+            buf.as_mut_ptr(),
+            off as i32,
+            pitch as i32,
+            mblim,
+            lim,
+            hev,
+            bd,
         )
     };
 }

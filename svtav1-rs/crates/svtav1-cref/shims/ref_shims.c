@@ -450,6 +450,42 @@ void ref_lpf(int32_t kind, uint8_t* buf, int32_t off, int32_t pitch, uint8_t bli
     }
 }
 
+/* High bit depth loop filters (deblocking_common.c:473+). Same kind dispatch
+   as ref_lpf but on a uint16_t plane with an extra bd (10 or 12). The port's
+   hbd::lpf_*_hbd entry points are the differential target. */
+void svt_aom_highbd_lpf_horizontal_4_c(uint16_t* s, int32_t p, const uint8_t* blimit, const uint8_t* limit,
+                                       const uint8_t* thresh, int32_t bd);
+void svt_aom_highbd_lpf_vertical_4_c(uint16_t* s, int32_t p, const uint8_t* blimit, const uint8_t* limit,
+                                     const uint8_t* thresh, int32_t bd);
+void svt_aom_highbd_lpf_horizontal_6_c(uint16_t* s, int32_t p, const uint8_t* blimit, const uint8_t* limit,
+                                       const uint8_t* thresh, int32_t bd);
+void svt_aom_highbd_lpf_vertical_6_c(uint16_t* s, int32_t p, const uint8_t* blimit, const uint8_t* limit,
+                                     const uint8_t* thresh, int32_t bd);
+void svt_aom_highbd_lpf_horizontal_8_c(uint16_t* s, int32_t p, const uint8_t* blimit, const uint8_t* limit,
+                                       const uint8_t* thresh, int32_t bd);
+void svt_aom_highbd_lpf_vertical_8_c(uint16_t* s, int32_t p, const uint8_t* blimit, const uint8_t* limit,
+                                     const uint8_t* thresh, int32_t bd);
+void svt_aom_highbd_lpf_horizontal_14_c(uint16_t* s, int p, const uint8_t* blimit, const uint8_t* limit,
+                                        const uint8_t* thresh, int32_t bd);
+void svt_aom_highbd_lpf_vertical_14_c(uint16_t* s, int p, const uint8_t* blimit, const uint8_t* limit,
+                                      const uint8_t* thresh, int32_t bd);
+
+void ref_lpf_hbd(int32_t kind, uint16_t* buf, int32_t off, int32_t pitch, uint8_t blimit, uint8_t limit,
+                 uint8_t thresh, int32_t bd) {
+    uint16_t* s = buf + off;
+    switch (kind) {
+    case 0: svt_aom_highbd_lpf_horizontal_4_c(s, pitch, &blimit, &limit, &thresh, bd); break;
+    case 1: svt_aom_highbd_lpf_vertical_4_c(s, pitch, &blimit, &limit, &thresh, bd); break;
+    case 2: svt_aom_highbd_lpf_horizontal_6_c(s, pitch, &blimit, &limit, &thresh, bd); break;
+    case 3: svt_aom_highbd_lpf_vertical_6_c(s, pitch, &blimit, &limit, &thresh, bd); break;
+    case 4: svt_aom_highbd_lpf_horizontal_8_c(s, pitch, &blimit, &limit, &thresh, bd); break;
+    case 5: svt_aom_highbd_lpf_vertical_8_c(s, pitch, &blimit, &limit, &thresh, bd); break;
+    case 6: svt_aom_highbd_lpf_horizontal_14_c(s, pitch, &blimit, &limit, &thresh, bd); break;
+    case 7: svt_aom_highbd_lpf_vertical_14_c(s, pitch, &blimit, &limit, &thresh, bd); break;
+    default: break;
+    }
+}
+
 /* Reference limits per level for a sharpness setting: lim_out/mblim_out are
    64-entry arrays indexed by filter level (svt_aom_update_sharpness). */
 void ref_lf_limits(int32_t sharpness, uint8_t* lim_out, uint8_t* mblim_out) {

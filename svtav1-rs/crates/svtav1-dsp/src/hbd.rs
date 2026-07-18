@@ -970,8 +970,11 @@ pub fn highbd_sad_kernel(src: &[u16], src_stride: usize, ref_: &[u16], ref_strid
 // derive from `level`/`sharpness` only) are reused directly as the
 // threshold carrier type; no hbd variant needed for those two.
 //
-// PORT-NOTE(unverified) on every function below: verify vs FFI parity once
-// wired (mirroring `tests/c_parity_lpf.rs`'s bd8 coverage).
+// FFI-VERIFIED: tests/c_parity_lpf_hbd.rs pins all 8 public lpf_*_hbd entry
+// points (and thus the shared mask/hev/filter helpers below) against the real
+// exported svt_aom_highbd_lpf_*_c at bd10 AND bd12, over the full
+// (level, sharpness) space and random params — the bd-shift twin of the bd8
+// tests/c_parity_lpf.rs.
 // =============================================================================
 
 use crate::loop_filter::LfThresh;
