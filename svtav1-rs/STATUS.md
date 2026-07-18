@@ -28,16 +28,36 @@ dims a multiple of 64 (dims {57..64} -> a single 64x64 SB, e.g. 60x60).
 | 60x60 uniform+gradient vs SvtAv1EncApp, presets 13/10/6 × q20/40/55 | **18/18 byte-identical** |
 | default identity_matrix (64/128 full-SB + 60 arb-dims) | **54/54** |
 
-Partial SBs (aligned NOT a mult of 64: 56x56, 200x200, odd widths) are
-chunk 2. Byte-neutral groundwork landed (matrix stays 54/54): the frame-edge
-partition PACK coding (spec 5.11.4 `write_partition_edge` + CDF gathers), the
-mono silent-corruption guard (sub-64 mono was emitting undecodable streams),
-and `frame_geom::edge_has_rows_cols` wired as the one edge rule (unit-tested on
-the 96x80 milestone). The remaining core is the SEARCH: partial SBs currently
-fall to the homegrown recursive search (`use_pd0` requires full SBs), not C's
-PD0 path — so a partial SB needs the PD0/funnel path extended to a clamped
-sb_geom extent with edge-forced decisions + cropped-RDO distortion + padded
-b64 variance before it can byte-match. See CLAUDE.md #95.
+## Arbitrary dimensions — chunk 2: PARTIAL SBs byte-match (task #95, 2026-07-18)
+
+Partial superblocks (aligned NOT a mult of 64) now byte-match real C.
+`tools/partial_sb_gate.sh` = **15/15**: 96x80 (the milestone, cmp-verified 878B),
+96x64, 96x96, 64x80, 80x96, 200x120, 48x48, 88x56, 72x72, + straddle cells
+48x56, 40x40, 120x120, 136x136 (all preset 6, bd8 4:2:0). Full-SB identity
+matrix stays **54/54** (every change byte-neutral where no SB is incomplete);
+bd10 36/36 + bd10-nonflat 8/8 untouched. Landed pieces:
+- **SB-extent padded variance** — `encode_input` padded TRUE->sb_ext
+  (`frame_geom::pad_input_plane`, edge replication) at the sb_ext stride, so
+  `compute_b64_variance`'s unclamped 64x64 walk reads C's replicated border.
+- **Partition edge SEARCH** — a partial node is a DETERMINISTIC edge-shape
+  decision (`set_blocks_to_test`: one shape injected, `md_disallow_nsq_search`),
+  priced on the NON-SQUARE in-frame block (`pd0::lvl1_block_cost_rect`,
+  `leaf_funnel::decide_leaf_rect` + tall-rect TX Tx32x64/16x32/8x16), NOT the
+  square PART_N cropped nor forced-split. Off-frame quadrants = `Pd0Tree::Off`.
+- **Partition edge CODING** — `encode_partition_av1` binary SPLIT-vs-{H,V} with
+  the CROSS-named `partition_gather_{horz,vert}_alike` (see arb-dims-port-map),
+  no-symbol forced split when both-false, single-child H/V pack arms.
+- **Straddle boundary blocks** — C codes blocks that reach PAST aligned (the
+  "leaves inside ALIGNED" assumption was false — even both-true nodes straddle,
+  e.g. 48x56's 64-root); recon+chroma working buffers are sized to the sb_ext
+  PRODUCT so straddling reads/writes never OOB. Verified PANIC-FREE: 240
+  partial-SB cells (dims x qp) all decodable, 0 panics.
+
+REMAINING (decodable-DIFF, documented in docs/arbitrary-dims-port-map.md, NOT
+gated): straddle-WIN cells (80x88, 104x88, 72x88 — C keeps a straddling leaf)
+need cropped-RDO distortion + a true sb_ext chroma STRIDE (not just product
+slack); 65x65 odd-width (harness even-dim + DLF floor-vs-ceiling chroma); the
+M9+ boundary edge-shape cost (wired on LVL_1 only). See CLAUDE.md #95.
 
 ## Decode conformance (AV1 reference decoder)
 
