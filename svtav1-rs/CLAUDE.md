@@ -546,7 +546,13 @@ shared file, THEIR fork arms win, OUR mainline arms win.
    the MDS0/MDS1/MDS3 per-class dev-prunes were correct+necessary but did
    not fully converge the survivor→winner set. (pipeline.rs:1531 stale
    PORT-NOTE updated this session.) Gate: EPICA p6/p7 q32 byte-match
-   (13097B / 14736B) — still OPEN.
+   (13097B / 14736B) — still OPEN (RD/over-picking gap only).
+   **NOTE 2026-07-18: EPICA now DECODES cleanly (was undecodable).** The
+   palette filter_intra conformance fix (a0b505b4f) applied to EPICA too —
+   its palette-heavy stream is now valid (13173B vs C 13097B, decodes under
+   aomdec). So #71 is now purely an RD-efficiency gap (byte-match), NOT a
+   correctness/desync issue. The over-picking drill above is the remaining
+   work; it no longer blocks decodability.
 2. **#71 IBC wiring**: wire `intrabc.rs` into the funnel injection
    (palette_hint coupling) + FH allow_intrabc for M2-M4 sc + the already
    -dormant obu.rs LF/CDEF/LR skips. Gate: EPICA p2-p5 cells.
