@@ -739,11 +739,28 @@ pub(crate) fn build_tx_type_rates_dc_from_fc(
 impl TxTypeRatesDc {
     #[inline]
     fn rate_for(&self, c_tx_size: usize) -> i32 {
-        match c_tx_size {
-            0 => self.tx4,  // TX_4X4
-            1 => self.tx8,  // TX_8X8
-            2 => self.tx16, // TX_16X16
-            _ => 0,         // TX_32X32 / TX_64X64: DCT-only intra set
+        use svtav1_entropy::coeff_c as cc;
+        // C `av1_transform_type_rate_estimation` (rd_cost.c:107): the intra
+        // tx-type bit is coded only when the ext-tx set is NOT DCT-only
+        // (`sqr_up >= TX_32X32` => DCTONLY intra => 0), and its DCT_DCT cost
+        // uses the tx's SQUARE-MAPPED CDF row. So a RECTANGULAR transform
+        // charges the SAME rate as its square map — `ext_tx_set_type` and the
+        // CDF row are identical for TX_16X8 and TX_8X8 (both DTT4_IDTX_1DDCT,
+        // row TX_8X8). Rectangular transforms only occur at PD0 boundary
+        // edge-shape blocks (partial SBs); the prior `_ => 0` dropped the
+        // tx-type bit on every one of them (748 bits for TX_16X8/8X16),
+        // undercosting the edge shape and flipping the edge-vs-SPLIT PD0
+        // partition near-tie. SQUARE sizes are unchanged: TX_4X4/8X8/16X16 ->
+        // tx4/tx8/tx16, TX_32X32/64X64 -> 0 (DCTONLY) — so 64-aligned frames
+        // are byte-neutral.
+        if cc::ext_tx_set_type(c_tx_size, false, false) == cc::EXT_TX_SET_DCTONLY {
+            return 0;
+        }
+        match cc::TXSIZE_SQR_MAP[c_tx_size] {
+            0 => self.tx4,  // sqr map TX_4X4  (TX_4X4/4X8/8X4/4X16/16X4)
+            1 => self.tx8,  // sqr map TX_8X8  (TX_8X8/8X16/16X8/8X32/32X8)
+            2 => self.tx16, // sqr map TX_16X16 (TX_16X16/16X32/32X16 -> but those are DCTONLY above)
+            _ => 0,
         }
     }
 }
@@ -1087,6 +1104,15 @@ pub struct M6Pd0Tables {
     /// PARTITION_SPLIT rate per square size (index by log2(sq) - 3:
     /// 8/16/32/64), from THIS SB's chained partition CDFs (ctx row 0).
     split_bits: [u64; 4],
+    /// BINARY SPLIT rate for a one-false BOUNDARY node, per square size —
+    /// C `svt_aom_partition_rate_cost` boundary branch (rd_cost.c:1846-1863):
+    /// the bottom-edge (`!has_rows`) uses `partition_vert_alike_fac_bits`, the
+    /// right-edge (`!has_cols`) `partition_horz_alike_fac_bits`, indexed
+    /// `[ctx][SPLIT]` — NOT the full-alphabet `split_bits`. Gather is
+    /// CROSS-named vs the option. Slot 0 (8x8) is never used (8x8 is never an
+    /// edge node).
+    vert_alike_split_bits: [u64; 4],
+    horz_alike_split_bits: [u64; 4],
     /// `partition_fac_bits[0][PARTITION_NONE]` (context index 0 — the
     /// 8x8-class row, rd_cost.c:1344-1349 approximation).
     none_bits_ctx0: u64,
@@ -1113,6 +1139,8 @@ pub fn build_m6_pd0_tables_from_ctx(
     // (pipeline EntropyCtx::partition_ctx semantics; nsyms 10 for the
     // square 8..64 classes at ctx rows 0..=15 except row 0 = 4 syms).
     let mut split_bits = [0u64; 4];
+    let mut vert_alike_split_bits = [0u64; 4];
+    let mut horz_alike_split_bits = [0u64; 4];
     let mut none_bits_ctx0 = 0u64;
     for (slot, sq) in [(0usize, 8usize), (1, 16), (2, 32), (3, 64)] {
         let bsl = match sq {
@@ -1126,6 +1154,19 @@ pub fn build_m6_pd0_tables_from_ctx(
         let mut costs = [0i32; 10];
         crate::quant::syntax_rate_from_cdf(&mut costs[..nsyms], &fc.partition_cdf[ctx]);
         split_bits[slot] = costs[crate::partition::PartitionType::Split as usize] as u64;
+        // Binary boundary SPLIT rate at the same ctx row (left = above = 0).
+        // is_128 = false: PD0 squares here are <= 64. Slot 0 (8x8) computes a
+        // value that is never consumed (8x8 is never an edge node).
+        vert_alike_split_bits[slot] = svtav1_entropy::context::partition_alike_split_cost(
+            &fc.partition_cdf[ctx],
+            true, // !has_rows -> vert_alike (bottom edge)
+            false,
+        ) as u64;
+        horz_alike_split_bits[slot] = svtav1_entropy::context::partition_alike_split_cost(
+            &fc.partition_cdf[ctx],
+            false, // !has_cols -> horz_alike (right edge)
+            false,
+        ) as u64;
         if sq == 8 {
             none_bits_ctx0 = costs[crate::partition::PartitionType::None as usize] as u64;
         }
@@ -1136,6 +1177,8 @@ pub fn build_m6_pd0_tables_from_ctx(
         coeff: crate::quant::build_coeff_cost_tables_from_fc(cfc),
         tx_rates: build_tx_type_rates_dc_from_fc(cfc),
         split_bits,
+        vert_alike_split_bits,
+        horz_alike_split_bits,
         none_bits_ctx0,
         skip0_bits: skip_costs[0] as u64,
     }
@@ -1143,13 +1186,28 @@ pub fn build_m6_pd0_tables_from_ctx(
 
 impl M6Pd0Tables {
     #[inline]
-    pub(crate) fn split_bits(&self, sq_size: usize) -> u64 {
-        self.split_bits[match sq_size {
+    fn size_slot(sq_size: usize) -> usize {
+        match sq_size {
             8 => 0,
             16 => 1,
             32 => 2,
             _ => 3,
-        }]
+        }
+    }
+    #[inline]
+    pub(crate) fn split_bits(&self, sq_size: usize) -> u64 {
+        self.split_bits[Self::size_slot(sq_size)]
+    }
+    /// Binary boundary SPLIT rate for a one-false node. `bottom_edge`
+    /// (`!has_rows`) -> vert_alike; else (right edge, `!has_cols`) -> horz_alike.
+    #[inline]
+    fn boundary_split_bits(&self, sq_size: usize, bottom_edge: bool) -> u64 {
+        let slot = Self::size_slot(sq_size);
+        if bottom_edge {
+            self.vert_alike_split_bits[slot]
+        } else {
+            self.horz_alike_split_bits[slot]
+        }
     }
 }
 
@@ -1448,13 +1506,22 @@ impl<'a> Pd0Ctx<'a> {
         let mut split_cost = match self.mode {
             Pd0Mode::Lvl6 => 0,
             Pd0Mode::Lvl5 => rdcost(self.lambda, 2 * partition_split_bits(sq_size), 0),
-            Pd0Mode::Lvl1 => rdcost(
-                self.lambda,
-                self.lvl1
-                    .expect("LVL_1 requires tables")
-                    .split_bits(sq_size),
-                0,
-            ),
+            Pd0Mode::Lvl1 => {
+                let tables = self.lvl1.expect("LVL_1 requires tables");
+                // C `svt_aom_partition_rate_cost` (rd_cost.c:1846-1863): at a
+                // one-false BOUNDARY node the SPLIT rate is the BINARY
+                // split-vs-{H,V} cost (`partition_{vert,horz}_alike_fac_bits`),
+                // not the full-alphabet `partition_fac_bits[ctx][SPLIT]`. Only
+                // the LVL_1 fixed-tree path prices the edge shape (parent_cost),
+                // so only it needs the matching boundary split rate; interior
+                // nodes and LVL_5/6 keep the full-alphabet `split_bits`.
+                let sbits = if one_false {
+                    tables.boundary_split_bits(sq_size, !has_rows)
+                } else {
+                    tables.split_bits(sq_size)
+                };
+                rdcost(self.lambda, sbits, 0)
+            }
         };
 
         let half = sq_size / 2;

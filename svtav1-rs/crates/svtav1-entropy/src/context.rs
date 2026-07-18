@@ -747,6 +747,31 @@ pub fn write_partition_edge(
     w.write_cdf(usize::from(partition as usize == PARTITION_SPLIT), &cdf, 2);
 }
 
+/// Cost (1/512 bit) of coding PARTITION_SPLIT at a one-false boundary node,
+/// using the BINARY split-vs-{H,V} alphabet — C `svt_aom_partition_rate_cost`
+/// boundary branch (rd_cost.c:1846-1863): the SPLIT rate is
+/// `partition_{vert,horz}_alike_fac_bits[ctx][p == PARTITION_SPLIT]`, i.e. the
+/// cost of symbol 1 in the gathered 2-symbol CDF, NOT the full-alphabet
+/// `partition_fac_bits[ctx][SPLIT]`. `bottom_edge` (`!has_rows`) selects the
+/// vert_alike gather; `!bottom_edge` (`!has_cols`, right edge) the horz_alike —
+/// the gather is CROSS-named vs the option (see [`write_partition_edge`]).
+/// `partition_cdf_row` is `fc.partition_cdf[ctx]` at `ctx = bsl*PARTITION_PLOFFSET`
+/// (left = above = 0 in PD0). For the gathered 2-symbol icdf `[x, 0]`,
+/// `P(sym1=SPLIT) = x`, so the cost is `av1_cost_symbol(x.max(EC_MIN_PROB))`.
+pub fn partition_alike_split_cost(
+    partition_cdf_row: &[AomCdfProb],
+    bottom_edge: bool,
+    is_128: bool,
+) -> u32 {
+    let mut cdf = [0 as AomCdfProb; 3];
+    if bottom_edge {
+        partition_gather_vert_alike(&mut cdf, partition_cdf_row, is_128);
+    } else {
+        partition_gather_horz_alike(&mut cdf, partition_cdf_row, is_128);
+    }
+    av1_cost_symbol((cdf[0] as u32).max(4 /* EC_MIN_PROB */))
+}
+
 /// Encode a skip flag using CDF.
 pub fn write_skip(w: &mut AomWriter, fc: &mut FrameContext, ctx: usize, skip: bool) {
     let sym = if skip { 1 } else { 0 };
