@@ -164,7 +164,27 @@ fn main() {
         "I420 harness requires even dims (got {w}x{h})"
     );
 
-    let (y, u, v) = if let Some(path) = content.strip_prefix("file:") {
+    let (y, u, v) = if let Some(path) = content.strip_prefix("raw:") {
+        // Raw I420 8-bit YUV file (w*h luma + 2*(w/2)*(h/2) chroma), used to
+        // drive the identity/decode-both harness with EXACT content — e.g. the
+        // decode_conformance failure cases (replicated-border padded content)
+        // that synthetic uniform/gradient don't reproduce.
+        let bytes = std::fs::read(path).expect("read raw yuv");
+        let ysz = w * h;
+        let csz = (w / 2) * (h / 2);
+        assert!(
+            bytes.len() >= ysz + 2 * csz,
+            "raw yuv {} too small: {} < {}",
+            path,
+            bytes.len(),
+            ysz + 2 * csz
+        );
+        (
+            bytes[..ysz].to_vec(),
+            bytes[ysz..ysz + csz].to_vec(),
+            bytes[ysz + csz..ysz + 2 * csz].to_vec(),
+        )
+    } else if let Some(path) = content.strip_prefix("file:") {
         // Real photographic content. The caller (real_image_matrix.sh) passes
         // (w,h) = the image dims rounded up to a multiple of 64; edge-replicate
         // into that box (a no-op for natively 64-aligned corpora like CID22-512).
