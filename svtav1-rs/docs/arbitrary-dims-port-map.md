@@ -62,11 +62,30 @@ coexist — conflating them is the #1 porting risk.
   variance than C and therefore different PD0 partition decisions — it would
   break byte-exactness at partial SBs rather than enable it. The port must
   reproduce C's padded CONTENT out to the SB extent instead.
-  OPEN (needs a trace before chunk 2's PD0 path is unlocked): exactly what
-  occupies the input buffer between ALIGNED and the SB extent — the border
-  padding applied for ME/reference use, or uninitialised allocation. Trace it
-  against the C buffer before trusting any variance at a partial SB; if it is
-  edge replication, extend `frame_geom::pad_input_plane` to the SB extent.
+  RESOLVED (2026-07-18, full source trace): the region `[aligned, SB-extent)`
+  is **edge/replication of the TRUE edge** — deterministic, in-bounds, NOT
+  uninitialised. C reaches it in two steps into the SHARED y8b luma buffer
+  (`input_padded_pic->y_buffer` == `enhanced_pic->y_buffer` == `buff_y8b`,
+  resource_coordination_process.c:1016/1193/1320; the pa_ref desc allocates no
+  pixels, reference_object.c:248-250) BEFORE the variance runs:
+  (1a) `pad_input_picture` (pic_operators.c:561) replicates the true edge
+  col→row into `[true, aligned]` (pad_right/bottom, mult of MIN_BLK=8), then
+  (1b) `svt_aom_generate_padding` (pic_operators.c:434, called at
+  pic_analysis_process.c:1555 — BEFORE the :2000 `svt_aom_gathering_picture_
+  statistics`) edge-replicates the 8-aligned buffer over the full
+  `border = BLOCK_SIZE_64+4 = 68` px (enc_handle.c:4256), which covers the b64
+  grid (the (64,64) b64 reads only 32px past aligned in x, 48 in y — both < 68).
+  Net content of `[true, ext)` = the TRUE edge pixel (corner = `(true_w-1,
+  true_h-1)`). LUMA ONLY matters (`compute_b64_variance` reads `y_buffer`
+  alone, pic_analysis_process.c:333). **Do NOT clamp `compute_b64_variance`.**
+  DONE: `frame_geom::pad_input_plane(plane, dims, sb)` now edge-replicates the
+  true edge out to `dims.sb_ext_w/h(sb)` (horizontal-then-vertical, corner-
+  correct) — C-faithful, unit-tested on the 96x80 milestone + a full-SB no-op
+  case, byte-neutral (the fn is not yet wired into the pipeline; the current
+  full-SB matrix is unaffected). REMAINING chunk-2 WIRING: allocate the input
+  plane at the SB extent (`sb_ext_w`-strided), call `pad_input_plane` after
+  ingestion, and pass the ext stride to `compute_b64_variance` — then the
+  partial-SB PD0 variance matches C and the 96x80 search restructure can land.
 - subres off at incomplete b64 (enc_mode_config.c:7327).
 - end_tx_depth=0 for blocks touching the ALIGNED boundary
   (product_coding_loop.c:6710-6717).

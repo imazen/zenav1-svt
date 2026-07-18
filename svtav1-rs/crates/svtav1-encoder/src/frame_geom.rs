@@ -105,6 +105,21 @@ impl FrameDims {
     pub fn sb_rows(&self, sb: usize) -> usize {
         self.aligned_h.div_ceil(sb)
     }
+
+    /// The extent (>= aligned, rounded up to `sb`) that the UNCLAMPED
+    /// per-b64 variance walk (`pd0::compute_b64_variance`) reads on a
+    /// partial SB: the last SB at `org = (sb_cols-1)*sb` walks a full
+    /// `sb`x`sb`, reaching `sb_cols*sb`. The input plane must be
+    /// edge-padded (see [`pad_input_plane`]) out to this extent so the
+    /// walk reads C's replicated border rather than stride-wrapping into
+    /// the next row's pixels. For a 64-aligned (full-SB) frame this equals
+    /// `aligned_w`/`aligned_h`, so padding to it is a no-op there.
+    pub fn sb_ext_w(&self, sb: usize) -> usize {
+        self.aligned_w.div_ceil(sb) * sb
+    }
+    pub fn sb_ext_h(&self, sb: usize) -> usize {
+        self.aligned_h.div_ceil(sb) * sb
+    }
 }
 
 /// Per-SB clamped geometry — C sb_geom_init (pcs.c:1535-1555):
@@ -149,30 +164,53 @@ pub fn edge_has_rows_cols(
     (blk_y + half < aligned_h, blk_x + half < aligned_w)
 }
 
-/// C pad_input_picture (pic_operators.c:561-604): replicate the last real
-/// column into the right pad, THEN memcpy the last real row (INCLUDING
-/// the just-written right pad) into the bottom pad — order matters for
-/// the bottom-right corner. Operates on an aligned_w-strided plane whose
-/// left-top true_w x true_h region holds source pixels.
-/// PORT-NOTE(unverified): byte-compare against the C pad on a non-aligned
-/// cell (the sc detector's pad-to-8 already ported independently in
-/// sc_detect.rs uses the same replication rule).
-pub fn pad_input_plane(plane: &mut [u8], dims: &FrameDims) {
-    let (tw, th, aw, ah) = (dims.true_w, dims.true_h, dims.aligned_w, dims.aligned_h);
-    debug_assert!(plane.len() >= aw * ah);
-    if tw < aw {
+/// Edge-replicate the input plane's TRUE edge out to the SB extent
+/// `sb_ext_w(sb) x sb_ext_h(sb)`, so the unclamped per-b64 variance walk
+/// (`pd0::compute_b64_variance`) on a partial SB reads C's replicated
+/// border instead of stride-wrapping into the next row's pixels.
+///
+/// C reaches the same buffer content in TWO steps into the shared y8b
+/// luma buffer BEFORE `compute_b64_variance` runs (VERIFIED 2026-07-18,
+/// source-cited in docs/arbitrary-dims-port-map.md):
+/// 1a. `pad_input_picture` (pic_operators.c:561): replicate last real
+///     column into `[true, aligned)` (pad_right, mult of MIN_BLK=8), then
+///     the last real row (incl. the new right pad) into `[true, aligned)`.
+/// 1b. `svt_aom_generate_padding` (pic_operators.c:434, called at
+///     pic_analysis_process.c:1555, BEFORE the :2000 variance): edge-
+///     replicate the 8-aligned buffer over the full `border = 68` pixels
+///     (BLOCK_SIZE_64+4, enc_handle.c:4256) — which covers the b64 grid.
+/// Because 1a replicates TRUE->aligned and 1b replicates aligned->border,
+/// the net content of `[true, ext)` is just the TRUE edge pixel (the
+/// corner is `plane[true_h-1][true_w-1]`). This single horizontal-then-
+/// vertical pass reproduces that net content exactly (order matters for
+/// the corner). The plane is `sb_ext_w`-strided; its top-left
+/// `true_w x true_h` holds source pixels.
+///
+/// For a 64-aligned (full-SB) frame `ext == aligned == true-rounded-up`,
+/// so this only writes where a partial SB actually needs it. Luma only:
+/// `compute_b64_variance` reads `y_buffer` alone (pic_analysis_process.c
+/// :333); padding chroma identically is harmless.
+pub fn pad_input_plane(plane: &mut [u8], dims: &FrameDims, sb: usize) {
+    let (tw, th) = (dims.true_w, dims.true_h);
+    let (ew, eh) = (dims.sb_ext_w(sb), dims.sb_ext_h(sb));
+    debug_assert!(plane.len() >= ew * eh);
+    // Horizontal: replicate the true edge column across [true_w, ext_w)
+    // for every true row.
+    if tw < ew {
         for r in 0..th {
-            let edge = plane[r * aw + tw - 1];
-            for c in tw..aw {
-                plane[r * aw + c] = edge;
+            let edge = plane[r * ew + tw - 1];
+            for c in tw..ew {
+                plane[r * ew + c] = edge;
             }
         }
     }
-    if th < ah {
-        let (last_real, rest) = plane.split_at_mut(th * aw);
-        let src_row = &last_real[(th - 1) * aw..th * aw];
-        for r in 0..(ah - th) {
-            rest[r * aw..(r + 1) * aw].copy_from_slice(src_row);
+    // Vertical: copy the fully horizontally-padded last true row down into
+    // [true_h, ext_h) — makes the bottom-right corner the corner pixel.
+    if th < eh {
+        let (done, rest) = plane.split_at_mut(th * ew);
+        let src_row = &done[(th - 1) * ew..th * ew];
+        for r in 0..(eh - th) {
+            rest[r * ew..(r + 1) * ew].copy_from_slice(src_row);
         }
     }
 }
@@ -313,5 +351,64 @@ mod tests {
         assert_eq!(sb_geom(&dims, 64, 64, 0), (32, 64)); // right column
         assert_eq!(sb_geom(&dims, 64, 0, 64), (64, 16)); // bottom row
         assert_eq!(sb_geom(&dims, 64, 64, 64), (32, 16)); // corner
+    }
+
+    /// pad_input_plane edge-replicates the TRUE edge out to the SB extent,
+    /// matching C's pad_input_picture + generate_padding net content
+    /// (VERIFIED 2026-07-18, docs/arbitrary-dims-port-map.md). 96x80 is
+    /// 8-aligned (aligned==true) so ALL padding is the generate_padding
+    /// step: ext = 128x128 (b64 grid), col 95 / row 79 are the true edge.
+    #[test]
+    fn pad_input_plane_replicates_true_edge_to_sb_extent_96x80() {
+        let dims = FrameDims::new(96, 80);
+        let sb = 64;
+        let (ew, eh) = (dims.sb_ext_w(sb), dims.sb_ext_h(sb));
+        assert_eq!((ew, eh), (128, 128)); // ceil(96/64)*64, ceil(80/64)*64
+        // Fill the true 96x80 region with a pattern where every pixel is
+        // distinct enough to catch a wrong replication source.
+        let mut plane = alloc::vec![0u8; ew * eh];
+        for r in 0..80 {
+            for c in 0..96 {
+                plane[r * ew + c] = ((r * 7 + c * 3) & 0xff) as u8;
+            }
+        }
+        pad_input_plane(&mut plane, &dims, sb);
+        let at = |r: usize, c: usize| plane[r * ew + c];
+        // Right pad [96,128) x [0,80): replicate column 95.
+        for r in 0..80 {
+            let edge = at(r, 95);
+            for c in 96..128 {
+                assert_eq!(at(r, c), edge, "right pad r={r} c={c}");
+            }
+        }
+        // Bottom pad [0,96) x [80,128): replicate row 79.
+        for c in 0..96 {
+            let edge = at(79, c);
+            for r in 80..128 {
+                assert_eq!(at(r, c), edge, "bottom pad r={r} c={c}");
+            }
+        }
+        // Bottom-right corner [96,128) x [80,128): the corner pixel (95,79)
+        // (horizontal-then-vertical order — row 79's right pad first).
+        let corner = at(79, 95);
+        for r in 80..128 {
+            for c in 96..128 {
+                assert_eq!(at(r, c), corner, "corner r={r} c={c}");
+            }
+        }
+    }
+
+    /// Full-SB (64-aligned) frame: the SB extent equals aligned, so
+    /// pad_input_plane is a no-op — the byte-neutral guarantee for every
+    /// existing full-SB identity-matrix cell.
+    #[test]
+    fn pad_input_plane_is_noop_on_full_sb_frame() {
+        let dims = FrameDims::new(128, 128);
+        let sb = 64;
+        assert_eq!((dims.sb_ext_w(sb), dims.sb_ext_h(sb)), (128, 128));
+        let orig: alloc::vec::Vec<u8> = (0..128 * 128).map(|i| (i & 0xff) as u8).collect();
+        let mut plane = orig.clone();
+        pad_input_plane(&mut plane, &dims, sb);
+        assert_eq!(plane, orig, "full-SB pad must be a no-op");
     }
 }
