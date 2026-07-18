@@ -37,8 +37,10 @@ static void die(const char* msg, int32_t err) {
 }
 
 int main(int argc, char** argv) {
-    if (argc != 7) {
-        fprintf(stderr, "usage: %s <width> <height> <cli_qp 0..63> <preset> <in.yuv> <out.obu>\n", argv[0]);
+    if (argc != 7 && argc != 8) {
+        fprintf(stderr,
+                "usage: %s <width> <height> <cli_qp 0..63> <preset> <in.yuv> <out.obu> [bit_depth=8|10]\n",
+                argv[0]);
         return 2;
     }
     const uint32_t w      = (uint32_t)atoi(argv[1]);
@@ -47,18 +49,24 @@ int main(int argc, char** argv) {
     const int8_t   preset = (int8_t)atoi(argv[4]);
     const char*    in_yuv = argv[5];
     const char*    out    = argv[6];
+    /* Optional 8th arg = encoder bit depth (default 8, so every existing
+       6-arg caller is byte-identical). At bd10 the input .yuv is PACKED u16
+       little-endian (2 bytes/sample), matching this fork's packed-u16 intake. */
+    const uint32_t bit_depth   = (argc == 8) ? (uint32_t)atoi(argv[7]) : 8;
+    const size_t   sample_size = (bit_depth > 8) ? 2 : 1;
 
     const size_t ysz = (size_t)w * h;
     const size_t csz = (size_t)(w / 2) * (h / 2);
+    const size_t frame_bytes = (ysz + 2 * csz) * sample_size;
 
-    uint8_t* yuv = malloc(ysz + 2 * csz);
+    uint8_t* yuv = malloc(frame_bytes);
     if (!yuv)
         die("oom", 0);
     FILE* fi = fopen(in_yuv, "rb");
     if (!fi)
         die("cannot open input .yuv", 0);
-    if (fread(yuv, 1, ysz + 2 * csz, fi) != ysz + 2 * csz)
-        die("short read (need w*h*3/2 bytes of I420)", 0);
+    if (fread(yuv, 1, frame_bytes, fi) != frame_bytes)
+        die("short read (need w*h*3/2 * sample_size bytes of I420)", 0);
     fclose(fi);
 
     /* STEP 1: handle + library defaults. */
@@ -79,7 +87,7 @@ int main(int argc, char** argv) {
     cfg.qp                     = qp;  /* CLI domain 0..63 */
     cfg.avif                   = true; /* still_picture=1 + reduced_still_picture_header=1 */
     cfg.level_of_parallelism   = 1;   /* --lp 1 */
-    cfg.encoder_bit_depth      = 8;
+    cfg.encoder_bit_depth      = bit_depth;
     cfg.encoder_color_format   = EB_YUV420;
     cfg.frame_rate_numerator   = 30; /* matches the F30:1 y4m the perf gate feeds the app */
     cfg.frame_rate_denominator = 1;
@@ -107,9 +115,9 @@ int main(int argc, char** argv) {
     EbSvtIOFormat io;
     memset(&io, 0, sizeof(io));
     io.luma      = yuv;
-    io.cb        = yuv + ysz;
-    io.cr        = yuv + ysz + csz;
-    io.y_stride  = w;
+    io.cb        = yuv + ysz * sample_size;
+    io.cr        = yuv + (ysz + csz) * sample_size;
+    io.y_stride  = w; /* strides are in SAMPLES (pixels), not bytes */
     io.cb_stride = w / 2;
     io.cr_stride = w / 2;
 
@@ -117,7 +125,7 @@ int main(int argc, char** argv) {
     memset(&in_hdr, 0, sizeof(in_hdr));
     in_hdr.size         = sizeof(EbBufferHeaderType);
     in_hdr.p_buffer     = (uint8_t*)&io;
-    in_hdr.n_filled_len = (uint32_t)(ysz + 2 * csz);
+    in_hdr.n_filled_len = (uint32_t)frame_bytes;
     in_hdr.pts          = 0;
     in_hdr.pic_type     = EB_AV1_INVALID_PICTURE; /* encoder decides; frame 0 is a key frame */
     err                 = svt_av1_enc_send_picture(handle, &in_hdr);

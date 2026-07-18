@@ -211,12 +211,28 @@ fn main() {
         (y, u, v)
     };
 
-    // Raw I420 input for the C driver: identical bytes on both sides.
-    let mut yuv = Vec::with_capacity(w * h * 3 / 2);
-    yuv.extend_from_slice(&y);
-    yuv.extend_from_slice(&u);
-    yuv.extend_from_slice(&v);
-    std::fs::write(format!("{prefix}.yuv"), &yuv).expect("write .yuv");
+    // SVTAV1_BD: encoder bit depth (8 default, or 10). At bd10 the C driver
+    // (capture_c_trace <..> 10) reads PACKED u16 LE, so write the input as u16
+    // (sample << (bd-8)); the port pipeline is u8 end-to-end, so it encodes the
+    // u8 planes directly (chunks 2-4 add the u16 MD path). This is VALID for
+    // content whose coded symbols are bit-depth-independent — uniform/skip,
+    // where the decoder's DC prediction fills the 10-bit default and the coded
+    // tile bytes are identical to bd8 apart from the SH high_bitdepth bit.
+    let bd: u8 = std::env::var("SVTAV1_BD").ok().and_then(|v| v.parse().ok()).unwrap_or(8);
+    if bd > 8 {
+        let shift = (bd - 8) as u32;
+        let mut yuv = Vec::with_capacity((w * h + 2 * (w / 2) * (h / 2)) * 2);
+        for &s in y.iter().chain(u.iter()).chain(v.iter()) {
+            yuv.extend_from_slice(&(((s as u16) << shift).to_le_bytes()));
+        }
+        std::fs::write(format!("{prefix}.yuv"), &yuv).expect("write .yuv");
+    } else {
+        let mut yuv = Vec::with_capacity(w * h * 3 / 2);
+        yuv.extend_from_slice(&y);
+        yuv.extend_from_slice(&u);
+        yuv.extend_from_slice(&v);
+        std::fs::write(format!("{prefix}.yuv"), &yuv).expect("write .yuv");
+    }
 
     let rc = RcConfig {
         mode: RcMode::Cqp,
@@ -235,7 +251,8 @@ fn main() {
     // shared luma coding). Off by default (the harness is 4:2:0).
     let mono = std::env::var_os("SVTAV1_MONO").is_some();
     let mut pipeline = EncodePipeline::new(w as u32, h as u32, preset, rc, 0, 1)
-        .with_tile_rows_log2(tile_rows_log2);
+        .with_tile_rows_log2(tile_rows_log2)
+        .with_bit_depth(bd);
     let obu = if mono {
         pipeline.encode_frame(&y, w)
     } else {
