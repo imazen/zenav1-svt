@@ -81,6 +81,28 @@ MILESTONE per the map: our targets are M0+ (DUAL == true 10-bit for
 intra) — smallest cell = uniform 64x64 bd10 at a <=M3 preset (bypass 0,
 no dance), single fixed partition; needs chunks 1-4 only.
 
+## FIRST CELL LANDED 2026-07-18 (aa89a83be) — uniform <=M3 bd10 byte-identical
+
+`tools/bd10_matrix.sh` 18/18: uniform {64,128} x qp{20,40,55} x preset{0,2,3}
+byte-match real aomenc at bd10 AND decode under aomdec. Harness bd10 axis:
+`capture_c_trace <..> 10` (packed u16 LE input) + `identity_run` `SVTAV1_BD=10`
+(writes u16 for C, port stays u8) + `with_bit_depth`. The pipeline already had
+the bit_depth field + SH high_bitdepth bit; only the harness was missing.
+
+**Why u8-port is correct for uniform (not a hack):** flat -> every block skip
+-> no residual coded -> tile bytes bit-depth-INDEPENDENT (measured: C uniform
+bd8 vs bd10 differ in exactly ONE byte = the SH high_bitdepth bit); the decoder
+fills DC from the 10-bit default (512) and skips residual, so it decodes to
+uniform-512 correctly.
+
+**Scope boundary (measured):** uniform byte-matches at M0/M2/M3 but NOT M6/M13.
+The faster presets derive LF/CDEF from the bd10 quantizer (LPF_PICK_FROM_Q uses
+`av1_ac_quant_QTX(qindex, .., bd)` = the bd10 qlookup, already FFI-verified),
+which diverges from the port's bd8 LF params. **NEXT bd10 chunk = the LF-level-
+from-Q derivation at bd10** (thread bd into `lf_search::pick_filter_level_from_q`
++ the quantizer it reads), which should close M6/M13 uniform. THEN the u16 MD
+path for non-flat content (precision-sensitive RD).
+
 ## Concrete wiring anchors (measured 2026-07-18)
 - **Kernel FFI verification (landed, derisks chunk 2):** bd10 quant tables
   (`c_parity_bd10_quant.rs`), hbd loop filters (`c_parity_lpf_hbd.rs`), hbd
