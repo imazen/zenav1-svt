@@ -80,3 +80,25 @@ change except palette literal width. Real work:
 MILESTONE per the map: our targets are M0+ (DUAL == true 10-bit for
 intra) — smallest cell = uniform 64x64 bd10 at a <=M3 preset (bypass 0,
 no dance), single fixed partition; needs chunks 1-4 only.
+
+## Concrete wiring anchors (measured 2026-07-18)
+- **Kernel FFI verification (landed, derisks chunk 2):** bd10 quant tables
+  (`c_parity_bd10_quant.rs`), hbd loop filters (`c_parity_lpf_hbd.rs`), hbd
+  distortion/variance/SAD (`c_parity_hbd_distortion.rs`) all byte-match real C
+  at bd10+bd12. (hbd intra pred + CDEF are the remaining kernel classes.) So
+  when the wiring pass lands, a divergence is a WIRING bug, not a kernel bug.
+- **Constructor (chunk 1 API shape):** `EncodePipeline::new` (pipeline.rs:128)
+  takes NO bit_depth — it is implicitly 8-bit and its planes are `&[u8]`. Add
+  bd via a builder mirroring `with_chroma_420` (e.g. `with_bit_depth(bd)` /
+  `with_10bit(true)`), NOT a `new` signature change — matches house style and
+  keeps churn additive. Store `self.bit_depth`; bd8 keeps every current path.
+  NOTE: chunk 1 (the stored field alone) is nearly vacuous — the value is
+  chunks 2-4 (u16 plumbing that CONSUMES it), so do not land chunk 1 as a
+  standalone "win"; land it together with the first consumer.
+- **Harness:** `tools/capture_c_trace/capture_c_trace.c:82` hardcodes
+  `cfg.encoder_bit_depth = 8`. A bd10 gate needs an optional 7th arg
+  (bit_depth, default 8 → byte-neutral for every existing 6-arg caller in
+  identity_diff.sh) AND a 10-bit `.yuv` producer in `identity_run` (u16 LE
+  planes). Both are prerequisites for the FIRST bd10 identity cell.
+- **PD0 stays u8** (map §hbd_md): build the MSB-truncated 8-bit plane at
+  ingestion; `pd0.rs` reads it unchanged. Only MD/recon/filters go u16.
