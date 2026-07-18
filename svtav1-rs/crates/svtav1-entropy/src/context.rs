@@ -630,6 +630,123 @@ pub fn write_partition(
     w.write_symbol(sym, &mut fc.partition_cdf[ctx], symbs);
 }
 
+// ---- Frame-edge partition coding (spec 5.11.4 / C encode_partition_av1) ----
+//
+// Partition symbol indices (C `PartitionType`, definitions.h:932-946).
+const PARTITION_HORZ: usize = 1;
+const PARTITION_SPLIT: usize = 3;
+const PARTITION_HORZ_A: usize = 4;
+const PARTITION_HORZ_B: usize = 5;
+const PARTITION_VERT_A: usize = 6;
+const PARTITION_VERT_B: usize = 7;
+const PARTITION_HORZ_4: usize = 8;
+const PARTITION_VERT: usize = 2;
+const PARTITION_VERT_4: usize = 9;
+
+/// C `cdf_element_prob` (cabac_context_model.h:373-376): the Q15 probability
+/// of `element`, recovered from the stored INVERSE CDF as
+/// `(element > 0 ? cdf[element - 1] : CDF_PROB_TOP) - cdf[element]`.
+///
+/// Deliberately has NO `EC_MIN_PROB` floor — unlike [`partition_symbol_cost`],
+/// which is the rate-table path and does floor at 4. The gathers below must
+/// reproduce C's arithmetic bit-for-bit, so this stays unfloored. `wrapping_sub`
+/// mirrors C's `uint16_t` arithmetic (a well-formed CDF never underflows).
+fn cdf_element_prob(cdf: &[AomCdfProb], element: usize) -> AomCdfProb {
+    let prev = if element > 0 { cdf[element - 1] } else { CDF_PROB_TOP };
+    prev.wrapping_sub(cdf[element])
+}
+
+/// C `partition_gather_horz_alike` (cabac_context_model.h:378-391). Used at the
+/// RIGHT frame edge (`has_rows && !has_cols`), where the only codable outcomes
+/// are a vertical split or a full SPLIT: the 10-symbol partition CDF collapses
+/// to a 2-symbol "is it SPLIT" CDF.
+fn partition_gather_horz_alike(out: &mut [AomCdfProb; 3], inp: &[AomCdfProb], is_128: bool) {
+    let mut v = CDF_PROB_TOP;
+    v = v.wrapping_sub(cdf_element_prob(inp, PARTITION_HORZ));
+    v = v.wrapping_sub(cdf_element_prob(inp, PARTITION_SPLIT));
+    v = v.wrapping_sub(cdf_element_prob(inp, PARTITION_HORZ_A));
+    v = v.wrapping_sub(cdf_element_prob(inp, PARTITION_HORZ_B));
+    v = v.wrapping_sub(cdf_element_prob(inp, PARTITION_VERT_A));
+    if !is_128 {
+        v = v.wrapping_sub(cdf_element_prob(inp, PARTITION_HORZ_4));
+    }
+    out[0] = CDF_PROB_TOP.wrapping_sub(v); // AOM_ICDF(x) == CDF_PROB_TOP - x
+    out[1] = 0; // AOM_ICDF(CDF_PROB_TOP) == 0
+    out[2] = 0; // CDF adaptation counter
+}
+
+/// C `partition_gather_vert_alike` (cabac_context_model.h:393-406). Used at the
+/// BOTTOM frame edge (`!has_rows && has_cols`) — horizontal split or SPLIT.
+/// Note the deliberate asymmetry vs [`partition_gather_horz_alike`]: both
+/// include HORZ_A and VERT_A, but this one takes VERT/VERT_B/VERT_4 where the
+/// other takes HORZ/HORZ_B/HORZ_4. Transcribed exactly from C.
+fn partition_gather_vert_alike(out: &mut [AomCdfProb; 3], inp: &[AomCdfProb], is_128: bool) {
+    let mut v = CDF_PROB_TOP;
+    v = v.wrapping_sub(cdf_element_prob(inp, PARTITION_VERT));
+    v = v.wrapping_sub(cdf_element_prob(inp, PARTITION_SPLIT));
+    v = v.wrapping_sub(cdf_element_prob(inp, PARTITION_HORZ_A));
+    v = v.wrapping_sub(cdf_element_prob(inp, PARTITION_VERT_A));
+    v = v.wrapping_sub(cdf_element_prob(inp, PARTITION_VERT_B));
+    if !is_128 {
+        v = v.wrapping_sub(cdf_element_prob(inp, PARTITION_VERT_4));
+    }
+    out[0] = CDF_PROB_TOP.wrapping_sub(v);
+    out[1] = 0;
+    out[2] = 0;
+}
+
+/// Code one partition symbol with frame-edge awareness — C
+/// `encode_partition_av1` (entropy_coding.c:932-981) == spec 5.11.4.
+///
+/// `has_rows` / `has_cols` are `(blk_y + hbs) < aligned_h` /
+/// `(blk_x + hbs) < aligned_w` with `hbs` = HALF the block width in pixels
+/// (C :941-943). Three cases:
+/// - both false (block's whole lower-right quadrant is off-frame): the
+///   partition is FORCED to SPLIT and **no symbol is coded at all**.
+/// - both true (the interior case): the ordinary full-alphabet symbol.
+/// - exactly one false: a BINARY `partition == SPLIT` symbol coded against a
+///   gathered 2-symbol CDF.
+///
+/// IMPORTANT — the binary arm does NOT adapt the frame context. C builds the
+/// gathered CDF on the STACK and lets `aom_write_symbol` adapt that throwaway
+/// copy, leaving `frame_context->partition_cdf` untouched; the decoder does the
+/// same, so the two stay in sync. [`AomWriter::write_cdf`] encodes without
+/// updating, which is exactly that behaviour.
+///
+/// On a 64-aligned frame every block has `has_rows == has_cols == true`, so
+/// this routes to [`write_partition`] and is bit-identical to the pre-edge port.
+#[allow(clippy::too_many_arguments)]
+pub fn write_partition_edge(
+    w: &mut AomWriter,
+    fc: &mut FrameContext,
+    ctx: usize,
+    partition: u8,
+    nsymbs: usize,
+    is_128: bool,
+    has_rows: bool,
+    has_cols: bool,
+) {
+    if !has_rows && !has_cols {
+        debug_assert_eq!(
+            partition as usize, PARTITION_SPLIT,
+            "off-frame quadrant forces PARTITION_SPLIT (C encode_partition_av1:963)"
+        );
+        return;
+    }
+    if has_rows && has_cols {
+        write_partition(w, fc, ctx, partition, nsymbs);
+        return;
+    }
+    debug_assert!(ctx < PARTITION_CONTEXTS);
+    let mut cdf = [0 as AomCdfProb; 3];
+    if !has_rows {
+        partition_gather_vert_alike(&mut cdf, &fc.partition_cdf[ctx], is_128);
+    } else {
+        partition_gather_horz_alike(&mut cdf, &fc.partition_cdf[ctx], is_128);
+    }
+    w.write_cdf(usize::from(partition as usize == PARTITION_SPLIT), &cdf, 2);
+}
+
 /// Encode a skip flag using CDF.
 pub fn write_skip(w: &mut AomWriter, fc: &mut FrameContext, ctx: usize, skip: bool) {
     let sym = if skip { 1 } else { 0 };
@@ -1596,5 +1713,93 @@ mod tests {
         let some_bytes = w2.done().to_vec();
 
         assert_ne!(none_bytes, some_bytes, "palette Some arm must code additional symbols");
+    }
+
+    /// Hand-derived vector for the frame-edge partition CDF gathers.
+    ///
+    /// `partition_gather_{horz,vert}_alike` are `static INLINE` in a C header
+    /// (cabac_context_model.h:378-406), so they are NOT reachable through FFI —
+    /// per the evidence hierarchy they get a hand-computed vector traced from
+    /// the C source, plus the end-to-end partial-SB identity gate.
+    ///
+    /// Synthetic 10-symbol inverse CDF with per-symbol Q15 probabilities
+    /// P = [3000, 4000, 2000, 5000, 1000, 2000, 3000, 4000, 6000, 2768]
+    /// (sum 32768), stored as `icdf[i] = 32768 - cumulative(i+1)`.
+    #[test]
+    fn partition_edge_cdf_gathers_match_c_formula() {
+        let icdf: [AomCdfProb; 11] = [
+            29768, 25768, 23768, 18768, 17768, 15768, 12768, 8768, 2768, 0, 0,
+        ];
+
+        // cdf_element_prob recovers the per-symbol probabilities exactly.
+        let mut probs = [0u16; 10];
+        for (e, slot) in probs.iter_mut().enumerate() {
+            *slot = cdf_element_prob(&icdf, e);
+        }
+        assert_eq!(probs, [3000, 4000, 2000, 5000, 1000, 2000, 3000, 4000, 6000, 2768]);
+
+        // horz_alike: subtract P(HORZ=1) + P(SPLIT=3) + P(HORZ_A=4)
+        //           + P(HORZ_B=5) + P(VERT_A=6) + P(HORZ_4=8)
+        //           = 4000+5000+1000+2000+3000+6000 = 21000
+        // v = 32768 - 21000 = 11768; out[0] = AOM_ICDF(v) = 32768 - 11768 = 21000
+        let mut out = [0 as AomCdfProb; 3];
+        partition_gather_horz_alike(&mut out, &icdf, false);
+        assert_eq!(out, [21000, 0, 0]);
+
+        // vert_alike: P(VERT=2) + P(SPLIT=3) + P(HORZ_A=4)
+        //           + P(VERT_A=6) + P(VERT_B=7) + P(VERT_4=9)
+        //           = 2000+5000+1000+3000+4000+2768 = 17768
+        // v = 32768 - 17768 = 15000; out[0] = 32768 - 15000 = 17768
+        partition_gather_vert_alike(&mut out, &icdf, false);
+        assert_eq!(out, [17768, 0, 0]);
+
+        // is_128 drops the *_4 term from each (C `bsize != BLOCK_128X128`).
+        partition_gather_horz_alike(&mut out, &icdf, true);
+        assert_eq!(out, [15000, 0, 0]);
+        partition_gather_vert_alike(&mut out, &icdf, true);
+        assert_eq!(out, [15000, 0, 0]);
+    }
+
+    /// The both-false case codes NOTHING (forced SPLIT), and the interior case
+    /// is bit-identical to the plain `write_partition` path — the property that
+    /// keeps 64-aligned frames byte-unchanged.
+    #[test]
+    fn write_partition_edge_interior_matches_plain_and_offframe_codes_nothing() {
+        // Interior (has_rows && has_cols) == plain write_partition.
+        let mut fc_a = FrameContext::new_default();
+        let mut w_a = AomWriter::new(256);
+        write_partition(&mut w_a, &mut fc_a, 5, 3, 10);
+        let plain = w_a.done().to_vec();
+
+        let mut fc_b = FrameContext::new_default();
+        let mut w_b = AomWriter::new(256);
+        write_partition_edge(&mut w_b, &mut fc_b, 5, 3, 10, false, true, true);
+        let edge_interior = w_b.done().to_vec();
+        assert_eq!(plain, edge_interior, "interior edge-write must match write_partition");
+        assert_eq!(
+            fc_a.partition_cdf[5], fc_b.partition_cdf[5],
+            "interior edge-write must adapt the CDF identically"
+        );
+
+        // Both-false: forced SPLIT, no symbol, and the CDF is NOT adapted.
+        let mut fc_c = FrameContext::new_default();
+        let before = fc_c.partition_cdf[5];
+        let mut w_c = AomWriter::new(256);
+        write_partition_edge(&mut w_c, &mut fc_c, 5, 3, 10, false, false, false);
+        let nothing = w_c.done().to_vec();
+        let mut w_empty = AomWriter::new(256);
+        let empty = w_empty.done().to_vec();
+        assert_eq!(nothing, empty, "off-frame quadrant must code no partition symbol");
+        assert_eq!(before, fc_c.partition_cdf[5], "forced-SPLIT must not adapt the CDF");
+
+        // Binary arm: must NOT adapt the persistent CDF (C gathers on the stack).
+        let mut fc_d = FrameContext::new_default();
+        let before_d = fc_d.partition_cdf[5];
+        let mut w_d = AomWriter::new(256);
+        write_partition_edge(&mut w_d, &mut fc_d, 5, 3, 10, false, true, false);
+        assert_eq!(
+            before_d, fc_d.partition_cdf[5],
+            "gathered binary arm must leave the frame-context CDF untouched"
+        );
     }
 }

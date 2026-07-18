@@ -2997,6 +2997,33 @@ fn expect_leaf(tree: &crate::partition::PartitionTree) -> &crate::partition::Blo
 ///
 /// Partition context is derived from tracked above/left partition arrays,
 /// matching the rav1d decoder's context derivation exactly.
+/// Frame-edge partition flags for a SQUARE partition node — C
+/// `encode_partition_av1` (entropy_coding.c:941-943):
+/// `hbs` = HALF the node width in pixels, then
+/// `has_rows = (y + hbs) < aligned_height`, `has_cols = (x + hbs) < aligned_width`.
+///
+/// The ALIGNED frame extent is recovered from the deblock geometry, which is
+/// built from those same aligned dims (`DeblockGeom::new(w, h)`, ~:884) and is
+/// already threaded through this whole walk — so the partition edge rules and
+/// the deblock walk can never disagree about where the frame ends. Aligned dims
+/// are always a multiple of 8, so `mi * 4` recovers the pixel extent exactly.
+///
+/// On a 64-aligned frame every node lies wholly inside the frame, so both flags
+/// are always `true` and the callers below stay bit-identical to the pre-edge
+/// port.
+#[inline]
+fn partition_edge_flags(
+    geom: &crate::deblock::DeblockGeom,
+    block_x: usize,
+    block_y: usize,
+    node_w: usize,
+) -> (bool, bool) {
+    let aligned_w = geom.mi_cols * 4;
+    let aligned_h = geom.mi_rows * 4;
+    let hbs = node_w / 2;
+    (block_y + hbs < aligned_h, block_x + hbs < aligned_w)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn encode_partition_tree(
     tree: &crate::partition::PartitionTree,
@@ -3017,8 +3044,20 @@ fn encode_partition_tree(
             let h = decision.height as usize;
             if w > 4 || h > 4 {
                 let (ctx, nsymbs) = ectx.partition_ctx(block_x, block_y, w);
-                svtav1_entropy::context::write_partition(
+                let (has_rows, has_cols) = partition_edge_flags(geom, block_x, block_y, w);
+                // A PARTITION_NONE leaf is only legal where the node lies wholly
+                // inside the frame: at an edge the non-SPLIT outcome is VERT
+                // (right edge) or HORZ (bottom edge), never NONE, and with BOTH
+                // flags false the partition is forced to SPLIT. The edge-aware
+                // search must therefore never hand us a NONE leaf at an edge.
+                debug_assert!(
+                    has_rows && has_cols,
+                    "PARTITION_NONE leaf at a frame edge ({block_x},{block_y}) {w}x{h}: \
+                     has_rows={has_rows} has_cols={has_cols} — illegal per spec 5.11.4"
+                );
+                svtav1_entropy::context::write_partition_edge(
                     writer, frame_ctx, ctx, 0, nsymbs, // 0 = PARTITION_NONE
+                    w == 128, has_rows, has_cols,
                 );
             }
 
@@ -3045,12 +3084,16 @@ fn encode_partition_tree(
             let w = *width as usize;
             let h = *height as usize;
             let (ctx, nsymbs) = ectx.partition_ctx(block_x, block_y, w);
-            svtav1_entropy::context::write_partition(
+            let (has_rows, has_cols) = partition_edge_flags(geom, block_x, block_y, w);
+            svtav1_entropy::context::write_partition_edge(
                 writer,
                 frame_ctx,
                 ctx,
                 *partition_type as u8,
                 nsymbs,
+                w == 128,
+                has_rows,
+                has_cols,
             );
 
             let half_w = w / 2;
