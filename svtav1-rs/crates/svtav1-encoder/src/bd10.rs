@@ -74,8 +74,9 @@ pub fn inv_txfm_range_max(bd: u8) -> i32 {
 // dc/ac qlookup tables for bd10 (C dc_qlookup_10_QTX / ac_qlookup_10_QTX,
 // inv_transforms.c:3373-3506; 256 entries each, qindex 0..255 at every
 // bd). Machine-transcribed (xtask/transcribe_bd10_qlookup.py).
-// PORT-NOTE(unverified): spot-check vs C at qindex {0, 80, 128, 255} in
-// the first bd10 differential.
+// FFI-VERIFIED: tests/c_parity_bd10_quant.rs pins every one of the 256 DC
+// and AC entries against the real exported svt_aom_dc_quant_qtx /
+// svt_aom_ac_quant_qtx at EB_TEN_BIT (full range, not a spot-check).
 include!("bd10_qlookup_tables.rs");
 
 pub fn dc_qlookup_10(qindex: u8) -> i16 {

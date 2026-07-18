@@ -279,6 +279,15 @@ int16_t svt_aom_ac_quant_qtx(int qindex, int delta, EbBitDepth bit_depth);
 int16_t ref_dc_quant_qtx(int32_t qindex) { return svt_aom_dc_quant_qtx(qindex, 0, EB_EIGHT_BIT); }
 int16_t ref_ac_quant_qtx(int32_t qindex) { return svt_aom_ac_quant_qtx(qindex, 0, EB_EIGHT_BIT); }
 
+/* Bit-depth-parameterized variants (bd in {8,10,12}, the EbBitDepth values).
+   The 8-bit-only shims above stay as-is for their existing callers. */
+int16_t ref_dc_quant_qtx_bd(int32_t qindex, int32_t bd) {
+    return svt_aom_dc_quant_qtx(qindex, 0, (EbBitDepth)bd);
+}
+int16_t ref_ac_quant_qtx_bd(int32_t qindex, int32_t bd) {
+    return svt_aom_ac_quant_qtx(qindex, 0, (EbBitDepth)bd);
+}
+
 /* ---- 2D transform wrappers (square sizes, C reference versions) ---- */
 
 #define DECL_TXFM2D(N) \

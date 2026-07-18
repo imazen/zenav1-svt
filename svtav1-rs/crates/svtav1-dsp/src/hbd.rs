@@ -1494,9 +1494,14 @@ pub fn cdef_filter_block_hbd(
 // bd10.rs — cross-reference, don't duplicate." See the correctness finding
 // immediately below the placeholders.
 //
-// PORT-NOTE(unverified) on `dc_quant_qtx`/`ac_quant_qtx`: the SWITCH SHAPE
-// is a faithful, complete translation of C; verify vs FFI parity once the
-// qlookup tables are transcribed and wired.
+// NOTE on `dc_quant_qtx`/`ac_quant_qtx`: the SWITCH SHAPE is a faithful,
+// complete translation of C. The bd10 tables it dispatches to ARE
+// transcribed and FFI-verified against real C — but in the ENCODER crate
+// (`svtav1_encoder::bd10::{DC,AC}_QLOOKUP_10`, tests/c_parity_bd10_quant.rs),
+// not here: this DSP crate cannot depend on the encoder crate. The bd10/bd12
+// arms below are still `unimplemented!()` placeholders; wiring them means
+// sharing the encoder tables (or relocating them to a common crate) — a
+// tracked de-duplication, NOT a re-transcription.
 // =============================================================================
 
 use crate::quant_tables::{AC_QLOOKUP_8, DC_QLOOKUP_8};
@@ -1530,19 +1535,20 @@ pub fn ac_quant_qtx(qindex: i32, delta: i32, bd: u8) -> i16 {
 
 /// C `dc_qlookup_10_QTX` (inv_transforms.c:3425-3459), 256 entries.
 ///
-/// PORT-NOTE(unverified): table body NOT transcribed — run
-/// `xtask/transcribe_bd10_qlookup.py` then replace with
-/// `include!("bd10_qlookup_tables.rs")` or equivalent (see the sibling
-/// placeholder in `svtav1_encoder::bd10` for the intended shape).
+/// The transcribed body lives (and is FFI-verified) at
+/// `svtav1_encoder::bd10::DC_QLOOKUP_10` — this DSP crate cannot depend on the
+/// encoder crate, so this placeholder stays until the tables are relocated to
+/// a shared crate. Wire, don't re-transcribe.
 pub fn dc_qlookup_10(_qindex: u8) -> i16 {
-    unimplemented!("run xtask/transcribe_bd10_qlookup.py (PORT-NOTE above)")
+    unimplemented!("bd10 DC qlookup lives in svtav1_encoder::bd10 (FFI-verified); share it here")
 }
 
 /// C `ac_qlookup_10_QTX` (inv_transforms.c:3373-3423), 256 entries.
 ///
-/// PORT-NOTE(unverified): table body NOT transcribed — see [`dc_qlookup_10`].
+/// See [`dc_qlookup_10`] — the FFI-verified body is
+/// `svtav1_encoder::bd10::AC_QLOOKUP_10`.
 pub fn ac_qlookup_10(_qindex: u8) -> i16 {
-    unimplemented!("run xtask/transcribe_bd10_qlookup.py (PORT-NOTE above)")
+    unimplemented!("bd10 AC qlookup lives in svtav1_encoder::bd10 (FFI-verified); share it here")
 }
 
 /// bd12 is OUT OF SCOPE for this port (docs/bd10-port-map.md: "bd 8 or 10

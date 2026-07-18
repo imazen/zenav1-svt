@@ -412,6 +412,8 @@ pub fn txb_high(tx_size: usize) -> usize {
 unsafe extern "C" {
     fn ref_dc_quant_qtx(qindex: i32) -> i16;
     fn ref_ac_quant_qtx(qindex: i32) -> i16;
+    fn ref_dc_quant_qtx_bd(qindex: i32, bd: i32) -> i16;
+    fn ref_ac_quant_qtx_bd(qindex: i32, bd: i32) -> i16;
 }
 
 /// Reference `svt_aom_dc_quant_qtx(qindex, 0, 8-bit)`.
@@ -422,6 +424,17 @@ pub fn dc_quant_qtx(qindex: i32) -> i16 {
 /// Reference `svt_aom_ac_quant_qtx(qindex, 0, 8-bit)`.
 pub fn ac_quant_qtx(qindex: i32) -> i16 {
     unsafe { ref_ac_quant_qtx(qindex) }
+}
+
+/// Reference `svt_aom_dc_quant_qtx(qindex, 0, bd)` for `bd` in {8, 10, 12}
+/// (the `EbBitDepth` values). Backs the bd10 qlookup-table FFI check.
+pub fn dc_quant_qtx_bd(qindex: i32, bd: i32) -> i16 {
+    unsafe { ref_dc_quant_qtx_bd(qindex, bd) }
+}
+
+/// Reference `svt_aom_ac_quant_qtx(qindex, 0, bd)` for `bd` in {8, 10, 12}.
+pub fn ac_quant_qtx_bd(qindex: i32, bd: i32) -> i16 {
+    unsafe { ref_ac_quant_qtx_bd(qindex, bd) }
 }
 
 // ---- variance-boost helper wrappers (rc_aq.c, exported in both modes) ----
