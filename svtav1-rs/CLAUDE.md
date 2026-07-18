@@ -535,11 +535,57 @@ shared file, THEIR fork arms win, OUR mainline arms win.
    uniform+gradient byte-identical vs SvtAv1EncApp across presets 13/10/6
    × q20/40/55 (18/18); `60` added to the default identity_matrix (now
    54/54); 64-aligned regression 36/36; 196 encoder tests green; mono
-   path preserved. NEXT (chunk 2): partial SBs (aligned NOT a mult of 64,
-   e.g. 56x56, 200x200) — the partition edge-coding (has_rows/has_cols
-   forced splits, sb_geom clamp, DLF floor-chroma at odd widths) per
-   docs/arbitrary-dims-port-map.md "Partial SBs" + "MD at edges". Gate:
-   96x80 then 65x65 (odd) vs SvtAv1EncApp.
+   path preserved.
+   **CHUNK 2 IN PROGRESS (partial SBs — aligned NOT a mult of 64).**
+   Landed so far: (a) `ebd770d1b` the ENTROPY + PACK edge coding — C
+   `encode_partition_av1` (entropy_coding.c:932-981) + both CDF gathers
+   (cabac_context_model.h:378-406) as `write_partition_edge` /
+   `partition_gather_{horz,vert}_alike` / `cdf_element_prob`, and
+   `pipeline::partition_edge_flags` (derives the ALIGNED extent from the
+   `DeblockGeom` already threaded through the walk, so partition edges and
+   the deblock walk can never disagree). KEY SEMANTIC: the binary arm must
+   NOT adapt the frame CDF — C gathers onto the STACK and lets
+   `aom_write_symbol` adapt that throwaway copy (decoder does the same), so
+   the port uses `write_cdf` (encode, no update). (b) `c17fb1b53` closed a
+   SILENT-CORRUPTION hole: mono `encode_frame` only asserted 8-alignment, so
+   partial-SB dims reached the search with a CLAMPED root and emitted an
+   undecodable stream (96x80 codes a 32-node NONE where the decoder expects
+   a 64-node binary SPLIT-vs-VERT); some sizes coincide (16x16 codes no
+   symbols at the two forced-split levels), which is what made it silent.
+   Both landings are byte-neutral: matrix 54/54, entropy 119/119, encoder
+   suite green.
+   **REMAINING (the SEARCH restructure — the real work).** The port's search
+   threads a CLAMPED extent (`cur_w = hw.min(width - x0)`, partition.rs:1319,
+   and pipeline.rs passes the clamped SB extent as the ROOT) — i.e. it models
+   a partial SB as a SMALLER BLOCK. That is the wrong model: AV1 keeps the
+   node's TRUE size for partition decisions and guarantees coded LEAVES land
+   fully inside via edge-driven splits. Required shape, per C
+   `set_blocks_to_test` (enc_dec_process.c:1394-1438):
+   - root stays 64x64; `has_rows/has_cols` (hbs = node_w/2 vs ALIGNED dims)
+     drive the decision, NOT a clamped size;
+   - both flags false -> `tot_shapes = 0` -> FORCED SPLIT (no NONE, no rect);
+   - exactly one false -> `inj_hv_incomp` injects EXACTLY ONE shape (H at the
+     bottom edge, V at the right edge) and **excludes PARTITION_NONE**; SPLIT
+     is still evaluated;
+   - NSQ disallowed at that size -> also forced SPLIT;
+   - children whose ORIGIN is outside the aligned frame are SKIPPED entirely
+     (search, tree, and pack);
+   - an edge node must NEVER call `encode_with_neighbors` (it would predict/
+     reconstruct outside the frame buffer) — only recurse or take the single
+     legal rect, whose in-frame child is fully inside. Note 8x8 nodes can
+     never be edge nodes while aligned dims are a multiple of 8 (hbs=4 keeps
+     both flags true), so the `width <= MIN_BLOCK_SIZE` base case is safe.
+   Then: cropped-RDO distortion (`frame_geom::cropped_tx_dims`, already
+   written + dead), `pd0::compute_b64_variance` needs clamped reads before
+   the `use_pd0` gate (pipeline.rs ~:3592) can be relaxed, and the two soft
+   64-gates (`c_quant` at ~:451, `use_pd0`) plus the two 64-multiple asserts
+   come off LAST. NOTE `frame_geom.rs` already contains `sb_geom`,
+   `edge_has_rows_cols`, `cropped_tx_dims`, `pad_input_plane`,
+   `mi_cols/mi_rows/sb_cols/sb_rows` — all correct, all DEAD except
+   `FrameDims::new`; route through them rather than re-deriving inline.
+   Filters need NO work: CDEF already clamps partial fbs explicitly, DLF/LR
+   are mi/frame-driven (verified). Gate: 96x80 (exercises all three edge
+   cases: right at SB(0,1), bottom at SB(1,0), both at SB(1,1)) then 65x65.
 5. **#94 bd10 integration** (P0): u16 intake + harness axis, hbd module
    consumption, lambda *16/*4, filters at true depth per
    docs/bd10-port-map.md. Gate: uniform 64x64 bd10 <=M3 cell vs C.
