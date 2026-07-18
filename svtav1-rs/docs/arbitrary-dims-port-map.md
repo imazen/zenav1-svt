@@ -177,18 +177,70 @@ distortion problem after all; they shared this boundary-cost root. Gate:
 `partial_sb_gate.sh` 37/37; identity_matrix 54/54; bd10 36/36 + 8/8; both fixes
 partial-SB-only (rect tx / one-false nodes never occur 64-aligned).
 
+### PRESETS >= 9 (M9 LPD0 / PD0_LVL_5/6) — FIXED (2026-07-18, commit 8813a12e7)
+
+The "boundary nodes fall back to the square cost" hypothesis was WRONG. The
+higher-LVL boundary path had TWO LPD0-only roots, both byte-neutral for full
+SBs and for the LVL_1 presets 0-6 (drilled 96x80 p10 with `SVTAV1_PD09` port
+dump + the C `SVT_PD0COST`/`SVT_FULLCOST` interposers):
+
+1. **subres forced OFF on an INCOMPLETE b64** (`pd0::pd0_pick_sb_partition`).
+   C `enc_mode_config.c:7326` sets `subres_level = 0` when `!is_complete_b64`.
+   The port applied subres (step 1, `is_subres_safe` set only by the 64x64
+   odd/even check) on partial SBs, so a LVL_5 16x16 block computed a subres
+   (half-height) transform with dist=215398 vs C's full-res 143032 -> over-split
+   16x16 -> 8x8. Fix: seed `is_subres_safe = 0` (determined, not safe) on any
+   SB whose 64x64 extent reaches past ALIGNED, so step stays 0.
+2. **one-false boundary nodes are FORCED SPLIT at LPD0** (`pd0::pick`). NSQ geom
+   is DISABLED for allintra `enc_mode > M6` (`svt_aom_get_nsq_geom_level_allintra`
+   returns level 0 => `enabled = 0` for preset >= 7; enc_mode_config.c:8240). So
+   `set_blocks_to_test` yields `tot_shapes = 0` for a one-false node — C never
+   injects the edge shape; a thin 8-wide/8-tall edge descends straight to the
+   fitting 8x8s (C `SVT_PD0COST` at a 72x64 thin right edge shows ONLY 8x8). The
+   port priced the boundary node as a SQUARE and kept a coarser VERT/HORZ shape
+   (under-split). Fix: force-split one-false nodes for Lvl5/Lvl6 (both-false
+   already did); the SPLIT rate feeding a straddling parent is the binary alike
+   (2x at LVL_5, 0 at LVL_6 allintra), via the new
+   `context::partition_alike_split_symbol_cost`. LVL_1 (preset <= 6) keeps NSQ
+   enabled -> the injected edge shape, unchanged. NOTE this is a preset>=7 (M7)
+   boundary, NOT M9 — presets 7/8 (LVL_1 path) also have NSQ disabled, but their
+   partial-SB cells are not yet gated (a latent item: the `one_false && Lvl1`
+   edge-shape branch is only correct for preset <= 6).
+
+Result: the FULL p9/p10/p13 gradient partial-SB sweep byte-matches — set 1
+(single-edge/multi-SB, 9 dims) 108/108, set 2 (odd/bottom/straddle, 14 dims)
+168/168 — AND the both-partial 65x65/65x72/65x80 (which still diverge at p6 =
+the PD1 near-tie below) match at p9+. `partial_sb_gate.sh` 37 -> 55 (18 new
+p9/p10/p13 cells). identity_matrix 54/54, bd10 36/36 + 8/8, no-panic sweep
+1936/1936 clean.
+
 REMAINING (diverge, NOT in the gate — all DECODABLE):
-- **BOTH-partial PD1 intra MODE near-tie** (aligned 72x72 small-partial, and
-  the straddle cells at high qp q40+). ROOT (drilled 65x65 q32, mi=(16,4) =
-  pixel (16,64)): partition MATCHES C (four 16x8 in the bottom SB), but C picks
-  V_PRED (eob 28) where the port picks DC (eob 100) on ONE 16x8 leaf; 3 of 4
-  leaves match, so it is a genuine PD1 leaf-RD near-tie, not a systematic 16x8
-  bug. Affects 65x65 (all qp but a coincidental q36), 65x72, 65x80, 88x88, and
-  80x88/104x88/72x88 at q40+. Needs C's per-mode PD1 leaf RD (deeper than the
-  pickpart winner dump).
-- **presets >= 9 (M9 LVL_5/6)** — the edge-shape cost + the boundary split
-  rate are wired on LVL_1 only; 96x80 p10/p13 diverge (boundary nodes fall back
-  to the square cost -> split).
+- **BOTH-partial PD1 intra MODE near-tie — preset 6 ONLY** (aligned 72x72:
+  65x65 / 65x72 / 65x80). SHARPENED op-trace (65x65 q32 p6, mi=(16,4) = the
+  16x8 boundary leaf at pixel (16,64); C `SVT_FULLCOST` + `SVT_PICKPART`
+  interposers + port `SVTAV1_CANDDBG`/`PREDDBG` dumps):
+  * Tree MATCHES C; the ONLY divergence is the luma MODE — C V_PRED (mode 1,
+    eob 28, DCT_DCT), port DC (mode 0). NOT a partition/PD0 bug.
+  * At MDS1 C's V beats DC (cost 6617701 < 9348297) so V survives to MDS3 and
+    wins (ycb 16258, eob 28); the port's V LOSES to DC (10676372 > 9562657) and
+    is pruned before MDS3. Both use DCT_DCT (C `full_loop_core` non-txt path,
+    product_coding_loop.c:4441), so NOT a tx-type diff.
+  * The port's V_PRED costs coeff_rate=45833 vs C's ycb=22722 for a *similar*
+    dist (11396 vs 12380). C's eob 28 = a COMPACT residual -> its above
+    reference must carry the horizontal sawtooth. But the port's encoder recon
+    at row 63, x16-23 is **column-FLAT 243** (rows 56/60/62/63 = 214/232/240/243
+    across ALL of x0-23), and the port's OWN decoded output there is ~197, not
+    243. So the port predicts V_PRED from a recon reference that does not match
+    its own bitstream — a cross-SB ENCODER-RECON MISMATCH at the SB(0,0) bottom
+    boundary feeding the wrong V_PRED reference. NOT a coeff-rate/txt_rate bug
+    (the earlier "PD1 txt_rate handles rect tx" note stands).
+  * NEXT DRILL: the SB(0,0) block covering (x16-23, row 63) — why the port's
+    encoder recon there is column-flat where the bitstream/decoder is not
+    (the tree-join for this SB showed the recon "matching" but the reference
+    is a DIFFERENT SB's bottom row; suspect a cross-SB recon plumbing / write
+    ordering issue for the aligned-72 frame, or a lost horizontal residual in
+    the block above). This is preset-6-specific; presets 9+ match (the lighter
+    PD1 does not make V a contender at that leaf).
 
 ## MD at edges
 - **b64 VARIANCE on a partial SB reads PAST the aligned extent — do NOT
