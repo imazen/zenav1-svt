@@ -1758,7 +1758,7 @@ pub(crate) fn tx_unit_hbd(
     let mut dqcoeff = vec![0i32; pw * ph];
     let eob = if do_rdoq {
         let mut e =
-            crate::quant::quantize_fp(&packed, scan, qt, log_scale, &mut qcoeff, &mut dqcoeff);
+            crate::quant::quantize_fp_hbd(&packed, scan, qt, log_scale, &mut qcoeff, &mut dqcoeff);
         if e != 0 {
             let (cut_off_num, cut_off_denum) = crate::quant::rdoq_cutoffs(rdoq_level);
             let tx_class = cc::TX_TYPE_TO_CLASS[tx_type];

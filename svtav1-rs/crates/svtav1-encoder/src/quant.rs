@@ -274,6 +274,55 @@ pub fn quantize_fp(
     (eob + 1) as u16
 }
 
+/// C `highbd_quantize_fp_helper_c` non-QM branch (full_loop.c:367-395) — the
+/// bd>8 FP quantize. IDENTICAL to [`quantize_fp`] EXCEPT it does NOT clamp
+/// `abs_coeff + rounding` to INT16: high-bit-depth coefficients routinely
+/// exceed 2^15, and C's highbd path uses the full value (the 8-bit
+/// `quantize_fp_helper_c` clamps to INT16, C full_loop.c:245 — that clamp is
+/// bd8-ONLY). Task #94: the missing highbd path is exactly what made the first
+/// bd10 cell's dark-corner DC level (block 0,0) diverge. Additive — the bd8
+/// [`quantize_fp`] is untouched.
+pub fn quantize_fp_hbd(
+    coeffs: &[i32],
+    scan: &[u16],
+    t: &QuantTable,
+    log_scale: i32,
+    qcoeff: &mut [i32],
+    dqcoeff: &mut [i32],
+) -> u16 {
+    let rounding = [
+        (t.round_fp[0] + ((1 << log_scale) >> 1)) >> log_scale,
+        (t.round_fp[1] + ((1 << log_scale) >> 1)) >> log_scale,
+    ];
+    qcoeff[..coeffs.len()].fill(0);
+    dqcoeff[..coeffs.len()].fill(0);
+
+    let mut eob: i64 = -1;
+    for (i, &sc) in scan.iter().enumerate() {
+        let rc = sc as usize;
+        let thresh = t.dequant[usize::from(rc != 0)] as i64;
+        let coeff = coeffs[rc];
+        let coeff_sign: i32 = if coeff < 0 { -1 } else { 0 };
+        let abs_coeff = ((coeff ^ coeff_sign) - coeff_sign) as i64;
+        let mut tmp32 = 0i32;
+        if (abs_coeff << (1 + log_scale)) >= thresh {
+            let iz = usize::from(rc != 0);
+            // NO INT16 clamp (highbd path) — C highbd_quantize_fp_helper_c:382.
+            let a = abs_coeff + rounding[iz] as i64;
+            tmp32 = ((a * t.quant_fp[iz] as i64) >> (16 - log_scale)) as i32;
+            if tmp32 != 0 {
+                qcoeff[rc] = (tmp32 ^ coeff_sign) - coeff_sign;
+                let abs_dq = ((tmp32 as i64 * t.dequant[iz] as i64) >> log_scale) as i32;
+                dqcoeff[rc] = (abs_dq ^ coeff_sign) - coeff_sign;
+            }
+        }
+        if tmp32 != 0 {
+            eob = i as i64;
+        }
+    }
+    (eob + 1) as u16
+}
+
 // ---------------------------------------------------------------------------
 // Default-CDF coefficient cost tables (svt_aom_estimate_coefficients_rate)
 // ---------------------------------------------------------------------------
@@ -1589,6 +1638,39 @@ mod tests {
             assert_eq!(t.dequant[0], crate::bd10::dc_qlookup_10(q) as i32, "dc q={q}");
             assert_eq!(t.dequant[1], crate::bd10::ac_qlookup_10(q) as i32, "ac q={q}");
         }
+    }
+
+    /// `quantize_fp_hbd` (bd10 FP quantize) must equal `quantize_fp` for
+    /// coefficients that fit in INT16 (where the bd8 clamp is a no-op), and
+    /// must DIVERGE for coefficients exceeding INT16 — the highbd path keeps
+    /// the full value where the 8-bit path clamps to 32767 (C
+    /// highbd_quantize_fp_helper_c:382 vs quantize_fp_helper_c:245). This is
+    /// the bug that made the first bd10 cell's dark-corner DC level diverge.
+    #[test]
+    fn quantize_fp_hbd_matches_fp_below_int16_diverges_above() {
+        let t = build_quant_table_bd(160, 10);
+        let scan: Vec<u16> = (0..16u16).collect();
+        // (a) small coeffs (|c| < 32767): the clamp never fires -> identical.
+        let small: Vec<i32> = vec![1000, -2000, 300, 0, 500, -100, 42, 7, 0, 0, 0, 0, 0, 0, 0, 0];
+        let (mut qa, mut da) = (vec![0i32; 16], vec![0i32; 16]);
+        let (mut qb, mut db) = (vec![0i32; 16], vec![0i32; 16]);
+        let ea = quantize_fp(&small, &scan, &t, 1, &mut qa, &mut da);
+        let eb = quantize_fp_hbd(&small, &scan, &t, 1, &mut qb, &mut db);
+        assert_eq!((ea, &qa, &da), (eb, &qb, &db), "hbd==fp below INT16");
+        // (b) a DC coefficient beyond INT16 (bd10 dark-corner magnitude): the
+        // 8-bit clamp truncates to 32767 -> a SMALLER level than the highbd
+        // full-value path.
+        let big: Vec<i32> = vec![90000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let (mut qc, mut dc) = (vec![0i32; 16], vec![0i32; 16]);
+        let (mut qd, mut dd) = (vec![0i32; 16], vec![0i32; 16]);
+        quantize_fp(&big, &scan, &t, 1, &mut qc, &mut dc);
+        quantize_fp_hbd(&big, &scan, &t, 1, &mut qd, &mut dd);
+        assert!(
+            qd[0].abs() > qc[0].abs(),
+            "hbd DC level {} must exceed clamped bd8 level {}",
+            qd[0],
+            qc[0]
+        );
     }
 
     /// Instrumented-library capture (qindex 220, g64 q55 QIQ tables line):
