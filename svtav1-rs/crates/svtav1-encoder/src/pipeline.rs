@@ -3036,10 +3036,13 @@ fn partition_edge_flags(
     block_y: usize,
     node_w: usize,
 ) -> (bool, bool) {
-    let aligned_w = geom.mi_cols * 4;
-    let aligned_h = geom.mi_rows * 4;
-    let hbs = node_w / 2;
-    (block_y + hbs < aligned_h, block_x + hbs < aligned_w)
+    crate::frame_geom::edge_has_rows_cols(
+        geom.mi_cols * 4,
+        geom.mi_rows * 4,
+        block_x,
+        block_y,
+        node_w / 2,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]

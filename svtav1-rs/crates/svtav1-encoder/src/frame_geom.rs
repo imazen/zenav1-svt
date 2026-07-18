@@ -1,9 +1,15 @@
 //! Arbitrary frame dimensions — chunk 1 geometry plumbing (task #95).
 //!
 //! Source-to-source translation of the C geometry model per
-//! docs/arbitrary-dims-port-map.md. UNWIRED (add `pub mod frame_geom;` to
-//! lib.rs when integration starts); written under the 2026-07-17
-//! bulk-write directive — no build/test run yet.
+//! docs/arbitrary-dims-port-map.md.
+//!
+//! WIRING STATUS: [`FrameDims::new`] backs the pipeline's true-vs-aligned dims
+//! (chunk 1) and [`edge_has_rows_cols`] backs `pipeline::partition_edge_flags`
+//! (chunk 2 pack side), both covered by tests below. [`sb_geom`],
+//! [`cropped_tx_dims`], [`pad_input_plane`] and the `mi_*`/`sb_*` accessors are
+//! still unwired — the pipeline re-derives those inline; route them through
+//! here as the chunk-2 search restructure lands, so the frame extent has ONE
+//! definition.
 //!
 //! THE model (map §0): TWO boundary systems coexist.
 //! - ALIGNED (mi grid): true dims rounded UP to a multiple of 8
@@ -119,19 +125,28 @@ pub fn sb_geom(dims: &FrameDims, sb: usize, sb_x: usize, sb_y: usize) -> (usize,
 /// - !has_cols  -> binary SPLIT-vs-VERT (shape must be PART_V)
 /// - !has_rows  -> binary SPLIT-vs-HORZ (shape must be PART_H)
 /// - both false -> forced SPLIT, NO symbol coded
-/// PORT-NOTE(unverified): verify on the 96x80 milestone cell; the port's
-/// current walk/writer assume has_rows == has_cols == true everywhere
-/// (64-aligned harness).
+/// Takes the ALIGNED extent directly (rather than a [`FrameDims`]) so the
+/// pack walk — which knows the frame only through the deblock geometry — can
+/// share this one rule instead of re-deriving it; `pipeline::
+/// partition_edge_flags` delegates here.
+///
+/// Note a size invariant that keeps the search's base case safe: while the
+/// aligned dims are a multiple of 8, an 8x8 node can NEVER be an edge node
+/// (`half` = 4, and an 8-node sits at a multiple of 8, so `blk + 4` is at most
+/// `aligned - 4 < aligned`). Edge handling therefore only ever applies to
+/// nodes of 16 pixels and up.
+///
+/// PORT-NOTE(unverified at the STREAM level): the flag algebra is unit-tested
+/// below against hand-derived 96x80 vectors, but end-to-end byte-identity at a
+/// partial-SB cell still needs the search restructure (#95 chunk 2).
 pub fn edge_has_rows_cols(
-    dims: &FrameDims,
+    aligned_w: usize,
+    aligned_h: usize,
     blk_x: usize,
     blk_y: usize,
     half: usize,
 ) -> (bool, bool) {
-    (
-        blk_y + half < dims.aligned_h,
-        blk_x + half < dims.aligned_w,
-    )
+    (blk_y + half < aligned_h, blk_x + half < aligned_w)
 }
 
 /// C pad_input_picture (pic_operators.c:561-604): replicate the last real
@@ -207,4 +222,96 @@ pub fn seq_size_bits(max_dim: usize) -> (u32, u32) {
         bits += 1;
     }
     (bits.max(1), (max_dim - 1) as u32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Hand-derived vectors for the spec-5.11.4 edge predicates, taken from the
+    /// 96x80 milestone cell (docs/arbitrary-dims-port-map.md): aligned 96x80
+    /// gives a 2x2 SB grid where SB(0,0) is interior, SB(0,1) hits the RIGHT
+    /// edge, SB(1,0) the BOTTOM edge, and SB(1,1) both — so one frame exercises
+    /// all three non-interior branches.
+    #[test]
+    fn edge_flags_match_c_rule_on_the_96x80_milestone() {
+        let (aw, ah) = (96, 80);
+        // has_rows = y + half < aligned_h ; has_cols = x + half < aligned_w
+        // SB(0,0): 0+32<80 and 0+32<96 -> interior, full alphabet.
+        assert_eq!(edge_has_rows_cols(aw, ah, 0, 0, 32), (true, true));
+        // SB(0,1) at x=64: 64+32 == 96, NOT < 96 -> right edge (binary
+        // SPLIT-vs-VERT).
+        assert_eq!(edge_has_rows_cols(aw, ah, 64, 0, 32), (true, false));
+        // SB(1,0) at y=64: 64+32 == 96, NOT < 80 -> bottom edge (binary
+        // SPLIT-vs-HORZ).
+        assert_eq!(edge_has_rows_cols(aw, ah, 0, 64, 32), (false, true));
+        // SB(1,1): both -> forced SPLIT, no symbol coded.
+        assert_eq!(edge_has_rows_cols(aw, ah, 64, 64, 32), (false, false));
+        // Descending into SB(1,1): the 32-node at (64,64) is still a BOTTOM
+        // edge (64+16 == 80, not < 80) but no longer a right edge (80 < 96).
+        assert_eq!(edge_has_rows_cols(aw, ah, 64, 64, 16), (false, true));
+        // Its 16-node is fully interior (72 < 80, 72 < 96) — the recursion
+        // terminates on in-frame leaves, which is why nothing codes half a
+        // block.
+        assert_eq!(edge_has_rows_cols(aw, ah, 64, 64, 8), (true, true));
+    }
+
+    /// While the aligned dims are a multiple of 8, an 8x8 node can never be an
+    /// edge node — the invariant that keeps the search's `MIN_BLOCK_SIZE` base
+    /// case (which can only emit PARTITION_NONE) legal at the frame border.
+    #[test]
+    fn eight_pixel_nodes_are_never_edge_nodes() {
+        for (aw, ah) in [(96usize, 80usize), (72, 40), (200, 104), (64, 64)] {
+            let mut x = 0;
+            while x < aw {
+                let mut y = 0;
+                while y < ah {
+                    // half = 4 for an 8x8 node
+                    assert_eq!(
+                        edge_has_rows_cols(aw, ah, x, y, 4),
+                        (true, true),
+                        "8x8 node at ({x},{y}) in {aw}x{ah} must be interior"
+                    );
+                    y += 8;
+                }
+                x += 8;
+            }
+        }
+    }
+
+    /// A 64-aligned frame has no edge nodes at any partition size — this is the
+    /// property that makes the edge coding byte-neutral on every currently
+    /// gated cell (identity matrix 54/54).
+    #[test]
+    fn sixty_four_aligned_frames_have_no_edge_nodes() {
+        for (aw, ah) in [(64usize, 64usize), (128, 128), (192, 64), (256, 192)] {
+            for half in [4usize, 8, 16, 32] {
+                let node = half * 2;
+                let mut x = 0;
+                while x < aw {
+                    let mut y = 0;
+                    while y < ah {
+                        assert_eq!(
+                            edge_has_rows_cols(aw, ah, x, y, half),
+                            (true, true),
+                            "{node}x{node} node at ({x},{y}) in {aw}x{ah} must be interior"
+                        );
+                        y += node;
+                    }
+                    x += node;
+                }
+            }
+        }
+    }
+
+    /// sb_geom clamps the per-SB extent to the aligned frame (C sb_geom_init).
+    #[test]
+    fn sb_geom_clamps_partial_superblocks() {
+        let dims = FrameDims::new(96, 80);
+        assert_eq!((dims.aligned_w, dims.aligned_h), (96, 80));
+        assert_eq!(sb_geom(&dims, 64, 0, 0), (64, 64));
+        assert_eq!(sb_geom(&dims, 64, 64, 0), (32, 64)); // right column
+        assert_eq!(sb_geom(&dims, 64, 0, 64), (64, 16)); // bottom row
+        assert_eq!(sb_geom(&dims, 64, 64, 64), (32, 16)); // corner
+    }
 }
