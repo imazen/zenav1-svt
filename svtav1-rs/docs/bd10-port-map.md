@@ -133,6 +133,19 @@ plumbing from u8 to u16). Candidate decomposition into byte-verifiable sub-chunk
 bd10 tables (quant/lambda/pred/recon-clip) on the u16 path, gate = first non-flat
 bd10 cell. PD0 stays u8 on the MSB-truncated plane.
 
+SURFACE MEASURED (2026-07-18): the u8 pixel-buffer surface in the encode hot path
+is ~374 `u8`/`[u8]`/`Vec<u8>` refs — pipeline.rs 107, leaf_funnel.rs 148, pd0.rs 27
+(stays u8), deblock.rs 48, cdef.rs 44 — plus the svtav1-dsp kernels (intra_pred,
+fwd/inv_txfm, quant, loop_filter, restoration; an `hbd.rs` already exists for the
+FFI-verified highbd kernels). This is a large generic-over-`Pixel` refactor (u8/u16),
+NOT a duplicate-path change (maintainability is a standing priority). Because there
+is no byte-verifiable slice smaller than "the whole MD path aligned for one cell",
+chunk 2a must land as ONE reviewed pass gated by bd8 identity 54/54 — it cannot be
+dribbled in. Recommended shape: a `Pixel` trait (`u8`/`u16` impls, `to_i32`,
+`from_i32_clamped(bd)`) threaded through the funnel recon/pred buffers first (they
+carry the intra-neighbour chain that forces exact recon precision), then deblock/
+cdef/restoration, keeping every existing u8 call path as the `Pixel=u8` instantiation.
+
 ## Concrete wiring anchors (measured 2026-07-18)
 - **Kernel FFI verification (landed, derisks chunk 2):** bd10 quant tables
   (`c_parity_bd10_quant.rs`), hbd loop filters (`c_parity_lpf_hbd.rs`), hbd
