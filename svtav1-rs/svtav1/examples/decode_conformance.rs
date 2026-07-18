@@ -40,6 +40,21 @@ fn make_uniform(w: usize, h: usize) -> Vec<u8> {
     vec![128u8; w * h]
 }
 
+/// Fine 4-pixel vertical stripes, 2 colors — deliberately forces the encoder
+/// to WIN palette blocks (few colors + high local variance). This is the
+/// regression guard for the palette filter_intra desync (fix a0b505b4f): a
+/// winning palette block must not emit an extra use_filter_intra flag. Without
+/// the fix, every size here desyncs under aomdec.
+fn make_stripes(w: usize, h: usize) -> Vec<u8> {
+    let mut v = vec![0u8; w * h];
+    for r in 0..h {
+        for c in 0..w {
+            v[r * w + c] = if (c / 4) % 2 == 0 { 40 } else { 200 };
+        }
+    }
+    v
+}
+
 fn make_edges(w: usize, h: usize) -> Vec<u8> {
     let mut v = vec![0u8; w * h];
     for r in 0..h {
@@ -79,13 +94,15 @@ fn main() {
         ("gradient", make_gradient),
         ("uniform", make_uniform),
         ("edges", make_edges),
+        ("stripes", make_stripes), // palette-forcing regression guard (a0b505b4f)
     ];
     if chroma_mode {
         // Luma gradient + chroma that actually carries content.
         contents.push(("color", make_gradient));
     }
-    // Square sizes padded internally to 64-aligned; the multi-SB odd sizes
-    // (80/96/112) are historical failure cases.
+    // Square sizes padded internally to 64-aligned. The odd multi-SB sizes
+    // (80/96/112) were historical failure cases; all decode since the palette
+    // filter_intra fix (a0b505b4f).
     let sizes = [32usize, 48, 64, 80, 96, 112, 128];
     // CLI-domain qps -> qindex {80, 128, 172, 220, 255} (see header note).
     let qps = [20u8, 32, 43, 55, 63];
