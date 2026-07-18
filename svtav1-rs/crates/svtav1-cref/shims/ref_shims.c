@@ -431,6 +431,35 @@ void svt_aom_lpf_horizontal_14_c(uint8_t* s, int p, const uint8_t* blimit, const
 void svt_aom_lpf_vertical_14_c(uint8_t* s, int p, const uint8_t* blimit, const uint8_t* limit,
                                const uint8_t* thresh);
 
+/* ---- High-bit-depth distortion / variance / SAD kernels ---- */
+uint64_t svt_full_distortion_kernel16_bits_c(uint8_t* input, uint32_t input_offset, uint32_t input_stride,
+                                             uint8_t* pred, int32_t pred_offset, uint32_t pred_stride,
+                                             uint32_t area_width, uint32_t area_height);
+uint32_t svt_aom_variance_highbd_c(const uint16_t* a, int a_stride, const uint16_t* b, int b_stride, int w, int h,
+                                   uint32_t* sse);
+uint32_t svt_aom_sad_16b_kernel_c(uint16_t* src, uint32_t src_stride, uint16_t* ref, uint32_t ref_stride,
+                                  uint32_t height, uint32_t width);
+
+/* The C distortion kernel takes uint8_t* it internally reinterprets as
+   uint16_t* AND applies the offsets after that cast, so a u16 buffer + a
+   u16-element offset marshals directly (matching the port's plain-u16 form). */
+uint64_t ref_full_distortion_kernel16(uint16_t* input, uint32_t in_off, uint32_t in_stride, uint16_t* pred,
+                                      int32_t pred_off, uint32_t pred_stride, uint32_t w, uint32_t h) {
+    return svt_full_distortion_kernel16_bits_c(
+        (uint8_t*)input, in_off, in_stride, (uint8_t*)pred, pred_off, pred_stride, w, h);
+}
+
+uint32_t ref_variance_highbd(const uint16_t* a, int a_stride, const uint16_t* b, int b_stride, int w, int h,
+                             uint32_t* sse_out) {
+    return svt_aom_variance_highbd_c(a, a_stride, b, b_stride, w, h, sse_out);
+}
+
+/* C parameter order is (src, src_stride, ref, ref_stride, HEIGHT, WIDTH). */
+uint32_t ref_sad_16b_kernel(uint16_t* src, uint32_t src_stride, uint16_t* ref, uint32_t ref_stride, uint32_t height,
+                            uint32_t width) {
+    return svt_aom_sad_16b_kernel_c(src, src_stride, ref, ref_stride, height, width);
+}
+
 /* kind: 0..7 = h4, v4, h6, v6, h8, v8, h14, v14. `off` indexes q0 of the
    first filtered line; the SIMD-width blimit/limit/thresh arrays only have
    their first byte read by the _c kernels, so scalars suffice. */

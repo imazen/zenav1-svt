@@ -829,6 +829,81 @@ pub fn lpf_hbd(
     };
 }
 
+// ---- High-bit-depth distortion / variance / SAD kernels ----
+
+unsafe extern "C" {
+    fn ref_full_distortion_kernel16(
+        input: *const u16,
+        in_off: u32,
+        in_stride: u32,
+        pred: *const u16,
+        pred_off: i32,
+        pred_stride: u32,
+        w: u32,
+        h: u32,
+    ) -> u64;
+    fn ref_variance_highbd(
+        a: *const u16,
+        a_stride: i32,
+        b: *const u16,
+        b_stride: i32,
+        w: i32,
+        h: i32,
+        sse_out: *mut u32,
+    ) -> u32;
+    fn ref_sad_16b_kernel(
+        src: *const u16,
+        src_stride: u32,
+        r: *const u16,
+        ref_stride: u32,
+        height: u32,
+        width: u32,
+    ) -> u32;
+}
+
+/// Reference `svt_full_distortion_kernel16_bits_c`: SSE between two u16 planes
+/// over a `w x h` window. Offsets are u16-element indices (not bytes).
+#[allow(clippy::too_many_arguments)]
+pub fn full_distortion_kernel16(
+    input: &[u16],
+    in_off: usize,
+    in_stride: usize,
+    pred: &[u16],
+    pred_off: usize,
+    pred_stride: usize,
+    w: usize,
+    h: usize,
+) -> u64 {
+    unsafe {
+        ref_full_distortion_kernel16(
+            input.as_ptr(),
+            in_off as u32,
+            in_stride as u32,
+            pred.as_ptr(),
+            pred_off as i32,
+            pred_stride as u32,
+            w as u32,
+            h as u32,
+        )
+    }
+}
+
+/// Reference `svt_aom_variance_highbd_c`: returns `(sse, variance)` for two
+/// u16 planes over `w x h`.
+pub fn variance_highbd(a: &[u16], a_stride: usize, b: &[u16], b_stride: usize, w: usize, h: usize) -> (u32, u32) {
+    let mut sse = 0u32;
+    let var =
+        unsafe { ref_variance_highbd(a.as_ptr(), a_stride as i32, b.as_ptr(), b_stride as i32, w as i32, h as i32, &mut sse) };
+    (sse, var)
+}
+
+/// Reference `svt_aom_sad_16b_kernel_c`. The C order is `(.., height, width)`;
+/// this wrapper takes `(width, height)` to match the port's house convention
+/// and swaps internally.
+pub fn sad_16b_kernel(src: &[u16], src_stride: usize, r: &[u16], ref_stride: usize, width: usize, height: usize) -> u32 {
+    unsafe { ref_sad_16b_kernel(src.as_ptr(), src_stride as u32, r.as_ptr(), ref_stride as u32, height as u32, width as u32) }
+}
+
 /// Reference `svt_aom_update_sharpness` limits: `(lim, mblim)` arrays
 /// indexed by filter level 0..=63.
 pub fn lf_limits(sharpness: u8) -> ([u8; 64], [u8; 64]) {

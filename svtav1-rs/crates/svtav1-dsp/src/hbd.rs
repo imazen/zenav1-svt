@@ -856,8 +856,12 @@ pub fn cfl_predict_hbd(
 // are already GENERIC (W, H) forms in C — no sized-wrapper family to
 // enumerate for these (unlike variance, below).
 //
-// PORT-NOTE(unverified) on all three functions below: verify vs FFI parity
-// once wired.
+// FFI-VERIFIED: tests/c_parity_hbd_distortion.rs pins all three below
+// (full_distortion_kernel16_bits / highbd_variance / highbd_sad_kernel)
+// against the real exported svt_full_distortion_kernel16_bits_c /
+// svt_aom_variance_highbd_c / svt_aom_sad_16b_kernel_c at bd10 + bd12 over 14
+// block shapes on strided buffers (offset origin + padded stride), so the
+// offset/stride/overflow marshalling is exercised, not just tight-packed.
 // =============================================================================
 
 /// C `svt_full_distortion_kernel16_bits_c` (pic_operators.c:100-123): SSE
