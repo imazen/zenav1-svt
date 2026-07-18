@@ -88,6 +88,16 @@ CELLS=(
   "gradient 63 65 40 6"    # odd BOTH, aligned 64x72 bottom-partial
   "gradient 64 72 52 6"    # 8-aligned bottom partial (pinned the boundary bugs)
   "gradient 72 64 62 6"    # 8-aligned right partial (pinned the tx-type rate bug)
+  # STRADDLE-WIN cells (C keeps a straddling boundary block as a leaf) — the
+  # port-map's documented goal-2 divergences (80x88 / 104x88 / 72x88), now
+  # byte-exact after the PD0 boundary-node cost fix (they share the partial-SB
+  # RD path). Gated at the qps that byte-match; high-qp both-partial hits the
+  # separate PD1 mode near-tie (follow-up).
+  "gradient 80 88 32 6"
+  "gradient 104 88 32 6"
+  "gradient 72 88 32 6"
+  "gradient 80 104 40 6"   # all-qp match
+  "gradient 104 80 48 6"   # all-qp match
 )
 for cell in "${CELLS[@]}"; do
   read -r content w h qp p <<<"$cell"
