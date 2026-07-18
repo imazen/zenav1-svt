@@ -95,13 +95,21 @@ bd8 vs bd10 differ in exactly ONE byte = the SH high_bitdepth bit); the decoder
 fills DC from the 10-bit default (512) and skips residual, so it decodes to
 uniform-512 correctly.
 
-**Scope boundary (measured):** uniform byte-matches at M0/M2/M3 but NOT M6/M13.
-The faster presets derive LF/CDEF from the bd10 quantizer (LPF_PICK_FROM_Q uses
-`av1_ac_quant_QTX(qindex, .., bd)` = the bd10 qlookup, already FFI-verified),
-which diverges from the port's bd8 LF params. **NEXT bd10 chunk = the LF-level-
-from-Q derivation at bd10** (thread bd into `lf_search::pick_filter_level_from_q`
-+ the quantizer it reads), which should close M6/M13 uniform. THEN the u16 MD
-path for non-flat content (precision-sensitive RD).
+**LF-from-Q at bd10 LANDED (be1ea0770):** uniform bd10 now byte-matches C at
+ALL presets — `tools/bd10_matrix.sh` **36/36** ({64,128} x qp{20,40,55} x
+preset{0,2,3,6,10,13}). The M6+ LPF_PICK_FROM_Q closed form is now bd10-aware in
+`deblock::pick_filter_levels_key_frame` (bd10 KEY: `ROUND_POWER_OF_TWO(q*20723 +
+4060632, 20) - 4`, q = AC_QLOOKUP_10). bd8 byte-neutral (matrix 54/54).
+
+**NEXT bd10 chunk = the u16 MD path for NON-FLAT content (the big one).** Uniform
+works because every block is skip (no residual); any content with a coded
+residual needs the precision-sensitive u16 MD: u16 intra prediction (hbd
+predictors — FFI-verified), residual/transform/quant with the bd10 qlookup +
+qzbin ladder + lambda *16/*4 (kernels FFI-verified), recon-add with
+clip_pixel_highbd. This is the large hot-path pass (the funnel/pipeline plane
+plumbing from u8 to u16); it has NO smaller byte-verifiable sub-chunk (a single
+non-flat bd10 cell needs the whole MD path aligned). PD0 stays u8 on the
+MSB-truncated plane.
 
 ## Concrete wiring anchors (measured 2026-07-18)
 - **Kernel FFI verification (landed, derisks chunk 2):** bd10 quant tables
