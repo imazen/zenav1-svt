@@ -41,6 +41,15 @@ CELLS=(
   "gradient 48 48 32 6"    # sub-64 single partial SB
   "gradient 88 56 40 6"
   "gradient 72 72 40 6"
+  # STRADDLE cases (coded block extends past the aligned extent). C codes such
+  # blocks reading its SB-extent pad; the port sizes the recon + chroma-source
+  # buffers to the SB-extent product so straddling writes/reads never OOB (all
+  # dims decode under aomdec). These particular cells byte-match — the straddle
+  # either loses RD or the padded reads coincide with C's on uniform chroma.
+  "gradient 48 56 40 6"
+  "gradient 40 40 40 6"
+  "gradient 120 120 32 6"
+  "gradient 136 136 40 6"
 )
 for cell in "${CELLS[@]}"; do
   read -r content w h qp p <<<"$cell"

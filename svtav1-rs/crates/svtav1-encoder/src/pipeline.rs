@@ -385,6 +385,38 @@ impl EncodePipeline {
         };
         let sb_input: &[u8] = sb_input_owned.as_deref().unwrap_or(&encode_input);
         let in_stride = if sb_input_owned.is_some() { ext_w } else { w };
+        // Task #95 chunk 2: chroma SOURCE padded to the SB-extent height (aligned
+        // chroma width/stride, extra rows edge-replicated) so a straddling
+        // boundary block's chroma TX read stays in bounds — mirrors the luma
+        // sb_input. Full-SB frames need no extension (byte-neutral).
+        let sb_chroma_owned: Option<(alloc::vec::Vec<u8>, alloc::vec::Vec<u8>)> =
+            chroma.map(|(u, v)| {
+                let (acw, ach) = (w / 2, h / 2);
+                let (ext_ch_h, ext_cw) = (ext_h / 2, ext_w / 2);
+                if ext_ch_h == ach && ext_cw == acw {
+                    // Full-SB (or 64-aligned) frame: exact aligned chroma,
+                    // byte-identical to the pre-#95 source.
+                    (u.to_vec(), v.to_vec())
+                } else {
+                    // Partial SB: `acw`-strided rows, edge-replicating the last
+                    // real chroma row. Enough rows to cover BOTH a height-
+                    // straddle read (reaches `ext_ch_h`) AND a right-straddle
+                    // read that wraps down into later stride rows. For gradient
+                    // (uniform chroma) every padded byte equals the true edge,
+                    // so the reads match C's SB-extent pad; other content is
+                    // decodable (the boundary chroma differs from C's crop).
+                    let n_rows = ext_ch_h + ext_cw.div_ceil(acw) + 2;
+                    let cap = n_rows * acw;
+                    let mut up = alloc::vec![0u8; cap];
+                    let mut vp = alloc::vec![0u8; cap];
+                    for r in 0..n_rows {
+                        let sr = r.min(ach - 1);
+                        up[r * acw..(r + 1) * acw].copy_from_slice(&u[sr * acw..(sr + 1) * acw]);
+                        vp[r * acw..(r + 1) * acw].copy_from_slice(&v[sr * acw..(sr + 1) * acw]);
+                    }
+                    (up, vp)
+                }
+            });
 
         // Screen-content derivation (allintra): scm 3 auto-detect at
         // preset <= 7 (enc_handle.c:4514-4527), off at M8+; palette level
@@ -774,7 +806,9 @@ impl EncodePipeline {
             &sb_qp_offsets,
             chroma.is_some(),
             c_quant.clone(),
-            chroma.as_ref().map(|c| (c.0, c.1)),
+            sb_chroma_owned
+                .as_ref()
+                .map(|(u, v)| (u.as_slice(), v.as_slice())),
         );
 
         let mut per_tile_decisions: Vec<Vec<crate::partition::BlockDecision>> = Vec::new();
@@ -913,7 +947,13 @@ impl EncodePipeline {
         // parse order — the UV_DC prediction reads exactly the chroma
         // neighbors the decoder will have reconstructed.
         let cw = w / 2;
-        let chh = h / 2;
+        // SB-extent chroma buffer (task #95 chunk 2): the pack reconstructs a
+        // straddling boundary block's chroma past the aligned chroma extent, so
+        // size u_recon/v_recon to the extent PRODUCT (aligned stride `cw`, a
+        // right-straddle write wraps down into the slack). `ext == aligned` on a
+        // 64-aligned frame → no-op. The final-recon crop + deblock/CDEF read
+        // only the in-frame region at stride `cw`, unaffected by the slack.
+        let ext_cbuf = (w.div_ceil(sb_size) * sb_size / 2) * (h.div_ceil(sb_size) * sb_size / 2);
         // Debug aid: SVTAV1_DUMP_TREE=1 prints every winning leaf
         // (abs rect, mode, tx_type, eob) in coding order — the fastest way
         // to correlate a recon-parity diff position with the block that
@@ -984,7 +1024,7 @@ impl EncodePipeline {
             u8,
         ) {
             let (mut u_recon, mut v_recon) = if chroma.is_some() {
-                (alloc::vec![128u8; cw * chh], alloc::vec![128u8; cw * chh])
+                (alloc::vec![128u8; ext_cbuf], alloc::vec![128u8; ext_cbuf])
             } else {
                 (Vec::new(), Vec::new())
             };
@@ -1052,9 +1092,9 @@ impl EncodePipeline {
                     ectx.delta_q_state = Some((res, i32::from(base_qindex)));
                     ectx.delta_q_sb_qindex = i32::from(base_qindex);
                 }
-                let mut chroma_pass = chroma.map(|(u_src, v_src)| ChromaPass {
-                    u_src,
-                    v_src,
+                let mut chroma_pass = sb_chroma_owned.as_ref().map(|(u_src, v_src)| ChromaPass {
+                    u_src: u_src.as_slice(),
+                    v_src: v_src.as_slice(),
                     u_recon: &mut u_recon,
                     v_recon: &mut v_recon,
                     stride: cw,
@@ -3783,9 +3823,21 @@ fn encode_tile_rows(
         // frame, so non-screen-content streams are untouched.
         funnel_cfg.palette_level = tile_sc.palette_level;
         let cwid = w / 2;
-        let chgt = h / 2;
-        let mut fun_u_recon = alloc::vec![128u8; if use_funnel { cwid * chgt } else { 0 }];
-        let mut fun_v_recon = alloc::vec![128u8; if use_funnel { cwid * chgt } else { 0 }];
+        // SB extent (task #95 chunk 2): a boundary block whose square (or edge)
+        // block STRADDLES the aligned extent writes past aligned into the
+        // SB-extent pad (C codes such blocks). The recon working buffers KEEP
+        // the aligned stride (`w` luma / `cwid` chroma) but are sized to the SB
+        // extent PRODUCT (`ext_w * ext_h`), so a straddling write past the
+        // aligned right/bottom lands in the slack rows rather than out of
+        // bounds (a right-straddle write wraps down into the next stride row —
+        // hence the full product, not just extra rows). For a 64-aligned frame
+        // `ext_w == w` and `ext_h == h`, so the buffers are the same size as
+        // before — byte-neutral.
+        let ext_w = w.div_ceil(sb_size) * sb_size;
+        let ext_h = h.div_ceil(sb_size) * sb_size;
+        let ext_cbuf = (ext_w / 2) * (ext_h / 2); // chroma buffer capacity at `cwid` stride
+        let mut fun_u_recon = alloc::vec![128u8; if use_funnel { ext_cbuf } else { 0 }];
+        let mut fun_v_recon = alloc::vec![128u8; if use_funnel { ext_cbuf } else { 0 }];
         let mut fun_ectx = if use_funnel {
             let mut e = EntropyCtx::new(w / 4, h / 4, true, tile_sc.allow_screen_content_tools);
             // Task #86: consistent with the other EntropyCtx instances
@@ -3867,13 +3919,13 @@ fn encode_tile_rows(
             None
         };
         let mut sim_geom = crate::deblock::DeblockGeom::new(w, h);
-        let mut sim_u = alloc::vec![128u8; if funnel_chain { cwid * chgt } else { 0 }];
-        let mut sim_v = alloc::vec![128u8; if funnel_chain { cwid * chgt } else { 0 }];
+        let mut sim_u = alloc::vec![128u8; if funnel_chain { ext_cbuf } else { 0 }];
+        let mut sim_v = alloc::vec![128u8; if funnel_chain { ext_cbuf } else { 0 }];
         let mut sim_prev_sb_row = usize::MAX;
         let mut fun_rates = fun_rates;
         let mut tile_decisions: Vec<crate::partition::BlockDecision> = Vec::new();
         let mut tile_trees: Vec<crate::partition::PartitionTree> = Vec::new();
-        let mut tile_frame_recon = alloc::vec![128u8; w * h];
+        let mut tile_frame_recon = alloc::vec![128u8; ext_w * ext_h];
 
         let mut part_config =
             crate::partition::PartitionSearchConfig::from_speed_config(speed_config);

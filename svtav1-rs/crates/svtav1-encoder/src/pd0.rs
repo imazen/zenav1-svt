@@ -1366,13 +1366,21 @@ impl<'a> Pd0Ctx<'a> {
         let half = sq_size / 2;
         let has_rows = abs_y + half < self.aligned_h;
         let has_cols = abs_x + half < self.aligned_w;
+        let one_false = !has_rows || !has_cols;
         if !has_rows && !has_cols {
             // BOTH-false node (extends past both edges): `set_blocks_to_test`
             // (enc_dec_process.c:1405) yields `tot_shapes = 0` → FORCED SPLIT.
             // PART_N is NEVER costed; recurse into the four quadrants
             // (off-frame ones return `Off`). 8x8 nodes are never edge nodes on
             // an 8-aligned frame, so a both-false node always has `sq_size >
-            // min_sq` and can split.
+            // min_sq` and can split. Note: a node with has_rows && has_cols
+            // BOTH true can still STRADDLE the aligned extent (its sq x sq
+            // block reaching past aligned, e.g. a 64x64 SB root of a 48x56
+            // frame — 32 < 48 and 32 < 56, yet 64 > 48); C codes such straddle
+            // blocks reading its SB-extent pad and cropping the distortion, so
+            // the port sizes the recon + chroma-source buffers to the SB extent
+            // (encode_tile_rows) — a straddling block writes past aligned into
+            // the padded rows rather than out of bounds.
             let mut children: Vec<Pd0Eval> = Vec::with_capacity(4);
             let mut total = 0u64;
             for i in 0..4 {
@@ -1393,28 +1401,17 @@ impl<'a> Pd0Ctx<'a> {
             };
             return (total, eval);
         }
-        // ONE-false (single-edge) and complete (both-true) nodes fall through
-        // to the normal PART_N-vs-SPLIT decision below. C's PD0 costs the
-        // SQUARE PART_N block (its distortion cropped to the ALIGNED extent,
-        // handled in the block-cost path) at every reachable node; a one-false
-        // node that PD0 keeps as a leaf is coded as its single edge shape
-        // (PARTITION_HORZ for `!has_rows`, PARTITION_VERT for `!has_cols`) at
-        // `encode_fixed_tree`, deterministically — `set_blocks_to_test`
-        // injects exactly that one shape (md_disallow_nsq_search is set at the
-        // allintra fixed-tree presets, so no other shape competes).
-
-        let tested = sq_size <= self.max_sq && sq_size >= self.min_sq;
-        // A ONE-false (single-edge) node prices its EDGE SHAPE block, not the
-        // square PART_N — C's LPD0 costs "PART_H/PART_V for boundary blocks"
-        // (product_coding_loop.c:127): HORZ (`!has_rows`) = `sq x sq/2`, VERT
-        // (`!has_cols`) = `sq/2 x sq`. The square block would over-cost (twice
-        // the pixels/coeffs) and wrongly lose to SPLIT. This "don't split"
-        // cost then competes with SPLIT exactly like the square path; a win
-        // makes the node a PD0 leaf, coded as its edge shape at
+        // A FITTING one-false node prices its EDGE SHAPE block, not the square
+        // PART_N — C's LPD0 costs "PART_H/PART_V for boundary blocks"
+        // (product_coding_loop.c:127). The square block would over-cost (twice
+        // the pixels/coeffs) and wrongly lose to SPLIT. This "don't split" cost
+        // competes with SPLIT exactly like the square path; a win makes the
+        // node a PD0 leaf, coded as its (fitting) edge shape at
         // `encode_fixed_tree`. Only wired on the LVL_1 path (allintra
         // fixed-tree presets, incl. the 96x80 milestone); LVL_5/6 boundary
-        // nodes keep the square cost (their straddle cells are out of scope).
-        let one_false = !has_rows || !has_cols;
+        // nodes keep the square cost.
+
+        let tested = sq_size <= self.max_sq && sq_size >= self.min_sq;
         let parent_cost = if tested {
             if one_false && self.mode == Pd0Mode::Lvl1 {
                 let (bw, bh) = if !has_rows {
