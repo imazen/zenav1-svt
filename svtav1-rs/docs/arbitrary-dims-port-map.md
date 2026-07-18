@@ -46,6 +46,27 @@ coexist — conflating them is the #1 porting risk.
   Leaf blocks always fully inside ALIGNED — nothing codes half a block.
 
 ## MD at edges
+- **b64 VARIANCE on a partial SB reads PAST the aligned extent — do NOT
+  "fix" this with a clamp (measured 2026-07-18).** `compute_b64_variance`
+  (pic_analysis_process.c:318) is called per b64 with `input_padded_pic` and
+  NO clamping (:611, inside `compute_picture_spatial_statistics`) — it always
+  walks a full 8x8 grid of 8x8s. The documented input pad,
+  `svt_aom_pad_picture_to_multiple_of_min_blk_size_dimensions` ->
+  `pad_input_picture` (pic_operators.c:561), only extends TRUE -> ALIGNED
+  (`scs->pad_right/pad_bottom`, a multiple of MIN_BLK_SIZE = 8), NOT to the
+  64-wide SB grid. So on a partial SB C reads beyond ALIGNED into whatever the
+  picture buffer's border padding holds. The port's `pd0::compute_b64_variance`
+  carries the same unclamped 64x64 walk and a note that "every current caller
+  pads frames to 64-aligned dimensions".
+  CONSEQUENCE: clamping the port's reads to the frame would compute DIFFERENT
+  variance than C and therefore different PD0 partition decisions — it would
+  break byte-exactness at partial SBs rather than enable it. The port must
+  reproduce C's padded CONTENT out to the SB extent instead.
+  OPEN (needs a trace before chunk 2's PD0 path is unlocked): exactly what
+  occupies the input buffer between ALIGNED and the SB extent — the border
+  padding applied for ME/reference use, or uninitialised allocation. Trace it
+  against the C buffer before trusting any variance at a partial SB; if it is
+  edge replication, extend `frame_geom::pad_input_plane` to the SB extent.
 - subres off at incomplete b64 (enc_mode_config.c:7327).
 - end_tx_depth=0 for blocks touching the ALIGNED boundary
   (product_coding_loop.c:6710-6717).
