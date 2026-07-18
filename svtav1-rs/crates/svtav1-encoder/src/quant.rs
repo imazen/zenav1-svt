@@ -117,6 +117,56 @@ pub fn build_quant_table(qindex: u8) -> QuantTable {
     t
 }
 
+/// Bit-depth-aware quantizer row (`svt_av1_build_quantizer` at `bd`).
+///
+/// Additive bd10 companion to [`build_quant_table`] (task #94, the u16 MD
+/// path). For `bd == 8` it is byte-identical to [`build_quant_table`] (the
+/// dc/ac qlookups + the 148 qzbin threshold coincide) — asserted in tests;
+/// for `bd == 10` it uses the FFI-verified `crate::bd10::{dc,ac}_qlookup_10`
+/// tables and the 592 qzbin threshold (`svt_aom_get_qzbin_factor`,
+/// inv_transforms.c:3492-3505). Same `_fp`/`invert_quant`/round formulas as
+/// the 8-bit builder — those are bit-depth-independent (they consume the
+/// per-bd `quant_qtx` only). The bd8 path never calls this, so bd8 output is
+/// provably unchanged.
+pub fn build_quant_table_bd(qindex: u8, bd: u8) -> QuantTable {
+    let (dc, ac): (i32, i32) = match bd {
+        8 => (
+            svtav1_dsp::quant_tables::DC_QLOOKUP_8[qindex as usize] as i32,
+            svtav1_dsp::quant_tables::AC_QLOOKUP_8[qindex as usize] as i32,
+        ),
+        10 => (
+            crate::bd10::dc_qlookup_10(qindex) as i32,
+            crate::bd10::ac_qlookup_10(qindex) as i32,
+        ),
+        _ => unreachable!("build_quant_table_bd: only bd 8/10 supported (bd12 out of scope)"),
+    };
+    // svt_aom_get_qzbin_factor: q==0 -> 64; else dc < th ? 84 : 80 with
+    // th = 148 (bd8) / 592 (bd10). crate::bd10::qzbin_factor encodes both.
+    let qzbin_factor = crate::bd10::qzbin_factor(qindex, dc, bd);
+    let qrounding_factor = if qindex == 0 { 64 } else { 48 };
+    let mut t = QuantTable {
+        zbin: [0; 2],
+        round: [0; 2],
+        quant: [0; 2],
+        quant_shift: [0; 2],
+        round_fp: [0; 2],
+        quant_fp: [0; 2],
+        dequant: [0; 2],
+        qm_level: 15,
+    };
+    for (i, quant_qtx) in [dc, ac].into_iter().enumerate() {
+        let (quant, shift) = invert_quant(quant_qtx);
+        t.quant[i] = quant;
+        t.quant_shift[i] = shift;
+        t.zbin[i] = (qzbin_factor * quant_qtx + 64) >> 7;
+        t.round[i] = (qrounding_factor * quant_qtx) >> 7;
+        t.quant_fp[i] = (1 << 16) / quant_qtx;
+        t.round_fp[i] = (64 * quant_qtx) >> 7;
+        t.dequant[i] = quant_qtx;
+    }
+    t
+}
+
 /// C `av1_get_tx_scale_tab[TX_SIZES_ALL]` (full_loop.c:22), indexed by the
 /// C TxSize value.
 pub const TX_SCALE_TAB: [i32; 19] = [0, 0, 0, 1, 2, 0, 0, 0, 0, 1, 1, 2, 2, 0, 0, 0, 0, 1, 1];
@@ -1512,6 +1562,34 @@ pub fn quantize_inv_quantize_still(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The bd8 arm of [`build_quant_table_bd`] must be byte-identical to the
+    /// legacy [`build_quant_table`] at every qindex (additive-neutrality
+    /// guarantee: the bd8 path never changes because the new bd-aware builder
+    /// reproduces the old one exactly for bd==8).
+    #[test]
+    fn build_quant_table_bd8_matches_legacy() {
+        for q in 0u8..=255 {
+            assert_eq!(
+                build_quant_table_bd(q, 8),
+                build_quant_table(q),
+                "bd8 quant table mismatch at qindex {q}"
+            );
+        }
+    }
+
+    /// bd10 dequant (`t.dequant`) must equal the FFI-verified
+    /// `crate::bd10::{dc,ac}_qlookup_10` — the coefficient dequant the u16 MD
+    /// path folds. Spot-checks the wiring (the tables themselves are pinned
+    /// full-range by tests/c_parity_bd10_quant.rs).
+    #[test]
+    fn build_quant_table_bd10_dequant_matches_tables() {
+        for &q in &[0u8, 1, 20, 40, 55, 128, 200, 255] {
+            let t = build_quant_table_bd(q, 10);
+            assert_eq!(t.dequant[0], crate::bd10::dc_qlookup_10(q) as i32, "dc q={q}");
+            assert_eq!(t.dequant[1], crate::bd10::ac_qlookup_10(q) as i32, "ac q={q}");
+        }
+    }
 
     /// Instrumented-library capture (qindex 220, g64 q55 QIQ tables line):
     /// dc zbin=326 round=195 quant=-1255 qshift=128 qfp=125 rfp=261 deq=522
