@@ -80,3 +80,19 @@ effects (<64 disables). MILESTONE: 96x80 FIRST (8-aligned, no odd-chroma
 ambiguity; exercises partial SB + CDEF clamp + LR collapse), THEN 65x65
 (pressure-tests the DLF floor-vs-ceiling discrepancy — the highest-value
 differential in the map). SvtAv1EncApp accepts arbitrary -w/-h directly.
+
+## Gate design notes (measured 2026-07-18)
+
+- The C side ALREADY handles 96x80: `capture_c_trace 96 80 32 6` on a
+  synthesized I420 input exits 0 and emits a stream, so the milestone gate
+  needs no C-side work — only the port's search restructure.
+- **Use GRADIENT, not uniform, for the 96x80 cell.** Uniform-128 at q32/p6
+  codes to just 25 bytes: everything is skip/NONE and the forced-split levels
+  emit no symbols at all, so a uniform cell can pass while the edge coding is
+  still wrong. (That same "forced splits code nothing" property is exactly what
+  made the pre-guard mono partial-SB bug silent at 16x16 — see CLAUDE.md #95.)
+  Gradient forces real partition decisions at the three edge SBs.
+- 96x80 covers all three non-interior branches in one frame: SB(0,1) right
+  edge (binary SPLIT-vs-VERT), SB(1,0) bottom edge (binary SPLIT-vs-HORZ),
+  SB(1,1) both-false (forced SPLIT, no symbol). Unit-locked in
+  `frame_geom::tests::edge_flags_match_c_rule_on_the_96x80_milestone`.
