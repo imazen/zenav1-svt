@@ -1127,7 +1127,7 @@ impl EncodePipeline {
                 };
                 crate::deblock::pick_filter_levels_full_search(&input)
             } else {
-                crate::deblock::pick_filter_levels_key_frame(base_qindex)
+                crate::deblock::pick_filter_levels_key_frame(base_qindex, self.bit_depth)
             }
         } else {
             crate::deblock::LfLevels::default()

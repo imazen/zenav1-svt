@@ -80,7 +80,7 @@ fn main() {
     for content in ["edges", "gradient"] {
         for qp in [55u8, 63] {
             let qindex = qp_to_qindex(qp);
-            let levels = svtav1_encoder::deblock::pick_filter_levels_key_frame(qindex).levels;
+            let levels = svtav1_encoder::deblock::pick_filter_levels_key_frame(qindex, 8).levels;
             let y = gen_content(content, sz);
             let rc = RcConfig {
                 mode: RcMode::Cqp,

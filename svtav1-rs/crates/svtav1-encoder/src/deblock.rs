@@ -52,12 +52,26 @@ impl LfLevels {
 ///
 /// Returns `[filt_guess, filt_guess, chroma, chroma]` for
 /// `[level0, level1, U, V]`.
-pub fn pick_filter_levels_key_frame(qindex: u8) -> LfLevels {
-    let q = svtav1_dsp::quant_tables::AC_QLOOKUP_8[qindex as usize] as i32;
-    // ROUND_POWER_OF_TWO(v, 18) on a possibly-negative value: C computes
-    // (v + (1 << 17)) >> 18 with an arithmetic shift; Rust's i32 >> is
-    // arithmetic too.
-    let filt_guess = (q * 17563 - 421574 + (1 << 17)) >> 18;
+pub fn pick_filter_levels_key_frame(qindex: u8, bit_depth: u8) -> LfLevels {
+    // C `svt_av1_pick_filter_level_by_q` (deblocking_filter.c:1056-1096), KEY
+    // arm: `q = ac_quant_qtx(qindex, 0, bd)` (the per-bd AC qlookup), then a
+    // per-bit-depth linear fit; bd>8 additionally subtracts 4.
+    // ROUND_POWER_OF_TWO(v, n) == (v + (1 << (n-1))) >> n (arithmetic shift;
+    // Rust's i32 >> is arithmetic, matching C on negatives).
+    let filt_guess = match bit_depth {
+        8 => {
+            let q = svtav1_dsp::quant_tables::AC_QLOOKUP_8[qindex as usize] as i32;
+            (q * 17563 - 421574 + (1 << 17)) >> 18 // filt_guess = q*0.06699 - 1.60817
+        }
+        10 => {
+            let q = crate::bd10::AC_QLOOKUP_10[qindex as usize] as i32;
+            ((q * 20723 + 4060632 + (1 << 19)) >> 20) - 4 // q*0.316206 + 3.87252, then -4 for bd>8 KEY
+        }
+        // bd12 is out of scope for this port (docs/bd10-port-map.md: "bd 8 or
+        // 10 only"); C's arm is `ROUND_POWER_OF_TWO(q*20723 + 16242526, 22) - 4`
+        // with the bd12 AC qlookup — transcribe when bd12 is in scope.
+        _ => unreachable!("bit_depth must be 8 or 10 (bd12 out of scope, bd10-port-map.md)"),
+    };
     let filt_guess_chroma = filt_guess / 2;
     let y = filt_guess.clamp(0, MAX_LOOP_FILTER) as u8;
     let uv = filt_guess_chroma.clamp(0, MAX_LOOP_FILTER) as u8;
@@ -731,14 +745,32 @@ mod tests {
     /// 938908 >> 18 = 3. Chroma = y / 2 (truncated before clamp).
     #[test]
     fn key_frame_levels_match_c_formula() {
-        assert_eq!(pick_filter_levels_key_frame(30).levels, [1, 1, 0, 0]);
-        assert_eq!(pick_filter_levels_key_frame(50).levels, [2, 2, 1, 1]);
-        assert_eq!(pick_filter_levels_key_frame(63).levels, [3, 3, 1, 1]);
+        assert_eq!(pick_filter_levels_key_frame(30, 8).levels, [1, 1, 0, 0]);
+        assert_eq!(pick_filter_levels_key_frame(50, 8).levels, [2, 2, 1, 1]);
+        assert_eq!(pick_filter_levels_key_frame(63, 8).levels, [3, 3, 1, 1]);
         // qindex 0: q_step = 4 -> 70252 - 421574 = negative -> clamps to 0.
-        assert_eq!(pick_filter_levels_key_frame(0).levels, [0, 0, 0, 0]);
+        assert_eq!(pick_filter_levels_key_frame(0, 8).levels, [0, 0, 0, 0]);
         // Top of the table: q_step(255) = 1828 -> (32105164 - 421574 +
         // 131072) >> 18 = 121 -> clamps to 63; chroma 121/2 = 60.
-        assert_eq!(pick_filter_levels_key_frame(255).levels, [63, 63, 60, 60]);
+        assert_eq!(pick_filter_levels_key_frame(255, 8).levels, [63, 63, 60, 60]);
+    }
+
+    /// bd10 KEY arm (deblocking_filter.c:1070-1084): q = AC_QLOOKUP_10[qidx],
+    /// filt_guess = ROUND_POWER_OF_TWO(q*20723 + 4060632, 20) - 4, chroma = /2.
+    #[test]
+    fn key_frame_levels_bd10_match_c_formula() {
+        // qindex 128: AC_QLOOKUP_10[128] = 592 -> (592*20723 + 4060632 +
+        // (1<<19)) >> 20 - 4 = (12268016 + 4060632 + 524288)>>20 - 4
+        // = 16852936>>20 - 4 = 16 - 4 = 12; chroma 12/2 = 6.
+        let q128 = crate::bd10::AC_QLOOKUP_10[128] as i32;
+        let expect = ((q128 * 20723 + 4060632 + (1 << 19)) >> 20) - 4;
+        let lv = pick_filter_levels_key_frame(128, 10);
+        assert_eq!(lv.levels[0] as i32, expect.clamp(0, MAX_LOOP_FILTER));
+        assert_eq!(lv.levels[2] as i32, (expect / 2).clamp(0, MAX_LOOP_FILTER));
+        // bd8 at the same qindex must be UNCHANGED (byte-neutral guarantee).
+        let q8 = svtav1_dsp::quant_tables::AC_QLOOKUP_8[128] as i32;
+        let e8 = (q8 * 17563 - 421574 + (1 << 17)) >> 18;
+        assert_eq!(pick_filter_levels_key_frame(128, 8).levels[0] as i32, e8.clamp(0, MAX_LOOP_FILTER));
     }
 
     #[test]
