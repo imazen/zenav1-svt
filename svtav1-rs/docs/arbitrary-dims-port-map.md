@@ -77,6 +77,49 @@ coexist — conflating them is the #1 porting risk.
   fully inside ALIGNED — nothing codes half a block.
 - Three search mirror sites: product_coding_loop.c:10538/:10618/:10896.
 
+### CHUNK 2 — LANDED (2026-07-18, preset 6 / bd8 4:2:0)
+
+96x80 (the milestone) byte-matches real aomenc, plus 96x64, 96x96, 64x80,
+80x96, 200x120, 48x48, 88x56, 72x72 — `tools/partial_sb_gate.sh` = 11/11.
+The full-SB identity matrix stays 54/54 (+ bd10 36/36, bd10-nonflat 8/8):
+every change is byte-neutral where the frame has no incomplete SB.
+
+Two CORRECTIONS to the model above, learned by cmp-verified iteration:
+
+1. **The boundary shape is NOT forced-split; it is an edge-shape-vs-SPLIT
+   decision made in PD0, and at the fixed-tree presets it is DETERMINISTIC**
+   (md_disallow_nsq_search => `set_blocks_to_test` injects exactly one shape).
+   C's LPD0 (product_coding_loop.c:127) prices "a single block per shape ...
+   PART_H/PART_V for boundary blocks", i.e. the NON-SQUARE in-frame block
+   (`size x size/2` HORZ, `size/2 x size` VERT) — NOT the square PART_N with a
+   cropped distortion. The square block over-costs (twice the pixels/coeffs)
+   and wrongly loses to SPLIT: the port's `pd0::lvl1_block_cost_rect` prices
+   the edge shape, so a PD0-leaf boundary node keeps its edge shape exactly
+   where C does (e.g. 96x80 bottom-edge 32-node -> HORZ 32x16; the right-edge
+   64-root's VERT 32x64 loses to SPLIT, matching C).
+2. **VERT boundary blocks are TALLER than wide** (`sq/2 x sq`), so the PD0
+   transform needs Tx32x64 / Tx16x32 / Tx8x16 (+ the 32x64 height-fold), which
+   the wide-only subres table lacked. Without them a right-edge node panics.
+
+Coding: a one-false PD0 leaf codes its single in-frame block through
+`leaf_funnel::decide_leaf_rect` (evaluate_leaf/commit_leaf are already
+dimension-general) and a `PartitionTree::Split{Horz|Vert, [1 child]}`;
+`encode_partition_av1` writes the binary SPLIT-vs-{H,V} symbol (the gather is
+cross-named per the trap above) and the single block (the pack's Horz/Vert
+arms code child 1 only when it exists). Off-frame quadrants are `Pd0Tree::Off`
+(coded as nothing) and pruned by position in both the fixed-tree encode and
+the entropy walk (C `svt_aom_write_modes_sb` early-return / SPLIT `continue`).
+
+REMAINING (diverge, NOT in the gate):
+- **65x65 (odd true width)** — blocked at the harness: `identity_run` requires
+  even dims (I420) and `capture_c_trace` reads FLOOR chroma (`w/2`) while the
+  port expects CEILING; reconcile the odd-dim chroma layout, THEN the DLF
+  floor-vs-ceiling-chroma (the map's flagged discrepancy) can be validated.
+- **presets >= 9 (M9 LVL_5/6)** — the edge-shape cost is wired on LVL_1 only;
+  96x80 p10/p13 diverge (boundary nodes fall back to the square cost -> split).
+- **104x88** — a *smaller* VERT straddle (16x16 -> 8x16 boundary block) codes
+  ~4 bytes over C: a Tx8x16 edge-cost / VERT-vs-SPLIT near-tie at the 16-node.
+
 ## MD at edges
 - **b64 VARIANCE on a partial SB reads PAST the aligned extent — do NOT
   "fix" this with a clamp (measured 2026-07-18).** `compute_b64_variance`
