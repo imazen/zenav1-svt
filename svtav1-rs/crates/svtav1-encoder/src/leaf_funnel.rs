@@ -103,10 +103,16 @@ pub struct MdRates {
     /// DC candidates' luma rate when allow_palette. Row `[_][0]` is the
     /// pre-#71 no-neighbour value (bit-identical for non-screen content).
     pub palette_y_no: [[i32; 3]; 7],
-    /// No-palette uv flag cost (palette_uv_mode_fac_bits[0][0]) — part of
-    /// EVERY UV_DC chroma fast rate when allow_palette (C computes it
-    /// inside svt_aom_get_intra_uv_fast_rate, rd_cost.c:514-520).
-    pub palette_uv_no: i32,
+    /// No-palette uv flag cost `palette_uv_mode_fac_bits[use_palette_y][0]`
+    /// (rd_cost.c:514-520, inside svt_aom_get_intra_uv_fast_rate) — part of
+    /// EVERY UV_DC chroma fast rate when allow_palette. Indexed by
+    /// `use_palette_y` (C `cand->palette_size[0] > 0`): `[0]` for a regular
+    /// candidate (y-palette off), `[1]` for a palette candidate (y-palette
+    /// on). The rows DIFFER — `[1][0]` is dearer (icdf 11280 vs 307) — so a
+    /// palette candidate that priced the `[0]` row under-costs its own chroma
+    /// flag, biasing the palette-vs-regular RD tie toward palette (a #71
+    /// over-picking lever). `use_palette_uv` is hard-0 (chroma palette dead).
+    pub palette_uv_no: [i32; 2],
     /// palette_y_mode YES flag cost `palette_ymode_fac_bits[bctx][mode_ctx][1]`
     /// (rd_cost.c:582-584) — the n>0 arm palette candidates price. Same
     /// `[bctx][mode_ctx]` indexing as [`Self::palette_y_no`].
@@ -140,7 +146,7 @@ pub fn build_md_rates(fc: &FrameContext, cfc: &cc::CoeffFc) -> alloc::boxed::Box
         intra_ext_tx: [[0; 17]; 13 * 4 * 3],
         cfl_alpha_fac_bits: [[[0; 16]; 2]; 8],
         palette_y_no: [[0; 3]; 7],
-        palette_uv_no: 0,
+        palette_uv_no: [0; 2],
         palette_y_yes: [[0; 3]; 7],
         palette_ysize: [[0; 7]; 7],
         palette_ycolor: [[[0; 8]; 5]; 7],
@@ -156,7 +162,10 @@ pub fn build_md_rates(fc: &FrameContext, cfc: &cc::CoeffFc) -> alloc::boxed::Box
         }
         r.palette_ysize[b] = costs_from_cdf::<7>(&fc.palette_y_size_cdf[b]);
     }
-    r.palette_uv_no = costs_from_cdf::<2>(&fc.palette_uv_mode_cdf[0])[0];
+    r.palette_uv_no = [
+        costs_from_cdf::<2>(&fc.palette_uv_mode_cdf[0])[0],
+        costs_from_cdf::<2>(&fc.palette_uv_mode_cdf[1])[0],
+    ];
     for n in 0..7 {
         for c in 0..5 {
             // Row width = n+2 symbols; syntax_rate_from_cdf reads to the
@@ -2435,7 +2444,10 @@ pub(crate) fn evaluate_leaf(
     } else {
         0
     };
-    let pal_uv_no = if allow_pal { rates.palette_uv_no as u64 } else { 0 };
+    // Regular (y-palette-off) candidates price the [0] row; the palette
+    // candidate prices the [1] row (use_palette_y=1) via pal_uv_no_y1 below.
+    let pal_uv_no = if allow_pal { rates.palette_uv_no[0] as u64 } else { 0 };
+    let pal_uv_no_y1 = if allow_pal { rates.palette_uv_no[1] as u64 } else { 0 };
 
     let mut ind_uv: Option<[(u8, i8); 13]> = None;
     // C: at ind_uv_last_mds == 0 (the M0/M1 chroma config) the independent
@@ -2909,10 +2921,13 @@ pub(crate) fn evaluate_leaf(
             }
             // Chroma: DC (palette-uv unsupported) with the y-palette-ON uv
             // flag row. C prices palette_uv_mode_fac_bits[1][0] here
-            // (rd_cost.c:514-521 use_palette_y=1).
-            // PORT-NOTE(unverified): rates.palette_uv_no is the [0][0]
-            // row; the [1][0] row differs (uv ctx = y-palette-used).
-            // Wire palette_uv_no_y1 when the EPICA drill demands it.
+            // (rd_cost.c:514-521, use_palette_y=1 because this candidate has a
+            // luma palette). This is the ONLY leaf-funnel site that takes the
+            // [1] row; every regular candidate keeps pal_uv_no ([0]). The port
+            // formerly priced [0][0] here too, under-costing the palette
+            // candidate's chroma flag (icdf 307 vs the correct 11280) and
+            // biasing the palette-vs-regular RD tie toward palette — a #71
+            // over-picking contributor (agent-confirmed via the triage drill).
             let (uv, uv_delta) = match &ind_uv {
                 Some(tbl) if !cfg.ind_uv_last_mds1 => tbl[0],
                 _ => (0u8, 0i8),
@@ -2926,7 +2941,7 @@ pub(crate) fn evaluate_leaf(
                 fcr += rates.angle[uv as usize - 1][(3 + uv_delta) as usize] as u64;
             }
             if has_uv && uv == 0 {
-                fcr += pal_uv_no;
+                fcr += pal_uv_no_y1; // [1][0]: this candidate's luma palette is on
             }
             let fast_cost = rdcost(
                 lambda,
