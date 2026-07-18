@@ -2721,11 +2721,12 @@ fn encode_block_syntax(
     // from write_modes_b right after the uv/palette/filter_intra syntax
     // and before the residuals. Key frames signal TX_MODE_SELECT in the
     // FH (like C always does), so every INTRA block with bsize > 4x4
-    // codes a tx_depth symbol — skip only suppresses it for inter
-    // blocks, and our depth is always 0 (largest TX). The neighbor
-    // context update (set_txfm_ctxs) runs for EVERY block, signaling or
-    // not. Inter frames signal TX_MODE_LARGEST (no symbol), but keep
-    // their context arrays maintained exactly like C's else-branch.
+    // codes a tx_depth symbol (the ACTUAL `decision.tx_depth` from the
+    // funnel's TXS search — 0/1/2, NOT hardcoded to largest); skip only
+    // suppresses the symbol for inter blocks. The neighbor context update
+    // (set_txfm_ctxs) runs for EVERY block, signaling or not. Inter frames
+    // signal TX_MODE_LARGEST (no symbol), but keep their context arrays
+    // maintained exactly like C's else-branch.
     {
         let w = decision.width as usize;
         let h = decision.height as usize;
