@@ -1639,24 +1639,61 @@ pub(crate) fn predict_unit_hbd(
     mode: u8,
     delta: i8,
     fi_mode: u8,
+    geom: &UnitGeom,
+    edge_filter: bool,
+    filt_type: i32,
     dst: &mut [u16],
     bd: u8,
 ) {
     use svtav1_dsp::hbd as hp;
     // Directional: modes D45..D203 (3..=8) OR V/H with a nonzero angle delta.
+    // Mirrors the u8 `predict_unit` directional arm: same DrGeom, routed to the
+    // hbd edge/kernel twin `dr_predict_hbd`. (task #94 follow-up)
     if matches!(mode, 3..=8) || (matches!(mode, 1 | 2) && delta != 0) {
-        unimplemented!(
-            "bd10 directional intra (mode {mode}, delta {delta}) not yet ported — the first \
-             bd10 cell is DC-only; add dr_predict_hbd for angled bd10 content (task #94 follow-up)"
+        let p_angle = crate::intra_edge::MODE_TO_ANGLE_MAP[mode as usize] + delta as i32 * 3;
+        debug_assert!(fi_mode == FI_NONE);
+        let g = crate::intra_edge::DrGeom {
+            px: abs_x,
+            py: abs_y,
+            txw: w,
+            txh: h,
+            mi_row: geom.mi_row,
+            mi_col: geom.mi_col,
+            bw_px: geom.bw_px,
+            bh_px: geom.bh_px,
+            row_off: 0,
+            col_off: 0,
+            ss: geom.ss,
+            frame_w: geom.frame_w,
+            frame_h: geom.frame_h,
+        };
+        crate::intra_edge::dr_predict_hbd(
+            |x, y| recon[y * stride + x],
+            &g,
+            p_angle,
+            edge_filter,
+            filt_type,
+            svtav1_types::partition::PartitionType::None,
+            dst,
+            bd,
         );
+        return;
     }
     let (above, left, top_left, has_above, has_left) =
         crate::partition::extract_neighbors_hbd(recon, stride, abs_x, abs_y, w, h, bd);
     if fi_mode != FI_NONE {
-        unimplemented!(
-            "bd10 filter-intra (fi_mode {fi_mode}) not yet ported — DC-only first bd10 cell \
-             (task #94 follow-up: wire predict_filter_intra_hbd)"
-        );
+        // Filter-intra (highbd). C `build_intra_predictors_high` sets
+        // above_row[-1] via the standard need_above_left logic (the base=512
+        // fallback for the frame corner) — which is exactly `top_left` from
+        // extract_neighbors_hbd — then calls
+        // `svt_aom_highbd_filter_intra_predictor(above_row, left_col, ...)`.
+        // `predict_filter_intra_hbd` expects `above[0]` = top-left,
+        // `above[1..]` = the above row. Mirrors the u8 `predict_unit` fi arm.
+        let mut above_c = alloc::vec![0u16; w + 1];
+        above_c[0] = top_left;
+        above_c[1..].copy_from_slice(&above);
+        hp::predict_filter_intra_hbd(dst, w, &above_c, &left, w, h, fi_mode, bd);
+        return;
     }
     match mode {
         0 => hp::predict_dc_hbd(dst, w, &above, &left, w, h, has_above, has_left, bd),
@@ -1785,7 +1822,9 @@ pub(crate) fn tx_unit_hbd(
         }
         e
     } else {
-        crate::quant::quantize_b(&packed, scan, qt, log_scale, &mut qcoeff, &mut dqcoeff)
+        // rdoq level 0 (do_rdoq == false): C routes bd>8 to the highbd b-quant
+        // (no INT16 clamp) — the SAME clamp-is-bd8-only class as the fp fix.
+        crate::quant::quantize_b_hbd(&packed, scan, qt, log_scale, &mut qcoeff, &mut dqcoeff)
     };
 
     // 10-bit reconstruction (pred + inverse residual, clipped to [0, 2^bd-1]).

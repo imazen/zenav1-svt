@@ -817,9 +817,15 @@ impl EncodePipeline {
             // predict_filter_intra_hbd, tx_depth>0 re-encode). The supported
             // subset (currently the DC-family first cell) is exact; the rest is
             // WIP, so this keeps the encoder panic-free while the port grows.
+            // SH intra edge filter for this frame (the FunnelCfg the u8 tree was
+            // searched with). Directional bd10 leaves are only in-envelope when
+            // it is off (the re-encode passes filt_type=0); for {M3,M6,M10,M13}
+            // it is false, for M5 (4:2:0 still) true.
+            let bd10_edge_filter =
+                crate::leaf_funnel::FunnelCfg::for_preset(self.speed_config.preset).edge_filter;
             if let Some(cq) = c_quant
                 .as_ref()
-                .filter(|_| all_trees.iter().all(bd10_tree_supported))
+                .filter(|_| all_trees.iter().all(|t| bd10_tree_supported(t, bd10_edge_filter)))
             {
                 let shift = (self.bit_depth - 8) as u32;
                 let src10: alloc::vec::Vec<u16> =
@@ -840,6 +846,7 @@ impl EncodePipeline {
                     base_qindex,
                     cq.rdoq_level,
                     lambda_bd10,
+                    bd10_edge_filter,
                     self.bit_depth,
                 );
                 self.last_recon10_y = Some(recon10);
@@ -3395,16 +3402,22 @@ fn encode_partition_tree(
 /// `bd10_reencode_luma` runs ONLY when the whole frame is supported, so an
 /// out-of-envelope bd10 frame falls back to the (non-panicking, if not yet
 /// byte-exact) u8 output instead of crashing a public-API caller.
-fn bd10_tree_supported(tree: &crate::partition::PartitionTree) -> bool {
+fn bd10_tree_supported(tree: &crate::partition::PartitionTree, edge_filter: bool) -> bool {
     match tree {
         crate::partition::PartitionTree::Leaf(d) => {
-            d.tx_depth == 0
-                && d.filter_intra_mode == crate::leaf_funnel::FI_NONE
-                && !(matches!(d.intra_mode, 3..=8)
-                    || (matches!(d.intra_mode, 1 | 2) && d.angle_delta != 0))
+            // Filter-intra IS ported (predict_filter_intra_hbd) and directional
+            // intra IS ported (dr_predict_hbd) — but the re-encode passes
+            // filt_type=0, valid only when the SH edge filter is off. So a
+            // directional leaf is in-envelope ONLY when !edge_filter; with
+            // edge_filter on it falls back (filt_type would need the live
+            // per-block smooth-neighbour derivation — a future follow-up). Only
+            // tx_depth>0 still unconditionally falls back.
+            let directional = matches!(d.intra_mode, 3..=8)
+                || (matches!(d.intra_mode, 1 | 2) && d.angle_delta != 0);
+            d.tx_depth == 0 && (!directional || !edge_filter)
         }
         crate::partition::PartitionTree::Split { children, .. } => {
-            children.iter().all(bd10_tree_supported)
+            children.iter().all(|c| bd10_tree_supported(c, edge_filter))
         }
     }
 }
@@ -3419,6 +3432,7 @@ fn bd10_reencode_luma(
     base_qindex: u8,
     rdoq_level: u8,
     lambda_bd10: u64,
+    edge_filter: bool,
     bd: u8,
 ) -> alloc::vec::Vec<u16> {
     let fc = svtav1_entropy::context::FrameContext::new_default();
@@ -3440,6 +3454,9 @@ fn bd10_reencode_luma(
             rdoq_level,
             lambda_bd10,
             &rates,
+            edge_filter,
+            w,
+            h,
             bd,
         );
     }
@@ -3458,6 +3475,9 @@ fn bd10_reencode_node(
     rdoq_level: u8,
     lambda: u64,
     rates: &crate::leaf_funnel::MdRates,
+    edge_filter: bool,
+    frame_w: usize,
+    frame_h: usize,
     bd: u8,
 ) {
     use crate::partition::PartitionTree as Tr;
@@ -3473,6 +3493,19 @@ fn bd10_reencode_node(
             );
             // Predict luma at 10-bit from the running 10-bit recon plane.
             let mut pred = alloc::vec![0u16; bw * bh];
+            // Luma geom for directional prediction (ss=0; tx_depth 0 ⇒ tx==block,
+            // row_off=col_off=0). filt_type is consulted only when edge_filter is
+            // set, and the gate (`bd10_tree_supported`) admits directional leaves
+            // ONLY when edge_filter is false — so 0 is inert here.
+            let geom = crate::leaf_funnel::UnitGeom {
+                mi_row: y >> 2,
+                mi_col: x >> 2,
+                bw_px: bw,
+                bh_px: bh,
+                ss: 0,
+                frame_w,
+                frame_h,
+            };
             crate::leaf_funnel::predict_unit_hbd(
                 recon10,
                 stride,
@@ -3483,6 +3516,9 @@ fn bd10_reencode_node(
                 d.intra_mode,
                 d.angle_delta,
                 d.filter_intra_mode,
+                &geom,
+                edge_filter,
+                0,
                 &mut pred,
                 bd,
             );
@@ -3511,7 +3547,20 @@ fn bd10_reencode_node(
             );
             // Overwrite the coded LUMA levels with the 10-bit result. The walk
             // re-derives the scan-order eob + skip from these coeffs.
-            d.qcoeffs = out.qcoeff;
+            //
+            // `out.qcoeff` is the TIGHT (32-capped) packed txb at stride pw; the
+            // entropy walk (pipeline.rs `tx_depth==0` arm) — like the u8
+            // `funnel_block_decision` (partition.rs) — expects `d.qcoeffs` as a
+            // full w*h raster at stride w, from which it re-packs the low-freq
+            // quadrant. Re-expand so 64-dim transforms (pw<w) don't read past
+            // the tight buffer (was: a 64x64 DC leaf at high qindex panicked in
+            // the walk's stride-w pack).
+            let (pw, ph) = (bw.min(32), bh.min(32));
+            let mut full = alloc::vec![0i32; bw * bh];
+            for r in 0..ph {
+                full[r * bw..r * bw + pw].copy_from_slice(&out.qcoeff[r * pw..r * pw + pw]);
+            }
+            d.qcoeffs = full;
             d.eob = out.eob;
             // Write the 10-bit recon back for neighbour prediction of the next
             // block in decode order.
@@ -3556,6 +3605,9 @@ fn bd10_reencode_node(
                     rdoq_level,
                     lambda,
                     rates,
+                    edge_filter,
+                    frame_w,
+                    frame_h,
                     bd,
                 );
             }

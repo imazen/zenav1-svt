@@ -1079,6 +1079,227 @@ pub fn dr_predict<S: Fn(usize, usize) -> u8>(
     );
 }
 
+/// High-bit-depth (u16) twin of [`dr_predict`] for the bd10 MD re-encode path
+/// (task #94 follow-up). Byte-for-byte the same geometry / availability /
+/// edge-array construction (all bit-depth-INDEPENDENT — see `dr_predict`),
+/// swapping: the flat-fill defaults `{129,127,128}` for their bd-general forms
+/// `{base+1, base-1, base}` with `base = 128 << (bd-8)` (C
+/// `build_intra_predictors_high`, enc_intra_prediction.c:261-374); the u8 edge
+/// filter / corner / upsample / dr kernels for the hbd siblings
+/// (`svtav1_dsp::hbd::{filter_intra_edge_high, filter_intra_edge_corner_high,
+/// upsample_intra_edge_high, dr_predictor_edged_hbd}`, all FFI-verified). The
+/// filter-strength / use-upsample predicates take only dims+angle+filt_type, so
+/// the u8 `ip::` versions are reused unchanged. ADDITIVE — the u8 `dr_predict`
+/// is untouched, so the bd8 bitstream is byte-identical.
+#[allow(clippy::too_many_arguments)]
+pub fn dr_predict_hbd<S: Fn(usize, usize) -> u16>(
+    sample: S,
+    g: &DrGeom,
+    p_angle: i32,
+    edge_filter: bool,
+    filt_type: i32,
+    partition: PartitionType,
+    dst: &mut [u16],
+    bd: u8,
+) {
+    use svtav1_dsp::hbd as hp;
+    use svtav1_dsp::intra_pred as ip;
+    debug_assert!(g.frame_w % 8 == 0 && g.frame_h % 8 == 0);
+    let base: i32 = 128 << (bd - 8);
+    let mi_cols = 2 * ((g.frame_w + 7) >> 3);
+    let mi_rows = 2 * ((g.frame_h + 7) >> 3);
+    let txwpx = g.txw as i64;
+    let txhpx = g.txh as i64;
+    let wpx = (g.bw_px >> g.ss) as i64;
+    let hpx = (g.bh_px >> g.ss) as i64;
+    let x_off = (g.col_off * 4) as i64;
+    let y_off = (g.row_off * 4) as i64;
+
+    let have_top = g.row_off > 0 || g.mi_row > 0;
+    let have_left = g.col_off > 0 || g.mi_col > 0;
+
+    let xr = (((mi_cols * 4) as i64 - (g.mi_col * 4) as i64 - g.bw_px as i64) >> g.ss)
+        + (wpx - x_off - txwpx);
+    let yd = (((mi_rows * 4) as i64 - (g.mi_row * 4) as i64 - g.bh_px as i64) >> g.ss)
+        + (hpx - y_off - txhpx);
+
+    let txw_mi = g.txw / 4;
+    let txh_mi = g.txh / 4;
+    let right_available = g.mi_col + ((g.col_off + txw_mi) << g.ss) < mi_cols;
+    let bottom_available = yd > 0 && g.mi_row + ((g.row_off + txh_mi) << g.ss) < mi_rows;
+
+    let shape_ok = is_av1_block_shape(g.bw_px, g.bh_px);
+    let have_top_right = shape_ok
+        && has_top_right(
+            16, g.bw_px, g.bh_px, g.mi_row, g.mi_col, have_top, right_available, partition, txw_mi,
+            g.row_off, g.col_off, g.ss, g.ss,
+        );
+    let have_bottom_left = shape_ok
+        && has_bottom_left(
+            16, g.bw_px, g.bh_px, g.mi_row, g.mi_col, bottom_available, have_left, partition,
+            txh_mi, g.row_off, g.col_off, g.ss, g.ss,
+        );
+
+    let n_top_px = if have_top { txwpx.min(xr + txwpx) } else { 0 };
+    let n_topright_px = if have_top_right { txwpx.min(xr) } else { 0 };
+    let n_left_px = if have_left { txhpx.min(yd + txhpx) } else { 0 };
+    let n_bottomleft_px = if have_bottom_left { txhpx.min(yd) } else { 0 };
+
+    let (need_above, need_left) = if p_angle <= 90 {
+        (true, false)
+    } else if p_angle < 180 {
+        (true, true)
+    } else {
+        (false, true)
+    };
+    let need_right = p_angle < 90;
+    let need_bottom = p_angle > 180;
+
+    let above_ref = |i: i64| sample(((g.px as i64) + i) as usize, g.py - 1);
+    let left_ref = |i: i64| sample(g.px - 1, ((g.py as i64) + i) as usize);
+
+    // Early flat exit (build_intra_predictors_high:289-301).
+    if (!need_above && n_left_px == 0) || (!need_left && n_top_px == 0) {
+        let val = if need_left {
+            if n_top_px > 0 { above_ref(0) } else { (base + 1) as u16 }
+        } else if n_left_px > 0 {
+            left_ref(0)
+        } else {
+            (base - 1) as u16
+        };
+        for r in 0..g.txh {
+            dst[r * g.txw..(r + 1) * g.txw].fill(val);
+        }
+        return;
+    }
+
+    let origin = ip::EDGE_ORIGIN;
+    let mut above = [(base - 1) as u16; ip::EDGE_BUF_LEN];
+    let mut left = [(base + 1) as u16; ip::EDGE_BUF_LEN];
+
+    // NEED_LEFT.
+    if need_left {
+        let num_left = (txhpx + if need_bottom { txwpx } else { 0 }) as usize;
+        if n_left_px > 0 {
+            for i in 0..n_left_px {
+                left[origin + i as usize] = left_ref(i);
+            }
+            let mut i = n_left_px as usize;
+            if need_bottom && n_bottomleft_px > 0 {
+                debug_assert_eq!(i as i64, txhpx);
+                while (i as i64) < txhpx + n_bottomleft_px {
+                    left[origin + i] = left_ref(i as i64);
+                    i += 1;
+                }
+            }
+            if i < num_left {
+                let v = left[origin + i - 1];
+                left[origin + i..origin + num_left].fill(v);
+            }
+        } else if n_top_px > 0 {
+            let v = above_ref(0);
+            left[origin..origin + num_left].fill(v);
+        }
+    }
+
+    // NEED_ABOVE.
+    if need_above {
+        let num_top = (txwpx + if need_right { txhpx } else { 0 }) as usize;
+        if n_top_px > 0 {
+            for i in 0..n_top_px {
+                above[origin + i as usize] = above_ref(i);
+            }
+            let mut i = n_top_px as usize;
+            if need_right && n_topright_px > 0 {
+                debug_assert_eq!(i as i64, txwpx);
+                while (i as i64) < txwpx + n_topright_px {
+                    above[origin + i] = above_ref(i as i64);
+                    i += 1;
+                }
+            }
+            if i < num_top {
+                let v = above[origin + i - 1];
+                above[origin + i..origin + num_top].fill(v);
+            }
+        } else if n_left_px > 0 {
+            let v = left_ref(0);
+            above[origin..origin + num_top].fill(v);
+        }
+    }
+
+    // need_above_left (always set for dr modes).
+    let top_left = if n_top_px > 0 && n_left_px > 0 {
+        sample(g.px - 1, g.py - 1)
+    } else if n_top_px > 0 {
+        above_ref(0)
+    } else if n_left_px > 0 {
+        left_ref(0)
+    } else {
+        base as u16
+    };
+    above[origin - 1] = top_left;
+    left[origin - 1] = top_left;
+
+    // dr edge filter + upsample (hbd kernels).
+    let mut upsample_above = false;
+    let mut upsample_left = false;
+    if edge_filter {
+        if p_angle != 90 && p_angle != 180 {
+            let ab_le = 1usize; // need_above_left
+            if need_above && need_left && (txwpx + txhpx >= 24) {
+                hp::filter_intra_edge_corner_high(&mut above, &mut left, origin);
+            }
+            if need_above && n_top_px > 0 {
+                let strength = ip::intra_edge_filter_strength(
+                    txwpx as i32,
+                    txhpx as i32,
+                    p_angle - 90,
+                    filt_type,
+                );
+                let n_px = (n_top_px + ab_le as i64 + if need_right { txhpx } else { 0 }) as usize;
+                hp::filter_intra_edge_high(&mut above, origin - ab_le, n_px, strength);
+            }
+            if need_left && n_left_px > 0 {
+                let strength = ip::intra_edge_filter_strength(
+                    txhpx as i32,
+                    txwpx as i32,
+                    p_angle - 180,
+                    filt_type,
+                );
+                let n_px =
+                    (n_left_px + ab_le as i64 + if need_bottom { txwpx } else { 0 }) as usize;
+                hp::filter_intra_edge_high(&mut left, origin - ab_le, n_px, strength);
+            }
+        }
+        upsample_above =
+            ip::use_intra_edge_upsample(txwpx as i32, txhpx as i32, p_angle - 90, filt_type);
+        if need_above && upsample_above {
+            let n_px = (txwpx + if need_right { txhpx } else { 0 }) as usize;
+            hp::upsample_intra_edge_high(&mut above, origin, n_px, bd);
+        }
+        upsample_left =
+            ip::use_intra_edge_upsample(txhpx as i32, txwpx as i32, p_angle - 180, filt_type);
+        if need_left && upsample_left {
+            let n_px = (txhpx + if need_bottom { txwpx } else { 0 }) as usize;
+            hp::upsample_intra_edge_high(&mut left, origin, n_px, bd);
+        }
+    }
+
+    hp::dr_predictor_edged_hbd(
+        dst,
+        g.txw,
+        &above,
+        &left,
+        origin,
+        upsample_above,
+        upsample_left,
+        g.txw,
+        g.txh,
+        p_angle,
+        bd,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1352,6 +1573,64 @@ mod tests {
                 }
             }
             DirEdges::Flat(_) => panic!("expected edges"),
+        }
+    }
+
+    /// `dr_predict_hbd` at bd=8 MUST reproduce the C-verified u8 `dr_predict`
+    /// byte-for-byte on u8-range content (base = 128, hbd kernels clip to 255).
+    /// This transitively verifies the hbd wrapper's edge-array construction and
+    /// kernel wiring (the only bd10-specific parts are the base±1 constants —
+    /// checked against C `build_intra_predictors_high` — and the bd param to the
+    /// FFI-verified hbd kernels). The bd8 path itself is untouched (additive).
+    #[test]
+    fn dr_predict_hbd_bd8_matches_u8_dr_predict() {
+        let (recon, stride) = test_frame();
+        let recon16: Vec<u16> = recon.iter().map(|&p| p as u16).collect();
+        // Directional angles: D45..D203 (modes 3..=8) and V/H (1,2) with a
+        // nonzero delta — the cases that route through dr_predict.
+        let cases: &[(u8, i8)] = &[
+            (3, 0), (4, 0), (5, 0), (6, 0), (7, 0), (8, 0),
+            (3, 2), (4, -2), (5, 3), (6, -3), (7, 1), (8, -1),
+            (1, 1), (1, -2), (2, 2), (2, -3),
+        ];
+        // Interior, top-edge, left-edge and corner positions × square sizes.
+        let blocks: &[(usize, usize, usize, usize)] = &[
+            (64, 64, 32, 32), (72, 68, 8, 8), (80, 80, 16, 16),
+            (96, 0, 16, 16), (0, 96, 16, 16), (0, 0, 8, 8),
+            (64, 0, 32, 32), (0, 64, 32, 32), (16, 48, 16, 16),
+        ];
+        for &(px, py, txw, txh) in blocks {
+            for &(mode, delta) in cases {
+                let p_angle = MODE_TO_ANGLE_MAP[mode as usize] + delta as i32 * 3;
+                let g = DrGeom {
+                    px, py, txw, txh,
+                    mi_row: py >> 2, mi_col: px >> 2,
+                    bw_px: txw, bh_px: txh,
+                    row_off: 0, col_off: 0, ss: 0,
+                    frame_w: 128, frame_h: 128,
+                };
+                for &edge_filter in &[false, true] {
+                    for &filt_type in &[0i32, 1] {
+                        let mut d8 = alloc::vec![0u8; txw * txh];
+                        dr_predict(
+                            |x, y| recon[y * stride + x],
+                            &g, p_angle, edge_filter, filt_type, P_NONE, &mut d8,
+                        );
+                        let mut d16 = alloc::vec![0u16; txw * txh];
+                        dr_predict_hbd(
+                            |x, y| recon16[y * stride + x],
+                            &g, p_angle, edge_filter, filt_type, P_NONE, &mut d16, 8,
+                        );
+                        for (i, (&a, &b)) in d8.iter().zip(d16.iter()).enumerate() {
+                            assert_eq!(
+                                a as u16, b,
+                                "mismatch px{px} py{py} {txw}x{txh} mode{mode} d{delta} \
+                                 ef{edge_filter} ft{filt_type} idx{i}"
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
 }

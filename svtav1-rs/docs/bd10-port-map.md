@@ -134,6 +134,64 @@ plan below is SUPERSEDED for the coded-levels path (the additive re-encode is th
 maintainable shape that landed); it may still guide a future full-u16 recon/filter
 pass if one proves necessary for the follow-ups.
 
+**FOLLOW-UPS LANDED (2026-07-18, this session) — non-flat gate 2/2 -> 8/8.** Four
+additive, bd10-gated pieces (bd8 byte-unchanged: identity_matrix 54/54, bd10 uniform
+36/36):
+- **`quant::quantize_b_hbd`** (rdoq level 0): C `svt_aom_highbd_quantize_b_c`
+  (full_loop.c:85) — [`quantize_b`] minus the INT16 clamp (same clamp-is-bd8-only class
+  as the fp fix; the `idx_arr` prescan is outcome-identical to the contiguous one). Wired
+  into `tx_unit_hbd`'s do_rdoq==false branch (was calling the buggy u8 `quantize_b`).
+- **64-dim qcoeff re-expansion** in `bd10_reencode_node`: `tx_unit_hbd` returns the tight
+  pw-stride packed txb; the entropy walk (like u8 `funnel_block_decision`) expects
+  `d.qcoeffs` as a full w*h stride-w raster. Was a PANIC on a TX_64X64 leaf at high
+  qindex (q55). Now re-expands, mirroring the u8 path.
+- **`hbd::predict_filter_intra_hbd`** (filter-intra): wired into `predict_unit_hbd`'s fi
+  arm (above[0]=top_left via extract_neighbors_hbd, base=512 corner fallback). Gate widened
+  (dropped the `fi == FI_NONE` restriction).
+- **`intra_edge::dr_predict_hbd`** (directional): u16 twin of `dr_predict` — same
+  geometry/availability/edge-array construction, flat-fill `{129,127,128}` -> `{base+1,
+  base-1,base}` (base=128<<(bd-8), C `build_intra_predictors_high` enc_intra_prediction.c
+  :261-374), hbd edge-filter/corner/upsample/dr kernels. Wired into `predict_unit_hbd`'s
+  directional arm with the same DrGeom as u8. Gate widened to admit directional leaves when
+  the SH edge filter is OFF (the re-encode passes filt_type=0 — valid only then; edge_filter
+  is now threaded through `bd10_reencode_luma`/`_node`/`bd10_tree_supported` from
+  `FunnelCfg::for_preset(preset).edge_filter`). VERIFIED: `dr_predict_hbd(bd=8)` byte-matches
+  the C-verified u8 `dr_predict` across modes/sizes/positions/edge-filter (new
+  `intra_edge::tests::dr_predict_hbd_bd8_matches_u8_dr_predict`); the base constants are
+  checked vs C source and the hbd kernels are FFI-verified.
+
+New byte-exact cells (`tools/bd10_nonflat_gate.sh`): `gradient 64x64 q55 {p3,p6,p10,p13}` +
+`gradient 128x128 q55 {p10,p13}` (all non-flat: total_eob 521/1476; rdoq levels 1/2/3).
+
+**MEASURED — the gradient non-flat sweep is dominated by TWO blockers OUTSIDE the four
+follow-ups (op-traced, `tools/identity_diff.py`):**
+1. **The u8 tree is NOT bit-depth-scale-invariant at low qindex / 128px.** e.g. `gradient
+   64x64 q20 p10`: C's bd10 tree keeps a 32x32 PARTITION_NONE where the u8 (bd8) tree
+   SPLITs to 16x16 — a **partition-symbol** divergence (identical CDF, different coded
+   symbol), not a level bug. The re-encode reuses the u8 decisions, so it structurally
+   CANNOT fix these — they need a true bd10 MD pass (the generic-Pixel refactor). Affects
+   q20 (all) and most 128px cells.
+2. **bd10 CDEF-search + Wiener-LR post-filter divergence at M0..M6.** e.g. `gradient 64x64
+   q40 p6`: after filter-intra, the TILE PAYLOAD byte-matches (264B==264B) — the ONLY
+   divergence is the Wiener LR taps; `gradient 128x128 q55 p3`: the FH `cdef_y_pri_strength`
+   differs (C=8, port=12). These are the unported bd10 dependencies of `cdef_search_still`
+   /`finish_cdef_rd` (u16 recon MSE + bd10 lambda) and the Wiener tap search — NOT prediction
+   /quant. High-qindex (q55) cells converge (why q55 p3/p6 64x64 match); q40/mid-q diverge.
+
+**Directional is NOT exercised by `gradient`** (it selects DC-family only: modes {0,1,2,9,
+10,12}, angle_delta 0). Added a `diag` content generator (identity_run.rs, constant along
+r-c) that DOES pick D45/D135/D67 at M3 — but M3 has the CDEF/LR bd10 divergence above, so
+`diag` cells don't byte-match yet (the divergence is CDEF/LR, tile sizes equal). Directional
+is therefore verified by the bd8-equivalence unit test, not e2e.
+
+**STILL-open re-encode follow-ups (unchanged priority order): tx_depth>0** (every gradient
+cell that needs it — e.g. `128x128 q40 p6` — is also M0..M6 CDEF/LR-blocked, so it would
+widen the envelope but not grow the gate on this content); **directional WITH edge_filter on**
+(M5 — needs the live per-block `get_filt_type` smooth-neighbour derivation in the re-encode
+walk); **the u16 chroma path**; **native (non-`<<2`) u16 ingestion**. The bigger unlock for
+real bd10 content is the **CDEF-search / Wiener-LR bd10** dependencies and a **true bd10 MD**
+(scale-variant decisions) — both OUTSIDE the coded-levels re-encode.
+
 **(historical) NEXT bd10 chunk = the u16 MD path for NON-FLAT content (the big one).** Uniform
 works because every block is skip (no residual); any content with a coded
 residual needs the precision-sensitive u16 MD. MEASURED (2026-07-18): gradient

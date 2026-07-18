@@ -202,7 +202,14 @@ fn main() {
                 y[r * w + c] = match content {
                     "uniform" => 128,
                     "gradient" => (((r * 255) / h) as u8) ^ (((c * 3) & 0x3f) as u8),
-                    other => panic!("unknown content {other:?} (use uniform|gradient|file:<png>)"),
+                    // Constant along the r-c (down-right) diagonal → strong
+                    // directional correlation, exercises the angled intra modes
+                    // (D45/D135/…) that `gradient` never selects. Used to verify
+                    // the bd10 directional re-encode (dr_predict_hbd).
+                    "diag" => (((r as i32 - c as i32).rem_euclid(64)) * 4) as u8,
+                    other => {
+                        panic!("unknown content {other:?} (use uniform|gradient|diag|file:<png>)")
+                    }
                 };
             }
         }

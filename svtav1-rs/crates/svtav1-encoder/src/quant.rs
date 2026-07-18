@@ -323,6 +323,74 @@ pub fn quantize_fp_hbd(
     (eob + 1) as u16
 }
 
+/// C `svt_aom_highbd_quantize_b_c` non-QM branch (full_loop.c:85-136) — the
+/// bd>8 dead-zone (b) quantize used by the RDOQ level-0 path
+/// (`av1_quantize_b_facade` routes bd>8 to `svt_aom_highbd_quantize_b`).
+/// IDENTICAL to [`quantize_b`] EXCEPT it does NOT clamp `abs_coeff + round` to
+/// INT16 — the SAME bd8-only clamp (C `svt_aom_quantize_b_c` full_loop.c:67)
+/// that [`quantize_fp_hbd`] drops for the FP path. C's highbd variant collects
+/// the non-dead-zone scan indices into `idx_arr` rather than a contiguous
+/// `non_zero_count` prefix, but the two are OUTCOME-identical: every index in
+/// `idx_arr` lies in `[0, non_zero_count)` (all trailing coeffs are dead-zone,
+/// which is exactly the break condition), and within that prefix the inner
+/// `abs_coeff >= zbin` test selects the same set — so the contiguous prescan
+/// (matching the port's [`quantize_b`]) yields the same qcoeff/dqcoeff/eob. The
+/// no-QM `wt = 1<<AOM_QM_BITS` folds out identically to the bd8 path. Additive:
+/// the bd8 [`quantize_b`] is untouched; only the bd10 re-encode `tx_unit_hbd`
+/// rdoq-level-0 branch calls this (task #94 follow-up).
+pub fn quantize_b_hbd(
+    coeffs: &[i32],
+    scan: &[u16],
+    t: &QuantTable,
+    log_scale: i32,
+    qcoeff: &mut [i32],
+    dqcoeff: &mut [i32],
+) -> u16 {
+    let n_coeffs = scan.len();
+    let zbins = [
+        (t.zbin[0] + ((1 << log_scale) >> 1)) >> log_scale,
+        (t.zbin[1] + ((1 << log_scale) >> 1)) >> log_scale,
+    ];
+    qcoeff[..coeffs.len()].fill(0);
+    dqcoeff[..coeffs.len()].fill(0);
+
+    // Pre-scan pass: find the last scan position outside the zbin dead zone.
+    let mut non_zero_count = n_coeffs;
+    for i in (0..n_coeffs).rev() {
+        let rc = scan[i] as usize;
+        let coeff = coeffs[rc];
+        let iz = usize::from(rc != 0);
+        if coeff < zbins[iz] && coeff > -zbins[iz] {
+            non_zero_count -= 1;
+        } else {
+            break;
+        }
+    }
+
+    let mut eob: i64 = -1;
+    for i in 0..non_zero_count {
+        let rc = scan[i] as usize;
+        let coeff = coeffs[rc];
+        let iz = usize::from(rc != 0);
+        let coeff_sign: i32 = if coeff < 0 { -1 } else { 0 };
+        let abs_coeff = (coeff ^ coeff_sign) - coeff_sign;
+        if abs_coeff >= zbins[iz] {
+            let round = (t.round[iz] + ((1 << log_scale) >> 1)) >> log_scale;
+            // NO INT16 clamp (highbd path) — C svt_aom_highbd_quantize_b_c:122.
+            let tmp = (abs_coeff + round) as i64;
+            let tmp32 = (((((tmp * t.quant[iz] as i64) >> 16) + tmp) * t.quant_shift[iz] as i64)
+                >> (16 - log_scale)) as i32;
+            qcoeff[rc] = (tmp32 ^ coeff_sign) - coeff_sign;
+            let abs_dq = ((tmp32 as i64 * t.dequant[iz] as i64) >> log_scale) as i32;
+            dqcoeff[rc] = (abs_dq ^ coeff_sign) - coeff_sign;
+            if tmp32 != 0 {
+                eob = i as i64;
+            }
+        }
+    }
+    (eob + 1) as u16
+}
+
 // ---------------------------------------------------------------------------
 // Default-CDF coefficient cost tables (svt_aom_estimate_coefficients_rate)
 // ---------------------------------------------------------------------------
