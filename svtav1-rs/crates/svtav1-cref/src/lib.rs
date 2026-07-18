@@ -2392,3 +2392,89 @@ pub fn calc_indices_dim1(data: &[i32], centroids: &[i32], indices: &mut [u8], k:
     assert!(centroids.len() >= k);
     unsafe { svt_av1_calc_indices_dim1_c(data.as_ptr(), centroids.as_ptr(), indices.as_mut_ptr(), n as i32, k as i32) }
 }
+
+// ---- High-bit-depth intra predictors (intra_prediction.c sized macro) ----
+
+unsafe extern "C" {
+    fn ref_highbd_intra_pred(
+        mode: i32,
+        dst: *mut u16,
+        stride: isize,
+        above: *const u16,
+        left: *const u16,
+        top_left: u16,
+        w: i32,
+        h: i32,
+        bd: i32,
+    );
+}
+
+/// Which reference high-bit-depth intra predictor to run (the sized
+/// `svt_aom_highbd_*_predictor_WxH_c` family, intra_prediction.c:1602).
+///
+/// C splits DC into four distinct wrappers; the port folds them into a single
+/// `hbd::predict_dc_hbd` with a `(has_above, has_left)` flag pair, so these
+/// four variants map onto that pair (documented per variant).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HbdIntraPred {
+    /// `highbd_dc_predictor` — DC of above+left (`has_above && has_left`).
+    Dc = 0,
+    /// `highbd_dc_top_predictor` — DC of above only (`has_above && !has_left`).
+    DcTop = 1,
+    /// `highbd_dc_left_predictor` — DC of left only (`!has_above && has_left`).
+    DcLeft = 2,
+    /// `highbd_dc_128_predictor` — `128 << (bd - 8)` (`!has_above && !has_left`).
+    Dc128 = 3,
+    /// `highbd_v_predictor` — replicate the above row down every column.
+    V = 4,
+    /// `highbd_h_predictor` — replicate the left column across every row.
+    H = 5,
+    /// `highbd_paeth_predictor` — nearest of {left, above, top-left}.
+    Paeth = 6,
+    /// `highbd_smooth_predictor` — bilinear H+V smooth blend.
+    Smooth = 7,
+    /// `highbd_smooth_v_predictor` — vertical smooth blend.
+    SmoothV = 8,
+    /// `highbd_smooth_h_predictor` — horizontal smooth blend.
+    SmoothH = 9,
+}
+
+/// Run the reference C high-bit-depth intra predictor into a fresh
+/// `dst_stride`-strided block of `height` rows, returned as a
+/// `height * dst_stride` buffer (only the first `width` columns of each row are
+/// written, matching both C and the port's `hbd::predict_*_hbd` output layout).
+///
+/// `above` holds the `width` samples of the row above the block, `left` holds
+/// the `height` samples of the column to its left, and `top_left` is the corner
+/// sample (`above[-1]` in C, read only by [`HbdIntraPred::Paeth`]). `bd` is the
+/// bit depth in {8, 10, 12}.
+#[allow(clippy::too_many_arguments)]
+pub fn highbd_intra_pred(
+    mode: HbdIntraPred,
+    dst_stride: usize,
+    above: &[u16],
+    left: &[u16],
+    top_left: u16,
+    width: usize,
+    height: usize,
+    bd: i32,
+) -> Vec<u16> {
+    assert!(above.len() >= width, "above must hold width samples");
+    assert!(left.len() >= height, "left must hold height samples");
+    assert!(dst_stride >= width, "dst_stride must be >= width");
+    let mut dst = vec![0u16; height * dst_stride];
+    unsafe {
+        ref_highbd_intra_pred(
+            mode as i32,
+            dst.as_mut_ptr(),
+            dst_stride as isize,
+            above.as_ptr(),
+            left.as_ptr(),
+            top_left,
+            width as i32,
+            height as i32,
+            bd,
+        );
+    }
+    dst
+}

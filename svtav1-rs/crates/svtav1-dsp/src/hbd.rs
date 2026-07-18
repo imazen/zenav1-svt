@@ -1,11 +1,11 @@
 //! 10-bit (bd10) DSP kernel layer — bulk source translation (task #94).
 //!
-//! **UNWIRED.** This module is NOT referenced by `lib.rs` (no `pub mod
-//! hbd;` line exists there) and is never compiled as part of the crate.
-//! Wiring is the first step of the integration session that picks this up:
-//! add `pub mod hbd;` to `crates/svtav1-dsp/src/lib.rs`, then run the FFI
-//! parity + bd10 uniform-64 verification described below before anything
-//! calls into this file from production code.
+//! COMPILED (wired at `lib.rs`), FFI-PARITY-VERIFIED, but NOT YET CALLED from
+//! production: the kernels below (quant tables, loop filters, distortion/
+//! variance/SAD, intra predictors) are pinned bit-for-bit against real C at
+//! bd10+bd12 by the `c_parity_*_hbd` / `c_parity_bd10_quant` suites, but no
+//! production path invokes them yet — the pipeline is still u8 end-to-end
+//! (the u16 plumbing is the bd10 wiring pass, docs/bd10-port-map.md).
 //!
 //! Translated per `docs/bd10-port-map.md` (the spec — plain `u16` pixel
 //! planes everywhere; the C 8+2 unpacked-plane split is an *input ingestion
@@ -153,8 +153,12 @@ pub fn highbd_clip_pixel_add(dest: u16, trans: i64, bd: u8) -> u16 {
 // `predict_v` / `predict_h` / `predict_paeth` / `predict_smooth{,_v,_h}`'s
 // combined-arm / per-mode shapes.
 //
-// PORT-NOTE(unverified) on every function below: verify vs FFI parity once
-// wired (see module doc verification plan).
+// FFI-VERIFIED: tests/c_parity_intra_pred_hbd.rs pins the whole predictor
+// family below (predict_{v,h,paeth,dc,smooth,smooth_v,smooth_h}_hbd) against
+// the real exported sized svt_aom_highbd_*_predictor_WxH_c wrappers over 10
+// modes x 19 sizes x bd{10,12} (DC's 4 above/left cases included), plus a
+// non-vacuous known-answer guard. The two flagged risk spots BOTH match C:
+// the Paeth left-first tie-break and the DC128 128<<(bd-8) shift.
 // =============================================================================
 
 /// C `highbd_v_predictor` (intra_prediction.c:1202-1210). `bd` unused (C:

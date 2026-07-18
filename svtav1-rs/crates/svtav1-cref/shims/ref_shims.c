@@ -1229,3 +1229,94 @@ void ref_noise_normalization(const int16_t dequant_dc, const int16_t dequant_ac,
     svt_av1_perform_noise_normalization(
         &p, &qp, (TranLow*)coeff, qcoeff, dqcoeff, (TxSize)tx_size, (TxType)tx_type, eob, &g_nn_pcs);
 }
+
+/* ===========================================================================
+ * High-bit-depth intra predictors (intra_prediction.c sized macro, :1602).
+ *
+ * The port's hbd::predict_*_hbd family (svtav1-dsp/src/hbd.rs) is the
+ * differential target. C exposes one sized wrapper per (mode, W, H):
+ *   svt_aom_highbd_<mode>_predictor_<W>x<H>_c(dst, stride, above, left, bd)
+ * all declared in common_dsp_rtcd.h (already included transitively via
+ * cabac_context_model.h at the top of this file). `mode` dispatch:
+ *   0 dc      (DC of above+left; port has_above=1 has_left=1)
+ *   1 dc_top  (DC of above only; port has_above=1 has_left=0)
+ *   2 dc_left (DC of left only;  port has_above=0 has_left=1)
+ *   3 dc_128  (128<<(bd-8);      port has_above=0 has_left=0)
+ *   4 v  5 h  6 paeth  7 smooth  8 smooth_v  9 smooth_h
+ *
+ * highbd_v_predictor dereferences svt_memcpy (an RTCD function pointer, NULL
+ * until svt_aom_setup_common_rtcd_internal runs) -> ref_rtcd_once() first. The
+ * other kernels use the static-inline svt_aom_memset16 and need no init.
+ * paeth reads above[-1] as its top-left corner: the shim takes `top_left`
+ * explicitly (matching the port's separate arg) and stages a corner-prefixed
+ * above row so C sees above[-1] == top_left. `above` holds W samples, `left`
+ * holds H samples, `dst` is `stride`-strided with >= H rows.
+ * =========================================================================== */
+
+/* One sized-wrapper case per (W,H); pastes the mode token into the C name. */
+#define HBD_IPRED_CASE(TYPE, W, H)                                                     \
+    case (W) * 1000 + (H):                                                             \
+        svt_aom_highbd_##TYPE##_predictor_##W##x##H##_c(dst, stride, above, left, bd); \
+        break;
+
+/* The 19 sizes the sized macro instantiates (5 square + 14 rectangular). */
+#define HBD_IPRED_ALL_SIZES(TYPE)                                                          \
+    HBD_IPRED_CASE(TYPE, 4, 4) HBD_IPRED_CASE(TYPE, 8, 8) HBD_IPRED_CASE(TYPE, 16, 16)      \
+    HBD_IPRED_CASE(TYPE, 32, 32) HBD_IPRED_CASE(TYPE, 64, 64)                               \
+    HBD_IPRED_CASE(TYPE, 4, 8) HBD_IPRED_CASE(TYPE, 4, 16) HBD_IPRED_CASE(TYPE, 8, 4)       \
+    HBD_IPRED_CASE(TYPE, 8, 16) HBD_IPRED_CASE(TYPE, 8, 32) HBD_IPRED_CASE(TYPE, 16, 4)     \
+    HBD_IPRED_CASE(TYPE, 16, 8) HBD_IPRED_CASE(TYPE, 16, 32) HBD_IPRED_CASE(TYPE, 16, 64)   \
+    HBD_IPRED_CASE(TYPE, 32, 8) HBD_IPRED_CASE(TYPE, 32, 16) HBD_IPRED_CASE(TYPE, 32, 64)   \
+    HBD_IPRED_CASE(TYPE, 64, 16) HBD_IPRED_CASE(TYPE, 64, 32)
+
+#define DEF_HBD_IPRED(FNNAME, TYPE)                                             \
+    static void FNNAME(uint16_t* dst, ptrdiff_t stride, const uint16_t* above,  \
+                       const uint16_t* left, int32_t bd, int32_t w, int32_t h) {\
+        switch (w * 1000 + h) {                                                 \
+            HBD_IPRED_ALL_SIZES(TYPE)                                           \
+        default: break;                                                         \
+        }                                                                       \
+    }
+
+DEF_HBD_IPRED(ref_hbd_ipred_dc, dc)
+DEF_HBD_IPRED(ref_hbd_ipred_dc_top, dc_top)
+DEF_HBD_IPRED(ref_hbd_ipred_dc_left, dc_left)
+DEF_HBD_IPRED(ref_hbd_ipred_dc_128, dc_128)
+DEF_HBD_IPRED(ref_hbd_ipred_v, v)
+DEF_HBD_IPRED(ref_hbd_ipred_h, h)
+DEF_HBD_IPRED(ref_hbd_ipred_paeth, paeth)
+DEF_HBD_IPRED(ref_hbd_ipred_smooth, smooth)
+DEF_HBD_IPRED(ref_hbd_ipred_smooth_v, smooth_v)
+DEF_HBD_IPRED(ref_hbd_ipred_smooth_h, smooth_h)
+
+#undef DEF_HBD_IPRED
+#undef HBD_IPRED_ALL_SIZES
+#undef HBD_IPRED_CASE
+
+void ref_highbd_intra_pred(int32_t mode, uint16_t* dst, ptrdiff_t stride, const uint16_t* above,
+                           const uint16_t* left, uint16_t top_left, int32_t w, int32_t h, int32_t bd) {
+    ref_rtcd_once(); /* highbd_v_predictor dereferences svt_memcpy */
+    switch (mode) {
+    case 0: ref_hbd_ipred_dc(dst, stride, above, left, bd, w, h); break;
+    case 1: ref_hbd_ipred_dc_top(dst, stride, above, left, bd, w, h); break;
+    case 2: ref_hbd_ipred_dc_left(dst, stride, above, left, bd, w, h); break;
+    case 3: ref_hbd_ipred_dc_128(dst, stride, above, left, bd, w, h); break;
+    case 4: ref_hbd_ipred_v(dst, stride, above, left, bd, w, h); break;
+    case 5: ref_hbd_ipred_h(dst, stride, above, left, bd, w, h); break;
+    case 6: {
+        /* paeth: C reads above[-1] as the top-left; stage a corner-prefixed
+           row (w <= 64, so 65 entries cover corner + every above sample). */
+        uint16_t corner_above[65];
+        corner_above[0] = top_left;
+        for (int32_t i = 0; i < w; i++) {
+            corner_above[i + 1] = above[i];
+        }
+        ref_hbd_ipred_paeth(dst, stride, corner_above + 1, left, bd, w, h);
+        break;
+    }
+    case 7: ref_hbd_ipred_smooth(dst, stride, above, left, bd, w, h); break;
+    case 8: ref_hbd_ipred_smooth_v(dst, stride, above, left, bd, w, h); break;
+    case 9: ref_hbd_ipred_smooth_h(dst, stride, above, left, bd, w, h); break;
+    default: break;
+    }
+}
