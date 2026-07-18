@@ -45,6 +45,22 @@ pub fn inv_txfm2d_dispatch(
     tx_size: TxSize,
     tx_type: TxType,
 ) -> bool {
+    inv_txfm2d_dispatch_bd(input, output, stride, tx_size, tx_type, 8)
+}
+
+/// Bit-depth-aware [`inv_txfm2d_dispatch`] for the bd10 u16 MD path (task #94).
+/// `bd == 8` is byte-identical to [`inv_txfm2d_dispatch`]; `bd == 10` widens
+/// the inverse-transform row-pass clamp/stage range (see
+/// `inv_txfm::inv_txfm2d_c_exact_bd`). Coefficients (i32) are otherwise
+/// bit-depth-independent — the caller clips the recon ADD to `bd` separately.
+pub fn inv_txfm2d_dispatch_bd(
+    input: &[TranLow],
+    output: &mut [TranLow],
+    stride: usize,
+    tx_size: TxSize,
+    tx_type: TxType,
+    bd: u8,
+) -> bool {
     let (col_1d, row_1d) = tx_type_to_1d(tx_type);
     let (w, h) = tx_size_dims(tx_size);
     let (ud_flip, lr_flip) = flip_cfg(tx_type);
@@ -60,12 +76,12 @@ pub fn inv_txfm2d_dispatch(
                 mod_input[r * w + c] = input[r * stride + c];
             }
         }
-        inv_txfm2d_c_exact(
-            &mod_input, w, output, stride, w, h, row_1d, col_1d, ud_flip, lr_flip,
+        inv_txfm2d_c_exact_bd(
+            &mod_input, w, output, stride, w, h, row_1d, col_1d, ud_flip, lr_flip, bd,
         )
     } else {
-        inv_txfm2d_c_exact(
-            input, stride, output, stride, w, h, row_1d, col_1d, ud_flip, lr_flip,
+        inv_txfm2d_c_exact_bd(
+            input, stride, output, stride, w, h, row_1d, col_1d, ud_flip, lr_flip, bd,
         )
     }
 }

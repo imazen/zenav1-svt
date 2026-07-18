@@ -300,6 +300,88 @@ pub(crate) fn extract_neighbors_tiled(
     (above, left, top_left, has_above, has_left)
 }
 
+/// High-bit-depth (u16) mirror of [`extract_neighbors`] for the bd10 u16 MD
+/// path (task #94). Identical neighbour-availability + edge-extend rules; the
+/// only bit-depth dependence is the C `build_intra_predictors_high` fallback
+/// fills — `base = 128 << (bd - 8)` (512 at bd10), so a missing above row with
+/// no left is `base - 1` (511) and a missing left column with no above is
+/// `base + 1` (513), top-left-neither is `base` (512). At bd == 8 this reduces
+/// to the exact 127/129/128 the u8 path uses (verified in tests), so the u8
+/// path is untouched. `tile_top == 0` (single tile row) matches the funnel's
+/// current scope.
+pub(crate) fn extract_neighbors_hbd(
+    recon: &[u16],
+    stride: usize,
+    abs_x: usize,
+    abs_y: usize,
+    width: usize,
+    height: usize,
+    bd: u8,
+) -> (alloc::vec::Vec<u16>, alloc::vec::Vec<u16>, u16, bool, bool) {
+    let base: u16 = 128u16 << (bd - 8);
+    let has_above = abs_y > 0;
+    let has_left = abs_x > 0;
+
+    let left_ref0 = if has_left {
+        recon.get(abs_y * stride + abs_x - 1).copied()
+    } else {
+        None
+    };
+    let above_ref0 = if has_above {
+        recon.get((abs_y - 1) * stride + abs_x).copied()
+    } else {
+        None
+    };
+
+    let above: alloc::vec::Vec<u16> = if has_above {
+        let row = abs_y - 1;
+        let mut v = alloc::vec::Vec::with_capacity(width);
+        let mut last = above_ref0.unwrap_or(base - 1);
+        for i in 0..width {
+            let x = abs_x + i;
+            let idx = row * stride + x;
+            if x < stride && idx < recon.len() {
+                last = recon[idx];
+            }
+            v.push(last);
+        }
+        v
+    } else {
+        alloc::vec![left_ref0.unwrap_or(base - 1); width]
+    };
+
+    let left: alloc::vec::Vec<u16> = if has_left {
+        let col = abs_x - 1;
+        let mut v = alloc::vec::Vec::with_capacity(height);
+        let mut last = left_ref0.unwrap_or(base + 1);
+        for i in 0..height {
+            let idx = (abs_y + i) * stride + col;
+            if idx < recon.len() {
+                last = recon[idx];
+            }
+            v.push(last);
+        }
+        v
+    } else {
+        alloc::vec![above_ref0.unwrap_or(base + 1); height]
+    };
+
+    let top_left = if has_above && has_left {
+        recon
+            .get((abs_y - 1) * stride + abs_x - 1)
+            .copied()
+            .unwrap_or(base)
+    } else if has_above {
+        above_ref0.unwrap_or(base)
+    } else if has_left {
+        left_ref0.unwrap_or(base)
+    } else {
+        base
+    };
+
+    (above, left, top_left, has_above, has_left)
+}
+
 /// Save a rectangular region of the reconstruction buffer.
 fn save_region(
     recon: &[u8],

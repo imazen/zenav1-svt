@@ -278,6 +278,37 @@ pub(crate) fn kf_full_lambda_8bit_tuned(
     lambda
 }
 
+/// KF full MD lambda at bd10 (C `full_lambda_md[1]`, md_process.c:725-759),
+/// mainline still/allintra path. Task #94 (the u16 MD path): the bd10 lambda
+/// is NOT `kf_full_lambda_8bit * 16` — the rdmult base is computed from the
+/// bit-depth-specific DC quant and a different frame-type factor:
+/// - `q = svt_aom_dc_quant_qtx(qindex, 0, 10)` = `dc_qlookup_10` (rc_process.c:366),
+/// - `rdmult = (3.3 + 0.0015*q) * q * q`, then `ROUND_POWER_OF_TWO(rdmult, 4)`
+///   for bd10 (rc_process.c:382),
+/// - frame-type factor `rd_frame_type_factor[1][KF_UPDATE] = 128` at bd!=8
+///   (rc_process.c:417 — a no-op ×128>>7, vs the 150 real scaling at bd8),
+/// - then the same `lambda_weight` ladder and `full_lambda_md[1] *= 16`
+///   (md_process.c:753). Intra-scaling (temporal_layer>0) and scale_factor
+///   (128) are no-ops on the KF still path — same as the bd8 builder.
+pub(crate) fn kf_full_lambda_bd10(qindex: u8, cli_qp: u32) -> u32 {
+    let q = crate::bd10::dc_qlookup_10(qindex) as i64;
+    let mut rdmult = ((3.3 + 0.0015 * q as f64) * q as f64 * q as f64) as i64;
+    rdmult = (rdmult + 8) >> 4; // ROUND_POWER_OF_TWO(_, 4) — bd10
+    rdmult = (rdmult * 128) >> 7; // rd_frame_type_factor[1][KF_UPDATE] = 128
+    let mut lambda = rdmult as u32;
+    let lambda_weight: u32 = if cli_qp >= 56 {
+        175
+    } else if cli_qp >= 16 {
+        150
+    } else {
+        0
+    };
+    if lambda_weight != 0 {
+        lambda = ((lambda as u64 * lambda_weight as u64) >> 7) as u32;
+    }
+    lambda * 16 // md_process.c:753 — full_lambda_md[1] *= 16 (2^(2*(10-8)))
+}
+
 // ---------------------------------------------------------------------------
 // Depth-set cap + PD0-level detector
 // ---------------------------------------------------------------------------

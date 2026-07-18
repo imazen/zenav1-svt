@@ -791,6 +791,42 @@ impl EncodePipeline {
             }
         }
 
+        // Step 4c: bd10 LUMA re-encode (task #94, the u16 MD path). The u8
+        // funnel above produced C's partition/mode/tx decisions (RD is
+        // ~16x-scale-invariant for `sample << 2` content); this pass recomputes
+        // the bit-depth-SENSITIVE coded luma levels + 10-bit recon at true
+        // 10-bit (Q10 tables + bd10 lambda), mutating the per-SB trees in place
+        // so the (unchanged) entropy walk codes the 10-bit levels. bd8 skips
+        // this entirely. HARNESS SCOPE: the port receives the u8 (MSB-shifted)
+        // content, so the true 10-bit source is `u8 << 2` — exactly the u16
+        // .yuv the C reference encodes at bd10 (identity_run writes both from
+        // one gradient). Native u16 (non-<<2) ingestion is a follow-up.
+        if self.bit_depth == 10 {
+            if let Some(cq) = c_quant.as_ref() {
+                let shift = (self.bit_depth - 8) as u32;
+                let src10: alloc::vec::Vec<u16> =
+                    encode_input.iter().map(|&s| (s as u16) << shift).collect();
+                // bd10 full MD lambda (C full_lambda_md[1], md_process.c:725-759):
+                // computed from the bd10 rdmult base (dc_qlookup_10 + ROUND_
+                // POWER_OF_TWO(,4) + frame-type-factor 128 + the *16), NOT a
+                // ×16 of the bd8 lambda — see kf_full_lambda_bd10.
+                let lambda_bd10 =
+                    u64::from(crate::pd0::kf_full_lambda_bd10(base_qindex, tpl_adjusted_qp as u32));
+                bd10_reencode_luma(
+                    &mut all_trees,
+                    sb_cols,
+                    sb_size,
+                    w,
+                    h,
+                    &src10,
+                    base_qindex,
+                    cq.rdoq_level,
+                    lambda_bd10,
+                    self.bit_depth,
+                );
+            }
+        }
+
         // Step 5: Post-reconstruction filters.
         //
         // Deblocking is SIGNALED and applied decoder-exactly further down
@@ -3310,6 +3346,175 @@ fn encode_partition_tree(
                         );
                     }
                 }
+            }
+        }
+    }
+}
+
+/// bd10 LUMA re-encode pass (task #94) — the "M4+ bypass_encdec re-predict
+/// dance" (docs/bd10-port-map.md §5). The u8 MD funnel already produced the
+/// partition / mode / tx DECISIONS; because RD is ~16x-scale-invariant between
+/// bd8 and bd10 for `sample << 2` content (dist scales 16x, lambda x16, rate
+/// bit-depth-independent), those decisions coincide with C's true-10-bit MD.
+/// This pass recomputes ONLY the bit-depth-sensitive coded LUMA levels + the
+/// 10-bit recon that feeds neighbour prediction, mutating each leaf's
+/// `BlockDecision` in place; the (unchanged) entropy walk then codes the
+/// 10-bit levels. bd8 never calls this, so the bd8 bitstream is untouched.
+///
+/// SCOPE (first bd10 cell = gradient 64x64 preset13): DC leaves, tx_depth 0.
+/// Chroma is left untouched — the harness chroma is uniform (u=v=128), whose
+/// DC residual is 0 at every bit depth, so `chroma_dec` stays skip=correct.
+/// Directional / filter-intra / tx_depth>0 panic loudly (predict_unit_hbd /
+/// the assert here) rather than emit wrong pixels — an obvious follow-up.
+#[allow(clippy::too_many_arguments)]
+fn bd10_reencode_luma(
+    all_trees: &mut [crate::partition::PartitionTree],
+    sb_cols: usize,
+    sb_size: usize,
+    w: usize,
+    h: usize,
+    src10: &[u16],
+    base_qindex: u8,
+    rdoq_level: u8,
+    lambda_bd10: u64,
+    bd: u8,
+) {
+    let fc = svtav1_entropy::context::FrameContext::new_default();
+    let cfc = svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex);
+    let rates = crate::leaf_funnel::build_md_rates(&fc, &cfc);
+    let qt = crate::quant::build_quant_table_bd(base_qindex, bd);
+    let mut recon10 = alloc::vec![0u16; w * h];
+    for (sb_idx, tree) in all_trees.iter_mut().enumerate() {
+        let sb_col = sb_idx % sb_cols;
+        let sb_row = sb_idx / sb_cols;
+        bd10_reencode_node(
+            tree,
+            sb_col * sb_size,
+            sb_row * sb_size,
+            &mut recon10,
+            w,
+            src10,
+            &qt,
+            rdoq_level,
+            lambda_bd10,
+            &rates,
+            bd,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn bd10_reencode_node(
+    tree: &mut crate::partition::PartitionTree,
+    x: usize,
+    y: usize,
+    recon10: &mut [u16],
+    stride: usize,
+    src10: &[u16],
+    qt: &crate::quant::QuantTable,
+    rdoq_level: u8,
+    lambda: u64,
+    rates: &crate::leaf_funnel::MdRates,
+    bd: u8,
+) {
+    use crate::partition::PartitionTree as Tr;
+    use crate::partition::PartitionType as PT;
+    match tree {
+        Tr::Leaf(d) => {
+            let bw = d.width as usize;
+            let bh = d.height as usize;
+            assert_eq!(
+                d.tx_depth, 0,
+                "bd10 reencode: tx_depth {} not yet ported (DC-only first cell)",
+                d.tx_depth
+            );
+            // Predict luma at 10-bit from the running 10-bit recon plane.
+            let mut pred = alloc::vec![0u16; bw * bh];
+            crate::leaf_funnel::predict_unit_hbd(
+                recon10,
+                stride,
+                x,
+                y,
+                bw,
+                bh,
+                d.intra_mode,
+                d.angle_delta,
+                d.filter_intra_mode,
+                &mut pred,
+                bd,
+            );
+            let src_off = y * stride + x;
+            // RDOQ contexts are 0/0 at eff-M9 (rate_est_level 0).
+            let out = crate::leaf_funnel::tx_unit_hbd(
+                src10,
+                stride,
+                src_off,
+                &pred,
+                bw,
+                0,
+                bw,
+                bh,
+                d.tx_type as usize,
+                0, // luma plane
+                0, // txb_skip_ctx
+                0, // dc_sign_ctx
+                qt,
+                rdoq_level,
+                lambda,
+                0, // sharpness
+                rates,
+                rdoq_level != 0,
+                bd,
+            );
+            // Overwrite the coded LUMA levels with the 10-bit result. The walk
+            // re-derives the scan-order eob + skip from these coeffs.
+            d.qcoeffs = out.qcoeff;
+            d.eob = out.eob;
+            // Write the 10-bit recon back for neighbour prediction of the next
+            // block in decode order.
+            for r in 0..bh {
+                let drow = (y + r) * stride + x;
+                recon10[drow..drow + bw].copy_from_slice(&out.recon[r * bw..(r + 1) * bw]);
+            }
+        }
+        Tr::Split {
+            partition_type,
+            width,
+            height,
+            children,
+        } => {
+            let nw = *width as usize;
+            let nh = *height as usize;
+            let hw = nw / 2;
+            let hh = nh / 2;
+            let qw = nw / 4;
+            let qh = nh / 4;
+            let offs: alloc::vec::Vec<(usize, usize)> = match (*partition_type, children.len()) {
+                (PT::Split, 4) => alloc::vec![(0, 0), (hw, 0), (0, hh), (hw, hh)],
+                (PT::Horz, 2) => alloc::vec![(0, 0), (0, hh)],
+                (PT::Vert, 2) => alloc::vec![(0, 0), (hw, 0)],
+                (PT::HorzA, 3) => alloc::vec![(0, 0), (hw, 0), (0, hh)],
+                (PT::HorzB, 3) => alloc::vec![(0, 0), (0, hh), (hw, hh)],
+                (PT::VertA, 3) => alloc::vec![(0, 0), (0, hh), (hw, 0)],
+                (PT::VertB, 3) => alloc::vec![(0, 0), (hw, 0), (hw, hh)],
+                (PT::Horz4, 4) => alloc::vec![(0, 0), (0, qh), (0, 2 * qh), (0, 3 * qh)],
+                (PT::Vert4, 4) => alloc::vec![(0, 0), (qw, 0), (2 * qw, 0), (3 * qw, 0)],
+                other => panic!("bd10 reencode: unsupported partition {other:?}"),
+            };
+            for (child, (dx, dy)) in children.iter_mut().zip(offs) {
+                bd10_reencode_node(
+                    child,
+                    x + dx,
+                    y + dy,
+                    recon10,
+                    stride,
+                    src10,
+                    qt,
+                    rdoq_level,
+                    lambda,
+                    rates,
+                    bd,
+                );
             }
         }
     }

@@ -1615,6 +1615,216 @@ fn energy_region(coeffs: &[i32], stride: usize, w: usize, h: usize) -> u64 {
     e
 }
 
+// ===========================================================================
+// bd10 u16 MD path (task #94): high-bit-depth mirrors of the intra-block
+// chain. ADDITIVE — the u8 predict_unit / tx_unit above are untouched, so the
+// bd8 path is byte-identical. These run only from the bd10 re-encode pass
+// (pipeline.rs), gated on bit_depth == 10.
+// ===========================================================================
+
+/// u16 mirror of [`predict_unit`] for the bd10 MD path. Uses the C-verified
+/// hbd predictor kernels (`svtav1_dsp::hbd`) and [`crate::partition::
+/// extract_neighbors_hbd`]. Directional / filter-intra modes are not yet
+/// ported here (the first bd10 cell — gradient 64x64 preset13 — resolves to
+/// DC-only leaves); they panic LOUDLY rather than predict wrong pixels, so a
+/// future non-DC bd10 cell is an obvious follow-up, never a silent corruption.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn predict_unit_hbd(
+    recon: &[u16],
+    stride: usize,
+    abs_x: usize,
+    abs_y: usize,
+    w: usize,
+    h: usize,
+    mode: u8,
+    delta: i8,
+    fi_mode: u8,
+    dst: &mut [u16],
+    bd: u8,
+) {
+    use svtav1_dsp::hbd as hp;
+    // Directional: modes D45..D203 (3..=8) OR V/H with a nonzero angle delta.
+    if matches!(mode, 3..=8) || (matches!(mode, 1 | 2) && delta != 0) {
+        unimplemented!(
+            "bd10 directional intra (mode {mode}, delta {delta}) not yet ported — the first \
+             bd10 cell is DC-only; add dr_predict_hbd for angled bd10 content (task #94 follow-up)"
+        );
+    }
+    let (above, left, top_left, has_above, has_left) =
+        crate::partition::extract_neighbors_hbd(recon, stride, abs_x, abs_y, w, h, bd);
+    if fi_mode != FI_NONE {
+        unimplemented!(
+            "bd10 filter-intra (fi_mode {fi_mode}) not yet ported — DC-only first bd10 cell \
+             (task #94 follow-up: wire predict_filter_intra_hbd)"
+        );
+    }
+    match mode {
+        0 => hp::predict_dc_hbd(dst, w, &above, &left, w, h, has_above, has_left, bd),
+        1 => hp::predict_v_hbd(dst, w, &above, w, h),
+        2 => hp::predict_h_hbd(dst, w, &left, w, h),
+        9 => hp::predict_smooth_hbd(dst, w, &above, &left, w, h),
+        10 => hp::predict_smooth_v_hbd(dst, w, &above, &left, w, h),
+        11 => hp::predict_smooth_h_hbd(dst, w, &above, &left, w, h),
+        12 => hp::predict_paeth_hbd(dst, w, &above, &left, top_left, w, h),
+        m => unreachable!("funnel bd10 mode {m}"),
+    }
+}
+
+/// u16 mirror of [`TxUnitOut`] — recon in the 10-bit domain.
+pub(crate) struct TxUnitOutHbd {
+    pub eob: u16,
+    /// Packed (32-capped) quantized levels — the CODED levels.
+    pub qcoeff: Vec<i32>,
+    /// Reconstructed pixels (w x h raster, 10-bit).
+    pub recon: Vec<u16>,
+    /// `(dc_sign << 6) | min(cul_level, 63)` neighbor byte.
+    pub cul: u8,
+}
+
+/// u16 / bd10 mirror of the level-producing core of [`tx_unit`]: 10-bit
+/// residual -> forward TX -> Q10 quantize (+ optional RDOQ) -> 10-bit recon.
+///
+/// The forward/inverse transforms are bit-depth-INDEPENDENT (i32 coeffs) and
+/// the quantize/RDOQ kernels are table-driven, so this reuses them verbatim;
+/// only the residual (u16 src/pred), the quant table (`qt` = the bd10 row),
+/// and the recon-add clip (`clip_pixel_highbd(bd)`) are bit-depth-specific.
+/// RD distortion / tx-bias / ac-bias / noise-norm / QM are NOT computed here:
+/// the re-encode pass reuses the u8 path's decisions, so only the coded LEVELS
+/// + the 10-bit recon (for neighbour prediction) are needed. `txb_skip_ctx` /
+/// `dc_sign_ctx` are the RDOQ contexts (0/0 at eff-M9, rate_est_level 0).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn tx_unit_hbd(
+    src: &[u16],
+    src_stride: usize,
+    src_off: usize,
+    pred: &[u16],
+    pred_stride: usize,
+    pred_off: usize,
+    w: usize,
+    h: usize,
+    tx_type: usize,
+    plane_type: usize,
+    txb_skip_ctx: usize,
+    dc_sign_ctx: usize,
+    qt: &QuantTable,
+    rdoq_level: u8,
+    lambda: u64,
+    sharpness: i8,
+    rates: &MdRates,
+    do_rdoq: bool,
+    bd: u8,
+) -> TxUnitOutHbd {
+    let n = w * h;
+    let c_tx = cc::tx_size_from_dims(w, h);
+    let rs_tx_type = TX_TYPE_FROM_C[tx_type];
+
+    let mut residual = vec![0i32; n];
+    for r in 0..h {
+        let srow = src_off + r * src_stride;
+        let prow = pred_off + r * pred_stride;
+        for c in 0..w {
+            residual[r * w + c] = src[srow + c] as i32 - pred[prow + c] as i32;
+        }
+    }
+    let mut coeffs = vec![0i32; n];
+    let ok = svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
+        &residual,
+        &mut coeffs,
+        w,
+        rs_tx_size(w, h),
+        rs_tx_type,
+    );
+    debug_assert!(ok, "bd10 fwd txfm {w}x{h} type {tx_type}");
+
+    // 64-dim fold (svt_handle_transform64x64): keep the 32-capped low-freq
+    // quadrant packed at the adjusted stride, exactly like tx_unit.
+    let (pw, ph) = (w.min(32), h.min(32));
+    let packed = if w > 32 || h > 32 {
+        let mut v = vec![0i32; pw * ph];
+        for r in 0..ph {
+            v[r * pw..(r + 1) * pw].copy_from_slice(&coeffs[r * w..r * w + pw]);
+        }
+        v
+    } else {
+        coeffs.clone()
+    };
+
+    let scan = svtav1_entropy::scan_tables::scan(
+        c_tx,
+        svtav1_entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type] as usize,
+    );
+    let log_scale = TX_SCALE_TAB[c_tx];
+    let mut qcoeff = vec![0i32; pw * ph];
+    let mut dqcoeff = vec![0i32; pw * ph];
+    let eob = if do_rdoq {
+        let mut e =
+            crate::quant::quantize_fp(&packed, scan, qt, log_scale, &mut qcoeff, &mut dqcoeff);
+        if e != 0 {
+            let (cut_off_num, cut_off_denum) = crate::quant::rdoq_cutoffs(rdoq_level);
+            let tx_class = cc::TX_TYPE_TO_CLASS[tx_type];
+            let o = crate::quant::OptimizeCtx {
+                txb_costs: rates.coeff.txb(cc::txsize_entropy_ctx(c_tx), plane_type),
+                eob_costs: &rates.coeff.eob[cc::TXSIZE_LOG2_MINUS4[c_tx]][plane_type],
+                rdmult: crate::quant::rdoq_rdmult_full(
+                    lambda as u32,
+                    plane_type,
+                    sharpness,
+                    false,
+                    false,
+                ),
+                sharpness_flag: false,
+                iwt: None,
+                tx_size: c_tx,
+                tx_class,
+                txb_skip_ctx,
+                dc_sign_ctx,
+                cut_off_num,
+                cut_off_denum,
+            };
+            crate::quant::optimize_b(&packed, &mut qcoeff, &mut dqcoeff, &mut e, scan, qt, &o);
+        }
+        e
+    } else {
+        crate::quant::quantize_b(&packed, scan, qt, log_scale, &mut qcoeff, &mut dqcoeff)
+    };
+
+    // 10-bit reconstruction (pred + inverse residual, clipped to [0, 2^bd-1]).
+    let mut recon = vec![0u16; n];
+    if eob > 0 {
+        let mut dq_full = vec![0i32; n];
+        for r in 0..ph {
+            dq_full[r * w..r * w + pw].copy_from_slice(&dqcoeff[r * pw..(r + 1) * pw]);
+        }
+        let mut inv = vec![0i32; n];
+        let ok = svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch_bd(
+            &dq_full,
+            &mut inv,
+            w,
+            rs_tx_size(w, h),
+            rs_tx_type,
+            bd,
+        );
+        debug_assert!(ok, "bd10 inv txfm {w}x{h} type {tx_type}");
+        let maxv = (1i32 << bd) - 1;
+        for r in 0..h {
+            let prow = pred_off + r * pred_stride;
+            for c in 0..w {
+                recon[r * w + c] = (pred[prow + c] as i32 + inv[r * w + c]).clamp(0, maxv) as u16;
+            }
+        }
+    } else {
+        for r in 0..h {
+            let prow = pred_off + r * pred_stride;
+            for c in 0..w {
+                recon[r * w + c] = pred[prow + c];
+            }
+        }
+    }
+
+    let cul = compute_cul_level(scan, &qcoeff, eob);
+    TxUnitOutHbd { eob, qcoeff, recon, cul }
+}
+
 use crate::quant::TX_SCALE_TAB;
 
 /// C TxType index -> Rust TxType (identical numbering).

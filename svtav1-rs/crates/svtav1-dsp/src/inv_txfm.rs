@@ -38,22 +38,34 @@ fn clamp_buf(buf: &mut [i32], bit: i8) {
     }
 }
 
-// Fixed bd=8 composition constants, all from the C reference:
-// - row-pass input clamp: bd + 8 = 16 bits (inv_txfm2d_add_c)
-// - col-pass input clamp: max(bd + 6, 16) = 16 bits
-// - per-stage kernel range: svt_av1_gen_inv_stage_range gives 16 for every
-//   stage of every kernel at bd = 8 (inv_transforms.c:43-85)
-const BD8_ROW_CLAMP: i8 = 16;
-const BD8_COL_CLAMP: i8 = 16;
-const BD8_STAGE_RANGE: i8 = 16;
+// The bd-dependent inverse-transform composition ranges are computed by
+// `inv_txfm_ranges(bd)` (bd8 -> 16/16, bd10 -> 18/16); the residual wraplow
+// by `highbd_wraplow(_, bd)`. Both reduce to the former fixed bd=8 constants
+// (row/col clamp 16, stage range 16, wraplow 34595) at bd == 8, so the bd8
+// path is byte-identical. C: `svt_av1_gen_inv_stage_range` +
+// `svt_av1_inv_txfm2d_add_c` row/col clamps (inv_transforms.c:43-85).
 
-/// C `HIGHBD_WRAPLOW(x, 8)` = `check_range(x, 8)` (inv_transforms.c:2426):
-/// clamp the residual to +/-(2^15 - 1 + 1828), the AV1 8-bit coefficient
-/// range including maximum quantization error.
+/// C `HIGHBD_WRAPLOW(x, bd)` = `check_range(x, bd)` (inv_transforms.c:2426):
+/// clamp to `+/-((1<<(7+bd))-1 + (914<<(bd-7)))`. At `bd == 8` this is
+/// `+/-34595` (the AV1 8-bit coefficient range incl. max quant error), so the
+/// bd8 path is unaffected. Task #94 (bd10 u16 MD path).
 #[inline]
-fn highbd_wraplow_bd8(trans: i32) -> i32 {
-    const INT_MAX8: i32 = (1 << 15) - 1 + (914 << 1);
-    trans.clamp(-INT_MAX8 - 1, INT_MAX8)
+fn highbd_wraplow(trans: i32, bd: u8) -> i32 {
+    let int_max = (1i32 << (7 + bd)) - 1 + (914i32 << (bd - 7));
+    trans.clamp(-int_max - 1, int_max)
+}
+
+/// Per-direction clamp/stage-range bit widths at `bd`
+/// (`svt_av1_gen_inv_stage_range` + the row/col input clamps
+/// `bd+8` / `AOMMAX(bd+6,16)`, inv_transforms.c:43-84 + the 2d-add clamps).
+/// Row uses `bd+8` (16/18/20 at bd 8/10/12), col uses `max(bd+6,16)`
+/// (16/16/18) — for both the input clamp AND the kernel stage range in that
+/// direction. At bd8 both are 16, matching the fixed BD8 constants.
+#[inline]
+fn inv_txfm_ranges(bd: u8) -> (i8, i8) {
+    let row = (bd as i32 + 8) as i8;
+    let col = core::cmp::max(bd as i32 + 6, 16) as i8;
+    (row, col)
 }
 
 // =============================================================================
@@ -1810,7 +1822,11 @@ fn inv_txfm2d_core(
     shift: [i8; 2],
     ud_flip: bool,
     lr_flip: bool,
+    bd: u8,
 ) {
+    // bd-dependent clamp/stage ranges (bd8 -> 16/16, byte-identical to the
+    // former BD8_* constants; bd10 -> row 18 / col 16).
+    let (row_range, col_range) = inv_txfm_ranges(bd);
     let mut buf = vec![0i32; w * h];
     let nmax = w.max(h);
     let mut temp_in = vec![0i32; nmax];
@@ -1832,8 +1848,8 @@ fn inv_txfm2d_core(
                 temp_in[c] = input[r * input_stride + c];
             }
         }
-        clamp_buf(&mut temp_in[..w], BD8_ROW_CLAMP);
-        row_func(&temp_in[..w], &mut buf[r * w..(r + 1) * w], BD8_STAGE_RANGE);
+        clamp_buf(&mut temp_in[..w], row_range);
+        row_func(&temp_in[..w], &mut buf[r * w..(r + 1) * w], row_range);
         round_shift_array(&mut buf[r * w..(r + 1) * w], -(shift[0] as i32));
     }
 
@@ -1849,17 +1865,17 @@ fn inv_txfm2d_core(
                 temp_in[r] = buf[r * w + (w - c - 1)];
             }
         }
-        clamp_buf(&mut temp_in[..h], BD8_COL_CLAMP);
-        col_func(&temp_in[..h], &mut temp_out[..h], BD8_STAGE_RANGE);
+        clamp_buf(&mut temp_in[..h], col_range);
+        col_func(&temp_in[..h], &mut temp_out[..h], col_range);
         round_shift_array(&mut temp_out[..h], -(shift[1] as i32));
         if !ud_flip {
             for r in 0..h {
-                output[r * out_stride + c] = highbd_wraplow_bd8(temp_out[r]);
+                output[r * out_stride + c] = highbd_wraplow(temp_out[r], bd);
             }
         } else {
             // flip upside down
             for r in 0..h {
-                output[r * out_stride + c] = highbd_wraplow_bd8(temp_out[h - r - 1]);
+                output[r * out_stride + c] = highbd_wraplow(temp_out[h - r - 1], bd);
             }
         }
     }
@@ -1903,6 +1919,30 @@ pub fn inv_txfm2d_c_exact(
     ud_flip: bool,
     lr_flip: bool,
 ) -> bool {
+    inv_txfm2d_c_exact_bd(
+        input, input_stride, output, out_stride, w, h, row_1d, col_1d, ud_flip, lr_flip, 8,
+    )
+}
+
+/// Bit-depth-aware [`inv_txfm2d_c_exact`] for the bd10 u16 MD path (task #94).
+/// At `bd == 8` byte-identical to `inv_txfm2d_c_exact`; at bd10 the row-pass
+/// clamp/stage range widens to 18 bits (col stays 16) per
+/// `svt_av1_gen_inv_stage_range`, so high-magnitude bd10 coefficients are not
+/// over-clamped. Transforms are otherwise bit-depth-independent.
+#[allow(clippy::too_many_arguments)]
+pub fn inv_txfm2d_c_exact_bd(
+    input: &[TranLow],
+    input_stride: usize,
+    output: &mut [TranLow],
+    out_stride: usize,
+    w: usize,
+    h: usize,
+    row_1d: u8,
+    col_1d: u8,
+    ud_flip: bool,
+    lr_flip: bool,
+    bd: u8,
+) -> bool {
     let row_func = match get_inv_txfm_func(row_1d, w) {
         Some(f) => f,
         None => return false,
@@ -1923,6 +1963,7 @@ pub fn inv_txfm2d_c_exact(
         inv_txfm_shift(w, h),
         ud_flip,
         lr_flip,
+        bd,
     );
     true
 }
