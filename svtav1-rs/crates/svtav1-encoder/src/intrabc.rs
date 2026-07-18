@@ -14,10 +14,9 @@
 //! feed `write_intrabc_info` into the PACK block-mode-info writer ahead of
 //! the y-mode symbol (`entropy_coding.c:5022`, already the position the FH
 //! `allow_intrabc` bit / LF-CDEF-LR skips in `svtav1-entropy/src/obu.rs`
-//! were landed dormant for). This module was compile-checked standalone by
-//! temporarily adding `pub mod intrabc;` to `lib.rs`, running `cargo build
-//! -p svtav1-encoder`, then reverting `lib.rs` — see the porting session's
-//! final report for the exact command and result.
+//! were landed dormant for). `pub mod intrabc;` is permanently wired in
+//! `lib.rs`, so the module compiles with the crate; it is not yet CALLED (the
+//! funnel-injection wiring is #71 IBC, a later chunk).
 //!
 //! House style: pure functions over caller-provided pixel slices / scalars,
 //! no `PictureControlSet`/`ModeDecisionContext` dependency (see

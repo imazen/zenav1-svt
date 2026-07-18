@@ -918,10 +918,12 @@ fn ceil_log2_pal(n: i32) -> i32 {
 /// emits the bits). Transcribed directly rather than shared because
 /// svtav1-entropy cannot depend on svtav1-encoder; keep both in sync by
 /// hand if either changes (cross-referenced in both directions).
-// PORT-NOTE(unverified): exercised only by a self-consistency unit test
-// (`write_delta_encoded_colors_hand_consistency`, below) — no palette
-// candidate has won yet (#71 chunk 3/4 injection), so this never runs
-// end-to-end. Verify: an EPICA/identity cell once injection lands.
+// EXERCISED end-to-end since #71 palette injection landed (leaf_funnel.rs
+// sets `palette: Some(..)`, pipeline.rs writes it) — no longer dead. It runs
+// on the EPICA screen-content cell; that cell does not byte-match C yet
+// (palette over-picking, #71), so this is exercised-but-not-yet-byte-verified.
+// The step sequence is additionally locked by the self-consistency unit test
+// `write_delta_encoded_colors_hand_consistency` below.
 fn write_delta_encoded_colors(w: &mut AomWriter, colors: &[u16], bit_depth: u32, min_val: i32) {
     let num = colors.len();
     if num == 0 {
@@ -967,9 +969,10 @@ fn write_delta_encoded_colors(w: &mut AomWriter, colors: &[u16], bit_depth: u32,
 /// n_in_cache < n` loop guard — then delta-encodes `out_of_cache` (bd8:
 /// `bit_depth = 8`, `min_val = 1`, matching every C call site for the luma
 /// palette).
-// PORT-NOTE(unverified): only reachable via the `Some` arm of
-// `write_palette_mode_info`, which no current leaf takes (see that fn's
-// note). Verify: an EPICA/identity cell once #71 chunk 3/4 injection lands.
+// Reached via the `Some` arm of `write_palette_mode_info`, which a winning
+// palette leaf now takes (#71 injection landed) — exercised on the EPICA
+// screen-content cell, which does not byte-match C yet (over-picking, #71), so
+// exercised-but-not-yet-byte-verified.
 fn write_palette_colors_y(w: &mut AomWriter, n: usize, cache_found: &[bool], out_of_cache: &[u16]) {
     let mut n_in_cache = 0usize;
     for &found in cache_found {
@@ -1005,17 +1008,16 @@ fn write_palette_colors_y(w: &mut AomWriter, n: usize, cache_found: &[bool], out
 ///   `svt_av1_index_color_cache` split (see [`write_palette_colors_y`]).
 ///
 /// This is the generalization of the former `write_no_palette_flags`: the
-/// `None` arm below is EXACTLY that function's old behavior (bit-for-bit),
-/// which is required for stream identity until palette candidates can win
-/// (docs/palette-port-map.md task #71 chunks 3-4 land the search/RD side).
-// PORT-NOTE(unverified): the `Some` arm (y size symbol + colors) is
-// verified only by a same-crate smoke test
-// (`write_palette_mode_info_some_vs_none_arm`, below) — no `BlockDecision`
-// carries `Some(palette)` yet, so this never runs against a real encode.
-// The `None` arm IS verified: `tools/identity_matrix.sh` (24/24) and
-// `tools/real_image_matrix.sh` (byte-identical) both re-ran clean after
-// this generalization landed. Verify the `Some` arm via an EPICA/identity
-// cell once #71 chunk 3/4 injection wires a winning candidate.
+/// `None` arm below is EXACTLY that function's old behavior (bit-for-bit).
+// The `None` arm is byte-verified: `tools/identity_matrix.sh` (54/54) and
+// `tools/real_image_matrix.sh` (byte-identical on photo content) both stay
+// green — non-screen content never takes the `Some` arm. The `Some` arm (y
+// size symbol + colors) NOW runs against a real encode: #71 injection landed,
+// so a winning palette leaf carries `Some(palette)` (leaf_funnel.rs) and this
+// codes it on the EPICA screen-content cell. That cell does not byte-match C
+// yet (palette over-picking, #71), so the `Some` arm is exercised-but-not-yet-
+// byte-verified; the same-crate smoke test
+// `write_palette_mode_info_some_vs_none_arm` locks its shape meanwhile.
 pub fn write_palette_mode_info(
     w: &mut AomWriter,
     fc: &mut FrameContext,
@@ -1202,16 +1204,15 @@ fn palette_map_pixel_ctx(color_map: &[u8], stride: usize, i: usize, j: usize) ->
 /// non-64-aligned right/bottom picture edges); `n` is the palette size
 /// (2..=8).
 ///
-/// PORT-NOTE(unverified): TWO gaps. (1) This whole function only runs from
-/// `write_palette_mode_info`'s `Some` arm, never exercised end-to-end yet
-/// (see that fn's note) — covered here only by the
-/// `write_palette_mode_info_some_vs_none_arm` smoke test. (2) Even once
-/// exercised, this port has no edge-clipped blocks yet (frames are
-/// 64-aligned), so callers always pass `rows`/`cols` equal to the nominal
-/// block height/width — the within-bounds clip itself is untested.
-/// Verification: EPICA/identity cells once #71 chunk 3/4 injection lands
-/// (gap 1), and again once a non-64-aligned frame size exercises a clipped
-/// block (gap 2).
+/// PORT-NOTE(unverified): ONE gap remains. This function runs from
+/// `write_palette_mode_info`'s `Some` arm, which #71 injection now reaches —
+/// it codes the map on the EPICA screen-content cell (that cell does not
+/// byte-match C yet, over-picking #71, so exercised-but-not-yet-byte-verified;
+/// the `write_palette_mode_info_some_vs_none_arm` smoke test locks its shape).
+/// The remaining gap is the within-bounds CLIP: full-SB frames pass `rows`/
+/// `cols` equal to the nominal block dims, so the clip (rows/cols < nominal)
+/// only fires on a partial-SB frame — #95 chunk 2. Verify the clip once a
+/// non-64-aligned cell exercises an edge-clipped palette block.
 pub fn write_palette_map_tokens(
     w: &mut AomWriter,
     fc: &mut FrameContext,
@@ -1681,8 +1682,9 @@ mod tests {
     /// smoke test: a synthetic 4-color 2x2 map must round-trip through the
     /// writer without panicking, and the `Some` arm must code MORE symbols
     /// (hence produce different bytes) than the `None` (no-palette) arm on
-    /// the same block — a cheap sanity net until #71 chunk 3/4 injection
-    /// lets an EPICA identity cell exercise this end-to-end for real.
+    /// the same block — a cheap shape lock. #71 injection now exercises this
+    /// end-to-end on the EPICA cell, which is not yet byte-matched (over-
+    /// picking, #71); this test guards the writer shape independent of that.
     #[test]
     fn write_palette_mode_info_some_vs_none_arm() {
         let mut fc = FrameContext::new_default();

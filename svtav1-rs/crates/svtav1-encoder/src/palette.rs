@@ -1,11 +1,14 @@
-//! Palette pipeline — chunk 1 (pure-math primitives) and chunk 2 (color-map
-//! context / tokenization skeleton) of the port order in
-//! `docs/palette-port-map.md` (task #71). C reference: `Source/Lib/Codec/
-//! palette.c`, `k_means_template.h`, `random.h`, `pic_analysis_process.c` —
-//! the bd8 4:2:0 luma-only palette path (chroma palette is dead in this
-//! encoder: `palette_size[1]` is hard-0 at injection, see the port map
-//! header). Chunks 3-7 (`search_palette_luma`, RD integration, PACK, state
-//! wiring, gates) are NOT implemented here.
+//! Palette pipeline (task #71) — C reference: `Source/Lib/Codec/palette.c`,
+//! `k_means_template.h`, `random.h`, `pic_analysis_process.c`; the bd8 4:2:0
+//! luma-only palette path (chroma palette is dead in this encoder:
+//! `palette_size[1]` is hard-0 at injection, see the port map header).
+//!
+//! Landed here: chunk 1 (pure-math primitives), chunk 2 (color-map context /
+//! tokenization), and chunk 3 ([`search_palette_luma`], dominant + k-means
+//! search with the neighbour-cache centroid snap). RD integration + PACK +
+//! MD-time state wiring live in `leaf_funnel.rs` / `pipeline.rs` and landed
+//! with #71 injection. The remaining #71 work is calibration (screen-content
+//! over-picking), not new palette primitives here.
 //!
 //! FFI-parity coverage (`tests/c_parity_palette.rs`): [`count_colors`],
 //! [`index_color_cache`], [`k_means_dim1`] / [`calc_indices_dim1`] are
@@ -724,11 +727,13 @@ fn palette_rd_y(
 /// Appends up to 14 candidates; rejected sizes reuse their slot exactly
 /// like C's `(*tot_palette_cands)++` gating.
 ///
-/// PORT-NOTE(unverified): verify end-to-end via EPICA p6/p7 identity
-/// cells once RD integration (chunk 4) lands; the dominant-color argmax
-/// tie (first-max => LOWEST pixel value wins) and the integer seed
-/// expression `lb + (2i+1)*(ub-lb)/n/2` (divide by n THEN by 2) are the
-/// two spots a careless transcription would break.
+/// PORT-NOTE(unverified): RD integration (#71 injection) HAS landed, so this
+/// runs end-to-end on the EPICA p6/p7 cells — but those cells do not
+/// byte-match C yet (palette over-picking, #71), so it is exercised-but-not-
+/// yet-byte-verified. The two transcription-fragile spots to re-check when a
+/// cell diverges on palette COLORS: the dominant-color argmax tie (first-max
+/// => LOWEST pixel value wins) and the integer seed expression
+/// `lb + (2i+1)*(ub-lb)/n/2` (divide by n THEN by 2, not by 2n).
 #[allow(clippy::too_many_arguments)]
 pub fn search_palette_luma(
     src: &[u8],
