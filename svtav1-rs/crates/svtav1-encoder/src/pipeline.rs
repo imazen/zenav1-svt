@@ -80,6 +80,11 @@ pub struct EncodePipeline {
     /// `last_recon` when CDEF didn't fire) — evidence aid for CDEF's
     /// before/after contribution.
     pub last_recon_pre_cdef: Option<(Vec<u8>, Vec<u8>, Vec<u8>)>,
+    /// bd10 u16 MD path (task #94): the true-10-bit LUMA recon produced by the
+    /// re-encode pass (`bd10_reencode_luma`), pre-filter, w*h raster. `None` on
+    /// the bd8 path. Diagnostic aid to compare the encoder's internal 10-bit
+    /// recon against the decoder's prefilter output (self-consistency check).
+    pub last_recon10_y: Option<Vec<u16>>,
     /// CDEF evidence counters for the last encoded frame (non-vacuity
     /// reporting: how many pixels the signaled strengths actually touched).
     pub last_cdef_stats: crate::cdef::CdefStats,
@@ -164,6 +169,7 @@ impl EncodePipeline {
             last_recon: None,
             last_recon_unfiltered: None,
             last_recon_pre_cdef: None,
+            last_recon10_y: None,
             last_cdef_stats: crate::cdef::CdefStats::default(),
             last_lr_stats: ([0; 3], 0),
             tile_rows_log2: 0,
@@ -812,7 +818,7 @@ impl EncodePipeline {
                 // ×16 of the bd8 lambda — see kf_full_lambda_bd10.
                 let lambda_bd10 =
                     u64::from(crate::pd0::kf_full_lambda_bd10(base_qindex, tpl_adjusted_qp as u32));
-                bd10_reencode_luma(
+                let recon10 = bd10_reencode_luma(
                     &mut all_trees,
                     sb_cols,
                     sb_size,
@@ -824,6 +830,7 @@ impl EncodePipeline {
                     lambda_bd10,
                     self.bit_depth,
                 );
+                self.last_recon10_y = Some(recon10);
             }
         }
 
@@ -3378,7 +3385,7 @@ fn bd10_reencode_luma(
     rdoq_level: u8,
     lambda_bd10: u64,
     bd: u8,
-) {
+) -> alloc::vec::Vec<u16> {
     let fc = svtav1_entropy::context::FrameContext::new_default();
     let cfc = svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex);
     let rates = crate::leaf_funnel::build_md_rates(&fc, &cfc);
@@ -3401,6 +3408,7 @@ fn bd10_reencode_luma(
             bd,
         );
     }
+    recon10
 }
 
 #[allow(clippy::too_many_arguments)]

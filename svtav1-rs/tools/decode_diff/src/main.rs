@@ -120,6 +120,61 @@ fn main() {
         std::process::exit(if bad { 1 } else { 0 });
     }
 
+    // --r10 <obu> <recon10_le_u16_file>: decode <obu> PREFILTER and compare
+    // its LUMA recon (u16) against a raw u16-LE file (the bd10 encoder's
+    // internal recon10 dump). Used to (a) self-consistency check the encoder's
+    // recon10 vs decode(own OBU), and (b) compare recon10 vs decode(C OBU).
+    // Also `--r10 <obuA> --vs <obuB>` diffs two prefilter LUMA recons directly.
+    if args[1] == "--r10" {
+        let da = std::fs::read(&args[2]).unwrap();
+        let (ta, _, _) = aom_decode::frame::decode_frame_obus_prefilter(&da).unwrap_or_else(|e| {
+            eprintln!("{}: {e}", args[2]);
+            std::process::exit(2);
+        });
+        let (pw, ph, st) = (ta.width, ta.height, ta.stride);
+        let ref_y: Vec<u16> = if args.get(3).map(|s| s.as_str()) == Some("--vs") {
+            let db = std::fs::read(&args[4]).unwrap();
+            let (tb, _, _) =
+                aom_decode::frame::decode_frame_obus_prefilter(&db).unwrap_or_else(|e| {
+                    eprintln!("{}: {e}", args[4]);
+                    std::process::exit(2);
+                });
+            let mut v = vec![0u16; pw * ph];
+            for y in 0..ph {
+                for x in 0..pw {
+                    v[y * pw + x] = tb.recon[y * tb.stride + x];
+                }
+            }
+            v
+        } else {
+            let raw = std::fs::read(&args[3]).unwrap();
+            raw.chunks_exact(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .collect()
+        };
+        let mut n = 0u64;
+        let mut first = None;
+        for y in 0..ph {
+            for x in 0..pw {
+                let d = ta.recon[y * st + x];
+                let r = ref_y[y * pw + x];
+                if d != r {
+                    n += 1;
+                    if first.is_none() {
+                        first = Some((x, y, r, d));
+                    }
+                }
+            }
+        }
+        match first {
+            None => println!("prefilter luma == ref ({pw}x{ph})"),
+            Some((x, y, r, d)) => {
+                println!("{n} luma diffs, first at ({x},{y}) ref={r} decoded={d}")
+            }
+        }
+        std::process::exit(if n == 0 { 0 } else { 1 });
+    }
+
     // --blocks <c.obu> <rs.obu> [mi_row,mi_col]: diff the DECODER'S OWN
     // per-block records (DecodedBlockKf — stream truth, bypassing every
     // encoder-side dump-fidelity question). Without a mi filter: prints

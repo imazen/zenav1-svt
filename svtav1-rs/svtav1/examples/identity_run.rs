@@ -277,6 +277,18 @@ fn main() {
         dump("pre", &pipeline.last_recon_unfiltered);
         dump("post", &pipeline.last_recon_pre_cdef);
     }
+    // bd10 diagnostic: dump the re-encode pass's true-10-bit LUMA recon (u16
+    // LE) for the self-consistency check vs the decoder's prefilter output.
+    if let Ok(path) = std::env::var("SVTAV1_BD10_RECON") {
+        if let Some(r10) = pipeline.last_recon10_y.as_ref() {
+            let mut b = Vec::with_capacity(r10.len() * 2);
+            for &v in r10 {
+                b.extend_from_slice(&v.to_le_bytes());
+            }
+            std::fs::write(&path, &b).expect("write recon10");
+            eprintln!("SVTAV1_BD10_RECON -> {path} ({} u16)", r10.len());
+        }
+    }
     println!(
         "identity_run: {content} {w}x{h} qp={qp} preset={preset} -> {} bytes",
         obu.len()
