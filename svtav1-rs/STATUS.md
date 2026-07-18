@@ -29,8 +29,15 @@ dims a multiple of 64 (dims {57..64} -> a single 64x64 SB, e.g. 60x60).
 | default identity_matrix (64/128 full-SB + 60 arb-dims) | **54/54** |
 
 Partial SBs (aligned NOT a mult of 64: 56x56, 200x200, odd widths) are
-chunk 2 — partition edge-coding (has_rows/has_cols forced splits),
-sb_geom clamp, DLF floor-chroma. Both encode paths assert their scope.
+chunk 2. Byte-neutral groundwork landed (matrix stays 54/54): the frame-edge
+partition PACK coding (spec 5.11.4 `write_partition_edge` + CDF gathers), the
+mono silent-corruption guard (sub-64 mono was emitting undecodable streams),
+and `frame_geom::edge_has_rows_cols` wired as the one edge rule (unit-tested on
+the 96x80 milestone). The remaining core is the SEARCH: partial SBs currently
+fall to the homegrown recursive search (`use_pd0` requires full SBs), not C's
+PD0 path — so a partial SB needs the PD0/funnel path extended to a clamped
+sb_geom extent with edge-forced decisions + cropped-RDO distortion + padded
+b64 variance before it can byte-match. See CLAUDE.md #95.
 
 ## Decode conformance (AV1 reference decoder)
 
@@ -65,6 +72,10 @@ run:
 | Deblocking kernels (`svt_aom_lpf_{h,v}_{4,6,8,14}_c`) + sharpness limits | bit-exact over all (level, sharpness) x content classes (c_parity_lpf) |
 | CDEF kernels (`svt_cdef_filter_block_c` dst8, `svt_cdef_filter_block_8bit_c`, `svt_aom_cdef_find_dir{,_8bit}_c`) | bit-exact over all 64 signalable strengths x damping 2..=6 x dirs x 8x8/4x4 x frame-border sentinel patterns + randomized wide/torture (c_parity_cdef) |
 | CDEF qp-strength picker (`svt_pick_cdef_from_qp` intra branch) | bit-exact for all 256 qindexes vs C float semantics (c_parity_cdef_pick) |
+| **bd10** quant step tables (`svt_aom_dc/ac_quant_qtx` at `EB_TEN_BIT`) | all 256 qindexes DC+AC vs real C (c_parity_bd10_quant) — #94 |
+| **bd10** loop filters (`svt_aom_highbd_lpf_{h,v}_{4,6,8,14}_c`) | bit-exact at bd10+bd12 over all (level, sharpness) x content (c_parity_lpf_hbd) — #94 |
+| **bd10** distortion/variance/SAD (`svt_full_distortion_kernel16_bits_c`, `svt_aom_variance_highbd_c`, `svt_aom_sad_16b_kernel_c`) | bit-exact at bd10+bd12 over 14 block shapes, strided (c_parity_hbd_distortion) — #94 |
+| **bd10** intra predictors (sized `svt_aom_highbd_*_predictor_WxH_c`) | bit-exact at bd10+bd12: 10 modes (DC×4 / V / H / Paeth / Smooth×3) × 19 sizes, 7600 preds (c_parity_intra_pred_hbd) — #94 |
 
 v4.2.0-rc note: upstream refactored the coder internals (borrowed buffer,
 ptr walk) — output verified still byte-identical; `coeff_br_cdf` dropped its
