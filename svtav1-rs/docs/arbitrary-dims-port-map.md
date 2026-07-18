@@ -126,11 +126,40 @@ the entropy walk (C `svt_aom_write_modes_sb` early-return / SPLIT `continue`).
    Panic-free across `{40..192}^2 x qp{20,32,40,55}` preset 6 (400/400); every
    straddle cell decodes under aomdec.
 
+### ODD TRUE DIMS — LANDED (2026-07-18, task #95 goal 1)
+
+Odd -w/-h are now byte-comparable and 11 odd partial-SB cells are gated (26/26
+in `partial_sb_gate.sh`; identity_matrix stays 54/54, bd10 36/36 + 8/8). Two
+changes, both byte-neutral for even/8-aligned dims (ceiling == floor there):
+
+1. **Harness ceiling chroma** (identity_run.rs + capture_c_trace.c): both sides
+   feed CEILING chroma ((w+1)/2) for the flat-chroma synthetic content, matching
+   AV1 4:2:0 + the port's `encode_frame_420` intake. C internally reads FLOOR
+   chroma (luma_width>>1) from the ceiling-strided buffer, inert on flat chroma.
+2. **LR search TRUE dims** (pipeline.rs + restoration.rs): `search_restoration_
+   still` + `write_lr_for_sb`/`corners_in_sb` ran on ALIGNED dims, but C
+   `whole_frame_rect` (restoration.c:51-62) uses TRUE luma / CEILING chroma and
+   reads the recon at the aligned buffer stride while `extend_frame` replicates
+   the TRUE edge (never the aligned padding). The port now extracts tight
+   true/ceil buffers from the aligned-strided recon+source for the search. This
+   fixed the odd-HEIGHT FH `lr_type[0]` divergence (C=WIENER, Rust=NONE) that the
+   7 aligned-padding rows caused.
+
+GATED odd cells: 65x64/65x63/71x64/73x64/81x64 (odd width, right-edge partial),
+73x73 (odd both, aligned 80x80), 63x96/63x48 (odd width + ≥32-tall bottom
+partial), 63x63 (odd both, full SB = odd header + true crop, no partial SB).
+
 REMAINING (diverge, NOT in the gate — all DECODABLE):
-- **65x65 (odd true width)** — blocked at the harness: `identity_run` requires
-  even dims (I420) and `capture_c_trace` reads FLOOR chroma (`w/2`) while the
-  port expects CEILING; reconcile the odd-dim chroma layout, THEN the DLF
-  floor-vs-ceiling-chroma (the map's flagged discrepancy) can be validated.
+- **8-tall-bottom-SB partial-SB PD0 near-tie** (NOT odd-specific; 8-aligned
+  64x72 / 72x64 diverge at some qp too). ROOT (drilled 64x65 q20, mi=(16,8)
+  = pixel (32,64)): C splits the straddling 16x16 bottom-edge node into
+  2×8x8, the port keeps its edge-shape 16x8 — an edge-shape(16x8)-vs-
+  SPLIT(2×8x8) RD near-tie in `pd0::pick`, both candidates FULLY IN-FRAME
+  (no crop involved). x16-31 splits identically in both; only x32-47 tips.
+  The port compares `lvl1_block_cost_rect` (edge shape) vs the recursed
+  split; a small PD0 RD delta flips it. Needs C's exact PD0 RD (product_
+  coding_loop.c) — no PD0 wrap hook exists yet. Affects odd-HEIGHT-with-
+  8-tall-bottom-SB (64x65, 65x65, 65x72, 65x80, 71x63) at some qp.
 - **presets >= 9 (M9 LVL_5/6)** — the edge-shape cost is wired on LVL_1 only;
   96x80 p10/p13 diverge (boundary nodes fall back to the square cost -> split).
 - **straddle-WIN cells** (C keeps a straddling boundary block as a leaf) — the

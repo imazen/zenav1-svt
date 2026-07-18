@@ -16,9 +16,20 @@
 # forced-split, all in one frame). Adding a cell here means it BYTE-MATCHES; do
 # NOT add a cell that diverges or matches only by coincidence.
 #
+# ODD TRUE DIMS (task #95 goal 1): odd -w/-h are now byte-comparable — the
+# harness feeds CEILING chroma ((w+1)/2) on both sides (identity_run +
+# capture_c_trace) and the loop-restoration search runs on the TRUE luma /
+# CEILING chroma extent (whole_frame_rect) reading the aligned-strided recon,
+# which fixed the odd-height FH lr_type divergence. Odd-WIDTH cells (right-edge
+# partial SBs) byte-match robustly across qp; odd full-SB cells (e.g. 63x63)
+# exercise the true-dim seq-header size bits + recon crop with no partial SB.
+# STILL DIVERGENT (a pre-existing partial-SB PD0 near-tie, NOT odd-specific —
+# 8-aligned 64x72 / 72x64 diverge too): the 8-tall bottom partial SB, where a
+# straddling 16x16 node's edge-shape(16x8)-vs-SPLIT(2x8x8) RD tips — so
+# odd-HEIGHT-with-8-tall-bottom-SB (64x65, 65x65, 65x72, 65x80) is a follow-up.
+#
 # Scope: preset 6 (the PD0_LVL_1 fixed-tree path) at bd8 4:2:0. Presets >= 9
-# (LVL_5/6 boundary cost) and the odd-true-width DLF floor-chroma case (65x65)
-# are documented follow-ups.
+# (LVL_5/6 boundary cost) are a documented follow-up.
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 RS_ROOT=$(cd "$HERE/.." && pwd)
@@ -50,6 +61,21 @@ CELLS=(
   "gradient 40 40 40 6"
   "gradient 120 120 32 6"
   "gradient 136 136 40 6"
+  # ODD TRUE DIMS (task #95 goal 1) — CEILING-chroma harness + LR true-dim
+  # search. All cmp-verified byte-identical across qp. Odd width => right-edge
+  # partial SBs coded from odd true dims; odd full-SB (63x63) => true-dim seq
+  # header size bits + recon crop with no partial SB.
+  "gradient 65 64 32 6"    # odd width (a #95 target), aligned 72x64 right-edge
+  "gradient 65 64 20 6"
+  "gradient 65 64 55 6"
+  "gradient 65 63 40 6"    # odd BOTH w+h, aligned 72x64 (right-edge partial)
+  "gradient 71 64 20 6"    # odd width, aligned 72x64
+  "gradient 73 64 32 6"    # odd width, aligned 80x64
+  "gradient 81 64 40 6"    # odd width, aligned 88x64
+  "gradient 73 73 32 6"    # odd BOTH, aligned 80x80 partial
+  "gradient 63 96 32 6"    # odd width + 32-tall bottom partial SB
+  "gradient 63 48 32 6"    # odd width + bottom partial (48-tall single SB)
+  "gradient 63 63 32 6"    # odd BOTH, aligned 64x64 (odd header + true crop, no partial SB)
 )
 for cell in "${CELLS[@]}"; do
   read -r content w h qp p <<<"$cell"
