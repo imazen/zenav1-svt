@@ -30,12 +30,23 @@ dims a multiple of 64 (dims {57..64} -> a single 64x64 SB, e.g. 60x60).
 
 ## Arbitrary dimensions — chunk 2: PARTIAL SBs byte-match (task #95, 2026-07-18)
 
-Partial superblocks (aligned NOT a mult of 64) now byte-match real C.
-`tools/partial_sb_gate.sh` = **15/15**: 96x80 (the milestone, cmp-verified 878B),
-96x64, 96x96, 64x80, 80x96, 200x120, 48x48, 88x56, 72x72, + straddle cells
-48x56, 40x40, 120x120, 136x136 (all preset 6, bd8 4:2:0). Full-SB identity
-matrix stays **54/54** (every change byte-neutral where no SB is incomplete);
-bd10 36/36 + bd10-nonflat 8/8 untouched. Landed pieces:
+Partial superblocks (aligned NOT a mult of 64) AND ODD dimensions now byte-match
+real C. `tools/partial_sb_gate.sh` = **37/37** (preset 6, bd8 4:2:0): the 96x80
+milestone (cmp-verified 878B) + full/straddle cells + **11 odd-dim cells** (65x64,
+64x65, ...) + 6 bottom-edge/8-aligned-partial + 5 straddle-win. Full-SB identity
+matrix stays **54/54**; bd10 36/36 + bd10-nonflat 8/8 untouched. Verified
+PANIC-FREE incl. odd dims (484 cells dims×qp, all decodable). Landed pieces:
+- **ODD dims** — harness ceiling chroma `(w+1)/2` both sides; LR true-dim search
+  (`search_restoration_still`/`write_lr_for_sb` on TRUE luma / CEILING chroma,
+  fixing the odd-height FH `lr_type` WIENER-vs-NONE divergence).
+- **PD0 boundary-node cost fix** (the high-leverage root, `pd0.rs` +
+  `context::partition_alike_split_cost`) — TWO real bugs pinned by a new
+  `SVT_PD0COST` C `--wrap` interposer (harness, env-gated, C tree pristine):
+  (1) rectangular tx-type rate returned 0 for non-square edge shapes (748 bits
+  too cheap) — fixed via `TXSIZE_SQR_MAP`; (2) boundary split used the
+  full-alphabet rate instead of C's binary `partition_{vert,horz}_alike` (cross-
+  named). Unlocked all single-edge partial + the straddle-win cells at q≤32.
+
 - **SB-extent padded variance** — `encode_input` padded TRUE->sb_ext
   (`frame_geom::pad_input_plane`, edge replication) at the sb_ext stride, so
   `compute_b64_variance`'s unclamped 64x64 walk reads C's replicated border.
