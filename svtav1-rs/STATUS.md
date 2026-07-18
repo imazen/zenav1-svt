@@ -54,7 +54,22 @@ decode under **aomdec**:
 | 700/700 chroma-420 streams decode | **PASS** (new 2026-07-13; opt-in `with_chroma_420`) |
 
 The old rav1d-based "decode PASS" claims were leniency artifacts; aomdec is
-the gate now.
+the gate now. **2026-07-18: the 4:2:0 gate gained palette-forcing `stripes`
+content (1575/1575) after fixing a palette `filter_intra` desync (a0b505b4f)
+that had held CI red — see CLAUDE.md.**
+
+## 10-bit (bd10) encode — uniform, ALL presets (task #94, 2026-07-18)
+
+`tools/bd10_matrix.sh` (also a CI gate): uniform {64,128} x qp{20,40,55} x
+preset{0,2,3,6,10,13} encodes byte-identical to real aomenc at bit depth 10
+(**36/36**) and decode under aomdec. Harness: `capture_c_trace <..> 10` (packed
+u16 LE) + `identity_run SVTAV1_BD=10` + the pipeline's `with_bit_depth`. Two
+chunks landed: the first cell (uniform, aa89a83be — the port stays u8 because
+flat->skip makes the tile bit-depth-independent) and the M6+ LF-level-from-Q
+bd10 derivation (be1ea0770). The 5 bd10 DSP kernel families are FFI-verified
+(see the differential-suites table). NEXT: the u16 MD path for NON-flat content
+(coded residuals are precision-sensitive) — the large hot-path pass; PD0 stays
+u8 on the MSB-truncated plane. See docs/bd10-port-map.md.
 
 ## Bit-exact-vs-C differential suites (svtav1-cref harness)
 
