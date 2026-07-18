@@ -34,12 +34,19 @@
 # are byte-neutral for full SBs and for LVL_1 presets 0-6. A representative p9/
 # p10/p13 slice is gated in the last block below.
 #
+# PRESETS 7 & 8 also byte-match now: they share the LVL_1 PD0 fixed tree but
+# have NSQ geom DISABLED (enc_mode > M6), so a one-false boundary node FORCE-
+# SPLITS (no edge shape) exactly like presets >= 9 — the nsq_enabled gate in
+# pd0::pick extends the presets >= 9 force-split to the LVL_1 presets 7/8.
+#
 # STILL DIVERGENT: aligned-72x72 BOTH-partial cells (65x65 / 65x72 / 65x80) at
 # PRESET 6 ONLY hit a separate full-PD1 intra MODE near-tie (V_PRED vs DC at a
-# bottom-SB 16x8 leaf) — they byte-match at p9+ (lighter PD1). That p6 near-tie
-# is the remaining follow-up.
+# bottom-SB 16x8 leaf) — they byte-match at p7/p8 (lighter PD1) and p9+. That p6
+# near-tie is the remaining follow-up; a few high-qp q55 straddle/multi-SB cells
+# at p7/p8 hit the same near-tie class and are not gated.
 #
-# Scope: bd8 4:2:0. preset 6 (PD0_LVL_1 fixed tree) + presets 9/10/13 (LPD0).
+# Scope: bd8 4:2:0. preset 6 (PD0_LVL_1 fixed tree) + presets 7/8 (LVL_1, NSQ
+# disabled) + presets 9/10/13 (LPD0).
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 RS_ROOT=$(cd "$HERE/.." && pwd)
@@ -136,6 +143,46 @@ CELLS=(
   "gradient 65 65 32 13"
   "gradient 104 80 40 10"  # straddle-win at higher qp
   "gradient 120 120 32 13"
+  # PRESETS 7 & 8 (LVL_1 PD0 fixed tree, but NSQ geom DISABLED — enc_mode > M6
+  # => svt_aom_get_nsq_geom_level_allintra returns level 0 => enabled 0). Unlike
+  # presets <= 6, a one-false boundary node yields set_blocks_to_test tot_shapes
+  # 0 (FORCED SPLIT, no edge shape injected) — the SAME rule the presets >= 9
+  # fix applied at LVL_5/6, now extended to the LVL_1 presets 7/8 via the
+  # nsq_enabled gate in pd0::pick. Byte-neutral for presets <= 6 (nsq_enabled
+  # true keeps the injected edge shape). All cmp-verified byte-identical; the
+  # thin 8-wide/8-tall edges (72x64, 64x72) specifically exercise the new
+  # force-split-to-8x8 path. (High-qp q55 straddle/multi-SB both-partial cells
+  # — 200x120 q40/55, 80x88/104x88/72x88/120x120 q55 — still hit the separate
+  # PD1 mode near-tie, follow-up 2; not gated.)
+  "gradient 96 80 32 7"    # milestone: right + bottom + corner, all force-split
+  "gradient 96 80 20 7"
+  "gradient 96 80 55 7"
+  "gradient 96 64 32 7"    # right edge only
+  "gradient 64 80 32 7"    # bottom edge only
+  "gradient 72 64 32 7"    # thin 8-wide right edge -> force-split to 8x8s
+  "gradient 64 72 40 7"    # thin 8-tall bottom edge -> force-split
+  "gradient 65 64 20 7"    # odd width, right-edge partial
+  "gradient 64 65 40 7"    # odd height, bottom-edge partial
+  "gradient 65 65 32 7"    # both-partial (matches at p7; diverges only at p6)
+  "gradient 200 120 32 7"  # multi-SB thin right + bottom
+  "gradient 88 56 40 7"    # straddle
+  "gradient 48 48 32 7"    # sub-64 single partial SB
+  "gradient 96 96 32 7"    # 32-aligned both partial (no straddle)
+  "gradient 96 80 32 8"    # milestone at p8
+  "gradient 96 80 20 8"
+  "gradient 96 80 55 8"
+  "gradient 96 64 40 8"    # right edge
+  "gradient 64 80 55 8"    # bottom edge
+  "gradient 72 64 55 8"    # thin 8-wide right edge -> force-split
+  "gradient 64 72 20 8"    # thin 8-tall bottom edge -> force-split
+  "gradient 65 64 32 8"    # odd width
+  "gradient 64 65 32 8"    # odd height
+  "gradient 65 72 32 8"    # both-partial
+  "gradient 65 80 40 8"    # both-partial
+  "gradient 200 120 20 8"  # multi-SB
+  "gradient 72 72 32 8"    # 8-aligned both partial
+  "gradient 63 63 40 8"    # odd full SB (true-dim header + crop, no partial SB)
+  "gradient 73 73 32 8"    # odd both, aligned 80x80 partial
 )
 for cell in "${CELLS[@]}"; do
   read -r content w h qp p <<<"$cell"

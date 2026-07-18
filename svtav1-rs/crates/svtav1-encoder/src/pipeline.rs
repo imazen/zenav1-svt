@@ -4393,6 +4393,11 @@ fn encode_tile_rows(
                                 // (get_max_block_size_allintra base th ~0
                                 // through M7) — never on this p<=5 branch.
                                 false,
+                                // NSQ enabled: this branch is preset 0..=5
+                                // (nsq_geom_level 1/2/3), so a one-false node
+                                // keeps its edge shape. Inert here (full-SB
+                                // gated), but correct for the predicate.
+                                true,
                                 // ALIGNED dims — this `refined` path is
                                 // full-SB-gated (see `refined` above), so the
                                 // edge/off branches never fire; passing the
@@ -4476,6 +4481,13 @@ fn encode_tile_rows(
                                 speed_config.preset >= 8
                                     && x0 + 64 <= w
                                     && y0 + 64 <= h,
+                                // NSQ geom enabled iff enc_mode <= M6
+                                // (svt_aom_get_nsq_geom_level_allintra: presets
+                                // 0..=6 → level 1/2/3 → enabled; presets 7/8 →
+                                // level 0 → disabled). When disabled, a
+                                // one-false boundary node force-splits (no edge
+                                // shape) — the presets 7/8 partial-SB fix.
+                                speed_config.preset <= 6,
                                 // ALIGNED dims — the spec-5.11.4 edge grid.
                                 w,
                                 h,

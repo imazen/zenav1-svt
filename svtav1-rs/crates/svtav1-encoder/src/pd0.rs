@@ -1244,6 +1244,16 @@ struct Pd0Ctx<'a> {
     /// (`th = (bw*bh)>>5`, bw/bh capped at 32). Only consulted by the
     /// LVL_1 block cost; LVL_5/6 use their own closed forms.
     coeff_rate_est_lvl: u8,
+    /// C `ctx->nsq_geom_ctrls.enabled` (svt_aom_get_nsq_geom_level_allintra,
+    /// enc_mode_config.c:8240): 1 for allintra enc_mode <= M6 (presets 0..=6,
+    /// nsq_geom_level 1/2/3), 0 for enc_mode > M6 (presets >= 7, level 0).
+    /// Gates `set_blocks_to_test`'s one-false force-split: when NSQ is DISABLED
+    /// a one-false boundary node yields `tot_shapes = 0` (force-split, no edge
+    /// shape injected) — LVL_5/6 (presets >= 9) AND the LVL_1 presets 7/8. When
+    /// ENABLED (presets <= 6) a fitting one-false node keeps its single edge
+    /// shape (the `sq_size <= MAX(min_nsq=4, min_nsq_block_size<=8)` term never
+    /// fires for edge nodes, which are always >= 16 wide on an 8-aligned frame).
+    nsq_enabled: bool,
 }
 
 /// C `svt_aom_partition_rate_cost` at PD0: neighbor partition contexts are
@@ -1437,13 +1447,17 @@ impl<'a> Pd0Ctx<'a> {
         // `tot_shapes = 0`, so PART_N is NEVER costed and the node splits with
         // no NONE/edge candidate. This fires for:
         //  - a BOTH-false node (extends past both edges), at every PD0 level;
-        //  - a one-false node when NSQ geom is DISABLED. At LPD0 (PD0_LVL_5/6,
-        //    allintra CLI preset >= M7 → `nsq_geom_level = 0` → `enabled = 0`,
-        //    enc_mode_config.c:8240) EVERY one-false boundary node force-splits
-        //    — C never injects the edge shape, so it descends to the fitting
-        //    sub-blocks (e.g. a thin 8-wide right edge -> all 8x8). LVL_1
-        //    (preset <= M6) keeps NSQ enabled → the one-false edge-shape path
-        //    below (`one_false && Lvl1`), matching the M6 boundary milestone.
+        //  - a one-false node when NSQ geom is DISABLED (`!self.nsq_enabled`).
+        //    `svt_aom_get_nsq_geom_level_allintra` returns level 0 → `enabled =
+        //    0` for allintra CLI preset >= M7 (enc_mode_config.c:8240), which
+        //    covers BOTH the LPD0 presets >= 9 (PD0_LVL_5/6) AND the LVL_1
+        //    presets 7/8. C never injects the edge shape, so EVERY one-false
+        //    boundary node force-splits, descending to the fitting sub-blocks
+        //    (e.g. a thin 8-wide right edge -> all 8x8). Presets <= M6 keep NSQ
+        //    enabled → the one-false edge-shape path below (`one_false &&
+        //    self.nsq_enabled`), matching the M6 boundary milestone. (The C
+        //    `sq_size <= MAX(min_nsq=4, min_nsq_block_size<=8)` term is inert:
+        //    edge nodes are always >= 16 wide on an 8-aligned frame.)
         // 8x8 nodes are never edge nodes on an 8-aligned frame, so a
         // force-split node always has `sq_size > min_sq` and can split. A
         // has_rows && has_cols node can still STRADDLE the aligned extent (its
@@ -1451,7 +1465,7 @@ impl<'a> Pd0Ctx<'a> {
         // reading its SB-extent pad and cropping the distortion, so the port
         // sizes the recon + chroma-source buffers to the SB extent — a
         // straddling block writes into the padded rows, never out of bounds.
-        let forced_split = both_false || (one_false && self.mode != Pd0Mode::Lvl1);
+        let forced_split = both_false || (one_false && !self.nsq_enabled);
         if forced_split {
             let mut children: Vec<Pd0Eval> = Vec::with_capacity(4);
             let mut total = 0u64;
@@ -1468,12 +1482,20 @@ impl<'a> Pd0Ctx<'a> {
             // node codes NO partition symbol -> rate 0; a one-false node codes
             // the BINARY SPLIT-vs-{H,V} symbol -> its alike rate (doubled at
             // LVL_5 since `use_accurate_part_ctx = 0`; 0 at LVL_6 allintra,
-            // test_split_partition_pd0:10435).
+            // test_split_partition_pd0:10435; UNdoubled at LVL_1 presets 7/8
+            // since `use_accurate_part_ctx = 1` at M7/M8, from this SB's
+            // chained tables — the same boundary rate the preset<=6 edge-shape
+            // node's split cost uses below).
             if !both_false {
-                let alike = 2 * partition_alike_split_bits(sq_size, !has_rows);
                 total += match self.mode {
-                    Pd0Mode::Lvl5 => rdcost(self.lambda, alike, 0),
-                    _ => 0, // Lvl6 (allintra split rate 0); Lvl1 never reaches here
+                    Pd0Mode::Lvl5 => {
+                        rdcost(self.lambda, 2 * partition_alike_split_bits(sq_size, !has_rows), 0)
+                    }
+                    Pd0Mode::Lvl6 => 0,
+                    Pd0Mode::Lvl1 => {
+                        let tables = self.lvl1.expect("LVL_1 requires tables");
+                        rdcost(self.lambda, tables.boundary_split_bits(sq_size, !has_rows), 0)
+                    }
                 };
             }
             let ch: [Pd0Eval; 4] = children.try_into().expect("4 children");
@@ -1661,6 +1683,9 @@ pub fn pd0_pick_sb_partition(
         ires_factor,
         // LVL_5/6 use their own closed-form coeff rates; unused here.
         coeff_rate_est_lvl: 0,
+        // eff-M9 (preset >= 9) => enc_mode > M6 => nsq_geom_level 0 =>
+        // NSQ disabled: every one-false boundary node force-splits.
+        nsq_enabled: false,
     };
     let (_cost, eval) = ctx.pick(64, 0, 0);
     eval.tree()
@@ -1691,6 +1716,7 @@ pub fn pd0_pick_sb_partition_m6(
     qindex: u8,
     tables: &M6Pd0Tables,
     coeff_rate_est_lvl: u8,
+    nsq_enabled: bool,
     aligned_w: usize,
     aligned_h: usize,
 ) -> Pd0Tree {
@@ -1714,6 +1740,7 @@ pub fn pd0_pick_sb_partition_m6(
         is_subres_safe: 255,
         ires_factor: 0,
         coeff_rate_est_lvl,
+        nsq_enabled,
     };
     let (_cost, eval) = ctx.pick(64, 0, 0);
     eval.tree()
@@ -1739,6 +1766,7 @@ pub fn pd0_pick_sb_partition_m6_eval(
     min_sq: usize,
     coeff_rate_est_lvl: u8,
     cap_max_block: bool,
+    nsq_enabled: bool,
     aligned_w: usize,
     aligned_h: usize,
 ) -> Pd0Eval {
@@ -1776,6 +1804,7 @@ pub fn pd0_pick_sb_partition_m6_eval(
         is_subres_safe: 255,
         ires_factor: 0,
         coeff_rate_est_lvl,
+        nsq_enabled,
     };
     let (_cost, eval) = ctx.pick(64, 0, 0);
     eval
@@ -1911,6 +1940,7 @@ mod tests {
             min_sq: 8,
             is_subres_safe: 255,
             ires_factor: 0,
+            nsq_enabled: false,
         };
         for (sq, ox, oy, cost) in [
             (32usize, 0usize, 0usize, 187677438u64),
@@ -1952,6 +1982,7 @@ mod tests {
             min_sq: 8,
             is_subres_safe: 255,
             ires_factor: 0,
+            nsq_enabled: false,
         };
         assert_eq!(ctx.lvl5_block_cost(64, 0, 0), 1708208432);
         assert_eq!(
@@ -2054,6 +2085,7 @@ mod tests {
             min_sq: 8,
             is_subres_safe: 255,
             ires_factor: 0,
+            nsq_enabled: true,
         };
         for (sq, ox, oy, cost) in [
             (64usize, 0usize, 0usize, 1791569177u64),
@@ -2091,6 +2123,7 @@ mod tests {
             min_sq: 8,
             is_subres_safe: 255,
             ires_factor: 0,
+            nsq_enabled: true,
         };
         for (sq, ox, oy, cost) in [
             (64usize, 0usize, 0usize, 1176293547u64),
@@ -2124,6 +2157,7 @@ mod tests {
             min_sq: 8,
             is_subres_safe: 255,
             ires_factor: 0,
+            nsq_enabled: true,
         };
         for (sq, ox, oy, cost) in [
             (64usize, 0usize, 0usize, 903280295u64),
@@ -2146,16 +2180,16 @@ mod tests {
     #[test]
     fn m6_gradient64_trees_match_c() {
         let y = gradient64();
-        let t20 = pd0_pick_sb_partition_m6(&y, 64, 0, 0, 20, 80, &build_m6_pd0_tables(80), 1, 64, 64);
+        let t20 = pd0_pick_sb_partition_m6(&y, 64, 0, 0, 20, 80, &build_m6_pd0_tables(80), 1, true, 64, 64);
         assert_eq!(t20.leaf_sizes(), vec![32; 4]);
-        let t40 = pd0_pick_sb_partition_m6(&y, 64, 0, 0, 40, 160, &build_m6_pd0_tables(160), 1, 64, 64);
+        let t40 = pd0_pick_sb_partition_m6(&y, 64, 0, 0, 40, 160, &build_m6_pd0_tables(160), 1, true, 64, 64);
         assert_eq!(t40.leaf_sizes(), vec![32; 4]);
-        let t55 = pd0_pick_sb_partition_m6(&y, 64, 0, 0, 55, 220, &build_m6_pd0_tables(220), 1, 64, 64);
+        let t55 = pd0_pick_sb_partition_m6(&y, 64, 0, 0, 55, 220, &build_m6_pd0_tables(220), 1, true, 64, 64);
         assert_eq!(t55, Pd0Tree::Leaf(64));
         // Uniform content: exact DC prediction, zero residual -> 64 NONE
         // (keeps every uniform p6 identity cell byte-identical).
         let u = vec![128u8; 64 * 64];
-        let tu = pd0_pick_sb_partition_m6(&u, 64, 0, 0, 40, 160, &build_m6_pd0_tables(160), 1, 64, 64);
+        let tu = pd0_pick_sb_partition_m6(&u, 64, 0, 0, 40, 160, &build_m6_pd0_tables(160), 1, true, 64, 64);
         assert_eq!(tu, Pd0Tree::Leaf(64));
     }
 }
