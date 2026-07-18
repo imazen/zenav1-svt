@@ -38,12 +38,44 @@ coexist — conflating them is the #1 porting risk.
   multiples of 8 (pcs.c:1535-1555). No is_complete_sb; B64Geom has
   is_complete_b64.
 - encode_partition_av1 (entropy_coding.c:932-981) = spec 5.11.4:
-  has_rows/cols vs ALIGNED dims; both false -> forced SPLIT, NO symbol;
-  one false -> BINARY split-vs-H (or V) via partition_gather_*_alike.
-  !has_cols => PART_V; !has_rows => PART_H (confirmed 4 sites).
-- Search mirrors x3 (product_coding_loop.c:10538/:10618/:10896 + enc_dec_
-  process.c:1394-1438 set_blocks_to_test: inj_hv_incomp EXCLUDES PART_N).
-  Leaf blocks always fully inside ALIGNED — nothing codes half a block.
+  has_rows/cols vs ALIGNED dims (`hbs = (mi_size_wide[bsize]<<2)>>1`;
+  `has_rows = org_y+hbs < aligned_h`, `has_cols = org_x+hbs < aligned_w`);
+  both false -> forced SPLIT, NO symbol (`assert(p==SPLIT); return`);
+  both true -> full `aom_write_symbol(p, partition_cdf[ctx], len)`;
+  one false -> BINARY `aom_write_symbol(p==PARTITION_SPLIT, cdf, 2)`.
+  OPTION mapping (spec): !has_cols(+has_rows) => SPLIT-vs-VERT (PART_V);
+  !has_rows(+has_cols) => SPLIT-vs-HORZ (PART_H). **GATHER-FN TRAP (VERIFIED
+  2026-07-18, cabac_context_model.h:378/393): the gather is CROSS-named vs the
+  option** — the `!has_rows` case (option HORZ) uses `partition_gather_VERT_alike`
+  (entropy_coding.c:972); the `!has_cols` case (option VERT) uses
+  `partition_gather_HORZ_alike` (:976). Each gather sums out {its-dir, SPLIT,
+  the two A-variants of its dir + one of the other, its _4 unless 128} from the
+  full partition_cdf into a 2-symbol cdf. Do NOT pair "horz option -> horz
+  gather"; it is crossed. ctx = `(left*2+above) + bsl*PARTITION_PLOFFSET`,
+  `bsl = mi_size_wide_log2[bsize] - mi_size_wide_log2[BLOCK_8X8]`, above/left
+  from the partition-context neighbour array `>> bsl & 1`. Sub-8x8 (bsize <
+  BLOCK_8X8) writes NO partition symbol. The port's `frame_geom::edge_has_rows_cols`
+  (VERT/HORZ doc) is spec-correct; only the pack CONSUMER + the search remain.
+- Search restriction — `set_blocks_to_test` (enc_dec_process.c:1394-1438,
+  VERIFIED 2026-07-18): `hbs = mi_size_wide[bsize]>>1` (MI units), `has_rows =
+  mi_row+hbs < av1_cm->mi_rows` (ALIGNED grid), `has_cols = mi_col+hbs < mi_cols`.
+  * `!has_cols && !has_rows` -> `tot_shapes=0` -> FORCED SPLIT (no shape tested).
+  * exactly one false AND (NSQ disabled OR `sq_size <= max(min_nsq(=4, or 8 in
+    PD1 non-REGULAR), nsq_geom_ctrls.min_nsq_block_size)`) -> `tot_shapes=0` ->
+    FORCED SPLIT (an incomplete block too small for NSQ must split).
+  * otherwise (`inj_hv_incomp = !has_cols||!has_rows`): the loop over
+    PART_N..max_part SKIPS every shape except the one edge shape —
+    `if (has_cols && part!=PART_H) continue; if (has_rows && part!=PART_V) continue;`
+    => bottom edge (`!has_rows`, has_cols) tests ONLY {PART_H}; right edge
+    (`!has_cols`, has_rows) tests ONLY {PART_V}. **PART_N is excluded** (it fails
+    both guards), so an incomplete block never evaluates NONE — only its single
+    H/V shape, with SPLIT implicit via the recursion. Matches the coding
+    (H<->!has_rows, V<->!has_cols) above.
+  So chunk-2 search = at a partial node, restrict the shape set to {single H|V}
+  (or {} => forced split) per the rule; the pack then codes it with the binary
+  gather (cross-named!) or the no-symbol forced split. Leaf blocks always land
+  fully inside ALIGNED — nothing codes half a block.
+- Three search mirror sites: product_coding_loop.c:10538/:10618/:10896.
 
 ## MD at edges
 - **b64 VARIANCE on a partial SB reads PAST the aligned extent — do NOT
