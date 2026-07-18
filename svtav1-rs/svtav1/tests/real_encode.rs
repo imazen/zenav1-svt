@@ -842,28 +842,28 @@ fn obu_structure_key_frame() {
 fn obu_structure_multi_frame() {
     // Encode a 3-frame sequence and validate structure
     let mut pipeline = svtav1_encoder::pipeline::EncodePipeline::new(
-        32,
-        32,
+        64,
+        64,
         10,
         svtav1_encoder::rate_control::RcConfig::default(),
         4,
         64,
     );
-    let y_plane = make_gradient(32, 32);
+    let y_plane = make_gradient(64, 64);
 
     // Frame 0: key frame (TD + SH + Frame)
-    let bs0 = pipeline.encode_frame(&y_plane, 32);
+    let bs0 = pipeline.encode_frame(&y_plane, 64);
     let (obu_type, _) = parse_obu_header(bs0[0]);
     assert_eq!(obu_type, 2, "frame 0 should start with TD");
 
     // Frame 1: inter frame (just Frame OBU, no SH)
-    let bs1 = pipeline.encode_frame(&y_plane, 32);
+    let bs1 = pipeline.encode_frame(&y_plane, 64);
     assert!(!bs1.is_empty(), "frame 1 should produce output");
     let (obu_type, _) = parse_obu_header(bs1[0]);
     assert_eq!(obu_type, 6, "inter frame should be Frame OBU (type 6)");
 
     // Frame 2: inter frame
-    let bs2 = pipeline.encode_frame(&y_plane, 32);
+    let bs2 = pipeline.encode_frame(&y_plane, 64);
     assert!(!bs2.is_empty(), "frame 2 should produce output");
 }
 
@@ -871,15 +871,15 @@ fn obu_structure_multi_frame() {
 fn obu_sequence_header_profile() {
     // Verify sequence header starts with correct profile bits
     let mut pipeline = svtav1_encoder::pipeline::EncodePipeline::new(
-        16,
-        16,
+        64,
+        64,
         8,
         svtav1_encoder::rate_control::RcConfig::default(),
         4,
         64,
     );
-    let y_plane = make_flat(16, 16, 128);
-    let bitstream = pipeline.encode_frame(&y_plane, 16);
+    let y_plane = make_flat(64, 64, 128);
+    let bitstream = pipeline.encode_frame(&y_plane, 64);
 
     // Skip TD (header + size + 0 bytes payload)
     let mut pos = 0;
@@ -953,17 +953,17 @@ fn multi_frame_bitstream_sizes_decrease() {
 fn multi_frame_full_sh_obu_structure() {
     // Verify multi-frame encoding uses full (non-reduced) SH
     let mut pipeline = svtav1_encoder::pipeline::EncodePipeline::new(
-        32,
-        32,
+        64,
+        64,
         8,
         svtav1_encoder::rate_control::RcConfig::default(),
         4,
         64,
     );
-    let y_plane = make_gradient(32, 32);
+    let y_plane = make_gradient(64, 64);
 
     // Frame 0: key with full SH
-    let bs0 = pipeline.encode_frame(&y_plane, 32);
+    let bs0 = pipeline.encode_frame(&y_plane, 64);
     // Parse TD
     let mut pos = 0;
     let _ = parse_obu_header(bs0[pos]);
@@ -989,7 +989,7 @@ fn multi_frame_full_sh_obu_structure() {
     assert_eq!(obu_type, 6, "Frame OBU");
 
     // Frame 1: inter
-    let bs1 = pipeline.encode_frame(&y_plane, 32);
+    let bs1 = pipeline.encode_frame(&y_plane, 64);
     let (obu_type, _) = parse_obu_header(bs1[0]);
     assert_eq!(obu_type, 6, "inter frame should be Frame OBU");
 }

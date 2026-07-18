@@ -727,8 +727,8 @@ fn pipeline_deterministic() {
     use svtav1_encoder::rate_control::{RcConfig, RcMode};
 
     let mut p1 = EncodePipeline::new(
-        32,
-        32,
+        64,
+        64,
         8,
         RcConfig {
             mode: RcMode::Cqp,
@@ -739,8 +739,8 @@ fn pipeline_deterministic() {
         64,
     );
     let mut p2 = EncodePipeline::new(
-        32,
-        32,
+        64,
+        64,
         8,
         RcConfig {
             mode: RcMode::Cqp,
@@ -751,10 +751,10 @@ fn pipeline_deterministic() {
         64,
     );
 
-    let y_plane: Vec<u8> = (0..32 * 32).map(|i| ((i * 7 + 42) % 256) as u8).collect();
+    let y_plane: Vec<u8> = (0..64 * 64).map(|i| ((i * 7 + 42) % 256) as u8).collect();
 
-    let bs1 = p1.encode_frame(&y_plane, 32);
-    let bs2 = p2.encode_frame(&y_plane, 32);
+    let bs1 = p1.encode_frame(&y_plane, 64);
+    let bs2 = p2.encode_frame(&y_plane, 64);
 
     assert_eq!(
         bs1, bs2,
@@ -1248,11 +1248,11 @@ fn speed_preset_affects_partition_depth() {
     use svtav1_encoder::rate_control::{RcConfig, RcMode};
 
     // Preset 0 (slowest) should use deeper partition than preset 13 (fastest)
-    let y_plane: Vec<u8> = (0..32 * 32).map(|i| ((i * 7 + 42) % 256) as u8).collect();
+    let y_plane: Vec<u8> = (0..64 * 64).map(|i| ((i * 7 + 42) % 256) as u8).collect();
 
     let mut p_slow = EncodePipeline::new(
-        32,
-        32,
+        64,
+        64,
         0, // preset 0
         RcConfig {
             mode: RcMode::Cqp,
@@ -1263,8 +1263,8 @@ fn speed_preset_affects_partition_depth() {
         64,
     );
     let mut p_fast = EncodePipeline::new(
-        32,
-        32,
+        64,
+        64,
         13, // preset 13
         RcConfig {
             mode: RcMode::Cqp,
@@ -1275,8 +1275,8 @@ fn speed_preset_affects_partition_depth() {
         64,
     );
 
-    let bs_slow = p_slow.encode_frame(&y_plane, 32);
-    let bs_fast = p_fast.encode_frame(&y_plane, 32);
+    let bs_slow = p_slow.encode_frame(&y_plane, 64);
+    let bs_fast = p_fast.encode_frame(&y_plane, 64);
 
     // Both should produce output
     assert!(!bs_slow.is_empty());
