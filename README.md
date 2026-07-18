@@ -21,6 +21,15 @@ Alliance for Open Media Patent License 1.0. See [LICENSE](LICENSE-BSD2.md) and
 under the BSD-3-clause clear license and the Alliance for Open Media Patent
 License 1.0. See [LICENSE](LICENSE.md) and [PATENTS](PATENTS.md) for details.
 
+### svtav1-rs — the Rust port
+
+The pure-Rust encoder port in [`svtav1-rs/`](svtav1-rs/) is Imazen's work and
+is dual-licensed [AGPL-3.0](svtav1-rs/LICENSE-AGPL3) or
+[commercial](svtav1-rs/LICENSE-COMMERCIAL) — see the
+[svtav1-rs license section](svtav1-rs/README.md#license). The C tree keeps the
+upstream licenses above. If someone covers Imazen's 2026 AI + server costs,
+we'll release the port under MIT or the original upstream license.
+
 ## Documentation
 
 **Guides**

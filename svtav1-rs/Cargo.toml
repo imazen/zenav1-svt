@@ -15,8 +15,8 @@ resolver = "3"
 [workspace.package]
 edition = "2024"
 rust-version = "1.85"
-license = "BSD-2-Clause"
-repository = "https://github.com/imazen/svtav1-rs"
+license = "AGPL-3.0-only OR LicenseRef-Imazen-Commercial"
+repository = "https://github.com/imazen/svtav1"
 
 [workspace.dependencies]
 svtav1-types = { path = "crates/svtav1-types" }
