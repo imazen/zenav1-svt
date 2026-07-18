@@ -477,29 +477,46 @@ shared file, THEIR fork arms win, OUR mainline arms win.
    port n=8 total_rate ~115556 vs C 110356; port n=5 fits the block better
    than C's, coeff 22595 vs 38458 — different palettes both sizes). coeff
    738==738 and the map-cost machinery are bit-exact, so it is NOT a
-   residual or map-cost bug. THE FIX (a.k.a. #71 chunk 3/4 injection, most
-   infra ALREADY EXISTS): (1) `pipeline::palette_cache()` (the ported
-   `svt_get_palette_cache_y`, pipeline.rs:1537) + `record_palette`
-   (:2050) + `above/left_palette_colors` fields + `index_color_cache` are
-   all present; (2) BUT the port stamps `record_palette` only in the PACK
-   walk (:2935), so during MD the neighbor palette state is empty and the
-   leaf search sees no cache — MUST stamp each block's palette winner into
-   `fx.ectx` DURING MD (coding order, like C's per-block mbmi update) so
-   the next block's search sees it; (3) call `palette_cache(&fx.ectx,
-   abs_x, abs_y)` in `leaf_funnel.rs` (replace the `&[]` at the
-   `search_palette_luma` call ~line 2822) AND make the color-cost
-   cache-aware (`svt_av1_palette_color_cost_y`, palette.c:143:
-   `n_cache + delta_encode_cost(index_color_cache(cache,colors).new)` <<9,
-   replacing the plain `delta_encode_bits`); (4) the palette-mode neighbor
-   ctx (`palette_y_mode` ctx, currently hardcoded 0) likely needs the same
-   MD-time stamp. All parts are byte-identical at n_cache=0 (mi(20,6)
-   preserved) and correct at n_cache>0. This closes mi(22,6) and the whole
-   downstream palette cascade (port 540 vs C 178 blocks). NOTE the stale
-   PORT-NOTE at pipeline.rs:1531 ("no BlockDecision carries a palette
-   winner yet") — palette injection landed this session; update it. The
-   MDS0 + MDS1/MDS3
-   per-class dev-prunes are correct+necessary. Gate: EPICA p6/p7 q32
-   byte-match (13097B / 14736B).
+   residual or map-cost bug. **THE MD-CACHE FIX IS IMPLEMENTED 2026-07-18
+   (this session) — faithful to C, but it does NOT close the cascade; the
+   prior "closes mi(22,6) + the whole cascade" prediction was MEASURED
+   WRONG.** The 4 parts landed (all verified line-by-line vs palette.c +
+   rd_cost.c): (1) `commit_leaf` (leaf_funnel.rs) stamps
+   `fx.ectx.record_palette(winner)` per committed block in coding order —
+   the MD-time neighbour state, mirroring the pack walk's :2935 stamp +
+   `record_block`; (2) `evaluate_leaf` reads `palette_cache(&*fx.ectx,
+   abs_x, abs_y)` (the ported `svt_get_palette_cache_y`) into
+   `search_palette_luma` (was `&[]`) — feeds the k-means centroid snap
+   (`optimize_palette_colors`, opt_colors=TRUE) + the cost; (3) cache-aware
+   colour cost `(n_cache + delta_encode_bits(index_color_cache(cache,
+   colors).new)) << 9` (C `svt_av1_palette_color_cost_y`, palette.c:143);
+   (4) the palette-Y mode flag rate is now `palette_ymode_fac_bits[bctx]
+   [mode_ctx]` — the rate table (`MdRates::palette_y_no/yes`) gained the
+   `mode_ctx` dim, indexed by the ALREADY-EXISTING
+   `EntropyCtx::palette_neighbor_ctx` (C `svt_aom_get_palette_mode_ctx`),
+   for BOTH the DC no-flag and the palette yes-flag. All 4 are
+   byte-identical at n_cache==0 + mode_ctx==0 → **non-sc matrix 54/54 +
+   244/244 unit tests green (safe by construction — no palette winner ⇒
+   empty neighbour state ⇒ every non-screen leaf unchanged).**
+   **MEASURED on EPICA p6 q32 (clean stash before/after): bytes 13192 →
+   13153 (toward C 13097), BUT palette blocks 556 → 712 (AWAY from C's
+   ~178), first divergence op 48 → 43 (EARLIER).** The fix is correct yet
+   AMPLIFIES the over-picking via a FEEDBACK LOOP: the port's pre-existing
+   over-picking (556 vs 178, from before this fix) gives it MORE palette
+   neighbours than C ⇒ bigger caches than C at the same block ⇒ palette
+   even cheaper ⇒ even more palette. So the cache fix can only be
+   byte-VALIDATED once the over-picking root is fixed (then port + C share
+   the same neighbour state). **THE REAL EPICA ROOT is the over-picking
+   FULL-RD divergence (see the para above, mi 18,60): the port's palette
+   full-RD beats the regular modes where C picks a regular mode — either C
+   costs palette MORE or regular LESS at those blocks. The cache is NOT
+   that root.** NEXT: real-C leaf-fn drill comparing the port's vs C's
+   FULL cost for {palette n5/n8, best regular} at a stable over-picked
+   block, to localise which side (palette or regular full-RD) diverges —
+   the MDS0/MDS1/MDS3 per-class dev-prunes were correct+necessary but did
+   not fully converge the survivor→winner set. (pipeline.rs:1531 stale
+   PORT-NOTE updated this session.) Gate: EPICA p6/p7 q32 byte-match
+   (13097B / 14736B) — still OPEN.
 2. **#71 IBC wiring**: wire `intrabc.rs` into the funnel injection
    (palette_hint coupling) + FH allow_intrabc for M2-M4 sc + the already
    -dormant obu.rs LF/CDEF/LR skips. Gate: EPICA p2-p5 cells.

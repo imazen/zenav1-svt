@@ -96,21 +96,21 @@ pub struct MdRates {
     /// md_rate_estimation.c:192-213). Plane U already carries the joint-sign
     /// rate added in; plane V is the magnitude cost alone.
     pub cfl_alpha_fac_bits: [[[i32; 16]; 2]; 8],
-    /// No-palette y flag cost per palette bsize ctx (palette_ymode_fac_bits
-    /// [bctx][neighbor ctx 0][0] — neighbor ctx is 0 until palette blocks
-    /// exist). Priced into DC candidates' luma rate when allow_palette
-    /// (rd_cost.c:579-585).
-    pub palette_y_no: [i32; 7],
+    /// No-palette y flag cost `palette_ymode_fac_bits[bctx][mode_ctx][0]`
+    /// (rd_cost.c:582-584). Indexed by the palette bsize ctx AND the
+    /// neighbor palette-mode ctx (C `svt_aom_get_palette_mode_ctx`, 0..=2 —
+    /// count of above/left neighbours whose luma palette_size>0). Priced into
+    /// DC candidates' luma rate when allow_palette. Row `[_][0]` is the
+    /// pre-#71 no-neighbour value (bit-identical for non-screen content).
+    pub palette_y_no: [[i32; 3]; 7],
     /// No-palette uv flag cost (palette_uv_mode_fac_bits[0][0]) — part of
     /// EVERY UV_DC chroma fast rate when allow_palette (C computes it
     /// inside svt_aom_get_intra_uv_fast_rate, rd_cost.c:514-520).
     pub palette_uv_no: i32,
-    /// palette_y_mode YES flag cost per bsize ctx (neighbor ctx 0) — the
-    /// n>0 arm palette candidates price (rd_cost.c:585).
-    /// PORT-NOTE(unverified): consumed by the palette RD integration
-    /// (#71 chunk 4); verify via an EPICA identity cell once the search
-    /// lands.
-    pub palette_y_yes: [i32; 7],
+    /// palette_y_mode YES flag cost `palette_ymode_fac_bits[bctx][mode_ctx][1]`
+    /// (rd_cost.c:582-584) — the n>0 arm palette candidates price. Same
+    /// `[bctx][mode_ctx]` indexing as [`Self::palette_y_no`].
+    pub palette_y_yes: [[i32; 3]; 7],
     /// palette_y_size fac bits [bsize ctx][n-2] (md_rate_estimation.c:167).
     pub palette_ysize: [[i32; 7]; 7],
     /// palette_y_color_index fac bits [n-2][color ctx][idx<n]
@@ -139,17 +139,21 @@ pub fn build_md_rates(fc: &FrameContext, cfc: &cc::CoeffFc) -> alloc::boxed::Box
         tx_size: [[[0; 3]; 3]; 4],
         intra_ext_tx: [[0; 17]; 13 * 4 * 3],
         cfl_alpha_fac_bits: [[[0; 16]; 2]; 8],
-        palette_y_no: [0; 7],
+        palette_y_no: [[0; 3]; 7],
         palette_uv_no: 0,
-        palette_y_yes: [0; 7],
+        palette_y_yes: [[0; 3]; 7],
         palette_ysize: [[0; 7]; 7],
         palette_ycolor: [[[0; 8]; 5]; 7],
         coeff: crate::quant::build_coeff_cost_tables_from_fc(cfc),
     });
     for b in 0..7 {
-        let c2 = costs_from_cdf::<2>(&fc.palette_y_mode_cdf[b][0]);
-        r.palette_y_no[b] = c2[0];
-        r.palette_y_yes[b] = c2[1];
+        // palette_ymode_fac_bits[bsize_ctx][mode_ctx][yes/no] — all 3
+        // neighbor mode-ctx rows (C default_palette_y_mode_cdf, 7x3x2).
+        for m in 0..3 {
+            let c2 = costs_from_cdf::<2>(&fc.palette_y_mode_cdf[b][m]);
+            r.palette_y_no[b][m] = c2[0];
+            r.palette_y_yes[b][m] = c2[1];
+        }
         r.palette_ysize[b] = costs_from_cdf::<7>(&fc.palette_y_size_cdf[b]);
     }
     r.palette_uv_no = costs_from_cdf::<2>(&fc.palette_uv_mode_cdf[0])[0];
@@ -2417,12 +2421,17 @@ pub(crate) fn evaluate_leaf(
     };
 
     // No-palette flag pricing for this leaf (C svt_aom_allow_palette on the
-    // LUMA bsize; both dims <= 64 and not 4x4/4x8/8x4). ctx rows are 0 —
-    // no neighbor ever carries palette until the palette search lands.
+    // LUMA bsize; both dims <= 64 and not 4x4/4x8/8x4).
     let allow_pal =
         svtav1_entropy::context::allow_palette(cfg.allow_sct, w, h);
+    // C svt_aom_get_palette_mode_ctx (rd_cost.c:583): neighbor palette-mode
+    // ctx (above+left count of palette-coded neighbours, 0..=2), read from
+    // the MD decision grid (stamped by commit_leaf in coding order). 0 until
+    // a palette candidate wins a neighbour => byte-identical for non-screen
+    // content, where no leaf ever carries a palette.
+    let pal_mode_ctx = fx.ectx.palette_neighbor_ctx(abs_x, abs_y);
     let pal_y_no = if allow_pal {
-        rates.palette_y_no[svtav1_entropy::context::palette_bsize_ctx(w, h)] as u64
+        rates.palette_y_no[svtav1_entropy::context::palette_bsize_ctx(w, h)][pal_mode_ctx] as u64
     } else {
         0
     };
@@ -2703,7 +2712,8 @@ pub(crate) fn evaluate_leaf(
             }
         }
         // No-palette y flag (rd_cost.c:579-585): every DC-coded candidate
-        // (fi included) prices palette_ymode_fac_bits[bctx][0][0] when
+        // (fi included) prices palette_ymode_fac_bits[bctx][mode_ctx][0]
+        // (via pal_y_no, computed above with the neighbour mode ctx) when
         // allow_palette. pal_y_no is 0 when palette is disallowed.
         if mode == 0 {
             flr += pal_y_no;
@@ -2799,13 +2809,21 @@ pub(crate) fn evaluate_leaf(
     // this funnel is single-class, so palette candidates share the one
     // pool — near-tie survivor sets can differ from C. Verify on the
     // EPICA cells; if a cell diverges on survivor membership, split the
-    // pool per class. Neighbor state (mode ctx + color cache) is wired by
-    // chunk 6; until then ctx row 0 + empty cache (bit-exact for blocks
-    // with no palette neighbors — always true until palette WINS a
-    // neighbor).
+    // pool per class. Neighbor state (mode ctx `pal_mode_ctx` + color cache
+    // `pal_cache`) is read from the MD decision grid (stamped by commit_leaf
+    // in coding order); both are 0/empty for blocks with no palette
+    // neighbours — always true for non-screen content — so those stay
+    // byte-identical to the pre-neighbour stub.
     if svtav1_entropy::context::allow_palette(cfg.allow_sct, w, h) && cfg.palette_level > 0 {
         let ctrls = crate::palette::PaletteCtrls::for_level(cfg.palette_level);
         let bctx = svtav1_entropy::context::palette_bsize_ctx(w, h);
+        // Neighbour palette color cache (C svt_get_palette_cache_y): merged
+        // above+left palette colours, feeding BOTH the k-means centroid snap
+        // (optimize_palette_colors, opt_colors=TRUE) INSIDE the search AND
+        // the cache-aware color cost below. Empty => bit-identical search +
+        // cost (the n_cache==0 fast paths in index_color_cache /
+        // optimize_palette_colors / palette_color_cost_y).
+        let pal_cache = crate::pipeline::palette_cache(&*fx.ectx, abs_x, abs_y);
         // C svt_aom_write_uniform_cost (entropy_coding.c:4308):
         // truncated-binary literal bits << AV1_PROB_COST_SHIFT(9).
         let uniform_cost = |n: usize, v: u8| -> u64 {
@@ -2829,7 +2847,7 @@ pub(crate) fn evaluate_leaf(
             w,
             h,
             &ctrls,
-            &[],
+            &pal_cache,
             frame.base_qindex,
         );
         for pc in pal_cands {
@@ -2855,11 +2873,22 @@ pub(crate) fn evaluate_leaf(
             // divergence vs C. Palette candidates get zero fi bits.
             let r_fi = 0u64;
             let _ = fi_elig; // (fi eligibility is a DC-candidate concept)
-            let r_yes = rates.palette_y_yes[bctx] as u64;
+            let r_yes = rates.palette_y_yes[bctx][pal_mode_ctx] as u64;
             let r_size = rates.palette_ysize[bctx][n - 2] as u64;
             let r_uniform = uniform_cost(n, pc.idx_map[0]);
-            // Colors: empty cache -> 0 flag bits, all colors delta-coded.
-            let r_colors = (crate::palette::delta_encode_bits(&pc.colors, 8, 1) as u64) << 9;
+            // Colors (C svt_av1_palette_color_cost_y, palette.c:143-152):
+            // one flag bit per neighbour-cache entry (n_cache) + delta-code
+            // only the out-of-cache colours; av1_cost_literal shifts the
+            // whole total by 9. index_color_cache splits pc.colors on the
+            // neighbour cache — at n_cache==0 out == pc.colors, so this is
+            // bit-identical to the former empty-cache all-colours cost.
+            let mut pal_found = alloc::vec![false; pal_cache.len()];
+            let mut pal_out = alloc::vec![0u16; pc.colors.len()];
+            let n_out =
+                crate::palette::index_color_cache(&pal_cache, &pc.colors, &mut pal_found, &mut pal_out);
+            let r_colors = ((pal_cache.len() as u64)
+                + crate::palette::delta_encode_bits(&pal_out[..n_out], 8, 1) as u64)
+                << 9;
             let mut map_bits = 0u64;
             crate::palette::color_map_wavefront(&pc.idx_map, w, h, w, n, |_i, _j, ctx, idx| {
                 map_bits += rates.palette_ycolor[n - 2][ctx][idx as usize] as u64;
@@ -4530,6 +4559,20 @@ pub(crate) fn commit_leaf(
     let skip = !cand.block_has_coeff;
     fx.ectx
         .record_block(abs_x, abs_y, w, h, cand.mode, cand.uv, skip);
+    // MD-time palette neighbour state (C mbmi->palette_mode_info, stamped for
+    // EVERY committed winner in coding order — mirrors the pack walk's
+    // record_palette + the record_block above). Read back by the NEXT
+    // block's evaluate_leaf via palette_cache (colour cache / centroid snap)
+    // and palette_neighbor_ctx (mode-flag ctx). None for a non-palette
+    // winner => neighbour state stays empty, so non-screen content (no
+    // palette winner) is byte-identical.
+    fx.ectx.record_palette(
+        abs_x,
+        abs_y,
+        w,
+        h,
+        cand.palette.as_ref().map(|(colors, _idx)| colors.as_slice()),
+    );
     // MD partition-context bytes (mode_decision_update_neighbor_arrays,
     // product_coding_loop.c:179-192: partition_context_lookup[bsize]
     // written over the block span — per-DIMENSION levels for rect NSQ

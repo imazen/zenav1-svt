@@ -1528,12 +1528,14 @@ impl EncodePipeline {
 /// this cache, NOT to [`EntropyCtx::palette_neighbor_ctx`]'s flag context.
 /// Ties in the merge advance both cursors, keeping the ABOVE value (C's
 /// `else` branch runs first and additionally drains `left` on equality).
-// PORT-NOTE(unverified): no `BlockDecision` carries a palette winner yet
-// (#71 chunk 3/4 injection), so `above_palette`/`left_palette` never hold
-// a nonzero size and this fn's merge loop is only exercised on the trivial
-// empty-cache path (`above_n == 0 && left_n == 0` early return) by the
-// current identity/real-image gates. Verify: an EPICA/identity cell with
-// adjacent palette-winning blocks once injection lands.
+// Consumed on BOTH sides now (#71, 2026-07-18): the MD `evaluate_leaf`
+// reads this cache (via `commit_leaf`'s per-block `record_palette` stamp,
+// coding order) into `search_palette_luma` + the cache-aware colour cost,
+// and the PACK walk reads it for the palette-colour writer. On
+// screen-content frames (EPICA) `above_palette`/`left_palette` DO carry
+// nonzero sizes and the merge loop runs; on non-sc content no leaf wins a
+// palette so it stays on the empty-cache early return (`above_n == 0 &&
+// left_n == 0`), keeping those gates byte-identical.
 pub(crate) fn palette_cache(ectx: &EntropyCtx, block_x: usize, block_y: usize) -> alloc::vec::Vec<u16> {
     let x4 = block_x / 4;
     let y4 = block_y / 4;
