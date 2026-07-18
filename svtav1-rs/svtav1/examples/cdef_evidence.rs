@@ -82,7 +82,7 @@ fn main() {
     for content in ["edges", "gradient"] {
         for qp in [43u8, 55, 63] {
             let qindex = qp_to_qindex(qp);
-            let params = svtav1_encoder::cdef::pick_cdef_params_key_frame(qindex);
+            let params = svtav1_encoder::cdef::pick_cdef_params_key_frame(qindex, 8);
             let y = gen_content(content, sz);
             let rc = RcConfig {
                 mode: RcMode::Cqp,

@@ -571,10 +571,13 @@ void ref_cdef_filter_block_8bit(uint8_t* dst, int32_t dstride, const uint8_t* in
 
 int16_t svt_aom_ac_quant_qtx(int32_t qindex, int32_t delta, EbBitDepth bit_depth);
 
-void ref_pick_cdef_from_qp_intra_8bit(int32_t base_q_idx, int32_t* pred_y_strength,
-                                      int32_t* pred_uv_strength) {
-    int32_t q = svt_aom_ac_quant_qtx(base_q_idx, 0, EB_EIGHT_BIT);
-    q >>= 0; /* (bit_depth - 8) */
+void ref_pick_cdef_from_qp_intra(int32_t base_q_idx, int32_t bit_depth,
+                                 int32_t* pred_y_strength, int32_t* pred_uv_strength) {
+    /* svt_pick_cdef_from_qp (enc_cdef.c:829-830): bd-aware AC step
+       normalized back to the 8-bit scale. bit_depth is the EbBitDepth enum
+       value (8/10/12), passed straight to svt_aom_ac_quant_qtx. */
+    int32_t q = svt_aom_ac_quant_qtx(base_q_idx, 0, bit_depth);
+    q >>= (bit_depth - 8);
 
     /* enc_cdef.c:880-888, Intra branch, verbatim. */
     int32_t y_f1  = (int32_t)roundf(q * q * 0.0000033731974f + q * 0.008070594f + 0.0187634f);

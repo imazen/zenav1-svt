@@ -101,15 +101,37 @@ preset{0,2,3,6,10,13}). The M6+ LPF_PICK_FROM_Q closed form is now bd10-aware in
 `deblock::pick_filter_levels_key_frame` (bd10 KEY: `ROUND_POWER_OF_TWO(q*20723 +
 4060632, 20) - 4`, q = AC_QLOOKUP_10). bd8 byte-neutral (matrix 54/54).
 
+**CDEF-from-Q at bd10 LANDED (this commit):** the qp-fast-path CDEF strength
+(`cdef::pick_cdef_params_key_frame`, presets M7+) is now bd-aware, mirroring the
+LF-from-Q fix — C `q = ac_quant_qtx(qindex,0,bd) >> (bd-8)` (enc_cdef.c:829-830),
+i.e. `AC_QLOOKUP_10[qindex] >> 2` at bd10, with the SAME f32 fit constants. The
+knee shifts (16 qindexes give a different strength than bd8) because the
+higher-precision bd10 q crosses the CDEF-off threshold at a different qindex.
+Proven C-exact for all 256 qindexes by the `c_parity_cdef_pick` bd10 differential
+(port vs real `svt_aom_ac_quant_qtx`) AND end-to-end: the gradient bd10 op-trace's
+first divergence moved OFF the FH cdef line into the tile payload once this landed.
+bd8 byte-neutral (identity matrix 54/54, bd10 uniform 36/36). NOTE: this fixes the
+qp-fast-path CDEF *header* value only; the CDEF **search** path (presets M0..M6,
+`cdef_search_still`) has its own bd-dependency (u16 recon MSE + bd10 lambda in
+`finish_cdef_rd`) — but for 8-bit-representable content the search's strength is
+moot until the coefficient/quant divergence below is closed (a differing coefficient
+already desyncs the tile).
+
 **NEXT bd10 chunk = the u16 MD path for NON-FLAT content (the big one).** Uniform
 works because every block is skip (no residual); any content with a coded
-residual needs the precision-sensitive u16 MD: u16 intra prediction (hbd
-predictors — FFI-verified), residual/transform/quant with the bd10 qlookup +
-qzbin ladder + lambda *16/*4 (kernels FFI-verified), recon-add with
-clip_pixel_highbd. This is the large hot-path pass (the funnel/pipeline plane
-plumbing from u8 to u16); it has NO smaller byte-verifiable sub-chunk (a single
-non-flat bd10 cell needs the whole MD path aligned). PD0 stays u8 on the
-MSB-truncated plane.
+residual needs the precision-sensitive u16 MD. MEASURED (2026-07-18): gradient
+bd10 diverges in the **tile payload / coefficients**, not the frame header — the
+port quantizes the residual with the bd8 tables (Q8) while C uses the bd10 tables
+(Q10 ≈ 4×Q8 but NOT exactly), so even 8-bit-representable content quantizes to
+different levels (e.g. g128 q40 p13: port 791B vs C 669B). The fix is the u16 MD:
+u16 intra prediction (hbd predictors — FFI-verified), residual/transform/quant with
+the bd10 qlookup + qzbin ladder + lambda *16/*4 (kernels FFI-verified), recon-add
+with clip_pixel_highbd. This is the large hot-path pass (the funnel/pipeline plane
+plumbing from u8 to u16). Candidate decomposition into byte-verifiable sub-chunks:
+**(2a)** plumb u16 through funnel/pipeline/filters with bd8 stored as u16 (values
+≤255) — a pure refactor, gate = bd8 identity matrix stays 54/54; **(2b)** flip the
+bd10 tables (quant/lambda/pred/recon-clip) on the u16 path, gate = first non-flat
+bd10 cell. PD0 stays u8 on the MSB-truncated plane.
 
 ## Concrete wiring anchors (measured 2026-07-18)
 - **Kernel FFI verification (landed, derisks chunk 2):** bd10 quant tables

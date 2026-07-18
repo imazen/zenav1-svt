@@ -1217,6 +1217,7 @@ impl EncodePipeline {
             } else {
                 crate::cdef::CdefPick::single(crate::cdef::pick_cdef_params_key_frame(
                     base_qindex,
+                    self.bit_depth,
                 ))
             }
         } else {

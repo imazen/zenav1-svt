@@ -121,8 +121,16 @@ impl CdefPick {
 /// hurts near-lossless), luma pri kicks in around the qindex-60 knee
 /// (y = 4 at qindex 63/80), growing to y = 9/17/43 at qindex 128/172/220
 /// and saturating at 63 (pri 15 / sec field 3) at qindex 255.
-pub fn pick_cdef_params_key_frame(qindex: u8) -> CdefFrameParams {
-    let q = AC_QLOOKUP_8[qindex as usize] as i32 as f32;
+pub fn pick_cdef_params_key_frame(qindex: u8, bit_depth: u8) -> CdefFrameParams {
+    // C `q = ac_quant_qtx(qindex, 0, bd) >> (bd - 8)` (enc_cdef.c:829-830) —
+    // the per-bd AC step normalized back to the 8-bit scale, so the f32 fit
+    // constants below stay bit-depth-independent. bd8: AC_QLOOKUP_8 >> 0.
+    let q_raw = match bit_depth {
+        8 => AC_QLOOKUP_8[qindex as usize] as i32,
+        10 => crate::bd10::AC_QLOOKUP_10[qindex as usize] as i32,
+        _ => unreachable!("bit_depth must be 8 or 10 (bd12 out of scope, bd10-port-map.md)"),
+    };
+    let q = (q_raw >> (bit_depth - 8)) as f32;
 
     // enc_cdef.c:880-888 (Intra branch), verbatim constants.
     let y_f1 =
@@ -1012,15 +1020,15 @@ mod tests {
     /// q(128): ac=176 -> y = 9, uv = 8; q(30): ac=37 -> all zero.
     #[test]
     fn strength_formula_anchors() {
-        let p255 = pick_cdef_params_key_frame(255);
+        let p255 = pick_cdef_params_key_frame(255, 8);
         assert_eq!(
             (p255.damping, p255.y_strength, p255.uv_strength),
             (6, 63, 3)
         );
-        let p128 = pick_cdef_params_key_frame(128);
+        let p128 = pick_cdef_params_key_frame(128, 8);
         assert_eq!((p128.damping, p128.y_strength, p128.uv_strength), (5, 9, 8));
         // Very low q: everything zero (CDEF off near-lossless).
-        let p30 = pick_cdef_params_key_frame(30);
+        let p30 = pick_cdef_params_key_frame(30, 8);
         assert_eq!((p30.y_strength, p30.uv_strength), (0, 0));
         assert_eq!(p30.damping, 3);
         assert!(!p30.any(true) && !p30.any(false));
@@ -1032,21 +1040,52 @@ mod tests {
     #[test]
     fn firing_profile_and_ranges() {
         for q in 0..=255u16 {
-            let p = pick_cdef_params_key_frame(q as u8);
+            let p = pick_cdef_params_key_frame(q as u8, 8);
             assert!((3..=6).contains(&p.damping), "damping range at {q}");
             assert!(p.y_strength <= 63 && p.uv_strength <= 63);
         }
         // Zero below the knee (near-lossless protection)...
-        assert_eq!(pick_cdef_params_key_frame(50).y_strength, 0);
+        assert_eq!(pick_cdef_params_key_frame(50, 8).y_strength, 0);
         // ...firing across the entire gate matrix.
         for (q, want_y) in [(80u8, 4u8), (128, 9), (172, 17), (220, 43), (255, 63)] {
             assert_eq!(
-                pick_cdef_params_key_frame(q).y_strength,
+                pick_cdef_params_key_frame(q, 8).y_strength,
                 want_y,
                 "luma CDEF strength at qindex {q}"
             );
         }
-        assert!(pick_cdef_params_key_frame(80).uv_strength != 0);
+        assert!(pick_cdef_params_key_frame(80, 8).uv_strength != 0);
+    }
+
+    /// bd10 qp-fast-path anchors (task #94). C `svt_pick_cdef_from_qp`
+    /// (enc_cdef.c:829-830) normalizes the AC step back to the 8-bit scale
+    /// via `q = ac_quant_qtx(qindex, 0, 10) >> 2` and reuses the SAME intra
+    /// fit constants — so the bd10 strengths differ from bd8 (the >>2 of
+    /// AC_QLOOKUP_10 is NOT exactly AC_QLOOKUP_8). These values are the ones
+    /// the port emits into the frame header at bd10, PROVEN C-correct by the
+    /// end-to-end FH byte-match in the gradient bd10 op-trace (the entire C
+    /// frame header — cdef_y/uv_strength, damping, bits — is byte-identical
+    /// to the port's once this bd10 arm lands; see docs/bd10-port-map.md).
+    #[test]
+    fn strength_formula_anchors_bd10() {
+        // qindex 160 (cli qp 40): FH-byte-verified (gradient 64x64 q40 p13
+        // bd10 op-trace — first divergence moved off FH onto the tile).
+        let p160 = pick_cdef_params_key_frame(160, 10);
+        assert_eq!((p160.damping, p160.y_strength, p160.uv_strength), (5, 13, 12));
+        // A spread of qindexes across the fit's range, hand-traced from
+        // AC_QLOOKUP_10>>2 + the intra fit (bd10 differs from bd8 here).
+        let p172 = pick_cdef_params_key_frame(172, 10);
+        assert_eq!((p172.damping, p172.y_strength, p172.uv_strength), (5, 17, 13));
+        let p220 = pick_cdef_params_key_frame(220, 10);
+        assert_eq!((p220.damping, p220.y_strength, p220.uv_strength), (6, 43, 7));
+        let p255 = pick_cdef_params_key_frame(255, 10);
+        assert_eq!((p255.damping, p255.y_strength, p255.uv_strength), (6, 63, 3));
+        // Contrast: bd8 and bd10 genuinely diverge (the whole point of the
+        // fix). 16 qindexes differ; the knee shifts because AC_QLOOKUP_10>>2
+        // crosses the CDEF-off threshold at a different qindex than
+        // AC_QLOOKUP_8. q52: luma strength 4 (bd8) vs 0 (bd10).
+        assert_eq!(pick_cdef_params_key_frame(52, 8).y_strength, 4);
+        assert_eq!(pick_cdef_params_key_frame(52, 10).y_strength, 0);
     }
 
     /// The finish_cdef_search RD pick pinned against the instrumented C
@@ -1095,12 +1134,12 @@ mod tests {
     /// Damping steps exactly at the C breakpoints.
     #[test]
     fn damping_from_qp_breakpoints() {
-        assert_eq!(pick_cdef_params_key_frame(0).damping, 3);
-        assert_eq!(pick_cdef_params_key_frame(63).damping, 3);
-        assert_eq!(pick_cdef_params_key_frame(64).damping, 4);
-        assert_eq!(pick_cdef_params_key_frame(127).damping, 4);
-        assert_eq!(pick_cdef_params_key_frame(128).damping, 5);
-        assert_eq!(pick_cdef_params_key_frame(191).damping, 5);
-        assert_eq!(pick_cdef_params_key_frame(192).damping, 6);
+        assert_eq!(pick_cdef_params_key_frame(0, 8).damping, 3);
+        assert_eq!(pick_cdef_params_key_frame(63, 8).damping, 3);
+        assert_eq!(pick_cdef_params_key_frame(64, 8).damping, 4);
+        assert_eq!(pick_cdef_params_key_frame(127, 8).damping, 4);
+        assert_eq!(pick_cdef_params_key_frame(128, 8).damping, 5);
+        assert_eq!(pick_cdef_params_key_frame(191, 8).damping, 5);
+        assert_eq!(pick_cdef_params_key_frame(192, 8).damping, 6);
     }
 }
