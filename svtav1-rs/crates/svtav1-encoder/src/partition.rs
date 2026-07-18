@@ -1541,6 +1541,7 @@ pub(crate) fn funnel_block_decision(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn encode_fixed_tree(
     src: &[u8],
     src_stride: usize,
@@ -1552,6 +1553,13 @@ pub(crate) fn encode_fixed_tree(
     config: &PartitionSearchConfig,
     abs_x: usize,
     abs_y: usize,
+    // ALIGNED frame dims — a PD0-leaf node that is a single-edge (one-false)
+    // block against this grid is coded as PARTITION_HORZ / PARTITION_VERT
+    // (its single in-frame block), matching C's `set_blocks_to_test` edge
+    // shape (task #95 chunk 2). On a 64-aligned frame every leaf is complete,
+    // so this is byte-neutral.
+    aligned_w: usize,
+    aligned_h: usize,
     sb_vars: &crate::pd0::SbVariance,
     sb_org: (usize, usize),
     mut funnel: Option<&mut crate::leaf_funnel::FunnelCtx<'_>>,
@@ -1582,6 +1590,53 @@ pub(crate) fn encode_fixed_tree(
                 // config sets `txs_lvl6_gate` (eff-M9 only).
                 let sb_is_lvl6 =
                     !crate::pd0::pd0_detector_allintra_demotes(sb_vars, fx.frame.cli_qp);
+                // Task #95 chunk 2: a PD0-leaf node that is a SINGLE-EDGE
+                // (one-false) block is coded as PARTITION_HORZ (`!has_rows`)
+                // or PARTITION_VERT (`!has_cols`) — its single in-frame block
+                // (`size x size/2` for HORZ, `size/2 x size` for VERT), the
+                // other half being off-frame. `set_blocks_to_test` injects
+                // exactly this shape at the allintra fixed-tree presets
+                // (md_disallow_nsq_search). Byte-neutral on 64-aligned frames.
+                let half = size / 2;
+                let has_rows = abs_y + half < aligned_h;
+                let has_cols = abs_x + half < aligned_w;
+                if !has_rows || !has_cols {
+                    let (bw, bh, ptype) = if !has_rows {
+                        (size, half, PartitionType::Horz)
+                    } else {
+                        (half, size, PartitionType::Vert)
+                    };
+                    let choice = crate::leaf_funnel::decide_leaf_rect(
+                        fx,
+                        src,
+                        src_stride,
+                        0,
+                        recon,
+                        recon_stride,
+                        abs_x,
+                        abs_y,
+                        bw,
+                        bh,
+                        dc_only,
+                        sb_is_lvl6,
+                    );
+                    let decision = funnel_block_decision(choice, bw, bh);
+                    let tree = PartitionTree::Split {
+                        partition_type: ptype,
+                        width: size as u16,
+                        height: size as u16,
+                        children: alloc::vec![PartitionTree::Leaf(decision.clone())],
+                    };
+                    return PartitionResult {
+                        partition_type: ptype,
+                        rd_cost: 0,
+                        distortion: 0,
+                        rate: 0,
+                        decisions: alloc::vec![decision],
+                        tree: Some(tree),
+                        num_blocks: 1,
+                    };
+                }
                 let choice = crate::leaf_funnel::decide_leaf(
                     fx,
                     src,
@@ -1645,6 +1700,15 @@ pub(crate) fn encode_fixed_tree(
             };
             let mut child_trees = alloc::vec::Vec::with_capacity(4);
             for (i, child) in children.iter().enumerate() {
+                // Off-frame quadrant (partial SB): codes nothing, exactly like
+                // C `svt_aom_write_modes_sb`'s SPLIT-loop `continue`. Skipping
+                // the recursion keeps the in-frame children packed in quadrant
+                // order — the same order the entropy walk replays them (which
+                // recomputes each quadrant's position and skips the off-frame
+                // ones itself). Never taken on a 64-aligned frame.
+                if matches!(child, crate::pd0::Pd0Tree::Off) {
+                    continue;
+                }
                 let x0 = (i & 1) * half;
                 let y0 = (i >> 1) * half;
                 let sub = encode_fixed_tree(
@@ -1658,6 +1722,8 @@ pub(crate) fn encode_fixed_tree(
                     config,
                     abs_x + x0,
                     abs_y + y0,
+                    aligned_w,
+                    aligned_h,
                     sb_vars,
                     sb_org,
                     funnel.as_deref_mut(),
@@ -1679,6 +1745,18 @@ pub(crate) fn encode_fixed_tree(
             });
             result
         }
+        // Reached only if a caller hands an off-frame quadrant directly; the
+        // Split arm above already skips them, and the SB root is always
+        // in-frame. Defensive: an off-frame node reconstructs/codes nothing.
+        crate::pd0::Pd0Tree::Off => PartitionResult {
+            partition_type: PartitionType::None,
+            rd_cost: 0,
+            distortion: 0,
+            rate: 0,
+            decisions: alloc::vec::Vec::new(),
+            tree: None,
+            num_blocks: 0,
+        },
     }
 }
 

@@ -213,23 +213,20 @@ impl EncodePipeline {
             "monochrome encode_frame requires 8-aligned dims (arbitrary-dims padding is wired \
              on the 4:2:0 path only so far — task #95)"
         );
-        // Same chunk-1 scope guard the 4:2:0 path carries. WITHOUT it, dims
-        // that are 8-aligned but not 64-aligned silently reach the search with
-        // a CLAMPED root block (the `cur_w`/`cur_h` frame-edge extent) instead
-        // of a 64x64 root carrying spec-5.11.4 forced splits — so the port
-        // codes a partition symbol at the wrong node size and emits a stream
-        // the decoder cannot follow (e.g. 96x80: the port codes a 32-node
-        // PARTITION_NONE where the decoder expects a 64-node binary
-        // SPLIT-vs-VERT symbol). Some sizes happen to coincide (at 16x16 the
-        // two forced-split levels code no symbols at all), which is exactly
-        // what made this silent. Rejecting out-of-scope dims outright beats
-        // mis-coding them; partial-SB support is task #95 chunk 2.
+        // Task #95 chunk 2: partial SBs (8-aligned but not 64-aligned) are
+        // supported ONLY on the PD0 fixed-tree path (preset >= 6), which starts
+        // from a 64x64 root carrying spec-5.11.4 forced edge splits and codes
+        // the partition symbols with the edge-aware alphabets. Presets < 6 that
+        // use the homegrown search still root at the CLAMPED extent and would
+        // emit an undecodable stream, so they stay restricted to full 64x64
+        // SBs — rejecting out-of-scope dims beats mis-coding them.
         assert!(
-            self.width % 64 == 0 && self.height % 64 == 0,
-            "monochrome encode_frame needs dims that are a multiple of 64 (full SBs); got \
-             {}x{} — partial-SB edge coding is task #95 chunk 2",
+            (self.width % 64 == 0 && self.height % 64 == 0) || self.speed_config.preset >= 6,
+            "monochrome encode_frame supports partial SBs only on the PD0 path (preset >= 6); \
+             got {}x{} at preset {} — use a multiple of 64 or preset >= 6",
             self.width,
-            self.height
+            self.height,
+            self.speed_config.preset
         );
         self.encode_frame_impl(y_plane, y_stride, None)
     }
@@ -250,15 +247,17 @@ impl EncodePipeline {
         );
         let (tw, th) = (self.true_width as usize, self.true_height as usize);
         let (aw, ah) = (self.width as usize, self.height as usize);
-        // Task #95 chunk 1 scope: the ALIGNED dims must form full 64x64
-        // SBs. Dims in {57..64} align to 64 (60x60 padded 4px), 64/128/...
-        // pass straight through. A natively 8-aligned partial size (56x56,
-        // 200x200) is out of scope until the partial-SB edge coding lands.
-        assert!(
-            aw % 64 == 0 && ah % 64 == 0,
-            "encode_frame_420 (task #95 chunk 1) needs aligned dims that are a multiple of 64 \
-             (full SBs); true {}x{} aligns to {}x{} — partial-SB edge coding is chunk 2",
-            tw, th, aw, ah
+        // Task #95 chunk 2: partial SBs are now supported. Every 4:2:0 KEY
+        // frame routes through the PD0 fixed-tree path (use_funnel is always
+        // live for 4:2:0 key), which starts from a 64x64 root carrying the
+        // spec-5.11.4 forced edge splits and codes the partition symbols with
+        // the edge-aware alphabets (encode_partition_av1). The only invariant
+        // is that the ALIGNED dims are a multiple of MIN_BLOCK_SIZE (8), which
+        // FrameDims guarantees by construction.
+        debug_assert!(
+            aw % crate::frame_geom::MIN_BLOCK_SIZE == 0
+                && ah % crate::frame_geom::MIN_BLOCK_SIZE == 0,
+            "aligned dims must be 8-aligned; got {aw}x{ah} for true {tw}x{th}"
         );
         // TRUE chroma dims (4:2:0 ceiling, matching the input .yuv layout).
         let (tcw, tch) = ((tw + 1) / 2, (th + 1) / 2);
@@ -359,6 +358,33 @@ impl EncodePipeline {
             } else {
                 y_plane[..n].to_vec()
             };
+
+        // Task #95 chunk 2 — partial-SB variance source. `compute_b64_variance`
+        // walks a full 64x64 grid per b64, so on a partial SB (aligned dims not
+        // a multiple of 64) it reads PAST the aligned extent into C's replicated
+        // border (`pad_input_picture` + `svt_aom_generate_padding` net content =
+        // the TRUE edge pixel, docs/arbitrary-dims-port-map.md). Build a source
+        // buffer padded out to the SB extent and read the PD0 partition /
+        // variance source from it. For a 64-aligned frame the extent equals the
+        // aligned extent, so no padding is needed and `encode_input` is used
+        // directly at stride `w` — fully byte-neutral for every full-SB cell.
+        let dims95 =
+            crate::frame_geom::FrameDims::new(self.true_width as usize, self.true_height as usize);
+        let sb95 = 64usize;
+        let ext_w = w.div_ceil(sb95) * sb95;
+        let ext_h = h.div_ceil(sb95) * sb95;
+        let sb_input_owned: Option<alloc::vec::Vec<u8>> = if ext_w == w && ext_h == h {
+            None
+        } else {
+            let mut buf = alloc::vec![0u8; ext_w * ext_h];
+            for r in 0..h {
+                buf[r * ext_w..r * ext_w + w].copy_from_slice(&encode_input[r * w..r * w + w]);
+            }
+            crate::frame_geom::pad_input_plane(&mut buf, &dims95, sb95);
+            Some(buf)
+        };
+        let sb_input: &[u8] = sb_input_owned.as_deref().unwrap_or(&encode_input);
+        let in_stride = if sb_input_owned.is_some() { ext_w } else { w };
 
         // Screen-content derivation (allintra): scm 3 auto-detect at
         // preset <= 7 (enc_handle.c:4514-4527), off at M8+; palette level
@@ -472,13 +498,19 @@ impl EncodePipeline {
         // enc_mode_config.c:14931) on 64-aligned dims — everywhere else
         // the legacy dead-zone quantizer stays.
         let mut c_quant: Option<alloc::sync::Arc<crate::quant::CodingQuantCfg>> =
-            if is_key && w % 64 == 0 && h % 64 == 0 {
+            // Task #95 chunk 2: was gated on 64-aligned dims; the padded
+            // `sb_input` now lets the per-b64 walk read C's replicated border
+            // on partial SBs, so the still/PD0 coding quantizer is built for any
+            // 8-aligned key frame. pic_avg_variance averages over the ALIGNED
+            // b64 grid (sb_cols x sb_rows), matching C. Full-SB is unchanged.
+            if is_key {
                 let mut tot: u64 = 0;
                 let mut cnt: u64 = 0;
                 for sy in (0..h).step_by(64) {
                     for sx in (0..w).step_by(64) {
                         tot +=
-                            crate::pd0::compute_b64_variance(&encode_input, w, sx, sy).0[0] as u64;
+                            crate::pd0::compute_b64_variance(sb_input, in_stride, sx, sy).0[0]
+                                as u64;
                         cnt += 1;
                     }
                 }
@@ -706,6 +738,8 @@ impl EncodePipeline {
         }
         let tile_recons = encode_tile_rows(
             &encode_input,
+            sb_input,
+            in_stride,
             w,
             h,
             sb_size,
@@ -3186,12 +3220,20 @@ fn encode_partition_tree(
             let half_w = w / 2;
             let half_h = h / 2;
             match (*partition_type, children.len()) {
-                (crate::partition::PartitionType::Split, 4) => {
-                    // PARTITION_SPLIT: 4 equal quarter-size children in Z-order.
+                (crate::partition::PartitionType::Split, _) => {
+                    // PARTITION_SPLIT: up to 4 quarter-size children in Z-order.
+                    // On a partial SB the off-frame quadrants were pruned from
+                    // `children` by encode_fixed_tree, so walk the 4 quadrant
+                    // SLOTS, skip the off-frame ones by absolute position (C
+                    // svt_aom_write_modes_sb's `mi_row+y_idx >= mi_rows ||
+                    // mi_col+x_idx >= mi_cols` continue, entropy_coding.c:5498),
+                    // and pull the packed in-frame children in order. A
+                    // 64-aligned frame keeps all four in-frame → byte-identical.
                     // Don't update partition context here — children do it —
                     // EXCEPT the terminal 8x8 split (4x4 children write no
                     // partition bytes; the decoder sets the 8x8 cell to the
-                    // SPLIT value, dav1d decode_sb BL_8X8).
+                    // SPLIT value, dav1d decode_sb BL_8X8). An 8x8 node is never
+                    // a frame edge, so all four 4x4 quadrants are in-frame.
                     if half_w == 4 {
                         ectx.update_partition_ctx(
                             block_x,
@@ -3201,61 +3243,42 @@ fn encode_partition_tree(
                             crate::partition::PartitionType::Split,
                         );
                     }
-                    encode_partition_tree(
-                        &children[0],
-                        writer,
-                        frame_ctx,
-                        coeff_fc,
-                        base_q_idx,
-                        ectx,
-                        is_key,
-                        block_x,
-                        block_y,
-                        chroma,
-                        geom,
-                    );
-                    encode_partition_tree(
-                        &children[1],
-                        writer,
-                        frame_ctx,
-                        coeff_fc,
-                        base_q_idx,
-                        ectx,
-                        is_key,
-                        block_x + half_w,
-                        block_y,
-                        chroma,
-                        geom,
-                    );
-                    encode_partition_tree(
-                        &children[2],
-                        writer,
-                        frame_ctx,
-                        coeff_fc,
-                        base_q_idx,
-                        ectx,
-                        is_key,
-                        block_x,
-                        block_y + half_h,
-                        chroma,
-                        geom,
-                    );
-                    encode_partition_tree(
-                        &children[3],
-                        writer,
-                        frame_ctx,
-                        coeff_fc,
-                        base_q_idx,
-                        ectx,
-                        is_key,
-                        block_x + half_w,
-                        block_y + half_h,
-                        chroma,
-                        geom,
+                    let aligned_w = geom.mi_cols * 4;
+                    let aligned_h = geom.mi_rows * 4;
+                    let mut ci = 0usize;
+                    for i in 0..4usize {
+                        let cx = block_x + (i & 1) * half_w;
+                        let cy = block_y + (i >> 1) * half_h;
+                        if cx >= aligned_w || cy >= aligned_h {
+                            continue;
+                        }
+                        encode_partition_tree(
+                            &children[ci],
+                            writer,
+                            frame_ctx,
+                            coeff_fc,
+                            base_q_idx,
+                            ectx,
+                            is_key,
+                            cx,
+                            cy,
+                            chroma,
+                            geom,
+                        );
+                        ci += 1;
+                    }
+                    debug_assert_eq!(
+                        ci,
+                        children.len(),
+                        "packed in-frame child count must equal the in-frame quadrant count"
                     );
                 }
-                (crate::partition::PartitionType::Horz, 2) => {
-                    // PARTITION_HORZ: two children stacked vertically.
+                (crate::partition::PartitionType::Horz, _) => {
+                    // PARTITION_HORZ: two children stacked vertically — OR, on
+                    // a partial SB (task #95 chunk 2), a single in-frame top
+                    // block (`children.len() == 1`), the bottom half being
+                    // off-frame (C write_modes_sb codes block 1 only if
+                    // `mi_row + hbs < mi_rows`, entropy_coding.c:5490).
                     // Update partition context for HORZ (children don't do it).
                     ectx.update_partition_ctx(
                         block_x,
@@ -3272,23 +3295,27 @@ fn encode_partition_tree(
                         top, writer, frame_ctx, coeff_fc, base_q_idx, ectx, is_key, block_x,
                         block_y, chroma, geom,
                     );
-                    let bot = expect_leaf(&children[1]);
-                    encode_block_syntax(
-                        bot,
-                        writer,
-                        frame_ctx,
-                        coeff_fc,
-                        base_q_idx,
-                        ectx,
-                        is_key,
-                        block_x,
-                        block_y + half_h,
-                        chroma,
-                        geom,
-                    );
+                    if let Some(bot_tree) = children.get(1) {
+                        let bot = expect_leaf(bot_tree);
+                        encode_block_syntax(
+                            bot,
+                            writer,
+                            frame_ctx,
+                            coeff_fc,
+                            base_q_idx,
+                            ectx,
+                            is_key,
+                            block_x,
+                            block_y + half_h,
+                            chroma,
+                            geom,
+                        );
+                    }
                 }
-                (crate::partition::PartitionType::Vert, 2) => {
-                    // PARTITION_VERT: two children side by side.
+                (crate::partition::PartitionType::Vert, _) => {
+                    // PARTITION_VERT: two children side by side — OR a single
+                    // in-frame left block on a partial SB (task #95 chunk 2),
+                    // the right half being off-frame.
                     // Update partition context for VERT.
                     ectx.update_partition_ctx(
                         block_x,
@@ -3303,20 +3330,22 @@ fn encode_partition_tree(
                         left, writer, frame_ctx, coeff_fc, base_q_idx, ectx, is_key, block_x,
                         block_y, chroma, geom,
                     );
-                    let right = expect_leaf(&children[1]);
-                    encode_block_syntax(
-                        right,
-                        writer,
-                        frame_ctx,
-                        coeff_fc,
-                        base_q_idx,
-                        ectx,
-                        is_key,
-                        block_x + half_w,
-                        block_y,
-                        chroma,
-                        geom,
-                    );
+                    if let Some(right_tree) = children.get(1) {
+                        let right = expect_leaf(right_tree);
+                        encode_block_syntax(
+                            right,
+                            writer,
+                            frame_ctx,
+                            coeff_fc,
+                            base_q_idx,
+                            ectx,
+                            is_key,
+                            block_x + half_w,
+                            block_y,
+                            chroma,
+                            geom,
+                        );
+                    }
                 }
                 (ptype, n) => {
                     // Extended partitions: children are DIRECT leaf blocks at
@@ -3656,6 +3685,12 @@ fn dump_tree_leaves(tree: &crate::partition::PartitionTree, x: usize, y: usize) 
 
 fn encode_tile_rows(
     encode_input: &[u8],
+    // Task #95 chunk 2: source padded to the SB extent (== `encode_input` for
+    // full-SB frames) + its stride. The PD0 partition search and per-b64
+    // variance read from THIS buffer so a partial SB sees C's replicated
+    // border instead of stride-wrapping into the next row.
+    sb_input: &[u8],
+    in_stride: usize,
     w: usize,
     h: usize,
     sb_size: usize,
@@ -3954,11 +3989,18 @@ fn encode_tile_rows(
                 let sb_qindex = base_qindex;
                 // C-exact partition source gate (see the comment below);
                 // computed here because the leaf lambda depends on it.
+                // Task #95 chunk 2: partial SBs (cur_w/cur_h < sb_size) now take
+                // the PD0 fixed-tree path too — C decides the ENTIRE partition
+                // tree in PD0 for every SB including incomplete ones, starting
+                // from a 64x64 root that carries the spec-5.11.4 forced edge
+                // splits. The previous `cur_w == sb_size && cur_h == sb_size`
+                // gate diverted partial SBs to the homegrown search, which
+                // rooted at the CLAMPED extent and mis-coded the partition
+                // symbols. Full SBs are unaffected (cur_w == cur_h == sb_size).
+                let full_sb = cur_w == sb_size && cur_h == sb_size;
                 let use_pd0 = ref_ctx.is_none()
                     && (speed_config.preset >= 6
-                        || (matches!(speed_config.preset, 0..=5) && use_funnel))
-                    && cur_w == sb_size
-                    && cur_h == sb_size;
+                        || (matches!(speed_config.preset, 0..=5) && use_funnel));
                 // CLI-qp-calibrated lambda via the exact inverse mapping
                 // (see qp_to_lambda's domain note). On the PD0 fixed-tree
                 // path the leaf funnel must be preset-INDEPENDENT like
@@ -4150,8 +4192,8 @@ fn encode_tile_rows(
                 let sb_result = if use_pd0 {
                     if speed_config.preset >= 9 {
                         let tree = crate::pd0::pd0_pick_sb_partition(
-                            encode_input,
-                            w,
+                            sb_input,
+                            in_stride,
                             x0,
                             y0,
                             cli_qp as u32,
@@ -4159,12 +4201,15 @@ fn encode_tile_rows(
                             // C `input_resolution_factor[input_resolution]`:
                             // per-picture coeff-rate addend keyed on w*h.
                             crate::pd0::input_resolution_factor(w * h),
+                            // ALIGNED dims — the spec-5.11.4 edge predicate grid.
+                            w,
+                            h,
                         );
                         // The same per-SB variance map C's picture analysis
                         // feeds to is_dc_only_safe (pcs->ppcs->variance): the
                         // fixed-tree leaves use it to force the C-exact
                         // DC-only intra candidate set where the gate fires.
-                        let sb_vars = crate::pd0::compute_b64_variance(encode_input, w, x0, y0);
+                        let sb_vars = crate::pd0::compute_b64_variance(sb_input, in_stride, x0, y0);
                         let mut funnel_ctx = if use_funnel {
                             let (u_src, v_src) = chroma_src.unwrap();
                             Some(crate::leaf_funnel::FunnelCtx {
@@ -4181,8 +4226,8 @@ fn encode_tile_rows(
                             None
                         };
                         crate::partition::encode_fixed_tree(
-                            &encode_input[y0 * w + x0..],
-                            w,
+                            &sb_input[y0 * in_stride + x0..],
+                            in_stride,
                             &mut tile_frame_recon,
                             w,
                             &tree,
@@ -4191,6 +4236,8 @@ fn encode_tile_rows(
                             &part_config,
                             x0,
                             y0,
+                            w,
+                            h,
                             &sb_vars,
                             (x0, y0),
                             funnel_ctx.as_mut(),
@@ -4214,7 +4261,11 @@ fn encode_tile_rows(
                             None => m6_pd0_tables
                                 .get_or_insert_with(|| crate::pd0::build_m6_pd0_tables(sb_qindex)),
                         };
-                        let refined = matches!(speed_config.preset, 0..=5) && use_funnel;
+                        // The PD1 depth-refinement path (depth_refine.rs) is not
+                        // yet edge-aware, so partial SBs at presets 0..=5 fall
+                        // back to the plain PD0 fixed tree below (which carries
+                        // the forced edge splits). Full SBs are unaffected.
+                        let refined = matches!(speed_config.preset, 0..=5) && use_funnel && full_sb;
                         if refined {
                             // M4/M5 (`dr_mode = 1`, PD0_DEPTH_ADAPTIVE):
                             // PD1 re-decides depths around the PD0 tree —
@@ -4243,6 +4294,12 @@ fn encode_tile_rows(
                                 // (get_max_block_size_allintra base th ~0
                                 // through M7) — never on this p<=5 branch.
                                 false,
+                                // ALIGNED dims — this `refined` path is
+                                // full-SB-gated (see `refined` above), so the
+                                // edge/off branches never fire; passing the
+                                // frame dims keeps the predicate well-defined.
+                                w,
+                                h,
                             );
                             let cq = c_quant.as_ref().unwrap();
                             let scan = crate::depth_refine::build_refined_scan_at(
@@ -4300,8 +4357,8 @@ fn encode_tile_rows(
                             // counterpart is the PICKPART wrap, which fires
                             // at every preset.
                             let eval = crate::pd0::pd0_pick_sb_partition_m6_eval(
-                                encode_input,
-                                w,
+                                sb_input,
+                                in_stride,
                                 x0,
                                 y0,
                                 cli_qp as u32,
@@ -4320,6 +4377,9 @@ fn encode_tile_rows(
                                 speed_config.preset >= 8
                                     && x0 + 64 <= w
                                     && y0 + 64 <= h,
+                                // ALIGNED dims — the spec-5.11.4 edge grid.
+                                w,
+                                h,
                             );
                             #[cfg(feature = "std")]
                             if std::env::var_os("SVTAV1_PD0DBG").is_some()
@@ -4346,7 +4406,7 @@ fn encode_tile_rows(
                                 walk(&eval, x0, y0);
                             }
                             let tree = eval.tree();
-                            let sb_vars = crate::pd0::compute_b64_variance(encode_input, w, x0, y0);
+                            let sb_vars = crate::pd0::compute_b64_variance(sb_input, in_stride, x0, y0);
                             let mut funnel_ctx = if use_funnel {
                                 let (u_src, v_src) = chroma_src.unwrap();
                                 Some(crate::leaf_funnel::FunnelCtx {
@@ -4363,8 +4423,8 @@ fn encode_tile_rows(
                                 None
                             };
                             crate::partition::encode_fixed_tree(
-                                &encode_input[y0 * w + x0..],
-                                w,
+                                &sb_input[y0 * in_stride + x0..],
+                                in_stride,
                                 &mut tile_frame_recon,
                                 w,
                                 &tree,
@@ -4373,6 +4433,8 @@ fn encode_tile_rows(
                                 &part_config,
                                 x0,
                                 y0,
+                                w,
+                                h,
                                 &sb_vars,
                                 (x0, y0),
                                 funnel_ctx.as_mut(),

@@ -611,6 +611,12 @@ fn tx_quant_core(
         (8, 8) => (TxSize::Tx8x8, 1),
         (8, 4) => (TxSize::Tx8x4, 6),
         (4, 4) => (TxSize::Tx4x4, 0),
+        // Task #95 chunk 2: "tall" rect TX for the PARTITION_VERT boundary
+        // block (`sq/2 x sq`) of a right-edge partial-SB node. The AV1 enum
+        // indices mirror the "wide" ones (TX_8X16=7, TX_16X32=9, TX_32X64=11).
+        (32, 64) => (TxSize::Tx32x64, 11),
+        (16, 32) => (TxSize::Tx16x32, 9),
+        (8, 16) => (TxSize::Tx8x16, 7),
         _ => unreachable!("PD0 tx {}x{}", sq_size, tx_h),
     };
 
@@ -623,7 +629,7 @@ fn tx_quant_core(
         TxType::DctDct,
     );
 
-    // 64-dim fold + pack (svt_handle_transform64x64 / 64x32).
+    // 64-dim fold + pack (svt_handle_transform64x64 / 64x32 / 32x64).
     let mut three_quad_energy = 0u64;
     if sq_size == 64 {
         if tx_h == 64 {
@@ -639,6 +645,12 @@ fn tx_quant_core(
             }
         }
         coeffs.truncate(32 * pack_h);
+    } else if tx_h == 64 {
+        // Tall 32x64 (svt_handle_transform32x64): the block is 32 wide (no
+        // width fold), so the top 32 rows are already contiguous — keep them
+        // and route the bottom 32 rows' energy to three_quad_energy.
+        three_quad_energy = energy(&coeffs[sq_size * 32..], sq_size, sq_size, 32);
+        coeffs.truncate(sq_size * 32);
     }
 
     let packed_w = sq_size.min(32);
@@ -947,14 +959,22 @@ fn check_is_subres_safe(
 pub enum Pd0Tree {
     Leaf(usize),
     Split(Box<[Pd0Tree; 4]>),
+    /// A quadrant whose top-left lies at/after the ALIGNED frame extent —
+    /// it codes NOTHING (C `svt_aom_write_modes_sb`'s `mi_row >= mi_rows ||
+    /// mi_col >= mi_cols` early return / the SPLIT-loop `continue`). Only
+    /// produced on partial superblocks (task #95 chunk 2); a 64-aligned
+    /// frame never generates it.
+    Off,
 }
 
 impl Pd0Tree {
-    /// Leaf sizes in raster/coding order (debug aid).
+    /// Leaf sizes in raster/coding order (debug aid). Off quadrants
+    /// contribute nothing.
     pub fn leaf_sizes(&self) -> Vec<usize> {
         match self {
             Pd0Tree::Leaf(s) => vec![*s],
             Pd0Tree::Split(ch) => ch.iter().flat_map(|c| c.leaf_sizes()).collect(),
+            Pd0Tree::Off => vec![],
         }
     }
 }
@@ -975,6 +995,10 @@ pub struct Pd0Eval {
     pub cost: u64,
     /// PD0 picked SPLIT at this node (`pc_tree->partition`).
     pub split: bool,
+    /// This node's top-left is at/after the ALIGNED frame extent — it codes
+    /// nothing (partial-SB off-frame quadrant, task #95 chunk 2). Mutually
+    /// exclusive with `tested`/`split`. Never set on a 64-aligned frame.
+    pub off: bool,
     pub children: Option<Box<[Pd0Eval; 4]>>,
 }
 
@@ -985,13 +1009,28 @@ impl Pd0Eval {
             tested: false,
             cost: 0,
             split: false,
+            off: false,
+            children: None,
+        }
+    }
+
+    /// An off-frame quadrant (top-left >= aligned extent): codes nothing.
+    fn off(sq: usize) -> Self {
+        Pd0Eval {
+            sq,
+            tested: false,
+            cost: 0,
+            split: false,
+            off: true,
             children: None,
         }
     }
 
     /// The picked partition tree this eval corresponds to.
     pub fn tree(&self) -> Pd0Tree {
-        if self.split {
+        if self.off {
+            Pd0Tree::Off
+        } else if self.split {
             let ch = self.children.as_ref().expect("split node has children");
             Pd0Tree::Split(Box::new([
                 ch[0].tree(),
@@ -1005,9 +1044,12 @@ impl Pd0Eval {
     }
 
     /// C `get_max_min_pd0_depths` (enc_dec_process.c:1959): max/min PICKED
-    /// leaf sizes over the tree (in-bounds walk; our frames are 64-aligned
-    /// so every node is in bounds).
+    /// leaf sizes over the tree. Off-frame quadrants contribute nothing (C
+    /// only walks in-bounds sub-trees).
     pub fn max_min_picked(&self, max: &mut usize, min: &mut usize) {
+        if self.off {
+            return;
+        }
         if self.split {
             for c in self.children.as_ref().expect("split children").iter() {
                 c.max_min_picked(max, min);
@@ -1116,6 +1158,12 @@ struct Pd0Ctx<'a> {
     stride: usize,
     sb_x: usize,
     sb_y: usize,
+    /// ALIGNED frame dims (mi-grid extent) — the spec-5.11.4 /
+    /// set_blocks_to_test edge predicate is computed against these. For a
+    /// 64-aligned frame every SB is complete, so `sb_x + 64 <= aligned_w`
+    /// and the edge/off branches in [`Pd0Ctx::pick`] never fire.
+    aligned_w: usize,
+    aligned_h: usize,
     vars: SbVariance,
     qp: u32,
     qindex: u8,
@@ -1242,41 +1290,44 @@ impl<'a> Pd0Ctx<'a> {
     /// the REAL coefficient rate (`coeff_rate_est_lvl = 1` ->
     /// svt_aom_txb_estimate_coeff_bits_pd0 with zero contexts).
     fn lvl1_block_cost(&mut self, sq_size: usize, org_x: usize, org_y: usize) -> u64 {
+        self.lvl1_block_cost_rect(sq_size, sq_size, org_x, org_y)
+    }
+
+    /// Non-square generalisation of the PD0_LVL_1 block cost. `bw == bh` is
+    /// the square PART_N path (unchanged); `bw != bh` costs the single
+    /// in-frame PARTITION_HORZ / PARTITION_VERT block of a partial-SB boundary
+    /// node (task #95 chunk 2) — C's LPD0 "single block per shape ... PART_H/
+    /// PART_V for boundary blocks" (product_coding_loop.c:127). The DC
+    /// predictor, residual, `tx_quant_core` (Tx32x16 / Tx16x8 / …) and PD0
+    /// coeff-rate estimator are all dimension-general.
+    fn lvl1_block_cost_rect(&mut self, bw: usize, bh: usize, org_x: usize, org_y: usize) -> u64 {
         let abs_x = self.sb_x + org_x;
         let abs_y = self.sb_y + org_y;
-        let (above, left, _tl, has_above, has_left) = crate::partition::extract_neighbors(
-            self.src,
-            self.stride,
-            abs_x,
-            abs_y,
-            sq_size,
-            sq_size,
-        );
-        let mut pred = vec![0u8; sq_size * sq_size];
+        let (above, left, _tl, has_above, has_left) =
+            crate::partition::extract_neighbors(self.src, self.stride, abs_x, abs_y, bw, bh);
+        let mut pred = vec![0u8; bw * bh];
         svtav1_dsp::intra_pred::predict_dc(
-            &mut pred, sq_size, &above, &left, sq_size, sq_size, has_above, has_left,
+            &mut pred, bw, &above, &left, bw, bh, has_above, has_left,
         );
 
-        let mut residual = vec![0i32; sq_size * sq_size];
-        for r in 0..sq_size {
+        let mut residual = vec![0i32; bw * bh];
+        for r in 0..bh {
             let srow = (abs_y + r) * self.stride + abs_x;
-            let prow = r * sq_size;
-            for c in 0..sq_size {
-                residual[r * sq_size + c] = self.src[srow + c] as i32 - pred[prow + c] as i32;
+            let prow = r * bw;
+            for c in 0..bw {
+                residual[r * bw + c] = self.src[srow + c] as i32 - pred[prow + c] as i32;
             }
         }
-        let (eob, dist, qcoeff, c_tx) = tx_quant_core(&residual, sq_size, sq_size, self.qindex, 0);
+        let (eob, dist, qcoeff, c_tx) = tx_quant_core(&residual, bw, bh, self.qindex, 0);
         let tables = self.lvl1.expect("LVL_1 requires tables");
         // C `perform_tx_pd0` luma coeff rate (single-txb, product_coding_
-        // loop.c:4576): `th = (bw*bh)>>5`, bw = bh = min(sq_size,32) (the
-        // capped distortion dims). coeff_rate_est_lvl 2 (M7/M8) prices
-        // `eob < th ? 6000 + eob*500 : real`; the eob==0 -> 6000 case folds
-        // into `eob < th` (th >= 2 for every >= 8x8 square). Level 1 (M2..M6)
-        // keeps the real cost / skip cost (unchanged). The real fallback's
-        // eob/2 middle loop (loop_cost_eob_pd0) already matches M7/M8's
-        // pd0_fast_coeff_est_level 2.
-        let bw = if sq_size < 64 { sq_size } else { 32 };
-        let th = (bw * bw) >> 5;
+        // loop.c:4576): `th = (bw*bh)>>5`, dims capped at 32. coeff_rate_est_lvl
+        // 2 (M7/M8) prices `eob < th ? 6000 + eob*500 : real`; the eob==0 ->
+        // 6000 case folds into `eob < th`. Level 1 (M2..M6) keeps the real
+        // cost / skip cost.
+        let cw = bw.min(32);
+        let ch = bh.min(32);
+        let th = (cw * ch) >> 5;
         let bits = if self.coeff_rate_est_lvl >= 2 && (eob as usize) < th {
             6000 + eob as u64 * 500
         } else if eob == 0 {
@@ -1300,9 +1351,81 @@ impl<'a> Pd0Ctx<'a> {
     /// parent-first DFS returning (cost, eval record) for this square
     /// node; the picked tree is `eval.tree()`.
     fn pick(&mut self, sq_size: usize, org_x: usize, org_y: usize) -> (u64, Pd0Eval) {
+        let abs_x = self.sb_x + org_x;
+        let abs_y = self.sb_y + org_y;
+        // C `svt_aom_write_modes_sb` early return: a node whose top-left is
+        // outside the ALIGNED frame codes nothing. Its cost never enters a
+        // parent decision (parents of off-frame nodes are forced-split edge
+        // nodes, which ignore cost), so 0 is inert.
+        if abs_x >= self.aligned_w || abs_y >= self.aligned_h {
+            return (0, Pd0Eval::off(sq_size));
+        }
+        // spec 5.11.4 / `set_blocks_to_test` (enc_dec_process.c:1394) edge
+        // predicate vs the ALIGNED grid. `half` = half the square's pixel
+        // extent (C `hbs = (mi_size_wide[bsize] << 2) >> 1`).
+        let half = sq_size / 2;
+        let has_rows = abs_y + half < self.aligned_h;
+        let has_cols = abs_x + half < self.aligned_w;
+        if !has_rows && !has_cols {
+            // BOTH-false node (extends past both edges): `set_blocks_to_test`
+            // (enc_dec_process.c:1405) yields `tot_shapes = 0` → FORCED SPLIT.
+            // PART_N is NEVER costed; recurse into the four quadrants
+            // (off-frame ones return `Off`). 8x8 nodes are never edge nodes on
+            // an 8-aligned frame, so a both-false node always has `sq_size >
+            // min_sq` and can split.
+            let mut children: Vec<Pd0Eval> = Vec::with_capacity(4);
+            let mut total = 0u64;
+            for i in 0..4 {
+                let cx = org_x + (i & 1) * half;
+                let cy = org_y + (i >> 1) * half;
+                let (c_cost, c_eval) = self.pick(half, cx, cy);
+                total += c_cost;
+                children.push(c_eval);
+            }
+            let ch: [Pd0Eval; 4] = children.try_into().expect("4 children");
+            let eval = Pd0Eval {
+                sq: sq_size,
+                tested: false,
+                cost: 0,
+                split: true,
+                off: false,
+                children: Some(Box::new(ch)),
+            };
+            return (total, eval);
+        }
+        // ONE-false (single-edge) and complete (both-true) nodes fall through
+        // to the normal PART_N-vs-SPLIT decision below. C's PD0 costs the
+        // SQUARE PART_N block (its distortion cropped to the ALIGNED extent,
+        // handled in the block-cost path) at every reachable node; a one-false
+        // node that PD0 keeps as a leaf is coded as its single edge shape
+        // (PARTITION_HORZ for `!has_rows`, PARTITION_VERT for `!has_cols`) at
+        // `encode_fixed_tree`, deterministically — `set_blocks_to_test`
+        // injects exactly that one shape (md_disallow_nsq_search is set at the
+        // allintra fixed-tree presets, so no other shape competes).
+
         let tested = sq_size <= self.max_sq && sq_size >= self.min_sq;
+        // A ONE-false (single-edge) node prices its EDGE SHAPE block, not the
+        // square PART_N — C's LPD0 costs "PART_H/PART_V for boundary blocks"
+        // (product_coding_loop.c:127): HORZ (`!has_rows`) = `sq x sq/2`, VERT
+        // (`!has_cols`) = `sq/2 x sq`. The square block would over-cost (twice
+        // the pixels/coeffs) and wrongly lose to SPLIT. This "don't split"
+        // cost then competes with SPLIT exactly like the square path; a win
+        // makes the node a PD0 leaf, coded as its edge shape at
+        // `encode_fixed_tree`. Only wired on the LVL_1 path (allintra
+        // fixed-tree presets, incl. the 96x80 milestone); LVL_5/6 boundary
+        // nodes keep the square cost (their straddle cells are out of scope).
+        let one_false = !has_rows || !has_cols;
         let parent_cost = if tested {
-            Some(self.block_cost(sq_size, org_x, org_y))
+            if one_false && self.mode == Pd0Mode::Lvl1 {
+                let (bw, bh) = if !has_rows {
+                    (sq_size, half)
+                } else {
+                    (half, sq_size)
+                };
+                Some(self.lvl1_block_cost_rect(bw, bh, org_x, org_y))
+            } else {
+                Some(self.block_cost(sq_size, org_x, org_y))
+            }
         } else {
             None
         };
@@ -1311,6 +1434,7 @@ impl<'a> Pd0Ctx<'a> {
             tested,
             cost: parent_cost.unwrap_or(0),
             split: false,
+            off: false,
             children: None,
         };
 
@@ -1392,6 +1516,7 @@ impl<'a> Pd0Ctx<'a> {
 ///
 /// `src` is the full luma plane (64-aligned frame, the caller's padding
 /// convention), `qp` the CLI 0..63 qp, `qindex` the frame base_q_idx.
+#[allow(clippy::too_many_arguments)]
 pub fn pd0_pick_sb_partition(
     src: &[u8],
     stride: usize,
@@ -1400,6 +1525,8 @@ pub fn pd0_pick_sb_partition(
     qp: u32,
     qindex: u8,
     ires_factor: u64,
+    aligned_w: usize,
+    aligned_h: usize,
 ) -> Pd0Tree {
     let vars = compute_b64_variance(src, stride, sb_x, sb_y);
     let max_sq = max_block_size_allintra(vars.0[0], qp);
@@ -1414,6 +1541,8 @@ pub fn pd0_pick_sb_partition(
         stride,
         sb_x,
         sb_y,
+        aligned_w,
+        aligned_h,
         vars,
         qp,
         qindex,
@@ -1448,6 +1577,7 @@ pub fn pd0_pick_sb_partition(
 /// `tables` carries the frame-level default cost tables (C
 /// `md_frame_context` for the first SB; the per-SB refresh from the
 /// evolving frame context under `cdf_ctrl.enabled` is not yet ported).
+#[allow(clippy::too_many_arguments)]
 pub fn pd0_pick_sb_partition_m6(
     src: &[u8],
     stride: usize,
@@ -1457,6 +1587,8 @@ pub fn pd0_pick_sb_partition_m6(
     qindex: u8,
     tables: &M6Pd0Tables,
     coeff_rate_est_lvl: u8,
+    aligned_w: usize,
+    aligned_h: usize,
 ) -> Pd0Tree {
     let vars = compute_b64_variance(src, stride, sb_x, sb_y);
     let lambda = kf_full_lambda_8bit(qindex, qp) as u64;
@@ -1465,6 +1597,8 @@ pub fn pd0_pick_sb_partition_m6(
         stride,
         sb_x,
         sb_y,
+        aligned_w,
+        aligned_h,
         vars,
         qp,
         qindex,
@@ -1489,6 +1623,7 @@ pub fn pd0_pick_sb_partition_m6(
 /// `set_blocks_to_be_tested` (enc_dec_process.c:1494: depth removal off
 /// on the allintra still path, `ctx->disallow_4x4 ? 8 : 4`); the PD0B
 /// capture rows confirm C's LPD0 evaluates 4x4 blocks at M2/M3.
+#[allow(clippy::too_many_arguments)]
 pub fn pd0_pick_sb_partition_m6_eval(
     src: &[u8],
     stride: usize,
@@ -1500,6 +1635,8 @@ pub fn pd0_pick_sb_partition_m6_eval(
     min_sq: usize,
     coeff_rate_est_lvl: u8,
     cap_max_block: bool,
+    aligned_w: usize,
+    aligned_h: usize,
 ) -> Pd0Eval {
     let vars = compute_b64_variance(src, stride, sb_x, sb_y);
     let lambda = kf_full_lambda_8bit(qindex, qp) as u64;
@@ -1522,6 +1659,8 @@ pub fn pd0_pick_sb_partition_m6_eval(
         stride,
         sb_x,
         sb_y,
+        aligned_w,
+        aligned_h,
         vars,
         qp,
         qindex,
@@ -1655,6 +1794,8 @@ mod tests {
             stride: 64,
             sb_x: 0,
             sb_y: 0,
+            aligned_w: 64,
+            aligned_h: 64,
             vars: compute_b64_variance(&y, 64, 0, 0),
             qp: 40,
             qindex: 160,
@@ -1694,6 +1835,8 @@ mod tests {
             stride: 64,
             sb_x: 0,
             sb_y: 0,
+            aligned_w: 64,
+            aligned_h: 64,
             vars: compute_b64_variance(&y, 64, 0, 0),
             qp: 55,
             qindex: 220,
@@ -1767,18 +1910,18 @@ mod tests {
         // q20 (qindex 80): LVL_6, max 32 -> forced SPLIT at 64, every 32
         // SPLITs again, 16x16 leaves everywhere (C stream: op0 SPLIT,
         // op1 SPLIT, op2 NONE...).
-        let t20 = pd0_pick_sb_partition(&y, 64, 0, 0, 20, 80, 0);
+        let t20 = pd0_pick_sb_partition(&y, 64, 0, 0, 20, 80, 0, 64, 64);
         assert_eq!(t20.leaf_sizes(), vec![16; 16]);
         // q40 (qindex 160): LVL_5, max 32 -> forced SPLIT at 64, all four
         // 32x32 keep PARENT (C: op0 SPLIT, op1 NONE).
-        let t40 = pd0_pick_sb_partition(&y, 64, 0, 0, 40, 160, 0);
+        let t40 = pd0_pick_sb_partition(&y, 64, 0, 0, 40, 160, 0, 64, 64);
         assert_eq!(t40.leaf_sizes(), vec![32; 4]);
         // q55 (qindex 220): LVL_5, 64 in set and PARENT wins outright.
-        let t55 = pd0_pick_sb_partition(&y, 64, 0, 0, 55, 220, 0);
+        let t55 = pd0_pick_sb_partition(&y, 64, 0, 0, 55, 220, 0, 64, 64);
         assert_eq!(t55, Pd0Tree::Leaf(64));
         // Uniform: LVL_5 with zero residual everywhere -> 64x64 NONE.
         let u = vec![128u8; 64 * 64];
-        let tu = pd0_pick_sb_partition(&u, 64, 0, 0, 40, 160, 0);
+        let tu = pd0_pick_sb_partition(&u, 64, 0, 0, 40, 160, 0, 64, 64);
         assert_eq!(tu, Pd0Tree::Leaf(64));
     }
 
@@ -1794,6 +1937,8 @@ mod tests {
             stride: 64,
             sb_x: 0,
             sb_y: 0,
+            aligned_w: 64,
+            aligned_h: 64,
             vars: compute_b64_variance(&y, 64, 0, 0),
             qp: 55,
             qindex: 220,
@@ -1829,6 +1974,8 @@ mod tests {
             stride: 64,
             sb_x: 0,
             sb_y: 0,
+            aligned_w: 64,
+            aligned_h: 64,
             vars: compute_b64_variance(&y, 64, 0, 0),
             qp: 40,
             qindex: 160,
@@ -1860,6 +2007,8 @@ mod tests {
             stride: 64,
             sb_x: 0,
             sb_y: 0,
+            aligned_w: 64,
+            aligned_h: 64,
             vars: compute_b64_variance(&y, 64, 0, 0),
             qp: 20,
             qindex: 80,
@@ -1893,16 +2042,16 @@ mod tests {
     #[test]
     fn m6_gradient64_trees_match_c() {
         let y = gradient64();
-        let t20 = pd0_pick_sb_partition_m6(&y, 64, 0, 0, 20, 80, &build_m6_pd0_tables(80), 1);
+        let t20 = pd0_pick_sb_partition_m6(&y, 64, 0, 0, 20, 80, &build_m6_pd0_tables(80), 1, 64, 64);
         assert_eq!(t20.leaf_sizes(), vec![32; 4]);
-        let t40 = pd0_pick_sb_partition_m6(&y, 64, 0, 0, 40, 160, &build_m6_pd0_tables(160), 1);
+        let t40 = pd0_pick_sb_partition_m6(&y, 64, 0, 0, 40, 160, &build_m6_pd0_tables(160), 1, 64, 64);
         assert_eq!(t40.leaf_sizes(), vec![32; 4]);
-        let t55 = pd0_pick_sb_partition_m6(&y, 64, 0, 0, 55, 220, &build_m6_pd0_tables(220), 1);
+        let t55 = pd0_pick_sb_partition_m6(&y, 64, 0, 0, 55, 220, &build_m6_pd0_tables(220), 1, 64, 64);
         assert_eq!(t55, Pd0Tree::Leaf(64));
         // Uniform content: exact DC prediction, zero residual -> 64 NONE
         // (keeps every uniform p6 identity cell byte-identical).
         let u = vec![128u8; 64 * 64];
-        let tu = pd0_pick_sb_partition_m6(&u, 64, 0, 0, 40, 160, &build_m6_pd0_tables(160), 1);
+        let tu = pd0_pick_sb_partition_m6(&u, 64, 0, 0, 40, 160, &build_m6_pd0_tables(160), 1, 64, 64);
         assert_eq!(tu, Pd0Tree::Leaf(64));
     }
 }

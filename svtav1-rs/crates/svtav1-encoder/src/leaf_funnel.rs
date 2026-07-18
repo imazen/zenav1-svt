@@ -2465,6 +2465,33 @@ pub(crate) fn decide_leaf(
     // at M0..M8 where TXS is uniform.
     sb_is_lvl6: bool,
 ) -> LeafChoice {
+    decide_leaf_rect(
+        fx, y_src, y_src_stride, y_src_off, y_recon, y_stride, abs_x, abs_y, size, size, dc_only,
+        sb_is_lvl6,
+    )
+}
+
+/// Non-square variant of [`decide_leaf`] — evaluate + commit a `w x h` block
+/// (`evaluate_leaf`/`commit_leaf` are already dimension-general, exercised by
+/// the M4/M5 NSQ depth-refine walk). Used by the partial-SB partition edge
+/// coding (task #95 chunk 2): an incomplete node coded as PARTITION_HORZ /
+/// PARTITION_VERT codes its single in-frame `size x (size/2)` (or
+/// `(size/2) x size`) block through this path.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn decide_leaf_rect(
+    fx: &mut FunnelCtx<'_>,
+    y_src: &[u8],
+    y_src_stride: usize,
+    y_src_off: usize,
+    y_recon: &mut [u8],
+    y_stride: usize,
+    abs_x: usize,
+    abs_y: usize,
+    w: usize,
+    h: usize,
+    dc_only: bool,
+    sb_is_lvl6: bool,
+) -> LeafChoice {
     let ev = evaluate_leaf(
         fx,
         y_src,
@@ -2474,8 +2501,8 @@ pub(crate) fn decide_leaf(
         y_stride,
         abs_x,
         abs_y,
-        size,
-        size,
+        w,
+        h,
         dc_only,
         sb_is_lvl6,
     );

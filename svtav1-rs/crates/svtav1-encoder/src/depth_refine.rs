@@ -1886,7 +1886,7 @@ mod tests {
         for (qp, qindex, lambda) in [(20u32, 80u8, 25650u64), (40, 160, 248207)] {
             let tables = crate::pd0::build_m6_pd0_tables(qindex);
             let eval =
-                crate::pd0::pd0_pick_sb_partition_m6_eval(&y, 64, 0, 0, qp, qindex, &tables, 8, 1, false);
+                crate::pd0::pd0_pick_sb_partition_m6_eval(&y, 64, 0, 0, qp, qindex, &tables, 8, 1, false, 64, 64);
             assert!(eval.split, "q{qp}: PD0 splits the 64");
             let scan = build_refined_scan(&eval, &ctrls, lambda, &tables);
             assert!(!scan.test_this, "q{qp}: no 64x64 parent-depth eval");
@@ -1900,7 +1900,7 @@ mod tests {
         }
         // q55: 64x64 NONE, no deeper evals.
         let tables = crate::pd0::build_m6_pd0_tables(220);
-        let eval = crate::pd0::pd0_pick_sb_partition_m6_eval(&y, 64, 0, 0, 55, 220, &tables, 8, 1, false);
+        let eval = crate::pd0::pd0_pick_sb_partition_m6_eval(&y, 64, 0, 0, 55, 220, &tables, 8, 1, false, 64, 64);
         assert!(!eval.split);
         let scan = build_refined_scan(&eval, &ctrls, 1527856, &tables);
         assert!(scan.test_this && !scan.split_flag && scan.children.is_none());
@@ -1916,7 +1916,7 @@ mod tests {
         let y = gradient64();
         let ctrls = DrCtrls::for_preset(4);
         let tables = crate::pd0::build_m6_pd0_tables(80);
-        let eval = crate::pd0::pd0_pick_sb_partition_m6_eval(&y, 64, 0, 0, 20, 80, &tables, 8, 1, false);
+        let eval = crate::pd0::pd0_pick_sb_partition_m6_eval(&y, 64, 0, 0, 20, 80, &tables, 8, 1, false, 64, 64);
         assert!(eval.split);
         let scan = build_refined_scan(&eval, &ctrls, 25650, &tables);
         assert!(!scan.test_this && scan.split_flag);
@@ -1933,12 +1933,14 @@ mod tests {
             tested: true,
             cost: 100,
             split: true,
+            off: false,
             children: Some(Box::new([
                 Pd0Eval {
                     sq: 32,
                     tested: true,
                     cost: 25,
                     split: false,
+                    off: false,
                     children: None,
                 },
                 Pd0Eval {
@@ -1946,6 +1948,7 @@ mod tests {
                     tested: true,
                     cost: 25,
                     split: false,
+                    off: false,
                     children: None,
                 },
                 Pd0Eval {
@@ -1953,6 +1956,7 @@ mod tests {
                     tested: true,
                     cost: 25,
                     split: false,
+                    off: false,
                     children: None,
                 },
                 Pd0Eval {
@@ -1960,6 +1964,7 @@ mod tests {
                     tested: true,
                     cost: 25,
                     split: false,
+                    off: false,
                     children: None,
                 },
             ])),
