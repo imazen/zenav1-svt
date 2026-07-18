@@ -63,13 +63,32 @@ that had held CI red — see CLAUDE.md.**
 `tools/bd10_matrix.sh` (also a CI gate): uniform {64,128} x qp{20,40,55} x
 preset{0,2,3,6,10,13} encodes byte-identical to real aomenc at bit depth 10
 (**36/36**) and decode under aomdec. Harness: `capture_c_trace <..> 10` (packed
-u16 LE) + `identity_run SVTAV1_BD=10` + the pipeline's `with_bit_depth`. Two
-chunks landed: the first cell (uniform, aa89a83be — the port stays u8 because
-flat->skip makes the tile bit-depth-independent) and the M6+ LF-level-from-Q
-bd10 derivation (be1ea0770). The 5 bd10 DSP kernel families are FFI-verified
-(see the differential-suites table). NEXT: the u16 MD path for NON-flat content
-(coded residuals are precision-sensitive) — the large hot-path pass; PD0 stays
+u16 LE) + `identity_run SVTAV1_BD=10` + the pipeline's `with_bit_depth`. Three
+frame-header chunks landed: the first cell (uniform, aa89a83be — the port stays
+u8 because flat->skip makes the tile bit-depth-independent), the M6+
+LF-level-from-Q bd10 derivation (be1ea0770), and the qp-fast-path CDEF
+strength-from-Q bd10 derivation (885ece6da: `q = AC_QLOOKUP_10[qindex] >> 2`,
+same f32 fit — proven C-exact for all 256 qindexes by the `c_parity_cdef_pick`
+bd10 differential, and end-to-end by the gradient bd10 op-trace's first
+divergence moving off the FH cdef line into the tile). The 5 bd10 DSP kernel
+families are FFI-verified (see the differential-suites table).
+
+NEXT: the u16 MD path for NON-flat content. MEASURED (2026-07-18): gradient bd10
+diverges in the **tile coefficients**, not the frame header — the port quantizes
+the residual with bd8 tables (Q8) while C uses bd10 tables (Q10 ~4xQ8 but not
+exactly), so even 8-bit-representable content quantizes to different levels. The
+large hot-path pass (funnel/pipeline u8->u16); candidate decomposition:
+(2a) plumb u16 with bd8 stored as u16, gate = bd8 identity 54/54 (pure refactor);
+(2b) flip bd10 tables on the u16 path, gate = first non-flat bd10 cell. PD0 stays
 u8 on the MSB-truncated plane. See docs/bd10-port-map.md.
+
+NOTE (2026-07-18): the prior session's bd10 + palette-conformance work (10
+commits, 58bd3b4c9..885ece6da) was committed+verified-green locally but **never
+pushed to origin** — origin CI had been red since 2026-07-16 without the palette
+`filter_intra` conformance fix. Recovered this session: pushed + origin-verified
+(`merge-base --is-ancestor HEAD origin`), all gates green locally (workspace
+tests, bd8 54/54, bd10 uniform 36/36, mono conformance 1260/1260, chroma
+1575/1575).
 
 ## Bit-exact-vs-C differential suites (svtav1-cref harness)
 
