@@ -23,10 +23,11 @@
 # which fixed the odd-height FH lr_type divergence. Odd-WIDTH cells (right-edge
 # partial SBs) byte-match robustly across qp; odd full-SB cells (e.g. 63x63)
 # exercise the true-dim seq-header size bits + recon crop with no partial SB.
-# STILL DIVERGENT (a pre-existing partial-SB PD0 near-tie, NOT odd-specific —
-# 8-aligned 64x72 / 72x64 diverge too): the 8-tall bottom partial SB, where a
-# straddling 16x16 node's edge-shape(16x8)-vs-SPLIT(2x8x8) RD tips — so
-# odd-HEIGHT-with-8-tall-bottom-SB (64x65, 65x65, 65x72, 65x80) is a follow-up.
+# The 8-tall bottom partial SB near-tie is now FIXED (PD0 boundary-node cost:
+# rectangular TX-type rate + binary alike split rate) — single-edge partial
+# cells (bottom OR right) byte-match at every qp. STILL DIVERGENT: BOTH-partial
+# cells (aligned 72x72, e.g. 65x65 / 65x72 / 65x80) hit a separate PD1 intra
+# MODE near-tie (V_PRED vs DC at a bottom-SB leaf) — a follow-up.
 #
 # Scope: preset 6 (the PD0_LVL_1 fixed-tree path) at bd8 4:2:0. Presets >= 9
 # (LVL_5/6 boundary cost) are a documented follow-up.
@@ -76,6 +77,17 @@ CELLS=(
   "gradient 63 96 32 6"    # odd width + 32-tall bottom partial SB
   "gradient 63 48 32 6"    # odd width + bottom partial (48-tall single SB)
   "gradient 63 63 32 6"    # odd BOTH, aligned 64x64 (odd header + true crop, no partial SB)
+  # BOTTOM-EDGE / 8-tall bottom partial SB — unblocked by the PD0 boundary-node
+  # cost fix (rect TX-type rate + binary alike split rate). These are the
+  # single-edge partial cells the boundary near-tie used to flip; now byte-exact
+  # at every qp. Includes the two 8-ALIGNED partial cells (64x72, 72x64) that
+  # pinned the bugs (they are not odd-dim — pure partial-SB).
+  "gradient 64 65 32 6"    # odd height (#95 target), bottom-edge 8-tall SB
+  "gradient 64 65 20 6"
+  "gradient 64 65 55 6"
+  "gradient 63 65 40 6"    # odd BOTH, aligned 64x72 bottom-partial
+  "gradient 64 72 52 6"    # 8-aligned bottom partial (pinned the boundary bugs)
+  "gradient 72 64 62 6"    # 8-aligned right partial (pinned the tx-type rate bug)
 )
 for cell in "${CELLS[@]}"; do
   read -r content w h qp p <<<"$cell"
