@@ -149,25 +149,46 @@ GATED odd cells: 65x64/65x63/71x64/73x64/81x64 (odd width, right-edge partial),
 73x73 (odd both, aligned 80x80), 63x96/63x48 (odd width + ≥32-tall bottom
 partial), 63x63 (odd both, full SB = odd header + true crop, no partial SB).
 
+### PD0 BOUNDARY-NODE COST — FIXED (2026-07-18)
+
+The partial-SB PD0 partition near-tie was TWO real bugs in the boundary
+edge-shape node cost (pinned via a new `SVT_PD0COST` interposer on C's
+`svt_aom_full_cost_pd0`, unit-comparing C's PD0 costs against the port's
+NSQDBG PD0 dump — the port's 8x8 children + dist already matched C; only the
+16x8 edge-shape ybits and the split rate were off):
+
+1. **Rectangular tx-type rate** (`pd0::TxTypeRatesDc::rate_for`):
+   `av1_transform_type_rate_estimation` charges the intra tx-type bit via the
+   tx's SQUARE-MAPPED CDF row; the port returned it only for the 3 SQUARE PD0
+   sizes and 0 for rectangular transforms, so every 16x8/8x16 edge shape was
+   748 bits too cheap (TX_16X8 -> its square TX_8X8's rate). Fix: map rect tx
+   through `TXSIZE_SQR_MAP` (0 only when DCT-only, sqr_up >= TX_32X32).
+2. **Binary boundary split rate** (`pd0::pick` + `context::partition_alike_
+   split_cost`): `svt_aom_partition_rate_cost` prices SPLIT at a one-false node
+   with the BINARY `partition_{vert,horz}_alike_fac_bits[ctx][SPLIT]` (bottom ->
+   vert_alike, right -> horz_alike, CROSS-named), NOT the full-alphabet
+   `partition_fac_bits[ctx][SPLIT]` the port's `split_bits` used.
+
+With both fixes the port's PD0 costs match C EXACTLY. Unblocked EVERY
+single-edge partial cell at EVERY qp (64x65 / 64x72 / 72x64 + all odd-width
+right-edge) AND the straddle-win cells at low-mid qp (80x88 / 104x88 / 72x88
+q<=32, 80x104 / 104x80 all qp) — the straddle cells were NOT an uncropped-
+distortion problem after all; they shared this boundary-cost root. Gate:
+`partial_sb_gate.sh` 37/37; identity_matrix 54/54; bd10 36/36 + 8/8; both fixes
+partial-SB-only (rect tx / one-false nodes never occur 64-aligned).
+
 REMAINING (diverge, NOT in the gate — all DECODABLE):
-- **8-tall-bottom-SB partial-SB PD0 near-tie** (NOT odd-specific; 8-aligned
-  64x72 / 72x64 diverge at some qp too). ROOT (drilled 64x65 q20, mi=(16,8)
-  = pixel (32,64)): C splits the straddling 16x16 bottom-edge node into
-  2×8x8, the port keeps its edge-shape 16x8 — an edge-shape(16x8)-vs-
-  SPLIT(2×8x8) RD near-tie in `pd0::pick`, both candidates FULLY IN-FRAME
-  (no crop involved). x16-31 splits identically in both; only x32-47 tips.
-  The port compares `lvl1_block_cost_rect` (edge shape) vs the recursed
-  split; a small PD0 RD delta flips it. Needs C's exact PD0 RD (product_
-  coding_loop.c) — no PD0 wrap hook exists yet. Affects odd-HEIGHT-with-
-  8-tall-bottom-SB (64x65, 65x65, 65x72, 65x80, 71x63) at some qp.
-- **presets >= 9 (M9 LVL_5/6)** — the edge-shape cost is wired on LVL_1 only;
-  96x80 p10/p13 diverge (boundary nodes fall back to the square cost -> split).
-- **straddle-WIN cells** (C keeps a straddling boundary block as a leaf) — the
-  port's PD0 uses the UNCROPPED distortion and the chroma source WRAPS at the
-  aligned stride (byte-exact on uniform chroma / when the straddle loses RD:
-  48x56, 40x40, 120x120, 136x136 are gated; 80x88, 104x88, 72x88 diverge by a
-  few bytes). Full byte-exact straddle support = cropped-RDO distortion +
-  SB-extent chroma STRIDE (not just product-sized slack) — a follow-up.
+- **BOTH-partial PD1 intra MODE near-tie** (aligned 72x72 small-partial, and
+  the straddle cells at high qp q40+). ROOT (drilled 65x65 q32, mi=(16,4) =
+  pixel (16,64)): partition MATCHES C (four 16x8 in the bottom SB), but C picks
+  V_PRED (eob 28) where the port picks DC (eob 100) on ONE 16x8 leaf; 3 of 4
+  leaves match, so it is a genuine PD1 leaf-RD near-tie, not a systematic 16x8
+  bug. Affects 65x65 (all qp but a coincidental q36), 65x72, 65x80, 88x88, and
+  80x88/104x88/72x88 at q40+. Needs C's per-mode PD1 leaf RD (deeper than the
+  pickpart winner dump).
+- **presets >= 9 (M9 LVL_5/6)** — the edge-shape cost + the boundary split
+  rate are wired on LVL_1 only; 96x80 p10/p13 diverge (boundary nodes fall back
+  to the square cost -> split).
 
 ## MD at edges
 - **b64 VARIANCE on a partial SB reads PAST the aligned extent — do NOT
