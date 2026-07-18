@@ -207,6 +207,24 @@ impl EncodePipeline {
             "monochrome encode_frame requires 8-aligned dims (arbitrary-dims padding is wired \
              on the 4:2:0 path only so far — task #95)"
         );
+        // Same chunk-1 scope guard the 4:2:0 path carries. WITHOUT it, dims
+        // that are 8-aligned but not 64-aligned silently reach the search with
+        // a CLAMPED root block (the `cur_w`/`cur_h` frame-edge extent) instead
+        // of a 64x64 root carrying spec-5.11.4 forced splits — so the port
+        // codes a partition symbol at the wrong node size and emits a stream
+        // the decoder cannot follow (e.g. 96x80: the port codes a 32-node
+        // PARTITION_NONE where the decoder expects a 64-node binary
+        // SPLIT-vs-VERT symbol). Some sizes happen to coincide (at 16x16 the
+        // two forced-split levels code no symbols at all), which is exactly
+        // what made this silent. Rejecting out-of-scope dims outright beats
+        // mis-coding them; partial-SB support is task #95 chunk 2.
+        assert!(
+            self.width % 64 == 0 && self.height % 64 == 0,
+            "monochrome encode_frame needs dims that are a multiple of 64 (full SBs); got \
+             {}x{} — partial-SB edge coding is task #95 chunk 2",
+            self.width,
+            self.height
+        );
         self.encode_frame_impl(y_plane, y_stride, None)
     }
 
@@ -4181,9 +4199,11 @@ mod tests {
 
     #[test]
     fn pipeline_encode_sequence() {
+        // 64x64: this test exercises the frame/RC state machine, not block
+        // geometry, so it uses the smallest in-scope (full-SB) size.
         let mut pipeline = EncodePipeline::new(
-            32,
-            32,
+            64,
+            64,
             10,
             RcConfig {
                 mode: RcMode::Crf,
@@ -4193,9 +4213,9 @@ mod tests {
             3,
             16,
         );
-        let y_plane = vec![100u8; 32 * 32];
+        let y_plane = vec![100u8; 64 * 64];
         for i in 0..5 {
-            let bitstream = pipeline.encode_frame(&y_plane, 32);
+            let bitstream = pipeline.encode_frame(&y_plane, 64);
             assert!(!bitstream.is_empty(), "frame {i} should produce output");
         }
         assert_eq!(pipeline.frame_count, 5);
@@ -4204,9 +4224,9 @@ mod tests {
 
     #[test]
     fn pipeline_key_frame_first() {
-        let mut pipeline = EncodePipeline::new(16, 16, 8, RcConfig::default(), 4, 64);
-        let y_plane = vec![128u8; 16 * 16];
-        let bitstream = pipeline.encode_frame(&y_plane, 16);
+        let mut pipeline = EncodePipeline::new(64, 64, 8, RcConfig::default(), 4, 64);
+        let y_plane = vec![128u8; 64 * 64];
+        let bitstream = pipeline.encode_frame(&y_plane, 64);
         // First frame should be key frame with sequence header
         // OBU structure: TD + SH + Frame
         assert!(bitstream.len() > 10);
@@ -4214,9 +4234,9 @@ mod tests {
 
     #[test]
     fn pipeline_dpb_updated() {
-        let mut pipeline = EncodePipeline::new(16, 16, 8, RcConfig::default(), 4, 64);
-        let y_plane = vec![128u8; 16 * 16];
-        pipeline.encode_frame(&y_plane, 16);
+        let mut pipeline = EncodePipeline::new(64, 64, 8, RcConfig::default(), 4, 64);
+        let y_plane = vec![128u8; 64 * 64];
+        pipeline.encode_frame(&y_plane, 64);
         // After key frame, all DPB slots should be filled
         assert!(pipeline.dpb.occupied_slots() > 0);
     }
