@@ -12,7 +12,26 @@ This applies to:
 
 **The definition of "done" for any encoding feature is: rav1d-safe decodes the output correctly at all tested sizes.**
 
-## BLOCKING CONFORMANCE FAILURE (open, actively worked 2026-07-18) — sub-8 chroma-ref pairing desync on textured padded content
+## FIXED 2026-07-18 — palette blocks coded an EXTRA filter_intra flag (4:2:0 decode-conformance desync)
+
+**ROOT + FIX (one line):** `encode_block_syntax` (pipeline.rs:2680) coded the
+`use_filter_intra` flag for DC-mode ≤32×32 blocks but was **missing C's
+`palette_size == 0` gate** (`svt_aom_filter_intra_allowed`, mode_decision.c:107).
+A winning palette block (DC, ≤32) therefore emitted an EXTRA symbol the decoder
+never reads → whole-tile desync. Latent while palette was never picked
+(allow_screen_content_tools=0 historically); it fired the moment screen-content
+frames started winning palette blocks. Fix: add `&& decision.palette.is_none()`.
+The RATE side was already correct (4543a3651 prices palette candidates 0
+filter-intra bits) — only the PACK emitted the stray flag, which is why the RD
+was fine but the coded bytes desynced. **Result: 4:2:0 decode-conformance
+1260/1260 (was 99 failures), mono 945/945, non-sc matrix 54/54 unchanged
+(byte-neutral — non-palette blocks keep `palette.is_none()==true`), full
+workspace 813/0.** CI-covered by the existing decode_conformance 420 gate (which
+includes the 48/80/96 palette-triggering content). Harness gained
+`identity_run` `raw:<yuv>` + `SVTAV1_MONO` modes (used to localize this).
+The full localization trail (kept for method reference):
+
+### (historical) sub-8 chroma-ref pairing desync investigation
 
 **CI has been RED since 2026-07-17T00:31 (commit 5eb8e5d97, the PRIOR session) — ~20h before it was noticed.** The `svtav1-rs-gates` job's "Decode conformance — 4:2:0" step fails. It was MASKED in the job log by a second failure (the mono `encode_frame` 64-multiple guard, c17fb1b53, broke the earlier "Workspace tests" step; GitHub Actions stops the job at the first failing step). That second failure is FIXED (d41704495); this pre-existing one remains the red.
 

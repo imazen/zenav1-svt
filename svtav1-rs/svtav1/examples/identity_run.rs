@@ -230,10 +230,18 @@ fn main() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
+    // SVTAV1_MONO: encode the luma alone via the monochrome path (diagnostic —
+    // isolates whether a 4:2:0 divergence is chroma-specific or exists in the
+    // shared luma coding). Off by default (the harness is 4:2:0).
+    let mono = std::env::var_os("SVTAV1_MONO").is_some();
     let mut pipeline = EncodePipeline::new(w as u32, h as u32, preset, rc, 0, 1)
-        .with_chroma_420(true)
         .with_tile_rows_log2(tile_rows_log2);
-    let obu = pipeline.encode_frame_420(&y, &u, &v, w);
+    let obu = if mono {
+        pipeline.encode_frame(&y, w)
+    } else {
+        pipeline = pipeline.with_chroma_420(true);
+        pipeline.encode_frame_420(&y, &u, &v, w)
+    };
     std::fs::write(format!("{prefix}.obu"), &obu).expect("write .obu");
 
     // SCRATCH: env-gated recon dump for the C-vs-Rust recon diff (tightly

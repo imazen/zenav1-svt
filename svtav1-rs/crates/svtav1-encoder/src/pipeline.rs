@@ -2665,21 +2665,23 @@ fn encode_block_syntax(
     }
 
     // use_filter_intra flag — C writes it right after the uv/palette
-    // syntax (palette is never allowed for us:
-    // allow_screen_content_tools = 0 -> svt_aom_allow_palette false) and
-    // BEFORE code_tx_size, for every intra block passing
-    // svt_aom_filter_intra_allowed (mode_decision.c:102-108): SH
-    // filter_intra level != 0, mode == DC_PRED, palette_size == 0 (always
-    // for us), and block_size_wide/high[bsize] <= 32. Write order:
-    // entropy_coding.c:5098-5112 (key frames; the inter-frame intra path
-    // :5231-5236 is identical — eligibility does not involve the frame
-    // type or chroma presence, so this applies to mono streams too;
-    // decoder mirror read_filter_intra_mode_info). We never PREDICT with
-    // filter-intra, so the flag is always 0 — but when the SH signals the
-    // tool the symbol MUST be coded or the decoder desyncs.
+    // syntax and BEFORE code_tx_size, for every intra block passing
+    // svt_aom_filter_intra_allowed (mode_decision.c:107): SH filter_intra
+    // level != 0, mode == DC_PRED, **palette_size == 0**, and
+    // block_size_wide/high[bsize] <= 32. Write order: entropy_coding.c:5050
+    // (the flag is coded right after write_palette_mode_info, :5039). The
+    // palette_size==0 gate is LOAD-BEARING: C codes NO filter_intra flag for
+    // a palette block (palette forces the mode + tx), so a palette block that
+    // priced/coded the flag emits an EXTRA symbol the decoder never reads,
+    // desyncing the whole tile. (This was latent while palette was never
+    // picked — allow_screen_content_tools=0; it fires the moment a
+    // screen-content frame wins a DC-mode <=32x32 palette block.) We never
+    // PREDICT with filter-intra so the flag is always 0 when coded, but on a
+    // non-palette DC block the symbol MUST be coded or the decoder desyncs.
     if ectx.seq_filter_intra
         && !decision.is_inter
         && decision.intra_mode == 0 // DC_PRED
+        && decision.palette.is_none() // palette_size == 0 (mode_decision.c:107)
         && decision.width <= 32
         && decision.height <= 32
     {
