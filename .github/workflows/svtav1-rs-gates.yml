@@ -72,6 +72,11 @@ jobs:
         run: |
           ./tools/bd10_matrix.sh
 
+      - name: bd10 non-flat identity (u16 MD path, DC-family cells)
+        working-directory: svtav1-rs
+        run: |
+          ./tools/bd10_nonflat_gate.sh
+
       - name: Recon parity (encoder recon == aomdec output, byte-exact)
         working-directory: svtav1-rs
         run: |

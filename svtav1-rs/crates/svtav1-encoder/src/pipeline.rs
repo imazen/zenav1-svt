@@ -808,7 +808,19 @@ impl EncodePipeline {
         // .yuv the C reference encodes at bd10 (identity_run writes both from
         // one gradient). Native u16 (non-<<2) ingestion is a follow-up.
         if self.bit_depth == 10 {
-            if let Some(cq) = c_quant.as_ref() {
+            // Run the u16 re-encode ONLY on frames within the ported bd10
+            // envelope (every luma leaf tx_depth 0, non-directional,
+            // non-filter-intra). Outside it, fall back to the (non-panicking)
+            // u8 output rather than crash the public encode_frame_420 API —
+            // predict_unit_hbd / bd10_reencode_node panic loudly on unported
+            // modes/tx_depth (task #94 follow-ups: dr_predict_hbd,
+            // predict_filter_intra_hbd, tx_depth>0 re-encode). The supported
+            // subset (currently the DC-family first cell) is exact; the rest is
+            // WIP, so this keeps the encoder panic-free while the port grows.
+            if let Some(cq) = c_quant
+                .as_ref()
+                .filter(|_| all_trees.iter().all(bd10_tree_supported))
+            {
                 let shift = (self.bit_depth - 8) as u32;
                 let src10: alloc::vec::Vec<u16> =
                     encode_input.iter().map(|&s| (s as u16) << shift).collect();
@@ -3374,6 +3386,29 @@ fn encode_partition_tree(
 /// Directional / filter-intra / tx_depth>0 panic loudly (predict_unit_hbd /
 /// the assert here) rather than emit wrong pixels — an obvious follow-up.
 #[allow(clippy::too_many_arguments)]
+/// Read-only pre-pass: is every luma leaf of `tree` inside the ported bd10 u16
+/// re-encode envelope? The u16 predict/tx path (`predict_unit_hbd`,
+/// `bd10_reencode_node`) intentionally panics on the not-yet-ported cases —
+/// directional intra (mode 3..=8, or V/H with a nonzero angle delta),
+/// filter-intra (`filter_intra_mode != FI_NONE`), and `tx_depth > 0` — because a
+/// loud "not ported" beats silently miscoding 10-bit pixels. This gate ensures
+/// `bd10_reencode_luma` runs ONLY when the whole frame is supported, so an
+/// out-of-envelope bd10 frame falls back to the (non-panicking, if not yet
+/// byte-exact) u8 output instead of crashing a public-API caller.
+fn bd10_tree_supported(tree: &crate::partition::PartitionTree) -> bool {
+    match tree {
+        crate::partition::PartitionTree::Leaf(d) => {
+            d.tx_depth == 0
+                && d.filter_intra_mode == crate::leaf_funnel::FI_NONE
+                && !(matches!(d.intra_mode, 3..=8)
+                    || (matches!(d.intra_mode, 1 | 2) && d.angle_delta != 0))
+        }
+        crate::partition::PartitionTree::Split { children, .. } => {
+            children.iter().all(bd10_tree_supported)
+        }
+    }
+}
+
 fn bd10_reencode_luma(
     all_trees: &mut [crate::partition::PartitionTree],
     sb_cols: usize,

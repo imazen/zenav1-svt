@@ -73,14 +73,32 @@ bd10 differential, and end-to-end by the gradient bd10 op-trace's first
 divergence moving off the FH cdef line into the tile). The 5 bd10 DSP kernel
 families are FFI-verified (see the differential-suites table).
 
-NEXT: the u16 MD path for NON-flat content. MEASURED (2026-07-18): gradient bd10
-diverges in the **tile coefficients**, not the frame header — the port quantizes
-the residual with bd8 tables (Q8) while C uses bd10 tables (Q10 ~4xQ8 but not
-exactly), so even 8-bit-representable content quantizes to different levels. The
-large hot-path pass (funnel/pipeline u8->u16); candidate decomposition:
-(2a) plumb u16 with bd8 stored as u16, gate = bd8 identity 54/54 (pure refactor);
-(2b) flip bd10 tables on the u16 path, gate = first non-flat bd10 cell. PD0 stays
-u8 on the MSB-truncated plane. See docs/bd10-port-map.md.
+## bd10 NON-FLAT — first cells with a coded residual byte-match (task #94, 2026-07-18)
+
+`tools/bd10_nonflat_gate.sh` (CI gate): `gradient 64x64 q40` at preset **10 and
+13** byte-match real aomenc at bd10 (**2/2**) — the first non-flat bd10 cells.
+Root cause of the prior tile divergence: the port quantized the residual with
+the bd8 Q8 tables while C uses bd10 Q10 (~4xQ8 but NOT exactly) → different coded
+levels. Fixed via an ADDITIVE, bd10-gated u16 re-encode (the "M4+ bypass_encdec
+re-predict" shape — the u8 partition/mode/tx decisions are RD-scale-invariant for
+`sample<<2` content, so only the bit-depth-sensitive coded luma LEVELS + true
+10-bit recon are recomputed; NOT a full u8->u16 refactor). Pieces:
+`quant::build_quant_table_bd` (Q10 + qzbin), `quant::quantize_fp_hbd` (**THE FIX**:
+the INT16 clamp in `quantize_fp` is bd8-only — C dispatches bd>8 to
+`highbd_quantize_fp_helper_c`, full_loop.c:367-395), `leaf_funnel::{predict_unit_hbd,
+tx_unit_hbd}`, `pd0::kf_full_lambda_bd10` (EXACT C full_lambda_md[1], not ×16 of
+bd8), a bd-aware inverse transform, and `pipeline::bd10_reencode_luma`. The u8 path
+is byte-UNCHANGED (bd8 identity 54/54, bd10 uniform 36/36).
+
+ENVELOPE (narrow, honest): only the **DC-family / tx_depth-0 / rdoq-fp** subset is
+ported. Out-of-envelope bd10 frames (directional or filter-intra intra, tx_depth>0,
+rdoq level 0, non-uniform chroma) FALL BACK to the non-panicking u8 output via the
+`bd10_tree_supported` gate — the encoder stays panic-free on the public
+`encode_frame_420` API; the u16 predict/tx path panics loudly only where a
+future-ported case would land, and the gate never lets it. FOLLOW-UPS (#94):
+`dr_predict_hbd` (directional), `predict_filter_intra_hbd`, `quantize_b_hbd`
+(rdoq-0, same INT16-clamp class), tx_depth>0 re-encode, the u16 chroma path, and
+native (non-`<<2`) u16 ingestion. See docs/bd10-port-map.md.
 
 NOTE (2026-07-18): the prior session's bd10 + palette-conformance work (10
 commits, 58bd3b4c9..885ece6da) was committed+verified-green locally but **never

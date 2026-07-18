@@ -117,7 +117,24 @@ qp-fast-path CDEF *header* value only; the CDEF **search** path (presets M0..M6,
 moot until the coefficient/quant divergence below is closed (a differing coefficient
 already desyncs the tile).
 
-**NEXT bd10 chunk = the u16 MD path for NON-FLAT content (the big one).** Uniform
+**FIRST NON-FLAT bd10 CELLS LANDED (2026-07-18) — the "big one" started.** The u16
+MD path did NOT need the full generic-`Pixel` refactor below: it was done ADDITIVELY
+via the M4+ bypass_encdec re-predict shape — the u8 partition/mode/tx decisions are
+RD-scale-invariant for `sample<<2` content, so `pipeline::bd10_reencode_luma`
+recomputes only the bit-depth-sensitive coded luma LEVELS + true-10-bit recon,
+bd10-gated, leaving the u8 path byte-unchanged. THE FIX was `quantize_fp`'s INT16
+clamp being bd8-only (C dispatches bd>8 to `highbd_quantize_fp_helper_c`,
+full_loop.c:367-395) → `quant::quantize_fp_hbd`. Cells: `gradient 64x64 q40 p10/p13`
+(`tools/bd10_nonflat_gate.sh`, 2/2, CI). Envelope = DC-family / tx_depth-0 / rdoq-fp;
+out-of-envelope frames fall back to the non-panicking u8 output via the
+`bd10_tree_supported` gate (encoder stays panic-free on the public API). FOLLOW-UPS:
+`dr_predict_hbd` (directional), `predict_filter_intra_hbd`, `quantize_b_hbd` (rdoq-0,
+same clamp class), tx_depth>0, u16 chroma, native u16 ingestion. The generic-Pixel
+plan below is SUPERSEDED for the coded-levels path (the additive re-encode is the
+maintainable shape that landed); it may still guide a future full-u16 recon/filter
+pass if one proves necessary for the follow-ups.
+
+**(historical) NEXT bd10 chunk = the u16 MD path for NON-FLAT content (the big one).** Uniform
 works because every block is skip (no residual); any content with a coded
 residual needs the precision-sensitive u16 MD. MEASURED (2026-07-18): gradient
 bd10 diverges in the **tile payload / coefficients**, not the frame header — the
