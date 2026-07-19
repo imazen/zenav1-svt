@@ -82,6 +82,7 @@
 #include "pcs.h"
 
 #include "coding_loop.h"
+#include "inv_transforms.h"
 #include "md_process.h"
 
 void __real_svt_av1_loop_filter_init(PictureControlSet* pcs);
@@ -304,6 +305,69 @@ int64_t __wrap_svt_aom_partition_rate_cost(PictureParentControlSet* pcs, const B
         if (pf && mi_row < 16 && mi_col < 16)
             fprintf(pf, "PART bsize=%d mi=(%d,%d) part=%d rate=%lld\n", (int)bsize, mi_row, mi_col, (int)p,
                     (long long)ret);
+    }
+    return ret;
+}
+
+/* ---- final quantized-LEVEL interposer (task #94 bd10 coeff-level diag) ---
+ * svt_aom_quantize_inv_quantize (transforms.h:97, defined full_loop.c:1649) is
+ * the FULL MD quant+RDOQ entry. At eff-M9 a tx_depth-0 luma leaf's FINAL coded
+ * coefficients come from perform_dct_dct_tx -> this fn (product_coding_loop.c
+ * :5478, COMPONENT_LUMA), and — because bypass_encdec is on at M4+ and there is
+ * NO update_coeff_cdf pass at M9 — the existing CCOEF wrap (gated on
+ * allow_update_cdf) NEVER fires there. This wrap dumps `quant_coeff` (the post-
+ * quant/post-RDOQ levels) directly after the real call, so C's per-leaf levels
+ * are visible at ANY preset. It is cross-TU (called from product_coding_loop.c /
+ * coding_loop.c), so --wrap reaches it. Env: SVT_QLEVELS_OUT (file), optional
+ * SVT_QLEVELS_XY="x,y" (pin to a block origin in pixels), optional
+ * SVT_QLEVELS_COMP (only that component_type; default all). One line per call:
+ *   QLEV org=(x,y) comp=<c> txs=<t> txt=<T> eob=<e> enc=<b> bd=<d> qidx=<q> nz=[i:lvl,...]
+ * Levels are RASTER order (quant_coeff[raster_idx]), matching the port's
+ * SVTAV1_PACKTREE_COEFF dump. Pure pass-through when SVT_QLEVELS_OUT is unset —
+ * the C tree stays PRISTINE (link interposer, no Source/ edit). */
+uint8_t __real_svt_aom_quantize_inv_quantize(PictureControlSet* pcs, ModeDecisionContext* ctx, int32_t* coeff,
+                                             int32_t* quant_coeff, int32_t* recon_coeff, uint32_t qindex,
+                                             int32_t segmentation_qp_offset, TxSize txsize, uint16_t* eob,
+                                             uint32_t component_type, uint32_t bit_depth, TxType tx_type,
+                                             int16_t txb_skip_context, int16_t dc_sign_context,
+                                             PredictionMode pred_mode, uint32_t lambda, bool is_encode_pass);
+
+uint8_t __wrap_svt_aom_quantize_inv_quantize(PictureControlSet* pcs, ModeDecisionContext* ctx, int32_t* coeff,
+                                             int32_t* quant_coeff, int32_t* recon_coeff, uint32_t qindex,
+                                             int32_t segmentation_qp_offset, TxSize txsize, uint16_t* eob,
+                                             uint32_t component_type, uint32_t bit_depth, TxType tx_type,
+                                             int16_t txb_skip_context, int16_t dc_sign_context,
+                                             PredictionMode pred_mode, uint32_t lambda, bool is_encode_pass) {
+    uint8_t ret = __real_svt_aom_quantize_inv_quantize(
+        pcs, ctx, coeff, quant_coeff, recon_coeff, qindex, segmentation_qp_offset, txsize, eob, component_type,
+        bit_depth, tx_type, txb_skip_context, dc_sign_context, pred_mode, lambda, is_encode_pass);
+    const char* path = getenv("SVT_QLEVELS_OUT");
+    if (!path || !*path)
+        return ret;
+    const char* xy   = getenv("SVT_QLEVELS_XY");
+    const char* comp = getenv("SVT_QLEVELS_COMP");
+    if (xy && *xy) {
+        int px = -1, py = -1;
+        sscanf(xy, "%d,%d", &px, &py);
+        if ((int)ctx->blk_org_x != px || (int)ctx->blk_org_y != py)
+            return ret;
+    }
+    if (comp && *comp && atoi(comp) != (int)component_type)
+        return ret;
+    static FILE* f = NULL;
+    if (!f)
+        f = fopen(path, "w");
+    if (f) {
+        const int n = av1_get_max_eob(txsize);
+        fprintf(f, "QLEV org=(%u,%u) comp=%u txs=%d txt=%d eob=%u enc=%d bd=%u qidx=%u nz=[",
+                (unsigned)ctx->blk_org_x, (unsigned)ctx->blk_org_y, component_type, (int)txsize, (int)tx_type,
+                (unsigned)*eob, (int)is_encode_pass, (unsigned)bit_depth, (unsigned)qindex);
+        int emitted = 0;
+        for (int i = 0; i < n && emitted < 48; ++i)
+            if (quant_coeff[i])
+                fprintf(f, "%s%d:%d", emitted++ ? "," : "", i, quant_coeff[i]);
+        fprintf(f, "]\n");
+        fflush(f);
     }
     return ret;
 }
