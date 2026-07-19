@@ -14,7 +14,7 @@ resolver = "3"
 edition = "2024"
 rust-version = "1.85"
 license = "AGPL-3.0-only OR LicenseRef-Imazen-Commercial"
-repository = "https://github.com/imazen/svtav1-rs"
+repository = "https://github.com/imazen/zenav1-svt"
 
 [workspace.dependencies]
 # Package names carry the `zenav1-svt-` prefix; each crate keeps a SHORT

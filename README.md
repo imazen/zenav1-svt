@@ -33,7 +33,7 @@ the fork onto v4.2.0 ourselves — see `rust/docs/HDR-ON-4.2.md`).
 
 ```toml
 [dependencies]
-zenav1-svt = { git = "https://github.com/imazen/svtav1" }
+zenav1-svt = { git = "https://github.com/imazen/zenav1-svt" }
 ```
 
 Requires Rust 1.85+ (2024 edition). **No C toolchain, no cmake, no `build.rs`** —
@@ -79,7 +79,7 @@ Known open gaps are tracked, not hidden — see `rust/docs/IDENTITY-STATUS.md`
 ## Testing on a fresh box
 
 ```bash
-git clone https://github.com/imazen/svtav1 && cd svtav1
+git clone https://github.com/imazen/zenav1-svt && cd zenav1-svt
 
 # 1. Build the C reference (the differential oracle). Needs cmake + nasm + cc.
 cmake -S . -B cbuild-static -DCMAKE_BUILD_TYPE=Release \
@@ -141,10 +141,13 @@ license** — the standard Imazen "zen" model (same as zenavif et al.):
 [rust/LICENSE-COMMERCIAL](rust/LICENSE-COMMERCIAL). Use it under the AGPL, or
 [contact Imazen](https://imazen.io) for a commercial license.
 
-The SVT-AV1 **C tree** (`Source/`, `Docs/`, the build system) is unchanged
-upstream licensing: BSD-3-Clause-Clear plus the Alliance for Open Media Patent
-License 1.0 — see [LICENSE.md](LICENSE.md), [LICENSE-BSD2.md](LICENSE-BSD2.md)
-and [PATENTS.md](PATENTS.md). The Rust port is a derivative work of that
+**If someone covers Imazen's 2026 AI + server costs, we'll release the port under
+MIT or the original upstream license.**
+
+The SVT-AV1 **C tree** (`Source/`, `Docs/`, the build system) keeps its upstream
+licensing: BSD-3-Clause-Clear plus the Alliance for Open Media Patent License 1.0
+— see [LICENSE.md](LICENSE.md), [LICENSE-BSD2.md](LICENSE-BSD2.md) and
+[PATENTS.md](PATENTS.md). The Rust port is a derivative work of that
 BSD-licensed C source; its upstream attribution and patent terms are preserved,
 and relicensing the derivative is permitted by BSD-3-Clause-Clear.
 

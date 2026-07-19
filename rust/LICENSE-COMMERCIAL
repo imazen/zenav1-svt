@@ -1,8 +1,8 @@
 IMAZEN COMMERCIAL LICENSE
 
-Copyright (c) 2024-2026 Imazen LLC
+Copyright (c) 2026 Imazen LLC
 
-This crate is available under a commercial license as an alternative
+This software is available under a commercial license as an alternative
 to the GNU Affero General Public License v3 (see LICENSE-AGPL3).
 
 The commercial license is governed by the Imazen Site-wide Subscription
@@ -30,3 +30,9 @@ Purchase or start a 60-day free trial:  https://www.imazen.io/pricing
 License overview:                       https://www.imazen.io/legal/overview
 Full legal terms:                       https://www.imazen.io/legal
 Questions:                              support@imazen.io
+
+Upstream note: svtav1-rs is a Rust port derived from SVT-AV1 (and, in
+fork mode, from the svt-av1-hdr fork's feature set). The upstream
+BSD-3-Clause-Clear license and the Alliance for Open Media Patent
+License 1.0 (LICENSE.md and PATENTS.md at the repository root) continue
+to apply to the upstream work it derives from.
