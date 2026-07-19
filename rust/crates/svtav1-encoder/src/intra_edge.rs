@@ -918,7 +918,12 @@ pub fn dr_predict<S: Fn(usize, usize) -> u8>(
     dst: &mut [u8],
 ) {
     use svtav1_dsp::intra_pred as ip;
-    debug_assert!(g.frame_w % 8 == 0 && g.frame_h % 8 == 0);
+    // `frame_w`/`frame_h` are the luma dims — TRUE (possibly odd, task #95)
+    // OR 8-aligned; both round to the SAME aligned mi grid below because
+    // `(d + 7) >> 3 == aligned(d) / 8` by definition, so `mi_cols`/`mi_rows`
+    // equal C `av1_cm->mi_cols/rows` for either. (The old `% 8 == 0` assert
+    // wrongly rejected the legitimate odd-true-dim input.)
+    debug_assert!(g.frame_w > 0 && g.frame_h > 0);
     let mi_cols = 2 * ((g.frame_w + 7) >> 3);
     let mi_rows = 2 * ((g.frame_h + 7) >> 3);
     let txwpx = g.txw as i64;
@@ -1170,7 +1175,12 @@ pub fn dr_predict_hbd<S: Fn(usize, usize) -> u16>(
 ) {
     use svtav1_dsp::hbd as hp;
     use svtav1_dsp::intra_pred as ip;
-    debug_assert!(g.frame_w % 8 == 0 && g.frame_h % 8 == 0);
+    // `frame_w`/`frame_h` are the luma dims — TRUE (possibly odd, task #95)
+    // OR 8-aligned; both round to the SAME aligned mi grid below because
+    // `(d + 7) >> 3 == aligned(d) / 8` by definition, so `mi_cols`/`mi_rows`
+    // equal C `av1_cm->mi_cols/rows` for either. (The old `% 8 == 0` assert
+    // wrongly rejected the legitimate odd-true-dim input.)
+    debug_assert!(g.frame_w > 0 && g.frame_h > 0);
     let base: i32 = 128 << (bd - 8);
     let mi_cols = 2 * ((g.frame_w + 7) >> 3);
     let mi_rows = 2 * ((g.frame_h + 7) >> 3);

@@ -4715,13 +4715,18 @@ pub(crate) fn evaluate_leaf(
                 dep_bits += txb_bits;
                 dep_dist += dec_dist;
                 dep_has_coeff |= dec_eob > 0;
-                // tx_update_neighbor_arrays: cul byte over the txb span.
-                let a0 = tx_x / 4;
+                // tx_update_neighbor_arrays: cul byte over the txb span. Clamp
+                // the START to the span length (partial-SB straddle: an
+                // off-frame txb's 4x4 origin exceeds the in-frame-clipped span)
+                // so the range is empty rather than start>end. No in-frame cell
+                // reads an off-frame txb's cul, so skipping the write matches C;
+                // byte-neutral for every in-frame txb (start <= len).
+                let a0 = (tx_x / 4).min(loc_above.len());
                 let a1 = (a0 + txw / 4).min(loc_above.len());
                 for v in loc_above[a0..a1].iter_mut() {
                     *v = dec_cul;
                 }
-                let l0 = tx_y / 4;
+                let l0 = (tx_y / 4).min(loc_left.len());
                 let l1 = (l0 + txh / 4).min(loc_left.len());
                 for v in loc_left[l0..l1].iter_mut() {
                     *v = dec_cul;
@@ -6782,8 +6787,19 @@ fn txb_ctx_from_spans(
     txh: usize,
     block_eq_tx: bool,
 ) -> (usize, usize) {
-    let a0 = tx_x / 4;
-    let l0 = tx_y / 4;
+    // A txb of a leaf that STRADDLES the aligned frame edge (partial-SB path,
+    // task #95) can sit entirely past the frame extent — its 4x4 origin then
+    // exceeds the block's coeff-context span, which `above_coeff_span` /
+    // `left_coeff_span` already clip to the in-frame extent. Clamp the START so
+    // the slice is empty rather than panicking (start > end). An empty span is
+    // exactly what `get_txb_ctx` treats as "no coded neighbour" (== a 0xFF /
+    // INVALID entry -> zero contribution), which is the context of an off-frame
+    // neighbour — so this is byte-neutral for every in-frame txb (start <= len,
+    // clamp is a no-op) and gives the off-frame txb the unavailable-neighbour
+    // context. C reads its SB-extent-padded neighbour arrays here; the off-frame
+    // cells were never coded, so C's contribution is likewise zero.
+    let a0 = (tx_x / 4).min(above_span.len());
+    let l0 = (tx_y / 4).min(left_span.len());
     let a = &above_span[a0..(a0 + txw / 4).min(above_span.len())];
     let l = &left_span[l0..(l0 + txh / 4).min(left_span.len())];
     cc::get_txb_ctx(0, a, l, block_eq_tx, false)
