@@ -74,6 +74,17 @@ way).
   byte-compares the OBUs. On mismatch, the od_ec op traces localize the first diverging
   arithmetic symbol and classify the stage (SH / FH / tile-op).
 - **Sweep level** — `identity_matrix.sh` is the pass/fail gate over synthetic content.
+  `tile_gate.sh` covers the tile-configuration axis (both `TileRowsLog2` and
+  `TileColsLog2`, on divisible and ragged SB grids), backed by the 162-cell
+  `tile_map.sh` sweep; it additionally asserts, per cell, that the C oracle's
+  bytes actually CHANGED under the tile request (anti-vacuity — both log2s are
+  clamped to the geometry, so an unhonourable request silently yields a
+  single-tile encode) and that aomdec accepts the port's stream whether or not
+  it byte-matches. That decodability assert is not optional: a byte gate is
+  structurally blind to corruption among expected-DIFF cells, and this axis had
+  shipped exactly that — an out-of-range `context_update_tile_id` that every
+  conforming decoder rejected, invisible because no gate had ever decoded a
+  multi-tile stream.
   `real_image_matrix.sh` is the ratchet over real photographic and screen content,
   where divergences are findings rather than failures **until the end state, at which
   point it becomes a pass/fail gate too**.
@@ -119,7 +130,7 @@ byte-identical encoder nobody can safely modify has a short shelf life.
 
 | Gate | Criterion | Evidence |
 |---|---|---|
-| G1 Mainline parity | Byte-identical OBUs vs `SvtAv1EncApp` v4.2.0 across the full still-image matrix | `identity_matrix.sh` + `real_image_matrix.sh` both pass/fail green |
+| G1 Mainline parity | Byte-identical OBUs vs `SvtAv1EncApp` v4.2.0 across the full still-image matrix | `identity_matrix.sh` + `real_image_matrix.sh` both pass/fail green; per-axis gates (`partial_sb_gate`, `bd10_*`, `sb128_gate`, `tile_gate`) green |
 | G2 HDR mode | Mode off == mainline C; mode on == rebased fork-on-4.2 C | Both witnesses per feature |
 | G3 Kernel parity | Every kernel differentially tested vs the real exported C symbol | `c_parity_*.rs` |
 | G4 Performance | ≤ ~1.2× C wall clock, matched preset/quality | Interleaved paired-stat harness, intercept + slope reported |
