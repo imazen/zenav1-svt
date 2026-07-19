@@ -130,6 +130,23 @@ CELLS=(
   "diag 64 64 5 13"
   "diag 64 64 12 10"
   "diag 64 64 12 13"
+  # bd10 u16 LUMA MODE FUNNEL (task #94, this landing): a TRUE 10-bit recon
+  # canvas threaded through the eff-M9 leaf funnel so each block's MDS0 mode
+  # decision is made on the 10-bit recon (predict_unit_hbd + hadamard_satd_hbd
+  # + the bd10 fast lambda = kf_full_lambda_bd10/16), not the MSB-truncated u8
+  # recon. On `diag` q20 the true bd10 recon (the ~+20/px hbd-predictor
+  # divergence from recon8<<2) tips the near-tie so C picks SMOOTH(9)/V(1) on
+  # the diagonal-edge 8x8s where the u8 SATD keeps DC(0) — the DC->SMOOTH flip
+  # the port previously could not reproduce. commit_leaf writes the winner's
+  # bd10 recon into the canvas for the next block's neighbours (the sequential
+  # coupling). bd10-gated (bd8/other-preset/partial-SB pass None -> byte-
+  # IDENTICAL). Each was a LUMA MODE flip DIFF before and BYTE-MATCHES after
+  # (verified `cmp`). Higher-qindex diag (q32/q55) + diag 128 stay DIFF on a
+  # SEPARATE, pre-existing bd10 recon-precision cascade (the shared bd10 recon
+  # path's DC-prediction averages drift from C on dense coded content, DIFF
+  # with the funnel OFF too) — NOT this funnel; see docs/bd10-port-map.md.
+  "diag 64 64 20 10"
+  "diag 64 64 20 13"
 )
 for cell in "${CELLS[@]}"; do
   read -r content w h qp p <<<"$cell"

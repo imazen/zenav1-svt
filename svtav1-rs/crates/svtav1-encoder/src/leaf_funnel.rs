@@ -1074,6 +1074,47 @@ fn hadamard_satd(
     satd
 }
 
+/// bd10 mirror of [`hadamard_satd`]: 10-bit residual (`src << 2` minus the
+/// 10-bit `pred`) over the same square-tile Hadamard/SATD accumulation. Used
+/// ONLY by the bd10 luma mode funnel (task #94, `evaluate_leaf`'s MDS0 fast
+/// loop, gated on the bd10 recon canvas). The transform/SATD kernels are
+/// bit-depth-independent (i16 residual, i32 coeffs) — only the source scale
+/// (`<< 2` from the MSB-truncated u8 the harness feeds) and the u16 `pred`
+/// differ. The residual range (−1023..1020) fits i16 exactly.
+fn hadamard_satd_hbd(
+    src: &[u8],
+    src_stride: usize,
+    src_off: usize,
+    pred: &[u16],
+    w: usize,
+    h: usize,
+) -> u64 {
+    let tx = w.min(h).min(32);
+    let mut satd: u64 = 0;
+    let mut res = vec![0i16; tx * tx];
+    let mut coeff = vec![0i32; tx * tx];
+    for ty in (0..h).step_by(tx) {
+        for tx_x in (0..w).step_by(tx) {
+            for r in 0..tx {
+                let srow = src_off + (ty + r) * src_stride + tx_x;
+                let prow = (ty + r) * w + tx_x;
+                for c in 0..tx {
+                    res[r * tx + c] = ((src[srow + c] as i16) << 2) - pred[prow + c] as i16;
+                }
+            }
+            match tx {
+                4 => svtav1_dsp::hadamard::aom_hadamard_4x4(&res, tx, &mut coeff),
+                8 => svtav1_dsp::hadamard::aom_hadamard_8x8(&res, tx, &mut coeff),
+                16 => svtav1_dsp::hadamard::aom_hadamard_16x16(&res, tx, &mut coeff),
+                32 => svtav1_dsp::hadamard::aom_hadamard_32x32(&res, tx, &mut coeff),
+                _ => unreachable!("hadamard tile {tx}"),
+            }
+            satd += svtav1_dsp::hadamard::aom_satd(&coeff) as u64;
+        }
+    }
+    satd
+}
+
 // ---------------------------------------------------------------------------
 // Coefficient rate (svt_av1_cost_coeffs_txb, full scan, real contexts)
 // ---------------------------------------------------------------------------
@@ -2283,6 +2324,19 @@ pub(crate) struct FunnelCtx<'a> {
     pub ectx: &'a mut crate::pipeline::EntropyCtx,
     pub rates: &'a MdRates,
     pub frame: &'a FunnelFrame,
+    /// bd10 LUMA mode-decision recon canvas (task #94, the u16 mode funnel):
+    /// the TRUE 10-bit reconstruction of every committed block, frame-strided
+    /// (== the u8 `y_recon` canvas dims/stride). `Some` ONLY for complete-SB
+    /// eff-M9 (preset ≥ 9) bd10 frames; `None` (bd8, and every other bd10
+    /// preset/partial-SB) leaves the funnel byte-IDENTICAL. When present,
+    /// `evaluate_leaf`'s MDS0 fast loop predicts each candidate at 10-bit from
+    /// this canvas and scores the 10-bit SATD (so the mode survivor is C's
+    /// bd10 winner, not the u8 winner — the DC↔SMOOTH flips on diagonal-edge
+    /// content), and `commit_leaf` writes the winner's 10-bit recon back for
+    /// the next block's neighbours. The u8 path (`y_recon`) still runs for
+    /// MDS1/MDS3 rate/levels; the coded LEVELS come from the post-pass
+    /// `bd10_reencode_luma`, which now reads these bd10-decided modes.
+    pub y_recon10: Option<&'a mut [u16]>,
 }
 
 /// One evaluated (not yet committed) PART_N funnel decision — the C
@@ -2318,6 +2372,11 @@ pub(crate) struct LeafEval {
     /// residual (the depth-1/2 trials write the per-depth scratch
     /// buffers, init_tx_cand_bf copies OUT of this one).
     psq_resid: Vec<i32>,
+    /// bd10 mode funnel (task #94): the winner's TRUE 10-bit recon (w×h
+    /// raster), reconstructed by `evaluate_leaf` from the bd10 canvas when
+    /// `FunnelCtx::y_recon10` is `Some`. `commit_leaf` writes it back into the
+    /// canvas for the next block's neighbour prediction. Empty on the u8 path.
+    win_recon10: Vec<u16>,
 }
 
 impl LeafEval {
@@ -2554,6 +2613,33 @@ pub(crate) fn evaluate_leaf(
     qt_u.qm_level = frame.qm_levels[1];
     let mut qt_v = crate::quant::build_quant_table(frame.qindex_v);
     qt_v.qm_level = frame.qm_levels[2];
+
+    // bd10 LUMA mode funnel (task #94): when the bd10 recon canvas is present
+    // (complete-SB eff-M9 bd10 — gated at construction) the MDS0 mode decision
+    // must be made at TRUE 10-bit, not on the MSB-truncated u8 recon (which
+    // scales `satd` exactly ×4 on `sample<<2` content and cannot flip the
+    // survivor). C decides the mode at bd10; the ~+20/px hbd-predictor recon
+    // divergence feeds a different prediction into DC↔SMOOTH near-ties. When
+    // `bd10_funnel` is false (bd8, every other preset/partial-SB) NONE of the
+    // bd10 branches below run and the path is byte-IDENTICAL.
+    let bd10_funnel = fx.y_recon10.is_some();
+    let (lambda_bd10_full, lambda_bd10_fast) = if bd10_funnel {
+        // Full bd10 MD lambda (C full_lambda_md[1] = compute_rd_mult(10bit)×16,
+        // md_process.c:753) — used for the winner-recon RDOQ.
+        let lf = u64::from(crate::pd0::kf_full_lambda_bd10(frame.base_qindex, frame.cli_qp));
+        // MDS0 fast cost lambda. C's fast loop calls `av1_intra_fast_cost(...,
+        // fast_lambda_md[1], satd<<4)`, and the port's `rdcost(λ, rate, satd<<4)`
+        // has the IDENTICAL structure (`(rate*λ+256)>>9 + (satd<<4)<<7`) — so the
+        // port's fast lambda must be C's `fast_lambda_md[1]` EXACTLY. Verified vs
+        // the real C interposer (SVT_FASTCOST_OUT lam=): it is `kf_full_lambda_
+        // bd10 / 16` (the value BEFORE md_process.c's `full_lambda_md[1] *= 16`;
+        // integer-exact since `*16` adds no low bits) — 22505@q20, 94716@q32,
+        // 2053848@q55 all match. (This is a bd10-specific coincidence of the
+        // rdmult-vs-SAD tables at ×16-vs-×4; the u8 path keeps frame.lambda.)
+        (lf, lf / 16)
+    } else {
+        (0, 0)
+    };
 
     // -- Block-level contexts (svt_aom_coding_loop_context_generation) --
     // Intra-mode and tx-size contexts are always neighbour-derived; the
@@ -3028,11 +3114,29 @@ pub(crate) fn evaluate_leaf(
         if has_uv && uv == 0 {
             fcr += pal_uv_no; // rd_cost.c:514 (inside uv fast rate)
         }
-        let fast_cost = rdcost(
-            lambda,
-            flr + fcr,
-            if frame.mds0_ssd { satd } else { satd << 4 },
-        );
+        // bd10 mode funnel (task #94): when the bd10 recon canvas is present,
+        // score this candidate's MDS0 fast cost at TRUE 10-bit — predict from
+        // the 10-bit canvas, SATD the 10-bit residual (`y_src<<2 - pred10`),
+        // with the bd10 fast lambda. This re-orders the survivor (C's bd10
+        // winner). The rate (flr+fcr) is bit-depth-independent. The u8 `pred`
+        // and `satd` above are still computed (MDS1/MDS3 reuse `cand.pred`);
+        // only the fast COST switches. `None` (bd8) is the exact u8 path.
+        let fast_cost = match fx.y_recon10.as_deref() {
+            Some(canvas10) => {
+                let mut pred10 = vec![0u16; w * h];
+                predict_unit_hbd(
+                    canvas10, y_stride, abs_x, abs_y, w, h, mode, delta, fi, &y_geom,
+                    cfg.edge_filter, filt_type_y, &mut pred10, frame.bit_depth,
+                );
+                let satd10 = hadamard_satd_hbd(y_src, y_src_stride, y_src_off, &pred10, w, h);
+                rdcost(lambda_bd10_fast, flr + fcr, satd10 << 4)
+            }
+            None => rdcost(
+                lambda,
+                flr + fcr,
+                if frame.mds0_ssd { satd } else { satd << 4 },
+            ),
+        };
         #[cfg(feature = "std")]
         if std::env::var_os("SVTAV1_CANDDBG").is_some()
             && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
@@ -4810,6 +4914,42 @@ pub(crate) fn evaluate_leaf(
         (wc.y_recon.clone(), wc.u_recon.clone(), wc.v_recon.clone())
     };
 
+    // bd10 mode funnel (task #94): reconstruct the winner at TRUE 10-bit for
+    // the next block's neighbour prediction (`commit_leaf` writes this into the
+    // canvas). Mirrors the post-pass `bd10_reencode_node` leaf body
+    // (predict_unit_hbd + tx_unit_hbd, bd10 quant table + full bd10 lambda +
+    // the frame RDOQ level), so the canvas == C's true bd10 recon and the
+    // post-pass (which recomputes the coded LEVELS from these bd10 modes)
+    // produces the same recon. eff-M9 winners are DC-family / tx_depth 0 / DCT
+    // (no directional/fi/CfL — angular_level 4, filter_intra off), all handled
+    // by predict_unit_hbd + tx_unit_hbd. Empty on the u8 path.
+    let win_recon10 = match fx.y_recon10.as_deref() {
+        Some(canvas10) => {
+            let wc = &cands[win];
+            let mut pred10 = vec![0u16; w * h];
+            predict_unit_hbd(
+                canvas10, y_stride, abs_x, abs_y, w, h, wc.mode, wc.delta, wc.fi, &y_geom,
+                cfg.edge_filter, filt_type_y, &mut pred10, frame.bit_depth,
+            );
+            let mut blk_src10 = vec![0u16; w * h];
+            for r in 0..h {
+                let srow = y_src_off + r * y_src_stride;
+                for c in 0..w {
+                    blk_src10[r * w + c] = (y_src[srow + c] as u16) << 2;
+                }
+            }
+            let tx_type = wc.txb_type.first().copied().unwrap_or(0) as usize;
+            let qt10 = crate::quant::build_quant_table_bd(frame.base_qindex, frame.bit_depth);
+            let out = tx_unit_hbd(
+                &blk_src10, w, 0, &pred10, w, 0, w, h, tx_type, 0, 0, 0, &qt10,
+                frame.rdoq_level, lambda_bd10_full, 0, rates, frame.rdoq_level != 0,
+                frame.bit_depth,
+            );
+            out.recon
+        }
+        None => Vec::new(),
+    };
+
     LeafEval {
         abs_x,
         abs_y,
@@ -4825,6 +4965,7 @@ pub(crate) fn evaluate_leaf(
         gate_u,
         gate_v,
         psq_resid,
+        win_recon10,
     }
 }
 
@@ -4864,6 +5005,15 @@ pub(crate) fn commit_leaf(
     for r in 0..h {
         let dst = (abs_y + r) * y_stride + abs_x;
         y_recon[dst..dst + wr].copy_from_slice(&cand.y_recon[r * w..r * w + wr]);
+    }
+    // bd10 mode funnel (task #94): write the winner's 10-bit recon into the
+    // bd10 canvas for the next block's neighbour prediction (same straddle clip
+    // as the u8 recon above). `None` on the u8 path — byte-neutral for bd8.
+    if let Some(canvas10) = fx.y_recon10.as_deref_mut() {
+        for r in 0..h {
+            let dst = (abs_y + r) * y_stride + abs_x;
+            canvas10[dst..dst + wr].copy_from_slice(&ev.win_recon10[r * w..r * w + wr]);
+        }
     }
     if ev.has_uv {
         // Same straddle clip on chroma (c_stride = the aligned chroma width).

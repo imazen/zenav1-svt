@@ -620,3 +620,65 @@ recon it would read was built from the u8-decided modes) and cascades wrong afte
 than "the eff-M9 mode path aligned at bd10 for one cell" — attempt it in isolation and land ONLY on
 a clean byte-match; a partial thread that mispredicts silently corrupts luma. NOT attempted this
 session (Task-1 chroma landed clean; a speculative funnel thread risks the green baseline).
+
+## u16 LUMA MODE FUNNEL LANDED (2026-07-19) — target `diag 64 64 20 10` byte-exact; gate 45 -> 47
+
+The Task-2 thread above is IMPLEMENTED, exactly as scoped. A TRUE 10-bit luma recon canvas
+(`FunnelCtx::y_recon10: Option<&mut [u16]>`) is threaded through the eff-M9 leaf funnel so each
+block's MDS0 mode decision is made on the 10-bit recon, not the MSB-truncated u8 recon. bd10-gated;
+bd8 and every other preset/partial-SB pass `None` -> the funnel is byte-IDENTICAL (verified).
+
+**Files/functions (leaf_funnel.rs + pipeline.rs):**
+- `FunnelCtx.y_recon10` (new field) — the frame-strided 10-bit recon canvas, `Some` only for
+  complete-SB (`w%64==0 && h%64==0`) eff-M9 (`preset>=9`) bd10 frames.
+- `hadamard_satd_hbd` (new) — u16 mirror of `hadamard_satd`: 10-bit residual (`src<<2 - pred10`),
+  same square-tile Hadamard/SATD kernels (bit-depth-independent).
+- `evaluate_leaf`: when the canvas is present, the MDS0 fast loop predicts each candidate at 10-bit
+  (`predict_unit_hbd` from `y_recon10`) and scores `rdcost(lambda_bd10_fast, flr+fcr, satd10<<4)`
+  — re-ordering the survivor (the prune + rates are bit-depth-independent, computed as on the u8
+  path). At the end it reconstructs the winner at 10-bit (`predict_unit_hbd` + `tx_unit_hbd`, bd10
+  quant table + full bd10 lambda + the frame RDOQ level) into `LeafEval.win_recon10`.
+- `commit_leaf`: writes `win_recon10` into the canvas for the next block's neighbours (the
+  sequential coupling — the per-block bd10 re-encode moved INTO the walk, exactly as the map said).
+- `pipeline.rs`: allocates `tile_frame_recon10` (bd10-gated) before the SB loop and threads it into
+  the eff-M9 `FunnelCtx`; the u8 tree + the existing `bd10_reencode_luma`/`_chroma` post-pass (coded
+  LEVELS) are UNCHANGED — the funnel only fixes the MODE, the post-pass reads the bd10-decided modes.
+
+**THE FAST LAMBDA (root-caused vs REAL C, not guessed):** C's fast loop calls `av1_intra_fast_cost(
+.., fast_lambda_md[1], satd<<4)`, and the port's `rdcost(λ, rate, satd<<4)` has the IDENTICAL
+structure, so the port's fast lambda must be C's `fast_lambda_md[1]` EXACTLY. Added `lam=` to the
+`SVT_FASTCOST_OUT` interposer (`wrap_recon.c`) and read it: `fast_lambda_md[1] == kf_full_lambda_bd10
+/ 16` (the value BEFORE md_process.c's `full_lambda_md[1] *= 16`; integer-exact since `*16` adds no
+low bits) — verified 22505@q20, 94716@q32, 2053848@q55 all match the real C. (A bd10 coincidence of
+the rdmult-vs-SAD tables under the ×16-vs-×4 scaling; the u8 path keeps `frame.lambda`.) Proof it
+WORKS: `diag 64 64 20 10`'s `tree_diff` goes from 3 flips -> the SMOOTH(9) flips at mi(4,4)/(8,8)/
+(12,12) all match C, and block (0,0)'s 3 candidate fast costs match C to the UNIT (verified via
+`SVT_FASTCOST_OUT`).
+
+**Gate `bd10_nonflat_gate.sh` 45 -> 47:** +`diag 64 64 20 {p10,p13}` (the documented DC->SMOOTH/V
+flip — a LUMA MODE flip DIFF before, `cmp` byte-match after). Verification: bd8 identity_matrix
+54/54, partial_sb 101/101, bd10_matrix 36/36 byte-UNCHANGED; encoder unit tests 210/210; 135-cell
+bd10 no-panic sweep (incl. partial-SB 96/200/72 + non-64 dims) 0 panics, all decodable.
+
+### REMAINING (still DIFF) — a SEPARATE, PRE-EXISTING bd10 recon-precision cascade (NOT the funnel)
+
+`diag {64,128} q{32,55} p{10,13}` still DIFF. The funnel is CORRECT — the blocker is that the shared
+bd10 recon path drifts from C on **dense coded content at coarse qindex**, and the funnel (reading
+that recon as neighbours) surfaces it as a mode flip. DECISIVELY ATTRIBUTED (dumped luma levels with
+the funnel FORCE-DISABLED via a temporary env gate, then reverted):
+- With the funnel OFF (u8 modes), `diag 64 q55` STILL diverges — **14/22 luma blocks DIFF from C**,
+  OBU diverges at the same byte 12. So the divergence is pre-existing, independent of the funnel.
+- The signature: for the DC-mode blocks the **AC coeffs match C, only the DC coefficient drifts**
+  (e.g. mi(0,2): port DC=4 vs C DC=0). DC_PRED is flat, so the residual AC is prediction-independent
+  (always matches); the residual DC = `src_DC - pred_DC`, so a drifting DC coeff means the **DC
+  prediction average (of the neighbour recon) drifts from C**. The forward quant is verified CORRECT
+  (mi(0,0) levels byte-match C exactly, `SVT_QLEVELS_OUT` vs `SVTAV1_PACKTREE_COEFF`); the drift is a
+  recon cascade: the 10-bit recon of a dense/coded neighbour differs from C by a small amount, the
+  next block's DC average picks it up, and on a 32x32 block it accumulates enough to flip the mode
+  (port satd10_DC = 141056 vs C's 51456 -> port avoids DC, picks V/SMOOTH which don't use the drifted
+  left neighbour). q20 byte-matches because there the recon does NOT drift (the funnel fixes it).
+- **This is a bd10 RECON precision item (inv-tx/dequant/recon cascade in `tx_unit_hbd`, shared by the
+  post-pass), NOT a mode-funnel item.** It also blocks `diag 128` (multi-SB) and every real-content
+  coarse-q cell. NEXT: dump C's true 10-bit recon (make `SVT_RECON_BIN` 16-bit-aware) and diff it
+  against the port's `tile_frame_recon10`/`last_recon10_y` to pin the first diverging pixel/block.
+  The p3/p6 depth-refine + M6 fi/CFL axes remain separate (as before).

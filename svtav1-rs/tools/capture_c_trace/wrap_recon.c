@@ -435,12 +435,13 @@ uint64_t __wrap_svt_aom_intra_fast_cost(PictureControlSet* pcs, ModeDecisionCont
             if (!f)
                 f = fopen(path, "w");
             if (f) {
-                fprintf(f, "CFAST org=(%u,%u) %ux%u mode=%d fi=%d ang=%d uv=%d uvang=%d dist=%llu cost=%llu\n",
+                fprintf(f,
+                        "CFAST org=(%u,%u) %ux%u mode=%d fi=%d ang=%d uv=%d uvang=%d dist=%llu lam=%llu cost=%llu\n",
                         (unsigned)ctx->blk_org_x, (unsigned)ctx->blk_org_y, block_size_wide[ctx->blk_geom->bsize],
                         block_size_high[ctx->blk_geom->bsize], (int)cand_bf->cand->block_mi.mode,
                         (int)cand_bf->cand->block_mi.filter_intra_mode, (int)cand_bf->cand->block_mi.angle_delta[0],
                         (int)cand_bf->cand->block_mi.uv_mode, (int)cand_bf->cand->block_mi.angle_delta[1],
-                        (unsigned long long)luma_distortion, (unsigned long long)ret);
+                        (unsigned long long)luma_distortion, (unsigned long long)lambda, (unsigned long long)ret);
                 fflush(f);
             }
         }

@@ -4292,6 +4292,22 @@ fn encode_tile_rows(
         let mut tile_decisions: Vec<crate::partition::BlockDecision> = Vec::new();
         let mut tile_trees: Vec<crate::partition::PartitionTree> = Vec::new();
         let mut tile_frame_recon = alloc::vec![128u8; ext_w * ext_h];
+        // bd10 LUMA mode funnel (task #94): a parallel TRUE 10-bit recon canvas,
+        // maintained ONLY for complete-SB eff-M9 (preset ≥ 9) bd10 frames so the
+        // per-block mode decision (evaluate_leaf MDS0) is made on the 10-bit
+        // recon rather than the MSB-truncated u8 recon (which scales SATD ×4 on
+        // `sample<<2` content and cannot flip the survivor). bd8 and every other
+        // bd10 preset/partial-SB allocate NOTHING and pass `None` into FunnelCtx
+        // → the funnel is byte-IDENTICAL. Frame-persistent (a block reads its
+        // left/above SB's committed 10-bit recon); each SB's FunnelCtx borrows
+        // it. On a 64-aligned frame ext_w==w, so this mirrors tile_frame_recon.
+        let bd10_luma_funnel =
+            bit_depth == 10 && speed_config.preset >= 9 && w % 64 == 0 && h % 64 == 0;
+        let mut tile_frame_recon10: alloc::vec::Vec<u16> = if bd10_luma_funnel {
+            alloc::vec![512u16; ext_w * ext_h]
+        } else {
+            alloc::vec::Vec::new()
+        };
 
         let mut part_config =
             crate::partition::PartitionSearchConfig::from_speed_config(speed_config);
@@ -4660,6 +4676,15 @@ fn encode_tile_rows(
                                 ectx: fun_ectx.as_mut().unwrap(),
                                 rates: fun_rates.as_deref().unwrap(),
                                 frame: fun_frame.as_ref().unwrap(),
+                                // bd10 luma mode funnel (task #94): true 10-bit
+                                // recon canvas for the per-block mode decision;
+                                // None (bd8 / other presets / partial-SB) is
+                                // byte-identical.
+                                y_recon10: if bd10_luma_funnel {
+                                    Some(&mut tile_frame_recon10)
+                                } else {
+                                    None
+                                },
                             })
                         } else {
                             None
@@ -4773,6 +4798,8 @@ fn encode_tile_rows(
                                 ectx: fun_ectx.as_mut().unwrap(),
                                 rates: fun_rates.as_deref().unwrap(),
                                 frame: fun_frame.as_ref().unwrap(),
+                                // bd10 luma mode funnel is eff-M9-only (task #94).
+                                y_recon10: None,
                             };
                             let nsq = crate::depth_refine::NsqCfg::for_preset_qp(
                                 speed_config.preset,
@@ -4869,6 +4896,8 @@ fn encode_tile_rows(
                                     ectx: fun_ectx.as_mut().unwrap(),
                                     rates: fun_rates.as_deref().unwrap(),
                                     frame: fun_frame.as_ref().unwrap(),
+                                    // bd10 luma mode funnel is eff-M9-only (task #94).
+                                    y_recon10: None,
                                 })
                             } else {
                                 None
