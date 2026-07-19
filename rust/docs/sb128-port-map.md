@@ -112,3 +112,146 @@ unit test -> 9 ec_ctx seeding parameterization -> 10 M0/M1 signal
 confirmation tests -> 11 flip the Globals/enc_handle.c:4071 gate.
 Audit the port's existing chroma sq_size<128 gates during chunk 5.
 Baseline cells: benchmarks/real_image_identity_p01_2026-07-16.tsv (12).
+
+---
+
+# Reachability + port state (measured 2026-07-19, task #91 chunk 2)
+
+## How an SB128 encode is REACHED (this changes the gate design)
+
+There is **no `super_block_size` field in `EbSvtAv1EncConfiguration`** and no
+`--sb-size` option in `SvtAv1EncApp`. C derives the value in
+`Globals/enc_handle.c:4071-4111`, so the oracle cannot be *asked* for SB128 —
+it can only be *steered into it*. Two clauses decide everything on the
+allintra path:
+
+1. **AREA.** `input_resolution == INPUT_SIZE_240p_RANGE` forces 64
+   **unconditionally** (it is in the first, highest-priority clause). That
+   bucket is `aligned_luma_area < INPUT_SIZE_240p_TH = 0x28500 = 165,120`
+   (`Codec/definitions.h:1834`, classified by
+   `svt_aom_derive_input_resolution`). It is classified on the **8-ALIGNED**
+   dims: `enc_handle.c:3920` folds `max_input_pad_right/bottom` into
+   `max_input_luma_width/height` before `:3992` derives the bucket.
+2. **PRESET.** Inside the allintra branch only `enc_mode <= ENC_M1` picks
+   128; presets 2..13 are SB64 at every frame size.
+
+Also forcing 64: `resize_mode`, `rtc`, `sframe`, `fast_decode && qp<=56 &&
+res>360p`, and **`enable_variance_boost`** — which the HDR fork defaults ON
+(`enc_settings.c:1150`), so an sb128 x fork cell needs
+`SVT_FORK_ENABLE_VARIANCE_BOOST=0`.
+
+**MEASURED** with the real encoder, reading `use_128x128_superblock` back out
+of the emitted sequence header (`tools/sb128_seqhdr.py`):
+
+| request | aligned px | preset | `use_128x128_superblock` |
+|---|---|---|---|
+| 512x384 | 196,608 | 0 | **1** |
+| 512x384 | 196,608 | 1 | **1** |
+| 512x384 | 196,608 | 2 | 0 |
+| 512x384 | 196,608 | 3 | 0 |
+| 256x256 | 65,536 | 0 | 0 |
+| 512x320 | 163,840 | 0 | 0 |
+| 512x336 | 172,032 | 0 | **1** |
+| 404x404 | 166,464 (pads to 408x408) | 0 | **1** |
+
+**Consequence for gating: a 128x128 / 192x192 / 256x256 cell can NEVER
+exercise SB128** — C forces SB64 there. Every cell in `tools/sb128_gate.sh`
+is therefore >= 165,120 aligned luma samples at preset 0 or 1, and the gate
+asserts the oracle's SH bit per cell so a mis-sized cell fails loudly instead
+of silently re-proving the SB64 gate.
+
+A second consequence: **SB128 is the DEFAULT for allintra M0/M1 at any real
+image size.** Every existing gate cell is below the threshold, which is the
+only reason the port has been correct so far — not because SB64 was the right
+answer, but because no cell was ever big enough to ask the question.
+
+## What C actually codes at the 128 root
+
+Measured on `512x384 preset 0` by counting partition symbols in the C
+`SVT_TRACE_OUT` op stream (`W CDF nsyms=8` is the 8-symbol 128-alphabet;
+`icdf0=4869` is `PARTITION_CDF[16]`, i.e. bsl=4 ctx 16):
+
+- **uniform, q32/q55/q63: exactly 12 ops, ALL `s=3` (PARTITION_SPLIT)** —
+  one per SB in the 4x3 SB128 grid. C never keeps a 128x128 NONE here, even
+  on dead-flat content at q63.
+- gradient q32: 156 `nsyms=8` ops (the 8-symbol alphabet is shared with other
+  syntax on textured content, so that count is an upper bound, not 12).
+
+For **uniform 512x384** the two op streams differ by *only* the 12 root
+SPLIT symbols. Per-64-block both encoders emit the identical 5-op group
+(`nsyms=10 s=0` PARTITION_NONE, skip, two `nsyms=13` mode symbols, one
+`nsyms=3`), 48 blocks each (8x6 64-blocks). That makes uniform the cheapest
+possible first byte-match target for the SB128 encode path.
+
+## First divergence, as of this landing
+
+`tools/identity_diff.sh 512 384 32 0 gradient` reports:
+
+```
+STAGE: SH | use_128x128_superblock C=1 Rust=0
+ALSO: tile-op | op 0 C=CDF8:s3 Rust=CDF10:s3
+VERDICT: NOT IDENTICAL (C=7828B Rust=7806B)
+```
+
+i.e. the sequence-header bit, and then immediately the very first tile
+symbol: C codes the 128 root partition against the **8-symbol** alphabet
+(`nsyms=8`, CDF row 16) while the port codes a 64 root against the
+**10-symbol** alphabet (`nsyms=10`, CDF row 12).
+
+## What IS wired (this landing)
+
+- `sb128_geom::derive_super_block_size` — C's rule transcribed branch for
+  branch, with `SbSizeInputs` for the force-64 knobs. Unit-tested against
+  **every measured row of the table above** (not a transcription guess).
+- `EncodePipeline::sb_size` / `sb_size_override` / `sb128_fallback` — the
+  pipeline derives the SB size at construction. `SVTAV1_SB=64|128` pins it.
+- `SeqTools::use_128x128_superblock` -> the SH bit (C derives it the same
+  way, at write time, from `sb_size == BLOCK_128X128`,
+  `entropy_coding.c:2800`).
+- `resolve_tile_rows_log2_sb` / `tile_row_log2_limits(.., sb_size)` /
+  `write_tile_info(.., sb_size)` / `write_key_frame_header_full_lr_sb` —
+  the tile limits are SB-derived (`max_tile_width_sb` halves,
+  `max_tile_area_sb` quarters at SB128). The 64px entry points are kept as
+  compat shims so every existing caller is byte-identical by construction.
+- **`EntropyCtx::bsl` 128 fix (a real bug).** `bsl` used to fold 128 into
+  the 64 level via a `_ => 3` catch-all, which capped `partition_ctx` at
+  ctx 15 and made ctx 16..19 — the only rows carrying the 8-symbol 128
+  alphabet — unreachable dead code. A 128-wide node would have coded its
+  partition symbol against the 64x64 CDF row with a 10-symbol alphabet:
+  wrong probabilities *and* wrong alphabet length. Byte-neutral at SB64
+  (no node is ever 128 wide there).
+
+## What is NOT wired — remaining scope, in dependency order
+
+`EncodePipeline::sb128_encode_supported()` returns **false**, so a cell C
+would code at 128 falls back to a valid 64px-SB stream and sets
+`sb128_fallback`. Deliberate: never a panic, never an undecodable stream,
+and the fallback is reported on stdout and by the gate.
+
+1. **MD root at 128.** `pd0.rs` is structurally 64-rooted: `ctx.pick(64,0,0)`
+   at `:1741/:1807/:1862/:1926`, `SbVariance([u16; 85])` (the 1+4+16+64 tree
+   for a 64 root) at `:69`, and `blk_var_map`'s `lvl = 6 - block_size.ilog2()`
+   at `:143` **underflows** at 128. The cheapest correct first step is NOT a
+   128-rooted variance tree: it is to build the 128 node as
+   `Pd0Tree::Split([q0..q3])` over four existing 64-rooted decisions in
+   Z-order, which is exactly what C chooses on all measured uniform cells.
+   A true 128 NONE/H/V/AB search is a later chunk.
+2. **`depth_refine.rs` caps** — `sq == 64` / `sq*2 == 64` at `:252-258`,
+   `sq < 64` at `:330`.
+3. **Partition WRITE at 128** — the ctx side is fixed (`bsl`), but the
+   pack walk must emit the root symbol and recurse Z-order into the four
+   64 quadrants.
+4. **b64 <-> sb stat bridges** — `sb128_geom::sb128_variance` (AVERAGE) and
+   `sb128_bridge_avg`/`sb128_bridge_max` (**MAX for `me_8x8_cost_var`**) are
+   written but have no consumers. `pipeline.rs` indexes the variance-boost
+   plan on the *sb* grid while producing it on the *b64* grid — those
+   desync at SB128.
+5. **CDEF, the highest-risk chunk** — the port's cdef_idx path is
+   structurally one filter block per SB (`pipeline.rs` cdef_pending is a
+   single slot). SB128 needs the full three-phase contract plus the
+   4-quadrant `CdefTransmit` state machine and `cdef_strength_fanout_offsets`
+   (both already written in `sb128_geom`, both unconsumed).
+6. **DLF ranges** (32 vs 16 mi), **`intra_edge`'s hardcoded
+   `MAX_MIB_SIZE_LOG2 = 5`** and the `svt_aom_intra_has_top_right` 128-centre
+   special case, and **`ec_ctx` seeding** (which should follow automatically
+   once `sb_cols` is 128-derived, but is unverified).

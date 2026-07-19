@@ -1,13 +1,147 @@
-//! SB128 — chunk 1 geometry tables (task #91, dead code at SB64).
+//! SB128 — geometry tables + the `super_block_size` selection rule
+//! (task #91).
 //!
-//! Source translation per docs/sb128-port-map.md. UNWIRED (add
-//! `pub mod sb128_geom;` when integration starts); bulk-write directive
-//! 2026-07-17, no build run yet. Every item is inert until the
-//! Globals/enc_handle.c:4071 selection gate is ported (chunk 11).
+//! Source translation per docs/sb128-port-map.md. Wired at `lib.rs`; the
+//! geometry helpers below still have no encode-path consumers (chunk 4+),
+//! but [`derive_super_block_size`] IS live — `pipeline::EncodePipeline`
+//! calls it to decide the SB grid, exactly like C.
 //!
 //! THE architectural fact: SVT keeps TWO grids — a b64 grid ALWAYS 64x64
 //! (ME/variance/per-64 stats) and the sb grid following super_block_size.
 //! SB128 code exists to bridge them.
+
+// ---------------------------------------------------------------------------
+// super_block_size selection (C Globals/enc_handle.c:4071-4111)
+// ---------------------------------------------------------------------------
+
+/// C `INPUT_SIZE_240p_TH` (Codec/definitions.h:1834) — 0x28500 = 165,120
+/// luma samples. Frames strictly below this are `INPUT_SIZE_240p_RANGE`.
+pub const INPUT_SIZE_240P_TH: u64 = 0x28500;
+
+/// C `INPUT_SIZE_360p_TH` (Codec/definitions.h:1835) — 0x4CE00 = 315,392.
+pub const INPUT_SIZE_360P_TH: u64 = 0x4CE00;
+
+/// C `ResolutionRange` (Codec/definitions.h:1824-1832), only the two
+/// buckets the SB-size rule reads. `svt_aom_derive_input_resolution`
+/// (Codec/sequence_control_set.c:120-136) classifies on `max_input_luma_
+/// width * max_input_luma_height` — the **8-ALIGNED** dims, because
+/// enc_handle.c:3920 folds `max_input_pad_right/bottom` into those fields
+/// before the resolution is derived at :3992. Verified empirically: a
+/// 404x404 request (true 163,216 < TH) encodes with SB128 because it pads
+/// to 408x408 = 166,464 >= TH, while 512x320 = 163,840 (already 8-aligned)
+/// stays SB64.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ResolutionRange {
+    P240,
+    P360,
+    /// 480p and above — the rule only needs "> 360p".
+    Above360,
+}
+
+/// C `svt_aom_derive_input_resolution` (Codec/sequence_control_set.c:120),
+/// collapsed to the three buckets the SB-size rule distinguishes.
+/// `aligned_w`/`aligned_h` are the 8-rounded encode dims.
+pub fn derive_input_resolution(aligned_w: usize, aligned_h: usize) -> ResolutionRange {
+    let n = (aligned_w as u64) * (aligned_h as u64);
+    if n < INPUT_SIZE_240P_TH {
+        ResolutionRange::P240
+    } else if n < INPUT_SIZE_360P_TH {
+        ResolutionRange::P360
+    } else {
+        ResolutionRange::Above360
+    }
+}
+
+/// The non-preset inputs to the SB-size rule that the port does not model
+/// as first-class config yet. Every field defaults to the value the
+/// identity harness's C oracle actually uses (`capture_c_trace.c:149-173`
+/// leaves them at `svt_av1_enc_init_handle` defaults), so
+/// `SbSizeInputs::default()` reproduces the oracle exactly.
+#[derive(Clone, Copy, Debug)]
+pub struct SbSizeInputs {
+    /// C `static_config.fast_decode` (default 0).
+    pub fast_decode: bool,
+    /// C `static_config.qp` — CLI domain 0..63.
+    pub qp: u8,
+    /// C `static_config.resize_mode > RESIZE_NONE` (default false).
+    pub resize: bool,
+    /// C `static_config.rtc` (default false).
+    pub rtc: bool,
+    /// C `static_config.enable_variance_boost`. **mainline v4.2 default is
+    /// false** (enc_settings.c:1152); the HDR fork defaults it TRUE
+    /// (:1150), which forces SB64 — so an sb128 x fork cell needs
+    /// `SVT_FORK_ENABLE_VARIANCE_BOOST=0`.
+    pub variance_boost: bool,
+    /// C `static_config.sframe_dist != 0 || sframe_posi.sframe_posis`.
+    pub sframe: bool,
+    /// C `scs->allintra` (enc_handle.c:507-518) — set by `avif = true`,
+    /// which the identity oracle passes.
+    pub allintra: bool,
+}
+
+impl Default for SbSizeInputs {
+    fn default() -> Self {
+        SbSizeInputs {
+            fast_decode: false,
+            qp: 32,
+            resize: false,
+            rtc: false,
+            variance_boost: false,
+            sframe: false,
+            allintra: true,
+        }
+    }
+}
+
+/// C `super_block_size` derivation, Globals/enc_handle.c:4071-4111 —
+/// transcribed branch for branch. Returns 64 or 128 (PIXELS).
+///
+/// `enc_mode` is the SIGNED preset (C `ENC_MR = -1`, `ENC_M0 = 0`, ...,
+/// EbSvtAv1Enc.h:44-56), so the `<= ENC_M1` / `<= ENC_MR` comparisons keep
+/// their C meaning for the research modes.
+///
+/// **The two facts that decide every current gate cell:**
+/// 1. `INPUT_SIZE_240p_RANGE` (aligned area < 165,120) forces 64
+///    UNCONDITIONALLY — so every existing harness cell (largest is
+///    256x256 = 65,536) is SB64 no matter the preset. SB128 needs a frame
+///    of at least ~165,120 aligned luma samples (e.g. 512x384 = 196,608).
+/// 2. In the `allintra` branch only `enc_mode <= ENC_M1` picks 128 — so
+///    presets 2..13 are SB64 at every frame size. Only presets 0 and 1
+///    (and the negative research modes) can reach SB128 in allintra.
+pub fn derive_super_block_size(
+    aligned_w: usize,
+    aligned_h: usize,
+    enc_mode: i8,
+    inputs: &SbSizeInputs,
+) -> usize {
+    const ENC_MR: i8 = -1;
+    const ENC_M1: i8 = 1;
+    const ENC_M5: i8 = 5;
+
+    let res = derive_input_resolution(aligned_w, aligned_h);
+    let mut sb = if (inputs.fast_decode && inputs.qp <= 56 && res == ResolutionRange::Above360)
+        || inputs.resize
+        || inputs.rtc
+        || res == ResolutionRange::P240
+        || inputs.variance_boost
+    {
+        64
+    } else if inputs.allintra {
+        if enc_mode <= ENC_M1 { 128 } else { 64 }
+    } else if enc_mode <= ENC_MR {
+        128
+    } else if enc_mode <= ENC_M5 {
+        if inputs.qp <= 57 { 64 } else { 128 }
+    } else {
+        64
+    };
+    // "When switch frame is on, all renditions must have same super block
+    // size. See spec 5.5.1, 5.9.15." (enc_handle.c:4095-4098)
+    if inputs.sframe {
+        sb = 64;
+    }
+    sb
+}
 
 /// C ns_blk_offset_md (common_utils.c:269) — per-shape mds block-index
 /// offsets for sub-128 squares. Shape order: N,H,V,H4,V4,HA,HB,VA,VB.
@@ -205,5 +339,100 @@ pub fn cdef_strength_fanout_offsets(bsize128: u8) -> &'static [(usize, usize)] {
         2 => &[(0, 16)],                    // BLOCK_128X64: right
         3 => &[(16, 0)],                    // BLOCK_64X128: below
         _ => &[],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every value below is a MEASURED verdict from the real C encoder
+    /// (`Bin/Release/SvtAv1EncApp`, v4.2.0, mainline defaults), read back
+    /// out of the emitted sequence header's `use_128x128_superblock` bit —
+    /// not a transcription guess. Harness config = the identity oracle's
+    /// (`avif = true` -> allintra, `rate_control_mode = 0`, variance boost
+    /// off, no resize/rtc/sframe/fast-decode).
+    #[test]
+    fn derive_super_block_size_matches_measured_c() {
+        let d = SbSizeInputs::default();
+        // MEASURED: 512x384 = 196,608 px (>= 240p TH) at preset 0 and 1
+        // emits use_128x128_superblock=1; preset 2 and 3 emit 0.
+        assert_eq!(derive_super_block_size(512, 384, 0, &d), 128);
+        assert_eq!(derive_super_block_size(512, 384, 1, &d), 128);
+        assert_eq!(derive_super_block_size(512, 384, 2, &d), 64);
+        assert_eq!(derive_super_block_size(512, 384, 3, &d), 64);
+        // MEASURED: 256x256 = 65,536 px at preset 0 emits 0 — the 240p
+        // clause wins over the allintra M0 clause. This is why every
+        // pre-existing harness cell is SB64.
+        assert_eq!(derive_super_block_size(256, 256, 0, &d), 64);
+        // MEASURED threshold pair, both at preset 0:
+        //   512x320 = 163,840 (< 165,120) -> 0
+        //   512x336 = 172,032 (>= 165,120) -> 1
+        assert_eq!(derive_super_block_size(512, 320, 0, &d), 64);
+        assert_eq!(derive_super_block_size(512, 336, 0, &d), 128);
+        // MEASURED: a 404x404 REQUEST emits 1 even though 404*404 =
+        // 163,216 < TH — C classifies on the 8-ALIGNED dims (408x408 =
+        // 166,464). Callers must pass aligned dims; this asserts the
+        // aligned value is the one that flips.
+        assert_eq!(derive_super_block_size(408, 408, 0, &d), 128);
+        assert_eq!(derive_super_block_size(404, 404, 0, &d), 64);
+    }
+
+    #[test]
+    fn derive_super_block_size_force_64_clauses() {
+        let base = SbSizeInputs::default();
+        // Each force-64 clause independently overrides the allintra-M0 128.
+        for f in [
+            SbSizeInputs { variance_boost: true, ..base },
+            SbSizeInputs { rtc: true, ..base },
+            SbSizeInputs { resize: true, ..base },
+            SbSizeInputs { sframe: true, ..base },
+        ] {
+            assert_eq!(derive_super_block_size(512, 384, 0, &f), 64, "{f:?}");
+        }
+        // fast_decode only forces 64 ABOVE 360p — at 512x384 (360p range)
+        // the `!(res <= 360p)` guard makes it inert.
+        let fd = SbSizeInputs { fast_decode: true, qp: 32, ..base };
+        assert_eq!(derive_super_block_size(512, 384, 0, &fd), 128);
+        // 640x512 = 327,680 >= 360p TH -> the fast_decode clause fires.
+        assert_eq!(derive_super_block_size(640, 512, 0, &fd), 64);
+        // ... but only while qp <= 56.
+        let fd57 = SbSizeInputs { fast_decode: true, qp: 57, ..base };
+        assert_eq!(derive_super_block_size(640, 512, 0, &fd57), 128);
+    }
+
+    #[test]
+    fn derive_super_block_size_non_allintra_branches() {
+        let inter = SbSizeInputs { allintra: false, ..SbSizeInputs::default() };
+        // enc_mode <= ENC_MR (-1) -> 128
+        assert_eq!(derive_super_block_size(512, 384, -1, &inter), 128);
+        // M0..M5 -> qp-dependent (<= 57 -> 64)
+        assert_eq!(derive_super_block_size(512, 384, 0, &inter), 64);
+        let hiq = SbSizeInputs { qp: 58, ..inter };
+        assert_eq!(derive_super_block_size(512, 384, 5, &hiq), 128);
+        // > M5 -> 64
+        assert_eq!(derive_super_block_size(512, 384, 6, &hiq), 64);
+    }
+
+    #[test]
+    fn resolution_buckets_match_c_thresholds() {
+        assert_eq!(derive_input_resolution(512, 320), ResolutionRange::P240);
+        assert_eq!(derive_input_resolution(512, 336), ResolutionRange::P360);
+        // 315,392 is the 360p TH: 640x496 = 317,440 is above it.
+        assert_eq!(derive_input_resolution(640, 496), ResolutionRange::Above360);
+    }
+
+    #[test]
+    fn sb_header_params_match_c() {
+        assert_eq!(sb_header_params(64), (false, 16, 4, 6));
+        assert_eq!(sb_header_params(128), (true, 32, 5, 7));
+    }
+
+    #[test]
+    fn partition_alphabet_len_matches_c() {
+        assert_eq!(partition_cdf_length(8), 4);
+        assert_eq!(partition_cdf_length(16), 10);
+        assert_eq!(partition_cdf_length(64), 10);
+        assert_eq!(partition_cdf_length(128), 8);
     }
 }

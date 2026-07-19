@@ -1,6 +1,6 @@
 # SVT-AV1 Rust Port — Status
 
-Last updated: 2026-07-13 (wave2/entropy-c-parity) — C baseline **v4.2.0-rc**
+Last updated: 2026-07-19 (wave2/entropy-c-parity) — C baseline **v4.2.0-rc**
 
 ## QP domain (C-exact since 2026-07-13)
 
@@ -70,6 +70,75 @@ gated): straddle-WIN cells (80x88, 104x88, 72x88 — C keeps a straddling leaf)
 need cropped-RDO distortion + a true sb_ext chroma STRIDE (not just product
 slack); 65x65 odd-width (harness even-dim + DLF floor-vs-ceiling chroma); the
 M9+ boundary edge-shape cost (wired on LVL_1 only). See CLAUDE.md #95.
+
+## SB128 (128x128 superblocks) — selection rule + plumbing (task #91, 2026-07-19)
+
+**The port now knows when C uses 128px superblocks; it cannot yet CODE one.**
+
+C has no `super_block_size` config field — it DERIVES the value
+(`Globals/enc_handle.c:4071-4111`). `sb128_geom::derive_super_block_size`
+replays that rule branch for branch, so both encoders agree with no harness
+flag. Unit-tested against the real encoder's emitted SH bit, read back with
+`tools/sb128_seqhdr.py` — MEASURED, not transcribed:
+
+| request | aligned px | preset | C `use_128x128_superblock` |
+|---|---|---|---|
+| 512x384 | 196,608 | 0 / 1 | **1** |
+| 512x384 | 196,608 | 2 / 3 | 0 |
+| 512x320 | 163,840 | 0 | 0 |
+| 512x336 | 172,032 | 0 | **1** |
+| 256x256 | 65,536 | 0 | 0 |
+
+**Two clauses decide it, and both invalidate the obvious gate design:**
+1. `input_resolution == INPUT_SIZE_240p_RANGE` forces 64 UNCONDITIONALLY —
+   that bucket is aligned luma area `< 165,120` (`INPUT_SIZE_240p_TH`). So a
+   128x128 / 192x192 / 256x256 cell can NEVER exercise SB128.
+2. In allintra only `enc_mode <= ENC_M1` picks 128 — presets 2..13 are SB64
+   at every size.
+
+Every existing gate cell is under the area threshold, which is the only
+reason SB64 has been correct so far. **SB128 is the DEFAULT for allintra
+M0/M1 at any real image size.**
+
+Landed (all byte-neutral at SB64 — every gate re-verified, see below):
+- `sb128_geom::derive_super_block_size` + `SbSizeInputs` (the force-64 knobs:
+  variance-boost — which the HDR fork defaults ON — resize, rtc, sframe,
+  fast-decode).
+- `EncodePipeline::{sb_size, derived_sb_size, sb_size_override,
+  sb128_fallback}`; `SVTAV1_SB=64|128` pins it in `identity_run`.
+- `SeqTools::use_128x128_superblock` -> the SH bit; SB-derived tile limits
+  (`resolve_tile_rows_log2_sb`, `write_key_frame_header_full_lr_sb`) with the
+  64px entry points kept as compat shims.
+- **`EntropyCtx::bsl` 128 fix (a real latent bug):** a `_ => 3` catch-all
+  folded 128 into the 64 level, capping `partition_ctx` at ctx 15 and making
+  ctx 16..19 — the only rows carrying the 8-symbol 128 alphabet — dead code.
+  A 128-wide node would have coded against the 64x64 CDF row with a
+  10-symbol alphabet: wrong probabilities AND wrong alphabet length.
+
+NOT landed: the SB128 encode path. `sb128_encode_supported()` is `false`, so
+a cell C codes at 128 falls back to a valid 64px-SB stream and sets
+`sb128_fallback` (reported on stdout and by the gate) — never a panic, never
+an undecodable stream.
+
+**First divergence** (`identity_diff.sh 512 384 32 0 gradient`):
+`STAGE: SH | use_128x128_superblock C=1 Rust=0`, then the very first tile
+symbol — C codes the 128 root against the 8-symbol alphabet (CDF row 16),
+the port codes a 64 root against the 10-symbol alphabet (row 12).
+
+**Cheapest first target, measured:** on `uniform 512x384` at q32/q55/q63,
+C emits exactly 12 `nsyms=8` partition ops, **all PARTITION_SPLIT** — one per
+SB in the 4x3 grid — and the per-64-block op groups are already identical
+between the two encoders (48 blocks, same 5 symbols each). So uniform's whole
+delta is the SH bit plus 12 root SPLIT symbols. C never keeps a 128x128 NONE
+there, even on dead-flat content at q63.
+
+Gate: `tools/sb128_gate.sh` — 14 sb128 cells (all >= 165,120 px, preset <= 1)
++ 4 SB64 controls. Per cell it asserts the ORACLE really emitted SB128
+(anti-vacuity, via `sb128_seqhdr.py`) so a mis-sized cell fails loudly instead
+of silently re-proving the SB64 gate; the sb128 cells are pinned as diverging
+and the pin is SELF-PROMOTING (a cell that starts matching FAILS the gate
+until it is moved into `SB128_BYTE_EXACT`). Remaining scope is enumerated in
+`docs/sb128-port-map.md`.
 
 ## Decode conformance (AV1 reference decoder)
 

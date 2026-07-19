@@ -27,6 +27,17 @@
 //! Env: SVTAV1_TILE_ROWS_LOG2 (default 0) — TileRowsLog2 request, same
 //! log2 units as C's cfg.tile_rows / the C driver's SVT_TILE_ROWS (task
 //! #86). 0 = single tile row (unchanged default).
+//!
+//! Env: SVTAV1_SB (task #91) — pin the superblock size to 64 or 128.
+//! UNSET (the default) derives it with C's own rule
+//! (`sb128_geom::derive_super_block_size`, Globals/enc_handle.c:4071-4111).
+//! There is deliberately NO matching flag on the C driver: there is no
+//! `super_block_size` field in EbSvtAv1EncConfiguration, so C derives it
+//! too — both encoders agree from (aligned area, preset) alone. SB128 is
+//! reached at aligned luma area >= 165,120 AND preset <= 1 in allintra;
+//! below that area C forces 64 regardless of preset, which is why every
+//! pre-existing cell here is an SB64 encode. The override exists for the
+//! anti-vacuity witness (force 64 on an SB128 cell -> must diverge).
 
 use svtav1_encoder::pipeline::EncodePipeline;
 use svtav1_encoder::rate_control::{RcConfig, RcMode};
@@ -264,9 +275,31 @@ fn main() {
     // isolates whether a 4:2:0 divergence is chroma-specific or exists in the
     // shared luma coding). Off by default (the harness is 4:2:0).
     let mono = std::env::var_os("SVTAV1_MONO").is_some();
+    // SVTAV1_SB (task #91): pin the superblock size to 64 or 128 instead of
+    // deriving it. UNSET (the default, and every pre-existing invocation) =
+    // derive with C's own rule (`sb128_geom::derive_super_block_size`,
+    // Globals/enc_handle.c:4071-4111), which is what makes the port agree
+    // with the oracle WITHOUT a matching C-side flag — there is no
+    // superblock field in `EbSvtAv1EncConfiguration`, C derives it too.
+    //
+    // The override exists for the anti-vacuity witness: forcing 64 on a
+    // cell C codes at 128 must DIVERGE, proving an sb128 gate is not just
+    // re-proving the sb64 gate.
+    let sb_size: Option<usize> = std::env::var("SVTAV1_SB").ok().and_then(|v| v.parse().ok());
+    assert!(
+        matches!(sb_size, None | Some(64) | Some(128)),
+        "SVTAV1_SB must be 64 or 128, got {sb_size:?}"
+    );
     let mut pipeline = EncodePipeline::new(w as u32, h as u32, preset, rc, 0, 1)
         .with_tile_rows_log2(tile_rows_log2)
-        .with_bit_depth(bd);
+        .with_bit_depth(bd)
+        .with_sb_size(sb_size);
+    // NOTE: the warning goes to STDOUT, never stderr — identity_diff.sh
+    // captures this process's stderr verbatim into `rs.trace` (the symtrace
+    // op stream the differ parses), so any stray stderr line corrupts every
+    // comparison. Same reason the wrapper buffers cargo's build chatter.
+    let sb128_fallback = pipeline.sb128_fallback;
+    let sb_size_used = pipeline.sb_size;
     // SVT_HDR_MODE / SVT_FORK_*: the SAME env names the C driver reads, so one
     // env vector configures both encoders (hdr_mode::HdrForkConfig::from_env).
     // Unset => mainline, i.e. every pre-existing invocation is unchanged.
@@ -308,7 +341,17 @@ fn main() {
         }
     }
     println!(
-        "identity_run: {content} {w}x{h} qp={qp} preset={preset} -> {} bytes",
+        "identity_run: {content} {w}x{h} qp={qp} preset={preset} sb={} -> {} bytes",
+        sb_size_used,
         obu.len()
     );
+    if sb128_fallback {
+        // Loud, so a gate cell can never silently "pass" while the port
+        // quietly coded a different superblock geometry than C did.
+        println!(
+            "identity_run: SB128-FALLBACK — C codes {w}x{h} preset {preset} with 128px \
+             superblocks (sb128_geom::derive_super_block_size); this port emitted a valid \
+             64px-SB stream that will NOT byte-match."
+        );
+    }
 }

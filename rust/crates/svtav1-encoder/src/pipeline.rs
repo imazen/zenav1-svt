@@ -100,6 +100,38 @@ pub struct EncodePipeline {
     /// too-large request degrades exactly like C instead of panicking.
     /// Tile COLUMNS are out of scope (always 1 column).
     pub tile_rows_log2: u8,
+    /// SUPERBLOCK SIZE IN PIXELS — 64 or 128 (task #91). C derives this in
+    /// `Globals/enc_handle.c:4071-4111`; the port replays that rule in
+    /// [`crate::sb128_geom::derive_super_block_size`] at construction from
+    /// the ALIGNED dims + preset, so it agrees with the C oracle without
+    /// any harness flag (there is NO `super_block_size` field in
+    /// `EbSvtAv1EncConfiguration` — C's value is purely derived).
+    ///
+    /// For every pre-existing gate cell this is 64 and nothing changes: the
+    /// C rule forces 64 below 165,120 aligned luma samples (largest current
+    /// cell is 256x256 = 65,536) AND for every allintra preset above M1.
+    ///
+    /// When the derivation asks for 128 but the SB128 encode path cannot
+    /// yet code the cell, [`Self::sb128_fallback`] records it and this stays
+    /// 64 — a clean, decodable (if non-matching) stream rather than a panic.
+    pub sb_size: usize,
+    /// Explicit SB-size override (`SVTAV1_SB` in the harness). `None` =
+    /// derive from the C rule. Set to `Some(64)`/`Some(128)` to pin one —
+    /// used by the anti-vacuity witness, which needs to force the port to
+    /// the WRONG size on an SB128 cell and observe the divergence.
+    pub sb_size_override: Option<usize>,
+    /// What C's rule alone asked for, BEFORE the override and the
+    /// capability fallback. Stored rather than recovered from `sb_size` +
+    /// `sb128_fallback`: once `sb128_encode_supported` stops being a
+    /// constant false, `(sb_size, fallback)` no longer determines the
+    /// derived value (an explicit `Some(128)` on a supported preset would
+    /// be indistinguishable from a derived 128), and a later
+    /// `with_sb_size(None)` would silently resolve to the wrong grid.
+    pub derived_sb_size: usize,
+    /// True when [`Self::sb_size`] was forced back to 64 because the C rule
+    /// asked for 128 on a cell the SB128 encode path does not support yet.
+    /// The emitted stream is valid and decodable but will NOT byte-match C.
+    pub sb128_fallback: bool,
 }
 
 /// Edge-replicate a plane from a valid `sw x sh` region (read at
@@ -145,6 +177,25 @@ impl EncodePipeline {
         // NOT here, so the monochrome state-tracking path keeps working at
         // its historical sub-64 dims (aligned == true, no padding).
         let dims = crate::frame_geom::FrameDims::new(width as usize, height as usize);
+        // Task #91: replay C's `super_block_size` derivation
+        // (Globals/enc_handle.c:4071-4111) on the ALIGNED dims — C
+        // classifies resolution on `max_input_luma_width/height` AFTER the
+        // 8-pad fold (enc_handle.c:3920, verified empirically). `allintra`
+        // mirrors the identity oracle, which passes `avif = true`
+        // (capture_c_trace.c) and therefore always lands in C's allintra
+        // branch; the port's still/key pipeline is the same shape.
+        let sb_inputs = crate::sb128_geom::SbSizeInputs {
+            qp: rc_config.qp,
+            allintra: intra_period <= 1,
+            ..Default::default()
+        };
+        let derived_sb = crate::sb128_geom::derive_super_block_size(
+            dims.aligned_w,
+            dims.aligned_h,
+            preset as i8,
+            &sb_inputs,
+        );
+        let (sb_size, sb128_fallback) = Self::resolve_sb_size(derived_sb, None, preset);
         Self {
             hdr: crate::hdr_mode::HdrForkConfig::default(),
             speed_config: SpeedConfig::from_preset(preset),
@@ -173,7 +224,51 @@ impl EncodePipeline {
             last_cdef_stats: crate::cdef::CdefStats::default(),
             last_lr_stats: ([0; 3], 0),
             tile_rows_log2: 0,
+            sb_size,
+            sb_size_override: None,
+            derived_sb_size: derived_sb,
+            sb128_fallback,
         }
+    }
+
+    /// Whether the SB128 encode path can code a frame at this preset.
+    ///
+    /// SB128 is a whole second geometry (128 partition root with the
+    /// 8-symbol alphabet, the b64<->sb stat bridges, the CDEF 4-quadrant
+    /// contract, per-128-region CDF seeding — see docs/sb128-port-map.md).
+    /// Until every one of those lands, a cell C would code at 128 is coded
+    /// at 64 instead: a valid, decodable stream that does NOT byte-match.
+    /// That is deliberate — the alternative is a panic or an undecodable
+    /// stream, both worse. `sb128_fallback` reports when it happened.
+    ///
+    /// Returns false today. Flip per-capability as the chunks land.
+    fn sb128_encode_supported(_preset: u8) -> bool {
+        false
+    }
+
+    /// Apply the override + capability gate to a derived SB size.
+    /// Returns `(sb_size, fell_back)`.
+    fn resolve_sb_size(derived: usize, override_: Option<usize>, preset: u8) -> (usize, bool) {
+        let want = override_.unwrap_or(derived);
+        debug_assert!(want == 64 || want == 128, "sb_size must be 64 or 128, got {want}");
+        if want == 128 && !Self::sb128_encode_supported(preset) {
+            (64, true)
+        } else {
+            (want, false)
+        }
+    }
+
+    /// Pin the superblock size instead of deriving it (`SVTAV1_SB`).
+    /// `Some(128)` on a cell whose encode path is unsupported still falls
+    /// back to 64 and sets [`Self::sb128_fallback`] — the override chooses
+    /// what to ASK for, not what to bypass.
+    pub fn with_sb_size(mut self, sb: Option<usize>) -> Self {
+        self.sb_size_override = sb;
+        let (sb_size, fell_back) =
+            Self::resolve_sb_size(self.derived_sb_size, sb, self.speed_config.preset);
+        self.sb_size = sb_size;
+        self.sb128_fallback = fell_back;
+        self
     }
 
     /// Set bit depth (8, 10, or 12).
@@ -583,7 +678,13 @@ impl EncodePipeline {
         // The decoder always uses 64x64 SBs when this flag is 0.
         // The encoder's max_partition_depth controls how deep the
         // partition search goes WITHIN each 64x64 SB, not the SB size.
-        let sb_size = 64;
+        // SUPERBLOCK SIZE (task #91). Derived once in `EncodePipeline::new`
+        // by replaying C's rule (Globals/enc_handle.c:4071-4111) — see the
+        // `sb_size` field. 64 for every cell the gates currently cover; 128
+        // only once the SB128 encode path is capability-enabled, at which
+        // point the seq header's `use_128x128_superblock` and the tile
+        // limits follow it (both parameterized below).
+        let sb_size = self.sb_size;
         // Lambda stays CLI-qp-calibrated (see qp_to_lambda's domain note);
         // tpl_adjusted_qp is the CLI-domain value base_qindex is derived
         // from, so this is qp_to_lambda(qindex_to_qp(base_qindex)).
@@ -631,7 +732,17 @@ impl EncodePipeline {
         // producing a bitstream inconsistent with what was encoded. Tile
         // COLUMNS stay fixed at 1 (out of scope for #86).
         let tile_rows_log2 =
-            svtav1_entropy::obu::resolve_tile_rows_log2(self.width, self.height, self.tile_rows_log2);
+            svtav1_entropy::obu::resolve_tile_rows_log2_sb(
+                self.width,
+                self.height,
+                self.tile_rows_log2,
+                // Task #91: the tile limits are SB-derived (spec 5.9.15) —
+                // max_tile_width_sb HALVES and max_tile_area_sb QUARTERS at
+                // SB128 (C svt_av1_get_tile_limits shifts by the PIXEL
+                // sb_size_log2). Identical to the old 64 constant whenever
+                // sb_size == 64, i.e. for every currently gated cell.
+                self.sb_size as u32,
+            );
         let tile_rows = 1usize << tile_rows_log2;
         let rows_per_tile = sb_rows.div_ceil(tile_rows);
 
@@ -1036,6 +1147,11 @@ impl EncodePipeline {
                 self.speed_config.preset,
                 is_single_frame,
             );
+            // Task #91: C derives `use_128x128_superblock` at SH-write time
+            // from `sb_size == BLOCK_128X128` (entropy_coding.c:2800). The
+            // port's `sb_size` comes from the same rule
+            // (sb128_geom::derive_super_block_size), so the bit follows it.
+            t.use_128x128_superblock = self.sb_size == 128;
             // [SVT_HDR_MODE] the fork ALWAYS signals separate_uv_delta_q
             // (its FH writes independent U/V deltas — entropy_coding.c
             // fork block hardcodes both flags true).
@@ -1684,7 +1800,7 @@ impl EncodePipeline {
             // base_qindex is the SAME value used for quantization, CDF
             // bucket selection and the deblock picker above — the decoder's
             // dequant/CDF init must match the encoder's exactly.
-            let fh_bytes = svtav1_entropy::obu::write_key_frame_header_full_lr(
+            let fh_bytes = svtav1_entropy::obu::write_key_frame_header_full_lr_sb(
                 self.width,
                 self.height,
                 base_qindex,
@@ -1736,6 +1852,9 @@ impl EncodePipeline {
                 // always matches the tile group's actual size prefixes.
                 tile_rows_log2,
                 tile_size_bytes_minus_1,
+                // Task #91: must match the SH's use_128x128_superblock
+                // (the FH's tile_info() limits are SB-derived).
+                self.sb_size as u32,
             );
             // tile_data is already a complete tile_group (with TG header)
             let mut frame_payload = alloc::vec::Vec::new();
@@ -2149,17 +2268,28 @@ impl EntropyCtx {
     }
 
     /// Convert block width to our bsl (block size level).
+    ///
+    /// Task #91: the `_ => 3` catch-all used to fold 128 into the 64 level,
+    /// which capped `partition_ctx` at ctx 15 and made the ctx 16..19 rows
+    /// — the ONLY rows whose alphabet is the 8-symbol 128 set (C
+    /// `svt_aom_partition_cdf_length`, entropy_coding.c:922) — unreachable
+    /// dead code. A 128-wide node would have coded its partition symbol
+    /// against the 64x64 CDF row with a 10-symbol alphabet: wrong
+    /// probabilities AND wrong alphabet length. Byte-neutral at SB64
+    /// (no node is ever 128 wide there).
     fn bsl(width: usize) -> usize {
         match width {
             w if w <= 8 => 0,
             w if w <= 16 => 1,
             w if w <= 32 => 2,
-            _ => 3,
+            w if w <= 64 => 3,
+            _ => 4,
         }
     }
 
     /// Convert our bsl to rav1d BlockLevel.
-    /// bsl=0 (8x8) → bl=4, bsl=1 (16x16) → bl=3, bsl=2 (32x32) → bl=2, bsl=3 (64x64) → bl=1.
+    /// bsl=0 (8x8) → bl=4, bsl=1 (16x16) → bl=3, bsl=2 (32x32) → bl=2,
+    /// bsl=3 (64x64) → bl=1, bsl=4 (128x128) → bl=0 (BL_128X128).
     fn bsl_to_block_level(bsl: usize) -> usize {
         4 - bsl
     }
@@ -2190,6 +2320,12 @@ impl EntropyCtx {
         let bsl = Self::bsl(width);
         let sub = self.partition_sub(x, y, bsl);
         let ctx = bsl * 4 + sub;
+        // C `svt_aom_partition_cdf_length` (entropy_coding.c:922-930):
+        // 4 at 8x8 (ctx 0..3 — only NONE/H/V/SPLIT fit), 8 at 128x128
+        // (ctx 16..19 — EXT minus the geometrically impossible H4/V4),
+        // 10 everywhere between. Cross-checked against
+        // `sb128_geom::partition_cdf_length`, which is keyed on the square
+        // size rather than the ctx; the two must agree.
         let nsymbs = match ctx {
             0..=3 => 4,
             4..=15 => 10,
@@ -5250,4 +5386,69 @@ mod tests {
         let v = vec![128u8; 32 * 32];
         let _ = pipeline.encode_frame_420(&y, &u, &v, 64);
     }
+
+    /// Task #91: the partition alphabet the entropy ctx derives must agree
+    /// with the square-size-keyed C rule (`svt_aom_partition_cdf_length`,
+    /// entropy_coding.c:922). Before the `bsl` fix, width 128 folded into
+    /// the 64 level and returned 10 symbols against the 64x64 CDF row.
+    #[test]
+    fn partition_ctx_alphabet_matches_c_rule_at_every_square_size() {
+        let ectx = EntropyCtx::new(64, 64, true, false);
+        for sq in [8usize, 16, 32, 64, 128] {
+            let (ctx, nsymbs) = ectx.partition_ctx(0, 0, sq);
+            assert_eq!(
+                nsymbs,
+                crate::sb128_geom::partition_cdf_length(sq),
+                "alphabet mismatch at square {sq} (ctx {ctx})"
+            );
+            // ctx rows are 4 per level, level = bsl; 128 must land in the
+            // top group (16..=19) that carries the 8-symbol rows.
+            let expect_group = match sq {
+                8 => 0..=3,
+                16 => 4..=7,
+                32 => 8..=11,
+                64 => 12..=15,
+                _ => 16..=19,
+            };
+            assert!(expect_group.contains(&ctx), "square {sq} -> ctx {ctx}");
+        }
+    }
+
+    /// The SB-size resolution honors the C derivation, the explicit
+    /// override, and the capability fallback — and NEVER yields anything
+    /// but 64/128.
+    #[test]
+    fn sb_size_resolution_and_fallback() {
+        // Every existing gate cell shape: small frame -> C rule says 64,
+        // no fallback, so nothing about those encodes changes.
+        let p = EncodePipeline::new(64, 64, 0, RcConfig::default(), 0, 1);
+        assert_eq!(p.sb_size, 64);
+        assert!(!p.sb128_fallback);
+        // A frame C would code at 128 (512x384 preset 0, MEASURED): the
+        // port records the fallback instead of emitting an SB128 stream it
+        // cannot yet code, and keeps a valid 64 grid.
+        let p = EncodePipeline::new(512, 384, 0, RcConfig::default(), 0, 1);
+        assert_eq!(p.sb_size, 64);
+        assert!(p.sb128_fallback, "512x384 p0 is an SB128 cell in C");
+        // preset 2 at the same size is genuinely SB64 in C -> no fallback.
+        let p = EncodePipeline::new(512, 384, 2, RcConfig::default(), 0, 1);
+        assert_eq!(p.sb_size, 64);
+        assert!(!p.sb128_fallback);
+        // Explicit override asks for 128; the capability gate still governs.
+        let p = EncodePipeline::new(64, 64, 0, RcConfig::default(), 0, 1).with_sb_size(Some(128));
+        assert_eq!(p.sb_size, 64);
+        assert!(p.sb128_fallback);
+        // Explicit 64 on an SB128 cell pins 64 with no fallback flag — the
+        // anti-vacuity witness's "force the port to the wrong size" mode.
+        let p = EncodePipeline::new(512, 384, 0, RcConfig::default(), 0, 1).with_sb_size(Some(64));
+        assert_eq!(p.sb_size, 64);
+        assert!(!p.sb128_fallback);
+        assert_eq!(p.derived_sb_size, 128, "the C rule's own answer is preserved");
+        // ... and re-resolving with None returns to the DERIVED value, not
+        // to whatever the last override happened to be.
+        let p = p.with_sb_size(None);
+        assert_eq!(p.derived_sb_size, 128);
+        assert!(p.sb128_fallback);
+    }
+
 }

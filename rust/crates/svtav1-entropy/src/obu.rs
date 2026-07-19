@@ -152,6 +152,20 @@ pub struct SeqTools {
     /// fields (spec 5.9.20) — every frame header of the sequence must
     /// then carry per-plane `lr_type` bits.
     pub enable_restoration: bool,
+    /// SH `use_128x128_superblock` (spec 5.5.1). C never stores this — it
+    /// derives it at write time from `seq_header.sb_size == BLOCK_128X128`
+    /// (entropy_coding.c:2800); the struct field at :190 is dead. The port
+    /// mirrors that by deriving it from `EncodePipeline::sb_size`, which in
+    /// turn comes from `sb128_geom::derive_super_block_size` (the C rule at
+    /// Globals/enc_handle.c:4071-4111).
+    ///
+    /// Default false = 64px superblocks, which is what the C rule returns
+    /// for every cell the gates currently cover.
+    /// The bool <-> pixels mapping deliberately lives in ONE place —
+    /// `sb128_geom::sb_header_params`, which also returns `sb_mi_size` and
+    /// BOTH log2 domains (MI and PIXEL, which the port map flags as easy to
+    /// conflate). Do not add a second accessor here.
+    pub use_128x128_superblock: bool,
 }
 
 /// OBU types as defined in the AV1 spec.
@@ -603,7 +617,9 @@ fn write_sequence_header_inner(
         wb.write_bit(false); // frame_id_numbers_present_flag = 0
     }
 
-    wb.write_bit(false); // use_128x128_superblock = 0
+    // C derives this at write time from `sb_size == BLOCK_128X128`
+    // (entropy_coding.c:2800) — see `SeqTools::use_128x128_superblock`.
+    wb.write_bit(tools.use_128x128_superblock);
     // enable_filter_intra: per-preset in C —
     // scs->seq_header.filter_intra_level = (allintra level != 0), set by
     // get_filter_intra_level_allintra (enc_mode_config.c:12679, on for
@@ -845,7 +861,7 @@ pub struct CdefSignal {
 /// between them produces a non-decodable stream. Both are unused (any
 /// value is fine, `0` by convention) when `tile_rows_log2 == 0`.
 #[allow(clippy::too_many_arguments)]
-pub fn write_key_frame_header_full_lr(
+pub fn write_key_frame_header_full_lr_sb(
     width: u32,
     height: u32,
     base_qindex: u8,
@@ -862,6 +878,9 @@ pub fn write_key_frame_header_full_lr(
     fgs: Option<&FilmGrainParams>,
     tile_rows_log2: u8,
     tile_size_bytes_minus_1: u8,
+    // Superblock size in PIXELS (64 or 128); must match the SH's
+    // `use_128x128_superblock`.
+    sb_size: u32,
 ) -> Vec<u8> {
     let mut wb = key_frame_header_bits_lr(
         width,
@@ -880,6 +899,7 @@ pub fn write_key_frame_header_full_lr(
         fgs,
         tile_rows_log2,
         tile_size_bytes_minus_1,
+        sb_size,
     );
     // This header is embedded in an OBU_FRAME: the spec requires
     // byte_alignment() (zero bits only) between frame_header and tile_group —
@@ -887,6 +907,34 @@ pub fn write_key_frame_header_full_lr(
     // OBU_FRAME_HEADER. C: write_frame_header_obu(appendTrailingBits=0).
     byte_align_zero(&mut wb);
     wb.into_data()
+}
+
+/// 64px-superblock form of [`write_key_frame_header_full_lr_sb`] — the
+/// historical signature, kept so every existing caller and test is
+/// byte-identical by construction.
+#[allow(clippy::too_many_arguments)]
+pub fn write_key_frame_header_full_lr(
+    width: u32,
+    height: u32,
+    base_qindex: u8,
+    reduced_sh: bool,
+    monochrome: bool,
+    lf_levels: [u8; 4],
+    lf_sharpness: u8,
+    cdef: &CdefSignal,
+    lr: &LrSignal,
+    sc: ScSignal,
+    chroma_q: Option<[i8; 4]>,
+    delta_q_res: Option<u8>,
+    qm: Option<[u8; 3]>,
+    fgs: Option<&FilmGrainParams>,
+    tile_rows_log2: u8,
+    tile_size_bytes_minus_1: u8,
+) -> Vec<u8> {
+    write_key_frame_header_full_lr_sb(
+        width, height, base_qindex, reduced_sh, monochrome, lf_levels, lf_sharpness, cdef, lr, sc,
+        chroma_q, delta_q_res, qm, fgs, tile_rows_log2, tile_size_bytes_minus_1, 64,
+    )
 }
 
 /// Body of [`write_key_frame_header_full`] returning the raw [`BitWriter`]
@@ -926,6 +974,7 @@ fn key_frame_header_bits(
         None, // fgs: no film grain
         0,    // tile_rows_log2: test wrapper stays single-tile
         0,    // tile_size_bytes_minus_1: unused when tile_rows_log2 == 0
+        64,
     )
 }
 
@@ -948,6 +997,10 @@ fn key_frame_header_bits_lr(
     fgs: Option<&FilmGrainParams>,
     tile_rows_log2: u8,
     tile_size_bytes_minus_1: u8,
+    // Superblock size in PIXELS (64 or 128) — the tile limits are
+    // SB-derived (spec 5.9.15), so this must match the SH's
+    // `use_128x128_superblock`.
+    sb_size: u32,
 ) -> BitWriter {
     let mut wb = BitWriter::new();
 
@@ -1002,7 +1055,7 @@ fn key_frame_header_bits_lr(
     }
 
     // ---- tile_info() ----
-    write_tile_info(&mut wb, width, height, tile_rows_log2, tile_size_bytes_minus_1);
+    write_tile_info(&mut wb, width, height, tile_rows_log2, tile_size_bytes_minus_1, sb_size);
 
     // ---- quantization_params() ----
     // Spec 5.9.12; decoder authority: libaom setup_quantization
@@ -1238,19 +1291,30 @@ fn tile_log2_blk(blk_size: u32, target: u32) -> u32 {
 /// `MAX_TILE_WIDTH` SBs wide, i.e. 4096px). [`write_tile_info`]'s column
 /// bits are unaffected and unchanged by this function.
 pub fn resolve_tile_rows_log2(width: u32, height: u32, requested_log2: u8) -> u8 {
-    let (min_log2_tile_rows, max_log2_tile_rows) = tile_row_log2_limits(width, height);
+    resolve_tile_rows_log2_sb(width, height, requested_log2, 64)
+}
+
+/// [`resolve_tile_rows_log2`] with an explicit superblock size (64 or 128
+/// PIXELS). The tile limits are SB-derived, so `max_tile_width_sb` and
+/// `max_tile_area_sb` HALVE / QUARTER at SB128 (C
+/// `svt_av1_get_tile_limits`, entropy_coding.c:2450-2467, shifts by the
+/// PIXEL-domain `sb_size_log2`).
+pub fn resolve_tile_rows_log2_sb(width: u32, height: u32, requested_log2: u8, sb_size: u32) -> u8 {
+    let (min_log2_tile_rows, max_log2_tile_rows) = tile_row_log2_limits(width, height, sb_size);
     (u32::from(requested_log2)).clamp(min_log2_tile_rows, max_log2_tile_rows) as u8
 }
 
 /// `(minLog2TileRows, maxLog2TileRows)` per spec 5.9.15 / C
 /// `svt_av1_get_tile_limits` (entropy_coding.c:2450), assuming
 /// `TileColsLog2 = 0` (see [`resolve_tile_rows_log2`]).
-fn tile_row_log2_limits(width: u32, height: u32) -> (u32, u32) {
-    let sb_size = 64u32; // use_128x128_superblock = 0
+///
+/// `sb_size` is the superblock size in PIXELS (64 or 128).
+fn tile_row_log2_limits(width: u32, height: u32, sb_size: u32) -> (u32, u32) {
+    debug_assert!(sb_size == 64 || sb_size == 128, "sb_size must be 64 or 128");
     // C: sb_size_log2 = log2_sb_size(MI units) + MI_SIZE_LOG2(2). For a
-    // 64px SB (use_128x128_superblock=0, the only case this port emits):
-    // log2_sb_size = log2(64/4) = 4, so sb_size_log2 = 4 + 2 = 6.
-    let sb_size_log2 = 6u32;
+    // 64px SB log2_sb_size = log2(64/4) = 4 -> 6; for a 128px SB it is
+    // log2(128/4) = 5 -> 7 (sb128_geom::sb_header_params' PIXEL log2).
+    let sb_size_log2 = sb_size.trailing_zeros();
     let sb_cols = width.div_ceil(sb_size);
     let sb_rows = height.div_ceil(sb_size);
 
@@ -1315,8 +1379,14 @@ pub fn tile_size_bytes_minus_1_for(non_last_tile_lens: &[usize]) -> u8 {
 /// build the tile group (`build_tile_group_multi`) or the FH's declared
 /// `TileSizeBytes` will disagree with the tile group's actual size
 /// prefixes.
-fn write_tile_info(wb: &mut BitWriter, width: u32, height: u32, tile_rows_log2: u8, tile_size_bytes_minus_1: u8) {
-    let sb_size = 64u32; // use_128x128_superblock = 0
+fn write_tile_info(
+    wb: &mut BitWriter,
+    width: u32,
+    height: u32,
+    tile_rows_log2: u8,
+    tile_size_bytes_minus_1: u8,
+    sb_size: u32,
+) {
     let sb_cols = width.div_ceil(sb_size);
     // Row limits (min/max log2 for the row sub-syntax below) come from the
     // shared `tile_row_log2_limits` helper, which recomputes sb_rows
@@ -1339,7 +1409,7 @@ fn write_tile_info(wb: &mut BitWriter, width: u32, height: u32, tile_rows_log2: 
     // write_tile_info_max_tile (entropy_coding.c:2403): `ones` "1" bits
     // (each an increment_tile_rows_log2=1), then — UNLESS TileRowsLog2
     // already reached maxLog2TileRows — one final "0" stop bit.
-    let (min_log2_tile_rows, max_log2_tile_rows) = tile_row_log2_limits(width, height);
+    let (min_log2_tile_rows, max_log2_tile_rows) = tile_row_log2_limits(width, height, sb_size);
     let log2_tile_rows = u32::from(tile_rows_log2);
     debug_assert!(
         log2_tile_rows >= min_log2_tile_rows && log2_tile_rows <= max_log2_tile_rows,
@@ -1641,7 +1711,7 @@ mod tests {
     fn tile_info_single_sb() {
         // 64x64 = 1 SB → uniform + no increments, log2=0 (regression baseline)
         let mut wb = BitWriter::new();
-        write_tile_info(&mut wb, 64, 64, 0, 0);
+        write_tile_info(&mut wb, 64, 64, 0, 0, 64);
         // Should be just 1 bit (uniform_tile_spacing_flag)
         assert_eq!(wb.bit_offset, 1);
     }
@@ -1652,7 +1722,7 @@ mod tests {
         // 1 row stop bit (regression baseline: task #86 must not change
         // this byte shape when tile_rows_log2 == 0).
         let mut wb = BitWriter::new();
-        write_tile_info(&mut wb, 128, 128, 0, 0);
+        write_tile_info(&mut wb, 128, 128, 0, 0, 64);
         // uniform_flag (1) + col_increment_stop (1) + row_increment_stop (1) = 3
         assert_eq!(wb.bit_offset, 3);
     }
@@ -1667,7 +1737,7 @@ mod tests {
         // early via an explicit "0").
         assert_eq!(resolve_tile_rows_log2(128, 128, 1), 1);
         let mut wb = BitWriter::new();
-        write_tile_info(&mut wb, 128, 128, 1, 0);
+        write_tile_info(&mut wb, 128, 128, 1, 0, 64);
         // uniform(1) + col_stop(1) + row_inc(1) + context_update_tile_id
         // (1 bit, value=(1<<1)-1=1) + tile_size_bytes_minus_1(2 bits, 0) = 6
         assert_eq!(wb.bit_offset, 6);
@@ -1682,7 +1752,7 @@ mod tests {
         // case above, which hit its max exactly and has no stop bit).
         assert_eq!(resolve_tile_rows_log2(512, 512, 1), 1);
         let mut wb = BitWriter::new();
-        write_tile_info(&mut wb, 512, 512, 1, 0);
+        write_tile_info(&mut wb, 512, 512, 1, 0, 64);
         // uniform(1) + col: maxLog2TileCols=3>0 -> stop(1) + row: one
         // "1" increment + one "0" stop (2 bits, since 1 < 3) +
         // context_update_tile_id(1 bit, value=1) + tile_size_bytes(2) = 7
@@ -1865,6 +1935,7 @@ mod tests {
                 enable_filter_intra: true,
                 enable_intra_edge_filter: false,
                 enable_restoration: true,
+                use_128x128_superblock: false,
             },
         );
         assert_eq!(ours[0], 0b0_0001_0_1_0); // SH OBU header

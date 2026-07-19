@@ -201,6 +201,11 @@ pub fn seq_tools_for_preset(preset: u8, allintra: bool) -> svtav1_entropy::obu::
         enable_filter_intra: filter_intra_level != 0,
         enable_intra_edge_filter,
         enable_restoration: wn > 0 || sg > 0,
+        // SB size is NOT a speed feature: C derives it from frame area +
+        // preset + the force-64 clauses (Globals/enc_handle.c:4071-4111),
+        // which `seq_tools_for_preset` cannot see. The pipeline overwrites
+        // this from its own `sb_size` right after calling us.
+        use_128x128_superblock: false,
     }
 }
 
