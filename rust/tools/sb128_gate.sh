@@ -82,9 +82,27 @@ SB128_CELLS=(
   "gradient 512 448 32 0"
 )
 
-# Cells that BYTE-MATCH today. Empty until the SB128 encode path lands; a
-# cell only ever moves here after `cmp` says so.
-SB128_BYTE_EXACT=()
+# Cells that BYTE-MATCH today. A cell only ever moves here after `cmp` says
+# so. Landed by task #91 chunk 3 (the 128 partition root + the b64
+# coding-unit walk):
+#   - all four `uniform 512x384` cells (q32/q55/q63, p0 AND p1) — the exact
+#     4x3 SB128 grid, no partial SBs;
+#   - `diag 512x384 q32 p0` — TEXTURED content, so the forced-SPLIT 128 root
+#     is not a uniform-only artefact;
+#   - `uniform 448x384 q32 p0` — a partial 128 COLUMN (448 = 3*128 + 64), so
+#     the right-edge `has_cols == false` binary partition arm (the
+#     H4/V4-free `partition_gather_horz_alike` with is_128) is exercised;
+#   - `uniform 512x448 q32 p0` — a partial 128 ROW, the `has_rows == false`
+#     vert_alike counterpart.
+SB128_BYTE_EXACT=(
+  "uniform  512 384 32 0"
+  "uniform  512 384 55 0"
+  "uniform  512 384 63 0"
+  "uniform  512 384 32 1"
+  "diag     512 384 32 0"
+  "uniform  448 384 32 0"
+  "uniform  512 448 32 0"
+)
 
 # Cells PINNED as still-diverging. Everything in SB128_CELLS that is not in
 # SB128_BYTE_EXACT is implicitly pinned (see the loop) — the pin is what

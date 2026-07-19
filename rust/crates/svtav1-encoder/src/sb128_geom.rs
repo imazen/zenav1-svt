@@ -143,6 +143,47 @@ pub fn derive_super_block_size(
     sb
 }
 
+/// The **b64 coding units** of one superblock, in C's coding order.
+///
+/// THE architectural fact (map §1) made operational: SVT's b64 grid is
+/// ALWAYS 64x64 while the sb grid follows `super_block_size`, so the
+/// per-64 machinery (variance map, PD0 tree, leaf funnel, recon) is the
+/// same at both sizes — only the *visiting order* and the extra root
+/// partition symbol differ.
+///
+/// - SB64: exactly one unit, the SB itself. Callers are byte-identical to
+///   the pre-SB128 code by construction.
+/// - SB128: up to four b64 quadrants in **Z-order** (the AV1
+///   PARTITION_SPLIT child order, spec 5.11.4 / C `svt_aom_write_modes_sb`),
+///   with quadrants whose top-left is at/after the ALIGNED frame extent
+///   DROPPED — exactly C's `mi_row + y_idx >= mi_rows || mi_col + x_idx >=
+///   mi_cols` `continue`. Those quadrants code nothing at all.
+///
+/// `aligned_w`/`aligned_h` are the 8-aligned encode dims (the spec-5.11.4
+/// predicate grid), NOT the true dims.
+pub fn sb_coding_units(
+    sb_x: usize,
+    sb_y: usize,
+    sb_size: usize,
+    aligned_w: usize,
+    aligned_h: usize,
+) -> alloc::vec::Vec<(usize, usize)> {
+    debug_assert!(sb_size == 64 || sb_size == 128);
+    if sb_size == 64 {
+        return alloc::vec![(sb_x, sb_y)];
+    }
+    let mut out = alloc::vec::Vec::with_capacity(4);
+    for i in 0..4usize {
+        let x = sb_x + (i & 1) * 64;
+        let y = sb_y + (i >> 1) * 64;
+        if x >= aligned_w || y >= aligned_h {
+            continue;
+        }
+        out.push((x, y));
+    }
+    out
+}
+
 /// C ns_blk_offset_md (common_utils.c:269) — per-shape mds block-index
 /// offsets for sub-128 squares. Shape order: N,H,V,H4,V4,HA,HB,VA,VB.
 pub const NS_BLK_OFFSET_MD: [u32; 9] = [0, 1, 3, 5, 9, 13, 16, 19, 22];

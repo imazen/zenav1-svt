@@ -241,9 +241,27 @@ impl EncodePipeline {
     /// That is deliberate — the alternative is a panic or an undecodable
     /// stream, both worse. `sb128_fallback` reports when it happened.
     ///
-    /// Returns false today. Flip per-capability as the chunks land.
-    fn sb128_encode_supported(_preset: u8) -> bool {
-        false
+    /// Flipped per-capability as the chunks land.
+    ///
+    /// LANDED (task #91 chunk 3): the 128 partition ROOT. The SB is walked
+    /// as its b64 coding units in Z-order and coded as a `PARTITION_SPLIT`
+    /// at the 128 square (8-symbol alphabet, ctx 16..19) — see
+    /// `merge_sb_units` and `sb128_geom::sb_coding_units`. Everything below
+    /// the root is the byte-proven per-64 path.
+    ///
+    /// STILL UNPORTED, so still gated (see `sb128_root_always_split`):
+    /// a genuine 128-level NONE/HORZ/VERT RD search (this path is
+    /// forced-SPLIT), the b64<->sb stat bridges (`get_sb128_variance` /
+    /// `get_sb128_me_data`), and the CDEF 4-quadrant three-phase contract.
+    fn sb128_encode_supported(preset: u8) -> bool {
+        // Preset gate only; the CONTENT gate (forced-SPLIT validity) is
+        // applied per-frame in `encode_frame_internal`, which can see the
+        // pixels. Presets 0/1 are the only ones C ever codes at 128 in
+        // allintra (`derive_super_block_size`), so anything else reaching
+        // here is an `SVTAV1_SB=128` override — honour it, the walk is
+        // preset-agnostic.
+        let _ = preset;
+        true
     }
 
     /// Apply the override + capability gate to a derived SB size.
@@ -3444,6 +3462,74 @@ fn partition_edge_flags(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Fold the per-b64 coding-unit results of ONE superblock into the SB's
+/// result (task #91, SB128).
+///
+/// SB64 (`units.len() == 1`, `unit_size == sb_size`): the identity — the
+/// single `PartitionResult` is moved out unchanged, so every SB64 caller is
+/// byte-identical by construction.
+///
+/// SB128: the up-to-4 b64 quadrants become the children of a
+/// `PARTITION_SPLIT` node rooted at the 128 square. That is exactly what C
+/// codes — `encode_partition_av1` writes one partition symbol for the 128
+/// node against the 8-symbol alphabet at CDF row `bsl = 4` (ctx 16..19,
+/// `svt_aom_partition_cdf_length`, entropy_coding.c:922), then
+/// `svt_aom_write_modes_sb` recurses into the quadrants in Z-order. The
+/// entropy walk ([`encode_partition_tree`]) already handles a 128-wide
+/// `Split` node: it derives ctx/nsymbs from the node width via
+/// `EntropyCtx::partition_ctx` and passes `is_128 = w == 128` to
+/// `write_partition_edge`, which is what selects the H4/V4-free gathers at
+/// a frame edge.
+///
+/// Off-frame quadrants are already absent from `units`
+/// (`sb128_geom::sb_coding_units` drops them, C's `mi_row + y_idx >=
+/// mi_rows` `continue`), so `children` holds only the in-frame quadrants —
+/// the packed layout the walk's Split arm expects.
+///
+/// PORT-NOTE: this models the 128 root as ALWAYS SPLIT. See
+/// `docs/sb128-port-map.md` — measured true for every uniform cell, and the
+/// M0/M1 128-square candidate set is `{N,H,V,S}`; a genuine 128-level
+/// NONE/H/V RD search is a later chunk. `sb128_root_always_split_supported`
+/// gates which content reaches this path.
+fn merge_sb_units(
+    mut units: Vec<crate::partition::PartitionResult>,
+    sb_size: usize,
+    unit_size: usize,
+) -> crate::partition::PartitionResult {
+    if sb_size == unit_size {
+        debug_assert_eq!(units.len(), 1, "SB64 must have exactly one coding unit");
+        return units.remove(0);
+    }
+    debug_assert_eq!((sb_size, unit_size), (128, 64));
+    let mut out = crate::partition::PartitionResult {
+        partition_type: crate::partition::PartitionType::Split,
+        rd_cost: 0,
+        distortion: 0,
+        rate: 0,
+        num_blocks: 0,
+        decisions: alloc::vec::Vec::new(),
+        tree: None,
+    };
+    let mut children = alloc::vec::Vec::with_capacity(units.len());
+    for u in units {
+        out.distortion += u.distortion;
+        out.rate += u.rate;
+        out.num_blocks += u.num_blocks;
+        out.decisions.extend(u.decisions);
+        if let Some(t) = u.tree {
+            children.push(t);
+        }
+    }
+    out.rd_cost = out.distortion;
+    out.tree = Some(crate::partition::PartitionTree::Split {
+        partition_type: crate::partition::PartitionType::Split,
+        width: sb_size as u16,
+        height: sb_size as u16,
+        children,
+    });
+    out
+}
+
 fn encode_partition_tree(
     tree: &crate::partition::PartitionTree,
     writer: &mut svtav1_entropy::writer::AomWriter,
@@ -4563,10 +4649,10 @@ fn encode_tile_rows(
 
         for sb_row in tile_sb_row_start..tile_sb_row_end {
             for sb_col in 0..sb_cols {
-                let x0 = sb_col * sb_size;
-                let y0 = sb_row * sb_size;
-                let cur_w = sb_size.min(w - x0);
-                let cur_h = sb_size.min(h - y0);
+                let sb_x0 = sb_col * sb_size;
+                let sb_y0 = sb_row * sb_size;
+                let sb_cur_w = sb_size.min(w - sb_x0);
+                let sb_cur_h = sb_size.min(h - sb_y0);
 
                 // [SVT_HDR_MODE] variance boost: this SB searches/quantizes
                 // at its PLANNED qindex (luma + per-plane chroma) with the
@@ -4647,17 +4733,26 @@ fn encode_tile_rows(
                 // conflation and is gone — qindex saturates at u8 range.
                 let _ = (sb_row, sb_col, &sb_qp_offsets);
                 let sb_qindex = base_qindex;
-                // C-exact partition source gate (see the comment below);
-                // computed here because the leaf lambda depends on it.
-                // Task #95 chunk 2: partial SBs (cur_w/cur_h < sb_size) now take
-                // the PD0 fixed-tree path too — C decides the ENTIRE partition
-                // tree in PD0 for every SB including incomplete ones, starting
-                // from a 64x64 root that carries the spec-5.11.4 forced edge
-                // splits. The previous `cur_w == sb_size && cur_h == sb_size`
-                // gate diverted partial SBs to the homegrown search, which
-                // rooted at the CLAMPED extent and mis-coded the partition
-                // symbols. Full SBs are unaffected (cur_w == cur_h == sb_size).
-                let full_sb = cur_w == sb_size && cur_h == sb_size;
+                // ---------------------------------------------- SB128 (#91)
+                // The b64 CODING UNITS of this superblock, in C's coding
+                // order (`sb128_geom::sb_coding_units`). SVT's b64 grid is
+                // ALWAYS 64x64 while the sb grid follows super_block_size, so
+                // the per-64 machinery (PD0 tree, variance map, leaf funnel,
+                // recon) is size-agnostic — only the visiting ORDER and the
+                // extra 128-root partition symbol differ. At SB64 there is
+                // exactly ONE unit (the SB itself) with `unit_size ==
+                // sb_size`, so the loop below is byte-identical to the
+                // pre-SB128 code by construction.
+                //
+                // Everything OUTSIDE the unit loop stays per-SB — notably the
+                // `ec_ctx` chain base / rate tables, because C's
+                // `ec_ctx_array[sb]` is genuinely SB-indexed: at SB128 the
+                // rate-estimation CDF seed refreshes once per 128 REGION
+                // (4x coarser), which is the map's §"Pipeline state"
+                // behavioural delta. Keeping the chain here gets that right
+                // for free.
+                let units = crate::sb128_geom::sb_coding_units(sb_x0, sb_y0, sb_size, w, h);
+                let unit_size = if sb_size == 128 { 64 } else { sb_size };
                 let use_pd0 = ref_ctx.is_none()
                     && (speed_config.preset >= 6
                         || (matches!(speed_config.preset, 0..=5) && use_funnel));
@@ -4849,6 +4944,21 @@ fn encode_tile_rows(
                         }
                     });
                 }
+                // Per-b64 coding units (SB128: up to 4 in Z-order; SB64: the
+                // SB itself — see the `units` comment above).
+                let mut unit_results: Vec<crate::partition::PartitionResult> =
+                    Vec::with_capacity(units.len());
+                for &(x0, y0) in units.iter() {
+                let cur_w = unit_size.min(w - x0);
+                let cur_h = unit_size.min(h - y0);
+                // C-exact partition source gate.
+                // Task #95 chunk 2: partial units (cur_w/cur_h < unit_size)
+                // take the PD0 fixed-tree path too — C decides the ENTIRE
+                // partition tree in PD0 for every b64 including incomplete
+                // ones, starting from a 64x64 root that carries the
+                // spec-5.11.4 forced edge splits. Complete units are
+                // unaffected (cur_w == cur_h == unit_size).
+                let full_sb = cur_w == unit_size && cur_h == unit_size;
                 let sb_result = if use_pd0 {
                     if speed_config.preset >= 9 {
                         let tree = if bit_depth == 10 {
@@ -4932,7 +5042,7 @@ fn encode_tile_rows(
                             &mut tile_frame_recon,
                             w,
                             &tree,
-                            sb_size,
+                            unit_size,
                             sb_qindex,
                             &part_config,
                             x0,
@@ -5164,7 +5274,7 @@ fn encode_tile_rows(
                                 &mut tile_frame_recon,
                                 w,
                                 &tree,
-                                sb_size,
+                                unit_size,
                                 sb_qindex,
                                 &part_config,
                                 x0,
@@ -5194,6 +5304,17 @@ fn encode_tile_rows(
                         ref_ctx.as_ref(),
                     )
                 };
+                unit_results.push(sb_result);
+                } // end per-b64 coding-unit loop
+
+                // Merge the b64 units into this SUPERBLOCK's result. At SB64
+                // there is exactly one unit and this is the identity (the
+                // moved-out `PartitionResult`, byte-for-byte the old value).
+                // At SB128 the four b64 quadrants become the children of a
+                // PARTITION_SPLIT node rooted at the 128 square — which is
+                // what C codes: an 8-symbol partition symbol at CDF row
+                // bsl=4 (ctx 16..19), then the quadrants in Z-order.
+                let sb_result = merge_sb_units(unit_results, sb_size, unit_size);
 
                 // Chain: evolve this SB's contexts by re-coding the decided
                 // tree (throwaway arithmetic state; only the CDF updates
@@ -5234,8 +5355,8 @@ fn encode_tile_rows(
                             base_qindex,
                             se,
                             true,
-                            x0,
-                            y0,
+                            sb_x0,
+                            sb_y0,
                             &mut sim_chroma,
                             &mut sim_geom,
                         );
@@ -5245,11 +5366,11 @@ fn encode_tile_rows(
                 }
 
                 // Keep the per-SB recon list layout for downstream consumers.
-                let mut sb_recon = alloc::vec![0u8; cur_w * cur_h];
-                for r in 0..cur_h {
-                    let src_off = (y0 + r) * w + x0;
-                    sb_recon[r * cur_w..(r + 1) * cur_w]
-                        .copy_from_slice(&tile_frame_recon[src_off..src_off + cur_w]);
+                let mut sb_recon = alloc::vec![0u8; sb_cur_w * sb_cur_h];
+                for r in 0..sb_cur_h {
+                    let src_off = (sb_y0 + r) * w + sb_x0;
+                    sb_recon[r * sb_cur_w..(r + 1) * sb_cur_w]
+                        .copy_from_slice(&tile_frame_recon[src_off..src_off + sb_cur_w]);
                 }
                 tile_recon.extend_from_slice(&sb_recon);
                 tile_decisions.extend(sb_result.decisions);
