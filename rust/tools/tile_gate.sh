@@ -200,6 +200,25 @@ BYTE_EXACT=(
 # SYMPTOM and not the root: LR syntax is written before each SB's
 # partition tree, so any recon difference anywhere in the frame reprices
 # every unit's taps and surfaces at the very first coded op.
+#
+# NOT COVERED by this gate (stated so nobody reads 25/25 as more than it
+# is):
+#   * SB128 + tiles. Every cell here is SB64 — C picks SB128 only at
+#     preset <= 1 and >= 165,120 aligned px, and these presets are 6/10/13.
+#     TileGrid::resolve does implement the SB128 limits (max_tile_width_sb
+#     halves, max_tile_area_sb quarters) but nothing exercises them.
+#   * bd10 + tiles. The bd10 re-encode is post-merge and whole-frame — see
+#     the PORT-NOTEs at both UnitGeom sites in pipeline.rs.
+#   * Real photographic / screen content with tiles. All cells are
+#     `gradient`.
+#   * C's enc_settings validation caps (each log2 <= 6, product <= 128,
+#     and tile_columns <= 4 — enc_settings.c:373,377) are a hard REJECT in
+#     C, where the port clamps geometrically. That is an error-behaviour
+#     difference, not a bitstream one, and it is out of reach here anyway:
+#     cols_log2 5 needs >= 32 SB columns, i.e. a >= 2048px-wide frame.
+#   * Non-uniform tile spacing is not a gap — C itself refuses it
+#     ("NON uniform_tile_spacing_flag not supported yet",
+#     entropy_coding.c:2427), so uniform is the whole envelope.
 # ---------------------------------------------------------------------------
 
 # CONTROLS: the same geometries at rows=cols=0. These must byte-match —
