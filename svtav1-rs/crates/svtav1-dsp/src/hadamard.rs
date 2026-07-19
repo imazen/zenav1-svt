@@ -431,49 +431,93 @@ pub fn aom_hadamard_8x8(src_diff: &[i16], src_stride: usize, coeff: &mut [i32]) 
     }
 }
 
-/// C `svt_aom_hadamard_16x16_c`: four 8x8 sub-transforms + cross-combine
-/// with a `>> 1` on each pairwise sum/difference.
+// ---------------------------------------------------------------------------
+// 16x16 / 32x32: ported from the AVX2 kernels, NOT the `_c` references.
+//
+// `svt_aom_hadamard_{16x16,32x32}` are RTCD function POINTERS that the encoder
+// binds to the AVX2 implementations on any AVX2 host
+// (`SET_AVX2(svt_aom_hadamard_32x32, _c, _avx2)`, common_dsp_rtcd.c:1047-1048),
+// and the AVX2 kernels are NOT equivalent to the `_c` ones once the residual
+// leaves the 8-bit range they were written for (their own comment: "src_diff:
+// 9 bit, dynamic range [-255, 255]"):
+//
+//   * `_c` carries the 8x8 sub-results into the 16x16 cross-combine as
+//     `int32_t` and the 16x16 sub-results into the 32x32 combine as `int32_t`;
+//     nothing after the 8x8 stage can wrap.
+//   * `_avx2` keeps BOTH of those stages in 16-bit lanes: the 16x16 combine is
+//     `_mm256_{add,sub}_epi16` + `_mm256_srai_epi16` (wrapping), and
+//     `svt_aom_hadamard_32x32_avx2` buffers its four 16x16 sub-transforms in an
+//     `int16_t temp_coeff[32*32]` (`is_final = 0`,
+//     pic_operators_intrin_avx2.c:1721-1732) before sign-extending to 32-bit,
+//     doing the `>> 2` in 32-bit, SATURATING back to 16-bit
+//     (`_mm256_packs_epi32`) and finishing with wrapping 16-bit add/sub.
+//
+// At 8-bit residuals the 16x16 stage spans [-32640, 32640] and the post-shift
+// 32x32 operands span [-16320, 16320], so no wrap or saturation is reachable
+// and the two kernels agree bit-for-bit — which is why the 8-bit identity
+// gates are unaffected by porting the AVX2 semantics. At 10-bit residuals
+// (the bd10 MD fast loop, task #94) the 16x16 stage reaches ~+/-130560 and the
+// AVX2 kernel wraps where `_c` does not, so ONLY the AVX2 form reproduces the
+// encoder's SATD. Pinned against both references in tests/c_parity_hadamard.rs
+// (`_c` over the 8-bit range, `_avx2` over the 8-bit AND 10-bit ranges).
+// ---------------------------------------------------------------------------
+
+/// `svt_aom_hadamard_16x16_avx2`: four 8x8 sub-transforms + a cross-combine
+/// carried in WRAPPING 16-bit lanes (`_mm256_{add,sub}_epi16`,
+/// `_mm256_srai_epi16`), widened to `int32` on store (`store_tran_low`).
 pub fn aom_hadamard_16x16(src_diff: &[i16], src_stride: usize, coeff: &mut [i32]) {
     for idx in 0..4usize {
         let off = (idx >> 1) * 8 * src_stride + (idx & 1) * 8;
         aom_hadamard_8x8(&src_diff[off..], src_stride, &mut coeff[idx * 64..]);
     }
     for i in 0..64usize {
-        let a0 = coeff[i];
-        let a1 = coeff[i + 64];
-        let a2 = coeff[i + 128];
-        let a3 = coeff[i + 192];
-        let b0 = (a0 + a1) >> 1;
-        let b1 = (a0 - a1) >> 1;
-        let b2 = (a2 + a3) >> 1;
-        let b3 = (a2 - a3) >> 1;
-        coeff[i] = b0 + b2;
-        coeff[i + 64] = b1 + b3;
-        coeff[i + 128] = b0 - b2;
-        coeff[i + 192] = b1 - b3;
+        // The 8x8 stage already produced int16-valued coefficients (C's
+        // `buffer2` / the AVX2 `temp_coeff` are both int16), so reading them
+        // back as i16 is lossless and matches the AVX2 lane width.
+        let a0 = coeff[i] as i16;
+        let a1 = coeff[i + 64] as i16;
+        let a2 = coeff[i + 128] as i16;
+        let a3 = coeff[i + 192] as i16;
+        let b0 = a0.wrapping_add(a1) >> 1;
+        let b1 = a0.wrapping_sub(a1) >> 1;
+        let b2 = a2.wrapping_add(a3) >> 1;
+        let b3 = a2.wrapping_sub(a3) >> 1;
+        coeff[i] = b0.wrapping_add(b2) as i32;
+        coeff[i + 64] = b1.wrapping_add(b3) as i32;
+        coeff[i + 128] = b0.wrapping_sub(b2) as i32;
+        coeff[i + 192] = b1.wrapping_sub(b3) as i32;
     }
 }
 
-/// C `svt_aom_hadamard_32x32_c`: four 16x16 sub-transforms + cross-combine
-/// with a `>> 2` on each pairwise sum/difference.
+/// `svt_aom_hadamard_32x32_avx2`: four 16x16 sub-transforms buffered as
+/// `int16` (`is_final = 0`), then sign-extended to 32-bit for the pairwise
+/// sum/difference and `>> 2`, SATURATED back to 16-bit (`_mm256_packs_epi32`)
+/// and combined with wrapping 16-bit add/sub before the 32-bit store.
 pub fn aom_hadamard_32x32(src_diff: &[i16], src_stride: usize, coeff: &mut [i32]) {
     for idx in 0..4usize {
         let off = (idx >> 1) * 16 * src_stride + (idx & 1) * 16;
         aom_hadamard_16x16(&src_diff[off..], src_stride, &mut coeff[idx * 256..]);
     }
     for i in 0..256usize {
-        let a0 = coeff[i];
-        let a1 = coeff[i + 256];
-        let a2 = coeff[i + 512];
-        let a3 = coeff[i + 768];
+        // `temp_coeff` is int16: the 16x16 stage is read back through 16-bit
+        // lanes and sign-extended (the AVX2 `sign_extend_16bit_to_32bit`).
+        let a0 = coeff[i] as i16 as i32;
+        let a1 = coeff[i + 256] as i16 as i32;
+        let a2 = coeff[i + 512] as i16 as i32;
+        let a3 = coeff[i + 768] as i16 as i32;
+        // 32-bit add/sub then arithmetic `>> 2` (`_mm256_srai_epi32`).
         let b0 = (a0 + a1) >> 2;
         let b1 = (a0 - a1) >> 2;
         let b2 = (a2 + a3) >> 2;
         let b3 = (a2 - a3) >> 2;
-        coeff[i] = b0 + b2;
-        coeff[i + 256] = b1 + b3;
-        coeff[i + 512] = b0 - b2;
-        coeff[i + 768] = b1 - b3;
+        // `_mm256_packs_epi32`: SATURATING 32 -> 16 narrowing.
+        let sat = |v: i32| v.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        let (b0, b1, b2, b3) = (sat(b0), sat(b1), sat(b2), sat(b3));
+        // `_mm256_{add,sub}_epi16`: WRAPPING 16-bit, then sign-extended store.
+        coeff[i] = b0.wrapping_add(b2) as i32;
+        coeff[i + 256] = b1.wrapping_add(b3) as i32;
+        coeff[i + 512] = b0.wrapping_sub(b2) as i32;
+        coeff[i + 768] = b1.wrapping_sub(b3) as i32;
     }
 }
 

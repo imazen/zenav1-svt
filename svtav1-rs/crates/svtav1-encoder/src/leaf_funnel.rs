@@ -3121,6 +3121,8 @@ pub(crate) fn evaluate_leaf(
         // winner). The rate (flr+fcr) is bit-depth-independent. The u8 `pred`
         // and `satd` above are still computed (MDS1/MDS3 reuse `cand.pred`);
         // only the fast COST switches. `None` (bd8) is the exact u8 path.
+        let mut dbg_satd10: u64 = 0;
+        let mut dbg_pred0: u16 = 0;
         let fast_cost = match fx.y_recon10.as_deref() {
             Some(canvas10) => {
                 let mut pred10 = vec![0u16; w * h];
@@ -3129,6 +3131,8 @@ pub(crate) fn evaluate_leaf(
                     cfg.edge_filter, filt_type_y, &mut pred10, frame.bit_depth,
                 );
                 let satd10 = hadamard_satd_hbd(y_src, y_src_stride, y_src_off, &pred10, w, h);
+                dbg_satd10 = satd10;
+                dbg_pred0 = pred10[0];
                 rdcost(lambda_bd10_fast, flr + fcr, satd10 << 4)
             }
             None => rdcost(
@@ -3142,7 +3146,7 @@ pub(crate) fn evaluate_leaf(
             && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
         {
             eprintln!(
-                "NSQDBG PFAST mi=({},{}) {}x{} mode={} fi={} delta={} uv={} uvd={} flr={} fcr={} satd={} fast={}",
+                "NSQDBG PFAST mi=({},{}) {}x{} mode={} fi={} delta={} uv={} uvd={} flr={} fcr={} satd={} satd10={} pred10_0={} fast={}",
                 abs_y / 4,
                 abs_x / 4,
                 w,
@@ -3155,6 +3159,8 @@ pub(crate) fn evaluate_leaf(
                 flr,
                 fcr,
                 satd,
+                dbg_satd10,
+                dbg_pred0,
                 fast_cost,
             );
         }

@@ -147,6 +147,56 @@ CELLS=(
   # with the funnel OFF too) — NOT this funnel; see docs/bd10-port-map.md.
   "diag 64 64 20 10"
   "diag 64 64 20 13"
+  # bd10 AVX2-HADAMARD fix (task #94, this landing): the MDS0 fast-loop SATD
+  # kernels were ported from `svt_aom_hadamard_{16x16,32x32}_c`, but the encoder
+  # binds those RTCD pointers to the AVX2 implementations
+  # (SET_AVX2(svt_aom_hadamard_32x32, _c, _avx2), common_dsp_rtcd.c:1047-1048),
+  # and the two are NOT equivalent above the 8-bit residual range they were
+  # written for: `_avx2` carries the 16x16 cross-combine in WRAPPING int16 lanes
+  # and buffers the 32x32's four 16x16 sub-transforms in an `int16_t temp_coeff`
+  # (is_final=0) before sign-extending, while `_c` keeps both in int32. At 8-bit
+  # the stage maxima ([-32640,32640] / [-16320,16320]) cannot wrap and the two
+  # agree bit-for-bit; at 10-bit the 16x16 stage reaches ~+/-130560 and the AVX2
+  # kernel WRAPS. The bd10 mode funnel feeds exactly such residuals, so the port
+  # computed a DIFFERENT fast-loop SATD than the encoder and picked a different
+  # MDS0 winner (measured on `diag 64 64 32 10`, the 32x32 leaf at (32,0): C's
+  # DC candidate satd 49152 vs the port's 143360 -> C coded DC_PRED, the port
+  # V_PRED). Porting the AVX2 int16 semantics (src/hadamard.rs) closed the whole
+  # eff-M9 class. Each cell below was a DIFF before and BYTE-MATCHES after
+  # (verified `cmp`); the full {diag,gradient} x {64,128} x q{5..63} x p{10,13}
+  # sweep is now 64/64 with ZERO diffs.
+  "diag 64 64 32 10"
+  "diag 64 64 32 13"
+  "diag 64 64 48 10"
+  "diag 64 64 48 13"
+  "diag 64 64 55 10"
+  "diag 64 64 55 13"
+  "diag 64 64 63 10"
+  "diag 64 64 63 13"
+  "diag 128 128 5 10"
+  "diag 128 128 5 13"
+  "diag 128 128 12 10"
+  "diag 128 128 12 13"
+  "diag 128 128 20 10"
+  "diag 128 128 20 13"
+  "diag 128 128 32 10"
+  "diag 128 128 32 13"
+  "diag 128 128 40 10"
+  "diag 128 128 40 13"
+  "diag 128 128 48 10"
+  "diag 128 128 48 13"
+  "diag 128 128 55 10"
+  "diag 128 128 55 13"
+  "diag 128 128 63 10"
+  "diag 128 128 63 13"
+  "gradient 64 64 48 10"
+  "gradient 64 64 48 13"
+  "gradient 64 64 63 10"
+  "gradient 64 64 63 13"
+  "gradient 128 128 48 10"
+  "gradient 128 128 48 13"
+  "gradient 128 128 63 10"
+  "gradient 128 128 63 13"
 )
 for cell in "${CELLS[@]}"; do
   read -r content w h qp p <<<"$cell"

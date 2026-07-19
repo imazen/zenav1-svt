@@ -1308,6 +1308,8 @@ unsafe extern "C" {
     fn svt_aom_hadamard_8x8_c(src_diff: *const i16, src_stride: isize, coeff: *mut i32);
     fn svt_aom_hadamard_16x16_c(src_diff: *const i16, src_stride: isize, coeff: *mut i32);
     fn svt_aom_hadamard_32x32_c(src_diff: *const i16, src_stride: isize, coeff: *mut i32);
+    fn svt_aom_hadamard_16x16_avx2(src_diff: *const i16, src_stride: isize, coeff: *mut i32);
+    fn svt_aom_hadamard_32x32_avx2(src_diff: *const i16, src_stride: isize, coeff: *mut i32);
     fn svt_aom_satd_c(coeff: *const i32, length: i32) -> i32;
 }
 
@@ -1357,6 +1359,36 @@ pub fn hadamard(dim: usize, src_diff: &[i16], src_stride: usize, coeff: &mut [i3
 /// Reference `svt_aom_satd_c`.
 pub fn satd(coeff: &[i32]) -> i32 {
     unsafe { svt_aom_satd_c(coeff.as_ptr(), coeff.len() as i32) }
+}
+
+/// `svt_aom_hadamard_{16x16,32x32}_avx2` — the kernel the ENCODER actually
+/// runs (`SET_AVX2(svt_aom_hadamard_32x32, _c, _avx2)`, common_dsp_rtcd.c
+/// :1047-1048) on any AVX2 host. It is NOT equivalent to the `_c` reference
+/// above once the residual exceeds the 8-bit range: `svt_aom_hadamard_32x32
+/// _avx2` buffers its four 16x16 sub-transforms in an `int16_t temp_coeff
+/// [32*32]` (pic_operators_intrin_avx2.c:1721, `is_final = 0`) and only then
+/// sign-extends to 32-bit, whereas `svt_aom_hadamard_32x32_c` carries those
+/// sub-results in `int32_t`. At 8-bit the 16x16 stage spans [-32640, 32640]
+/// and fits int16, so the two agree; at 10-bit it reaches ~+/-130560 and the
+/// AVX2 kernel WRAPS. The bd10 MD fast loop feeds exactly such residuals, so
+/// bit-exactness with the real encoder requires matching `_avx2` (task #94).
+pub fn hadamard_avx2(dim: usize, src_diff: &[i16], src_stride: usize, coeff: &mut [i32]) {
+    assert!(coeff.len() >= dim * dim);
+    unsafe {
+        match dim {
+            16 => svt_aom_hadamard_16x16_avx2(
+                src_diff.as_ptr(),
+                src_stride as isize,
+                coeff.as_mut_ptr(),
+            ),
+            32 => svt_aom_hadamard_32x32_avx2(
+                src_diff.as_ptr(),
+                src_stride as isize,
+                coeff.as_mut_ptr(),
+            ),
+            _ => panic!("unsupported avx2 hadamard dim {dim}"),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

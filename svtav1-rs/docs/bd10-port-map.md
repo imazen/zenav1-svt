@@ -682,3 +682,97 @@ the funnel FORCE-DISABLED via a temporary env gate, then reverted):
   coarse-q cell. NEXT: dump C's true 10-bit recon (make `SVT_RECON_BIN` 16-bit-aware) and diff it
   against the port's `tile_frame_recon10`/`last_recon10_y` to pin the first diverging pixel/block.
   The p3/p6 depth-refine + M6 fi/CFL axes remain separate (as before).
+
+## AVX2-HADAMARD ROOT CAUSE — the "recon-precision cascade" was NOT recon at all (2026-07-19)
+
+**The section immediately above is WRONG about the mechanism** (kept for the trail). The residual
+`diag {64,128} q{32,55} p{10,13}` divergence was NOT an inv-tx / dequant / recon-add / DC-predictor
+precision cascade. It was the **MDS0 fast-loop SATD kernel**: the port was ported from
+`svt_aom_hadamard_{16x16,32x32}_c`, but the encoder binds those RTCD pointers to the **AVX2**
+implementations, and the two are **not equivalent above the 8-bit residual range**.
+
+### How it was localized (method, in order)
+
+1. `SVT_RECON_BIN` made 16-bit-aware (`wrap_recon.c`: at `is_16bit` the recon is plain packed u16,
+   `buffer[p]` pre-offset to the frame origin, `stride[p]` in SAMPLES) and diffed against the port's
+   existing `SVTAV1_BD10_RECON` dump of `last_recon10_y`.
+   -> `diag 64 64 32 10`: 691/4096 luma pixels differ, **all inside the single 32x32 block at
+   (x=32,y=0)**; the other three 32x32 blocks are byte-identical. So the neighbours of the diverging
+   block were CORRECT — which already refutes "a drifting neighbour recon cascade".
+2. Per-block levels (`SVT_QLEVELS_OUT` vs the port's re-encode dump): every AC level identical, only
+   the DC differs (C `qcoeff[0] = -110`, port `-19`) — the documented "AC matches, DC drifts"
+   signature. But the coded TREE showed the real cause: **C codes mode 0 (DC_PRED) at (32,0), the
+   port codes mode 1 (V_PRED)** — a MODE flip, not a recon drift. Both predictions are flat (the
+   block is at the frame top, so `has_above = false`), which is exactly why every AC coefficient
+   agreed and only the DC moved.
+3. `SVT_FASTCOST_OUT` extended to dump the candidate PREDICTION and the branch selectors:
+   `pred0/pred1/predS/predmean` prove C's DC pred is flat **752** and V flat **554** — *identical to
+   the port's* (`predict_unit_hbd` is correct; the left column feeding it is byte-identical). The
+   selectors show `dtype=0 (SAD)`, `hadblk=1`, `subres=0`, i.e. C takes `hadamard_path` with
+   `luma_fast_dist = satd << 4` (`fast_loop_core`, product_coding_loop.c:1283-1287).
+4. The wrap also dumps `cand_bf->residual->y_buffer` (which `hadamard_path` fills just before the
+   SATD): C's residual is **exactly** `src10 - 752` (`res0=-240 res1=-256 resmean=-240.00
+   resmin=-736 resmax=256`) — identical to the port's. Same source, same prediction, same residual,
+   same kernel... yet C reported `rawsatd = 49152` where the port computed **143360**.
+5. Feeding that exact residual to the REAL C `svt_aom_hadamard_32x32_c` via `cref` returned
+   **143360** — matching the PORT, not the encoder. So the encoder was not running `_c`. Calling
+   `svt_aom_hadamard_32x32_avx2` on the same residual returned **49152 / 52480**, reproducing the
+   encoder's DC/V distortions EXACTLY. Root cause identified.
+
+### The defect
+
+`SET_AVX2(svt_aom_hadamard_32x32, _c, _avx2)` / `SET_AVX2(svt_aom_hadamard_16x16, ...)`
+(common_dsp_rtcd.c:1047-1048) bind the MD fast loop to the AVX2 kernels, which were written for
+8-bit residuals (their own comment: `// src_diff: 9 bit, dynamic range [-255, 255]`):
+
+- `_c` carries the 8x8 sub-results into the 16x16 cross-combine as `int32_t`, and the 16x16
+  sub-results into the 32x32 combine as `int32_t`; nothing after the 8x8 stage can wrap.
+- `_avx2` keeps BOTH stages in 16-bit lanes: the 16x16 combine is `_mm256_{add,sub}_epi16` +
+  `_mm256_srai_epi16` (wrapping), and `svt_aom_hadamard_32x32_avx2` buffers its four 16x16
+  sub-transforms in an `int16_t temp_coeff[32*32]` (`is_final = 0`,
+  pic_operators_intrin_avx2.c:1721-1732) before sign-extending to 32-bit, doing the `>> 2` in
+  32-bit, SATURATING back to 16-bit (`_mm256_packs_epi32`) and finishing with wrapping 16-bit
+  add/sub.
+
+At 8-bit the 16x16 stage spans [-32640, 32640] and the post-shift 32x32 operands span
+[-16320, 16320] — no wrap or saturation is reachable and the kernels agree bit-for-bit (which is why
+every 8-bit gate was unaffected and why the 8-bit fuzzers never caught it). At **10-bit** the 16x16
+stage reaches ~+/-130560 and the AVX2 kernel WRAPS. The bd10 mode funnel (`hadamard_satd_hbd`) feeds
+exactly such residuals, so the port produced a different MDS0 fast cost and a different winner.
+
+### The fix
+
+`crates/svtav1-dsp/src/hadamard.rs`: `aom_hadamard_16x16` / `aom_hadamard_32x32` re-ported from the
+**AVX2** kernels (wrapping i16 combine; i16-buffered sub-transforms, i32 add/sub + `>> 2`,
+saturating narrow, wrapping i16 finish). **bd8 byte-UNCHANGED by construction** — at 8-bit the values
+cannot reach the wrap/saturate thresholds, so the new code is bit-identical to the old there (and the
+existing `_c` 8-bit parity tests still pass unmodified).
+
+Differential (`tests/c_parity_hadamard.rs`, 9 tests): the port is pinned against `_c` over the 8-bit
+range (unchanged) AND against `_avx2` over BOTH the 8-bit and the new **bd10 (-1023..1023)** ranges,
+plus `c_and_avx2_hadamard_diverge_at_bd10_range` — an anti-vacuity witness that fails if upstream
+ever unifies the two kernels. NOTE the AVX2 kernels emit coefficients in a different ORDER ("the
+final transpose may be skipped"), so parity is asserted on the coefficient MULTISET + the SATD —
+strictly stronger than the SATD alone, and exactly the invariant `svt_aom_satd` depends on.
+`cref::hadamard_avx2` was added for this.
+
+### Result
+
+`tools/bd10_nonflat_gate.sh` **47 -> 79** byte-identical cells. The whole eff-M9 bd10 envelope is
+closed: the full sweep `{diag,gradient} x {64x64,128x128} x q{5,12,20,32,40,48,55,63} x p{10,13}` is
+**64/64 with ZERO diffs** — including every `diag 128` cell (previously written off as "multi-SB
+near-ties") and the q48/q63 cells that were never gated. bd8 `identity_matrix` 54/54,
+`partial_sb_gate` 101/101, `bd10_matrix` 36/36 all byte-UNCHANGED; encoder 210 + dsp unit tests green.
+
+### Remaining scope (unchanged by this landing)
+
+- **Low presets p0/p3/p6 at bd10**: 2/36 match on the spot sweep (only the two `gradient 64 64 55
+  {p3,p6}` cells already gated). Still blocked by the separate, previously-documented axes — PD1
+  depth-refinement + NSQ (p3-p5), M6 fi/CFL, and the bd10 CDEF-search / Wiener-LR post-filter
+  dependencies. NOT a hadamard issue.
+- **PRE-EXISTING 65x65 failures (found by this session's 360-cell no-panic sweep; NOT caused by this
+  change — verified by re-running the identical sweep with the fix stashed, failure sets IDENTICAL):**
+  `65x65 p0` at q32/q63 PANICS in `txb_ctx_from_spans` (leaf_funnel.rs:5417) — and it panics at
+  **bd8 too**, so it is a general partial-SB bug, unrelated to bd10; `65x65 bd10 p0/p6` at q5/q32
+  additionally produce UNDECODABLE streams. Excluding 65x65 the sweep is 353/353 clean and decodable
+  (aomdec). Neither is covered by `partial_sb_gate.sh` (101/101 green).

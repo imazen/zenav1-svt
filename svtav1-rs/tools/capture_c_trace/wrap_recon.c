@@ -366,6 +366,14 @@ uint8_t __wrap_svt_aom_quantize_inv_quantize(PictureControlSet* pcs, ModeDecisio
         for (int i = 0; i < n && emitted < 48; ++i)
             if (quant_coeff[i])
                 fprintf(f, "%s%d:%d", emitted++ ? "," : "", i, quant_coeff[i]);
+        /* task #94 bd10 recon-drift: also dump recon_coeff (the DEQUANTIZED
+         * coeffs that feed svt_aom_inv_transform_recon_wrapper) so the port's
+         * dqcoeff can be compared directly — isolates dequant from inv-tx. */
+        fprintf(f, "] dq=[");
+        emitted = 0;
+        for (int i = 0; i < n && emitted < 48; ++i)
+            if (recon_coeff[i])
+                fprintf(f, "%s%d:%d", emitted++ ? "," : "", i, recon_coeff[i]);
         fprintf(f, "]\n");
         fflush(f);
     }
@@ -435,13 +443,58 @@ uint64_t __wrap_svt_aom_intra_fast_cost(PictureControlSet* pcs, ModeDecisionCont
             if (!f)
                 f = fopen(path, "w");
             if (f) {
+                /* task #94 bd10: also report the CANDIDATE PREDICTION this cost
+                 * was computed from (pred[0], pred[1], pred[stride]) and its
+                 * block mean, so the port's predict_unit_hbd output can be
+                 * compared directly. hbd_md => pred buffer is uint16_t. */
+                const int      bw = block_size_wide[ctx->blk_geom->bsize];
+                const int      bh = block_size_high[ctx->blk_geom->bsize];
+                const uint32_t ps = cand_bf->pred->y_stride;
+                double         pmean = 0.0;
+                int            p0 = -1, p1 = -1, pS = -1;
+                if (ctx->hbd_md) {
+                    const uint16_t* p = (const uint16_t*)cand_bf->pred->y_buffer;
+                    p0 = p[0];
+                    p1 = p[1];
+                    pS = p[ps];
+                    for (int r = 0; r < bh; ++r)
+                        for (int c = 0; c < bw; ++c) pmean += p[r * ps + c];
+                } else {
+                    const uint8_t* p = cand_bf->pred->y_buffer;
+                    p0 = p[0];
+                    p1 = p[1];
+                    pS = p[ps];
+                    for (int r = 0; r < bh; ++r)
+                        for (int c = 0; c < bw; ++c) pmean += p[r * ps + c];
+                }
+                pmean /= (double)(bw * bh);
+                /* C's ACTUAL residual: hadamard_path just wrote it into
+                 * cand_bf->residual->y_buffer (int16) before calling us. */
+                const int16_t* rs  = (const int16_t*)cand_bf->residual->y_buffer;
+                const uint32_t rst = cand_bf->residual->y_stride;
+                double         rmean = 0.0;
+                int            rmin = 1 << 30, rmax = -(1 << 30);
+                for (int r = 0; r < bh; ++r)
+                    for (int c = 0; c < bw; ++c) {
+                        const int v = rs[r * rst + c];
+                        rmean += v;
+                        if (v < rmin) rmin = v;
+                        if (v > rmax) rmax = v;
+                    }
+                rmean /= (double)(bw * bh);
                 fprintf(f,
-                        "CFAST org=(%u,%u) %ux%u mode=%d fi=%d ang=%d uv=%d uvang=%d dist=%llu lam=%llu cost=%llu\n",
+                        "CFAST org=(%u,%u) %ux%u mode=%d fi=%d ang=%d uv=%d uvang=%d dist=%llu lam=%llu cost=%llu "
+                        "hbd=%d pred0=%d pred1=%d predS=%d predmean=%.2f dtype=%d hadblk=%d subres=%d "
+                        "rawsatd=%llu res0=%d res1=%d resmean=%.2f resmin=%d resmax=%d rstride=%u\n",
                         (unsigned)ctx->blk_org_x, (unsigned)ctx->blk_org_y, block_size_wide[ctx->blk_geom->bsize],
                         block_size_high[ctx->blk_geom->bsize], (int)cand_bf->cand->block_mi.mode,
                         (int)cand_bf->cand->block_mi.filter_intra_mode, (int)cand_bf->cand->block_mi.angle_delta[0],
                         (int)cand_bf->cand->block_mi.uv_mode, (int)cand_bf->cand->block_mi.angle_delta[1],
-                        (unsigned long long)luma_distortion, (unsigned long long)lambda, (unsigned long long)ret);
+                        (unsigned long long)luma_distortion, (unsigned long long)lambda, (unsigned long long)ret,
+                        (int)ctx->hbd_md, p0, p1, pS, pmean, (int)ctx->mds0_ctrls.mds0_dist_type,
+                        (int)ctx->mds0_use_hadamard_blk, (int)ctx->mds_subres_step,
+                        (unsigned long long)cand_bf->luma_fast_dist, (int)rs[0], (int)rs[1], rmean, rmin, rmax,
+                        (unsigned)rst);
                 fflush(f);
             }
         }
@@ -527,6 +580,13 @@ void __wrap_svt_av1_loop_filter_init(PictureControlSet* pcs) {
         if (n == 0 && binpath && *binpath) {
             const uint32_t ss_x = pcs->ppcs->scs->subsampling_x;
             const uint32_t ss_y = pcs->ppcs->scs->subsampling_y;
+            /* task #94 bd10: at the 16-bit pipeline the recon buffer is PLAIN
+             * PACKED u16 (2 B/px), buffer[p] pre-offset to the frame origin,
+             * stride[p] in SAMPLES (uint16_t units) — exactly what
+             * picture_sse_calculations feeds svt_full_distortion_kernel16_bits.
+             * Dump u16 LE per pixel so the file diffs the port's
+             * SVTAV1_BD10_RECON dump (last_recon10_y, tightly packed u16 LE).
+             * bd8 (is_16bit false) is byte-UNCHANGED (1 B/px). */
             for (int p = 0; p < 3; ++p) {
                 const uint32_t pw = p ? (pcs->ppcs->aligned_width >> ss_x) : pcs->ppcs->aligned_width;
                 const uint32_t ph = p ? (pcs->ppcs->aligned_height >> ss_y) : pcs->ppcs->aligned_height;
@@ -535,10 +595,16 @@ void __wrap_svt_av1_loop_filter_init(PictureControlSet* pcs) {
                 FILE* bf = fopen(path, "wb");
                 if (!bf)
                     continue;
-                for (uint32_t r = 0; r < ph; ++r)
-                    fwrite(recon->buffer[p] + (size_t)r * recon->stride[p], 1, pw, bf);
+                if (is_16bit) {
+                    const uint16_t* base = (const uint16_t*)recon->buffer[p];
+                    for (uint32_t r = 0; r < ph; ++r)
+                        fwrite(base + (size_t)r * recon->stride[p], sizeof(uint16_t), pw, bf);
+                } else {
+                    for (uint32_t r = 0; r < ph; ++r)
+                        fwrite(recon->buffer[p] + (size_t)r * recon->stride[p], 1, pw, bf);
+                }
                 fclose(bf);
-                fprintf(f, "RECON_BIN plane=%d w=%u h=%u -> %s\n", p, pw, ph, path);
+                fprintf(f, "RECON_BIN plane=%d w=%u h=%u b16=%d -> %s\n", p, pw, ph, (int)is_16bit, path);
             }
         }
     }
