@@ -328,6 +328,43 @@ substantial pass: the exact `md_stage_3_pd0` cost/rate model, `subres`, DC-only 
 `test_split_partition_pd0` early-exits must all match C. Not attempted this session — scoped +
 verified only.)
 
+### PD0_LVL_0 LANDED (2026-07-19) — M9+ partition flip FIXED, 10 new byte-exact cells
+
+`pd0::pd0_pick_sb_partition_lvl0` + `Pd0Mode::Lvl0` (pd0.rs); wired at preset>=9 bd10 in
+`encode_tile_rows` (pipeline.rs), gated on `bit_depth == 10` (bd8 byte-UNCHANGED). The LVL_0
+block cost turned out to be the port's EXISTING LVL_5 closed-form encode with subres OFF —
+proven against real C: `rate_est_level 0` above M8 (`pcs->rate_est_level = 0` at enc_mode > M8)
+=> PD0 `coeff_rate_est_lvl = 0` (closed form `5000 + ires*1600 + 100*eob`) + `lpd0_qp_offset = 8`
+(qindex+8); `use_accurate_part_ctx = 0` above M8 => SPLIT rate DOUBLED; `pd0_level <= PD0_LVL_2`
+=> subres OFF; parent_cost_bias 1000, split_cost_th 50; max_sq from `get_max_block_size_allintra`
+(the 64-variance cap fires at M8+), min_sq 8. Per-block costs + tree pinned vs real C's
+`SVT_PD0COST_OUT` / `SVT_CTREE_OUT` dumps (`lvl0_block_costs_match_c`, e.g. gradient-64 q20 32x32
+cost 26185862, tree 4x BLOCK_32X32). Gate `bd10_nonflat_gate.sh` 21 -> **31** (added the 10
+partition-only cells: gradient 64x64 & 128x128 at q12/q20/q32 x p10/p13). bd8 identity_matrix
+54/54, partial_sb 101/101, bd10_matrix 36/36 byte-UNCHANGED; 576-cell bd10 no-panic sweep 0
+panics (added a partial-SB fall-back guard on the bd10 re-encode — `tx_unit_hbd` is not yet
+partial-SB-aware and would panic on an edge block; a pre-existing gap, now falls back to u8).
+
+**Preset-dependence discovered (IMPORTANT for widening):** the fix is correct ONLY for M9+.
+- **M9+ (p9-13):** bd8 `pic_pd0_lvl` is 5/6 (LVL_6/LVL_5 variance heuristic) — that over-splits
+  where C's forced LVL_0 keeps the parent. THIS is the partition flip; `pred_depth_only` (PD0
+  tree == final tree) means the LVL_0 partition suffices. FIXED.
+- **M6-M8 (p6-8):** `LVL_0 == LVL_1` (identical PD0 config — same `coeff_rate_est_lvl`,
+  `use_accurate_part_ctx`, depth set, subres, no detector — only the M9+ jump to LVL_5/6 differs).
+  The port's existing m6_eval (LVL_1) path ALREADY produces C's partition (verified: C bd8 p6
+  tree == C bd10 p6 tree == port p6 tree, all 4x BLOCK_32X32). p6-8 divergences are pure MODE
+  flips (bd10 leaf funnel), NOT partition. Do NOT apply `pd0_pick_sb_partition_lvl0` there — its
+  hardcoded M9+ config (closed form / qindex+8 / doubled split) is WRONG below M9 (yields no
+  byte-matches; reverted a trial extension).
+- **M3-M5 (p3-5):** PD1 depth refinement (PD0_DEPTH_ADAPTIVE) runs over the PD0 tree AND adds NSQ
+  (C's p3 tree has HORZ part=1 down to 8x8) — the remaining true partition flips (all 12
+  synthetic PARTFLIP cells are p3). Needs the LVL_0 PD0 fed into a bd10-aware depth-refine + NSQ,
+  a larger scope than the PD0-only fix. FOLLOW-UP.
+
+Accurate synthetic map (dedup, gradient/diag x {64,128} x q{5,12,20,32} x p{3,6,10,13}, 64 cells):
+10 byte-MATCH (all p10/p13), 42 SAMEPART-DIFF (partition correct, mode/level flip = true-bd10-MD),
+12 PARTFLIP (all p3 = depth-refine axis).
+
 **Separately, the `BLOCKER1_mode` cells (40 synthetic) are a DISTINCT axis:** `pred_depth_only`
 fixes only the PARTITION; PD1 still runs its per-block MODE decision at `hbd_md=2` (TRUE 10-bit),
 so a bd10-sensitive mode/uv/tx pick differs from the port's reused u8 modes. THAT axis IS a
