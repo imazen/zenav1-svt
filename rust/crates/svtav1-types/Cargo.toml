@@ -1,11 +1,14 @@
 [package]
-name = "svtav1-types"
+name = "zenav1-svt-types"
 version = "0.1.0"
 description = "Core data structures, constants, and enums for SVT-AV1 Rust port"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+
+[lib]
+name = "svtav1_types"
 
 [dependencies]
 

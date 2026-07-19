@@ -2,7 +2,7 @@
 //! (svt_aom_dc_quant_qtx / svt_aom_ac_quant_qtx, 8-bit, delta 0).
 //!
 //! GENERATED FILE — DO NOT EDIT. Regenerate with:
-//!   cargo run --release -p svtav1-cref --bin gen_quant_tables \
+//!   cargo run --release -p zenav1-svt-cref --bin gen_quant_tables \
 //!     > crates/svtav1-dsp/src/quant_tables.rs
 
 #[rustfmt::skip]

@@ -16,7 +16,7 @@
 //! starting point, not a claim).
 //!
 //! Usage:
-//!   cargo run --release -p svtav1 --example perf_vs_c -- [outdir]
+//!   cargo run --release -p zenav1-svt --example perf_vs_c -- [outdir]
 //! Env:
 //!   SVT_APP  path to SvtAv1EncApp (default: ../Bin/Release/SvtAv1EncApp)
 

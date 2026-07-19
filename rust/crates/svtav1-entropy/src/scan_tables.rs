@@ -4,7 +4,7 @@
 //! (vertical tx classes), 2 = column (horizontal tx classes)).
 //!
 //! GENERATED FILE — DO NOT EDIT. Regenerate with:
-//!   cargo run --release -p svtav1-cref --bin gen_scan_tables \
+//!   cargo run --release -p zenav1-svt-cref --bin gen_scan_tables \
 //!     > crates/svtav1-entropy/src/scan_tables.rs
 //! The c_scan_tables_match test asserts these stay in sync with C.
 

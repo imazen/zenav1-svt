@@ -68,7 +68,7 @@ fi
 
 # Pre-build the Rust runner once (identity_diff.sh also builds, but priming here
 # keeps per-cell logs clean and surfaces build errors before the sweep starts).
-(cd "$RS_ROOT" && nice -n 19 cargo build --release -p svtav1 --features symtrace \
+(cd "$RS_ROOT" && nice -n 19 cargo build --release -p zenav1-svt --features symtrace \
     --example identity_run) >&2 || { echo "build failed" >&2; exit 2; }
 
 # Pre-build decode-diff too: it decodes each DIFFERS cell's (c.obu, rs.obu)

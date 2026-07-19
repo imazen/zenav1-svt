@@ -10,7 +10,7 @@
 //! are the pipeline's non-vacuity counters (pixels covered by a
 //! nonzero-strength kernel call / pixels whose value changed).
 //!
-//! Usage: cargo run --release -p svtav1 --example cdef_evidence -- [outdir]
+//! Usage: cargo run --release -p zenav1-svt --example cdef_evidence -- [outdir]
 //! Env:   AOMDEC (default: /root/aomdec-build/aomdec)
 
 use svtav1_encoder::pipeline::EncodePipeline;

@@ -17,11 +17,14 @@ license = "BSD-2-Clause"
 repository = "https://github.com/imazen/svtav1-rs"
 
 [workspace.dependencies]
-svtav1-types = { path = "crates/svtav1-types" }
-svtav1-tables = { path = "crates/svtav1-tables" }
-svtav1-dsp = { path = "crates/svtav1-dsp" }
-svtav1-entropy = { path = "crates/svtav1-entropy" }
-svtav1-encoder = { path = "crates/svtav1-encoder" }
+# Package names carry the `zenav1-svt-` prefix; each crate keeps a SHORT
+# `[lib] name` (`svtav1_types`, ...) so interior `use svtav1_types::…` paths
+# stay stable across the rename.
+zenav1-svt-types = { path = "crates/svtav1-types" }
+zenav1-svt-tables = { path = "crates/svtav1-tables" }
+zenav1-svt-dsp = { path = "crates/svtav1-dsp" }
+zenav1-svt-entropy = { path = "crates/svtav1-entropy" }
+zenav1-svt-encoder = { path = "crates/svtav1-encoder" }
 
 archmage = "0.9"
 magetypes = "0.9"

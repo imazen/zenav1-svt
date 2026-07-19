@@ -10,7 +10,7 @@
 //! Encodes a matrix in both mono and 4:2:0 modes, decodes each stream with
 //! aomdec, and byte-compares all planes.
 //!
-//! Usage: cargo run --release -p svtav1 --example recon_parity -- [outdir]
+//! Usage: cargo run --release -p zenav1-svt --example recon_parity -- [outdir]
 //! Env:   AOMDEC (default: /root/aomdec-build/aomdec — override in CI)
 
 use svtav1_encoder::pipeline::EncodePipeline;

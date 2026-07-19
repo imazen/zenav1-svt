@@ -2,7 +2,7 @@
 //! exported `eb_av1_scan_orders` / `tx_type_to_scan_index` data.
 //!
 //! Usage:
-//!   cargo run --release -p svtav1-cref --bin gen_scan_tables \
+//!   cargo run --release -p zenav1-svt-cref --bin gen_scan_tables \
 //!     > crates/svtav1-entropy/src/scan_tables.rs
 
 use svtav1_cref as cref;
@@ -19,7 +19,7 @@ fn main() {
          //! (vertical tx classes), 2 = column (horizontal tx classes)).\n\
          //!\n\
          //! GENERATED FILE — DO NOT EDIT. Regenerate with:\n\
-         //!   cargo run --release -p svtav1-cref --bin gen_scan_tables \\\n\
+         //!   cargo run --release -p zenav1-svt-cref --bin gen_scan_tables \\\n\
          //!     > crates/svtav1-entropy/src/scan_tables.rs\n\
          //! The c_scan_tables_match test asserts these stay in sync with C.\n\n",
     );

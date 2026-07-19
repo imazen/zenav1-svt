@@ -4,4 +4,4 @@
 set -u
 cd "$(dirname "$0")/.."
 outdir="${1:-target/recon_parity}"
-exec cargo run --release -p svtav1 --example recon_parity -- "$outdir"
+exec cargo run --release -p zenav1-svt --example recon_parity -- "$outdir"

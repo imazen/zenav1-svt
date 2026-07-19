@@ -1,7 +1,7 @@
 //! Benchmark Rust svtav1 encoder vs C SVT-AV1.
 //!
 //! Reads Y4M files and encodes them, measuring time and output size.
-//! Run with: cargo run -p svtav1 --example bench_vs_c --release -- /tmp/svtav1-bench/
+//! Run with: cargo run -p zenav1-svt --example bench_vs_c --release -- /tmp/svtav1-bench/
 
 use std::time::Instant;
 use svtav1::avif::AvifEncoder;

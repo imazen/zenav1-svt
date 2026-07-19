@@ -1,5 +1,5 @@
 [package]
-name = "svtav1"
+name = "zenav1-svt"
 version = "0.1.0"
 description = "Safe Rust AV1 encoder — algorithm-for-algorithm port of SVT-AV1"
 edition.workspace = true
@@ -7,12 +7,15 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+name = "svtav1"
+
 [dependencies]
-svtav1-types = { workspace = true, features = ["std"] }
-svtav1-tables = { workspace = true }
-svtav1-dsp = { workspace = true, features = ["std"] }
-svtav1-entropy = { workspace = true, features = ["std"] }
-svtav1-encoder = { workspace = true }
+zenav1-svt-types = { workspace = true, features = ["std"] }
+zenav1-svt-tables = { workspace = true }
+zenav1-svt-dsp = { workspace = true, features = ["std"] }
+zenav1-svt-entropy = { workspace = true, features = ["std"] }
+zenav1-svt-encoder = { workspace = true }
 
 [dev-dependencies]
 # PNG decode for the real-image identity harness (examples/identity_run.rs
@@ -25,7 +28,7 @@ workspace = true
 [features]
 default = ["std"]
 std = []
-unsafe_encoding = ["svtav1-encoder/unsafe_encoding"]
+unsafe_encoding = ["zenav1-svt-encoder/unsafe_encoding"]
 # Per-symbol arithmetic-coder trace on stderr (identity harness:
 # tools/identity_diff.sh diffs it against the wrapped C library's trace).
-symtrace = ["svtav1-entropy/symtrace"]
+symtrace = ["zenav1-svt-entropy/symtrace"]

@@ -1,5 +1,5 @@
 [package]
-name = "svtav1-encoder"
+name = "zenav1-svt-encoder"
 version = "0.1.0"
 description = "Mode decision, rate control, encoding loop, and pipeline for SVT-AV1 Rust port"
 edition.workspace = true
@@ -7,14 +7,17 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+name = "svtav1_encoder"
+
 [dependencies]
-svtav1-types = { workspace = true, features = ["std"] }
-svtav1-tables = { workspace = true }
-svtav1-dsp = { workspace = true, features = ["std"] }
-svtav1-entropy = { workspace = true, features = ["std"] }
+zenav1-svt-types = { workspace = true, features = ["std"] }
+zenav1-svt-tables = { workspace = true }
+zenav1-svt-dsp = { workspace = true, features = ["std"] }
+zenav1-svt-entropy = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
-svtav1-cref = { path = "../svtav1-cref" }
+zenav1-svt-cref = { path = "../svtav1-cref" }
 
 [lints]
 workspace = true
@@ -22,4 +25,4 @@ workspace = true
 [features]
 default = ["std"]
 std = []
-unsafe_encoding = ["svtav1-dsp/unchecked_dsp", "svtav1-entropy/unchecked_entropy"]
+unsafe_encoding = ["zenav1-svt-dsp/unchecked_dsp", "zenav1-svt-entropy/unchecked_entropy"]

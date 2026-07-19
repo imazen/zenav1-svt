@@ -30,7 +30,7 @@ RS_ROOT=$(cd "$HERE/.." && pwd)
 _bl=$(mktemp)
 if ! (
     cd "$RS_ROOT" && CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}" \
-        cargo build --release -p svtav1 --features symtrace --example identity_run
+        cargo build --release -p zenav1-svt --features symtrace --example identity_run
 ) >"$_bl" 2>&1; then
     cat "$_bl" >&2
     rm -f "$_bl"

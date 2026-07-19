@@ -16,7 +16,7 @@
 //! predates the domain split: values ran as qindexes 30..63 after the
 //! CLI clamp, so q70/q90 were duplicate qindex-63 cells.)
 //!
-//! Usage: `cargo run --release -p svtav1 --example decode_conformance -- <outdir> [chroma]`
+//! Usage: `cargo run --release -p zenav1-svt --example decode_conformance -- <outdir> [chroma]`
 //!
 //! With the optional `chroma` mode argument the same matrix is encoded via
 //! `encode_frame_420` (mono_chrome=0, NumPlanes=3): the three mono contents

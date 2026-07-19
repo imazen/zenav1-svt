@@ -1,5 +1,5 @@
 [package]
-name = "svtav1-entropy"
+name = "zenav1-svt-entropy"
 version = "0.1.0"
 description = "Arithmetic coder, CDF tables, and context models for SVT-AV1 Rust port"
 edition.workspace = true
@@ -7,19 +7,22 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+name = "svtav1_entropy"
+
 [dependencies]
-svtav1-types = { workspace = true }
-svtav1-tables = { workspace = true }
+zenav1-svt-types = { workspace = true }
+zenav1-svt-tables = { workspace = true }
 
 [dev-dependencies]
-svtav1-cref = { path = "../svtav1-cref" }
+zenav1-svt-cref = { path = "../svtav1-cref" }
 
 [lints]
 workspace = true
 
 [features]
 default = []
-std = ["svtav1-types/std"]
+std = ["zenav1-svt-types/std"]
 unchecked_entropy = []
 # Prints every symbol written to stderr — for differential debugging against
 # a gdb-instrumented reference decoder. Requires std.

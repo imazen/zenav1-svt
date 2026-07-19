@@ -5,7 +5,7 @@
 //! them as Rust statics in exact C layout and dimensions.
 //!
 //! Usage:
-//!   cargo run --release -p svtav1-cref --bin gen_default_cdfs \
+//!   cargo run --release -p zenav1-svt-cref --bin gen_default_cdfs \
 //!     > crates/svtav1-entropy/src/default_cdfs.rs
 //!
 //! A drift test in svtav1-entropy re-extracts at test time and asserts the
@@ -235,7 +235,7 @@ fn main() {
          //! `[nsymbs]`.\n\
          //!\n\
          //! GENERATED FILE — DO NOT EDIT. Regenerate with:\n\
-         //!   cargo run --release -p svtav1-cref --bin gen_default_cdfs \\\n\
+         //!   cargo run --release -p zenav1-svt-cref --bin gen_default_cdfs \\\n\
          //!     > crates/svtav1-entropy/src/default_cdfs.rs\n\
          //! The c_default_cdfs_match test asserts these stay in sync with C.\n\
          \n\

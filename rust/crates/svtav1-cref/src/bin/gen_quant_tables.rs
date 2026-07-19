@@ -2,7 +2,7 @@
 //! (`svt_aom_dc_quant_qtx` / `svt_aom_ac_quant_qtx`, 8-bit).
 //!
 //! Usage:
-//!   cargo run --release -p svtav1-cref --bin gen_quant_tables \
+//!   cargo run --release -p zenav1-svt-cref --bin gen_quant_tables \
 //!     > crates/svtav1-dsp/src/quant_tables.rs
 
 use svtav1_cref as cref;
@@ -14,7 +14,7 @@ fn main() {
          //! (svt_aom_dc_quant_qtx / svt_aom_ac_quant_qtx, 8-bit, delta 0).\n\
          //!\n\
          //! GENERATED FILE — DO NOT EDIT. Regenerate with:\n\
-         //!   cargo run --release -p svtav1-cref --bin gen_quant_tables \\\n\
+         //!   cargo run --release -p zenav1-svt-cref --bin gen_quant_tables \\\n\
          //!     > crates/svtav1-dsp/src/quant_tables.rs\n\n",
     );
     for (name, f) in [

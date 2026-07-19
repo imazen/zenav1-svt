@@ -1,6 +1,6 @@
 //! Performance report — prints DSP function throughput.
 //!
-//! Run with: cargo run -p svtav1-dsp --features std --example perf_report --release
+//! Run with: cargo run -p zenav1-svt-dsp --features std --example perf_report --release
 
 fn main() {
     println!("SVT-AV1 Rust DSP Performance Report");

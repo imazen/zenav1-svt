@@ -1,5 +1,5 @@
 [package]
-name = "svtav1-cref"
+name = "zenav1-svt-cref"
 version = "0.0.0"
 publish = false
 description = "Test-only FFI harness linking the in-tree C SVT-AV1 static library for differential parity testing"
@@ -7,6 +7,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+
+[lib]
+name = "svtav1_cref"
 
 [build-dependencies]
 cc = "1.2.67"

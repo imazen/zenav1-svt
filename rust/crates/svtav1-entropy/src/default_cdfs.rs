@@ -5,7 +5,7 @@
 //! `[nsymbs]`.
 //!
 //! GENERATED FILE — DO NOT EDIT. Regenerate with:
-//!   cargo run --release -p svtav1-cref --bin gen_default_cdfs \
+//!   cargo run --release -p zenav1-svt-cref --bin gen_default_cdfs \
 //!     > crates/svtav1-entropy/src/default_cdfs.rs
 //! The c_default_cdfs_match test asserts these stay in sync with C.
 

@@ -9,7 +9,7 @@
 //! (levels, pixel delta count, PSNR movement) while staying bit-exact
 //! with the reference decoder.
 //!
-//! Usage: cargo run --release -p svtav1 --example deblock_evidence -- [outdir]
+//! Usage: cargo run --release -p zenav1-svt --example deblock_evidence -- [outdir]
 //! Env:   AOMDEC (default: /root/aomdec-build/aomdec)
 
 use svtav1_encoder::pipeline::EncodePipeline;

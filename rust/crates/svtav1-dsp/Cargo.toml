@@ -1,5 +1,5 @@
 [package]
-name = "svtav1-dsp"
+name = "zenav1-svt-dsp"
 version = "0.1.0"
 description = "Transforms, prediction, filtering — SIMD hot path for SVT-AV1 Rust port"
 edition.workspace = true
@@ -7,20 +7,23 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+name = "svtav1_dsp"
+
 [dependencies]
-svtav1-types = { workspace = true }
-svtav1-tables = { workspace = true }
+zenav1-svt-types = { workspace = true }
+zenav1-svt-tables = { workspace = true }
 archmage = { workspace = true }
 magetypes = { workspace = true }
 
 [dev-dependencies]
 archmage = { workspace = true, features = ["testable_dispatch"] }
-svtav1-cref = { path = "../svtav1-cref" }
+zenav1-svt-cref = { path = "../svtav1-cref" }
 
 [lints]
 workspace = true
 
 [features]
 default = []
-std = ["svtav1-types/std"]
+std = ["zenav1-svt-types/std"]
 unchecked_dsp = []

@@ -25,7 +25,7 @@ command -v "$aomdec" >/dev/null 2>&1 || {
 }
 
 rm -rf "$outdir"; mkdir -p "$outdir"
-cargo run --release -p svtav1 --example decode_conformance -- "$outdir" $mode \
+cargo run --release -p zenav1-svt --example decode_conformance -- "$outdir" $mode \
     >"$outdir.manifest" || {
     echo "encode step failed" >&2
     exit 2
