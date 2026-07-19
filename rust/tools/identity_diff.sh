@@ -39,9 +39,18 @@ mkdir -p "$OUTDIR"
 "$HERE/identity_run" \
     "$CONTENT" "$W" "$H" "$QP" "$PRESET" "$OUTDIR/rs" 2>"$OUTDIR/rs.trace"
 
-# 4. C encode of the SAME yuv bytes.
+# 4. C encode of the SAME yuv bytes, AT THE SAME BIT DEPTH.
+#
+# `SVTAV1_BD` selects the port's depth (identity_run reads it); the C driver
+# takes it as argv[7]. Passing it here is not optional: without it the C side
+# silently encoded 8-bit while the port encoded 10, and every bd10 report came
+# back "STAGE: SH | high_bitdepth C=0 Rust=1" with a nonsense byte delta — a
+# comparison of two different configurations dressed up as a divergence. That
+# made this differ unusable for the whole bd10 track, which is why bd10
+# root-causing has been done with ad-hoc scripts instead.
 SVT_TRACE_OUT="$OUTDIR/c.trace" "$HERE/capture_c_trace/capture_c_trace" \
-    "$W" "$H" "$QP" "$PRESET" "$OUTDIR/rs.yuv" "$OUTDIR/c.obu" 2>"$OUTDIR/c.stderr"
+    "$W" "$H" "$QP" "$PRESET" "$OUTDIR/rs.yuv" "$OUTDIR/c.obu" \
+    "${SVTAV1_BD:-8}" 2>"$OUTDIR/c.stderr"
 
 # 5. Diff. Concise by default (STAGE + VERDICT); set IDENTITY_VERBOSE=1 for
 #    the full field walks + op-context dumps when diagnosing.
