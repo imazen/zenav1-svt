@@ -4581,11 +4581,23 @@ fn dump_tree_leaves(tree: &crate::partition::PartitionTree, x: usize, y: usize) 
 /// RDOQ contexts 0/0, which is only correct where `real_coeff_ctx` is off).
 ///
 /// Scope, deliberately narrow:
-/// - **presets 6..=8** — the open MODE axis. eff-M9 (p9..p13) is CLOSED via the
-///   MDS0 funnel + post-pass and is left EXACTLY as it is; widening to it is a
-///   follow-up that must be re-verified against the whole 127-cell gate.
-///   Presets 0..=5 are the PART axis (PD1 depth-refine + NSQ), a different fix.
-/// - **complete-SB only** — `tx_unit_hbd` is not partial-SB-aware.
+/// - **presets 0..=8**. p6..=8 was the MODE axis (landed first). p0..=5 take the
+///   PD1 depth-refine + NSQ walk (`decide_sb_refined`), which is the **PART**
+///   axis: C's PD1 runs at `hbd_md = 2`, so `test_depth` /
+///   `test_split_partition` sum 10-bit MDS3 leaf costs when choosing the shape
+///   and the depth. Feeding that walk 8-bit leaf costs picked C's *bd8*
+///   geometry. LOCALIZED (docs/bd10-port-map.md): at p0..p2 C's PD0 pass is
+///   bit-depth-IDENTICAL (bd8 `pic_pd0_lvl == 0` and bd10 forces `PD0_LVL_0`,
+///   both run at `hbd_md = 0` on the MSB-truncated plane — measured
+///   byte-identical `SVT_PD0COST_OUT` dumps), and the depth-refinement gates
+///   also run inside C's `hbd_md = 0` window (enc_dec_process.c:2965 forces 0,
+///   :3023 restores AFTER the :3017 refinement call), so the ONLY bit-depth
+///   input to the geometry is the PD1 leaf cost.
+///   eff-M9 (p9..p13) is CLOSED via the MDS0 funnel + post-pass and is left
+///   EXACTLY as it is; widening to it is a follow-up that must be re-verified
+///   against the whole gate.
+/// - **complete-SB only** — `tx_unit_hbd` is not partial-SB-aware. (The p0..=5
+///   `refined` path is independently full-SB-gated.)
 /// - **palette off** — a palette candidate has no 10-bit prediction here.
 ///
 /// CfL is handled inside `evaluate_leaf` instead of here, because whether it is
@@ -4594,7 +4606,7 @@ fn dump_tree_leaves(tree: &crate::partition::PartitionTree, x: usize, y: usize) 
 /// which leaves a CfL block as a VISIBLE mode divergence rather than a
 /// mixed-domain compare. See the comment at the `cfl_gate` site.
 fn bd10_full_rd_supported(bit_depth: u8, preset: u8, w: usize, h: usize) -> bool {
-    if bit_depth != 10 || !(6..=8).contains(&preset) || w % 64 != 0 || h % 64 != 0 {
+    if bit_depth != 10 || preset > 8 || w % 64 != 0 || h % 64 != 0 {
         return false;
     }
     crate::leaf_funnel::FunnelCfg::for_preset(preset).palette_level == 0
@@ -5381,6 +5393,17 @@ fn encode_tile_rows(
                                 h,
                             );
                             let cq = c_quant.as_ref().unwrap();
+                            // 8-BIT lambda even at bd10 — deliberate, not an
+                            // oversight. C's `perform_pred_depth_refinement`
+                            // (enc_dec_process.c:3017) runs INSIDE the window
+                            // where `hbd_md` is forced to 0 (:2965, restored at
+                            // :3023), so `is_parent_to_current_deviation_small`
+                            // / `is_child_to_current_deviation_small` select
+                            // `full_lambda_md[EB_8_BIT_MD]` /
+                            // `full_sb_lambda_md[EB_8_BIT_MD]` at BOTH bit
+                            // depths, over PD0 costs that are themselves
+                            // bit-depth-identical. The bd10 lambda belongs to
+                            // the PD1 WALK below, not to this scan.
                             let scan = crate::depth_refine::build_refined_scan_at(
                                 &eval,
                                 &dr,
@@ -5408,13 +5431,35 @@ fn encode_tile_rows(
                                 ectx: fun_ectx.as_mut().unwrap(),
                                 rates: fun_rates.as_deref().unwrap(),
                                 frame: fun_frame.as_ref().unwrap(),
-                                // The PD1 depth-refinement path (M0..M5) is the
-                                // PART axis, not this landing's MODE axis — it
-                                // stays u8-decided (docs/bd10-port-map.md).
-                                y_recon10: None,
-                                u_recon10: None,
-                                v_recon10: None,
-                                full_rd10: false,
+                                // bd10 PART axis (task #94): the PD1
+                                // depth-refine + NSQ walk compares LEAF block
+                                // costs, and C's PD1 runs at `hbd_md = 2` (true
+                                // 10-bit) — `test_depth` /
+                                // `test_split_partition` sum
+                                // `block_data[shape][nsi]->cost` from an MDS3
+                                // that predicted, quantized and measured
+                                // distortion at 10 bits. Running that walk on
+                                // 8-bit leaf costs picked C's *bd8* shape. The
+                                // same `full_rd10` chain that closed p7/p8
+                                // (MODE axis) now feeds this walk. bd8 and
+                                // every out-of-envelope bd10 frame keep `None`
+                                // / `false` → byte-IDENTICAL.
+                                y_recon10: if bd10_luma_funnel {
+                                    Some(&mut tile_frame_recon10)
+                                } else {
+                                    None
+                                },
+                                u_recon10: if bd10_full_rd {
+                                    Some(&mut tile_frame_u_recon10)
+                                } else {
+                                    None
+                                },
+                                v_recon10: if bd10_full_rd {
+                                    Some(&mut tile_frame_v_recon10)
+                                } else {
+                                    None
+                                },
+                                full_rd10: bd10_full_rd,
                             };
                             let nsq = crate::depth_refine::NsqCfg::for_preset_qp(
                                 speed_config.preset,
@@ -5427,7 +5472,28 @@ fn encode_tile_rows(
                                 w,
                                 &mut tile_frame_recon,
                                 w,
-                                cq.lambda as u64,
+                                // PD1 partition-rate lambda. C `test_depth` /
+                                // `test_split_partition` /
+                                // `update_skip_nsq_based_on_split_rate` /
+                                // `update_skip_nsq_based_on_sq_recon_dist` all
+                                // select `full_sb_lambda_md[EB_10_BIT_MD]` (==
+                                // `full_lambda_md[EB_10_BIT_MD]`,
+                                // md_process.c:763-764) when `hbd_md != 0`
+                                // (product_coding_loop.c:9725, 9859, 10782,
+                                // 10887). It MUST move with the leaf costs: the
+                                // gates are ratio compares between an
+                                // RDCOST(λ, part_rate, 0) term and a block cost.
+                                // NOTE the refinement SCAN above deliberately
+                                // keeps the 8-bit lambda — see
+                                // `build_refined_scan_at`'s call site.
+                                if bd10_full_rd {
+                                    u64::from(crate::pd0::kf_full_lambda_bd10(
+                                        base_qindex,
+                                        cli_qp as u32,
+                                    ))
+                                } else {
+                                    cq.lambda as u64
+                                },
                                 &part_rates,
                                 &nsq,
                                 dr.disallow_4x4,
