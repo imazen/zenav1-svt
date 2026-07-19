@@ -358,6 +358,108 @@ CELLS=(
   "gradient 64 64 55 2"
   "gradient 64 64 55 4"
   "gradient 64 64 55 5"
+  # ---------------------------------------------------------------------
+  # Presets 0-5, closed 2026-07-19 by two changes landing together:
+  #
+  #   1. the bd10 level-only re-encode post-pass is now SKIPPED where the
+  #      FULL-RD funnel ran (pipeline.rs). Both had been eligible on the same
+  #      frame, and the post-pass re-quantized the funnel's already-coded
+  #      10-bit levels with the RDOQ entropy contexts hardcoded to 0/0,
+  #      overwriting both the levels and the 10-bit recon. That is the
+  #      invariant `bd10_full_rd_supported`'s doc comment already stated but
+  #      the gate never implemented.
+  #   2. the DEBLOCK-LEVEL full search now runs at 10 bits (deblock.rs) — the
+  #      third post-MD search that reads the recon and writes header syntax,
+  #      active at preset <= 5 only, the same preset split as the CDEF and
+  #      Wiener-LR searches.
+  #
+  # MEASURED over the whole p0..p5 x q{5,12,20,32,40,48,55,63} x
+  # {gradient,diag,uniform} x {64,128} grid (288 cells): byte-identity went
+  # 163 -> 240 with ZERO regressions (p0 22->28, p1 29->46, p2 24->40,
+  # p3 23->34, p4 34->46, p5 31->46). The 77 cells that flipped DIFF -> MATCH
+  # are all listed below, each verified with `cmp`, so the improvement is
+  # pinned rather than sampled.
+  #
+  # `gradient 128 128 20 2` is the one closed by (2) specifically — it is the
+  # anti-vacuity witness that the 10-bit DLF search is decision-relevant and
+  # not a no-op on this grid.
+  "diag 128 128 12 1"
+  "diag 128 128 20 5"
+  "diag 128 128 40 2"
+  "diag 128 128 48 2"
+  "diag 128 128 55 0"
+  "diag 128 128 55 1"
+  "diag 128 128 55 2"
+  "diag 128 128 55 4"
+  "diag 128 128 55 5"
+  "diag 128 128 5 1"
+  "diag 128 128 5 5"
+  "diag 128 128 63 0"
+  "diag 128 128 63 4"
+  "diag 128 128 63 5"
+  "diag 64 64 12 1"
+  "diag 64 64 20 1"
+  "diag 64 64 20 5"
+  "diag 64 64 32 1"
+  "diag 64 64 40 2"
+  "diag 64 64 40 4"
+  "diag 64 64 40 5"
+  "diag 64 64 48 2"
+  "diag 64 64 55 3"
+  "diag 64 64 55 5"
+  "diag 64 64 5 4"
+  "diag 64 64 63 1"
+  "diag 64 64 63 2"
+  "diag 64 64 63 3"
+  "diag 64 64 63 4"
+  "gradient 128 128 12 1"
+  "gradient 128 128 12 2"
+  "gradient 128 128 12 3"
+  "gradient 128 128 12 4"
+  "gradient 128 128 12 5"
+  "gradient 128 128 20 1"
+  "gradient 128 128 20 2"
+  "gradient 128 128 20 3"
+  "gradient 128 128 20 5"
+  "gradient 128 128 32 1"
+  "gradient 128 128 32 2"
+  "gradient 128 128 32 3"
+  "gradient 128 128 32 4"
+  "gradient 128 128 32 5"
+  "gradient 128 128 40 0"
+  "gradient 128 128 40 1"
+  "gradient 128 128 40 2"
+  "gradient 128 128 40 3"
+  "gradient 128 128 48 0"
+  "gradient 128 128 48 1"
+  "gradient 128 128 48 2"
+  "gradient 128 128 48 3"
+  "gradient 128 128 48 4"
+  "gradient 128 128 48 5"
+  "gradient 128 128 55 0"
+  "gradient 128 128 55 1"
+  "gradient 128 128 55 2"
+  "gradient 128 128 55 3"
+  "gradient 128 128 55 4"
+  "gradient 128 128 55 5"
+  "gradient 128 128 5 2"
+  "gradient 128 128 5 3"
+  "gradient 128 128 5 4"
+  "gradient 128 128 5 5"
+  "gradient 128 128 63 0"
+  "gradient 128 128 63 1"
+  "gradient 128 128 63 2"
+  "gradient 64 64 12 1"
+  "gradient 64 64 40 1"
+  "gradient 64 64 40 2"
+  "gradient 64 64 40 3"
+  "gradient 64 64 40 4"
+  "gradient 64 64 40 5"
+  "gradient 64 64 5 1"
+  "gradient 64 64 5 2"
+  "gradient 64 64 5 3"
+  "gradient 64 64 5 4"
+  "gradient 64 64 5 5"
 )
 for cell in "${CELLS[@]}"; do
   read -r content w h qp p <<<"$cell"
