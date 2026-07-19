@@ -174,8 +174,18 @@ Measured on `512x384 preset 0` by counting partition symbols in the C
 - **uniform, q32/q55/q63: exactly 12 ops, ALL `s=3` (PARTITION_SPLIT)** —
   one per SB in the 4x3 SB128 grid. C never keeps a 128x128 NONE here, even
   on dead-flat content at q63.
-- gradient q32: 156 `nsyms=8` ops (the 8-symbol alphabet is shared with other
-  syntax on textured content, so that count is an upper bound, not 12).
+- gradient q32: 156 `nsyms=8` ops — **do NOT read this as 156 partitions.**
+  On textured content the 8-symbol alphabet is shared with `eob_pt_128` (the
+  eob-class symbol for 128-coefficient transform blocks: eob_pt_16..1024 are
+  5,6,7,8,9,10,11 symbols, so the 128 class collides with the 128x128
+  partition alphabet, exactly as `eob_pt_512` collides with the 10-symbol
+  sub-128 partition alphabet). Separating them needs a real parse, not an
+  op-census; only the FIRST op of the frame is unambiguous (it is SB(0,0)'s
+  root, at the pristine `PARTITION_CDF[16]` = icdf0 4869), and it is `s=3`
+  SPLIT on both uniform and gradient. **Whether C ever keeps a non-SPLIT 128
+  partition on textured content is therefore UNVERIFIED** — measure it with a
+  bitstream parse before assuming a forced-split implementation is
+  sufficient beyond flat content.
 
 For **uniform 512x384** the two op streams differ by *only* the 12 root
 SPLIT symbols. Per-64-block both encoders emit the identical 5-op group
@@ -236,6 +246,16 @@ and the fallback is reported on stdout and by the gate.
    `Pd0Tree::Split([q0..q3])` over four existing 64-rooted decisions in
    Z-order, which is exactly what C chooses on all measured uniform cells.
    A true 128 NONE/H/V/AB search is a later chunk.
+
+   **Keep each quadrant's variance map b64-rooted.** `encode_fixed_tree`
+   takes `sb_vars: &SbVariance` plus `sb_org` and indexes the map by the
+   node's offset RELATIVE to `sb_org` (`is_dc_only_safe(sb_vars, size,
+   abs_x - sb_org.0, abs_y - sb_org.1)`). Handing it the 128 SB's origin
+   with a 64-rooted 85-entry map would push three of the four quadrants past
+   the end of the map. The recursion must enter each quadrant with THAT
+   quadrant's own `compute_b64_variance` result and its own `sb_org` — which
+   is also what C does: the b64 grid stays 64 at SB128, which is the entire
+   reason the `get_sb128_*` bridge functions exist.
 2. **`depth_refine.rs` caps** — `sq == 64` / `sq*2 == 64` at `:252-258`,
    `sq < 64` at `:330`.
 3. **Partition WRITE at 128** — the ctx side is fixed (`bsl`), but the
