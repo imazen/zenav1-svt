@@ -1262,6 +1262,160 @@ The `cfl_ind_uv` arm (M0..M5) was deliberately NOT attempted: its decision is
 `check_best_indepedant_cfl`'s SPATIAL compare against `best_uv_cost[mode]`,
 which needs the whole independent-uv search at 10 bits, not just the CfL side.
 
+## CfL AT bd10 — LANDED, AND BOTH "GAPS" ABOVE WERE WRONG (2026-07-19)
+
+The uv-follows-luma arm now runs at 10 bits and is **verified byte-exact
+against real C**. Both blockers recorded in the section above are refuted;
+they were measurement artifacts, not defects. Read this before trusting any
+number in the previous section.
+
+### Refutation 1 — the pick rate was never 4x. It is 210 vs C's 211.
+
+The "port 856 vs C 211" figure counted **raw dump records**, not blocks. Both
+`SVTAV1_PACKTREE` and `SVT_CTREE_OUT` re-stamp a block whenever MD revisits it
+at a depth change — `tree_diff.py`'s own docstring says so ("last record
+wins"). The port re-stamps ~4x, C ~1x, so comparing raw line counts manufactures
+exactly the observed 4x. Normalised last-record-wins on
+`CID22-512/2119713 512x512 q32 p6`:
+
+| | before | with bd10 CfL |
+|---|---|---|
+| blocks coded `UV_CFL_PRED` | port 0 (C 211) | **port 210 (C 211)** |
+| — of which agree with C | 0 | **177** |
+| field flips | 3053 | **1064** |
+| geometry C-only / port-only | 1070 / 137 | **21 / 45** |
+
+**Always normalise before counting a tree dump.** `grep -c` on a `.ptree` is
+not a block count.
+
+### Refutation 2 — the hbd chroma-complexity detector needs NO port.
+
+The claim was that `vf_hbd_10` makes a 10-bit variance ~16x its 8-bit value, so
+C's detector arms on far more blocks. It does not. `highbd_10_variance`
+(svt_psnr.c:145-151) **normalises back to 8-bit scale** before computing the
+variance:
+
+```c
+*sse = (uint32_t)ROUND_POWER_OF_TWO(sse_long, 4);   // /16
+*sum = (int)ROUND_POWER_OF_TWO(sum_long, 2);        // /4
+var  = *sse - ((int64_t)sum * sum) / (W * H);
+```
+
+Under the harness ingestion model `src10 = src8 << 2` (and the hbd reference
+table `eb_av1_var_offs_hbd` is 512 == `128 << 2`), every diff is exactly `4 *
+diff8`, so `sse_long == 16 * sse8` and `sum_long == 4 * sum8`, and both
+`ROUND_POWER_OF_TWO`s are exact — **`vf_hbd_10` returns bit-for-bit the same
+value as the 8-bit `vf`**. The variance arm is bit-depth INVARIANT, so the
+port's u8 `chroma_var_arm_fires` is already correct and was left unchanged.
+(The SAD arm is not exactly invariant — it runs on 10-bit predictions whose
+rounding is not `pred8 << 2` — but both sides scale ~4x so the `cb_dist >
+2*y_dist` compare only moves on near-ties. It is still u8 in the port; see the
+remaining scope below.)
+
+### What was actually needed: nothing but a faithful 10-bit transcription
+
+`md_cfl_rd_pick_alpha` was split into a bit-depth-independent driver
+(`md_cfl_alpha_search`, the plane/sign/magnitude walk + `itr_th` early exit)
+plus a `plane_cost(plane, alpha_q3)` closure — C's `av1_cost_calc_cfl` for one
+component, and the only place the pixel type enters. The bd10 closure uses
+`cfl_predict_hbd` over a 10-bit DC base (`predict_unit_hbd`, mode 0) and an AC
+luma subsampled from the 10-bit **winning** recon (`best_recon10` via the new
+`cfl_ac_subsample_hbd`), costed through `tx_unit_hbd` with the bd10 quant
+tables, `full_lambda_md[EB_10_BIT_MD]` and `spatial_dist: false` (C's
+`svt_aom_full_loop_uv` `is_full_loop=0` — the freq-domain chroma distortion,
+which carries NO bit-depth term of its own, full_loop.c:2436-2467).
+
+### Verification — the method, since the documented one is impossible
+
+The previous section's named next step ("extend the `SVT_FULLCOST_OUT` wrap to
+C's `cfl_prediction` compare") **cannot work**: `cfl_prediction`,
+`md_cfl_rd_pick_alpha` and `check_best_indepedant_cfl` are all `static` in
+product_coding_loop.c, so `--wrap` has no symbol to interpose. (This is the
+same `--wrap` trap already documented three times in `wrap_recon.c`.)
+`chroma_complexity_check_pred` is non-static but its only callers are in the
+same TU, so it binds direct and never fires either.
+
+**What does work: `SVT_UVLOOP_OUT` + `SVT_UVLOOP_XY`.** `av1_cost_calc_cfl`
+calls `svt_aom_full_loop_uv` once per (plane, alpha), which IS wrapped — so the
+whole alpha search is observable from outside:
+
+```bash
+SVT_TRACE_OUT=/dev/null SVT_UVLOOP_OUT=/tmp/c.uvloop SVT_UVLOOP_XY="0,0" \
+  tools/capture_c_trace/capture_c_trace 512 512 32 6 rs.yuv c.obu 10
+```
+
+The record sequence per block is: one non-CfL `full=0` call (both planes,
+`cfl_prediction`'s `non_cfl_cost`), then the alpha-zero seed for each plane,
+then one `full=0` call per searched (plane, alpha) in
+`plane x {NEG,POS} x c` order, then the chosen-alpha `full=1`.
+
+At `2119713 q32 p6` block **(0,0)** — chosen because the frame origin has no
+neighbours, so the DC base is the fixed `512` default on both planes and the
+comparison is not contaminated by upstream recon drift — the port reproduces C
+**exactly on every value**: U dist `37561 / 43469 / 50476 / 61250 / 33893 /
+34251`, V dist `82567 / 76015 / 74225 / 71188 / 91943 / 100130`, coeff bits
+`5553` (U) and `7385` (V), the final chosen-alpha chroma distortion `39424 /
+82304`, and the CfL-vs-non-CfL verdict (both decline CfL there).
+
+Note the contrast at a **later** block, (112,0): the U plane still matches C
+exactly on all five alphas, while V is uniformly ~1900 high. Since the two
+planes run identical code with different buffers, that is not a CfL defect —
+it is divergent *neighbour chroma recon* feeding the DC base, i.e. the
+pre-existing bd10 chroma residual. Use (0,0)-style clean-neighbour blocks when
+validating a chroma cost; a mid-frame block conflates the two.
+
+### Lockstep: `bd10_tree_supported` now ADMITS CfL leaves
+
+The previous attempt was correctly refused partly because an over-picked CfL
+leaf would be rejected by `bd10_tree_supported` (`uv_mode != 13`), silently
+dropping the whole frame out of the level re-encode. That hazard is now removed
+at the source rather than avoided: `bd10_reencode_chroma` takes the 10-bit LUMA
+recon `bd10_reencode_luma` just produced, and a UV_CFL_PRED leaf rebuilds C's
+CfL prediction from it (`cfl_ac_from_frame_recon_hbd` + `cfl_predict_hbd` over
+a DC base), so the `uv_mode != 13` rejection could be dropped. The two AC
+producers are pinned equal by
+`cfl_ac_producers_agree_once_block_is_committed`.
+
+**This re-encode arm is currently DEAD on all reachable content** and is
+carried for correctness, not effect: `bd10_tree_supported` still rejects any
+frame with a `tx_depth > 0` leaf, and every bd10 cell that picks CfL
+(photographic, presets <= 8) has such leaves, while every cell whose tree is
+all-`tx_depth == 0` (the synthetic gradient/diag gate cells) never arms the
+detector. Measured: 0 invocations on `2119713 q32 p6`, and 0 CfL leaves at
+p10. Do not assume the gates cover it — they do not.
+
+### Measured result: a large improvement, but NO cell closes
+
+All nine gates are unchanged (bd8 byte-identical: identity 54/54, partial-SB
+101/101, sb128 18/18, tile 25/25; bd10: matrix 36/36, non-flat 180/180, photo
+112/112, hdr 46/46). The bd10 gates pass **without exercising CfL** — the photo
+gate is presets 9-13 where `bd10_full_rd_supported` is false, so `bd10_rd` is
+`None` and the new arm never runs.
+
+Photographic bd10 at presets 6-8 ({2119713, 1001682, 4666751} x q{12,32,55},
+27 cells) is **2/27 byte-identical** (1001682 p7 q55 and p8 q55) — the same
+two before and after. Sizes are now within a few bytes of C (e.g. 1001682 p8
+q32: 19978 vs 19978, differing only in content), but the residual is real and
+multi-root: divergent chroma neighbour recon (above) plus the luma-side p6
+MODE/COEFF residual already documented. **CfL was the single biggest root —
+it removed two thirds of the field flips and 95% of the geometry divergence —
+but it is not the last one.**
+
+### Remaining scope, honestly
+
+1. The bd10 chroma **neighbour recon** drift that shows as the V-plane offset
+   at (112,0). This is the next thing to chase for photographic p0..p8; it is
+   upstream of CfL and independent of it.
+2. The detector's **SAD arm** is still computed on u8 planes/predictions. Exact
+   only up to predictor rounding; needs a `best_pred10` accumulator in the TX
+   depth loop (none exists today) plus 10-bit chroma predictions.
+3. The **`cfl_ind_uv`** arm (M0..M5) is still gated off at bd10
+   (`bd10_rd.is_none()`), so no bd10 leaf below p6 can be CfL — which is what
+   keeps the widened `bd10_tree_supported` in lockstep with what the search can
+   produce. Closing it needs the whole independent-uv search at 10 bits.
+4. `bd10_tree_supported`'s `tx_depth == 0` restriction is what keeps the
+   re-encode (and hence the CfL re-encode arm) off all photographic content.
+
 Baseline was restored rather than landing a known-4x-over-picking decision into
 the shared MD path: an over-picked CfL leaf is also rejected by
 `bd10_tree_supported` (uv_mode 13), which would silently drop whole frames out

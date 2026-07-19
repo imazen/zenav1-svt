@@ -1116,7 +1116,6 @@ impl EncodePipeline {
                     self.bit_depth,
                     qm_levels[0],
                 );
-                self.last_recon10_y = Some(recon10);
                 // bd10 CHROMA re-encode (task #94): recompute chroma levels at
                 // bd10 too — the luma pass above leaves chroma at the u8 MD
                 // decision, which diverges on content whose subsampled chroma
@@ -1141,6 +1140,13 @@ impl EncodePipeline {
                         &u10,
                         &v10,
                         w / 2,
+                        // The 10-bit LUMA recon the pass above just produced —
+                        // the CfL AC source for UV_CFL_PRED leaves. C reads the
+                        // same thing (`cfl_temp_luma_recon16bit`), and it is
+                        // fully committed here because the luma re-encode walks
+                        // the entire frame before chroma starts.
+                        &recon10,
+                        w,
                         base_qindex,
                         cq.rdoq_level,
                         lambda_bd10,
@@ -1149,6 +1155,7 @@ impl EncodePipeline {
                         [qm_levels[1], qm_levels[2]],
                     );
                 }
+                self.last_recon10_y = Some(recon10);
             }
         }
 
@@ -4038,12 +4045,18 @@ fn bd10_tree_supported(tree: &crate::partition::PartitionTree, edge_filter: bool
                 || (matches!(d.intra_mode, 1 | 2) && d.angle_delta != 0);
             // Chroma re-encode (task #94): the bd10 chroma pass predicts via
             // predict_unit_hbd, which supports DC/V/H/SMOOTH/PAETH + directional
-            // (edge_filter off) but NOT UV_CFL_PRED (13). So a CfL-chroma leaf,
-            // or a directional-uv leaf with the SH edge filter on, falls back to
-            // the u8 output (whole frame) rather than mispredicting chroma.
+            // (edge_filter off). UV_CFL_PRED (13) is NOT a predict_unit_hbd mode
+            // — it is handled separately in `bd10_reencode_chroma_node`, which
+            // rebuilds the CfL prediction from the 10-bit LUMA recon the luma
+            // pass just produced (`cfl_luma_subsampling_420_hbd` +
+            // `cfl_predict_hbd` on a DC base). That support MUST stay in
+            // lockstep with the search's `cfl_gate`: a leaf the search can pick
+            // but the post-pass rejects silently drops the WHOLE FRAME out of
+            // the re-encode, which is a far worse (invisible) failure than a
+            // visible mode divergence.
             let uv_directional = matches!(d.uv_mode, 3..=8)
                 || (matches!(d.uv_mode, 1 | 2) && d.uv_angle_delta != 0);
-            let uv_ok = d.uv_mode != 13 && (!uv_directional || !edge_filter);
+            let uv_ok = !uv_directional || !edge_filter;
             d.tx_depth == 0 && (!directional || !edge_filter) && uv_ok
         }
         crate::partition::PartitionTree::Split { children, .. } => {
@@ -4294,6 +4307,10 @@ fn bd10_reencode_chroma(
     u_src10: &[u16],
     v_src10: &[u16],
     cstride: usize,
+    // The frame's 10-bit LUMA recon from `bd10_reencode_luma`, `w*h` at
+    // stride `y_stride` — the CfL AC source for UV_CFL_PRED leaves.
+    y_recon10: &[u16],
+    y_stride: usize,
     chroma_qindex: u8,
     rdoq_level: u8,
     lambda: u64,
@@ -4325,6 +4342,8 @@ fn bd10_reencode_chroma(
             cstride,
             u_src10,
             v_src10,
+            y_recon10,
+            y_stride,
             &qt,
             rdoq_level,
             lambda,
@@ -4363,6 +4382,11 @@ fn bd10_reencode_chroma_plane(
     rates: &crate::leaf_funnel::MdRates,
     bd: u8,
     qm_level: u8,
+    // `Some((ac_luma_q3, alpha_q3))` for a UV_CFL_PRED leaf. C predicts CfL as
+    // `svt_cfl_predict_hbd(pred_buf_q3, dc_pred, alpha)` over a **DC** base
+    // (`cfl_prediction` regenerates DC at :3798-3801 before calling), so the
+    // mode passed to `predict_unit_hbd` is forced to UV_DC_PRED here.
+    cfl: Option<(&[i16], i32)>,
 ) -> (alloc::vec::Vec<i32>, u16, alloc::vec::Vec<u8>) {
     let mut pred = alloc::vec![0u16; cw * ch];
     crate::leaf_funnel::predict_unit_hbd(
@@ -4372,8 +4396,8 @@ fn bd10_reencode_chroma_plane(
         cy,
         cw,
         ch,
-        uv_mode,
-        uv_angle_delta,
+        if cfl.is_some() { 0 } else { uv_mode },
+        if cfl.is_some() { 0 } else { uv_angle_delta },
         crate::leaf_funnel::FI_NONE,
         geom,
         edge_filter,
@@ -4381,6 +4405,10 @@ fn bd10_reencode_chroma_plane(
         &mut pred,
         bd,
     );
+    if let Some((ac, alpha_q3)) = cfl {
+        let dc = pred.clone();
+        svtav1_dsp::hbd::cfl_predict_hbd(ac, &dc, cw, &mut pred, cw, alpha_q3, bd, cw, ch);
+    }
     let src_off = cy * cstride + cx;
     let out = crate::leaf_funnel::tx_unit_hbd(
         src10,
@@ -4427,6 +4455,8 @@ fn bd10_reencode_chroma_node(
     cstride: usize,
     u_src10: &[u16],
     v_src10: &[u16],
+    y_recon10: &[u16],
+    y_stride: usize,
     qt: &crate::quant::QuantTable,
     rdoq_level: u8,
     lambda: u64,
@@ -4456,7 +4486,28 @@ fn bd10_reencode_chroma_node(
             let ch = bh.max(8) / 2;
             let cx = ((x >> 3) << 3) / 2 + if bw >= 8 { (x % 8) / 2 } else { 0 };
             let cy = ((y >> 3) << 3) / 2 + if bh >= 8 { (y % 8) / 2 } else { 0 };
+            // UV_CFL_PRED: C's chroma tx_type is forced to DCT_DCT
+            // (`cfl_prediction` :3796, `transform_type_uv = DCT_DCT`), and the
+            // prediction comes from the 10-bit LUMA recon rather than the
+            // chroma neighbours. `uv_tx_type` already maps mode 13 -> DCT_DCT,
+            // so only the prediction changes.
             let uv_tt = crate::leaf_funnel::uv_tx_type(d.uv_mode, cw, ch);
+            let cfl_ac: Option<alloc::vec::Vec<i16>> = if d.uv_mode == 13 {
+                let mut ac =
+                    alloc::vec![0i16; svtav1_dsp::intra_pred::CFL_BUF_LINE * ch.max(1)];
+                crate::leaf_funnel::cfl_ac_from_frame_recon_hbd(
+                    y_recon10, y_stride, x, y, bw, bh, cw, ch, &mut ac,
+                );
+                Some(ac)
+            } else {
+                None
+            };
+            let cfl_u = cfl_ac
+                .as_ref()
+                .map(|ac| (&ac[..], crate::leaf_funnel::cfl_idx_to_alpha(d.cfl_alpha_idx, d.cfl_alpha_signs, 0)));
+            let cfl_v = cfl_ac
+                .as_ref()
+                .map(|ac| (&ac[..], crate::leaf_funnel::cfl_idx_to_alpha(d.cfl_alpha_idx, d.cfl_alpha_signs, 1)));
             let geom = crate::leaf_funnel::UnitGeom {
                 mi_row: cy >> 2,
                 mi_col: cx >> 2,
@@ -4472,11 +4523,11 @@ fn bd10_reencode_chroma_node(
             };
             let (u_q, u_eob, u_rec) = bd10_reencode_chroma_plane(
                 recon10_u, u_src10, cstride, cx, cy, cw, ch, d.uv_mode, d.uv_angle_delta, uv_tt, &geom,
-                edge_filter, qt, rdoq_level, lambda, rates, bd, qm_uv[0],
+                edge_filter, qt, rdoq_level, lambda, rates, bd, qm_uv[0], cfl_u,
             );
             let (v_q, v_eob, v_rec) = bd10_reencode_chroma_plane(
                 recon10_v, v_src10, cstride, cx, cy, cw, ch, d.uv_mode, d.uv_angle_delta, uv_tt, &geom,
-                edge_filter, qt, rdoq_level, lambda, rates, bd, qm_uv[1],
+                edge_filter, qt, rdoq_level, lambda, rates, bd, qm_uv[1], cfl_v,
             );
             d.chroma_dec = Some((u_q, v_q, u_eob, v_eob, u_rec, v_rec));
         }
@@ -4515,6 +4566,8 @@ fn bd10_reencode_chroma_node(
                     cstride,
                     u_src10,
                     v_src10,
+                    y_recon10,
+                    y_stride,
                     qt,
                     rdoq_level,
                     lambda,
