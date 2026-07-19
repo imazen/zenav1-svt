@@ -1620,3 +1620,45 @@ decision. It is downstream of MD. In priority order:
 Use `SVT_QLEVELS_OUT` vs `SVTAV1_QLEV_XY` at the first block whose coded bytes
 diverge; the tree being identical makes that join unambiguous for the first
 time.
+
+### MEASURED: p6's residual is the 8-bit CDEF/LR SEARCH, and that is the whole story
+
+`tools/identity_diff.py` on `2119713 q32 p6` with the tree identical reports
+exactly two things:
+
+```
+STAGE: FH | cdef_y_sec_strength[1] C=2 Rust=0
+ALSO: tile-op | op 6 C=B:v1 Rust=B:v0   (op-class: lr-taps, wiener_restore)
+```
+
+Nothing about modes, partitions, tx or coefficients. The frame-header CDEF
+strength and the Wiener LR taps — both produced by post-MD SEARCHES that read
+the reconstructed frame — are the entire remaining divergence.
+
+And the preset split is not a coincidence. `cdef::allintra_preset_uses_cdef_search`
+is **`preset <= 6`**:
+- presets **7-13** take `pick_cdef_params_key_frame`, the qp fast path, which
+  IS bd10-aware (`AC_QLOOKUP_10[qindex] >> 2`, cdef.rs:124-133) — so they are
+  byte-exact, which is exactly what the 130-cell photo gate shows.
+- preset **6** (and below) takes `cdef_search_still`, whose signature is
+  `recon_y/u/v: &[u8]` and `src_y/u/v: &[u8]` (cdef.rs:830-843) — a **fully
+  8-bit search**, while C at `hbd_md` searches on 10-bit recon against the
+  10-bit source with bit-depth-dependent rounding inside the CDEF filter.
+  Same for the Wiener/SGR LR search.
+
+So **the p6 residual is a known structural approximation ("the open FH axis"),
+now measured and bounded rather than suspected.** It is NOT another MD near-tie
+and no further mode/partition archaeology is warranted: at p6 the port's MD is
+now bit-exact with C.
+
+Next step, and it is a different subsystem: **carry the CDEF strength search
+and the LR search at 10 bits** — `cdef_search_still` + `restoration`'s Wiener
+path taking `&[u16]` recon/source with a `bd` parameter, fed from the bd10
+recon the pipeline already maintains. That closes p0..p6 photographic bd10 as
+one piece of work.
+
+Related, and now likely LOAD-BEARING rather than incidental: the dead stores at
+`leaf_funnel.rs:5706-5707` (see the note above) mean the u8 recon proxy those
+searches read does NOT represent the coded 10-bit levels. Fix that in the same
+change — the comment already there explains why the truncated 10-bit recon is
+the right proxy, and it is the CDEF/LR searches that make it observable.
