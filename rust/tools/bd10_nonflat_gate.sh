@@ -25,6 +25,23 @@ RS_ROOT=$(cd "$HERE/.." && pwd)
 cd "$RS_ROOT"
 OUT="${TMPDIR:-/tmp}/bd10nf.$$"
 mkdir -p "$OUT"
+# Reference decoder for the DECODABILITY assert below. Required, never skipped:
+# a byte-identity gate is structurally blind to a stream that is byte-equal to
+# nothing (a cell that regresses out of the list) and to corruption on the cells
+# it does not list, so every port OBU this gate produces must also be provably
+# decodable. Override with AOMDEC=/path/to/aomdec.
+aomdec="${AOMDEC:-}"
+if [ -z "$aomdec" ]; then
+    for _c in aomdec /root/aomdec-debug/aomdec; do
+        if command -v "$_c" >/dev/null 2>&1; then aomdec=$_c; break; fi
+    done
+fi
+# Hard fail, never a graceful skip: a gate that silently stops checking
+# decodability is a gate that lies.
+command -v "$aomdec" >/dev/null 2>&1 || {
+    echo "bd10 non-flat gate: aomdec not found (set AOMDEC=/path/to/aomdec)" >&2
+    exit 2
+}
 pass=0
 fail=0
 failed=()
@@ -312,6 +329,35 @@ CELLS=(
   "diag 128 128 63 9"
   "diag 128 128 63 11"
   "diag 128 128 63 12"
+  # ---------------------------------------------------------------------
+  # bd10 PART axis (task #94, this landing): the PD1 depth-refine + NSQ walk
+  # (`decide_sb_refined`, presets 0..=5) now runs at TRUE 10 bits — C's PD1
+  # is `hbd_md = 2`, so `test_depth` / `test_split_partition`
+  # (product_coding_loop.c:10857 / :10770) sum 10-bit MDS3 leaf costs and
+  # take `full_sb_lambda_md[EB_10_BIT_MD]` for the partition rate. Running
+  # that walk on 8-bit leaf costs picked C's *bd8* geometry.
+  #
+  # This band (p0..p5) had NEVER been gated — the gate jumped p6 -> p13. The
+  # six q12/q20 cells below are NEWLY closed by this landing, MEASURED by
+  # re-running each with the change reverted (all six were DIFF before,
+  # MATCH after); the four q55 cells were already byte-exact but ungated, so
+  # they are added as regression cover for the band rather than as wins.
+  # Everything else at p0..p5 is still open (docs/bd10-port-map.md): the
+  # residual is dominated by the bd10 full-RD's missing CfL arm, which real
+  # photographic content exercises heavily.
+  #
+  # NEWLY CLOSED by the 10-bit PD1 walk (before: DIFF, after: MATCH):
+  "gradient 64 64 12 2"
+  "gradient 64 64 12 3"
+  "gradient 64 64 12 4"
+  "gradient 64 64 12 5"
+  "diag 64 64 20 4"
+  "diag 128 128 20 4"
+  # Already byte-exact pre-landing, previously ungated (band regression cover):
+  "gradient 64 64 55 1"
+  "gradient 64 64 55 2"
+  "gradient 64 64 55 4"
+  "gradient 64 64 55 5"
 )
 for cell in "${CELLS[@]}"; do
   read -r content w h qp p <<<"$cell"
@@ -321,6 +367,11 @@ for cell in "${CELLS[@]}"; do
   fi
   if ! SVT_TRACE_OUT=/dev/null "$HERE/capture_c_trace/capture_c_trace" "$w" "$h" "$qp" "$p" "$OUT/rs.yuv" "$OUT/c.obu" 10 >/dev/null 2>&1; then
     fail=$((fail + 1)); failed+=("${tag}[c-err]"); continue
+  fi
+  # Decodability BEFORE byte-identity: a stream that aomdec rejects is a
+  # corruption bug regardless of what `cmp` says, and `cmp` alone cannot see it.
+  if ! "$aomdec" --rawvideo -o /dev/null "$OUT/rs.obu" >/dev/null 2>&1; then
+    fail=$((fail + 1)); failed+=("${tag}[undecodable]"); continue
   fi
   if cmp -s "$OUT/rs.obu" "$OUT/c.obu"; then
     pass=$((pass + 1))
