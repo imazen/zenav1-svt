@@ -1800,6 +1800,7 @@ pub(crate) fn tx_unit_hbd(
     rates: &MdRates,
     do_rdoq: bool,
     bd: u8,
+    qm_level: u8,
 ) -> TxUnitOutHbd {
     let n = w * h;
     let c_tx = cc::tx_size_from_dims(w, h);
@@ -1843,9 +1844,30 @@ pub(crate) fn tx_unit_hbd(
     let log_scale = TX_SCALE_TAB[c_tx];
     let mut qcoeff = vec![0i32; pw * ph];
     let mut dqcoeff = vec![0i32; pw * ph];
+    // [SVT_HDR_MODE] QM at bd10. C selects the matrix by qm_level regardless of
+    // bit depth (svt_av1_qm_init, md_config_process.c:246-280 — a pure function
+    // of base_qindex) and then routes bd>8 through the *_qm HIGHBD kernels via
+    // svt_av1_highbd_quantize_{b,fp}_facade (full_loop.c:139-176). This path
+    // previously always called the NON-QM highbd kernels and passed `iwt: None`
+    // to the trellis, so fork mode (QM on by default) silently dequantized
+    // without matrices at bd10 while bd8 applied them. Same 2D-only gate as the
+    // bd8 site: the caller passes qm_level 15 for non-2D tx types.
+    // IS_2D_TRANSFORM(tx_type) == tx_type < IDTX(9) — definitions.h:1122, the
+    // same gate the bd8 sites use (tx_unit:1438, encode_loop.rs:213).
+    let qm = if tx_type < 9 && qm_level < 15 {
+        crate::qm::qm_slices(usize::from(qm_level), plane_type == 1, c_tx)
+    } else {
+        None
+    };
     let eob = if do_rdoq {
-        let mut e =
-            crate::quant::quantize_fp_hbd(&packed, scan, qt, log_scale, &mut qcoeff, &mut dqcoeff);
+        let mut e = match qm {
+            Some((wt, iwt)) => crate::qm::quantize_fp_hbd_qm(
+                &packed, scan, qt, log_scale, wt, iwt, &mut qcoeff, &mut dqcoeff,
+            ),
+            None => crate::quant::quantize_fp_hbd(
+                &packed, scan, qt, log_scale, &mut qcoeff, &mut dqcoeff,
+            ),
+        };
         if e != 0 {
             let (cut_off_num, cut_off_denum) = crate::quant::rdoq_cutoffs(rdoq_level);
             let tx_class = cc::TX_TYPE_TO_CLASS[tx_type];
@@ -1860,7 +1882,9 @@ pub(crate) fn tx_unit_hbd(
                     false,
                 ),
                 sharpness_flag: false,
-                iwt: None,
+                // The trellis dequant must use the SAME matrix as the quantize
+                // (C optimize_b reads qparam->iqmatrix through get_dqv).
+                iwt: qm.map(|(_, iwt)| iwt),
                 tx_size: c_tx,
                 tx_class,
                 txb_skip_ctx,
@@ -1874,7 +1898,14 @@ pub(crate) fn tx_unit_hbd(
     } else {
         // rdoq level 0 (do_rdoq == false): C routes bd>8 to the highbd b-quant
         // (no INT16 clamp) — the SAME clamp-is-bd8-only class as the fp fix.
-        crate::quant::quantize_b_hbd(&packed, scan, qt, log_scale, &mut qcoeff, &mut dqcoeff)
+        match qm {
+            Some((wt, iwt)) => crate::qm::quantize_b_hbd_qm(
+                &packed, scan, qt, log_scale, wt, iwt, &mut qcoeff, &mut dqcoeff,
+            ),
+            None => {
+                crate::quant::quantize_b_hbd(&packed, scan, qt, log_scale, &mut qcoeff, &mut dqcoeff)
+            }
+        }
     };
 
     // 10-bit reconstruction (pred + inverse residual, clipped to [0, 2^bd-1]).
@@ -4949,7 +4980,7 @@ pub(crate) fn evaluate_leaf(
             let out = tx_unit_hbd(
                 &blk_src10, w, 0, &pred10, w, 0, w, h, tx_type, 0, 0, 0, &qt10,
                 frame.rdoq_level, lambda_bd10_full, 0, rates, frame.rdoq_level != 0,
-                frame.bit_depth,
+                frame.bit_depth, frame.qm_levels[0],
             );
             out.recon
         }

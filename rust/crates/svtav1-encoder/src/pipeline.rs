@@ -927,6 +927,7 @@ impl EncodePipeline {
                     lambda_bd10,
                     bd10_edge_filter,
                     self.bit_depth,
+                    qm_levels[0],
                 );
                 self.last_recon10_y = Some(recon10);
                 // bd10 CHROMA re-encode (task #94): recompute chroma levels at
@@ -958,6 +959,7 @@ impl EncodePipeline {
                         lambda_bd10,
                         bd10_edge_filter,
                         self.bit_depth,
+                        [qm_levels[1], qm_levels[2]],
                     );
                 }
             }
@@ -3617,6 +3619,7 @@ fn bd10_reencode_luma(
     lambda_bd10: u64,
     edge_filter: bool,
     bd: u8,
+    qm_level: u8,
 ) -> alloc::vec::Vec<u16> {
     let fc = svtav1_entropy::context::FrameContext::new_default();
     let cfc = svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex);
@@ -3641,6 +3644,7 @@ fn bd10_reencode_luma(
             w,
             h,
             bd,
+            qm_level,
         );
     }
     recon10
@@ -3662,6 +3666,7 @@ fn bd10_reencode_node(
     frame_w: usize,
     frame_h: usize,
     bd: u8,
+    qm_level: u8,
 ) {
     use crate::partition::PartitionTree as Tr;
     use crate::partition::PartitionType as PT;
@@ -3727,6 +3732,7 @@ fn bd10_reencode_node(
                 rates,
                 rdoq_level != 0,
                 bd,
+                qm_level,
             );
             // Overwrite the coded LUMA levels with the 10-bit result. The walk
             // re-derives the scan-order eob + skip from these coeffs.
@@ -3792,6 +3798,7 @@ fn bd10_reencode_node(
                     frame_w,
                     frame_h,
                     bd,
+                    qm_level,
                 );
             }
         }
@@ -3832,6 +3839,11 @@ fn bd10_reencode_chroma(
     lambda: u64,
     edge_filter: bool,
     bd: u8,
+    // [SVT_HDR_MODE] per-plane QM levels [U, V] (15 = off). C derives them
+    // separately via `aom_get_qmlevel(base_qindex + delta_q_ac[plane], ...)`
+    // (md_config_process.c:271-279), so they can differ between Cb and Cr —
+    // the fork's chroma path gives Cb a +12 delta.
+    qm_uv: [u8; 2],
 ) {
     let fc = svtav1_entropy::context::FrameContext::new_default();
     let cfc = svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(chroma_qindex);
@@ -3860,6 +3872,7 @@ fn bd10_reencode_chroma(
             cframe_w,
             cframe_h,
             bd,
+            qm_uv,
         );
     }
 }
@@ -3888,6 +3901,7 @@ fn bd10_reencode_chroma_plane(
     lambda: u64,
     rates: &crate::leaf_funnel::MdRates,
     bd: u8,
+    qm_level: u8,
 ) -> (alloc::vec::Vec<i32>, u16, alloc::vec::Vec<u8>) {
     let mut pred = alloc::vec![0u16; cw * ch];
     crate::leaf_funnel::predict_unit_hbd(
@@ -3927,6 +3941,7 @@ fn bd10_reencode_chroma_plane(
         rates,
         rdoq_level != 0,
         bd,
+        qm_level,
     );
     for r in 0..ch {
         let drow = (cy + r) * cstride + cx;
@@ -3955,6 +3970,7 @@ fn bd10_reencode_chroma_node(
     cframe_w: usize,
     cframe_h: usize,
     bd: u8,
+    qm_uv: [u8; 2],
 ) {
     use crate::partition::PartitionTree as Tr;
     use crate::partition::PartitionType as PT;
@@ -3987,11 +4003,11 @@ fn bd10_reencode_chroma_node(
             };
             let (u_q, u_eob, u_rec) = bd10_reencode_chroma_plane(
                 recon10_u, u_src10, cstride, cx, cy, cw, ch, d.uv_mode, d.uv_angle_delta, uv_tt, &geom,
-                edge_filter, qt, rdoq_level, lambda, rates, bd,
+                edge_filter, qt, rdoq_level, lambda, rates, bd, qm_uv[0],
             );
             let (v_q, v_eob, v_rec) = bd10_reencode_chroma_plane(
                 recon10_v, v_src10, cstride, cx, cy, cw, ch, d.uv_mode, d.uv_angle_delta, uv_tt, &geom,
-                edge_filter, qt, rdoq_level, lambda, rates, bd,
+                edge_filter, qt, rdoq_level, lambda, rates, bd, qm_uv[1],
             );
             d.chroma_dec = Some((u_q, v_q, u_eob, v_eob, u_rec, v_rec));
         }
@@ -4037,6 +4053,7 @@ fn bd10_reencode_chroma_node(
                     cframe_w,
                     cframe_h,
                     bd,
+                    qm_uv,
                 );
             }
         }

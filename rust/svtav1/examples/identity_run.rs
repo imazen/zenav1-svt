@@ -267,6 +267,10 @@ fn main() {
     let mut pipeline = EncodePipeline::new(w as u32, h as u32, preset, rc, 0, 1)
         .with_tile_rows_log2(tile_rows_log2)
         .with_bit_depth(bd);
+    // SVT_HDR_MODE / SVT_FORK_*: the SAME env names the C driver reads, so one
+    // env vector configures both encoders (hdr_mode::HdrForkConfig::from_env).
+    // Unset => mainline, i.e. every pre-existing invocation is unchanged.
+    pipeline.hdr = svtav1_encoder::hdr_mode::HdrForkConfig::from_env();
     let obu = if mono {
         pipeline.encode_frame(&y, w)
     } else {

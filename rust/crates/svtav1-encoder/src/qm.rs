@@ -216,6 +216,143 @@ pub fn quantize_fp_qm(
     (eob + 1) as u16
 }
 
+/// C `highbd_quantize_fp_helper_c` **QM arm** (full_loop.c:342-366) — the
+/// bd>8 FP quantize with quantization matrices.
+///
+/// Differs from the bd8 [`quantize_fp_qm`] in exactly one place, the same
+/// bd8-only INT16 clamp that separates [`crate::quant::quantize_fp_hbd`] from
+/// [`crate::quant::quantize_fp`]: C's 8-bit arm does
+/// `abs_coeff = clamp64(abs_coeff + rounding, INT16_MIN, INT16_MAX)`
+/// (full_loop.c:271-272) while the highbd arm keeps full width in an `int64_t`
+/// `tmp` (full_loop.c:355-356). At 10-bit the coefficients genuinely exceed
+/// INT16, so the clamp is the whole difference.
+///
+/// The `if (abs_qcoeff)` eob guard also differs from the bd8 arm: highbd sets
+/// `eob = i` only for a nonzero qcoeff, whereas the bd8 QM arm writes
+/// `qcoeff_ptr[rc]` unconditionally inside the threshold branch and then tests
+/// `tmp32`. Both end up recording the last nonzero, but highbd leaves
+/// `qcoeff/dqcoeff` at the memset 0 for a zero result, which is what the
+/// `else` clause here reproduces.
+#[allow(clippy::too_many_arguments)]
+pub fn quantize_fp_hbd_qm(
+    coeffs: &[i32],
+    scan: &[u16],
+    t: &crate::quant::QuantTable,
+    log_scale: i32,
+    wt: &[u8],
+    iwt: &[u8],
+    qcoeff: &mut [i32],
+    dqcoeff: &mut [i32],
+) -> u16 {
+    let shift = 16 - log_scale;
+    qcoeff[..coeffs.len()].fill(0);
+    dqcoeff[..coeffs.len()].fill(0);
+
+    let mut eob: i64 = -1;
+    for (i, &sc) in scan.iter().enumerate() {
+        let rc = sc as usize;
+        let coeff = coeffs[rc];
+        let iz = usize::from(rc != 0);
+        let w = i64::from(wt[rc]);
+        let iw = i32::from(iwt[rc]);
+        let dequant = (t.dequant[iz] * iw + (1 << (AOM_QM_BITS - 1))) >> AOM_QM_BITS;
+        let coeff_sign: i32 = if coeff < 0 { -1 } else { 0 };
+        let abs_coeff = i64::from((coeff ^ coeff_sign) - coeff_sign);
+        if abs_coeff * w >= i64::from(t.dequant[iz]) << (AOM_QM_BITS - (1 + log_scale)) {
+            // NO INT16 clamp (highbd path) — C full_loop.c:355-356.
+            let tmp = abs_coeff
+                + i64::from((t.round_fp[iz] + ((1 << log_scale) >> 1)) >> log_scale);
+            let abs_qcoeff = ((tmp * i64::from(t.quant_fp[iz]) * w) >> (shift + AOM_QM_BITS)) as i32;
+            qcoeff[rc] = (abs_qcoeff ^ coeff_sign) - coeff_sign;
+            let abs_dq = ((i64::from(abs_qcoeff) * i64::from(dequant)) >> log_scale) as i32;
+            dqcoeff[rc] = (abs_dq ^ coeff_sign) - coeff_sign;
+            if abs_qcoeff != 0 {
+                eob = i as i64;
+            }
+        } else {
+            qcoeff[rc] = 0;
+            dqcoeff[rc] = 0;
+        }
+    }
+    (eob + 1) as u16
+}
+
+/// C `svt_aom_highbd_quantize_b_c` **QM arm** (full_loop.c:85-136) — the bd>8
+/// dead-zone (b) quantize with quantization matrices, used by the bd10 RDOQ
+/// level-0 path.
+///
+/// Unlike [`crate::quant::quantize_b_hbd`] (which may collapse C's `idx_arr`
+/// to a contiguous prefix because the no-QM dead-zone test is monotone in scan
+/// order) this reproduces C's **two-pass index collection verbatim**. With a
+/// matrix the prescan test is `coeff * wt` vs `zbin << AOM_QM_BITS`, and `wt`
+/// varies per coefficient position — so passing/failing is no longer a
+/// trailing-run property and the prefix shortcut would select a different set.
+/// C's quantization pass then processes exactly the collected indices with NO
+/// further guard, so the collected set IS the semantics.
+#[allow(clippy::too_many_arguments)]
+pub fn quantize_b_hbd_qm(
+    coeffs: &[i32],
+    scan: &[u16],
+    t: &crate::quant::QuantTable,
+    log_scale: i32,
+    wt: &[u8],
+    iwt: &[u8],
+    qcoeff: &mut [i32],
+    dqcoeff: &mut [i32],
+) -> u16 {
+    let n_coeffs = scan.len();
+    qcoeff[..coeffs.len()].fill(0);
+    dqcoeff[..coeffs.len()].fill(0);
+
+    let zbins = [
+        (t.zbin[0] + ((1 << log_scale) >> 1)) >> log_scale,
+        (t.zbin[1] + ((1 << log_scale) >> 1)) >> log_scale,
+    ];
+
+    // Pre-scan pass (C idx_arr[4096]; the packed txb here is at most 32x32
+    // = 1024 coefficients after the 64-dim fold).
+    debug_assert!(n_coeffs <= 1024, "packed txb exceeds the idx_arr bound");
+    let mut idx_arr = [0u16; 1024];
+    let mut idx = 0usize;
+    for (i, &sc) in scan.iter().enumerate() {
+        let rc = sc as usize;
+        let iz = usize::from(rc != 0);
+        let coeff = i64::from(coeffs[rc]) * i64::from(wt[rc]);
+        let zb = i64::from(zbins[iz]) << AOM_QM_BITS;
+        if coeff >= zb || coeff <= -zb {
+            idx_arr[idx] = i as u16;
+            idx += 1;
+        }
+    }
+
+    // Quantization pass: only the collected indices, no further guard.
+    let mut eob: i64 = -1;
+    for &si in idx_arr.iter().take(idx) {
+        let i = si as usize;
+        let rc = scan[i] as usize;
+        let coeff = coeffs[rc];
+        let iz = usize::from(rc != 0);
+        let coeff_sign: i32 = if coeff < 0 { -1 } else { 0 };
+        let w = i64::from(wt[rc]);
+        let iw = i32::from(iwt[rc]);
+        let abs_coeff = i64::from((coeff ^ coeff_sign) - coeff_sign);
+        // NO INT16 clamp (highbd path) — C full_loop.c:122-124.
+        let tmp1 = abs_coeff + i64::from((t.round[iz] + ((1 << log_scale) >> 1)) >> log_scale);
+        let tmpw = tmp1 * w;
+        let tmp2 = ((tmpw * i64::from(t.quant[iz])) >> 16) + tmpw;
+        let abs_qcoeff =
+            ((tmp2 * i64::from(t.quant_shift[iz])) >> (16 - log_scale + AOM_QM_BITS)) as i32;
+        qcoeff[rc] = (abs_qcoeff ^ coeff_sign) - coeff_sign;
+        let dequant = (t.dequant[iz] * iw + (1 << (AOM_QM_BITS - 1))) >> AOM_QM_BITS;
+        let abs_dq = ((i64::from(abs_qcoeff) * i64::from(dequant)) >> log_scale) as i32;
+        dqcoeff[rc] = (abs_dq ^ coeff_sign) - coeff_sign;
+        if abs_qcoeff != 0 {
+            eob = i as i64;
+        }
+    }
+    (eob + 1) as u16
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -142,10 +142,24 @@ impl HdrForkConfig {
         }
     }
 
-    /// svt-av1-hdr fork defaults — matches the C hybrid at `SVT_HDR_MODE=1`
-    /// (enc_settings.c fork-default branches + the fork's README
-    /// "Modified Defaults"). NOTE: preset/bit-depth/keyint defaults are
-    /// caller decisions in this port and are not carried here.
+    /// svt-av1-hdr UPSTREAM fork defaults — the values the fork's own
+    /// `svt_av1_set_default_params` ships (fork README "Modified Defaults").
+    ///
+    /// **This is NOT the config the in-tree C oracle produces at
+    /// `-DSVT_HDR_MODE=ON`** — use [`HdrForkConfig::hdr_fork_c_mode1`] for
+    /// that, and for any byte comparison against `capture_c_trace`. The
+    /// in-tree C hybrid deliberately neutralizes the fork's feature knobs
+    /// UNCONDITIONALLY (`enc_settings.c:1181-1203`: `ac_bias = 0.0`,
+    /// `sharp_tx = 0`, `noise_norm_strength = 0`, `alt_lambda_factors = 0`,
+    /// `kf_tf_strength = 3`, `qp_scale_compress_strength = 0.0`) — they sit
+    /// outside every `#if SVT_HDR_MODE` block, so compiling MODE1 does not
+    /// turn them on. Only six defaults actually flip with the mode (bit
+    /// depth, preset, QM, variance boost, `tf_strength`, `sharpness`).
+    ///
+    /// Keep this constructor for "what the shipped fork does"; it is the
+    /// right target for feature-behavior work and the wrong one for oracle
+    /// byte-identity. NOTE: preset/bit-depth/keyint defaults are caller
+    /// decisions in this port and are not carried here.
     pub fn hdr_fork() -> Self {
         Self {
             mode: SvtHdrMode::HdrFork,
@@ -177,6 +191,102 @@ impl HdrForkConfig {
             max_chroma_qm_level: 15,
             tf_strength: 1,
         }
+    }
+
+    /// The config the IN-TREE C oracle loads at `-DSVT_HDR_MODE=ON`, i.e.
+    /// what `svt_av1_enc_init_handle` hands back from a MODE1 build with no
+    /// further overrides. **This is the byte-identity target** for
+    /// `capture_c_trace` run under `SVT_HDR_MODE=1`.
+    ///
+    /// Derived field-by-field from `Source/Lib/Globals/enc_settings.c`
+    /// `svt_av1_set_default_params`: the `#if SVT_HDR_MODE` branches flip
+    /// exactly `enable_qm` (:1123), `min_qm_level` 6 (:1128), `max_qm_level`
+    /// 10 (:1133), `enable_variance_boost` (:1149), `tf_strength` 1 (:1156)
+    /// and `sharpness` 1 (:1163) — plus `encoder_bit_depth` 10 (:995) and
+    /// `enc_mode` M4 (:1032), which are caller decisions here and so are not
+    /// fields of this struct. Everything else keeps the neutralized value
+    /// assigned unconditionally at :1181-1203.
+    ///
+    /// Fork mode is therefore NOT "all fork features on" — it is the fork's
+    /// UNCONDITIONAL code-path deltas (unconditional loop filter, `double`
+    /// variance pipeline, chroma-qindex derivation, light-RDOQ low-DC chroma,
+    /// mds0 dist-type branching, `diff_uv_delta`/`separate_uv_delta_q`) plus
+    /// those six defaults. Individual fork FEATURES are opted into on top,
+    /// on both sides, via the shared `SVT_FORK_*` env knobs
+    /// ([`HdrForkConfig::from_env`]).
+    pub fn hdr_fork_c_mode1() -> Self {
+        Self {
+            mode: SvtHdrMode::HdrFork,
+            // --- the six SVT_HDR_MODE-gated default flips ---
+            enable_qm: true,
+            min_qm_level: 6,
+            max_qm_level: 10,
+            enable_variance_boost: true,
+            tf_strength: 1,
+            sharpness: 1,
+            // --- everything else: the unconditional neutral values ---
+            ..Self::mainline()
+        }
+    }
+
+    /// Build a config from the environment, using the SAME variable names the
+    /// C driver (`rust/tools/capture_c_trace`) reads. One env vector then
+    /// configures BOTH encoders, which is what makes a fork-mode byte
+    /// comparison meaningful — two parallel naming schemes drift, and a knob
+    /// that silently fails to reach one side looks exactly like a knob with no
+    /// effect.
+    ///
+    /// - `SVT_HDR_MODE=1` → start from [`Self::hdr_fork_c_mode1`]; otherwise
+    ///   [`Self::mainline`] (so an unset environment is today's behavior).
+    /// - `SVT_FORK_<FIELD>` → override that field. Unparseable values are a
+    ///   hard error rather than a silent fallback: a typo'd knob that quietly
+    ///   encodes the default is the failure mode this whole path exists to
+    ///   prevent.
+    pub fn from_env() -> Self {
+        let fork = std::env::var("SVT_HDR_MODE").map(|v| v == "1").unwrap_or(false);
+        let mut c = if fork { Self::hdr_fork_c_mode1() } else { Self::mainline() };
+
+        fn get<T: std::str::FromStr>(name: &str, slot: &mut T) {
+            if let Ok(v) = std::env::var(name) {
+                *slot = v
+                    .parse()
+                    .unwrap_or_else(|_| panic!("{name}: cannot parse {v:?} as {}", std::any::type_name::<T>()));
+            }
+        }
+        fn get_bool(name: &str, slot: &mut bool) {
+            let mut n: u8 = u8::from(*slot);
+            get(name, &mut n);
+            *slot = n != 0;
+        }
+
+        get("SVT_FORK_AC_BIAS", &mut c.ac_bias);
+        get("SVT_FORK_QP_SCALE_COMPRESS_STRENGTH", &mut c.qp_scale_compress_strength);
+        get("SVT_FORK_SHARP_TX", &mut c.sharp_tx);
+        get("SVT_FORK_TX_BIAS", &mut c.tx_bias);
+        get("SVT_FORK_COMPLEX_HVS", &mut c.complex_hvs);
+        get("SVT_FORK_NOISE_NORM_STRENGTH", &mut c.noise_norm_strength);
+        get("SVT_FORK_NOISE_ADAPTIVE_FILTERING", &mut c.noise_adaptive_filtering);
+        get("SVT_FORK_CDEF_SCALING", &mut c.cdef_scaling);
+        get("SVT_FORK_NOISE_STRENGTH", &mut c.noise_strength);
+        get("SVT_FORK_NOISE_CHROMA_FROM_LUMA", &mut c.noise_chroma_from_luma);
+        get("SVT_FORK_NOISE_STRENGTH_CHROMA", &mut c.noise_strength_chroma);
+        get("SVT_FORK_NOISE_SIZE", &mut c.noise_size);
+        get("SVT_FORK_KF_TF_STRENGTH", &mut c.kf_tf_strength);
+        get("SVT_FORK_TF_STRENGTH", &mut c.tf_strength);
+        get("SVT_FORK_TUNE", &mut c.tune);
+        get("SVT_FORK_VARIANCE_BOOST_STRENGTH", &mut c.variance_boost_strength);
+        get("SVT_FORK_VARIANCE_OCTILE", &mut c.variance_octile);
+        get("SVT_FORK_VARIANCE_BOOST_CURVE", &mut c.variance_boost_curve);
+        get("SVT_FORK_MIN_QM_LEVEL", &mut c.min_qm_level);
+        get("SVT_FORK_MAX_QM_LEVEL", &mut c.max_qm_level);
+        get("SVT_FORK_MIN_CHROMA_QM_LEVEL", &mut c.min_chroma_qm_level);
+        get("SVT_FORK_MAX_CHROMA_QM_LEVEL", &mut c.max_chroma_qm_level);
+        get("SVT_FORK_SHARPNESS", &mut c.sharpness);
+        get_bool("SVT_FORK_ALT_LAMBDA_FACTORS", &mut c.alt_lambda_factors);
+        get_bool("SVT_FORK_ALT_SSIM_TUNING", &mut c.alt_ssim_tuning);
+        get_bool("SVT_FORK_ENABLE_QM", &mut c.enable_qm);
+        get_bool("SVT_FORK_ENABLE_VARIANCE_BOOST", &mut c.enable_variance_boost);
+        c
     }
 
     /// True when any ported fork behavior may fire.
@@ -227,5 +337,41 @@ mod tests {
     #[test]
     fn default_is_mainline() {
         assert_eq!(HdrForkConfig::default(), HdrForkConfig::mainline());
+    }
+
+    /// The C oracle at -DSVT_HDR_MODE=ON flips exactly SIX config defaults;
+    /// every other fork knob stays neutralized (enc_settings.c:1181-1203 sits
+    /// outside all `#if SVT_HDR_MODE` blocks). Pinning this keeps a future
+    /// "fork mode means all fork features on" assumption from silently
+    /// desynchronising the Rust config from the oracle it is compared against.
+    #[test]
+    fn c_mode1_flips_exactly_six_defaults_vs_mainline() {
+        let m = HdrForkConfig::mainline();
+        let f = HdrForkConfig::hdr_fork_c_mode1();
+        assert!(f.is_fork());
+
+        // The six that DO flip (enc_settings.c :1123/:1128/:1133/:1149/:1156/:1163).
+        assert!(f.enable_qm && !m.enable_qm);
+        assert_eq!((f.min_qm_level, f.max_qm_level), (6, 10));
+        assert!(f.enable_variance_boost && !m.enable_variance_boost);
+        assert_eq!((f.tf_strength, m.tf_strength), (1, 3));
+        assert_eq!((f.sharpness, m.sharpness), (1, 0));
+
+        // The fork FEATURE knobs stay at mainline-neutral in MODE1 — this is
+        // what separates hdr_fork_c_mode1() from hdr_fork().
+        assert_eq!(f.ac_bias, m.ac_bias);
+        assert_eq!(f.sharp_tx, m.sharp_tx);
+        assert_eq!(f.noise_norm_strength, m.noise_norm_strength);
+        assert_eq!(f.alt_lambda_factors, m.alt_lambda_factors);
+        assert_eq!(f.kf_tf_strength, m.kf_tf_strength);
+        assert_eq!(f.qp_scale_compress_strength, m.qp_scale_compress_strength);
+
+        // ... and those six are exactly where the shipped fork's own defaults
+        // (hdr_fork()) diverge from the oracle's — the distinction this test
+        // exists to hold.
+        let upstream = HdrForkConfig::hdr_fork();
+        assert_ne!(upstream, f, "hdr_fork() must not be confused with the MODE1 oracle config");
+        assert_eq!(upstream.ac_bias, 1.0);
+        assert_eq!(upstream.sharp_tx, 1);
     }
 }
