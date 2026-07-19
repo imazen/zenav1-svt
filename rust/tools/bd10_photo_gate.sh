@@ -103,6 +103,23 @@ PRESETS_D=(7 8)
 IMAGES_E=(1001682 2119713 4666751)
 QPS_E=(12 32 55)
 PRESETS_E=(6)
+# Group F — preset 5, closed 2026-07-19 by running the M2..M5 CHROMA mode
+# decision at TRUE 10 bits. `search_best_mds3_uv_mode` (the M2..M5 uv-mode
+# search) and `check_best_indepedant_cfl` (the ind-uv CfL arbitration) ran
+# ENTIRELY at 8 bits at bd10: the port priced the uv full loop with the u8
+# `chroma_eval` + u8 lambda and gated the CfL arm on `bd10_rd.is_none()`. C
+# runs BOTH at hbd_md — `full_lambda_md[EB_10_BIT_MD]` with 10-bit prediction /
+# residual / full-loop distortion (product_coding_loop.c:7307/7397/7443,
+# :3899). Deciding the uv mode / CfL on u8 chroma flipped near-ties (uv V-vs-DC
+# at block (0,0), CfL-vs-non-CfL at (16,80) on 1001682 q12 p5) which cascaded
+# into partition/mode divergence across the frame. Fixed by running the M2..M5
+# uv search + the ind-uv CfL arbitration on `chroma_eval10` + `b.lambda` at
+# bd10 (leaf_funnel.rs). ALL 5 group-A images x q{12,32,55} at p5 are now
+# byte-identical (15/15, verified `cmp`). p4 is 11/15 and p2/p3 diverge on a
+# SEPARATE, still-open LUMA partition RD near-tie (docs/bd10-port-map.md).
+IMAGES_F=(1001682 1484678 2119713 2738653 4666751)
+QPS_F=(12 32 55)
+PRESETS_F=(5)
 
 OUT="${TMPDIR:-/tmp}/bd10photo.$$"
 mkdir -p "$OUT"
@@ -171,6 +188,11 @@ done
 for stem in "${IMAGES_E[@]}"; do
     for qp in "${QPS_E[@]}"; do
         for p in "${PRESETS_E[@]}"; do run_cell "$stem" "$qp" "$p"; done
+    done
+done
+for stem in "${IMAGES_F[@]}"; do
+    for qp in "${QPS_F[@]}"; do
+        for p in "${PRESETS_F[@]}"; do run_cell "$stem" "$qp" "$p"; done
     done
 done
 

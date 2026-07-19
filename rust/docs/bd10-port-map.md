@@ -1832,3 +1832,110 @@ decision on real content**, and it should be attacked with the recon dump
 is the same class: its tile diverges at op 163 (`CDF13:s12` vs `s0`), i.e.
 mid-tile MD, and its tile is 191 bytes off C (22016 vs 21825) — far more than
 filter syntax can account for.
+
+## ROOT FOUND (2026-07-19): p0..p5 was the CHROMA mode decision at 8 bits; p5 photographic now closes
+
+The "bd10 FULL-RD funnel's mode decision on real content" named above as the next
+root for p0..p5 is **the chroma uv-mode + CfL decision running entirely at 8
+bits at bd10.** Fixing it closes **preset 5 photographic byte-identically on
+every group-A cell (15/15)** and the whole **p4/p5 diag+gradient synthetic band**.
+
+### Localization — `1001682 q12 p5`, the sharp cell (2648 tile bytes off)
+
+Walked the committed-block recon-edge dump (`SVTAV1_CEDGE` / `SVT_CEDGE_OUT`,
+joined in coding order). The luma was byte-identical from block (0,0) — the
+divergence was purely chroma:
+
+1. **Block (0,0), 64x64**: luma edges identical (`lyb`/`lyr` match; raw `lyB`
+   samples match), but the chroma right columns (`cu`/`cv`) diverged by ±1 from
+   the very first block. The coded tree named it: port `uv=1` (UV_V_PRED), C
+   `uv=0` (UV_DC_PRED) — a **chroma uv-mode flip** on a frame-origin block (no
+   neighbours, so the DC base is the fixed default — the decision itself
+   differs, not the inputs).
+
+2. After the mds3-uv fix (below): **32 blocks byte-identical**, then block
+   **(16,80), 16x16**: luma identical (DC_PRED), but port `uv=2` (UV_H_PRED, no
+   CfL) vs C `uv=13` (UV_CFL_PRED, `cflidx=50 cflsgn=4`) — a **CfL-vs-non-CfL
+   flip**. C picks CfL where the port cannot even evaluate it.
+
+3. After the CfL fix (below): **byte-identical** (59212 == 59212).
+
+### Two roots, both "one search, priced at the wrong bit depth"
+
+**(a) `search_best_mds3_uv_mode` (M2..M5 chroma uv search) ran at 8 bits.**
+The port's `ind_uv_mds3` block (`leaf_funnel.rs`) built the per-luma-mode uv
+table with the **u8 `chroma_eval`** and compared with the **u8 `lambda`**, then
+rewrote each MDS3 candidate's uv mode from that u8 table. C runs the whole search
+at `hbd_md`: `full_lambda = full_lambda_md[hbd_md ? EB_10_BIT_MD : EB_8_BIT_MD]`
+(product_coding_loop.c:7307), 10-bit prediction/residual (:7397/:7415/:7429), the
+10-bit full loop (`svt_aom_full_loop_uv`, :7443), cost `RDCOST(full_lambda, ...)`
+(:7491). Deciding the uv mode on 8-bit chroma flips near-ties (V-vs-DC above).
+**Fix:** at bd10 the uv full loop uses `chroma_eval10` and the compare uses
+`b.lambda` (== `full_lambda_md[EB_10_BIT_MD]`); bd8 keeps the u8 arm and is
+byte-unchanged **by construction** (the `None` arm is the original code).
+
+**(b) `check_best_indepedant_cfl` (the ind-uv CfL arbitration) was gated OFF at
+bd10.** The port's `cfl_ind_uv` arm carried `&& bd10_rd.is_none()`, so **no bd10
+leaf below p6 could ever pick CfL** while C arbitrates CfL at `hbd_md`
+(product_coding_loop.c:3899 `full_lambda_md[EB_10_BIT_MD]`; :3893-3999). **Fix:**
+the arm now runs at bd10 too — 10-bit CfL AC (from the winning 10-bit luma recon
+`best_recon10`) + 10-bit DC base, the alpha search via `md_cfl_alpha_search` with
+`plane_cost10` (transform-domain, `av1_cost_calc_cfl` at hbd), and the CfL-vs-non
+-CfL compare in the MDS3 SPATIAL domain: `best_uv_cost` from `uv_out10`, and the
+chosen-alpha CfL chroma re-run at 10-bit spatial for `cfl_uv_cost`. The revert
+guard mirrors C exactly (`check_best_indepedant_cfl` reverts iff `best_uv_cost <
+cfl_uv_cost` :3927 — so CfL wins exact ties, unlike the port's u8 `<`). The
+re-key at M0 also recomputes `uv_out10` via `chroma_eval10` so the arbitration
+runs on the ind-uv-best chroma at 10 bits.
+
+### Result — p5 closes, p4/p5 synthetic closes, all gates green
+
+- **Photographic p5: 15/15** byte-identical (group-A {1001682, 1484678, 2119713,
+  2738653, 4666751} x q{12,32,55}). Added as **group F** of `bd10_photo_gate.sh`
+  (139 -> **154**).
+- **Synthetic p4/p5: the whole diag+gradient x {64,128} x 8-qp band closes**
+  (0 DIFF at p4/p5 on that grid; the diag+gradient divergences fell 41 -> 21).
+  31 newly-closing p4/p5 cells added to `bd10_nonflat_gate.sh` (257 -> **288**).
+- **All gates green, bd8 byte-UNCHANGED**: identity 54/54, partial-SB 101/101,
+  sb128 18/18, tile 25/25, bd10 matrix 36/36, nonflat 288/288, photo 154/154,
+  recon-parity 13/13, hdr 46/46.
+
+### CHROMA post-pass check (asked, answered): correctly skipped
+
+The chroma level-only re-encode (`bd10_reencode_chroma`, pipeline.rs:1249) is
+**nested inside** the `if let Some(cq) = c_quant.as_ref().filter(|_|
+bd10_postpass_runs)` block (:1210), so it shares the exact `bd10_postpass_runs`
+gate — which carries the `!bd10_full_rd` term. It is structurally impossible for
+the chroma post-pass to run when the luma one is skipped; it is correctly skipped
+wherever the FULL-RD funnel runs. No separate bug.
+
+### What p0..p3 still needs — a SEPARATE, open LUMA partition RD near-tie
+
+p0..p3 (photographic AND synthetic) still diverge, and it is **NOT** the chroma
+fix above (p4/p5 close on the same funnel) — the first divergence is a **luma
+partition RD near-tie**. On the FAST flat-chroma repro `diag 64 q12 p2`
+(chroma cost ~0, so it is unambiguously luma) the first divergence is block
+(0,0): port keeps a larger square (8x8 / 32x32 NONE), C splits to a non-square
+(4x8 / 8x32 VERT/VERT_4); everything cascades from there. The depth-refine
+partition-rate lambda IS already the bd10 lambda (pipeline.rs:5849, `kf_full_
+lambda_bd10`), so this is a genuine near-tie / precision residual in the LUMA
+block RD, not a lambda mismatch. It is scattered (p2 closes at q55 but not q12;
+p4 closes 11/15 photographic; p0/p1 flip at mid-q) — the KB-2 near-tie signature.
+Next step: dump the port-vs-C partition RD at the (0,0) node on `diag 64 q12 p2`
+(the NSQDBG / PICKPART join) to find the tiny luma-cost delta.
+
+### Also found, NOT yet fixed — `search_best_independent_uv_mode` (M0/M1) full loop
+
+The M0/M1 independent uv search (`leaf_funnel.rs`, the `ind_uv_independent`
+block) has the **same class of bug** as (a): its full loop uses the u8
+`chroma_eval` (:3406) and the u8 `lambda` (:3430), while C runs it at hbd_md
+(product_coding_loop.c:7523). It is NOT fixed here because (1) it also needs the
+fast-loop candidate prune at 10 bits — C sorts with `vf_hbd_10` (:7627), so a u8
+sort could admit a different candidate SET, not just mis-cost the full loop, so a
+half-fix (10-bit full loop over a u8-pruned set) would be *less* faithful than
+the all-u8 path; and (2) on the tested cells p0/p1 are dominated by the luma
+partition near-tie above (diag p0/p1 diverge on luma with flat chroma), so no
+p0/p1 cell can be `cmp`-verified to close on this fix alone. Fix pattern when
+picked up: mirror (a) (`chroma_eval10` + `b.lambda`) AND port the fast-loop
+residual variance to `vf_hbd_10` semantics (the ROUND_POWER_OF_TWO(sum,2) form,
+NOT a naive u16 `sse - sum^2/N`).

@@ -460,6 +460,51 @@ CELLS=(
   "gradient 64 64 5 3"
   "gradient 64 64 5 4"
   "gradient 64 64 5 5"
+  # bd10 CHROMA mode-decision fix (task #94, this landing): the M2..M5 chroma
+  # uv search and the ind-uv CfL arbitration ran ENTIRELY at 8 bits at bd10 —
+  # `search_best_mds3_uv_mode`/`search_best_independent_uv_mode`'s full loop
+  # (chroma_eval + u8 lambda) and `check_best_indepedant_cfl` (gated
+  # `bd10_rd.is_none()`). C runs both at hbd_md: `full_lambda_md[EB_10_BIT_MD]`
+  # + 10-bit prediction/residual/full-loop distortion
+  # (product_coding_loop.c:7307/7397/7443, :3899). Deciding the uv mode / CfL
+  # on u8 chroma flipped near-ties (uv V-vs-DC, CfL-vs-non-CfL), which cascaded
+  # into partition/mode divergence across the frame. Fixed by running the
+  # M2..M5 uv search and the ind-uv CfL arbitration on `chroma_eval10` +
+  # `b.lambda` at bd10 (leaf_funnel.rs). This completes the p4/p5 diag+gradient
+  # coverage (the whole p4/p5 band on this grid is now byte-identical; p0..p3
+  # have a SEPARATE, open luma partition RD near-tie — see docs/bd10-port-map).
+  # Each verified with `cmp` at the commit that added it.
+  "diag 64 64 5 5"
+  "diag 64 64 12 4"
+  "diag 64 64 12 5"
+  "diag 64 64 32 4"
+  "diag 64 64 32 5"
+  "diag 64 64 48 4"
+  "diag 64 64 48 5"
+  "diag 64 64 55 4"
+  "diag 64 64 63 5"
+  "diag 128 128 5 4"
+  "diag 128 128 12 4"
+  "diag 128 128 12 5"
+  "diag 128 128 32 4"
+  "diag 128 128 32 5"
+  "diag 128 128 40 4"
+  "diag 128 128 40 5"
+  "diag 128 128 48 4"
+  "diag 128 128 48 5"
+  "gradient 64 64 20 4"
+  "gradient 64 64 20 5"
+  "gradient 64 64 32 4"
+  "gradient 64 64 32 5"
+  "gradient 64 64 48 4"
+  "gradient 64 64 48 5"
+  "gradient 64 64 63 4"
+  "gradient 64 64 63 5"
+  "gradient 128 128 20 4"
+  "gradient 128 128 40 4"
+  "gradient 128 128 40 5"
+  "gradient 128 128 63 4"
+  "gradient 128 128 63 5"
 )
 for cell in "${CELLS[@]}"; do
   read -r content w h qp p <<<"$cell"
