@@ -4446,6 +4446,10 @@ pub(crate) fn evaluate_leaf(
         // (the MDS0 whole-block pred) whenever the winning depth > 0 — see the
         // detector call below for why the difference is observable.
         let mut best_pred: Vec<u8> = Vec::new();
+        // The bd10 twin of `best_pred` — C's `cand_bf->pred->y_buffer` at
+        // `hbd_md`, which is what `chroma_complexity_check_pred`'s SAD arm
+        // reads (product_coding_loop.c:6049). Empty on every u8 path.
+        let mut best_pred10: Vec<u16> = Vec::new();
         // The tx_depth-0 (whole-block-pred) recon, kept regardless of which
         // depth wins. C's `cand_bf->recon` is the SHARED ctx temp buffer:
         // deeper depths reconstruct into the AUX tx-depth buffers and
@@ -4484,6 +4488,12 @@ pub(crate) fn evaluate_leaf(
             // This depth's assembled whole-block luma prediction (see
             // `best_pred`); mirrors what C leaves in `cand_bf->pred->y_buffer`.
             let mut dep_pred = vec![0u8; w * h];
+            // Its 10-bit twin, assembled from the same per-txb predictions.
+            let mut dep_pred10 = if bd10_rd.is_some() {
+                vec![0u16; w * h]
+            } else {
+                Vec::new()
+            };
             let mut dep_has_coeff = false;
             let mut aborted = false;
             // bd10 FULL-RD (task #94): the depth's 10-bit recon, which the
@@ -4586,6 +4596,14 @@ pub(crate) fn evaluate_leaf(
                             &mut txb_pred10,
                             frame.bit_depth,
                         );
+                    }
+                    // Accumulate this depth's whole-block 10-bit prediction,
+                    // exactly as `dep_pred` does for u8 — C writes both
+                    // through the same `cand_bf->pred->y_buffer`.
+                    for r in 0..txh {
+                        let dst = (tx_y + r) * w + tx_x;
+                        dep_pred10[dst..dst + txw]
+                            .copy_from_slice(&txb_pred10[r * txw..(r + 1) * txw]);
                     }
                 }
                 // Per-txb contexts from the TX-local overlay (real at M6;
@@ -4765,6 +4783,7 @@ pub(crate) fn evaluate_leaf(
                 best_recon = dep_recon;
                 best_recon10 = core::mem::take(&mut dep_recon10);
                 best_pred = dep_pred;
+                best_pred10 = core::mem::take(&mut dep_pred10);
                 best_coeff_count = dep_eob.iter().map(|&e| e as u32).sum();
                 let _ = dep_has_coeff;
             }
@@ -4853,21 +4872,70 @@ pub(crate) fn evaluate_leaf(
             // was > 0 (measured: 1040/7323 records on 258947 q40 p3, and zero
             // mismatches at depth 0), flipping `sad_arm` — and hence whether
             // CfL is evaluated at all — on 22 of them.
-            let sad_arm = chroma_detector_fires(
-                y_src,
-                y_src_stride,
-                y_src_off,
-                &best_pred,
-                w,
-                fx.u_src,
-                fx.v_src,
-                &u_pred,
-                &v_pred,
-                fx.c_stride,
-                c_off,
-                cw,
-                chh,
-            );
+            // At bd10 C runs this SAD arm on the 10-bit source and the 10-bit
+            // candidate prediction (:6048-6072), which does NOT reduce to the
+            // u8 arm — see `chroma_detector_fires_hbd`. The chroma predictions
+            // are the same (uv, uv_delta) pair `u_pred`/`v_pred` above, at 10
+            // bits; the luma one is `best_pred10`, the winning depth's 10-bit
+            // prediction.
+            let sad_arm = match &bd10_rd {
+                Some(b) => {
+                    let mut u_p10d = vec![0u16; cw * chh];
+                    let mut v_p10d = vec![0u16; cw * chh];
+                    for (plane_recon, dst) in [
+                        (fx.u_recon10.as_deref().unwrap(), &mut u_p10d),
+                        (fx.v_recon10.as_deref().unwrap(), &mut v_p10d),
+                    ] {
+                        predict_unit_hbd(
+                            plane_recon,
+                            fx.c_stride,
+                            ccx,
+                            ccy,
+                            cw,
+                            chh,
+                            cand.uv,
+                            cand.uv_delta,
+                            FI_NONE,
+                            &uv_geom,
+                            cfg.edge_filter,
+                            filt_type_uv,
+                            dst,
+                            b.bd,
+                        );
+                    }
+                    chroma_detector_fires_hbd(
+                        y_src,
+                        y_src_stride,
+                        y_src_off,
+                        &best_pred10,
+                        w,
+                        fx.u_src,
+                        fx.v_src,
+                        &u_p10d,
+                        &v_p10d,
+                        fx.c_stride,
+                        c_off,
+                        cw,
+                        chh,
+                        u32::from(b.bd - 8),
+                    )
+                }
+                None => chroma_detector_fires(
+                    y_src,
+                    y_src_stride,
+                    y_src_off,
+                    &best_pred,
+                    w,
+                    fx.u_src,
+                    fx.v_src,
+                    &u_pred,
+                    &v_pred,
+                    fx.c_stride,
+                    c_off,
+                    cw,
+                    chh,
+                ),
+            };
             // M6 cfl_level 4 -> cplx_th 10. Both detector arms use it: the
             // caller gates CfL on cfl_complexity == COMPONENT_CHROMA when
             // cplx_th != 0 (product_coding_loop.c:7183).
@@ -6919,6 +6987,72 @@ fn chroma_detector_fires(
     let y_dist = sad(y_src, y_off, y_stride, y_pred, 0, y_pred_stride) << 1;
     let cb_dist = sad(u_src, c_off, c_stride, u_pred, 0, cw);
     let cr_dist = sad(v_src, c_off, c_stride, v_pred, 0, cw);
+    cb_dist > y_dist || cr_dist > y_dist
+}
+
+/// bd10 twin of [`chroma_detector_fires`]: C's `hbd_md` arm of
+/// `chroma_complexity_check_pred` (product_coding_loop.c:6048-6072) runs
+/// `sad_16b_kernel` over the **10-bit** source and the **10-bit candidate
+/// prediction**, with the identical subsample shift and `cb > 2*y ||
+/// cr > 2*y` test.
+///
+/// This is NOT redundant with the u8 form under the harness's `src10 =
+/// src8 << 2` ingestion. The SOURCE scales exactly x4, so it cancels in the
+/// ratio — but the PREDICTION does not: intra prediction rounds internally
+/// (DC averaging, smooth weighting, paeth), so `pred10 != pred8 << 2` in
+/// general. The three SADs therefore scale by slightly different factors and
+/// the comparison flips on near-ties — and this test is a CfL GATE, so a flip
+/// does not perturb a cost, it decides whether CfL is evaluated at all.
+///
+/// The sources stay `u8` + `shift`: the 10-bit source IS `src8 << shift` by
+/// construction (the same ingestion `Bd10Rd`'s `y_src10`/`u_src10`/`v_src10`
+/// use), so widening it here would allocate a frame-sized buffer per
+/// candidate to no numerical effect.
+#[allow(clippy::too_many_arguments)]
+fn chroma_detector_fires_hbd(
+    y_src: &[u8],
+    y_src_stride: usize,
+    y_src_off: usize,
+    y_pred10: &[u16],
+    y_pred10_stride: usize,
+    u_src: &[u8],
+    v_src: &[u8],
+    u_pred10: &[u16],
+    v_pred10: &[u16],
+    c_stride: usize,
+    c_off: usize,
+    cw: usize,
+    chh: usize,
+    shift10: u32,
+) -> bool {
+    let shift = if chh > 8 {
+        2usize
+    } else if chh > 4 {
+        1
+    } else {
+        0
+    };
+    let rows = chh >> shift;
+    let sad = |a: &[u8],
+               a_off: usize,
+               a_stride: usize,
+               b: &[u16],
+               b_off: usize,
+               b_stride: usize|
+     -> u32 {
+        let mut s = 0u32;
+        for r in 0..rows {
+            let ar = a_off + r * (a_stride << shift);
+            let br = b_off + r * (b_stride << shift);
+            for c in 0..cw {
+                s += ((i32::from(a[ar + c]) << shift10) - i32::from(b[br + c])).unsigned_abs();
+            }
+        }
+        s
+    };
+    let y_dist = sad(y_src, y_src_off, y_src_stride, y_pred10, 0, y_pred10_stride) << 1;
+    let cb_dist = sad(u_src, c_off, c_stride, u_pred10, 0, cw);
+    let cr_dist = sad(v_src, c_off, c_stride, v_pred10, 0, cw);
     cb_dist > y_dist || cr_dist > y_dist
 }
 

@@ -1558,3 +1558,65 @@ the chroma-complexity detector, the u8 CfL arm and the post-filter searches
 read at bd10. Current behaviour is what 130 photo + 180 non-flat cells are
 byte-exact WITH, so the dead stores are not obviously the intended semantics
 winning — resolve this by measurement, with a gate run, not by deleting a line.
+
+### Chunk 2 — the hbd SAD arm of the chroma-complexity detector (2026-07-19)
+
+The p6 root named above (the luma MODE flip at (16,128)) was the **CfL gate**,
+not the RD compare. C's `SVT_UVLOOP_OUT` at that block shows only TWO records,
+both `full=1`, and NO per-alpha records at all: C never runs `cfl_prediction`
+there. The port did, CfL won for its SMOOTH candidate, and the cheaper chroma
+flipped the luma winner (C `st=3` full costs: H_PRED 120753204 < SMOOTH
+125870093, both with `uv` following luma and neither CfL).
+
+`chroma_complexity_check_pred` has TWO arms and both feed `cfl_complexity`:
+- the **variance** arm — reads only the SOURCE, and (per Refutation 2 above)
+  is provably bit-depth INVARIANT under `src10 = src8 << 2`. Correct as-is.
+- the **SAD** arm (:6023-6087) — `cb_dist > 2*y_dist || cr_dist > 2*y_dist`
+  over the candidate's PREDICTION. At `hbd_md` C runs it through
+  `sad_16b_kernel` on 10-bit source and 10-bit prediction (:6048-6072); the
+  port ran the u8 form. That does NOT reduce: the source scales exactly x4 and
+  cancels in the ratio, but intra prediction rounds internally (DC averaging,
+  smooth weighting, paeth) so `pred10 != pred8 << 2`, the three SADs scale by
+  slightly different factors, and the comparison flips on near-ties. Because
+  this is a GATE, a flip does not perturb a cost — it decides whether CfL is
+  evaluated at all.
+
+Ported as `chroma_detector_fires_hbd`, fed by a new `best_pred10` — the bd10
+twin of `best_pred`, accumulated per-txb into `dep_pred10` exactly as
+`dep_pred` is, and taken at the same winning-depth assignment (so it is
+populated whenever `best_pred` is: depth 0 never aborts and always wins the
+first compare). This is the accumulator the previous "remaining scope" note
+said did not exist. Sources stay `u8 + shift` — the 10-bit source IS
+`src8 << shift` by construction, so widening it would allocate a frame-sized
+buffer per candidate for no numerical effect.
+
+**Result on `2119713 q32 p6`: the coded tree is now IDENTICAL to C.**
+`tree_diff.py`: 1645 blocks joined, **0 field flips, 0 skip flips, 0 geometry
+divergence** (was 21 C-only / 45 port-only), and MD recon edges are
+**1645/1645 = 100%** identical (was 510/1639 after chunk 1, 4 before it).
+mi(32,4) now codes `mode=2 uv=2 cflidx=0`, matching C.
+
+p6 does NOT close yet — 18/27 unchanged — but every p6 cell converges hard:
+`1001682 q32 p6` and `4666751 q12 p6` now produce EXACTLY C's byte count
+(19354 and 33236) differing only in content, and `1001682 q12 p6` is within
+1 byte. All nine gates stay green (photo 130/130, non-flat 180/180, matrix
+36/36, hdr 46/46, identity 54/54, partial-SB 101/101, sb128 18/18, tile
+25/25) and the workspace is green.
+
+### Where preset 6 stands now — the remaining divergence is POST-MD
+
+With the coded tree bit-identical and MD recon 100% identical, the residual
+~12 bytes on `2119713 q32 p6` can no longer be a mode/partition/tx-depth
+decision. It is downstream of MD. In priority order:
+1. **The frame-level filter derivations** — LF level, CDEF, loop-restoration —
+   which run on the FULL recon AFTER MD and write frame-header syntax. The
+   first payload divergence is at byte 24/26 (inside the uncompressed frame
+   header), which fits. Compare the port's derived LF/CDEF/LR against C's for
+   a cell whose tree is proven identical.
+2. **Coefficient-level syntax that MD recon cannot see** — the tree dumps carry
+   mode/uv/txd/cfl but NOT tx types or coded levels. Two cells now match C's
+   byte COUNT exactly while differing in content, which is the signature of a
+   symbol landing on a different CDF, not of a length change.
+Use `SVT_QLEVELS_OUT` vs `SVTAV1_QLEV_XY` at the first block whose coded bytes
+diverge; the tree being identical makes that join unambiguous for the first
+time.
