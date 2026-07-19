@@ -275,3 +275,155 @@ and the fallback is reported on stdout and by the gate.
    `MAX_MIB_SIZE_LOG2 = 5`** and the `svt_aom_intra_has_top_right` 128-centre
    special case, and **`ec_ctx` seeding** (which should follow automatically
    once `sb_cols` is 128-derived, but is unverified).
+
+---
+
+# LANDED — the SB128 encode path (2026-07-19, task #91 chunk 3)
+
+**12 of 14 `tools/sb128_gate.sh` cells byte-match real `SvtAv1EncApp`.** The
+gate is 18/18 (4 SB64 controls + 12 byte-exact + 2 self-promoting pins).
+Every SB64 gate re-verified byte-UNCHANGED after each commit:
+identity_matrix 54/54, partial_sb 101/101, bd10_matrix 36/36,
+bd10_nonflat 170/170, bd10_photo 112/112, hdr_bd10 46/46,
+`cargo test --workspace` 58 suites green.
+
+## The architecture that made it small
+
+`sb128_geom::sb_coding_units` turns the map's "two grids" fact into the
+walk: an SB is visited as its **b64 CODING UNITS** — one unit at SB64 (the
+SB itself), up to four Z-order quadrants at SB128 with off-frame ones
+dropped. Everything below that is the byte-proven per-64 machinery,
+unchanged; `pipeline::merge_sb_units` folds the units back into one
+`PartitionTree`, which at SB64 is the IDENTITY (one unit moved out). That
+is what makes SB64 byte-identical *by construction* rather than by testing.
+
+Per-SB state deliberately stays OUTSIDE the unit loop — notably the
+`ec_ctx` chain, because C's `ec_ctx_array[sb]` really is SB-indexed. At
+SB128 the rate-CDF seed therefore refreshes once per 128 REGION (4x
+coarser), which §"Pipeline state" flagged as a real behavioural delta. The
+structure gets it for free; MEASURED: port-SB64 and port-SB128 agree for
+1714 coded decisions on `gradient 512x384 q32 p0` and then diverge, which
+is that seeding difference showing up exactly where it should.
+
+The entropy walk needed NO change: `encode_partition_tree` already derives
+ctx/nsymbs from the node width (`EntropyCtx::bsl`, fixed in chunk 2) and
+passes `is_128` to `write_partition_edge`, which selects the H4/V4-free
+gathers at a frame edge. Both partial-SB128 shapes (a 128 COLUMN at 448
+wide, a 128 ROW at 448 tall) byte-match on the first try.
+
+## CORRECTION to §"What C actually codes at the 128 root"
+
+The caveat "proven for uniform, **UNVERIFIED for textured content**" is now
+**resolved: the 128 root is ALWAYS PARTITION_SPLIT on a KEY frame, and that
+is STRUCTURAL, not a heuristic.** Verified first-hand in
+`Codec/enc_dec_process.c:1483-1499` (`set_blocks_to_be_tested`):
+
+```c
+int max_sq_size = ctx->max_block_size;
+if (pcs->mimic_only_tx_4x4)             max_sq_size = MIN(.., 8);
+else if (static_config.max_tx_size==32) max_sq_size = MIN(.., 32);
+else if (pcs->slice_type == I_SLICE)    max_sq_size = MIN(.., 64);
+```
+
+On an I_SLICE the largest square ever entered into the MD scan is 64x64
+whatever the superblock size, so `BLOCK_128X128` is never an MD candidate
+and the root has no codable outcome but SPLIT. (`ctx->max_block_size` is
+itself `super_block_size` unconditionally at M0..M7 —
+`enc_mode_config.c:7055-7080` sets `base_var_th_cap = (uint16_t)~0`, making
+the `variance <= var_th_cap` test on a `uint16_t` a tautology; the I_SLICE
+clamp is what decides.) SCOPE: I_SLICE only, which is the port's target. An
+INTER frame is not clamped and would need a real 128-level NONE/HORZ/VERT
+search — `debug_assert`ed in `merge_sb_units`.
+
+**This collapses §5, "CDEF, the highest-risk chunk."** Search-skips-stale-
+quadrants, strength fan-out, and forced-fresh dirinit all exist for
+128-VARIANT coding BLOCKS, and on a KEY frame there are none. Every 64x64
+filter block owns its own blocks and its own searched strength, exactly as
+at SB64. `cdef_fb_is_stale_quadrant` and `cdef_strength_fanout_offsets`
+stay unconsumed and correctly so. Only phase 4 (the WRITE) differs — see
+below.
+
+## The three defects found, in the order they bit
+
+1. **lr_params unit-size bit.** `encode_restoration_mode`
+   (`entropy_coding.c:2225-2236`) writes `unit_size > 64` ONLY when
+   `sb_size == 64`; a restoration unit may never be smaller than the SB, so
+   at SB128 the bit is implied. Writing it anyway shifted every following
+   header bit and corrupted `tx_mode_select` / `reduced_tx_set`. Closed 2
+   cells that were ALREADY tile-identical (4857 and 18818 ops, all matching)
+   with one differing header byte, 0x00 vs 0x80.
+2. **`seq_header.sb_mi_size` hardcoded to 16.** All six
+   `intra_edge::has_top_right` / `has_bottom_left` call sites used the SB64
+   value. Those index `mi & (sb_mi_size - 1)`, so a block at mi_col 16 reads
+   as the SB's LEFT column under 16 but its RIGHT half under 32 — different
+   top-right / bottom-left availability, different directional prediction.
+   Threaded as data (`FunnelFrame` -> `UnitGeom` -> `DrGeom`, plus
+   `PartitionSearchConfig` and a `build_directional_edges` parameter);
+   defaults are 16 so SB64 is unchanged. **This is the only genuinely
+   SB128-specific SUB-64 defect found.** Closed 2 cells.
+3. **`cdef_idx` is per 64x64 FILTER BLOCK, not per SB** — and this one
+   produced a **CORRUPT stream**, not merely a mismatched one. `write_cdef`
+   (`entropy_coding.c:3986-4017`) latches `cdef_transmitted[4]` and emits at
+   the first non-skip block of each quadrant, `index = !!(mi_col & 16) + 2 *
+   !!(mi_row & 16)`. The port emitted one literal per SB, so the decoder
+   read literals the encoder never wrote: aomdec rejected the SB128 stream
+   with "Failed to decode tile data" at 6 of 10 qps on `gradient 512x384 p0`
+   (the qps where `cdef_bits > 0`), while the same frame forced to SB64
+   decoded at every qp. The strength lookup was wrong the same way —
+   `fb_idx` is B64-indexed but was read with SB coordinates. Closed 1 cell.
+   The gate now carries assert **(E) DECODABILITY** over every cell
+   INCLUDING pinned ones, because a byte-comparison gate is structurally
+   blind to this bug class: a pinned cell is expected to differ from C, so
+   "differs" hid "is corrupt".
+
+## The 2 remaining pinned cells are NOT SB128
+
+`gradient 512x384 q32 p0` and `gradient 448x384 q32 p0`. First divergence is
+a PARTITION decision at a 32x32 node: C codes `s=9` (PARTITION_VERT_4) where
+the port codes `s=0` (NONE), CDF row icdf0=14306. Measured three ways:
+
+1. The port makes the same NONE decision under `SVTAV1_SB=64` and SB128 —
+   the SB128 walk did not influence it.
+2. `gradient 424x384 q32 p0` (162,816 px, BELOW the area threshold, so C
+   codes it at **SB64**) reproduces it exactly: same node, same icdf row,
+   C `s=9` vs port `s=0`. `gradient` is `((r*255)/h) ^ ((c*3)&0x3f)`, so at
+   equal `h` the top-left block is bit-identical to the 512x384 cell's.
+3. The port's own NSQ dump (`SVTAV1_NSQDBG=1 SVTAV1_DBG_MI=0,0`) shows V4 is
+   EVALUATED, not gated: `shape=4 valid=0 part_cost=70131638` vs NONE's
+   `69986899` — it LOSES by 0.207%. H4 wins outright at mi=(8,0) in the same
+   dump, so the shape list, the four NSQ prune gates and H4/V4 availability
+   are all fine.
+
+It is a leaf-cost RD near-tie. Closing it needs an instrumented-C
+per-candidate RD dump in the leaf funnel — orthogonal to SB128.
+
+## Remaining SB128 scope (honest list)
+
+- **`av1_intra_luma_prediction`'s `multipler`** (`product_coding_loop.c:4027`):
+  `(txb_origin_y % sb_size + tx_height * intra_size.left) > sb_size ? 1 :
+  intra_size.left` bounds how many LEFT reference samples C memcpys. The
+  port does not model it at all — and is byte-exact across 54+101+170+112+46
+  SB64 cells, so the port's availability-driven sample count is evidently
+  equivalent in the tested envelope. At SB128 the threshold doubles, so the
+  clamp bites LESS often (C copies more), which is the safe direction.
+  UNMODELLED and empirically inert; revisit if a directional SB128 cell
+  diverges.
+- **`tx_reset_neighbor_arrays`** (`product_coding_loop.c:4169+`):
+  `MIN(bheight * 2, sb_size - org_y)` bounds the TX-depth-1/2 neighbour
+  copy. Only live when `tx_depth > 0`. Not audited.
+- **The b64<->sb stat bridges** (`sb128_variance`, `sb128_bridge_avg/max`,
+  `svt_aom_get_me_qindex`) remain unconsumed. A survey of their C call sites
+  concluded every one is dead or inert on the ALLINTRA KEY M0/M1 path; the
+  one arm re-read first-hand is `get_max_block_size_allintra`, whose
+  averaged variance is discarded at M0..M7 by the `(uint16_t)~0` cap AND
+  masked again by the I_SLICE clamp above. The rest of that survey is NOT
+  individually re-verified here — treat as a lead, not a fact.
+- **The variance-boost plan** is still produced on the b64 grid and indexed
+  on the sb grid (§4). Inert in mainline (`enable_variance_boost` FORCES
+  SB64, `derive_super_block_size`), so an sb128 x fork cell cannot even
+  exist today.
+- **bd10 at SB128** is untested. `sb_mi_size` is threaded through the bd10
+  re-encode chain so it carries no latent wrong constant, but no gate cell
+  exercises bd10 x SB128.
+- **INTER frames at SB128** need a real 128-level RD search (see the
+  CORRECTION above). `debug_assert`ed, and inter is unported throughout.
