@@ -14,7 +14,7 @@
 # the AVX2-hadamard fix; with all four landed, photographic bd10 at eff-M9 is
 # byte-identical. This gate pins that so it cannot silently regress.
 #
-# SCOPE — eff-M9 (presets 10 and 13) ONLY. Photographic bd10 at presets 0/3/6
+# SCOPE — the eff-M9 band (presets 9..13) ONLY. Photographic bd10 at presets 0/3/6
 # still DIVERGES (measured: 9/9 at p6, all PARTITION flips — PD1 depth-refine +
 # NSQ at bd10). Those are NOT listed here; adding them would be a false claim.
 # See docs/bd10-port-map.md "low-preset failure map".
@@ -43,6 +43,12 @@ QPS_A=(12 32 55)
 IMAGES_B=(1080721 1454613116 167491 2208891 2666598 3571065 708587 pexels-photo-3214683)
 QPS_B=(5 20 40 63)
 PRESETS=(10 13)
+# The rest of the eff-M9 band. Presets 9/11/12 share the closed envelope but
+# were never gated (the synthetic gate was pinned on 10 and 13 only); measured
+# 18/18 byte-identical on the group-C images below.
+IMAGES_C=(1001682 2119713 4666751)
+QPS_C=(12 40)
+PRESETS_C=(9 11 12)
 
 OUT="${TMPDIR:-/tmp}/bd10photo.$$"
 mkdir -p "$OUT"
@@ -89,6 +95,11 @@ done
 for stem in "${IMAGES_B[@]}"; do
     for qp in "${QPS_B[@]}"; do
         for p in "${PRESETS[@]}"; do run_cell "$stem" "$qp" "$p"; done
+    done
+done
+for stem in "${IMAGES_C[@]}"; do
+    for qp in "${QPS_C[@]}"; do
+        for p in "${PRESETS_C[@]}"; do run_cell "$stem" "$qp" "$p"; done
     done
 done
 

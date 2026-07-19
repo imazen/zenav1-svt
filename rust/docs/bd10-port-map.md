@@ -903,7 +903,33 @@ un-dribbleable; the MDS0-only shortcut is now measured to be insufficient.
   mispredicts silently).
 - **PART (22 cells at p0/p3, plus ALL photographic p6)** — bd10-aware PD1
   depth-refine + NSQ over the PD0 tree. Largest real-content impact below M9.
-- **FH (1 cell)** — the u16-dst CDEF filter (`svt_cdef_filter_block_c`; only the
-  u8-dst arm is ported), `coeff_shift=2`, bd10 lambda in `finish_cdef_rd`, run on
-  `last_recon10_y`. Bounded, but it unblocks only this one cell until the MODE and
-  PART axes land (every other FH difference is downstream of a tree flip).
+- **FH (1 cell)** — `coeff_shift=2`, bd10 lambda in `finish_cdef_rd`, and the
+  bd10 recon (`last_recon10_y`) threaded into `cdef_search_still` /
+  `filter_fb_packed` (which today writes a u8 dst and hardcodes `coeff_shift=0`).
+  **CORRECTION to the BLOCKER 2 section above: the u16-dst CDEF filter is ALREADY
+  ported AND FFI-verified** — `svtav1_dsp::cdef::cdef_filter_block` (the `dst16`
+  arm of `svt_cdef_filter_block_c`) plus `hbd::cdef_filter_block_hbd`, pinned by
+  `c_parity_cdef.rs::filter_block_randomized_wide`, which exercises
+  `coeff_shift = 2` explicitly. So axis 3 is pure WIRING, not a kernel port. Note
+  a general fix also needs the bd10 **DLF** first (the CDEF search consumes the
+  post-deblock recon); the one open cell happens to have `lf_level == 0`, so
+  `last_recon10_y` IS its post-deblock recon. Bounded, but it unblocks only this
+  one cell until the MODE and PART axes land (every other FH difference is
+  downstream of a tree flip).
+
+### 4. The eff-M9 BAND was under-gated — presets 9/11/12 were already closed
+
+The two bd10 gates were pinned on presets **10 and 13** only, leaving the rest of
+the eff-M9 band unmeasured. Measured this session, all byte-identical:
+
+- Synthetic `{gradient,diag} x {64,128}^2 x q{5,20,40,63} x p{9,11,12}` = **48/48**.
+- Photographic 3 x CID22-512 x q{12,40} x p{9,11,12} = **18/18**.
+
+No product code changed — these cells already matched. Both gates now cover the
+whole band, so a regression anywhere in p9..p13 is caught rather than slipping
+between the two pinned presets:
+- `tools/bd10_nonflat_gate.sh` **79 -> 127** byte-identical cells.
+- `tools/bd10_photo_gate.sh` **94 -> 112** byte-identical cells.
+
+**Net bd10 position: the eff-M9 band (p9..p13) is CLOSED for both synthetic and
+real photographic content at bd10. Everything still open is p0..p8.**
