@@ -788,8 +788,15 @@ void ref_compute_stats_highbd(int32_t wiener_win, const uint16_t* dgd, const uin
                                    (EbBitDepth)bit_depth);
 }
 
+/* `svt_aom_highbd_get_sse` calls the rtcd pointer `svt_aom_highbd_mse16x16`,
+   which lives in the ENCODER dsp table (aom_dsp_rtcd.c:269), not the common
+   one `ref_rtcd_once` initializes — without this it is NULL and the call
+   segfaults. Defined further down; forward-declared here. */
+static void ref_dsp_rtcd_once(void);
+
 int64_t ref_highbd_get_sse(const uint16_t* a, int32_t a_stride, const uint16_t* b, int32_t b_stride, int32_t width,
                            int32_t height) {
+    ref_dsp_rtcd_once();
     return svt_aom_highbd_get_sse(CONVERT_TO_BYTEPTR(a), a_stride, CONVERT_TO_BYTEPTR(b), b_stride, width, height);
 }
 
