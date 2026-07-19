@@ -97,16 +97,26 @@ SB128_CELLS=(
 #   - `diag 512x384 q55 p0` and `gradient 512x384 q55 p0` — closed by the
 #     lr_params fix (the `unit_size > 64` bit is SB64-only). Both were
 #     already TILE-identical, so they are pure header witnesses.
+#   - `gradient 512x384 q32 p1` and `gradient 512x448 q32 p0` — closed by
+#     threading C's `seq_header.sb_mi_size` (16 SB64 / 32 SB128) into the
+#     intra availability tables, which had been hardcoded to the SB64 value.
+#     `has_top_right` / `has_bottom_left` index blocks by
+#     `mi & (sb_mi_size - 1)`, so a block at mi_col 16 reads as the SB's LEFT
+#     column at SB64 but its RIGHT half at SB128 — different top-right /
+#     bottom-left availability, hence different directional prediction. This
+#     is the one genuinely SB128-specific sub-64 defect found so far.
 SB128_BYTE_EXACT=(
   "uniform  512 384 32 0"
   "uniform  512 384 55 0"
   "uniform  512 384 63 0"
   "uniform  512 384 32 1"
   "gradient 512 384 55 0"
+  "gradient 512 384 32 1"
   "diag     512 384 32 0"
   "diag     512 384 55 0"
   "uniform  448 384 32 0"
   "uniform  512 448 32 0"
+  "gradient 512 448 32 0"
 )
 
 # ---------------------------------------------------------------------------

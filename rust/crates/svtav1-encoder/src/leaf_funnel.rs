@@ -272,6 +272,14 @@ impl MdRates {
 
 /// Frame-constant funnel parameters.
 pub struct FunnelFrame {
+    /// Superblock size in MI (4px) units — C `seq_header.sb_mi_size`, 16 at
+    /// SB64 and 32 at SB128 (task #91). Feeds the intra availability tables
+    /// (`intra_edge::has_top_right` / `has_bottom_left`), whose
+    /// `blk_row_in_sb` / `blk_col_in_sb` are `mi & (sb_mi_size - 1)` — so a
+    /// block at mi_col 16 is the SB's LEFT column at SB64 but its RIGHT
+    /// half at SB128, with completely different top-right / bottom-left
+    /// availability. 16 for every SB64 encode, i.e. byte-neutral there.
+    pub sb_mi_size: usize,
     /// `full_lambda_md[EB_8_BIT_MD]` — the kf chain at the frame qindex.
     pub lambda: u64,
     /// CLI qp 0..63 (qp-based threshold scaling input).
@@ -949,6 +957,9 @@ pub(crate) struct UnitGeom {
     pub ss: usize,
     pub frame_w: usize,
     pub frame_h: usize,
+    /// C `seq_header.sb_mi_size` — 16 (SB64) or 32 (SB128). See
+    /// [`FunnelFrame::sb_mi_size`].
+    pub sb_mi_size: usize,
 }
 
 /// Predict one intra mode (any of the 13 C modes + angle delta, or
@@ -995,6 +1006,7 @@ fn predict_unit(
             ss: geom.ss,
             frame_w: geom.frame_w,
             frame_h: geom.frame_h,
+            sb_mi_size: geom.sb_mi_size,
         };
         crate::intra_edge::dr_predict(
             |x, y| recon[y * stride + x],
@@ -1716,6 +1728,7 @@ pub(crate) fn predict_unit_hbd(
             ss: geom.ss,
             frame_w: geom.frame_w,
             frame_h: geom.frame_h,
+            sb_mi_size: geom.sb_mi_size,
         };
         crate::intra_edge::dr_predict_hbd(
             |x, y| recon[y * stride + x],
@@ -2913,6 +2926,7 @@ pub(crate) fn evaluate_leaf(
         ss: 0,
         frame_w: y_stride,
         frame_h: frame_h_px,
+        sb_mi_size: fx.frame.sb_mi_size,
     };
     // Chroma prediction geometry: for sub-8 chroma-ref blocks the unit
     // is the PAIR (C predicts the ROUND_UV-anchored bsize_uv block), so
@@ -5901,6 +5915,7 @@ fn predict_unit_overlay(
             ss: 0,
             frame_w: geom.frame_w,
             frame_h: geom.frame_h,
+            sb_mi_size: geom.sb_mi_size,
         };
         crate::intra_edge::dr_predict(
             |x, y| {
@@ -6049,6 +6064,7 @@ fn predict_unit_overlay_hbd(
             ss: 0,
             frame_w: geom.frame_w,
             frame_h: geom.frame_h,
+            sb_mi_size: geom.sb_mi_size,
         };
         crate::intra_edge::dr_predict_hbd(
             |x, y| {

@@ -553,6 +553,7 @@ pub enum DirEdges {
 /// (only PARTITION_VERT_A/B select different availability tables; this
 /// encoder never emits those, so callers pass `PartitionType::None`).
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub fn build_directional_edges(
     recon: &[u8],
     stride: usize,
@@ -562,6 +563,8 @@ pub fn build_directional_edges(
     height: usize,
     p_angle: i32,
     partition: PartitionType,
+    // C `seq_header.sb_mi_size` — 16 (SB64) or 32 (SB128), task #91.
+    sb_mi_size: usize,
 ) -> DirEdges {
     let frame_w = stride;
     let frame_h = recon.len() / stride;
@@ -620,7 +623,7 @@ pub fn build_directional_edges(
         i32::from(
             shape_ok
                 && has_top_right(
-                    16,
+                    sb_mi_size,
                     width,
                     height,
                     mi_row,
@@ -642,7 +645,7 @@ pub fn build_directional_edges(
         i32::from(
             shape_ok
                 && has_bottom_left(
-                    16,
+                    sb_mi_size,
                     width,
                     height,
                     mi_row,
@@ -831,6 +834,13 @@ pub struct DrGeom {
     /// LUMA frame dims in px (64-aligned in this encoder).
     pub frame_w: usize,
     pub frame_h: usize,
+    /// C `seq_header.sb_mi_size` — superblock size in MI (4px) units: 16
+    /// at SB64, 32 at SB128 (task #91). The availability tables index
+    /// blocks by `mi & (sb_mi_size - 1)`, so this is NOT a constant once
+    /// SB128 is reachable: a block at mi_col 16 is the SB's left column at
+    /// SB64 but its right half at SB128, with different top-right /
+    /// bottom-left availability.
+    pub sb_mi_size: usize,
 }
 
 /// C `mode_to_angle_map` (V..D67) + `ANGLE_STEP = 3`.
@@ -888,7 +898,7 @@ pub fn dr_predict<S: Fn(usize, usize) -> u8>(
     let shape_ok = is_av1_block_shape(g.bw_px, g.bh_px);
     let have_top_right = shape_ok
         && has_top_right(
-            16,
+            g.sb_mi_size,
             g.bw_px,
             g.bh_px,
             g.mi_row,
@@ -904,7 +914,7 @@ pub fn dr_predict<S: Fn(usize, usize) -> u8>(
         );
     let have_bottom_left = shape_ok
         && has_bottom_left(
-            16,
+            g.sb_mi_size,
             g.bw_px,
             g.bh_px,
             g.mi_row,
@@ -1131,13 +1141,13 @@ pub fn dr_predict_hbd<S: Fn(usize, usize) -> u16>(
     let shape_ok = is_av1_block_shape(g.bw_px, g.bh_px);
     let have_top_right = shape_ok
         && has_top_right(
-            16, g.bw_px, g.bh_px, g.mi_row, g.mi_col, have_top, right_available, partition, txw_mi,
-            g.row_off, g.col_off, g.ss, g.ss,
+            g.sb_mi_size, g.bw_px, g.bh_px, g.mi_row, g.mi_col, have_top, right_available, partition,
+            txw_mi, g.row_off, g.col_off, g.ss, g.ss,
         );
     let have_bottom_left = shape_ok
         && has_bottom_left(
-            16, g.bw_px, g.bh_px, g.mi_row, g.mi_col, bottom_available, have_left, partition,
-            txh_mi, g.row_off, g.col_off, g.ss, g.ss,
+            g.sb_mi_size, g.bw_px, g.bh_px, g.mi_row, g.mi_col, bottom_available, have_left,
+            partition, txh_mi, g.row_off, g.col_off, g.ss, g.ss,
         );
 
     let n_top_px = if have_top { txwpx.min(xr + txwpx) } else { 0 };
@@ -1416,7 +1426,7 @@ mod tests {
         let (recon, stride) = test_frame();
         // 32x32 at (64, 64): mi(16, 16), top row of SB(1,1) → TR available;
         // xr = 128 - 96 = 32 → n_topright = 32 real pixels.
-        match build_directional_edges(&recon, stride, 64, 64, 32, 32, 45, P_NONE) {
+        match build_directional_edges(&recon, stride, 64, 64, 32, 32, 45, P_NONE, 16) {
             DirEdges::Edges { above, .. } => {
                 for i in 0..64 {
                     assert_eq!(
@@ -1437,7 +1447,7 @@ mod tests {
         // not its top row? blk_row_in_sb = (16 & 15) >> 3 = 0 → TOP row →
         // available, but xr = 128 - 128 = 0 → right_available false →
         // has_top_right = 0 → replicate above[31].
-        match build_directional_edges(&recon, stride, 96, 64, 32, 32, 45, P_NONE) {
+        match build_directional_edges(&recon, stride, 96, 64, 32, 32, 45, P_NONE, 16) {
             DirEdges::Edges { above, .. } => {
                 for i in 0..32 {
                     assert_eq!(above[i], recon[63 * stride + 96 + i]);
@@ -1459,7 +1469,7 @@ mod tests {
         let (recon, stride) = test_frame();
         // 32x32 at (32, 0): no top row, angle 45 needs above only →
         // C early exit: flat fill with left_ref[0] = recon[0*128 + 31].
-        match build_directional_edges(&recon, stride, 32, 0, 32, 32, 45, P_NONE) {
+        match build_directional_edges(&recon, stride, 32, 0, 32, 32, 45, P_NONE, 16) {
             DirEdges::Flat(v) => assert_eq!(v, recon[31]),
             DirEdges::Edges { .. } => panic!("expected C's flat-fill early exit"),
         }
@@ -1469,15 +1479,15 @@ mod tests {
     fn edges_frame_corner_defaults() {
         let (recon, stride) = test_frame();
         // Block at (0,0): z1 → flat 127; z3 → flat 129; z2 → 127/129/128.
-        match build_directional_edges(&recon, stride, 0, 0, 32, 32, 45, P_NONE) {
+        match build_directional_edges(&recon, stride, 0, 0, 32, 32, 45, P_NONE, 16) {
             DirEdges::Flat(v) => assert_eq!(v, 127),
             _ => panic!("expected flat"),
         }
-        match build_directional_edges(&recon, stride, 0, 0, 32, 32, 203, P_NONE) {
+        match build_directional_edges(&recon, stride, 0, 0, 32, 32, 203, P_NONE, 16) {
             DirEdges::Flat(v) => assert_eq!(v, 129),
             _ => panic!("expected flat"),
         }
-        match build_directional_edges(&recon, stride, 0, 0, 32, 32, 135, P_NONE) {
+        match build_directional_edges(&recon, stride, 0, 0, 32, 32, 135, P_NONE, 16) {
             DirEdges::Edges {
                 above,
                 left,
@@ -1496,7 +1506,7 @@ mod tests {
         let (recon, stride) = test_frame();
         // 16x16 at (32, 0): mi(0, 8) → has_bl_16x16 bit 2 = 1, yd = 112 →
         // n_bottomleft = 16 real pixels below the block at col 31.
-        match build_directional_edges(&recon, stride, 32, 0, 16, 16, 203, P_NONE) {
+        match build_directional_edges(&recon, stride, 32, 0, 16, 16, 203, P_NONE, 16) {
             DirEdges::Edges { left, .. } => {
                 for i in 0..32 {
                     assert_eq!(
@@ -1515,7 +1525,7 @@ mod tests {
         let (recon, stride) = test_frame();
         // 16x16 at (16, 16): mi(4, 4) → has_bl bit 1 of 16 = 0 →
         // replicate left[15].
-        match build_directional_edges(&recon, stride, 16, 16, 16, 16, 203, P_NONE) {
+        match build_directional_edges(&recon, stride, 16, 16, 16, 16, 203, P_NONE, 16) {
             DirEdges::Edges { left, .. } => {
                 for i in 0..16 {
                     assert_eq!(left[i], recon[(16 + i) * stride + 15]);
@@ -1534,7 +1544,7 @@ mod tests {
         let (recon, stride) = test_frame();
         // 16x16 at (16, 0): z2 (135) with no top row: above row filled
         // with left_ref[0]; top_left = left_ref[0].
-        match build_directional_edges(&recon, stride, 16, 0, 16, 16, 135, P_NONE) {
+        match build_directional_edges(&recon, stride, 16, 0, 16, 16, 135, P_NONE, 16) {
             DirEdges::Edges {
                 above,
                 left,
@@ -1563,7 +1573,7 @@ mod tests {
         let (recon, stride) = test_frame();
         // 8x64 is not an AV1 block size (RDO transient from 4:1 splits of
         // partial-SB areas). Must fall back to unavailable TR/BL, not panic.
-        let e = build_directional_edges(&recon, stride, 8, 64, 8, 64, 45, P_NONE);
+        let e = build_directional_edges(&recon, stride, 8, 64, 8, 64, 45, P_NONE, 16);
         match e {
             DirEdges::Edges { above, .. } => {
                 // n_topright = 0 → replication after the 8 real pixels.
@@ -1608,6 +1618,9 @@ mod tests {
                     bw_px: txw, bh_px: txh,
                     row_off: 0, col_off: 0, ss: 0,
                     frame_w: 128, frame_h: 128,
+                    // 64px superblocks — this bd8-vs-bd10 equivalence test
+                    // is about the predictor, not the SB geometry.
+                    sb_mi_size: 16,
                 };
                 for &edge_filter in &[false, true] {
                     for &filt_type in &[0i32, 1] {

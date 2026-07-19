@@ -3493,10 +3493,12 @@ fn partition_edge_flags(
 /// C `set_blocks_to_be_tested` (Codec/enc_dec_process.c:1483-1499) computes
 /// the MD scan's largest square candidate as
 ///
-///     int max_sq_size = ctx->max_block_size;
-///     if (pcs->mimic_only_tx_4x4)            max_sq_size = MIN(.., 8);
-///     else if (static_config.max_tx_size==32) max_sq_size = MIN(.., 32);
-///     else if (pcs->slice_type == I_SLICE)    max_sq_size = MIN(.., 64);
+/// ```text
+/// int max_sq_size = ctx->max_block_size;
+/// if (pcs->mimic_only_tx_4x4)             max_sq_size = MIN(.., 8);
+/// else if (static_config.max_tx_size==32) max_sq_size = MIN(.., 32);
+/// else if (pcs->slice_type == I_SLICE)    max_sq_size = MIN(.., 64);
+/// ```
 ///
 /// — so on a KEY frame the largest square ever ENTERED INTO THE SCAN is
 /// 64x64, whatever the superblock size. A BLOCK_128X128 is never an MD
@@ -3872,6 +3874,7 @@ fn bd10_tree_supported(tree: &crate::partition::PartitionTree, edge_filter: bool
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn bd10_reencode_luma(
     all_trees: &mut [crate::partition::PartitionTree],
     sb_cols: usize,
@@ -3895,6 +3898,7 @@ fn bd10_reencode_luma(
         let sb_col = sb_idx % sb_cols;
         let sb_row = sb_idx / sb_cols;
         bd10_reencode_node(
+            sb_size / 4,
             tree,
             sb_col * sb_size,
             sb_row * sb_size,
@@ -3916,7 +3920,11 @@ fn bd10_reencode_luma(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn bd10_reencode_node(
+    // C `seq_header.sb_mi_size` (16 SB64 / 32 SB128) — the intra
+    // availability tables index by `mi & (sb_mi_size - 1)` (task #91).
+    sb_mi_size: usize,
     tree: &mut crate::partition::PartitionTree,
     x: usize,
     y: usize,
@@ -3955,6 +3963,7 @@ fn bd10_reencode_node(
                 mi_col: x >> 2,
                 bw_px: bw,
                 bh_px: bh,
+                sb_mi_size,
                 ss: 0,
                 frame_w,
                 frame_h,
@@ -4050,6 +4059,7 @@ fn bd10_reencode_node(
             };
             for (child, (dx, dy)) in children.iter_mut().zip(offs) {
                 bd10_reencode_node(
+                    sb_mi_size,
                     child,
                     x + dx,
                     y + dy,
@@ -4122,6 +4132,7 @@ fn bd10_reencode_chroma(
         let sb_col = sb_idx % sb_cols;
         let sb_row = sb_idx / sb_cols;
         bd10_reencode_chroma_node(
+            sb_size / 4,
             tree,
             sb_col * sb_size,
             sb_row * sb_size,
@@ -4220,7 +4231,10 @@ fn bd10_reencode_chroma_plane(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn bd10_reencode_chroma_node(
+    // C `seq_header.sb_mi_size` (16 SB64 / 32 SB128), task #91.
+    sb_mi_size: usize,
     tree: &mut crate::partition::PartitionTree,
     x: usize,
     y: usize,
@@ -4264,6 +4278,7 @@ fn bd10_reencode_chroma_node(
                 mi_col: cx >> 2,
                 bw_px: cw,
                 bh_px: ch,
+                sb_mi_size,
                 ss: 0,
                 frame_w: cframe_w,
                 frame_h: cframe_h,
@@ -4304,6 +4319,7 @@ fn bd10_reencode_chroma_node(
             };
             for (child, (dx, dy)) in children.iter_mut().zip(offs) {
                 bd10_reencode_chroma_node(
+                    sb_mi_size,
                     child,
                     x + dx,
                     y + dy,
@@ -4544,6 +4560,9 @@ fn encode_tile_rows(
         let mut fun_frame = if use_funnel {
             let cq = c_quant.as_ref().unwrap();
             Some(crate::leaf_funnel::FunnelFrame {
+                // C `seq_header.sb_mi_size` (task #91): 16 at SB64, 32 at
+                // SB128. 16 for every SB64 encode -> byte-neutral there.
+                sb_mi_size: sb_size / 4,
                 sharpness: hdr_sharpness,
                 sharp_tx_active,
                 noise_norm_strength: hdr_noise_norm,
@@ -4657,6 +4676,9 @@ fn encode_tile_rows(
         // just because it isn't the frame's own top row (AV1 intra
         // prediction never crosses a tile boundary).
         part_config.tile_top_px = tile_sb_row_start * sb_size;
+        // C `seq_header.sb_mi_size` (task #91): 16 at SB64 (the struct
+        // default, so every pre-SB128 path is byte-identical), 32 at SB128.
+        part_config.sb_mi_size = sb_size / 4;
         if chroma_420 {
             // 4:2:0 policy: min luma block dim 8, so every coded block is a
             // chroma reference with chroma dims exactly (w/2, h/2) >= 4.

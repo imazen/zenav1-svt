@@ -59,6 +59,13 @@ pub struct PartitionSearchConfig {
     /// tile row (unchanged pre-#86 behavior — the frame's top row IS the
     /// only tile's top row).
     pub tile_top_px: usize,
+    /// C `seq_header.sb_mi_size` — superblock size in MI (4px) units, 16 at
+    /// SB64 and 32 at SB128 (task #91). Feeds the intra availability tables
+    /// (`intra_edge::has_top_right` / `has_bottom_left`), which index blocks
+    /// by `mi & (sb_mi_size - 1)`. Defaults to 16 so every pre-SB128 caller
+    /// is byte-identical by construction; `pipeline` overrides it from the
+    /// derived SB size.
+    pub sb_mi_size: usize,
 }
 
 impl PartitionSearchConfig {
@@ -75,6 +82,7 @@ impl PartitionSearchConfig {
             min_block_dim: MIN_BLOCK_SIZE,
             c_quant: None,
             tile_top_px: 0,
+            sb_mi_size: 16,
         }
     }
 
@@ -91,6 +99,7 @@ impl PartitionSearchConfig {
             min_block_dim: MIN_BLOCK_SIZE,
             c_quant: None,
             tile_top_px: 0,
+            sb_mi_size: 16,
         }
     }
 }
@@ -2112,6 +2121,7 @@ fn encode_single_block(
                     height,
                     angle,
                     partition,
+                    config.sb_mi_size,
                 ) {
                     crate::intra_edge::DirEdges::Flat(v) => pred_block.fill(v),
                     crate::intra_edge::DirEdges::Edges {
