@@ -21,6 +21,38 @@
  *      same log2 units as the Rust driver's SVTAV1_TILE_ROWS_LOG2 —
  *      EbSvtAv1Enc.h:607-611 documents the field as "Log 2 Tile Rows").
  *
+ *      SVT_HDR_MODE=1 selects the FORK oracle. That is a BUILD-TIME switch,
+ *      handled by build.sh/the wrapper (different lib + different binary);
+ *      this file is compiled unchanged for both. What it does add is the
+ *      SVT_FORK_* knob passthrough below.
+ *
+ *      SVT_FORK_<FIELD> (all optional): explicit override for a fork /
+ *      fork-defaulted config field. ABSENT means "leave at whatever
+ *      svt_av1_enc_init_handle loaded", so with none set this driver is
+ *      byte-for-byte its previous self in mainline mode, and in fork mode it
+ *      reproduces the MODE1 library defaults. Needed because the fork's
+ *      feature knobs (ac_bias, sharp_tx, noise_norm_strength, ...) are NOT
+ *      inside `#if SVT_HDR_MODE` in enc_settings.c — they are neutralized
+ *      unconditionally (enc_settings.c:1181-1203) — so MODE1-by-default is
+ *      only the fork's UNCONDITIONAL deltas plus the six defaults the fork
+ *      does flip (bit depth, preset, QM on 6..10, variance boost on,
+ *      tf_strength 1, sharpness 1). Exercising a fork FEATURE against the C
+ *      oracle requires setting it here and to the identical value on the Rust
+ *      side. Names match the EbSvtAv1EncConfiguration fields, upper-cased:
+ *      SVT_FORK_AC_BIAS, SVT_FORK_SHARP_TX, SVT_FORK_TX_BIAS,
+ *      SVT_FORK_COMPLEX_HVS, SVT_FORK_NOISE_NORM_STRENGTH,
+ *      SVT_FORK_ALT_LAMBDA_FACTORS, SVT_FORK_ALT_SSIM_TUNING, SVT_FORK_TUNE,
+ *      SVT_FORK_CDEF_SCALING, SVT_FORK_NOISE_ADAPTIVE_FILTERING,
+ *      SVT_FORK_NOISE_STRENGTH, SVT_FORK_NOISE_STRENGTH_CHROMA,
+ *      SVT_FORK_NOISE_CHROMA_FROM_LUMA, SVT_FORK_NOISE_SIZE,
+ *      SVT_FORK_KF_TF_STRENGTH, SVT_FORK_TF_STRENGTH, SVT_FORK_SHARPNESS,
+ *      SVT_FORK_QP_SCALE_COMPRESS_STRENGTH, SVT_FORK_ENABLE_QM,
+ *      SVT_FORK_MIN_QM_LEVEL, SVT_FORK_MAX_QM_LEVEL,
+ *      SVT_FORK_MIN_CHROMA_QM_LEVEL, SVT_FORK_MAX_CHROMA_QM_LEVEL,
+ *      SVT_FORK_ENABLE_VARIANCE_BOOST, SVT_FORK_VARIANCE_BOOST_STRENGTH,
+ *      SVT_FORK_VARIANCE_OCTILE, SVT_FORK_VARIANCE_BOOST_CURVE,
+ *      SVT_FORK_HBD_MDS.
+ *
  * NOT part of the cargo workspace build — compiled on demand by build.sh.
  */
 #include <stdint.h>
@@ -35,6 +67,33 @@ static void die(const char* msg, int32_t err) {
     fprintf(stderr, "capture_c_trace: %s (err=0x%x)\n", msg, (unsigned)err);
     exit(1);
 }
+
+/* ---- SVT_FORK_* knob passthrough (see the header comment) ---------------- *
+ * Each setter is a no-op when its env var is absent, so the config the library
+ * loaded stays untouched. Applied AFTER the still-picture/CQP config block and
+ * BEFORE svt_av1_enc_set_parameter, and echoed to stderr so a gate log records
+ * exactly which fork config produced the bytes. */
+
+/* Every override is echoed; the caller's log is then self-describing.
+ * The env NAME is spelled out rather than stringified from `field`, so the
+ * documented upper-case spelling is what is actually looked up (a `#field`
+ * form silently searches the lower-case name and every override is ignored —
+ * which is both silent and indistinguishable from "the knob has no effect"). */
+#define FORK_SET(envname, field, conv)                                           \
+    do {                                                                         \
+        const char* _v = getenv(envname);                                        \
+        if (_v) {                                                                \
+            cfg.field = conv(_v);                                                \
+            fprintf(stderr, "capture_c_trace: fork knob %s=%s\n", envname, _v);  \
+        }                                                                        \
+    } while (0)
+
+#define FORK_I(s)   ((int)atoi(s))
+#define FORK_U8(s)  ((uint8_t)atoi(s))
+#define FORK_I8(s)  ((int8_t)atoi(s))
+#define FORK_I32(s) ((int32_t)atoi(s))
+#define FORK_B(s)   ((bool)(atoi(s) != 0))
+#define FORK_D(s)   (atof(s))
 
 int main(int argc, char** argv) {
     if (argc != 7 && argc != 8) {
@@ -112,6 +171,38 @@ int main(int argc, char** argv) {
     if (tile_rows_env) {
         cfg.tile_rows = atoi(tile_rows_env);
     }
+
+    /* Fork / fork-defaulted knobs. Types per EbSvtAv1Enc.h; absent env var =
+     * untouched, so this whole block is inert for every pre-existing caller. */
+    FORK_SET("SVT_FORK_AC_BIAS", ac_bias, FORK_D);
+    FORK_SET("SVT_FORK_QP_SCALE_COMPRESS_STRENGTH", qp_scale_compress_strength, FORK_D);
+    FORK_SET("SVT_FORK_HBD_MDS", hbd_mds, FORK_I);
+    FORK_SET("SVT_FORK_SHARP_TX", sharp_tx, FORK_U8);
+    FORK_SET("SVT_FORK_TX_BIAS", tx_bias, FORK_U8);
+    FORK_SET("SVT_FORK_COMPLEX_HVS", complex_hvs, FORK_U8);
+    FORK_SET("SVT_FORK_NOISE_NORM_STRENGTH", noise_norm_strength, FORK_U8);
+    FORK_SET("SVT_FORK_NOISE_ADAPTIVE_FILTERING", noise_adaptive_filtering, FORK_U8);
+    FORK_SET("SVT_FORK_CDEF_SCALING", cdef_scaling, FORK_U8);
+    FORK_SET("SVT_FORK_NOISE_STRENGTH", noise_strength, FORK_U8);
+    FORK_SET("SVT_FORK_NOISE_CHROMA_FROM_LUMA", noise_chroma_from_luma, FORK_U8);
+    FORK_SET("SVT_FORK_KF_TF_STRENGTH", kf_tf_strength, FORK_U8);
+    FORK_SET("SVT_FORK_TF_STRENGTH", tf_strength, FORK_U8);
+    FORK_SET("SVT_FORK_TUNE", tune, FORK_U8);
+    FORK_SET("SVT_FORK_VARIANCE_BOOST_STRENGTH", variance_boost_strength, FORK_U8);
+    FORK_SET("SVT_FORK_VARIANCE_OCTILE", variance_octile, FORK_U8);
+    FORK_SET("SVT_FORK_VARIANCE_BOOST_CURVE", variance_boost_curve, FORK_U8);
+    FORK_SET("SVT_FORK_MIN_QM_LEVEL", min_qm_level, FORK_U8);
+    FORK_SET("SVT_FORK_MAX_QM_LEVEL", max_qm_level, FORK_U8);
+    FORK_SET("SVT_FORK_MIN_CHROMA_QM_LEVEL", min_chroma_qm_level, FORK_U8);
+    FORK_SET("SVT_FORK_MAX_CHROMA_QM_LEVEL", max_chroma_qm_level, FORK_U8);
+    FORK_SET("SVT_FORK_NOISE_STRENGTH_CHROMA", noise_strength_chroma, FORK_I32);
+    FORK_SET("SVT_FORK_NOISE_SIZE", noise_size, FORK_I8);
+    FORK_SET("SVT_FORK_SHARPNESS", sharpness, FORK_I8);
+    FORK_SET("SVT_FORK_ALT_LAMBDA_FACTORS", alt_lambda_factors, FORK_B);
+    FORK_SET("SVT_FORK_ALT_SSIM_TUNING", alt_ssim_tuning, FORK_B);
+    FORK_SET("SVT_FORK_ENABLE_QM", enable_qm, FORK_B);
+    FORK_SET("SVT_FORK_ENABLE_VARIANCE_BOOST", enable_variance_boost, FORK_B);
+
     err = svt_av1_enc_set_parameter(handle, &cfg);
     if (err != EB_ErrorNone)
         die("svt_av1_enc_set_parameter", err);

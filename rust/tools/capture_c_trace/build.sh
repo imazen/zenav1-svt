@@ -34,16 +34,57 @@ set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../../.." && pwd) # <repo> (rust/tools/capture_c_trace -> repo root)
-OUT="${1:-$HERE/capture_c_trace.bin}"
-LIB_DIR="${SVT_CREF_LIB_DIR:-$ROOT/Bin/Release}"
+
+# ---------------------------------------------------------------------------
+# SVT_HDR_MODE — which C oracle to link (see rust/docs/HDR-ON-4.2.md).
+#
+#   unset / 0 : MAINLINE v4.2.0 semantics. Lib <repo>/Bin/Release, cmake dir
+#               cbuild-static, driver capture_c_trace.bin. UNCHANGED — every
+#               pre-existing caller keeps byte-for-byte the same oracle.
+#   1         : svt-av1-hdr (Chromedome) FORK semantics on the v4.2 base
+#               (`cmake -DSVT_HDR_MODE=ON`). Lib <repo>/Bin/ReleaseHdr, cmake
+#               dir cbuild-static-hdr, driver capture_c_trace.hdr.bin.
+#
+# The two modes MUST use distinct lib dirs AND distinct driver binaries. Both
+# halves are load-bearing:
+#   * distinct lib dirs — the cmake output dir is CMAKE_OUTPUT_DIRECTORY, which
+#     defaults to Bin/${CMAKE_BUILD_TYPE} for BOTH configs; an HDR build left at
+#     the default silently OVERWRITES the mainline libSvtAv1Enc.a and every
+#     "mainline" gate then compares against the fork oracle. (This happened once
+#     while wiring this switch — hence -DCMAKE_OUTPUT_DIRECTORY below.)
+#   * distinct binaries — the staleness guard below is a set of mtime
+#     comparisons against ONE $LIB. Sharing a binary across modes defeats it in
+#     the most dangerous direction: after linking mode B, switching back to mode
+#     A finds the binary NEWER than mode A's (older) lib, so no relink fires and
+#     mode A silently runs mode B's oracle. Per-mode $OUT makes each guard chain
+#     independent and self-consistent.
+#
+# Both builds must also agree on SVT_AV1_LTO (=OFF): LTO changes codegen, and a
+# bit-identity oracle may not differ from its counterpart by optimization level.
+# ---------------------------------------------------------------------------
+HDR_MODE="${SVT_HDR_MODE:-0}"
+if [[ "$HDR_MODE" == "1" ]]; then
+    DEFAULT_LIB_DIR="$ROOT/Bin/ReleaseHdr"
+    CMAKE_DIR="$ROOT/cbuild-static-hdr"
+    DEFAULT_OUT="$HERE/capture_c_trace.hdr.bin"
+    CMAKE_HDR_FLAG="-DSVT_HDR_MODE=ON"
+else
+    DEFAULT_LIB_DIR="$ROOT/Bin/Release"
+    CMAKE_DIR="$ROOT/cbuild-static"
+    DEFAULT_OUT="$HERE/capture_c_trace.bin"
+    CMAKE_HDR_FLAG="-DSVT_HDR_MODE=OFF"
+fi
+
+OUT="${1:-$DEFAULT_OUT}"
+LIB_DIR="${SVT_CREF_LIB_DIR:-$DEFAULT_LIB_DIR}"
 LIB="$LIB_DIR/libSvtAv1Enc.a"
 
 # Hole #1: make the static lib itself current with Source/. Only for the
 # in-tree default — an explicit SVT_CREF_LIB_DIR is the caller's own artifact
 # and we must not build into it.
-if [[ -z "${SVT_CREF_LIB_DIR:-}" && -z "${SVT_NO_AUTO_CMAKE:-}" && -d "$ROOT/cbuild-static" ]]; then
-    if ! cmake --build "$ROOT/cbuild-static" -j "${SVT_BUILD_JOBS:-8}" >/dev/null 2>&1; then
-        echo "error: 'cmake --build $ROOT/cbuild-static' FAILED — refusing to run against a" >&2
+if [[ -z "${SVT_CREF_LIB_DIR:-}" && -z "${SVT_NO_AUTO_CMAKE:-}" && -d "$CMAKE_DIR" ]]; then
+    if ! cmake --build "$CMAKE_DIR" -j "${SVT_BUILD_JOBS:-8}" >/dev/null 2>&1; then
+        echo "error: 'cmake --build $CMAKE_DIR' FAILED — refusing to run against a" >&2
         echo "       possibly stale $LIB. Fix the C build first, or re-run with" >&2
         echo "       SVT_NO_AUTO_CMAKE=1 if you know the lib is current." >&2
         exit 1
@@ -51,8 +92,10 @@ if [[ -z "${SVT_CREF_LIB_DIR:-}" && -z "${SVT_NO_AUTO_CMAKE:-}" && -d "$ROOT/cbu
 fi
 
 if [[ ! -f "$LIB" ]]; then
-    echo "error: $LIB not found. Build the C reference first:" >&2
-    echo "  cmake -S $ROOT -B $ROOT/cbuild-static -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DBUILD_APPS=OFF -DBUILD_TESTING=OFF && cmake --build $ROOT/cbuild-static -j" >&2
+    echo "error: $LIB not found (SVT_HDR_MODE=$HDR_MODE). Build the C reference first:" >&2
+    echo "  cmake -S $ROOT -B $CMAKE_DIR -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \\" >&2
+    echo "        -DBUILD_APPS=OFF -DBUILD_TESTING=OFF -DSVT_AV1_LTO=OFF $CMAKE_HDR_FLAG \\" >&2
+    echo "        -DCMAKE_OUTPUT_DIRECTORY=$DEFAULT_LIB_DIR/ && cmake --build $CMAKE_DIR -j" >&2
     exit 1
 fi
 
@@ -90,4 +133,4 @@ cc -O2 -g -o "$OUT" \
     -Wl,--wrap=svt_aom_quantize_inv_quantize \
     "$LIB" -lpthread -lm
 
-echo "capture_c_trace: built $OUT"
+echo "capture_c_trace: built $OUT (SVT_HDR_MODE=$HDR_MODE, lib=$LIB)"

@@ -41,4 +41,9 @@ if ! "$HERE/build.sh" >"$_bl" 2>&1; then
 fi
 rm -f "$_bl"
 
+# Exec the binary for the SELECTED oracle. build.sh derives the same path from
+# SVT_HDR_MODE; keep the two in sync (mainline -> .bin, fork -> .hdr.bin).
+if [[ "${SVT_HDR_MODE:-0}" == "1" ]]; then
+    exec "$HERE/capture_c_trace.hdr.bin" "$@"
+fi
 exec "$HERE/capture_c_trace.bin" "$@"
