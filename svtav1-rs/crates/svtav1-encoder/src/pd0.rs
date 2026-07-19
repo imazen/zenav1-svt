@@ -1087,6 +1087,25 @@ enum Pd0Mode {
     /// PD0_LVL_5 light encode: qindex+8, subres, 5000+100*eob rate
     /// (eff-M9 demoted by the detector).
     Lvl5,
+    /// PD0_LVL_0 full-RD partition search — C `set_pd0_ctrls`
+    /// (enc_mode_config.c:5415) FORCES this level whenever `hbd_md` is set
+    /// (i.e. bit_depth 10 DUAL), regardless of preset. PD0 itself runs
+    /// entirely at 8-BIT (`enc_dec_process.c:2965` saves hbd_md and forces
+    /// it to 0 for the whole PD0 pass), so the partition tree is a pure
+    /// function of the 8-bit MSB-truncated plane — NO bd10 pixel/quant/lambda
+    /// kernel is on the partition path.
+    ///
+    /// The block cost is IDENTICAL to [`Pd0Mode::Lvl5`] (same DC-from-source
+    /// prediction, `lpd0_qp_offset = 8` -> qindex+8, `coeff_rate_est_lvl = 0`
+    /// closed form `5000 + ires*1600 + 100*eob`, doubled split rate because
+    /// `use_accurate_part_ctx = 0` above M8) EXCEPT that **subres is OFF**:
+    /// LVL_0 is `pd0_level <= PD0_LVL_2` so `subres_level = 0`
+    /// (enc_mode_config.c:7327), whereas LVL_5 enables step-1 subres via the
+    /// odd/even-deviation check. There is also NO PD0-level detector: every
+    /// SB runs the full block encode (LVL_5 only runs it when the detector
+    /// demotes LVL_6). Verified end-to-end against real C's SVT_PD0COST_OUT +
+    /// SVT_CTREE_OUT dumps at bd10.
+    Lvl0,
     /// PD0_LVL_1 (allintra M2..M8): qindex+0, no subres, real
     /// `svt_av1_cost_coeffs_txb` rate at zero contexts, undoubled split
     /// rate (`use_accurate_part_ctx = 1`).
@@ -1297,6 +1316,30 @@ impl<'a> Pd0Ctx<'a> {
     /// per-SB subres-safety check when this is a 64x64 block and the
     /// safety is still undetermined (full_loop_core_pd0).
     fn lvl5_block_cost(&mut self, sq_size: usize, org_x: usize, org_y: usize) -> u64 {
+        self.lvl5_like_block_cost(sq_size, org_x, org_y, 1)
+    }
+
+    /// LVL_0 block cost (bd10-forced full-RD PD0). Same closed-form encode as
+    /// [`Pd0Ctx::lvl5_block_cost`] but with subres FORCED OFF (`subres_level =
+    /// 0` at `pd0_level <= PD0_LVL_2`, enc_mode_config.c:7327): step is always
+    /// 0, so no 8x2/16x4 sub-sampled transform and no per-SB odd/even-deviation
+    /// check. Every block runs it (no PD0-level detector).
+    fn lvl0_block_cost(&mut self, sq_size: usize, org_x: usize, org_y: usize) -> u64 {
+        self.lvl5_like_block_cost(sq_size, org_x, org_y, 0)
+    }
+
+    /// Shared closed-form PD0 block cost (`full_loop_core_pd0` at
+    /// `coeff_rate_est_lvl == 0`, `lpd0_qp_offset = 8`). `subres_step_cfg` is
+    /// C's `subres_ctrls.step`: 1 for LVL_5 (the 64x64 odd/even-deviation
+    /// check may then enable step-1 sub-sampling), 0 for LVL_0 (subres off ->
+    /// no check, step stays 0 for every block).
+    fn lvl5_like_block_cost(
+        &mut self,
+        sq_size: usize,
+        org_x: usize,
+        org_y: usize,
+        subres_step_cfg: u32,
+    ) -> u64 {
         let abs_x = self.sb_x + org_x;
         let abs_y = self.sb_y + org_y;
         // DC prediction from SOURCE neighbors (pd0_use_src_samples=1):
@@ -1317,7 +1360,9 @@ impl<'a> Pd0Ctx<'a> {
         // Subres safety: determined once per SB by the first (and only)
         // tested 64x64 block; blocks tested while it is undetermined use
         // step 0 (C forces mds_subres_step = 0 when is_subres_safe != 1).
-        if sq_size == 64 && self.is_subres_safe == 255 {
+        // When subres is off entirely (LVL_0, subres_step_cfg == 0), the
+        // check never runs and every block keeps step 0.
+        if subres_step_cfg > 0 && sq_size == 64 && self.is_subres_safe == 255 {
             self.is_subres_safe = u8::from(check_is_subres_safe(
                 self.src,
                 self.stride,
@@ -1326,12 +1371,11 @@ impl<'a> Pd0Ctx<'a> {
                 &pred,
             ));
         }
-        // subres_ctrls.step = 1 for this config; 8x8 caps at min(1, step).
-        let step_cfg = 1u32;
+        // subres_ctrls.step for this config; 8x8 caps at min(1, step).
         let mut step = if sq_size >= 16 {
-            step_cfg
+            subres_step_cfg
         } else {
-            step_cfg.min(1)
+            subres_step_cfg.min(1)
         };
         if self.is_subres_safe != 1 {
             step = 0;
@@ -1418,6 +1462,7 @@ impl<'a> Pd0Ctx<'a> {
         match self.mode {
             Pd0Mode::Lvl1 => self.lvl1_block_cost(sq_size, org_x, org_y),
             Pd0Mode::Lvl5 => self.lvl5_block_cost(sq_size, org_x, org_y),
+            Pd0Mode::Lvl0 => self.lvl0_block_cost(sq_size, org_x, org_y),
             Pd0Mode::Lvl6 => lvl6_cost_allintra(&self.vars, sq_size, org_x, org_y, self.qp),
         }
     }
@@ -1488,7 +1533,9 @@ impl<'a> Pd0Ctx<'a> {
             // node's split cost uses below).
             if !both_false {
                 total += match self.mode {
-                    Pd0Mode::Lvl5 => {
+                    // LVL_0 and LVL_5 both have `use_accurate_part_ctx = 0`
+                    // (allintra above M8) -> the boundary SPLIT rate is doubled.
+                    Pd0Mode::Lvl5 | Pd0Mode::Lvl0 => {
                         rdcost(self.lambda, 2 * partition_alike_split_bits(sq_size, !has_rows), 0)
                     }
                     Pd0Mode::Lvl6 => 0,
@@ -1555,7 +1602,11 @@ impl<'a> Pd0Ctx<'a> {
         // observed 1195/1465/2020 in the instrumented PD0SPLITRATE dumps).
         let mut split_cost = match self.mode {
             Pd0Mode::Lvl6 => 0,
-            Pd0Mode::Lvl5 => rdcost(self.lambda, 2 * partition_split_bits(sq_size), 0),
+            // LVL_0/LVL_5: `use_accurate_part_ctx = 0` -> SPLIT rate doubled,
+            // priced from the DEFAULT partition CDF (ctx row 0).
+            Pd0Mode::Lvl5 | Pd0Mode::Lvl0 => {
+                rdcost(self.lambda, 2 * partition_split_bits(sq_size), 0)
+            }
             Pd0Mode::Lvl1 => {
                 let tables = self.lvl1.expect("LVL_1 requires tables");
                 // C `svt_aom_partition_rate_cost` (rd_cost.c:1846-1863): at a
@@ -1685,6 +1736,72 @@ pub fn pd0_pick_sb_partition(
         coeff_rate_est_lvl: 0,
         // eff-M9 (preset >= 9) => enc_mode > M6 => nsq_geom_level 0 =>
         // NSQ disabled: every one-false boundary node force-splits.
+        nsq_enabled: false,
+    };
+    let (_cost, eval) = ctx.pick(64, 0, 0);
+    eval.tree()
+}
+
+/// Decide the partition tree of one 64x64 superblock exactly like C's
+/// **PD0_LVL_0** full-RD pass — the level `set_pd0_ctrls`
+/// (enc_mode_config.c:5415) FORCES at bit-depth 10 (`hbd_md` set),
+/// regardless of preset. PD0 runs at 8-bit, so `src` is the 8-bit
+/// MSB-truncated luma plane (the same plane the bd8 pickers read); the
+/// resulting tree is fed to `pipeline::bd10_reencode_luma`, which recomputes
+/// the bd10 coded levels + recon over this fixed partition.
+///
+/// Differences from the eff-M9 (LVL_6/LVL_5) entry
+/// [`pd0_pick_sb_partition`]:
+/// - NO PD0-level detector: every block runs the full closed-form encode
+///   (`lvl0_block_cost` = LVL_5 cost with subres OFF), never the LVL_6
+///   variance heuristic — this is the whole point (the heuristic over-splits
+///   where the full-RD keeps the parent);
+/// - the 64x64 variance cap on the depth set still applies
+///   (`get_max_block_size_allintra`, bit-depth-independent), so a busy SB
+///   (`var64 > qp-scaled 7500`) force-splits the 64x64 to 32x32 exactly as at
+///   bd8;
+/// - split rate DOUBLED (`use_accurate_part_ctx = 0` above M8), like LVL_5.
+#[allow(clippy::too_many_arguments)]
+pub fn pd0_pick_sb_partition_lvl0(
+    src: &[u8],
+    stride: usize,
+    sb_x: usize,
+    sb_y: usize,
+    qp: u32,
+    qindex: u8,
+    ires_factor: u64,
+    aligned_w: usize,
+    aligned_h: usize,
+) -> Pd0Tree {
+    let vars = compute_b64_variance(src, stride, sb_x, sb_y);
+    let max_sq = max_block_size_allintra(vars.0[0], qp);
+    let lambda = kf_full_lambda_8bit(qindex, qp) as u64;
+    let mut ctx = Pd0Ctx {
+        src,
+        stride,
+        sb_x,
+        sb_y,
+        aligned_w,
+        aligned_h,
+        vars,
+        qp,
+        qindex,
+        lambda,
+        mode: Pd0Mode::Lvl0,
+        lvl1: None,
+        max_sq,
+        min_sq: 8,
+        // subres OFF (LVL_0 is pd0_level <= PD0_LVL_2 -> subres_level 0). The
+        // "determined, not safe" sentinel (0) makes lvl5_like_block_cost keep
+        // step 0 for every block AND skip the 64x64 odd/even-deviation check.
+        is_subres_safe: 0,
+        ires_factor,
+        // coeff_rate_est_lvl 0 (PD0 rate_est_level 0 above M8): closed-form
+        // coeff rate. Unused by the LVL_0/LVL_5 closed forms directly (they
+        // read `ires_factor`), kept 0 for consistency.
+        coeff_rate_est_lvl: 0,
+        // enc_mode > M6 => nsq_geom_level 0 => NSQ disabled: one-false
+        // boundary nodes force-split (inert on 64-aligned frames).
         nsq_enabled: false,
     };
     let (_cost, eval) = ctx.pick(64, 0, 0);
@@ -1890,6 +2007,74 @@ mod tests {
         assert_eq!(vu.0, [0u16; 85]);
         assert!(pd0_detector_allintra_demotes(&vu, 40));
         assert_eq!(max_block_size_allintra(0, 20), 64);
+    }
+
+    #[test]
+    fn lvl0_block_costs_match_c() {
+        // C `svt_aom_full_cost_pd0` per-block RD, gradient-64 q20 (qindex 80),
+        // captured from the REAL library's SVT_PD0COST_OUT wrap at bd10 (PD0
+        // runs at 8-bit, hbd_md forced 0). Closed-form coeff rate (5000 +
+        // 100*eob, coeff_rate_est_lvl 0), qindex+8 quant (lpd0_qp_offset 8),
+        // subres OFF, 8-bit lambda 25650.
+        let y = gradient64();
+        let mut ctx = Pd0Ctx {
+            src: &y,
+            stride: 64,
+            sb_x: 0,
+            sb_y: 0,
+            aligned_w: 64,
+            aligned_h: 64,
+            vars: compute_b64_variance(&y, 64, 0, 0),
+            qp: 20,
+            qindex: 80,
+            lambda: kf_full_lambda_8bit(80, 20) as u64,
+            mode: Pd0Mode::Lvl0,
+            coeff_rate_est_lvl: 0,
+            lvl1: None,
+            max_sq: 32,
+            min_sq: 8,
+            is_subres_safe: 0, // subres off
+            ires_factor: 0,
+            nsq_enabled: false,
+        };
+        assert_eq!(ctx.lambda, 25650);
+        // (sq, org_x, org_y, C full_cost)
+        for (sq, ox, oy, cost) in [
+            (32usize, 0usize, 0usize, 26185862u64),
+            (16, 0, 0, 8396609),
+            (8, 0, 0, 2143413),
+            (8, 8, 0, 1990844),
+            (8, 0, 8, 2225589),
+            (8, 8, 8, 2168757),
+            (16, 16, 0, 6559425),
+            (16, 0, 16, 8443329),
+            (16, 16, 16, 8792001),
+            (32, 32, 0, 28871046),
+            (32, 0, 32, 22111622),
+            (32, 32, 32, 22521222),
+        ] {
+            assert_eq!(
+                ctx.lvl0_block_cost(sq, ox, oy),
+                cost,
+                "sq={sq} ({ox},{oy})"
+            );
+        }
+    }
+
+    #[test]
+    fn lvl0_gradient64_tree_matches_c() {
+        // C bd10 CTREE (svt_aom_update_mi_map wrap): gradient-64 q20 p10 codes
+        // 4x BLOCK_32X32 PARTITION_NONE (the LVL_0 full-RD keeps the 32x32
+        // parent where the LVL_6 heuristic over-splits to 16x 16x16). The
+        // 64x64 force-splits (var64 5425 > qp-scaled cap -> max_sq 32).
+        let y = gradient64();
+        let tree = pd0_pick_sb_partition_lvl0(&y, 64, 0, 0, 20, 80, 0, 64, 64);
+        assert_eq!(tree.leaf_sizes(), vec![32, 32, 32, 32]);
+        // q40 / q55 keep the same 4x32 shape here (the parent still wins);
+        // q55's 64x64 is IN the depth set (max_sq 64) and PARENT wins outright
+        // -> a single 64x64 leaf.
+        let t55 = pd0_pick_sb_partition_lvl0(&y, 64, 0, 0, 55, 220, 0, 64, 64);
+        assert_eq!(t55.leaf_sizes(), vec![64]);
     }
 
     #[test]

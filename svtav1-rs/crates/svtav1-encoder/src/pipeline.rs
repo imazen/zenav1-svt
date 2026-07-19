@@ -809,6 +809,7 @@ impl EncodePipeline {
             sb_chroma_owned
                 .as_ref()
                 .map(|(u, v)| (u.as_slice(), v.as_slice())),
+            self.bit_depth,
         );
 
         let mut per_tile_decisions: Vec<Vec<crate::partition::BlockDecision>> = Vec::new();
@@ -891,10 +892,20 @@ impl EncodePipeline {
             // it is false, for M5 (4:2:0 still) true.
             let bd10_edge_filter =
                 crate::leaf_funnel::FunnelCfg::for_preset(self.speed_config.preset).edge_filter;
-            if let Some(cq) = c_quant
-                .as_ref()
-                .filter(|_| all_trees.iter().all(|t| bd10_tree_supported(t, bd10_edge_filter)))
-            {
+            // The bd10 re-encode (`tx_unit_hbd`) is not yet partial-SB-aware: an
+            // edge/straddle block (frame dims not a multiple of 64) has an
+            // out-of-envelope transform footprint the highbd tx unit can't map,
+            // so a partial-SB bd10 frame must FALL BACK to the u8 output rather
+            // than panic. Complete-SB frames (every current bd10 gate cell is
+            // 64-aligned) are unaffected. Partial-SB bd10 is a documented
+            // follow-up (docs/bd10-port-map.md).
+            let bd10_frame_aligned = w % 64 == 0 && h % 64 == 0;
+            if let Some(cq) = c_quant.as_ref().filter(|_| {
+                bd10_frame_aligned
+                    && all_trees
+                        .iter()
+                        .all(|t| bd10_tree_supported(t, bd10_edge_filter))
+            }) {
                 let shift = (self.bit_depth - 8) as u32;
                 let src10: alloc::vec::Vec<u16> =
                     encode_input.iter().map(|&s| (s as u16) << shift).collect();
@@ -3816,6 +3827,12 @@ fn encode_tile_rows(
     chroma_420: bool,
     c_quant: Option<alloc::sync::Arc<crate::quant::CodingQuantCfg>>,
     chroma_src: Option<(&[u8], &[u8])>,
+    // Encode bit depth (8 or 10). At bd10 the partition search runs C's
+    // hbd-forced PD0_LVL_0 (full-RD), NOT the preset's LVL_6/LVL_5 heuristic
+    // (set_pd0_ctrls, enc_mode_config.c:5415). The tree is still decided at
+    // 8-bit on the MSB-truncated plane; only the coded levels go 10-bit
+    // (bd10_reencode_luma).
+    bit_depth: u8,
 ) -> Vec<(
     Vec<u8>,
     Vec<crate::partition::BlockDecision>,
@@ -4290,20 +4307,41 @@ fn encode_tile_rows(
                 }
                 let sb_result = if use_pd0 {
                     if speed_config.preset >= 9 {
-                        let tree = crate::pd0::pd0_pick_sb_partition(
-                            sb_input,
-                            in_stride,
-                            x0,
-                            y0,
-                            cli_qp as u32,
-                            sb_qindex,
-                            // C `input_resolution_factor[input_resolution]`:
-                            // per-picture coeff-rate addend keyed on w*h.
-                            crate::pd0::input_resolution_factor(w * h),
-                            // ALIGNED dims — the spec-5.11.4 edge predicate grid.
-                            w,
-                            h,
-                        );
+                        let tree = if bit_depth == 10 {
+                            // C `set_pd0_ctrls` (enc_mode_config.c:5415) FORCES
+                            // PD0_LVL_0 (full-RD partition search) at bd10 (hbd_md
+                            // set), regardless of preset — where bd8 uses the
+                            // preset's LVL_6/LVL_5 variance heuristic. LVL_0 runs
+                            // at 8-bit on the same MSB-truncated `sb_input`, so
+                            // this is a pure partition change; the coded levels
+                            // are recomputed at 10-bit by bd10_reencode_luma.
+                            crate::pd0::pd0_pick_sb_partition_lvl0(
+                                sb_input,
+                                in_stride,
+                                x0,
+                                y0,
+                                cli_qp as u32,
+                                sb_qindex,
+                                crate::pd0::input_resolution_factor(w * h),
+                                w,
+                                h,
+                            )
+                        } else {
+                            crate::pd0::pd0_pick_sb_partition(
+                                sb_input,
+                                in_stride,
+                                x0,
+                                y0,
+                                cli_qp as u32,
+                                sb_qindex,
+                                // C `input_resolution_factor[input_resolution]`:
+                                // per-picture coeff-rate addend keyed on w*h.
+                                crate::pd0::input_resolution_factor(w * h),
+                                // ALIGNED dims — the spec-5.11.4 edge predicate grid.
+                                w,
+                                h,
+                            )
+                        };
                         // The same per-SB variance map C's picture analysis
                         // feeds to is_dc_only_safe (pcs->ppcs->variance): the
                         // fixed-tree leaves use it to force the C-exact

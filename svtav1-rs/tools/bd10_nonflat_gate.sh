@@ -66,6 +66,28 @@ CELLS=(
   "gradient 128 128 55 13"
   "gradient 128 128 58 10"
   "gradient 128 128 58 13"
+  # PD0_LVL_0 partition fix (task #94, this landing): at bd10 C forces
+  # PD0_LVL_0 (full-RD partition search) regardless of preset — where bd8
+  # uses the preset's LVL_6/LVL_5 variance heuristic (set_pd0_ctrls,
+  # enc_mode_config.c:5415). PD0_LVL_0 runs entirely at 8-bit, so the fix is a
+  # pure 8-bit partition search (pd0::pd0_pick_sb_partition_lvl0) gated on
+  # bd10; the LVL_6 heuristic OVER-SPLITS these low-qindex cells where the
+  # full-RD keeps the parent (e.g. q20 p10: C bd10 keeps 4x BLOCK_32X32, the
+  # LVL_6 tree SPLIT to 16x BLOCK_16X16). Each cell below was a partition-flip
+  # DIFF before the fix and BYTE-MATCHES after (verified `cmp`). Only cells
+  # whose ONLY divergence was the partition are here; cells that ALSO have a
+  # bd10-sensitive mode/tx flip (the true-bd10-MD axis, e.g. q20 p10's
+  # tx_depth) are NOT — they need the u16 leaf funnel (docs/bd10-port-map.md).
+  "gradient 64 64 12 10"
+  "gradient 64 64 12 13"
+  "gradient 64 64 32 10"
+  "gradient 64 64 32 13"
+  "gradient 128 128 12 10"
+  "gradient 128 128 12 13"
+  "gradient 128 128 20 10"
+  "gradient 128 128 20 13"
+  "gradient 128 128 32 10"
+  "gradient 128 128 32 13"
 )
 for cell in "${CELLS[@]}"; do
   read -r content w h qp p <<<"$cell"
