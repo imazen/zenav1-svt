@@ -39,13 +39,24 @@
 #   C. BYTE-EXACT (hard): every cell listed in SB128_BYTE_EXACT must `cmp`
 #      clean. Adding a cell there means it byte-matches; never add one that
 #      merely decodes or falls back.
+#   E. DECODABILITY (hard, EVERY cell incl. pinned ones): the port's own
+#      stream must decode with the AV1 reference decoder. A byte-comparison
+#      gate is blind here — a PINNED cell is expected to differ from C, so
+#      "differs" hides "is corrupt". That is not hypothetical: the SB128
+#      landing shipped a stream that aomdec rejected with "Failed to decode
+#      tile data" at six of ten qps, because C emits `cdef_idx` once per
+#      64x64 FILTER BLOCK (four per SB128 superblock, latched by
+#      `cdef_transmitted[4]`, entropy_coding.c:4009-4016) while the port
+#      emitted one per SB — so the decoder expected literals the encoder
+#      never wrote. Byte-identity alone would never have caught it.
+#      Set AOMDEC=/path/to/aomdec; the check is skipped (loudly) if absent.
 #   D. PIN (hard, self-promoting): every cell in SB128_PINNED must still
 #      DIVERGE. When the SB128 encode path lands, those flip to matching and
 #      this gate FAILS — that is the signal to move them into
 #      SB128_BYTE_EXACT. Same pattern the sibling aom-rs port uses for its
 #      pinned near-ties.
 #
-# Exit 0 iff A, B, C and D all hold.
+# Exit 0 iff A, B, C, D and E all hold.
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 RS_ROOT=$(cd "$HERE/.." && pwd)
@@ -56,6 +67,21 @@ mkdir -p "$OUT"
 pass=0
 fail=0
 failed=()
+
+# Reference decoder for assert (E). Optional but loudly reported when
+# missing — a silently-skipped corruption check is worse than none.
+aomdec="${AOMDEC:-aomdec}"
+if ! command -v "$aomdec" >/dev/null 2>&1; then
+  for cand in /root/aomdec-build/aomdec /root/aomdec-debug/aomdec \
+              /root/aom-rs/upstream/build/aomdec; do
+    [ -x "$cand" ] && { aomdec="$cand"; break; }
+  done
+fi
+command -v "$aomdec" >/dev/null 2>&1 || [ -x "$aomdec" ] || {
+  echo "WARNING: aomdec not found (set AOMDEC=...) — assert (E) DECODABILITY is SKIPPED" >&2
+  aomdec=""
+}
+[ -n "$aomdec" ] && echo "decodability check: $aomdec"
 
 # Cells: "content w h qp preset". Every one is >= 165,120 aligned luma px
 # and preset <= 1, i.e. SB128 in C (asserted per-cell below, never assumed).
@@ -105,12 +131,14 @@ SB128_CELLS=(
 #     column at SB64 but its RIGHT half at SB128 — different top-right /
 #     bottom-left availability, hence different directional prediction. This
 #     is the one genuinely SB128-specific sub-64 defect found so far.
+#   - `gradient 512x384 q20 p0` — closed by the CDEF quadrant fix (below).
 SB128_BYTE_EXACT=(
   "uniform  512 384 32 0"
   "uniform  512 384 55 0"
   "uniform  512 384 63 0"
   "uniform  512 384 32 1"
   "gradient 512 384 55 0"
+  "gradient 512 384 20 0"
   "gradient 512 384 32 1"
   "diag     512 384 32 0"
   "diag     512 384 55 0"
@@ -120,12 +148,12 @@ SB128_BYTE_EXACT=(
 )
 
 # ---------------------------------------------------------------------------
-# WHY THE 5 REMAINING CELLS ARE PINNED — and why it is NOT an SB128 bug.
+# WHY THE 2 REMAINING CELLS ARE PINNED — and why it is NOT an SB128 bug.
 #
-# Every one of them is `gradient` at qp 20/32 (q55 closed with the header
-# fix). Their first divergence is a PARTITION decision at a 32x32 node:
-# C codes `s=9` (PARTITION_VERT_4, four 8x32 strips) where the port codes
-# `s=0` (PARTITION_NONE), at CDF row icdf0=14306.
+# Both are `gradient` at qp 32 (`512x384` and `448x384`). Their first
+# divergence is a PARTITION decision at a 32x32 node: C codes `s=9`
+# (PARTITION_VERT_4, four 8x32 strips) where the port codes `s=0`
+# (PARTITION_NONE), at CDF row icdf0=14306.
 #
 # MEASURED, twice, that this is a pre-existing sub-64 NSQ gap and not
 # SB128:
@@ -139,11 +167,19 @@ SB128_BYTE_EXACT=(
 #      `gradient`'s pixels are `((r*255)/h) ^ ((c*3)&0x3f)`, so at the same
 #      `h` the top-left block is bit-identical to the 512x384 cell's.
 #
+# MEASURED a third time, from the port's own NSQ dump
+# (`SVTAV1_NSQDBG=1 SVTAV1_DBG_MI=0,0` on the 424x384 cell): VERT_4 is
+# EVALUATED, not gated — `NSQDBG SHAPE mi=(0,0) bsize=9 shape=4 valid=0
+# part_cost=70131638` against NONE's `69986899`. It LOSES by 0.207%. So the
+# shape list, the four NSQ prune gates, and the H4/V4 availability are all
+# fine (H4 wins outright at mi=(8,0) in the same dump); this is a leaf-cost
+# RD near-tie, and closing it needs an instrumented-C per-candidate RD dump
+# in the leaf funnel — orthogonal to SB128.
+#
 # The `diag` cells (content independent of w/h) byte-match at both qps, and
-# every `uniform` cell matches, which is what isolates this to the NSQ
-# H4/V4 selection rather than anything geometric. Closing it is orthogonal
-# NSQ work; when it lands these five cells should flip on their own and the
-# pin will fire.
+# every `uniform` cell matches, which is what isolates this to the NSQ cost
+# rather than anything geometric. When it lands these two cells should flip
+# on their own and the pin will fire.
 
 # Cells PINNED as still-diverging. Everything in SB128_CELLS that is not in
 # SB128_BYTE_EXACT is implicitly pinned (see the loop) — the pin is what
@@ -209,6 +245,16 @@ for cell in "${SB128_CELLS[@]}"; do
     fail=$((fail + 1)); failed+=("$tag[VACUOUS: C emitted sb64, cell proves nothing]")
     echo "  VACUOUS  $tag"
     continue
+  fi
+
+  # (E) DECODABILITY — the port's own bytes must be a legal AV1 stream,
+  # whether or not they equal C's. See the header note.
+  if [ -n "$aomdec" ]; then
+    if ! "$aomdec" --rawvideo -o /dev/null "$OUT/rs.obu" >/dev/null 2>&1; then
+      fail=$((fail + 1)); failed+=("$tag[UNDECODABLE: aomdec rejected the port stream]")
+      echo "  CORRUPT  $tag  <-- port stream does not decode"
+      continue
+    fi
   fi
 
   if cmp -s "$OUT/rs.obu" "$OUT/c.obu"; then

@@ -1343,8 +1343,39 @@ impl EncodePipeline {
                         // cdef_transmitted at the SB's top-left, then the first
                         // non-skip block emits `cdef_bits` literal bits). 64x64
                         // SBs: one filter block per SB.
-                        ectx.cdef_pending = cdef_walk.and_then(|p| {
-                            (p.bits > 0).then(|| (p.bits, p.fb_idx[sb_row * p.nhfb + sb_col]))
+                        // C write_cdef resets `cdef_transmitted[4]` at the
+                        // SB top-left, then each 64x64 quadrant's first
+                        // non-skip block emits its own literal. The strength
+                        // is read off the B64 grid (C's mbmi at
+                        // `(mi & ~15)`), which is what `fb_idx` is indexed
+                        // by — NOT by the SB grid. At SB64 the two grids
+                        // coincide and only quadrant 0 is ever used, so this
+                        // reduces exactly to the previous
+                        // `fb_idx[sb_row * nhfb + sb_col]`.
+                        ectx.cdef_sb = cdef_walk.and_then(|p| {
+                            (p.bits > 0).then(|| {
+                                let fb_per_sb = sb_size / 64;
+                                let mut strengths = [0u8; 4];
+                                for (q, st) in strengths.iter_mut().enumerate() {
+                                    let fbc = sb_col * fb_per_sb + (q & 1);
+                                    let fbr = sb_row * fb_per_sb + (q >> 1);
+                                    // Off-frame quadrants of a partial SB
+                                    // code nothing, so their slot is never
+                                    // read; 0 keeps the lookup total.
+                                    *st = p
+                                        .fb_idx
+                                        .get(fbr * p.nhfb + fbc)
+                                        .copied()
+                                        .filter(|_| fbc < p.nhfb)
+                                        .unwrap_or(0);
+                                }
+                                CdefSbState {
+                                    bits: p.bits,
+                                    strengths,
+                                    transmitted: [false; 4],
+                                    sb128: sb_size == 128,
+                                }
+                            })
                         });
 
                         // Loop-restoration coefficients for every RU cornered in
@@ -2094,17 +2125,59 @@ pub(crate) struct EntropyCtx {
     pub delta_q_state: Option<(u8, i32)>,
     /// The current SB's target qindex, set by the walk at SB start.
     pub delta_q_sb_qindex: i32,
-    /// Pending per-SB `cdef_idx` emission (C write_cdef,
-    /// entropy_coding.c:4034: `aom_write_literal(w, mbmi->cdef_strength,
-    /// cdef_bits)` at the FIRST NON-SKIP block of each 64x64). Set at SB
-    /// start by the walk when `cdef_bits > 0`; `take()`n at emission.
-    cdef_pending: Option<(u8, u8)>,
+    /// Pending `cdef_idx` emission for the CURRENT superblock — C
+    /// `write_cdef` (entropy_coding.c:3986-4017). Set at SB start by the
+    /// walk when `cdef_bits > 0`, `None` otherwise.
+    cdef_sb: Option<CdefSbState>,
     /// Task #86: the Y-origin (LUMA pixel domain) of the current tile's
     /// own top row — see `PartitionSearchConfig::tile_top_px`'s doc for
     /// why this must gate "above" availability instead of frame-absolute
     /// y=0. 0 = single tile row (default, set by `EntropyCtx::new`); the
     /// per-tile entropy walk sets it explicitly per tile_idx.
     pub(crate) tile_top_px: usize,
+}
+
+/// C `write_cdef`'s per-superblock state (entropy_coding.c:3986-4017).
+///
+/// The CDEF filter block is 64x64 **always**, so an SB128 superblock covers
+/// FOUR of them and C emits up to four `cdef_bits` literals per SB — one at
+/// the first non-skip coding block of each quadrant — latched by
+/// `cdef_transmitted[4]`:
+///
+/// ```text
+/// const int32_t mask  = 1 << (6 - MI_SIZE_LOG2);            // 16 mi = 64 px
+/// const int32_t index = sb_size == BLOCK_128X128
+///     ? !!(mi_col & mask) + 2 * !!(mi_row & mask) : 0;
+/// if (!ctx->cdef_transmitted[index] && !skip) {
+///     aom_write_literal(w, mbmi->cdef_strength, cdef_bits);
+///     ctx->cdef_transmitted[index] = true;
+/// }
+/// ```
+///
+/// The strength itself is read off the **b64 grid** — C takes the mbmi at
+/// `(mi_row & ~15, mi_col & ~15)`, i.e. the 64-aligned mi — which is what
+/// [`Self::strengths`] caches per quadrant.
+///
+/// At SB64 there is exactly one quadrant, `index` is always 0, and this is
+/// bit-for-bit the previous single-slot behaviour.
+///
+/// NOTE the three-phase CDEF contract that docs/sb128-port-map.md flags as
+/// the highest-risk SB128 chunk (search skips stale quadrants / strengths
+/// fan out to covered quadrants / dirinit forced fresh) collapses to a
+/// no-op here, because on a KEY frame the 128 root is ALWAYS split (see
+/// `merge_sb_units`) so NO coding block is ever a 128-variant. Every 64x64
+/// filter block owns its own blocks and its own searched strength, exactly
+/// as at SB64. Only this WRITE side differs.
+#[derive(Clone, Copy, Debug)]
+struct CdefSbState {
+    /// C `cdef_bits` (> 0, else the walk stores `None`).
+    bits: u8,
+    /// Per-quadrant strength index, b64-grid order (0=TL, 1=TR, 2=BL, 3=BR).
+    strengths: [u8; 4],
+    /// C `ctx->cdef_transmitted[4]`, reset at each SB top-left.
+    transmitted: [bool; 4],
+    /// SB128: quadrant index varies. SB64: always slot 0.
+    sb128: bool,
 }
 
 /// Live state for the 4:2:0 chroma pass, threaded through the entropy walk
@@ -2205,7 +2278,7 @@ impl EntropyCtx {
             allow_sct,
             delta_q_state: None,
             delta_q_sb_qindex: 0,
-            cdef_pending: None,
+            cdef_sb: None,
             tile_top_px: 0,
         }
     }
@@ -2898,14 +2971,30 @@ fn encode_block_syntax(
     let skip_ctx = ectx.skip_ctx(block_x, block_y);
     svtav1_entropy::context::write_skip(writer, frame_ctx, skip_ctx, skip);
 
-    // Per-SB cdef_idx (C write_cdef, entropy_coding.c:4034-4065; spec
-    // read_cdef): at the FIRST NON-SKIP coded block of each 64x64,
-    // `cdef_bits` raw literal bits carry the filter block's strength
+    // cdef_idx (C write_cdef, entropy_coding.c:3986-4017; spec read_cdef):
+    // at the FIRST NON-SKIP coded block of each 64x64 FILTER BLOCK,
+    // `cdef_bits` raw literal bits carry that filter block's strength
     // index. Armed by the walk at SB start only when cdef_bits > 0
     // (aom_write_literal with 0 bits is a no-iteration loop).
+    //
+    // The filter block is 64x64 ALWAYS, so an SB128 superblock emits up to
+    // FOUR literals — C's `cdef_transmitted[4]` latch, indexed
+    // `!!(mi_col & 16) + 2 * !!(mi_row & 16)` (mi 16 == 64 px). Emitting
+    // just one per SB (the pre-SB128 model) leaves the decoder expecting
+    // literals the encoder never wrote: a CORRUPT tile, not merely a
+    // mismatched one. At SB64 `index` is always 0 and this is bit-for-bit
+    // the previous behaviour.
     if !skip {
-        if let Some((bits, idx)) = ectx.cdef_pending.take() {
-            writer.write_literal(idx as u32, bits as u32);
+        if let Some(st) = ectx.cdef_sb.as_mut() {
+            let index = if st.sb128 {
+                ((block_x >> 6) & 1) + 2 * ((block_y >> 6) & 1)
+            } else {
+                0
+            };
+            if !st.transmitted[index] {
+                st.transmitted[index] = true;
+                writer.write_literal(u32::from(st.strengths[index]), u32::from(st.bits));
+            }
         }
     }
 
