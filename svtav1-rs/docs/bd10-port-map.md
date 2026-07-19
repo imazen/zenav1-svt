@@ -451,3 +451,77 @@ cdef/restoration, keeping every existing u8 call path as the `Pixel=u8` instanti
   planes). Both are prerequisites for the FIRST bd10 identity cell.
 - **PD0 stays u8** (map §hbd_md): build the MSB-truncated 8-bit plane at
   ingestion; `pd0.rs` reads it unchanged. Only MD/recon/filters go u16.
+
+## TXS-COUPLING GATE LANDED (2026-07-19) — the SAMEPART-DIFF tx_depth flips were an 8-bit gate, NOT bd10 precision
+
+**A large subset of the "42 SAMEPART-DIFF = true-bd10-MD" cells were mis-classified.** The
+`tx_depth` flips (the target cell `gradient 64 64 20 10`: sole flip `txd C=0/port=1`) are NOT a
+bd10 RD-precision decision — they are an **8-bit speed-feature gate** C flips because bd10 forces
+`pd0_level = PD0_LVL_0`, exactly the same mechanism as the PD0_LVL_0 partition fix.
+
+**Root cause (traced end-to-end vs real C, read-only `/root/svtav1/Source/`):** the eff-M9 per-SB
+TXS coupling in `svt_aom_sig_deriv_enc_dec_allintra` (enc_mode_config.c:8114-8118):
+```c
+uint8_t txs_level =
+    (pcs->txs_level == 0 && ctx->pd0_ctrls.pd0_level == PD0_LVL_6) ? MAX_TXS_LEVEL - 1 : pcs->txs_level;
+set_txs_controls(pcs, ctx, txs_level);
+```
+`set_pd0_ctrls` (enc_mode_config.c:5416) forces `pd0_ctrls.pd0_level = PD0_LVL_0` at bd10 (hbd_md
+set) BEFORE this reads it (order: `svt_aom_sig_deriv_enc_dec_common` @ 7096 -> `_allintra` @ 8045).
+At eff-M9 `pcs->txs_level == 0`, so the coupling would bump txs to level 5 — but ONLY when
+`pd0_level == PD0_LVL_6`. bd10 = LVL_0 => the bump NEVER fires => **TXS off, tx_depth 0 on every
+leaf**, where bd8 bumps it to level 5 for undemoted PD0_LVL_6 SBs and codes tx_depth 1 on some.
+Those tx_depth-1 leaves were out of the bd10 re-encode envelope (`bd10_reencode_node` asserts
+`tx_depth==0`) -> the whole frame fell back to u8 and DIFFERED.
+
+**Fix (commit a901b4862):** force `sb_is_lvl6 = false` at bd10 in `partition.rs`
+(`fx.frame.bit_depth != 10 && !pd0_detector_allintra_demotes(...)`), via a new
+`FunnelFrame.bit_depth` field. bd8 byte-UNCHANGED (the `!= 10 &&` short-circuit keeps the bd8
+expression). Gate `bd10_nonflat_gate.sh` **31 -> 41**: +gradient 64/128 q5/q20/q40 p10/p13
+(closes the whole gradient eff-M9 tx_depth cluster) + diag 64 q40 p10/p13 (exercises the
+directional `dr_predict_hbd` re-encode arm). Verification: bd8 identity_matrix 54/54, partial_sb
+101/101, bd10_matrix 36/36 byte-UNCHANGED; 588-cell bd10 no-panic sweep (incl partial-SB + non-64
+dims) 0 panics; encoder unit tests 210/210.
+
+### CORRECTED SAMEPART-DIFF map (post-TXS-fix survey: {gradient,diag} x {64,128} x q{5,12,20,32,40,55} x p{3,6,10,13})
+
+- **gradient eff-M9 (p10/p13): ALL MATCH** — the tx_depth flips were the sole issue; now closed.
+- **diag eff-M9 splits into TWO classes** (verified: bd8 diag q5/q12/q20 p10 all byte-MATCH, so
+  partition/mode/tx_type are correct at bd8 — the bd10 divergences are bd10-specific):
+  - **q20/q32/q55 (p10/p13): MODE flips** — genuine bd10 RD precision. e.g. `diag 64 64 20 10`
+    flips LUMA mode DC(0)->SMOOTH(9) on the diagonal-edge 8x8 blocks mi=(4,4)/(8,8)/(12,12) (uv
+    follows: uv 0->9). DECISIVE that this is precision, not a gate: the harness input is
+    `sample<<2`, so a u8-predicted SATD scales EXACTLY 4x at bd10 and preserves the DC-vs-SMOOTH
+    ordering — the flip can ONLY come from the true bd10 recon differing from `recon8<<2` (the
+    ~+20/px hbd intra-predictor rounding, docs above) feeding a different prediction into the
+    near-tie. At eff-M9 `nic_counts(_, (0,0,0)) = (1,1,1)`, so the winner is dominated by the MDS0
+    fast SATD survivor — the flip lives in the fast loop's u8 predict + u8 SATD. Needs the u16 mode
+    funnel.
+  - **q5/q12 (p10/p13): COEFF divergence, trees IDENTICAL** — a DISTINCT, SMALLER class. tree_diff
+    is 0 flips (partition + every mode/uv/txd match C) AND bd8 byte-matches, yet the bd10 tile
+    payload diverges (`diag 64 64 12 10`: first differing byte 133 of 469, 336 bytes differ). So it
+    is NOT a mode flip and NOT a post-filter header field — it is a **bd10 re-encode coded-LEVEL
+    divergence** on some leaf: given matching modes/tx_type, the only sources are the bd10 quant /
+    `optimize_b` RDOQ (`tx_unit_hbd`) or an accumulated u16-canvas prediction drift feeding a later
+    leaf (the first ~132 bytes / several leaves match, then one diverges). This is a re-encode WIRING
+    bug (all kernels FFI-verified), likely more tractable than the mode funnel. NEXT: coeff-level
+    dump of the first diverging leaf (map byte 133 -> leaf), compare port `tx_unit_hbd` qcoeffs vs a
+    C bd10 coeff dump; check the RDOQ path (rdoq_level, `rdoq_rdmult_full(lambda_bd10)`) and the
+    64-dim fold. NOT yet root-caused this session.
+- **gradient/diag M6 (p6): mode/uv/fi flips** — same bd10 RD-precision class, plus fi/CFL (M6 runs
+  more candidates). NOT the TXS gate (M6 `pcs->txs_level != 0`, so the coupling is inert at both bd).
+- **p3 (M3-M5): partition depth-refine + NSQ (bsize flips)** — the PARTFLIP axis, separate.
+- **A few pure-BLOCKER2 cells** (trees identical, only a post-filter value differs): CDEF/Wiener bd10.
+
+**REMAINING SCOPE = true bd10 MD (the u16 mode funnel).** The diag/M6 MODE flips need the leaf
+funnel's mode RD evaluated at bd10: a u16 recon canvas maintained through the funnel walk
+(`encode_fixed_tree` -> `decide_leaf`/`evaluate_leaf`/`commit_leaf`, + the pipeline SB loop) so
+each candidate predicts at bd10 (`predict_unit_hbd` from the u16 canvas), its residual/tx/quant/
+distortion run at bd10 (`tx_unit_hbd` extended to return dist+bits, `full_distortion_kernel16_bits
+<< 4`, bd10 lambda `kf_full_lambda_bd10`), and the MDS0/MDS1/MDS3 winner is picked at bd10. All
+kernels exist + are FFI-verified; the work is the u16-canvas plumbing (luma AND chroma — the
+joint block cost includes chroma) + the bd10 branches, gated on bit_depth==10 (bd8 byte-UNCHANGED).
+Per this file's SURFACE analysis there is no byte-verifiable sub-chunk smaller than "the eff-M9
+mode path aligned at bd10 for one cell", so it lands as one reviewed pass. This is the true-bd10-MD
+axis the original SAMEPART-DIFF framing named — correct for the MODE flips, wrong (now fixed) for
+the tx_depth flips.
