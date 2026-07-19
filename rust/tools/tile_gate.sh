@@ -161,7 +161,18 @@ BYTE_EXACT=(
 # extraction and its tx-level canvases now stop at the tile edge instead
 # of reading the 128 fill. That promoted 12 of the 22 cells in one change.
 #
-# What is left is 4 cells, and they are NOT one thing:
+# The 162-cell map after the fix is 137 MATCH / 25 DIFF, 162/162 DECODE.
+# Discounting the 18 rows=cols=0 cells (which are single-tile by
+# definition), genuine multi-tile parity is 119/144 — and the residual has
+# a sharp shape worth stating: EVERY ONE of the 25 diverging cells is
+# PRESET 6. Presets 10 and 13 are 48/48 byte-exact each, on both axes, on
+# all three geometries, at both qps. Preset 6 is 23/48. So the remaining
+# work is not "tiles" — the tile machinery is exact wherever the MD path
+# is the eff-M9 funnel — it is preset 6's richer search still having a
+# non-tile-aware corner.
+#
+# The 4 cells in THIS gate's pinned set are all preset 6, and they are not
+# one thing:
 #
 #   * `512x384 q45 p6 r1c0` — the outlier, and the only LARGE gap
 #     (C=3211B vs port=3042B; every other divergence is under 60 bytes).
