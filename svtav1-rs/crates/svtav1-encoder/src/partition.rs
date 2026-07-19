@@ -1588,8 +1588,17 @@ pub(crate) fn encode_fixed_tree(
                 // pd0_detector_allintra_demotes at the CLI qp) so demoted
                 // PD0_LVL_5 SBs keep TXS off. Ignored unless the funnel
                 // config sets `txs_lvl6_gate` (eff-M9 only).
-                let sb_is_lvl6 =
-                    !crate::pd0::pd0_detector_allintra_demotes(sb_vars, fx.frame.cli_qp);
+                //
+                // bd10: C forces `pd0_ctrls.pd0_level = PD0_LVL_0`
+                // (`set_pd0_ctrls`, enc_mode_config.c:5416) at every preset,
+                // so the coupling's `pd0_level == PD0_LVL_6` predicate
+                // (enc_mode_config.c:8116) is FALSE for every SB — the txs
+                // bump never fires, TXS stays off (tx_depth 0). Mirror that by
+                // forcing `sb_is_lvl6 = false` at bd10; the pd0 detector is
+                // irrelevant there (the SB is at LVL_0, the LVL_0 partition
+                // path). bd8 unchanged.
+                let sb_is_lvl6 = fx.frame.bit_depth != 10
+                    && !crate::pd0::pd0_detector_allintra_demotes(sb_vars, fx.frame.cli_qp);
                 // Task #95 chunk 2: a PD0-leaf node that is a SINGLE-EDGE
                 // (one-false) block is coded as PARTITION_HORZ (`!has_rows`)
                 // or PARTITION_VERT (`!has_cols`) — its single in-frame block

@@ -88,6 +88,31 @@ CELLS=(
   "gradient 128 128 20 13"
   "gradient 128 128 32 10"
   "gradient 128 128 32 13"
+  # bd10 TXS-coupling gate fix (task #94, this landing): at bd10 C forces
+  # pd0_ctrls.pd0_level = PD0_LVL_0 (set_pd0_ctrls, enc_mode_config.c:5416), so
+  # the eff-M9 per-SB TXS coupling (svt_aom_sig_deriv_enc_dec_allintra,
+  # enc_mode_config.c:8114-8118: `pcs->txs_level == 0 && pd0_level ==
+  # PD0_LVL_6`) NEVER fires — TXS stays OFF (tx_depth 0 everywhere), where the
+  # port's u8 funnel bumped it to level 5 for undemoted PD0_LVL_6 SBs and coded
+  # tx_depth 1 on some leaves. Those tx_depth-1 leaves were out of the bd10
+  # re-encode envelope (bd10_reencode_node asserts tx_depth==0) -> the whole
+  # frame fell back to the u8 output and DIFFERED. Forcing sb_is_lvl6=false at
+  # bd10 (partition.rs) restores tx_depth 0, the re-encode runs, and the cell
+  # byte-matches. These are the gradient eff-M9 (p10/p13) cells whose ONLY
+  # remaining flip was the tx_depth (now closed); each was a tx_depth DIFF
+  # before the fix and BYTE-MATCHES after (verified `cmp`). Load-bearing on the
+  # re-encode: Q10 != 4*Q8 at these qindexes, so a u8 fallback would NOT match.
+  # (diag q40 exercises the directional dr_predict_hbd re-encode arm.)
+  "gradient 64 64 5 10"
+  "gradient 64 64 5 13"
+  "gradient 64 64 20 10"
+  "gradient 64 64 20 13"
+  "gradient 128 128 5 10"
+  "gradient 128 128 5 13"
+  "gradient 128 128 40 10"
+  "gradient 128 128 40 13"
+  "diag 64 64 40 10"
+  "diag 64 64 40 13"
 )
 for cell in "${CELLS[@]}"; do
   read -r content w h qp p <<<"$cell"

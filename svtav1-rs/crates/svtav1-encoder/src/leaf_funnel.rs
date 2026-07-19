@@ -279,6 +279,15 @@ pub struct FunnelFrame {
     /// Frame rdoq level (0 = quantize_b at MDS3 too).
     pub rdoq_level: u8,
     pub base_qindex: u8,
+    /// Encode bit depth (8 or 10). At bd10 C forces `pd0_ctrls.pd0_level =
+    /// PD0_LVL_0` (`set_pd0_ctrls`, enc_mode_config.c:5416) regardless of
+    /// preset, so the eff-M9 per-SB TXS coupling
+    /// (`svt_aom_sig_deriv_enc_dec_allintra`, enc_mode_config.c:8114-8118:
+    /// `pcs->txs_level == 0 && pd0_level == PD0_LVL_6`) NEVER fires — TXS
+    /// stays off (tx_depth 0 everywhere), where bd8 bumps it to level 5 for
+    /// undemoted PD0_LVL_6 SBs. The funnel's `sb_is_lvl6` gate (partition.rs)
+    /// forces false at bd10 to mirror this. bd8 unaffected.
+    pub bit_depth: u8,
     /// Per-plane chroma quantization qindexes: clamp(base + FH delta_q_ac
     /// [plane]). == base_qindex in mainline mode (all FH chroma deltas 0);
     /// the fork's chroma-q path sets U/V independently (chroma_q.rs).

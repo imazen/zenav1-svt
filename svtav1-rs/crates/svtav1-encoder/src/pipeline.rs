@@ -3940,6 +3940,7 @@ fn encode_tile_rows(
                 cli_qp: cli_qp as u32,
                 rdoq_level: cq.rdoq_level,
                 base_qindex,
+                bit_depth,
                 qindex_u,
                 qindex_v,
                 ac_bias_eff,
