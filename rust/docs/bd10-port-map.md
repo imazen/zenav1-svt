@@ -1214,3 +1214,55 @@ there. It is bounded, not open-ended:
 
 Only after CfL is the residual p0..p5 partition question worth re-opening; on
 synthetic content the remaining 9 PART cells are the visible part of it.
+
+### CfL at bd10 — ATTEMPTED, MEASURED, REVERTED (do not re-try the same way)
+
+The uv-follows-luma arm was wired at 10 bits and **built and ran**, so the
+plumbing is proven: AC luma subsampled from the 10-bit winner recon
+(`cfl_luma_subsampling_420_hbd`), DC base via `predict_unit_hbd`, every cost
+through `tx_unit_hbd` with the bd10 tables + `full_lambda_md[EB_10_BIT_MD]`, and
+the alpha search factored out into a shared bit-depth-independent
+`md_cfl_alpha_search` so the u8 path routes through the same code.
+
+**Result on `CID22-512/2119713 512x512 q32 p6`: a big improvement that is still
+NOT byte-exact, so it was reverted.** Whole-frame vs C at bd10:
+
+| | before | with bd10 CfL |
+|---|---|---|
+| field flips | 3053 | **1072** |
+| geometry C-only / port-only | 1070 / 137 | **15 / 18** |
+| `uv` flips | 739 | 336 |
+| blocks coded `UV_CFL_PRED` | port 0 (C 211) | **port 856** (C 211) |
+
+So offering CfL at 10 bits collapses most of the divergence — and then
+**over-picks CfL ~4x**. Two distinct gaps are responsible, and BOTH must land
+before the arm is byte-exact:
+
+1. **The chroma-complexity detector is not ported at 10 bits** (this is new
+   information, not in the sections above). `chroma_complexity_check_pred`
+   (product_coding_loop.c:6012) has an explicit `if (!ctx->hbd_md) { ... } else
+   { ... }` split. The SAD arm uses `sad_16b_kernel` on 10-bit source/pred —
+   roughly scale-invariant on `<<2` content — but the VARIANCE arm uses
+   `fn_ptr->vf_hbd_10(...)` against `eb_av1_var_offs_hbd` and then compares
+   `ROUND_POWER_OF_TWO(var, num_pels_log2) > ctx->cfl_ctrls.cplx_th` (:6136)
+   against the SAME RAW `cplx_th` (10 at M6). A 10-bit per-pixel variance is
+   ~16x its 8-bit value, so at bd10 C's detector arms on far more blocks than at
+   bd8, while the port's `chroma_var_arm_fires` still reads u8 planes. The port
+   therefore EVALUATES CfL on the wrong block set — in the under-firing
+   direction, which is NOT the over-pick, so it is necessary but not sufficient.
+2. **Something still tilts the CfL-vs-non-CfL compare toward CfL.** Both sides
+   were run in the transform domain as C does (`svt_aom_full_loop_uv`
+   `is_full_loop=0`, :3800-3860 for non-CfL and `av1_cost_calc_cfl` :3445 for
+   each alpha), so the domain is not the error; the residual is inside those
+   costs. Next session: dump C's `cfl_rd` and `non_cfl_cost` for one block where
+   the port picks CfL and C does not (extend the `SVT_FULLCOST_OUT` wrap to the
+   `cfl_prediction` compare) rather than re-deriving by inspection.
+
+The `cfl_ind_uv` arm (M0..M5) was deliberately NOT attempted: its decision is
+`check_best_indepedant_cfl`'s SPATIAL compare against `best_uv_cost[mode]`,
+which needs the whole independent-uv search at 10 bits, not just the CfL side.
+
+Baseline was restored rather than landing a known-4x-over-picking decision into
+the shared MD path: an over-picked CfL leaf is also rejected by
+`bd10_tree_supported` (uv_mode 13), which would silently drop whole frames out
+of the level re-encode post-pass. The honest visible gap is better than that.
