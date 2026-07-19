@@ -811,3 +811,99 @@ and switches source/recon buffer selection, distortion-kernel dispatch
 lambda shift (`>> (2*(bit_depth-8))`), and whether LPD1 is reachable at all.
 The port's u8-search + 10-bit-re-encode strategy models none of that, which is
 the same gap already described above as "true bd10 MD".
+
+---
+
+## LOW-PRESET (M0/M3/M6) failure MAP + PHOTOGRAPHIC bd10 (2026-07-19)
+
+Two measured results, both of which **overturn a premise recorded above**.
+
+### 1. PHOTOGRAPHIC bd10 at eff-M9 is BYTE-IDENTICAL — 94/94 (was "18/18 diverge")
+
+The "Photographic sweep ... 18/18 BLOCKER1_part. On real content the partition
+tree ALWAYS diverges at bd10" result in the FALL-BACK MAP section is **STALE**.
+It was measured before four landings (PD0_LVL_0, the TXS-coupling gate, the bd10
+chroma re-encode, the AVX2-hadamard fix). Re-measured with all four in:
+
+- **94/94 byte-identical** across **12 distinct CID22-512 photographs** x
+  q{5,12,20,32,40,55,63} x p{10,13}. ZERO diffs.
+- Gated: **`tools/bd10_photo_gate.sh`** (94 cells, ~2m50s). Corpus
+  `BD10_PHOTO_CORPUS` (default CID22-512); **fails loudly if absent**, never
+  skips silently.
+
+So real 10-bit photographic content is fully byte-exact at eff-M9. The bd10 gap
+is now a **low-preset** gap, not a real-content gap.
+
+### 2. The low-preset failure MAP — the CDEF/LR axis owns ONE cell, not the bulk
+
+Sweep `{gradient,diag} x {64x64,128x128} x q{12,20,32,40,55} x p{0,3,6}` = 60
+cells, classified by `tools/bd10_classify.sh` (new; see its header for the
+classifier contract). Every DIFF is assigned its **upstream-most** axis, because
+a partition/mode flip changes the recon and therefore ALSO perturbs the
+CDEF/LR frame header — that FH difference is a downstream symptom, not evidence
+of an FH bug. Only a cell whose tree AND tile payload are byte-identical proves
+the post-filter search itself diverges.
+
+| axis | p0 | p3 | p6 | total |
+|---|---|---|---|---|
+| **PART** (geometry flip: PD1 depth-refine + NSQ) | 13 | 9 | 0 | **22** |
+| **MODE** (geometry identical; mode/uv/fi/txd flip) | 6 | 10 | 19 | **35** |
+| **FH** (tree AND tile payload identical: CDEF/LR search) | 1 | 0 | 0 | **1** |
+| MATCH | 0 | 1 | 1 | 2 |
+
+**The working hypothesis that "CDEF/LR search dominates at p<=6 since it changes
+the frame header on every cell" is REFUTED.** 36 of 58 DIFF cells do show an FH
+difference, but in 35 of those the tree also flips, so the FH value is
+downstream. Exactly **one** cell (`gradient 64x64 q55 p0`, `cdef_y_pri_strength`
+C=4/port=5) is a pure post-filter divergence — the same single cell the FALL-BACK
+MAP already identified as the smallest blocker-2 cell.
+
+**Structure worth keeping:**
+- **p6 has ZERO partition flips** (19/19 MODE, geometry identical on every cell)
+  — confirming the `LVL_0 == LVL_1` note above. p6 is a pure MODE axis.
+- **p0/p3 are partition-dominated** (22 of 29 DIFFs), i.e. PD1 depth-refine + NSQ.
+- The p6 MODE flips are `fi` (filter-intra DC vs DC_PRED near-tie), `mode`
+  (DC(0) <-> SMOOTH(9)/V(1)) and `uv`/`txd` — few flips per cell (1-9).
+- **Photographic at p6 is PART, not MODE**: 9/9 cells (3 images x q{12,32,55})
+  diverge on partition geometry. So real content at p6 needs the depth-refine
+  axis too; the synthetic p6 grid understates the work.
+
+### 3. MEASURED NEGATIVE — widening the u16 MDS0 mode funnel to M6..M8 closes NOTHING
+
+Tried and REVERTED (recorded so it is not re-tried): extending `bd10_luma_funnel`
+from `preset >= 9` to `preset >= 6` and passing the 10-bit canvas into the
+M6-M8 `FunnelCtx` (M6..M8 share eff-M9's `encode_fixed_tree` walk, so it wires up
+in ~10 lines). Result: **p6 stays 19/19 DIFF** — no cell closed. The existing
+gate stayed 79/79 (the change is byte-neutral there), and a few p6 payload sizes
+shifted by 1-5 bytes, proving the canvas WAS live; it just does not decide the
+winner.
+
+**Why:** at eff-M9 `nic_counts = (1,1,1)`, so the MDS0 fast-SATD survivor IS the
+coded mode and a bd10 MDS0 is sufficient. At M6 `nic_num = (6,6,6)` — many
+candidates survive MDS0 and the winner is chosen by the **MDS1 / MDS3 full-RD**
+stages (`leaf_funnel.rs:3579` MDS1, `:3802` MDS3), which still run u8 prediction,
+u8 `tx_unit`, the u8 quant table and the bd8 lambda.
+
+**So the p6 MODE axis needs the full-RD stages at bd10, not just MDS0.** Concrete
+prerequisite discovered while scoping: **`tx_unit_hbd` returns no `dist` and no
+`bits`** (`TxUnitOutHbd` = `{eob, qcoeff, recon, cul}`) — it is a level-producing
+core, not an RD unit. Threading bd10 into MDS1/MDS3 therefore requires FIRST
+extending it with the freq/spatial distortion + coeff-rate model that u8
+`tx_unit` already returns, then carrying a per-candidate `pred10` (MDS0 already
+computes one, it is currently discarded), then the MDS3 TXS/TXT/RDOQ/chroma
+interactions (~1150 lines). This is the "true bd10 MD" pass the map calls
+un-dribbleable; the MDS0-only shortcut is now measured to be insufficient.
+
+### Remaining scope per axis (honest)
+
+- **MODE (35 cells; 19 at p6, all geometry-clean)** — the largest and, at p6, the
+  structurally simplest target: extend `tx_unit_hbd` with dist+bits, thread
+  `pred10`, run MDS1+MDS3 at bd10 with `lambda_bd10_full` + the bd10 quant table.
+  One reviewed pass; land only on a clean byte-match (a partial thread
+  mispredicts silently).
+- **PART (22 cells at p0/p3, plus ALL photographic p6)** — bd10-aware PD1
+  depth-refine + NSQ over the PD0 tree. Largest real-content impact below M9.
+- **FH (1 cell)** — the u16-dst CDEF filter (`svt_cdef_filter_block_c`; only the
+  u8-dst arm is ported), `coeff_shift=2`, bd10 lambda in `finish_cdef_rd`, run on
+  `last_recon10_y`. Bounded, but it unblocks only this one cell until the MODE and
+  PART axes land (every other FH difference is downstream of a tree flip).
