@@ -841,6 +841,56 @@ pub struct DrGeom {
     /// SB64 but its right half at SB128, with different top-right /
     /// bottom-left availability.
     pub sb_mi_size: usize,
+    /// Task #96: the CURRENT TILE's bounds in LUMA mi units — C's
+    /// `xd->tile.mi_{row,col}_{start,end}`. AV1 intra prediction stops at
+    /// a tile boundary on every side, so C derives all four availability
+    /// predicates from the TILE, not the frame:
+    ///
+    /// ```text
+    /// have_top         = row_off || (mi_row > tile.mi_row_start)   // adaptive_mv_pred.c:1058
+    /// have_left        = col_off || (mi_col > tile.mi_col_start)   // :1059
+    /// right_available  = mi_col + ((col_off + txw) << ss) < tile.mi_col_end
+    /// bottom_available = yd > 0 && mi_row + ((row_off + txh) << ss) < tile.mi_row_end
+    /// ```
+    ///
+    /// `TileMi::whole_frame(w, h)` reproduces the previous single-tile
+    /// behaviour exactly (start 0, end = frame mi), so every single-tile
+    /// caller is byte-identical by construction.
+    pub tile: TileMi,
+}
+
+/// A tile's bounds in LUMA mi (4px) units — C `TileInfo`'s
+/// `mi_{row,col}_{start,end}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TileMi {
+    pub mi_row_start: usize,
+    pub mi_row_end: usize,
+    pub mi_col_start: usize,
+    pub mi_col_end: usize,
+}
+
+impl TileMi {
+    /// The whole frame as one tile — the single-tile default, and exactly
+    /// the bounds the pre-task-#96 code hardcoded.
+    pub fn whole_frame(frame_w: usize, frame_h: usize) -> Self {
+        Self {
+            mi_row_start: 0,
+            mi_row_end: 2 * ((frame_h + 7) >> 3),
+            mi_col_start: 0,
+            mi_col_end: 2 * ((frame_w + 7) >> 3),
+        }
+    }
+
+    /// Plane-domain pixel origin of the tile's top edge (`ss` = 0 luma,
+    /// 1 for 4:2:0 chroma).
+    pub fn top_px(&self, ss: usize) -> usize {
+        (self.mi_row_start * 4) >> ss
+    }
+
+    /// Plane-domain pixel origin of the tile's left edge.
+    pub fn left_px(&self, ss: usize) -> usize {
+        (self.mi_col_start * 4) >> ss
+    }
 }
 
 /// C `mode_to_angle_map` (V..D67) + `ANGLE_STEP = 3`.
@@ -879,9 +929,12 @@ pub fn dr_predict<S: Fn(usize, usize) -> u8>(
     let y_off = (g.row_off * 4) as i64;
 
     // C: have_top = row_off || up_available; have_left = col_off ||
-    // left_available (single tile).
-    let have_top = g.row_off > 0 || g.mi_row > 0;
-    let have_left = g.col_off > 0 || g.mi_col > 0;
+    // left_available — and BOTH are tile-scoped
+    // (`xd->up_available = mi_row > tile->mi_row_start`,
+    // adaptive_mv_pred.c:1058-1059). Identical to the previous `> 0` for
+    // a whole-frame tile.
+    let have_top = g.row_off > 0 || g.mi_row > g.tile.mi_row_start;
+    let have_left = g.col_off > 0 || g.mi_col > g.tile.mi_col_start;
 
     // C: xr/yd — distance from the TX unit's right/bottom edge to the
     // frame's mi-aligned edges, in PLANE px (mb_to_right_edge >> (3+ss)).
@@ -892,8 +945,11 @@ pub fn dr_predict<S: Fn(usize, usize) -> u8>(
 
     let txw_mi = g.txw / 4;
     let txh_mi = g.txh / 4;
-    let right_available = g.mi_col + ((g.col_off + txw_mi) << g.ss) < mi_cols;
-    let bottom_available = yd > 0 && g.mi_row + ((g.row_off + txh_mi) << g.ss) < mi_rows;
+    // Task #96: C bounds these by the TILE's mi_col_end / mi_row_end, not
+    // the frame's — a block on the tile's right edge has no top-right
+    // even mid-frame. `mi_cols`/`mi_rows` for a whole-frame tile.
+    let right_available = g.mi_col + ((g.col_off + txw_mi) << g.ss) < g.tile.mi_col_end;
+    let bottom_available = yd > 0 && g.mi_row + ((g.row_off + txh_mi) << g.ss) < g.tile.mi_row_end;
 
     let shape_ok = is_av1_block_shape(g.bw_px, g.bh_px);
     let have_top_right = shape_ok
@@ -1621,6 +1677,7 @@ mod tests {
                     // 64px superblocks — this bd8-vs-bd10 equivalence test
                     // is about the predictor, not the SB geometry.
                     sb_mi_size: 16,
+                    tile: TileMi::whole_frame(128, 128),
                 };
                 for &edge_filter in &[false, true] {
                     for &filt_type in &[0i32, 1] {

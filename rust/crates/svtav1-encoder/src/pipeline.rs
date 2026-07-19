@@ -1341,6 +1341,16 @@ impl EncodePipeline {
                 ectx.tile_top_px = tile_sb_row_start * sb_size;
                 // Task #96: ditto for this tile's own left column.
                 ectx.tile_left_px = tile_sb_col_start * sb_size;
+                // Same rect in LUMA mi, ends included, for the MD
+                // prediction path. Ends are clamped to the frame exactly
+                // like C's av1_tile_set_{col,row}
+                // (`AOMMIN(mi_col_end, cm->mi_params.mi_cols)`).
+                ectx.tile_mi = crate::intra_edge::TileMi {
+                    mi_row_start: tile_sb_row_start * sb_size / 4,
+                    mi_row_end: (tile_sb_row_end * sb_size / 4).min(h4),
+                    mi_col_start: tile_sb_col_start * sb_size / 4,
+                    mi_col_end: (tile_sb_col_end * sb_size / 4).min(w4),
+                };
                 // [SVT_HDR_MODE] arm per-SB delta-q: prev starts at the FH base
                 // (C prev_qindex tile-init); uniform plan = every SB at base.
                 if let Some(res) = delta_q_res_signal {
@@ -2197,6 +2207,14 @@ pub(crate) struct EntropyCtx {
     /// 0 = single tile column (default), which is what every pre-#96 cell
     /// encodes, so gating on this is byte-neutral there.
     pub(crate) tile_left_px: usize,
+    /// The same tile rect in LUMA mi units, INCLUDING the ends, for the MD
+    /// prediction path (`intra_edge::DrGeom`'s four availability
+    /// predicates need `mi_col_end` / `mi_row_end`, which the two px
+    /// origins above cannot express). Defaults to the whole frame, so a
+    /// single-tile encode is byte-identical. The origins and this field
+    /// are assigned together at each of the (few) tile-walk sites and a
+    /// debug_assert keeps them consistent.
+    pub(crate) tile_mi: crate::intra_edge::TileMi,
 }
 
 /// C `write_cdef`'s per-superblock state (entropy_coding.c:3986-4017).
@@ -2343,6 +2361,12 @@ impl EntropyCtx {
             cdef_sb: None,
             tile_top_px: 0,
             tile_left_px: 0,
+            tile_mi: crate::intra_edge::TileMi {
+                mi_row_start: 0,
+                mi_row_end: height_4x4,
+                mi_col_start: 0,
+                mi_col_end: width_4x4,
+            },
         }
     }
 
@@ -4121,6 +4145,12 @@ fn bd10_reencode_node(
                 ss: 0,
                 frame_w,
                 frame_h,
+                // PORT-NOTE(task #96): the bd10 re-encode runs AFTER the
+                // per-tile search merges, so it has no tile grid threaded
+                // and treats the frame as one tile. Byte-neutral for every
+                // gated bd10 cell (all single-tile); bd10 + multi-tile is
+                // not a gated combination and this is the known gap in it.
+                tile: crate::intra_edge::TileMi::whole_frame(frame_w, frame_h),
             };
             crate::leaf_funnel::predict_unit_hbd(
                 recon10,
@@ -4436,6 +4466,9 @@ fn bd10_reencode_chroma_node(
                 ss: 0,
                 frame_w: cframe_w,
                 frame_h: cframe_h,
+                // PORT-NOTE(task #96): see the luma twin above — bd10
+                // re-encode is post-merge and frame-scoped.
+                tile: crate::intra_edge::TileMi::whole_frame(cframe_w, cframe_h),
             };
             let (u_q, u_eob, u_rec) = bd10_reencode_chroma_plane(
                 recon10_u, u_src10, cstride, cx, cy, cw, ch, d.uv_mode, d.uv_angle_delta, uv_tt, &geom,
@@ -4703,6 +4736,12 @@ fn encode_tile_rows(
             // field on an EntropyCtx pipeline.rs already owns).
             e.tile_top_px = tile_sb_row_start * sb_size;
             e.tile_left_px = tile_sb_col_start * sb_size; // task #96
+            e.tile_mi = crate::intra_edge::TileMi {
+                mi_row_start: tile_sb_row_start * sb_size / 4,
+                mi_row_end: (tile_sb_row_end * sb_size / 4).min(h / 4),
+                mi_col_start: tile_sb_col_start * sb_size / 4,
+                mi_col_end: (tile_sb_col_end * sb_size / 4).min(w / 4),
+            };
             Some(e)
         } else {
             None
@@ -4776,6 +4815,12 @@ fn encode_tile_rows(
             let mut e = EntropyCtx::new(w / 4, h / 4, true, tile_sc.allow_screen_content_tools);
             e.tile_top_px = tile_sb_row_start * sb_size; // task #86, see fun_ectx above
             e.tile_left_px = tile_sb_col_start * sb_size; // task #96
+            e.tile_mi = crate::intra_edge::TileMi {
+                mi_row_start: tile_sb_row_start * sb_size / 4,
+                mi_row_end: (tile_sb_row_end * sb_size / 4).min(h / 4),
+                mi_col_start: tile_sb_col_start * sb_size / 4,
+                mi_col_end: (tile_sb_col_end * sb_size / 4).min(w / 4),
+            };
             Some(e)
         } else {
             None

@@ -960,6 +960,12 @@ pub(crate) struct UnitGeom {
     /// C `seq_header.sb_mi_size` — 16 (SB64) or 32 (SB128). See
     /// [`FunnelFrame::sb_mi_size`].
     pub sb_mi_size: usize,
+    /// Task #96: the current TILE's bounds in LUMA mi units. Every
+    /// neighbour-availability test in the MD prediction path is
+    /// tile-scoped in C; see [`crate::intra_edge::TileMi`].
+    /// `TileMi::whole_frame(..)` is the single-tile default and reproduces
+    /// the previous behaviour exactly.
+    pub tile: crate::intra_edge::TileMi,
 }
 
 /// Predict one intra mode (any of the 13 C modes + angle delta, or
@@ -1007,6 +1013,7 @@ fn predict_unit(
             frame_w: geom.frame_w,
             frame_h: geom.frame_h,
             sb_mi_size: geom.sb_mi_size,
+            tile: geom.tile,
         };
         crate::intra_edge::dr_predict(
             |x, y| recon[y * stride + x],
@@ -1019,8 +1026,19 @@ fn predict_unit(
         );
         return;
     }
-    let (above, left, top_left, has_above, has_left) =
-        crate::partition::extract_neighbors(recon, stride, abs_x, abs_y, w, h);
+    // Task #96: tile-scoped neighbour availability. `geom.tile` is the
+    // whole frame for a single-tile encode, where `tile_top/left` are 0
+    // and this is bit-for-bit `extract_neighbors`.
+    let (above, left, top_left, has_above, has_left) = crate::partition::extract_neighbors_tiled(
+        recon,
+        stride,
+        abs_x,
+        abs_y,
+        w,
+        h,
+        geom.tile.top_px(geom.ss),
+        geom.tile.left_px(geom.ss),
+    );
     if fi_mode != FI_NONE {
         let mut above_c = vec![0u8; w + 1];
         above_c[0] = if has_above && has_left {
@@ -1729,6 +1747,7 @@ pub(crate) fn predict_unit_hbd(
             frame_w: geom.frame_w,
             frame_h: geom.frame_h,
             sb_mi_size: geom.sb_mi_size,
+            tile: geom.tile,
         };
         crate::intra_edge::dr_predict_hbd(
             |x, y| recon[y * stride + x],
@@ -2927,6 +2946,11 @@ pub(crate) fn evaluate_leaf(
         frame_w: y_stride,
         frame_h: frame_h_px,
         sb_mi_size: fx.frame.sb_mi_size,
+        // Task #96: the tile this SB belongs to. The per-tile walk stamps
+        // it on the funnel's own EntropyCtx (`fun_ectx`), so the MD
+        // prediction sees the SAME boundaries the coded symbols do.
+        // Whole-frame for a single-tile encode -> byte-identical.
+        tile: fx.ectx.tile_mi,
     };
     // Chroma prediction geometry: for sub-8 chroma-ref blocks the unit
     // is the PAIR (C predicts the ROUND_UV-anchored bsize_uv block), so
@@ -5916,6 +5940,7 @@ fn predict_unit_overlay(
             frame_w: geom.frame_w,
             frame_h: geom.frame_h,
             sb_mi_size: geom.sb_mi_size,
+            tile: geom.tile,
         };
         crate::intra_edge::dr_predict(
             |x, y| {
@@ -5971,9 +5996,11 @@ fn predict_unit_overlay(
         canvas[cy * cw_dim] = sample(abs_tx_x as isize - 1, abs_tx_y as isize + cy as isize - 1);
     }
     // Predict at canvas coords (1, 1): availability mirrors the absolute
-    // position (frame edges).
-    let has_above = abs_tx_y > 0;
-    let has_left = abs_tx_x > 0;
+    // position (frame edges) — and, task #96, the TILE edges, which C
+    // gates on identically (`mi_row > tile->mi_row_start`). Both origins
+    // are 0 for a single-tile encode.
+    let has_above = abs_tx_y > geom.tile.top_px(geom.ss);
+    let has_left = abs_tx_x > geom.tile.left_px(geom.ss);
     let above: Vec<u8> = if has_above {
         canvas[1..cw_dim].to_vec()
     } else {
@@ -6065,6 +6092,7 @@ fn predict_unit_overlay_hbd(
             frame_w: geom.frame_w,
             frame_h: geom.frame_h,
             sb_mi_size: geom.sb_mi_size,
+            tile: geom.tile,
         };
         crate::intra_edge::dr_predict_hbd(
             |x, y| {
@@ -6114,8 +6142,8 @@ fn predict_unit_overlay_hbd(
     for cy in 1..ch_dim {
         canvas[cy * cw_dim] = sample(abs_tx_x as isize - 1, abs_tx_y as isize + cy as isize - 1);
     }
-    let has_above = abs_tx_y > 0;
-    let has_left = abs_tx_x > 0;
+    let has_above = abs_tx_y > geom.tile.top_px(geom.ss);
+    let has_left = abs_tx_x > geom.tile.left_px(geom.ss);
     let above: Vec<u16> = if has_above {
         canvas[1..cw_dim].to_vec()
     } else {
