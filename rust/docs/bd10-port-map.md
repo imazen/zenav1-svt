@@ -1420,3 +1420,141 @@ Baseline was restored rather than landing a known-4x-over-picking decision into
 the shared MD path: an over-picked CfL leaf is also rejected by
 `bd10_tree_supported` (uv_mode 13), which would silently drop whole frames out
 of the level re-encode post-pass. The honest visible gap is better than that.
+
+## The "bd10 chroma neighbour recon drift" was a TXT-lambda scale bug (2026-07-19)
+
+Photographic bd10 p6-p8 went **2/27 -> 18/27**: presets **7 and 8 are now
+byte-identical to real C on every cell** (18/18); preset 6 still diverges (0/9).
+`tools/bd10_photo_gate.sh` grows 112 -> **130** cells (new group D = presets 7-8
+x {1001682, 2119713, 4666751} x q{12,32,55}) and now also asserts aomdec
+decodability on every cell.
+
+### The stated premise was wrong — correct it before building on it
+
+The previous section closed by naming, as the next thing to chase, a
+**V-plane-specific** chroma neighbour recon drift, on the evidence that at
+`2119713 q32 p6` block (112,0) "the U plane matches C exactly on all five
+alphas while V is uniformly ~1900 high", and reasoned that since both planes
+run identical code over different buffers the defect must be plane-asymmetric.
+
+**That was one block's sampling artifact.** Measured across the frame (method
+below): of 762 blocks where both sides run the CfL alpha search, the chroma DC
+base differs on **673 for U and 672 for V** — the two planes drift equally — and
+the FIRST divergent block, (24,0), is **U-only** (C u=563 v=422, port u=562
+v=422). (112,0) simply happened to be a block where U had drifted back into
+agreement. The "uniform across alphas" reasoning WAS sound and did point at the
+DC base — alpha only scales the AC term — but the plane asymmetry it was
+attached to did not exist.
+
+Nor was the root in chroma at all. It is upstream of both planes, in **luma**.
+
+### Method: two new dumps, because the DC base is the observable
+
+`SVT_UVLOOP_OUT` now also prints `pu=/pv=`, the `cand_bf->pred` chroma origin
+samples captured BEFORE the real call. `cfl_prediction` passes
+`blk_chroma_origin_index == 0` (:6938), so index 0 is the block's prediction
+origin, and on the CfL-search calls `cand_bf->pred` holds the **DC base** that
+`svt_cfl_predict_*` reads — constant across every alpha of a block. That makes
+the chroma DC base directly observable from outside the static
+`cfl_prediction` family. `SVT_UVLOOP_XY` is now optional (unset/"all" dumps
+every block), which is what bisecting a drift needs. Port side: `SVTAV1_UVDC`.
+
+Better still, `SVT_CEDGE_OUT` (a new dump on the existing
+`__wrap_svt_aom_update_mi_map`) prints each committed block's
+`neigh_top_recon_16bit` / `neigh_left_recon_16bit` — its BOTTOM row and RIGHT
+column (:8552-8578), i.e. exactly what the below/right neighbours predict from —
+as luma sums plus the RAW chroma right columns, with `SVT_CEDGE_XY="x,y"`
+switching one pinned block to raw luma too. Port side: `SVTAV1_CEDGE` /
+`SVTAV1_CEDGE_XY`. Joining the two gives C-vs-port MD recon per block, so the
+first divergent block falls out in one pass. `SVTAV1_QLEV_XY` is the port's
+per-txb join partner for the existing `SVT_QLEVELS_OUT` wrap.
+
+### The bisect
+
+Exactly **4 blocks** are recon-identical, then **(16,0)** diverges — and its
+LUMA edges diverge too (`lyb` 2284 vs 2232, `lyr` 4414 vs 4334), so chroma is
+downstream (CfL's AC comes from the luma recon). Port and C code (16,0)
+IDENTICALLY (mi(0,4): bsize=3, mode=1 V_PRED, uv=13 CfL, txd=1, cflidx=1,
+cflsgn=6) and its DC base matches, so the divergence is inside the block's own
+reconstruction. Raw edges localise it further: the block is `txd=1` = four
+TX_4X4 units, and units 0/1/2 are bit-exact while **only unit 3 (the
+bottom-right 4x4) differs**.
+
+`SVT_QLEVELS_OUT` vs `SVTAV1_QLEV_XY` then names it outright. For unit (4,4),
+across all three candidate groups:
+
+| | C | port (before) |
+|---|---|---|
+| chosen tx type | **DCT_DCT** (txt=0) | **V_DCT** (txt=10) |
+| eob | 7 / 7 / 2 | 4 / 8 / 4 |
+
+C never even *quantizes* V_DCT there — no QLEV record exists for it — so C
+pruned it before quantize, while the port evaluated and picked it.
+
+### Root cause: one lambda, used at two scales
+
+`txt_search` (`leaf_funnel.rs`) priced the TXT **rate-cost gate** with the u8
+`lambda` while `dct_cost` — the value it compares against — was the **bd10**
+cost:
+
+```rust
+if dct_cost != u64::MAX
+    && rdcost(lambda, tx_type_rate, 0) * 1000 > dct_cost * frame.cfg.txt_rate_th
+```
+
+C has ONE `full_lambda` for both. `tx_type_search` sets
+`full_lambda = ctx->hbd_md ? ctx->full_lambda_md[EB_10_BIT_MD] :
+ctx->full_lambda_md[EB_8_BIT_MD]` (product_coding_loop.c:4590) and uses it in
+the gate at **:4714** AND in the tx-type cost at **:4944**. At bd10 the port's
+left-hand side therefore stayed 8-bit-scaled against a 10-bit-scaled
+`dct_cost`: the gate **under-fired**, the port evaluated tx types C prunes, and
+sometimes picked one. Fix is one line — `let gate_lambda = bd10.map_or(lambda,
+|b| b.lambda);` — mirroring the existing `lambda3` at :4379. bd8 takes the
+`None` arm, so it is byte-unchanged **by construction**, not just by
+measurement (re-verified: the same cell at bd8 is byte-identical before and
+after, and all bd8 gates are unmoved).
+
+This is a **decision-space** bug, not an arithmetic one, which is why every
+kernel-level differential passed over it: each tx type's cost was computed
+correctly; the port simply considered a type C had already discarded.
+
+### Effect
+
+MD recon now agrees for **466 blocks instead of 4** on `2119713 q32 p6`
+(510 of 1639 common blocks fully edge-identical, up from 4), and p7/p8 close
+completely. All nine gates green after the change: identity 54/54, partial-SB
+101/101, bd10 matrix 36/36, non-flat 180/180, **photo 130/130**, hdr 46/46,
+sb128 18/18, tile 25/25, `cargo test --workspace` 58 binaries / 0 failures.
+
+### What preset 6 still needs (a NEW, separate root)
+
+At `2119713 q32 p6` the first divergence is now block **(16,128)**, reached
+after 466 byte-identical blocks, and it is a **luma MODE flip**, not a recon
+defect: C codes mi(32,4) as `mode=2` (H_PRED) with `uv=2`, the port as `mode=9`
+(SMOOTH_PRED) with `uv=13` (CfL) `cflidx=1 cflsgn=4`. Both agree the block is
+16x16 with `txd=0`, and every earlier block's recon is identical, so the inputs
+to that decision are equal and the RD comparison itself differs. All nine p6
+cells still diverge, and the sizes stay within ~0.2% of C.
+
+Two things to try next, in order:
+1. Audit the remaining bd10 RD compares for the SAME class of scale mismatch —
+   a cost computed at one bit depth compared against a threshold/cost computed
+   at the other. `leaf_funnel.rs` is now clean (the surviving u8-`lambda`
+   `rdcost` sites at :3410/:4355 belong to the `ind_uv` tables, which are fed
+   by the u8 `chroma_eval` and are gated off at bd10 anyway; :5753 is
+   tune_ssim), so look OUTSIDE it — `intra_rd`, `depth_refine`, `pd0`.
+2. If that comes up empty, dump the per-mode MDS3 costs at (16,128) with
+   `SVT_FULLCOST_OUT`/`SVT_FASTCOST_OUT` + the port's `SVTAV1_CANDDBG` and
+   compare H_PRED vs SMOOTH directly.
+
+### Incidental finding — NOT fixed, do not "fix" it blind
+
+`leaf_funnel.rs:5706-5707` writes the truncated 10-bit chroma recon into
+`cand.u_recon`/`cand.v_recon` (with a comment explaining why the u8 proxy must
+represent the CODED levels), and :5718-5719 then **unconditionally overwrites
+both with the u8-quantizer recon** — the stores are dead. The 10-bit path is
+unaffected (`cand.u_recon10` at :5721 is separate), but the u8 canvas is what
+the chroma-complexity detector, the u8 CfL arm and the post-filter searches
+read at bd10. Current behaviour is what 130 photo + 180 non-flat cells are
+byte-exact WITH, so the dead stores are not obviously the intended semantics
+winning — resolve this by measurement, with a gate run, not by deleting a line.

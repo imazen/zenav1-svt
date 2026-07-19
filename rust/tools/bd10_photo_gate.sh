@@ -14,10 +14,21 @@
 # the AVX2-hadamard fix; with all four landed, photographic bd10 at eff-M9 is
 # byte-identical. This gate pins that so it cannot silently regress.
 #
-# SCOPE — the eff-M9 band (presets 9..13) ONLY. Photographic bd10 at presets 0/3/6
-# still DIVERGES (measured: 9/9 at p6, all PARTITION flips — PD1 depth-refine +
-# NSQ at bd10). Those are NOT listed here; adding them would be a false claim.
-# See docs/bd10-port-map.md "low-preset failure map".
+# SCOPE — the eff-M9 band (presets 9..13) PLUS presets 7-8 (group D below).
+#
+# Presets 7-8 were closed 2026-07-19 by the TXT rate-cost gate lambda fix
+# (leaf_funnel.rs `txt_search`): C prices that gate with the SAME `full_lambda`
+# it prices the tx-type cost with — `hbd_md ? full_lambda_md[EB_10_BIT_MD] :
+# [EB_8_BIT_MD]` (product_coding_loop.c:4590/4714/4944) — while the port had the
+# cost on the bd10 lambda and the gate on the u8 one, so at bd10 the gate
+# under-fired and the port picked tx types C prunes before quantizing them.
+# Photographic p6-p8 went 2/27 -> 18/27 (all of p7+p8).
+#
+# Preset 6 still DIVERGES (0/9) and is NOT listed — adding it would be a false
+# claim. Its first divergence is now a LUMA MODE flip (measured on
+# 2119713 q32 p6 at block (16,128): C H_PRED, port SMOOTH+CfL) reached only
+# after 466 blocks of byte-identical MD recon, i.e. a separate root from the one
+# above. See docs/bd10-port-map.md.
 #
 # CORPUS: CID22-512 (250 real 512x512 photographic PNGs, natively 64-aligned).
 # Override with BD10_PHOTO_CORPUS=<dir>. If the corpus is absent this gate FAILS
@@ -27,6 +38,21 @@ set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 RS_ROOT=$(cd "$HERE/.." && pwd)
 cd "$RS_ROOT"
+
+# Reference decoder for the DECODABILITY assert in run_cell. Required, never
+# skipped: byte-identity alone is blind to a cell that regresses OUT of the
+# lists below, so every port OBU this gate produces must also be provably
+# decodable. Same contract as bd10_nonflat_gate.sh. Override with AOMDEC=.
+aomdec="${AOMDEC:-}"
+if [ -z "$aomdec" ]; then
+    for _c in aomdec /root/aomdec-debug/aomdec; do
+        if command -v "$_c" >/dev/null 2>&1; then aomdec=$_c; break; fi
+    done
+fi
+command -v "$aomdec" >/dev/null 2>&1 || {
+    echo "bd10 photo gate: aomdec not found (set AOMDEC=/path/to/aomdec)" >&2
+    exit 2
+}
 
 CORPUS="${BD10_PHOTO_CORPUS:-/root/work/codec-corpus/CID22/CID22-512/training}"
 if [ ! -d "$CORPUS" ]; then
@@ -49,6 +75,15 @@ PRESETS=(10 13)
 IMAGES_C=(1001682 2119713 4666751)
 QPS_C=(12 40)
 PRESETS_C=(9 11 12)
+# Group D — presets 7-8, closed by the TXT rate-cost gate lambda fix (header).
+# These are the first photographic cells below the eff-M9 band to be
+# byte-identical: at p7/p8 `bd10_full_rd_supported` is TRUE, so unlike groups
+# A-C they exercise the whole bd10 full-RD leaf (10-bit TXT search, tx-depth
+# loop, chroma full loop and the bd10 CfL arm), not just the level re-encode.
+# 18/18 verified with `cmp` at the commit that added them.
+IMAGES_D=(1001682 2119713 4666751)
+QPS_D=(12 32 55)
+PRESETS_D=(7 8)
 
 OUT="${TMPDIR:-/tmp}/bd10photo.$$"
 mkdir -p "$OUT"
@@ -79,6 +114,13 @@ run_cell() {
         failed+=("${tag}[c-err]")
         return
     fi
+    # Decodability BEFORE byte-identity: a stream aomdec rejects is a failure
+    # regardless of what it compares equal to.
+    if ! "$aomdec" --rawvideo -o /dev/null "$OUT/rs.obu" >/dev/null 2>&1; then
+        fail=$((fail + 1))
+        failed+=("${tag}[undecodable]")
+        return
+    fi
     if cmp -s "$OUT/rs.obu" "$OUT/c.obu"; then
         pass=$((pass + 1))
     else
@@ -100,6 +142,11 @@ done
 for stem in "${IMAGES_C[@]}"; do
     for qp in "${QPS_C[@]}"; do
         for p in "${PRESETS_C[@]}"; do run_cell "$stem" "$qp" "$p"; done
+    done
+done
+for stem in "${IMAGES_D[@]}"; do
+    for qp in "${QPS_D[@]}"; do
+        for p in "${PRESETS_D[@]}"; do run_cell "$stem" "$qp" "$p"; done
     done
 done
 

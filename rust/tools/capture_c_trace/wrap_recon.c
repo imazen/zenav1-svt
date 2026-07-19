@@ -75,6 +75,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "common_utils.h"
 #include "deblocking_filter.h"
@@ -625,23 +626,70 @@ void __real_svt_aom_update_mi_map(PictureControlSet* pcs, ModeDecisionContext* c
 void __wrap_svt_aom_update_mi_map(PictureControlSet* pcs, ModeDecisionContext* ctx, const PartitionType part,
                                   const BlockSize bsize, const int mi_row, const int mi_col) {
     __real_svt_aom_update_mi_map(pcs, ctx, part, bsize, mi_row, mi_col);
-    const char* path = getenv("SVT_CTREE_OUT");
-    if (!path || !*path)
-        return;
-    static FILE* f = NULL;
-    if (!f)
-        f = fopen(path, "w");
-    if (!f)
-        return;
     const BlkStruct*     b = ctx->blk_ptr;
     const BlockModeInfo* m = &b->block_mi;
-    fprintf(f,
+    const char*          path = getenv("SVT_CTREE_OUT");
+    static FILE*         f    = NULL;
+    if (path && *path && !f)
+        f = fopen(path, "w");
+    if (f)
+        fprintf(f,
             "CTREE mi=(%d,%d) bsize=%d part=%d mode=%d uv=%d fi=%d ady=%d aduv=%d txd=%d pal=%d skip=%d cflidx=%d "
             "cflsgn=%d\n",
             mi_row, mi_col, (int)bsize, (int)part, (int)m->mode, (int)m->uv_mode, (int)m->filter_intra_mode,
             (int)m->angle_delta[0], (int)m->angle_delta[1], (int)m->tx_depth, (int)b->palette_size[0], (int)m->skip,
             (int)m->cfl_alpha_idx, (int)m->cfl_alpha_signs);
-    fflush(f);
+    if (f)
+        fflush(f);
+
+    /* ---- committed per-block RECON EDGES (SVT_CEDGE_OUT) -----------------
+     * blk_ptr->neigh_top_recon_16bit[p] is the block's BOTTOM row and
+     * neigh_left_recon_16bit[p] its RIGHT column (:8552-8578) — exactly the
+     * samples the below/right neighbours intra-predict from. Dumping them
+     * here, right after the block is committed, gives C's MD recon state per
+     * block WITHOUT touching the static cfl_prediction family, and joins
+     * against the port's committed winner recon. Luma as sums (localisation
+     * only); chroma right columns RAW, since the chroma DC base is literally
+     * their average. */
+    const char* epath = getenv("SVT_CEDGE_OUT");
+    if (epath && *epath && ctx->hbd_md) {
+        static FILE* ef = NULL;
+        if (!ef)
+            ef = fopen(epath, "w");
+        if (ef) {
+            const BlockGeom* g   = ctx->blk_geom;
+            unsigned long    lyb = 0, lyr = 0;
+            for (int i = 0; i < g->bwidth; ++i) lyb += b->neigh_top_recon_16bit[0][i];
+            for (int j = 0; j < g->bheight; ++j) lyr += b->neigh_left_recon_16bit[0][j];
+            fprintf(ef, "CEDGE org=(%u,%u) %dx%d lyb=%lu lyr=%lu", (unsigned)ctx->blk_org_x,
+                    (unsigned)ctx->blk_org_y, g->bwidth, g->bheight, lyb, lyr);
+            /* Raw luma edges for one pinned block (SVT_CEDGE_XY="x,y"): which
+             * SAMPLES differ localises the divergence to a single TX unit. */
+            const char* rxy = getenv("SVT_CEDGE_XY");
+            if (rxy && *rxy) {
+                int rx = -1, ry = -1;
+                sscanf(rxy, "%d,%d", &rx, &ry);
+                if ((int)ctx->blk_org_x == rx && (int)ctx->blk_org_y == ry) {
+                    fprintf(ef, " lyB=");
+                    for (int i = 0; i < g->bwidth; ++i)
+                        fprintf(ef, "%s%u", i ? "," : "", (unsigned)b->neigh_top_recon_16bit[0][i]);
+                    fprintf(ef, " lyR=");
+                    for (int j = 0; j < g->bheight; ++j)
+                        fprintf(ef, "%s%u", j ? "," : "", (unsigned)b->neigh_left_recon_16bit[0][j]);
+                }
+            }
+            if (ctx->has_uv && ctx->uv_ctrls.uv_mode <= CHROMA_MODE_1) {
+                fprintf(ef, " uvr=%dx%d cu=", g->bwidth_uv, g->bheight_uv);
+                for (int j = 0; j < g->bheight_uv; ++j)
+                    fprintf(ef, "%s%u", j ? "," : "", (unsigned)b->neigh_left_recon_16bit[1][j]);
+                fprintf(ef, " cv=");
+                for (int j = 0; j < g->bheight_uv; ++j)
+                    fprintf(ef, "%s%u", j ? "," : "", (unsigned)b->neigh_left_recon_16bit[2][j]);
+            }
+            fprintf(ef, "\n");
+            fflush(ef);
+        }
+    }
 }
 
 /* ---- chroma full-loop interposer ----------------------------------------
@@ -649,7 +697,19 @@ void __wrap_svt_aom_update_mi_map(PictureControlSet* pcs, ModeDecisionContext* c
  * product_coding_loop.c incl. the mds3 independent-uv search's per-uv
  * evaluations). Logging (cand uv/uvd + accumulated cb/cr bits+dist) at a
  * pinned block reveals the per-(uv) RD pairs C's uv-table argmin consumes.
- * Env: SVT_UVLOOP_OUT + SVT_UVLOOP_XY="x,y". One line per call. */
+ * Env: SVT_UVLOOP_OUT + SVT_UVLOOP_XY="x,y". One line per call.
+ * SVT_UVLOOP_XY is OPTIONAL: unset (or "all") dumps EVERY block, which is what
+ * localizing a neighbour-recon drift needs (the first divergent block is not
+ * known in advance, so a pinned x,y cannot find it).
+ *
+ * `pu=/pv=` are cand_bf->pred's chroma ORIGIN samples, read BEFORE the real
+ * call. cfl_prediction passes blk_chroma_origin_index == 0 (:6938), so index 0
+ * IS the block's prediction origin. On the CfL-search calls (av1_cost_calc_cfl,
+ * :3411/:3441) cand_bf->pred holds the DC BASE that svt_cfl_predict_* reads —
+ * constant across every alpha of a block — so `pu/pv` is a direct, per-block
+ * readout of the chroma DC prediction, i.e. of the chroma recon NEIGHBOUR state
+ * feeding it. That is the one number needed to bisect a chroma recon drift from
+ * outside the (static, un-wrappable) cfl_prediction family. */
 void __real_svt_aom_full_loop_uv(PictureControlSet* pcs, ModeDecisionContext* ctx,
                                  ModeDecisionCandidateBuffer* cand_bf, EbPictureBufferDesc* input_pic,
                                  COMPONENT_TYPE component_type, uint32_t chroma_qindex,
@@ -663,25 +723,45 @@ void __wrap_svt_aom_full_loop_uv(PictureControlSet* pcs, ModeDecisionContext* ct
                                  uint64_t cb_full_distortion[DIST_TOTAL][DIST_CALC_TOTAL],
                                  uint64_t cr_full_distortion[DIST_TOTAL][DIST_CALC_TOTAL], uint64_t* cb_coeff_bits,
                                  uint64_t* cr_coeff_bits, bool is_full_loop) {
+    /* Prediction origin samples, captured BEFORE the real call so nothing the
+     * full loop does can perturb them. */
+    unsigned pu = 0, pv = 0;
+    {
+        const char* p0 = getenv("SVT_UVLOOP_OUT");
+        if (p0 && *p0 && cand_bf->pred) {
+            if (ctx->hbd_md) {
+                pu = ((const uint16_t*)cand_bf->pred->u_buffer)[0];
+                pv = ((const uint16_t*)cand_bf->pred->v_buffer)[0];
+            } else {
+                pu = cand_bf->pred->u_buffer[0];
+                pv = cand_bf->pred->v_buffer[0];
+            }
+        }
+    }
     __real_svt_aom_full_loop_uv(pcs, ctx, cand_bf, input_pic, component_type, chroma_qindex, cb_full_distortion,
                                 cr_full_distortion, cb_coeff_bits, cr_coeff_bits, is_full_loop);
     const char* path = getenv("SVT_UVLOOP_OUT");
     const char* xy   = getenv("SVT_UVLOOP_XY");
-    if (path && *path && xy) {
+    if (path && *path) {
         int px = -1, py = -1;
-        sscanf(xy, "%d,%d", &px, &py);
-        if ((int)ctx->blk_org_x == px && (int)ctx->blk_org_y == py) {
+        /* xy unset / "all" => every block. */
+        const int all = !xy || !*xy || !strcmp(xy, "all");
+        if (!all)
+            sscanf(xy, "%d,%d", &px, &py);
+        if (all || ((int)ctx->blk_org_x == px && (int)ctx->blk_org_y == py)) {
             static FILE* f = NULL;
             if (!f)
                 f = fopen(path, "w");
             if (f) {
                 fprintf(f,
-                        "UVLOOP org=(%u,%u) %ux%u mode=%d uv=%d uvd=%d full=%d cbb=%llu crb=%llu cbd=%llu crd=%llu\n",
+                        "UVLOOP org=(%u,%u) %ux%u mode=%d uv=%d uvd=%d full=%d cbb=%llu crb=%llu cbd=%llu crd=%llu "
+                        "pu=%u pv=%u\n",
                         (unsigned)ctx->blk_org_x, (unsigned)ctx->blk_org_y, block_size_wide[ctx->blk_geom->bsize],
                         block_size_high[ctx->blk_geom->bsize], (int)cand_bf->cand->block_mi.mode,
                         (int)cand_bf->cand->block_mi.uv_mode, (int)cand_bf->cand->block_mi.angle_delta[1],
                         (int)is_full_loop, (unsigned long long)*cb_coeff_bits, (unsigned long long)*cr_coeff_bits,
-                        (unsigned long long)cb_full_distortion[0][0], (unsigned long long)cr_full_distortion[0][0]);
+                        (unsigned long long)cb_full_distortion[0][0], (unsigned long long)cr_full_distortion[0][0], pu,
+                        pv);
                 fflush(f);
             }
         }

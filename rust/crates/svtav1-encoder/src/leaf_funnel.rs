@@ -1145,6 +1145,26 @@ fn hadamard_satd_hbd(
     satd
 }
 
+/// Is a presence-only debug env var set? Cached, because every caller sits on
+/// a per-block or per-txb path where a `getenv` per call would be a real
+/// regression. One relaxed atomic load when off.
+#[cfg(feature = "std")]
+fn dbg_on(cell: &'static std::sync::OnceLock<bool>, var: &str) -> bool {
+    *cell.get_or_init(|| std::env::var_os(var).is_some())
+}
+
+/// The `"x,y"` block-pin debug vars (`SVTAV1_CEDGE_XY`, `SVTAV1_QLEV_XY`),
+/// parsed once. `Some((x, y))` selects a single block ORIGIN to dump; these
+/// dumps are per-txb verbose, so pinning is what keeps them usable.
+#[cfg(feature = "std")]
+fn dbg_xy(cell: &'static std::sync::OnceLock<Option<(usize, usize)>>, var: &str) -> Option<(usize, usize)> {
+    *cell.get_or_init(|| {
+        let s = std::env::var(var).ok()?;
+        let (a, b) = s.split_once(',')?;
+        Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Coefficient rate (svt_av1_cost_coeffs_txb, full scan, real contexts)
 // ---------------------------------------------------------------------------
@@ -4609,6 +4629,28 @@ pub(crate) fn evaluate_leaf(
                     lambda,
                     bd10_txb.as_ref(),
                 );
+                // SVTAV1_QLEV_XY="x,y": per-txb winner (tx_type, eob, levels)
+                // at one pinned block, to join against the C `--wrap
+                // svt_aom_quantize_inv_quantize` QLEV dump.
+                #[cfg(feature = "std")]
+                if let Some(o) = &out10 {
+                    static XY: std::sync::OnceLock<Option<(usize, usize)>> =
+                        std::sync::OnceLock::new();
+                    if dbg_xy(&XY, "SVTAV1_QLEV_XY") == Some((abs_x, abs_y)) {
+                        let nz: alloc::vec::Vec<_> = o
+                            .qcoeff
+                            .iter()
+                            .enumerate()
+                            .filter(|&(_, &v)| v != 0)
+                            .map(|(i, v)| alloc::format!("{i}:{v}"))
+                            .collect();
+                        eprintln!(
+                            "PQLEV org=({abs_x},{abs_y}) d={depth} tx=({tx_x},{tx_y}) {txw}x{txh} txt={txt} eob={} nz=[{}]",
+                            o.eob,
+                            nz.join(",")
+                        );
+                    }
+                }
                 // The decision terms: 10-bit when the bd10 full-RD is active.
                 let (dec_eob, dec_bits_raw, dec_dist, dec_cul) = match &out10 {
                     Some(o) => (o.eob, o.bits, o.dist, o.cul),
@@ -5047,6 +5089,24 @@ pub(crate) fn evaluate_leaf(
                     }
                     (ac10, u_dc10, v_dc10)
                 });
+                // SVTAV1_UVDC: the bd10 CfL DC base, one line per (block,
+                // candidate). Mirrors the C `--wrap svt_aom_full_loop_uv`
+                // `pu=/pv=` readout (cand_bf->pred origin at the CfL-search
+                // calls), which is the only externally observable handle on
+                // C's chroma recon NEIGHBOUR state — `cfl_prediction` and
+                // friends are static and cannot be wrapped. Constant per
+                // (block, plane), so joining the two dumps on `org` bisects a
+                // chroma neighbour-recon drift to its first divergent block.
+                #[cfg(feature = "std")]
+                if let Some((_, u_dc10, v_dc10)) = cfl10.as_ref() {
+                    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                    if dbg_on(&ON, "SVTAV1_UVDC") {
+                        eprintln!(
+                            "UVDC org=({abs_x},{abs_y}) {w}x{h} udc={} vdc={}",
+                            u_dc10[0], v_dc10[0]
+                        );
+                    }
+                }
                 // The spatial-run chroma coeff bits at the decision depth — the
                 // rate half of `non_cfl_cost`. Read out before the compare so
                 // `uv_out10` is free to be replaced when CfL wins.
@@ -5931,6 +5991,45 @@ pub(crate) fn commit_leaf(
                 }
             }
         }
+        // SVTAV1_CEDGE: the committed winner's recon EDGES, mirroring the C
+        // `--wrap svt_aom_update_mi_map` `CEDGE` dump (blk_ptr->neigh_top/
+        // left_recon_16bit = the block's bottom row / right column). Joining
+        // the two bisects an MD recon drift to its first divergent block, and
+        // separates a LUMA root (lyb/lyr, which also feeds CfL's AC) from a
+        // CHROMA one (cu/cv, whose average IS the next block's DC base).
+        #[cfg(feature = "std")]
+        if !ev.win_u_recon10.is_empty() && {
+            static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            dbg_on(&ON, "SVTAV1_CEDGE")
+        } {
+            let lyb: u64 = ev.win_recon10[(h - 1) * w..h * w].iter().map(|&s| u64::from(s)).sum();
+            let lyr: u64 = (0..h).map(|r| u64::from(ev.win_recon10[r * w + w - 1])).sum();
+            let col = |v: &[u16]| {
+                (0..chh)
+                    .map(|r| v[r * cw + cw - 1].to_string())
+                    .collect::<alloc::vec::Vec<_>>()
+                    .join(",")
+            };
+            // Raw luma edges for one pinned block (SVTAV1_CEDGE_XY="x,y") —
+            // which SAMPLES differ localises a divergence to one TX unit.
+            static XY: std::sync::OnceLock<Option<(usize, usize)>> = std::sync::OnceLock::new();
+            let raw = (dbg_xy(&XY, "SVTAV1_CEDGE_XY") == Some((abs_x, abs_y))).then(|| {
+                let j = |it: alloc::vec::Vec<u16>| {
+                    it.iter().map(|v| v.to_string()).collect::<alloc::vec::Vec<_>>().join(",")
+                };
+                alloc::format!(
+                    " lyB={} lyR={}",
+                    j(ev.win_recon10[(h - 1) * w..h * w].to_vec()),
+                    j((0..h).map(|r| ev.win_recon10[r * w + w - 1]).collect())
+                )
+            });
+            eprintln!(
+                "CEDGE org=({abs_x},{abs_y}) {w}x{h} lyb={lyb} lyr={lyr} uvr={cw}x{chh} cu={} cv={}{}",
+                col(&ev.win_u_recon10),
+                col(&ev.win_v_recon10),
+                raw.unwrap_or_default()
+            );
+        }
     }
     let skip = !cand.block_has_coeff;
     fx.ectx
@@ -6576,10 +6675,24 @@ fn txt_search(
                 }
                 // txt_rate_cost_th (100 at M6, 250 at M5): skip types
                 // whose signalling rate alone exceeds the DCT cost
-                // fraction (product_coding_loop.c:4787-4794).
+                // fraction (product_coding_loop.c:4710-4716).
+                //
+                // The lambda here MUST be the same one that produced
+                // `dct_cost`, or the gate compares two different scales. C
+                // uses ONE `full_lambda` for both — `ctx->hbd_md ?
+                // full_lambda_md[EB_10_BIT_MD] : full_lambda_md[EB_8_BIT_MD]`
+                // (:4590) — in the gate at :4714 AND in the cost at :4944.
+                // The port had the cost on the bd10 lambda but the gate on the
+                // u8 one, so at bd10 the left side stayed 8-bit-scaled while
+                // `dct_cost` was 10-bit-scaled: the gate under-fired and the
+                // port evaluated (and sometimes picked) tx types C prunes
+                // before it ever quantizes them. `bd10.map_or` mirrors
+                // `lambda3`, so bd8 is byte-unchanged by construction.
+                let gate_lambda = bd10.map_or(lambda, |b| b.lambda);
                 let tx_type_rate = rates.txt_rate(c_tx, intra_dir, tx_type) as u64;
                 if dct_cost != u64::MAX
-                    && rdcost(lambda, tx_type_rate, 0) * 1000 > dct_cost * frame.cfg.txt_rate_th
+                    && rdcost(gate_lambda, tx_type_rate, 0) * 1000
+                        > dct_cost * frame.cfg.txt_rate_th
                 {
                     continue;
                 }
