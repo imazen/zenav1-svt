@@ -192,6 +192,109 @@ walk); **the u16 chroma path**; **native (non-`<<2`) u16 ingestion**. The bigger
 real bd10 content is the **CDEF-search / Wiener-LR bd10** dependencies and a **true bd10 MD**
 (scale-variant decisions) — both OUTSIDE the coded-levels re-encode.
 
+## FALL-BACK MAP + blocker root-cause (2026-07-19, task #94 investigation)
+
+**Gate grown 8 -> 21** (`tools/bd10_nonflat_gate.sh`, all `cmp`-verified byte-identical):
+added the re-encode's previously-ungated working qindex range `gradient 64x64 q{42,44,46,48,50}
+x p{3,6,10,13}` (base_qindex 168..200) + `128x128 q58 p{10,13}`. Those cells are LOAD-BEARING
+on the re-encode (`last_recon10_y` populated on all; Q10/Q8 = 3.997..3.999 there, so the u16
+quant genuinely changes the coded levels vs the u8 fallback — see the quant-ratio table below).
+No product code changed — these cells already byte-matched; the gate simply now covers the
+range between the old q40 and q55 anchors. bd8 identity_matrix 54/54, partial_sb 101/101,
+bd10 uniform 36/36 byte-UNCHANGED.
+
+### The MAP (op-traced first divergence, classified per cell)
+
+Method: per cell, encode rs (`SVTAV1_BD=10`, `SVTAV1_PACKTREE`) + C (`capture_c_trace .. 10`,
+`SVT_CTREE_OUT`), `cmp`; if DIFF, classify via `tools/identity_diff.py` (STAGE + op-class) AND
+`tools/tree_diff.py` (C bd10 tree vs port u8 tree). The tree diff is the decisive discriminator:
+partition/mode flip => blocker 1; trees identical => the divergence is post-filter (blocker 2)
+or coefficients.
+
+- **Synthetic sweep** `{gradient,diag} x {64,128} x q{5,12,20,32,40,55} x p{0,3,6,10,13}` = 120
+  cells: **69 BLOCKER1_part** (C bd10 tree != port u8 tree — partition geometry flip),
+  **40 BLOCKER1_mode** (geometry same, mode/uv/txd/angle flip), **8 IDENTICAL** (the old gate
+  cells), **2 BLOCKER2_lr** (Wiener taps), **1 BLOCKER2_filt** (CDEF strength), **0 COEFF**.
+- **Photographic sweep** (CID22-512, `file:`, `q{12,32,55} x p{6,10,13}`) = 18 cells:
+  **18/18 BLOCKER1_part**. On real content the partition tree ALWAYS diverges at bd10.
+- **Zero panics** across all 138 cells (every out-of-envelope cell fell back via
+  `bd10_tree_supported`, none crashed the public API).
+
+**KEY RESULT: 109/120 synthetic + 18/18 photographic cells are BLOCKER1 (true-bd10-MD).**
+There are **ZERO COEFF cells** — wherever the tree is identical the re-encode already produces
+byte-exact coefficients, so nothing on this content is a re-encode-envelope gap. The tractable
+tail is 3 pure post-filter cells; everything else needs a true bd10 MD.
+
+The 3 pure-BLOCKER2 cells (trees identical, coeffs identical, only a post-filter value differs):
+`gradient 64x64 q20 p6` + `q40 p6` (Wiener LR taps) and `q55 p0` (`cdef_y_pri_strength` C=4/port=5).
+
+### BLOCKER 1 — ROOT-CAUSED + QUANTIFIED (the big one; true bd10 MD)
+
+**The u8-tree-reuse assumes the RD is exactly 16x-scale-invariant for `sample<<2` content**
+(dist scales 16x, lambda scales 16x, so NONE-vs-SPLIT ordering is preserved). That holds ONLY
+if the effective quantizer at bd10 is EXACTLY 4x the bd8 quantizer. It is not:
+
+```
+qidx  (cli)  dc8  dc10  dc10/dc8   ac8  ac10  ac10/ac8
+  48  (q12)   48   170    3.542     55   195    3.545
+  80  (q20)   74   287    3.878     87   337    3.874
+ 128  (q32)  140   559    3.993    176   700    3.977
+ 160  (q40)  223   891    3.996    305  1218    3.993
+ 220  (q55)  522  2088    4.000    933  3731    3.999
+```
+Q10 != 4*Q8 at **251/256 qindexes**; the ratio reaches 4.000 only near qindex 220 (cli q55).
+
+This **exactly explains the MAP's qindex boundary**: q55 (ratio 4.000) is scale-invariant, so
+the u8 tree is correct and the re-encode (levels only) suffices -> the gate cells are q55 +
+q40..q50 (64x64, where 3.996..3.999 is close enough that the single-SB near-ties don't tip);
+q<=32 (ratio <=3.99) and all 128px non-flat cells tip a partition/mode RD near-tie -> BLOCKER1.
+
+**DECISIVE PROOF it is intrinsic, not a port bug** (`gradient 64x64 q20 p10`): C's OWN tree
+differs by bit depth on byte-identical `<<2` content — **C bd8 = 16x BLOCK_16X16 (bsize 6);
+C bd10 = 4x BLOCK_32X32 (bsize 9)** — and the port's u8 tree byte-matches C bd8 EXACTLY (the
+same cell is a bd8 byte-match: 54/54). So the u8 MD is faithful; the divergence is purely from
+replaying the bd8 partition at bd10, where C keeps 32x32 PARTITION_NONE and the u8 tree SPLITs.
+The re-encode (fixed tree, recompute levels) structurally CANNOT fix this.
+
+**SCOPE — true bd10 MD** = re-run the partition/mode/tx RD SEARCH (not just final levels) at
+bd10, so each candidate's `dist + lambda*rate` is evaluated at bd10 and the NONE-vs-SPLIT /
+mode / tx-type choice is made at bd10. Every KERNEL it needs is already ported + FFI-verified:
+bd10 quant (`build_quant_table_bd`/`quantize_*_hbd`), bd10 lambda (`kf_full_lambda_bd10`,
+`*16` full / `*4` fast), bd10 distortion (`c_parity_hbd_distortion` SSE/SATD/variance), bd10
+intra prediction (`predict_unit_hbd`/`dr_predict_hbd`/`predict_filter_intra_hbd`). The work is
+threading them through the funnel/partition RD SEARCH (the generic-`Pixel` pass in the SURFACE
+section, or a bd10 MD pass), because the RD COMPARISON must be at bd10 — a large hot-path pass,
+NOT dribble-able. This is the single highest-impact bd10 item (100% of real content).
+
+### BLOCKER 2 — CDEF-search / Wiener-LR bd10 (bounded; 3 cells on this content)
+
+CONFIRMED CDEF+LR DO run in this harness config (SVT still-picture defaults, NOT libaom
+allintra-off): the p0/p6 cells carry searched CDEF strengths + per-SB Wiener taps. The bd10
+searches are genuinely bit-depth-dependent (measured, `gradient 64x64 q55 p0`): even though
+Q10=4*Q8 there, the bd10 recon != `recon8<<2` (3962/4096 luma px differ by ~+20, from the
+hbd intra-predictor rounding), so the CDEF/LR MSE genuinely needs the TRUE bd10 recon.
+
+Precise scope (per search; all operate on u8 recon today):
+- **DLF level search** (`deblock::pick_filter_levels_full_search`, M0..M5): u8 SSE on u8 recon.
+  Needs u16 recon + u16 source + hbd deblock kernels (FFI-verified, `c_parity_lpf_hbd`) + bd10
+  SSE. (from-Q LF at M6+ is ALREADY bd10-aware.)
+- **CDEF search** (`cdef::cdef_search_still` + `finish_cdef_rd`): the encoder's `filter_fb_packed`
+  writes a **u8** dst and hardcodes `coeff_shift=0`; `finish_cdef_rd` uses the bd8 lambda. Needs
+  a **u16-dst CDEF filter** (only the u8-dst `svt_cdef_filter_block_8bit_c` arm is ported/verified;
+  the u16-dst `svt_cdef_filter_block_c` must be ported + FFI-verified), `coeff_shift=2` threaded
+  (C `svt_cdef_filter_fb`: `pri=(strength/4)<<coeff_shift`, `damping+=coeff_shift`), bd10 lambda,
+  and the bd10 recon (`last_recon10_y` + flat-512 uniform chroma). q55 p0 (deblock is a no-op
+  there, LF=0) needs ONLY this; it is the smallest blocker-2 cell.
+- **Wiener LR search** (`restoration::search_restoration_still`, M0..M6): needs the post-CDEF
+  bd10 recon (so DLF + CDEF at bd10 first) + hbd Wiener + bd10 lambda. q{20,40} p6 need the full
+  DLF+CDEF+Wiener bd10 chain (deblock RAN on both, so not skippable). Larger than the CDEF cell.
+
+For single-frame identity ONLY the SEARCHES (which pick the signaled levels/strengths/taps) need
+bd10 recon — the filter APPLICATION to the stored recon does not affect the OBU. That bounds the
+CDEF-only cell to: port+verify the u16-dst CDEF filter, then a bd10 `cdef_search_still` on
+`last_recon10_y`. Deferred to a dedicated pass (needs the u16-dst filter FFI-verified first; no
+C-side CDEF-search instrumentation exists in `capture_c_trace` yet to diff intermediate MSE).
+
 **(historical) NEXT bd10 chunk = the u16 MD path for NON-FLAT content (the big one).** Uniform
 works because every block is skip (no residual); any content with a coded
 residual needs the precision-sensitive u16 MD. MEASURED (2026-07-18): gradient
