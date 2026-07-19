@@ -80,16 +80,93 @@ pub fn pick_filter_levels_key_frame(qindex: u8, bit_depth: u8) -> LfLevels {
     }
 }
 
+/// The two bit-depth-dependent kernels the deblock-LEVEL search calls. C
+/// selects both on `scs->is_16bit_pipeline`: `svt_av1_loop_filter_frame`
+/// dispatches to the highbd lpf family, and `picture_sse_calculations`
+/// (deblocking_filter.c:768) picks `svt_full_distortion_kernel16_bits` over
+/// `svt_spatial_full_distortion_kernel`. The hill-climb around them
+/// (`search_filter_level`, deblocking_filter.c:838) is one shared body.
+pub trait DlfPixel: Copy + Default {
+    #[allow(clippy::too_many_arguments)]
+    fn filter_plane(
+        buf: &mut [Self],
+        stride: usize,
+        plane_w: usize,
+        plane_h: usize,
+        plane: usize,
+        ss: usize,
+        level_vert: u8,
+        level_horz: u8,
+        geom: &DeblockGeom,
+        sharpness: u8,
+        bit_depth: u8,
+    );
+
+    /// `picture_sse_calculations` (deblocking_filter.c:752).
+    fn plane_sse(a: &[Self], b: &[Self], w: usize, h: usize) -> i64;
+}
+
+impl DlfPixel for u8 {
+    fn filter_plane(
+        buf: &mut [u8],
+        stride: usize,
+        plane_w: usize,
+        plane_h: usize,
+        plane: usize,
+        ss: usize,
+        level_vert: u8,
+        level_horz: u8,
+        geom: &DeblockGeom,
+        sharpness: u8,
+        _bit_depth: u8,
+    ) {
+        filter_plane(
+            buf, stride, plane_w, plane_h, plane, ss, level_vert, level_horz, geom, sharpness,
+        );
+    }
+
+    fn plane_sse(a: &[u8], b: &[u8], w: usize, h: usize) -> i64 {
+        plane_sse(a, b, w, h)
+    }
+}
+
+impl DlfPixel for u16 {
+    fn filter_plane(
+        buf: &mut [u16],
+        stride: usize,
+        plane_w: usize,
+        plane_h: usize,
+        plane: usize,
+        ss: usize,
+        level_vert: u8,
+        level_horz: u8,
+        geom: &DeblockGeom,
+        sharpness: u8,
+        bit_depth: u8,
+    ) {
+        filter_plane_hbd(
+            buf, stride, plane_w, plane_h, plane, ss, level_vert, level_horz, geom, sharpness,
+            bit_depth,
+        );
+    }
+
+    /// `svt_full_distortion_kernel16_bits` (pic_operators.c:100) — the
+    /// is_16bit arm of `picture_sse_calculations`.
+    fn plane_sse(a: &[u16], b: &[u16], w: usize, h: usize) -> i64 {
+        svtav1_dsp::hbd::full_distortion_kernel16_bits(a, 0, w, b, 0, w, w, h) as i64
+    }
+}
+
 /// Inputs to the full-image deblock-level search (`LPF_PICK_FROM_FULL_IMAGE`).
-pub struct DlfSearchInput<'a> {
-    /// Source planes (`enhanced_pic`): the encoder input.
-    pub y_src: &'a [u8],
-    pub u_src: &'a [u8],
-    pub v_src: &'a [u8],
+pub struct DlfSearchInput<'a, P: DlfPixel = u8> {
+    /// Source planes (`enhanced_pic` / `input_frame16bit`): the encoder input.
+    pub y_src: &'a [P],
+    pub u_src: &'a [P],
+    pub v_src: &'a [P],
     /// Post-encode reconstruction, BEFORE any deblocking.
-    pub y_recon: &'a [u8],
-    pub u_recon: &'a [u8],
-    pub v_recon: &'a [u8],
+    pub y_recon: &'a [P],
+    pub u_recon: &'a [P],
+    pub v_recon: &'a [P],
     pub width: usize,
     pub height: usize,
     pub chroma_420: bool,
@@ -103,6 +180,9 @@ pub struct DlfSearchInput<'a> {
     /// which changes the deblock thresholds used by BOTH the level search
     /// trials and the final application (and the FH sharpness bits).
     pub sharpness: u8,
+    /// Encoder bit depth (8 or 10) — reaches the lpf kernels' threshold
+    /// shift. Inert on the u8 instantiation.
+    pub bit_depth: u8,
 }
 
 /// Sum of squared differences over one plane —
@@ -129,9 +209,9 @@ fn plane_sse(a: &[u8], b: &[u8], w: usize, h: usize) -> i64 {
 /// `temp_lf_recon_buffer`; filtering a scratch clone is arithmetically
 /// identical (the kernels are pure functions of the pre-filter plane).
 #[allow(clippy::too_many_arguments)]
-fn try_filter_plane(
-    input: &DlfSearchInput,
-    scratch: &mut Vec<u8>,
+fn try_filter_plane<P: DlfPixel>(
+    input: &DlfSearchInput<'_, P>,
+    scratch: &mut Vec<P>,
     plane: usize,
     lvl0: u8,
     lvl1: u8,
@@ -159,12 +239,21 @@ fn try_filter_plane(
     // leave the plane untouched (the per-SB walk skips planes whose level
     // is 0 — svt_aom_loop_filter_sb plane gating).
     if lvl0 != 0 || lvl1 != 0 {
-        filter_plane(
-            scratch, w, w, h, plane, subs, lvl0, lvl1, input.geom,
+        P::filter_plane(
+            scratch,
+            w,
+            w,
+            h,
+            plane,
+            subs,
+            lvl0,
+            lvl1,
+            input.geom,
             input.sharpness, // = signaled loop_filter_sharpness (fork default 1)
+            input.bit_depth,
         );
     }
-    plane_sse(src, scratch, w, h)
+    P::plane_sse(src, scratch, w, h)
 }
 
 /// C `search_filter_level` (deblocking_filter.c:832) — the
@@ -179,9 +268,9 @@ fn try_filter_plane(
 ///
 /// Returns (best level, ss_err[0], ss_err[best]) — the zero/best SSEs feed
 /// the caller's bookkeeping (pcs->zero_filt_sse / best_filt_sse).
-fn search_filter_level(
-    input: &DlfSearchInput,
-    scratch: &mut Vec<u8>,
+fn search_filter_level<P: DlfPixel>(
+    input: &DlfSearchInput<'_, P>,
+    scratch: &mut Vec<P>,
     plane: usize,
     dir: i32,
     last_frame_filter_level: [i32; 4],
@@ -210,7 +299,7 @@ fn search_filter_level(
 
     // try_filter_frame at filt_mid. For plane 0 with dir == 2 both luma
     // levels take the candidate; chroma planes carry one level.
-    let try_level = |input: &DlfSearchInput, scratch: &mut Vec<u8>, level: i32| -> i64 {
+    let try_level = |input: &DlfSearchInput<'_, P>, scratch: &mut Vec<P>, level: i32| -> i64 {
         let (l0, l1) = if plane == 0 {
             // dir == 2 on the still path (dir 0/1 would mix in the frame
             // header's other-direction level, which is only exercised by
@@ -346,8 +435,8 @@ pub fn recondbg_dump(
     }
 }
 
-pub fn pick_filter_levels_full_search(input: &DlfSearchInput) -> LfLevels {
-    let mut scratch: Vec<u8> = Vec::with_capacity(input.width * input.height);
+pub fn pick_filter_levels_full_search<P: DlfPixel>(input: &DlfSearchInput<'_, P>) -> LfLevels {
+    let mut scratch: Vec<P> = Vec::with_capacity(input.width * input.height);
     let last = [0i32; 4];
 
     // Luma: one level for both edge directions (dir = 2).

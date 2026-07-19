@@ -1666,40 +1666,20 @@ impl EncodePipeline {
                 chroma.is_some(),
             );
         }
-        let lf_levels = if is_key {
-            if is_single_frame && self.speed_config.preset <= 5 {
-                let (su, sv) = chroma.unwrap_or((&[][..], &[][..]));
-                let input = crate::deblock::DlfSearchInput {
-                    sharpness: lf_sharp_eff,
-                    y_src: &encode_input,
-                    u_src: su,
-                    v_src: sv,
-                    y_recon: &recon,
-                    u_recon: &u_recon,
-                    v_recon: &v_recon,
-                    width: w,
-                    height: h,
-                    chroma_420: chroma.is_some(),
-                    geom: &deblock_geom,
-                    early_exit_convergence: if self.speed_config.preset <= 3 { 0 } else { 1 },
-                };
-                crate::deblock::pick_filter_levels_full_search(&input)
-            } else {
-                crate::deblock::pick_filter_levels_key_frame(base_qindex, self.bit_depth)
-            }
-        } else {
-            crate::deblock::LfLevels::default()
-        };
-        self.last_recon_unfiltered = Some((recon.clone(), u_recon.clone(), v_recon.clone()));
         // ---- bd10 post-filter canvas ------------------------------------
-        // At 10 bits C runs the WHOLE post-MD filter chain (deblock -> CDEF
-        // -> LR) on the 16-bit recon against the 16-bit source, and the two
-        // SEARCHES in that chain (CDEF strength, Wiener LR taps) write frame
-        // syntax — so running them at 8 bits is a bitstream divergence, not
-        // just a recon approximation. This carries the true 10-bit planes
-        // through the chain in parallel with the u8 ones; the u8 chain still
-        // produces the output/DPB recon, unchanged, and bd8 never enters
-        // any of this.
+        // At 10 bits C runs the WHOLE post-MD filter chain on the 16-bit
+        // recon against the 16-bit source, and the THREE SEARCHES in that
+        // chain — the deblock LEVEL search, the CDEF strength search and the
+        // Wiener LR taps — each write frame-header syntax. Running them at 8
+        // bits is therefore a bitstream divergence, not just a recon
+        // approximation. This carries the true 10-bit planes through the
+        // chain in parallel with the u8 ones; the u8 chain still produces the
+        // output/DPB recon, unchanged, and bd8 never enters any of it.
+        //
+        // Built BEFORE the LF-level decision because the deblock-level search
+        // reads the UNFILTERED recon (each trial filters a scratch copy — C
+        // re-instates the frame from `temp_lf_recon_buffer` after every
+        // try_filter_frame, deblocking_filter.c:828).
         //
         // `Some` iff this frame produced a complete 10-bit recon (the bd10
         // re-encode gate above). When it declined, the searches fall back to
@@ -1714,6 +1694,65 @@ impl EncodePipeline {
             }
             _ => None,
         };
+        let lf_levels = if is_key {
+            if is_single_frame && self.speed_config.preset <= 5 {
+                let (su, sv) = chroma.unwrap_or((&[][..], &[][..]));
+                let early_exit_convergence =
+                    if self.speed_config.preset <= 3 { 0 } else { 1 };
+                match recon10.as_ref() {
+                    // bd10: search on the true 10-bit unfiltered recon
+                    // against the true 10-bit source, with the highbd lpf
+                    // kernels and `svt_full_distortion_kernel16_bits`
+                    // (C `picture_sse_calculations` at is_16bit,
+                    // deblocking_filter.c:768).
+                    Some((y10, u10, v10)) => {
+                        let sh = (self.bit_depth - 8) as u32;
+                        let widen =
+                            |p: &[u8]| -> Vec<u16> { p.iter().map(|&s| (s as u16) << sh).collect() };
+                        let (sy10, su10, sv10) = (widen(&encode_input), widen(su), widen(sv));
+                        let input = crate::deblock::DlfSearchInput::<u16> {
+                            sharpness: lf_sharp_eff,
+                            y_src: &sy10,
+                            u_src: &su10,
+                            v_src: &sv10,
+                            y_recon: y10,
+                            u_recon: u10,
+                            v_recon: v10,
+                            width: w,
+                            height: h,
+                            chroma_420: true,
+                            geom: &deblock_geom,
+                            early_exit_convergence,
+                            bit_depth: self.bit_depth,
+                        };
+                        crate::deblock::pick_filter_levels_full_search(&input)
+                    }
+                    None => {
+                        let input = crate::deblock::DlfSearchInput::<u8> {
+                            sharpness: lf_sharp_eff,
+                            y_src: &encode_input,
+                            u_src: su,
+                            v_src: sv,
+                            y_recon: &recon,
+                            u_recon: &u_recon,
+                            v_recon: &v_recon,
+                            width: w,
+                            height: h,
+                            chroma_420: chroma.is_some(),
+                            geom: &deblock_geom,
+                            early_exit_convergence,
+                            bit_depth: self.bit_depth,
+                        };
+                        crate::deblock::pick_filter_levels_full_search(&input)
+                    }
+                }
+            } else {
+                crate::deblock::pick_filter_levels_key_frame(base_qindex, self.bit_depth)
+            }
+        } else {
+            crate::deblock::LfLevels::default()
+        };
+        self.last_recon_unfiltered = Some((recon.clone(), u_recon.clone(), v_recon.clone()));
         if let Some((y10, u10, v10)) = recon10.as_mut() {
             if lf_levels.any() {
                 crate::deblock::apply_deblock_frame_hbd(
