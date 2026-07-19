@@ -21,6 +21,10 @@
  *      same log2 units as the Rust driver's SVTAV1_TILE_ROWS_LOG2 —
  *      EbSvtAv1Enc.h:607-611 documents the field as "Log 2 Tile Rows").
  *
+ * Env: SVT_TILE_COLUMNS (default: unset -> library default, 0 tile cols) —
+ *      the column analogue, cfg.tile_columns / TileColsLog2 (task #96;
+ *      Rust driver: SVTAV1_TILE_COLS_LOG2).
+ *
  *      SVT_HDR_MODE=1 selects the FORK oracle. That is a BUILD-TIME switch,
  *      handled by build.sh/the wrapper (different lib + different binary);
  *      this file is compiled unchanged for both. What it does add is the
@@ -170,6 +174,18 @@ int main(int argc, char** argv) {
     const char* tile_rows_env = getenv("SVT_TILE_ROWS");
     if (tile_rows_env) {
         cfg.tile_rows = atoi(tile_rows_env);
+    }
+    /* task #96: tile COLUMNS, same log2 domain (EbSvtAv1Enc.h:610-611
+     * "int32_t tile_columns"). Validation (enc_settings.c:373,377):
+     * log2 <= 6, (1<<rows)*(1<<cols) <= 128, and tile_columns <= 4.
+     * Absent the env var, cfg.tile_columns keeps the DEFAULT sentinel
+     * (-1); DEFAULT on BOTH fields resolves to 0/0 (enc_handle.c:4520),
+     * and DEFAULT on one with the other set resolves that one to 0
+     * (:4525-4530) — so setting only SVT_TILE_ROWS is still exactly the
+     * pre-existing single-column encode. */
+    const char* tile_cols_env = getenv("SVT_TILE_COLUMNS");
+    if (tile_cols_env) {
+        cfg.tile_columns = atoi(tile_cols_env);
     }
 
     /* Fork / fork-defaulted knobs. Types per EbSvtAv1Enc.h; absent env var =

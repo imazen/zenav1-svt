@@ -98,8 +98,14 @@ pub struct EncodePipeline {
     /// The actually-encoded value is [`svtav1_entropy::obu::
     /// resolve_tile_rows_log2`] of this against the frame dims — a
     /// too-large request degrades exactly like C instead of panicking.
-    /// Tile COLUMNS are out of scope (always 1 column).
+    /// Pairs with [`Self::tile_cols_log2`].
     pub tile_rows_log2: u8,
+    /// Requested `TileColsLog2` (C `static_config.tile_columns` —
+    /// EbSvtAv1Enc.h:610-611, same log2 domain as the rows). Default 0 =
+    /// single tile column. C validation caps it at 4
+    /// (`enc_settings.c:377`) on top of the geometry clamp; a request
+    /// beyond what the frame supports degrades exactly like C.
+    pub tile_cols_log2: u8,
     /// SUPERBLOCK SIZE IN PIXELS — 64 or 128 (task #91). C derives this in
     /// `Globals/enc_handle.c:4071-4111`; the port replays that rule in
     /// [`crate::sb128_geom::derive_super_block_size`] at construction from
@@ -224,6 +230,7 @@ impl EncodePipeline {
             last_cdef_stats: crate::cdef::CdefStats::default(),
             last_lr_stats: ([0; 3], 0),
             tile_rows_log2: 0,
+            tile_cols_log2: 0,
             sb_size,
             sb_size_override: None,
             derived_sb_size: derived_sb,
@@ -300,6 +307,14 @@ impl EncodePipeline {
     /// like C (see [`Self::tile_rows_log2`]) rather than rejected.
     pub fn with_tile_rows_log2(mut self, log2: u8) -> Self {
         self.tile_rows_log2 = log2;
+        self
+    }
+
+    /// Request `TileColsLog2` tile columns (`1 << log2`; 0 = single tile
+    /// column, the default). Clamped exactly like C — see
+    /// [`Self::tile_cols_log2`].
+    pub fn with_tile_cols_log2(mut self, log2: u8) -> Self {
+        self.tile_cols_log2 = log2;
         self
     }
 
@@ -747,22 +762,34 @@ impl EncodePipeline {
         // same way C's `svt_aom_set_tile_info` clamps a nonsense request
         // (entropy_coding.c:2450-2579): out-of-range requests degrade to
         // the largest the frame supports rather than panicking or
-        // producing a bitstream inconsistent with what was encoded. Tile
-        // COLUMNS stay fixed at 1 (out of scope for #86).
-        let tile_rows_log2 =
-            svtav1_entropy::obu::resolve_tile_rows_log2_sb(
-                self.width,
-                self.height,
-                self.tile_rows_log2,
-                // Task #91: the tile limits are SB-derived (spec 5.9.15) —
-                // max_tile_width_sb HALVES and max_tile_area_sb QUARTERS at
-                // SB128 (C svt_av1_get_tile_limits shifts by the PIXEL
-                // sb_size_log2). Identical to the old 64 constant whenever
-                // sb_size == 64, i.e. for every currently gated cell.
-                self.sb_size as u32,
-            );
-        let tile_rows = 1usize << tile_rows_log2;
-        let rows_per_tile = sb_rows.div_ceil(tile_rows);
+        // producing a bitstream inconsistent with what was encoded.
+        //
+        // Task #96: the grid is resolved through `TileGrid::resolve`, the
+        // shared port of C's get_tile_limits + calculate_tile_cols +
+        // calculate_tile_rows. The load-bearing part is that
+        // `grid.tile_rows` is the ACTUAL tile count, which C's algorithm
+        // makes SMALLER than `1 << TileRowsLog2` whenever the SB-row
+        // count is not a multiple of it (6 SB rows at log2=2 -> height 2
+        // -> 3 tiles, not 4). Deriving the count as `1 << log2` instead
+        // both encoded a trailing EMPTY tile and wrote an out-of-range
+        // `context_update_tile_id`, which conforming decoders REJECT
+        // ("Invalid context_update_tile"). See TileGrid's doc comment.
+        let tile_grid = svtav1_entropy::obu::TileGrid::resolve(
+            self.width,
+            self.height,
+            // Task #91: the tile limits are SB-derived (spec 5.9.15) —
+            // max_tile_width_sb HALVES and max_tile_area_sb QUARTERS at
+            // SB128 (C svt_av1_get_tile_limits shifts by the PIXEL
+            // sb_size_log2). Identical to the old 64 constant whenever
+            // sb_size == 64, i.e. for every currently gated cell.
+            self.sb_size as u32,
+            self.tile_rows_log2,
+            self.tile_cols_log2,
+        );
+        let tile_rows_log2 = tile_grid.tile_rows_log2;
+        let tile_cols_log2 = tile_grid.tile_cols_log2;
+        let tile_rows = tile_grid.tile_rows;
+        let rows_per_tile = tile_grid.tile_height_sb;
 
         // [SVT_HDR_MODE] fork chroma-q: derive the FH per-plane deltas and
         // the plane qindexes the quantizer must use. Mainline: all zero.
@@ -1900,6 +1927,7 @@ impl EncodePipeline {
                 // reassignment above), so the FH's declared TileSizeBytes
                 // always matches the tile group's actual size prefixes.
                 tile_rows_log2,
+                tile_cols_log2,
                 tile_size_bytes_minus_1,
                 // Task #91: must match the SH's use_128x128_superblock
                 // (the FH's tile_info() limits are SB-derived).

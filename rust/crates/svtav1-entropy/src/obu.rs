@@ -797,7 +797,8 @@ pub fn write_key_frame_header_full(
         None, // qm: quant matrices off
         None, // fgs: no film grain
         0,    // tile_rows_log2: legacy wrapper stays single-tile
-        0,    // tile_size_bytes_minus_1: unused when tile_rows_log2 == 0
+        0,    // tile_cols_log2: ditto
+        0,    // tile_size_bytes_minus_1: unused when NumTiles == 1
     )
 }
 
@@ -877,6 +878,7 @@ pub fn write_key_frame_header_full_lr_sb(
     qm: Option<[u8; 3]>,
     fgs: Option<&FilmGrainParams>,
     tile_rows_log2: u8,
+    tile_cols_log2: u8,
     tile_size_bytes_minus_1: u8,
     // Superblock size in PIXELS (64 or 128); must match the SH's
     // `use_128x128_superblock`.
@@ -898,6 +900,7 @@ pub fn write_key_frame_header_full_lr_sb(
         qm,
         fgs,
         tile_rows_log2,
+        tile_cols_log2,
         tile_size_bytes_minus_1,
         sb_size,
     );
@@ -929,11 +932,13 @@ pub fn write_key_frame_header_full_lr(
     qm: Option<[u8; 3]>,
     fgs: Option<&FilmGrainParams>,
     tile_rows_log2: u8,
+    tile_cols_log2: u8,
     tile_size_bytes_minus_1: u8,
 ) -> Vec<u8> {
     write_key_frame_header_full_lr_sb(
         width, height, base_qindex, reduced_sh, monochrome, lf_levels, lf_sharpness, cdef, lr, sc,
-        chroma_q, delta_q_res, qm, fgs, tile_rows_log2, tile_size_bytes_minus_1, 64,
+        chroma_q, delta_q_res, qm, fgs, tile_rows_log2, tile_cols_log2, tile_size_bytes_minus_1,
+        64,
     )
 }
 
@@ -973,7 +978,8 @@ fn key_frame_header_bits(
         None, // qm: quant matrices off
         None, // fgs: no film grain
         0,    // tile_rows_log2: test wrapper stays single-tile
-        0,    // tile_size_bytes_minus_1: unused when tile_rows_log2 == 0
+        0,    // tile_cols_log2: ditto
+        0,    // tile_size_bytes_minus_1: unused when NumTiles == 1
         64,
     )
 }
@@ -996,6 +1002,7 @@ fn key_frame_header_bits_lr(
     qm: Option<[u8; 3]>,
     fgs: Option<&FilmGrainParams>,
     tile_rows_log2: u8,
+    tile_cols_log2: u8,
     tile_size_bytes_minus_1: u8,
     // Superblock size in PIXELS (64 or 128) — the tile limits are
     // SB-derived (spec 5.9.15), so this must match the SH's
@@ -1055,7 +1062,15 @@ fn key_frame_header_bits_lr(
     }
 
     // ---- tile_info() ----
-    write_tile_info(&mut wb, width, height, tile_rows_log2, tile_size_bytes_minus_1, sb_size);
+    write_tile_info(
+        &mut wb,
+        width,
+        height,
+        tile_rows_log2,
+        tile_cols_log2,
+        tile_size_bytes_minus_1,
+        sb_size,
+    );
 
     // ---- quantization_params() ----
     // Spec 5.9.12; decoder authority: libaom setup_quantization
@@ -1294,55 +1309,156 @@ fn tile_log2_blk(blk_size: u32, target: u32) -> u32 {
     k
 }
 
-/// Rows-only port of `svt_av1_get_tile_limits` + the tile-rows half of
-/// `svt_aom_set_tile_info` (entropy_coding.c:2450-2579): clamps a
-/// requested `TileRowsLog2` into `[minLog2TileRows, maxLog2TileRows]`
-/// exactly like C, so an out-of-range request (e.g. more tile rows than
-/// SB rows exist) degrades identically to the C reference instead of
-/// producing a bitstream inconsistent with what was actually encoded.
+/// The resolved uniform tile grid — a faithful port of C's
+/// `svt_av1_get_tile_limits` + `svt_av1_calculate_tile_cols` +
+/// `svt_av1_calculate_tile_rows`, driven in the order
+/// `svt_aom_set_tile_info` drives them (entropy_coding.c:2450-2579).
 ///
-/// Tile COLUMNS are out of scope for this port (task #86 covers tile rows
-/// only) and are assumed fixed at `TileColsLog2 = 0` — true for every
-/// width this harness exercises (`minLog2TileCols` is 0 up to
-/// `MAX_TILE_WIDTH` SBs wide, i.e. 4096px). [`write_tile_info`]'s column
-/// bits are unaffected and unchanged by this function.
+/// The distinction this type exists to carry is **requested log2 vs
+/// ACTUAL tile count**. C's tiling algorithm (the comment block at
+/// `svt_aom_set_tile_info`) rounds the SB count up to `1 << log2`,
+/// divides to get a uniform tile size, then *fills tiles of that size
+/// until the picture ends* — so "the last tile could have smaller size,
+/// and the final number of tiles could be less than tile_count". A 6-SB
+/// dimension with `log2 = 2` yields `size_sb = 2` and therefore **3**
+/// tiles, not 4.
+///
+/// Getting that wrong is not a byte-difference, it is a CORRUPT stream:
+/// `context_update_tile_id` is written as `NumTiles - 1` in
+/// `TileColsLog2 + TileRowsLog2` bits, so emitting `(1 << log2) - 1`
+/// when fewer tiles exist makes the id exceed `NumTiles - 1` and every
+/// conforming decoder rejects the frame ("Invalid context_update_tile").
+/// The pre-task-#96 rows-only path did exactly that for any frame whose
+/// SB-row count was not a multiple of the requested tile count.
+///
+/// All spans are in SUPERBLOCK units.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TileGrid {
+    /// Resolved `TileColsLog2` (clamped into the legal range).
+    pub tile_cols_log2: u8,
+    /// Resolved `TileRowsLog2` (clamped into the legal range).
+    pub tile_rows_log2: u8,
+    /// ACTUAL tile-column count — may be `< 1 << tile_cols_log2`.
+    pub tile_cols: usize,
+    /// ACTUAL tile-row count — may be `< 1 << tile_rows_log2`.
+    pub tile_rows: usize,
+    /// Uniform tile width in SBs (the last column may be narrower).
+    pub tile_width_sb: usize,
+    /// Uniform tile height in SBs (the last row may be shorter).
+    pub tile_height_sb: usize,
+    /// Frame width in SBs.
+    pub sb_cols: usize,
+    /// Frame height in SBs.
+    pub sb_rows: usize,
+    min_log2_tile_cols: u32,
+    max_log2_tile_cols: u32,
+    /// Recomputed as `max(min_log2_tiles - TileColsLog2, 0)` AFTER the
+    /// columns are resolved — C does this both in
+    /// `svt_av1_calculate_tile_cols` and again in
+    /// `write_tile_info_max_tile` (entropy_coding.c:2417).
+    min_log2_tile_rows: u32,
+    max_log2_tile_rows: u32,
+}
+
+impl TileGrid {
+    /// Resolve a requested `(TileRowsLog2, TileColsLog2)` against the
+    /// frame geometry. `sb_size` is the superblock size in PIXELS (64 or
+    /// 128); the tile limits are SB-derived, so `max_tile_width_sb`
+    /// HALVES and `max_tile_area_sb` QUARTERS at SB128 (C shifts by the
+    /// PIXEL-domain `sb_size_log2`).
+    ///
+    /// Out-of-range requests are CLAMPED, exactly like C, rather than
+    /// rejected — so a nonsense request degrades to the largest grid the
+    /// frame supports instead of producing a bitstream inconsistent with
+    /// what was actually encoded.
+    pub fn resolve(
+        width: u32,
+        height: u32,
+        sb_size: u32,
+        requested_rows_log2: u8,
+        requested_cols_log2: u8,
+    ) -> Self {
+        debug_assert!(sb_size == 64 || sb_size == 128, "sb_size must be 64 or 128");
+        // C: sb_size_log2 = log2_sb_size(MI units) + MI_SIZE_LOG2(2). For
+        // a 64px SB log2_sb_size = log2(64/4) = 4 -> 6; for 128px it is
+        // log2(128/4) = 5 -> 7 (the PIXEL log2).
+        let sb_size_log2 = sb_size.trailing_zeros();
+        let sb_cols = width.div_ceil(sb_size);
+        let sb_rows = height.div_ceil(sb_size);
+
+        // --- svt_av1_get_tile_limits (entropy_coding.c:2450) ---
+        let max_tile_width_sb = (MAX_TILE_WIDTH as u32) >> sb_size_log2;
+        let max_tile_area_sb = (MAX_TILE_AREA as u32) >> (2 * sb_size_log2);
+        let min_log2_tile_cols = tile_log2_blk(max_tile_width_sb, sb_cols);
+        let max_log2_tile_cols = tile_log2(sb_cols.min(MAX_TILE_COLS as u32));
+        let max_log2_tile_rows = tile_log2(sb_rows.min(MAX_TILE_ROWS as u32));
+        let min_log2_tiles =
+            tile_log2_blk(max_tile_area_sb, sb_rows * sb_cols).max(min_log2_tile_cols);
+
+        // --- columns first (svt_aom_set_tile_info:2555-2560) ---
+        let tile_cols_log2 =
+            u32::from(requested_cols_log2).clamp(min_log2_tile_cols, max_log2_tile_cols);
+        // svt_av1_calculate_tile_cols: size_sb = ceil(sb_cols / 2^log2)
+        // via ALIGN_POWER_OF_TWO, then fill until the picture ends.
+        let tile_width_sb = sb_cols.div_ceil(1 << tile_cols_log2).max(1);
+        let tile_cols = sb_cols.div_ceil(tile_width_sb) as usize;
+
+        // --- then rows, with min recomputed against the chosen cols ---
+        let min_log2_tile_rows = min_log2_tiles.saturating_sub(tile_cols_log2);
+        let tile_rows_log2 =
+            u32::from(requested_rows_log2).clamp(min_log2_tile_rows, max_log2_tile_rows);
+        let tile_height_sb = sb_rows.div_ceil(1 << tile_rows_log2).max(1);
+        let tile_rows = sb_rows.div_ceil(tile_height_sb) as usize;
+
+        Self {
+            tile_cols_log2: tile_cols_log2 as u8,
+            tile_rows_log2: tile_rows_log2 as u8,
+            tile_cols,
+            tile_rows,
+            tile_width_sb: tile_width_sb as usize,
+            tile_height_sb: tile_height_sb as usize,
+            sb_cols: sb_cols as usize,
+            sb_rows: sb_rows as usize,
+            min_log2_tile_cols,
+            max_log2_tile_cols,
+            min_log2_tile_rows,
+            max_log2_tile_rows,
+        }
+    }
+
+    /// ACTUAL total tile count (`tile_rows * tile_cols`) — the value
+    /// `context_update_tile_id` and the tile group's size-prefix count
+    /// both derive from.
+    pub fn num_tiles(&self) -> usize {
+        self.tile_rows * self.tile_cols
+    }
+
+    /// SB-column span `[start, end)` of tile column `tc`. The last
+    /// column is clipped to the frame.
+    pub fn col_span(&self, tc: usize) -> (usize, usize) {
+        let start = tc * self.tile_width_sb;
+        (start, ((tc + 1) * self.tile_width_sb).min(self.sb_cols))
+    }
+
+    /// SB-row span `[start, end)` of tile row `tr`. The last row is
+    /// clipped to the frame.
+    pub fn row_span(&self, tr: usize) -> (usize, usize) {
+        let start = tr * self.tile_height_sb;
+        (start, ((tr + 1) * self.tile_height_sb).min(self.sb_rows))
+    }
+}
+
+/// Rows-only convenience over [`TileGrid::resolve`] at SB64 — clamps a
+/// requested `TileRowsLog2` into `[minLog2TileRows, maxLog2TileRows]`
+/// exactly like C, with `TileColsLog2 = 0`.
 pub fn resolve_tile_rows_log2(width: u32, height: u32, requested_log2: u8) -> u8 {
     resolve_tile_rows_log2_sb(width, height, requested_log2, 64)
 }
 
 /// [`resolve_tile_rows_log2`] with an explicit superblock size (64 or 128
-/// PIXELS). The tile limits are SB-derived, so `max_tile_width_sb` and
-/// `max_tile_area_sb` HALVE / QUARTER at SB128 (C
-/// `svt_av1_get_tile_limits`, entropy_coding.c:2450-2467, shifts by the
-/// PIXEL-domain `sb_size_log2`).
+/// PIXELS).
 pub fn resolve_tile_rows_log2_sb(width: u32, height: u32, requested_log2: u8, sb_size: u32) -> u8 {
-    let (min_log2_tile_rows, max_log2_tile_rows) = tile_row_log2_limits(width, height, sb_size);
-    (u32::from(requested_log2)).clamp(min_log2_tile_rows, max_log2_tile_rows) as u8
-}
-
-/// `(minLog2TileRows, maxLog2TileRows)` per spec 5.9.15 / C
-/// `svt_av1_get_tile_limits` (entropy_coding.c:2450), assuming
-/// `TileColsLog2 = 0` (see [`resolve_tile_rows_log2`]).
-///
-/// `sb_size` is the superblock size in PIXELS (64 or 128).
-fn tile_row_log2_limits(width: u32, height: u32, sb_size: u32) -> (u32, u32) {
-    debug_assert!(sb_size == 64 || sb_size == 128, "sb_size must be 64 or 128");
-    // C: sb_size_log2 = log2_sb_size(MI units) + MI_SIZE_LOG2(2). For a
-    // 64px SB log2_sb_size = log2(64/4) = 4 -> 6; for a 128px SB it is
-    // log2(128/4) = 5 -> 7 (sb128_geom::sb_header_params' PIXEL log2).
-    let sb_size_log2 = sb_size.trailing_zeros();
-    let sb_cols = width.div_ceil(sb_size);
-    let sb_rows = height.div_ceil(sb_size);
-
-    let max_tile_width_sb = (MAX_TILE_WIDTH as u32) >> sb_size_log2;
-    let max_tile_area_sb = (MAX_TILE_AREA as u32) >> (2 * sb_size_log2);
-    let min_log2_tile_cols = tile_log2_blk(max_tile_width_sb, sb_cols);
-    // min_log2_tiles = max(min_log2_tile_cols, tile_log2(max_tile_area_sb, sb_rows*sb_cols))
-    let min_log2_tiles = tile_log2_blk(max_tile_area_sb, sb_rows * sb_cols).max(min_log2_tile_cols);
-    // min_log2_tile_rows = max(min_log2_tiles - TileColsLog2(=0), 0)
-    let min_log2_tile_rows = min_log2_tiles;
-    let max_log2_tile_rows = tile_log2(sb_rows.min(MAX_TILE_ROWS as u32));
-    (min_log2_tile_rows, max_log2_tile_rows)
+    TileGrid::resolve(width, height, sb_size, requested_log2, 0).tile_rows_log2
 }
 
 /// C `mem_put_varsize` (entropy_coding.c:32): pack `val` into `sz` bytes,
@@ -1400,56 +1516,53 @@ fn write_tile_info(
     width: u32,
     height: u32,
     tile_rows_log2: u8,
+    tile_cols_log2: u8,
     tile_size_bytes_minus_1: u8,
     sb_size: u32,
 ) {
-    let sb_cols = width.div_ceil(sb_size);
-    // Row limits (min/max log2 for the row sub-syntax below) come from the
-    // shared `tile_row_log2_limits` helper, which recomputes sb_rows
-    // itself — no separate local needed here.
+    let grid = TileGrid::resolve(width, height, sb_size, tile_rows_log2, tile_cols_log2);
+    debug_assert_eq!(
+        (grid.tile_rows_log2, grid.tile_cols_log2),
+        (tile_rows_log2, tile_cols_log2),
+        "tile log2s must be pre-resolved via TileGrid::resolve"
+    );
 
     wb.write_bit(true); // uniform_tile_spacing_flag = 1
 
-    // TileColsLog2 starts at minLog2TileCols.
-    // For our small images, minLog2TileCols = 0.
-    // maxLog2TileCols = tile_log2(min(sbCols, MAX_TILE_COLS))
-    let max_log2_tile_cols = tile_log2(sb_cols.min(MAX_TILE_COLS as u32));
-    // The decoder reads increment_tile_cols_log2 bits until a 0: a single
-    // 0 keeps TileColsLog2 = 0 (single tile column). No bit at all when
-    // no increment is even possible (maxLog2TileCols == 0).
-    if max_log2_tile_cols > 0 {
+    // C write_tile_info_max_tile (entropy_coding.c:2403): for each of
+    // columns then rows, `ones` increment bits (each a 1), then — UNLESS
+    // the log2 already reached its max — one final 0 stop bit.
+    let log2_tile_cols = u32::from(grid.tile_cols_log2);
+    for _ in 0..(log2_tile_cols - grid.min_log2_tile_cols) {
+        wb.write_bit(true); // increment_tile_cols_log2 = 1 → continue
+    }
+    if log2_tile_cols < grid.max_log2_tile_cols {
         wb.write_bit(false); // increment_tile_cols_log2 = 0 → stop
     }
 
-    // TileRowsLog2: minLog2TileRows..=maxLog2TileRows, per C
-    // write_tile_info_max_tile (entropy_coding.c:2403): `ones` "1" bits
-    // (each an increment_tile_rows_log2=1), then — UNLESS TileRowsLog2
-    // already reached maxLog2TileRows — one final "0" stop bit.
-    let (min_log2_tile_rows, max_log2_tile_rows) = tile_row_log2_limits(width, height, sb_size);
-    let log2_tile_rows = u32::from(tile_rows_log2);
-    debug_assert!(
-        log2_tile_rows >= min_log2_tile_rows && log2_tile_rows <= max_log2_tile_rows,
-        "tile_rows_log2 must be pre-resolved via resolve_tile_rows_log2"
-    );
-    let ones = log2_tile_rows - min_log2_tile_rows;
-    for _ in 0..ones {
+    // C recomputes minLog2TileRows against the CHOSEN columns right here
+    // (entropy_coding.c:2417) — TileGrid::resolve stores that same value.
+    let log2_tile_rows = u32::from(grid.tile_rows_log2);
+    for _ in 0..(log2_tile_rows - grid.min_log2_tile_rows) {
         wb.write_bit(true); // increment_tile_rows_log2 = 1 → continue
     }
-    if log2_tile_rows < max_log2_tile_rows {
+    if log2_tile_rows < grid.max_log2_tile_rows {
         wb.write_bit(false); // increment_tile_rows_log2 = 0 → stop
     }
 
-    // n_log2_tiles = TileRowsLog2 + TileColsLog2(=0). NumTiles > 1 iff
-    // either is nonzero (spec 5.9.15's `if (TileColsLog2 > 0 ||
-    // TileRowsLog2 > 0)`); columns are always 0 here.
-    if log2_tile_rows > 0 {
-        // context_update_tile_id: SVT always picks the LAST tile (C
-        // write_tile_info, entropy_coding.c:2593-2595: literal value
-        // `tile_cnt - 1`), which for TileColsLog2=0 is exactly
-        // `(1 << TileRowsLog2) - 1` — an all-ones pattern of
-        // `log2_tile_rows` bits.
-        let num_tiles = 1u32 << log2_tile_rows;
-        wb.write_bits(num_tiles - 1, log2_tile_rows);
+    // Spec 5.9.15's `if (TileColsLog2 > 0 || TileRowsLog2 > 0)`, which C
+    // spells as `tile_rows * tile_cols > 1` over the ACTUAL counts
+    // (entropy_coding.c:2587). The two agree: a nonzero log2 always
+    // yields at least 2 tiles on that axis.
+    if grid.num_tiles() > 1 {
+        // context_update_tile_id: SVT always picks the LAST tile — C
+        // writes the literal `tile_cnt - 1` in `log2_tile_cols +
+        // log2_tile_rows` bits (entropy_coding.c:2593-2595). `tile_cnt`
+        // is the ACTUAL `tile_rows * tile_cols`, which can be less than
+        // `1 << (rows_log2 + cols_log2)` — see TileGrid's doc comment.
+        // Writing the all-ones pattern instead makes the id exceed
+        // NumTiles-1 and the frame is REJECTED by conforming decoders.
+        wb.write_bits(grid.num_tiles() as u32 - 1, log2_tile_cols + log2_tile_rows);
         wb.write_bits(u32::from(tile_size_bytes_minus_1), 2);
     }
 }
@@ -1727,7 +1840,7 @@ mod tests {
     fn tile_info_single_sb() {
         // 64x64 = 1 SB → uniform + no increments, log2=0 (regression baseline)
         let mut wb = BitWriter::new();
-        write_tile_info(&mut wb, 64, 64, 0, 0, 64);
+        write_tile_info(&mut wb, 64, 64, 0, 0, 0, 64);
         // Should be just 1 bit (uniform_tile_spacing_flag)
         assert_eq!(wb.bit_offset, 1);
     }
@@ -1738,7 +1851,7 @@ mod tests {
         // 1 row stop bit (regression baseline: task #86 must not change
         // this byte shape when tile_rows_log2 == 0).
         let mut wb = BitWriter::new();
-        write_tile_info(&mut wb, 128, 128, 0, 0, 64);
+        write_tile_info(&mut wb, 128, 128, 0, 0, 0, 64);
         // uniform_flag (1) + col_increment_stop (1) + row_increment_stop (1) = 3
         assert_eq!(wb.bit_offset, 3);
     }
@@ -1753,7 +1866,7 @@ mod tests {
         // early via an explicit "0").
         assert_eq!(resolve_tile_rows_log2(128, 128, 1), 1);
         let mut wb = BitWriter::new();
-        write_tile_info(&mut wb, 128, 128, 1, 0, 64);
+        write_tile_info(&mut wb, 128, 128, 1, 0, 0, 64);
         // uniform(1) + col_stop(1) + row_inc(1) + context_update_tile_id
         // (1 bit, value=(1<<1)-1=1) + tile_size_bytes_minus_1(2 bits, 0) = 6
         assert_eq!(wb.bit_offset, 6);
@@ -1768,13 +1881,83 @@ mod tests {
         // case above, which hit its max exactly and has no stop bit).
         assert_eq!(resolve_tile_rows_log2(512, 512, 1), 1);
         let mut wb = BitWriter::new();
-        write_tile_info(&mut wb, 512, 512, 1, 0, 64);
+        write_tile_info(&mut wb, 512, 512, 1, 0, 0, 64);
         // uniform(1) + col: maxLog2TileCols=3>0 -> stop(1) + row: one
         // "1" increment + one "0" stop (2 bits, since 1 < 3) +
         // context_update_tile_id(1 bit, value=1) + tile_size_bytes(2) = 7
         assert_eq!(wb.bit_offset, 7);
         // 1,0, 1,0, 1, 0,0 -> 0b1010_100(0 unwritten) = 0xA8
         assert_eq!(wb.data(), &[0b1010_1000]);
+    }
+
+    #[test]
+    fn tile_grid_actual_count_is_below_pow2_when_sb_count_does_not_divide() {
+        // THE task-#96 defect, in one assertion. 512x384 at SB64 = 8x6 SBs.
+        // C's algorithm (svt_aom_set_tile_info's comment block +
+        // svt_av1_calculate_tile_rows): size_sb = ceil(6 / 2^2) = 2, then
+        // fill 2-SB tiles until the picture ends -> start_sb 0,2,4 -> THREE
+        // tiles, not four. `1 << log2` (= 4) is the REQUEST, never the count.
+        let g = TileGrid::resolve(512, 384, 64, 2, 0);
+        assert_eq!(g.tile_rows_log2, 2, "log2 is honoured");
+        assert_eq!(g.tile_height_sb, 2);
+        assert_eq!(g.tile_rows, 3, "ACTUAL rows, not 1<<2");
+        assert_eq!(g.num_tiles(), 3);
+        // Spans are contiguous, non-empty and cover the frame exactly —
+        // the pre-fix `1 << log2` count produced a 4th EMPTY span [6,6).
+        assert_eq!(g.row_span(0), (0, 2));
+        assert_eq!(g.row_span(1), (2, 4));
+        assert_eq!(g.row_span(2), (4, 6));
+
+        // log2=3 -> size 1 -> exactly 6 tiles (8 requested).
+        let g3 = TileGrid::resolve(512, 384, 64, 3, 0);
+        assert_eq!((g3.tile_height_sb, g3.tile_rows), (1, 6));
+
+        // The divisible case is unchanged: 256x256 = 4x4 SBs, log2=2 -> 4.
+        let g4 = TileGrid::resolve(256, 256, 64, 2, 0);
+        assert_eq!((g4.tile_height_sb, g4.tile_rows), (1, 4));
+    }
+
+    #[test]
+    fn tile_info_writes_actual_tile_count_in_context_update_tile_id() {
+        // Regression witness for the CORRUPTION this fixed. 512x384,
+        // rows_log2=2 -> 3 real tiles, so context_update_tile_id must be
+        // 2 (NumTiles-1) in 2 bits. Writing the all-ones `(1<<log2)-1 = 3`
+        // exceeds NumTiles-1 and aomdec rejects the frame with
+        // "Invalid context_update_tile".
+        let g = TileGrid::resolve(512, 384, 64, 2, 0);
+        assert_eq!(g.num_tiles(), 3);
+        let mut wb = BitWriter::new();
+        write_tile_info(&mut wb, 512, 384, 2, 0, 0, 64);
+        // uniform(1) + col stop(1: maxLog2TileCols=3>0) + rows: 2 "1"
+        // increments then a "0" stop (2 < maxLog2TileRows=3) = 3 bits +
+        // context_update_tile_id(2 bits) + tile_size_bytes_minus_1(2) = 9
+        assert_eq!(wb.bit_offset, 9);
+        // 1, 0, 1,1,0, 1,0, 0,0 -> 0b1011_0100 0b0xxx_xxxx
+        assert_eq!(wb.data()[0], 0b1011_0100);
+        assert_eq!(wb.data()[1] & 0b1000_0000, 0, "ctx id LSB = 0 (value 2, not 3)");
+    }
+
+    #[test]
+    fn tile_grid_resolves_columns_like_c_order() {
+        // C resolves COLUMNS first, then recomputes minLog2TileRows
+        // against the chosen columns (svt_aom_set_tile_info:2555-2578 +
+        // write_tile_info_max_tile:2417). 512x384 = 8x6 SBs.
+        let g = TileGrid::resolve(512, 384, 64, 0, 2);
+        assert_eq!(g.tile_cols_log2, 2);
+        assert_eq!((g.tile_width_sb, g.tile_cols), (2, 4));
+        assert_eq!(g.col_span(0), (0, 2));
+        assert_eq!(g.col_span(3), (6, 8));
+        assert_eq!(g.num_tiles(), 4);
+
+        // Columns clamp to maxLog2TileCols = tile_log2(min(sb_cols, 64)).
+        // 256 wide at SB64 = 4 SB cols -> max log2 = 2, so 3 clamps to 2.
+        assert_eq!(TileGrid::resolve(256, 256, 64, 0, 3).tile_cols_log2, 2);
+        // A 1-SB-wide frame supports no column split at all.
+        assert_eq!(TileGrid::resolve(64, 512, 64, 0, 4).tile_cols_log2, 0);
+
+        // Rows x cols compose: 3 row tiles x 4 col tiles = 12.
+        let g2 = TileGrid::resolve(512, 384, 64, 2, 2);
+        assert_eq!((g2.tile_rows, g2.tile_cols, g2.num_tiles()), (3, 4, 12));
     }
 
     #[test]
