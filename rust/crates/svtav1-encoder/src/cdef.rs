@@ -490,6 +490,167 @@ fn build_src<P: Copy + Into<u16>>(
     }
 }
 
+/// Highbd twin of [`apply_cdef_frame`] — the same decoder-exact frame pass on
+/// the 10-bit planes, with `coeff_shift = bit_depth - 8` threaded exactly as
+/// in [`cdef_search_still_hbd`] (strengths shifted left, damping raised,
+/// `cdef_find_dir` and the block kernel both given the shift).
+///
+/// This does NOT produce output pixels — the u8 chain still does that. It
+/// exists so the bd10 Wiener LR search reads a genuinely POST-CDEF 10-bit
+/// recon, which is C's pipeline order (rest_process runs after cdef_process,
+/// reading the same 16-bit recon picture CDEF just filtered in place).
+#[allow(clippy::too_many_arguments)]
+pub fn apply_cdef_frame_hbd(
+    y: &mut [u16],
+    u: &mut [u16],
+    v: &mut [u16],
+    width: usize,
+    height: usize,
+    chroma_420: bool,
+    geom: &DeblockGeom,
+    params: &CdefPick,
+    bit_depth: u8,
+) {
+    if !params.any(!chroma_420) {
+        return;
+    }
+    assert!(width % 8 == 0 && height % 8 == 0, "8-aligned frames only");
+    assert!(bit_depth == 10, "bd12 out of scope (docs/bd10-port-map.md)");
+    let coeff_shift = (bit_depth - 8) as i32;
+    let damping = params.damping as i32 + coeff_shift;
+
+    let nvfb = height.div_ceil(64);
+    let nhfb = width.div_ceil(64);
+
+    let pre_y: Vec<u16> = y.to_vec();
+    let (pre_u, pre_v): (Vec<u16>, Vec<u16>) = if chroma_420 {
+        (u.to_vec(), v.to_vec())
+    } else {
+        (Vec::new(), Vec::new())
+    };
+
+    let mut src = alloc::vec![0u16; k::CDEF_INBUF_SIZE];
+    let mut dir = [[0i32; 8]; 8];
+    let mut var = [[0i32; 8]; 8];
+
+    for fbr in 0..nvfb {
+        let vsize = 64.min(height - fbr * 64);
+        for fbc in 0..nhfb {
+            let hsize = 64.min(width - fbc * 64);
+            let mut dlist: Vec<(usize, usize)> = Vec::with_capacity(64);
+            for by in 0..vsize / 8 {
+                for bx in 0..hsize / 8 {
+                    if !geom.is_8x8_all_skip(fbr * 16 + by * 2, fbc * 16 + bx * 2) {
+                        dlist.push((by, bx));
+                    }
+                }
+            }
+            if dlist.is_empty() {
+                continue;
+            }
+
+            let (fb_y, fb_uv) = params.fb_strengths(fbr, fbc);
+            let lvl_y = ((fb_y / 4) as i32) << coeff_shift;
+            let sec_y = {
+                let mut s = (fb_y % 4) as i32;
+                s += i32::from(s == 3);
+                s << coeff_shift
+            };
+            let (lvl_uv, sec_uv) = if chroma_420 {
+                let l = ((fb_uv / 4) as i32) << coeff_shift;
+                let mut s = (fb_uv % 4) as i32;
+                s += i32::from(s == 3);
+                (l, s << coeff_shift)
+            } else {
+                (0, 0)
+            };
+            let zero_y = lvl_y == 0 && sec_y == 0;
+            let zero_uv = lvl_uv == 0 && sec_uv == 0;
+
+            build_src(
+                &mut src,
+                &pre_y,
+                width,
+                height,
+                fbr * 64,
+                fbc * 64,
+                vsize,
+                hsize,
+            );
+            let base = k::CDEF_VBORDER * k::CDEF_BSTRIDE + k::CDEF_HBORDER;
+            for &(by, bx) in &dlist {
+                let (d, vr) = k::cdef_find_dir(
+                    &src[base + by * 8 * k::CDEF_BSTRIDE + bx * 8..],
+                    k::CDEF_BSTRIDE,
+                    coeff_shift,
+                );
+                dir[by][bx] = d as i32;
+                var[by][bx] = vr;
+            }
+            if !zero_y {
+                for &(by, bx) in &dlist {
+                    let t = k::adjust_strength(lvl_y, var[by][bx]);
+                    if t == 0 && sec_y == 0 {
+                        continue;
+                    }
+                    let px = fbc * 64 + bx * 8;
+                    let py = fbr * 64 + by * 8;
+                    svtav1_dsp::hbd::cdef_filter_block_hbd(
+                        y,
+                        py * width + px,
+                        width,
+                        &src,
+                        base + by * 8 * k::CDEF_BSTRIDE + bx * 8,
+                        t,
+                        sec_y,
+                        if lvl_y != 0 { dir[by][bx] } else { 0 },
+                        damping,
+                        damping,
+                        k::BLOCK_8X8,
+                        coeff_shift,
+                        1,
+                    );
+                }
+            }
+
+            if chroma_420 && !zero_uv {
+                let (cw, ch) = (width / 2, height / 2);
+                for (pre_c, buf) in [(&pre_u, &mut *u), (&pre_v, &mut *v)] {
+                    build_src(
+                        &mut src,
+                        pre_c,
+                        cw,
+                        ch,
+                        fbr * 32,
+                        fbc * 32,
+                        vsize / 2,
+                        hsize / 2,
+                    );
+                    for &(by, bx) in &dlist {
+                        let px = fbc * 32 + bx * 4;
+                        let py = fbr * 32 + by * 4;
+                        svtav1_dsp::hbd::cdef_filter_block_hbd(
+                            buf,
+                            py * cw + px,
+                            cw,
+                            &src,
+                            base + by * 4 * k::CDEF_BSTRIDE + bx * 4,
+                            lvl_uv,
+                            sec_uv,
+                            if lvl_uv != 0 { dir[by][bx] } else { 0 },
+                            damping - 1,
+                            damping - 1,
+                            k::BLOCK_4X4,
+                            coeff_shift,
+                            1,
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Run the C-exact block kernel into `buf` and account evidence counters.
 #[allow(clippy::too_many_arguments)]
 fn filter_and_count(

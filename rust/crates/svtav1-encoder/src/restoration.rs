@@ -134,28 +134,31 @@ impl FrameRestInfo {
 /// search extend uses horizontally and >= every read/write the stripe
 /// machinery performs: setup touches columns h_start-4 .. h_end+4 and rows
 /// v_start-3 .. v_end+2; the convolve reads 3/3/3/4).
-pub struct PaddedPlane {
-    pub data: alloc::vec::Vec<u8>,
+pub struct PaddedPlaneT<T> {
+    pub data: alloc::vec::Vec<T>,
     pub stride: usize,
     pub origin: usize,
     pub w: usize,
     pub h: usize,
 }
 
+/// The 8-bit plane (unchanged name for every existing caller).
+pub type PaddedPlane = PaddedPlaneT<u8>;
+
 pub const PLANE_BORDER: usize = 4;
 
-impl PaddedPlane {
+impl<T: Copy + Default> PaddedPlaneT<T> {
     /// Copy a tight `w x h` plane into padded storage (borders zero until
     /// `extend()` replicates them).
-    pub fn from_tight(src: &[u8], w: usize, h: usize) -> Self {
+    pub fn from_tight(src: &[T], w: usize, h: usize) -> Self {
         let stride = w + 2 * PLANE_BORDER;
-        let mut data = alloc::vec![0u8; stride * (h + 2 * PLANE_BORDER)];
+        let mut data = alloc::vec![T::default(); stride * (h + 2 * PLANE_BORDER)];
         let origin = PLANE_BORDER * stride + PLANE_BORDER;
         for y in 0..h {
             data[origin + y * stride..origin + y * stride + w]
                 .copy_from_slice(&src[y * w..y * w + w]);
         }
-        PaddedPlane {
+        PaddedPlaneT {
             data,
             stride,
             origin,
@@ -166,8 +169,8 @@ impl PaddedPlane {
 
     fn empty(w: usize, h: usize) -> Self {
         let stride = w + 2 * PLANE_BORDER;
-        PaddedPlane {
-            data: alloc::vec![0u8; stride * (h + 2 * PLANE_BORDER)],
+        PaddedPlaneT {
+            data: alloc::vec![T::default(); stride * (h + 2 * PLANE_BORDER)],
             stride,
             origin: PLANE_BORDER * stride + PLANE_BORDER,
             w,
@@ -176,12 +179,216 @@ impl PaddedPlane {
     }
 
     /// Copy the crop back into a tight buffer.
-    fn copy_crop_to(&self, dst: &mut [u8]) {
+    #[allow(dead_code)]
+    fn copy_crop_to(&self, dst: &mut [T]) {
         for y in 0..self.h {
             dst[y * self.w..y * self.w + self.w].copy_from_slice(
                 &self.data[self.origin + y * self.stride..self.origin + y * self.stride + self.w],
             );
         }
+    }
+}
+
+/// The four bit-depth-dependent kernels the Wiener SEARCH calls. C selects
+/// between two whole families on `cm->use_highbitdepth` (restoration_pick.c:
+/// 1243) while the surrounding decision logic — the per-unit iteration, the
+/// tap solve, the refinement hill-climb, the per-unit and frame-level RD — is
+/// one body shared by both. This trait keeps that split: exactly the kernels
+/// are per-depth, the logic below is written once.
+pub trait LrPixel: Copy + Default {
+    /// `sse_restoration_unit` (restoration_pick.c:48) at this depth.
+    #[allow(clippy::too_many_arguments)]
+    fn sse_region(
+        a: &[Self],
+        a_origin: usize,
+        a_stride: usize,
+        b: &[Self],
+        b_origin: usize,
+        b_stride: usize,
+        width: usize,
+        height: usize,
+    ) -> i64;
+
+    /// `svt_av1_compute_stats{,_highbd}` (restoration_pick.c:652 / :692).
+    #[allow(clippy::too_many_arguments)]
+    fn compute_stats(
+        wiener_win: usize,
+        dgd: &[Self],
+        dgd_origin: usize,
+        dgd_stride: usize,
+        src: &[Self],
+        src_origin: usize,
+        src_stride: usize,
+        h_start: i32,
+        h_end: i32,
+        v_start: i32,
+        v_end: i32,
+        m: &mut [i64],
+        h: &mut [i64],
+        bit_depth: u8,
+    );
+
+    /// `svt_av1_loop_restoration_filter_unit` at `need_boundaries = 0` —
+    /// the search arm (`use_boundaries_in_rest_search = 0`).
+    #[allow(clippy::too_many_arguments)]
+    fn filter_unit_search(
+        limits: &TileLimits,
+        rtype: u8,
+        wiener: &WienerInfo,
+        rect: &PixelRect,
+        ss: i32,
+        data: &mut [Self],
+        data_origin: usize,
+        stride: usize,
+        dst: &mut [Self],
+        dst_origin: usize,
+        dst_stride: usize,
+        bit_depth: u8,
+    );
+}
+
+impl LrPixel for u8 {
+    fn sse_region(
+        a: &[u8],
+        a_origin: usize,
+        a_stride: usize,
+        b: &[u8],
+        b_origin: usize,
+        b_stride: usize,
+        width: usize,
+        height: usize,
+    ) -> i64 {
+        sse_region(a, a_origin, a_stride, b, b_origin, b_stride, width, height)
+    }
+
+    fn compute_stats(
+        wiener_win: usize,
+        dgd: &[u8],
+        dgd_origin: usize,
+        dgd_stride: usize,
+        src: &[u8],
+        src_origin: usize,
+        src_stride: usize,
+        h_start: i32,
+        h_end: i32,
+        v_start: i32,
+        v_end: i32,
+        m: &mut [i64],
+        h: &mut [i64],
+        _bit_depth: u8,
+    ) {
+        compute_stats(
+            wiener_win, dgd, dgd_origin, dgd_stride, src, src_origin, src_stride, h_start, h_end,
+            v_start, v_end, m, h,
+        );
+    }
+
+    fn filter_unit_search(
+        limits: &TileLimits,
+        rtype: u8,
+        wiener: &WienerInfo,
+        rect: &PixelRect,
+        ss: i32,
+        data: &mut [u8],
+        data_origin: usize,
+        stride: usize,
+        dst: &mut [u8],
+        dst_origin: usize,
+        dst_stride: usize,
+        _bit_depth: u8,
+    ) {
+        // `need_boundaries = false` -> the stripe-boundary save/restore never
+        // runs, so the (empty) buffers are never read and `data` is not
+        // modified. Byte-identical to the previous direct call.
+        let empty_bounds = StripeBoundaries::default();
+        loop_restoration_filter_unit(
+            false,
+            limits,
+            rtype,
+            wiener,
+            &empty_bounds,
+            rect,
+            0,
+            ss,
+            ss,
+            data,
+            data_origin,
+            stride,
+            dst,
+            dst_origin,
+            dst_stride,
+        );
+    }
+}
+
+impl LrPixel for u16 {
+    fn sse_region(
+        a: &[u16],
+        a_origin: usize,
+        a_stride: usize,
+        b: &[u16],
+        b_origin: usize,
+        b_stride: usize,
+        width: usize,
+        height: usize,
+    ) -> i64 {
+        svtav1_dsp::restoration::sse_region_hbd(
+            a, a_origin, a_stride, b, b_origin, b_stride, width, height,
+        )
+    }
+
+    fn compute_stats(
+        wiener_win: usize,
+        dgd: &[u16],
+        dgd_origin: usize,
+        dgd_stride: usize,
+        src: &[u16],
+        src_origin: usize,
+        src_stride: usize,
+        h_start: i32,
+        h_end: i32,
+        v_start: i32,
+        v_end: i32,
+        m: &mut [i64],
+        h: &mut [i64],
+        bit_depth: u8,
+    ) {
+        svtav1_dsp::restoration::compute_stats_hbd(
+            wiener_win, dgd, dgd_origin, dgd_stride, src, src_origin, src_stride, h_start, h_end,
+            v_start, v_end, m, h, bit_depth,
+        );
+    }
+
+    fn filter_unit_search(
+        limits: &TileLimits,
+        rtype: u8,
+        wiener: &WienerInfo,
+        rect: &PixelRect,
+        ss: i32,
+        data: &mut [u16],
+        data_origin: usize,
+        stride: usize,
+        dst: &mut [u16],
+        dst_origin: usize,
+        dst_stride: usize,
+        bit_depth: u8,
+    ) {
+        svtav1_dsp::restoration::loop_restoration_filter_unit_search_hbd(
+            limits,
+            rtype,
+            wiener,
+            rect,
+            0,
+            ss,
+            ss,
+            data,
+            data_origin,
+            stride,
+            dst,
+            dst_origin,
+            dst_stride,
+            bit_depth as i32,
+        );
     }
 }
 
@@ -229,26 +436,22 @@ struct UnitSearch {
 /// overwrites) from the extended dgd into the trial buffer, then SSE vs the
 /// source over the unit rect.
 #[allow(clippy::too_many_arguments)]
-fn try_restoration_unit(
-    dgd: &mut PaddedPlane,
-    trial: &mut PaddedPlane,
-    src: &[u8],
+fn try_restoration_unit<P: LrPixel>(
+    dgd: &mut PaddedPlaneT<P>,
+    trial: &mut PaddedPlaneT<P>,
+    src: &[P],
     src_stride: usize,
     limits: &TileLimits,
     rect: &PixelRect,
     ss: i32,
     wiener: &WienerInfo,
+    bit_depth: u8,
 ) -> i64 {
-    let empty_bounds = StripeBoundaries::default();
-    loop_restoration_filter_unit(
-        false,
+    P::filter_unit_search(
         limits,
         RESTORE_WIENER,
         wiener,
-        &empty_bounds,
         rect,
-        0,
-        ss,
         ss,
         &mut dgd.data,
         dgd.origin,
@@ -256,8 +459,9 @@ fn try_restoration_unit(
         &mut trial.data,
         trial.origin,
         trial.stride,
+        bit_depth,
     );
-    sse_region(
+    P::sse_region(
         src,
         (limits.v_start as usize) * src_stride + limits.h_start as usize,
         src_stride,
@@ -273,20 +477,22 @@ fn try_restoration_unit(
 /// try_restoration_unit, then (when `use_refinement`) the +-step tap hill
 /// climb over hfilter then vfilter, taps plane_off..WIENER_HALFWIN.
 #[allow(clippy::too_many_arguments)]
-fn finer_tile_search_wiener(
+fn finer_tile_search_wiener<P: LrPixel>(
     ctrls: &WnFilterCtrls,
-    dgd: &mut PaddedPlane,
-    trial: &mut PaddedPlane,
-    src: &[u8],
+    dgd: &mut PaddedPlaneT<P>,
+    trial: &mut PaddedPlaneT<P>,
+    src: &[P],
     src_stride: usize,
     limits: &TileLimits,
     rect: &PixelRect,
     ss: i32,
     wiener: &mut WienerInfo,
     wiener_win: usize,
+    bit_depth: u8,
 ) -> i64 {
     let plane_off = (WIENER_WIN - wiener_win) >> 1;
-    let mut err = try_restoration_unit(dgd, trial, src, src_stride, limits, rect, ss, wiener);
+    let mut err =
+        try_restoration_unit(dgd, trial, src, src_stride, limits, rect, ss, wiener, bit_depth);
     if !ctrls.use_refinement {
         return err;
     }
@@ -322,7 +528,7 @@ fn finer_tile_search_wiener(
                         f[WIENER_WIN - p - 1] -= s as i16;
                         f[halfwin] += 2 * s as i16;
                         let err2 = try_restoration_unit(
-                            dgd, trial, src, src_stride, limits, rect, ss, wiener,
+                            dgd, trial, src, src_stride, limits, rect, ss, wiener, bit_depth,
                         );
                         if err2 > err {
                             let f = if pass == 0 {
@@ -358,7 +564,7 @@ fn finer_tile_search_wiener(
                         f[WIENER_WIN - p - 1] += s as i16;
                         f[halfwin] -= 2 * s as i16;
                         let err2 = try_restoration_unit(
-                            dgd, trial, src, src_stride, limits, rect, ss, wiener,
+                            dgd, trial, src, src_stride, limits, rect, ss, wiener, bit_depth,
                         );
                         if err2 > err {
                             let f = if pass == 0 {
@@ -403,6 +609,38 @@ pub fn search_restoration_still(
     h: usize,
     has_chroma: bool,
     rdmult: i64,
+) -> FrameRestInfo {
+    search_restoration_still_bd(
+        ctrls, src_y, src_u, src_v, recon_y, recon_u, recon_v, w, h, has_chroma, rdmult, 8,
+    )
+}
+
+/// [`search_restoration_still`] at an explicit bit depth. C runs ONE
+/// `restoration_seg_search` body and picks the kernel family per
+/// `cm->use_highbitdepth` (restoration_pick.c:1243); the same split here —
+/// the decision logic is this single generic body, only the four kernels in
+/// [`LrPixel`] differ. `bit_depth` reaches `compute_stats` (the
+/// `bit_depth_divider`) and the unit filter (`clip_pixel_highbd`); it is
+/// inert on the u8 instantiation.
+///
+/// `rdmult` is C's `x->rdmult` = `pic_full_lambda[bit_depth == EB_TEN_BIT ?
+/// EB_10_BIT_MD : EB_8_BIT_MD]` (enc_dec_process.c:3246) — the CALLER's
+/// responsibility to pass at the matching depth
+/// (`pd0::kf_full_lambda_bd10_pic` at bd10).
+#[allow(clippy::too_many_arguments)]
+pub fn search_restoration_still_bd<P: LrPixel>(
+    ctrls: &WnFilterCtrls,
+    src_y: &[P],
+    src_u: &[P],
+    src_v: &[P],
+    recon_y: &[P],
+    recon_u: &[P],
+    recon_v: &[P],
+    w: usize,
+    h: usize,
+    has_chroma: bool,
+    rdmult: i64,
+    bit_depth: u8,
 ) -> FrameRestInfo {
     debug_assert!(ctrls.enabled);
     let wn_luma = if ctrls.filter_tap_lvl == 1 {
@@ -456,9 +694,9 @@ pub fn search_restoration_still(
         // svt_extend_frame(dgd, ..) with RESTORATION_BORDER+1(+pad16) horz /
         // RESTORATION_BORDER vert — values beyond +-3 never affect results,
         // our PLANE_BORDER=4 covers every touched byte.
-        let mut dgd = PaddedPlane::from_tight(recon, pw, ph);
+        let mut dgd = PaddedPlaneT::<P>::from_tight(recon, pw, ph);
         extend_frame(&mut dgd.data, dgd.origin, pw, ph, dgd.stride, 4, 3);
-        let mut trial = PaddedPlane::empty(pw, ph);
+        let mut trial = PaddedPlaneT::<P>::empty(pw, ph);
 
         // ---- search phase (per-unit sse_none + wiener solve/SSE) ----
         let nunits = (hunits * vunits) as usize;
@@ -473,7 +711,7 @@ pub fn search_restoration_still(
 
         foreach_rest_unit_in_tile(&rect, hunits, unit_size, ss, |limits, unit_idx| {
             // search_norestore_seg: SSE of the unfiltered recon vs source.
-            units[unit_idx as usize].sse_none = sse_region(
+            units[unit_idx as usize].sse_none = P::sse_region(
                 src,
                 (limits.v_start as usize) * pw + limits.h_start as usize,
                 pw,
@@ -490,7 +728,7 @@ pub fn search_restoration_still(
             let win2 = wiener_win * wiener_win;
             let mut m = [0i64; WIENER_WIN * WIENER_WIN];
             let mut hh = alloc::vec![0i64; win2 * win2];
-            compute_stats(
+            P::compute_stats(
                 wiener_win,
                 &dgd.data,
                 dgd.origin,
@@ -504,6 +742,7 @@ pub fn search_restoration_still(
                 limits.v_end,
                 &mut m,
                 &mut hh,
+                bit_depth,
             );
             let mut vd = [0i32; WIENER_WIN];
             let mut hd = [0i32; WIENER_WIN];
@@ -521,6 +760,7 @@ pub fn search_restoration_still(
             }
             let sse = finer_tile_search_wiener(
                 ctrls, &mut dgd, &mut trial, src, pw, limits, &rect, ss, &mut wi, wiener_win,
+                bit_depth,
             );
             units[unit_idx as usize].sse_wiener = sse;
             units[unit_idx as usize].wiener = wi;

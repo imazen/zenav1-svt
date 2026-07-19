@@ -1842,6 +1842,24 @@ impl EncodePipeline {
             &deblock_geom,
             &cdef_params,
         );
+        // bd10: apply CDEF to the 10-bit canvas too. Not for output — the u8
+        // chain above still produces that — but because the Wiener LR search
+        // reads the POST-CDEF recon, and at 10 bits that must be the 10-bit
+        // one (C: rest_process runs after cdef_process on the same 16-bit
+        // recon picture CDEF just filtered in place).
+        if let Some((y10, u10, v10)) = recon10.as_mut() {
+            crate::cdef::apply_cdef_frame_hbd(
+                y10,
+                u10,
+                v10,
+                w,
+                h,
+                true,
+                &deblock_geom,
+                &cdef_params,
+                self.bit_depth,
+            );
+        }
 
         // Step 6a'': Wiener loop restoration — C order deblock -> CDEF ->
         // LR. The C-exact search (restoration_seg_search +
@@ -1859,7 +1877,16 @@ impl EncodePipeline {
         if is_key && seq_tools.enable_restoration {
             let ctrls = crate::restoration::wn_filter_ctrls_allintra(self.speed_config.preset);
             if ctrls.enabled {
-                let rdmult = crate::pd0::kf_full_lambda_8bit_unweighted(base_qindex) as i64;
+                // C `x->rdmult` = `pic_full_lambda[bit_depth == EB_TEN_BIT ?
+                // EB_10_BIT_MD : EB_8_BIT_MD]` (enc_dec_process.c:3246-3247),
+                // i.e. `svt_aom_lambda_assign(.., multiply_lambda = true)` —
+                // whose `*= 16` arm is 10-bit-ONLY, so bd8 is the unweighted
+                // value and bd10 is 16x the bd10 one. (Contrast the CDEF
+                // search, enc_cdef.c:958, which passes false.)
+                let rdmult = match (self.bit_depth, recon10.as_ref()) {
+                    (10, Some(_)) => crate::pd0::kf_full_lambda_bd10_pic(base_qindex) as i64,
+                    _ => crate::pd0::kf_full_lambda_8bit_unweighted(base_qindex) as i64,
+                };
                 let (su, sv) = chroma.unwrap_or((&[][..], &[][..]));
                 // PORT-NOTE(unverified) task #86: this call (and the
                 // per-SB `write_lr_for_sb` walk below) computes the
@@ -1918,19 +1945,63 @@ impl EncodePipeline {
                         alloc::vec::Vec::new(),
                     )
                 };
-                let rest_info = crate::restoration::search_restoration_still(
-                    &ctrls,
-                    &lr_src_y,
-                    &lr_src_u,
-                    &lr_src_v,
-                    &lr_rec_y,
-                    &lr_rec_u,
-                    &lr_rec_v,
-                    lr_true_w,
-                    lr_true_h,
-                    chroma.is_some(),
-                    rdmult,
-                );
+                // bd10: run the search on the TRUE 10-bit post-CDEF recon
+                // against the true 10-bit source. Same tight true/ceil
+                // extraction as the u8 arm — the 10-bit canvas is already
+                // tight (`w` / `w/2` stride), and the 10-bit source is
+                // `u8 << (bd - 8)` by construction (the harness writes exactly
+                // that .yuv for both encoders).
+                let rest_info = match recon10.as_ref() {
+                    Some((y10, u10, v10)) => {
+                        let sh = (self.bit_depth - 8) as u32;
+                        let widen_tight =
+                            |src: &[u8], src_stride: usize, pw: usize, ph: usize| -> Vec<u16> {
+                                let mut out = alloc::vec![0u16; pw * ph];
+                                for r in 0..ph {
+                                    for c in 0..pw {
+                                        out[r * pw + c] = (src[r * src_stride + c] as u16) << sh;
+                                    }
+                                }
+                                out
+                            };
+                        let tight10 =
+                            |src: &[u16], src_stride: usize, pw: usize, ph: usize| -> Vec<u16> {
+                                let mut out = alloc::vec![0u16; pw * ph];
+                                for r in 0..ph {
+                                    out[r * pw..(r + 1) * pw]
+                                        .copy_from_slice(&src[r * src_stride..r * src_stride + pw]);
+                                }
+                                out
+                            };
+                        crate::restoration::search_restoration_still_bd(
+                            &ctrls,
+                            &widen_tight(&encode_input, w, lr_true_w, lr_true_h),
+                            &widen_tight(su, cw, lr_tcw, lr_tch),
+                            &widen_tight(sv, cw, lr_tcw, lr_tch),
+                            &tight10(y10, w, lr_true_w, lr_true_h),
+                            &tight10(u10, w / 2, lr_tcw, lr_tch),
+                            &tight10(v10, w / 2, lr_tcw, lr_tch),
+                            lr_true_w,
+                            lr_true_h,
+                            true,
+                            rdmult,
+                            self.bit_depth,
+                        )
+                    }
+                    None => crate::restoration::search_restoration_still(
+                        &ctrls,
+                        &lr_src_y,
+                        &lr_src_u,
+                        &lr_src_v,
+                        &lr_rec_y,
+                        &lr_rec_u,
+                        &lr_rec_v,
+                        lr_true_w,
+                        lr_true_h,
+                        chroma.is_some(),
+                        rdmult,
+                    ),
+                };
                 #[cfg(feature = "std")]
                 if std::env::var_os("SVTAV1_DUMP_LR").is_some() {
                     for (p, pr) in rest_info.planes.iter().enumerate() {

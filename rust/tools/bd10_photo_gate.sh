@@ -24,11 +24,13 @@
 # under-fired and the port picked tx types C prunes before quantizing them.
 # Photographic p6-p8 went 2/27 -> 18/27 (all of p7+p8).
 #
-# Preset 6 still DIVERGES (0/9) and is NOT listed — adding it would be a false
-# claim. Its first divergence is now a LUMA MODE flip (measured on
-# 2119713 q32 p6 at block (16,128): C H_PRED, port SMOOTH+CfL) reached only
-# after 466 blocks of byte-identical MD recon, i.e. a separate root from the one
-# above. See docs/bd10-port-map.md.
+# Preset 6 CLOSED 2026-07-19 (group E below): its residual was the CDEF and
+# Wiener-LR SEARCHES still running at 8 bits — p6 is the only preset in this
+# gate that runs either. Both now run at true 10 bits. Presets 0-5 still
+# diverge and are NOT listed: their first divergence is the DEBLOCK-LEVEL full
+# search (`pick_filter_levels_full_search`, used at preset <= 5), a third
+# post-MD search that is still 8-bit at bd10 — measured on 2119713 q32 p0 as
+# `loop_filter_level[2] C=6 Rust=4`. See docs/bd10-port-map.md.
 #
 # CORPUS: CID22-512 (250 real 512x512 photographic PNGs, natively 64-aligned).
 # Override with BD10_PHOTO_CORPUS=<dir>. If the corpus is absent this gate FAILS
@@ -84,6 +86,23 @@ PRESETS_C=(9 11 12)
 IMAGES_D=(1001682 2119713 4666751)
 QPS_D=(12 32 55)
 PRESETS_D=(7 8)
+# Group E — preset 6, closed 2026-07-19 by running the CDEF strength search
+# AND the Wiener loop-restoration search at TRUE 10 bits.
+#
+# p6 is the ONLY preset in this gate that runs those two searches at all:
+# `cdef::allintra_preset_uses_cdef_search` is `preset <= 6` (presets 7-13 take
+# the closed-form qp picker, already bd10-aware) and
+# `restoration::wn_filter_ctrls_allintra` disables LR above preset 6. Both
+# searches read the reconstructed frame and write frame-header syntax, so
+# running them on the u8 recon at bd10 was a bitstream divergence, not a recon
+# approximation — measured as exactly two things on 2119713 q32 p6:
+# `cdef_y_sec_strength[1] C=2 Rust=0` plus the Wiener taps
+# (docs/bd10-port-map.md, "p6's residual is the 8-bit CDEF/LR SEARCH").
+# They now run on the 10-bit post-deblock / post-CDEF canvas with
+# coeff_shift = 2 and the bd10 lambdas. 9/9 verified with `cmp`.
+IMAGES_E=(1001682 2119713 4666751)
+QPS_E=(12 32 55)
+PRESETS_E=(6)
 
 OUT="${TMPDIR:-/tmp}/bd10photo.$$"
 mkdir -p "$OUT"
@@ -147,6 +166,11 @@ done
 for stem in "${IMAGES_D[@]}"; do
     for qp in "${QPS_D[@]}"; do
         for p in "${PRESETS_D[@]}"; do run_cell "$stem" "$qp" "$p"; done
+    done
+done
+for stem in "${IMAGES_E[@]}"; do
+    for qp in "${QPS_E[@]}"; do
+        for p in "${PRESETS_E[@]}"; do run_cell "$stem" "$qp" "$p"; done
     done
 done
 
