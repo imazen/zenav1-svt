@@ -5,8 +5,6 @@ members = [
     "crates/svtav1-dsp",
     "crates/svtav1-entropy",
     "crates/svtav1-encoder",
-    "crates/svtav1-disjoint-mut",
-    "crates/svtav1-cuda",
     "crates/svtav1-cref",
     "svtav1",
 ]
@@ -24,8 +22,6 @@ svtav1-tables = { path = "crates/svtav1-tables" }
 svtav1-dsp = { path = "crates/svtav1-dsp" }
 svtav1-entropy = { path = "crates/svtav1-entropy" }
 svtav1-encoder = { path = "crates/svtav1-encoder" }
-svtav1-disjoint-mut = { path = "crates/svtav1-disjoint-mut" }
-svtav1-cuda = { path = "crates/svtav1-cuda" }
 
 archmage = "0.9"
 magetypes = "0.9"

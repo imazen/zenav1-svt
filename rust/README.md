@@ -2,7 +2,7 @@
 
 A pure-Rust, still-picture (AVIF/all-intra) port of [SVT-AV1](https://gitlab.com/AOMediaCodec/SVT-AV1) v4.2.0, verified **byte-identical** to the C encoder on its tested envelope, with the [svt-av1-hdr](https://github.com/juliobbv-p/svt-av1-hdr) fork's perceptual feature set available behind a runtime switch.
 
-**~75k lines | 9 crates | 775+ tests | `#![forbid(unsafe_code)]` | BSD-2-Clause**
+**~75k lines | 7 crates | 775+ tests | `#![forbid(unsafe_code)]` | BSD-2-Clause**
 
 ## Two modes, two verification bars
 
@@ -92,7 +92,7 @@ The higher-level `svtav1::avif::AvifEncoder` wrapper provides quality/speed mapp
 
 ## Architecture
 
-Nine focused crates, minimal external dependencies (archmage for SIMD dispatch):
+Seven focused crates, minimal external dependencies (archmage for SIMD dispatch):
 
 ```
 svtav1                  Public API, AVIF backend
@@ -102,9 +102,7 @@ svtav1                  Public API, AVIF backend
     svtav1-entropy      Range coder, CDF tables, OBU/FH/SH serialization
     svtav1-tables       Const lookup tables, scan orders
     svtav1-types        Core AV1 type definitions
-    svtav1-disjoint-mut Region-based borrow tracking
   svtav1-cref           Test-only FFI shims to the real C library (differentials)
-  svtav1-cuda           Optional GPU bridge (stub)
 ```
 
 ## How verification works
@@ -134,7 +132,7 @@ cargo test --workspace
 
 ## Safety
 
-Every crate uses `#![forbid(unsafe_code)]` except the test-only `svtav1-cref` (FFI to the C reference library, never shipped) and `svtav1-cuda` (FFI boundary, isolated, optional). SIMD goes through archmage's safe token-based dispatch.
+Every crate uses `#![forbid(unsafe_code)]` except the test-only `svtav1-cref` (FFI to the C reference library, never shipped). SIMD goes through archmage's safe token-based dispatch.
 
 ## License
 

@@ -248,7 +248,6 @@ rust/
   crates/svtav1-entropy        Range coder, CDFs, OBU, coefficient coding (+ generated CDF/scan tables)
   crates/svtav1-encoder        Pipeline, partition, mode decision, RC
   crates/svtav1-cref           Test-only FFI harness over libSvtAv1Enc.a (the differential oracle)
-  crates/svtav1-disjoint-mut   Region-based borrow tracking
   svtav1                       Public API, AVIF backend
 ```
 
