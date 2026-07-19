@@ -1,11 +1,13 @@
 //! 10-bit (bd10) DSP kernel layer — bulk source translation (task #94).
 //!
-//! COMPILED (wired at `lib.rs`), FFI-PARITY-VERIFIED, but NOT YET CALLED from
-//! production: the kernels below (quant tables, loop filters, distortion/
-//! variance/SAD, intra predictors) are pinned bit-for-bit against real C at
-//! bd10+bd12 by the `c_parity_*_hbd` / `c_parity_bd10_quant` suites, but no
-//! production path invokes them yet — the pipeline is still u8 end-to-end
-//! (the u16 plumbing is the bd10 wiring pass, docs/bd10-port-map.md).
+//! COMPILED (wired at `lib.rs`) and FFI-PARITY-VERIFIED bit-for-bit against real
+//! C at bd10+bd12 (`c_parity_*_hbd` / `c_parity_bd10_quant`). Most kernels are
+//! now WIRED into the live bd10 pipeline: loop filters (`deblock.rs`), CDEF
+//! (`cdef.rs`), distortion (`full_distortion_kernel16_*`), CfL (`cfl_*_hbd`) and
+//! the intra predictors are all invoked from production (the bd10 full-RD funnel
+//! + post-pass, docs/bd10-port-map.md). Only the `dc/ac_qlookup_10/_12` arms
+//! below stay unwired — the real bd10 quant tables live in the encoder crate
+//! (`svtav1_encoder::bd10`), so these copies are dead by crate-dedup, not a gap.
 //!
 //! Translated per `docs/bd10-port-map.md` (the spec — plain `u16` pixel
 //! planes everywhere; the C 8+2 unpacked-plane split is an *input ingestion

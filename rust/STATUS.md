@@ -115,30 +115,26 @@ Landed (all byte-neutral at SB64 — every gate re-verified, see below):
   A 128-wide node would have coded against the 64x64 CDF row with a
   10-symbol alphabet: wrong probabilities AND wrong alphabet length.
 
-NOT landed: the SB128 encode path. `sb128_encode_supported()` is `false`, so
-a cell C codes at 128 falls back to a valid 64px-SB stream and sets
-`sb128_fallback` (reported on stdout and by the gate) — never a panic, never
-an undecodable stream.
-
-**First divergence** (`identity_diff.sh 512 384 32 0 gradient`):
-`STAGE: SH | use_128x128_superblock C=1 Rust=0`, then the very first tile
-symbol — C codes the 128 root against the 8-symbol alphabet (CDF row 16),
-the port codes a 64 root against the 10-symbol alphabet (row 12).
-
-**Cheapest first target, measured:** on `uniform 512x384` at q32/q55/q63,
-C emits exactly 12 `nsyms=8` partition ops, **all PARTITION_SPLIT** — one per
-SB in the 4x3 grid — and the per-64-block op groups are already identical
-between the two encoders (48 blocks, same 5 symbols each). So uniform's whole
-delta is the SH bit plus 12 root SPLIT symbols. C never keeps a 128x128 NONE
-there, even on dead-flat content at q63.
+LANDED (2026-07-19): the SB128 encode path. `sb128_encode_supported()` now
+returns `true`; a preset-0/1 cell above the 165,120-px area threshold encodes
+as a real 128px SB (walk: `sb128_geom::sb_coding_units` + `merge_sb_units`).
+**12 of 14** `sb128_gate.sh` cells byte-match real aomenc (gate 18/18 incl. the
+4 SB64 controls). Why it was small: on an I_SLICE C clamps the MD scan's max
+square to 64x64 regardless of SB size (`enc_dec_process.c:1483-1499`), so the
+128 root is STRUCTURALLY always PARTITION_SPLIT — there is no 128-level
+NONE/HORZ/VERT search on KEY. So coding the SH `use_128x128_superblock` bit +
+the per-SB forced-SPLIT root over the (already-identical) 64-block groups is the
+whole delta — exactly the pre-landing first-divergence analysis
+(`identity_diff.sh 512 384 32 0 gradient`: `SH use_128x128_superblock C=1
+Rust=0`, then a 128 root coded against the 8-symbol alphabet, CDF row 16).
 
 Gate: `tools/sb128_gate.sh` — 14 sb128 cells (all >= 165,120 px, preset <= 1)
-+ 4 SB64 controls. Per cell it asserts the ORACLE really emitted SB128
-(anti-vacuity, via `sb128_seqhdr.py`) so a mis-sized cell fails loudly instead
-of silently re-proving the SB64 gate; the sb128 cells are pinned as diverging
-and the pin is SELF-PROMOTING (a cell that starts matching FAILS the gate
-until it is moved into `SB128_BYTE_EXACT`). Remaining scope is enumerated in
-`docs/sb128-port-map.md`.
++ 4 SB64 controls; each asserts the ORACLE really emitted SB128 (anti-vacuity,
+`sb128_seqhdr.py`) so a mis-sized cell fails loudly. The 2 remaining diverging
+cells are pinned SELF-PROMOTING (a cell that starts matching FAILS the gate
+until moved into `SB128_BYTE_EXACT`); both are leaf-cost RD near-ties that
+reproduce at SB64 — NOT a 128-structural gap (`docs/sb128-port-map.md`). INTER
+at SB128 is unported (`debug_assert`ed).
 
 ## Decode conformance (AV1 reference decoder)
 
@@ -190,6 +186,18 @@ the INT16 clamp in `quantize_fp` is bd8-only — C dispatches bd>8 to
 tx_unit_hbd}`, `pd0::kf_full_lambda_bd10` (EXACT C full_lambda_md[1], not ×16 of
 bd8), a bd-aware inverse transform, and `pipeline::bd10_reencode_luma`. The u8 path
 is byte-UNCHANGED (bd8 identity 54/54, bd10 uniform 36/36).
+
+UPDATE (2026-07-19): the envelope below is SUPERSEDED — the "FOLLOW-UPS" listed
+as unported are DONE. `dr_predict_hbd` (directional) and `predict_filter_intra_hbd`
+(filter-intra) are ported and wired into the bd10 full-RD funnel, which now also
+decides the chroma uv mode + CfL at 10 bits and runs the deblock-level full search
+at 10 bits. `bd10_tree_supported` now falls back to u8 ONLY for `tx_depth > 0`
+unconditionally (directional additionally when the SH edge filter is on). Current
+byte-identity coverage: `bd10_matrix` 36/36, `bd10_nonflat_gate` (diag+gradient,
+presets 0–13) 288, `bd10_photo_gate` (photographic, incl. preset 5) 154,
+`bd10_recon_parity_gate` 13. The remaining bd10 residuals are the p0–p3 luma
+partition RD near-tie + `search_best_independent_uv_mode` (M0/M1) — see
+docs/bd10-port-map.md. The 2026-07-18 note below is kept as the historical record.
 
 ENVELOPE (narrow, honest): only the **DC-family / tx_depth-0 / rdoq-fp** subset is
 ported. Out-of-envelope bd10 frames (directional or filter-intra intra, tx_depth>0,

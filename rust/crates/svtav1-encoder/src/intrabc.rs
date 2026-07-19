@@ -3,10 +3,13 @@
 //! {enc_mode_config,mode_decision,av1me,adaptive_mv_pred,inter_prediction,
 //! entropy_coding,rd_cost,md_rate_estimation,mcomp,hash_motion}.{c,h}`.
 //!
-//! **UNWIRED.** This file is NOT declared in `lib.rs` (`pub mod intrabc;` is
-//! absent) and is therefore not part of the crate's compiled surface —
-//! provably inert. Wiring is a separate task: add `pub mod intrabc;` to
-//! `lib.rs`, thread `IbcCtrls`/`intra_bc_search`/`build_intra_bc_candidate`
+//! **COMPILED BUT UNINVOKED.** `pub mod intrabc;` IS declared in `lib.rs`
+//! (line 37), so this module compiles as part of the crate — but it has ZERO
+//! callers: `intra_bc_search` / `build_intra_bc_candidate` / `IbcCtrls` are
+//! referenced only within this file and its own `#[cfg(test)]`, so the module
+//! is provably inert at runtime (every PORT-NOTE / `unimplemented!` here is
+//! unreachable regardless of content). Wiring is a separate task: thread
+//! `IbcCtrls`/`intra_bc_search`/`build_intra_bc_candidate`
 //! into `mode_decision.rs`'s candidate-injection path (mirroring
 //! `inject_palette_candidates` in `palette.rs`'s wiring, once that lands),
 //! flip `sc_detect.rs::ScDerivation::allow_intrabc` from its hardcoded
