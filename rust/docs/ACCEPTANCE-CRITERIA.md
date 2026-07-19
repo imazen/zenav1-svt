@@ -6,7 +6,7 @@
 **byte-identical bitstreams** — not visually equivalent, not PSNR-matched, not "close
 enough at high quality," but the same bytes — for every configuration a still-image
 encoder can be asked for: every preset M0–M13, every qp across the full 0–63 range,
-8-bit and 10-bit, 4:2:0 / 4:4:4 / monochrome, arbitrary frame dimensions including odd
+8-bit and 10-bit, 4:2:0 (see the chroma note below), arbitrary frame dimensions including odd
 sizes and partial superblocks, every tile configuration, SB64 and SB128, and every
 content class (uniform, gradient, photographic, screen/synthetic) — with the HDR/PSY
 fork's features available as an explicitly gated mode that is byte-identical to the
@@ -23,6 +23,29 @@ parity is a later, separately-scoped phase; it is not silently folded into "done
 Lossless is in scope but low priority. The standing priority order is: 10-bit and
 arbitrary dimensions first, maintainability continuously, lossless later, performance
 last.
+
+### Chroma: 4:2:0 only — 4:4:4 / 4:2:2 / monochrome are OUT OF SCOPE (decided 2026-07-19)
+
+Mainline SVT-AV1 v4.2.0 **cannot encode anything but 4:2:0**, so there is no C oracle to
+be byte-identical *to*. `svt_av1_verify_settings` (`Source/Lib/Globals/enc_settings.c:470-473`)
+rejects every other format unconditionally at encoder init:
+
+```c
+if (config->encoder_color_format != EB_YUV420) {
+    SVT_ERROR("Only support 420 now \n");
+    return_error = EB_ErrorBadParameter;   // init fails
+}
+```
+
+That reject also covers `EB_YUV400` (monochrome). The profile-1 → 4:4:4 and profile-2 →
+4:2:2 checks immediately below it (`:480`, `:485`), and the `EB_YUV444`/`EB_YUV422`
+`ss_x`/`ss_y` handling in `pic_buffer_desc.c`, are **dead scaffolding** — unreachable past
+the reject. Upstream has started the wiring but it is gated off.
+
+Consequence: 4:4:4 / 4:2:2 / monochrome are **not port work** — they are blocked on upstream
+enabling them. If upstream lands real non-420 support, re-scope this line and gate them
+then. Monochrome output may still be *decode*-validated (aomdec) as a non-byte-parity
+sanity check, but it is not part of "done".
 
 ## Two products, one baseline
 
