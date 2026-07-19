@@ -309,6 +309,41 @@ pub(crate) fn kf_full_lambda_bd10(qindex: u8, cli_qp: u32) -> u32 {
     lambda * 16 // md_process.c:753 — full_lambda_md[1] *= 16 (2^(2*(10-8)))
 }
 
+/// bd10 twin of [`kf_full_lambda_8bit_unweighted`]: C
+/// `svt_aom_compute_rd_mult(pcs, q, q, EB_TEN_BIT)` -> `update_lambda`
+/// (rc_process.c:365-449) with NO `lambda_weight` ladder and NO `*= 16`.
+///
+/// This is `svt_aom_lambda_assign(.., EB_TEN_BIT, qidx, multiply_lambda =
+/// false)`'s `full_lambda` — the CDEF search's lambda (enc_cdef.c:958-964,
+/// which passes `enhanced_pic->bit_depth` and `false`). Chain:
+/// * `q = svt_aom_dc_quant_qtx(qindex, 0, EB_TEN_BIT)` = `dc_qlookup_10`,
+/// * `rdmult = (3.3 + 0.0015*q) * q * q` (`def_kf_rd_multiplier`, KF_UPDATE),
+/// * `ROUND_POWER_OF_TWO(rdmult, 4)` for EB_TEN_BIT (rc_process.c:382),
+/// * clamped to `>= 1` (rc_process.c:392),
+/// * `* rd_frame_type_factor[bit_depth != 8][KF_UPDATE] = 128 >> 7`.
+///
+/// The `* 16` in [`kf_full_lambda_bd10`] comes from `multiply_lambda =
+/// true`, which only the MD (enc_dec_process.c:177-188) and LR
+/// (`pic_full_lambda[EB_10_BIT_MD]`, enc_dec_process.c:3246) paths pass —
+/// NOT the CDEF search.
+pub(crate) fn kf_full_lambda_bd10_unweighted(qindex: u8) -> u32 {
+    let q = crate::bd10::dc_qlookup_10(qindex) as i64;
+    let mut rdmult = ((3.3 + 0.0015 * q as f64) * q as f64 * q as f64) as i64;
+    rdmult = (rdmult + 8) >> 4; // ROUND_POWER_OF_TWO(_, 4) — EB_TEN_BIT
+    rdmult = rdmult.max(1); // rc_process.c:392 `rdmult > 0 ? .. : 1`
+    ((rdmult * 128) >> 7) as u32 // rd_frame_type_factor[1][KF_UPDATE]
+}
+
+/// The LR search's `x->rdmult` at bd10: `pic_full_lambda[EB_10_BIT_MD]`
+/// (enc_dec_process.c:3246-3247), i.e. `svt_aom_lambda_assign(..,
+/// EB_TEN_BIT, qidx, multiply_lambda = true)` — the same base as
+/// [`kf_full_lambda_bd10_unweighted`] with the `*= 16` applied
+/// (rc_process.c:479). bd8's twin is `kf_full_lambda_8bit_unweighted`
+/// (the `multiply_lambda` branch is 10-bit-only, so bd8 is unscaled).
+pub(crate) fn kf_full_lambda_bd10_pic(qindex: u8) -> u32 {
+    kf_full_lambda_bd10_unweighted(qindex) * 16
+}
+
 // ---------------------------------------------------------------------------
 // Depth-set cap + PD0-level detector
 // ---------------------------------------------------------------------------
@@ -2389,5 +2424,80 @@ mod alt_lambda_tests {
         assert_eq!(base, super::kf_full_lambda_8bit(160, 40));
         let qd = super::kf_full_lambda_8bit_ex(160, 40, false, 9);
         assert!(qd > base);
+    }
+}
+
+/// Differential parity for the post-MD RD lambdas against the REAL exported
+/// `svt_aom_compute_rd_mult_based_on_qindex` (rc_process.c:365) — the base
+/// that `svt_aom_lambda_assign` builds every one of them from.
+///
+/// Both bd10 lambdas added for the bd10 CDEF/LR searches are pinned here
+/// across the whole qindex range, not at hand-picked anchors: the bd10 chain
+/// (`dc_qlookup_10` -> `(3.3+0.0015q)q²` -> `ROUND_POWER_OF_TWO(_,4)` ->
+/// clamp -> `*128>>7`) has four places a transcription can be off by one and
+/// only the C symbol settles them.
+#[cfg(test)]
+mod lambda_c_parity {
+    use svtav1_cref as cref;
+
+    /// `SVT_AV1_KF_UPDATE` (definitions.h) — the KEY-frame update type.
+    const KF_UPDATE: i32 = 0;
+
+    /// `update_lambda`'s frame-type scale for KF at each bit depth:
+    /// `rd_frame_type_factor[bit_depth != EB_EIGHT_BIT][KF_UPDATE]`
+    /// (rc_process.c:395-396) = 150 at bd8, 128 at bd10.
+    fn c_full_lambda_unweighted(bit_depth: u8, qindex: u8) -> u32 {
+        let base = cref::compute_rd_mult_based_on_qindex(bit_depth, KF_UPDATE, qindex) as i64;
+        let ftf: i64 = if bit_depth == 8 { 150 } else { 128 };
+        ((base * ftf) >> 7) as u32
+    }
+
+    /// The CDEF search's lambda: `svt_aom_lambda_assign(.., enhanced_pic->
+    /// bit_depth, base_q_idx, multiply_lambda = false)` (enc_cdef.c:958).
+    #[test]
+    fn cdef_search_lambda_matches_c_at_every_qindex() {
+        for q in 0..=255u16 {
+            let q = q as u8;
+            assert_eq!(
+                super::kf_full_lambda_8bit_unweighted(q),
+                c_full_lambda_unweighted(8, q),
+                "bd8 CDEF lambda at qindex {q}"
+            );
+            assert_eq!(
+                super::kf_full_lambda_bd10_unweighted(q),
+                c_full_lambda_unweighted(10, q),
+                "bd10 CDEF lambda at qindex {q}"
+            );
+        }
+        // Non-vacuity: the two depths must genuinely differ (a bd10 arm that
+        // silently returned the bd8 value would pass a same-value compare).
+        let differ = (0..=255u16)
+            .filter(|&q| {
+                super::kf_full_lambda_bd10_unweighted(q as u8)
+                    != super::kf_full_lambda_8bit_unweighted(q as u8)
+            })
+            .count();
+        assert!(differ > 200, "bd8/bd10 lambdas differ at only {differ} qindexes");
+    }
+
+    /// The LR search's `x->rdmult` = `pic_full_lambda[EB_{8,10}_BIT_MD]`
+    /// (enc_dec_process.c:3246), i.e. `multiply_lambda = true` — which only
+    /// scales the 10-bit arm (`*= 16`, rc_process.c:479).
+    #[test]
+    fn lr_search_rdmult_matches_c_at_every_qindex() {
+        for q in 0..=255u16 {
+            let q = q as u8;
+            // bd8: multiply_lambda is a no-op, so it equals the unweighted.
+            assert_eq!(
+                super::kf_full_lambda_8bit_unweighted(q),
+                c_full_lambda_unweighted(8, q),
+                "bd8 LR rdmult at qindex {q}"
+            );
+            assert_eq!(
+                super::kf_full_lambda_bd10_pic(q),
+                c_full_lambda_unweighted(10, q) * 16,
+                "bd10 LR rdmult at qindex {q}"
+            );
+        }
     }
 }

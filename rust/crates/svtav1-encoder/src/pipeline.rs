@@ -85,6 +85,14 @@ pub struct EncodePipeline {
     /// the bd8 path. Diagnostic aid to compare the encoder's internal 10-bit
     /// recon against the decoder's prefilter output (self-consistency check).
     pub last_recon10_y: Option<Vec<u16>>,
+    /// bd10 u16 MD path: the true-10-bit CHROMA recon from
+    /// `bd10_reencode_chroma`, pre-filter, `(w/2)*(h/2)` rasters. Together
+    /// with `last_recon10_y` this is the complete 10-bit post-MD canvas that
+    /// the bd10 post-filter chain (deblock -> CDEF search -> LR search) runs
+    /// on — C's 16-bit recon picture. `None` on bd8 and whenever the bd10
+    /// re-encode was skipped (out-of-envelope tree / partial SB), in which
+    /// case the port falls back to the u8 filter chain.
+    pub last_recon10_uv: Option<(Vec<u16>, Vec<u16>)>,
     /// CDEF evidence counters for the last encoded frame (non-vacuity
     /// reporting: how many pixels the signaled strengths actually touched).
     pub last_cdef_stats: crate::cdef::CdefStats,
@@ -227,6 +235,7 @@ impl EncodePipeline {
             last_recon_unfiltered: None,
             last_recon_pre_cdef: None,
             last_recon10_y: None,
+            last_recon10_uv: None,
             last_cdef_stats: crate::cdef::CdefStats::default(),
             last_lr_stats: ([0; 3], 0),
             tile_rows_log2: 0,
@@ -977,8 +986,59 @@ impl EncodePipeline {
         let mut tree_slots: Vec<Option<crate::partition::PartitionTree>> =
             (0..sb_cols * sb_rows).map(|_| None).collect();
 
+        // ---- bd10 FULL-RD 10-bit post-MD canvas (frame scope) ----------
+        // Each tile returns its own frame-extent canvas with only its SB
+        // region written; merge the per-tile regions into ONE tight w*h /
+        // (w/2)*(h/2) pair. This is the port's true 10-bit reconstruction of
+        // the coded frame — C's 16-bit recon picture
+        // (`svt_aom_get_recon_pic(pcs, &recon, is_16bit)`) — and it is what
+        // the bd10 post-filter searches (CDEF strength, Wiener LR) must read.
+        //
+        // Source-of-truth note: at p6 this canvas, NOT `bd10_reencode_luma`'s
+        // output, is the live one. The level-only re-encode post-pass below
+        // declines whenever any leaf has `tx_depth > 0` (bd10_tree_supported),
+        // which real photographic content at p6 always has; the FULL-RD
+        // funnel has its own 10-bit tx-depth loop and commits the winner's
+        // 10-bit recon per block (`commit_leaf`, leaf_funnel.rs). Where the
+        // post-pass DOES run (eff-M9 band) it overwrites the coded levels, so
+        // its recon wins — handled after the post-pass below.
+        let sb95_ext_w = w.div_ceil(sb_size) * sb_size;
+        let mut canvas10: Option<(Vec<u16>, Vec<u16>, Vec<u16>)> =
+            tile_recons.first().and_then(|t| t.3.as_ref()).map(|_| {
+                (
+                    alloc::vec![0u16; w * h],
+                    alloc::vec![0u16; (w / 2) * (h / 2)],
+                    alloc::vec![0u16; (w / 2) * (h / 2)],
+                )
+            });
+        if let Some((cy, cu, cv)) = canvas10.as_mut() {
+            for (tile_idx, t) in tile_recons.iter().enumerate() {
+                let Some((ty, tu, tv)) = t.3.as_ref() else {
+                    continue;
+                };
+                let (r0, r1) = tile_grid.row_span(tile_idx / tile_grid.tile_cols);
+                let (c0, c1) = tile_grid.col_span(tile_idx % tile_grid.tile_cols);
+                let (y0, y1) = (r0 * sb_size, (r1 * sb_size).min(h));
+                let (x0, x1) = (c0 * sb_size, (c1 * sb_size).min(w));
+                for r in y0..y1 {
+                    cy[r * w + x0..r * w + x1]
+                        .copy_from_slice(&ty[r * sb95_ext_w + x0..r * sb95_ext_w + x1]);
+                }
+                let (cw, cxs, cxe) = (w / 2, x0 / 2, x1 / 2);
+                let cst = sb95_ext_w / 2;
+                for r in y0 / 2..y1 / 2 {
+                    cu[r * cw + cxs..r * cw + cxe]
+                        .copy_from_slice(&tu[r * cst + cxs..r * cst + cxe]);
+                    cv[r * cw + cxs..r * cw + cxe]
+                        .copy_from_slice(&tv[r * cst + cxs..r * cst + cxe]);
+                }
+            }
+        }
+
         // Merge tile recons into frame buffer and update MV map
-        for (tile_idx, (tile_recon, tile_decisions, tile_trees)) in tile_recons.iter().enumerate() {
+        for (tile_idx, (tile_recon, tile_decisions, tile_trees, _canvas10)) in
+            tile_recons.iter().enumerate()
+        {
             per_tile_decisions.push(tile_decisions.clone());
             let (tile_sb_row_start, tile_sb_row_end) =
                 tile_grid.row_span(tile_idx / tile_grid.tile_cols);
@@ -1050,6 +1110,20 @@ impl EncodePipeline {
         // content, so the true 10-bit source is `u8 << 2` — exactly the u16
         // .yuv the C reference encodes at bd10 (identity_run writes both from
         // one gradient). Native u16 (non-<<2) ingestion is a follow-up.
+        // Stale-canvas guard: the 10-bit recon is per-frame and the gate
+        // below can decline (out-of-envelope tree / partial SB). Clearing
+        // here means the post-filter chain's `Some(..)` test is exactly
+        // "this frame produced a complete 10-bit recon", never a leftover.
+        self.last_recon10_y = None;
+        self.last_recon10_uv = None;
+        // The FULL-RD funnel's committed 10-bit canvas is the baseline (the
+        // p0..p8 band). Where the level-only post-pass below also runs it
+        // REPLACES the coded levels, so its recon supersedes this — the
+        // post-pass overwrites both fields at its own end.
+        if let Some((cy, cu, cv)) = canvas10 {
+            self.last_recon10_y = Some(cy);
+            self.last_recon10_uv = Some((cu, cv));
+        }
         if self.bit_depth == 10 {
             // Run the u16 re-encode ONLY on frames within the ported bd10
             // envelope (every luma leaf tx_depth 0, non-directional,
@@ -1131,7 +1205,7 @@ impl EncodePipeline {
                         u_src.iter().map(|&s| (s as u16) << shift).collect();
                     let v10: alloc::vec::Vec<u16> =
                         v_src.iter().map(|&s| (s as u16) << shift).collect();
-                    bd10_reencode_chroma(
+                    let uv10 = bd10_reencode_chroma(
                         &mut all_trees,
                         sb_cols,
                         sb_size,
@@ -1154,6 +1228,7 @@ impl EncodePipeline {
                         self.bit_depth,
                         [qm_levels[1], qm_levels[2]],
                     );
+                    self.last_recon10_uv = Some(uv10);
                 }
                 self.last_recon10_y = Some(recon10);
             }
@@ -1575,6 +1650,45 @@ impl EncodePipeline {
             crate::deblock::LfLevels::default()
         };
         self.last_recon_unfiltered = Some((recon.clone(), u_recon.clone(), v_recon.clone()));
+        // ---- bd10 post-filter canvas ------------------------------------
+        // At 10 bits C runs the WHOLE post-MD filter chain (deblock -> CDEF
+        // -> LR) on the 16-bit recon against the 16-bit source, and the two
+        // SEARCHES in that chain (CDEF strength, Wiener LR taps) write frame
+        // syntax — so running them at 8 bits is a bitstream divergence, not
+        // just a recon approximation. This carries the true 10-bit planes
+        // through the chain in parallel with the u8 ones; the u8 chain still
+        // produces the output/DPB recon, unchanged, and bd8 never enters
+        // any of this.
+        //
+        // `Some` iff this frame produced a complete 10-bit recon (the bd10
+        // re-encode gate above). When it declined, the searches fall back to
+        // the u8 chain exactly as before.
+        let mut recon10: Option<(Vec<u16>, Vec<u16>, Vec<u16>)> = match (
+            self.bit_depth,
+            self.last_recon10_y.as_ref(),
+            self.last_recon10_uv.as_ref(),
+        ) {
+            (10, Some(y10), Some((u10, v10))) if chroma.is_some() => {
+                Some((y10.clone(), u10.clone(), v10.clone()))
+            }
+            _ => None,
+        };
+        if let Some((y10, u10, v10)) = recon10.as_mut() {
+            if lf_levels.any() {
+                crate::deblock::apply_deblock_frame_hbd(
+                    y10,
+                    u10,
+                    v10,
+                    w,
+                    h,
+                    true,
+                    &deblock_geom,
+                    &lf_levels,
+                    lf_sharp_eff,
+                    self.bit_depth,
+                );
+            }
+        }
         if lf_levels.any() {
             crate::deblock::apply_deblock_frame(
                 &mut recon,
@@ -1629,20 +1743,51 @@ impl EncodePipeline {
                     // path — self-consistent, documented divergence.
                     let (su, sv) = chroma.unwrap_or((&[][..], &[][..]));
                     let cfg = crate::cdef::cdef_search_cfg_for_preset(self.speed_config.preset);
-                    match crate::cdef::cdef_search_still(
-                        &cfg,
-                        &recon,
-                        &u_recon,
-                        &v_recon,
-                        &encode_input,
-                        su,
-                        sv,
-                        w,
-                        h,
-                        chroma.is_some(),
-                        &deblock_geom,
-                        base_qindex,
-                    ) {
+                    // bd10: search the TRUE 10-bit post-deblock recon against
+                    // the true 10-bit source (C `cdef_seg_search` at
+                    // is_16bit). The 10-bit source is `u8 << (bd - 8)` by
+                    // construction — the harness writes exactly that .yuv for
+                    // both encoders, so widening here is not an approximation.
+                    let searched = match recon10.as_ref() {
+                        Some((y10, u10, v10)) => {
+                            let sh = (self.bit_depth - 8) as u32;
+                            let widen = |p: &[u8]| -> Vec<u16> {
+                                p.iter().map(|&s| (s as u16) << sh).collect()
+                            };
+                            let (sy10, su10, sv10) =
+                                (widen(&encode_input), widen(su), widen(sv));
+                            crate::cdef::cdef_search_still_hbd(
+                                &cfg,
+                                y10,
+                                u10,
+                                v10,
+                                &sy10,
+                                &su10,
+                                &sv10,
+                                w,
+                                h,
+                                true,
+                                &deblock_geom,
+                                base_qindex,
+                                self.bit_depth,
+                            )
+                        }
+                        None => crate::cdef::cdef_search_still(
+                            &cfg,
+                            &recon,
+                            &u_recon,
+                            &v_recon,
+                            &encode_input,
+                            su,
+                            sv,
+                            w,
+                            h,
+                            chroma.is_some(),
+                            &deblock_geom,
+                            base_qindex,
+                        ),
+                    };
+                    match searched {
                         crate::cdef::CdefSearchPick::Picked(mut p) => {
                             // [SVT_HDR_MODE] fork cdef-scaling: search-path
                             // only (finish_cdef_search, enc_cdef.c:1444).
@@ -4321,7 +4466,7 @@ fn bd10_reencode_chroma(
     // (md_config_process.c:271-279), so they can differ between Cb and Cr —
     // the fork's chroma path gives Cb a +12 delta.
     qm_uv: [u8; 2],
-) {
+) -> (alloc::vec::Vec<u16>, alloc::vec::Vec<u16>) {
     let fc = svtav1_entropy::context::FrameContext::new_default();
     let cfc = svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(chroma_qindex);
     let rates = crate::leaf_funnel::build_md_rates(&fc, &cfc);
@@ -4355,6 +4500,11 @@ fn bd10_reencode_chroma(
             qm_uv,
         );
     }
+    // The frame's true 10-bit CHROMA recon — the post-MD canvas the bd10
+    // post-filter chain (deblock -> CDEF search -> LR search) reads, the
+    // chroma twin of `bd10_reencode_luma`'s return. C keeps the same thing
+    // in the 16-bit recon picture (`svt_aom_get_recon_pic(.., is_16bit)`).
+    (recon10_u, recon10_v)
 }
 
 /// Re-encode ONE chroma plane's leaf at bd10: predict -> residual/tx/quant ->
@@ -4724,11 +4874,17 @@ fn encode_tile_rows(
     Vec<u8>,
     Vec<crate::partition::BlockDecision>,
     Vec<crate::partition::PartitionTree>,
+    // bd10 FULL-RD only: this tile's committed 10-bit winner recon, as
+    // frame-extent (`ext_w` / `ext_w/2`-strided) Y/U/V canvases with only
+    // this tile's SB region written. `None` outside the bd10 full-RD
+    // envelope. See `Bd10Canvas` at the merge site.
+    Option<(Vec<u16>, Vec<u16>, Vec<u16>)>,
 )> {
     let encode_one_tile = |tile_idx: usize| -> (
         Vec<u8>,
         Vec<crate::partition::BlockDecision>,
         Vec<crate::partition::PartitionTree>,
+        Option<(Vec<u16>, Vec<u16>, Vec<u16>)>,
     ) {
         let (tile_sb_row_start, tile_sb_row_end) =
             tile_grid.row_span(tile_idx / tile_grid.tile_cols);
@@ -5762,7 +5918,22 @@ fn encode_tile_rows(
                 }
             }
         }
-        (tile_recon, tile_decisions, tile_trees)
+        // The bd10 FULL-RD canvases hold this tile's committed 10-bit
+        // winner recon (`commit_leaf` writes `win_recon10` / `win_*_recon10`
+        // into them per block). Outside that envelope they were never
+        // allocated. Note `bd10_luma_funnel` alone is not enough: the eff-M9
+        // band (p9..p13) allocates the LUMA canvas without the chroma ones,
+        // so the complete 3-plane canvas exists exactly at `bd10_full_rd`.
+        let tile_canvas10 = if bd10_full_rd {
+            Some((
+                tile_frame_recon10,
+                tile_frame_u_recon10,
+                tile_frame_v_recon10,
+            ))
+        } else {
+            None
+        };
+        (tile_recon, tile_decisions, tile_trees, tile_canvas10)
     };
 
     // Parallel encoding with std::thread::scope when available

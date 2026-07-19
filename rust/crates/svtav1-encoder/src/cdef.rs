@@ -456,9 +456,14 @@ pub fn apply_cdef_frame(
 /// (plane_y0 + r - VBORDER, plane_x0 + c - HBORDER) is inside the plane,
 /// else CDEF_VERY_LARGE — exactly what cdef_prepare_fb assembles for a
 /// 64-aligned frame (see apply_cdef_frame docs).
-fn build_src(
+///
+/// Generic over the plane's pixel type: the CDEF working buffer is u16 in
+/// BOTH pipelines (C's `in`/`inbuf` is `uint16_t` regardless of bit depth —
+/// cdef_process.c:315), so the 8-bit arm widens on read and the 10-bit arm
+/// copies. This mirrors C's single `svt_aom_copy_sb8_16(.., is_16bit)`.
+fn build_src<P: Copy + Into<u16>>(
     src: &mut [u16],
-    pre: &[u8],
+    pre: &[P],
     plane_w: usize,
     plane_h: usize,
     y0: usize,
@@ -479,7 +484,7 @@ fn build_src(
             *out = if gx < 0 || gx >= plane_w as isize {
                 k::CDEF_VERY_LARGE
             } else {
-                pre[gy * plane_w + gx as usize] as u16
+                pre[gy * plane_w + gx as usize].into()
             };
         }
     }
@@ -677,9 +682,28 @@ fn finish_cdef_rd(
     n_cand: usize,
     qindex: u8,
 ) -> (usize, alloc::vec::Vec<usize>, alloc::vec::Vec<usize>) {
+    finish_cdef_rd_bd(mse, n_cand, qindex, 8)
+}
+
+/// [`finish_cdef_rd`] with the bit depth of `svt_aom_lambda_assign`'s
+/// `bit_depth` argument. C: `svt_aom_lambda_assign(pcs, &fast, &full,
+/// pcs->ppcs->enhanced_pic->bit_depth, base_q_idx, /*multiply_lambda*/
+/// false)` (enc_cdef.c:958-964) — note `multiply_lambda = false`, so the
+/// bd10 lambda is `compute_rd_mult(EB_TEN_BIT)` WITHOUT the `*= 16` that
+/// the MD lambda carries (rc_process.c:476-481).
+fn finish_cdef_rd_bd(
+    mse: &[MseRow],
+    n_cand: usize,
+    qindex: u8,
+    bit_depth: u8,
+) -> (usize, alloc::vec::Vec<usize>, alloc::vec::Vec<usize>) {
     let sb_count = mse.len();
     debug_assert!(sb_count > 0);
-    let lambda = crate::pd0::kf_full_lambda_8bit_unweighted(qindex) as u64;
+    let lambda = match bit_depth {
+        8 => crate::pd0::kf_full_lambda_8bit_unweighted(qindex) as u64,
+        10 => crate::pd0::kf_full_lambda_bd10_unweighted(qindex) as u64,
+        _ => unreachable!("bit_depth must be 8 or 10 (bd12 out of scope)"),
+    };
     let mut best_cost = 1u64 << 63;
     let mut best_bits = 0usize;
     let mut best_lev0: alloc::vec::Vec<usize> = alloc::vec![0];
@@ -782,6 +806,101 @@ fn filter_fb_packed(
             damping,
             bsize,
             0,
+            subsampling,
+        );
+    }
+}
+
+/// Highbd twin of [`filter_fb_packed`] — C `svt_cdef_filter_fb` at
+/// `is_16bit` (`dst8 = NULL, dst16 = tmp_dst`, cdef_process.c:527-528),
+/// i.e. cdef.c:326-330 + :396 with a live `coeff_shift`:
+/// ```text
+/// pri_strength = (cdef_strength / CDEF_SEC_STRENGTHS) << coeff_shift;
+/// sec          = cdef_strength % CDEF_SEC_STRENGTHS;
+/// sec_strength = (sec + (sec == 3)) << coeff_shift;
+/// damping     += coeff_shift - (pli != PLANE_Y);
+/// ```
+/// and `coeff_shift` threaded into both `cdef_find_dir` (which subtracts
+/// `128 << coeff_shift` worth of DC via `(img[..] >> coeff_shift) - 128`)
+/// and the block kernel (whose tap-parity select reads
+/// `pri_strength >> coeff_shift`).
+#[allow(clippy::too_many_arguments)]
+fn filter_fb_packed_hbd(
+    tmp: &mut [u16],
+    src_pad: &[u16],
+    dlist: &[(usize, usize)],
+    strength: i32,
+    damping: i32,
+    pli: usize,
+    subsampling: usize,
+    coeff_shift: i32,
+    dir: &mut [[i32; 8]; 8],
+    var: &mut [[i32; 8]; 8],
+    dirinit: &mut bool,
+) {
+    let pri_strength = (strength / 4) << coeff_shift;
+    let sec = strength % 4;
+    let sec_strength = (sec + i32::from(sec == 3)) << coeff_shift;
+    let damping = damping + coeff_shift - i32::from(pli != 0);
+    let (bsizex, bsizey, bsize) = if pli == 0 {
+        (3usize, 3usize, k::BLOCK_8X8)
+    } else {
+        (2, 2, k::BLOCK_4X4)
+    };
+    let base = k::CDEF_VBORDER * k::CDEF_BSTRIDE + k::CDEF_HBORDER;
+
+    if strength == 0 {
+        // Copy path (svt_cdef_filter_fb, cdef.c:336-364) — the dst16 arm
+        // memcpy's whole rows; unfiltered rows keep stale contents exactly
+        // like C's tmp_dst (the dist reads only the subsampled rows).
+        for (bi, &(by, bx)) in dlist.iter().enumerate() {
+            let ioff = base + ((by << bsizey) * k::CDEF_BSTRIDE) + (bx << bsizex);
+            let doff = bi << (bsizex + bsizey);
+            let mut iy = 0usize;
+            while iy < (1 << bsizey) {
+                for ix in 0..(1 << bsizex) {
+                    tmp[doff + (iy << bsizex) + ix] = src_pad[ioff + iy * k::CDEF_BSTRIDE + ix];
+                }
+                iy += subsampling;
+            }
+        }
+        return;
+    }
+
+    if pli == 0 && !*dirinit {
+        for &(by, bx) in dlist {
+            let (d, vr) = k::cdef_find_dir(
+                &src_pad[base + by * 8 * k::CDEF_BSTRIDE + bx * 8..],
+                k::CDEF_BSTRIDE,
+                coeff_shift,
+            );
+            dir[by][bx] = d as i32;
+            var[by][bx] = vr;
+        }
+        *dirinit = true;
+    }
+
+    for (bi, &(by, bx)) in dlist.iter().enumerate() {
+        let t = if pli != 0 {
+            pri_strength
+        } else {
+            k::adjust_strength(pri_strength, var[by][bx])
+        };
+        let doff = bi << (bsizex + bsizey);
+        let ioff = base + ((by << bsizey) * k::CDEF_BSTRIDE) + (bx << bsizex);
+        svtav1_dsp::hbd::cdef_filter_block_hbd(
+            tmp,
+            doff,
+            1 << bsizex,
+            src_pad,
+            ioff,
+            t,
+            sec_strength,
+            if pri_strength != 0 { dir[by][bx] } else { 0 },
+            damping,
+            damping,
+            bsize,
+            coeff_shift,
             subsampling,
         );
     }
@@ -996,6 +1115,215 @@ pub fn cdef_search_still(
     }
     // filter_map translation: slot -> packed gi strength (the fs table
     // IS the map, enc_cdef.c:1414-1424).
+    let strengths: alloc::vec::Vec<(u8, u8)> = (0..nb)
+        .map(|gi| (cfg.fs[lev0[gi]] as u8, cfg.fs[lev1[gi]] as u8))
+        .collect();
+    CdefSearchPick::Picked(CdefPick {
+        damping: (3 + (qindex >> 6)) as u8,
+        bits: bits as u8,
+        strengths,
+        fb_idx,
+        nhfb,
+    })
+}
+
+/// Highbd twin of [`cdef_search_still`] — C `cdef_seg_search` with
+/// `is_16bit = 1` (cdef_process.c:268-640).
+///
+/// Structurally identical to the 8-bit search; every delta is a
+/// `coeff_shift = bit_depth - 8` (`AOMMAX(encoder_bit_depth - 8, 0)`,
+/// cdef_process.c:335) threading through the four places C uses it:
+/// 1. `svt_cdef_filter_fb` shifts both strengths left by it and adds it to
+///    the damping (cdef.c:326-330) — see [`filter_fb_packed_hbd`];
+/// 2. `cdef_find_dir` right-shifts each pixel by it before the -128 DC
+///    removal (cdef.c:113);
+/// 3. `svt_cdef_filter_block` selects its tap parity from
+///    `pri_strength >> coeff_shift` (cdef.c:196-197);
+/// 4. `svt_aom_compute_cdef_dist_16bit` normalizes the SSE by
+///    `>> 2 * coeff_shift` (enc_cdef.c:112) so the RD lambda stays on the
+///    8-bit scale.
+/// The recon/source planes are the TRUE 10-bit ones (C: `cdef_input_recon`
+/// from the 16-bit recon picture, `cdef_input_source` from
+/// `pcs->input_frame16bit`, cdef_process.c:330-332), and the RD lambda is
+/// `svt_aom_lambda_assign(.., EB_TEN_BIT, .., multiply_lambda = false)`.
+#[allow(clippy::too_many_arguments)]
+pub fn cdef_search_still_hbd(
+    cfg: &CdefSearchCfg,
+    recon_y: &[u16],
+    recon_u: &[u16],
+    recon_v: &[u16],
+    src_y: &[u16],
+    src_u: &[u16],
+    src_v: &[u16],
+    width: usize,
+    height: usize,
+    chroma_420: bool,
+    geom: &DeblockGeom,
+    qindex: u8,
+    bit_depth: u8,
+) -> CdefSearchPick {
+    assert!(width % 8 == 0 && height % 8 == 0, "8-aligned frames only");
+    assert!(bit_depth == 10, "bd12 out of scope (docs/bd10-port-map.md)");
+    let coeff_shift = (bit_depth - 8) as i32;
+    let damping = 3 + (qindex as i32 >> 6);
+    let nvfb = height.div_ceil(64);
+    let nhfb = width.div_ceil(64);
+    let n_cand = cfg.fs.len();
+    let sub_y = cfg.subsampling.min(4);
+    let sub_uv = cfg.subsampling.min(1);
+
+    let mut mse: Vec<MseRow> = Vec::new();
+    let mut fb_addr: Vec<(usize, usize)> = Vec::new();
+    let mut src_pad = alloc::vec![0u16; k::CDEF_INBUF_SIZE];
+    let mut tmp = alloc::vec![0u16; 64 * 64];
+    let mut dlist: Vec<(usize, usize)> = Vec::with_capacity(64);
+    let mut dlist_byx: Vec<(u8, u8)> = Vec::with_capacity(64);
+
+    for fbr in 0..nvfb {
+        let vsize = 64.min(height - fbr * 64);
+        for fbc in 0..nhfb {
+            let hsize = 64.min(width - fbc * 64);
+            dlist.clear();
+            dlist_byx.clear();
+            for by in 0..vsize / 8 {
+                for bx in 0..hsize / 8 {
+                    if !geom.is_8x8_all_skip(fbr * 16 + by * 2, fbc * 16 + bx * 2) {
+                        dlist.push((by, bx));
+                        dlist_byx.push((by as u8, bx as u8));
+                    }
+                }
+            }
+            if dlist.is_empty() {
+                continue;
+            }
+            let mut row: MseRow = [alloc::vec![0u64; n_cand], alloc::vec![0u64; n_cand]];
+            let mut dir = [[0i32; 8]; 8];
+            let mut var = [[0i32; 8]; 8];
+            let mut dirinit = false;
+
+            // ---- Luma
+            build_src(
+                &mut src_pad,
+                recon_y,
+                width,
+                height,
+                fbr * 64,
+                fbc * 64,
+                vsize,
+                hsize,
+            );
+            for (gi, &fs) in cfg.fs.iter().enumerate() {
+                filter_fb_packed_hbd(
+                    &mut tmp,
+                    &src_pad,
+                    &dlist,
+                    fs,
+                    damping,
+                    0,
+                    sub_y,
+                    coeff_shift,
+                    &mut dir,
+                    &mut var,
+                    &mut dirinit,
+                );
+                let d = svtav1_dsp::cdef::compute_cdef_dist_16bit(
+                    src_y,
+                    (fbr * 64) * width + fbc * 64,
+                    width,
+                    &tmp,
+                    &dlist_byx,
+                    k::BLOCK_8X8,
+                    coeff_shift,
+                    sub_y,
+                );
+                row[0][gi] = d * sub_y as u64;
+            }
+
+            // ---- Chroma: U then V ACCUMULATE into the joint uv row.
+            if chroma_420 {
+                let (cw, ch) = (width / 2, height / 2);
+                for gi in cfg.first_pass_num..n_cand {
+                    row[1][gi] = DEFAULT_MSE_UV * 64;
+                }
+                for (rec_c, src_c) in [(recon_u, src_u), (recon_v, src_v)] {
+                    build_src(
+                        &mut src_pad,
+                        rec_c,
+                        cw,
+                        ch,
+                        fbr * 32,
+                        fbc * 32,
+                        vsize / 2,
+                        hsize / 2,
+                    );
+                    for (gi, &fs) in cfg.fs.iter().enumerate().take(cfg.first_pass_num) {
+                        filter_fb_packed_hbd(
+                            &mut tmp,
+                            &src_pad,
+                            &dlist,
+                            fs,
+                            damping,
+                            1,
+                            sub_uv,
+                            coeff_shift,
+                            &mut dir,
+                            &mut var,
+                            &mut dirinit,
+                        );
+                        let d = svtav1_dsp::cdef::compute_cdef_dist_16bit(
+                            src_c,
+                            (fbr * 32) * cw + fbc * 32,
+                            cw,
+                            &tmp,
+                            &dlist_byx,
+                            k::BLOCK_4X4,
+                            coeff_shift,
+                            sub_uv,
+                        );
+                        row[1][gi] += d * sub_uv as u64;
+                    }
+                }
+            }
+            mse.push(row);
+            fb_addr.push((fbr, fbc));
+        }
+    }
+
+    if mse.is_empty() {
+        return CdefSearchPick::AllSkip;
+    }
+    let (bits, lev0, lev1) = finish_cdef_rd_bd(&mse, n_cand, qindex, bit_depth);
+    if std::env::var_os("SVTAV1_CDEF_DBG").is_some() {
+        let mut ysum = alloc::vec![0u64; n_cand];
+        let mut uvsum = alloc::vec![0u64; n_cand];
+        for (i, &(fbr, fbc)) in fb_addr.iter().enumerate() {
+            eprintln!("RS_CDEF_FB fbr={fbr} fbc={fbc} Y={:?} UV={:?}", mse[i][0], mse[i][1]);
+            for gi in 0..n_cand {
+                ysum[gi] += mse[i][0][gi];
+                uvsum[gi] += mse[i][1][gi];
+            }
+        }
+        eprintln!(
+            "RS_CDEF_SUM sb_count={} fs={:?} Ysum={ysum:?} UVsum={uvsum:?}",
+            mse.len(),
+            cfg.fs
+        );
+        eprintln!("RS_CDEF_PICK bits={bits} lev0={lev0:?} lev1={lev1:?}");
+    }
+    let nb = 1usize << bits;
+    let mut fb_idx = alloc::vec![0u8; nvfb * nhfb];
+    for (i, &(fbr, fbc)) in fb_addr.iter().enumerate() {
+        let mut best_gi = 0usize;
+        let mut best_mse = u64::MAX;
+        for gi in 0..nb {
+            let cur = mse[i][0][lev0[gi]] + mse[i][1][lev1[gi]];
+            if cur < best_mse {
+                best_gi = gi;
+                best_mse = cur;
+            }
+        }
+        fb_idx[fbr * nhfb + fbc] = best_gi as u8;
+    }
     let strengths: alloc::vec::Vec<(u8, u8)> = (0..nb)
         .map(|gi| (cfg.fs[lev0[gi]] as u8, cfg.fs[lev1[gi]] as u8))
         .collect();

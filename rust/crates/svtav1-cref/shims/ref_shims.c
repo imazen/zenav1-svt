@@ -646,6 +646,19 @@ void ref_pick_cdef_from_qp_intra(int32_t base_q_idx, int32_t bit_depth,
     *pred_uv_strength = uv_f1 * 4 + uv_f2;
 }
 
+/* ---- RD multiplier base (rc_process.c:365) ----
+   The lambda every post-MD RD search is built from: `svt_aom_lambda_assign`
+   calls `svt_aom_compute_rd_mult` -> `svt_aom_compute_rd_mult_based_on_qindex`
+   then applies `rd_frame_type_factor[bit_depth != 8][update_type] >> 7`. This
+   shim exposes the (real) qindex/bit-depth base so the Rust bd10 lambdas are
+   differentially pinned rather than hand-transcribed. SVT_AV1_KF_UPDATE = 0. */
+int svt_aom_compute_rd_mult_based_on_qindex(EbBitDepth bit_depth, SvtAv1FrameUpdateType update_type, int qindex);
+
+int32_t ref_compute_rd_mult_based_on_qindex(int32_t bit_depth, int32_t update_type, int32_t qindex) {
+    return svt_aom_compute_rd_mult_based_on_qindex(
+        (EbBitDepth)bit_depth, (SvtAv1FrameUpdateType)update_type, qindex);
+}
+
 /* ---- Loop restoration (Wiener): kernel, stats, filter_unit, subexp coding ---- */
 
 #include "restoration.h"

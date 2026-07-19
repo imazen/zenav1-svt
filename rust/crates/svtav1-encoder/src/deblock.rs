@@ -695,6 +695,68 @@ fn filter_plane(
     }
 }
 
+/// Highbd twin of [`filter_plane`] — identical edge walk (`lpf_params` is
+/// pure geometry, bit-depth independent), dispatching to the
+/// `svt_aom_highbd_lpf_*_c` kernel family with `bd`. C takes this arm
+/// whenever `is_16bit_pipeline` is set (`svt_av1_loop_filter_block_plane_*`
+/// -> the highbd vtable), which is exactly `encoder_bit_depth == 10` for
+/// this port's envelope.
+#[allow(clippy::too_many_arguments)]
+fn filter_plane_hbd(
+    buf: &mut [u16],
+    stride: usize,
+    plane_w: usize,
+    plane_h: usize,
+    plane: usize,
+    ss: usize,
+    level_vert: u8,
+    level_horz: u8,
+    geom: &DeblockGeom,
+    sharpness: u8,
+    bd: u8,
+) {
+    let mi_cols_p = plane_w / 4;
+    let mi_rows_p = plane_h / 4;
+
+    let tv = lf::lf_thresholds(level_vert, sharpness);
+    for my in 0..mi_rows_p {
+        let mut mx = 0;
+        while mx < mi_cols_p {
+            let (adv, filter) =
+                lpf_params(geom, EdgeDir::Vert, mx * 4, my * 4, plane, ss, level_vert);
+            if let Some(len) = filter {
+                let off = (my * 4) * stride + mx * 4;
+                match len {
+                    4 => svtav1_dsp::hbd::lpf_vertical_4_hbd(buf, off, stride, tv, bd),
+                    6 => svtav1_dsp::hbd::lpf_vertical_6_hbd(buf, off, stride, tv, bd),
+                    8 => svtav1_dsp::hbd::lpf_vertical_8_hbd(buf, off, stride, tv, bd),
+                    _ => svtav1_dsp::hbd::lpf_vertical_14_hbd(buf, off, stride, tv, bd),
+                }
+            }
+            mx += adv;
+        }
+    }
+
+    let th = lf::lf_thresholds(level_horz, sharpness);
+    for mx in 0..mi_cols_p {
+        let mut my = 0;
+        while my < mi_rows_p {
+            let (adv, filter) =
+                lpf_params(geom, EdgeDir::Horz, mx * 4, my * 4, plane, ss, level_horz);
+            if let Some(len) = filter {
+                let off = (my * 4) * stride + mx * 4;
+                match len {
+                    4 => svtav1_dsp::hbd::lpf_horizontal_4_hbd(buf, off, stride, th, bd),
+                    6 => svtav1_dsp::hbd::lpf_horizontal_6_hbd(buf, off, stride, th, bd),
+                    8 => svtav1_dsp::hbd::lpf_horizontal_8_hbd(buf, off, stride, th, bd),
+                    _ => svtav1_dsp::hbd::lpf_horizontal_14_hbd(buf, off, stride, th, bd),
+                }
+            }
+            my += adv;
+        }
+    }
+}
+
 /// Apply the AV1 deblocking filter to a reconstructed frame with the
 /// signaled `levels`, exactly as a conforming decoder will (spec 7.14;
 /// libaom av1_loop_filter_frame). Must run on the OUTPUT copy of the
@@ -731,6 +793,42 @@ pub fn apply_deblock_frame(
         }
         if l[3] != 0 {
             filter_plane(v, cw, cw, ch, 2, 1, l[3], l[3], geom, sharpness);
+        }
+    }
+}
+
+/// Highbd twin of [`apply_deblock_frame`] — same plane gating, same edge
+/// walk, the `svt_aom_highbd_lpf_*` kernels. Used at bd10 to produce the
+/// POST-DEBLOCK 10-bit recon that the CDEF strength search reads (C's
+/// `pcs->cdef_input_recon` at `is_16bit`, cdef_process.c:332). bd8 never
+/// reaches this function.
+#[allow(clippy::too_many_arguments)]
+pub fn apply_deblock_frame_hbd(
+    y: &mut [u16],
+    u: &mut [u16],
+    v: &mut [u16],
+    width: usize,
+    height: usize,
+    chroma_420: bool,
+    geom: &DeblockGeom,
+    lv: &LfLevels,
+    sharpness: u8,
+    bd: u8,
+) {
+    debug_assert_eq!(geom.mi_cols, width / 4);
+    debug_assert_eq!(geom.mi_rows, height / 4);
+    let l = lv.levels;
+    if l[0] == 0 && l[1] == 0 {
+        return;
+    }
+    filter_plane_hbd(y, width, width, height, 0, 0, l[0], l[1], geom, sharpness, bd);
+    if chroma_420 {
+        let (cw, ch) = (width / 2, height / 2);
+        if l[2] != 0 {
+            filter_plane_hbd(u, cw, cw, ch, 1, 1, l[2], l[2], geom, sharpness, bd);
+        }
+        if l[3] != 0 {
+            filter_plane_hbd(v, cw, cw, ch, 2, 1, l[3], l[3], geom, sharpness, bd);
         }
     }
 }

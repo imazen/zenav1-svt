@@ -1205,6 +1205,19 @@ pub fn pick_cdef_from_qp_intra_8bit(base_q_idx: u8) -> (i32, i32) {
     pick_cdef_from_qp_intra(base_q_idx, 8)
 }
 
+// ---- RD multiplier base ----
+
+unsafe extern "C" {
+    fn ref_compute_rd_mult_based_on_qindex(bit_depth: i32, update_type: i32, qindex: i32) -> i32;
+}
+
+/// Reference `svt_aom_compute_rd_mult_based_on_qindex` (rc_process.c:365):
+/// the per-(bit_depth, update_type, qindex) rdmult base that every post-MD
+/// RD search's lambda is built from. `update_type` 0 == `SVT_AV1_KF_UPDATE`.
+pub fn compute_rd_mult_based_on_qindex(bit_depth: u8, update_type: i32, qindex: u8) -> i32 {
+    unsafe { ref_compute_rd_mult_based_on_qindex(bit_depth as i32, update_type, qindex as i32) }
+}
+
 // ---- Loop restoration (Wiener) ----
 
 unsafe extern "C" {
