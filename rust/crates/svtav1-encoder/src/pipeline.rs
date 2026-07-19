@@ -901,6 +901,19 @@ impl EncodePipeline {
             // 64-aligned) are unaffected. Partial-SB bd10 is a documented
             // follow-up (docs/bd10-port-map.md).
             let bd10_frame_aligned = w % 64 == 0 && h % 64 == 0;
+            // NOTE (measured, task #94): the bd10 FULL-RD funnel now also
+            // produces 10-bit coded levels, computed with each txb's REAL
+            // entropy contexts — whereas this post-pass hardcodes the RDOQ
+            // contexts to 0/0 (only correct where `real_coeff_ctx` is off).
+            // Skipping the post-pass in favour of the funnel's levels was
+            // therefore expected to be strictly better; it was A/B MEASURED on
+            // the p6 bd10 grid and is NOT (4/20 byte-exact with the post-pass,
+            // 3/20 without — `gradient 64x64 q12` regresses to a CDEF-strength
+            // divergence). So the post-pass stays authoritative for the coded
+            // levels until that is root-caused. The funnel's 10-bit levels are
+            // still live where the post-pass does not reach: the neighbour
+            // `cul` bytes that drive later blocks' coefficient contexts, and
+            // the u8 chroma recon the CDEF/LR searches read.
             if let Some(cq) = c_quant.as_ref().filter(|_| {
                 bd10_frame_aligned
                     && all_trees
@@ -4102,6 +4115,37 @@ fn dump_tree_leaves(tree: &crate::partition::PartitionTree, x: usize, y: usize) 
     }
 }
 
+/// Is the bd10 FULL-RD mode funnel (MDS1 + MDS3 at true depth) usable for this
+/// frame? (task #94, MODE axis — docs/bd10-port-map.md.)
+///
+/// Below eff-M9 the coded mode is the MDS1/MDS3 full-RD winner rather than the
+/// MDS0 survivor, so a bd10 MDS0 alone closes nothing (measured). When this is
+/// on, `evaluate_leaf` runs the whole full-RD chain — luma depth loop with
+/// TXS/TXT, and the chroma loop — on 10-bit pixels with the bd10 quant tables
+/// and `full_lambda_md[EB_10_BIT_MD]`, and the winner's 10-bit levels ARE the
+/// coded ones (so the level-only re-encode post-pass is skipped: it hardcodes
+/// RDOQ contexts 0/0, which is only correct where `real_coeff_ctx` is off).
+///
+/// Scope, deliberately narrow:
+/// - **presets 6..=8** — the open MODE axis. eff-M9 (p9..p13) is CLOSED via the
+///   MDS0 funnel + post-pass and is left EXACTLY as it is; widening to it is a
+///   follow-up that must be re-verified against the whole 127-cell gate.
+///   Presets 0..=5 are the PART axis (PD1 depth-refine + NSQ), a different fix.
+/// - **complete-SB only** — `tx_unit_hbd` is not partial-SB-aware.
+/// - **palette off** — a palette candidate has no 10-bit prediction here.
+///
+/// CfL is handled inside `evaluate_leaf` instead of here, because whether it is
+/// reachable is a per-block runtime property (the chroma complexity detector),
+/// not a config one: under the bd10 full-RD the CfL candidate is not offered,
+/// which leaves a CfL block as a VISIBLE mode divergence rather than a
+/// mixed-domain compare. See the comment at the `cfl_gate` site.
+fn bd10_full_rd_supported(bit_depth: u8, preset: u8, w: usize, h: usize) -> bool {
+    if bit_depth != 10 || !(6..=8).contains(&preset) || w % 64 != 0 || h % 64 != 0 {
+        return false;
+    }
+    crate::leaf_funnel::FunnelCfg::for_preset(preset).palette_level == 0
+}
+
 fn encode_tile_rows(
     encode_input: &[u8],
     // Task #95 chunk 2: source padded to the SB extent (== `encode_input` for
@@ -4321,12 +4365,38 @@ fn encode_tile_rows(
         // → the funnel is byte-IDENTICAL. Frame-persistent (a block reads its
         // left/above SB's committed 10-bit recon); each SB's FunnelCtx borrows
         // it. On a 64-aligned frame ext_w==w, so this mirrors tile_frame_recon.
+        let bd10_complete_sb = bit_depth == 10 && w % 64 == 0 && h % 64 == 0;
+        // bd10 FULL-RD (task #94, MODE axis): below eff-M9 the coded mode is
+        // the MDS1/MDS3 full-RD winner, not the MDS0 survivor, so the bd10
+        // canvas alone is not enough — widening only MDS0 to M6..M8 was
+        // measured to close ZERO cells (docs/bd10-port-map.md). `full_rd10`
+        // runs the whole full-RD chain (luma depth loop with TXS/TXT + chroma)
+        // at 10 bits. It is gated on the arms that ARE ported at 10 bits:
+        //   - CfL off: the CfL compare inside MDS3 is 8-bit only, and mixing it
+        //     into a 10-bit block cost would be silently wrong (there is a
+        //     debug_assert backstop in evaluate_leaf).
+        //   - palette off: a palette candidate has no 10-bit prediction here.
+        //   - mainline tools only: ac-bias / noise-norm are fork features whose
+        //     u16 psy kernels are unported (tx_unit_hbd applies neither).
+        // Everything outside that envelope keeps the existing behaviour.
+        let bd10_full_rd = bd10_full_rd_supported(bit_depth, speed_config.preset, w, h);
         let bd10_luma_funnel =
-            bit_depth == 10 && speed_config.preset >= 9 && w % 64 == 0 && h % 64 == 0;
+            bd10_complete_sb && (speed_config.preset >= 9 || bd10_full_rd);
         let mut tile_frame_recon10: alloc::vec::Vec<u16> = if bd10_luma_funnel {
             alloc::vec![512u16; ext_w * ext_h]
         } else {
             alloc::vec::Vec::new()
+        };
+        // bd10 chroma decision canvases (the chroma twins of the luma one).
+        // 4:2:0 -> half dims; seeded with the 10-bit DC default like the luma.
+        let (mut tile_frame_u_recon10, mut tile_frame_v_recon10): (
+            alloc::vec::Vec<u16>,
+            alloc::vec::Vec<u16>,
+        ) = if bd10_full_rd {
+            let n = (ext_w / 2) * (ext_h / 2);
+            (alloc::vec![512u16; n], alloc::vec![512u16; n])
+        } else {
+            (alloc::vec::Vec::new(), alloc::vec::Vec::new())
         };
 
         let mut part_config =
@@ -4705,6 +4775,17 @@ fn encode_tile_rows(
                                 } else {
                                     None
                                 },
+                                u_recon10: if bd10_full_rd {
+                                    Some(&mut tile_frame_u_recon10)
+                                } else {
+                                    None
+                                },
+                                v_recon10: if bd10_full_rd {
+                                    Some(&mut tile_frame_v_recon10)
+                                } else {
+                                    None
+                                },
+                                full_rd10: bd10_full_rd,
                             })
                         } else {
                             None
@@ -4818,8 +4899,13 @@ fn encode_tile_rows(
                                 ectx: fun_ectx.as_mut().unwrap(),
                                 rates: fun_rates.as_deref().unwrap(),
                                 frame: fun_frame.as_ref().unwrap(),
-                                // bd10 luma mode funnel is eff-M9-only (task #94).
+                                // The PD1 depth-refinement path (M0..M5) is the
+                                // PART axis, not this landing's MODE axis — it
+                                // stays u8-decided (docs/bd10-port-map.md).
                                 y_recon10: None,
+                                u_recon10: None,
+                                v_recon10: None,
+                                full_rd10: false,
                             };
                             let nsq = crate::depth_refine::NsqCfg::for_preset_qp(
                                 speed_config.preset,
@@ -4916,8 +5002,22 @@ fn encode_tile_rows(
                                     ectx: fun_ectx.as_mut().unwrap(),
                                     rates: fun_rates.as_deref().unwrap(),
                                     frame: fun_frame.as_ref().unwrap(),
-                                    // bd10 luma mode funnel is eff-M9-only (task #94).
-                                    y_recon10: None,
+                                    y_recon10: if bd10_luma_funnel {
+                                        Some(&mut tile_frame_recon10)
+                                    } else {
+                                        None
+                                    },
+                                    u_recon10: if bd10_full_rd {
+                                        Some(&mut tile_frame_u_recon10)
+                                    } else {
+                                        None
+                                    },
+                                    v_recon10: if bd10_full_rd {
+                                        Some(&mut tile_frame_v_recon10)
+                                    } else {
+                                        None
+                                    },
+                                    full_rd10: bd10_full_rd,
                                 })
                             } else {
                                 None

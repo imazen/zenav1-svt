@@ -933,3 +933,123 @@ between the two pinned presets:
 
 **Net bd10 position: the eff-M9 band (p9..p13) is CLOSED for both synthetic and
 real photographic content at bd10. Everything still open is p0..p8.**
+
+## bd10 FULL-RD MODE FUNNEL LANDED (2026-07-19) — p7/p8 CLOSED (40/40), p6 MODE class 19 -> 7
+
+The "MODE (35 cells; 19 at p6)" axis from the low-preset map above. Landed
+exactly as that section scoped it: `tx_unit_hbd` extended with dist+bits, a
+per-candidate `pred10` threaded, and MDS1 + MDS3 run at bd10.
+
+### The mechanism (unchanged from the scoping, now implemented)
+
+At eff-M9 `nic_counts == (1,1,1)`, so the coded mode IS the MDS0 fast-SATD
+survivor and a bd10 MDS0 suffices — which is why p9..p13 was already closed.
+At **M6..M8 `nic_counts == (6,6,6)`**: MDS0 only shortlists, and the winner
+comes from the **MDS1 + MDS3 full-RD** stages, which ran at 8 bits. The port
+therefore coded C's *bd8* winner. Measured at `gradient 64x64 q40 p6`
+mi=(0,0): four candidates reach MDS3 and the u8 compare puts
+`mode=0 fi=FILTER_DC` at 241322877 vs `mode=0 fi=NONE` at 243339291 — a 0.83%
+margin that inverts at 10 bits (C codes `fi=NONE`).
+
+### What runs at 10 bits now (`FunnelCtx::full_rd10`)
+
+- **MDS1** — 10-bit residual from `cand.pred10`, bd10 quant table, bd10
+  lambda, and the freq-domain distortion (`svt_aom_picture_full_distortion32_
+  bits_single` is bit-depth-INDEPENDENT, so the u8 expression is reused on the
+  10-bit coefficients). This drives both the sort and the NIC pruning.
+- **MDS3 luma** — the whole TXS depth loop: `txt_search` gained a bd10 arm
+  (every gate around it — group order, ext-tx set, rate-cost th, SATD early
+  exit, non-signalable-eob — is bit-depth-independent, so only the cost source
+  switches), a `dep_recon10` carries the intra-block coupling, and
+  `predict_unit_overlay_hbd` predicts deeper-depth txbs from the 10-bit canvas.
+  The spatial distortion is `svt_full_distortion_kernel16_bits << 4`, which is
+  what `svt_spatial_full_distortion_kernel_facade` (pic_operators.c:257)
+  dispatches at `hbd_md != 0`.
+- **MDS3 chroma** — `chroma_eval10`, predicting from new bd10 chroma canvases
+  (`FunnelCtx::u_recon10`/`v_recon10`, committed by `commit_leaf` exactly like
+  the luma one). This is NOT optional: the MDS3 block cost is JOINT, so with
+  luma at 10 bits and chroma at 8 the chroma term would be ~16x
+  under-weighted and every uv-follows-luma mode flip would be decided on luma
+  alone.
+- One `lambda3` substitution covers every MDS3 rdcost (depth compare, txb
+  early exits, final block cost) — C uses `full_lambda_md[hbd_md ? 1 : 0]`
+  throughout.
+
+### Results (MEASURED, not inferred)
+
+| band | before | after |
+|---|---|---|
+| p7/p8 (`{gradient,diag}` x `{64,128}` x q`{12,20,32,40,55}`) | **12/40** | **40/40** |
+| p6 (same grid) | 1/20 | 4/20 |
+
+The p7/p8 baseline was measured by re-running the identical sweep with the
+change stashed — 28 cells are newly closed, not pre-existing. **p7/p8 had
+never been gated at all** (the gate jumped p6 -> p9), so that band was
+closed-but-unmeasured on one side and open on the other.
+
+`tools/bd10_nonflat_gate.sh` **127 -> 170** (all 40 p7/p8 + the 3 new p6).
+Unchanged: identity_matrix 54/54, partial_sb_gate 101/101, bd10_matrix 36/36,
+bd10_photo_gate 112/112, hdr_bd10_gate 46/46, `cargo test --workspace` green,
+135-cell bd10 p6/p7/p8 panic sweep (incl. partial-SB 96/200/72) 0 failures.
+
+### p6 residual — the axis mix CHANGED, which is the useful part
+
+p6 went from **19 MODE cells** to **7 MODE + 9 COEFF + 2 FH**. The 9 COEFF
+cells now have a **byte-identical coded tree** (0 partition/mode/uv/tx flips)
+AND an identical tile-payload SIZE — only the coefficient bytes differ. So the
+p6 mode decision is largely correct now and the residual has moved one layer
+down. Remaining p6 DIFFs by axis:
+
+- **COEFF (9)** — `gradient` q20..q55 at both sizes, `diag 64 q55`. Trees
+  match; the coded levels do not.
+- **MODE (7)** — all `diag` at q20..q55. Still a genuine mode/uv flip.
+- **FH (2)** — CDEF strength; the known post-filter axis.
+
+### MEASURED NEGATIVE — do not re-try: funnel levels do NOT beat the post-pass
+
+The bd10 full-RD also computes 10-bit coded levels, and it computes them with
+each txb's **real** `txb_skip_ctx`/`dc_sign_ctx`, whereas the level-only
+re-encode post-pass (`bd10_reencode_luma`/`_chroma`) hardcodes the RDOQ
+contexts to **0/0** — correct only where `real_coeff_ctx` is off (eff-M9,
+rate_est_level 0), and M6 has it ON. Replacing the post-pass with the funnel's
+levels was therefore expected to close the COEFF class outright.
+
+It was implemented and **A/B measured on the p6 grid: 4/20 with the post-pass,
+3/20 without** (`gradient 64x64 q12` regresses into a CDEF-strength
+divergence). So the post-pass stays authoritative for the coded levels and the
+COEFF class is NOT simply the RDOQ-context gap. The funnel's 10-bit levels do
+stay live where the post-pass does not reach — the neighbour `cul` bytes that
+drive later blocks' coefficient contexts, and the u8 chroma recon the CDEF/LR
+searches read (`recon10 >> (bd-8)`, the convention the post-pass established).
+
+**NEXT for the COEFF class:** dump both level sets for `gradient 64x64 q40 p6`
+(`SVT_QLEVELS_OUT` + `SVT_QLEVELS_COMP=0` vs `SVTAV1_PACKTREE_COEFF`) and find
+the first diverging txb. C's dump shows several records per txb (one per
+candidate), so pin the winning one before comparing. The observed signature at
+q40 mi(0,0) is a trellis-shaping difference (C `32:-26`; port `32:-25, 33:-1`,
+plus an extra `46:-1` and a different tail past coefficient 256), i.e. RDOQ,
+not the forward quantizer.
+
+### Scope deliberately NOT taken in this landing
+
+- **CfL at bd10.** The two CfL arms inside MDS3 (`cfl_rd_search`, the non-CfL
+  freq re-run, the chosen-alpha chroma TX) are 8-bit only. Rather than feed an
+  8-bit CfL compare into a 10-bit block cost, the CfL candidate is simply **not
+  offered** under the bd10 full-RD, so a CfL block stays a VISIBLE mode
+  divergence instead of a silent mixed-domain decision (the re-encode's
+  `bd10_tree_supported` already rejects UV_CFL_PRED for the same reason).
+  MEASURED: the chroma complexity detector never arms on the p6 bd10 grid
+  (`cfl_would_run == false` on every block of every gradient/diag cell), so
+  nothing gated here is affected. The kernels a port would need
+  (`cfl_luma_subsampling_420_hbd`, `cfl_predict_hbd`) already exist and are
+  FFI-verified.
+- **eff-M9 (p9..p13) is excluded from `bd10_full_rd_supported`** — that band is
+  CLOSED (170-cell gate) via the MDS0 funnel + post-pass and is left byte-for-
+  byte as it was. Widening the full-RD to it is plausible (with
+  `nic_counts == (1,1,1)` a single candidate reaches MDS3, so it should be
+  decision-inert) but it MUST be re-verified against the whole gate first.
+- **presets 0..=5** are the PART axis (PD1 depth-refine + NSQ), unrelated.
+- **Palette** is excluded (a palette candidate has no 10-bit prediction here);
+  `palette_level == 0` for M6..M8 so this is not currently binding.
+- **ac-bias / noise-norm** (fork-only) are not applied in `tx_unit_hbd` — they
+  need a u16 psy kernel that is unported.

@@ -1798,6 +1798,40 @@ pub(crate) struct TxRdArgs {
     pub tx_bias: u8,
 }
 
+/// bd10 FULL-RD context for the MDS1 / MDS3 stages (task #94, MODE axis).
+///
+/// At `hbd_md != 0` — i.e. every M0..M13 bd10 frame (DUAL, see
+/// docs/bd10-port-map.md) — C runs the whole full-RD chain at TRUE 10 bits:
+/// the prediction, the residual, the quantizer table, the lambda and the
+/// distortion kernel are all the 10-bit ones. Below eff-M9 `nic_counts` is
+/// (6,6,6) or wider, so the coded mode is NOT the MDS0 survivor — it is the
+/// MDS1/MDS3 full-RD winner, and deciding it on 8-bit pixels picks C's *bd8*
+/// winner. That is the entire p6 MODE-flip class.
+///
+/// This carries the bit-depth-specific inputs those stages need. It is `Some`
+/// only when [`FunnelCtx::full_rd10`] is set (bd10, complete-SB, mainline
+/// tools); the u8 path never constructs one and is byte-identical.
+struct Bd10Rd {
+    /// The block's TRUE 10-bit luma source, w*h at stride w. The harness
+    /// ingestion model is `src10 == src8 << (bd - 8)` (docs/bd10-port-map.md
+    /// "PORT: use plain u16 planes"), the same relation `hadamard_satd_hbd`
+    /// and the re-encode post-pass already assume.
+    y_src10: Vec<u16>,
+    /// The block's 10-bit chroma sources, cw*chh at stride cw. Empty when the
+    /// block carries no chroma (`has_uv == 0`).
+    u_src10: Vec<u16>,
+    v_src10: Vec<u16>,
+    /// bd10 quant tables (`build_quant_table_bd`): Q10 is ~4x Q8 but NOT
+    /// exactly, which is precisely why the RD ordering is not scale-invariant.
+    qt: QuantTable,
+    qt_u: QuantTable,
+    qt_v: QuantTable,
+    /// C `full_lambda_md[EB_10_BIT_MD]` (md_process.c:753) — the bd10 rdmult
+    /// base, x16. NOT a x16 of the bd8 lambda; see `kf_full_lambda_bd10`.
+    lambda: u64,
+    bd: u8,
+}
+
 /// u16 / bd10 mirror of the level-producing core of [`tx_unit`]: 10-bit
 /// residual -> forward TX -> Q10 quantize (+ optional RDOQ) -> 10-bit recon.
 ///
@@ -2402,6 +2436,11 @@ struct Cand {
     uv_delta: i8,
     /// Whole-block depth-0 luma prediction (w x h).
     pred: Vec<u8>,
+    /// The SAME prediction at TRUE 10 bits, from the bd10 recon canvas
+    /// (task #94). MDS0 already computes this to score the fast cost and
+    /// used to throw it away; MDS1/MDS3 need it as their depth-0 predictor.
+    /// Empty unless the bd10 full-RD funnel is active.
+    pred10: Vec<u16>,
     flr: u64,
     fcr: u64,
     fast_cost: u64,
@@ -2417,6 +2456,16 @@ struct Cand {
     txb_cul: Vec<u8>,
     txb_type: Vec<u8>,
     y_recon: Vec<u8>,
+    /// The winner's TRUE 10-bit LUMA recon (w*h), from the winning tx depth
+    /// of the bd10 MDS3 loop. Empty unless the bd10 full-RD funnel is active.
+    y_recon10: Vec<u16>,
+    /// The winner's TRUE 10-bit chroma recon (cw*chh each), produced by the
+    /// bd10 chroma full loop. `commit_leaf` writes them into the bd10 chroma
+    /// canvases so the NEXT block predicts chroma from 10-bit neighbours —
+    /// the same sequential coupling `y_recon10` closes for luma. Empty
+    /// unless the bd10 full-RD funnel is active.
+    u_recon10: Vec<u16>,
+    v_recon10: Vec<u16>,
     /// The tx_depth-0 luma recon (C's shared `cand_bf->recon` state after the
     /// TX loop — deeper depths reconstruct in aux buffers and are never
     /// copied back, so the quad-dist gates measure THIS, not `y_recon`).
@@ -2502,10 +2551,25 @@ pub(crate) struct FunnelCtx<'a> {
     /// this canvas and scores the 10-bit SATD (so the mode survivor is C's
     /// bd10 winner, not the u8 winner — the DC↔SMOOTH flips on diagonal-edge
     /// content), and `commit_leaf` writes the winner's 10-bit recon back for
-    /// the next block's neighbours. The u8 path (`y_recon`) still runs for
-    /// MDS1/MDS3 rate/levels; the coded LEVELS come from the post-pass
-    /// `bd10_reencode_luma`, which now reads these bd10-decided modes.
+    /// the next block's neighbours. The coded LEVELS come from the post-pass
+    /// `bd10_reencode_luma`, which reads these bd10-decided modes.
     pub y_recon10: Option<&'a mut [u16]>,
+    /// bd10 CHROMA mode-decision recon canvases — the chroma twins of
+    /// `y_recon10`, chroma-strided (`c_stride`). `Some` exactly when
+    /// `full_rd10` is set: the MDS3 chroma full loop predicts from them so
+    /// the joint (luma + chroma) block RD is entirely 10-bit.
+    pub u_recon10: Option<&'a mut [u16]>,
+    pub v_recon10: Option<&'a mut [u16]>,
+    /// Run the FULL-RD stages (MDS1 + MDS3, luma AND chroma) at bd10.
+    ///
+    /// `y_recon10` alone only fixes MDS0, which is sufficient at eff-M9
+    /// (`nic_counts == (1,1,1)` -> the fast survivor IS the coded mode) but
+    /// NOT below it: at M6 `nic_counts == (6,6,6)`, several candidates reach
+    /// MDS1/MDS3 and the full-RD compare picks the winner. Widening only the
+    /// MDS0 funnel to M6..M8 was measured to close ZERO cells
+    /// (docs/bd10-port-map.md "MEASURED NEGATIVE"), which is what this flag
+    /// exists to fix. Requires `y_recon10`/`u_recon10`/`v_recon10` to be set.
+    pub full_rd10: bool,
 }
 
 /// One evaluated (not yet committed) PART_N funnel decision — the C
@@ -2546,6 +2610,11 @@ pub(crate) struct LeafEval {
     /// `FunnelCtx::y_recon10` is `Some`. `commit_leaf` writes it back into the
     /// canvas for the next block's neighbour prediction. Empty on the u8 path.
     win_recon10: Vec<u16>,
+    /// The winner's TRUE 10-bit CHROMA recon (cw*chh each) — the chroma twins
+    /// of `win_recon10`, written into the bd10 chroma canvases by
+    /// `commit_leaf`. Empty unless the bd10 full-RD funnel is active.
+    win_u_recon10: Vec<u16>,
+    win_v_recon10: Vec<u16>,
 }
 
 impl LeafEval {
@@ -2865,6 +2934,53 @@ pub(crate) fn evaluate_leaf(
     let ccx = ((abs_x >> 3) << 3) / 2 + if w >= 8 { (abs_x % 8) / 2 } else { 0 };
     let ccy = ((abs_y >> 3) << 3) / 2 + if h >= 8 { (abs_y % 8) / 2 } else { 0 };
 
+    // bd10 FULL-RD (task #94, MODE axis): the MDS1/MDS3 inputs at true depth.
+    // Built once per leaf; `None` on every u8 path AND on bd10 leaves where
+    // only the MDS0 funnel is enabled, so both stay byte-identical.
+    let bd10_rd: Option<Bd10Rd> = if bd10_funnel && fx.full_rd10 {
+        let shift = (frame.bit_depth - 8) as u32;
+        let mut y_src10 = vec![0u16; w * h];
+        for r in 0..h {
+            let srow = y_src_off + r * y_src_stride;
+            for c in 0..w {
+                y_src10[r * w + c] = u16::from(y_src[srow + c]) << shift;
+            }
+        }
+        let mut qt10 = crate::quant::build_quant_table_bd(frame.base_qindex, frame.bit_depth);
+        qt10.qm_level = frame.qm_levels[0];
+        let mut qt_u10 = crate::quant::build_quant_table_bd(frame.qindex_u, frame.bit_depth);
+        qt_u10.qm_level = frame.qm_levels[1];
+        let mut qt_v10 = crate::quant::build_quant_table_bd(frame.qindex_v, frame.bit_depth);
+        qt_v10.qm_level = frame.qm_levels[2];
+        // Block-local 10-bit chroma sources at stride cw (empty when the block
+        // carries no chroma — C skips every chroma stage on !has_uv).
+        let (mut u_src10, mut v_src10) = (Vec::new(), Vec::new());
+        if has_uv {
+            let c_off = ccy * fx.c_stride + ccx;
+            u_src10 = vec![0u16; cw * chh];
+            v_src10 = vec![0u16; cw * chh];
+            for r in 0..chh {
+                let srow = c_off + r * fx.c_stride;
+                for c in 0..cw {
+                    u_src10[r * cw + c] = u16::from(fx.u_src[srow + c]) << shift;
+                    v_src10[r * cw + c] = u16::from(fx.v_src[srow + c]) << shift;
+                }
+            }
+        }
+        Some(Bd10Rd {
+            y_src10,
+            u_src10,
+            v_src10,
+            qt: qt10,
+            qt_u: qt_u10,
+            qt_v: qt_v10,
+            lambda: lambda_bd10_full,
+            bd: frame.bit_depth,
+        })
+    } else {
+        None
+    };
+
     // -- Candidate injection + MDS0 --
     // C order (`generate_md_stage_0_cand`): regular intra modes DC ..
     // intra_mode_end with the angular-delta inner loop in counter order
@@ -2892,6 +3008,50 @@ pub(crate) fn evaluate_leaf(
     // the shared body of `search_best_mds3_uv_mode`'s full loop and
     // MDS3's `svt_aom_full_loop_uv` (identical settings: rdoq per frame
     // policy, spatial SSE, real contexts).
+    // bd10 FULL-RD chroma (task #94): the 10-bit twin of `chroma_eval`. C's
+    // `svt_aom_full_loop_uv` reaches the same facades at both depths — the
+    // spatial chroma distortion is `svt_full_distortion_kernel16_bits` at
+    // hbd_md != 0 (pic_operators.c:257) — so only the pixel type, the quant
+    // table and the lambda move. This matters because the MDS3 block cost is
+    // JOINT (luma + chroma): with the luma terms at 10 bits and chroma left at
+    // 8, chroma would be ~16x under-weighted and every uv-follows-luma mode
+    // flip would be decided on luma alone.
+    let chroma_eval10 = |fx: &FunnelCtx<'_>,
+                         b: &Bd10Rd,
+                         uv: u8,
+                         uv_delta: i8|
+     -> (TxUnitOutHbd, TxUnitOutHbd) {
+        let mut u_pred = vec![0u16; cw * chh];
+        let mut v_pred = vec![0u16; cw * chh];
+        let c_off10 = ccy * fx.c_stride + ccx;
+        predict_unit_hbd(
+            fx.u_recon10.as_deref().unwrap(), fx.c_stride, ccx, ccy, cw, chh, uv, uv_delta,
+            FI_NONE, &uv_geom, cfg.edge_filter, filt_type_uv, &mut u_pred, b.bd,
+        );
+        predict_unit_hbd(
+            fx.v_recon10.as_deref().unwrap(), fx.c_stride, ccx, ccy, cw, chh, uv, uv_delta,
+            FI_NONE, &uv_geom, cfg.edge_filter, filt_type_uv, &mut v_pred, b.bd,
+        );
+        let _ = c_off10;
+        let tt = uv_tx_type(uv, cw, chh);
+        let rd = |plane_dir: usize| TxRdArgs {
+            spatial_dist: true, // MDS3 chroma is the spatial SSE (<<4)
+            intra_dir: plane_dir,
+            coeff_rate_est_lvl: cfg.coeff_rate_est_lvl,
+            tx_bias: frame.tx_bias,
+        };
+        let u_out = tx_unit_hbd(
+            &b.u_src10, cw, 0, &u_pred, cw, 0, cw, chh, tt, 1, cb_tsc, cb_dsc, &b.qt_u,
+            frame.rdoq_level, b.lambda, frame.sharpness, rates, do_rdoq, b.bd,
+            b.qt_u.qm_level, Some(&rd(0)),
+        );
+        let v_out = tx_unit_hbd(
+            &b.v_src10, cw, 0, &v_pred, cw, 0, cw, chh, tt, 1, cr_tsc, cr_dsc, &b.qt_v,
+            frame.rdoq_level, b.lambda, frame.sharpness, rates, do_rdoq, b.bd,
+            b.qt_v.qm_level, Some(&rd(0)),
+        );
+        (u_out, v_out)
+    };
     let chroma_eval = |fx: &FunnelCtx<'_>, uv: u8, uv_delta: i8| -> (TxUnitOut, TxUnitOut) {
         let mut u_pred = vec![0u8; cw * chh];
         let mut v_pred = vec![0u8; cw * chh];
@@ -3292,9 +3452,13 @@ pub(crate) fn evaluate_leaf(
         // only the fast COST switches. `None` (bd8) is the exact u8 path.
         let mut dbg_satd10: u64 = 0;
         let mut dbg_pred0: u16 = 0;
+        // The 10-bit prediction is RETAINED (`cand.pred10`) — MDS1/MDS3 need it
+        // as their depth-0 predictor, exactly as they reuse the u8 `cand.pred`.
+        // It used to be dropped here because only MDS0 ran at bd10.
+        let mut pred10: Vec<u16> = Vec::new();
         let fast_cost = match fx.y_recon10.as_deref() {
             Some(canvas10) => {
-                let mut pred10 = vec![0u16; w * h];
+                pred10 = vec![0u16; w * h];
                 predict_unit_hbd(
                     canvas10, y_stride, abs_x, abs_y, w, h, mode, delta, fi, &y_geom,
                     cfg.edge_filter, filt_type_y, &mut pred10, frame.bit_depth,
@@ -3346,6 +3510,7 @@ pub(crate) fn evaluate_leaf(
             uv,
             uv_delta,
             pred,
+            pred10,
             flr,
             fcr,
             fast_cost,
@@ -3358,6 +3523,9 @@ pub(crate) fn evaluate_leaf(
             txb_cul: Vec::new(),
             txb_type: Vec::new(),
             y_recon: Vec::new(),
+            y_recon10: Vec::new(),
+            u_recon10: Vec::new(),
+            v_recon10: Vec::new(),
             y_recon_d0: Vec::new(),
             y_bits: 0,
             y_dist: 0,
@@ -3529,6 +3697,10 @@ pub(crate) fn evaluate_leaf(
                 uv,
                 uv_delta,
                 pred,
+                // Palette is excluded from the bd10 full-RD envelope
+                // (`bd10_full_rd_supported`): its prediction is a
+                // position-only colour substitution with no 10-bit form here.
+                pred10: Vec::new(),
                 flr,
                 fcr,
                 fast_cost,
@@ -3540,6 +3712,9 @@ pub(crate) fn evaluate_leaf(
                 txb_cul: Vec::new(),
                 txb_type: Vec::new(),
                 y_recon: Vec::new(),
+                y_recon10: Vec::new(),
+                u_recon10: Vec::new(),
+                v_recon10: Vec::new(),
                 y_recon_d0: Vec::new(),
                 y_bits: 0,
                 y_dist: 0,
@@ -3754,7 +3929,50 @@ pub(crate) fn evaluate_leaf(
             false, // no RDOQ at MDS1
             false, // freq-domain dist
         );
-        let has = out.eob > 0;
+        // bd10 FULL-RD (task #94): C's MDS1 at hbd_md != 0 runs the SAME
+        // luma-only full loop on 10-bit pixels — 10-bit residual, bd10 quant
+        // table, bd10 lambda, and the bit-depth-INDEPENDENT freq-domain
+        // distortion (svt_aom_picture_full_distortion32_bits_single). Deciding
+        // it at 8 bits picks C's bd8 winner; below eff-M9 several candidates
+        // survive to MDS3, so this ordering + the pruning below is binding.
+        // The u8 `out` above still runs — nothing downstream of MDS1 reads it,
+        // but keeping it keeps the bd8 expression untouched and the two
+        // domains directly comparable under SVTAV1_CANDDBG.
+        let out10 = bd10_rd.as_ref().map(|b| {
+            tx_unit_hbd(
+                &b.y_src10,
+                w,
+                0,
+                &cand.pred10,
+                w,
+                0,
+                w,
+                h,
+                cc::DCT_DCT,
+                0,
+                txb_skip_ctx,
+                dc_sign_ctx,
+                &b.qt,
+                frame.rdoq_level,
+                b.lambda,
+                frame.sharpness,
+                rates,
+                false, // no RDOQ at MDS1 (mirrors the u8 call)
+                b.bd,
+                b.qt.qm_level,
+                Some(&TxRdArgs {
+                    spatial_dist: false, // MDS1 = freq-domain residual
+                    intra_dir,
+                    coeff_rate_est_lvl: cfg.coeff_rate_est_lvl,
+                    tx_bias: frame.tx_bias,
+                }),
+            )
+        });
+        let (dec_eob, dec_bits, dec_dist, dec_lambda) = match &out10 {
+            Some(o) => (o.eob, o.bits as u64, o.dist, bd10_rd.as_ref().unwrap().lambda),
+            None => (out.eob, out.bits as u64, out.dist, lambda),
+        };
+        let has = dec_eob > 0;
         let tsz_cat = tx_size_cat(w, h);
         let tsz_ctx = fx.ectx.tx_size_ctx(abs_x, abs_y, w, h);
         // C: 4x4 codes no tx_size symbol (block_signals_txsize == bsize > 4x4).
@@ -3764,12 +3982,12 @@ pub(crate) fn evaluate_leaf(
             0
         };
         let coeff_rate = if has {
-            out.bits as u64 + tx_size_bits + rates.skip[skip_ctx][0] as u64
+            dec_bits + tx_size_bits + rates.skip[skip_ctx][0] as u64
         } else {
             rates.skip[skip_ctx][1] as u64 + tx_size_bits
         };
         cand.mds1_has_coeff = has;
-        cand.full_cost = rdcost(lambda, cand.flr + cand.fcr + coeff_rate, out.dist);
+        cand.full_cost = rdcost(dec_lambda, cand.flr + cand.fcr + coeff_rate, dec_dist);
         #[cfg(feature = "std")]
         if std::env::var_os("SVTAV1_CANDDBG").is_some()
             && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
@@ -3785,7 +4003,7 @@ pub(crate) fn evaluate_leaf(
                 cand.delta,
                 cand.uv,
                 coeff_rate,
-                out.dist,
+                dec_dist,
                 cand.full_cost,
             );
         }
@@ -4028,6 +4246,11 @@ pub(crate) fn evaluate_leaf(
         ind_uv = Some(table);
     }
 
+    // bd10 FULL-RD (task #94): every MDS3 rdcost — the depth compare, the txb
+    // early exits and the final block cost — must use the SAME lambda domain
+    // as the distortion it is comparing. C uses `full_lambda_md[hbd_md ? 1 : 0]`
+    // throughout (md_process.c:753), so one substitution covers all of them.
+    let lambda3 = bd10_rd.as_ref().map_or(lambda, |b| b.lambda);
     for &ci in order1.iter().take(n3) {
         // `update_intra_chroma_mode`: rewrite the candidate's chroma from
         // the ind-uv table (fast chroma rate recomputed for the luma
@@ -4069,6 +4292,9 @@ pub(crate) fn evaluate_leaf(
         let mut best_txb_cul: Vec<u8> = Vec::new();
         let mut best_txb_type: Vec<u8> = Vec::new();
         let mut best_recon: Vec<u8> = Vec::new();
+        // The winning depth's TRUE 10-bit luma recon (bd10 full-RD only) —
+        // the 10-bit twin of `best_recon`.
+        let mut best_recon10: Vec<u16> = Vec::new();
         // The winning depth's luma PREDICTION, i.e. C `cand_bf->pred->y_buffer`
         // as it stands once the TX loop returns. NOT the same as `cand.pred`
         // (the MDS0 whole-block pred) whenever the winning depth > 0 — see the
@@ -4114,6 +4340,16 @@ pub(crate) fn evaluate_leaf(
             let mut dep_pred = vec![0u8; w * h];
             let mut dep_has_coeff = false;
             let mut aborted = false;
+            // bd10 FULL-RD (task #94): the depth's 10-bit recon, which the
+            // NEXT txb of a deeper depth predicts from (the same intra-block
+            // sequential coupling the u8 `dep_recon` carries). `dep_dist` /
+            // `dep_bits` above accumulate the 10-bit terms when active, so the
+            // depth compare — and therefore tx_depth — is decided at bd10.
+            let mut dep_recon10 = if bd10_rd.is_some() {
+                vec![0u16; w * h]
+            } else {
+                Vec::new()
+            };
 
             for txb in 0..txbs {
                 let tx_x = (txb % cols) * txw;
@@ -4166,6 +4402,46 @@ pub(crate) fn evaluate_leaf(
                     let dst = (tx_y + r) * w + tx_x;
                     dep_pred[dst..dst + txw].copy_from_slice(&txb_pred[r * txw..(r + 1) * txw]);
                 }
+                // The SAME per-txb prediction at 10 bits, by the same three
+                // rules: depth 0 reuses the MDS0 10-bit whole-block pred;
+                // palette is position-only substitution (no neighbour edges),
+                // so a deeper txb is a slice of it; otherwise predict from the
+                // 10-bit overlay canvas.
+                let mut txb_pred10: Vec<u16> = Vec::new();
+                if bd10_rd.is_some() {
+                    txb_pred10 = vec![0u16; txw * txh];
+                    if depth == 0 {
+                        txb_pred10.copy_from_slice(&cand.pred10);
+                    } else if cand.palette.is_some() {
+                        for r in 0..txh {
+                            let src0 = (tx_y + r) * w + tx_x;
+                            txb_pred10[r * txw..(r + 1) * txw]
+                                .copy_from_slice(&cand.pred10[src0..src0 + txw]);
+                        }
+                    } else {
+                        predict_unit_overlay_hbd(
+                            fx.y_recon10.as_deref().unwrap(),
+                            y_stride,
+                            abs_x,
+                            abs_y,
+                            &dep_recon10,
+                            w,
+                            h,
+                            tx_x,
+                            tx_y,
+                            txw,
+                            txh,
+                            cand.mode,
+                            cand.delta,
+                            cand.fi,
+                            &y_geom,
+                            cfg.edge_filter,
+                            filt_type_y,
+                            &mut txb_pred10,
+                            frame.bit_depth,
+                        );
+                    }
+                }
                 // Per-txb contexts from the TX-local overlay (real at M6;
                 // 0/0 at M7/M8 where update_skip_ctx_dc_sign_ctx == 0, so
                 // cul_level never accumulates — full_loop.c:1880).
@@ -4180,7 +4456,16 @@ pub(crate) fn evaluate_leaf(
                 } else {
                     cand.mode as usize
                 };
-                let (out, txt) = txt_search(
+                let bd10_txb = bd10_rd.as_ref().map(|b| Bd10Txb {
+                    src10: &b.y_src10,
+                    src10_stride: w,
+                    src10_off: tx_y * w + tx_x,
+                    pred10: &txb_pred10,
+                    qt: &b.qt,
+                    lambda: b.lambda,
+                    bd: b.bd,
+                });
+                let (out, out10, txt) = txt_search(
                     y_src,
                     y_src_stride,
                     y_src_off + tx_y * y_src_stride + tx_x,
@@ -4196,7 +4481,13 @@ pub(crate) fn evaluate_leaf(
                     rates,
                     do_rdoq,
                     lambda,
+                    bd10_txb.as_ref(),
                 );
+                // The decision terms: 10-bit when the bd10 full-RD is active.
+                let (dec_eob, dec_bits_raw, dec_dist, dec_cul) = match &out10 {
+                    Some(o) => (o.eob, o.bits, o.dist, o.cul),
+                    None => (out.eob, out.bits, out.dist, out.cul),
+                };
                 // eff-M9 (coeff_rate_est_lvl 0) prices the luma coeff RATE in
                 // the RD compare with the fast per-txb approximation from C
                 // `tx_type_search` (product_coding_loop.c:4976), NOT the real
@@ -4208,40 +4499,57 @@ pub(crate) fn evaluate_leaf(
                 // single-candidate decision is rate-invariant).
                 let txb_bits = if cfg.coeff_rate_est_lvl == 0 && end_depth > 0 {
                     let th = (txw * txh) >> 6;
-                    if (out.eob as usize) < th {
-                        6000 + out.eob as u64 * 1000
+                    if (dec_eob as usize) < th {
+                        6000 + dec_eob as u64 * 1000
                     } else {
-                        3000 + out.eob as u64 * 100
+                        3000 + dec_eob as u64 * 100
                     }
                 } else {
-                    out.bits as u64
+                    dec_bits_raw as u64
                 };
                 dep_bits += txb_bits;
-                dep_dist += out.dist;
-                dep_has_coeff |= out.eob > 0;
+                dep_dist += dec_dist;
+                dep_has_coeff |= dec_eob > 0;
                 // tx_update_neighbor_arrays: cul byte over the txb span.
                 let a0 = tx_x / 4;
                 let a1 = (a0 + txw / 4).min(loc_above.len());
                 for v in loc_above[a0..a1].iter_mut() {
-                    *v = out.cul;
+                    *v = dec_cul;
                 }
                 let l0 = tx_y / 4;
                 let l1 = (l0 + txh / 4).min(loc_left.len());
                 for v in loc_left[l0..l1].iter_mut() {
-                    *v = out.cul;
+                    *v = dec_cul;
                 }
                 for r in 0..txh {
                     let dst = (tx_y + r) * w + tx_x;
                     dep_recon[dst..dst + txw].copy_from_slice(&out.recon[r * txw..(r + 1) * txw]);
                 }
-                dep_q.push(out.qcoeff);
-                dep_eob.push(out.eob);
-                dep_cul.push(out.cul);
+                if let Some(o) = &out10 {
+                    for r in 0..txh {
+                        let dst = (tx_y + r) * w + tx_x;
+                        dep_recon10[dst..dst + txw]
+                            .copy_from_slice(&o.recon[r * txw..(r + 1) * txw]);
+                    }
+                }
+
+                // The CODED levels. With the bd10 full-RD active these come from
+                // the 10-bit quantize/RDOQ — which is what C codes, and which
+                // (unlike the level-only re-encode post-pass) carries this
+                // txb's REAL txb_skip/dc_sign contexts into the trellis. Both
+                // forms are the same packed (32-capped) pw*ph layout the
+                // entropy walk re-expands (partition.rs funnel_block_decision).
+                dep_q.push(match out10 {
+                    Some(o) => o.qcoeff,
+                    None => out.qcoeff,
+                });
+                dep_eob.push(dec_eob);
+                dep_cul.push(dec_cul);
                 dep_type.push(txt as u8);
 
                 // C txb loop early exit: current accumulated cost already
                 // above the best depth cost.
-                if rdcost(lambda, dep_bits, dep_dist) > best_cost {
+                if rdcost(lambda3, dep_bits, dep_dist) > best_cost {
                     aborted = true;
                     break;
                 }
@@ -4255,7 +4563,7 @@ pub(crate) fn evaluate_leaf(
                 if cfg.txs_quadrant_sf != 0 && depth > 0 {
                     let normlized = ((txb as u64 + 1) * best_cost) / txbs as u64;
                     let tsb = rates.tx_size[tsz_cat][tsz_ctx][depth as usize] as u64;
-                    let cost_tmp = rdcost(lambda, dep_bits + tsb, dep_dist);
+                    let cost_tmp = rdcost(lambda3, dep_bits + tsb, dep_dist);
                     if cost_tmp * 100 > normlized * cfg.txs_quadrant_sf {
                         aborted = true;
                         break;
@@ -4271,7 +4579,7 @@ pub(crate) fn evaluate_leaf(
             } else {
                 0
             };
-            let cost = rdcost(lambda, dep_bits + tx_size_bits, dep_dist);
+            let cost = rdcost(lambda3, dep_bits + tx_size_bits, dep_dist);
             // Depth 0 never aborts (the abort guard is `depth > 0`), so this
             // is always populated for every candidate that reaches MDS3.
             if depth == 0 {
@@ -4287,6 +4595,7 @@ pub(crate) fn evaluate_leaf(
                 best_txb_cul = dep_cul;
                 best_txb_type = dep_type;
                 best_recon = dep_recon;
+                best_recon10 = core::mem::take(&mut dep_recon10);
                 best_pred = dep_pred;
                 best_coeff_count = dep_eob.iter().map(|&e| e as u32).sum();
                 let _ = dep_has_coeff;
@@ -4303,6 +4612,13 @@ pub(crate) fn evaluate_leaf(
             chroma_eval(fx, cand.uv, cand.uv_delta)
         } else {
             (TxUnitOut::absent(), TxUnitOut::absent())
+        };
+        // bd10 chroma full loop — the decision terms for this candidate.
+        let mut uv_out10 = match (&bd10_rd, has_uv) {
+            (Some(b), true) => Some(chroma_eval10(fx, b, cand.uv, cand.uv_delta)),
+            // !has_uv: C runs NO chroma stage, so every chroma term is exactly
+            // zero at either depth (TxUnitOut::absent()'s contract).
+            _ => None,
         };
         // CfL override state, applied at the mutable-borrow writeback below.
         let mut uv_mode_final = cand.uv;
@@ -4438,7 +4754,26 @@ pub(crate) fn evaluate_leaf(
             // blocks where C has ind_uv_avail == 0, picking CfL where C keeps DC.
             let cfl_uv_follows = ind_uv.is_none();
             let cfl_ind_uv = ind_uv.is_some();
-            let cfl_gate = cfg.cfl_enabled && cfl_would_run && w <= 32 && h <= 32;
+            // The two CfL arms below are 8-BIT ONLY — `cfl_rd_search`, the
+            // non-CfL freq re-run and the chosen-alpha chroma TX all run on u8
+            // pixels with the bd8 lambda. Feeding an 8-bit CfL compare into an
+            // otherwise 10-bit block cost would be silently wrong (the two
+            // costs differ by ~16x in scale), so under the bd10 full-RD the CfL
+            // candidate is simply NOT OFFERED.
+            //
+            // This is a deliberate, VISIBLE gap rather than a silent one: a
+            // block where C picks UV_CFL_PRED stays a mode divergence in the
+            // gate (exactly as it is today — the bd10 re-encode's
+            // `bd10_tree_supported` already rejects UV_CFL_PRED for the same
+            // reason), instead of being decided by a mixed-domain compare.
+            // Measured on the p6 bd10 grid: the chroma complexity detector
+            // never arms on this content (`cfl_would_run` is false on every
+            // block of every gradient/diag cell), so nothing gated here is
+            // affected. Porting the arm at 10 bits is a follow-up; the kernels
+            // it needs (`cfl_luma_subsampling_420_hbd`, `cfl_predict_hbd`)
+            // already exist and are FFI-verified.
+            let cfl_gate =
+                cfg.cfl_enabled && cfl_would_run && w <= 32 && h <= 32 && bd10_rd.is_none();
             if cfl_gate && cfl_uv_follows {
                 // ---- cfl_prediction (product_coding_loop.c:3795) ----
                 // non_cfl_cost = RDCOST(coeff_bits + uv fast rate, dist) over
@@ -4850,7 +5185,24 @@ pub(crate) fn evaluate_leaf(
         }
 
         // ---- svt_aom_full_cost (rd_cost.c:1357) ----
-        let block_has_coeff = best_coeff_count > 0 || u_out.eob > 0 || v_out.eob > 0;
+        // bd10 FULL-RD: the chroma eob/bits/dist that enter the block cost come
+        // from the 10-bit chroma loop when it ran (the luma terms already do,
+        // via `best_bits` / `best_dist`).
+        let (uv_eob10, u_bits10, v_bits10, uv_dist10) = match &uv_out10 {
+            Some((u, v)) => (
+                (u.eob, v.eob),
+                u.bits as u64,
+                v.bits as u64,
+                u.dist + v.dist,
+            ),
+            None => (
+                (u_out.eob, v_out.eob),
+                u_out.bits as u64,
+                v_out.bits as u64,
+                u_out.dist + v_out.dist,
+            ),
+        };
+        let block_has_coeff = best_coeff_count > 0 || uv_eob10.0 > 0 || uv_eob10.1 > 0;
         // C: 4x4 codes no tx_size symbol (block_signals_txsize == bsize > 4x4).
         let tx_size_bits_final = if block_signals_txsize(w, h) {
             rates.tx_size[tsz_cat][tsz_ctx][best_depth as usize] as u64
@@ -4881,7 +5233,7 @@ pub(crate) fn evaluate_leaf(
         // clean (6246) undercharged the H candidate ~4500 and flipped the
         // leaf y_mode from C's DC to our H.
         let (u_bits, v_bits) = if cfg.real_coeff_ctx {
-            (u_out.bits as u64, v_out.bits as u64)
+            (u_bits10, v_bits10)
         } else {
             let lvl = cfg.coeff_rate_est_lvl;
             let th = ((cw * chh) >> 6) as u16;
@@ -4898,22 +5250,22 @@ pub(crate) fn evaluate_leaf(
             let mut cr_leak = 0u64;
             let mut need_full = false;
             // CB branch of skip_chroma_rate_est (checked first).
-            if u_out.eob < th || lvl == 0 {
-                cb_leak = approx(u_out.eob);
+            if uv_eob10.0 < th || lvl == 0 {
+                cb_leak = approx(uv_eob10.0);
             } else {
                 need_full = true; // lvl-2, cb_eob >= th -> return false (nothing leaked)
             }
             // CR branch — only reached when CB didn't already force full.
             if !need_full {
-                if v_out.eob < th || lvl == 0 {
-                    cr_leak = approx(v_out.eob);
+                if uv_eob10.1 < th || lvl == 0 {
+                    cr_leak = approx(uv_eob10.1);
                 } else {
                     need_full = true; // lvl-2, cr_eob >= th -> return false (CB leak stays)
                 }
             }
             if need_full {
                 // Caller runs the full estimate and ADDS it to the accumulator.
-                (cb_leak + u_out.bits as u64, cr_leak + v_out.bits as u64)
+                (cb_leak + u_bits10, cr_leak + v_bits10)
             } else {
                 (cb_leak, cr_leak)
             }
@@ -4923,10 +5275,10 @@ pub(crate) fn evaluate_leaf(
         } else {
             rates.skip[skip_ctx][1] as u64 + tx_size_bits_final
         };
-        let dist = best_dist + u_out.dist + v_out.dist;
+        let dist = best_dist + uv_dist10;
         // fcr_final == cand.fcr unless CfL was selected above (then the
         // UV_CFL_PRED mode + alpha rate replaces the non-CFL uv fast rate).
-        let full = rdcost(lambda, cand.flr + fcr_final + coeff_rate, dist);
+        let full = rdcost(lambda3, cand.flr + fcr_final + coeff_rate, dist);
         #[cfg(feature = "std")]
         if std::env::var_os("SVTAV1_CANDDBG").is_some()
             && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
@@ -4968,14 +5320,45 @@ pub(crate) fn evaluate_leaf(
         cand.y_recon_d0 = d0_recon;
         cand.y_bits = best_bits;
         cand.y_dist = best_dist;
-        cand.u_q = u_out.qcoeff;
-        cand.v_q = v_out.qcoeff;
-        cand.u_eob = u_out.eob;
-        cand.v_eob = v_out.eob;
-        cand.u_cul = u_out.cul;
-        cand.v_cul = v_out.cul;
+        // Chroma coded levels / eobs / neighbour culs — 10-bit when the bd10
+        // chroma full loop ran, for the same reason as luma above.
+        match &uv_out10 {
+            Some((u10, v10)) => {
+                cand.u_q = u10.qcoeff.clone();
+                cand.v_q = v10.qcoeff.clone();
+                cand.u_eob = u10.eob;
+                cand.v_eob = v10.eob;
+                cand.u_cul = u10.cul;
+                cand.v_cul = v10.cul;
+                // The stored u8 chroma recon must REPRESENT the coded levels,
+                // because the post-filter searches (CDEF / Wiener-LR) read it.
+                // At bd10 the true recon is 10-bit and those searches are still
+                // 8-bit (the open FH axis), so the u8 proxy is the truncated
+                // 10-bit recon — exactly the convention the level-only chroma
+                // re-encode post-pass established (`bd10_reencode_chroma_plane`
+                // returns `recon10 >> (bd - 8)` and overwrites chroma_dec with
+                // it). Keeping the u8-quantizer recon here instead would leave
+                // the recon inconsistent with the levels actually coded.
+                let sh = (frame.bit_depth - 8) as u32;
+                cand.u_recon = u10.recon.iter().map(|&s| (s >> sh).min(255) as u8).collect();
+                cand.v_recon = v10.recon.iter().map(|&s| (s >> sh).min(255) as u8).collect();
+            }
+            None => {
+                cand.u_q = u_out.qcoeff;
+                cand.v_q = v_out.qcoeff;
+                cand.u_eob = u_out.eob;
+                cand.v_eob = v_out.eob;
+                cand.u_cul = u_out.cul;
+                cand.v_cul = v_out.cul;
+            }
+        }
         cand.u_recon = u_out.recon;
         cand.v_recon = v_out.recon;
+        if let Some((u10, v10)) = uv_out10.take() {
+            cand.u_recon10 = u10.recon;
+            cand.v_recon10 = v10.recon;
+        }
+        cand.y_recon10 = core::mem::take(&mut best_recon10);
         cand.block_has_coeff = block_has_coeff;
         // [SVT_HDR_MODE] alt-ssim-tuning: the parallel SSIM full cost —
         // same lambda and total rate, block-SSIM distortion on the FINAL
@@ -5098,6 +5481,36 @@ pub(crate) fn evaluate_leaf(
     // produces the same recon. eff-M9 winners are DC-family / tx_depth 0 / DCT
     // (no directional/fi/CfL — angular_level 4, filter_intra off), all handled
     // by predict_unit_hbd + tx_unit_hbd. Empty on the u8 path.
+    // With the bd10 FULL-RD active the winner's 10-bit recon already exists —
+    // it is the winning tx DEPTH's recon from the MDS3 loop, so it is correct
+    // for tx_depth > 0 too. The re-predict below is the MDS0-only (eff-M9)
+    // path, which is depth-0 by construction there.
+    if !cands[win].y_recon10.is_empty() {
+        let wr = core::mem::take(&mut cands[win].y_recon10);
+        let (wu, wv) = (
+            core::mem::take(&mut cands[win].u_recon10),
+            core::mem::take(&mut cands[win].v_recon10),
+        );
+        return LeafEval {
+            abs_x,
+            abs_y,
+            w,
+            h,
+            has_uv,
+            ccx,
+            ccy,
+            cw,
+            chh,
+            win: cands.swap_remove(win),
+            gate_y,
+            gate_u,
+            gate_v,
+            psq_resid,
+            win_recon10: wr,
+            win_u_recon10: wu,
+            win_v_recon10: wv,
+        };
+    }
     let win_recon10 = match fx.y_recon10.as_deref() {
         Some(canvas10) => {
             let wc = &cands[win];
@@ -5141,6 +5554,8 @@ pub(crate) fn evaluate_leaf(
         gate_v,
         psq_resid,
         win_recon10,
+        win_u_recon10: Vec::new(),
+        win_v_recon10: Vec::new(),
     }
 }
 
@@ -5197,6 +5612,21 @@ pub(crate) fn commit_leaf(
             let dst = (ccy + r) * fx.c_stride + ccx;
             fx.u_recon[dst..dst + cwr].copy_from_slice(&cand.u_recon[r * cw..r * cw + cwr]);
             fx.v_recon[dst..dst + cwr].copy_from_slice(&cand.v_recon[r * cw..r * cw + cwr]);
+        }
+        // bd10 FULL-RD chroma canvases — the chroma twin of the luma write
+        // above, closing the same sequential coupling for chroma prediction.
+        if !ev.win_u_recon10.is_empty() {
+            let c_stride = fx.c_stride;
+            for (canvas, src) in [
+                (fx.u_recon10.as_deref_mut(), &ev.win_u_recon10),
+                (fx.v_recon10.as_deref_mut(), &ev.win_v_recon10),
+            ] {
+                let canvas = canvas.expect("bd10 full-RD requires both chroma canvases");
+                for r in 0..chh {
+                    let dst = (ccy + r) * c_stride + ccx;
+                    canvas[dst..dst + cwr].copy_from_slice(&src[r * cw..r * cw + cwr]);
+                }
+            }
         }
     }
     let skip = !cand.block_has_coeff;
@@ -5569,6 +5999,158 @@ fn predict_unit_overlay(
     }
 }
 
+/// bd10 twin of [`predict_unit_overlay`]: predict one deeper-depth txb from
+/// the TRUE 10-bit canvas (frame recon outside the block, this depth's 10-bit
+/// recon inside).
+///
+/// Same geometry, same availability, same canvas splice as the u8 form — only
+/// the pixel type and the no-neighbour flat fills change, which follow C's
+/// `build_intra_predictors_high` (enc_intra_prediction.c:261-374):
+/// `{129, 127, 128}` become `{base+1, base-1, base}` with `base = 128 <<
+/// (bd - 8)`. That is the same substitution `dr_predict_hbd` already makes.
+#[allow(clippy::too_many_arguments)]
+fn predict_unit_overlay_hbd(
+    y_recon10: &[u16],
+    y_stride: usize,
+    blk_x: usize,
+    blk_y: usize,
+    dep_recon10: &[u16],
+    blk_w: usize,
+    blk_h: usize,
+    tx_x: usize,
+    tx_y: usize,
+    txw: usize,
+    txh: usize,
+    mode: u8,
+    delta: i8,
+    fi: u8,
+    geom: &UnitGeom,
+    edge_filter: bool,
+    filt_type: i32,
+    dst: &mut [u16],
+    bd: u8,
+) {
+    use svtav1_dsp::hbd as hp;
+    let base: u16 = 128u16 << (bd - 8);
+    if matches!(mode, 3..=8) || (matches!(mode, 1 | 2) && delta != 0) {
+        let p_angle = crate::intra_edge::MODE_TO_ANGLE_MAP[mode as usize] + delta as i32 * 3;
+        debug_assert!(fi == FI_NONE);
+        let g = crate::intra_edge::DrGeom {
+            px: blk_x + tx_x,
+            py: blk_y + tx_y,
+            txw,
+            txh,
+            mi_row: geom.mi_row,
+            mi_col: geom.mi_col,
+            bw_px: geom.bw_px,
+            bh_px: geom.bh_px,
+            row_off: tx_y / 4,
+            col_off: tx_x / 4,
+            ss: 0,
+            frame_w: geom.frame_w,
+            frame_h: geom.frame_h,
+        };
+        crate::intra_edge::dr_predict_hbd(
+            |x, y| {
+                if x >= blk_x && x < blk_x + blk_w && y >= blk_y && y < blk_y + blk_h {
+                    dep_recon10[(y - blk_y) * blk_w + (x - blk_x)]
+                } else {
+                    y_recon10[y * y_stride + x]
+                }
+            },
+            &g,
+            p_angle,
+            edge_filter,
+            filt_type,
+            svtav1_types::partition::PartitionType::None,
+            dst,
+            bd,
+        );
+        return;
+    }
+    let cw_dim = txw + 1;
+    let ch_dim = txh + 1;
+    let abs_tx_x = blk_x + tx_x;
+    let abs_tx_y = blk_y + tx_y;
+    let mut canvas = vec![0u16; cw_dim * ch_dim];
+    let sample = |x: isize, y: isize| -> u16 {
+        if x < 0 || y < 0 {
+            return base; // never read: the extraction below handles borders
+        }
+        let (x, y) = (x as usize, y as usize);
+        let in_blk_x = x >= blk_x && x < blk_x + blk_w;
+        let in_blk_y = y >= blk_y && y < blk_y + blk_h;
+        if in_blk_x && in_blk_y {
+            dep_recon10[(y - blk_y) * blk_w + (x - blk_x)]
+        } else {
+            let row_len = y_stride;
+            let idx = y * y_stride + x.min(row_len - 1);
+            if idx < y_recon10.len() {
+                y_recon10[idx]
+            } else {
+                y_recon10[y_recon10.len() - row_len + x.min(row_len - 1)]
+            }
+        }
+    };
+    for cx in 0..cw_dim {
+        canvas[cx] = sample(abs_tx_x as isize + cx as isize - 1, abs_tx_y as isize - 1);
+    }
+    for cy in 1..ch_dim {
+        canvas[cy * cw_dim] = sample(abs_tx_x as isize - 1, abs_tx_y as isize + cy as isize - 1);
+    }
+    let has_above = abs_tx_y > 0;
+    let has_left = abs_tx_x > 0;
+    let above: Vec<u16> = if has_above {
+        canvas[1..cw_dim].to_vec()
+    } else {
+        vec![if has_left { canvas[cw_dim] } else { base - 1 }; txw]
+    };
+    let left: Vec<u16> = if has_left {
+        (1..ch_dim).map(|cy| canvas[cy * cw_dim]).collect()
+    } else {
+        vec![if has_above { canvas[1] } else { base + 1 }; txh]
+    };
+    let top_left = if has_above && has_left {
+        canvas[0]
+    } else if has_above {
+        canvas[1]
+    } else if has_left {
+        canvas[cw_dim]
+    } else {
+        base
+    };
+    if fi != FI_NONE {
+        let mut above_c = vec![0u16; txw + 1];
+        above_c[0] = top_left;
+        above_c[1..].copy_from_slice(&above);
+        hp::predict_filter_intra_hbd(dst, txw, &above_c, &left, txw, txh, fi, bd);
+        return;
+    }
+    match mode {
+        0 => hp::predict_dc_hbd(dst, txw, &above, &left, txw, txh, has_above, has_left, bd),
+        1 => hp::predict_v_hbd(dst, txw, &above, txw, txh),
+        2 => hp::predict_h_hbd(dst, txw, &left, txw, txh),
+        9 => hp::predict_smooth_hbd(dst, txw, &above, &left, txw, txh),
+        10 => hp::predict_smooth_v_hbd(dst, txw, &above, &left, txw, txh),
+        11 => hp::predict_smooth_h_hbd(dst, txw, &above, &left, txw, txh),
+        12 => hp::predict_paeth_hbd(dst, txw, &above, &left, top_left, txw, txh),
+        m => unreachable!("funnel bd10 overlay mode {m}"),
+    }
+}
+
+/// The 10-bit inputs one [`txt_search`] txb needs to run at true depth.
+struct Bd10Txb<'a> {
+    /// Block-local 10-bit source and this txb's origin inside it.
+    src10: &'a [u16],
+    src10_stride: usize,
+    src10_off: usize,
+    /// This txb's 10-bit prediction (txw*txh at stride txw).
+    pred10: &'a [u16],
+    qt: &'a QuantTable,
+    lambda: u64,
+    bd: u8,
+}
+
 /// txb skip / dc sign contexts from TX-local (block-span) overlay arrays.
 /// `spans` are the block's above/left coeff-byte slices (4x4 units);
 /// txb at (tx_x, tx_y) within the block, `tx` square dims.
@@ -5609,7 +6191,8 @@ fn txt_search(
     rates: &MdRates,
     do_rdoq: bool,
     lambda: u64,
-) -> (TxUnitOut, usize) {
+    bd10: Option<&Bd10Txb<'_>>,
+) -> (TxUnitOut, Option<TxUnitOutHbd>, usize) {
     let c_tx = cc::tx_size_from_dims(w, h);
     // search_dct_dct_only (product_coding_loop.c:4601): txt disabled
     // (eff-M9 txt_level 0 -> !mds_do_txt), dims > 32, a single-type ext
@@ -5664,6 +6247,10 @@ fn txt_search(
     } as i64;
 
     let mut best: Option<TxUnitOut> = None;
+    // The bd10 twin of the SELECTED type (not of the u8-best type): when the
+    // bd10 context is present the winner is chosen by the 10-bit cost, so both
+    // outputs must come from the same tx_type.
+    let mut best10: Option<TxUnitOutHbd> = None;
     let mut best_type = cc::DCT_DCT;
     let mut best_cost = u64::MAX;
     let mut dct_cost = u64::MAX;
@@ -5708,11 +6295,58 @@ fn txt_search(
                 do_rdoq,
                 true, // MDS3 spatial dist
             );
+            // bd10 FULL-RD (task #94): the same TX unit at true depth. Every
+            // gate around it (group order, ext-tx set, the rate-cost th, the
+            // SATD early exit, the non-signalable-eob rule) is bit-depth
+            // INDEPENDENT — only the residual, the quant table, the lambda and
+            // the distortion move — so the search structure is shared and only
+            // the COST source switches.
+            let out10 = bd10.map(|b| {
+                tx_unit_hbd(
+                    b.src10,
+                    b.src10_stride,
+                    b.src10_off,
+                    b.pred10,
+                    w,
+                    0,
+                    w,
+                    h,
+                    tx_type,
+                    0,
+                    txb_skip_ctx,
+                    dc_sign_ctx,
+                    b.qt,
+                    frame.rdoq_level,
+                    b.lambda,
+                    frame.sharpness,
+                    rates,
+                    do_rdoq,
+                    b.bd,
+                    b.qt.qm_level,
+                    Some(&TxRdArgs {
+                        spatial_dist: true, // MDS3
+                        intra_dir,
+                        coeff_rate_est_lvl: frame.cfg.coeff_rate_est_lvl,
+                        tx_bias: frame.tx_bias,
+                    }),
+                )
+            });
             // SATD early exit between transform and quantize in C; we
             // apply it post-hoc on the transform coefficients via a
             // dedicated pass only when the th is armed.
             if satd_th > 0 {
-                let satd = txb_coeff_satd(src, src_stride, src_off, pred, w, h, tx_type);
+                let satd = match bd10 {
+                    Some(b) => txb_coeff_satd_hbd(
+                        b.src10,
+                        b.src10_stride,
+                        b.src10_off,
+                        b.pred10,
+                        w,
+                        h,
+                        tx_type,
+                    ),
+                    None => txb_coeff_satd(src, src_stride, src_off, pred, w, h, tx_type),
+                };
                 if satd < best_satd {
                     best_satd = satd;
                 } else if (satd - best_satd) * 100 > best_satd * satd_th {
@@ -5720,10 +6354,14 @@ fn txt_search(
                 }
             }
             // A non-DCT type with no coefficients is not signalable.
-            if out.eob == 0 && tx_type != cc::DCT_DCT {
+            let dec_eob = out10.as_ref().map_or(out.eob, |o| o.eob);
+            if dec_eob == 0 && tx_type != cc::DCT_DCT {
                 continue;
             }
-            let cost = rdcost(lambda, out.bits as u64, out.dist);
+            let cost = match (&out10, bd10) {
+                (Some(o), Some(b)) => rdcost(b.lambda, o.bits as u64, o.dist),
+                _ => rdcost(lambda, out.bits as u64, out.dist),
+            };
             if cost < best_cost {
                 best_cost = cost;
                 best_type = tx_type;
@@ -5731,6 +6369,7 @@ fn txt_search(
                     dct_cost = cost;
                 }
                 best = Some(out);
+                best10 = out10;
             } else if tx_type == cc::DCT_DCT {
                 dct_cost = cost;
             }
@@ -5739,7 +6378,43 @@ fn txt_search(
             }
         }
     }
-    (best.expect("DCT_DCT always evaluated"), best_type)
+    (best.expect("DCT_DCT always evaluated"), best10, best_type)
+}
+
+/// bd10 twin of [`txb_coeff_satd`] — the forward-transform coefficient SATD on
+/// the 10-bit residual. The transform is bit-depth-independent; only the
+/// residual's source/prediction type changes.
+fn txb_coeff_satd_hbd(
+    src: &[u16],
+    src_stride: usize,
+    src_off: usize,
+    pred: &[u16],
+    w: usize,
+    h: usize,
+    tx_type: usize,
+) -> i64 {
+    let n = w * h;
+    let mut residual = vec![0i32; n];
+    for r in 0..h {
+        let srow = src_off + r * src_stride;
+        let prow = r * w;
+        for c in 0..w {
+            residual[r * w + c] = i32::from(src[srow + c]) - i32::from(pred[prow + c]);
+        }
+    }
+    let mut coeffs = vec![0i32; n];
+    svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
+        &residual,
+        &mut coeffs,
+        w,
+        rs_tx_size(w, h),
+        TX_TYPE_FROM_C[tx_type],
+    );
+    let mut satd: i64 = 0;
+    for &c in &coeffs {
+        satd += c.unsigned_abs() as i64;
+    }
+    satd
 }
 
 /// SATD of the forward-transform coefficients (C computes it inline on

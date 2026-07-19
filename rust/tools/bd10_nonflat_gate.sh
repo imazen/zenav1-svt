@@ -45,6 +45,66 @@ failed=()
 # bit-depth-dependent partition/mode RD decision C makes differently at bd10 —
 # see docs/bd10-port-map.md "true bd10 MD"); those cells are NOT gated here.
 CELLS=(
+  # ---------------------------------------------------------------------
+  # bd10 FULL-RD mode funnel (task #94, MODE axis — this landing). Below
+  # eff-M9 `nic_counts` is (6,6,6), so the coded mode is the MDS1/MDS3
+  # full-RD winner, NOT the MDS0 fast survivor. Running those stages at 8
+  # bits picked C's *bd8* winner; they now run at true 10 bits (10-bit
+  # prediction from the bd10 canvas, 10-bit residual/quant/RDOQ, the bd10
+  # quant tables and full_lambda_md[EB_10_BIT_MD]), luma AND chroma, so the
+  # joint block RD is entirely 10-bit.
+  #
+  # p7/p8 were NEVER gated before (the gate jumped p6 -> p9) and were 12/40
+  # byte-exact; they are now 40/40 — 28 cells newly closed, MEASURED by
+  # re-running this exact sweep with the change stashed. All 40 are gated
+  # here so the whole p7..p13 band is covered rather than sampled.
+  "gradient 64 64 12 7"
+  "gradient 64 64 20 7"
+  "gradient 64 64 32 7"
+  "gradient 64 64 40 7"
+  "gradient 64 64 55 7"
+  "gradient 128 128 12 7"
+  "gradient 128 128 20 7"
+  "gradient 128 128 32 7"
+  "gradient 128 128 40 7"
+  "gradient 128 128 55 7"
+  "diag 64 64 12 7"
+  "diag 64 64 20 7"
+  "diag 64 64 32 7"
+  "diag 64 64 40 7"
+  "diag 64 64 55 7"
+  "diag 128 128 12 7"
+  "diag 128 128 20 7"
+  "diag 128 128 32 7"
+  "diag 128 128 40 7"
+  "diag 128 128 55 7"
+  "gradient 64 64 12 8"
+  "gradient 64 64 20 8"
+  "gradient 64 64 32 8"
+  "gradient 64 64 40 8"
+  "gradient 64 64 55 8"
+  "gradient 128 128 12 8"
+  "gradient 128 128 20 8"
+  "gradient 128 128 32 8"
+  "gradient 128 128 40 8"
+  "gradient 128 128 55 8"
+  "diag 64 64 12 8"
+  "diag 64 64 20 8"
+  "diag 64 64 32 8"
+  "diag 64 64 40 8"
+  "diag 64 64 55 8"
+  "diag 128 128 12 8"
+  "diag 128 128 20 8"
+  "diag 128 128 32 8"
+  "diag 128 128 40 8"
+  "diag 128 128 55 8"
+  # p6, newly closed by the same change (the p6 MODE class went from 19
+  # DIFF cells to 7; the rest are now COEFF/FH, documented in
+  # docs/bd10-port-map.md). Each was a mode/uv flip before and byte-matches
+  # after (verified by `cmp` below).
+  "gradient 64 64 12 6"
+  "diag 64 64 12 6"
+  "diag 128 128 12 6"
   "gradient 64 64 40 13"
   "gradient 64 64 40 10"
   "gradient 64 64 42 10"
