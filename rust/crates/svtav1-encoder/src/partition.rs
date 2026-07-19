@@ -59,6 +59,10 @@ pub struct PartitionSearchConfig {
     /// tile row (unchanged pre-#86 behavior — the frame's top row IS the
     /// only tile's top row).
     pub tile_top_px: usize,
+    /// Task #96: the X-origin (luma pixel domain) of the CURRENT TILE's
+    /// own left column — the column analogue of [`Self::tile_top_px`].
+    /// 0 = single tile column (unchanged pre-#96 behavior).
+    pub tile_left_px: usize,
     /// C `seq_header.sb_mi_size` — superblock size in MI (4px) units, 16 at
     /// SB64 and 32 at SB128 (task #91). Feeds the intra availability tables
     /// (`intra_edge::has_top_right` / `has_bottom_left`), which index blocks
@@ -82,6 +86,7 @@ impl PartitionSearchConfig {
             min_block_dim: MIN_BLOCK_SIZE,
             c_quant: None,
             tile_top_px: 0,
+            tile_left_px: 0,
             sb_mi_size: 16,
         }
     }
@@ -99,6 +104,7 @@ impl PartitionSearchConfig {
             min_block_dim: MIN_BLOCK_SIZE,
             c_quant: None,
             tile_top_px: 0,
+            tile_left_px: 0,
             sb_mi_size: 16,
         }
     }
@@ -201,7 +207,7 @@ pub(crate) fn extract_neighbors(
     width: usize,
     height: usize,
 ) -> (alloc::vec::Vec<u8>, alloc::vec::Vec<u8>, u8, bool, bool) {
-    extract_neighbors_tiled(recon, stride, abs_x, abs_y, width, height, 0)
+    extract_neighbors_tiled(recon, stride, abs_x, abs_y, width, height, 0, 0)
 }
 
 /// Extract prediction neighbors for a block at absolute position
@@ -234,6 +240,7 @@ pub(crate) fn extract_neighbors_tiled(
     width: usize,
     height: usize,
     tile_top: usize,
+    tile_left: usize,
 ) -> (alloc::vec::Vec<u8>, alloc::vec::Vec<u8>, u8, bool, bool) {
     // Task #86: `tile_top` is this plane's tile-row origin (0 = single
     // tile row / unchanged pre-#86 behavior). AV1 intra prediction never
@@ -245,7 +252,11 @@ pub(crate) fn extract_neighbors_tiled(
     // desync a conforming decoder — it reconstructs each tile
     // independently and has no such pixels to read either.
     let has_above = abs_y > tile_top;
-    let has_left = abs_x > 0;
+    // Task #96: same rule on the column axis — a block at a TILE's own
+    // left column has no "left" neighbour even when it is not the frame's
+    // left column. `tile_left` is 0 for a single-column frame, so this is
+    // byte-identical to the previous `abs_x > 0` there.
+    let has_left = abs_x > tile_left;
 
     // C left_ref[0] / above_ref[0]: the first sample of each neighbor edge.
     let left_ref0 = if has_left {
@@ -1798,10 +1809,11 @@ pub(crate) fn encode_fixed_tree(
 /// runs RDOQ on chroma too when enc-dec is bypassed (`md_stage_3` clears
 /// `rdoq_ctrls.skip_uv`, product_coding_loop.c) — plane_type 1 selects the
 /// chroma cost tables and `plane_rd_mult` 13.
-/// `tile_top` is the CHROMA-plane pixel row where the current tile
-/// starts (0 = single tile row). Callers pass the luma tile-row origin
-/// halved — exact since tile rows are always 64-luma-px (SB-aligned)
-/// multiples, and 4:2:0 chroma is exactly half resolution vertically.
+/// `tile_top` / `tile_left` are the CHROMA-plane pixel row/column where
+/// the current tile starts (0/0 = single tile). Callers pass the luma
+/// tile origin halved — exact since tile boundaries are always 64-luma-px
+/// (SB-aligned) multiples and 4:2:0 chroma is exactly half resolution on
+/// both axes.
 #[allow(clippy::too_many_arguments)]
 pub fn encode_chroma_block_dc(
     src: &[u8],
@@ -1815,9 +1827,10 @@ pub fn encode_chroma_block_dc(
     cq: Option<&crate::quant::CodingQuantCfg>,
     qm_level: u8,
     tile_top: usize,
+    tile_left: usize,
 ) -> (alloc::vec::Vec<i32>, u16) {
     let (above, left, _top_left, has_above, has_left) =
-        extract_neighbors_tiled(recon, stride, cx, cy, cw, ch, tile_top);
+        extract_neighbors_tiled(recon, stride, cx, cy, cw, ch, tile_top, tile_left);
 
     let mut pred = alloc::vec![0u8; cw * ch];
     svtav1_dsp::intra_pred::predict_dc(&mut pred, cw, &above, &left, cw, ch, has_above, has_left);
@@ -1874,7 +1887,16 @@ fn encode_with_neighbors(
     dc_only: bool,
 ) -> PartitionResult {
     let (above, left, top_left, has_above, has_left) =
-        extract_neighbors_tiled(recon, recon_stride, abs_x, abs_y, width, height, config.tile_top_px);
+        extract_neighbors_tiled(
+            recon,
+            recon_stride,
+            abs_x,
+            abs_y,
+            width,
+            height,
+            config.tile_top_px,
+            config.tile_left_px,
+        );
     encode_single_block(
         src,
         src_stride,
@@ -2563,7 +2585,7 @@ mod tests {
             }
         }
         let (above, left, tl, has_above, has_left) =
-            extract_neighbors_tiled(&frame, w, 0, 64, 8, 8, 64);
+            extract_neighbors_tiled(&frame, w, 0, 64, 8, 8, 64, 0);
         assert!(!has_above, "row 64 IS this tile's own top row");
         assert!(!has_left);
         // Unavailable-above fallback: left_ref[0] if left exists, else 127
@@ -2588,7 +2610,7 @@ mod tests {
         // fallback is unambiguous.
         frame[64 * w + 3] = 200;
         let (above, _left, tl, has_above, has_left) =
-            extract_neighbors_tiled(&frame, w, 4, 64, 8, 8, 64);
+            extract_neighbors_tiled(&frame, w, 4, 64, 8, 8, 64, 0);
         assert!(!has_above);
         assert!(has_left);
         assert!(
@@ -2609,9 +2631,49 @@ mod tests {
             frame[71 * w + c] = 77;
         }
         let (above, _left, _tl, has_above, _has_left) =
-            extract_neighbors_tiled(&frame, w, 0, 72, 8, 8, 64);
+            extract_neighbors_tiled(&frame, w, 0, 72, 8, 8, 64, 0);
         assert!(has_above, "row 72 is inside the tile (top row = 64)");
         assert!(above.iter().all(|&v| v == 77));
+    }
+
+    /// Task #96, the COLUMN mirror of
+    /// `extract_neighbors_tiled_top_row_has_no_above`: a block at a tile's
+    /// own LEFT column has no "left" neighbour even though `abs_x > 0`.
+    /// Reading real pixels across a tile-column boundary would desync a
+    /// conforming decoder, which reconstructs each tile independently.
+    #[test]
+    fn extract_neighbors_tiled_left_col_has_no_left() {
+        let w = 128;
+        let h = 128;
+        let mut frame = vec![0u8; w * h];
+        // Fill the column immediately left of the tile boundary with a
+        // distinctive value; if it leaks in, the assertions below fail.
+        for r in 0..h {
+            frame[r * w + 63] = 200;
+            frame[r * w + 64] = 55;
+        }
+        // Block at (64, 0) where the tile's left column IS 64.
+        let (_above, left, _tl, _has_above, has_left) =
+            extract_neighbors_tiled(&frame, w, 64, 0, 8, 8, 0, 64);
+        assert!(!has_left, "col 64 IS this tile's own left column");
+        assert!(
+            left.iter().all(|&v| v != 200),
+            "the neighbouring tile's column must not leak in: {left:?}"
+        );
+
+        // One SB further right, INSIDE the same tile: left is available
+        // again and reads the real recon.
+        let (_a2, left2, _tl2, _ha2, has_left2) =
+            extract_neighbors_tiled(&frame, w, 72, 0, 8, 8, 0, 64);
+        assert!(has_left2, "col 72 is interior to the tile (left col = 64)");
+        assert!(left2.iter().all(|&v| v == 0), "left2 = {left2:?}");
+
+        // tile_left = 0 (single tile column) is the pre-#96 behaviour:
+        // abs_x > 0 alone decides, so col 64 DOES see its left neighbour.
+        let (_a3, left3, _tl3, _ha3, has_left3) =
+            extract_neighbors_tiled(&frame, w, 64, 0, 8, 8, 0, 0);
+        assert!(has_left3);
+        assert!(left3.iter().all(|&v| v == 200));
     }
 
     #[test]

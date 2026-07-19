@@ -788,8 +788,7 @@ impl EncodePipeline {
         );
         let tile_rows_log2 = tile_grid.tile_rows_log2;
         let tile_cols_log2 = tile_grid.tile_cols_log2;
-        let tile_rows = tile_grid.tile_rows;
-        let rows_per_tile = tile_grid.tile_height_sb;
+
 
         // [SVT_HDR_MODE] fork chroma-q: derive the FH per-plane deltas and
         // the plane qindexes the quantizer must use. Mainline: all zero.
@@ -934,8 +933,7 @@ impl EncodePipeline {
             sb_size,
             sb_cols,
             sb_rows,
-            rows_per_tile,
-            tile_rows,
+            tile_grid,
             base_qindex,
             qindex_u,
             qindex_v,
@@ -970,17 +968,32 @@ impl EncodePipeline {
         );
 
         let mut per_tile_decisions: Vec<Vec<crate::partition::BlockDecision>> = Vec::new();
-        let mut all_trees: Vec<crate::partition::PartitionTree> = Vec::new();
+        // Task #96: `all_trees` is indexed by RASTER sb_idx
+        // (`sb_row * sb_cols + sb_col`) by every consumer — the entropy
+        // walk, the CDEF/LR re-walks, the deblock geometry pass. Tile
+        // order equals raster order only while tiles are full-width row
+        // bands; with tile COLUMNS it does not, so each tile's trees are
+        // placed at their raster positions instead of appended.
+        let mut tree_slots: Vec<Option<crate::partition::PartitionTree>> =
+            (0..sb_cols * sb_rows).map(|_| None).collect();
 
         // Merge tile recons into frame buffer and update MV map
         for (tile_idx, (tile_recon, tile_decisions, tile_trees)) in tile_recons.iter().enumerate() {
             per_tile_decisions.push(tile_decisions.clone());
-            all_trees.extend_from_slice(tile_trees);
-            let tile_sb_row_start = tile_idx * rows_per_tile;
-            let tile_sb_row_end = ((tile_idx + 1) * rows_per_tile).min(sb_rows);
+            let (tile_sb_row_start, tile_sb_row_end) =
+                tile_grid.row_span(tile_idx / tile_grid.tile_cols);
+            let (tile_sb_col_start, tile_sb_col_end) =
+                tile_grid.col_span(tile_idx % tile_grid.tile_cols);
+            let mut tree_k = 0usize;
+            for sb_row in tile_sb_row_start..tile_sb_row_end {
+                for sb_col in tile_sb_col_start..tile_sb_col_end {
+                    tree_slots[sb_row * sb_cols + sb_col] = Some(tile_trees[tree_k].clone());
+                    tree_k += 1;
+                }
+            }
             let mut offset = 0;
             for sb_row in tile_sb_row_start..tile_sb_row_end {
-                for sb_col in 0..sb_cols {
+                for sb_col in tile_sb_col_start..tile_sb_col_end {
                     let x0 = sb_col * sb_size;
                     let y0 = sb_row * sb_size;
                     let cur_w = sb_size.min(w - x0);
@@ -1022,6 +1035,10 @@ impl EncodePipeline {
                 }
             }
         }
+        let mut all_trees: Vec<crate::partition::PartitionTree> = tree_slots
+            .into_iter()
+            .map(|t| t.expect("every SB is covered by exactly one tile"))
+            .collect();
 
         // Step 4c: bd10 LUMA re-encode (task #94, the u16 MD path). The u8
         // funnel above produced C's partition/mode/tx decisions (RD is
@@ -1294,10 +1311,17 @@ impl EncodePipeline {
             // coder starts (`reset_entropy_coding_picture`,
             // ec_process.c:72-117) — mirrored here by constructing fresh
             // writer/frame_ctx/coeff_fc/ectx/lr_refs per tile_idx.
-            let mut tile_bitstreams: Vec<Vec<u8>> = Vec::with_capacity(tile_rows);
-            for tile_idx in 0..tile_rows {
-                let tile_sb_row_start = tile_idx * rows_per_tile;
-                let tile_sb_row_end = ((tile_idx + 1) * rows_per_tile).min(sb_rows);
+            //
+            // Task #96: and per tile COLUMN too. The tile group's tile
+            // order is raster over the grid (row-major), which is the
+            // order a decoder consumes the size-prefixed payloads in.
+            let mut tile_bitstreams: Vec<Vec<u8>> =
+                Vec::with_capacity(tile_grid.num_tiles());
+            for tile_idx in 0..tile_grid.num_tiles() {
+                let (tile_sb_row_start, tile_sb_row_end) =
+                    tile_grid.row_span(tile_idx / tile_grid.tile_cols);
+                let (tile_sb_col_start, tile_sb_col_end) =
+                    tile_grid.col_span(tile_idx % tile_grid.tile_cols);
 
                 let mut writer = svtav1_entropy::writer::AomWriter::new(n + 256);
                 // CDF updates enabled — matches the frame header's disable_cdf_update=0
@@ -1315,6 +1339,8 @@ impl EncodePipeline {
                 // availability in tx_size_ctx and (via chroma_pass's
                 // encode_chroma_block_dc calls below) chroma prediction.
                 ectx.tile_top_px = tile_sb_row_start * sb_size;
+                // Task #96: ditto for this tile's own left column.
+                ectx.tile_left_px = tile_sb_col_start * sb_size;
                 // [SVT_HDR_MODE] arm per-SB delta-q: prev starts at the FH base
                 // (C prev_qindex tile-init); uniform plan = every SB at base.
                 if let Some(res) = delta_q_res_signal {
@@ -1339,7 +1365,7 @@ impl EncodePipeline {
                 let mut prev_sb_row = usize::MAX;
 
                 for sb_row in tile_sb_row_start..tile_sb_row_end {
-                    for sb_col in 0..sb_cols {
+                    for sb_col in tile_sb_col_start..tile_sb_col_end {
                         let sb_idx = sb_row * sb_cols + sb_col;
                         let tree = &all_trees[sb_idx];
                         // [SVT_HDR_MODE] per-SB delta-q: the SB's planned qindex
@@ -2163,6 +2189,14 @@ pub(crate) struct EntropyCtx {
     /// y=0. 0 = single tile row (default, set by `EntropyCtx::new`); the
     /// per-tile entropy walk sets it explicitly per tile_idx.
     pub(crate) tile_top_px: usize,
+    /// Task #96: the X-origin (LUMA pixel domain) of the current tile's
+    /// own left column — the column analogue of [`Self::tile_top_px`].
+    /// AV1 intra prediction and every above/left CONTEXT lookup stop at a
+    /// tile boundary in BOTH axes; a block at a tile's own left column has
+    /// no "left" neighbour even when it is not the frame's left column.
+    /// 0 = single tile column (default), which is what every pre-#96 cell
+    /// encodes, so gating on this is byte-neutral there.
+    pub(crate) tile_left_px: usize,
 }
 
 /// C `write_cdef`'s per-superblock state (entropy_coding.c:3986-4017).
@@ -2308,6 +2342,7 @@ impl EntropyCtx {
             delta_q_sb_qindex: 0,
             cdef_sb: None,
             tile_top_px: 0,
+            tile_left_px: 0,
         }
     }
 
@@ -2595,7 +2630,8 @@ impl EntropyCtx {
         let x4 = x / 4;
         let y4 = y / 4;
         let above = y > 0 && x4 < self.above_palette.len() && self.above_palette[x4] > 0;
-        let left = x > 0 && y4 < self.left_palette.len() && self.left_palette[y4] > 0;
+        let left =
+            x > self.tile_left_px && y4 < self.left_palette.len() && self.left_palette[y4] > 0;
         usize::from(above) + usize::from(left)
     }
 
@@ -2606,7 +2642,7 @@ impl EntropyCtx {
     pub(crate) fn filt_type_y(&self, x: usize, y: usize) -> i32 {
         let smooth = |m: u8| matches!(m, 9 | 10 | 11);
         let ab = y > 0 && smooth(self.above_mode[x / 4]);
-        let le = x > 0 && smooth(self.left_mode[y / 4]);
+        let le = x > self.tile_left_px && smooth(self.left_mode[y / 4]);
         i32::from(ab || le)
     }
 
@@ -2616,7 +2652,7 @@ impl EntropyCtx {
     pub(crate) fn filt_type_uv(&self, x: usize, y: usize) -> i32 {
         let smooth = |m: u8| matches!(m, 9 | 10 | 11);
         let ab = y > 0 && smooth(self.above_uv_mode[x / 4]);
-        let le = x > 0 && smooth(self.left_uv_mode[y / 4]);
+        let le = x > self.tile_left_px && smooth(self.left_uv_mode[y / 4]);
         i32::from(ab || le)
     }
 
@@ -2672,7 +2708,7 @@ impl EntropyCtx {
         // this consistent with `extract_neighbors`/`PartitionSearchConfig
         // ::tile_top_px` rather than relying on that coincidence).
         let has_above = y > self.tile_top_px;
-        let has_left = x > 0;
+        let has_left = x > self.tile_left_px;
         let above = (self.above_txfm[x / 4] as usize >= w) as usize;
         let left = (self.left_txfm[y / 4] as usize >= h) as usize;
         match (has_above, has_left) {
@@ -2957,6 +2993,7 @@ fn encode_block_syntax(
     // encode_chroma_block_dc's doc comment). Copied out of `ectx` before
     // the closure below so the closure doesn't need to borrow `ectx` too.
     let chroma_tile_top = ectx.tile_top_px / 2;
+    let chroma_tile_left = ectx.tile_left_px / 2; // task #96, same halving rule
     let chroma_blocks = chroma.as_mut().filter(|_| blk_has_uv).map(|cp| {
         let cw = (decision.width as usize).max(8) / 2;
         let ch = (decision.height as usize).max(8) / 2;
@@ -2977,11 +3014,11 @@ fn encode_block_syntax(
         } else {
             let (u_q, u_eob) = crate::partition::encode_chroma_block_dc(
                 cp.u_src, cp.u_recon, cp.stride, cx, cy, cw, ch, cp.qindex_u, cp.c_quant,
-                cp.qm_u, chroma_tile_top,
+                cp.qm_u, chroma_tile_top, chroma_tile_left,
             );
             let (v_q, v_eob) = crate::partition::encode_chroma_block_dc(
                 cp.v_src, cp.v_recon, cp.stride, cx, cy, cw, ch, cp.qindex_v, cp.c_quant,
-                cp.qm_v, chroma_tile_top,
+                cp.qm_v, chroma_tile_top, chroma_tile_left,
             );
             (u_q, u_eob, v_q, v_eob)
         }
@@ -4543,8 +4580,11 @@ fn encode_tile_rows(
     sb_size: usize,
     sb_cols: usize,
     sb_rows: usize,
-    rows_per_tile: usize,
-    tile_rows: usize,
+    // Task #96: the resolved tile grid — the SAME value the entropy walk
+    // and the frame header use, so the MD search, the coded symbols and
+    // the signalled geometry can never disagree about where the tile
+    // boundaries are.
+    tile_grid: svtav1_entropy::obu::TileGrid,
     base_qindex: u8,
     // Per-plane chroma qindexes (== base_qindex in mainline mode).
     qindex_u: u8,
@@ -4592,8 +4632,11 @@ fn encode_tile_rows(
         Vec<crate::partition::BlockDecision>,
         Vec<crate::partition::PartitionTree>,
     ) {
-        let tile_sb_row_start = tile_idx * rows_per_tile;
-        let tile_sb_row_end = ((tile_idx + 1) * rows_per_tile).min(sb_rows);
+        let (tile_sb_row_start, tile_sb_row_end) =
+            tile_grid.row_span(tile_idx / tile_grid.tile_cols);
+        let (tile_sb_col_start, tile_sb_col_end) =
+            tile_grid.col_span(tile_idx % tile_grid.tile_cols);
+        let tile_sb_cols = tile_sb_col_end - tile_sb_col_start;
 
         let mut tile_recon = Vec::new();
         // PD0_LVL_1 rate tables (presets 6..8), built once per tile on
@@ -4659,6 +4702,7 @@ fn encode_tile_rows(
             // separate, out-of-scope workstream file; this only sets a
             // field on an EntropyCtx pipeline.rs already owns).
             e.tile_top_px = tile_sb_row_start * sb_size;
+            e.tile_left_px = tile_sb_col_start * sb_size; // task #96
             Some(e)
         } else {
             None
@@ -4731,6 +4775,7 @@ fn encode_tile_rows(
             // flags as the real pack or the palette CDF rows drift.
             let mut e = EntropyCtx::new(w / 4, h / 4, true, tile_sc.allow_screen_content_tools);
             e.tile_top_px = tile_sb_row_start * sb_size; // task #86, see fun_ectx above
+            e.tile_left_px = tile_sb_col_start * sb_size; // task #96
             Some(e)
         } else {
             None
@@ -4793,6 +4838,9 @@ fn encode_tile_rows(
         // just because it isn't the frame's own top row (AV1 intra
         // prediction never crosses a tile boundary).
         part_config.tile_top_px = tile_sb_row_start * sb_size;
+        // Task #96: ditto for this tile's own left column — MD prediction
+        // must not read across a tile-COLUMN boundary either.
+        part_config.tile_left_px = tile_sb_col_start * sb_size;
         // C `seq_header.sb_mi_size` (task #91): 16 at SB64 (the struct
         // default, so every pre-SB128 path is byte-identical), 32 at SB128.
         part_config.sb_mi_size = sb_size / 4;
@@ -4816,7 +4864,7 @@ fn encode_tile_rows(
         part_config.c_quant = c_quant.clone();
 
         for sb_row in tile_sb_row_start..tile_sb_row_end {
-            for sb_col in 0..sb_cols {
+            for sb_col in tile_sb_col_start..tile_sb_col_end {
                 let sb_x0 = sb_col * sb_size;
                 let sb_y0 = sb_row * sb_size;
                 let sb_cur_w = sb_size.min(w - sb_x0);
@@ -4987,7 +5035,8 @@ fn encode_tile_rows(
                 // ESTIMATES (candidate cost comparisons), never the
                 // coded bitstream, whose entropy state comes from the
                 // separately-reset `run_entropy_walk`.
-                let local_sb_index = (sb_row - tile_sb_row_start) * sb_cols + sb_col;
+                let local_sb_index = (sb_row - tile_sb_row_start) * tile_sb_cols
+                    + (sb_col - tile_sb_col_start);
                 let chain_base = if funnel_chain {
                     // C `ec_ctx_array[sb]` neighbor rule for the rate-estimation
                     // CDF (enc_dec_process.c:3002-3022). `pic_based_rate_est` is
@@ -4996,8 +5045,9 @@ fn encode_tile_rows(
                     // single-tile SB-aligned frame: left = not tile-left column,
                     // top-right = not tile-top row AND the SB one to the right
                     // exists (so the last column has no top-right).
-                    let left_avail = sb_col > 0;
-                    let topright_avail = sb_row > tile_sb_row_start && sb_col + 1 < sb_cols;
+                    let left_avail = sb_col > tile_sb_col_start;
+                    let topright_avail =
+                        sb_row > tile_sb_row_start && sb_col + 1 < tile_sb_col_end;
                     if left_avail && topright_avail {
                         // both -> copy left, then avg with top-right (3:1).
                         // C AVG_CDF_WEIGHT_LEFT / AVG_CDF_WEIGHT_TOP
@@ -5005,7 +5055,7 @@ fn encode_tile_rows(
                         const WT_LEFT: i32 = 3;
                         const WT_TOP: i32 = 1;
                         let mut base = chain_snaps[local_sb_index - 1].clone();
-                        let tr = &chain_snaps[local_sb_index - sb_cols + 1];
+                        let tr = &chain_snaps[local_sb_index - tile_sb_cols + 1];
                         base.0.avg_cdf_with(&tr.0, WT_LEFT, WT_TOP);
                         base.1.avg_cdf_with(tr.1.as_ref(), WT_LEFT, WT_TOP);
                         Some(base)
@@ -5013,8 +5063,8 @@ fn encode_tile_rows(
                         // left only -> copy left (sb-1)
                         Some(chain_snaps[local_sb_index - 1].clone())
                     } else if topright_avail {
-                        // top-right only -> copy top-right (sb - sb_cols + 1)
-                        Some(chain_snaps[local_sb_index - sb_cols + 1].clone())
+                        // top-right only -> copy top-right (sb - tile_sb_cols + 1)
+                        Some(chain_snaps[local_sb_index - tile_sb_cols + 1].clone())
                     } else {
                         // neither -> md_frame_context (default)
                         None
@@ -5553,9 +5603,9 @@ fn encode_tile_rows(
 
     // Parallel encoding with std::thread::scope when available
     #[cfg(feature = "std")]
-    if tile_rows > 1 {
+    if tile_grid.num_tiles() > 1 {
         return std::thread::scope(|s| {
-            let handles: Vec<_> = (0..tile_rows)
+            let handles: Vec<_> = (0..tile_grid.num_tiles())
                 .map(|tile_idx| s.spawn(move || encode_one_tile(tile_idx)))
                 .collect();
             handles.into_iter().map(|h| h.join().unwrap()).collect()
@@ -5563,7 +5613,7 @@ fn encode_tile_rows(
     }
 
     // Sequential fallback
-    (0..tile_rows).map(encode_one_tile).collect()
+    (0..tile_grid.num_tiles()).map(encode_one_tile).collect()
 }
 
 #[cfg(test)]

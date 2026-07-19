@@ -28,6 +28,12 @@
 //! log2 units as C's cfg.tile_rows / the C driver's SVT_TILE_ROWS (task
 //! #86). 0 = single tile row (unchanged default).
 //!
+//! Env: SVTAV1_TILE_COLS_LOG2 (default 0) — the column analogue, matching
+//! C's cfg.tile_columns / the C driver's SVT_TILE_COLUMNS (task #96).
+//! Both are CLAMPED to what the frame geometry supports, exactly like C
+//! (`svt_aom_set_tile_info`), so an over-request degrades rather than
+//! diverging. `tools/tile_gate.sh` drives the pair as SVTAV1_TILES.
+//!
 //! Env: SVTAV1_SB (task #91) — pin the superblock size to 64 or 128.
 //! UNSET (the default) derives it with C's own rule
 //! (`sb128_geom::derive_super_block_size`, Globals/enc_handle.c:4071-4111).
@@ -271,6 +277,12 @@ fn main() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
+    // task #96: tile columns, same log2 domain (C cfg.tile_columns /
+    // capture_c_trace's SVT_TILE_COLUMNS).
+    let tile_cols_log2: u8 = std::env::var("SVTAV1_TILE_COLS_LOG2")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
     // SVTAV1_MONO: encode the luma alone via the monochrome path (diagnostic —
     // isolates whether a 4:2:0 divergence is chroma-specific or exists in the
     // shared luma coding). Off by default (the harness is 4:2:0).
@@ -292,6 +304,7 @@ fn main() {
     );
     let mut pipeline = EncodePipeline::new(w as u32, h as u32, preset, rc, 0, 1)
         .with_tile_rows_log2(tile_rows_log2)
+        .with_tile_cols_log2(tile_cols_log2)
         .with_bit_depth(bd)
         .with_sb_size(sb_size);
     // NOTE: the warning goes to STDOUT, never stderr — identity_diff.sh
