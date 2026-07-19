@@ -1,4 +1,7 @@
-# svtav1-rs
+# zenav1-svt — the Rust port
+
+*(Repo-root overview: [`../README.md`](../README.md). C → Rust map:
+[`../PORTING.md`](../PORTING.md).)*
 
 A pure-Rust, still-picture (AVIF/all-intra) port of [SVT-AV1](https://gitlab.com/AOMediaCodec/SVT-AV1) v4.2.0, verified **byte-identical** to the C encoder on its tested envelope, with the [svt-av1-hdr](https://github.com/juliobbv-p/svt-av1-hdr) fork's perceptual feature set available behind a runtime switch.
 
@@ -95,15 +98,20 @@ The higher-level `svtav1::avif::AvifEncoder` wrapper provides quality/speed mapp
 Seven focused crates, minimal external dependencies (archmage for SIMD dispatch):
 
 ```
-svtav1                  Public API, AVIF backend
-  svtav1-encoder        Pipeline, PD0/partition, mode-decision funnel, RDOQ,
-                        QM, tunes, fork features, rate control
-    svtav1-dsp          SIMD transforms, prediction, filtering, psy kernels
-    svtav1-entropy      Range coder, CDF tables, OBU/FH/SH serialization
-    svtav1-tables       Const lookup tables, scan orders
-    svtav1-types        Core AV1 type definitions
-  svtav1-cref           Test-only FFI shims to the real C library (differentials)
+zenav1-svt                  Public API, AVIF backend
+  zenav1-svt-encoder        Pipeline, PD0/partition, mode-decision funnel, RDOQ,
+                            QM, tunes, fork features, rate control
+    zenav1-svt-dsp          SIMD transforms, prediction, filtering, psy kernels
+    zenav1-svt-entropy      Range coder, CDF tables, OBU/FH/SH serialization
+    zenav1-svt-tables       Const lookup tables, scan orders
+    zenav1-svt-types        Core AV1 type definitions
+  zenav1-svt-cref           Test-only FFI shims to the real C library (differentials)
 ```
+
+Those are the **package** names. Each crate pins a short `[lib] name`, so Rust
+paths stay `use svtav1_encoder::…` / `use svtav1_dsp::…`, and the crate
+directories keep their `crates/svtav1-*` names (the port maps and bug log
+reference those paths). See [`../PORTING.md`](../PORTING.md) for the full table.
 
 ## How verification works
 
@@ -132,7 +140,7 @@ cargo test --workspace
 
 ## Safety
 
-Every crate uses `#![forbid(unsafe_code)]` except the test-only `svtav1-cref` (FFI to the C reference library, never shipped). SIMD goes through archmage's safe token-based dispatch.
+Every crate uses `#![forbid(unsafe_code)]` except the test-only `zenav1-svt-cref` (FFI to the C reference library, never shipped — dev-dependency only, so no published crate carries a `build.rs` or needs a C toolchain). SIMD goes through archmage's safe token-based dispatch.
 
 ## License
 

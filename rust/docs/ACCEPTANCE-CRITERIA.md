@@ -1,8 +1,8 @@
-# Acceptance criteria — what "done" means for svtav1-rs
+# Acceptance criteria — what "done" means for zenav1-svt
 
 ## The criterion
 
-`svtav1-rs` is done when it is a drop-in replacement for SVT-AV1 v4.2.0 that emits
+`zenav1-svt` is done when it is a drop-in replacement for SVT-AV1 v4.2.0 that emits
 **byte-identical bitstreams** — not visually equivalent, not PSNR-matched, not "close
 enough at high quality," but the same bytes — for every configuration a still-image
 encoder can be asked for: every preset M0–M13, every qp across the full 0–63 range,

@@ -13,7 +13,7 @@
 Repo: `/root/svt-av1-hdr-on-4.2`, branch `hdr-on-4.2`, base `v4.2.0-rc` (`0da2ed9`).
 Built 2026-07-15. Companion diff reference: `/root/svtav1-diff-reference/REFERENCE.md`.
 Purpose: produce a **hybrid C oracle** (`v4.2 + fork features`) so the Rust port
-(`svtav1-rs`) can differentially test HDR-fork features under its bit-identity mandate.
+(`zenav1-svt`) can differentially test HDR-fork features under its bit-identity mandate.
 
 ## TL;DR — the headline result
 
@@ -44,7 +44,7 @@ Other un-gated fork changes (0 references to any fork config flag in their diffs
 `pic_analysis_process.c`, `enc_dec_process.c`, `mode_decision.c`, plus retuned variance-boost
 curve constants in `rc_aq.c` (e.g. octile boost @var 64: mainline 1.481 → fork 1.330).
 
-### Consequence for the Rust port (`svtav1-rs`)
+### Consequence for the Rust port (`zenav1-svt`)
 
 You cannot have a single Rust codebase that is simultaneously bit-identical to **mainline
 v4.2** *and* carries the fork's features, because the fork itself does not gate its changes.

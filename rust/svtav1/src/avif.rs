@@ -1,7 +1,7 @@
 //! AVIF encoding backend for zenavif integration.
 //!
 //! Provides a builder-pattern API compatible with zenavif's encoder backend
-//! interface, allowing svtav1-rs to be used as an AV1 encoder for still
+//! interface, allowing zenav1-svt to be used as an AV1 encoder for still
 //! images (instead of or alongside zenrav1e).
 //!
 //! # Usage
@@ -62,7 +62,7 @@ impl core::fmt::Display for EncodeError {
     }
 }
 
-/// AVIF still-image encoder using svtav1-rs as the AV1 backend.
+/// AVIF still-image encoder using zenav1-svt as the AV1 backend.
 ///
 /// Follows the builder pattern from zenrav1e for compatibility with
 /// zenavif's encoder abstraction.

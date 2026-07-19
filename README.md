@@ -1,99 +1,151 @@
-# Scalable Video Technology for AV1 (SVT-AV1 Encoder)
+# zenav1-svt
 
-The Scalable Video Technology for AV1 (SVT-AV1 Encoder) is an
-AV1-compliant software encoder library. The work on the SVT-AV1 encoder
-targets the development of a production-quality AV1-encoder with performance
-levels applicable to a wide range of applications, from premium VOD to
-real-time and live encoding/transcoding.
+A pure-Rust, still-picture (AVIF / all-intra) AV1 encoder — an
+algorithm-for-algorithm port of [SVT-AV1](https://gitlab.com/AOMediaCodec/SVT-AV1)
+v4.2.0, verified **byte-identical** to the C encoder on its tested envelope, with
+the [svt-av1-hdr](https://github.com/juliobbv-p/svt-av1-hdr) fork's perceptual
+feature set available behind a runtime switch.
 
-The SVT-AV1 project was initially founded by Intel in partnership with Netflix,
-and was then [adopted](https://aomedia.org/press%20releases/aomedia-software-implementation-working-group-to-bring-av1-to-more-video-platforms/)
-by the Alliance of Open Media (AOM) Software Implementation Working Group
-(SIWG), in August 2020, to carry on the group's mission.
+**`#![forbid(unsafe_code)]` · ~75k lines · 7 crates · 775+ tests · no C in the product path**
 
-The canonical URL for this project is at <https://gitlab.com/AOMediaCodec/SVT-AV1>
+> **Experimental.** The envelope below is real and gated, but it is an envelope:
+> single still frame, CQP, `--lp 1`. Not yet a general-purpose video encoder.
+> Crates are not on crates.io yet — depend on it by git.
+
+This repository is **both** the SVT-AV1 C fork and its Rust port. The C tree
+(`Source/`) is the reference implementation and the differential oracle the port
+is tested against — it is not in the shipping path of the Rust crates.
+
+## Two modes, two verification bars
+
+| Mode | What it is | Bar |
+|---|---|---|
+| **Mainline** (default) | Stock SVT-AV1 v4.2.0 behavior | **Byte-identical bitstreams** vs the real C library at matched configs |
+| **HdrFork** (`HdrForkConfig::hdr_fork()`) | The svt-av1-hdr feature set: psychovisual RD, quant matrices, photon-noise synthesis, variance boost, six tune policies | **Functionally verified**: per-kernel differentials against the exported C functions, per-knob liveness witnesses, `aomdec` decode gates. *Not* byte-gated — the fork has no C twin at this base |
+
+That distinction is the honest summary of the project. Mainline mode is a
+drop-in bit-exact reimplementation on the envelope we have tested; fork mode is a
+faithful functional port whose every kernel is differentially tested against real
+C code, but whose end-to-end bytes have nothing to compare against (we rebased
+the fork onto v4.2.0 ourselves — see `rust/docs/HDR-ON-4.2.md`).
+
+## Install
+
+```toml
+[dependencies]
+zenav1-svt = { git = "https://github.com/imazen/svtav1" }
+```
+
+Requires Rust 1.85+ (2024 edition). **No C toolchain, no cmake, no `build.rs`** —
+the port is pure safe Rust; the C reference is a *test-time* dependency only.
+
+```rust
+use svtav1_encoder::pipeline::EncodePipeline;
+use svtav1_encoder::rate_control::{RcConfig, RcMode};
+
+let rc = RcConfig { mode: RcMode::Cqp, qp: 40, ..RcConfig::default() };
+let mut p = EncodePipeline::new(128, 128, /*preset*/ 6, rc, 4, 1);
+p.chroma_420 = true;
+
+// Optional — default is mainline (byte-identical to C):
+// p.hdr = svtav1_encoder::hdr_mode::HdrForkConfig::hdr_fork();
+// p.hdr.tune = 3; // 0=VQ 1=PSNR 2=SSIM 3=IQ 4=MS_SSIM 5=FilmGrain
+
+let obu = p.encode_frame_420(&y, &u, &v, /*y stride*/ 128);
+```
+
+`svtav1::avif::AvifEncoder` wraps this with quality/speed mapping and AVIF
+defaults. Rust paths use the short `svtav1_*` names; the *package* names carry
+the `zenav1-svt-` prefix (see [PORTING.md](PORTING.md)).
+
+## Status
+
+Byte-identical to the C encoder, verified via OBU comparison **plus** a full
+arithmetic-coder op trace (every range-coder call, including coder state):
+
+- **Synthetic identity matrix** — {uniform, gradient} × {64, 128, 60} px × qp
+  {20, 40, 55} × presets {13, 10, 6}: **54/54**.
+- **Partial superblocks / odd dimensions** — non-64-multiple frames with
+  spec-5.11.4 partition edges, presets 6–13: **101/101**.
+- **10-bit** — uniform across presets M0–M13 **36/36**; non-flat (coded residual,
+  u16 mode funnel) **79/79**.
+- Every gated stream decodes under `aomdec` and `dav1d`, and the decoder's output
+  matches the encoder's own reconstruction byte-for-byte.
+
+Known open gaps are tracked, not hidden — see `rust/docs/IDENTITY-STATUS.md`
+(full divergence map) and the port maps in `rust/docs/`. Current envelope: 8- and
+10-bit, 4:2:0, single frame, single-threaded.
+
+## Testing on a fresh box
+
+```bash
+git clone https://github.com/imazen/svtav1 && cd svtav1
+
+# 1. Build the C reference (the differential oracle). Needs cmake + nasm + cc.
+cmake -S . -B cbuild-static -DCMAKE_BUILD_TYPE=Release \
+      -DBUILD_SHARED_LIBS=OFF -DBUILD_APPS=OFF -DBUILD_TESTING=OFF
+cmake --build cbuild-static -j
+
+# 2. Run the port's tests and byte-identity gates.
+cd rust
+cargo test --workspace
+./tools/identity_matrix.sh        #  54 cells
+./tools/partial_sb_gate.sh        # 101 cells
+./tools/bd10_matrix.sh            #  36 cells
+./tools/bd10_nonflat_gate.sh      #  79 cells
+```
+
+Each gate prints `<pass> / <total> byte-identical`. To drill into one cell:
+`./tools/identity_diff.sh <w> <h> <qp> <preset> <content>`.
+
+## Layout
+
+```
+rust/            the Rust port  — start at rust/README.md
+  crates/          types, tables, dsp, entropy, encoder, cref (test-only)
+  svtav1/          the zenav1-svt facade: public API, AVIF backend, examples
+  tools/           identity + differential harnesses
+  docs/            port maps, identity campaign history
+Source/           the SVT-AV1 C fork (reference + oracle) — read-only
+PORTING.md        which C file each Rust module ports, and its gate
+README-SVT-AV1.md the upstream SVT-AV1 project README (C encoder docs, Docs/)
+```
+
+## The C baseline
+
+The C tree is **SVT-AV1 v4.2.0** plus one patch: an OFF-by-default `SVT_HDR_MODE`
+CMake option (15 guarded files) that switches the C build between mainline and
+svt-av1-hdr semantics on the same base.
+
+```bash
+cmake -S . -B build -DSVT_HDR_MODE=OFF   # default — mainline v4.2.0 behavior
+cmake -S . -B build -DSVT_HDR_MODE=ON    # svt-av1-hdr (Chromedome) semantics
+```
+
+The Rust port's mainline mode is byte-gated against the OFF build; fork mode
+targets the ON build's semantics.
+
+To bump the C baseline, merge an upstream tag — the gitlab remote is already
+configured as `upstream`:
+
+```bash
+git fetch upstream --tags
+git merge v4.3.0        # then re-run the gates; divergences are real work
+```
 
 ## License
 
-Up to v0.8.7, SVT-AV1 is licensed under the BSD-2-clause license and the
-Alliance for Open Media Patent License 1.0. See [LICENSE](LICENSE-BSD2.md) and
-[PATENTS](PATENTS.md) for details. Starting from v0.9, SVT-AV1 is licensed
-under the BSD-3-clause clear license and the Alliance for Open Media Patent
-License 1.0. See [LICENSE](LICENSE.md) and [PATENTS](PATENTS.md) for details.
+The Rust port is **BSD-2-Clause** (`rust/*/Cargo.toml`). The SVT-AV1 C tree is
+BSD-3-Clause-Clear plus the Alliance for Open Media Patent License 1.0 — see
+[LICENSE.md](LICENSE.md), [LICENSE-BSD2.md](LICENSE-BSD2.md) and
+[PATENTS.md](PATENTS.md).
 
-## Documentation
+## Acknowledgments
 
-**Guides**
-- [System Requirements](Docs/System-Requirements.md)
-- [How to run SVT-AV1 within ffmpeg](Docs/Ffmpeg.md)
-- [Standalone Encoder Usage](Docs/svt-av1_encoder_user_guide.md)
-- [List of All Parameters](Docs/Parameters.md)
-- [Build Guide](Docs/Build-Guide.md)
-- [ARM Build Guide](Docs/ARM-Build-Guide.md)
-
-**Common Questions/Issues**
-- [Why build with LTO?](Docs/CommonQuestions.md#why-build-with-lto)
-- [Why build with PGO?](Docs/CommonQuestions.md#why-build-with-pgo)
-- [What presets do](Docs/CommonQuestions.md#what-presets-do)
-- [Scene change detection](Docs/CommonQuestions.md#scene-change-detection)
-- [GOP size selection](Docs/CommonQuestions.md#gop-size-selection)
-- [Threading and efficiency](Docs/CommonQuestions.md#threading-and-efficiency)
-- [Practical advice about grain synthesis](Docs/CommonQuestions.md#practical-advice-about-grain-synthesis)
-- [Improving decoding performance](Docs/CommonQuestions.md#improving-decoding-performance)
-- [Tuning for animation](Docs/CommonQuestions.md#tuning-for-animation)
-- [8 vs. 10-bit encoding](Docs/CommonQuestions.md#8-or-10-bit-encoding)
-- [HDR and SDR video](Docs/CommonQuestions.md#hdr-and-sdr)
-- [Options that give the best encoding bang-for-buck](Docs/CommonQuestions.md#options-that-give-the-best-encoding-bang-for-buck)
-- [Multi-pass encoding](Docs/CommonQuestions.md#multi-pass-encoding)
-- [CBR, VBR, and CRF modes](Docs/CommonQuestions.md#bitrate-control-modes)
-
-**Presentations**
-- [Big Apple Video 2019](https://www.youtube.com/watch?v=lXqOaYNo8m0)
-- [Video @ Scale 2021](https://atscaleconference.com/videos/highly-efficient-svt-av1-based-solutions-for-vod-applications/?contact-form-id=124119&contact-form-sent=163268&contact-form-hash=d4bb3fd420fae91cd39c11bdb69f970a05a152a9&_wpnonce=bba8096d24#contact-form-124119)
-- [ICIP 2024](https://aomedia.org/docs/Software_Implementation_Working_Group_Update_ICIP2024.pdf)
-
-**Papers and Blogs**
-- [Netflix Blog 2020](https://netflixtechblog.com/svt-av1-an-open-source-av1-encoder-and-decoder-ad295d9b5ca2)
-- [SPIE 2020](https://www.spiedigitallibrary.org/conference-proceedings-of-spie/11510/1151021/The-SVT-AV1-encoder--overview-features-and-speed-quality/10.1117/12.2569270.full)
-- [SPIE 2021](https://www.spiedigitallibrary.org/conference-proceedings-of-spie/11842/118420T/Towards-much-better-SVT-AV1-quality-cycles-tradeoffs-for-VOD/10.1117/12.2595598.full)
-- [SVT-AV1 - Tech Blog 2022](https://networkbuilders.intel.com/blog/svt-av1-enables-highly-efficient-large-scale-video-on-demand-vod-services)
-- [SPIE 2022](https://www.spiedigitallibrary.org/conference-proceedings-of-spie/12226/122260S/Enhancing-SVT-AV1-with-LCEVC-to-improve-quality-cycles-trade/10.1117/12.2633882.full)
-- [Adaptive Steaming Common Test Conditions](https://aomedia.org/docs/SIWG-D001o.pdf)
-- [ICIP 2023](https://arxiv.org/abs/2307.05208)
-- [SPIE 2024](https://www.spiedigitallibrary.org/conference-proceedings-of-spie/13137/131370W/Benchmarking-hardware-and-software-encoder-quality-and-performance/10.1117/12.3031754.full)
-
-**Awards**
-- [IBC 2025 Innovation Award - Content Everywhere](https://aomedia.org/blog%20posts/SVT-AV1-Wins-IBC-2025-Innovation-Award-in-Content-Everywhere-Category/)
-
-**Design Documents**
-- [Encoder Design](Docs/svt-av1-encoder-design.md)
-
-**Technical Appendices**
-- [Adaptive Prediction Structure Appendix](Docs/Appendix-Adaptive-Prediction-Structure.md)
-- [Altref and Overlay Pictures Appendix](Docs/Appendix-Alt-Refs.md)
-- [CDEF Appendix](Docs/Appendix-CDEF.md)
-- [CfL Appendix](Docs/Appendix-CfL.md)
-- [Compliant Subpel Interpolation Filter Search Appendix](Docs/Appendix-Compliant-Subpel-Interpolation-Filter-Search.md)
-- [Compound Mode Prediction Appendix](Docs/Appendix-Compound-Mode-Prediction.md)
-- [Deblocking Loop Filter (LF) Appendix](Docs/Appendix-DLF.md)
-- [Film Grain Synthesis](Docs/Appendix-Film-Grain-Synthesis.md)
-- [Global Motion Appendix](Docs/Appendix-Global-Motion.md)
-- [Intra Block Copy Appendix](Docs/Appendix-Intra-Block-Copy.md)
-- [Local Warped Motion appendix](Docs/Appendix-Local-Warped-Motion.md)
-- [Mode Decision Appendix](Docs/Appendix-Mode-Decision.md)
-- [Motion Estimation Appendix](Docs/Appendix-Open-Loop-Motion-Estimation.md)
-- [Overlapped Block Motion Compensation Appendix](Docs/Appendix-Overlapped-Block-Motion-Compensation.md)
-- [Palette Prediction Appendix](Docs/Appendix-Palette-Prediction.md)
-- [Rate Control Appendix](Docs/Appendix-Rate-Control.md)
-- [Recursive Intra Appendix](Docs/Appendix-Recursive-Intra.md)
-- [Restoration Filter Appendix](Docs/Appendix-Restoration-Filter.md)
-- [SQ Weight Appendix](Docs/Appendix-SQ-Weight.md)
-- [Super-resolution Appendix](Docs/Appendix-Super-Resolution.md)
-- [Temporal Dependency Model](Docs/Appendix-TPL.md)
-- [Transform Search Appendix](Docs/Appendix-TX-Search.md)
-- [Reference Scaling Appendix](Docs/Appendix-Reference-Scaling.md)
-- [Variance Boost Appendix](Docs/Appendix-Variance-Boost.md)
-- [Anti-Aliasing Aware Screen Content Detection Mode Appendix](Docs/Appendix-Antialiasing-Aware-Screen-Content-Detection-Mode.md)
-
-**How Can I Contribute?**
-- [SVT-AV1 Contribution Guide](Docs/Contribute.md)
+- [SVT-AV1](https://gitlab.com/AOMediaCodec/SVT-AV1) (Intel / Alliance for Open
+  Media) — the battle-tested C encoder this port is built on
+- [svt-av1-hdr](https://github.com/juliobbv-p/svt-av1-hdr) (juliobbv-p) — the
+  perceptual/HDR feature set ported in fork mode
+- [rav1d](https://github.com/memorysafety/rav1d) — safe Rust AV1 decoder
+- [archmage](https://github.com/imazen/archmage) — safe SIMD dispatch via CPU
+  feature tokens

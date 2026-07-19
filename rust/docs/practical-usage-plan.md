@@ -101,7 +101,7 @@ not a corner.
 **4:4:4 / 4:2:2 are not functional in mainline SVT-AV1** → the ACCEPTANCE-CRITERIA line "4:2:0 /
 4:4:4 / monochrome" overstates reality; either de-scope 4:4:4/4:2:2 or annotate them "blocked on
 upstream SVT-AV1 functional 4:4:4." If zenavif ever needs 4:4:4 stills, that is an **aom-backend**
-job, not svtav1-rs.
+job, not zenav1-svt.
 
 ---
 
@@ -280,7 +280,7 @@ proven" toward "real-content proven," where the quality-AVIF traffic actually is
   serves the latter, so 10-bit leads — but bd8 must never regress.
 - **The port targets an SVT-AV1 backend specifically.** Much of the AVIF-quality literature
   recommends **aom** (for 4:4:4 + intra maturity). That is a statement about *aom vs SVT*, not about
-  this port — svtav1-rs's niche is SVT-AV1's **4:2:0 stills** with tune-IQ/avif-mode + fork
+  this port — zenav1-svt's niche is SVT-AV1's **4:2:0 stills** with tune-IQ/avif-mode + fork
   psychovisual tuning (where the pareto shows SVT-fork beating mainline on photo).
 
 ---

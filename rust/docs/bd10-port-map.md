@@ -60,8 +60,8 @@ literals are written with bit_depth bits (entropy_coding.c:4256-4370) —
 our landed palette writer/cost hardcodes 8; parameterize when bd10
 meets sc content.
 
-## Scope for svtav1-rs (CORRECTED — the agent sampled /root/aom-rs)
-svtav1-rs is u8 end-to-end in svtav1-dsp (intra pred, tx/quant/recon
+## Scope for zenav1-svt (CORRECTED — the agent sampled /root/aom-rs)
+zenav1-svt is u8 end-to-end in zenav1-svt-dsp (intra pred, tx/quant/recon
 kernels), svtav1-encoder (funnel pred/recon Vec<u8>, pipeline &[u8]
 planes, deblock/cdef/restoration u8), harness. svtav1-entropy needs no
 change except palette literal width. Real work:
