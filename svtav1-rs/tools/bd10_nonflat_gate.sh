@@ -29,15 +29,43 @@ pass=0
 fail=0
 failed=()
 # Each cell: "content w h qp preset" — known byte-exact in the bd10 u16 envelope.
+# The re-encode RAN (last_recon10_y populated) for every cell here and each
+# BYTE-MATCHES real aomenc at bd10 (verified by `cmp` below).
+#
+# Coverage rationale (task #94, extended 2026-07-19): the original 8 cells
+# jumped from q40 to q55, leaving the re-encode's working qindex range
+# (q42..q50 -> base_qindex 168..200) ungated. Those cells are LOAD-BEARING on
+# the re-encode: Q10/Q8 is 3.997..3.999 there (NOT the exact 4.000 it reaches
+# only at q55/qindex 220), so the coded levels genuinely differ from the u8
+# fallback — the u16 quant (quantize_fp_hbd / quantize_b_hbd, bd10 tables) is
+# what makes them match. All 64x64 (single-SB, tree bit-depth-scale-invariant
+# at qindex>=168). Presets 3/6 exercise the search-based LF/CDEF path, 10/13
+# the LPF_PICK_FROM_Q closed form. 128px q58 broadens the multi-SB path.
+# Everything at lower qindex / larger-than-64 non-flat falls back to u8 (a
+# bit-depth-dependent partition/mode RD decision C makes differently at bd10 —
+# see docs/bd10-port-map.md "true bd10 MD"); those cells are NOT gated here.
 CELLS=(
   "gradient 64 64 40 13"
   "gradient 64 64 40 10"
+  "gradient 64 64 42 10"
+  "gradient 64 64 42 13"
+  "gradient 64 64 44 10"
+  "gradient 64 64 44 13"
+  "gradient 64 64 44 3"
+  "gradient 64 64 46 10"
+  "gradient 64 64 46 13"
+  "gradient 64 64 48 6"
+  "gradient 64 64 50 10"
+  "gradient 64 64 50 13"
+  "gradient 64 64 50 6"
   "gradient 64 64 55 3"
   "gradient 64 64 55 6"
   "gradient 64 64 55 10"
   "gradient 64 64 55 13"
   "gradient 128 128 55 10"
   "gradient 128 128 55 13"
+  "gradient 128 128 58 10"
+  "gradient 128 128 58 13"
 )
 for cell in "${CELLS[@]}"; do
   read -r content w h qp p <<<"$cell"
