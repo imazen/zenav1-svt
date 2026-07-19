@@ -266,6 +266,75 @@ threading them through the funnel/partition RD SEARCH (the generic-`Pixel` pass 
 section, or a bd10 MD pass), because the RD COMPARISON must be at bd10 — a large hot-path pass,
 NOT dribble-able. This is the single highest-impact bd10 item (100% of real content).
 
+### BLOCKER 1 — ROOT CAUSE CORRECTED (2026-07-19): it is the bd10 `PD0_LVL_6 -> PD0_LVL_0` switch, decided at **8-BIT**
+
+**The "16x-scale-invariance / true-bd10-MD" framing above is WRONG for the PARTITION flip.**
+The partition tree is NOT decided by a bd10 RD comparison at all — it is decided by an **8-bit
+full-RD PD0** whose *level* C switches on bit depth. Traced end-to-end against the real C
+(read-only `/root/svtav1/Source/`) with a temporary `svt_aom_pick_partition_pd0` / DRMODE wrap
+(added to `wrap_recon.c`, used, then reverted — the harness is back at its committed state):
+
+**THE bd-dependent gate** — `set_pd0_ctrls` (`enc_mode_config.c:5413-5418`):
+```c
+static void set_pd0_ctrls(ModeDecisionContext* ctx, uint8_t lpd0_lvl) {
+    if (ctx->hbd_md) { ctx->pd0_ctrls.pd0_level = PD0_LVL_0; return; }  // <-- bd10 (DUAL)
+    switch (lpd0_lvl) { ... }                                          // <-- bd8: pic level
+}
+```
+- **bd8** (`hbd_md == 0`): PD0 uses the picture level `pcs->pic_pd0_lvl` (`set_pic_pd0_lvl_default`,
+  `enc_mode_config.c:8592`; M10 <=360p KEY, `coeff_lvl` HIGH -> level 5..6) => **`PD0_LVL_6`**, the
+  *variance-heuristic* cost `compute_lpd0_cost_allintra` (`product_coding_loop.c:8191`, the port's
+  FFI-verified `pd0::lvl6_cost_allintra`). It **over-splits** flat-ish high-var SBs to 16x16.
+- **bd10** (`hbd_md == 2` DUAL): the gate FORCES **`PD0_LVL_0`** = the *full-RD* PD0
+  (`md_encode_block_pd0`'s `md_stage_0_pd0`+`md_stage_3_pd0` path + `test_split_partition_pd0`,
+  `product_coding_loop.c:10424`), which makes an RD-optimal NONE-vs-SPLIT choice and keeps 32x32.
+
+**CRUCIAL: `PD0_LVL_0` runs entirely at 8-BIT.** `enc_dec_process.c:2965-2966` saves `hbd_md`
+and forces it to **0** for all of PD0 (restored at `:3024`, before PD1). The PD0 distortion
+kernel is `hbd_md ? svt_full_distortion_kernel16_bits : svt_spatial_full_distortion_kernel`
+(`product_coding_loop.c:1129-1130,1273-1274`) -> **8-bit spatial SSE**; lambda =
+`full_lambda_md[EB_8_BIT_MD]`; source = the 8-bit MSB-truncated plane. `pd0_level` is fixed at
+sig-deriv time from the *original* `hbd_md` (=2), so it stays LVL_0 even though PD0 then runs at
+`hbd_md=0`. => the bd10 partition tree is a pure function of the 8-bit input — **NO bd10 pixel /
+quant / lambda kernel is on the partition path.**
+
+**Empirical proof (`gradient 64x64 q20 p10`), same 8-bit `<<2` input both encodes:**
+- `PD0 mi=(0,0) bsize=12 part=3 rd=5013       hbd_md=0 pd0_lvl=6 encbd=8`   (bd8)
+- `PD0 mi=(0,0) bsize=12 part=3 rd=99809485   hbd_md=0 pd0_lvl=0 encbd=10`  (bd10)
+- Both: `DRMODE mode=2(PD0_DEPTH_PRED_PART_ONLY) pred_only=1 bias=995` and
+  `PICCFG coeff_lvl=3 depth_refine_lvl=10`. `depth_refine_lvl 10 -> PD0_DEPTH_PRED_PART_ONLY`
+  (`enc_mode_config.c:6985-6986`) => PD1 codes the PD0 tree verbatim (`pred_depth_only=1`, the
+  `test_split_partition` assert at `:10814` proves no PD1 merge runs). So **final tree == PD0
+  tree**, and the PD0 tree differs ONLY because `pd0_lvl` is 6 vs 0. rd 5013 is LVL_6-heuristic
+  scale (`area*bias/1000`); rd 99809485 is LVL_0 full-RD scale (`RDCOST(8bit_lambda, rate, 8bit
+  SSE)`, `dist<<7`). Trees: bd8 = 16x `BLOCK_16X16`, bd10 = 4x `BLOCK_32X32`.
+
+**Why the port matches bd8 but not bd10:** the port's `pd0_pick_sb_partition` (preset>=9) ALWAYS
+uses the LVL_6/LVL_5 heuristic (there is NO faithful `PD0_LVL_0` port anywhere — presets 0-2,
+where C also uses LVL_0, are approximated by the LVL_1 `pd0_pick_sb_partition_m6_eval` path,
+tuned to reproduce C's bd8 *finals*, not the PD0 algorithm). At bd8 the LVL_6 heuristic
+coincides with C's bd8 final; at bd10 C runs LVL_0, so the port's LVL_6 tree is simply the wrong
+algorithm's output.
+
+**THE FIX (corrected):** at bd10, run an **8-bit `PD0_LVL_0` full-RD partition search** matching
+C's `svt_aom_pick_partition_pd0` at `pd0_level==0` (candidate gen `generate_md_stage_0_cand_pd0`
+-> DC-only where `is_dc_only_safe`; `md_stage_3_pd0` full loop with `pd0_fast_coeff_est_level` /
+`subres_step`; `test_split_partition_pd0`'s `parent_cost_bias * parent <= split_cost*1000` with
+`split_cost = RDCOST(8bit_lambda, split_rate, 0) + Σ children`), all at 8-bit using the port's
+EXISTING 8-bit funnel / tx / quant / spatial-SSE kernels. Feed its tree to the current
+`bd10_reencode_luma`, which already recomputes the bd10 coded LEVELS. **The partition needs no
+bd10 pixels** — only an 8-bit LVL_0 PD0 the port does not yet have. (Building it byte-exact is a
+substantial pass: the exact `md_stage_3_pd0` cost/rate model, `subres`, DC-only cand set, and the
+`test_split_partition_pd0` early-exits must all match C. Not attempted this session — scoped +
+verified only.)
+
+**Separately, the `BLOCKER1_mode` cells (40 synthetic) are a DISTINCT axis:** `pred_depth_only`
+fixes only the PARTITION; PD1 still runs its per-block MODE decision at `hbd_md=2` (TRUE 10-bit),
+so a bd10-sensitive mode/uv/tx pick differs from the port's reused u8 modes. THAT axis IS a
+"true bd10 MD" (10-bit predict/dist/lambda in the leaf funnel) — the original framing above is
+correct for MODES, wrong for PARTITIONS. The gate cells match because their modes (DC-family)
+are bd10-stable; the mode-flip cells are not.
+
 ### BLOCKER 2 — CDEF-search / Wiener-LR bd10 (bounded; 3 cells on this content)
 
 CONFIRMED CDEF+LR DO run in this harness config (SVT still-picture defaults, NOT libaom
