@@ -580,3 +580,43 @@ near-ties), `p{3,6}` (depth-refine + M6 fi/CFL). The chroma re-encode also now r
 q40/q55 cells (previously matched by flat-chroma coincidence) and is the missing "u16 chroma path"
 follow-up the luma-landing notes listed — but ONLY the coded-level (skip/non-CfL) subset; the u16
 chroma FILTERS (DLF/CDEF/LR) and CfL chroma remain unported.
+
+### Task-2 threading map (u16 LUMA MODE funnel) — TRACED 2026-07-19, NOT attempted (baseline risk)
+
+`diag 64 64 20 10` (post-chroma-fix) is a pure LUMA divergence: `decode-diff` = plane0 1570 px,
+chroma 0; the flip is LUMA mode **DC(0)->SMOOTH(9)** at mi=(4,4)/(8,8)/(12,12) (the diagonal-edge
+8x8s). At eff-M9 `nic_counts=(1,1,1)`, so the coded MODE == the MDS0 fast-SATD survivor; the flip
+lives in `evaluate_leaf`'s fast loop, which predicts each candidate from the **u8** recon canvas and
+scores u8 Hadamard SATD. On `sample<<2` content a u8-SATD scales EXACTLY 4x, so the ordering flips
+ONLY because the true bd10 recon canvas differs from `recon8<<2` (the hbd-predictor rounding) and
+feeds a different prediction into the DC-vs-SMOOTH near-tie.
+
+**Why it is NOT a post-pass (the coupling):** deciding block N's mode at bd10 needs block <N's bd10
+recon neighbours, which needs block <N decided+reconstructed at bd10 — a sequential bd10 funnel
+walk. A second "re-decide the u8 tree's modes over a bd10 recon" pass is inconsistent (the bd10
+recon it would read was built from the u8-decided modes) and cascades wrong after the first flip.
+
+**The exact threading (gated `frame.bit_depth == 10`; bd8 must stay byte-identical):**
+- `FunnelCtx` (leaf_funnel.rs:2277) carries `u_recon`/`v_recon: &mut [u8]` (chroma) — add a LUMA
+  bd10 canvas. The luma u8 canvas is `y_recon: &[u8]` passed into `evaluate_leaf` (2532) and
+  `commit_leaf` (4838); add a parallel `y_recon10: &[u16]` / `&mut [u16]` (frame-luma dims).
+- `evaluate_leaf` (2527): in the MDS0 fast loop (`predict_unit` at 2643/2658/2785 + `hadamard_satd`
+  at 1043) predict each candidate at bd10 (`predict_unit_hbd` from `y_recon10`) and SATD the bd10
+  residual (`y_src10 - pred10`). `y_src10 = encode_input<<2`. The `intra_fast_cost` RATE is
+  bd-independent; only the SATD term (`satd<<4`) changes. This alone re-orders the survivor.
+- `commit_leaf` (4838): reconstruct the winner at bd10 (`predict_unit_hbd` + `tx_unit_hbd`, exactly
+  the `bd10_reencode_node` body) and write its recon into `y_recon10` for the next block's
+  neighbours. This is the coupling closure — the per-block bd10 re-encode moves INTO the walk.
+- Pipeline SB loop (partition.rs `encode_fixed_tree` :1545 / `funnel_block_decision` :1462 + the
+  pipeline caller): allocate + thread `y_recon10` per SB, same lifetime as the u8 canvas.
+- MDS1/MDS3 rate/levels can stay u8 for the DECISION (1 survivor -> mode already fixed); the final
+  coded LEVELS still come from the existing `bd10_reencode_luma` post-pass (or fold it into
+  `commit_leaf` and drop the post-pass). Chroma follows the same idea if a chroma MODE ever flips
+  (none observed on `diag` — uv follows luma there).
+
+**Smallest demoable chunk:** bd10 MDS0 SATD + bd10 `commit_leaf` luma canvas, gated eff-M9 bd10; gate
+= `diag 64 64 20 10` byte-match AND bd8 identity 54/54 + partial_sb 101/101 + bd10 36/36 + nonflat
+45/45 all UNCHANGED. It is one reviewed pass (shared hot path) with no byte-verifiable slice smaller
+than "the eff-M9 mode path aligned at bd10 for one cell" — attempt it in isolation and land ONLY on
+a clean byte-match; a partial thread that mispredicts silently corrupts luma. NOT attempted this
+session (Task-1 chroma landed clean; a speculative funnel thread risks the green baseline).
