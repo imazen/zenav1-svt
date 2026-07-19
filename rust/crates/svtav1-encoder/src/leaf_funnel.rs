@@ -1766,6 +1766,36 @@ pub(crate) struct TxUnitOutHbd {
     pub recon: Vec<u16>,
     /// `(dc_sign << 6) | min(cul_level, 63)` neighbor byte.
     pub cul: u8,
+    /// RD distortion in the 10-bit domain — the freq-domain RESIDUAL form
+    /// (MDS1) or spatial SSE << 4 (MDS3), matching [`TxUnitOut::dist`].
+    /// ZERO unless the caller passed [`TxRdArgs`] (the level-only re-encode
+    /// post-pass does not, so it stays byte-inert).
+    pub dist: u64,
+    /// Coefficient bits (or skip-txb bits when `eob == 0`), matching
+    /// [`TxUnitOut::bits`]. ZERO unless [`TxRdArgs`] was passed.
+    pub bits: i32,
+}
+
+/// Opt-in RD outputs for [`tx_unit_hbd`].
+///
+/// `tx_unit_hbd` began life as a LEVEL producer for the bd10 re-encode
+/// post-pass, which needs no RD terms. The bd10 full-RD stages (MDS1/MDS3)
+/// need exactly the two the u8 [`tx_unit`] returns, in the same domains and
+/// with the same shifts — so they are computed here, but only when asked.
+/// `None` keeps every existing caller bit-for-bit unchanged.
+pub(crate) struct TxRdArgs {
+    /// MDS3 (recon-vs-source spatial SSE << 4) when true; the MDS1
+    /// freq-domain residual form when false. Mirrors `tx_unit`'s flag.
+    pub spatial_dist: bool,
+    /// Intra direction feeding the ext-tx-type rate row (fi-MAPPED for
+    /// FILTER candidates, exactly as the u8 sites do it).
+    pub intra_dir: usize,
+    /// `FunnelCfg::coeff_rate_est_lvl` — level 2 (M7/M8) replaces the LUMA
+    /// coeff rate with C's fast per-txb approximation.
+    pub coeff_rate_est_lvl: u8,
+    /// `[SVT_HDR_MODE]` fork tx-bias facade strength (`FunnelFrame::tx_bias`).
+    /// The facade is pure arithmetic on the SSE, so it applies at any depth.
+    pub tx_bias: u8,
 }
 
 /// u16 / bd10 mirror of the level-producing core of [`tx_unit`]: 10-bit
@@ -1775,10 +1805,13 @@ pub(crate) struct TxUnitOutHbd {
 /// the quantize/RDOQ kernels are table-driven, so this reuses them verbatim;
 /// only the residual (u16 src/pred), the quant table (`qt` = the bd10 row),
 /// and the recon-add clip (`clip_pixel_highbd(bd)`) are bit-depth-specific.
-/// RD distortion / tx-bias / ac-bias / noise-norm / QM are NOT computed here:
-/// the re-encode pass reuses the u8 path's decisions, so only the coded LEVELS
-/// + the 10-bit recon (for neighbour prediction) are needed. `txb_skip_ctx` /
-/// `dc_sign_ctx` are the RDOQ contexts (0/0 at eff-M9, rate_est_level 0).
+/// ac-bias / noise-norm are NOT applied here (both are fork-only and both need
+/// a u16 psy kernel that is not ported; the bd10 full-RD funnel refuses to
+/// engage when either is active, so this is never silently wrong). RD
+/// distortion + coeff bits are computed only when `rd` is `Some` — the
+/// level-only re-encode post-pass passes `None` and is byte-inert.
+/// `txb_skip_ctx` / `dc_sign_ctx` are the RDOQ contexts (0/0 at eff-M9,
+/// rate_est_level 0) and, when `rd` is set, also the coeff-rate contexts.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn tx_unit_hbd(
     src: &[u16],
@@ -1801,6 +1834,7 @@ pub(crate) fn tx_unit_hbd(
     do_rdoq: bool,
     bd: u8,
     qm_level: u8,
+    rd: Option<&TxRdArgs>,
 ) -> TxUnitOutHbd {
     let n = w * h;
     let c_tx = cc::tx_size_from_dims(w, h);
@@ -1825,9 +1859,25 @@ pub(crate) fn tx_unit_hbd(
     debug_assert!(ok, "bd10 fwd txfm {w}x{h} type {tx_type}");
 
     // 64-dim fold (svt_handle_transform64x64): keep the 32-capped low-freq
-    // quadrant packed at the adjusted stride, exactly like tx_unit.
+    // quadrant packed at the adjusted stride, exactly like tx_unit. The energy
+    // of the DISCARDED region is only needed by the freq-domain distortion, so
+    // it is gathered only when RD terms were asked for (byte-inert otherwise).
     let (pw, ph) = (w.min(32), h.min(32));
+    let mut three_quad_energy: u64 = 0;
     let packed = if w > 32 || h > 32 {
+        if rd.is_some() {
+            // Identical region geometry to `tx_unit` (svt_handle_transform64x64
+            // / 64x32 / 32x64, transforms.c:3223) — the transforms are
+            // bit-depth-independent so the same three quadrants are dropped.
+            if w == 64 && h == 64 {
+                three_quad_energy = energy_region(&coeffs[32..], 64, 32, 32)
+                    + energy_region(&coeffs[32 * 64..], 64, 64, 32);
+            } else if w == 64 {
+                three_quad_energy = energy_region(&coeffs[32..], 64, 32, h.min(32));
+            } else {
+                three_quad_energy = energy_region(&coeffs[32 * w..], w, w, h - 32);
+            }
+        }
         let mut v = vec![0i32; pw * ph];
         for r in 0..ph {
             v[r * pw..(r + 1) * pw].copy_from_slice(&coeffs[r * w..r * w + pw]);
@@ -1941,8 +1991,96 @@ pub(crate) fn tx_unit_hbd(
         }
     }
 
+    // RD terms (MDS1/MDS3 only) — the same two domains and shifts as the u8
+    // `tx_unit`, on 10-bit inputs. C reaches them through the SAME facades at
+    // both depths; only the kernel behind the facade is bit-depth-selected:
+    //   spatial: svt_spatial_full_distortion_kernel_facade
+    //            (pic_operators.c:257) dispatches `hbd_md ?
+    //            svt_full_distortion_kernel16_bits : svt_spatial_full_
+    //            distortion_kernel` -> a plain u16 SSE at bd10, then the
+    //            caller's `<<= 4` (product_coding_loop.c:5836-5837).
+    //   freq:    svt_aom_picture_full_distortion32_bits_single (pic_operators.c
+    //            :172) is bit-depth-INDEPENDENT (i32 coefficients), so the u8
+    //            expression is reused verbatim on the bd10 coefficients.
+    // The coefficient RATE tables are qindex-driven with no bit-depth term, so
+    // `rates` is shared with the u8 path unchanged.
+    let (dist, bits) = match rd {
+        None => (0u64, 0i32),
+        Some(a) => {
+            let dist = if a.spatial_dist {
+                let mut sse = svtav1_dsp::hbd::full_distortion_kernel16_bits(
+                    src, src_off, src_stride, &recon, 0, w, w, h,
+                );
+                // [SVT_HDR_MODE] fork tx-bias facade (pic_operators.c:265-292):
+                // pure integer scaling of the SSE by prediction-mode class, so
+                // it is bit-depth-agnostic and mirrors the u8 site exactly.
+                if a.tx_bias > 0 {
+                    let class = match a.intra_dir {
+                        0 | 9 | 10 | 11 => crate::tx_bias::BiasModeClass::IntraBlurry,
+                        1 | 2 | 12 => crate::tx_bias::BiasModeClass::IntraNeutral,
+                        _ => crate::tx_bias::BiasModeClass::IntraOther,
+                    };
+                    sse = crate::tx_bias::facade_bias(
+                        sse as i64,
+                        class,
+                        true,
+                        w as u32,
+                        h as u32,
+                        0,
+                        0.0,
+                        a.tx_bias,
+                    ) as u64;
+                }
+                sse << 4
+            } else {
+                let mut d: u64 = 0;
+                if eob > 0 {
+                    for i in 0..pw * ph {
+                        let e = (packed[i] - dqcoeff[i]) as i64;
+                        d += (e * e) as u64;
+                    }
+                } else {
+                    for i in 0..pw * ph {
+                        d += (packed[i] as i64 * packed[i] as i64) as u64;
+                    }
+                }
+                d += three_quad_energy;
+                let shift = (1 - log_scale as i32) * 2;
+                if shift < 0 { d << (-shift) } else { d >> shift }
+            };
+            let real_bits = if eob > 0 {
+                cost_coeffs_txb(
+                    &qcoeff,
+                    eob,
+                    c_tx,
+                    tx_type,
+                    plane_type,
+                    txb_skip_ctx,
+                    dc_sign_ctx,
+                    a.intra_dir,
+                    rates,
+                )
+            } else {
+                cost_skip_txb(c_tx, plane_type, txb_skip_ctx, rates)
+            };
+            // C `coeff_rate_est_lvl == 2` LUMA fast approximation — identical
+            // to the u8 site (see its comment); bit-depth-independent.
+            let bits = if plane_type == 0 && a.coeff_rate_est_lvl == 2 {
+                let th = (w * h) >> 6;
+                if (eob as usize) < th {
+                    6000 + eob as i32 * 1000
+                } else {
+                    real_bits
+                }
+            } else {
+                real_bits
+            };
+            (dist, bits)
+        }
+    };
+
     let cul = compute_cul_level(scan, &qcoeff, eob);
-    TxUnitOutHbd { eob, qcoeff, recon, cul }
+    TxUnitOutHbd { eob, qcoeff, recon, cul, dist, bits }
 }
 
 use crate::quant::TX_SCALE_TAB;
@@ -4980,7 +5118,7 @@ pub(crate) fn evaluate_leaf(
             let out = tx_unit_hbd(
                 &blk_src10, w, 0, &pred10, w, 0, w, h, tx_type, 0, 0, 0, &qt10,
                 frame.rdoq_level, lambda_bd10_full, 0, rates, frame.rdoq_level != 0,
-                frame.bit_depth, frame.qm_levels[0],
+                frame.bit_depth, frame.qm_levels[0], None,
             );
             out.recon
         }

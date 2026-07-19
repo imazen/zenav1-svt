@@ -3734,6 +3734,7 @@ fn bd10_reencode_node(
                 rdoq_level != 0,
                 bd,
                 qm_level,
+                None, // level-only re-encode: no RD terms
             );
             // Overwrite the coded LUMA levels with the 10-bit result. The walk
             // re-derives the scan-order eob + skip from these coeffs.
@@ -3943,6 +3944,7 @@ fn bd10_reencode_chroma_plane(
         rdoq_level != 0,
         bd,
         qm_level,
+        None, // level-only re-encode: no RD terms
     );
     for r in 0..ch {
         let drow = (cy + r) * cstride + cx;
