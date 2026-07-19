@@ -94,15 +94,46 @@ SB128_CELLS=(
 #     H4/V4-free `partition_gather_horz_alike` with is_128) is exercised;
 #   - `uniform 512x448 q32 p0` — a partial 128 ROW, the `has_rows == false`
 #     vert_alike counterpart.
+#   - `diag 512x384 q55 p0` and `gradient 512x384 q55 p0` — closed by the
+#     lr_params fix (the `unit_size > 64` bit is SB64-only). Both were
+#     already TILE-identical, so they are pure header witnesses.
 SB128_BYTE_EXACT=(
   "uniform  512 384 32 0"
   "uniform  512 384 55 0"
   "uniform  512 384 63 0"
   "uniform  512 384 32 1"
+  "gradient 512 384 55 0"
   "diag     512 384 32 0"
+  "diag     512 384 55 0"
   "uniform  448 384 32 0"
   "uniform  512 448 32 0"
 )
+
+# ---------------------------------------------------------------------------
+# WHY THE 5 REMAINING CELLS ARE PINNED — and why it is NOT an SB128 bug.
+#
+# Every one of them is `gradient` at qp 20/32 (q55 closed with the header
+# fix). Their first divergence is a PARTITION decision at a 32x32 node:
+# C codes `s=9` (PARTITION_VERT_4, four 8x32 strips) where the port codes
+# `s=0` (PARTITION_NONE), at CDF row icdf0=14306.
+#
+# MEASURED, twice, that this is a pre-existing sub-64 NSQ gap and not
+# SB128:
+#   1. The port makes the SAME `NONE` decision at that node whether it runs
+#      at SB64 (`SVTAV1_SB=64`) or SB128 — the first 1714 coded decisions
+#      are identical between the two modes, so the SB128 walk did not
+#      influence it.
+#   2. `gradient 424x384 q32 p0` — 162,816 px, BELOW the area threshold, so
+#      C codes it at **SB64** — reproduces the divergence exactly: same
+#      first-divergent node, same icdf row 14306, C `s=9` vs port `s=0`.
+#      `gradient`'s pixels are `((r*255)/h) ^ ((c*3)&0x3f)`, so at the same
+#      `h` the top-left block is bit-identical to the 512x384 cell's.
+#
+# The `diag` cells (content independent of w/h) byte-match at both qps, and
+# every `uniform` cell matches, which is what isolates this to the NSQ
+# H4/V4 selection rather than anything geometric. Closing it is orthogonal
+# NSQ work; when it lands these five cells should flip on their own and the
+# pin will fire.
 
 # Cells PINNED as still-diverging. Everything in SB128_CELLS that is not in
 # SB128_BYTE_EXACT is implicitly pinned (see the loop) — the pin is what
