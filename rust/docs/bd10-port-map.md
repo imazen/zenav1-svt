@@ -1755,22 +1755,80 @@ canvas instead, that cell's `loop_filter_level` divergence **disappears** and
 the first divergence moves back into the tile payload. (`gradient 128x128 q55
 p5` is not a gate cell; it diverges in the tile either way.)
 
-So the sequencing is:
-1. **Root-cause the post-pass recon** (`bd10_reencode_luma` / `bd10_reencode
-   _chroma_plane`, pipeline.rs). Note `recon10` there is allocated
-   `vec![0u16; w*h]` while the funnel canvas is seeded `512` (the 10-bit DC
-   default) — check the neighbour-availability path before assuming the 0-init
-   is inert. The doc note above already flags that this pass hardcodes the
-   RDOQ contexts to 0/0, which is only correct where `real_coeff_ctx` is off.
-2. Then land the DLF search from the preserved ref and re-measure p0..p5.
+> ### CORRECTION (2026-07-19) — read this before acting on the block above
+>
+> **The `4*u8+24` diagnosis is WRONG. The conclusion that drove it (suppress
+> the post-pass overwrite) was RIGHT, for a different reason.** Both halves
+> are recorded here because the wrong half is an easy mistake to repeat.
+>
+> **The measurement was a unit confusion.** The column labelled `recon10>>2`
+> is not `recon10>>2` — it is raw `recon10`. Verified by re-running the same
+> cell: `recon10[0..8] = [64,71,86,108,132,149,154,146]` (exactly the quoted
+> figures) while the actual `recon10>>2` is `[16,17,21,27,33,37,38,36]`. So
+> the "systematic offset" was fitted between a **10-bit plane and an 8-bit
+> plane**, where a x4 relation is the expected bit-depth scale, not a defect.
+> And those very values are **byte-identical to C's own 10-bit recon** for
+> that cell (`SVT_RECON_BIN` dump of `svt_aom_get_recon_pic`): the pixels
+> cited as evidence of a broken recon were already correct.
+>
+> **The SSE argument does not hold either.** `SSE(src10,recon10)/16` and
+> `SSE(src8,u8recon)` are different quantizations of different signals; a 5%
+> gap carries no correctness signal. C's own 10-bit recon for that cell scores
+> `39393439/16 = 2462089` — **worse** than the port's `2450984` by the same
+> metric. A test that fails the reference encoder is not a test.
+>
+> **What was actually wrong.** `bd10_full_rd_supported`'s doc comment
+> (pipeline.rs) already stated the invariant: when the FULL-RD funnel runs,
+> "the winner's 10-bit levels ARE the coded ones (so the level-only re-encode
+> post-pass is skipped: it hardcodes RDOQ contexts 0/0, which is only correct
+> where `real_coeff_ctx` is off)". **That invariant was never implemented** —
+> the post-pass gate tested only frame alignment and `bd10_tree_supported`. So
+> wherever both producers were eligible (presets 0..=8, 64-aligned, palette
+> off, every leaf tx_depth 0) the post-pass re-quantized the funnel's levels
+> under the wrong contexts and overwrote both the coded levels and
+> `last_recon10_*`. That is a BITSTREAM defect, not only a latent recon one,
+> which is why suppressing the overwrite appeared to help.
+>
+> Fixed by adding the missing `!bd10_full_rd` term. The eff-M9 band
+> (preset >= 9) is not full-RD, so the post-pass stays authoritative there —
+> which is why the earlier wholesale-removal A/B (4/20 vs 3/20) regressed that
+> band while removing it *conditionally* does not.
+>
+> **Result:** `gradient 128x128 q55 p5` is byte-identical, and so is its
+> 10-bit recon. On the p0..p5 x q{5,12,20,32,40,48,55,63} x
+> {gradient,diag,uniform} x {64,128} grid (288 cells) byte-identity went
+> **163 -> 240, zero regressions** (p0 22->28, p1 29->46, p2 24->40,
+> p3 23->34, p4 34->46, p5 31->46), and recon-divergent cells 54 -> 24.
+> The DLF search then landed unchanged from the preserved ref and closed
+> `gradient 128x128 q20 p2` on top (so it is decision-relevant, not a no-op).
+>
+> **Method note — the probe was lying, and that is why this took two passes.**
+> C's `loop_filter_init` interposer dumps the recon at call 0. At preset >= 6
+> C's only such call is the early sb-based-DLF one, so the dump holds just
+> SB(0,0) and a comparison against it shows a huge spurious "divergence".
+> `wrap_recon.c` now prints `RECON_WALKSSE` — the SSE recomputed from the exact
+> walk the dump uses — beside C's own `picture_sse_calculations`; when they
+> disagree the file is garbage. `SVTAV1_BD10_POSTPASS` reports which canvas is
+> live. `tools/bd10_recon_parity_gate.sh` pins recon identity against C so this
+> class cannot regress silently again, and `identity_diff.sh` now forwards
+> `SVTAV1_BD` to the C driver (it previously compared a 10-bit port encode
+> against an 8-bit C encode and reported `high_bitdepth C=0 Rust=1`).
 
-Until (1) is fixed, the landed CDEF/LR searches also read the post-pass recon
-wherever it runs. That has NOT broken anything measurable — all nine gates are
-green, including the 18 bd10 non-flat cells at presets 1-6 that take both
-searches — but it is a known latent wrongness, not a proven-inert one.
+**p0..p5 PHOTOGRAPHIC IS STILL 0/54 — and the root is NOT the filter searches.**
+Measured after the above landed, on the group-A CID22 images x q{12,32,55} x
+p0..p5. The frame-header LF level does still differ on several cells
+(`1001682 q55 p3`: `loop_filter_level[2] C=9 Rust=16`; `4666751 q55 p0`:
+`loop_filter_level[0] C=41 Rust=38`) but that is a SYMPTOM: on those same cells
+the port's 10-bit recon differs from C's by **157001-265565 of 524288 bytes**,
+i.e. 30-50% of the plane, with the post-pass correctly declining
+(`runs=false`) so the FULL-RD funnel canvas is the one that diverges. A search
+fed a different recon must return a different level; nothing in the three
+filter searches can close this. At low qp it is unambiguous — `1001682 q12 p5`
+differs by 2648 tile bytes (59186 vs 61834), which is MD, not filter syntax.
 
-`diag 128x128 q32 p0` is a SEPARATE issue from both: its tile diverges at op
-163 (`CDF13:s12` vs `s0`), i.e. mid-tile MD, so at p0 the mode/partition
-stream itself differs and no filter-search fix can close it. p0's tile is also
-191 bytes off C (22016 vs 21825) — far more than filter syntax can account
-for, unlike p6's pre-fix 12 bytes.
+So the next root for photographic p0..p5 is **the bd10 FULL-RD funnel's mode
+decision on real content**, and it should be attacked with the recon dump
+(first divergent superblock) rather than the bitstream. `diag 128x128 q32 p0`
+is the same class: its tile diverges at op 163 (`CDF13:s12` vs `s0`), i.e.
+mid-tile MD, and its tile is 191 bytes off C (22016 vs 21825) — far more than
+filter syntax can account for.
