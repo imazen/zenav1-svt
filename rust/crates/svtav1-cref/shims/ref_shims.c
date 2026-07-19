@@ -562,6 +562,58 @@ void ref_cdef_filter_block_8bit(uint8_t* dst, int32_t dstride, const uint8_t* in
                                  subsampling_factor);
 }
 
+/* dst16 arm — the one the 10-bit (is_16bit) pipeline takes: cdef_seg_search
+   passes `svt_cdef_filter_fb(NULL, tmp_dst, ...)` at is_16bit, which reaches
+   svt_cdef_filter_block_c with dst8 == NULL. Same `in` layout as the dst8 arm
+   above. */
+void ref_cdef_filter_block_16(uint16_t* dst, int32_t dstride, const uint16_t* in, int32_t pri_strength,
+                              int32_t sec_strength, int32_t dir, int32_t pri_damping, int32_t sec_damping,
+                              int32_t bsize, int32_t coeff_shift, uint8_t subsampling_factor) {
+    svt_cdef_filter_block_c(NULL, dst, dstride, in, pri_strength, sec_strength, dir, pri_damping, sec_damping,
+                            bsize, coeff_shift, subsampling_factor);
+}
+
+/* ---- CDEF search distortion (enc_cdef.c) ----
+   NOTE the C parameter naming is inverted relative to the call site: in
+   cdef_seg_search `dst` receives the SOURCE picture (with the fb offset +
+   the picture stride) and `src` receives the PACKED filtered blocks
+   (tmp_dst). These shims keep C's parameter names so the signature matches
+   the header, and the Rust side documents the roles. */
+uint64_t svt_aom_compute_cdef_dist_16bit_c(const uint16_t* dst, int32_t dstride, const uint16_t* src,
+                                           const CdefList* dlist, int32_t cdef_count, BlockSize bsize,
+                                           int32_t coeff_shift, uint8_t subsampling_factor);
+uint64_t svt_aom_compute_cdef_dist_8bit_c(const uint8_t* dst8, int32_t dstride, const uint8_t* src8,
+                                          const CdefList* dlist, int32_t cdef_count, BlockSize bsize,
+                                          int32_t coeff_shift, uint8_t subsampling_factor);
+
+/* dlist is passed as flat (by, bx) byte pairs so Rust need not know the
+   CdefList layout; skip_cdef/… fields are unused by the dist kernels. */
+static void ref_fill_dlist(CdefList* dl, const uint8_t* byx, int32_t n) {
+    for (int32_t i = 0; i < n; i++) {
+        memset(&dl[i], 0, sizeof(dl[i]));
+        dl[i].by = byx[2 * i];
+        dl[i].bx = byx[2 * i + 1];
+    }
+}
+
+uint64_t ref_compute_cdef_dist_16bit(const uint16_t* plane, int32_t dstride, const uint16_t* packed,
+                                     const uint8_t* byx, int32_t cdef_count, int32_t bsize, int32_t coeff_shift,
+                                     uint8_t subsampling_factor) {
+    CdefList dl[64 * 64];
+    ref_fill_dlist(dl, byx, cdef_count);
+    return svt_aom_compute_cdef_dist_16bit_c(
+        plane, dstride, packed, dl, cdef_count, (BlockSize)bsize, coeff_shift, subsampling_factor);
+}
+
+uint64_t ref_compute_cdef_dist_8bit(const uint8_t* plane, int32_t dstride, const uint8_t* packed,
+                                    const uint8_t* byx, int32_t cdef_count, int32_t bsize, int32_t coeff_shift,
+                                    uint8_t subsampling_factor) {
+    CdefList dl[64 * 64];
+    ref_fill_dlist(dl, byx, cdef_count);
+    return svt_aom_compute_cdef_dist_8bit_c(
+        plane, dstride, packed, dl, cdef_count, (BlockSize)bsize, coeff_shift, subsampling_factor);
+}
+
 /* ---- CDEF strength-from-QP picker (svt_pick_cdef_from_qp is static; this
    replicates its intra branch verbatim from enc_cdef.c:849 against the
    REAL svt_aom_ac_quant_qtx, pinning the C float-expression semantics the
@@ -667,6 +719,110 @@ void ref_extend_frame(uint8_t* data, int32_t width, int32_t height, int32_t stri
                       int32_t border_vert) {
     ref_rtcd_once();
     svt_extend_frame(data, width, height, stride, border_horz, border_vert, /*highbd*/ 0);
+}
+
+/* ---- Loop restoration, HIGHBD arm (the is_16bit / 10-bit pipeline) ----
+   Every highbd entry below takes a real uint16_t* from Rust and hands C the
+   CONVERT_TO_BYTEPTR form (definitions.h:1020, the libaom pointer>>1 trick)
+   that the C signatures expect. */
+
+void svt_av1_highbd_wiener_convolve_add_src_c(const uint8_t* const src, const ptrdiff_t src_stride,
+                                              uint8_t* const dst, const ptrdiff_t dst_stride,
+                                              const int16_t* const filter_x, const int16_t* const filter_y,
+                                              const int32_t w, const int32_t h,
+                                              const ConvolveParams* const conv_params, const int32_t bd);
+void svt_av1_compute_stats_highbd_c(int32_t wiener_win, const uint8_t* dgd8, const uint8_t* src8, int32_t h_start,
+                                    int32_t h_end, int32_t v_start, int32_t v_end, int32_t dgd_stride,
+                                    int32_t src_stride, int64_t* M, int64_t* H, EbBitDepth bit_depth);
+int64_t svt_aom_highbd_get_sse(const uint8_t* a, int a_stride, const uint8_t* b, int b_stride, int width,
+                               int height);
+
+void ref_highbd_wiener_convolve_add_src(const uint16_t* src, int32_t src_stride, uint16_t* dst, int32_t dst_stride,
+                                        const int16_t* filter_x, const int16_t* filter_y, int32_t w, int32_t h,
+                                        int32_t bd) {
+    ref_rtcd_once();
+    _Alignas(16) int16_t fx[8];
+    _Alignas(16) int16_t fy[8];
+    memcpy(fx, filter_x, sizeof(fx));
+    memcpy(fy, filter_y, sizeof(fy));
+    const ConvolveParams conv_params = get_conv_params_wiener(bd);
+    svt_av1_highbd_wiener_convolve_add_src_c(CONVERT_TO_BYTEPTR(src),
+                                             src_stride,
+                                             CONVERT_TO_BYTEPTR(dst),
+                                             dst_stride,
+                                             fx,
+                                             fy,
+                                             w,
+                                             h,
+                                             &conv_params,
+                                             bd);
+}
+
+void ref_compute_stats_highbd(int32_t wiener_win, const uint16_t* dgd, const uint16_t* src, int32_t h_start,
+                              int32_t h_end, int32_t v_start, int32_t v_end, int32_t dgd_stride,
+                              int32_t src_stride, int64_t* m, int64_t* h, int32_t bit_depth) {
+    svt_av1_compute_stats_highbd_c(wiener_win,
+                                   CONVERT_TO_BYTEPTR(dgd),
+                                   CONVERT_TO_BYTEPTR(src),
+                                   h_start,
+                                   h_end,
+                                   v_start,
+                                   v_end,
+                                   dgd_stride,
+                                   src_stride,
+                                   m,
+                                   h,
+                                   (EbBitDepth)bit_depth);
+}
+
+int64_t ref_highbd_get_sse(const uint16_t* a, int32_t a_stride, const uint16_t* b, int32_t b_stride, int32_t width,
+                           int32_t height) {
+    return svt_aom_highbd_get_sse(CONVERT_TO_BYTEPTR(a), a_stride, CONVERT_TO_BYTEPTR(b), b_stride, width, height);
+}
+
+void ref_extend_frame_highbd(uint16_t* data, int32_t width, int32_t height, int32_t stride, int32_t border_horz,
+                             int32_t border_vert) {
+    ref_rtcd_once();
+    svt_extend_frame(CONVERT_TO_BYTEPTR(data), width, height, stride, border_horz, border_vert, /*highbd*/ 1);
+}
+
+/* Search-path unit filter: need_boundaries = 0 (use_boundaries_in_rest_search
+   = 0, enc_handle.c:4483), so the stripe-boundary save/restore never runs and
+   the boundary buffers are unused. */
+void ref_loop_restoration_filter_unit_highbd(int32_t h_start, int32_t h_end, int32_t v_start, int32_t v_end,
+                                             int32_t rtype, const int16_t* vfilter, const int16_t* hfilter,
+                                             int32_t tile_left, int32_t tile_top, int32_t tile_right,
+                                             int32_t tile_bottom, int32_t tile_stripe0, int32_t ss_x, int32_t ss_y,
+                                             int32_t bit_depth, uint16_t* data, int32_t stride, uint16_t* dst,
+                                             int32_t dst_stride) {
+    ref_rtcd_once();
+    RestorationTileLimits limits = {h_start, h_end, v_start, v_end};
+    Av1PixelRect          rect   = {tile_left, tile_top, tile_right, tile_bottom};
+    RestorationUnitInfo   rui;
+    memset(&rui, 0, sizeof(rui));
+    rui.restoration_type = (RestorationType)rtype;
+    memcpy(rui.wiener_info.vfilter, vfilter, 8 * sizeof(int16_t));
+    memcpy(rui.wiener_info.hfilter, hfilter, 8 * sizeof(int16_t));
+    RestorationStripeBoundaries rsb;
+    memset(&rsb, 0, sizeof(rsb));
+    static RestorationLineBuffers rlbs; /* large; single-threaded tests */
+    svt_av1_loop_restoration_filter_unit(/*need_boundaries*/ 0,
+                                         &limits,
+                                         &rui,
+                                         &rsb,
+                                         &rlbs,
+                                         &rect,
+                                         tile_stripe0,
+                                         ss_x,
+                                         ss_y,
+                                         /*highbd*/ 1,
+                                         bit_depth,
+                                         CONVERT_TO_BYTEPTR(data),
+                                         stride,
+                                         CONVERT_TO_BYTEPTR(dst),
+                                         dst_stride,
+                                         /*tmpbuf*/ NULL,
+                                         /*optimized_lr*/ 0);
 }
 
 /* Subexp-with-reference bit chain (tap coding). Returns the coded byte

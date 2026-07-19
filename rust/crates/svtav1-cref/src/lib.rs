@@ -943,6 +943,39 @@ unsafe extern "C" {
         coeff_shift: i32,
         subsampling_factor: u8,
     );
+    fn ref_cdef_filter_block_16(
+        dst: *mut u16,
+        dstride: i32,
+        input: *const u16,
+        pri_strength: i32,
+        sec_strength: i32,
+        dir: i32,
+        pri_damping: i32,
+        sec_damping: i32,
+        bsize: i32,
+        coeff_shift: i32,
+        subsampling_factor: u8,
+    );
+    fn ref_compute_cdef_dist_16bit(
+        plane: *const u16,
+        dstride: i32,
+        packed: *const u16,
+        byx: *const u8,
+        cdef_count: i32,
+        bsize: i32,
+        coeff_shift: i32,
+        subsampling_factor: u8,
+    ) -> u64;
+    fn ref_compute_cdef_dist_8bit(
+        plane: *const u8,
+        dstride: i32,
+        packed: *const u8,
+        byx: *const u8,
+        cdef_count: i32,
+        bsize: i32,
+        coeff_shift: i32,
+        subsampling_factor: u8,
+    ) -> u64;
 }
 
 /// Reference `svt_aom_cdef_find_dir_c`: 8x8 direction search over 16-bit
@@ -1040,6 +1073,110 @@ pub fn cdef_filter_block_8bit(
     }
 }
 
+/// Reference `svt_cdef_filter_block_c` **dst16 arm** — the store path the
+/// `is_16bit` (10-bit) pipeline takes (`svt_cdef_filter_fb` passes
+/// `dst8 = NULL, dst16 = tmp_dst` at `is_16bit`, cdef_process.c:527-528).
+#[allow(clippy::too_many_arguments)]
+pub fn cdef_filter_block_16(
+    dst: &mut [u16],
+    doff: usize,
+    dstride: usize,
+    inb: &[u16],
+    ioff: usize,
+    pri_strength: i32,
+    sec_strength: i32,
+    dir: i32,
+    pri_damping: i32,
+    sec_damping: i32,
+    bsize: i32,
+    coeff_shift: i32,
+    subsampling_factor: u8,
+) {
+    const TAP_REACH: usize = 2 * 144 + 2;
+    assert!(ioff >= TAP_REACH);
+    assert!(ioff + 7 * 144 + 7 + TAP_REACH < inb.len());
+    assert!(doff + 7 * dstride + 8 <= dst.len());
+    assert!((0..=7).contains(&dir));
+    unsafe {
+        ref_cdef_filter_block_16(
+            dst.as_mut_ptr().add(doff),
+            dstride as i32,
+            inb.as_ptr().add(ioff),
+            pri_strength,
+            sec_strength,
+            dir,
+            pri_damping,
+            sec_damping,
+            bsize,
+            coeff_shift,
+            subsampling_factor,
+        );
+    }
+}
+
+/// Reference `svt_aom_compute_cdef_dist_16bit_c` (enc_cdef.c:77).
+///
+/// C's parameter names are inverted relative to its only call site: `plane`
+/// here is C's `dst` (the SOURCE picture, already offset to the filter
+/// block's top-left, at the picture stride `dstride`) and `packed` is C's
+/// `src` (the tmp_dst buffer of packed filtered blocks). `byx` is the dlist
+/// as flat `(by, bx)` pairs.
+#[allow(clippy::too_many_arguments)]
+pub fn compute_cdef_dist_16bit(
+    plane: &[u16],
+    plane_off: usize,
+    dstride: usize,
+    packed: &[u16],
+    dlist: &[(u8, u8)],
+    bsize: i32,
+    coeff_shift: i32,
+    subsampling_factor: u8,
+) -> u64 {
+    let byx: Vec<u8> = dlist.iter().flat_map(|&(by, bx)| [by, bx]).collect();
+    assert!(plane_off <= plane.len());
+    unsafe {
+        ref_compute_cdef_dist_16bit(
+            plane.as_ptr().add(plane_off),
+            dstride as i32,
+            packed.as_ptr(),
+            byx.as_ptr(),
+            dlist.len() as i32,
+            bsize,
+            coeff_shift,
+            subsampling_factor,
+        )
+    }
+}
+
+/// Reference `svt_aom_compute_cdef_dist_8bit_c` (enc_cdef.c:114). Same
+/// inverted naming as [`compute_cdef_dist_16bit`].
+#[allow(clippy::too_many_arguments)]
+pub fn compute_cdef_dist_8bit(
+    plane: &[u8],
+    plane_off: usize,
+    dstride: usize,
+    packed: &[u8],
+    dlist: &[(u8, u8)],
+    bsize: i32,
+    coeff_shift: i32,
+    subsampling_factor: u8,
+) -> u64 {
+    let byx: Vec<u8> = dlist.iter().flat_map(|&(by, bx)| [by, bx]).collect();
+    assert!(plane_off <= plane.len());
+    unsafe {
+        ref_compute_cdef_dist_8bit(
+            plane.as_ptr().add(plane_off),
+            dstride as i32,
+            packed.as_ptr(),
+            byx.as_ptr(),
+            dlist.len() as i32,
+            bsize,
+            coeff_shift,
+            subsampling_factor,
+        )
+    }
+}
+
 // ---- CDEF strength picker (intra branch, C float semantics) ----
 
 unsafe extern "C" {
@@ -1129,6 +1266,235 @@ unsafe extern "C" {
     );
     fn ref_write_refsubexpfin_bytes(n: u16, k: u16, r: u16, v: u16, out: *mut u8, cap: u32) -> u32;
     fn ref_count_refsubexpfin(n: u16, k: u16, r: u16, v: u16) -> i32;
+
+    // ---- highbd arm (the is_16bit / 10-bit pipeline) ----
+    fn ref_highbd_wiener_convolve_add_src(
+        src: *const u16,
+        src_stride: i32,
+        dst: *mut u16,
+        dst_stride: i32,
+        filter_x: *const i16,
+        filter_y: *const i16,
+        w: i32,
+        h: i32,
+        bd: i32,
+    );
+    fn ref_compute_stats_highbd(
+        wiener_win: i32,
+        dgd: *const u16,
+        src: *const u16,
+        h_start: i32,
+        h_end: i32,
+        v_start: i32,
+        v_end: i32,
+        dgd_stride: i32,
+        src_stride: i32,
+        m: *mut i64,
+        h: *mut i64,
+        bit_depth: i32,
+    );
+    fn ref_highbd_get_sse(
+        a: *const u16,
+        a_stride: i32,
+        b: *const u16,
+        b_stride: i32,
+        width: i32,
+        height: i32,
+    ) -> i64;
+    fn ref_extend_frame_highbd(
+        data: *mut u16,
+        width: i32,
+        height: i32,
+        stride: i32,
+        border_horz: i32,
+        border_vert: i32,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn ref_loop_restoration_filter_unit_highbd(
+        h_start: i32,
+        h_end: i32,
+        v_start: i32,
+        v_end: i32,
+        rtype: i32,
+        vfilter: *const i16,
+        hfilter: *const i16,
+        tile_left: i32,
+        tile_top: i32,
+        tile_right: i32,
+        tile_bottom: i32,
+        tile_stripe0: i32,
+        ss_x: i32,
+        ss_y: i32,
+        bit_depth: i32,
+        data: *mut u16,
+        stride: i32,
+        dst: *mut u16,
+        dst_stride: i32,
+    );
+}
+
+/// Reference `svt_av1_highbd_wiener_convolve_add_src_c` (convolve.c:200).
+/// Same margin contract as the 8-bit [`wiener_convolve_add_src`].
+#[allow(clippy::too_many_arguments)]
+pub fn highbd_wiener_convolve_add_src(
+    src: &[u16],
+    src_origin: usize,
+    src_stride: usize,
+    dst: &mut [u16],
+    dst_origin: usize,
+    dst_stride: usize,
+    hfilter: &[i16; 8],
+    vfilter: &[i16; 8],
+    w: usize,
+    h: usize,
+    bd: i32,
+) {
+    assert!(src_origin >= 3 * src_stride + 3);
+    assert!(src_origin + (h + 2) * src_stride + w + 4 <= src.len());
+    assert!(dst_origin + (h - 1) * dst_stride + w <= dst.len());
+    unsafe {
+        ref_highbd_wiener_convolve_add_src(
+            src.as_ptr().add(src_origin),
+            src_stride as i32,
+            dst.as_mut_ptr().add(dst_origin),
+            dst_stride as i32,
+            hfilter.as_ptr(),
+            vfilter.as_ptr(),
+            w as i32,
+            h as i32,
+            bd,
+        );
+    }
+}
+
+/// Reference `svt_av1_compute_stats_highbd_c` (restoration_pick.c:692).
+#[allow(clippy::too_many_arguments)]
+pub fn compute_stats_highbd(
+    wiener_win: usize,
+    dgd: &[u16],
+    dgd_origin: usize,
+    dgd_stride: usize,
+    src: &[u16],
+    src_origin: usize,
+    src_stride: usize,
+    h_start: i32,
+    h_end: i32,
+    v_start: i32,
+    v_end: i32,
+    m: &mut [i64],
+    h: &mut [i64],
+    bit_depth: i32,
+) {
+    unsafe {
+        ref_compute_stats_highbd(
+            wiener_win as i32,
+            dgd.as_ptr().add(dgd_origin),
+            src.as_ptr().add(src_origin),
+            h_start,
+            h_end,
+            v_start,
+            v_end,
+            dgd_stride as i32,
+            src_stride as i32,
+            m.as_mut_ptr(),
+            h.as_mut_ptr(),
+            bit_depth,
+        );
+    }
+}
+
+/// Reference `svt_aom_highbd_get_sse` (svt_psnr.c) — the kernel behind
+/// `svt_aom_highbd_get_{y,u,v}_sse_part`, i.e. the LR search's
+/// `sse_restoration_unit` at `highbd = 1`.
+#[allow(clippy::too_many_arguments)]
+pub fn highbd_get_sse(
+    a: &[u16],
+    a_origin: usize,
+    a_stride: usize,
+    b: &[u16],
+    b_origin: usize,
+    b_stride: usize,
+    width: usize,
+    height: usize,
+) -> i64 {
+    unsafe {
+        ref_highbd_get_sse(
+            a.as_ptr().add(a_origin),
+            a_stride as i32,
+            b.as_ptr().add(b_origin),
+            b_stride as i32,
+            width as i32,
+            height as i32,
+        )
+    }
+}
+
+/// Reference `svt_extend_frame` at `highbd = 1` (restoration.c).
+pub fn extend_frame_highbd(
+    data: &mut [u16],
+    origin: usize,
+    width: usize,
+    height: usize,
+    stride: usize,
+    border_horz: usize,
+    border_vert: usize,
+) {
+    unsafe {
+        ref_extend_frame_highbd(
+            data.as_mut_ptr().add(origin),
+            width as i32,
+            height as i32,
+            stride as i32,
+            border_horz as i32,
+            border_vert as i32,
+        );
+    }
+}
+
+/// Reference `svt_av1_loop_restoration_filter_unit` at `highbd = 1`,
+/// `need_boundaries = 0` — the SEARCH path
+/// (`use_boundaries_in_rest_search = 0`).
+#[allow(clippy::too_many_arguments)]
+pub fn loop_restoration_filter_unit_highbd(
+    limits: (i32, i32, i32, i32),
+    rtype: i32,
+    vfilter: &[i16; 8],
+    hfilter: &[i16; 8],
+    tile_rect: (i32, i32, i32, i32),
+    tile_stripe0: i32,
+    ss_x: i32,
+    ss_y: i32,
+    bit_depth: i32,
+    data: &mut [u16],
+    data_origin: usize,
+    stride: usize,
+    dst: &mut [u16],
+    dst_origin: usize,
+    dst_stride: usize,
+) {
+    unsafe {
+        ref_loop_restoration_filter_unit_highbd(
+            limits.0,
+            limits.1,
+            limits.2,
+            limits.3,
+            rtype,
+            vfilter.as_ptr(),
+            hfilter.as_ptr(),
+            tile_rect.0,
+            tile_rect.1,
+            tile_rect.2,
+            tile_rect.3,
+            tile_stripe0,
+            ss_x,
+            ss_y,
+            bit_depth,
+            data.as_mut_ptr().add(data_origin),
+            stride as i32,
+            dst.as_mut_ptr().add(dst_origin),
+            dst_stride as i32,
+        );
+    }
 }
 
 /// Reference `svt_av1_wiener_convolve_add_src_c`. `src_origin`/`dst_origin`

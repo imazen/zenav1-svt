@@ -384,3 +384,221 @@ fn filter_block_8bit_matches_c() {
         );
     }
 }
+
+// =============================================================================
+// HIGHBD (is_16bit / 10-bit pipeline) arms.
+//
+// These two kernels are what the bd10 CDEF strength SEARCH runs per filter
+// block: `svt_cdef_filter_fb` at `is_16bit` calls `svt_cdef_filter_block_c`
+// with `dst8 = NULL, dst16 = tmp_dst` (cdef_process.c:527-528), then
+// `compute_cdef_dist` dispatches to `svt_aom_compute_cdef_dist_16bit_c`
+// (cdef_process.c:246). Both were previously untested — `cdef_filter_block_hbd`
+// carried a `PORT-NOTE(unverified)` and the dist kernel had no hbd port at all.
+// They are load-bearing for the bd10 search, so they are differentially
+// pinned against the REAL exported C symbols here.
+// =============================================================================
+
+/// The `dst16` store arm of `svt_cdef_filter_block_c`, over the same
+/// randomized/border/torture coverage as the `dst8` arm above, with the
+/// coeff_shift = 2 (10-bit) domain oversampled — that is the only domain in
+/// which this arm is reachable.
+#[test]
+fn filter_block_hbd_dst16_matches_c() {
+    let mut rng = Rng(0x16B1_7DEF);
+    let mut inb = vec![0u16; cdef::CDEF_INBUF_SIZE];
+    let bsizes = [
+        cdef::BLOCK_4X4,
+        cdef::BLOCK_4X8,
+        cdef::BLOCK_8X4,
+        cdef::BLOCK_8X8,
+    ];
+    let mut seen_shift2 = 0u32;
+    for round in 0..3000u32 {
+        let torture = round % 10 == 9;
+        if torture {
+            for v in inb.iter_mut() {
+                *v = rng.next() as u16;
+            }
+        } else {
+            // 10-bit content: pixels in 0..=1023, plus the CDEF_VERY_LARGE
+            // sentinel borders the search's `build_src` writes off-frame.
+            for v in inb.iter_mut() {
+                *v = (rng.next() % 1024) as u16;
+            }
+            apply_borders(rng.range(8) as u32, &mut rng, &mut inb);
+        }
+        // coeff_shift 2 dominates (the bd10 domain); 0 kept as a control.
+        let coeff_shift = if round % 5 == 4 { 0 } else { 2 };
+        if coeff_shift == 2 {
+            seen_shift2 += 1;
+        }
+        let pri = (rng.range(16) as i32) << coeff_shift;
+        let sec = ([0, 1, 2, 4][rng.range(4) as usize]) << coeff_shift;
+        let dir = rng.range(8) as i32;
+        // C: `damping += coeff_shift - (pli != PLANE_Y)`, damping base 3..=6.
+        let pd = 3 + rng.range(4) as i32 + coeff_shift - i32::from(round % 3 == 0);
+        let sd = pd;
+        let bsize = bsizes[rng.range(4) as usize];
+        let sub = 1 + rng.range(2) as usize;
+
+        let mut ours = [0xAAAAu16; 64];
+        let mut theirs = [0xAAAAu16; 64];
+        svtav1_dsp::hbd::cdef_filter_block_hbd(
+            &mut ours,
+            0,
+            8,
+            &inb,
+            IOFF,
+            pri,
+            sec,
+            dir,
+            pd,
+            sd,
+            bsize,
+            coeff_shift,
+            sub,
+        );
+        cref::cdef_filter_block_16(
+            &mut theirs,
+            0,
+            8,
+            &inb,
+            IOFF,
+            pri,
+            sec,
+            dir,
+            pd,
+            sd,
+            bsize,
+            coeff_shift,
+            sub as u8,
+        );
+        assert_eq!(
+            ours.as_slice(),
+            theirs.as_slice(),
+            "hbd dst16 kernel diverges: round {round} pri {pri} sec {sec} dir {dir} \
+             damping {pd}/{sd} bsize {bsize} shift {coeff_shift} sub {sub} \
+             ({})",
+            if torture { "torture-u16" } else { "10-bit" }
+        );
+    }
+    assert!(seen_shift2 > 2000, "coverage: coeff_shift=2 must dominate");
+}
+
+/// `svt_aom_compute_cdef_dist_16bit_c` (enc_cdef.c:77) — the bd10 search's
+/// per-filter-block distortion, including the `sum >> 2 * coeff_shift`
+/// normalization back to the 8-bit scale.
+#[test]
+fn compute_cdef_dist_16bit_matches_c() {
+    let mut rng = Rng(0xD157_16B1);
+    // Plane the SOURCE is read from (C's `dst` parameter) and the packed
+    // filtered blocks (C's `src`).
+    let plane_w = 128usize;
+    let mut plane = vec![0u16; plane_w * 128];
+    let mut packed = vec![0u16; 64 * 64];
+    for (bsize, dim) in [
+        (cdef::BLOCK_8X8, 8usize),
+        (cdef::BLOCK_4X4, 4),
+        (cdef::BLOCK_4X8, 4),
+        (cdef::BLOCK_8X4, 8),
+    ] {
+        for round in 0..250u32 {
+            for v in plane.iter_mut() {
+                *v = (rng.next() % 1024) as u16;
+            }
+            for v in packed.iter_mut() {
+                *v = (rng.next() % 1024) as u16;
+            }
+            let count = 1 + rng.range(16) as usize;
+            let dlist: Vec<(u8, u8)> = (0..count)
+                .map(|i| ((i / 4) as u8, (i % 4) as u8))
+                .collect();
+            let coeff_shift = if round % 4 == 3 { 0 } else { 2 };
+            let sub = if bsize == cdef::BLOCK_4X4 {
+                1
+            } else {
+                1 + rng.range(2) as u8
+            };
+            let plane_off = (rng.range(8) as usize) * plane_w + rng.range(8) as usize;
+            let ours = svtav1_dsp::cdef::compute_cdef_dist_16bit(
+                &plane,
+                plane_off,
+                plane_w,
+                &packed,
+                &dlist,
+                bsize,
+                coeff_shift,
+                sub as usize,
+            );
+            let theirs = cref::compute_cdef_dist_16bit(
+                &plane,
+                plane_off,
+                plane_w,
+                &packed,
+                &dlist,
+                bsize,
+                coeff_shift,
+                sub,
+            );
+            assert_eq!(
+                ours, theirs,
+                "cdef dist 16bit diverges: bsize {bsize} (dim {dim}) count {count} \
+                 shift {coeff_shift} sub {sub} off {plane_off}"
+            );
+        }
+    }
+}
+
+/// The 8-bit twin of the same kernel — the port's existing `dist_packed`
+/// was hand-inlined in the encoder with no differential; this pins the
+/// shared implementation the bd8 search now routes through, so the bd10
+/// wiring cannot silently change bd8 behaviour.
+#[test]
+fn compute_cdef_dist_8bit_matches_c() {
+    let mut rng = Rng(0xD157_08B1);
+    let plane_w = 128usize;
+    let mut plane = vec![0u8; plane_w * 128];
+    let mut packed = vec![0u8; 64 * 64];
+    for bsize in [
+        cdef::BLOCK_8X8,
+        cdef::BLOCK_4X4,
+        cdef::BLOCK_4X8,
+        cdef::BLOCK_8X4,
+    ] {
+        for round in 0..250u32 {
+            for v in plane.iter_mut() {
+                *v = rng.byte();
+            }
+            for v in packed.iter_mut() {
+                *v = rng.byte();
+            }
+            let count = 1 + rng.range(16) as usize;
+            let dlist: Vec<(u8, u8)> = (0..count)
+                .map(|i| ((i / 4) as u8, (i % 4) as u8))
+                .collect();
+            let sub = if bsize == cdef::BLOCK_4X4 {
+                1
+            } else {
+                1 + rng.range(2) as u8
+            };
+            let plane_off = (rng.range(8) as usize) * plane_w + rng.range(8) as usize;
+            let _ = round;
+            let ours = svtav1_dsp::cdef::compute_cdef_dist_8bit(
+                &plane,
+                plane_off,
+                plane_w,
+                &packed,
+                &dlist,
+                bsize,
+                0,
+                sub as usize,
+            );
+            let theirs =
+                cref::compute_cdef_dist_8bit(&plane, plane_off, plane_w, &packed, &dlist, bsize, 0, sub);
+            assert_eq!(
+                ours, theirs,
+                "cdef dist 8bit diverges: bsize {bsize} count {count} sub {sub} off {plane_off}"
+            );
+        }
+    }
+}

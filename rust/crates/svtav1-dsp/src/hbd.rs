@@ -1350,8 +1350,13 @@ pub fn lpf_vertical_14_hbd(buf: &mut [u16], off: usize, pitch: usize, t: LfThres
 // counterpart at all — it already takes `&[u16]` and is bit-depth-generic
 // as-is; reuse it directly, zero new code.
 //
-// PORT-NOTE(unverified): verify vs FFI parity once wired (mirroring
-// `tests/c_parity_cdef.rs`'s bd8 coverage, extended to a dst16 assertion).
+// VERIFIED (2026-07-19): `tests/c_parity_cdef.rs::filter_block_hbd_dst16
+// _matches_c` drives the REAL `svt_cdef_filter_block_c` through its dst16 arm
+// (`ref_cdef_filter_block_16`) over 3000 randomized rounds — 10-bit content,
+// every border pattern, all four block shapes, raw-u16 torture, sub=1/2, and
+// the coeff_shift=2 domain oversampled 4:1 (that being the only domain this
+// arm is reachable in). The former PORT-NOTE(unverified) is discharged; the
+// kernel is now load-bearing for the bd10 CDEF strength search.
 // =============================================================================
 
 use crate::cdef::{BLOCK_4X8, BLOCK_8X4, BLOCK_8X8, CDEF_BSTRIDE, CDEF_VERY_LARGE};

@@ -515,3 +515,91 @@ mod tests {
         assert_eq!(adjust_strength(12, 1 << 18), 12);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Search-side distortion (enc_cdef.c) — shared by the bd8 and bd10 searches.
+// ---------------------------------------------------------------------------
+
+/// The (by, bx) block dims and packed-block stride shift for a CDEF
+/// `plane_bsize` — C's four-way switch in `svt_aom_compute_cdef_dist_*_c`.
+/// Returns `(block_w, block_h)`; the packed offset for block `bi` is
+/// `bi << (log2(block_w) + log2(block_h))`, and the plane offset is
+/// `(by << log2(block_h)) * stride + (bx << log2(block_w))`.
+#[inline]
+fn cdef_dist_block_dims(bsize: i32) -> (usize, usize) {
+    match bsize {
+        BLOCK_8X8 => (8, 8),
+        BLOCK_4X8 => (4, 8),
+        BLOCK_8X4 => (8, 4),
+        _ => (4, 4),
+    }
+}
+
+/// C `svt_aom_compute_cdef_dist_16bit_c` (enc_cdef.c:77) — the bd10/bd12
+/// search's per-filter-block distortion.
+///
+/// `plane` is the SOURCE picture (C's `dst` parameter — the naming is
+/// inverted at the only call site, cdef_process.c:541-551), `plane_off` the
+/// filter block's top-left, `pstride` the picture stride. `packed` is C's
+/// `src`: `tmp_dst`, the filtered blocks packed back-to-back.
+#[allow(clippy::too_many_arguments)]
+pub fn compute_cdef_dist_16bit(
+    plane: &[u16],
+    plane_off: usize,
+    pstride: usize,
+    packed: &[u16],
+    dlist: &[(u8, u8)],
+    bsize: i32,
+    coeff_shift: i32,
+    subsampling_factor: usize,
+) -> u64 {
+    let (bw, bh) = cdef_dist_block_dims(bsize);
+    let (lw, lh) = (bw.trailing_zeros() as usize, bh.trailing_zeros() as usize);
+    let mut sum = 0u64;
+    for (bi, &(by, bx)) in dlist.iter().enumerate() {
+        let poff = plane_off + ((by as usize) << lh) * pstride + ((bx as usize) << lw);
+        let packed_off = bi << (lw + lh);
+        let mut i = 0usize;
+        while i < bh {
+            for j in 0..bw {
+                let e = plane[poff + i * pstride + j] as i32
+                    - packed[packed_off + i * bw + j] as i32;
+                sum += (e * e) as u64;
+            }
+            i += subsampling_factor;
+        }
+    }
+    sum >> (2 * coeff_shift)
+}
+
+/// C `svt_aom_compute_cdef_dist_8bit_c` (enc_cdef.c:114). Same parameter
+/// roles as [`compute_cdef_dist_16bit`].
+#[allow(clippy::too_many_arguments)]
+pub fn compute_cdef_dist_8bit(
+    plane: &[u8],
+    plane_off: usize,
+    pstride: usize,
+    packed: &[u8],
+    dlist: &[(u8, u8)],
+    bsize: i32,
+    coeff_shift: i32,
+    subsampling_factor: usize,
+) -> u64 {
+    let (bw, bh) = cdef_dist_block_dims(bsize);
+    let (lw, lh) = (bw.trailing_zeros() as usize, bh.trailing_zeros() as usize);
+    let mut sum = 0u64;
+    for (bi, &(by, bx)) in dlist.iter().enumerate() {
+        let poff = plane_off + ((by as usize) << lh) * pstride + ((bx as usize) << lw);
+        let packed_off = bi << (lw + lh);
+        let mut i = 0usize;
+        while i < bh {
+            for j in 0..bw {
+                let e =
+                    plane[poff + i * pstride + j] as i32 - packed[packed_off + i * bw + j] as i32;
+                sum += (e * e) as u64;
+            }
+            i += subsampling_factor;
+        }
+    }
+    sum >> (2 * coeff_shift)
+}
