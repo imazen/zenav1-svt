@@ -135,10 +135,18 @@ git merge v4.3.0        # then re-run the gates; divergences are real work
 
 ## License
 
-The Rust port is **BSD-2-Clause** (`rust/*/Cargo.toml`). The SVT-AV1 C tree is
-BSD-3-Clause-Clear plus the Alliance for Open Media Patent License 1.0 — see
-[LICENSE.md](LICENSE.md), [LICENSE-BSD2.md](LICENSE-BSD2.md) and
-[PATENTS.md](PATENTS.md).
+The Rust port (`rust/`) is dual-licensed **AGPL-3.0-only OR a commercial
+license** — the standard Imazen "zen" model (same as zenavif et al.):
+[rust/LICENSE-AGPL3](rust/LICENSE-AGPL3) /
+[rust/LICENSE-COMMERCIAL](rust/LICENSE-COMMERCIAL). Use it under the AGPL, or
+[contact Imazen](https://imazen.io) for a commercial license.
+
+The SVT-AV1 **C tree** (`Source/`, `Docs/`, the build system) is unchanged
+upstream licensing: BSD-3-Clause-Clear plus the Alliance for Open Media Patent
+License 1.0 — see [LICENSE.md](LICENSE.md), [LICENSE-BSD2.md](LICENSE-BSD2.md)
+and [PATENTS.md](PATENTS.md). The Rust port is a derivative work of that
+BSD-licensed C source; its upstream attribution and patent terms are preserved,
+and relicensing the derivative is permitted by BSD-3-Clause-Clear.
 
 ## Acknowledgments
 
