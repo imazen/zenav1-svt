@@ -4343,17 +4343,36 @@ pub(crate) fn evaluate_leaf(
 
         // Full loop per uv candidate: coeff_rate + SSD distortion
         // (DIST_CALC_RESIDUAL — both planes summed).
+        //
+        // bd10 FULL-RD (task #94): C runs search_best_mds3_uv_mode ENTIRELY at
+        // hbd_md — `full_lambda = full_lambda_md[hbd_md ? EB_10_BIT_MD :
+        // EB_8_BIT_MD]` (product_coding_loop.c:7307) with 10-bit prediction/
+        // residual (:7397/:7415/:7429) and the 10-bit full-loop distortion
+        // (svt_aom_full_loop_uv, :7443). Deciding the uv mode on the u8
+        // `chroma_eval` + u8 `lambda` flips near-ties: on 1001682 q12 p5 block
+        // (0,0) the port picked UV_V_PRED where C picks UV_DC_PRED. Use the
+        // 10-bit twin at bd10; bd8 keeps `chroma_eval` and is byte-unchanged.
         let mut uv_rd: Vec<(u64, u64)> = Vec::with_capacity(uv_list.len());
         for &(uvm, uvd) in &uv_list {
-            let (u_out, v_out) = chroma_eval(fx, uvm, uvd);
-            uv_rd.push((
-                u_out.bits as u64 + v_out.bits as u64,
-                u_out.dist + v_out.dist,
-            ));
+            let (bits, dist) = match bd10_rd.as_ref() {
+                Some(b) => {
+                    let (u_out, v_out) = chroma_eval10(fx, b, uvm, uvd);
+                    (u_out.bits as u64 + v_out.bits as u64, u_out.dist + v_out.dist)
+                }
+                None => {
+                    let (u_out, v_out) = chroma_eval(fx, uvm, uvd);
+                    (u_out.bits as u64 + v_out.bits as u64, u_out.dist + v_out.dist)
+                }
+            };
+            uv_rd.push((bits, dist));
         }
 
         // Per distinct surviving luma mode (survivor order), pick the
-        // lowest-cost uv pair (strict less, list order on ties).
+        // lowest-cost uv pair (strict less, list order on ties). At bd10 the
+        // compare uses the SAME 10-bit lambda C prices this search with
+        // (`full_lambda_md[EB_10_BIT_MD]`, :7307/:7491), matching the 10-bit
+        // `uv_rd` above; bd8 takes the `None` arm and keeps the u8 `lambda`.
+        let uv_lambda = bd10_rd.as_ref().map_or(lambda, |b| b.lambda);
         let mut table = [(0u8, 0i8); 13];
         let mut mode_seen = [false; 13];
         for &ci in order1.iter().take(n3) {
@@ -4372,7 +4391,7 @@ pub(crate) fn evaluate_leaf(
                     fcr2 += pal_uv_no; // rd_cost.c:514 (inside uv fast rate)
                 }
                 let (bits, dist) = uv_rd[k];
-                let cost = rdcost(lambda, bits + fcr2, dist);
+                let cost = rdcost(uv_lambda, bits + fcr2, dist);
                 #[cfg(feature = "std")]
                 if std::env::var_os("SVTAV1_CANDDBG").is_some()
                     && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
@@ -5411,7 +5430,7 @@ pub(crate) fn evaluate_leaf(
                         + rates.cfl_alpha_fac_bits[cfl_signs as usize][1][(cfl_idx & 15) as usize]
                             as u64;
                 }
-            } else if cfl_gate && cfl_ind_uv && bd10_rd.is_none() {
+            } else if cfl_gate && cfl_ind_uv {
                 // C independent-uv CfL: cfl_prediction (ind_uv_avail branch,
                 // product_coding_loop.c:3888) forwards CfL, then
                 // check_best_indepedant_cfl (:3830, called :6875) keeps the
@@ -5433,6 +5452,14 @@ pub(crate) fn evaluate_leaf(
                     let (u2, v2) = chroma_eval(fx, arb_uv, arb_uvd);
                     u_out = u2;
                     v_out = v2;
+                    // bd10: the 10-bit chroma decision terms follow the re-key
+                    // (C re-runs the ind-uv-best chroma at hbd_md in
+                    // check_best_indepedant_cfl :3957-3995). Only fires at M0
+                    // (FILTER candidate, no :7063 pre-rewrite); the mds3 configs
+                    // pre-rewrote so this branch is a no-op there.
+                    if let Some(b) = bd10_rd.as_ref() {
+                        uv_out10 = Some(chroma_eval10(fx, b, arb_uv, arb_uvd));
+                    }
                     uv_mode_final = arb_uv;
                     uv_delta_final = arb_uvd;
                     let mut f =
@@ -5445,12 +5472,10 @@ pub(crate) fn evaluate_leaf(
                     }
                     fcr_final = f;
                 }
-                let best_uv_cost = rdcost(
-                    lambda,
-                    u_out.bits as u64 + v_out.bits as u64 + fcr_final,
-                    u_out.dist + v_out.dist,
-                );
-                // compute_cfl_ac_components: subsample the winning luma recon.
+                // compute_cfl_ac_components (u8): subsample the winning luma
+                // recon; the DC chroma base. Shared by both depths — at bd10
+                // the u8 chroma canvas still follows the CfL decision (carried
+                // for the pre-filter searches), so it is rebuilt from these.
                 let mut pred_buf_q3 = vec![0i16; svtav1_dsp::intra_pred::CFL_BUF_LINE * chh.max(1)];
                 cfl_ac_subsample(
                     y_recon,
@@ -5497,119 +5522,237 @@ pub(crate) fn evaluate_leaf(
                     filt_type_uv,
                     &mut v_dc,
                 );
-                // Alpha search: md_cfl_rd_pick_alpha (transform domain,
-                // spatial_dist=false internally), same call as M6.
-                let (cfl_idx, cfl_signs, cfl_rd) = md_cfl_rd_pick_alpha(
-                    &pred_buf_q3,
-                    &u_dc,
-                    &v_dc,
-                    fx.u_src,
-                    fx.v_src,
-                    fx.c_stride,
-                    c_off,
-                    cw,
-                    chh,
-                    cb_tsc,
-                    cb_dsc,
-                    cr_tsc,
-                    cr_dsc,
-                    &qt_u,
-                    &qt_v,
-                    frame,
-                    rates,
-                    do_rdoq,
-                    lambda,
-                    cand.mode as usize,
-                    cfg.cfl_itr_th,
-                );
-                if cfl_rd != MAX_MODE_COST {
-                    // cfl_uv_cost: the chosen-alpha CfL chroma TX in the MDS3
-                    // SPATIAL domain + the accurate CfL uv fast rate.
-                    let alpha_cb = cfl_idx_to_alpha(cfl_idx, cfl_signs, 0);
-                    let alpha_cr = cfl_idx_to_alpha(cfl_idx, cfl_signs, 1);
-                    let mut u_cfl = vec![0u8; cw * chh];
-                    let mut v_cfl = vec![0u8; cw * chh];
-                    svtav1_dsp::intra_pred::cfl_predict_lbd(
-                        &pred_buf_q3,
-                        &u_dc,
-                        cw,
-                        &mut u_cfl,
-                        cw,
-                        alpha_cb,
-                        cw,
-                        chh,
-                    );
-                    svtav1_dsp::intra_pred::cfl_predict_lbd(
-                        &pred_buf_q3,
-                        &v_dc,
-                        cw,
-                        &mut v_cfl,
-                        cw,
-                        alpha_cr,
-                        cw,
-                        chh,
-                    );
-                    let u_cfl_out = tx_unit(
-                        fx.u_src,
-                        fx.c_stride,
-                        c_off,
-                        &u_cfl,
-                        cw,
-                        0,
-                        cw,
-                        chh,
-                        0,
-                        1,
-                        cb_tsc,
-                        cb_dsc,
-                        0,
-                        &qt_u,
-                        frame,
-                        rates,
-                        do_rdoq,
-                        true,
-                    );
-                    let v_cfl_out = tx_unit(
-                        fx.v_src,
-                        fx.c_stride,
-                        c_off,
-                        &v_cfl,
-                        cw,
-                        0,
-                        cw,
-                        chh,
-                        0,
-                        1,
-                        cr_tsc,
-                        cr_dsc,
-                        0,
-                        &qt_v,
-                        frame,
-                        rates,
-                        do_rdoq,
-                        true,
-                    );
-                    let cfl_fast_rate = rates.uv[cfl_allowed][cand.mode as usize][UV_CFL_PRED_IDX]
-                        as u64
-                        + rates.cfl_alpha_fac_bits[cfl_signs as usize][0][(cfl_idx >> 4) as usize]
-                            as u64
-                        + rates.cfl_alpha_fac_bits[cfl_signs as usize][1][(cfl_idx & 15) as usize]
-                            as u64;
-                    let cfl_uv_cost = rdcost(
-                        lambda,
-                        u_cfl_out.bits as u64 + v_cfl_out.bits as u64 + cfl_fast_rate,
-                        u_cfl_out.dist + v_cfl_out.dist,
-                    );
-                    // check_best_indepedant_cfl (:3998): CfL wins iff strictly
-                    // cheaper than the best non-CfL uv (list/search order ties
-                    // keep non-CfL, matching C's `<` guard).
-                    if cfl_uv_cost < best_uv_cost {
-                        u_out = u_cfl_out;
-                        v_out = v_cfl_out;
-                        uv_mode_final = UV_CFL_PRED_IDX as u8;
-                        cfl_idx_final = cfl_idx;
-                        cfl_signs_final = cfl_signs;
-                        fcr_final = cfl_fast_rate;
+                // check_best_indepedant_cfl (product_coding_loop.c:3893): CfL vs
+                // the best non-CfL uv, BOTH in the MDS3 SPATIAL SSE domain,
+                // priced with `full_lambda_md[hbd_md ? EB_10_BIT_MD :
+                // EB_8_BIT_MD]` (:3899). At bd10 C runs the whole arbitration at
+                // 10 bits (hbd prediction / residual / full-loop). The port ran
+                // it u8-only (this branch was `&& bd10_rd.is_none()`), so no
+                // bd10 leaf below p6 could ever pick CfL while C does — the
+                // block (16,80) divergence on 1001682 q12 p5.
+                match &bd10_rd {
+                    None => {
+                        let best_uv_cost = rdcost(
+                            lambda,
+                            u_out.bits as u64 + v_out.bits as u64 + fcr_final,
+                            u_out.dist + v_out.dist,
+                        );
+                        // Alpha search: md_cfl_rd_pick_alpha (transform domain,
+                        // spatial_dist=false internally), same call as M6.
+                        let (cfl_idx, cfl_signs, cfl_rd) = md_cfl_rd_pick_alpha(
+                            &pred_buf_q3,
+                            &u_dc,
+                            &v_dc,
+                            fx.u_src,
+                            fx.v_src,
+                            fx.c_stride,
+                            c_off,
+                            cw,
+                            chh,
+                            cb_tsc,
+                            cb_dsc,
+                            cr_tsc,
+                            cr_dsc,
+                            &qt_u,
+                            &qt_v,
+                            frame,
+                            rates,
+                            do_rdoq,
+                            lambda,
+                            cand.mode as usize,
+                            cfg.cfl_itr_th,
+                        );
+                        if cfl_rd != MAX_MODE_COST {
+                            // cfl_uv_cost: the chosen-alpha CfL chroma TX in the
+                            // MDS3 SPATIAL domain + the accurate CfL uv fast rate.
+                            let alpha_cb = cfl_idx_to_alpha(cfl_idx, cfl_signs, 0);
+                            let alpha_cr = cfl_idx_to_alpha(cfl_idx, cfl_signs, 1);
+                            let mut u_cfl = vec![0u8; cw * chh];
+                            let mut v_cfl = vec![0u8; cw * chh];
+                            svtav1_dsp::intra_pred::cfl_predict_lbd(
+                                &pred_buf_q3, &u_dc, cw, &mut u_cfl, cw, alpha_cb, cw, chh,
+                            );
+                            svtav1_dsp::intra_pred::cfl_predict_lbd(
+                                &pred_buf_q3, &v_dc, cw, &mut v_cfl, cw, alpha_cr, cw, chh,
+                            );
+                            let u_cfl_out = tx_unit(
+                                fx.u_src, fx.c_stride, c_off, &u_cfl, cw, 0, cw, chh, 0, 1,
+                                cb_tsc, cb_dsc, 0, &qt_u, frame, rates, do_rdoq, true,
+                            );
+                            let v_cfl_out = tx_unit(
+                                fx.v_src, fx.c_stride, c_off, &v_cfl, cw, 0, cw, chh, 0, 1,
+                                cr_tsc, cr_dsc, 0, &qt_v, frame, rates, do_rdoq, true,
+                            );
+                            let cfl_fast_rate = rates.uv[cfl_allowed][cand.mode as usize]
+                                [UV_CFL_PRED_IDX]
+                                as u64
+                                + rates.cfl_alpha_fac_bits[cfl_signs as usize][0]
+                                    [(cfl_idx >> 4) as usize] as u64
+                                + rates.cfl_alpha_fac_bits[cfl_signs as usize][1]
+                                    [(cfl_idx & 15) as usize] as u64;
+                            let cfl_uv_cost = rdcost(
+                                lambda,
+                                u_cfl_out.bits as u64 + v_cfl_out.bits as u64 + cfl_fast_rate,
+                                u_cfl_out.dist + v_cfl_out.dist,
+                            );
+                            // check_best_indepedant_cfl (:3998): CfL wins iff
+                            // strictly cheaper than the best non-CfL uv
+                            // (list/search order ties keep non-CfL).
+                            if cfl_uv_cost < best_uv_cost {
+                                u_out = u_cfl_out;
+                                v_out = v_cfl_out;
+                                uv_mode_final = UV_CFL_PRED_IDX as u8;
+                                cfl_idx_final = cfl_idx;
+                                cfl_signs_final = cfl_signs;
+                                fcr_final = cfl_fast_rate;
+                            }
+                        }
+                    }
+                    Some(b) => {
+                        // bd10 arbitration: 10-bit AC/DC, hbd alpha search, hbd
+                        // SPATIAL cfl_uv_cost, all priced with `b.lambda` ==
+                        // full_lambda_md[EB_10_BIT_MD]. `best_uv_cost` is the
+                        // 10-bit non-CfL uv cost — the same value C's
+                        // search_best_mds3_uv_mode stored in best_uv_cost[mode]
+                        // (spatial SSE, from `uv_out10`); scope the borrow so
+                        // `uv_out10` is free to be replaced on a CfL win.
+                        let best_uv_cost = {
+                            let (u10b, v10b) = uv_out10.as_ref().unwrap();
+                            rdcost(
+                                b.lambda,
+                                u10b.bits as u64 + v10b.bits as u64 + fcr_final,
+                                u10b.dist + v10b.dist,
+                            )
+                        };
+                        // compute_cfl_ac_components at hbd: AC from the winning
+                        // 10-bit luma recon + the 10-bit DC chroma base.
+                        let mut ac10 =
+                            vec![0i16; svtav1_dsp::intra_pred::CFL_BUF_LINE * chh.max(1)];
+                        cfl_ac_subsample_hbd(
+                            fx.y_recon10.as_deref().unwrap(),
+                            y_stride,
+                            &best_recon10,
+                            abs_x,
+                            abs_y,
+                            w,
+                            h,
+                            &mut ac10,
+                        );
+                        svtav1_dsp::intra_pred::cfl_subtract_average(&mut ac10, cw, chh);
+                        let mut u_dc10 = vec![0u16; cw * chh];
+                        let mut v_dc10 = vec![0u16; cw * chh];
+                        for (plane_recon, dst) in [
+                            (fx.u_recon10.as_deref().unwrap(), &mut u_dc10),
+                            (fx.v_recon10.as_deref().unwrap(), &mut v_dc10),
+                        ] {
+                            predict_unit_hbd(
+                                plane_recon, fx.c_stride, ccx, ccy, cw, chh, 0, 0, FI_NONE,
+                                &uv_geom, cfg.edge_filter, filt_type_uv, dst, b.bd,
+                            );
+                        }
+                        // av1_cost_calc_cfl at hbd, TRANSFORM domain (is_full_
+                        // loop=0) — the alpha search's per-plane cost.
+                        let plane_cost10 = |plane: usize, alpha_q3: i32| -> (u64, i32) {
+                            let (src, dc, tsc, dsc, qt) = if plane == 0 {
+                                (&b.u_src10, &u_dc10, cb_tsc, cb_dsc, &b.qt_u)
+                            } else {
+                                (&b.v_src10, &v_dc10, cr_tsc, cr_dsc, &b.qt_v)
+                            };
+                            let mut cfl_pred = vec![0u16; cw * chh];
+                            svtav1_dsp::hbd::cfl_predict_hbd(
+                                &ac10, dc, cw, &mut cfl_pred, cw, alpha_q3, b.bd, cw, chh,
+                            );
+                            let o = tx_unit_hbd(
+                                src, cw, 0, &cfl_pred, cw, 0, cw, chh, 0, 1, tsc, dsc, qt,
+                                frame.rdoq_level, b.lambda, frame.sharpness, rates, do_rdoq,
+                                b.bd, qt.qm_level,
+                                Some(&TxRdArgs {
+                                    spatial_dist: false,
+                                    intra_dir: 0,
+                                    coeff_rate_est_lvl: cfg.coeff_rate_est_lvl,
+                                    tx_bias: frame.tx_bias,
+                                }),
+                            );
+                            (o.dist, o.bits)
+                        };
+                        let (cfl_idx, cfl_signs, cfl_rd) = md_cfl_alpha_search(
+                            plane_cost10,
+                            rates,
+                            b.lambda,
+                            cand.mode as usize,
+                            cfg.cfl_itr_th,
+                        );
+                        if cfl_rd != MAX_MODE_COST {
+                            let alpha_cb = cfl_idx_to_alpha(cfl_idx, cfl_signs, 0);
+                            let alpha_cr = cfl_idx_to_alpha(cfl_idx, cfl_signs, 1);
+                            // cfl_uv_cost at 10 bits: the chosen-alpha CfL chroma
+                            // re-run in the MDS3 SPATIAL domain (full_loop_uv
+                            // is_full_loop=1), matching check_best_indepedant_cfl.
+                            let rd10 = TxRdArgs {
+                                spatial_dist: true,
+                                intra_dir: 0,
+                                coeff_rate_est_lvl: cfg.coeff_rate_est_lvl,
+                                tx_bias: frame.tx_bias,
+                            };
+                            let mut u_cfl10 = vec![0u16; cw * chh];
+                            let mut v_cfl10 = vec![0u16; cw * chh];
+                            svtav1_dsp::hbd::cfl_predict_hbd(
+                                &ac10, &u_dc10, cw, &mut u_cfl10, cw, alpha_cb, b.bd, cw, chh,
+                            );
+                            svtav1_dsp::hbd::cfl_predict_hbd(
+                                &ac10, &v_dc10, cw, &mut v_cfl10, cw, alpha_cr, b.bd, cw, chh,
+                            );
+                            let u10 = tx_unit_hbd(
+                                &b.u_src10, cw, 0, &u_cfl10, cw, 0, cw, chh, 0, 1, cb_tsc,
+                                cb_dsc, &b.qt_u, frame.rdoq_level, b.lambda, frame.sharpness,
+                                rates, do_rdoq, b.bd, b.qt_u.qm_level, Some(&rd10),
+                            );
+                            let v10 = tx_unit_hbd(
+                                &b.v_src10, cw, 0, &v_cfl10, cw, 0, cw, chh, 0, 1, cr_tsc,
+                                cr_dsc, &b.qt_v, frame.rdoq_level, b.lambda, frame.sharpness,
+                                rates, do_rdoq, b.bd, b.qt_v.qm_level, Some(&rd10),
+                            );
+                            let cfl_fast_rate = rates.uv[cfl_allowed][cand.mode as usize]
+                                [UV_CFL_PRED_IDX]
+                                as u64
+                                + rates.cfl_alpha_fac_bits[cfl_signs as usize][0]
+                                    [(cfl_idx >> 4) as usize] as u64
+                                + rates.cfl_alpha_fac_bits[cfl_signs as usize][1]
+                                    [(cfl_idx & 15) as usize] as u64;
+                            let cfl_uv_cost = rdcost(
+                                b.lambda,
+                                u10.bits as u64 + v10.bits as u64 + cfl_fast_rate,
+                                u10.dist + v10.dist,
+                            );
+                            // C `check_best_indepedant_cfl` reverts to non-CfL iff
+                            // `best_uv_cost < cfl_uv_cost` (:3927) — i.e. CfL is
+                            // KEPT unless strictly beaten, so CfL wins exact ties.
+                            if !(best_uv_cost < cfl_uv_cost) {
+                                // u8 chroma canvas follows the decision (the
+                                // pre-filter searches read it at bd10).
+                                let mut u_cfl = vec![0u8; cw * chh];
+                                let mut v_cfl = vec![0u8; cw * chh];
+                                svtav1_dsp::intra_pred::cfl_predict_lbd(
+                                    &pred_buf_q3, &u_dc, cw, &mut u_cfl, cw, alpha_cb, cw, chh,
+                                );
+                                svtav1_dsp::intra_pred::cfl_predict_lbd(
+                                    &pred_buf_q3, &v_dc, cw, &mut v_cfl, cw, alpha_cr, cw, chh,
+                                );
+                                u_out = tx_unit(
+                                    fx.u_src, fx.c_stride, c_off, &u_cfl, cw, 0, cw, chh, 0, 1,
+                                    cb_tsc, cb_dsc, 0, &qt_u, frame, rates, do_rdoq, true,
+                                );
+                                v_out = tx_unit(
+                                    fx.v_src, fx.c_stride, c_off, &v_cfl, cw, 0, cw, chh, 0, 1,
+                                    cr_tsc, cr_dsc, 0, &qt_v, frame, rates, do_rdoq, true,
+                                );
+                                uv_out10 = Some((u10, v10));
+                                uv_mode_final = UV_CFL_PRED_IDX as u8;
+                                cfl_idx_final = cfl_idx;
+                                cfl_signs_final = cfl_signs;
+                                fcr_final = cfl_fast_rate;
+                            }
+                        }
                     }
                 }
             }
