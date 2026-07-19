@@ -113,6 +113,23 @@ CELLS=(
   "gradient 128 128 40 13"
   "diag 64 64 40 10"
   "diag 64 64 40 13"
+  # bd10 CHROMA re-encode (task #94, this landing): the luma re-encode
+  # (bd10_reencode_luma) recomputes only luma levels; chroma stayed at the u8
+  # MD decision. On `diag` the subsampled chroma carries a coded residual (the
+  # diagonal edge), so the u8 chroma levels diverged from C's bd10 chroma quant
+  # (decode-both proved LUMA byte-identical, chroma off by 1 LSB: port coded
+  # flat 512 where C coded 511). bd10_reencode_chroma now recomputes U+V at
+  # bd10 (predict_unit_hbd + tx_unit_hbd plane 1 + uv_tx_type + the bd10 chroma
+  # quant table) and overwrites chroma_dec. Each cell below was a chroma DIFF
+  # before the fix and BYTE-MATCHES after (verified `cmp`). Load-bearing on the
+  # chroma re-encode (non-flat chroma; a u8 fallback would NOT match). q40 p10/
+  # p13 above ALSO ride the chroma re-encode now (previously matched only
+  # because their chroma residual happened to agree). gradient/uniform chroma is
+  # flat -> re-encodes to zero -> the other gate cells stay byte-unchanged.
+  "diag 64 64 5 10"
+  "diag 64 64 5 13"
+  "diag 64 64 12 10"
+  "diag 64 64 12 13"
 )
 for cell in "${CELLS[@]}"; do
   read -r content w h qp p <<<"$cell"

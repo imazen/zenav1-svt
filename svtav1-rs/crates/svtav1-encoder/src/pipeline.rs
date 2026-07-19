@@ -929,6 +929,37 @@ impl EncodePipeline {
                     self.bit_depth,
                 );
                 self.last_recon10_y = Some(recon10);
+                // bd10 CHROMA re-encode (task #94): recompute chroma levels at
+                // bd10 too — the luma pass above leaves chroma at the u8 MD
+                // decision, which diverges on content whose subsampled chroma
+                // carries a coded residual (e.g. `diag`). Gated identically
+                // (complete-SB + bd10_tree_supported, which rejects CfL /
+                // directional-uv-with-edge-filter). Flat-chroma content
+                // (gradient/uniform) re-encodes to the same zero result, so bd8
+                // and the existing bd10 gate cells stay byte-unchanged. Chroma
+                // qindex == base_qindex in mainline (all FH chroma deltas 0),
+                // matching the walk's `base_q_idx` chroma coding.
+                if let Some((u_src, v_src)) = sb_chroma_owned.as_ref() {
+                    let u10: alloc::vec::Vec<u16> =
+                        u_src.iter().map(|&s| (s as u16) << shift).collect();
+                    let v10: alloc::vec::Vec<u16> =
+                        v_src.iter().map(|&s| (s as u16) << shift).collect();
+                    bd10_reencode_chroma(
+                        &mut all_trees,
+                        sb_cols,
+                        sb_size,
+                        w,
+                        h,
+                        &u10,
+                        &v10,
+                        w / 2,
+                        base_qindex,
+                        cq.rdoq_level,
+                        lambda_bd10,
+                        bd10_edge_filter,
+                        self.bit_depth,
+                    );
+                }
             }
         }
 
@@ -2565,15 +2596,20 @@ fn encode_block_syntax(
             );
         }
     }
-    // Diagnostic (SVTAV1_PACKTREE_COEFF="mi_row,mi_col"): the pinned
-    // block's PACKED nonzero luma+chroma levels as (raster_idx:level)
-    // pairs — the port counterpart of the C CCOEF wrap dump (final coded
-    // levels), bounded to one stderr line per block.
+    // Diagnostic (SVTAV1_PACKTREE_COEFF): the block's PACKED nonzero
+    // luma+chroma levels as (raster_idx:level) pairs — the port counterpart
+    // of the C QLEV/CCOEF wrap dumps (final coded levels). Two modes:
+    //   * value contains a comma ("mi_row,mi_col") → pin ONE block, stderr.
+    //   * value is a PATH (no comma) → append EVERY coded leaf to that file
+    //     (coding order), for a whole-frame join vs the C SVT_QLEVELS_OUT
+    //     dump. Backward-compatible: existing "r,c" callers are unchanged.
     #[cfg(feature = "std")]
     if let Ok(xy) = std::env::var("SVTAV1_PACKTREE_COEFF") {
+        let is_pin = xy.contains(',');
         let want: alloc::vec::Vec<usize> =
             xy.split(',').filter_map(|s| s.trim().parse().ok()).collect();
-        if want.len() == 2 && want[0] == block_y / 4 && want[1] == block_x / 4 {
+        let pinned = is_pin && want.len() == 2 && want[0] == block_y / 4 && want[1] == block_x / 4;
+        if pinned || !is_pin {
             let fmt_nz = |q: &[i32], cap: usize| -> alloc::string::String {
                 let mut s = alloc::string::String::new();
                 let mut n = 0;
@@ -2591,18 +2627,30 @@ fn encode_block_syntax(
             let (unz, vnz) = decision
                 .chroma_dec
                 .as_ref()
-                .map(|c| (fmt_nz(&c.0, 12), fmt_nz(&c.1, 12)))
+                .map(|c| (fmt_nz(&c.0, 48), fmt_nz(&c.1, 48)))
                 .unwrap_or_default();
-            eprintln!(
+            let line = alloc::format!(
                 "PCOEF mi=({},{}) yeob={} txt={} ynz=[{}] unz=[{}] vnz=[{}]",
                 block_y / 4,
                 block_x / 4,
                 decision.eob,
                 decision.tx_type,
-                fmt_nz(&decision.qcoeffs, 24),
+                fmt_nz(&decision.qcoeffs, 48),
                 unz,
                 vnz
             );
+            if is_pin {
+                eprintln!("{line}");
+            } else {
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&xy)
+                {
+                    let _ = writeln!(f, "{line}");
+                }
+            }
         }
     }
     // Diagnostic (SVTAV1_PART_DUMP): every coded leaf's geometry + skip, to
@@ -3541,7 +3589,15 @@ fn bd10_tree_supported(tree: &crate::partition::PartitionTree, edge_filter: bool
             // tx_depth>0 still unconditionally falls back.
             let directional = matches!(d.intra_mode, 3..=8)
                 || (matches!(d.intra_mode, 1 | 2) && d.angle_delta != 0);
-            d.tx_depth == 0 && (!directional || !edge_filter)
+            // Chroma re-encode (task #94): the bd10 chroma pass predicts via
+            // predict_unit_hbd, which supports DC/V/H/SMOOTH/PAETH + directional
+            // (edge_filter off) but NOT UV_CFL_PRED (13). So a CfL-chroma leaf,
+            // or a directional-uv leaf with the SH edge filter on, falls back to
+            // the u8 output (whole frame) rather than mispredicting chroma.
+            let uv_directional = matches!(d.uv_mode, 3..=8)
+                || (matches!(d.uv_mode, 1 | 2) && d.uv_angle_delta != 0);
+            let uv_ok = d.uv_mode != 13 && (!uv_directional || !edge_filter);
+            d.tx_depth == 0 && (!directional || !edge_filter) && uv_ok
         }
         crate::partition::PartitionTree::Split { children, .. } => {
             children.iter().all(|c| bd10_tree_supported(c, edge_filter))
@@ -3735,6 +3791,251 @@ fn bd10_reencode_node(
                     edge_filter,
                     frame_w,
                     frame_h,
+                    bd,
+                );
+            }
+        }
+    }
+}
+
+/// bd10 CHROMA re-encode (task #94). The luma re-encode (`bd10_reencode_luma`)
+/// recomputes only luma levels; chroma stays at the u8 MD decision
+/// (`chroma_dec`). For content whose CHROMA has a coded residual (e.g. the
+/// `diag` diagonal edge — its subsampled chroma is NOT flat), the u8 chroma
+/// levels diverge from C's bd10 chroma quant: C's higher-precision chroma
+/// prediction (the ~+20/px hbd-predictor rounding) yields a small DC residual
+/// that quantizes to ±1 at bd10 where the MSB-truncated u8 path rounds to 0.
+/// Decode-both localization proved the LUMA plane is already byte-identical
+/// (`bd10_reencode_luma`) and every chroma divergence is exactly this (port
+/// codes flat 512 where C codes a coded 511). This walk mirrors the luma pass
+/// on the U and V planes: predict at bd10 (`predict_unit_hbd` on the running
+/// bd10 chroma recon), residual/tx/quant at bd10 (`tx_unit_hbd`, plane 1, the
+/// derived `uv_tx_type` + the bd10 chroma quant table), then OVERWRITE
+/// `chroma_dec` with the bd10 levels/eob. Gated to complete-SB, in-envelope
+/// trees (`bd10_tree_supported`, which now also rejects CfL / directional-uv-
+/// with-edge-filter); flat-chroma content (gradient/uniform) re-encodes to the
+/// SAME zero-coefficient result, so bd8 and the existing bd10 gate cells stay
+/// byte-unchanged. The stored u8 recon in `chroma_dec` is inert (the walk only
+/// copies it into the u8 chroma plane, which no `chroma_dec` block reads).
+#[allow(clippy::too_many_arguments)]
+fn bd10_reencode_chroma(
+    all_trees: &mut [crate::partition::PartitionTree],
+    sb_cols: usize,
+    sb_size: usize,
+    w: usize,
+    h: usize,
+    u_src10: &[u16],
+    v_src10: &[u16],
+    cstride: usize,
+    chroma_qindex: u8,
+    rdoq_level: u8,
+    lambda: u64,
+    edge_filter: bool,
+    bd: u8,
+) {
+    let fc = svtav1_entropy::context::FrameContext::new_default();
+    let cfc = svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(chroma_qindex);
+    let rates = crate::leaf_funnel::build_md_rates(&fc, &cfc);
+    let qt = crate::quant::build_quant_table_bd(chroma_qindex, bd);
+    let (cframe_w, cframe_h) = (w / 2, h / 2);
+    let mut recon10_u = alloc::vec![0u16; cframe_w * cframe_h];
+    let mut recon10_v = alloc::vec![0u16; cframe_w * cframe_h];
+    for (sb_idx, tree) in all_trees.iter_mut().enumerate() {
+        let sb_col = sb_idx % sb_cols;
+        let sb_row = sb_idx / sb_cols;
+        bd10_reencode_chroma_node(
+            tree,
+            sb_col * sb_size,
+            sb_row * sb_size,
+            &mut recon10_u,
+            &mut recon10_v,
+            cstride,
+            u_src10,
+            v_src10,
+            &qt,
+            rdoq_level,
+            lambda,
+            &rates,
+            edge_filter,
+            cframe_w,
+            cframe_h,
+            bd,
+        );
+    }
+}
+
+/// Re-encode ONE chroma plane's leaf at bd10: predict -> residual/tx/quant ->
+/// recon, writing the bd10 recon back into `recon10` for neighbour prediction.
+/// Returns `(qcoeff raster, eob, u8-recon)`. `uv_tt`/geom/edge params mirror the
+/// walk's chroma coding (`write_chroma_txb`, `uv_tx_type`). The u8 recon is a
+/// sane truncation (`>> (bd-8)`) — it is inert (see `bd10_reencode_chroma`).
+#[allow(clippy::too_many_arguments)]
+fn bd10_reencode_chroma_plane(
+    recon10: &mut [u16],
+    src10: &[u16],
+    cstride: usize,
+    cx: usize,
+    cy: usize,
+    cw: usize,
+    ch: usize,
+    uv_mode: u8,
+    uv_angle_delta: i8,
+    uv_tt: usize,
+    geom: &crate::leaf_funnel::UnitGeom,
+    edge_filter: bool,
+    qt: &crate::quant::QuantTable,
+    rdoq_level: u8,
+    lambda: u64,
+    rates: &crate::leaf_funnel::MdRates,
+    bd: u8,
+) -> (alloc::vec::Vec<i32>, u16, alloc::vec::Vec<u8>) {
+    let mut pred = alloc::vec![0u16; cw * ch];
+    crate::leaf_funnel::predict_unit_hbd(
+        recon10,
+        cstride,
+        cx,
+        cy,
+        cw,
+        ch,
+        uv_mode,
+        uv_angle_delta,
+        crate::leaf_funnel::FI_NONE,
+        geom,
+        edge_filter,
+        0,
+        &mut pred,
+        bd,
+    );
+    let src_off = cy * cstride + cx;
+    let out = crate::leaf_funnel::tx_unit_hbd(
+        src10,
+        cstride,
+        src_off,
+        &pred,
+        cw,
+        0,
+        cw,
+        ch,
+        uv_tt,
+        1, // chroma plane
+        0, // txb_skip_ctx (eff-M9 rate_est_level 0)
+        0, // dc_sign_ctx
+        qt,
+        rdoq_level,
+        lambda,
+        0, // sharpness
+        rates,
+        rdoq_level != 0,
+        bd,
+    );
+    for r in 0..ch {
+        let drow = (cy + r) * cstride + cx;
+        recon10[drow..drow + cw].copy_from_slice(&out.recon[r * cw..(r + 1) * cw]);
+    }
+    let shift = (bd - 8) as u32;
+    let rec_u8: alloc::vec::Vec<u8> = out.recon.iter().map(|&s| (s >> shift).min(255) as u8).collect();
+    (out.qcoeff, out.eob, rec_u8)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn bd10_reencode_chroma_node(
+    tree: &mut crate::partition::PartitionTree,
+    x: usize,
+    y: usize,
+    recon10_u: &mut [u16],
+    recon10_v: &mut [u16],
+    cstride: usize,
+    u_src10: &[u16],
+    v_src10: &[u16],
+    qt: &crate::quant::QuantTable,
+    rdoq_level: u8,
+    lambda: u64,
+    rates: &crate::leaf_funnel::MdRates,
+    edge_filter: bool,
+    cframe_w: usize,
+    cframe_h: usize,
+    bd: u8,
+) {
+    use crate::partition::PartitionTree as Tr;
+    use crate::partition::PartitionType as PT;
+    match tree {
+        Tr::Leaf(d) => {
+            let bw = d.width as usize;
+            let bh = d.height as usize;
+            // Chroma reference? (walk `blk_has_uv`, pipeline.rs). With the
+            // min-8x8 luma policy every leaf is a reference; kept for safety.
+            let bw_mi = bw / 4;
+            let bh_mi = bh / 4;
+            let has_uv = ((y / 4) % 2 == 1 || bh_mi % 2 == 0) && ((x / 4) % 2 == 1 || bw_mi % 2 == 0);
+            if !has_uv {
+                return;
+            }
+            // Chroma origin/dims — EXACTLY the walk's derivation.
+            let cw = bw.max(8) / 2;
+            let ch = bh.max(8) / 2;
+            let cx = ((x >> 3) << 3) / 2 + if bw >= 8 { (x % 8) / 2 } else { 0 };
+            let cy = ((y >> 3) << 3) / 2 + if bh >= 8 { (y % 8) / 2 } else { 0 };
+            let uv_tt = crate::leaf_funnel::uv_tx_type(d.uv_mode, cw, ch);
+            let geom = crate::leaf_funnel::UnitGeom {
+                mi_row: cy >> 2,
+                mi_col: cx >> 2,
+                bw_px: cw,
+                bh_px: ch,
+                ss: 0,
+                frame_w: cframe_w,
+                frame_h: cframe_h,
+            };
+            let (u_q, u_eob, u_rec) = bd10_reencode_chroma_plane(
+                recon10_u, u_src10, cstride, cx, cy, cw, ch, d.uv_mode, d.uv_angle_delta, uv_tt, &geom,
+                edge_filter, qt, rdoq_level, lambda, rates, bd,
+            );
+            let (v_q, v_eob, v_rec) = bd10_reencode_chroma_plane(
+                recon10_v, v_src10, cstride, cx, cy, cw, ch, d.uv_mode, d.uv_angle_delta, uv_tt, &geom,
+                edge_filter, qt, rdoq_level, lambda, rates, bd,
+            );
+            d.chroma_dec = Some((u_q, v_q, u_eob, v_eob, u_rec, v_rec));
+        }
+        Tr::Split {
+            partition_type,
+            width,
+            height,
+            children,
+        } => {
+            let nw = *width as usize;
+            let nh = *height as usize;
+            let hw = nw / 2;
+            let hh = nh / 2;
+            let qw = nw / 4;
+            let qh = nh / 4;
+            let offs: alloc::vec::Vec<(usize, usize)> = match (*partition_type, children.len()) {
+                (PT::Split, 4) => alloc::vec![(0, 0), (hw, 0), (0, hh), (hw, hh)],
+                (PT::Horz, 2) => alloc::vec![(0, 0), (0, hh)],
+                (PT::Vert, 2) => alloc::vec![(0, 0), (hw, 0)],
+                (PT::HorzA, 3) => alloc::vec![(0, 0), (hw, 0), (0, hh)],
+                (PT::HorzB, 3) => alloc::vec![(0, 0), (0, hh), (hw, hh)],
+                (PT::VertA, 3) => alloc::vec![(0, 0), (0, hh), (hw, 0)],
+                (PT::VertB, 3) => alloc::vec![(0, 0), (hw, 0), (hw, hh)],
+                (PT::Horz4, 4) => alloc::vec![(0, 0), (0, qh), (0, 2 * qh), (0, 3 * qh)],
+                (PT::Vert4, 4) => alloc::vec![(0, 0), (qw, 0), (2 * qw, 0), (3 * qw, 0)],
+                other => panic!("bd10 chroma reencode: unsupported partition {other:?}"),
+            };
+            for (child, (dx, dy)) in children.iter_mut().zip(offs) {
+                bd10_reencode_chroma_node(
+                    child,
+                    x + dx,
+                    y + dy,
+                    recon10_u,
+                    recon10_v,
+                    cstride,
+                    u_src10,
+                    v_src10,
+                    qt,
+                    rdoq_level,
+                    lambda,
+                    rates,
+                    edge_filter,
+                    cframe_w,
+                    cframe_h,
                     bd,
                 );
             }

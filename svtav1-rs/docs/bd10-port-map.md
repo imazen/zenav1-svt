@@ -525,3 +525,58 @@ Per this file's SURFACE analysis there is no byte-verifiable sub-chunk smaller t
 mode path aligned at bd10 for one cell", so it lands as one reviewed pass. This is the true-bd10-MD
 axis the original SAMEPART-DIFF framing named — correct for the MODE flips, wrong (now fixed) for
 the tx_depth flips.
+
+## bd10 CHROMA RE-ENCODE LANDED (2026-07-19) — the diag q5/q12 COEFF class was CHROMA, not luma quant/RDOQ
+
+**The "diag q5/q12 = bd10 re-encode coded-LEVEL divergence on some LUMA leaf (quant / optimize_b
+RDOQ / 64-dim fold)" framing above (the CORRECTED-SAMEPART-DIFF q5/q12 bullet) was WRONG about the
+plane.** Root-caused end-to-end (read-only `/root/svtav1/Source/`) via a NEW C `--wrap` interposer
+plus decode-both localization:
+
+**Method (the instrumentation the diagnosis was blocked on):** the existing `SVT_CCOEF_OUT` wrap
+(`wrap_recon.c`, on `svt_aom_txb_estimate_coeff_bits`) only fires on the `allow_update_cdf` pass,
+which does NOT run at eff-M9 (bypass_encdec, no update_coeff_cdf). Added `SVT_QLEVELS_OUT` — a wrap
+of the exported cross-TU `svt_aom_quantize_inv_quantize` (full_loop.c:1649, the FULL MD quant+RDOQ
+entry a tx_depth-0 luma leaf reaches via `perform_dct_dct_tx`, product_coding_loop.c:5478) that
+dumps the post-quant/post-RDOQ `quant_coeff` levels at ANY preset (optional `SVT_QLEVELS_XY` pin /
+`SVT_QLEVELS_COMP` component filter). Clean reusable tool, kept (like `SVT_PD0COST`). Port side:
+extended `SVTAV1_PACKTREE_COEFF` to a file-dump-all-leaves mode (a path arg vs the old "r,c" pin).
+
+**The MAP (`diag 64 64 12 10`):**
+- C's 22 luma leaves vs the port's 22 (`SVT_QLEVELS_COMP=0` vs `SVTAV1_PACKTREE_COEFF=<file>`):
+  **every luma level byte-IDENTICAL.** So `bd10_reencode_luma` + `quantize_b_hbd`/`quantize_fp_hbd`
+  are already correct — NOT a luma quant/RDOQ bug.
+- `decode-diff` on the two bd10 OBUs: **plane0 (luma) = 0 diffs; planes 1+2 (chroma) diverge** —
+  port codes flat **512** (bd10 DC default) where C codes a coded **511** (q5: chroma(0,0), ALL 1024
+  px; q12: chroma(6,0), 991 px). C makes ZERO `svt_aom_quantize_inv_quantize` chroma calls (chroma
+  quantizes via `svt_aom_full_loop_uv`), confirming the split.
+
+**Root cause:** `bd10_reencode_luma` recomputes ONLY luma levels; **chroma stays at the u8 MD
+decision** (`chroma_dec`). On `diag` the subsampled chroma is NOT flat (the diagonal edge), so its
+bd10 prediction (the ~+20/px hbd-predictor rounding — same mechanism as the luma mode flips) yields
+a small DC residual that quantizes to ±1 at bd10 where the MSB-truncated u8 path rounds to 0.
+gradient/uniform chroma IS flat -> DC residual 0 at every bd -> the u8 chroma was coincidentally
+correct (why gradient cells matched without a chroma re-encode).
+
+**THE FIX (pipeline.rs `bd10_reencode_chroma` + `_node` + `_plane`):** mirror the luma re-encode on
+the U and V planes — predict at bd10 (`predict_unit_hbd` on a running bd10 chroma recon), residual/
+tx/quant at bd10 (`tx_unit_hbd` plane 1, the derived `uv_tx_type(uv_mode,cw,ch)`, the bd10 chroma
+quant table `build_quant_table_bd(base_qindex,bd)` — chroma qindex == base in mainline), then
+OVERWRITE `chroma_dec`. Same coding-order walk as luma (chroma origin/dims = the walk's
+`blk_has_uv` derivation). Gated on the SAME complete-SB + `bd10_tree_supported` (now also rejects
+UV_CFL_PRED(13) / directional-uv-with-edge-filter -> u8 fallback, `predict_unit_hbd` has no CfL).
+The stored u8 recon in `chroma_dec` is inert (only copied into the u8 chroma plane, which no
+`chroma_dec` block reads). bd10-gated: bd8 byte-UNCHANGED; flat-chroma content re-encodes to the
+SAME zero result so the existing gate cells stay byte-identical.
+
+**Gate `bd10_nonflat_gate.sh` 41 -> 45:** +`diag 64 64 q{5,12} p{10,13}` (the whole eff-M9 diag
+COEFF class; each was a chroma DIFF before, `cmp` byte-match after). Verification: bd8
+identity_matrix 54/54, partial_sb 101/101, bd10_matrix 36/36 byte-UNCHANGED; bd10 no-panic sweep
+(incl. partial-SB + non-64 dims) 0 panics, decodable; encoder unit tests 261/261.
+
+**REMAINING diag scope (still DIFF; Task-2 axis):** `diag {64,128} q{20,32,55} p{10,13}` (LUMA MODE
+flips — DC->SMOOTH on the diagonal-edge 8x8s, needs the u16 mode funnel), all `diag 128` (multi-SB
+near-ties), `p{3,6}` (depth-refine + M6 fi/CFL). The chroma re-encode also now rides the gradient
+q40/q55 cells (previously matched by flat-chroma coincidence) and is the missing "u16 chroma path"
+follow-up the luma-landing notes listed — but ONLY the coded-level (skip/non-CfL) subset; the u16
+chroma FILTERS (DLF/CDEF/LR) and CfL chroma remain unported.
