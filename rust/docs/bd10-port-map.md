@@ -1662,3 +1662,115 @@ Related, and now likely LOAD-BEARING rather than incidental: the dead stores at
 searches read does NOT represent the coded 10-bit levels. Fix that in the same
 change — the comment already there explains why the truncated 10-bit recon is
 the right proxy, and it is the CDEF/LR searches that make it observable.
+
+### CLOSED: p6 photographic bd10 — the CDEF and Wiener-LR searches now run at 10 bits (2026-07-19)
+
+The residual measured in the section above — `cdef_y_sec_strength[1] C=2
+Rust=0` plus the Wiener LR taps, and nothing else — is fixed. `2119713 q32 p6`
+is **byte-identical**, the whole p6 photographic grid is **9/9**, and
+`bd10_photo_gate.sh` is **139/139** (group E added; was 130/130).
+
+Landed as three commits: the FFI pins (`302e02c81`), the CDEF search
+(`1b86e7867`), the highbd LR kernels (`effa7d117`) and the LR search
+(`0a97d2914`).
+
+**Why only p6.** Both searches are preset-gated and p6 is the only preset in
+that gate that runs either: `cdef::allintra_preset_uses_cdef_search` is
+`preset <= 6`, and `restoration::wn_filter_ctrls_allintra` disables LR above
+preset 6. Presets 7-13 take closed-form qp derivations that were already
+bd10-aware — which is exactly why the 130-cell photo gate was green while p6
+was 0/9.
+
+**The CDEF delta** is one `coeff_shift = bit_depth - 8` threaded through the
+four places C uses it, nothing more:
+1. `svt_cdef_filter_fb` shifts BOTH strengths left by it and adds it to the
+   damping (cdef.c:326-330);
+2. `cdef_find_dir` right-shifts each pixel by it before the -128 (cdef.c:113);
+3. `svt_cdef_filter_block` selects its tap parity from
+   `pri_strength >> coeff_shift` (cdef.c:196);
+4. `svt_aom_compute_cdef_dist_16bit` normalizes by `>> 2 * coeff_shift`
+   (enc_cdef.c:112), keeping the RD lambda on the 8-bit scale.
+
+**The LR delta** is the four kernels C swaps on `cm->use_highbitdepth`
+(restoration_pick.c:1243) — `compute_stats_highbd` (whose `bit_depth_divider`
+integer-divides M and H **after** accumulation, so it is NOT input scaling),
+the highbd wiener convolve, `svt_aom_highbd_get_sse` (which truncates each
+partial sum to `uint32_t` — observable at 10 bits on a tall edge strip), and
+the highbd unit filter. `search_restoration_still` is now generic over an
+`LrPixel` trait carrying exactly those four, mirroring C's own single-body /
+two-kernel-family split rather than duplicating the RD and refinement logic.
+
+**The two lambdas point OPPOSITE ways and both are now pinned.** The CDEF
+search calls `svt_aom_lambda_assign(.., enhanced_pic->bit_depth, qidx,
+multiply_lambda = FALSE)` (enc_cdef.c:958) so its bd10 lambda has NO `*= 16`;
+the LR search's `x->rdmult` is `pic_full_lambda[EB_10_BIT_MD]`
+(enc_dec_process.c:3246), i.e. `multiply_lambda = TRUE`, which DOES apply the
+`*= 16` (rc_process.c:479, a 10-bit-only arm). `pd0::lambda_c_parity` drives
+the real `svt_aom_compute_rd_mult_based_on_qindex` over all 256 qindexes for
+both, at bd8 and bd10, with a non-vacuity assert that the depths differ.
+
+**Where the 10-bit canvas comes from — important.** NOT from
+`bd10_reencode_luma`'s level-only post-pass: that declines whenever any leaf
+has `tx_depth > 0` (`bd10_tree_supported`), which real p6 photographic content
+always has. It comes from the FULL-RD funnel, which already commits the
+winner's 10-bit recon per block; `encode_tile_rows` now returns those per-tile
+canvases and the caller merges them into one tight `w*h` + 2x`(w/2)*(h/2)`
+frame recon (`last_recon10_y` / the new `last_recon10_uv`). It is deblocked at
+10 bits (`apply_deblock_frame_hbd`) and CDEF'd at 10 bits
+(`apply_cdef_frame_hbd`) before each search reads it, matching C's
+deblock -> CDEF -> LR order on the 16-bit recon picture.
+
+### NEXT ROOT for p0..p5 photographic bd10: the DEBLOCK-LEVEL search — ported, MEASURED, and BLOCKED
+
+With CDEF and LR closed, `2119713 q32 p0` (and p1/p2/p3, all 0/9) diverges
+first at **`loop_filter_level[2] C=6 Rust=4`** — a THIRD post-MD 8-bit search:
+`pick_filter_levels_full_search` (C `svt_av1_pick_filter_level` with
+`LPF_PICK_FROM_FULL_IMAGE`), which runs at `preset <= 5` only. p6+ derives the
+LF level from the closed-form qp picker instead, already bd10-aware — the same
+preset split as CDEF/LR, and the reason p6 closed here and p0-p5 did not.
+
+The port itself is straightforward and was WRITTEN and MEASURED (preserved at
+`refs/wip/bd10-dlf-level-search-attempt`; `git diff 0a97d2914
+refs/wip/bd10-dlf-level-search-attempt`): a `DlfPixel` trait over the two
+depth-dependent kernels C swaps on `is_16bit_pipeline` — the highbd lpf family
+via `apply_deblock_frame_hbd`'s `filter_plane_hbd`, and
+`svt_full_distortion_kernel16_bits` in place of
+`svt_spatial_full_distortion_kernel` (`picture_sse_calculations`,
+deblocking_filter.c:768) — with `DlfSearchInput` generic and the hill-climb
+shared. It is **NOT landed**, because it is blocked on a separate defect:
+
+**BLOCKER (measured): `bd10_reencode_luma`'s post-pass recon is wrong, and the
+searches read it.** On `gradient 128x128 q55 p5` the post-pass runs, and its
+`recon10` differs from the u8 recon by a systematic offset — `recon10 ~= 4 *
+u8recon + 24` across the whole plane (measured pixel-for-pixel: u8recon
+`10,12,16,21,27,31,33,30` vs `recon10>>2` `64,71,86,108,132,149,154,146`;
+`SSE(src10, recon10)/16 = 2450984` vs `SSE(src8, u8recon) = 2331968`, i.e. the
+10-bit recon is the WORSE reconstruction of the same source). Feeding that to
+the ported bd10 DLF search REGRESSES that cell: `loop_filter_level[0]` goes
+from matching C to `C=0 Rust=4`.
+
+Proven to be the post-pass and not the funnel: with the post-pass's
+`last_recon10_*` overwrite suppressed so the searches read the FULL-RD funnel
+canvas instead, that cell's `loop_filter_level` divergence **disappears** and
+the first divergence moves back into the tile payload. (`gradient 128x128 q55
+p5` is not a gate cell; it diverges in the tile either way.)
+
+So the sequencing is:
+1. **Root-cause the post-pass recon** (`bd10_reencode_luma` / `bd10_reencode
+   _chroma_plane`, pipeline.rs). Note `recon10` there is allocated
+   `vec![0u16; w*h]` while the funnel canvas is seeded `512` (the 10-bit DC
+   default) — check the neighbour-availability path before assuming the 0-init
+   is inert. The doc note above already flags that this pass hardcodes the
+   RDOQ contexts to 0/0, which is only correct where `real_coeff_ctx` is off.
+2. Then land the DLF search from the preserved ref and re-measure p0..p5.
+
+Until (1) is fixed, the landed CDEF/LR searches also read the post-pass recon
+wherever it runs. That has NOT broken anything measurable — all nine gates are
+green, including the 18 bd10 non-flat cells at presets 1-6 that take both
+searches — but it is a known latent wrongness, not a proven-inert one.
+
+`diag 128x128 q32 p0` is a SEPARATE issue from both: its tile diverges at op
+163 (`CDF13:s12` vs `s0`), i.e. mid-tile MD, so at p0 the mode/partition
+stream itself differs and no filter-search fix can close it. p0's tile is also
+191 bytes off C (22016 vs 21825) — far more than filter syntax can account
+for, unlike p6's pre-fix 12 bytes.
