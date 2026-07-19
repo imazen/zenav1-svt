@@ -3486,21 +3486,50 @@ fn partition_edge_flags(
 /// mi_rows` `continue`), so `children` holds only the in-frame quadrants —
 /// the packed layout the walk's Split arm expects.
 ///
-/// PORT-NOTE: this models the 128 root as ALWAYS SPLIT. See
-/// `docs/sb128-port-map.md` — measured true for every uniform cell, and the
-/// M0/M1 128-square candidate set is `{N,H,V,S}`; a genuine 128-level
-/// NONE/H/V RD search is a later chunk. `sb128_root_always_split_supported`
-/// gates which content reaches this path.
+/// WHY FORCED-SPLIT IS CORRECT HERE, NOT A HEURISTIC (verified first-hand
+/// against /root/svtav1/Source, 2026-07-19 — this supersedes the port map's
+/// "UNVERIFIED for textured content" caveat):
+///
+/// C `set_blocks_to_be_tested` (Codec/enc_dec_process.c:1483-1499) computes
+/// the MD scan's largest square candidate as
+///
+///     int max_sq_size = ctx->max_block_size;
+///     if (pcs->mimic_only_tx_4x4)            max_sq_size = MIN(.., 8);
+///     else if (static_config.max_tx_size==32) max_sq_size = MIN(.., 32);
+///     else if (pcs->slice_type == I_SLICE)    max_sq_size = MIN(.., 64);
+///
+/// — so on a KEY frame the largest square ever ENTERED INTO THE SCAN is
+/// 64x64, whatever the superblock size. A BLOCK_128X128 is never an MD
+/// candidate on an I_SLICE, so the 128 root has no codable outcome except
+/// PARTITION_SPLIT. (`ctx->max_block_size` itself is `super_block_size`
+/// unconditionally at M0..M7 — `get_max_block_size_allintra`,
+/// enc_mode_config.c:7055-7080, sets `base_var_th_cap = (uint16_t)~0`, so
+/// the `variance <= var_th_cap` test on a `uint16_t` variance is a
+/// tautology; the clamp above is what actually decides.)
+///
+/// SCOPE OF THAT PROOF: it covers I_SLICE frames — which is the port's
+/// target (ALLINTRA single-frame KEY, docs/ACCEPTANCE-CRITERIA.md). On an
+/// INTER frame `max_sq_size` is NOT clamped to 64 and a genuine 128-level
+/// NONE/HORZ/VERT RD search would be required; inter is unported
+/// throughout, so this path is consistent with the rest of the encoder
+/// rather than a new limitation. `debug_assert`ed below.
 fn merge_sb_units(
     mut units: Vec<crate::partition::PartitionResult>,
     sb_size: usize,
     unit_size: usize,
+    is_key: bool,
 ) -> crate::partition::PartitionResult {
     if sb_size == unit_size {
         debug_assert_eq!(units.len(), 1, "SB64 must have exactly one coding unit");
         return units.remove(0);
     }
     debug_assert_eq!((sb_size, unit_size), (128, 64));
+    debug_assert!(
+        is_key,
+        "the forced-SPLIT 128 root is only PROVEN on an I_SLICE (C clamps the MD \
+         scan's max square to 64 there, enc_dec_process.c:1497); an INTER frame \
+         needs a real 128-level NONE/HORZ/VERT RD search"
+    );
     let mut out = crate::partition::PartitionResult {
         partition_type: crate::partition::PartitionType::Split,
         rd_cost: 0,
@@ -5314,7 +5343,8 @@ fn encode_tile_rows(
                 // PARTITION_SPLIT node rooted at the 128 square — which is
                 // what C codes: an 8-symbol partition symbol at CDF row
                 // bsl=4 (ctx 16..19), then the quadrants in Z-order.
-                let sb_result = merge_sb_units(unit_results, sb_size, unit_size);
+                let sb_result =
+                    merge_sb_units(unit_results, sb_size, unit_size, ref_frame_data.is_none());
 
                 // Chain: evolve this SB's contexts by re-coding the decided
                 // tree (throwaway arithmetic state; only the CDF updates
@@ -5535,41 +5565,95 @@ mod tests {
         }
     }
 
-    /// The SB-size resolution honors the C derivation, the explicit
-    /// override, and the capability fallback — and NEVER yields anything
-    /// but 64/128.
+    /// The SB-size resolution honors the C derivation and the explicit
+    /// override, and NEVER yields anything but 64/128.
+    ///
+    /// Task #91 chunk 3 flipped `sb128_encode_supported` on, so an SB128
+    /// cell now RESOLVES to 128 and is genuinely coded at 128 (the
+    /// `sb128_gate.sh` cells byte-match real SvtAv1EncApp). Before the
+    /// chunk this test asserted the fallback-to-64 behaviour; the
+    /// assertions below are the same contract with the capability gate
+    /// open, plus a direct `resolve_sb_size` check so the fallback
+    /// mechanism itself stays covered even though nothing triggers it.
     #[test]
     fn sb_size_resolution_and_fallback() {
-        // Every existing gate cell shape: small frame -> C rule says 64,
-        // no fallback, so nothing about those encodes changes.
+        // Small frame -> C rule says 64, no fallback, so nothing about the
+        // pre-SB128 gate cells changes.
         let p = EncodePipeline::new(64, 64, 0, RcConfig::default(), 0, 1);
         assert_eq!(p.sb_size, 64);
+        assert_eq!(p.derived_sb_size, 64);
         assert!(!p.sb128_fallback);
-        // A frame C would code at 128 (512x384 preset 0, MEASURED): the
-        // port records the fallback instead of emitting an SB128 stream it
-        // cannot yet code, and keeps a valid 64 grid.
+        // A frame C codes at 128 (512x384 preset 0, MEASURED against the
+        // real encoder's sequence header): the port now codes it at 128 too
+        // and does NOT fall back.
         let p = EncodePipeline::new(512, 384, 0, RcConfig::default(), 0, 1);
-        assert_eq!(p.sb_size, 64);
-        assert!(p.sb128_fallback, "512x384 p0 is an SB128 cell in C");
-        // preset 2 at the same size is genuinely SB64 in C -> no fallback.
+        assert_eq!(p.sb_size, 128, "512x384 p0 is an SB128 cell in C");
+        assert_eq!(p.derived_sb_size, 128);
+        assert!(!p.sb128_fallback, "the SB128 encode path is capability-enabled");
+        // preset 2 at the same size is genuinely SB64 in C.
         let p = EncodePipeline::new(512, 384, 2, RcConfig::default(), 0, 1);
         assert_eq!(p.sb_size, 64);
         assert!(!p.sb128_fallback);
-        // Explicit override asks for 128; the capability gate still governs.
+        // Explicit override asks for 128 on a frame the C rule puts at 64:
+        // honoured, because the walk is size- (and preset-) agnostic.
         let p = EncodePipeline::new(64, 64, 0, RcConfig::default(), 0, 1).with_sb_size(Some(128));
-        assert_eq!(p.sb_size, 64);
-        assert!(p.sb128_fallback);
-        // Explicit 64 on an SB128 cell pins 64 with no fallback flag — the
-        // anti-vacuity witness's "force the port to the wrong size" mode.
+        assert_eq!(p.sb_size, 128);
+        assert_eq!(p.derived_sb_size, 64, "the C rule's own answer is preserved");
+        assert!(!p.sb128_fallback);
+        // Explicit 64 on an SB128 cell pins 64 — the anti-vacuity witness's
+        // "force the port to the wrong size" mode. Not a fallback: the
+        // override chose it.
         let p = EncodePipeline::new(512, 384, 0, RcConfig::default(), 0, 1).with_sb_size(Some(64));
         assert_eq!(p.sb_size, 64);
         assert!(!p.sb128_fallback);
-        assert_eq!(p.derived_sb_size, 128, "the C rule's own answer is preserved");
+        assert_eq!(p.derived_sb_size, 128);
         // ... and re-resolving with None returns to the DERIVED value, not
         // to whatever the last override happened to be.
         let p = p.with_sb_size(None);
+        assert_eq!(p.sb_size, 128);
         assert_eq!(p.derived_sb_size, 128);
-        assert!(p.sb128_fallback);
+        assert!(!p.sb128_fallback);
+        // The fallback mechanism itself: still wired, and the ONLY thing
+        // that can trigger it is `sb128_encode_supported` going false again
+        // (e.g. if a future chunk re-gates a preset). Assert the contract
+        // directly so the plumbing cannot rot while it is unreachable.
+        assert_eq!(EncodePipeline::resolve_sb_size(128, None, 0), (128, false));
+        assert_eq!(EncodePipeline::resolve_sb_size(128, Some(64), 0), (64, false));
+        assert_eq!(EncodePipeline::resolve_sb_size(64, Some(128), 0), (128, false));
     }
 
+    /// Task #91: the b64 coding units of one superblock, in C's coding
+    /// order. SB64 must yield exactly the SB itself (this is what makes
+    /// every SB64 path byte-identical by construction); SB128 must yield
+    /// the Z-order quadrants with off-frame ones dropped (C
+    /// `svt_aom_write_modes_sb`'s `mi_row + y_idx >= mi_rows` continue).
+    #[test]
+    fn sb_coding_units_match_c_walk_order() {
+        use crate::sb128_geom::sb_coding_units;
+        // SB64: always exactly one unit, whatever the frame extent.
+        assert_eq!(sb_coding_units(0, 0, 64, 512, 384), alloc::vec![(0, 0)]);
+        assert_eq!(sb_coding_units(448, 320, 64, 512, 384), alloc::vec![(448, 320)]);
+        // SB128 interior: four quadrants, Z-order (raster within the SB).
+        assert_eq!(
+            sb_coding_units(0, 0, 128, 512, 384),
+            alloc::vec![(0, 0), (64, 0), (0, 64), (64, 64)]
+        );
+        assert_eq!(
+            sb_coding_units(256, 128, 128, 512, 384),
+            alloc::vec![(256, 128), (320, 128), (256, 192), (320, 192)]
+        );
+        // Partial 128 COLUMN (448 = 3*128 + 64): the right quadrants are
+        // off-frame and code nothing.
+        assert_eq!(
+            sb_coding_units(384, 0, 128, 448, 384),
+            alloc::vec![(384, 0), (384, 64)]
+        );
+        // Partial 128 ROW (448 = 3*128 + 64 vertically).
+        assert_eq!(
+            sb_coding_units(0, 384, 128, 512, 448),
+            alloc::vec![(0, 384), (64, 384)]
+        );
+        // Both partial: only the top-left quadrant survives.
+        assert_eq!(sb_coding_units(384, 384, 128, 448, 448), alloc::vec![(384, 384)]);
+    }
 }
