@@ -214,6 +214,6 @@ carries the user-facing summary.
    `svtav1-dsp::ac_bias`, no consumer — the port has no LPD1 fast path
    (all-intra C never takes LPD1 either: `pic_lpd1_lvl = 0` unconditionally).
 
-Remaining PORT-NOTE(unverified) debt is indexed in `svtav1-rs/CLAUDE.md`
+Remaining PORT-NOTE(unverified) debt is indexed in `rust/CLAUDE.md`
 (complex-hvs MDS0 fast cost; alt-ssim full_cost_ssim assembly granularity;
 tune-ssim SB-vs-block lambda granularity).

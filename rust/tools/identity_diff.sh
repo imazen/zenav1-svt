@@ -6,7 +6,7 @@
 # Usage: identity_diff.sh <width> <height> <cli_qp 0..63> <preset> [content] [outdir]
 #   content: uniform (default) | gradient
 #
-# Outputs under <outdir> (default svtav1-rs/target/identity/<case>):
+# Outputs under <outdir> (default rust/target/identity/<case>):
 #   rs.yuv rs.obu rs.trace   — Rust side (identity_run, symtrace stderr)
 #   c.obu c.trace c.stderr   — C side (capture_c_trace, --wrap trace)
 #   report.txt               — identity_diff.py output
@@ -23,8 +23,8 @@ QP=$3
 PRESET=$4
 CONTENT="${5:-uniform}"
 
-HERE=$(cd "$(dirname "$0")" && pwd)           # svtav1-rs/tools
-RS_ROOT=$(cd "$HERE/.." && pwd)               # svtav1-rs
+HERE=$(cd "$(dirname "$0")" && pwd)           # rust/tools
+RS_ROOT=$(cd "$HERE/.." && pwd)               # rust
 OUTDIR="${6:-$RS_ROOT/target/identity/${CONTENT}_${W}x${H}_q${QP}_p${PRESET}}"
 mkdir -p "$OUTDIR"
 

@@ -6,11 +6,11 @@ use std::path::PathBuf;
 
 fn main() {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    // crates/svtav1-cref -> crates -> svtav1-rs -> repo root
+    // crates/svtav1-cref -> crates -> rust -> repo root
     let repo_root = manifest
         .ancestors()
         .nth(3)
-        .expect("svtav1-cref must live at <repo>/svtav1-rs/crates/svtav1-cref")
+        .expect("svtav1-cref must live at <repo>/rust/crates/svtav1-cref")
         .to_path_buf();
 
     let lib_dir = env::var("SVT_CREF_LIB_DIR")

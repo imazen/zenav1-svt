@@ -2774,7 +2774,7 @@ tail-truncation. The uniform 2-3x eob inflation points at (3) or (2), not (1).
   known M0/M1 gradient).
 - real M7/M8/M10 spot (4 imgs q40): **12/12 IDENTICAL** (no regression).
 - C tree pristine (`git -C /root/svtav1 status --short` shows only
-  `svtav1-rs/.../pipeline.rs`, the `SVTAV1_CHAIN_DUMP` aid); scratch
+  `rust/.../pipeline.rs`, the `SVTAV1_CHAIN_DUMP` aid); scratch
   `/root/svtav1-instr` deleted.
 - Repo change: one diagnostic aid — pipeline.rs env-gated `SVTAV1_CHAIN_DUMP`
   (per-SB chain_base coeff CDF). No encoder-output change.

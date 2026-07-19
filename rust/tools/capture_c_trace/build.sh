@@ -33,7 +33,7 @@
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
-ROOT=$(cd "$HERE/../../.." && pwd) # <repo> (svtav1-rs/tools/capture_c_trace -> repo root)
+ROOT=$(cd "$HERE/../../.." && pwd) # <repo> (rust/tools/capture_c_trace -> repo root)
 OUT="${1:-$HERE/capture_c_trace.bin}"
 LIB_DIR="${SVT_CREF_LIB_DIR:-$ROOT/Bin/Release}"
 LIB="$LIB_DIR/libSvtAv1Enc.a"

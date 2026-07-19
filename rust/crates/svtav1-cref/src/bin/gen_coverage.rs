@@ -1,4 +1,4 @@
-//! Generates/refreshes `svtav1-rs/COVERAGE.md` — the coverage-gate
+//! Generates/refreshes `rust/COVERAGE.md` — the coverage-gate
 //! scoreboard, auto-derived from the C API surface so no field can be
 //! silently omitted.
 //!
@@ -9,8 +9,8 @@
 //! removed fields drop out. The coverage gate is green when every row is
 //! `tested`.
 //!
-//! Usage (from svtav1-rs/):
-//!   cargo run --release -p svtav1-cref --bin gen_coverage
+//! Usage (from rust/):
+//!   cargo run --release -p zenav1-svt-cref --bin gen_coverage
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -20,7 +20,7 @@ fn main() {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let repo_root = manifest.ancestors().nth(3).unwrap().to_path_buf();
     let header = repo_root.join("Source/API/EbSvtAv1Enc.h");
-    let coverage_path = repo_root.join("svtav1-rs/COVERAGE.md");
+    let coverage_path = repo_root.join("rust/COVERAGE.md");
 
     let src = std::fs::read_to_string(&header).expect("read EbSvtAv1Enc.h");
 

@@ -1,7 +1,7 @@
 /*
  * capture_c_trace — minimal public-API driver for the in-tree C SVT-AV1
  * static library, used by the bitstream-identity harness
- * (svtav1-rs/tools/identity_diff.sh).
+ * (rust/tools/identity_diff.sh).
  *
  * Encodes exactly ONE raw I420 8-bit frame from a .yuv file in
  * still-picture/AVIF CQP mode at a matched config (the same knob set the

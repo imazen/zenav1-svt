@@ -2,7 +2,7 @@
  * Build from cbuild/:
  *   gcc -O0 -g -I../Source/Lib/Codec -I../Source/Lib/C_DEFAULT \
  *     -I../Source/Lib/Globals -I../Source/API -DNDEBUG \
- *     ../svtav1-rs/tools/extract_intra_golden.c \
+ *     ../rust/tools/extract_intra_golden.c \
  *     Source/Lib/C_DEFAULT/CMakeFiles/C_DEFAULT.dir/*.o \
  *     Source/Lib/Codec/CMakeFiles/CODEC.dir/transforms.c.o \
  *     Source/Lib/Codec/CMakeFiles/CODEC.dir/inv_transforms.c.o \

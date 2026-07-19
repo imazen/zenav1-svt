@@ -1,6 +1,6 @@
 /* Complete golden data extractor for C SVT-AV1.
  * Build from cbuild/:
- *   gcc -O0 -g ../svtav1-rs/tools/extract_golden.c \
+ *   gcc -O0 -g ../rust/tools/extract_golden.c \
  *     Source/Lib/Codec/CMakeFiles/CODEC.dir/transforms.c.o \
  *     Source/Lib/Codec/CMakeFiles/CODEC.dir/inv_transforms.c.o \
  *     -lm -o /tmp/extract_golden

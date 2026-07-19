@@ -241,7 +241,7 @@ filters, chroma) still ours and next in line:
 ## Crate structure
 
 ```
-svtav1-rs/
+rust/
   crates/svtav1-types          Core AV1 types, enums, constants
   crates/svtav1-tables         Const lookup tables (no_std)
   crates/svtav1-dsp            Transforms, prediction, filters, quant (+ generated quant tables)

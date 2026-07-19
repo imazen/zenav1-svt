@@ -38,4 +38,4 @@ cbuild-config.log
 cbuild-static-config.log
 
 # Committed test fixtures (lr_search_c_capture include_bytes! inputs, 4 KB each)
-!svtav1-rs/crates/svtav1-encoder/tests/data/*.bin
+!rust/crates/svtav1-encoder/tests/data/*.bin
