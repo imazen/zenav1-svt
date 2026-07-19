@@ -867,6 +867,15 @@ MAP already identified as the smallest blocker-2 cell.
 - **Photographic at p6 is PART, not MODE**: 9/9 cells (3 images x q{12,32,55})
   diverge on partition geometry. So real content at p6 needs the depth-refine
   axis too; the synthetic p6 grid understates the work.
+  > **SUPERSEDED 2026-07-19 — the second half of that sentence is WRONG.** The
+  > classifier label is right (geometry does flip) but the ROOT is not the
+  > depth-refine axis: at p6 the tree IS the PD0 tree, C's PD0 for SB(0,0) is
+  > bit-depth-IDENTICAL, and the port's p6 geometry inside SB(0,0) matches C
+  > EXACTLY (0 bsize flips, 0 port-only keys). The geometry flips in later SBs
+  > are a CDF-chain cascade from a **CfL mode flip** in SB(0,0) (C codes
+  > `UV_CFL_PRED` on 7/28 blocks there, the port on 0). See "bd10 PART AXIS
+  > LANDED" at the end of this file; the fix is the bd10 CfL arm, not a
+  > partition change.
 
 ### 3. MEASURED NEGATIVE — widening the u16 MDS0 mode funnel to M6..M8 closes NOTHING
 
@@ -1083,3 +1092,125 @@ because it is consistent with the levels the same stage computes.
   `palette_level == 0` for M6..M8 so this is not currently binding.
 - **ac-bias / noise-norm** (fork-only) are not applied in `tx_unit_hbd` — they
   need a u16 psy kernel that is unported.
+
+## bd10 PART AXIS LANDED (2026-07-19) — the PD1 walk runs at 10 bits; p0..p5 gated
+
+The "PART (22 cells at p0/p3, plus ALL photographic p6)" axis from the
+low-preset map. **Two DIFFERENT roots wear the PART label**, and separating
+them is the main result of this pass. Root 1 is fixed; root 2 is measured and
+is NOT a partition bug at all.
+
+### Root 1 — p0..p5: C's PD1 decides the geometry with 10-bit leaf costs (FIXED)
+
+`svt_aom_pick_partition` compares whole partitions, and both comparators sum
+**leaf block costs**:
+
+- `test_depth` (product_coding_loop.c:10857): `part_cost = RDCOST(full_lambda,
+  part_rate, 0)` then `+= block_data[shape][nsi]->cost` per NSQ sub-block.
+- `test_split_partition` (:10770): `split_cost = RDCOST(full_lambda,
+  above_split_rate, 0)` then `+= split[i]->rdc.rd_cost`.
+
+Both select `full_sb_lambda_md[EB_10_BIT_MD]` when `hbd_md != 0` (:10782,
+:10887), and PD1 runs at `hbd_md = 2` at every allintra preset. Those leaf
+`cost`s come from an MDS3 that predicted, quantized and measured distortion at
+**10 bits**. The port ran the whole `decide_sb_refined` walk on 8-bit leaf
+costs with the 8-bit lambda, so at bd10 it reproduced C's *bd8* geometry.
+
+**What is NOT bit-depth dependent here — measured, and the reason the fix is
+one substitution rather than a new algorithm:**
+
+1. **The PD0 pass.** At p0..p2 bd8 `pic_pd0_lvl == 0` (`set_pic_pd0_lvl_default`,
+   enc_mode_config.c:8613) and bd10 forces `PD0_LVL_0` (`set_pd0_ctrls`,
+   :5415) — the same level; and PD0 runs at `hbd_md = 0` on the MSB-truncated
+   plane either way. VERIFIED: `SVT_PD0COST_OUT` for `diag 64x64 q12 p0` dumps
+   **89 records at bd8 and 89 at bd10, byte-identical** (`diff` empty).
+2. **The depth-refinement scan.** `perform_pred_depth_refinement` is called at
+   enc_dec_process.c:3017, INSIDE the window where `hbd_md` is forced to 0
+   (:2965) and restored only at :3023. So `is_parent_to_current_deviation_small`
+   / `is_child_to_current_deviation_small` take `full_lambda_md[EB_8_BIT_MD]` /
+   `full_sb_lambda_md[EB_8_BIT_MD]` at BOTH bit depths, over PD0 costs that are
+   themselves identical. **The scan must stay 8-bit — using the bd10 lambda
+   there would be a bug.** The asymmetry (8-bit scan, 10-bit walk) IS the fix.
+
+**Landed** (`c171a18af`): `bd10_full_rd_supported` widened from presets 6..=8 to
+0..=8; the p0..=5 `refined` `FunnelCtx` gets `y_recon10`/`u_recon10`/`v_recon10`
++ `full_rd10`; `decide_sb_refined` gets `kf_full_lambda_bd10` (which also feeds
+`update_skip_nsq_based_on_split_rate` :9725 and
+`update_skip_nsq_based_on_sq_recon_dist` :9859 — both ratio-compare an
+`RDCOST(λ, rate, 0)` term against a block cost, so the lambda must move WITH
+the costs). bd8 is structurally untouched (every branch is gated on
+`bd10_full_rd`, which requires `bit_depth == 10`).
+
+**Measured** on the classifier grid (`{gradient,diag} x {64,128} x
+q{12,20,32,40,55} x p{0,3}`, 40 cells): **PART 18 -> 9**, and **13 cells became
+COEFF** (coded tree AND every mode field byte-identical; only coefficient bytes
+differ). `diag 64x64 q12 p0` went from 2 port-only geometry keys plus bsize
+flips (C 16X16 vs port 8X16, C 16X32 vs port 8X32 — the port over-splitting
+into narrower NSQ shapes) to **0 geometry diffs**.
+
+**Gated** (`7e7c7a2f6`): `bd10_nonflat_gate.sh` **170 -> 180**. Six cells are
+newly closed and A/B-MEASURED (rebuilt with the change reverted: all six DIFF
+before, MATCH after) — `gradient 64x64 q12` at p2/p3/p4/p5, `diag 64x64 q20 p4`,
+`diag 128x128 q20 p4`; four more (`gradient 64x64 q55` at p1/p2/p4/p5) were
+already byte-exact but the band had never been gated at all. The gate also now
+asserts **aomdec decodability** on every cell before consulting `cmp`.
+
+### Root 2 — photographic p6 "PART" is a CfL MODE flip that CASCADES (NOT a partition bug)
+
+The low-preset map recorded "Photographic at p6 is PART, not MODE: 9/9 cells
+diverge on partition geometry", and grouped it under the depth-refine axis.
+**That grouping is WRONG, and the p6 geometry is already correct.** Measured on
+`CID22-512/2119713 512x512 q32 p6`:
+
+1. p6 is `PD0_DEPTH_PRED_PART_ONLY`, so the coded tree IS the PD0 tree.
+2. C's PD0 costs DO differ bd8 vs bd10 (4881 vs 4880 records) — **but the first
+   SB is byte-identical (68 records) and the divergence starts at SB(64,0)**,
+   and in the diverging records `dist` and `lambda` are IDENTICAL and only
+   `ybits` moves (e.g. 64x64 `dist=7726356` both, `ybits` 795090 vs 794836).
+   A pure RATE divergence with identical distortion is the signature of a
+   different **entropy-context chain**, not different pixels.
+3. Inside **SB(0,0)** (whose PD0 is provably identical), C's bd8 and bd10 final
+   trees already differ on **11 of 28 mi keys — with `bsize` identical on every
+   one of them**. The flips are `mode` / `uv` / `fi` / `txd`, e.g. mi(0,8)
+   bd8 `uv=2` vs bd10 `uv=13 cflidx=1 cflsgn=6`.
+
+So: PD1's 10-bit MODE decisions in SB(0,0) change the coded symbols -> the
+per-SB CDF chain that PD0 rebuilds its rate tables from changes -> later SBs'
+PD0 `ybits` change -> their PD0 trees change -> the classifier sees geometry
+flips and labels the cell PART. **The partition machinery is not implicated.**
+
+**And the mode flip is overwhelmingly CfL.** Port vs C at bd10, same cell,
+SB(0,0): **0 C-only mi keys, 0 port-only mi keys, 0 bsize flips** — the port's
+geometry is exactly C's — but **C codes `UV_CFL_PRED` on 7 of 28 blocks and the
+port on 0**, accounting for 7 of the 10 uv flips. Whole-frame at p3 the same
+picture is much larger: 112 `cflidx` flips, 739 `uv` flips, first divergence at
+mi(0,4) with `uv: C=13 port=0`.
+
+The cause is known and deliberate: `evaluate_leaf`'s `cfl_gate` carries
+`&& bd10_rd.is_none()`, i.e. **the CfL candidate is not offered at all under the
+bd10 full-RD**, because `cfl_rd_search` / the non-CfL freq re-run / the
+chosen-alpha chroma TX are 8-bit only and mixing an 8-bit CfL compare into a
+10-bit block cost would be silently wrong. That gate was justified by a
+measurement — "the chroma complexity detector never arms on the p6 bd10 grid" —
+which is TRUE for synthetic gradient/diag content and **FALSE for real
+photographs**. This is exactly why the synthetic grid understated the p6 work.
+
+### Next step (highest real-content value, bounded)
+
+**Port the CfL arm at 10 bits.** It gates ALL real photographic content below
+eff-M9 and sits upstream of everything the classifier currently calls PART
+there. It is bounded, not open-ended:
+
+- The two arms in `leaf_funnel.rs` are `cfl_uv_follows` (~215 lines, from
+  `if cfl_gate && cfl_uv_follows`) and `cfl_ind_uv`; both are self-contained.
+- Every kernel exists and is FFI-verified: `cfl_luma_subsampling_420_hbd` and
+  `cfl_predict_hbd` (`svtav1-dsp/src/hbd.rs:806/834`), `tx_unit_hbd` (now
+  returning dist+bits), `predict_unit_hbd`.
+- The pieces needing an hbd twin are `cfl_ac_subsample` (small — subsample the
+  10-bit winner recon), `md_cfl_rd_pick_alpha` (135 lines, the iterative alpha
+  search), and the two `tx_unit` -> `tx_unit_hbd` swaps in each arm.
+- Land it only on a clean byte-match; a partial thread mispredicts silently.
+  Then re-run `bd10_classify.sh` on photographic p3/p6 — that is where it pays.
+
+Only after CfL is the residual p0..p5 partition question worth re-opening; on
+synthetic content the remaining 9 PART cells are the visible part of it.
