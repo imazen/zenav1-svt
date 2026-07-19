@@ -28,18 +28,20 @@
 # A cell listed here BYTE-MATCHES the fork oracle via `cmp`. Do NOT add a cell
 # that merely falls back or matches by coincidence.
 #
-# KNOWN-OPEN fork x bd10 axes (NOT gated here — each measured by isolating the
-# knob on both sides, see docs/HDR-ON-4.2.md):
-#   * variance boost at bd10 — the C variance/mean pipeline reads the 8-bit MSB
-#     plane at EVERY bit depth (reference_object.c:246 creates the PA reference
-#     at EB_EIGHT_BIT; resource_coordination_process.c:1320 aliases y_buffer
-#     onto the y8b pool), so every 8-bit-domain constant downstream
-#     (delta_var_th 7500, the PQ dark-bias `mean <= 25000`) stays valid at 10
-#     bit. Cells that need SVT_FORK_ENABLE_VARIANCE_BOOST=0 to match are
-#     tracking that.
-#   * loop-filter sharpness=1 at bd10.
-#   * a QM residual at a few mid/high-qindex cells.
-# Cells in those classes are excluded below rather than weakened.
+# KNOWN-OPEN fork x bd10 residual — 18 of the 64-cell sweep
+# ({gradient,diag} x {64,128}^2 x q{5,12,20,32,40,48,55,63} x p{10,13}) are NOT
+# gated here. They are EXCLUDED, not weakened; see docs/HDR-ON-4.2.md. Measured
+# by isolating each knob on BOTH sides via the shared SVT_FORK_* env:
+#   * class A — matches with SVT_FORK_ENABLE_QM=0, diverges with QM on
+#     (gradient 64 q12, gradient 128 q40, diag 64 q48): a remaining QM-at-bd10
+#     residual beyond the kernel/level wiring below.
+#   * class B — diverges even with QM, variance boost AND sharpness all off
+#     (the q5 cells across both contents/sizes, diag 128 q12): a deeper axis.
+#     All four localize to the same frame-payload byte 14, but mid-byte at
+#     VARIABLE bit positions and with large size deltas — i.e. a downstream
+#     header symptom (LF level is derived from the recon) of a tile-level RD
+#     divergence, not a header-field bug.
+# Both classes need the sibling-C RD-dump treatment to close.
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 RS_ROOT=$(cd "$HERE/.." && pwd)
@@ -63,6 +65,15 @@ failed=()
 # (full_loop.c:139-176), which is what qm::quantize_{fp,b}_hbd_qm now port.
 # Load-bearing: with SVT_FORK_ENABLE_QM=0 these cells still match, but that is
 # a DIFFERENT (QM-off) bitstream — the point is that QM-on now matches too.
+#
+# VARIANCE BOOST AT BD10 (this landing) adds the six `diag` q12/q20 cells.
+# svt_av1_convert_qindex_to_q_fp8 / svt_av1_compute_qdelta_fp (rc_aq.c:24-61)
+# are the ONLY two bit-depth entry points in the variance-boost chain — they
+# select both a different qlookup table and a different shift per depth (8-bit
+# `ac_quant_qtx << 6`, 10-bit `<< 4`). var_boost.rs hardcoded the 8-bit form,
+# skewing every boost at bd10. Everything else in the chain is correctly
+# bit-depth INVARIANT because C computes variance/mean on the 8-bit MSB luma
+# plane at every depth.
 CELLS=(
   # --- gradient, single-SB ---
   "gradient 64 64 20 10"
@@ -92,6 +103,10 @@ CELLS=(
   "gradient 128 128 63 13"
   # --- diag (coded chroma residual: exercises the bd10 CHROMA re-encode's
   #     per-plane QM level, qm_uv[0]/qm_uv[1]) ---
+  "diag 64 64 12 10"
+  "diag 64 64 12 13"
+  "diag 64 64 20 10"
+  "diag 64 64 20 13"
   "diag 64 64 32 10"
   "diag 64 64 32 13"
   "diag 64 64 40 10"
@@ -100,6 +115,8 @@ CELLS=(
   "diag 64 64 55 13"
   "diag 64 64 63 10"
   "diag 64 64 63 13"
+  "diag 128 128 20 10"
+  "diag 128 128 20 13"
   "diag 128 128 32 10"
   "diag 128 128 32 13"
   "diag 128 128 40 10"

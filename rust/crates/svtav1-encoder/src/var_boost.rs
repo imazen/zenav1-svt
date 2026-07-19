@@ -30,29 +30,46 @@ const VAR_BOOST_MAX_QSTEP_RATIO_BOOST: f64 = 8.0;
 const SUBBLOCKS_IN_SB: usize = 64;
 const SUBBLOCKS_IN_OCTILE: usize = SUBBLOCKS_IN_SB / 8;
 
-/// C `svt_av1_convert_qindex_to_q_fp8` (rc_aq.c:24): AC dequant at the
-/// qindex, scaled to fp8 "real Q" units. 8-bit only in this port (the C
-/// 10/12-bit variants shift by 4/3 on their own tables).
+/// C `svt_av1_convert_qindex_to_q_fp8` (rc_aq.c:24-37): AC dequant at the
+/// qindex, scaled to fp8 "real Q" units.
+///
+/// BIT-DEPTH DEPENDENT — this and [`compute_qdelta_fp`] are the ONLY two
+/// bit-depth entry points in the whole variance-boost chain (everything else
+/// runs on the 8-bit MSB luma plane at every depth, because the C picture
+/// analysis reference is created at `EB_EIGHT_BIT` and aliased onto the y8b
+/// pool: reference_object.c:246, resource_coordination_process.c:1320). C
+/// selects BOTH a different qlookup table and a different shift per depth:
+/// 8-bit `ac_quant_qtx(q,0,8) << 6`, 10-bit `<< 4`, 12-bit `<< 3`. Passing the
+/// 8-bit form at bd10 skews every boost, which is what made fork-mode
+/// variance boost diverge at 10 bit.
+///
+/// bd12 is out of scope for this port (docs/bd10-port-map.md).
 #[inline]
-pub fn convert_qindex_to_q_fp8(qindex: i32) -> i32 {
+pub fn convert_qindex_to_q_fp8(qindex: i32, bit_depth: u8) -> i32 {
     let q = qindex.clamp(0, 255) as usize;
-    i32::from(AC_QLOOKUP_8[q]) << 6
+    match bit_depth {
+        8 => i32::from(AC_QLOOKUP_8[q]) << 6,
+        10 => i32::from(crate::bd10::AC_QLOOKUP_10[q]) << 4,
+        _ => unreachable!("bit_depth must be 8 or 10 (bd12 out of scope, bd10-port-map.md)"),
+    }
 }
 
-/// C `svt_av1_compute_qdelta_fp` (rc_aq.c:39): linear scan mapping fp8 Q
-/// values back to qindex, returning `target_index - start_index`.
-pub fn compute_qdelta_fp(qstart_fp8: i32, qtarget_fp8: i32) -> i32 {
+/// C `svt_av1_compute_qdelta_fp` (rc_aq.c:39-61): linear scan mapping fp8 Q
+/// values back to qindex, returning `target_index - start_index`. The scan
+/// re-derives each index through [`convert_qindex_to_q_fp8`], so it carries
+/// the same bit-depth dependence.
+pub fn compute_qdelta_fp(qstart_fp8: i32, qtarget_fp8: i32, bit_depth: u8) -> i32 {
     let mut start_index = MAXQ;
     for i in MINQ..MAXQ {
         start_index = i;
-        if convert_qindex_to_q_fp8(i) >= qstart_fp8 {
+        if convert_qindex_to_q_fp8(i, bit_depth) >= qstart_fp8 {
             break;
         }
     }
     let mut target_index = MAXQ;
     for i in MINQ..MAXQ {
         target_index = i;
-        if convert_qindex_to_q_fp8(i) >= qtarget_fp8 {
+        if convert_qindex_to_q_fp8(i, bit_depth) >= qtarget_fp8 {
             break;
         }
     }
@@ -79,6 +96,7 @@ pub fn deltaq_sb_variance_boost(
     strength: u8,
     octile: u8,
     curve: u8,
+    bit_depth: u8,
 ) -> i32 {
     debug_assert!((1..=4).contains(&strength));
     debug_assert!((1..=8).contains(&octile));
@@ -129,10 +147,10 @@ pub fn deltaq_sb_variance_boost(
     };
     qstep_ratio = qstep_ratio.clamp(1.0, max_ratio);
 
-    let base_q = convert_qindex_to_q_fp8(i32::from(base_q_idx));
+    let base_q = convert_qindex_to_q_fp8(i32::from(base_q_idx), bit_depth);
     let target_q = (f64::from(base_q) / qstep_ratio) as i32;
 
-    let qdelta = compute_qdelta_fp(base_q, target_q);
+    let qdelta = compute_qdelta_fp(base_q, target_q, bit_depth);
     let boost = match curve {
         2 => (i32::from(base_q_idx) + 544) * -qdelta / (255 + 1024),
         3 => (i32::from(base_q_idx) + 2000) * -qdelta / (255 + 2000),
@@ -164,9 +182,9 @@ mod tests {
     #[test]
     fn qindex_to_q_fp8_endpoints() {
         // AC_QLOOKUP_8[0]=4 -> 256; [255]=1828 -> 116992 (table-derived).
-        assert_eq!(convert_qindex_to_q_fp8(0), i32::from(AC_QLOOKUP_8[0]) << 6);
+        assert_eq!(convert_qindex_to_q_fp8(0, 8), i32::from(AC_QLOOKUP_8[0]) << 6);
         assert_eq!(
-            convert_qindex_to_q_fp8(255),
+            convert_qindex_to_q_fp8(255, 8),
             i32::from(AC_QLOOKUP_8[255]) << 6
         );
     }
@@ -174,8 +192,8 @@ mod tests {
     #[test]
     fn qdelta_fp_roundtrip_zero() {
         for q in [0, 32, 128, 249, 255] {
-            let fp8 = convert_qindex_to_q_fp8(q);
-            assert_eq!(compute_qdelta_fp(fp8, fp8), 0, "q={q}");
+            let fp8 = convert_qindex_to_q_fp8(q, 8);
+            assert_eq!(compute_qdelta_fp(fp8, fp8, 8), 0, "q={q}");
         }
     }
 
@@ -187,14 +205,14 @@ mod tests {
     fn flat_sb_boosts_within_range() {
         let vars = [1.0f64; 64];
         for curve in 0..=3u8 {
-            let b = deltaq_sb_variance_boost(255, 30000, &vars, 1.0, 2, 5, curve);
+            let b = deltaq_sb_variance_boost(255, 30000, &vars, 1.0, 2, 5, curve, 8);
             let cap = if curve == 3 { 120 } else { 80 };
             assert!(b > 0 && b <= cap, "curve {curve}: boost {b}");
         }
         // High-variance SB: no boost on any curve.
         let vars = [4096.0f64; 64];
         for curve in 0..=3u8 {
-            let b = deltaq_sb_variance_boost(255, 30000, &vars, 4096.0, 2, 5, curve);
+            let b = deltaq_sb_variance_boost(255, 30000, &vars, 4096.0, 2, 5, curve, 8);
             assert_eq!(b, 0, "curve {curve}");
         }
     }
@@ -205,13 +223,13 @@ mod tests {
     #[test]
     fn pq_dark_attenuation() {
         let vars = [1.0f64; 64];
-        let bright = deltaq_sb_variance_boost(255, 26000, &vars, 1.0, 2, 5, 3);
-        let dark = deltaq_sb_variance_boost(255, 1000, &vars, 1.0, 2, 5, 3);
+        let bright = deltaq_sb_variance_boost(255, 26000, &vars, 1.0, 2, 5, 3, 8);
+        let dark = deltaq_sb_variance_boost(255, 1000, &vars, 1.0, 2, 5, 3, 8);
         assert!(dark < bright, "dark {dark} !< bright {bright}");
-        let protected = deltaq_sb_variance_boost(255, 1000, &vars, 300.0, 2, 5, 3);
+        let protected = deltaq_sb_variance_boost(255, 1000, &vars, 300.0, 2, 5, 3, 8);
         assert!(protected >= bright, "protect {protected} < {bright}");
-        let c0_bright = deltaq_sb_variance_boost(255, 26000, &vars, 1.0, 2, 5, 0);
-        let c0_dark = deltaq_sb_variance_boost(255, 1000, &vars, 1.0, 2, 5, 0);
+        let c0_bright = deltaq_sb_variance_boost(255, 26000, &vars, 1.0, 2, 5, 0, 8);
+        let c0_dark = deltaq_sb_variance_boost(255, 1000, &vars, 1.0, 2, 5, 0, 8);
         assert_eq!(c0_bright, c0_dark);
     }
 

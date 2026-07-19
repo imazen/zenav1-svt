@@ -511,6 +511,7 @@ impl EncodePipeline {
                 self.hdr.variance_octile,
                 self.hdr.variance_boost_curve,
                 tpl_adjusted_qp,
+                self.bit_depth,
             );
             base_qindex = plan.base_qindex;
             tpl_adjusted_qp = ((i32::from(plan.base_qindex) + 2) >> 2).clamp(0, 63) as u8;
