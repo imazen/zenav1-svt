@@ -203,8 +203,14 @@ carries the user-facing summary.
    temporal filter, i.e. a multi-frame window; `qp_scale_compress_strength` —
    CRF-only (sole consumer is the rc_process.c qp-scale path; the hybrid C
    renames the field `_unused` and the port is CQP).
-5. **HBD (10-bit) fork paths** incl. `hbd_mds` and HBD noise ramps: the port is
-   8-bit; bd10 is tracked separately (`docs/bd10-port-map.md`).
+5. ~~**HBD (10-bit) fork paths** incl. `hbd_mds` and HBD noise ramps~~ —
+   **SUPERSEDED 2026-07-19, see "Fork mode at 10-bit" below.** Fork x bd10 is
+   now measured against a real oracle and is 46/64 byte-identical. Two premises
+   of this deferral were also wrong: there are no "HBD noise ramps" (the fork's
+   grain-table generator is bit-depth INVARIANT — AV1 scaling points are 8-bit
+   by spec, §6.8.20, and `noise_generation.c` reads no bit depth anywhere), and
+   `hbd_mds` is a MAINLINE v4.2 field (MR !2644), not a fork addition — the
+   fork's duplicate was dropped during the rebase.
 6. **TUNE_VQ `vq_ctrls`** video-sequence machinery: tune 0 selects only VQ's
    still-reachable policies (LF sharpness ladder etc.).
 7. **Mainline TUNE_VMAF**: the Rust `tune` field uses FORK numbering (5 =
@@ -217,3 +223,129 @@ carries the user-facing summary.
 Remaining PORT-NOTE(unverified) debt is indexed in `rust/CLAUDE.md`
 (complex-hvs MDS0 fast cost; alt-ssim full_cost_ssim assembly granularity;
 tune-ssim SB-vs-block lambda granularity).
+
+---
+
+# Fork mode at 10-bit (2026-07-19)
+
+## The oracle (this is the unblock)
+
+Fork mode previously had **no byte-identity oracle at all** — it was validated
+only by aomdec decode gates, per-feature C-parity kernel differentials, and
+liveness witnesses. `tools/capture_c_trace/build.sh` is now mode-aware:
+
+```
+SVT_HDR_MODE=1   -> lib Bin/ReleaseHdr, cmake dir cbuild-static-hdr,
+                    driver capture_c_trace.hdr.bin
+unset / 0        -> lib Bin/Release,    cbuild-static, capture_c_trace.bin
+```
+
+Build the fork oracle once:
+
+```bash
+cmake -S /root/svtav1 -B /root/svtav1/cbuild-static-hdr \
+  -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DBUILD_APPS=OFF \
+  -DBUILD_TESTING=OFF -DSVT_AV1_LTO=OFF -DSVT_HDR_MODE=ON \
+  -DCMAKE_OUTPUT_DIRECTORY=/root/svtav1/Bin/ReleaseHdr/
+cmake --build /root/svtav1/cbuild-static-hdr -j8
+```
+
+Two invariants are load-bearing and must not be "simplified":
+
+* **Distinct output dirs.** `CMAKE_OUTPUT_DIRECTORY` defaults to
+  `Bin/${CMAKE_BUILD_TYPE}` for *both* configs, so an HDR build left at the
+  default **overwrites the mainline `libSvtAv1Enc.a`** and every mainline gate
+  then silently compares against the fork oracle. (This happened once while
+  wiring the switch; hence the explicit `-DCMAKE_OUTPUT_DIRECTORY`.)
+* **Distinct driver binaries.** The staleness guard in `build.sh` is a set of
+  mtime tests against one `$LIB`. A shared binary breaks in the dangerous
+  direction: after linking mode B, mode A finds the binary *newer* than its own
+  (older) lib, skips the relink, and runs mode B's oracle under mode A's name.
+
+Both configs also pin `SVT_AV1_LTO=OFF` (it defaults **ON**) — a bit-identity
+oracle may not differ from its counterpart by optimization level.
+
+## Configuring both encoders from one env vector
+
+`capture_c_trace.c` takes `SVT_FORK_<KNOB>` overrides for all 28 fork /
+fork-defaulted config fields, and `HdrForkConfig::from_env()` reads the *same*
+names, so a gate script sets one vector and both encoders receive it. Absent
+knobs leave the library default untouched, so mainline callers are byte-for-byte
+unchanged.
+
+**Fork mode is not "all fork features on."** `enc_settings.c` neutralizes the
+fork's feature knobs **unconditionally** at `:1181-1203` (`ac_bias` 0.0,
+`sharp_tx` 0, `noise_norm_strength` 0, `alt_lambda_factors` 0, `kf_tf_strength`
+3, `qp_scale_compress_strength` 0.0) — outside every `#if SVT_HDR_MODE` block.
+A MODE1 build gives you the fork's **unconditional code-path deltas** plus
+exactly **six** flipped defaults (QM on 6..10, variance boost on, `tf_strength`
+1, `sharpness` 1, and — overridden by this harness — bit depth 10 and preset
+M4). `HdrForkConfig::hdr_fork_c_mode1()` models that; `hdr_fork()` keeps the
+*shipped fork's* defaults and is **not** the oracle config. A unit test pins the
+distinction.
+
+## Measured state
+
+| Config | Result |
+|---|---|
+| **Fork @ bd8** | **48/48 byte-identical** — `{gradient,diag}` x `{64,128}²` x q`{12,20,32,40,55,63}` x p`{10,13}`. The bd8 fork port was already correct; this is the first time it could be *proven*. |
+| **Fork @ bd10** | **46/64** (was 0/64). Gated at 46/46 by `tools/hdr_bd10_gate.sh`, with an anti-vacuity check that the fork and mainline oracles genuinely differ. |
+
+### Roots fixed
+
+1. **QM was entirely unwired at bd10.** `leaf_funnel::tx_unit_hbd` always called
+   the non-QM highbd quantize kernels and passed `iwt: None` to the trellis. QM
+   is on by default in fork mode, so bd10 quantized/dequantized without matrices
+   while bd8 applied them. C has no such split: `svt_av1_qm_init` picks the
+   matrix from `base_qindex` alone (no bit-depth term,
+   `md_config_process.c:246-280`) and bd>8 routes through
+   `svt_av1_highbd_quantize_{b,fp}_facade`. Added `qm::quantize_fp_hbd_qm` /
+   `quantize_b_hbd_qm` and threaded per-plane levels (U and V derive separately;
+   the fork gives Cb a +12 delta). 0/64 -> 40/64.
+2. **Variance boost used the 8-bit Q curve at bd10.**
+   `convert_qindex_to_q_fp8` / `compute_qdelta_fp` are the only two bit-depth
+   entry points in that chain and change both table and shift per depth
+   (`<< 6` at 8-bit, `<< 4` at 10-bit). 40/64 -> 46/64.
+
+### Deliberately NOT changed
+
+The rest of the variance-boost chain is bit-depth **invariant** and must stay
+so: C computes variance/mean on the **8-bit MSB luma plane at every bit depth**
+(`reference_object.c:246` creates the picture-analysis reference at
+`EB_EIGHT_BIT`; `resource_coordination_process.c:1320` aliases `y_buffer` onto
+the y8b pool). That is why `delta_var_th = 7500` and the PQ dark-bias
+`mean <= 25000` (MEAN_PRECISION 8, ≈ pixel 97.7) are correct at 10-bit — do not
+"fix" them by rescaling. Same for the fork's light-RDOQ thresholds (quantized-DC
+domain), chroma-qindex derivation (qindex space), `cdef_scaling`, `sharp_tx`,
+`tx_bias` and `noise_norm_strength`.
+
+## Remaining fork x bd10 scope (18 cells, honest)
+
+* **Class A — QM residual** (`gradient 64 q12`, `gradient 128 q40`,
+  `diag 64 q48`): match with `SVT_FORK_ENABLE_QM=0`, diverge with QM on, so
+  something beyond the kernel/level wiring remains.
+* **Class B — deeper** (the q5 cells across both contents and sizes,
+  `diag 128 q12`): diverge with QM, variance boost *and* sharpness all off.
+
+All localize to the same frame-payload byte 14 — but mid-byte at **variable**
+bit positions and with large size deltas, i.e. a downstream header symptom (the
+LF level is derived from the recon) of a tile-level RD divergence, not a
+header-field bug. Closing them wants the sibling-C RD-dump treatment.
+
+## Still deferred at bd10
+
+* **`hbd_md` (`--hbd-mds`)** — a MAINLINE knob, not a fork one. At bd10 C's
+  ladder (`enc_mode_config.c:2152-2165`) picks 0/1/2 by preset and gates buffer
+  selection, kernel dispatch (`svt_full_distortion_kernel16_bits` vs the 8-bit
+  form), the dequant table, the lambda shift, and LPD1 availability. The port's
+  bd10 strategy is a u8 search plus a 10-bit re-encode, so modelling C's
+  `hbd_md` is the separate "true bd10 MD" axis already tracked in
+  `docs/bd10-port-map.md` — not a fork item.
+* **`ac_bias` / `complex_hvs` at bd10** — `ac_bias.c:143` returns
+  `energy_gap << 2` in the hbd psy kernel ("scaled to approximately match
+  equivalent 8-bit strengths"), which combined with the L1-vs-SSD domain makes
+  the net 10-bit psy scale 16x. Unexercised so far: both knobs are 0 in MODE1.
+* **`alt_ssim_tuning` at bd10** — the hbd MD-SSIM path uses `m = 8`
+  (`mode_decision.c:4395`), notably **not** the 16x used everywhere else, and
+  `svt_aom_similarity` is called with a hardcoded `bd = 10`
+  (`mode_decision.c:4241,:4266`). Also 0 in MODE1.

@@ -776,3 +776,38 @@ near-ties") and the q48/q63 cells that were never gated. bd8 `identity_matrix` 5
   **bd8 too**, so it is a general partial-SB bug, unrelated to bd10; `65x65 bd10 p0/p6` at q5/q32
   additionally produce UNDECODABLE streams. Excluding 65x65 the sweep is 353/353 clean and decodable
   (aomdec). Neither is covered by `partial_sb_gate.sh` (101/101 green).
+
+---
+
+## bd10 x HDR-FORK mode (2026-07-19)
+
+Fork mode (`SVT_HDR_MODE=1`) at bd10 is now byte-measurable against a real C
+oracle and is **46/64** byte-identical (was 0/64). Full write-up, including the
+oracle build and the two roots fixed, is in **`docs/HDR-ON-4.2.md` § "Fork mode
+at 10-bit"**. Gate: `tools/hdr_bd10_gate.sh` (46/46).
+
+Two bd10 findings from that work belong here because they are **not**
+fork-specific:
+
+1. **`qm::quantize_fp_hbd_qm` / `quantize_b_hbd_qm`** now exist — the bd10
+   re-encode (`tx_unit_hbd`) previously had NO quantization-matrix support at
+   all (non-QM highbd kernels, `iwt: None` into the trellis). Any future bd10
+   work that turns QM on (`--enable-qm`, `tune=IQ`, `tune=SSIMULACRA2`) needs
+   these, mainline or fork.
+2. **`var_boost::convert_qindex_to_q_fp8` / `compute_qdelta_fp` take a bit
+   depth.** C changes both the qlookup table and the shift per depth
+   (`ac_quant_qtx(q,0,bd) << 6` at 8-bit, `<< 4` at 10-bit, `<< 3` at 12-bit).
+   These two are the ONLY bit-depth entry points in the variance-boost chain;
+   everything else there runs on the 8-bit MSB luma plane at every depth
+   (C creates the picture-analysis reference at `EB_EIGHT_BIT`,
+   `reference_object.c:246`), so its 8-bit-domain constants are correct at bd10
+   and must NOT be rescaled.
+
+**`hbd_md` remains the open "true bd10 MD" axis** and is a MAINLINE knob, not a
+fork one (v4.2 MR !2644; the fork's duplicate field was dropped in the rebase).
+C's ladder (`enc_mode_config.c:2152-2165`) yields 0/1/2 by preset and bit depth
+and switches source/recon buffer selection, distortion-kernel dispatch
+(`svt_full_distortion_kernel16_bits` vs the 8-bit form), the dequant table, the
+lambda shift (`>> (2*(bit_depth-8))`), and whether LPD1 is reachable at all.
+The port's u8-search + 10-bit-re-encode strategy models none of that, which is
+the same gap already described above as "true bd10 MD".
