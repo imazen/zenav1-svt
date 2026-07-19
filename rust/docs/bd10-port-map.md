@@ -1022,13 +1022,43 @@ stay live where the post-pass does not reach — the neighbour `cul` bytes that
 drive later blocks' coefficient contexts, and the u8 chroma recon the CDEF/LR
 searches read (`recon10 >> (bd-8)`, the convention the post-pass established).
 
-**NEXT for the COEFF class:** dump both level sets for `gradient 64x64 q40 p6`
-(`SVT_QLEVELS_OUT` + `SVT_QLEVELS_COMP=0` vs `SVTAV1_PACKTREE_COEFF`) and find
-the first diverging txb. C's dump shows several records per txb (one per
-candidate), so pin the winning one before comparing. The observed signature at
-q40 mi(0,0) is a trellis-shaping difference (C `32:-26`; port `32:-25, 33:-1`,
-plus an extra `46:-1` and a different tail past coefficient 256), i.e. RDOQ,
-not the forward quantizer.
+### COEFF class — TRACED (2026-07-19), and it is NOT a level bug
+
+Done on `gradient 64x64 q40 p6` (264B payload, 4 blocks, RDOQ level 3):
+
+1. `decode-diff` on the two OBUs: **plane 0 only** (chroma 0 diffs), first
+   differing pixel `x=4 y=0`, i.e. the very first block, 1553/4096 luma px.
+   (`gradient 64 q20` behaves identically: luma-only, SB(0,0), 2135 px.)
+2. `SVT_QLEVELS_OUT` + `SVT_QLEVELS_COMP=0` vs `SVTAV1_PACKTREE_COEFF` on
+   block mi=(0,0): C emits **25 records at org=(0,0)** — one per candidate x
+   tx_type x depth, all `enc=0` (there is no encode-pass marker to filter on).
+   Nine are `txs=3 txt=0`; they fall into two families, `eob=996` (records
+   1-5) and `eob=528` (records 6-9).
+3. **The port's coded levels are byte-identical to C's `eob=528` family** —
+   `yeob=528`, `0:-76, 2:-1, 16:1, 32:-25, 33:-1, 34:-4, 36:2, 37:-1, 40:-1,
+   46:-1, 64:2, ...` matches records 6-9 exactly, coefficient for coefficient.
+
+So the port's forward quantize + RDOQ for this txb reproduce a real C result
+exactly. **CAUTION for the next session: an earlier draft of this section
+claimed a "trellis-shaping difference (C 32:-26 vs port 32:-25,33:-1)". That
+was WRONG — it compared against record 2, a LOSING candidate.** Do not chase
+the quantizer on this evidence.
+
+That leaves two live hypotheses, in order:
+- **(a) Winner identification.** C may actually code the `eob=996` family and
+  the port matches a losing candidate. Distinguish by extending the
+  `SVT_QLEVELS_OUT` wrap with the candidate/stage identity (or by adding an
+  `is_encode_pass`-equivalent marker), so the winning record is unambiguous
+  rather than guessed from dump order.
+- **(b) Write-side contexts** (the KB-6 class from the sibling aom-rs port):
+  identical symbols written on different-probability cdf rows desync the
+  parse. Both the tile payload SIZE and the coded tree already match, which
+  fits this shape.
+
+Measured NOT to be the cause: the neighbour `cul` source. Routing the MDS3
+`cul` bytes from the 10-bit levels vs the 8-bit ones was A/B'd on the whole p6
+grid and is decision-NEUTRAL (4/20 either way); the 10-bit form is kept
+because it is consistent with the levels the same stage computes.
 
 ### Scope deliberately NOT taken in this landing
 
