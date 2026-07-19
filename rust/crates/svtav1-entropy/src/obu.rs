@@ -1221,9 +1221,25 @@ fn key_frame_header_bits_lr(
             wb.write_bit(b1);
         }
         if !all_none {
-            // sb_size is 64 in this encoder (C asserts unit >= sb).
-            debug_assert!(lr.unit_size >= 64);
-            wb.write_bit(lr.unit_size > 64);
+            // C encode_restoration_mode (entropy_coding.c:2225-2236):
+            //
+            //     if (sb_size == 64) wb_write_bit(unit_size > 64);
+            //     if (unit_size > 64) wb_write_bit(unit_size > 128);
+            //
+            // The FIRST bit is written ONLY at SB64 (task #91). At SB128
+            // the spec's RESTORATION_UNITSIZE_MAX-relative encoding starts
+            // one step up, because a restoration unit may never be smaller
+            // than the superblock (C asserts `unit_size >= sb_size`), so
+            // `unit_size > 64` is not a free choice — it is implied. Writing
+            // it anyway shifts every following header bit by one and
+            // silently corrupts tx_mode_select / reduced_tx_set (MEASURED:
+            // exactly the `diag 512x384 q55 p0` and `gradient 512x384 q55
+            // p0` divergences, whose tile payloads were already
+            // byte-identical).
+            debug_assert!(u32::from(lr.unit_size) >= sb_size);
+            if sb_size == 64 {
+                wb.write_bit(lr.unit_size > 64);
+            }
             if lr.unit_size > 64 {
                 wb.write_bit(lr.unit_size > 128);
             }
