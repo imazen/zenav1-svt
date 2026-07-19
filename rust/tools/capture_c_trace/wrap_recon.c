@@ -596,16 +596,46 @@ void __wrap_svt_av1_loop_filter_init(PictureControlSet* pcs) {
                 FILE* bf = fopen(path, "wb");
                 if (!bf)
                     continue;
+                /* SELF-CHECK (added while root-causing the bd10 post-pass
+                 * recon): compute the SSE from the EXACT walk this dump uses
+                 * and print it beside C's own picture_sse_calculations. If the
+                 * two disagree, the dumped file is garbage and any "recon
+                 * divergence" read off it is an artifact of the walk, not a
+                 * port defect. Without this the two failure modes are
+                 * indistinguishable — which is how `4*u8+24` got recorded. */
+                uint64_t walk_sse = 0;
                 if (is_16bit) {
                     const uint16_t* base = (const uint16_t*)recon->buffer[p];
-                    for (uint32_t r = 0; r < ph; ++r)
-                        fwrite(base + (size_t)r * recon->stride[p], sizeof(uint16_t), pw, bf);
+                    const uint16_t* sbase =
+                        (const uint16_t*)pcs->input_frame16bit->buffer[p];
+                    const uint32_t  sstride = pcs->input_frame16bit->stride[p];
+                    for (uint32_t r = 0; r < ph; ++r) {
+                        const uint16_t* row = base + (size_t)r * recon->stride[p];
+                        const uint16_t* srow = sbase + (size_t)r * sstride;
+                        for (uint32_t cc = 0; cc < pw; ++cc) {
+                            const int64_t d = (int64_t)srow[cc] - (int64_t)row[cc];
+                            walk_sse += (uint64_t)(d * d);
+                        }
+                        fwrite(row, sizeof(uint16_t), pw, bf);
+                    }
                 } else {
                     for (uint32_t r = 0; r < ph; ++r)
                         fwrite(recon->buffer[p] + (size_t)r * recon->stride[p], 1, pw, bf);
                 }
                 fclose(bf);
-                fprintf(f, "RECON_BIN plane=%d w=%u h=%u b16=%d -> %s\n", p, pw, ph, (int)is_16bit, path);
+                fprintf(f, "RECON_WALKSSE plane=%d walk_sse=%llu\n", p, (unsigned long long)walk_sse);
+                /* stride/geometry alongside the file: a dump whose stride does
+                 * not match the buffer's is silently garbage, and the only way
+                 * to tell that from a genuine recon divergence is to print the
+                 * walk parameters next to the data. (Measured: at fast presets
+                 * the recon desc's `width` is the ALIGNED width while `stride`
+                 * carries padding, so a reader assuming stride==w is wrong.) */
+                fprintf(f,
+                        "RECON_BIN plane=%d w=%u h=%u b16=%d stride=%u desc_w=%u desc_h=%u "
+                        "border=%u packed=%d bd=%d -> %s\n",
+                        p, pw, ph, (int)is_16bit, (unsigned)recon->stride[p], (unsigned)recon->width,
+                        (unsigned)recon->height, (unsigned)recon->border, (int)recon->packed_flag,
+                        (int)recon->bit_depth, path);
             }
         }
     }

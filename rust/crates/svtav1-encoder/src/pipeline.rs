@@ -1161,12 +1161,53 @@ impl EncodePipeline {
             // still live where the post-pass does not reach: the neighbour
             // `cul` bytes that drive later blocks' coefficient contexts, and
             // the u8 chroma recon the CDEF/LR searches read.
-            if let Some(cq) = c_quant.as_ref().filter(|_| {
-                bd10_frame_aligned
-                    && all_trees
-                        .iter()
-                        .all(|t| bd10_tree_supported(t, bd10_edge_filter))
-            }) {
+            // Where the FULL-RD funnel ran, it ALREADY produced this frame's
+            // coded 10-bit levels and the committed 10-bit recon, computed
+            // with each txb's REAL entropy contexts. This level-only post-pass
+            // hardcodes the RDOQ contexts to 0/0 — correct only where
+            // `real_coeff_ctx` is off — so letting it run on top REPLACES
+            // correct levels with ones quantized under the wrong contexts, and
+            // the recon it writes then disagrees with the bitstream the funnel
+            // decided. That is exactly the invariant `bd10_full_rd_supported`
+            // documents ("the winner's 10-bit levels ARE the coded ones, so
+            // the level-only re-encode post-pass is skipped"); it was
+            // documented but never actually implemented in this gate.
+            //
+            // MEASURED (bd10, 128x128 gradient, presets 3 and 5, q12/q32/q55):
+            // with both running, the port's 10-bit recon differs from C's by
+            // 8194-11766 bytes and the tile payload diverges; with the
+            // post-pass correctly skipped, the recon is byte-identical to C's
+            // `svt_aom_get_recon_pic` dump. The eff-M9 band (preset >= 9) is
+            // NOT full-RD, so the post-pass stays authoritative there — which
+            // is why removing it wholesale regressed that band (the A/B noted
+            // in docs/bd10-port-map.md) while removing it *conditionally* does
+            // not.
+            let bd10_full_rd =
+                bd10_full_rd_supported(self.bit_depth, self.speed_config.preset, w, h);
+            let bd10_postpass_runs = !bd10_full_rd
+                && bd10_frame_aligned
+                && all_trees
+                    .iter()
+                    .all(|t| bd10_tree_supported(t, bd10_edge_filter));
+            // Diagnostic: which 10-bit canvas the post-filter searches (DLF
+            // level, CDEF strength, Wiener LR) end up reading. The two
+            // producers — the FULL-RD funnel's committed per-block recon and
+            // this level-only post-pass — are gated differently, so "which one
+            // is live" is the first question any recon-parity investigation
+            // has to answer and it is not otherwise observable from outside.
+            #[cfg(feature = "std")]
+            if std::env::var_os("SVTAV1_BD10_POSTPASS").is_some() {
+                let unsupported = all_trees
+                    .iter()
+                    .filter(|t| !bd10_tree_supported(t, bd10_edge_filter))
+                    .count();
+                eprintln!(
+                    "BD10_POSTPASS runs={bd10_postpass_runs} aligned={bd10_frame_aligned} \
+                     unsupported_sbs={unsupported}/{} edge_filter={bd10_edge_filter}",
+                    all_trees.len()
+                );
+            }
+            if let Some(cq) = c_quant.as_ref().filter(|_| bd10_postpass_runs) {
                 let shift = (self.bit_depth - 8) as u32;
                 let src10: alloc::vec::Vec<u16> =
                     encode_input.iter().map(|&s| (s as u16) << shift).collect();
