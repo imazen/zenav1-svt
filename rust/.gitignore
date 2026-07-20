@@ -11,6 +11,11 @@ Cargo.lock
 # a stale driver can never be run. Do not re-ignore the wrapper.
 tools/capture_c_trace/capture_c_trace.bin
 
+# perf gate: locally built C encode-timing driver (tools/perf_c_encode/build.sh
+# rebuilds it with a staleness guard, same contract as capture_c_trace). Only
+# the source (.c + build.sh) is tracked; tools/perf_gate.sh rebuilds on demand.
+tools/perf_c_encode/perf_c_encode
+
 # agent work marker (never committed)
 .workongoing
 tools/decode_diff/target/
