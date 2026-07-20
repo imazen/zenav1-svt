@@ -383,6 +383,29 @@ CELLS=(
   # `gradient 128 128 20 2` is the one closed by (2) specifically — it is the
   # anti-vacuity witness that the 10-bit DLF search is decision-relevant and
   # not a no-op on this grid.
+  #
+  # bd10 root #2 (task #94, the p0..p3 NSQ partition near-tie): `min_nz_hv`
+  # (the parent-SQ H/V tx-split nonzero counts feeding the `skip_by_sq_txs` NSQ
+  # gate) was computed at bd8 (Q8 quant + 8-bit residual) while C computes it
+  # at EB_TEN_BIT (Q10 + `svt_aom_highbd_quantize_b`, non_normative_txs). At
+  # bd10 the bd8 counts flipped which of H/V is pruned, so the port picked a
+  # non-square where C keeps NONE (e.g. `diag 64 64 12 2` mi(8,0): port VERT vs
+  # C NONE). Fixed by routing the H/V nz-count quant through the bd10 tables +
+  # the 10-bit last-candidate residual (bd8 byte-inert). These 12 diag p2/p3
+  # cells (near-flat chroma, so the divergence is unambiguously luma-NSQ) flip
+  # DIFF -> MATCH; each verified with `cmp`.
+  "diag 64 64 5 2"
+  "diag 64 64 5 3"
+  "diag 64 64 12 2"
+  "diag 64 64 12 3"
+  "diag 64 64 20 2"
+  "diag 64 64 20 3"
+  "diag 128 128 5 2"
+  "diag 128 128 5 3"
+  "diag 128 128 12 2"
+  "diag 128 128 12 3"
+  "diag 128 128 20 2"
+  "diag 128 128 20 3"
   "diag 128 128 12 1"
   "diag 128 128 20 5"
   "diag 128 128 40 2"

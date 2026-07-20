@@ -2759,6 +2759,15 @@ pub(crate) struct LeafEval {
     /// residual (the depth-1/2 trials write the per-depth scratch
     /// buffers, init_tx_cand_bf copies OUT of this one).
     psq_resid: Vec<i32>,
+    /// bd10 twin of `psq_resid` (task #94, root #2): the LAST MDS3 candidate's
+    /// whole-block depth-0 residual at TRUE 10 bits (`src10 - last.pred10`).
+    /// C's `non_normative_txs` (product_coding_loop.c:9180) transforms +
+    /// quantizes this at `EB_TEN_BIT` (Q10 tables, `svt_aom_highbd_quantize_b`)
+    /// to derive `min_nz_h`/`min_nz_v` — the counts the `skip_by_sq_txs` NSQ
+    /// gate reads. Deciding that gate on the bd8 residual + Q8 quant flips
+    /// which NSQ shapes are pruned (H-vs-V), so the port over/under-splits at
+    /// bd10. Empty on the u8 path (bd8 keeps `psq_resid`, byte-unchanged).
+    psq_resid10: Vec<i32>,
     /// bd10 mode funnel (task #94): the winner's TRUE 10-bit recon (w×h
     /// raster), reconstructed by `evaluate_leaf` from the bd10 canvas when
     /// `FunnelCtx::y_recon10` is `Some`. `commit_leaf` writes it back into the
@@ -2877,6 +2886,12 @@ impl LeafEval {
     /// residual.
     pub(crate) fn psq_resid(&self) -> &[i32] {
         &self.psq_resid
+    }
+
+    /// The bd10 twin of [`psq_resid`](Self::psq_resid): the last MDS3
+    /// candidate's depth-0 residual at TRUE 10 bits. Empty on the u8 path.
+    pub(crate) fn psq_resid10(&self) -> &[i32] {
+        &self.psq_resid10
     }
 
     /// Winner luma recon (w x h raster).
@@ -6054,12 +6069,28 @@ pub(crate) fn evaluate_leaf(
     // The shared MDS3 residual workspace after the loop: the LAST
     // processed candidate's (order1[n3-1]) whole-block depth-0 residual.
     let mut psq_resid = vec![0i32; w * h];
+    // bd10 twin (task #94, root #2): the SAME last-candidate residual at TRUE
+    // 10 bits (`src10 - last.pred10`), consumed by `min_nz_hv` at bd10. Built
+    // only when the last candidate carries a 10-bit prediction (== bd10 funnel
+    // active); empty on the u8 path, so bd8 stays byte-identical.
+    let mut psq_resid10: Vec<i32> = Vec::new();
     {
         let last = &cands[order1[n3 - 1]];
         for r in 0..h {
             let srow = y_src_off + r * y_src_stride;
             for c in 0..w {
                 psq_resid[r * w + c] = y_src[srow + c] as i32 - last.pred[r * w + c] as i32;
+            }
+        }
+        if !last.pred10.is_empty() {
+            let shift = (frame.bit_depth - 8) as u32;
+            psq_resid10 = vec![0i32; w * h];
+            for r in 0..h {
+                let srow = y_src_off + r * y_src_stride;
+                for c in 0..w {
+                    psq_resid10[r * w + c] =
+                        ((y_src[srow + c] as i32) << shift) - (last.pred10[r * w + c] as i32);
+                }
             }
         }
     }
@@ -6115,6 +6146,7 @@ pub(crate) fn evaluate_leaf(
             gate_u,
             gate_v,
             psq_resid,
+            psq_resid10,
             win_recon10: wr,
             win_u_recon10: wu,
             win_v_recon10: wv,
@@ -6162,6 +6194,7 @@ pub(crate) fn evaluate_leaf(
         gate_u,
         gate_v,
         psq_resid,
+        psq_resid10,
         win_recon10,
         win_u_recon10: Vec::new(),
         win_v_recon10: Vec::new(),
@@ -6398,16 +6431,26 @@ fn sub_tx_dims(tw: usize, th: usize) -> (usize, usize) {
 /// the min eob per split direction. `None` when the winner kept no
 /// coefficients (C leaves the ~0 sentinels, so the psq gate can't
 /// fire).
-pub(crate) fn min_nz_hv(ev: &LeafEval, qindex: u8, qm_level_y: u8) -> Option<(u16, u16)> {
+pub(crate) fn min_nz_hv(ev: &LeafEval, qindex: u8, qm_level_y: u8, bit_depth: u8) -> Option<(u16, u16)> {
     if !ev.block_has_coeff() {
         return None;
     }
     let (w, h) = (ev.w, ev.h);
     debug_assert!(w == h && w >= 8, "psq gate runs on SQ blocks only");
-    let mut qt = crate::quant::build_quant_table(qindex);
+    // bd10 (task #94, root #2): C's `non_normative_txs` transforms + quantizes
+    // this residual at `EB_TEN_BIT` — Q10 tables + `svt_aom_highbd_quantize_b`
+    // (full_loop.c:1288). Deciding the H/V nz counts on the bd8 residual + Q8
+    // quant flips the `skip_by_sq_txs` gate. bd8 keeps `build_quant_table` +
+    // `psq_resid` + `quantize_b`, so it is byte-unchanged by construction.
+    let bd10 = bit_depth > 8 && !ev.psq_resid10().is_empty();
+    let mut qt = if bd10 {
+        crate::quant::build_quant_table_bd(qindex, bit_depth)
+    } else {
+        crate::quant::build_quant_table(qindex)
+    };
     // C's light quantize applies the PLANE_Y QM here too (full_loop.c:1282).
     qt.qm_level = qm_level_y;
-    let resid = ev.psq_resid();
+    let resid = if bd10 { ev.psq_resid10() } else { ev.psq_resid() };
     debug_assert_eq!(resid.len(), w * h);
 
     let half_eob = |ox: usize, oy: usize, tw: usize, th: usize| -> u16 {
@@ -6449,6 +6492,16 @@ pub(crate) fn min_nz_hv(ev: &LeafEval, qindex: u8, qm_level_y: u8) -> Option<(u1
         } else {
             None
         } {
+            Some((wt, iwt)) if bd10 => crate::qm::quantize_b_hbd_qm(
+                &packed,
+                scan,
+                &qt,
+                TX_SCALE_TAB[c_tx],
+                wt,
+                iwt,
+                &mut qcoeff,
+                &mut dqcoeff,
+            ),
             Some((wt, iwt)) => crate::qm::quantize_b_qm(
                 &packed,
                 scan,
@@ -6456,6 +6509,14 @@ pub(crate) fn min_nz_hv(ev: &LeafEval, qindex: u8, qm_level_y: u8) -> Option<(u1
                 TX_SCALE_TAB[c_tx],
                 wt,
                 iwt,
+                &mut qcoeff,
+                &mut dqcoeff,
+            ),
+            None if bd10 => crate::quant::quantize_b_hbd(
+                &packed,
+                scan,
+                &qt,
+                TX_SCALE_TAB[c_tx],
                 &mut qcoeff,
                 &mut dqcoeff,
             ),

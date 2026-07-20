@@ -126,6 +126,31 @@ static void dump_pc_tree(FILE* f, const PC_TREE* t) {
                 (unsigned)n->quant_dc.y[2], (unsigned)n->quant_dc.y[3], (int)n->block_mi.angle_delta[0],
                 (int)n->block_mi.angle_delta[1], (unsigned long long)n->total_rate, (unsigned long long)n->full_dist);
     }
+    /* All TESTED NSQ shapes at this node (bd10 partition-flip drill): the
+     * chosen-path dump only shows the winner, but a partition flip needs the
+     * cost C assigned to the REJECTED shapes too (e.g. VERT when C keeps NONE).
+     * Dump each tested shape's per-sub-block cost/mode + its cost sum. */
+    for (int sh = 1; sh < PART_S; ++sh) {
+        if (!t->tested_blk[sh][0] || !t->block_data[sh][0])
+            continue;
+        unsigned long long csum = 0;
+        int                nb = shape_nblk[sh], ok = 1;
+        for (int nsi = 0; nsi < nb; ++nsi) {
+            const BlkStruct* b = t->block_data[sh][nsi];
+            if (!b) {
+                ok = 0;
+                break;
+            }
+            csum += (unsigned long long)b->cost;
+            fprintf(f, "CNSQ mi=(%d,%d) bsize=%d shape=%d nsi=%d cost=%llu mode=%d uv=%d txd=%d rate=%llu dist=%llu\n",
+                    t->mi_row, t->mi_col, (int)t->bsize, sh, nsi, (unsigned long long)b->cost, (int)b->block_mi.mode,
+                    (int)b->block_mi.uv_mode, (int)b->block_mi.tx_depth, (unsigned long long)b->total_rate,
+                    (unsigned long long)b->full_dist);
+        }
+        if (ok)
+            fprintf(f, "CNSQSUM mi=(%d,%d) bsize=%d shape=%d nblk=%d costsum=%llu\n", t->mi_row, t->mi_col,
+                    (int)t->bsize, sh, nb, csum);
+    }
     if (t->partition == PARTITION_SPLIT) {
         for (int i = 0; i < 4; ++i)
             dump_pc_tree(f, t->split[i]);
