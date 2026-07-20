@@ -215,12 +215,28 @@ gates) with no `unsafe`.
 | p6  | ~11.3× | ~9.9× | **7.53×** |
 
 The transforms run at ALL presets (CDEF only ≤M6), so they were the dominant fast-
-preset cost — **p10 is now 2.12× C, close to the ≤1.2× target**, and p13's
-*intercept*-ratio is already 1.14× (within target on fixed overhead; the slope is
-the remaining gap). **Not at ≤1.2× yet.** Remaining levers: p6 still carries CDEF+LR
-search + the non-square/`fadst` transforms; the fast-preset residual is quant + the
-entropy coeff-coding path + SAD/SSE (each smaller). Next-biggest byte-exact target:
-the `fadst*` (ADST) transforms + the non-square rectangular sizes.
+preset cost — **the square DCT SIMD brought p10 to ~2.1× C** (from ~8.4×), close to
+the ≤1.2× target, with p13's *intercept*-ratio already ~1.1× (within target on fixed
+overhead; the slope is the remaining gap).
+
+A **fifth** win then landed (commit `a29dc02af`, worktree-isolated): **ADST
+(`fadst`/`iadst` 8,16) + non-square rectangular DCT** SIMD — byte-exact (the
+`c_parity_txfm` differential grew to 14 cases incl. the rectangular `rect_type`
+scaling; all 11 gates + workspace green). This is a SMALLER lever than the square
+DCT (ADST/rect are a smaller slice of the fast-preset cost, and the square DCT was
+already SIMD'd), so it doesn't move p10's slope much — a correct byte-exact
+increment, not a big ratio jump.
+
+CAVEAT on the numbers: the quick 8-round / 2-size grid is **noise-dominated** (the C
+per-run variance alone swings the measured C-slope ~2–3×), so treat the per-preset
+ratios above as order-of-magnitude, not precise — a full `perf_gate.sh` grid (more
+rounds, 4 sizes) is needed to state the post-transform ratio precisely.
+
+**Not at ≤1.2× yet.** Remaining fast-preset levers, now that the transforms are
+SIMD'd: **quant** (`quantize_b`/`quantize_fp`), the **entropy coeff-coding** path
+(`get_nz_map_contexts` context sum + the writer), and SAD/SSE — each a smaller slice.
+p6 additionally carries the CDEF+LR search. All are byte-exact-portable via the same
+archmage pattern in an isolated worktree.
 
 **Process note (learned the hard way 2026-07-20):** do NOT run `perf_gate.sh`'s
 before/after (which `git stash`/pops the working tree) in the SAME checkout where a
