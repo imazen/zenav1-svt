@@ -2786,12 +2786,14 @@ impl LeafEval {
         self.win.mode
     }
 
-    /// Winner tx_depth (diagnostic).
+    /// Winner tx_depth (diagnostic; only read by the std-gated NSQDBG dumps).
+    #[cfg(feature = "std")]
     pub(crate) fn tx_depth(&self) -> u8 {
         self.win.tx_depth
     }
 
-    /// Winner uv_mode (diagnostic — 13 == UV_CFL_PRED).
+    /// Winner uv_mode (diagnostic — 13 == UV_CFL_PRED; std-gated NSQDBG only).
+    #[cfg(feature = "std")]
     pub(crate) fn uv_mode(&self) -> u8 {
         self.win.uv
     }
@@ -2803,38 +2805,46 @@ impl LeafEval {
     /// NSQDBG only: winner per-txb tx types / luma eobs as "a,b,c" strings,
     /// plus chroma eobs — joined against C's CLEAF dump to catch coeff-level
     /// (tx_type/RDOQ) divergence that mode/uv/txd comparison misses.
+    /// std-only (returns `String`; only consumed by the std-gated NSQDBG dumps).
+    #[cfg(feature = "std")]
     pub(crate) fn dbg_txb_types(&self) -> String {
         let v: Vec<String> = self.win.txb_type.iter().map(|t| t.to_string()).collect();
         v.join(",")
     }
 
+    #[cfg(feature = "std")]
     pub(crate) fn dbg_txb_eobs(&self) -> String {
         let v: Vec<String> = self.win.txb_eob.iter().map(|e| e.to_string()).collect();
         v.join(",")
     }
 
+    #[cfg(feature = "std")]
     pub(crate) fn dbg_uv_eobs(&self) -> (u16, u16) {
         (self.win.u_eob, self.win.v_eob)
     }
 
     /// NSQDBG only: the winner's filter-intra mode (0 == FI off/none for
     /// non-DC winners; distinguishes FILTER_* candidates from plain DC).
+    #[cfg(feature = "std")]
     pub(crate) fn dbg_fi(&self) -> u8 {
         self.win.fi
     }
 
     /// NSQDBG only: the winner's luma + chroma angle deltas.
+    #[cfg(feature = "std")]
     pub(crate) fn dbg_deltas(&self) -> (i8, i8) {
         (self.win.delta, self.win.uv_delta)
     }
 
     /// NSQDBG only: the winner's per-txb quantized DC levels.
+    #[cfg(feature = "std")]
     pub(crate) fn dbg_qdcs(&self) -> String {
         let v: Vec<String> = self.win.txb_q.iter().map(|q| q[0].to_string()).collect();
         v.join(",")
     }
 
     /// NSQDBG only: the winner's whole-block depth-0 luma prediction.
+    #[cfg(feature = "std")]
     pub(crate) fn dbg_pred(&self) -> &[u8] {
         &self.win.pred
     }
@@ -3596,7 +3606,10 @@ pub(crate) fn evaluate_leaf(
         // winner). The rate (flr+fcr) is bit-depth-independent. The u8 `pred`
         // and `satd` above are still computed (MDS1/MDS3 reuse `cand.pred`);
         // only the fast COST switches. `None` (bd8) is the exact u8 path.
+        // Diagnostic-only (read by the std-gated NSQDBG PFAST dump below).
+        #[cfg(feature = "std")]
         let mut dbg_satd10: u64 = 0;
+        #[cfg(feature = "std")]
         let mut dbg_pred0: u16 = 0;
         // The 10-bit prediction is RETAINED (`cand.pred10`) — MDS1/MDS3 need it
         // as their depth-0 predictor, exactly as they reuse the u8 `cand.pred`.
@@ -3610,8 +3623,11 @@ pub(crate) fn evaluate_leaf(
                     cfg.edge_filter, filt_type_y, &mut pred10, frame.bit_depth,
                 );
                 let satd10 = hadamard_satd_hbd(y_src, y_src_stride, y_src_off, &pred10, w, h);
-                dbg_satd10 = satd10;
-                dbg_pred0 = pred10[0];
+                #[cfg(feature = "std")]
+                {
+                    dbg_satd10 = satd10;
+                    dbg_pred0 = pred10[0];
+                }
                 rdcost(lambda_bd10_fast, flr + fcr, satd10 << 4)
             }
             None => rdcost(

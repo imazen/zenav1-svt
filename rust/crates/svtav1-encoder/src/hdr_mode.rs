@@ -242,6 +242,7 @@ impl HdrForkConfig {
     ///   hard error rather than a silent fallback: a typo'd knob that quietly
     ///   encodes the default is the failure mode this whole path exists to
     ///   prevent.
+    #[cfg(feature = "std")]
     pub fn from_env() -> Self {
         let fork = std::env::var("SVT_HDR_MODE").map(|v| v == "1").unwrap_or(false);
         let mut c = if fork { Self::hdr_fork_c_mode1() } else { Self::mainline() };
@@ -287,6 +288,14 @@ impl HdrForkConfig {
         get_bool("SVT_FORK_ENABLE_QM", &mut c.enable_qm);
         get_bool("SVT_FORK_ENABLE_VARIANCE_BOOST", &mut c.enable_variance_boost);
         c
+    }
+
+    /// `no_std` has no process environment, so the `SVT_HDR_MODE` / `SVT_FORK_*`
+    /// override knobs cannot be read — a `no_std` build always uses the mainline
+    /// defaults (identical to an unset environment in the std build).
+    #[cfg(not(feature = "std"))]
+    pub fn from_env() -> Self {
+        Self::mainline()
     }
 
     /// True when any ported fork behavior may fire.

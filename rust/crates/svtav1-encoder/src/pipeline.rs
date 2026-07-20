@@ -5449,6 +5449,8 @@ fn encode_tile_rows(
                 // back to 128).
                 // Chain: select this SB's context base per the C rule and
                 // rebuild the funnel rate tables from it.
+                // Only read by the std-gated CHAINDUMP / SEED debug dumps below.
+                #[cfg(feature = "std")]
                 let sb_index = sb_row * sb_cols + sb_col;
                 // PORT-NOTE(unverified): `chain_snaps` is a PER-TILE
                 // accumulator (pushed once per SB in this tile's own

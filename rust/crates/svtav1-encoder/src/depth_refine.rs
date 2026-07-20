@@ -219,6 +219,8 @@ struct RefineEnv<'a> {
 /// gates, producing this PD0 leaf's admitted (s_depth, e_depth).
 /// `parent` is the enclosing square's PD0 eval (None only for the SB
 /// root, whose s is forced 0 by the max-size clamp anyway).
+// `abs_x`/`abs_y` are consumed only by the std-gated NSQDBG REFINE dump below.
+#[cfg_attr(not(feature = "std"), allow(unused_variables))]
 fn set_start_end_depth(
     env: &RefineEnv<'_>,
     node: &Pd0Eval,
@@ -403,6 +405,7 @@ fn set_start_end_depth(
         }
     }
 
+    #[cfg(feature = "std")]
     if nsqdbg_here(abs_x, abs_y) {
         let ch_costs: Vec<u64> = node
             .children
@@ -795,6 +798,7 @@ struct SqInfo {
 
 /// SVTAV1_NSQDBG=1: mirror the instrumented C NSQDBG line format
 /// (docs/captures/nsq_m2m3/) on stderr for direct MD-level diffing.
+#[cfg(feature = "std")]
 fn nsqdbg_on() -> bool {
     std::env::var_os("SVTAV1_NSQDBG").is_some()
 }
@@ -803,6 +807,7 @@ fn nsqdbg_on() -> bool {
 /// containing that mi (e.g. `64,112`). Unset = whole frame. Frame-wide dumps
 /// are ~45 MB / 35k lines on a 512x512 photo; one SB is ~50 lines — always
 /// set this when drilling a known divergence (drill_cell.sh does).
+#[cfg(feature = "std")]
 fn nsqdbg_sb() -> Option<(usize, usize)> {
     static SB: std::sync::OnceLock<Option<(usize, usize)>> = std::sync::OnceLock::new();
     *SB.get_or_init(|| {
@@ -813,6 +818,7 @@ fn nsqdbg_sb() -> Option<(usize, usize)> {
 }
 
 /// Dump gate for a record about the block at pixel (abs_x, abs_y).
+#[cfg(feature = "std")]
 pub(crate) fn nsqdbg_here(abs_x: usize, abs_y: usize) -> bool {
     nsqdbg_on()
         && match nsqdbg_sb() {
@@ -822,6 +828,7 @@ pub(crate) fn nsqdbg_here(abs_x: usize, abs_y: usize) -> bool {
 }
 
 /// C BLOCK_SIZES enum value of a square block (dump parity).
+#[cfg(feature = "std")]
 fn c_bsize_sq(size: usize) -> u32 {
     match size {
         4 => 0,
@@ -833,6 +840,7 @@ fn c_bsize_sq(size: usize) -> u32 {
 }
 
 /// C `Part` enum value of a funnel shape (dump parity).
+#[cfg(feature = "std")]
 fn c_part(p: PartitionType) -> u32 {
     match p {
         PartitionType::None => 0,
@@ -908,6 +916,7 @@ impl DepthWalk<'_, '_> {
                 dists[r * 2 + c] = d;
             }
         }
+        #[cfg(feature = "std")]
         if nsqdbg_here(ev.abs_x, ev.abs_y) {
             // Luma-only re-pass for the SKIPSUBQ-parity dump.
             let mut luma = [0u64; 4];
@@ -1372,6 +1381,7 @@ impl DepthWalk<'_, '_> {
                             &h_children,
                             &v_children,
                         ) {
+                            #[cfg(feature = "std")]
                             if nsqdbg_here(abs_x, abs_y) {
                                 let g = if self.skip_by_split_rate(
                                     shape,
@@ -1421,6 +1431,7 @@ impl DepthWalk<'_, '_> {
                         // every preset that reaches the depth-refine walk).
                         true,
                     );
+                    #[cfg(feature = "std")]
                     if nsqdbg_here(abs_x, abs_y) {
                         eprintln!(
                             "NSQDBG BLK mi=({},{}) bsize={} shape={} nsi={} cost={} rate={} dist={} mode={} coeff={} nz={} txd={} uv={} txt=[{}] ye=[{}] ue={} ve={} fi={} ady={} aduv={} qdc=[{}]",
@@ -1452,6 +1463,7 @@ impl DepthWalk<'_, '_> {
 
                     if let Some((_, best_rd, _)) = &best {
                         if part_cost >= *best_rd {
+                            #[cfg(feature = "std")]
                             if nsqdbg_here(abs_x, abs_y) {
                                 eprintln!(
                                     "NSQDBG ABORT mi=({},{}) bsize={} shape={} nsi={} part_cost={} best={}",
@@ -1542,6 +1554,7 @@ impl DepthWalk<'_, '_> {
                         best = Some((shape, part_cost, evals));
                     }
                 }
+                #[cfg(feature = "std")]
                 if nsqdbg_here(abs_x, abs_y) {
                     let (bp, brd) = best
                         .as_ref()
@@ -1677,6 +1690,7 @@ impl DepthWalk<'_, '_> {
                 if (prd as u128) * (th as u128) * (Self::PARENT_COST_BIAS as u128)
                     <= (split_cost as u128) * 1_000_000
                 {
+                    #[cfg(feature = "std")]
                     if nsqdbg_here(abs_x, abs_y) {
                         eprintln!(
                             "NSQDBG TSX mi=({},{}) bsize={} i={} parent={} split={}",
@@ -1702,6 +1716,7 @@ impl DepthWalk<'_, '_> {
 
         // Final compare (:11375): parent wins on
         // bias * parent_rd <= split_cost * 1000.
+        #[cfg(feature = "std")]
         if nsqdbg_here(abs_x, abs_y) {
             let chose = match parent_rd {
                 Some(prd)

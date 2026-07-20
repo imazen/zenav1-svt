@@ -173,7 +173,7 @@ pub fn sc_aa_collect_counts(
 ) -> ScAaCounts {
     let mut out = ScAaCounts::default();
     let multiplier: usize = if fast_detection { 2 } else { 1 };
-    let mut dilated = vec![0u8; blk_w * blk_h];
+    let mut dilated = alloc::vec![0u8; blk_w * blk_h];
 
     let mut r = 0usize;
     while r + blk_h <= height {

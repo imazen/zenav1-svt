@@ -1240,6 +1240,7 @@ pub fn cdef_search_still(
     // (C_CDEF_FB/SUM/FINAL). Used to verify the search is C-exact on real
     // content: at every fb whose post-deblock recon matches C the mse rows
     // are byte-identical. No effect on the encoded stream.
+    #[cfg(feature = "std")]
     if std::env::var_os("SVTAV1_CDEF_DBG").is_some() {
         let mut ysum = alloc::vec![0u64; n_cand];
         let mut uvsum = alloc::vec![0u64; n_cand];
@@ -1454,6 +1455,7 @@ pub fn cdef_search_still_hbd(
         return CdefSearchPick::AllSkip;
     }
     let (bits, lev0, lev1) = finish_cdef_rd_bd(&mse, n_cand, qindex, bit_depth);
+    #[cfg(feature = "std")]
     if std::env::var_os("SVTAV1_CDEF_DBG").is_some() {
         let mut ysum = alloc::vec![0u64; n_cand];
         let mut uvsum = alloc::vec![0u64; n_cand];
