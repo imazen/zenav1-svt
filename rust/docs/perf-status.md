@@ -328,6 +328,21 @@ item (~19 %) has since been cut to ~1.6 % by the **per-txb level-map + tx-scratc
 zeroing reduction** (seventh landed win, 256² p6 −15.8 % frame instructions; see
 "Landed"); `compute_stats` is again the dominant p6 kernel.
 
+An **eighth** win then landed (commits `2027408a2` FLIPADST + IDENTITY, `3e4a9443c`
+4-dim), **completing the transform SIMD coverage**: every transform family now has a
+byte-exact AVX2 path — the FLIPADST combos (the block edge flip reuses the existing
+`fadst`/`iadst` kernels + a `reverse8` lane mirror), IDENTITY (IDTX + the mixed
+V_/H_ types, a per-size NewSqrt2 scale), and all five 4-dim sizes (4x4/4x8/8x4/4x16/
+16x4, incl. the 4-point sinpi `fadst4`/`iadst4`) across all 16 tx types. The
+`c_parity_txfm` differential grew by six cases (fwd/inv ext + fwd/inv 4-dim, bd8 +
+bd10, each == real C AND == scalar under every archmage tier); all 11 gates +
+workspace byte-identical. Measured component before/after (release, forward, SIMD
+dispatch vs the scalar core): FLIPADST **8–12×**, IDTX **4.4–5.0×**, V_/H_ **6.4×**,
+4-dim **2.9× (4x4) → 6.5× (16x4)** — the SIMD path also skips the scalar core's
+per-call `Vec` allocations. The whole-frame gradient p6 sweep barely moves (smooth
+content codes mostly DCT, already SIMD), but the non-DCT transforms are no longer a
+scalar residual for the content (real photo/screen) that uses them.
+
 **Not at ≤1.2× yet.** Remaining fast-preset levers, now that the transforms are
 SIMD'd: **quant** (`quantize_b`/`quantize_fp`), the **entropy coeff-coding** path
 (`get_nz_map_contexts` context sum + the writer), and SAD/SSE — each a smaller slice.
