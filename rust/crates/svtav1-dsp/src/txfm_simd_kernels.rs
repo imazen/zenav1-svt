@@ -31,6 +31,12 @@ macro_rules! sub {
         _mm256_sub_epi32($a, $b)
     };
 }
+/// `-x` across 8 lanes (`0 - x`). Used by the ADST input/output permutations.
+macro_rules! neg {
+    ($a:expr) => {
+        _mm256_sub_epi32(_mm256_setzero_si256(), $a)
+    };
+}
 
 // ---------------------------------------------------------------------------
 // 8-point inverse DCT (svt_av1_idct8_new / inv_txfm.rs::idct8)
@@ -1032,5 +1038,337 @@ pub(super) fn fdct64_x8(t: Desktop64, inp: &[__m256i; 64], out: &mut [__m256i; 6
         s10[11], s10[43], s10[27], s10[59],
         s10[7], s10[39], s10[23], s10[55],
         s10[15], s10[47], s10[31], s10[63],
+    ];
+}
+
+// ===========================================================================
+// ADST kernels — hand-transcribed op-for-op from the scalar `fadst*` /
+// `iadst*` (fwd_txfm.rs / inv_txfm.rs), in the same explicit-per-stage form as
+// the DCT kernels above. The ADST butterfly is asymmetric (sinpi-free at 8/16;
+// the 4-point sinpi ADST stays scalar) but every stage is still `neg` / `add` /
+// `sub` / `half_btf` / `clamp_value`, so the vector op sequence is bit-identical
+// (see module docs). `c_parity_txfm.rs` proves it byte-exact vs real C.
+// ---------------------------------------------------------------------------
+// 8-point forward ADST (svt_av1_fadst8_new / fwd_txfm.rs::fadst8). No clamps.
+// ---------------------------------------------------------------------------
+#[rite]
+pub(super) fn fadst8_x8(t: Desktop64, inp: &[__m256i; 8], out: &mut [__m256i; 8], cos_bit: i8) {
+    let cospi = cospi_arr(cos_bit);
+    let rnd = splat(t, 1 << (cos_bit as u32 - 1));
+    let sh = _mm_cvtsi32_si128(cos_bit as i32);
+    // stage 1: input permutation with sign flips
+    let s1: [__m256i; 8] = [
+        inp[0], neg!(inp[7]), neg!(inp[3]), inp[4],
+        neg!(inp[1]), inp[6], inp[2], neg!(inp[5]),
+    ];
+    // stage 2
+    let s2: [__m256i; 8] = [
+        s1[0], s1[1],
+        hbtf(t, c!(t, cospi, 32), s1[2], c!(t, cospi, 32), s1[3], rnd, sh),
+        hbtf(t, c!(t, cospi, 32), s1[2], cn!(t, cospi, 32), s1[3], rnd, sh),
+        s1[4], s1[5],
+        hbtf(t, c!(t, cospi, 32), s1[6], c!(t, cospi, 32), s1[7], rnd, sh),
+        hbtf(t, c!(t, cospi, 32), s1[6], cn!(t, cospi, 32), s1[7], rnd, sh),
+    ];
+    // stage 3
+    let s3: [__m256i; 8] = [
+        add!(s2[0], s2[2]), add!(s2[1], s2[3]), sub!(s2[0], s2[2]), sub!(s2[1], s2[3]),
+        add!(s2[4], s2[6]), add!(s2[5], s2[7]), sub!(s2[4], s2[6]), sub!(s2[5], s2[7]),
+    ];
+    // stage 4
+    let s4: [__m256i; 8] = [
+        s3[0], s3[1], s3[2], s3[3],
+        hbtf(t, c!(t, cospi, 16), s3[4], c!(t, cospi, 48), s3[5], rnd, sh),
+        hbtf(t, c!(t, cospi, 48), s3[4], cn!(t, cospi, 16), s3[5], rnd, sh),
+        hbtf(t, cn!(t, cospi, 48), s3[6], c!(t, cospi, 16), s3[7], rnd, sh),
+        hbtf(t, c!(t, cospi, 16), s3[6], c!(t, cospi, 48), s3[7], rnd, sh),
+    ];
+    // stage 5
+    let s5: [__m256i; 8] = [
+        add!(s4[0], s4[4]), add!(s4[1], s4[5]), add!(s4[2], s4[6]), add!(s4[3], s4[7]),
+        sub!(s4[0], s4[4]), sub!(s4[1], s4[5]), sub!(s4[2], s4[6]), sub!(s4[3], s4[7]),
+    ];
+    // stage 6
+    let s6: [__m256i; 8] = [
+        hbtf(t, c!(t, cospi, 4), s5[0], c!(t, cospi, 60), s5[1], rnd, sh),
+        hbtf(t, c!(t, cospi, 60), s5[0], cn!(t, cospi, 4), s5[1], rnd, sh),
+        hbtf(t, c!(t, cospi, 20), s5[2], c!(t, cospi, 44), s5[3], rnd, sh),
+        hbtf(t, c!(t, cospi, 44), s5[2], cn!(t, cospi, 20), s5[3], rnd, sh),
+        hbtf(t, c!(t, cospi, 36), s5[4], c!(t, cospi, 28), s5[5], rnd, sh),
+        hbtf(t, c!(t, cospi, 28), s5[4], cn!(t, cospi, 36), s5[5], rnd, sh),
+        hbtf(t, c!(t, cospi, 52), s5[6], c!(t, cospi, 12), s5[7], rnd, sh),
+        hbtf(t, c!(t, cospi, 12), s5[6], cn!(t, cospi, 52), s5[7], rnd, sh),
+    ];
+    // stage 7: output permutation
+    *out = [s6[1], s6[6], s6[3], s6[4], s6[5], s6[2], s6[7], s6[0]];
+}
+
+// ---------------------------------------------------------------------------
+// 8-point inverse ADST (svt_av1_iadst8_new / inv_txfm.rs::iadst8).
+// ---------------------------------------------------------------------------
+#[rite]
+pub(super) fn iadst8_x8(
+    t: Desktop64,
+    inp: &[__m256i; 8],
+    out: &mut [__m256i; 8],
+    rnd: __m256i,
+    sh: __m128i,
+    lo: __m256i,
+    hi: __m256i,
+) {
+    let cospi = &COSPI;
+    let cl = |v| clampv(t, v, lo, hi);
+    // stage 1: input permutation
+    let s1: [__m256i; 8] = [
+        inp[7], inp[0], inp[5], inp[2], inp[3], inp[4], inp[1], inp[6],
+    ];
+    // stage 2
+    let s2: [__m256i; 8] = [
+        hbtf(t, c!(t, cospi, 4), s1[0], c!(t, cospi, 60), s1[1], rnd, sh),
+        hbtf(t, c!(t, cospi, 60), s1[0], cn!(t, cospi, 4), s1[1], rnd, sh),
+        hbtf(t, c!(t, cospi, 20), s1[2], c!(t, cospi, 44), s1[3], rnd, sh),
+        hbtf(t, c!(t, cospi, 44), s1[2], cn!(t, cospi, 20), s1[3], rnd, sh),
+        hbtf(t, c!(t, cospi, 36), s1[4], c!(t, cospi, 28), s1[5], rnd, sh),
+        hbtf(t, c!(t, cospi, 28), s1[4], cn!(t, cospi, 36), s1[5], rnd, sh),
+        hbtf(t, c!(t, cospi, 52), s1[6], c!(t, cospi, 12), s1[7], rnd, sh),
+        hbtf(t, c!(t, cospi, 12), s1[6], cn!(t, cospi, 52), s1[7], rnd, sh),
+    ];
+    // stage 3
+    let s3: [__m256i; 8] = [
+        cl(add!(s2[0], s2[4])), cl(add!(s2[1], s2[5])), cl(add!(s2[2], s2[6])), cl(add!(s2[3], s2[7])),
+        cl(sub!(s2[0], s2[4])), cl(sub!(s2[1], s2[5])), cl(sub!(s2[2], s2[6])), cl(sub!(s2[3], s2[7])),
+    ];
+    // stage 4
+    let s4: [__m256i; 8] = [
+        s3[0], s3[1], s3[2], s3[3],
+        hbtf(t, c!(t, cospi, 16), s3[4], c!(t, cospi, 48), s3[5], rnd, sh),
+        hbtf(t, c!(t, cospi, 48), s3[4], cn!(t, cospi, 16), s3[5], rnd, sh),
+        hbtf(t, cn!(t, cospi, 48), s3[6], c!(t, cospi, 16), s3[7], rnd, sh),
+        hbtf(t, c!(t, cospi, 16), s3[6], c!(t, cospi, 48), s3[7], rnd, sh),
+    ];
+    // stage 5
+    let s5: [__m256i; 8] = [
+        cl(add!(s4[0], s4[2])), cl(add!(s4[1], s4[3])), cl(sub!(s4[0], s4[2])), cl(sub!(s4[1], s4[3])),
+        cl(add!(s4[4], s4[6])), cl(add!(s4[5], s4[7])), cl(sub!(s4[4], s4[6])), cl(sub!(s4[5], s4[7])),
+    ];
+    // stage 6
+    let s6: [__m256i; 8] = [
+        s5[0], s5[1],
+        hbtf(t, c!(t, cospi, 32), s5[2], c!(t, cospi, 32), s5[3], rnd, sh),
+        hbtf(t, c!(t, cospi, 32), s5[2], cn!(t, cospi, 32), s5[3], rnd, sh),
+        s5[4], s5[5],
+        hbtf(t, c!(t, cospi, 32), s5[6], c!(t, cospi, 32), s5[7], rnd, sh),
+        hbtf(t, c!(t, cospi, 32), s5[6], cn!(t, cospi, 32), s5[7], rnd, sh),
+    ];
+    // stage 7: output with negations
+    *out = [s6[0], neg!(s6[4]), s6[6], neg!(s6[2]), s6[3], neg!(s6[7]), s6[5], neg!(s6[1])];
+}
+
+// ---------------------------------------------------------------------------
+// 16-point forward ADST (svt_av1_fadst16_new / fwd_txfm.rs::fadst16). No clamps.
+// ---------------------------------------------------------------------------
+#[rite]
+pub(super) fn fadst16_x8(t: Desktop64, inp: &[__m256i; 16], out: &mut [__m256i; 16], cos_bit: i8) {
+    let cospi = cospi_arr(cos_bit);
+    let rnd = splat(t, 1 << (cos_bit as u32 - 1));
+    let sh = _mm_cvtsi32_si128(cos_bit as i32);
+    // stage 1: input permutation with sign flips
+    let s1: [__m256i; 16] = [
+        inp[0], neg!(inp[15]), neg!(inp[7]), inp[8],
+        neg!(inp[3]), inp[12], inp[4], neg!(inp[11]),
+        neg!(inp[1]), inp[14], inp[6], neg!(inp[9]),
+        inp[2], neg!(inp[13]), neg!(inp[5]), inp[10],
+    ];
+    // stage 2
+    let s2: [__m256i; 16] = [
+        s1[0], s1[1],
+        hbtf(t, c!(t, cospi, 32), s1[2], c!(t, cospi, 32), s1[3], rnd, sh),
+        hbtf(t, c!(t, cospi, 32), s1[2], cn!(t, cospi, 32), s1[3], rnd, sh),
+        s1[4], s1[5],
+        hbtf(t, c!(t, cospi, 32), s1[6], c!(t, cospi, 32), s1[7], rnd, sh),
+        hbtf(t, c!(t, cospi, 32), s1[6], cn!(t, cospi, 32), s1[7], rnd, sh),
+        s1[8], s1[9],
+        hbtf(t, c!(t, cospi, 32), s1[10], c!(t, cospi, 32), s1[11], rnd, sh),
+        hbtf(t, c!(t, cospi, 32), s1[10], cn!(t, cospi, 32), s1[11], rnd, sh),
+        s1[12], s1[13],
+        hbtf(t, c!(t, cospi, 32), s1[14], c!(t, cospi, 32), s1[15], rnd, sh),
+        hbtf(t, c!(t, cospi, 32), s1[14], cn!(t, cospi, 32), s1[15], rnd, sh),
+    ];
+    // stage 3
+    let s3: [__m256i; 16] = [
+        add!(s2[0], s2[2]), add!(s2[1], s2[3]), sub!(s2[0], s2[2]), sub!(s2[1], s2[3]),
+        add!(s2[4], s2[6]), add!(s2[5], s2[7]), sub!(s2[4], s2[6]), sub!(s2[5], s2[7]),
+        add!(s2[8], s2[10]), add!(s2[9], s2[11]), sub!(s2[8], s2[10]), sub!(s2[9], s2[11]),
+        add!(s2[12], s2[14]), add!(s2[13], s2[15]), sub!(s2[12], s2[14]), sub!(s2[13], s2[15]),
+    ];
+    // stage 4
+    let s4: [__m256i; 16] = [
+        s3[0], s3[1], s3[2], s3[3],
+        hbtf(t, c!(t, cospi, 16), s3[4], c!(t, cospi, 48), s3[5], rnd, sh),
+        hbtf(t, c!(t, cospi, 48), s3[4], cn!(t, cospi, 16), s3[5], rnd, sh),
+        hbtf(t, cn!(t, cospi, 48), s3[6], c!(t, cospi, 16), s3[7], rnd, sh),
+        hbtf(t, c!(t, cospi, 16), s3[6], c!(t, cospi, 48), s3[7], rnd, sh),
+        s3[8], s3[9], s3[10], s3[11],
+        hbtf(t, c!(t, cospi, 16), s3[12], c!(t, cospi, 48), s3[13], rnd, sh),
+        hbtf(t, c!(t, cospi, 48), s3[12], cn!(t, cospi, 16), s3[13], rnd, sh),
+        hbtf(t, cn!(t, cospi, 48), s3[14], c!(t, cospi, 16), s3[15], rnd, sh),
+        hbtf(t, c!(t, cospi, 16), s3[14], c!(t, cospi, 48), s3[15], rnd, sh),
+    ];
+    // stage 5
+    let s5: [__m256i; 16] = [
+        add!(s4[0], s4[4]), add!(s4[1], s4[5]), add!(s4[2], s4[6]), add!(s4[3], s4[7]),
+        sub!(s4[0], s4[4]), sub!(s4[1], s4[5]), sub!(s4[2], s4[6]), sub!(s4[3], s4[7]),
+        add!(s4[8], s4[12]), add!(s4[9], s4[13]), add!(s4[10], s4[14]), add!(s4[11], s4[15]),
+        sub!(s4[8], s4[12]), sub!(s4[9], s4[13]), sub!(s4[10], s4[14]), sub!(s4[11], s4[15]),
+    ];
+    // stage 6
+    let s6: [__m256i; 16] = [
+        s5[0], s5[1], s5[2], s5[3], s5[4], s5[5], s5[6], s5[7],
+        hbtf(t, c!(t, cospi, 8), s5[8], c!(t, cospi, 56), s5[9], rnd, sh),
+        hbtf(t, c!(t, cospi, 56), s5[8], cn!(t, cospi, 8), s5[9], rnd, sh),
+        hbtf(t, c!(t, cospi, 40), s5[10], c!(t, cospi, 24), s5[11], rnd, sh),
+        hbtf(t, c!(t, cospi, 24), s5[10], cn!(t, cospi, 40), s5[11], rnd, sh),
+        hbtf(t, cn!(t, cospi, 56), s5[12], c!(t, cospi, 8), s5[13], rnd, sh),
+        hbtf(t, c!(t, cospi, 8), s5[12], c!(t, cospi, 56), s5[13], rnd, sh),
+        hbtf(t, cn!(t, cospi, 24), s5[14], c!(t, cospi, 40), s5[15], rnd, sh),
+        hbtf(t, c!(t, cospi, 40), s5[14], c!(t, cospi, 24), s5[15], rnd, sh),
+    ];
+    // stage 7
+    let s7: [__m256i; 16] = [
+        add!(s6[0], s6[8]), add!(s6[1], s6[9]), add!(s6[2], s6[10]), add!(s6[3], s6[11]),
+        add!(s6[4], s6[12]), add!(s6[5], s6[13]), add!(s6[6], s6[14]), add!(s6[7], s6[15]),
+        sub!(s6[0], s6[8]), sub!(s6[1], s6[9]), sub!(s6[2], s6[10]), sub!(s6[3], s6[11]),
+        sub!(s6[4], s6[12]), sub!(s6[5], s6[13]), sub!(s6[6], s6[14]), sub!(s6[7], s6[15]),
+    ];
+    // stage 8
+    let s8: [__m256i; 16] = [
+        hbtf(t, c!(t, cospi, 2), s7[0], c!(t, cospi, 62), s7[1], rnd, sh),
+        hbtf(t, c!(t, cospi, 62), s7[0], cn!(t, cospi, 2), s7[1], rnd, sh),
+        hbtf(t, c!(t, cospi, 10), s7[2], c!(t, cospi, 54), s7[3], rnd, sh),
+        hbtf(t, c!(t, cospi, 54), s7[2], cn!(t, cospi, 10), s7[3], rnd, sh),
+        hbtf(t, c!(t, cospi, 18), s7[4], c!(t, cospi, 46), s7[5], rnd, sh),
+        hbtf(t, c!(t, cospi, 46), s7[4], cn!(t, cospi, 18), s7[5], rnd, sh),
+        hbtf(t, c!(t, cospi, 26), s7[6], c!(t, cospi, 38), s7[7], rnd, sh),
+        hbtf(t, c!(t, cospi, 38), s7[6], cn!(t, cospi, 26), s7[7], rnd, sh),
+        hbtf(t, c!(t, cospi, 34), s7[8], c!(t, cospi, 30), s7[9], rnd, sh),
+        hbtf(t, c!(t, cospi, 30), s7[8], cn!(t, cospi, 34), s7[9], rnd, sh),
+        hbtf(t, c!(t, cospi, 42), s7[10], c!(t, cospi, 22), s7[11], rnd, sh),
+        hbtf(t, c!(t, cospi, 22), s7[10], cn!(t, cospi, 42), s7[11], rnd, sh),
+        hbtf(t, c!(t, cospi, 50), s7[12], c!(t, cospi, 14), s7[13], rnd, sh),
+        hbtf(t, c!(t, cospi, 14), s7[12], cn!(t, cospi, 50), s7[13], rnd, sh),
+        hbtf(t, c!(t, cospi, 58), s7[14], c!(t, cospi, 6), s7[15], rnd, sh),
+        hbtf(t, c!(t, cospi, 6), s7[14], cn!(t, cospi, 58), s7[15], rnd, sh),
+    ];
+    // stage 9: output permutation
+    *out = [
+        s8[1], s8[14], s8[3], s8[12], s8[5], s8[10], s8[7], s8[8],
+        s8[9], s8[6], s8[11], s8[4], s8[13], s8[2], s8[15], s8[0],
+    ];
+}
+
+// ---------------------------------------------------------------------------
+// 16-point inverse ADST (svt_av1_iadst16_new / inv_txfm.rs::iadst16).
+// ---------------------------------------------------------------------------
+#[rite]
+pub(super) fn iadst16_x8(
+    t: Desktop64,
+    inp: &[__m256i; 16],
+    out: &mut [__m256i; 16],
+    rnd: __m256i,
+    sh: __m128i,
+    lo: __m256i,
+    hi: __m256i,
+) {
+    let cospi = &COSPI;
+    let cl = |v| clampv(t, v, lo, hi);
+    // stage 1: input permutation
+    let s1: [__m256i; 16] = [
+        inp[15], inp[0], inp[13], inp[2], inp[11], inp[4], inp[9], inp[6],
+        inp[7], inp[8], inp[5], inp[10], inp[3], inp[12], inp[1], inp[14],
+    ];
+    // stage 2
+    let s2: [__m256i; 16] = [
+        hbtf(t, c!(t, cospi, 2), s1[0], c!(t, cospi, 62), s1[1], rnd, sh),
+        hbtf(t, c!(t, cospi, 62), s1[0], cn!(t, cospi, 2), s1[1], rnd, sh),
+        hbtf(t, c!(t, cospi, 10), s1[2], c!(t, cospi, 54), s1[3], rnd, sh),
+        hbtf(t, c!(t, cospi, 54), s1[2], cn!(t, cospi, 10), s1[3], rnd, sh),
+        hbtf(t, c!(t, cospi, 18), s1[4], c!(t, cospi, 46), s1[5], rnd, sh),
+        hbtf(t, c!(t, cospi, 46), s1[4], cn!(t, cospi, 18), s1[5], rnd, sh),
+        hbtf(t, c!(t, cospi, 26), s1[6], c!(t, cospi, 38), s1[7], rnd, sh),
+        hbtf(t, c!(t, cospi, 38), s1[6], cn!(t, cospi, 26), s1[7], rnd, sh),
+        hbtf(t, c!(t, cospi, 34), s1[8], c!(t, cospi, 30), s1[9], rnd, sh),
+        hbtf(t, c!(t, cospi, 30), s1[8], cn!(t, cospi, 34), s1[9], rnd, sh),
+        hbtf(t, c!(t, cospi, 42), s1[10], c!(t, cospi, 22), s1[11], rnd, sh),
+        hbtf(t, c!(t, cospi, 22), s1[10], cn!(t, cospi, 42), s1[11], rnd, sh),
+        hbtf(t, c!(t, cospi, 50), s1[12], c!(t, cospi, 14), s1[13], rnd, sh),
+        hbtf(t, c!(t, cospi, 14), s1[12], cn!(t, cospi, 50), s1[13], rnd, sh),
+        hbtf(t, c!(t, cospi, 58), s1[14], c!(t, cospi, 6), s1[15], rnd, sh),
+        hbtf(t, c!(t, cospi, 6), s1[14], cn!(t, cospi, 58), s1[15], rnd, sh),
+    ];
+    // stage 3
+    let s3: [__m256i; 16] = [
+        cl(add!(s2[0], s2[8])), cl(add!(s2[1], s2[9])), cl(add!(s2[2], s2[10])), cl(add!(s2[3], s2[11])),
+        cl(add!(s2[4], s2[12])), cl(add!(s2[5], s2[13])), cl(add!(s2[6], s2[14])), cl(add!(s2[7], s2[15])),
+        cl(sub!(s2[0], s2[8])), cl(sub!(s2[1], s2[9])), cl(sub!(s2[2], s2[10])), cl(sub!(s2[3], s2[11])),
+        cl(sub!(s2[4], s2[12])), cl(sub!(s2[5], s2[13])), cl(sub!(s2[6], s2[14])), cl(sub!(s2[7], s2[15])),
+    ];
+    // stage 4
+    let s4: [__m256i; 16] = [
+        s3[0], s3[1], s3[2], s3[3], s3[4], s3[5], s3[6], s3[7],
+        hbtf(t, c!(t, cospi, 8), s3[8], c!(t, cospi, 56), s3[9], rnd, sh),
+        hbtf(t, c!(t, cospi, 56), s3[8], cn!(t, cospi, 8), s3[9], rnd, sh),
+        hbtf(t, c!(t, cospi, 40), s3[10], c!(t, cospi, 24), s3[11], rnd, sh),
+        hbtf(t, c!(t, cospi, 24), s3[10], cn!(t, cospi, 40), s3[11], rnd, sh),
+        hbtf(t, cn!(t, cospi, 56), s3[12], c!(t, cospi, 8), s3[13], rnd, sh),
+        hbtf(t, c!(t, cospi, 8), s3[12], c!(t, cospi, 56), s3[13], rnd, sh),
+        hbtf(t, cn!(t, cospi, 24), s3[14], c!(t, cospi, 40), s3[15], rnd, sh),
+        hbtf(t, c!(t, cospi, 40), s3[14], c!(t, cospi, 24), s3[15], rnd, sh),
+    ];
+    // stage 5
+    let s5: [__m256i; 16] = [
+        cl(add!(s4[0], s4[4])), cl(add!(s4[1], s4[5])), cl(add!(s4[2], s4[6])), cl(add!(s4[3], s4[7])),
+        cl(sub!(s4[0], s4[4])), cl(sub!(s4[1], s4[5])), cl(sub!(s4[2], s4[6])), cl(sub!(s4[3], s4[7])),
+        cl(add!(s4[8], s4[12])), cl(add!(s4[9], s4[13])), cl(add!(s4[10], s4[14])), cl(add!(s4[11], s4[15])),
+        cl(sub!(s4[8], s4[12])), cl(sub!(s4[9], s4[13])), cl(sub!(s4[10], s4[14])), cl(sub!(s4[11], s4[15])),
+    ];
+    // stage 6
+    let s6: [__m256i; 16] = [
+        s5[0], s5[1], s5[2], s5[3],
+        hbtf(t, c!(t, cospi, 16), s5[4], c!(t, cospi, 48), s5[5], rnd, sh),
+        hbtf(t, c!(t, cospi, 48), s5[4], cn!(t, cospi, 16), s5[5], rnd, sh),
+        hbtf(t, cn!(t, cospi, 48), s5[6], c!(t, cospi, 16), s5[7], rnd, sh),
+        hbtf(t, c!(t, cospi, 16), s5[6], c!(t, cospi, 48), s5[7], rnd, sh),
+        s5[8], s5[9], s5[10], s5[11],
+        hbtf(t, c!(t, cospi, 16), s5[12], c!(t, cospi, 48), s5[13], rnd, sh),
+        hbtf(t, c!(t, cospi, 48), s5[12], cn!(t, cospi, 16), s5[13], rnd, sh),
+        hbtf(t, cn!(t, cospi, 48), s5[14], c!(t, cospi, 16), s5[15], rnd, sh),
+        hbtf(t, c!(t, cospi, 16), s5[14], c!(t, cospi, 48), s5[15], rnd, sh),
+    ];
+    // stage 7
+    let s7: [__m256i; 16] = [
+        cl(add!(s6[0], s6[2])), cl(add!(s6[1], s6[3])), cl(sub!(s6[0], s6[2])), cl(sub!(s6[1], s6[3])),
+        cl(add!(s6[4], s6[6])), cl(add!(s6[5], s6[7])), cl(sub!(s6[4], s6[6])), cl(sub!(s6[5], s6[7])),
+        cl(add!(s6[8], s6[10])), cl(add!(s6[9], s6[11])), cl(sub!(s6[8], s6[10])), cl(sub!(s6[9], s6[11])),
+        cl(add!(s6[12], s6[14])), cl(add!(s6[13], s6[15])), cl(sub!(s6[12], s6[14])), cl(sub!(s6[13], s6[15])),
+    ];
+    // stage 8
+    let s8: [__m256i; 16] = [
+        s7[0], s7[1],
+        hbtf(t, c!(t, cospi, 32), s7[2], c!(t, cospi, 32), s7[3], rnd, sh),
+        hbtf(t, c!(t, cospi, 32), s7[2], cn!(t, cospi, 32), s7[3], rnd, sh),
+        s7[4], s7[5],
+        hbtf(t, c!(t, cospi, 32), s7[6], c!(t, cospi, 32), s7[7], rnd, sh),
+        hbtf(t, c!(t, cospi, 32), s7[6], cn!(t, cospi, 32), s7[7], rnd, sh),
+        s7[8], s7[9],
+        hbtf(t, c!(t, cospi, 32), s7[10], c!(t, cospi, 32), s7[11], rnd, sh),
+        hbtf(t, c!(t, cospi, 32), s7[10], cn!(t, cospi, 32), s7[11], rnd, sh),
+        s7[12], s7[13],
+        hbtf(t, c!(t, cospi, 32), s7[14], c!(t, cospi, 32), s7[15], rnd, sh),
+        hbtf(t, c!(t, cospi, 32), s7[14], cn!(t, cospi, 32), s7[15], rnd, sh),
+    ];
+    // stage 9: output with negations
+    *out = [
+        s8[0], neg!(s8[8]), s8[12], neg!(s8[4]), s8[6], neg!(s8[14]), s8[10], neg!(s8[2]),
+        s8[3], neg!(s8[11]), s8[15], neg!(s8[7]), s8[5], neg!(s8[13]), s8[9], neg!(s8[1]),
     ];
 }

@@ -55,6 +55,15 @@ fn simd_rect_supported(w: usize, h: usize) -> bool {
     w != h && simd_square_supported(w) && simd_square_supported(h)
 }
 
+/// `(w, h, col_1d, row_1d)` the ADST-containing SIMD path supports: both dims in
+/// {8, 16} (the only sizes AV1 allows ADST for, both dims <= 16), each 1D type
+/// DCT(0) or ADST(1), with at least one ADST (pure DCT-DCT is handled by the
+/// square/rect DCT paths). FLIPADST(2)/IDENTITY(3) stay scalar.
+#[inline]
+fn simd_adst_supported(w: usize, h: usize, col_1d: u8, row_1d: u8) -> bool {
+    col_1d <= 1 && row_1d <= 1 && (col_1d == 1 || row_1d == 1) && matches!(w, 8 | 16) && matches!(h, 8 | 16)
+}
+
 /// Try the SIMD forward square DCT-DCT (`w == h == n`, no flips). Returns true
 /// only when the AVX2 tier actually handled it; false (scalar/neon tiers, or
 /// unsupported `n`) tells the caller to run the scalar core.
@@ -131,6 +140,47 @@ pub fn try_inv_dct_rect(
     )
 }
 
+/// Try the SIMD forward ADST-containing 2D transform (ADST_DCT / DCT_ADST /
+/// ADST_ADST, no flips). Same return contract as [`try_fwd_dct_square`].
+pub fn try_fwd_adst(
+    input: &[TranLow],
+    output: &mut [TranLow],
+    input_stride: usize,
+    w: usize,
+    h: usize,
+    col_1d: u8,
+    row_1d: u8,
+) -> bool {
+    if !simd_adst_supported(w, h, col_1d, row_1d) {
+        return false;
+    }
+    incant!(
+        try_fwd_adst_impl(input, output, input_stride, w, h, col_1d, row_1d),
+        [v3, neon, scalar]
+    )
+}
+
+/// Try the SIMD inverse ADST-containing 2D transform (no flips, `bd <= 10`).
+pub fn try_inv_adst(
+    input: &[TranLow],
+    input_stride: usize,
+    output: &mut [TranLow],
+    out_stride: usize,
+    w: usize,
+    h: usize,
+    col_1d: u8,
+    row_1d: u8,
+    bd: u8,
+) -> bool {
+    if !simd_adst_supported(w, h, col_1d, row_1d) || bd > 10 {
+        return false;
+    }
+    incant!(
+        try_inv_adst_impl(input, input_stride, output, out_stride, w, h, col_1d, row_1d, bd),
+        [v3, neon, scalar]
+    )
+}
+
 // -- scalar / neon arms: not handled, caller runs the scalar core --
 
 fn try_fwd_dct_square_impl_scalar(
@@ -202,6 +252,66 @@ fn try_inv_dct_rect_impl_neon(
     _out_stride: usize,
     _w: usize,
     _h: usize,
+    _bd: u8,
+) -> bool {
+    false
+}
+
+fn try_fwd_adst_impl_scalar(
+    _t: ScalarToken,
+    _input: &[TranLow],
+    _output: &mut [TranLow],
+    _input_stride: usize,
+    _w: usize,
+    _h: usize,
+    _col_1d: u8,
+    _row_1d: u8,
+) -> bool {
+    false
+}
+
+fn try_inv_adst_impl_scalar(
+    _t: ScalarToken,
+    _input: &[TranLow],
+    _input_stride: usize,
+    _output: &mut [TranLow],
+    _out_stride: usize,
+    _w: usize,
+    _h: usize,
+    _col_1d: u8,
+    _row_1d: u8,
+    _bd: u8,
+) -> bool {
+    false
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn try_fwd_adst_impl_neon(
+    _t: NeonToken,
+    _input: &[TranLow],
+    _output: &mut [TranLow],
+    _input_stride: usize,
+    _w: usize,
+    _h: usize,
+    _col_1d: u8,
+    _row_1d: u8,
+) -> bool {
+    false
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn try_inv_adst_impl_neon(
+    _t: NeonToken,
+    _input: &[TranLow],
+    _input_stride: usize,
+    _output: &mut [TranLow],
+    _out_stride: usize,
+    _w: usize,
+    _h: usize,
+    _col_1d: u8,
+    _row_1d: u8,
     _bd: u8,
 ) -> bool {
     false
@@ -380,6 +490,7 @@ mod v3 {
     include!("txfm_simd_kernels.rs");
     include!("txfm_simd_drivers.rs");
     include!("txfm_simd_rect.rs");
+    include!("txfm_simd_adst.rs");
 }
 
 /// AVX2 forward square DCT-DCT. Dispatched only on the `v3` tier.
@@ -438,4 +549,38 @@ fn try_inv_dct_rect_impl_v3(
     bd: u8,
 ) -> bool {
     v3::inv_dct_rect(t, input, input_stride, output, out_stride, w, h, bd)
+}
+
+/// AVX2 forward ADST-containing 2D transform. Dispatched only on the `v3` tier.
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn try_fwd_adst_impl_v3(
+    t: Desktop64,
+    input: &[TranLow],
+    output: &mut [TranLow],
+    input_stride: usize,
+    w: usize,
+    h: usize,
+    col_1d: u8,
+    row_1d: u8,
+) -> bool {
+    v3::fwd_adst(t, input, output, input_stride, w, h, col_1d, row_1d)
+}
+
+/// AVX2 inverse ADST-containing 2D transform. Dispatched only on the `v3` tier.
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn try_inv_adst_impl_v3(
+    t: Desktop64,
+    input: &[TranLow],
+    input_stride: usize,
+    output: &mut [TranLow],
+    out_stride: usize,
+    w: usize,
+    h: usize,
+    col_1d: u8,
+    row_1d: u8,
+    bd: u8,
+) -> bool {
+    v3::inv_adst(t, input, input_stride, output, out_stride, w, h, col_1d, row_1d, bd)
 }

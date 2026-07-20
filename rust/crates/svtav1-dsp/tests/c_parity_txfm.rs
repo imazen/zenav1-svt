@@ -591,3 +591,174 @@ fn inv_dct_simd_all_tiers_identical_and_recon_match_c() {
         }
     }
 }
+
+// ============================================================================
+// ADST SIMD DIFFERENTIAL (ADST_DCT / DCT_ADST / ADST_ADST, no flips).
+//
+// The four sizes AV1 allows ADST for with both dims a lane-group multiple
+// (8x8, 16x16, 8x16, 16x8) x the three non-flip ADST combos. Same two-way proof
+// as the DCT tiers (every tier == real C, and every tier's residual byte-
+// identical = SIMD == scalar), over edge (max-mag) + random + wide-synthetic
+// inputs. The 8x16/16x8 cells also exercise the rect NewSqrt2/NewInvSqrt2 scale.
+// ============================================================================
+
+const SIMD_ADST: [(usize, usize, TxSize, TxType); 12] = [
+    (8, 8, TxSize::Tx8x8, TxType::AdstDct),
+    (8, 8, TxSize::Tx8x8, TxType::DctAdst),
+    (8, 8, TxSize::Tx8x8, TxType::AdstAdst),
+    (16, 16, TxSize::Tx16x16, TxType::AdstDct),
+    (16, 16, TxSize::Tx16x16, TxType::DctAdst),
+    (16, 16, TxSize::Tx16x16, TxType::AdstAdst),
+    (8, 16, TxSize::Tx8x16, TxType::AdstDct),
+    (8, 16, TxSize::Tx8x16, TxType::DctAdst),
+    (8, 16, TxSize::Tx8x16, TxType::AdstAdst),
+    (16, 8, TxSize::Tx16x8, TxType::AdstDct),
+    (16, 8, TxSize::Tx16x8, TxType::DctAdst),
+    (16, 8, TxSize::Tx16x8, TxType::AdstAdst),
+];
+
+fn cref_fwd_any(w: usize, h: usize, res: &[i16], txt: usize) -> Vec<i32> {
+    if w == h {
+        cref::fwd_txfm2d(w, res, txt)
+    } else {
+        cref::fwd_txfm2d_rect(w, h, res, txt)
+    }
+}
+
+fn cref_inv_add_any(w: usize, h: usize, coeffs: &[i32], base: &[u16], txt: usize) -> Vec<u16> {
+    if w == h {
+        cref::inv_txfm2d_add(w, coeffs, base, txt)
+    } else {
+        cref::inv_txfm2d_add_rect(w, h, coeffs, base, txt)
+    }
+}
+
+#[test]
+fn fwd_adst_simd_all_tiers_match_c() {
+    let mut rng = Rng(0xAD57_2026_0720_0001);
+    for &(w, h, ts, txt) in &SIMD_ADST {
+        let txi = txt as usize;
+        for pat in 0..40 {
+            let res16 = simd_residual(pat, w * h, &mut rng);
+            let c_out = cref_fwd_any(w, h, &res16, txi);
+            let res32: Vec<i32> = res16.iter().map(|&v| v as i32).collect();
+            for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+                let mut ours = vec![0i32; w * h];
+                assert!(svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
+                    &res32, &mut ours, w, ts, txt
+                ));
+                if ours != c_out {
+                    let first = ours
+                        .iter()
+                        .zip(c_out.iter())
+                        .position(|(a, b)| a != b)
+                        .unwrap();
+                    panic!(
+                        "fwd adst {w}x{h} {txt:?} pat {pat}: SIMD tier != C at {first} (r{} c{}): ours={} c={}",
+                        first / w,
+                        first % w,
+                        ours[first],
+                        c_out[first]
+                    );
+                }
+            });
+        }
+    }
+}
+
+#[test]
+fn inv_adst_simd_all_tiers_identical_and_recon_match_c() {
+    let mut rng = Rng(0xAD57_2026_0720_0002);
+    for &(w, h, ts, txt) in &SIMD_ADST {
+        let txi = txt as usize;
+        for pat in 0..50 {
+            let coeffs: Vec<i32> = if pat < 40 {
+                let res16 = simd_residual(pat, w * h, &mut rng);
+                cref_fwd_any(w, h, &res16, txi)
+            } else {
+                (0..w * h)
+                    .map(|_| (rng.next() % 60001) as i32 - 30000)
+                    .collect()
+            };
+            let base = vec![128u16; w * h];
+            let c_recon = cref_inv_add_any(w, h, &coeffs, &base, txi);
+
+            let mut first_res: Option<Vec<i32>> = None;
+            for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+                let mut our_res = vec![0i32; w * h];
+                assert!(svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch(
+                    &coeffs, &mut our_res, w, ts, txt
+                ));
+                match &first_res {
+                    None => first_res = Some(our_res.clone()),
+                    Some(f) => assert_eq!(
+                        &our_res, f,
+                        "inv adst {w}x{h} {txt:?} pat {pat}: tier residual != scalar"
+                    ),
+                }
+                let recon: Vec<u16> = our_res
+                    .iter()
+                    .map(|&r| (128 + r).clamp(0, 255) as u16)
+                    .collect();
+                assert_eq!(
+                    recon, c_recon,
+                    "inv adst {w}x{h} {txt:?} pat {pat}: SIMD tier recon != C"
+                );
+            });
+        }
+    }
+}
+
+// ============================================================================
+// bd10 SIMD == scalar consistency (rect DCT + ADST inverse).
+//
+// The bd8 differentials above prove SIMD == real C. The inverse SIMD drivers
+// also carry the bit-depth-dependent row/col stage ranges + highbd_wraplow
+// (inv_txfm_ranges(bd)); the bd10 gates exercise them. This proves every tier's
+// bd10 residual is byte-identical to the (C-verified) scalar core, so the bd10
+// end-to-end gates cannot see a SIMD-vs-scalar divergence. No C oracle needed —
+// the all-tiers-identical assertion pins SIMD == scalar at bd10.
+// ============================================================================
+#[test]
+fn inv_simd_bd10_all_tiers_identical_rect_and_adst() {
+    let mut rng = Rng(0xBD10_2026_0720_FEED);
+    // rect DCT-DCT sizes + the ADST sizes/types.
+    for &(w, h, ts) in &SIMD_RECT {
+        run_bd10_tier_check(w, h, ts, TxType::DctDct, &mut rng);
+    }
+    for &(w, h, ts, txt) in &SIMD_ADST {
+        run_bd10_tier_check(w, h, ts, txt, &mut rng);
+    }
+}
+
+fn run_bd10_tier_check(w: usize, h: usize, ts: TxSize, txt: TxType, rng: &mut Rng) {
+    for pat in 0..24 {
+        // bd10-scale coefficients (wider dynamic range than bd8).
+        let coeffs: Vec<i32> = if pat < 16 {
+            (0..w * h)
+                .map(|_| (rng.next() % 200001) as i32 - 100000)
+                .collect()
+        } else {
+            let res16 = simd_residual(pat, w * h, rng);
+            if w == h {
+                cref::fwd_txfm2d(w, &res16, txt as usize)
+            } else {
+                cref::fwd_txfm2d_rect(w, h, &res16, txt as usize)
+            }
+        };
+        let mut first_res: Option<Vec<i32>> = None;
+        for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            let mut our_res = vec![0i32; w * h];
+            assert!(svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch_bd(
+                &coeffs, &mut our_res, w, ts, txt, 10
+            ));
+            match &first_res {
+                None => first_res = Some(our_res.clone()),
+                Some(f) => assert_eq!(
+                    &our_res, f,
+                    "inv bd10 {w}x{h} {txt:?} pat {pat}: tier residual != scalar"
+                ),
+            }
+        });
+    }
+}

@@ -1987,6 +1987,14 @@ pub fn fwd_txfm2d_c_exact(
     {
         return true;
     }
+    // SIMD fast path: ADST_DCT / DCT_ADST / ADST_ADST (8x8/16x16/8x16/16x8),
+    // no flips. FLIPADST (which flips) and identity stay scalar.
+    if !ud_flip
+        && !lr_flip
+        && crate::txfm_simd::try_fwd_adst(input, output, input_stride, w, h, col_1d, row_1d)
+    {
+        return true;
+    }
     let col_func = match get_fwd_txfm_func(col_1d, h) {
         Some(f) => f,
         None => return false,

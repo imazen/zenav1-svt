@@ -1963,6 +1963,24 @@ pub fn inv_txfm2d_c_exact_bd(
     {
         return true;
     }
+    // SIMD fast path: ADST_DCT / DCT_ADST / ADST_ADST (8x8/16x16/8x16/16x8),
+    // no flips, bd <= 10. FLIPADST (which flips) and identity stay scalar.
+    if !ud_flip
+        && !lr_flip
+        && crate::txfm_simd::try_inv_adst(
+            input,
+            input_stride,
+            output,
+            out_stride,
+            w,
+            h,
+            col_1d,
+            row_1d,
+            bd,
+        )
+    {
+        return true;
+    }
     let row_func = match get_inv_txfm_func(row_1d, w) {
         Some(f) => f,
         None => return false,
