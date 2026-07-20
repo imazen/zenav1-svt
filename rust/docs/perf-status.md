@@ -121,14 +121,18 @@ Reading the fit:
    distortion kernels (`sad`/`sse`/`variance`/`satd`) are only ~2–3 % here — small
    relative to CDEF+transforms — so the remaining fast-preset levers, in order, are
    the **transform butterflies** and the **per-frame allocation/`memset`** (see (3)).
-2. **Loop-restoration Wiener stats (`restoration::compute_stats`) — the single
-   biggest function at preset ≤ 6.** Callgrind (128²/256² preset-6, debuginfo
-   build) puts it at ~40–46 % of frame instructions, called exactly 3× per frame
-   (Y/U/V — not redundant; it is the inherent O(win²·win²) Wiener M/H
-   accumulation). Restoration runs only at presets 0–6 (off at ≥ 7), which is
-   most of why preset 6's slope is ~5× that of presets 10/13. A byte-inert scalar
-   pass has landed (see "Landed" below); the remaining lever here is the SIMD
-   port of `svt_av1_compute_stats_avx2` (part of (1)).
+2. **Loop-restoration Wiener stats (`restoration::compute_stats`) — was the single
+   biggest function at preset ≤ 6; now SIMD'd.** Callgrind (256² preset-6, debuginfo)
+   originally put it at **~46 %** of frame instructions (316.9M direct + inlined
+   iterator/bounds machinery) — the inherent O(win²·win²) Wiener M/H accumulation,
+   called per Y/U/V plane. Restoration runs only at presets 0–6 (off at ≥ 7), which
+   is most of why preset 6's slope is ~5× that of presets 10/13. An **AVX2 port has
+   now landed** (see "Landed" below): the M/H outer-product accumulation dropped
+   from ~431M → ~165M frame instructions (2.6×), taking the whole 256² p6 encode
+   from 938M → 684M (−27 %). The remaining `compute_stats` cost is the (still-scalar,
+   cache-unfriendly column-major) window gather and the inherent i32-lane H body;
+   a further win needs either a SIMD gather or C's incremental delta-decomposition
+   algorithm (`svt_av1_compute_stats_avx2`, ~2800 lines — a much larger port).
 
    The earlier "per-SB `MdRates`/`CoeffCostTables` rebuild" suspicion was
    investigated and is **not** a material lever: for presets ≥ 7 (update_cdf_level
@@ -136,10 +140,14 @@ Reading the fit:
    (update_cdf_level 2) they genuinely evolve per SB from the `ec_ctx_array`
    neighbour chain (`chain_base` in pipeline.rs), so a hoist would change bytes.
    The rebuild is a negligible fraction of frame time either way.
-3. **Per-frame allocation discipline** (secondary). The port allocates its
-   working set inside `encode_frame_420`; C pre-allocates in `init`. It shows up
-   as part of the port's honest per-frame cost but is dwarfed by (1) and (2) —
-   the near-perfect linear fit says allocation is not the scaling problem.
+3. **Per-frame allocation discipline** (now the #1 remaining item at p6). The port
+   allocates+zeros its working set inside `encode_frame_420`; C pre-allocates in
+   `init`. After the `compute_stats` SIMD, `__memset_avx2` (per-frame zeroing) is
+   the **largest single item at 256² p6 — ~19 %** (132.9M, essentially unchanged by
+   the SIMD work, so it is pre-existing buffer zeroing, not the LR scratch). It is
+   byte-inert to fix (reuse buffers instead of re-zeroing) but structural, not a
+   SIMD kernel. After that the next SIMD-able integer kernel is the entropy coeff
+   context sum `get_nz_map_contexts`/`nz_map_ctx` (~6 % combined).
 
 Approach order per the criteria: algorithmic parity (done on this envelope),
 then allocation discipline, then SIMD. On these numbers, SIMD on the hot loops
@@ -197,14 +205,41 @@ is the biggest single lever.
   `txb_init_levels_simd_matches_c` (SIMD == exported real-C `av1_txb_init_levels_c`,
   all tx sizes) + all 11 gates unchanged. `#![forbid(unsafe_code)]` intact.
 
+- **Wiener LR `compute_stats` SIMD (AVX2) — the M/H accumulation** (`crates/svtav1-dsp/
+  src/restoration.rs`, commits `4107be038` + `429cf91c6`). Callgrind put
+  `restoration::compute_stats` at **~46 % of frame instructions at 256² preset 6** —
+  the single dominant p6 hotspot, and fully scalar (only a prior bounds-check reshape
+  had landed). It is the O(win²·win²) per-source-pixel Wiener outer product
+  `M[k] += y[k]·x`, `H[k][l] += y[k]·y[l]` (upper triangle). archmage
+  `incant!([v3, neon, scalar])`, additive alongside the scalar reference (also the
+  aarch64 neon fallback). The AVX2 path accumulates each restoration region **row**'s
+  products in i32 SIMD lanes (`_mm256_mullo_epi32`, 8 columns at a time) then flushes
+  the row's partial sums into the i64 output. **Byte-exact by construction:** every
+  product is two values in [−255,255] (pixel minus region avg) so it fits i32 exactly
+  (`mullo_epi32`'s low 32 bits ARE the product), and a region row is < 512 px wide so
+  each i32 cell sums ≤ ~512 products (≤ 3.4e7 ≪ i32::MAX) — no i32 overflow; the final
+  i64 is the same set of products, merely regrouped Σrows(Σpixels), identical by
+  associativity of integer addition. Proven two ways in `tests/c_parity_wiener.rs`:
+  `compute_stats_matches_c` (host tier == real `svt_av1_compute_stats_c`) +
+  `compute_stats_all_tiers_match_c` (forces EVERY tier via `for_each_token_permutation`,
+  each == real C AND == tier 0, so SIMD == real-C AND == scalar) across both window
+  sizes, all content classes, and edge regions (widths <8 / 8 / off-by-one / 1-row /
+  tall-multi-flush). Only the bd8 u8 `compute_stats` is touched; the bd10/bd12
+  `compute_stats_hbd` path is unchanged. Instruction-count: `compute_stats` ~431M →
+  ~165M (2.6×); whole 256² p6 encode 938M → 684M (−27 %). Wall (interleaved paired vs
+  the pre-SIMD parent binary, no `target-cpu=native`): **256² p6 −24.5 %, 512² p6
+  −26.6 %, 1024² p6 −28.9 %**. All 10 runnable gates byte-identical + workspace green;
+  `#![forbid(unsafe_code)]` intact. Data: benchmarks/perf_p6_{4size,computestats_simd}.tsv.
+
 ## Campaign summary (2026-07-20)
 
-FOUR byte-inert perf wins landed on public master, profile-ranked: restoration
+SIX byte-exact perf wins now landed, profile-ranked: restoration
 reshape (−8.9% worst preset), CDEF filter SIMD (the 27.8% hotspot), `txb_init_levels`
-SIMD (~8%), and the **square DCT transforms SIMD** (fdct/idct 8/16/32/64, commit
+SIMD (~8%), the **square DCT transforms SIMD** (fdct/idct 8/16/32/64, commit
 `42989abee` — done in an isolated `git worktree` to avoid the shared-checkout
-hazard). Each is byte-identical (a `c_parity_*` differential vs real C + the 11
-gates) with no `unsafe`.
+hazard), the **ADST + non-square DCT SIMD** (fifth, below), and the **Wiener LR
+`compute_stats` SIMD** (sixth — the dominant p6 hotspot, below). Each is
+byte-identical (a `c_parity_*` differential vs real C + the gates) with no `unsafe`.
 
 **Measured G4 progress (port/C slope-ratio, the gate metric):**
 
@@ -233,13 +268,22 @@ moves because CDEF+LR search dominate the slowest preset.
 |---|---|---|
 | p10 | **2.00×** | at 64² the port is **0.79× — FASTER than C** (lower fixed cost); the ~2× is per-pixel slope, dominating at ≥256² |
 | p13 | **1.92×** | same |
-| p6  | **7.65×** | still carries the CDEF+LR *search* + the non-DCT transforms |
+| p6  | ~~7.65×~~ → **5.18×** | after the `compute_stats` SIMD (below); still carries the CDEF+LR *search*, the still-scalar window gather, and the non-DCT transforms |
 
 After five byte-exact SIMD wins the fast presets are at **~2× C on the slope** (and
 faster than C on small frames). To reach ≤1.2× at p10/p13 needs roughly halving the
 remaining per-pixel cost — spread across quant + the entropy coeff-coding path +
-SAD/SSE, each a smaller slice, so it's an incremental grind, not one big lever. p6
-needs the CDEF/LR search + `fadst`/non-square transforms SIMD'd on top.
+SAD/SSE, each a smaller slice, so it's an incremental grind, not one big lever.
+
+A **sixth** win then landed (commits `4107be038` + `429cf91c6`): the **Wiener LR
+`compute_stats` M/H accumulation SIMD** (see "Landed" above). It was the dominant p6
+hotspot (~46 % of 256² p6 instructions) and fully scalar; the AVX2 port cut it 2.6×
+(431M → 165M instructions) and took p6 **7.65× → 5.18×** on the same 4-size grid
+(measured 2026-07-20, commit `429cf91c6`; interleaved before/after vs the parent
+binary: 256²/512²/1024² p6 −24.5 %/−26.6 %/−28.9 %). p6 now needs the CDEF/LR
+*search* structure, the still-scalar `compute_stats` window gather, and the non-DCT
+transforms; the largest single p6 item is now the pre-existing per-frame
+`__memset` (allocation discipline, ~19 %).
 
 **Not at ≤1.2× yet.** Remaining fast-preset levers, now that the transforms are
 SIMD'd: **quant** (`quantize_b`/`quantize_fp`), the **entropy coeff-coding** path
