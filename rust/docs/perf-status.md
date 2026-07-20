@@ -199,16 +199,28 @@ is the biggest single lever.
 
 ## Campaign summary (2026-07-20)
 
-Three byte-inert perf wins landed on public master, in the profile-ranked order:
-restoration reshape (−8.9% worst preset), CDEF filter SIMD (the 27.8% hotspot; G4
-slope-ratio ~12× → ~8.4× at p10/p13), `txb_init_levels` SIMD (~8%). Each is
-byte-identical (a `c_parity_*` differential vs real C + the 11 gates) with no
-`unsafe`. **The port is still ~3–9× C — not at ≤1.2× yet.** The dominant remaining
-lever is the **integer transforms** (`fadst*`/`idct64`/`fdct64`, ~25% at fast
-presets): AV1 transforms are fixed-point integer butterflies, so a byte-exact SIMD
-port is possible but the rounding-shift order must match the scalar exactly — a
-careful separate pass, not a shotgun. After that: quant, and the SAD/SSE/SATD
-distortion kernels (only ~2–3% each here, low priority).
+FOUR byte-inert perf wins landed on public master, profile-ranked: restoration
+reshape (−8.9% worst preset), CDEF filter SIMD (the 27.8% hotspot), `txb_init_levels`
+SIMD (~8%), and the **square DCT transforms SIMD** (fdct/idct 8/16/32/64, commit
+`42989abee` — done in an isolated `git worktree` to avoid the shared-checkout
+hazard). Each is byte-identical (a `c_parity_*` differential vs real C + the 11
+gates) with no `unsafe`.
+
+**Measured G4 progress (port/C slope-ratio, the gate metric):**
+
+| preset | baseline | after CDEF | **after transforms** |
+|---|---|---|---|
+| p10 | ~12× | ~8.4× | **2.12×** |
+| p13 | ~11.6× | ~8.4× | **2.97×** |
+| p6  | ~11.3× | ~9.9× | **7.53×** |
+
+The transforms run at ALL presets (CDEF only ≤M6), so they were the dominant fast-
+preset cost — **p10 is now 2.12× C, close to the ≤1.2× target**, and p13's
+*intercept*-ratio is already 1.14× (within target on fixed overhead; the slope is
+the remaining gap). **Not at ≤1.2× yet.** Remaining levers: p6 still carries CDEF+LR
+search + the non-square/`fadst` transforms; the fast-preset residual is quant + the
+entropy coeff-coding path + SAD/SSE (each smaller). Next-biggest byte-exact target:
+the `fadst*` (ADST) transforms + the non-square rectangular sizes.
 
 **Process note (learned the hard way 2026-07-20):** do NOT run `perf_gate.sh`'s
 before/after (which `git stash`/pops the working tree) in the SAME checkout where a
