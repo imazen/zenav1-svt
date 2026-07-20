@@ -33,6 +33,116 @@ macro_rules! sub {
 }
 
 // ---------------------------------------------------------------------------
+// 8-point inverse DCT (svt_av1_idct8_new / inv_txfm.rs::idct8)
+// ---------------------------------------------------------------------------
+#[rite]
+pub(super) fn idct8_x8(
+    t: Desktop64,
+    inp: &[__m256i; 8],
+    out: &mut [__m256i; 8],
+    rnd: __m256i,
+    sh: __m128i,
+    lo: __m256i,
+    hi: __m256i,
+) {
+    let cospi = &COSPI;
+    let cl = |v| clampv(t, v, lo, hi);
+
+    // stage 1: permutation
+    let s1 = [
+        inp[0], inp[4], inp[2], inp[6], inp[1], inp[5], inp[3], inp[7],
+    ];
+    // stage 2
+    let mut s2 = s1;
+    s2[4] = hbtf(t, c!(t, cospi, 56), s1[4], cn!(t, cospi, 8), s1[7], rnd, sh);
+    s2[5] = hbtf(t, c!(t, cospi, 24), s1[5], cn!(t, cospi, 40), s1[6], rnd, sh);
+    s2[6] = hbtf(t, c!(t, cospi, 40), s1[5], c!(t, cospi, 24), s1[6], rnd, sh);
+    s2[7] = hbtf(t, c!(t, cospi, 8), s1[4], c!(t, cospi, 56), s1[7], rnd, sh);
+    // stage 3
+    let mut s3 = s2;
+    s3[0] = hbtf(t, c!(t, cospi, 32), s2[0], c!(t, cospi, 32), s2[1], rnd, sh);
+    s3[1] = hbtf(t, c!(t, cospi, 32), s2[0], cn!(t, cospi, 32), s2[1], rnd, sh);
+    s3[2] = hbtf(t, c!(t, cospi, 48), s2[2], cn!(t, cospi, 16), s2[3], rnd, sh);
+    s3[3] = hbtf(t, c!(t, cospi, 16), s2[2], c!(t, cospi, 48), s2[3], rnd, sh);
+    s3[4] = cl(add!(s2[4], s2[5]));
+    s3[5] = cl(sub!(s2[4], s2[5]));
+    s3[6] = cl(sub!(s2[7], s2[6]));
+    s3[7] = cl(add!(s2[6], s2[7]));
+    // stage 4
+    let mut s4 = s3;
+    s4[0] = cl(add!(s3[0], s3[3]));
+    s4[1] = cl(add!(s3[1], s3[2]));
+    s4[2] = cl(sub!(s3[1], s3[2]));
+    s4[3] = cl(sub!(s3[0], s3[3]));
+    s4[5] = hbtf(t, cn!(t, cospi, 32), s3[5], c!(t, cospi, 32), s3[6], rnd, sh);
+    s4[6] = hbtf(t, c!(t, cospi, 32), s3[5], c!(t, cospi, 32), s3[6], rnd, sh);
+    // stage 5: final combine
+    out[0] = cl(add!(s4[0], s4[7]));
+    out[1] = cl(add!(s4[1], s4[6]));
+    out[2] = cl(add!(s4[2], s4[5]));
+    out[3] = cl(add!(s4[3], s4[4]));
+    out[4] = cl(sub!(s4[3], s4[4]));
+    out[5] = cl(sub!(s4[2], s4[5]));
+    out[6] = cl(sub!(s4[1], s4[6]));
+    out[7] = cl(sub!(s4[0], s4[7]));
+}
+
+// ---------------------------------------------------------------------------
+// 8-point forward DCT (svt_av1_fdct8_new / fwd_txfm.rs::fdct8). No clamps.
+// ---------------------------------------------------------------------------
+#[rite]
+pub(super) fn fdct8_x8(t: Desktop64, inp: &[__m256i; 8], out: &mut [__m256i; 8], cos_bit: i8) {
+    let cospi = cospi_arr(cos_bit);
+    let rnd = splat(t, 1 << (cos_bit as u32 - 1));
+    let sh = _mm_cvtsi32_si128(cos_bit as i32);
+
+    // stage 1
+    let s1 = [
+        add!(inp[0], inp[7]),
+        add!(inp[1], inp[6]),
+        add!(inp[2], inp[5]),
+        add!(inp[3], inp[4]),
+        sub!(inp[3], inp[4]),
+        sub!(inp[2], inp[5]),
+        sub!(inp[1], inp[6]),
+        sub!(inp[0], inp[7]),
+    ];
+    // stage 2
+    let mut s2 = s1;
+    s2[0] = add!(s1[0], s1[3]);
+    s2[1] = add!(s1[1], s1[2]);
+    s2[2] = sub!(s1[1], s1[2]);
+    s2[3] = sub!(s1[0], s1[3]);
+    s2[5] = hbtf(t, cn!(t, cospi, 32), s1[5], c!(t, cospi, 32), s1[6], rnd, sh);
+    s2[6] = hbtf(t, c!(t, cospi, 32), s1[6], c!(t, cospi, 32), s1[5], rnd, sh);
+    // stage 3
+    let mut s3 = s2;
+    s3[0] = hbtf(t, c!(t, cospi, 32), s2[0], c!(t, cospi, 32), s2[1], rnd, sh);
+    s3[1] = hbtf(t, cn!(t, cospi, 32), s2[1], c!(t, cospi, 32), s2[0], rnd, sh);
+    s3[2] = hbtf(t, c!(t, cospi, 48), s2[2], c!(t, cospi, 16), s2[3], rnd, sh);
+    s3[3] = hbtf(t, c!(t, cospi, 48), s2[3], cn!(t, cospi, 16), s2[2], rnd, sh);
+    s3[4] = add!(s2[4], s2[5]);
+    s3[5] = sub!(s2[4], s2[5]);
+    s3[6] = sub!(s2[7], s2[6]);
+    s3[7] = add!(s2[7], s2[6]);
+    // stage 4
+    let mut s4 = s3;
+    s4[4] = hbtf(t, c!(t, cospi, 56), s3[4], c!(t, cospi, 8), s3[7], rnd, sh);
+    s4[5] = hbtf(t, c!(t, cospi, 24), s3[5], c!(t, cospi, 40), s3[6], rnd, sh);
+    s4[6] = hbtf(t, c!(t, cospi, 24), s3[6], cn!(t, cospi, 40), s3[5], rnd, sh);
+    s4[7] = hbtf(t, c!(t, cospi, 56), s3[7], cn!(t, cospi, 8), s3[4], rnd, sh);
+    // stage 5: output permutation
+    out[0] = s4[0];
+    out[1] = s4[4];
+    out[2] = s4[2];
+    out[3] = s4[6];
+    out[4] = s4[1];
+    out[5] = s4[5];
+    out[6] = s4[3];
+    out[7] = s4[7];
+}
+
+// ---------------------------------------------------------------------------
 // 16-point inverse DCT (svt_av1_idct16_new / inv_txfm.rs::idct16)
 // ---------------------------------------------------------------------------
 #[rite]

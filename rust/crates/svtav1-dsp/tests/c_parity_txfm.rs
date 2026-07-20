@@ -391,7 +391,7 @@ fn inv_named_square_wrappers_flat_dc_match_c() {
 
 use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
 
-const SIMD_SQUARE: [(usize, TxSize); 1] = [(16, TxSize::Tx16x16)];
+const SIMD_SQUARE: [(usize, TxSize); 2] = [(8, TxSize::Tx8x8), (16, TxSize::Tx16x16)];
 
 /// Residual patterns: max-magnitude edges first (stress the `mullo_epi32`
 /// no-overflow invariant), then random.

@@ -160,6 +160,7 @@ macro_rules! dct_square_driver {
     };
 }
 
+dct_square_driver!(inv_dct_8, fwd_dct_8, 8, idct8_x8, fdct8_x8);
 dct_square_driver!(inv_dct_16, fwd_dct_16, 16, idct16_x8, fdct16_x8);
 
 /// Inverse square DCT-DCT dispatcher. Returns true if `n` has a SIMD kernel.
@@ -174,6 +175,10 @@ pub(super) fn inv_dct_square(
     bd: u8,
 ) -> bool {
     match n {
+        8 => {
+            inv_dct_8(t, input, input_stride, output, out_stride, bd);
+            true
+        }
         16 => {
             inv_dct_16(t, input, input_stride, output, out_stride, bd);
             true
@@ -192,6 +197,10 @@ pub(super) fn fwd_dct_square(
     n: usize,
 ) -> bool {
     match n {
+        8 => {
+            fwd_dct_8(t, input, output, input_stride);
+            true
+        }
         16 => {
             fwd_dct_16(t, input, output, input_stride);
             true
