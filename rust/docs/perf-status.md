@@ -227,10 +227,19 @@ DCT (ADST/rect are a smaller slice of the fast-preset cost, and the square DCT w
 already SIMD'd), so it doesn't move p10's slope much — a correct byte-exact
 increment, not a big ratio jump.
 
-CAVEAT on the numbers: the quick 8-round / 2-size grid is **noise-dominated** (the C
-per-run variance alone swings the measured C-slope ~2–3×), so treat the per-preset
-ratios above as order-of-magnitude, not precise — a full `perf_gate.sh` grid (more
-rounds, 4 sizes) is needed to state the post-transform ratio precisely.
+**CLEAN post-SIMD baseline (20 rounds × 4 sizes {64,128,256,512} × p{6,10,13}, paired):**
+
+| preset | slope-ratio (port/C) | shape |
+|---|---|---|
+| p10 | **2.00×** | at 64² the port is **0.79× — FASTER than C** (lower fixed cost); the ~2× is per-pixel slope, dominating at ≥256² |
+| p13 | **1.92×** | same |
+| p6  | **7.65×** | still carries the CDEF+LR *search* + the non-DCT transforms |
+
+After five byte-exact SIMD wins the fast presets are at **~2× C on the slope** (and
+faster than C on small frames). To reach ≤1.2× at p10/p13 needs roughly halving the
+remaining per-pixel cost — spread across quant + the entropy coeff-coding path +
+SAD/SSE, each a smaller slice, so it's an incremental grind, not one big lever. p6
+needs the CDEF/LR search + `fadst`/non-square transforms SIMD'd on top.
 
 **Not at ≤1.2× yet.** Remaining fast-preset levers, now that the transforms are
 SIMD'd: **quant** (`quantize_b`/`quantize_fp`), the **entropy coeff-coding** path
