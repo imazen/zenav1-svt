@@ -1241,6 +1241,12 @@ pub fn build_m6_pd0_tables_from_ctx(
 impl M6Pd0Tables {
     #[inline]
     fn size_slot(sq_size: usize) -> usize {
+        // BENIGN `_ => 3`: slot 3 is BLOCK_64X64. This table only ever sees
+        // PD0 squares in {8,16,32,64} — even at SB128 the b64-coding-unit
+        // decomposition (`sb_coding_units`) keeps every coding square <= 64. So
+        // `_` folds 64 (never 128) into slot 3. NOT the `EntropyCtx::bsl` class
+        // of `_ => 3` bug (which wrongly folded 128 into the 64 level); there is
+        // no 128 slot here because no 128 square reaches this function.
         match sq_size {
             8 => 0,
             16 => 1,

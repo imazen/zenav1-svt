@@ -250,9 +250,14 @@ pub fn lr_units_in_dim(plane_size: usize) -> usize {
 /// writer emits `bits-1` as a 4-bit literal followed by `max-1` in `bits`
 /// bits. Operates on TRUE dims (captured pre-alignment,
 /// enc_handle.c:4792-4799). Returns (bits, minus_1_value).
-/// PORT-NOTE(unverified): the port's SH writer currently derives width
-/// bits its own way for 64-aligned dims — swap to this at #95 chunk 2
-/// and byte-compare the SH on a non-aligned cell.
+/// VERIFIED (2026-07-19, #95): the port's SH writer (`obu.rs:609-613`) derives
+/// the same value inline (`w_bits = 32 - (width - 1).leading_zeros()`, writing
+/// `w_bits - 1` then `width - 1`) on the TRUE dims, and the odd-true full-SB
+/// cell `63x63` plus the odd-width partial cells byte-match real aomenc in
+/// `partial_sb_gate.sh` — which exercises this at ODD true widths, proving the
+/// size-bit derivation correct there. This helper is the shared definition;
+/// `obu.rs` may be routed through it in a later cleanup (kept separate for now
+/// to avoid a cross-crate dependency edit).
 pub fn seq_size_bits(max_dim: usize) -> (u32, u32) {
     debug_assert!(max_dim >= 1);
     let mut bits = usize::BITS - 1 - max_dim.leading_zeros(); // floor log2

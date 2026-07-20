@@ -1189,6 +1189,23 @@ impl EncodePipeline {
                 && all_trees
                     .iter()
                     .all(|t| bd10_tree_supported(t, bd10_edge_filter));
+            // INVARIANT (D4): the level-only post-pass hardcodes the RDOQ
+            // txb_skip_ctx / dc_sign_ctx to 0/0 (leaf_funnel.rs), which is
+            // correct ONLY where `real_coeff_ctx` is false — the eff-M9 band
+            // (preset >= 9), the only band where `bd10_full_rd` is false for an
+            // aligned frame. Enforce that coupling so it cannot silently re-open
+            // if `bd10_full_rd_supported` is ever widened downward (e.g. a
+            // preset <= 6 aligned bd10 SCREEN frame turns `bd10_full_rd` off via
+            // palette_level != 0, where `real_coeff_ctx` is TRUE — the post-pass
+            // must NOT run there). Debug-only; the reachable envelope satisfies it.
+            debug_assert!(
+                !bd10_postpass_runs
+                    || !crate::leaf_funnel::FunnelCfg::for_preset(self.speed_config.preset)
+                        .real_coeff_ctx,
+                "bd10 level-only post-pass would run where real_coeff_ctx is true \
+                 (preset {}): its 0/0 RDOQ contexts would miscode the levels",
+                self.speed_config.preset
+            );
             // Diagnostic: which 10-bit canvas the post-filter searches (DLF
             // level, CDEF strength, Wiener LR) end up reading. The two
             // producers — the FULL-RD funnel's committed per-block recon and
@@ -4312,18 +4329,21 @@ fn encode_partition_tree(
 /// `BlockDecision` in place; the (unchanged) entropy walk then codes the
 /// 10-bit levels. bd8 never calls this, so the bd8 bitstream is untouched.
 ///
-/// SCOPE (first bd10 cell = gradient 64x64 preset13): DC leaves, tx_depth 0.
-/// Chroma is left untouched — the harness chroma is uniform (u=v=128), whose
-/// DC residual is 0 at every bit depth, so `chroma_dec` stays skip=correct.
-/// Directional / filter-intra / tx_depth>0 panic loudly (predict_unit_hbd /
-/// the assert here) rather than emit wrong pixels — an obvious follow-up.
+/// SCOPE (updated 2026-07-19): the bd10 full-RD funnel now covers the DC family
+/// AND directional + filter-intra intra AND the chroma uv/CfL path. Only
+/// `tx_depth > 0` still unconditionally falls back to u8 (directional
+/// additionally when the SH edge filter is on). The `bd10_tree_supported` gate
+/// below enumerates the current envelope; an out-of-envelope leaf falls back
+/// rather than miscoding pixels. (The original scope was DC-only, tx_depth 0.)
 #[allow(clippy::too_many_arguments)]
 /// Read-only pre-pass: is every luma leaf of `tree` inside the ported bd10 u16
 /// re-encode envelope? The u16 predict/tx path (`predict_unit_hbd`,
-/// `bd10_reencode_node`) intentionally panics on the not-yet-ported cases —
-/// directional intra (mode 3..=8, or V/H with a nonzero angle delta),
-/// filter-intra (`filter_intra_mode != FI_NONE`), and `tx_depth > 0` — because a
-/// loud "not ported" beats silently miscoding 10-bit pixels. This gate ensures
+/// `bd10_reencode_node`) panics on the not-yet-ported cases so a loud "not
+/// ported" beats silently miscoding 10-bit pixels. As of 2026-07-19 that is
+/// ONLY `tx_depth > 0` (unconditional) plus directional intra WHEN the SH edge
+/// filter is on (filt_type would need the live per-block smooth-neighbour
+/// derivation); directional (edge filter off) and filter-intra are now ported
+/// (`dr_predict_hbd` / `predict_filter_intra_hbd`). This gate ensures
 /// `bd10_reencode_luma` runs ONLY when the whole frame is supported, so an
 /// out-of-envelope bd10 frame falls back to the (non-panicking, if not yet
 /// byte-exact) u8 output instead of crashing a public-API caller.
