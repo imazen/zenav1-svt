@@ -222,10 +222,10 @@ overhead; the slope is the remaining gap).
 A **fifth** win then landed (commit `a29dc02af`, worktree-isolated): **ADST
 (`fadst`/`iadst` 8,16) + non-square rectangular DCT** SIMD — byte-exact (the
 `c_parity_txfm` differential grew to 14 cases incl. the rectangular `rect_type`
-scaling; all 11 gates + workspace green). This is a SMALLER lever than the square
-DCT (ADST/rect are a smaller slice of the fast-preset cost, and the square DCT was
-already SIMD'd), so it doesn't move p10's slope much — a correct byte-exact
-increment, not a big ratio jump.
+scaling; all 11 gates + workspace green). Measured (clean 15-round self-consistent
+before/after): **p10 port-slope −10.5%, p13 −10.0%, p6 −1.3%** — a real ~10% win at
+the fast presets (the rectangular sizes are common there), NOT negligible. p6 barely
+moves because CDEF+LR search dominate the slowest preset.
 
 **CLEAN post-SIMD baseline (20 rounds × 4 sizes {64,128,256,512} × p{6,10,13}, paired):**
 
