@@ -391,7 +391,12 @@ fn inv_named_square_wrappers_flat_dc_match_c() {
 
 use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
 
-const SIMD_SQUARE: [(usize, TxSize); 2] = [(8, TxSize::Tx8x8), (16, TxSize::Tx16x16)];
+const SIMD_SQUARE: [(usize, TxSize); 4] = [
+    (8, TxSize::Tx8x8),
+    (16, TxSize::Tx16x16),
+    (32, TxSize::Tx32x32),
+    (64, TxSize::Tx64x64),
+];
 
 /// Residual patterns: max-magnitude edges first (stress the `mullo_epi32`
 /// no-overflow invariant), then random.
@@ -433,26 +438,43 @@ fn fwd_dct_simd_all_tiers_match_c() {
 fn inv_dct_simd_all_tiers_identical_and_recon_match_c() {
     let mut rng = Rng(0xC0FF_EE20_2607_2012);
     for &(n, ts) in &SIMD_SQUARE {
+        // 64-dim inverse carries only the top-left 32x32 (`keep`) coefficients
+        // (the AV1 bitstream never sends the rest). The port dispatch reads that
+        // block at frame stride `n`; the exported C 64x64 inverse reads it
+        // 32-*packed*. Lay a single `keep x keep` block into BOTH conventions so
+        // the two decoders consume identical coefficients (for n<=32, keep==n and
+        // the two arrays coincide).
+        let keep = n.min(32);
         for pat in 0..60 {
-            // Coefficients: realistic (from the C forward of a residual) for
+            // Coefficients: realistic (C forward of a keep x keep residual) for
             // pat < 40; wide-magnitude synthetic (near the row-range clamp,
             // overflow stress) for pat >= 40.
-            let coeffs: Vec<i32> = if pat < 40 {
-                let res16 = simd_residual(pat, n * n, &mut rng);
-                cref::fwd_txfm2d(n, &res16, 0)
+            let block: Vec<i32> = if pat < 40 {
+                let res = simd_residual(pat, keep * keep, &mut rng);
+                cref::fwd_txfm2d(keep, &res, 0)
             } else {
-                (0..n * n)
+                (0..keep * keep)
                     .map(|_| (rng.next() % 60001) as i32 - 30000)
                     .collect()
             };
+            // Port view: `block` at frame stride n (top-left, rest zero).
+            let mut port_coeffs = vec![0i32; n * n];
+            // C view: `block` packed at stride `keep` (first keep*keep, rest zero).
+            let mut cref_coeffs = vec![0i32; n * n];
+            for r in 0..keep {
+                for c in 0..keep {
+                    port_coeffs[r * n + c] = block[r * keep + c];
+                    cref_coeffs[r * keep + c] = block[r * keep + c];
+                }
+            }
             let base = vec![128u16; n * n];
-            let c_recon = cref::inv_txfm2d_add(n, &coeffs, &base, 0);
+            let c_recon = cref::inv_txfm2d_add(n, &cref_coeffs, &base, 0);
 
             let mut first: Option<Vec<i32>> = None;
             for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
                 let mut res = vec![0i32; n * n];
                 assert!(svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch(
-                    &coeffs,
+                    &port_coeffs,
                     &mut res,
                     n,
                     ts,
