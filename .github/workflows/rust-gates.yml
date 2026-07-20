@@ -75,7 +75,7 @@ jobs:
       - name: bd10 non-flat identity (u16 MD path, DC-family cells)
         working-directory: rust
         run: |
-          ./tools/bd10_nonflat_gate.sh
+          AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" ./tools/bd10_nonflat_gate.sh
 
       - name: Recon parity (encoder recon == aomdec output, byte-exact)
         working-directory: rust
