@@ -1260,7 +1260,7 @@ pub fn optimize_b(
     let skip_cost = o.txb_costs.txb_skip_cost[o.txb_skip_ctx][1];
     let eob_cost_init = eob_cost(*eob as i32, o.eob_costs, o.txb_costs, o.tx_class);
 
-    let mut levels_buf = [0u8; coeff_c::TX_PAD_2D];
+    let mut levels_buf = [0u8; coeff_c::LEVELS_SCRATCH_LEN];
     if *eob > 1 {
         coeff_c::txb_init_levels(qcoeff, width, height, &mut levels_buf);
     }

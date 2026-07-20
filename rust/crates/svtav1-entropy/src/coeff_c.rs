@@ -234,6 +234,21 @@ pub const MAX_TX_SIZE: usize = 64;
 pub const TX_PAD_2D: usize =
     (MAX_TX_SIZE + TX_PAD_HOR) * (MAX_TX_SIZE + TX_PAD_TOP + TX_PAD_BOTTOM) + TX_PAD_END;
 
+/// Per-call level-map scratch length, sized to the **coeff-coding txb cap of
+/// 32x32** rather than the MAX_TX_SIZE(64)-shaped [`TX_PAD_2D`]. Coefficient
+/// coding always operates on the adjusted (≤32) txb dims (`adjusted_tx_size`
+/// folds every 64-dim transform to its 32-dim map), so no reader of the level
+/// map ever indexes past what a 32x32 txb reaches: the deepest access is the
+/// `TX_CLASS_VERT` branch of `get_nz_mag`, `base + 4*stride`, i.e. up to
+/// `TX_PAD_TOP + 32 + 4` padded rows of a `32 + TX_PAD_HOR`-wide stride plus
+/// `TX_PAD_END`. This equals the [`txb_init_levels`] `used` bound at
+/// width=height=32, so a scratch of this length (~1456 bytes vs 4640) holds
+/// every txb the encoder can code with a ~3x smaller one-time zero, and
+/// `used.min(len)` never truncates below a real read. Callers that previously
+/// stack-allocated (or heap-allocated) a full `TX_PAD_2D` per txb use this.
+pub const LEVELS_SCRATCH_LEN: usize =
+    (TX_PAD_TOP + 32 + TX_PAD_BOTTOM + 4) * (32 + TX_PAD_HOR) + TX_PAD_END;
+
 /// Offset of the (0,0) level inside the padded buffer (C `set_levels`).
 #[inline]
 pub const fn levels_origin(width: usize) -> usize {
@@ -247,7 +262,26 @@ pub const fn levels_origin(width: usize) -> usize {
 /// byte-identical to the scalar map, proven against the exported real-C kernel
 /// under every dispatch tier in `tests/c_parity.rs`.
 pub fn txb_init_levels(coeff: &[i32], width: usize, height: usize, levels_buf: &mut [u8]) {
-    for b in levels_buf.iter_mut() {
+    // Zero only the padded extent this (width, height) txb actually uses, not the
+    // whole MAX_TX_SIZE-shaped buffer (TX_PAD_2D = 4640 bytes). C keeps a
+    // persistent `md_levels_buf` whose pad is zeroed once (md_process.c:235) and
+    // re-fills only the body per txb; the port re-zeros per call, so at least
+    // bound the re-zero to the used prefix. The context derivation
+    // (`get_nz_map_contexts` -> `nz_map_ctx`/`get_nz_mag`/`br_ctx`) reads the map
+    // at each coefficient's padded position plus neighbour offsets reaching at
+    // most 4 rows below the bottom-right coefficient (the TX_CLASS_VERT branch of
+    // `nz_mag` reads `base + 4*stride`); with the top-aligned origin (TX_PAD_TOP
+    // rows) the furthest byte any reader touches is strictly below
+    // `(TX_PAD_TOP + height + 3) * stride + width`, and `fill_levels` writes only
+    // the body columns inside that. `used` clears that bound with >= 2*width rows
+    // of margin plus TX_PAD_END, capped at the buffer length. Byte-identical:
+    // every byte read and every byte written lies in `[0, used)`; bytes in
+    // `[used, len)` are never accessed for a txb of this size (for a 4x4 that is
+    // ~112 bytes zeroed instead of 4640).
+    let stride = width + TX_PAD_HOR;
+    let used =
+        ((TX_PAD_TOP + height + TX_PAD_BOTTOM + 4) * stride + TX_PAD_END).min(levels_buf.len());
+    for b in levels_buf[..used].iter_mut() {
         *b = 0;
     }
     crate::coeff_simd::fill_levels(coeff, width, height, levels_buf);
@@ -757,7 +791,7 @@ pub fn write_coeffs_txb_1d(
         return 0;
     }
 
-    let mut levels_buf = [0u8; TX_PAD_2D];
+    let mut levels_buf = [0u8; LEVELS_SCRATCH_LEN];
     txb_init_levels(coeffs, width, height, &mut levels_buf);
 
     if plane_type == 0 {

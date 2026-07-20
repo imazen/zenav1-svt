@@ -1241,7 +1241,7 @@ pub(crate) fn cost_coeffs_txb(
     let eob_bits = &rates.coeff.eob[cc::TXSIZE_LOG2_MINUS4[c_tx_size]][plane_type];
 
     let mut cost = costs.txb_skip_cost[txb_skip_ctx][0];
-    let mut levels_buf = vec![0u8; cc::TX_PAD_2D];
+    let mut levels_buf = [0u8; cc::LEVELS_SCRATCH_LEN];
     if eob > 1 {
         cc::txb_init_levels(qcoeff, width, height, &mut levels_buf);
     }
@@ -1435,12 +1435,16 @@ fn tx_unit(
     let c_tx = cc::tx_size_from_dims(w, h);
     let rs_tx_type = TX_TYPE_FROM_C[tx_type];
 
-    let mut residual = vec![0i32; n];
+    // Build directly (uninit capacity + push) rather than `vec![0; n]` + full
+    // overwrite: every element is written below, so the zero-fill was dead. This
+    // pushes exactly h*w = n values in row-major order — byte-identical contents,
+    // no `calloc`/`memset`.
+    let mut residual = Vec::with_capacity(n);
     for r in 0..h {
         let srow = src_off + r * src_stride;
         let prow = pred_off + r * pred_stride;
         for c in 0..w {
-            residual[r * w + c] = src[srow + c] as i32 - pred[prow + c] as i32;
+            residual.push(src[srow + c] as i32 - pred[prow + c] as i32);
         }
     }
     let mut coeffs = vec![0i32; n];
@@ -1468,9 +1472,12 @@ fn tx_unit(
             // 32x64 / 16x64: bottom w-wide, (h-32)-tall region.
             three_quad_energy = energy_region(&coeffs[32 * w..], w, w, h - 32);
         }
-        let mut v = vec![0i32; pw * ph];
+        // Uninit capacity + extend rather than `vec![0; pw*ph]` + full copy: the
+        // loop copies every one of the pw*ph elements, so the zero-fill was dead.
+        // Byte-identical contents (same pw-wide rows in order), no `calloc`/`memset`.
+        let mut v = Vec::with_capacity(pw * ph);
         for r in 0..ph {
-            v[r * pw..(r + 1) * pw].copy_from_slice(&coeffs[r * w..r * w + pw]);
+            v.extend_from_slice(&coeffs[r * w..r * w + pw]);
         }
         v
     } else {
@@ -1926,12 +1933,16 @@ pub(crate) fn tx_unit_hbd(
     let c_tx = cc::tx_size_from_dims(w, h);
     let rs_tx_type = TX_TYPE_FROM_C[tx_type];
 
-    let mut residual = vec![0i32; n];
+    // Build directly (uninit capacity + push) rather than `vec![0; n]` + full
+    // overwrite: every element is written below, so the zero-fill was dead. This
+    // pushes exactly h*w = n values in row-major order — byte-identical contents,
+    // no `calloc`/`memset`.
+    let mut residual = Vec::with_capacity(n);
     for r in 0..h {
         let srow = src_off + r * src_stride;
         let prow = pred_off + r * pred_stride;
         for c in 0..w {
-            residual[r * w + c] = src[srow + c] as i32 - pred[prow + c] as i32;
+            residual.push(src[srow + c] as i32 - pred[prow + c] as i32);
         }
     }
     let mut coeffs = vec![0i32; n];
@@ -1964,9 +1975,12 @@ pub(crate) fn tx_unit_hbd(
                 three_quad_energy = energy_region(&coeffs[32 * w..], w, w, h - 32);
             }
         }
-        let mut v = vec![0i32; pw * ph];
+        // Uninit capacity + extend rather than `vec![0; pw*ph]` + full copy: the
+        // loop copies every one of the pw*ph elements, so the zero-fill was dead.
+        // Byte-identical contents (same pw-wide rows in order), no `calloc`/`memset`.
+        let mut v = Vec::with_capacity(pw * ph);
         for r in 0..ph {
-            v[r * pw..(r + 1) * pw].copy_from_slice(&coeffs[r * w..r * w + pw]);
+            v.extend_from_slice(&coeffs[r * w..r * w + pw]);
         }
         v
     } else {

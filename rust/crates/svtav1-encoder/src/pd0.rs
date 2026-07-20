@@ -942,7 +942,7 @@ fn cost_coeffs_txb_pd0(
 
     let mut cost = coeff_costs.txb_skip_cost[0][0];
 
-    let mut levels_buf = vec![0u8; cc::TX_PAD_2D];
+    let mut levels_buf = [0u8; cc::LEVELS_SCRATCH_LEN];
     if eob > 1 {
         cc::txb_init_levels(qcoeff, width, height, &mut levels_buf);
     }
