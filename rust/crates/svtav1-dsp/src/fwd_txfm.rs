@@ -1988,10 +1988,17 @@ pub fn fwd_txfm2d_c_exact(
         return true;
     }
     // SIMD fast path: ADST_DCT / DCT_ADST / ADST_ADST (8x8/16x16/8x16/16x8),
-    // no flips. FLIPADST (which flips) and identity stay scalar.
+    // no flips.
     if !ud_flip
         && !lr_flip
         && crate::txfm_simd::try_fwd_adst(input, output, input_stride, w, h, col_1d, row_1d)
+    {
+        return true;
+    }
+    // SIMD fast path: extended types — FLIPADST (all combos, with the block
+    // edge flip), IDENTITY (IDTX), and the mixed V_/H_ types. Gated internally
+    // by `simd_ext_supported`.
+    if crate::txfm_simd::try_fwd_ext(input, output, input_stride, w, h, col_1d, row_1d, ud_flip, lr_flip)
     {
         return true;
     }

@@ -1964,7 +1964,7 @@ pub fn inv_txfm2d_c_exact_bd(
         return true;
     }
     // SIMD fast path: ADST_DCT / DCT_ADST / ADST_ADST (8x8/16x16/8x16/16x8),
-    // no flips, bd <= 10. FLIPADST (which flips) and identity stay scalar.
+    // no flips, bd <= 10.
     if !ud_flip
         && !lr_flip
         && crate::txfm_simd::try_inv_adst(
@@ -1979,6 +1979,24 @@ pub fn inv_txfm2d_c_exact_bd(
             bd,
         )
     {
+        return true;
+    }
+    // SIMD fast path: extended types — FLIPADST (all combos, with the block
+    // edge flip), IDENTITY (IDTX), and the mixed V_/H_ types. Gated internally
+    // by `simd_ext_supported`.
+    if crate::txfm_simd::try_inv_ext(
+        input,
+        input_stride,
+        output,
+        out_stride,
+        w,
+        h,
+        col_1d,
+        row_1d,
+        ud_flip,
+        lr_flip,
+        bd,
+    ) {
         return true;
     }
     let row_func = match get_inv_txfm_func(row_1d, w) {

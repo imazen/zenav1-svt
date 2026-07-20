@@ -762,3 +762,159 @@ fn run_bd10_tier_check(w: usize, h: usize, ts: TxSize, txt: TxType, rng: &mut Rn
         });
     }
 }
+
+// ============================================================================
+// EXT SIMD DIFFERENTIAL — FLIPADST (all 5 combos, with the block edge flip),
+// IDENTITY (IDTX), and the mixed V_/H_ 1D types.
+//
+// Same two-way proof as the DCT/ADST tiers (every tier == real C, and every
+// tier's residual byte-identical = SIMD == scalar), over edge + random +
+// wide-synthetic inputs. The FLIPADST cells exercise ud_flip/lr_flip (the
+// reversed row read + `reverse8` lane mirror); the IDENTITY cells exercise the
+// `fidentity*`/`iidentity*` scales (shift for 8/32, `rect_scale` for 16); the
+// 8x16/16x8 rects also exercise the NewSqrt2/NewInvSqrt2 scale.
+//
+// Coverage:
+//   * 8x8, 16x16, 8x16, 16x8 x all 12 ext tx types (max dim <= 16, legal in the
+//     full AV1 ext_tx set), and
+//   * IDTX at 32x32, 16x32, 32x16, 8x32, 32x8 (IDTX's larger-size envelope).
+// ============================================================================
+
+/// (w, h, TxSize, TxType) for every ext combo the SIMD path handles.
+fn ext_cells() -> Vec<(usize, usize, TxSize, TxType)> {
+    let full_sizes = [
+        (8usize, 8usize, TxSize::Tx8x8),
+        (16, 16, TxSize::Tx16x16),
+        (8, 16, TxSize::Tx8x16),
+        (16, 8, TxSize::Tx16x8),
+    ];
+    // Every ext type at the full sizes: the 5 FLIPADST combos, IDTX, and the 6
+    // mixed V_/H_ types.
+    let ext_types = [
+        TxType::FlipAdstDct,
+        TxType::DctFlipAdst,
+        TxType::FlipAdstFlipAdst,
+        TxType::AdstFlipAdst,
+        TxType::FlipAdstAdst,
+        TxType::Idtx,
+        TxType::VDct,
+        TxType::HDct,
+        TxType::VAdst,
+        TxType::HAdst,
+        TxType::VFlipAdst,
+        TxType::HFlipAdst,
+    ];
+    // IDTX-only larger sizes (DCT_IDTX ext set; the only ext type legal there).
+    let idtx_sizes = [
+        (32usize, 32usize, TxSize::Tx32x32),
+        (16, 32, TxSize::Tx16x32),
+        (32, 16, TxSize::Tx32x16),
+        (8, 32, TxSize::Tx8x32),
+        (32, 8, TxSize::Tx32x8),
+    ];
+    let mut v = Vec::new();
+    for &(w, h, ts) in &full_sizes {
+        for &tt in &ext_types {
+            v.push((w, h, ts, tt));
+        }
+    }
+    for &(w, h, ts) in &idtx_sizes {
+        v.push((w, h, ts, TxType::Idtx));
+    }
+    v
+}
+
+#[test]
+fn fwd_ext_simd_all_tiers_match_c() {
+    let mut rng = Rng(0xE47_2026_0720_0001);
+    for (w, h, ts, txt) in ext_cells() {
+        let txi = txt as usize;
+        for pat in 0..40 {
+            let res16 = simd_residual(pat, w * h, &mut rng);
+            let c_out = cref_fwd_any(w, h, &res16, txi);
+            let res32: Vec<i32> = res16.iter().map(|&v| v as i32).collect();
+            for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+                let mut ours = vec![0i32; w * h];
+                assert!(
+                    svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(&res32, &mut ours, w, ts, txt),
+                    "dispatch must support {w}x{h} {txt:?}"
+                );
+                if ours != c_out {
+                    let first = ours
+                        .iter()
+                        .zip(c_out.iter())
+                        .position(|(a, b)| a != b)
+                        .unwrap();
+                    panic!(
+                        "fwd ext {w}x{h} {txt:?} pat {pat}: SIMD tier != C at {first} (r{} c{}): ours={} c={}",
+                        first / w,
+                        first % w,
+                        ours[first],
+                        c_out[first]
+                    );
+                }
+            });
+        }
+    }
+}
+
+#[test]
+fn inv_ext_simd_all_tiers_identical_and_recon_match_c() {
+    let mut rng = Rng(0xE47_2026_0720_0002);
+    for (w, h, ts, txt) in ext_cells() {
+        let txi = txt as usize;
+        for pat in 0..50 {
+            let coeffs: Vec<i32> = if pat < 40 {
+                let res16 = simd_residual(pat, w * h, &mut rng);
+                cref_fwd_any(w, h, &res16, txi)
+            } else {
+                (0..w * h)
+                    .map(|_| (rng.next() % 60001) as i32 - 30000)
+                    .collect()
+            };
+            let base = vec![128u16; w * h];
+            let c_recon = cref_inv_add_any(w, h, &coeffs, &base, txi);
+
+            let mut first_res: Option<Vec<i32>> = None;
+            for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+                let mut our_res = vec![0i32; w * h];
+                assert!(svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch(
+                    &coeffs, &mut our_res, w, ts, txt
+                ));
+                match &first_res {
+                    None => first_res = Some(our_res.clone()),
+                    Some(f) => assert_eq!(
+                        &our_res, f,
+                        "inv ext {w}x{h} {txt:?} pat {pat}: tier residual != scalar"
+                    ),
+                }
+                let recon: Vec<u16> = our_res
+                    .iter()
+                    .map(|&r| (128 + r).clamp(0, 255) as u16)
+                    .collect();
+                if recon != c_recon {
+                    let first = recon
+                        .iter()
+                        .zip(c_recon.iter())
+                        .position(|(a, b)| a != b)
+                        .unwrap();
+                    panic!(
+                        "inv ext {w}x{h} {txt:?} pat {pat}: SIMD tier recon != C at {first} (r{} c{}): ours={} c={}",
+                        first / w,
+                        first % w,
+                        recon[first],
+                        c_recon[first]
+                    );
+                }
+            });
+        }
+    }
+}
+
+#[test]
+fn inv_ext_simd_bd10_all_tiers_identical() {
+    let mut rng = Rng(0xE47_2026_0720_0003);
+    for (w, h, ts, txt) in ext_cells() {
+        run_bd10_tier_check(w, h, ts, txt, &mut rng);
+    }
+}

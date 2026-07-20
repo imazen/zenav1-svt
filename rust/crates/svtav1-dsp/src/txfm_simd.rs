@@ -64,6 +64,27 @@ fn simd_adst_supported(w: usize, h: usize, col_1d: u8, row_1d: u8) -> bool {
     col_1d <= 1 && row_1d <= 1 && (col_1d == 1 || row_1d == 1) && matches!(w, 8 | 16) && matches!(h, 8 | 16)
 }
 
+/// `(w, h, col_1d, row_1d)` the "extended" SIMD path (FLIPADST / IDENTITY /
+/// mixed V_/H_) supports. At least one axis must be FLIPADST(2) or IDENTITY(3)
+/// — pure DCT/ADST is handled by the DCT / ADST paths. IDTX (both identity)
+/// covers every mult-of-8 size up to a 32 dim (its legal AV1 tx-set envelope,
+/// via the reused square/rect drivers); the mixed / FLIPADST types are only
+/// legal (and only kernel-available) at 8x8/16x16/8x16/16x8. `bd` gates the
+/// inverse only.
+#[inline]
+fn simd_ext_supported(w: usize, h: usize, col_1d: u8, row_1d: u8) -> bool {
+    if col_1d < 2 && row_1d < 2 {
+        return false;
+    }
+    if col_1d == 3 && row_1d == 3 {
+        return matches!(
+            (w, h),
+            (8, 8) | (16, 16) | (32, 32) | (8, 16) | (16, 8) | (16, 32) | (32, 16) | (8, 32) | (32, 8)
+        );
+    }
+    matches!((w, h), (8, 8) | (16, 16) | (8, 16) | (16, 8))
+}
+
 /// Try the SIMD forward square DCT-DCT (`w == h == n`, no flips). Returns true
 /// only when the AVX2 tier actually handled it; false (scalar/neon tiers, or
 /// unsupported `n`) tells the caller to run the scalar core.
@@ -181,6 +202,57 @@ pub fn try_inv_adst(
     )
 }
 
+/// Try the SIMD forward "extended" 2D transform — FLIPADST (all combos),
+/// IDENTITY (IDTX), and the mixed V_/H_ types. `col_1d`/`row_1d` ∈ {0=DCT,
+/// 1=ADST, 2=FLIPADST, 3=IDENTITY}; `ud`/`lr` are the FLIPADST block edge flips
+/// (`ud == col_1d==2`, `lr == row_1d==2`). Same return contract as
+/// [`try_fwd_dct_square`].
+#[allow(clippy::too_many_arguments)]
+pub fn try_fwd_ext(
+    input: &[TranLow],
+    output: &mut [TranLow],
+    input_stride: usize,
+    w: usize,
+    h: usize,
+    col_1d: u8,
+    row_1d: u8,
+    ud: bool,
+    lr: bool,
+) -> bool {
+    if !simd_ext_supported(w, h, col_1d, row_1d) {
+        return false;
+    }
+    incant!(
+        try_fwd_ext_impl(input, output, input_stride, w, h, col_1d, row_1d, ud, lr),
+        [v3, neon, scalar]
+    )
+}
+
+/// Try the SIMD inverse "extended" 2D transform (FLIPADST / IDENTITY / mixed
+/// V_/H_), `bd <= 10`. Same contract as [`try_fwd_ext`].
+#[allow(clippy::too_many_arguments)]
+pub fn try_inv_ext(
+    input: &[TranLow],
+    input_stride: usize,
+    output: &mut [TranLow],
+    out_stride: usize,
+    w: usize,
+    h: usize,
+    col_1d: u8,
+    row_1d: u8,
+    ud: bool,
+    lr: bool,
+    bd: u8,
+) -> bool {
+    if !simd_ext_supported(w, h, col_1d, row_1d) || bd > 10 {
+        return false;
+    }
+    incant!(
+        try_inv_ext_impl(input, input_stride, output, out_stride, w, h, col_1d, row_1d, ud, lr, bd),
+        [v3, neon, scalar]
+    )
+}
+
 // -- scalar / neon arms: not handled, caller runs the scalar core --
 
 fn try_fwd_dct_square_impl_scalar(
@@ -280,6 +352,78 @@ fn try_inv_adst_impl_scalar(
     _h: usize,
     _col_1d: u8,
     _row_1d: u8,
+    _bd: u8,
+) -> bool {
+    false
+}
+
+#[allow(clippy::too_many_arguments)]
+fn try_fwd_ext_impl_scalar(
+    _t: ScalarToken,
+    _input: &[TranLow],
+    _output: &mut [TranLow],
+    _input_stride: usize,
+    _w: usize,
+    _h: usize,
+    _col_1d: u8,
+    _row_1d: u8,
+    _ud: bool,
+    _lr: bool,
+) -> bool {
+    false
+}
+
+#[allow(clippy::too_many_arguments)]
+fn try_inv_ext_impl_scalar(
+    _t: ScalarToken,
+    _input: &[TranLow],
+    _input_stride: usize,
+    _output: &mut [TranLow],
+    _out_stride: usize,
+    _w: usize,
+    _h: usize,
+    _col_1d: u8,
+    _row_1d: u8,
+    _ud: bool,
+    _lr: bool,
+    _bd: u8,
+) -> bool {
+    false
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn try_fwd_ext_impl_neon(
+    _t: NeonToken,
+    _input: &[TranLow],
+    _output: &mut [TranLow],
+    _input_stride: usize,
+    _w: usize,
+    _h: usize,
+    _col_1d: u8,
+    _row_1d: u8,
+    _ud: bool,
+    _lr: bool,
+) -> bool {
+    false
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn try_inv_ext_impl_neon(
+    _t: NeonToken,
+    _input: &[TranLow],
+    _input_stride: usize,
+    _output: &mut [TranLow],
+    _out_stride: usize,
+    _w: usize,
+    _h: usize,
+    _col_1d: u8,
+    _row_1d: u8,
+    _ud: bool,
+    _lr: bool,
     _bd: u8,
 ) -> bool {
     false
@@ -491,6 +635,7 @@ mod v3 {
     include!("txfm_simd_drivers.rs");
     include!("txfm_simd_rect.rs");
     include!("txfm_simd_adst.rs");
+    include!("txfm_simd_ext.rs");
 }
 
 /// AVX2 forward square DCT-DCT. Dispatched only on the `v3` tier.
@@ -583,4 +728,44 @@ fn try_inv_adst_impl_v3(
     bd: u8,
 ) -> bool {
     v3::inv_adst(t, input, input_stride, output, out_stride, w, h, col_1d, row_1d, bd)
+}
+
+/// AVX2 forward extended 2D transform (FLIPADST / IDENTITY / V_/H_). `v3` only.
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn try_fwd_ext_impl_v3(
+    t: Desktop64,
+    input: &[TranLow],
+    output: &mut [TranLow],
+    input_stride: usize,
+    w: usize,
+    h: usize,
+    col_1d: u8,
+    row_1d: u8,
+    ud: bool,
+    lr: bool,
+) -> bool {
+    v3::fwd_ext(t, input, output, input_stride, w, h, col_1d, row_1d, ud, lr)
+}
+
+/// AVX2 inverse extended 2D transform (FLIPADST / IDENTITY / V_/H_). `v3` only.
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn try_inv_ext_impl_v3(
+    t: Desktop64,
+    input: &[TranLow],
+    input_stride: usize,
+    output: &mut [TranLow],
+    out_stride: usize,
+    w: usize,
+    h: usize,
+    col_1d: u8,
+    row_1d: u8,
+    ud: bool,
+    lr: bool,
+    bd: u8,
+) -> bool {
+    v3::inv_ext(t, input, input_stride, output, out_stride, w, h, col_1d, row_1d, ud, lr, bd)
 }
