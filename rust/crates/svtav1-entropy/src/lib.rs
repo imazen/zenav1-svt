@@ -12,6 +12,7 @@ extern crate alloc;
 pub mod cdf;
 pub mod coeff;
 pub mod coeff_c;
+mod coeff_simd;
 pub mod context;
 pub mod default_cdfs;
 pub mod default_coef_cdfs;

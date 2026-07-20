@@ -507,3 +507,75 @@ fn coeff_c_levels_and_contexts_match_c() {
         }
     }
 }
+
+/// Coefficient patterns that stress the `abs` / 127-clamp / i32→u8 narrow of
+/// `txb_init_levels`. `i32::MIN` is deliberately excluded: C's `abs(INT_MIN)`
+/// is undefined behavior, so it is not a valid oracle input (it is also never a
+/// real quantized coefficient). `-i32::MAX` (= `i32::MIN + 1`) IS well-defined
+/// and included as the negative extreme.
+fn txb_gen_coeffs(pat: usize, n: usize, rng: &mut Rng) -> Vec<i32> {
+    match pat {
+        0 => vec![0i32; n],
+        1 => vec![127i32; n],   // exactly INT8_MAX
+        2 => vec![128i32; n],   // first clamped value
+        3 => vec![-127i32; n],
+        4 => vec![-128i32; n],
+        5 => vec![i32::MAX; n], // positive extreme
+        6 => vec![-i32::MAX; n], // negative extreme (i32::MIN + 1; C-abs safe)
+        7 => (0..n).map(|c| c as i32).collect(), // ramp crossing 127
+        8 => (0..n).map(|c| -(c as i32)).collect(),
+        9 => (0..n)
+            .map(|c| {
+                let m = 125 + (c % 6) as i32; // straddles 127 per lane position
+                if c % 2 == 0 { m } else { -m }
+            })
+            .collect(),
+        _ => (0..n)
+            .map(|_| {
+                let mag = match rng.below(8) {
+                    0 => rng.below(1 << 24) as i32, // large magnitude
+                    1 => 125 + rng.below(6) as i32, // dense straddle of 127
+                    _ => rng.below(300) as i32,     // small, dense over the clamp
+                };
+                if rng.below(2) == 0 { mag } else { -mag }
+            })
+            .collect(),
+    }
+}
+
+/// The SIMD `txb_init_levels` fill equals the exported real-C
+/// `svt_av1_txb_init_levels_c` under EVERY archmage dispatch tier (the AVX2
+/// `v3` path AND the scalar fallback), across all tx sizes and the coefficient
+/// patterns above. Locks the SIMD to the C kernel the same way
+/// `c_parity_cdef::filter_block_dispatch_all_tiers_match_c` does for CDEF.
+#[test]
+fn txb_init_levels_simd_matches_c() {
+    use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+    use svtav1_entropy::coeff_c;
+
+    let mut rng = Rng(0x7B12_C0DE_5EED_1234);
+    for ts in 0..coeff_c::TX_SIZES_ALL {
+        let width = coeff_c::txb_wide(ts);
+        let height = coeff_c::txb_high(ts);
+        let n = width * height;
+        let stride = width + coeff_c::TX_PAD_HOR;
+        let origin = coeff_c::levels_origin(width);
+        // Bytes the C kernel writes at `c_buf[origin..]`: `height` rows of
+        // `width` values + `TX_PAD_HOR` trailing zeros each.
+        let region = height * stride;
+        for pat in 0..50usize {
+            let coeffs = txb_gen_coeffs(pat, n, &mut rng);
+            let mut c_buf = vec![0u8; coeff_c::TX_PAD_2D];
+            cref::txb_init_levels(&coeffs, width, height, &mut c_buf[origin..]);
+            let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+                let mut rust_buf = vec![0u8; coeff_c::TX_PAD_2D];
+                coeff_c::txb_init_levels(&coeffs, width, height, &mut rust_buf);
+                assert_eq!(
+                    &rust_buf[origin..origin + region],
+                    &c_buf[origin..origin + region],
+                    "txb_init_levels tier != C: ts={ts} pat={pat} w={width} h={height}"
+                );
+            });
+        }
+    }
+}

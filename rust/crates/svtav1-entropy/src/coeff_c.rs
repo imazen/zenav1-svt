@@ -242,18 +242,15 @@ pub const fn levels_origin(width: usize) -> usize {
 
 /// C `svt_av1_txb_init_levels_c`: zero the padded map and fill
 /// `levels[row * (width+4) + col] = min(|coeff|, 127)` at the origin offset.
+///
+/// The value fill is SIMD-dispatched (see [`crate::coeff_simd::fill_levels`]) —
+/// byte-identical to the scalar map, proven against the exported real-C kernel
+/// under every dispatch tier in `tests/c_parity.rs`.
 pub fn txb_init_levels(coeff: &[i32], width: usize, height: usize, levels_buf: &mut [u8]) {
-    let stride = width + TX_PAD_HOR;
     for b in levels_buf.iter_mut() {
         *b = 0;
     }
-    let origin = levels_origin(width);
-    for r in 0..height {
-        for c in 0..width {
-            let v = coeff[r * width + c].unsigned_abs().min(127) as u8;
-            levels_buf[origin + r * stride + c] = v;
-        }
-    }
+    crate::coeff_simd::fill_levels(coeff, width, height, levels_buf);
 }
 
 /// C `get_padded_idx`.

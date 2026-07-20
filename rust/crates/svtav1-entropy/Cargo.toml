@@ -13,9 +13,12 @@ name = "svtav1_entropy"
 [dependencies]
 zenav1-svt-types = { workspace = true }
 zenav1-svt-tables = { workspace = true }
+archmage = { workspace = true }
+magetypes = { workspace = true }
 
 [dev-dependencies]
 zenav1-svt-cref = { path = "../svtav1-cref" }
+archmage = { workspace = true, features = ["testable_dispatch"] }
 
 [lints]
 workspace = true
