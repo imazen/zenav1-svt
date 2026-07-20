@@ -430,17 +430,25 @@ fn compute_stats_impl_v3(
     for i in v_start..v_end {
         m_acc[..win2].fill(0);
         h_acc[..win2 * win2].fill(0);
+        let stride = dgd_stride as isize;
+        let row0 = (i - halfwin) as isize; // top window row (relative to origin)
         for j in h_start..h_end {
             let sidx = src_origin as isize + i as isize * src_stride as isize + j as isize;
             let x = src[sidx as usize] as i16 - avg;
+            // Gather the win x win window into `y`, column-major (k = column
+            // offset outer, l = row offset inner) — the exact C `idx` order, so
+            // every y[idx] keeps its C meaning. Exclusive ranges + an
+            // incremental `didx += stride` replace the inclusive-range double
+            // loop and its per-element `(i+l)*stride` multiply; values are
+            // unchanged.
             let mut idx = 0usize;
-            for k in -halfwin..=halfwin {
-                for l in -halfwin..=halfwin {
-                    let didx = dgd_origin as isize
-                        + (i + l) as isize * dgd_stride as isize
-                        + (j + k) as isize;
+            for kk in 0..wiener_win {
+                let col = (j - halfwin) as isize + kk as isize;
+                let mut didx = dgd_origin as isize + row0 * stride + col;
+                for _ in 0..wiener_win {
                     y[idx] = dgd[didx as usize] as i16 - avg;
                     idx += 1;
+                    didx += stride;
                 }
             }
             // M[k] += y[k]*x for k in 0..win2 (full row).
@@ -452,14 +460,15 @@ fn compute_stats_impl_v3(
                 mac_row_i32_v3(token, &mut h_acc[base + k..base + win2], &y[k..win2], yk);
             }
         }
-        // Flush this row's i32 partial sums into the i64 output.
-        for k in 0..win2 {
-            m[k] += m_acc[k] as i64;
+        // Flush this row's i32 partial sums into the i64 output (bounds-check-free
+        // zips; same additions, so still byte-exact).
+        for (mv, &ma) in m.iter_mut().zip(m_acc[..win2].iter()) {
+            *mv += ma as i64;
         }
         for k in 0..win2 {
             let base = k * win2;
-            for l in k..win2 {
-                h[base + l] += h_acc[base + l] as i64;
+            for (hv, &ha) in h[base + k..base + win2].iter_mut().zip(h_acc[base + k..base + win2].iter()) {
+                *hv += ha as i64;
             }
         }
     }
@@ -479,20 +488,20 @@ fn compute_stats_impl_v3(
 #[rite]
 fn mac_row_i32_v3(_token: Desktop64, acc: &mut [i32], vals: &[i16], scalar: i32) {
     let s = _mm256_set1_epi32(scalar);
-    let n = acc.len();
-    let mut t = 0usize;
-    while t + 8 <= n {
-        let vchunk: &[i16; 8] = vals[t..t + 8].try_into().unwrap();
+    // `chunks_exact` leaves no interior bounds checks: each 8-lane body reads
+    // the exact-length chunk, and the equal-length remainder handles the tail
+    // (win2 = 25/49 is not a multiple of 8) lane-for-lane like the vector body.
+    let mut ai = acc.chunks_exact_mut(8);
+    let mut vi = vals.chunks_exact(8);
+    for (a, v) in ai.by_ref().zip(vi.by_ref()) {
+        let vchunk: &[i16; 8] = v.try_into().unwrap();
+        let achunk: &mut [i32; 8] = a.try_into().unwrap();
         let v32 = _mm256_cvtepi16_epi32(_mm_loadu_si128(vchunk));
-        let prod = _mm256_mullo_epi32(v32, s);
-        let achunk: &mut [i32; 8] = (&mut acc[t..t + 8]).try_into().unwrap();
-        let sum = _mm256_add_epi32(_mm256_loadu_si256(achunk), prod);
+        let sum = _mm256_add_epi32(_mm256_loadu_si256(achunk), _mm256_mullo_epi32(v32, s));
         _mm256_storeu_si256(achunk, sum);
-        t += 8;
     }
-    while t < n {
-        acc[t] += vals[t] as i32 * scalar;
-        t += 1;
+    for (a, &v) in ai.into_remainder().iter_mut().zip(vi.remainder()) {
+        *a += v as i32 * scalar;
     }
 }
 
