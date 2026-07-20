@@ -15,7 +15,11 @@
 use crate::picture::{DecodedPictureBuffer, GopStructure, PictureControlSet, ReferenceFrame};
 use crate::rate_control::{RcConfig, RcState, assign_picture_qp, update_rc_state};
 use crate::speed_config::SpeedConfig;
+use crate::{EncodeError, EncodeResult};
 use alloc::vec::Vec;
+// `StopToken::check` is a method of the `enough::Stop` trait; bring the trait
+// into scope so the frame-entry cancellation check resolves.
+use enough::Stop;
 
 /// Encoder pipeline state.
 pub struct EncodePipeline {
@@ -146,6 +150,19 @@ pub struct EncodePipeline {
     /// asked for 128 on a cell the SB128 encode path does not support yet.
     /// The emitted stream is valid and decodable but will NOT byte-match C.
     pub sb128_fallback: bool,
+    /// Feature 4 — bounded threading: the maximum number of OS threads the
+    /// tile-parallel encode may run at once. `0` (default) = auto
+    /// (`std::thread::available_parallelism`). The value only bounds
+    /// CONCURRENCY: every tile's result is reassembled in tile-index order,
+    /// so the emitted bytes are IDENTICAL for any `thread_count`. Set via
+    /// [`Self::with_thread_count`]. On a single-tile frame it is inert.
+    pub thread_count: usize,
+    /// Feature 1 — cooperative cancellation token, checked once at the entry
+    /// of the fallible [`Self::try_encode_frame`] / [`Self::try_encode_frame_420`]
+    /// methods. The default is a no-op (`Unstoppable`) that never stops, so
+    /// the infallible `encode_frame*` methods are unaffected. Set via
+    /// [`Self::with_stop`].
+    pub stop: almost_enough::StopToken,
 }
 
 /// Edge-replicate a plane from a valid `sw x sh` region (read at
@@ -244,6 +261,10 @@ impl EncodePipeline {
             sb_size_override: None,
             derived_sb_size: derived_sb,
             sb128_fallback,
+            // Feature 4: auto by default (byte-inert regardless of value).
+            thread_count: 0,
+            // Feature 1: no-op token (never stops) — zero-cost `None` variant.
+            stop: almost_enough::StopToken::new(enough::Unstoppable),
         }
     }
 
@@ -339,6 +360,25 @@ impl EncodePipeline {
         self
     }
 
+    /// Feature 4: bound the tile-parallel encode to at most `n` concurrent OS
+    /// threads (`0` = auto via `available_parallelism`). See
+    /// [`Self::thread_count`]. Byte-inert — tiles are always reassembled in
+    /// tile order — so this only trades throughput against core pressure.
+    pub fn with_thread_count(mut self, n: usize) -> Self {
+        self.thread_count = n;
+        self
+    }
+
+    /// Feature 1: install a cooperative cancellation token. Any
+    /// [`enough::Stop`] implementation works (e.g. `almost_enough::Stopper`);
+    /// it is checked once at the entry of [`Self::try_encode_frame`] /
+    /// [`Self::try_encode_frame_420`]. The infallible `encode_frame*` methods
+    /// ignore it. See [`Self::stop`].
+    pub fn with_stop(mut self, stop: impl enough::Stop + 'static) -> Self {
+        self.stop = almost_enough::StopToken::new(stop);
+        self
+    }
+
     /// Encode a single frame through the full pipeline (monochrome).
     ///
     /// Returns the encoded bitstream data and updates internal state.
@@ -416,6 +456,86 @@ impl EncodePipeline {
         let u_pad = pad_plane_replicate(u, tcw, tcw, tch, acw, ach);
         let v_pad = pad_plane_replicate(v, tcw, tcw, tch, acw, ach);
         self.encode_frame_impl(&y_pad, aw, Some((&u_pad, &v_pad)))
+    }
+
+    /// Fallible twin of [`Self::encode_frame`] (Feature 1 + 2).
+    ///
+    /// Byte-identical to [`Self::encode_frame`] on success. The difference is
+    /// purely at the boundary: the legacy `assert!`s become typed
+    /// [`EncodeError`]s, and the cooperative cancellation token
+    /// ([`Self::stop`]) is checked once at entry. The legacy method is left
+    /// untouched. Internally this calls the SAME infallible
+    /// `encode_frame_impl`, so it cannot change the emitted bytes.
+    pub fn try_encode_frame(&mut self, y_plane: &[u8], y_stride: usize) -> EncodeResult<Vec<u8>> {
+        // (a) Validate — mirror the `encode_frame` asserts.
+        if self.width != self.true_width || self.height != self.true_height {
+            return Err(whereat::at!(EncodeError::InvalidDimensions {
+                width: self.true_width,
+                height: self.true_height,
+                reason: "monochrome encode requires 8-aligned dims (arbitrary-dims padding is \
+                         wired on the 4:2:0 path only)",
+            }));
+        }
+        if (self.width % 64 != 0 || self.height % 64 != 0) && self.speed_config.preset < 6 {
+            return Err(whereat::at!(EncodeError::UnsupportedConfig(
+                "monochrome encode supports partial SBs only on the PD0 path (preset >= 6); use a \
+                 multiple of 64 or preset >= 6",
+            )));
+        }
+        // (b) Feature 1 entry stop-check (frame-granular).
+        self.stop
+            .check()
+            .map_err(EncodeError::from)
+            .map_err(whereat::at)?;
+        // (c) Reuse the existing infallible body (asserts above pre-satisfied).
+        Ok(self.encode_frame_impl(y_plane, y_stride, None))
+    }
+
+    /// Fallible twin of [`Self::encode_frame_420`] (Feature 1 + 2).
+    ///
+    /// Byte-identical to [`Self::encode_frame_420`] on success. The legacy
+    /// `assert!`s (chroma flag, u/v plane sizes, still/key-only) become typed
+    /// [`EncodeError`]s and the cancellation token is checked at entry;
+    /// otherwise it delegates to the untouched infallible method (which
+    /// performs the TRUE->ALIGNED padding and calls `encode_frame_impl`), so
+    /// the emitted bytes are unchanged.
+    pub fn try_encode_frame_420(
+        &mut self,
+        y: &[u8],
+        u: &[u8],
+        v: &[u8],
+        y_stride: usize,
+    ) -> EncodeResult<Vec<u8>> {
+        // (a) Validate — mirror the `encode_frame_420` + impl asserts.
+        if !self.chroma_420 {
+            return Err(whereat::at!(EncodeError::UnsupportedConfig(
+                "encode_frame_420 requires the pipeline to be built with with_chroma_420(true)",
+            )));
+        }
+        // The 4:2:0 path is still/key-only (mirrors the `encode_frame_impl`
+        // `chroma.is_none() || is_key` assert).
+        if !self.gop.is_key_frame(self.frame_count) {
+            return Err(whereat::at!(EncodeError::UnsupportedConfig(
+                "chroma_420 pipeline supports still/key frames only (intra_period <= 1)",
+            )));
+        }
+        let (tw, th) = (self.true_width as usize, self.true_height as usize);
+        let (tcw, tch) = ((tw + 1) / 2, (th + 1) / 2);
+        let cn_true = tcw * tch;
+        if u.len() < cn_true || v.len() < cn_true {
+            return Err(whereat::at!(EncodeError::InvalidDimensions {
+                width: self.true_width,
+                height: self.true_height,
+                reason: "u/v planes must each be at least (true_w/2 x true_h/2)",
+            }));
+        }
+        // (b) Feature 1 entry stop-check (frame-granular).
+        self.stop
+            .check()
+            .map_err(EncodeError::from)
+            .map_err(whereat::at)?;
+        // (c) Reuse the existing infallible body (padding + encode_frame_impl).
+        Ok(self.encode_frame_420(y, u, v, y_stride))
     }
 
     /// Shared frame encode body. `chroma = Some((u, v))` selects the 4:2:0
@@ -974,6 +1094,7 @@ impl EncodePipeline {
                 .as_ref()
                 .map(|(u, v)| (u.as_slice(), v.as_slice())),
             self.bit_depth,
+            self.thread_count,
         );
 
         let mut per_tile_decisions: Vec<Vec<crate::partition::BlockDecision>> = Vec::new();
@@ -5041,6 +5162,12 @@ fn encode_tile_rows(
     // 8-bit on the MSB-truncated plane; only the coded levels go 10-bit
     // (bd10_reencode_luma).
     bit_depth: u8,
+    // Feature 4 (bounded threading): the maximum number of OS threads the
+    // tile loop below may run at once (0 = auto via `available_parallelism`).
+    // Bounds CONCURRENCY only — tiles are always joined and appended in
+    // tile-index order — so the returned per-tile results (and the emitted
+    // bytes) are identical for any value.
+    thread_count: usize,
 ) -> Vec<(
     Vec<u8>,
     Vec<crate::partition::BlockDecision>,
@@ -6109,18 +6236,40 @@ fn encode_tile_rows(
         (tile_recon, tile_decisions, tile_trees, tile_canvas10)
     };
 
-    // Parallel encoding with std::thread::scope when available
+    // Parallel encoding with std::thread::scope when available, BOUNDED to
+    // `thread_count` concurrent OS threads (Feature 4). Previously every tile
+    // (up to 256) was spawned at once; now tiles run in fixed-size waves so a
+    // heavily-tiled frame cannot oversubscribe the box. Order-preserving:
+    // each wave's handles are joined and pushed in tile-index order, and the
+    // waves themselves advance in order, so the assembled `Vec` is in exact
+    // tile-index order — byte-identical to the old all-at-once collect for any
+    // `thread_count`.
     #[cfg(feature = "std")]
     if tile_grid.num_tiles() > 1 {
+        let num_tiles = tile_grid.num_tiles();
+        let limit = match thread_count {
+            0 => std::thread::available_parallelism().map_or(1, |n| n.get()),
+            n => n,
+        }
+        .clamp(1, num_tiles);
         return std::thread::scope(|s| {
-            let handles: Vec<_> = (0..tile_grid.num_tiles())
-                .map(|tile_idx| s.spawn(move || encode_one_tile(tile_idx)))
-                .collect();
-            handles.into_iter().map(|h| h.join().unwrap()).collect()
+            let mut results = Vec::with_capacity(num_tiles);
+            let mut start = 0;
+            while start < num_tiles {
+                let end = (start + limit).min(num_tiles);
+                let handles: Vec<_> = (start..end)
+                    .map(|tile_idx| s.spawn(move || encode_one_tile(tile_idx)))
+                    .collect();
+                for h in handles {
+                    results.push(h.join().unwrap());
+                }
+                start = end;
+            }
+            results
         });
     }
 
-    // Sequential fallback
+    // Sequential fallback (single tile, or no-std build).
     (0..tile_grid.num_tiles()).map(encode_one_tile).collect()
 }
 

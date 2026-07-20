@@ -10,10 +10,12 @@
 
 extern crate alloc;
 
+pub mod alloc_util;
 pub mod bitstream;
 pub mod block;
 pub mod block_mode;
 pub mod constants;
+pub mod error;
 pub mod frame;
 pub mod interp;
 pub mod motion;
@@ -23,3 +25,5 @@ pub mod quantization;
 pub mod reference;
 pub mod restoration;
 pub mod transform;
+
+pub use error::{EncodeError, EncodeResult};

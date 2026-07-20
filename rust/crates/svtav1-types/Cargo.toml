@@ -11,6 +11,10 @@ repository.workspace = true
 name = "svtav1_types"
 
 [dependencies]
+# Feature 2: cancellation reason (in `EncodeError::Cancelled`) + error-location
+# tracing (`At<EncodeError>`). Both no_std (this crate is no_std + alloc).
+enough = { workspace = true }
+whereat = { workspace = true }
 
 [lints]
 workspace = true
@@ -18,3 +22,5 @@ workspace = true
 [features]
 default = []
 std = []
+# Feature 3: switch `try_vec!` to fallible `try_reserve`-based allocation.
+fallible-alloc = []

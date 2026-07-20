@@ -29,6 +29,14 @@ zenav1-svt-encoder = { path = "crates/svtav1-encoder" }
 archmage = "0.9"
 magetypes = "0.9"
 
+# Production-hardening deps (additive; success/default path is byte-inert):
+# cooperative cancellation (`enough`/`almost-enough`) + error-location
+# tracing (`whereat`). `enough`/`whereat` stay no_std (default-features off);
+# `almost-enough` keeps its default `std` feature to expose `StopToken`.
+enough = { version = "0.4.4", default-features = false }
+almost-enough = "0.4.4"
+whereat = { version = "0.1.5", default-features = false }
+
 # Iteration-time balance: opt-level 2 compiles markedly faster than opt-3
 # while keeping the encode/decode gates and codec tests fast at runtime
 # (the gates are entropy-walk + external-decoder bound, not raw-DSP bound,

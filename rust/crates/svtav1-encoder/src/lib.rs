@@ -4,6 +4,14 @@
 
 extern crate alloc;
 
+// Feature 2: per-crate whereat crate-info so `at!(..)` in this crate can tag
+// errors with `crate::at_crate_info()` (source location + repo links).
+whereat::define_at_crate_info!();
+
+// Feature 2: re-export the shared error surface so callers use
+// `svtav1_encoder::{EncodeError, EncodeResult}` alongside the pipeline.
+pub use svtav1_types::{EncodeError, EncodeResult};
+
 pub mod cdef;
 pub mod deblock;
 pub mod depth_refine;

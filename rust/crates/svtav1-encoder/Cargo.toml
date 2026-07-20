@@ -15,6 +15,11 @@ zenav1-svt-types = { workspace = true, features = ["std"] }
 zenav1-svt-tables = { workspace = true }
 zenav1-svt-dsp = { workspace = true, features = ["std"] }
 zenav1-svt-entropy = { workspace = true, features = ["std"] }
+# Feature 1: cooperative cancellation (`Stop` trait + no-op `Unstoppable` +
+# type-erased `StopToken`). Feature 2: error-location tracing (`at!`).
+enough = { workspace = true }
+almost-enough = { workspace = true }
+whereat = { workspace = true }
 
 [dev-dependencies]
 zenav1-svt-cref = { path = "../svtav1-cref" }
@@ -26,3 +31,6 @@ workspace = true
 default = ["std"]
 std = []
 unsafe_encoding = ["zenav1-svt-dsp/unchecked_dsp", "zenav1-svt-entropy/unchecked_entropy"]
+# Feature 3: forward fallible allocation to svtav1-types (parallels the
+# unconditional std forwarding above).
+fallible-alloc = ["zenav1-svt-types/fallible-alloc"]

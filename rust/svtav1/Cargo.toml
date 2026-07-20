@@ -32,3 +32,6 @@ unsafe_encoding = ["zenav1-svt-encoder/unsafe_encoding"]
 # Per-symbol arithmetic-coder trace on stderr (identity harness:
 # tools/identity_diff.sh diffs it against the wrapped C library's trace).
 symtrace = ["zenav1-svt-entropy/symtrace"]
+# Feature 3: forward fallible allocation down to the encoder/types so the
+# gates (e.g. golden_parity) can be run with `--features fallible-alloc`.
+fallible-alloc = ["zenav1-svt-encoder/fallible-alloc"]

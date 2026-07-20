@@ -356,7 +356,10 @@ impl AvifEncoder {
             rc_config,
             0,
             1,
-        );
+        )
+        // Feature 4: route the previously-dead `threads` knob into the
+        // bounded tile-parallel encode (`None`/`Some(0)` = auto).
+        .with_thread_count(self.threads.unwrap_or(0));
         pipeline.bit_depth = self.bit_depth;
         pipeline.color_description = self.color_description();
 
