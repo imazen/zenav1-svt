@@ -918,3 +918,152 @@ fn inv_ext_simd_bd10_all_tiers_identical() {
         run_bd10_tier_check(w, h, ts, txt, &mut rng);
     }
 }
+
+// ============================================================================
+// 4-DIM SIMD DIFFERENTIAL — the five sizes with a 4 dim (4x4, 4x8, 8x4, 4x16,
+// 16x4), ALL 16 tx types (all legal at max dim <= 16). Exercises the 4-point
+// fdct4/idct4/fadst4(sinpi)/iadst4(sinpi)/fidentity4 kernels, the narrow/strided
+// array-based gather-scatter, the FLIPADST edge flip, and (4x8/8x4) the 2:1
+// NewSqrt2 rect scale. Same two-way proof (== real C, and every tier's residual
+// byte-identical = SIMD == scalar), edge + random + wide-synthetic, bd8+bd10.
+// ============================================================================
+
+const ALL_TX_TYPES: [TxType; 16] = [
+    TxType::DctDct,
+    TxType::AdstDct,
+    TxType::DctAdst,
+    TxType::AdstAdst,
+    TxType::FlipAdstDct,
+    TxType::DctFlipAdst,
+    TxType::FlipAdstFlipAdst,
+    TxType::AdstFlipAdst,
+    TxType::FlipAdstAdst,
+    TxType::Idtx,
+    TxType::VDct,
+    TxType::HDct,
+    TxType::VAdst,
+    TxType::HAdst,
+    TxType::VFlipAdst,
+    TxType::HFlipAdst,
+];
+
+fn dim4_cells() -> Vec<(usize, usize, TxSize, TxType)> {
+    let sizes = [
+        (4usize, 4usize, TxSize::Tx4x4),
+        (4, 8, TxSize::Tx4x8),
+        (8, 4, TxSize::Tx8x4),
+        (4, 16, TxSize::Tx4x16),
+        (16, 4, TxSize::Tx16x4),
+    ];
+    let mut v = Vec::new();
+    for &(w, h, ts) in &sizes {
+        for &tt in &ALL_TX_TYPES {
+            v.push((w, h, ts, tt));
+        }
+    }
+    v
+}
+
+#[test]
+fn fwd_4dim_simd_all_tiers_match_c() {
+    let mut rng = Rng(0x4D14_2026_0720_0001);
+    for (w, h, ts, txt) in dim4_cells() {
+        let txi = txt as usize;
+        // pat 0..40: bd8 edge + random (<=255). pat 40..52: bd10-scale residuals
+        // (up to +/-1023) — the max conformant forward input at bd<=10, to stress
+        // the sinpi fadst4 int32 arithmetic (products/sums stay within i32).
+        for pat in 0..52 {
+            let res16: Vec<i16> = if pat < 40 {
+                simd_residual(pat, w * h, &mut rng)
+            } else {
+                (0..w * h)
+                    .map(|_| (rng.next() % 2047) as i16 - 1023)
+                    .collect()
+            };
+            let c_out = cref_fwd_any(w, h, &res16, txi);
+            let res32: Vec<i32> = res16.iter().map(|&v| v as i32).collect();
+            for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+                let mut ours = vec![0i32; w * h];
+                assert!(
+                    svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(&res32, &mut ours, w, ts, txt),
+                    "dispatch must support {w}x{h} {txt:?}"
+                );
+                if ours != c_out {
+                    let first = ours
+                        .iter()
+                        .zip(c_out.iter())
+                        .position(|(a, b)| a != b)
+                        .unwrap();
+                    panic!(
+                        "fwd 4dim {w}x{h} {txt:?} pat {pat}: SIMD tier != C at {first} (r{} c{}): ours={} c={}",
+                        first / w,
+                        first % w,
+                        ours[first],
+                        c_out[first]
+                    );
+                }
+            });
+        }
+    }
+}
+
+#[test]
+fn inv_4dim_simd_all_tiers_identical_and_recon_match_c() {
+    let mut rng = Rng(0x4D14_2026_0720_0002);
+    for (w, h, ts, txt) in dim4_cells() {
+        let txi = txt as usize;
+        for pat in 0..50 {
+            let coeffs: Vec<i32> = if pat < 40 {
+                let res16 = simd_residual(pat, w * h, &mut rng);
+                cref_fwd_any(w, h, &res16, txi)
+            } else {
+                (0..w * h)
+                    .map(|_| (rng.next() % 60001) as i32 - 30000)
+                    .collect()
+            };
+            let base = vec![128u16; w * h];
+            let c_recon = cref_inv_add_any(w, h, &coeffs, &base, txi);
+
+            let mut first_res: Option<Vec<i32>> = None;
+            for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+                let mut our_res = vec![0i32; w * h];
+                assert!(svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch(
+                    &coeffs, &mut our_res, w, ts, txt
+                ));
+                match &first_res {
+                    None => first_res = Some(our_res.clone()),
+                    Some(f) => assert_eq!(
+                        &our_res, f,
+                        "inv 4dim {w}x{h} {txt:?} pat {pat}: tier residual != scalar"
+                    ),
+                }
+                let recon: Vec<u16> = our_res
+                    .iter()
+                    .map(|&r| (128 + r).clamp(0, 255) as u16)
+                    .collect();
+                if recon != c_recon {
+                    let first = recon
+                        .iter()
+                        .zip(c_recon.iter())
+                        .position(|(a, b)| a != b)
+                        .unwrap();
+                    panic!(
+                        "inv 4dim {w}x{h} {txt:?} pat {pat}: SIMD tier recon != C at {first} (r{} c{}): ours={} c={}",
+                        first / w,
+                        first % w,
+                        recon[first],
+                        c_recon[first]
+                    );
+                }
+            });
+        }
+    }
+}
+
+#[test]
+fn inv_4dim_simd_bd10_all_tiers_identical() {
+    let mut rng = Rng(0x4D14_2026_0720_0003);
+    for (w, h, ts, txt) in dim4_cells() {
+        run_bd10_tier_check(w, h, ts, txt, &mut rng);
+    }
+}

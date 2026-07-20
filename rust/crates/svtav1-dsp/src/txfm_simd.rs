@@ -34,8 +34,8 @@
 #![allow(clippy::too_many_arguments)]
 
 use crate::fwd_txfm::{
-    COS_BIT, FWD_COS_BIT_COL, FWD_COS_BIT_ROW, NEW_SQRT2, NEW_SQRT2_BITS, cospi_arr,
-    fwd_txfm_shift,
+    COS_BIT, FWD_COS_BIT_COL, FWD_COS_BIT_ROW, NEW_SQRT2, NEW_SQRT2_BITS, SINPI, cospi_arr,
+    fwd_txfm_shift, sinpi_arr,
 };
 use crate::inv_txfm::{NEW_INV_SQRT2, inv_txfm_shift};
 use archmage::prelude::*;
@@ -83,6 +83,14 @@ fn simd_ext_supported(w: usize, h: usize, col_1d: u8, row_1d: u8) -> bool {
         );
     }
     matches!((w, h), (8, 8) | (16, 16) | (8, 16) | (16, 8))
+}
+
+/// `(w, h)` the 4-dim SIMD path supports: the five sizes with a 4 dim (4x4,
+/// 4x8, 8x4, 4x16, 16x4). All 16 tx types are legal there (max dim <= 16), so
+/// the driver handles every (col_1d, row_1d). `bd` gates the inverse only.
+#[inline]
+fn simd_4dim_supported(w: usize, h: usize) -> bool {
+    matches!((w, h), (4, 4) | (4, 8) | (8, 4) | (4, 16) | (16, 4))
 }
 
 /// Try the SIMD forward square DCT-DCT (`w == h == n`, no flips). Returns true
@@ -253,6 +261,55 @@ pub fn try_inv_ext(
     )
 }
 
+/// Try the SIMD forward 4-dim 2D transform (4x4 / 4x8 / 8x4 / 4x16 / 16x4, any
+/// tx type). `col_1d`/`row_1d` ∈ {0=DCT, 1=ADST, 2=FLIPADST, 3=IDENTITY};
+/// `ud`/`lr` are the FLIPADST edge flips. Same contract as [`try_fwd_ext`].
+#[allow(clippy::too_many_arguments)]
+pub fn try_fwd_4dim(
+    input: &[TranLow],
+    output: &mut [TranLow],
+    input_stride: usize,
+    w: usize,
+    h: usize,
+    col_1d: u8,
+    row_1d: u8,
+    ud: bool,
+    lr: bool,
+) -> bool {
+    if !simd_4dim_supported(w, h) {
+        return false;
+    }
+    incant!(
+        try_fwd_4dim_impl(input, output, input_stride, w, h, col_1d, row_1d, ud, lr),
+        [v3, neon, scalar]
+    )
+}
+
+/// Try the SIMD inverse 4-dim 2D transform (any tx type), `bd <= 10`. Same
+/// contract as [`try_fwd_4dim`].
+#[allow(clippy::too_many_arguments)]
+pub fn try_inv_4dim(
+    input: &[TranLow],
+    input_stride: usize,
+    output: &mut [TranLow],
+    out_stride: usize,
+    w: usize,
+    h: usize,
+    col_1d: u8,
+    row_1d: u8,
+    ud: bool,
+    lr: bool,
+    bd: u8,
+) -> bool {
+    if !simd_4dim_supported(w, h) || bd > 10 {
+        return false;
+    }
+    incant!(
+        try_inv_4dim_impl(input, input_stride, output, out_stride, w, h, col_1d, row_1d, ud, lr, bd),
+        [v3, neon, scalar]
+    )
+}
+
 // -- scalar / neon arms: not handled, caller runs the scalar core --
 
 fn try_fwd_dct_square_impl_scalar(
@@ -413,6 +470,78 @@ fn try_fwd_ext_impl_neon(
 #[arcane]
 #[allow(clippy::too_many_arguments)]
 fn try_inv_ext_impl_neon(
+    _t: NeonToken,
+    _input: &[TranLow],
+    _input_stride: usize,
+    _output: &mut [TranLow],
+    _out_stride: usize,
+    _w: usize,
+    _h: usize,
+    _col_1d: u8,
+    _row_1d: u8,
+    _ud: bool,
+    _lr: bool,
+    _bd: u8,
+) -> bool {
+    false
+}
+
+#[allow(clippy::too_many_arguments)]
+fn try_fwd_4dim_impl_scalar(
+    _t: ScalarToken,
+    _input: &[TranLow],
+    _output: &mut [TranLow],
+    _input_stride: usize,
+    _w: usize,
+    _h: usize,
+    _col_1d: u8,
+    _row_1d: u8,
+    _ud: bool,
+    _lr: bool,
+) -> bool {
+    false
+}
+
+#[allow(clippy::too_many_arguments)]
+fn try_inv_4dim_impl_scalar(
+    _t: ScalarToken,
+    _input: &[TranLow],
+    _input_stride: usize,
+    _output: &mut [TranLow],
+    _out_stride: usize,
+    _w: usize,
+    _h: usize,
+    _col_1d: u8,
+    _row_1d: u8,
+    _ud: bool,
+    _lr: bool,
+    _bd: u8,
+) -> bool {
+    false
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn try_fwd_4dim_impl_neon(
+    _t: NeonToken,
+    _input: &[TranLow],
+    _output: &mut [TranLow],
+    _input_stride: usize,
+    _w: usize,
+    _h: usize,
+    _col_1d: u8,
+    _row_1d: u8,
+    _ud: bool,
+    _lr: bool,
+) -> bool {
+    false
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn try_inv_4dim_impl_neon(
     _t: NeonToken,
     _input: &[TranLow],
     _input_stride: usize,
@@ -636,6 +765,7 @@ mod v3 {
     include!("txfm_simd_rect.rs");
     include!("txfm_simd_adst.rs");
     include!("txfm_simd_ext.rs");
+    include!("txfm_simd_4dim.rs");
 }
 
 /// AVX2 forward square DCT-DCT. Dispatched only on the `v3` tier.
@@ -768,4 +898,44 @@ fn try_inv_ext_impl_v3(
     bd: u8,
 ) -> bool {
     v3::inv_ext(t, input, input_stride, output, out_stride, w, h, col_1d, row_1d, ud, lr, bd)
+}
+
+/// AVX2 forward 4-dim 2D transform (4x4 / 4x8 / 8x4 / 4x16 / 16x4). `v3` only.
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn try_fwd_4dim_impl_v3(
+    t: Desktop64,
+    input: &[TranLow],
+    output: &mut [TranLow],
+    input_stride: usize,
+    w: usize,
+    h: usize,
+    col_1d: u8,
+    row_1d: u8,
+    ud: bool,
+    lr: bool,
+) -> bool {
+    v3::fwd_4dim(t, input, output, input_stride, w, h, col_1d, row_1d, ud, lr)
+}
+
+/// AVX2 inverse 4-dim 2D transform. `v3` only.
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn try_inv_4dim_impl_v3(
+    t: Desktop64,
+    input: &[TranLow],
+    input_stride: usize,
+    output: &mut [TranLow],
+    out_stride: usize,
+    w: usize,
+    h: usize,
+    col_1d: u8,
+    row_1d: u8,
+    ud: bool,
+    lr: bool,
+    bd: u8,
+) -> bool {
+    v3::inv_4dim(t, input, input_stride, output, out_stride, w, h, col_1d, row_1d, ud, lr, bd)
 }

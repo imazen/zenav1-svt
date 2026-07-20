@@ -1999,6 +1999,22 @@ pub fn inv_txfm2d_c_exact_bd(
     ) {
         return true;
     }
+    // SIMD fast path: 4-dim sizes (4x4/4x8/8x4/4x16/16x4), any tx type.
+    if crate::txfm_simd::try_inv_4dim(
+        input,
+        input_stride,
+        output,
+        out_stride,
+        w,
+        h,
+        col_1d,
+        row_1d,
+        ud_flip,
+        lr_flip,
+        bd,
+    ) {
+        return true;
+    }
     let row_func = match get_inv_txfm_func(row_1d, w) {
         Some(f) => f,
         None => return false,
