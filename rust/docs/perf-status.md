@@ -113,9 +113,21 @@ Reading the fit:
    gap is the port's mostly-scalar mode-decision / transform / SAD / quant paths
    against C's `avx512icl` runtime dispatch. This is per-pixel, so it is exactly
    what the slope measures, and a win here moves every size and preset.
-2. **Per-SB rebuild overhead** (suspected: `MdRates` / `CoeffCostTables` rebuilt
-   per superblock rather than once per frame). Consistent with preset 6's larger
-   per-pixel constant and elevated small-size cost.
+2. **Loop-restoration Wiener stats (`restoration::compute_stats`) — the single
+   biggest function at preset ≤ 6.** Callgrind (128²/256² preset-6, debuginfo
+   build) puts it at ~40–46 % of frame instructions, called exactly 3× per frame
+   (Y/U/V — not redundant; it is the inherent O(win²·win²) Wiener M/H
+   accumulation). Restoration runs only at presets 0–6 (off at ≥ 7), which is
+   most of why preset 6's slope is ~5× that of presets 10/13. A byte-inert scalar
+   pass has landed (see "Landed" below); the remaining lever here is the SIMD
+   port of `svt_av1_compute_stats_avx2` (part of (1)).
+
+   The earlier "per-SB `MdRates`/`CoeffCostTables` rebuild" suspicion was
+   investigated and is **not** a material lever: for presets ≥ 7 (update_cdf_level
+   0) those tables are already built once per tile, and for presets 0–6
+   (update_cdf_level 2) they genuinely evolve per SB from the `ec_ctx_array`
+   neighbour chain (`chain_base` in pipeline.rs), so a hoist would change bytes.
+   The rebuild is a negligible fraction of frame time either way.
 3. **Per-frame allocation discipline** (secondary). The port allocates its
    working set inside `encode_frame_420`; C pre-allocates in `init`. It shows up
    as part of the port's honest per-frame cost but is dwarfed by (1) and (2) —
@@ -124,6 +136,21 @@ Reading the fit:
 Approach order per the criteria: algorithmic parity (done on this envelope),
 then allocation discipline, then SIMD. On these numbers, SIMD on the hot loops
 is the biggest single lever.
+
+## Landed byte-inert optimizations
+
+- **`compute_stats` / `compute_stats_hbd` accumulation reshape**
+  (crates/svtav1-dsp/src/restoration.rs). Re-slice M/H to their exact working
+  lengths and walk the upper-triangular `H[k][l] += y[k]·y[l]` (plus
+  `M[k] += y[k]·x`) as bounds-check-free `chunks_exact_mut`/`zip` pairs. Identical
+  products in the same per-element accumulation order → M/H are bit-for-bit
+  unchanged (guarded by the `compute_stats_matches_c` /
+  `highbd_compute_stats_matches_c` C-parity tests and all 11 identity gates).
+  Measured (benchmarks/perf_cs_{before,after}.*, same host/grid, 20 paired
+  rounds): `compute_stats` instructions −22 % (139.2M → 108.1M at 128² preset 6),
+  total frame instructions −10.4 %; wall-clock port slope at preset 6
+  990.8 → 902.1 ms/MP (−8.9 %), 256² preset 6 −6.5 %, 512² preset 6 −8.3 %.
+  Presets 10/13 unchanged (restoration off there).
 
 ## Reproducibility / provenance
 

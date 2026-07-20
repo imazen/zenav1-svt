@@ -1,0 +1,14 @@
+# perf_gate summary — port vs C per-frame encode wall time (byte-identical envelope)
+# commit=321f92f0c  host=dev-32gb  cores=16  date=2026-07-20T05:53:08Z
+# content=gradient sizes=[128 256 512] presets=[6 10 13] qp=40 rounds=20 warmup=1
+# ratio = port/C (median of per-round paired ratios); target <= ~1.2x. ident=Y means byte-identical (apples-to-apples).
+size	preset	ident	n	port_ms	c_ms	ratio	ratio_p25	ratio_p75
+128	6	Y	20	17.838	5.423	3.294	2.832	4.101
+128	10	Y	20	7.683	2.134	3.588	3.148	3.806
+128	13	Y	20	7.999	2.182	3.625	3.421	3.910
+256	6	Y	20	73.376	9.814	7.691	4.259	8.253
+256	10	Y	20	13.080	4.313	3.676	2.911	4.356
+256	13	Y	20	16.527	4.308	3.569	2.847	4.394
+512	6	Y	20	243.275	26.915	9.057	8.669	9.361
+512	10	Y	20	46.803	14.450	3.305	3.130	7.777
+512	13	Y	20	46.026	14.408	3.221	3.107	3.305

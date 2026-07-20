@@ -239,6 +239,13 @@ pub fn compute_stats(
 
     m[..win2].fill(0);
     h[..win2 * win2].fill(0);
+    // Re-slice M and H to their exact working lengths so the hot
+    // accumulation below carries no interior bounds checks and LLVM can
+    // vectorise the multiply-accumulate. Byte-inert: identical products,
+    // and each H/M element is still touched exactly once per pixel in the
+    // same (i, j) order, so the i64 accumulation is bit-for-bit unchanged.
+    let m = &mut m[..win2];
+    let h = &mut h[..win2 * win2];
     let mut y = [0i16; WIENER_WIN * WIENER_WIN];
     for i in v_start..v_end {
         for j in h_start..h_end {
@@ -255,10 +262,17 @@ pub fn compute_stats(
                 }
             }
             debug_assert_eq!(idx, win2);
-            for k in 0..win2 {
-                m[k] += (y[k] as i32 * x as i32) as i64;
-                for l in k..win2 {
-                    h[k * win2 + l] += (y[k] as i32 * y[l] as i32) as i64;
+            let ys = &y[..win2];
+            let xi = x as i32;
+            // Upper-triangular H (`H[k*win2 + l] += y[k]*y[l]` for l >= k)
+            // plus `M[k] += y[k]*x`, walked as exact-length chunk/zip pairs.
+            // `h` is win2 rows of win2 (chunks_exact_mut leaves no remainder),
+            // so `k` ranges 0..win2 and the inner zip is bounds-check-free.
+            for (k, hrow) in h.chunks_exact_mut(win2).enumerate() {
+                let yk = ys[k] as i32;
+                m[k] += (yk * xi) as i64;
+                for (hv, &yl) in hrow[k..].iter_mut().zip(&ys[k..]) {
+                    *hv += (yk * yl as i32) as i64;
                 }
             }
         }
@@ -1184,6 +1198,12 @@ pub fn compute_stats_hbd(
 
     m[..win2].fill(0);
     h[..win2 * win2].fill(0);
+    // Same byte-inert reshaping as the 8-bit [`compute_stats`]: exact-length
+    // M/H slices + a check-free chunk/zip walk of the upper-triangular
+    // accumulation. Identical i64 products in the same per-element order, so
+    // M/H (and thus the divided/mirrored result below) are bit-for-bit equal.
+    let m = &mut m[..win2];
+    let h = &mut h[..win2 * win2];
     let mut y = [0i32; WIENER_WIN * WIENER_WIN];
     for i in v_start..v_end {
         for j in h_start..h_end {
@@ -1200,10 +1220,13 @@ pub fn compute_stats_hbd(
                 }
             }
             debug_assert_eq!(idx, win2);
-            for k in 0..win2 {
-                m[k] += y[k] as i64 * x as i64;
-                for l in k..win2 {
-                    h[k * win2 + l] += y[k] as i64 * y[l] as i64;
+            let ys = &y[..win2];
+            let xi = x as i64;
+            for (k, hrow) in h.chunks_exact_mut(win2).enumerate() {
+                let yk = ys[k] as i64;
+                m[k] += yk * xi;
+                for (hv, &yl) in hrow[k..].iter_mut().zip(&ys[k..]) {
+                    *hv += yk * yl as i64;
                 }
             }
         }
