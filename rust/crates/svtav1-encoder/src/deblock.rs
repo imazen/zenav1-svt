@@ -435,8 +435,10 @@ pub fn recondbg_dump(
     }
 }
 
-pub fn pick_filter_levels_full_search<P: DlfPixel>(input: &DlfSearchInput<'_, P>) -> LfLevels {
-    let mut scratch: Vec<P> = Vec::with_capacity(input.width * input.height);
+pub fn pick_filter_levels_full_search<P: DlfPixel>(
+    input: &DlfSearchInput<'_, P>,
+) -> crate::EncodeResult<LfLevels> {
+    let mut scratch: Vec<P> = svtav1_types::try_with_capacity![input.width * input.height]?;
     let last = [0i32; 4];
 
     // Luma: one level for both edge directions (dir = 2).
@@ -473,9 +475,9 @@ pub fn pick_filter_levels_full_search<P: DlfPixel>(input: &DlfSearchInput<'_, P>
         (u, v)
     };
 
-    LfLevels {
+    Ok(LfLevels {
         levels: [filt_y as u8, filt_y as u8, filt_u as u8, filt_v as u8],
-    }
+    })
 }
 
 /// Per-4x4 (mode-info unit) frame geometry for deblocking, recorded during

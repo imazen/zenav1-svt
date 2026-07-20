@@ -57,6 +57,52 @@ macro_rules! try_vec {
     }};
 }
 
+/// Reserve capacity for `cap` elements of `T`, returning
+/// [`EncodeError::AllocFailed`](crate::error::EncodeError::AllocFailed)
+/// instead of aborting when the reservation cannot be satisfied.
+///
+/// The companion of [`alloc_vec_fallible`] for the `Vec::with_capacity(cap)`
+/// call sites (capacity-only allocations that are then filled by `push`).
+/// Only compiled under the `fallible-alloc` feature.
+#[cfg(feature = "fallible-alloc")]
+pub fn with_capacity_fallible<T>(
+    cap: usize,
+) -> Result<alloc::vec::Vec<T>, crate::error::EncodeError> {
+    let mut v = alloc::vec::Vec::new();
+    v.try_reserve(cap)
+        .map_err(|_| crate::error::EncodeError::AllocFailed {
+            requested_bytes: (cap as u64).saturating_mul(core::mem::size_of::<T>() as u64),
+            context: "",
+        })?;
+    Ok(v)
+}
+
+/// Fallible `Vec::with_capacity(cap)`.
+///
+/// Always evaluates to `Result<Vec<_>, EncodeError>`, mirroring [`try_vec!`]:
+/// - with `fallible-alloc`: routes through [`with_capacity_fallible`],
+///   returning `Err(EncodeError::AllocFailed)` on failure (no abort);
+/// - without it: the infallible `Ok(Vec::with_capacity(cap))` fast path
+///   (byte-identical — capacity does not affect the pushed contents).
+///
+/// Like [`try_vec!`], the `#[cfg]` is evaluated in the crate that *invokes*
+/// the macro, so the arm follows that crate's `fallible-alloc` feature.
+#[macro_export]
+macro_rules! try_with_capacity {
+    ($cap:expr) => {{
+        #[cfg(feature = "fallible-alloc")]
+        {
+            $crate::alloc_util::with_capacity_fallible($cap)
+        }
+        #[cfg(not(feature = "fallible-alloc"))]
+        {
+            Ok::<::alloc::vec::Vec<_>, $crate::error::EncodeError>(::alloc::vec::Vec::with_capacity(
+                $cap,
+            ))
+        }
+    }};
+}
+
 #[cfg(test)]
 mod tests {
     // A small request succeeds on both feature arms and yields the same vec
@@ -76,6 +122,30 @@ mod tests {
         assert!(
             matches!(r, Err(crate::error::EncodeError::AllocFailed { .. })),
             "huge try_vec must be AllocFailed, got {r:?}"
+        );
+    }
+
+    // `try_with_capacity!` reserves and pushes to the same contents a
+    // `Vec::with_capacity` + push loop would, on both feature arms.
+    #[test]
+    fn try_with_capacity_small_ok() {
+        let r: Result<alloc::vec::Vec<u16>, crate::error::EncodeError> = try_with_capacity![4];
+        let mut v = r.unwrap();
+        assert!(v.capacity() >= 4);
+        v.push(9u16);
+        assert_eq!(v, alloc::vec![9u16]);
+    }
+
+    // Under `fallible-alloc`, an impossible capacity request returns
+    // `Err(AllocFailed)` rather than aborting the process.
+    #[cfg(feature = "fallible-alloc")]
+    #[test]
+    fn try_with_capacity_huge_is_alloc_failed() {
+        let r: Result<alloc::vec::Vec<u64>, crate::error::EncodeError> =
+            try_with_capacity![usize::MAX];
+        assert!(
+            matches!(r, Err(crate::error::EncodeError::AllocFailed { .. })),
+            "huge try_with_capacity must be AllocFailed, got {r:?}"
         );
     }
 }

@@ -178,8 +178,8 @@ fn pad_plane_replicate(
     sh: usize,
     dw: usize,
     dh: usize,
-) -> alloc::vec::Vec<u8> {
-    let mut out = alloc::vec![0u8; dw * dh];
+) -> crate::EncodeResult<alloc::vec::Vec<u8>> {
+    let mut out = svtav1_types::try_vec![0u8; dw * dh]?;
     for r in 0..dh {
         let sr = r.min(sh - 1);
         let base = sr * src_stride;
@@ -188,7 +188,7 @@ fn pad_plane_replicate(
             out[orow + c] = src[base + c.min(sw - 1)];
         }
     }
-    out
+    Ok(out)
 }
 
 impl EncodePipeline {
@@ -405,7 +405,14 @@ impl EncodePipeline {
             self.height,
             self.speed_config.preset
         );
+        // Additive fallible core (Feature 1+3). This wrapper KEEPS its exact
+        // signature and panicking contract: with the default `Unstoppable`
+        // token and the infallible-alloc feature default, the core cannot
+        // return `Err` on the trusted path, so `.expect()` never fires and the
+        // emitted bytes are unchanged. Callers wanting graceful OOM /
+        // cancellation use `try_encode_frame`.
         self.encode_frame_impl(y_plane, y_stride, None)
+            .expect("encode_frame is infallible on the default/trusted path")
     }
 
     /// Encode a single 4:2:0 still/key frame (NumPlanes=3).
@@ -423,6 +430,33 @@ impl EncodePipeline {
             "encode_frame_420 requires the pipeline to be built with with_chroma_420(true)"
         );
         let (tw, th) = (self.true_width as usize, self.true_height as usize);
+        // TRUE chroma dims (4:2:0 ceiling, matching the input .yuv layout).
+        let (tcw, tch) = ((tw + 1) / 2, (th + 1) / 2);
+        let cn_true = tcw * tch;
+        assert!(
+            u.len() >= cn_true && v.len() >= cn_true,
+            "u/v planes must be (true_w/2 x true_h/2)"
+        );
+        // Additive fallible core (Feature 1+3), shared with `try_encode_frame_420`.
+        // KEEPS the exact panicking contract: on the default/trusted path the
+        // core cannot return `Err`, so `.expect()` never fires and the bytes are
+        // unchanged.
+        self.encode_frame_420_core(y, u, v, y_stride)
+            .expect("encode_frame_420 is infallible on the default/trusted path")
+    }
+
+    /// Fallible core of the 4:2:0 path (TRUE->ALIGNED padding + the shared
+    /// `encode_frame_impl`). Shared by the panicking [`Self::encode_frame_420`]
+    /// wrapper and the fallible [`Self::try_encode_frame_420`]; both validate
+    /// the chroma flag + plane sizes before calling in.
+    fn encode_frame_420_core(
+        &mut self,
+        y: &[u8],
+        u: &[u8],
+        v: &[u8],
+        y_stride: usize,
+    ) -> crate::EncodeResult<Vec<u8>> {
+        let (tw, th) = (self.true_width as usize, self.true_height as usize);
         let (aw, ah) = (self.width as usize, self.height as usize);
         // Task #95 chunk 2: partial SBs are now supported. Every 4:2:0 KEY
         // frame routes through the PD0 fixed-tree path (use_funnel is always
@@ -438,11 +472,6 @@ impl EncodePipeline {
         );
         // TRUE chroma dims (4:2:0 ceiling, matching the input .yuv layout).
         let (tcw, tch) = ((tw + 1) / 2, (th + 1) / 2);
-        let cn_true = tcw * tch;
-        assert!(
-            u.len() >= cn_true && v.len() >= cn_true,
-            "u/v planes must be (true_w/2 x true_h/2)"
-        );
         if aw == tw && ah == th {
             // Natively 8-aligned: pass through unchanged (byte-identical to
             // the pre-#95 path).
@@ -452,9 +481,9 @@ impl EncodePipeline {
         // last valid row (incl. the new right pad); the per-pixel min-clamp
         // in `pad_plane_replicate` is equivalent for a rectangular region.
         let (acw, ach) = (aw / 2, ah / 2);
-        let y_pad = pad_plane_replicate(y, y_stride, tw, th, aw, ah);
-        let u_pad = pad_plane_replicate(u, tcw, tcw, tch, acw, ach);
-        let v_pad = pad_plane_replicate(v, tcw, tcw, tch, acw, ach);
+        let y_pad = pad_plane_replicate(y, y_stride, tw, th, aw, ah)?;
+        let u_pad = pad_plane_replicate(u, tcw, tcw, tch, acw, ach)?;
+        let v_pad = pad_plane_replicate(v, tcw, tcw, tch, acw, ach)?;
         self.encode_frame_impl(&y_pad, aw, Some((&u_pad, &v_pad)))
     }
 
@@ -487,8 +516,10 @@ impl EncodePipeline {
             .check()
             .map_err(EncodeError::from)
             .map_err(whereat::at)?;
-        // (c) Reuse the existing infallible body (asserts above pre-satisfied).
-        Ok(self.encode_frame_impl(y_plane, y_stride, None))
+        // (c) The fallible core (asserts above pre-satisfied). Its own in-loop
+        // stop-checks + fallible allocations propagate here as `Err` instead of
+        // panicking/aborting; on success the bytes match `encode_frame`.
+        self.encode_frame_impl(y_plane, y_stride, None)
     }
 
     /// Fallible twin of [`Self::encode_frame_420`] (Feature 1 + 2).
@@ -534,8 +565,10 @@ impl EncodePipeline {
             .check()
             .map_err(EncodeError::from)
             .map_err(whereat::at)?;
-        // (c) Reuse the existing infallible body (padding + encode_frame_impl).
-        Ok(self.encode_frame_420(y, u, v, y_stride))
+        // (c) The fallible core (padding + encode_frame_impl), NOT the panicking
+        // `encode_frame_420` wrapper — so a fallible alloc / cancellation
+        // surfaces as `Err` here instead of unwinding through `.expect()`.
+        self.encode_frame_420_core(y, u, v, y_stride)
     }
 
     /// Shared frame encode body. `chroma = Some((u, v))` selects the 4:2:0
@@ -545,8 +578,14 @@ impl EncodePipeline {
         y_plane: &[u8],
         y_stride: usize,
         chroma: Option<(&[u8], &[u8])>,
-    ) -> Vec<u8> {
+    ) -> crate::EncodeResult<Vec<u8>> {
         let display_order = self.frame_count;
+        // Feature 1: snapshot the cooperative-cancellation token once (a cheap
+        // Arc clone; `Send + Sync`) so the per-SB loops here, the entropy-walk
+        // closure, and `encode_tile_rows` all check the same token. The default
+        // `Unstoppable` token's `may_stop()` is `false`, so every guarded check
+        // below is a byte-inert false-branch.
+        let stop = self.stop.clone();
 
         // Step 1: Determine frame type from GOP structure
         let is_key = self.gop.is_key_frame(display_order);
@@ -607,7 +646,7 @@ impl EncodePipeline {
                         h,
                         y_stride,
                         &tf_config,
-                    );
+                    )?;
                     tf_result.filtered
                 } else {
                     y_plane[..n].to_vec()
@@ -633,7 +672,7 @@ impl EncodePipeline {
         let sb_input_owned: Option<alloc::vec::Vec<u8>> = if ext_w == w && ext_h == h {
             None
         } else {
-            let mut buf = alloc::vec![0u8; ext_w * ext_h];
+            let mut buf = svtav1_types::try_vec![0u8; ext_w * ext_h]?;
             for r in 0..h {
                 buf[r * ext_w..r * ext_w + w].copy_from_slice(&encode_input[r * w..r * w + w]);
             }
@@ -646,34 +685,39 @@ impl EncodePipeline {
         // chroma width/stride, extra rows edge-replicated) so a straddling
         // boundary block's chroma TX read stays in bounds — mirrors the luma
         // sb_input. Full-SB frames need no extension (byte-neutral).
-        let sb_chroma_owned: Option<(alloc::vec::Vec<u8>, alloc::vec::Vec<u8>)> =
-            chroma.map(|(u, v)| {
-                let (acw, ach) = (w / 2, h / 2);
-                let (ext_ch_h, ext_cw) = (ext_h / 2, ext_w / 2);
-                if ext_ch_h == ach && ext_cw == acw {
-                    // Full-SB (or 64-aligned) frame: exact aligned chroma,
-                    // byte-identical to the pre-#95 source.
-                    (u.to_vec(), v.to_vec())
-                } else {
-                    // Partial SB: `acw`-strided rows, edge-replicating the last
-                    // real chroma row. Enough rows to cover BOTH a height-
-                    // straddle read (reaches `ext_ch_h`) AND a right-straddle
-                    // read that wraps down into later stride rows. For gradient
-                    // (uniform chroma) every padded byte equals the true edge,
-                    // so the reads match C's SB-extent pad; other content is
-                    // decodable (the boundary chroma differs from C's crop).
-                    let n_rows = ext_ch_h + ext_cw.div_ceil(acw) + 2;
-                    let cap = n_rows * acw;
-                    let mut up = alloc::vec![0u8; cap];
-                    let mut vp = alloc::vec![0u8; cap];
-                    for r in 0..n_rows {
-                        let sr = r.min(ach - 1);
-                        up[r * acw..(r + 1) * acw].copy_from_slice(&u[sr * acw..(sr + 1) * acw]);
-                        vp[r * acw..(r + 1) * acw].copy_from_slice(&v[sr * acw..(sr + 1) * acw]);
-                    }
-                    (up, vp)
-                }
-            });
+        let sb_chroma_owned: Option<(alloc::vec::Vec<u8>, alloc::vec::Vec<u8>)> = chroma
+            .map(
+                |(u, v)| -> crate::EncodeResult<(alloc::vec::Vec<u8>, alloc::vec::Vec<u8>)> {
+                    let (acw, ach) = (w / 2, h / 2);
+                    let (ext_ch_h, ext_cw) = (ext_h / 2, ext_w / 2);
+                    Ok(if ext_ch_h == ach && ext_cw == acw {
+                        // Full-SB (or 64-aligned) frame: exact aligned chroma,
+                        // byte-identical to the pre-#95 source.
+                        (u.to_vec(), v.to_vec())
+                    } else {
+                        // Partial SB: `acw`-strided rows, edge-replicating the last
+                        // real chroma row. Enough rows to cover BOTH a height-
+                        // straddle read (reaches `ext_ch_h`) AND a right-straddle
+                        // read that wraps down into later stride rows. For gradient
+                        // (uniform chroma) every padded byte equals the true edge,
+                        // so the reads match C's SB-extent pad; other content is
+                        // decodable (the boundary chroma differs from C's crop).
+                        let n_rows = ext_ch_h + ext_cw.div_ceil(acw) + 2;
+                        let cap = n_rows * acw;
+                        let mut up = svtav1_types::try_vec![0u8; cap]?;
+                        let mut vp = svtav1_types::try_vec![0u8; cap]?;
+                        for r in 0..n_rows {
+                            let sr = r.min(ach - 1);
+                            up[r * acw..(r + 1) * acw]
+                                .copy_from_slice(&u[sr * acw..(sr + 1) * acw]);
+                            vp[r * acw..(r + 1) * acw]
+                                .copy_from_slice(&v[sr * acw..(sr + 1) * acw]);
+                        }
+                        (up, vp)
+                    })
+                },
+            )
+            .transpose()?;
 
         // Screen-content derivation (allintra): scm 3 auto-detect at
         // preset <= 7 (enc_handle.c:4514-4527), off at M8+; palette level
@@ -753,7 +797,7 @@ impl EncodePipeline {
         let sb_plan = if self.hdr.is_fork() && self.hdr.enable_variance_boost {
             let sb_cols_p = w.div_ceil(64);
             let sb_rows_p = h.div_ceil(64);
-            let mut vars = alloc::vec::Vec::with_capacity(sb_cols_p * sb_rows_p);
+            let mut vars = svtav1_types::try_with_capacity![sb_cols_p * sb_rows_p]?;
             for r in 0..sb_rows_p {
                 for c in 0..sb_cols_p {
                     vars.push(crate::sb_qindex::compute_sb_variances(
@@ -835,7 +879,7 @@ impl EncodePipeline {
         // This ensures each SB can read above/left neighbors from previously
         // reconstructed SBs, matching the AV1 decode order.
         // (Spec 00: "The main encoding loop processes SBs in raster order")
-        let mut recon = alloc::vec![128u8; n];
+        let mut recon = svtav1_types::try_vec![128u8; n]?;
         // AV1 spec: use_128x128_superblock=0 in SH → sb_size=64.
         // The decoder always uses 64x64 SBs when this flag is 0.
         // The encoder's max_partition_depth controls how deep the
@@ -866,17 +910,17 @@ impl EncodePipeline {
         // MV map for spatial MV prediction (8x8 block grid)
         let mv_map_stride = w.div_ceil(8);
         let mv_map_size = mv_map_stride * h.div_ceil(8);
-        let mut mv_map = alloc::vec![svtav1_types::motion::Mv::ZERO; mv_map_size];
+        let mut mv_map = svtav1_types::try_vec![svtav1_types::motion::Mv::ZERO; mv_map_size]?;
 
         // Compute per-SB TPL QP offsets for spatial bit allocation
         let sb_qp_offsets = if !is_key {
             if let Some(ref rf) = ref_frame_data {
                 crate::rate_control::tpl_sb_qp_offsets(&encode_input, rf, w, h, w, sb_size)
             } else {
-                alloc::vec![0i8; sb_cols * sb_rows]
+                svtav1_types::try_vec![0i8; sb_cols * sb_rows]?
             }
         } else {
-            alloc::vec![0i8; sb_cols * sb_rows]
+            svtav1_types::try_vec![0i8; sb_cols * sb_rows]?
         };
 
         // Task #86: real tile ROWS for the allintra KEY path. Per AV1 spec
@@ -1095,7 +1139,8 @@ impl EncodePipeline {
                 .map(|(u, v)| (u.as_slice(), v.as_slice())),
             self.bit_depth,
             self.thread_count,
-        );
+            &stop,
+        )?;
 
         let mut per_tile_decisions: Vec<Vec<crate::partition::BlockDecision>> = Vec::new();
         // Task #96: `all_trees` is indexed by RASTER sb_idx
@@ -1124,14 +1169,17 @@ impl EncodePipeline {
         // post-pass DOES run (eff-M9 band) it overwrites the coded levels, so
         // its recon wins — handled after the post-pass below.
         let sb95_ext_w = w.div_ceil(sb_size) * sb_size;
-        let mut canvas10: Option<(Vec<u16>, Vec<u16>, Vec<u16>)> =
-            tile_recons.first().and_then(|t| t.3.as_ref()).map(|_| {
-                (
-                    alloc::vec![0u16; w * h],
-                    alloc::vec![0u16; (w / 2) * (h / 2)],
-                    alloc::vec![0u16; (w / 2) * (h / 2)],
-                )
-            });
+        let mut canvas10: Option<(Vec<u16>, Vec<u16>, Vec<u16>)> = tile_recons
+            .first()
+            .and_then(|t| t.3.as_ref())
+            .map(|_| -> crate::EncodeResult<(Vec<u16>, Vec<u16>, Vec<u16>)> {
+                Ok((
+                    svtav1_types::try_vec![0u16; w * h]?,
+                    svtav1_types::try_vec![0u16; (w / 2) * (h / 2)]?,
+                    svtav1_types::try_vec![0u16; (w / 2) * (h / 2)]?,
+                ))
+            })
+            .transpose()?;
         if let Some((cy, cu, cv)) = canvas10.as_mut() {
             for (tile_idx, t) in tile_recons.iter().enumerate() {
                 let Some((ty, tu, tv)) = t.3.as_ref() else {
@@ -1167,6 +1215,11 @@ impl EncodePipeline {
                 tile_grid.col_span(tile_idx % tile_grid.tile_cols);
             let mut tree_k = 0usize;
             for sb_row in tile_sb_row_start..tile_sb_row_end {
+                // Feature 1: byte-inert cooperative-cancellation check (no-op
+                // for the default `Unstoppable` token — `may_stop()` is false).
+                if stop.may_stop() {
+                    stop.check().map_err(EncodeError::from).map_err(whereat::at)?;
+                }
                 for sb_col in tile_sb_col_start..tile_sb_col_end {
                     tree_slots[sb_row * sb_cols + sb_col] = Some(tile_trees[tree_k].clone());
                     tree_k += 1;
@@ -1174,6 +1227,10 @@ impl EncodePipeline {
             }
             let mut offset = 0;
             for sb_row in tile_sb_row_start..tile_sb_row_end {
+                // Feature 1: byte-inert cooperative-cancellation check.
+                if stop.may_stop() {
+                    stop.check().map_err(EncodeError::from).map_err(whereat::at)?;
+                }
                 for sb_col in tile_sb_col_start..tile_sb_col_end {
                     let x0 = sb_col * sb_size;
                     let y0 = sb_row * sb_size;
@@ -1368,7 +1425,7 @@ impl EncodePipeline {
                     bd10_edge_filter,
                     self.bit_depth,
                     qm_levels[0],
-                );
+                )?;
                 // bd10 CHROMA re-encode (task #94): recompute chroma levels at
                 // bd10 too — the luma pass above leaves chroma at the u8 MD
                 // decision, which diverges on content whose subsampled chroma
@@ -1406,7 +1463,7 @@ impl EncodePipeline {
                         bd10_edge_filter,
                         self.bit_depth,
                         [qm_levels[1], qm_levels[2]],
-                    );
+                    )?;
                     self.last_recon10_uv = Some(uv10);
                 }
                 self.last_recon10_y = Some(recon10);
@@ -1523,15 +1580,18 @@ impl EncodePipeline {
         // (rest_process before the EC kernel) gives it the same view.
         let run_entropy_walk = |lr: Option<&crate::restoration::FrameRestInfo>,
                                 cdef_walk: Option<&crate::cdef::CdefPick>|
-         -> (
+         -> crate::EncodeResult<(
             Vec<u8>,
             crate::deblock::DeblockGeom,
             Vec<u8>,
             Vec<u8>,
             u8,
-        ) {
+        )> {
             let (mut u_recon, mut v_recon) = if chroma.is_some() {
-                (alloc::vec![128u8; ext_cbuf], alloc::vec![128u8; ext_cbuf])
+                (
+                    svtav1_types::try_vec![128u8; ext_cbuf]?,
+                    svtav1_types::try_vec![128u8; ext_cbuf]?,
+                )
             } else {
                 (Vec::new(), Vec::new())
             };
@@ -1579,6 +1639,11 @@ impl EncodePipeline {
             let mut tile_bitstreams: Vec<Vec<u8>> =
                 Vec::with_capacity(tile_grid.num_tiles());
             for tile_idx in 0..tile_grid.num_tiles() {
+                // Feature 1: byte-inert cooperative-cancellation check, once per
+                // tile of each entropy re-walk (this closure runs up to 3x).
+                if stop.may_stop() {
+                    stop.check().map_err(EncodeError::from).map_err(whereat::at)?;
+                }
                 let (tile_sb_row_start, tile_sb_row_end) =
                     tile_grid.row_span(tile_idx / tile_grid.tile_cols);
                 let (tile_sb_col_start, tile_sb_col_end) =
@@ -1636,6 +1701,11 @@ impl EncodePipeline {
                 let mut prev_sb_row = usize::MAX;
 
                 for sb_row in tile_sb_row_start..tile_sb_row_end {
+                    // Feature 1: byte-inert cooperative-cancellation check, once
+                    // per SB row of the entropy walk.
+                    if stop.may_stop() {
+                        stop.check().map_err(EncodeError::from).map_err(whereat::at)?;
+                    }
                     for sb_col in tile_sb_col_start..tile_sb_col_end {
                         let sb_idx = sb_row * sb_cols + sb_col;
                         let tree = &all_trees[sb_idx];
@@ -1754,16 +1824,16 @@ impl EncodePipeline {
             let tile_size_bytes_minus_1 =
                 svtav1_entropy::obu::tile_size_bytes_minus_1_for(&non_last_lens);
 
-            (
+            Ok((
                 svtav1_entropy::obu::build_tile_group_multi(&tile_bitstreams, tile_size_bytes_minus_1),
                 deblock_geom,
                 u_recon,
                 v_recon,
                 tile_size_bytes_minus_1,
-            )
+            ))
         };
         let (mut tile_data, deblock_geom, mut u_recon, mut v_recon, mut tile_size_bytes_minus_1) =
-            run_entropy_walk(None, None);
+            run_entropy_walk(None, None)?;
 
         // Step 6a: Deblocking — pick the levels the frame header will
         // signal (C svt_av1_pick_filter_level_by_q closed form) and apply
@@ -1863,7 +1933,7 @@ impl EncodePipeline {
                             early_exit_convergence,
                             bit_depth: self.bit_depth,
                         };
-                        crate::deblock::pick_filter_levels_full_search(&input)
+                        crate::deblock::pick_filter_levels_full_search(&input)?
                     }
                     None => {
                         let input = crate::deblock::DlfSearchInput::<u8> {
@@ -1881,7 +1951,7 @@ impl EncodePipeline {
                             early_exit_convergence,
                             bit_depth: self.bit_depth,
                         };
-                        crate::deblock::pick_filter_levels_full_search(&input)
+                        crate::deblock::pick_filter_levels_full_search(&input)?
                     }
                 }
             } else {
@@ -1988,7 +2058,7 @@ impl EncodePipeline {
                                 &deblock_geom,
                                 base_qindex,
                                 self.bit_depth,
-                            )
+                            )?
                         }
                         None => crate::cdef::cdef_search_still(
                             &cfg,
@@ -2003,7 +2073,7 @@ impl EncodePipeline {
                             chroma.is_some(),
                             &deblock_geom,
                             base_qindex,
-                        ),
+                        )?,
                     };
                     match searched {
                         crate::cdef::CdefSearchPick::Picked(mut p) => {
@@ -2033,7 +2103,7 @@ impl EncodePipeline {
         // the extra syntax; C's EC pass simply runs after the cdef
         // search, ours re-runs the deterministic walk).
         if cdef_params.bits > 0 {
-            let (tile_cdef, _geom_c, u_c, v_c, tsb_c) = run_entropy_walk(None, Some(&cdef_params));
+            let (tile_cdef, _geom_c, u_c, v_c, tsb_c) = run_entropy_walk(None, Some(&cdef_params))?;
             // The re-walk reproduces the PRE-filter recon; u_recon/v_recon
             // were deblocked IN PLACE above, so compare against the
             // pre-deblock copy (the old `== u_recon` form only held on
@@ -2204,7 +2274,7 @@ impl EncodePipeline {
                             true,
                             rdmult,
                             self.bit_depth,
-                        )
+                        )?
                     }
                     None => crate::restoration::search_restoration_still(
                         &ctrls,
@@ -2218,7 +2288,7 @@ impl EncodePipeline {
                         lr_true_h,
                         chroma.is_some(),
                         rdmult,
-                    ),
+                    )?,
                 };
                 #[cfg(feature = "std")]
                 if std::env::var_os("SVTAV1_DUMP_LR").is_some() {
@@ -2237,7 +2307,7 @@ impl EncodePipeline {
                     // Tile pass 2: identical symbol stream + LR syntax.
                     let cdef_walk_opt = (cdef_params.bits > 0).then_some(&cdef_params);
                     let (tile_lr, _geom2, u2, v2, tsb_lr) =
-                        run_entropy_walk(Some(&rest_info), cdef_walk_opt);
+                        run_entropy_walk(Some(&rest_info), cdef_walk_opt)?;
                     // Same pre-deblock reference as the CDEF re-walk assert:
                     // u_recon/v_recon have been deblocked (and CDEF'd) in
                     // place by now; the walk reproduces the pre-filter state.
@@ -2445,7 +2515,7 @@ impl EncodePipeline {
         update_rc_state(&mut self.rc_state, bitstream.len() as u64 * 8, pcs.qp);
 
         self.frame_count += 1;
-        bitstream
+        Ok(bitstream)
     }
 }
 
@@ -4516,12 +4586,12 @@ fn bd10_reencode_luma(
     edge_filter: bool,
     bd: u8,
     qm_level: u8,
-) -> alloc::vec::Vec<u16> {
+) -> crate::EncodeResult<alloc::vec::Vec<u16>> {
     let fc = svtav1_entropy::context::FrameContext::new_default();
     let cfc = svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex);
     let rates = crate::leaf_funnel::build_md_rates(&fc, &cfc);
     let qt = crate::quant::build_quant_table_bd(base_qindex, bd);
-    let mut recon10 = alloc::vec![0u16; w * h];
+    let mut recon10 = svtav1_types::try_vec![0u16; w * h]?;
     for (sb_idx, tree) in all_trees.iter_mut().enumerate() {
         let sb_col = sb_idx % sb_cols;
         let sb_row = sb_idx / sb_cols;
@@ -4544,7 +4614,7 @@ fn bd10_reencode_luma(
             qm_level,
         );
     }
-    recon10
+    Ok(recon10)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4758,14 +4828,14 @@ fn bd10_reencode_chroma(
     // (md_config_process.c:271-279), so they can differ between Cb and Cr —
     // the fork's chroma path gives Cb a +12 delta.
     qm_uv: [u8; 2],
-) -> (alloc::vec::Vec<u16>, alloc::vec::Vec<u16>) {
+) -> crate::EncodeResult<(alloc::vec::Vec<u16>, alloc::vec::Vec<u16>)> {
     let fc = svtav1_entropy::context::FrameContext::new_default();
     let cfc = svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(chroma_qindex);
     let rates = crate::leaf_funnel::build_md_rates(&fc, &cfc);
     let qt = crate::quant::build_quant_table_bd(chroma_qindex, bd);
     let (cframe_w, cframe_h) = (w / 2, h / 2);
-    let mut recon10_u = alloc::vec![0u16; cframe_w * cframe_h];
-    let mut recon10_v = alloc::vec![0u16; cframe_w * cframe_h];
+    let mut recon10_u = svtav1_types::try_vec![0u16; cframe_w * cframe_h]?;
+    let mut recon10_v = svtav1_types::try_vec![0u16; cframe_w * cframe_h]?;
     for (sb_idx, tree) in all_trees.iter_mut().enumerate() {
         let sb_col = sb_idx % sb_cols;
         let sb_row = sb_idx / sb_cols;
@@ -4796,7 +4866,7 @@ fn bd10_reencode_chroma(
     // post-filter chain (deblock -> CDEF search -> LR search) reads, the
     // chroma twin of `bd10_reencode_luma`'s return. C keeps the same thing
     // in the 16-bit recon picture (`svt_aom_get_recon_pic(.., is_16bit)`).
-    (recon10_u, recon10_v)
+    Ok((recon10_u, recon10_v))
 }
 
 /// Re-encode ONE chroma plane's leaf at bd10: predict -> residual/tx/quant ->
@@ -5168,7 +5238,14 @@ fn encode_tile_rows(
     // tile-index order — so the returned per-tile results (and the emitted
     // bytes) are identical for any value.
     thread_count: usize,
-) -> Vec<(
+    // Feature 1: cooperative cancellation, checked at the head of every SB
+    // row of the MD search (the heaviest per-frame loop). Passed as
+    // `&dyn Stop` so the threaded per-tile closure stays `Send` (the trait
+    // is `Send + Sync`); the default `Unstoppable` token's `may_stop()` is
+    // `false`, so the guarded check compiles to a cheap false-branch and the
+    // search output stays byte-identical.
+    stop: &dyn enough::Stop,
+) -> crate::EncodeResult<Vec<(
     Vec<u8>,
     Vec<crate::partition::BlockDecision>,
     Vec<crate::partition::PartitionTree>,
@@ -5177,13 +5254,13 @@ fn encode_tile_rows(
     // this tile's SB region written. `None` outside the bd10 full-RD
     // envelope. See `Bd10Canvas` at the merge site.
     Option<(Vec<u16>, Vec<u16>, Vec<u16>)>,
-)> {
-    let encode_one_tile = |tile_idx: usize| -> (
+)>> {
+    let encode_one_tile = |tile_idx: usize| -> crate::EncodeResult<(
         Vec<u8>,
         Vec<crate::partition::BlockDecision>,
         Vec<crate::partition::PartitionTree>,
         Option<(Vec<u16>, Vec<u16>, Vec<u16>)>,
-    ) {
+    )> {
         let (tile_sb_row_start, tile_sb_row_end) =
             tile_grid.row_span(tile_idx / tile_grid.tile_cols);
         let (tile_sb_col_start, tile_sb_col_end) =
@@ -5244,8 +5321,8 @@ fn encode_tile_rows(
         let ext_w = w.div_ceil(sb_size) * sb_size;
         let ext_h = h.div_ceil(sb_size) * sb_size;
         let ext_cbuf = (ext_w / 2) * (ext_h / 2); // chroma buffer capacity at `cwid` stride
-        let mut fun_u_recon = alloc::vec![128u8; if use_funnel { ext_cbuf } else { 0 }];
-        let mut fun_v_recon = alloc::vec![128u8; if use_funnel { ext_cbuf } else { 0 }];
+        let mut fun_u_recon = svtav1_types::try_vec![128u8; if use_funnel { ext_cbuf } else { 0 }]?;
+        let mut fun_v_recon = svtav1_types::try_vec![128u8; if use_funnel { ext_cbuf } else { 0 }]?;
         let mut fun_ectx = if use_funnel {
             let mut e = EntropyCtx::new(w / 4, h / 4, true, tile_sc.allow_screen_content_tools);
             // Task #86: consistent with the other EntropyCtx instances
@@ -5345,13 +5422,13 @@ fn encode_tile_rows(
             None
         };
         let mut sim_geom = crate::deblock::DeblockGeom::new(w, h);
-        let mut sim_u = alloc::vec![128u8; if funnel_chain { ext_cbuf } else { 0 }];
-        let mut sim_v = alloc::vec![128u8; if funnel_chain { ext_cbuf } else { 0 }];
+        let mut sim_u = svtav1_types::try_vec![128u8; if funnel_chain { ext_cbuf } else { 0 }]?;
+        let mut sim_v = svtav1_types::try_vec![128u8; if funnel_chain { ext_cbuf } else { 0 }]?;
         let mut sim_prev_sb_row = usize::MAX;
         let mut fun_rates = fun_rates;
         let mut tile_decisions: Vec<crate::partition::BlockDecision> = Vec::new();
         let mut tile_trees: Vec<crate::partition::PartitionTree> = Vec::new();
-        let mut tile_frame_recon = alloc::vec![128u8; ext_w * ext_h];
+        let mut tile_frame_recon = svtav1_types::try_vec![128u8; ext_w * ext_h]?;
         // bd10 LUMA mode funnel (task #94): a parallel TRUE 10-bit recon canvas,
         // maintained ONLY for complete-SB eff-M9 (preset ≥ 9) bd10 frames so the
         // per-block mode decision (evaluate_leaf MDS0) is made on the 10-bit
@@ -5379,7 +5456,7 @@ fn encode_tile_rows(
         let bd10_luma_funnel =
             bd10_complete_sb && (speed_config.preset >= 9 || bd10_full_rd);
         let mut tile_frame_recon10: alloc::vec::Vec<u16> = if bd10_luma_funnel {
-            alloc::vec![512u16; ext_w * ext_h]
+            svtav1_types::try_vec![512u16; ext_w * ext_h]?
         } else {
             alloc::vec::Vec::new()
         };
@@ -5390,7 +5467,7 @@ fn encode_tile_rows(
             alloc::vec::Vec<u16>,
         ) = if bd10_full_rd {
             let n = (ext_w / 2) * (ext_h / 2);
-            (alloc::vec![512u16; n], alloc::vec![512u16; n])
+            (svtav1_types::try_vec![512u16; n]?, svtav1_types::try_vec![512u16; n]?)
         } else {
             (alloc::vec::Vec::new(), alloc::vec::Vec::new())
         };
@@ -5428,6 +5505,13 @@ fn encode_tile_rows(
         part_config.c_quant = c_quant.clone();
 
         for sb_row in tile_sb_row_start..tile_sb_row_end {
+            // Feature 1: cooperative cancellation, checked once per SB row of
+            // the MD search. `may_stop()` short-circuits to `false` for the
+            // default `Unstoppable` token, so this is byte-inert unless a real
+            // stop token was installed via `with_stop`.
+            if stop.may_stop() {
+                stop.check().map_err(EncodeError::from).map_err(whereat::at)?;
+            }
             for sb_col in tile_sb_col_start..tile_sb_col_end {
                 let sb_x0 = sb_col * sb_size;
                 let sb_y0 = sb_row * sb_size;
@@ -6233,7 +6317,7 @@ fn encode_tile_rows(
         } else {
             None
         };
-        (tile_recon, tile_decisions, tile_trees, tile_canvas10)
+        Ok((tile_recon, tile_decisions, tile_trees, tile_canvas10))
     };
 
     // Parallel encoding with std::thread::scope when available, BOUNDED to
@@ -6253,6 +6337,10 @@ fn encode_tile_rows(
         }
         .clamp(1, num_tiles);
         return std::thread::scope(|s| {
+            // Each tile's closure now yields an `EncodeResult`; collect them in
+            // tile-index order and short-circuit to the FIRST error (in tile
+            // order). On the success/default path every element is `Ok`, so the
+            // collect is byte-identical to the previous `Vec` assembly.
             let mut results = Vec::with_capacity(num_tiles);
             let mut start = 0;
             while start < num_tiles {
@@ -6265,7 +6353,7 @@ fn encode_tile_rows(
                 }
                 start = end;
             }
-            results
+            results.into_iter().collect()
         });
     }
 
@@ -6297,6 +6385,96 @@ mod tests {
         let bitstream = pipeline.encode_frame(&y_plane, 64);
         assert!(!bitstream.is_empty(), "should produce output");
         assert_eq!(pipeline.frame_count, 1);
+    }
+
+    /// Feature 1: a cooperative stop token that fires mid-frame makes
+    /// `try_encode_frame` return `Err(Cancelled)` — no panic, no partial output,
+    /// and the frame counter is not advanced (the pipeline stays consistent).
+    #[test]
+    fn try_encode_cancellation_mid_frame_is_clean_err() {
+        use core::sync::atomic::{AtomicUsize, Ordering};
+
+        // Allows the first `limit` checks, then cancels. The frame-entry check
+        // plus at least one MD-search SB row pass before it trips — genuinely
+        // mid-frame. (`may_stop()` is true, so the guarded in-loop checks run.)
+        struct CancelAfter {
+            count: AtomicUsize,
+            limit: usize,
+        }
+        impl enough::Stop for CancelAfter {
+            fn check(&self) -> core::result::Result<(), enough::StopReason> {
+                if self.count.fetch_add(1, Ordering::Relaxed) >= self.limit {
+                    Err(enough::StopReason::Cancelled)
+                } else {
+                    Ok(())
+                }
+            }
+            fn may_stop(&self) -> bool {
+                true
+            }
+        }
+
+        // 64x192 mono = 3 SB rows, so the per-SB-row stop-check has rows to trip.
+        let (w, h) = (64u32, 192u32);
+        let y_plane = vec![130u8; (w * h) as usize];
+        let mut pipeline = EncodePipeline::new(
+            w,
+            h,
+            8,
+            RcConfig {
+                mode: RcMode::Cqp,
+                qp: 30,
+                ..RcConfig::default()
+            },
+            0,
+            1,
+        )
+        .with_stop(CancelAfter {
+            count: AtomicUsize::new(0),
+            limit: 2,
+        });
+
+        let err = pipeline
+            .try_encode_frame(&y_plane, w as usize)
+            .expect_err("a fired stop token must yield Err, never Ok or a panic");
+        assert!(
+            matches!(
+                err.error(),
+                EncodeError::Cancelled(enough::StopReason::Cancelled)
+            ),
+            "expected EncodeError::Cancelled, got {err:?}"
+        );
+        // No partial output (the `Err` carries no bytes) and no state corruption:
+        // the `?` fires before the post-encode bookkeeping, so `frame_count`
+        // never advanced past 0.
+        assert_eq!(
+            pipeline.frame_count, 0,
+            "a cancelled frame must not advance frame_count"
+        );
+    }
+
+    /// Feature 3: under `fallible-alloc`, an oversized-dimensions request to a
+    /// converted allocation site returns `Err(AllocFailed)` instead of aborting.
+    /// `temporal_filter`'s first action is `try_vec![0u16; width * height]?`, so
+    /// a `usize::MAX x 1` request fails the reservation (its byte count exceeds
+    /// `isize::MAX` on both 32- and 64-bit) and returns before reading the input.
+    #[cfg(feature = "fallible-alloc")]
+    #[test]
+    fn oversized_dims_return_alloc_failed_not_abort() {
+        let tiny = [0u8; 4];
+        let err = crate::temporal_filter::temporal_filter(
+            &tiny,
+            &[],
+            usize::MAX,
+            1,
+            1,
+            &crate::temporal_filter::TfConfig::default(),
+        )
+        .expect_err("an unsatisfiable reservation must be Err, not an abort");
+        assert!(
+            matches!(err.error(), EncodeError::AllocFailed { .. }),
+            "expected EncodeError::AllocFailed, got {err:?}"
+        );
     }
 
     #[test]

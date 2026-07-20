@@ -609,7 +609,7 @@ pub fn search_restoration_still(
     h: usize,
     has_chroma: bool,
     rdmult: i64,
-) -> FrameRestInfo {
+) -> crate::EncodeResult<FrameRestInfo> {
     search_restoration_still_bd(
         ctrls, src_y, src_u, src_v, recon_y, recon_u, recon_v, w, h, has_chroma, rdmult, 8,
     )
@@ -641,7 +641,7 @@ pub fn search_restoration_still_bd<P: LrPixel>(
     has_chroma: bool,
     rdmult: i64,
     bit_depth: u8,
-) -> FrameRestInfo {
+) -> crate::EncodeResult<FrameRestInfo> {
     debug_assert!(ctrls.enabled);
     let wn_luma = if ctrls.filter_tap_lvl == 1 {
         WIENER_WIN
@@ -700,7 +700,7 @@ pub fn search_restoration_still_bd<P: LrPixel>(
 
         // ---- search phase (per-unit sse_none + wiener solve/SSE) ----
         let nunits = (hunits * vunits) as usize;
-        let mut units: alloc::vec::Vec<UnitSearch> = alloc::vec::Vec::with_capacity(nunits);
+        let mut units: alloc::vec::Vec<UnitSearch> = svtav1_types::try_with_capacity![nunits]?;
         for _ in 0..nunits {
             units.push(UnitSearch {
                 sse_none: 0,
@@ -818,7 +818,7 @@ pub fn search_restoration_still_bd<P: LrPixel>(
             RESTORE_NONE
         };
 
-        let mut out_units = alloc::vec::Vec::with_capacity(nunits);
+        let mut out_units: alloc::vec::Vec<RestUnit> = svtav1_types::try_with_capacity![nunits]?;
         for (idx, u) in units.iter().enumerate() {
             if frame_rtype == RESTORE_WIENER {
                 // copy_unit_info: unit rtype = the per-unit pick.
@@ -842,7 +842,7 @@ pub fn search_restoration_still_bd<P: LrPixel>(
         });
     }
 
-    FrameRestInfo { planes }
+    Ok(FrameRestInfo { planes })
 }
 
 /// Build the stripe-boundary line buffers exactly like the C pipeline:

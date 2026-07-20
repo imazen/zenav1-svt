@@ -66,9 +66,9 @@ pub fn temporal_filter(
     height: usize,
     stride: usize,
     config: &TfConfig,
-) -> TfResult {
-    let mut filtered = alloc::vec![0u16; width * height];
-    let mut weight_sum = alloc::vec![0u16; width * height];
+) -> crate::EncodeResult<TfResult> {
+    let mut filtered = svtav1_types::try_vec![0u16; width * height]?;
+    let mut weight_sum = svtav1_types::try_vec![0u16; width * height]?;
 
     // Center frame gets maximum weight
     let center_weight = 16u16;
@@ -115,7 +115,7 @@ pub fn temporal_filter(
     }
 
     // Normalize
-    let mut output = alloc::vec![0u8; width * height];
+    let mut output = svtav1_types::try_vec![0u8; width * height]?;
     for i in 0..width * height {
         if weight_sum[i] > 0 {
             output[i] = ((filtered[i] + weight_sum[i] / 2) / weight_sum[i]) as u8;
@@ -124,11 +124,11 @@ pub fn temporal_filter(
         }
     }
 
-    TfResult {
+    Ok(TfResult {
         filtered: output,
         width,
         height,
-    }
+    })
 }
 
 /// FP16 constants from `temporal_filtering.h`.
@@ -218,7 +218,7 @@ mod tests {
     fn temporal_filter_identical_frames() {
         let frame = vec![128u8; 16 * 16];
         let refs: Vec<&[u8]> = vec![&frame, &frame];
-        let result = temporal_filter(&frame, &refs, 16, 16, 16, &TfConfig::default());
+        let result = temporal_filter(&frame, &refs, 16, 16, 16, &TfConfig::default()).unwrap();
         // With identical frames, output should equal input
         assert!(result.filtered.iter().all(|&v| (v as i32 - 128).abs() <= 1));
     }
@@ -233,7 +233,7 @@ mod tests {
         let clean = vec![128u8; 16 * 16];
         let refs: Vec<&[u8]> = vec![&clean, &clean, &clean];
 
-        let result = temporal_filter(&center, &refs, 16, 16, 16, &TfConfig::default());
+        let result = temporal_filter(&center, &refs, 16, 16, 16, &TfConfig::default()).unwrap();
         // Noise spike should be reduced toward 128
         assert!(
             result.filtered[0] < 150,

@@ -1120,7 +1120,7 @@ pub fn cdef_search_still(
     chroma_420: bool,
     geom: &DeblockGeom,
     qindex: u8,
-) -> CdefSearchPick {
+) -> crate::EncodeResult<CdefSearchPick> {
     assert!(width % 8 == 0 && height % 8 == 0, "8-aligned frames only");
     let damping = 3 + (qindex as i32 >> 6);
     let nvfb = height.div_ceil(64);
@@ -1231,7 +1231,7 @@ pub fn cdef_search_still(
     }
 
     if mse.is_empty() {
-        return CdefSearchPick::AllSkip;
+        return Ok(CdefSearchPick::AllSkip);
     }
     let (bits, lev0, lev1) = finish_cdef_rd(&mse, n_cand, qindex);
     // Diagnostic aid (SVTAV1_CDEF_DBG): dump the per-fb candidate-slot mse
@@ -1262,7 +1262,7 @@ pub fn cdef_search_still(
     // 1397-1412): min over gi of luma+uv candidate-slot mse; skip fbs
     // keep index 0 (never transmitted or applied).
     let nb = 1usize << bits;
-    let mut fb_idx = alloc::vec![0u8; nvfb * nhfb];
+    let mut fb_idx = svtav1_types::try_vec![0u8; nvfb * nhfb]?;
     for (i, &(fbr, fbc)) in fb_addr.iter().enumerate() {
         let mut best_gi = 0usize;
         let mut best_mse = u64::MAX;
@@ -1280,13 +1280,13 @@ pub fn cdef_search_still(
     let strengths: alloc::vec::Vec<(u8, u8)> = (0..nb)
         .map(|gi| (cfg.fs[lev0[gi]] as u8, cfg.fs[lev1[gi]] as u8))
         .collect();
-    CdefSearchPick::Picked(CdefPick {
+    Ok(CdefSearchPick::Picked(CdefPick {
         damping: (3 + (qindex >> 6)) as u8,
         bits: bits as u8,
         strengths,
         fb_idx,
         nhfb,
-    })
+    }))
 }
 
 /// Highbd twin of [`cdef_search_still`] — C `cdef_seg_search` with
@@ -1323,7 +1323,7 @@ pub fn cdef_search_still_hbd(
     geom: &DeblockGeom,
     qindex: u8,
     bit_depth: u8,
-) -> CdefSearchPick {
+) -> crate::EncodeResult<CdefSearchPick> {
     assert!(width % 8 == 0 && height % 8 == 0, "8-aligned frames only");
     assert!(bit_depth == 10, "bd12 out of scope (docs/bd10-port-map.md)");
     let coeff_shift = (bit_depth - 8) as i32;
@@ -1452,7 +1452,7 @@ pub fn cdef_search_still_hbd(
     }
 
     if mse.is_empty() {
-        return CdefSearchPick::AllSkip;
+        return Ok(CdefSearchPick::AllSkip);
     }
     let (bits, lev0, lev1) = finish_cdef_rd_bd(&mse, n_cand, qindex, bit_depth);
     #[cfg(feature = "std")]
@@ -1474,7 +1474,7 @@ pub fn cdef_search_still_hbd(
         eprintln!("RS_CDEF_PICK bits={bits} lev0={lev0:?} lev1={lev1:?}");
     }
     let nb = 1usize << bits;
-    let mut fb_idx = alloc::vec![0u8; nvfb * nhfb];
+    let mut fb_idx = svtav1_types::try_vec![0u8; nvfb * nhfb]?;
     for (i, &(fbr, fbc)) in fb_addr.iter().enumerate() {
         let mut best_gi = 0usize;
         let mut best_mse = u64::MAX;
@@ -1490,13 +1490,13 @@ pub fn cdef_search_still_hbd(
     let strengths: alloc::vec::Vec<(u8, u8)> = (0..nb)
         .map(|gi| (cfg.fs[lev0[gi]] as u8, cfg.fs[lev1[gi]] as u8))
         .collect();
-    CdefSearchPick::Picked(CdefPick {
+    Ok(CdefSearchPick::Picked(CdefPick {
         damping: (3 + (qindex >> 6)) as u8,
         bits: bits as u8,
         strengths,
         fb_idx,
         nhfb,
-    })
+    }))
 }
 
 #[cfg(test)]
