@@ -941,6 +941,36 @@ fn residual_variance(
     (sse - (sum * sum) / (w * h) as i64) as u64
 }
 
+/// C `sad_16b_kernel` (svt_aom_sad_16b_kernel_c) — the plain 16-bit SAD (sum of
+/// absolute differences) used as the bd10 fast-loop chroma distortion in
+/// `search_best_independent_uv_mode` when `mds0_dist_type != VAR`
+/// (product_coding_loop.c:7658). `mds0_dist_type` is NEVER assigned in the C
+/// tree (definitions.h:892 `enum { SAD=0, VAR=1, SSD=2 }`, default 0 = SAD), so
+/// the ind_uv fast loop scores SAD, NOT the `vf_hbd_10` variance the mainline
+/// LUMA mds0 uses unconditionally (product_coding_loop.c:1004). Using variance
+/// here mis-orders the candidate SET on non-flat recon: variance is DC-invariant
+/// so a flat prediction (e.g. off-frame-left H) scores 0 and displaces the
+/// above-following modes (V/PAETH/D45) that SAD ranks best, dropping UV_PAETH
+/// from the nfl=32 survivors where C keeps it.
+fn residual_sad_hbd(
+    src: &[u16],
+    src_stride: usize,
+    sx: usize,
+    sy: usize,
+    pred: &[u16],
+    w: usize,
+    h: usize,
+) -> u64 {
+    let mut sad: u64 = 0;
+    for r in 0..h {
+        let base = (sy + r) * src_stride + sx;
+        for c in 0..w {
+            sad += (src[base + c] as i64 - pred[r * w + c] as i64).unsigned_abs();
+        }
+    }
+    sad
+}
+
 // ---------------------------------------------------------------------------
 // Prediction helpers
 // ---------------------------------------------------------------------------
@@ -3378,49 +3408,70 @@ pub(crate) fn evaluate_leaf(
         // 2. Fast loop: residual variance (u + v) per candidate — C uses
         //    `svt_aom_mefn_ptr[bsize_uv].vf` and NO rate at this stage
         //    (:7864-7899).
+        // bd10 (task #94, root #1): C runs this fast loop at `hbd_md` too —
+        // the 10-bit prediction (product_prediction_fun_table) scored by
+        // `fn_ptr->vf_hbd_10` on the 10-bit source (product_coding_loop.c:
+        // 7622-7639). The sort order (which candidates enter the full loop)
+        // is decided HERE, so a u8 sort would admit a different candidate SET,
+        // not just mis-cost. bd8 keeps the u8 `vf` path and is byte-unchanged.
         let mut u_pred = alloc::vec![0u8; cw * chh];
         let mut v_pred = alloc::vec![0u8; cw * chh];
+        let mut u_pred10 = alloc::vec![0u16; cw * chh];
+        let mut v_pred10 = alloc::vec![0u16; cw * chh];
         let mut fast: Vec<(u64, usize)> = Vec::with_capacity(uv_cands.len());
         for (idx, &(uvm, uvd)) in uv_cands.iter().enumerate() {
-            predict_unit(
-                fx.u_recon,
-                fx.c_stride,
-                ccx,
-                ccy,
-                cw,
-                chh,
-                uvm,
-                uvd,
-                FI_NONE,
-                &uv_geom,
-                cfg.edge_filter,
-                filt_type_uv,
-                &mut u_pred,
-            );
-            predict_unit(
-                fx.v_recon,
-                fx.c_stride,
-                ccx,
-                ccy,
-                cw,
-                chh,
-                uvm,
-                uvd,
-                FI_NONE,
-                &uv_geom,
-                cfg.edge_filter,
-                filt_type_uv,
-                &mut v_pred,
-            );
-            let var = residual_variance(fx.u_src, fx.c_stride, ccx, ccy, &u_pred, cw, chh)
-                + residual_variance(fx.v_src, fx.c_stride, ccx, ccy, &v_pred, cw, chh);
-            fast.push((var, idx));
+            // bd10: SAD (`mds0_dist_type` default 0 = SAD); bd8: the original
+            // variance. Either is the fast-loop sort key below.
+            let fast_dist = match bd10_rd.as_ref() {
+                Some(b) => {
+                    predict_unit_hbd(
+                        fx.u_recon10.as_deref().unwrap(), fx.c_stride, ccx, ccy, cw, chh, uvm,
+                        uvd, FI_NONE, &uv_geom, cfg.edge_filter, filt_type_uv, &mut u_pred10, b.bd,
+                    );
+                    predict_unit_hbd(
+                        fx.v_recon10.as_deref().unwrap(), fx.c_stride, ccx, ccy, cw, chh, uvm,
+                        uvd, FI_NONE, &uv_geom, cfg.edge_filter, filt_type_uv, &mut v_pred10, b.bd,
+                    );
+                    residual_sad_hbd(&b.u_src10, cw, 0, 0, &u_pred10, cw, chh)
+                        + residual_sad_hbd(&b.v_src10, cw, 0, 0, &v_pred10, cw, chh)
+                }
+                None => {
+                    predict_unit(
+                        fx.u_recon, fx.c_stride, ccx, ccy, cw, chh, uvm, uvd, FI_NONE, &uv_geom,
+                        cfg.edge_filter, filt_type_uv, &mut u_pred,
+                    );
+                    predict_unit(
+                        fx.v_recon, fx.c_stride, ccx, ccy, cw, chh, uvm, uvd, FI_NONE, &uv_geom,
+                        cfg.edge_filter, filt_type_uv, &mut v_pred,
+                    );
+                    residual_variance(fx.u_src, fx.c_stride, ccx, ccy, &u_pred, cw, chh)
+                        + residual_variance(fx.v_src, fx.c_stride, ccx, ccy, &v_pred, cw, chh)
+                }
+            };
+            fast.push((fast_dist, idx));
         }
 
-        // 3. Stable sort by fast cost — C `sort_fast_cost_based_candidates`
-        //    (:1404) is a strict-less selection sort, so ties keep the
-        //    injection order; Rust `sort_by_key` is stable.
-        fast.sort_by_key(|&(var, _)| var);
+        // 3. Sort by fast cost. C `sort_fast_cost_based_candidates`
+        //    (product_coding_loop.c:1415) is a swap-on-`<` selection sort:
+        //    `for i { for j>i { if cost[j] < cost[i] swap(i,j) } }`. It is NOT
+        //    stable — a swap displaces the element at `i` down to `j`, so
+        //    equal-cost candidates do NOT keep injection order, and which of a
+        //    SAD tie group (e.g. the three `cbd=96` D45 deltas) lands inside
+        //    `nfl` is decided by this exact ordering. bd10 replicates C
+        //    bit-for-bit; the bd8 path keeps its original stable `sort_by_key`
+        //    (byte-inert — every bd8 gate is unchanged).
+        if bd10_rd.is_some() {
+            let n = fast.len();
+            for i in 0..n.saturating_sub(1) {
+                for j in (i + 1)..n {
+                    if fast[j].0 < fast[i].0 {
+                        fast.swap(i, j);
+                    }
+                }
+            }
+        } else {
+            fast.sort_by_key(|&(var, _)| var);
+        }
 
         // 4. Full-loop count: allintra path -> base is_highest_layer ? 16
         //    : 32 (:7919). Under OPT_USE_HL0_FLAT a still KF (temporal layer
@@ -3442,19 +3493,31 @@ pub(crate) fn evaluate_leaf(
         //    (:7949-8003).
         let mut uv_rd: Vec<(u8, i8, u64, u64)> = Vec::with_capacity(set.len());
         for &(uvm, uvd) in &set {
-            let (u_out, v_out) = chroma_eval(fx, uvm, uvd);
-            uv_rd.push((
-                uvm,
-                uvd,
-                u_out.bits as u64 + v_out.bits as u64,
-                u_out.dist + v_out.dist,
-            ));
+            // bd10 (root #1): the full loop is `svt_aom_full_loop_uv` at
+            // `hbd_md` (product_coding_loop.c:7523 full_lambda, 10-bit pred/
+            // residual/distortion), same as the mds3-uv fix. bd8 keeps the u8
+            // `chroma_eval` (the `None` arm is the original code).
+            let (bits, dist) = match bd10_rd.as_ref() {
+                Some(b) => {
+                    let (u_out, v_out) = chroma_eval10(fx, b, uvm, uvd);
+                    (u_out.bits as u64 + v_out.bits as u64, u_out.dist + v_out.dist)
+                }
+                None => {
+                    let (u_out, v_out) = chroma_eval(fx, uvm, uvd);
+                    (u_out.bits as u64 + v_out.bits as u64, u_out.dist + v_out.dist)
+                }
+            };
+            uv_rd.push((uvm, uvd, bits, dist));
         }
 
         // 6. Per luma mode: best uv by RD with the uv rate conditioned on
         //    the (real) luma mode (:8005-8039). All luma modes DC..mode_end
         //    get an entry (no directional skip at angular_pred_level 1); the
         //    rewrite below reads only the surviving luma modes.
+        // bd10 (root #1): C prices this compare with the SAME full_lambda the
+        // 10-bit full loop used (`full_lambda_md[EB_10_BIT_MD]`, :7523/:7994),
+        // matching the 10-bit `uv_rd` above; bd8 keeps the u8 `lambda`.
+        let uv_lambda = bd10_rd.as_ref().map_or(lambda, |b| b.lambda);
         let mut table = [(0u8, 0i8); 13];
         for luma in 0..=(cfg.mode_end as usize) {
             let mut best_cost = u64::MAX;
@@ -3466,7 +3529,7 @@ pub(crate) fn evaluate_leaf(
                 if uvm == 0 {
                     fcr2 += pal_uv_no; // rd_cost.c:514 (inside uv fast rate)
                 }
-                let cost = rdcost(lambda, bits + fcr2, dist);
+                let cost = rdcost(uv_lambda, bits + fcr2, dist);
                 if cost < best_cost {
                     best_cost = cost;
                     table[luma] = (uvm, uvd);
@@ -7344,6 +7407,36 @@ fn chroma_var_arm_fires(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// bd10 ind_uv fast metric: [`residual_sad_hbd`] is the 16-bit SAD C sorts
+    /// the `search_best_independent_uv_mode` candidates by when `mds0_dist_type
+    /// != VAR` (product_coding_loop.c:7658, `sad_16b_kernel`) — the default,
+    /// since `mds0_dist_type` is never assigned in the C tree (0 = SAD). Pin it
+    /// BIT-EXACT to the real `svt_aom_sad_16b_kernel_c` across the chroma sizes
+    /// the uv search reaches, over randomized 10-bit content. Using variance
+    /// here (the mainline LUMA mds0 metric) mis-orders the SET on non-flat
+    /// recon and drops UV_PAETH from the survivors where C keeps it.
+    #[test]
+    fn residual_sad_hbd_matches_c_sad_16b_kernel() {
+        // Deterministic xorshift so the test needs no rng dependency.
+        let mut s: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut next = || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s
+        };
+        for &(w, h) in &[(4usize, 4usize), (8, 8), (16, 16), (32, 32), (4, 8), (8, 4), (16, 8), (8, 16)] {
+            for _ in 0..300 {
+                let n = w * h;
+                let src: Vec<u16> = (0..n).map(|_| (next() % 1024) as u16).collect();
+                let pred: Vec<u16> = (0..n).map(|_| (next() % 1024) as u16).collect();
+                let port = residual_sad_hbd(&src, w, 0, 0, &pred, w, h);
+                let c = svtav1_cref::sad_16b_kernel(&src, w, &pred, w, w, h) as u64;
+                assert_eq!(port, c, "sad_16b mismatch at {w}x{h}: port={port} c={c}");
+            }
+        }
+    }
 
     /// Instrumented-capture pins: `M6FNL NICS c0` lines — mds1/2/3
     /// counts at CLI qp 20/40/55 (M6 nic level 6, nums 6/6/6, base

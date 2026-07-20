@@ -1940,7 +1940,12 @@ picked up: mirror (a) (`chroma_eval10` + `b.lambda`) AND port the fast-loop
 residual variance to `vf_hbd_10` semantics (the ROUND_POWER_OF_TWO(sum,2) form,
 NOT a naive u16 `sse - sum^2/N`).
 
-## ROOT #2 CLOSED — ROOT #1 uv port DEFERRED (2026-07-20): p0..p3 NSQ psq-txs bd8-pricing
+## ROOT #2 + ROOT #1 CLOSED (2026-07-20): p0..p3 NSQ psq-txs bd8-pricing + ind_uv fast metric
+
+NOTE: the "ROOT #1 uv port DEFERRED" framing below is SUPERSEDED — root #1 (the
+p0/p1 luma MODE near-tie) is now CLOSED, but by a DIFFERENT fix than the deferred
+branch attempted. The real root was the ind_uv fast-loop METRIC (SAD vs variance),
+not the variance-at-bd10 port. See "ROOT #1 (LUMA MODE near-tie) — CLOSED" below.
 
 The "p0..p3 luma partition RD near-tie" named in the section above was NOT an
 irreducible near-tie: it is the recurring **"one search, two consumers, one
@@ -1998,17 +2003,56 @@ at `parity/bd10-uvport-deferred`. It has zero current value (0 wins) and needs
 BOTH its own uv-sort divergence fixed AND the luma near-tie (below) closed before
 the uv decision is even load-bearing — re-land only after both.
 
+### ROOT #1 (LUMA MODE near-tie) — CLOSED ✅ (2026-07-20): ind_uv fast metric is SAD, not variance
+
+The "bd10-specific luma MODE near-tie" was NOT a MDS3 luma-cost bug and NOT the
+deferred variance-at-bd10 port. It was the **`search_best_independent_uv_mode`
+(M0/M1 chroma_level 1/2, `ind_uv_independent`) fast loop scoring the uv
+candidates by the WRONG METRIC**. C's ind_uv fast loop (product_coding_loop.c
+:7607-7673) branches on `mds0_dist_type`: `== VAR` → `vf_hbd_10` variance, else →
+`sad_16b_kernel` SAD. **`mds0_dist_type` is NEVER assigned anywhere in the C tree**
+(definitions.h:892 `enum DistortionType { SAD=0, VAR=1, SSD=2 }`, zero-init default
+0 = SAD), so the ind_uv fast loop scores **SAD**, NOT the `vf_hbd_10` variance the
+mainline LUMA mds0 uses unconditionally (:1004). The port's `ind_uv_independent`
+block scored `residual_variance` (variance) regardless of bit depth.
+
+- **Mechanism (localised on `diag 64x64 q32 p0` mi(4,0) 16x16).** Chroma source is
+  flat 512, but the recon neighbours are a 1-LSB vertical edge (513 in cols 0-3,
+  512 in cols 4-7 — verified byte-identical to C's `SVT_RECON_BIN` p1). Variance is
+  DC-invariant, so a flat off-frame-left prediction (H/D157/D203) scores **0** and
+  the above-following modes (D45/D67/V/PAETH) that SAD ranks best score higher →
+  the variance sort admits {DC,H,D45,D157,D203,V} where SAD admits
+  {D45,D67,D113,V,PAETH,SMOOTH*,DC}. **UV_PAETH is dropped from the nfl=32
+  survivors** where C keeps it, so the port's ind_uv table gave `best_uv[PAETH]=0`
+  (DC) vs C's `12` (PAETH), and `best_uv[V]=0` vs C's `1`. The wrong uv modes
+  mis-priced the JOINT mode RD (the dist is luma-only and matched; the divergence
+  was the chroma-mode fast rate `fcr`), so the port coded DC+filter-intra where C
+  codes PAETH. Verified with the `SVT_UVLOOP_OUT` wrap: after the fix the port's set
+  order, SAD values (8,10,12,…) and the whole `best_uv` table match C's UVLOOP
+  dump exactly (DC→0, V→1, H→0, PAETH→12).
+- **Fix (`leaf_funnel.rs`, bd10-gated, bd8 byte-inert):** the bd10 `ind_uv_independent`
+  fast loop scores `residual_sad_hbd` (the plain 16-bit SAD, pinned bit-exact to the
+  real `svt_aom_sad_16b_kernel_c` by `residual_sad_hbd_matches_c_sad_16b_kernel`) +
+  C's EXACT non-stable swap-sort (`sort_fast_cost_based_candidates`, :1415 — a
+  swap-on-`<` selection sort, NOT stable; it decides which of a SAD tie group lands
+  inside `nfl`). The full loop uses `chroma_eval10` and the compare uses the bd10
+  lambda. bd8 keeps `residual_variance` + the stable `sort_by_key` — every bd8 gate
+  is unchanged. (The deferred root #1 at `parity/bd10-uvport-deferred` used
+  `vf_hbd_10` variance — the wrong metric — which is why it diverged / regressed a
+  p1 cell.)
+- **Effect (A/B-proven):** synthetic p0/p1 DIFF 7 → 0 — `diag {64,128} q32/q40 p0`,
+  `diag {64,128} q40 p1`, `gradient 128 q20 p0` all flip DIFF → MATCH; the whole
+  synthetic p0..p3 sweep is **126/128** (only `{diag,gradient} 128 q63 p3` stay DIFF
+  on a SEPARATE ind_uv_mds3 residual, below). Added to `bd10_nonflat_gate.sh`
+  (300 → 307). bd8 `identity_matrix` 54/54, `bd10_matrix` 36/36 unchanged.
+
 ### REMAINING (p0..p3 still open) — the roots, with evidence
 
-1. **A bd10-specific luma MODE near-tie** (the first divergence on the residual
-   synthetic cells). `diag 64x64 q32 p0` first diverges at mi(4,0) 16x16: C
-   codes PAETH (mode 12, no filter-intra), the port codes DC + filter-intra
-   (fi=1) — and the cell is **byte-identical at bd8**. So it is the same
-   bd8-pricing class as root #2 but in the luma MDS3 mode RD (the fast loop is
-   already 10-bit — `satd10 != satd<<2` for angled modes, confirming it). Next
-   step: per-candidate MDS3 full-cost dump at mi(4,0) (`SVTAV1_CANDDBG` vs
-   `SVT_FULLCOST_OUT`) to find which mode's cost term still diverges — the
-   min_nz method.
+1. **`{diag,gradient} 128×128 q63 p3`** (the q63 128px corner). p3 uses
+   `ind_uv_mds3` (NOT the `ind_uv_independent` root #1 just closed), so this is a
+   separate near-tie at the extreme high-qindex + largest-size corner. Next step:
+   the `SVT_UVLOOP_OUT` / `SVT_FULLCOST_OUT` per-candidate dump at the first
+   divergent block.
 2. **`quad_rec_dists`** (the `skip_by_recon_dist` NSQ gate input) reads the u8
    recon (`ev.gate_y()`) while C's `calc_scr_to_recon_dist_per_quadrant`
    (:8065) uses `svt_full_distortion_kernel16_bits` at `hbd_md`. A latent

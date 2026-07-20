@@ -406,6 +406,32 @@ CELLS=(
   "diag 128 128 12 3"
   "diag 128 128 20 2"
   "diag 128 128 20 3"
+  # bd10 root #1 (task #94, the p0/p1 LUMA MODE near-tie): the M0/M1
+  # `search_best_independent_uv_mode` fast loop (ind_uv_independent) scored the
+  # uv candidates by VARIANCE (`residual_variance`) at bd10, but C scores them by
+  # SAD — `mds0_dist_type` is never assigned in the C tree (definitions.h:892
+  # `enum { SAD=0, VAR=1, SSD=2 }`, default 0 = SAD), so the ind_uv fast loop
+  # takes the `!= VAR` arm `sad_16b_kernel` (product_coding_loop.c:7658), NOT the
+  # `vf_hbd_10` variance the mainline LUMA mds0 uses. Variance is DC-invariant, so
+  # on the non-flat 10-bit recon a flat off-frame-left prediction (H/D157/D203)
+  # scored 0 and displaced the above-following modes (D45/D67/V/PAETH) that SAD
+  # ranks best, dropping UV_PAETH from the nfl=32 survivors where C keeps it. The
+  # wrong uv table then mis-priced the JOINT mode RD and flipped the luma winner
+  # (diag 64 64 32 0 mi(4,0): C PAETH, port DC+filter-intra). Fixed by scoring the
+  # bd10 ind_uv fast loop with SAD (residual_sad_hbd, pinned to sad_16b_kernel) +
+  # C's exact non-stable swap-sort (sort_fast_cost_based_candidates); bd8 keeps
+  # the u8 variance + stable sort and is byte-inert. Each of these 7 cells was a
+  # LUMA MODE-flip DIFF before and BYTE-MATCHES after (verified `cmp`; A/B-proven
+  # to flip only with the fix). diag q32/q40 (64+128) + gradient 128 q20 exercise
+  # the near-tie; the wider p0..p3 sweep is 126/128 (only 128 q63 p3 stays DIFF on
+  # a SEPARATE ind_uv_mds3 residual).
+  "diag 64 64 32 0"
+  "diag 64 64 40 0"
+  "diag 64 64 40 1"
+  "diag 128 128 32 0"
+  "diag 128 128 40 0"
+  "diag 128 128 40 1"
+  "gradient 128 128 20 0"
   "diag 128 128 12 1"
   "diag 128 128 20 5"
   "diag 128 128 40 2"
