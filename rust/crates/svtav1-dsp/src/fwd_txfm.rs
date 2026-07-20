@@ -1977,6 +1977,16 @@ pub fn fwd_txfm2d_c_exact(
     {
         return true;
     }
+    // SIMD fast path: non-square (rectangular) DCT-DCT, no flips.
+    if col_1d == 0
+        && row_1d == 0
+        && w != h
+        && !ud_flip
+        && !lr_flip
+        && crate::txfm_simd::try_fwd_dct_rect(input, output, input_stride, w, h)
+    {
+        return true;
+    }
     let col_func = match get_fwd_txfm_func(col_1d, h) {
         Some(f) => f,
         None => return false,

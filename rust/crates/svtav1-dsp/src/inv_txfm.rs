@@ -1953,6 +1953,16 @@ pub fn inv_txfm2d_c_exact_bd(
     {
         return true;
     }
+    // SIMD fast path: non-square (rectangular) DCT-DCT, no flips, bd <= 10.
+    if row_1d == 0
+        && col_1d == 0
+        && w != h
+        && !ud_flip
+        && !lr_flip
+        && crate::txfm_simd::try_inv_dct_rect(input, input_stride, output, out_stride, w, h, bd)
+    {
+        return true;
+    }
     let row_func = match get_inv_txfm_func(row_1d, w) {
         Some(f) => f,
         None => return false,

@@ -33,8 +33,11 @@
 
 #![allow(clippy::too_many_arguments)]
 
-use crate::fwd_txfm::{COS_BIT, FWD_COS_BIT_COL, FWD_COS_BIT_ROW, cospi_arr, fwd_txfm_shift};
-use crate::inv_txfm::inv_txfm_shift;
+use crate::fwd_txfm::{
+    COS_BIT, FWD_COS_BIT_COL, FWD_COS_BIT_ROW, NEW_SQRT2, NEW_SQRT2_BITS, cospi_arr,
+    fwd_txfm_shift,
+};
+use crate::inv_txfm::{NEW_INV_SQRT2, inv_txfm_shift};
 use archmage::prelude::*;
 use svtav1_types::transform::TranLow;
 
@@ -43,6 +46,13 @@ use svtav1_types::transform::TranLow;
 #[inline]
 fn simd_square_supported(n: usize) -> bool {
     matches!(n, 8 | 16 | 32 | 64)
+}
+
+/// `(w, h)` the rectangular DCT-DCT SIMD path supports: both dims a multiple of
+/// 8 and `w != h` (the 4-dim rects stay scalar). `bd` gates the inverse only.
+#[inline]
+fn simd_rect_supported(w: usize, h: usize) -> bool {
+    w != h && simd_square_supported(w) && simd_square_supported(h)
 }
 
 /// Try the SIMD forward square DCT-DCT (`w == h == n`, no flips). Returns true
@@ -82,6 +92,45 @@ pub fn try_inv_dct_square(
     )
 }
 
+/// Try the SIMD forward rectangular DCT-DCT (`w != h`, no flips). Same return
+/// contract as [`try_fwd_dct_square`].
+pub fn try_fwd_dct_rect(
+    input: &[TranLow],
+    output: &mut [TranLow],
+    input_stride: usize,
+    w: usize,
+    h: usize,
+) -> bool {
+    if !simd_rect_supported(w, h) {
+        return false;
+    }
+    incant!(
+        try_fwd_dct_rect_impl(input, output, input_stride, w, h),
+        [v3, neon, scalar]
+    )
+}
+
+/// Try the SIMD inverse rectangular DCT-DCT (`w != h`, no flips, `bd <= 10`).
+/// For 64-dim sizes the caller must pass the zero-extended `w x h` mod_input at
+/// `input_stride` (exactly the scalar `inv_txfm2d_c_exact_bd` contract).
+pub fn try_inv_dct_rect(
+    input: &[TranLow],
+    input_stride: usize,
+    output: &mut [TranLow],
+    out_stride: usize,
+    w: usize,
+    h: usize,
+    bd: u8,
+) -> bool {
+    if !simd_rect_supported(w, h) || bd > 10 {
+        return false;
+    }
+    incant!(
+        try_inv_dct_rect_impl(input, input_stride, output, out_stride, w, h, bd),
+        [v3, neon, scalar]
+    )
+}
+
 // -- scalar / neon arms: not handled, caller runs the scalar core --
 
 fn try_fwd_dct_square_impl_scalar(
@@ -101,6 +150,58 @@ fn try_inv_dct_square_impl_scalar(
     _output: &mut [TranLow],
     _out_stride: usize,
     _n: usize,
+    _bd: u8,
+) -> bool {
+    false
+}
+
+fn try_fwd_dct_rect_impl_scalar(
+    _t: ScalarToken,
+    _input: &[TranLow],
+    _output: &mut [TranLow],
+    _input_stride: usize,
+    _w: usize,
+    _h: usize,
+) -> bool {
+    false
+}
+
+fn try_inv_dct_rect_impl_scalar(
+    _t: ScalarToken,
+    _input: &[TranLow],
+    _input_stride: usize,
+    _output: &mut [TranLow],
+    _out_stride: usize,
+    _w: usize,
+    _h: usize,
+    _bd: u8,
+) -> bool {
+    false
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn try_fwd_dct_rect_impl_neon(
+    _t: NeonToken,
+    _input: &[TranLow],
+    _output: &mut [TranLow],
+    _input_stride: usize,
+    _w: usize,
+    _h: usize,
+) -> bool {
+    false
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn try_inv_dct_rect_impl_neon(
+    _t: NeonToken,
+    _input: &[TranLow],
+    _input_stride: usize,
+    _output: &mut [TranLow],
+    _out_stride: usize,
+    _w: usize,
+    _h: usize,
     _bd: u8,
 ) -> bool {
     false
@@ -198,6 +299,37 @@ mod v3 {
         _mm256_max_epi32(_mm256_min_epi32(v, hi), lo)
     }
 
+    /// The rectangular `NewSqrt2` / `NewInvSqrt2` scale, byte-exact with the
+    /// scalar `round_shift_i64(v as i64 * k as i64, NEW_SQRT2_BITS)` applied to
+    /// each of the 8 lanes: `(v*k + (1<<11)) >> 12` with a **64-bit** product
+    /// (the scalar widens to i64, so 32-bit `mullo` would overflow for large
+    /// coefficients — this must use the true i64 product).
+    ///
+    /// AVX2 has no signed 64-bit arithmetic shift, so the even (0,2,4,6) and odd
+    /// (1,3,5,7) lanes are multiplied 32×32→64 via `_mm256_mul_epi32`, rounded,
+    /// then `>> 12` **logically**: the true result fits in i32 (a valid
+    /// coefficient), and a logical and arithmetic `>>12` agree in bits 0..51, so
+    /// the low 32 bits of the logical shift equal the i32 arithmetic result. The
+    /// even results land in i32 lanes 0,2,4,6; the odd results are shifted up
+    /// into i32 lanes 1,3,5,7 and blended back to lane order. The `c_parity_txfm`
+    /// rect differential proves this byte-exact vs real C over edge inputs.
+    #[rite]
+    pub(super) fn rect_scale(_t: Desktop64, v: __m256i, k: i32) -> __m256i {
+        const BITS: i32 = NEW_SQRT2_BITS as i32; // 12
+        let ks = _mm256_set1_epi32(k);
+        let round = _mm256_set1_epi64x(1i64 << (BITS - 1)); // 2048
+        // even lanes 0,2,4,6 → four i64 products in slots [0..4]
+        let even = _mm256_add_epi64(_mm256_mul_epi32(v, ks), round);
+        // odd lanes 1,3,5,7 → move into the low 32 of each 64-bit slot, then mul
+        let vodd = _mm256_srli_epi64::<32>(v);
+        let odd = _mm256_add_epi64(_mm256_mul_epi32(vodd, ks), round);
+        // >>12 logical; low 32 bits of each slot = the i32 arithmetic result
+        let even_s = _mm256_srli_epi64::<BITS>(even); // results in i32 lanes 0,2,4,6
+        let odd_s = _mm256_srli_epi64::<BITS>(odd);
+        let odd_up = _mm256_slli_epi64::<32>(odd_s); // move to i32 lanes 1,3,5,7
+        _mm256_blend_epi32::<0xAA>(even_s, odd_up)
+    }
+
     /// Transpose an 8×8 i32 tile: `out[i]` = column `i` = `[in0[i]..in7[i]]`.
     /// Pure data movement (unpack + `permute2x128`) → bit-exact.
     #[rite]
@@ -247,6 +379,7 @@ mod v3 {
 
     include!("txfm_simd_kernels.rs");
     include!("txfm_simd_drivers.rs");
+    include!("txfm_simd_rect.rs");
 }
 
 /// AVX2 forward square DCT-DCT. Dispatched only on the `v3` tier.
@@ -275,4 +408,34 @@ fn try_inv_dct_square_impl_v3(
     bd: u8,
 ) -> bool {
     v3::inv_dct_square(t, input, input_stride, output, out_stride, n, bd)
+}
+
+/// AVX2 forward rectangular DCT-DCT. Dispatched only on the `v3` tier.
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn try_fwd_dct_rect_impl_v3(
+    t: Desktop64,
+    input: &[TranLow],
+    output: &mut [TranLow],
+    input_stride: usize,
+    w: usize,
+    h: usize,
+) -> bool {
+    v3::fwd_dct_rect(t, input, output, input_stride, w, h)
+}
+
+/// AVX2 inverse rectangular DCT-DCT. Dispatched only on the `v3` tier.
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn try_inv_dct_rect_impl_v3(
+    t: Desktop64,
+    input: &[TranLow],
+    input_stride: usize,
+    output: &mut [TranLow],
+    out_stride: usize,
+    w: usize,
+    h: usize,
+    bd: u8,
+) -> bool {
+    v3::inv_dct_rect(t, input, input_stride, output, out_stride, w, h, bd)
 }

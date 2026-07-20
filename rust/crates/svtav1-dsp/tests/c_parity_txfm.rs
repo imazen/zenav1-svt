@@ -434,6 +434,104 @@ fn fwd_dct_simd_all_tiers_match_c() {
     }
 }
 
+// ---- non-square (rectangular) DCT-DCT SIMD differential ----
+//
+// Every rect size with both dims a multiple of 8 (the sizes the rect SIMD path
+// handles). Same two-way proof as the square tests, PLUS the rectangular
+// `NewSqrt2`/`NewInvSqrt2` scaling is exercised at every 2:1 size (the `rect_
+// scale` i64 helper) — the classic rect_type byte-diff source. Edge (max-mag)
+// patterns first to stress the forward rect scale's large-coefficient path.
+
+const SIMD_RECT: [(usize, usize, TxSize); 10] = [
+    (8, 16, TxSize::Tx8x16),
+    (16, 8, TxSize::Tx16x8),
+    (16, 32, TxSize::Tx16x32),
+    (32, 16, TxSize::Tx32x16),
+    (32, 64, TxSize::Tx32x64),
+    (64, 32, TxSize::Tx64x32),
+    (8, 32, TxSize::Tx8x32),
+    (32, 8, TxSize::Tx32x8),
+    (16, 64, TxSize::Tx16x64),
+    (64, 16, TxSize::Tx64x16),
+];
+
+#[test]
+fn fwd_dct_simd_rect_all_tiers_match_c() {
+    let mut rng = Rng(0x2EC7_2026_0720_1234);
+    for &(w, h, ts) in &SIMD_RECT {
+        for pat in 0..40 {
+            let res16 = simd_residual(pat, w * h, &mut rng);
+            let c_out = cref::fwd_txfm2d_rect(w, h, &res16, 0); // DCT_DCT
+            let res32: Vec<i32> = res16.iter().map(|&v| v as i32).collect();
+            for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+                let mut ours = vec![0i32; w * h];
+                assert!(svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
+                    &res32,
+                    &mut ours,
+                    w,
+                    ts,
+                    TxType::DctDct
+                ));
+                if ours != c_out {
+                    let first = ours
+                        .iter()
+                        .zip(c_out.iter())
+                        .position(|(a, b)| a != b)
+                        .unwrap();
+                    panic!(
+                        "fwd rect {w}x{h} pat {pat}: SIMD tier != C at {first} (r{} c{}): ours={} c={}",
+                        first / w,
+                        first % w,
+                        ours[first],
+                        c_out[first]
+                    );
+                }
+            });
+        }
+    }
+}
+
+#[test]
+fn inv_dct_simd_rect_all_tiers_identical_and_recon_match_c() {
+    let mut rng = Rng(0x1A5E_2026_0720_ABCD);
+    for &(w, h, _ts) in &SIMD_RECT {
+        // Both the port named wrapper and the C rect inverse consume the SAME
+        // coefficient bytes (for 64-dim: packed at stride min(dim,32) via
+        // `mod_input_64` — identical to C), so recon-equality is meaningful and
+        // the all-tiers-identical residual check pins SIMD == scalar.
+        for pat in 0..50 {
+            let coeffs: Vec<i32> = if pat < 40 {
+                let res16 = simd_residual(pat, w * h, &mut rng);
+                cref::fwd_txfm2d_rect(w, h, &res16, 0)
+            } else {
+                // wide-magnitude synthetic (rect_scale i64 stress)
+                (0..w * h)
+                    .map(|_| (rng.next() % 60001) as i32 - 30000)
+                    .collect()
+            };
+            let base = vec![128u16; w * h];
+            let c_recon = cref::inv_txfm2d_add_rect(w, h, &coeffs, &base, 0);
+
+            let mut first_res: Option<Vec<i32>> = None;
+            for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+                let mut our_res = vec![0i32; w * h];
+                named_inv_rect(w, h, &coeffs, &mut our_res, w);
+                match &first_res {
+                    None => first_res = Some(our_res.clone()),
+                    Some(f) => {
+                        assert_eq!(&our_res, f, "inv rect {w}x{h} pat {pat}: tier residual != scalar")
+                    }
+                }
+                let recon: Vec<u16> = our_res
+                    .iter()
+                    .map(|&r| (128 + r).clamp(0, 255) as u16)
+                    .collect();
+                assert_eq!(recon, c_recon, "inv rect {w}x{h} pat {pat}: SIMD tier recon != C");
+            });
+        }
+    }
+}
+
 #[test]
 fn inv_dct_simd_all_tiers_identical_and_recon_match_c() {
     let mut rng = Rng(0xC0FF_EE20_2607_2012);
