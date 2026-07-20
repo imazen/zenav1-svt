@@ -27,5 +27,6 @@ pub mod sad;
 pub mod scale;
 pub mod superres;
 pub mod txfm_dispatch;
+pub mod txfm_simd;
 pub mod variance;
 pub mod warp;

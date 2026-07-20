@@ -374,3 +374,100 @@ fn inv_named_square_wrappers_flat_dc_match_c() {
         }
     }
 }
+
+// ============================================================================
+// SIMD DIFFERENTIAL (archmage AVX2 square DCT-DCT fast path).
+//
+// Proves the SIMD transform is byte-exact TWO ways, per size, over randomized
+// AND edge (max-magnitude) inputs, under EVERY archmage dispatch tier
+// (`for_each_token_permutation` forces v3 + scalar, so the SIMD path is
+// genuinely exercised — not silently skipped):
+//   (a) every tier's output == the exported real C reference; and
+//   (b) every tier's residual is byte-identical to every other tier's — i.e.
+//       SIMD == the (already C-verified) scalar core at full i32 precision
+//       (stronger than the recon compare, which a clamp could mask).
+// Extend `SIMD_SQUARE` as more sizes are vectorized.
+// ============================================================================
+
+use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+
+const SIMD_SQUARE: [(usize, TxSize); 1] = [(16, TxSize::Tx16x16)];
+
+/// Residual patterns: max-magnitude edges first (stress the `mullo_epi32`
+/// no-overflow invariant), then random.
+fn simd_residual(pat: usize, n: usize, rng: &mut Rng) -> Vec<i16> {
+    match pat {
+        0 => vec![255i16; n],
+        1 => vec![-255i16; n],
+        2 => (0..n).map(|i| if i % 2 == 0 { 255 } else { -255 }).collect(),
+        3 => (0..n).map(|i| if (i / 4) % 2 == 0 { 255 } else { -255 }).collect(),
+        4 => (0..n).map(|i| if i % 3 == 0 { 255 } else { 0 }).collect(),
+        _ => (0..n).map(|_| rng.residual()).collect(),
+    }
+}
+
+#[test]
+fn fwd_dct_simd_all_tiers_match_c() {
+    let mut rng = Rng(0x51D0_2026_0720_C0DE);
+    for &(n, ts) in &SIMD_SQUARE {
+        for pat in 0..40 {
+            let res16 = simd_residual(pat, n * n, &mut rng);
+            let c_out = cref::fwd_txfm2d(n, &res16, 0); // DCT_DCT
+            let res32: Vec<i32> = res16.iter().map(|&v| v as i32).collect();
+            for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+                let mut ours = vec![0i32; n * n];
+                assert!(svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
+                    &res32,
+                    &mut ours,
+                    n,
+                    ts,
+                    TxType::DctDct
+                ));
+                assert_eq!(ours, c_out, "fwd {n}x{n} pat {pat}: SIMD tier != C");
+            });
+        }
+    }
+}
+
+#[test]
+fn inv_dct_simd_all_tiers_identical_and_recon_match_c() {
+    let mut rng = Rng(0xC0FF_EE20_2607_2012);
+    for &(n, ts) in &SIMD_SQUARE {
+        for pat in 0..60 {
+            // Coefficients: realistic (from the C forward of a residual) for
+            // pat < 40; wide-magnitude synthetic (near the row-range clamp,
+            // overflow stress) for pat >= 40.
+            let coeffs: Vec<i32> = if pat < 40 {
+                let res16 = simd_residual(pat, n * n, &mut rng);
+                cref::fwd_txfm2d(n, &res16, 0)
+            } else {
+                (0..n * n)
+                    .map(|_| (rng.next() % 60001) as i32 - 30000)
+                    .collect()
+            };
+            let base = vec![128u16; n * n];
+            let c_recon = cref::inv_txfm2d_add(n, &coeffs, &base, 0);
+
+            let mut first: Option<Vec<i32>> = None;
+            for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+                let mut res = vec![0i32; n * n];
+                assert!(svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch(
+                    &coeffs,
+                    &mut res,
+                    n,
+                    ts,
+                    TxType::DctDct
+                ));
+                // (b) all tiers produce byte-identical residuals (SIMD==scalar)
+                match &first {
+                    None => first = Some(res.clone()),
+                    Some(f) => assert_eq!(&res, f, "inv {n}x{n} pat {pat}: tier residual != scalar"),
+                }
+                // (a) recon == real C
+                let recon: Vec<u16> =
+                    res.iter().map(|&r| (128 + r).clamp(0, 255) as u16).collect();
+                assert_eq!(recon, c_recon, "inv {n}x{n} pat {pat}: SIMD tier recon != C");
+            });
+        }
+    }
+}

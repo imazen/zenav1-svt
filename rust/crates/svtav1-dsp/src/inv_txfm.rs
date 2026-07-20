@@ -62,7 +62,7 @@ fn highbd_wraplow(trans: i32, bd: u8) -> i32 {
 /// (16/16/18) — for both the input clamp AND the kernel stage range in that
 /// direction. At bd8 both are 16, matching the fixed BD8 constants.
 #[inline]
-fn inv_txfm_ranges(bd: u8) -> (i8, i8) {
+pub(crate) fn inv_txfm_ranges(bd: u8) -> (i8, i8) {
     let row = (bd as i32 + 8) as i8;
     let col = core::cmp::max(bd as i32 + 6, 16) as i8;
     (row, col)
@@ -1943,6 +1943,16 @@ pub fn inv_txfm2d_c_exact_bd(
     lr_flip: bool,
     bd: u8,
 ) -> bool {
+    // SIMD fast path: square DCT-DCT with no flips, bd <= 10 (byte-exact).
+    if row_1d == 0
+        && col_1d == 0
+        && w == h
+        && !ud_flip
+        && !lr_flip
+        && crate::txfm_simd::try_inv_dct_square(input, input_stride, output, out_stride, w, bd)
+    {
+        return true;
+    }
     let row_func = match get_inv_txfm_func(row_1d, w) {
         Some(f) => f,
         None => return false,

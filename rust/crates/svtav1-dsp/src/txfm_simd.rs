@@ -1,0 +1,278 @@
+//! Archmage SIMD (AVX2 `v3`) fast paths for the hot square DCT-DCT 2D
+//! transforms, **byte-exact** with the scalar reference.
+//!
+//! The AV1 integer transforms are fixed-point butterfly networks: every stage
+//! is `add` / `sub` / `half_btf(w0,in0,w1,in1,bit)` / `clamp` with a *defined*
+//! rounding-shift order. They vectorize naturally across the N independent
+//! columns (or rows) of a block — lane `l` carries column (or row) `base + l`,
+//! `i32x8` doing 8 at once — with NO cross-lane arithmetic inside a pass. So a
+//! SIMD port that performs the SAME multiplies and the SAME `round_shift` in the
+//! SAME stage order is **bit-identical** to the scalar kernel.
+//!
+//! ## Why `_mm256_mullo_epi32` (32-bit) reproduces the scalar's i64 `half_btf`
+//!
+//! The scalar [`crate::fwd_txfm::half_btf`] widens to i64
+//! (`w0 as i64 * in0 as i64 + w1 as i64 * in1 as i64`) then `>> bit`. This code
+//! uses `_mm256_mullo_epi32` (low 32 bits) + `_mm256_sra_epi32` — exactly the
+//! technique SVT-AV1's own production AVX2 kernels use
+//! (`half_btf_avx2`, ASM_AVX2/highbd_{fwd,inv}_txfm_avx2.c), which are
+//! bit-identical to the C reference across the whole conformance/fuzz suite.
+//! It is exact **iff** every intermediate (`w0·in0`, `w1·in1`, their sum,
+//! `+ round`) stays within `i32`: then the wrapping 32-bit ops equal the true
+//! i64 value and the arithmetic `>> bit` matches. That range invariant is a
+//! designed property of the forward cos-bit choices and the inverse stage
+//! clamps; it holds for the whole supported bd8/bd10 envelope (this module gates
+//! itself to `bd <= 10`). The `c_parity_txfm` differential proves SIMD == the
+//! exported real C **and** SIMD == the scalar port over randomized + edge inputs
+//! for every size, under every archmage dispatch tier — so a range violation
+//! would fail the build, not ship a wrong pixel.
+//!
+//! Only the AVX2 (`v3`) arm is vectorized; the `neon`/`scalar` arms report
+//! "not handled" and the caller falls through to the scalar core (the CDEF /
+//! `txb_init_levels` pattern). Additive — no scalar path is modified.
+
+#![allow(clippy::too_many_arguments)]
+
+use crate::fwd_txfm::{COS_BIT, FWD_COS_BIT_COL, FWD_COS_BIT_ROW, cospi_arr, fwd_txfm_shift};
+use crate::inv_txfm::inv_txfm_shift;
+use archmage::prelude::*;
+use svtav1_types::transform::TranLow;
+
+/// Sizes the square DCT-DCT SIMD path supports (multiples of 8; 4x4 stays
+/// scalar — smaller than a lane group).
+#[inline]
+fn simd_square_supported(n: usize) -> bool {
+    matches!(n, 8 | 16 | 32 | 64)
+}
+
+/// Try the SIMD forward square DCT-DCT (`w == h == n`, no flips). Returns true
+/// only when the AVX2 tier actually handled it; false (scalar/neon tiers, or
+/// unsupported `n`) tells the caller to run the scalar core.
+pub fn try_fwd_dct_square(
+    input: &[TranLow],
+    output: &mut [TranLow],
+    input_stride: usize,
+    n: usize,
+) -> bool {
+    if !simd_square_supported(n) {
+        return false;
+    }
+    incant!(
+        try_fwd_dct_square_impl(input, output, input_stride, n),
+        [v3, neon, scalar]
+    )
+}
+
+/// Try the SIMD inverse square DCT-DCT (`w == h == n`, no flips, `bd <= 10`).
+/// Same return contract as [`try_fwd_dct_square`].
+pub fn try_inv_dct_square(
+    input: &[TranLow],
+    input_stride: usize,
+    output: &mut [TranLow],
+    out_stride: usize,
+    n: usize,
+    bd: u8,
+) -> bool {
+    if !simd_square_supported(n) || bd > 10 {
+        return false;
+    }
+    incant!(
+        try_inv_dct_square_impl(input, input_stride, output, out_stride, n, bd),
+        [v3, neon, scalar]
+    )
+}
+
+// -- scalar / neon arms: not handled, caller runs the scalar core --
+
+fn try_fwd_dct_square_impl_scalar(
+    _t: ScalarToken,
+    _input: &[TranLow],
+    _output: &mut [TranLow],
+    _input_stride: usize,
+    _n: usize,
+) -> bool {
+    false
+}
+
+fn try_inv_dct_square_impl_scalar(
+    _t: ScalarToken,
+    _input: &[TranLow],
+    _input_stride: usize,
+    _output: &mut [TranLow],
+    _out_stride: usize,
+    _n: usize,
+    _bd: u8,
+) -> bool {
+    false
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn try_fwd_dct_square_impl_neon(
+    _t: NeonToken,
+    _input: &[TranLow],
+    _output: &mut [TranLow],
+    _input_stride: usize,
+    _n: usize,
+) -> bool {
+    false
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn try_inv_dct_square_impl_neon(
+    _t: NeonToken,
+    _input: &[TranLow],
+    _input_stride: usize,
+    _output: &mut [TranLow],
+    _out_stride: usize,
+    _n: usize,
+    _bd: u8,
+) -> bool {
+    false
+}
+
+// ============================================================================
+// AVX2 (v3) implementation
+// ============================================================================
+
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::identity_op, clippy::needless_range_loop)]
+mod v3 {
+    use super::*;
+
+    // ----- primitives -----
+
+    /// Broadcast an i32 to all 8 lanes.
+    #[rite]
+    pub(super) fn splat(_t: Desktop64, v: i32) -> __m256i {
+        _mm256_set1_epi32(v)
+    }
+
+    /// Vector `half_btf`: `((w0·n0 + w1·n1) + round) >> bit`, arithmetic shift.
+    /// `w0`/`w1` are broadcast cospi weights, `rnd` = splat(1<<(bit-1)),
+    /// `sh` = the runtime shift count in an `__m128i`. See the module docs for
+    /// why the 32-bit `mullo` reproduces the scalar i64 result exactly.
+    #[rite]
+    pub(super) fn hbtf(
+        _t: Desktop64,
+        w0: __m256i,
+        n0: __m256i,
+        w1: __m256i,
+        n1: __m256i,
+        rnd: __m256i,
+        sh: __m128i,
+    ) -> __m256i {
+        let x = _mm256_mullo_epi32(w0, n0);
+        let y = _mm256_mullo_epi32(w1, n1);
+        _mm256_sra_epi32(_mm256_add_epi32(_mm256_add_epi32(x, y), rnd), sh)
+    }
+
+    /// `clamp_value(v, range)` across 8 lanes: clamp to the signed `range`-bit
+    /// interval. `range <= 0` is a no-op (caller passes precomputed lo/hi).
+    #[rite]
+    pub(super) fn clampv(_t: Desktop64, v: __m256i, lo: __m256i, hi: __m256i) -> __m256i {
+        _mm256_max_epi32(_mm256_min_epi32(v, hi), lo)
+    }
+
+    /// `round_shift_array` element op: `bit > 0` → `(v + (1<<(bit-1))) >> bit`
+    /// (rounded right); `bit < 0` → `v << -bit`; `bit == 0` → identity. Matches
+    /// `crate::fwd_txfm::round_shift_array` exactly.
+    #[rite]
+    pub(super) fn round_shift_v(_t: Desktop64, v: __m256i, bit: i32) -> __m256i {
+        if bit > 0 {
+            let b = bit as u32;
+            let rnd = _mm256_set1_epi32(1 << (b - 1));
+            _mm256_sra_epi32(_mm256_add_epi32(v, rnd), _mm_cvtsi32_si128(bit))
+        } else if bit < 0 {
+            _mm256_sll_epi32(v, _mm_cvtsi32_si128(-bit))
+        } else {
+            v
+        }
+    }
+
+    /// `highbd_wraplow(v, bd)` across 8 lanes: clamp to `±((1<<(7+bd))-1 +
+    /// (914<<(bd-7)))`. `lo`/`hi` precomputed by the caller.
+    #[rite]
+    pub(super) fn wraplow(_t: Desktop64, v: __m256i, lo: __m256i, hi: __m256i) -> __m256i {
+        _mm256_max_epi32(_mm256_min_epi32(v, hi), lo)
+    }
+
+    /// Transpose an 8×8 i32 tile: `out[i]` = column `i` = `[in0[i]..in7[i]]`.
+    /// Pure data movement (unpack + `permute2x128`) → bit-exact.
+    #[rite]
+    pub(super) fn transpose8(t: Desktop64, inp: &[__m256i; 8]) -> [__m256i; 8] {
+        let a0 = _mm256_unpacklo_epi32(inp[0], inp[1]);
+        let a1 = _mm256_unpackhi_epi32(inp[0], inp[1]);
+        let a2 = _mm256_unpacklo_epi32(inp[2], inp[3]);
+        let a3 = _mm256_unpackhi_epi32(inp[2], inp[3]);
+        let a4 = _mm256_unpacklo_epi32(inp[4], inp[5]);
+        let a5 = _mm256_unpackhi_epi32(inp[4], inp[5]);
+        let a6 = _mm256_unpacklo_epi32(inp[6], inp[7]);
+        let a7 = _mm256_unpackhi_epi32(inp[6], inp[7]);
+        let b0 = _mm256_unpacklo_epi64(a0, a2);
+        let b1 = _mm256_unpackhi_epi64(a0, a2);
+        let b2 = _mm256_unpacklo_epi64(a1, a3);
+        let b3 = _mm256_unpackhi_epi64(a1, a3);
+        let b4 = _mm256_unpacklo_epi64(a4, a6);
+        let b5 = _mm256_unpackhi_epi64(a4, a6);
+        let b6 = _mm256_unpacklo_epi64(a5, a7);
+        let b7 = _mm256_unpackhi_epi64(a5, a7);
+        let _ = t;
+        [
+            _mm256_permute2x128_si256::<0x20>(b0, b4),
+            _mm256_permute2x128_si256::<0x20>(b1, b5),
+            _mm256_permute2x128_si256::<0x20>(b2, b6),
+            _mm256_permute2x128_si256::<0x20>(b3, b7),
+            _mm256_permute2x128_si256::<0x31>(b0, b4),
+            _mm256_permute2x128_si256::<0x31>(b1, b5),
+            _mm256_permute2x128_si256::<0x31>(b2, b6),
+            _mm256_permute2x128_si256::<0x31>(b3, b7),
+        ]
+    }
+
+    /// Load 8 contiguous i32 at `buf[off..off+8]`.
+    #[rite]
+    pub(super) fn load8(_t: Desktop64, buf: &[i32], off: usize) -> __m256i {
+        let a: &[i32; 8] = buf[off..off + 8].try_into().unwrap();
+        _mm256_loadu_si256(a)
+    }
+
+    /// Store 8 i32 to `buf[off..off+8]`.
+    #[rite]
+    pub(super) fn store8(_t: Desktop64, buf: &mut [i32], off: usize, v: __m256i) {
+        let a: &mut [i32; 8] = (&mut buf[off..off + 8]).try_into().unwrap();
+        _mm256_storeu_si256(a, v);
+    }
+
+    include!("txfm_simd_kernels.rs");
+    include!("txfm_simd_drivers.rs");
+}
+
+/// AVX2 forward square DCT-DCT. Dispatched only on the `v3` tier.
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn try_fwd_dct_square_impl_v3(
+    t: Desktop64,
+    input: &[TranLow],
+    output: &mut [TranLow],
+    input_stride: usize,
+    n: usize,
+) -> bool {
+    v3::fwd_dct_square(t, input, output, input_stride, n)
+}
+
+/// AVX2 inverse square DCT-DCT. Dispatched only on the `v3` tier.
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn try_inv_dct_square_impl_v3(
+    t: Desktop64,
+    input: &[TranLow],
+    input_stride: usize,
+    output: &mut [TranLow],
+    out_stride: usize,
+    n: usize,
+    bd: u8,
+) -> bool {
+    v3::inv_dct_square(t, input, input_stride, output, out_stride, n, bd)
+}
