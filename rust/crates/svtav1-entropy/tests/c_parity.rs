@@ -508,6 +508,87 @@ fn coeff_c_levels_and_contexts_match_c() {
     }
 }
 
+/// Locks the reduced-extent zeroing of [`coeff_c::txb_init_levels`]: it zeros
+/// only the padded prefix a `(width, height)` txb uses (`used`), not the whole
+/// `TX_PAD_2D`. Byte-identity of every downstream coeff cost/context depends on
+/// NO reader ever touching the un-zeroed tail `[used, len)`. This pre-fills the
+/// whole scratch with `0xFF` garbage before `txb_init_levels`, then checks that
+/// `get_nz_map_contexts` and `br_ctx` are still bit-identical to the real-C
+/// reference (built from a correctly-zeroed buffer). A read past `used` would
+/// surface `0xFF` (which clamps to context 3, not 0) and diverge from C — so
+/// passing proves the reduced zeroing leaves no observable stale byte. Since the
+/// deepest read here (TX_CLASS_VERT, 32x32) is exactly what `LEVELS_SCRATCH_LEN`
+/// is sized for, this transitively validates the shrunk per-call scratch too.
+#[test]
+fn coeff_c_txb_init_levels_partial_zero_no_stale_reads() {
+    use svtav1_entropy::coeff_c;
+    let mut rng = Rng(0x5EED_1EAF_9911_ABCD);
+    for ts in 0..19usize {
+        let width = coeff_c::txb_wide(ts);
+        let height = coeff_c::txb_high(ts);
+        let n = width * height;
+        for &tx_type in &[0usize, 10, 11] {
+            let tx_class = coeff_c::TX_TYPE_TO_CLASS[tx_type];
+            for _trial in 0..8 {
+                let mut coeffs = vec![0i32; n];
+                let nnz = 1 + rng.below((n as u64 / 4).max(1)) as usize;
+                for _ in 0..nnz {
+                    let p = rng.below(n as u64) as usize;
+                    let mag = 1 + rng.below(300) as i32;
+                    coeffs[p] = if rng.below(2) == 0 { mag } else { -mag };
+                }
+
+                // PRE-FILL WITH GARBAGE: any read past `used` sees 0xFF, not 0.
+                let mut rust_buf = [0xFFu8; coeff_c::TX_PAD_2D];
+                coeff_c::txb_init_levels(&coeffs, width, height, &mut rust_buf);
+                let origin = coeff_c::levels_origin(width);
+                // Real-C reference from a correctly-zeroed buffer.
+                let mut c_buf = [0u8; coeff_c::TX_PAD_2D];
+                cref::txb_init_levels(&coeffs, width, height, &mut c_buf[origin..]);
+
+                let scan = svtav1_entropy::scan_tables::scan(
+                    ts,
+                    svtav1_entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type] as usize,
+                );
+                let mut eob = 0usize;
+                for (i, &pos) in scan.iter().enumerate() {
+                    if coeffs[pos as usize] != 0 {
+                        eob = i + 1;
+                    }
+                }
+                if eob == 0 {
+                    continue;
+                }
+
+                let mut rust_ctx = [0i8; 32 * 32];
+                coeff_c::get_nz_map_contexts(&rust_buf, scan, eob, ts, tx_class, &mut rust_ctx);
+                let c_scan: Vec<i16> = scan.iter().map(|&v| v as i16).collect();
+                let mut c_ctx = [0i8; 32 * 32];
+                cref::get_nz_map_contexts(
+                    &c_buf[origin..],
+                    &c_scan,
+                    eob as u16,
+                    ts,
+                    tx_class,
+                    &mut c_ctx,
+                );
+                assert_eq!(
+                    &rust_ctx[..n],
+                    &c_ctx[..n],
+                    "nz ctx (dirty scratch) ts={ts} type={tx_type}"
+                );
+
+                let bwl = coeff_c::txb_bwl(ts);
+                for &pos in scan[..eob].iter() {
+                    let r = coeff_c::br_ctx(&rust_buf, pos as usize, bwl, tx_class);
+                    let c = cref::get_br_ctx(&c_buf[origin..], pos as usize, bwl, tx_class);
+                    assert_eq!(r as i32, c, "br_ctx (dirty scratch) ts={ts} pos={pos}");
+                }
+            }
+        }
+    }
+}
+
 /// Coefficient patterns that stress the `abs` / 127-clamp / i32→u8 narrow of
 /// `txb_init_levels`. `i32::MIN` is deliberately excluded: C's `abs(INT_MIN)`
 /// is undefined behavior, so it is not a valid oracle input (it is also never a
