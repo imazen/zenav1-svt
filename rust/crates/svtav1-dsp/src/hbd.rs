@@ -1362,6 +1362,7 @@ pub fn lpf_vertical_14_hbd(buf: &mut [u16], off: usize, pitch: usize, t: LfThres
 // =============================================================================
 
 use crate::cdef::{BLOCK_4X8, BLOCK_8X4, BLOCK_8X8, CDEF_BSTRIDE, CDEF_VERY_LARGE};
+use archmage::prelude::*;
 
 /// Duplicated from `crate::cdef`'s private `CDEF_DIRECTIONS_PADDED` (not
 /// `pub`) — identical values, same C provenance
@@ -1420,6 +1421,140 @@ fn constrain_hbd(diff: i32, threshold: i32, damping: i32) -> i32 {
 /// store-type variant, not a new algorithm.
 #[allow(clippy::too_many_arguments)]
 pub fn cdef_filter_block_hbd(
+    dst: &mut [u16],
+    doff: usize,
+    dstride: usize,
+    inb: &[u16],
+    ioff: usize,
+    pri_strength: i32,
+    sec_strength: i32,
+    dir: i32,
+    pri_damping: i32,
+    sec_damping: i32,
+    bsize: i32,
+    coeff_shift: i32,
+    subsampling_factor: usize,
+) {
+    incant!(
+        cdef_filter_block_hbd_impl(
+            dst, doff, dstride, inb, ioff, pri_strength, sec_strength, dir, pri_damping,
+            sec_damping, bsize, coeff_shift, subsampling_factor
+        ),
+        [v3, neon, scalar]
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cdef_filter_block_hbd_impl_scalar(
+    _token: ScalarToken,
+    dst: &mut [u16],
+    doff: usize,
+    dstride: usize,
+    inb: &[u16],
+    ioff: usize,
+    pri_strength: i32,
+    sec_strength: i32,
+    dir: i32,
+    pri_damping: i32,
+    sec_damping: i32,
+    bsize: i32,
+    coeff_shift: i32,
+    subsampling_factor: usize,
+) {
+    cdef_filter_block_hbd_core(
+        dst, doff, dstride, inb, ioff, pri_strength, sec_strength, dir, pri_damping, sec_damping,
+        bsize, coeff_shift, subsampling_factor,
+    );
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn cdef_filter_block_hbd_impl_neon(
+    _token: NeonToken,
+    dst: &mut [u16],
+    doff: usize,
+    dstride: usize,
+    inb: &[u16],
+    ioff: usize,
+    pri_strength: i32,
+    sec_strength: i32,
+    dir: i32,
+    pri_damping: i32,
+    sec_damping: i32,
+    bsize: i32,
+    coeff_shift: i32,
+    subsampling_factor: usize,
+) {
+    cdef_filter_block_hbd_core(
+        dst, doff, dstride, inb, ioff, pri_strength, sec_strength, dir, pri_damping, sec_damping,
+        bsize, coeff_shift, subsampling_factor,
+    );
+}
+
+/// AVX2 dst16 filter — the bd10/bd12 CDEF search's per-block filter. Byte-identical
+/// to [`cdef_filter_block_hbd_core`]; reuses the shared 8-lane compute
+/// ([`crate::cdef::cdef_filter_cols8_v3`]) since the dst16 arm differs from dst8
+/// only in the output store type (`as u16` vs `as u8`).
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn cdef_filter_block_hbd_impl_v3(
+    token: Desktop64,
+    dst: &mut [u16],
+    doff: usize,
+    dstride: usize,
+    inb: &[u16],
+    ioff: usize,
+    pri_strength: i32,
+    sec_strength: i32,
+    dir: i32,
+    pri_damping: i32,
+    sec_damping: i32,
+    bsize: i32,
+    coeff_shift: i32,
+    subsampling_factor: usize,
+) {
+    let cols = if bsize == BLOCK_8X8 || bsize == BLOCK_8X4 { 8 } else { 4 };
+    if cols != 8 {
+        cdef_filter_block_hbd_core(
+            dst, doff, dstride, inb, ioff, pri_strength, sec_strength, dir, pri_damping,
+            sec_damping, bsize, coeff_shift, subsampling_factor,
+        );
+        return;
+    }
+    let rows = if bsize == BLOCK_8X8 || bsize == BLOCK_4X8 { 8 } else { 4 };
+    let mut scratch = [0i32; 64];
+    crate::cdef::cdef_filter_cols8_v3(
+        token,
+        inb,
+        ioff,
+        pri_strength,
+        sec_strength,
+        dir,
+        pri_damping,
+        sec_damping,
+        coeff_shift,
+        rows,
+        subsampling_factor as i32,
+        &mut scratch,
+    );
+    let mut i = 0i32;
+    while i < rows {
+        let drow = doff + i as usize * dstride;
+        let srow = i as usize * 8;
+        for j in 0..8usize {
+            dst[drow + j] = scratch[srow + j] as u16;
+        }
+        i += subsampling_factor as i32;
+    }
+}
+
+/// Scalar reference body for [`cdef_filter_block_hbd`] (`svt_cdef_filter_block_c`
+/// dst16 arm). The AVX2 path is proven byte-identical to this against real C in
+/// `tests/c_parity_cdef.rs`.
+#[allow(clippy::too_many_arguments)]
+fn cdef_filter_block_hbd_core(
     dst: &mut [u16],
     doff: usize,
     dstride: usize,

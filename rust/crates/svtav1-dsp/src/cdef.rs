@@ -33,6 +33,8 @@
 //! differentially fuzzed bit-exact against `libSvtAv1Enc.a` in
 //! `tests/c_parity_cdef.rs`.
 
+use archmage::prelude::*;
+
 /// 6-bit packed strength: `pri * CDEF_SEC_STRENGTHS + sec` (spec 5.9.19).
 pub const CDEF_STRENGTH_BITS: u32 = 6;
 /// Number of primary strengths (4-bit field).
@@ -232,6 +234,290 @@ fn clamp_i32(value: i32, low: i32, high: i32) -> i32 {
 /// the decoder path always passes 1).
 #[allow(clippy::too_many_arguments)]
 pub fn cdef_filter_block(
+    dst: &mut [u8],
+    doff: usize,
+    dstride: usize,
+    inb: &[u16],
+    ioff: usize,
+    pri_strength: i32,
+    sec_strength: i32,
+    dir: i32,
+    pri_damping: i32,
+    sec_damping: i32,
+    bsize: i32,
+    coeff_shift: i32,
+    subsampling_factor: usize,
+) {
+    incant!(
+        cdef_filter_block_impl(
+            dst, doff, dstride, inb, ioff, pri_strength, sec_strength, dir, pri_damping,
+            sec_damping, bsize, coeff_shift, subsampling_factor
+        ),
+        [v3, neon, scalar]
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cdef_filter_block_impl_scalar(
+    _token: ScalarToken,
+    dst: &mut [u8],
+    doff: usize,
+    dstride: usize,
+    inb: &[u16],
+    ioff: usize,
+    pri_strength: i32,
+    sec_strength: i32,
+    dir: i32,
+    pri_damping: i32,
+    sec_damping: i32,
+    bsize: i32,
+    coeff_shift: i32,
+    subsampling_factor: usize,
+) {
+    cdef_filter_block_core(
+        dst, doff, dstride, inb, ioff, pri_strength, sec_strength, dir, pri_damping, sec_damping,
+        bsize, coeff_shift, subsampling_factor,
+    );
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn cdef_filter_block_impl_neon(
+    _token: NeonToken,
+    dst: &mut [u8],
+    doff: usize,
+    dstride: usize,
+    inb: &[u16],
+    ioff: usize,
+    pri_strength: i32,
+    sec_strength: i32,
+    dir: i32,
+    pri_damping: i32,
+    sec_damping: i32,
+    bsize: i32,
+    coeff_shift: i32,
+    subsampling_factor: usize,
+) {
+    cdef_filter_block_core(
+        dst, doff, dstride, inb, ioff, pri_strength, sec_strength, dir, pri_damping, sec_damping,
+        bsize, coeff_shift, subsampling_factor,
+    );
+}
+
+/// AVX2 dst8 filter. Byte-identical to [`cdef_filter_block_core`]: each output
+/// pixel is an independent 12-tap integer sum, so 8 columns of a row map to 8
+/// SIMD lanes with NO cross-lane reduction. The `sum` is accumulated in i32 and
+/// truncated to i16 once at the end (`(x<<16)>>16`); since two's-complement add
+/// is associative mod 2^16, that equals the scalar's per-tap `wrapping_add::<i16>`
+/// exactly (products are small, no i32 overflow across 12 taps). Only the
+/// `cols == 8` shapes (BLOCK_8X8 / BLOCK_8X4) use the vector path; the rare 4-wide
+/// chroma shapes fall back to the scalar core.
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn cdef_filter_block_impl_v3(
+    token: Desktop64,
+    dst: &mut [u8],
+    doff: usize,
+    dstride: usize,
+    inb: &[u16],
+    ioff: usize,
+    pri_strength: i32,
+    sec_strength: i32,
+    dir: i32,
+    pri_damping: i32,
+    sec_damping: i32,
+    bsize: i32,
+    coeff_shift: i32,
+    subsampling_factor: usize,
+) {
+    let cols = if bsize == BLOCK_8X8 || bsize == BLOCK_8X4 { 8 } else { 4 };
+    if cols != 8 {
+        cdef_filter_block_core(
+            dst, doff, dstride, inb, ioff, pri_strength, sec_strength, dir, pri_damping,
+            sec_damping, bsize, coeff_shift, subsampling_factor,
+        );
+        return;
+    }
+    let rows = if bsize == BLOCK_8X8 || bsize == BLOCK_4X8 { 8 } else { 4 };
+    let mut scratch = [0i32; 64];
+    cdef_filter_cols8_v3(
+        token,
+        inb,
+        ioff,
+        pri_strength,
+        sec_strength,
+        dir,
+        pri_damping,
+        sec_damping,
+        coeff_shift,
+        rows,
+        subsampling_factor as i32,
+        &mut scratch,
+    );
+    let mut i = 0i32;
+    while i < rows {
+        let drow = doff + i as usize * dstride;
+        let srow = i as usize * 8;
+        for j in 0..8usize {
+            dst[drow + j] = scratch[srow + j] as u8;
+        }
+        i += subsampling_factor as i32;
+    }
+}
+
+/// Load 8 contiguous `u16` at `idx` and SIGN-extend to an `i32x8` — the C
+/// reference reads the `uint16_t*` input into `int16_t` locals (`cdef.c:205-224`),
+/// so values ≥ 0x8000 wrap negative. Sign-extension reproduces that exactly (for
+/// real pixels ≤ 0x7f7f, incl. the `CDEF_VERY_LARGE` sentinel, it equals a
+/// zero-extension, so the sentinel equality compare is unaffected).
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn cdef_load8_u16_v3(_token: Desktop64, inb: &[u16], idx: usize) -> __m256i {
+    let a: &[u16; 8] = inb[idx..idx + 8].try_into().unwrap();
+    _mm256_cvtepi16_epi32(_mm_loadu_si128(a))
+}
+
+/// SIMD [`constrain`] over an `i32x8` of diffs. `threshold`/`shift` are scalar
+/// (broadcast); when `active` is false the tap is disabled (threshold 0 ⇒ 0),
+/// matching the scalar early-return.
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn cdef_constrain8_v3(
+    _token: Desktop64,
+    diff: __m256i,
+    thr: __m256i,
+    shift_c: __m128i,
+    active: bool,
+) -> __m256i {
+    if !active {
+        return _mm256_setzero_si256();
+    }
+    let adiff = _mm256_abs_epi32(diff);
+    let shifted = _mm256_srl_epi32(adiff, shift_c);
+    let capped = _mm256_max_epi32(_mm256_sub_epi32(thr, shifted), _mm256_setzero_si256());
+    let m = _mm256_min_epi32(adiff, capped);
+    // sign(diff) * m: _mm256_sign_epi32 negates m where diff<0, zeros where diff==0
+    // (m is already 0 there), else keeps m — exactly `sign * min(|diff|, cap)`.
+    _mm256_sign_epi32(m, diff)
+}
+
+/// Shared 8-wide CDEF filter core (dst8 and dst16 arms both call this). Writes
+/// the filtered pixels of the `cols == 8` block into `out` row-major (`rows`
+/// rows × 8), touching only the rows the `subsampling_factor` visits. Callers
+/// clamp-cast each `i32` to the output pixel type.
+#[cfg(target_arch = "x86_64")]
+#[rite]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn cdef_filter_cols8_v3(
+    token: Desktop64,
+    inb: &[u16],
+    ioff: usize,
+    pri_strength: i32,
+    sec_strength: i32,
+    dir: i32,
+    pri_damping: i32,
+    sec_damping: i32,
+    coeff_shift: i32,
+    rows: i32,
+    sub: i32,
+    out: &mut [i32; 64],
+) {
+    let s = CDEF_BSTRIDE as i32;
+    let pri_taps = CDEF_PRI_TAPS[((pri_strength >> coeff_shift) & 1) as usize];
+    let sec_taps = CDEF_SEC_TAPS[((pri_strength >> coeff_shift) & 1) as usize];
+
+    let pri_active = pri_strength != 0;
+    let sec_active = sec_strength != 0;
+    let pri_shift = if pri_active {
+        (pri_damping - get_msb(pri_strength as u32)).max(0)
+    } else {
+        0
+    };
+    let sec_shift = if sec_active {
+        (sec_damping - get_msb(sec_strength as u32)).max(0)
+    } else {
+        0
+    };
+    let pri_shift_c = _mm_cvtsi32_si128(pri_shift);
+    let sec_shift_c = _mm_cvtsi32_si128(sec_shift);
+    let pri_thr = _mm256_set1_epi32(pri_strength);
+    let sec_thr = _mm256_set1_epi32(sec_strength);
+    let sentinel = _mm256_set1_epi32(CDEF_VERY_LARGE as i32);
+    let eight = _mm256_set1_epi32(8);
+
+    // 4 primary taps (±dir·k) and 8 secondary taps (±(dir±2)·k); offsets and
+    // coefficients are block-constant (independent of the row), so precompute.
+    let p_off = [
+        cdef_direction(dir, 0),
+        -cdef_direction(dir, 0),
+        cdef_direction(dir, 1),
+        -cdef_direction(dir, 1),
+    ];
+    let p_cof = [pri_taps[0], pri_taps[0], pri_taps[1], pri_taps[1]];
+    let s_off = [
+        cdef_direction(dir + 2, 0),
+        -cdef_direction(dir + 2, 0),
+        cdef_direction(dir - 2, 0),
+        -cdef_direction(dir - 2, 0),
+        cdef_direction(dir + 2, 1),
+        -cdef_direction(dir + 2, 1),
+        cdef_direction(dir - 2, 1),
+        -cdef_direction(dir - 2, 1),
+    ];
+    let s_cof = [
+        sec_taps[0], sec_taps[0], sec_taps[0], sec_taps[0], sec_taps[1], sec_taps[1], sec_taps[1],
+        sec_taps[1],
+    ];
+
+    let mut i = 0i32;
+    while i < rows {
+        let base = (ioff as i32 + i * s) as usize;
+        let x = cdef_load8_u16_v3(token, inb, base);
+        let mut sum = _mm256_setzero_si256();
+        let mut mx = x;
+        let mut mn = x;
+        for t in 0..4usize {
+            let idx = (base as i32 + p_off[t]) as usize;
+            let tap = cdef_load8_u16_v3(token, inb, idx);
+            let diff = _mm256_sub_epi32(tap, x);
+            let c = cdef_constrain8_v3(token, diff, pri_thr, pri_shift_c, pri_active);
+            sum = _mm256_add_epi32(sum, _mm256_mullo_epi32(c, _mm256_set1_epi32(p_cof[t])));
+            let is_sent = _mm256_cmpeq_epi32(tap, sentinel);
+            mx = _mm256_blendv_epi8(_mm256_max_epi32(mx, tap), mx, is_sent);
+            mn = _mm256_min_epi32(mn, tap);
+        }
+        for t in 0..8usize {
+            let idx = (base as i32 + s_off[t]) as usize;
+            let tap = cdef_load8_u16_v3(token, inb, idx);
+            let diff = _mm256_sub_epi32(tap, x);
+            let c = cdef_constrain8_v3(token, diff, sec_thr, sec_shift_c, sec_active);
+            sum = _mm256_add_epi32(sum, _mm256_mullo_epi32(c, _mm256_set1_epi32(s_cof[t])));
+            let is_sent = _mm256_cmpeq_epi32(tap, sentinel);
+            mx = _mm256_blendv_epi8(_mm256_max_epi32(mx, tap), mx, is_sent);
+            mn = _mm256_min_epi32(mn, tap);
+        }
+        // `sum as i16 as i32` (sign-extend low 16 bits) reproduces the scalar's
+        // wrapping i16 accumulation; then `x + ((8 + sum - (sum<0)) >> 4)`.
+        let sw = _mm256_srai_epi32::<16>(_mm256_slli_epi32::<16>(sum));
+        let neg = _mm256_srli_epi32::<31>(sw);
+        let adj = _mm256_srai_epi32::<4>(_mm256_sub_epi32(_mm256_add_epi32(eight, sw), neg));
+        let val = _mm256_add_epi32(x, adj);
+        let y = _mm256_min_epi32(_mm256_max_epi32(val, mn), mx);
+        let row_arr: &mut [i32; 8] = (&mut out[i as usize * 8..i as usize * 8 + 8])
+            .try_into()
+            .unwrap();
+        _mm256_storeu_si256(row_arr, y);
+        i += sub;
+    }
+}
+
+/// Scalar reference body for [`cdef_filter_block`] — `svt_cdef_filter_block_c`
+/// (dst8 arm). The AVX2 path ([`cdef_filter_block_impl_v3`]) is proven
+/// byte-identical to this against real C in `tests/c_parity_cdef.rs`.
+#[allow(clippy::too_many_arguments)]
+fn cdef_filter_block_core(
     dst: &mut [u8],
     doff: usize,
     dstride: usize,

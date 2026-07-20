@@ -602,3 +602,145 @@ fn compute_cdef_dist_8bit_matches_c() {
         }
     }
 }
+
+// =============================================================================
+// Dispatch-tier lock for the SIMD filter (task G4).
+//
+// `cdef_filter_block` (dst8) and `cdef_filter_block_hbd` (dst16) gained an AVX2
+// path. The exhaustive suites above run whatever tier this host dispatches to
+// (v3 here), so they already pin v3==C — but to guarantee EVERY tier (the scalar
+// reference AND the AVX2 kernel) stays byte-identical to real C regardless of the
+// host, force each token permutation and assert equality with the C reference for
+// every combination. Both arms cover the cols==8 SIMD shapes AND the 4-wide scalar
+// fallback, interior/border/sentinel/torture content, and the bd10 coeff_shift=2
+// domain.
+// =============================================================================
+#[test]
+fn filter_block_dispatch_all_tiers_match_c() {
+    use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+    let mut rng = Rng(0xD15A_7C4D);
+    let mut inb = vec![0u16; cdef::CDEF_INBUF_SIZE];
+    let bsizes = [
+        cdef::BLOCK_8X8, // cols 8 -> AVX2 path
+        cdef::BLOCK_8X4, // cols 8 -> AVX2 path (rows 4)
+        cdef::BLOCK_4X8, // cols 4 -> scalar fallback
+        cdef::BLOCK_4X4, // cols 4 -> scalar fallback
+    ];
+    for round in 0..96u32 {
+        let torture = round % 8 == 7;
+        if torture {
+            for v in inb.iter_mut() {
+                *v = rng.next() as u16;
+            }
+        } else {
+            random_pixels(&mut rng, &mut inb);
+            apply_borders(rng.range(8) as u32, &mut rng, &mut inb);
+        }
+        let coeff_shift = if round % 3 == 0 { 2 } else { 0 };
+        let pri = (rng.range(16) as i32) << coeff_shift;
+        let sec = ([0, 1, 2, 4][rng.range(4) as usize]) << coeff_shift;
+        let dir = rng.range(8) as i32;
+        let pd = 2 + rng.range(5) as i32 + coeff_shift;
+        let sd = 2 + rng.range(5) as i32 + coeff_shift;
+        let bsize = bsizes[rng.range(4) as usize];
+        let sub = 1 + rng.range(2) as usize;
+
+        // dst8 arm: C reference, then port under EVERY dispatch tier.
+        let mut theirs8 = [0xAAu8; 64];
+        cref::cdef_filter_block_8(
+            &mut theirs8, 0, 8, &inb, IOFF, pri, sec, dir, pd, sd, bsize, coeff_shift, sub as u8,
+        );
+        let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            let mut ours = [0xAAu8; 64];
+            cdef::cdef_filter_block(
+                &mut ours, 0, 8, &inb, IOFF, pri, sec, dir, pd, sd, bsize, coeff_shift, sub,
+            );
+            assert_eq!(
+                ours, theirs8,
+                "dst8 dispatch tier != C: round {round} bsize {bsize} pri {pri} sec {sec} \
+                 dir {dir} sub {sub} shift {coeff_shift}"
+            );
+        });
+
+        // dst16 (bd10) arm: same.
+        let mut theirs16 = [0xBBBBu16; 64];
+        cref::cdef_filter_block_16(
+            &mut theirs16, 0, 8, &inb, IOFF, pri, sec, dir, pd, sd, bsize, coeff_shift, sub as u8,
+        );
+        let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            let mut ours = [0xBBBBu16; 64];
+            svtav1_dsp::hbd::cdef_filter_block_hbd(
+                &mut ours, 0, 8, &inb, IOFF, pri, sec, dir, pd, sd, bsize, coeff_shift, sub,
+            );
+            assert_eq!(
+                ours.as_slice(),
+                theirs16.as_slice(),
+                "dst16 dispatch tier != C: round {round} bsize {bsize} pri {pri} sec {sec} \
+                 dir {dir} sub {sub} shift {coeff_shift}"
+            );
+        });
+    }
+}
+
+/// Sign-extension guard. The C kernel reads the `uint16_t*` input into `int16_t`
+/// locals (`cdef.c:205`), so values ≥ 0x8000 wrap negative; a SIMD load that
+/// zero-extends diverges. Neither uniform-high content (all pixels shift by
+/// 65536 ≡ 0 mod 256, so it cancels) nor random torture (huge diffs saturate
+/// `constrain` to 0) exposes this — the distinguisher is content that STRADDLES
+/// 0x8000 with small u16 gaps: zero-extension then sees a small, `constrain`-active
+/// diff where the correct int16 view sees a huge, saturated one. Combined with a
+/// large strength (so the damped clamp stays active on the small gap), the two
+/// interpretations produce different pixels. This test pins the correct
+/// (sign-extending) path against real C on exactly that content; it FAILS if the
+/// vector load is switched to zero-extension (verified). Purely a semantics lock —
+/// real CDEF input is always ≤ 0x7f7f (pixels + the 0x7f7f sentinel), where
+/// sign- and zero-extension coincide.
+#[test]
+fn filter_block_sign_straddle_matches_c() {
+    let mut rng = Rng(0x516E_E871);
+    let mut inb = vec![0u16; cdef::CDEF_INBUF_SIZE];
+    for round in 0..800u32 {
+        // Each pixel lands just below OR just above 0x8000 (gap ≤ 63), so many
+        // tap/center pairs straddle the sign boundary.
+        for v in inb.iter_mut() {
+            let off = (rng.next() % 64) as u16;
+            *v = if rng.range(2) == 0 {
+                0x7FC0u16.wrapping_add(off).min(0x7FFF)
+            } else {
+                0x8000u16.wrapping_add(off)
+            };
+        }
+        let bsize = cdef::BLOCK_8X8; // cols==8 -> AVX2 path
+        // Large strengths keep `constrain` active on the small zero-ext gap
+        // (thr << shift > gap), so the sign flip changes the output.
+        let pri = 12 + rng.range(4) as i32;
+        let sec = [2, 4][rng.range(2) as usize];
+        let dir = rng.range(8) as i32;
+        let pd = 6;
+        let sd = 6;
+        let sub = 1 + rng.range(2) as usize;
+
+        let mut ours8 = [0u8; 64];
+        let mut c8 = [0u8; 64];
+        cdef::cdef_filter_block(&mut ours8, 0, 8, &inb, IOFF, pri, sec, dir, pd, sd, bsize, 0, sub);
+        cref::cdef_filter_block_8(&mut c8, 0, 8, &inb, IOFF, pri, sec, dir, pd, sd, bsize, 0, sub as u8);
+        assert_eq!(
+            ours8, c8,
+            "dst8 sign-straddle != C: round {round} pri {pri} sec {sec} dir {dir} sub {sub}"
+        );
+
+        let mut ours16 = [0u16; 64];
+        let mut c16 = [0u16; 64];
+        svtav1_dsp::hbd::cdef_filter_block_hbd(
+            &mut ours16, 0, 8, &inb, IOFF, pri, sec, dir, pd, sd, bsize, 0, sub,
+        );
+        cref::cdef_filter_block_16(
+            &mut c16, 0, 8, &inb, IOFF, pri, sec, dir, pd, sd, bsize, 0, sub as u8,
+        );
+        assert_eq!(
+            ours16.as_slice(),
+            c16.as_slice(),
+            "dst16 sign-straddle != C: round {round} pri {pri} sec {sec} dir {dir} sub {sub}"
+        );
+    }
+}

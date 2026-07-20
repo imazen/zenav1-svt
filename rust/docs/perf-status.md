@@ -112,7 +112,15 @@ Reading the fit:
 1. **SIMD on the hot per-pixel kernels — the dominant lever.** The ~9–11× slope
    gap is the port's mostly-scalar mode-decision / transform / SAD / quant paths
    against C's `avx512icl` runtime dispatch. This is per-pixel, so it is exactly
-   what the slope measures, and a win here moves every size and preset.
+   what the slope measures, and a win here moves every size and preset. A callgrind
+   self-instruction ranking of a 256² preset-10 frame (restoration off) puts the
+   per-pixel cost concretely — **CDEF `cdef_filter_block` 27.8 %** (now SIMD'd, see
+   "Landed"), inverse/forward transforms (`inv_txfm2d_c_exact_bd` + `idct*`/`fdct*`/
+   `fadst*`) ~25 %, `__memset` (per-frame zeroing) ~6 %, entropy coeff contexts
+   (`get_nz_map_contexts`/`nz_map_ctx`/`txb_init_levels`) ~8 %, quant ~3 %. The named
+   distortion kernels (`sad`/`sse`/`variance`/`satd`) are only ~2–3 % here — small
+   relative to CDEF+transforms — so the remaining fast-preset levers, in order, are
+   the **transform butterflies** and the **per-frame allocation/`memset`** (see (3)).
 2. **Loop-restoration Wiener stats (`restoration::compute_stats`) — the single
    biggest function at preset ≤ 6.** Callgrind (128²/256² preset-6, debuginfo
    build) puts it at ~40–46 % of frame instructions, called exactly 3× per frame
@@ -151,6 +159,35 @@ is the biggest single lever.
   total frame instructions −10.4 %; wall-clock port slope at preset 6
   990.8 → 902.1 ms/MP (−8.9 %), 256² preset 6 −6.5 %, 512² preset 6 −8.3 %.
   Presets 10/13 unchanged (restoration off there).
+
+- **CDEF filter SIMD (AVX2) — `cdef_filter_block` (dst8) + `cdef_filter_block_hbd`
+  (dst16)** (crates/svtav1-dsp/src/{cdef,hbd}.rs). Callgrind identified
+  `cdef_filter_block` as the single largest per-pixel kernel on the fast-preset hot
+  path — **27.8 % of frame instructions at 256² preset 10** (5.3 % at preset 6),
+  and it was fully scalar. Each output pixel is an independent 12-tap integer sum
+  with no cross-pixel reduction, so the 8 columns of a row map to 8 AVX2 lanes
+  (archmage `Desktop64`, `incant!([v3, neon, scalar])`); the scalar core is retained
+  as the reference and the cols==4 (4:2:0 chroma) fallback. Byte-exact by
+  construction — the per-tap products are summed in i32 and the running sum truncated
+  to i16 once at the end, which equals the scalar's per-tap `wrapping_add::<i16>` by
+  associativity of two's-complement add mod 2^16; the u16 input is **sign**-extended
+  (the C kernel reads it into `int16_t`, cdef.c:205), matching C for every input, not
+  just ≤ 0x7f7f pixels. Pinned against the REAL exported `svt_cdef_filter_block_c`
+  in tests/c_parity_cdef.rs — every signalable (strength, damping, dir, bsize,
+  border) combo + 2000 torture rounds, plus a new all-dispatch-tier lock
+  (`filter_block_dispatch_all_tiers_match_c`) and a sign-extension lock
+  (`filter_block_sign_straddle_matches_c`, verified to fail on zero-extension).
+  Measured (perf_gate.sh, same host, 15 paired rounds, no `target-cpu=native`). The
+  cleanest aggregate is the fitted **port per-pixel slope** (across 256²/512²/1024²,
+  so per-cell noise averages out): **p10 166.1 → 131.9 ms/MP (−20.6 %), p13 165.0 →
+  138.6 (−16.0 %), p6 790.9 → 726.7 (−8.1 %)** — the port/C slope-ratio (the G4 metric)
+  drops **p10 12.0× → 8.4×, p13 11.6× → 8.4×, p6 11.3× → 9.9×**. Per-cell wall time
+  agrees at the slope-dominated sizes: 512² p10 47.7 → 38.2 ms, 512² p13 49.1 → 38.0 ms,
+  1024² p10 178.3 → 144.7 ms, 1024² p13 176.8 → 148.8 ms (256² is noise-dominated at
+  ~15 ms, so read the slope, not that row). The dst16 arm
+  carries the same win to the bd10/bd12 search (not in the bd8 perf grid; verified by
+  the bd10 gates). All 11 byte-identity gates + `cargo test --workspace` green;
+  `#![forbid(unsafe_code)]` intact. Data: benchmarks/perf_{before,after}_cdef.tsv.
 
 ## Reproducibility / provenance
 
