@@ -39,6 +39,7 @@ fn run_cell(dgd: &[u8], rdmult: i64) -> svtav1_encoder::restoration::FrameRestIn
     search_restoration_still(
         &ctrls, &src_y, &flat, &flat, dgd, &flat, &flat, w, h, true, rdmult,
     )
+    .expect("restoration search is infallible on the default (trusted) test path")
 }
 
 /// g64 q40 p6 (qindex 160, rdmult 211804): C solved luma
