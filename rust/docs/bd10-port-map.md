@@ -1939,3 +1939,83 @@ p0/p1 cell can be `cmp`-verified to close on this fix alone. Fix pattern when
 picked up: mirror (a) (`chroma_eval10` + `b.lambda`) AND port the fast-loop
 residual variance to `vf_hbd_10` semantics (the ROUND_POWER_OF_TWO(sum,2) form,
 NOT a naive u16 `sse - sum^2/N`).
+
+## ROOT #2 CLOSED — ROOT #1 uv port DEFERRED (2026-07-20): p0..p3 NSQ psq-txs bd8-pricing
+
+The "p0..p3 luma partition RD near-tie" named in the section above was NOT an
+irreducible near-tie: it is the recurring **"one search, two consumers, one
+priced at bd8"** class. Root #2 (the NSQ nz-count fix) LANDED on `main`. The
+Root #1 uv port was **DEFERRED** — it regressed a previously-passing gate cell
+(see below) and is preserved at `parity/bd10-uvport-deferred` for a future
+re-land.
+
+### Root #2 (LANDED, byte-parity — `0b364e511`): the NSQ psq H/V nz-counts
+
+`skip_by_sq_txs` (C `update_skip_nsq_based_on_sq_txs`, product_coding_loop.c
+:10063) prunes an NSQ shape from the parent square's horizontal- vs
+vertical-tx-split **nonzero counts** (`min_nz_h`/`min_nz_v`). C derives them in
+`non_normative_txs` (:9180) by transforming + quantizing the last-MDS3-candidate
+residual at `ctx->hbd_md ? EB_TEN_BIT : EB_EIGHT_BIT` — Q10 tables +
+`svt_aom_highbd_quantize_b` (full_loop.c:1288) at bd10. The port's `min_nz_hv`
+(leaf_funnel.rs) used `build_quant_table` (Q8) + an 8-bit `psq_resid`
+regardless of bit depth. The Q8 counts diverged from C's Q10 counts and flipped
+which of H/V the gate prunes:
+
+- **Localised** with a new `CNSQ` dump in `wrap_recon.c` (prints every TESTED
+  NSQ shape's cost, not just the chosen path). On `diag 64x64 q12 p2` mi(8,0)
+  the port's 32x32 NONE cost is byte-identical to C (21384027) but the port had
+  `nz_h=168 > nz_v=78` (skip HORZ, test VERT) where C tests HORZ and does NOT
+  test VERT: the port coded a 16x32 VERT where C keeps the 32x32 NONE. **bd8
+  both encoders pick VERT and byte-match** — purely a bd10 count divergence.
+- **Fix:** carry the last-candidate residual at true 10 bits (`psq_resid10`,
+  `src10 - last.pred10`) and route `min_nz_hv` through `build_quant_table_bd` +
+  `quantize_b_hbd`/`_qm` at bd10. bd8 byte-inert by construction.
+- **Effect:** synthetic p0..p3 (gradient+diag × 64/128 × q5..63) DIFF 21 → 9,
+  MATCH 107 → 119; 12 diag p2/p3 cells flip DIFF → MATCH (gated,
+  `bd10_nonflat_gate.sh` 288 → 300). Photo p0..p3 +1 (multi-root). All gates
+  green (identity 54/54, bd10 matrix 36/36, nonflat 300/300, photo 154/154,
+  recon-parity 13/13, partial-SB 101/101, sb128 18/18, tile 25/25, arb 57/57,
+  workspace 59/59).
+
+### Root #1 (DEFERRED — regressed a p1 cell; preserved at `parity/bd10-uvport-deferred`): M0/M1 uv
+
+`search_best_independent_uv_mode` (:7518) ran its whole pipeline at `hbd_md`;
+the port's `ind_uv_independent` block ran the fast-loop candidate SORT, full
+loop, and compare lambda at u8. The sort decides which of ~61 uv candidates
+enter the full loop (nfl 16 at M1 / 32 at M0), so a u8 sort admits a different
+candidate SET. Ported: fast loop → `predict_unit_hbd` + `residual_variance_hbd`
+(the `vf_hbd_10` twin, pinned bit-exact to `svt_aom_highbd_10_variance*_c` by
+`residual_variance_hbd_matches_c_vf_hbd_10` + the cref `highbd_10_variance`
+shim); full loop → `chroma_eval10`; compare → `b.lambda`. bd8 byte-inert.
+**Flips 0 cells alone — AND regressed one**: it runs only at p0/p1, where every
+remaining bd10 divergence is upstream in luma (below), so the uv decision is
+masked on the wins. But on `diag 64 64 32 1` (p1, a previously-passing gate
+cell) the reordered candidate SET diverged, taking `bd10_nonflat` 300 → 299
+(caught by independent verification; the agent's own report claimed 300/300).
+So the "faithful" port is **not yet faithful** — its reordered uv candidate set
+does not match C on that cell. **REVERTED** from the landed branch and preserved
+at `parity/bd10-uvport-deferred`. It has zero current value (0 wins) and needs
+BOTH its own uv-sort divergence fixed AND the luma near-tie (below) closed before
+the uv decision is even load-bearing — re-land only after both.
+
+### REMAINING (p0..p3 still open) — the roots, with evidence
+
+1. **A bd10-specific luma MODE near-tie** (the first divergence on the residual
+   synthetic cells). `diag 64x64 q32 p0` first diverges at mi(4,0) 16x16: C
+   codes PAETH (mode 12, no filter-intra), the port codes DC + filter-intra
+   (fi=1) — and the cell is **byte-identical at bd8**. So it is the same
+   bd8-pricing class as root #2 but in the luma MDS3 mode RD (the fast loop is
+   already 10-bit — `satd10 != satd<<2` for angled modes, confirming it). Next
+   step: per-candidate MDS3 full-cost dump at mi(4,0) (`SVTAV1_CANDDBG` vs
+   `SVT_FULLCOST_OUT`) to find which mode's cost term still diverges — the
+   min_nz method.
+2. **`quad_rec_dists`** (the `skip_by_recon_dist` NSQ gate input) reads the u8
+   recon (`ev.gate_y()`) while C's `calc_scr_to_recon_dist_per_quadrant`
+   (:8065) uses `svt_full_distortion_kernel16_bits` at `hbd_md`. A latent
+   second instance of the class — the gate uses scale-invariant ratios, so it
+   only bites when it fires near a threshold, and it was NOT the root on any
+   drilled cell. Risk: at p4/p5 `gate_y` is the last-candidate (bypass=1) recon
+   and no 10-bit twin exists, so a fix must be p0..p3-scoped.
+3. **DLF-level full search** (M0..M5): several residual cells show a
+   `loop_filter_level` FH divergence — a downstream symptom of the luma near-tie
+   changing the recon the search reads, not an independent root.
