@@ -28,6 +28,9 @@
 //! Every function here is differentially fuzzed against the C archive in
 //! `tests/c_parity_wiener.rs`.
 
+#[allow(unused_imports)]
+use archmage::prelude::*;
+
 /// WIENER_WIN (7-tap window) — restoration.h:116.
 pub const WIENER_WIN: usize = 7;
 /// WIENER_WIN_CHROMA (5-tap window) — restoration.h:123.
@@ -216,8 +219,92 @@ pub fn find_average(
 /// `m` must hold `win*win` entries, `h` `win^2 * win^2`. `dgd` needs
 /// `win/2` margins around the region (the search extends the recon by 3+
 /// before calling). Coordinates are plane-relative; `origin` indexes (0,0).
+///
+/// Runtime-dispatched (`incant!([v3, neon, scalar])`): the AVX2 (`_v3`) path
+/// accumulates each region row's M/H products in i32 SIMD lanes and flushes
+/// the row's partial sums into the i64 output once per row; the `_scalar`
+/// reference (also the aarch64 `_neon` fallback) is the verbatim C transcription.
+/// The two are byte-identical — see [`compute_stats_impl_v3`] for the proof
+/// that the i32-then-flush regrouping reproduces the scalar i64 accumulation
+/// exactly. Pinned by `tests/c_parity_wiener.rs` (`compute_stats_matches_c`
+/// on the host tier + `compute_stats_all_tiers_match_c` forcing every tier).
 #[allow(clippy::too_many_arguments)]
 pub fn compute_stats(
+    wiener_win: usize,
+    dgd: &[u8],
+    dgd_origin: usize,
+    dgd_stride: usize,
+    src: &[u8],
+    src_origin: usize,
+    src_stride: usize,
+    h_start: i32,
+    h_end: i32,
+    v_start: i32,
+    v_end: i32,
+    m: &mut [i64],
+    h: &mut [i64],
+) {
+    incant!(
+        compute_stats_impl(
+            wiener_win, dgd, dgd_origin, dgd_stride, src, src_origin, src_stride, h_start, h_end,
+            v_start, v_end, m, h
+        ),
+        [v3, neon, scalar]
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compute_stats_impl_scalar(
+    _token: ScalarToken,
+    wiener_win: usize,
+    dgd: &[u8],
+    dgd_origin: usize,
+    dgd_stride: usize,
+    src: &[u8],
+    src_origin: usize,
+    src_stride: usize,
+    h_start: i32,
+    h_end: i32,
+    v_start: i32,
+    v_end: i32,
+    m: &mut [i64],
+    h: &mut [i64],
+) {
+    compute_stats_scalar_core(
+        wiener_win, dgd, dgd_origin, dgd_stride, src, src_origin, src_stride, h_start, h_end,
+        v_start, v_end, m, h,
+    );
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn compute_stats_impl_neon(
+    _token: NeonToken,
+    wiener_win: usize,
+    dgd: &[u8],
+    dgd_origin: usize,
+    dgd_stride: usize,
+    src: &[u8],
+    src_origin: usize,
+    src_stride: usize,
+    h_start: i32,
+    h_end: i32,
+    v_start: i32,
+    v_end: i32,
+    m: &mut [i64],
+    h: &mut [i64],
+) {
+    compute_stats_scalar_core(
+        wiener_win, dgd, dgd_origin, dgd_stride, src, src_origin, src_stride, h_start, h_end,
+        v_start, v_end, m, h,
+    );
+}
+
+/// Scalar reference — verbatim `svt_av1_compute_stats_c`. The M and H
+/// accumulation order below is the byte-exactness anchor for every SIMD tier.
+#[allow(clippy::too_many_arguments)]
+fn compute_stats_scalar_core(
     wiener_win: usize,
     dgd: &[u8],
     dgd_origin: usize,
@@ -281,6 +368,131 @@ pub fn compute_stats(
         for l in (k + 1)..win2 {
             h[l * win2 + k] = h[k * win2 + l];
         }
+    }
+}
+
+/// AVX2 `compute_stats`. Byte-identical to [`compute_stats_scalar_core`].
+///
+/// The scalar accumulates, per source pixel, `M[k] += y[k]*x` and (upper
+/// triangle) `H[k*win2+l] += y[k]*y[l]` straight into the i64 output. Every
+/// product `y[k]*y[l]` / `y[k]*x` is formed from two values in `[-255, 255]`
+/// (a pixel minus the region average), so each product lies in
+/// `[-65025, 65025]` and fits `i32` exactly — the scalar's `(i32)y[k]*y[l]`
+/// is lossless, and so is this path's `_mm256_mullo_epi32` (its low 32 bits
+/// ARE the full product when it fits i32).
+///
+/// This path accumulates one **region row** of those i32 products in i32 SIMD
+/// lanes (`h_acc`/`m_acc` scratch) and then adds the row's partial sums into
+/// the i64 output. A single restoration region row is at most
+/// `RESTORATION_UNITPELS_HORZ_MAX` (< 512) pixels wide, so each i32 cell sums
+/// at most ~512 products of magnitude ≤ 65025, i.e. ≤ 3.4e7 ≪ `i32::MAX` — the
+/// i32 accumulation and `_mm256_add_epi32` never overflow. The final i64 value
+/// is therefore `Σ_rows (Σ_pixels-in-row product)` = `Σ_all-pixels product`,
+/// identical to the scalar's per-pixel i64 sum by associativity of integer
+/// addition (the products are the same set; only their grouping differs). The
+/// lower triangle is mirrored once at the end, exactly as the scalar does.
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn compute_stats_impl_v3(
+    token: Desktop64,
+    wiener_win: usize,
+    dgd: &[u8],
+    dgd_origin: usize,
+    dgd_stride: usize,
+    src: &[u8],
+    src_origin: usize,
+    src_stride: usize,
+    h_start: i32,
+    h_end: i32,
+    v_start: i32,
+    v_end: i32,
+    m: &mut [i64],
+    h: &mut [i64],
+) {
+    let win2 = wiener_win * wiener_win;
+    let halfwin = (wiener_win >> 1) as i32;
+    assert!(m.len() >= win2 && h.len() >= win2 * win2);
+    let avg = find_average(dgd, dgd_origin, dgd_stride, h_start, h_end, v_start, v_end) as i16;
+
+    m[..win2].fill(0);
+    h[..win2 * win2].fill(0);
+    let m = &mut m[..win2];
+    let h = &mut h[..win2 * win2];
+
+    const N2MAX: usize = WIENER_WIN * WIENER_WIN;
+    // Per-region-row i32 scratch. Bounded to one row of products (see the fn
+    // doc), so the i32 sums never overflow and the flush is byte-exact.
+    let mut m_acc = [0i32; N2MAX];
+    let mut h_acc = [0i32; N2MAX * N2MAX];
+    let mut y = [0i16; N2MAX];
+
+    for i in v_start..v_end {
+        m_acc[..win2].fill(0);
+        h_acc[..win2 * win2].fill(0);
+        for j in h_start..h_end {
+            let sidx = src_origin as isize + i as isize * src_stride as isize + j as isize;
+            let x = src[sidx as usize] as i16 - avg;
+            let mut idx = 0usize;
+            for k in -halfwin..=halfwin {
+                for l in -halfwin..=halfwin {
+                    let didx = dgd_origin as isize
+                        + (i + l) as isize * dgd_stride as isize
+                        + (j + k) as isize;
+                    y[idx] = dgd[didx as usize] as i16 - avg;
+                    idx += 1;
+                }
+            }
+            // M[k] += y[k]*x for k in 0..win2 (full row).
+            mac_row_i32_v3(token, &mut m_acc[..win2], &y[..win2], x as i32);
+            // Upper-triangular H[k][l] += y[k]*y[l], l >= k.
+            for k in 0..win2 {
+                let yk = y[k] as i32;
+                let base = k * win2;
+                mac_row_i32_v3(token, &mut h_acc[base + k..base + win2], &y[k..win2], yk);
+            }
+        }
+        // Flush this row's i32 partial sums into the i64 output.
+        for k in 0..win2 {
+            m[k] += m_acc[k] as i64;
+        }
+        for k in 0..win2 {
+            let base = k * win2;
+            for l in k..win2 {
+                h[base + l] += h_acc[base + l] as i64;
+            }
+        }
+    }
+    // Mirror the upper triangle to the lower (once), as the scalar does.
+    for k in 0..win2 {
+        for l in (k + 1)..win2 {
+            h[l * win2 + k] = h[k * win2 + l];
+        }
+    }
+}
+
+/// `acc[t] += vals[t] * scalar` for all `t` (equal-length slices), 8 i32 lanes
+/// at a time. Products fit i32 and each `acc` cell is bounded to one region
+/// row's worth (see [`compute_stats_impl_v3`]), so neither the `i32` multiply
+/// nor the `_mm256_add_epi32` overflows. The scalar tail matches lane-for-lane.
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn mac_row_i32_v3(_token: Desktop64, acc: &mut [i32], vals: &[i16], scalar: i32) {
+    let s = _mm256_set1_epi32(scalar);
+    let n = acc.len();
+    let mut t = 0usize;
+    while t + 8 <= n {
+        let vchunk: &[i16; 8] = vals[t..t + 8].try_into().unwrap();
+        let v32 = _mm256_cvtepi16_epi32(_mm_loadu_si128(vchunk));
+        let prod = _mm256_mullo_epi32(v32, s);
+        let achunk: &mut [i32; 8] = (&mut acc[t..t + 8]).try_into().unwrap();
+        let sum = _mm256_add_epi32(_mm256_loadu_si256(achunk), prod);
+        _mm256_storeu_si256(achunk, sum);
+        t += 8;
+    }
+    while t < n {
+        acc[t] += vals[t] as i32 * scalar;
+        t += 1;
     }
 }
 

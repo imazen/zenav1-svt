@@ -173,6 +173,96 @@ fn compute_stats_matches_c() {
     }
 }
 
+/// compute_stats — EVERY dispatch tier byte-identical to real C (and hence to
+/// each other). The suite above runs whatever tier this host picks (v3 here),
+/// pinning v3==C; this forces both the AVX2 (`_v3`) kernel and the scalar
+/// reference (`_scalar`, also the aarch64 `_neon` fallback) and asserts each
+/// == real C AND == the first tier's output. Since the scalar tier == C and
+/// the v3 tier == C, the SIMD path == the scalar path (the task's "SIMD ==
+/// real-C AND == scalar"). Covers both window sizes, all content classes, and
+/// edge regions: widths < 8 (scalar-tail only), widths 8/16 (whole-vector),
+/// off-by-one tails (9, 17, …), 1-row / 1-column regions, and tall regions
+/// (many flush rows). The scalar-tail path (win2 = 25 and 49 are both not
+/// multiples of 8) is exercised on every case.
+#[test]
+fn compute_stats_all_tiers_match_c() {
+    use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+    let mut rng = Rng(0x5EED_57A7);
+    // Explicit region widths/heights hitting the SIMD boundary conditions,
+    // plus random sizes. (w, h) are the plane content extents; the region
+    // (h_start..h_end, v_start..v_end) is carved inside with small margins.
+    let widths = [1usize, 2, 5, 7, 8, 9, 15, 16, 17, 24, 25, 33, 48, 64, 80];
+    for iter in 0..220usize {
+        let (w, h) = if iter < widths.len() * 2 {
+            let wv = widths[iter % widths.len()];
+            let hv = if iter < widths.len() { 1 + (iter % 6) } else { widths[(iter + 3) % widths.len()] };
+            (wv, hv)
+        } else {
+            (1 + rng.range(90) as usize, 1 + rng.range(90) as usize)
+        };
+        let b = 5usize; // >= halfwin(3) + slack for +-window reads
+        let stride = w + 2 * b + rng.range(9) as usize;
+        let rows = h + 2 * b;
+        let origin = b * stride + b;
+        let mut dgd = vec![0u8; stride * rows];
+        let mut src = vec![0u8; stride * rows];
+        let nd = dgd.len();
+        fill_content(&mut rng, &mut dgd, 1, nd, 1, (iter % 3) as u64);
+        let ns = src.len();
+        fill_content(&mut rng, &mut src, 1, ns, 1, ((iter + 2) % 3) as u64);
+        // Window reads +-halfwin around every region pixel; define those borders.
+        rst::extend_frame(&mut dgd, origin, w, h, stride, 4, 4);
+
+        let win = if iter % 2 == 0 { 5 } else { 7 };
+        let win2 = win * win;
+
+        // Region: full plane on some iters, a carved sub-region on others.
+        let (h_start, h_end, v_start, v_end) = if iter % 3 == 0 {
+            (0i32, w as i32, 0i32, h as i32)
+        } else {
+            let hs = rng.range((w as u64).max(1)) as i32 * (w > 1) as i32;
+            let vs = rng.range((h as u64).max(1)) as i32 * (h > 1) as i32;
+            let he = (w as i32).max(hs + 1);
+            let ve = (h as i32).max(vs + 1);
+            (hs.min(he - 1).max(0), he, vs.min(ve - 1).max(0), ve)
+        };
+
+        let mut m_c = vec![0i64; win2];
+        let mut h_c = vec![0i64; win2 * win2];
+        cref::compute_stats(
+            win, &dgd, origin, stride, &src, origin, stride, h_start, h_end, v_start, v_end,
+            &mut m_c, &mut h_c,
+        );
+
+        // Reference tier snapshot (asserted equal across all tiers too).
+        let mut m_first: Option<Vec<i64>> = None;
+        let mut h_first: Option<Vec<i64>> = None;
+        let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            let mut m_r = vec![0i64; win2];
+            let mut h_r = vec![0i64; win2 * win2];
+            rst::compute_stats(
+                win, &dgd, origin, stride, &src, origin, stride, h_start, h_end, v_start, v_end,
+                &mut m_r, &mut h_r,
+            );
+            assert_eq!(
+                m_r, m_c,
+                "M tier!=C iter {iter} win {win} w{w} h{h} reg[{h_start},{h_end})x[{v_start},{v_end})"
+            );
+            assert_eq!(
+                h_r, h_c,
+                "H tier!=C iter {iter} win {win} w{w} h{h} reg[{h_start},{h_end})x[{v_start},{v_end})"
+            );
+            if let (Some(mf), Some(hf)) = (m_first.as_ref(), h_first.as_ref()) {
+                assert_eq!(&m_r, mf, "M tier!=tier0 iter {iter}");
+                assert_eq!(&h_r, hf, "H tier!=tier0 iter {iter}");
+            } else {
+                m_first = Some(m_r);
+                h_first = Some(h_r);
+            }
+        });
+    }
+}
+
 /// Full unit filter parity WITH the stripe-boundary machinery: random frame
 /// sizes (including the 64/128 identity cells and odd sizes), random
 /// boundary buffer contents (standing in for the saved deblock/CDEF lines),
