@@ -72,6 +72,13 @@ CELLS=(
   "120 120 20 6 8" "120 120 45 9 10" "120 120 20 13 8"
   "65 64 45 6 8"   "65 257 20 13 8"  "257 120 45 9 8"
   "200 200 20 6 8" "72 72 45 13 10"
+  # --- SB128-triggering (>=165,120 px @ preset 0/1) + partial/odd SB128 ---
+  # These exercise the SB128 encode path (use_128x128_superblock=1) incl. the
+  # bd10 x SB128 combo; presets 3/13 at the same size are the SB64 control.
+  "512 384 32 0 8"  "512 384 32 1 10"  "448 384 32 0 10"
+  "512 512 32 1 8"  "456 392 32 0 8"   "456 392 32 1 10"   # 456x392 = partial SB128
+  "513 385 32 0 8"  "520 392 32 1 10"                       # odd + partial SB128
+  "512 384 32 3 8"                                          # SB64 control at an SB128 size
 )
 
 pass=0; fail=0; failed=()
