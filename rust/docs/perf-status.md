@@ -140,20 +140,61 @@ Reading the fit:
    (update_cdf_level 2) they genuinely evolve per SB from the `ec_ctx_array`
    neighbour chain (`chain_base` in pipeline.rs), so a hoist would change bytes.
    The rebuild is a negligible fraction of frame time either way.
-3. **Per-frame allocation discipline** (now the #1 remaining item at p6). The port
-   allocates+zeros its working set inside `encode_frame_420`; C pre-allocates in
-   `init`. After the `compute_stats` SIMD, `__memset_avx2` (per-frame zeroing) is
-   the **largest single item at 256² p6 — ~19 %** (132.9M, essentially unchanged by
-   the SIMD work, so it is pre-existing buffer zeroing, not the LR scratch). It is
-   byte-inert to fix (reuse buffers instead of re-zeroing) but structural, not a
-   SIMD kernel. After that the next SIMD-able integer kernel is the entropy coeff
-   context sum `get_nz_map_contexts`/`nz_map_ctx` (~6 % combined).
+3. **Per-frame allocation discipline** (was the #1 remaining item at p6; the bulk is
+   now landed). The port allocates+zeros its working set inside `encode_frame_420`;
+   C pre-allocates in `init`. After the `compute_stats` SIMD, `__memset_avx2`
+   (per-frame zeroing) was the **largest single item at 256² p6 — ~19 %** (132.9M),
+   pre-existing per-txb buffer zeroing, not the LR scratch. The **per-txb level-map
+   + tx-scratch zeroing reduction** (see "Landed" below) cut it to ~1.6 % (#9),
+   taking 256² p6 frame instructions −15.8 % — byte-inert (reduced zeroing extent +
+   32-cap scratch sizing + dead-zero → uninit alloc). What remains is the ~9.2M
+   (1.6 %) per-txb `tx_unit` i32 calloc blob (`coeffs`/`qcoeff`/`dqcoeff`/`dq_full`/
+   `inv`/`recon`): these are `&mut`-filled or have load-bearing zeros (positions
+   past eob, the >32 high-freq tail), so they cannot be turned into uninit `collect`
+   like `residual`/`packed` were — eliminating them needs a persistent/thread-local
+   `TxScratch` reused across calls, with per-buffer write-coverage verified before
+   any zero is skipped (the riskiest byte-identity change; deferred). After that the
+   next SIMD-able integer kernel is the entropy coeff context sum
+   `get_nz_map_contexts`/`nz_map_ctx` (~6 % combined).
 
 Approach order per the criteria: algorithmic parity (done on this envelope),
 then allocation discipline, then SIMD. On these numbers, SIMD on the hot loops
 is the biggest single lever.
 
 ## Landed byte-inert optimizations
+
+- **Per-txb level-map + tx-scratch zeroing reduction** (crates/svtav1-entropy/src/
+  coeff_c.rs, crates/svtav1-encoder/src/{leaf_funnel,quant,pd0}.rs). `__memset_avx2`
+  was the #1 remaining preset-6 item (~19 % of 256² p6 frame instructions, item (3)
+  above) — per-frame/per-txb buffer zeroing the port pays that C avoids via
+  persistent, once-zeroed buffers. Three byte-inert reductions on the per-txb
+  coeff-coding hot path: (1) `txb_init_levels` zeros only the padded extent the
+  `(width,height)` txb uses (the context readers reach at most 4 rows below the
+  bottom-right coeff — `TX_CLASS_VERT` `nz_mag` reads `base+4*stride` — so `used`
+  bounds that, capped at len; a 4×4 zeros ~112 B not 4640, matching C's
+  md_levels_buf whose pad is zeroed once and only the body re-fills). (2) A new
+  `LEVELS_SCRATCH_LEN` const (~1456 B) sizes the per-call level scratch to the
+  32×32 coeff-coding cap (`adjusted_tx_size` folds 64-dim tx to a 32-dim map)
+  instead of the 64-shaped `TX_PAD_2D`; the two heap `vec![0u8; TX_PAD_2D]` level
+  buffers become stack arrays of this length (no per-txb calloc), the two stack
+  ones shrink 3.2×. (3) `tx_unit`/`tx_unit_hbd` build `residual` and the >32 fold
+  `packed` with `Vec::with_capacity`+push/extend instead of `vec![0; n]` + full
+  overwrite (dead zero → uninit alloc). Byte-identical by construction: every read
+  and write stays in the zeroed/filled prefix; the dead-zero buffers are fully
+  overwritten. Proven two ways: a new `c_parity.rs::
+  coeff_c_txb_init_levels_partial_zero_no_stale_reads` pre-fills the scratch with
+  0xFF garbage and asserts `get_nz_map_contexts`/`br_ctx` still bit-match real C
+  across all 19 tx sizes × {2D,VERT,HORIZ} (0xFF clips to context 3, so any
+  over-read diverges), plus all 9 runnable identity gates + `cargo test
+  --workspace` (864 tests). Measured (callgrind, deterministic): 256² p6 frame
+  instructions **685.9M → 577.3M (−15.8 %)**; `__memset` from the ~19 % #1 item to
+  ~1.6 % (#9), and the per-txb calloc blob **44.9M → 9.2M**. Cross-size instr:
+  128² −1.4 %, 512² −9.8 % (the win tracks the memset fraction, largest at 256²).
+  Wall (40-round interleaved paired, no `target-cpu=native`): 256² p6 −3.1 %, 512²
+  p6 −1.3 % — smaller than the instruction delta because `__memset` is
+  bandwidth-bound and p6 wall time is dominated by the untouched restoration
+  `compute_stats`. `#![forbid(unsafe_code)]` intact. Commits `57f8dc6e8` (perf) +
+  `713f7b7f9` (regression test).
 
 - **`compute_stats` / `compute_stats_hbd` accumulation reshape**
   (crates/svtav1-dsp/src/restoration.rs). Re-slice M/H to their exact working
@@ -282,8 +323,10 @@ hotspot (~46 % of 256² p6 instructions) and fully scalar; the AVX2 port cut it 
 (measured 2026-07-20, commit `429cf91c6`; interleaved before/after vs the parent
 binary: 256²/512²/1024² p6 −24.5 %/−26.6 %/−28.9 %). p6 now needs the CDEF/LR
 *search* structure, the still-scalar `compute_stats` window gather, and the non-DCT
-transforms; the largest single p6 item is now the pre-existing per-frame
-`__memset` (allocation discipline, ~19 %).
+transforms. The pre-existing per-frame `__memset` that was the largest single p6
+item (~19 %) has since been cut to ~1.6 % by the **per-txb level-map + tx-scratch
+zeroing reduction** (seventh landed win, 256² p6 −15.8 % frame instructions; see
+"Landed"); `compute_stats` is again the dominant p6 kernel.
 
 **Not at ≤1.2× yet.** Remaining fast-preset levers, now that the transforms are
 SIMD'd: **quant** (`quantize_b`/`quantize_fp`), the **entropy coeff-coding** path

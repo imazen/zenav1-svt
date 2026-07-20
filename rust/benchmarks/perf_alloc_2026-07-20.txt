@@ -1,0 +1,42 @@
+# Per-txb level-map + tx-scratch zeroing reduction — before/after
+#
+# Change:   commit 57f8dc6e8 (perf) + 713f7b7f9 (regression test)
+# Baseline: commit c131b0b30 (= 429cf91c6 code, pre-change)
+# Host:     dev (16 cores), shared box; no -C target-cpu=native (runtime SIMD dispatch)
+# Content:  gradient, qp 40, preset 6 (ALLINTRA still KEY, bd8 4:2:0)
+#
+# Motivation: docs/perf-status.md item (3) — __memset_avx2 was the #1 remaining
+# preset-6 hotspot (~19% of 256^2 p6 frame instructions), pre-existing per-txb
+# buffer zeroing the port pays that C avoids via persistent once-zeroed buffers.
+
+## Deterministic — callgrind frame instruction count (I refs), p6, warmup 0
+## cmd: valgrind --tool=callgrind --cache-sim=no --branch-sim=no \
+##        <perf_encode> gradient <S> <S> 40 6 <out> 0
+size    before_irefs      after_irefs       delta
+64^2    (profiled: __memset dominated by per-txb level/tx zeroing)
+128^2   130,536,423       128,737,916       -1.38%   (-1.8M)
+256^2   685,905,386       577,333,235      -15.83%   (-108.6M)   <- doc profiling size
+512^2   2,290,591,872     2,066,792,368     -9.77%   (-223.8M)
+# The win tracks the memset fraction of the frame (largest at 256^2, where
+# __memset was 19% of instructions). At 256^2 p6: __memset went from the #1 item
+# (~19%) to #9 (~1.6%); the per-txb calloc blob dropped 44.9M -> 9.2M.
+
+## Wall-clock — interleaved paired (randomized order/round), p6, warmup 1
+## driver: /tmp/perf_ab.py (median of per-round paired ratios); bytes verified
+##         identical every round.
+size    rounds  before_ms   after_ms   ratio    delta    bytes
+256^2   20      38.669      37.632     0.967    -3.29%   identical
+512^2   20      129.024     127.374    0.987    -1.28%   identical
+256^2   40      39.347      38.200     0.969    -3.09%   identical
+512^2   40      129.332     126.865    0.987    -1.31%   identical
+# Wall delta < instruction delta: __memset is bandwidth-bound (retires cheap per
+# instruction) and p6 wall time is dominated by the untouched restoration
+# compute_stats (~26%). The reduction is real, byte-identical, and stable across
+# 20/40 rounds.
+
+## Verification (all byte-identical / green)
+# identity_matrix 54/54, partial_sb 101/101, bd10_matrix 36/36, bd10_nonflat
+# 288/288, bd10_photo 154/154, bd10_recon_parity 13/13, sb128 18/18, tile 25/25,
+# arbitrary_size 57/57 panic-free + aomdec-decodable; cargo test --workspace 864
+# tests, incl. new c_parity coeff_c_txb_init_levels_partial_zero_no_stale_reads.
+# (hdr_bd10 not runnable in this worktree — no fork build; coordinator runs it.)
