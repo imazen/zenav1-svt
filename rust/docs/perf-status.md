@@ -189,6 +189,33 @@ is the biggest single lever.
   the bd10 gates). All 11 byte-identity gates + `cargo test --workspace` green;
   `#![forbid(unsafe_code)]` intact. Data: benchmarks/perf_{before,after}_cdef.tsv.
 
+- **`txb_init_levels` SIMD (AVX2) — coeff-level packing** (`crates/svtav1-entropy/src/
+  coeff_simd.rs`, commit `2e71f1f9d`). The per-txb coeff-magnitude → level-buffer pack
+  that feeds the nz-map context sum, ~8% of frame instructions. archmage
+  `incant!([v3, neon, scalar])`, additive alongside the scalar `coeff_c` path. Integer
+  per-element clamp/pack → bit-identical. Proven byte-exact two ways:
+  `txb_init_levels_simd_matches_c` (SIMD == exported real-C `av1_txb_init_levels_c`,
+  all tx sizes) + all 11 gates unchanged. `#![forbid(unsafe_code)]` intact.
+
+## Campaign summary (2026-07-20)
+
+Three byte-inert perf wins landed on public master, in the profile-ranked order:
+restoration reshape (−8.9% worst preset), CDEF filter SIMD (the 27.8% hotspot; G4
+slope-ratio ~12× → ~8.4× at p10/p13), `txb_init_levels` SIMD (~8%). Each is
+byte-identical (a `c_parity_*` differential vs real C + the 11 gates) with no
+`unsafe`. **The port is still ~3–9× C — not at ≤1.2× yet.** The dominant remaining
+lever is the **integer transforms** (`fadst*`/`idct64`/`fdct64`, ~25% at fast
+presets): AV1 transforms are fixed-point integer butterflies, so a byte-exact SIMD
+port is possible but the rounding-shift order must match the scalar exactly — a
+careful separate pass, not a shotgun. After that: quant, and the SAD/SSE/SATD
+distortion kernels (only ~2–3% each here, low priority).
+
+**Process note (learned the hard way 2026-07-20):** do NOT run `perf_gate.sh`'s
+before/after (which `git stash`/pops the working tree) in the SAME checkout where a
+verification sweep is concurrently reading the tree — it pulls the change out from
+under the sweep and corrupts the result (recovered via the snapshot stash, no loss).
+Measure perf on the COMMITTED change post-landing, or in an isolated `git worktree`.
+
 ## Reproducibility / provenance
 
 - Harness: `tools/perf_gate.sh`, `svtav1/examples/perf_encode.rs`,
