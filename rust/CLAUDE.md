@@ -990,3 +990,143 @@ after the code is in. Rules:
     some possibly empty" shape instead of C's early-stopping loop —
     unreachable by any in-scope test cell (both use clean, power-of-2
     splits).
+
+## Zen codec cross-cutting compliance (encode backend) — SPEC (2026-07-20)
+
+This crate (`svtav1` lib / pkg `zenav1-svt`, encoder `zenav1-svt-encoder`) is an
+**encode backend** consumed by zenavif (feature `encode-svt-rs`,
+`src/encoder_svt_rs.rs` → `EncodePipeline::encode_frame_420`). Its input is
+**trusted in-memory pixels the caller already holds**, not an adversarial
+bitstream — so the resource-limit / panic-on-untrusted-input bar is genuinely
+LOWER than a decoder's. But three gaps are NOT excused by trusted input and are
+the priority here: (a) entry points that **panic** on a caller contract
+violation instead of returning `Err`; (b) **silently emitting a corrupt
+bitstream** for un-gated configs (the seam can't tell garbage from valid); (c)
+**no cancellation hook** for a long encode. Reference codec is zenavif; contract
+types live in `zencodec` 0.1.26, `whereat`, `enough`/`almost-enough`.
+
+**Design rule: stay codec-only.** Do NOT take a hard `zencodec` dependency. The
+integration crate (zenavif) owns the `CategorizedError`/limits/estimate trait
+impls (zenavif `main` already implements `zencodec::CategorizedError for Error`).
+This crate's job: return a **structured `Result`** (never panic on a caller
+mistake), carry enough error granularity for the seam to categorize, accept a
+**stop token** and a **fallible-alloc setting**, and **never return a non-empty
+`Vec<u8>` that isn't a valid bitstream**.
+
+### 1. Limits enforcement — LOW priority (trusted input)
+- **State:** only zero/alignment/buffer-size validation
+  (`avif.rs:451`, `encoder_svt_rs.rs:164`). No max-dimension / max-memory cap;
+  `EncodePipeline::new` accepts arbitrary `u32×u32` and `encode_y8:329` does
+  `vec![128u8; padded_w*padded_h]` unbounded.
+- **Bar (relaxed):** because dims come from a caller-held buffer, an over-large
+  request is a caller bug, not an attack. Still, replace the *abort* with a
+  typed `Err`: add a sanity ceiling (e.g. reject `width*height` beyond a
+  configurable `max_pixels`, default generous ~1 Gpx) returning
+  `EncodeError::InvalidDimensions`/a new `TooLarge` variant, so a bad dimension
+  is a graceful error not an OOM-abort. This is §5's "no panic on caller
+  contract violation", not decoder-grade DoS hardening.
+
+### 2. Resource estimation — LOW priority
+- **State:** none.
+- **Bar:** a lightweight `estimate_encode(width, height, preset, qp) ->
+  EncodeEstimate { peak_memory_bytes, time_ms, output_bytes }` keyed on pixels
+  × preset. zenavif has its own calibrated `heuristics::estimate_encode`, so a
+  minimal honest peak-memory bound (buffers are `~padded_w*padded_h*k`) is
+  enough to let a caller pre-flight. Optional until §3/§5/§6 land.
+
+### 3. Structured `Result` errors + whereat — MEDIUM (a real gap)
+- **State:** `EncodeError` exists (`avif.rs:44`) with 3 variants
+  (`InvalidDimensions`, `InvalidQuality`, `EncodeFailed(String)` — the last
+  **never constructed**). Critically, **the pipeline returns bare `Vec<u8>`**:
+  `encode_frame`/`encode_frame_420`/`encode_frame_impl` (`pipeline.rs:347,380,
+  423`) cannot report a runtime failure — they **panic** instead (§5). So
+  `avif.rs::encode_y8` returns `Ok(...)` unconditionally and the zenavif seam's
+  `is_empty()` check (`encoder_svt_rs.rs:345`) can never fire. No `whereat`.
+- **Bar:** `EncodePipeline::encode_frame*` must return
+  `Result<Vec<u8>, EncodeError>` so a runtime failure (unsupported partition
+  shape, un-gated config, worker panic caught) surfaces as `Err`, not a
+  process panic and not silent garbage. `EncodeError` gains the granularity in
+  §4. Behind a default-off `whereat` feature, `define_at_crate_info!()` +
+  `At<EncodeError>`; without it, the bare enum still carries category+message.
+
+### 4. Category granularity (feeds zencodec `CategorizedError`) — MEDIUM
+- **State:** 3 flat variants, no categorization, no zencodec.
+- **Bar:** `EncodeError` variants that let the zenavif seam map to the right
+  `zencodec::ErrorCategory` arm instead of a blanket `Error::Encode` →
+  `Internal`. Suggested set:
+  - `InvalidDimensions` / `InvalidQuality` / `TooLarge {..}` → caller-request
+    faults → zenavif maps to **Request::Invalid(Parameters/Buffer)** /
+    **Resource::Limits**.
+  - `UnsupportedConfig(what)` (a preset/qp/dims combination the port can't yet
+    encode correctly — see §5 corruption) → **Request::Unsupported** /
+    zenavif `Error::Unsupported`. This is the honest home for "un-gated config"
+    (below) instead of emitting garbage.
+  - `Internal(reason)` (a genuine port bug: unexpected partition shape, worker
+    panic) → **Internal::Bug**.
+  - `Cancelled(StopReason)` (§6) → **Stopped**.
+
+### 5. Panic-freedom, no-silent-corruption, configurable fallible alloc — HIGH
+- **Bar (no panic on a caller mistake):** the encode entry points currently
+  `assert!` on contract violations — `encode_frame:348` (dims 8-aligned),
+  `encode_frame_420:381` (chroma_420 enabled), `:402` (plane lengths) — plus
+  `panic!` at `pipeline.rs:3916,4297,4571,4877` and worker `join().unwrap()`
+  at `:6119`. Trusted input does NOT excuse crashing the caller's process on a
+  legal-but-unaligned request or an internal partition case: convert these to
+  `Err(EncodeError::…)` at the entry-point boundary (validate → `Err`), and
+  catch worker panics into `EncodeError::Internal` rather than propagating.
+- **Bar (NO SILENT CORRUPTION — the load-bearing one):** per STATUS.md, many
+  preset/qp/dimension combinations outside the gated matrix produce
+  **decodable-but-wrong or non-decodable** bitstreams (STATUS.md:68), returned
+  as a **non-empty `Vec<u8>` of garbage** that the zenavif `is_empty()` seam
+  happily muxes. This violates the global "ZERO TOLERANCE for image corruption"
+  rule at the integration boundary. Required: the encoder must **know its own
+  verified envelope** and, for a config outside it, return
+  `EncodeError::UnsupportedConfig` (§4) — refuse, don't emit garbage. A
+  wrong-pixels output that is indistinguishable from a correct one at the seam
+  is a shipping bug, not a "known limitation". (This is the encoder analogue of
+  the decoder's panic-freedom: the failure mode differs — corruption vs panic —
+  but both must become a typed `Err`.)
+- **Bar (fallible alloc is a SETTING — per user directive):** the
+  fallible-vs-infallible allocation trade must be a **configurable knob**, not
+  hardcoded. The pipeline allocates large buffers infallibly off dims
+  (`pipeline.rs:516,1009,4403,4646,5227,5255,6081` — `vec![v; w*h]`, abort on
+  OOM). Add an `AllocMode { Fallible, Infallible }` on the pipeline/encoder
+  config; route the dim-sized buffers through a helper honoring it
+  (`try_reserve_exact` → `EncodeError::AllocFailed` on the fallible path). For
+  a *trusted-input encoder* the sensible default is **Infallible** (single
+  `calloc`, faster — the caller controls the size), with Fallible available for
+  memory-bounded/server contexts. This is the inverse default from the
+  untrusted decoder, and that asymmetry is the point of making it a setting.
+- **Bar (fuzz):** add a `fuzz/` target over `AvifEncoder::encode_y8`/`_yuv420`
+  with arbitrary dims/quality/preset + small random pixels; any panic/abort is
+  a bug. None exist today. This mechanically enforces the "no panic on caller
+  mistake" bar.
+- **Keep:** `#![forbid(unsafe_code)]` (already workspace-forbidden).
+
+### 6. Stop-token cancellation — HIGH (a long encode is uninterruptible)
+- **State:** the pipeline takes no token; `encode_frame_420` runs to completion
+  (`pipeline.rs:380`). zenavif checks `stop` only at coarse phase boundaries
+  (`encoder_svt_rs.rs:275,316`) and the single `encode_frame_420` call at
+  `:344` is uninterruptible — a slow preset-0 encode blocks past the last check.
+- **Bar:** thread an `&impl enough::Stop` (default `enough::Unstoppable`) into
+  `encode_frame`/`encode_frame_420` and poll `stop.check()?` inside the
+  superblock loop / at tile-worker boundaries (`encode_frame_impl` body around
+  `pipeline.rs:5227-6119`), returning `EncodeError::Cancelled(StopReason)`.
+  The module doc already flags the missing hook
+  (`encoder_svt_rs.rs:275`: "no per-superblock stop hook yet") — this is where
+  it lands. Cadence: at least once per superblock-row so cancellation is
+  observed within bounded work; `enough` is zero-dep `no_std`.
+
+### Priority order for this backend
+1. §5 no-silent-corruption + no-panic-on-caller-mistake (make entry points
+   return `Err` for out-of-envelope configs and contract violations) — the
+   corruption-at-the-seam risk is the top issue and is NOT excused by trusted
+   input.
+2. §3 pipeline returns `Result` + §4 category-bearing `EncodeError`.
+3. §6 stop hook in the superblock loop.
+4. §5 configurable `AllocMode` (default Infallible for this trusted encoder),
+   §1 sanity ceiling, §2 estimate.
+
+When any item lands, update the zenavif seam (`src/encoder_svt_rs.rs`) in the
+SAME change to consume it (thread the token, map the new error variants, drop
+the `is_empty()`-as-failure heuristic once `Result` is real).
