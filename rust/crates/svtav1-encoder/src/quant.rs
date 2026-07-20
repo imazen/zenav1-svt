@@ -186,48 +186,31 @@ pub fn quantize_b(
     qcoeff: &mut [i32],
     dqcoeff: &mut [i32],
 ) -> u16 {
-    let n_coeffs = scan.len();
     let zbins = [
         (t.zbin[0] + ((1 << log_scale) >> 1)) >> log_scale,
         (t.zbin[1] + ((1 << log_scale) >> 1)) >> log_scale,
     ];
-    qcoeff[..coeffs.len()].fill(0);
-    dqcoeff[..coeffs.len()].fill(0);
-
-    // Pre-scan pass: find the last scan position outside the zbin dead zone.
-    let mut non_zero_count = n_coeffs;
-    for i in (0..n_coeffs).rev() {
-        let rc = scan[i] as usize;
-        let coeff = coeffs[rc];
-        let iz = usize::from(rc != 0);
-        if coeff < zbins[iz] && coeff > -zbins[iz] {
-            non_zero_count -= 1;
-        } else {
-            break;
-        }
-    }
-
-    let mut eob: i64 = -1;
-    for i in 0..non_zero_count {
-        let rc = scan[i] as usize;
-        let coeff = coeffs[rc];
-        let iz = usize::from(rc != 0);
-        let coeff_sign: i32 = if coeff < 0 { -1 } else { 0 };
-        let abs_coeff = (coeff ^ coeff_sign) - coeff_sign;
-        if abs_coeff >= zbins[iz] {
-            let round = (t.round[iz] + ((1 << log_scale) >> 1)) >> log_scale;
-            let tmp = (abs_coeff + round).clamp(i16::MIN as i32, i16::MAX as i32) as i64;
-            let tmp32 = (((((tmp * t.quant[iz] as i64) >> 16) + tmp) * t.quant_shift[iz] as i64)
-                >> (16 - log_scale)) as i32;
-            qcoeff[rc] = (tmp32 ^ coeff_sign) - coeff_sign;
-            let abs_dq = ((tmp32 as i64 * t.dequant[iz] as i64) >> log_scale) as i32;
-            dqcoeff[rc] = (abs_dq ^ coeff_sign) - coeff_sign;
-            if tmp32 != 0 {
-                eob = i as i64;
-            }
-        }
-    }
-    (eob + 1) as u16
+    let round = [
+        (t.round[0] + ((1 << log_scale) >> 1)) >> log_scale,
+        (t.round[1] + ((1 << log_scale) >> 1)) >> log_scale,
+    ];
+    // Dead-zone quantize in RASTER order (archmage SIMD, bd8-safe). C's
+    // `non_zero_count` prescan only skips a trailing all-dead-zone SCAN suffix,
+    // whose positions quantize to 0 under the same per-position zbin test the
+    // raster kernel applies everywhere — so the qcoeff/dqcoeff arrays are
+    // identical and `eob` (below) is the max scan index with a nonzero qcoeff.
+    svtav1_dsp::quant_coding::quantize_b_raster(
+        coeffs,
+        qcoeff,
+        dqcoeff,
+        &zbins,
+        &round,
+        &t.quant,
+        &t.quant_shift,
+        &t.dequant,
+        log_scale,
+    );
+    eob_from_qcoeff(scan, qcoeff)
 }
 
 /// C `quantize_fp_helper_c` (full_loop.c:222), no-quant-matrix branch —
@@ -246,32 +229,33 @@ pub fn quantize_fp(
         (t.round_fp[0] + ((1 << log_scale) >> 1)) >> log_scale,
         (t.round_fp[1] + ((1 << log_scale) >> 1)) >> log_scale,
     ];
-    qcoeff[..coeffs.len()].fill(0);
-    dqcoeff[..coeffs.len()].fill(0);
+    // Per-coefficient quantize in RASTER order (archmage SIMD, bd8-safe); the
+    // scan-order walk only mattered for `eob`, computed below. Byte-exact with
+    // the former scan loop — the arithmetic at each position is
+    // scan-order-independent (svtav1_dsp::quant_coding module docs).
+    svtav1_dsp::quant_coding::quantize_fp_raster(
+        coeffs,
+        qcoeff,
+        dqcoeff,
+        &rounding,
+        &t.quant_fp,
+        &t.dequant,
+        log_scale,
+    );
+    eob_from_qcoeff(scan, qcoeff)
+}
 
-    let mut eob: i64 = -1;
-    for (i, &sc) in scan.iter().enumerate() {
-        let rc = sc as usize;
-        let thresh = t.dequant[usize::from(rc != 0)] as i64;
-        let coeff = coeffs[rc];
-        let coeff_sign: i32 = if coeff < 0 { -1 } else { 0 };
-        let abs_coeff = ((coeff ^ coeff_sign) - coeff_sign) as i64;
-        let mut tmp32 = 0i32;
-        if (abs_coeff << (1 + log_scale)) >= thresh {
-            let iz = usize::from(rc != 0);
-            let a = (abs_coeff + rounding[iz] as i64).clamp(i16::MIN as i64, i16::MAX as i64);
-            tmp32 = ((a * t.quant_fp[iz] as i64) >> (16 - log_scale)) as i32;
-            if tmp32 != 0 {
-                qcoeff[rc] = (tmp32 ^ coeff_sign) - coeff_sign;
-                let abs_dq = ((tmp32 as i64 * t.dequant[iz] as i64) >> log_scale) as i32;
-                dqcoeff[rc] = (abs_dq ^ coeff_sign) - coeff_sign;
-            }
-        }
-        if tmp32 != 0 {
-            eob = i as i64;
+/// `eob = 1 + max{ i : qcoeff[scan[i]] != 0 }`, else 0 — the scan-order
+/// end-of-block C's quantizers return, recovered from the finished (raster)
+/// `qcoeff` with a reverse scan walk (load + compare, no arithmetic).
+#[inline]
+fn eob_from_qcoeff(scan: &[u16], qcoeff: &[i32]) -> u16 {
+    for i in (0..scan.len()).rev() {
+        if qcoeff[scan[i] as usize] != 0 {
+            return (i + 1) as u16;
         }
     }
-    (eob + 1) as u16
+    0
 }
 
 /// C `highbd_quantize_fp_helper_c` non-QM branch (full_loop.c:367-395) — the
