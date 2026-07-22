@@ -173,7 +173,23 @@ pub fn build_md_rates(fc: &FrameContext, cfc: &cc::CoeffFc) -> alloc::boxed::Box
             let nsym = n + 2;
             let mut full = [0i32; 8];
             let mut tmp = alloc::vec![0i32; nsym];
-            crate::quant::syntax_rate_from_cdf(&mut tmp, &fc.palette_y_color_index_cdf[n][c]);
+            // #71: the palette color-index MAP cost uses the FRAME-INIT
+            // (default) CDF, NOT the per-SB-chained `fc`. C's MD-side
+            // `update_palette_cdf` (md_rate_estimation.c:733-759) advances
+            // ONLY palette_y_mode / palette_y_size — it NEVER touches
+            // palette_y_color_index_cdf — so `palette_ycolor_fac_bitss` stays
+            // at its frame-init value for every SB (measured: constant across
+            // the whole frame). Building it from the chained `fc` (which the
+            // port's full-walk chain sim adapts via write_palette_map_tokens)
+            // drifted the map rate on 2nd+ palette blocks (graph p6 q5
+            // mi(14,46): port 18875 vs C 17858) and flipped the palette-vs-
+            // regular near-tie. The DEFAULT const == the frame-init fc, so
+            // this is a no-op on the (default-fc) non-chain call sites and on
+            // non-screen frames (palette_ycolor unused).
+            crate::quant::syntax_rate_from_cdf(
+                &mut tmp,
+                &svtav1_entropy::default_cdfs::PALETTE_Y_COLOR_INDEX_CDF[n][c],
+            );
             full[..nsym].copy_from_slice(&tmp);
             r.palette_ycolor[n][c] = full;
         }
@@ -400,6 +416,18 @@ pub struct FunnelCfg {
     pub mds2_rel_dev_th: u64,
     /// `mds3_cand_base_th` (M6/M7: 15; M8: 1).
     pub mds3_cand_base_th: u64,
+    /// `nic_ctrls.pruning_ctrls.mds3_class_th` base (nic case: lvl1 25 /
+    /// lvl3 25 / lvl5 15 / lvl6-7 5). u64::MAX == the `(uint64_t)~0` sentinel
+    /// (inter-class MDS3 prune disabled). UNLIKE mds1/mds2_class_th (forced
+    /// ~0 on the I-slice, product_coding_loop.c:7826/:7897) this one stays
+    /// ACTIVE on I-slices: `MAX(25, scaled*i_mds3_class_th_mult)` (:7978-7979).
+    /// Only reachable on the multi-class (palette) path — inert single-class.
+    pub mds3_class_th: u64,
+    /// `nic_ctrls.pruning_ctrls.mds3_band_cnt` (lvl1 4 / lvl3 8 / lvl5-7 16).
+    pub mds3_band_cnt: u8,
+    /// `nic_ctrls.pruning_ctrls.i_mds3_class_th_mult` (50 for every
+    /// palette-reachable allintra level 1/3/5/6/7).
+    pub i_mds3_class_th_mult: u64,
     /// `rate_est_ctrls.update_skip_ctx_dc_sign_ctx`/`update_skip_coeff_ctx`
     /// (M6 rate_est 1: real neighbour contexts; M7/M8 rate_est 4: 0/0).
     pub real_coeff_ctx: bool,
@@ -558,6 +586,12 @@ impl FunnelCfg {
             mds2_rank_factor: 1,
             mds2_rel_dev_th: 5,
             mds3_cand_base_th: 15,
+            // nic_level 6 (M5/M6) inter-class MDS3 pruning (case 6,
+            // enc_mode_config.c:4711-4713). Presets 5/6/7 inherit these
+            // (lvl7 == lvl6 for the class ths); 0-4 override below.
+            mds3_class_th: 5,
+            mds3_band_cnt: 16,
+            i_mds3_class_th_mult: 50,
             real_coeff_ctx: true,
             txs_on: true,
             dc_only_gate: false,
@@ -641,6 +675,9 @@ impl FunnelCfg {
                 mds2_rank_factor: 0,
                 mds2_rel_dev_th: 0,
                 mds3_cand_base_th: 50,
+                // nic_level 1 (case 1, enc_mode_config.c:4561-4562).
+                mds3_class_th: 25,
+                mds3_band_cnt: 4,
                 txt_group_lt16: 6,
                 txt_group_ge16: 6,
                 txt_satd_th: 20,
@@ -678,6 +715,9 @@ impl FunnelCfg {
                 ind_uv_mds3: false,
                 ind_uv_independent: Some(8),
                 ind_uv_last_mds1: true,
+                // nic_level 3 (case 3, enc_mode_config.c:4621-4622).
+                mds3_class_th: 25,
+                mds3_band_cnt: 8,
                 ..m6_tail
             },
             // M2/M3 (still/420): the M5DBG CFG enc_mode=2/3 rows
@@ -706,6 +746,9 @@ impl FunnelCfg {
                 mds2_rank_factor: 0,
                 mds2_rel_dev_th: 0,
                 mds3_cand_base_th: 25,
+                // nic_level 3 (case 3, enc_mode_config.c:4621-4622).
+                mds3_class_th: 25,
+                mds3_band_cnt: 8,
                 txt_group_lt16: 6,
                 txt_group_ge16: 6,
                 txt_satd_th: 20,
@@ -720,6 +763,9 @@ impl FunnelCfg {
             3 => FunnelCfg {
                 mode_end: 12,
                 angular_level: 1,
+                // nic_level 5 (case 5, enc_mode_config.c:4681): class_th 15,
+                // band 16 (== m6_tail).
+                mds3_class_th: 15,
                 mds1_rank_factor: 0,
                 mds2_cand_base_th: 20,
                 mds2_rank_factor: 0,
@@ -760,6 +806,9 @@ impl FunnelCfg {
             4 => FunnelCfg {
                 mode_end: 12,
                 angular_level: 1,
+                // nic_level 5 (case 5, enc_mode_config.c:4681): class_th 15,
+                // band 16 (== m6_tail).
+                mds3_class_th: 15,
                 txt_group_lt16: 6,
                 txt_group_ge16: 6,
                 txt_satd_th: 15,
@@ -4317,11 +4366,29 @@ pub(crate) fn evaluate_leaf(
     // lower full cost sets `best` — the MDS1/MDS3 sibling of the MDS0
     // dev-prune fix (ba58a3ec2). Without this DC never reaches MDS3, so
     // palette wins by default even though C's DC MDS3 (residual coded)
-    // beats it. The inter-class (class_th) block is inert on the I-slice
-    // (mds2_class_th == ~0). Only the palette (multi-class) path takes the
-    // per-lane branch; the single-class path is byte-identical to before.
+    // beats it. The post_mds1 inter-class (mds2_class_th) block IS inert on
+    // the I-slice (forced ~0, :7897) — but the post_mds2 inter-class
+    // (mds3_class_th) block is NOT (:7978-7979 re-floors it to
+    // MAX(25, scaled*mult) for I_SLICE); that one is applied per lane below
+    // (the #71 palette under-pick root: it zeroes the regular class when its
+    // best cost deviates too far from the palette global best). Only the
+    // palette (multi-class) path takes the per-lane branch; the single-class
+    // path is byte-identical to before (best == global best => inert).
     let mds2_cand_th = div_round(cfg.mds2_cand_base_th * qw, qwd);
     let mds3_cand_th = div_round(cfg.mds3_cand_base_th * qw, qwd);
+    // Inter-class MDS3 threshold (post_mds2_nic_pruning, :7975-7979). This
+    // funnel is always the allintra KEY (I_SLICE), so the I-slice re-floor
+    // MAX(25, scaled*i_mds3_class_th_mult) always applies. u64::MAX == the
+    // `(uint64_t)~0` disabled sentinel (never set on palette-active presets).
+    let mds3_class_th = if cfg.mds3_class_th == u64::MAX {
+        u64::MAX
+    } else {
+        25u64.max(div_round(cfg.mds3_class_th * qw, qwd) * cfg.i_mds3_class_th_mult)
+    };
+    // C `best_md_stage_cost` at post_mds2: MDS2 is bypassed on this funnel
+    // (no MD_STAGE_2 full loop), so it stays the MDS1 GLOBAL best
+    // (product_coding_loop.c:9580-9585) — the overall cheapest MDS1 full cost.
+    let global_best = cands[mds1_best_idx].full_cost;
     let n3;
     if order1.iter().any(|&i| cands[i].palette.is_some()) {
         let mds1_best_is_pal = cands[mds1_best_idx].palette.is_some();
@@ -4370,8 +4437,39 @@ pub(crate) fn evaluate_leaf(
                 }
                 n2 = count;
             }
-            // post_mds2 -> n3 (same lane best)
+            // post_mds2 -> n3. C: md_stage_3_count = min(md_stage_2_count,
+            // nic3_base) (product_coding_loop.c:9589), then post_mds2 prunes.
             let mut n3l = n2.min(nic3 as usize);
+            if n3l == 0 {
+                return 0; // C guard :7986 md_stage_3_count[cidx] > 0
+            }
+            // INTER-CLASS prune (:7993-8008): zero a class whose best full
+            // cost deviates >= mds3_class_th% from the GLOBAL best (`continue`
+            // skips its intra prune), else band-reduce the count. `best` is
+            // this lane's best; on the single-class path best == global_best
+            // so this whole block is skipped (byte-inert). The zeroing arm is
+            // the #71 fix: the regular lane (best 455607) vs the palette
+            // global best (295193) gives dev 54 >= 50 at q5/p6, dropping DC
+            // from MDS3 so palette (the C winner) is no longer beaten.
+            if mds3_class_th != u64::MAX && best != 0 && global_best != 0 && best != global_best {
+                if mds3_class_th == 0 {
+                    return 0; // C :7994-7996 md_stage_3_count=0; continue
+                }
+                let dev = (best - global_best) * 100 / global_best;
+                if dev != 0 {
+                    if dev >= mds3_class_th {
+                        return 0; // C :8000-8002 md_stage_3_count=0; continue
+                    }
+                    if cfg.mds3_band_cnt >= 3 && n3l > 1 {
+                        // C :8004-8007 band reduce (DIVIDE_AND_ROUND).
+                        let band_idx = dev * (cfg.mds3_band_cnt as u64 - 1) / mds3_class_th;
+                        n3l = div_round(n3l as u64, band_idx + 1) as usize;
+                    }
+                }
+            }
+            // INTRA-CLASS prune (mds3_cand_th, :8011-8019): C floors cand_count
+            // at 1, so a band-reduced 0 is lifted back to 1 here (only the
+            // inter-class `continue` above yields a true 0).
             if best > 0 {
                 let mut count = 1usize;
                 while count < n3l {
