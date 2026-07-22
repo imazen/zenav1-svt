@@ -81,7 +81,52 @@ fn invert_quant(d: i32) -> (i32, i32) {
 /// pd0.rs's `build_quant_entry` including the `_fp` fields the RDOQ path
 /// quantizes with. Pinned against the instrumented library at qindex 220
 /// (see tests).
+/// Fixed reference `base_q_idx` the quantizer table is built against.
+/// `resource_coordination_process.c:365` hardcodes `frm_hdr.quantization_
+/// params.base_q_idx = 31`, and `svt_av1_build_quantizer` runs ONCE at
+/// picture-0 init (`initial_rc_process.c:804`, "1 time per sequence assuming
+/// the qindex offset(s) are 0") — so the whole table is built against 31 and
+/// later frames/blocks just index it by their real qindex.
+const QUANT_SHARPNESS_BASE_Q_IDX: i32 = 31;
+
+/// C `svt_av1_build_quantizer`'s sharpness adjustment of the dead-zone
+/// factors (`md_config_process.c:106-120`). For a block quantizing at
+/// `qindex` BELOW the fixed init reference (31), a positive `sharpness`
+/// lowers the zbin factor (keep more coefficients) and raises the rounding
+/// factor; a negative sharpness does the mirror above the reference. Only
+/// `zbin`/`round` are touched (the `_fp`/`quant`/`dequant` rows are
+/// unchanged), so ONLY the dead-zone `quantize_b` path shifts — `quantize_fp`
+/// (the RDOQ initial quantize) is unaffected, matching C.
+///
+/// `sharpness == 0` (mainline default) is a no-op → byte-inert outside fork
+/// mode. Bit-depth-INVARIANT: C applies the identical adjustment when it
+/// builds `quants_8bit` AND `quants_bd` (the unconditional loop has no
+/// bit-depth term), so both port builders route through here.
+fn apply_quant_sharpness_factors(qzbin: i32, qround: i32, qindex: u8, sharpness: i8) -> (i32, i32) {
+    let sv = sharpness as i32;
+    let diff = qindex as i32 - QUANT_SHARPNESS_BASE_Q_IDX;
+    if (sv > 0 && diff < 0) || (sv < 0 && diff > 0) {
+        let offset = if sv > 0 {
+            (sv << 1).max(diff.abs())
+        } else {
+            ((-sv) << 1).min(diff)
+        };
+        let qzbin = (if sv > 0 { qzbin - offset } else { qzbin + offset }).clamp(1, 256);
+        let qround = (if sv > 0 { qround + offset } else { qround - offset }).clamp(1, 256);
+        (qzbin, qround)
+    } else {
+        (qzbin, qround)
+    }
+}
+
 pub fn build_quant_table(qindex: u8) -> QuantTable {
+    build_quant_table_sharp(qindex, 0)
+}
+
+/// [SVT_HDR_MODE] bd8 quant table with the fork sharpness adjustment
+/// (`svt_av1_build_quantizer`, md_config_process.c). `sharpness == 0` is
+/// byte-identical to [`build_quant_table`].
+pub fn build_quant_table_sharp(qindex: u8, sharpness: i8) -> QuantTable {
     let q = qindex as usize;
     let dc = svtav1_dsp::quant_tables::DC_QLOOKUP_8[q] as i32;
     let ac = svtav1_dsp::quant_tables::AC_QLOOKUP_8[q] as i32;
@@ -94,6 +139,8 @@ pub fn build_quant_table(qindex: u8) -> QuantTable {
         80
     };
     let qrounding_factor = if q == 0 { 64 } else { 48 };
+    let (qzbin_factor, qrounding_factor) =
+        apply_quant_sharpness_factors(qzbin_factor, qrounding_factor, qindex, sharpness);
     let mut t = QuantTable {
         zbin: [0; 2],
         round: [0; 2],
@@ -129,6 +176,13 @@ pub fn build_quant_table(qindex: u8) -> QuantTable {
 /// per-bd `quant_qtx` only). The bd8 path never calls this, so bd8 output is
 /// provably unchanged.
 pub fn build_quant_table_bd(qindex: u8, bd: u8) -> QuantTable {
+    build_quant_table_bd_sharp(qindex, bd, 0)
+}
+
+/// [SVT_HDR_MODE] bd-aware quant table with the fork sharpness adjustment
+/// (`svt_av1_build_quantizer`, md_config_process.c:106-120). `sharpness == 0`
+/// is byte-identical to [`build_quant_table_bd`].
+pub fn build_quant_table_bd_sharp(qindex: u8, bd: u8, sharpness: i8) -> QuantTable {
     let (dc, ac): (i32, i32) = match bd {
         8 => (
             svtav1_dsp::quant_tables::DC_QLOOKUP_8[qindex as usize] as i32,
@@ -144,6 +198,8 @@ pub fn build_quant_table_bd(qindex: u8, bd: u8) -> QuantTable {
     // th = 148 (bd8) / 592 (bd10). crate::bd10::qzbin_factor encodes both.
     let qzbin_factor = crate::bd10::qzbin_factor(qindex, dc, bd);
     let qrounding_factor = if qindex == 0 { 64 } else { 48 };
+    let (qzbin_factor, qrounding_factor) =
+        apply_quant_sharpness_factors(qzbin_factor, qrounding_factor, qindex, sharpness);
     let mut t = QuantTable {
         zbin: [0; 2],
         round: [0; 2],

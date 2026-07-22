@@ -43,17 +43,34 @@
 # AND diag 128 q48 (same QM-path root, just omitted from that list); all now
 # gated above. The remaining 10 (below) are a separate, deeper axis.
 #
-# KNOWN-OPEN fork x bd10 residual — 10 of the 64-cell sweep
+# QUANT-SHARPNESS (this landing) closed the 4 gradient q5 cells (class B,
+# Group 1). C's `svt_av1_build_quantizer` (md_config_process.c:106-120) applies
+# a fork sharpness adjustment to the dead-zone quantizer factors:
+# `qzbin_factor -= offset; qrounding_factor += offset` (offset =
+# max(sharpness<<1, |q - base|)) for every table entry whose `q < base_q_idx`,
+# where `base_q_idx = 31` is the FIXED init value the table is built against
+# (`resource_coordination_process.c:365`; the build runs ONCE at picture-0 init,
+# `initial_rc_process.c:804`, "1 time per sequence assuming qindex offset 0").
+# A q5 frame codes blocks at qindex 20 (< 31) -> the sharpened table[20]
+# (qzbin 84->73, qround 48->59), keeping more/larger coeffs (+23B). The port's
+# `build_quant_table[_bd]` never applied it, so it coded the sharpness-OFF
+# bytes at every sharpness. Fix: `apply_quant_sharpness_factors` (quant.rs),
+# routed through the bd10 re-encode (pipeline `bd10_reencode_{luma,chroma}`).
+# Byte-inert at mainline (sharpness 0 -> no-op) and at qindex >= 31 (q12+
+# blocks), which is why only q5 flipped. Sibling-C RD dump (throwaway,
+# reverted) confirmed the exact zbin/round + eob mechanism.
+#
+# KNOWN-OPEN fork x bd10 residual — 6 of the 64-cell sweep
 # ({gradient,diag} x {64,128}^2 x q{5,12,20,32,40,48,55,63} x p{10,13}) are NOT
-# gated here. They are EXCLUDED, not weakened; see docs/HDR-ON-4.2.md. Measured
-# by isolating each knob on BOTH sides via the shared SVT_FORK_* env:
-#   * class B — diverges even with QM, variance boost AND sharpness all off
-#     (the q5 cells across both contents/sizes, diag 128 q12): a deeper axis.
-#     All four localize to the same frame-payload byte 14, but mid-byte at
-#     VARIABLE bit positions and with large size deltas — i.e. a downstream
-#     header symptom (LF level is derived from the recon) of a tile-level RD
-#     divergence, not a header-field bug.
-# Both classes need the sibling-C RD-dump treatment to close.
+# gated here. They are EXCLUDED, not weakened; see docs/HDR-ON-4.2.md:
+#   * class B (Group 2) — the diag q5 cells + diag 128 q12: a SEPARATE,
+#     non-sharpness root. Measured: they diverge even with `SVT_FORK_SHARPNESS=0`
+#     (the quant-sharpness fix above is symmetric on them — it shifts BOTH port
+#     and C by the same amount, leaving a residual port-over-codes-by-1 delta
+#     that is present at sharpness 0 too). diag carries a coded CHROMA residual
+#     the gradient cells do not, so the root is in the bd10 chroma re-encode /
+#     a coeff near-tie, not the quantizer. Needs the sibling-C RD-dump treatment
+#     to close.
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 RS_ROOT=$(cd "$HERE/.." && pwd)
@@ -88,6 +105,13 @@ failed=()
 # plane at every depth.
 CELLS=(
   # --- gradient, single-SB ---
+  # q5 was class B — closed by the QUANT-SHARPNESS landing (quant.rs
+  # apply_quant_sharpness_factors; see the QUANT-SHARPNESS note below). The
+  # fork's `svt_av1_build_quantizer` sharpens the dead-zone zbin/round for
+  # blocks whose qindex is below the fixed init base_q_idx=31; a q5 block at
+  # qindex 20 (<31) uses the sharpened table, the port's builder did not.
+  "gradient 64 64 5 10"
+  "gradient 64 64 5 13"
   # q12 was class A (QM-in-PD0 partition near-tie) — closed by the PD0
   # quantization-matrix landing (pd0.rs tx_quant_core); see the QM-IN-PD0 note.
   "gradient 64 64 12 10"
@@ -105,6 +129,9 @@ CELLS=(
   "gradient 64 64 63 10"
   "gradient 64 64 63 13"
   # --- gradient, multi-SB ---
+  # q5 closed by the QUANT-SHARPNESS landing (below).
+  "gradient 128 128 5 10"
+  "gradient 128 128 5 13"
   "gradient 128 128 12 10"
   "gradient 128 128 12 13"
   "gradient 128 128 20 10"

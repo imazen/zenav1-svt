@@ -1425,6 +1425,7 @@ impl EncodePipeline {
                     bd10_edge_filter,
                     self.bit_depth,
                     qm_levels[0],
+                    if self.hdr.is_fork() { self.hdr.sharpness } else { 0 },
                 )?;
                 // bd10 CHROMA re-encode (task #94): recompute chroma levels at
                 // bd10 too — the luma pass above leaves chroma at the u8 MD
@@ -1463,6 +1464,7 @@ impl EncodePipeline {
                         bd10_edge_filter,
                         self.bit_depth,
                         [qm_levels[1], qm_levels[2]],
+                        if self.hdr.is_fork() { self.hdr.sharpness } else { 0 },
                     )?;
                     self.last_recon10_uv = Some(uv10);
                 }
@@ -4585,11 +4587,14 @@ fn bd10_reencode_luma(
     edge_filter: bool,
     bd: u8,
     qm_level: u8,
+    // [SVT_HDR_MODE] fork loop_filter_sharpness (static_config.sharpness). 0 in
+    // mainline → the quant table is byte-identical to build_quant_table_bd.
+    sharpness: i8,
 ) -> crate::EncodeResult<alloc::vec::Vec<u16>> {
     let fc = svtav1_entropy::context::FrameContext::new_default();
     let cfc = svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex);
     let rates = crate::leaf_funnel::build_md_rates(&fc, &cfc);
-    let qt = crate::quant::build_quant_table_bd(base_qindex, bd);
+    let qt = crate::quant::build_quant_table_bd_sharp(base_qindex, bd, sharpness);
     let mut recon10 = svtav1_types::try_vec![0u16; w * h]?;
     for (sb_idx, tree) in all_trees.iter_mut().enumerate() {
         let sb_col = sb_idx % sb_cols;
@@ -4827,11 +4832,15 @@ fn bd10_reencode_chroma(
     // (md_config_process.c:271-279), so they can differ between Cb and Cr —
     // the fork's chroma path gives Cb a +12 delta.
     qm_uv: [u8; 2],
+    // [SVT_HDR_MODE] fork loop_filter_sharpness (static_config.sharpness). 0 in
+    // mainline → byte-identical to build_quant_table_bd. C applies the same
+    // qzbin/qround sharpening to the chroma quantizer rows (u/v_zbin/round).
+    sharpness: i8,
 ) -> crate::EncodeResult<(alloc::vec::Vec<u16>, alloc::vec::Vec<u16>)> {
     let fc = svtav1_entropy::context::FrameContext::new_default();
     let cfc = svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(chroma_qindex);
     let rates = crate::leaf_funnel::build_md_rates(&fc, &cfc);
-    let qt = crate::quant::build_quant_table_bd(chroma_qindex, bd);
+    let qt = crate::quant::build_quant_table_bd_sharp(chroma_qindex, bd, sharpness);
     let (cframe_w, cframe_h) = (w / 2, h / 2);
     let mut recon10_u = svtav1_types::try_vec![0u16; cframe_w * cframe_h]?;
     let mut recon10_v = svtav1_types::try_vec![0u16; cframe_w * cframe_h]?;

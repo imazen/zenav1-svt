@@ -289,7 +289,7 @@ distinction.
 | Config | Result |
 |---|---|
 | **Fork @ bd8** | **48/48 byte-identical** — `{gradient,diag}` x `{64,128}²` x q`{12,20,32,40,55,63}` x p`{10,13}`. The bd8 fork port was already correct; this is the first time it could be *proven*. |
-| **Fork @ bd10** | **54/64** (was 0/64 -> 46/64). Gated at 54/54 by `tools/hdr_bd10_gate.sh`, with an anti-vacuity check that the fork and mainline oracles genuinely differ. |
+| **Fork @ bd10** | **58/64** (was 0/64 -> 46/64 -> 54/64). Gated at 58/58 by `tools/hdr_bd10_gate.sh`, with an anti-vacuity check that the fork and mainline oracles genuinely differ. |
 
 ### Roots fixed
 
@@ -306,6 +306,38 @@ distinction.
    `convert_qindex_to_q_fp8` / `compute_qdelta_fp` are the only two bit-depth
    entry points in that chain and change both table and shift per depth
    (`<< 6` at 8-bit, `<< 4` at 10-bit). 40/64 -> 46/64.
+4. **The quantizer dead-zone was never sharpened (Class B, Group 1 — the 4
+   gradient q5 cells). 54/64 -> 58/64.** C's `svt_av1_build_quantizer`
+   (`md_config_process.c:106-120`) adjusts the dead-zone factors for a positive
+   fork `sharpness`: for every table entry whose `q < base_q_idx` it does
+   `qzbin_factor -= offset; qrounding_factor += offset` with
+   `offset = MAX(sharpness<<1, |q - base_q_idx|)` (keep more / larger coeffs).
+   The quantizer table is built ONCE at picture-0 init
+   (`initial_rc_process.c:804`, "1 time per sequence assuming the qindex
+   offset(s) are 0") against the FIXED init base `base_q_idx = 31`
+   (`resource_coordination_process.c:365`), so `q < 31` entries are sharpened
+   and later frames/blocks just index the table by their real qindex. A q5
+   frame codes luma at qindex 20 (< 31) -> the sharpened `table[20]`
+   (qzbin 84->73, qround 48->59, verified by throwaway sibling-C dump), keeping
+   +23B of coeffs; the port's `build_quant_table[_bd]` applied no sharpening, so
+   it coded the sharpness-OFF bytes at EVERY sharpness (`SVT_FORK_SHARPNESS=0`
+   was byte-identical, on a different bitstream). Note this is NOT the sharp-tx
+   RDOQ path (`use_sharpness = sharpness_ctrls.rdoq = 0` for the default PSNR
+   tune) NOR the loop filter (LF level is the closed-form `LPF_PICK_FROM_Q` at
+   preset >= 6, sharpness-independent; the `lf_thresholds` at LF level 1 are
+   identical for sharpness 0 and 1) — the first-diverging byte 12/14 is the
+   OBU-size leb128, a size symptom of the extra coeff bytes, not a header field.
+   Only `zbin`/`round` change, so ONLY the dead-zone `quantize_b` path shifts
+   (the RDOQ `quantize_fp` initial quantize is untouched). **Fix:**
+   `apply_quant_sharpness_factors` (quant.rs) + `build_quant_table_{,bd_}sharp`,
+   routed through the bd10 re-encode (`pipeline::bd10_reencode_{luma,chroma}`,
+   gated `if is_fork { hdr.sharpness } else { 0 }`). Byte-inert everywhere it
+   should be: mainline (sharpness 0 -> no-op), bd8 (never calls the bd10
+   re-encode), and every qindex >= 31 (only cli qp <= 7 -> qindex <= 28 fires,
+   so only q5 among the gate's {5,12,20,32,40,48,55,63} flips). The existing
+   `build_quant_table[_bd]` signatures are unchanged (delegate with 0), so the
+   MD/still-path/parity-test callers stay byte-identical.
+
 3. **PD0 was QM-blind (the Class A root).** C's PD0 light encode
    (`svt_aom_quantize_inv_quantize_light`, full_loop.c:1263) applies the frame
    luma quantization matrix whenever `frm_hdr.quantization_params.using_qmatrix`
@@ -338,24 +370,45 @@ the y8b pool). That is why `delta_var_th = 7500` and the PQ dark-bias
 domain), chroma-qindex derivation (qindex space), `cdef_scaling`, `sharp_tx`,
 `tx_bias` and `noise_norm_strength`.
 
-## Remaining fork x bd10 scope (10 cells, honest)
+## Remaining fork x bd10 scope (6 cells, honest)
 
-* **Class A (QM-path) — CLOSED** (root #3 above, the QM-in-PD0 landing).
-  `gradient 64 q12`, `gradient 128 q40`, `diag 64 q48`, and `diag 128 q48`
-  (all four match with `SVT_FORK_ENABLE_QM=0`, diverge with QM on — the last
-  was simply omitted from the original 3-combo enumeration) now byte-match;
-  they are gated in `hdr_bd10_gate.sh` (54/54).
-  The old "matches with `SVT_FORK_ENABLE_QM=0`, diverges with QM on" property
-  pinned it to the QM path; the divergence was a PD0 partition near-tie
-  (top-left 32x32 `PARTITION_SPLIT` vs C's `PARTITION_NONE`) because the port's
-  PD0 leaf quantize was QM-blind.
-* **Class B — deeper** (10 cells: the q5 cells across both contents and sizes,
-  `diag 128 q12`): diverge with QM, variance boost *and* sharpness all off.
+* **Class A (QM-path) — CLOSED** (root #3, the QM-in-PD0 landing). Four cells,
+  gated.
+* **Class B Group 1 (quant-sharpness) — CLOSED** (root #4, the quant-sharpness
+  landing). The 4 gradient q5 cells (`{gradient} x {64,128}^2 x q5 x p{10,13}`)
+  now byte-match and are gated in `hdr_bd10_gate.sh` (58/58). The earlier
+  framing was WRONG on the mechanism: it is NOT the loop filter (byte 12/14 is
+  the OBU-size leb128, a size symptom) and the "diverges with sharpness off"
+  claim was ALSO wrong — `SVT_FORK_SHARPNESS=0` was byte-IDENTICAL on the
+  gradient q5 cells (a different, sharpness-off bitstream). The real root is the
+  fork dead-zone quantizer sharpening keyed off the fixed init `base_q_idx=31`;
+  see root #4 above.
+* **Class B Group 2 — still OPEN** (6 cells: `{diag} x {64,128}^2 x q5 x
+  p{10,13}` + `diag 128 q12 x p{10,13}`). A SEPARATE, non-sharpness root:
+  they diverge even with `SVT_FORK_SHARPNESS=0` (the quant-sharpness fix is
+  symmetric on the q5 diag cells — it shifts BOTH port and C by the same +2, so
+  the residual is unchanged; the q12 diag cells have qindex 48 >= 31 and are not
+  touched by it at all). Localized (decode-both): luma AND U(Cb) are
+  BYTE-IDENTICAL to C; ONLY the V(Cr) plane diverges — 64 Cr pixels off-by-one
+  (bd10 512 vs 511, first at (0,0)), all partition/mode/tx decisions match. So
+  the root is in the bd10 CHROMA re-encode's V(Cr) path (a Cr-specific
+  recon/dequant/DC-pred rounding, present at every knob setting), not the
+  quantizer and not the luma path. `diag` is the only content here that codes a
+  chroma residual, which is why the gradient cells never showed it. Closing it
+  wants a sibling-C per-txb chroma-recon dump of the Cr plane.
 
-The Class B cells localize to the same frame-payload byte 14 — but mid-byte at
-**variable** bit positions and with large size deltas, i.e. a downstream header
-symptom (the LF level is derived from the recon) of a tile-level RD divergence,
-not a header-field bug. Closing them wants the sibling-C RD-dump treatment.
+## Roots — method note (Class B Group 1)
+
+The localization that cracked this used a throwaway instrumented sibling C
+(`/tmp/cinstr`, a COPY of the ONE `.o` swapped into a COPY of
+`Bin/ReleaseHdr/libSvtAv1Enc.a` — the shared `Source/` and lib were NEVER
+touched, verified, and the throwaway was reverted). The decisive dumps:
+`full_loop.c` `svt_aom_quantize_inv_quantize` proved input transform coeffs +
+lambda + `perform_rdoq(=0)` all IDENTICAL between sharpness 0/1 while the
+quantized output `qsum` differed (so it is the quantizer TABLE, not RDOQ / the
+residual); `md_config_process.c` `svt_av1_build_quantizer` then showed
+`base=31, q=20, diff=-11, qzbin 84->73, qround 48->59` — the sharpening on
+`table[20]`, built once at picture-0 init against the fixed 31.
 
 ## Still deferred at bd10
 
