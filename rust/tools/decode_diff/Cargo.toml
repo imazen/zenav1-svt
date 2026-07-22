@@ -16,4 +16,7 @@ publish = false
 # oracle. Supersedes the older /root/work/aom-decoder-rs, which silently
 # desyncs on Wiener-active streams; aom-decode fails LOUDLY (Result) on
 # anything it cannot decode instead of fabricating pixels.
-aom-decode = { path = "/root/aom-rs/crates/aom-decode" }
+# The sibling crate was renamed to `zenav1-aom-decode` (lib name still
+# `aom_decode`), so pin the package explicitly; the dep key stays `aom-decode`
+# so `use aom_decode::...` in main.rs is unchanged.
+aom-decode = { package = "zenav1-aom-decode", path = "/root/aom-rs/crates/aom-decode" }

@@ -2046,20 +2046,62 @@ block scored `residual_variance` (variance) regardless of bit depth.
   on a SEPARATE ind_uv_mds3 residual, below). Added to `bd10_nonflat_gate.sh`
   (300 → 307). bd8 `identity_matrix` 54/54, `bd10_matrix` 36/36 unchanged.
 
-### REMAINING (p0..p3 still open) — the roots, with evidence
+### ROOT #2 (the p3 NSQ recon-dist gate) — CLOSED ✅ (2026-07-22): quad dists scored at bd10
 
-1. **`{diag,gradient} 128×128 q63 p3`** (the q63 128px corner). p3 uses
-   `ind_uv_mds3` (NOT the `ind_uv_independent` root #1 just closed), so this is a
-   separate near-tie at the extreme high-qindex + largest-size corner. Next step:
-   the `SVT_UVLOOP_OUT` / `SVT_FULLCOST_OUT` per-candidate dump at the first
-   divergent block.
-2. **`quad_rec_dists`** (the `skip_by_recon_dist` NSQ gate input) reads the u8
-   recon (`ev.gate_y()`) while C's `calc_scr_to_recon_dist_per_quadrant`
-   (:8065) uses `svt_full_distortion_kernel16_bits` at `hbd_md`. A latent
-   second instance of the class — the gate uses scale-invariant ratios, so it
-   only bites when it fires near a threshold, and it was NOT the root on any
-   drilled cell. Risk: at p4/p5 `gate_y` is the last-candidate (bypass=1) recon
-   and no 10-bit twin exists, so a fix must be p0..p3-scoped.
-3. **DLF-level full search** (M0..M5): several residual cells show a
+The `{diag,gradient} 128×128 q63 p3` residual was NOT a `ind_uv_mds3` chroma
+near-tie (that earlier framing was WRONG — see the localization) and NOT a luma
+mode/coeff bug. It was **`quad_rec_dists` scoring the NSQ recon-dist skip gate on
+the u8 recon** — the "latent second instance" flagged below, which turned out to
+BE the root for these cells.
+
+- **Localization (`diag 128 128 63 3`, decode-both + `SVT_FULLCOST_OUT` /
+  `SVT_QLEVELS` / port `NSQDBG`).** `decode_diff` = plane0 (luma) diverges, chroma
+  0 diffs; first divergent DECODED block is `mi=(24,8)` (SB(1,0), 32×32). C codes
+  it **PARTITION_NONE** (32×32, D135, `angle_delta_y=1`, tx_depth=1); the port
+  codes **PARTITION_VERT** (two 16×32, D135, `angle_delta_y=0`). The pixel-(0,0)
+  Δ6 `decode_diff` reports first is a downstream loop-filter symptom — block (0,0)
+  codes byte-identically (port `PCOEF` == C `QLEV enc=1`: same eob=51, same
+  tx_type, same exact levels).
+- **The NONE evaluation is byte-exact.** C's `SVT_FULLCOST` MDS3 winner for the
+  32×32 (`mode=4 ang=1 ydist=293281584 cost=71065528168`) == the port's NONE
+  (`cost=71065528168 dist=293281584`) to the unit. And **C makes ZERO
+  `svt_aom_full_cost` calls at (48,96)** and dumps only 32×32 candidates at
+  (32,96) — i.e. **C never evaluates the VERT partition at all**; it is pruned.
+  The port evaluates VERT, finds it cheaper (44.75e9 < NONE 71.33e9), and picks
+  it.
+- **The prune C applies is `update_skip_nsq_based_on_sq_recon_dist`
+  (product_coding_loop.c:9847).** Its ONE bd-dependent input is
+  `ctx->rec_dist_per_quadrant`, filled by `calc_scr_to_recon_dist_per_quadrant`
+  (:8065) with `svt_full_distortion_kernel16_bits` at `hbd_md` — the 10-bit source
+  (u8<<2) vs the 10-bit `cand_bf->recon`. The port's `quad_rec_dists` used the u8
+  recon. The gate's part0-to-part1 deviation ratio is NOT scale-invariant once the
+  10-bit recon differs from `recon8<<2` (the hbd-predictor rounding): measured at
+  `mi=(24,8)` the u8 quads give **dev=81 ≥ max_dev=59** (VERT kept) where the bd10
+  quads give **dev=27 < max_dev=51** (VERT skipped). Every other gate input
+  (`dist_cost_ratio=52`, `block_cost`, parent mode) already matched C — only
+  `quad` was u8. This is exactly the "not scale-invariant, bites near a threshold"
+  prediction below; on these two q63/128 cells it fires right at the threshold.
+- **Fix (`depth_refine.rs` `quad_rec_dists`, `leaf_funnel.rs` accessors;
+  bd10-gated, bd8 byte-inert):** score the quadrant SSEs on the winner's 10-bit
+  recon (`win_recon10` + `win_uv_recon10`) vs `src<<2`. The bd10 path is taken
+  ONLY at `bypass_encdec=0` (preset ≤ 3), where `gate_y` == the winner's
+  (winning-depth) recon and `win_recon10` is its exact twin; at `bypass_encdec=1`
+  (p4+) `gate_y` is the last-candidate depth-0 recon (no 10-bit twin kept), so p4+
+  keeps the u8 path — this is the "must be p0..p3-scoped" constraint below,
+  enforced. bd8 has no `win_recon10` → u8 path → byte-unchanged.
+- **Effect:** `{diag,gradient} 128 128 63 3` flip DIFF → MATCH (byte-identical vs
+  real aomenc; A/B-proven — reverting `quad_rec_dists` to u8 re-diverges both).
+  Added to `bd10_nonflat_gate.sh` (307 → 309). **The whole synthetic p0..p3 sweep
+  is now 128/128.** All gates green/unchanged: `identity_matrix` 54/54 (bd8-inert),
+  `bd10_matrix` 36/36, `bd10_photo` 154/154, `recon_parity` 13/13, `partial_sb`
+  101/101, `sb128` 18/18, `tile` 25/25, `arbitrary` 57/57, `cargo test --workspace`
+  876/0.
+
+### REMAINING (p0..p3) — the roots, with evidence
+
+1. ~~`{diag,gradient} 128×128 q63 p3`~~ + ~~`quad_rec_dists` NSQ gate~~ — **CLOSED**
+   (root #2 above). The whole synthetic p0..p3 sweep is 128/128.
+2. **DLF-level full search** (M0..M5): several residual cells show a
    `loop_filter_level` FH divergence — a downstream symptom of the luma near-tie
-   changing the recon the search reads, not an independent root.
+   changing the recon the search reads, not an independent root. (Not exercised by
+   the now-128/128 synthetic sweep; watch for it on real-content bd10 at p0..p5.)

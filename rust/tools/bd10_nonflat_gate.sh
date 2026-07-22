@@ -444,6 +444,24 @@ CELLS=(
   "diag 128 128 5 1"
   "diag 128 128 5 5"
   "diag 128 128 63 0"
+  # bd10 root #2 (task #94, the p3 NSQ PARTITION near-tie): the port scored the
+  # NSQ recon-dist skip gate (`update_skip_nsq_based_on_sq_recon_dist`,
+  # product_coding_loop.c:9847) on the u8 recon — but C fills
+  # `rec_dist_per_quadrant` via `calc_scr_to_recon_dist_per_quadrant` (:8065)
+  # with `svt_full_distortion_kernel16_bits` at `hbd_md`, i.e. the 10-bit source
+  # (u8<<2) vs the 10-bit recon. The gate's part0-to-part1 deviation ratio is NOT
+  # scale-invariant once the 10-bit recon differs from `recon8<<2` (the
+  # hbd-predictor rounding), so the u8 quads gave dev=81 (>= max_dev 59, VERT
+  # kept) where the bd10 quads give dev=27 (< max_dev 51, VERT skipped). On
+  # `diag 128 128 63 3` mi(24,8) that flipped the 32x32 partition PARTITION_VERT
+  # -> PARTITION_NONE (the port over-split where C keeps the square, D135
+  # angle_delta=1); the LUMA recon then cascaded (chroma was identical). Fixed by
+  # scoring `quad_rec_dists` on the winner's bd10 recon (`win_recon10` +
+  # `win_uv_recon10`, the winning-depth twin of `gate_y` at bypass_encdec=0) vs
+  # `src<<2`; bd8 keeps the u8 path and is byte-inert. Both cells were a PARTITION
+  # DIFF before and BYTE-MATCH after (verified `cmp`; A/B-proven to flip only with
+  # the fix). The whole synthetic p0..p3 sweep is now 128/128.
+  "diag 128 128 63 3"
   "diag 128 128 63 4"
   "diag 128 128 63 5"
   "diag 64 64 12 1"
@@ -498,6 +516,9 @@ CELLS=(
   "gradient 128 128 63 0"
   "gradient 128 128 63 1"
   "gradient 128 128 63 2"
+  # bd10 root #2 (see the diag 128 128 63 3 comment above): the p3 NSQ
+  # recon-dist skip gate scored at bd10 — PARTITION DIFF before, BYTE-MATCH after.
+  "gradient 128 128 63 3"
   "gradient 64 64 12 1"
   "gradient 64 64 40 1"
   "gradient 64 64 40 2"

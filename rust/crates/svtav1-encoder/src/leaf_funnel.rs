@@ -2915,6 +2915,24 @@ impl LeafEval {
         (&self.gate_u, &self.gate_v)
     }
 
+    /// bd10 (task #94, root #2): the 10-bit twin of [`gate_y`](Self::gate_y) for
+    /// the NSQ recon-dist gate. C's `calc_scr_to_recon_dist_per_quadrant`
+    /// (product_coding_loop.c:8065) reads `cand_bf->recon` through
+    /// `svt_full_distortion_kernel16_bits` at `hbd_md`, i.e. the 10-bit recon —
+    /// while `gate_y` is the MSB-truncated u8 proxy. At bypass_encdec=0
+    /// (preset <= 3) `cand_bf->recon` is the winner's final (winning-depth)
+    /// recon, whose bd10 twin is exactly `win_recon10`. Empty on the u8 path.
+    pub(crate) fn win_recon10(&self) -> &[u16] {
+        &self.win_recon10
+    }
+
+    /// bd10 twin of [`gate_uv`](Self::gate_uv) — the winner's 10-bit chroma
+    /// recon (chroma has no tx-depth split, so the winner recon is unambiguous).
+    /// Empty unless the bd10 chroma full loop ran.
+    pub(crate) fn win_uv_recon10(&self) -> (&[u16], &[u16]) {
+        (&self.win_u_recon10, &self.win_v_recon10)
+    }
+
     /// The shared MDS3 residual-workspace state (C `cand_bf->residual`,
     /// consumed by the psq gate): the LAST MDS3 candidate's depth-0
     /// residual.
