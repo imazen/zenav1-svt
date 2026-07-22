@@ -110,18 +110,27 @@ CELLS=(
   "gradient 512 384 45 6  2 0"
   "gradient 512 384 45 6  2 2"
   "gradient 512 384 20 6  2 0"
+  # The two big-gap tile-ROW-boundary witnesses (were port -190 / -214 bytes
+  # short before the M6 PD0 tile-boundary fix — the strongest proof it works).
+  "gradient 512 384 45 6  1 1"
+  "gradient 512 384 45 6  1 2"
   # --- 640x448, ragged on BOTH axes ---
   "gradient 640 448 45 6  1 1"
   "gradient 640 448 45 6  2 2"
   "gradient 640 448 45 10 2 1"
+  # The two big-gap BOTH-axes q20 witnesses (were port +219 / +180 bytes off).
+  "gradient 640 448 20 6  1 2"
+  "gradient 640 448 20 6  2 2"
 )
 
 # Cells that BYTE-MATCH the C reference today. A cell only ever moves here
 # after `cmp` says so (measured by tools/tile_map.sh, 162-cell sweep).
 #
-# 18 of the 22 tile cells, across all three geometries and both axes,
-# including `512x384 r2` — the ragged-rows geometry whose tile count is 3
-# where `1<<log2` is 4, and the exact cell that used to be UNDECODABLE.
+# ALL 26 tile cells are byte-exact — the full 162-cell sweep is 162/162 MATCH
+# after the M6 PD0 tile-boundary fix (see the note below). This includes
+# `512x384 r2` (the ragged-rows geometry, tile count 3 where 1<<log2 is 4, the
+# ex-UNDECODABLE cell) and the four big-gap witnesses (512x384 q45 r1c1/r1c2,
+# 640x448 q20 r1c2/r2c2) that were 190-219 bytes off before the fix.
 BYTE_EXACT=(
   "gradient 256 256 45 6  0 1"
   "gradient 256 256 45 6  0 2"
@@ -136,15 +145,23 @@ BYTE_EXACT=(
   "gradient 256 256 45 10 2 2"
   "gradient 256 256 45 13 2 2"
   "gradient 256 256 20 6  1 0"
+  "gradient 256 256 20 6  2 2"
   "gradient 512 384 45 6  0 1"
+  "gradient 512 384 45 6  1 0"
   "gradient 512 384 45 6  2 0"
   "gradient 512 384 45 6  2 2"
   "gradient 512 384 20 6  2 0"
+  "gradient 512 384 45 6  1 1"
+  "gradient 512 384 45 6  1 2"
+  "gradient 640 448 45 6  1 1"
+  "gradient 640 448 45 6  2 2"
   "gradient 640 448 45 10 2 1"
+  "gradient 640 448 20 6  1 2"
+  "gradient 640 448 20 6  2 2"
 )
 
 # ---------------------------------------------------------------------------
-# WHY THE REMAINING 4 CELLS DIVERGE — measured, not guessed.
+# THE MULTI-TILE PRESET-6 RESIDUAL — ROOT-CAUSED AND CLOSED (162/162 MATCH).
 #
 # The frame header is NOT the problem, and never was: identity_diff
 # classifies every diverging cell's first divergence as `tile payload`,
@@ -153,55 +170,42 @@ BYTE_EXACT=(
 # tile_size_bytes_minus_1 — and the tile group's size prefixes are
 # byte-correct across the entire 162-cell sweep.
 #
-# The dominant root WAS that the MD search predicted across tile
-# boundaries, and that is now fixed: `intra_edge::TileMi` carries the
-# tile's mi rect into the leaf funnel's UnitGeom and DrGeom, so all four
-# of C's tile-scoped availability predicates (`have_top`, `have_left`,
-# `right_available`, `bottom_available`) plus the funnel's neighbour
-# extraction and its tx-level canvases now stop at the tile edge instead
-# of reading the 128 fill. That promoted 12 of the 22 cells in one change.
+# The MD-search fix (`intra_edge::TileMi` carrying the tile's mi rect into
+# the leaf funnel's UnitGeom / DrGeom so C's tile-scoped availability
+# predicates and neighbour extraction stop at the tile edge instead of
+# reading the 128 fill) promoted 12 of the 22 cells — but it fixed only the
+# LEAF-MODE search, not the PARTITION search.
 #
-# The 162-cell map after the fix is 137 MATCH / 25 DIFF, 162/162 DECODE.
-# Discounting the 18 rows=cols=0 cells (which are single-tile by
-# definition), genuine multi-tile parity is 119/144 — and the residual has
-# a sharp shape worth stating: EVERY ONE of the 25 diverging cells is
-# PRESET 6. Presets 10 and 13 are 48/48 byte-exact each, on both axes, on
-# all three geometries, at both qps. Preset 6 is 23/48. So the remaining
-# work is not "tiles" — the tile machinery is exact wherever the MD path
-# is the eff-M9 funnel — it is preset 6's richer search still having a
-# non-tile-aware corner.
+# The residual (25 cells, every one PRESET 6) was a SECOND tile-blind
+# corner: the M6 PD0 partition search (`pd0_pick_sb_partition_m6_eval` ->
+# `Pd0Ctx::lvl1_block_cost_rect`) predicted the DC candidate from
+# `extract_neighbors` — the FRAME-edge availability form — so at a
+# tile-TOP-ROW / tile-LEFT-COLUMN superblock it read source pixels ACROSS
+# the tile boundary. C's `up_available` / `left_available` respect tiles at
+# every preset, so C predicts DC from the tile edge (worse prediction ->
+# higher residual -> SPLIT into 16x16/8x8) while the port kept the 64x64
+# NONE and coded a different tree. Measured at 512x384 q45 r1c0: at the
+# tile-row boundary mi_row=48 (pixel 192) C-multi splits to bsize 6/3 where
+# C-single (== port) keeps bsize 12 — and the port's multi-tile tree was
+# BYTE-IDENTICAL to its own single-tile tree (tile-blind). Fix: thread the
+# tile pixel origin into `Pd0Ctx` and use `extract_neighbors_tiled` in the
+# LVL_1 leaf cost (byte-inert at origin 0, so single-tile / eff-M9 LVL_5 /
+# bd10 LVL_0 are untouched — which is exactly why presets 10/13 were 48/48
+# THROUGHOUT: their variance-dominated eff-M9 partition never reacted to the
+# boundary-prediction change in the first place).
 #
-# The 4 cells in THIS gate's pinned set are all preset 6, and they are not
-# one thing:
+# The `lr-taps` "first divergence" was a faithful SYMPTOM, not the root: LR
+# syntax is written before each SB's partition tree, so any recon difference
+# anywhere in the frame reprices the whole-frame Wiener taps and surfaces at
+# the very first coded op. Both encoders DO pick RESTORE_WIENER; the taps
+# just differed because the recon fed to the (genuinely whole-frame /
+# tile-independent — restoration.c `foreach_rest_unit_in_frame` uses
+# `whole_frame_rect` and calls `on_tile(0,0)` exactly once, tile loop
+# hardcoded `< 1` at :1699) LR search differed. The earlier "per-tile RU
+# grid" hypothesis (pipeline.rs task-#86 PORT-NOTE) was WRONG — the recon
+# difference was the PD0 partition, now fixed.
 #
-#   * `512x384 q45 p6 r1c0` — the outlier, and the only LARGE gap
-#     (C=3211B vs port=3042B; every other divergence is under 60 bytes).
-#     C spends ~170 bytes more than its OWN single-tile encode of the same
-#     input (3017B) while the port spends ~25 more, which is the signature
-#     of a whole-frame restoration-type flip rather than scattered MD
-#     drift. Worth noting what it is NOT: SVT's LR search is entirely
-#     tile-independent — `svt_aom_foreach_rest_unit_in_frame` calls
-#     `on_tile(0,0)` exactly once over `whole_frame_rect`
-#     (restoration.c:1274-1297) and the stripe derivation's tile loop is
-#     literally commented out (`for i < 1 /*cm->tile_rows*/`,
-#     restoration.c:1699). So the LR CONFIG cannot depend on tiles; the
-#     recon fed to the search must still differ somewhere. Unroot-caused.
-#
-#   * `640x448 r1c1`, `640x448 r2c2`, `256x256 q20 r2c2` — small
-#     residuals (7-54 bytes) on the ragged-both-axes geometry and at the
-#     low qp where far more blocks are coded. Ordinary near-tie drift of
-#     the kind the other gates' pins also carry, plus whatever the
-#     remaining non-tile-aware corners of the search are: the per-tile MD
-#     recon canvas is still frame-SIZED and 128-filled rather than
-#     tile-cropped, and the bd10 re-encode path is explicitly whole-frame
-#     (see the PORT-NOTEs in pipeline.rs).
-#
-# The first DIVERGING op in these cells is usually `lr-taps`, which is a
-# SYMPTOM and not the root: LR syntax is written before each SB's
-# partition tree, so any recon difference anywhere in the frame reprices
-# every unit's taps and surfaces at the very first coded op.
-#
-# NOT COVERED by this gate (stated so nobody reads 25/25 as more than it
+# NOT COVERED by this gate (stated so nobody reads 26/26 as more than it
 # is):
 #   * SB128 + tiles. Every cell here is SB64 — C picks SB128 only at
 #     preset <= 1 and >= 165,120 aligned px, and these presets are 6/10/13.

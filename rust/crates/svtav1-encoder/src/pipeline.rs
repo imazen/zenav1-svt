@@ -2176,29 +2176,28 @@ impl EncodePipeline {
                     _ => crate::pd0::kf_full_lambda_8bit_unweighted(base_qindex) as i64,
                 };
                 let (su, sv) = chroma.unwrap_or((&[][..], &[][..]));
-                // PORT-NOTE(unverified) task #86: this call (and the
-                // per-SB `write_lr_for_sb` walk below) computes the
-                // restoration-unit grid across the WHOLE FRAME
+                // PORT-NOTE(VERIFIED whole-frame — do NOT make per-tile):
+                // this call (and the per-SB `write_lr_for_sb` walk below)
+                // computes the restoration-unit grid across the WHOLE FRAME
                 // (`svtav1_dsp::restoration::count_units_in_tile(unit_size,
-                // pw)` — restoration.rs:425-426 — called with the full
-                // plane width/height, despite the "in_tile" name), matching
-                // C only when NumTiles == 1. Per AV1 spec 5.11.57 / C
-                // `restoration.c` `count_units_in_tile`+
-                // `foreach_rest_unit_in_tile`, the RU grid AND the
-                // reference-tap delta-coding chain are genuinely PER-TILE
-                // (called once per tile with that tile's own pixel rect)
-                // — with real tile rows active, C's RU boundaries/counts
-                // at a tile-row split can differ from this single
-                // frame-wide grid. Confirmed empirically: task #86's
-                // 2-tile-row identity cells that exercise wiener
-                // restoration diverge starting inside the tile payload,
-                // classified "op-class: lr-taps (wiener_restore + literal
-                // run)" by tools/identity_diff.py, with the FH and every
-                // byte before the LR syntax byte-identical to C. Verify by
-                // threading a per-tile pixel rect into
-                // search_restoration_still + write_lr_for_sb (one call per
-                // tile_idx, tile-relative RU indices) and re-running
-                // identity_diff on a 2-tile-row cell that signals wiener.
+                // pw)` — restoration.rs:425-426 — with the full plane
+                // width/height), which is EXACTLY what C does regardless of
+                // tile count: `svt_aom_foreach_rest_unit_in_frame` /
+                // `_frame_seg` (restoration.c:1274-1297 / 1379-1394) build
+                // the grid from `whole_frame_rect`, call `on_tile(0,0)`
+                // exactly once, and the stripe-derivation tile loop is
+                // hardcoded `for i < 1 /*cm->tile_rows*/` (restoration.c:1699).
+                // So the LR RU grid / tap-delta chain is tile-INDEPENDENT.
+                // (The earlier task-#86 "genuinely PER-TILE" hypothesis was
+                // WRONG — read the C source, not the "in_tile" name.) The
+                // task-#86 2-tile-row `lr-taps` divergence was a downstream
+                // SYMPTOM: a recon difference reprices the whole-frame Wiener
+                // taps, and that recon difference was the M6 PD0 partition
+                // search predicting DC across the tile boundary (pd0.rs
+                // `lvl1_block_cost_rect`, now fixed via `extract_neighbors_
+                // tiled`). With that fixed the LR taps match C byte-for-byte
+                // on the full multi-tile sweep (162/162), confirming this
+                // whole-frame grid is correct as-is.
                 // Task #95 goal 1 (odd true dims): the search runs on the TRUE
                 // luma / CEILING chroma extent, reading the recon at its aligned
                 // buffer stride while `extend_frame` replicates the true edge —
@@ -5990,6 +5989,11 @@ fn encode_tile_rows(
                                 // frame dims keeps the predicate well-defined.
                                 w,
                                 h,
+                                // Tile pixel origin (full-SB refined path is
+                                // single-tile-only in the tested envelope; 0
+                                // when untiled → byte-inert).
+                                tile_sb_row_start * sb_size,
+                                tile_sb_col_start * sb_size,
                             );
                             let cq = c_quant.as_ref().unwrap();
                             // 8-BIT lambda even at bd10 — deliberate, not an
@@ -6138,6 +6142,12 @@ fn encode_tile_rows(
                                 // ALIGNED dims — the spec-5.11.4 edge grid.
                                 w,
                                 h,
+                                // This tile's pixel origin: the M6 PD0 leaf-cost
+                                // DC prediction must not read across a tile
+                                // boundary (C up/left_available respect tiles).
+                                // 0 for a single-tile frame → byte-inert.
+                                tile_sb_row_start * sb_size,
+                                tile_sb_col_start * sb_size,
                             );
                             #[cfg(feature = "std")]
                             if std::env::var_os("SVTAV1_PD0DBG").is_some()

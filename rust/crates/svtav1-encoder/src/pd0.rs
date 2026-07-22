@@ -1411,6 +1411,19 @@ struct Pd0Ctx<'a> {
     /// shape (the `sq_size <= MAX(min_nsq=4, min_nsq_block_size<=8)` term never
     /// fires for edge nodes, which are always >= 16 wide on an 8-aligned frame).
     nsq_enabled: bool,
+    /// Tile-row / tile-column pixel origin of this SB's tile (0 = single tile,
+    /// i.e. byte-identical to the pre-fix frame-edge predicate). AV1 intra
+    /// prediction never crosses a tile boundary, so a block at a tile's own
+    /// top row / left column has NO above / left neighbour even when it is not
+    /// the frame's own edge. The LVL_1 (M6) leaf-cost DC prediction — which
+    /// drives the M6 PD0 partition decision — must honour this: otherwise it
+    /// predicts across the tile boundary (from the frame-wide source), keeps a
+    /// 64x64 NONE where C splits into 16x16/8x8 (C's `up_available` /
+    /// `left_available` respect tiles at every preset), and codes a different
+    /// tree. Only read by `lvl1_block_cost_rect`; LVL_5/LVL_6/LVL_0 leave these
+    /// 0 so eff-M9 / bd10 are provably untouched.
+    tile_top: usize,
+    tile_left: usize,
 }
 
 /// C `svt_aom_partition_rate_cost` at PD0: neighbor partition contexts are
@@ -1561,8 +1574,16 @@ impl<'a> Pd0Ctx<'a> {
     fn lvl1_block_cost_rect(&mut self, bw: usize, bh: usize, org_x: usize, org_y: usize) -> u64 {
         let abs_x = self.sb_x + org_x;
         let abs_y = self.sb_y + org_y;
-        let (above, left, _tl, has_above, has_left) =
-            crate::partition::extract_neighbors(self.src, self.stride, abs_x, abs_y, bw, bh);
+        let (above, left, _tl, has_above, has_left) = crate::partition::extract_neighbors_tiled(
+            self.src,
+            self.stride,
+            abs_x,
+            abs_y,
+            bw,
+            bh,
+            self.tile_top,
+            self.tile_left,
+        );
         let mut pred = vec![0u8; bw * bh];
         svtav1_dsp::intra_pred::predict_dc(
             &mut pred, bw, &above, &left, bw, bh, has_above, has_left,
@@ -1880,6 +1901,8 @@ pub fn pd0_pick_sb_partition(
         // eff-M9 (preset >= 9) => enc_mode > M6 => nsq_geom_level 0 =>
         // NSQ disabled: every one-false boundary node force-splits.
         nsq_enabled: false,
+        tile_top: 0,
+        tile_left: 0,
     };
     let (_cost, eval) = ctx.pick(64, 0, 0);
     eval.tree()
@@ -1953,6 +1976,8 @@ pub fn pd0_pick_sb_partition_lvl0(
         // enc_mode > M6 => nsq_geom_level 0 => NSQ disabled: one-false
         // boundary nodes force-split (inert on 64-aligned frames).
         nsq_enabled: false,
+        tile_top: 0,
+        tile_left: 0,
     };
     let (_cost, eval) = ctx.pick(64, 0, 0);
     eval.tree()
@@ -2011,6 +2036,8 @@ pub fn pd0_pick_sb_partition_m6(
         ires_factor: 0,
         coeff_rate_est_lvl,
         nsq_enabled,
+        tile_top: 0,
+        tile_left: 0,
     };
     let (_cost, eval) = ctx.pick(64, 0, 0);
     eval.tree()
@@ -2039,6 +2066,11 @@ pub fn pd0_pick_sb_partition_m6_eval(
     nsq_enabled: bool,
     aligned_w: usize,
     aligned_h: usize,
+    // Tile pixel origin (0 = single tile → frame-edge predicate, byte-inert).
+    // The DC leaf-cost prediction that drives the M6 PD0 partition must not
+    // read across a tile boundary, matching C's tile-scoped up/left_available.
+    tile_top: usize,
+    tile_left: usize,
 ) -> Pd0Eval {
     let vars = compute_b64_variance(src, stride, sb_x, sb_y);
     let lambda = kf_full_lambda_8bit(qindex, qp) as u64;
@@ -2078,6 +2110,8 @@ pub fn pd0_pick_sb_partition_m6_eval(
         ires_factor: 0,
         coeff_rate_est_lvl,
         nsq_enabled,
+        tile_top,
+        tile_left,
     };
     let (_cost, eval) = ctx.pick(64, 0, 0);
     eval
@@ -2193,6 +2227,8 @@ mod tests {
             is_subres_safe: 0, // subres off
             ires_factor: 0,
             nsq_enabled: false,
+            tile_top: 0,
+            tile_left: 0,
         };
         assert_eq!(ctx.lambda, 25650);
         // (sq, org_x, org_y, C full_cost)
@@ -2284,6 +2320,8 @@ mod tests {
             is_subres_safe: 255,
             ires_factor: 0,
             nsq_enabled: false,
+            tile_top: 0,
+            tile_left: 0,
         };
         for (sq, ox, oy, cost) in [
             (32usize, 0usize, 0usize, 187677438u64),
@@ -2327,6 +2365,8 @@ mod tests {
             is_subres_safe: 255,
             ires_factor: 0,
             nsq_enabled: false,
+            tile_top: 0,
+            tile_left: 0,
         };
         assert_eq!(ctx.lvl5_block_cost(64, 0, 0), 1708208432);
         assert_eq!(
@@ -2431,6 +2471,8 @@ mod tests {
             is_subres_safe: 255,
             ires_factor: 0,
             nsq_enabled: true,
+            tile_top: 0,
+            tile_left: 0,
         };
         for (sq, ox, oy, cost) in [
             (64usize, 0usize, 0usize, 1791569177u64),
@@ -2470,6 +2512,8 @@ mod tests {
             is_subres_safe: 255,
             ires_factor: 0,
             nsq_enabled: true,
+            tile_top: 0,
+            tile_left: 0,
         };
         for (sq, ox, oy, cost) in [
             (64usize, 0usize, 0usize, 1176293547u64),
@@ -2505,6 +2549,8 @@ mod tests {
             is_subres_safe: 255,
             ires_factor: 0,
             nsq_enabled: true,
+            tile_top: 0,
+            tile_left: 0,
         };
         for (sq, ox, oy, cost) in [
             (64usize, 0usize, 0usize, 903280295u64),
