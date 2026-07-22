@@ -6362,7 +6362,15 @@ fn encode_tile_rows(
                             // (bias 995). M6+ (PRED_PART_ONLY) keeps the
                             // fixed-tree path below (identical outcome:
                             // s = e = 0 everywhere).
-                            let dr = crate::depth_refine::DrCtrls::for_preset(speed_config.preset);
+                            // C's allintra depth-refinement level is sc_class5-
+                            // aware (enc_mode_config.c:10067-10090): screen
+                            // content at M0-M2 uses a lower/more-thorough level
+                            // (1/1/5) that admits the depth descent the
+                            // !sc_class5 level-6 row over-prunes.
+                            let dr = crate::depth_refine::DrCtrls::for_preset_sc(
+                                speed_config.preset,
+                                tile_sc.classes.sc_class5,
+                            );
                             let eval = crate::pd0::pd0_pick_sb_partition_m6_eval(
                                 encode_input,
                                 w,

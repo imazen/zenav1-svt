@@ -73,6 +73,15 @@ pub struct DrCtrls {
     pub s1_th: i64,
     /// `e1_sub_to_current_th` (M4: 15, M5: 10).
     pub e1_th: i64,
+    /// `s2_parent_to_current_th` / `e2_sub_to_current_th`. C stores these as
+    /// `uint8`; the `(uint8)~0` sentinel maps to `MIN_SIGNED_VALUE` = "always
+    /// passes" (levels 5/6/9), while levels 1-4 store a literal `0`. We carry
+    /// the resolved i64 threshold directly: `i64::MIN` = the sentinel,
+    /// otherwise the literal value. When the sentinel, the second-tier compare
+    /// always succeeds (the pre-fix behaviour); a literal `0` admits the extra
+    /// parent/child depth only when the deviation is negative.
+    pub s2_th: i64,
+    pub e2_th: i64,
     /// `parent_max_cost_th_mult` (M4: 10, M5: 0).
     pub parent_max_cost_mult: u64,
     /// `cost_band_based_modulation` (M4: 0, M5: 1).
@@ -99,15 +108,102 @@ pub struct DrCtrls {
     pub disallow_4x4: bool,
 }
 
+/// C `(uint8_t)~0` -> `MIN_SIGNED_VALUE` sentinel for the second-tier
+/// (s2/e2) thresholds: the compare always succeeds.
+const S2E2_ALWAYS: i64 = i64::MIN;
+
 impl DrCtrls {
-    /// Per-preset derivation: `set_depth_ctrls` level from the capture
-    /// (depth_ref_lvl 6 at M0-M4, 9 at M5, 10 at M6+ = PRED_PART_ONLY).
+    /// C allintra depth-refinement level derivation
+    /// (enc_mode_config.c:10067-10090). The level is keyed on `sc_class5`
+    /// (screen-content class 5) AND the preset — NOT the preset alone. This is
+    /// a clean switch: the r0-modulation (the non-allintra :9350 block) and
+    /// `coeff_lvl_modulation` are absent/dead on the allintra I-slice path.
+    ///
+    /// ```text
+    /// sc_class5:  M0/M1 -> 1, M2 -> 5, M3/M4 -> 6, M5 -> 9, M6+ -> 10 (PRED_PART_ONLY)
+    /// !sc_class5: M0..M4 -> 6, M5 -> 9, M6+ -> 10
+    /// ```
+    /// Verified against the instrumented C `depth_refinement_ctrls.mode`/thresholds:
+    /// `graph` (sc_class5) reports level 1/1/5/6/6/9 at p0..p5, `codec_wiki`
+    /// (!sc_class5) reports 6/6/6/6/6/9 — the port previously used the
+    /// !sc_class5 row for every image, over-pruning the depth descent on
+    /// screen content at M0-M2 (e1 15 instead of 200/30).
+    pub fn for_preset_sc(preset: u8, sc_class5: bool) -> Self {
+        let level: u8 = if sc_class5 {
+            match preset {
+                0 | 1 => 1,
+                2 => 5,
+                3 | 4 => 6,
+                5 => 9,
+                _ => 10,
+            }
+        } else {
+            match preset {
+                0..=4 => 6,
+                5 => 9,
+                _ => 10,
+            }
+        };
+        Self::for_level(level, preset)
+    }
+
+    /// Pre-fix entry: the !sc_class5 row (level 6 at M0-M4, 9 at M5, 10 at M6+).
+    /// Retained for the unit tests, which assert the non-screen behaviour.
     pub fn for_preset(preset: u8) -> Self {
-        match preset {
-            0..=4 => DrCtrls {
+        Self::for_preset_sc(preset, false)
+    }
+
+    /// Build the ctrls for a `set_block_based_depth_refinement_controls` level
+    /// (enc_mode_config.c:6816). `disallow_4x4` is preset-based
+    /// (`svt_aom_get_disallow_4x4_allintra`, <= M3 -> false), independent of
+    /// the level. Only the levels reachable from the allintra derivation
+    /// (1, 5, 6, 9, 10) are materialised.
+    fn for_level(level: u8, preset: u8) -> Self {
+        let disallow_4x4 = preset >= 4;
+        match level {
+            // case 1: sc_class5 M0/M1. s2/e2 = literal 0 (NOT the sentinel).
+            1 => DrCtrls {
+                adaptive: true,
+                s1_th: 200,
+                e1_th: 200,
+                s2_th: 0,
+                e2_th: 0,
+                parent_max_cost_mult: 10,
+                band_mod: false,
+                max_cost_multiplier: 0,
+                max_band_cnt: 1,
+                decrement_per_band: [0; 4],
+                lower_split_th: 0,
+                split_rate_th: 0,
+                limit_to_pd0: 0,
+                unavail_mode: 2,
+                disallow_4x4,
+            },
+            // case 5: sc_class5 M2. s2/e2 = sentinel (always passes).
+            5 => DrCtrls {
+                adaptive: true,
+                s1_th: 30,
+                e1_th: 30,
+                s2_th: S2E2_ALWAYS,
+                e2_th: S2E2_ALWAYS,
+                parent_max_cost_mult: 10,
+                band_mod: false,
+                max_cost_multiplier: 0,
+                max_band_cnt: 1,
+                decrement_per_band: [0; 4],
+                lower_split_th: 10,
+                split_rate_th: 10,
+                limit_to_pd0: 2,
+                unavail_mode: 2,
+                disallow_4x4,
+            },
+            // case 6: M0-M4 (!sc_class5) and sc_class5 M3/M4.
+            6 => DrCtrls {
                 adaptive: true,
                 s1_th: 15,
                 e1_th: 15,
+                s2_th: S2E2_ALWAYS,
+                e2_th: S2E2_ALWAYS,
                 parent_max_cost_mult: 10,
                 band_mod: false,
                 max_cost_multiplier: 0,
@@ -117,12 +213,15 @@ impl DrCtrls {
                 split_rate_th: 10,
                 limit_to_pd0: 1,
                 unavail_mode: 2,
-                disallow_4x4: preset >= 4,
+                disallow_4x4,
             },
-            5 => DrCtrls {
+            // case 9: M5.
+            9 => DrCtrls {
                 adaptive: true,
                 s1_th: 10,
                 e1_th: 10,
+                s2_th: S2E2_ALWAYS,
+                e2_th: S2E2_ALWAYS,
                 parent_max_cost_mult: 0,
                 band_mod: true,
                 max_cost_multiplier: 400,
@@ -132,12 +231,15 @@ impl DrCtrls {
                 split_rate_th: 5,
                 limit_to_pd0: 1,
                 unavail_mode: 0,
-                disallow_4x4: true,
+                disallow_4x4,
             },
+            // case 10 (M6+): PRED_PART_ONLY — s = e = 0 everywhere.
             _ => DrCtrls {
                 adaptive: false,
                 s1_th: 0,
                 e1_th: 0,
+                s2_th: S2E2_ALWAYS,
+                e2_th: S2E2_ALWAYS,
                 parent_max_cost_mult: 0,
                 band_mod: false,
                 max_cost_multiplier: 0,
@@ -147,7 +249,7 @@ impl DrCtrls {
                 split_rate_th: 0,
                 limit_to_pd0: 0,
                 unavail_mode: 0,
-                disallow_4x4: true,
+                disallow_4x4,
             },
         }
     }
@@ -349,9 +451,14 @@ fn set_start_end_depth(
                     let dev = ((p.cost.max(1) as i64) - cur4) * 100 / cur4;
                     if dev >= s1_th && p.cost >= max_cost {
                         s = 0;
-                    } else {
-                        // dev >= s2 (MIN_SIGNED) always.
+                    } else if dev >= ctrls.s2_th {
+                        // s2 = MIN_SIGNED sentinel (levels 5/6/9) -> always
+                        // here; s2 = literal 0 (levels 1-4) -> here iff dev>=0.
                         s = -1;
+                    } else {
+                        // C `MAX(*s_depth, -2)` (:1697): a negative parent
+                        // deviation admits the grandparent depth too.
+                        s = s.max(-2);
                     }
                 }
                 None => {
@@ -388,9 +495,14 @@ fn set_start_end_depth(
                 let dev = ((child_cost.max(1) as i64) - cur) * 100 / cur;
                 if dev >= e1_th {
                     e = 0;
-                } else {
-                    // dev >= e2 (MIN_SIGNED) always.
+                } else if dev >= ctrls.e2_th {
+                    // e2 = MIN_SIGNED sentinel (levels 5/6/9) -> always here;
+                    // e2 = literal 0 (levels 1-4) -> here iff dev>=0.
                     e = 1;
+                } else {
+                    // C `MIN(*e_depth, 2)` (:1729): a negative child deviation
+                    // admits the grandchild depth too.
+                    e = e.min(2);
                 }
             } else {
                 match ctrls.unavail_mode {
@@ -1952,6 +2064,55 @@ mod tests {
         assert_eq!((m5.limit_to_pd0, m5.unavail_mode), (1, 0));
         // M6+ collapses to PRED_PART_ONLY.
         assert!(!DrCtrls::for_preset(6).adaptive);
+    }
+
+    #[test]
+    fn dr_ctrls_sc_class5_level_mapping() {
+        // C allintra derivation (enc_mode_config.c:10067-10090), verified
+        // against the instrumented `ctx->depth_refinement_ctrls` dump:
+        //   graph (sc_class5):  p0/p1 -> lvl1, p2 -> lvl5, p3/p4 -> lvl6, p5 -> lvl9
+        //   codec_wiki (!sc):   p0..p4 -> lvl6, p5 -> lvl9
+        // sc_class5 M0/M1 = level 1: s1=e1=200, s2=e2=0 (NOT the sentinel),
+        // split_rate_th=0, limit=0.
+        for p in [0u8, 1] {
+            let c = DrCtrls::for_preset_sc(p, true);
+            assert!(c.adaptive);
+            assert_eq!((c.s1_th, c.e1_th), (200, 200));
+            assert_eq!((c.s2_th, c.e2_th), (0, 0), "level 1 s2/e2 are literal 0");
+            assert_eq!((c.split_rate_th, c.limit_to_pd0), (0, 0));
+        }
+        // sc_class5 M2 = level 5: s1=e1=30, s2=e2=sentinel, limit=2, lower=10.
+        let c = DrCtrls::for_preset_sc(2, true);
+        assert!(c.adaptive);
+        assert_eq!((c.s1_th, c.e1_th), (30, 30));
+        assert_eq!((c.s2_th, c.e2_th), (i64::MIN, i64::MIN));
+        assert_eq!((c.lower_split_th, c.limit_to_pd0), (10, 2));
+        // sc_class5 M3/M4 = level 6, same as the !sc row.
+        for p in [3u8, 4] {
+            let sc = DrCtrls::for_preset_sc(p, true);
+            assert_eq!((sc.s1_th, sc.e1_th), (15, 15));
+            assert_eq!((sc.limit_to_pd0, sc.lower_split_th), (1, 20));
+        }
+        // sc_class5 M5 = level 9 (same band-modulated ctrls as !sc M5).
+        let sc5 = DrCtrls::for_preset_sc(5, true);
+        assert!(sc5.band_mod);
+        assert_eq!((sc5.s1_th, sc5.e1_th), (10, 10));
+        // !sc_class5 keeps the pre-fix per-preset row for every preset, so the
+        // whole non-screen envelope (every mainline gate) is byte-identical.
+        for p in 0..=6u8 {
+            let a = DrCtrls::for_preset_sc(p, false);
+            let b = DrCtrls::for_preset(p);
+            assert_eq!((a.s1_th, a.e1_th, a.adaptive), (b.s1_th, b.e1_th, b.adaptive));
+            assert_eq!((a.limit_to_pd0, a.split_rate_th), (b.limit_to_pd0, b.split_rate_th));
+        }
+        // The screen and non-screen rows differ exactly at M0/M1/M2.
+        for p in [0u8, 1, 2] {
+            assert_ne!(
+                DrCtrls::for_preset_sc(p, true).e1_th,
+                DrCtrls::for_preset_sc(p, false).e1_th,
+                "sc_class5 must lower e1 at M{p}"
+            );
+        }
     }
 
     /// The identity-harness gradient content (identity_run.rs) at 64x64.
