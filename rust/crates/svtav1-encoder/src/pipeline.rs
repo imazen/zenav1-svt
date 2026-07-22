@@ -1927,7 +1927,15 @@ impl EncodePipeline {
             }
             _ => None,
         };
-        let lf_levels = if is_key {
+        // IBC (chunk 1): C kills the deblock filter at SIGNAL-DERIVATION on
+        // IntraBC frames — `dlf_level` stays 0 unless `enable_dlf_flag &&
+        // frm_hdr->allow_intrabc == 0` (enc_mode_config.c:10117-10127), so
+        // neither the level pick nor the frame apply runs and the FH codes
+        // no loop-filter params (obu.rs suppresses them on the same flag).
+        // Only sc_class5 presets <= 4 frames take this arm.
+        let lf_levels = if sc_derivation.allow_intrabc {
+            crate::deblock::LfLevels::default()
+        } else if is_key {
             if is_single_frame && self.speed_config.preset <= 5 {
                 let (su, sv) = chroma.unwrap_or((&[][..], &[][..]));
                 let early_exit_convergence =
@@ -2025,7 +2033,15 @@ impl EncodePipeline {
         // a no-iteration loop, bitreader.h:161 — so the entropy walk needs
         // no syntax change). Inter frames signal zero strengths and apply
         // nothing — consistent.
-        let cdef_params = if is_key {
+        // IBC (chunk 1): C kills CDEF at SIGNAL-DERIVATION on IntraBC frames
+        // — `if (!scs->seq_header.cdef_level || frm_hdr->allow_intrabc)
+        // cdef_search_level = 0` (allintra: enc_mode_config.c:2396-2398) and
+        // cdef_process re-zeroes cdef_params (cdef_process.c:692-697). The
+        // all-zero-strength default makes apply_cdef_frame a structural
+        // no-op and cdef_bits stays 0 (no per-SB syntax, no FH params).
+        let cdef_params = if sc_derivation.allow_intrabc {
+            crate::cdef::CdefPick::single(crate::cdef::CdefFrameParams::default())
+        } else if is_key {
             // C splits the strength policy per preset (allintra
             // enc_mode_config.c:3543-3600): presets <= M6 run the CDEF
             // RDO search, >= M7 the use_qp_strength fast path we ported.
@@ -2187,7 +2203,14 @@ impl EncodePipeline {
         // untouched — the decoder's split.
         self.last_lr_stats = ([0; 3], 0);
         let mut lr_signal = svtav1_entropy::obu::LrSignal::none(seq_tools.enable_restoration);
-        if is_key && seq_tools.enable_restoration {
+        // IBC (chunk 1): unlike DLF/CDEF, C suppresses loop restoration at
+        // PIPELINE EXECUTION, not signal-derivation — `if (ppcs->
+        // enable_restoration && frm_hdr->allow_intrabc == 0)` gates BOTH the
+        // search (rest_process.c:262) and the apply/finish (:325, else-arm
+        // forces all planes RESTORE_NONE). enable_restoration itself (and
+        // the SH bit) stays UNCHANGED — do NOT fold this into the
+        // derivation (docs/ibc-port-map.md §A.7).
+        if is_key && seq_tools.enable_restoration && !sc_derivation.allow_intrabc {
             let ctrls = crate::restoration::wn_filter_ctrls_allintra(self.speed_config.preset);
             if ctrls.enabled {
                 // C `x->rdmult` = `pic_full_lambda[bit_depth == EB_TEN_BIT ?
@@ -2504,6 +2527,15 @@ impl EncodePipeline {
                 // (the FH's tile_info() limits are SB-derived).
                 self.sb_size as u32,
             );
+            // Diagnostic (SVTAV1_FHDUMP=<path>): dump the raw frame-header
+            // bytes (the OBU_FRAME payload prefix before tile data — the FH
+            // is byte-aligned at its end, so a prefix compare against the C
+            // stream's frame OBU is exact FH byte identity). Consumed by
+            // tools/screen_ibc_fh_gate.sh (IBC chunk 1).
+            #[cfg(feature = "std")]
+            if let Some(path) = std::env::var_os("SVTAV1_FHDUMP") {
+                let _ = std::fs::write(path, &fh_bytes);
+            }
             // tile_data is already a complete tile_group (with TG header)
             let mut frame_payload = alloc::vec::Vec::new();
             frame_payload.extend_from_slice(&fh_bytes);

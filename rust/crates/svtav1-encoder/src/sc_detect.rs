@@ -360,14 +360,16 @@ pub struct ScDerivation {
     /// M0-M2 -> 2, M3 -> 3, M4-M5 -> 4, M6 -> 5, M7 -> 7, M8+ -> 0).
     pub palette_level: u8,
     /// C's intrabc level table value (:2346-2370, sc_class5-gated: MR -> 1,
-    /// M0 -> 3, M1 -> 4, M2 -> 5, M3 -> 6, M4 -> 7, M5+ -> 0). Recorded for
-    /// the IBC vertical; `allow_intrabc` below stays false until the port
-    /// codes IBC blocks — signaling a tool the tile never uses would be
-    /// legal but C-divergent in a different way, and the FH intrabc bit
-    /// also suppresses LF/CDEF/LR params (spec 5.9.11/19/20).
+    /// M0 -> 3, M1 -> 4, M2 -> 5, M3 -> 6, M4 -> 7, M5+ -> 0). Feeds
+    /// `IbcCtrls::for_level` — the search controls AND the FH gate below.
     pub intrabc_level: u8,
-    /// FH bit. C: `pcs->intrabc_ctrls.enabled`. Port: false (see above) —
-    /// M2-M4 sc_class5 cells stay divergent until the IBC vertical (#71).
+    /// FH bit. C: `pcs->intrabc_ctrls.enabled` (enc_mode_config.c:2371) =
+    /// `IbcCtrls::for_level(intrabc_level).enabled` (IBC chunk 1 flipped
+    /// this live; it had been hardcoded false while IBC was unported).
+    /// True on sc_class5 frames at presets <= 4. Setting it also
+    /// suppresses the LF/CDEF/LR FH param blocks (spec 5.9.11/19/20,
+    /// obu.rs) and kills the DLF/CDEF searches + LR execution
+    /// (enc_mode_config.c:10118 / :2397; rest_process.c:262 — pipeline.rs).
     pub allow_intrabc: bool,
     /// FH bit. C: `(palette_level || allow_intrabc) ? 1 : 0` (:2393).
     pub allow_screen_content_tools: bool,
@@ -449,7 +451,12 @@ pub fn derive_allintra_sc(
     } else {
         0
     };
-    let allow_intrabc = false; // IBC unported — see field doc
+    // C: `set_intrabc_level(pcs, intrabc_level); frm_hdr->allow_intrabc =
+    // pcs->intrabc_ctrls.enabled;` (enc_mode_config.c:2370-2371). The CLI
+    // `enable_intrabc` toggle defaults ON (enc_settings.c:1065) and is not
+    // exposed by this port's surface, so the level table above already
+    // encodes the whole gate (sc_class5 && preset <= 4 => level != 0).
+    let allow_intrabc = crate::intrabc::IbcCtrls::for_level(intrabc_level).enabled;
     ScDerivation {
         classes,
         palette_level,
