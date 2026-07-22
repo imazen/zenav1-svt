@@ -458,3 +458,60 @@ SB128; left as-is.
   exercises bd10 x SB128.
 - **INTER frames at SB128** need a real 128-level RD search (see the
   CORRECTION above). `debug_assert`ed, and inter is unported throughout.
+
+---
+
+# LANDED — whole-128-SB PD0 max/min for depth refinement (2026-07-22, task #91)
+
+**codec_wiki 512 center-crop preset 0: q48 and q63 now byte-match real aomenc**
+(were 1727 vs 1684 B and 450 vs 445 B). Root, verified with instrumented
+sibling-C (`perform_pred_depth_refinement` dump, byte-inert):
+
+C's `get_max_min_pd0_depths` (enc_dec_process.c:1943) walks the ENTIRE SB
+pc_tree and derives `max_pd0_size`/`min_pd0_size` over ALL four 64x64
+coding-unit quadrants, then feeds them to `set_start_end_depth`'s
+`limit_max_min_to_pd0` gate (:1830-1846) for EVERY block in the SB. The port
+computed them PER 64x64 coding unit (`build_refined_scan_at` did
+`root.max_min_picked` on that one quadrant's PD0 eval).
+
+On `codec_wiki` SB(0,0) the four quadrants' PD0 max/min were TL 32/4, TR 16/8,
+BL 32/4, BR 32/8. C's whole-SB fold is **max_pd0=32 min_pd0=4** (confirmed by
+the instrument); at a 16x16 node in the TR quadrant `set_start_end_depth` then
+sets `s_depth=-1` (:1840, `sq*2==max_pd0` = 32) and TESTS the 32x32 parent. The
+port's per-quadrant TR `max_pd0=16` instead hit `sq==max_pd0` (:1833) -> `s=0`,
+so the 32x32 depth was NEVER tested and its nodes were force-split. C keeps a
+32x32 HORZ at mi(0,24) (leaf-sum 177800141 < NONE 181492610 < the port's split);
+the port, never evaluating it, split to 16x16. This is a DEPTH-PREDICTION scope
+bug, not a leaf-cost near-tie: the port did not mis-score the 32x32, it never
+searched it.
+
+Only bites at SB128 (units.len() > 1); at SB64 the whole-SB fold equals the
+single unit's own max/min, so the fix passes `None` there and is byte-identical
+by construction. **Fix:** `pipeline.rs` folds the whole-128-SB PD0 max/min
+across every coding-unit quadrant (the pure `pd0_pick_sb_partition_m6_eval`,
+cached once per SB, full-64-units only for bounds-safety) and passes it into
+`build_refined_scan_at` (new `sb_max_min: Option<(usize,usize)>` param).
+Gate: `tools/sb128_gate.sh` gains `codec_wiki 512x512 q48/q63 p0` (SC_CORPUS,
+local-only like coverage_combos). No regressions: sb128 20/20, identity 54/54,
+coverage_combos 40/40, nextest 873/873, bd10 {matrix 36, nonflat 309, photo
+154}, partial_sb 101, tile 29, arbitrary_size 57.
+
+## Two RESIDUAL near-ties on codec_wiki (SEPARATE roots, NOT the depth scope)
+
+`codec_wiki 512x512` after the fix: p0 {q32 DIFFERS, q48 OK, q63 OK}, p1 {q32
+OK, q48 DIFFERS by 1 byte, q63 OK}. Both residuals are preset-specific RD
+near-ties in a DIFFERENT layer than this depth-scope fix:
+
+- **p0 q32** — a per-txb TX-TYPE near-tie at the 16x16 NONE mi(4,24). The port
+  picks `ADST_ADST` (tx_type 3, eob 53) on the 3rd 8x8 txb where C picks
+  `DCT_ADST` (2, eob 47); tx blocks 0/1/3 match C to the eob. That inflates the
+  port's NONE rate (+20563) and dist (-9536) so its NONE cost 35270402 loses to
+  its own VERT 33892339, while C's NONE 32696655 wins. SB-agnostic: diverges at
+  p0 (SB128) but MATCHES at p1 (SB128) and p2/p3 (SB64), so it is the preset-0
+  tx-type search settings tipping the tie on this content, not SB128.
+- **p1 q48** — a 1-byte near-tie (port 1747 vs C 1748); a single symbol. Not
+  drilled to the term.
+
+Both are the tail of leaf-cost/tx-type RD ties, orthogonal to the SB128
+partition/depth machinery. Next step for either: sibling-C per-txb tx-type RD
+dump (the KB-2/KB-7 method extended to `tx_type_search`).

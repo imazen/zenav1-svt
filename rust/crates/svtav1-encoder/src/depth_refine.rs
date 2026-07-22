@@ -491,7 +491,11 @@ pub(crate) fn build_refined_scan(
     lambda: u64,
     tables: &M6Pd0Tables,
 ) -> RefScan {
-    build_refined_scan_at(root, ctrls, lambda, tables, 0, 0)
+    // `None` = derive the PD0 max/min from THIS root alone. Correct whenever
+    // the root spans a whole superblock — i.e. every SB64 case and the tests
+    // below. The SB128 pipeline passes the whole-128-SB fold instead (see
+    // `build_refined_scan_at`).
+    build_refined_scan_at(root, ctrls, lambda, tables, 0, 0, None)
 }
 
 /// [`build_refined_scan`] with the SB's pixel origin, so the NSQDBG REFINE
@@ -503,11 +507,30 @@ pub(crate) fn build_refined_scan_at(
     tables: &M6Pd0Tables,
     sb_x: usize,
     sb_y: usize,
+    // Whole-superblock PD0 (max, min) block sizes. `None` = derive from
+    // `root` alone (the single-64x64-unit case: SB64, or a partial SB128
+    // unit). `Some` carries C's WHOLE-128-SB fold for the SB128 refined
+    // path: C's `get_max_min_pd0_depths` (enc_dec_process.c:1943) walks the
+    // ENTIRE SB pc_tree — at SB128 that is all four 64x64 coding-unit
+    // quadrants — so `max_pd0_size`/`min_pd0_size` fed to `set_start_end_depth`
+    // span the whole 128 SB, NOT this one 64x64 unit. Computing them
+    // per-unit made a quadrant whose PD0 max was 16 (while a sibling quadrant
+    // reached 32) cap its shallowest tested depth at 16x16, force-splitting
+    // the 32x32 nodes C keeps (`limit_max_min_to_pd0`, :1830-1846). Only bit
+    // at SB128 where units.len() > 1; at SB64 the fold equals the root's own
+    // max/min, so passing it is byte-identical.
+    sb_max_min: Option<(usize, usize)>,
 ) -> RefScan {
     let mut max_pd0 = 0usize;
     let mut min_pd0 = 255usize;
     if ctrls.limit_to_pd0 != 0 {
-        root.max_min_picked(&mut max_pd0, &mut min_pd0);
+        match sb_max_min {
+            Some((mx, mn)) => {
+                max_pd0 = mx;
+                min_pd0 = mn;
+            }
+            None => root.max_min_picked(&mut max_pd0, &mut min_pd0),
+        }
     } else {
         max_pd0 = 1;
         min_pd0 = 1;

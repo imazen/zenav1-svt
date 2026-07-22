@@ -5868,6 +5868,18 @@ fn encode_tile_rows(
                 // SB itself — see the `units` comment above).
                 let mut unit_results: Vec<crate::partition::PartitionResult> =
                     Vec::with_capacity(units.len());
+                // SB128 depth-refinement: C's `get_max_min_pd0_depths`
+                // (enc_dec_process.c:1943) derives max/min PD0 block sizes over
+                // the WHOLE 128 SB pc_tree (all four 64x64 quadrants), and feeds
+                // them to `set_start_end_depth`'s `limit_max_min_to_pd0` gate.
+                // The port's per-64-unit refined scan must see that SAME whole-SB
+                // fold, not this one quadrant's — else a quadrant with PD0 max 16
+                // caps its shallowest tested depth at 16x16 and force-splits the
+                // 32x32 nodes a sibling quadrant's max-32 keeps. Folded once per
+                // SB, lazily, from the same pure PD0 eval the unit loop recomputes
+                // (`pd0_pick_sb_partition_m6_eval` reads only source pixels).
+                // `None` at SB64 (units.len() == 1) → byte-identical.
+                let mut sb_pd0_max_min: Option<(usize, usize)> = None;
                 for &(x0, y0) in units.iter() {
                 let cur_w = unit_size.min(w - x0);
                 let cur_h = unit_size.min(h - y0);
@@ -6060,6 +6072,54 @@ fn encode_tile_rows(
                             // depths, over PD0 costs that are themselves
                             // bit-depth-identical. The bd10 lambda belongs to
                             // the PD1 WALK below, not to this scan.
+                            // Whole-128-SB PD0 max/min fold (C
+                            // `get_max_min_pd0_depths`). At SB128 (units.len() >
+                            // 1) fold every coding-unit quadrant's PD0 eval;
+                            // cached across the unit loop. `None` at SB64 → the
+                            // scan derives max/min from `eval` alone, unchanged.
+                            let sb_max_min = if units.len() > 1 {
+                                if sb_pd0_max_min.is_none() {
+                                    let mut mx = 0usize;
+                                    let mut mn = 255usize;
+                                    for &(ux, uy) in units.iter() {
+                                        // Only fold FULL 64x64 units: the m6 PD0
+                                        // eval reads a whole 64x64 source block,
+                                        // so a partial edge unit (non-64-aligned
+                                        // frame) would read out of bounds. Every
+                                        // SB128 gate cell is 64-aligned → all
+                                        // units full → this never skips. A
+                                        // non-64-aligned SB128 frame needs the
+                                        // partial-SB (#95) treatment anyway
+                                        // (partial units take the fixed-tree
+                                        // path, not this refined one).
+                                        if ux + unit_size > w || uy + unit_size > h {
+                                            continue;
+                                        }
+                                        crate::pd0::pd0_pick_sb_partition_m6_eval(
+                                            encode_input,
+                                            w,
+                                            ux,
+                                            uy,
+                                            cli_qp as u32,
+                                            sb_qindex,
+                                            tables,
+                                            if dr.disallow_4x4 { 8 } else { 4 },
+                                            funnel_cfg.coeff_rate_est_lvl,
+                                            false,
+                                            true,
+                                            w,
+                                            h,
+                                            tile_sb_row_start * sb_size,
+                                            tile_sb_col_start * sb_size,
+                                        )
+                                        .max_min_picked(&mut mx, &mut mn);
+                                    }
+                                    sb_pd0_max_min = Some((mx, mn));
+                                }
+                                sb_pd0_max_min
+                            } else {
+                                None
+                            };
                             let scan = crate::depth_refine::build_refined_scan_at(
                                 &eval,
                                 &dr,
@@ -6067,6 +6127,7 @@ fn encode_tile_rows(
                                 tables,
                                 x0,
                                 y0,
+                                sb_max_min,
                             );
                             // Partition rates at the real contexts, from
                             // the same (possibly chained) frame context as

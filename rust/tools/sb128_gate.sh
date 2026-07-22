@@ -150,6 +150,35 @@ SB128_BYTE_EXACT=(
 )
 
 # ---------------------------------------------------------------------------
+# REAL-CONTENT SB128 cell (task #91 codec_wiki) — a 512x512 CENTER-CROP of the
+# gb82-sc `codec_wiki` screenshot (2560x1664). 262,144px >= 165,120 AND preset 0
+# -> C codes SB128 (asserted per-cell by (A)). This is the cell that pinned the
+# whole-128-SB PD0 max/min bug: C's `get_max_min_pd0_depths` (enc_dec_process.c:
+# 1943) folds max/min PD0 block sizes over ALL FOUR 64x64 coding-unit quadrants,
+# but the port computed them PER quadrant. On this frame SB(0,0)'s TR quadrant PD0
+# max was 16x16 while the other three reached 32x32, so C's whole-SB max_pd0=32
+# tested the 32x32 depth in the TR quadrant (`set_start_end_depth` s_depth=-1) but
+# the port's per-quadrant max_pd0=16 capped it and force-split those 32x32 nodes.
+# Closed by folding whole-128-SB max/min in `build_refined_scan_at`. q48 and q63
+# byte-match; q32 STILL DIVERGES — a SEPARATE tx-type near-tie (the port picks
+# ADST_ADST where C picks DCT_ADST on the 3rd 8x8 txb of the mi(4,24) 16x16 NONE,
+# inflating NONE's rate so VERT wins), NOT the depth root — so it is deliberately
+# not asserted (never assert a non-matching cell).
+#
+# The corpus is a LOCAL resource (not fetched in CI, exactly like
+# coverage_combos_gate.sh's real cells). SC_CORPUS overrides the dir; when it is
+# absent the cells are dropped with a LOUD warning — the corpus-presence decision
+# is made HERE at the caller, never buried inside a silently-skipping cell.
+SC_CORPUS="${SC_CORPUS:-/root/work/codec-corpus/gb82-sc}"
+_wiki_png="$SC_CORPUS/codec_wiki.png"
+if [ -f "$_wiki_png" ]; then
+  SB128_CELLS+=("crop:$_wiki_png 512 512 48 0" "crop:$_wiki_png 512 512 63 0")
+  SB128_BYTE_EXACT+=("crop:$_wiki_png 512 512 48 0" "crop:$_wiki_png 512 512 63 0")
+else
+  echo "WARNING: $_wiki_png not found (set SC_CORPUS) — codec_wiki SB128 cells SKIPPED" >&2
+fi
+
+# ---------------------------------------------------------------------------
 # THE 2 FORMERLY-PINNED CELLS — CLOSED 2026-07-22 (bd8 ind_uv fast-loop SAD).
 #
 # `gradient 512x384 q32 p0` and `gradient 448x384 q32 p0` diverged at a 32x32
@@ -223,7 +252,12 @@ done
 echo "--- sb128 cells (>= 165,120px, preset <= 1 -> C codes SB128) ---"
 for cell in "${SB128_CELLS[@]}"; do
   read -r content w h qp p <<<"$cell"
-  tag="${content}_${w}x${h}_q${qp}_p${p}"
+  # `crop:/abs/foo.png` / `file:/abs/foo.png` -> a clean `foo` tag stem.
+  case "$content" in
+  crop:* | file:*) cname=$(basename "${content#*:}" .png) ;;
+  *) cname="$content" ;;
+  esac
+  tag="${cname}_${w}x${h}_q${qp}_p${p}"
   if ! "$HERE/identity_run" "$content" "$w" "$h" "$qp" "$p" "$OUT/rs" >"$OUT/rs.log" 2>"$OUT/rs.trace"; then
     fail=$((fail + 1)); failed+=("$tag[rs-err]"); continue
   fi
