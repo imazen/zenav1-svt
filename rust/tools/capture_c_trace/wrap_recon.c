@@ -690,10 +690,11 @@ void __wrap_svt_aom_update_mi_map(PictureControlSet* pcs, ModeDecisionContext* c
     if (f)
         fprintf(f,
             "CTREE mi=(%d,%d) bsize=%d part=%d mode=%d uv=%d fi=%d ady=%d aduv=%d txd=%d pal=%d skip=%d cflidx=%d "
-            "cflsgn=%d\n",
+            "cflsgn=%d ibc=%d aibc=%d\n",
             mi_row, mi_col, (int)bsize, (int)part, (int)m->mode, (int)m->uv_mode, (int)m->filter_intra_mode,
             (int)m->angle_delta[0], (int)m->angle_delta[1], (int)m->tx_depth, (int)b->palette_size[0], (int)m->skip,
-            (int)m->cfl_alpha_idx, (int)m->cfl_alpha_signs);
+            (int)m->cfl_alpha_idx, (int)m->cfl_alpha_signs, (int)m->use_intrabc,
+            (int)pcs->ppcs->frm_hdr.allow_intrabc);
     if (f)
         fflush(f);
 
