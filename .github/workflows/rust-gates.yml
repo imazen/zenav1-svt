@@ -29,6 +29,11 @@ jobs:
         with:
           workspaces: rust
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
       - name: Build C reference (static, the differential oracle)
         run: |
           cmake -S . -B cbuild-static -G Ninja -DCMAKE_BUILD_TYPE=Release \
@@ -53,7 +58,12 @@ jobs:
 
       - name: Workspace tests (differential parity suites vs C)
         working-directory: rust
-        run: cargo test --workspace --no-fail-fast
+        # nextest is the standard runner (faster, per-test isolation). It does
+        # not run doctests; the workspace currently has 0 doctests (verified),
+        # and `cargo test --doc` below is a guard if any are ever added.
+        run: |
+          cargo nextest run --workspace --no-fail-fast
+          cargo test --workspace --doc
 
       - name: Decode conformance — mono (aomdec + dav1d)
         working-directory: rust
