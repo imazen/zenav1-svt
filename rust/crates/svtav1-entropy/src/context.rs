@@ -246,6 +246,22 @@ pub struct FrameContext {
     // --- Delta Q ---
     /// Delta Q CDFs [DELTA_Q_PROBS+1+1]
     pub delta_q_cdf: [AomCdfProb; DELTA_Q_PROBS + 2],
+
+    // --- IntraBC (intra block copy, screen content) ---
+    /// `use_intrabc` flag CDF — C FRAME_CONTEXT.intrabc_cdf
+    /// (`default_intrabc_cdf` = AOM_CDF2(30531), cabac_context_model.c:
+    /// 610-612, installed :792). Coded by `write_intrabc_info`
+    /// (entropy_coding.c:4405-4416) for every block on a frame where
+    /// `svt_aom_allow_intrabc` holds; adapted per committed block
+    /// (md_rate_estimation.c:854-855).
+    pub intrabc_cdf: [AomCdfProb; 3],
+
+    /// DV (displacement vector) entropy context — C FRAME_CONTEXT.ndvc.
+    /// Seeded from the EXACT same `default_nmv_context` as `nmvc`
+    /// (cabac_context_model.c:795), but adapted independently: `ndvc` only
+    /// ever codes IntraBC DVs (`svt_av1_encode_dv`, entropy_coding.c:4381,
+    /// with literal `MV_SUBPEL_NONE` — sign/class/integer bits only).
+    pub ndvc: crate::mv_coding::NmvContext,
 }
 
 // =============================================================================
@@ -488,6 +504,14 @@ impl FrameContext {
             // AV1 default_delta_q_cdf = AOM_CDF4(28160, 32120, 32677)
             // (cabac_context_model.c:637) in ICDF form: 32768 - cum.
             delta_q_cdf: [4608, 648, 91, 0, 0],
+            // C default_intrabc_cdf = AOM_CDF2(30531) (cabac_context_model.c:
+            // 610-612); the generated table is drift-tested vs FcTable::IntraBc
+            // in tests/c_parity.rs.
+            intrabc_cdf: crate::default_cdfs::INTRABC_CDF,
+            // C seeds ndvc from default_nmv_context — the SAME table as nmvc
+            // (cabac_context_model.c:795); NmvContext::default() is that
+            // table (drift-tested vs FcTable::Nmvc in tests/c_parity_mv.rs).
+            ndvc: crate::mv_coding::NmvContext::default(),
         }
     }
 
@@ -505,6 +529,21 @@ impl FrameContext {
         // 1D
         avg(&mut self.filter_intra_mode_cdf, &tr.filter_intra_mode_cdf, wt_left, wt_tr);
         avg(&mut self.cfl_sign_cdf, &tr.cfl_sign_cdf, wt_left, wt_tr);
+        // IntraBC: C averages intrabc_cdf + the whole ndvc alongside nmvc
+        // (enc_dec_process.c:2638-2640, avg_nmv :2567-2579 — every CDF field).
+        avg(&mut self.intrabc_cdf, &tr.intrabc_cdf, wt_left, wt_tr);
+        avg(&mut self.ndvc.joints_cdf, &tr.ndvc.joints_cdf, wt_left, wt_tr);
+        for i in 0..2 {
+            let (l, r) = (&mut self.ndvc.comps[i], &tr.ndvc.comps[i]);
+            avg(&mut l.classes_cdf, &r.classes_cdf, wt_left, wt_tr);
+            avg(l.class0_fp_cdf.as_flattened_mut(), r.class0_fp_cdf.as_flattened(), wt_left, wt_tr);
+            avg(&mut l.fp_cdf, &r.fp_cdf, wt_left, wt_tr);
+            avg(&mut l.sign_cdf, &r.sign_cdf, wt_left, wt_tr);
+            avg(&mut l.class0_hp_cdf, &r.class0_hp_cdf, wt_left, wt_tr);
+            avg(&mut l.hp_cdf, &r.hp_cdf, wt_left, wt_tr);
+            avg(&mut l.class0_cdf, &r.class0_cdf, wt_left, wt_tr);
+            avg(l.bits_cdf.as_flattened_mut(), r.bits_cdf.as_flattened(), wt_left, wt_tr);
+        }
         avg(self.cfl_alpha_cdf.as_flattened_mut(), tr.cfl_alpha_cdf.as_flattened(), wt_left, wt_tr);
         avg(&mut self.wiener_restore_cdf, &tr.wiener_restore_cdf, wt_left, wt_tr);
         avg(&mut self.delta_q_cdf, &tr.delta_q_cdf, wt_left, wt_tr);

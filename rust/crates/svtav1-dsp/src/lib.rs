@@ -16,7 +16,13 @@ pub mod ac_bias;
 pub mod hadamard;
 pub mod inter_pred;
 pub mod intra_pred;
-pub mod intrabc;
+// NOTE: no `intrabc` module here. A naive non-C-faithful placeholder
+// (sum-of-pixels hash, hand-rolled DV validity missing the tile bounds /
+// sub-8x8 chroma margin / INTRABC_DELAY wavefront) briefly lived at
+// `src/intrabc.rs`; it was removed (IBC chunk 0, docs/ibc-port-map.md §B.4)
+// in favor of the single canonical translation in
+// `svtav1-encoder/src/intrabc.rs`. Do not resurrect it — the encoder module
+// is the one verified against C (`svt_aom_is_dv_valid` et al.).
 pub mod inv_txfm;
 pub mod loop_filter;
 pub mod obmc;

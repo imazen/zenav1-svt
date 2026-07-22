@@ -2057,16 +2057,18 @@ pub fn build_intra_bc_candidate(dv: Mv, pred_dv: Mv) -> IbcCandidate {
 // correct `ndvc` default too. Only `intrabc_cdf` (a plain binary flag,
 // not carried by `mv_coding`) needs transcribing here.
 //
-// PORT-NOTE(unverified): at wiring time, move [`INTRABC_DEFAULT_CDF`]
-// into `svtav1-entropy/src/default_cdfs.rs` (ideally via that file's
-// `gen_default_cdfs` generator, matching every other default-CDF table's
-// provenance) and add an `intrabc_cdf: [AomCdfProb; 3]` + `ndvc:
-// NmvContext` field pair to `FrameContext` (`context.rs`) alongside the
-// other per-frame CDF state, rather than leaving them here.
+// Consolidated (IBC chunk 0): the default flag CDF lives in
+// `svtav1-entropy/src/default_cdfs.rs::INTRABC_CDF` (generated from the C
+// reference by `gen_default_cdfs`, drift-tested vs `FcTable::IntraBc` in
+// svtav1-entropy/tests/c_parity.rs) and is carried per-frame on
+// `FrameContext::intrabc_cdf` alongside `FrameContext::ndvc`; both are
+// averaged by `avg_cdf_with` exactly as C's `avg_cdf_symbols` averages
+// `intrabc_cdf`/`ndvc` (enc_dec_process.c:2638-2640).
 // =============================================================================
 
 /// C `default_intrabc_cdf` (cabac_context_model.c:610-612): `AOM_CDF2(30531)`.
-pub const INTRABC_DEFAULT_CDF: [u16; 3] = [svtav1_entropy::cdf::aom_icdf(30531), 0, 0];
+/// Re-export of the generated table (see the consolidation note above).
+pub use svtav1_entropy::default_cdfs::INTRABC_CDF as INTRABC_DEFAULT_CDF;
 
 /// C `write_intrabc_info` (entropy_coding.c:4405-4416) + `svt_av1_encode_
 /// dv` (entropy_coding.c:4381-4396, inlined here as a call to

@@ -378,6 +378,54 @@ fn c_default_cdf_tables_match() {
     assert_eq!(ym, cref::fc_table(cref::FcTable::YMode), "Y_MODE_CDF");
 }
 
+/// IBC chunk 0: `FrameContext::new_default()` must carry the C defaults for
+/// the two IntraBC entropy states (`intrabc_cdf` + `ndvc`), field-for-field
+/// against the C FRAME_CONTEXT after `svt_aom_init_mode_probs` — locking the
+/// FrameContext WIRING, not just the raw generated tables (covered above /
+/// in c_parity_mv.rs). Flat order == C struct layout order (all-u16 structs,
+/// no padding — same serialization the Nmvc drift test uses).
+#[test]
+fn frame_context_intrabc_defaults_match_c() {
+    use svtav1_entropy::context::FrameContext;
+    cref::fc_init(60);
+    let fc = FrameContext::new_default();
+    assert_eq!(
+        fc.intrabc_cdf.to_vec(),
+        cref::fc_table(cref::FcTable::IntraBc),
+        "FrameContext.intrabc_cdf"
+    );
+    let mut ndvc_flat: Vec<u16> = Vec::new();
+    ndvc_flat.extend_from_slice(&fc.ndvc.joints_cdf);
+    for comp in &fc.ndvc.comps {
+        ndvc_flat.extend_from_slice(&comp.classes_cdf);
+        for fp in &comp.class0_fp_cdf {
+            ndvc_flat.extend_from_slice(fp);
+        }
+        ndvc_flat.extend_from_slice(&comp.fp_cdf);
+        ndvc_flat.extend_from_slice(&comp.sign_cdf);
+        ndvc_flat.extend_from_slice(&comp.class0_hp_cdf);
+        ndvc_flat.extend_from_slice(&comp.hp_cdf);
+        ndvc_flat.extend_from_slice(&comp.class0_cdf);
+        for b in &comp.bits_cdf {
+            ndvc_flat.extend_from_slice(b);
+        }
+    }
+    // Direct extraction of C's fc.ndvc (not just its nmvc twin).
+    assert_eq!(
+        ndvc_flat,
+        cref::fc_table(cref::FcTable::Ndvc),
+        "FrameContext.ndvc"
+    );
+    // ...and C indeed seeds ndvc == nmvc from default_nmv_context
+    // (cabac_context_model.c:795) — assert the C-side twin-ness too, so a
+    // future C version divergence here would be caught.
+    assert_eq!(
+        cref::fc_table(cref::FcTable::Ndvc),
+        cref::fc_table(cref::FcTable::Nmvc),
+        "C ndvc default != C nmvc default"
+    );
+}
+
 // ---- coeff_c helper parity ----
 
 #[test]

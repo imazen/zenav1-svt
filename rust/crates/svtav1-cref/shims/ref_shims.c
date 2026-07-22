@@ -119,6 +119,7 @@ REF_TBL(delta_q_cdf)
 REF_TBL(intrabc_cdf)
 REF_TBL(y_mode_cdf)
 REF_TBL(nmvc)
+REF_TBL(ndvc)
 
 /* ---- MV entropy encode (AUDIT 2026-07-14) ----
  *
