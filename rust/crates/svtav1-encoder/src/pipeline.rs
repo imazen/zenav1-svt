@@ -4675,10 +4675,22 @@ fn bd10_reencode_node(
                 frame_w,
                 frame_h,
                 // PORT-NOTE(task #96): the bd10 re-encode runs AFTER the
-                // per-tile search merges, so it has no tile grid threaded
-                // and treats the frame as one tile. Byte-neutral for every
-                // gated bd10 cell (all single-tile); bd10 + multi-tile is
-                // not a gated combination and this is the known gap in it.
+                // per-tile search merges, so it has no tile grid threaded and
+                // treats the frame as one tile. Byte-neutral for every gated
+                // bd10 cell (all single-tile).
+                //
+                // MEASURED CORRECTION (bd10 x tiles coverage, 2026-07-22): this
+                // whole_frame TileMi is NOT the bd10 x multi-tile divergence
+                // root. Threading per-tile bounds here was verified
+                // BYTE-INERT on the diverging cells (stash "cov-combos:
+                // byte-inert bd10 re-encode tile threading"). The actual root
+                // is UPSTREAM: the port's eff-M9 partition search picks a
+                // different tree at a tile boundary at bd10 (tree_diff on
+                // gradient 256x256 q40 p10 r1c1: port keeps bsize 9 at the
+                // y=128 tile-row-boundary SBs mi(32,16)/(32,48) where C — at
+                // BOTH bit depths — splits to bsize 6; the port matches C at
+                // bd8 tiles and at bd10 single-tile). See
+                // docs/coverage-combos-map.md (axis "bd10 x tiles").
                 tile: crate::intra_edge::TileMi::whole_frame(frame_w, frame_h),
             };
             crate::leaf_funnel::predict_unit_hbd(
@@ -5066,7 +5078,10 @@ fn bd10_reencode_chroma_node(
                 frame_w: cframe_w,
                 frame_h: cframe_h,
                 // PORT-NOTE(task #96): see the luma twin above — bd10
-                // re-encode is post-merge and frame-scoped.
+                // re-encode is post-merge and frame-scoped. The MEASURED
+                // CORRECTION there applies here too: whole_frame is NOT the
+                // bd10 x tiles root (threading was byte-inert); the partition
+                // search is. docs/coverage-combos-map.md.
                 tile: crate::intra_edge::TileMi::whole_frame(cframe_w, cframe_h),
             };
             let (u_q, u_eob, u_rec) = bd10_reencode_chroma_plane(
