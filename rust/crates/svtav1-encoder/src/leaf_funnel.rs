@@ -3834,7 +3834,25 @@ pub(crate) fn evaluate_leaf(
     // in coding order); both are 0/empty for blocks with no palette
     // neighbours — always true for non-screen content — so those stay
     // byte-identical to the pre-neighbour stub.
-    if svtav1_entropy::context::allow_palette(cfg.allow_sct, w, h) && cfg.palette_level > 0 {
+    // The luma palette (#71) search is NOT ported into the bd10 (u16) leaf
+    // funnel: a surviving palette candidate reaches the bd10 full-RD stage
+    // (`tx_unit_hbd`) with a u8 `w*h` palette prediction where the hbd path
+    // indexes a u16 buffer at hbd offsets/stride, panicking with an
+    // out-of-bounds on `residual.push(src[..] - pred[..])` (leaf_funnel.rs
+    // tx_unit_hbd). This fires on real SCREEN content at bd10 (palette is
+    // active at preset <= 7 via sc_class5) — a panic on the PUBLIC
+    // `encode_frame_420` API. Gate palette injection out of the bd10 funnel so
+    // those leaves decide among the (ported) non-palette hbd modes instead,
+    // yielding a valid decodable stream rather than a crash. Rationale for
+    // safety: `bd10_funnel` is false at bd8 (byte-inert there) and on every
+    // non-screen bd10 frame `cfg.palette_level == 0` (sc_class5=0), so the
+    // block is already skipped — hence this is inert on all existing bd10 gates
+    // (photo/gradient/diag/uniform, none screen); and since the bd10 search
+    // currently PANICS on any palette candidate, no passing bd10 cell can reach
+    // one, so this cannot regress a passing cell — it only converts the panic
+    // into graceful non-palette output. Byte-exact bd10 palette is a future #71
+    // port (needs the hbd palette predictor + hbd-typed candidate buffers).
+    if !bd10_funnel && svtav1_entropy::context::allow_palette(cfg.allow_sct, w, h) && cfg.palette_level > 0 {
         let ctrls = crate::palette::PaletteCtrls::for_level(cfg.palette_level);
         let bctx = svtav1_entropy::context::palette_bsize_ctx(w, h);
         // Neighbour palette color cache (C svt_get_palette_cache_y): merged
