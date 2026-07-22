@@ -911,15 +911,22 @@ fn nic_counts(cli_qp: u32, num: (u64, u64, u64)) -> (u32, u32, u32) {
     (scale(64, num.0), scale(32, num.1), scale(16, num.2))
 }
 
-/// C `svt_aom_mefn_ptr[bsize].vf` (the block variance function used as the
-/// fast-loop chroma distortion in `search_best_independent_uv_mode`):
-/// `sse - sum^2 / N` over a `w`x`h` block, where the residual is `src`
-/// (plane at `src_stride`, block origin `(sx,sy)`) minus the block-local
-/// `pred`. The DC-offset subtraction is intentional (it is the *variance*
-/// of the residual, not the SSE). On flat chroma every uv prediction is a
-/// constant, so every candidate scores 0 and the stable sort keeps the C
-/// injection order.
-fn residual_variance(
+/// C `svt_nxm_sad_kernel` (svt_nxm_sad_kernel_helper_c, compute_sad_c.c:21) —
+/// the plain 8-bit SAD (sum of absolute differences) used as the bd8 fast-loop
+/// chroma distortion in `search_best_independent_uv_mode`
+/// (product_coding_loop.c:7643). `ctx->mds0_ctrls.mds0_dist_type` is NEVER
+/// assigned anywhere in the C tree (definitions.h:892 `enum { SAD=0, VAR=1,
+/// SSD=2 }`, and grep of `Source/Lib` finds no `mds0_dist_type =` site), so it
+/// stays zero-initialized = SAD for EVERY preset/bit-depth — the fast loop
+/// scores SAD, not the `vf` variance. `residual_sad`/`residual_sad_hbd` are the
+/// u8/u16 halves of the same metric (C picks `svt_nxm_sad_kernel` vs
+/// `sad_16b_kernel` on `hbd_md`). Using variance here (DC-invariant) mis-orders
+/// the candidate SET on non-flat recon: a flat prediction scores 0 and displaces
+/// the above-following modes (V/PAETH/D45) that SAD ranks best, dropping UV_PAETH
+/// from the nfl=32 survivors where C keeps it — the gradient q32 p0 32x32 VERT_4
+/// pin (a 4x16 chroma block whose luma-PAETH sub-block resolved to UV_DC under
+/// variance but UV_PAETH under SAD, flipping the whole node NONE<->VERT_4).
+fn residual_sad(
     src: &[u8],
     src_stride: usize,
     sx: usize,
@@ -928,17 +935,14 @@ fn residual_variance(
     w: usize,
     h: usize,
 ) -> u64 {
-    let mut sum: i64 = 0;
-    let mut sse: i64 = 0;
+    let mut sad: u64 = 0;
     for r in 0..h {
         let base = (sy + r) * src_stride + sx;
         for c in 0..w {
-            let d = src[base + c] as i64 - pred[r * w + c] as i64;
-            sum += d;
-            sse += d * d;
+            sad += (src[base + c] as i64 - pred[r * w + c] as i64).unsigned_abs();
         }
     }
-    (sse - (sum * sum) / (w * h) as i64) as u64
+    sad
 }
 
 /// C `sad_16b_kernel` (svt_aom_sad_16b_kernel_c) — the plain 16-bit SAD (sum of
@@ -3405,23 +3409,23 @@ pub(crate) fn evaluate_leaf(
             }
         }
 
-        // 2. Fast loop: residual variance (u + v) per candidate — C uses
-        //    `svt_aom_mefn_ptr[bsize_uv].vf` and NO rate at this stage
-        //    (:7864-7899).
-        // bd10 (task #94, root #1): C runs this fast loop at `hbd_md` too —
-        // the 10-bit prediction (product_prediction_fun_table) scored by
-        // `fn_ptr->vf_hbd_10` on the 10-bit source (product_coding_loop.c:
-        // 7622-7639). The sort order (which candidates enter the full loop)
-        // is decided HERE, so a u8 sort would admit a different candidate SET,
-        // not just mis-cost. bd8 keeps the u8 `vf` path and is byte-unchanged.
+        // 2. Fast loop: SAD (u + v) per candidate, NO rate at this stage
+        //    (product_coding_loop.c:7604-7674). C's `mds0_dist_type` is
+        //    zero-initialized = SAD (never assigned in `Source/Lib`), so BOTH
+        //    bit depths score plain SAD — bd8 `svt_nxm_sad_kernel`, bd10
+        //    `sad_16b_kernel` — NOT the `vf` variance. The sort order (which
+        //    candidates enter the full loop) is decided HERE, so the metric
+        //    must match C's SAD or a different candidate SET is admitted.
+        // bd10 (task #94, root #1): C runs this fast loop at `hbd_md` too — the
+        // 10-bit prediction scored by `sad_16b_kernel` on the 10-bit source.
         let mut u_pred = alloc::vec![0u8; cw * chh];
         let mut v_pred = alloc::vec![0u8; cw * chh];
         let mut u_pred10 = alloc::vec![0u16; cw * chh];
         let mut v_pred10 = alloc::vec![0u16; cw * chh];
         let mut fast: Vec<(u64, usize)> = Vec::with_capacity(uv_cands.len());
         for (idx, &(uvm, uvd)) in uv_cands.iter().enumerate() {
-            // bd10: SAD (`mds0_dist_type` default 0 = SAD); bd8: the original
-            // variance. Either is the fast-loop sort key below.
+            // Both bit depths score SAD (`mds0_dist_type` default 0 = SAD);
+            // it is the fast-loop sort key below.
             let fast_dist = match bd10_rd.as_ref() {
                 Some(b) => {
                     predict_unit_hbd(
@@ -3444,8 +3448,8 @@ pub(crate) fn evaluate_leaf(
                         fx.v_recon, fx.c_stride, ccx, ccy, cw, chh, uvm, uvd, FI_NONE, &uv_geom,
                         cfg.edge_filter, filt_type_uv, &mut v_pred,
                     );
-                    residual_variance(fx.u_src, fx.c_stride, ccx, ccy, &u_pred, cw, chh)
-                        + residual_variance(fx.v_src, fx.c_stride, ccx, ccy, &v_pred, cw, chh)
+                    residual_sad(fx.u_src, fx.c_stride, ccx, ccy, &u_pred, cw, chh)
+                        + residual_sad(fx.v_src, fx.c_stride, ccx, ccy, &v_pred, cw, chh)
                 }
             };
             fast.push((fast_dist, idx));

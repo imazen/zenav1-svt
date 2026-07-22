@@ -137,53 +137,46 @@ SB128_BYTE_EXACT=(
   "uniform  512 384 55 0"
   "uniform  512 384 63 0"
   "uniform  512 384 32 1"
+  "gradient 512 384 32 0"
   "gradient 512 384 55 0"
   "gradient 512 384 20 0"
   "gradient 512 384 32 1"
   "diag     512 384 32 0"
   "diag     512 384 55 0"
   "uniform  448 384 32 0"
+  "gradient 448 384 32 0"
   "uniform  512 448 32 0"
   "gradient 512 448 32 0"
 )
 
 # ---------------------------------------------------------------------------
-# WHY THE 2 REMAINING CELLS ARE PINNED — and why it is NOT an SB128 bug.
+# THE 2 FORMERLY-PINNED CELLS — CLOSED 2026-07-22 (bd8 ind_uv fast-loop SAD).
 #
-# Both are `gradient` at qp 32 (`512x384` and `448x384`). Their first
-# divergence is a PARTITION decision at a 32x32 node: C codes `s=9`
-# (PARTITION_VERT_4, four 8x32 strips) where the port codes `s=0`
-# (PARTITION_NONE), at CDF row icdf0=14306.
+# `gradient 512x384 q32 p0` and `gradient 448x384 q32 p0` diverged at a 32x32
+# node where C coded `s=9` (PARTITION_VERT_4) and the port coded `s=0`
+# (PARTITION_NONE). It was NEVER an SB128 bug: it reproduced at SB64 on
+# `gradient 424x384 q32 p0` (below the area threshold) at the same node.
 #
-# MEASURED, twice, that this is a pre-existing sub-64 NSQ gap and not
-# SB128:
-#   1. The port makes the SAME `NONE` decision at that node whether it runs
-#      at SB64 (`SVTAV1_SB=64`) or SB128 — the first 1714 coded decisions
-#      are identical between the two modes, so the SB128 walk did not
-#      influence it.
-#   2. `gradient 424x384 q32 p0` — 162,816 px, BELOW the area threshold, so
-#      C codes it at **SB64** — reproduces the divergence exactly: same
-#      first-divergent node, same icdf row 14306, C `s=9` vs port `s=0`.
-#      `gradient`'s pixels are `((r*255)/h) ^ ((c*3)&0x3f)`, so at the same
-#      `h` the top-left block is bit-identical to the 512x384 cell's.
+# ROOT CAUSE (per-candidate leaf-RD dump, C `SVT_PICKPART_OUT` vs the port's
+# `SVTAV1_NSQDBG`/`SVTAV1_UVDBG`): the VERT_4 divergence was ENTIRELY in the
+# first 8x32 sub-block's CHROMA mode — C coded UV_PAETH (12), the port coded
+# UV_DC (0). Luma was bit-identical. C's V4 leaf-sum 69441889 + partrate =
+# 69889912 < NONE 69986899 (C keeps V4); the port's UV_DC inflated that
+# sub-block's RD by 241726, pushing V4 to 70131638 > NONE (port kept NONE).
 #
-# MEASURED a third time, from the port's own NSQ dump
-# (`SVTAV1_NSQDBG=1 SVTAV1_DBG_MI=0,0` on the 424x384 cell): VERT_4 is
-# EVALUATED, not gated — `NSQDBG SHAPE mi=(0,0) bsize=9 shape=4 valid=0
-# part_cost=70131638` against NONE's `69986899`. It LOSES by 0.207%. So the
-# shape list, the four NSQ prune gates, and the H4/V4 availability are all
-# fine (H4 wins outright at mi=(8,0) in the same dump); this is a leaf-cost
-# RD near-tie, and closing it needs an instrumented-C per-candidate RD dump
-# in the leaf funnel — orthogonal to SB128.
-#
-# The `diag` cells (content independent of w/h) byte-match at both qps, and
-# every `uniform` cell matches, which is what isolates this to the NSQ cost
-# rather than anything geometric. When it lands these two cells should flip
-# on their own and the pin will fire.
+# The port's bd8 `search_best_independent_uv_mode` fast loop scored candidates
+# by residual VARIANCE, but C's `mds0_dist_type` is zero-initialized = SAD
+# (never assigned anywhere in `Source/Lib`), so C scores plain SAD. Variance is
+# DC-invariant, so on the flat 4x16 chroma many candidates tied at 0 and pushed
+# UV_PAETH just past the nfl=32 survivor cut; SAD keeps it, matching C. (The
+# bd10 path already used SAD; the bd8 arm was the straggler.) Fix:
+# `crates/svtav1-encoder/src/leaf_funnel.rs` `residual_sad` (was
+# `residual_variance`). Chroma is now byte-identical to C on these cells; both
+# pins byte-match end-to-end.
 
-# Cells PINNED as still-diverging. Everything in SB128_CELLS that is not in
-# SB128_BYTE_EXACT is implicitly pinned (see the loop) — the pin is what
-# makes this gate fail-forward when the port starts matching.
+# Cells PINNED as still-diverging (currently NONE). Everything in SB128_CELLS
+# that is not in SB128_BYTE_EXACT is implicitly pinned (see the loop) — the pin
+# is what makes this gate fail-forward when the port starts matching.
 
 # CONTROL cells: same presets and content, BELOW the area threshold, so C
 # codes them at SB64 and the port must byte-match them exactly.

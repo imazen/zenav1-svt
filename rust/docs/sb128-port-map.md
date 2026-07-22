@@ -376,11 +376,12 @@ below.
    blind to this bug class: a pinned cell is expected to differ from C, so
    "differs" hid "is corrupt".
 
-## The 2 remaining pinned cells are NOT SB128
+## The 2 formerly-pinned cells were NOT SB128 — CLOSED 2026-07-22
 
-`gradient 512x384 q32 p0` and `gradient 448x384 q32 p0`. First divergence is
-a PARTITION decision at a 32x32 node: C codes `s=9` (PARTITION_VERT_4) where
-the port codes `s=0` (NONE), CDF row icdf0=14306. Measured three ways:
+`gradient 512x384 q32 p0` and `gradient 448x384 q32 p0`. First divergence was
+a PARTITION decision at a 32x32 node: C coded `s=9` (PARTITION_VERT_4) where
+the port coded `s=0` (NONE), CDF row icdf0=14306. Measured three ways that it
+was a pre-existing sub-64 leaf-cost near-tie, not SB128:
 
 1. The port makes the same NONE decision under `SVTAV1_SB=64` and SB128 —
    the SB128 walk did not influence it.
@@ -390,12 +391,42 @@ the port codes `s=0` (NONE), CDF row icdf0=14306. Measured three ways:
    equal `h` the top-left block is bit-identical to the 512x384 cell's.
 3. The port's own NSQ dump (`SVTAV1_NSQDBG=1 SVTAV1_DBG_MI=0,0`) shows V4 is
    EVALUATED, not gated: `shape=4 valid=0 part_cost=70131638` vs NONE's
-   `69986899` — it LOSES by 0.207%. H4 wins outright at mi=(8,0) in the same
-   dump, so the shape list, the four NSQ prune gates and H4/V4 availability
-   are all fine.
+   `69986899` — it LOSES by 0.207%.
 
-It is a leaf-cost RD near-tie. Closing it needs an instrumented-C
-per-candidate RD dump in the leaf funnel — orthogonal to SB128.
+### Root cause + fix (per-candidate leaf-RD dump)
+
+C's `SVT_PICKPART_OUT` interposer (`CSQ`/`CNSQ` per tested shape) vs the port's
+`SVTAV1_NSQDBG`/`SVTAV1_UVDBG` on the 424 SB64 repro pinned it to ONE term: the
+VERT_4 divergence is ENTIRELY in the first 8x32 sub-block's CHROMA mode. C codes
+UV_PAETH (uv_mode 12); the port coded UV_DC (0). Luma is bit-identical (same
+mode 12, same dist 60592). C's V4 leaf-sum 69441889 + partrate 448023 =
+69889912 < NONE 69986899 (C keeps V4); the port's UV_DC inflated that sub-block
+by exactly 241726, pushing V4 to 70131638 > NONE (port kept NONE). The whole
+0.207% was one wrong chroma mode.
+
+WHY the port picked UV_DC: `search_best_independent_uv_mode`
+(product_coding_loop.c:7518) scores its fast-loop candidates by
+`ctx->mds0_ctrls.mds0_dist_type`, which is **NEVER assigned anywhere in
+`Source/Lib`** (definitions.h:892 `enum { SAD=0, VAR=1, SSD=2 }`), so it stays
+zero-initialized = **SAD** for every preset/bit-depth. The port's **bd8** arm
+scored residual **VARIANCE** instead (the bd10 arm already used SAD). Variance
+is DC-invariant, so on the flat 4x16 chroma of this 8x32 block many candidates
+tied at 0 and pushed UV_PAETH — injected last — just past the `nfl=32` survivor
+cut (rank 32); C's SAD keeps it inside the top 32.
+
+**Fix:** `crates/svtav1-encoder/src/leaf_funnel.rs` — `residual_sad` (u8 SAD,
+mirrors `residual_sad_hbd` / C `svt_nxm_sad_kernel`) replaces `residual_variance`
+in the bd8 ind_uv fast loop. bd8-only; bd10 arm untouched. Promoted in
+`tools/sb128_gate.sh` (SB128_BYTE_EXACT, now 18/18). Byte-inert on every green
+cell: identity_matrix 54/54, sb128 18/18, partial_sb 101/101, tile 25/25,
+arbitrary_size 57/57, bd10 {matrix 36, nonflat 307, photo 154, recon 13}, and
+`cargo test --workspace`.
+
+NOTE the 424 SB64 repro is NOT fully closed by this: 512/448 are multiples of
+64 but 424 = 6*64 + **40**, so it has a partial-width edge SB (mi_col 96) with
+its OWN separate luma partition near-tie (C VERT vs port NONE at the 16x16
+mi(8,96)) that the real pins do not exercise. Orthogonal to this fix and to
+SB128; left as-is.
 
 ## Remaining SB128 scope (honest list)
 
