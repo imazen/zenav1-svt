@@ -1458,7 +1458,12 @@ impl EncodePipeline {
                         // the entire frame before chroma starts.
                         &recon10,
                         w,
+                        // base_qindex sources the frame-level coeff-rate context
+                        // (`cfc`); qindex_u/qindex_v drive the per-plane chroma
+                        // quant tables (== base in mainline). See the fn doc.
                         base_qindex,
+                        qindex_u,
+                        qindex_v,
                         cq.rdoq_level,
                         lambda_bd10,
                         bd10_edge_filter,
@@ -4822,7 +4827,23 @@ fn bd10_reencode_chroma(
     // stride `y_stride` — the CfL AC source for UV_CFL_PRED leaves.
     y_recon10: &[u16],
     y_stride: usize,
+    // Frame-level chroma qindex (== base_qindex) — sources ONLY the coeff-rate
+    // context (`cfc`), which C builds once per frame from base_qindex (never
+    // per plane). The per-plane quant TABLES use qindex_u/qindex_v below.
     chroma_qindex: u8,
+    // [SVT_HDR_MODE] per-plane chroma quant qindex = base_qindex + the FH
+    // u_ac/v_ac delta (chroma_q.rs / pipeline qindex_u/qindex_v). C dequantizes
+    // chroma with the signaled per-plane deltas (separate_uv_delta_q=1), and the
+    // bd8 walk already quantizes U/V at these qindices — the bd10 chroma
+    // re-encode MUST too, or a small residual that survives at the finer plane
+    // qindex is dropped at base (the diag q5 Cr off-by-one: V_PRED predicts the
+    // no-neighbour default 511, source is flat 512, so +1/px; at qindex_v it
+    // codes, at base it rounds to 0 -> the port codes 511 where C codes 512).
+    // Using base for both also DESYNCS the port's own chroma recon from its
+    // signaled bitstream (the decoder dequantizes at qindex_v). Mainline: both
+    // == base_qindex (all FH chroma deltas 0) -> byte-inert.
+    qindex_u: u8,
+    qindex_v: u8,
     rdoq_level: u8,
     lambda: u64,
     edge_filter: bool,
@@ -4840,7 +4861,10 @@ fn bd10_reencode_chroma(
     let fc = svtav1_entropy::context::FrameContext::new_default();
     let cfc = svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(chroma_qindex);
     let rates = crate::leaf_funnel::build_md_rates(&fc, &cfc);
-    let qt = crate::quant::build_quant_table_bd_sharp(chroma_qindex, bd, sharpness);
+    // Per-plane chroma quant tables (== each other, and == the old single
+    // base-qindex table, whenever the FH chroma deltas are 0 -> mainline inert).
+    let qt_u = crate::quant::build_quant_table_bd_sharp(qindex_u, bd, sharpness);
+    let qt_v = crate::quant::build_quant_table_bd_sharp(qindex_v, bd, sharpness);
     let (cframe_w, cframe_h) = (w / 2, h / 2);
     let mut recon10_u = svtav1_types::try_vec![0u16; cframe_w * cframe_h]?;
     let mut recon10_v = svtav1_types::try_vec![0u16; cframe_w * cframe_h]?;
@@ -4859,7 +4883,8 @@ fn bd10_reencode_chroma(
             v_src10,
             y_recon10,
             y_stride,
-            &qt,
+            &qt_u,
+            &qt_v,
             rdoq_level,
             lambda,
             &rates,
@@ -4977,7 +5002,10 @@ fn bd10_reencode_chroma_node(
     v_src10: &[u16],
     y_recon10: &[u16],
     y_stride: usize,
-    qt: &crate::quant::QuantTable,
+    // Per-plane chroma quant tables (base + FH u_ac / v_ac delta). Equal in
+    // mainline (deltas 0) -> byte-inert.
+    qt_u: &crate::quant::QuantTable,
+    qt_v: &crate::quant::QuantTable,
     rdoq_level: u8,
     lambda: u64,
     rates: &crate::leaf_funnel::MdRates,
@@ -5043,11 +5071,11 @@ fn bd10_reencode_chroma_node(
             };
             let (u_q, u_eob, u_rec) = bd10_reencode_chroma_plane(
                 recon10_u, u_src10, cstride, cx, cy, cw, ch, d.uv_mode, d.uv_angle_delta, uv_tt, &geom,
-                edge_filter, qt, rdoq_level, lambda, rates, bd, qm_uv[0], cfl_u,
+                edge_filter, qt_u, rdoq_level, lambda, rates, bd, qm_uv[0], cfl_u,
             );
             let (v_q, v_eob, v_rec) = bd10_reencode_chroma_plane(
                 recon10_v, v_src10, cstride, cx, cy, cw, ch, d.uv_mode, d.uv_angle_delta, uv_tt, &geom,
-                edge_filter, qt, rdoq_level, lambda, rates, bd, qm_uv[1], cfl_v,
+                edge_filter, qt_v, rdoq_level, lambda, rates, bd, qm_uv[1], cfl_v,
             );
             d.chroma_dec = Some((u_q, v_q, u_eob, v_eob, u_rec, v_rec));
         }
@@ -5088,7 +5116,8 @@ fn bd10_reencode_chroma_node(
                     v_src10,
                     y_recon10,
                     y_stride,
-                    qt,
+                    qt_u,
+                    qt_v,
                     rdoq_level,
                     lambda,
                     rates,

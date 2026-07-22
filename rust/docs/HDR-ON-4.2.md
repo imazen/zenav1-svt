@@ -289,7 +289,7 @@ distinction.
 | Config | Result |
 |---|---|
 | **Fork @ bd8** | **48/48 byte-identical** — `{gradient,diag}` x `{64,128}²` x q`{12,20,32,40,55,63}` x p`{10,13}`. The bd8 fork port was already correct; this is the first time it could be *proven*. |
-| **Fork @ bd10** | **58/64** (was 0/64 -> 46/64 -> 54/64). Gated at 58/58 by `tools/hdr_bd10_gate.sh`, with an anti-vacuity check that the fork and mainline oracles genuinely differ. |
+| **Fork @ bd10** | **64/64 byte-identical** (was 0/64 -> 46/64 -> 54/64 -> 58/64). The full sweep `{gradient,diag}` x `{64,128}²` x q`{5,12,20,32,40,48,55,63}` x p`{10,13}` matches the fork oracle; gated at 64/64 by `tools/hdr_bd10_gate.sh`, with an anti-vacuity check that the fork and mainline oracles genuinely differ. |
 
 ### Roots fixed
 
@@ -358,6 +358,31 @@ distinction.
    q40, diag 64 q48 (the 3 combos the "class A" note enumerated) AND diag 128
    q48 (same QM-path root, simply omitted from that list).
 
+5. **The bd10 chroma re-encode quantized both planes at `base_qindex` (Class B,
+   Group 2 — the diag q5 cells + diag 128 q12). 58/64 -> 64/64.** The fork
+   signals per-plane chroma delta-q (`separate_uv_delta_q=1`; at q5/base 20 the
+   4:2:0 boost gives `u_ac=+4`, `v_ac=-8` -> `qindex_u=24`, `qindex_v=12`), the
+   decoder dequantizes chroma with them, and the bd8 walk already quantizes U/V
+   at `qindex_u`/`qindex_v`. But the bd10 CHROMA re-encode
+   (`pipeline::bd10_reencode_chroma`) built ONE quant table from `base_qindex`
+   and used it for both planes. On `diag` the first chroma leaf is UV_V_PRED at
+   the top-left SB: with no above neighbour the predictor's above row defaults to
+   `(1<<(bd-1))-1 = 511`, the flat chroma source is 512, so the DC residual is
+   +1/px. That +1 **survives** at the finer `qindex_v` but **rounds to 0** at
+   base -> C coded Cr with a DC coeff (recon 512) where the port coded it flat
+   (recon 511, +1 byte). Cb was byte-identical only by luck (base 20 and
+   `qindex_u=24` both drop the +1). Using base for both also latently DESYNCED
+   the port's own chroma recon from its signaled bitstream (the decoder
+   dequantizes at `qindex_v`). **Fix:** `bd10_reencode_chroma` builds per-plane
+   quant tables from `qindex_u`/`qindex_v` (threaded through
+   `bd10_reencode_chroma_node`); the coeff-rate context stays frame-level
+   (`base_qindex`), matching C. Byte-inert where it should be: mainline
+   (all FH chroma deltas 0 -> both qindices == base -> the single-table result),
+   bd8 (never calls the bd10 re-encode), and flat-chroma content
+   (gradient/uniform re-encode to zero coeffs regardless of qindex). Localized by
+   decode-both (`tools/decode_diff`): luma + U byte-identical, V off-by-one at
+   txb (0,0), C V-txb eob 1 vs port eob 0.
+
 ### Deliberately NOT changed
 
 The rest of the variance-boost chain is bit-depth **invariant** and must stay
@@ -370,32 +395,28 @@ the y8b pool). That is why `delta_var_th = 7500` and the PQ dark-bias
 domain), chroma-qindex derivation (qindex space), `cdef_scaling`, `sharp_tx`,
 `tx_bias` and `noise_norm_strength`.
 
-## Remaining fork x bd10 scope (6 cells, honest)
+## Fork x bd10 scope — CLOSED (64/64)
 
 * **Class A (QM-path) — CLOSED** (root #3, the QM-in-PD0 landing). Four cells,
   gated.
 * **Class B Group 1 (quant-sharpness) — CLOSED** (root #4, the quant-sharpness
   landing). The 4 gradient q5 cells (`{gradient} x {64,128}^2 x q5 x p{10,13}`)
-  now byte-match and are gated in `hdr_bd10_gate.sh` (58/58). The earlier
-  framing was WRONG on the mechanism: it is NOT the loop filter (byte 12/14 is
-  the OBU-size leb128, a size symptom) and the "diverges with sharpness off"
-  claim was ALSO wrong — `SVT_FORK_SHARPNESS=0` was byte-IDENTICAL on the
-  gradient q5 cells (a different, sharpness-off bitstream). The real root is the
-  fork dead-zone quantizer sharpening keyed off the fixed init `base_q_idx=31`;
-  see root #4 above.
-* **Class B Group 2 — still OPEN** (6 cells: `{diag} x {64,128}^2 x q5 x
-  p{10,13}` + `diag 128 q12 x p{10,13}`). A SEPARATE, non-sharpness root:
-  they diverge even with `SVT_FORK_SHARPNESS=0` (the quant-sharpness fix is
-  symmetric on the q5 diag cells — it shifts BOTH port and C by the same +2, so
-  the residual is unchanged; the q12 diag cells have qindex 48 >= 31 and are not
-  touched by it at all). Localized (decode-both): luma AND U(Cb) are
-  BYTE-IDENTICAL to C; ONLY the V(Cr) plane diverges — 64 Cr pixels off-by-one
-  (bd10 512 vs 511, first at (0,0)), all partition/mode/tx decisions match. So
-  the root is in the bd10 CHROMA re-encode's V(Cr) path (a Cr-specific
-  recon/dequant/DC-pred rounding, present at every knob setting), not the
-  quantizer and not the luma path. `diag` is the only content here that codes a
-  chroma residual, which is why the gradient cells never showed it. Closing it
-  wants a sibling-C per-txb chroma-recon dump of the Cr plane.
+  now byte-match. The earlier framing was WRONG on the mechanism: it is NOT the
+  loop filter (byte 12/14 is the OBU-size leb128, a size symptom) and the
+  "diverges with sharpness off" claim was ALSO wrong — `SVT_FORK_SHARPNESS=0`
+  was byte-IDENTICAL on the gradient q5 cells (a different, sharpness-off
+  bitstream). The real root is the fork dead-zone quantizer sharpening keyed off
+  the fixed init `base_q_idx=31`; see root #4 above.
+* **Class B Group 2 — CLOSED** (root #5, the per-plane chroma qindex landing).
+  The 6 cells (`{diag} x {64,128}^2 x q5 x p{10,13}` + `diag 128 q12 x
+  p{10,13}`) now byte-match and are gated in `hdr_bd10_gate.sh` (64/64). The
+  localization held exactly: luma + U(Cb) byte-identical, only V(Cr) off-by-one
+  at txb (0,0). The direction was the reverse of the earlier note — C codes the
+  Cr DC residual (recon 512) and the port coded it flat (recon 511), because the
+  bd10 chroma re-encode quantized V at `base_qindex` instead of the finer
+  `qindex_v` the FH signals. It was NOT a Cr-specific rounding term: the code
+  path is identical for U and V; the divergence was the per-plane quant qindex.
+  See root #5 above.
 
 ## Roots — method note (Class B Group 1)
 

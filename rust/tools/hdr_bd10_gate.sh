@@ -60,17 +60,23 @@
 # blocks), which is why only q5 flipped. Sibling-C RD dump (throwaway,
 # reverted) confirmed the exact zbin/round + eob mechanism.
 #
-# KNOWN-OPEN fork x bd10 residual — 6 of the 64-cell sweep
-# ({gradient,diag} x {64,128}^2 x q{5,12,20,32,40,48,55,63} x p{10,13}) are NOT
-# gated here. They are EXCLUDED, not weakened; see docs/HDR-ON-4.2.md:
-#   * class B (Group 2) — the diag q5 cells + diag 128 q12: a SEPARATE,
-#     non-sharpness root. Measured: they diverge even with `SVT_FORK_SHARPNESS=0`
-#     (the quant-sharpness fix above is symmetric on them — it shifts BOTH port
-#     and C by the same amount, leaving a residual port-over-codes-by-1 delta
-#     that is present at sharpness 0 too). diag carries a coded CHROMA residual
-#     the gradient cells do not, so the root is in the bd10 chroma re-encode /
-#     a coeff near-tie, not the quantizer. Needs the sibling-C RD-dump treatment
-#     to close.
+# PER-PLANE CHROMA QINDEX AT BD10 (this landing) closed the last 6 residuals —
+# class B Group 2 (diag q5 x {64,128} + diag 128 q12), the full 64-cell sweep
+# ({gradient,diag} x {64,128}^2 x q{5,12,20,32,40,48,55,63} x p{10,13}) now
+# byte-matches. The bd10 CHROMA re-encode (`bd10_reencode_chroma`, pipeline.rs)
+# quantized BOTH chroma planes at `base_qindex`, but C dequantizes chroma with
+# the fork's per-plane FH deltas (separate_uv_delta_q=1: u_ac = +12-boost,
+# v_ac = the 4:2:0 boost — e.g. at q5/base 20, qindex_u=24, qindex_v=12) and the
+# bd8 walk already quantizes U/V at those qindices. On `diag` the first chroma
+# leaf is UV_V_PRED at the top-left SB: the no-neighbour above row defaults to
+# `(1<<(bd-1))-1 = 511`, the flat chroma source is 512, so the DC residual is
+# +1/px. That +1 SURVIVES at the finer qindex_v but ROUNDS TO 0 at base — so C
+# coded Cr (recon 512) where the port coded it flat (recon 511, +1 byte). Cb was
+# byte-identical only by luck (base 20 and qindex_u 24 both drop the +1). Fix:
+# `bd10_reencode_chroma` now builds per-plane quant tables from qindex_u/qindex_v
+# (== base whenever the FH chroma deltas are 0 -> mainline/bd8/gradient inert);
+# the coeff-rate context stays frame-level (base_qindex), matching C. Decode-both
+# (tools/decode_diff) confirmed the exact Cr-off-by-one + txb (0,0) eob mechanism.
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 RS_ROOT=$(cd "$HERE/.." && pwd)
@@ -148,7 +154,13 @@ CELLS=(
   "gradient 128 128 63 10"
   "gradient 128 128 63 13"
   # --- diag (coded chroma residual: exercises the bd10 CHROMA re-encode's
-  #     per-plane QM level, qm_uv[0]/qm_uv[1]) ---
+  #     per-plane QM level qm_uv[0]/qm_uv[1] AND per-plane quant qindex
+  #     qindex_u/qindex_v) ---
+  # q5 was class B Group 2 — closed by the PER-PLANE CHROMA QINDEX landing (see
+  # the note above). The top-left UV_V_PRED leaf's +1/px Cr residual (no-neighbour
+  # pred 511 vs flat source 512) survives at qindex_v but was dropped at base.
+  "diag 64 64 5 10"
+  "diag 64 64 5 13"
   "diag 64 64 12 10"
   "diag 64 64 12 13"
   "diag 64 64 20 10"
@@ -164,6 +176,12 @@ CELLS=(
   "diag 64 64 55 13"
   "diag 64 64 63 10"
   "diag 64 64 63 13"
+  # q5 + q12 were class B Group 2 — closed by the PER-PLANE CHROMA QINDEX landing
+  # (the multi-SB twin of the diag 64 q5 cells; same per-plane-qindex root).
+  "diag 128 128 5 10"
+  "diag 128 128 5 13"
+  "diag 128 128 12 10"
+  "diag 128 128 12 13"
   "diag 128 128 20 10"
   "diag 128 128 20 13"
   "diag 128 128 32 10"
