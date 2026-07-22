@@ -2899,3 +2899,247 @@ pub fn highbd_intra_pred(
     }
     dst
 }
+
+// ---- IntraBC (IBC chunks 2-3, docs/ibc-port-map.md) ----
+
+/// `MV_VALS` (cabac_context_model.h): 2 * MV_MAX + 1 with MV_MAX = 2^14 - 1.
+pub const MV_VALS: usize = 2 * ((1 << 14) - 1) + 1;
+/// `MV_JOINTS`.
+pub const MV_JOINTS: usize = 4;
+/// Flat u16 length of the C `NmvContext` (asserted against sizeof at runtime).
+pub const NMV_FLAT_LEN: usize = 143;
+
+unsafe extern "C" {
+    fn ref_is_dv_valid(
+        dv_x: i16,
+        dv_y: i16,
+        mi_row: i32,
+        mi_col: i32,
+        bsize: i32,
+        mib_size_log2: i32,
+        tile_row_start: i32,
+        tile_row_end: i32,
+        tile_col_start: i32,
+        tile_col_end: i32,
+    ) -> i32;
+    fn ref_find_ref_dv(tile_row_start: i32, mib_size: i32, mi_row: i32, mi_col: i32) -> u32;
+    fn ref_qp_based_th_scaling_factors(
+        enable: i32,
+        qp: u32,
+        q_weight: *mut u32,
+        q_weight_denom: *mut u32,
+    );
+    fn ref_nmv_context_flat_len() -> usize;
+    fn ref_estimate_mv_rate(
+        approx_inter_rate: i32,
+        allow_intrabc: i32,
+        allow_high_precision_mv: i32,
+        nmvc_flat: *const u16,
+        ndvc_flat: *const u16,
+        nmv_joint: *mut i32,
+        nmv_costs: *mut i32,
+        dv_joint: *mut i32,
+        dv_costs: *mut i32,
+    );
+    fn ref_mv_bit_cost(
+        mv_x: i16,
+        mv_y: i16,
+        ref_x: i16,
+        ref_y: i16,
+        mvjcost: *const i32,
+        mvcost0_full: *const i32,
+        mvcost1_full: *const i32,
+        weight: i32,
+    ) -> i32;
+    fn ref_mv_bit_cost_light(mv_x: i16, mv_y: i16, ref_x: i16, ref_y: i16) -> i32;
+    fn ref_mv_err_cost(
+        mv_x: i16,
+        mv_y: i16,
+        ref_x: i16,
+        ref_y: i16,
+        mvjcost: *const i32,
+        mvcost0_full: *const i32,
+        mvcost1_full: *const i32,
+        error_per_bit: i32,
+    ) -> i32;
+    fn ref_mv_err_cost_light(mv_x: i16, mv_y: i16, ref_x: i16, ref_y: i16) -> i32;
+    fn ref_estimate_syntax_rate_intrabc(
+        intrabc_cdf3: *const u16,
+        allow_intrabc: i32,
+        fac_out2: *mut i32,
+    );
+}
+
+/// Reference `svt_aom_is_dv_valid` (adaptive_mv_pred.c:1908). `dv` is
+/// `(x, y)` eighth-pel; `tile` is `(row_start, row_end, col_start, col_end)`
+/// in MI units.
+#[allow(clippy::too_many_arguments)]
+pub fn is_dv_valid(
+    dv: (i16, i16),
+    mi_row: i32,
+    mi_col: i32,
+    bsize: i32,
+    mib_size_log2: i32,
+    tile: (i32, i32, i32, i32),
+) -> bool {
+    unsafe {
+        ref_is_dv_valid(
+            dv.0,
+            dv.1,
+            mi_row,
+            mi_col,
+            bsize,
+            mib_size_log2,
+            tile.0,
+            tile.1,
+            tile.2,
+            tile.3,
+        ) != 0
+    }
+}
+
+/// Reference `svt_aom_find_ref_dv` (inter_prediction.c:2390) → `(x, y)`.
+pub fn find_ref_dv(tile_row_start: i32, mib_size: i32, mi_row: i32, mi_col: i32) -> (i16, i16) {
+    let packed = unsafe { ref_find_ref_dv(tile_row_start, mib_size, mi_row, mi_col) };
+    // C Mv union: x = low half, y = high half (little-endian in-memory order).
+    ((packed & 0xFFFF) as i16, (packed >> 16) as i16)
+}
+
+/// Reference `svt_aom_get_qp_based_th_scaling_factors` (enc_mode_config.c:25).
+pub fn qp_based_th_scaling_factors(enable: bool, qp: u32) -> (u32, u32) {
+    let (mut w, mut d) = (0u32, 0u32);
+    unsafe { ref_qp_based_th_scaling_factors(i32::from(enable), qp, &mut w, &mut d) };
+    (w, d)
+}
+
+/// The C `svt_aom_estimate_mv_rate` outputs (md_rate_estimation.c:458).
+pub struct MvRateTables {
+    /// `nmv_vec_cost[MV_JOINTS]`.
+    pub nmv_joint: [i32; MV_JOINTS],
+    /// The SELECTED (hp or non-hp) component stacks, full `[2][MV_VALS]`.
+    pub nmv_costs: Vec<i32>,
+    /// `dv_joint_cost[MV_JOINTS]`.
+    pub dv_joint: [i32; MV_JOINTS],
+    /// `dv_cost`, full `[2][MV_VALS]`.
+    pub dv_costs: Vec<i32>,
+}
+
+/// Reference `svt_aom_estimate_mv_rate`. `nmvc_flat`/`ndvc_flat` are the
+/// 143-u16 `NmvContext` serializations (c_parity_mv.rs field order == C
+/// struct layout); `None` keeps the C default context. The dv outputs are
+/// seeded with `dv_sentinel` so the `!allow_intrabc` / `approx_inter_rate`
+/// "left unfilled" arms are observable.
+pub fn estimate_mv_rate(
+    approx_inter_rate: bool,
+    allow_intrabc: bool,
+    allow_high_precision_mv: bool,
+    nmvc_flat: Option<&[u16]>,
+    ndvc_flat: Option<&[u16]>,
+    dv_sentinel: i32,
+) -> MvRateTables {
+    assert_eq!(unsafe { ref_nmv_context_flat_len() }, NMV_FLAT_LEN);
+    for f in [nmvc_flat, ndvc_flat].into_iter().flatten() {
+        assert_eq!(f.len(), NMV_FLAT_LEN);
+    }
+    let mut out = MvRateTables {
+        nmv_joint: [0; MV_JOINTS],
+        nmv_costs: vec![0i32; 2 * MV_VALS],
+        dv_joint: [dv_sentinel; MV_JOINTS],
+        dv_costs: vec![dv_sentinel; 2 * MV_VALS],
+    };
+    unsafe {
+        ref_estimate_mv_rate(
+            i32::from(approx_inter_rate),
+            i32::from(allow_intrabc),
+            i32::from(allow_high_precision_mv),
+            nmvc_flat.map_or(core::ptr::null(), |f| f.as_ptr()),
+            ndvc_flat.map_or(core::ptr::null(), |f| f.as_ptr()),
+            out.nmv_joint.as_mut_ptr(),
+            out.nmv_costs.as_mut_ptr(),
+            out.dv_joint.as_mut_ptr(),
+            out.dv_costs.as_mut_ptr(),
+        );
+    }
+    out
+}
+
+/// Reference `svt_av1_mv_bit_cost` (rd_cost.c:70). `mvcost0/1` are FULL
+/// `MV_VALS` tables (the shim applies the `+MV_MAX` mid-table offset).
+pub fn mv_bit_cost(
+    mv: (i16, i16),
+    ref_mv: (i16, i16),
+    mvjcost: &[i32; MV_JOINTS],
+    mvcost0: &[i32],
+    mvcost1: &[i32],
+    weight: i32,
+) -> i32 {
+    assert_eq!(mvcost0.len(), MV_VALS);
+    assert_eq!(mvcost1.len(), MV_VALS);
+    unsafe {
+        ref_mv_bit_cost(
+            mv.0,
+            mv.1,
+            ref_mv.0,
+            ref_mv.1,
+            mvjcost.as_ptr(),
+            mvcost0.as_ptr(),
+            mvcost1.as_ptr(),
+            weight,
+        )
+    }
+}
+
+/// Reference `svt_av1_mv_bit_cost_light` (rd_cost.c:59).
+pub fn mv_bit_cost_light(mv: (i16, i16), ref_mv: (i16, i16)) -> i32 {
+    unsafe { ref_mv_bit_cost_light(mv.0, mv.1, ref_mv.0, ref_mv.1) }
+}
+
+/// Reference `svt_aom_mv_err_cost` (av1me.c:141).
+pub fn mv_err_cost(
+    mv: (i16, i16),
+    ref_mv: (i16, i16),
+    mvjcost: &[i32; MV_JOINTS],
+    mvcost0: &[i32],
+    mvcost1: &[i32],
+    error_per_bit: i32,
+) -> i32 {
+    assert_eq!(mvcost0.len(), MV_VALS);
+    assert_eq!(mvcost1.len(), MV_VALS);
+    unsafe {
+        ref_mv_err_cost(
+            mv.0,
+            mv.1,
+            ref_mv.0,
+            ref_mv.1,
+            mvjcost.as_ptr(),
+            mvcost0.as_ptr(),
+            mvcost1.as_ptr(),
+            error_per_bit,
+        )
+    }
+}
+
+/// Reference `svt_aom_mv_err_cost_light` (av1me.c:126).
+pub fn mv_err_cost_light(mv: (i16, i16), ref_mv: (i16, i16)) -> i32 {
+    unsafe { ref_mv_err_cost_light(mv.0, mv.1, ref_mv.0, ref_mv.1) }
+}
+
+/// Reference `svt_aom_estimate_syntax_rate`'s intrabc_fac_bits slice
+/// (md_rate_estimation.c:253-255). `intrabc_cdf3 = None` keeps the C
+/// default CDF. Returns the fac bits, pre-seeded with `sentinel` so the
+/// `!allow_intrabc` "left untouched" arm is observable.
+pub fn estimate_syntax_rate_intrabc(
+    intrabc_cdf3: Option<&[u16; 3]>,
+    allow_intrabc: bool,
+    sentinel: i32,
+) -> [i32; 2] {
+    let mut fac = [sentinel; 2];
+    unsafe {
+        ref_estimate_syntax_rate_intrabc(
+            intrabc_cdf3.map_or(core::ptr::null(), |c| c.as_ptr()),
+            i32::from(allow_intrabc),
+            fac.as_mut_ptr(),
+        );
+    }
+    fac
+}

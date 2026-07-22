@@ -1500,3 +1500,184 @@ void ref_highbd_intra_pred(int32_t mode, uint16_t* dst, ptrdiff_t stride, const 
     default: break;
     }
 }
+
+/* ---- IntraBC (IBC chunks 2-3, docs/ibc-port-map.md) ----
+ *
+ * Differential oracles for the pure-math IBC translations in
+ * svtav1-encoder/src/intrabc.rs. Exported C entry points are called
+ * directly; the shims below only assemble the tiny struct inputs
+ * (MacroBlockD/TileInfo/PCS shells) from plain scalars.
+ */
+#include "coding_unit.h"       /* MacroBlockD */
+#include "adaptive_mv_pred.h"  /* svt_aom_is_dv_valid */
+#include "md_rate_estimation.h"/* MdRateEstimationContext, MV_VALS/MV_JOINTS */
+
+/* svt_aom_is_dv_valid (adaptive_mv_pred.c:1908, EXPORTED) reads ONLY
+ * xd->tile from the MacroBlockD (verified against the function body). */
+int32_t ref_is_dv_valid(int16_t dv_x, int16_t dv_y, int32_t mi_row, int32_t mi_col,
+                        int32_t bsize, int32_t mib_size_log2, int32_t tile_row_start,
+                        int32_t tile_row_end, int32_t tile_col_start, int32_t tile_col_end) {
+    MacroBlockD xd;
+    memset(&xd, 0, sizeof(xd));
+    xd.tile.mi_row_start = tile_row_start;
+    xd.tile.mi_row_end   = tile_row_end;
+    xd.tile.mi_col_start = tile_col_start;
+    xd.tile.mi_col_end   = tile_col_end;
+    Mv dv;
+    dv.x = dv_x;
+    dv.y = dv_y;
+    return svt_aom_is_dv_valid(dv, &xd, mi_row, mi_col, (BlockSize)bsize, mib_size_log2);
+}
+
+/* svt_aom_find_ref_dv (inter_prediction.c:2390, EXPORTED). Reads only
+ * tile->mi_row_start; mi_col is (void)ed by C but passed through anyway. */
+uint32_t ref_find_ref_dv(int32_t tile_row_start, int32_t mib_size, int32_t mi_row,
+                         int32_t mi_col) {
+    TileInfo tile;
+    memset(&tile, 0, sizeof(tile));
+    tile.mi_row_start = tile_row_start;
+    Mv dv;
+    dv.as_int = 0;
+    svt_aom_find_ref_dv(&dv, &tile, mib_size, mi_row, mi_col);
+    return dv.as_int;
+}
+
+/* svt_aom_get_qp_based_th_scaling_factors (enc_mode_config.c:25, EXPORTED). */
+void svt_aom_get_qp_based_th_scaling_factors(bool enable_qp_based_th_scaling,
+                                             uint32_t* ret_q_weight,
+                                             uint32_t* ret_q_weight_denom, uint32_t qp);
+void ref_qp_based_th_scaling_factors(int32_t enable, uint32_t qp, uint32_t* q_weight,
+                                     uint32_t* q_weight_denom) {
+    svt_aom_get_qp_based_th_scaling_factors(enable != 0, q_weight, q_weight_denom, qp);
+}
+
+/* Flat NmvContext staging: the struct is all-u16 (143 entries, no padding —
+ * ref_nmv_context_flat_len lets the Rust side assert that), so a memcpy of
+ * the c_parity_mv.rs field-order serialization IS the C layout. */
+size_t ref_nmv_context_flat_len(void) { return sizeof(NmvContext) / sizeof(uint16_t); }
+
+/* svt_aom_estimate_mv_rate (md_rate_estimation.c:458, EXPORTED): builds the
+ * nmv tables (via the static svt_av1_build_nmv_cost_table +
+ * build_nmv_component_cost_table chain) and, when allow_intrabc, the dv
+ * tables from fc->ndvc at MV_SUBPEL_NONE. Replicates the approx_inter_rate
+ * early-return ordering hazard by construction (it IS the real fn).
+ * Outputs: nmv_joint[MV_JOINTS], nmv_costs[2*MV_VALS] (the SELECTED
+ * hp/non-hp stack), dv_joint[MV_JOINTS], dv_costs[2*MV_VALS]. dv outputs are
+ * pre-filled with a sentinel by the caller to observe "left unfilled". */
+void ref_estimate_mv_rate(int32_t approx_inter_rate, int32_t allow_intrabc,
+                          int32_t allow_high_precision_mv, const uint16_t* nmvc_flat,
+                          const uint16_t* ndvc_flat, int32_t* nmv_joint, int32_t* nmv_costs,
+                          int32_t* dv_joint, int32_t* dv_costs) {
+    PictureParentControlSet* ppcs = (PictureParentControlSet*)calloc(1, sizeof(*ppcs));
+    PictureControlSet*       pcs  = (PictureControlSet*)calloc(1, sizeof(*pcs));
+    MdRateEstimationContext* md   = (MdRateEstimationContext*)calloc(1, sizeof(*md));
+    FRAME_CONTEXT*           fc   = (FRAME_CONTEXT*)calloc(1, sizeof(*fc));
+    if (!g_rtcd_ready) {
+        svt_aom_setup_common_rtcd_internal(svt_aom_get_cpu_flags_to_use());
+        g_rtcd_ready = 1;
+    }
+    svt_aom_init_mode_probs(fc);
+    if (nmvc_flat)
+        memcpy(&fc->nmvc, nmvc_flat, sizeof(NmvContext));
+    if (ndvc_flat)
+        memcpy(&fc->ndvc, ndvc_flat, sizeof(NmvContext));
+    pcs->ppcs                             = ppcs;
+    pcs->approx_inter_rate                = (uint8_t)approx_inter_rate;
+    ppcs->frm_hdr.allow_intrabc           = allow_intrabc;
+    ppcs->frm_hdr.allow_high_precision_mv = (uint8_t)allow_high_precision_mv;
+    /* seed the dv outputs' backing fields with the caller's sentinel so the
+     * "!allow_intrabc leaves them untouched" arm is observable */
+    memcpy(md->dv_joint_cost, dv_joint, sizeof(int32_t) * MV_JOINTS);
+    memcpy(md->dv_cost[0], dv_costs, sizeof(int32_t) * MV_VALS);
+    memcpy(md->dv_cost[1], dv_costs + MV_VALS, sizeof(int32_t) * MV_VALS);
+    svt_aom_estimate_mv_rate(pcs, md, fc);
+    memcpy(nmv_joint, md->nmv_vec_cost, sizeof(int32_t) * MV_JOINTS);
+    memcpy(nmv_costs, md->nmvcoststack[0] - MV_MAX, sizeof(int32_t) * MV_VALS);
+    memcpy(nmv_costs + MV_VALS, md->nmvcoststack[1] - MV_MAX, sizeof(int32_t) * MV_VALS);
+    memcpy(dv_joint, md->dv_joint_cost, sizeof(int32_t) * MV_JOINTS);
+    memcpy(dv_costs, md->dv_cost[0], sizeof(int32_t) * MV_VALS);
+    memcpy(dv_costs + MV_VALS, md->dv_cost[1], sizeof(int32_t) * MV_VALS);
+    free(fc);
+    free(md);
+    free(pcs);
+    free(ppcs);
+}
+
+/* svt_av1_mv_bit_cost / svt_aom_mv_err_cost (+ _light) — EXPORTED; direct
+ * wrappers assembling the Mv values and the mvcost[2] mid-table pointers. */
+int32_t svt_av1_mv_bit_cost(const Mv* mv, const Mv* ref, const int32_t* mvjcost,
+                            const int32_t* const mvcost[2], int32_t weight);
+int32_t svt_av1_mv_bit_cost_light(const Mv* mv, const Mv* ref);
+int     svt_aom_mv_err_cost(const Mv* mv, const Mv* ref, const int* mvjcost, const int* mvcost[2],
+                            int error_per_bit);
+int     svt_aom_mv_err_cost_light(const Mv* mv, const Mv* ref);
+
+int32_t ref_mv_bit_cost(int16_t mv_x, int16_t mv_y, int16_t ref_x, int16_t ref_y,
+                        const int32_t* mvjcost, const int32_t* mvcost0_full,
+                        const int32_t* mvcost1_full, int32_t weight) {
+    Mv mv, rf;
+    mv.x = mv_x;
+    mv.y = mv_y;
+    rf.x = ref_x;
+    rf.y = ref_y;
+    const int32_t* stack[2] = {mvcost0_full + MV_MAX, mvcost1_full + MV_MAX};
+    return svt_av1_mv_bit_cost(&mv, &rf, mvjcost, stack, weight);
+}
+
+int32_t ref_mv_bit_cost_light(int16_t mv_x, int16_t mv_y, int16_t ref_x, int16_t ref_y) {
+    Mv mv, rf;
+    mv.x = mv_x;
+    mv.y = mv_y;
+    rf.x = ref_x;
+    rf.y = ref_y;
+    return svt_av1_mv_bit_cost_light(&mv, &rf);
+}
+
+int32_t ref_mv_err_cost(int16_t mv_x, int16_t mv_y, int16_t ref_x, int16_t ref_y,
+                        const int32_t* mvjcost, const int32_t* mvcost0_full,
+                        const int32_t* mvcost1_full, int32_t error_per_bit) {
+    Mv mv, rf;
+    mv.x = mv_x;
+    mv.y = mv_y;
+    rf.x = ref_x;
+    rf.y = ref_y;
+    const int* stack[2] = {(const int*)(mvcost0_full + MV_MAX), (const int*)(mvcost1_full + MV_MAX)};
+    return svt_aom_mv_err_cost(&mv, &rf, (const int*)mvjcost, stack, error_per_bit);
+}
+
+int32_t ref_mv_err_cost_light(int16_t mv_x, int16_t mv_y, int16_t ref_x, int16_t ref_y) {
+    Mv mv, rf;
+    mv.x = mv_x;
+    mv.y = mv_y;
+    rf.x = ref_x;
+    rf.y = ref_y;
+    return svt_aom_mv_err_cost_light(&mv, &rf);
+}
+
+/* svt_aom_estimate_syntax_rate (md_rate_estimation.c:74, EXPORTED) — the
+ * intrabc_fac_bits fill site (:253-255, gated allow_intrabc). Only the
+ * intrabc slice is exported; fac bits are pre-seeded with the caller's
+ * sentinel so the "!allow_intrabc leaves them untouched" arm is observable. */
+void svt_aom_estimate_syntax_rate(MdRateEstimationContext* md_rate_est_ctx, bool is_i_slice,
+                                  uint8_t pic_filter_intra_level, uint8_t allow_screen_content_tools,
+                                  uint8_t enable_restoration, uint8_t allow_intrabc,
+                                  FRAME_CONTEXT* fc);
+void ref_estimate_syntax_rate_intrabc(const uint16_t* intrabc_cdf3, int32_t allow_intrabc,
+                                      int32_t* fac_out2) {
+    FRAME_CONTEXT*           fc = (FRAME_CONTEXT*)calloc(1, sizeof(*fc));
+    MdRateEstimationContext* md = (MdRateEstimationContext*)calloc(1, sizeof(*md));
+    if (!g_rtcd_ready) {
+        svt_aom_setup_common_rtcd_internal(svt_aom_get_cpu_flags_to_use());
+        g_rtcd_ready = 1;
+    }
+    svt_aom_init_mode_probs(fc);
+    if (intrabc_cdf3)
+        memcpy(fc->intrabc_cdf, intrabc_cdf3, 3 * sizeof(uint16_t));
+    md->intrabc_fac_bits[0] = fac_out2[0];
+    md->intrabc_fac_bits[1] = fac_out2[1];
+    svt_aom_estimate_syntax_rate(md, true, 1, 1, 1, (uint8_t)allow_intrabc, fc);
+    fac_out2[0] = md->intrabc_fac_bits[0];
+    fac_out2[1] = md->intrabc_fac_bits[1];
+    free(md);
+    free(fc);
+}
