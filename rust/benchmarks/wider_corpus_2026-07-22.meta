@@ -1,0 +1,76 @@
+WIDER-CORPUS BYTE-IDENTITY DISCOVERY SWEEP — 2026-07-22
+=======================================================
+Branch: coverage/wider-corpus (off ef14c4a3e)
+Tool:   tools/wider_corpus_sweep.sh  (summary: tools/wider_corpus_summary.sh)
+C ref:  /root/svtav1/Bin/Release  libSvtAv1Enc v4.2.0
+Full scoreboard (NOT committed, >30KB): benchmarks/wider_corpus_2026-07-22_full.tsv
+                                        (also /tmp/wider_corpus_2026-07-22.tsv)
+Per-group aggregate (committed):        benchmarks/wider_corpus_2026-07-22_aggregate.tsv
+
+GOAL: surface real-content divergences the existing gates miss — the gates use
+synthetic content + a CID22 subset (real-image default presets 2/6/10); this
+sweep broadens to 3 real corpora INCLUDING SCREEN content (a class no gate has),
+across preset {0,6,10,13} x qp {5,20,32,48,63} x bit-depth {8,10}.
+
+CORPORA (each image encoded at a 512x512 box; clic/screen CENTER-CROPPED via the
+new identity_run `crop:` prefix so preset-0 — the SB128-triggering primary config
+— stays tractable while exercising each corpus's real content statistics):
+  cid22  15 imgs  CID22-512 photo (native 512, file:)
+  clic   12 imgs  clic2025 photo (~2.7MP, crop:512) — a different photo distribution
+  screen 10 imgs  gb82-sc SCREEN/UI/text (crop:512) — NEW axis, no prior gate
+
+RESULT: 1090/1480 byte-identical (73.6%); 310 DIFFERS; 80 rs-err (a bd10 PANIC — see
+below; FIXED this branch). Every port stream that encoded is aomdec-DECODABLE.
+
+BY CONTENT CLASS   screen 237/400 (59.2%)   photo 853/1080 (79.0%)
+BY PRESET          p0 58/370 (15.7%)  p6 292/370 (78.9%)  p10 370/370  p13 370/370
+BY BIT-DEPTH       bd8 547/740 (73.9%)  bd10 543/740 (73.4%)  (near-equal)
+
+DIVERGENCE MAP — identity rate per (class x preset x bd) [id/total]:
+  class    p0/bd8  p0/bd10  p6/bd8  p6/bd10  p10/bd8 p10/bd10 p13/bd8 p13/bd10
+  photo    22/135  22/135   135/135 134/135  135/135 135/135  135/135 135/135
+  screen    7/50    7/50     13/50   10/50    50/50   50/50    50/50   50/50
+  (screen bd10 p0/p6 totals INCLUDE 80 pre-fix rs-err panics; post-fix they
+   produce graceful decodable DIFFERS output — see PANIC below.)
+
+FIVE DISTINCT DIVERGENCE GROUPS (representative first-divergence localization):
+
+1. PHOTO preset-0 (bd8) — UNIVERSAL, ~85% of p0 cells. First divergence = FH
+   `loop_filter_level` (the deblock-level FULL SEARCH `pick_filter_levels_full_search`,
+   preset<=5 only; p6-13 use the closed-form from-Q picker => clean). Pre-deblock
+   recon SSE differs only ~0.08% (Y) from C => a TINY real-content MD near-tie
+   perturbs the recon the post-MD filter searches read. KNOWN class (docs/
+   bd10-port-map.md "three post-MD searches"; CLAUDE.md:962). NEW: mapped as the
+   universal bd8 p0 photo root across a wide corpus (was only bd10-documented).
+   Rep cell: cid22 1459534 p0 q63 bd8 (FH loop_filter_level[2] C=16 Rust=14).
+
+2. PHOTO preset-0 (bd10) — the tile diverges at OP 0 (first partition symbol,
+   CDF8:s3 vs v0): a MAJOR MD divergence (documented bd10 full-RD funnel root,
+   30-50% recon divergence, docs/bd10-port-map.md). Distinct from group 1 (bd8's
+   MD is nearly identical; bd10's diverges at the first block).
+
+3. clic p6 bd10 q5 — FH byte-identical, TILE Wiener LR-taps diverge (bd10 Wiener
+   loop-restoration tap search near-tie at LOW qp on textured content). NOT covered
+   by any gate (bd10_photo_gate p6 tests only q{12,32,55} on 3 CID22 imgs). GATE GAP.
+
+4. SCREEN preset-0/6 (bd8) — the KEY NEW FIND. Screen diverges ~50-86% at p0/p6
+   (where palette/screen-content-tools are active) but is 100% IDENTICAL at p10/p13
+   (palette OFF at M9). Root = PALETTE over-picking / palette-vs-regular RD near-tie:
+   on graph p6 the port codes palette on 968 blocks vs C's 252 (over-picks). Known
+   class (svtav1 memory svtav1-71-palette-overpicking-root.md, aom KB-P29). NEW:
+   first byte-test of palette on REAL screenshots (palette was only decode-tested on
+   synthetic "stripes"). SC-DETECTION itself is correct (codec_wiki/gmessages, where
+   C uses no palette, are byte-identical). Rep: graph p6 bd8 q32 tile op 41.
+
+5. SCREEN preset-0/6 (bd10) — PANIC (80 rs-err cells, all screen+bd10+p{0,6} on the
+   8 palette-triggering shots). Index-out-of-bounds in the bd10 leaf search:
+   encode_frame_420 -> encode_fixed_tree -> decide_leaf_rect -> evaluate_leaf ->
+   tx_unit_hbd (leaf_funnel.rs `residual.push(src[..]-pred[..])`). A surviving palette
+   candidate reaches the bd10 full-RD stage with a u8 w*h palette prediction where the
+   hbd path indexes a u16 buffer => OOB. A PANIC ON THE PUBLIC API for bd10 screen
+   content. FIXED this branch (leaf_funnel.rs: gate palette injection on `!bd10_funnel`
+   — bd8-inert, inert on all non-screen bd10 gates; converts the panic to graceful
+   non-palette decodable output). Byte-exact bd10 palette remains a future #71 port.
+
+NON-FINDINGS (clean): p10/p13 = 100% identical on ALL corpora incl. screen (390/390
+each); SC detection matches C on real screenshots; all encoded streams decodable.

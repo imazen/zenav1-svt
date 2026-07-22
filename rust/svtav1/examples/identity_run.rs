@@ -17,6 +17,10 @@
 //!                            if smaller, convert to I420 with the fixed
 //!                            deterministic BT.601 limited-range transform below
 //!                            (real photographic content — CID22, imazen26).
+//!            crop:<a.png>  — like file: but CENTER-CROP a large image down to
+//!                            <width>x<height> (used by the wider-corpus sweep to
+//!                            run the big clic2025 / gb82-sc screen corpora at a
+//!                            bounded encode size).
 //!   u = v = 128 for uniform/gradient; real chroma for file: content.
 //!
 //! Writes <out_prefix>.yuv and <out_prefix>.obu. The critical harness
@@ -218,6 +222,33 @@ fn main() {
             "requested {w}x{h} is smaller than image {pw}x{ph} — caller must round up to >= image"
         );
         let rgb = pad_rgb_replicate(&rgb, pw, ph, w, h);
+        rgb_to_i420_bt601(&rgb, w, h)
+    } else if let Some(path) = content.strip_prefix("crop:") {
+        // Real content CENTER-CROPPED to (w,h). Unlike `file:` (which pads a
+        // small image UP to the box and rejects an image LARGER than the box),
+        // `crop:` takes a (w,h) window from the centre of a large image — the
+        // wider-corpus sweep uses it to run the LARGE clic2025 (~2.7 MP) and
+        // gb82-sc screen (up to ~5.6 MP) corpora at a bounded 512x512 encode so
+        // preset-0 (the primary, SB128-triggering config) is tractable while
+        // still exercising that corpus's real content statistics. If the image
+        // is smaller than the crop in either axis the crop is clamped to the
+        // image and the remainder edge-replicated (same padding as `file:`), so
+        // this is a strict superset of `file:`'s box handling. Both encoders
+        // still consume the ONE shared .yuv, so the comparison stays exact.
+        let (rgb, pw, ph) = decode_png_rgb(path);
+        let cwp = w.min(pw);
+        let chp = h.min(ph);
+        let ox = (pw - cwp) / 2;
+        let oy = (ph - chp) / 2;
+        let mut cropped = vec![0u8; cwp * chp * 3];
+        for r in 0..chp {
+            for c in 0..cwp {
+                let si = ((oy + r) * pw + (ox + c)) * 3;
+                let di = (r * cwp + c) * 3;
+                cropped[di..di + 3].copy_from_slice(&rgb[si..si + 3]);
+            }
+        }
+        let rgb = pad_rgb_replicate(&cropped, cwp, chp, w, h);
         rgb_to_i420_bt601(&rgb, w, h)
     } else {
         let mut y = vec![0u8; w * h];
