@@ -821,6 +821,24 @@ impl EncodePipeline {
             None
         };
 
+        // Issue #5: `base_qindex == 0` signals CODED-LOSSLESS in the frame
+        // header (WHT 4x4 transform, deblock/CDEF/LR forced off) — a path the
+        // search/recon side does NOT implement yet. Encoding anyway emits a
+        // valid-syntax, self-consistent bitstream of the WRONG image (decoders
+        // reconstruct via the lossless rules the encoder never used; measured
+        // ssim2 -200..-1100 vs source, and one 64x64 case rav1d rejects).
+        // Zero-tolerance corruption class: reject with a typed error instead
+        // of silently corrupting. QP 1 (qindex 4) is the verified floor.
+        // Remove this gate only when the lossless envelope is ported +
+        // byte-verified vs C (the aom-rs sibling's KB-5 closed this exact
+        // class: forward WHT + lossless entropy-ctx + CfL-at-lossless).
+        if base_qindex == 0 {
+            return Err(whereat::at!(crate::EncodeError::UnsupportedConfig(
+                "QP 0 (base_qindex 0 = coded-lossless) is not implemented; the \
+                 emitted stream would decode to wrong pixels (issue #5). Use QP >= 1.",
+            )));
+        }
+
         // C-exact coding quantizer for the still/PD1 path (quant.rs): the
         // frame-level rdoq_level from `derive_intra_coeff_level`
         // (pic_avg_variance = mean of the per-B64 64x64 variances,
@@ -6515,6 +6533,68 @@ mod tests {
         let bitstream = pipeline.encode_frame(&y_plane, 64);
         assert!(!bitstream.is_empty(), "should produce output");
         assert_eq!(pipeline.frame_count, 1);
+    }
+
+    /// Issue #5: QP 0 derives base_qindex 0 = coded-lossless signaling, which
+    /// the search/recon side does not implement — encoding would emit a
+    /// valid-syntax stream of the WRONG image. The fallible entry must reject
+    /// it with a typed error (never silent corruption), and QP 1 — the exact
+    /// boundary the issue measured clean — must still encode.
+    #[test]
+    fn qp0_returns_unsupported_config_not_garbage() {
+        let mk = |qp: u8| {
+            EncodePipeline::new(
+                64,
+                64,
+                7,
+                RcConfig {
+                    mode: RcMode::Cqp,
+                    qp,
+                    ..RcConfig::default()
+                },
+                0,
+                1,
+            )
+            .with_chroma_420(true)
+        };
+        let y = vec![128u8; 64 * 64];
+        let u = vec![100u8; 32 * 32];
+        let v = vec![150u8; 32 * 32];
+
+        let err = mk(0)
+            .try_encode_frame_420(&y, &u, &v, 64)
+            .expect_err("QP 0 must be rejected, not encoded to garbage (issue #5)");
+        assert!(
+            matches!(err.error(), EncodeError::UnsupportedConfig(_)),
+            "expected EncodeError::UnsupportedConfig, got {err:?}"
+        );
+
+        // Anti-vacuity + the exact boundary: QP 1 (qindex 4) still encodes.
+        let obu = mk(1)
+            .try_encode_frame_420(&y, &u, &v, 64)
+            .expect("QP 1 is the verified floor and must keep encoding");
+        assert!(!obu.is_empty());
+    }
+
+    /// Issue #5, legacy surface: the panicking `encode_frame` contract turns
+    /// the QP-0 rejection into a panic (never a silently-corrupt bitstream).
+    #[test]
+    #[should_panic(expected = "coded-lossless")]
+    fn qp0_legacy_encode_panics() {
+        let mut pipeline = EncodePipeline::new(
+            64,
+            64,
+            7,
+            RcConfig {
+                mode: RcMode::Cqp,
+                qp: 0,
+                ..RcConfig::default()
+            },
+            0,
+            1,
+        );
+        let y_plane = vec![128u8; 64 * 64];
+        let _ = pipeline.encode_frame(&y_plane, 64);
     }
 
     /// Feature 1: a cooperative stop token that fires mid-frame makes
