@@ -122,6 +122,16 @@ pub struct MdRates {
     /// palette_y_color_index fac bits [n-2][color ctx][idx<n]
     /// (md_rate_estimation.c:~180; row width = n symbols).
     pub palette_ycolor: [[[i32; 8]; 5]; 7],
+    /// `use_intrabc` flag cost `intrabc_fac_bits[use_intrabc]`
+    /// (md_rate_estimation.c:253-255, from `fc->intrabc_cdf`; default CDF
+    /// AOM_CDF2(30531) gives `[51, 1982]`). C fills it only when
+    /// `allow_intrabc` (leaving stale memory otherwise); the port fills
+    /// unconditionally — the sole consumers are gated on the same
+    /// frame-level flag (rd_cost.c:629-631 / :531-545), so the value is
+    /// unread on non-IBC frames. Per-SB cadence: rebuilt with the rest of
+    /// this struct from the avg'd snapshot (`update_se` is 1 at the
+    /// funnel's CDF levels — enc_dec_process.c:2901-2909).
+    pub intrabc_fac_bits: [i32; 2],
     /// Coefficient cost tables (svt_aom_estimate_coefficients_rate).
     pub coeff: alloc::boxed::Box<CoeffCostTables>,
 }
@@ -150,8 +160,10 @@ pub fn build_md_rates(fc: &FrameContext, cfc: &cc::CoeffFc) -> alloc::boxed::Box
         palette_y_yes: [[0; 3]; 7],
         palette_ysize: [[0; 7]; 7],
         palette_ycolor: [[[0; 8]; 5]; 7],
+        intrabc_fac_bits: [0; 2],
         coeff: crate::quant::build_coeff_cost_tables_from_fc(cfc),
     });
+    r.intrabc_fac_bits = costs_from_cdf::<2>(&fc.intrabc_cdf);
     for b in 0..7 {
         // palette_ymode_fac_bits[bsize_ctx][mode_ctx][yes/no] — all 3
         // neighbor mode-ctx rows (C default_palette_y_mode_cdf, 7x3x2).
@@ -565,6 +577,13 @@ pub struct FunnelCfg {
     /// UV_DC chroma fast rate (inside svt_aom_get_intra_uv_fast_rate,
     /// rd_cost.c:514) when `svt_aom_allow_palette` holds.
     pub allow_sct: bool,
+    /// FH `allow_intrabc` for THIS frame (`svt_aom_allow_intrabc` — always
+    /// I-slice + sct here; stamped by the pipeline from the sc derivation
+    /// next to `allow_sct`, IBC chunk 3). On an IBC frame EVERY non-IBC
+    /// candidate's luma rate is charged `intrabc_fac_bits[0]` — the coded
+    /// `use_intrabc = 0` flag (rd_cost.c:629-631; the writer codes the flag
+    /// for every block, entropy_coding.c:5021-5023).
+    pub allow_intrabc: bool,
 }
 
 impl FunnelCfg {
@@ -624,6 +643,7 @@ impl FunnelCfg {
             cfl_cplx_th: 10,
             palette_level: 0,
             allow_sct: false,
+            allow_intrabc: false,
         };
         let mut cfg = match preset {
             // M1 (still/420): the svt_aom_get_*_allintra rows for enc_mode=1
@@ -3749,6 +3769,13 @@ pub(crate) fn evaluate_leaf(
         if mode == 0 {
             flr += pal_y_no;
         }
+        // No-intrabc flag (rd_cost.c:629-631, IBC chunk 3): on an IBC frame
+        // EVERY non-IBC candidate's luma rate carries intrabc_fac_bits[0]
+        // (the use_intrabc=0 flag the writer codes per block). 0-cost
+        // structurally when !allow_intrabc (the C fill is gated the same).
+        if cfg.allow_intrabc {
+            flr += rates.intrabc_fac_bits[0] as u64;
+        }
         let mut fcr = if has_uv {
             rates.uv[cfl_allowed][mode as usize][uv as usize] as u64
         } else {
@@ -3980,7 +4007,15 @@ pub(crate) fn evaluate_leaf(
             crate::palette::color_map_wavefront(&pc.idx_map, w, h, w, n, |_i, _j, ctx, idx| {
                 map_bits += rates.palette_ycolor[n - 2][ctx][idx as usize] as u64;
             });
-            let flr = r_mode + r_fi + r_yes + r_size + r_uniform + r_colors + map_bits;
+            // Palette candidates flow through the same svt_aom_intra_fast_cost
+            // else-arm tail as regular intra — the no-intrabc flag charge
+            // (rd_cost.c:629-631) applies to them identically (IBC chunk 3).
+            let r_ibc_no = if cfg.allow_intrabc {
+                rates.intrabc_fac_bits[0] as u64
+            } else {
+                0
+            };
+            let flr = r_mode + r_fi + r_yes + r_size + r_uniform + r_colors + map_bits + r_ibc_no;
             #[cfg(feature = "std")]
             if std::env::var_os("SVTAV1_PALBRK").is_some()
                 && crate::depth_refine::nsqdbg_here(abs_x, abs_y)

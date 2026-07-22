@@ -1909,6 +1909,57 @@ pub fn mv_bit_cost_light(mv: Mv, ref_mv: Mv) -> i32 {
     mv_err_cost_light(mv, ref_mv)
 }
 
+/// The dv arm of `svt_aom_estimate_mv_rate` (md_rate_estimation.c:458-488,
+/// IBC chunk 3): `dv_cost`/`dv_joint_cost` built from `fc->ndvc` at
+/// `MV_SUBPEL_NONE`, gated `allow_intrabc` (:484-486) — and SKIPPED
+/// entirely by the `approx_inter_rate` early return (:459-465), which
+/// leaves the tables UNFILLED (stale memory in C; `None` here). Both
+/// gating arms are C-FFI-locked in
+/// `tests/c_parity_intrabc.rs::c_parity_estimate_mv_rate_gating`.
+///
+/// Cadence (verified, docs/ibc-port-map.md A.4): `update_mv` is FORCED 0 on
+/// I-slices (`set_cdf_controls`, enc_mode_config.c:8496), so on the
+/// allintra path the per-SB rate refresh NEVER rebuilds these — they are
+/// FRAME-CONSTANT, built once at genesis (`init_frame_rate_tables`,
+/// md_config_process.c:293-327) from `pcs->md_frame_context`, which on a
+/// KEY frame (PRIMARY_REF_NONE) is the DEFAULT context — i.e. pass the
+/// frame-init `FrameContext::new_default().ndvc` here, NOT a per-SB avg'd
+/// snapshot (unlike `MdRates::intrabc_fac_bits`, which IS per-SB via
+/// `update_se`). `approx_inter_rate` is structurally 0 on allintra
+/// (`svt_aom_sig_deriv_mode_decision_config_allintra`,
+/// enc_mode_config.c:9944).
+pub fn build_dv_cost_tables(
+    ndvc: &NmvContext,
+    allow_intrabc: bool,
+    approx_inter_rate: bool,
+) -> Option<MvCostTables> {
+    if approx_inter_rate || !allow_intrabc {
+        return None;
+    }
+    Some(build_nmv_cost_table(ndvc, MvSubpelPrecision::None))
+}
+
+/// The `use_intrabc == 1` arm of `svt_aom_intra_fast_cost`
+/// (rd_cost.c:531-545, IBC chunk 3): the ENTIRE normal intra fast-cost body
+/// is bypassed; the candidate's rates are
+/// `fast_luma_rate = svt_av1_mv_bit_cost(dv, pred_dv, dv_tables,
+/// MV_COST_WEIGHT_SUB) + intrabc_fac_bits[1]` and `fast_chroma_rate = 0`.
+/// Returned as `(fast_luma_rate, fast_chroma_rate)`; the caller composes
+/// `RDCOST(lambda, luma + chroma, luma_distortion)` exactly as for any
+/// other candidate. (The non-IBC candidates' counterpart — `luma_rate +=
+/// intrabc_fac_bits[0]`, :629-631 — lives at the funnel's flr assembly,
+/// `leaf_funnel.rs`.)
+#[inline]
+pub fn intrabc_fast_cost_rates(
+    dv: Mv,
+    pred_dv: Mv,
+    dv_tables: &MvCostTables,
+    intrabc_fac_bits: &[i32; 2],
+) -> (u32, u32) {
+    let mv_rate = mv_bit_cost(dv, pred_dv, dv_tables, MV_COST_WEIGHT_SUB);
+    ((mv_rate + intrabc_fac_bits[1]) as u32, 0)
+}
+
 // =============================================================================
 // §6. Injection-gate helpers + the candidate shape --
 // `generate_md_stage_0_cand`'s intrabc block (mode_decision.c:3587-3620)

@@ -5409,6 +5409,11 @@ fn encode_tile_rows(
         // (chunk 5). sc_derivation.palette_level is 0 on every non-sc
         // frame, so non-screen-content streams are untouched.
         funnel_cfg.palette_level = tile_sc.palette_level;
+        // IBC chunk 3: the frame-level svt_aom_allow_intrabc (always
+        // I-slice + sct on this path) — arms the per-candidate
+        // intrabc_fac_bits[0] charge in the funnel. False on every
+        // non-screen / p5+ frame (byte-inert there).
+        funnel_cfg.allow_intrabc = tile_sc.allow_intrabc;
         let cwid = w / 2;
         // SB extent (task #95 chunk 2): a boundary block whose square (or edge)
         // block STRADDLES the aligned extent writes past aligned into the

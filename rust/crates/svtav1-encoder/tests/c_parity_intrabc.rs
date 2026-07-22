@@ -638,3 +638,92 @@ fn ibc_ctrls_level_table_transcription_lock() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// IBC chunk 3: intrabc_fac_bits + dv cost tables + the fast-cost shape
+// ---------------------------------------------------------------------------
+
+/// `intrabc_fac_bits` (md_rate_estimation.c:253-255) vs C — the default CDF
+/// gives the map's hand-verified [51, 1982]; randomized CDFs lock the fill
+/// formula; the `!allow_intrabc` arm leaves the C fields untouched.
+#[test]
+fn c_parity_intrabc_fac_bits() {
+    use svtav1_entropy::context::FrameContext;
+
+    // Default CDF: C fills [51, 1982] (AOM_CDF2(30531)).
+    let c = cref::estimate_syntax_rate_intrabc(None, true, SENTINEL);
+    assert_eq!(c, [51, 1982], "C default intrabc_fac_bits");
+
+    // The port's per-SB rate build carries the same values from the same
+    // default context.
+    let fc = FrameContext::new_default();
+    let cfc = svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(60);
+    let rates = svtav1_encoder::leaf_funnel::build_md_rates(&fc, &cfc);
+    assert_eq!(rates.intrabc_fac_bits, [51, 1982], "port default intrabc_fac_bits");
+
+    // Randomized (adapted-looking) CDFs: fill formula locked against C.
+    let mut rng = Rng(0x1BC0_D51D_0006);
+    for iter in 0..200 {
+        let mut cdf3 = [0u16; 3];
+        random_cdf(&mut rng, &mut cdf3);
+        let c = cref::estimate_syntax_rate_intrabc(Some(&cdf3), true, SENTINEL);
+        let mut fc = FrameContext::new_default();
+        fc.intrabc_cdf = cdf3;
+        let rates = svtav1_encoder::leaf_funnel::build_md_rates(&fc, &cfc);
+        assert_eq!(rates.intrabc_fac_bits, c, "fac bits diverge (iter {iter}, cdf {cdf3:?})");
+    }
+
+    // !allow_intrabc: C leaves the fields untouched (sentinel survives) —
+    // the port's unconditional fresh fill is safe because its only
+    // consumers are gated on the same frame flag (rd_cost.c:629/:531).
+    let c = cref::estimate_syntax_rate_intrabc(None, false, SENTINEL);
+    assert_eq!(c, [SENTINEL; 2], "C must not fill fac bits when !allow_intrabc");
+}
+
+/// `build_dv_cost_tables` gating (the estimate_mv_rate dv arm + the
+/// approx_inter_rate hazard) and its inner equality with the
+/// C-parity-locked NONE-precision builder.
+#[test]
+fn dv_cost_tables_gating_and_shape() {
+    let ndvc = NmvContext::default();
+    assert!(intrabc::build_dv_cost_tables(&ndvc, false, false).is_none());
+    assert!(
+        intrabc::build_dv_cost_tables(&ndvc, true, true).is_none(),
+        "approx_inter_rate must skip the dv fill (md_rate_estimation.c:459-465)"
+    );
+    assert!(intrabc::build_dv_cost_tables(&ndvc, false, true).is_none());
+    let t = intrabc::build_dv_cost_tables(&ndvc, true, false).expect("dv tables");
+    let direct = intrabc::build_nmv_cost_table(&ndvc, MvSubpelPrecision::None);
+    assert_eq!(t.joint_cost, direct.joint_cost);
+    for comp in 0..2 {
+        for v in [-16383, -255, -8, 0, 8, 255, 16383] {
+            assert_eq!(t.comp_cost[comp].cost(v), direct.comp_cost[comp].cost(v));
+        }
+    }
+}
+
+/// The IBC candidate fast-cost shape (rd_cost.c:531-545): an IBC candidate
+/// pays `mv_bit_cost(dv, pred_dv, MV_COST_WEIGHT_SUB) + fac_bits[1]` as its
+/// LUMA rate with `fast_chroma_rate = 0`; an ordinary candidate on the same
+/// frame pays `+fac_bits[0]` (charged at the funnel's flr assembly — the
+/// VALUE is locked by c_parity_intrabc_fac_bits above, and the C fast-cost
+/// composition is validated against a from-parts reconstruction over the
+/// C-locked cost primitives here).
+#[test]
+fn intrabc_fast_cost_rates_shape() {
+    let ndvc = NmvContext::default();
+    let tables = intrabc::build_dv_cost_tables(&ndvc, true, false).unwrap();
+    let fac = [51i32, 1982];
+    let mut rng = Rng(0x1BC0_D51D_0007);
+    for _ in 0..500 {
+        let m = |rng: &mut Rng| (rng.range_i32(-1000, 1000) * 8) as i16;
+        let dv = Mv { x: m(&mut rng), y: m(&mut rng) };
+        let pred = Mv { x: m(&mut rng), y: m(&mut rng) };
+        let (flr, fcr) = intrabc::intrabc_fast_cost_rates(dv, pred, &tables, &fac);
+        let want = intrabc::mv_bit_cost(dv, pred, &tables, intrabc::MV_COST_WEIGHT_SUB) + fac[1];
+        assert_eq!(flr, want as u32, "IBC fast luma rate: mv_rate + fac[1]");
+        assert_eq!(fcr, 0, "IBC fast chroma rate is 0 (rd_cost.c:543)");
+    }
+    // The weight is MV_COST_WEIGHT_SUB = 120 (md_rate_estimation.h:24),
+    // NOT ordinary inter's 108 (the map's copy-paste trap).
+    assert_eq!(intrabc::MV_COST_WEIGHT_SUB, 120);
+}
