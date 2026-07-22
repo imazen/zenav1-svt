@@ -7576,10 +7576,6 @@ mod tests {
         }
     }
 
-    /// Instrumented-capture pins: `M6FNL NICS c0` lines — mds1/2/3
-    /// counts at CLI qp 20/40/55 (M6 nic level 6, nums 6/6/6, base
-    /// 24/12/6 q-scaled).
-    #[test]
     /// The bd10 CfL AC luma has TWO producers that must agree: the in-search
     /// [`cfl_ac_subsample_hbd`], which overlays the block's *uncommitted*
     /// winner recon onto the frame's ROUND_UV pair, and the re-encode
@@ -7653,6 +7649,13 @@ mod tests {
         assert_eq!(cfl_idx_to_alpha((7 << 4) + 7, js, 0), 0);
     }
 
+    /// Instrumented-capture pins: `M6FNL NICS c0` lines — mds1/2/3
+    /// counts at CLI qp 20/40/55 (M6 nic level 6, nums 6/6/6, base
+    /// 24/12/6 q-scaled).
+    ///
+    /// (These docs + a stray duplicate `#[test]` were left attached to the
+    /// CfL producers test by the 977136df8 splice; relocated here, where the
+    /// test they describe lives.)
     #[test]
     fn nic_counts_match_c() {
         // M6 (nic level 6): nums 6/6/6.
