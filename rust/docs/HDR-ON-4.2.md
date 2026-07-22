@@ -289,7 +289,7 @@ distinction.
 | Config | Result |
 |---|---|
 | **Fork @ bd8** | **48/48 byte-identical** — `{gradient,diag}` x `{64,128}²` x q`{12,20,32,40,55,63}` x p`{10,13}`. The bd8 fork port was already correct; this is the first time it could be *proven*. |
-| **Fork @ bd10** | **46/64** (was 0/64). Gated at 46/46 by `tools/hdr_bd10_gate.sh`, with an anti-vacuity check that the fork and mainline oracles genuinely differ. |
+| **Fork @ bd10** | **54/64** (was 0/64 -> 46/64). Gated at 54/54 by `tools/hdr_bd10_gate.sh`, with an anti-vacuity check that the fork and mainline oracles genuinely differ. |
 
 ### Roots fixed
 
@@ -306,6 +306,25 @@ distinction.
    `convert_qindex_to_q_fp8` / `compute_qdelta_fp` are the only two bit-depth
    entry points in that chain and change both table and shift per depth
    (`<< 6` at 8-bit, `<< 4` at 10-bit). 40/64 -> 46/64.
+3. **PD0 was QM-blind (the Class A root).** C's PD0 light encode
+   (`svt_aom_quantize_inv_quantize_light`, full_loop.c:1263) applies the frame
+   luma quantization matrix whenever `frm_hdr.quantization_params.using_qmatrix`
+   is set (fork default) — the QM arm calls `svt_av1_quantize_b_qm`. The port's
+   PD0 leaf quantize (`pd0.rs` `tx_quant_core` -> `quantize_b`) never applied
+   the matrix, so a QM-tipped **partition** near-tie (the top-left 32x32 of a
+   smooth SB) coded `PARTITION_SPLIT` where C's QM-aware PD0 keeps
+   `PARTITION_NONE`. C forces `PD0_LVL_0` at bd10 (`set_pd0_ctrls`, hbd_md set),
+   so the fix threads the frame luma `qm_level` through
+   `pd0_pick_sb_partition_lvl0` (bd10-only) into `tx_quant_core`, which applies
+   the 8-bit QM kernel (`pd0::quantize_b_qm`, mirroring `qm::quantize_b_qm`)
+   when `qm_level < 15`. Note C passes `bit_depth = EB_EIGHT_BIT` to the PD0
+   quantize even at bd10, so this is 8-bit-domain (no highbd term). Gated on
+   `qm_level < 15`, so mainline (qm_level 15) keeps the non-QM `quantize_b`
+   byte-inert; bd8 fork uses the LVL_5 path (left QM-blind, still 48/48).
+   46/64 -> 54/64. Closed all four QM-path cells (each matches with
+   `SVT_FORK_ENABLE_QM=0`, diverges with QM on): gradient 64 q12, gradient 128
+   q40, diag 64 q48 (the 3 combos the "class A" note enumerated) AND diag 128
+   q48 (same QM-path root, simply omitted from that list).
 
 ### Deliberately NOT changed
 
@@ -319,18 +338,24 @@ the y8b pool). That is why `delta_var_th = 7500` and the PQ dark-bias
 domain), chroma-qindex derivation (qindex space), `cdef_scaling`, `sharp_tx`,
 `tx_bias` and `noise_norm_strength`.
 
-## Remaining fork x bd10 scope (18 cells, honest)
+## Remaining fork x bd10 scope (10 cells, honest)
 
-* **Class A — QM residual** (`gradient 64 q12`, `gradient 128 q40`,
-  `diag 64 q48`): match with `SVT_FORK_ENABLE_QM=0`, diverge with QM on, so
-  something beyond the kernel/level wiring remains.
-* **Class B — deeper** (the q5 cells across both contents and sizes,
+* **Class A (QM-path) — CLOSED** (root #3 above, the QM-in-PD0 landing).
+  `gradient 64 q12`, `gradient 128 q40`, `diag 64 q48`, and `diag 128 q48`
+  (all four match with `SVT_FORK_ENABLE_QM=0`, diverge with QM on — the last
+  was simply omitted from the original 3-combo enumeration) now byte-match;
+  they are gated in `hdr_bd10_gate.sh` (54/54).
+  The old "matches with `SVT_FORK_ENABLE_QM=0`, diverges with QM on" property
+  pinned it to the QM path; the divergence was a PD0 partition near-tie
+  (top-left 32x32 `PARTITION_SPLIT` vs C's `PARTITION_NONE`) because the port's
+  PD0 leaf quantize was QM-blind.
+* **Class B — deeper** (10 cells: the q5 cells across both contents and sizes,
   `diag 128 q12`): diverge with QM, variance boost *and* sharpness all off.
 
-All localize to the same frame-payload byte 14 — but mid-byte at **variable**
-bit positions and with large size deltas, i.e. a downstream header symptom (the
-LF level is derived from the recon) of a tile-level RD divergence, not a
-header-field bug. Closing them wants the sibling-C RD-dump treatment.
+The Class B cells localize to the same frame-payload byte 14 — but mid-byte at
+**variable** bit positions and with large size deltas, i.e. a downstream header
+symptom (the LF level is derived from the recon) of a tile-level RD divergence,
+not a header-field bug. Closing them wants the sibling-C RD-dump treatment.
 
 ## Still deferred at bd10
 

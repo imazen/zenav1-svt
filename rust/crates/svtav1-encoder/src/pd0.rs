@@ -606,6 +606,73 @@ fn quantize_b(
     ((eob + 1) as u16, qcoeff, dqcoeff)
 }
 
+/// C `svt_av1_quantize_b_qm` — the QM arm of `svt_aom_quantize_inv_quantize_
+/// light` (full_loop.c:1346, 8-bit) — i.e. [`quantize_b`] with the frame luma
+/// quantization matrix applied. `wt`/`iwt` are the raster-indexed matrix
+/// slices from [`crate::qm::qm_slices`]. Mirrors the differentially C-tested
+/// [`crate::qm::quantize_b_qm`] (tests/c_parity_qm.rs) on PD0's [`QuantEntry`]
+/// (whose zbin/round/quant/quant_shift/dequant fields are identical to
+/// `QuantTable`'s). Keeps the bd8-domain INT16 clamp (C's 8-bit kernel clamps
+/// `INT16_MIN..INT16_MAX`, av1_quantize.c) — PD0 quantizes 8-bit residuals
+/// even at bd10.
+fn quantize_b_qm(
+    coeffs: &[i32],
+    scan: &[u16],
+    e: &QuantEntry,
+    log_scale: i32,
+    wt: &[u8],
+    iwt: &[u8],
+) -> (u16, Vec<i32>, Vec<i32>) {
+    const AOM_QM_BITS: i32 = 5;
+    let n_coeffs = scan.len();
+    let zbins = [
+        (e.zbin[0] + ((1 << log_scale) >> 1)) >> log_scale,
+        (e.zbin[1] + ((1 << log_scale) >> 1)) >> log_scale,
+    ];
+    let mut qcoeff = vec![0i32; coeffs.len()];
+    let mut dqcoeff = vec![0i32; coeffs.len()];
+
+    // Pre-scan pass (weighted zbin dead zone).
+    let mut non_zero_count = n_coeffs;
+    for i in (0..n_coeffs).rev() {
+        let rc = scan[i] as usize;
+        let w = i32::from(wt[rc]);
+        let coeff = coeffs[rc] * w;
+        let iz = usize::from(rc != 0);
+        if coeff < zbins[iz] * (1 << AOM_QM_BITS) && coeff > -zbins[iz] * (1 << AOM_QM_BITS) {
+            non_zero_count -= 1;
+        } else {
+            break;
+        }
+    }
+
+    let mut eob: i64 = -1;
+    for i in 0..non_zero_count {
+        let rc = scan[i] as usize;
+        let coeff = coeffs[rc];
+        let iz = usize::from(rc != 0);
+        let coeff_sign: i32 = if coeff < 0 { -1 } else { 0 };
+        let abs_coeff = (coeff ^ coeff_sign) - coeff_sign;
+        let w = i64::from(wt[rc]);
+        if i64::from(abs_coeff) * w >= i64::from(zbins[iz]) << AOM_QM_BITS {
+            let round = (e.round[iz] + ((1 << log_scale) >> 1)) >> log_scale;
+            let mut tmp = i64::from((abs_coeff + round).clamp(i16::MIN as i32, i16::MAX as i32));
+            tmp *= w;
+            let tmp32 = ((((tmp * e.quant[iz] as i64) >> 16) + tmp) * e.quant_shift[iz] as i64
+                >> (16 - log_scale + AOM_QM_BITS)) as i32;
+            qcoeff[rc] = (tmp32 ^ coeff_sign) - coeff_sign;
+            let dequant =
+                (e.dequant[iz] * i32::from(iwt[rc]) + (1 << (AOM_QM_BITS - 1))) >> AOM_QM_BITS;
+            let abs_dq = ((tmp32 as i64 * dequant as i64) >> log_scale) as i32;
+            dqcoeff[rc] = (abs_dq ^ coeff_sign) - coeff_sign;
+            if tmp32 != 0 {
+                eob = i as i64;
+            }
+        }
+    }
+    ((eob + 1) as u16, qcoeff, dqcoeff)
+}
+
 /// C `energy_computation` (transforms.c:3095): sum of squared
 /// coefficients over an area.
 fn energy(coeff: &[i32], stride: usize, w: usize, h: usize) -> u64 {
@@ -631,6 +698,7 @@ fn tx_quant_core(
     sq_size: usize,
     tx_h: usize,
     qindex_off: u8,
+    qm_level: u8,
     subres_step: u32,
 ) -> (u16, u64, Vec<i32>, usize) {
     use svtav1_types::transform::{TxSize, TxType};
@@ -694,7 +762,28 @@ fn tx_quant_core(
     let entry = build_quant_entry(qindex_off);
     let scan = svtav1_entropy::scan_tables::scan(c_tx_size, 0);
     debug_assert_eq!(scan.len(), packed_w * packed_h);
-    let (eob, qcoeff, dqcoeff) = quantize_b(&coeffs, scan, &entry, log_scale);
+    // [SVT_HDR_MODE] Quantization matrices in PD0. C's md_encode_block_pd0
+    // quantize (`svt_aom_quantize_inv_quantize_light`, full_loop.c:1263)
+    // applies the frame's luma QM whenever `frm_hdr.quantization_params.
+    // using_qmatrix` is set (fork default ON) — the QM arm calls
+    // `svt_av1_quantize_b_qm`. PD0 always transforms DCT_DCT, which
+    // IS_2D_TRANSFORM, so the matrix applies whenever the frame luma
+    // `qm_level < 15`. The matrix LEVEL is the frame value derived from
+    // base_qindex (`frm_hdr.quantization_params.qm[PLANE_Y]`,
+    // md_config_process.c:270), NOT the `qindex_off` quant step. C passes
+    // `bit_depth = EB_EIGHT_BIT` to the PD0 quantize (product_coding_loop.c:
+    // 4397/4471), so even at bd10 it is the 8-bit QM kernel over the 8-bit
+    // `quants_8bit` tables `build_quant_entry` already models — this fix is
+    // 8-bit-domain and carries no highbd term. Without it PD0 dequantized
+    // WITHOUT matrices, so a QM-tipped partition near-tie (top-left 32x32 of
+    // a smooth SB) coded SPLIT where C keeps NONE (fork x bd10 Class A).
+    let (eob, qcoeff, dqcoeff) = match (qm_level < 15)
+        .then(|| crate::qm::qm_slices(usize::from(qm_level), false, c_tx_size))
+        .flatten()
+    {
+        Some((wt, iwt)) => quantize_b_qm(&coeffs, scan, &entry, log_scale, wt, iwt),
+        None => quantize_b(&coeffs, scan, &entry, log_scale),
+    };
 
     // svt_aom_picture_full_distortion32_bits_single: freq-domain SSE
     // (or plain coeff energy when eob == 0) over the packed region.
@@ -1285,6 +1374,14 @@ struct Pd0Ctx<'a> {
     vars: SbVariance,
     qp: u32,
     qindex: u8,
+    /// [SVT_HDR_MODE] Frame luma QM level (`frm_hdr.quantization_params.
+    /// qm[PLANE_Y]`, from base_qindex) for the PD0 leaf quantize; 15 =
+    /// identity/no matrices (mainline, and every non-bd10 fork path). Only
+    /// the bd10 LVL_0 entry (`pd0_pick_sb_partition_lvl0`) sets it non-15,
+    /// mirroring C's `set_pd0_ctrls` PD0_LVL_0 force at bd10 whose light
+    /// encode applies QM (`svt_aom_quantize_inv_quantize_light`). Consumed by
+    /// [`tx_quant_core`]; when 15 the non-QM `quantize_b` runs (byte-inert).
+    qm_level: u8,
     lambda: u64,
     mode: Pd0Mode,
     lvl1: Option<&'a M6Pd0Tables>,
@@ -1432,7 +1529,8 @@ impl<'a> Pd0Ctx<'a> {
             }
         }
         let qindex_off = (self.qindex as u32 + 8).min(255) as u8; // lpd0_qp_offset = 8
-        let (eob, dist, _qcoeff, _c_tx) = tx_quant_core(&residual, sq_size, tx_h, qindex_off, step);
+        let (eob, dist, _qcoeff, _c_tx) =
+            tx_quant_core(&residual, sq_size, tx_h, qindex_off, self.qm_level, step);
         // coeff_rate_est_lvl == 0 closed form (perform_tx_pd0,
         // product_coding_loop.c:4579): 5000 + input_resolution_factor*1600 +
         // 100*eob. The resolution factor is a per-picture constant (0 for
@@ -1478,7 +1576,8 @@ impl<'a> Pd0Ctx<'a> {
                 residual[r * bw + c] = self.src[srow + c] as i32 - pred[prow + c] as i32;
             }
         }
-        let (eob, dist, qcoeff, c_tx) = tx_quant_core(&residual, bw, bh, self.qindex, 0);
+        let (eob, dist, qcoeff, c_tx) =
+            tx_quant_core(&residual, bw, bh, self.qindex, self.qm_level, 0);
         let tables = self.lvl1.expect("LVL_1 requires tables");
         // C `perform_tx_pd0` luma coeff rate (single-txb, product_coding_
         // loop.c:4576): `th = (bw*bh)>>5`, dims capped at 32. coeff_rate_est_lvl
@@ -1752,6 +1851,9 @@ pub fn pd0_pick_sb_partition(
         vars,
         qp,
         qindex,
+        // Non-bd10 PD0 paths never carry a live QM level (mainline QM-off; the
+        // bd8 fork LVL_5/LVL_6 path is left byte-inert per the fork-bd10 scope).
+        qm_level: 15,
         lambda,
         mode,
         lvl1: None,
@@ -1810,6 +1912,12 @@ pub fn pd0_pick_sb_partition_lvl0(
     sb_y: usize,
     qp: u32,
     qindex: u8,
+    // [SVT_HDR_MODE] Frame luma QM level (base_qindex-derived
+    // `frm_hdr.quantization_params.qm[PLANE_Y]`); 15 = no matrices. C forces
+    // PD0_LVL_0 at bd10 and its light encode applies QM when using_qmatrix
+    // (fork default), so this is the ONLY PD0 entry that carries a live QM
+    // level. Mainline / QM-off callers pass 15 (byte-inert non-QM path).
+    qm_level: u8,
     ires_factor: u64,
     aligned_w: usize,
     aligned_h: usize,
@@ -1827,6 +1935,7 @@ pub fn pd0_pick_sb_partition_lvl0(
         vars,
         qp,
         qindex,
+        qm_level,
         lambda,
         mode: Pd0Mode::Lvl0,
         lvl1: None,
@@ -1890,6 +1999,9 @@ pub fn pd0_pick_sb_partition_m6(
         vars,
         qp,
         qindex,
+        // Non-bd10 PD0 paths never carry a live QM level (mainline QM-off; the
+        // bd8 fork LVL_5/LVL_6 path is left byte-inert per the fork-bd10 scope).
+        qm_level: 15,
         lambda,
         mode: Pd0Mode::Lvl1,
         lvl1: Some(tables),
@@ -1954,6 +2066,9 @@ pub fn pd0_pick_sb_partition_m6_eval(
         vars,
         qp,
         qindex,
+        // Non-bd10 PD0 paths never carry a live QM level (mainline QM-off; the
+        // bd8 fork LVL_5/LVL_6 path is left byte-inert per the fork-bd10 scope).
+        qm_level: 15,
         lambda,
         mode: Pd0Mode::Lvl1,
         lvl1: Some(tables),
@@ -2068,6 +2183,7 @@ mod tests {
             vars: compute_b64_variance(&y, 64, 0, 0),
             qp: 20,
             qindex: 80,
+            qm_level: 15,
             lambda: kf_full_lambda_8bit(80, 20) as u64,
             mode: Pd0Mode::Lvl0,
             coeff_rate_est_lvl: 0,
@@ -2109,12 +2225,12 @@ mod tests {
         // parent where the LVL_6 heuristic over-splits to 16x 16x16). The
         // 64x64 force-splits (var64 5425 > qp-scaled cap -> max_sq 32).
         let y = gradient64();
-        let tree = pd0_pick_sb_partition_lvl0(&y, 64, 0, 0, 20, 80, 0, 64, 64);
+        let tree = pd0_pick_sb_partition_lvl0(&y, 64, 0, 0, 20, 80, 15, 0, 64, 64);
         assert_eq!(tree.leaf_sizes(), vec![32, 32, 32, 32]);
         // q40 / q55 keep the same 4x32 shape here (the parent still wins);
         // q55's 64x64 is IN the depth set (max_sq 64) and PARENT wins outright
         // -> a single 64x64 leaf.
-        let t55 = pd0_pick_sb_partition_lvl0(&y, 64, 0, 0, 55, 220, 0, 64, 64);
+        let t55 = pd0_pick_sb_partition_lvl0(&y, 64, 0, 0, 55, 220, 15, 0, 64, 64);
         assert_eq!(t55.leaf_sizes(), vec![64]);
     }
 
@@ -2158,6 +2274,7 @@ mod tests {
             vars: compute_b64_variance(&y, 64, 0, 0),
             qp: 40,
             qindex: 160,
+            qm_level: 15,
             lambda: kf_full_lambda_8bit(160, 40) as u64,
             mode: Pd0Mode::Lvl5,
             coeff_rate_est_lvl: 0,
@@ -2200,6 +2317,7 @@ mod tests {
             vars: compute_b64_variance(&y, 64, 0, 0),
             qp: 55,
             qindex: 220,
+            qm_level: 15,
             lambda: kf_full_lambda_8bit(220, 55) as u64,
             mode: Pd0Mode::Lvl5,
             coeff_rate_est_lvl: 0,
@@ -2303,6 +2421,7 @@ mod tests {
             vars: compute_b64_variance(&y, 64, 0, 0),
             qp: 55,
             qindex: 220,
+            qm_level: 15,
             lambda: kf_full_lambda_8bit(220, 55) as u64,
             mode: Pd0Mode::Lvl1,
             coeff_rate_est_lvl: 1,
@@ -2341,6 +2460,7 @@ mod tests {
             vars: compute_b64_variance(&y, 64, 0, 0),
             qp: 40,
             qindex: 160,
+            qm_level: 15,
             lambda: kf_full_lambda_8bit(160, 40) as u64,
             mode: Pd0Mode::Lvl1,
             coeff_rate_est_lvl: 1,
@@ -2375,6 +2495,7 @@ mod tests {
             vars: compute_b64_variance(&y, 64, 0, 0),
             qp: 20,
             qindex: 80,
+            qm_level: 15,
             lambda: kf_full_lambda_8bit(80, 20) as u64,
             mode: Pd0Mode::Lvl1,
             coeff_rate_est_lvl: 1,

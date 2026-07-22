@@ -782,18 +782,29 @@ near-ties") and the q48/q63 cells that were never gated. bd8 `identity_matrix` 5
 ## bd10 x HDR-FORK mode (2026-07-19)
 
 Fork mode (`SVT_HDR_MODE=1`) at bd10 is now byte-measurable against a real C
-oracle and is **46/64** byte-identical (was 0/64). Full write-up, including the
-oracle build and the two roots fixed, is in **`docs/HDR-ON-4.2.md` § "Fork mode
-at 10-bit"**. Gate: `tools/hdr_bd10_gate.sh` (46/46).
+oracle and is **54/64** byte-identical (was 0/64 -> 46/64). Full write-up,
+including the oracle build and the roots fixed, is in **`docs/HDR-ON-4.2.md`
+§ "Fork mode at 10-bit"**. Gate: `tools/hdr_bd10_gate.sh` (54/54).
 
-Two bd10 findings from that work belong here because they are **not**
-fork-specific:
+Three bd10 findings from that work belong here because they are **not**
+fork-specific (the QM machinery is shared with `--enable-qm` / `tune=IQ`):
 
 1. **`qm::quantize_fp_hbd_qm` / `quantize_b_hbd_qm`** now exist — the bd10
    re-encode (`tx_unit_hbd`) previously had NO quantization-matrix support at
    all (non-QM highbd kernels, `iwt: None` into the trellis). Any future bd10
    work that turns QM on (`--enable-qm`, `tune=IQ`, `tune=SSIMULACRA2`) needs
    these, mainline or fork.
+1b. **PD0 was QM-blind (fork bd10 Class A, closed 46/64 -> 54/64).** C's PD0
+   light encode (`svt_aom_quantize_inv_quantize_light`, full_loop.c:1263)
+   applies the frame luma QM whenever `using_qmatrix` is set (fork default; also
+   `--enable-qm`, tune=IQ) via `svt_av1_quantize_b_qm`; C passes
+   `bit_depth = EB_EIGHT_BIT` so it is the **8-bit** QM kernel even at bd10. The
+   port's `pd0.rs` `tx_quant_core` -> `quantize_b` never applied the matrix, so
+   a QM-tipped PD0 partition near-tie (top-left 32x32 SPLIT-vs-NONE) diverged.
+   Fix: `pd0::quantize_b_qm` (mirrors `qm::quantize_b_qm`), threaded through
+   `pd0_pick_sb_partition_lvl0` (the PD0_LVL_0 path C forces at bd10) and gated
+   on the frame luma `qm_level < 15`. Any future bd10 `--enable-qm` work reuses
+   this same PD0 path (it is QM-on-gated, not fork-gated).
 2. **`var_boost::convert_qindex_to_q_fp8` / `compute_qdelta_fp` take a bit
    depth.** C changes both the qlookup table and the shift per depth
    (`ac_quant_qtx(q,0,bd) << 6` at 8-bit, `<< 4` at 10-bit, `<< 3` at 12-bit).

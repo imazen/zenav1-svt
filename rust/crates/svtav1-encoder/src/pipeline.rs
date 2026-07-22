@@ -5844,6 +5844,12 @@ fn encode_tile_rows(
                                 y0,
                                 cli_qp as u32,
                                 sb_qindex,
+                                // [SVT_HDR_MODE] Frame luma QM level. C forces
+                                // PD0_LVL_0 at bd10 whose light encode applies
+                                // the matrix when using_qmatrix (fork default);
+                                // mainline/QM-off leave qm_levels = [15;3], so
+                                // this is the non-QM (byte-inert) path there.
+                                qm_levels[0],
                                 crate::pd0::input_resolution_factor(w * h),
                                 w,
                                 h,

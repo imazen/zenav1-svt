@@ -219,7 +219,7 @@ instrumented-C per-candidate RD dump.
 | bd10, partial-SB | **u8 fallback, not byte-exact** | §A3 |
 | SB128, preset 0/1, ≥165k px | **12/14 byte-match** (LANDED) | §A4; 2 near-tie pins |
 | multi-tile, preset 6 | **25 cells diverge** | §C4 |
-| HDR fork × bd10 | 46/64 byte-match; **18 diverge** | §C5 |
+| HDR fork × bd10 | 54/64 byte-match; **10 diverge** | §C5 |
 | 4:4:4 / 4:2:2 / mono | **OUT OF SCOPE** (no C oracle) | ACCEPTANCE-CRITERIA.md:27 |
 
 ---
@@ -250,10 +250,15 @@ pointable from source alone.
   pipeline.rs:5433, indexed tile-locally). tools/tile_gate.sh:164-187. Orthogonal to the
   arbitrary-size goal (only fires on multi-tile requests). **Multi-pass.**
 
-### C5. HDR fork × bd10 tail (18 cells)
-- Complement of the measured 46/64 (docs/HDR-ON-4.2.md:292). Class A (3 cells, a QM
-  residual beyond kernel/level wiring) + Class B (deeper q5 cells). HDR-fork-gated,
-  orthogonal to the mainline arbitrary-size goal. **Multi-pass** (sibling-C RD dump).
+### C5. HDR fork × bd10 tail (10 cells)
+- Complement of the measured 54/64 (docs/HDR-ON-4.2.md). **Class A CLOSED** — it
+  was the PD0 leaf quantize being QM-blind (C's `svt_aom_quantize_inv_quantize_light`
+  applies the luma matrix, the port's `pd0::tx_quant_core` did not), a QM-tipped
+  PD0 partition near-tie; fixed by `pd0::quantize_b_qm` threaded through the bd10
+  `pd0_pick_sb_partition_lvl0` path (also closed diag 128 q48). Remaining: Class B
+  (10 cells — the q5 cells + diag 128 q12), a deeper tile-level RD divergence.
+  HDR-fork-gated, orthogonal to the mainline arbitrary-size goal. **Multi-pass**
+  (sibling-C RD dump).
 
 ### C6. Synthetic bd10 p0/p3 `diag` residual
 - p0 = a mid-tile MODE flip (op 163, SMOOTH-vs-DC); p3 = the PARTFLIP axis (bd10 leaf-cost

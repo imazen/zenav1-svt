@@ -28,13 +28,25 @@
 # A cell listed here BYTE-MATCHES the fork oracle via `cmp`. Do NOT add a cell
 # that merely falls back or matches by coincidence.
 #
-# KNOWN-OPEN fork x bd10 residual — 18 of the 64-cell sweep
+# QM IN PD0 (this landing) closed class A + one class-B cell. C's PD0 light
+# encode (`svt_aom_quantize_inv_quantize_light`, full_loop.c:1263) applies the
+# frame luma quantization matrix whenever `using_qmatrix` is set (fork default)
+# — its QM arm calls `svt_av1_quantize_b_qm`. The port's PD0 leaf quantize
+# (`pd0.rs` `tx_quant_core` -> `quantize_b`) was QM-BLIND, so a QM-tipped
+# partition NEAR-TIE (the top-left 32x32 of a smooth SB) coded PARTITION_SPLIT
+# where C's QM-aware PD0 keeps PARTITION_NONE. C forces PD0_LVL_0 at bd10
+# (hbd_md set), so the fix is threaded through `pd0_pick_sb_partition_lvl0`
+# (bd10-only) and gated on the frame luma qm_level < 15 (fork-only; mainline
+# qm_level 15 keeps the non-QM `quantize_b`, byte-inert). This closed all four
+# QM-path cells (each matches with SVT_FORK_ENABLE_QM=0, diverges with QM on):
+# gradient 64 q12, gradient 128 q40, diag 64 q48 (the docs' 3-combo class A)
+# AND diag 128 q48 (same QM-path root, just omitted from that list); all now
+# gated above. The remaining 10 (below) are a separate, deeper axis.
+#
+# KNOWN-OPEN fork x bd10 residual — 10 of the 64-cell sweep
 # ({gradient,diag} x {64,128}^2 x q{5,12,20,32,40,48,55,63} x p{10,13}) are NOT
 # gated here. They are EXCLUDED, not weakened; see docs/HDR-ON-4.2.md. Measured
 # by isolating each knob on BOTH sides via the shared SVT_FORK_* env:
-#   * class A — matches with SVT_FORK_ENABLE_QM=0, diverges with QM on
-#     (gradient 64 q12, gradient 128 q40, diag 64 q48): a remaining QM-at-bd10
-#     residual beyond the kernel/level wiring below.
 #   * class B — diverges even with QM, variance boost AND sharpness all off
 #     (the q5 cells across both contents/sizes, diag 128 q12): a deeper axis.
 #     All four localize to the same frame-payload byte 14, but mid-byte at
@@ -76,6 +88,10 @@ failed=()
 # plane at every depth.
 CELLS=(
   # --- gradient, single-SB ---
+  # q12 was class A (QM-in-PD0 partition near-tie) — closed by the PD0
+  # quantization-matrix landing (pd0.rs tx_quant_core); see the QM-IN-PD0 note.
+  "gradient 64 64 12 10"
+  "gradient 64 64 12 13"
   "gradient 64 64 20 10"
   "gradient 64 64 20 13"
   "gradient 64 64 32 10"
@@ -95,6 +111,9 @@ CELLS=(
   "gradient 128 128 20 13"
   "gradient 128 128 32 10"
   "gradient 128 128 32 13"
+  # q40 was class A — closed by the QM-in-PD0 landing.
+  "gradient 128 128 40 10"
+  "gradient 128 128 40 13"
   "gradient 128 128 48 10"
   "gradient 128 128 48 13"
   "gradient 128 128 55 10"
@@ -111,6 +130,9 @@ CELLS=(
   "diag 64 64 32 13"
   "diag 64 64 40 10"
   "diag 64 64 40 13"
+  # q48 was class A — closed by the QM-in-PD0 landing.
+  "diag 64 64 48 10"
+  "diag 64 64 48 13"
   "diag 64 64 55 10"
   "diag 64 64 55 13"
   "diag 64 64 63 10"
@@ -121,6 +143,11 @@ CELLS=(
   "diag 128 128 32 13"
   "diag 128 128 40 10"
   "diag 128 128 40 13"
+  # q48 is QM-path (matches with SVT_FORK_ENABLE_QM=0, diverges with QM on) —
+  # the SAME class-A PD0 near-tie root, just omitted from the docs' original
+  # 3-combo class-A enumeration. Closed by the same QM-in-PD0 landing.
+  "diag 128 128 48 10"
+  "diag 128 128 48 13"
   "diag 128 128 55 10"
   "diag 128 128 55 13"
   "diag 128 128 63 10"
