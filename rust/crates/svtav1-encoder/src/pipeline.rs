@@ -1686,6 +1686,11 @@ impl EncodePipeline {
                     seq_tools.enable_filter_intra,
                     sc_derivation.allow_screen_content_tools,
                 );
+                // IBC chunk 1: arm the per-block use_intrabc flag coding
+                // (C write_intrabc_info gate) from the same sc derivation
+                // that set the FH bit — signaling and coding MUST agree or
+                // the stream is undecodable.
+                ectx.allow_intrabc = sc_derivation.allow_intrabc;
                 // Task #86: this tile's own top row — gates "above"
                 // availability in tx_size_ctx and (via chroma_pass's
                 // encode_chroma_block_dc calls below) chroma prediction.
@@ -2747,6 +2752,13 @@ pub(crate) struct EntropyCtx {
     /// FH `allow_screen_content_tools` — gates the per-block no-palette
     /// flag coding (C write_palette_mode_info gate, entropy_coding.c:5026).
     allow_sct: bool,
+    /// FH `allow_intrabc` — gates the per-block `use_intrabc` flag coding
+    /// (C write_modes_b -> write_intrabc_info, entropy_coding.c:5021-5023;
+    /// the flag is coded for EVERY block on an IBC frame). Default false;
+    /// stamped post-construction (like `tile_top_px`) by the real pack walk
+    /// AND the funnel chain sim — both must code it or the intrabc CDF (and
+    /// every later symbol's arithmetic state) desyncs from C.
+    allow_intrabc: bool,
     /// [SVT_HDR_MODE] per-SB delta-q emission state (C write_modes_b,
     /// entropy_coding.c:4997): `Some((delta_q_res, prev_qindex))` when the
     /// FH signaled delta_q_present. The walk arms `delta_q_pending` with
@@ -2923,6 +2935,7 @@ impl EntropyCtx {
             ],
             seq_filter_intra,
             allow_sct,
+            allow_intrabc: false,
             delta_q_state: None,
             delta_q_sb_qindex: 0,
             cdef_sb: None,
@@ -3670,6 +3683,20 @@ fn encode_block_syntax(
             );
             ectx.delta_q_state = Some((res, cur));
         }
+    }
+
+    // use_intrabc flag (C write_modes_b -> write_intrabc_info,
+    // entropy_coding.c:5021-5023 / :4405-4416, gated svt_aom_allow_intrabc;
+    // spec intra_frame_mode_info): on an IBC frame the flag is coded for
+    // EVERY block — the port codes use_intrabc = 0 until the DV search +
+    // injection land (map chunks 5-9); the write adapts intrabc_cdf exactly
+    // like C's aom_write_symbol, and the funnel chain sim shares this path
+    // (the C MD-side twin: update_stats -> update_cdf(intrabc_cdf),
+    // md_rate_estimation.c:854-855). Without the flag the FH's
+    // allow_intrabc = 1 promises a symbol the tile lacks — an UNDECODABLE
+    // stream, not merely a divergent one (aomdec outputs zero frames).
+    if is_key && ectx.allow_intrabc {
+        writer.write_symbol(0, &mut frame_ctx.intrabc_cdf, 2);
     }
 
     // Mode syntax is ALWAYS coded — the skip flag only gates residuals
@@ -5516,6 +5543,10 @@ fn encode_tile_rows(
             // per-SB frame contexts — it must code the same no-palette
             // flags as the real pack or the palette CDF rows drift.
             let mut e = EntropyCtx::new(w / 4, h / 4, true, tile_sc.allow_screen_content_tools);
+            // IBC chunk 1: same use_intrabc flag coding as the real pack —
+            // the chain's intrabc_cdf must evolve identically (the C
+            // MD-side twin, update_stats md_rate_estimation.c:854-855).
+            e.allow_intrabc = tile_sc.allow_intrabc;
             e.tile_top_px = tile_sb_row_start * sb_size; // task #86, see fun_ectx above
             e.tile_left_px = tile_sb_col_start * sb_size; // task #96
             e.tile_mi = crate::intra_edge::TileMi {
