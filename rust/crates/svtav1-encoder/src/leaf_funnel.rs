@@ -561,9 +561,10 @@ pub struct FunnelCfg {
     pub txs_max_sq: u8,
     /// `txs_ctrls.intra_class_max_depth_nsq` (M4..M6: 0; M0..M3: 2).
     pub txs_max_nsq: u8,
-    /// `txs_ctrls.inter_class_max_depth_sq` (IBC chunk 7): txs_level 2 at
-    /// M0..M3 -> 1; txs_level 3 at M4..M7 -> 1 (set_txs_controls,
-    /// enc_mode_config.c:6185-6205). Caps the IntraBC tx depth loop.
+    /// `txs_ctrls.inter_class_max_depth_sq`: txs_level 2 at M0..M3 -> 1;
+    /// txs_level 3 at M4..M7 -> 1 (set_txs_controls, enc_mode_config.c:
+    /// 6185-6205). The port's IBC tx-depth cap (see [`end_tx_depth_inter`]
+    /// — deliberately NOT C's mode-keyed intra clamp, pinned).
     pub txs_inter_max_sq: u8,
     /// `txs_ctrls.inter_class_max_depth_nsq`: M0..M3 -> 1; M4..M7 -> 0.
     pub txs_inter_max_nsq: u8,
@@ -796,9 +797,9 @@ impl FunnelCfg {
                 txt_rate_th: 250,
                 txs_max_sq: 2,
                 txs_max_nsq: 2,
-                // txs_level 2 inter caps (set_txs_controls case 2).
                 txs_inter_max_sq: 1,
                 txs_inter_max_nsq: 1,
+                // txs_level 2 inter caps (set_txs_controls case 2).
                 txt_d1_off: 0,
                 txt_d2_off: 0,
                 fi_max: 4,
@@ -825,9 +826,9 @@ impl FunnelCfg {
                 txt_rate_th: 250,
                 txs_max_sq: 2,
                 txs_max_nsq: 2,
-                // txs_level 2 inter caps (set_txs_controls case 2).
                 txs_inter_max_sq: 1,
                 txs_inter_max_nsq: 1,
+                // txs_level 2 inter caps (set_txs_controls case 2).
                 txt_d1_off: 0,
                 txt_d2_off: 0,
                 ind_uv_mds3: false,
@@ -873,9 +874,9 @@ impl FunnelCfg {
                 txt_rate_th: 250,
                 txs_max_sq: 2,
                 txs_max_nsq: 2,
-                // txs_level 2 inter caps (set_txs_controls case 2).
                 txs_inter_max_sq: 1,
                 txs_inter_max_nsq: 1,
+                // txs_level 2 inter caps (set_txs_controls case 2).
                 txt_d1_off: 0,
                 txt_d2_off: 0,
                 ind_uv_mds3: true,
@@ -897,9 +898,9 @@ impl FunnelCfg {
                 txt_rate_th: 250,
                 txs_max_sq: 2,
                 txs_max_nsq: 2,
-                // txs_level 2 inter caps (set_txs_controls case 2).
                 txs_inter_max_sq: 1,
                 txs_inter_max_nsq: 1,
+                // txs_level 2 inter caps (set_txs_controls case 2).
                 txt_d1_off: 0,
                 txt_d2_off: 0,
                 ind_uv_mds3: true,
@@ -5332,9 +5333,22 @@ pub(crate) fn evaluate_leaf(
             }
         }
         // ---- Luma: TX depth loop ----
-        // IBC chunk 7: an IntraBC candidate is INTER-classified — its
-        // depth cap comes from txs_ctrls.inter_class_max_depth_sq/nsq
-        // (C get_end_tx_depth's is_inter arm), not the intra caps.
+        // KNOWN GAP (pinned, screen-IBC grind 2026-07-23): C's TXS depth
+        // CLASS clamp keys on `is_intra_mode(cand->block_mi.mode)`
+        // (get_start_end_tx_depth, product_coding_loop.c:6728-6733) — an
+        // IntraBC candidate keeps mode DC_PRED, so C searches IBC txs
+        // depths under the INTRA caps (2/2 at p0..p3 txs_level 2), NOT the
+        // inter caps (1/1) used here. Widening the port to the intra caps
+        // was MEASURED to flip windows95_p0_q20 to a byte MATCH, but any
+        // cell where the port then PICKS an IBC depth-2 winner emits a
+        // stream the decode oracle reads differently (16 cells
+        // SELF-DESYNC: the depth-2 inter var-tx pack chain — txfm
+        // partition ctx / per-txb syntax — disagrees with the oracle's
+        // z-order transform_tree read somewhere past the first nonzero
+        // txb, and C streams never code depth-2 IBC on this corpus to
+        // arbitrate). Until that chain is proven, keep the inter caps:
+        // every emitted stream stays self-consistent (depth <= 1, where
+        // the inter z-order == raster).
         let cand_end_depth = if cands[ci].ibc.is_some() {
             if txs_active { end_tx_depth_inter(w, h, &cfg) } else { 0 }
         } else {
@@ -7383,11 +7397,19 @@ pub(crate) fn commit_leaf(
     } else {
         fx.ectx.record_txfm_dims(abs_x, abs_y, w, h, txw, txh);
     }
-    // Per-txb luma cul bytes; chroma culs over the chroma span.
+    // Per-txb luma cul bytes; chroma culs over the chroma span. The
+    // winner's txb arrays are stored in the SEARCH walk order — the
+    // inter z-order (txb_org_inter) for IntraBC winners, raster for
+    // intra — so the index -> position mapping must match, or a depth-2
+    // IBC winner's culs land on the wrong cells and every later block's
+    // coeff contexts (pack vs decode) desync.
     let cols = w / txw;
     for (txb, &cul) in cand.txb_cul.iter().enumerate() {
-        let tx_x = (txb % cols) * txw;
-        let tx_y = (txb / cols) * txh;
+        let (tx_x, tx_y) = if cand.ibc.is_some() {
+            txb_org_inter(w, h, cand.tx_depth, txb)
+        } else {
+            ((txb % cols) * txw, (txb / cols) * txh)
+        };
         fx.ectx
             .record_coeff(abs_x + tx_x, abs_y + tx_y, txw, txh, cul);
     }
@@ -7418,9 +7440,11 @@ fn end_tx_depth(w: usize, h: usize, cfg: &FunnelCfg) -> u8 {
     base.min(cap)
 }
 
-/// The INTER-class twin of [`end_tx_depth`] (IBC chunk 7): same bsize
-/// base, capped by `txs_ctrls.inter_class_max_depth_sq/nsq` (C
-/// `get_end_tx_depth`'s is_inter arm). IntraBC candidates only.
+/// The INTER-class twin of [`end_tx_depth`]: same bsize base, capped by
+/// `txs_ctrls.inter_class_max_depth_sq/nsq`. NOT what C applies to
+/// IntraBC (C's clamp is mode-keyed -> intra caps; see the pinned KNOWN
+/// GAP note at the depth-loop call site) — kept as the port's IBC cap so
+/// every emitted stream stays within the proven depth<=1 pack chain.
 fn end_tx_depth_inter(w: usize, h: usize, cfg: &FunnelCfg) -> u8 {
     let base: u8 = match (w, h) {
         (64, 64) | (32, 32) | (16, 16) => 2,
@@ -7446,7 +7470,7 @@ fn end_tx_depth_inter(w: usize, h: usize, cfg: &FunnelCfg) -> u8 {
 /// 16X8/16X16/32X16/32X32/64X32/64X64; vertical rects coincide).
 /// Currently unreachable at the IBC presets (inter depth caps <= 1) but
 /// kept exact for when deeper inter caps arrive.
-fn txb_org_inter(w: usize, h: usize, depth: u8, txb: usize) -> (usize, usize) {
+pub(crate) fn txb_org_inter(w: usize, h: usize, depth: u8, txb: usize) -> (usize, usize) {
     let (txw, txh) = txb_dims_at_depth(w, h, depth);
     if depth < 2 {
         let cols = w / txw;

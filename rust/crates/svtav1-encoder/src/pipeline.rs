@@ -4168,8 +4168,27 @@ fn encode_block_syntax(
             let txbs = cols * (h / txh);
             let tx_size = coeff_c::tx_size_from_dims(txw, txh);
             for txb in 0..txbs {
-                let tx_x = block_x + (txb % cols) * txw;
-                let tx_y = block_y + (txb / cols) * txh;
+                // IntraBC (inter-classified) blocks write their residual
+                // in the recursive var-tx z-order (C write_inter_txb_coeff
+                // recursion == the decoder's read order == the search
+                // walk's txb_org_inter); intra blocks in raster. At depth
+                // <= 1 the two coincide; at depth 2 they differ on the
+                // square/h-rect bsizes and a raster write self-desyncs.
+                let (rel_x, rel_y) = if decision.use_intrabc || decision.is_inter {
+                    crate::leaf_funnel::txb_org_inter(w, h, decision.tx_depth, txb)
+                } else {
+                    ((txb % cols) * txw, (txb / cols) * txh)
+                };
+                let tx_x = block_x + rel_x;
+                let tx_y = block_y + rel_y;
+                #[cfg(feature = "std")]
+                if std::env::var_os("SVTAV1_PACKTXB").is_some() {
+                    let nz = decision.txb_qcoeffs[txb].iter().filter(|&&v| v != 0).count();
+                    eprintln!(
+                        "PACKTXB blk=({block_x},{block_y}) {w}x{h} d={} ibc={} txb={txb} pos=({rel_x},{rel_y}) tt={} nz={nz}",
+                        decision.tx_depth, decision.use_intrabc, decision.txb_tx_types[txb],
+                    );
+                }
                 let (above, left) = ectx.coeff_neighbors(tx_x, tx_y, txw, txh);
                 let (txb_skip_ctx, dc_sign_ctx) =
                     coeff_c::get_txb_ctx(0, above, left, false, false);

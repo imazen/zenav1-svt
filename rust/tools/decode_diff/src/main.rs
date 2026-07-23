@@ -112,7 +112,7 @@ fn main() {
             let mut bad = false;
             'scan: for y in y0..(y0 + bh).min(td.height) {
                 for x in x0..(x0 + bw).min(td.width) {
-                    if td.recon[y * td.stride + x] != u16::from(raw_y[y * td.width + x]) {
+                    if td.recon.px(y * td.stride + x) != u16::from(raw_y[y * td.width + x]) {
                         bad = true;
                         break 'scan;
                     }
@@ -233,7 +233,7 @@ fn main() {
             });
         // KfTileDecode carries the (possibly mi-aligned) dims + strides.
         let mut bad = false;
-        let plist: [(usize, &[u16], usize, usize, usize); 3] = [
+        let plist: [(usize, &aom_decode::plane::ReconPlane, usize, usize, usize); 3] = [
             (0, &td.recon, td.width, td.height, td.stride),
             (1, &td.recon_u, td.width_uv, td.height_uv, td.stride_uv),
             (2, &td.recon_v, td.width_uv, td.height_uv, td.stride_uv),
@@ -259,10 +259,10 @@ fn main() {
             let mut n = 0u64;
             for y in 0..ph {
                 for x in 0..pw {
-                    if dp[y * st + x] != raw[y * pw + x] as u16 {
+                    if dp.px(y * st + x) != raw[y * pw + x] as u16 {
                         n += 1;
                         if first.is_none() {
-                            first = Some((x, y, raw[y * pw + x], dp[y * st + x]));
+                            first = Some((x, y, raw[y * pw + x], dp.px(y * st + x) as u8));
                         }
                     }
                 }
@@ -302,7 +302,7 @@ fn main() {
             let mut v = vec![0u16; pw * ph];
             for y in 0..ph {
                 for x in 0..pw {
-                    v[y * pw + x] = tb.recon[y * tb.stride + x];
+                    v[y * pw + x] = tb.recon.px(y * tb.stride + x);
                 }
             }
             v
@@ -316,7 +316,7 @@ fn main() {
         let mut first = None;
         for y in 0..ph {
             for x in 0..pw {
-                let d = ta.recon[y * st + x];
+                let d = ta.recon.px(y * st + x);
                 let r = ref_y[y * pw + x];
                 if d != r {
                     n += 1;
@@ -454,10 +454,10 @@ fn main() {
             let mut n = 0u64;
             for y in 0..ph {
                 for x in 0..pw {
-                    if ca[y * sa + x] != cb[y * sbst + x] {
+                    if ca.px(y * sa + x) != cb.px(y * sbst + x) {
                         n += 1;
                         if first.is_none() {
-                            first = Some((x, y, ca[y * sa + x], cb[y * sbst + x]));
+                            first = Some((x, y, ca.px(y * sa + x), cb.px(y * sbst + x)));
                         }
                     }
                 }
