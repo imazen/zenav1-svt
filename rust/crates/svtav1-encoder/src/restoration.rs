@@ -44,6 +44,27 @@ use svtav1_dsp::restoration::{
     save_tile_row_boundary_lines, sse_region, wiener_decompose_sep_sym,
 };
 
+/// `SVTAV1_LR_DBG` per-unit/per-step search dump (mirrors the sibling-C
+/// `SVT_LR_OUT` instrument format: LRNONE/LRWNSOLVE/LRWNSCORE/LRWNSEG/LRSTEP
+/// lines to stderr). Off = zero cost (a OnceLock bool).
+#[cfg(feature = "std")]
+fn lr_dbg_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("SVTAV1_LR_DBG").is_some())
+}
+#[cfg(not(feature = "std"))]
+fn lr_dbg_on() -> bool {
+    false
+}
+macro_rules! lr_dbg {
+    ($($t:tt)*) => {
+        #[cfg(feature = "std")]
+        if lr_dbg_on() {
+            eprintln!($($t)*);
+        }
+    };
+}
+
 /// C `WnFilterCtrls` (the fields the still path consumes).
 #[derive(Clone, Copy, Debug)]
 pub struct WnFilterCtrls {
@@ -530,6 +551,11 @@ fn finer_tile_search_wiener<P: LrPixel>(
                         let err2 = try_restoration_unit(
                             dgd, trial, src, src_stride, limits, rect, ss, wiener, bit_depth,
                         );
+                        lr_dbg!(
+                            "LRSTEP f={} d=- p={p} s={s} err2={err2} err={err} acc={}",
+                            if pass == 0 { 'h' } else { 'v' },
+                            i32::from(err2 <= err)
+                        );
                         if err2 > err {
                             let f = if pass == 0 {
                                 &mut wiener.hfilter
@@ -565,6 +591,11 @@ fn finer_tile_search_wiener<P: LrPixel>(
                         f[halfwin] -= 2 * s as i16;
                         let err2 = try_restoration_unit(
                             dgd, trial, src, src_stride, limits, rect, ss, wiener, bit_depth,
+                        );
+                        lr_dbg!(
+                            "LRSTEP f={} d=+ p={p} s={s} err2={err2} err={err} acc={}",
+                            if pass == 0 { 'h' } else { 'v' },
+                            i32::from(err2 <= err)
                         );
                         if err2 > err {
                             let f = if pass == 0 {
@@ -721,6 +752,14 @@ pub fn search_restoration_still_bd<P: LrPixel>(
                 (limits.h_end - limits.h_start) as usize,
                 (limits.v_end - limits.v_start) as usize,
             );
+            lr_dbg!(
+                "LRNONE plane={plane} unit={unit_idx} lim=[{},{},{},{}] sse={}",
+                limits.h_start,
+                limits.h_end,
+                limits.v_start,
+                limits.v_end,
+                units[unit_idx as usize].sse_none
+            );
         });
 
         foreach_rest_unit_in_tile(&rect, hunits, unit_size, ss, |limits, unit_idx| {
@@ -754,13 +793,39 @@ pub fn search_restoration_still_bd<P: LrPixel>(
             finalize_sym_filter(wiener_win, &vd, &mut wi.vfilter);
             finalize_sym_filter(wiener_win, &hd, &mut wi.hfilter);
 
-            if compute_score(wiener_win, &m, &hh, &wi.vfilter, &wi.hfilter) > 0 {
+            #[cfg(feature = "std")]
+            if lr_dbg_on() {
+                let msum = m.iter().fold(0u64, |a, &v| a.wrapping_add(v as u64));
+                let hsum = hh.iter().fold(0u64, |a, &v| a.wrapping_add(v as u64));
+                eprintln!(
+                    "LRWNSOLVE plane={plane} unit={unit_idx} win={wiener_win} lim=[{},{},{},{}] \
+                     M0={} M1={} Msum={msum} Hsum={hsum} vd={:?} hd={:?} v={:?} h={:?}",
+                    limits.h_start,
+                    limits.h_end,
+                    limits.v_start,
+                    limits.v_end,
+                    m[0],
+                    m[1],
+                    &vd[..],
+                    &hd[..],
+                    &wi.vfilter[..7],
+                    &wi.hfilter[..7]
+                );
+            }
+            let score = compute_score(wiener_win, &m, &hh, &wi.vfilter, &wi.hfilter);
+            lr_dbg!("LRWNSCORE plane={plane} unit={unit_idx} score={score}");
+            if score > 0 {
                 units[unit_idx as usize].sse_wiener = i64::MAX;
                 return;
             }
             let sse = finer_tile_search_wiener(
                 ctrls, &mut dgd, &mut trial, src, pw, limits, &rect, ss, &mut wi, wiener_win,
                 bit_depth,
+            );
+            lr_dbg!(
+                "LRWNSEG plane={plane} unit={unit_idx} sse_wn={sse} v={:?} h={:?}",
+                &wi.vfilter[..7],
+                &wi.hfilter[..7]
             );
             units[unit_idx as usize].sse_wiener = sse;
             units[unit_idx as usize].wiener = wi;

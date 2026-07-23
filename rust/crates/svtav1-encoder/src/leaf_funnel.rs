@@ -153,6 +153,28 @@ pub(crate) fn ext_tx_used(set_type: usize, tx_type: usize) -> bool {
     AV1_EXT_TX_USED[set_type][tx_type] != 0
 }
 
+/// C `sort_fast_cost_based_candidates` / `sort_full_cost_based_candidates`
+/// (product_coding_loop.c:1415 / :1438): the swap-on-`<` exchange sort
+/// `for i { for j>i { if cost[j] < cost[i] swap(i,j) } }`.
+///
+/// NOT stable: a swap displaces the element at `i` down to `j`, so when a
+/// strictly-smaller element appears AFTER a group of equal-cost elements,
+/// the group's first member is moved to the smaller element's position —
+/// behind the rest of its tie group. On all-distinct keys the result equals
+/// a stable ascending sort, so substituting this for `sort_by_key` is
+/// byte-inert except on exact cost ties — where THIS order is the one C's
+/// stage counts truncate (which candidates survive into MDS3).
+fn c_exchange_sort_by(idx: &mut [usize], cost: impl Fn(usize) -> u64) {
+    let n = idx.len();
+    for i in 0..n.saturating_sub(1) {
+        for j in (i + 1)..n {
+            if cost(idx[j]) < cost(idx[i]) {
+                idx.swap(i, j);
+            }
+        }
+    }
+}
+
 /// C `av1_ext_tx_used[EXT_TX_SET_TYPES][TX_TYPES]` (definitions.h) —
 /// which tx types each ext set admits. Shared by `txt_search`'s set gate
 /// and the IntraBC chroma follows-luma tx-type rule.
@@ -3762,15 +3784,20 @@ pub(crate) fn evaluate_leaf(
         //    stable — a swap displaces the element at `i` down to `j`, so
         //    equal-cost candidates do NOT keep injection order, and which of a
         //    SAD tie group (e.g. the three `cbd=96` D45 deltas) lands inside
-        //    `nfl` is decided by this exact ordering. BOTH depths replicate C
-        //    bit-for-bit. (The bd8 path briefly kept a stable `sort_by_key`,
-        //    believed byte-inert from the then-green gates — WRONG on real
-        //    photo content: flat-chroma SAD tie groups straddle the nfl cut
-        //    constantly, admitting a different full-loop set. First pinned on
-        //    CID22 1200348 512x512 q32 p0 at org=(192,128) 32x32 — C fully
-        //    evaluates (V,-3) but never (V,0), the stable port did the
-        //    opposite, flipping the coded chroma angle delta and cascading
-        //    into every later chroma DC base in SB(1,1)+.)
+        //    `nfl` is decided by this exact ordering. BOTH bit depths must
+        //    replicate C bit-for-bit. (The bd8 arm briefly kept a stable
+        //    `sort_by_key`, believed byte-inert from the then-green gates —
+        //    WRONG on real content: flat-chroma SAD tie groups straddle the
+        //    nfl cut constantly, admitting a different full-loop SET. Two
+        //    independent witnesses, same day:
+        //    - CID22 1200348 512x512 q32 p0 at org=(192,128) 32x32 — C fully
+        //      evaluates (V,-3) but never (V,0); the stable port did the
+        //      opposite, flipping the coded chroma angle delta and cascading
+        //      into every later chroma DC base in SB(1,1)+.
+        //    - codec_wiki 512^2 p0 q32 (16x16 at mi(4,24)) — C's exchange
+        //      order kept UV_SMOOTH inside the 32-survivor cut where the
+        //      stable order kept an extra D113 delta, so the whole ind-uv
+        //      table and every MDS0 fast cost pricing it diverged.)
         {
             let n = fast.len();
             for i in 0..n.saturating_sub(1) {
@@ -3817,6 +3844,18 @@ pub(crate) fn evaluate_leaf(
                 }
             };
             uv_rd.push((uvm, uvd, bits, dist));
+            #[cfg(feature = "std")]
+            if std::env::var_os("SVTAV1_NSQDBG").is_some()
+                && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
+            {
+                eprintln!(
+                    "NSQDBG UVRD mi=({},{}) {}x{} uv={uvm} uvd={uvd} bits={bits} dist={dist}",
+                    abs_y / 4,
+                    abs_x / 4,
+                    w,
+                    h,
+                );
+            }
         }
 
         // 6. Per luma mode: best uv by RD with the uv rate conditioned on
@@ -4655,9 +4694,13 @@ pub(crate) fn evaluate_leaf(
         }
         count
     };
-    // stable sort == C's strict-less sort over each class's surviving pool
+    // C `sort_fast_cost_based_candidates` (product_coding_loop.c:1415) over
+    // each class's surviving pool. MUST be the C exchange sort, not a stable
+    // sort: on exact fast-cost ties the two differ (see [`c_exchange_sort_by`]),
+    // and the pool arrangement entering it is C's buffer arrangement
+    // (lane_pool), so the tie order here is the one C's MDS1 walks.
     let sort_lane = |mut lane: Vec<usize>, cands: &[Cand]| -> Vec<usize> {
-        lane.sort_by_key(|&i| cands[i].fast_cost);
+        c_exchange_sort_by(&mut lane, |i| cands[i].fast_cost);
         lane
     };
     // IBC chunk 8: C classes IntraBC CAND_CLASS_4 (mode_decision.c:3659)
@@ -4852,8 +4895,17 @@ pub(crate) fn evaluate_leaf(
     }
 
     // -- Sort survivors by full cost --
+    // C `sort_full_cost_based_candidates` (product_coding_loop.c:1438, the
+    // post-MDS1 :9561 sort). Same exchange-sort tie semantics as the fast
+    // sort: on an exact full-cost TIE the survivor set into MDS3 depends on
+    // it. Measured on clic 8426ed... 512^2 bd10 p6 q5, blk (472,208) 8x8:
+    // MDS1 costs {DC+fi 2709194, SMOOTH 2710447, DC 2710447} in fast order
+    // [SMOOTH, DC, DC+fi] — C's i=0/j=2 swap moves SMOOTH BEHIND the tied
+    // DC, so C's MDS3 pair is {DC+fi, DC} while a stable sort keeps SMOOTH
+    // -> the port coded SMOOTH and desynced the whole tail of the frame
+    // (305 tree flips downstream of one tie).
     let mut order1: Vec<usize> = order[..n1].to_vec();
-    order1.sort_by_key(|&i| cands[i].full_cost);
+    c_exchange_sort_by(&mut order1, |i| cands[i].full_cost);
     let mds1_best_idx = order1[0];
 
     // -- post_mds1_nic_pruning (:7885) + post_mds2_nic_pruning (:7961) --
@@ -5443,6 +5495,21 @@ pub(crate) fn evaluate_leaf(
                     lambda: b.lambda,
                     bd: b.bd,
                 });
+                #[cfg(feature = "std")]
+                let txt_dbg_tag = {
+                    static XY: std::sync::OnceLock<Option<(usize, usize)>> =
+                        std::sync::OnceLock::new();
+                    (dbg_xy(&XY, "SVTAV1_TXT_XY") == Some((abs_x, abs_y))).then_some(TxtDbg {
+                        abs_x,
+                        abs_y,
+                        tx_x,
+                        tx_y,
+                        mode: cand.mode,
+                        fi: cand.fi,
+                    })
+                };
+                #[cfg(not(feature = "std"))]
+                let txt_dbg_tag = None;
                 let (out, out10, txt) = txt_search(
                     y_src,
                     y_src_stride,
@@ -5460,6 +5527,7 @@ pub(crate) fn evaluate_leaf(
                     do_rdoq,
                     lambda,
                     bd10_txb.as_ref(),
+                    txt_dbg_tag,
                 );
                 // SVTAV1_QLEV_XY="x,y": per-txb winner (tx_type, eob, levels)
                 // at one pinned block, to join against the C `--wrap
@@ -7860,6 +7928,18 @@ fn txb_ctx_from_spans(
     cc::get_txb_ctx(0, a, l, block_eq_tx, false)
 }
 
+/// `SVTAV1_TXT_XY="x,y"` per-candidate TXT-search dump tag (block org +
+/// txb identity), mirroring the sibling-C `SVT_TXT_OUT` instrument lines.
+#[derive(Clone, Copy)]
+struct TxtDbg {
+    abs_x: usize,
+    abs_y: usize,
+    tx_x: usize,
+    tx_y: usize,
+    mode: u8,
+    fi: u8,
+}
+
 /// TXT search for one luma txb (`tx_type_search`, product_coding_loop.c:
 /// 4660): DCT-only above 16x16 intra (ext-tx set), otherwise the intra
 /// tx-type groups with SATD early exit + rate-cost gate. Returns the best
@@ -7882,7 +7962,20 @@ fn txt_search(
     do_rdoq: bool,
     lambda: u64,
     bd10: Option<&Bd10Txb<'_>>,
+    dbg: Option<TxtDbg>,
 ) -> (TxUnitOut, Option<TxUnitOutHbd>, usize) {
+    macro_rules! txt_dbg {
+        ($($t:tt)*) => {
+            #[cfg(feature = "std")]
+            if let Some(d) = &dbg {
+                eprint!(
+                    "PTXT org=({},{}) tx=({},{}) {w}x{h} d={depth} mode={} fi={} ",
+                    d.abs_x, d.abs_y, d.tx_x, d.tx_y, d.mode, d.fi
+                );
+                eprintln!($($t)*);
+            }
+        };
+    }
     let c_tx = cc::tx_size_from_dims(w, h);
     // IBC chunk 7: the INTER_TXT_DIR sentinel marks an IntraBC txb — the
     // whole search then runs over the INTER ext-tx machinery
@@ -7979,8 +8072,10 @@ fn txt_search(
                     && rdcost(gate_lambda, tx_type_rate, 0) * 1000
                         > dct_cost * frame.cfg.txt_rate_th
                 {
+                    txt_dbg!("cand txt={tx_type} SKIP rate_gate rate={tx_type_rate} dctcost={dct_cost}");
                     continue;
                 }
+                txt_dbg!("cand txt={tx_type} rate_gate_pass rate={tx_type_rate} dctcost={dct_cost}");
             }
             let out = tx_unit(
                 src,
@@ -8054,6 +8149,10 @@ fn txt_search(
                     ),
                     None => txb_coeff_satd(src, src_stride, src_off, pred, w, h, tx_type),
                 };
+                txt_dbg!(
+                    "cand txt={tx_type} satd={satd} best_satd={best_satd} skip={}",
+                    i32::from(satd >= best_satd && (satd - best_satd) * 100 > best_satd * satd_th)
+                );
                 if satd < best_satd {
                     best_satd = satd;
                 } else if (satd - best_satd) * 100 > best_satd * satd_th {
@@ -8062,13 +8161,26 @@ fn txt_search(
             }
             // A non-DCT type with no coefficients is not signalable.
             let dec_eob = out10.as_ref().map_or(out.eob, |o| o.eob);
+            txt_dbg!("cand txt={tx_type} eob={dec_eob}");
             if dec_eob == 0 && tx_type != cc::DCT_DCT {
+                txt_dbg!("cand txt={tx_type} SKIP eob0");
                 continue;
             }
             let cost = match (&out10, bd10) {
                 (Some(o), Some(b)) => rdcost(b.lambda, o.bits as u64, o.dist),
                 _ => rdcost(lambda, out.bits as u64, out.dist),
             };
+            #[cfg(feature = "std")]
+            if dbg.is_some() {
+                let (b_, d_) = match &out10 {
+                    Some(o) => (o.bits, o.dist),
+                    None => (out.bits, out.dist),
+                };
+                txt_dbg!(
+                    "cand txt={tx_type} bits={b_} dist={d_} cost={cost} best={best_cost}{}",
+                    if cost < best_cost { " NEW_BEST" } else { "" }
+                );
+            }
             if cost < best_cost {
                 best_cost = cost;
                 best_type = tx_type;
@@ -8085,6 +8197,7 @@ fn txt_search(
             }
         }
     }
+    txt_dbg!("WINNER txt={best_type} cost={best_cost}");
     (best.expect("DCT_DCT always evaluated"), best10, best_type)
 }
 
