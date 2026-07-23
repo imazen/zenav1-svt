@@ -36,7 +36,34 @@ CELL_TIMEOUT="${SIG_CELL_TIMEOUT:-300}"
 
 # The measured byte-exact set (bake cells in as they close; the gate
 # FAILS if a cell here diverges OR an unlisted cell matches).
+# Baked 2026-07-23 from the first full run (commit 823955fea state):
+# the 19 matching cells are the two !sc_class5 control images (IBC off,
+# streams carry 0 intrabc blocks) at every preset/qp except the
+# pre-existing codec_wiki_p1_q48 near-tie (proven pre-IBC: the
+# pre-chunk-7 build produces the byte-identical port stream and also
+# diverges from C there). All 80 sc_class5 cells are pinned-diverging
+# RD near-ties (KB-2 family; localizations in
+# benchmarks/screen_ibc_map_2026-07-23.txt).
 BYTE_EXACT=(
+  "codec_wiki_p0_q20"
+  "codec_wiki_p0_q48"
+  "codec_wiki_p1_q20"
+  "codec_wiki_p2_q20"
+  "codec_wiki_p2_q48"
+  "codec_wiki_p3_q20"
+  "codec_wiki_p3_q48"
+  "codec_wiki_p4_q20"
+  "codec_wiki_p4_q48"
+  "gmessages_p0_q20"
+  "gmessages_p0_q48"
+  "gmessages_p1_q20"
+  "gmessages_p1_q48"
+  "gmessages_p2_q20"
+  "gmessages_p2_q48"
+  "gmessages_p3_q20"
+  "gmessages_p3_q48"
+  "gmessages_p4_q20"
+  "gmessages_p4_q48"
 )
 
 is_byte_exact() {
@@ -103,8 +130,10 @@ PYEOF
       # IBC censuses (count real intrabc blocks in each stream).
       c_ibc=$("$DD_BIN" --ibc-debug "$d/c.obu" - 2>/dev/null | awk '/^IBC-TOTAL/{print $2}')
       rs_ibc=$("$DD_BIN" --ibc-debug "$d/rs.obu" - 2>/dev/null | awk '/^IBC-TOTAL/{print $2}')
-      c_ibc=${c_ibc:-0}; rs_ibc=${rs_ibc:-0}
-      c_ibc_total=$((c_ibc_total + c_ibc))
+      # An empty census (oracle-reject) reports NA, never 0 — the known
+      # aom-decode gap on some REAL-SVT streams must not read as "no IBC".
+      c_ibc=${c_ibc:-NA}; rs_ibc=${rs_ibc:-NA}
+      [ "$c_ibc" != "NA" ] && c_ibc_total=$((c_ibc_total + c_ibc))
       if cmp -s "$d/rs.obu" "$d/c.obu"; then
         match=$((match+1))
         line="$tag MATCH bytes=$(stat -c%s "$d/rs.obu") ibc=$c_ibc"

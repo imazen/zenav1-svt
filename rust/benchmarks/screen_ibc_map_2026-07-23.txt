@@ -1,0 +1,198 @@
+# screen_ibc_gate map — 2026-07-23
+# commit: 823955fea + baked-BYTE_EXACT edit (this commit)
+# cmd: SVT_CREF_LIB_DIR=/root/svtav1/Bin/Release tools/screen_ibc_gate.sh (512x512 bd8, gb82-sc x p0-4 x qp{20,48})
+# host: dev-32gb
+#
+# SUMMARY: 19/100 byte-identical (the two !sc_class5 control images at
+# every cell except the PRE-EXISTING codec_wiki_p1_q48 near-tie — proven
+# pre-IBC: the pre-chunk-7 build emits the byte-identical port stream).
+# 81 sc-cells diverge as partition/mode RD near-ties (KB-2 family).
+# 0 errors, 0 self-desync (every port stream decodes to the port's own
+# recon — the corruption class is CLOSED). C IBC census total: 4503.
+# windows95_p0_q20: bits differ, decoded pixels IDENTICAL.
+#
+## per-cell map
+OK   codec_wiki_p0_q20 MATCH bytes=4051 ibc=0
+OK   codec_wiki_p0_q48 MATCH bytes=1684 ibc=0
+OK   codec_wiki_p1_q20 MATCH bytes=4192 ibc=0
+DIFF codec_wiki_p1_q48 DIFF port=1747B c=1748B c_ibc=0 rs_ibc=0 DIFF plane=1 x=4 y=6 c=138 r=139 SB mi_row=0 mi_col=0 
+OK   codec_wiki_p2_q20 MATCH bytes=4367 ibc=0
+OK   codec_wiki_p2_q48 MATCH bytes=1798 ibc=0
+OK   codec_wiki_p3_q20 MATCH bytes=4546 ibc=0
+OK   codec_wiki_p3_q48 MATCH bytes=1806 ibc=0
+OK   codec_wiki_p4_q20 MATCH bytes=4957 ibc=0
+OK   codec_wiki_p4_q48 MATCH bytes=1897 ibc=0
+OK   gmessages_p0_q20 MATCH bytes=46 ibc=0
+OK   gmessages_p0_q48 MATCH bytes=45 ibc=0
+OK   gmessages_p1_q20 MATCH bytes=47 ibc=0
+OK   gmessages_p1_q48 MATCH bytes=46 ibc=0
+OK   gmessages_p2_q20 MATCH bytes=46 ibc=0
+OK   gmessages_p2_q48 MATCH bytes=45 ibc=0
+OK   gmessages_p3_q20 MATCH bytes=46 ibc=0
+OK   gmessages_p3_q48 MATCH bytes=45 ibc=0
+OK   gmessages_p4_q20 MATCH bytes=46 ibc=0
+OK   gmessages_p4_q48 MATCH bytes=45 ibc=0
+DIFF graph_p0_q20 DIFF port=5045B c=5016B c_ibc=7 rs_ibc=10 DIFF plane=0 x=192 y=96 c=118 r=114 SB mi_row=0 mi_col=32 
+DIFF graph_p0_q48 DIFF port=2237B c=2226B c_ibc=7 rs_ibc=6 DIFF plane=0 x=248 y=336 c=115 r=117 SB mi_row=64 mi_col=32 
+DIFF graph_p1_q20 DIFF port=5034B c=5034B c_ibc=7 rs_ibc=6 DIFF plane=1 x=168 y=16 c=126 r=125 SB mi_row=0 mi_col=64 
+DIFF graph_p1_q48 DIFF port=2309B c=2266B c_ibc=0 rs_ibc=3 
+DIFF graph_p2_q20 DIFF port=5200B c=5219B c_ibc=5 rs_ibc=22 DIFF plane=0 x=336 y=32 c=159 r=162 SB mi_row=0 mi_col=64 
+DIFF graph_p2_q48 DIFF port=2342B c=2334B c_ibc=0 rs_ibc=16 
+DIFF graph_p3_q20 DIFF port=5308B c=5324B c_ibc=23 rs_ibc=23 DIFF plane=0 x=32 y=258 c=54 r=55 SB mi_row=64 mi_col=0 
+DIFF graph_p3_q48 DIFF port=2310B c=2317B c_ibc=1 rs_ibc=13 DIFF plane=0 x=128 y=64 c=54 r=55 SB mi_row=0 mi_col=32 
+DIFF graph_p4_q20 DIFF port=5283B c=5265B c_ibc=29 rs_ibc=26 DIFF plane=0 x=19 y=256 c=112 r=101 SB mi_row=64 mi_col=0 
+DIFF graph_p4_q48 DIFF port=2454B c=2462B c_ibc=24 rs_ibc=23 DIFF plane=0 x=208 y=440 c=55 r=59 SB mi_row=96 mi_col=32 
+DIFF gui_p0_q20 DIFF port=3956B c=3933B c_ibc=0 rs_ibc=58 
+DIFF gui_p0_q48 DIFF port=1549B c=1559B c_ibc=6 rs_ibc=19 DIFF plane=0 x=320 y=192 c=60 r=57 SB mi_row=32 mi_col=64 
+DIFF gui_p1_q20 DIFF port=4024B c=4007B c_ibc=61 rs_ibc=51 DIFF plane=0 x=97 y=232 c=62 r=61 SB mi_row=32 mi_col=0 
+DIFF gui_p1_q48 DIFF port=1589B c=1586B c_ibc=0 rs_ibc=11 
+DIFF gui_p2_q20 DIFF port=4190B c=4187B c_ibc=78 rs_ibc=51 DIFF plane=0 x=219 y=8 c=67 r=70 SB mi_row=0 mi_col=32 
+DIFF gui_p2_q48 DIFF port=1624B c=1631B c_ibc=0 rs_ibc=18 
+DIFF gui_p3_q20 DIFF port=4313B c=4301B c_ibc=0 rs_ibc=61 
+DIFF gui_p3_q48 DIFF port=1657B c=1678B c_ibc=0 rs_ibc=41 
+DIFF gui_p4_q20 DIFF port=4384B c=4431B c_ibc=74 rs_ibc=63 DIFF plane=0 x=0 y=65 c=47 r=46 SB mi_row=0 mi_col=0 
+DIFF gui_p4_q48 DIFF port=1703B c=1697B c_ibc=44 rs_ibc=37 DIFF plane=0 x=128 y=248 c=249 r=211 SB mi_row=32 mi_col=32 
+DIFF imac_dark_p0_q20 DIFF port=12873B c=13034B c_ibc=0 rs_ibc=687 
+DIFF imac_dark_p0_q48 DIFF port=6436B c=6442B c_ibc=0 rs_ibc=775 
+DIFF imac_dark_p1_q20 DIFF port=13330B c=13279B c_ibc=22 rs_ibc=635 DIFF plane=0 x=448 y=64 c=37 r=33 SB mi_row=0 mi_col=96 
+DIFF imac_dark_p1_q48 DIFF port=6955B c=6916B c_ibc=0 rs_ibc=669 
+DIFF imac_dark_p2_q20 DIFF port=13440B c=13724B c_ibc=2 rs_ibc=713 DIFF plane=0 x=307 y=64 c=43 r=33 SB mi_row=0 mi_col=64 
+DIFF imac_dark_p2_q48 DIFF port=7138B c=7106B c_ibc=11 rs_ibc=695 DIFF plane=0 x=0 y=64 c=99 r=33 SB mi_row=0 mi_col=0 
+DIFF imac_dark_p3_q20 DIFF port=14017B c=14147B c_ibc=0 rs_ibc=617 
+DIFF imac_dark_p3_q48 DIFF port=7471B c=7490B c_ibc=0 rs_ibc=614 
+DIFF imac_dark_p4_q20 DIFF port=14354B c=14320B c_ibc=515 rs_ibc=507 DIFF plane=0 x=127 y=146 c=153 r=164 SB mi_row=32 mi_col=0 
+DIFF imac_dark_p4_q48 DIFF port=8509B c=8560B c_ibc=502 rs_ibc=488 DIFF plane=0 x=320 y=80 c=33 r=34 SB mi_row=0 mi_col=64 
+DIFF imac_g3_p0_q20 DIFF port=13744B c=13783B c_ibc=0 rs_ibc=632 
+DIFF imac_g3_p0_q48 DIFF port=6577B c=6611B c_ibc=0 rs_ibc=733 
+DIFF imac_g3_p1_q20 DIFF port=13994B c=14009B c_ibc=0 rs_ibc=666 
+DIFF imac_g3_p1_q48 DIFF port=6854B c=6881B c_ibc=0 rs_ibc=676 
+DIFF imac_g3_p2_q20 DIFF port=14269B c=14363B c_ibc=0 rs_ibc=788 
+DIFF imac_g3_p2_q48 DIFF port=7224B c=7301B c_ibc=2 rs_ibc=682 DIFF plane=0 x=8 y=32 c=86 r=64 SB mi_row=0 mi_col=0 
+DIFF imac_g3_p3_q20 DIFF port=14532B c=14795B c_ibc=0 rs_ibc=716 
+DIFF imac_g3_p3_q48 DIFF port=7490B c=7541B c_ibc=0 rs_ibc=613 
+DIFF imac_g3_p4_q20 DIFF port=15482B c=15427B c_ibc=509 rs_ibc=498 DIFF plane=0 x=193 y=80 c=29 r=31 SB mi_row=0 mi_col=32 
+DIFF imac_g3_p4_q48 DIFF port=8218B c=8334B c_ibc=508 rs_ibc=484 DIFF plane=0 x=133 y=24 c=210 r=234 SB mi_row=0 mi_col=32 
+DIFF imessage_p0_q20 DIFF port=3576B c=3570B c_ibc=44 rs_ibc=38 DIFF plane=1 x=16 y=86 c=128 r=129 SB mi_row=32 mi_col=0 
+DIFF imessage_p0_q48 DIFF port=1686B c=1679B c_ibc=7 rs_ibc=78 DIFF plane=0 x=96 y=128 c=18 r=17 SB mi_row=32 mi_col=0 
+DIFF imessage_p1_q20 DIFF port=3598B c=3582B c_ibc=50 rs_ibc=43 DIFF plane=0 x=108 y=206 c=116 r=111 SB mi_row=32 mi_col=0 
+DIFF imessage_p1_q48 DIFF port=1696B c=1708B c_ibc=0 rs_ibc=67 
+DIFF imessage_p2_q20 DIFF port=3757B c=3759B c_ibc=6 rs_ibc=65 DIFF plane=0 x=360 y=112 c=17 r=16 SB mi_row=0 mi_col=64 
+DIFF imessage_p2_q48 DIFF port=1855B c=1814B c_ibc=1 rs_ibc=56 DIFF plane=0 x=108 y=112 c=16 r=10 SB mi_row=0 mi_col=0 
+DIFF imessage_p3_q20 DIFF port=3917B c=3896B c_ibc=3 rs_ibc=46 DIFF plane=0 x=64 y=232 c=95 r=94 SB mi_row=32 mi_col=0 
+DIFF imessage_p3_q48 DIFF port=1871B c=1821B c_ibc=0 rs_ibc=58 
+DIFF imessage_p4_q20 DIFF port=3740B c=3746B c_ibc=53 rs_ibc=51 DIFF plane=0 x=136 y=208 c=235 r=227 SB mi_row=32 mi_col=32 
+DIFF imessage_p4_q48 DIFF port=1887B c=1873B c_ibc=66 rs_ibc=64 DIFF plane=0 x=368 y=128 c=136 r=137 SB mi_row=32 mi_col=64 
+DIFF terminal_p0_q20 DIFF port=7940B c=7908B c_ibc=0 rs_ibc=334 
+DIFF terminal_p0_q48 DIFF port=3984B c=3999B c_ibc=3 rs_ibc=360 DIFF plane=0 x=104 y=192 c=53 r=54 SB mi_row=32 mi_col=0 
+DIFF terminal_p1_q20 DIFF port=8287B c=8133B c_ibc=8 rs_ibc=299 DIFF plane=0 x=448 y=0 c=54 r=55 SB mi_row=0 mi_col=96 
+DIFF terminal_p1_q48 DIFF port=4107B c=4145B c_ibc=4 rs_ibc=308 DIFF plane=0 x=80 y=208 c=54 r=55 SB mi_row=32 mi_col=0 
+DIFF terminal_p2_q20 DIFF port=8642B c=8498B c_ibc=0 rs_ibc=401 
+DIFF terminal_p2_q48 DIFF port=4104B c=4054B c_ibc=0 rs_ibc=413 
+DIFF terminal_p3_q20 DIFF port=8760B c=8785B c_ibc=0 rs_ibc=439 
+DIFF terminal_p3_q48 DIFF port=4298B c=4338B c_ibc=0 rs_ibc=392 
+DIFF terminal_p4_q20 DIFF port=9315B c=9405B c_ibc=265 rs_ibc=272 DIFF plane=0 x=36 y=208 c=54 r=55 SB mi_row=32 mi_col=0 
+DIFF terminal_p4_q48 DIFF port=4707B c=4780B c_ibc=301 rs_ibc=302 DIFF plane=0 x=288 y=64 c=167 r=145 SB mi_row=0 mi_col=64 
+DIFF windows_p0_q20 DIFF port=25871B c=25938B c_ibc=0 rs_ibc=625 
+DIFF windows_p0_q48 DIFF port=8731B c=8768B c_ibc=0 rs_ibc=748 
+DIFF windows_p1_q20 DIFF port=26191B c=26400B c_ibc=0 rs_ibc=642 
+DIFF windows_p1_q48 DIFF port=9071B c=9132B c_ibc=0 rs_ibc=710 
+DIFF windows_p2_q20 DIFF port=26472B c=26768B c_ibc=0 rs_ibc=857 
+DIFF windows_p2_q48 DIFF port=8986B c=9093B c_ibc=0 rs_ibc=929 
+DIFF windows_p3_q20 DIFF port=26718B c=26805B c_ibc=0 rs_ibc=875 
+DIFF windows_p3_q48 DIFF port=9522B c=9610B c_ibc=0 rs_ibc=823 
+DIFF windows_p4_q20 DIFF port=28168B c=28053B c_ibc=392 rs_ibc=366 DIFF plane=0 x=112 y=64 c=67 r=65 SB mi_row=0 mi_col=0 
+DIFF windows_p4_q48 DIFF port=10302B c=10312B c_ibc=413 rs_ibc=409 DIFF plane=0 x=32 y=85 c=168 r=173 SB mi_row=0 mi_col=0 
+DIFF windows95_p0_q20 DIFF port=12362B c=12355B c_ibc=20 rs_ibc=21 IDENTICAL decoded output (512x512) 
+DIFF windows95_p0_q48 DIFF port=8352B c=8361B c_ibc=41 rs_ibc=40 DIFF plane=0 x=0 y=146 c=178 r=181 SB mi_row=32 mi_col=0 
+DIFF windows95_p1_q20 DIFF port=12325B c=12303B c_ibc=18 rs_ibc=19 DIFF plane=1 x=40 y=28 c=138 r=137 SB mi_row=0 mi_col=0 
+DIFF windows95_p1_q48 DIFF port=8327B c=8385B c_ibc=40 rs_ibc=30 DIFF plane=0 x=80 y=144 c=137 r=165 SB mi_row=32 mi_col=0 
+DIFF windows95_p2_q20 DIFF port=13162B c=13160B c_ibc=0 rs_ibc=98 
+DIFF windows95_p2_q48 DIFF port=8677B c=8762B c_ibc=0 rs_ibc=118 
+DIFF windows95_p3_q20 DIFF port=13516B c=13515B c_ibc=181 rs_ibc=181 DIFF plane=0 x=96 y=40 c=234 r=236 SB mi_row=0 mi_col=0 
+DIFF windows95_p3_q48 DIFF port=8857B c=8872B c_ibc=0 rs_ibc=135 
+DIFF windows95_p4_q20 DIFF port=13556B c=13555B c_ibc=2 rs_ibc=2 DIFF plane=1 x=49 y=96 c=135 r=138 SB mi_row=32 mi_col=0 
+DIFF windows95_p4_q48 DIFF port=8434B c=8521B c_ibc=148 rs_ibc=203 DIFF plane=0 x=0 y=16 c=135 r=126 SB mi_row=0 mi_col=0 
+
+## first-block-diff localizations (decode-order; TREE=partition flip, MODE=mode/DV/tx flip at same block;
+## 'DV failed validity' = the aom-decode oracle rejects the REAL-SVT C stream — an oracle gap (libaom 3.14.1 decodes those cleanly), localization n/a
+codec_wiki_p1_q48: FIRST-BLOCK-DIFF #285 kind=MODE   A mi=(41,44) bsize=17 ibc=0 dv=(0,0) mode=1 uv=0 skip=1 pal=0 fi=0 tx=14 txbs=[(0, 0)]   B mi=(41,44) bsize=17 ibc=0 dv=(0,0) mode=1 uv=1 skip=1 pal=0 fi=0 tx=14 txbs=[(0, 0)] 
+graph_p0_q20: FIRST-BLOCK-DIFF #132 kind=TREE   A mi=(24,48) bsize=4 ibc=0 dv=(0,0) mode=7 uv=13 skip=0 pal=0 fi=0 tx=1 txbs=[(18, 9), (0, 0)]   B mi=(24,48) bsize=3 ibc=0 dv=(0,0) mode=12 uv=13 skip=0 pal=0 fi=0 tx=1 txbs=[(18, 9)] 
+graph_p0_q48: FIRST-BLOCK-DIFF #310 kind=MODE   A mi=(84,62) bsize=4 ibc=1 dv=(-1024,0) mode=0 uv=0 skip=0 pal=0 fi=0 tx=0 txbs=[(5, 13), (9, 8), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)]   B mi=(84,62) bsize=4 ibc=1 dv=(-1024,0) mode=0 uv=0 skip=0 pal=0 fi=0 tx=7 txbs=[(20, 11)] 
+graph_p1_q20: FIRST-BLOCK-DIFF #169 kind=MODE   A mi=(8,84) bsize=5 ibc=0 dv=(0,0) mode=1 uv=0 skip=0 pal=0 fi=0 tx=1 txbs=[(49, 10), (0, 0)]   B mi=(8,84) bsize=5 ibc=0 dv=(0,0) mode=1 uv=1 skip=0 pal=0 fi=0 tx=1 txbs=[(49, 10), (0, 0)] 
+graph_p1_q48: graph_p1_q48/c.obu: prefilter decode error: malformed bitstream: corrupt frame: intrabc DV failed validity (non-conformant stream) 
+graph_p2_q20: FIRST-BLOCK-DIFF #121 kind=TREE   A mi=(8,84) bsize=5 ibc=0 dv=(0,0) mode=1 uv=1 skip=0 pal=0 fi=0 tx=0 txbs=[(13, 10), (0, 0), (0, 0), (0, 0), (10, 10), (0, 0), (0, 0), (0, 0)]   B mi=(8,84) bsize=6 ibc=0 dv=(0,0) mode=1 uv=0 skip=0 pal=0 fi=0 tx=0 txbs=[(13, 10), (0, 0), (0, 0), (0, 0), (10, 10), (0, 0), (0, 0), (0, 0), (9, 10), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)] 
+graph_p2_q48: graph_p2_q48/c.obu: prefilter decode error: malformed bitstream: corrupt frame: intrabc DV failed validity (non-conformant stream) 
+graph_p3_q20: FIRST-BLOCK-DIFF #310 kind=MODE   A mi=(65,6) bsize=0 ibc=1 dv=(-512,0) mode=0 uv=0 skip=0 pal=0 fi=0 tx=0 txbs=[(9, 11)]   B mi=(65,6) bsize=0 ibc=1 dv=(-512,0) mode=0 uv=0 skip=0 pal=0 fi=0 tx=0 txbs=[(7, 9)] 
+graph_p3_q48: FIRST-BLOCK-DIFF #128 kind=TREE   A mi=(16,32) bsize=9 ibc=1 dv=(-512,-520) mode=0 uv=0 skip=0 pal=0 fi=0 tx=1 txbs=[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (3, 13), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)]   B mi=(16,32) bsize=19 ibc=0 dv=(0,0) mode=0 uv=0 skip=1 pal=2 fi=0 tx=16 txbs=[(0, 0)] 
+graph_p4_q20: FIRST-BLOCK-DIFF #291 kind=TREE   A mi=(64,4) bsize=6 ibc=0 dv=(0,0) mode=0 uv=13 skip=0 pal=5 fi=0 tx=2 txbs=[(0, 0)]   B mi=(64,4) bsize=3 ibc=0 dv=(0,0) mode=0 uv=13 skip=0 pal=4 fi=0 tx=1 txbs=[(0, 0)] 
+graph_p4_q48: FIRST-BLOCK-DIFF #359 kind=MODE   A mi=(108,44) bsize=6 ibc=1 dv=(-512,0) mode=0 uv=0 skip=0 pal=0 fi=0 tx=2 txbs=[(112, 11)]   B mi=(108,44) bsize=6 ibc=0 dv=(0,0) mode=2 uv=0 skip=1 pal=0 fi=0 tx=2 txbs=[(0, 0)] 
+gui_p0_q20: gui_p0_q20/c.obu: prefilter decode error: malformed bitstream: corrupt frame: intrabc DV failed validity (non-conformant stream) 
+gui_p0_q48: FIRST-BLOCK-DIFF #97 kind=MODE   A mi=(56,64) bsize=9 ibc=1 dv=(-1024,0) mode=0 uv=0 skip=0 pal=0 fi=0 tx=1 txbs=[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (24, 4), (10, 2), (18, 7), (47, 7)]   B mi=(56,64) bsize=9 ibc=0 dv=(0,0) mode=0 uv=0 skip=0 pal=0 fi=1 tx=1 txbs=[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (19, 3), (19, 1), (0, 0), (0, 0)] 
+gui_p1_q20: FIRST-BLOCK-DIFF #96 kind=TREE   A mi=(60,16) bsize=5 ibc=1 dv=(-1024,0) mode=0 uv=0 skip=0 pal=0 fi=0 tx=1 txbs=[(14, 0), (18, 15)]   B mi=(60,16) bsize=17 ibc=0 dv=(0,0) mode=3 uv=0 skip=0 pal=0 fi=0 tx=14 txbs=[(14, 3)] 
+gui_p1_q48: gui_p1_q48/c.obu: prefilter decode error: malformed bitstream: corrupt frame: intrabc DV failed validity (non-conformant stream) 
+gui_p2_q20: FIRST-BLOCK-DIFF #2 kind=TREE   A mi=(0,32) bsize=8 ibc=0 dv=(0,0) mode=12 uv=12 skip=0 pal=0 fi=0 tx=2 txbs=[(0, 0), (30, 2)]   B mi=(0,32) bsize=6 ibc=0 dv=(0,0) mode=0 uv=0 skip=1 pal=0 fi=0 tx=2 txbs=[(0, 0)] 
+gui_p2_q48: gui_p2_q48/c.obu: prefilter decode error: malformed bitstream: corrupt frame: intrabc DV failed validity (non-conformant stream) 
+gui_p3_q20: gui_p3_q20/c.obu: prefilter decode error: malformed bitstream: corrupt frame: intrabc DV failed validity (non-conformant stream) 
+gui_p3_q48: gui_p3_q48/c.obu: prefilter decode error: malformed bitstream: corrupt frame: intrabc DV failed validity (non-conformant stream) 
+gui_p4_q20: FIRST-BLOCK-DIFF #41 kind=TREE   A mi=(0,72) bsize=6 ibc=0 dv=(0,0) mode=0 uv=0 skip=1 pal=6 fi=0 tx=1 txbs=[(0, 0), (0, 0), (0, 0), (0, 0)]   B mi=(0,72) bsize=3 ibc=0 dv=(0,0) mode=0 uv=0 skip=1 pal=4 fi=0 tx=0 txbs=[(0, 0), (0, 0), (0, 0), (0, 0)] 
+gui_p4_q48: FIRST-BLOCK-DIFF #71 kind=MODE   A mi=(62,32) bsize=3 ibc=1 dv=(-512,0) mode=0 uv=0 skip=0 pal=0 fi=0 tx=1 txbs=[(19, 5)]   B mi=(62,32) bsize=3 ibc=0 dv=(0,0) mode=10 uv=0 skip=0 pal=0 fi=0 tx=1 txbs=[(18, 0)] 
+imac_dark_p0_q20: imac_dark_p0_q20/c.obu: prefilter decode error: malformed bitstream: corrupt frame: intrabc DV failed validity (non-conformant stream) 
+imac_dark_p0_q48: imac_dark_p0_q48/c.obu: prefilter decode error: malformed bitstream: corrupt frame: intrabc DV failed validity (non-conformant stream) 
+imac_dark_p1_q20: FIRST-BLOCK-DIFF #247 kind=MODE   A mi=(24,104) bsize=6 ibc=1 dv=(0,-2576) mode=0 uv=0 skip=0 pal=0 fi=0 tx=0 txbs=[(11, 10), (16, 9), (16, 9), (15, 11), (12, 9), (6, 14), (15, 0), (15, 9), (15, 9), (12, 9), (7, 9), (14, 15), (14, 11), (11, 10), (9, 11), (9, 10)]   B mi=(24,104) bsize=6 ibc=0 dv=(0,0) mode=0 uv=0 skip=0 pal=7 fi=0 tx=2 txbs=[(232, 9)] 
+imac_dark_p1_q48: imac_dark_p1_q48/c.obu: prefilter decode error: malformed bitstream: corrupt frame: intrabc DV failed validity (non-conformant stream) 
+imac_dark_p2_q20: FIRST-BLOCK-DIFF #189 kind=TREE   A mi=(20,68) bsize=6 ibc=1 dv=(-368,160) mode=0 uv=0 skip=0 pal=0 fi=0 tx=0 txbs=[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (15, 9), (0, 0), (0, 0), (0, 0), (8, 9)]   B mi=(20,68) bsize=5 ibc=0 dv=(0,0) mode=0 uv=0 skip=1 pal=0 fi=0 tx=8 txbs=[(0, 0)] 
+imac_dark_p2_q48: FIRST-BLOCK-DIFF #51 kind=MODE   A mi=(8,100) bsize=6 ibc=1 dv=(0,-2512) mode=0 uv=0 skip=0 pal=0 fi=0 tx=0 txbs=[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (8, 15), (8, 15), (0, 0), (0, 0), (0, 0), (0, 0)]   B mi=(8,100) bsize=6 ibc=0 dv=(0,0) mode=0 uv=0 skip=1 pal=3 fi=0 tx=2 txbs=[(0, 0)] 
+imac_dark_p3_q20: imac_dark_p3_q20/c.obu: prefilter decode error: malformed bitstream: corrupt frame: intrabc DV failed validity (non-conformant stream) 
+imac_dark_p3_q48: imac_dark_p3_q48/c.obu: prefilter decode error: malformed bitstream: corrupt frame: intrabc DV failed validity (non-conformant stream) 
+imac_dark_p4_q20: FIRST-BLOCK-DIFF #267 kind=TREE   A mi=(36,28) bsize=3 ibc=0 dv=(0,0) mode=0 uv=0 skip=0 pal=6 fi=0 tx=1 txbs=[(59, 9)]   B mi=(36,28) bsize=6 ibc=0 dv=(0,0) mode=0 uv=0 skip=0 pal=8 fi=0 tx=2 txbs=[(204, 9)] 
+imac_dark_p4_q48: FIRST-BLOCK-DIFF #157 kind=TREE   A mi=(20,76) bsize=6 ibc=0 dv=(0,0) mode=0 uv=0 skip=1 pal=4 fi=0 tx=2 txbs=[(0, 0)]   B mi=(20,76) bsize=3 ibc=0 dv=(0,0) mode=0 uv=0 skip=1 pal=0 fi=1 tx=1 txbs=[(0, 0)] 
+imac_g3_p0_q20: imac_g3_p0_q20/c.obu: prefilter decode error: malformed bitstream: corrupt frame: intrabc DV failed validity (non-conformant stream) 
+imac_g3_p0_q48: imac_g3_p0_q48/c.obu: prefilter decode error: malformed bitstream: corrupt frame: intrabc DV failed validity (non-conformant stream) 
+imac_g3_p1_q20: imac_g3_p1_q20/c.obu: prefilter decode error: malformed bitstream: corrupt frame: intrabc DV failed validity (non-conformant stream) 
+imac_g3_p1_q48: imac_g3_p1_q48/c.obu: prefilter decode error: malformed bitstream: corrupt frame: intrabc DV failed validity (non-conformant stream) 
+imac_g3_p2_q20: imac_g3_p2_q20/c.obu: prefilter decode error: malformed bitstream: corrupt frame: intrabc DV failed validity (non-conformant stream) 
+imac_g3_p2_q48: FIRST-BLOCK-DIFF #14 kind=TREE   A mi=(8,0) bsize=6 ibc=0 dv=(0,0) mode=0 uv=0 skip=1 pal=5 fi=0 tx=2 txbs=[(0, 0)]   B mi=(8,0) bsize=4 ibc=0 dv=(0,0) mode=0 uv=0 skip=1 pal=2 fi=0 tx=1 txbs=[(0, 0), (0, 0)] 
+imac_g3_p3_q20: imac_g3_p3_q20/c.obu: prefilter decode error: malformed bitstream: corrupt frame: intrabc DV failed validity (non-conformant stream) 
+imac_g3_p3_q48: imac_g3_p3_q48/c.obu: prefilter decode error: malformed bitstream: corrupt frame: intrabc DV failed validity (non-conformant stream) 
+imac_g3_p4_q20: FIRST-BLOCK-DIFF #103 kind=TREE   A mi=(4,68) bsize=3 ibc=0 dv=(0,0) mode=12 uv=12 skip=1 pal=0 fi=0 tx=1 txbs=[(0, 0)]   B mi=(4,68) bsize=6 ibc=0 dv=(0,0) mode=0 uv=0 skip=0 pal=8 fi=0 tx=1 txbs=[(0, 0), (0, 0), (18, 0), (6, 0)] 
+imac_g3_p4_q48: FIRST-BLOCK-DIFF #34 kind=TREE   A mi=(4,32) bsize=6 ibc=0 dv=(0,0) mode=0 uv=0 skip=0 pal=4 fi=0 tx=1 txbs=[(0, 0), (0, 0), (8, 10), (0, 0)]   B mi=(4,32) bsize=3 ibc=0 dv=(0,0) mode=12 uv=12 skip=1 pal=0 fi=0 tx=1 txbs=[(0, 0)] 
+imessage_p0_q20: FIRST-BLOCK-DIFF #70 kind=TREE   A mi=(40,0) bsize=6 ibc=1 dv=(-1024,0) mode=0 uv=0 skip=0 pal=0 fi=0 tx=2 txbs=[(16, 11)]   B mi=(40,0) bsize=7 ibc=0 dv=(0,0) mode=0 uv=0 skip=1 pal=2 fi=0 tx=9 txbs=[(0, 0)] 
+imessage_p0_q48: FIRST-BLOCK-DIFF #87 kind=TREE   A mi=(32,24) bsize=19 ibc=0 dv=(0,0) mode=12 uv=0 skip=0 pal=0 fi=0 tx=1 txbs=[(0, 0), (0, 0), (5, 10), (0, 0)]   B mi=(32,24) bsize=6 ibc=0 dv=(0,0) mode=9 uv=0 skip=1 pal=0 fi=0 tx=2 txbs=[(0, 0)] 
+imessage_p1_q20: FIRST-BLOCK-DIFF #116 kind=TREE   A mi=(48,24) bsize=6 ibc=0 dv=(0,0) mode=0 uv=0 skip=1 pal=5 fi=0 tx=2 txbs=[(0, 0)]   B mi=(48,24) bsize=19 ibc=0 dv=(0,0) mode=0 uv=0 skip=1 pal=0 fi=0 tx=16 txbs=[(0, 0)] 
+imessage_p1_q48: imessage_p1_q48/c.obu: prefilter decode error: malformed bitstream: corrupt frame: intrabc DV failed validity (non-conformant stream) 
+imessage_p2_q20: FIRST-BLOCK-DIFF #59 kind=TREE   A mi=(24,64) bsize=9 ibc=0 dv=(0,0) mode=0 uv=0 skip=1 pal=7 fi=0 tx=3 txbs=[(0, 0)]   B mi=(24,64) bsize=6 ibc=0 dv=(0,0) mode=0 uv=0 skip=1 pal=0 fi=0 tx=2 txbs=[(0, 0)] 
+imessage_p2_q48: FIRST-BLOCK-DIFF #36 kind=TREE   A mi=(28,24) bsize=6 ibc=1 dv=(-512,0) mode=0 uv=0 skip=0 pal=0 fi=0 tx=0 txbs=[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (12, 13), (11, 4), (0, 0), (0, 0), (2, 5), (6, 0), (0, 0), (0, 0), (12, 12), (0, 0), (0, 0)]   B mi=(28,24) bsize=5 ibc=0 dv=(0,0) mode=9 uv=0 skip=0 pal=0 fi=0 tx=0 txbs=[(0, 0), (0, 0), (0, 0), (4, 3), (0, 0), (0, 0), (0, 0), (6, 1)] 
+imessage_p3_q20: FIRST-BLOCK-DIFF #213 kind=MODE   A mi=(58,16) bsize=3 ibc=0 dv=(0,0) mode=5 uv=0 skip=0 pal=0 fi=0 tx=1 txbs=[(58, 9)]   B mi=(58,16) bsize=3 ibc=0 dv=(0,0) mode=0 uv=0 skip=1 pal=7 fi=0 tx=1 txbs=[(0, 0)] 
+imessage_p3_q48: imessage_p3_q48/c.obu: prefilter decode error: malformed bitstream: corrupt frame: intrabc DV failed validity (non-conformant stream) 
+imessage_p4_q20: FIRST-BLOCK-DIFF #214 kind=TREE   A mi=(52,32) bsize=6 ibc=0 dv=(0,0) mode=0 uv=0 skip=1 pal=7 fi=0 tx=2 txbs=[(0, 0)]   B mi=(52,32) bsize=3 ibc=0 dv=(0,0) mode=0 uv=0 skip=1 pal=3 fi=0 tx=1 txbs=[(0, 0)] 
+imessage_p4_q48: FIRST-BLOCK-DIFF #167 kind=MODE   A mi=(32,92) bsize=6 ibc=1 dv=(-512,0) mode=0 uv=0 skip=0 pal=0 fi=0 tx=1 txbs=[(18, 0), (6, 10), (25, 11), (33, 11)]   B mi=(32,92) bsize=6 ibc=0 dv=(0,0) mode=0 uv=0 skip=1 pal=4 fi=0 tx=2 txbs=[(0, 0)] 
+terminal_p0_q20: terminal_p0_q20/c.obu: prefilter decode error: malformed bitstream: corrupt frame: intrabc DV failed validity (non-conformant stream) 
+terminal_p0_q48: FIRST-BLOCK-DIFF #128 kind=TREE   A mi=(48,16) bsize=9 ibc=1 dv=(-1024,0) mode=0 uv=0 skip=0 pal=0 fi=0 tx=1 txbs=[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (18, 15), (0, 0), (0, 0), (0, 0)]   B mi=(48,16) bsize=6 ibc=0 dv=(0,0) mode=0 uv=0 skip=1 pal=0 fi=0 tx=2 txbs=[(0, 0)] 
+terminal_p1_q20: FIRST-BLOCK-DIFF #101 kind=MODE   A mi=(12,108) bsize=6 ibc=1 dv=(0,-3072) mode=0 uv=0 skip=0 pal=0 fi=0 tx=0 txbs=[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (16, 13), (0, 0), (0, 0), (9, 7), (3, 9)]   B mi=(12,108) bsize=6 ibc=0 dv=(0,0) mode=12 uv=0 skip=0 pal=0 fi=0 tx=0 txbs=[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (16, 11), (16, 11), (4, 11)] 
+terminal_p1_q48: FIRST-BLOCK-DIFF #122 kind=TREE   A mi=(48,16) bsize=9 ibc=1 dv=(-1024,0) mode=0 uv=0 skip=0 pal=0 fi=0 tx=1 txbs=[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (30, 14), (5, 0), (0, 0), (0, 0)]   B mi=(48,16) bsize=6 ibc=0 dv=(0,0) mode=0 uv=0 skip=1 pal=0 fi=0 tx=2 txbs=[(0, 0)] 
+terminal_p2_q20: terminal_p2_q20/c.obu: prefilter decode error: malformed bitstream: corrupt frame: intrabc DV failed validity (non-conformant stream) 
+terminal_p2_q48: terminal_p2_q48/c.obu: prefilter decode error: malformed bitstream: corrupt frame: intrabc DV failed validity (non-conformant stream) 
+terminal_p3_q20: terminal_p3_q20/c.obu: prefilter decode error: malformed bitstream: corrupt frame: intrabc DV failed validity (non-conformant stream) 
+terminal_p3_q48: terminal_p3_q48/c.obu: prefilter decode error: malformed bitstream: corrupt frame: intrabc DV failed validity (non-conformant stream) 
+terminal_p4_q20: FIRST-BLOCK-DIFF #305 kind=MODE   A mi=(52,0) bsize=6 ibc=1 dv=(-256,0) mode=0 uv=0 skip=0 pal=0 fi=0 tx=2 txbs=[(160, 11)]   B mi=(52,0) bsize=6 ibc=0 dv=(0,0) mode=0 uv=0 skip=0 pal=4 fi=0 tx=2 txbs=[(1, 0)] 
+terminal_p4_q48: FIRST-BLOCK-DIFF #88 kind=MODE   A mi=(16,72) bsize=3 ibc=1 dv=(-512,136) mode=0 uv=0 skip=0 pal=0 fi=0 tx=1 txbs=[(1, 12)]   B mi=(16,72) bsize=3 ibc=1 dv=(-512,136) mode=0 uv=0 skip=0 pal=0 fi=0 tx=1 txbs=[(9, 10)] 
+windows95_p0_q20: FIRST-BLOCK-DIFF #604 kind=TREE   A mi=(76,108) bsize=16 ibc=0 dv=(0,0) mode=12 uv=0 skip=1 pal=0 fi=0 tx=13 txbs=[(0, 0)]   B mi=(76,108) bsize=3 ibc=1 dv=(-488,0) mode=0 uv=0 skip=1 pal=0 fi=0 tx=1 txbs=[(0, 0)] 
+windows95_p0_q48: FIRST-BLOCK-DIFF #193 kind=TREE   A mi=(36,0) bsize=6 ibc=1 dv=(-624,0) mode=0 uv=0 skip=0 pal=0 fi=0 tx=2 txbs=[(6, 11)]   B mi=(36,0) bsize=5 ibc=0 dv=(0,0) mode=0 uv=0 skip=0 pal=0 fi=0 tx=8 txbs=[(6, 11)] 
+windows95_p1_q20: FIRST-BLOCK-DIFF #38 kind=MODE   A mi=(14,20) bsize=5 ibc=0 dv=(0,0) mode=0 uv=13 skip=0 pal=5 fi=0 tx=8 txbs=[(0, 0)]   B mi=(14,20) bsize=5 ibc=0 dv=(0,0) mode=0 uv=0 skip=0 pal=5 fi=0 tx=8 txbs=[(0, 0)] 
+windows95_p1_q48: FIRST-BLOCK-DIFF #218 kind=MODE   A mi=(38,19) bsize=1 ibc=1 dv=(-1056,0) mode=0 uv=0 skip=0 pal=0 fi=0 tx=5 txbs=[(31, 9)]   B mi=(38,19) bsize=1 ibc=0 dv=(0,0) mode=4 uv=4 skip=0 pal=0 fi=0 tx=5 txbs=[(27, 10)] 
+windows95_p2_q20: windows95_p2_q20/c.obu: prefilter decode error: malformed bitstream: corrupt frame: intrabc DV failed validity (non-conformant stream) 
+windows95_p2_q48: windows95_p2_q48/c.obu: prefilter decode error: malformed bitstream: corrupt frame: intrabc DV failed validity (non-conformant stream) 
+windows95_p3_q20: FIRST-BLOCK-DIFF #103 kind=TREE   A mi=(8,24) bsize=5 ibc=0 dv=(0,0) mode=0 uv=13 skip=0 pal=2 fi=0 tx=8 txbs=[(0, 0)]   B mi=(8,24) bsize=3 ibc=0 dv=(0,0) mode=0 uv=13 skip=0 pal=2 fi=0 tx=1 txbs=[(0, 0)] 
+windows95_p3_q48: windows95_p3_q48/c.obu: prefilter decode error: malformed bitstream: corrupt frame: intrabc DV failed validity (non-conformant stream) 
+windows95_p4_q20: FIRST-BLOCK-DIFF #359 kind=MODE   A mi=(40,32) bsize=6 ibc=0 dv=(0,0) mode=0 uv=13 skip=0 pal=6 fi=0 tx=2 txbs=[(0, 0)]   B mi=(40,32) bsize=6 ibc=0 dv=(0,0) mode=0 uv=0 skip=0 pal=6 fi=0 tx=2 txbs=[(0, 0)] 
+windows95_p4_q48: FIRST-BLOCK-DIFF #2 kind=TREE   A mi=(4,0) bsize=6 ibc=0 dv=(0,0) mode=0 uv=0 skip=0 pal=2 fi=0 tx=1 txbs=[(2, 11), (2, 11), (0, 0), (0, 0)]   B mi=(4,0) bsize=3 ibc=0 dv=(0,0) mode=0 uv=0 skip=1 pal=3 fi=0 tx=1 txbs=[(0, 0)] 
+windows_p0_q20: windows_p0_q20/c.obu: prefilter decode error: malformed bitstream: corrupt frame: intrabc DV failed validity (non-conformant stream) 
+windows_p0_q48: windows_p0_q48/c.obu: prefilter decode error: malformed bitstream: corrupt frame: intrabc DV failed validity (non-conformant stream) 
+windows_p1_q20: windows_p1_q20/c.obu: prefilter decode error: malformed bitstream: corrupt frame: intrabc DV failed validity (non-conformant stream) 
+windows_p1_q48: windows_p1_q48/c.obu: prefilter decode error: malformed bitstream: corrupt frame: intrabc DV failed validity (non-conformant stream) 
+windows_p2_q20: windows_p2_q20/c.obu: prefilter decode error: malformed bitstream: corrupt frame: intrabc DV failed validity (non-conformant stream) 
+windows_p2_q48: windows_p2_q48/c.obu: prefilter decode error: malformed bitstream: corrupt frame: intrabc DV failed validity (non-conformant stream) 
+windows_p3_q20: windows_p3_q20/c.obu: prefilter decode error: malformed bitstream: corrupt frame: intrabc DV failed validity (non-conformant stream) 
+windows_p3_q48: windows_p3_q48/c.obu: prefilter decode error: malformed bitstream: corrupt frame: intrabc DV failed validity (non-conformant stream) 
+windows_p4_q20: FIRST-BLOCK-DIFF #233 kind=TREE   A mi=(16,28) bsize=3 ibc=1 dv=(-200,-272) mode=0 uv=0 skip=0 pal=0 fi=0 tx=1 txbs=[(0, 0)]   B mi=(16,28) bsize=6 ibc=0 dv=(0,0) mode=0 uv=10 skip=0 pal=5 fi=0 tx=1 txbs=[(0, 0), (15, 10), (0, 0), (0, 0)] 
+windows_p4_q48: FIRST-BLOCK-DIFF #95 kind=TREE   A mi=(20,8) bsize=6 ibc=0 dv=(0,0) mode=0 uv=0 skip=1 pal=4 fi=0 tx=2 txbs=[(0, 0)]   B mi=(20,8) bsize=3 ibc=0 dv=(0,0) mode=0 uv=0 skip=1 pal=4 fi=0 tx=1 txbs=[(0, 0)] 
