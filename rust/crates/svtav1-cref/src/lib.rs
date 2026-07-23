@@ -3622,3 +3622,110 @@ pub fn intra_bc_search_driver(
     };
     (0..n as usize).map(|i| (out_dv[i * 2], out_dv[i * 2 + 1])).collect()
 }
+
+// ---------------------------------------------------------------------------
+// IntraBC MVP stack (IBC chunk 6)
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn ref_setup_ref_mv_list_intra(
+        cells: *const i32,
+        grid_rows: i32,
+        grid_cols: i32,
+        mi_row: i32,
+        mi_col: i32,
+        bsize_cur: i32,
+        mi_rows: i32,
+        mi_cols: i32,
+        tile_row_start: i32,
+        tile_row_end: i32,
+        tile_col_start: i32,
+        tile_col_end: i32,
+        sb_size_is_128: i32,
+        stack_out: *mut i32,
+        mode_ctx_out: *mut i32,
+        nearest_out: *mut u32,
+        near_out: *mut u32,
+    ) -> i32;
+}
+
+/// One packed mode-info grid cell for [`setup_ref_mv_list_intra`]:
+/// `(bsize, mode, use_intrabc, ref_frame0, ref_frame1, mv0_as_int, partition)`.
+pub type MvpCell = (u8, u8, bool, i8, i8, u32, u8);
+
+/// The result of the C `setup_ref_mv_list` (INTRA_FRAME) +
+/// `svt_av1_find_best_ref_mvs_from_stack` chain.
+pub struct MvpResult {
+    pub count: u8,
+    /// All 8 raw stack slots `(this_mv_as_int, weight)` — including the
+    /// gm-filled slots beyond `count`.
+    pub stack: [(u32, i32); 8],
+    pub mode_context: i16,
+    pub nearest: u32,
+    pub near: u32,
+}
+
+/// Reference `setup_ref_mv_list` (adaptive_mv_pred.c:651, EXPORTED) for
+/// `INTRA_FRAME` on a packed KEY-frame grid, + the from-stack read.
+#[allow(clippy::too_many_arguments)]
+pub fn setup_ref_mv_list_intra(
+    cells: &[MvpCell],
+    grid_rows: usize,
+    grid_cols: usize,
+    mi_pos: (i32, i32),
+    bsize_cur: usize,
+    mi_dims: (i32, i32),
+    tile: (i32, i32, i32, i32),
+    sb_size_is_128: bool,
+) -> MvpResult {
+    assert_eq!(cells.len(), grid_rows * grid_cols);
+    let packed: Vec<i32> = cells
+        .iter()
+        .flat_map(|&(bsize, mode, ibc, r0, r1, mv, part)| {
+            [
+                i32::from(bsize),
+                i32::from(mode),
+                i32::from(ibc),
+                i32::from(r0),
+                i32::from(r1),
+                mv as i32,
+                i32::from(part),
+            ]
+        })
+        .collect();
+    let mut stack_out = [0i32; 16];
+    let mut mode_ctx = 0i32;
+    let (mut nearest, mut near) = (0u32, 0u32);
+    let count = unsafe {
+        ref_setup_ref_mv_list_intra(
+            packed.as_ptr(),
+            grid_rows as i32,
+            grid_cols as i32,
+            mi_pos.0,
+            mi_pos.1,
+            bsize_cur as i32,
+            mi_dims.0,
+            mi_dims.1,
+            tile.0,
+            tile.1,
+            tile.2,
+            tile.3,
+            i32::from(sb_size_is_128),
+            stack_out.as_mut_ptr(),
+            &mut mode_ctx,
+            &mut nearest,
+            &mut near,
+        )
+    };
+    let mut stack = [(0u32, 0i32); 8];
+    for (i, slot) in stack.iter_mut().enumerate() {
+        *slot = (stack_out[i * 2] as u32, stack_out[i * 2 + 1]);
+    }
+    MvpResult {
+        count: count as u8,
+        stack,
+        mode_context: mode_ctx as i16,
+        nearest,
+        near,
+    }
+}

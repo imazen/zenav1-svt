@@ -2171,3 +2171,154 @@ int32_t ref_intra_bc_search_driver(
     free(ppcs);
     return num_dv_cand;
 }
+
+/* ---- IntraBC MVP (DV predictor) stack (IBC chunk 6, ibc-port-map.md §D) ----
+ *
+ * Differential oracle for svtav1-encoder/src/intrabc_mvp.rs: the EXPORTED
+ * setup_ref_mv_list (adaptive_mv_pred.c:651) driven for INTRA_FRAME on a
+ * caller-supplied KEY-frame mode-info grid, then the EXPORTED
+ * svt_av1_find_best_ref_mvs_from_stack (:2030). The shim assembles the
+ * MacroBlockD exactly as svt_aom_init_xd (:1038-1123) does (n8 dims,
+ * availability, is_sec_rect, mb_to edges, tile, mi grid pointers) and
+ * replicates generate_av1_mvp_table's INTRA_FRAME slice (:1358-1364:
+ * zeroed stack + count, gm_mv = 0, IDENTITY gm_params).
+ *
+ * Grid cells arrive packed 7 i32s each: bsize, mode, use_intrabc, ref0,
+ * ref1, mv0_as_int, partition — replicated per 4x4 mi cell over each
+ * block's footprint (like SVT's mi_grid_base). Every cell gets its own
+ * MbModeInfo (field-identical within a block; the scans compare fields,
+ * never pointer identity).
+ */
+#include "av1_common.h" /* Av1Common */
+#include "md_process.h" /* ModeDecisionContext */
+
+void setup_ref_mv_list(PictureControlSet* pcs, const Av1Common* cm, const MacroBlockD* xd,
+                       MvReferenceFrame ref_frame, uint8_t* refmv_count,
+                       CandidateMv ref_mv_stack[MAX_REF_MV_STACK_SIZE], Mv* gm_mv_candidates,
+                       const WarpedMotionParams* gm_params, int32_t mi_row, int32_t mi_col,
+                       ModeDecisionContext* ctx, uint8_t symteric_refs, Mv* mv_ref0,
+                       int16_t* mode_context);
+void svt_av1_find_best_ref_mvs_from_stack(int allow_hp,
+                                          CandidateMv ref_mv_stack[][MAX_REF_MV_STACK_SIZE],
+                                          MacroBlockD* xd, MvReferenceFrame ref_frame,
+                                          Mv* nearest_mv, Mv* near_mv, int is_integer);
+
+int32_t ref_setup_ref_mv_list_intra(const int32_t* cells, int32_t grid_rows, int32_t grid_cols,
+                                    int32_t mi_row, int32_t mi_col, int32_t bsize_cur,
+                                    int32_t mi_rows, int32_t mi_cols, int32_t tile_row_start,
+                                    int32_t tile_row_end, int32_t tile_col_start,
+                                    int32_t tile_col_end, int32_t sb_size_is_128,
+                                    int32_t* stack_out /* 8 x {this_as_int, weight} */,
+                                    int32_t* mode_ctx_out, uint32_t* nearest_out,
+                                    uint32_t* near_out) {
+    ibc_ensure_init();
+    const int32_t n_cells = grid_rows * grid_cols;
+    MbModeInfo*   mbmi    = (MbModeInfo*)calloc((size_t)n_cells, sizeof(MbModeInfo));
+    MbModeInfo**  grid    = (MbModeInfo**)calloc((size_t)n_cells, sizeof(MbModeInfo*));
+    for (int32_t i = 0; i < n_cells; i++) {
+        const int32_t* c              = cells + (size_t)i * 7;
+        mbmi[i].bsize                 = (BlockSize)c[0];
+        mbmi[i].block_mi.mode         = (PredictionMode)c[1];
+        mbmi[i].block_mi.use_intrabc  = (uint8_t)c[2];
+        mbmi[i].block_mi.ref_frame[0] = (MvReferenceFrame)c[3];
+        mbmi[i].block_mi.ref_frame[1] = (MvReferenceFrame)c[4];
+        mbmi[i].block_mi.mv[0].as_int = (uint32_t)c[5];
+        mbmi[i].partition             = (PartitionType)c[6];
+        grid[i]                       = &mbmi[i];
+    }
+
+    Av1Common* cm = (Av1Common*)calloc(1, sizeof(Av1Common));
+    cm->mi_rows   = mi_rows;
+    cm->mi_cols   = mi_cols;
+
+    PictureParentControlSet* ppcs = (PictureParentControlSet*)calloc(1, sizeof(*ppcs));
+    PictureControlSet*       pcs  = (PictureControlSet*)calloc(1, sizeof(*pcs));
+    SequenceControlSet*      scs  = (SequenceControlSet*)calloc(1, sizeof(*scs));
+    ModeDecisionContext*     ctx  = (ModeDecisionContext*)calloc(1, sizeof(*ctx));
+    pcs->ppcs                     = ppcs;
+    pcs->scs                      = scs;
+    ppcs->scs                     = scs;
+    scs->seq_header.sb_size       = sb_size_is_128 ? BLOCK_128X128 : BLOCK_64X64;
+    ppcs->frm_hdr.use_ref_frame_mvs = 0;
+
+    /* svt_aom_init_xd (adaptive_mv_pred.c:1046-1091). */
+    MacroBlockD xd;
+    memset(&xd, 0, sizeof(xd));
+    const int32_t bw = mi_size_wide[bsize_cur];
+    const int32_t bh = mi_size_high[bsize_cur];
+    xd.n4_w = xd.n8_w = (uint8_t)bw;
+    xd.n4_h = xd.n8_h = (uint8_t)bh;
+    xd.mi_row            = mi_row;
+    xd.mi_col            = mi_col;
+    xd.mb_to_top_edge    = -((mi_row * MI_SIZE) * 8);
+    xd.mb_to_bottom_edge = ((mi_rows - bh - mi_row) * MI_SIZE) * 8;
+    xd.mb_to_left_edge   = -((mi_col * MI_SIZE) * 8);
+    xd.mb_to_right_edge  = ((mi_cols - bw - mi_col) * MI_SIZE) * 8;
+    xd.tile.mi_row_start = tile_row_start;
+    xd.tile.mi_row_end   = tile_row_end;
+    xd.tile.mi_col_start = tile_col_start;
+    xd.tile.mi_col_end   = tile_col_end;
+    xd.up_available      = (int8_t)(mi_row > tile_row_start);
+    xd.left_available    = (int8_t)(mi_col > tile_col_start);
+    xd.is_sec_rect       = 0;
+    if (xd.n8_w < xd.n8_h) {
+        if (!((mi_col + xd.n8_w) & (xd.n8_h - 1))) {
+            xd.is_sec_rect = 1;
+        }
+    }
+    if (xd.n8_w > xd.n8_h) {
+        if (mi_row & (xd.n8_w - 1)) {
+            xd.is_sec_rect = 1;
+        }
+    }
+    xd.mi_stride = grid_cols;
+    xd.mi        = grid + (size_t)mi_row * grid_cols + mi_col;
+
+    /* generate_av1_mvp_table INTRA_FRAME slice (:1358-1364). */
+    static CandidateMv stack2d[MODE_CTX_REF_FRAMES][MAX_REF_MV_STACK_SIZE];
+    memset(stack2d[INTRA_FRAME], 0, sizeof(CandidateMv) * MAX_REF_MV_STACK_SIZE);
+    xd.ref_mv_count[INTRA_FRAME] = 0;
+    Mv gm_mv[2];
+    gm_mv[0].as_int = gm_mv[1].as_int = 0;
+    WarpedMotionParams gm_params[TOTAL_REFS_PER_FRAME];
+    memset(gm_params, 0, sizeof(gm_params));
+    Mv      mv_ref0[64];
+    int16_t mode_ctx = 0;
+
+    uint8_t count = 0;
+    setup_ref_mv_list(pcs,
+                      cm,
+                      &xd,
+                      INTRA_FRAME,
+                      &count,
+                      stack2d[INTRA_FRAME],
+                      gm_mv,
+                      gm_params,
+                      mi_row,
+                      mi_col,
+                      ctx,
+                      0,
+                      mv_ref0,
+                      &mode_ctx);
+    xd.ref_mv_count[INTRA_FRAME] = count;
+
+    for (int i = 0; i < MAX_REF_MV_STACK_SIZE; i++) {
+        stack_out[i * 2]     = (int32_t)stack2d[INTRA_FRAME][i].this_mv.as_int;
+        stack_out[i * 2 + 1] = stack2d[INTRA_FRAME][i].weight;
+    }
+    *mode_ctx_out = mode_ctx;
+
+    Mv nearest, near_mv;
+    svt_av1_find_best_ref_mvs_from_stack(0, stack2d, &xd, INTRA_FRAME, &nearest, &near_mv, 0);
+    *nearest_out = nearest.as_int;
+    *near_out    = near_mv.as_int;
+
+    free(ctx);
+    free(scs);
+    free(pcs);
+    free(ppcs);
+    free(cm);
+    free(grid);
+    free(mbmi);
+    return count;
+}
