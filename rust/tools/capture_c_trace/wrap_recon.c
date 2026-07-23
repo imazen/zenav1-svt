@@ -327,10 +327,15 @@ int64_t __wrap_svt_aom_partition_rate_cost(PictureParentControlSet* pcs, const B
             pf     = fopen(path, "w");
             opened = 1;
         }
-        /* Only the first SB (mi_row,mi_col within the top-left 64x64 = mi<16). */
-        if (pf && mi_row < 16 && mi_col < 16)
-            fprintf(pf, "PART bsize=%d mi=(%d,%d) part=%d rate=%lld\n", (int)bsize, mi_row, mi_col, (int)p,
-                    (long long)ret);
+        /* Window filter: SVT_PART_MI="rowmin,rowmax,colmin,colmax" (mi units,
+         * inclusive). Default = the original behaviour (top-left 64x64, mi<16). */
+        int rmin = 0, rmax = 15, cmin = 0, cmax = 15;
+        const char* win = getenv("SVT_PART_MI");
+        if (win && *win)
+            sscanf(win, "%d,%d,%d,%d", &rmin, &rmax, &cmin, &cmax);
+        if (pf && mi_row >= rmin && mi_row <= rmax && mi_col >= cmin && mi_col <= cmax)
+            fprintf(pf, "PART bsize=%d mi=(%d,%d) part=%d rate=%lld lctx=%d actx=%d\n", (int)bsize, mi_row, mi_col,
+                    (int)p, (long long)ret, (int)left_ctx, (int)above_ctx);
     }
     return ret;
 }

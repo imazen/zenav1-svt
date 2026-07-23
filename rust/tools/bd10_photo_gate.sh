@@ -141,6 +141,27 @@ PRESETS_F=(5)
 # silent skip.
 CLIC_CORPUS="${BD10_CLIC_CORPUS:-/root/work/codec-corpus/clic2025}"
 IMAGE_G="$CLIC_CORPUS/final-test/8426ed2245c791232862b0a0b2a62a1f17031e8e6e38921fe939df0b3a05ac41.png"
+# Group H — presets 0-3 (the last photographic band), closed 2026-07-23 by the
+# C-exact NON-STABLE post-MDS1 sort at bd10 (leaf_funnel.rs `order1`). C's
+# `sort_full_cost_based_candidates` (product_coding_loop.c:1438) is a
+# swap-on-`<` selection sort: when a strictly-cheaper candidate bubbles up
+# from position k, the displaced element lands at k BEHIND a tied rival it
+# originally preceded, so on an exact MDS1 full-cost TIE the rival takes the
+# MDS3 slot. The port's stable `sort_by_key` kept injection order on ties and
+# admitted a different candidate into MDS3 (measured on 7062227 q5 p1, 4x4
+# mi=(69,56): tie 1297503 between modes 12/11 -> port coded mode 12/SPLIT
+# where C codes mode 8/NONE at the parent 8x8). One-root fix: the whole
+# 540-cell p0-p3 x q{5,20,32,48,63} photo sweep went 537/540 -> 540/540.
+# 7062227 is the image that exposed the tie (q5 p1 + q5 p2 both flipped).
+IMAGES_H=(1001682 2119713 4666751 7062227)
+QPS_H=(5 32)
+PRESETS_H=(0 1 2 3)
+# The third proven-flipped cell is a CLIC center-crop (crop: spec, not file:).
+# Full content-spec cells: "spec|W|H|qp|preset".
+CLIC_DIR_G="${BD10_PHOTO_CLIC_DIR:-/root/work/codec-corpus/clic2025}"
+SPEC_CELLS_H=(
+    "crop:$CLIC_DIR_G/final-test/02809272b4ca9b08af45771501b741296187c7e26907efb44abbbfcb6cd804f7.png|512|512|5|2"
+)
 
 OUT="${TMPDIR:-/tmp}/bd10photo.$$"
 mkdir -p "$OUT"
@@ -230,6 +251,47 @@ else
     missing=$((missing + 1))
     failed+=("clic8426ed_q5_p6[no-png: set BD10_CLIC_CORPUS]")
 fi
+for stem in "${IMAGES_H[@]}"; do
+    for qp in "${QPS_H[@]}"; do
+        for p in "${PRESETS_H[@]}"; do run_cell "$stem" "$qp" "$p"; done
+    done
+done
+# Full-spec cells (group H tail): same contract as run_cell, but the content
+# argument is passed verbatim (crop:/gradient:/... specs), so non-CID22
+# sources can be pinned. Fails loudly when the source PNG is absent.
+for spec in "${SPEC_CELLS_H[@]}"; do
+    IFS='|' read -r content sw sh sqp sp <<<"$spec"
+    tag="$(basename "${content#*:}" .png | cut -c1-12)_q${sqp}_p${sp}"
+    src="${content#*:}"
+    if [ ! -f "$src" ]; then
+        missing=$((missing + 1))
+        failed+=("${tag}[no-png]")
+        continue
+    fi
+    if ! SVTAV1_BD=10 "$HERE/identity_run" "$content" "$sw" "$sh" "$sqp" "$sp" "$OUT/rs" \
+        >/dev/null 2>&1; then
+        fail=$((fail + 1))
+        failed+=("${tag}[rs-err]")
+        continue
+    fi
+    if ! SVT_TRACE_OUT=/dev/null "$HERE/capture_c_trace/capture_c_trace" \
+        "$sw" "$sh" "$sqp" "$sp" "$OUT/rs.yuv" "$OUT/c.obu" 10 >/dev/null 2>&1; then
+        fail=$((fail + 1))
+        failed+=("${tag}[c-err]")
+        continue
+    fi
+    if ! "$aomdec" --rawvideo -o /dev/null "$OUT/rs.obu" >/dev/null 2>&1; then
+        fail=$((fail + 1))
+        failed+=("${tag}[undecodable]")
+        continue
+    fi
+    if cmp -s "$OUT/rs.obu" "$OUT/c.obu"; then
+        pass=$((pass + 1))
+    else
+        fail=$((fail + 1))
+        failed+=("$tag")
+    fi
+done
 
 total=$((pass + fail + missing))
 echo "bd10 photographic identity: $pass / $total byte-identical"
