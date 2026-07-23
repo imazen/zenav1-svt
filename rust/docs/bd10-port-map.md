@@ -2108,11 +2108,116 @@ BE the root for these cells.
   101/101, `sb128` 18/18, `tile` 25/25, `arbitrary` 57/57, `cargo test --workspace`
   876/0.
 
-### REMAINING (p0..p3) — the roots, with evidence
+### REAL-PHOTO p0..p3 — CLOSED ✅ (2026-07-23): C's UNSTABLE sorts, post-MDS1 AND MDS0
+
+With synthetic p0..p3 at 128/128, the real-content residual came down to
+EXACT-cost-tie flips fed through the port's stable sorts. C's candidate sorts
+(`sort_fast_cost_based_candidates` :1415 / `sort_full_cost_based_candidates`
+:1438) are both the swap-on-`<` exchange sort — `for i { for j>i { if
+cost[j] < cost[i] swap(i,j) } }` — which is NOT stable: when a strictly
+cheaper candidate bubbles up from position k, the element displaced from
+position i lands at k, BEHIND tied rivals it originally preceded, and the
+strict-`<` compare never swaps equal costs back. On an EXACT cost tie the
+survivor ORDER (and therefore the nfl/MDS3 cut and every later tie-break)
+differs from a stable sort's. The ind-uv site got this treatment first (bd10
+at :3767 on this branch; bd8 on master, 79cc43d3c); closing real-photo p0..p3
+took the remaining TWO sites, found one session apart:
+
+- **Site 2 — post-MDS1 full cost (`evaluate_leaf`'s `order1`;
+  product_coding_loop.c:1438 called at :9561).** C sorts each class's
+  survivors by MDS1 full cost with the exchange sort; the port's stable
+  `sort_by_key` admitted a different tied candidate into the MDS3 count.
+  (C nominally re-sorts post-MDS2 at :9603 too, but `MD_STAGING_MODE_2` is
+  never assigned in v4.2.0 → `bypass_md_stage_2` is always true → post-MDS1
+  is the only live full-cost sort. Verified against enc_mode_config.c.)
+  **Witness (`7062227 q5 p1`, 4x4 leaf at mi=(69,56); PMDS1 dump re-verified,
+  both sorts hand-traced over the dumped costs):** the post-MDS0 MDS1 list
+  holds mode12 `full=1297503` at position 0, mode11 `full=1297503` at
+  position 4 (EXACT tie — different (rate,dist) pairs, 36912/1877 vs
+  38884/1350, colliding after the lambda fold) and mode8 `full=1287740` at
+  position 6. C's exchange sort ends `{8, 11, …}` (mode12 is displaced to
+  position 6 when mode8 bubbles up, then loses every strict-`<` compare to
+  its tied rival); a stable sort ends `{8, 12, …}`. MDS3 evaluates a
+  different pair, the port coded mode 12 where C codes mode 8, the parent
+  8x8's split decision flipped, and the stream diverges from FH byte 2 (the
+  DLF level reads the changed recon). Closes `7062227 q5 p1`, `7062227 q5
+  p2`, CLIC `02809272b4ca… q5 p2` — the prior session's 540-cell sweep
+  (27 CID22+CLIC images × p0-3 × q{5,20,32,48,63}) went **537/540 →
+  540/540** (`/tmp/p0bd10_rerun_baseline.tsv`, `/tmp/p0bd10_after_sweep.log`);
+  the 3 flips A/B-re-proven this session (diverge without, byte-match with,
+  byte sizes matching the baseline TSV's).
+- **Site 3 — MDS0 per-class fast cost (`evaluate_leaf`'s `sort_lane`;
+  product_coding_loop.c:1415 called at :9511 over `md_stage_1_count[class]+1`
+  buffers).** Found by probing OUTSIDE the swept 27 images: CID22 `2119713
+  q5 p1` still diverged WITH site 2 fixed — deterministically, with
+  **decode-IDENTICAL streams** (43,675 differing bytes, first at tile byte
+  +10899, recon equal). Op-trace localization (`identity_diff.py`): identical
+  through op 66842 (y_mode, nsyms=13 s=1), divergent at op 66843 — the
+  angle_delta symbol (nsyms=7): C codes s=3 (delta 0), the port coded s=2
+  (delta −1). Two angle deltas of one mode predicting IDENTICALLY (flat
+  neighbourhood) tie at BOTH fast and full cost; the (now C-exact) post-MDS1
+  exchange sort resolves that tie by its INPUT order = the MDS0 order, which
+  the port still stable-sorted. Making `sort_lane` the C-exact exchange sort
+  at bd10 flips the cell to byte-match (single-cell A/B: MATCH with, DIFF
+  without, this session).
+- **Fixes (leaf_funnel.rs, both bd10-gated on `bd10_rd.is_some()`):** the
+  exchange sort transcribed bit-for-bit at `order1` (post-MDS1) and
+  `sort_lane` (MDS0 lanes) — i.e. live exactly on the bd10 full-RD funnel
+  (`bd10_full_rd_supported`: bit_depth 10 ∧ preset ≤ 8 ∧ 64-aligned dims ∧
+  palette_level == 0). bd8 and the eff-M9 band keep the original stable
+  `sort_by_key` (the `else` branches are the verbatim old expressions —
+  structurally byte-inert there; `identity_matrix` 54/54 re-verified).
+- **Why synthetic (128/128) never caught either:** the sorts only diverge on
+  an EXACT u64 cost collision between distinct candidates of one class.
+  diag/gradient produce well-separated costs; the collisions need
+  real-content statistics (flat-ish neighbourhoods at q5, where two deltas
+  predict identically or two (rate,dist) pairs collide after the lambda
+  fold) — 4 cells across 540+75 probed real cells, all q5.
+- **Effect / gates:** `bd10_photo_gate.sh` group G — 4 CID22 images ×
+  q{5,32} × p{0..3} + the CLIC crop spec cell (154 → **187 cells, 187/187**
+  on the final build; the prior agent's WIP had added `2119713 q5 p1`
+  UNVERIFIED and it genuinely failed until site 3 landed — 186/187 with
+  site 2 alone). Probe grid 5 CID22 images × p{0..4} × q{5,32,55}: p0-3
+  subgrid **57/60 base → 59/60 site-2 → 60/60 final**; p4 13/15 in all three
+  builds (the p4 band is untouched by these sorts on this grid — its 2 DIFF
+  cells are the known-open p4 scope). Full battery + `cargo nextest`
+  (915/915) green on the final build; `bd10_nonflat` 309/309 proves the
+  exchange sorts byte-inert on the whole synthetic bd10 corpus.
+- **Modeling note (latent, screen-only):** C sorts PER CLASS post-MDS1; the
+  port exchange-sorts the flat `order1` union and then filters per-class
+  lanes from it. Tie-free, the restriction of the sorted union to a class ==
+  the class's own sort; on an exact INTRA-class tie with a palette/IBC lane
+  present the union-exchange order could differ from C's per-class order.
+  Similarly, C's MDS0 sort covers `md_stage_1_count+1` slots INCLUDING the
+  sacrificial max-cost buffer, while `lane_pool` removes the victim before
+  `sort_lane` runs — equivalent except on max-cost ties. Both unreachable on
+  the current gate surface (`palette_level == 0` is a `bd10_full_rd_
+  supported` precondition; bd8 keeps the stable sort), but if bd10 screen
+  byte-parity work ever lands IBC lanes on this funnel, make the exchange
+  sort per-lane and sort the sacrificial slot like C.
+- **Rebase note:** master already un-gated the ind-uv exchange sort for bd8
+  (79cc43d3c — its comment records that "stable, believed byte-inert" was
+  WRONG on real photo content) and is generalizing all 3 sites (MDS0
+  per-class, post-MDS1 full-cost, ind-uv) for the bd8 photo-p0 class close.
+  This branch's two bd10-gated sorts are the same C sites — expect the
+  un-gated generalization to supersede the `bd10_rd.is_some()` branches at
+  rebase time; the C-faithful end state is the exchange sort at EVERY bit
+  depth on all three sites.
+
+### REMAINING (bd10 low-preset real content) — after the p0..p3 close
 
 1. ~~`{diag,gradient} 128×128 q63 p3`~~ + ~~`quad_rec_dists` NSQ gate~~ — **CLOSED**
    (root #2 above). The whole synthetic p0..p3 sweep is 128/128.
-2. **DLF-level full search** (M0..M5): several residual cells show a
-   `loop_filter_level` FH divergence — a downstream symptom of the luma near-tie
-   changing the recon the search reads, not an independent root. (Not exercised by
-   the now-128/128 synthetic sweep; watch for it on real-content bd10 at p0..p5.)
+2. ~~Real-photo p0..p3~~ — **CLOSED** (exchange-sort root above): 540/540 on the
+   27-image × 4-preset × 5-qp photographic sweep.
+3. **p4 real-photo** — the one remaining ungated photographic band.
+   Re-measured 2026-07-23 (probe grid {1001682,2119713,4666751,2738653,
+   7062227} × q{5,32,55}): **13/15** — DIFF `2119713 q32 p4`
+   (rs 22915 / c 23006) and `7062227 q5 p4` (rs 69410 / c 69376), identical
+   across base/site-2/final builds, i.e. NOT a sort-tie cell pair.
+   `quad_rec_dists` deliberately keeps the u8 path at p4+ (`bypass_encdec=1`
+   keeps no 10-bit winner-recon twin) — first suspect.
+4. **DLF-level full search** (M0..M5): previously-seen `loop_filter_level` FH
+   divergences were downstream symptoms of MD near-ties changing the recon the
+   search reads, not an independent root — none remain on the closed p0..p3/p5
+   bands; watch for it on p4.

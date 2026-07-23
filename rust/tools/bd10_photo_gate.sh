@@ -14,7 +14,12 @@
 # the AVX2-hadamard fix; with all four landed, photographic bd10 at eff-M9 is
 # byte-identical. This gate pins that so it cannot silently regress.
 #
-# SCOPE — the eff-M9 band (presets 9..13) PLUS presets 7-8 (group D below).
+# SCOPE — every preset band except 4: eff-M9 (presets 9..13, groups A-C),
+# presets 7-8 (group D), preset 6 (group E), preset 5 (group F) and presets
+# 0-3 (group G). Preset 4 is the one remaining ungated photographic band —
+# re-measured 2026-07-23 at 13/15 on {1001682,2119713,4666751,2738653,
+# 7062227} x q{5,32,55} (DIFF: 2119713 q32, 7062227 q5); gate it when the
+# p4 residual closes (docs/bd10-port-map.md REMAINING #3).
 #
 # Presets 7-8 were closed 2026-07-19 by the TXT rate-cost gate lambda fix
 # (leaf_funnel.rs `txt_search`): C prices that gate with the SAME `full_lambda`
@@ -26,11 +31,10 @@
 #
 # Preset 6 CLOSED 2026-07-19 (group E below): its residual was the CDEF and
 # Wiener-LR SEARCHES still running at 8 bits — p6 is the only preset in this
-# gate that runs either. Both now run at true 10 bits. Presets 0-5 still
-# diverge and are NOT listed: their first divergence is the DEBLOCK-LEVEL full
-# search (`pick_filter_levels_full_search`, used at preset <= 5), a third
-# post-MD search that is still 8-bit at bd10 — measured on 2119713 q32 p0 as
-# `loop_filter_level[2] C=6 Rust=4`. See docs/bd10-port-map.md.
+# gate that runs either. Both now run at true 10 bits. (The "presets 0-5
+# diverge on the 8-bit DEBLOCK-LEVEL full search" note that used to sit here
+# is history: that root and the luma/chroma MD near-tie roots after it were
+# closed one by one — group F = p5, group G = p0-3; see docs/bd10-port-map.md.)
 #
 # CORPUS: CID22-512 (250 real 512x512 photographic PNGs, natively 64-aligned).
 # Override with BD10_PHOTO_CORPUS=<dir>. If the corpus is absent this gate FAILS
@@ -141,18 +145,23 @@ PRESETS_F=(5)
 # silent skip.
 CLIC_CORPUS="${BD10_CLIC_CORPUS:-/root/work/codec-corpus/clic2025}"
 IMAGE_G="$CLIC_CORPUS/final-test/8426ed2245c791232862b0a0b2a62a1f17031e8e6e38921fe939df0b3a05ac41.png"
-# Group H — presets 0-3 (the last photographic band), closed 2026-07-23 by the
-# C-exact NON-STABLE post-MDS1 sort at bd10 (leaf_funnel.rs `order1`). C's
-# `sort_full_cost_based_candidates` (product_coding_loop.c:1438) is a
-# swap-on-`<` selection sort: when a strictly-cheaper candidate bubbles up
-# from position k, the displaced element lands at k BEHIND a tied rival it
-# originally preceded, so on an exact MDS1 full-cost TIE the rival takes the
-# MDS3 slot. The port's stable `sort_by_key` kept injection order on ties and
-# admitted a different candidate into MDS3 (measured on 7062227 q5 p1, 4x4
-# mi=(69,56): tie 1297503 between modes 12/11 -> port coded mode 12/SPLIT
-# where C codes mode 8/NONE at the parent 8x8). One-root fix: the whole
-# 540-cell p0-p3 x q{5,20,32,48,63} photo sweep went 537/540 -> 540/540.
-# 7062227 is the image that exposed the tie (q5 p1 + q5 p2 both flipped).
+# Group H — presets 0-3 (the last photographic band), closed 2026-07-23 by
+# TWO C-exact NON-STABLE sorts at bd10 (leaf_funnel.rs): C's candidate sorts
+# (`sort_full_cost_based_candidates` :1438, `sort_fast_cost_based_candidates`
+# :1415) are swap-on-`<` selection sorts — when a strictly-cheaper candidate
+# bubbles up from position k, the displaced element lands at k BEHIND a tied
+# rival it originally preceded, so on an EXACT cost tie the survivor order
+# differs from the port's old stable `sort_by_key`.
+#   * post-MDS1 (`order1`): tie 1297503 between modes 12/11 on 7062227 q5 p1
+#     4x4 mi=(69,56) -> port coded mode 12/SPLIT where C codes mode 8/NONE at
+#     the parent 8x8. Closed 7062227 q5 p1 + q5 p2 + the CLIC crop q5 p2: the
+#     540-cell p0-p3 x q{5,20,32,48,63} sweep went 537/540 -> 540/540.
+#   * MDS0 per-class (`sort_lane`): 2119713 q5 p1 (an image OUTSIDE that
+#     sweep) still diverged — two angle deltas of one y_mode predicting
+#     identically tie at BOTH fast and full cost, so the post-MDS1 tie-break
+#     inherits the MDS0 ORDER (op 66843: C angle_delta 0, port -1;
+#     decode-identical streams). The exchange sort at `sort_lane` closed it.
+# Every cell below byte-verified on the final build (this gate 187/187).
 IMAGES_H=(1001682 2119713 4666751 7062227)
 QPS_H=(5 32)
 PRESETS_H=(0 1 2 3)

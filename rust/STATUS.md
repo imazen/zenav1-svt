@@ -214,6 +214,28 @@ bd10 differential, and end-to-end by the gradient bd10 op-trace's first
 divergence moving off the FH cdef line into the tile). The 5 bd10 DSP kernel
 families are FFI-verified (see the differential-suites table).
 
+## bd10 REAL-PHOTO p0–p3 byte-identity — CLOSED (task #94, 2026-07-23)
+
+The last open photographic band at bd10. Root: C's candidate sorts
+(`sort_fast_cost_based_candidates` :1415 / `sort_full_cost_based_candidates`
+:1438) are UNSTABLE swap-on-`<` exchange sorts; the port's stable
+`sort_by_key` diverged from them on EXACT cost ties (real-content flat
+regions at q5 — two candidates predicting identically, or (rate,dist) pairs
+colliding after the lambda fold). Two sites fixed in `leaf_funnel.rs`, both
+bd10-gated (`bd10_rd.is_some()`; bd8 verbatim-unchanged): the post-MDS1
+`order1` sort (WIP `70b26b6c6`, verified + A/B-re-proven this session —
+closed `7062227 q5 p1/p2` + CLIC `02809272… q5 p2`; the prior session's
+540-cell p0-3 sweep 537/540 → 540/540) and the MDS0 per-class `sort_lane`
+(this session — closed `2119713 q5 p1`, a decode-IDENTICAL angle_delta tie
+found OUTSIDE the swept images; op-trace localized to op 66843). The ind-uv
+site had it already. Gates: `bd10_photo_gate.sh` +33 group-G cells (4 CID22
+images × q{5,32} × p0-3 + a CLIC crop spec cell) = **187/187**; battery
+green: identity 54/54, bd10_matrix 36/36, nonflat 309/309, partial_sb
+101/101, sb128 20/20, tile 29/29, arbitrary 57/57, combos 40/40, panic
+60/60, palette 50/50, ibc-fh PASS, ibc rc=0, nextest 915/915. Remaining
+bd10 low-preset scope: p4 (13/15 probe; `2119713 q32`, `7062227 q5`) — see
+docs/bd10-port-map.md REMAINING.
+
 ## bd10 NON-FLAT — first cells with a coded residual byte-match (task #94, 2026-07-18)
 
 `tools/bd10_nonflat_gate.sh` (CI gate): `gradient 64x64 q40` at preset **10 and

@@ -1,0 +1,33 @@
+# bd10 real-photo p0-p3 close — evidence record (task #94 low-preset band)
+# Branch: parity/photo-p0-bd10; base 3a5c064cc; WIP fix commit 70b26b6c6
+# (post-MDS1 exchange sort) verified + completed this session.
+# Machine: this box; C ref: /root/svtav1/Bin/Release libSvtAv1Enc.a (v4.2.0),
+# corpus /root/work/codec-corpus/CID22/CID22-512/training + clic2025/final-test.
+# Cell contract == tools/bd10_photo_gate.sh run_cell (SVTAV1_BD=10, 512x512,
+# identity_run + capture_c_trace + aomdec decodability + cmp).
+#
+# PRIOR-SESSION full sweep (27 CID22+CLIC images x p0-3 x q{5,20,32,48,63}):
+#   before (base, no post-MDS1 fix): 537/540 — DIFF: 7062227 q5 p1,
+#     7062227 q5 p2, clic 02809272b4ca... q5 p2   [/tmp/p0bd10_rerun_baseline.tsv]
+#   after (post-MDS1 exchange sort): 540/540      [/tmp/p0bd10_after_sweep.log]
+# THIS SESSION re-verified the 3 flipped cells A/B (serial, fails-before/
+# matches-after, byte sizes identical to the baseline TSV's).
+#
+# THIS-SESSION probe grid: 5 CID22 images x p{0..4} x q{5,32,55}, bd10.
+# Columns: build = base | wip(post-MDS1) | final(post-MDS1 + MDS0 lane sort).
+# The accompanying .tsv holds the per-cell verdicts. MEASURED SUMMARY:
+#   base:              p0-3 57/60   p4 13/15
+#   wip_postmds1:      p0-3 59/60   p4 13/15   (closes 7062227 q5 p1+p2)
+#   final_+mds0_sort:  p0-3 60/60   p4 13/15   (closes 2119713 q5 p1)
+# p4's 2 DIFF cells (2119713 q32, 7062227 q5) are identical across all three
+# builds — NOT sort-tie cells; known-open p4 scope (port-map REMAINING #3).
+#
+# FINAL-BUILD GATES (all run to completion this session):
+#   bd10_photo_gate 187/187 (was 186/187 with post-MDS1 alone — the WIP's
+#   unverified 2119713 q5 p1 cell failed until the MDS0 sort landed);
+#   identity_matrix 54/54; bd10_matrix 36/36; bd10_nonflat 309/309;
+#   partial_sb 101/101; sb128 20/20; tile 29/29; arbitrary 57/57;
+#   coverage_combos 40/40; bd10_screen_panic 60/60; screen_palette 50/50
+#   (needs SVT_CREF_LIB_DIR=/root/svtav1/Bin/Release — its script default
+#   resolves to the nonexistent rust/Bin/Release); screen_ibc_fh PASS;
+#   screen_ibc rc=0 (19/100 pinned map unchanged); nextest 915/915.
