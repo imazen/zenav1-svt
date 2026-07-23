@@ -55,6 +55,98 @@ fn main() {
         std::process::exit(2);
     }
 
+    // --ibc-debug <stream.obu> <plane_prefix>: prefilter-decode, list every
+    // IntraBC block (mi position, bsize, DV, skip, tx_size), and walk the
+    // per-block decode records IN DECODE ORDER to report the FIRST block
+    // whose luma footprint contains a decoded-vs-raw diff (the encoder's
+    // internal recon). The first corrupt block in coding order is where the
+    // pack-vs-search desync STARTS (later diffs are usually cascade).
+    if args[1] == "--ibc-debug" {
+        let data = std::fs::read(&args[2]).unwrap_or_else(|e| {
+            eprintln!("read {}: {e}", args[2]);
+            std::process::exit(2);
+        });
+        let (td, _cfg, _fh) = aom_decode::frame::decode_frame_obus_prefilter(&data)
+            .unwrap_or_else(|e| {
+                eprintln!("{}: prefilter decode error: {e}", args[2]);
+                std::process::exit(2);
+            });
+        if let Some(c) = &td.corrupt {
+            println!("DECODER-CORRUPT: {c}");
+        }
+        // "-" prefix: census-only mode (no raw planes to correlate).
+        let raw_y = if args[3] == "-" {
+            Vec::new()
+        } else {
+            std::fs::read(format!("{}.p0", args[3])).expect("raw p0")
+        };
+        // Per-block IBC census in decode order.
+        let mut n_ibc = 0usize;
+        for b in &td.blocks {
+            if b.info.use_intrabc != 0 {
+                n_ibc += 1;
+                println!(
+                    "IBC mi=({},{}) bsize={} dv=({},{}) skip={} tx_size={} txbs(eob,tt)={:?} uv={:?}",
+                    b.mi_row, b.mi_col, b.bsize, b.info.dv_row, b.info.dv_col,
+                    b.info.skip, b.tx_size, b.txbs, b.txbs_uv
+                );
+            }
+        }
+        println!("IBC-TOTAL {n_ibc} of {} blocks", td.blocks.len());
+        // Block dims from the C BlockSize index.
+        const BDIM: [(usize, usize); 22] = [
+            (4, 4), (4, 8), (8, 4), (8, 8), (8, 16), (16, 8), (16, 16),
+            (16, 32), (32, 16), (32, 32), (32, 64), (64, 32), (64, 64),
+            (64, 128), (128, 64), (128, 128), (4, 16), (16, 4), (8, 32),
+            (32, 8), (16, 64), (64, 16),
+        ];
+        let mut first_bad: Option<usize> = None;
+        let mut n_bad = 0usize;
+        if raw_y.is_empty() {
+            std::process::exit(0);
+        }
+        for (bi, b) in td.blocks.iter().enumerate() {
+            let (bw, bh) = BDIM[b.bsize];
+            let x0 = (b.mi_col as usize) * 4;
+            let y0 = (b.mi_row as usize) * 4;
+            let mut bad = false;
+            'scan: for y in y0..(y0 + bh).min(td.height) {
+                for x in x0..(x0 + bw).min(td.width) {
+                    if td.recon[y * td.stride + x] != u16::from(raw_y[y * td.width + x]) {
+                        bad = true;
+                        break 'scan;
+                    }
+                }
+            }
+            if bad {
+                n_bad += 1;
+                if first_bad.is_none() {
+                    first_bad = Some(bi);
+                    println!(
+                        "FIRST-BAD block #{bi}: mi=({},{}) {}x{} use_intrabc={} dv=({},{}) \
+                         y_mode={} skip={} tx_size={} ntxb={} palette={} fi={}",
+                        b.mi_row, b.mi_col, bw, bh, b.info.use_intrabc,
+                        b.info.dv_row, b.info.dv_col, b.info.y_mode, b.info.skip,
+                        b.tx_size, b.txbs.len(), b.info.palette_size[0],
+                        b.info.use_filter_intra
+                    );
+                    // context: dump the preceding 4 blocks
+                    for pi in bi.saturating_sub(4)..bi {
+                        let pb = &td.blocks[pi];
+                        let (pw, ph) = BDIM[pb.bsize];
+                        println!(
+                            "  prev #{pi}: mi=({},{}) {}x{} ibc={} dv=({},{}) mode={} skip={}",
+                            pb.mi_row, pb.mi_col, pw, ph, pb.info.use_intrabc,
+                            pb.info.dv_row, pb.info.dv_col, pb.info.y_mode, pb.info.skip
+                        );
+                    }
+                }
+            }
+        }
+        println!("BAD-LUMA-BLOCKS {n_bad} of {}", td.blocks.len());
+        std::process::exit(if n_bad > 0 { 1 } else { 0 });
+    }
+
     // --vs-raw-prefilter: decode to the PRE-FILTER reconstruction
     // (aom-decode's decode_frame_obus_prefilter) and compare against the
     // encoder's pre-DLF dump — an EXACT self-consistency check at every

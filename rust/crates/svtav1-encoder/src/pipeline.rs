@@ -2926,9 +2926,17 @@ impl EntropyCtx {
                 alloc::vec![0xFFu8; height_c4],
                 alloc::vec![0xFFu8; height_c4],
             ],
-            above_txfm: alloc::vec![0u8; width_4x4],
+            // C inits the TXFM neighbour arrays to NEIGHBOR_ARRAY_INVALID
+            // (0xFF, neighbor_arrays.h:30 / svt_aom_neighbor_array_unit_reset).
+            // The intra tx_size ctx never sees it (availability-gated), but
+            // the IBC var-tx `txfm_partition_context` reads the RAW byte
+            // with NO availability gate (`*above_ctx < txw`,
+            // entropy_coding.c:4490) — a 0 init flips a/l to 1 at
+            // tile-top/left blocks and desyncs the txfm_partition CDF row
+            // vs the decoder (the chunk-8 gui corruption root).
+            above_txfm: alloc::vec![0xFFu8; width_4x4],
             above_inter_bw: alloc::vec![0u8; width_4x4],
-            left_txfm: alloc::vec![0u8; height_4x4],
+            left_txfm: alloc::vec![0xFFu8; height_4x4],
             left_inter_bh: alloc::vec![0u8; height_4x4],
             above_palette: alloc::vec![0u8; width_4x4],
             left_palette: alloc::vec![0u8; height_4x4],

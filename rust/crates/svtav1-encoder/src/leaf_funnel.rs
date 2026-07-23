@@ -5220,11 +5220,7 @@ pub(crate) fn evaluate_leaf(
         // depth cap comes from txs_ctrls.inter_class_max_depth_sq/nsq
         // (C get_end_tx_depth's is_inter arm), not the intra caps.
         let cand_end_depth = if cands[ci].ibc.is_some() {
-            if txs_active && std::env::var_os("IBC_D0").is_none() {
-                end_tx_depth_inter(w, h, &cfg)
-            } else {
-                0
-            }
+            if txs_active { end_tx_depth_inter(w, h, &cfg) } else { 0 }
         } else {
             end_depth
         };
