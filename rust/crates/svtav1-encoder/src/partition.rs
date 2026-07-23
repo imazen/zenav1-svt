@@ -476,6 +476,16 @@ pub struct BlockDecision {
     pub partition_type: PartitionType,
     /// Whether this block uses inter prediction.
     pub is_inter: bool,
+    /// IBC chunk 9: IntraBC block (KEY frame, screen content). The block
+    /// codes use_intrabc=1 + the DV diff, suppresses every intra mode
+    /// syntax slice, and routes tx_size through the inter var-tx writer.
+    pub use_intrabc: bool,
+    /// The IntraBC displacement vector (eighth-pel; whole-pel by
+    /// is_dv_valid). Dead unless `use_intrabc`.
+    pub dv: svtav1_types::motion::Mv,
+    /// The DV predictor `svt_av1_encode_dv` diffs against
+    /// (ref_mv_stack[INTRA_FRAME][0].this_mv at injection).
+    pub dv_ref: svtav1_types::motion::Mv,
     /// Intra prediction mode index (0-12 for AV1 modes).
     pub intra_mode: u8,
     /// Transform type used for the residual (C TxType index; 0 = DCT_DCT).
@@ -541,6 +551,9 @@ impl Default for BlockDecision {
         Self {
             partition_type: PartitionType::None,
             is_inter: false,
+            use_intrabc: false,
+            dv: svtav1_types::motion::Mv::default(),
+            dv_ref: svtav1_types::motion::Mv::default(),
             intra_mode: 0,
             tx_type: 0,
             mv: svtav1_types::motion::Mv::ZERO,
@@ -1557,6 +1570,9 @@ pub(crate) fn funnel_block_decision(
             choice.u_recon,
             choice.v_recon,
         )),
+        use_intrabc: choice.ibc.is_some(),
+        dv: choice.ibc.map(|(dv, _)| dv).unwrap_or_default(),
+        dv_ref: choice.ibc.map(|(_, r)| r).unwrap_or_default(),
         ..Default::default()
     }
 }

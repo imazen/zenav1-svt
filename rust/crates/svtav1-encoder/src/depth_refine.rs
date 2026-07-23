@@ -1477,6 +1477,17 @@ impl DepthWalk<'_, '_> {
 
                     let cx = abs_x + dx;
                     let cy = abs_y + dy;
+                    // IBC chunk 8: the do_intra_bc gate inputs for this
+                    // leaf (mode_decision.c:3597-3616) — the shape under
+                    // evaluation + this node's PART_N (square) winner.
+                    self.fx.ibc_gate = crate::leaf_funnel::IbcGateInput {
+                        partition: shape as u8,
+                        is_part_n: shape == PartitionType::None,
+                        sibling_n0: match &sq_info {
+                            Some(sq) => (true, sq.ev.used_ibc()),
+                            None => (false, false),
+                        },
+                    };
                     let ev = evaluate_leaf(
                         self.fx,
                         self.y_src,
@@ -1549,7 +1560,7 @@ impl DepthWalk<'_, '_> {
                         }
                         committed_since_snap = true;
                         let ev = evals.last().unwrap();
-                        commit_leaf(self.fx, self.y_recon, self.y_stride, ev);
+                        commit_leaf(self.fx, self.y_recon, self.y_stride, ev, shape as u8);
                     }
                 }
 
@@ -1694,7 +1705,13 @@ impl DepthWalk<'_, '_> {
         let (win_part, win_rd, win_evals) = best.expect("refined node with no valid shape");
         if win_part == PartitionType::None {
             let sq = sq_info.expect("SQ info for PART_N winner");
-            commit_leaf(self.fx, self.y_recon, self.y_stride, &sq.ev);
+            commit_leaf(
+                self.fx,
+                self.y_recon,
+                self.y_stride,
+                &sq.ev,
+                PartitionType::None as u8,
+            );
             let decision = crate::partition::funnel_block_decision(sq.ev.to_choice(), size, size);
             return NodeRes {
                 rd: win_rd,
@@ -1705,7 +1722,7 @@ impl DepthWalk<'_, '_> {
         let mut decisions: Vec<BlockDecision> = Vec::with_capacity(win_evals.len());
         let mut child_trees: Vec<PartitionTree> = Vec::with_capacity(win_evals.len());
         for ev in &win_evals {
-            commit_leaf(self.fx, self.y_recon, self.y_stride, ev);
+            commit_leaf(self.fx, self.y_recon, self.y_stride, ev, win_part as u8);
             let d = crate::partition::funnel_block_decision(ev.to_choice(), ev.w, ev.h);
             decisions.push(d.clone());
             child_trees.push(PartitionTree::Leaf(d));

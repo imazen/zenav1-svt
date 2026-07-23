@@ -146,6 +146,13 @@ pub struct MdRates {
     pub coeff: alloc::boxed::Box<CoeffCostTables>,
 }
 
+/// C `av1_ext_tx_used[set][tx_type]` accessor for the pack's IntraBC
+/// chroma follows-luma tx-type rule (tx_type_search,
+/// product_coding_loop.c:5091-5096).
+pub(crate) fn ext_tx_used(set_type: usize, tx_type: usize) -> bool {
+    AV1_EXT_TX_USED[set_type][tx_type] != 0
+}
+
 /// C `av1_ext_tx_used[EXT_TX_SET_TYPES][TX_TYPES]` (definitions.h) —
 /// which tx types each ext set admits. Shared by `txt_search`'s set gate
 /// and the IntraBC chroma follows-luma tx-type rule.
@@ -2871,6 +2878,10 @@ pub struct LeafChoice {
     /// Winning palette payload (colors, full-size idx map) — Some iff the
     /// palette candidate won this leaf; flows into BlockDecision.palette.
     pub palette: Option<(Vec<u16>, Vec<u8>)>,
+    /// IBC chunk 8: `(dv, dv_ref)` — Some iff the IntraBC candidate won
+    /// this leaf; flows into BlockDecision (chunk 9) for the pack's
+    /// `write_intrabc_info` + var-tx tx_size writer.
+    pub ibc: Option<(svtav1_types::motion::Mv, svtav1_types::motion::Mv)>,
 }
 
 /// Per-frame/SB mutable funnel context threaded through the fixed tree.
@@ -2911,6 +2922,110 @@ pub(crate) struct FunnelCtx<'a> {
     /// (docs/bd10-port-map.md "MEASURED NEGATIVE"), which is what this flag
     /// exists to fix. Requires `y_recon10`/`u_recon10`/`v_recon10` to be set.
     pub full_rd10: bool,
+    /// IBC chunk 8: frame-level IntraBC search state (hash table, site
+    /// config, search cost tables, ctrls, tile/mi geometry). `None`
+    /// unless `cfg.allow_intrabc` — every IBC path is unreachable then.
+    pub ibc: Option<&'a IbcFrameState>,
+    /// The MD mode-info grid the INTRA_FRAME MVP scans read (C
+    /// `pcs->mi_grid_base` as MD stamps it): one entry per 4x4 mi cell,
+    /// frame-wide, stamped by [`commit_leaf`] per mid-walk commit exactly
+    /// like C's `svt_aom_update_mi_map` (product_coding_loop.c:670) — and
+    /// NOT restored by the NSQ walk's node snapshots (C never restores the
+    /// mi map between shapes; losing shapes' stamps linger until
+    /// overwritten, so this lives OUTSIDE `EntropyCtx`). `None` unless
+    /// `cfg.allow_intrabc`.
+    pub ibc_mvp: Option<&'a mut alloc::vec::Vec<crate::intrabc_mvp::MvpMiEntry>>,
+    /// Per-leaf IBC gate input, set by the partition/NSQ walk before each
+    /// `evaluate_leaf` call (the C `ctx->shape` + `pc_tree` state the
+    /// `do_intra_bc` gate reads, mode_decision.c:3597-3616).
+    pub ibc_gate: IbcGateInput,
+}
+
+/// C `BlockSize` enum index from pixel dims (definitions.h block order) —
+/// the MVP block-ctx derivation consumes the C index.
+pub(crate) fn c_bsize_index(w: usize, h: usize) -> usize {
+    match (w, h) {
+        (4, 4) => 0,
+        (4, 8) => 1,
+        (8, 4) => 2,
+        (8, 8) => 3,
+        (8, 16) => 4,
+        (16, 8) => 5,
+        (16, 16) => 6,
+        (16, 32) => 7,
+        (32, 16) => 8,
+        (32, 32) => 9,
+        (32, 64) => 10,
+        (64, 32) => 11,
+        (64, 64) => 12,
+        (64, 128) => 13,
+        (128, 64) => 14,
+        (128, 128) => 15,
+        (4, 16) => 16,
+        (16, 4) => 17,
+        (8, 32) => 18,
+        (32, 8) => 19,
+        (16, 64) => 20,
+        (64, 16) => 21,
+        _ => panic!("no C BlockSize for {w}x{h}"),
+    }
+}
+
+/// The per-leaf inputs of the IBC injection gate + the current block's
+/// live partition (C `pc_tree->partition` on the current mbmi — read by
+/// `has_top_right`'s VERT_A case via the CURRENT mi cell).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct IbcGateInput {
+    /// C PartitionType of the shape under evaluation (NONE=0, HORZ=1,
+    /// VERT=2, SPLIT=3, HORZ_A=4, HORZ_B=5, VERT_A=6, VERT_B=7,
+    /// HORZ_4=8, VERT_4=9).
+    pub partition: u8,
+    /// `ctx->shape == PART_N`.
+    pub is_part_n: bool,
+    /// The node's PART_N (square) winner: `(tested, used_intrabc)` — C
+    /// `pc_tree->tested_blk[PART_N][0]` +
+    /// `block_data[PART_N][0]->block_mi.use_intrabc`.
+    pub sibling_n0: (bool, bool),
+}
+
+impl Default for IbcGateInput {
+    /// The fixed-tree default: PART_N (square leaves; the gate always
+    /// allows — b4 gating is off at every allintra IBC level).
+    fn default() -> Self {
+        Self { partition: 0, is_part_n: true, sibling_n0: (false, false) }
+    }
+}
+
+/// Frame-constant IntraBC search state (IBC chunk 8) — everything
+/// `intra_bc_search` + the MVP build need beyond the funnel context.
+/// Built once per frame in the pipeline when `allow_intrabc`.
+pub struct IbcFrameState {
+    /// Per-level controls with the one-shot QP mesh rescale applied
+    /// (md_config_process.c:956-969).
+    pub ctrls: crate::intrabc::IbcCtrls,
+    /// The frame source hash table (`generate_ibc_data`).
+    pub hash: crate::intrabc_hash::HashTable,
+    /// Diamond site config (per-frame, source stride baked).
+    pub sites: crate::intrabc::SearchSiteConfig,
+    /// SEARCH-time mv cost tables: C `md_rate_est_ctx->nmv_vec_cost` /
+    /// `nmvcoststack` — built from `fc->nmvc` at precision
+    /// `allow_high_precision_mv` (= 0 = LOW on a KEY frame, i.e. WITH
+    /// fractional-bit costs; svt_aom_estimate_mv_rate). Frame-constant
+    /// (update_mv forced 0 on I-slices). Distinct from the RD-time
+    /// `FunnelFrame::dv_tables` (ndvc at MV_SUBPEL_NONE).
+    pub search_tables: crate::intrabc::MvCostTables,
+    /// `svt_aom_get_sad_per_bit(base_q_idx, 0)` (mode_decision.c:3010).
+    pub sad_per_bit: i32,
+    /// `full_lambda >> RD_EPB_SHIFT`, min 1 (mode_decision.c:3011-3012).
+    pub error_per_bit: i32,
+    pub mi_rows: i32,
+    pub mi_cols: i32,
+    pub tile: crate::intrabc::TileMiBounds,
+    pub sb_mi_size: i32,
+    pub sb_size_log2_mi: u32,
+    pub sb_size_px: i32,
+    /// `pcs->pic_disallow_4x4` — gates the 4x4 hash size out of the table.
+    pub disallow_4x4: bool,
 }
 
 /// One evaluated (not yet committed) PART_N funnel decision — the C
@@ -2972,6 +3087,13 @@ impl LeafEval {
     /// partition-rate term the depth walk adds).
     pub(crate) fn block_cost(&self) -> u64 {
         self.win.mds3_cost
+    }
+
+    /// IBC chunk 8: whether the winner is an IntraBC candidate — the C
+    /// `block_data[PART_N][0]->block_mi.use_intrabc` the NSQ parent gate
+    /// reads (mode_decision.c:3608-3612).
+    pub(crate) fn used_ibc(&self) -> bool {
+        self.win.ibc.is_some()
     }
 
     /// C `cnt_nz_coeff` (sum of the winner's luma txb eobs,
@@ -3131,8 +3253,15 @@ impl LeafEval {
             cfl_alpha_idx: cand.cfl_alpha_idx,
             cfl_alpha_signs: cand.cfl_alpha_signs,
             palette: cand.palette.clone(),
+            ibc: cand.ibc,
         }
     }
+}
+
+/// The partition value the fixed-tree decide paths stamp at commit: the
+/// caller-set per-leaf gate partition (PART_N default).
+fn fx_partition_for_commit(fx: &FunnelCtx<'_>) -> u8 {
+    fx.ibc_gate.partition
 }
 
 /// Decide one PART_N leaf of the fixed tree — the full MDS0/MDS1/MDS3
@@ -3197,7 +3326,7 @@ pub(crate) fn decide_leaf_rect(
         sb_is_lvl6,
     );
     let choice = ev.to_choice();
-    commit_leaf(fx, y_recon, y_stride, &ev);
+    commit_leaf(fx, y_recon, y_stride, &ev, fx_partition_for_commit(fx));
     choice
 }
 
@@ -3206,7 +3335,7 @@ pub(crate) fn decide_leaf_rect(
 /// untouched; the caller commits the winning depth via [`commit_leaf`]).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn evaluate_leaf(
-    fx: &FunnelCtx<'_>,
+    fx: &mut FunnelCtx<'_>,
     y_src: &[u8],
     y_src_stride: usize,
     y_src_off: usize,
@@ -4013,7 +4142,13 @@ pub(crate) fn evaluate_leaf(
     // one, so this cannot regress a passing cell — it only converts the panic
     // into graceful non-palette output. Byte-exact bd10 palette is a future #71
     // port (needs the hbd palette predictor + hbd-typed candidate buffers).
-    if !bd10_funnel && svtav1_entropy::context::allow_palette(cfg.allow_sct, w, h) && cfg.palette_level > 0 {
+    // C's `eval_intrabc` narrowing scope (mode_decision.c:3587-3594): the
+    // palette-hint coupling reads whether the palette injection RAN for
+    // this block and whether it produced any candidate.
+    let palette_ran =
+        svtav1_entropy::context::allow_palette(cfg.allow_sct, w, h) && cfg.palette_level > 0;
+    let cands_before_palette = cands.len();
+    if !bd10_funnel && palette_ran {
         let ctrls = crate::palette::PaletteCtrls::for_level(cfg.palette_level);
         let bctx = svtav1_entropy::context::palette_bsize_ctx(w, h);
         // Neighbour palette color cache (C svt_get_palette_cache_y): merged
@@ -4201,6 +4336,200 @@ pub(crate) fn evaluate_leaf(
         }
     }
 
+    // ---- inject_intra_bc_candidates (IBC chunk 8; mode_decision.c
+    //      :3596-3618 gate + :3127-3163 injection + :2976-3126 search) ----
+    // bd10 excluded like palette: the IBC predictor is u8-only here; at
+    // bd10 the FH still carries allow_intrabc but every block codes
+    // use_intrabc=0 (the chunk-1 state) — decodable, divergence expected.
+    if cfg.allow_intrabc && !bd10_funnel {
+        if let (Some(ibc), Some(dvt)) = (fx.ibc, frame.dv_tables.as_ref()) {
+            let gate = fx.ibc_gate;
+            let do_ibc = crate::intrabc::do_intra_bc_gate(
+                &ibc.ctrls,
+                palette_ran,
+                (cands.len() - cands_before_palette) as u32,
+                gate.is_part_n,
+                w.max(h) as i32, // sq_size: only the (allintra-off) b4 gate reads it
+                (false, false),  // parent_n0: b4_parent_gating is off at every level
+                gate.sibling_n0,
+            );
+            if do_ibc {
+                let mi_row = (abs_y / 4) as i32;
+                let mi_col = (abs_x / 4) as i32;
+                let grid_stride = ibc.mi_cols;
+                let base = mi_row * grid_stride + mi_col;
+                // C's MVP scan runs against the live mi state where the
+                // CURRENT cell carries the block's own partition (the
+                // `has_top_right` VERT_A read) — stamp it before building
+                // the stack (commit will overwrite the cell either way).
+                let mvp = fx.ibc_mvp.as_deref_mut().expect("ibc_mvp with ibc state");
+                mvp[base as usize].partition = gate.partition;
+                let stack = {
+                    let grid = crate::intrabc_mvp::MvpGrid {
+                        entries: mvp,
+                        stride: grid_stride,
+                        base,
+                    };
+                    let bctx = crate::intrabc_mvp::derive_block_ctx(
+                        mi_row,
+                        mi_col,
+                        c_bsize_index(w, h),
+                        ibc.mi_rows,
+                        ibc.mi_cols,
+                        ibc.tile,
+                        ibc.sb_mi_size,
+                    );
+                    crate::intrabc_mvp::generate_mvp_table_intra_frame(&grid, &bctx)
+                };
+                // dv_ref = nearest/near coercion + find_ref_dv fallback
+                // (mode_decision.c:3019-3033); C stamps it back onto
+                // ref_mv_stack[INTRA_FRAME][0].this_mv = cand->pred_mv[0].
+                let dv_ref = crate::intrabc_mvp::compose_dv_ref(
+                    &stack,
+                    ibc.tile,
+                    ibc.sb_mi_size,
+                    mi_row,
+                );
+                // Per-block hash query (square + size-gated), the bucket
+                // fetched once and offered to both directions.
+                let hash_eligible =
+                    crate::intrabc::hash_search_eligible(w as i32, h as i32, ibc.ctrls.max_block_size_hash);
+                let (bucket_entries, hv2) = if hash_eligible {
+                    let mut bufs = crate::intrabc_hash::BlockHashBuffers::default();
+                    let (hv1, hv2) = crate::intrabc_hash::get_block_hash_value(
+                        &y_src[abs_y * y_src_stride + abs_x..],
+                        y_src_stride,
+                        w,
+                        &mut bufs,
+                    );
+                    (
+                        ibc.hash
+                            .bucket(hv1)
+                            .iter()
+                            .map(|e| crate::intrabc::BlockHashEntry {
+                                x: i32::from(e.x),
+                                y: i32::from(e.y),
+                                hash_value2: e.hash_value2,
+                            })
+                            .collect::<Vec<_>>(),
+                        hv2,
+                    )
+                } else {
+                    (Vec::new(), 0)
+                };
+                let buckets: [Option<&[crate::intrabc::BlockHashEntry]>; 2] = if hash_eligible {
+                    [Some(&bucket_entries), Some(&bucket_entries)]
+                } else {
+                    [None, None]
+                };
+                let dvs = crate::intrabc::intra_bc_search(
+                    y_src, // SOURCE pixels (A.3 fact 1), frame-origin absolute
+                    y_src_stride,
+                    w as i32,
+                    h as i32,
+                    (w / 4) as i32,
+                    (h / 4) as i32,
+                    mi_row,
+                    mi_col,
+                    ibc.mi_rows,
+                    ibc.mi_cols,
+                    ibc.sb_mi_size,
+                    ibc.sb_size_log2_mi,
+                    ibc.sb_size_px,
+                    ibc.tile,
+                    dv_ref,
+                    &ibc.sites,
+                    &ibc.ctrls,
+                    ibc.sad_per_bit,
+                    ibc.error_per_bit,
+                    false, // approx_inter_rate: structurally 0 on allintra
+                    &ibc.search_tables,
+                    buckets,
+                    hv2,
+                );
+                for dv in dvs {
+                    // Prediction: the RECON-domain block copy (the ONE
+                    // search-vs-predict asymmetry — map §A.6).
+                    let mut pred = vec![0u8; w * h];
+                    crate::intrabc_pred::predict_intrabc_luma(
+                        y_recon, y_stride, abs_x, abs_y, w, h, dv, &mut pred,
+                    );
+                    let satd = if frame.mds0_ssd {
+                        let mut sse: u64 = 0;
+                        for r in 0..h {
+                            let srow = y_src_off + r * y_src_stride;
+                            for c in 0..w {
+                                let d = i64::from(y_src[srow + c]) - i64::from(pred[r * w + c]);
+                                sse += (d * d) as u64;
+                            }
+                        }
+                        sse
+                    } else {
+                        hadamard_satd(y_src, y_src_stride, y_src_off, &pred, w, h)
+                    };
+                    // svt_aom_intra_fast_cost use_intrabc arm (rd_cost.c
+                    // :531-545): rate = mv_bit_cost(dv, pred_dv, dv tables,
+                    // MV_COST_WEIGHT_SUB) + intrabc_fac_bits[1]; chroma 0.
+                    let (flr32, _) = crate::intrabc::intrabc_fast_cost_rates(
+                        dv,
+                        dv_ref,
+                        dvt,
+                        &rates.intrabc_fac_bits,
+                    );
+                    let flr = u64::from(flr32);
+                    let fast_cost = rdcost(
+                        lambda,
+                        flr,
+                        if frame.mds0_ssd { satd } else { satd << 4 },
+                    );
+                    cands.push(Cand {
+                        mode: 0, // DC_PRED (the coded neighbour-visible mode)
+                        delta: 0,
+                        fi: FI_NONE,
+                        uv: 0, // UV_DC_PRED
+                        uv_delta: 0,
+                        pred,
+                        pred10: Vec::new(),
+                        flr,
+                        fcr: 0,
+                        fast_cost,
+                        full_cost: u64::MAX,
+                        mds3_cost_ssim: u64::MAX,
+                        mds1_has_coeff: false,
+                        tx_depth: 0,
+                        txb_q: Vec::new(),
+                        txb_eob: Vec::new(),
+                        txb_cul: Vec::new(),
+                        txb_type: Vec::new(),
+                        y_recon: Vec::new(),
+                        y_recon10: Vec::new(),
+                        u_recon10: Vec::new(),
+                        v_recon10: Vec::new(),
+                        y_recon_d0: Vec::new(),
+                        y_bits: 0,
+                        y_dist: 0,
+                        u_q: Vec::new(),
+                        v_q: Vec::new(),
+                        u_eob: 0,
+                        v_eob: 0,
+                        u_cul: 0,
+                        v_cul: 0,
+                        u_recon: Vec::new(),
+                        v_recon: Vec::new(),
+                        cfl_alpha_idx: 0,
+                        cfl_alpha_signs: 0,
+                        palette: None,
+                        ibc: Some((dv, dv_ref)),
+                        mds3_cost: u64::MAX,
+                        block_has_coeff: false,
+                        total_rate: 0,
+                        full_dist: 0,
+                    });
+                }
+            }
+        }
+    }
+
     let ncand = cands.len();
 
     // -- MDS0 -> MDS1 MEMBERSHIP: C's replacement POOL, not a sort. --
@@ -4326,19 +4655,33 @@ pub(crate) fn evaluate_leaf(
         lane.sort_by_key(|&i| cands[i].fast_cost);
         lane
     };
-    let order: Vec<usize> = if has_palette_lane {
+    // IBC chunk 8: C classes IntraBC CAND_CLASS_4 (mode_decision.c:3659)
+    // — its own MDS0 pool + per-class prunes, exactly like palette's C3.
+    // The class NIC bases are all 64 on I-slices (MD_STAGE_NICS,
+    // definitions.h:811-813: {64, 0, 0, 64, 64}) so every lane shares the
+    // same `cap` derivation; with <= 2 IBC candidates the C4 pool never
+    // overflows in practice. Union order = class order (C0, C3, C4 —
+    // construct_best_sorted_arrays), stable-sorted by fast cost.
+    let has_ibc_lane = cands.iter().any(|c| c.ibc.is_some());
+    let order: Vec<usize> = if has_palette_lane || has_ibc_lane {
         let cap = (ncand as u32).min(nic1).max(1) as usize + 1;
-        let lane0: Vec<usize> = (0..ncand).filter(|&i| cands[i].palette.is_none()).collect();
+        let lane0: Vec<usize> = (0..ncand)
+            .filter(|&i| cands[i].palette.is_none() && cands[i].ibc.is_none())
+            .collect();
         let lane3: Vec<usize> = (0..ncand).filter(|&i| cands[i].palette.is_some()).collect();
+        let lane4: Vec<usize> = (0..ncand).filter(|&i| cands[i].ibc.is_some()).collect();
         // Per-class MDS0 replacement pool -> sort -> per-class dev-prune.
         let s0 = sort_lane(lane_pool(&lane0, &cands, cap), &cands);
         let s3 = sort_lane(lane_pool(&lane3, &cands, cap), &cands);
+        let s4 = sort_lane(lane_pool(&lane4, &cands, cap), &cands);
         let k0 = dev_prune(&s0, &cands);
         let k3 = dev_prune(&s3, &cands);
+        let k4 = dev_prune(&s4, &cands);
         // MDS1/MDS3 evaluate the UNION sorted by fast cost
         // (construct_best_sorted_arrays_md_stage_3, :1455).
         let mut u: Vec<usize> = s0[..k0].to_vec();
         u.extend_from_slice(&s3[..k3]);
+        u.extend_from_slice(&s4[..k4]);
         u.sort_by_key(|&i| cands[i].fast_cost);
         u
     } else {
@@ -4540,9 +4883,22 @@ pub(crate) fn evaluate_leaf(
     // (no MD_STAGE_2 full loop), so it stays the MDS1 GLOBAL best
     // (product_coding_loop.c:9580-9585) — the overall cheapest MDS1 full cost.
     let global_best = cands[mds1_best_idx].full_cost;
+    // Class id for the rank-staging compare: 0 regular, 3 palette, 4 IBC.
+    let class_of = |c: &Cand| -> u8 {
+        if c.ibc.is_some() {
+            4
+        } else if c.palette.is_some() {
+            3
+        } else {
+            0
+        }
+    };
     let n3;
-    if order1.iter().any(|&i| cands[i].palette.is_some()) {
-        let mds1_best_is_pal = cands[mds1_best_idx].palette.is_some();
+    if order1
+        .iter()
+        .any(|&i| cands[i].palette.is_some() || cands[i].ibc.is_some())
+    {
+        let mds1_best_class = class_of(&cands[mds1_best_idx]);
         // post_mds1 (n2) then post_mds2 (n3) for one class lane, each
         // against that lane's own best. Returns the post_mds2 survivor
         // count. `cands`/`cfg`/thresholds captured by ref; no `order1`
@@ -4558,10 +4914,10 @@ pub(crate) fn evaluate_leaf(
                 // C rank staging (:7934-7939): +3 when this lane is NOT
                 // the MDS1-best class, else +2 when the MDS0 and MDS1
                 // winners coincide (only if the base factor is nonzero).
-                let lane_is_pal = cands[lane[0]].palette.is_some();
+                let lane_class = class_of(&cands[lane[0]]);
                 let mut rank_factor = cfg.mds2_rank_factor;
                 if rank_factor != 0 {
-                    if lane_is_pal != mds1_best_is_pal {
+                    if lane_class != mds1_best_class {
                         rank_factor += 3;
                     } else if mds0_best_idx == mds1_best_idx {
                         rank_factor += 2;
@@ -4634,13 +4990,20 @@ pub(crate) fn evaluate_leaf(
             }
             n3l
         };
-        let lane0: Vec<usize> = order1.iter().copied().filter(|&i| cands[i].palette.is_none()).collect();
+        let lane0: Vec<usize> = order1
+            .iter()
+            .copied()
+            .filter(|&i| cands[i].palette.is_none() && cands[i].ibc.is_none())
+            .collect();
         let lane3: Vec<usize> = order1.iter().copied().filter(|&i| cands[i].palette.is_some()).collect();
+        let lane4: Vec<usize> = order1.iter().copied().filter(|&i| cands[i].ibc.is_some()).collect();
         let k0 = prune_lane(&lane0);
         let k3 = prune_lane(&lane3);
+        let k4 = prune_lane(&lane4);
         // MDS3 evaluates the UNION sorted by full cost.
         let mut u: Vec<usize> = lane0[..k0].to_vec();
         u.extend_from_slice(&lane3[..k3]);
+        u.extend_from_slice(&lane4[..k4]);
         u.sort_by_key(|&i| cands[i].full_cost);
         n3 = u.len();
         order1 = u;
@@ -4857,7 +5220,7 @@ pub(crate) fn evaluate_leaf(
         // depth cap comes from txs_ctrls.inter_class_max_depth_sq/nsq
         // (C get_end_tx_depth's is_inter arm), not the intra caps.
         let cand_end_depth = if cands[ci].ibc.is_some() {
-            if txs_active {
+            if txs_active && std::env::var_os("IBC_D0").is_none() {
                 end_tx_depth_inter(w, h, &cfg)
             } else {
                 0
@@ -6694,9 +7057,41 @@ pub(crate) fn commit_leaf(
     y_recon: &mut [u8],
     y_stride: usize,
     ev: &LeafEval,
+    // IBC chunk 8: the C PartitionType stamped onto the mi map with this
+    // block (C `svt_aom_update_mi_map(pcs, ctx, pc_tree->partition, ...)`,
+    // product_coding_loop.c:670 — the currently-evaluated shape during the
+    // NSQ walk, the winning shape at the final re-stamp :10696). Dead when
+    // the frame has no IBC state (the map is None).
+    partition: u8,
 ) {
     let (abs_x, abs_y) = (ev.abs_x, ev.abs_y);
     let (w, h) = (ev.w, ev.h);
+    // IBC chunk 8: stamp the MD mi map (C svt_aom_update_mi_map) — the
+    // INTRA_FRAME MVP scans read these entries. Stamped at every mid-walk
+    // commit and NEVER restored by node snapshots, mirroring C (losing
+    // shapes' stamps linger until overwritten).
+    if let Some(mvp) = fx.ibc_mvp.as_deref_mut() {
+        let stride = fx.ibc.map(|i| i.mi_cols as usize).unwrap_or(0);
+        if stride > 0 {
+            let entry = crate::intrabc_mvp::MvpMiEntry {
+                bsize: c_bsize_index(w, h) as u8,
+                mode: ev.win.mode,
+                use_intrabc: ev.win.ibc.is_some(),
+                ref_frame: [0, -1], // {INTRA_FRAME, NONE_FRAME}
+                mv: [
+                    ev.win.ibc.map(|(dv, _)| dv).unwrap_or_default(),
+                    svtav1_types::motion::Mv::default(),
+                ],
+                partition,
+            };
+            let (mi_x, mi_y) = (abs_x / 4, abs_y / 4);
+            for my in mi_y..(mi_y + h / 4).min(mvp.len() / stride) {
+                for cell in mvp[my * stride + mi_x..(my * stride + mi_x + w / 4).min((my + 1) * stride)].iter_mut() {
+                    *cell = entry;
+                }
+            }
+        }
+    }
     let (ccx, ccy, cw, chh) = (ev.ccx, ev.ccy, ev.cw, ev.chh);
     let cand = &ev.win;
     // Task #95 (both-partial p6 mode flip): a boundary block whose recon
@@ -6794,6 +7189,10 @@ pub(crate) fn commit_leaf(
     let skip = !cand.block_has_coeff;
     fx.ectx
         .record_block(abs_x, abs_y, w, h, cand.mode, cand.uv, skip);
+    // IBC chunk 9 (Root 6 twin, MD side): stamp the inter-neighbour dims
+    // — the funnel's tx_size_ctx reads them for the C is_inter override.
+    fx.ectx
+        .record_inter_dims(abs_x, abs_y, w, h, cand.ibc.is_some());
     // MD-time palette neighbour state (C mbmi->palette_mode_info, stamped for
     // EVERY committed winner in coding order — mirrors the pack walk's
     // record_palette + the record_block above). Read back by the NEXT
@@ -6815,9 +7214,15 @@ pub(crate) fn commit_leaf(
     // (update_part_neighs); inert for the fixed-tree paths (nothing
     // reads the decision ectx's partition bytes there).
     fx.ectx.update_partition_ctx_leaf(abs_x, abs_y, w, h);
-    // set_txfm_ctxs with the CHOSEN tx dims (mode_decision_update:246-256).
+    // set_txfm_ctxs with the CHOSEN tx dims (mode_decision_update:246-256)
+    // — the skip && is_inter arm stores the BLOCK dims instead (IntraBC
+    // skip winners; entropy_coding.c:4620-4624).
     let (txw, txh) = txb_dims_at_depth(w, h, cand.tx_depth);
-    fx.ectx.record_txfm_dims(abs_x, abs_y, w, h, txw, txh);
+    if cand.ibc.is_some() && skip {
+        fx.ectx.record_txfm_dims(abs_x, abs_y, w, h, w, h);
+    } else {
+        fx.ectx.record_txfm_dims(abs_x, abs_y, w, h, txw, txh);
+    }
     // Per-txb luma cul bytes; chroma culs over the chroma span.
     let cols = w / txw;
     for (txb, &cul) in cand.txb_cul.iter().enumerate() {

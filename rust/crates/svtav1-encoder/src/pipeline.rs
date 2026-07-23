@@ -2722,9 +2722,14 @@ pub(crate) struct EntropyCtx {
     /// availability, and every available cell was written by a previous
     /// block (blocks are coded in z-order).
     above_txfm: Vec<u8>,
+    /// IBC chunk 9: per-4x4 above-neighbour INTER block dims (0 = intra)
+    /// — the get_tx_size_context is_inter override state (Root 6).
+    above_inter_bw: Vec<u8>,
     /// Left TXFM context at 4x4 granularity: the HEIGHT in pixels of the
     /// last coded TX in each mi row.
     left_txfm: Vec<u8>,
+    /// Per-4x4 left-neighbour INTER block dims (0 = intra).
+    left_inter_bh: Vec<u8>,
     /// Above row luma palette_size (4x4 granularity), 0 = no palette — C's
     /// `above_mbmi->palette_mode_info.palette_size` read back by
     /// `svt_aom_get_palette_mode_ctx` / `svt_get_palette_cache_y`. Full
@@ -2922,7 +2927,9 @@ impl EntropyCtx {
                 alloc::vec![0xFFu8; height_c4],
             ],
             above_txfm: alloc::vec![0u8; width_4x4],
+            above_inter_bw: alloc::vec![0u8; width_4x4],
             left_txfm: alloc::vec![0u8; height_4x4],
+            left_inter_bh: alloc::vec![0u8; height_4x4],
             above_palette: alloc::vec![0u8; width_4x4],
             left_palette: alloc::vec![0u8; height_4x4],
             above_palette_colors: alloc::vec![
@@ -3313,14 +3320,56 @@ impl EntropyCtx {
         // ::tile_top_px` rather than relying on that coincidence).
         let has_above = y > self.tile_top_px;
         let has_left = x > self.tile_left_px;
-        let above = (self.above_txfm[x / 4] as usize >= w) as usize;
-        let left = (self.left_txfm[y / 4] as usize >= h) as usize;
+        // IBC chunk 9 (aom-rs Root 6): C substitutes an is_inter
+        // neighbour's BLOCK dims for its TXFM-context byte
+        // (get_tx_size_context, entropy_coding.c:4626-4637). IntraBC
+        // blocks are the only inter-classified neighbours on this port;
+        // `above_inter_bw`/`left_inter_bh` hold their block dims (0 =
+        // intra neighbour, the plain txfm-ctx compare).
+        let above = if self.above_inter_bw[x / 4] != 0 {
+            (self.above_inter_bw[x / 4] as usize >= w) as usize
+        } else {
+            (self.above_txfm[x / 4] as usize >= w) as usize
+        };
+        let left = if self.left_inter_bh[y / 4] != 0 {
+            (self.left_inter_bh[y / 4] as usize >= h) as usize
+        } else {
+            (self.left_txfm[y / 4] as usize >= h) as usize
+        };
         match (has_above, has_left) {
             (true, true) => above + left,
             (true, false) => above,
             (false, true) => left,
             (false, false) => 0,
         }
+    }
+
+    /// IBC chunk 9: stamp the inter-neighbour dims state over a block's
+    /// footprint — the coded BLOCK dims for an IntraBC block (u8-safe:
+    /// block dims <= 128), 0 for every intra block.
+    pub(crate) fn record_inter_dims(
+        &mut self,
+        x: usize,
+        y: usize,
+        w: usize,
+        h: usize,
+        use_intrabc: bool,
+    ) {
+        let (bw, bh) = if use_intrabc { (w as u8, h as u8) } else { (0, 0) };
+        let x4 = x / 4;
+        let y4 = y / 4;
+        for i in x4..(x4 + w / 4).min(self.above_inter_bw.len()) {
+            self.above_inter_bw[i] = bw;
+        }
+        for i in y4..(y4 + h / 4).min(self.left_inter_bh.len()) {
+            self.left_inter_bh[i] = bh;
+        }
+    }
+
+    /// The frame height in pixels this context spans (the C
+    /// `mb_to_bottom_edge` clip base for the var-tx walk).
+    pub(crate) fn frame_h_px(&self) -> usize {
+        self.left_txfm.len() * 4
     }
 
     /// Update the TXFM context arrays after coding a block.
@@ -3463,6 +3512,35 @@ fn write_chroma_txb(
 /// This is the core block encoding used by both PARTITION_NONE leaves and
 /// HORZ/VERT children. In AV1, HORZ/VERT children are always leaf blocks
 /// that the decoder reads directly — no partition symbol is expected for them.
+/// IBC chunk 9: bridge the inter var-tx tx_size writer with the
+/// EntropyCtx txfm spans (copied out to end the immutable borrow before
+/// the CDF-adapting write).
+#[allow(clippy::too_many_arguments)]
+fn writer_tx_size_vartx_bridge(
+    writer: &mut svtav1_entropy::writer::AomWriter,
+    frame_ctx: &mut svtav1_entropy::context::FrameContext,
+    ectx: &EntropyCtx,
+    block_x: usize,
+    block_y: usize,
+    w: usize,
+    h: usize,
+    depth: u8,
+) {
+    let above: alloc::vec::Vec<u8> = ectx.txfm_above_span(block_x, w).to_vec();
+    let left: alloc::vec::Vec<u8> = ectx.txfm_left_span(block_y, h).to_vec();
+    crate::vartx::write_tx_size_vartx(
+        writer,
+        frame_ctx,
+        &above,
+        &left,
+        w,
+        h,
+        depth,
+        block_y,
+        ectx.frame_h_px(),
+    );
+}
+
 #[allow(clippy::too_many_arguments)]
 fn encode_block_syntax(
     decision: &crate::partition::BlockDecision,
@@ -3710,12 +3788,19 @@ fn encode_block_syntax(
     // md_rate_estimation.c:854-855). Without the flag the FH's
     // allow_intrabc = 1 promises a symbol the tile lacks — an UNDECODABLE
     // stream, not merely a divergent one (aomdec outputs zero frames).
-    // TODO(IBC chunk 9): thread the winner's real use_intrabc + DV from
-    // BlockDecision through write_intrabc_info here; `use_intrabc` below
-    // then steers the tx-type CDF rows + the var-tx tx_size writer.
-    let use_intrabc = false;
+    // IBC chunk 9: the winner's real use_intrabc + DV. write_intrabc_info
+    // codes the flag over intrabc_cdf (adapting) and, when set, the DV
+    // diff vs dv_ref over ndvc at MV_SUBPEL_NONE (svt_av1_encode_dv).
+    let use_intrabc = decision.use_intrabc;
     if is_key && ectx.allow_intrabc {
-        writer.write_symbol(usize::from(use_intrabc), &mut frame_ctx.intrabc_cdf, 2);
+        crate::intrabc::write_intrabc_info(
+            writer,
+            &mut frame_ctx.intrabc_cdf,
+            &mut frame_ctx.ndvc,
+            use_intrabc,
+            decision.dv,
+            decision.dv_ref,
+        );
     }
 
     // Mode syntax is ALWAYS coded — the skip flag only gates residuals
@@ -3724,7 +3809,11 @@ fn encode_block_syntax(
         svtav1_entropy::context::write_intra_inter(writer, frame_ctx, 0, decision.is_inter);
     }
 
-    if decision.is_inter {
+    if use_intrabc {
+        // C write_modes_b :5024-5089: y_mode + angle + uv mode-info +
+        // palette + filter_intra are ALL suppressed for an IntraBC block
+        // (each writer is nested under `use_intrabc == 0`).
+    } else if decision.is_inter {
         svtav1_entropy::mv_coding::write_mv(writer, decision.mv.x, decision.mv.y, true);
     } else if is_key {
         let above_ctx = ectx.above_mode_ctx(block_x);
@@ -3783,7 +3872,7 @@ fn encode_block_syntax(
     //   follows directional UV modes — UV_DC triggers neither.
     // CFL allowed = LUMA block w <= 32 && h <= 32 (is_cfl_allowed,
     // blockd.h, non-lossless path).
-    if chroma_blocks.is_some() {
+    if chroma_blocks.is_some() && !use_intrabc {
         debug_assert!(!decision.is_inter, "420 path is key/intra only");
         let cfl_allowed = decision.width <= 32 && decision.height <= 32;
         svtav1_entropy::context::write_uv_mode(
@@ -3844,6 +3933,7 @@ fn encode_block_syntax(
         pal_n_out = crate::palette::index_color_cache(&pal_cache, colors, &mut pal_found, &mut pal_out);
     }
     if !decision.is_inter
+        && !use_intrabc // C :5026: palette mode-info suppressed for IntraBC
         && svtav1_entropy::context::allow_palette(
             ectx.allow_sct,
             decision.width as usize,
@@ -3884,6 +3974,7 @@ fn encode_block_syntax(
     // non-palette DC block the symbol MUST be coded or the decoder desyncs.
     if ectx.seq_filter_intra
         && !decision.is_inter
+        && !use_intrabc // C :5050 nests under use_intrabc == 0
         && decision.intra_mode == 0 // DC_PRED
         && decision.palette.is_none() // palette_size == 0 (mode_decision.c:107)
         && decision.width <= 32
@@ -3935,15 +4026,39 @@ fn encode_block_syntax(
         let w = decision.width as usize;
         let h = decision.height as usize;
         let depth = decision.tx_depth;
-        if is_key && !(w == 4 && h == 4) {
-            let ctx = ectx.tx_size_ctx(block_x, block_y, w, h);
-            svtav1_entropy::context::write_tx_depth(writer, frame_ctx, w, h, ctx, depth as usize);
+        if use_intrabc {
+            // C av1_code_tx_size inter arm (entropy_coding.c:4658-4676):
+            // TX_MODE_SELECT && block_signals_txsize && !(is_inter && skip)
+            // -> the var-tx walk over txfm_partition_cdf; the skip arm
+            // codes NOTHING and stamps the BLOCK dims (set_txfm_ctxs with
+            // skip && is_inter).
+            if !skip && !(w == 4 && h == 4) {
+                writer_tx_size_vartx_bridge(
+                    writer, frame_ctx, ectx, block_x, block_y, w, h, depth,
+                );
+                let (txw, txh) = crate::leaf_funnel::txb_dims_at_depth(w, h, depth);
+                ectx.record_txfm_dims(block_x, block_y, w, h, txw, txh);
+            } else {
+                // skip (or 4x4): context stamp only — block dims for the
+                // skip-inter arm (C set_txfm_ctxs bw = n8_w * MI_SIZE).
+                if skip {
+                    ectx.record_txfm_dims(block_x, block_y, w, h, w, h);
+                } else {
+                    let (txw, txh) = crate::leaf_funnel::txb_dims_at_depth(w, h, depth);
+                    ectx.record_txfm_dims(block_x, block_y, w, h, txw, txh);
+                }
+            }
+        } else {
+            if is_key && !(w == 4 && h == 4) {
+                let ctx = ectx.tx_size_ctx(block_x, block_y, w, h);
+                svtav1_entropy::context::write_tx_depth(writer, frame_ctx, w, h, ctx, depth as usize);
+            }
+            // set_txfm_ctxs records the CHOSEN tx dims (the C
+            // tx_depth_to_tx_size chain — rect blocks halve the LONG dim
+            // first) — the next blocks' tx_size contexts read them.
+            let (txw, txh) = crate::leaf_funnel::txb_dims_at_depth(w, h, depth);
+            ectx.record_txfm_dims(block_x, block_y, w, h, txw, txh);
         }
-        // set_txfm_ctxs records the CHOSEN tx dims (the C
-        // tx_depth_to_tx_size chain — rect blocks halve the LONG dim
-        // first) — the next blocks' tx_size contexts read them.
-        let (txw, txh) = crate::leaf_funnel::txb_dims_at_depth(w, h, depth);
-        ectx.record_txfm_dims(block_x, block_y, w, h, txw, txh);
     }
 
     if !skip {
@@ -4089,7 +4204,30 @@ fn encode_block_syntax(
             let ch = h.max(8) / 2;
             let cx = ((block_x >> 3) << 3) / 2 + if w >= 8 { (block_x % 8) / 2 } else { 0 };
             let cy = ((block_y >> 3) << 3) / 2 + if h >= 8 { (block_y % 8) / 2 } else { 0 };
-            let uv_tt = crate::leaf_funnel::uv_tx_type(decision.uv_mode, cw, ch);
+            // IBC chunk 9: on an INTER-classified (IntraBC) block the
+            // decoder DERIVES the chroma tx type from the co-located luma
+            // type (av1_get_tx_type plane>0 inter arm) — the same
+            // follows-luma rule MDS3 applied: luma txb-0's type when the
+            // chroma inter ext set admits it, else DCT. Intra blocks keep
+            // the uv-mode mapping.
+            let uv_tt = if use_intrabc {
+                let luma_tt = if decision.tx_depth == 0 {
+                    decision.tx_type
+                } else {
+                    decision.txb_tx_types.first().copied().unwrap_or(0)
+                } as usize;
+                let uv_tx = svtav1_entropy::coeff_c::adjusted_tx_size(
+                    svtav1_entropy::coeff_c::tx_size_from_dims(cw, ch),
+                );
+                let uv_set = svtav1_entropy::coeff_c::ext_tx_set_type(uv_tx, true, false);
+                if crate::leaf_funnel::ext_tx_used(uv_set, luma_tt) {
+                    luma_tt
+                } else {
+                    0
+                }
+            } else {
+                crate::leaf_funnel::uv_tx_type(decision.uv_mode, cw, ch)
+            };
             #[cfg(feature = "std")]
             if std::env::var_os("SVTAV1_CODED_EOB").is_some() {
                 let uv_ts = svtav1_entropy::coeff_c::tx_size_from_dims(cw, ch);
@@ -4158,6 +4296,17 @@ fn encode_block_syntax(
         mode,
         decision.uv_mode,
         skip,
+    );
+    // IBC chunk 9 (aom-rs Root 6): stamp the inter-neighbour override
+    // state — get_tx_size_context substitutes an is_inter neighbour's
+    // BLOCK dims for its TXFM-context byte (entropy_coding.c:4626-4637);
+    // IntraBC blocks are the only inter-classified neighbours here.
+    ectx.record_inter_dims(
+        block_x,
+        block_y,
+        decision.width as usize,
+        decision.height as usize,
+        use_intrabc,
     );
     // Palette neighbor state (C mbmi->palette_mode_info, stamped for
     // EVERY block — palette or not, matching record_block above).
@@ -5544,6 +5693,70 @@ fn encode_tile_rows(
         } else {
             None
         };
+        // ---- IBC chunk 8: frame-level IntraBC state + the MD mi grid ----
+        // C md_config_process.c:946-969 (gated frm_hdr->allow_intrabc):
+        // the frame hash table over the SOURCE (enhanced_pic), the diamond
+        // site config (source stride baked), the one-shot QP mesh rescale;
+        // plus this port's search cost tables (nmvc @ LOW precision — the
+        // I-slice frame-constant `svt_aom_estimate_mv_rate` build) and the
+        // per-block scalars (sadperbit16 from base_q_idx, errorperbit from
+        // the funnel lambda >> RD_EPB_SHIFT).
+        let ibc_state: Option<alloc::boxed::Box<crate::leaf_funnel::IbcFrameState>> =
+            if use_funnel && funnel_cfg.allow_intrabc {
+                let mut ctrls = crate::intrabc::IbcCtrls::for_level(tile_sc.intrabc_level);
+                // scs->qp_based_th_scaling_ctrls.intra_bc_mesh_qp_scaling is
+                // true on the allintra path (scale_mesh_patterns_by_qp doc).
+                crate::intrabc::scale_mesh_patterns_by_qp(&mut ctrls, true, cli_qp as u32);
+                let hash = crate::intrabc_hash::generate_ibc_data(
+                    encode_input,
+                    w,
+                    w,
+                    h,
+                    ctrls.max_block_size_hash,
+                    ctrls.max_cand_per_bucket,
+                    speed_config.preset >= 4, // pic_disallow_4x4 (depth_refine derivation)
+                );
+                // svt_aom_get_sad_per_bit(base_q_idx, 0): init_me_luts_bd's
+                // `(int)(0.0418*q + 2.4107)` with q = ac_qlookup/4.0
+                // (rc_process.c:186-190, mode_decision.c:2052-2063).
+                let q8 = f64::from(svtav1_dsp::quant_tables::AC_QLOOKUP_8[base_qindex as usize]) / 4.0;
+                let sad_per_bit = (0.0418 * q8 + 2.4107) as i32;
+                let error_per_bit = ((pic_lambda) >> crate::intrabc::RD_EPB_SHIFT).max(1) as i32;
+                Some(alloc::boxed::Box::new(crate::leaf_funnel::IbcFrameState {
+                    ctrls,
+                    hash,
+                    sites: crate::intrabc::init_search_sites(w),
+                    search_tables: crate::intrabc::build_nmv_cost_table(
+                        &svtav1_entropy::mv_coding::NmvContext::default(),
+                        svtav1_entropy::mv_coding::MvSubpelPrecision::Low,
+                    ),
+                    sad_per_bit,
+                    error_per_bit,
+                    mi_rows: (h / 4) as i32,
+                    mi_cols: (w / 4) as i32,
+                    tile: crate::intrabc::TileMiBounds {
+                        mi_row_start: (tile_sb_row_start * sb_size / 4) as i32,
+                        mi_row_end: ((tile_sb_row_end * sb_size / 4).min(h / 4)) as i32,
+                        mi_col_start: (tile_sb_col_start * sb_size / 4) as i32,
+                        mi_col_end: ((tile_sb_col_end * sb_size / 4).min(w / 4)) as i32,
+                    },
+                    sb_mi_size: (sb_size / 4) as i32,
+                    sb_size_log2_mi: (sb_size as u32 / 4).trailing_zeros(),
+                    sb_size_px: sb_size as i32,
+                    disallow_4x4: speed_config.preset >= 4,
+                }))
+            } else {
+                None
+            };
+        // The MD mode-info grid the MVP scans read (C mi_grid_base as MD
+        // stamps it) — frame-wide, one entry per 4x4 cell.
+        let mut ibc_mvp_grid: alloc::vec::Vec<crate::intrabc_mvp::MvpMiEntry> =
+            if ibc_state.is_some() {
+                alloc::vec![crate::intrabc_mvp::MvpMiEntry::default(); (w / 4) * (h / 4)]
+            } else {
+                alloc::vec::Vec::new()
+            };
+
         // Per-SB CDF refresh chain (C update_cdf_level 2 at M4..M6:
         // ec_ctx_array[sb] copied per the left/top-right rule at SB
         // configure, evolved by that SB's coded symbols, and the MD rate
@@ -6085,6 +6298,14 @@ fn encode_tile_rows(
                                 } else {
                                     None
                                 },
+                                // IBC chunk 8: frame IntraBC state + the MD mi grid.
+                                ibc: ibc_state.as_deref(),
+                                ibc_mvp: if ibc_state.is_some() {
+                                    Some(&mut ibc_mvp_grid)
+                                } else {
+                                    None
+                                },
+                                ibc_gate: Default::default(),
                                 full_rd10: bd10_full_rd,
                             })
                         } else {
@@ -6292,6 +6513,14 @@ fn encode_tile_rows(
                                 } else {
                                     None
                                 },
+                                // IBC chunk 8: frame IntraBC state + the MD mi grid.
+                                ibc: ibc_state.as_deref(),
+                                ibc_mvp: if ibc_state.is_some() {
+                                    Some(&mut ibc_mvp_grid)
+                                } else {
+                                    None
+                                },
+                                ibc_gate: Default::default(),
                                 full_rd10: bd10_full_rd,
                             };
                             let nsq = crate::depth_refine::NsqCfg::for_preset_qp(
@@ -6431,6 +6660,11 @@ fn encode_tile_rows(
                                     } else {
                                         None
                                     },
+                                    // bd10 post-pass: IBC is bd8-only (the injection
+                                    // self-gates on bd10 too).
+                                    ibc: None,
+                                    ibc_mvp: None,
+                                    ibc_gate: Default::default(),
                                     full_rd10: bd10_full_rd,
                                 })
                             } else {
