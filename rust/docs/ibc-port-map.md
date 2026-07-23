@@ -26,6 +26,40 @@
 > - Wiring-time facts carried in the module docs: search reads the SOURCE
 >   plane 8-bit forced; the hash table hashes ALIGNED dims; fixtures must
 >   be ≥ 4 SB64s wide or `INTRABC_DELAY_SB64` rejects every DV.
+>
+> **INTEGRATION (chunks 7-9, 2026-07-23, branch `ibc/integration`):**
+> - **Chunk 7** (`4c140fd4d`): the RD/prediction/tx machinery — vartx.rs
+>   (`write_tx_size_vartx`/`cost_tx_size_vartx` over `txfm_partition_cdf`),
+>   intrabc_pred.rs (RECON-domain luma copy + 4:2:0 chroma half-pel
+>   bilinear, §F.12 odd-DV pinned), the INTER_TXT_DIR inter ext-tx routing,
+>   `Cand.ibc`, inter tx depth caps, the IBC chroma arm. Dormant,
+>   unit-locked.
+> - **Chunk 8+9** (`89c4ed95d` WIP + `411b978b2` completion): injection
+>   into the MD funnel (the do_intra_bc gate tree, CAND_CLASS_4 lane, the
+>   MD mi grid for the MVP scans, `IbcFrameState`) AND the pack writer
+>   (`write_intrabc_info` + DV over adapting ndvc, the 5 suppressions,
+>   the inter var-tx tx_size write, is_inter coeff/tx-type rows, the
+>   Root-6 inter-neighbour tx-size-ctx override, skip-inter block-dims
+>   ctx stamp). **The WIP's recon-corruption root:** the port's
+>   `EntropyCtx::{above_txfm,left_txfm}` initialized to 0 where C inits
+>   neighbour arrays to `NEIGHBOR_ARRAY_INVALID` (0xFF) — the intra
+>   tx-size ctx is availability-gated and never noticed, but
+>   `txfm_partition_context` reads the RAW byte (no gate,
+>   entropy_coding.c:4490-4494), so tile-top/left IBC blocks picked a
+>   different txfm_partition CDF row than the decoder → arithmetic desync
+>   (gui p0 q20: mi(72,0) 16x32 non-skip IBC, 747/1054 blocks cascade).
+>   Fixed by 0xFF-init (intra-inert). VERIFIED: 100-cell self-consistency
+>   sweep (gb82-sc × p0-p4 × qp{20,48} × 512², aom-decode oracle) — every
+>   stream decodes to EXACTLY the port's own recon, 25,356 IBC blocks
+>   coded; nextest 915/915; identity 54/54, bd10 36/36 + 309/309
+>   unchanged. The sc_class5 depth-refinement fix (`4b2c0355d`,
+>   cherry-picked from parity/screen-lowpreset) rides along — screen
+>   trees at p0-p2 need it for C parity.
+> - **Chunk 10 (open):** `tools/screen_ibc_gate.sh` measures the
+>   port-vs-C byte map on gb82-sc × p0-p4; residuals are partition/mode
+>   RD near-ties (KB-2 family, e.g. graph p0 q20 first divergence =
+>   mi(24,48) 8x16-vs-8x8 TREE flip, no IBC block involved) — localize
+>   with `decode-diff --first-block-diff` / `--ibc-debug`.
 
 Port-ready map of the SVT-AV1 v4.2.0 intra-block-copy path for the **allintra KEY
 bd8 4:2:0 screen-content** envelope. C reference read READ-ONLY at

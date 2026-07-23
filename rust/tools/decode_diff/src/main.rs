@@ -147,6 +147,74 @@ fn main() {
         std::process::exit(if n_bad > 0 { 1 } else { 0 });
     }
 
+    // --first-block-diff <a.obu> <b.obu>: prefilter-decode both streams and
+    // report the FIRST per-block decode record (in decode order) where the
+    // two disagree — position/bsize (tree divergence) or mode info
+    // (mode/DV/skip/tx divergence at the same block). The chunk-10
+    // localization tool: classifies WHERE the encoders' decisions split.
+    if args[1] == "--first-block-diff" {
+        let mut tds = Vec::new();
+        for p in [&args[2], &args[3]] {
+            let data = std::fs::read(p).unwrap_or_else(|e| {
+                eprintln!("read {p}: {e}");
+                std::process::exit(2);
+            });
+            let (td, _cfg, _fh) = aom_decode::frame::decode_frame_obus_prefilter(&data)
+                .unwrap_or_else(|e| {
+                    eprintln!("{p}: prefilter decode error: {e}");
+                    std::process::exit(2);
+                });
+            tds.push(td);
+        }
+        let (a, b) = (&tds[0], &tds[1]);
+        let n = a.blocks.len().min(b.blocks.len());
+        let mut diverged = false;
+        for i in 0..n {
+            let (ba, bb) = (&a.blocks[i], &b.blocks[i]);
+            let pos_diff = ba.mi_row != bb.mi_row || ba.mi_col != bb.mi_col || ba.bsize != bb.bsize;
+            let ia = &ba.info;
+            let ib = &bb.info;
+            let mode_diff = ia.use_intrabc != ib.use_intrabc
+                || ia.dv_row != ib.dv_row
+                || ia.dv_col != ib.dv_col
+                || ia.y_mode != ib.y_mode
+                || ia.uv_mode != ib.uv_mode
+                || ia.skip != ib.skip
+                || ia.angle_delta_y != ib.angle_delta_y
+                || ia.palette_size != ib.palette_size
+                || ia.use_filter_intra != ib.use_filter_intra
+                || ba.tx_size != bb.tx_size
+                || ba.txbs != bb.txbs;
+            if pos_diff || mode_diff {
+                let kind = if pos_diff { "TREE" } else { "MODE" };
+                println!(
+                    "FIRST-BLOCK-DIFF #{i} kind={kind}\n  A mi=({},{}) bsize={} ibc={} dv=({},{}) mode={} uv={} skip={} pal={} fi={} tx={} txbs={:?}\n  B mi=({},{}) bsize={} ibc={} dv=({},{}) mode={} uv={} skip={} pal={} fi={} tx={} txbs={:?}",
+                    ba.mi_row, ba.mi_col, ba.bsize, ia.use_intrabc, ia.dv_row, ia.dv_col,
+                    ia.y_mode, ia.uv_mode, ia.skip, ia.palette_size[0], ia.use_filter_intra,
+                    ba.tx_size, ba.txbs,
+                    bb.mi_row, bb.mi_col, bb.bsize, ib.use_intrabc, ib.dv_row, ib.dv_col,
+                    ib.y_mode, ib.uv_mode, ib.skip, ib.palette_size[0], ib.use_filter_intra,
+                    bb.tx_size, bb.txbs,
+                );
+                diverged = true;
+                break;
+            }
+        }
+        if !diverged {
+            if a.blocks.len() != b.blocks.len() {
+                println!(
+                    "BLOCK-COUNT-DIFF a={} b={} (first {n} identical)",
+                    a.blocks.len(),
+                    b.blocks.len()
+                );
+                diverged = true;
+            } else {
+                println!("BLOCKS-IDENTICAL {n}");
+            }
+        }
+        std::process::exit(if diverged { 1 } else { 0 });
+    }
+
     // --vs-raw-prefilter: decode to the PRE-FILTER reconstruction
     // (aom-decode's decode_frame_obus_prefilter) and compare against the
     // encoder's pre-DLF dump — an EXACT self-consistency check at every
