@@ -3756,15 +3756,22 @@ pub(crate) fn evaluate_leaf(
         }
 
         // 3. Sort by fast cost. C `sort_fast_cost_based_candidates`
-        //    (product_coding_loop.c:1415) is a swap-on-`<` selection sort:
+        //    (product_coding_loop.c:1415, called by the ind-uv search at
+        //    :7680) is a swap-on-`<` selection sort:
         //    `for i { for j>i { if cost[j] < cost[i] swap(i,j) } }`. It is NOT
         //    stable — a swap displaces the element at `i` down to `j`, so
         //    equal-cost candidates do NOT keep injection order, and which of a
         //    SAD tie group (e.g. the three `cbd=96` D45 deltas) lands inside
-        //    `nfl` is decided by this exact ordering. bd10 replicates C
-        //    bit-for-bit; the bd8 path keeps its original stable `sort_by_key`
-        //    (byte-inert — every bd8 gate is unchanged).
-        if bd10_rd.is_some() {
+        //    `nfl` is decided by this exact ordering. BOTH depths replicate C
+        //    bit-for-bit. (The bd8 path briefly kept a stable `sort_by_key`,
+        //    believed byte-inert from the then-green gates — WRONG on real
+        //    photo content: flat-chroma SAD tie groups straddle the nfl cut
+        //    constantly, admitting a different full-loop set. First pinned on
+        //    CID22 1200348 512x512 q32 p0 at org=(192,128) 32x32 — C fully
+        //    evaluates (V,-3) but never (V,0), the stable port did the
+        //    opposite, flipping the coded chroma angle delta and cascading
+        //    into every later chroma DC base in SB(1,1)+.)
+        {
             let n = fast.len();
             for i in 0..n.saturating_sub(1) {
                 for j in (i + 1)..n {
@@ -3773,8 +3780,6 @@ pub(crate) fn evaluate_leaf(
                     }
                 }
             }
-        } else {
-            fast.sort_by_key(|&(var, _)| var);
         }
 
         // 4. Full-loop count: allintra path -> base is_highest_layer ? 16
@@ -6467,6 +6472,22 @@ pub(crate) fn evaluate_leaf(
                                 u_cfl_out.bits as u64 + v_cfl_out.bits as u64 + cfl_fast_rate,
                                 u_cfl_out.dist + v_cfl_out.dist,
                             );
+                            #[cfg(feature = "std")]
+                            if std::env::var_os("SVTAV1_NSQDBG").is_some()
+                                && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
+                            {
+                                eprintln!(
+                                    "NSQDBG CFLARB mi=({},{}) {}x{} m={} arb=({},{}) ncb={}+{}+{} ncd={}+{} nc={} cflrd={} idx={} sgn={} cb={}+{}+{} cd={}+{} cfl={} udc={} vdc={}",
+                                    abs_y / 4, abs_x / 4, w, h, cand.mode,
+                                    uv_mode_final, uv_delta_final,
+                                    u_out.bits, v_out.bits, fcr_final,
+                                    u_out.dist, v_out.dist, best_uv_cost,
+                                    cfl_rd, cfl_idx, cfl_signs,
+                                    u_cfl_out.bits, v_cfl_out.bits, cfl_fast_rate,
+                                    u_cfl_out.dist, v_cfl_out.dist, cfl_uv_cost,
+                                    u_dc[0], v_dc[0]
+                                );
+                            }
                             // check_best_indepedant_cfl (:3998): CfL wins iff
                             // strictly cheaper than the best non-CfL uv
                             // (list/search order ties keep non-CfL).
@@ -6477,6 +6498,16 @@ pub(crate) fn evaluate_leaf(
                                 cfl_idx_final = cfl_idx;
                                 cfl_signs_final = cfl_signs;
                                 fcr_final = cfl_fast_rate;
+                            }
+                        } else {
+                            #[cfg(feature = "std")]
+                            if std::env::var_os("SVTAV1_NSQDBG").is_some()
+                                && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
+                            {
+                                eprintln!(
+                                    "NSQDBG CFLARB mi=({},{}) {}x{} m={} ALPHA-REJECT",
+                                    abs_y / 4, abs_x / 4, w, h, cand.mode
+                                );
                             }
                         }
                     }
