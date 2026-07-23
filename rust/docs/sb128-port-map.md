@@ -515,3 +515,53 @@ near-ties in a DIFFERENT layer than this depth-scope fix:
 Both are the tail of leaf-cost/tx-type RD ties, orthogonal to the SB128
 partition/depth machinery. Next step for either: sibling-C per-txb tx-type RD
 dump (the KB-2/KB-7 method extended to `tx_type_search`).
+
+---
+
+# CLOSED — both residual near-ties (2026-07-23): C exchange-sort tie semantics
+
+Both cells above (p0 q32 AND p1 q48) — plus the wider-corpus sweep's only
+non-p0 photographic divergence (clic2025 `8426ed...` 512-crop bd10 p6 q5) —
+were ONE root: C's candidate sorts are swap-on-`<` EXCHANGE sorts
+(`sort_fast_cost_based_candidates` / `sort_full_cost_based_candidates`,
+product_coding_loop.c:1415/:1438), NOT stable. When a strictly-smaller cost
+follows a group of equal-cost candidates, C's i/j swap displaces the tie
+group's first member BEHIND the group; a stable sort keeps injection order.
+Identical on distinct keys — divergent exactly on cost TIES, and the stage
+survivor counts truncate there.
+
+The "tx-type near-tie" framing above was a downstream symptom. Measured with
+a byte-inert instrumented sibling-C (SVT_TXT_OUT/SVT_LR_OUT dumps + the
+existing wrap interposers) against new env-gated port dumps (SVTAV1_TXT_XY,
+SVTAV1_LR_DBG, NSQDBG UVRD):
+
+- codec_wiki p0 q32: the port's per-tx-type terms are line-for-line identical
+  to C for EVERY (mode, fi) arm (satd/eob/bits/dist/cost all match; DC arm
+  picks ADST_ADST in both, the fi=2 arm DCT_ADST in both). What differed was
+  the CANDIDATE SET: the ind-uv fast loop's 32-survivor cut hits SAD ties on
+  the flat screen chroma, C's exchange order admits UV_SMOOTH where the
+  port's stable order kept an extra D113 delta -> the whole ind-uv table and
+  every MDS0 fast cost pricing it diverged -> C's winning DC+fi2 NONE
+  candidate (32696655) never survived into the port's MDS3 -> the port coded
+  VERT. The bd8 ind-uv arm had kept the stable sort when the bd10 arm was
+  converted (the "424 SB64" fix) — this cell is the bd8 tie case that
+  deliberate asymmetry missed.
+- clic bd10 p6 q5: an EXACT MDS1 full-cost tie (SMOOTH 2710447 == DC 2710447
+  at blk(472,208) 8x8, both sides bit-identical costs); C's post-MDS1
+  exchange sort keeps DC into the 2-candidate MDS3, the stable sort kept
+  SMOOTH -> 305 coded-tree flips downstream. The first divergent tile SYMBOL
+  was the chroma Wiener taps, but the LR search itself is exact — its
+  post-CDEF recon inputs differed (LRNONE sse already diverged). Near-
+  lossless qindex makes exact 64-bit ties common, which is why q5 exposed it.
+
+**Fix** (commit `670a33592`): `c_exchange_sort_by` in leaf_funnel.rs — C's
+double loop verbatim — at the three sites that model C's sorts: `sort_lane`
+(per-class MDS0 fast sort; the lane_pool arrangement == C's buffer
+arrangement, so the tie order entering it is C's), the post-MDS1 `order1`
+full-cost sort, and the ind-uv fast loop (bd8 arm unified with bd10's).
+Byte-inert wherever costs are distinct, by construction.
+
+**Gates:** `sb128_gate.sh` gains `codec_wiki 512x512 q32 p0` + `q48 p1`
+(SB128_BYTE_EXACT, 22 cells); `bd10_photo_gate.sh` gains q5 on group E
+(3 CID22 images, p6) + group G (the clic `8426ed...` crop repro,
+BD10_CLIC_CORPUS-guarded, 158 cells total).

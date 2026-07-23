@@ -159,11 +159,14 @@ SB128_BYTE_EXACT=(
 # max was 16x16 while the other three reached 32x32, so C's whole-SB max_pd0=32
 # tested the 32x32 depth in the TR quadrant (`set_start_end_depth` s_depth=-1) but
 # the port's per-quadrant max_pd0=16 capped it and force-split those 32x32 nodes.
-# Closed by folding whole-128-SB max/min in `build_refined_scan_at`. q48 and q63
-# byte-match; q32 STILL DIVERGES — a SEPARATE tx-type near-tie (the port picks
-# ADST_ADST where C picks DCT_ADST on the 3rd 8x8 txb of the mi(4,24) 16x16 NONE,
-# inflating NONE's rate so VERT wins), NOT the depth root — so it is deliberately
-# not asserted (never assert a non-matching cell).
+# Closed by folding whole-128-SB max/min in `build_refined_scan_at`. q48/q63
+# byte-matched then; q32 (and the p1 q48 1-byte tie) closed 2026-07-23 by the
+# C exchange-sort tie-semantics fix (c_exchange_sort_by, leaf_funnel.rs): the
+# ind-uv fast loop's 32-survivor cut hit SAD TIES on this flat screen chroma,
+# and C's swap-on-`<` exchange sort admits UV_SMOOTH where a stable sort kept
+# an extra D113 delta — the whole ind-uv table (and every MDS0 fast cost
+# pricing it) diverged, surfacing as a 16x16-vs-VERT flip at mi(4,24). All
+# four cells assert byte-identity now.
 #
 # The corpus is a LOCAL resource (not fetched in CI, exactly like
 # coverage_combos_gate.sh's real cells). SC_CORPUS overrides the dir; when it is
@@ -172,8 +175,10 @@ SB128_BYTE_EXACT=(
 SC_CORPUS="${SC_CORPUS:-/root/work/codec-corpus/gb82-sc}"
 _wiki_png="$SC_CORPUS/codec_wiki.png"
 if [ -f "$_wiki_png" ]; then
-  SB128_CELLS+=("crop:$_wiki_png 512 512 48 0" "crop:$_wiki_png 512 512 63 0")
-  SB128_BYTE_EXACT+=("crop:$_wiki_png 512 512 48 0" "crop:$_wiki_png 512 512 63 0")
+  SB128_CELLS+=("crop:$_wiki_png 512 512 48 0" "crop:$_wiki_png 512 512 63 0"
+                "crop:$_wiki_png 512 512 32 0" "crop:$_wiki_png 512 512 48 1")
+  SB128_BYTE_EXACT+=("crop:$_wiki_png 512 512 48 0" "crop:$_wiki_png 512 512 63 0"
+                     "crop:$_wiki_png 512 512 32 0" "crop:$_wiki_png 512 512 48 1")
 else
   echo "WARNING: $_wiki_png not found (set SC_CORPUS) — codec_wiki SB128 cells SKIPPED" >&2
 fi

@@ -101,8 +101,15 @@ PRESETS_D=(7 8)
 # They now run on the 10-bit post-deblock / post-CDEF canvas with
 # coeff_shift = 2 and the bd10 lambdas. 9/9 verified with `cmp`.
 IMAGES_E=(1001682 2119713 4666751)
-QPS_E=(12 32 55)
+QPS_E=(5 12 32 55)
 PRESETS_E=(6)
+# q5 added 2026-07-23 with the C exchange-sort tie-semantics fix
+# (c_exchange_sort_by, leaf_funnel.rs): near-lossless qindex makes exact
+# 64-bit MDS cost TIES common, and C's swap-on-`<` exchange sort orders a
+# tie group differently from a stable sort whenever a strictly-smaller
+# cost follows it — which decides the MDS3 survivor set. The wider-corpus
+# sweep caught it on clic2025 8426ed... bd10 p6 q5 (group G below); the
+# three group-E images at q5 verified `cmp`-identical at the same commit.
 # Group F — preset 5, closed 2026-07-19 by running the M2..M5 CHROMA mode
 # decision at TRUE 10 bits. `search_best_mds3_uv_mode` (the M2..M5 uv-mode
 # search) and `check_best_indepedant_cfl` (the ind-uv CfL arbitration) ran
@@ -120,6 +127,20 @@ PRESETS_E=(6)
 IMAGES_F=(1001682 1484678 2119713 2738653 4666751)
 QPS_F=(12 32 55)
 PRESETS_F=(5)
+# Group G — the wider-corpus q5 near-tie repro (2026-07-23). clic2025
+# `8426ed...` (~2.7MP photo, CENTER-CROPPED to 512 via crop:, the sweep's
+# convention) at bd10 p6 q5: the ONLY non-p0 photographic divergence in the
+# 2026-07-22 wider-corpus sweep. Root: the MDS1 full-cost sort hit an EXACT
+# tie (SMOOTH 2710447 == DC 2710447 at blk(472,208) 8x8) and the port's
+# stable sort kept SMOOTH into MDS3 where C's exchange sort keeps DC — 305
+# coded-tree flips downstream, first divergent tile symbol the chroma Wiener
+# taps (the LR search itself was exact; only its recon inputs differed).
+# Byte-identical since the c_exchange_sort_by fix. The corpus is a LOCAL
+# resource (like sb128_gate's SC_CORPUS cells): override with
+# BD10_CLIC_CORPUS; if absent the cell FAILS LOUDLY as missing — never a
+# silent skip.
+CLIC_CORPUS="${BD10_CLIC_CORPUS:-/root/work/codec-corpus/clic2025}"
+IMAGE_G="$CLIC_CORPUS/final-test/8426ed2245c791232862b0a0b2a62a1f17031e8e6e38921fe939df0b3a05ac41.png"
 
 OUT="${TMPDIR:-/tmp}/bd10photo.$$"
 mkdir -p "$OUT"
@@ -138,7 +159,14 @@ run_cell() {
         failed+=("${tag}[no-png]")
         return
     fi
-    if ! SVTAV1_BD=10 "$HERE/identity_run" "file:$png" 512 512 "$qp" "$p" "$OUT/rs" \
+    run_cell_spec "file:$png" "$tag" "$qp" "$p"
+}
+
+# Same contract, but the caller supplies the full identity_run content spec
+# (group G feeds `crop:` — the wider-corpus sweep's center-crop convention).
+run_cell_spec() {
+    local spec=$1 tag=$2 qp=$3 p=$4
+    if ! SVTAV1_BD=10 "$HERE/identity_run" "$spec" 512 512 "$qp" "$p" "$OUT/rs" \
         >/dev/null 2>&1; then
         fail=$((fail + 1))
         failed+=("${tag}[rs-err]")
@@ -195,6 +223,13 @@ for stem in "${IMAGES_F[@]}"; do
         for p in "${PRESETS_F[@]}"; do run_cell "$stem" "$qp" "$p"; done
     done
 done
+# Group G (see the header): the clic q5 near-tie repro, corpus-guarded.
+if [ -f "$IMAGE_G" ]; then
+    run_cell_spec "crop:$IMAGE_G" "clic8426ed_q5_p6" 5 6
+else
+    missing=$((missing + 1))
+    failed+=("clic8426ed_q5_p6[no-png: set BD10_CLIC_CORPUS]")
+fi
 
 total=$((pass + fail + missing))
 echo "bd10 photographic identity: $pass / $total byte-identical"
