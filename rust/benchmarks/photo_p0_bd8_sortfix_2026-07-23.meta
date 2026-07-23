@@ -1,0 +1,38 @@
+PHOTO PRESET-0 BD8 BYTE-IDENTITY — THE IND-UV SORT ROOT (task: photo-p0-deblock)
+================================================================================
+Branch: parity/photo-p0-deblock   Fix commit: 79cc43d3c (base 3a5c064cc)
+Tool:   tools/wider_corpus_sweep.sh  WCS_PRESETS=0 WCS_QPS="5 20 32 48 63"
+        WCS_BDS=8 WCS_CORPORA="cid22 clic"  (135 cells: 15 CID22 + 12 clic
+        images x 5 qps, 512x512, preset 0, bd8 4:2:0)
+C ref:  /root/svtav1/Bin/Release libSvtAv1Enc v4.2.0
+Host:   the shared workstation (nice -n19 ionice -c3 throughout)
+
+RESULT: 61/135 -> 134/135 byte-identical (73 cells fixed, 0 regressed) from
+ONE root. The 2026-07-22 wider-corpus map (22/135) predated the #91 sb128
+depth-fold landing; on base 3a5c064cc the before-map is 61/135
+(photo_p0_bd8_sortfix_2026-07-23_before.tsv), after the fix 134/135
+(_after.tsv).
+
+ROOT (the ~85%-universal "FH loop_filter_level" class): the M0/M1
+independent-uv search's fast-candidate sort. C sorts the SAD-ranked
+(uv_mode, angle_delta) candidates with sort_fast_cost_based_candidates
+(product_coding_loop.c:1415, ind-uv call :7680) — a swap-on-< selection
+sort whose TIE order is not injection order. The port's bd8 arm used a
+stable sort_by_key (bd10 already replicated C). Flat-chroma SAD tie
+groups straddle the nfl=32 full-loop cut on nearly every real photo, so
+the port full-evaluated a DIFFERENT candidate set, flipping a chroma
+angle delta / uv mode somewhere mid-frame; the winner's chroma recon then
+shifts every later chroma DC prediction, MD decisions cascade, and the
+recon-driven deblock/CDEF/LR searches re-price -> the universal FH
+loop_filter_level first-divergence symptom. The LF level was never the
+bug.
+
+Localization chain (drill cell cid22 1200348 q32 p0): drill_cell.sh ->
+decode-diff --first-block-diff (first record flip mi(40,62) uv CfL-vs-D203;
+records ignore angle deltas) -> tree_diff aduv flip mi(32,48) C=-3 port=0
+(the true first coded flip) -> NSQDBG CFLARB (new) vs C SVT_UVLOOP_XY
+per-candidate join: all inputs identical, C full-evaluates (V,-3) but
+never (V,0), stable port the opposite -> the sort.
+
+RESIDUAL: 1 cell (cid22 5739122 q5) — separate root, drilled next; see
+the follow-up records/commits on this branch.
