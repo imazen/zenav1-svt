@@ -326,7 +326,7 @@ fn nz_mag(levels: &[u8], base: usize, bwl: usize, tx_class: usize) -> u32 {
 /// C `nz_map_ctx_offset_1d`: 1D-class contexts live after the 26 2D
 /// contexts (`SIG_COEF_CONTEXTS_2D`).
 #[inline]
-const fn nz_map_ctx_offset_1d(pos: usize) -> usize {
+pub(crate) const fn nz_map_ctx_offset_1d(pos: usize) -> usize {
     match pos {
         0 => 26,
         1 => 31,
@@ -338,7 +338,7 @@ const fn nz_map_ctx_offset_1d(pos: usize) -> usize {
 /// (documented in coefficients.h:176-186); verified against the exported C
 /// data in tests/c_parity.rs.
 #[inline]
-pub fn nz_map_ctx_offset_2d(tx_size: usize, coeff_idx: usize) -> usize {
+pub const fn nz_map_ctx_offset_2d(tx_size: usize, coeff_idx: usize) -> usize {
     if coeff_idx == 0 {
         // The (0,0) entry is 0 in the C tables (the from-stats path
         // special-cases (tx_class | coeff_idx) == 0 before the lookup).
@@ -398,7 +398,7 @@ fn nz_map_ctx_from_stats(
 
 /// C `get_nz_map_ctx` (encode_txb_ref_c.c:17).
 #[inline]
-fn nz_map_ctx(
+pub(crate) fn nz_map_ctx(
     levels: &[u8],
     origin: usize,
     coeff_idx: usize,
@@ -472,7 +472,22 @@ pub fn br_ctx_eob(c: usize, bwl: usize, tx_class: usize) -> usize {
     14
 }
 
-/// C `svt_av1_get_nz_map_contexts_c`.
+/// C `svt_av1_get_nz_map_contexts` — the coefficient nz-map / base-level
+/// context for every scanned position.
+///
+/// The heavy per-position neighbour sum is computed in **raster** order over the
+/// whole padded transform block (mirroring the production C SIMD kernel
+/// `svt_av1_get_nz_map_contexts_sse2`/`_avx2`, the RTCD default — not the scalar
+/// `_c`), then the scan positions `scan[0..eob]` are scattered into
+/// `coeff_contexts`. Byte-identical to the scan-order scalar `_c` at every
+/// written (scan) position — the only positions any caller reads — so the
+/// output and every downstream cost/symbol is unchanged; non-scan positions are
+/// left at their input value exactly as `_c` leaves them.
+///
+/// The raster fill is archmage-dispatched (see
+/// [`crate::coeff_simd::nz_map_contexts_raster`]); the SIMD path is proven
+/// bit-identical to the exported real-C `_sse2`/`_c` kernels and the scalar core
+/// under every dispatch tier in `tests/c_parity.rs`.
 pub fn get_nz_map_contexts(
     levels_buf: &[u8],
     scan: &[u16],
@@ -481,22 +496,16 @@ pub fn get_nz_map_contexts(
     tx_class: usize,
     coeff_contexts: &mut [i8],
 ) {
-    let bwl = txb_bwl(tx_size);
-    let height = txb_high(tx_size);
-    let origin = levels_origin(txb_wide(tx_size));
-    for i in 0..eob {
-        let pos = scan[i] as usize;
-        coeff_contexts[pos] = nz_map_ctx(
-            levels_buf,
-            origin,
-            pos,
-            bwl,
-            height,
-            i,
-            i == eob - 1,
-            tx_size,
-            tx_class,
-        ) as i8;
+    if eob == 0 {
+        return;
+    }
+    let mut scratch = [0u8; 32 * 32];
+    crate::coeff_simd::nz_map_contexts_raster(
+        levels_buf, scan, eob, tx_size, tx_class, &mut scratch,
+    );
+    for &pos in &scan[..eob] {
+        let p = pos as usize;
+        coeff_contexts[p] = scratch[p] as i8;
     }
 }
 

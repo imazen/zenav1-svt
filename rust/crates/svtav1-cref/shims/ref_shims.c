@@ -269,6 +269,17 @@ void ref_get_nz_map_contexts(const uint8_t* levels, const int16_t* scan, uint16_
     svt_av1_get_nz_map_contexts_c(levels, scan, eob, (TxSize)tx_size, (TxClass)tx_class, coeff_contexts);
 }
 
+/* Production RTCD-default SIMD kernel (raster fill + eob stamp). Exported from
+ * the Release archive; asserts (incl. the 16-byte-align check) are compiled out
+ * there and the stores are unaligned, so any buffer is valid. Prototyped here. */
+void svt_av1_get_nz_map_contexts_sse2(const uint8_t* const levels, const int16_t* const scan, const uint16_t eob,
+                                      TxSize tx_size, const TxClass tx_class, int8_t* const coeff_contexts);
+
+void ref_get_nz_map_contexts_sse2(const uint8_t* levels, const int16_t* scan, uint16_t eob, int32_t tx_size,
+                                  int32_t tx_class, int8_t* coeff_contexts) {
+    svt_av1_get_nz_map_contexts_sse2(levels, scan, eob, (TxSize)tx_size, (TxClass)tx_class, coeff_contexts);
+}
+
 int32_t ref_get_txsize_entropy_ctx(int32_t tx_size) { return (int32_t)get_txsize_entropy_ctx((TxSize)tx_size); }
 int32_t ref_get_txb_bwl(int32_t tx_size) { return get_txb_bwl((TxSize)tx_size); }
 int32_t ref_get_txb_wide(int32_t tx_size) { return get_txb_wide((TxSize)tx_size); }

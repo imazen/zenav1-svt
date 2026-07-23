@@ -322,6 +322,14 @@ unsafe extern "C" {
         tx_class: i32,
         coeff_contexts: *mut i8,
     );
+    fn ref_get_nz_map_contexts_sse2(
+        levels: *const u8,
+        scan: *const i16,
+        eob: u16,
+        tx_size: i32,
+        tx_class: i32,
+        coeff_contexts: *mut i8,
+    );
     fn ref_get_txsize_entropy_ctx(tx_size: i32) -> i32;
     fn ref_get_txb_bwl(tx_size: i32) -> i32;
     fn ref_get_txb_wide(tx_size: i32) -> i32;
@@ -387,6 +395,31 @@ pub fn get_nz_map_contexts(
 ) {
     unsafe {
         ref_get_nz_map_contexts(
+            levels.as_ptr(),
+            scan.as_ptr(),
+            eob,
+            tx_size as i32,
+            tx_class as i32,
+            coeff_contexts.as_mut_ptr(),
+        )
+    };
+}
+
+/// The production RTCD-default SIMD kernel `svt_av1_get_nz_map_contexts_sse2`:
+/// fills the whole padded block in raster order, then stamps the eob position.
+/// Byte-identical to [`get_nz_map_contexts`] at every scan position, but also
+/// writes the non-scan positions (raster), so it is the reference for the
+/// port's raster fill on the *full* buffer.
+pub fn get_nz_map_contexts_sse2(
+    levels: &[u8],
+    scan: &[i16],
+    eob: u16,
+    tx_size: usize,
+    tx_class: usize,
+    coeff_contexts: &mut [i8],
+) {
+    unsafe {
+        ref_get_nz_map_contexts_sse2(
             levels.as_ptr(),
             scan.as_ptr(),
             eob,

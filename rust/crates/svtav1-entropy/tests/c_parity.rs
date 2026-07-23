@@ -727,3 +727,123 @@ fn txb_init_levels_simd_matches_c() {
         }
     }
 }
+
+/// The SIMD-dispatched `get_nz_map_contexts` equals the exported real-C kernels
+/// under EVERY archmage dispatch tier (the AVX2 `v3` raster path AND the scalar
+/// fallback), across all tx sizes, all tx classes (2D / HORIZ / VERT), and every
+/// eob bucket including the DC, edge, and scan-last special cases:
+///   * vs the scalar `svt_av1_get_nz_map_contexts_c` on the full `[..n]` buffer
+///     (both write scan order — the port output stays byte-identical to `_c`);
+///   * vs the production RTCD-default SIMD `svt_av1_get_nz_map_contexts_sse2` at
+///     every written (scan) position — and, for fully-dense blocks (eob == n,
+///     the scan a full permutation), the WHOLE raster buffer, which exercises
+///     every position-base offset and the 5-neighbour stencil at every coord.
+/// This is the nz-map analogue of `txb_init_levels_simd_matches_c`.
+#[test]
+fn nz_map_contexts_simd_matches_c() {
+    use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+    use svtav1_entropy::coeff_c;
+    use svtav1_entropy::scan_tables;
+
+    let mut rng = Rng(0x4E5A_9AB1_0FF5_E7C3);
+    for ts in 0..coeff_c::TX_SIZES_ALL {
+        let width = coeff_c::txb_wide(ts);
+        let height = coeff_c::txb_high(ts);
+        let n = width * height;
+        let bwl = coeff_c::txb_bwl(ts);
+        let total = height << bwl;
+        for &tx_type in &[0usize, 10, 11] {
+            // DCT_DCT (2D), V_DCT (VERT), H_DCT (HORIZ)
+            let tx_class = coeff_c::TX_TYPE_TO_CLASS[tx_type];
+            let scan =
+                scan_tables::scan(ts, scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type] as usize);
+            let c_scan: Vec<i16> = scan.iter().map(|&v| v as i16).collect();
+
+            // eob targets that pin the scan-last context buckets (`<=(h<<bwl)/8`
+            // -> 1, `<=(h<<bwl)/4` -> 2, else 3), DC-only (eob==1), and dense
+            // (eob==n -> whole-buffer coverage).
+            let mut eob_targets = vec![1usize, n];
+            for e in [total / 8, total / 8 + 1, total / 4, total / 4 + 1, n / 2] {
+                if (1..=n).contains(&e) {
+                    eob_targets.push(e);
+                }
+            }
+
+            for trial in 0..24usize {
+                let target_last = if trial < eob_targets.len() {
+                    eob_targets[trial]
+                } else {
+                    1 + rng.below(n as u64) as usize
+                }
+                .clamp(1, n);
+                let dense = target_last == n;
+
+                // Fill scan[0..target_last] with a random-density subset, forcing
+                // scan[target_last-1] nonzero so eob == target_last exactly.
+                let mut coeffs = vec![0i32; n];
+                for i in 0..target_last {
+                    if i == target_last - 1 || dense || rng.below(2) == 0 {
+                        let mag = 1 + rng.below(6) as i32; // straddles the clip-to-3
+                        coeffs[scan[i] as usize] =
+                            if rng.below(2) == 0 { mag } else { -mag };
+                    }
+                }
+
+                // Level maps: port (whole buffer) and C (at the set_levels origin).
+                let mut levels = vec![0u8; coeff_c::TX_PAD_2D];
+                coeff_c::txb_init_levels(&coeffs, width, height, &mut levels);
+                let origin = coeff_c::levels_origin(width);
+                let mut c_levels = vec![0u8; coeff_c::TX_PAD_2D];
+                cref::txb_init_levels(&coeffs, width, height, &mut c_levels[origin..]);
+
+                let mut eob = 0usize;
+                for (i, &pos) in scan.iter().enumerate() {
+                    if coeffs[pos as usize] != 0 {
+                        eob = i + 1;
+                    }
+                }
+                if eob == 0 {
+                    continue;
+                }
+
+                let mut c_ctx = vec![0i8; n];
+                cref::get_nz_map_contexts(
+                    &c_levels[origin..],
+                    &c_scan,
+                    eob as u16,
+                    ts,
+                    tx_class,
+                    &mut c_ctx,
+                );
+                let mut sse2_ctx = vec![0i8; n];
+                cref::get_nz_map_contexts_sse2(
+                    &c_levels[origin..],
+                    &c_scan,
+                    eob as u16,
+                    ts,
+                    tx_class,
+                    &mut sse2_ctx,
+                );
+
+                let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+                    let mut port = vec![0i8; n];
+                    coeff_c::get_nz_map_contexts(&levels, scan, eob, ts, tx_class, &mut port);
+                    // vs scalar `_c`: byte-identical on the whole [..n] (both scan order).
+                    assert_eq!(
+                        port, c_ctx,
+                        "port != _c: ts={ts} class={tx_class} eob={eob} trial={trial}"
+                    );
+                    // vs production `_sse2`: identical at every written (scan) position;
+                    // dense (eob==n) covers the whole raster buffer.
+                    for &p in &scan[..eob] {
+                        let p = p as usize;
+                        assert_eq!(
+                            port[p], sse2_ctx[p],
+                            "port != _sse2 @pos {p}: ts={ts} class={tx_class} eob={eob} trial={trial}"
+                        );
+                    }
+                });
+            }
+        }
+    }
+}
