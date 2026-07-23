@@ -38,16 +38,19 @@ CELL_TIMEOUT="${SIG_CELL_TIMEOUT:-300}"
 # FAILS if a cell here diverges OR an unlisted cell matches).
 # Baked 2026-07-23 from the first full run (commit 823955fea state):
 # the 19 matching cells are the two !sc_class5 control images (IBC off,
-# streams carry 0 intrabc blocks) at every preset/qp except the
-# pre-existing codec_wiki_p1_q48 near-tie (proven pre-IBC: the
-# pre-chunk-7 build produces the byte-identical port stream and also
-# diverges from C there). All 80 sc_class5 cells are pinned-diverging
-# RD near-ties (KB-2 family; localizations in
+# streams carry 0 intrabc blocks) at every preset/qp except the then-
+# pre-existing codec_wiki_p1_q48 near-tie. All 80 sc_class5 cells are
+# pinned-diverging RD near-ties (KB-2 family; localizations in
 # benchmarks/screen_ibc_map_2026-07-23.txt).
+# codec_wiki_p1_q48 PROMOTED 2026-07-23 (same day, later): the photo-p0
+# ind-uv fixes (79cc43d3c unstable-sort + 78bb5d361 CfL tie-break — p1 is
+# the other ind_uv_independent preset) closed that near-tie; the gate's
+# fail-forward caught the flip on the first post-fix run (20/100).
 BYTE_EXACT=(
   "codec_wiki_p0_q20"
   "codec_wiki_p0_q48"
   "codec_wiki_p1_q20"
+  "codec_wiki_p1_q48"
   "codec_wiki_p2_q20"
   "codec_wiki_p2_q48"
   "codec_wiki_p3_q20"
