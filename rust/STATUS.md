@@ -1,6 +1,50 @@
 # SVT-AV1 Rust Port — Status
 
-Last updated: 2026-07-19 (wave2/entropy-c-parity) — C baseline **v4.2.0-rc**
+Last updated: 2026-07-23 (parity/photo-p0-deblock) — C baseline **v4.2.0**
+
+## Photo preset-0 bd8 — the universal "FH loop_filter_level" class CLOSED (2026-07-23)
+
+The dominant real-content residual (the wider-corpus sweep's group 1: ~85% of
+photo p0 bd8 cells diverging, first byte always the FH `loop_filter_level`,
+pre-deblock recon SSE off by only ~0.08%) is closed by TWO roots in the
+M0/M1 independent-uv chroma search, branch `parity/photo-p0-deblock`:
+
+1. **`79cc43d3c` — the bd8 ind-uv fast-candidate sort.** C sorts the
+   SAD-ranked (uv_mode, angle_delta) candidates with
+   `sort_fast_cost_based_candidates` (product_coding_loop.c:1415, ind-uv call
+   :7680) — a swap-on-`<` selection sort whose TIE order differs from
+   injection order. The port's bd8 arm used a stable `sort_by_key` (bd10
+   already replicated C) under a "byte-inert" claim. On real photos,
+   flat-chroma SAD tie groups straddle the nfl=32 full-loop cut on nearly
+   every frame -> a different full-loop set -> a chroma angle-delta / uv-mode
+   winner flips mid-frame -> the winner's chroma recon shifts every later
+   chroma DC prediction (localized with the new `tools/uvdc_join.py`:
+   1604/3488 blocks with drifted DC inputs on the drill cell) -> MD cascades
+   -> the recon-driven deblock/CDEF/LR searches re-price -> the FH symptom.
+   **This ONE fix: photo p0 bd8 probe 61/135 -> 134/135** (135 cells = 27
+   CID22+clic images x qp {5,20,32,48,63}, 512x512; 73 fixed, 0 regressed).
+2. **`78bb5d361` — the bd8 ind-uv CfL arbitration tie-break.** C's
+   `check_best_indepedant_cfl` (:3927) reverts CfL only when
+   `best_uv_cost < cfl_uv_cost` — CfL WINS exact RD ties; the port's bd8 arm
+   had `cfl < best` (non-CfL wins ties; the bd10 arm was already correct).
+   Latent-documented since 2026-07-15 with no witness; the witness cell is
+   CID22 5739122 q5 p0 at mi(31,80) 8x4 DC+filter-intra — both sides' terms
+   byte-identical, RD collides at exactly 130518==130518, C codes CfL.
+   **Takes the probe to 135/135.**
+
+Method (the reusable chain, ~1 drill each): `tools/drill_cell.sh` ->
+`decode-diff --first-block-diff` (NOTE: decoder block records ignore angle
+deltas — cross-check `tree_diff` aduv/ady flips for the true first coded
+flip) -> the new `NSQDBG CFLARB` per-candidate arbitration dump (leaf_funnel)
+vs C `SVT_UVLOOP_OUT`/`SVT_UVLOOP_XY` -> `tools/uvdc_join.py` for
+coding-invisible chroma-neighbour drift. Records:
+`benchmarks/photo_p0_bd8_sortfix_2026-07-23_{before,after}.tsv` + `.meta`.
+
+Residual scope after this landing: the deferred union-sort question for
+multi-lane (palette/IBC) MDS1/MDS3 ordering — C concatenates per-class
+sorted lists (`construct_best_sorted_arrays_md_stage_3`, :1454) where the
+port re-sorts the union; photo has a single lane so it is inert here, but
+screen-content cells with palette/IBC lanes should be re-checked against it.
 
 ## QP domain (C-exact since 2026-07-13)
 
