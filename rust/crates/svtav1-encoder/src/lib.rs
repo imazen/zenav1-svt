@@ -43,6 +43,7 @@ pub mod frame_geom;
 pub mod sb128_geom;
 pub mod bd10;
 pub mod intrabc;
+pub mod intrabc_hash;
 pub mod quant;
 pub mod sb_qindex;
 pub mod rate_control;

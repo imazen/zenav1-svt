@@ -3143,3 +3143,142 @@ pub fn estimate_syntax_rate_intrabc(
     }
     fac
 }
+
+// ---------------------------------------------------------------------------
+// IntraBC hash table (IBC chunk 4)
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn ref_crc32c(buf: *const u8, len: usize) -> u32;
+    fn ref_generate_block_2x2_hash(pic: *const u8, stride: i32, w: i32, h: i32, dst: *mut u32);
+    fn ref_generate_block_hash(w: i32, h: i32, block_size: i32, src: *const u32, dst: *mut u32);
+    fn ref_hash_table_create() -> *mut core::ffi::c_void;
+    fn ref_hash_table_add(
+        table: *mut core::ffi::c_void,
+        pic_hash: *const u32,
+        pic_width: i32,
+        pic_height: i32,
+        block_size: i32,
+        max_cand_per_bucket: u16,
+    );
+    fn ref_hash_table_count(table: *mut core::ffi::c_void, hash_value1: u32) -> i32;
+    fn ref_hash_table_read_bucket(
+        table: *mut core::ffi::c_void,
+        hash_value1: u32,
+        xs: *mut i16,
+        ys: *mut i16,
+        hv2s: *mut u32,
+        cap: i32,
+    ) -> i32;
+    fn ref_hash_table_destroy(table: *mut core::ffi::c_void);
+    fn ref_get_block_hash_value(
+        src: *const u8,
+        stride: i32,
+        block_size: i32,
+        hash_value1: *mut u32,
+        hash_value2: *mut u32,
+    );
+}
+
+/// Reference CRC-32C (`svt_av1_get_crc32c_value_c`, hash.c:55).
+pub fn crc32c(buf: &[u8]) -> u32 {
+    unsafe { ref_crc32c(buf.as_ptr(), buf.len()) }
+}
+
+/// Reference `svt_av1_generate_block_2x2_hash_value` (hash_motion.c:153),
+/// bd8. Returns the full `w*h` array (last row/col positions untouched by
+/// C — pre-seeded 0 on both sides for comparison of the valid region).
+pub fn generate_block_2x2_hash(pic: &[u8], stride: usize, w: usize, h: usize) -> Vec<u32> {
+    assert!(pic.len() >= stride * h);
+    let mut dst = vec![0u32; w * h];
+    unsafe {
+        ref_generate_block_2x2_hash(pic.as_ptr(), stride as i32, w as i32, h as i32, dst.as_mut_ptr());
+    }
+    dst
+}
+
+/// Reference `svt_av1_generate_block_hash_value` (hash_motion.c:192).
+pub fn generate_block_hash(w: usize, h: usize, block_size: usize, src: &[u32]) -> Vec<u32> {
+    assert!(src.len() >= w * h);
+    let mut dst = vec![0u32; w * h];
+    unsafe {
+        ref_generate_block_hash(w as i32, h as i32, block_size as i32, src.as_ptr(), dst.as_mut_ptr());
+    }
+    dst
+}
+
+/// Owned handle to a C-side `HashTable` (create + per-size add + bucket
+/// readback), for chunk-4 order differentials and as the C-side table
+/// input to the chunk-5 `svt_av1_intrabc_hash_search` differential.
+pub struct CHashTable {
+    ptr: *mut core::ffi::c_void,
+}
+
+impl CHashTable {
+    pub fn new() -> Self {
+        Self { ptr: unsafe { ref_hash_table_create() } }
+    }
+
+    /// `svt_aom_rtime_alloc_svt_av1_add_to_hash_map_by_row_with_precal_data`.
+    pub fn add(&mut self, pic_hash: &[u32], pic_width: usize, pic_height: usize, block_size: usize, max_cand_per_bucket: u16) {
+        assert!(pic_hash.len() >= pic_width * pic_height);
+        unsafe {
+            ref_hash_table_add(
+                self.ptr,
+                pic_hash.as_ptr(),
+                pic_width as i32,
+                pic_height as i32,
+                block_size as i32,
+                max_cand_per_bucket,
+            );
+        }
+    }
+
+    /// `svt_av1_hash_table_count`.
+    pub fn count(&self, hash_value1: u32) -> usize {
+        let c = unsafe { ref_hash_table_count(self.ptr, hash_value1) };
+        usize::try_from(c.max(0)).unwrap()
+    }
+
+    /// Bucket entries `(x, y, hash_value2)` in ITERATION order.
+    pub fn bucket(&self, hash_value1: u32) -> Vec<(i16, i16, u32)> {
+        let count = unsafe { ref_hash_table_count(self.ptr, hash_value1) };
+        if count <= 0 {
+            return Vec::new();
+        }
+        let mut xs = vec![0i16; count as usize];
+        let mut ys = vec![0i16; count as usize];
+        let mut hv2s = vec![0u32; count as usize];
+        let got = unsafe {
+            ref_hash_table_read_bucket(self.ptr, hash_value1, xs.as_mut_ptr(), ys.as_mut_ptr(), hv2s.as_mut_ptr(), count)
+        };
+        assert_eq!(got, count);
+        (0..count as usize).map(|i| (xs[i], ys[i], hv2s[i])).collect()
+    }
+
+    pub(crate) fn raw(&self) -> *mut core::ffi::c_void {
+        self.ptr
+    }
+}
+
+impl Default for CHashTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for CHashTable {
+    fn drop(&mut self) {
+        unsafe { ref_hash_table_destroy(self.ptr) };
+    }
+}
+
+/// Reference `svt_av1_get_block_hash_value` (hash_motion.c:309), bd8.
+pub fn get_block_hash_value(src: &[u8], stride: usize, block_size: usize) -> (u32, u32) {
+    assert!(src.len() >= stride * (block_size - 1) + block_size);
+    let (mut hv1, mut hv2) = (0u32, 0u32);
+    unsafe {
+        ref_get_block_hash_value(src.as_ptr(), stride as i32, block_size as i32, &mut hv1, &mut hv2);
+    }
+    (hv1, hv2)
+}

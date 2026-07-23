@@ -1681,3 +1681,121 @@ void ref_estimate_syntax_rate_intrabc(const uint16_t* intrabc_cdf3, int32_t allo
     free(md);
     free(fc);
 }
+
+/* ---- IntraBC hash table (IBC chunk 4, docs/ibc-port-map.md §D) ----
+ *
+ * Differential oracles for svtav1-encoder/src/intrabc_hash.rs. All entry
+ * points are EXPORTED T-symbols (verified via nm): the CRC, the frame
+ * pyramid builders, the table create/add, the count/iterator readback,
+ * and the per-block query. Shims only assemble the small struct inputs
+ * (Yv12BufferConfig / IntraBcContext shells) and run the one-time global
+ * init (CRC table + aom_dsp RTCD pointers) the encoder normally performs
+ * in init_global_tables / rtcd setup.
+ */
+#include "hash.h"        /* svt_av1_crc32c_table_init, AOM_BUFFER_SIZE_FOR_BLOCK_HASH */
+#include "hash_motion.h" /* HashTable, BlockHash, generate/add/query fns */
+
+void init_fn_ptr(void); /* av1me.c:26 (EXPORTED, no header decl) */
+
+static int g_ibc_rtcd_ready = 0;
+static void ibc_ensure_init(void) {
+    if (!g_ibc_rtcd_ready) {
+        svt_aom_setup_common_rtcd_internal(svt_aom_get_cpu_flags_to_use());
+        svt_aom_setup_rtcd_internal(svt_aom_get_cpu_flags_to_use());
+        svt_av1_crc32c_table_init();
+        init_fn_ptr(); /* svt_aom_mefn_ptr[bsize].sdf/vf/sdx4df (av1me.c:26) */
+        g_ibc_rtcd_ready = 1;
+    }
+}
+
+uint32_t ref_crc32c(const uint8_t* buf, size_t len) {
+    ibc_ensure_init();
+    return svt_av1_get_crc32c_value_c(buf, len);
+}
+
+/* svt_av1_generate_block_2x2_hash_value (hash_motion.c:153, EXPORTED),
+ * bd8 arm (flags = 0). */
+void ref_generate_block_2x2_hash(const uint8_t* pic, int32_t stride, int32_t w, int32_t h,
+                                 uint32_t* dst) {
+    ibc_ensure_init();
+    Yv12BufferConfig buf;
+    memset(&buf, 0, sizeof(buf));
+    buf.y_buffer      = (uint8_t*)pic;
+    buf.y_stride      = stride;
+    buf.y_crop_width  = w;
+    buf.y_crop_height = h;
+    buf.flags         = 0;
+    svt_av1_generate_block_2x2_hash_value(&buf, dst);
+}
+
+/* svt_av1_generate_block_hash_value (hash_motion.c:192, EXPORTED). */
+void ref_generate_block_hash(int32_t w, int32_t h, int32_t block_size, const uint32_t* src,
+                             uint32_t* dst) {
+    ibc_ensure_init();
+    Yv12BufferConfig buf;
+    memset(&buf, 0, sizeof(buf));
+    buf.y_crop_width  = w;
+    buf.y_crop_height = h;
+    svt_av1_generate_block_hash_value(&buf, block_size, (uint32_t*)src, dst);
+}
+
+/* Hash table lifecycle: create + per-size add + bucket readback + destroy.
+ * The Rust side drives these through an opaque handle. */
+void* ref_hash_table_create(void) {
+    ibc_ensure_init();
+    HashTable* t = (HashTable*)calloc(1, sizeof(HashTable));
+    svt_aom_rtime_alloc_svt_av1_hash_table_create(t);
+    return t;
+}
+
+void ref_hash_table_add(void* table, const uint32_t* pic_hash, int32_t pic_width,
+                        int32_t pic_height, int32_t block_size, uint16_t max_cand_per_bucket) {
+    svt_aom_rtime_alloc_svt_av1_add_to_hash_map_by_row_with_precal_data(
+        (HashTable*)table, (uint32_t*)pic_hash, pic_width, pic_height, block_size,
+        max_cand_per_bucket);
+}
+
+int32_t ref_hash_table_count(void* table, uint32_t hash_value1) {
+    return svt_av1_hash_table_count((const HashTable*)table, hash_value1);
+}
+
+/* Read back one bucket IN ITERATION ORDER (the order the DV search
+ * consumes candidates in — the cost-tie tie-break). Returns the entry
+ * count; fills up to cap entries. */
+int32_t ref_hash_table_read_bucket(void* table, uint32_t hash_value1, int16_t* xs, int16_t* ys,
+                                   uint32_t* hv2s, int32_t cap) {
+    HashTable* t     = (HashTable*)table;
+    int32_t    count = svt_av1_hash_table_count(t, hash_value1);
+    if (count <= 0) {
+        return 0;
+    }
+    Iterator it = svt_av1_hash_get_first_iterator(t, hash_value1);
+    for (int32_t i = 0; i < count && i < cap; i++, svt_aom_iterator_increment(&it)) {
+        BlockHash* e = (BlockHash*)svt_aom_iterator_get(&it);
+        xs[i]        = e->x;
+        ys[i]        = e->y;
+        hv2s[i]      = e->hash_value2;
+    }
+    return count;
+}
+
+void ref_hash_table_destroy(void* table) {
+    svt_av1_hash_table_destroy((HashTable*)table);
+    free(table);
+}
+
+/* svt_av1_get_block_hash_value (hash_motion.c:309, EXPORTED), bd8 arm
+ * (use_highbitdepth = 0, matching the one call site av1me.c:1071). */
+void ref_get_block_hash_value(const uint8_t* src, int32_t stride, int32_t block_size,
+                              uint32_t* hash_value1, uint32_t* hash_value2) {
+    ibc_ensure_init();
+    IntraBcContext x;
+    memset(&x, 0, sizeof(x));
+    for (int i = 0; i < 2; i++) {
+        x.hash_value_buffer[i] = (uint32_t*)malloc(sizeof(uint32_t) * AOM_BUFFER_SIZE_FOR_BLOCK_HASH);
+    }
+    svt_av1_get_block_hash_value((uint8_t*)src, stride, block_size, hash_value1, hash_value2, 0, &x);
+    for (int i = 0; i < 2; i++) {
+        free(x.hash_value_buffer[i]);
+    }
+}
