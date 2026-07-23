@@ -473,21 +473,23 @@ pub fn br_ctx_eob(c: usize, bwl: usize, tx_class: usize) -> usize {
 }
 
 /// C `svt_av1_get_nz_map_contexts` — the coefficient nz-map / base-level
-/// context for every scanned position.
+/// context for every scanned position, mirroring the production RTCD dispatch:
+/// on x86 the AVX2 arm reproduces `svt_av1_get_nz_map_contexts_sse2` (the RTCD
+/// default — a **raster** fill of the whole padded block with contiguous
+/// 16-byte neighbour loads, then the scan-last stamp); elsewhere the scan-order
+/// scalar `_c` loop runs, exactly as C's `SET_ONLY_C`/`SET_NEON` fallbacks.
 ///
-/// The heavy per-position neighbour sum is computed in **raster** order over the
-/// whole padded transform block (mirroring the production C SIMD kernel
-/// `svt_av1_get_nz_map_contexts_sse2`/`_avx2`, the RTCD default — not the scalar
-/// `_c`), then the scan positions `scan[0..eob]` are scattered into
-/// `coeff_contexts`. Byte-identical to the scan-order scalar `_c` at every
-/// written (scan) position — the only positions any caller reads — so the
-/// output and every downstream cost/symbol is unchanged; non-scan positions are
-/// left at their input value exactly as `_c` leaves them.
+/// Both arms are byte-identical at every `scan[0..eob]` position — the only
+/// positions any caller reads (pd0 `loop_cost_eob_pd0` and the leaf-funnel
+/// coeff cost both index `coeff_contexts` exclusively at `0 == scan[0]` and
+/// `scan[c], c < eob`), the same invariant production C relies on: its SIMD
+/// kernels leave raster values at non-scan positions. Proven bit-identical to
+/// BOTH exported real-C kernels (`_c` and `_sse2`) under every archmage
+/// dispatch tier in `tests/c_parity.rs::nz_map_contexts_simd_matches_c`.
 ///
-/// The raster fill is archmage-dispatched (see
-/// [`crate::coeff_simd::nz_map_contexts_raster`]); the SIMD path is proven
-/// bit-identical to the exported real-C `_sse2`/`_c` kernels and the scalar core
-/// under every dispatch tier in `tests/c_parity.rs`.
+/// `eob == 1` short-circuits to the DC write both C kernels agree on
+/// (`_sse2`'s `coeff_contexts[0] = 0` early-out; `_c`'s `scan_idx == 0`
+/// is_eob arm — `scan[0]` is always the DC position 0).
 pub fn get_nz_map_contexts(
     levels_buf: &[u8],
     scan: &[u16],
@@ -497,15 +499,43 @@ pub fn get_nz_map_contexts(
     coeff_contexts: &mut [i8],
 ) {
     if eob == 0 {
+        // `_c`'s loop body never runs; write nothing.
         return;
     }
-    let mut scratch = [0u8; 32 * 32];
-    crate::coeff_simd::nz_map_contexts_raster(
-        levels_buf, scan, eob, tx_size, tx_class, &mut scratch,
-    );
-    for &pos in &scan[..eob] {
-        let p = pos as usize;
-        coeff_contexts[p] = scratch[p] as i8;
+    if eob == 1 {
+        coeff_contexts[scan[0] as usize] = 0;
+        return;
+    }
+    crate::coeff_simd::nz_map_contexts(levels_buf, scan, eob, tx_size, tx_class, coeff_contexts);
+}
+
+/// C `svt_av1_get_nz_map_contexts_c` (encode_txb_ref_c.c:35) — the scan-order
+/// scalar loop, verbatim. The non-x86 dispatch arm of [`get_nz_map_contexts`]
+/// and the tier-forced reference in `tests/c_parity.rs`.
+pub(crate) fn nz_map_contexts_scan_order(
+    levels_buf: &[u8],
+    scan: &[u16],
+    eob: usize,
+    tx_size: usize,
+    tx_class: usize,
+    coeff_contexts: &mut [i8],
+) {
+    let bwl = txb_bwl(tx_size);
+    let height = txb_high(tx_size);
+    let origin = levels_origin(txb_wide(tx_size));
+    for i in 0..eob {
+        let pos = scan[i] as usize;
+        coeff_contexts[pos] = nz_map_ctx(
+            levels_buf,
+            origin,
+            pos,
+            bwl,
+            height,
+            i,
+            i == eob - 1,
+            tx_size,
+            tx_class,
+        ) as i8;
     }
 }
 

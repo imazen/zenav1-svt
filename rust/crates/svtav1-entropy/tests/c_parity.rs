@@ -561,7 +561,16 @@ fn coeff_c_levels_and_contexts_match_c() {
                     tx_class,
                     &mut c_ctx,
                 );
-                assert_eq!(&rust_ctx[..n], &c_ctx[..n], "nz ctx ts={ts} type={tx_type}");
+                // Compared at the scan positions — the bytes `_c` defines and
+                // the only ones any caller reads. Non-scan positions are
+                // tier-dependent (raster values on the x86 arm, untouched on
+                // scalar), exactly C's own `_c` vs `_sse2` RTCD difference;
+                // `nz_map_contexts_simd_matches_c` pins every raster position
+                // via dense-eob trials.
+                for &pos in scan[..eob].iter() {
+                    let p = pos as usize;
+                    assert_eq!(rust_ctx[p], c_ctx[p], "nz ctx ts={ts} type={tx_type} pos={p}");
+                }
 
                 // br context parity at every nonzero position.
                 let bwl = coeff_c::txb_bwl(ts);
@@ -639,11 +648,39 @@ fn coeff_c_txb_init_levels_partial_zero_no_stale_reads() {
                     tx_class,
                     &mut c_ctx,
                 );
-                assert_eq!(
-                    &rust_ctx[..n],
-                    &c_ctx[..n],
-                    "nz ctx (dirty scratch) ts={ts} type={tx_type}"
-                );
+                // Scan positions: identical to `_c` regardless of dispatch
+                // tier (the bytes every caller reads).
+                for &pos in scan[..eob].iter() {
+                    let p = pos as usize;
+                    assert_eq!(
+                        rust_ctx[p], c_ctx[p],
+                        "nz ctx (dirty scratch) ts={ts} type={tx_type} pos={p}"
+                    );
+                }
+                // On an AVX2 host the dispatch takes the raster arm, which
+                // computes ALL `n` positions from the dirty buffer — assert the
+                // WHOLE buffer against the real-C `_sse2` raster kernel (run on
+                // the correctly-zeroed buffer): any read past `used` would
+                // surface 0xFF (clamps to 3, inflating the count) at some
+                // raster position and diverge. This extends the stale-read
+                // police from the scan positions to every raster coordinate.
+                #[cfg(target_arch = "x86_64")]
+                if std::arch::is_x86_feature_detected!("avx2") && eob >= 2 {
+                    let mut sse2_ctx = [0i8; 32 * 32];
+                    cref::get_nz_map_contexts_sse2(
+                        &c_buf[origin..],
+                        &c_scan,
+                        eob as u16,
+                        ts,
+                        tx_class,
+                        &mut sse2_ctx,
+                    );
+                    assert_eq!(
+                        &rust_ctx[..n],
+                        &sse2_ctx[..n],
+                        "raster nz ctx (dirty scratch) != _sse2 ts={ts} type={tx_type}"
+                    );
+                }
 
                 let bwl = coeff_c::txb_bwl(ts);
                 for &pos in scan[..eob].iter() {
@@ -729,15 +766,20 @@ fn txb_init_levels_simd_matches_c() {
 }
 
 /// The SIMD-dispatched `get_nz_map_contexts` equals the exported real-C kernels
-/// under EVERY archmage dispatch tier (the AVX2 `v3` raster path AND the scalar
-/// fallback), across all tx sizes, all tx classes (2D / HORIZ / VERT), and every
-/// eob bucket including the DC, edge, and scan-last special cases:
-///   * vs the scalar `svt_av1_get_nz_map_contexts_c` on the full `[..n]` buffer
-///     (both write scan order — the port output stays byte-identical to `_c`);
-///   * vs the production RTCD-default SIMD `svt_av1_get_nz_map_contexts_sse2` at
-///     every written (scan) position — and, for fully-dense blocks (eob == n,
-///     the scan a full permutation), the WHOLE raster buffer, which exercises
-///     every position-base offset and the 5-neighbour stencil at every coord.
+/// under EVERY archmage dispatch tier (the AVX2 `v3` raster path AND the
+/// scan-order scalar fallback), across all tx sizes, all tx classes (2D /
+/// HORIZ / VERT), and every eob bucket including the DC-only (eob == 1),
+/// bucket-edge, and scan-last special cases. Compared at every `scan[0..eob]`
+/// position — the positions the two C kernels themselves agree on, and the
+/// only ones any caller reads — against BOTH:
+///   * the scalar `svt_av1_get_nz_map_contexts_c` (scan-order), and
+///   * the production RTCD-default SIMD `svt_av1_get_nz_map_contexts_sse2`
+///     (raster fill + scan-last stamp — the kernel the port's v3 arm
+///     reproduces).
+///
+/// Fully-dense trials (eob == n, the scan a full permutation) make every
+/// raster position a compared position, exercising every position-base offset
+/// and the 5-neighbour stencil at every coordinate of every block shape.
 /// This is the nz-map analogue of `txb_init_levels_simd_matches_c`.
 #[test]
 fn nz_map_contexts_simd_matches_c() {
@@ -825,24 +867,37 @@ fn nz_map_contexts_simd_matches_c() {
                     &mut sse2_ctx,
                 );
 
-                let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+                let report = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
                     let mut port = vec![0i8; n];
                     coeff_c::get_nz_map_contexts(&levels, scan, eob, ts, tx_class, &mut port);
-                    // vs scalar `_c`: byte-identical on the whole [..n] (both scan order).
-                    assert_eq!(
-                        port, c_ctx,
-                        "port != _c: ts={ts} class={tx_class} eob={eob} trial={trial}"
-                    );
-                    // vs production `_sse2`: identical at every written (scan) position;
-                    // dense (eob==n) covers the whole raster buffer.
+                    // Identical to BOTH real-C kernels at every scan position
+                    // (dense trials, eob == n, make that every raster position).
                     for &p in &scan[..eob] {
                         let p = p as usize;
+                        assert_eq!(
+                            port[p], c_ctx[p],
+                            "port != _c @pos {p}: ts={ts} class={tx_class} eob={eob} trial={trial}"
+                        );
                         assert_eq!(
                             port[p], sse2_ctx[p],
                             "port != _sse2 @pos {p}: ts={ts} class={tx_class} eob={eob} trial={trial}"
                         );
                     }
                 });
+                // The closure must have run under BOTH the SIMD-live and the
+                // tier-disabled (scalar scan-order) permutations wherever the
+                // v3 arm can exist — a silent single-permutation run would
+                // leave one arm untested.
+                #[cfg(target_arch = "x86_64")]
+                if std::arch::is_x86_feature_detected!("avx2") {
+                    assert!(
+                        report.permutations_run >= 2,
+                        "expected >= 2 dispatch permutations on an AVX2 host, ran {}",
+                        report.permutations_run
+                    );
+                }
+                #[cfg(not(target_arch = "x86_64"))]
+                let _ = report;
             }
         }
     }
