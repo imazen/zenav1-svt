@@ -4711,7 +4711,18 @@ pub(crate) fn evaluate_leaf(
     // overflows in practice. Union order = class order (C0, C3, C4 —
     // construct_best_sorted_arrays), stable-sorted by fast cost.
     let has_ibc_lane = cands.iter().any(|c| c.ibc.is_some());
-    let order: Vec<usize> = if has_palette_lane || has_ibc_lane {
+    // Multi-lane: `seg` carries the per-class segment lengths (k0, k3, k4)
+    // of the CLASS-CONCATENATED `order` — C's cand_buff_indices structure.
+    // C never merges the classes into one cost-sorted list: MDS1 evaluates
+    // each class's own fast-sorted survivors (md_stage_1 per target_class),
+    // and every later union (construct_best_sorted_arrays_md_stage_3,
+    // :1454) is a pure concatenation in class order C0, C3, C4. The
+    // previous union `sort_by_key(fast_cost)` matched C on all DISTINCT
+    // costs but flipped cross-class tie/order corners (winner-scan ties,
+    // uv_list order, mds1-best identity) — the screen multi-lane pins.
+    let (order, seg): (Vec<usize>, Option<(usize, usize, usize)>) = if has_palette_lane
+        || has_ibc_lane
+    {
         let cap = (ncand as u32).min(nic1).max(1) as usize + 1;
         let lane0: Vec<usize> = (0..ncand)
             .filter(|&i| cands[i].palette.is_none() && cands[i].ibc.is_none())
@@ -4725,13 +4736,12 @@ pub(crate) fn evaluate_leaf(
         let k0 = dev_prune(&s0, &cands);
         let k3 = dev_prune(&s3, &cands);
         let k4 = dev_prune(&s4, &cands);
-        // MDS1/MDS3 evaluate the UNION sorted by fast cost
-        // (construct_best_sorted_arrays_md_stage_3, :1455).
+        // MDS1 evaluates the per-class survivors, class-concatenated in
+        // class order (C0, C3, C4) — NOT cost-merged.
         let mut u: Vec<usize> = s0[..k0].to_vec();
         u.extend_from_slice(&s3[..k3]);
         u.extend_from_slice(&s4[..k4]);
-        u.sort_by_key(|&i| cands[i].fast_cost);
-        u
+        (u, Some((k0, k3, k4)))
     } else {
         // Single-class fast path (no palette candidates) — byte-identical
         // to the prior single-pool behaviour: pool -> sort -> dev-prune.
@@ -4739,9 +4749,29 @@ pub(crate) fn evaluate_leaf(
         let all: Vec<usize> = (0..ncand).collect();
         let s = sort_lane(lane_pool(&all, &cands, cap), &cands);
         let k = dev_prune(&s, &cands);
-        s[..k].to_vec()
+        (s[..k].to_vec(), None)
     };
-    let mds0_best_idx = order[0];
+    // C mds0_best (:9518-9524): strict `<` over the per-class sorted heads
+    // in class order (the head survives every dev-prune, count >= 1). On
+    // the single-class path this is order[0]; on the multi-lane concat it
+    // must be scanned (the concat head is C0's head, not the global min).
+    let mds0_best_idx = match seg {
+        Some((k0, k3, _)) => {
+            let mut bi = order[0];
+            let mut bc = u64::MAX;
+            for head in [order.first(), order.get(k0), order.get(k0 + k3)]
+                .into_iter()
+                .flatten()
+            {
+                if cands[*head].fast_cost < bc {
+                    bc = cands[*head].fast_cost;
+                    bi = *head;
+                }
+            }
+            bi
+        }
+        None => order[0],
+    };
     let n1 = order.len();
 
     // -- MDS1: luma-only full loop (freq dist, quantize_b, DCT, depth 0) --
@@ -4904,9 +4934,39 @@ pub(crate) fn evaluate_leaf(
     // DC, so C's MDS3 pair is {DC+fi, DC} while a stable sort keeps SMOOTH
     // -> the port coded SMOOTH and desynced the whole tail of the frame
     // (305 tree flips downstream of one tie).
+    // Multi-lane: C sorts PER CLASS (`sort_full_cost_based_candidates(ctx,
+    // md_stage_1_count[cidx], cand_buff_indices[cidx])` inside the per-class
+    // MDS1 loop, :9560-9564) — never across the union. The class segments
+    // stay contiguous; the mds1 best is the strict-`<` scan over the class
+    // heads in class order (:9565-9569) — on a cross-class exact full-cost
+    // tie the EARLIER class keeps the best (identity feeds the rank-staging
+    // `mds0_best_idx == mds1_best_idx` compare and the class +3 arm).
     let mut order1: Vec<usize> = order[..n1].to_vec();
-    c_exchange_sort_by(&mut order1, |i| cands[i].full_cost);
-    let mds1_best_idx = order1[0];
+    let mds1_best_idx = match seg {
+        Some((k0, k3, _)) => {
+            let (a, rest) = order1.split_at_mut(k0);
+            let (b, c) = rest.split_at_mut(k3);
+            c_exchange_sort_by(a, |i| cands[i].full_cost);
+            c_exchange_sort_by(b, |i| cands[i].full_cost);
+            c_exchange_sort_by(c, |i| cands[i].full_cost);
+            let mut bi = order1[0];
+            let mut bc = u64::MAX;
+            for head in [order1.first(), order1.get(k0), order1.get(k0 + k3)]
+                .into_iter()
+                .flatten()
+            {
+                if cands[*head].full_cost < bc {
+                    bc = cands[*head].full_cost;
+                    bi = *head;
+                }
+            }
+            bi
+        }
+        None => {
+            c_exchange_sort_by(&mut order1, |i| cands[i].full_cost);
+            order1[0]
+        }
+    };
 
     // -- post_mds1_nic_pruning (:7885) + post_mds2_nic_pruning (:7961) --
     // BOTH run PER CANDIDATE CLASS in C (`for cidx`, :7903/:7969), each
@@ -4951,10 +5011,7 @@ pub(crate) fn evaluate_leaf(
         }
     };
     let n3;
-    if order1
-        .iter()
-        .any(|&i| cands[i].palette.is_some() || cands[i].ibc.is_some())
-    {
+    if let Some((k0s, k3s, _)) = seg {
         let mds1_best_class = class_of(&cands[mds1_best_idx]);
         // post_mds1 (n2) then post_mds2 (n3) for one class lane, each
         // against that lane's own best. Returns the post_mds2 survivor
@@ -5047,21 +5104,23 @@ pub(crate) fn evaluate_leaf(
             }
             n3l
         };
-        let lane0: Vec<usize> = order1
-            .iter()
-            .copied()
-            .filter(|&i| cands[i].palette.is_none() && cands[i].ibc.is_none())
-            .collect();
-        let lane3: Vec<usize> = order1.iter().copied().filter(|&i| cands[i].palette.is_some()).collect();
-        let lane4: Vec<usize> = order1.iter().copied().filter(|&i| cands[i].ibc.is_some()).collect();
+        // The class segments are contiguous in `order1` (per-class sorted
+        // above) — C's cand_buff_indices[cidx] arrays.
+        let lane0: Vec<usize> = order1[..k0s].to_vec();
+        let lane3: Vec<usize> = order1[k0s..k0s + k3s].to_vec();
+        let lane4: Vec<usize> = order1[k0s + k3s..].to_vec();
         let k0 = prune_lane(&lane0);
         let k3 = prune_lane(&lane3);
         let k4 = prune_lane(&lane4);
-        // MDS3 evaluates the UNION sorted by full cost.
+        // MDS3 evaluates the class-CONCATENATED survivors in class order —
+        // C `construct_best_sorted_arrays_md_stage_3` (:1454) does NOT
+        // re-sort the union; the winner scan's strict-`<` therefore breaks
+        // cross-class full-cost ties toward the earlier class (C0 intra
+        // beats palette/IBC on an exact tie), and the ind-uv uv_list /
+        // MDS3 evaluation order follow the same concatenation.
         let mut u: Vec<usize> = lane0[..k0].to_vec();
         u.extend_from_slice(&lane3[..k3]);
         u.extend_from_slice(&lane4[..k4]);
-        u.sort_by_key(|&i| cands[i].full_cost);
         n3 = u.len();
         order1 = u;
     } else {
