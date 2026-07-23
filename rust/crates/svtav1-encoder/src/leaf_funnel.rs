@@ -6488,10 +6488,16 @@ pub(crate) fn evaluate_leaf(
                                     u_dc[0], v_dc[0]
                                 );
                             }
-                            // check_best_indepedant_cfl (:3998): CfL wins iff
-                            // strictly cheaper than the best non-CfL uv
-                            // (list/search order ties keep non-CfL).
-                            if cfl_uv_cost < best_uv_cost {
+                            // C `check_best_indepedant_cfl` reverts to non-CfL
+                            // iff `best_uv_cost < cfl_uv_cost` (:3927-3928) —
+                            // i.e. CfL is KEPT unless strictly beaten, so CfL
+                            // wins exact ties (the bd10 arm below always had
+                            // this right; the old `cfl < best` here kept
+                            // non-CfL on ties — witnessed flipping CID22
+                            // 5739122 q5 p0 at mi(31,80) 8x4, where both
+                            // sides' terms are identical and nc == cfl ==
+                            // 130518 exactly: C codes CfL, the port coded H).
+                            if !(best_uv_cost < cfl_uv_cost) {
                                 u_out = u_cfl_out;
                                 v_out = v_cfl_out;
                                 uv_mode_final = UV_CFL_PRED_IDX as u8;
