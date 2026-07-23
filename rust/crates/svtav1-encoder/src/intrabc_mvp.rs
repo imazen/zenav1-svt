@@ -828,9 +828,14 @@ mod tests {
         let (nearest, near) = find_best_ref_mvs_from_stack(&out);
         assert_eq!(nearest.as_int(), INVALID_MV);
         assert_eq!(near.as_int(), INVALID_MV);
+        // mi_row = 8 with sb_mi_size = 16 is still the FIRST SB row
+        // (find_ref_dv gates on mi_row - tile_row_start < mib_size), so
+        // the fallback is the first-row default — cross-check against the
+        // chunk-2-locked find_ref_dv rather than a hand-carried value.
         let dv_ref = compose_dv_ref(&out, tile, 16, 8);
-        // find_ref_dv non-first-SB-row default: (0, -sb_mi_size*MI*8).
-        assert_eq!((dv_ref.x, dv_ref.y), (0, -(16 * 4 * 8) as i16));
+        let direct = crate::intrabc::find_ref_dv(tile, 16, 8);
+        assert_eq!(dv_ref.as_int(), direct.as_int());
+        assert_eq!(dv_ref.y, 0, "first-SB-row fallback points left, not up");
     }
 
     /// A single intrabc left neighbour: its DV lands on the stack with
