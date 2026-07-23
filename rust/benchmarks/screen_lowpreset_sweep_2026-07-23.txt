@@ -1,0 +1,334 @@
+# screen_lowpreset_sweep — 2026-07-23 (post IBC chunks 7-10)
+# commit: 7741dbdd5; cmd: tools/screen_lowpreset_sweep.sh (300 cells: gb82-sc x p0-5 x qp{5,20,32,48,63} x 512^2 bd8)
+# SUMMARY ok=89 diff=211 err=0
+#
+# NO-REGRESSION PROOF: every DIFF cell in the invariant set (!sc_class5
+# images codec_wiki/gmessages at any preset + ALL p5 cells) was batch
+# A/B'd against the pre-chunk-7 build (a00369a5b, throwaway worktree,
+# separate target dir): 18/18 produce a PORT STREAM BYTE-IDENTICAL to
+# the pre-IBC build's (both diverging from C the same way) -> 100%
+# pre-existing near-ties, 0 regressions, 0 port-output changes outside
+# the IBC envelope. Control: graph_p0_q20 (sc M0) port output DID
+# change pre->post (IBC live), as expected.
+#
+## A/B results
+codec_wiki_p0_q32: pre-existing (port unchanged)
+codec_wiki_p1_q48: pre-existing (port unchanged)
+graph_p5_q32: pre-existing (port unchanged)
+gui_p5_q20: pre-existing (port unchanged)
+gui_p5_q32: pre-existing (port unchanged)
+gui_p5_q48: pre-existing (port unchanged)
+gui_p5_q5: pre-existing (port unchanged)
+imac_g3_p5_q48: pre-existing (port unchanged)
+imac_g3_p5_q5: pre-existing (port unchanged)
+imessage_p5_q20: pre-existing (port unchanged)
+imessage_p5_q32: pre-existing (port unchanged)
+imessage_p5_q48: pre-existing (port unchanged)
+terminal_p5_q20: pre-existing (port unchanged)
+terminal_p5_q32: pre-existing (port unchanged)
+terminal_p5_q48: pre-existing (port unchanged)
+windows95_p5_q32: pre-existing (port unchanged)
+windows95_p5_q48: pre-existing (port unchanged)
+windows95_p5_q63: pre-existing (port unchanged)
+
+## per-cell sweep map
+DIFF graph_p0_q5 13 8033 8073
+DIFF graph_p0_q20 13 5045 5016
+DIFF graph_p0_q32 13 3785 3781
+DIFF graph_p0_q48 13 2237 2226
+DIFF graph_p0_q63 13 252 257
+DIFF graph_p1_q5 13 8124 8111
+DIFF graph_p1_q20 1918 5034 5034
+DIFF graph_p1_q32 13 3833 3836
+DIFF graph_p1_q48 13 2309 2266
+OK   graph_p1_q63 246
+DIFF graph_p2_q5 13 8276 8313
+DIFF graph_p2_q20 13 5200 5219
+DIFF graph_p2_q32 13 3991 4002
+DIFF graph_p2_q48 13 2342 2334
+DIFF graph_p2_q63 161 252 252
+DIFF graph_p3_q5 13 8444 8469
+DIFF graph_p3_q20 13 5308 5324
+DIFF graph_p3_q32 13 3988 4007
+DIFF graph_p3_q48 13 2310 2317
+OK   graph_p3_q63 260
+DIFF graph_p4_q5 5312 8423 8423
+DIFF graph_p4_q20 13 5283 5265
+DIFF graph_p4_q32 13 4087 4093
+DIFF graph_p4_q48 13 2454 2462
+OK   graph_p4_q63 207
+OK   graph_p5_q5 9056
+OK   graph_p5_q20 5860
+DIFF graph_p5_q32 13 4458 4468
+OK   graph_p5_q48 2699
+OK   graph_p5_q63 227
+OK   codec_wiki_p0_q5 6205
+OK   codec_wiki_p0_q20 4051
+DIFF codec_wiki_p0_q32 13 3048 3020
+OK   codec_wiki_p0_q48 1684
+OK   codec_wiki_p0_q63 445
+OK   codec_wiki_p1_q5 6625
+OK   codec_wiki_p1_q20 4192
+OK   codec_wiki_p1_q32 3147
+DIFF codec_wiki_p1_q48 13 1747 1748
+OK   codec_wiki_p1_q63 463
+OK   codec_wiki_p2_q5 6834
+OK   codec_wiki_p2_q20 4367
+OK   codec_wiki_p2_q32 3228
+OK   codec_wiki_p2_q48 1798
+OK   codec_wiki_p2_q63 479
+OK   codec_wiki_p3_q5 6995
+OK   codec_wiki_p3_q20 4546
+OK   codec_wiki_p3_q32 3363
+OK   codec_wiki_p3_q48 1806
+OK   codec_wiki_p3_q63 455
+OK   codec_wiki_p4_q5 7881
+OK   codec_wiki_p4_q20 4957
+OK   codec_wiki_p4_q32 3523
+OK   codec_wiki_p4_q48 1897
+OK   codec_wiki_p4_q63 442
+OK   codec_wiki_p5_q5 9147
+OK   codec_wiki_p5_q20 5530
+OK   codec_wiki_p5_q32 3889
+OK   codec_wiki_p5_q48 1884
+OK   codec_wiki_p5_q63 447
+OK   gmessages_p0_q5 49
+OK   gmessages_p0_q20 46
+OK   gmessages_p0_q32 45
+OK   gmessages_p0_q48 45
+OK   gmessages_p0_q63 41
+OK   gmessages_p1_q5 49
+OK   gmessages_p1_q20 47
+OK   gmessages_p1_q32 45
+OK   gmessages_p1_q48 46
+OK   gmessages_p1_q63 41
+OK   gmessages_p2_q5 48
+OK   gmessages_p2_q20 46
+OK   gmessages_p2_q32 44
+OK   gmessages_p2_q48 45
+OK   gmessages_p2_q63 40
+OK   gmessages_p3_q5 48
+OK   gmessages_p3_q20 46
+OK   gmessages_p3_q32 44
+OK   gmessages_p3_q48 45
+OK   gmessages_p3_q63 40
+OK   gmessages_p4_q5 48
+OK   gmessages_p4_q20 46
+OK   gmessages_p4_q32 44
+OK   gmessages_p4_q48 45
+OK   gmessages_p4_q63 40
+OK   gmessages_p5_q5 48
+OK   gmessages_p5_q20 46
+OK   gmessages_p5_q32 44
+OK   gmessages_p5_q48 45
+OK   gmessages_p5_q63 40
+DIFF gui_p0_q5 13 6583 6567
+DIFF gui_p0_q20 13 3956 3933
+DIFF gui_p0_q32 13 2772 2762
+DIFF gui_p0_q48 13 1549 1559
+DIFF gui_p0_q63 13 429 422
+DIFF gui_p1_q5 13 6672 6703
+DIFF gui_p1_q20 13 4024 4007
+DIFF gui_p1_q32 13 2844 2879
+DIFF gui_p1_q48 13 1589 1586
+DIFF gui_p1_q63 13 438 453
+DIFF gui_p2_q5 13 6800 6776
+DIFF gui_p2_q20 13 4190 4187
+DIFF gui_p2_q32 13 2918 2940
+DIFF gui_p2_q48 13 1624 1631
+DIFF gui_p2_q63 13 442 432
+DIFF gui_p3_q5 13 6861 6896
+DIFF gui_p3_q20 13 4313 4301
+DIFF gui_p3_q32 13 3001 3018
+DIFF gui_p3_q48 13 1657 1678
+DIFF gui_p3_q63 13 451 448
+DIFF gui_p4_q5 13 7266 7243
+DIFF gui_p4_q20 13 4384 4431
+DIFF gui_p4_q32 13 3053 3054
+DIFF gui_p4_q48 13 1703 1697
+DIFF gui_p4_q63 13 404 413
+DIFF gui_p5_q5 13 7676 7681
+DIFF gui_p5_q20 13 4594 4593
+DIFF gui_p5_q32 13 3299 3290
+DIFF gui_p5_q48 766 1763 1763
+OK   gui_p5_q63 431
+DIFF imac_dark_p0_q5 13 18217 18266
+DIFF imac_dark_p0_q20 13 12873 13034
+DIFF imac_dark_p0_q32 13 10488 10416
+DIFF imac_dark_p0_q48 13 6436 6442
+DIFF imac_dark_p0_q63 13 2399 2373
+DIFF imac_dark_p1_q5 13 18574 18706
+DIFF imac_dark_p1_q20 13 13330 13279
+DIFF imac_dark_p1_q32 13 10705 10784
+DIFF imac_dark_p1_q48 13 6955 6916
+DIFF imac_dark_p1_q63 13 2447 2542
+DIFF imac_dark_p2_q5 13 18503 18599
+DIFF imac_dark_p2_q20 13 13440 13724
+DIFF imac_dark_p2_q32 14 10807 10935
+DIFF imac_dark_p2_q48 13 7138 7106
+DIFF imac_dark_p2_q63 13 2567 2575
+DIFF imac_dark_p3_q5 13 18803 18887
+DIFF imac_dark_p3_q20 13 14017 14147
+DIFF imac_dark_p3_q32 13 11124 11258
+DIFF imac_dark_p3_q48 13 7471 7490
+DIFF imac_dark_p3_q63 13 2989 3049
+DIFF imac_dark_p4_q5 13 24711 24748
+DIFF imac_dark_p4_q20 13 14354 14320
+DIFF imac_dark_p4_q32 13 11242 11316
+DIFF imac_dark_p4_q48 13 8509 8560
+DIFF imac_dark_p4_q63 13 2988 3006
+OK   imac_dark_p5_q5 37022
+OK   imac_dark_p5_q20 21917
+OK   imac_dark_p5_q32 17559
+OK   imac_dark_p5_q48 12706
+OK   imac_dark_p5_q63 3187
+DIFF imac_g3_p0_q5 13 18947 18985
+DIFF imac_g3_p0_q20 13 13744 13783
+DIFF imac_g3_p0_q32 13 10793 10711
+DIFF imac_g3_p0_q48 13 6577 6611
+DIFF imac_g3_p0_q63 13 2598 2595
+DIFF imac_g3_p1_q5 13 19345 19340
+DIFF imac_g3_p1_q20 13 13994 14009
+DIFF imac_g3_p1_q32 13 10928 10943
+DIFF imac_g3_p1_q48 13 6854 6881
+DIFF imac_g3_p1_q63 13 2753 2740
+DIFF imac_g3_p2_q5 13 19928 19900
+DIFF imac_g3_p2_q20 13 14269 14363
+DIFF imac_g3_p2_q32 13 11365 11389
+DIFF imac_g3_p2_q48 13 7224 7301
+DIFF imac_g3_p2_q63 13 2816 2728
+DIFF imac_g3_p3_q5 13 20107 19941
+DIFF imac_g3_p3_q20 13 14532 14795
+DIFF imac_g3_p3_q32 13 11414 11593
+DIFF imac_g3_p3_q48 13 7490 7541
+DIFF imac_g3_p3_q63 13 3216 3159
+DIFF imac_g3_p4_q5 13 24316 24385
+DIFF imac_g3_p4_q20 13 15482 15427
+DIFF imac_g3_p4_q32 13 11771 11879
+DIFF imac_g3_p4_q48 13 8218 8334
+DIFF imac_g3_p4_q63 13 3195 3130
+DIFF imac_g3_p5_q5 13 34384 33923
+OK   imac_g3_p5_q20 22055
+OK   imac_g3_p5_q32 17282
+DIFF imac_g3_p5_q48 13 12001 12057
+OK   imac_g3_p5_q63 3309
+DIFF imessage_p0_q5 13 5797 5799
+DIFF imessage_p0_q20 13 3576 3570
+DIFF imessage_p0_q32 13 2818 2831
+DIFF imessage_p0_q48 13 1686 1679
+DIFF imessage_p0_q63 13 520 518
+DIFF imessage_p1_q5 13 5887 5893
+DIFF imessage_p1_q20 13 3598 3582
+DIFF imessage_p1_q32 13 2816 2836
+DIFF imessage_p1_q48 13 1696 1708
+DIFF imessage_p1_q63 13 544 542
+DIFF imessage_p2_q5 13 6090 6094
+DIFF imessage_p2_q20 13 3757 3759
+DIFF imessage_p2_q32 13 2997 2989
+DIFF imessage_p2_q48 13 1855 1814
+DIFF imessage_p2_q63 497 587 587
+DIFF imessage_p3_q5 13 6235 6243
+DIFF imessage_p3_q20 13 3917 3896
+DIFF imessage_p3_q32 13 3049 2995
+DIFF imessage_p3_q48 13 1871 1821
+DIFF imessage_p3_q63 13 598 604
+DIFF imessage_p4_q5 13 6157 6156
+DIFF imessage_p4_q20 13 3740 3746
+DIFF imessage_p4_q32 13 2985 3001
+DIFF imessage_p4_q48 13 1887 1873
+DIFF imessage_p4_q63 13 591 598
+OK   imessage_p5_q5 8672
+DIFF imessage_p5_q20 13 5577 5557
+DIFF imessage_p5_q32 13 4275 4305
+DIFF imessage_p5_q48 13 2654 2648
+OK   imessage_p5_q63 657
+DIFF terminal_p0_q5 13 12233 12189
+DIFF terminal_p0_q20 13 7940 7908
+DIFF terminal_p0_q32 13 6029 6045
+DIFF terminal_p0_q48 13 3984 3999
+DIFF terminal_p0_q63 13 1277 1304
+DIFF terminal_p1_q5 13 12295 12308
+DIFF terminal_p1_q20 13 8287 8133
+DIFF terminal_p1_q32 13 6246 6231
+DIFF terminal_p1_q48 13 4107 4145
+DIFF terminal_p1_q63 13 1301 1331
+DIFF terminal_p2_q5 13 12049 12135
+DIFF terminal_p2_q20 13 8642 8498
+DIFF terminal_p2_q32 13 6469 6495
+DIFF terminal_p2_q48 13 4104 4054
+DIFF terminal_p2_q63 13 1308 1304
+DIFF terminal_p3_q5 13 12268 12273
+DIFF terminal_p3_q20 13 8760 8785
+DIFF terminal_p3_q32 13 6558 6641
+DIFF terminal_p3_q48 13 4298 4338
+DIFF terminal_p3_q63 13 1345 1428
+DIFF terminal_p4_q5 13 12410 12439
+DIFF terminal_p4_q20 13 9315 9405
+DIFF terminal_p4_q32 13 6373 6426
+DIFF terminal_p4_q48 13 4707 4780
+DIFF terminal_p4_q63 13 1300 1289
+OK   terminal_p5_q5 22729
+DIFF terminal_p5_q20 13 13938 13934
+DIFF terminal_p5_q32 21 11043 11043
+DIFF terminal_p5_q48 13 6290 6292
+OK   terminal_p5_q63 1431
+DIFF windows_p0_q5 13 44806 44962
+DIFF windows_p0_q20 13 25871 25938
+DIFF windows_p0_q32 13 16974 16940
+DIFF windows_p0_q48 13 8731 8768
+DIFF windows_p0_q63 13 1031 1089
+DIFF windows_p1_q5 13 45537 45757
+DIFF windows_p1_q20 13 26191 26400
+DIFF windows_p1_q32 13 17604 17833
+DIFF windows_p1_q48 13 9071 9132
+DIFF windows_p1_q63 13 921 1162
+DIFF windows_p2_q5 13 45660 45994
+DIFF windows_p2_q20 13 26472 26768
+DIFF windows_p2_q32 13 18071 18145
+DIFF windows_p2_q48 13 8986 9093
+DIFF windows_p2_q63 13 938 1030
+DIFF windows_p3_q5 13 44854 44916
+DIFF windows_p3_q20 13 26718 26805
+DIFF windows_p3_q32 13 18481 18532
+DIFF windows_p3_q48 13 9522 9610
+DIFF windows_p3_q63 13 839 915
+DIFF windows_p4_q5 13 49861 50334
+DIFF windows_p4_q20 13 28168 28053
+DIFF windows_p4_q32 13 19078 19017
+DIFF windows_p4_q48 13 10302 10312
+DIFF windows_p4_q63 13 816 817
+OK   windows_p5_q5 60826
+OK   windows_p5_q20 32649
+OK   windows_p5_q32 22744
+OK   windows_p5_q48 12943
+OK   windows_p5_q63 852
+OK   windows95_p0_q5 14469
+DIFF windows95_p0_q20 13 12362 12355
+OK   windows95_p0_q32 10654
+DIFF windows95_p0_q48 13 8352 8361
+DIFF windows95_p0_q63 13 1123 1137
+DIFF windows95_p1_q5 13 14557 14556
+DIFF windows95_p1_q20 13 12325 12303
+DIFF windows95_p1_q32 13 10675 10638
+DIFF windows95_p1_q48 13 8327 8385
+DIFF windows95_p1_q63 13 1128 1118
+OK   windows95_p2_q5 16116
+DIFF windows95_p2_q20 13 13162 13160
+DIFF windows95_p2_q32 13 11329 11274
+DIFF windows95_p2_q48 13 8677 8762
+DIFF windows95_p2_q63 13 1141 1124
+DIFF windows95_p3_q5 13 16697 16699
+DIFF windows95_p3_q20 13 13516 13515
+DIFF windows95_p3_q32 13 11534 11569
+DIFF windows95_p3_q48 13 8857 8872
+DIFF windows95_p3_q63 13 1066 1069
+OK   windows95_p4_q5 16604
+DIFF windows95_p4_q20 13 13556 13555
+DIFF windows95_p4_q32 13 11710 11729
+DIFF windows95_p4_q48 13 8434 8521
+DIFF windows95_p4_q63 13 1103 1139
+OK   windows95_p5_q5 16930
+OK   windows95_p5_q20 13710
+DIFF windows95_p5_q32 13 12085 12097
+DIFF windows95_p5_q48 13 9268 9272
+DIFF windows95_p5_q63 13 1195 1190
