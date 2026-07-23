@@ -1,5 +1,32 @@
 # IntraBC (IBC / intra block copy) — port-ready map (IBC vertical scoping, 2026-07-22)
 
+> **LANDED SINCE THIS MAP — foundation (chunks 0-3, 2026-07-22) + SEARCH CORE
+> (chunks 4-6, 2026-07-23, branch `ibc/search-core`):**
+> - **Chunk 4** (`bb7a6e061`): `intrabc_hash.rs` — CRC-32C, frame pyramid,
+>   the 1<<19-bucket table with the hierarchical insertion ORDER, per-block
+>   query, `generate_ibc_data`. C-parity: `c_parity_intrabc_hash.rs` 4/4
+>   (values + bucket contents AND order across all buckets + query).
+>   §B.2.1 is CLOSED; the naive dsp placeholder was deleted in chunk 0.
+> - **Chunk 5** (`a7cc55c66`): the §4 search skeleton is now C-parity locked
+>   (`c_parity_intrabc_search.rs` 5/5: kernels, diamond, full_pixel_search,
+>   hash search e2e, the whole `intra_bc_search` driver). THREE REAL BUGS
+>   fixed in the 2026-07-17 bulk translation: `get_mvpred_var` used SAD
+>   where C uses VARIANCE (the §A.3.7 cross-stage metric); the
+>   `full_pixel_diamond` num00 level-skip was missing entirely; the mesh
+>   mv-diff kill compared the UNCLAMPED seed. §F.1 risks are discharged.
+> - **Chunk 6** (`d81b8ef9a` + `a318d109e`): `intrabc_mvp.rs` — the
+>   INTRA_FRAME `setup_ref_mv_list` slice (scans/weights/REF_CAT_LEVEL/
+>   sort/light-rescan/clamp + mode ctx), `find_best_ref_mvs_from_stack`,
+>   `compose_dv_ref`, `derive_block_ctx` (init_xd). C-parity:
+>   `c_parity_intrabc_mvp.rs` (full 8-slot stack + count + mode_context +
+>   nearest/near, >1200 randomized-grid cases). §B.2.2 is CLOSED.
+>   Temporal-MVP (`use_ref_frame_mvs`) intentionally NOT ported (KEY-only).
+> - The search core is CALLABLE, UNWIRED machinery (wiring = chunks 7-8);
+>   all 340+ cells verified byte-inert (nextest 902/902 + full gate sweep).
+> - Wiring-time facts carried in the module docs: search reads the SOURCE
+>   plane 8-bit forced; the hash table hashes ALIGNED dims; fixtures must
+>   be ≥ 4 SB64s wide or `INTRABC_DELAY_SB64` rejects every DV.
+
 Port-ready map of the SVT-AV1 v4.2.0 intra-block-copy path for the **allintra KEY
 bd8 4:2:0 screen-content** envelope. C reference read READ-ONLY at
 `/root/svtav1--ibc-scope/Source/Lib/Codec/` (v4.2.0, base `ca96121d7`). This maps
