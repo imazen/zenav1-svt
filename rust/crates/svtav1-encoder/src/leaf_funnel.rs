@@ -6638,7 +6638,30 @@ pub(crate) fn evaluate_leaf(
                             // 5739122 q5 p0 at mi(31,80) 8x4, where both
                             // sides' terms are identical and nc == cfl ==
                             // 130518 exactly: C codes CfL, the port coded H).
-                            if !(best_uv_cost < cfl_uv_cost) {
+                            //
+                            // ind_palette_cost_diff (C :3849-3863): the ind-uv
+                            // table priced its UV_DC row with palette_uv_mode
+                            // _fac_bits[0][0] (its injected candidates carry
+                            // palette_info = NULL), but THIS candidate's coded
+                            // DC row pays the [use_palette_y=1][0] context —
+                            // add the row delta to the table side of the
+                            // compare for a luma-palette candidate. Witnessed:
+                            // windows95_p4_q20 mi(40,32) 16x16 pal=6 — all
+                            // four coeff/dist terms byte-match C (nc 6916533
+                            // vs cfl 6916944) yet C codes CfL because its DC
+                            // side carries +[1][0]-[0][0]; the port kept DC.
+                            let ind_pal_diff: i64 = if uv_mode_final == 0
+                                && allow_pal
+                                && cand.palette.is_some()
+                            {
+                                rdcost(lambda, pal_uv_no_y1, 0) as i64
+                                    - rdcost(lambda, pal_uv_no, 0) as i64
+                            } else {
+                                0
+                            };
+                            let best_uv_adj =
+                                (best_uv_cost as i64).saturating_add(ind_pal_diff) as u64;
+                            if !(best_uv_adj < cfl_uv_cost) {
                                 u_out = u_cfl_out;
                                 v_out = v_cfl_out;
                                 uv_mode_final = UV_CFL_PRED_IDX as u8;
@@ -6777,7 +6800,22 @@ pub(crate) fn evaluate_leaf(
                             // C `check_best_indepedant_cfl` reverts to non-CfL iff
                             // `best_uv_cost < cfl_uv_cost` (:3927) — i.e. CfL is
                             // KEPT unless strictly beaten, so CfL wins exact ties.
-                            if !(best_uv_cost < cfl_uv_cost) {
+                            // ind_palette_cost_diff (:3849-3863) — see the bd8
+                            // arm above: a luma-palette candidate's DC row pays
+                            // the [1][0] palette-flag context the table priced
+                            // as [0][0]; priced with this arm's 10-bit lambda.
+                            let ind_pal_diff: i64 = if uv_mode_final == 0
+                                && allow_pal
+                                && cand.palette.is_some()
+                            {
+                                rdcost(b.lambda, pal_uv_no_y1, 0) as i64
+                                    - rdcost(b.lambda, pal_uv_no, 0) as i64
+                            } else {
+                                0
+                            };
+                            let best_uv_adj =
+                                (best_uv_cost as i64).saturating_add(ind_pal_diff) as u64;
+                            if !(best_uv_adj < cfl_uv_cost) {
                                 // u8 chroma canvas follows the decision (the
                                 // pre-filter searches read it at bd10).
                                 let mut u_cfl = vec![0u8; cw * chh];
