@@ -936,12 +936,42 @@ fn window(pic: &[u8], stride: usize, block_origin: (i32, i32), rel_x: i32, rel_y
     &pic[abs_y as usize * stride + abs_x as usize..]
 }
 
-/// C `svt_av1_get_mvpred_var` (av1me.c:196-209): SAD between the block and
-/// the candidate `best_mv` location, plus (if `use_mvcost`) the precise
-/// [`mv_err_cost`]/[`mv_err_cost_light`] rate term. `best_mv_x`/`best_mv_y`
-/// are FULL-PEL offsets from `block_origin` (C's `best_mv`); `center_mv`
-/// (the ref for cost purposes) is EIGHTH-PEL, matching C's `Mv mv =
-/// {best_mv->x*8, best_mv->y*8}` conversion done internally.
+/// C `variance_c` + the `svt_aom_variance{W}x{H}` wrapper
+/// (Source/Lib/C_DEFAULT/variance.c:145-205, dispatched through
+/// `svt_aom_mefn_ptr[bsize].vf`, av1me.c:24-62): sum + SSE of the
+/// per-pixel difference, returning `sse - (u32)((i64)sum*sum / (w*h))`.
+/// This is the CROSS-STAGE metric of the whole DV search (hash candidate
+/// costing, diamond-vs-diamond, diamond-vs-mesh, refine adoption — map
+/// §A.3 fact 7); the RTCD SIMD variants are bit-identical.
+pub fn variance_of_diff(a: &[u8], a_stride: usize, b: &[u8], b_stride: usize, w: usize, h: usize) -> u32 {
+    let mut sum: i32 = 0;
+    let mut sse: u32 = 0;
+    for row in 0..h {
+        let ra = &a[row * a_stride..row * a_stride + w];
+        let rb = &b[row * b_stride..row * b_stride + w];
+        for (&pa, &pb) in ra.iter().zip(rb.iter()) {
+            let diff = i32::from(pa) - i32::from(pb);
+            sum += diff;
+            sse = sse.wrapping_add((diff * diff) as u32);
+        }
+    }
+    sse.wrapping_sub(((i64::from(sum) * i64::from(sum)) / ((w * h) as i64)) as u32)
+}
+
+/// C `svt_av1_get_mvpred_var` (av1me.c:195-208): **VARIANCE**
+/// (`fn_ptr->vf`, NOT SAD — the map §A.3 fact 7 two-metric asymmetry:
+/// SAD ranks candidates WITHIN a diamond/mesh stage, variance compares
+/// ACROSS stages) between the block and the candidate `best_mv` location,
+/// plus (if `use_mvcost`) the precise [`mv_err_cost`]/
+/// [`mv_err_cost_light`] rate term. `best_mv_x`/`best_mv_y` are FULL-PEL
+/// offsets from `block_origin` (C's `best_mv`); `center_mv` (the ref for
+/// cost purposes) is EIGHTH-PEL, matching C's `Mv mv = {best_mv->x*8,
+/// best_mv->y*8}` conversion done internally. The u32 variance + i32 rate
+/// sum uses C's unsigned wrap-then-int-convert arithmetic.
+///
+/// FIXED (chunk 5): the original bulk-port translation used SAD here — a
+/// real byte-exactness bug (every cross-stage adoption decision and every
+/// hash-candidate cost would diverge from C).
 #[allow(clippy::too_many_arguments)]
 pub fn get_mvpred_var(
     pic: &[u8],
@@ -959,7 +989,7 @@ pub fn get_mvpred_var(
 ) -> i32 {
     let what = window(pic, stride, block_origin, 0, 0);
     let cand = window(pic, stride, block_origin, best_mv_x, best_mv_y);
-    let sad = svtav1_dsp::sad::sad(what, stride, cand, stride, bw, bh) as i32;
+    let var = variance_of_diff(what, stride, cand, stride, bw, bh);
     let mv = Mv {
         x: (best_mv_x * 8) as i16,
         y: (best_mv_y * 8) as i16,
@@ -971,7 +1001,7 @@ pub fn get_mvpred_var(
     } else {
         mv_err_cost(mv, center_mv, tables, error_per_bit)
     };
-    sad + rate
+    var.wrapping_add(rate as u32) as i32
 }
 
 /// C `SearchSite` / `SearchSiteConfig` (av1me.h) + `svt_av1_init3smotion_
@@ -1234,7 +1264,7 @@ pub fn full_pixel_diamond(
     error_per_bit: i32,
     approx_inter_rate: bool,
 ) -> (i32, i32, i32) {
-    let (mut best_x, mut best_y, _sad0, mut n) = diamond_search_sad(
+    let (mut best_x, mut best_y, sad0, mut n) = diamond_search_sad(
         pic,
         stride,
         block_origin,
@@ -1248,49 +1278,72 @@ pub fn full_pixel_diamond(
         tables,
         approx_inter_rate,
     );
-    let mut bestsme = get_mvpred_var(
-        pic, stride, block_origin, bw, bh, best_x, best_y, center_eighth_pel, tables, error_per_bit,
-        approx_inter_rate, true,
-    );
+    // C: `if (bestsme < INT_MAX) bestsme = svt_av1_get_mvpred_var(...)` —
+    // the diamond's raw SAD return is never trusted for the cross-stage
+    // compare, but the INT_MAX "not found" sentinel is passed through.
+    let mut bestsme = if sad0 < i32::MAX {
+        get_mvpred_var(
+            pic, stride, block_origin, bw, bh, best_x, best_y, center_eighth_pel, tables, error_per_bit,
+            approx_inter_rate, true,
+        )
+    } else {
+        sad0
+    };
 
     let mut do_refine = do_refine_in;
     if n > further_steps {
         do_refine = false;
     }
 
+    // C's num00 skip (av1me.c:511-537): a diamond call reporting `num00`
+    // no-move coarse steps causes the NEXT `num00` step-param levels to be
+    // SKIPPED ENTIRELY (no diamond call, no candidate compare) — they
+    // would re-search the same neighborhood. FIXED (chunk 5): the original
+    // bulk-port translation ran every level unconditionally, evaluating
+    // (and potentially adopting) candidates C never visits.
+    let mut num00 = 0i32;
     while n < further_steps {
         n += 1;
-        let (cand_x, cand_y, _sad, num00) = diamond_search_sad(
-            pic,
-            stride,
-            block_origin,
-            bw,
-            bh,
-            cfg,
-            center_eighth_pel,
-            mv_limits,
-            step_param + n,
-            sadpb,
-            tables,
-            approx_inter_rate,
-        );
-        if num00 > further_steps - n {
-            do_refine = false;
-        }
-        let thissme = get_mvpred_var(
-            pic, stride, block_origin, bw, bh, cand_x, cand_y, center_eighth_pel, tables, error_per_bit,
-            approx_inter_rate, true,
-        );
-        if thissme < bestsme {
-            bestsme = thissme;
-            best_x = cand_x;
-            best_y = cand_y;
+        if num00 > 0 {
+            num00 -= 1;
+        } else {
+            let (cand_x, cand_y, cand_sad, this_num00) = diamond_search_sad(
+                pic,
+                stride,
+                block_origin,
+                bw,
+                bh,
+                cfg,
+                center_eighth_pel,
+                mv_limits,
+                step_param + n,
+                sadpb,
+                tables,
+                approx_inter_rate,
+            );
+            num00 = this_num00;
+            let thissme = if cand_sad < i32::MAX {
+                get_mvpred_var(
+                    pic, stride, block_origin, bw, bh, cand_x, cand_y, center_eighth_pel, tables,
+                    error_per_bit, approx_inter_rate, true,
+                )
+            } else {
+                cand_sad
+            };
+            if num00 > further_steps - n {
+                do_refine = false;
+            }
+            if thissme < bestsme {
+                bestsme = thissme;
+                best_x = cand_x;
+                best_y = cand_y;
+            }
         }
     }
 
     if do_refine {
         const SEARCH_RANGE: i32 = 8;
-        let (rx, ry, _rsad) = refining_search_sad(
+        let (rx, ry, rsad) = refining_search_sad(
             pic,
             stride,
             block_origin,
@@ -1305,10 +1358,14 @@ pub fn full_pixel_diamond(
             tables,
             approx_inter_rate,
         );
-        let thissme = get_mvpred_var(
-            pic, stride, block_origin, bw, bh, rx, ry, center_eighth_pel, tables, error_per_bit, approx_inter_rate,
-            true,
-        );
+        let thissme = if rsad < i32::MAX {
+            get_mvpred_var(
+                pic, stride, block_origin, bw, bh, rx, ry, center_eighth_pel, tables, error_per_bit,
+                approx_inter_rate, true,
+            )
+        } else {
+            rsad
+        };
         if thissme < bestsme {
             bestsme = thissme;
             best_x = rx;
@@ -1558,8 +1615,16 @@ pub fn full_pixel_search(
     exhaustive_mesh_thresh >>= 10 - (mi_size_wide_log2 + mi_size_high_log2);
 
     let mut run_mesh_search = var > exhaustive_mesh_thresh;
-    let mvp_full_x = i32::from(ref_mv_eighth_pel.x) >> 3;
-    let mvp_full_y = i32::from(ref_mv_eighth_pel.y) >> 3;
+    // C's `mvp_full` was CLAMPED IN PLACE into `x->mv_limits` by
+    // `clamp_mv(ref_mv, ...)` inside the first `svt_av1_diamond_search_
+    // sad_c` call (av1me.c:318 — same pointer reused across every level),
+    // so the :1142 `full_pel_mv_diff` reads the CLAMPED seed, not the raw
+    // `dv_ref >> 3`. FIXED (chunk 5): the original translation compared
+    // against the unclamped seed — divergent whenever the direction box
+    // excludes the dv_ref (e.g. LEFT direction at an SB's first column,
+    // where col_max = -bw < 0 = dv_ref.x >> 3).
+    let mvp_full_x = (i32::from(ref_mv_eighth_pel.x) >> 3).clamp(mv_limits.col_min, mv_limits.col_max);
+    let mvp_full_y = (i32::from(ref_mv_eighth_pel.y) >> 3).clamp(mv_limits.row_min, mv_limits.row_max);
     let full_pel_mv_diff = (mvp_full_x - best_x).abs().max((mvp_full_y - best_y).abs());
     if full_pel_mv_diff <= ctrls.mesh_search_mv_diff_threshold {
         run_mesh_search = false;

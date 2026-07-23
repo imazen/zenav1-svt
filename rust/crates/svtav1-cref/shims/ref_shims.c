@@ -1799,3 +1799,375 @@ void ref_get_block_hash_value(const uint8_t* src, int32_t stride, int32_t block_
         free(x.hash_value_buffer[i]);
     }
 }
+
+/* ---- IntraBC DV search (IBC chunk 5, docs/ibc-port-map.md §D) ----
+ *
+ * Differential oracles for the intrabc.rs search core. The workhorses are
+ * EXPORTED (svt_av1_diamond_search_sad_c, svt_av1_full_pixel_search,
+ * svt_av1_intrabc_hash_search, svt_av1_set_mv_search_range,
+ * svt_av1_init3smotion_compensation, svt_aom_is_dv_valid) and are called
+ * directly; the shims assemble IntraBcContext / PictureControlSet /
+ * SequenceControlSet shells exactly as mode_decision.c:2976-3125 does.
+ * The one static piece — the per-direction driver intra_bc_search itself —
+ * is transcribed VERBATIM below (ref_intra_bc_search_driver) over the real
+ * exported sub-functions (the sanctioned facade-over-real-fn pattern).
+ */
+#include "av1me.h" /* SearchSiteConfig, AomVarianceFnPtr, search fns */
+#include "sequence_control_set.h"
+
+extern AomVarianceFnPtr svt_aom_mefn_ptr[BLOCK_SIZES_ALL];
+
+/* av1me.c:291 (EXPORTED, no header decl — the direct-call `_c` name). */
+int svt_av1_diamond_search_sad_c(IntraBcContext* x, const SearchSiteConfig* cfg, Mv* ref_mv,
+                                 Mv* best_mv, int search_param, int sad_per_bit, int* num00,
+                                 const AomVarianceFnPtr* fn_ptr, const Mv* center_mv);
+
+/* Kernel oracles: the EXACT sdf/vf the search binds for this bsize (RTCD-
+ * resolved function pointers captured by init_fn_ptr — includes any SIMD
+ * dispatch the real encoder would use). */
+uint32_t ref_mefn_sdf(int32_t bsize, const uint8_t* src, int32_t src_stride, const uint8_t* ref,
+                      int32_t ref_stride) {
+    ibc_ensure_init();
+    return svt_aom_mefn_ptr[bsize].sdf(src, src_stride, ref, ref_stride);
+}
+
+uint32_t ref_mefn_vf(int32_t bsize, const uint8_t* src, int32_t src_stride, const uint8_t* ref,
+                     int32_t ref_stride) {
+    ibc_ensure_init();
+    unsigned int sse;
+    return svt_aom_mefn_ptr[bsize].vf(src, src_stride, ref, ref_stride, &sse);
+}
+
+/* Shared IntraBcContext assembly (mode_decision.c:2978-3044 minus the
+ * PCS plumbing): src == ref == the SOURCE plane at the block origin. */
+static void ibc_setup_x(IntraBcContext* x, const int32_t** stack, const uint8_t* pic,
+                        int32_t stride, int32_t x_pos, int32_t y_pos, int32_t col_min,
+                        int32_t col_max, int32_t row_min, int32_t row_max,
+                        const int32_t* dv_joint, const int32_t* dv_cost0,
+                        const int32_t* dv_cost1, int32_t errorperbit,
+                        int32_t approx_inter_rate) {
+    memset(x, 0, sizeof(*x));
+    x->plane[0].src.buf      = (uint8_t*)pic + y_pos * stride + x_pos;
+    x->plane[0].src.stride   = stride;
+    x->xdplane[0].pre[0]     = x->plane[0].src;
+    x->mv_limits.col_min     = col_min;
+    x->mv_limits.col_max     = col_max;
+    x->mv_limits.row_min     = row_min;
+    x->mv_limits.row_max     = row_max;
+    x->errorperbit           = errorperbit;
+    x->approx_inter_rate     = (uint8_t)approx_inter_rate;
+    stack[0]                 = dv_cost0 + MV_MAX;
+    stack[1]                 = dv_cost1 + MV_MAX;
+    x->nmv_vec_cost          = (int*)dv_joint;
+    x->mv_cost_stack         = stack;
+}
+
+/* svt_av1_diamond_search_sad_c (av1me.c:291, EXPORTED). The seed is the
+ * folded IBC form: mvp_full = center >> 3 (the only shape the IBC call
+ * chain ever uses — full_pixel_diamond av1me.c:497/521). Returns bestsad;
+ * outputs the winner and num00. */
+int32_t ref_diamond_search(const uint8_t* pic, int32_t stride, int32_t x_pos, int32_t y_pos,
+                           int32_t bsize, int32_t center_x_ep, int32_t center_y_ep,
+                           int32_t search_param, int32_t sad_per_bit, int32_t col_min,
+                           int32_t col_max, int32_t row_min, int32_t row_max,
+                           const int32_t* dv_joint, const int32_t* dv_cost0,
+                           const int32_t* dv_cost1, int32_t errorperbit,
+                           int32_t approx_inter_rate, int32_t* out_x, int32_t* out_y,
+                           int32_t* out_num00) {
+    ibc_ensure_init();
+    IntraBcContext x;
+    const int32_t* stack[2];
+    ibc_setup_x(&x, stack, pic, stride, x_pos, y_pos, col_min, col_max, row_min, row_max,
+                dv_joint, dv_cost0, dv_cost1, errorperbit, approx_inter_rate);
+    SearchSiteConfig cfg;
+    svt_av1_init3smotion_compensation(&cfg, stride);
+    Mv center;
+    center.x = (int16_t)center_x_ep;
+    center.y = (int16_t)center_y_ep;
+    Mv mvp_full;
+    mvp_full.x = center.x >> 3;
+    mvp_full.y = center.y >> 3;
+    Mv  best;
+    int num00   = 0;
+    int bestsad = svt_av1_diamond_search_sad_c(&x, &cfg, &mvp_full, &best, search_param,
+                                               sad_per_bit, &num00, &svt_aom_mefn_ptr[bsize],
+                                               &center);
+    *out_x     = best.x;
+    *out_y     = best.y;
+    *out_num00 = num00;
+    return bestsad;
+}
+
+/* svt_av1_full_pixel_search (av1me.c:1115, EXPORTED): diamond + optional
+ * mesh. mesh_patterns8 = 4 (range, interval) pairs. */
+void ref_full_pixel_search(const uint8_t* pic, int32_t stride, int32_t x_pos, int32_t y_pos,
+                           int32_t bsize, int32_t ref_mv_x_ep, int32_t ref_mv_y_ep,
+                           int32_t sad_per_bit, int32_t col_min, int32_t col_max,
+                           int32_t row_min, int32_t row_max, uint64_t exhaustive_mesh_thresh,
+                           int32_t mesh_search_mv_diff_threshold, const int32_t* mesh_patterns8,
+                           const int32_t* dv_joint, const int32_t* dv_cost0,
+                           const int32_t* dv_cost1, int32_t errorperbit,
+                           int32_t approx_inter_rate, int32_t* out_x, int32_t* out_y) {
+    ibc_ensure_init();
+    PictureParentControlSet* ppcs = (PictureParentControlSet*)calloc(1, sizeof(*ppcs));
+    PictureControlSet*       pcs  = (PictureControlSet*)calloc(1, sizeof(*pcs));
+    pcs->ppcs                     = ppcs;
+    ppcs->intrabc_ctrls.exhaustive_mesh_thresh          = exhaustive_mesh_thresh;
+    ppcs->intrabc_ctrls.mesh_search_mv_diff_threshold   = mesh_search_mv_diff_threshold;
+    for (int i = 0; i < MAX_MESH_STEP; i++) {
+        ppcs->intrabc_ctrls.mesh_patterns[i].range    = mesh_patterns8[2 * i];
+        ppcs->intrabc_ctrls.mesh_patterns[i].interval = mesh_patterns8[2 * i + 1];
+    }
+    svt_av1_init3smotion_compensation(&pcs->ss_cfg, stride);
+
+    IntraBcContext x;
+    const int32_t* stack[2];
+    ibc_setup_x(&x, stack, pic, stride, x_pos, y_pos, col_min, col_max, row_min, row_max,
+                dv_joint, dv_cost0, dv_cost1, errorperbit, approx_inter_rate);
+    Mv ref_mv;
+    ref_mv.x = (int16_t)ref_mv_x_ep;
+    ref_mv.y = (int16_t)ref_mv_y_ep;
+    Mv mvp_full;
+    mvp_full.x = ref_mv.x >> 3;
+    mvp_full.y = ref_mv.y >> 3;
+    x.best_mv.as_int = 0;
+    (void)svt_av1_full_pixel_search(pcs, &x, (BlockSize)bsize, &mvp_full, 0, sad_per_bit, NULL,
+                                    &ref_mv);
+    *out_x = x.best_mv.x;
+    *out_y = x.best_mv.y;
+    free(pcs);
+    free(ppcs);
+}
+
+/* svt_av1_intrabc_hash_search (av1me.c:1056, EXPORTED). `hash_table` is a
+ * chunk-4 CHashTable handle; the PCS embeds a struct copy (shared lookup
+ * array — freed only through the handle). Returns best_hash_cost (INT_MAX
+ * = no candidate), outputs the FULL-PEL winning mv. */
+int32_t ref_intrabc_hash_search(const uint8_t* pic, int32_t stride, int32_t x_pos, int32_t y_pos,
+                                int32_t bsize, int32_t ref_mv_x_ep, int32_t ref_mv_y_ep,
+                                void* hash_table, int32_t max_block_size_hash,
+                                int32_t sb_size_log2, int32_t tile_row_start,
+                                int32_t tile_row_end, int32_t tile_col_start,
+                                int32_t tile_col_end, int32_t col_min, int32_t col_max,
+                                int32_t row_min, int32_t row_max, const int32_t* dv_joint,
+                                const int32_t* dv_cost0, const int32_t* dv_cost1,
+                                int32_t errorperbit, int32_t approx_inter_rate, int32_t* out_x,
+                                int32_t* out_y) {
+    ibc_ensure_init();
+    PictureParentControlSet* ppcs = (PictureParentControlSet*)calloc(1, sizeof(*ppcs));
+    PictureControlSet*       pcs  = (PictureControlSet*)calloc(1, sizeof(*pcs));
+    SequenceControlSet*      scs  = (SequenceControlSet*)calloc(1, sizeof(*scs));
+    pcs->ppcs                     = ppcs;
+    ppcs->scs                     = scs;
+    scs->seq_header.sb_size_log2  = sb_size_log2;
+    ppcs->intrabc_ctrls.max_block_size_hash = (uint8_t)max_block_size_hash;
+    pcs->hash_table               = *(HashTable*)hash_table;
+
+    MacroBlockD xd;
+    memset(&xd, 0, sizeof(xd));
+    xd.tile.mi_row_start = tile_row_start;
+    xd.tile.mi_row_end   = tile_row_end;
+    xd.tile.mi_col_start = tile_col_start;
+    xd.tile.mi_col_end   = tile_col_end;
+
+    IntraBcContext x;
+    const int32_t* stack[2];
+    ibc_setup_x(&x, stack, pic, stride, x_pos, y_pos, col_min, col_max, row_min, row_max,
+                dv_joint, dv_cost0, dv_cost1, errorperbit, approx_inter_rate);
+    x.xd = &xd;
+    for (int i = 0; i < 2; i++) {
+        x.hash_value_buffer[i] = (uint32_t*)malloc(sizeof(uint32_t) * AOM_BUFFER_SIZE_FOR_BLOCK_HASH);
+    }
+    Mv ref_mv;
+    ref_mv.x = (int16_t)ref_mv_x_ep;
+    ref_mv.y = (int16_t)ref_mv_y_ep;
+
+    int best_hash_cost = INT_MAX;
+    Mv  best_hash_mv;
+    best_hash_mv.as_int = 0;
+    svt_av1_intrabc_hash_search(pcs, &x, (BlockSize)bsize, x_pos, y_pos, &ref_mv, 1,
+                                &svt_aom_mefn_ptr[bsize], &best_hash_cost, &best_hash_mv);
+    *out_x = best_hash_mv.x;
+    *out_y = best_hash_mv.y;
+    for (int i = 0; i < 2; i++) {
+        free(x.hash_value_buffer[i]);
+    }
+    free(scs);
+    free(pcs);
+    free(ppcs);
+    return best_hash_cost;
+}
+
+/* mv_check_bounds (mode_decision.c:2965-2968, static INLINE) — verbatim. */
+static INLINE int shim_mv_check_bounds(const MvLimits* mv_limits, const Mv* mv) {
+    return (mv->y >> 3) < mv_limits->row_min || (mv->y >> 3) > mv_limits->row_max ||
+        (mv->x >> 3) < mv_limits->col_min || (mv->x >> 3) > mv_limits->col_max;
+}
+
+/* intra_bc_search (mode_decision.c:2976-3125, static) — VERBATIM
+ * transcription of the per-direction driver over the REAL exported
+ * sub-functions. Deviations from C, all plumbing-only: dv_ref arrives
+ * already composed (the from-stack + find_ref_dv composition is chunk 6's
+ * surface, differentially locked separately); sadperbit16/errorperbit and
+ * the cost tables arrive as parameters instead of deriving from
+ * lambda/qindex; the source-plane Buf2D is set directly instead of via
+ * svt_aom_link_eb_to_aom_buffer_desc_8bit + svt_av1_setup_pred_block
+ * (same buf/stride result). Returns the number of DV candidates (0-2);
+ * out_dv holds eighth-pel x,y pairs. */
+int32_t ref_intra_bc_search_driver(
+    const uint8_t* pic, int32_t stride, int32_t bsize, int32_t bw, int32_t bh, int32_t mi_row,
+    int32_t mi_col, int32_t mi_rows, int32_t mi_cols, int32_t sb_mi_size, int32_t sb_size_log2,
+    int32_t tile_row_start, int32_t tile_row_end, int32_t tile_col_start, int32_t tile_col_end,
+    int32_t dv_ref_x, int32_t dv_ref_y, int32_t search_dir, int32_t max_block_size_hash,
+    uint64_t exhaustive_mesh_thresh, int32_t mesh_search_mv_diff_threshold,
+    const int32_t* mesh_patterns8, void* hash_table_or_null, int32_t sadperbit16,
+    int32_t errorperbit, const int32_t* dv_joint, const int32_t* dv_cost0,
+    const int32_t* dv_cost1, int32_t approx_inter_rate, int16_t* out_dv) {
+    ibc_ensure_init();
+    PictureParentControlSet* ppcs = (PictureParentControlSet*)calloc(1, sizeof(*ppcs));
+    PictureControlSet*       pcs  = (PictureControlSet*)calloc(1, sizeof(*pcs));
+    SequenceControlSet*      scs  = (SequenceControlSet*)calloc(1, sizeof(*scs));
+    pcs->ppcs                     = ppcs;
+    ppcs->scs                     = scs;
+    scs->seq_header.sb_size_log2  = sb_size_log2;
+    scs->seq_header.sb_mi_size    = sb_mi_size;
+    ppcs->intrabc_ctrls.max_block_size_hash           = (uint8_t)max_block_size_hash;
+    ppcs->intrabc_ctrls.exhaustive_mesh_thresh        = exhaustive_mesh_thresh;
+    ppcs->intrabc_ctrls.mesh_search_mv_diff_threshold = mesh_search_mv_diff_threshold;
+    ppcs->intrabc_ctrls.search_dir                    = (uint8_t)search_dir;
+    for (int i = 0; i < MAX_MESH_STEP; i++) {
+        ppcs->intrabc_ctrls.mesh_patterns[i].range    = mesh_patterns8[2 * i];
+        ppcs->intrabc_ctrls.mesh_patterns[i].interval = mesh_patterns8[2 * i + 1];
+    }
+    if (hash_table_or_null) {
+        pcs->hash_table = *(HashTable*)hash_table_or_null;
+    }
+    svt_av1_init3smotion_compensation(&pcs->ss_cfg, stride);
+
+    MacroBlockD xd;
+    memset(&xd, 0, sizeof(xd));
+    xd.tile.mi_row_start = tile_row_start;
+    xd.tile.mi_row_end   = tile_row_end;
+    xd.tile.mi_col_start = tile_col_start;
+    xd.tile.mi_col_end   = tile_col_end;
+
+    const int32_t x_pos = mi_col * 4; /* MI_SIZE */
+    const int32_t y_pos = mi_row * 4;
+
+    /* --- transcription of mode_decision.c:2976-3125 begins --- */
+    IntraBcContext x_st;
+    IntraBcContext* x = &x_st;
+    const int32_t* stack[2];
+    /* whole-frame limits (:3005-3008); per-direction arms overwrite all 4 */
+    const int mi_width  = bw / 4;
+    const int mi_height = bh / 4;
+    ibc_setup_x(x, stack, pic, stride, x_pos, y_pos,
+                -(((mi_col + mi_width) * 4) + 4 /*AOM_INTERP_EXTEND*/),
+                (mi_cols - mi_col) * 4 + 4,
+                -(((mi_row + mi_height) * 4) + 4),
+                (mi_rows - mi_row) * 4 + 4,
+                dv_joint, dv_cost0, dv_cost1, errorperbit, approx_inter_rate);
+    /* ibc_setup_x fills (col_min, col_max, row_min, row_max) in that order;
+     * re-set explicitly to keep the row/col mapping obvious: */
+    x->mv_limits.row_min = -(((mi_row + mi_height) * 4) + 4);
+    x->mv_limits.col_min = -(((mi_col + mi_width) * 4) + 4);
+    x->mv_limits.row_max = (mi_rows - mi_row) * 4 + 4;
+    x->mv_limits.col_max = (mi_cols - mi_col) * 4 + 4;
+    x->xd          = &xd;
+    x->sadperbit16 = sadperbit16;
+    for (int i = 0; i < 2; i++) {
+        x->hash_value_buffer[i] = (uint32_t*)malloc(sizeof(uint32_t) * AOM_BUFFER_SIZE_FOR_BLOCK_HASH);
+    }
+    Mv dv_ref;
+    dv_ref.x = (int16_t)dv_ref_x;
+    dv_ref.y = (int16_t)dv_ref_y;
+
+    const int w      = bw;
+    const int h      = bh;
+    const int sb_row = mi_row >> sb_size_log2;
+    const int sb_col = mi_col >> sb_size_log2;
+
+    int32_t num_dv_cand = 0;
+
+    enum IntrabcMotionDirection max_dir = ppcs->intrabc_ctrls.search_dir ? IBC_MOTION_LEFT
+                                                                         : IBC_MOTION_DIRECTIONS;
+
+    for (enum IntrabcMotionDirection dir = IBC_MOTION_ABOVE; dir < max_dir; ++dir) {
+        const MvLimits tmp_mv_limits = x->mv_limits;
+
+        switch (dir) {
+        case IBC_MOTION_ABOVE:
+            x->mv_limits.col_min = (xd.tile.mi_col_start - mi_col) * 4;
+            x->mv_limits.col_max = (xd.tile.mi_col_end - mi_col) * 4 - w;
+            x->mv_limits.row_min = (xd.tile.mi_row_start - mi_row) * 4;
+            x->mv_limits.row_max = (sb_row * sb_mi_size - mi_row) * 4 - h;
+            break;
+        case IBC_MOTION_LEFT: {
+            x->mv_limits.col_min = (xd.tile.mi_col_start - mi_col) * 4;
+            x->mv_limits.col_max = (sb_col * sb_mi_size - mi_col) * 4 - w;
+            x->mv_limits.row_min = (xd.tile.mi_row_start - mi_row) * 4;
+            int bottom_coded_mi_edge = AOMMIN((sb_row + 1) * sb_mi_size, xd.tile.mi_row_end);
+            x->mv_limits.row_max     = (bottom_coded_mi_edge - mi_row) * 4 - h;
+            break;
+        }
+        default:
+            break;
+        }
+
+        svt_av1_set_mv_search_range(&x->mv_limits, &dv_ref);
+
+        if (x->mv_limits.col_max < x->mv_limits.col_min ||
+            x->mv_limits.row_max < x->mv_limits.row_min) {
+            x->mv_limits = tmp_mv_limits;
+            continue;
+        }
+        Mv mvp_full = dv_ref;
+        mvp_full.x >>= 3;
+        mvp_full.y >>= 3;
+        x->best_mv.as_int = 0;
+
+        const AomVarianceFnPtr* fn_ptr = &svt_aom_mefn_ptr[bsize];
+
+        int best_hash_cost = INT_MAX;
+        Mv  best_hash_mv;
+        best_hash_mv.as_int = 0;
+
+        if (hash_table_or_null) {
+            svt_av1_intrabc_hash_search(pcs, x, (BlockSize)bsize, x_pos, y_pos, &dv_ref, 1,
+                                        fn_ptr, &best_hash_cost, &best_hash_mv);
+        }
+
+        if (best_hash_cost < INT_MAX) {
+            Mv dv;
+            dv.x = best_hash_mv.x * 8;
+            dv.y = best_hash_mv.y * 8;
+            out_dv[num_dv_cand * 2]     = dv.x;
+            out_dv[num_dv_cand * 2 + 1] = dv.y;
+            num_dv_cand++;
+            x->best_mv = best_hash_mv;
+        } else {
+            svt_av1_full_pixel_search(pcs, x, (BlockSize)bsize, &mvp_full, 0, x->sadperbit16,
+                                      NULL, &dv_ref);
+            Mv dv;
+            dv.x = x->best_mv.x * 8;
+            dv.y = x->best_mv.y * 8;
+            if (!shim_mv_check_bounds(&x->mv_limits, &dv) &&
+                svt_aom_is_dv_valid(dv, &xd, mi_row, mi_col, (BlockSize)bsize, sb_size_log2)) {
+                out_dv[num_dv_cand * 2]     = dv.x;
+                out_dv[num_dv_cand * 2 + 1] = dv.y;
+                num_dv_cand++;
+            }
+        }
+
+        x->mv_limits = tmp_mv_limits;
+    }
+    /* --- transcription ends --- */
+
+    for (int i = 0; i < 2; i++) {
+        free(x->hash_value_buffer[i]);
+    }
+    free(scs);
+    free(pcs);
+    free(ppcs);
+    return num_dv_cand;
+}

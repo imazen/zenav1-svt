@@ -3282,3 +3282,343 @@ pub fn get_block_hash_value(src: &[u8], stride: usize, block_size: usize) -> (u3
     }
     (hv1, hv2)
 }
+
+// ---------------------------------------------------------------------------
+// IntraBC DV search (IBC chunk 5)
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn ref_mefn_sdf(bsize: i32, src: *const u8, src_stride: i32, r: *const u8, ref_stride: i32) -> u32;
+    fn ref_mefn_vf(bsize: i32, src: *const u8, src_stride: i32, r: *const u8, ref_stride: i32) -> u32;
+    fn ref_diamond_search(
+        pic: *const u8,
+        stride: i32,
+        x_pos: i32,
+        y_pos: i32,
+        bsize: i32,
+        center_x_ep: i32,
+        center_y_ep: i32,
+        search_param: i32,
+        sad_per_bit: i32,
+        col_min: i32,
+        col_max: i32,
+        row_min: i32,
+        row_max: i32,
+        dv_joint: *const i32,
+        dv_cost0: *const i32,
+        dv_cost1: *const i32,
+        errorperbit: i32,
+        approx_inter_rate: i32,
+        out_x: *mut i32,
+        out_y: *mut i32,
+        out_num00: *mut i32,
+    ) -> i32;
+    fn ref_full_pixel_search(
+        pic: *const u8,
+        stride: i32,
+        x_pos: i32,
+        y_pos: i32,
+        bsize: i32,
+        ref_mv_x_ep: i32,
+        ref_mv_y_ep: i32,
+        sad_per_bit: i32,
+        col_min: i32,
+        col_max: i32,
+        row_min: i32,
+        row_max: i32,
+        exhaustive_mesh_thresh: u64,
+        mesh_search_mv_diff_threshold: i32,
+        mesh_patterns8: *const i32,
+        dv_joint: *const i32,
+        dv_cost0: *const i32,
+        dv_cost1: *const i32,
+        errorperbit: i32,
+        approx_inter_rate: i32,
+        out_x: *mut i32,
+        out_y: *mut i32,
+    );
+    fn ref_intrabc_hash_search(
+        pic: *const u8,
+        stride: i32,
+        x_pos: i32,
+        y_pos: i32,
+        bsize: i32,
+        ref_mv_x_ep: i32,
+        ref_mv_y_ep: i32,
+        hash_table: *mut core::ffi::c_void,
+        max_block_size_hash: i32,
+        sb_size_log2: i32,
+        tile_row_start: i32,
+        tile_row_end: i32,
+        tile_col_start: i32,
+        tile_col_end: i32,
+        col_min: i32,
+        col_max: i32,
+        row_min: i32,
+        row_max: i32,
+        dv_joint: *const i32,
+        dv_cost0: *const i32,
+        dv_cost1: *const i32,
+        errorperbit: i32,
+        approx_inter_rate: i32,
+        out_x: *mut i32,
+        out_y: *mut i32,
+    ) -> i32;
+    fn ref_intra_bc_search_driver(
+        pic: *const u8,
+        stride: i32,
+        bsize: i32,
+        bw: i32,
+        bh: i32,
+        mi_row: i32,
+        mi_col: i32,
+        mi_rows: i32,
+        mi_cols: i32,
+        sb_mi_size: i32,
+        sb_size_log2: i32,
+        tile_row_start: i32,
+        tile_row_end: i32,
+        tile_col_start: i32,
+        tile_col_end: i32,
+        dv_ref_x: i32,
+        dv_ref_y: i32,
+        search_dir: i32,
+        max_block_size_hash: i32,
+        exhaustive_mesh_thresh: u64,
+        mesh_search_mv_diff_threshold: i32,
+        mesh_patterns8: *const i32,
+        hash_table_or_null: *mut core::ffi::c_void,
+        sadperbit16: i32,
+        errorperbit: i32,
+        dv_joint: *const i32,
+        dv_cost0: *const i32,
+        dv_cost1: *const i32,
+        approx_inter_rate: i32,
+        out_dv: *mut i16,
+    ) -> i32;
+}
+
+/// The exact per-bsize SAD kernel the C search binds (`svt_aom_mefn_ptr[bsize].sdf`).
+pub fn mefn_sdf(bsize: usize, src: &[u8], src_stride: usize, r: &[u8], ref_stride: usize) -> u32 {
+    unsafe { ref_mefn_sdf(bsize as i32, src.as_ptr(), src_stride as i32, r.as_ptr(), ref_stride as i32) }
+}
+
+/// The exact per-bsize VARIANCE kernel (`svt_aom_mefn_ptr[bsize].vf`) — the
+/// cross-stage DV search metric.
+pub fn mefn_vf(bsize: usize, src: &[u8], src_stride: usize, r: &[u8], ref_stride: usize) -> u32 {
+    unsafe { ref_mefn_vf(bsize as i32, src.as_ptr(), src_stride as i32, r.as_ptr(), ref_stride as i32) }
+}
+
+/// Cost tables + context scalars shared by the search oracles. `dv_joint`
+/// is `[i32; 4]` (MV_JOINTS); `dv_cost0`/`dv_cost1` are full un-centered
+/// `MV_VALS` arrays (the shim re-centers them at `+MV_MAX`).
+pub struct SearchCosts<'a> {
+    pub dv_joint: &'a [i32],
+    pub dv_cost0: &'a [i32],
+    pub dv_cost1: &'a [i32],
+    pub errorperbit: i32,
+    pub approx_inter_rate: bool,
+}
+
+/// Reference `svt_av1_diamond_search_sad_c` (av1me.c:291) in the folded
+/// IBC form (seed = center >> 3). Returns (best_x, best_y, bestsad, num00).
+#[allow(clippy::too_many_arguments)]
+pub fn diamond_search(
+    pic: &[u8],
+    stride: usize,
+    block: (i32, i32),
+    bsize: usize,
+    center_ep: (i32, i32),
+    search_param: i32,
+    sad_per_bit: i32,
+    limits: (i32, i32, i32, i32),
+    costs: &SearchCosts,
+) -> (i32, i32, i32, i32) {
+    assert_eq!(costs.dv_joint.len(), 4);
+    assert_eq!(costs.dv_cost0.len(), MV_VALS);
+    assert_eq!(costs.dv_cost1.len(), MV_VALS);
+    let (mut ox, mut oy, mut n00) = (0i32, 0i32, 0i32);
+    let sad = unsafe {
+        ref_diamond_search(
+            pic.as_ptr(),
+            stride as i32,
+            block.0,
+            block.1,
+            bsize as i32,
+            center_ep.0,
+            center_ep.1,
+            search_param,
+            sad_per_bit,
+            limits.0,
+            limits.1,
+            limits.2,
+            limits.3,
+            costs.dv_joint.as_ptr(),
+            costs.dv_cost0.as_ptr(),
+            costs.dv_cost1.as_ptr(),
+            costs.errorperbit,
+            i32::from(costs.approx_inter_rate),
+            &mut ox,
+            &mut oy,
+            &mut n00,
+        )
+    };
+    (ox, oy, sad, n00)
+}
+
+/// Reference `svt_av1_full_pixel_search` (av1me.c:1115): diamond +
+/// optional mesh. Returns the winning full-pel mv (`x->best_mv`).
+#[allow(clippy::too_many_arguments)]
+pub fn full_pixel_search(
+    pic: &[u8],
+    stride: usize,
+    block: (i32, i32),
+    bsize: usize,
+    ref_mv_ep: (i32, i32),
+    sad_per_bit: i32,
+    limits: (i32, i32, i32, i32),
+    exhaustive_mesh_thresh: u64,
+    mesh_search_mv_diff_threshold: i32,
+    mesh_patterns: &[(i32, i32); 4],
+    costs: &SearchCosts,
+) -> (i32, i32) {
+    let flat: Vec<i32> = mesh_patterns.iter().flat_map(|&(r, i)| [r, i]).collect();
+    let (mut ox, mut oy) = (0i32, 0i32);
+    unsafe {
+        ref_full_pixel_search(
+            pic.as_ptr(),
+            stride as i32,
+            block.0,
+            block.1,
+            bsize as i32,
+            ref_mv_ep.0,
+            ref_mv_ep.1,
+            sad_per_bit,
+            limits.0,
+            limits.1,
+            limits.2,
+            limits.3,
+            exhaustive_mesh_thresh,
+            mesh_search_mv_diff_threshold,
+            flat.as_ptr(),
+            costs.dv_joint.as_ptr(),
+            costs.dv_cost0.as_ptr(),
+            costs.dv_cost1.as_ptr(),
+            costs.errorperbit,
+            i32::from(costs.approx_inter_rate),
+            &mut ox,
+            &mut oy,
+        );
+    }
+    (ox, oy)
+}
+
+/// Reference `svt_av1_intrabc_hash_search` (av1me.c:1056). Returns
+/// `Some((mv_x, mv_y, cost))` on a hash hit (full-pel mv), `None` on miss.
+#[allow(clippy::too_many_arguments)]
+pub fn intrabc_hash_search(
+    pic: &[u8],
+    stride: usize,
+    block: (i32, i32),
+    bsize: usize,
+    ref_mv_ep: (i32, i32),
+    table: &CHashTable,
+    max_block_size_hash: u8,
+    sb_size_log2: i32,
+    tile: (i32, i32, i32, i32),
+    limits: (i32, i32, i32, i32),
+    costs: &SearchCosts,
+) -> Option<(i32, i32, i32)> {
+    let (mut ox, mut oy) = (0i32, 0i32);
+    let cost = unsafe {
+        ref_intrabc_hash_search(
+            pic.as_ptr(),
+            stride as i32,
+            block.0,
+            block.1,
+            bsize as i32,
+            ref_mv_ep.0,
+            ref_mv_ep.1,
+            table.raw(),
+            i32::from(max_block_size_hash),
+            sb_size_log2,
+            tile.0,
+            tile.1,
+            tile.2,
+            tile.3,
+            limits.0,
+            limits.1,
+            limits.2,
+            limits.3,
+            costs.dv_joint.as_ptr(),
+            costs.dv_cost0.as_ptr(),
+            costs.dv_cost1.as_ptr(),
+            costs.errorperbit,
+            i32::from(costs.approx_inter_rate),
+            &mut ox,
+            &mut oy,
+        )
+    };
+    if cost < i32::MAX { Some((ox, oy, cost)) } else { None }
+}
+
+/// The intra_bc_search driver (mode_decision.c:2976-3125) transcribed over
+/// the real exported search fns. Returns the eighth-pel DV candidates.
+#[allow(clippy::too_many_arguments)]
+pub fn intra_bc_search_driver(
+    pic: &[u8],
+    stride: usize,
+    bsize: usize,
+    b_dims: (i32, i32),
+    mi_pos: (i32, i32),
+    mi_dims: (i32, i32),
+    sb: (i32, i32),
+    tile: (i32, i32, i32, i32),
+    dv_ref_ep: (i32, i32),
+    search_dir: u8,
+    max_block_size_hash: u8,
+    exhaustive_mesh_thresh: u64,
+    mesh_search_mv_diff_threshold: i32,
+    mesh_patterns: &[(i32, i32); 4],
+    table: Option<&CHashTable>,
+    sadperbit16: i32,
+    costs: &SearchCosts,
+) -> Vec<(i16, i16)> {
+    let flat: Vec<i32> = mesh_patterns.iter().flat_map(|&(r, i)| [r, i]).collect();
+    let mut out_dv = [0i16; 4];
+    let n = unsafe {
+        ref_intra_bc_search_driver(
+            pic.as_ptr(),
+            stride as i32,
+            bsize as i32,
+            b_dims.0,
+            b_dims.1,
+            mi_pos.0,
+            mi_pos.1,
+            mi_dims.0,
+            mi_dims.1,
+            sb.0,
+            sb.1,
+            tile.0,
+            tile.1,
+            tile.2,
+            tile.3,
+            dv_ref_ep.0,
+            dv_ref_ep.1,
+            i32::from(search_dir),
+            i32::from(max_block_size_hash),
+            exhaustive_mesh_thresh,
+            mesh_search_mv_diff_threshold,
+            flat.as_ptr(),
+            table.map_or(core::ptr::null_mut(), |t| t.raw()),
+            sadperbit16,
+            costs.errorperbit,
+            costs.dv_joint.as_ptr(),
+            costs.dv_cost0.as_ptr(),
+            costs.dv_cost1.as_ptr(),
+            i32::from(costs.approx_inter_rate),
+            out_dv.as_mut_ptr(),
+        )
+    };
+    (0..n as usize).map(|i| (out_dv[i * 2], out_dv[i * 2 + 1])).collect()
+}
