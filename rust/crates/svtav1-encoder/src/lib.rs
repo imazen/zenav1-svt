@@ -45,6 +45,8 @@ pub mod bd10;
 pub mod intrabc;
 pub mod intrabc_hash;
 pub mod intrabc_mvp;
+pub mod intrabc_pred;
+pub mod vartx;
 pub mod quant;
 pub mod sb_qindex;
 pub mod rate_control;

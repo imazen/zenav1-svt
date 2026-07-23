@@ -3356,6 +3356,20 @@ impl EntropyCtx {
         }
     }
 
+    /// The block's above TXFM-context span (tx dims in px per 4x4 unit) —
+    /// the seed of the inter var-tx walk's local copy (IBC chunk 7; C
+    /// `svt_aom_get_tx_size_bits` memcpy, rd_cost.c:1790-1795).
+    pub(crate) fn txfm_above_span(&self, x: usize, w: usize) -> &[u8] {
+        let x4 = x / 4;
+        &self.above_txfm[x4..(x4 + w / 4).min(self.above_txfm.len())]
+    }
+
+    /// The block's left TXFM-context span (IBC chunk 7).
+    pub(crate) fn txfm_left_span(&self, y: usize, h: usize) -> &[u8] {
+        let y4 = y / 4;
+        &self.left_txfm[y4..(y4 + h / 4).min(self.left_txfm.len())]
+    }
+
     /// The block's above coefficient-context byte span (4x4 units),
     /// clipped to the frame — the seed of the MD TX-local overlay
     /// (C tx_reset_neighbor_arrays copies the committed arrays).
@@ -3439,6 +3453,7 @@ fn write_chroma_txb(
         0, // intra_dir: unused for plane_type != 0 (no tx_type signaling)
         base_q_idx,
         false,
+        false, // is_inter: dead for plane_type != 0 (no tx_type symbol)
     );
     ectx.record_coeff_uv(uv, cx, cy, cw, ch, cul_level as u8);
 }
@@ -3695,8 +3710,12 @@ fn encode_block_syntax(
     // md_rate_estimation.c:854-855). Without the flag the FH's
     // allow_intrabc = 1 promises a symbol the tile lacks — an UNDECODABLE
     // stream, not merely a divergent one (aomdec outputs zero frames).
+    // TODO(IBC chunk 9): thread the winner's real use_intrabc + DV from
+    // BlockDecision through write_intrabc_info here; `use_intrabc` below
+    // then steers the tx-type CDF rows + the var-tx tx_size writer.
+    let use_intrabc = false;
     if is_key && ectx.allow_intrabc {
-        writer.write_symbol(0, &mut frame_ctx.intrabc_cdf, 2);
+        writer.write_symbol(usize::from(use_intrabc), &mut frame_ctx.intrabc_cdf, 2);
     }
 
     // Mode syntax is ALWAYS coded — the skip flag only gates residuals
@@ -4012,6 +4031,7 @@ fn encode_block_syntax(
                 tx_intra_dir,
                 base_q_idx,
                 false,
+                use_intrabc, // IntraBC blocks code tx types over the INTER rows
             );
             ectx.record_coeff(block_x, block_y, w, h, cul_level as u8);
         } else {
@@ -4055,6 +4075,7 @@ fn encode_block_syntax(
                     tx_intra_dir,
                     base_q_idx,
                     false,
+                    use_intrabc, // IntraBC blocks code tx types over the INTER rows
                 );
                 ectx.record_coeff(tx_x, tx_y, txw, txh, cul_level as u8);
             }
@@ -5509,6 +5530,15 @@ fn encode_tile_rows(
                 qindex_u,
                 qindex_v,
                 ac_bias_eff,
+                // IBC chunk 7: frame-constant DV RD tables (default ndvc at
+                // MV_SUBPEL_NONE — `build_dv_cost_tables`'s cadence doc) +
+                // the aligned frame height for the vartx bottom clip.
+                dv_tables: crate::intrabc::build_dv_cost_tables(
+                    &svtav1_entropy::mv_coding::NmvContext::default(),
+                    funnel_cfg.allow_intrabc,
+                    false, // approx_inter_rate: structurally 0 on allintra
+                ),
+                frame_h_px: h,
                 cfg: funnel_cfg,
             })
         } else {

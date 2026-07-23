@@ -228,6 +228,8 @@ fc_tables! {
     (YMode, ref_fc_sizeof_y_mode_cdf, ref_fc_copy_y_mode_cdf),
     (Nmvc, ref_fc_sizeof_nmvc, ref_fc_copy_nmvc),
     (Ndvc, ref_fc_sizeof_ndvc, ref_fc_copy_ndvc),
+    (InterExtTx, ref_fc_sizeof_inter_ext_tx_cdf, ref_fc_copy_inter_ext_tx_cdf),
+    (TxfmPartition, ref_fc_sizeof_txfm_partition_cdf, ref_fc_copy_txfm_partition_cdf),
 }
 
 // ---- MV entropy encode oracle (AUDIT 2026-07-14) ----

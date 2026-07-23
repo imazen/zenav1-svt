@@ -376,6 +376,25 @@ fn c_default_cdf_tables_match() {
     );
     let ym: Vec<u16> = d::Y_MODE_CDF.iter().flatten().copied().collect();
     assert_eq!(ym, cref::fc_table(cref::FcTable::YMode), "Y_MODE_CDF");
+    // IBC chunk 7: the two inter-classified-block tables (IntraBC-only
+    // consumers here) — inter tx-type rows + the var-tx split rows.
+    let inter_et: Vec<u16> = d::INTER_EXT_TX_CDF
+        .iter()
+        .flatten()
+        .flatten()
+        .copied()
+        .collect();
+    assert_eq!(
+        inter_et,
+        cref::fc_table(cref::FcTable::InterExtTx),
+        "INTER_EXT_TX_CDF"
+    );
+    let txp: Vec<u16> = d::TXFM_PARTITION_CDF.iter().flatten().copied().collect();
+    assert_eq!(
+        txp,
+        cref::fc_table(cref::FcTable::TxfmPartition),
+        "TXFM_PARTITION_CDF"
+    );
 }
 
 /// IBC chunk 0: `FrameContext::new_default()` must carry the C defaults for

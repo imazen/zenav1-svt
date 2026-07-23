@@ -599,6 +599,11 @@ pub struct CoeffFc {
     pub coeff_base_cdf: [[AomCdfProb; 5]; 42 * 2 * 5],
     pub coeff_br_cdf: [[AomCdfProb; 5]; 21 * 2 * 4],
     pub intra_ext_tx_cdf: [[AomCdfProb; 17]; 13 * 4 * 3],
+    /// C `FRAME_CONTEXT.inter_ext_tx_cdf[EXT_TX_SETS_INTER(4)]`
+    /// `[EXT_TX_SIZES(4)][CDF_SIZE(TX_TYPES)]` — the tx-type rows for
+    /// INTER-classified blocks (on this allintra port: IntraBC only,
+    /// `av1_write_tx_type`'s `is_inter` arm, entropy_coding.c:333-337).
+    pub inter_ext_tx_cdf: [[AomCdfProb; 17]; 4 * 4],
 }
 
 impl CoeffFc {
@@ -621,6 +626,7 @@ impl CoeffFc {
             coeff_base_cdf: [[0; 5]; 420],
             coeff_br_cdf: [[0; 5]; 168],
             intra_ext_tx_cdf: [[0; 17]; 156],
+            inter_ext_tx_cdf: [[0; 17]; 16],
         });
         fc.txb_skip_cdf
             .copy_from_slice(d::TXB_SKIP_CDF[q].as_flattened());
@@ -650,6 +656,8 @@ impl CoeffFc {
             .copy_from_slice(d::COEFF_BR_CDF[q].as_flattened().as_flattened());
         fc.intra_ext_tx_cdf
             .copy_from_slice(d::INTRA_EXT_TX_CDF.as_flattened().as_flattened());
+        fc.inter_ext_tx_cdf
+            .copy_from_slice(d::INTER_EXT_TX_CDF.as_flattened());
         fc
     }
 
@@ -687,6 +695,10 @@ impl CoeffFc {
     ) -> &mut [AomCdfProb; 17] {
         &mut self.intra_ext_tx_cdf[(eset * 4 + sq_tx) * 13 + intra_dir]
     }
+    #[inline]
+    fn inter_ext_tx(&mut self, eset: usize, sq_tx: usize) -> &mut [AomCdfProb; 17] {
+        &mut self.inter_ext_tx_cdf[eset * 4 + sq_tx]
+    }
 
     /// In-place weighted per-entry average of `self` (left, ×`wt_left`) with a
     /// top-right neighbor's coeff context (×`wt_tr`) — the coeff-CDF half of
@@ -712,6 +724,11 @@ impl CoeffFc {
         avg(self.coeff_base_cdf.as_flattened_mut(), tr.coeff_base_cdf.as_flattened(), wt_left, wt_tr);
         avg(self.coeff_br_cdf.as_flattened_mut(), tr.coeff_br_cdf.as_flattened(), wt_left, wt_tr);
         avg(self.intra_ext_tx_cdf.as_flattened_mut(), tr.intra_ext_tx_cdf.as_flattened(), wt_left, wt_tr);
+        // C AVG_CDF_STRIDE over inter_ext_tx_cdf sets 1..3 (enc_dec_process.c
+        // :2675-2677); set 0 + the beyond-nsymbs tails are identical zeros on
+        // both sides, so the full-slice average is value-equivalent (the same
+        // established convention as intra_ext_tx_cdf above).
+        avg(self.inter_ext_tx_cdf.as_flattened_mut(), tr.inter_ext_tx_cdf.as_flattened(), wt_left, wt_tr);
     }
 }
 
@@ -753,12 +770,42 @@ pub fn write_tx_type_intra(
     }
 }
 
+/// C `av1_write_tx_type` (entropy_coding.c:333-337) — the `is_inter` arm.
+/// On this allintra port only IntraBC blocks are inter-classified
+/// (`is_inter_block` = `use_intrabc || ref_frame[0] > INTRA_FRAME`), so
+/// this codes the tx type of an IntraBC block's luma txbs over
+/// `inter_ext_tx_cdf[eset][square_tx_size]` (no intra-dir dimension).
+pub fn write_tx_type_inter(
+    fc: &mut CoeffFc,
+    w: &mut AomWriter,
+    tx_type: usize,
+    tx_size: usize,
+    base_q_idx: u8,
+    reduced_tx_set: bool,
+) {
+    if ext_tx_types(tx_size, true, reduced_tx_set) > 1 && base_q_idx > 0 {
+        let square_tx_size = TXSIZE_SQR_MAP[tx_size];
+        let set_type = ext_tx_set_type(tx_size, true, reduced_tx_set);
+        let eset = ext_tx_set(tx_size, true, reduced_tx_set);
+        debug_assert!(eset > 0);
+        let cdf = fc.inter_ext_tx(eset as usize, square_tx_size);
+        w.write_symbol(
+            AV1_EXT_TX_IND[set_type][tx_type],
+            cdf,
+            AV1_NUM_EXT_TX_SET[set_type],
+        );
+    }
+}
+
 /// Exact port of `av1_write_coeffs_txb_1d` (entropy_coding.c:448).
 ///
 /// `coeffs` is the raster-order coefficient block, `width x height` of the
 /// adjusted transform size, tightly packed with stride == width (matching
 /// how the C caller lays out `coeff_buffer_ptr` reads for this path).
 /// Returns `cul_level` (with the DC sign folded in) for neighbor updates.
+/// `is_inter` routes the luma tx-type symbol through the inter CDF rows
+/// (`av1_write_tx_type`'s `is_inter_block` split) — true only for IntraBC
+/// blocks on this port.
 #[allow(clippy::too_many_arguments)]
 pub fn write_coeffs_txb_1d(
     fc: &mut CoeffFc,
@@ -773,6 +820,7 @@ pub fn write_coeffs_txb_1d(
     intra_dir: usize,
     base_q_idx: u8,
     reduced_tx_set: bool,
+    is_inter: bool,
 ) -> i32 {
     let txs_ctx = txsize_entropy_ctx(tx_size);
     let scan = scan_tables::scan(
@@ -795,15 +843,19 @@ pub fn write_coeffs_txb_1d(
     txb_init_levels(coeffs, width, height, &mut levels_buf);
 
     if plane_type == 0 {
-        write_tx_type_intra(
-            fc,
-            w,
-            intra_dir,
-            tx_type,
-            tx_size,
-            base_q_idx,
-            reduced_tx_set,
-        );
+        if is_inter {
+            write_tx_type_inter(fc, w, tx_type, tx_size, base_q_idx, reduced_tx_set);
+        } else {
+            write_tx_type_intra(
+                fc,
+                w,
+                intra_dir,
+                tx_type,
+                tx_size,
+                base_q_idx,
+                reduced_tx_set,
+            );
+        }
     }
 
     let (eob_pt, eob_extra) = eob_pos_token(eob);

@@ -4529,3 +4529,68 @@ pub static PALETTE_Y_COLOR_INDEX_CDF: [[[AomCdfProb; 9]; 5]; 7] = [
         [1740, 1498, 1264, 1063, 841, 615, 376, 0, 0],
     ],
 ];
+
+// ---- IBC integration additions (chunk 7) ----
+// Extracted from the C reference library via the same gen_default_cdfs
+// mechanism (FcTable::InterExtTx / FcTable::TxfmPartition, added to the
+// generator + ref_shims in this chunk); appended here rather than fully
+// regenerating because the committed file also carries palette tables the
+// current generator does not emit (pre-existing gap — a full regeneration
+// would drop them). Drift-tested vs the C library in tests/c_parity.rs.
+
+/// C `FRAME_CONTEXT.inter_ext_tx_cdf[EXT_TX_SETS_INTER][EXT_TX_SIZES]`
+/// (`default_inter_ext_tx_cdf`, cabac_context_model.c:316-333). Row 0 is
+/// the unused DCT-only set (all zeros in C too).
+pub static INTER_EXT_TX_CDF: [[[AomCdfProb; 17]; 4]; 4] = [
+    [
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    ],
+    [
+        [28310, 27208, 25073, 23059, 19438, 17979, 15231, 12502, 11264, 9920, 8834, 7294, 5041, 3853, 2137, 0, 0],
+        [31123, 30195, 27990, 27057, 24961, 24146, 22246, 17411, 15094, 12360, 10251, 7758, 5652, 3912, 2019, 0, 0],
+        [30720, 28672, 26624, 24576, 22528, 20480, 18432, 16384, 14336, 12288, 10240, 8192, 6144, 4096, 2048, 0, 0],
+        [30720, 28672, 26624, 24576, 22528, 20480, 18432, 16384, 14336, 12288, 10240, 8192, 6144, 4096, 2048, 0, 0],
+    ],
+    [
+        [30037, 27307, 24576, 21845, 19115, 16384, 13653, 10923, 8192, 5461, 2731, 0, 0, 0, 0, 0, 0],
+        [30037, 27307, 24576, 21845, 19115, 16384, 13653, 10923, 8192, 5461, 2731, 0, 0, 0, 0, 0, 0],
+        [31998, 30347, 27543, 19861, 16949, 13841, 11207, 8679, 6173, 4242, 2239, 0, 0, 0, 0, 0, 0],
+        [30037, 27307, 24576, 21845, 19115, 16384, 13653, 10923, 8192, 5461, 2731, 0, 0, 0, 0, 0, 0],
+    ],
+    [
+        [16384, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [28601, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [30770, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [32020, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    ],
+];
+
+/// C `FRAME_CONTEXT.txfm_partition_cdf[TXFM_PARTITION_CONTEXTS]`
+/// (`default_txfm_partition_cdf`, cabac_context_model.c:587-592) — the
+/// inter var-tx tx_size writer's CDF rows (IntraBC blocks only, here).
+pub static TXFM_PARTITION_CDF: [[AomCdfProb; 3]; 21] = [
+    [4187, 0, 0],
+    [8922, 0, 0],
+    [11921, 0, 0],
+    [8453, 0, 0],
+    [14572, 0, 0],
+    [20635, 0, 0],
+    [13977, 0, 0],
+    [21881, 0, 0],
+    [21763, 0, 0],
+    [5589, 0, 0],
+    [12764, 0, 0],
+    [21487, 0, 0],
+    [6219, 0, 0],
+    [13460, 0, 0],
+    [18544, 0, 0],
+    [4753, 0, 0],
+    [11222, 0, 0],
+    [18368, 0, 0],
+    [4603, 0, 0],
+    [10367, 0, 0],
+    [16680, 0, 0],
+];

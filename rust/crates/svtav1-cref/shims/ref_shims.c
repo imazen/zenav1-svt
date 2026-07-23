@@ -120,6 +120,8 @@ REF_TBL(intrabc_cdf)
 REF_TBL(y_mode_cdf)
 REF_TBL(nmvc)
 REF_TBL(ndvc)
+REF_TBL(inter_ext_tx_cdf)
+REF_TBL(txfm_partition_cdf)
 
 /* ---- MV entropy encode (AUDIT 2026-07-14) ----
  *

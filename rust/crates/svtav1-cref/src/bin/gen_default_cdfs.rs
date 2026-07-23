@@ -138,6 +138,26 @@ const TABLES: &[Tbl] = &[
         q_dependent: false,
     },
     Tbl {
+        // C FRAME_CONTEXT.inter_ext_tx_cdf[EXT_TX_SETS_INTER][EXT_TX_SIZES]
+        // [CDF_SIZE(TX_TYPES)] (default_inter_ext_tx_cdf,
+        // cabac_context_model.c:316-333). Consumed by IntraBC blocks (the
+        // only inter-classified blocks on this allintra port).
+        rust_name: "INTER_EXT_TX_CDF",
+        table: FcTable::InterExtTx,
+        dims: &[4, 4, 17],
+        q_dependent: false,
+    },
+    Tbl {
+        // C FRAME_CONTEXT.txfm_partition_cdf[TXFM_PARTITION_CONTEXTS]
+        // [CDF_SIZE(2)] (default_txfm_partition_cdf,
+        // cabac_context_model.c:587-592) — the inter var-tx tx_size writer's
+        // CDF rows (`write_tx_size_vartx`); IntraBC-only here.
+        rust_name: "TXFM_PARTITION_CDF",
+        table: FcTable::TxfmPartition,
+        dims: &[21, 3],
+        q_dependent: false,
+    },
+    Tbl {
         rust_name: "TX_SIZE_CDF",
         table: FcTable::TxSize,
         dims: &[4, 3, 4],

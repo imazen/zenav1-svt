@@ -132,9 +132,38 @@ pub struct MdRates {
     /// this struct from the avg'd snapshot (`update_se` is 1 at the
     /// funnel's CDF levels — enc_dec_process.c:2901-2909).
     pub intrabc_fac_bits: [i32; 2],
+    /// INTER tx-type signalling costs from `inter_ext_tx_cdf` (IBC chunk 7:
+    /// `inter_tx_type_fac_bits[eset][square_tx_size][tx_type]`,
+    /// md_rate_estimation.c:~215 — the `is_inter` arm of
+    /// `av1_txt_rate_est`). Only IntraBC candidates read these here.
+    pub inter_ext_tx: [[i32; 17]; 4 * 4],
+    /// `txfm_partition` split costs (`txfm_partition_fac_bits[ctx][split]`,
+    /// md_rate_estimation.c:222, from `fc->txfm_partition_cdf`) — the
+    /// inter var-tx tx_size rate rows (`cost_tx_size_vartx`, rd_cost.c
+    /// :1591-1650). IntraBC-only consumers.
+    pub txfm_partition_fac_bits: [[i32; 2]; svtav1_entropy::context::TXFM_PARTITION_CONTEXTS],
     /// Coefficient cost tables (svt_aom_estimate_coefficients_rate).
     pub coeff: alloc::boxed::Box<CoeffCostTables>,
 }
+
+/// C `av1_ext_tx_used[EXT_TX_SET_TYPES][TX_TYPES]` (definitions.h) —
+/// which tx types each ext set admits. Shared by `txt_search`'s set gate
+/// and the IntraBC chroma follows-luma tx-type rule.
+const AV1_EXT_TX_USED: [[u8; 16]; 6] = [
+    [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], // DCTONLY
+    [1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0], // DCT_IDTX
+    [1, 1, 1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0], // DTT4_IDTX
+    [1, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0], // DTT4_IDTX_1DDCT
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0], // DTT9_IDTX_1DDCT
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], // ALL16
+];
+
+/// Sentinel `intra_dir` marking an INTER-classified (IntraBC) txb through
+/// the shared `tx_unit`/`cost_coeffs_txb`/`txt_search` plumbing: real
+/// intra dirs are 0..=12, so 13 is unambiguous. `MdRates::txt_rate` maps
+/// it to the inter tx-type rate rows; `txt_search` maps it to the inter
+/// ext-tx set.
+pub(crate) const INTER_TXT_DIR: usize = 13;
 
 fn costs_from_cdf<const N: usize>(cdf: &[u16]) -> [i32; N] {
     let mut out = [0i32; N];
@@ -161,9 +190,17 @@ pub fn build_md_rates(fc: &FrameContext, cfc: &cc::CoeffFc) -> alloc::boxed::Box
         palette_ysize: [[0; 7]; 7],
         palette_ycolor: [[[0; 8]; 5]; 7],
         intrabc_fac_bits: [0; 2],
+        inter_ext_tx: [[0; 17]; 16],
+        txfm_partition_fac_bits: [[0; 2]; svtav1_entropy::context::TXFM_PARTITION_CONTEXTS],
         coeff: crate::quant::build_coeff_cost_tables_from_fc(cfc),
     });
     r.intrabc_fac_bits = costs_from_cdf::<2>(&fc.intrabc_cdf);
+    for row in 0..16 {
+        r.inter_ext_tx[row] = costs_from_cdf::<17>(&cfc.inter_ext_tx_cdf[row]);
+    }
+    for (row, cdf) in fc.txfm_partition_cdf.iter().enumerate() {
+        r.txfm_partition_fac_bits[row] = costs_from_cdf::<2>(cdf);
+    }
     for b in 0..7 {
         // palette_ymode_fac_bits[bsize_ctx][mode_ctx][yes/no] — all 3
         // neighbor mode-ctx rows (C default_palette_y_mode_cdf, 7x3x2).
@@ -275,22 +312,30 @@ pub fn build_md_rates(fc: &FrameContext, cfc: &cc::CoeffFc) -> alloc::boxed::Box
 }
 
 impl MdRates {
-    /// C `av1_transform_type_rate_estimation` (rd_cost.c:107) for INTRA:
-    /// nonzero only when the tx size's intra ext set has > 1 type.
-    /// `intra_dir` follows `fimode_to_intradir` for filter-intra blocks.
+    /// C `av1_transform_type_rate_estimation` (rd_cost.c:107) /
+    /// `av1_txt_rate_est` (product_coding_loop.c:4318): nonzero only when
+    /// the tx size's ext set has > 1 type. `intra_dir` follows
+    /// `fimode_to_intradir` for filter-intra blocks; the [`INTER_TXT_DIR`]
+    /// sentinel selects the `is_inter` arm (IntraBC blocks — the inter
+    /// ext-tx set + `inter_tx_type_fac_bits`, no intra-dir dimension).
     fn txt_rate(&self, c_tx_size: usize, intra_dir: usize, tx_type: usize) -> i32 {
-        if cc::ext_tx_types(c_tx_size, false, false) <= 1 {
+        let is_inter = intra_dir == INTER_TXT_DIR;
+        if cc::ext_tx_types(c_tx_size, is_inter, false) <= 1 {
             return 0;
         }
-        let set_type = cc::ext_tx_set_type(c_tx_size, false, false);
-        let eset = cc::EXT_TX_SET_INDEX[0][set_type];
+        let set_type = cc::ext_tx_set_type(c_tx_size, is_inter, false);
+        let eset = cc::EXT_TX_SET_INDEX[usize::from(is_inter)][set_type];
         if eset == 0 {
             return 0;
         }
         let sq_tx = cc::TXSIZE_SQR_MAP[c_tx_size];
-        let row = (eset as usize * 4 + sq_tx) * 13 + intra_dir;
         let sym = cc::AV1_EXT_TX_IND[set_type][tx_type];
-        self.intra_ext_tx[row][sym]
+        if is_inter {
+            self.inter_ext_tx[eset as usize * 4 + sq_tx][sym]
+        } else {
+            let row = (eset as usize * 4 + sq_tx) * 13 + intra_dir;
+            self.intra_ext_tx[row][sym]
+        }
     }
 }
 
@@ -376,6 +421,16 @@ pub struct FunnelFrame {
     /// distortion facade bias layer (tx_bias.rs; C
     /// svt_spatial_full_distortion_kernel_facade, pic_operators.c:252).
     pub tx_bias: u8,
+    /// IBC chunk 7: the DV RD-cost tables (`md_rate_est_ctx->dv_cost` /
+    /// `dv_joint_cost`, `svt_aom_estimate_mv_rate`'s dv arm) — FRAME-
+    /// CONSTANT on the allintra path (`update_mv` forced 0 on I-slices;
+    /// `build_dv_cost_tables`'s doc), built from the default `ndvc` at
+    /// `MV_SUBPEL_NONE`. `None` unless `cfg.allow_intrabc`.
+    pub dv_tables: Option<crate::intrabc::MvCostTables>,
+    /// Frame height in pixels (`mi_rows * 4`, the ALIGNED height) — the
+    /// C `mb_to_bottom_edge` bottom clip the inter var-tx walk applies
+    /// (entropy_coding.c:4444-4452). Only read by IBC candidates.
+    pub frame_h_px: usize,
     /// Per-preset intra-leaf config (M6 vs intra_level-7 M7/M8).
     pub cfg: FunnelCfg,
 }
@@ -477,6 +532,12 @@ pub struct FunnelCfg {
     pub txs_max_sq: u8,
     /// `txs_ctrls.intra_class_max_depth_nsq` (M4..M6: 0; M0..M3: 2).
     pub txs_max_nsq: u8,
+    /// `txs_ctrls.inter_class_max_depth_sq` (IBC chunk 7): txs_level 2 at
+    /// M0..M3 -> 1; txs_level 3 at M4..M7 -> 1 (set_txs_controls,
+    /// enc_mode_config.c:6185-6205). Caps the IntraBC tx depth loop.
+    pub txs_inter_max_sq: u8,
+    /// `txs_ctrls.inter_class_max_depth_nsq`: M0..M3 -> 1; M4..M7 -> 0.
+    pub txs_inter_max_nsq: u8,
     /// `txs_ctrls.depth1_txt_group_offset` / `depth2_txt_group_offset`
     /// (txs_level 3: 3/3; txs_level 2: 0/0) — subtracted from the TXT
     /// group count at that tx depth (min 1, get_tx_type_group).
@@ -623,6 +684,8 @@ impl FunnelCfg {
             txt_rate_th: 100,
             txs_max_sq: 1,
             txs_max_nsq: 0,
+            txs_inter_max_sq: 1,
+            txs_inter_max_nsq: 0,
             txt_d1_off: 3,
             txt_d2_off: 3,
             txs_prev_depth_exit: 1,
@@ -704,6 +767,9 @@ impl FunnelCfg {
                 txt_rate_th: 250,
                 txs_max_sq: 2,
                 txs_max_nsq: 2,
+                // txs_level 2 inter caps (set_txs_controls case 2).
+                txs_inter_max_sq: 1,
+                txs_inter_max_nsq: 1,
                 txt_d1_off: 0,
                 txt_d2_off: 0,
                 fi_max: 4,
@@ -730,6 +796,9 @@ impl FunnelCfg {
                 txt_rate_th: 250,
                 txs_max_sq: 2,
                 txs_max_nsq: 2,
+                // txs_level 2 inter caps (set_txs_controls case 2).
+                txs_inter_max_sq: 1,
+                txs_inter_max_nsq: 1,
                 txt_d1_off: 0,
                 txt_d2_off: 0,
                 ind_uv_mds3: false,
@@ -775,6 +844,9 @@ impl FunnelCfg {
                 txt_rate_th: 250,
                 txs_max_sq: 2,
                 txs_max_nsq: 2,
+                // txs_level 2 inter caps (set_txs_controls case 2).
+                txs_inter_max_sq: 1,
+                txs_inter_max_nsq: 1,
                 txt_d1_off: 0,
                 txt_d2_off: 0,
                 ind_uv_mds3: true,
@@ -796,6 +868,9 @@ impl FunnelCfg {
                 txt_rate_th: 250,
                 txs_max_sq: 2,
                 txs_max_nsq: 2,
+                // txs_level 2 inter caps (set_txs_controls case 2).
+                txs_inter_max_sq: 1,
+                txs_inter_max_nsq: 1,
                 txt_d1_off: 0,
                 txt_d2_off: 0,
                 ind_uv_mds3: true,
@@ -2746,6 +2821,15 @@ struct Cand {
     /// (mode == DC, fi == NONE). The prediction is map->colors
     /// SUBSTITUTION (position-only, no neighbor edges) at every stage.
     palette: Option<(Vec<u16>, Vec<u8>)>,
+    /// IntraBC candidate payload `(dv, pred_dv)` (IBC chunk 7/8) — Some
+    /// only for candidates injected by the IBC lane
+    /// (`inject_intra_bc_candidates`): the winning eighth-pel DV +
+    /// `ref_mv_stack[INTRA_FRAME][0].this_mv` (the dv_ref the writer's
+    /// `svt_av1_encode_dv` diffs against). The candidate's other fields
+    /// follow `build_intra_bc_candidate`: mode DC (0), uv DC (0), fi
+    /// NONE, deltas 0 — an IBC cand is `is_inter`-classified everywhere
+    /// (tx set, tx_size vartx coding, no CfL / no ind-uv rewrite).
+    ibc: Option<(svtav1_types::motion::Mv, svtav1_types::motion::Mv)>,
     mds3_cost: u64,
     block_has_coeff: bool,
     /// C `blk_ptr->total_rate` / `full_dist` (svt_aom_full_cost writeback)
@@ -3892,6 +3976,7 @@ pub(crate) fn evaluate_leaf(
             cfl_alpha_idx: 0,
             cfl_alpha_signs: 0,
             palette: None,
+            ibc: None,
             mds3_cost: u64::MAX,
             block_has_coeff: false,
             total_rate: 0,
@@ -4107,6 +4192,7 @@ pub(crate) fn evaluate_leaf(
                 cfl_alpha_idx: 0,
                 cfl_alpha_signs: 0,
                 palette: Some((pc.colors, pc.idx_map)),
+                ibc: None,
                 mds3_cost: u64::MAX,
                 block_has_coeff: false,
                 total_rate: 0,
@@ -4282,7 +4368,11 @@ pub(crate) fn evaluate_leaf(
         // didn't, under-pricing fi=V/H/D157 coeff rates by the row delta
         // (g128 q20 p0 16x4@(2,0): C ycb higher by exactly 630/684/736 for
         // fi=1/2/3 with bit-equal dists; fi=0/4 map to DC and matched).
-        let intra_dir = if cand.fi != FI_NONE {
+        let intra_dir = if cand.ibc.is_some() {
+            // IBC chunk 7: inter-classified — the coeff cost's tx-type
+            // rate reads the INTER rows (av1_txt_rate_est is_inter arm).
+            INTER_TXT_DIR
+        } else if cand.fi != FI_NONE {
             FIMODE_TO_INTRADIR[cand.fi as usize] as usize
         } else {
             cand.mode as usize
@@ -4354,15 +4444,41 @@ pub(crate) fn evaluate_leaf(
         let tsz_cat = tx_size_cat(w, h);
         let tsz_ctx = fx.ectx.tx_size_ctx(abs_x, abs_y, w, h);
         // C: 4x4 codes no tx_size symbol (block_signals_txsize == bsize > 4x4).
-        let tx_size_bits = if block_signals_txsize(w, h) {
-            rates.tx_size[tsz_cat][tsz_ctx][0] as u64
+        // IBC (inter-classified): tx_size codes via the var-tx walk when the
+        // block has coeffs, and ZERO bits when skip (svt_aom_tx_size_bits'
+        // `!(is_inter_tx && skip)` gate) — svt_aom_full_cost prices exactly
+        // that pair at MDS1 too.
+        let coeff_rate = if cand.ibc.is_some() {
+            let vartx_bits = if has && block_signals_txsize(w, h) {
+                crate::vartx::tx_size_bits_vartx(
+                    &rates.txfm_partition_fac_bits,
+                    fx.ectx.txfm_above_span(abs_x, w),
+                    fx.ectx.txfm_left_span(abs_y, h),
+                    w,
+                    h,
+                    0, // MDS1 evaluates depth 0
+                    abs_y,
+                    frame.frame_h_px,
+                )
+            } else {
+                0
+            };
+            if has {
+                dec_bits + vartx_bits + rates.skip[skip_ctx][0] as u64
+            } else {
+                rates.skip[skip_ctx][1] as u64
+            }
         } else {
-            0
-        };
-        let coeff_rate = if has {
-            dec_bits + tx_size_bits + rates.skip[skip_ctx][0] as u64
-        } else {
-            rates.skip[skip_ctx][1] as u64 + tx_size_bits
+            let tx_size_bits = if block_signals_txsize(w, h) {
+                rates.tx_size[tsz_cat][tsz_ctx][0] as u64
+            } else {
+                0
+            };
+            if has {
+                dec_bits + tx_size_bits + rates.skip[skip_ctx][0] as u64
+            } else {
+                rates.skip[skip_ctx][1] as u64 + tx_size_bits
+            }
         };
         cand.mds1_has_coeff = has;
         cand.full_cost = rdcost(dec_lambda, cand.flr + cand.fcr + coeff_rate, dec_dist);
@@ -4657,6 +4773,12 @@ pub(crate) fn evaluate_leaf(
         let mut table = [(0u8, 0i8); 13];
         let mut mode_seen = [false; 13];
         for &ci in order1.iter().take(n3) {
+            // C search_best_mds3_uv_mode skips inter-classified candidates
+            // (product_coding_loop.c:7335 — an IntraBC cand keeps UV_DC and
+            // never seeds a per-luma-mode table row).
+            if cands[ci].ibc.is_some() {
+                continue;
+            }
             let luma = cands[ci].mode as usize;
             if mode_seen[luma] {
                 continue;
@@ -4709,7 +4831,9 @@ pub(crate) fn evaluate_leaf(
         // both configs" note toggled M0+M1 together; the q40-64 breakage
         // came from the M1 cells, where C does rewrite.)
         if let Some(tbl) = &ind_uv {
-            if cfg.ind_uv_last_mds1 || cfg.ind_uv_mds3 {
+            // C update_intra_chroma_mode skips inter-classified candidates
+            // (:7077 `!is_inter` gate) — an IntraBC cand keeps UV_DC.
+            if (cfg.ind_uv_last_mds1 || cfg.ind_uv_mds3) && cands[ci].ibc.is_none() {
             // The rewrite keys on the CODED luma mode (`cand->block_mi.mode`
             // in update_intra_chroma_mode — DC for FILTER candidates), NOT
             // the fi-mapped direction. A/B-verified (g64 p0): mapping the
@@ -4729,6 +4853,18 @@ pub(crate) fn evaluate_leaf(
             }
         }
         // ---- Luma: TX depth loop ----
+        // IBC chunk 7: an IntraBC candidate is INTER-classified — its
+        // depth cap comes from txs_ctrls.inter_class_max_depth_sq/nsq
+        // (C get_end_tx_depth's is_inter arm), not the intra caps.
+        let cand_end_depth = if cands[ci].ibc.is_some() {
+            if txs_active {
+                end_tx_depth_inter(w, h, &cfg)
+            } else {
+                0
+            }
+        } else {
+            end_depth
+        };
         let mut best_depth = 0u8;
         let mut best_cost = u64::MAX;
         let mut best_bits: u64 = 0;
@@ -4763,7 +4899,7 @@ pub(crate) fn evaluate_leaf(
         let mut d0_recon: Vec<u8> = Vec::new();
         let mut best_coeff_count = u32::MAX;
 
-        for depth in 0..=end_depth {
+        for depth in 0..=cand_end_depth {
             // prev_depth_coeff_exit_th (1 at txs_level <=4; 100 at eff-M9
             // txs_level 5): skip a deeper depth when the best depth so far
             // kept fewer than the threshold's worth of non-zero coeffs.
@@ -4808,16 +4944,26 @@ pub(crate) fn evaluate_leaf(
             };
 
             for txb in 0..txbs {
-                let tx_x = (txb % cols) * txw;
-                let tx_y = (txb / cols) * txh;
                 let cand = &cands[ci];
+                // Inter (IntraBC) txbs walk the C tx_org is_inter=1 rows
+                // (z-order at depth 2); intra keeps the plain raster.
+                let (tx_x, tx_y) = if cand.ibc.is_some() {
+                    txb_org_inter(w, h, depth, txb)
+                } else {
+                    ((txb % cols) * txw, (txb / cols) * txh)
+                };
                 // Per-txb prediction: depth 0 reuses the MDS0 pred;
                 // depth > 0 predicts from the live canvas (frame recon
                 // outside the block, this depth's recon inside).
                 let mut txb_pred = vec![0u8; txw * txh];
                 if depth == 0 {
                     txb_pred.copy_from_slice(&cand.pred);
-                } else if cand.palette.is_some() {
+                } else if cand.palette.is_some() || cand.ibc.is_some() {
+                    // Palette: position-only substitution. IntraBC: C
+                    // computes the INTER residual once from the block-level
+                    // prediction and never re-predicts per txb (the
+                    // `if (!is_inter)` skip, product_coding_loop.c:5325) —
+                    // a deeper-depth txb pred is the slice of the DV copy.
                     // Palette prediction is position-only substitution
                     // (enc_intra_prediction.c:640-651 runs per tx block
                     // over the SAME map — no neighbor edges), so a
@@ -4868,7 +5014,7 @@ pub(crate) fn evaluate_leaf(
                     txb_pred10 = vec![0u16; txw * txh];
                     if depth == 0 {
                         txb_pred10.copy_from_slice(&cand.pred10);
-                    } else if cand.palette.is_some() {
+                    } else if cand.palette.is_some() || cand.ibc.is_some() {
                         for r in 0..txh {
                             let src0 = (tx_y + r) * w + tx_x;
                             txb_pred10[r * txw..(r + 1) * txw]
@@ -4914,8 +5060,12 @@ pub(crate) fn evaluate_leaf(
                 } else {
                     (0, 0)
                 };
-                // TXT search over this txb.
-                let intra_dir = if cand.fi != FI_NONE {
+                // TXT search over this txb. IntraBC txbs carry the
+                // INTER_TXT_DIR sentinel: the inter ext-tx set + the
+                // inter tx-type rate rows (tx_type_search is_inter).
+                let intra_dir = if cand.ibc.is_some() {
+                    INTER_TXT_DIR
+                } else if cand.fi != FI_NONE {
                     FIMODE_TO_INTRADIR[cand.fi as usize] as usize
                 } else {
                     cand.mode as usize
@@ -5053,7 +5203,27 @@ pub(crate) fn evaluate_leaf(
                 // only gate the inter path).
                 if cfg.txs_quadrant_sf != 0 && depth > 0 {
                     let normlized = ((txb as u64 + 1) * best_cost) / txbs as u64;
-                    let tsb = rates.tx_size[tsz_cat][tsz_ctx][depth as usize] as u64;
+                    let tsb = if cands[ci].ibc.is_some() {
+                        // Inert at the IBC presets (quadrant_sf == 0 at
+                        // txs_level 2/3) — kept faithful to
+                        // svt_aom_get_tx_size_bits' inter arm regardless.
+                        if dep_has_coeff && block_signals_txsize(w, h) {
+                            crate::vartx::tx_size_bits_vartx(
+                                &rates.txfm_partition_fac_bits,
+                                fx.ectx.txfm_above_span(abs_x, w),
+                                fx.ectx.txfm_left_span(abs_y, h),
+                                w,
+                                h,
+                                depth,
+                                abs_y,
+                                frame.frame_h_px,
+                            )
+                        } else {
+                            0
+                        }
+                    } else {
+                        rates.tx_size[tsz_cat][tsz_ctx][depth as usize] as u64
+                    };
                     let cost_tmp = rdcost(lambda3, dep_bits + tsb, dep_dist);
                     if cost_tmp * 100 > normlized * cfg.txs_quadrant_sf {
                         aborted = true;
@@ -5065,7 +5235,25 @@ pub(crate) fn evaluate_leaf(
                 continue;
             }
             // C: 4x4 codes no tx_size symbol (block_signals_txsize == bsize > 4x4).
-            let tx_size_bits = if block_signals_txsize(w, h) {
+            // IntraBC (inter-classified): svt_aom_get_tx_size_bits prices the
+            // var-tx walk when the depth kept coeffs, 0 bits when skip
+            // (`!(is_inter_tx && skip)`).
+            let tx_size_bits = if cands[ci].ibc.is_some() {
+                if dep_has_coeff && block_signals_txsize(w, h) {
+                    crate::vartx::tx_size_bits_vartx(
+                        &rates.txfm_partition_fac_bits,
+                        fx.ectx.txfm_above_span(abs_x, w),
+                        fx.ectx.txfm_left_span(abs_y, h),
+                        w,
+                        h,
+                        depth,
+                        abs_y,
+                        frame.frame_h_px,
+                    )
+                } else {
+                    0
+                }
+            } else if block_signals_txsize(w, h) {
                 rates.tx_size[tsz_cat][tsz_ctx][depth as usize] as u64
             } else {
                 0
@@ -5100,7 +5288,43 @@ pub(crate) fn evaluate_leaf(
         //      Skipped entirely for non-chroma-ref blocks (C gates every
         //      chroma stage on ctx->has_uv).
         let cand = &cands[ci];
-        let (mut u_out, mut v_out) = if has_uv {
+        let (mut u_out, mut v_out) = if has_uv && cand.ibc.is_some() {
+            // IBC chunk 7: IntraBC chroma — the DV copy / half-pel bilinear
+            // from the chroma recon canvases (enc_inter_prediction chroma
+            // arm, sf_identity), with the INTER chroma tx type rule: the
+            // luma winner's txb-0 type when the chroma ext set allows it,
+            // else DCT (tx_type_search, product_coding_loop.c:5087-5096).
+            // No CfL, no ind-uv, no detector (all intra-only).
+            let (dv, _) = cand.ibc.unwrap();
+            let mut u_pred = vec![0u8; cw * chh];
+            let mut v_pred = vec![0u8; cw * chh];
+            let frame_ch = frame.frame_h_px / 2;
+            crate::intrabc_pred::predict_intrabc_chroma(
+                fx.u_recon, fx.c_stride, ccx, ccy, cw, chh, fx.c_stride, frame_ch, dv,
+                &mut u_pred,
+            );
+            crate::intrabc_pred::predict_intrabc_chroma(
+                fx.v_recon, fx.c_stride, ccx, ccy, cw, chh, fx.c_stride, frame_ch, dv,
+                &mut v_pred,
+            );
+            let luma_tt = best_txb_type.first().copied().unwrap_or(0) as usize;
+            let uv_tx = cc::adjusted_tx_size(cc::tx_size_from_dims(cw, chh));
+            let uv_set = cc::ext_tx_set_type(uv_tx, true, false);
+            let tt = if AV1_EXT_TX_USED[uv_set][luma_tt] != 0 {
+                luma_tt
+            } else {
+                cc::DCT_DCT
+            };
+            let u_out = tx_unit(
+                fx.u_src, fx.c_stride, ccy * fx.c_stride + ccx, &u_pred, cw, 0, cw, chh, tt,
+                1, cb_tsc, cb_dsc, 0, &qt_u, frame, rates, do_rdoq, true,
+            );
+            let v_out = tx_unit(
+                fx.v_src, fx.c_stride, ccy * fx.c_stride + ccx, &v_pred, cw, 0, cw, chh, tt,
+                1, cr_tsc, cr_dsc, 0, &qt_v, frame, rates, do_rdoq, true,
+            );
+            (u_out, v_out)
+        } else if has_uv {
             chroma_eval(fx, cand.uv, cand.uv_delta)
         } else {
             (TxUnitOut::absent(), TxUnitOut::absent())
@@ -5118,7 +5342,10 @@ pub(crate) fn evaluate_leaf(
         let mut fcr_final = cand.fcr;
         let mut cfl_idx_final = 0u8;
         let mut cfl_signs_final = 0u8;
-        if has_uv {
+        // IntraBC candidates: no chroma detector, no CfL, no uv rewrite —
+        // C excludes inter-classified candidates from every chroma search
+        // (search_best_mds3_uv_mode :7335, the CfL arm :6932-equivalent).
+        if has_uv && cand.ibc.is_none() {
             // Chroma complexity detector (chroma_complexity_check_pred,
             // product_coding_loop.c:6095), use_var=1: cfl_complexity ==
             // COMPONENT_CHROMA iff the SAD arm (cb/cr pred SAD > 2x luma
@@ -6064,7 +6291,25 @@ pub(crate) fn evaluate_leaf(
         };
         let block_has_coeff = best_coeff_count > 0 || uv_eob10.0 > 0 || uv_eob10.1 > 0;
         // C: 4x4 codes no tx_size symbol (block_signals_txsize == bsize > 4x4).
-        let tx_size_bits_final = if block_signals_txsize(w, h) {
+        // IntraBC: svt_aom_full_cost prices non_skip_tx_size_bits = the
+        // var-tx walk (block_has_coeff) and skip_tx_size_bits = 0
+        // (rd_cost.c:1367-1377 + the `!(is_inter_tx && skip)` gate).
+        let tx_size_bits_final = if cand.ibc.is_some() {
+            if block_has_coeff && block_signals_txsize(w, h) {
+                crate::vartx::tx_size_bits_vartx(
+                    &rates.txfm_partition_fac_bits,
+                    fx.ectx.txfm_above_span(abs_x, w),
+                    fx.ectx.txfm_left_span(abs_y, h),
+                    w,
+                    h,
+                    best_depth,
+                    abs_y,
+                    frame.frame_h_px,
+                )
+            } else {
+                0
+            }
+        } else if block_signals_txsize(w, h) {
             rates.tx_size[tsz_cat][tsz_ctx][best_depth as usize] as u64
         } else {
             0
@@ -6606,6 +6851,51 @@ fn end_tx_depth(w: usize, h: usize, cfg: &FunnelCfg) -> u8 {
         cfg.txs_max_nsq
     };
     base.min(cap)
+}
+
+/// The INTER-class twin of [`end_tx_depth`] (IBC chunk 7): same bsize
+/// base, capped by `txs_ctrls.inter_class_max_depth_sq/nsq` (C
+/// `get_end_tx_depth`'s is_inter arm). IntraBC candidates only.
+fn end_tx_depth_inter(w: usize, h: usize, cfg: &FunnelCfg) -> u8 {
+    let base: u8 = match (w, h) {
+        (64, 64) | (32, 32) | (16, 16) => 2,
+        (64, 32) | (32, 64) | (32, 16) | (16, 32) | (16, 8) | (8, 16) => 2,
+        (64, 16) | (16, 64) | (32, 8) | (8, 32) | (16, 4) | (4, 16) => 2,
+        (8, 8) => 1,
+        _ => 0,
+    };
+    let cap = if w == h {
+        cfg.txs_inter_max_sq
+    } else {
+        cfg.txs_inter_max_nsq
+    };
+    base.min(cap)
+}
+
+/// Per-txb origin at a depth for an INTER-classified (IntraBC) block —
+/// C `tx_org[bsize][is_inter=1][depth][txb]` (transforms.c:48). Depths
+/// 0/1 equal the intra raster; at depth 2 the inter rows are the
+/// RECURSIVE var-tx z-order — depth-1 parents in raster, the 2x2
+/// sub-txbs raster within each parent (verified against the C table:
+/// exactly 6 (bsize, depth-2) cells differ from the intra raster —
+/// 16X8/16X16/32X16/32X32/64X32/64X64; vertical rects coincide).
+/// Currently unreachable at the IBC presets (inter depth caps <= 1) but
+/// kept exact for when deeper inter caps arrive.
+fn txb_org_inter(w: usize, h: usize, depth: u8, txb: usize) -> (usize, usize) {
+    let (txw, txh) = txb_dims_at_depth(w, h, depth);
+    if depth < 2 {
+        let cols = w / txw;
+        return ((txb % cols) * txw, (txb / cols) * txh);
+    }
+    // Parent (depth-1) geometry.
+    let (pw, ph) = txb_dims_at_depth(w, h, 1);
+    let sub_per_parent = (pw / txw) * (ph / txh);
+    let parent = txb / sub_per_parent;
+    let within = txb % sub_per_parent;
+    let pcols = w / pw;
+    let (px, py) = ((parent % pcols) * pw, (parent / pcols) * ph);
+    let scols = pw / txw;
+    (px + (within % scols) * txw, py + (within / scols) * txh)
 }
 
 /// C `bsize_to_tx_size_cat`: category of the block's max tx size chain —
@@ -7156,17 +7446,26 @@ fn txt_search(
     bd10: Option<&Bd10Txb<'_>>,
 ) -> (TxUnitOut, Option<TxUnitOutHbd>, usize) {
     let c_tx = cc::tx_size_from_dims(w, h);
+    // IBC chunk 7: the INTER_TXT_DIR sentinel marks an IntraBC txb — the
+    // whole search then runs over the INTER ext-tx machinery
+    // (tx_type_search's `is_inter`, product_coding_loop.c:4597-4601).
+    let is_inter = intra_dir == INTER_TXT_DIR;
     // search_dct_dct_only (product_coding_loop.c:4601): txt disabled
     // (eff-M9 txt_level 0 -> !mds_do_txt), dims > 32, a single-type ext
     // set, or ext set index 0.
     let only_dct = !frame.cfg.txt_on
         || w > 32
         || h > 32
-        || cc::ext_tx_types(c_tx, false, false) == 1
-        || cc::ext_tx_set(c_tx, false, false) == 0;
+        || cc::ext_tx_types(c_tx, is_inter, false) == 1
+        || cc::ext_tx_set(c_tx, is_inter, false) == 0;
     // get_tx_type_group (product_coding_loop.c:4358): per-preset intra
     // group counts (M6 txt_level 8: ge16 4 / lt16 5; M5 txt_level 3:
     // 6 / 6 — the dump's txt_ge16/txt_lt16); depth-1 offset 3 (min 1).
+    // INTER groups: at every IBC preset (M0-M4, txt_level 2/3) the C
+    // inter group counts EQUAL the intra ones (both MAX=6/6,
+    // set_txt_controls cases 2-3, enc_mode_config.c:3927-3955), so the
+    // intra config fields are reused; presets >= M5 have allow_intrabc=0
+    // so the inter arm is unreachable there.
     let mut groups: i32 = if only_dct {
         1
     } else if w >= 16 && h >= 16 {
@@ -7180,15 +7479,6 @@ fn txt_search(
         groups = (groups - frame.cfg.txt_d2_off).max(1);
     }
 
-    /// C `av1_ext_tx_used[EXT_TX_SET_TYPES][TX_TYPES]` (definitions.h).
-    const AV1_EXT_TX_USED: [[u8; 16]; 6] = [
-        [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], // DCTONLY
-        [1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0], // DCT_IDTX
-        [1, 1, 1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0], // DTT4_IDTX
-        [1, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0], // DTT4_IDTX_1DDCT
-        [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0], // DTT9_IDTX_1DDCT
-        [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], // ALL16
-    ];
     const TX_TYPE_GROUPS: [&[usize]; 6] = [
         &[cc::DCT_DCT],
         &[10, 11], // V_DCT, H_DCT
@@ -7198,9 +7488,12 @@ fn txt_search(
         &[4, 5, 7, 8, 12, 13, 14, 15],
     ];
 
-    let set_type = cc::ext_tx_set_type(c_tx, false, false);
+    let set_type = cc::ext_tx_set_type(c_tx, is_inter, false);
     // qp-scaled SATD early-exit th (satd_th_q_weight = 1; intra th 10 at
-    // M6, 15 at M5 — txt_satd_intra in the dumps).
+    // M6, 15 at M5 — txt_satd_intra in the dumps). INTER th: equal to the
+    // intra th at every IBC preset (M0-M3: 20/20, M4: 15/15 —
+    // set_txt_controls cases 2-3), so the intra field is reused (same
+    // reasoning as the group counts above).
     let (qw, qwd) = qp_scale_factors(frame.cli_qp);
     let satd_th = if only_dct {
         0
@@ -7580,6 +7873,84 @@ fn chroma_var_arm_fires(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// IBC chunk 7: the inter txb origins must reproduce the C
+    /// `tx_org[bsize][is_inter=1]` rows exactly. Depths 0/1 equal the
+    /// intra raster everywhere; depth 2 is the var-tx z-order on exactly
+    /// 6 bsizes (values extracted from transforms.c:48 during the chunk-7
+    /// landing — the 16X8/16X16 rows locked verbatim here, the others by
+    /// the parent-major rule those two pin).
+    #[test]
+    fn inter_txb_origins_match_c_tx_org() {
+        // Depth 0/1: identical to the intra raster for every dim pair.
+        for &(w, h) in &[(64, 64), (32, 16), (16, 8), (8, 8), (16, 64)] {
+            for depth in 0..=1u8 {
+                let (txw, txh) = txb_dims_at_depth(w, h, depth);
+                let cols = w / txw;
+                let n = cols * (h / txh);
+                for txb in 0..n {
+                    assert_eq!(
+                        txb_org_inter(w, h, depth, txb),
+                        ((txb % cols) * txw, (txb / cols) * txh),
+                        "{w}x{h} d{depth} txb{txb}"
+                    );
+                }
+            }
+        }
+        // Depth 2, BLOCK_16X8 (C inter row):
+        // {0,0},{4,0},{0,4},{4,4},{8,0},{12,0},{8,4},{12,4}.
+        let c_16x8: [(usize, usize); 8] = [
+            (0, 0), (4, 0), (0, 4), (4, 4), (8, 0), (12, 0), (8, 4), (12, 4),
+        ];
+        for (i, &xy) in c_16x8.iter().enumerate() {
+            assert_eq!(txb_org_inter(16, 8, 2, i), xy, "16x8 d2 txb{i}");
+        }
+        // Depth 2, BLOCK_16X16 (C inter row).
+        let c_16x16: [(usize, usize); 16] = [
+            (0, 0), (4, 0), (0, 4), (4, 4), (8, 0), (12, 0), (8, 4), (12, 4),
+            (0, 8), (4, 8), (0, 12), (4, 12), (8, 8), (12, 8), (8, 12), (12, 12),
+        ];
+        for (i, &xy) in c_16x16.iter().enumerate() {
+            assert_eq!(txb_org_inter(16, 16, 2, i), xy, "16x16 d2 txb{i}");
+        }
+        // Vertical rects coincide with the raster even at depth 2
+        // (verified against the C table): 8X16 d2.
+        let (txw, txh) = txb_dims_at_depth(8, 16, 2);
+        let cols = 8 / txw;
+        for txb in 0..(cols * (16 / txh)) {
+            assert_eq!(
+                txb_org_inter(8, 16, 2, txb),
+                ((txb % cols) * txw, (txb / cols) * txh),
+                "8x16 d2 txb{txb}"
+            );
+        }
+    }
+
+    /// IBC chunk 7: `MdRates::txt_rate` INTER arm — the sentinel routes to
+    /// `inter_ext_tx` rows with the inter set indexing; the intra arm is
+    /// untouched (same inputs give the pre-chunk value).
+    #[test]
+    fn txt_rate_inter_sentinel_routes_to_inter_rows() {
+        let fc = FrameContext::new_default();
+        let cfc = cc::CoeffFc::default_for_qindex(60);
+        let rates = build_md_rates(&fc, &cfc);
+        // 8x8: intra set DTT4_IDTX_1DDCT (7 types), inter set ALL16.
+        let tx = cc::TX_8X8;
+        let intra_dct = rates.txt_rate(tx, 0, cc::DCT_DCT);
+        let inter_dct = rates.txt_rate(tx, INTER_TXT_DIR, cc::DCT_DCT);
+        // Both nonzero (multi-type sets), from DIFFERENT tables.
+        assert!(intra_dct > 0 && inter_dct > 0);
+        let set_inter = cc::ext_tx_set_type(tx, true, false);
+        let eset_inter = cc::EXT_TX_SET_INDEX[1][set_inter] as usize;
+        let sym = cc::AV1_EXT_TX_IND[set_inter][cc::DCT_DCT];
+        assert_eq!(
+            inter_dct,
+            rates.inter_ext_tx[eset_inter * 4 + cc::TXSIZE_SQR_MAP[tx]][sym]
+        );
+        // 32x32: intra DCT-only (rate 0); inter DCT_IDTX (2 types, nonzero).
+        assert_eq!(rates.txt_rate(cc::TX_32X32, 0, cc::DCT_DCT), 0);
+        assert!(rates.txt_rate(cc::TX_32X32, INTER_TXT_DIR, cc::DCT_DCT) > 0);
+    }
 
     /// bd10 ind_uv fast metric: [`residual_sad_hbd`] is the 16-bit SAD C sorts
     /// the `search_best_independent_uv_mode` candidates by when `mds0_dist_type

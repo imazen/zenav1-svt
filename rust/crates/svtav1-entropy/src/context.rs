@@ -262,7 +262,19 @@ pub struct FrameContext {
     /// ever codes IntraBC DVs (`svt_av1_encode_dv`, entropy_coding.c:4381,
     /// with literal `MV_SUBPEL_NONE` — sign/class/integer bits only).
     pub ndvc: crate::mv_coding::NmvContext,
+
+    /// TX-partition split CDFs — C FRAME_CONTEXT.txfm_partition_cdf
+    /// [TXFM_PARTITION_CONTEXTS][CDF2] (`default_txfm_partition_cdf`,
+    /// cabac_context_model.c:587-592). Coded by `write_tx_size_vartx`
+    /// (entropy_coding.c:4513-4557) for INTER-classified blocks — on this
+    /// allintra port that means IntraBC blocks only (`is_inter_block` is
+    /// true for `use_intrabc`, block_structures.h:115-121).
+    pub txfm_partition_cdf: [[AomCdfProb; 3]; TXFM_PARTITION_CONTEXTS],
 }
+
+/// C `TXFM_PARTITION_CONTEXTS` = `(TX_SIZES - TX_8X8) * 6 - 3` = 21
+/// (blockd.h-equivalent; definitions.h).
+pub const TXFM_PARTITION_CONTEXTS: usize = 21;
 
 // =============================================================================
 // AV1 spec default CDF tables (Section 9.3)
@@ -512,6 +524,7 @@ impl FrameContext {
             // (cabac_context_model.c:795); NmvContext::default() is that
             // table (drift-tested vs FcTable::Nmvc in tests/c_parity_mv.rs).
             ndvc: crate::mv_coding::NmvContext::default(),
+            txfm_partition_cdf: crate::default_cdfs::TXFM_PARTITION_CDF,
         }
     }
 
@@ -532,6 +545,9 @@ impl FrameContext {
         // IntraBC: C averages intrabc_cdf + the whole ndvc alongside nmvc
         // (enc_dec_process.c:2638-2640, avg_nmv :2567-2579 — every CDF field).
         avg(&mut self.intrabc_cdf, &tr.intrabc_cdf, wt_left, wt_tr);
+        // C averages txfm_partition_cdf with the rest (AVERAGE_CDF over
+        // FRAME_CONTEXT covers it; only IntraBC blocks evolve it here).
+        avg(self.txfm_partition_cdf.as_flattened_mut(), tr.txfm_partition_cdf.as_flattened(), wt_left, wt_tr);
         avg(&mut self.ndvc.joints_cdf, &tr.ndvc.joints_cdf, wt_left, wt_tr);
         for i in 0..2 {
             let (l, r) = (&mut self.ndvc.comps[i], &tr.ndvc.comps[i]);
