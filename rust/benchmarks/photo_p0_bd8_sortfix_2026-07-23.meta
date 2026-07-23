@@ -7,8 +7,8 @@ Tool:   tools/wider_corpus_sweep.sh  WCS_PRESETS=0 WCS_QPS="5 20 32 48 63"
 C ref:  /root/svtav1/Bin/Release libSvtAv1Enc v4.2.0
 Host:   the shared workstation (nice -n19 ionice -c3 throughout)
 
-RESULT: 61/135 -> 134/135 byte-identical (73 cells fixed, 0 regressed) from
-ONE root. The 2026-07-22 wider-corpus map (22/135) predated the #91 sb128
+RESULT: 61/135 -> 134/135 from root 1 (the sort), -> 135/135 with root 2
+(the CfL tie-break, commit 78bb5d361; final map _final.tsv, 0 regressed). The 2026-07-22 wider-corpus map (22/135) predated the #91 sb128
 depth-fold landing; on base 3a5c064cc the before-map is 61/135
 (photo_p0_bd8_sortfix_2026-07-23_before.tsv), after the fix 134/135
 (_after.tsv).
@@ -34,5 +34,10 @@ records ignore angle deltas) -> tree_diff aduv flip mi(32,48) C=-3 port=0
 per-candidate join: all inputs identical, C full-evaluates (V,-3) but
 never (V,0), stable port the opposite -> the sort.
 
-RESIDUAL: 1 cell (cid22 5739122 q5) — separate root, drilled next; see
-the follow-up records/commits on this branch.
+RESIDUAL: closed. Root 2 (cid22 5739122 q5, mi(31,80) 8x4 DC+filter-intra):
+both sides' CfL-vs-independent terms byte-identical, RD collides at exactly
+130518 == 130518; C's check_best_indepedant_cfl keeps CfL on ties (:3927,
+reverts only when best < cfl), the port's bd8 arm had cfl < best. Fixed in
+78bb5d361 -> the full 135-cell probe is byte-identical
+(photo_p0_bd8_sortfix_2026-07-23_final.tsv). Gate: tools/photo_p0_gate.sh
+(8 cells incl. both witnesses).
