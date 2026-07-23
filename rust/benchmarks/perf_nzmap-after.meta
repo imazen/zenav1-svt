@@ -1,0 +1,24 @@
+# perf_gate fit + verdict
+date: 2026-07-23T20:18:16Z
+commit: 366bf42c3
+host: dev-32gb (16 cores)
+content: gradient
+grid: content=gradient sizes=[64 128 256 512 1024] presets=[6 10 13] qp=40 rounds=20 warmup=1
+harness: interleaved paired (randomized per-round order); no target-cpu=native; setup excluded both sides
+target: <= ~1.2x C wall clock (matched preset+qp, byte-identical envelope)
+fits (ms = intercept + slope*pixels):
+  p6   port: intercept=19.353 ms  slope=386.9978 ms/MP   |   C: intercept=3.027 ms  slope=77.9452 ms/MP   |   slope-ratio=4.96x  intercept-ratio=6.39x
+  p10  port: intercept=2.726 ms  slope=91.2238 ms/MP   |   C: intercept=0.811 ms  slope=19.1552 ms/MP   |   slope-ratio=4.76x  intercept-ratio=3.36x
+  p13  port: intercept=2.654 ms  slope=86.5074 ms/MP   |   C: intercept=1.020 ms  slope=18.3234 ms/MP   |   slope-ratio=4.72x  intercept-ratio=2.60x
+CAVEAT (added post-run): this sweep ran while concurrent agents saturated the
+box (loadavg ~13: two real_bitstream runners, another svtav1 worktree's
+identity gates, two libFuzzer jobs — ramping up mid-sweep). The wall times and
+ratios of the 64..256 cells are load artifacts (C-side medians shifted ±25%
+vs the before sweep despite an identical C binary; IQRs like [1.64,5.18]);
+they contradict the deterministic callgrind result (-5.7% whole-program Ir at
+256x256 p6 AND p10, benchmarks/perf_nzmap_callgrind_2026-07-23.txt). Kept for
+audit because the per-cell identity pre-pass (ident=Y on all 15 cells,
+port .obu == C .obu at 64/128/256/512/1024 x p6/p10/p13) is load-independent
+and is part of the byte-inertness evidence. The clean wall A/B is the paired
+before/after run in perf_nzmap_ab_2026-07-23.* (load-gated, both port builds
+interleaved per round).

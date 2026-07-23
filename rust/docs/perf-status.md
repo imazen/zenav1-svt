@@ -153,15 +153,63 @@ Reading the fit:
    past eob, the >32 high-freq tail), so they cannot be turned into uninit `collect`
    like `residual`/`packed` were — eliminating them needs a persistent/thread-local
    `TxScratch` reused across calls, with per-buffer write-coverage verified before
-   any zero is skipped (the riskiest byte-identity change; deferred). After that the
-   next SIMD-able integer kernel is the entropy coeff context sum
-   `get_nz_map_contexts`/`nz_map_ctx` (~6 % combined).
+   any zero is skipped (the riskiest byte-identity change; deferred). The entropy
+   coeff context sum `get_nz_map_contexts` is now SIMD'd (see "Landed"); the
+   remaining `nz_map_ctx` slice (~3 %) is the RDOQ-trellis
+   `lower_levels_ctx_general` path, a separate caller.
 
 Approach order per the criteria: algorithmic parity (done on this envelope),
 then allocation discipline, then SIMD. On these numbers, SIMD on the hot loops
 is the biggest single lever.
 
 ## Landed byte-inert optimizations
+
+- **`get_nz_map_contexts` SIMD (AVX2) — the coeff nz-map context sum**
+  (`crates/svtav1-entropy/src/{coeff_simd,coeff_c}.rs`, branch `perf/nzmap-simd`).
+  The per-txb scan-order context derivation was the #3 hotspot after the zeroing
+  work — callgrind at 256²: `get_nz_map_contexts` + `nz_map_ctx` = **10.2 % of
+  frame instructions at p6, 9.7 % at p10**. The port now mirrors C's RTCD split:
+  the x86 arm reproduces the production `svt_av1_get_nz_map_contexts_sse2`
+  verbatim — an `eob == 1` early-out, then a **raster** fill of the whole padded
+  block written directly into `coeff_contexts` (16 positions/iter in C's three
+  width shapes: one 16-column row chunk at w ≥ 16, 4 whole rows at w == 4, 2 at
+  w == 8 — contiguous loads, no scattered gathers), the 2D DC zero, and the
+  scan-last stamp; position-base offsets come from a compile-time `NZ_OFFSET`
+  table built from the same `nz_map_ctx_offset_2d/_1d` helpers the scalar path
+  uses (no re-transcribed vector constants — the classic nz-map byte-diff
+  source). Scalar/NEON arms run the scan-order `_c` loop verbatim, exactly C's
+  `SET_ONLY_C`/`SET_NEON` fallbacks. All arms are byte-identical at every
+  `scan[0..eob]` position — the only bytes any caller reads (verified for both
+  call sites, pd0 `loop_cost_eob_pd0` + the leaf-funnel coeff cost); non-scan
+  positions carry tier-dependent raster values exactly as production C's
+  `_sse2`/`_avx2` leave them. **Proven** (tests/c_parity.rs): `nz_map_contexts_
+  simd_matches_c` — port == exported real-C `_c` AND `_sse2` at every scan
+  position across all 19 tx sizes × 3 tx classes × eob buckets (DC-only,
+  bucket edges, dense eob == n which makes every raster position a compared
+  position), under every archmage tier permutation with a positive ≥ 2-
+  permutation assert on AVX2 hosts; the 0xFF stale-read police
+  (`coeff_c_txb_init_levels_partial_zero_no_stale_reads`) additionally asserts
+  the port's FULL raster buffer == real-C `_sse2` on AVX2 hosts (the raster
+  worst-case tap read ends exactly at the `used` zeroing extent). **Measured**:
+  callgrind (deterministic) 256² whole-frame instructions **−5.75 % (p6:
+  556.7M → 524.7M), −5.7 % (p10: 87.8M → 82.8M)**; kernel-only **5.3× (p6) /
+  6.1× (p10)**. Wall (paired before/after A/B, both port binaries interleaved
+  per round, randomized order, 40 rounds/cell, per-cell byte-identity
+  pre-checked; run under steady ~14 loadavg from concurrent agents — absolute
+  ms inflated, the paired ratio is the metric): **every cell of
+  {128,256,512,1024}² × p{6,10,13} faster — −5.9 % to −16.3 %, grid median
+  −8.4 %** (e.g. 1024² p6 0.928, 256² p13 0.837, 512² p13 0.911). Data:
+  benchmarks/perf_nzmap_ab_2026-07-23.{raw.tsv,meta} +
+  perf_nzmap_callgrind_2026-07-23.txt + perf_nzmap-before-master.* (clean-box
+  sweep; the perf_nzmap-after sweep is load-contaminated and annotated as such
+  in its .meta — its per-cell ident=Y identity pre-pass at 64..1024² ×
+  p{6,10,13} is the load-independent part that counts). All 14 gates green at
+  baseline (identity 54/54, bd10 36/36 + 309/309 + 158/158, partial-SB
+  101/101, sb128 22/22, tile 29/29, arb-size 57/57, combos 40/40, panic 60/60,
+  palette 50/50, ibc-fh PASS, ibc 20/100 + 80 pins rc=0) + `cargo nextest run
+  --workspace` 916/916. `#![forbid(unsafe_code)]` intact; the remaining
+  `nz_map_ctx` slice (~3 %) is the RDOQ-trellis `lower_levels_ctx_general`
+  path — a separate caller, untouched.
 
 - **Per-txb level-map + tx-scratch zeroing reduction** (crates/svtav1-entropy/src/
   coeff_c.rs, crates/svtav1-encoder/src/{leaf_funnel,quant,pd0}.rs). `__memset_avx2`
@@ -343,11 +391,11 @@ per-call `Vec` allocations. The whole-frame gradient p6 sweep barely moves (smoo
 content codes mostly DCT, already SIMD), but the non-DCT transforms are no longer a
 scalar residual for the content (real photo/screen) that uses them.
 
-**Not at ≤1.2× yet.** Remaining fast-preset levers, now that the transforms are
-SIMD'd: **quant** (`quantize_b`/`quantize_fp`), the **entropy coeff-coding** path
-(`get_nz_map_contexts` context sum + the writer), and SAD/SSE — each a smaller slice.
-p6 additionally carries the CDEF+LR search. All are byte-exact-portable via the same
-archmage pattern in an isolated worktree.
+**Not at ≤1.2× yet.** Remaining fast-preset levers, now that the transforms and the
+`get_nz_map_contexts` context sum are SIMD'd: **quant** (`quantize_b`/`quantize_fp`),
+the coeff **writer** + the RDOQ-trellis `lower_levels_ctx_general`/`nz_map_ctx` path,
+and SAD/SSE — each a smaller slice. p6 additionally carries the CDEF+LR search. All
+are byte-exact-portable via the same archmage pattern in an isolated worktree.
 
 **Process note (learned the hard way 2026-07-20):** do NOT run `perf_gate.sh`'s
 before/after (which `git stash`/pops the working tree) in the SAME checkout where a

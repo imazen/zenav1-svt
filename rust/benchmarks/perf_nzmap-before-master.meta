@@ -1,0 +1,12 @@
+# perf_gate fit + verdict
+date: 2026-07-23T20:16:11Z
+commit: 16d9c296a
+host: dev-32gb (16 cores)
+content: gradient
+grid: content=gradient sizes=[64 128 256 512 1024] presets=[6 10 13] qp=40 rounds=20 warmup=1
+harness: interleaved paired (randomized per-round order); no target-cpu=native; setup excluded both sides
+target: <= ~1.2x C wall clock (matched preset+qp, byte-identical envelope)
+fits (ms = intercept + slope*pixels):
+  p6   port: intercept=5.628 ms  slope=435.4434 ms/MP   |   C: intercept=3.306 ms  slope=76.7474 ms/MP   |   slope-ratio=5.67x  intercept-ratio=1.70x
+  p10  port: intercept=0.902 ms  slope=95.0238 ms/MP   |   C: intercept=0.930 ms  slope=18.1841 ms/MP   |   slope-ratio=5.23x  intercept-ratio=0.97x
+  p13  port: intercept=0.830 ms  slope=99.2230 ms/MP   |   C: intercept=0.833 ms  slope=18.8190 ms/MP   |   slope-ratio=5.27x  intercept-ratio=1.00x

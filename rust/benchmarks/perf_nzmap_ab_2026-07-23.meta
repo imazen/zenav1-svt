@@ -1,0 +1,32 @@
+# perf_nzmap_ab — paired port-BEFORE vs port-AFTER wall A/B for the nz-map SIMD kernel
+date: 2026-07-23T21:00:01Z
+host: dev-32gb (16 cores)
+before: master 16d9c296a scan-order scalar (binary /tmp/perf_encode_before)
+after:  perf/nzmap-simd 366bf42c3 raster SIMD dispatch (binary /tmp/perf_encode_after)
+harness: both PORT binaries interleaved per round in randomized order (same pairing
+  design as tools/perf_gate.sh, but the pair is before/after instead of port/C), so
+  machine drift cancels within each pair. 40 rounds/cell, gradient qp40, release,
+  no target-cpu=native, warmup 1. Per-cell identity pre-check: before .obu ==
+  after .obu asserted before any timing (0 failures).
+load context: the box ran other agents' steady jobs throughout (1-min loadavg
+  ~13.4-14.9, recorded per round in the raw TSV). Steady symmetric contention
+  inflates ABSOLUTE ms (~1.8x vs the clean-box perf_nzmap-before-master sweep) but
+  cancels in the per-round paired RATIO — the honest metric here. The separate
+  perf_nzmap-after sweep is load-contaminated (see its .meta) and is NOT evidence.
+verdict: KEEP — every cell's paired median ratio < 1:
+
+  size   preset  n    before_ms   after_ms    ratio     [p25,p75]      load_med  
+  128    6       40   13.479      9.395       0.881     [0.614, 0.986] 14.88     
+  256    6       40   40.571      36.130      0.934     [0.850, 0.957] 14.61     
+  256    10      40   7.468       6.096       0.898     [0.680, 1.105] 14.40     
+  256    13      40   9.422       7.195       0.837     [0.530, 0.953] 14.40     
+  512    6       40   124.641     116.794     0.941     [0.893, 0.966] 14.03     
+  512    10      40   27.068      25.298      0.920     [0.886, 0.975] 13.74     
+  512    13      40   26.987      24.811      0.911     [0.857, 0.957] 13.54     
+  1024   6       40   459.159     424.189     0.928     [0.897, 0.964] 13.43     
+  1024   10      40   101.571     95.493      0.933     [0.882, 0.976] 13.87     
+  1024   13      40   104.550     95.090      0.913     [0.827, 0.948] 14.63     
+
+cross-check: deterministic callgrind (contention-immune) agrees —
+  256x256 whole-program Ir -5.7% (p10) / -5.75% (p6); kernel-only 6.06x / 5.33x.
+  See benchmarks/perf_nzmap_callgrind_2026-07-23.txt.

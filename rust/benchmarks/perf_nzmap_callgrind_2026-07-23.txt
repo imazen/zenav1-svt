@@ -1,0 +1,18 @@
+# nz-map SIMD callgrind A/B — deterministic instruction counts (contention-immune)
+# date=2026-07-23T20:21:00Z host=dev-32gb branch_commit=366bf42c3 master_commit=16d9c296a
+# cmd: valgrind --tool=callgrind target/release/examples/perf_encode gradient 256 256 40 <preset> <out> 0
+# (whole-program Ir, single 256x256 gradient qp40 frame encode; release, no target-cpu=native)
+
+preset 10 (256x256):
+  before (master 16d9c296a): PROGRAM TOTALS 87,791,894 Ir
+    get_nz_map_contexts 6,019,484 (6.86%) + nz_map_ctx 2,475,432 (2.82%) = 8,494,916 (9.68%)
+  after  (branch 366bf42c3): PROGRAM TOTALS 82,797,622 Ir  (-5.7% whole-program)
+    __arcane_nz_map_ctxs_impl_v3 992,856 (1.20%) + nz_map_ctx 2,475,432 (2.99%, RDOQ-trellis path, untouched)
+    kernel-only: 6,019,484 -> 992,856 Ir = 6.06x
+
+preset 6 (256x256):
+  before (master 16d9c296a): PROGRAM TOTALS 556,741,001 Ir
+    get_nz_map_contexts 39,458,124 (7.09%) + nz_map_ctx 17,266,755 (3.10%) = 56,724,879 (10.19%)
+  after  (branch 366bf42c3): PROGRAM TOTALS 524,727,016 Ir  (-5.75% whole-program)
+    __arcane_nz_map_ctxs_impl_v3 7,139,288 (1.36%) + get_nz_map_contexts wrapper 262,775 (0.05%) + nz_map_ctx 17,266,755 (3.29%, RDOQ-trellis path, untouched)
+    kernel-only: 39,458,124 -> 7,402,063 Ir = 5.33x
