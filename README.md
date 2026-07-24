@@ -10,14 +10,14 @@ byte-gated too, against a `SVT_HDR_MODE=ON` build of the same C base.
 **`#![forbid(unsafe_code)]` · ~80k lines · 7 crates · 900+ tests · no C in the product path**
 
 > **Experimental.** The envelope below is real and gated, but it is an envelope:
-> single still frame, CQP, single tile group semantics (`--lp 1`). Not yet a
-> general-purpose video encoder. Crates are not on crates.io yet — depend by git.
+> single still frame, CQP only. Not yet a general-purpose video encoder. Crates
+> are not on crates.io yet — depend by git.
 
 The SVT-AV1 C tree is **not vendored here** — it lives in the
 [`imazen/zenav1-svt-c`](https://github.com/imazen/zenav1-svt-c) submodule at
 `reference/svt-av1` — a fork of upstream SVT-AV1 with **full history + all tags**
 (`master` mirrors gitlab.com/AOMediaCodec/SVT-AV1); our changes live on the
-`zenav1-parity` branch as a single commit on the `v4.2.0` tag (the gated
+`imazen-parity` branch as a single commit on the `v4.2.0` tag (the gated
 `SVT_HDR_MODE` option), so we can rebase onto future upstream tags. It is the
 differential oracle the port is tested against; it is not in the shipping path
 of the Rust crates.
@@ -166,7 +166,7 @@ rust/               the Rust port — start at rust/README.md
   tools/              identity + differential gates (the tables above)
   docs/               port maps, identity-campaign history, HDR-ON-4.2.md
   benchmarks/         committed gate scoreboards + perf records
-reference/svt-av1   git submodule → imazen/zenav1-svt-c @ zenav1-parity (C oracle)
+reference/svt-av1   git submodule → imazen/zenav1-svt-c @ imazen-parity (C oracle)
 specs/              our AV1 algorithm specifications (port docs, read-only)
 PORTING.md          which C file each Rust module ports, and its gate
 ```
@@ -174,7 +174,7 @@ PORTING.md          which C file each Rust module ports, and its gate
 ## The C baseline
 
 [`imazen/zenav1-svt-c`](https://github.com/imazen/zenav1-svt-c) is a fork of
-upstream **SVT-AV1** (full history + tags on `master`); the `zenav1-parity`
+upstream **SVT-AV1** (full history + tags on `master`); the `imazen-parity`
 branch is **v4.2.0** plus one patch: an OFF-by-default `SVT_HDR_MODE` CMake option
 (15 guarded files) that switches the C build between mainline and svt-av1-hdr
 semantics on the same base.
@@ -186,7 +186,7 @@ cmake -S reference/svt-av1 -B build -DSVT_HDR_MODE=ON   # svt-av1-hdr semantics
 
 The port's mainline mode is byte-gated against the OFF build; fork mode against
 the ON build. To bump the C baseline: in the `zenav1-svt-c` fork, fetch upstream
-(its `master` mirrors gitlab SVT-AV1) and rebase the `zenav1-parity` branch onto
+(its `master` mirrors gitlab SVT-AV1) and rebase the `imazen-parity` branch onto
 the new tag, then bump the submodule pin here and re-run every gate — divergences
 are real work, and the gates are the todo list.
 
