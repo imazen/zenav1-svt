@@ -74,6 +74,10 @@ them at init (`enc_settings.c:460` permits only 8/10-bit; `:470` "Only support
 420 now"), so the port already matches C's shipping *format* envelope exactly;
 the 422/444/12-bit code in the C tree is dead-gated behind those lines. QP 0
 (coded-lossless) is rejected with a typed error rather than implemented (issue #5).
+**Monochrome** is decode-conformance-validated (aomdec + dav1d accept it, and the
+decoder output matches the encoder's recon bit-for-bit) rather than byte-vs-C —
+C v4.2.0 can't encode mono (`EB_YUV400` is rejected at init), so no C oracle
+exists for it; the byte-identity gates below run the 4:2:0 path.
 
 **Rate control beyond CQP is a still-image gap, not a video one.** CRF
 (quality-target), VBR (size-target), and `aq_mode` / delta-q (perceptual bit

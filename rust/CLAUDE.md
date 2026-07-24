@@ -44,6 +44,14 @@ cite the source, don't re-argue them.
 5. **SGR loop-restoration "absent" is in-envelope-faithful.** C does not search self-guided
    restoration at the port's ENC_MR either (`restoration.rs:8-9`, C `restoration_pick.c`
    force-types WIENER-vs-NONE) — so Wiener-only is full parity here, not a divergence.
+6. **Monochrome is DECODE-conformance-validated, NOT byte-vs-C.** C v4.2.0 cannot encode mono:
+   `verify_settings:470` rejects `EB_YUV400` and the still/avif capture is hardwired to
+   `EB_YUV420` (`capture_c_trace.c:164`, `avif=true`) — so **there is no C mono oracle**. The
+   port's mono (`encode_frame` → `mono_chrome=1`) is validated by `recon_parity` (encoder-recon
+   == aomdec, bit-exact) + `decode_conformance` (aomdec + dav1d), not by byte-identity to C.
+   Byte-vs-C gates (`identity_matrix`, bd10, …) run the **420** path. Never claim "mono
+   byte-matches C" or try to build a C mono oracle — patch C to un-gate `EB_YUV400` first if a
+   mono oracle is ever truly needed.
 
 Master capability map: issue #7 (imazen/zenav1-svt). C's actual shipping envelope is narrow
 (8/10-bit, 420, CQP-ish), so the real distance to C is *feature*-level (rate control, inter,
