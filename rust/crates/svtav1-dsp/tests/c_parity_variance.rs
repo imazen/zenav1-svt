@@ -57,6 +57,12 @@ const SIZES: &[(usize, usize)] = &[
 /// `sse(a,b)` must equal the `*sse` output of the C variance kernel.
 #[test]
 fn sse_matches_c_variance_sse_output() {
+    // Pin the dispatch tier: archmage token disabling is PROCESS-WIDE, so a
+    // sibling `for_each_token_permutation` test can flip tiers underneath an
+    // unguarded test and silently move it onto an arm it did not intend to
+    // exercise. Holding the same lock makes the tier this test runs on
+    // deterministic (the real CPU tier). See rust/CLAUDE.md.
+    let _tier = archmage::testing::lock_token_testing();
     let mut rng = Rng(0x55E_1234_u64);
     for &(w, h) in SIZES {
         for _ in 0..40 {
@@ -76,6 +82,12 @@ fn sse_matches_c_variance_sse_output() {
 /// oracles (sum via SAD-vs-zeros, sum-of-squares via variance-vs-zeros).
 #[test]
 fn single_block_variance_matches_c_derived_numerator() {
+    // Pin the dispatch tier: archmage token disabling is PROCESS-WIDE, so a
+    // sibling `for_each_token_permutation` test can flip tiers underneath an
+    // unguarded test and silently move it onto an arm it did not intend to
+    // exercise. Holding the same lock makes the tier this test runs on
+    // deterministic (the real CPU tier). See rust/CLAUDE.md.
+    let _tier = archmage::testing::lock_token_testing();
     let mut rng = Rng(0xABC_9999_u64);
     for &(w, h) in SIZES {
         for _ in 0..40 {
@@ -103,6 +115,12 @@ fn single_block_variance_matches_c_derived_numerator() {
 /// `sum^2/N` truncation makes `N*C_return != our numerator`).
 #[test]
 fn single_block_variance_is_not_c_two_block_variance() {
+    // Pin the dispatch tier: archmage token disabling is PROCESS-WIDE, so a
+    // sibling `for_each_token_permutation` test can flip tiers underneath an
+    // unguarded test and silently move it onto an arm it did not intend to
+    // exercise. Holding the same lock makes the tier this test runs on
+    // deterministic (the real CPU tier). See rust/CLAUDE.md.
+    let _tier = archmage::testing::lock_token_testing();
     // 4x4 ramp 0..15: sum=120, sum2=1240, N=16. sum^2=14400, 14400/16=900 exact
     // -> pick content where sum^2 % N != 0. 4x4 with one 1 and rest 0: sum=1,
     // sum2=1, sum^2=1, 1/16=0 (trunc). C_return = 1 - 0 = 1. Our numerator =

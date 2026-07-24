@@ -111,6 +111,34 @@ The full localization trail (kept for method reference):
 - Run `cargo test` before every commit.
 
 ## Archmage Rules
+
+- **The test runner is `cargo nextest run --workspace`** (what CI runs, and now
+  what `just test` runs). It executes each test in its OWN PROCESS, which
+  structurally removes the token hazard below. `cargo test` must still work —
+  hence the lock rule — but gates are defined against nextest.
+- **Token disabling is PROCESS-WIDE.** `archmage::testing::
+  for_each_token_permutation` calls `dangerously_disable_token_process_wide`,
+  and its `TOKEN_PERMUTATION_MUTEX` only serialises OTHER permutation callers.
+  Under a shared-process runner, any unguarded test running concurrently can be
+  moved onto a dispatch arm it never intended to exercise.
+- **Which helper to use:**
+  - a test asserting output that DIFFERS between tiers, or one that needs to
+    know which arm it ran → `let _tier = archmage::testing::lock_token_testing();`
+    as the first statement;
+  - a kernel-vs-C parity test that should cover EVERY arm →
+    `for_each_token_permutation(CompileTimePolicy::WarnStderr, |_| { ... })`
+    around the kernel call (it detects an already-held lock, so the two
+    compose).
+- **Current state (audited 2026-07-24):** `testable_dispatch` is enabled only
+  for `svtav1-dsp` and `svtav1-entropy` (dev-deps), so only their test binaries
+  carry the hazard. `for_each_token_permutation` is used by
+  `c_parity_{cdef,txfm,wiener}` + 10 dsp src modules; every other dsp test that
+  calls a dispatched kernel now pins with `lock_token_testing` (31 tests across
+  8 files), as does the entropy `coeff_c_txb_init_levels_partial_zero` test.
+  FOLLOW-UP: those 31 pinned tests only cover the top tier — upgrading them to
+  full `for_each_token_permutation` coverage is strictly better and unblocked.
+
+
 - `#[arcane]` = entry points only (after token summon). One per hot path.
 - `#[rite]` = inner helpers (no dispatch overhead). Default for all SIMD helpers.
 - `incant!` for multi-platform dispatch with `[v3, neon, scalar]` tiers.

@@ -11,17 +11,30 @@ check:
 build:
     cargo build --workspace
 
-# Run all tests
+# Run all tests.
+#
+# nextest, NOT `cargo test`, is the runner — same as CI (.github/workflows/
+# rust-gates.yml). It runs each test in its OWN PROCESS, which structurally
+# removes the archmage hazard: token disabling
+# (`for_each_token_permutation` -> `dangerously_disable_token_process_wide`)
+# is PROCESS-WIDE, so under a shared-process runner one test can flip the
+# dispatch tier underneath another. Tests that must observe a stable tier also
+# hold `archmage::testing::lock_token_testing()` so `cargo test` stays correct,
+# but nextest is what the gates are defined against.
+#
+# nextest does not run doctests; the `--doc` pass covers them.
 test:
-    cargo test --workspace
+    cargo nextest run --workspace
+    cargo test --workspace --doc
 
 # Run tests with all features
 test-all:
-    cargo test --workspace --all-features
+    cargo nextest run --workspace --all-features
+    cargo test --workspace --all-features --doc
 
 # Run tests with no default features
 test-minimal:
-    cargo test --workspace --no-default-features
+    cargo nextest run --workspace --no-default-features
 
 # Format and lint
 fmt:

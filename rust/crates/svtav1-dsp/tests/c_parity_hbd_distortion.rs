@@ -44,6 +44,12 @@ fn plane(rng: &mut Rng, w: usize, h: usize, stride: usize, off: usize, bd: u8) -
 
 #[test]
 fn hbd_full_distortion_matches_c() {
+    // Pin the dispatch tier: archmage token disabling is PROCESS-WIDE, so a
+    // sibling `for_each_token_permutation` test can flip tiers underneath an
+    // unguarded test and silently move it onto an arm it did not intend to
+    // exercise. Holding the same lock makes the tier this test runs on
+    // deterministic (the real CPU tier). See rust/CLAUDE.md.
+    let _tier = archmage::testing::lock_token_testing();
     let mut rng = Rng(0xD157_2026_0718_0001);
     for bd in [10u8, 12] {
         for &(w, h) in SHAPES {
@@ -67,6 +73,12 @@ fn hbd_full_distortion_matches_c() {
 
 #[test]
 fn hbd_variance_matches_c() {
+    // Pin the dispatch tier: archmage token disabling is PROCESS-WIDE, so a
+    // sibling `for_each_token_permutation` test can flip tiers underneath an
+    // unguarded test and silently move it onto an arm it did not intend to
+    // exercise. Holding the same lock makes the tier this test runs on
+    // deterministic (the real CPU tier). See rust/CLAUDE.md.
+    let _tier = archmage::testing::lock_token_testing();
     let mut rng = Rng(0x7A21_2026_0718_0002);
     for bd in [10u8, 12] {
         for &(w, h) in SHAPES {
@@ -84,6 +96,12 @@ fn hbd_variance_matches_c() {
 
 #[test]
 fn hbd_sad_matches_c() {
+    // Pin the dispatch tier: archmage token disabling is PROCESS-WIDE, so a
+    // sibling `for_each_token_permutation` test can flip tiers underneath an
+    // unguarded test and silently move it onto an arm it did not intend to
+    // exercise. Holding the same lock makes the tier this test runs on
+    // deterministic (the real CPU tier). See rust/CLAUDE.md.
+    let _tier = archmage::testing::lock_token_testing();
     let mut rng = Rng(0x5AD0_2026_0718_0003);
     for bd in [10u8, 12] {
         for &(w, h) in SHAPES {

@@ -50,6 +50,12 @@ const SIZES: [(usize, usize, usize); 14] = [
 
 #[test]
 fn filter_intra_predictor_matches_c() {
+    // Pin the dispatch tier: archmage token disabling is PROCESS-WIDE, so a
+    // sibling `for_each_token_permutation` test can flip tiers underneath an
+    // unguarded test and silently move it onto an arm it did not intend to
+    // exercise. Holding the same lock makes the tier this test runs on
+    // deterministic (the real CPU tier). See rust/CLAUDE.md.
+    let _tier = archmage::testing::lock_token_testing();
     let mut rng = Rng(0xf117e2_1a7a_0001);
     for &(c_tx, w, h) in &SIZES {
         for mode in 0u8..5 {

@@ -46,6 +46,12 @@ const SIZES: &[(usize, usize)] = &[
 
 #[test]
 fn convolve_horiz_matches_c_all_phases() {
+    // Pin the dispatch tier: archmage token disabling is PROCESS-WIDE, so a
+    // sibling `for_each_token_permutation` test can flip tiers underneath an
+    // unguarded test and silently move it onto an arm it did not intend to
+    // exercise. Holding the same lock makes the tier this test runs on
+    // deterministic (the real CPU tier). See rust/CLAUDE.md.
+    let _tier = archmage::testing::lock_token_testing();
     let mut rng = Rng(0xC0FFEE_11);
     for &(w, h) in SIZES {
         let stride = w + 8;
@@ -65,6 +71,12 @@ fn convolve_horiz_matches_c_all_phases() {
 
 #[test]
 fn convolve_vert_matches_c_all_phases() {
+    // Pin the dispatch tier: archmage token disabling is PROCESS-WIDE, so a
+    // sibling `for_each_token_permutation` test can flip tiers underneath an
+    // unguarded test and silently move it onto an arm it did not intend to
+    // exercise. Holding the same lock makes the tier this test runs on
+    // deterministic (the real CPU tier). See rust/CLAUDE.md.
+    let _tier = archmage::testing::lock_token_testing();
     let mut rng = Rng(0xC0FFEE_22);
     for &(w, h) in SIZES {
         let stride = w + 8;
@@ -86,6 +98,12 @@ fn convolve_vert_matches_c_all_phases() {
 /// `convolve8_vert` — i.e. the u8-intermediate 2-pass composition, bit-exact.
 #[test]
 fn convolve_2d_matches_c_two_pass_composition() {
+    // Pin the dispatch tier: archmage token disabling is PROCESS-WIDE, so a
+    // sibling `for_each_token_permutation` test can flip tiers underneath an
+    // unguarded test and silently move it onto an arm it did not intend to
+    // exercise. Holding the same lock makes the tier this test runs on
+    // deterministic (the real CPU tier). See rust/CLAUDE.md.
+    let _tier = archmage::testing::lock_token_testing();
     let mut rng = Rng(0xC0FFEE_33);
     for &(w, h) in SIZES {
         let src_stride = w + 8;

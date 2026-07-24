@@ -78,16 +78,34 @@ fn fuzz_dim_gen(dim: usize, iters: usize, seed: u64, bd10: bool) {
 
 #[test]
 fn hadamard_8x8_matches_c() {
+    // Pin the dispatch tier: archmage token disabling is PROCESS-WIDE, so a
+    // sibling `for_each_token_permutation` test can flip tiers underneath an
+    // unguarded test and silently move it onto an arm it did not intend to
+    // exercise. Holding the same lock makes the tier this test runs on
+    // deterministic (the real CPU tier). See rust/CLAUDE.md.
+    let _tier = archmage::testing::lock_token_testing();
     fuzz_dim(8, 400, 0x8ada_11ad_0808_0808);
 }
 
 #[test]
 fn hadamard_16x16_matches_c() {
+    // Pin the dispatch tier: archmage token disabling is PROCESS-WIDE, so a
+    // sibling `for_each_token_permutation` test can flip tiers underneath an
+    // unguarded test and silently move it onto an arm it did not intend to
+    // exercise. Holding the same lock makes the tier this test runs on
+    // deterministic (the real CPU tier). See rust/CLAUDE.md.
+    let _tier = archmage::testing::lock_token_testing();
     fuzz_dim(16, 200, 0x8ada_11ad_1616_1616);
 }
 
 #[test]
 fn hadamard_32x32_matches_c() {
+    // Pin the dispatch tier: archmage token disabling is PROCESS-WIDE, so a
+    // sibling `for_each_token_permutation` test can flip tiers underneath an
+    // unguarded test and silently move it onto an arm it did not intend to
+    // exercise. Holding the same lock makes the tier this test runs on
+    // deterministic (the real CPU tier). See rust/CLAUDE.md.
+    let _tier = archmage::testing::lock_token_testing();
     fuzz_dim(32, 100, 0x8ada_11ad_3232_3232);
 }
 
@@ -146,26 +164,56 @@ fn fuzz_dim_avx2(dim: usize, iters: usize, seed: u64, bd10: bool) {
 
 #[test]
 fn hadamard_8x8_matches_c_bd10_range() {
+    // Pin the dispatch tier: archmage token disabling is PROCESS-WIDE, so a
+    // sibling `for_each_token_permutation` test can flip tiers underneath an
+    // unguarded test and silently move it onto an arm it did not intend to
+    // exercise. Holding the same lock makes the tier this test runs on
+    // deterministic (the real CPU tier). See rust/CLAUDE.md.
+    let _tier = archmage::testing::lock_token_testing();
     fuzz_dim_gen(8, 400, 0xbd10_11ad_0808_0808, true);
 }
 
 #[test]
 fn hadamard_16x16_matches_avx2_8bit_range() {
+    // Pin the dispatch tier: archmage token disabling is PROCESS-WIDE, so a
+    // sibling `for_each_token_permutation` test can flip tiers underneath an
+    // unguarded test and silently move it onto an arm it did not intend to
+    // exercise. Holding the same lock makes the tier this test runs on
+    // deterministic (the real CPU tier). See rust/CLAUDE.md.
+    let _tier = archmage::testing::lock_token_testing();
     fuzz_dim_avx2(16, 200, 0x8ada_a7f2_1616_1616, false);
 }
 
 #[test]
 fn hadamard_32x32_matches_avx2_8bit_range() {
+    // Pin the dispatch tier: archmage token disabling is PROCESS-WIDE, so a
+    // sibling `for_each_token_permutation` test can flip tiers underneath an
+    // unguarded test and silently move it onto an arm it did not intend to
+    // exercise. Holding the same lock makes the tier this test runs on
+    // deterministic (the real CPU tier). See rust/CLAUDE.md.
+    let _tier = archmage::testing::lock_token_testing();
     fuzz_dim_avx2(32, 100, 0x8ada_a7f2_3232_3232, false);
 }
 
 #[test]
 fn hadamard_16x16_matches_avx2_bd10_range() {
+    // Pin the dispatch tier: archmage token disabling is PROCESS-WIDE, so a
+    // sibling `for_each_token_permutation` test can flip tiers underneath an
+    // unguarded test and silently move it onto an arm it did not intend to
+    // exercise. Holding the same lock makes the tier this test runs on
+    // deterministic (the real CPU tier). See rust/CLAUDE.md.
+    let _tier = archmage::testing::lock_token_testing();
     fuzz_dim_avx2(16, 200, 0xbd10_a7f2_1616_1616, true);
 }
 
 #[test]
 fn hadamard_32x32_matches_avx2_bd10_range() {
+    // Pin the dispatch tier: archmage token disabling is PROCESS-WIDE, so a
+    // sibling `for_each_token_permutation` test can flip tiers underneath an
+    // unguarded test and silently move it onto an arm it did not intend to
+    // exercise. Holding the same lock makes the tier this test runs on
+    // deterministic (the real CPU tier). See rust/CLAUDE.md.
+    let _tier = archmage::testing::lock_token_testing();
     fuzz_dim_avx2(32, 100, 0xbd10_a7f2_3232_3232, true);
 }
 
@@ -175,6 +223,12 @@ fn hadamard_32x32_matches_avx2_bd10_range() {
 /// which point the AVX2-shaped port above should be revisited).
 #[test]
 fn c_and_avx2_hadamard_diverge_at_bd10_range() {
+    // Pin the dispatch tier: archmage token disabling is PROCESS-WIDE, so a
+    // sibling `for_each_token_permutation` test can flip tiers underneath an
+    // unguarded test and silently move it onto an arm it did not intend to
+    // exercise. Holding the same lock makes the tier this test runs on
+    // deterministic (the real CPU tier). See rust/CLAUDE.md.
+    let _tier = archmage::testing::lock_token_testing();
     let mut rng = Rng(0xd1f_0f_c_a7f2_3232);
     let mut diverged = false;
     for _ in 0..100 {

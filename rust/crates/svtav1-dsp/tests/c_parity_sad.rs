@@ -58,6 +58,12 @@ const SIZES: &[(usize, usize)] = &[
 
 #[test]
 fn sad_matches_c_all_sizes_random() {
+    // Pin the dispatch tier: archmage token disabling is PROCESS-WIDE, so a
+    // sibling `for_each_token_permutation` test can flip tiers underneath an
+    // unguarded test and silently move it onto an arm it did not intend to
+    // exercise. Holding the same lock makes the tier this test runs on
+    // deterministic (the real CPU tier). See rust/CLAUDE.md.
+    let _tier = archmage::testing::lock_token_testing();
     let mut rng = Rng(0x5AD_C0FFEE_u64);
     for &(w, h) in SIZES {
         for _ in 0..40 {
@@ -76,6 +82,12 @@ fn sad_matches_c_all_sizes_random() {
 
 #[test]
 fn sad_matches_c_extremes() {
+    // Pin the dispatch tier: archmage token disabling is PROCESS-WIDE, so a
+    // sibling `for_each_token_permutation` test can flip tiers underneath an
+    // unguarded test and silently move it onto an arm it did not intend to
+    // exercise. Holding the same lock makes the tier this test runs on
+    // deterministic (the real CPU tier). See rust/CLAUDE.md.
+    let _tier = archmage::testing::lock_token_testing();
     for &(w, h) in SIZES {
         // Max per-pixel difference: 0 vs 255 -> SAD = 255 * w * h.
         let a = vec![0u8; w * h];
@@ -94,6 +106,12 @@ fn sad_matches_c_extremes() {
 /// larger buffer so the C origin offset is exercised on both sides.
 #[test]
 fn sad_matches_c_offset_regions() {
+    // Pin the dispatch tier: archmage token disabling is PROCESS-WIDE, so a
+    // sibling `for_each_token_permutation` test can flip tiers underneath an
+    // unguarded test and silently move it onto an arm it did not intend to
+    // exercise. Holding the same lock makes the tier this test runs on
+    // deterministic (the real CPU tier). See rust/CLAUDE.md.
+    let _tier = archmage::testing::lock_token_testing();
     let mut rng = Rng(0xABCD_1234_u64);
     for &(w, h) in SIZES {
         let stride = w + 32;

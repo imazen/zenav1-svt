@@ -80,6 +80,12 @@ fn fill10(rng: &mut Rng, buf: &mut [u16], class_: u64) {
 /// `svt_av1_highbd_wiener_convolve_add_src_c` (convolve.c:200) at bd10.
 #[test]
 fn highbd_wiener_convolve_matches_c() {
+    // Pin the dispatch tier: archmage token disabling is PROCESS-WIDE, so a
+    // sibling `for_each_token_permutation` test can flip tiers underneath an
+    // unguarded test and silently move it onto an arm it did not intend to
+    // exercise. Holding the same lock makes the tier this test runs on
+    // deterministic (the real CPU tier). See rust/CLAUDE.md.
+    let _tier = archmage::testing::lock_token_testing();
     let mut rng = Rng(0x5EED_1001);
     for iter in 0..400 {
         let w = 1 + rng.range(64) as usize;
@@ -118,6 +124,12 @@ fn highbd_wiener_convolve_matches_c() {
 /// `svt_extend_frame(.., highbd = 1)` -> `extend_frame_highbd`.
 #[test]
 fn highbd_extend_frame_matches_c() {
+    // Pin the dispatch tier: archmage token disabling is PROCESS-WIDE, so a
+    // sibling `for_each_token_permutation` test can flip tiers underneath an
+    // unguarded test and silently move it onto an arm it did not intend to
+    // exercise. Holding the same lock makes the tier this test runs on
+    // deterministic (the real CPU tier). See rust/CLAUDE.md.
+    let _tier = archmage::testing::lock_token_testing();
     let mut rng = Rng(0x5EED_1002);
     for iter in 0..100 {
         let w = 1 + rng.range(70) as usize;
@@ -142,6 +154,12 @@ fn highbd_extend_frame_matches_c() {
 /// bd12 — the M/H moments the tap solve consumes.
 #[test]
 fn highbd_compute_stats_matches_c() {
+    // Pin the dispatch tier: archmage token disabling is PROCESS-WIDE, so a
+    // sibling `for_each_token_permutation` test can flip tiers underneath an
+    // unguarded test and silently move it onto an arm it did not intend to
+    // exercise. Holding the same lock makes the tier this test runs on
+    // deterministic (the real CPU tier). See rust/CLAUDE.md.
+    let _tier = archmage::testing::lock_token_testing();
     let mut rng = Rng(0x5EED_1003);
     let mut saw_divider_effect = 0u32;
     for iter in 0..80 {
@@ -229,6 +247,12 @@ fn highbd_compute_stats_matches_c() {
 /// (`use_boundaries_in_rest_search = 0`), including the stripe split.
 #[test]
 fn highbd_filter_unit_search_matches_c() {
+    // Pin the dispatch tier: archmage token disabling is PROCESS-WIDE, so a
+    // sibling `for_each_token_permutation` test can flip tiers underneath an
+    // unguarded test and silently move it onto an arm it did not intend to
+    // exercise. Holding the same lock makes the tier this test runs on
+    // deterministic (the real CPU tier). See rust/CLAUDE.md.
+    let _tier = archmage::testing::lock_token_testing();
     let mut rng = Rng(0x5EED_1004);
     for iter in 0..200 {
         let ss = (iter % 2) as i32;
@@ -327,6 +351,12 @@ fn highbd_filter_unit_search_matches_c() {
 /// truncation.
 #[test]
 fn highbd_sse_region_matches_c() {
+    // Pin the dispatch tier: archmage token disabling is PROCESS-WIDE, so a
+    // sibling `for_each_token_permutation` test can flip tiers underneath an
+    // unguarded test and silently move it onto an arm it did not intend to
+    // exercise. Holding the same lock makes the tier this test runs on
+    // deterministic (the real CPU tier). See rust/CLAUDE.md.
+    let _tier = archmage::testing::lock_token_testing();
     let mut rng = Rng(0x5EED_1005);
     for iter in 0..300 {
         // Bias toward `width % 16 != 0` with a large height so the right

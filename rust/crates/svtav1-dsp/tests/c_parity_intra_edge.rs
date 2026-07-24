@@ -30,6 +30,12 @@ impl Rng {
 /// (bs0, bs1, delta, type) combination.
 #[test]
 fn edge_strength_and_upsample_decisions_match_c() {
+    // Pin the dispatch tier: archmage token disabling is PROCESS-WIDE, so a
+    // sibling `for_each_token_permutation` test can flip tiers underneath an
+    // unguarded test and silently move it onto an arm it did not intend to
+    // exercise. Holding the same lock makes the tier this test runs on
+    // deterministic (the real CPU tier). See rust/CLAUDE.md.
+    let _tier = archmage::testing::lock_token_testing();
     let dims = [4i32, 8, 16, 32, 64];
     for &bs0 in &dims {
         for &bs1 in &dims {
@@ -54,6 +60,12 @@ fn edge_strength_and_upsample_decisions_match_c() {
 /// Random-edge fuzz of the 5-tap edge filter at every size/strength.
 #[test]
 fn filter_intra_edge_matches_c() {
+    // Pin the dispatch tier: archmage token disabling is PROCESS-WIDE, so a
+    // sibling `for_each_token_permutation` test can flip tiers underneath an
+    // unguarded test and silently move it onto an arm it did not intend to
+    // exercise. Holding the same lock makes the tier this test runs on
+    // deterministic (the real CPU tier). See rust/CLAUDE.md.
+    let _tier = archmage::testing::lock_token_testing();
     let mut rng = Rng(0xed6ef117_0001);
     for sz in 1usize..=129 {
         for strength in 0..=3 {
@@ -74,6 +86,12 @@ fn filter_intra_edge_matches_c() {
 /// Random-edge fuzz of the 2x edge upsampler at every legal size.
 #[test]
 fn upsample_intra_edge_matches_c() {
+    // Pin the dispatch tier: archmage token disabling is PROCESS-WIDE, so a
+    // sibling `for_each_token_permutation` test can flip tiers underneath an
+    // unguarded test and silently move it onto an arm it did not intend to
+    // exercise. Holding the same lock makes the tier this test runs on
+    // deterministic (the real CPU tier). See rust/CLAUDE.md.
+    let _tier = archmage::testing::lock_token_testing();
     let mut rng = Rng(0x0b5a_317e_0001);
     for sz in 1usize..=16 {
         for _ in 0..100 {
@@ -95,6 +113,12 @@ fn upsample_intra_edge_matches_c() {
 /// like production (`use_intra_edge_upsample` per side).
 #[test]
 fn dr_prediction_kernels_match_c() {
+    // Pin the dispatch tier: archmage token disabling is PROCESS-WIDE, so a
+    // sibling `for_each_token_permutation` test can flip tiers underneath an
+    // unguarded test and silently move it onto an arm it did not intend to
+    // exercise. Holding the same lock makes the tier this test runs on
+    // deterministic (the real CPU tier). See rust/CLAUDE.md.
+    let _tier = archmage::testing::lock_token_testing();
     let mut rng = Rng(0xd41d_ed6e_u64 ^ 0x9E3779B97F4A7C15);
     let base_angles = [45i32, 67, 90, 113, 135, 157, 203, 180];
     let sizes = [(4usize, 4usize), (8, 8), (16, 16), (32, 32), (64, 64)];
