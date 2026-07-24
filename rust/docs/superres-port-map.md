@@ -1,17 +1,20 @@
 # Superres (super-resolution) — port map
 
-**Status: CHUNKS A + B.1 + B.2 LANDED 2026-07-24** (5c69edcb2, f4a1b7516,
-2f4d24cba) — the normative upscale, the source downscale, and the header
-syntax are all ported and byte-exact vs real C. **B.3 (the encoder wiring)
-is the remaining work.** Superres stays OFF by default, so everything landed
-so far is additive and byte-neutral.
+**Status: CHUNKS A + B.1 + B.2 + B.3 LANDED 2026-07-24** (5c69edcb2, f4a1b7516,
+2f4d24cba, f319ec298) — the normative upscale, the source downscale, and the header
+syntax, and the encoder wiring are all ported and byte-exact vs real C over
+the gated envelope. **B.4 / B.5 (below) are the remaining work.** Superres
+stays OFF by default, so everything landed is additive and byte-neutral.
 
 | piece | state | gate |
 |---|---|---|
 | normative upscale (`svtav1-dsp::superres`) | LANDED (chunk A) | `c_parity_superres` — 64/64 filter phases + 224 upscale cells == C |
 | source downscale (`svtav1-dsp::resize`) | LANDED (chunk B.1) | `c_parity_resize` — 256 plane cells == C, all 5 filter banks, both down2 arms |
 | `enable_superres` + `superres_params()` | LANDED (chunk B.2) | `superres_header` — SH and FH bytes == real C at denom 12/16 |
-| denom selection / encode at coded_w / recon upscale / LR on upscaled | **OPEN (chunk B.3)** | byte-parity vs `--superres-mode 1 --superres-kf-denom D` |
+| encode at coded_w + recon upscale + signalling | LANDED (chunk B.3) | `superres_gate.sh` — 128/128 cells: byte-parity vs C + decode at the upscaled size + anti-vacuity |
+| stale full-res variance indexing (presets >= 9) | **OPEN (chunk B.4)** | the 133/640 divergent cells of the wider sweep |
+| LR on the upscaled frame (presets <= 6) | **OPEN (chunk B.5)** | refused today by `superres_config_error` |
+| denominator RDO (QTHRESH / AUTO) | **OPEN (chunk C)** | — |
 
 **MEASURED (2026-07-24), do not re-derive:** for a STILL (KEY) frame the C knob
 is `--superres-kf-denom`, NOT `--superres-denom`. With `--superres-mode 1
@@ -78,7 +81,39 @@ Modes (`EbSvtAv1Enc.h:108-121`): `NONE` (default), `FIXED` (one denom), `RANDOM`
   `ScSignal::superres` / `SuperresParams` write `superres_params()`; the
   `allow_intrabc` bit is now gated on the frame being unscaled. Pinned to real
   C bytes at denom 12 and 16.
-- **Chunk B.3 — OPEN, the remaining wiring.** In order:
+- **Chunk B.3 — DONE** (f319ec298). `EncodePipeline::with_superres(denom)`:
+  source downscale (chunk B.1 kernel) -> encode at `coded_w` -> recon upscale
+  (chunk A kernel) -> `superres_params()` signalling, with the aligned dims and
+  SB size re-derived from the coded width and the sequence header advertising
+  the UPSCALED width. C's pre-scaling picture statistics are replicated
+  (`pic_avg_variance` + screen-content detection run on the FULL-RES source,
+  because picture analysis precedes `svt_aom_init_resize_picture`,
+  pd_process.c:4344). `superres_config_error` REFUSES presets <= 6 (C runs LR
+  on the upscaled frame; the port still does it at the coded width) and bd10
+  (u16 downscale unported). Gate `tools/superres_gate.sh`: 128/128 cells at
+  preset 8 x denom 9..=16 x {64,128} x qp {20,32,40,55} x {uniform,gradient},
+  each checked for byte-parity vs C, decodability at the UPSCALED size, and
+  anti-vacuity vs the non-superres stream.
+- **Chunk B.4 — OPEN: the stale-variance divergence at presets >= 9.**
+  MEASURED on the wider sweep (`SR_PRESETS="7 8 9 10 13"`): 507/640
+  byte-identical; all 640 decode; every divergence is a partition-symbol
+  (`CDF10`) flip on textured content. Localized — encoding the port's OWN
+  downscaled pixels at the coded dims WITHOUT superres is byte-identical to C
+  (gradient 128x128 q32 p10 d16: 724B == 724B, 6390 tile ops), so neither the
+  downscale nor the coded-width MD is at fault. ROOT CAUSE in C:
+  `scale_pcs_params` (resize.c:1434) re-inits `b64_geom`/`sb_geom` for the
+  coded size but does NOT recompute `pcs->variance` — C's PD0 keeps reading
+  picture-analysis variances computed on the FULL-RESOLUTION b64 grid through
+  the new (smaller) coded-grid indices. To match, the port must build its
+  per-SB variance array on the full-res grid in raster order and index it with
+  the coded grid's linear b64 index. NOTE: deriving `pic_avg_variance` /
+  sc-detection pre-scaling is already implemented and was measured NOT to be
+  the trigger on its own.
+- **Chunk B.5 — OPEN: superres + loop restoration** (presets <= 6). C upscales
+  the recon between CDEF and LR and runs the LR search/apply on the UPSCALED
+  frame; the port must move its LR stage after the upscale and use upscaled RU
+  geometry. Until then `superres_config_error` refuses those presets.
+- **Superseded step list (kept for the site map):**
   1. `EncodePipeline::with_superres(denom)` (opt-in; default `None`), carrying
      `upscaled_w` (the SH/`max_frame_width_minus_1` value, already the TRUE
      width) and `coded_w = superres::scaled_size(upscaled_w, denom)`.

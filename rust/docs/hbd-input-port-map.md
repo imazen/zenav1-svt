@@ -1,6 +1,6 @@
 # Native 10-bit input (real u16 source) — port map (issue #6)
 
-**Status: CHUNK 1 LANDED 2026-07-24 (35743ebd5). Chunks 2–3 open.** The port already processes at
+**Status: CHUNKS 1 + 2 LANDED 2026-07-24 (35743ebd5, f319ec298). Chunk 3 (HDR metadata) open.** The port already processes at
 **true 10-bit internally** (the u16 MD/recon path exists — `leaf_funnel.rs:2130`, `pipeline.rs:4862+`),
 but **source enters as `u8` and is widened `<< 2` at ~43 sites**, so the low 2 bits of a real
 10-bit source are never seen. This map threads *real* u16 source into the existing u16 path.
@@ -81,7 +81,28 @@ distortion (documented band-limit). The `u8` path is byte-unchanged.
    - **Witness**: a real-10-bit source (low 2 bits set) makes the funnel RD *differ* from the
      truncated-u8 encode (proves the low bits now reach MD). MUST differ.
 
-## Chunk 2 — full precision (real 10-bit byte-parity vs C)
+## Chunk 2 — LANDED (f319ec298): full precision + real-u16 C oracle
+
+The three post-filter searches that still widened `u8 << 2` now read the native
+u16 source: the deblock level search's SSE, the CDEF strength search's
+distortion, and the Wiener tap search. With chunk 1's MD funnel + level
+re-encode, NOTHING on the bd10 path truncates the caller's source.
+
+Oracle: no C-side change was needed — `capture_c_trace` already consumes a
+16-bit-LE .yuv at bd10, so `identity_run` gained `SVTAV1_HBD_SRC=1`, which
+generates a real 10-bit source (low 2 bits carry a spatial pattern), writes it
+to the .yuv the C driver reads, and pushes the same u16 planes through the
+port's hbd entry point.
+
+Gate `tools/bd10_hbd_src_gate.sh`: **100/100 cells byte-identical to real C**
+(presets {6,8,9,10,13} x qp {8,20,32,40,55} x {64,128} x {uniform,gradient}).
+Anti-vacuity is ENFORCED: each cell is also compared against the widened-u8
+stream of the same content, and the gate fails if any (content,size,preset)
+configuration is vacuous at every qp. MEASURED: qp 55 is vacuous everywhere —
+at that quantizer a ±3/1023 perturbation is below the step — which is physics,
+not a defect; 20/20 configurations still have a live qp.
+
+### Original chunk-2 scoping (kept for the site map)
 
 Thread `hbd_source` into the remaining sites (deblock/CDEF/LR distortion, recon SSE — the
 `pipeline.rs` widen sites) so the low 2 bits survive end-to-end. Then:
