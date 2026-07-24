@@ -1,0 +1,44 @@
+# imazen26 K300 production-corpus byte-parity sweep — 2026-07-24
+
+Tool:     tools/imazen26_sweep.sh  (port identity_run vs C capture_c_trace, `cmp` + aomdec decodability)
+Gate:     tools/imazen26_gate.sh   (40-cell clean-subset regression gate; env IM26_DIR, fail-loud)
+Branch:   coverage/imazen26 @ b10f67fd6 (rebased on master 2d585bb2b)
+Host:     dev-32gb (16 threads, 30 GiB RAM)   Encoder: zenav1-svt vs SVT-AV1 v4.2.0 (Bin/Release)
+Corpus:   /root/work/imazen26-cache/K300 (273 PNGs), manifest K300.tsv — NOT committed (large)
+
+## COVERAGE (honest — NOT full corpus)
+Sample:   103 of 273 K300 images (IM26_N=7 per class, class-balanced; ALL 20 content classes represented).
+Axes:     presets {0,6,10,13} x qps {5,20,32,48,63} x bd {8,10}, 512x512 CENTER-CROP.
+Cells:    3894 measured (of 103x40=4120 full-axes).  Per tier:
+            p0  1030/1030 COMPLETE   p6  1030/1030 COMPLETE
+            p13 1030/1030 COMPLETE   p10  804/1030 PARTIAL (sweep stopped by box-lifetime limit mid-p10)
+Result:   3488 IDENTICAL / 406 DIFFERS (89.6% byte-identical).  ZERO panics, ZERO hangs, ZERO
+          self-desyncs (every port stream aomdec-decodable) across all 3894 cells on novel
+          production content.
+
+## MAP (by content_class)  — 12 of 20 classes byte-identical at EVERY tested axis (p0/p6/p10/p13, bd8+bd10):
+Fully clean:  photos-general, interiors, nature, food, unsplash-people, unsplash-textures,
+              art-institute-of-chicago, met-museum, ia-scans-manuscript-illustrations,
+              ia-scans-manuscript-text, ai-illustrations, ai-products.
+Divergent (p0 and/or p6 ONLY; p10+p13 100% clean):  nps-brochures, epa-report, noaa-documents,
+              scans-public-patents, plots, mobile-screenshots, web-screenshots, ai-clipart.
+
+## TWO DIVERGENCE FRONTS — both map to KNOWN mechanisms (not a new root); all decodable:
+1. p0 SCREEN-CONTENT-TOOL front (271 cells, bd8+bd10).  The known low-preset (p0-4) palette/IntraBC
+   RD near-tie front (KB-P29 / tools/screen_ibc_gate.sh 80-pin front), now witnessed on NOVEL content
+   that SCREEN-DETECTS: gov documents (text+charts), synthetic plots, bilevel patent scans, screenshots,
+   1 clipart. Confirmed screen-detected (both port+C code palette blocks). tree_diff on 5004/6012/7000/
+   8106: per-block palette-vs-regular flips cascading from an early partition flip. Photographic content
+   never screen-detects -> never diverges. Matches at p6 bd8 and p10/p13.
+2. p6 bd10 LEAF-FUNNEL MODE axis (135 cells, bd10-ONLY; bd8 p6 fully clean).  The documented-open bd10
+   MD residual (docs/bd10-port-map.md: "p6-8 divergences are pure MODE flips (bd10 leaf funnel), NOT
+   partition"; the SAMEPART-DIFF class). tree_diff on 5004 bd10 p6: partition tree == C (0 C-only
+   geometry, 1 bsize flip), 855 MODE/UV/TXD/FI flips. Broader on real screen content than the synthetic
+   docs implied. p10/p13 bd10 clean (M9+ pic_pd0_lvl fix). NOT small/clearly-rooted -> localized+documented,
+   not fixed (per task: fix only if small+regression-free).
+
+## Full raw scoreboard (large, not committed):
+  /mnt/v/output/svtav1-im26/imazen26_sweep_2026-07-24_combined.tsv
+  sha256 7162ec9ebab290783f82c9e66dee8c1d3cc0f66d2f172e480c34dd7094598a48
+  (also _p0p6p10partial.tsv and _p1013.tsv; small per-class×preset×bd summary committed alongside:
+   imazen26_sweep_2026-07-24_summary.tsv)
