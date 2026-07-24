@@ -12,6 +12,43 @@ This applies to:
 
 **The definition of "done" for any encoding feature is: rav1d-safe decodes the output correctly at all tested sizes.**
 
+## C v4.2.0 SHIPPING ENVELOPE — recurring-confusion guards (READ BEFORE claiming a "gap")
+
+These five facts have each been re-derived wrongly at least once. They are settled;
+cite the source, don't re-argue them.
+
+1. **C ships 8/10-bit + 4:2:0 ONLY.** `svt_av1_verify_settings` (`Source/Lib/Globals/
+   enc_settings.c`) rejects any bit depth other than 8/10 (`:460`) and any color format
+   other than 420 (`:470` — literally `"Only support 420 now"`). The 4:4:4 / 4:2:2 / 12-bit
+   machinery exists in the C tree (enum values, profile checks, CLI/y4m plumbing) but is
+   **dead-gated behind those two lines**. Therefore **422 / 444 / 12-bit are NOT port gaps**
+   — both C and the port reject them; the port already matches C's shipping *format*
+   envelope. Do NOT read the `EbColorFormat` enum or the CLI parser and conclude "C supports
+   444"; read `verify_settings`. (An oracle for 444/12-bit would require patching C first.)
+2. **Rate control (CRF / VBR / aq) is a STILL-IMAGE concern, not "video work".** CRF =
+   quality-target, VBR = size-target, `aq_mode`/delta-q = perceptual bit allocation — all
+   apply to one frame. In SVT-AV1, CQP-vs-CRF is distinguished by `aq_mode` (enc_settings.c
+   comment ~:175: "cqp is distinguished by setting aq_mode to 0"), i.e. CRF = `rate_control_
+   mode=0` + `aq_mode != 0`. The port is **CQP-only** (`RcMode::Crf` is a literal copy of the
+   Cqp arm; VBR/CBR = a ±1-QP nudge; 2-pass is dead). This is the port's #1 still-image gap
+   (issue #7) — never file it under "multi-frame/video".
+3. **The port is deterministic TILE-PARALLEL, not single-threaded.** `EncodePipeline::
+   with_thread_count(n)` bounds a `std::thread::scope` per-tile spawn (`pipeline.rs:~6854`);
+   tiles reassemble in index order so bytes are identical at any thread count. The C oracle
+   is captured at `--lp 1` only for determinism. ("single-threaded" in a CDEF/stage note
+   means that *stage's* application is serial — not the encoder.)
+4. **`COVERAGE.md`'s "N tested / 121 fields" is an API-SHAPE scoreboard, not feature
+   coverage.** It counts 1:1 `EbSvtAv1EncConfiguration`-field mirroring, which the port
+   deliberately does NOT do (it exposes `RcConfig`/`HdrForkConfig`/`EncodePipeline` builders).
+   `tested: 0` ≠ "0 features". Use README / STATUS.md / issue #7 for capability status.
+5. **SGR loop-restoration "absent" is in-envelope-faithful.** C does not search self-guided
+   restoration at the port's ENC_MR either (`restoration.rs:8-9`, C `restoration_pick.c`
+   force-types WIENER-vs-NONE) — so Wiener-only is full parity here, not a divergence.
+
+Master capability map: issue #7 (imazen/zenav1-svt). C's actual shipping envelope is narrow
+(8/10-bit, 420, CQP-ish), so the real distance to C is *feature*-level (rate control, inter,
+superres, segmentation, HDR metadata), not format-level.
+
 ## FIXED 2026-07-18 — palette blocks coded an EXTRA filter_intra flag (4:2:0 decode-conformance desync)
 
 **ROOT + FIX (one line):** `encode_block_syntax` (pipeline.rs:2680) coded the

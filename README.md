@@ -69,10 +69,17 @@ tracked, not hidden — the pinned-cell maps live in `rust/benchmarks/` and the
 port maps in `rust/docs/`.
 
 **Envelope:** 8- and 10-bit, 4:2:0 (and luma-only/monochrome), single frame.
-4:4:4 / 4:2:2 / 12-bit are out of scope because upstream SVT-AV1 rejects them at
-init (no oracle exists). QP 0 (coded-lossless) is rejected with a typed error
-rather than implemented (issue #5). Multi-frame / rate control beyond CQP are
-future program-scale work.
+4:4:4 / 4:2:2 / 12-bit are **not port gaps** — C SVT-AV1 v4.2.0 itself rejects
+them at init (`enc_settings.c:460` permits only 8/10-bit; `:470` "Only support
+420 now"), so the port already matches C's shipping *format* envelope exactly;
+the 422/444/12-bit code in the C tree is dead-gated behind those lines. QP 0
+(coded-lossless) is rejected with a typed error rather than implemented (issue #5).
+
+**Rate control beyond CQP is a still-image gap, not a video one.** CRF
+(quality-target), VBR (size-target), and `aq_mode` / delta-q (perceptual bit
+allocation) all apply to a single frame — the port is **CQP-only** today
+([#7](https://github.com/imazen/zenav1-svt/issues/7)). Multi-frame / GOP / ALT-REF
+are the separate video-scale future.
 
 Two envelope details for *consumers*: the 10-bit path is byte-gated internally,
 but the public encode API currently takes **8-bit input** (`&[u8]`) — a `&[u16]`

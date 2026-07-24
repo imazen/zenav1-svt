@@ -11,7 +11,10 @@ inspection of both trees at `master`.
 
 Per `rust/README.md` + `rust/CLAUDE.md`, the port is a **still-picture / all-intra**
 reimplementation of SVT-AV1 v4.2.0, byte-identical on this envelope:
-**8-bit 4:2:0, CQP, single frame (KEY), single-threaded, 64-aligned dims, `--lp 1`.**
+**8-bit 4:2:0, CQP, single frame (KEY), 64-aligned or preset-≥6 dims.** The port
+is deterministic **tile-parallel** (byte-identical to C's `--lp 1` output at any
+thread count), so the C oracle is captured at `--lp 1` purely for determinism —
+the port itself is not single-threaded.
 10-bit and arbitrary dims are in-progress (bd10 gates + partial-SB gates exist).
 A separate **HDR-fork** mode adds psy-RD / QM / photon-noise / variance-boost, verified
 *functionally* (per-kernel differentials + decode gates), not byte-gated.

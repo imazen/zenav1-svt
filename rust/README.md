@@ -31,7 +31,7 @@ Every stream additionally decodes with the reference decoder (`aomdec`), and the
 ### Known open identity gaps (tracked, not hidden)
 
 - **Real 512×512 content at presets 0–1**: 0/12 — one systematic first divergence: C enables 128-px superblocks above 240p at ≤M1 (`use_128x128_superblock`), the port is 64-SB only. Port map: `docs/sb128-port-map.md` (task #91).
-- **Envelope limits**: 64-aligned dimensions, 8-bit, single frame (still), single-threaded. 10-bit and arbitrary dimensions are the next priorities — port-ready maps in `docs/bd10-port-map.md` and `docs/arbitrary-dims-port-map.md`.
+- **Envelope limits**: 8-bit input (10-bit gated internally), single frame (still), CQP-only rate control. Dimensions are arbitrary — partial-SB byte-matches at preset ≥ 6, 64-aligned at all presets. Encoding is **deterministic tile-parallel** (`with_thread_count`; byte-identical at any thread count), NOT single-threaded. Native 10-bit input ([#6](https://github.com/imazen/zenav1-svt/issues/6)) and beyond-CQP rate control ([#7](https://github.com/imazen/zenav1-svt/issues/7)) are the next priorities — maps in `docs/bd10-port-map.md` and `docs/arbitrary-dims-port-map.md`.
 
 `docs/IDENTITY-STATUS.md` is the full divergence map and campaign history.
 

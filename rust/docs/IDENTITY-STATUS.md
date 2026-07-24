@@ -129,7 +129,7 @@ Run: `tools/identity_diff.sh <w> <h> <cli_qp> <preset> [uniform|gradient]`
 | `aq_mode`                       | 0          | `RcConfig.aq_mode` (default 0 = off, C-matched since d72a7641) |
 | `qp` (CLI 0..63)                | qp         | `RcConfig.qp`                             |
 | `avif`                          | true       | `intra_period=1` → reduced-still SH       |
-| `level_of_parallelism`          | 1          | single-threaded                           |
+| `level_of_parallelism`          | 1          | deterministic tile-parallel (byte-identical to C `--lp 1` at any thread count) |
 | `encoder_color_format`          | EB_YUV420  | `.with_chroma_420(true)` + `encode_frame_420` |
 | `encoder_bit_depth`             | 8          | `bit_depth = 8`                           |
 | `frame_rate` num/den            | 30/1       | n/a (no timing info in reduced SH)        |
