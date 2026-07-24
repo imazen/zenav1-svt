@@ -2335,3 +2335,50 @@ int32_t ref_setup_ref_mv_list_intra(const int32_t* cells, int32_t grid_rows, int
     free(mbmi);
     return count;
 }
+
+/* ---- Source RESIZE (superres downscale): resize.c ------------------------
+ * `svt_av1_resize_plane_horizontal` is the shape superres uses (width changes,
+ * height does not). It drives the `static` `resize_multistep` ->
+ * {`svt_av1_down2_symeven`, `down2_symodd`, `choose_interp_filter` +
+ * `svt_av1_interpolate_core`}, so one end-to-end oracle covers every arm.
+ * `svt_av1_interpolate_core_c` and `svt_av1_down2_symeven_c` are additionally
+ * exposed directly (they ARE exported) so a divergence can be localized to the
+ * kernel instead of the multistep driver. */
+#include "resize.h"
+
+/* Declared in resize.c but not in resize.h (the encoder reaches them through
+   the RTCD/`Av1ResizePlane` function-pointer table). Prototyped verbatim. */
+EbErrorType svt_av1_resize_plane_horizontal(const uint8_t* const input, int height, int width, int in_stride,
+                                            uint8_t* output, int height2, int width2, int out_stride);
+void        svt_av1_down2_symeven_c(const uint8_t* const input, int length, uint8_t* output);
+void        svt_av1_interpolate_core_c(const uint8_t* const input, int in_length, uint8_t* output, int out_length,
+                                       const int16_t* interp_filters);
+
+int32_t ref_resize_plane_horizontal(const uint8_t* input, int32_t height, int32_t width, int32_t in_stride,
+                                    uint8_t* output, int32_t width2, int32_t out_stride) {
+    /* `svt_av1_down2_symeven` / `svt_av1_interpolate_core` are RTCD POINTERS
+       from aom_dsp_rtcd.c (not common_dsp_rtcd.c) — without this setup the
+       multistep driver calls through NULL. */
+    ref_dsp_rtcd_once();
+    return (int32_t)svt_av1_resize_plane_horizontal(
+        input, height, width, in_stride, output, height, width2, out_stride);
+}
+
+void ref_down2_symeven(const uint8_t* input, int32_t length, uint8_t* output) {
+    svt_av1_down2_symeven_c(input, length, output);
+}
+
+/* bank: 0 = filters1000 (== svt_av1_resize_filter_normative), 1 = 875,
+ *       2 = 750, 3 = 625, 4 = 500 — the `choose_interp_filter` ladder. */
+void ref_interpolate_core(const uint8_t* input, int32_t in_length, uint8_t* output, int32_t out_length,
+                          int32_t bank) {
+    const int16_t* f;
+    switch (bank) {
+    case 1: f = &svt_aom_av1_filteredinterp_filters875[0][0]; break;
+    case 2: f = &svt_aom_av1_filteredinterp_filters750[0][0]; break;
+    case 3: f = &svt_aom_av1_filteredinterp_filters625[0][0]; break;
+    case 4: f = &svt_aom_av1_filteredinterp_filters500[0][0]; break;
+    default: f = &svt_av1_resize_filter_normative[0][0]; break;
+    }
+    svt_av1_interpolate_core_c(input, in_length, output, out_length, f);
+}

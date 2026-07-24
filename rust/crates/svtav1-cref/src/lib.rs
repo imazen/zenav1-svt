@@ -2129,6 +2129,80 @@ unsafe extern "C" {
     );
     fn ref_superres_filter_normative(phase: i32, out8: *mut i16);
     fn ref_superres_upscale_row(input: *const u8, in_width: i32, output: *mut u8, out_width: i32);
+    fn ref_resize_plane_horizontal(
+        input: *const u8,
+        height: i32,
+        width: i32,
+        in_stride: i32,
+        output: *mut u8,
+        width2: i32,
+        out_stride: i32,
+    ) -> i32;
+    fn ref_down2_symeven(input: *const u8, length: i32, output: *mut u8);
+    fn ref_interpolate_core(
+        input: *const u8,
+        in_length: i32,
+        output: *mut u8,
+        out_length: i32,
+        bank: i32,
+    );
+}
+
+/// Reference `svt_av1_resize_plane_horizontal` (resize.c:464) — the superres
+/// SOURCE downscale: `width` -> `width2` at unchanged height. Drives C's
+/// `static` `resize_multistep` (down2 steps + polyphase interpolate), so this
+/// one oracle covers every arm of the ladder.
+pub fn resize_plane_horizontal(
+    input: &[u8],
+    height: usize,
+    width: usize,
+    in_stride: usize,
+    output: &mut [u8],
+    width2: usize,
+    out_stride: usize,
+) {
+    assert!(input.len() >= (height - 1) * in_stride + width);
+    assert!(output.len() >= (height - 1) * out_stride + width2);
+    let rc = unsafe {
+        ref_resize_plane_horizontal(
+            input.as_ptr(),
+            height as i32,
+            width as i32,
+            in_stride as i32,
+            output.as_mut_ptr(),
+            width2 as i32,
+            out_stride as i32,
+        )
+    };
+    assert_eq!(rc, 0, "svt_av1_resize_plane_horizontal failed (rc {rc})");
+}
+
+/// Reference `svt_av1_down2_symeven_c` (resize.c:170) — exact 2:1 decimation.
+pub fn down2_symeven(input: &[u8], length: usize, output: &mut [u8]) {
+    assert!(input.len() >= length && output.len() >= length.div_ceil(2));
+    unsafe { ref_down2_symeven(input.as_ptr(), length as i32, output.as_mut_ptr()) };
+}
+
+/// Reference `svt_av1_interpolate_core_c` (resize.c:287) with an explicit
+/// filter bank (0 = filters1000 / normative, 1 = 875, 2 = 750, 3 = 625,
+/// 4 = 500 — C's `choose_interp_filter` ladder).
+pub fn interpolate_core(
+    input: &[u8],
+    in_length: usize,
+    output: &mut [u8],
+    out_length: usize,
+    bank: i32,
+) {
+    assert!(input.len() >= in_length && output.len() >= out_length);
+    unsafe {
+        ref_interpolate_core(
+            input.as_ptr(),
+            in_length as i32,
+            output.as_mut_ptr(),
+            out_length as i32,
+            bank,
+        )
+    };
 }
 
 /// Reference `svt_av1_warp_affine_c` (non-compound, 8-bit). `mat` is the 6-entry

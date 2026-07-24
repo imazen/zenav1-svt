@@ -32,6 +32,7 @@ pub mod quant_tables;
 pub mod restoration;
 pub mod sad;
 pub mod scale;
+pub mod resize;
 pub mod superres;
 pub mod txfm_dispatch;
 pub mod txfm_simd;
