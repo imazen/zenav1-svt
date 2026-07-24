@@ -74,6 +74,12 @@ init (no oracle exists). QP 0 (coded-lossless) is rejected with a typed error
 rather than implemented (issue #5). Multi-frame / rate control beyond CQP are
 future program-scale work.
 
+Two envelope details for *consumers*: the 10-bit path is byte-gated internally,
+but the public encode API currently takes **8-bit input** (`&[u8]`) — a `&[u16]`
+10-bit-source entry point is pending ([#6](https://github.com/imazen/zenav1-svt/issues/6)).
+Non-multiple-of-64 dimensions encode at **preset ≥ 6** (partial superblocks,
+byte-identical); presets 0–5 require multiples of 64.
+
 ## Production API
 
 The encoder is hardened for library use, not just parity testing:
