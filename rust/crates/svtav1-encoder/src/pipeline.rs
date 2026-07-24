@@ -58,6 +58,19 @@ pub struct EncodePipeline {
     pub true_height: u32,
     /// Bit depth (8, 10, or 12).
     pub bit_depth: u8,
+    /// Native 10-bit (u16) SOURCE planes for the NEXT frame — task #6 chunk 1.
+    ///
+    /// Set by [`Self::try_encode_frame_420_hbd`] / [`Self::try_encode_frame_hbd`]
+    /// and TAKEN (not cloned) at the head of `encode_frame_impl`, so it can
+    /// never leak into a following u8 frame. `None` on every u8 entry point,
+    /// which is what keeps the whole u8 path — and every bd10-on-8-bit-source
+    /// gate cell — byte-identical.
+    ///
+    /// Layout: ALIGNED frame, luma `aligned_w × aligned_h` at stride
+    /// `aligned_w`, chroma `aligned_w/2 × aligned_h/2` at stride `aligned_w/2`
+    /// (empty on the monochrome entry point). The bd10 consumers are all
+    /// 64-aligned-gated, so this stride equals the funnel's SB-extended one.
+    hbd_source: Option<HbdSource>,
     /// CICP color description.
     pub color_description: svtav1_entropy::obu::ColorDescription,
     /// Opt-in 4:2:0 chroma mode (default false = monochrome).
@@ -191,6 +204,39 @@ fn pad_plane_replicate(
     Ok(out)
 }
 
+/// u16 twin of [`pad_plane_replicate`] — the TRUE->ALIGNED edge replication
+/// for a native 10-bit source plane (task #6 chunk 1). Same gather, same
+/// clamp order, so a widened-u8 hbd plane pads to exactly the widening of the
+/// u8 pad (which is what the chunk-1 equivalence gate proves end-to-end).
+fn pad_plane_replicate_u16(
+    src: &[u16],
+    src_stride: usize,
+    sw: usize,
+    sh: usize,
+    dw: usize,
+    dh: usize,
+) -> crate::EncodeResult<alloc::vec::Vec<u16>> {
+    let mut out = svtav1_types::try_vec![0u16; dw * dh]?;
+    for r in 0..dh {
+        let sr = r.min(sh - 1);
+        let base = sr * src_stride;
+        let orow = r * dw;
+        for c in 0..dw {
+            out[orow + c] = src[base + c.min(sw - 1)];
+        }
+    }
+    Ok(out)
+}
+
+/// Native 10-bit SOURCE planes for one frame, already padded TRUE->ALIGNED
+/// (task #6 chunk 1). See [`EncodePipeline::hbd_source`] for the layout.
+struct HbdSource {
+    y: alloc::vec::Vec<u16>,
+    /// Chroma planes; both empty on the monochrome entry point.
+    u: alloc::vec::Vec<u16>,
+    v: alloc::vec::Vec<u16>,
+}
+
 impl EncodePipeline {
     /// Create a new encoding pipeline.
     pub fn new(
@@ -240,6 +286,7 @@ impl EncodePipeline {
             true_width: width,
             true_height: height,
             bit_depth: 8,
+            hbd_source: None,
             // C-matched default: CICP "unspecified" (cp/tc/mc = 2/2/2,
             // studio range) — the library defaults of enc_settings.c:1043.
             // The SH then carries color_description_present_flag=0 and
@@ -571,6 +618,224 @@ impl EncodePipeline {
         self.encode_frame_420_core(y, u, v, y_stride)
     }
 
+    /// Does this configuration actually CONSUME a native 10-bit source?
+    ///
+    /// Task #6 chunk 1 threads real u16 into the bd10 MD funnel and the bd10
+    /// level re-encode post-pass. Both are gated (`bd10_full_rd_supported`,
+    /// `bd10_luma_funnel`, `bd10_postpass_runs`) on bd10 + 64-aligned dims,
+    /// and they are mutually exclusive by preset. Outside that envelope the
+    /// encode would silently truncate the caller's low bits to 8, so the hbd
+    /// entry points reject instead of emitting a quietly-8-bit stream (the
+    /// "no silent corruption" bar in `rust/CLAUDE.md`).
+    fn hbd_source_consumed(&self, chroma_420: bool) -> bool {
+        if self.bit_depth != 10 {
+            return false;
+        }
+        let (w, h) = (self.width as usize, self.height as usize);
+        if w % 64 != 0 || h % 64 != 0 {
+            return false;
+        }
+        let preset = self.speed_config.preset;
+        if chroma_420 {
+            // preset >= 9: the MDS0 luma funnel (`bd10_luma_funnel`) + the
+            // luma/chroma level post-pass. preset <= 8: the full-RD funnel
+            // (luma AND chroma, `bd10_full_rd_supported` — which also
+            // requires palette off, i.e. non-screen content).
+            preset >= 9 || bd10_full_rd_supported(self.bit_depth, preset, w, h)
+        } else {
+            // Monochrome builds no funnel (`use_funnel` requires 4:2:0), so
+            // only the level re-encode post-pass can consume the source — and
+            // it runs exactly where the full-RD funnel does not.
+            preset >= 9
+        }
+    }
+
+    /// Native 10-bit (u16) 4:2:0 entry point — task #6 chunk 1
+    /// (`rust/docs/hbd-input-port-map.md`).
+    ///
+    /// `y`/`u`/`v` carry REAL 10-bit samples (0..=1023) in the same TRUE-dim
+    /// layout [`Self::try_encode_frame_420`] takes for `u8` (`y` at
+    /// `y_stride`, chroma at `(true_w+1)/2`). Requires the pipeline to be
+    /// built with `with_bit_depth(10)` and `with_chroma_420(true)`.
+    ///
+    /// # What chunk 1 threads — and what it does not
+    ///
+    /// The low 2 bits reach the **mode decision and the coded levels**: the
+    /// bd10 MD funnel (MDS0 SATD, and the MDS1/MDS3 full-RD inputs for luma
+    /// AND chroma) plus the bd10 level re-encode post-pass all read the real
+    /// u16 samples. The **post-filter searches** (deblock level, CDEF
+    /// strength, Wiener taps) and the recon SSE still run on the
+    /// MSB-truncated u8 planes — that is chunk 2. The emitted bitstream is a
+    /// valid 10-bit stream either way; the band-limit is on filter DECISIONS,
+    /// not on the coded residual.
+    ///
+    /// # Errors
+    ///
+    /// [`EncodeError::UnsupportedConfig`] if the pipeline is not bd10/4:2:0,
+    /// if the frame is not a key frame, if a sample exceeds 10 bits, or if
+    /// this preset/dimension combination has no consumer for the native
+    /// source (see [`Self::hbd_source_consumed`]) — rejecting beats silently
+    /// encoding the MSB-truncated content. Also propagates cancellation and
+    /// fallible-allocation failures like the u8 entry points.
+    pub fn try_encode_frame_420_hbd(
+        &mut self,
+        y: &[u16],
+        u: &[u16],
+        v: &[u16],
+        y_stride: usize,
+    ) -> EncodeResult<Vec<u8>> {
+        if !self.chroma_420 {
+            return Err(whereat::at!(EncodeError::UnsupportedConfig(
+                "try_encode_frame_420_hbd requires the pipeline to be built with \
+                 with_chroma_420(true)",
+            )));
+        }
+        if self.bit_depth != 10 {
+            return Err(whereat::at!(EncodeError::UnsupportedConfig(
+                "try_encode_frame_420_hbd requires with_bit_depth(10) (8-bit sources use \
+                 encode_frame_420; 12-bit is outside C's shipping envelope)",
+            )));
+        }
+        if !self.hbd_source_consumed(true) {
+            return Err(whereat::at!(EncodeError::UnsupportedConfig(
+                "native 10-bit input needs a bd10 consumer: 64-aligned dims and either preset \
+                 >= 9 or a full-RD-capable preset <= 8 (non-screen content) — see \
+                 docs/hbd-input-port-map.md chunk 2",
+            )));
+        }
+        if !self.gop.is_key_frame(self.frame_count) {
+            return Err(whereat::at!(EncodeError::UnsupportedConfig(
+                "chroma_420 pipeline supports still/key frames only (intra_period <= 1)",
+            )));
+        }
+        let (tw, th) = (self.true_width as usize, self.true_height as usize);
+        let (tcw, tch) = ((tw + 1) / 2, (th + 1) / 2);
+        if y.len() < (th - 1) * y_stride + tw || u.len() < tcw * tch || v.len() < tcw * tch {
+            return Err(whereat::at!(EncodeError::InvalidDimensions {
+                width: self.true_width,
+                height: self.true_height,
+                reason: "hbd planes must cover the true dims (y at y_stride, u/v at true_w/2)",
+            }));
+        }
+        let max = 1u16 << self.bit_depth;
+        if y.iter().chain(u.iter()).chain(v.iter()).any(|&s| s >= max) {
+            return Err(whereat::at!(EncodeError::UnsupportedConfig(
+                "hbd source carries a sample above the configured bit depth",
+            )));
+        }
+        self.stop
+            .check()
+            .map_err(EncodeError::from)
+            .map_err(whereat::at)?;
+        // Stash the ALIGNED-padded u16 planes for `encode_frame_impl` to take,
+        // and drive the existing core with the MSB-truncated u8 planes — the
+        // sites chunk 1 does not thread (post-filter searches, recon SSE) keep
+        // reading those. Truncation and edge replication are both per-sample
+        // gathers, so truncate-then-pad == pad-then-truncate: the u8 planes the
+        // core builds are exactly the u8 planes an 8-bit caller would pass.
+        let shift = u32::from(self.bit_depth - 8);
+        let (aw, ah) = (self.width as usize, self.height as usize);
+        let hbd = HbdSource {
+            y: pad_plane_replicate_u16(y, y_stride, tw, th, aw, ah)?,
+            u: pad_plane_replicate_u16(u, tcw, tcw, tch, aw / 2, ah / 2)?,
+            v: pad_plane_replicate_u16(v, tcw, tcw, tch, aw / 2, ah / 2)?,
+        };
+        let mut y8 = svtav1_types::try_vec![0u8; tw * th]?;
+        for r in 0..th {
+            for c in 0..tw {
+                y8[r * tw + c] = (y[r * y_stride + c] >> shift) as u8;
+            }
+        }
+        let mut u8p = svtav1_types::try_vec![0u8; tcw * tch]?;
+        let mut v8p = svtav1_types::try_vec![0u8; tcw * tch]?;
+        for i in 0..tcw * tch {
+            u8p[i] = (u[i] >> shift) as u8;
+            v8p[i] = (v[i] >> shift) as u8;
+        }
+        self.hbd_source = Some(hbd);
+        let out = self.encode_frame_420_core(&y8, &u8p, &v8p, tw);
+        // Never leave a stale source behind for the next frame (the happy
+        // path already took it; this covers the early-error paths).
+        self.hbd_source = None;
+        out
+    }
+
+    /// Native 10-bit (u16) monochrome entry point — the mono twin of
+    /// [`Self::try_encode_frame_420_hbd`] (task #6 chunk 1).
+    ///
+    /// Monochrome builds no MD funnel, so the only consumer of the real u16
+    /// samples is the bd10 level re-encode post-pass (preset >= 9): the coded
+    /// LEVELS are computed at true 10 bits, while the mode decision itself
+    /// still runs on the MSB-truncated plane. Rejects any config where even
+    /// that consumer is absent.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::try_encode_frame_420_hbd`], plus the monochrome dimension
+    /// rules of [`Self::try_encode_frame`].
+    pub fn try_encode_frame_hbd(&mut self, y: &[u16], y_stride: usize) -> EncodeResult<Vec<u8>> {
+        if self.chroma_420 {
+            return Err(whereat::at!(EncodeError::UnsupportedConfig(
+                "try_encode_frame_hbd is the monochrome entry point; use \
+                 try_encode_frame_420_hbd on a 4:2:0 pipeline",
+            )));
+        }
+        if self.bit_depth != 10 {
+            return Err(whereat::at!(EncodeError::UnsupportedConfig(
+                "try_encode_frame_hbd requires with_bit_depth(10)",
+            )));
+        }
+        if self.width != self.true_width || self.height != self.true_height {
+            return Err(whereat::at!(EncodeError::InvalidDimensions {
+                width: self.true_width,
+                height: self.true_height,
+                reason: "monochrome encode requires 8-aligned dims (arbitrary-dims padding is \
+                         wired on the 4:2:0 path only)",
+            }));
+        }
+        if !self.hbd_source_consumed(false) {
+            return Err(whereat::at!(EncodeError::UnsupportedConfig(
+                "native 10-bit monochrome input needs the bd10 level re-encode post-pass: \
+                 64-aligned dims at preset >= 9 — see docs/hbd-input-port-map.md chunk 2",
+            )));
+        }
+        let (tw, th) = (self.true_width as usize, self.true_height as usize);
+        if y.len() < (th - 1) * y_stride + tw {
+            return Err(whereat::at!(EncodeError::InvalidDimensions {
+                width: self.true_width,
+                height: self.true_height,
+                reason: "hbd luma plane must cover the true dims at y_stride",
+            }));
+        }
+        let max = 1u16 << self.bit_depth;
+        if y.iter().any(|&s| s >= max) {
+            return Err(whereat::at!(EncodeError::UnsupportedConfig(
+                "hbd source carries a sample above the configured bit depth",
+            )));
+        }
+        self.stop
+            .check()
+            .map_err(EncodeError::from)
+            .map_err(whereat::at)?;
+        let shift = u32::from(self.bit_depth - 8);
+        let mut y8 = svtav1_types::try_vec![0u8; tw * th]?;
+        for r in 0..th {
+            for c in 0..tw {
+                y8[r * tw + c] = (y[r * y_stride + c] >> shift) as u8;
+            }
+        }
+        // Mono aligned == true dims (checked above), so the hbd plane only
+        // needs tightening to stride `tw`.
+        self.hbd_source = Some(HbdSource {
+            y: pad_plane_replicate_u16(y, y_stride, tw, th, tw, th)?,
+            u: alloc::vec::Vec::new(),
+            v: alloc::vec::Vec::new(),
+        });
+        let out = self.encode_frame_impl(&y8, tw, None);
+        self.hbd_source = None;
+        out
+    }
+
     /// Shared frame encode body. `chroma = Some((u, v))` selects the 4:2:0
     /// path; `None` is the unchanged monochrome path.
     fn encode_frame_impl(
@@ -580,6 +845,21 @@ impl EncodePipeline {
         chroma: Option<(&[u8], &[u8])>,
     ) -> crate::EncodeResult<Vec<u8>> {
         let display_order = self.frame_count;
+        // Task #6 chunk 1: TAKE the native 10-bit source (set only by the
+        // `*_hbd` entry points) so it can never leak into a following u8
+        // frame. `None` on every u8 path -> every bd10 stage keeps widening
+        // `u8 << 2` exactly as before.
+        let hbd_source = self.hbd_source.take();
+        // Did a bd10 consumer actually READ it? The entry points pre-screen
+        // the config (`hbd_source_consumed`), but the post-pass additionally
+        // requires every SB's tree to be bd10-supported at RUNTIME — so this
+        // flag is what turns "the low bits were silently dropped" into an
+        // explicit error instead of a quietly-8-bit stream.
+        let mut hbd_used = false;
+        // The funnel side reports through an atomic because the tile loop
+        // runs the funnel inside `std::thread::scope` (byte-inert: the flag
+        // is write-only and never read by the search).
+        let hbd_used_flag = core::sync::atomic::AtomicBool::new(false);
         // Feature 1: snapshot the cooperative-cancellation token once (a cheap
         // Arc clone; `Send + Sync`) so the per-SB loops here, the entropy-walk
         // closure, and `encode_tile_rows` all check the same token. The default
@@ -1156,9 +1436,16 @@ impl EncodePipeline {
                 .as_ref()
                 .map(|(u, v)| (u.as_slice(), v.as_slice())),
             self.bit_depth,
+            // Task #6 chunk 1: the native 10-bit source for the bd10 MD
+            // funnel (`None` on every u8 path).
+            hbd_source
+                .as_ref()
+                .map(|h| (h.y.as_slice(), h.u.as_slice(), h.v.as_slice())),
+            &hbd_used_flag,
             self.thread_count,
             &stop,
         )?;
+        hbd_used |= hbd_used_flag.load(core::sync::atomic::Ordering::Relaxed);
 
         let mut per_tile_decisions: Vec<Vec<crate::partition::BlockDecision>> = Vec::new();
         // Task #96: `all_trees` is indexed by RASTER sb_idx
@@ -1422,8 +1709,18 @@ impl EncodePipeline {
             }
             if let Some(cq) = c_quant.as_ref().filter(|_| bd10_postpass_runs) {
                 let shift = (self.bit_depth - 8) as u32;
-                let src10: alloc::vec::Vec<u16> =
-                    encode_input.iter().map(|&s| (s as u16) << shift).collect();
+                // Task #6 chunk 1: the REAL 10-bit source when the caller
+                // entered through `try_encode_frame_*_hbd` (so the coded
+                // levels carry the low 2 bits), else the `u8 << shift`
+                // widening this site always did.
+                let src10: alloc::vec::Vec<u16> = match hbd_source.as_ref() {
+                    Some(hbd) => {
+                        debug_assert_eq!(hbd.y.len(), encode_input.len());
+                        hbd_used = true;
+                        hbd.y.clone()
+                    }
+                    None => encode_input.iter().map(|&s| (s as u16) << shift).collect(),
+                };
                 // bd10 full MD lambda (C full_lambda_md[1], md_process.c:725-759):
                 // computed from the bd10 rdmult base (dc_qlookup_10 + ROUND_
                 // POWER_OF_TWO(,4) + frame-type-factor 128 + the *16), NOT a
@@ -1456,10 +1753,22 @@ impl EncodePipeline {
                 // qindex == base_qindex in mainline (all FH chroma deltas 0),
                 // matching the walk's `base_q_idx` chroma coding.
                 if let Some((u_src, v_src)) = sb_chroma_owned.as_ref() {
-                    let u10: alloc::vec::Vec<u16> =
-                        u_src.iter().map(|&s| (s as u16) << shift).collect();
-                    let v10: alloc::vec::Vec<u16> =
-                        v_src.iter().map(|&s| (s as u16) << shift).collect();
+                    // Task #6 chunk 1: real 10-bit chroma when supplied (the
+                    // bd10 envelope is 64-aligned, so `sb_chroma_owned` is the
+                    // untouched aligned chroma and the hbd planes match it
+                    // element-for-element).
+                    let (u10, v10): (alloc::vec::Vec<u16>, alloc::vec::Vec<u16>) =
+                        match hbd_source.as_ref().filter(|hbd| !hbd.u.is_empty()) {
+                            Some(hbd) => {
+                                debug_assert_eq!(hbd.u.len(), u_src.len());
+                                hbd_used = true;
+                                (hbd.u.clone(), hbd.v.clone())
+                            }
+                            None => (
+                                u_src.iter().map(|&s| (s as u16) << shift).collect(),
+                                v_src.iter().map(|&s| (s as u16) << shift).collect(),
+                            ),
+                        };
                     let uv10 = bd10_reencode_chroma(
                         &mut all_trees,
                         sb_cols,
@@ -2575,6 +2884,21 @@ impl EncodePipeline {
         // Step 8: Update rate control state
         update_rc_state(&mut self.rc_state, bitstream.len() as u64 * 8, pcs.qp);
 
+        // Task #6 chunk 1 — no silent 8-bit fallback. If the caller supplied a
+        // native 10-bit source and NO bd10 stage read it (an out-of-envelope
+        // tree turned the level post-pass off at runtime, say), the bytes
+        // above encode the MSB-truncated content. Emitting them would look
+        // exactly like a real 10-bit encode, so fail loudly instead. The u8
+        // path never takes this branch (`hbd_source` is `None` there), and the
+        // frame counter is left un-advanced so the caller can retry a
+        // supported config on the same pipeline.
+        if hbd_source.is_some() && !hbd_used {
+            return Err(whereat::at!(EncodeError::UnsupportedConfig(
+                "native 10-bit source went unconsumed (the bd10 level re-encode was skipped for \
+                 this frame's partition trees) — the encode would have silently truncated to 8 \
+                 bits; see docs/hbd-input-port-map.md chunk 2",
+            )));
+        }
         self.frame_count += 1;
         Ok(bitstream)
     }
@@ -5558,6 +5882,15 @@ fn encode_tile_rows(
     // 8-bit on the MSB-truncated plane; only the coded levels go 10-bit
     // (bd10_reencode_luma).
     bit_depth: u8,
+    // Task #6 chunk 1: native 10-bit SOURCE planes (Y, U, V) for the bd10 MD
+    // funnel — frame-strided over the ALIGNED frame (`w`, `w/2`). `Some` only
+    // when the caller entered through `try_encode_frame_420_hbd`; every u8
+    // path passes `None` and the funnel keeps widening `u8 << 2`.
+    hbd_src: Option<(&[u16], &[u16], &[u16])>,
+    // Set when the funnel actually consumed `hbd_src` (i.e. the bd10 luma
+    // funnel armed). Read by `encode_frame_impl` to reject an encode that
+    // would have silently dropped the caller's low bits.
+    hbd_used: &core::sync::atomic::AtomicBool,
     // Feature 4 (bounded threading): the maximum number of OS threads the
     // tile loop below may run at once (0 = auto via `available_parallelism`).
     // Bounds CONCURRENCY only — tiles are always joined and appended in
@@ -5863,6 +6196,25 @@ fn encode_tile_rows(
         let bd10_full_rd = bd10_full_rd_supported(bit_depth, speed_config.preset, w, h);
         let bd10_luma_funnel =
             bd10_complete_sb && (speed_config.preset >= 9 || bd10_full_rd);
+        // Task #6 chunk 1: hand the funnel the REAL 10-bit source when the
+        // caller supplied one AND a bd10 stage is armed to read it. The bd10
+        // envelope is 64-aligned (`bd10_complete_sb`), so the SB-extended
+        // `in_stride` equals `w` and a block's `(abs_x, abs_y)` indexes these
+        // planes exactly like the u8 `sb_input`.
+        let funnel_src10 = hbd_src.filter(|_| bd10_luma_funnel).map(|(y10, u10, v10)| {
+            debug_assert_eq!(in_stride, w, "bd10 hbd source assumes a 64-aligned frame");
+            debug_assert!(y10.len() >= w * h);
+            crate::leaf_funnel::FunnelSrc10 {
+                y: y10,
+                y_stride: w,
+                u: u10,
+                v: v10,
+                c_stride: w / 2,
+            }
+        });
+        if funnel_src10.is_some() {
+            hbd_used.store(true, core::sync::atomic::Ordering::Relaxed);
+        }
         let mut tile_frame_recon10: alloc::vec::Vec<u16> = if bd10_luma_funnel {
             svtav1_types::try_vec![512u16; ext_w * ext_h]?
         } else {
@@ -6300,6 +6652,7 @@ fn encode_tile_rows(
                             Some(crate::leaf_funnel::FunnelCtx {
                                 u_src,
                                 v_src,
+                                src10: funnel_src10,
                                 u_recon: &mut fun_u_recon,
                                 v_recon: &mut fun_v_recon,
                                 c_stride: cwid,
@@ -6514,6 +6867,7 @@ fn encode_tile_rows(
                             let mut fx = crate::leaf_funnel::FunnelCtx {
                                 u_src,
                                 v_src,
+                                src10: funnel_src10,
                                 u_recon: &mut fun_u_recon,
                                 v_recon: &mut fun_v_recon,
                                 c_stride: cwid,
@@ -6674,6 +7028,7 @@ fn encode_tile_rows(
                                 Some(crate::leaf_funnel::FunnelCtx {
                                     u_src,
                                     v_src,
+                                    src10: funnel_src10,
                                     u_recon: &mut fun_u_recon,
                                     v_recon: &mut fun_v_recon,
                                     c_stride: cwid,

@@ -1319,8 +1319,12 @@ fn hadamard_satd(
 /// bit-depth-independent (i16 residual, i32 coeffs) — only the source scale
 /// (`<< 2` from the MSB-truncated u8 the harness feeds) and the u16 `pred`
 /// differ. The residual range (−1023..1020) fits i16 exactly.
+/// 10-bit twin of [`hadamard_satd`]: the residual is `src10 - pred10` at true
+/// depth. `src` is the block-local 10-bit source (task #6 chunk 1 — real u16
+/// samples on a native-HBD encode, the `u8 << 2` widening otherwise; the
+/// widening used to live in this loop, so the arithmetic is unchanged).
 fn hadamard_satd_hbd(
-    src: &[u8],
+    src: &[u16],
     src_stride: usize,
     src_off: usize,
     pred: &[u16],
@@ -1337,7 +1341,7 @@ fn hadamard_satd_hbd(
                 let srow = src_off + (ty + r) * src_stride + tx_x;
                 let prow = (ty + r) * w + tx_x;
                 for c in 0..tx {
-                    res[r * tx + c] = ((src[srow + c] as i16) << 2) - pred[prow + c] as i16;
+                    res[r * tx + c] = src[srow + c] as i16 - pred[prow + c] as i16;
                 }
             }
             match tx {
@@ -2920,9 +2924,33 @@ pub struct LeafChoice {
 }
 
 /// Per-frame/SB mutable funnel context threaded through the fixed tree.
+/// Native 10-bit (u16) SOURCE planes for the bd10 funnel — task #6 chunk 1.
+///
+/// `Some` on [`FunnelCtx::src10`] exactly when the caller entered through
+/// [`crate::pipeline::EncodePipeline::try_encode_frame_420_hbd`]: the planes
+/// carry the REAL 10-bit samples instead of the `u8 << 2` widening every bd10
+/// stage used before. Frame-strided over the ALIGNED frame (the bd10 envelope
+/// is 64-aligned-gated, so `y_stride` equals the funnel's `y_src`/`y_recon`
+/// stride and a block at `(abs_x, abs_y)` indexes identically in both).
+#[derive(Clone, Copy)]
+pub(crate) struct FunnelSrc10<'a> {
+    pub y: &'a [u16],
+    pub y_stride: usize,
+    /// Chroma planes at `c_stride` (== the u8 `u_src`/`v_src` layout). Empty
+    /// on a monochrome frame (which never builds a funnel today).
+    pub u: &'a [u16],
+    pub v: &'a [u16],
+    pub c_stride: usize,
+}
+
 pub(crate) struct FunnelCtx<'a> {
     pub u_src: &'a [u8],
     pub v_src: &'a [u8],
+    /// Native 10-bit source planes (task #6 chunk 1). `None` on every u8
+    /// entry point AND on a bd10 encode of an 8-bit source, where the bd10
+    /// stages keep widening `u8 << 2` exactly as before — so every existing
+    /// gate cell is byte-unchanged.
+    pub src10: Option<FunnelSrc10<'a>>,
     pub u_recon: &'a mut [u8],
     pub v_recon: &'a mut [u8],
     pub c_stride: usize,
@@ -3426,6 +3454,41 @@ pub(crate) fn evaluate_leaf(
     } else {
         (0, 0)
     };
+    // Task #6 chunk 1 — the block-local 10-bit LUMA source every bd10 stage
+    // reads (MDS0 SATD, the MDS1/MDS3 `Bd10Rd` inputs, the `psq_resid10`
+    // twin, and the eff-M9 winner re-encode). When the caller supplied a
+    // NATIVE 10-bit source (`try_encode_frame_420_hbd`) these are the real
+    // u16 samples, so the low 2 bits reach the mode decision AND the coded
+    // levels; otherwise it is the identical `u8 << (bd - 8)` widening those
+    // sites did inline before, i.e. byte-unchanged for every existing cell.
+    // Built once per leaf instead of four times per leaf/candidate.
+    let shift10 = (frame.bit_depth - 8) as u32;
+    let blk_y_src10: Vec<u16> = if bd10_funnel {
+        let mut blk = vec![0u16; w * h];
+        match fx.src10.as_ref() {
+            Some(s10) => {
+                debug_assert!(
+                    s10.y.len() >= (abs_y + h - 1) * s10.y_stride + abs_x + w,
+                    "hbd luma plane must cover the aligned frame"
+                );
+                for r in 0..h {
+                    let srow = (abs_y + r) * s10.y_stride + abs_x;
+                    blk[r * w..(r + 1) * w].copy_from_slice(&s10.y[srow..srow + w]);
+                }
+            }
+            None => {
+                for r in 0..h {
+                    let srow = y_src_off + r * y_src_stride;
+                    for c in 0..w {
+                        blk[r * w + c] = u16::from(y_src[srow + c]) << shift10;
+                    }
+                }
+            }
+        }
+        blk
+    } else {
+        Vec::new()
+    };
 
     // -- Block-level contexts (svt_aom_coding_loop_context_generation) --
     // Intra-mode and tx-size contexts are always neighbour-derived; the
@@ -3492,14 +3555,11 @@ pub(crate) fn evaluate_leaf(
     // Built once per leaf; `None` on every u8 path AND on bd10 leaves where
     // only the MDS0 funnel is enabled, so both stay byte-identical.
     let bd10_rd: Option<Bd10Rd> = if bd10_funnel && fx.full_rd10 {
-        let shift = (frame.bit_depth - 8) as u32;
-        let mut y_src10 = vec![0u16; w * h];
-        for r in 0..h {
-            let srow = y_src_off + r * y_src_stride;
-            for c in 0..w {
-                y_src10[r * w + c] = u16::from(y_src[srow + c]) << shift;
-            }
-        }
+        let shift = shift10;
+        // Task #6 chunk 1: the shared block-local 10-bit luma source (real u16
+        // when the caller supplied a native HBD source, else the same
+        // `u8 << shift` widening this site did inline).
+        let y_src10 = blk_y_src10.clone();
         let mut qt10 = crate::quant::build_quant_table_bd(frame.base_qindex, frame.bit_depth);
         qt10.qm_level = frame.qm_levels[0];
         let mut qt_u10 = crate::quant::build_quant_table_bd(frame.qindex_u, frame.bit_depth);
@@ -3513,11 +3573,25 @@ pub(crate) fn evaluate_leaf(
             let c_off = ccy * fx.c_stride + ccx;
             u_src10 = vec![0u16; cw * chh];
             v_src10 = vec![0u16; cw * chh];
-            for r in 0..chh {
-                let srow = c_off + r * fx.c_stride;
-                for c in 0..cw {
-                    u_src10[r * cw + c] = u16::from(fx.u_src[srow + c]) << shift;
-                    v_src10[r * cw + c] = u16::from(fx.v_src[srow + c]) << shift;
+            match fx.src10.as_ref() {
+                // Task #6 chunk 1: real 10-bit chroma samples (same strided
+                // layout as the u8 `u_src`/`v_src`).
+                Some(s10) => {
+                    let c_off10 = ccy * s10.c_stride + ccx;
+                    for r in 0..chh {
+                        let srow = c_off10 + r * s10.c_stride;
+                        u_src10[r * cw..(r + 1) * cw].copy_from_slice(&s10.u[srow..srow + cw]);
+                        v_src10[r * cw..(r + 1) * cw].copy_from_slice(&s10.v[srow..srow + cw]);
+                    }
+                }
+                None => {
+                    for r in 0..chh {
+                        let srow = c_off + r * fx.c_stride;
+                        for c in 0..cw {
+                            u_src10[r * cw + c] = u16::from(fx.u_src[srow + c]) << shift;
+                            v_src10[r * cw + c] = u16::from(fx.v_src[srow + c]) << shift;
+                        }
+                    }
                 }
             }
         }
@@ -4082,7 +4156,7 @@ pub(crate) fn evaluate_leaf(
                     canvas10, y_stride, abs_x, abs_y, w, h, mode, delta, fi, &y_geom,
                     cfg.edge_filter, filt_type_y, &mut pred10, frame.bit_depth,
                 );
-                let satd10 = hadamard_satd_hbd(y_src, y_src_stride, y_src_off, &pred10, w, h);
+                let satd10 = hadamard_satd_hbd(&blk_y_src10, w, 0, &pred10, w, h);
                 #[cfg(feature = "std")]
                 {
                     dbg_satd10 = satd10;
@@ -7151,14 +7225,13 @@ pub(crate) fn evaluate_leaf(
             }
         }
         if !last.pred10.is_empty() {
-            let shift = (frame.bit_depth - 8) as u32;
+            // Task #6 chunk 1: `blk_y_src10` is the real u16 source on a
+            // native-HBD encode, and the same `u8 << (bd - 8)` widening this
+            // loop did inline otherwise.
+            debug_assert_eq!(blk_y_src10.len(), w * h);
             psq_resid10 = vec![0i32; w * h];
-            for r in 0..h {
-                let srow = y_src_off + r * y_src_stride;
-                for c in 0..w {
-                    psq_resid10[r * w + c] =
-                        ((y_src[srow + c] as i32) << shift) - (last.pred10[r * w + c] as i32);
-                }
+            for i in 0..w * h {
+                psq_resid10[i] = blk_y_src10[i] as i32 - last.pred10[i] as i32;
             }
         }
     }
@@ -7228,13 +7301,9 @@ pub(crate) fn evaluate_leaf(
                 canvas10, y_stride, abs_x, abs_y, w, h, wc.mode, wc.delta, wc.fi, &y_geom,
                 cfg.edge_filter, filt_type_y, &mut pred10, frame.bit_depth,
             );
-            let mut blk_src10 = vec![0u16; w * h];
-            for r in 0..h {
-                let srow = y_src_off + r * y_src_stride;
-                for c in 0..w {
-                    blk_src10[r * w + c] = (y_src[srow + c] as u16) << 2;
-                }
-            }
+            // Task #6 chunk 1: real u16 source on a native-HBD encode; the
+            // identical `u8 << 2` widening this site did inline otherwise.
+            let blk_src10 = blk_y_src10.clone();
             let tx_type = wc.txb_type.first().copied().unwrap_or(0) as usize;
             let qt10 = crate::quant::build_quant_table_bd(frame.base_qindex, frame.bit_depth);
             let out = tx_unit_hbd(
