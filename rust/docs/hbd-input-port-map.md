@@ -1,6 +1,6 @@
 # Native 10-bit input (real u16 source) — port map (issue #6)
 
-**Status: SCOPED, chunk-1 designed. Not yet landed.** The port already processes at
+**Status: CHUNK 1 LANDED 2026-07-24 (35743ebd5). Chunks 2–3 open.** The port already processes at
 **true 10-bit internally** (the u16 MD/recon path exists — `leaf_funnel.rs:2130`, `pipeline.rs:4862+`),
 but **source enters as `u8` and is widened `<< 2` at ~43 sites**, so the low 2 bits of a real
 10-bit source are never seen. This map threads *real* u16 source into the existing u16 path.
@@ -18,7 +18,42 @@ Contract consumer: **zenavif#33** (lift the SvtRs `bit_depth Ten` rejection once
 | recon distortion / SSE | funnel + `pipeline.rs` `svt_full_distortion_kernel16_bits` sites | source vs recon |
 | 20 more in `leaf_funnel`, 23 in `pipeline` | grep `<< sh`, `<< 2`, `widen` | — |
 
-## Chunk 1 — public entry point + funnel real-u16 (SAFE, equivalence-gated)
+## Chunk 1 — LANDED (35743ebd5): entry points + funnel + coded levels at real u16
+
+What actually shipped (wider than the original sketch below — the level
+re-encode post-pass turned out to be the site that decides the coded bytes, so
+it was threaded too):
+
+- `EncodePipeline::try_encode_frame_420_hbd(&[u16] y,u,v, y_stride)` +
+  `try_encode_frame_hbd` (mono). The u16 planes are padded TRUE→ALIGNED
+  (`pad_plane_replicate_u16`) into the private `hbd_source` field, which
+  `encode_frame_impl` **takes** (never clones) so it cannot leak into a
+  following u8 frame; the existing core runs on the MSB-truncated u8 planes.
+- `FunnelCtx.src10` (`FunnelSrc10`) — the bd10 MD funnel reads real u16 at
+  MDS0 SATD, the MDS1/MDS3 `Bd10Rd` luma **and** chroma inputs, `psq_resid10`,
+  and the eff-M9 winner re-encode. One per-leaf `blk_y_src10` now feeds all
+  four (each widened inline before); `hadamard_satd_hbd` takes the 10-bit
+  block source instead of widening internally.
+- `bd10_reencode_luma` / `bd10_reencode_chroma` read the real u16 planes, so
+  the **coded levels** carry the low 2 bits.
+- **No silent 8-bit fallback.** `hbd_source_consumed()` rejects any config with
+  no bd10 consumer (needs 64-aligned dims and either preset ≥ 9 or a
+  full-RD-capable preset ≤ 8), and if a runtime-unsupported partition tree
+  turns the post-pass off after the fact, the encode returns
+  `UnsupportedConfig` rather than emitting the quietly-truncated stream.
+
+Gates: `crates/svtav1-encoder/tests/hbd_input_chunk1.rs` 5/5 — EQUIVALENCE
+(`widen(u8)` through the hbd entry == the u8 entry byte-for-byte, presets
+{6,9} × qp {8,32,55}, plus mono) and WITNESS (a source with non-zero low 2
+bits must NOT encode to the truncated stream), plus the rejection cases.
+Regression: identity_matrix 54/54, bd10_matrix 36/36, bd10_nonflat 309/309,
+bd10_photo 191/191, bd10_recon_parity 13/13 — all byte-identical.
+
+**Remaining band-limit (chunk 2):** the post-filter searches (deblock level,
+CDEF strength, Wiener taps) and the recon SSE still read the MSB-truncated u8
+planes.
+
+### Original chunk-1 sketch (kept for the site map)
 
 Threads real u16 into the **MD funnel RD only** (the biggest consumer). Post-filters still
 widen u8 → chunk-1 real-10-bit source gets real-u16 MD but 8-bit-precision post-filter

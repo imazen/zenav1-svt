@@ -1,6 +1,27 @@
 # Superres (super-resolution) — port map
 
-**Status: INVESTIGATED, scoped. Upscale DSP exists; encoder-side unported.**
+**Status: CHUNKS A + B.1 + B.2 LANDED 2026-07-24** (5c69edcb2, f4a1b7516,
+2f4d24cba) — the normative upscale, the source downscale, and the header
+syntax are all ported and byte-exact vs real C. **B.3 (the encoder wiring)
+is the remaining work.** Superres stays OFF by default, so everything landed
+so far is additive and byte-neutral.
+
+| piece | state | gate |
+|---|---|---|
+| normative upscale (`svtav1-dsp::superres`) | LANDED (chunk A) | `c_parity_superres` — 64/64 filter phases + 224 upscale cells == C |
+| source downscale (`svtav1-dsp::resize`) | LANDED (chunk B.1) | `c_parity_resize` — 256 plane cells == C, all 5 filter banks, both down2 arms |
+| `enable_superres` + `superres_params()` | LANDED (chunk B.2) | `superres_header` — SH and FH bytes == real C at denom 12/16 |
+| denom selection / encode at coded_w / recon upscale / LR on upscaled | **OPEN (chunk B.3)** | byte-parity vs `--superres-mode 1 --superres-kf-denom D` |
+
+**MEASURED (2026-07-24), do not re-derive:** for a STILL (KEY) frame the C knob
+is `--superres-kf-denom`, NOT `--superres-denom`. With `--superres-mode 1
+--superres-denom 12` C signals `enable_superres = 1` in the sequence header but
+codes `use_superres = 0` on the key frame — the denom-12 and denom-16 streams
+come out byte-identical. `--superres-kf-denom 12` is what actually scales.
+
+---
+
+**Original scoping (below) — Upscale DSP existed as a stub; encoder-side unported.**
 **Priority: LOW** — superres is **OFF by default** in C (`superres_mode = SUPERRES_NONE`,
 `enc_settings.c:1095`); it is an opt-in (`--superres-mode`) rate-saving tool, not part of the
 default still-image envelope. Sequenced after native-10-bit (`hbd-input-port-map.md`) + HDR.
@@ -40,11 +61,42 @@ Modes (`EbSvtAv1Enc.h:108-121`): `NONE` (default), `FIXED` (one denom), `RANDOM`
 
 ## Chunk plan
 
-- **Chunk A** — validate the upscale DSP: differential gate `superres_upscale` vs C
-  `av1_upscale_normative` (the exported kernel), bit-exact across denoms 9..16 × bit depths.
-- **Chunk B** — FIXED-denom still encode: source downscale → encode at `coded_w` → recon
-  upscale (DSP) → LR on upscaled → header `superres_params`. Byte-parity gate vs
-  `SvtAv1EncApp --superres-mode 1 --superres-denom D`, one denom, one preset.
+- **Chunk A — DONE** (5c69edcb2). The 16-phase Q14 stub was replaced with a
+  faithful `super_res.c` port: the 64-phase `RESIZE_FILTER_NORMATIVE` table,
+  `upscale_convolve_step` / `upscale_convolve_x0` (the RS_SCALE_EXTRA_OFF +
+  err/2 geometry the stub got wrong), `upscale_normative_row` with
+  `upscale_normative_rect`'s border policy as a `TileColPad`, the whole-plane
+  driver, and `scaled_size`.
+- **Chunk B.1 — DONE** (f4a1b7516). `svtav1-dsp::resize`: the four band-limited
+  filter banks (the 1000 bank IS the normative table, resize.h:75),
+  `choose_interp_filter`, `interpolate_core`, `down2_symeven`/`down2_symodd` +
+  `down2_steps`/`down2_length` (denominator 16 only), `resize_multistep`,
+  `resize_plane_horizontal`. New cref shims — note `svt_av1_interpolate_core` /
+  `svt_av1_down2_symeven` are RTCD pointers from **aom_dsp_rtcd.c**, not
+  common_dsp_rtcd.c (initialising the wrong table leaves them NULL → segfault).
+- **Chunk B.2 — DONE** (2f4d24cba). `SeqTools::enable_superres` +
+  `ScSignal::superres` / `SuperresParams` write `superres_params()`; the
+  `allow_intrabc` bit is now gated on the frame being unscaled. Pinned to real
+  C bytes at denom 12 and 16.
+- **Chunk B.3 — OPEN, the remaining wiring.** In order:
+  1. `EncodePipeline::with_superres(denom)` (opt-in; default `None`), carrying
+     `upscaled_w` (the SH/`max_frame_width_minus_1` value, already the TRUE
+     width) and `coded_w = superres::scaled_size(upscaled_w, denom)`.
+  2. Downscale the SOURCE with `resize::resize_plane_horizontal` (luma + both
+     chroma planes at their own widths) and run the whole existing MD/recon
+     pipeline at `coded_w` — the partition/SB/tile geometry all follow the
+     smaller width, which is exactly what the arbitrary-dims work (#95) already
+     supports.
+  3. After CDEF and BEFORE loop restoration, upscale the recon to `upscaled_w`
+     with `superres::upscale_normative_plane` (C `svt_av1_superres_upscale_frame`,
+     cdef_process.c:152), then run the LR search/apply on the UPSCALED frame
+     (LR unit geometry uses the upscaled width).
+  4. Signal it: `SeqTools::enable_superres = true` and
+     `ScSignal::superres = SuperresParams { enabled_in_seq: true, denom }`.
+  5. Gate: `tools/superres_gate.sh` — port vs `SvtAv1EncApp --superres-mode 1
+     --superres-kf-denom D` (D in 9..=16) × preset × qp, byte-identical OBUs,
+     plus an aomdec/dav1d decode-conformance run (the upscale is normative, so
+     a decode check is not optional).
 - **Chunk C** — QTHRESH + AUTO denom selection (the RDO); byte-parity across modes.
 
 ## Invariants

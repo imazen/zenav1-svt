@@ -376,6 +376,24 @@ v4.2.0-rc pin, so all gates carried over unchanged)
 - C baseline updated to upstream v4.2.0-rc; all parity suites re-verified
   against the new library.
 
+## Known Bugs — non-blocking, PRE-EXISTING (found 2026-07-24)
+
+- **`svtav1-entropy` `c_parity.rs::coeff_c_txb_init_levels_partial_zero_no_stale_reads`
+  fails at default test parallelism, passes at `--test-threads=1`.** Reproduced
+  4/4 vs 0/4. The assert that fires is the whole-buffer raster compare of the
+  port's `get_nz_map_contexts` against the real C `_sse2` kernel with a
+  deliberately dirty (0xFF-prefilled) scratch: the LAST raster position differs
+  (port 0 vs C 21) for a 4x4 txb. The SCAN-position asserts (the bytes any
+  consumer actually reads) all pass, and CI is green, which is why no encode
+  gate sees it. NOT caused by the hbd/superres work landed the same day —
+  `svtav1-entropy` does not depend on `svtav1-encoder`, and the port side holds
+  no mutable shared state (`coeff_simd.rs`'s only `static` is a const table),
+  so the thread-count dependence most likely comes from C's SIMD kernel
+  over-reading its input buffer into neighbouring STACK bytes whose contents
+  differ per thread. Owner: the entropy/SIMD workstream that landed 7326983b0
+  (`perf(entropy): complete the get_nz_map_contexts SIMD port`). Verify by
+  running the file single- vs multi-threaded.
+
 ## Investigation Notes
 
 ### Transform Parity
