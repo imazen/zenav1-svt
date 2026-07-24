@@ -79,11 +79,15 @@ decoder output matches the encoder's recon bit-for-bit) rather than byte-vs-C �
 C v4.2.0 can't encode mono (`EB_YUV400` is rejected at init), so no C oracle
 exists for it; the byte-identity gates below run the 4:2:0 path.
 
-**Rate control beyond CQP is a still-image gap, not a video one.** CRF
-(quality-target), VBR (size-target), and `aq_mode` / delta-q (perceptual bit
-allocation) all apply to a single frame — the port is **CQP-only** today
-([#7](https://github.com/imazen/zenav1-svt/issues/7)). Multi-frame / GOP / ALT-REF
-are the separate video-scale future.
+**Rate control for a single still is already covered.** SVT-AV1's default /
+guide-recommended still mode is CRF, but for one frame `--crf N` == `--cqp N` ==
+`--qp N` **byte-for-byte** — aq-mode-2's deltaq needs TPL lookahead, which a single
+still frame has none of (verified against the C encoder,
+[benchmark](rust/benchmarks/crf_cqp_equivalence_2026-07-24.md)). So the port's
+`qp = N` already emits SVT-AV1's default-CRF bytes; `RcMode::Crf` == `Cqp` is
+correct-by-design, not a stub. VBR/CBR bitrate-targeting is multi-frame / degenerate
+for one still (iterate CRF to hit a size). Multi-frame / GOP / ALT-REF are the
+separate video-scale future.
 
 Two envelope details for *consumers*: the 10-bit path is byte-gated internally,
 but the public encode API currently takes **8-bit input** (`&[u8]`) — a `&[u16]`

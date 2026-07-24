@@ -3,6 +3,20 @@
 //! Spec 09 (rate-control.md): CQP/CRF/VBR/CBR modes.
 //!
 //! Ported from SVT-AV1's `rc_process.c` and related files.
+//!
+//! **CRF ≡ CQP for a single still frame (empirically verified 2026-07-24).**
+//! SVT-AV1's default / guide-recommended still mode is CRF (`--rc 0 --aq-mode 2`,
+//! `--crf 35`), but the aq-mode-2 deltaq (`svt_aom_sb_qp_derivation_tpl_la`,
+//! rc_aq.c:899) only fires under `tpl_ctrls.enable && r0 != 0` — i.e. it needs
+//! TPL lookahead, which a single still frame has none of (`r0` inits to 0,
+//! pcs.c:1299; no future frames raise it). Proven with the built C encoder:
+//! `--qp N` == `--cqp N` == `--crf N`, byte-for-byte, across preset {0,8} × qp
+//! {20,40,55} (see `benchmarks/crf_cqp_equivalence_2026-07-24.md`). So
+//! `RcMode::Crf` being identical to `Cqp` here is **correct-by-design, not a
+//! stub** — the port already emits SVT-AV1's default-CRF bytes at `qp = N`.
+//! (aq-mode 1/2 segment/TPL VAQ and VBR/CBR bitrate-targeting are multi-frame or
+//! degenerate for one still; the fork variance-boost is the only still-frame
+//! deltaq that fires, and it is `enable_variance_boost` / tune-IQ gated.)
 
 /// Rate control mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

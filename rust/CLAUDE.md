@@ -25,13 +25,17 @@ cite the source, don't re-argue them.
    — both C and the port reject them; the port already matches C's shipping *format*
    envelope. Do NOT read the `EbColorFormat` enum or the CLI parser and conclude "C supports
    444"; read `verify_settings`. (An oracle for 444/12-bit would require patching C first.)
-2. **Rate control (CRF / VBR / aq) is a STILL-IMAGE concern, not "video work".** CRF =
-   quality-target, VBR = size-target, `aq_mode`/delta-q = perceptual bit allocation — all
-   apply to one frame. In SVT-AV1, CQP-vs-CRF is distinguished by `aq_mode` (enc_settings.c
-   comment ~:175: "cqp is distinguished by setting aq_mode to 0"), i.e. CRF = `rate_control_
-   mode=0` + `aq_mode != 0`. The port is **CQP-only** (`RcMode::Crf` is a literal copy of the
-   Cqp arm; VBR/CBR = a ±1-QP nudge; 2-pass is dead). This is the port's #1 still-image gap
-   (issue #7) — never file it under "multi-frame/video".
+2. **Rate control: CRF ≡ CQP for a single still (EMPIRICALLY VERIFIED) — NOT a gap.**
+   SVT-AV1's default / guide-recommended still mode is CRF (`--rc 0 --aq-mode 2`, `--crf 35`),
+   but aq-mode-2's deltaq (`svt_aom_sb_qp_derivation_tpl_la`, rc_aq.c:899) is gated on
+   `tpl_ctrls.enable && r0 != 0` — TPL lookahead, which a single still frame has none of
+   (`r0` inits 0, pcs.c:1299; no future frames raise it). Proven with the built C encoder:
+   `--qp N` == `--cqp N` == `--crf N` byte-for-byte across preset {0,8} × qp {20,40,55}
+   (`benchmarks/crf_cqp_equivalence_2026-07-24.md`). So the port's `qp = N` already emits the
+   default-CRF bytes, and `RcMode::Crf` == `Cqp` is **correct-by-design, not a stub**. Do NOT
+   re-flag CQP-only as a still-image gap. (VBR/CBR bitrate-targeting is multi-frame/degenerate
+   for one still; the fork variance-boost is the only still-frame deltaq, `enable_variance_
+   boost` / tune-IQ gated. The earlier "CQP-only is the #1 still gap" claim was wrong.)
 3. **The port is deterministic TILE-PARALLEL, not single-threaded.** `EncodePipeline::
    with_thread_count(n)` bounds a `std::thread::scope` per-tile spawn (`pipeline.rs:~6854`);
    tiles reassemble in index order so bytes are identical at any thread count. The C oracle
