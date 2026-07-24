@@ -376,23 +376,45 @@ v4.2.0-rc pin, so all gates carried over unchanged)
 - C baseline updated to upstream v4.2.0-rc; all parity suites re-verified
   against the new library.
 
-## Known Bugs — non-blocking, PRE-EXISTING (found 2026-07-24)
+## FIXED 2026-07-24 — entropy c_parity flake was an archmage TIER RACE (not a C over-read)
 
-- **`svtav1-entropy` `c_parity.rs::coeff_c_txb_init_levels_partial_zero_no_stale_reads`
-  fails at default test parallelism, passes at `--test-threads=1`.** Reproduced
-  4/4 vs 0/4. The assert that fires is the whole-buffer raster compare of the
-  port's `get_nz_map_contexts` against the real C `_sse2` kernel with a
-  deliberately dirty (0xFF-prefilled) scratch: the LAST raster position differs
-  (port 0 vs C 21) for a 4x4 txb. The SCAN-position asserts (the bytes any
-  consumer actually reads) all pass, and CI is green, which is why no encode
-  gate sees it. NOT caused by the hbd/superres work landed the same day —
-  `svtav1-entropy` does not depend on `svtav1-encoder`, and the port side holds
-  no mutable shared state (`coeff_simd.rs`'s only `static` is a const table),
-  so the thread-count dependence most likely comes from C's SIMD kernel
-  over-reading its input buffer into neighbouring STACK bytes whose contents
-  differ per thread. Owner: the entropy/SIMD workstream that landed 7326983b0
-  (`perf(entropy): complete the get_nz_map_contexts SIMD port`). Verify by
-  running the file single- vs multi-threaded.
+`c_parity.rs::coeff_c_txb_init_levels_partial_zero_no_stale_reads` failed at
+default test parallelism and passed at `--test-threads=1`. My first hypothesis
+(C's `_sse2` kernel over-reading into neighbouring stack bytes) was **MEASURED
+WRONG** — a probe that poisons the bytes after the levels buffer and walks the
+poison offset shows the deepest read is 1291 bytes for the worst cell (32x32
+VERT) vs the 1456 the port zeroes and `TX_PAD_2D = 4640` allocated; no read
+ever passes `used`. (`TX_PAD_END = 16` exists precisely to give SIMD that
+headroom, definitions.h:437-447.)
+
+**Real root cause: archmage token disabling is PROCESS-WIDE.**
+`for_each_token_permutation` calls `dangerously_disable_token_process_wide` and
+its `TOKEN_PERMUTATION_MUTEX` only serialises other permutation callers — an
+unrelated test on another libtest thread still observes the flipped tier. The
+sibling `txb_init_levels_simd_matches_c` / `nz_map_contexts_simd_matches_c`
+tests take that path, so the failing test could run on the SCALAR arm
+(`nz_map_contexts_scan_order`, a faithful port of C's `_c`), which writes only
+`scan[0..eob]` — leaving non-scan raster positions at 0 while the C `_sse2`
+oracle raster-fills them. Signature matches exactly: the differing value on the
+port side was always 0 (never a 0xFF-derived context 3), and the failing cell
+varied per run.
+
+**Fix (landed): the test holds `archmage::testing::lock_token_testing()`** —
+the same lock the permutation tests take. Verified 5/5 green full-file runs at
+default parallelism (was 4/4 failing). Nothing relaxed; every assert keeps
+full strength.
+
+**No bitstream risk ever existed.** Every consumer indexes `coeff_contexts`
+through `scan[c]`, `c < eob` — C pack (entropy_coding.c:481, :502-506), C RD
+(rd_cost.c:421-424), port pack (coeff_c.rs:957-960), PD0 (pd0.rs:896), funnel
+(leaf_funnel.rs:1478-1540). Positions outside the eob scan set are read by
+nobody, which is why CI was green.
+
+**STANDING RULE:** a test that asserts TIER-DEPENDENT output must hold
+`archmage::testing::lock_token_testing()`. Today no other test needs it (the
+`for_each_token_permutation` sites in svtav1-dsp assert tier-INVARIANT output),
+but the hazard is process-wide, so new tier-dependent asserts must take the
+lock.
 
 ## Investigation Notes
 

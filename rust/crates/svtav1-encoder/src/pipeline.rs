@@ -58,6 +58,32 @@ pub struct EncodePipeline {
     pub true_height: u32,
     /// Bit depth (8, 10, or 12).
     pub bit_depth: u8,
+    /// UPSCALED frame width — what the sequence header advertises
+    /// (`max_frame_width_minus_1`) and what a decoder outputs. Equals
+    /// [`Self::true_width`] unless superres is on, in which case
+    /// `true_width` is the reduced CODED width the whole encode runs at and
+    /// this is the width the decoder normatively upscales back to
+    /// (superres chunk B.3, `rust/docs/superres-port-map.md`).
+    pub upscaled_width: u32,
+    /// `SuperresDenom` in 9..=16 when superres is on, `None` (denominator 8,
+    /// unscaled) otherwise. Off by default, exactly like C
+    /// (`superres_mode = SUPERRES_NONE`, enc_settings.c:1095).
+    pub superres_denom: Option<u8>,
+    /// Superres chunk B.3: the FULL-RESOLUTION luma the caller handed in,
+    /// stashed by the downscale so the frame-level PICTURE STATISTICS can be
+    /// derived from it.
+    ///
+    /// C computes those in `picture_analysis_process` and only scales the
+    /// picture later, in `pd_process` (`svt_aom_init_resize_picture`,
+    /// pd_process.c:4344) — so `pic_avg_variance` (and the screen-content
+    /// derivation) see the ORIGINAL width, not the coded one. MEASURED: with
+    /// the port deriving them from the downscaled source instead, a superres
+    /// encode of textured content diverges from C late in the tile even though
+    /// encoding the identical downscaled pixels WITHOUT superres is
+    /// byte-identical (gradient 128x128 q32 p10 d16: 724B port vs 727B C with
+    /// superres; both 724B on the same pixels without it). Taken at the head
+    /// of `encode_frame_impl` like `hbd_source`, so it cannot leak.
+    superres_stats_luma: Option<(alloc::vec::Vec<u8>, usize, usize)>,
     /// Native 10-bit (u16) SOURCE planes for the NEXT frame — task #6 chunk 1.
     ///
     /// Set by [`Self::try_encode_frame_420_hbd`] / [`Self::try_encode_frame_hbd`]
@@ -286,6 +312,9 @@ impl EncodePipeline {
             true_width: width,
             true_height: height,
             bit_depth: 8,
+            upscaled_width: width,
+            superres_denom: None,
+            superres_stats_luma: None,
             hbd_source: None,
             // C-matched default: CICP "unspecified" (cp/tc/mc = 2/2/2,
             // studio range) — the library defaults of enc_settings.c:1043.
@@ -368,6 +397,55 @@ impl EncodePipeline {
         self.sb_size_override = sb;
         let (sb_size, fell_back) =
             Self::resolve_sb_size(self.derived_sb_size, sb, self.speed_config.preset);
+        self.sb_size = sb_size;
+        self.sb128_fallback = fell_back;
+        self
+    }
+
+    /// Enable super-resolution at `denom` (9..=16) — superres chunk B.3.
+    ///
+    /// The frame is then ENCODED at the reduced width `upscaled_w * 8 / denom`
+    /// (C `calculate_scaled_size_helper`) and a conforming decoder upscales it
+    /// back to the width the caller passed to [`Self::new`], with the
+    /// normative 8-tap filter ([`svtav1_dsp::superres`]). The caller keeps
+    /// handing in FULL-width planes; the pipeline downscales them
+    /// ([`svtav1_dsp::resize`], C `svt_av1_resize_plane_horizontal`).
+    ///
+    /// Height is unchanged — superres is horizontal only.
+    ///
+    /// Off by default (denominator 8), matching C. Re-derives the aligned
+    /// encode dims and the superblock size from the CODED width, exactly as
+    /// [`Self::new`] would have for a frame of that width.
+    pub fn with_superres(mut self, denom: u8) -> Self {
+        assert!(
+            (9..=16).contains(&denom),
+            "SuperresDenom must be 9..=16 (8 = unscaled = no superres); got {denom}"
+        );
+        let coded =
+            u32::from(svtav1_dsp::superres::scaled_size(self.upscaled_width as u16, denom));
+        self.superres_denom = Some(denom);
+        self.true_width = coded;
+        let dims =
+            crate::frame_geom::FrameDims::new(coded as usize, self.true_height as usize);
+        self.width = dims.aligned_w as u32;
+        self.height = dims.aligned_h as u32;
+        // The SB derivation keys off the ALIGNED dims, which just changed.
+        let sb_inputs = crate::sb128_geom::SbSizeInputs {
+            qp: self.rc_config.qp,
+            allintra: self.gop.intra_period <= 1,
+            ..Default::default()
+        };
+        self.derived_sb_size = crate::sb128_geom::derive_super_block_size(
+            dims.aligned_w,
+            dims.aligned_h,
+            self.speed_config.preset as i8,
+            &sb_inputs,
+        );
+        let (sb_size, fell_back) = Self::resolve_sb_size(
+            self.derived_sb_size,
+            self.sb_size_override,
+            self.speed_config.preset,
+        );
         self.sb_size = sb_size;
         self.sb128_fallback = fell_back;
         self
@@ -503,6 +581,22 @@ impl EncodePipeline {
         v: &[u8],
         y_stride: usize,
     ) -> crate::EncodeResult<Vec<u8>> {
+        // Superres chunk B.3: the caller hands in FULL-width planes; the
+        // encode runs at the reduced CODED width. Downscale horizontally with
+        // C's `svt_av1_resize_plane_horizontal` (svtav1-dsp::resize, pinned
+        // byte-exact vs C) before anything else, then the existing
+        // TRUE->ALIGNED padding and the whole pipeline operate on the coded
+        // planes. No-op when superres is off.
+        let downscaled = self.superres_downscale_420(y, u, v, y_stride)?;
+        let (y, u, v, y_stride) = match downscaled.as_ref() {
+            Some((yd, ud, vd)) => (
+                yd.as_slice(),
+                ud.as_slice(),
+                vd.as_slice(),
+                self.true_width as usize,
+            ),
+            None => (y, u, v, y_stride),
+        };
         let (tw, th) = (self.true_width as usize, self.true_height as usize);
         let (aw, ah) = (self.width as usize, self.height as usize);
         // Task #95 chunk 2: partial SBs are now supported. Every 4:2:0 KEY
@@ -648,6 +742,82 @@ impl EncodePipeline {
             // it runs exactly where the full-RD funnel does not.
             preset >= 9
         }
+    }
+
+    /// Superres chunk B.3: horizontally downscale the caller's FULL-width
+    /// 4:2:0 planes to the coded width. `None` when superres is off (the
+    /// planes are used as passed — zero copies, byte-identical path).
+    ///
+    /// Chroma is resized at its OWN widths (4:2:0 ceiling on both sides), so
+    /// the coded chroma width is `(coded_w + 1) / 2` — the same rounding the
+    /// rest of the pipeline uses.
+    fn superres_downscale_420(
+        &mut self,
+        y: &[u8],
+        u: &[u8],
+        v: &[u8],
+        y_stride: usize,
+    ) -> crate::EncodeResult<Option<(Vec<u8>, Vec<u8>, Vec<u8>)>> {
+        let Some(_denom) = self.superres_denom else {
+            return Ok(None);
+        };
+        let (uw, th) = (self.upscaled_width as usize, self.true_height as usize);
+        let cw = self.true_width as usize;
+        let (ucw, uch) = ((uw + 1) / 2, (th + 1) / 2);
+        let ccw = (cw + 1) / 2;
+        let mut yd = svtav1_types::try_vec![0u8; cw * th]?;
+        let mut ud = svtav1_types::try_vec![0u8; ccw * uch]?;
+        let mut vd = svtav1_types::try_vec![0u8; ccw * uch]?;
+        svtav1_dsp::resize::resize_plane_horizontal(y, th, uw, y_stride, &mut yd, cw, cw);
+        svtav1_dsp::resize::resize_plane_horizontal(u, uch, ucw, ucw, &mut ud, ccw, ccw);
+        svtav1_dsp::resize::resize_plane_horizontal(v, uch, ucw, ucw, &mut vd, ccw, ccw);
+        // Keep the ORIGINAL luma (tightened to `uw` stride) for the picture
+        // statistics C derives before scaling — see `superres_stats_luma`.
+        let mut orig = svtav1_types::try_vec![0u8; uw * th]?;
+        for r in 0..th {
+            orig[r * uw..(r + 1) * uw].copy_from_slice(&y[r * y_stride..r * y_stride + uw]);
+        }
+        self.superres_stats_luma = Some((orig, uw, th));
+        Ok(Some((yd, ud, vd)))
+    }
+
+    /// Superres chunk B.3 — the combinations whose SIGNALLED stream would not
+    /// match what the encoder actually produced. Rejecting beats emitting a
+    /// stream that says "upscale me" over content the encoder handled with the
+    /// wrong geometry.
+    fn superres_config_error(&self) -> Option<&'static str> {
+        let Some(denom) = self.superres_denom else {
+            return None;
+        };
+        if !(9..=16).contains(&denom) {
+            return Some("SuperresDenom must be 9..=16");
+        }
+        // Loop restoration runs on the UPSCALED frame in C
+        // (`svt_av1_superres_upscale_frame` sits between CDEF and LR,
+        // cdef_process.c:152); this port still searches/applies LR at the
+        // coded width, so the two would disagree. Restoration is off for
+        // allintra presets >= 7 (`seq_tools_for_preset`: wn = 0 there), which
+        // is where the superres gate lives until the upscaled-LR wiring lands.
+        let tools = crate::speed_config::seq_tools_for_preset(
+            self.speed_config.preset,
+            self.gop.intra_period <= 1,
+        );
+        if tools.enable_restoration && !crate::frame_geom::small_frame_disables_restoration(
+            &crate::frame_geom::FrameDims::new(
+                self.upscaled_width as usize,
+                self.true_height as usize,
+            ),
+        ) {
+            return Some(
+                "superres with loop restoration enabled (allintra preset <= 6) is not wired yet                  — C runs LR on the UPSCALED frame; use preset >= 7",
+            );
+        }
+        if self.bit_depth != 8 {
+            return Some(
+                "superres is 8-bit only so far (the u16 source downscale is unported)",
+            );
+        }
+        None
     }
 
     /// Native 10-bit (u16) 4:2:0 entry point — task #6 chunk 1
@@ -845,11 +1015,21 @@ impl EncodePipeline {
         chroma: Option<(&[u8], &[u8])>,
     ) -> crate::EncodeResult<Vec<u8>> {
         let display_order = self.frame_count;
+        // Superres chunk B.3: refuse any combination whose SIGNALLED geometry
+        // would not match what this encoder actually produced (see
+        // `superres_config_error`). Checked at the single choke point every
+        // entry point funnels through, so no path can slip past it.
+        if let Some(why) = self.superres_config_error() {
+            return Err(whereat::at!(EncodeError::UnsupportedConfig(why)));
+        }
         // Task #6 chunk 1: TAKE the native 10-bit source (set only by the
         // `*_hbd` entry points) so it can never leak into a following u8
         // frame. `None` on every u8 path -> every bd10 stage keeps widening
         // `u8 << 2` exactly as before.
         let hbd_source = self.hbd_source.take();
+        // Superres chunk B.3: the pre-scaling picture-statistics source (see
+        // `superres_stats_luma`). `None` on every non-superres path.
+        let stats_src = self.superres_stats_luma.take();
         // Did a bd10 consumer actually READ it? The entry points pre-screen
         // the config (`hbd_source_consumed`), but the post-pass additionally
         // requires every SB's tree to be bd10-supported at RUNTIME — so this
@@ -1007,13 +1187,22 @@ impl EncodePipeline {
         // the per-block no-palette flag coding in the tile pack, the MD
         // rates (via the tile driver's own identical derivation), and the
         // FH bits.
-        let sc_derivation = crate::sc_detect::derive_allintra_sc(
-            self.speed_config.preset,
-            &encode_input,
-            w,
-            w,
-            h,
-        );
+        // Superres chunk B.3: same pre-scaling rule as `pic_avg_variance` —
+        // C's screen-content detection is part of picture analysis, which runs
+        // before `svt_aom_init_resize_picture`. Unchanged (coded source) on
+        // every non-superres path.
+        let sc_derivation = match stats_src.as_ref() {
+            Some((orig, ow, oh)) => {
+                crate::sc_detect::derive_allintra_sc(self.speed_config.preset, orig, *ow, *ow, *oh)
+            }
+            None => crate::sc_detect::derive_allintra_sc(
+                self.speed_config.preset,
+                &encode_input,
+                w,
+                w,
+                h,
+            ),
+        };
 
         // Step 3c: Frame-level adaptive QP — OPT-IN via RcConfig.aq_mode.
         //
@@ -1136,13 +1325,23 @@ impl EncodePipeline {
             // 8-aligned key frame. pic_avg_variance averages over the ALIGNED
             // b64 grid (sb_cols x sb_rows), matching C. Full-SB is unchanged.
             if is_key {
+                // Superres chunk B.3: C's picture analysis runs BEFORE the
+                // superres downscale (pd_process.c:4344), so `pic_avg_variance`
+                // is derived from the FULL-RESOLUTION picture. Walk that grid
+                // when a superres source was stashed; otherwise this is the
+                // unchanged coded-source walk.
+                let (stat_src, stat_stride, stat_w, stat_h) = match stats_src.as_ref() {
+                    Some((orig, ow, oh)) => (orig.as_slice(), *ow, *ow, *oh),
+                    None => (sb_input, in_stride, w, h),
+                };
                 let mut tot: u64 = 0;
                 let mut cnt: u64 = 0;
-                for sy in (0..h).step_by(64) {
-                    for sx in (0..w).step_by(64) {
-                        tot +=
-                            crate::pd0::compute_b64_variance(sb_input, in_stride, sx, sy).0[0]
-                                as u64;
+                for sy in (0..stat_h).step_by(64) {
+                    for sx in (0..stat_w).step_by(64) {
+                        tot += crate::pd0::compute_b64_variance(
+                            stat_src, stat_stride, sx, sy,
+                        )
+                        .0[0] as u64;
                         cnt += 1;
                     }
                 }
@@ -1866,6 +2065,10 @@ impl EncodePipeline {
             // port's `sb_size` comes from the same rule
             // (sb128_geom::derive_super_block_size), so the bit follows it.
             t.use_128x128_superblock = self.sb_size == 128;
+            // Superres chunk B.3: the SH tool bit must agree with what the
+            // frame header signals (`SuperresParams::enabled_in_seq`) or the
+            // decoder's bit walk desyncs. Off by default -> unchanged bit.
+            t.enable_superres = self.superres_denom.is_some();
             // [SVT_HDR_MODE] the fork ALWAYS signals separate_uv_delta_q
             // (its FH writes independent U/V deltas — entropy_coding.c
             // fork block hardcodes both flags true).
@@ -2264,7 +2467,18 @@ impl EncodePipeline {
                         let sh = (self.bit_depth - 8) as u32;
                         let widen =
                             |p: &[u8]| -> Vec<u16> { p.iter().map(|&s| (s as u16) << sh).collect() };
-                        let (sy10, su10, sv10) = (widen(&encode_input), widen(su), widen(sv));
+                        // Task #6 chunk 2: the deblock level search compares the
+                        // 10-bit recon against the 10-bit SOURCE. With a native
+                        // HBD source that is the caller's real u16 (so the low 2
+                        // bits participate in the SSE that picks the level);
+                        // otherwise the same `u8 << sh` widening as before.
+                        let (sy10, su10, sv10) = match hbd_source.as_ref() {
+                            Some(hbd) => {
+                                hbd_used = true;
+                                (hbd.y.clone(), hbd.u.clone(), hbd.v.clone())
+                            }
+                            None => (widen(&encode_input), widen(su), widen(sv)),
+                        };
                         let input = crate::deblock::DlfSearchInput::<u16> {
                             sharpness: lf_sharp_eff,
                             y_src: &sy10,
@@ -2397,8 +2611,16 @@ impl EncodePipeline {
                             let widen = |p: &[u8]| -> Vec<u16> {
                                 p.iter().map(|&s| (s as u16) << sh).collect()
                             };
-                            let (sy10, su10, sv10) =
-                                (widen(&encode_input), widen(su), widen(sv));
+                            // Task #6 chunk 2: real u16 source for the CDEF
+                            // strength search's distortion (see the deblock
+                            // site); identical widening on every other path.
+                            let (sy10, su10, sv10) = match hbd_source.as_ref() {
+                                Some(hbd) => {
+                                    hbd_used = true;
+                                    (hbd.y.clone(), hbd.u.clone(), hbd.v.clone())
+                                }
+                                None => (widen(&encode_input), widen(su), widen(sv)),
+                            };
                             crate::cdef::cdef_search_still_hbd(
                                 &cfg,
                                 y10,
@@ -2622,11 +2844,30 @@ impl EncodePipeline {
                                 }
                                 out
                             };
+                        // Task #6 chunk 2: with a native HBD source the Wiener
+                        // tap search sees the caller's real u16 samples (same
+                        // tight true/ceil extraction, just from the u16 plane);
+                        // otherwise the identical `u8 << sh` widening as before.
+                        let (lr_sy10, lr_su10, lr_sv10) = match hbd_source.as_ref() {
+                            Some(hbd) => {
+                                hbd_used = true;
+                                (
+                                    tight10(&hbd.y, w, lr_true_w, lr_true_h),
+                                    tight10(&hbd.u, cw, lr_tcw, lr_tch),
+                                    tight10(&hbd.v, cw, lr_tcw, lr_tch),
+                                )
+                            }
+                            None => (
+                                widen_tight(&encode_input, w, lr_true_w, lr_true_h),
+                                widen_tight(su, cw, lr_tcw, lr_tch),
+                                widen_tight(sv, cw, lr_tcw, lr_tch),
+                            ),
+                        };
                         crate::restoration::search_restoration_still_bd(
                             &ctrls,
-                            &widen_tight(&encode_input, w, lr_true_w, lr_true_h),
-                            &widen_tight(su, cw, lr_tcw, lr_tch),
-                            &widen_tight(sv, cw, lr_tcw, lr_tch),
+                            &lr_sy10,
+                            &lr_su10,
+                            &lr_sv10,
                             &tight10(y10, w, lr_true_w, lr_true_h),
                             &tight10(u10, w / 2, lr_tcw, lr_tch),
                             &tight10(v10, w / 2, lr_tcw, lr_tch),
@@ -2758,11 +2999,13 @@ impl EncodePipeline {
         let sc_signal = svtav1_entropy::obu::ScSignal {
             allow_screen_content_tools: sc_derivation.allow_screen_content_tools,
             allow_intrabc: sc_derivation.allow_intrabc,
-            // Superres chunk B: the encoder does not yet downscale the source
-            // or upscale the recon, so no frame may signal it. `default()` is
-            // `enabled_in_seq: false, denom: None` -> zero bits written, i.e.
-            // the pre-superres header layout exactly.
-            superres: svtav1_entropy::obu::SuperresParams::default(),
+            // Superres chunk B.3: signal what the encode actually did. Off by
+            // default -> `SuperresParams::default()` -> zero bits written,
+            // i.e. the pre-superres header layout exactly.
+            superres: svtav1_entropy::obu::SuperresParams {
+                enabled_in_seq: self.superres_denom.is_some(),
+                denom: self.superres_denom,
+            },
         };
 
         let bitstream = if is_key {
@@ -2775,7 +3018,10 @@ impl EncodePipeline {
                 // captures max_frame_width BEFORE 8-alignment,
                 // enc_handle.c:4792). Everything else in the encode uses
                 // the aligned self.width/height.
-                self.true_width,
+                // Superres: the sequence header advertises the UPSCALED
+                // width (what a decoder outputs); the encode itself ran at
+                // the reduced `true_width`. Equal when superres is off.
+                self.upscaled_width,
                 self.true_height,
                 is_single_frame,
                 self.bit_depth,
@@ -2876,6 +3122,39 @@ impl EncodePipeline {
         };
 
         // Step 7: Publish recon for the recon-parity gate, then update DPB.
+        //
+        // Superres chunk B.3: what a DECODER outputs is the coded-width recon
+        // normatively upscaled back to `upscaled_width` (C
+        // `svt_av1_superres_upscale_frame`, cdef_process.c:152 — after CDEF,
+        // before loop restoration; LR is off for every config this port lets
+        // superres run at, see `superres_config_error`, so "after CDEF" is
+        // here). The BITSTREAM is unaffected: nothing downstream of this point
+        // codes symbols. No-op when superres is off.
+        if self.superres_denom.is_some() {
+            let (cw, uw, hh) = (
+                self.width as usize,
+                self.upscaled_width as usize,
+                self.height as usize,
+            );
+            let mut y_up = svtav1_types::try_vec![0u8; uw * hh]?;
+            svtav1_dsp::superres::upscale_normative_plane(
+                &recon, cw, cw, &mut y_up, uw, uw, hh,
+            );
+            recon = y_up;
+            if chroma.is_some() {
+                let (ccw, cuw, chh) = (cw / 2, uw.div_ceil(2), hh / 2);
+                let mut u_up = svtav1_types::try_vec![0u8; cuw * chh]?;
+                let mut v_up = svtav1_types::try_vec![0u8; cuw * chh]?;
+                svtav1_dsp::superres::upscale_normative_plane(
+                    &u_recon, ccw, ccw, &mut u_up, cuw, cuw, chh,
+                );
+                svtav1_dsp::superres::upscale_normative_plane(
+                    &v_recon, ccw, ccw, &mut v_up, cuw, cuw, chh,
+                );
+                u_recon = u_up;
+                v_recon = v_up;
+            }
+        }
         self.last_recon = Some((recon.clone(), u_recon.clone(), v_recon.clone()));
         let ref_frame = ReferenceFrame {
             y_plane: recon,

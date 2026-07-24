@@ -91,6 +91,21 @@ jobs:
         run: |
           AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" ./tools/bd10_nonflat_gate.sh
 
+      - name: bd10 NATIVE 10-bit source identity (task #6 chunk 2)
+        working-directory: rust
+        # Real 10-bit samples (low 2 bits SET) through the u16 entry points vs
+        # the same .yuv through the C encoder. The other bd10 gates feed both
+        # sides `u8 << 2`, so only this one can catch a silent truncation.
+        run: |
+          ./tools/bd10_hbd_src_gate.sh
+
+      - name: superres identity + conformance (chunk B.3)
+        working-directory: rust
+        # Byte-parity vs C at SUPERRES_FIXED + decodability at the UPSCALED
+        # size under the reference decoder (the upscale is normative).
+        run: |
+          AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" ./tools/superres_gate.sh
+
       - name: Recon parity (encoder recon == aomdec output, byte-exact)
         working-directory: rust
         run: |

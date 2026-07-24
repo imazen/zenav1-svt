@@ -598,6 +598,27 @@ fn coeff_c_levels_and_contexts_match_c() {
 #[test]
 fn coeff_c_txb_init_levels_partial_zero_no_stale_reads() {
     use svtav1_entropy::coeff_c;
+    // PIN THE DISPATCH TIER. The whole-buffer raster assert below compares the
+    // port's RASTER arm against C's `_sse2` raster fill, which is only a valid
+    // oracle while the v3 token is live: the scalar arm
+    // (`nz_map_contexts_scan_order`) faithfully reproduces C's `_c` and writes
+    // ONLY `scan[0..eob]`, leaving every other raster position at its initial
+    // value — so comparing it against a raster fill is meaningless.
+    //
+    // archmage's token disabling is PROCESS-WIDE
+    // (`dangerously_disable_token_process_wide`), and its
+    // `TOKEN_PERMUTATION_MUTEX` only serialises other permutation callers. The
+    // sibling `txb_init_levels_simd_matches_c` /
+    // `nz_map_contexts_simd_matches_c` tests call
+    // `for_each_token_permutation`, so at default test parallelism THIS test
+    // could observe the tier they flipped off — the failure signature being a
+    // 0 (never written) at a non-scan raster position, and a different cell
+    // each run. Taking the same lock pins a stable tier for the duration.
+    // Nothing is relaxed: every assert keeps full strength.
+    //
+    // STANDING RULE for this workspace: a test that asserts TIER-DEPENDENT
+    // output must hold `archmage::testing::lock_token_testing()`.
+    let _tier_lock = archmage::testing::lock_token_testing();
     let mut rng = Rng(0x5EED_1EAF_9911_ABCD);
     for ts in 0..19usize {
         let width = coeff_c::txb_wide(ts);

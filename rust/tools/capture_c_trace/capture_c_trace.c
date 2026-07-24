@@ -188,6 +188,20 @@ int main(int argc, char** argv) {
         cfg.tile_columns = atoi(tile_cols_env);
     }
 
+    /* Superres (superres chunk B.3): SVT_SUPERRES_KF_DENOM sets
+     * `superres_mode = SUPERRES_FIXED(1)` + `superres_kf_denom = D`.
+     * MEASURED: for a STILL (KEY) frame the KF denominator is the one that
+     * takes effect — `superres_denom` alone leaves `use_superres = 0` on the
+     * key frame (denom 12 and 16 then produce byte-identical streams). Absent
+     * the env var nothing is touched, so every pre-existing cell is unchanged
+     * (`superres_mode` stays SUPERRES_NONE, enc_settings.c:1095). */
+    const char* superres_env = getenv("SVT_SUPERRES_KF_DENOM");
+    if (superres_env) {
+        cfg.superres_mode      = 1; /* SUPERRES_FIXED */
+        cfg.superres_kf_denom  = (uint8_t)atoi(superres_env);
+        cfg.superres_denom     = (uint8_t)atoi(superres_env);
+    }
+
     /* Fork / fork-defaulted knobs. Types per EbSvtAv1Enc.h; absent env var =
      * untouched, so this whole block is inert for every pre-existing caller. */
     FORK_SET("SVT_FORK_AC_BIAS", ac_bias, FORK_D);

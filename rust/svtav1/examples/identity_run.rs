@@ -281,11 +281,41 @@ fn main() {
     // where the decoder's DC prediction fills the 10-bit default and the coded
     // tile bytes are identical to bd8 apart from the SH high_bitdepth bit.
     let bd: u8 = std::env::var("SVTAV1_BD").ok().and_then(|v| v.parse().ok()).unwrap_or(8);
+    // SVTAV1_HBD_SRC (task #6 chunk 2): generate a REAL 10-bit source instead
+    // of `u8 << 2`. The low 2 bits carry a deterministic spatial pattern, so
+    // both encoders see identical NON-widened 10-bit samples and the gate
+    // actually exercises the u16 path end-to-end. The .yuv written below is
+    // the SAME bytes the C driver reads, so the oracle needs no changes —
+    // `capture_c_trace` already consumes a 16-bit-LE .yuv at bd10.
+    let hbd_src = bd > 8 && std::env::var_os("SVTAV1_HBD_SRC").is_some();
+    let low_bits = |v: usize, r: usize, c: usize| -> u16 {
+        // 0..3, varying in BOTH directions (a constant or row-only pattern
+        // would be invisible to a horizontal-only predictor).
+        (((r * 3 + c * 5 + v) % 4) as u16) & 3
+    };
+    let (y10, u10, v10): (Vec<u16>, Vec<u16>, Vec<u16>) = if hbd_src {
+        let shift = (bd - 8) as u32;
+        let mk = |p: &[u8], pw: usize| -> Vec<u16> {
+            p.iter()
+                .enumerate()
+                .map(|(i, &s)| ((s as u16) << shift) | low_bits(s as usize, i / pw, i % pw))
+                .collect()
+        };
+        (mk(&y, w), mk(&u, cw), mk(&v, cw))
+    } else {
+        (Vec::new(), Vec::new(), Vec::new())
+    };
     if bd > 8 {
         let shift = (bd - 8) as u32;
         let mut yuv = Vec::with_capacity((w * h + 2 * cw * ch) * 2);
-        for &s in y.iter().chain(u.iter()).chain(v.iter()) {
-            yuv.extend_from_slice(&(((s as u16) << shift).to_le_bytes()));
+        if hbd_src {
+            for &s in y10.iter().chain(u10.iter()).chain(v10.iter()) {
+                yuv.extend_from_slice(&s.to_le_bytes());
+            }
+        } else {
+            for &s in y.iter().chain(u.iter()).chain(v.iter()) {
+                yuv.extend_from_slice(&(((s as u16) << shift).to_le_bytes()));
+            }
         }
         std::fs::write(format!("{prefix}.yuv"), &yuv).expect("write .yuv");
     } else {
@@ -333,6 +363,13 @@ fn main() {
         matches!(sb_size, None | Some(64) | Some(128)),
         "SVTAV1_SB must be 64 or 128, got {sb_size:?}"
     );
+    // SVTAV1_SUPERRES=<denom 9..16> (superres chunk B.3): encode at the
+    // reduced width `w * 8 / denom` and signal `superres_params()`; the C
+    // driver reads the SAME denominator from SVT_SUPERRES_KF_DENOM. Unset =
+    // no superres, i.e. every pre-existing cell is untouched.
+    let superres_denom: Option<u8> = std::env::var("SVTAV1_SUPERRES")
+        .ok()
+        .and_then(|v| v.parse().ok());
     let mut pipeline = EncodePipeline::new(w as u32, h as u32, preset, rc, 0, 1)
         .with_tile_rows_log2(tile_rows_log2)
         .with_tile_cols_log2(tile_cols_log2)
@@ -342,13 +379,51 @@ fn main() {
     // captures this process's stderr verbatim into `rs.trace` (the symtrace
     // op stream the differ parses), so any stray stderr line corrupts every
     // comparison. Same reason the wrapper buffers cargo's build chatter.
+    if let Some(d) = superres_denom {
+        pipeline = pipeline.with_superres(d);
+        // SVTAV1_SR_DUMP=<path>: write the DOWNSCALED I420 source the pipeline
+        // will encode (same `resize_plane_horizontal` call, which is pinned
+        // byte-exact vs C). Diagnostic only — lets a superres divergence be
+        // split into "the coded-width encode of this content" (re-run it via
+        // `raw:` with no superres) vs "a statistic C derives BEFORE scaling".
+        if let Ok(path) = std::env::var("SVTAV1_SR_DUMP") {
+            let cwid = pipeline.true_width as usize;
+            let (ucw, uch) = ((w + 1) / 2, (h + 1) / 2);
+            let ccw = (cwid + 1) / 2;
+            let mut yd = vec![0u8; cwid * h];
+            let mut ud = vec![0u8; ccw * uch];
+            let mut vd = vec![0u8; ccw * uch];
+            svtav1_dsp::resize::resize_plane_horizontal(&y, h, w, w, &mut yd, cwid, cwid);
+            svtav1_dsp::resize::resize_plane_horizontal(&u, uch, ucw, ucw, &mut ud, ccw, ccw);
+            svtav1_dsp::resize::resize_plane_horizontal(&v, uch, ucw, ucw, &mut vd, ccw, ccw);
+            let mut out = Vec::with_capacity(yd.len() + ud.len() + vd.len());
+            out.extend_from_slice(&yd);
+            out.extend_from_slice(&ud);
+            out.extend_from_slice(&vd);
+            std::fs::write(&path, &out).expect("write SVTAV1_SR_DUMP");
+            eprintln!("SVTAV1_SR_DUMP {cwid}x{h} -> {path}");
+        }
+    }
     let sb128_fallback = pipeline.sb128_fallback;
     let sb_size_used = pipeline.sb_size;
     // SVT_HDR_MODE / SVT_FORK_*: the SAME env names the C driver reads, so one
     // env vector configures both encoders (hdr_mode::HdrForkConfig::from_env).
     // Unset => mainline, i.e. every pre-existing invocation is unchanged.
     pipeline.hdr = svtav1_encoder::hdr_mode::HdrForkConfig::from_env();
-    let obu = if mono {
+    let obu = if hbd_src {
+        // Task #6: the native-10-bit entry points — the port sees the SAME
+        // real u16 samples written to the .yuv the C oracle reads.
+        if mono {
+            pipeline
+                .try_encode_frame_hbd(&y10, w)
+                .expect("hbd mono encode inside the documented envelope")
+        } else {
+            pipeline = pipeline.with_chroma_420(true);
+            pipeline
+                .try_encode_frame_420_hbd(&y10, &u10, &v10, w)
+                .expect("hbd 4:2:0 encode inside the documented envelope")
+        }
+    } else if mono {
         pipeline.encode_frame(&y, w)
     } else {
         pipeline = pipeline.with_chroma_420(true);
