@@ -1,6 +1,7 @@
 name: rust gates
 
 on:
+  workflow_dispatch: {}
   push:
     branches: ["wave2/**", "main"]
     paths: ["rust/**", "reference/**", ".gitmodules", ".github/workflows/rust-gates.yml"]
