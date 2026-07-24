@@ -43,9 +43,18 @@ CELL_TIMEOUT="${SIG_CELL_TIMEOUT:-300}"
 # pre-chunk-7 build) — CLOSED 2026-07-23 by the C exchange-sort
 # tie-semantics fix (c_exchange_sort_by, leaf_funnel.rs; the ind-uv
 # fast-loop SAD-tie survivor cut) and promoted here per the
-# self-promotion contract. All 80 sc_class5 cells remain pinned-diverging
-# RD near-ties (KB-2 family; localizations in
-# benchmarks/screen_ibc_map_2026-07-23.txt).
+# self-promotion contract.
+#
+# 2026-07-24 IBC-pin grind (parity/ibc-pin-grind): +2 sc_class5 cells
+# promoted per the self-promotion contract, 20 -> 22 byte-identical:
+#   - windows95_p3_q20 (ibc=181): the class-concatenated MDS structure fix
+#     (c0a39545f — C never cost-merges candidate classes; the winner-scan
+#     strict-< breaks a cross-class exact-RD tie toward the earlier class).
+#   - windows95_p4_q20 (ibc=2): the ind_palette_cost_diff CfL-arbitration
+#     fix (58afd153b — a luma-palette DC row pays the [1][0] palette-flag
+#     context the ind-uv table priced as [0][0]).
+# The remaining 78 sc_class5 cells stay pinned-diverging RD near-ties
+# (KB-2 family; localizations in benchmarks/screen_ibc_map_2026-07-23.txt).
 BYTE_EXACT=(
   "codec_wiki_p0_q20"
   "codec_wiki_p0_q48"
@@ -67,6 +76,8 @@ BYTE_EXACT=(
   "gmessages_p3_q48"
   "gmessages_p4_q20"
   "gmessages_p4_q48"
+  "windows95_p3_q20"
+  "windows95_p4_q20"
 )
 
 is_byte_exact() {
