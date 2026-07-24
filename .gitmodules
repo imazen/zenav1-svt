@@ -1,0 +1,3 @@
+[submodule "reference/svt-av1"]
+	path = reference/svt-av1
+	url = https://github.com/imazen/svt-av1-ref

@@ -1,38 +1,21 @@
+# Local artifacts (never committed)
 *.ivf
 *.yuv
 *.y4m
-*.user
 *.o
-*.db
-*.sdf
-*.suo
-*.opendb
-*.vs
 *.bin
-*.opensdf
 *.log
 .vscode
 .cache/
-Bin
-Build
-build
-build-*/
-compile_commands.json
-test/vectors/
-test/docs/
-!Build/linux/build.sh
-!Build/windows/build.bat
-!Build/obj1fastdownloader.cmake
-!Build/gen_devirt.py
 .DS_Store
-third_party/aom/lib/*/aom.lib
-third_party/aom/lib/*/*/aom.lib
-third_party/safestringlib/dummy.c
-/offline_ci/
-cbuild/
-
 .workongoing
 .jj/
+
+# C-oracle build output (built FROM the reference/svt-av1 submodule; the
+# oracle lib lands in Bin/Release / Bin/ReleaseHdr, gates read it via
+# SVT_CREF_LIB_DIR)
+Bin
+cbuild/
 cbuild-static/
 cbuild-static-hdr/
 cbuild-config.log

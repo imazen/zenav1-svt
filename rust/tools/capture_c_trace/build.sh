@@ -34,6 +34,7 @@ set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../../.." && pwd) # <repo> (rust/tools/capture_c_trace -> repo root)
+C_ROOT="$ROOT/reference/svt-av1" # the C reference submodule (imazen/svt-av1-ref)
 
 # ---------------------------------------------------------------------------
 # SVT_HDR_MODE — which C oracle to link (see rust/docs/HDR-ON-4.2.md).
@@ -93,7 +94,7 @@ fi
 
 if [[ ! -f "$LIB" ]]; then
     echo "error: $LIB not found (SVT_HDR_MODE=$HDR_MODE). Build the C reference first:" >&2
-    echo "  cmake -S $ROOT -B $CMAKE_DIR -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \\" >&2
+    echo "  cmake -S $C_ROOT -B $CMAKE_DIR -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \\" >&2
     echo "        -DBUILD_APPS=OFF -DBUILD_TESTING=OFF -DSVT_AV1_LTO=OFF $CMAKE_HDR_FLAG \\" >&2
     echo "        -DCMAKE_OUTPUT_DIRECTORY=$DEFAULT_LIB_DIR/ && cmake --build $CMAKE_DIR -j" >&2
     exit 1
@@ -110,10 +111,10 @@ cc -O2 -g -o "$OUT" \
     "$HERE/capture_c_trace.c" \
     "$HERE/wrap_odec.c" \
     "$HERE/wrap_recon.c" \
-    -I"$ROOT/Source/API" \
-    -I"$ROOT/Source/Lib/Codec" \
-    -I"$ROOT/Source/Lib/Globals" \
-    -I"$ROOT/Source/Lib/C_DEFAULT" \
+    -I"$C_ROOT/Source/API" \
+    -I"$C_ROOT/Source/Lib/Codec" \
+    -I"$C_ROOT/Source/Lib/Globals" \
+    -I"$C_ROOT/Source/Lib/C_DEFAULT" \
     -Wl,--wrap=svt_od_ec_encode_cdf_q15 \
     -Wl,--wrap=svt_od_ec_encode_bool_q15 \
     -Wl,--wrap=svt_od_ec_encode_bool_eq_q15 \

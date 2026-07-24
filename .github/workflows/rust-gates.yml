@@ -3,9 +3,9 @@ name: rust gates
 on:
   push:
     branches: ["wave2/**", "master"]
-    paths: ["rust/**", "Source/**", ".github/workflows/rust-gates.yml"]
+    paths: ["rust/**", "reference/**", ".gitmodules", ".github/workflows/rust-gates.yml"]
   pull_request:
-    paths: ["rust/**", "Source/**"]
+    paths: ["rust/**", "reference/**", ".gitmodules"]
 
 env:
   CARGO_TERM_COLOR: always
@@ -17,6 +17,8 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
+        with:
+          submodules: recursive
 
       - name: Install toolchain deps
         run: |
@@ -36,7 +38,8 @@ jobs:
 
       - name: Build C reference (static, the differential oracle)
         run: |
-          cmake -S . -B cbuild-static -G Ninja -DCMAKE_BUILD_TYPE=Release \
+          cmake -S reference/svt-av1 -B cbuild-static -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OUTPUT_DIRECTORY="$GITHUB_WORKSPACE/Bin/Release/" \
             -DBUILD_SHARED_LIBS=OFF -DBUILD_APPS=ON -DBUILD_TESTING=OFF -DSVT_AV1_LTO=OFF
           cmake --build cbuild-static
 
