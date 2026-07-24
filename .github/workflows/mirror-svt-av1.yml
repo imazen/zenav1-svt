@@ -1,0 +1,82 @@
+name: mirror-svt-av1
+
+# Keeps imazen/zenav1-svt-c's `master` (+ all tags) a faithful mirror of upstream
+# SVT-AV1 (https://gitlab.com/AOMediaCodec/SVT-AV1) — the C oracle this port pins
+# as its `reference/svt-av1` submodule. UNLIKE a pure mirror, zenav1-svt-c also
+# holds OUR work on the `imazen-parity` branch (the SVT_HDR_MODE fork commit on
+# the v4.2.0 tag), so this job mirrors upstream HEADS + TAGS but NEVER prunes
+# heads — our `imazen-*` branches are not in upstream's refs and are left alone.
+#
+# The mirror repo's default branch is upstream's `master`, so a scheduled
+# workflow cannot live there (a mirrored default branch has no room for it, and
+# schedules fire only from the default branch). It runs HERE and pushes into
+# zenav1-svt-c over SSH using a repo-scoped write DEPLOY KEY — no personal token,
+# no cross-repo GITHUB_TOKEN grant.
+#
+# ONE-TIME SETUP (repo admin, not automatable from this workflow):
+#   1. Generate a keypair:  ssh-keygen -t ed25519 -f svt_c_mirror -N ''
+#   2. Add svt_c_mirror.pub as a WRITE deploy key on imazen/zenav1-svt-c
+#      (Settings → Deploy keys → Add, "Allow write access").
+#   3. Add the PRIVATE key svt_c_mirror as secret SVT_C_MIRROR_SSH_KEY on THIS
+#      repo (imazen/zenav1-svt, Settings → Secrets → Actions).
+# After that this runs daily and on demand.
+
+on:
+  schedule:
+    - cron: '37 5 * * *'   # daily, 05:37 UTC
+  workflow_dispatch: {}
+
+# Talks only to upstream (anonymous read) and to zenav1-svt-c (via deploy key).
+# Needs no permissions on THIS repository.
+permissions: {}
+
+concurrency:
+  group: mirror-svt-av1
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mirror gitlab SVT-AV1 -> imazen/zenav1-svt-c (heads no-prune, tags prune)
+        env:
+          DEPLOY_KEY: ${{ secrets.SVT_C_MIRROR_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DEPLOY_KEY:-}" ]; then
+            echo "::error::SVT_C_MIRROR_SSH_KEY secret is not set — see the header of this workflow for one-time setup" >&2
+            exit 1
+          fi
+
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+
+          UPSTREAM="https://gitlab.com/AOMediaCodec/SVT-AV1.git"
+          FORK="git@github.com:imazen/zenav1-svt-c.git"
+
+          echo "::group::Bare-clone upstream"
+          git clone --bare "$UPSTREAM" svt.git
+          cd svt.git
+          echo "upstream HEAD: $(git rev-parse HEAD)"
+          echo "branches: $(git for-each-ref --format='%(refname)' refs/heads | wc -l), tags: $(git for-each-ref refs/tags | wc -l)"
+          echo "::endgroup::"
+
+          # Heads: force-update to exactly track upstream, but do NOT --prune.
+          # Pruning refs/heads/* would delete our imazen-* branches (they are not
+          # in the source), so we omit it. Upstream branch names never collide
+          # with the imazen-* prefix, so our work is safe; a branch deleted
+          # upstream simply lingers here (harmless), which is the price of
+          # protecting our fork branch.
+          echo "::group::Push heads (force, NO prune — protects imazen-*)"
+          git push --force "$FORK" 'refs/heads/*:refs/heads/*'
+          echo "::endgroup::"
+
+          # Tags: upstream owns the tag namespace entirely; force + prune is safe
+          # and keeps our release-point references (v4.2.0 etc.) exact.
+          echo "::group::Push tags (force + prune)"
+          git push --force --prune "$FORK" 'refs/tags/*:refs/tags/*'
+          echo "::endgroup::"
+
+          echo "Mirror sync complete. imazen-parity and any imazen-* branch untouched."

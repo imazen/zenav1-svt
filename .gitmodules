@@ -1,4 +1,4 @@
 [submodule "reference/svt-av1"]
 	path = reference/svt-av1
 	url = https://github.com/imazen/zenav1-svt-c.git
-	branch = zenav1-parity
+	branch = imazen-parity
