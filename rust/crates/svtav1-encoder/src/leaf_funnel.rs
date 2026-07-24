@@ -1454,7 +1454,19 @@ pub(crate) fn cost_coeffs_txb(
         cc::txb_init_levels(qcoeff, width, height, &mut levels_buf);
     }
     if plane_type == 0 {
-        cost += rates.txt_rate(c_tx_size, intra_dir, tx_type);
+        // SHIPPED-C QUIRK (svt_av1_cost_coeffs_txb, rd_cost.c:394): the
+        // coeff-cost's tx-type rate keys `is_inter` on
+        // `is_inter_mode(mode)` WITHOUT `|| use_intrabc` — an IntraBC
+        // candidate (mode DC_PRED, fi off) therefore prices its tx type
+        // on the INTRA rows at intra_dir = DC (the WRITE path and the
+        // txt-search set/gates stay inter-classified). Witnessed:
+        // gui_p4_q48 mi(62,32) IBC 8x8/d1 — C's V_DCT txb costs read the
+        // intra-DC row (~1.9k) where the inter row is 2504 (default),
+        // flipping both the per-txb TXT winners ({0,10,0,10} vs the
+        // port's {0,0,0,10}) and the candidate's total coeff rate (C ycb
+        // 29518 vs port 32124) -> the IBC-vs-intra arbitration.
+        let cost_dir = if intra_dir == INTER_TXT_DIR { 0 } else { intra_dir };
+        cost += rates.txt_rate(c_tx_size, cost_dir, tx_type);
     }
     cost += crate::quant::eob_cost(eob as i32, eob_bits, costs, tx_class);
 
