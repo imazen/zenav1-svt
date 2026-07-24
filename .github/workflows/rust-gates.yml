@@ -2,7 +2,7 @@ name: rust gates
 
 on:
   push:
-    branches: ["wave2/**", "master"]
+    branches: ["wave2/**", "main"]
     paths: ["rust/**", "reference/**", ".gitmodules", ".github/workflows/rust-gates.yml"]
   pull_request:
     paths: ["rust/**", "reference/**", ".gitmodules"]

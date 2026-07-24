@@ -90,7 +90,7 @@ way).
   point it becomes a pass/fail gate too**.
 - **Anti-vacuous witnesses** — every fix ships with a test that *fails without it*. A
   test that passes before and after the change proves nothing and is not evidence.
-- **Landing verification** — every landing is confirmed on `origin/master` with
+- **Landing verification** — every landing is confirmed on `origin/main` with
   `git merge-base --is-ancestor`. A report that something was pushed is a claim, not
   evidence; the two have been different before.
 

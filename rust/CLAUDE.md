@@ -437,7 +437,7 @@ re-litigate priorities (they are in "PRODUCTION PRIORITIES" above).
 
 ### Do-not-clobber map (concurrent HDR-fork session — read docs/HDR-ON-4.2.md first)
 
-The hdr-hybrid workstream actively lands on master. NEVER touch its
+The hdr-hybrid workstream actively lands on main. NEVER touch its
 surface: `hdr_mode.rs`, `var_boost.rs`, `chroma_q.rs`, `noise_gen.rs`,
 `noise_norm.rs`, `qm.rs`, `qm_tables.rs`, `tx_bias.rs`, `tune.rs`,
 `ssim_md.rs`, `tests/hdr_fork_e2e.rs`, the gate examples
@@ -677,8 +677,8 @@ after the code is in. Rules:
   differential), delete the marker in the same commit as the evidence.
 - The index below tracks AREAS with outstanding markers — update it when
   adding/clearing markers in a module.
-- Development happens ON MASTER now (wave2/entropy-c-parity is merged and
-  frozen; push origin HEAD:master). The HDR fork mode lands via PR #2
+- Development happens ON MAIN now (wave2/entropy-c-parity is merged and
+  frozen; push origin HEAD:main). The HDR fork mode lands via PR #2
   (hdr-hybrid branch) — do not touch SVT_HDR_MODE code paths here.
 
 ### PORT-NOTE(unverified) index
