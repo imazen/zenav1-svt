@@ -2758,6 +2758,11 @@ impl EncodePipeline {
         let sc_signal = svtav1_entropy::obu::ScSignal {
             allow_screen_content_tools: sc_derivation.allow_screen_content_tools,
             allow_intrabc: sc_derivation.allow_intrabc,
+            // Superres chunk B: the encoder does not yet downscale the source
+            // or upscale the recon, so no frame may signal it. `default()` is
+            // `enabled_in_seq: false, denom: None` -> zero bits written, i.e.
+            // the pre-superres header layout exactly.
+            superres: svtav1_entropy::obu::SuperresParams::default(),
         };
 
         let bitstream = if is_key {

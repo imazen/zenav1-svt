@@ -166,6 +166,81 @@ pub struct SeqTools {
     /// BOTH log2 domains (MI and PIXEL, which the port map flags as easy to
     /// conflate). Do not add a second accessor here.
     pub use_128x128_superblock: bool,
+    /// SH `enable_superres` (spec 5.5.1): gates the FH `superres_params()`
+    /// `use_superres` bit (spec 5.9.8). C sets it from the superres config
+    /// (`--superres-mode != 0`); MEASURED against real C v4.2.0 output at
+    /// `--superres-mode 1 --superres-kf-denom {12,16}` on a 64x64 still.
+    ///
+    /// Default false = no bit change anywhere, which is what every existing
+    /// byte-identical gate cell encodes.
+    pub enable_superres: bool,
+}
+
+/// FH `superres_params()` (spec 5.9.8) — the frame's superres state.
+///
+/// `None` = `use_superres = 0` (the default; `SuperresDenom = SCALE_NUMERATOR
+/// = 8`, coded frame width == upscaled width). `Some(denom)` with `denom` in
+/// 9..=16 codes `use_superres = 1` + `coded_denom = denom - 9` (3 bits) and
+/// means the frame is CODED at `upscaled_w * 8 / denom` and upscaled back by
+/// the decoder ([`svtav1_dsp::superres`]).
+///
+/// MEASURED ground truth (real C v4.2.0, 64x64 still, `--superres-mode 1`):
+/// `--superres-kf-denom 12` -> `use_superres = 1, coded_denom = 3`;
+/// `--superres-kf-denom 16` -> `coded_denom = 7`. NOTE for a still/KEY frame
+/// the applicable C knob is `--superres-kf-denom`; `--superres-denom` alone
+/// leaves `use_superres = 0` on the key frame (also measured).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SuperresParams {
+    /// The SEQUENCE header's `enable_superres` bit ([`SeqTools::
+    /// enable_superres`]), repeated here because `superres_params()` codes
+    /// nothing at all when the sequence has the tool off — and the two must
+    /// agree or the decoder's bit walk desyncs. C can have this set while a
+    /// given frame still codes `use_superres = 0` (MEASURED: `--superres-mode
+    /// 1 --superres-denom 12` on a still leaves the KEY frame unscaled).
+    pub enabled_in_seq: bool,
+    /// `SuperresDenom` in 9..=16, or `None` for unscaled (denom 8).
+    pub denom: Option<u8>,
+}
+
+impl SuperresParams {
+    /// Spec 5.9.8 `coded_denom` (`SuperresDenom - SUPERRES_DENOM_MIN`).
+    pub const DENOM_MIN: u8 = 9;
+    /// Spec `SUPERRES_NUM` — the unscaled denominator.
+    pub const NUM: u8 = 8;
+
+    /// Write `superres_params()` for a frame whose sequence header signalled
+    /// `enable_superres = enable`. Nothing is coded when the sequence has the
+    /// tool off, exactly like C.
+    fn write(self, wb: &mut BitWriter) {
+        if !self.enabled_in_seq {
+            debug_assert!(
+                self.denom.is_none(),
+                "a frame cannot use superres unless the SH enables it"
+            );
+            return;
+        }
+        match self.denom {
+            Some(d) => {
+                debug_assert!(
+                    (Self::DENOM_MIN..=16).contains(&d),
+                    "SuperresDenom must be 9..=16, got {d}"
+                );
+                wb.write_bit(true); // use_superres = 1
+                wb.write_bits(u32::from(d - Self::DENOM_MIN), 3); // coded_denom
+            }
+            None => wb.write_bit(false), // use_superres = 0
+        }
+    }
+
+    /// Spec 5.9.8 `FrameWidth` — the CODED width for an upscaled width.
+    /// Identical to C `calculate_scaled_size_helper`'s formula for the
+    /// superres denominators (both are `(w * 8 + denom/2) / denom`).
+    pub fn coded_width(self, upscaled_width: u32) -> u32 {
+        match self.denom {
+            Some(d) => (upscaled_width * u32::from(Self::NUM) + u32::from(d) / 2) / u32::from(d),
+            None => upscaled_width,
+        }
+    }
 }
 
 /// OBU types as defined in the AV1 spec.
@@ -651,7 +726,10 @@ fn write_sequence_header_inner(
         wb.write_bit(true); // = 1 → seq_force_integer_mv = SELECT
     }
 
-    wb.write_bit(false); // enable_superres = 0
+    // enable_superres (spec 5.5.1): false on every existing gate cell, so the
+    // written bit is unchanged there. When true the frame header carries
+    // `superres_params()` (spec 5.9.8) — see [`SuperresParams`].
+    wb.write_bit(tools.enable_superres);
     // enable_cdef = 1: matches C (scs->seq_header.cdef_level defaults on;
     // the C SH golden below carries the same bit). Every frame header now
     // carries cdef_params() (spec 5.9.19) — zero strengths when CDEF is off
@@ -842,6 +920,11 @@ impl LrSignal {
 pub struct ScSignal {
     pub allow_screen_content_tools: bool,
     pub allow_intrabc: bool,
+    /// FH `superres_params()` (spec 5.9.8) — see [`SuperresParams`]. Default
+    /// (`denom: None`) is the unscaled frame every current gate cell encodes;
+    /// it also gates `allow_intrabc` off, matching the spec's
+    /// `UpscaledWidth == FrameWidth` condition.
+    pub superres: SuperresParams,
 }
 
 /// [`write_key_frame_header_full`] with full lr_params() signaling.
@@ -1048,16 +1131,22 @@ fn key_frame_header_bits_lr(
     }
 
     // ---- frame_size() ----
-    // frame_size_override_flag = 0 → use SH dimensions, no bits
-    // superres_params(): enable_superres=0 → no bits
+    // frame_size_override_flag = 0 → use SH dimensions, no bits.
+    // superres_params() (spec 5.9.8): one `use_superres` bit when the SH has
+    // the tool on, plus 3 bits of `coded_denom` when it is set. Nothing is
+    // written when `enable_superres` is off (every current gate cell), so this
+    // is bit-for-bit the previous behaviour there.
+    sc.superres.write(&mut wb);
 
     // ---- render_size() ----
     wb.write_bit(false); // render_and_frame_size_different = 0
 
-    // allow_intrabc: signaled iff allow_screen_content_tools (superres is
-    // always unscaled here) — C entropy_coding.c:3464-3466, after
-    // write_frame_size.
-    if sc.allow_screen_content_tools {
+    // allow_intrabc: signaled iff allow_screen_content_tools AND the frame is
+    // NOT superres-scaled (spec 5.9.11 `UpscaledWidth == FrameWidth`; C
+    // entropy_coding.c:3464-3466, after write_frame_size). IntraBC cannot be
+    // combined with superres because the block copy would read the
+    // pre-upscale grid.
+    if sc.allow_screen_content_tools && sc.superres.denom.is_none() {
         wb.write_bit(sc.allow_intrabc);
     }
 
@@ -2135,6 +2224,7 @@ mod tests {
                 enable_intra_edge_filter: false,
                 enable_restoration: true,
                 use_128x128_superblock: false,
+                enable_superres: false,
             },
         );
         assert_eq!(ours[0], 0b0_0001_0_1_0); // SH OBU header

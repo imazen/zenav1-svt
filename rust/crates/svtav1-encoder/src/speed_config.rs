@@ -206,6 +206,10 @@ pub fn seq_tools_for_preset(preset: u8, allintra: bool) -> svtav1_entropy::obu::
         // which `seq_tools_for_preset` cannot see. The pipeline overwrites
         // this from its own `sb_size` right after calling us.
         use_128x128_superblock: false,
+        // Superres is OFF by default in C (`superres_mode = SUPERRES_NONE`,
+        // enc_settings.c:1095) and is a CONFIG knob, not a speed feature —
+        // the pipeline sets it when a caller opts in (superres chunk B).
+        enable_superres: false,
     }
 }
 
