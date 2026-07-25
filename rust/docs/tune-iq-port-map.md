@@ -53,14 +53,39 @@ So QM signalling, sharpness, the partition cap, the scm force and the header are
 all already C-exact under tune IQ. What differs is `variance_adjust_qp`'s
 magnitude at strength 3 / curve 2 / octile 5.
 
-**Strong lead:** `sb_qindex::variance_adjust_qp` recenters the frame base after
-the per-SB pass (`readjust_base_q_idx`: `normalized_base = min_q + range/2`).
-On a ONE-superblock frame `min_q == max_q`, so `range == 0` and every offset
-collapses to zero — which is exactly the flat plan observed. C keeps
-`base_q_idx = 208` and emits the delta instead. Compare the port's recentering
-against C's for the single-SB case first; a synthetic probe of
-`deltaq_sb_variance_boost` on a steeper gradient DOES produce a large boost
-(base 128 -> 93 at curve 2 / strength 3), so the kernel itself is live.
+**ROOT CAUSE FOUND (2026-07-25) — it is NOT the recentering.** An earlier note
+here blamed `variance_adjust_qp`'s base recentering; that was wrong and is
+corrected: the port's recentering matches C's mainline
+`svt_av1_variance_adjust_qp` (rc_aq.c:454) exactly — including the fact that
+mainline NEVER writes `normalized_base_q_idx` back to the frame header (the
+`readjust_base_q_idx` argument is `(void)`-ignored there, rc_aq.c:455; only the
+fork build at rc_aq.c:226 honours it). On a one-superblock frame that yields
+`sb_qindex = base - boost` with the frame base untouched — which is exactly
+what C emits.
+
+The real cause is one level down. **C has TWO boost functions and the port
+implements the wrong one for mainline:**
+
+| build | signature | rc_aq.c |
+|---|---|---|
+| fork (`SVT_HDR_MODE`) | `av1_get_deltaq_sb_variance_boost(base_q_idx, uint64_t mean, double* variances, strength, bd, octile, curve)` | :87 |
+| **mainline** | `av1_get_deltaq_sb_variance_boost(base_q_idx, uint16_t* variances, strength, bd, octile, curve)` | :350 |
+
+The mainline one takes **u16** variances and has **no `mean` argument** — it
+reads `ppcs->variance[sb_addr]`, the integer per-b64 array that picture analysis
+builds (the same `compute_b64_variance` output the PD0 path already uses,
+ported C-exactly in `pd0.rs`). The port's `var_boost::deltaq_sb_variance_boost`
+is the FORK variant (f64 variances scaled `/65536`, plus a mean-based dark-bias
+term), fed from `sb_qindex::compute_sb_variances` — a SECOND, differently-scaled
+variance implementation. Wrong input domain, so the boost comes back 0.
+
+**The fix**: port the mainline `av1_get_deltaq_sb_variance_boost` (rc_aq.c:350)
+against the u16 `pd0::compute_b64_variance` output, and select it whenever the
+encode is not in fork mode; keep the existing f64 variant for the fork. Note
+`c_parity_var_boost.rs` does NOT currently cover either boost function (its
+tests are qindex<->q conversions), so the new one needs its own differential
+test — `av1_get_deltaq_sb_variance_boost` is `static` in C, so it needs the
+`ref_shims.c` wrapper treatment the palette statics got.
 
 ## Invariants
 
