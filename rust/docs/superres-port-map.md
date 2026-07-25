@@ -16,6 +16,42 @@ stays OFF by default, so everything landed is additive and byte-neutral.
 | LR restoration-unit geometry | LANDED (chunk B.5 part 1) | `restoration::superres_lr_geom_tests` vs C's formula, all denominators |
 | LR on the upscaled frame (presets <= 6) | **OPEN (chunk B.5 rest)** | refused today by `superres_config_error` |
 | `gradient_64_q32_p7_d10` | **OPEN** | the single divergent cell of the 640-cell sweep |
+
+### Chunk B.5 — what is left, with the ordering question SETTLED
+
+The blocker named in the previous handoff ("what resolution do the LR
+boundary-line buffers have under superres?") is now answered from the C source,
+so the next session does not have to rediscover it:
+
+- C saves BOTH boundary-line sets at the **CODED** width, BEFORE the upscale.
+  `cdef_process.c:707` calls `svt_av1_loop_restoration_save_boundary_lines(...,
+  after_cdef=1)` and only then, at `:715`, runs
+  `svt_av1_superres_upscale_frame`; the deblock set is saved earlier still
+  (`dlf_process.c:134`, `after_cdef=0`). The save itself takes its width from
+  `frame->crop_widths[is_uv]` at call time (`restoration.c:1667-1681`), which
+  is the coded width at both call sites.
+- So LR runs on the UPSCALED recon while its stripe-boundary buffers hold
+  CODED-width rows. The port must reproduce that, not "fix" it.
+- LR's distortion source is the UNSCALED original (`enhanced_unscaled_pic`,
+  `rest_process.c:271`), and the RU grid is the upscaled one (chunk B.5 part 1,
+  already ported and tested).
+
+Remaining work is therefore mechanical rather than exploratory: upscale the
+recon after the boundary save, run the LR search/apply at the upscaled width
+against the original source, and lift the `superres_config_error` refusal only
+when a preset-6 cell byte-matches.
+
+### The one open cell, `gradient_64_q32_p7_d10`
+
+Superres-conditional and preset-7-specific. RULED OUT by measurement: the
+geometry itself (a plain 51x64 gradient at p7 q32 is byte-IDENTICAL to C), the
+stale-variance model (this cell failed identically before and after chunk B.4),
+and the screen-content source (it diverges with the detector reading either the
+full-res or the coded picture — expected, since `gradient` is not screen
+content, so that knob is inert here). The first divergence is a 3-symbol CDF at
+tile-op 2286 (C symbol 0, port symbol 1). Preset 7 is the ONLY allintra preset
+where scm-3 auto-detection is live, which is the remaining structural
+difference to chase.
 | denominator RDO (QTHRESH / AUTO) | **OPEN (chunk C)** | — |
 
 **MEASURED (2026-07-24), do not re-derive:** for a STILL (KEY) frame the C knob

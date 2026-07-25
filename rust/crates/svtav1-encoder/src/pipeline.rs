@@ -1217,22 +1217,22 @@ impl EncodePipeline {
         // the per-block no-palette flag coding in the tile pack, the MD
         // rates (via the tile driver's own identical derivation), and the
         // FH bits.
-        // Superres chunk B.3: same pre-scaling rule as `pic_avg_variance` —
-        // C's screen-content detection is part of picture analysis, which runs
-        // before `svt_aom_init_resize_picture`. Unchanged (coded source) on
-        // every non-superres path.
-        let sc_derivation = match stats_src.as_ref() {
-            Some((orig, ow, oh)) => {
-                crate::sc_detect::derive_allintra_sc(self.speed_config.preset, orig, *ow, *ow, *oh)
-            }
-            None => crate::sc_detect::derive_allintra_sc(
-                self.speed_config.preset,
-                &encode_input,
-                w,
-                w,
-                h,
-            ),
-        };
+        // Superres: screen-content detection runs on the CODED (downscaled)
+        // picture, NOT the full-resolution one — unlike `pic_avg_variance`.
+        // C's picture-decision process resizes at pd_process.c:4344 and only
+        // then detects (`svt_aom_is_screen_content_antialiasing_aware`,
+        // pd_process.c:4787), so the detector sees the scaled picture.
+        // MEASURED: running it on the full-res source instead diverges from C
+        // at preset 7 — the only allintra preset where scm-3 auto-detection is
+        // live (enc_handle.c:4514-4527; M8+ has it off) — on the superres cell
+        // gradient 64x64 q32 d10.
+        let sc_derivation = crate::sc_detect::derive_allintra_sc(
+            self.speed_config.preset,
+            &encode_input,
+            w,
+            w,
+            h,
+        );
 
         // Step 3c: Frame-level adaptive QP — OPT-IN via RcConfig.aq_mode.
         //
