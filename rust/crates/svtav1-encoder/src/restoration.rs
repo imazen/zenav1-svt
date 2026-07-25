@@ -1007,9 +1007,20 @@ pub fn apply_restoration_frame(
 
 /// C `svt_av1_loop_restoration_corners_in_sb` (restoration.c:1410) —
 /// which restoration units have their top-left corner inside this
-/// superblock (no superres, single tile). Returns `(rcol0, rcol1, rrow0,
-/// rrow1)` when non-empty. `mi_*` are 4x4 luma units; `sb_mi` the SB span
-/// in mi (16 for 64px SBs).
+/// superblock (single tile). Returns `(rcol0, rcol1, rrow0, rrow1)` when
+/// non-empty. `mi_*` are 4x4 luma units; `sb_mi` the SB span in mi (16 for
+/// 64px SBs).
+///
+/// SUPERRES (chunk B.5): restoration units live on the UPSCALED frame while
+/// superblocks are coded at the reduced width, so `frame_w` must be the
+/// UPSCALED width and `sr_denom` the `SuperresDenom`. C then scales the
+/// mi->pixel numerator by the denominator and the divisor by
+/// `SCALE_NUMERATOR` (restoration.c:1457-1462):
+/// `u = D * MI_SIZE * m / N`. `None` = unscaled = the pre-superres arithmetic
+/// exactly (`mi_to_num_x = mi_size_x`, `denom_x = size`).
+/// C `SCALE_NUMERATOR` (definitions.h:1451) — the superres numerator.
+const SCALE_NUMERATOR: i32 = 8;
+
 pub fn corners_in_sb(
     pr: &PlaneRest,
     is_uv: bool,
@@ -1018,6 +1029,7 @@ pub fn corners_in_sb(
     sb_mi: i32,
     frame_w: usize,
     frame_h: usize,
+    sr_denom: Option<u8>,
 ) -> Option<(i32, i32, i32, i32)> {
     if pr.frame_rtype == RESTORE_NONE {
         return None;
@@ -1031,11 +1043,18 @@ pub fn corners_in_sb(
     // MI_SIZE = 4 luma px; one mi spans 4 >> ss plane px.
     let mi_size_x = 4 >> ss;
     let mi_size_y = 4 >> ss;
-    let rnd = size - 1;
-    let rcol0 = (mi_col * mi_size_x + rnd) / size;
-    let rrow0 = (mi_row * mi_size_y + rnd) / size;
-    let rcol1 = (((mi_col + sb_mi) * mi_size_x + rnd) / size).min(horz_units);
-    let rrow1 = (((mi_row + sb_mi) * mi_size_y + rnd) / size).min(vert_units);
+    // C `mi_to_num_x` / `denom_x` (restoration.c:1459-1465): under superres the
+    // horizontal mapping carries the denominator; the vertical one never does
+    // (superres is horizontal only).
+    let (mi_to_num_x, denom_x) = match sr_denom {
+        Some(d) => (mi_size_x * i32::from(d), size * SCALE_NUMERATOR),
+        None => (mi_size_x, size),
+    };
+    let (rnd_x, rnd_y) = (denom_x - 1, size - 1);
+    let rcol0 = (mi_col * mi_to_num_x + rnd_x) / denom_x;
+    let rrow0 = (mi_row * mi_size_y + rnd_y) / size;
+    let rcol1 = (((mi_col + sb_mi) * mi_to_num_x + rnd_x) / denom_x).min(horz_units);
+    let rrow1 = (((mi_row + sb_mi) * mi_size_y + rnd_y) / size).min(vert_units);
     (rcol0 < rcol1 && rrow0 < rrow1).then_some((rcol0, rcol1, rrow0, rrow1))
 }
 
@@ -1074,12 +1093,15 @@ pub fn write_lr_for_sb(
     frame_w: usize,
     frame_h: usize,
     monochrome: bool,
+    // Superres chunk B.5: `SuperresDenom` when the frame is scaled (then
+    // `frame_w` is the UPSCALED width), `None` otherwise.
+    sr_denom: Option<u8>,
 ) {
     let num_planes = if monochrome { 1 } else { 3 };
     for plane in 0..num_planes {
         let pr = &info.planes[plane];
         let Some((rcol0, rcol1, rrow0, rrow1)) =
-            corners_in_sb(pr, plane > 0, mi_row, mi_col, sb_mi, frame_w, frame_h)
+            corners_in_sb(pr, plane > 0, mi_row, mi_col, sb_mi, frame_w, frame_h, sr_denom)
         else {
             continue;
         };
@@ -1148,5 +1170,128 @@ mod tests {
         assert!(c3.enabled && c3.use_refinement && c3.max_one_refinement_step);
         assert!(!wn_filter_ctrls_allintra(7).enabled);
         assert!(!wn_filter_ctrls_allintra(13).enabled);
+    }
+}
+
+#[cfg(test)]
+mod superres_lr_geom_tests {
+    use super::*;
+
+    fn pr(unit_size: i32) -> PlaneRest {
+        PlaneRest {
+            frame_rtype: RESTORE_WIENER,
+            unit_size,
+            hunits: 0,
+            vunits: 0,
+            units: alloc::vec::Vec::new(),
+        }
+    }
+
+    /// C `svt_av1_loop_restoration_corners_in_sb` (restoration.c:1410) with
+    /// the superres arms transcribed verbatim — the port must agree with it
+    /// for every superres denominator, SB position and plane.
+    ///
+    /// EVIDENCE TIER: hand-transcribed formula, not an FFI call. The C symbol
+    /// IS exported (`nm -g libSvtAv1Enc.a | grep corners_in_sb`), but it takes
+    /// an `Av1Common*` whose `child_pcs->rst_info` must be built by hand;
+    /// shimming it the way `c_parity_intrabc_mvp` shims its context is the
+    /// upgrade path when superres chunk B.5 wires the rest of the LR path.
+    fn c_reference(
+        unit_size: i32,
+        is_uv: bool,
+        mi_row: i32,
+        mi_col: i32,
+        sb_mi: i32,
+        upscaled_w: usize,
+        frame_h: usize,
+        sr_denom: Option<u8>,
+    ) -> Option<(i32, i32, i32, i32)> {
+        const SCALE_NUMERATOR: i32 = 8;
+        let ss = i32::from(is_uv);
+        // C `whole_frame_rect` (restoration.c:51): the LR tile rect is the
+        // UPSCALED width, ROUND_POWER_OF_TWO'd for chroma.
+        let tile_w = (upscaled_w as i32 + ss) >> ss;
+        let tile_h = (frame_h as i32 + ss) >> ss;
+        let horz_units = svtav1_dsp::restoration::count_units_in_tile(unit_size, tile_w);
+        let vert_units = svtav1_dsp::restoration::count_units_in_tile(unit_size, tile_h);
+        let (mi_size_x, mi_size_y) = (4 >> ss, 4 >> ss);
+        let unscaled = sr_denom.is_none();
+        let mi_to_num_x = if unscaled {
+            mi_size_x
+        } else {
+            mi_size_x * i32::from(sr_denom.unwrap())
+        };
+        let denom_x = if unscaled {
+            unit_size
+        } else {
+            unit_size * SCALE_NUMERATOR
+        };
+        let (rnd_x, rnd_y) = (denom_x - 1, unit_size - 1);
+        let rcol0 = (mi_col * mi_to_num_x + rnd_x) / denom_x;
+        let rrow0 = (mi_row * mi_size_y + rnd_y) / unit_size;
+        let rcol1 = (((mi_col + sb_mi) * mi_to_num_x + rnd_x) / denom_x).min(horz_units);
+        let rrow1 = (((mi_row + sb_mi) * mi_size_y + rnd_y) / unit_size).min(vert_units);
+        (rcol0 < rcol1 && rrow0 < rrow1).then_some((rcol0, rcol1, rrow0, rrow1))
+    }
+
+    #[test]
+    fn corners_in_sb_matches_c_across_superres_denominators() {
+        for &unit_size in &[64i32, 128, 256] {
+            for &upscaled_w in &[128usize, 256, 512] {
+                let frame_h = 128usize;
+                for denom in [None, Some(9u8), Some(12), Some(16)] {
+                    for is_uv in [false, true] {
+                        for sb in 0..(upscaled_w / 64) {
+                            let mi_col = (sb * 16) as i32;
+                            for mi_row in [0i32, 16, 32] {
+                                let got = corners_in_sb(
+                                    &pr(unit_size),
+                                    is_uv,
+                                    mi_row,
+                                    mi_col,
+                                    16,
+                                    upscaled_w,
+                                    frame_h,
+                                    denom,
+                                );
+                                let want = c_reference(
+                                    unit_size, is_uv, mi_row, mi_col, 16, upscaled_w, frame_h,
+                                    denom,
+                                );
+                                assert_eq!(
+                                    got, want,
+                                    "unit {unit_size} w {upscaled_w} denom {denom:?} uv {is_uv} \
+                                     mi ({mi_row},{mi_col})"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// ANTI-VACUITY: the superres arm must actually change the mapping —
+    /// otherwise the test above would pass on a port that ignored `sr_denom`.
+    #[test]
+    fn superres_shifts_the_restoration_unit_mapping() {
+        let (unit_size, upscaled_w, frame_h) = (64i32, 512usize, 128usize);
+        let mut differing = 0;
+        for sb in 0..(upscaled_w / 64) {
+            let mi_col = (sb * 16) as i32;
+            let unscaled = corners_in_sb(
+                &pr(unit_size), false, 0, mi_col, 16, upscaled_w, frame_h, None,
+            );
+            let scaled = corners_in_sb(
+                &pr(unit_size), false, 0, mi_col, 16, upscaled_w, frame_h, Some(16),
+            );
+            if unscaled != scaled {
+                differing += 1;
+            }
+        }
+        assert!(
+            differing > 0,
+            "denominator 16 must remap at least one superblock's restoration units"
+        );
     }
 }

@@ -1030,6 +1030,36 @@ impl EncodePipeline {
         // Superres chunk B.3: the pre-scaling picture-statistics source (see
         // `superres_stats_luma`). `None` on every non-superres path.
         let stats_src = self.superres_stats_luma.take();
+        // Superres chunk B.4: C's per-b64 variance array (`pcs->variance`) is
+        // built by picture analysis on the FULL-RESOLUTION picture, and
+        // `scale_pcs_params` (resize.c:1434) re-inits the b64/SB geometry for
+        // the coded size WITHOUT recomputing it — so every PD0 / dc-only gate
+        // downstream reads full-res variances through the SMALLER coded-grid
+        // indices. Reproduce that exactly: build the array over the full-res
+        // grid in raster order here, and index it with the coded grid's linear
+        // SB index at the search. `None` on every non-superres path -> the
+        // variance is recomputed from the coded source, unchanged.
+        let stale_vars: Option<alloc::vec::Vec<crate::pd0::SbVariance>> =
+            stats_src.as_ref().map(|(orig, ow, oh)| {
+                let (ext_w, ext_h) = (ow.div_ceil(64) * 64, oh.div_ceil(64) * 64);
+                let mut padded = alloc::vec![0u8; ext_w * ext_h];
+                for r in 0..*oh {
+                    padded[r * ext_w..r * ext_w + ow].copy_from_slice(&orig[r * ow..(r + 1) * ow]);
+                }
+                crate::frame_geom::pad_input_plane(
+                    &mut padded,
+                    &crate::frame_geom::FrameDims::new(*ow, *oh),
+                    64,
+                );
+                let (cols, rows) = (ext_w / 64, ext_h / 64);
+                let mut v = alloc::vec::Vec::with_capacity(cols * rows);
+                for by in 0..rows {
+                    for bx in 0..cols {
+                        v.push(crate::pd0::compute_b64_variance(&padded, ext_w, bx * 64, by * 64));
+                    }
+                }
+                v
+            });
         // Did a bd10 consumer actually READ it? The entry points pre-screen
         // the config (`hbd_source_consumed`), but the post-pass additionally
         // requires every SB's tree to be bd10-supported at RUNTIME — so this
@@ -1641,6 +1671,8 @@ impl EncodePipeline {
                 .as_ref()
                 .map(|h| (h.y.as_slice(), h.u.as_slice(), h.v.as_slice())),
             &hbd_used_flag,
+            // Superres chunk B.4: C's stale full-res variance array.
+            stale_vars.as_deref(),
             self.thread_count,
             &stop,
         )?;
@@ -2332,7 +2364,8 @@ impl EncodePipeline {
                                 lr_true_w,
                                 lr_true_h,
                                 chroma.is_none(),
-                            );
+                                                            self.superres_denom,
+);
                         }
 
                         encode_partition_tree(
@@ -6175,6 +6208,12 @@ fn encode_tile_rows(
     // funnel armed). Read by `encode_frame_impl` to reject an encode that
     // would have silently dropped the caller's low bits.
     hbd_used: &core::sync::atomic::AtomicBool,
+    // Superres chunk B.4: C's `pcs->variance` as picture analysis left it
+    // (FULL-RESOLUTION b64 grid, raster order), read here through the CODED
+    // grid's linear SB index — the indexing C itself does after
+    // `scale_pcs_params` re-inits the geometry without rebuilding the array.
+    // `None` on every non-superres path.
+    stale_vars: Option<&[crate::pd0::SbVariance]>,
     // Feature 4 (bounded threading): the maximum number of OS threads the
     // tile loop below may run at once (0 = auto via `available_parallelism`).
     // Bounds CONCURRENCY only — tiles are always joined and appended in
@@ -6707,6 +6746,13 @@ fn encode_tile_rows(
                 // Only read by the std-gated CHAINDUMP / SEED debug dumps below.
                 #[cfg(feature = "std")]
                 let sb_index = sb_row * sb_cols + sb_col;
+                // Superres chunk B.4: this SB's entry in C's STALE variance
+                // array — the CODED grid's linear index into an array laid out
+                // on the FULL-RES grid (exactly the indexing C does after
+                // `scale_pcs_params`). `None` on every non-superres path, where
+                // the variance is recomputed from the coded source instead.
+                let sb_stale_vars: Option<&crate::pd0::SbVariance> =
+                    stale_vars.and_then(|v| v.get(sb_row * sb_cols + sb_col));
                 // PORT-NOTE(unverified): `chain_snaps` is a PER-TILE
                 // accumulator (pushed once per SB in this tile's own
                 // raster order, starting empty at tile_idx's first SB —
@@ -6909,6 +6955,8 @@ fn encode_tile_rows(
                                 crate::pd0::input_resolution_factor(w * h),
                                 w,
                                 h,
+                                // Superres chunk B.4: this SB's STALE full-res variance entry.
+                                sb_stale_vars,
                             )
                         } else {
                             crate::pd0::pd0_pick_sb_partition(
@@ -6924,13 +6972,17 @@ fn encode_tile_rows(
                                 // ALIGNED dims — the spec-5.11.4 edge predicate grid.
                                 w,
                                 h,
+                                // Superres chunk B.4: this SB's STALE full-res variance entry.
+                                sb_stale_vars,
                             )
                         };
                         // The same per-SB variance map C's picture analysis
                         // feeds to is_dc_only_safe (pcs->ppcs->variance): the
                         // fixed-tree leaves use it to force the C-exact
                         // DC-only intra candidate set where the gate fires.
-                        let sb_vars = crate::pd0::compute_b64_variance(sb_input, in_stride, x0, y0);
+                        let sb_vars = sb_stale_vars.copied().unwrap_or_else(|| {
+                            crate::pd0::compute_b64_variance(sb_input, in_stride, x0, y0)
+                        });
                         let mut funnel_ctx = if use_funnel {
                             let (u_src, v_src) = chroma_src.unwrap();
                             Some(crate::leaf_funnel::FunnelCtx {
@@ -7068,6 +7120,8 @@ fn encode_tile_rows(
                                 // when untiled → byte-inert).
                                 tile_sb_row_start * sb_size,
                                 tile_sb_col_start * sb_size,
+                                // Superres chunk B.4: this SB's STALE full-res variance entry.
+                                sb_stale_vars,
                             );
                             let cq = c_quant.as_ref().unwrap();
                             // 8-BIT lambda even at bd10 — deliberate, not an
@@ -7120,6 +7174,8 @@ fn encode_tile_rows(
                                             h,
                                             tile_sb_row_start * sb_size,
                                             tile_sb_col_start * sb_size,
+                                            // Superres chunk B.4: this SB's STALE full-res variance entry.
+                                            sb_stale_vars,
                                         )
                                         .max_min_picked(&mut mx, &mut mn);
                                     }
@@ -7280,6 +7336,8 @@ fn encode_tile_rows(
                                 // 0 for a single-tile frame → byte-inert.
                                 tile_sb_row_start * sb_size,
                                 tile_sb_col_start * sb_size,
+                                // Superres chunk B.4: this SB's STALE full-res variance entry.
+                                sb_stale_vars,
                             );
                             #[cfg(feature = "std")]
                             if std::env::var_os("SVTAV1_PD0DBG").is_some()
@@ -7306,7 +7364,9 @@ fn encode_tile_rows(
                                 walk(&eval, x0, y0);
                             }
                             let tree = eval.tree();
-                            let sb_vars = crate::pd0::compute_b64_variance(sb_input, in_stride, x0, y0);
+                            let sb_vars = sb_stale_vars.copied().unwrap_or_else(|| {
+                                crate::pd0::compute_b64_variance(sb_input, in_stride, x0, y0)
+                            });
                             let mut funnel_ctx = if use_funnel {
                                 let (u_src, v_src) = chroma_src.unwrap();
                                 Some(crate::leaf_funnel::FunnelCtx {
