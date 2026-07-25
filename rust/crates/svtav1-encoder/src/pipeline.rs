@@ -1321,15 +1321,41 @@ impl EncodePipeline {
                     ));
                 }
             }
-            let plan = crate::sb_qindex::variance_adjust_qp(
-                base_qindex,
-                &vars,
-                self.hdr.variance_boost_strength,
-                self.hdr.variance_octile,
-                self.hdr.variance_boost_curve,
-                tpl_adjusted_qp,
-                self.bit_depth,
-            );
+            // C has TWO boost paths and they take DIFFERENT variance domains:
+            // mainline (rc_aq.c:350/454) reads the INTEGER per-b64 map that
+            // picture analysis builds (`pd0::compute_b64_variance`) and leaves
+            // the frame base alone; the fork build (rc_aq.c:87/226) reads f64
+            // maps, takes a mean, and resignals the recentered base. Feeding
+            // the fork kernel on a mainline encode computes the boost in the
+            // wrong domain and returns 0 — which is what made mainline tune IQ
+            // emit a flat delta-q plan where C emits a real one.
+            let plan = if self.hdr.is_fork() {
+                crate::sb_qindex::variance_adjust_qp(
+                    base_qindex,
+                    &vars,
+                    self.hdr.variance_boost_strength,
+                    self.hdr.variance_octile,
+                    self.hdr.variance_boost_curve,
+                    tpl_adjusted_qp,
+                    self.bit_depth,
+                )
+            } else {
+                let ivars: alloc::vec::Vec<crate::pd0::SbVariance> = (0..sb_rows_p)
+                    .flat_map(|r| (0..sb_cols_p).map(move |c| (r, c)))
+                    .map(|(r, c)| {
+                        crate::pd0::compute_b64_variance(sb_input, in_stride, c * 64, r * 64)
+                    })
+                    .collect();
+                crate::sb_qindex::variance_adjust_qp_mainline(
+                    base_qindex,
+                    &ivars,
+                    self.hdr.variance_boost_strength,
+                    self.hdr.variance_octile,
+                    self.hdr.variance_boost_curve,
+                    tpl_adjusted_qp,
+                    self.bit_depth,
+                )
+            };
             base_qindex = plan.base_qindex;
             tpl_adjusted_qp = ((i32::from(plan.base_qindex) + 2) >> 2).clamp(0, 63) as u8;
             Some(plan)

@@ -155,6 +155,63 @@ pub fn delta_q_res_for(cli_qp: u8, enable_variance_boost: bool) -> u8 {
 
 /// The fork `svt_av1_variance_adjust_qp(pcs, true)` +
 /// `svt_av1_normalize_sb_delta_q` chain for a still/KEY frame.
+/// Mainline twin of [`variance_adjust_qp`] — C `svt_av1_variance_adjust_qp`
+/// (rc_aq.c:454) with the mainline boost kernel (rc_aq.c:350).
+///
+/// Takes the INTEGER per-b64 variance maps (`pd0::compute_b64_variance`, the
+/// same array C's picture analysis fills and `ppcs->variance[sb_addr]` hands
+/// the boost) rather than the fork's f64 maps. Everything after the boost —
+/// the base recentering and the +-range/2 offset clamp — is identical to the
+/// fork path, because C shares that code between the two builds; only mainline
+/// never writes `normalized_base_q_idx` back to the frame header
+/// (`readjust_base_q_idx` is `(void)`-ignored at rc_aq.c:455), which this
+/// function also does not do.
+pub fn variance_adjust_qp_mainline(
+    base_qindex: u8,
+    variances: &[crate::pd0::SbVariance],
+    strength: u8,
+    octile: u8,
+    curve: u8,
+    cli_qp: u8,
+    bit_depth: u8,
+) -> SbQindexPlan {
+    let max_range = VAR_BOOST_MAX_DELTAQ_RANGE;
+    let mut sbq: alloc::vec::Vec<i32> = alloc::vec::Vec::with_capacity(variances.len());
+    let mut min_q = MAXQ;
+    let mut max_q = 0i32;
+    for v in variances {
+        let boost = var_boost::deltaq_sb_variance_boost_mainline(
+            base_qindex,
+            &v.0,
+            strength,
+            bit_depth,
+            octile,
+            curve,
+        );
+        let q = (i32::from(base_qindex) - boost).clamp(1, MAXQ);
+        min_q = min_q.min(q);
+        max_q = max_q.max(q);
+        sbq.push(q);
+    }
+    let range = (max_q - min_q).min(max_range);
+    let normalized_base = min_q + (range >> 1);
+    let plan: alloc::vec::Vec<u8> = sbq
+        .iter()
+        .map(|&q| {
+            let offset = (q - normalized_base).clamp(-(max_range >> 1), max_range >> 1);
+            (normalized_base + offset).clamp(1, MAXQ) as u8
+        })
+        .collect();
+    SbQindexPlan {
+        // MAINLINE keeps the frame base as-is: C's `readjust_base_q_idx` is
+        // `(void)`-ignored (rc_aq.c:455), so `normalized_base_q_idx` only
+        // re-expresses the per-SB values. (The fork path DOES resignal it.)
+        base_qindex,
+        delta_q_res: delta_q_res_for(cli_qp, true),
+        sb_qindex: plan,
+    }
+}
+
 pub fn variance_adjust_qp(
     base_qindex: u8,
     variances: &[SbVariance],

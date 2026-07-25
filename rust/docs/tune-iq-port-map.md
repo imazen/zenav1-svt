@@ -53,38 +53,58 @@ So QM signalling, sharpness, the partition cap, the scm force and the header are
 all already C-exact under tune IQ. What differs is `variance_adjust_qp`'s
 magnitude at strength 3 / curve 2 / octile 5.
 
-**ROOT CAUSE FOUND (2026-07-25) — it is NOT the recentering.** An earlier note
-here blamed `variance_adjust_qp`'s base recentering; that was wrong and is
-corrected: the port's recentering matches C's mainline
-`svt_av1_variance_adjust_qp` (rc_aq.c:454) exactly — including the fact that
-mainline NEVER writes `normalized_base_q_idx` back to the frame header (the
-`readjust_base_q_idx` argument is `(void)`-ignored there, rc_aq.c:455; only the
-fork build at rc_aq.c:226 honours it). On a one-superblock frame that yields
-`sb_qindex = base - boost` with the frame base untouched — which is exactly
-what C emits.
+## Progress: the delta-q divergence is FIXED; one coefficient symbol remains
 
-The real cause is one level down. **C has TWO boost functions and the port
-implements the wrong one for mainline:**
+**Fixed (2026-07-25):** C defines `av1_get_deltaq_sb_variance_boost` TWICE and
+the port implemented only the fork one.
 
 | build | signature | rc_aq.c |
 |---|---|---|
-| fork (`SVT_HDR_MODE`) | `av1_get_deltaq_sb_variance_boost(base_q_idx, uint64_t mean, double* variances, strength, bd, octile, curve)` | :87 |
-| **mainline** | `av1_get_deltaq_sb_variance_boost(base_q_idx, uint16_t* variances, strength, bd, octile, curve)` | :350 |
+| fork (`SVT_HDR_MODE`) | `(base_q_idx, uint64_t mean, double* variances, strength, bd, octile, curve)` | :87 |
+| **mainline** | `(base_q_idx, uint16_t* variances, strength, bd, octile, curve)` — no mean | :350 |
 
-The mainline one takes **u16** variances and has **no `mean` argument** — it
-reads `ppcs->variance[sb_addr]`, the integer per-b64 array that picture analysis
-builds (the same `compute_b64_variance` output the PD0 path already uses,
-ported C-exactly in `pd0.rs`). The port's `var_boost::deltaq_sb_variance_boost`
-is the FORK variant (f64 variances scaled `/65536`, plus a mean-based dark-bias
-term), fed from `sb_qindex::compute_sb_variances` — a SECOND, differently-scaled
-variance implementation. Wrong input domain, so the boost comes back 0.
+The mainline kernel reads the INTEGER per-b64 map picture analysis builds
+(`ppcs->variance[sb_addr]`, i.e. `pd0::compute_b64_variance`'s output), not the
+fork's f64 maps. Feeding the fork kernel on a mainline encode computed the boost
+in the wrong input domain and returned 0. Now ported as
+`var_boost::deltaq_sb_variance_boost_mainline` +
+`sb_qindex::variance_adjust_qp_mainline`, selected whenever the encode is not in
+fork mode — and mainline correctly leaves the frame base alone
+(`readjust_base_q_idx` is `(void)`-ignored at rc_aq.c:455), where the fork
+resignals it.
 
-**The fix**: port the mainline `av1_get_deltaq_sb_variance_boost` (rc_aq.c:350)
-against the u16 `pd0::compute_b64_variance` output, and select it whenever the
-encode is not in fork mode; keep the existing f64 variant for the fork. Note
-`c_parity_var_boost.rs` does NOT currently cover either boost function (its
-tests are qindex<->q conversions), so the new one needs its own differential
-test — `av1_get_deltaq_sb_variance_boost` is `static` in C, so it needs the
+Also landed: `qm::still_get_qmlevel` had a call site but no definition on the
+mainline path — the degree-7 still-image polynomial (md_config_process.c:185)
+that `TUNE_IQ`/`TUNE_MS_SSIM` use instead of the linear `aom_get_qmlevel`.
+
+MEASURED effect on `gradient 64x64 q55 p8`: the encoded SIZE now matches C
+exactly (65B == 65B, was 64B vs 65B) and the first divergence moved from
+**tile-op 3 to tile-op 197** — i.e. the frame header, the partition, the skip
+flag, the delta-q value AND its sign, the y-mode, and ~190 coefficient symbols
+now all match C.
+
+## The one remaining symbol
+
+At op 197 both encoders are deep in a run of 4-symbol coefficient CDFs; C codes
+`s=0` where the port codes `s=1` (icdf0 = 8946) — one coefficient's level class,
+one step apart. At q32 the streams are 519B (C) vs 517B (port), same class.
+
+RULED OUT: the QM LEVEL selection — the frame header matches field for field,
+and the qm levels are frame-header fields, so both encoders picked the same
+matrices.
+
+REMAINING CANDIDATES, in order:
+1. **`sharpness = 7`'s effect on RDOQ.** Tune IQ sets sharpness 7, and this
+   port's RDOQ rshift formula is documented to depart from mainline only at
+   `>= 3` (see `rust/CLAUDE.md`) — so 7 exercises a path that has never been
+   byte-verified against C. Compare `quant.rs`'s sharpened rshift against C's
+   for sharpness 7 first.
+2. **QM APPLICATION** (not selection) — the matrices are chosen correctly, but
+   check the quantizer applies them exactly as C does at these levels.
+
+Neither `deltaq_sb_variance_boost` variant has a differential test yet
+(`c_parity_var_boost.rs` covers only the qindex<->q conversions), and the C
+symbols are `static`, so closing this properly also means giving them the
 `ref_shims.c` wrapper treatment the palette statics got.
 
 ## Invariants
