@@ -108,6 +108,44 @@ The full localization trail (kept for method reference):
 - **REPRO (committed harness):** `identity_run` now takes `raw:<i420.yuv>` content. Generate the exact YUV (see the g48 generator in the session log — 48×48 gradient replicated to 64×64 + flat-128 chroma), then `tools/identity_diff.sh 64 64 20 0 raw:<yuv>` shows op-1 divergence and produces the port's undecodable `rs.obu`. `SVTAV1_PACKTREE=<f>` dumps the port's partition tree (shows the 4:1 → sub-8 blocks).
 - **NEXT (the fix pass) — root is PALETTE-on-420, exact symbol mismatch still to pinpoint.** Exhaustively RULED OUT by reading C-vs-port: `is_chroma_reference`/`has_uv`, chroma pair geometry, 4:1/HV4 (bisect), `allow_palette` (both `bsize>=BLOCK_8X8` enum-order incl. 4X16/16X4/8X32; block_size_index maps correct), the UV-palette-flag `is_chroma_ref` gate, and the `[Y-flag,colors,UV-flag]`-then-map ORDER (C write_palette_mode_info entropy_coding.c:4355 matches). Since MONO passes (all palette LUMA syntax — flag/size/colors/cache-flags/map — correct) and the 420-only delta is {UV-flag (ruled out), chroma-coeffs}, the remaining suspects are: (a) the palette candidate's CHROMA decision in the funnel (`decision.chroma_dec` for a palette winner) being inconsistent with what the pack codes — check whether the palette candidate reconstructs/decides chroma the same as a regular UV_DC candidate; (b) the palette block's chroma tx-size/type. TO PINPOINT: build a position-reporting decode of the port's `rs.obu` (aomdec/dav1d report only "tile data" with no offset), OR finer-bisect (zero the chroma coeffs of palette blocks only; or reduce to a SINGLE palette block). Do NOT band-aid by disabling palette on 420 (C codes this into a decodable stream — the port's palette-420 chroma must be fixed to match). #71 over-picking AMPLIFIES exposure (more palette blocks = more desync surface) but is not the coding-bug root. This is the #1 gate per the mandate above.
 
+## Gate Discipline — a gate that would pass without the feature is a DEFECT
+
+A byte-parity gate can pass for the wrong reason: if the feature under test does
+not change the bitstream for the cells swept, the gate keeps passing after the
+feature is deleted. Enforce anti-vacuity IN THE SCRIPT, not in a comment.
+
+Make the rule per-CONFIGURATION, not per-cell. MEASURED (2026-07-24,
+`tools/bd10_hbd_src_gate.sh`): at qp 55 a real-10-bit source and its widened-u8
+twin produce IDENTICAL streams for every content/size/preset — a +-3/1023
+perturbation is below that quantizer's step. That is physics, not a port defect,
+so "every cell must differ" is the wrong rule and "no cell needs to differ"
+proves nothing. What both gates written under this rule do:
+
+- compare each cell against the same cell with the feature OFF;
+- list every vacuous cell in the output, always;
+- FAIL if any (content, size, preset) configuration is vacuous at EVERY qp.
+
+`tools/superres_gate.sh` adds a third check for the same reason: it decodes
+every cell under the reference decoder at the UPSCALED size, because byte-parity
+alone cannot catch a header describing a geometry neither encoder produced.
+
+## Refuse out-of-envelope configs; never emit a plausible-but-wrong stream
+
+Entry points REJECT configurations this port cannot encode faithfully instead of
+producing something that looks valid. A wrong-pixels output that is
+indistinguishable from a correct one at the integration seam (zenavif checks
+only `is_empty()`) is a shipping bug, not a known limitation — see the ZERO
+TOLERANCE rule. An `Err` is recoverable; a plausible bad stream is not.
+
+Implemented at the single choke point `EncodePipeline::encode_frame_impl` plus
+the AVIF surface: `hbd_source_consumed` (a native 10-bit source with no bd10
+consumer, including the runtime case where an unsupported partition tree turns
+the level re-encode off AFTER the fact), `superres_config_error` (presets <= 6,
+bd10), and `AvifEncoder::validate_inert_knobs` (`lossless`, non-420 chroma —
+knobs that were recorded and then ignored). When adding a feature whose envelope
+is narrower than its API, add the predicate next to those and name both the
+constraint and the doc that tracks lifting it.
+
 ## Commit Discipline
 - **Commit after EVERY meaningful change.** After porting a function, commit. After adding a test, commit. After fixing a test, commit. Never batch more than ~30 minutes of work into one commit.
 - **Push after every commit.** CI runs on remote.
