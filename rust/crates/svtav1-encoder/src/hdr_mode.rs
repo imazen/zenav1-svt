@@ -90,6 +90,18 @@ pub struct HdrForkConfig {
     pub variance_boost_curve: u8,
     /// Loop-filter sharpness (fork default 1, mainline 0).
     pub sharpness: i8,
+    /// C `static_config.max_tx_size` (32 or 64; default 64) — MAINLINE
+    /// v4.2.0 (`Docs/Parameters.md:536-539`, recommended for still images).
+    /// At 32 the partition search may not use 64x64 square blocks:
+    /// `max_sq_size = MIN(max_sq_size, 32)` and `min_sq_size = MIN(min_sq_size,
+    /// 32)` (`enc_dec_process.c:1494-1500`), plus the same cap in the
+    /// depth-refinement (`:1815`). Set to 32 automatically by tune IQ at
+    /// qp <= 45.
+    pub max_tx_size: u8,
+    /// C `static_config.screen_content_mode`. `None` = derive from the preset
+    /// exactly as C's allintra rule does; `Some(3)` = force the auto-detector
+    /// on, which is what tune IQ does regardless of preset.
+    pub screen_content_mode: Option<u8>,
     pub enable_qm: bool,
     pub min_qm_level: u8,
     pub max_qm_level: u8,
@@ -128,6 +140,8 @@ impl HdrForkConfig {
             noise_size: -1,
             ac_bias: 0.0,
             qp_scale_compress_strength: 0.0,
+            max_tx_size: 64,
+            screen_content_mode: None,
             enable_variance_boost: false,
             variance_boost_strength: 2,
             variance_octile: 5,
@@ -163,6 +177,9 @@ impl HdrForkConfig {
     pub fn hdr_fork() -> Self {
         Self {
             mode: SvtHdrMode::HdrFork,
+            // Mainline defaults (the fork does not change these two).
+            max_tx_size: 64,
+            screen_content_mode: None,
             sharp_tx: 1,
             kf_tf_strength: 1,
             alt_lambda_factors: true,
@@ -300,6 +317,35 @@ impl HdrForkConfig {
 
     /// True when any ported fork behavior may fire.
     #[inline]
+    /// C `svt_av1_enc_set_parameter`'s TUNE_IQ / TUNE_MS_SSIM override block
+    /// (`enc_handle.c:4889-4915`), applied verbatim.
+    ///
+    /// `--tune 3` (IQ, documented "still image only") is not a single RD knob:
+    /// C rewrites seven settings when it is selected, so a port that honours
+    /// `tune` alone is not honouring `--tune 3`. `qp` is the CLI-domain
+    /// quantizer (C `static_config.qp`), which is what C keys `max_tx_size` on.
+    ///
+    /// Idempotent, and a no-op for every other tune — so calling it
+    /// unconditionally at encode time leaves tunes 0/1/2/5 byte-unchanged.
+    pub fn apply_tune_overrides(&mut self, qp: u8) {
+        if self.tune == crate::tune::TUNE_IQ || self.tune == crate::tune::TUNE_MS_SSIM {
+            self.enable_qm = true;
+            self.min_qm_level = 4;
+            self.max_qm_level = 10;
+            self.min_chroma_qm_level = 4;
+            self.max_chroma_qm_level = 10;
+            self.sharpness = 7;
+            self.enable_variance_boost = true;
+            self.variance_boost_strength = 3;
+            self.variance_boost_curve = 2;
+        }
+        if self.tune == crate::tune::TUNE_IQ {
+            // IQ-only, on top of the shared block above.
+            self.max_tx_size = if qp <= 45 { 32 } else { 64 };
+            self.screen_content_mode = Some(3);
+        }
+    }
+
     pub fn is_fork(&self) -> bool {
         self.mode == SvtHdrMode::HdrFork
     }

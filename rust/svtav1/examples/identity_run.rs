@@ -410,6 +410,17 @@ fn main() {
     // env vector configures both encoders (hdr_mode::HdrForkConfig::from_env).
     // Unset => mainline, i.e. every pre-existing invocation is unchanged.
     pipeline.hdr = svtav1_encoder::hdr_mode::HdrForkConfig::from_env();
+    // SVTAV1_TUNE=<0..5>: mainline `--tune`. The C driver reads the same value
+    // from SVT_TUNE, so one env vector configures both encoders. Tune 3 (IQ)
+    // and 4 (MS_SSIM) pull in C's whole override block (qm, sharpness,
+    // variance boost, and for IQ max_tx_size + screen content) via
+    // `HdrForkConfig::apply_tune_overrides`, which the pipeline calls at
+    // encode time. Unset => tune 1 (PSNR) => every pre-existing cell unchanged.
+    if let Ok(t) = std::env::var("SVTAV1_TUNE") {
+        if let Ok(v) = t.parse::<u8>() {
+            pipeline.hdr.tune = v;
+        }
+    }
     let obu = if hbd_src {
         // Task #6: the native-10-bit entry points — the port sees the SAME
         // real u16 samples written to the .yuv the C oracle reads.

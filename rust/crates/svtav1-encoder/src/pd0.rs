@@ -1861,12 +1861,17 @@ pub fn pd0_pick_sb_partition(
     // coded-grid indices. `Some(v)` hands this SB that stale entry; `None`
     // (every non-superres path) recomputes from the source exactly as before.
     stale_vars: Option<&SbVariance>,
+    // C `static_config.max_tx_size` (32 or 64). At 32 the partition search may
+    // not use 64x64 squares: `max_sq_size = MIN(max_sq_size, 32)`
+    // (enc_dec_process.c:1494-1495), and the depth-refinement applies the same
+    // cap (:1815). 64 = no cap = the pre-tune-IQ behaviour.
+    max_tx_size: u8,
 ) -> Pd0Tree {
     let vars = match stale_vars {
         Some(v) => *v,
         None => compute_b64_variance(src, stride, sb_x, sb_y),
     };
-    let max_sq = max_block_size_allintra(vars.0[0], qp);
+    let max_sq = max_block_size_allintra(vars.0[0], qp).min(max_tx_size as usize);
     let mode = if pd0_detector_allintra_demotes(&vars, qp) {
         Pd0Mode::Lvl5
     } else {
@@ -1962,12 +1967,17 @@ pub fn pd0_pick_sb_partition_lvl0(
     // coded-grid indices. `Some(v)` hands this SB that stale entry; `None`
     // (every non-superres path) recomputes from the source exactly as before.
     stale_vars: Option<&SbVariance>,
+    // C `static_config.max_tx_size` (32 or 64). At 32 the partition search may
+    // not use 64x64 squares: `max_sq_size = MIN(max_sq_size, 32)`
+    // (enc_dec_process.c:1494-1495), and the depth-refinement applies the same
+    // cap (:1815). 64 = no cap = the pre-tune-IQ behaviour.
+    max_tx_size: u8,
 ) -> Pd0Tree {
     let vars = match stale_vars {
         Some(v) => *v,
         None => compute_b64_variance(src, stride, sb_x, sb_y),
     };
-    let max_sq = max_block_size_allintra(vars.0[0], qp);
+    let max_sq = max_block_size_allintra(vars.0[0], qp).min(max_tx_size as usize);
     let lambda = kf_full_lambda_8bit(qindex, qp) as u64;
     let mut ctx = Pd0Ctx {
         src,
@@ -2039,6 +2049,11 @@ pub fn pd0_pick_sb_partition_m6(
     // coded-grid indices. `Some(v)` hands this SB that stale entry; `None`
     // (every non-superres path) recomputes from the source exactly as before.
     stale_vars: Option<&SbVariance>,
+    // C `static_config.max_tx_size` (32 or 64). At 32 the partition search may
+    // not use 64x64 squares: `max_sq_size = MIN(max_sq_size, 32)`
+    // (enc_dec_process.c:1494-1495), and the depth-refinement applies the same
+    // cap (:1815). 64 = no cap = the pre-tune-IQ behaviour.
+    max_tx_size: u8,
 ) -> Pd0Tree {
     let vars = match stale_vars {
         Some(v) => *v,
@@ -2061,7 +2076,7 @@ pub fn pd0_pick_sb_partition_m6(
         lambda,
         mode: Pd0Mode::Lvl1,
         lvl1: Some(tables),
-        max_sq: 64,
+        max_sq: 64usize.min(max_tx_size as usize),
         min_sq: 8,
         is_subres_safe: 255,
         ires_factor: 0,
@@ -2109,6 +2124,11 @@ pub fn pd0_pick_sb_partition_m6_eval(
     // coded-grid indices. `Some(v)` hands this SB that stale entry; `None`
     // (every non-superres path) recomputes from the source exactly as before.
     stale_vars: Option<&SbVariance>,
+    // C `static_config.max_tx_size` (32 or 64). At 32 the partition search may
+    // not use 64x64 squares: `max_sq_size = MIN(max_sq_size, 32)`
+    // (enc_dec_process.c:1494-1495), and the depth-refinement applies the same
+    // cap (:1815). 64 = no cap = the pre-tune-IQ behaviour.
+    max_tx_size: u8,
 ) -> Pd0Eval {
     let vars = match stale_vars {
         Some(v) => *v,
@@ -2128,7 +2148,8 @@ pub fn pd0_pick_sb_partition_m6_eval(
         max_block_size_allintra(vars.0[0], qp)
     } else {
         64
-    };
+    }
+    .min(max_tx_size as usize);
     let mut ctx = Pd0Ctx {
         src,
         stride,
@@ -2302,12 +2323,12 @@ mod tests {
         // parent where the LVL_6 heuristic over-splits to 16x 16x16). The
         // 64x64 force-splits (var64 5425 > qp-scaled cap -> max_sq 32).
         let y = gradient64();
-        let tree = pd0_pick_sb_partition_lvl0(&y, 64, 0, 0, 20, 80, 15, 0, 64, 64, None);
+        let tree = pd0_pick_sb_partition_lvl0(&y, 64, 0, 0, 20, 80, 15, 0, 64, 64, None, 64);
         assert_eq!(tree.leaf_sizes(), vec![32, 32, 32, 32]);
         // q40 / q55 keep the same 4x32 shape here (the parent still wins);
         // q55's 64x64 is IN the depth set (max_sq 64) and PARENT wins outright
         // -> a single 64x64 leaf.
-        let t55 = pd0_pick_sb_partition_lvl0(&y, 64, 0, 0, 55, 220, 15, 0, 64, 64, None);
+        let t55 = pd0_pick_sb_partition_lvl0(&y, 64, 0, 0, 55, 220, 15, 0, 64, 64, None, 64);
         assert_eq!(t55.leaf_sizes(), vec![64]);
     }
 
@@ -2470,18 +2491,18 @@ mod tests {
         // q20 (qindex 80): LVL_6, max 32 -> forced SPLIT at 64, every 32
         // SPLITs again, 16x16 leaves everywhere (C stream: op0 SPLIT,
         // op1 SPLIT, op2 NONE...).
-        let t20 = pd0_pick_sb_partition(&y, 64, 0, 0, 20, 80, 0, 64, 64, None);
+        let t20 = pd0_pick_sb_partition(&y, 64, 0, 0, 20, 80, 0, 64, 64, None, 64);
         assert_eq!(t20.leaf_sizes(), vec![16; 16]);
         // q40 (qindex 160): LVL_5, max 32 -> forced SPLIT at 64, all four
         // 32x32 keep PARENT (C: op0 SPLIT, op1 NONE).
-        let t40 = pd0_pick_sb_partition(&y, 64, 0, 0, 40, 160, 0, 64, 64, None);
+        let t40 = pd0_pick_sb_partition(&y, 64, 0, 0, 40, 160, 0, 64, 64, None, 64);
         assert_eq!(t40.leaf_sizes(), vec![32; 4]);
         // q55 (qindex 220): LVL_5, 64 in set and PARENT wins outright.
-        let t55 = pd0_pick_sb_partition(&y, 64, 0, 0, 55, 220, 0, 64, 64, None);
+        let t55 = pd0_pick_sb_partition(&y, 64, 0, 0, 55, 220, 0, 64, 64, None, 64);
         assert_eq!(t55, Pd0Tree::Leaf(64));
         // Uniform: LVL_5 with zero residual everywhere -> 64x64 NONE.
         let u = vec![128u8; 64 * 64];
-        let tu = pd0_pick_sb_partition(&u, 64, 0, 0, 40, 160, 0, 64, 64, None);
+        let tu = pd0_pick_sb_partition(&u, 64, 0, 0, 40, 160, 0, 64, 64, None, 64);
         assert_eq!(tu, Pd0Tree::Leaf(64));
     }
 
@@ -2614,16 +2635,16 @@ mod tests {
     #[test]
     fn m6_gradient64_trees_match_c() {
         let y = gradient64();
-        let t20 = pd0_pick_sb_partition_m6(&y, 64, 0, 0, 20, 80, &build_m6_pd0_tables(80), 1, true, 64, 64, None);
+        let t20 = pd0_pick_sb_partition_m6(&y, 64, 0, 0, 20, 80, &build_m6_pd0_tables(80), 1, true, 64, 64, None, 64);
         assert_eq!(t20.leaf_sizes(), vec![32; 4]);
-        let t40 = pd0_pick_sb_partition_m6(&y, 64, 0, 0, 40, 160, &build_m6_pd0_tables(160), 1, true, 64, 64, None);
+        let t40 = pd0_pick_sb_partition_m6(&y, 64, 0, 0, 40, 160, &build_m6_pd0_tables(160), 1, true, 64, 64, None, 64);
         assert_eq!(t40.leaf_sizes(), vec![32; 4]);
-        let t55 = pd0_pick_sb_partition_m6(&y, 64, 0, 0, 55, 220, &build_m6_pd0_tables(220), 1, true, 64, 64, None);
+        let t55 = pd0_pick_sb_partition_m6(&y, 64, 0, 0, 55, 220, &build_m6_pd0_tables(220), 1, true, 64, 64, None, 64);
         assert_eq!(t55, Pd0Tree::Leaf(64));
         // Uniform content: exact DC prediction, zero residual -> 64 NONE
         // (keeps every uniform p6 identity cell byte-identical).
         let u = vec![128u8; 64 * 64];
-        let tu = pd0_pick_sb_partition_m6(&u, 64, 0, 0, 40, 160, &build_m6_pd0_tables(160), 1, true, 64, 64, None);
+        let tu = pd0_pick_sb_partition_m6(&u, 64, 0, 0, 40, 160, &build_m6_pd0_tables(160), 1, true, 64, 64, None, 64);
         assert_eq!(tu, Pd0Tree::Leaf(64));
     }
 }

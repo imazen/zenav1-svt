@@ -188,6 +188,17 @@ int main(int argc, char** argv) {
         cfg.tile_columns = atoi(tile_cols_env);
     }
 
+    /* Tune (mainline v4.2.0): SVT_TUNE selects `--tune`. Tune 3 (IQ, "still
+     * image only") and 4 (MS_SSIM) make `svt_av1_enc_set_parameter` rewrite
+     * qm/sharpness/variance-boost — and, for IQ, max_tx_size + screen content
+     * (enc_handle.c:4889-4915) — so this one env var exercises the whole
+     * override block. Absent, cfg.tune keeps the library default (1 = PSNR)
+     * and every pre-existing cell is unchanged. */
+    const char* tune_env = getenv("SVT_TUNE");
+    if (tune_env) {
+        cfg.tune = (uint8_t)atoi(tune_env);
+    }
+
     /* Superres (superres chunk B.3): SVT_SUPERRES_KF_DENOM sets
      * `superres_mode = SUPERRES_FIXED(1)` + `superres_kf_denom = D`.
      * MEASURED: for a STILL (KEY) frame the KF denominator is the one that

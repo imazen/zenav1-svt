@@ -1022,38 +1022,19 @@ impl EncodePipeline {
         if let Some(why) = self.superres_config_error() {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(why)));
         }
-        // Mainline knobs that are currently consumed ONLY in fork mode. C
-        // treats `--tune`, `--enable-qm`, `--enable-variance-boost` and
-        // `--sharpness` as MAINLINE v4.2.0 features (Docs/Parameters.md:77,
-        // 95-97, 123-125, 132), and its still-image guidance recommends
-        // several of them; this port implements them behind
-        // `HdrForkConfig::is_fork()`. Setting one in mainline mode used to be
-        // a SILENT no-op — the caller asked for different output and got the
-        // default. Refuse instead, per the same rule the AVIF surface follows
-        // for `lossless`. Un-gating them for mainline is issue #9.
-        if !self.hdr.is_fork() {
-            if self.hdr.tune != 1 {
-                return Err(whereat::at!(EncodeError::UnsupportedConfig(
-                    "tune != 1 (PSNR) is only wired in fork mode; mainline tune (incl. the \
-                     still-image TUNE_IQ=3 recommendation) is unported — see issue #9",
-                )));
-            }
-            if self.hdr.enable_qm {
-                return Err(whereat::at!(EncodeError::UnsupportedConfig(
-                    "quantisation matrices are only wired in fork mode — see issue #9",
-                )));
-            }
-            if self.hdr.enable_variance_boost {
-                return Err(whereat::at!(EncodeError::UnsupportedConfig(
-                    "variance boost is only wired in fork mode — see issue #9",
-                )));
-            }
-            if self.hdr.sharpness != 0 {
-                return Err(whereat::at!(EncodeError::UnsupportedConfig(
-                    "sharpness != 0 is only wired in fork mode — see issue #9",
-                )));
-            }
-        }
+        // TUNE overrides (C `svt_av1_enc_set_parameter`, enc_handle.c:4889).
+        // `--tune 3` (IQ, "still image only") and `--tune 4` (MS-SSIM) are not
+        // single RD knobs: C rewrites qm on/min/max (luma AND chroma),
+        // sharpness, variance boost on/strength/curve, and — for IQ —
+        // `max_tx_size` and `screen_content_mode`. Applying them here, once,
+        // against the CLI-domain qp is what makes `hdr.tune = TUNE_IQ` in this
+        // port mean the same thing as `--tune 3` in C. A no-op for every other
+        // tune, so the default path is byte-unchanged.
+        //
+        // These four (tune, QM, variance boost, sharpness) are MAINLINE v4.2.0
+        // features, not fork additions — they used to be gated behind
+        // `is_fork()` here, which silently ignored them in mainline mode.
+        self.hdr.apply_tune_overrides(self.rc_config.qp);
         // Task #6 chunk 1: TAKE the native 10-bit source (set only by the
         // `*_hbd` entry points) so it can never leak into a following u8
         // frame. `None` on every u8 path -> every bd10 stage keeps widening
@@ -1258,13 +1239,17 @@ impl EncodePipeline {
         // at preset 7 — the only allintra preset where scm-3 auto-detection is
         // live (enc_handle.c:4514-4527; M8+ has it off) — on the superres cell
         // gradient 64x64 q32 d10.
-        let sc_derivation = crate::sc_detect::derive_allintra_sc(
-            self.speed_config.preset,
-            &encode_input,
-            w,
-            w,
-            h,
-        );
+        // C derives the allintra screen-content mode from the preset
+        // (scm 3 at <= M7, off at M8+, enc_handle.c:4641-4651) UNLESS the
+        // config forces it — tune IQ sets `screen_content_mode = 3`
+        // regardless of preset (enc_handle.c:4914). Model the force by
+        // running the detector at a preset it is live for.
+        let sc_preset = match self.hdr.screen_content_mode {
+            Some(3) => self.speed_config.preset.min(7),
+            _ => self.speed_config.preset,
+        };
+        let sc_derivation =
+            crate::sc_detect::derive_allintra_sc(sc_preset, &encode_input, w, w, h);
 
         // Step 3c: Frame-level adaptive QP — OPT-IN via RcConfig.aq_mode.
         //
@@ -1325,7 +1310,7 @@ impl EncodePipeline {
         // consumer (lambda, CDF bucket, deblock, FH) — C order: rc_aq runs
         // in rc_init_sb_qindex ahead of MD. picture_qp follows C's
         // (base+2)>>2 update.
-        let sb_plan = if self.hdr.is_fork() && self.hdr.enable_variance_boost {
+        let sb_plan = if self.hdr.enable_variance_boost {
             let sb_cols_p = w.div_ceil(64);
             let sb_rows_p = h.div_ceil(64);
             let mut vars = svtav1_types::try_with_capacity![sb_cols_p * sb_rows_p]?;
@@ -1422,7 +1407,7 @@ impl EncodePipeline {
                     tpl_adjusted_qp as u32,
                     self.hdr.is_fork() && self.hdr.alt_lambda_factors,
                     0,
-                    (self.hdr.is_fork() && self.hdr.tune == crate::tune::TUNE_IQ)
+                    (self.hdr.tune == crate::tune::TUNE_IQ)
                         .then(|| crate::tune::iq_lambda_weight(tpl_adjusted_qp as u32)),
                 );
                 Some(alloc::sync::Arc::new(crate::quant::CodingQuantCfg::new(
@@ -1543,6 +1528,22 @@ impl EncodePipeline {
         // FH delta_q_params + the per-SB delta_q_cdf symbols end to end.
         // The variance plan (sb_qindex::variance_adjust_qp) swaps in when
         // per-SB quantization threading lands (docs/HDR-ON-4.2.md).
+        // Diagnostic: SVTAV1_VB_DUMP=<path> writes the per-SB qindex plan to a
+        // FILE (never stderr — the identity harness parses this process's
+        // stderr as its symbol trace). Answers "did the boost fire, and by how
+        // much" without perturbing a byte-comparison run.
+        #[cfg(feature = "std")]
+        if let Ok(path) = std::env::var("SVTAV1_VB_DUMP") {
+            let txt = match sb_plan.as_ref() {
+                Some(p) => std::format!(
+                    "base={base_qindex} res={} plan={:?}\n",
+                    p.delta_q_res,
+                    p.sb_qindex
+                ),
+                None => std::format!("base={base_qindex} plan=NONE (variance boost off)\n"),
+            };
+            let _ = std::fs::write(path, txt);
+        }
         let delta_q_res_signal = sb_plan.as_ref().map(|p| p.delta_q_res);
         // sharp-tx RDOQ activates only with per-SB delta-q present (C gate
         // `(use_sharpness || sharp_tx) && delta_q_present && plane==0`).
@@ -1554,7 +1555,7 @@ impl EncodePipeline {
         // PORT-NOTE(unverified): SB-granularity approximation of the
         // per-block geometric mean — refine with a C-side lambda dump.
         let ssim_factors: Option<(alloc::vec::Vec<f64>, usize, usize)> =
-            if self.hdr.is_fork() && crate::tune::tune_uses_ssim_rdmult(self.hdr.tune) {
+            if crate::tune::tune_uses_ssim_rdmult(self.hdr.tune) {
                 Some(crate::tune::ssim_rdmult_factors(
                     &encode_input,
                     w,
@@ -1582,7 +1583,7 @@ impl EncodePipeline {
         // md_config_process.c:249): the linear qindex map (default tune =
         // PSNR in the fork); chroma levels derive from base + the FH
         // chroma AC deltas. [15;3] = QM off (identity).
-        let qm_levels: [u8; 3] = if self.hdr.is_fork() && self.hdr.enable_qm {
+        let qm_levels: [u8; 3] = if self.hdr.enable_qm {
             // TUNE_IQ / TUNE_MS_SSIM use the still-image polynomial
             // (svt_av1_qm_init switch, md_config_process.c:255).
             let still = matches!(
@@ -1679,7 +1680,7 @@ impl EncodePipeline {
             self.hdr.is_fork() && self.hdr.complex_hvs == 1,
             self.hdr.is_fork() && self.hdr.alt_ssim_tuning,
             self.hdr.is_fork() && self.hdr.alt_lambda_factors,
-            (self.hdr.is_fork() && self.hdr.tune == crate::tune::TUNE_IQ)
+            (self.hdr.tune == crate::tune::TUNE_IQ)
                 .then(|| crate::tune::iq_lambda_weight(tpl_adjusted_qp as u32)),
             ssim_factors.as_ref(),
             base_qindex,
@@ -1705,6 +1706,7 @@ impl EncodePipeline {
             &hbd_used_flag,
             // Superres chunk B.4: C's stale full-res variance array.
             stale_vars.as_deref(),
+            self.hdr.max_tx_size,
             self.thread_count,
             &stop,
         )?;
@@ -2003,7 +2005,7 @@ impl EncodePipeline {
                     bd10_edge_filter,
                     self.bit_depth,
                     qm_levels[0],
-                    if self.hdr.is_fork() { self.hdr.sharpness } else { 0 },
+                    self.hdr.sharpness,
                 )?;
                 // bd10 CHROMA re-encode (task #94): recompute chroma levels at
                 // bd10 too — the luma pass above leaves chroma at the u8 MD
@@ -2059,7 +2061,7 @@ impl EncodePipeline {
                         bd10_edge_filter,
                         self.bit_depth,
                         [qm_levels[1], qm_levels[2]],
-                        if self.hdr.is_fork() { self.hdr.sharpness } else { 0 },
+                        self.hdr.sharpness,
                     )?;
                     self.last_recon10_uv = Some(uv10);
                 }
@@ -6246,6 +6248,10 @@ fn encode_tile_rows(
     // `scale_pcs_params` re-inits the geometry without rebuilding the array.
     // `None` on every non-superres path.
     stale_vars: Option<&[crate::pd0::SbVariance]>,
+    // C `static_config.max_tx_size` (32 or 64) — tune IQ sets 32 at qp <= 45
+    // (enc_handle.c:4914) and the partition search then refuses 64x64 squares
+    // (enc_dec_process.c:1494-1495).
+    max_tx_size: u8,
     // Feature 4 (bounded threading): the maximum number of OS threads the
     // tile loop below may run at once (0 = auto via `available_parallelism`).
     // Bounds CONCURRENCY only — tiles are always joined and appended in
@@ -6989,6 +6995,8 @@ fn encode_tile_rows(
                                 h,
                                 // Superres chunk B.4: this SB's STALE full-res variance entry.
                                 sb_stale_vars,
+                                // C `static_config.max_tx_size` (tune IQ sets 32 at qp<=45).
+                                max_tx_size,
                             )
                         } else {
                             crate::pd0::pd0_pick_sb_partition(
@@ -7006,6 +7014,8 @@ fn encode_tile_rows(
                                 h,
                                 // Superres chunk B.4: this SB's STALE full-res variance entry.
                                 sb_stale_vars,
+                                // C `static_config.max_tx_size` (tune IQ sets 32 at qp<=45).
+                                max_tx_size,
                             )
                         };
                         // The same per-SB variance map C's picture analysis
@@ -7154,6 +7164,8 @@ fn encode_tile_rows(
                                 tile_sb_col_start * sb_size,
                                 // Superres chunk B.4: this SB's STALE full-res variance entry.
                                 sb_stale_vars,
+                                // C `static_config.max_tx_size` (tune IQ sets 32 at qp<=45).
+                                max_tx_size,
                             );
                             let cq = c_quant.as_ref().unwrap();
                             // 8-BIT lambda even at bd10 — deliberate, not an
@@ -7208,6 +7220,8 @@ fn encode_tile_rows(
                                             tile_sb_col_start * sb_size,
                                             // Superres chunk B.4: this SB's STALE full-res variance entry.
                                             sb_stale_vars,
+                                            // C `static_config.max_tx_size`.
+                                            max_tx_size,
                                         )
                                         .max_min_picked(&mut mx, &mut mn);
                                     }
@@ -7370,6 +7384,8 @@ fn encode_tile_rows(
                                 tile_sb_col_start * sb_size,
                                 // Superres chunk B.4: this SB's STALE full-res variance entry.
                                 sb_stale_vars,
+                                // C `static_config.max_tx_size` (tune IQ sets 32 at qp<=45).
+                                max_tx_size,
                             );
                             #[cfg(feature = "std")]
                             if std::env::var_os("SVTAV1_PD0DBG").is_some()
