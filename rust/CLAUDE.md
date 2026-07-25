@@ -57,6 +57,23 @@ cite the source, don't re-argue them.
    byte-matches C" or try to build a C mono oracle — patch C to un-gate `EB_YUV400` first if a
    mono oracle is ever truly needed.
 
+7. **The C tree is a HYBRID: a file can define the SAME function TWICE — once
+   for mainline, once under `SVT_HDR_MODE` — and they can differ in SIGNATURE,
+   not just behaviour.** Always confirm which definition is live for the mode
+   you are porting before comparing anything. This has produced two wrong
+   diagnoses (2026-07-25):
+   - `svt_av1_variance_adjust_qp`: fork at `rc_aq.c:226` honours
+     `readjust_base_q_idx` (resignals the frame base); MAINLINE at `rc_aq.c:454`
+     `(void)`-ignores it and never touches `base_q_idx`.
+   - `av1_get_deltaq_sb_variance_boost`: fork at `rc_aq.c:87` takes
+     `(uint64_t mean, double* variances)`; MAINLINE at `rc_aq.c:350` takes
+     `(uint16_t* variances)` with NO mean — a different INPUT DOMAIN, so the
+     wrong one silently returns 0 instead of erroring.
+   Practical check: `grep -n "^static .*<fn>\|^void <fn>\|^int <fn>" <file>` and
+   look for more than one hit, then find the `#if SVT_HDR_MODE` / `#endif` that
+   separates them. A port that implements only the fork variant will look
+   plausible and produce silently-neutral output on the mainline path.
+
 Master capability map: issue #7 (imazen/zenav1-svt). C's actual shipping envelope is narrow
 (8/10-bit, 420, CQP-ish), so the real distance to C is *feature*-level (rate control, inter,
 superres, segmentation, HDR metadata), not format-level.

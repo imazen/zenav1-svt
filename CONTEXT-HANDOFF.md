@@ -119,17 +119,55 @@ wrongly at least once before being settled against source.
 
 ## 4. Open work, in priority order
 
-1. **Superres B.5** — loop restoration under superres. The RU geometry is ported
-   and tested (`restoration::superres_lr_geom_tests`); what remains is upscaling
-   the recon between CDEF and LR, running the LR search against the ORIGINAL
-   unscaled source (C `enhanced_unscaled_pic`, rest_process.c:271), and settling
-   what resolution the deblock/CDEF boundary-line buffers have under superres.
-   Until that lands, presets ≤ 6 are refused.
-2. **10-bit chunk 3** — HDR static metadata (mastering-display + content-light).
-   Contract: zenavif#33.
-3. **#95 partial superblocks** — the PD0/funnel search must handle a clamped SB
-   extent with edge-forced partitions; see `rust/CLAUDE.md`'s queue.
-4. **#71 palette / IBC calibration**, **#91 SB128**, **#93 performance** (last).
+Each item below is stopped at a KNOWN point with the evidence recorded — none
+of them needs re-discovery, only execution.
+
+1. **Tune IQ — one coefficient symbol from done.** `rust/docs/tune-iq-port-map.md`
+   is the file to read. `--tune 3` is fully wired (C's seven-setting override
+   block, `max_tx_size`, the scm force, the still-image QM polynomial, the
+   mainline variance-boost kernel) and on `gradient 64x64 q55 p8` the encoded
+   SIZE matches C exactly while the first divergence sits at tile-op 197 — the
+   header, partition, skip, delta-q value and sign, y-mode and ~190 coefficient
+   symbols all match. What differs is one coefficient level class (C `s=0`,
+   port `s=1`). QM level selection is RULED OUT (qm levels are header fields
+   and the header matches). Leading candidate: `sharpness = 7`'s effect on the
+   RDOQ rshift — a path this port documents as departing from mainline at
+   `>= 3` and which has never been byte-verified. Then QM application.
+   When it closes, add `tools/tune_iq_gate.sh` shaped like `superres_gate.sh`
+   (byte-parity at `SVT_TUNE=3` x preset x qp x content, anti-vacuity vs the
+   tune-1 stream) and wire it into CI.
+2. **Superres B.5 — loop restoration under superres.** The RU geometry is
+   ported and tested; the ordering question that used to block it is ANSWERED
+   in `rust/docs/superres-port-map.md`: C saves BOTH boundary-line sets at the
+   CODED width BEFORE the upscale (`cdef_process.c:707` saves, `:715` upscales;
+   `dlf_process.c:134` for the deblock set), so LR runs on the UPSCALED recon
+   with CODED-width stripe boundaries, against the UNSCALED source
+   (`rest_process.c:271`). Remaining work is mechanical. Presets <= 6 stay
+   refused until a cell byte-matches.
+3. **The one open superres cell**, `gradient_64_q32_p7_d10` — 639/640 of the
+   sweep passes. Geometry, the stale-variance model and the screen-content
+   source are all ruled out by measurement (see the port map). Preset 7 is the
+   only allintra preset where scm-3 detection is live.
+4. **Issue #9** — the rest of the defaults/recommended-settings audit:
+   `max_tx_size` is now in, but fractional CRF, `chroma_sample_position`, and
+   `AvifEncoder::encode_yuv420` (which returns a three-mono-stream blob, not an
+   AV1 bitstream) are open.
+5. **Issue #8** — documentation debt: the drifted `PORT-NOTE(unverified)` index,
+   contradictory HDR verification claims, measured numbers with no committed
+   artifact, and the undocumented corpora that make several headline gate
+   numbers unreproducible off this box.
+6. **#95 partial superblocks**, **#71 palette / IBC calibration**, **#91 SB128
+   residuals**, **#93 performance** (last).
+
+### Test-coverage gaps worth knowing before you trust a green run
+
+- **Neither variance-boost kernel has a differential test.**
+  `c_parity_var_boost.rs` covers only the qindex<->q conversions, which is
+  exactly why a wrong-input-domain kernel sat there returning 0. Both C symbols
+  are `static`, so testing them needs the `ref_shims.c` wrapper treatment the
+  palette statics got. Do this before trusting the next tune-IQ fix.
+- CI runs six of ~32 gates (see section 2). The flagship `identity_matrix.sh`
+  is NOT among them, and it always exits 0 — read its tally.
 
 ## 5. Machine-local state a new box will NOT inherit
 

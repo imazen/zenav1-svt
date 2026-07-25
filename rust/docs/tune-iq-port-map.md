@@ -107,6 +107,28 @@ Neither `deltaq_sb_variance_boost` variant has a differential test yet
 symbols are `static`, so closing this properly also means giving them the
 `ref_shims.c` wrapper treatment the palette statics got.
 
+## How to continue — the method that got this far
+
+The two things that turned "the bytes differ" into a coordinate, both worth
+reusing on the remaining symbol:
+
+1. **Pick the emptiest cell that still reproduces.** `gradient 64x64 q55 p8` is
+   a 65-byte stream, so its whole symbol trace fits on a screen and every
+   divergence is readable by eye (`/tmp/<out>/{c,rs}.trace`, written by
+   `tools/identity_diff.sh`). Debugging the same bug at q32 (519 bytes) would
+   have been guesswork.
+2. **Bisect by CONFIGURATION, not by code.** Each tune-IQ override can be set
+   independently on both sides, so a divergence can be attributed to one
+   setting before reading any implementation. `SVTAV1_VB_DUMP=<path>` prints the
+   per-SB qindex plan to a FILE (never stderr — the harness parses this
+   process's stderr as its symbol trace; that is why the dump is not an
+   `eprintln!`).
+
+What NOT to repeat: I twice diagnosed from the fork's C code without checking
+whether a second, mainline definition existed (see `rust/CLAUDE.md` guard #7).
+Both times the fork version was the one that came up first in a grep, and both
+times it was the wrong one. Check for dual definitions FIRST.
+
 ## Invariants
 
 Default tune (1 = PSNR) is byte-unchanged — identity_matrix 54/54, workspace
