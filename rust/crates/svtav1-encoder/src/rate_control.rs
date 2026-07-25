@@ -64,10 +64,21 @@ impl Default for RcConfig {
     fn default() -> Self {
         Self {
             mode: RcMode::Crf,
-            qp: 30,
+            // C `DEFAULT_QP` (Source/Lib/Globals/enc_settings.h:22) — the
+            // value `svt_av1_set_default_params` installs (enc_settings.c:1007)
+            // and what `SvtAv1EncApp` encodes with when the caller passes no
+            // --qp/--crf. The port previously defaulted to 30 with no cited
+            // provenance.
+            qp: 35,
             target_bitrate: 0,
             max_bitrate: 0,
             buffer_size_ms: 1000,
+            // NOTE: C defaults to 60000/1000 = 60 fps (enc_settings.c:993-994),
+            // but the byte-parity oracle pins 30/1 (capture_c_trace.c) and the
+            // frame rate is only observable through the auto-derived
+            // `seq_level_idx`. Keeping 30.0 keeps the port and the oracle on
+            // the same matched config; a caller targeting C's own default sets
+            // this to 60.0 explicitly.
             framerate: 30.0,
             temporal_layers: 1,
             aq_mode: 0,

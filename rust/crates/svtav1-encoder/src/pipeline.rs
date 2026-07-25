@@ -1022,6 +1022,38 @@ impl EncodePipeline {
         if let Some(why) = self.superres_config_error() {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(why)));
         }
+        // Mainline knobs that are currently consumed ONLY in fork mode. C
+        // treats `--tune`, `--enable-qm`, `--enable-variance-boost` and
+        // `--sharpness` as MAINLINE v4.2.0 features (Docs/Parameters.md:77,
+        // 95-97, 123-125, 132), and its still-image guidance recommends
+        // several of them; this port implements them behind
+        // `HdrForkConfig::is_fork()`. Setting one in mainline mode used to be
+        // a SILENT no-op — the caller asked for different output and got the
+        // default. Refuse instead, per the same rule the AVIF surface follows
+        // for `lossless`. Un-gating them for mainline is issue #9.
+        if !self.hdr.is_fork() {
+            if self.hdr.tune != 1 {
+                return Err(whereat::at!(EncodeError::UnsupportedConfig(
+                    "tune != 1 (PSNR) is only wired in fork mode; mainline tune (incl. the \
+                     still-image TUNE_IQ=3 recommendation) is unported — see issue #9",
+                )));
+            }
+            if self.hdr.enable_qm {
+                return Err(whereat::at!(EncodeError::UnsupportedConfig(
+                    "quantisation matrices are only wired in fork mode — see issue #9",
+                )));
+            }
+            if self.hdr.enable_variance_boost {
+                return Err(whereat::at!(EncodeError::UnsupportedConfig(
+                    "variance boost is only wired in fork mode — see issue #9",
+                )));
+            }
+            if self.hdr.sharpness != 0 {
+                return Err(whereat::at!(EncodeError::UnsupportedConfig(
+                    "sharpness != 0 is only wired in fork mode — see issue #9",
+                )));
+            }
+        }
         // Task #6 chunk 1: TAKE the native 10-bit source (set only by the
         // `*_hbd` entry points) so it can never leak into a following u8
         // frame. `None` on every u8 path -> every bd10 stage keeps widening

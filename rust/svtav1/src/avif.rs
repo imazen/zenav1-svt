@@ -300,15 +300,19 @@ impl AvifEncoder {
         (qp.round() as u8).min(63)
     }
 
-    /// Map speed (1-10) to SVT-AV1 preset (0-13).
+    /// Map speed (1-10) to SVT-AV1 preset (0-9).
     ///
-    /// Speed 1 -> preset 0 (slowest/best), speed 10 -> preset 13 (fastest).
-    /// Intermediate values are linearly interpolated.
+    /// Speed 1 -> preset 0 (slowest/best), speed 10 -> preset 9 (fastest).
+    ///
+    /// The result is clamped to M9 because C remaps every all-intra preset
+    /// above M9 down to M9 (`enc_handle.c:4416-4419`) — a still encoded at
+    /// "preset 13" in C IS an M9 encode, so letting this map reach 10..13
+    /// would only diverge from the encoder it mirrors.
     fn speed_to_preset(speed: u8) -> u8 {
         let clamped = speed.clamp(1, 10);
-        // Map 1..=10 to 0..=13: preset = (speed - 1) * 13 / 9
+        // Map 1..=10 to 0..=13, then apply C's all-intra M9 clamp.
         let preset = ((clamped as u32 - 1) * 13 + 4) / 9;
-        preset as u8
+        (preset as u8).min(9)
     }
 
     /// Encode a single grayscale (Y-only) still image using the full pipeline.
@@ -622,8 +626,16 @@ mod tests {
     fn speed_to_preset_boundaries() {
         // Speed 1 -> preset 0 (slowest)
         assert_eq!(AvifEncoder::speed_to_preset(1), 0);
-        // Speed 10 -> preset 13 (fastest)
-        assert_eq!(AvifEncoder::speed_to_preset(10), 13);
+        // Speed 10 -> preset 9, NOT 13: C remaps every all-intra preset above
+        // M9 down to M9 (enc_handle.c:4416-4419), so "preset 13" for a still
+        // IS an M9 encode. Byte-neutral for this port — presets 9, 10 and 13
+        // are each byte-identical to C's M9 output (identity_matrix covers
+        // 13/10, bd10_hbd_src_gate covers 9/10/13), hence identical to each
+        // other; the clamp only stops the API advertising a distinction the
+        // encoder it mirrors does not have.
+        assert_eq!(AvifEncoder::speed_to_preset(10), 9);
+        // The slow half of the range is unaffected.
+        assert_eq!(AvifEncoder::speed_to_preset(5), 6);
     }
 
     #[test]
