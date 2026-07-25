@@ -5,7 +5,7 @@
 
 A pure-Rust, still-picture (AVIF/all-intra) port of [SVT-AV1](https://gitlab.com/AOMediaCodec/SVT-AV1) v4.2.0, verified **byte-identical** to the C encoder on its tested envelope, with the [svt-av1-hdr](https://github.com/juliobbv-p/svt-av1-hdr) fork's perceptual feature set available behind a runtime switch.
 
-**~75k lines | 7 crates | 775+ tests | `#![forbid(unsafe_code)]` | AGPL-3.0 or commercial**
+**~87k lines | 7 crates | 930+ tests | `#![forbid(unsafe_code)]` | AGPL-3.0 or commercial**
 
 ## Two modes, two verification bars
 
@@ -30,8 +30,8 @@ Every stream additionally decodes with the reference decoder (`aomdec`), and the
 
 ### Known open identity gaps (tracked, not hidden)
 
-- **Real 512×512 content at presets 0–1**: 0/12 — one systematic first divergence: C enables 128-px superblocks above 240p at ≤M1 (`use_128x128_superblock`), the port is 64-SB only. Port map: `docs/sb128-port-map.md` (task #91).
-- **Envelope limits**: 8-bit input (10-bit gated internally), single frame (still), CQP-only rate control. Dimensions are arbitrary — partial-SB byte-matches at preset ≥ 6, 64-aligned at all presets. Encoding is **deterministic tile-parallel** (`with_thread_count`; byte-identical at any thread count), NOT single-threaded. Native 10-bit input ([#6](https://github.com/imazen/zenav1-svt/issues/6)) and beyond-CQP rate control ([#7](https://github.com/imazen/zenav1-svt/issues/7)) are the next priorities — maps in `docs/bd10-port-map.md` and `docs/arbitrary-dims-port-map.md`.
+- **SB128 superblocks**: landed (C enables 128-px superblocks above 240p at ≤M1) — `tools/sb128_gate.sh` 18/18 (14 SB128 cells + 4 SB64 controls). Residual low-preset real-content divergences are RD near-ties; port map: `docs/sb128-port-map.md` (task #91).
+- **Envelope limits**: 8- and 10-bit input (native `&[u16]` entry points, CI-gated), single frame (still), CQP-only rate control. Dimensions are arbitrary — partial-SB byte-matches at preset ≥ 6, 64-aligned at all presets. Encoding is **deterministic tile-parallel** (`with_thread_count`; byte-identical at any thread count), NOT single-threaded. CQP is not a stub: for a single still it is byte-identical to SVT-AV1's default CRF (`benchmarks/crf_cqp_equivalence_2026-07-24.md`). Superres is opt-in and gated; HDR static metadata ([#7](https://github.com/imazen/zenav1-svt/issues/7)) is the next priority — maps in `docs/bd10-port-map.md` and `docs/arbitrary-dims-port-map.md`.
 
 `docs/IDENTITY-STATUS.md` is the full divergence map and campaign history.
 
@@ -67,7 +67,7 @@ For transparency, everything in svt-av1-hdr that is absent here, and why:
 3. **Post-"Chromedome" fork commits** (newer than our rebase base): noise chroma auto-strength adjustment (`4889de3`), dampened MDS0 ac-bias strength (`ce5178a`), sharpness default → 1 (`981fe12`), allow complex-HVS for all-intra (`80b48b9` — our wiring already reaches it on stills), LPD1 skip-inter-tx (`5caa3e3`).
 4. **Temporal-filter knobs** — `kf_tf_strength`, `tf_strength`, `noise_adaptive_filtering`: config fields exist but are dormant; a single still frame has no temporal window. Unblocks with multi-frame support.
 5. **`qp_scale_compress_strength`**: dormant — its only C consumer is the CRF rate-control qp-scale path (`rc_process.c`); this port is CQP-only.
-6. **10-bit / high-bit-depth fork paths** (`hbd_mds`, HBD noise tables): the port is 8-bit today (10-bit is a tracked next priority).
+6. **The FORK's high-bit-depth paths** (`hbd_mds`, HBD noise tables) are unported. The MAINLINE 10-bit path — including native `&[u16]` input — is ported and CI-gated.
 7. **TUNE_VQ's `vq_ctrls` video machinery**: video-sequence heuristics, out of scope for stills. Tune 0 selects VQ's still-reachable policies only.
 8. **Mainline TUNE_VMAF**: the fork replaces tune slot 5 with FILM_GRAIN; we follow the fork's numbering.
 9. **LPD1 psychovisual rate**: the kernel is ported (`svtav1-dsp::ac_bias`), but the port has no LPD1 fast-decision path (all-intra never takes it in C either).
@@ -122,7 +122,7 @@ Three layers, strongest first:
 3. **Decode gates** (`aomdec`): every gated stream must decode, and the decoder's output must equal the encoder's own reconstruction byte-for-byte — the AV1-conformance floor that holds in both modes, including for streams no C twin exists for.
 
 ```bash
-cargo test --workspace           # 775+ tests
+cargo nextest run --workspace    # 930+ tests (nextest, NOT cargo test — see CLAUDE.md)
 just identity 64 64 40 6 gradient  # one identity cell vs the C library
 ```
 
@@ -170,8 +170,9 @@ See [LICENSE-COMMERCIAL](LICENSE-COMMERCIAL) for details.
 Upstream C code from [SVT-AV1](https://gitlab.com/AOMediaCodec/SVT-AV1) — and
 the [svt-av1-hdr](https://github.com/juliobbv-p/svt-av1-hdr) fork whose
 feature set is ported in fork mode — is BSD-3-Clause-Clear with the Alliance
-for Open Media Patent License 1.0; see [LICENSE.md](../LICENSE.md) and
-[PATENTS.md](../PATENTS.md) at the repository root. Those terms continue to
+for Open Media Patent License 1.0; see `LICENSE.md` and `PATENTS.md`
+inside the `reference/svt-av1` submodule (the repository root carries
+`LICENSE-AGPL3` and `LICENSE-COMMERCIAL` for this port itself). Those terms continue to
 cover the upstream work this port derives from. This dual license applies to
 the Rust port in `rust/`; the C tree in the rest of the repository keeps
 the upstream licenses.

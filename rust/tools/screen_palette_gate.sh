@@ -38,7 +38,9 @@ RS_ROOT=$(cd "$HERE/.." && pwd)
 RUN_BIN="$RS_ROOT/target/release/examples/identity_run"
 CT_BIN="$HERE/capture_c_trace/capture_c_trace"
 SCREEN_DIR="${SCREEN_DIR:-/root/work/codec-corpus/gb82-sc}"
-: "${SVT_CREF_LIB_DIR:=$RS_ROOT/Bin/Release}"
+# $RS_ROOT is rust/, so the library lives one level UP (matching
+# svtav1-cref/build.rs, which resolves Bin/Release from the REPO root).
+: "${SVT_CREF_LIB_DIR:=$(cd "$RS_ROOT/.." && pwd)/Bin/Release}"
 export SVT_CREF_LIB_DIR
 
 read -r -a IMGS <<<"${SP_IMGS:-graph codec_wiki gmessages gui imac_dark imac_g3 imessage terminal windows windows95}"

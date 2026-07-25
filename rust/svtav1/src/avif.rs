@@ -50,11 +50,16 @@ pub enum EncodeError {
     InvalidQuality,
     /// Encoding failed with a description.
     EncodeFailed(String),
+    /// A builder knob was set that this encoder records but does not consume,
+    /// where ignoring it would silently emit output the caller did not ask for
+    /// (see `AvifEncoder::validate_inert_knobs`).
+    UnsupportedConfig(&'static str),
 }
 
 impl core::fmt::Display for EncodeError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            Self::UnsupportedConfig(what) => write!(f, "Unsupported configuration: {what}"),
             Self::InvalidDimensions => write!(f, "Invalid image dimensions"),
             Self::InvalidQuality => write!(f, "Quality must be between 1.0 and 100.0"),
             Self::EncodeFailed(msg) => write!(f, "Encode failed: {msg}"),
@@ -237,12 +242,20 @@ impl AvifEncoder {
     }
 
     /// Enable or disable trellis quantization.
+    ///
+    /// CURRENTLY INERT: recorded for API compatibility, not consumed by the
+    /// encoder (the RDOQ policy comes from the preset/qindex, C-exactly).
     pub fn with_trellis(mut self, enable: bool) -> Self {
         self.enable_trellis = enable;
         self
     }
 
-    /// Enable or disable lossless encoding.
+    /// Request lossless encoding.
+    ///
+    /// CURRENTLY INERT AND REJECTED: the encode entry points return
+    /// [`EncodeError::UnsupportedConfig`] when this is set, because the
+    /// encoder would otherwise silently produce a LOSSY stream. Setting it
+    /// back to `false` clears the rejection.
     pub fn with_lossless(mut self, lossless: bool) -> Self {
         self.lossless = lossless;
         self
@@ -315,6 +328,7 @@ impl AvifEncoder {
     ) -> Result<EncodedAvif, EncodeError> {
         self.validate_dimensions(pixels.len(), width, height, stride)?;
         self.validate_quality()?;
+        self.validate_inert_knobs()?;
 
         let qp = Self::quality_to_qp(self.quality);
         let preset = Self::speed_to_preset(self.speed);
@@ -476,6 +490,32 @@ impl AvifEncoder {
     fn validate_quality(&self) -> Result<(), EncodeError> {
         if !(1.0..=100.0).contains(&self.quality) {
             return Err(EncodeError::InvalidQuality);
+        }
+        Ok(())
+    }
+
+    /// Reject builder knobs that this encoder RECORDS but does not consume,
+    /// where ignoring them would silently emit output the caller did not ask
+    /// for.
+    ///
+    /// `with_lossless(true)` would otherwise return a LOSSY stream and
+    /// `with_chroma_subsampling(Yuv422/Yuv444)` a 4:2:0 one — both
+    /// indistinguishable from success at the call site. (4:2:2 / 4:4:4 are
+    /// outside SVT-AV1 v4.2.0's own shipping envelope too:
+    /// `svt_av1_verify_settings`, enc_settings.c:470, "Only support 420 now".)
+    /// The purely advisory knobs — trellis, VAQ, QM, seg-boost,
+    /// still-image tuning — are documented as inert instead of rejected: they
+    /// change nothing a caller can observe.
+    fn validate_inert_knobs(&self) -> Result<(), EncodeError> {
+        if self.lossless {
+            return Err(EncodeError::UnsupportedConfig(
+                "lossless encoding is not implemented; the encoder would emit a lossy stream",
+            ));
+        }
+        if self.chroma_subsampling != ChromaSubsampling::Yuv420 {
+            return Err(EncodeError::UnsupportedConfig(
+                "only 4:2:0 chroma is implemented (and C v4.2.0 ships 420 only)",
+            ));
         }
         Ok(())
     }

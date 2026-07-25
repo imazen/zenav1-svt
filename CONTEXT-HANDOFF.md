@@ -55,7 +55,16 @@ from leaking between tests (see `rust/CLAUDE.md` → Archmage Rules).
 ## 2. How correctness is actually established
 
 `rust/tools/` holds the gates. They shell out to BOTH encoders and compare
-bytes. CI (`.github/workflows/rust-gates.yml`) runs all of them.
+bytes. CI (`.github/workflows/rust-gates.yml`) runs SIX of them —
+`bd10_matrix`, `bd10_nonflat_gate`, `bd10_hbd_src_gate`, `superres_gate`,
+`recon_parity`, `decode_conformance` — plus the workspace tests. Everything
+else is LOCAL-ONLY, including the flagship `identity_matrix.sh` and every
+corpus-dependent gate. Run them by hand before any release.
+
+Two traps worth knowing before you trust a gate's exit code:
+`identity_matrix.sh` is a tracking SCOREBOARD — it always exits 0, so read its
+printed tally, not `$?`. And gates whose corpus is missing may run a reduced
+cell set; check the printed count against the documented one.
 
 | gate | what it proves |
 |---|---|

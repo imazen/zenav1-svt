@@ -46,7 +46,7 @@ under `rust/tools/`:
 | Real photographs, presets **0–13**, 8-bit (CID22) | `photo_p0_gate` + `real_image_matrix` | **8/8** + 177/180¹ |
 | 10-bit synthetic, presets 0–13 | `bd10_matrix` + `bd10_nonflat_gate` | **36/36** + **309/309** |
 | 10-bit real photographs, presets **0–13** (CID22 + CLIC) | `bd10_photo_gate` | **191/191** |
-| SB128 superblocks (incl. high-qp partition depths) | `sb128_gate` | **22/22** |
+| SB128 superblocks (incl. high-qp partition depths) | `sb128_gate` | **18/18** (14 SB128 cells + 4 SB64 controls) |
 | Multi-tile (rows × cols, all preset bands) | `tile_gate` | **29/29** |
 | Feature intersections: SB128×tiles, bd10×tiles, real×tiles | `coverage_combos_gate` | **40/40**² |
 | Screen content, palette, preset 6 | `screen_palette_gate` | **50/50** |
@@ -90,8 +90,12 @@ for one still (iterate CRF to hit a size). Multi-frame / GOP / ALT-REF are the
 separate video-scale future.
 
 Two envelope details for *consumers*: the 10-bit path is byte-gated internally,
-but the public encode API currently takes **8-bit input** (`&[u8]`) — a `&[u16]`
-10-bit-source entry point is pending ([#6](https://github.com/imazen/zenav1-svt/issues/6)).
+and the public encode API takes **native 10-bit `&[u16]` input** via
+`try_encode_frame_420_hbd` / `try_encode_frame_hbd` — the low 2 bits reach the
+mode decision, the coded levels, and the deblock/CDEF/Wiener searches
+(`tools/bd10_hbd_src_gate.sh`, 100/100 vs C). Envelope: 64-aligned dims and
+either preset ≥ 9 or a full-RD-capable preset ≤ 8; out-of-envelope configs are
+rejected with `UnsupportedConfig`, never silently truncated.
 Non-multiple-of-64 dimensions encode at **preset ≥ 6** (partial superblocks,
 byte-identical); presets 0–5 require multiples of 64.
 

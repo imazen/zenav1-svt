@@ -2,9 +2,11 @@
 //!
 //! # Overview
 //!
-//! `svtav1` is a safe Rust implementation of the SVT-AV1 video encoder,
-//! targeting real-time transcoding (H.264/H.265 → AV1) with optional
-//! CUDA GPU acceleration.
+//! `svtav1` is a still-picture (AVIF / all-intra) AV1 encoder — an
+//! algorithm-for-algorithm port of SVT-AV1 v4.2.0, verified BYTE-IDENTICAL to
+//! the C encoder across its tested envelope. It is not a video transcoder:
+//! there is no inter-frame path, no GPU acceleration, and no H.264/H.265
+//! input.
 //!
 //! # Architecture
 //!
@@ -17,14 +19,25 @@
 //!
 //! # Usage
 //!
-//! ```no_run
-//! use svtav1::{EncoderConfig, Encoder};
+//! The encoder is [`svtav1_encoder::pipeline::EncodePipeline`] (raw AV1 OBUs)
+//! or [`avif::AvifEncoder`] (a complete AVIF file):
 //!
-//! let config = EncoderConfig::new(8); // preset 8
-//! let mut encoder = Encoder::new(config).unwrap();
-//! // encoder.send_frame(frame);
-//! // let packet = encoder.receive_packet();
+//! ```no_run
+//! use svtav1::encoder::pipeline::EncodePipeline;
+//! use svtav1::encoder::rate_control::{RcConfig, RcMode};
+//!
+//! let (w, h) = (64u32, 64u32);
+//! let rc = RcConfig { mode: RcMode::Cqp, qp: 32, ..RcConfig::default() };
+//! let mut p = EncodePipeline::new(w, h, 8, rc, 0, 1).with_chroma_420(true);
+//! let (y, u, v) = (vec![128u8; 64 * 64], vec![128u8; 32 * 32], vec![128u8; 32 * 32]);
+//! let obu = p.try_encode_frame_420(&y, &u, &v, w as usize).expect("encode");
+//! assert!(!obu.is_empty());
 //! ```
+//!
+//! NOTE: the `Encoder` / `EncoderConfig` / `Frame` / `Packet` types below are
+//! an UNIMPLEMENTED scaffold from an early sketch — `Encoder::send_frame`
+//! discards its input and `Encoder::receive_packet` always returns
+//! `NotReady`. Do not build on them; use the two APIs above.
 //!
 //! # Safety
 //!

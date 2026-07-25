@@ -12,8 +12,10 @@ stays OFF by default, so everything landed is additive and byte-neutral.
 | source downscale (`svtav1-dsp::resize`) | LANDED (chunk B.1) | `c_parity_resize` — 256 plane cells == C, all 5 filter banks, both down2 arms |
 | `enable_superres` + `superres_params()` | LANDED (chunk B.2) | `superres_header` — SH and FH bytes == real C at denom 12/16 |
 | encode at coded_w + recon upscale + signalling | LANDED (chunk B.3) | `superres_gate.sh` — 128/128 cells: byte-parity vs C + decode at the upscaled size + anti-vacuity |
-| stale full-res variance indexing (presets >= 9) | **OPEN (chunk B.4)** | the 133/640 divergent cells of the wider sweep |
-| LR on the upscaled frame (presets <= 6) | **OPEN (chunk B.5)** | refused today by `superres_config_error` |
+| stale full-res variance indexing | LANDED (chunk B.4) | wide sweep 507/640 -> **639/640** byte-identical; `superres_gate.sh` defaults to presets 8/9/10/13 (512 cells, all passing) |
+| LR restoration-unit geometry | LANDED (chunk B.5 part 1) | `restoration::superres_lr_geom_tests` vs C's formula, all denominators |
+| LR on the upscaled frame (presets <= 6) | **OPEN (chunk B.5 rest)** | refused today by `superres_config_error` |
+| `gradient_64_q32_p7_d10` | **OPEN** | the single divergent cell of the 640-cell sweep |
 | denominator RDO (QTHRESH / AUTO) | **OPEN (chunk C)** | — |
 
 **MEASURED (2026-07-24), do not re-derive:** for a STILL (KEY) frame the C knob

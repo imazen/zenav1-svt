@@ -7,7 +7,7 @@ source of truth and `rust/docs/IDENTITY-STATUS.md` is the full divergence map.
 ## Layout
 
 ```
-Source/          the SVT-AV1 v4.2.0 C fork — READ-ONLY reference + differential oracle
+reference/svt-av1/  the SVT-AV1 v4.2.0 C fork (git SUBMODULE) — READ-ONLY reference + differential oracle
   Lib/Codec/       encoder core (the bulk of what is ported)
   Lib/C_DEFAULT/   scalar reference kernels (what the port's DSP is compared against)
   API/             EbSvtAv1Enc.h — the config surface the coverage gate tracks
@@ -39,9 +39,13 @@ Every differential test and identity run links or drives the in-tree C library.
 Build it once from the repo root:
 
 ```bash
-cmake -S . -B cbuild-static -DCMAKE_BUILD_TYPE=Release \
-      -DBUILD_SHARED_LIBS=OFF -DBUILD_APPS=OFF -DBUILD_TESTING=OFF
-cmake --build cbuild-static -j
+# The C reference is the SUBMODULE at reference/svt-av1, and the build MUST
+# place its outputs in Bin/Release — that is where svtav1-cref's build.rs
+# looks for libSvtAv1Enc.a.
+cmake -S reference/svt-av1 -B cbuild-static -G Ninja -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_OUTPUT_DIRECTORY="$PWD/Bin/Release/" \
+      -DBUILD_SHARED_LIBS=OFF -DBUILD_APPS=ON -DBUILD_TESTING=OFF -DSVT_AV1_LTO=OFF
+cmake --build cbuild-static
 ```
 
 `crates/svtav1-cref/build.rs` links `Bin/Release/libSvtAv1Enc.a` (override with

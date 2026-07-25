@@ -395,4 +395,4 @@ rust/
 ```
 
 C reference builds required for tests:
-`cmake -S . -B cbuild-static -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DBUILD_APPS=OFF -DBUILD_TESTING=OFF && cmake --build cbuild-static -j`
+`cmake -S reference/svt-av1 -B cbuild-static -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_OUTPUT_DIRECTORY="$PWD/Bin/Release/" -DBUILD_SHARED_LIBS=OFF -DBUILD_APPS=ON -DBUILD_TESTING=OFF -DSVT_AV1_LTO=OFF && cmake --build cbuild-static` (the C tree is the `reference/svt-av1` SUBMODULE, and `-DCMAKE_OUTPUT_DIRECTORY` is required — `svtav1-cref`'s build.rs looks for `Bin/Release/libSvtAv1Enc.a`)

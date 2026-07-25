@@ -32,21 +32,22 @@
 #   cdef_process.c:152) while this port still searches/applies it at the coded
 #   width. Refusing beats emitting a stream whose LR geometry disagrees with the
 #   signalled one.
-# * presets >= 9 on TEXTURED content (and one preset-7 cell) — MEASURED
-#   2026-07-24, full sweep `SR_PRESETS="7 8 9 10 13"`: 507/640 byte-identical,
-#   every one of the 640 DECODES at the upscaled size, and the 133 divergences
-#   are all partition-symbol (`CDF10`) flips on gradient content. Localized:
-#   encoding the port's OWN downscaled pixels at the coded dims WITHOUT superres
-#   is byte-identical to C (gradient 128x128 q32 p10 d16: 724B == 724B, 6390
-#   tile ops), so neither the downscale nor the coded-width MD is at fault — C
-#   itself decides differently when superres is on. Root cause in the C source:
-#   `scale_pcs_params` (resize.c:1434) re-inits the b64/SB geometry for the
-#   coded size but does NOT recompute `pcs->variance`, so C's PD0 keeps reading
-#   picture-analysis variances computed on the FULL-RESOLUTION b64 grid through
-#   the new coded-grid indices. Replicating that stale-array indexing is
-#   superres chunk B.4. (Deriving `pic_avg_variance` / screen-content detection
-#   pre-scaling — which C also does — is already implemented and was measured
-#   NOT to be the trigger on its own.)
+# * ONE cell, `gradient_64_q32_p7_d10` — the only byte divergence left in the
+#   full `SR_PRESETS="7 8 9 10 13"` sweep, which is otherwise **639/640**
+#   byte-identical (and 640/640 decodable at the upscaled size). Preset 7 is
+#   therefore out of the default set until it is root-caused; run
+#   `SR_PRESETS="7 8 9 10 13" tools/superres_gate.sh` to see it.
+#
+#   History worth keeping: that sweep was 507/640 before chunk B.4. The 133
+#   divergences were all partition-symbol (`CDF10`) flips on textured content,
+#   and encoding the port's OWN downscaled pixels at the coded dims WITHOUT
+#   superres was byte-identical to C (gradient 128x128 q32 p10 d16: 724B ==
+#   724B, 6390 tile ops) — so neither the downscale nor the coded-width MD was
+#   at fault. Root cause was in C: `scale_pcs_params` (resize.c:1434) re-inits
+#   the b64/SB geometry for the coded size but does NOT recompute
+#   `pcs->variance`, so C's PD0 keeps reading picture-analysis variances
+#   computed on the FULL-RESOLUTION b64 grid through the new coded-grid
+#   indices. Chunk B.4 reproduces that indexing deliberately.
 #
 # Env: AOMDEC (path to aomdec; required — no graceful skip).
 set -uo pipefail
@@ -61,7 +62,7 @@ if ! command -v "$aomdec" >/dev/null 2>&1; then
 fi
 read -r -a SIZES <<<"${SR_SIZES:-64 128}"
 read -r -a QPS <<<"${SR_QPS:-20 32 40 55}"
-read -r -a PRESETS <<<"${SR_PRESETS:-8}"
+read -r -a PRESETS <<<"${SR_PRESETS:-8 9 10 13}"
 read -r -a DENOMS <<<"${SR_DENOMS:-9 10 11 12 13 14 15 16}"
 read -r -a CONTENTS <<<"${SR_CONTENTS:-uniform gradient}"
 OUT="${TMPDIR:-/tmp}/srgate.$$"

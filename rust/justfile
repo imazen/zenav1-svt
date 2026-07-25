@@ -22,7 +22,8 @@ build:
 # hold `archmage::testing::lock_token_testing()` so `cargo test` stays correct,
 # but nextest is what the gates are defined against.
 #
-# nextest does not run doctests; the `--doc` pass covers them.
+# nextest does not run doctests; the workspace has 2, so the `--doc`
+# pass below is load-bearing, not just a guard.
 test:
     cargo nextest run --workspace
     cargo test --workspace --doc
