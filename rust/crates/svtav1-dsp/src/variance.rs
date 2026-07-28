@@ -142,16 +142,41 @@ fn variance_impl_neon(
     width: usize,
     height: usize,
 ) -> (u64, u32) {
-    let mut sum: u64 = 0;
-    let mut sum_sq: u64 = 0;
+    // Sum via the vpaddlq/vpadalq widening chain; sum-of-squares via vmull_u8
+    // (u8*u8 fits u16) drained into u32 lanes every iteration.
+    //
+    // Overflow: a u16 lane holds at most 255*255 = 65025, so squares must NOT
+    // accumulate in u16. Draining to u32 per 16-byte chunk keeps the largest
+    // block used here (128x128 = 16384 px, worst case 65025*16384 = 1.07e9)
+    // inside u32's 4.29e9.
+    let mut sum_acc = vdupq_n_u32(0);
+    let mut sq_acc = vdupq_n_u32(0);
+    let mut tail_sum: u64 = 0;
+    let mut tail_sq: u64 = 0;
+
     for row in 0..height {
-        let offset = row * src_stride;
-        for col in 0..width {
-            let v = src[offset + col] as u64;
-            sum += v;
-            sum_sq += v * v;
+        let off = row * src_stride;
+        let mut col = 0;
+        while col + 16 <= width {
+            let c: &[u8; 16] = src[off + col..off + col + 16].try_into().unwrap();
+            let v = vld1q_u8(c);
+            sum_acc = vpadalq_u16(sum_acc, vpaddlq_u8(v));
+            let lo = vget_low_u8(v);
+            let hi = vget_high_u8(v);
+            sq_acc = vpadalq_u16(sq_acc, vmull_u8(lo, lo));
+            sq_acc = vpadalq_u16(sq_acc, vmull_u8(hi, hi));
+            col += 16;
+        }
+        while col < width {
+            let v = src[off + col] as u64;
+            tail_sum += v;
+            tail_sq += v * v;
+            col += 1;
         }
     }
+
+    let sum = vaddvq_u32(sum_acc) as u64 + tail_sum;
+    let sum_sq = vaddvq_u32(sq_acc) as u64 + tail_sq;
     let n = (width * height) as u64;
     let variance = sum_sq * n - sum * sum;
     let mean = (sum / n) as u32;
@@ -169,16 +194,38 @@ fn sse_impl_neon(
     width: usize,
     height: usize,
 ) -> u64 {
-    let mut sse: u64 = 0;
+    // |a-b| via vabdq_u8 (exact for u8), squared with vmull_u8 into u16 and
+    // drained to u32 each chunk — squares reach 65025 so they must not
+    // accumulate in u16. The u32 accumulator is drained to u64 per ROW, so an
+    // arbitrarily tall block cannot overflow it.
+    let mut total: u64 = 0;
+    let mut tail: u64 = 0;
+
     for row in 0..height {
         let s_off = row * src_stride;
         let r_off = row * ref_stride;
-        for col in 0..width {
+        let mut col = 0;
+        let mut acc = vdupq_n_u32(0);
+
+        while col + 16 <= width {
+            let a: &[u8; 16] = src[s_off + col..s_off + col + 16].try_into().unwrap();
+            let b: &[u8; 16] = ref_[r_off + col..r_off + col + 16].try_into().unwrap();
+            let d = vabdq_u8(vld1q_u8(a), vld1q_u8(b));
+            let lo = vget_low_u8(d);
+            let hi = vget_high_u8(d);
+            acc = vpadalq_u16(acc, vmull_u8(lo, lo));
+            acc = vpadalq_u16(acc, vmull_u8(hi, hi));
+            col += 16;
+        }
+        total += vaddvq_u32(acc) as u64;
+
+        while col < width {
             let diff = src[s_off + col] as i32 - ref_[r_off + col] as i32;
-            sse += (diff * diff) as u64;
+            tail += (diff * diff) as u64;
+            col += 1;
         }
     }
-    sse
+    total + tail
 }
 
 #[cfg(test)]

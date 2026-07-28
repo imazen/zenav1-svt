@@ -15,7 +15,7 @@
 //!
 //! Run: `cargo bench -p zenav1-svt-dsp --bench kernel_tiers`
 
-use svtav1_dsp::{cdef, hadamard, sad};
+use svtav1_dsp::{cdef, hadamard, sad, variance};
 use zenbench::prelude::*;
 
 #[cfg(target_arch = "aarch64")]
@@ -79,6 +79,10 @@ fn bench_dsp(suite: &mut Suite) {
     pair!("satd_4x4", hadamard::satd_4x4(src, STRIDE, rf, STRIDE));
     pair!("satd_8x8", hadamard::satd_8x8(src, STRIDE, rf, STRIDE));
     pair!("cdef_find_dir_8bit", cdef::cdef_find_dir_8bit(src, STRIDE, 0));
+    pair!("variance_16x16", variance::variance(src, STRIDE, 16, 16));
+    pair!("variance_64x64", variance::variance(src, STRIDE, 64, 64));
+    pair!("sse_16x16", variance::sse(src, STRIDE, rf, STRIDE, 16, 16));
+    pair!("sse_64x64", variance::sse(src, STRIDE, rf, STRIDE, 64, 64));
 
     set_simd(true);
 }

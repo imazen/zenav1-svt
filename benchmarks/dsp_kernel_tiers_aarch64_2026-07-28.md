@@ -19,9 +19,14 @@ NEON is baseline. So the NEON tier was bit-for-bit the scalar tier, and the firs
 bench measured a uniform ~1.00× across all seven kernels — exactly what "both arms are the
 same code" looks like.
 
-An audit of every `*_impl_neon` in the crate found the same pattern in ~30 kernels: variance,
-sse, forward and inverse transforms, quant, quant_coding, restoration, intra_pred, inter_pred,
-hbd cdef, hadamard/satd, fwd_txfm, inv_txfm.
+An audit of every `*_impl_neon` in the crate found the same pattern in ~30 kernels. Three are
+now implemented (sad, variance, sse); the rest remain placeholders: forward and inverse
+transforms, quant, quant_coding, restoration, intra_pred, inter_pred, hbd cdef, hadamard/satd,
+fwd_txfm, inv_txfm.
+
+Note `satd_4x4`/`satd_8x8` and `cdef_find_dir_8bit` measure ~1.00× and are NOT yet done — they
+operate on 4- and 8-wide rows, so a 16-lane kernel would be all tail. They need either a
+different vectorization strategy (transpose-based Hadamard) or batching across blocks.
 
 ## Finding 2: SAD implemented for real — up to 8.7×
 
@@ -44,6 +49,27 @@ Exact by construction — absolute difference and addition are exact in integer 
 multiples of 16 (exercising the scalar tail), and an all-255-vs-all-0 worst case where the
 running sum reaches 4,177,920 — which overflows u16 many times over and would expose a missing
 accumulator drain.
+
+## Finding 2b: variance and sse implemented — 4.2×–6.1×
+
+Same treatment: `vabdq_u8` for the difference, `vmull_u8` to square into u16, and `vpadalq`
+to drain into u32. The drain cadence is the whole correctness story — a u16 lane tops out at
+255² = 65025, so squares cannot accumulate there.
+
+| kernel | scalar | NEON | speedup |
+|---|---|---|---|
+| variance_16x16 | 207.4 ns | **35.8 ns** | **5.8×** |
+| variance_64x64 | 2847 ns | **675 ns** | **4.2×** |
+| sse_16x16 | 289.5 ns | **47.1 ns** | **6.1×** |
+| sse_64x64 | 2505 ns | **436 ns** | **5.7×** |
+
+`sse` drains its u32 accumulator to u64 per *row*, so block height is unbounded; `variance`
+drains per 16-byte chunk, which covers the 128×128 maximum used here (worst case
+65025 × 16384 = 1.07e9, inside u32's 4.29e9).
+
+`tests/variance_neon_parity.rs` pins both against scalar across every block dimension and
+non-multiple-of-16 widths, plus an all-255-vs-all-0 case summing to 1,065,369,600 — which
+overflows a u16 lane by ~16000× and would immediately expose a missing drain.
 
 ## Finding 3: the C-parity gates could not LINK on ARM
 
