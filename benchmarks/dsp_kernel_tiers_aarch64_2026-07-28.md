@@ -19,8 +19,8 @@ NEON is baseline. So the NEON tier was bit-for-bit the scalar tier, and the firs
 bench measured a uniform ~1.00× across all seven kernels — exactly what "both arms are the
 same code" looks like.
 
-An audit of every `*_impl_neon` in the crate found the same pattern in ~30 kernels. Four are
-now implemented (sad, variance, sse, paeth); the rest remain placeholders: forward and inverse
+An audit of every `*_impl_neon` in the crate found the same pattern in ~30 kernels. Five are
+now implemented (sad, variance, sse, paeth, cdef_filter_block); the rest remain placeholders: forward and inverse
 transforms, quant, quant_coding, restoration, intra_pred, inter_pred, hbd cdef, hadamard/satd,
 fwd_txfm, inv_txfm.
 
@@ -97,6 +97,27 @@ top_left) is what makes it deterministic — a vectorized select with the wrong 
 produces plausible pixels while silently changing every intra block. Sampling is exactly what
 would miss that, so the test sweeps all 16.7M triples plus every block shape through both the
 vector body and the scalar tail.
+
+## Finding 2d: CDEF filter — 3.37×, and the C-parity suite earned its keep
+
+`cdef_filter_block` is applied to every reconstructed block. Ported from the existing AVX2 arm
+rather than invented: each output pixel is an independent 12-tap integer sum, so 8 columns map
+to 8 lanes with no cross-lane reduction. NEON's i32 vectors are 4 lanes, so each 8-wide
+quantity is carried as a `[int32x4_t; 2]` pair.
+
+| kernel | scalar | NEON | speedup |
+|---|---|---|---|
+| cdef_filter_block_8x8 | 1757 ns | **521 ns** | **3.37×** |
+
+**The first version was wrong, and `filter_block_sign_straddle_matches_c` caught it.** The AVX2
+arm loads taps with `_mm256_cvtepi16_epi32` — it reads the buffer as `int16_t`, so values at or
+above 0x8000 are NEGATIVE. I used `vmovl_u16`, which zero-extends. Every other CDEF parity test
+passed; only the one built specifically to place taps either side of 0x8000 failed, with output
+differing by small amounts (246 vs 242, 210 vs 209) that would have looked like rounding noise
+in a visual check.
+
+That is the concrete payoff from Finding 3 below: had the C-parity gates still been unlinkable
+on ARM, this port would have shipped looking correct.
 
 ## Finding 3: the C-parity gates could not LINK on ARM
 

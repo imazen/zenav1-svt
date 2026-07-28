@@ -79,6 +79,31 @@ fn bench_dsp(suite: &mut Suite) {
     pair!("satd_4x4", hadamard::satd_4x4(src, STRIDE, rf, STRIDE));
     pair!("satd_8x8", hadamard::satd_8x8(src, STRIDE, rf, STRIDE));
     pair!("cdef_find_dir_8bit", cdef::cdef_find_dir_8bit(src, STRIDE, 0));
+    {
+        // Same input offset the C-parity tests use.
+        const CDEF_IOFF: usize = cdef::CDEF_BSTRIDE * cdef::CDEF_VBORDER + cdef::CDEF_HBORDER;
+        // CDEF filter on the 8x8 shape that takes the vector path.
+        let inb: &'static [u16] = Box::leak(
+            (0..cdef::CDEF_INBUF_SIZE)
+                .map(|i| ((i * 7919) % 1024) as u16)
+                .collect::<Vec<u16>>()
+                .into_boxed_slice(),
+        );
+        suite.compare("cdef_filter_block_8x8", |g| {
+            for (arm, simd) in [(TIER_NAME, true), ("scalar", false)] {
+                g.bench(arm, move |b| {
+                    let mut dst = vec![0u8; 64];
+                    b.iter(move || {
+                        set_simd(simd);
+                        cdef::cdef_filter_block(
+                            &mut dst, 0, 8, inb, CDEF_IOFF, 12, 2, 1, 6, 6,
+                            cdef::BLOCK_8X8, 0, 1,
+                        );
+                    })
+                });
+            }
+        });
+    }
     pair!("variance_16x16", variance::variance(src, STRIDE, 16, 16));
     pair!("variance_64x64", variance::variance(src, STRIDE, 64, 64));
     pair!("sse_16x16", variance::sse(src, STRIDE, rf, STRIDE, 16, 16));

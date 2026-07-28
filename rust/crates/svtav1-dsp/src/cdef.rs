@@ -280,11 +280,172 @@ fn cdef_filter_block_impl_scalar(
     );
 }
 
+/// NEON port of [`cdef_filter_cols8_v3`]. Same algorithm, same guarantees:
+/// each output pixel is an independent 12-tap integer sum, so 8 columns map to
+/// 8 lanes with NO cross-lane reduction. NEON's i32 vectors are 4 lanes, so
+/// each "8-wide" quantity is carried as a `[int32x4_t; 2]` pair.
+///
+/// The `sum` is accumulated in i32 and sign-truncated to i16 once at the end
+/// (`(x<<16)>>16`); two's-complement add is associative mod 2^16, so that
+/// equals the scalar's per-tap `wrapping_add::<i16>` exactly. Products are
+/// small enough that the i32 accumulator cannot overflow across 12 taps.
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn cdef_load8_u16_neon(_token: NeonToken, inb: &[u16], idx: usize) -> [int32x4_t; 2] {
+    let a: &[u16; 8] = inb[idx..idx + 8].try_into().unwrap();
+    // SIGN-extend, not zero-extend. The AVX2 arm uses `_mm256_cvtepi16_epi32`,
+    // i.e. it reads the buffer as int16_t, so values >= 0x8000 are NEGATIVE.
+    // Zero-extending here produced a silent mismatch that only appears when
+    // taps straddle 0x8000 — caught by `filter_block_sign_straddle_matches_c`,
+    // which is built precisely to hit that boundary.
+    let v = vreinterpretq_s16_u16(vld1q_u16(a));
+    [vmovl_s16(vget_low_s16(v)), vmovl_s16(vget_high_s16(v))]
+}
+
+/// SIMD [`constrain`] over an i32x4 of diffs. `threshold`/`shift` are scalar
+/// (broadcast); `active == false` disables the tap, matching the scalar
+/// early-return for `threshold == 0`.
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn cdef_constrain4_neon(
+    _token: NeonToken,
+    diff: int32x4_t,
+    thr: int32x4_t,
+    shift: int32x4_t,
+    active: bool,
+) -> int32x4_t {
+    if !active {
+        return vdupq_n_s32(0);
+    }
+    let adiff = vabsq_s32(diff);
+    // Negative shift count = right shift in NEON's variable-shift.
+    let shifted = vshlq_s32(adiff, vnegq_s32(shift));
+    let capped = vmaxq_s32(vsubq_s32(thr, shifted), vdupq_n_s32(0));
+    let m = vminq_s32(adiff, capped);
+    // sign(diff) * m — negate where diff < 0. m is already 0 where diff == 0.
+    let neg = vcltq_s32(diff, vdupq_n_s32(0));
+    vbslq_s32(neg, vnegq_s32(m), m)
+}
+
+#[cfg(target_arch = "aarch64")]
+#[rite]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn cdef_filter_cols8_neon(
+    token: NeonToken,
+    inb: &[u16],
+    ioff: usize,
+    pri_strength: i32,
+    sec_strength: i32,
+    dir: i32,
+    pri_damping: i32,
+    sec_damping: i32,
+    coeff_shift: i32,
+    rows: i32,
+    sub: i32,
+    out: &mut [i32; 64],
+) {
+    let s = CDEF_BSTRIDE as i32;
+    let pri_taps = CDEF_PRI_TAPS[((pri_strength >> coeff_shift) & 1) as usize];
+    let sec_taps = CDEF_SEC_TAPS[((pri_strength >> coeff_shift) & 1) as usize];
+
+    let pri_active = pri_strength != 0;
+    let sec_active = sec_strength != 0;
+    let pri_shift = if pri_active {
+        (pri_damping - get_msb(pri_strength as u32)).max(0)
+    } else {
+        0
+    };
+    let sec_shift = if sec_active {
+        (sec_damping - get_msb(sec_strength as u32)).max(0)
+    } else {
+        0
+    };
+    let pri_shift_v = vdupq_n_s32(pri_shift);
+    let sec_shift_v = vdupq_n_s32(sec_shift);
+    let pri_thr = vdupq_n_s32(pri_strength);
+    let sec_thr = vdupq_n_s32(sec_strength);
+    let sentinel = vdupq_n_s32(CDEF_VERY_LARGE as i32);
+    let eight = vdupq_n_s32(8);
+    let zero = vdupq_n_s32(0);
+
+    let p_off = [
+        cdef_direction(dir, 0),
+        -cdef_direction(dir, 0),
+        cdef_direction(dir, 1),
+        -cdef_direction(dir, 1),
+    ];
+    let p_cof = [pri_taps[0], pri_taps[0], pri_taps[1], pri_taps[1]];
+    let s_off = [
+        cdef_direction(dir + 2, 0),
+        -cdef_direction(dir + 2, 0),
+        cdef_direction(dir - 2, 0),
+        -cdef_direction(dir - 2, 0),
+        cdef_direction(dir + 2, 1),
+        -cdef_direction(dir + 2, 1),
+        cdef_direction(dir - 2, 1),
+        -cdef_direction(dir - 2, 1),
+    ];
+    let s_cof = [
+        sec_taps[0], sec_taps[0], sec_taps[0], sec_taps[0], sec_taps[1], sec_taps[1], sec_taps[1],
+        sec_taps[1],
+    ];
+
+    let mut i = 0i32;
+    while i < rows {
+        let base = (ioff as i32 + i * s) as usize;
+        let x = cdef_load8_u16_neon(token, inb, base);
+        let mut sum = [zero, zero];
+        let mut mx = x;
+        let mut mn = x;
+
+        for t in 0..4usize {
+            let idx = (base as i32 + p_off[t]) as usize;
+            let tap = cdef_load8_u16_neon(token, inb, idx);
+            let cof = vdupq_n_s32(p_cof[t]);
+            for h in 0..2usize {
+                let diff = vsubq_s32(tap[h], x[h]);
+                let c = cdef_constrain4_neon(token, diff, pri_thr, pri_shift_v, pri_active);
+                sum[h] = vaddq_s32(sum[h], vmulq_s32(c, cof));
+                let is_sent = vceqq_s32(tap[h], sentinel);
+                mx[h] = vbslq_s32(is_sent, mx[h], vmaxq_s32(mx[h], tap[h]));
+                mn[h] = vminq_s32(mn[h], tap[h]);
+            }
+        }
+        for t in 0..8usize {
+            let idx = (base as i32 + s_off[t]) as usize;
+            let tap = cdef_load8_u16_neon(token, inb, idx);
+            let cof = vdupq_n_s32(s_cof[t]);
+            for h in 0..2usize {
+                let diff = vsubq_s32(tap[h], x[h]);
+                let c = cdef_constrain4_neon(token, diff, sec_thr, sec_shift_v, sec_active);
+                sum[h] = vaddq_s32(sum[h], vmulq_s32(c, cof));
+                let is_sent = vceqq_s32(tap[h], sentinel);
+                mx[h] = vbslq_s32(is_sent, mx[h], vmaxq_s32(mx[h], tap[h]));
+                mn[h] = vminq_s32(mn[h], tap[h]);
+            }
+        }
+
+        for h in 0..2usize {
+            // sign-extend the low 16 bits, then x + ((8 + sum - (sum<0)) >> 4)
+            let sw = vshrq_n_s32::<16>(vshlq_n_s32::<16>(sum[h]));
+            let neg = vreinterpretq_s32_u32(vshrq_n_u32::<31>(vreinterpretq_u32_s32(sw)));
+            let adj = vshrq_n_s32::<4>(vsubq_s32(vaddq_s32(eight, sw), neg));
+            let val = vaddq_s32(x[h], adj);
+            let y = vminq_s32(vmaxq_s32(val, mn[h]), mx[h]);
+            let dst: &mut [i32; 4] = (&mut out[i as usize * 8 + h * 4..i as usize * 8 + h * 4 + 4])
+                .try_into()
+                .unwrap();
+            vst1q_s32(dst, y);
+        }
+        i += sub;
+    }
+}
+
 #[cfg(target_arch = "aarch64")]
 #[arcane]
 #[allow(clippy::too_many_arguments)]
 fn cdef_filter_block_impl_neon(
-    _token: NeonToken,
+    token: NeonToken,
     dst: &mut [u8],
     doff: usize,
     dstride: usize,
@@ -299,10 +460,40 @@ fn cdef_filter_block_impl_neon(
     coeff_shift: i32,
     subsampling_factor: usize,
 ) {
-    cdef_filter_block_core(
-        dst, doff, dstride, inb, ioff, pri_strength, sec_strength, dir, pri_damping, sec_damping,
-        bsize, coeff_shift, subsampling_factor,
+    // Only the cols == 8 shapes take the vector path, exactly as the AVX2 arm
+    // does; the rare 4-wide chroma shapes fall back to the scalar core.
+    if !(bsize == BLOCK_8X8 || bsize == BLOCK_8X4) {
+        cdef_filter_block_core(
+            dst, doff, dstride, inb, ioff, pri_strength, sec_strength, dir, pri_damping,
+            sec_damping, bsize, coeff_shift, subsampling_factor,
+        );
+        return;
+    }
+    let rows = if bsize == BLOCK_8X8 || bsize == BLOCK_4X8 { 8 } else { 4 };
+    let mut scratch = [0i32; 64];
+    cdef_filter_cols8_neon(
+        token,
+        inb,
+        ioff,
+        pri_strength,
+        sec_strength,
+        dir,
+        pri_damping,
+        sec_damping,
+        coeff_shift,
+        rows,
+        subsampling_factor as i32,
+        &mut scratch,
     );
+    let mut i = 0i32;
+    while i < rows {
+        let drow = doff + i as usize * dstride;
+        let srow = i as usize * 8;
+        for j in 0..8usize {
+            dst[drow + j] = scratch[srow + j] as u8;
+        }
+        i += subsampling_factor as i32;
+    }
 }
 
 /// AVX2 dst8 filter. Byte-identical to [`cdef_filter_block_core`]: each output
