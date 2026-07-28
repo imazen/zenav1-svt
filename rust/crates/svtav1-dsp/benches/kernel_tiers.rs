@@ -15,7 +15,7 @@
 //!
 //! Run: `cargo bench -p zenav1-svt-dsp --bench kernel_tiers`
 
-use svtav1_dsp::{cdef, hadamard, intra_pred, sad, variance};
+use svtav1_dsp::{cdef, fwd_txfm, hadamard, intra_pred, inv_txfm, sad, variance};
 use zenbench::prelude::*;
 
 #[cfg(target_arch = "aarch64")]
@@ -126,6 +126,36 @@ fn bench_dsp(suite: &mut Suite) {
                 }
             });
         }
+    }
+
+    // Transforms: measured to decide whether a from-scratch bit-exact NEON
+    // butterfly is warranted. All three tiers currently call the same
+    // `*_c_exact` body, so these are absolute-cost numbers, not a tier
+    // comparison.
+    {
+        let coeffs: &'static [i32] = Box::leak(
+            (0..1024).map(|i| ((i * 7919) % 4096) as i32 - 2048).collect::<Vec<i32>>().into_boxed_slice(),
+        );
+        suite.compare("fwd_txfm2d_dct_dct", |g| {
+            g.bench("4x4", move |b| {
+                let mut out = vec![0i32; 16];
+                b.iter(move || fwd_txfm::fwd_txfm2d_4x4_dct_dct(coeffs, &mut out, 4))
+            });
+            g.bench("8x8", move |b| {
+                let mut out = vec![0i32; 64];
+                b.iter(move || fwd_txfm::fwd_txfm2d_8x8_dct_dct(coeffs, &mut out, 8))
+            });
+            g.bench("16x16", move |b| {
+                let mut out = vec![0i32; 256];
+                b.iter(move || fwd_txfm::fwd_txfm2d_16x16_dct_dct(coeffs, &mut out, 16))
+            });
+        });
+        suite.compare("inv_txfm2d_dct_dct", |g| {
+            g.bench("8x8", move |b| {
+                let mut out = vec![0i32; 64];
+                b.iter(move || inv_txfm::inv_txfm2d_8x8_dct_dct(coeffs, &mut out, 8))
+            });
+        });
     }
 
     set_simd(true);

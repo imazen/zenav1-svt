@@ -137,3 +137,53 @@ Note for whoever continues: on ARM the C encoder dispatches its own NEON kernels
 parity should ultimately be pinned against *those*, not against the `_c` reference. The AVX2
 shim exists precisely because it diverges from `_c` at 10-bit (see the comment above
 `hadamard_avx2`); the NEON kernels may diverge similarly and that is unverified.
+
+
+## The transforms: measured, scoped, NOT ported
+
+Transforms are the most expensive kernels measured in this crate:
+
+| kernel | cost (all tiers identical — see below) |
+|---|---|
+| fwd_txfm2d 16x16 dct_dct | 1171 ns |
+| inv_txfm2d 8x8 dct_dct | 835 ns |
+| fwd_txfm2d 8x8 dct_dct | 424 ns |
+| fwd_txfm2d 4x4 dct_dct | 183 ns |
+
+For comparison, the CDEF filter ported above is 521 ns and SAD 16x16 is 45 ns. An all-intra
+encoder runs a forward transform per block plus an inverse for reconstruction, so this is the
+largest remaining NEON opportunity in the crate.
+
+### What exists
+
+- `fwd_txfm.rs` / `inv_txfm.rs`: the `*_impl_v3` arms are **also placeholders** — they call the
+  same `*_c_exact` body as scalar and neon. Nothing is vectorized at that layer on any target.
+- The real SIMD lives one level down: `fwd_txfm2d_c_exact` routes to
+  `txfm_simd::try_fwd_dct_square` etc., and *that* has a genuine AVX2 implementation —
+  `txfm_simd.rs` contains 47 x86 intrinsic uses and **zero** NEON.
+- Structure: `mod v3` is 9 small primitives (`splat`, `hbtf`, `clampv`, `round_shift_v`,
+  `wraplow`, `rect_scale`, `transpose8`, `load8`, `store8`), and
+  `txfm_simd_drivers.rs` (228 lines, 4 entry points, only 13 direct intrinsic uses) generates
+  `fwd_dct_{8,16,32,64}` from a macro.
+
+### What the port requires
+
+Porting the 9 primitives is mechanical — `hbtf` is `vmulq_s32`/`vaddq_s32` plus a variable
+shift, `clampv` is `vminq_s32`/`vmaxq_s32`. Two things are not mechanical:
+
+1. **`transpose8`**: an 8x8 i32 transpose. AVX2 does it with 256-bit shuffles; NEON has 4-lane
+   vectors, so it becomes four 4x4 transposes built from `vtrnq`/`vzipq` plus cross-block
+   moves. This is the one piece with no direct correspondence.
+2. **Lane width**: every 8-wide quantity becomes a `[int32x4_t; 2]` pair, as in the CDEF port
+   above. The macro that generates the butterflies has to be adapted, not just the leaves.
+
+### Why it is not done here
+
+A DCT butterfly applies `half_btf` with exact rounding at every stage; unlike CDEF's
+independent per-pixel sums, an error at one stage propagates through the rest of the
+transform. `tests/c_parity_txfm.rs` WOULD catch it — it has forward/inverse tests against C
+with SIMD-stressing residual patterns, and it caught the CDEF sign-extension bug in this same
+session — but a port attempted while tired is how that bug happened in the first place, and it
+took a purpose-built boundary test to surface it.
+
+This is a well-defined next task with a working verification gate, not an open question.
