@@ -122,6 +122,9 @@ fn hadamard_32x32_matches_c() {
 // 8x8 has no AVX2 variant on this path (`SET_SSE2`), and its stage is int16 in
 // every implementation, so it is pinned against `_c` at both ranges.
 
+// AVX2 kernels exist only in an x86_64 build of the C library; on aarch64 the
+// C encoder ships NEON kernels and these symbols are absent.
+#[cfg(target_arch = "x86_64")]
 fn fuzz_dim_avx2(dim: usize, iters: usize, seed: u64, bd10: bool) {
     let mut rng = Rng(seed);
     for it in 0..iters {
@@ -173,6 +176,7 @@ fn hadamard_8x8_matches_c_bd10_range() {
     fuzz_dim_gen(8, 400, 0xbd10_11ad_0808_0808, true);
 }
 
+#[cfg(target_arch = "x86_64")]
 #[test]
 fn hadamard_16x16_matches_avx2_8bit_range() {
     // Pin the dispatch tier: archmage token disabling is PROCESS-WIDE, so a
@@ -184,6 +188,7 @@ fn hadamard_16x16_matches_avx2_8bit_range() {
     fuzz_dim_avx2(16, 200, 0x8ada_a7f2_1616_1616, false);
 }
 
+#[cfg(target_arch = "x86_64")]
 #[test]
 fn hadamard_32x32_matches_avx2_8bit_range() {
     // Pin the dispatch tier: archmage token disabling is PROCESS-WIDE, so a
@@ -195,6 +200,7 @@ fn hadamard_32x32_matches_avx2_8bit_range() {
     fuzz_dim_avx2(32, 100, 0x8ada_a7f2_3232_3232, false);
 }
 
+#[cfg(target_arch = "x86_64")]
 #[test]
 fn hadamard_16x16_matches_avx2_bd10_range() {
     // Pin the dispatch tier: archmage token disabling is PROCESS-WIDE, so a
@@ -206,6 +212,7 @@ fn hadamard_16x16_matches_avx2_bd10_range() {
     fuzz_dim_avx2(16, 200, 0xbd10_a7f2_1616_1616, true);
 }
 
+#[cfg(target_arch = "x86_64")]
 #[test]
 fn hadamard_32x32_matches_avx2_bd10_range() {
     // Pin the dispatch tier: archmage token disabling is PROCESS-WIDE, so a
@@ -221,6 +228,10 @@ fn hadamard_32x32_matches_avx2_bd10_range() {
 /// magnitudes `_c` and `_avx2` genuinely differ, so a port of `_c` cannot
 /// reproduce the encoder. Fails loudly if upstream ever unifies them (at
 /// which point the AVX2-shaped port above should be revisited).
+// AVX2 kernels exist only in an x86_64 build of the C library; on ARM the
+// symbols are absent (see svtav1-cref). Gated so the rest of the C-parity
+// suite can LINK and run on aarch64.
+#[cfg(target_arch = "x86_64")]
 #[test]
 fn c_and_avx2_hadamard_diverge_at_bd10_range() {
     // Pin the dispatch tier: archmage token disabling is PROCESS-WIDE, so a

@@ -18,6 +18,7 @@ magetypes = { workspace = true }
 
 [dev-dependencies]
 archmage = { workspace = true, features = ["testable_dispatch"] }
+zenbench = "0.1.7"
 zenav1-svt-cref = { path = "../svtav1-cref" }
 
 [lints]
@@ -35,3 +36,7 @@ unchecked_dsp = []
 [[example]]
 name = "perf_report"
 required-features = ["std"]
+
+[[bench]]
+name = "kernel_tiers"
+harness = false

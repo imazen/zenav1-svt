@@ -1,0 +1,65 @@
+# DSP kernels on aarch64: the NEON tier was never implemented — 2026-07-28
+
+Platform: Apple Silicon (aarch64, NEON), darwin 25.5.0
+Bench: `rust/crates/svtav1-dsp/benches/kernel_tiers.rs` (zenbench, interleaved arms)
+
+## Finding 1: every `_neon` arm was a placeholder
+
+All 32 `incant!` sites in `svtav1-dsp` dispatch `[v3, neon, scalar]`, so the crate *advertises*
+a NEON tier. Every `_neon` implementation was scalar code wrapped in `#[arcane]`. `sad.rs`
+even said so:
+
+```rust
+// NEON: use vabdl_u8 + vpaddlq for absolute difference and accumulate
+// Starting with scalar-with-autovectorize; will add explicit NEON intrinsics
+```
+
+`#[arcane]` adds `#[target_feature(enable = "neon")]`, which is a **no-op on aarch64** because
+NEON is baseline. So the NEON tier was bit-for-bit the scalar tier, and the first run of this
+bench measured a uniform ~1.00× across all seven kernels — exactly what "both arms are the
+same code" looks like.
+
+An audit of every `*_impl_neon` in the crate found the same pattern in ~30 kernels: variance,
+sse, forward and inverse transforms, quant, quant_coding, restoration, intra_pred, inter_pred,
+hbd cdef, hadamard/satd, fwd_txfm, inv_txfm.
+
+## Finding 2: SAD implemented for real — up to 8.7×
+
+`sad_impl_neon` now uses `vabdq_u8` for the absolute difference and widening pairwise adds
+(`vpadalq_u8` → u16, `vpadalq_u16` → u32) with a per-row drain so the u16 accumulator cannot
+overflow.
+
+| kernel | before (scalar-as-neon) | after | speedup |
+|---|---|---|---|
+| sad_8x8 | 80.2 ns | 79.5 ns | 1.00× (8 < 16 lanes — all tail) |
+| sad_16x16 | 312.9 ns | **44.8 ns** | **6.98×** |
+| sad_32x32 | 888 ns | **102 ns** | **8.7×** |
+| sad_64x64 | 2558 ns | **402 ns** | **6.4×** |
+
+SAD runs at every candidate position in motion and mode search, so this is on the encoder's
+hottest path.
+
+Exact by construction — absolute difference and addition are exact in integer lanes.
+`tests/sad_neon_parity.rs` pins it across every AV1 block dimension plus widths that are not
+multiples of 16 (exercising the scalar tail), and an all-255-vs-all-0 worst case where the
+running sum reaches 4,177,920 — which overflows u16 many times over and would expose a missing
+accumulator drain.
+
+## Finding 3: the C-parity gates could not LINK on ARM
+
+`svtav1-cref` declared `svt_aom_hadamard_{16x16,32x32}_avx2` in an **ungated** `extern` block.
+An aarch64 build of the C library has no AVX2 symbols (it ships NEON kernels instead), so every
+`c_parity_*` test failed to link with `Undefined symbols for architecture arm64`.
+
+For a project whose stated bar is *byte-identical OBUs against the C encoder*, this meant the
+verification gates were unavailable on the architecture being optimized. Fixed by gating the
+extern block, the `hadamard_avx2` wrapper, and the tests that call it to `target_arch =
+"x86_64"`.
+
+**233 tests now pass against the real C encoder on aarch64**, including 12 `c_parity_*` suites
+that previously could not build.
+
+Note for whoever continues: on ARM the C encoder dispatches its own NEON kernels, so ARM
+parity should ultimately be pinned against *those*, not against the `_c` reference. The AVX2
+shim exists precisely because it diverges from `_c` at 10-bit (see the comment above
+`hadamard_avx2`); the NEON kernels may diverge similarly and that is unverified.

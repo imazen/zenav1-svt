@@ -230,19 +230,46 @@ fn sad_impl_neon(
     width: usize,
     height: usize,
 ) -> u32 {
-    // NEON: use vabdl_u8 + vpaddlq for absolute difference and accumulate
-    // Starting with scalar-with-autovectorize; will add explicit NEON intrinsics
-    let mut sum: u32 = 0;
+    // Real NEON: vabdq_u8 for |a-b| on 16 bytes, then widening pairwise adds
+    // (vpadalq) to accumulate into u16 and u32 lanes without overflow.
+    //
+    // A block row is at most 128 px wide here and height at most 128, so the
+    // u16 accumulator could overflow (255 * 128 = 32640 fits, but summing
+    // across rows would not) — hence the per-row drain into the u32
+    // accumulator rather than accumulating u16 across the whole block.
+    //
+    // Exact by construction: absolute difference and addition are exact in
+    // integer lanes, so this equals the scalar sum bit for bit. Pinned by
+    // `sad_neon_matches_scalar_exactly` below.
+    let mut acc = vdupq_n_u32(0);
+    let mut tail: u32 = 0;
+
     for row in 0..height {
-        let src_row = row * src_stride;
-        let ref_row = row * ref_stride;
-        for col in 0..width {
-            let s = src[src_row + col] as i32;
-            let r = ref_[ref_row + col] as i32;
-            sum += (s - r).unsigned_abs();
+        let s_row = row * src_stride;
+        let r_row = row * ref_stride;
+        let mut col = 0;
+        let mut row_acc = vdupq_n_u16(0);
+
+        while col + 16 <= width {
+            let a: &[u8; 16] = src[s_row + col..s_row + col + 16].try_into().unwrap();
+            let b: &[u8; 16] = ref_[r_row + col..r_row + col + 16].try_into().unwrap();
+            let d = vabdq_u8(vld1q_u8(a), vld1q_u8(b));
+            // |diff| <= 255 per lane; 16 lanes -> at most 4080 per row chunk,
+            // and a 128-wide row is 8 chunks -> 32640, still inside u16.
+            row_acc = vpadalq_u8(row_acc, d);
+            col += 16;
+        }
+        acc = vpadalq_u16(acc, row_acc);
+
+        while col < width {
+            let s = src[s_row + col] as i32;
+            let r = ref_[r_row + col] as i32;
+            tail += (s - r).unsigned_abs();
+            col += 1;
         }
     }
-    sum
+
+    vaddvq_u32(acc) + tail
 }
 
 #[cfg(test)]

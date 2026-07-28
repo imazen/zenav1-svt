@@ -1723,9 +1723,18 @@ unsafe extern "C" {
     fn svt_aom_hadamard_8x8_c(src_diff: *const i16, src_stride: isize, coeff: *mut i32);
     fn svt_aom_hadamard_16x16_c(src_diff: *const i16, src_stride: isize, coeff: *mut i32);
     fn svt_aom_hadamard_32x32_c(src_diff: *const i16, src_stride: isize, coeff: *mut i32);
+    fn svt_aom_satd_c(coeff: *const i32, length: i32) -> i32;
+}
+
+// The AVX2 Hadamard kernels exist only in an x86_64 build of the C library.
+// On aarch64 the C encoder ships NEON kernels instead, so these symbols are
+// absent and an ungated declaration makes EVERY c_parity test fail to LINK on
+// ARM — which is how it stood before 2026-07-28, i.e. the C-parity gates could
+// not run on ARM at all.
+#[cfg(target_arch = "x86_64")]
+unsafe extern "C" {
     fn svt_aom_hadamard_16x16_avx2(src_diff: *const i16, src_stride: isize, coeff: *mut i32);
     fn svt_aom_hadamard_32x32_avx2(src_diff: *const i16, src_stride: isize, coeff: *mut i32);
-    fn svt_aom_satd_c(coeff: *const i32, length: i32) -> i32;
 }
 
 /// Reference `svt_av1_filter_intra_predictor_c`.
@@ -1787,6 +1796,7 @@ pub fn satd(coeff: &[i32]) -> i32 {
 /// and fits int16, so the two agree; at 10-bit it reaches ~+/-130560 and the
 /// AVX2 kernel WRAPS. The bd10 MD fast loop feeds exactly such residuals, so
 /// bit-exactness with the real encoder requires matching `_avx2` (task #94).
+#[cfg(target_arch = "x86_64")]
 pub fn hadamard_avx2(dim: usize, src_diff: &[i16], src_stride: usize, coeff: &mut [i32]) {
     assert!(coeff.len() >= dim * dim);
     unsafe {
