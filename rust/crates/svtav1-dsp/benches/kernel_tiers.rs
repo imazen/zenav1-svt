@@ -15,7 +15,7 @@
 //!
 //! Run: `cargo bench -p zenav1-svt-dsp --bench kernel_tiers`
 
-use svtav1_dsp::{cdef, hadamard, sad, variance};
+use svtav1_dsp::{cdef, hadamard, intra_pred, sad, variance};
 use zenbench::prelude::*;
 
 #[cfg(target_arch = "aarch64")]
@@ -83,6 +83,25 @@ fn bench_dsp(suite: &mut Suite) {
     pair!("variance_64x64", variance::variance(src, STRIDE, 64, 64));
     pair!("sse_16x16", variance::sse(src, STRIDE, rf, STRIDE, 16, 16));
     pair!("sse_64x64", variance::sse(src, STRIDE, rf, STRIDE, 64, 64));
+
+    // Intra prediction is THE hot path in an all-intra (AVIF) encoder.
+    {
+        let above: &'static [u8] = Box::leak(plane8(64, 11).into_boxed_slice());
+        let left: &'static [u8] = Box::leak(plane8(64, 13).into_boxed_slice());
+        for &(label, w, h) in &[("16x16", 16usize, 16usize), ("32x32", 32, 32)] {
+            suite.compare(format!("paeth_{label}"), |g| {
+                for (arm, simd) in [(TIER_NAME, true), ("scalar", false)] {
+                    g.bench(arm, move |b| {
+                        let mut dst = vec![0u8; STRIDE * h];
+                        b.iter(move || {
+                            set_simd(simd);
+                            intra_pred::predict_paeth(&mut dst, STRIDE, above, left, 128, w, h);
+                        })
+                    });
+                }
+            });
+        }
+    }
 
     set_simd(true);
 }

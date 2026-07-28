@@ -19,8 +19,8 @@ NEON is baseline. So the NEON tier was bit-for-bit the scalar tier, and the firs
 bench measured a uniform ~1.00× across all seven kernels — exactly what "both arms are the
 same code" looks like.
 
-An audit of every `*_impl_neon` in the crate found the same pattern in ~30 kernels. Three are
-now implemented (sad, variance, sse); the rest remain placeholders: forward and inverse
+An audit of every `*_impl_neon` in the crate found the same pattern in ~30 kernels. Four are
+now implemented (sad, variance, sse, paeth); the rest remain placeholders: forward and inverse
 transforms, quant, quant_coding, restoration, intra_pred, inter_pred, hbd cdef, hadamard/satd,
 fwd_txfm, inv_txfm.
 
@@ -70,6 +70,33 @@ drains per 16-byte chunk, which covers the 128×128 maximum used here (worst cas
 `tests/variance_neon_parity.rs` pins both against scalar across every block dimension and
 non-multiple-of-16 widths, plus an all-255-vs-all-0 case summing to 1,065,369,600 — which
 overflows a u16 lane by ~16000× and would immediately expose a missing drain.
+
+## Finding 2c: paeth intra prediction — 6.7× / 8.3×
+
+Intra prediction is THE hot path in an all-intra (AVIF) encoder, and paeth has a structural
+property worth exploiting: within a row, `left` and `top_left` are constant and only `above`
+varies by column, so one of the three distances collapses to a per-row scalar.
+
+```
+base   = top + lft - tl
+p_top  = |base - top| = |lft - tl|            <- row-constant
+p_left = |base - lft| = |top - tl|
+p_tl   = |base - tl|  = |top + lft - 2*tl|
+```
+
+i16 lanes are required, not u16: `top + lft - 2*tl` spans [-510, 510].
+
+| block | scalar | NEON | speedup |
+|---|---|---|---|
+| paeth_16x16 | 566.7 ns | **84.7 ns** | **6.7×** |
+| paeth_32x32 | 2243 ns | **271 ns** | **8.3×** |
+
+Verified over the **entire 2²⁴ (top, left, top_left) domain**, not sampled. Paeth is a
+three-way argmin whose distances are frequently EQUAL, and the tie order (top, then left, then
+top_left) is what makes it deterministic — a vectorized select with the wrong tie order still
+produces plausible pixels while silently changing every intra block. Sampling is exactly what
+would miss that, so the test sweeps all 16.7M triples plus every block shape through both the
+vector body and the scalar tail.
 
 ## Finding 3: the C-parity gates could not LINK on ARM
 

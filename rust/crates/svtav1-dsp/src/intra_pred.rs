@@ -206,7 +206,76 @@ fn predict_paeth_impl_neon(
     width: usize,
     height: usize,
 ) {
-    predict_paeth_core(dst, dst_stride, above, left, top_left, width, height);
+    // Paeth in i16 lanes. Within a ROW, `left` and `top_left` are constants and
+    // only `above` varies by column, which collapses one of the three
+    // distances to a per-row scalar:
+    //
+    //   base   = top + lft - tl
+    //   p_top  = |base - top| = |lft - tl|            <- row-constant
+    //   p_left = |base - lft| = |top - tl|
+    //   p_tl   = |base - tl|  = |top + lft - 2*tl|
+    //
+    // i16 is required, not u16: `top + lft - 2*tl` spans [-510, 510].
+    //
+    // Exact — every operation is integer add/sub/abs/compare/select, so this
+    // is bit-identical to the scalar core. Pinned by
+    // tests/paeth_neon_parity.rs, which sweeps all 2^24 (top,left,tl) triples
+    // through the 1-wide path and every block shape through the vector path.
+    let tl = top_left as i16;
+    let tl_v = vdupq_n_s16(tl);
+    let two_tl_v = vdupq_n_s16(tl * 2);
+
+    for row in 0..height {
+        let lft = left[row] as i16;
+        let lft_v = vdupq_n_s16(lft);
+        let p_top_v = vdupq_n_s16((lft - tl).abs());
+        let base_row = row * dst_stride;
+
+        let mut col = 0;
+        while col + 8 <= width {
+            let a: &[u8; 8] = above[col..col + 8].try_into().unwrap();
+            let top_v = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(a)));
+
+            let p_left_v = vabdq_s16(top_v, tl_v);
+            let p_tl_v = vabdq_s16(vaddq_s16(top_v, lft_v), two_tl_v);
+
+            // if p_top <= p_left && p_top <= p_tl { top }
+            // else if p_left <= p_tl { lft } else { tl }
+            let take_top = vandq_u16(
+                vcleq_s16(p_top_v, p_left_v),
+                vcleq_s16(p_top_v, p_tl_v),
+            );
+            let take_left = vcleq_s16(p_left_v, p_tl_v);
+
+            let pred = vbslq_s16(take_left, lft_v, tl_v);
+            let pred = vbslq_s16(take_top, top_v, pred);
+
+            let out: &mut [u8; 8] = (&mut dst[base_row + col..base_row + col + 8])
+                .try_into()
+                .unwrap();
+            vst1_u8(out, vmovn_u16(vreinterpretq_u16_s16(pred)));
+            col += 8;
+        }
+
+        // Tail: the scalar form verbatim.
+        while col < width {
+            let top = above[col] as i32;
+            let l = lft as i32;
+            let t = tl as i32;
+            let base = top + l - t;
+            let p_top = (base - top).abs();
+            let p_left = (base - l).abs();
+            let p_tl = (base - t).abs();
+            dst[base_row + col] = if p_top <= p_left && p_top <= p_tl {
+                top as u8
+            } else if p_left <= p_tl {
+                l as u8
+            } else {
+                t as u8
+            };
+            col += 1;
+        }
+    }
 }
 
 /// Core Paeth implementation (shared across dispatch tiers).
