@@ -19,8 +19,9 @@ NEON is baseline. So the NEON tier was bit-for-bit the scalar tier, and the firs
 bench measured a uniform ~1.00× across all seven kernels — exactly what "both arms are the
 same code" looks like.
 
-An audit of every `*_impl_neon` in the crate found the same pattern in ~30 kernels. Five are
-now implemented (sad, variance, sse, paeth, cdef_filter_block); the rest remain placeholders: forward and inverse
+An audit of every `*_impl_neon` in the crate found the same pattern in ~30 kernels. Six are
+now implemented (sad, variance, sse, paeth, cdef_filter_block, satd_8x8); the rest remain
+placeholders: forward and inverse
 transforms, quant, quant_coding, restoration, intra_pred, inter_pred, hbd cdef, hadamard/satd,
 fwd_txfm, inv_txfm.
 
@@ -118,6 +119,31 @@ in a visual check.
 
 That is the concrete payoff from Finding 3 below: had the C-parity gates still been unlinkable
 on ARM, this port would have shipped looking correct.
+
+## Finding 2e: satd_8x8 — 4.06×, via a reordering that needed proving
+
+Earlier in this sweep `satd_8x8` was set aside as needing "a different strategy" because it
+works on 8-wide rows, so a 16-lane u8 kernel would be all tail. The strategy is to change the
+lane type, not the width: `int16x8_t` gives exactly 8 lanes for 8 columns.
+
+| kernel | scalar | NEON | speedup |
+|---|---|---|---|
+| satd_8x8 | 86.5 ns | **21.3 ns** | **4.06×** |
+
+The NEON path deliberately **reorders the transform**: it runs BOTH Hadamard passes vertically
+(one lane per column, no horizontal ops) with a single 8×8 transpose between, where the scalar
+runs rows then columns. That is valid because a 2D separable Hadamard commutes and the result
+is an absolute sum over all 64 coefficients — but "valid in theory" is exactly the kind of
+claim worth pinning, since a wrong transpose yields a plausible SATD that silently changes mode
+decisions.
+
+i16 lanes suffice and no widening is needed: the residual is in [-255, 255] and a 2D 8-point
+Hadamard amplifies by at most 64, so |coefficient| ≤ 16320, inside i16's 32767.
+
+`tests/satd_neon_parity.rs` covers 5000 random blocks, maximum-amplitude blocks (every residual
+±255, driving coefficients to ±16320 — where a wrong lane width overflows), and an
+**asymmetric** alternating pattern chosen specifically because a transposed error is invisible
+on symmetric input.
 
 ## Finding 3: the C-parity gates could not LINK on ARM
 

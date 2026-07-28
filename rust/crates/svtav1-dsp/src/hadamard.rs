@@ -92,16 +92,117 @@ fn satd_4x4_impl_neon(
     satd_4x4_core(src, src_stride, ref_, ref_stride)
 }
 
+/// 8x8 i16 transpose from 4-lane NEON primitives: three stages of pairwise
+/// interleave at 16-, 32- and 64-bit granularity.
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn transpose8x8_s16(_token: NeonToken, v: [int16x8_t; 8]) -> [int16x8_t; 8] {
+    // Stage 1: swap adjacent elements between row pairs.
+    let t0 = vtrnq_s16(v[0], v[1]);
+    let t1 = vtrnq_s16(v[2], v[3]);
+    let t2 = vtrnq_s16(v[4], v[5]);
+    let t3 = vtrnq_s16(v[6], v[7]);
+    // Stage 2: swap adjacent 32-bit pairs.
+    let u0 = vtrnq_s32(vreinterpretq_s32_s16(t0.0), vreinterpretq_s32_s16(t1.0));
+    let u1 = vtrnq_s32(vreinterpretq_s32_s16(t0.1), vreinterpretq_s32_s16(t1.1));
+    let u2 = vtrnq_s32(vreinterpretq_s32_s16(t2.0), vreinterpretq_s32_s16(t3.0));
+    let u3 = vtrnq_s32(vreinterpretq_s32_s16(t2.1), vreinterpretq_s32_s16(t3.1));
+    // Stage 3: swap 64-bit halves.
+    let c = |a: int32x4_t, b: int32x4_t| -> (int16x8_t, int16x8_t) {
+        (
+            vreinterpretq_s16_s64(vcombine_s64(
+                vget_low_s64(vreinterpretq_s64_s32(a)),
+                vget_low_s64(vreinterpretq_s64_s32(b)),
+            )),
+            vreinterpretq_s16_s64(vcombine_s64(
+                vget_high_s64(vreinterpretq_s64_s32(a)),
+                vget_high_s64(vreinterpretq_s64_s32(b)),
+            )),
+        )
+    };
+    let (r0, r4) = c(u0.0, u2.0);
+    let (r1, r5) = c(u1.0, u3.0);
+    let (r2, r6) = c(u0.1, u2.1);
+    let (r3, r7) = c(u1.1, u3.1);
+    [r0, r1, r2, r3, r4, r5, r6, r7]
+}
+
+/// One 8-point Hadamard butterfly applied VERTICALLY across eight vectors.
+/// Each lane is an independent column, so there is no cross-lane work.
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn hadamard8_vertical(_token: NeonToken, d: [int16x8_t; 8]) -> [int16x8_t; 8] {
+    let a0 = vaddq_s16(d[0], d[4]);
+    let a1 = vaddq_s16(d[1], d[5]);
+    let a2 = vaddq_s16(d[2], d[6]);
+    let a3 = vaddq_s16(d[3], d[7]);
+    let a4 = vsubq_s16(d[0], d[4]);
+    let a5 = vsubq_s16(d[1], d[5]);
+    let a6 = vsubq_s16(d[2], d[6]);
+    let a7 = vsubq_s16(d[3], d[7]);
+
+    let b0 = vaddq_s16(a0, a2);
+    let b1 = vaddq_s16(a1, a3);
+    let b2 = vsubq_s16(a0, a2);
+    let b3 = vsubq_s16(a1, a3);
+    let b4 = vaddq_s16(a4, a6);
+    let b5 = vaddq_s16(a5, a7);
+    let b6 = vsubq_s16(a4, a6);
+    let b7 = vsubq_s16(a5, a7);
+
+    [
+        vaddq_s16(b0, b1),
+        vsubq_s16(b0, b1),
+        vaddq_s16(b2, b3),
+        vsubq_s16(b2, b3),
+        vaddq_s16(b4, b5),
+        vsubq_s16(b4, b5),
+        vaddq_s16(b6, b7),
+        vsubq_s16(b6, b7),
+    ]
+}
+
 #[cfg(target_arch = "aarch64")]
 #[arcane]
 fn satd_8x8_impl_neon(
-    _token: NeonToken,
+    token: NeonToken,
     src: &[u8],
     src_stride: usize,
     ref_: &[u8],
     ref_stride: usize,
 ) -> u32 {
-    satd_8x8_core(src, src_stride, ref_, ref_stride)
+    // The 2D Hadamard is separable, so row-then-column and column-then-row
+    // produce the same coefficients — and the result is an absolute SUM over
+    // all 64 of them, so ordering cannot change it. That lets both passes run
+    // VERTICALLY (one lane per column, no horizontal ops), with a single 8x8
+    // transpose between them.
+    //
+    // i16 lanes suffice: the residual is in [-255, 255] and a 2D 8-point
+    // Hadamard amplifies by at most 64, so |coefficient| <= 16320, inside
+    // i16's 32767. No widening or saturation is involved, so this is exact.
+    let mut d = [vdupq_n_s16(0); 8];
+    for (row, slot) in d.iter_mut().enumerate() {
+        let s: &[u8; 8] = src[row * src_stride..row * src_stride + 8].try_into().unwrap();
+        let r: &[u8; 8] = ref_[row * ref_stride..row * ref_stride + 8].try_into().unwrap();
+        *slot = vsubq_s16(
+            vreinterpretq_s16_u16(vmovl_u8(vld1_u8(s))),
+            vreinterpretq_s16_u16(vmovl_u8(vld1_u8(r))),
+        );
+    }
+
+    let d = hadamard8_vertical(token, d);
+    let d = transpose8x8_s16(token, d);
+    let d = hadamard8_vertical(token, d);
+
+    // Sum |coefficient| over all 64. Widen to u32 lanes before accumulating:
+    // 64 * 16320 = 1,044,480 overflows u16.
+    let mut acc = vdupq_n_u32(0);
+    for v in d {
+        acc = vpadalq_u16(acc, vreinterpretq_u16_s16(vabsq_s16(v)));
+    }
+    let satd = vaddvq_u32(acc);
+
+    (satd + 2) >> 2
 }
 
 // --- Core algorithm (shared across all dispatch tiers) ---
