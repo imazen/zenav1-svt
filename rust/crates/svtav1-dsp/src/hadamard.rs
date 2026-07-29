@@ -80,6 +80,17 @@ fn satd_8x8_impl_v3(
 
 // --- NEON implementations ---
 
+/// NEON 4x4 SATD.
+///
+/// Same structure as [`satd_8x8_impl_neon`] at half the lane width. The 2D
+/// Hadamard is separable and the two passes commute (`(H·X)·Hᵀ == H·(X·Hᵀ)`),
+/// so both passes run VERTICALLY — one lane per column, no horizontal ops —
+/// with a single 4x4 transpose between them. The butterfly is identical to the
+/// scalar core's, applied twice.
+///
+/// Exact: the residual is in [-255, 255] and a 2D 4-point Hadamard amplifies
+/// by at most 16, so |coefficient| <= 4080, far inside i16. The absolute values
+/// sum to at most 65280, inside u32. No widening or saturation is involved.
 #[cfg(target_arch = "aarch64")]
 #[arcane]
 fn satd_4x4_impl_neon(
@@ -89,7 +100,58 @@ fn satd_4x4_impl_neon(
     ref_: &[u8],
     ref_stride: usize,
 ) -> u32 {
-    satd_4x4_core(src, src_stride, ref_, ref_stride)
+    // Residual rows. Four bytes each, so building the i16 array directly is
+    // both simpler and safer than a wider load that would over-read.
+    let mut d = [vdup_n_s16(0); 4];
+    for (row, slot) in d.iter_mut().enumerate() {
+        let s = &src[row * src_stride..row * src_stride + 4];
+        let r = &ref_[row * ref_stride..row * ref_stride + 4];
+        let arr = [
+            s[0] as i16 - r[0] as i16,
+            s[1] as i16 - r[1] as i16,
+            s[2] as i16 - r[2] as i16,
+            s[3] as i16 - r[3] as i16,
+        ];
+        *slot = vld1_s16(&arr);
+    }
+
+    // Pass 1: vertical butterfly, pairing rows (0,1) and (2,3) exactly as the
+    // scalar column pass does.
+    let butterfly = |d: [int16x4_t; 4]| -> [int16x4_t; 4] {
+        let a = vadd_s16(d[0], d[1]);
+        let b = vsub_s16(d[0], d[1]);
+        let c = vadd_s16(d[2], d[3]);
+        let e = vsub_s16(d[2], d[3]);
+        [
+            vadd_s16(a, c),
+            vadd_s16(b, e),
+            vsub_s16(a, c),
+            vsub_s16(b, e),
+        ]
+    };
+    let t = butterfly(d);
+
+    // 4x4 i16 transpose: pairwise interleave, then interleave the 2x2 blocks.
+    let a0 = vtrn1_s16(t[0], t[1]);
+    let a1 = vtrn2_s16(t[0], t[1]);
+    let a2 = vtrn1_s16(t[2], t[3]);
+    let a3 = vtrn2_s16(t[2], t[3]);
+    let tr = [
+        vreinterpret_s16_s32(vtrn1_s32(vreinterpret_s32_s16(a0), vreinterpret_s32_s16(a2))),
+        vreinterpret_s16_s32(vtrn1_s32(vreinterpret_s32_s16(a1), vreinterpret_s32_s16(a3))),
+        vreinterpret_s16_s32(vtrn2_s32(vreinterpret_s32_s16(a0), vreinterpret_s32_s16(a2))),
+        vreinterpret_s16_s32(vtrn2_s32(vreinterpret_s32_s16(a1), vreinterpret_s32_s16(a3))),
+    ];
+
+    // Pass 2, then sum |coefficient| over all 16.
+    let f = butterfly(tr);
+    let mut acc = vdupq_n_u32(0);
+    for v in f {
+        acc = vaddq_u32(acc, vmovl_u16(vreinterpret_u16_s16(vabs_s16(v))));
+    }
+    let satd = vaddvq_u32(acc);
+
+    (satd + 1) >> 1
 }
 
 /// 8x8 i16 transpose from 4-lane NEON primitives: three stages of pairwise
@@ -336,6 +398,39 @@ fn satd_8x8_core(src: &[u8], src_stride: usize, ref_: &[u8], ref_stride: usize) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// satd_4x4 vs its scalar core, every tier, on random content.
+    ///
+    /// The other satd_4x4 tests here are identical-blocks (always 0) and a
+    /// UNIFORM difference (80). A uniform residual puts all the energy in DC,
+    /// so both would pass against a broken transpose or a mis-paired
+    /// butterfly — precisely the mistakes a hand-written Hadamard makes. This
+    /// uses random residuals, where every coefficient is live, and varies the
+    /// strides so a kernel that ignored them is caught.
+    #[test]
+    fn satd_4x4_random_all_tiers_match_core() {
+        use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+        let mut st = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            st ^= st << 13;
+            st ^= st >> 7;
+            st ^= st << 17;
+            (st >> 33) as u8
+        };
+        for case in 0..64 {
+            let (ss, rs) = (4 + case % 5, 4 + (case * 3) % 7);
+            let src: alloc::vec::Vec<u8> = (0..ss * 4 + 8).map(|_| next()).collect();
+            let rf: alloc::vec::Vec<u8> = (0..rs * 4 + 8).map(|_| next()).collect();
+            let expect = satd_4x4_core(&src, ss, &rf, rs);
+            let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+                let got = satd_4x4(&src, ss, &rf, rs);
+                assert_eq!(
+                    got, expect,
+                    "satd_4x4 case {case} strides ({ss},{rs}) tier {_perm}"
+                );
+            });
+        }
+    }
 
     #[test]
     fn satd_4x4_identical() {
