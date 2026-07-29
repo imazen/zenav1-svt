@@ -158,9 +158,76 @@ fn quantize_fp_raster_impl_neon(
     dequant: &[i32; 2],
     log_scale: i32,
 ) {
-    // Auto-vectorized inside the NEON target-feature region (same scalar core,
-    // no gather/scatter). Byte-identical to the scalar tier by construction.
-    quantize_fp_raster_core(coeffs, qcoeff, dqcoeff, rounding, quant_fp, dequant, log_scale);
+    // Op-for-op mirror of the AVX2 arm at 4 lanes instead of 8. Every AVX2
+    // op has an exact NEON twin: srai->vshrq_n, abs->vabsq, sll(var)->vshlq
+    // with a positive count, sra(var)->vshlq with a negated count,
+    // cmpgt(thresh,x)->vcltq(x,thresh), andnot(fail,t)->vbslq(fail,0,t).
+    let n = coeffs.len().min(qcoeff.len()).min(dqcoeff.len());
+
+    // AC (iz = 1) constants, broadcast.
+    let round_v = vdupq_n_s32(rounding[1]);
+    let quant_v = vdupq_n_s32(quant_fp[1]);
+    let deq_v = vdupq_n_s32(dequant[1]);
+    let thresh_v = vdupq_n_s32(dequant[1]);
+    let lo = vdupq_n_s32(i16::MIN as i32);
+    let hi = vdupq_n_s32(i16::MAX as i32);
+    let zero = vdupq_n_s32(0);
+    let sh_pre = vdupq_n_s32(1 + log_scale); // abs << (1+log_scale)
+    let sh_q = vdupq_n_s32(-(16 - log_scale)); // product >> (16-log_scale)
+    let sh_dq = vdupq_n_s32(-log_scale); // dq product >> log_scale
+
+    let mut rc = 0usize;
+    while rc + 4 <= n {
+        let src: &[i32; 4] = coeffs[rc..rc + 4].try_into().unwrap();
+        let coeff = vld1q_s32(src);
+        let coeff_sign = vshrq_n_s32::<31>(coeff); // 0 or -1 per lane
+        let abs = vabsq_s32(coeff);
+
+        // threshold: pass iff (abs << (1+log_scale)) >= dequant; `fail` = below.
+        let shifted = vshlq_s32(abs, sh_pre);
+        let fail = vcltq_s32(shifted, thresh_v);
+
+        // a = clamp_i16(abs + round); tmp32 = (a * quant_fp) >> (16-log_scale)
+        let sum = vaddq_s32(abs, round_v);
+        let a = vmaxq_s32(vminq_s32(sum, hi), lo);
+        let prod = vmulq_s32(a, quant_v);
+        let tmp = vshlq_s32(prod, sh_q);
+        // zero where the threshold failed (pass ? tmp : 0)
+        let tmp_masked = vbslq_s32(fail, zero, tmp);
+
+        // qcoeff = (tmp_masked ^ sign) - sign
+        let q = vsubq_s32(veorq_s32(tmp_masked, coeff_sign), coeff_sign);
+        // abs_dq = (tmp_masked * dequant) >> log_scale ; dqcoeff = signed
+        let dqprod = vmulq_s32(tmp_masked, deq_v);
+        let absdq = vshlq_s32(dqprod, sh_dq);
+        let dq = vsubq_s32(veorq_s32(absdq, coeff_sign), coeff_sign);
+
+        let qo: &mut [i32; 4] = (&mut qcoeff[rc..rc + 4]).try_into().unwrap();
+        vst1q_s32(qo, q);
+        let dqo: &mut [i32; 4] = (&mut dqcoeff[rc..rc + 4]).try_into().unwrap();
+        vst1q_s32(dqo, dq);
+        rc += 4;
+    }
+    // Scalar tail (blocks whose length isn't a multiple of 4; per-position iz).
+    while rc < n {
+        fp_one(
+            rc,
+            usize::from(rc != 0),
+            coeffs,
+            qcoeff,
+            dqcoeff,
+            rounding,
+            quant_fp,
+            dequant,
+            log_scale,
+        );
+        rc += 1;
+    }
+    // DC fix-up: the vector body ran position 0 with AC constants — redo it
+    // with the DC (iz = 0) row. (No-op-correct if the tail already did it.)
+    if n > 0 {
+        fp_one(0, 0, coeffs, qcoeff, dqcoeff, rounding, quant_fp, dequant, log_scale);
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -375,9 +442,74 @@ fn quantize_b_raster_impl_neon(
     dequant: &[i32; 2],
     log_scale: i32,
 ) {
-    quantize_b_raster_core(
-        coeffs, qcoeff, dqcoeff, zbins, round, quant, quant_shift, dequant, log_scale,
-    );
+    // Op-for-op mirror of the AVX2 arm at 4 lanes instead of 8 — see
+    // `quantize_fp_raster_impl_neon` for the intrinsic correspondence.
+    let n = coeffs.len().min(qcoeff.len()).min(dqcoeff.len());
+
+    // AC (iz = 1) constants, broadcast.
+    let zbin_v = vdupq_n_s32(zbins[1]);
+    let round_v = vdupq_n_s32(round[1]);
+    let quant_v = vdupq_n_s32(quant[1]);
+    let qshift_v = vdupq_n_s32(quant_shift[1]);
+    let deq_v = vdupq_n_s32(dequant[1]);
+    let lo = vdupq_n_s32(i16::MIN as i32);
+    let hi = vdupq_n_s32(i16::MAX as i32);
+    let zero = vdupq_n_s32(0);
+    let sh_q = vdupq_n_s32(-(16 - log_scale)); // final >> (16-log_scale)
+    let sh_dq = vdupq_n_s32(-log_scale); // dq product >> log_scale
+
+    let mut rc = 0usize;
+    while rc + 4 <= n {
+        let src: &[i32; 4] = coeffs[rc..rc + 4].try_into().unwrap();
+        let coeff = vld1q_s32(src);
+        let coeff_sign = vshrq_n_s32::<31>(coeff);
+        let abs = vabsq_s32(coeff);
+
+        // dead-zone: pass iff abs >= zbin; `fail` = abs < zbin.
+        let fail = vcltq_s32(abs, zbin_v);
+
+        // tmp = clamp_i16(abs + round)
+        let sum = vaddq_s32(abs, round_v);
+        let tmp = vmaxq_s32(vminq_s32(sum, hi), lo);
+        // tmp32 = (((tmp*quant) >> 16) + tmp) * quant_shift >> (16-log_scale)
+        let p1 = vshrq_n_s32::<16>(vmulq_s32(tmp, quant_v));
+        let inner = vaddq_s32(p1, tmp);
+        let p2 = vmulq_s32(inner, qshift_v);
+        let tmp32 = vshlq_s32(p2, sh_q);
+        let tmp_masked = vbslq_s32(fail, zero, tmp32); // pass ? tmp32 : 0
+
+        let q = vsubq_s32(veorq_s32(tmp_masked, coeff_sign), coeff_sign);
+        let dqprod = vmulq_s32(tmp_masked, deq_v);
+        let absdq = vshlq_s32(dqprod, sh_dq);
+        let dq = vsubq_s32(veorq_s32(absdq, coeff_sign), coeff_sign);
+
+        let qo: &mut [i32; 4] = (&mut qcoeff[rc..rc + 4]).try_into().unwrap();
+        vst1q_s32(qo, q);
+        let dqo: &mut [i32; 4] = (&mut dqcoeff[rc..rc + 4]).try_into().unwrap();
+        vst1q_s32(dqo, dq);
+        rc += 4;
+    }
+    while rc < n {
+        b_one(
+            rc,
+            usize::from(rc != 0),
+            coeffs,
+            qcoeff,
+            dqcoeff,
+            zbins,
+            round,
+            quant,
+            quant_shift,
+            dequant,
+            log_scale,
+        );
+        rc += 1;
+    }
+    if n > 0 {
+        b_one(
+            0, 0, coeffs, qcoeff, dqcoeff, zbins, round, quant, quant_shift, dequant, log_scale,
+        );
+    }
 }
 
 #[cfg(target_arch = "x86_64")]

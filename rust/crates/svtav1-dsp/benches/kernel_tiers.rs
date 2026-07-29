@@ -15,7 +15,7 @@
 //!
 //! Run: `cargo bench -p zenav1-svt-dsp --bench kernel_tiers`
 
-use svtav1_dsp::{cdef, fwd_txfm, hadamard, hbd, intra_pred, inv_txfm, quant, sad, variance};
+use svtav1_dsp::{cdef, fwd_txfm, hadamard, hbd, intra_pred, quant_coding, inv_txfm, quant, sad, variance};
 use zenbench::prelude::*;
 
 #[cfg(target_arch = "aarch64")]
@@ -148,6 +148,37 @@ fn bench_dsp(suite: &mut Suite) {
                 });
             }
         });
+    }
+
+    {
+        // Raster quantizers: whole-block quantize over 1024 coeffs (32x32).
+        let coeffs: &'static [i32] = Box::leak(
+            (0..1024).map(|i| (((i * 5779) % 4001) as i32) - 2000)
+                .collect::<Vec<i32>>().into_boxed_slice(),
+        );
+        for (name, is_fp) in [("quantize_fp_raster_1024", true), ("quantize_b_raster_1024", false)] {
+            suite.compare(name, move |g| {
+                for (arm, simd) in [(TIER_NAME, true), ("scalar", false)] {
+                    g.bench(arm, move |b| {
+                        let mut q = vec![0i32; 1024];
+                        let mut dq = vec![0i32; 1024];
+                        b.iter(move || {
+                            set_simd(simd);
+                            if is_fp {
+                                quant_coding::quantize_fp_raster(
+                                    coeffs, &mut q, &mut dq, &[195, 349], &[125, 70], &[522, 933], 1,
+                                );
+                            } else {
+                                quant_coding::quantize_b_raster(
+                                    coeffs, &mut q, &mut dq, &[326, 583], &[195, 349],
+                                    &[-1255, -29571], &[128, 128], &[522, 933], 1,
+                                );
+                            }
+                        })
+                    });
+                }
+            });
+        }
     }
 
     // Quantize: measured to decide whether a magic-reciprocal NEON port is
