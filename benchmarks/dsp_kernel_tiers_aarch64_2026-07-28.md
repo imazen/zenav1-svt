@@ -19,9 +19,9 @@ NEON is baseline. So the NEON tier was bit-for-bit the scalar tier, and the firs
 bench measured a uniform ~1.00× across all seven kernels — exactly what "both arms are the
 same code" looks like.
 
-An audit of every `*_impl_neon` in the crate found the same pattern in ~30 kernels. Six are
-now implemented (sad, variance, sse, paeth, cdef_filter_block, satd_8x8); the rest remain
-placeholders: forward and inverse
+An audit of every `*_impl_neon` in the crate found the same pattern in ~30 kernels. Seven are
+now implemented (sad, variance, sse, paeth, cdef_filter_block, satd_8x8, quantize); the rest
+remain placeholders: forward and inverse
 transforms, quant, quant_coding, restoration, intra_pred, inter_pred, hbd cdef, hadamard/satd,
 fwd_txfm, inv_txfm.
 
@@ -144,6 +144,37 @@ Hadamard amplifies by at most 64, so |coefficient| ≤ 16320, inside i16's 32767
 ±255, driving coefficients to ±16320 — where a wrong lane width overflows), and an
 **asymmetric** alternating pattern chosen specifically because a transposed error is invisible
 on symmetric input.
+
+## Finding 2f: quantize — 2.2×, exact via a checked bound rather than an assumed one
+
+`quantize_core` divides by `dequant` per coefficient and NEON has no integer divide. It was
+deferred twice in this sweep as "needs its own careful pass". The pass:
+
+| block | scalar | NEON | speedup |
+|---|---|---|---|
+| 64 coefficients | 79.3 ns | **35.8 ns** | **2.2×** |
+| 1024 coefficients | 1034 ns | **522 ns** | 2.0× |
+
+The quotient is computed in f32, which is exact only while the numerator is under 2^24 — the
+same argument proved for BRAG's unpremultiply. But `TranLow` is `i32` and `shift` is
+caller-supplied, so unlike BRAG that bound is **not guaranteed by the types**.
+
+Rather than assume a coefficient range, the kernel **checks** it: one pass takes the maximum
+|coeff|, and if `max << shift` could reach 2^24 the whole block falls back to `quantize_core`.
+Real AV1 coefficients are far below that so the fast path is what runs — but a pathological
+input gets the scalar answer, not a wrong one.
+
+`eob` is recovered by a backward scan instead of being tracked in the loop, which keeps the
+vector body branch-free.
+
+`tests/quantize_neon_parity.rs` covers shapes 1–1024, DC/AC divisors including 0, shifts 0–4,
+partial `eob_hint`, all-zero input, and inputs deliberately on **both sides** of the 2^24
+bound so the fallback itself is exercised.
+
+One note on that last test: its first version used coefficients so large that the SCALAR
+reference overflowed `q * dequant` in i32 — it passed in release (wrapping) and failed in
+debug (overflow panic). The values now straddle the bound while keeping the final multiply
+inside i32, because a test that only exercises its own arithmetic overflow proves nothing.
 
 ## Finding 3: the C-parity gates could not LINK on ARM
 

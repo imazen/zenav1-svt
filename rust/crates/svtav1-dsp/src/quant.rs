@@ -65,6 +65,24 @@ fn quantize_impl_v3(
     quantize_core(coeffs, qparam, qcoeffs, dqcoeffs, eob_hint)
 }
 
+/// NEON quantize.
+///
+/// The divisor `dequant` is loop-invariant, but NEON has no integer divide, so
+/// the quotient is computed in f32. That is EXACT only while the numerator is
+/// below 2^24 (f32's exact-integer limit) — the same argument that makes the
+/// BRAG unpremultiply kernel exact: a correctly-rounded f32 quotient cannot
+/// cross an integer boundary when the true fractional part is a multiple of
+/// 1/d and the quotient is small enough that half an ULP stays under 1/d.
+///
+/// `TranLow` is `i32` and `shift` is caller-supplied, so that bound is NOT
+/// guaranteed by the types. Rather than assume a coefficient range, this
+/// CHECKS it: one pass computes the maximum |coeff|, and if `max << shift`
+/// could reach 2^24 the whole block falls back to `quantize_core`. Real AV1
+/// coefficients are far below that, so the fast path is what runs — but a
+/// pathological input gets the scalar answer, not a wrong one.
+///
+/// `eob` is recovered by a backward scan rather than tracked in the loop,
+/// which keeps the vector body branch-free.
 #[cfg(target_arch = "aarch64")]
 #[arcane]
 fn quantize_impl_neon(
@@ -75,7 +93,83 @@ fn quantize_impl_neon(
     dqcoeffs: &mut [TranLow],
     eob_hint: usize,
 ) -> usize {
-    quantize_core(coeffs, qparam, qcoeffs, dqcoeffs, eob_hint)
+    let n = coeffs
+        .len()
+        .min(qcoeffs.len())
+        .min(dqcoeffs.len())
+        .min(eob_hint);
+    let dq_ac = qparam.dequant[1];
+    let shift = qparam.shift;
+
+    // Bail to scalar when the f32 quotient would not be provably exact, when
+    // the AC divisor is unusable, or when the block is too short to vectorize.
+    if n < 8 || dq_ac <= 0 || shift < 0 || shift > 24 {
+        return quantize_core(coeffs, qparam, qcoeffs, dqcoeffs, eob_hint);
+    }
+    let mut max_abs: i64 = 0;
+    for &c in &coeffs[..n] {
+        max_abs = max_abs.max((c as i64).abs());
+    }
+    if (max_abs << shift) >= (1i64 << 24) {
+        return quantize_core(coeffs, qparam, qcoeffs, dqcoeffs, eob_hint);
+    }
+
+    // Index 0 uses dequant[0]; do it scalar so the vector body has one divisor.
+    {
+        let dq_dc = qparam.dequant[0];
+        if dq_dc == 0 {
+            qcoeffs[0] = 0;
+            dqcoeffs[0] = 0;
+        } else {
+            let c = coeffs[0];
+            let q = (((c.abs() as i64) << shift) / dq_dc as i64) as i32;
+            let s = if c < 0 { -1 } else { 1 };
+            qcoeffs[0] = if q == 0 { 0 } else { s * q };
+            dqcoeffs[0] = if q == 0 { 0 } else { s * q * dq_dc };
+        }
+    }
+
+    let inv_dq = vdupq_n_f32(1.0 / dq_ac as f32);
+    let dq_v = vdupq_n_s32(dq_ac);
+    let zero = vdupq_n_s32(0);
+
+    let mut i = 1usize;
+    while i + 4 <= n {
+        let c: &[i32; 4] = coeffs[i..i + 4].try_into().unwrap();
+        let cv = vld1q_s32(c);
+        let a = vabsq_s32(cv);
+        let shifted = vshlq_s32(a, vdupq_n_s32(shift));
+        // Exact for the checked range: correctly-rounded divide, truncated.
+        let q = vcvtq_s32_f32(vmulq_f32(vcvtq_f32_s32(shifted), inv_dq));
+        // Re-apply sign; q == 0 stays 0 either way.
+        let neg = vcltq_s32(cv, zero);
+        let qs = vbslq_s32(neg, vnegq_s32(q), q);
+        let dq = vmulq_s32(qs, dq_v);
+
+        let qo: &mut [i32; 4] = (&mut qcoeffs[i..i + 4]).try_into().unwrap();
+        vst1q_s32(qo, qs);
+        let do_: &mut [i32; 4] = (&mut dqcoeffs[i..i + 4]).try_into().unwrap();
+        vst1q_s32(do_, dq);
+        i += 4;
+    }
+    while i < n {
+        let c = coeffs[i];
+        let q = (((c.abs() as i64) << shift) / dq_ac as i64) as i32;
+        let s = if c < 0 { -1 } else { 1 };
+        qcoeffs[i] = if q == 0 { 0 } else { s * q };
+        dqcoeffs[i] = if q == 0 { 0 } else { s * q * dq_ac };
+        i += 1;
+    }
+
+    // eob = (index of last nonzero quantized coefficient) + 1.
+    let mut eob = 0usize;
+    for k in (0..n).rev() {
+        if qcoeffs[k] != 0 {
+            eob = k + 1;
+            break;
+        }
+    }
+    eob
 }
 
 #[inline]

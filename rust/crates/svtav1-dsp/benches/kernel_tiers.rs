@@ -15,7 +15,7 @@
 //!
 //! Run: `cargo bench -p zenav1-svt-dsp --bench kernel_tiers`
 
-use svtav1_dsp::{cdef, fwd_txfm, hadamard, intra_pred, inv_txfm, sad, variance};
+use svtav1_dsp::{cdef, fwd_txfm, hadamard, intra_pred, inv_txfm, quant, sad, variance};
 use zenbench::prelude::*;
 
 #[cfg(target_arch = "aarch64")]
@@ -126,6 +126,25 @@ fn bench_dsp(suite: &mut Suite) {
                 }
             });
         }
+    }
+
+    // Quantize: measured to decide whether a magic-reciprocal NEON port is
+    // worth the risk. It divides by a loop-invariant `dequant` per
+    // coefficient, and NEON has no integer divide.
+    {
+        let coeffs: &'static [i32] = Box::leak(
+            (0..1024).map(|i| ((i * 7919) % 8192) as i32 - 4096).collect::<Vec<i32>>().into_boxed_slice(),
+        );
+        suite.compare("quantize", |g| {
+            for &(label, n) in &[("64_coeffs", 64usize), ("1024_coeffs", 1024)] {
+                g.bench(label, move |b| {
+                    let qp = quant::QuantParam { dequant: [20, 24], shift: 2 };
+                    let mut qc = vec![0i32; n];
+                    let mut dqc = vec![0i32; n];
+                    b.iter(move || quant::quantize(&coeffs[..n], &qp, &mut qc, &mut dqc, n))
+                });
+            }
+        });
     }
 
     // Transforms: measured to decide whether a from-scratch bit-exact NEON
