@@ -322,6 +322,7 @@ unsafe extern "C" {
         tx_class: i32,
         coeff_contexts: *mut i8,
     );
+    #[cfg(target_arch = "x86_64")]
     fn ref_get_nz_map_contexts_sse2(
         levels: *const u8,
         scan: *const i16,
@@ -410,6 +411,14 @@ pub fn get_nz_map_contexts(
 /// Byte-identical to [`get_nz_map_contexts`] at every scan position, but also
 /// writes the non-scan positions (raster), so it is the reference for the
 /// port's raster fill on the *full* buffer.
+///
+/// x86_64 ONLY — this wraps an SSE2 kernel that does not exist on other
+/// architectures. It was declared unconditionally, so on arm64 the entire
+/// `zenav1-svt-entropy` c_parity test binary failed to LINK (undefined
+/// `_svt_av1_get_nz_map_contexts_sse2`) and NO entropy parity test ran there at
+/// all. Gating it by architecture is what lets the rest of that suite run on
+/// arm64; the callers are gated to match.
+#[cfg(target_arch = "x86_64")]
 pub fn get_nz_map_contexts_sse2(
     levels: &[u8],
     scan: &[i16],

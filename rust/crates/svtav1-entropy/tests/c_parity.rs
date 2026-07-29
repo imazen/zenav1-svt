@@ -64,6 +64,26 @@ fn random_cdf(rng: &mut Rng, nsymbs: usize) -> Vec<u16> {
     cdf
 }
 
+
+/// Serializes every test that calls `cref::fc_init`.
+///
+/// `fc_init(q)` initializes a PROCESS-GLOBAL C frame context and the
+/// `fc_table` readers pull straight out of it, so two tests initializing at
+/// different qindexes concurrently read each other's state — or a half-written
+/// buffer. Symptom when it bites: the C side comes back mostly ZEROS (a
+/// partially-filled table) rather than merely different values.
+///
+/// This was invisible on arm64 until the SSE2-extern gating in this commit made
+/// the binary link there at all; it reproduces deterministically at default
+/// test parallelism and passes under `--test-threads=1`, which is the
+/// signature. Related but distinct from the archmage token race documented in
+/// the crate CLAUDE.md — that one is about dispatch tiers, this one is about
+/// shared C state.
+fn fc_guard() -> std::sync::MutexGuard<'static, ()> {
+    static FC_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    FC_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[test]
 fn update_cdf_matches_c() {
     let mut rng = Rng(0x9E3779B97F4A7C15);
@@ -239,6 +259,7 @@ fn ec_empty_and_tiny_streams_match_c() {
 /// edits of the generated file).
 #[test]
 fn c_default_cdf_tables_match() {
+    let _fc = fc_guard();
     use svtav1_entropy::default_cdfs as d;
 
     // Q-dependent coefficient tables: bucket k extracted at its
@@ -405,6 +426,7 @@ fn c_default_cdf_tables_match() {
 /// no padding — same serialization the Nmvc drift test uses).
 #[test]
 fn frame_context_intrabc_defaults_match_c() {
+    let _fc = fc_guard();
     use svtav1_entropy::context::FrameContext;
     cref::fc_init(60);
     let fc = FrameContext::new_default();
@@ -595,6 +617,12 @@ fn coeff_c_levels_and_contexts_match_c() {
 /// passing proves the reduced zeroing leaves no observable stale byte. Since the
 /// deepest read here (TX_CLASS_VERT, 32x32) is exactly what `LEVELS_SCRATCH_LEN`
 /// is sized for, this transitively validates the shrunk per-call scratch too.
+/// x86_64 ONLY: compares against `cref::get_nz_map_contexts_sse2`, an SSE2
+/// kernel with no counterpart on other architectures. Gated at COMPILE time
+/// (not skipped at runtime) so the rest of this suite links and runs on arm64 —
+/// it previously did not link there at all, so every test in this file was
+/// silently absent on that architecture.
+#[cfg(target_arch = "x86_64")]
 #[test]
 fn coeff_c_txb_init_levels_partial_zero_no_stale_reads() {
     use svtav1_entropy::coeff_c;
@@ -802,6 +830,12 @@ fn txb_init_levels_simd_matches_c() {
 /// raster position a compared position, exercising every position-base offset
 /// and the 5-neighbour stencil at every coordinate of every block shape.
 /// This is the nz-map analogue of `txb_init_levels_simd_matches_c`.
+/// x86_64 ONLY: compares against `cref::get_nz_map_contexts_sse2`, an SSE2
+/// kernel with no counterpart on other architectures. Gated at COMPILE time
+/// (not skipped at runtime) so the rest of this suite links and runs on arm64 —
+/// it previously did not link there at all, so every test in this file was
+/// silently absent on that architecture.
+#[cfg(target_arch = "x86_64")]
 #[test]
 fn nz_map_contexts_simd_matches_c() {
     use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
