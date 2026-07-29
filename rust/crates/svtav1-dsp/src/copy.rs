@@ -127,8 +127,14 @@ fn block_average_impl_v3(
     block_average_inner(dst, dst_stride, a, a_stride, b, b_stride, width, height);
 }
 
+/// NEON block average: `(a + b + 1) >> 1`, 16 pixels per iteration.
+///
+/// `vrhaddq_u8` IS this expression — an unsigned rounding halving add — so the
+/// kernel is one instruction per 16 pixels and exactly equal to the scalar
+/// form by definition of the instruction, with no intermediate widening.
 #[cfg(target_arch = "aarch64")]
 #[arcane]
+#[allow(clippy::too_many_arguments)]
 fn block_average_impl_neon(
     _token: NeonToken,
     dst: &mut [u8],
@@ -140,7 +146,26 @@ fn block_average_impl_neon(
     width: usize,
     height: usize,
 ) {
-    block_average_inner(dst, dst_stride, a, a_stride, b, b_stride, width, height);
+    for row in 0..height {
+        let d_off = row * dst_stride;
+        let a_off = row * a_stride;
+        let b_off = row * b_stride;
+        let mut col = 0usize;
+        while col + 16 <= width {
+            let va = vld1q_u8(a[a_off + col..a_off + col + 16].try_into().unwrap());
+            let vb = vld1q_u8(b[b_off + col..b_off + col + 16].try_into().unwrap());
+            let out: &mut [u8; 16] = (&mut dst[d_off + col..d_off + col + 16])
+                .try_into()
+                .unwrap();
+            vst1q_u8(out, vrhaddq_u8(va, vb));
+            col += 16;
+        }
+        for c in col..width {
+            let va = a[a_off + c] as u16;
+            let vb = b[b_off + c] as u16;
+            dst[d_off + c] = ((va + vb + 1) >> 1) as u8;
+        }
+    }
 }
 
 #[inline]
@@ -256,8 +281,15 @@ fn block_blend_impl_v3(
     );
 }
 
+/// NEON AOM_BLEND_A64: `(a*w + b*(64-w) + 32) >> 6`, 16 pixels per iteration.
+///
+/// Exact, not approximate. `a*w + b*(64-w) <= 255*64 = 16320` fits u16 with
+/// room to spare, and `vrshrn_n_u16::<6>` IS `(x + 32) >> 6` followed by a
+/// narrow — the rounding constant is the instruction's, not an added term. The
+/// result cannot exceed 255, so the narrow cannot lose information.
 #[cfg(target_arch = "aarch64")]
 #[arcane]
+#[allow(clippy::too_many_arguments)]
 fn block_blend_impl_neon(
     _token: NeonToken,
     dst: &mut [u8],
@@ -271,18 +303,44 @@ fn block_blend_impl_neon(
     width: usize,
     height: usize,
 ) {
-    block_blend_inner(
-        dst,
-        dst_stride,
-        a,
-        a_stride,
-        b,
-        b_stride,
-        mask,
-        mask_stride,
-        width,
-        height,
-    );
+    for row in 0..height {
+        let d_off = row * dst_stride;
+        let a_off = row * a_stride;
+        let b_off = row * b_stride;
+        let m_off = row * mask_stride;
+        let mut col = 0usize;
+        while col + 16 <= width {
+            let va = vld1q_u8(a[a_off + col..a_off + col + 16].try_into().unwrap());
+            let vb = vld1q_u8(b[b_off + col..b_off + col + 16].try_into().unwrap());
+            let vm = vld1q_u8(mask[m_off + col..m_off + col + 16].try_into().unwrap());
+            let inv = vsubq_u8(vdupq_n_u8(64), vm);
+
+            let lo = vmlal_u8(
+                vmull_u8(vget_low_u8(va), vget_low_u8(vm)),
+                vget_low_u8(vb),
+                vget_low_u8(inv),
+            );
+            let hi = vmlal_u8(
+                vmull_u8(vget_high_u8(va), vget_high_u8(vm)),
+                vget_high_u8(vb),
+                vget_high_u8(inv),
+            );
+            let out: &mut [u8; 16] = (&mut dst[d_off + col..d_off + col + 16])
+                .try_into()
+                .unwrap();
+            vst1q_u8(
+                out,
+                vcombine_u8(vrshrn_n_u16::<6>(lo), vrshrn_n_u16::<6>(hi)),
+            );
+            col += 16;
+        }
+        for c in col..width {
+            let va = a[a_off + c] as u32;
+            let vb = b[b_off + c] as u32;
+            let w = mask[m_off + c] as u32;
+            dst[d_off + c] = ((va * w + vb * (64 - w) + 32) >> 6) as u8;
+        }
+    }
 }
 
 #[inline]
@@ -403,6 +461,7 @@ mod tests {
 #[cfg(test)]
 mod dispatch_tests {
     use super::*;
+    use alloc::{vec, vec::Vec};
     use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
 
     #[test]
@@ -439,6 +498,87 @@ mod dispatch_tests {
                 "average mismatch at dispatch level {_perm}"
             );
         });
+    }
+
+    /// A tiny xorshift so the sweep below uses content, not constants.
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            x
+        }
+        fn u8(&mut self) -> u8 {
+            (self.next() >> 33) as u8
+        }
+    }
+
+    /// Every tier vs the scalar reference across widths that straddle the
+    /// vector body.
+    ///
+    /// The three tests around this one all use a single 4x4 block. The NEON
+    /// kernels process 16 pixels per iteration, so at width 4 the vector body
+    /// NEVER RUNS and only the scalar tail is exercised — those tests would
+    /// pass against a completely broken vector path. This sweeps widths 1..=40
+    /// (crossing 16 and 32, and every remainder), with strides wider than the
+    /// block so a kernel that ignored stride would be caught.
+    #[test]
+    fn average_and_blend_all_widths_all_tiers() {
+        let mut rng = Rng(0x51ED_BEEF_0000_0001);
+        for width in 1..=40usize {
+            for height in [1usize, 3, 8] {
+                let stride = width + 7; // deliberately not equal to width
+                let n = stride * (height + 2);
+                let a: Vec<u8> = (0..n).map(|_| rng.u8()).collect();
+                let b: Vec<u8> = (0..n).map(|_| rng.u8()).collect();
+                // Mask values are 0..=64 in AOM_BLEND_A64.
+                let mask: Vec<u8> = (0..n).map(|_| rng.u8() % 65).collect();
+
+                let mut ref_avg = vec![0u8; n];
+                block_average_inner(&mut ref_avg, stride, &a, stride, &b, stride, width, height);
+                let mut ref_blend = vec![0u8; n];
+                block_blend_inner(
+                    &mut ref_blend, stride, &a, stride, &b, stride, &mask, stride, width, height,
+                );
+
+                let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+                    let mut got = vec![0u8; n];
+                    block_average(&mut got, stride, &a, stride, &b, stride, width, height);
+                    assert_eq!(
+                        got, ref_avg,
+                        "average w={width} h={height} tier {_perm}"
+                    );
+
+                    let mut got = vec![0u8; n];
+                    block_blend(
+                        &mut got, stride, &a, stride, &b, stride, &mask, stride, width, height,
+                    );
+                    assert_eq!(
+                        got, ref_blend,
+                        "blend w={width} h={height} tier {_perm}"
+                    );
+                });
+            }
+        }
+    }
+
+    /// Mask 0 and 64 are the saturating ends of AOM_BLEND_A64 and must select
+    /// b and a exactly.
+    #[test]
+    fn blend_mask_extremes_are_exact_selects() {
+        let width = 33usize; // crosses the 16-wide body twice plus a tail
+        let mut rng = Rng(0xF00D_1234);
+        let a: Vec<u8> = (0..width).map(|_| rng.u8()).collect();
+        let b: Vec<u8> = (0..width).map(|_| rng.u8()).collect();
+        for (mval, expect) in [(0u8, &b), (64u8, &a)] {
+            let mask = vec![mval; width];
+            let mut got = vec![0u8; width];
+            block_blend(&mut got, width, &a, width, &b, width, &mask, width, width, 1);
+            assert_eq!(&got, expect, "mask={mval} must select exactly");
+        }
     }
 
     #[test]

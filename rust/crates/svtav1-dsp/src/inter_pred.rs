@@ -160,8 +160,23 @@ fn convolve_vert_impl_v3(
     convolve_vert_inner(src, src_stride, dst, dst_stride, filter, width, height);
 }
 
+/// NEON 8-tap vertical convolve, 8 columns per iteration.
+///
+/// Columns are independent and each tap reads a whole row, so the vertical
+/// filter vectorizes without any sliding-window shuffling: load 8 bytes from
+/// each of the 8 source rows, widen, and multiply-accumulate by the scalar tap.
+///
+/// Exact. Accumulation is i32, matching the scalar `sum`. The final
+/// `(sum + 64) >> 7` and the `clamp(0, 255)` are the instructions' own
+/// semantics rather than added terms: `vqrshrn_n_s32::<7>` is a rounding
+/// shift-right-by-7 with saturation, and `vqmovun_s16` saturates a signed
+/// value into `[0, 255]`. Neither saturation can trigger spuriously — with
+/// `|src| <= 255` and eight taps summing to 128, `|sum| >> 7` stays far inside
+/// i16 — but they are the correct behaviour if a caller passes an unusual
+/// filter, exactly as the scalar clamp is.
 #[cfg(target_arch = "aarch64")]
 #[arcane]
+#[allow(clippy::too_many_arguments)]
 fn convolve_vert_impl_neon(
     _token: NeonToken,
     src: &[u8],
@@ -172,7 +187,33 @@ fn convolve_vert_impl_neon(
     width: usize,
     height: usize,
 ) {
-    convolve_vert_inner(src, src_stride, dst, dst_stride, filter, width, height);
+    for row in 0..height {
+        let d_row = row * dst_stride;
+        let mut col = 0usize;
+        while col + 8 <= width {
+            let mut lo = vdupq_n_s32(0);
+            let mut hi = vdupq_n_s32(0);
+            for k in 0..FILTER_TAPS {
+                let off = (row + k) * src_stride + col;
+                let sv = vld1_u8(src[off..off + 8].try_into().unwrap());
+                let s16 = vreinterpretq_s16_u16(vmovl_u8(sv));
+                lo = vmlal_n_s16(lo, vget_low_s16(s16), filter[k]);
+                hi = vmlal_n_s16(hi, vget_high_s16(s16), filter[k]);
+            }
+            let packed = vcombine_s16(vqrshrn_n_s32::<FILTER_BITS>(lo), vqrshrn_n_s32::<FILTER_BITS>(hi));
+            let out: &mut [u8; 8] = (&mut dst[d_row + col..d_row + col + 8]).try_into().unwrap();
+            vst1_u8(out, vqmovun_s16(packed));
+            col += 8;
+        }
+        for c in col..width {
+            let mut sum: i32 = 0;
+            for k in 0..FILTER_TAPS {
+                sum += src[(row + k) * src_stride + c] as i32 * filter[k] as i32;
+            }
+            let val = (sum + (1 << (FILTER_BITS - 1))) >> FILTER_BITS;
+            dst[d_row + c] = val.clamp(0, 255) as u8;
+        }
+    }
 }
 
 #[inline]

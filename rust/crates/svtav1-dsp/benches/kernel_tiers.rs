@@ -15,7 +15,7 @@
 //!
 //! Run: `cargo bench -p zenav1-svt-dsp --bench kernel_tiers`
 
-use svtav1_dsp::{cdef, fwd_txfm, hadamard, hbd, intra_pred, quant_coding, restoration, inv_txfm, quant, sad, variance};
+use svtav1_dsp::{cdef, fwd_txfm, hadamard, hbd, intra_pred, copy, inter_pred, quant_coding, restoration, inv_txfm, quant, sad, variance};
 use zenbench::prelude::*;
 
 #[cfg(target_arch = "aarch64")]
@@ -205,6 +205,49 @@ fn bench_dsp(suite: &mut Suite) {
                 }
             });
         }
+    }
+
+    {
+        // Inter-pred / compositing kernels: 64x64 blocks, the common MC size.
+        const N: usize = 64;
+        let mask: &'static [u8] = Box::leak(
+            (0..STRIDE * 128).map(|i| ((i * 31) % 65) as u8).collect::<Vec<u8>>().into_boxed_slice(),
+        );
+        suite.compare("block_average_64x64", |g| {
+            for (arm, simd) in [(TIER_NAME, true), ("scalar", false)] {
+                g.bench(arm, move |b| {
+                    let mut dst = vec![0u8; STRIDE * N];
+                    b.iter(move || {
+                        set_simd(simd);
+                        copy::block_average(&mut dst, STRIDE, src, STRIDE, rf, STRIDE, N, N);
+                    })
+                });
+            }
+        });
+        suite.compare("block_blend_64x64", |g| {
+            for (arm, simd) in [(TIER_NAME, true), ("scalar", false)] {
+                g.bench(arm, move |b| {
+                    let mut dst = vec![0u8; STRIDE * N];
+                    b.iter(move || {
+                        set_simd(simd);
+                        copy::block_blend(&mut dst, STRIDE, src, STRIDE, rf, STRIDE, mask, STRIDE, N, N);
+                    })
+                });
+            }
+        });
+        // 8-tap vertical convolve, the sub-pel ME refinement kernel.
+        let filt: &'static [i16; 8] = Box::leak(Box::new([-2i16, 6, -14, 110, 34, -12, 4, 0]));
+        suite.compare("convolve_vert_64x64", |g| {
+            for (arm, simd) in [(TIER_NAME, true), ("scalar", false)] {
+                g.bench(arm, move |b| {
+                    let mut dst = vec![0u8; STRIDE * N];
+                    b.iter(move || {
+                        set_simd(simd);
+                        inter_pred::convolve_vert(src, STRIDE, &mut dst, STRIDE, filt, N, N);
+                    })
+                });
+            }
+        });
     }
 
     // Quantize: measured to decide whether a magic-reciprocal NEON port is
