@@ -70,9 +70,22 @@ fn convolve_horiz_impl_v3(
     convolve_horiz_inner(src, src_stride, dst, dst_stride, filter, width, height);
 }
 
+/// NEON 8-tap horizontal convolve body, shared by the `convolve_horiz` entry
+/// point and the two-pass `convolve_2d`.
+///
+/// The window slides one byte per output pixel, so unlike the vertical filter
+/// the taps cannot come from separate loads. One 16-byte load per 8 outputs
+/// covers every tap, and `vextq_s16` extracts window `k` from the widened
+/// halves — the tap index must be a constant, so the 8 taps are unrolled.
+///
+/// BOUNDS: the 16-byte load reaches `col + 15`, while the scalar reads only up
+/// to `col + 7`. At the last body column that is one byte FURTHER than the
+/// scalar ever touches, so the vector path is additionally guarded on the real
+/// buffer length and falls back to scalar rather than over-reading. Callers
+/// with a padded frame buffer take the fast path throughout.
 #[cfg(target_arch = "aarch64")]
-#[arcane]
-fn convolve_horiz_impl_neon(
+#[rite]
+fn convolve_horiz_body_neon(
     _token: NeonToken,
     src: &[u8],
     src_stride: usize,
@@ -82,7 +95,66 @@ fn convolve_horiz_impl_neon(
     width: usize,
     height: usize,
 ) {
-    convolve_horiz_inner(src, src_stride, dst, dst_stride, filter, width, height);
+    for row in 0..height {
+        let s_row = row * src_stride;
+        let d_row = row * dst_stride;
+        let mut col = 0usize;
+        while col + 8 <= width && s_row + col + 16 <= src.len() {
+            let v = vld1q_u8(src[s_row + col..s_row + col + 16].try_into().unwrap());
+            let lo = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(v)));
+            let hi = vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(v)));
+
+            let mut a0 = vdupq_n_s32(0);
+            let mut a1 = vdupq_n_s32(0);
+            // Unrolled: vextq_s16's lane offset must be a const generic.
+            let w = [
+                lo,
+                vextq_s16::<1>(lo, hi),
+                vextq_s16::<2>(lo, hi),
+                vextq_s16::<3>(lo, hi),
+                vextq_s16::<4>(lo, hi),
+                vextq_s16::<5>(lo, hi),
+                vextq_s16::<6>(lo, hi),
+                vextq_s16::<7>(lo, hi),
+            ];
+            for k in 0..FILTER_TAPS {
+                a0 = vmlal_n_s16(a0, vget_low_s16(w[k]), filter[k]);
+                a1 = vmlal_n_s16(a1, vget_high_s16(w[k]), filter[k]);
+            }
+            let packed = vcombine_s16(
+                vqrshrn_n_s32::<FILTER_BITS>(a0),
+                vqrshrn_n_s32::<FILTER_BITS>(a1),
+            );
+            let out: &mut [u8; 8] = (&mut dst[d_row + col..d_row + col + 8]).try_into().unwrap();
+            vst1_u8(out, vqmovun_s16(packed));
+            col += 8;
+        }
+        for c in col..width {
+            let mut sum: i32 = 0;
+            for k in 0..FILTER_TAPS {
+                sum += src[s_row + c + k] as i32 * filter[k] as i32;
+            }
+            let val = (sum + (1 << (FILTER_BITS - 1))) >> FILTER_BITS;
+            dst[d_row + c] = val.clamp(0, 255) as u8;
+        }
+    }
+}
+
+/// NEON 8-tap horizontal convolve. See [`convolve_horiz_body_neon`].
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn convolve_horiz_impl_neon(
+    token: NeonToken,
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    filter: &[i16; 8],
+    width: usize,
+    height: usize,
+) {
+    convolve_horiz_body_neon(token, src, src_stride, dst, dst_stride, filter, width, height);
 }
 
 #[inline]
@@ -175,9 +247,8 @@ fn convolve_vert_impl_v3(
 /// i16 — but they are the correct behaviour if a caller passes an unusual
 /// filter, exactly as the scalar clamp is.
 #[cfg(target_arch = "aarch64")]
-#[arcane]
-#[allow(clippy::too_many_arguments)]
-fn convolve_vert_impl_neon(
+#[rite]
+fn convolve_vert_body_neon(
     _token: NeonToken,
     src: &[u8],
     src_stride: usize,
@@ -300,10 +371,15 @@ fn convolve_2d_impl_v3(
     );
 }
 
+/// NEON two-pass convolve: the same u8-intermediate composition the scalar
+/// core performs, with both passes vectorized. Identical structure, so it
+/// stays bit-exact with the scalar path (and hence with the C composition the
+/// parity test checks) as long as each pass is.
 #[cfg(target_arch = "aarch64")]
 #[arcane]
+#[allow(clippy::too_many_arguments)]
 fn convolve_2d_impl_neon(
-    _token: NeonToken,
+    token: NeonToken,
     src: &[u8],
     src_stride: usize,
     dst: &mut [u8],
@@ -313,8 +389,29 @@ fn convolve_2d_impl_neon(
     width: usize,
     height: usize,
 ) {
-    convolve_2d_inner(
-        src, src_stride, dst, dst_stride, h_filter, v_filter, width, height,
+    let intermediate_height = height + FILTER_TAPS - 1;
+    let intermediate_stride = width;
+    let mut intermediate = alloc::vec![0u8; intermediate_height * intermediate_stride];
+
+    convolve_horiz_body_neon(
+        token,
+        src,
+        src_stride,
+        &mut intermediate,
+        intermediate_stride,
+        h_filter,
+        width,
+        intermediate_height,
+    );
+    convolve_vert_body_neon(
+        token,
+        &intermediate,
+        intermediate_stride,
+        dst,
+        dst_stride,
+        v_filter,
+        width,
+        height,
     );
 }
 
@@ -644,4 +741,21 @@ mod dispatch_tests {
             assert_eq!(result, reference, "2d mismatch at dispatch level {_perm}");
         });
     }
+}
+
+/// NEON 8-tap vertical convolve entry point. See [`convolve_vert_body_neon`].
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn convolve_vert_impl_neon(
+    token: NeonToken,
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    filter: &[i16; 8],
+    width: usize,
+    height: usize,
+) {
+    convolve_vert_body_neon(token, src, src_stride, dst, dst_stride, filter, width, height);
 }

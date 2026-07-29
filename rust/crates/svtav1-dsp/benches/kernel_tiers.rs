@@ -213,6 +213,8 @@ fn bench_dsp(suite: &mut Suite) {
         let mask: &'static [u8] = Box::leak(
             (0..STRIDE * 128).map(|i| ((i * 31) % 65) as u8).collect::<Vec<u8>>().into_boxed_slice(),
         );
+        // 8-tap filters: the sub-pel ME refinement kernels.
+        let filt: &'static [i16; 8] = Box::leak(Box::new([-2i16, 6, -14, 110, 34, -12, 4, 0]));
         suite.compare("block_average_64x64", |g| {
             for (arm, simd) in [(TIER_NAME, true), ("scalar", false)] {
                 g.bench(arm, move |b| {
@@ -235,8 +237,28 @@ fn bench_dsp(suite: &mut Suite) {
                 });
             }
         });
-        // 8-tap vertical convolve, the sub-pel ME refinement kernel.
-        let filt: &'static [i16; 8] = Box::leak(Box::new([-2i16, 6, -14, 110, 34, -12, 4, 0]));
+        suite.compare("convolve_horiz_64x64", |g| {
+            for (arm, simd) in [(TIER_NAME, true), ("scalar", false)] {
+                g.bench(arm, move |b| {
+                    let mut dst = vec![0u8; STRIDE * N];
+                    b.iter(move || {
+                        set_simd(simd);
+                        inter_pred::convolve_horiz(src, STRIDE, &mut dst, STRIDE, filt, N, N);
+                    })
+                });
+            }
+        });
+        suite.compare("convolve_2d_64x64", |g| {
+            for (arm, simd) in [(TIER_NAME, true), ("scalar", false)] {
+                g.bench(arm, move |b| {
+                    let mut dst = vec![0u8; STRIDE * N];
+                    b.iter(move || {
+                        set_simd(simd);
+                        inter_pred::convolve_2d(src, STRIDE, &mut dst, STRIDE, filt, filt, N, N);
+                    })
+                });
+            }
+        });
         suite.compare("convolve_vert_64x64", |g| {
             for (arm, simd) in [(TIER_NAME, true), ("scalar", false)] {
                 g.bench(arm, move |b| {
