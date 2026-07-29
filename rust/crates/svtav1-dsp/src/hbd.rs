@@ -1467,11 +1467,20 @@ fn cdef_filter_block_hbd_impl_scalar(
     );
 }
 
+/// NEON dst16 CDEF filter.
+///
+/// Mirrors the AVX2 arm exactly, and shares its column kernel: the filtered
+/// values are produced by `cdef::cdef_filter_cols8_neon` — already proven
+/// byte-identical to C by `tests/c_parity_cdef.rs` — and this differs from the
+/// dst8 arm only in the output cast (`as u16` rather than `as u8`).
+///
+/// Only the `cols == 8` shapes take the vector path; the 4-wide chroma shapes
+/// fall back to the scalar core, same as AVX2.
 #[cfg(target_arch = "aarch64")]
 #[arcane]
 #[allow(clippy::too_many_arguments)]
 fn cdef_filter_block_hbd_impl_neon(
-    _token: NeonToken,
+    token: NeonToken,
     dst: &mut [u16],
     doff: usize,
     dstride: usize,
@@ -1486,10 +1495,39 @@ fn cdef_filter_block_hbd_impl_neon(
     coeff_shift: i32,
     subsampling_factor: usize,
 ) {
-    cdef_filter_block_hbd_core(
-        dst, doff, dstride, inb, ioff, pri_strength, sec_strength, dir, pri_damping, sec_damping,
-        bsize, coeff_shift, subsampling_factor,
+    let cols = if bsize == BLOCK_8X8 || bsize == BLOCK_8X4 { 8 } else { 4 };
+    if cols != 8 {
+        cdef_filter_block_hbd_core(
+            dst, doff, dstride, inb, ioff, pri_strength, sec_strength, dir, pri_damping,
+            sec_damping, bsize, coeff_shift, subsampling_factor,
+        );
+        return;
+    }
+    let rows = if bsize == BLOCK_8X8 || bsize == BLOCK_4X8 { 8 } else { 4 };
+    let mut scratch = [0i32; 64];
+    crate::cdef::cdef_filter_cols8_neon(
+        token,
+        inb,
+        ioff,
+        pri_strength,
+        sec_strength,
+        dir,
+        pri_damping,
+        sec_damping,
+        coeff_shift,
+        rows,
+        subsampling_factor as i32,
+        &mut scratch,
     );
+    let mut i = 0i32;
+    while i < rows {
+        let drow = doff + i as usize * dstride;
+        let srow = i as usize * 8;
+        for j in 0..8usize {
+            dst[drow + j] = scratch[srow + j] as u16;
+        }
+        i += subsampling_factor as i32;
+    }
 }
 
 /// AVX2 dst16 filter — the bd10/bd12 CDEF search's per-block filter. Byte-identical

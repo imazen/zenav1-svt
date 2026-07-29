@@ -15,7 +15,7 @@
 //!
 //! Run: `cargo bench -p zenav1-svt-dsp --bench kernel_tiers`
 
-use svtav1_dsp::{cdef, fwd_txfm, hadamard, intra_pred, inv_txfm, quant, sad, variance};
+use svtav1_dsp::{cdef, fwd_txfm, hadamard, hbd, intra_pred, inv_txfm, quant, sad, variance};
 use zenbench::prelude::*;
 
 #[cfg(target_arch = "aarch64")]
@@ -126,6 +126,28 @@ fn bench_dsp(suite: &mut Suite) {
                 }
             });
         }
+    }
+
+    {
+        // HBD (dst16) CDEF: same column kernel as the 8-bit arm, u16 output.
+        let inb: &'static [u16] = Box::leak(
+            (0..cdef::CDEF_INBUF_SIZE).map(|i| ((i * 7919) % 4096) as u16)
+                .collect::<Vec<u16>>().into_boxed_slice(),
+        );
+        const IOFF2: usize = cdef::CDEF_BSTRIDE * cdef::CDEF_VBORDER + cdef::CDEF_HBORDER;
+        suite.compare("cdef_filter_block_hbd_8x8", |g| {
+            for (arm, simd) in [(TIER_NAME, true), ("scalar", false)] {
+                g.bench(arm, move |b| {
+                    let mut dst = vec![0u16; 64];
+                    b.iter(move || {
+                        set_simd(simd);
+                        hbd::cdef_filter_block_hbd(
+                            &mut dst, 0, 8, inb, IOFF2, 12, 2, 1, 6, 6, cdef::BLOCK_8X8, 0, 1,
+                        );
+                    })
+                });
+            }
+        });
     }
 
     // Quantize: measured to decide whether a magic-reciprocal NEON port is
