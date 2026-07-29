@@ -237,9 +237,9 @@ primitives, making the shared sources fully backend-agnostic, then have a `mod n
 same 14 primitive names over `[int32x4_t; 2]` and `include!` the identical 1870 lines. One copy
 of the butterflies; a backend becomes 14 small functions.
 
-**The alias half works** — it was implemented and verified byte-identical (242 tests). **The
-include half does not.** `#[rite]` is a proc macro that pattern-matches the token parameter's
-type *by name*; it rejects an alias:
+**The alias half works** — implemented and verified byte-identical (242 tests). The include
+half first appeared blocked: `#[rite]` is a proc macro that pattern-matches the token
+parameter's type *by name* and rejects an alias:
 
 ```
 error: rite requires a token parameter or a tier name. Supported forms:
@@ -247,21 +247,43 @@ error: rite requires a token parameter or a tier name. Supported forms:
        - Concrete: `token: X64V3Token`
 ```
 
-Since the shared functions carry `#[rite]` and would need `Tok` in their signatures, and the
-same source must satisfy both backends, there is no spelling that works for both. Both halves
-were reverted rather than left as churn.
+**But the error names the way out, and it is verified to work.** The tier-name form takes no
+token type at all, and the two backends are already `cfg`'d by architecture — so `cfg_attr`
+can pick the tier per target while the token stays aliased:
 
-Routes that remain, in order of preference:
+```rust
+pub(super) type Tok = Desktop64;          // or NeonToken in mod neon
 
-1. Teach `#[rite]` to resolve type aliases (an archmage change — it already accepts several
-   forms, so this is a widening rather than a new concept).
-2. Replace `#[rite]` with `#[inline(always)]` in the shared files. Plausible, since every entry
-   point is `#[arcane]` and inlining plain code into a `target_feature` region is legal — but
-   it changes how the *x86* path compiles, which is unmeasurable from this machine.
-3. Transliterate the butterflies into a separate NEON module — the brute-force option, and the
-   only one that touches nothing shared.
+#[cfg_attr(target_arch = "x86_64", rite(v3))]
+#[cfg_attr(target_arch = "aarch64", rite(neon))]
+pub(super) fn splat(_t: Tok, v: i32) -> Vec8 { … }
+```
 
-### What a transliterated port requires
+This was probed on a single primitive and **compiles clean**. On x86_64 only `mod v3` exists,
+so the shared source gets `rite(v3)`; on aarch64 only `mod neon` does, so it gets
+`rite(neon)`. No archmage change is needed.
+
+So the shared-source port is viable, and the remaining work is mechanical:
+
+1. Swap `#[rite]` → the `cfg_attr` pair throughout the three shared files.
+2. Add `Vec8` / `Tok` / `ShiftC` aliases and the four wrapper primitives
+   (`zero`, `shiftc`, `addv`, `subv`) so the shared files stop naming intrinsics — there are
+   only five distinct ones to abstract.
+3. Write `mod neon` with the 14 primitives over `[int32x4_t; 2]` and `include!` the same
+   sources. The only one with real content is `transpose8` (four 4×4 `vtrnq_s32` transposes
+   plus a quadrant swap) and `rect_scale`, which is actually EASIER on NEON — it needs a true
+   i64 product, and NEON has `vmull_s32` / `vmull_high_s32` plus a signed 64-bit shift, so it
+   avoids the even/odd lane dance the AVX2 arm documents.
+
+`tests/c_parity_txfm.rs` gates the result against real C with SIMD-stressing residual
+patterns — the same gate that caught the CDEF sign-extension bug in this sweep.
+
+**Not attempted here**, and this is a risk decision rather than an unknown: the port touches
+1870 lines of shared butterfly source, and a DCT rounds at every stage so an error propagates
+through the whole transform. It should be done with a clear head, not appended to a long
+session that had already produced several mechanical slips.
+
+### If the shared-source route is rejected, a transliterated port requires### What a transliterated port requires
 
 Porting the 9 primitives is mechanical — `hbtf` is `vmulq_s32`/`vaddq_s32` plus a variable
 shift, `clampv` is `vminq_s32`/`vmaxq_s32`. Two things are not mechanical:
