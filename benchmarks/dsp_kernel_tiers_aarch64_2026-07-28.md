@@ -223,7 +223,45 @@ largest remaining NEON opportunity in the crate.
   `txfm_simd_drivers.rs` (228 lines, 4 entry points, only 13 direct intrinsic uses) generates
   `fwd_dct_{8,16,32,64}` from a macro.
 
-### What the port requires
+### An attempted shortcut, and why it does not work
+
+The transform SIMD is written ONCE and `include!`d into `mod v3`
+(`txfm_simd_kernels.rs` 1374 lines, `txfm_simd_drivers.rs` 228,
+`txfm_simd_rect.rs` 268). Those files barely touch x86 types directly: drivers and rect contain
+**zero** `__m256i`, and across all three there are only **five distinct intrinsics**
+(`_mm256_setzero_si256` ×26, `_mm_cvtsi32_si128` ×8, `_mm256_sub_epi32` ×3,
+`_mm256_add_epi32` ×2).
+
+That suggests an elegant port: add `type Vec8` / `type Tok` aliases plus four wrapper
+primitives, making the shared sources fully backend-agnostic, then have a `mod neon` supply the
+same 14 primitive names over `[int32x4_t; 2]` and `include!` the identical 1870 lines. One copy
+of the butterflies; a backend becomes 14 small functions.
+
+**The alias half works** — it was implemented and verified byte-identical (242 tests). **The
+include half does not.** `#[rite]` is a proc macro that pattern-matches the token parameter's
+type *by name*; it rejects an alias:
+
+```
+error: rite requires a token parameter or a tier name. Supported forms:
+       - Tier name: `#[rite(v3)]`, `#[rite(neon)]`
+       - Concrete: `token: X64V3Token`
+```
+
+Since the shared functions carry `#[rite]` and would need `Tok` in their signatures, and the
+same source must satisfy both backends, there is no spelling that works for both. Both halves
+were reverted rather than left as churn.
+
+Routes that remain, in order of preference:
+
+1. Teach `#[rite]` to resolve type aliases (an archmage change — it already accepts several
+   forms, so this is a widening rather than a new concept).
+2. Replace `#[rite]` with `#[inline(always)]` in the shared files. Plausible, since every entry
+   point is `#[arcane]` and inlining plain code into a `target_feature` region is legal — but
+   it changes how the *x86* path compiles, which is unmeasurable from this machine.
+3. Transliterate the butterflies into a separate NEON module — the brute-force option, and the
+   only one that touches nothing shared.
+
+### What a transliterated port requires
 
 Porting the 9 primitives is mechanical — `hbtf` is `vmulq_s32`/`vaddq_s32` plus a variable
 shift, `clampv` is `vminq_s32`/`vmaxq_s32`. Two things are not mechanical:
