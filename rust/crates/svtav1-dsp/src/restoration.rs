@@ -279,8 +279,14 @@ fn compute_stats_impl_scalar(
 #[cfg(target_arch = "aarch64")]
 #[arcane]
 #[allow(clippy::too_many_arguments)]
+/// NEON `compute_stats`: the AVX2 arm's body verbatim, with `mac_row_i32_v3`
+/// swapped for `mac_row_i32_neon`. Everything else in that function — the
+/// column-major window gather, the i32 per-row scratch, the flush into i64,
+/// and the upper-to-lower triangle mirror — is tier-agnostic scalar Rust, so
+/// nothing is re-derived. Pinned against real C by
+/// `tests/c_parity_wiener.rs::compute_stats_all_tiers_match_c`.
 fn compute_stats_impl_neon(
-    _token: NeonToken,
+    token: NeonToken,
     wiener_win: usize,
     dgd: &[u8],
     dgd_origin: usize,
@@ -295,10 +301,74 @@ fn compute_stats_impl_neon(
     m: &mut [i64],
     h: &mut [i64],
 ) {
-    compute_stats_scalar_core(
-        wiener_win, dgd, dgd_origin, dgd_stride, src, src_origin, src_stride, h_start, h_end,
-        v_start, v_end, m, h,
-    );
+    let win2 = wiener_win * wiener_win;
+    let halfwin = (wiener_win >> 1) as i32;
+    assert!(m.len() >= win2 && h.len() >= win2 * win2);
+    let avg = find_average(dgd, dgd_origin, dgd_stride, h_start, h_end, v_start, v_end) as i16;
+
+    m[..win2].fill(0);
+    h[..win2 * win2].fill(0);
+    let m = &mut m[..win2];
+    let h = &mut h[..win2 * win2];
+
+    const N2MAX: usize = WIENER_WIN * WIENER_WIN;
+    // Per-region-row i32 scratch. Bounded to one row of products (see the fn
+    // doc), so the i32 sums never overflow and the flush is byte-exact.
+    let mut m_acc = [0i32; N2MAX];
+    let mut h_acc = [0i32; N2MAX * N2MAX];
+    let mut y = [0i16; N2MAX];
+
+    for i in v_start..v_end {
+        m_acc[..win2].fill(0);
+        h_acc[..win2 * win2].fill(0);
+        let stride = dgd_stride as isize;
+        let row0 = (i - halfwin) as isize; // top window row (relative to origin)
+        for j in h_start..h_end {
+            let sidx = src_origin as isize + i as isize * src_stride as isize + j as isize;
+            let x = src[sidx as usize] as i16 - avg;
+            // Gather the win x win window into `y`, column-major (k = column
+            // offset outer, l = row offset inner) — the exact C `idx` order, so
+            // every y[idx] keeps its C meaning. Exclusive ranges + an
+            // incremental `didx += stride` replace the inclusive-range double
+            // loop and its per-element `(i+l)*stride` multiply; values are
+            // unchanged.
+            let mut idx = 0usize;
+            for kk in 0..wiener_win {
+                let col = (j - halfwin) as isize + kk as isize;
+                let mut didx = dgd_origin as isize + row0 * stride + col;
+                for _ in 0..wiener_win {
+                    y[idx] = dgd[didx as usize] as i16 - avg;
+                    idx += 1;
+                    didx += stride;
+                }
+            }
+            // M[k] += y[k]*x for k in 0..win2 (full row).
+            mac_row_i32_neon(token, &mut m_acc[..win2], &y[..win2], x as i32);
+            // Upper-triangular H[k][l] += y[k]*y[l], l >= k.
+            for k in 0..win2 {
+                let yk = y[k] as i32;
+                let base = k * win2;
+                mac_row_i32_neon(token, &mut h_acc[base + k..base + win2], &y[k..win2], yk);
+            }
+        }
+        // Flush this row's i32 partial sums into the i64 output (bounds-check-free
+        // zips; same additions, so still byte-exact).
+        for (mv, &ma) in m.iter_mut().zip(m_acc[..win2].iter()) {
+            *mv += ma as i64;
+        }
+        for k in 0..win2 {
+            let base = k * win2;
+            for (hv, &ha) in h[base + k..base + win2].iter_mut().zip(h_acc[base + k..base + win2].iter()) {
+                *hv += ha as i64;
+            }
+        }
+    }
+    // Mirror the upper triangle to the lower (once), as the scalar does.
+    for k in 0..win2 {
+        for l in (k + 1)..win2 {
+            h[l * win2 + k] = h[k * win2 + l];
+        }
+    }
 }
 
 /// Scalar reference — verbatim `svt_av1_compute_stats_c`. The M and H
@@ -477,6 +547,33 @@ fn compute_stats_impl_v3(
         for l in (k + 1)..win2 {
             h[l * win2 + k] = h[k * win2 + l];
         }
+    }
+}
+
+/// NEON twin of [`mac_row_i32_v3`]: `acc[i] += vals[i] as i32 * scalar`.
+///
+/// Same arithmetic in the same order, at 4 lanes instead of 8. The i16->i32
+/// widen (`vmovl_s16`) is the exact counterpart of `_mm256_cvtepi16_epi32`,
+/// and the caller's bound (one region row of products) is what keeps both the
+/// multiply and the add inside i32 — see [`compute_stats`]'s doc. Chunk width
+/// does not affect the result: every lane is an independent exact i32 add, so
+/// the 4-lane split and the 8-lane split agree bit-for-bit, and the scalar
+/// remainder handles win2 = 25/49 (neither a multiple of 4 nor 8) lane-for-lane.
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn mac_row_i32_neon(_token: NeonToken, acc: &mut [i32], vals: &[i16], scalar: i32) {
+    let s = vdupq_n_s32(scalar);
+    let mut ai = acc.chunks_exact_mut(4);
+    let mut vi = vals.chunks_exact(4);
+    for (a, v) in ai.by_ref().zip(vi.by_ref()) {
+        let vchunk: &[i16; 4] = v.try_into().unwrap();
+        let achunk: &mut [i32; 4] = a.try_into().unwrap();
+        let v32 = vmovl_s16(vld1_s16(vchunk));
+        let sum = vaddq_s32(vld1q_s32(achunk), vmulq_s32(v32, s));
+        vst1q_s32(achunk, sum);
+    }
+    for (a, &v) in ai.into_remainder().iter_mut().zip(vi.remainder()) {
+        *a += v as i32 * scalar;
     }
 }
 

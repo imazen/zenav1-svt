@@ -15,7 +15,7 @@
 //!
 //! Run: `cargo bench -p zenav1-svt-dsp --bench kernel_tiers`
 
-use svtav1_dsp::{cdef, fwd_txfm, hadamard, hbd, intra_pred, quant_coding, inv_txfm, quant, sad, variance};
+use svtav1_dsp::{cdef, fwd_txfm, hadamard, hbd, intra_pred, quant_coding, restoration, inv_txfm, quant, sad, variance};
 use zenbench::prelude::*;
 
 #[cfg(target_arch = "aarch64")]
@@ -174,6 +174,32 @@ fn bench_dsp(suite: &mut Suite) {
                                     &[-1255, -29571], &[128, 128], &[522, 933], 1,
                                 );
                             }
+                        })
+                    });
+                }
+            });
+        }
+    }
+
+    {
+        // Wiener compute_stats: M/H moments over a 64x64 restoration unit.
+        const W: usize = 64; const B: usize = 4; const STR: usize = W + 2 * B;
+        let dgd: &'static [u8] = Box::leak(
+            (0..STR * (W + 2 * B)).map(|i| ((i * 7919) % 256) as u8)
+                .collect::<Vec<u8>>().into_boxed_slice(),
+        );
+        for win in [5usize, 7] {
+            suite.compare(&format!("wiener_compute_stats_win{win}_64x64"), move |g| {
+                for (arm, simd) in [(TIER_NAME, true), ("scalar", false)] {
+                    g.bench(arm, move |b| {
+                        let mut mm = vec![0i64; win * win];
+                        let mut hh = vec![0i64; win * win * win * win];
+                        b.iter(move || {
+                            set_simd(simd);
+                            restoration::compute_stats(
+                                win, dgd, B * STR + B, STR, dgd, B * STR + B, STR,
+                                0, W as i32, 0, W as i32, &mut mm, &mut hh,
+                            );
                         })
                     });
                 }
