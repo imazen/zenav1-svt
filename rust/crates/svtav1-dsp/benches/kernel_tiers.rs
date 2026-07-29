@@ -272,6 +272,35 @@ fn bench_dsp(suite: &mut Suite) {
         });
     }
 
+    {
+        // Transforms: the shared 8-lane kernels, now live on aarch64.
+        let coef: &'static [i32] = Box::leak(
+            (0..64 * 64).map(|i| (((i * 2654435761u64 as usize) % 4001) as i32) - 2000)
+                .collect::<Vec<i32>>().into_boxed_slice(),
+        );
+        macro_rules! txbench {
+            ($label:expr, $n:expr, $f:path) => {
+                suite.compare($label, |g| {
+                    for (arm, simd) in [(TIER_NAME, true), ("scalar", false)] {
+                        g.bench(arm, move |b| {
+                            let mut out = vec![0i32; $n * $n];
+                            b.iter(move || {
+                                set_simd(simd);
+                                $f(coef, &mut out, $n);
+                            })
+                        });
+                    }
+                });
+            };
+        }
+        txbench!("fwd_txfm2d_8x8_dct", 8, fwd_txfm::fwd_txfm2d_8x8_dct_dct);
+        txbench!("fwd_txfm2d_16x16_dct", 16, fwd_txfm::fwd_txfm2d_16x16_dct_dct);
+        txbench!("fwd_txfm2d_32x32_dct", 32, fwd_txfm::fwd_txfm2d_32x32_dct_dct);
+        txbench!("inv_txfm2d_8x8_dct", 8, inv_txfm::inv_txfm2d_8x8_dct_dct);
+        txbench!("inv_txfm2d_16x16_dct", 16, inv_txfm::inv_txfm2d_16x16_dct_dct);
+        txbench!("inv_txfm2d_32x32_dct", 32, inv_txfm::inv_txfm2d_32x32_dct_dct);
+    }
+
     // Quantize: measured to decide whether a magic-reciprocal NEON port is
     // worth the risk. It divides by a loop-invariant `dequant` per
     // coefficient, and NEON has no integer divide.

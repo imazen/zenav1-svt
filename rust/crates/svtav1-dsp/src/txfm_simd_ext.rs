@@ -29,7 +29,8 @@
 /// `out.lane(i) = in.lane(7 - i)` — a single `vpermd`, pure data movement →
 /// bit-exact. Used for the `lr_flip` horizontal mirror of a block's column
 /// outputs (forward) / inputs (inverse).
-#[rite]
+#[cfg_attr(target_arch = "x86_64", rite(v3))]
+#[cfg_attr(target_arch = "aarch64", rite(neon))]
 pub(super) fn reverse8(_t: Desktop64, v: __m256i) -> __m256i {
     // set_epi32(e7,..,e0) puts e7 in lane 7; so this is idx[i] = 7 - i.
     let idx = _mm256_set_epi32(0, 1, 2, 3, 4, 5, 6, 7);
@@ -50,13 +51,15 @@ pub(super) fn reverse8(_t: Desktop64, v: __m256i) -> __m256i {
 // cos_bit / rnd / sh / lo / hi are ignored, exactly like the scalar identity.
 // ---------------------------------------------------------------------------
 
-#[rite]
+#[cfg_attr(target_arch = "x86_64", rite(v3))]
+#[cfg_attr(target_arch = "aarch64", rite(neon))]
 pub(super) fn fidentity8_x8(_t: Desktop64, inp: &[__m256i; 8], out: &mut [__m256i; 8], _cos_bit: i8) {
     for i in 0..8 {
         out[i] = _mm256_slli_epi32::<1>(inp[i]);
     }
 }
-#[rite]
+#[cfg_attr(target_arch = "x86_64", rite(v3))]
+#[cfg_attr(target_arch = "aarch64", rite(neon))]
 pub(super) fn fidentity16_x8(
     t: Desktop64,
     inp: &[__m256i; 16],
@@ -67,7 +70,8 @@ pub(super) fn fidentity16_x8(
         out[i] = rect_scale(t, inp[i], 2 * NEW_SQRT2);
     }
 }
-#[rite]
+#[cfg_attr(target_arch = "x86_64", rite(v3))]
+#[cfg_attr(target_arch = "aarch64", rite(neon))]
 pub(super) fn fidentity32_x8(
     _t: Desktop64,
     inp: &[__m256i; 32],
@@ -79,7 +83,8 @@ pub(super) fn fidentity32_x8(
     }
 }
 
-#[rite]
+#[cfg_attr(target_arch = "x86_64", rite(v3))]
+#[cfg_attr(target_arch = "aarch64", rite(neon))]
 pub(super) fn iidentity8_x8(
     _t: Desktop64,
     inp: &[__m256i; 8],
@@ -93,7 +98,8 @@ pub(super) fn iidentity8_x8(
         out[i] = _mm256_slli_epi32::<1>(inp[i]);
     }
 }
-#[rite]
+#[cfg_attr(target_arch = "x86_64", rite(v3))]
+#[cfg_attr(target_arch = "aarch64", rite(neon))]
 pub(super) fn iidentity16_x8(
     t: Desktop64,
     inp: &[__m256i; 16],
@@ -107,7 +113,8 @@ pub(super) fn iidentity16_x8(
         out[i] = rect_scale(t, inp[i], 2 * NEW_SQRT2);
     }
 }
-#[rite]
+#[cfg_attr(target_arch = "x86_64", rite(v3))]
+#[cfg_attr(target_arch = "aarch64", rite(neon))]
 pub(super) fn iidentity32_x8(
     _t: Desktop64,
     inp: &[__m256i; 32],
@@ -161,7 +168,8 @@ macro_rules! fwd_ext_driver {
     ($fn:ident, $w:literal, $h:literal,
      $cdct:ident, $cadst:ident, $cid:ident,
      $rdct:ident, $radst:ident, $rid:ident) => {
-        #[rite]
+        #[cfg_attr(target_arch = "x86_64", rite(v3))]
+        #[cfg_attr(target_arch = "aarch64", rite(neon))]
         #[allow(clippy::too_many_arguments)]
         pub(super) fn $fn(
             t: Desktop64,
@@ -262,7 +270,8 @@ macro_rules! inv_ext_driver {
     ($fn:ident, $w:literal, $h:literal,
      $rdct:ident, $radst:ident, $rid:ident,
      $cdct:ident, $cadst:ident, $cid:ident) => {
-        #[rite]
+        #[cfg_attr(target_arch = "x86_64", rite(v3))]
+        #[cfg_attr(target_arch = "aarch64", rite(neon))]
         #[allow(clippy::too_many_arguments)]
         pub(super) fn $fn(
             t: Desktop64,
@@ -398,7 +407,8 @@ inv_ext_driver!(inv_ext_16x8, 16, 8,
 /// Forward EXT dispatcher: FLIPADST / IDENTITY / mixed V_/H_ types.
 /// `col_1d`/`row_1d` ∈ {0=DCT,1=ADST,2=FLIPADST,3=IDENTITY} with at least one
 /// >= 2; `ud`/`lr` are the FLIPADST edge flips. Returns true if handled.
-#[rite]
+#[cfg_attr(target_arch = "x86_64", rite(v3))]
+#[cfg_attr(target_arch = "aarch64", rite(neon))]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn fwd_ext(
     t: Desktop64,
@@ -438,7 +448,8 @@ pub(super) fn fwd_ext(
 }
 
 /// Inverse EXT dispatcher. Same contract as [`fwd_ext`], `bd <= 10`.
-#[rite]
+#[cfg_attr(target_arch = "x86_64", rite(v3))]
+#[cfg_attr(target_arch = "aarch64", rite(neon))]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn inv_ext(
     t: Desktop64,

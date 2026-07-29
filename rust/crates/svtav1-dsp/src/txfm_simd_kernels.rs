@@ -41,7 +41,8 @@ macro_rules! neg {
 // ---------------------------------------------------------------------------
 // 8-point inverse DCT (svt_av1_idct8_new / inv_txfm.rs::idct8)
 // ---------------------------------------------------------------------------
-#[rite]
+#[cfg_attr(target_arch = "x86_64", rite(v3))]
+#[cfg_attr(target_arch = "aarch64", rite(neon))]
 pub(super) fn idct8_x8(
     t: Desktop64,
     inp: &[__m256i; 8],
@@ -96,7 +97,8 @@ pub(super) fn idct8_x8(
 // ---------------------------------------------------------------------------
 // 8-point forward DCT (svt_av1_fdct8_new / fwd_txfm.rs::fdct8). No clamps.
 // ---------------------------------------------------------------------------
-#[rite]
+#[cfg_attr(target_arch = "x86_64", rite(v3))]
+#[cfg_attr(target_arch = "aarch64", rite(neon))]
 pub(super) fn fdct8_x8(t: Desktop64, inp: &[__m256i; 8], out: &mut [__m256i; 8], cos_bit: i8) {
     let cospi = cospi_arr(cos_bit);
     let rnd = splat(t, 1 << (cos_bit as u32 - 1));
@@ -151,7 +153,8 @@ pub(super) fn fdct8_x8(t: Desktop64, inp: &[__m256i; 8], out: &mut [__m256i; 8],
 // ---------------------------------------------------------------------------
 // 16-point inverse DCT (svt_av1_idct16_new / inv_txfm.rs::idct16)
 // ---------------------------------------------------------------------------
-#[rite]
+#[cfg_attr(target_arch = "x86_64", rite(v3))]
+#[cfg_attr(target_arch = "aarch64", rite(neon))]
 pub(super) fn idct16_x8(
     t: Desktop64,
     inp: &[__m256i; 16],
@@ -267,7 +270,8 @@ pub(super) fn idct16_x8(
 // `cos_bit` selects the cospi table row (13 for the col pass, 12 for the row
 // pass at 16x16) and the rounding.
 // ---------------------------------------------------------------------------
-#[rite]
+#[cfg_attr(target_arch = "x86_64", rite(v3))]
+#[cfg_attr(target_arch = "aarch64", rite(neon))]
 pub(super) fn fdct16_x8(
     t: Desktop64,
     inp: &[__m256i; 16],
@@ -383,7 +387,8 @@ pub(super) fn fdct16_x8(
 // C in c_parity_txfm.rs. Same op sequence as the scalar => bit-identical.
 // ===========================================================================
 
-#[rite]
+#[cfg_attr(target_arch = "x86_64", rite(v3))]
+#[cfg_attr(target_arch = "aarch64", rite(neon))]
 pub(super) fn idct32_x8(
     t: Desktop64,
     inp: &[__m256i; 32],
@@ -496,7 +501,8 @@ pub(super) fn idct32_x8(
     ];
 }
 
-#[rite]
+#[cfg_attr(target_arch = "x86_64", rite(v3))]
+#[cfg_attr(target_arch = "aarch64", rite(neon))]
 pub(super) fn fdct32_x8(t: Desktop64, inp: &[__m256i; 32], out: &mut [__m256i; 32], cos_bit: i8) {
     let cospi = cospi_arr(cos_bit);
     let rnd = splat(t, 1 << (cos_bit as u32 - 1));
@@ -602,7 +608,8 @@ pub(super) fn fdct32_x8(t: Desktop64, inp: &[__m256i; 32], out: &mut [__m256i; 3
     ];
 }
 
-#[rite]
+#[cfg_attr(target_arch = "x86_64", rite(v3))]
+#[cfg_attr(target_arch = "aarch64", rite(neon))]
 pub(super) fn idct64_x8(
     t: Desktop64,
     inp: &[__m256i; 64],
@@ -825,7 +832,8 @@ pub(super) fn idct64_x8(
     ];
 }
 
-#[rite]
+#[cfg_attr(target_arch = "x86_64", rite(v3))]
+#[cfg_attr(target_arch = "aarch64", rite(neon))]
 pub(super) fn fdct64_x8(t: Desktop64, inp: &[__m256i; 64], out: &mut [__m256i; 64], cos_bit: i8) {
     let cospi = cospi_arr(cos_bit);
     let rnd = splat(t, 1 << (cos_bit as u32 - 1));
@@ -1051,7 +1059,8 @@ pub(super) fn fdct64_x8(t: Desktop64, inp: &[__m256i; 64], out: &mut [__m256i; 6
 // ---------------------------------------------------------------------------
 // 8-point forward ADST (svt_av1_fadst8_new / fwd_txfm.rs::fadst8). No clamps.
 // ---------------------------------------------------------------------------
-#[rite]
+#[cfg_attr(target_arch = "x86_64", rite(v3))]
+#[cfg_attr(target_arch = "aarch64", rite(neon))]
 pub(super) fn fadst8_x8(t: Desktop64, inp: &[__m256i; 8], out: &mut [__m256i; 8], cos_bit: i8) {
     let cospi = cospi_arr(cos_bit);
     let rnd = splat(t, 1 << (cos_bit as u32 - 1));
@@ -1106,7 +1115,8 @@ pub(super) fn fadst8_x8(t: Desktop64, inp: &[__m256i; 8], out: &mut [__m256i; 8]
 // ---------------------------------------------------------------------------
 // 8-point inverse ADST (svt_av1_iadst8_new / inv_txfm.rs::iadst8).
 // ---------------------------------------------------------------------------
-#[rite]
+#[cfg_attr(target_arch = "x86_64", rite(v3))]
+#[cfg_attr(target_arch = "aarch64", rite(neon))]
 pub(super) fn iadst8_x8(
     t: Desktop64,
     inp: &[__m256i; 8],
@@ -1167,7 +1177,8 @@ pub(super) fn iadst8_x8(
 // ---------------------------------------------------------------------------
 // 16-point forward ADST (svt_av1_fadst16_new / fwd_txfm.rs::fadst16). No clamps.
 // ---------------------------------------------------------------------------
-#[rite]
+#[cfg_attr(target_arch = "x86_64", rite(v3))]
+#[cfg_attr(target_arch = "aarch64", rite(neon))]
 pub(super) fn fadst16_x8(t: Desktop64, inp: &[__m256i; 16], out: &mut [__m256i; 16], cos_bit: i8) {
     let cospi = cospi_arr(cos_bit);
     let rnd = splat(t, 1 << (cos_bit as u32 - 1));
@@ -1269,7 +1280,8 @@ pub(super) fn fadst16_x8(t: Desktop64, inp: &[__m256i; 16], out: &mut [__m256i; 
 // ---------------------------------------------------------------------------
 // 16-point inverse ADST (svt_av1_iadst16_new / inv_txfm.rs::iadst16).
 // ---------------------------------------------------------------------------
-#[rite]
+#[cfg_attr(target_arch = "x86_64", rite(v3))]
+#[cfg_attr(target_arch = "aarch64", rite(neon))]
 pub(super) fn iadst16_x8(
     t: Desktop64,
     inp: &[__m256i; 16],

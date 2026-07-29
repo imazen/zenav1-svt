@@ -361,29 +361,35 @@ fn try_inv_dct_rect_impl_scalar(
 #[cfg(target_arch = "aarch64")]
 #[arcane]
 fn try_fwd_dct_rect_impl_neon(
-    _t: NeonToken,
-    _input: &[TranLow],
-    _output: &mut [TranLow],
-    _input_stride: usize,
-    _w: usize,
-    _h: usize,
+    t: NeonToken,
+    input: &[TranLow],
+    output: &mut [TranLow],
+    input_stride: usize,
+    w: usize,
+    h: usize,
 ) -> bool {
-    false
+    if w.max(h) > NEON_FWD_MAX_DIM {
+        return false;
+    }
+    neon::fwd_dct_rect(t, input, output, input_stride, w, h)
 }
 
 #[cfg(target_arch = "aarch64")]
 #[arcane]
 fn try_inv_dct_rect_impl_neon(
-    _t: NeonToken,
-    _input: &[TranLow],
-    _input_stride: usize,
-    _output: &mut [TranLow],
-    _out_stride: usize,
-    _w: usize,
-    _h: usize,
-    _bd: u8,
+    t: NeonToken,
+    input: &[TranLow],
+    input_stride: usize,
+    output: &mut [TranLow],
+    out_stride: usize,
+    w: usize,
+    h: usize,
+    bd: u8,
 ) -> bool {
-    false
+    if w.max(h) > NEON_INV_MAX_DIM {
+        return false;
+    }
+    neon::inv_dct_rect(t, input, input_stride, output, out_stride, w, h, bd)
 }
 
 fn try_fwd_adst_impl_scalar(
@@ -452,38 +458,44 @@ fn try_inv_ext_impl_scalar(
 #[arcane]
 #[allow(clippy::too_many_arguments)]
 fn try_fwd_ext_impl_neon(
-    _t: NeonToken,
-    _input: &[TranLow],
-    _output: &mut [TranLow],
-    _input_stride: usize,
-    _w: usize,
-    _h: usize,
-    _col_1d: u8,
-    _row_1d: u8,
-    _ud: bool,
-    _lr: bool,
+    t: NeonToken,
+    input: &[TranLow],
+    output: &mut [TranLow],
+    input_stride: usize,
+    w: usize,
+    h: usize,
+    col_1d: u8,
+    row_1d: u8,
+    ud: bool,
+    lr: bool,
 ) -> bool {
-    false
+    if w.max(h) > NEON_FWD_MAX_DIM {
+        return false;
+    }
+    neon::fwd_ext(t, input, output, input_stride, w, h, col_1d, row_1d, ud, lr)
 }
 
 #[cfg(target_arch = "aarch64")]
 #[arcane]
 #[allow(clippy::too_many_arguments)]
 fn try_inv_ext_impl_neon(
-    _t: NeonToken,
-    _input: &[TranLow],
-    _input_stride: usize,
-    _output: &mut [TranLow],
-    _out_stride: usize,
-    _w: usize,
-    _h: usize,
-    _col_1d: u8,
-    _row_1d: u8,
-    _ud: bool,
-    _lr: bool,
-    _bd: u8,
+    t: NeonToken,
+    input: &[TranLow],
+    input_stride: usize,
+    output: &mut [TranLow],
+    out_stride: usize,
+    w: usize,
+    h: usize,
+    col_1d: u8,
+    row_1d: u8,
+    ud: bool,
+    lr: bool,
+    bd: u8,
 ) -> bool {
-    false
+    if w.max(h) > NEON_INV_MAX_DIM {
+        return false;
+    }
+    neon::inv_ext(t, input, input_stride, output, out_stride, w, h, col_1d, row_1d, ud, lr, bd)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -524,101 +536,315 @@ fn try_inv_4dim_impl_scalar(
 #[arcane]
 #[allow(clippy::too_many_arguments)]
 fn try_fwd_4dim_impl_neon(
-    _t: NeonToken,
-    _input: &[TranLow],
-    _output: &mut [TranLow],
-    _input_stride: usize,
-    _w: usize,
-    _h: usize,
-    _col_1d: u8,
-    _row_1d: u8,
-    _ud: bool,
-    _lr: bool,
+    t: NeonToken,
+    input: &[TranLow],
+    output: &mut [TranLow],
+    input_stride: usize,
+    w: usize,
+    h: usize,
+    col_1d: u8,
+    row_1d: u8,
+    ud: bool,
+    lr: bool,
 ) -> bool {
-    false
+    if w.max(h) > NEON_FWD_MAX_DIM {
+        return false;
+    }
+    neon::fwd_4dim(t, input, output, input_stride, w, h, col_1d, row_1d, ud, lr)
 }
 
 #[cfg(target_arch = "aarch64")]
 #[arcane]
 #[allow(clippy::too_many_arguments)]
 fn try_inv_4dim_impl_neon(
-    _t: NeonToken,
-    _input: &[TranLow],
-    _input_stride: usize,
-    _output: &mut [TranLow],
-    _out_stride: usize,
-    _w: usize,
-    _h: usize,
-    _col_1d: u8,
-    _row_1d: u8,
-    _ud: bool,
-    _lr: bool,
-    _bd: u8,
+    t: NeonToken,
+    input: &[TranLow],
+    input_stride: usize,
+    output: &mut [TranLow],
+    out_stride: usize,
+    w: usize,
+    h: usize,
+    col_1d: u8,
+    row_1d: u8,
+    ud: bool,
+    lr: bool,
+    bd: u8,
 ) -> bool {
-    false
+    if w.max(h) > NEON_INV_MAX_DIM {
+        return false;
+    }
+    neon::inv_4dim(t, input, input_stride, output, out_stride, w, h, col_1d, row_1d, ud, lr, bd)
 }
 
 #[cfg(target_arch = "aarch64")]
 #[arcane]
 fn try_fwd_adst_impl_neon(
-    _t: NeonToken,
-    _input: &[TranLow],
-    _output: &mut [TranLow],
-    _input_stride: usize,
-    _w: usize,
-    _h: usize,
-    _col_1d: u8,
-    _row_1d: u8,
+    t: NeonToken,
+    input: &[TranLow],
+    output: &mut [TranLow],
+    input_stride: usize,
+    w: usize,
+    h: usize,
+    col_1d: u8,
+    row_1d: u8,
 ) -> bool {
-    false
+    if w.max(h) > NEON_FWD_MAX_DIM {
+        return false;
+    }
+    neon::fwd_adst(t, input, output, input_stride, w, h, col_1d, row_1d)
 }
 
 #[cfg(target_arch = "aarch64")]
 #[arcane]
 fn try_inv_adst_impl_neon(
-    _t: NeonToken,
-    _input: &[TranLow],
-    _input_stride: usize,
-    _output: &mut [TranLow],
-    _out_stride: usize,
-    _w: usize,
-    _h: usize,
-    _col_1d: u8,
-    _row_1d: u8,
-    _bd: u8,
+    t: NeonToken,
+    input: &[TranLow],
+    input_stride: usize,
+    output: &mut [TranLow],
+    out_stride: usize,
+    w: usize,
+    h: usize,
+    col_1d: u8,
+    row_1d: u8,
+    bd: u8,
 ) -> bool {
-    false
+    if w.max(h) > NEON_INV_MAX_DIM {
+        return false;
+    }
+    neon::inv_adst(t, input, input_stride, output, out_stride, w, h, col_1d, row_1d, bd)
 }
 
 #[cfg(target_arch = "aarch64")]
 #[arcane]
 fn try_fwd_dct_square_impl_neon(
-    _t: NeonToken,
-    _input: &[TranLow],
-    _output: &mut [TranLow],
-    _input_stride: usize,
-    _n: usize,
+    t: NeonToken,
+    input: &[TranLow],
+    output: &mut [TranLow],
+    input_stride: usize,
+    n: usize,
 ) -> bool {
-    false
+    if n > NEON_FWD_MAX_DIM {
+        return false;
+    }
+    neon::fwd_dct_square(t, input, output, input_stride, n)
 }
 
 #[cfg(target_arch = "aarch64")]
 #[arcane]
 fn try_inv_dct_square_impl_neon(
-    _t: NeonToken,
-    _input: &[TranLow],
-    _input_stride: usize,
-    _output: &mut [TranLow],
-    _out_stride: usize,
-    _n: usize,
-    _bd: u8,
+    t: NeonToken,
+    input: &[TranLow],
+    input_stride: usize,
+    output: &mut [TranLow],
+    out_stride: usize,
+    n: usize,
+    bd: u8,
 ) -> bool {
-    false
+    if n > NEON_INV_MAX_DIM {
+        return false;
+    }
+    neon::inv_dct_square(t, input, input_stride, output, out_stride, n, bd)
 }
 
 // ============================================================================
 // AVX2 (v3) implementation
 // ============================================================================
+
+/// Largest dimension at which the aarch64 tier is measured to BEAT the scalar
+/// transform, per direction.
+///
+/// The shared 8-lane kernels are not a uniform win here — the advantage shrinks
+/// with size and goes negative. Measured (benches/kernel_tiers.rs, M-series,
+/// neon vs forced scalar, CI excluding zero on every row):
+///
+/// | shape | fwd            | inv            |
+/// |-------|----------------|----------------|
+/// | 8x8   | 224 -> 109 ns  | 373 -> 322 ns  |
+/// | 16x16 | 588 -> 547 ns  | 1.2 -> 1.7 us  |
+/// | 32x32 | 2.6 -> 2.7 us  | 5.1 -> 8.6 us  |
+///
+/// So forward pays through 16 and inverse only through 8; beyond that the
+/// scalar transform is faster and the `try_*` protocol returns false to keep
+/// it. Non-square/ext/adst/4dim shapes run the SAME inner kernels, so they are
+/// bounded by `max(w, h)` against these same limits — interpolation inside the
+/// measured range, not extrapolation past it.
+#[cfg(target_arch = "aarch64")]
+const NEON_FWD_MAX_DIM: usize = 16;
+#[cfg(target_arch = "aarch64")]
+const NEON_INV_MAX_DIM: usize = 8;
+
+/// aarch64 tier for the shared transform kernels.
+///
+/// The 3,000 lines of transform algorithm in the `include!`d files are written
+/// against an 8-lane vector plus a small primitive set. Rather than fork them
+/// (or refactor the x86 module, which cannot be tested on this host), this
+/// module supplies the SAME NAMES the shared files already use — the vector
+/// type, the token type, and the handful of intrinsics they call directly — so
+/// the identical source compiles here untouched.
+///
+/// The vector type is `[i32; 8]` in plain safe Rust, NOT hand-written NEON
+/// intrinsics. On aarch64 NEON is BASELINE, so LLVM autovectorizes this
+/// 8-lane-shaped code; the whole point of the shared files is that the shape is
+/// already right. That also keeps the module free of `unsafe` and of any
+/// lane-order reasoning, which is where hand-ported transforms go wrong.
+///
+/// Every function here is a transcription of the x86 one's DOCUMENTED
+/// semantics, not of its instruction sequence — see `mod v3` for the derivations
+/// (particularly `rect_scale`, which needs a true i64 product, and the note on
+/// why 32-bit `mullo` reproduces the scalar i64 result in `hbtf`).
+#[cfg(target_arch = "aarch64")]
+#[allow(non_camel_case_types, non_snake_case, dead_code)]
+#[allow(clippy::identity_op, clippy::needless_range_loop)]
+mod neon {
+    use super::*;
+
+    /// The shared files' token type. Aliased so their `#[rite]` signatures and
+    /// `Desktop64` mentions resolve here.
+    pub(super) type Desktop64 = NeonToken;
+    /// The shared files' 8-lane vector.
+    pub(super) type __m256i = [i32; 8];
+    /// The shared files' runtime shift-count type.
+    pub(super) type __m128i = i32;
+
+    // ----- shims for the intrinsics the shared files call directly -----
+
+    #[inline(always)]
+    pub(super) fn _mm256_setzero_si256() -> __m256i {
+        [0; 8]
+    }
+    #[inline(always)]
+    pub(super) fn _mm256_add_epi32(a: __m256i, b: __m256i) -> __m256i {
+        core::array::from_fn(|i| a[i].wrapping_add(b[i]))
+    }
+    #[inline(always)]
+    pub(super) fn _mm256_sub_epi32(a: __m256i, b: __m256i) -> __m256i {
+        core::array::from_fn(|i| a[i].wrapping_sub(b[i]))
+    }
+    /// Truncating 32x32 low product, exactly like `_mm256_mullo_epi32`.
+    #[inline(always)]
+    pub(super) fn _mm256_mullo_epi32(a: __m256i, b: __m256i) -> __m256i {
+        core::array::from_fn(|i| a[i].wrapping_mul(b[i]))
+    }
+    /// Arithmetic shift right by a runtime count, like `_mm256_sra_epi32`.
+    #[inline(always)]
+    pub(super) fn _mm256_sra_epi32(a: __m256i, sh: __m128i) -> __m256i {
+        core::array::from_fn(|i| a[i] >> sh)
+    }
+    /// Logical shift left by a constant, like `_mm256_slli_epi32::<N>`.
+    #[inline(always)]
+    pub(super) fn _mm256_slli_epi32<const N: i32>(a: __m256i) -> __m256i {
+        core::array::from_fn(|i| ((a[i] as u32) << N) as i32)
+    }
+    /// Package a runtime shift count, like `_mm_cvtsi32_si128`.
+    #[inline(always)]
+    pub(super) fn _mm_cvtsi32_si128(v: i32) -> __m128i {
+        v
+    }
+    /// NOTE the reversed argument order: x86's `set` takes lane 7 FIRST.
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn _mm256_set_epi32(
+        e7: i32, e6: i32, e5: i32, e4: i32, e3: i32, e2: i32, e1: i32, e0: i32,
+    ) -> __m256i {
+        [e0, e1, e2, e3, e4, e5, e6, e7]
+    }
+    /// Lane gather by index, like `_mm256_permutevar8x32_epi32`.
+    #[inline(always)]
+    pub(super) fn _mm256_permutevar8x32_epi32(v: __m256i, idx: __m256i) -> __m256i {
+        core::array::from_fn(|i| v[(idx[i] & 7) as usize])
+    }
+
+    // ----- the primitive set (mirrors `mod v3`) -----
+
+    #[rite(neon)]
+    pub(super) fn splat(_t: Desktop64, v: i32) -> __m256i {
+        [v; 8]
+    }
+
+    /// `((w0·n0 + w1·n1) + round) >> bit`. Truncating 32-bit products, matching
+    /// the x86 arm's `mullo` (see its doc for why that equals the scalar i64
+    /// result over the reachable coefficient range).
+    #[rite(neon)]
+    pub(super) fn hbtf(
+        _t: Desktop64,
+        w0: __m256i,
+        n0: __m256i,
+        w1: __m256i,
+        n1: __m256i,
+        rnd: __m256i,
+        sh: __m128i,
+    ) -> __m256i {
+        core::array::from_fn(|i| {
+            let x = w0[i].wrapping_mul(n0[i]);
+            let y = w1[i].wrapping_mul(n1[i]);
+            x.wrapping_add(y).wrapping_add(rnd[i]) >> sh
+        })
+    }
+
+    #[rite(neon)]
+    pub(super) fn clampv(_t: Desktop64, v: __m256i, lo: __m256i, hi: __m256i) -> __m256i {
+        core::array::from_fn(|i| v[i].min(hi[i]).max(lo[i]))
+    }
+
+    #[rite(neon)]
+    pub(super) fn round_shift_v(_t: Desktop64, v: __m256i, bit: i32) -> __m256i {
+        if bit > 0 {
+            let rnd = 1i32 << (bit as u32 - 1);
+            core::array::from_fn(|i| (v[i].wrapping_add(rnd)) >> bit)
+        } else if bit < 0 {
+            core::array::from_fn(|i| ((v[i] as u32) << (-bit) as u32) as i32)
+        } else {
+            v
+        }
+    }
+
+    #[rite(neon)]
+    pub(super) fn wraplow(_t: Desktop64, v: __m256i, lo: __m256i, hi: __m256i) -> __m256i {
+        core::array::from_fn(|i| v[i].min(hi[i]).max(lo[i]))
+    }
+
+    /// `(v*k + (1<<11)) >> 12` with a TRUE i64 product — the scalar widens, so a
+    /// 32-bit product would overflow for large coefficients. Simpler here than
+    /// on AVX2, which lacks a signed 64-bit arithmetic shift and has to split
+    /// even/odd lanes.
+    #[rite(neon)]
+    pub(super) fn rect_scale(_t: Desktop64, v: __m256i, k: i32) -> __m256i {
+        core::array::from_fn(|i| {
+            let p = v[i] as i64 * k as i64;
+            ((p + (1i64 << 11)) >> 12) as i32
+        })
+    }
+
+    /// 8x8 transpose of eight 8-lane vectors.
+    #[rite(neon)]
+    pub(super) fn transpose8(_t: Desktop64, inp: &[__m256i; 8]) -> [__m256i; 8] {
+        let mut out = [[0i32; 8]; 8];
+        for (r, row) in inp.iter().enumerate() {
+            for (c, &val) in row.iter().enumerate() {
+                out[c][r] = val;
+            }
+        }
+        out
+    }
+
+    #[rite(neon)]
+    pub(super) fn load8(_t: Desktop64, buf: &[i32], off: usize) -> __m256i {
+        let a: &[i32; 8] = buf[off..off + 8].try_into().unwrap();
+        *a
+    }
+
+    #[rite(neon)]
+    pub(super) fn store8(_t: Desktop64, buf: &mut [i32], off: usize, v: __m256i) {
+        buf[off..off + 8].copy_from_slice(&v);
+    }
+
+    include!("txfm_simd_kernels.rs");
+    include!("txfm_simd_drivers.rs");
+    include!("txfm_simd_rect.rs");
+    include!("txfm_simd_adst.rs");
+    include!("txfm_simd_ext.rs");
+    include!("txfm_simd_4dim.rs");
+}
 
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::identity_op, clippy::needless_range_loop)]

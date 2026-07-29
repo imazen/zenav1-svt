@@ -21,7 +21,8 @@
 // ---------------------------------------------------------------------------
 
 /// 4-point forward DCT (svt_av1_fdct4_new / fwd_txfm.rs::fdct4).
-#[rite]
+#[cfg_attr(target_arch = "x86_64", rite(v3))]
+#[cfg_attr(target_arch = "aarch64", rite(neon))]
 pub(super) fn fdct4_x8(t: Desktop64, inp: &[__m256i; 4], out: &mut [__m256i; 4], cos_bit: i8) {
     let cospi = cospi_arr(cos_bit);
     let rnd = splat(t, 1 << (cos_bit as u32 - 1));
@@ -42,7 +43,8 @@ pub(super) fn fdct4_x8(t: Desktop64, inp: &[__m256i; 4], out: &mut [__m256i; 4],
 
 /// 4-point inverse DCT (svt_av1_idct4_new / inv_txfm.rs::idct4). cos_bit is the
 /// fixed inverse 12 (baked into `rnd`/`sh`); clamps to `[lo, hi]` per stage 3.
-#[rite]
+#[cfg_attr(target_arch = "x86_64", rite(v3))]
+#[cfg_attr(target_arch = "aarch64", rite(neon))]
 pub(super) fn idct4_x8(
     t: Desktop64,
     inp: &[__m256i; 4],
@@ -74,7 +76,8 @@ pub(super) fn idct4_x8(
 /// butterfly, i32 (matches C; the scalar's i64 is identical in range). The
 /// scalar's all-zero early-out is a pure optimization — the full arithmetic
 /// yields 0 for 0 input — so it is omitted (byte-exact).
-#[rite]
+#[cfg_attr(target_arch = "x86_64", rite(v3))]
+#[cfg_attr(target_arch = "aarch64", rite(neon))]
 pub(super) fn fadst4_x8(t: Desktop64, inp: &[__m256i; 4], out: &mut [__m256i; 4], cos_bit: i8) {
     let sinpi = sinpi_arr(cos_bit);
     let x0 = inp[0];
@@ -116,7 +119,8 @@ pub(super) fn fadst4_x8(t: Desktop64, inp: &[__m256i; 4], out: &mut [__m256i; 4]
 /// 4-point inverse ADST (svt_av1_iadst4_new / inv_txfm.rs::iadst4). sinpi table
 /// fixed at the inverse cos_bit (SINPI); round-shift by cos_bit via `rnd`/`sh`
 /// (= (v + rnd) >> sh). Matches C's int32 arithmetic. lo/hi unused (no clamp).
-#[rite]
+#[cfg_attr(target_arch = "x86_64", rite(v3))]
+#[cfg_attr(target_arch = "aarch64", rite(neon))]
 pub(super) fn iadst4_x8(
     t: Desktop64,
     inp: &[__m256i; 4],
@@ -160,7 +164,8 @@ pub(super) fn iadst4_x8(
 }
 
 /// 4-point forward identity — round_shift(v * NewSqrt2, 12) (fidentity4).
-#[rite]
+#[cfg_attr(target_arch = "x86_64", rite(v3))]
+#[cfg_attr(target_arch = "aarch64", rite(neon))]
 pub(super) fn fidentity4_x8(t: Desktop64, inp: &[__m256i; 4], out: &mut [__m256i; 4], _cos_bit: i8) {
     for i in 0..4 {
         out[i] = rect_scale(t, inp[i], NEW_SQRT2);
@@ -168,7 +173,8 @@ pub(super) fn fidentity4_x8(t: Desktop64, inp: &[__m256i; 4], out: &mut [__m256i
 }
 
 /// 4-point inverse identity — round_shift(v * NewSqrt2, 12) (iidentity4).
-#[rite]
+#[cfg_attr(target_arch = "x86_64", rite(v3))]
+#[cfg_attr(target_arch = "aarch64", rite(neon))]
 pub(super) fn iidentity4_x8(
     t: Desktop64,
     inp: &[__m256i; 4],
@@ -193,7 +199,8 @@ macro_rules! fwd_4dim_driver {
     ($fn:ident, $w:literal, $h:literal,
      $cdct:ident, $cadst:ident, $cid:ident,
      $rdct:ident, $radst:ident, $rid:ident) => {
-        #[rite]
+        #[cfg_attr(target_arch = "x86_64", rite(v3))]
+        #[cfg_attr(target_arch = "aarch64", rite(neon))]
         #[allow(clippy::too_many_arguments)]
         pub(super) fn $fn(
             t: Desktop64,
@@ -305,7 +312,8 @@ macro_rules! inv_4dim_driver {
     ($fn:ident, $w:literal, $h:literal,
      $rdct:ident, $radst:ident, $rid:ident,
      $cdct:ident, $cadst:ident, $cid:ident) => {
-        #[rite]
+        #[cfg_attr(target_arch = "x86_64", rite(v3))]
+        #[cfg_attr(target_arch = "aarch64", rite(neon))]
         #[allow(clippy::too_many_arguments)]
         pub(super) fn $fn(
             t: Desktop64,
@@ -460,7 +468,8 @@ inv_4dim_driver!(inv_4dim_16x4, 16, 4,
 
 /// Forward 4-dim dispatcher. Any (col_1d, row_1d) ∈ {0..3}² (all 16 tx types
 /// are legal at these sizes). Returns true if `(w, h)` is a 4-dim size.
-#[rite]
+#[cfg_attr(target_arch = "x86_64", rite(v3))]
+#[cfg_attr(target_arch = "aarch64", rite(neon))]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn fwd_4dim(
     t: Desktop64,
@@ -486,7 +495,8 @@ pub(super) fn fwd_4dim(
 }
 
 /// Inverse 4-dim dispatcher. Same contract as [`fwd_4dim`], `bd <= 10`.
-#[rite]
+#[cfg_attr(target_arch = "x86_64", rite(v3))]
+#[cfg_attr(target_arch = "aarch64", rite(neon))]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn inv_4dim(
     t: Desktop64,

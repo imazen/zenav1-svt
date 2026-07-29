@@ -40,7 +40,8 @@ inv_rect_driver!(inv_adst_adst_16x8, 16, 8, iadst16_x8, iadst8_x8);
 
 /// Forward ADST-containing dispatcher. `col_1d`/`row_1d` ∈ {0=DCT, 1=ADST},
 /// with at least one ADST; `(w,h)` both in {8,16}. Returns true if handled.
-#[rite]
+#[cfg_attr(target_arch = "x86_64", rite(v3))]
+#[cfg_attr(target_arch = "aarch64", rite(neon))]
 pub(super) fn fwd_adst(
     t: Desktop64,
     input: &[i32],
@@ -70,7 +71,8 @@ pub(super) fn fwd_adst(
 }
 
 /// Inverse ADST-containing dispatcher. Same contract as [`fwd_adst`], `bd <= 10`.
-#[rite]
+#[cfg_attr(target_arch = "x86_64", rite(v3))]
+#[cfg_attr(target_arch = "aarch64", rite(neon))]
 pub(super) fn inv_adst(
     t: Desktop64,
     input: &[i32],

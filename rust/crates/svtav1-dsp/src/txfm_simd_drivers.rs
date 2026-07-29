@@ -14,7 +14,8 @@ macro_rules! dct_square_driver {
     ($inv_fn:ident, $fwd_fn:ident, $n:literal, $idct:ident, $fdct:ident) => {
         /// Inverse square DCT-DCT (`N=$n`), no flips, `bd <= 10`. Byte-exact
         /// with `inv_txfm2d_core(.., row_1d=0, col_1d=0)`.
-        #[rite]
+        #[cfg_attr(target_arch = "x86_64", rite(v3))]
+        #[cfg_attr(target_arch = "aarch64", rite(neon))]
         pub(super) fn $inv_fn(
             t: Desktop64,
             input: &[i32],
@@ -91,7 +92,8 @@ macro_rules! dct_square_driver {
 
         /// Forward square DCT-DCT (`N=$n`), no flips. Byte-exact with
         /// `fwd_txfm2d_core(.., col_1d=0, row_1d=0)` (output packed at stride N).
-        #[rite]
+        #[cfg_attr(target_arch = "x86_64", rite(v3))]
+        #[cfg_attr(target_arch = "aarch64", rite(neon))]
         pub(super) fn $fwd_fn(
             t: Desktop64,
             input: &[i32],
@@ -166,7 +168,8 @@ dct_square_driver!(inv_dct_32, fwd_dct_32, 32, idct32_x8, fdct32_x8);
 dct_square_driver!(inv_dct_64, fwd_dct_64, 64, idct64_x8, fdct64_x8);
 
 /// Inverse square DCT-DCT dispatcher. Returns true if `n` has a SIMD kernel.
-#[rite]
+#[cfg_attr(target_arch = "x86_64", rite(v3))]
+#[cfg_attr(target_arch = "aarch64", rite(neon))]
 pub(super) fn inv_dct_square(
     t: Desktop64,
     input: &[i32],
@@ -198,7 +201,8 @@ pub(super) fn inv_dct_square(
 }
 
 /// Forward square DCT-DCT dispatcher. Returns true if `n` has a SIMD kernel.
-#[rite]
+#[cfg_attr(target_arch = "x86_64", rite(v3))]
+#[cfg_attr(target_arch = "aarch64", rite(neon))]
 pub(super) fn fwd_dct_square(
     t: Desktop64,
     input: &[i32],

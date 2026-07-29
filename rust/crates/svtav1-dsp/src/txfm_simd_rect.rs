@@ -19,7 +19,8 @@
 /// row_1d=0)` for `w=W, h=H` and no flips.
 macro_rules! fwd_rect_driver {
     ($fn:ident, $w:literal, $h:literal, $colk:ident, $rowk:ident) => {
-        #[rite]
+        #[cfg_attr(target_arch = "x86_64", rite(v3))]
+        #[cfg_attr(target_arch = "aarch64", rite(neon))]
         pub(super) fn $fn(t: Desktop64, input: &[i32], output: &mut [i32], input_stride: usize) {
             const W: usize = $w;
             const H: usize = $h;
@@ -100,7 +101,8 @@ macro_rules! fwd_rect_driver {
 /// row-range clamp, matching C.
 macro_rules! inv_rect_driver {
     ($fn:ident, $w:literal, $h:literal, $rowk:ident, $colk:ident) => {
-        #[rite]
+        #[cfg_attr(target_arch = "x86_64", rite(v3))]
+        #[cfg_attr(target_arch = "aarch64", rite(neon))]
         pub(super) fn $fn(
             t: Desktop64,
             input: &[i32],
@@ -213,7 +215,8 @@ inv_rect_driver!(inv_dct_64x16, 64, 16, idct64_x8, idct16_x8);
 
 /// Forward rectangular DCT-DCT dispatcher. Returns true if `(w,h)` has a SIMD
 /// kernel (both dims a multiple of 8, `w != h`).
-#[rite]
+#[cfg_attr(target_arch = "x86_64", rite(v3))]
+#[cfg_attr(target_arch = "aarch64", rite(neon))]
 pub(super) fn fwd_dct_rect(
     t: Desktop64,
     input: &[i32],
@@ -240,7 +243,8 @@ pub(super) fn fwd_dct_rect(
 
 /// Inverse rectangular DCT-DCT dispatcher. Returns true if `(w,h)` has a SIMD
 /// kernel.
-#[rite]
+#[cfg_attr(target_arch = "x86_64", rite(v3))]
+#[cfg_attr(target_arch = "aarch64", rite(neon))]
 pub(super) fn inv_dct_rect(
     t: Desktop64,
     input: &[i32],
