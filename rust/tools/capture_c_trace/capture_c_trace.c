@@ -106,6 +106,33 @@ int main(int argc, char** argv) {
                 argv[0]);
         return 2;
     }
+#ifdef SVT_NO_WRAP_TRACE
+    /* This driver was linked WITHOUT the `ld --wrap` interposers because the
+       platform linker does not support them (Apple ld64). It still drives the
+       real encoder and writes real OBU bytes, so every byte-parity gate works;
+       what it cannot produce is the arithmetic-coder op trace that
+       identity_diff.py uses to localize a divergence to a symbol.
+
+       Refuse loudly rather than write an empty trace: a differ comparing an
+       empty C trace against a full Rust one would report a bogus first
+       divergence, and one comparing "no trace either side" would report
+       agreement it never checked. Both are the gate-passes-for-the-wrong-reason
+       defect this repo bans. `SVT_TRACE_OUT=/dev/null` (what every byte-only
+       gate passes) is explicitly allowed. */
+    {
+        const char* trace_out = getenv("SVT_TRACE_OUT");
+        if (trace_out && *trace_out && strcmp(trace_out, "/dev/null") != 0) {
+            fprintf(stderr,
+                    "capture_c_trace: built WITHOUT --wrap support (this platform's linker lacks\n"
+                    "                 it), so no arithmetic-coder op trace can be produced, but\n"
+                    "                 SVT_TRACE_OUT=%s asked for one. Byte-parity gates work here;\n"
+                    "                 op-level localization (identity_diff.sh, tile_map.sh) needs\n"
+                    "                 a GNU-ld host. Refusing rather than emitting an empty trace.\n",
+                    trace_out);
+            return 3;
+        }
+    }
+#endif
     const uint32_t w      = (uint32_t)atoi(argv[1]);
     const uint32_t h      = (uint32_t)atoi(argv[2]);
     const uint32_t qp     = (uint32_t)atoi(argv[3]);

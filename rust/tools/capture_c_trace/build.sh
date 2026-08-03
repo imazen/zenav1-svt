@@ -100,10 +100,64 @@ if [[ ! -f "$LIB" ]]; then
     exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# Linker capability probe: `-Wl,--wrap=` is a GNU-ld/lld extension. Apple's ld64
+# rejects it outright ("ld: unknown options: --wrap=..."), which used to make
+# this script — and therefore EVERY byte-parity gate in tools/ — unbuildable on
+# macOS. The gates do not actually need the interposers: all but identity_diff
+# and tile_map pass `SVT_TRACE_OUT=/dev/null` and compare OBU bytes only.
+#
+# So probe the capability (never the OS name — a Linux host with ld64-like
+# tooling, or a macOS host with GNU ld installed, should both do the right
+# thing) and fall back to a byte-only driver. The fallback gets its OWN $OUT so
+# the staleness contract above stays per-mode: a wrap build and a no-wrap build
+# can coexist and neither can silently masquerade as the other.
+# ---------------------------------------------------------------------------
+WRAP_PROBE=$(mktemp -d)
+trap 'rm -rf "$WRAP_PROBE"' EXIT
+printf 'void __wrap_probe_fn(void){} int probe_fn(void); int main(void){return 0;}\n' \
+    >"$WRAP_PROBE/p.c"
+if cc -o "$WRAP_PROBE/p" "$WRAP_PROBE/p.c" -Wl,--wrap=probe_fn >/dev/null 2>&1; then
+    WRAP_SUPPORTED=1
+else
+    WRAP_SUPPORTED=0
+    OUT="${1:-${DEFAULT_OUT%.bin}.nowrap.bin}"
+fi
+
+# Publish the resolved binary path so the `capture_c_trace` wrapper execs the
+# one this script actually produced, instead of re-deriving it (and drifting).
+# Per-mode, like $OUT itself. Only for the default invocation — an explicit
+# argv[1] is the caller's own artifact and must not move the wrapper's target.
+if [[ -z "${1:-}" ]]; then
+    printf '%s\n' "$OUT" >"$HERE/.selected.$HDR_MODE"
+fi
+
 # Skip rebuild when up to date (sources + lib older than binary).
 if [[ -x "$OUT" && "$OUT" -nt "$HERE/capture_c_trace.c" && "$OUT" -nt "$HERE/wrap_odec.c" &&
     "$OUT" -nt "$HERE/wrap_recon.c" && "$OUT" -nt "$HERE/build.sh" && "$OUT" -nt "$LIB" ]]; then
     echo "capture_c_trace: up to date ($OUT)"
+    exit 0
+fi
+
+if [[ "$WRAP_SUPPORTED" == "0" ]]; then
+    # Byte-only driver: the real encoder, real OBU bytes, no op trace. The
+    # wrap_*.c translation units are EXCLUDED (they reference `__real_*`
+    # symbols that only the --wrap flag defines), and the driver is compiled
+    # with -DSVT_NO_WRAP_TRACE so it refuses a real SVT_TRACE_OUT request
+    # instead of writing an empty trace a differ would misread.
+    echo "capture_c_trace: this linker does not support -Wl,--wrap — building the BYTE-ONLY" >&2
+    echo "                 driver. Byte-parity gates (identity_matrix, bd10_*, tile_gate," >&2
+    echo "                 sb128_gate, partial_sb_gate, ...) work; op-level localization" >&2
+    echo "                 (identity_diff.sh's symbol trace, tile_map.sh) needs a GNU-ld host." >&2
+    cc -O2 -g -o "$OUT" \
+        -DSVT_NO_WRAP_TRACE=1 \
+        "$HERE/capture_c_trace.c" \
+        -I"$C_ROOT/Source/API" \
+        -I"$C_ROOT/Source/Lib/Codec" \
+        -I"$C_ROOT/Source/Lib/Globals" \
+        -I"$C_ROOT/Source/Lib/C_DEFAULT" \
+        "$LIB" -lpthread -lm
+    echo "capture_c_trace: built $OUT (byte-only, SVT_HDR_MODE=$HDR_MODE, lib=$LIB)"
     exit 0
 fi
 

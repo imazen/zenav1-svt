@@ -722,6 +722,24 @@ impl EncodePipeline {
     /// entry points reject instead of emitting a quietly-8-bit stream (the
     /// "no silent corruption" bar in `rust/CLAUDE.md`).
     fn hbd_source_consumed(&self, chroma_420: bool) -> bool {
+        self.bd10_levels_native(chroma_420)
+    }
+
+    /// Will this configuration produce TRUE 10-bit coded levels?
+    ///
+    /// Exactly two stages can: the full-RD mode-decision funnel
+    /// ([`bd10_full_rd_supported`], preset <= 8) and the level-only u16
+    /// re-encode post-pass (preset >= 9, `bd10_postpass_runs`). BOTH require
+    /// 4:2:0 and 64-aligned dims — the funnel because `use_funnel` is gated on
+    /// `chroma_420` and `tx_unit_hbd` is not partial-SB-aware, the post-pass
+    /// because `bd10_tree_supported` cannot map an edge/straddle footprint.
+    ///
+    /// This is the single source of truth for "is bd10 real here", consumed
+    /// both by the hbd entry points (which must not silently drop the caller's
+    /// low bits) and by [`Self::bit_depth_config_error`] (which must not let a
+    /// u8-input 10-bit encode emit 8-bit-quantized levels under a 10-bit
+    /// sequence header).
+    fn bd10_levels_native(&self, chroma_420: bool) -> bool {
         if self.bit_depth != 10 {
             return false;
         }
@@ -729,19 +747,80 @@ impl EncodePipeline {
         if w % 64 != 0 || h % 64 != 0 {
             return false;
         }
+        // Monochrome builds no funnel (`use_funnel` requires 4:2:0). The
+        // post-pass cannot stand in for it below preset 9 either: it hardcodes
+        // the RDOQ txb_skip/dc_sign contexts to 0/0, which is correct only
+        // where `real_coeff_ctx` is off — i.e. only in the eff-M9 band. So
+        // mono bd10 is faithful at preset >= 9 and nowhere else.
         let preset = self.speed_config.preset;
-        if chroma_420 {
-            // preset >= 9: the MDS0 luma funnel (`bd10_luma_funnel`) + the
-            // luma/chroma level post-pass. preset <= 8: the full-RD funnel
-            // (luma AND chroma, `bd10_full_rd_supported` — which also
-            // requires palette off, i.e. non-screen content).
-            preset >= 9 || bd10_full_rd_supported(self.bit_depth, preset, w, h)
-        } else {
-            // Monochrome builds no funnel (`use_funnel` requires 4:2:0), so
-            // only the level re-encode post-pass can consume the source — and
-            // it runs exactly where the full-RD funnel does not.
-            preset >= 9
+        if !chroma_420 {
+            return preset >= 9;
         }
+        preset >= 9 || bd10_full_rd_supported(self.bit_depth, preset, chroma_420, w, h)
+    }
+
+    /// Bit-depth configurations this encoder cannot encode faithfully, refused
+    /// at the [`Self::encode_frame_impl`] choke point rather than emitted.
+    ///
+    /// Two distinct failure shapes:
+    ///
+    /// 1. **Any depth other than 8 or 10.** C v4.2.0 rejects those itself
+    ///    (`svt_av1_verify_settings`, `Globals/enc_settings.c:460`), and this
+    ///    port has no 12-bit path at all: `deblock::pick_filter_levels_key_frame`
+    ///    hits `unreachable!()` at preset >= 6, and below that the sequence
+    ///    header would advertise `seq_profile = 2` without the spec-5.5.2
+    ///    subsampling bits that profile requires — an unparseable SH.
+    ///
+    /// 2. **`bit_depth == 10` with no bd10 producer** (see
+    ///    [`Self::bd10_levels_native`]). Outside that envelope the entire
+    ///    encode runs in the 8-bit domain — `quant::build_quant_table` takes no
+    ///    bit-depth parameter, so the levels are Q8 — while the sequence header
+    ///    signals `high_bitdepth = 1`. The decoder then dequantizes with the Q10
+    ///    tables and reconstructs a picture the encoder never saw; because Q10
+    ///    is only *approximately* 4x Q8, the error compounds through intra
+    ///    prediction across the frame. On top of that the deblock levels
+    ///    (preset >= 6) and CDEF strengths (preset >= 7) are signalled from the
+    ///    bd10 closed forms while being applied by the encoder with the u8
+    ///    kernels — three independent scale errors in one stream.
+    ///
+    ///    That output is decodable and looks like a successful encode at the
+    ///    integration seam, which is exactly the class `rust/CLAUDE.md`
+    ///    ("Refuse out-of-envelope configs; never emit a plausible-but-wrong
+    ///    stream") forbids. Reachable today from `AvifEncoder::with_bit_depth(10)`
+    ///    at every speed whose preset is <= 8, including the DEFAULT speed.
+    fn bit_depth_config_error(&self, chroma_420: bool) -> Option<&'static str> {
+        match self.bit_depth {
+            8 => return None,
+            10 => {}
+            _ => {
+                return Some(
+                    "bit depth must be 8 or 10 — C v4.2.0 rejects every other depth at encoder \
+                     init (svt_av1_verify_settings, Globals/enc_settings.c:460) and this port has \
+                     no 12-bit kernels",
+                );
+            }
+        }
+        if self.bd10_levels_native(chroma_420) {
+            return None;
+        }
+        if !chroma_420 && self.speed_config.preset < 9 {
+            return Some(
+                "10-bit monochrome needs preset >= 9: below that neither bd10 producer runs (the \
+                 full-RD funnel requires 4:2:0, and the level-only post-pass would miscode with \
+                 its 0/0 RDOQ contexts), so the encode would be 8-bit-quantized under a 10-bit \
+                 sequence header",
+            );
+        }
+        if self.width % 64 != 0 || self.height % 64 != 0 {
+            return Some(
+                "10-bit requires 64-aligned encode dimensions: no bd10 producer is partial-SB \
+                 aware, so the encode would be 8-bit-quantized under a 10-bit sequence header",
+            );
+        }
+        Some(
+            "this 10-bit configuration has no bd10 stage to produce the coded levels; the encode \
+             would be 8-bit-quantized under a 10-bit sequence header",
+        )
     }
 
     /// Superres chunk B.3: horizontally downscale the caller's FULL-width
@@ -1020,6 +1099,15 @@ impl EncodePipeline {
         // `superres_config_error`). Checked at the single choke point every
         // entry point funnels through, so no path can slip past it.
         if let Some(why) = self.superres_config_error() {
+            return Err(whereat::at!(EncodeError::UnsupportedConfig(why)));
+        }
+        // Same choke point, same rule, for the bit-depth axis: a 10-bit request
+        // that no bd10 stage can serve would emit 8-bit-quantized levels under a
+        // 10-bit sequence header. See `bit_depth_config_error`. This covers the
+        // u8 entry points too — the `hbd_source_consumed` screen on the `*_hbd`
+        // entries only fires when the caller passed a native u16 source, so
+        // `with_bit_depth(10)` + `encode_frame_420` used to slip past every guard.
+        if let Some(why) = self.bit_depth_config_error(chroma.is_some()) {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(why)));
         }
         // TUNE overrides (C `svt_av1_enc_set_parameter`, enc_handle.c:4889).
@@ -1956,8 +2044,13 @@ impl EncodePipeline {
             // is why removing it wholesale regressed that band (the A/B noted
             // in docs/bd10-port-map.md) while removing it *conditionally* does
             // not.
-            let bd10_full_rd =
-                bd10_full_rd_supported(self.bit_depth, self.speed_config.preset, w, h);
+            let bd10_full_rd = bd10_full_rd_supported(
+                self.bit_depth,
+                self.speed_config.preset,
+                chroma.is_some(),
+                w,
+                h,
+            );
             let bd10_postpass_runs = !bd10_full_rd
                 && bd10_frame_aligned
                 && all_trees
@@ -6197,11 +6290,22 @@ fn dump_tree_leaves(tree: &crate::partition::PartitionTree, x: usize, y: usize) 
 /// not a config one: under the bd10 full-RD the CfL candidate is not offered,
 /// which leaves a CfL block as a VISIBLE mode divergence rather than a
 /// mixed-domain compare. See the comment at the `cfl_gate` site.
-fn bd10_full_rd_supported(bit_depth: u8, preset: u8, w: usize, h: usize) -> bool {
-    if bit_depth != 10 || preset > 8 || w % 64 != 0 || h % 64 != 0 {
-        return false;
-    }
-    crate::leaf_funnel::FunnelCfg::for_preset(preset).palette_level == 0
+fn bd10_full_rd_supported(bit_depth: u8, preset: u8, chroma_420: bool, w: usize, h: usize) -> bool {
+    // `chroma_420` is load-bearing, not decoration: the funnel this gate
+    // enables is only ever constructed when `use_funnel` holds, and that
+    // requires 4:2:0. Without this term the gate returned TRUE for a
+    // monochrome bd10 frame at preset <= 8 — which then suppressed the level
+    // post-pass (`bd10_postpass_runs = !bd10_full_rd`) while the funnel it
+    // claimed to be deferring to never ran, leaving the whole encode in the
+    // 8-bit domain under a 10-bit sequence header.
+    //
+    // The former `FunnelCfg::for_preset(preset).palette_level == 0` term is
+    // gone: `for_preset` returns the constant 0 (leaf_funnel.rs), the real
+    // per-frame level being stamped later from `sc_detect`, so the clause was
+    // a compile-time tautology that read like a screen-content precondition.
+    // Palette at bd10 is now handled inside the funnel (see
+    // `search_palette_luma_hbd`), so no such precondition is needed.
+    bit_depth == 10 && preset <= 8 && chroma_420 && w % 64 == 0 && h % 64 == 0
 }
 
 fn encode_tile_rows(
@@ -6580,7 +6684,8 @@ fn encode_tile_rows(
         //   - mainline tools only: ac-bias / noise-norm are fork features whose
         //     u16 psy kernels are unported (tx_unit_hbd applies neither).
         // Everything outside that envelope keeps the existing behaviour.
-        let bd10_full_rd = bd10_full_rd_supported(bit_depth, speed_config.preset, w, h);
+        let bd10_full_rd =
+            bd10_full_rd_supported(bit_depth, speed_config.preset, chroma_420, w, h);
         let bd10_luma_funnel =
             bd10_complete_sb && (speed_config.preset >= 9 || bd10_full_rd);
         // Task #6 chunk 1: hand the funnel the REAL 10-bit source when the

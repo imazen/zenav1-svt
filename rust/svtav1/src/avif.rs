@@ -381,7 +381,17 @@ impl AvifEncoder {
         pipeline.bit_depth = self.bit_depth;
         pipeline.color_description = self.color_description();
 
-        let bitstream = pipeline.encode_frame(&src, padded_w);
+        // Fallible entry point, NOT the infallible `encode_frame` wrapper: the
+        // latter `.expect()`s on every refusal the pipeline can raise
+        // (unsupported bit depth, qp 0, an out-of-envelope superres/bd10
+        // config), turning a caller mistake into a process abort inside a
+        // Result-returning API. Routing through `try_encode_frame` is also what
+        // finally gives `EncodeError::EncodeFailed` a constructor — it was dead
+        // in the whole workspace, so `AvifEncoder` could not report ANY runtime
+        // encode failure.
+        let bitstream = pipeline
+            .try_encode_frame(&src, padded_w)
+            .map_err(|e| Self::from_pipeline_error(e.error(), || e.to_string()))?;
 
         Ok(EncodedAvif {
             data: bitstream,
@@ -490,6 +500,32 @@ impl AvifEncoder {
         Ok(())
     }
 
+    /// Map a pipeline error onto this crate's error enum, PRESERVING the
+    /// category.
+    ///
+    /// The category is not cosmetic: the zenavif seam maps these onto
+    /// `zencodec::ErrorCategory`, where an unsupported *request* and an
+    /// internal *failure* mean different things to a caller (retry with other
+    /// parameters vs. report a bug). Flattening everything to `EncodeFailed`
+    /// would tell the seam every refusal was an internal fault.
+    /// Takes the error KIND plus its already-rendered display string, rather
+    /// than the `whereat::At<_>` wrapper, so this crate needs no `whereat`
+    /// dependency just to name a parameter type.
+    fn from_pipeline_error(
+        kind: &svtav1_encoder::EncodeError,
+        rendered: impl FnOnce() -> String,
+    ) -> EncodeError {
+        match kind {
+            svtav1_encoder::EncodeError::UnsupportedConfig(what) => {
+                EncodeError::UnsupportedConfig(what)
+            }
+            svtav1_encoder::EncodeError::InvalidDimensions { .. } => EncodeError::InvalidDimensions,
+            // Cancellation and allocation failure carry runtime detail worth
+            // surfacing verbatim; `#[non_exhaustive]` keeps this wildcard.
+            _ => EncodeError::EncodeFailed(rendered()),
+        }
+    }
+
     /// Validate quality range.
     fn validate_quality(&self) -> Result<(), EncodeError> {
         if !(1.0..=100.0).contains(&self.quality) {
@@ -519,6 +555,32 @@ impl AvifEncoder {
         if self.chroma_subsampling != ChromaSubsampling::Yuv420 {
             return Err(EncodeError::UnsupportedConfig(
                 "only 4:2:0 chroma is implemented (and C v4.2.0 ships 420 only)",
+            ));
+        }
+        // `with_bit_depth` accepts a u8 and was whitelisting 12, which the
+        // pipeline cannot encode: `deblock::pick_filter_levels_key_frame` hits
+        // `unreachable!()` at preset >= 6 (speeds 5-10, including the DEFAULT
+        // speed 6) and below that the sequence header would advertise
+        // seq_profile 2 without the subsampling bits that profile requires. C
+        // v4.2.0 rejects any depth but 8/10 at init as well
+        // (`svt_av1_verify_settings`, Globals/enc_settings.c:460).
+        if !matches!(self.bit_depth, 8 | 10) {
+            return Err(EncodeError::UnsupportedConfig(
+                "bit depth must be 8 or 10 (C v4.2.0 rejects every other depth at encoder init)",
+            ));
+        }
+        // Quality > ~99.21 maps to QP 0, which is LOSSLESS in AV1 — the WHT
+        // transform path, the forced-off loop filters and the frame-header
+        // omissions are all unported, so the pipeline refuses qp 0. It used to
+        // refuse it from inside the INFALLIBLE `EncodePipeline::encode_frame`,
+        // whose `.expect()` then aborted the caller's process: the most obvious
+        // "maximum quality" input panicked through a Result-returning API.
+        // Reject it here, as a typed error, at the same place the other
+        // unsupported knobs are caught.
+        if Self::quality_to_qp(self.quality) == 0 {
+            return Err(EncodeError::UnsupportedConfig(
+                "quality > 99.2 maps to QP 0, which is lossless AV1 (WHT transform + lossless \
+                 header signalling); lossless encoding is not implemented — use a lower quality",
             ));
         }
         Ok(())
@@ -756,6 +818,91 @@ mod tests {
         assert!(
             high_result.data.len() >= low_result.data.len() || !low_result.data.is_empty(),
             "Both encodings should produce non-empty output"
+        );
+    }
+
+    /// `quality_to_qp` maps everything above ~99.21 to QP 0, which is LOSSLESS
+    /// AV1 — a mode this port does not implement. The refusal used to live
+    /// inside the INFALLIBLE `EncodePipeline::encode_frame`, whose `.expect()`
+    /// aborted the process, so the most obvious "maximum quality" call panicked
+    /// out of a `Result`-returning API. Anti-vacuity: this test PANICS (not
+    /// fails) without the `validate_inert_knobs` q0 arm.
+    #[test]
+    fn max_quality_is_a_typed_error_not_a_panic() {
+        let pixels = vec![100u8; 16 * 16];
+        for q in [100.0f32, 99.9, 99.5] {
+            assert_eq!(AvifEncoder::quality_to_qp_static(q), 0, "q{q} must map to qp 0");
+            let err = AvifEncoder::new()
+                .with_quality(q)
+                .encode_y8(&pixels, 16, 16, 16)
+                .expect_err("qp 0 (lossless) must be refused, not encoded");
+            assert!(
+                matches!(err, EncodeError::UnsupportedConfig(_)),
+                "expected UnsupportedConfig, got {err:?}"
+            );
+        }
+        // The first quality that still maps off qp 0 must keep working.
+        assert!(AvifEncoder::quality_to_qp_static(99.0) > 0);
+        assert!(
+            AvifEncoder::new()
+                .with_quality(99.0)
+                .encode_y8(&pixels, 16, 16, 16)
+                .is_ok()
+        );
+    }
+
+    /// `with_bit_depth` whitelisted 12, which no code path can encode:
+    /// `deblock::pick_filter_levels_key_frame` hits `unreachable!()` at
+    /// preset >= 6 — i.e. speeds 5-10, including the DEFAULT speed 6 — and
+    /// below that the sequence header would advertise seq_profile 2 without
+    /// the subsampling bits that profile requires. C v4.2.0 rejects any depth
+    /// but 8/10 at init (`svt_av1_verify_settings`, enc_settings.c:460).
+    /// Anti-vacuity: this test PANICS without the `validate_inert_knobs` arm.
+    #[test]
+    fn bit_depth_12_is_a_typed_error_not_a_panic() {
+        let pixels = vec![100u8; 16 * 16];
+        let err = AvifEncoder::new()
+            .with_bit_depth(12)
+            .encode_y8(&pixels, 16, 16, 16)
+            .expect_err("12-bit must be refused (C rejects it at init too)");
+        assert!(
+            matches!(err, EncodeError::UnsupportedConfig(_)),
+            "expected UnsupportedConfig, got {err:?}"
+        );
+    }
+
+    /// 10-bit through the u8 entry points only produces TRUE 10-bit coded
+    /// levels inside a narrow envelope (4:2:0 + 64-aligned + a bd10 producer
+    /// for that preset). `AvifEncoder` is monochrome and pads to 64, so no
+    /// bd10 producer exists below preset 9: the whole encode ran with the Q8
+    /// tables while the sequence header advertised `high_bitdepth = 1`, and
+    /// the decoder dequantized it with Q10. That stream is decodable and
+    /// indistinguishable from success at the seam — the exact
+    /// "plausible-but-wrong bitstream" class the project bans. Anti-vacuity:
+    /// without `bit_depth_config_error` this returns `Ok` with corrupt bytes.
+    #[test]
+    fn bit_depth_10_refuses_where_no_bd10_stage_runs() {
+        let pixels = vec![100u8; 64 * 64];
+        // Speeds 1-6 map to presets 0,1,3,4,6,7 — all below 9, all broken.
+        for speed in [1u8, 2, 3, 4, 5, 6] {
+            let err = AvifEncoder::new()
+                .with_bit_depth(10)
+                .with_speed(speed)
+                .encode_y8(&pixels, 64, 64, 64)
+                .expect_err("10-bit mono below preset 9 has no bd10 producer");
+            assert!(
+                matches!(err, EncodeError::UnsupportedConfig(_)),
+                "speed {speed}: expected UnsupportedConfig, got {err:?}"
+            );
+        }
+        // Speeds 7-10 all clamp to preset 9, where the level post-pass runs.
+        assert!(
+            AvifEncoder::new()
+                .with_bit_depth(10)
+                .with_speed(10)
+                .encode_y8(&pixels, 64, 64, 64)
+                .is_ok(),
+            "preset 9 has a real bd10 producer and must still encode"
         );
     }
 }

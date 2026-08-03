@@ -10,6 +10,14 @@ Cargo.lock
 # TRACKED wrapper script that forces a freshness check before exec'ing this, so
 # a stale driver can never be run. Do not re-ignore the wrapper.
 tools/capture_c_trace/capture_c_trace.bin
+tools/capture_c_trace/capture_c_trace.hdr.bin
+# Byte-only driver built on hosts whose linker lacks `-Wl,--wrap` (Apple ld64),
+# plus the sidecar in which build.sh publishes which of these it just built.
+tools/capture_c_trace/capture_c_trace.nowrap.bin
+tools/capture_c_trace/capture_c_trace.hdr.nowrap.bin
+tools/capture_c_trace/.selected.*
+# macOS debug bundles emitted alongside the driver by `cc -g`.
+tools/capture_c_trace/*.dSYM/
 
 # perf gate: locally built C encode-timing driver (tools/perf_c_encode/build.sh
 # rebuilds it with a staleness guard, same contract as capture_c_trace). Only

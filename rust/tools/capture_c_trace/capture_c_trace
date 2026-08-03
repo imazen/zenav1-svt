@@ -41,8 +41,16 @@ if ! "$HERE/build.sh" >"$_bl" 2>&1; then
 fi
 rm -f "$_bl"
 
-# Exec the binary for the SELECTED oracle. build.sh derives the same path from
-# SVT_HDR_MODE; keep the two in sync (mainline -> .bin, fork -> .hdr.bin).
+# Exec the binary build.sh just resolved. It publishes the path (per
+# SVT_HDR_MODE) in `.selected.<mode>` rather than having this wrapper re-derive
+# it, because the name now depends on a LINKER CAPABILITY probe too: on a host
+# whose ld lacks `-Wl,--wrap` (Apple ld64) build.sh produces a byte-only
+# `.nowrap.bin`. Re-deriving that here would mean two copies of the same rule.
+_sel="$HERE/.selected.${SVT_HDR_MODE:-0}"
+if [[ -f "$_sel" ]]; then
+    exec "$(cat "$_sel")" "$@"
+fi
+# Fallback for a tree where build.sh predates the sidecar.
 if [[ "${SVT_HDR_MODE:-0}" == "1" ]]; then
     exec "$HERE/capture_c_trace.hdr.bin" "$@"
 fi

@@ -48,7 +48,26 @@ mkdir -p "$OUTDIR"
 # comparison of two different configurations dressed up as a divergence. That
 # made this differ unusable for the whole bd10 track, which is why bd10
 # root-causing has been done with ad-hoc scripts instead.
-SVT_TRACE_OUT="$OUTDIR/c.trace" "$HERE/capture_c_trace/capture_c_trace" \
+#
+# On a host whose linker lacks `-Wl,--wrap` (Apple ld64) build.sh produces a
+# BYTE-ONLY driver that cannot emit the op trace, and refuses a real
+# SVT_TRACE_OUT rather than writing an empty one a differ would misread. Detect
+# that from the path build.sh published and drop to a byte + header-field
+# comparison. The BYTE verdict — the thing this harness exists to produce, and
+# the thing every gate's exit code reads — is unaffected; only the
+# first-diverging-SYMBOL localization is unavailable, and the report says so
+# rather than implying the traces were checked and agreed.
+C_TRACE_ARGS=()
+c_trace_env="$OUTDIR/c.trace"
+if [[ "$(cat "$HERE/capture_c_trace/.selected.${SVT_HDR_MODE:-0}" 2>/dev/null)" == *.nowrap.bin ]]; then
+    c_trace_env=/dev/null
+    : >"$OUTDIR/c.trace"
+    echo "NOTE: byte-only C driver (this linker has no --wrap) — op-trace localization is" \
+        "unavailable; the byte verdict below is unaffected." >"$OUTDIR/no-trace.txt"
+else
+    C_TRACE_ARGS=(--c-trace "$OUTDIR/c.trace" --rust-trace "$OUTDIR/rs.trace")
+fi
+SVT_TRACE_OUT="$c_trace_env" "$HERE/capture_c_trace/capture_c_trace" \
     "$W" "$H" "$QP" "$PRESET" "$OUTDIR/rs.yuv" "$OUTDIR/c.obu" \
     "${SVTAV1_BD:-8}" 2>"$OUTDIR/c.stderr"
 
@@ -59,7 +78,7 @@ verbose_flag=()
 [[ -n "${IDENTITY_VERBOSE:-}" ]] && verbose_flag=(--verbose)
 python3 "$HERE/identity_diff.py" \
     --c-obu "$OUTDIR/c.obu" --rust-obu "$OUTDIR/rs.obu" \
-    --c-trace "$OUTDIR/c.trace" --rust-trace "$OUTDIR/rs.trace" \
+    "${C_TRACE_ARGS[@]}" \
     "${verbose_flag[@]}" \
     | tee "$OUTDIR/report.txt"
 rc=${PIPESTATUS[0]}
