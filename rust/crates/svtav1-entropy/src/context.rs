@@ -1068,7 +1068,13 @@ fn write_delta_encoded_colors(w: &mut AomWriter, colors: &[u16], bit_depth: u32,
 // palette leaf now takes (#71 injection landed) — exercised on the EPICA
 // screen-content cell, which does not byte-match C yet (over-picking, #71), so
 // exercised-but-not-yet-byte-verified.
-fn write_palette_colors_y(w: &mut AomWriter, n: usize, cache_found: &[bool], out_of_cache: &[u16]) {
+fn write_palette_colors_y(
+    w: &mut AomWriter,
+    n: usize,
+    cache_found: &[bool],
+    out_of_cache: &[u16],
+    bit_depth: u32,
+) {
     let mut n_in_cache = 0usize;
     for &found in cache_found {
         if n_in_cache >= n {
@@ -1078,7 +1084,7 @@ fn write_palette_colors_y(w: &mut AomWriter, n: usize, cache_found: &[bool], out
         n_in_cache += usize::from(found);
     }
     debug_assert_eq!(n_in_cache + out_of_cache.len(), n);
-    write_delta_encoded_colors(w, out_of_cache, 8, 1);
+    write_delta_encoded_colors(w, out_of_cache, bit_depth, 1);
 }
 
 /// Code the palette mode-info syntax for an intra block (C
@@ -1123,6 +1129,12 @@ pub fn write_palette_mode_info(
     is_chroma_ref: bool,
     neighbor_ctx: usize,
     palette: Option<(&[u16], &[bool], &[u16])>,
+    // C passes `ppcs->scs->static_config.encoder_bit_depth` here
+    // (entropy_coding.c:4369) — the palette colours are literals whose WIDTH is
+    // the encoder's bit depth, so a hardcoded 8 desyncs the arithmetic decoder
+    // on the first 10-bit palette block. Threaded rather than defaulted so a
+    // caller cannot forget it.
+    bit_depth: u32,
 ) {
     let bctx = palette_bsize_ctx(width, height);
     let mut y_used = false;
@@ -1134,7 +1146,7 @@ pub fn write_palette_mode_info(
             let n = colors.len();
             debug_assert!((PALETTE_MIN_SIZE..=svtav1_types::prediction::PALETTE_MAX_SIZE).contains(&n));
             w.write_symbol(n - PALETTE_MIN_SIZE, &mut fc.palette_y_size_cdf[bctx], PALETTE_SIZES);
-            write_palette_colors_y(w, n, cache_found, out_of_cache);
+            write_palette_colors_y(w, n, cache_found, out_of_cache, bit_depth);
         }
     }
     if uv_mode == 0 && is_chroma_ref {
@@ -1784,7 +1796,7 @@ mod tests {
     fn write_palette_mode_info_some_vs_none_arm() {
         let mut fc = FrameContext::new_default();
         let mut w = AomWriter::new(256);
-        write_palette_mode_info(&mut w, &mut fc, 8, 8, 0, 0, true, 0, None);
+        write_palette_mode_info(&mut w, &mut fc, 8, 8, 0, 0, true, 0, None, 8);
         let none_bytes = w.done().to_vec();
 
         let mut fc2 = FrameContext::new_default();
@@ -1802,6 +1814,7 @@ mod tests {
             true,
             0,
             Some((&colors, &cache_found, &out_of_cache)),
+            8,
         );
         // Map: 2x2, 2 colors, anti-diagonal pixels (1,0) and (0,1) each
         // code one context'd symbol on top of the (0,0) write_uniform.

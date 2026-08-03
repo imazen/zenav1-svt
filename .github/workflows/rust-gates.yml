@@ -99,6 +99,17 @@ jobs:
         run: |
           ./tools/bd10_hbd_src_gate.sh
 
+      - name: screen-content palette identity (bd8 AND bd10)
+        working-directory: rust
+        # The ONLY gate that reaches the palette path: every other synthetic
+        # content is photographic, so the screen-content detector never arms and
+        # palette stays unexercised. That blind spot let palette be gated out of
+        # the bd10 funnel entirely -- the port coded zero palette blocks at 10
+        # bits and emitted streams 2.0-2.5x larger than C. Self-asserts
+        # anti-vacuity: a cell that codes no palette leaf FAILS.
+        run: |
+          ./tools/screen_palette_bd_gate.sh
+
       - name: superres identity + conformance (chunk B.3)
         working-directory: rust
         # Byte-parity vs C at SUPERRES_FIXED + decodability at the UPSCALED

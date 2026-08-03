@@ -48,6 +48,39 @@ pub fn count_colors(src: &[u8], stride: usize, rows: usize, cols: usize, val_cou
     val_count.iter().filter(|&&n| n != 0).count() as u16
 }
 
+/// C `svt_av1_count_colors_highbd` (pic_analysis_process.c:869-891): the
+/// 10/12-bit twin of [`count_colors`]. Histograms the `rows`x`cols` window
+/// into `1 << bit_depth` bins and returns the number of occupied ones.
+///
+/// C returns 0 early on an out-of-range sample (after an `assert`), and this
+/// reproduces that rather than clamping or panicking: a caller that
+/// over-widened its source gets "no palette" — the same conservative outcome C
+/// reaches — instead of a palette built from a wrapped index.
+pub fn count_colors_highbd(
+    src: &[u16],
+    stride: usize,
+    rows: usize,
+    cols: usize,
+    bit_depth: u32,
+    val_count: &mut [i32],
+) -> u16 {
+    debug_assert!(bit_depth <= 12);
+    let max_pix_val = 1usize << bit_depth;
+    debug_assert!(val_count.len() >= max_pix_val);
+    debug_assert!(src.len() >= (rows - 1) * stride + cols);
+    val_count[..max_pix_val].fill(0);
+    for r in 0..rows {
+        for c in 0..cols {
+            let this_val = src[r * stride + c] as usize;
+            if this_val >= max_pix_val {
+                return 0;
+            }
+            val_count[this_val] += 1;
+        }
+    }
+    val_count[..max_pix_val].iter().filter(|&&n| n != 0).count() as u16
+}
+
 /// C `svt_av1_index_color_cache` (palette.c:111-141): splits `colors` into
 /// those already present in the above/left `cache` (flagged in `found`,
 /// one bool per cache entry) and those that are not (packed into the front
@@ -697,18 +730,21 @@ fn palette_rd_y(
     cols: usize,
     block_w: usize,
     block_h: usize,
+    bit_depth: u32,
 ) -> Option<PaletteCand> {
     if opt_colors {
-        optimize_palette_colors(color_cache, color_cache.len(), centroids, n, qp_index, 8);
+        optimize_palette_colors(color_cache, color_cache.len(), centroids, n, qp_index, bit_depth);
     }
     let k = remove_duplicates(centroids, n);
     if k < PALETTE_MIN_SIZE {
         return None;
     }
-    // bd8: clip_pixel (0..=255).
+    // C picks the clip by depth: `clip_pixel` (0..=255) at 8 bits,
+    // `clip_pixel_highbd(v, bd)` (0..=(1<<bd)-1) above (palette.c:310-318).
+    let max_val = (1i32 << bit_depth) - 1;
     let colors: alloc::vec::Vec<u16> = centroids[..k]
         .iter()
-        .map(|&c| c.clamp(0, 255) as u16)
+        .map(|&c| c.clamp(0, max_val) as u16)
         .collect();
     let mut idx_map = alloc::vec![0u8; block_w * block_h];
     calc_indices_dim1(data, &centroids[..k], &mut idx_map, rows * cols, k);
@@ -748,13 +784,102 @@ pub fn search_palette_luma(
     cache: &[u16],
     qp_index: u8,
 ) -> alloc::vec::Vec<PaletteCand> {
-    let mut out = alloc::vec::Vec::new();
     if !ctrls.enabled {
-        return out;
+        return alloc::vec::Vec::new();
     }
     let mut count_buf = [0i32; 256];
     let origin = abs_y * stride + abs_x;
     let colors = count_colors(&src[origin..], stride, rows, cols, &mut count_buf) as usize;
+    search_palette_core(
+        |r, c| i32::from(src[origin + r * stride + c]),
+        &mut count_buf,
+        colors,
+        rows,
+        cols,
+        block_w,
+        block_h,
+        ctrls,
+        cache,
+        qp_index,
+        8,
+    )
+}
+
+/// The 10-bit twin of [`search_palette_luma`] — C's SAME `search_palette_luma`
+/// with `is16bit = 1` (palette.c:391-399, :409, :425-439).
+///
+/// C does not have two palette searches; it has one, reading
+/// `pcs->input_frame16bit` instead of `enhanced_pic` and swapping
+/// `svt_av1_count_colors` for `svt_av1_count_colors_highbd`. Everything
+/// downstream — the dominant-color scan, the k-means seeding, the centroid
+/// snap threshold, the clip — is depth-parameterized, which is why this shares
+/// [`search_palette_core`] with the u8 entry point rather than duplicating it.
+///
+/// `src` is the block's 10-bit luma at `stride` (the caller's block-local copy,
+/// so the block origin is `(0, 0)`).
+///
+/// One C subtlety deliberately reproduced: C sets `palette_bit_depth =
+/// is16bit ? EB_TEN_BIT : EB_EIGHT_BIT` (:396) — a HARDCODED 10 — while
+/// passing the real `encoder_bit_depth` to `count_colors_highbd` (:406, :409).
+/// The two differ only at 12 bits, which neither C (`verify_settings`) nor this
+/// port accepts, so a single `bit_depth` parameter is faithful across the whole
+/// reachable envelope.
+#[allow(clippy::too_many_arguments)]
+pub fn search_palette_luma_hbd(
+    src: &[u16],
+    stride: usize,
+    rows: usize,
+    cols: usize,
+    block_w: usize,
+    block_h: usize,
+    ctrls: &PaletteCtrls,
+    cache: &[u16],
+    qp_index: u8,
+    bit_depth: u32,
+) -> alloc::vec::Vec<PaletteCand> {
+    if !ctrls.enabled {
+        return alloc::vec::Vec::new();
+    }
+    // C's `count_buf` is `int[1 << 12]` (palette.c:405) — sized for the widest
+    // depth, indexed to `1 << bit_depth`.
+    let mut count_buf = alloc::vec![0i32; 1usize << 12];
+    let colors = count_colors_highbd(src, stride, rows, cols, bit_depth, &mut count_buf) as usize;
+    search_palette_core(
+        |r, c| i32::from(src[r * stride + c]),
+        &mut count_buf,
+        colors,
+        rows,
+        cols,
+        block_w,
+        block_h,
+        ctrls,
+        cache,
+        qp_index,
+        bit_depth,
+    )
+}
+
+/// The depth-independent body of C `search_palette_luma` (palette.c:414-529).
+///
+/// `read(r, c)` returns the block sample at that position (the callers bind
+/// their own plane/stride/origin), and `count_buf` is the histogram the
+/// matching `count_colors*` just filled — the dominant-color scan CONSUMES it
+/// (zeroing each picked bin), exactly as C does.
+#[allow(clippy::too_many_arguments)]
+fn search_palette_core(
+    read: impl Fn(usize, usize) -> i32,
+    count_buf: &mut [i32],
+    colors: usize,
+    rows: usize,
+    cols: usize,
+    block_w: usize,
+    block_h: usize,
+    ctrls: &PaletteCtrls,
+    cache: &[u16],
+    qp_index: u8,
+    bit_depth: u32,
+) -> alloc::vec::Vec<PaletteCand> {
+    let mut out = alloc::vec::Vec::new();
     if colors <= 1 || colors > 64 {
         return out;
     }
@@ -765,11 +890,11 @@ pub fn search_palette_luma(
     // loop; the loop then min/maxes every pixel including [0] — plain
     // min/max over the block.
     let mut data = alloc::vec![0i32; rows * cols];
-    let mut lb = i32::from(src[origin]);
+    let mut lb = read(0, 0);
     let mut ub = lb;
     for r in 0..rows {
         for c in 0..cols {
-            let v = i32::from(src[origin + r * stride + c]);
+            let v = read(r, c);
             data[r * cols + c] = v;
             lb = lb.min(v);
             ub = ub.max(v);
@@ -782,10 +907,16 @@ pub fn search_palette_luma(
     // strict `>` ascending over j => on tied counts the LOWEST pixel value
     // wins; each round zeroes the picked bin. NOTE: consumes count_buf.
     if ctrls.dominant_color_step != 0xFF {
+        // C scans `j < (1 << palette_bit_depth)` (palette.c:447), not the whole
+        // scratch buffer — bound it the same way. (Bins at or above that index
+        // are always 0, so a wider scan happens to agree, but matching the
+        // literal bound keeps the tie semantics obvious and skips 3072 dead
+        // iterations per candidate at bd10.)
+        let bins = 1usize << bit_depth;
         let mut top_colors = [0i32; 8];
         for i in 0..max_n {
             let mut max_count = 0i32;
-            for (j, &cnt) in count_buf.iter().enumerate() {
+            for (j, &cnt) in count_buf[..bins].iter().enumerate() {
                 if cnt > max_count {
                     max_count = cnt;
                     top_colors[i] = j as i32;
@@ -798,7 +929,7 @@ pub fn search_palette_luma(
             centroids[..n as usize].copy_from_slice(&top_colors[..n as usize]);
             if let Some(cand) = palette_rd_y(
                 &data, &mut centroids[..n as usize], n as usize,
-                false, &[], qp_index, rows, cols, block_w, block_h,
+                false, &[], qp_index, rows, cols, block_w, block_h, bit_depth,
             ) {
                 out.push(cand);
             }
@@ -833,7 +964,7 @@ pub fn search_palette_luma(
             // centroid_refinement: 0 at every allintra level — not ported.
             if let Some(cand) = palette_rd_y(
                 &data, &mut centroids[..nn], nn,
-                true, cache, qp_index, rows, cols, block_w, block_h,
+                true, cache, qp_index, rows, cols, block_w, block_h, bit_depth,
             ) {
                 out.push(cand);
             }

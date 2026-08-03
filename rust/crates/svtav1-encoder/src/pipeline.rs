@@ -2382,6 +2382,7 @@ impl EncodePipeline {
                     h4,
                     seq_tools.enable_filter_intra,
                     sc_derivation.allow_screen_content_tools,
+                    self.bit_depth,
                 );
                 // IBC chunk 1: arm the per-block use_intrabc flag coding
                 // (C write_intrabc_info gate) from the same sc derivation
@@ -3558,6 +3559,17 @@ pub(crate) struct EntropyCtx {
     /// AND the funnel chain sim — both must code it or the intrabc CDF (and
     /// every later symbol's arithmetic state) desyncs from C.
     allow_intrabc: bool,
+    /// Encoder bit depth (8 or 10) — C
+    /// `ppcs->scs->static_config.encoder_bit_depth`.
+    ///
+    /// The pack walk needs it for the palette COLOUR literals, whose width IS
+    /// the encoder bit depth (`write_palette_colors_y`,
+    /// entropy_coding.c:4369 -> :4256-4288). It was hardcoded to 8, which
+    /// desyncs the arithmetic decoder on the first 10-bit palette block.
+    /// Passed to [`EntropyCtx::new`] rather than stamped afterwards like
+    /// `allow_intrabc`: a forgotten stamp here is a silent bitstream
+    /// corruption, and the compiler can enforce a parameter.
+    bit_depth: u8,
     /// [SVT_HDR_MODE] per-SB delta-q emission state (C write_modes_b,
     /// entropy_coding.c:4997): `Some((delta_q_res, prev_qindex))` when the
     /// FH signaled delta_q_present. The walk arms `delta_q_pending` with
@@ -3695,6 +3707,7 @@ impl EntropyCtx {
         height_4x4: usize,
         seq_filter_intra: bool,
         allow_sct: bool,
+        bit_depth: u8,
     ) -> Self {
         let width_8x8 = (width_4x4 + 1) / 2;
         let height_8x8 = (height_4x4 + 1) / 2;
@@ -3744,6 +3757,7 @@ impl EntropyCtx {
             ],
             seq_filter_intra,
             allow_sct,
+            bit_depth,
             allow_intrabc: false,
             delta_q_state: None,
             delta_q_sb_qindex: 0,
@@ -4757,6 +4771,7 @@ fn encode_block_syntax(
             chroma_blocks.is_some(),
             neighbor_ctx,
             palette_arg,
+            u32::from(ectx.bit_depth),
         );
     }
 
@@ -5638,7 +5653,24 @@ fn bd10_tree_supported(tree: &crate::partition::PartitionTree, edge_filter: bool
             let uv_directional = matches!(d.uv_mode, 3..=8)
                 || (matches!(d.uv_mode, 1 | 2) && d.uv_angle_delta != 0);
             let uv_ok = !uv_directional || !edge_filter;
-            d.tx_depth == 0 && (!directional || !edge_filter) && uv_ok
+            // A palette or IntraBC leaf is NOT re-encodable by this post-pass:
+            // `bd10_reencode_node` predicts every leaf with
+            // `predict_unit_hbd(d.intra_mode, d.angle_delta, d.filter_intra)`
+            // and never consults `d.palette` / `d.ibc`, so it would code
+            // DC-based levels under palette syntax — a decoder desync, not a
+            // quality loss.
+            //
+            // This is unreachable today (the post-pass runs only at preset >= 9,
+            // where `sc_detect` yields palette_level = 0 and intrabc_level = 0
+            // unconditionally), and it was unreachable BEFORE for a second
+            // reason too: palette was gated out of the bd10 funnel entirely.
+            // That second reason is now gone — palette is ported at bd10 — so
+            // the invariant rests on the sc_detect preset table alone. Enforce
+            // it structurally instead: a leaf the post-pass cannot code drops
+            // the frame back to the u8 output, which is the same
+            // fall-back-don't-miscode contract every other clause here has.
+            let paletted = d.palette.is_some() || d.use_intrabc;
+            d.tx_depth == 0 && (!directional || !edge_filter) && uv_ok && !paletted
         }
         crate::partition::PartitionTree::Split { children, .. } => {
             children.iter().all(|c| bd10_tree_supported(c, edge_filter))
@@ -6479,7 +6511,7 @@ fn encode_tile_rows(
         let mut fun_u_recon = svtav1_types::try_vec![128u8; if use_funnel { ext_cbuf } else { 0 }]?;
         let mut fun_v_recon = svtav1_types::try_vec![128u8; if use_funnel { ext_cbuf } else { 0 }]?;
         let mut fun_ectx = if use_funnel {
-            let mut e = EntropyCtx::new(w / 4, h / 4, true, tile_sc.allow_screen_content_tools);
+            let mut e = EntropyCtx::new(w / 4, h / 4, true, tile_sc.allow_screen_content_tools, bit_depth);
             // Task #86: consistent with the other EntropyCtx instances
             // this tile constructs — see the real pack walk's identical
             // assignment for the rationale (leaf_funnel.rs itself is a
@@ -6636,7 +6668,7 @@ fn encode_tile_rows(
             // The chain simulation re-codes each SB's symbols to evolve the
             // per-SB frame contexts — it must code the same no-palette
             // flags as the real pack or the palette CDF rows drift.
-            let mut e = EntropyCtx::new(w / 4, h / 4, true, tile_sc.allow_screen_content_tools);
+            let mut e = EntropyCtx::new(w / 4, h / 4, true, tile_sc.allow_screen_content_tools, bit_depth);
             // IBC chunk 1: same use_intrabc flag coding as the real pack —
             // the chain's intrabc_cdf must evolve identically (the C
             // MD-side twin, update_stats md_rate_estimation.c:854-855).
@@ -8023,7 +8055,7 @@ mod tests {
     /// the 64 level and returned 10 symbols against the 64x64 CDF row.
     #[test]
     fn partition_ctx_alphabet_matches_c_rule_at_every_square_size() {
-        let ectx = EntropyCtx::new(64, 64, true, false);
+        let ectx = EntropyCtx::new(64, 64, true, false, 8);
         for sq in [8usize, 16, 32, 64, 128] {
             let (ctx, nsymbs) = ectx.partition_ctx(0, 0, sq);
             assert_eq!(

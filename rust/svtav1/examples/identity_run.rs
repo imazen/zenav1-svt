@@ -262,8 +262,38 @@ fn main() {
                     // (D45/D135/…) that `gradient` never selects. Used to verify
                     // the bd10 directional re-encode (dr_predict_hbd).
                     "diag" => (((r as i32 - c as i32).rem_euclid(64)) * 4) as u8,
+                    // SCREEN content: few distinct luma values, hard edges, no
+                    // gradient — the shape `svt_aom_is_screen_content_
+                    // antialiasing_aware` (pic_analysis_process.c:1207)
+                    // classifies as palette blocks, so `sc_class5` fires and the
+                    // whole screen-content vertical (palette level, intrabc
+                    // level, allow_screen_content_tools) turns ON in BOTH
+                    // encoders.
+                    //
+                    // This exists because every other synthetic content here is
+                    // photographic in character, so no gate cell could ever
+                    // exercise palette — which is how a bd10 palette gap sat
+                    // unmeasured while the real-corpus sweep showed preset 6
+                    // bd10 at 380/515 with every failure on screen content.
+                    // A gate that cannot reach the feature cannot guard it.
+                    //
+                    // Layout: a 4-value background grid (window-like panels)
+                    // overlaid with 2-value horizontal runs (text-like), giving
+                    // 8x8 blocks of 2..6 distinct values — inside palette's
+                    // `colors <= 64` bound and well inside PALETTE_MAX_SIZE
+                    // after k-means.
+                    "screen" => {
+                        let panel = ((r / 24) & 1) as u8 * 2 + ((c / 32) & 1) as u8;
+                        let bg = [35u8, 110, 180, 235][panel as usize];
+                        let text_row = (r % 24) >= 6 && (r % 24) < 12;
+                        let glyph = (c / 3 + r / 24) % 5 != 0;
+                        if text_row && glyph { 16 } else { bg }
+                    }
                     other => {
-                        panic!("unknown content {other:?} (use uniform|gradient|diag|file:<png>)")
+                        panic!(
+                            "unknown content {other:?} \
+                             (use uniform|gradient|diag|screen|file:<png>|raw:<yuv>)"
+                        )
                     }
                 };
             }

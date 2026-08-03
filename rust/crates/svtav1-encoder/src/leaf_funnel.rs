@@ -4255,31 +4255,42 @@ pub(crate) fn evaluate_leaf(
     // in coding order); both are 0/empty for blocks with no palette
     // neighbours — always true for non-screen content — so those stay
     // byte-identical to the pre-neighbour stub.
-    // The luma palette (#71) search is NOT ported into the bd10 (u16) leaf
-    // funnel: a surviving palette candidate reaches the bd10 full-RD stage
-    // (`tx_unit_hbd`) with a u8 `w*h` palette prediction where the hbd path
-    // indexes a u16 buffer at hbd offsets/stride, panicking with an
-    // out-of-bounds on `residual.push(src[..] - pred[..])` (leaf_funnel.rs
-    // tx_unit_hbd). This fires on real SCREEN content at bd10 (palette is
-    // active at preset <= 7 via sc_class5) — a panic on the PUBLIC
-    // `encode_frame_420` API. Gate palette injection out of the bd10 funnel so
-    // those leaves decide among the (ported) non-palette hbd modes instead,
-    // yielding a valid decodable stream rather than a crash. Rationale for
-    // safety: `bd10_funnel` is false at bd8 (byte-inert there) and on every
-    // non-screen bd10 frame `cfg.palette_level == 0` (sc_class5=0), so the
-    // block is already skipped — hence this is inert on all existing bd10 gates
-    // (photo/gradient/diag/uniform, none screen); and since the bd10 search
-    // currently PANICS on any palette candidate, no passing bd10 cell can reach
-    // one, so this cannot regress a passing cell — it only converts the panic
-    // into graceful non-palette output. Byte-exact bd10 palette is a future #71
-    // port (needs the hbd palette predictor + hbd-typed candidate buffers).
+    // PALETTE AT 10 BITS (task #94 / #71). C has ONE palette search
+    // parameterized by `is16bit` (palette.c:391-399): it reads
+    // `pcs->input_frame16bit` instead of `enhanced_pic`, swaps
+    // `svt_av1_count_colors` for `svt_av1_count_colors_highbd`, clips centroids
+    // with `clip_pixel_highbd` (:310-312), widens the cache-snap threshold by
+    // `<< (bit_depth - 8)` (:265), and codes the colour literals at
+    // `encoder_bit_depth` (entropy_coding.c:4369, rd_cost.c:600).
+    //
+    // This funnel used to gate palette injection OUT at bd10 entirely
+    // (`!bd10_funnel`), because a surviving palette candidate reached
+    // `tx_unit_hbd` with only a u8 prediction and panicked. That was a graceful
+    // stand-in for a crash, but its parity cost was never measured: since
+    // `bd10_funnel` is true for EVERY 64-aligned bd10 4:2:0 frame at every
+    // preset, the port offered ZERO palette candidates where C codes palette
+    // blocks, so those leaves resolved to ordinary intra. MEASURED on the
+    // production corpus (benchmarks/imazen26_sweep_2026-07-24_summary.tsv):
+    // preset 6 bd8 = 515/515 byte-identical but preset 6 bd10 = 380/515, and
+    // the 135 failing cells are EXACTLY the eight screen-detecting content
+    // classes — the whole M6 bd10 gap was this gate. (At M6 IBC is already off,
+    // so M6 bd10 is a pure palette divergence; M0 adds IBC on top.)
+    //
+    // Now the search runs at the real depth and the candidate carries BOTH
+    // predictions: `pred` (u8, for the MDS1/MDS3 u8 stages) and `pred10` (u16,
+    // what `tx_unit_hbd` needs). Palette prediction is a position-only colour
+    // substitution with no neighbour edges (enc_intra_prediction.c:631-651), so
+    // the 10-bit form is the same index map through the 10-bit colours — no new
+    // predictor kernel is required, which is why this is a small change rather
+    // than an hbd-predictor port.
+    //
     // C's `eval_intrabc` narrowing scope (mode_decision.c:3587-3594): the
     // palette-hint coupling reads whether the palette injection RAN for
     // this block and whether it produced any candidate.
     let palette_ran =
         svtav1_entropy::context::allow_palette(cfg.allow_sct, w, h) && cfg.palette_level > 0;
     let cands_before_palette = cands.len();
-    if !bd10_funnel && palette_ran {
+    if palette_ran {
         let ctrls = crate::palette::PaletteCtrls::for_level(cfg.palette_level);
         let bctx = svtav1_entropy::context::palette_bsize_ctx(w, h);
         // Neighbour palette color cache (C svt_get_palette_cache_y): merged
@@ -4302,27 +4313,70 @@ pub(crate) fn evaluate_leaf(
         };
         // The funnel receives the source as (plane, stride, block offset);
         // decompose the offset back to plane coords for the search.
-        let pal_cands = crate::palette::search_palette_luma(
-            y_src,
-            y_src_stride,
-            y_src_off % y_src_stride,
-            y_src_off / y_src_stride,
-            h,
-            w,
-            w,
-            h,
-            &ctrls,
-            &pal_cache,
-            frame.base_qindex,
-        );
+        // C picks the source plane by `is16bit = ctx->hbd_md > 0`
+        // (palette.c:391-399). `blk_y_src10` is this block's 10-bit luma at
+        // stride `w` (the real u16 samples when the caller entered through a
+        // `*_hbd` entry point, else the `u8 << 2` widening), so the hbd search
+        // reads exactly what C's `input_frame16bit` would give it.
+        let pal_cands = if bd10_funnel {
+            crate::palette::search_palette_luma_hbd(
+                &blk_y_src10,
+                w,
+                h,
+                w,
+                w,
+                h,
+                &ctrls,
+                &pal_cache,
+                frame.base_qindex,
+                u32::from(frame.bit_depth),
+            )
+        } else {
+            crate::palette::search_palette_luma(
+                y_src,
+                y_src_stride,
+                y_src_off % y_src_stride,
+                y_src_off / y_src_stride,
+                h,
+                w,
+                w,
+                h,
+                &ctrls,
+                &pal_cache,
+                frame.base_qindex,
+            )
+        };
         for pc in pal_cands {
             let n = pc.colors.len();
-            // Substitution prediction (enc_intra_prediction.c:631-651).
+            // Substitution prediction (enc_intra_prediction.c:631-651): a
+            // position-only colour lookup, no neighbour edges. At bd10 the
+            // colours are 10-bit, so `pred10` is the authoritative prediction
+            // and the u8 `pred` is its MSB-truncated twin, kept because the
+            // MDS1/MDS3 u8 stages and `commit_leaf` still read `cand.pred`.
             let mut pred = vec![0u8; w * h];
+            let mut pred10: Vec<u16> = if bd10_funnel {
+                vec![0u16; w * h]
+            } else {
+                Vec::new()
+            };
+            let shift = u32::from(frame.bit_depth - 8);
             for (o, &idx) in pc.idx_map.iter().enumerate().take(w * h) {
-                pred[o] = pc.colors[idx as usize] as u8;
+                let c = pc.colors[idx as usize];
+                if bd10_funnel {
+                    pred10[o] = c;
+                    pred[o] = (c >> shift) as u8;
+                } else {
+                    pred[o] = c as u8;
+                }
             }
-            let satd = hadamard_satd(y_src, y_src_stride, y_src_off, &pred, w, h);
+            // MDS0 fast distortion at the real depth, mirroring the regular
+            // candidates' bd10 arm above (10-bit SATD against the 10-bit
+            // source, u8 SATD otherwise).
+            let satd = if bd10_funnel {
+                hadamard_satd_hbd(&blk_y_src10, w, 0, &pred10, w, h)
+            } else {
+                hadamard_satd(y_src, y_src_stride, y_src_off, &pred, w, h)
+            };
             // Luma rate: DC mode + fi-off flag (fi eligible blocks price it
             // for every DC candidate) + the palette slice (rd_cost.c:579-605
             // use_palette=1 arm): ymode YES + size + (0,0) uniform + colors
@@ -4351,8 +4405,18 @@ pub(crate) fn evaluate_leaf(
             let mut pal_out = alloc::vec![0u16; pc.colors.len()];
             let n_out =
                 crate::palette::index_color_cache(&pal_cache, &pc.colors, &mut pal_found, &mut pal_out);
+            // C passes `scs->static_config.encoder_bit_depth` here
+            // (`svt_av1_palette_color_cost_y`, rd_cost.c:600) — the same width
+            // the WRITER uses (entropy_coding.c:4369). A hardcoded 8 would
+            // under-price every 10-bit palette candidate's colours by 2 bits
+            // for the first literal (and shift the whole delta ladder), biasing
+            // the palette-vs-regular RD tie.
             let r_colors = ((pal_cache.len() as u64)
-                + crate::palette::delta_encode_bits(&pal_out[..n_out], 8, 1) as u64)
+                + crate::palette::delta_encode_bits(
+                    &pal_out[..n_out],
+                    u32::from(frame.bit_depth),
+                    1,
+                ) as u64)
                 << 9;
             let mut map_bits = 0u64;
             crate::palette::color_map_wavefront(&pc.idx_map, w, h, w, n, |_i, _j, ctx, idx| {
@@ -4426,10 +4490,12 @@ pub(crate) fn evaluate_leaf(
                 uv,
                 uv_delta,
                 pred,
-                // Palette is excluded from the bd10 full-RD envelope
-                // (`bd10_full_rd_supported`): its prediction is a
-                // position-only colour substitution with no 10-bit form here.
-                pred10: Vec::new(),
+                // The 10-bit substitution prediction (empty at bd8). This is
+                // what `tx_unit_hbd` residuals against; it used to be
+                // unconditionally empty, which is why a palette candidate
+                // reaching the bd10 full-RD stage panicked and why palette was
+                // gated out of the bd10 funnel entirely.
+                pred10,
                 flr,
                 fcr,
                 fast_cost,
