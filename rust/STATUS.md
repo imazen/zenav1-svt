@@ -1,6 +1,71 @@
 # SVT-AV1 Rust Port — Status
 
-Last updated: 2026-07-23 (parity/photo-p0-deblock) — C baseline **v4.2.0**
+Last updated: 2026-08-03 (bd10 palette) — C baseline **v4.2.0**
+
+## bd10 PALETTE — the M6 bd10 screen-content gap CLOSED (2026-08-03)
+
+The bd10 mode-decision funnel refused to inject palette candidates
+(`!bd10_funnel`, leaf_funnel.rs), and `bd10_funnel` is true for EVERY
+64-aligned bd10 4:2:0 frame at every preset — so where C codes hundreds of
+palette blocks the port coded none. The gate had been added to convert a
+`tx_unit_hbd` panic into graceful output; it did that, but its parity cost was
+never measured. MEASURED (`screen 128x128 q32`, port vs real C):
+
+| preset | C | port (before) | ratio |
+|---|---|---|---|
+| 0 | 327 B | 664 B | 2.03x |
+| 6 | 453 B | 1110 B | 2.45x |
+
+This is the whole of the `imazen26_sweep_2026-07-24` preset-6 bd10 anomaly
+(380/515 byte-identical vs **515/515 at bd8**, with all 135 failures on the
+eight screen-detecting content classes). The sweep's own `.meta` attributed
+those cells to the SAMEPART-DIFF MD residual, which had closed on 2026-07-23 —
+that attribution was wrong. At M6, IBC is already off (`intrabc_level = 0`
+above preset 4), so M6 bd10 was a PURE palette divergence; M0 adds IBC on top.
+
+Ported: `count_colors_highbd` (C pic_analysis_process.c:869), a depth-generic
+`search_palette_core` shared by `search_palette_luma{,_hbd}` (C has ONE search
+parameterized by `is16bit`, palette.c:391-399), `clip_pixel_highbd` centroid
+clipping, the `<< (bit_depth - 8)` cache-snap threshold, and a 10-bit
+substitution prediction on the candidate. Two LATENT DESYNCS fixed alongside:
+the palette COLOUR literals are `encoder_bit_depth` wide and BOTH the writer
+(entropy_coding.c:4369) and the RD cost (rd_cost.c:600) hardcoded 8.
+
+**Gate: `tools/screen_palette_bd_gate.sh` — 48/48 byte-identical**
+({bd8,bd10} × {64,128} × q{20,32,55} × p{0,2,4,6}), wired into CI. It needed a
+new synthetic content type (`screen`) because every pre-existing one is
+photographic, the screen-content detector never armed, and therefore **no gate
+cell in the repo could reach the palette path at all** — which is how this
+shipped. The gate self-asserts anti-vacuity per cell (fails a cell that codes
+zero palette leaves), so it cannot pass with the palette path deleted.
+
+### Open, found while closing the above (NOT palette)
+
+`screenrep` (high-entropy, exactly-repeated regions — opt-in via
+`SP_CONTENTS`) is byte-identical at bd8 at every swept cell but diverges at
+bd10 on p2/q20 and p6/{q20,q32,q55}, plus the pinned p4 cells. That is the
+same class as `bd10_nonflat_gate`'s open cells (diag/gradient at bd10), not a
+palette issue — but it is now reproducible from synthetic content, where it
+previously needed a photo corpus.
+
+**IBC at bd10 is still gated out** (`!bd10_funnel`). No witness could be
+constructed for it: on every synthetic screen content tried, C itself codes
+ZERO IntraBC blocks and the port matches C byte-for-byte at bd8 (e.g. 256x256
+`screenrep` p0/p2 = 20097 B / 20091 B, IDENTICAL). Exercising it needs the real
+screen corpus (`SCREEN_DIR`, not present on this box). Do not port it blind —
+without a cell that fails first, a fix is a claim, not a fact.
+
+### Measurement caveat for arm64 hosts
+
+`bd10_nonflat_gate` measures **197/309 on this arm64 box** where this file
+previously claimed 309/309. A worktree at the pre-NEON commit `bf56f8177`
+measures the SAME 197/309 with the SAME 112 cells, so the aarch64 NEON wave did
+not cause it. Every documented run was on x86 (`dev-32gb`), and the failures are
+bd10 + non-flat ONLY (bd8 54/54 and bd10-uniform 36/36 pass here) — exactly
+where residuals leave the 8-bit range and PORTING.md warns the RTCD binds
+kernels to arch-specific implementations not equivalent to their `_c` twins.
+Untested hypothesis: an x86-vs-arm64 **C-oracle** difference rather than a port
+bug. Do not read a bd10 non-flat number off an arm64 box until that is settled.
 
 ## Photo preset-0 bd8 — the universal "FH loop_filter_level" class CLOSED (2026-07-23)
 

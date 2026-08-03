@@ -4393,7 +4393,7 @@ fn encode_block_syntax(
                 .unwrap_or((0, 0));
             let _ = writeln!(
                 f,
-                "PTREE mi=({},{}) bsize={} part={} mode={} uv={} fi={} ady={} aduv={} txd={} yeob={} ueob={} veob={} cflidx={} cflsgn={} pal={}",
+                "PTREE mi=({},{}) bsize={} part={} mode={} uv={} fi={} ady={} aduv={} txd={} yeob={} ueob={} veob={} cflidx={} cflsgn={} pal={} ibc={}",
                 block_y / 4,
                 block_x / 4,
                 svtav1_entropy::context::block_size_index(
@@ -4413,6 +4413,10 @@ fn encode_block_syntax(
                 decision.cfl_alpha_idx,
                 decision.cfl_alpha_signs,
                 decision.palette.as_ref().map(|p| p.0.len()).unwrap_or(0),
+                // IntraBC is invisible in this dump otherwise, which made it
+                // impossible to assert that a screen-content gate cell actually
+                // exercised IBC rather than merely enabling it.
+                u8::from(decision.use_intrabc),
             );
         }
     }

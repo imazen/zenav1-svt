@@ -289,10 +289,39 @@ fn main() {
                         let glyph = (c / 3 + r / 24) % 5 != 0;
                         if text_row && glyph { 16 } else { bg }
                     }
+                    // SCREEN content with EXACTLY REPEATED distant regions —
+                    // what IntraBC exists to exploit. `screen` alone arms the
+                    // detector (allow_intrabc = true at preset <= 4) but never
+                    // makes an IBC candidate WIN the RD, so an IBC gap is
+                    // invisible on it: measured, `screen` at bd10 is
+                    // byte-identical to C with IBC gated out entirely.
+                    //
+                    // Here the left half carries a deterministic pseudo-random
+                    // glyph field and the right half REPLAYS it verbatim at a
+                    // fixed displacement, so a block copy is exact (distortion
+                    // 0) while any intra prediction must code a real residual.
+                    // The 64px offset also clears IBC's 256px wavefront-delay
+                    // and already-coded constraints (`is_dv_valid`).
+                    // The repeated region is deliberately HIGH-ENTROPY (a
+                    // per-pixel hash, ~250 distinct values). Palette bails
+                    // above 64 colours per block and loses the RD long before
+                    // that, so it cannot win here and mask the IBC candidate —
+                    // an earlier low-colour version of this content coded 68-80
+                    // palette blocks and ZERO IBC blocks. Flat panel bands stay
+                    // in the top rows so the screen-content detector still arms.
+                    "screenrep" => {
+                        if r < 32 {
+                            [24u8, 96, 168, 240][((r / 8) & 1) * 2 + ((c / 32) & 1)]
+                        } else {
+                            let (sr, sc) = if c >= w / 2 { (r, c - w / 2) } else { (r, c) };
+                            let hashed = (sc * 2654435761 + sr * 40503) % 65521;
+                            ((hashed % 251) + 2) as u8
+                        }
+                    }
                     other => {
                         panic!(
                             "unknown content {other:?} \
-                             (use uniform|gradient|diag|screen|file:<png>|raw:<yuv>)"
+                             (use uniform|gradient|diag|screen|screenrep|file:<png>|raw:<yuv>)"
                         )
                     }
                 };

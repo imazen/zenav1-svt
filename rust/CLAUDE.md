@@ -45,9 +45,31 @@ cite the source, don't re-argue them.
    coverage.** It counts 1:1 `EbSvtAv1EncConfiguration`-field mirroring, which the port
    deliberately does NOT do (it exposes `RcConfig`/`HdrForkConfig`/`EncodePipeline` builders).
    `tested: 0` ≠ "0 features". Use README / STATUS.md / issue #7 for capability status.
-5. **SGR loop-restoration "absent" is in-envelope-faithful.** C does not search self-guided
-   restoration at the port's ENC_MR either (`restoration.rs:8-9`, C `restoration_pick.c`
-   force-types WIENER-vs-NONE) — so Wiener-only is full parity here, not a divergence.
+5. **SGR loop-restoration "absent" is in-envelope-faithful FOR M0..M13 — but the old wording
+   of this guard was WRONG about ENC_MR.** CORRECTED 2026-08-03, re-derived from source by
+   six independent audits: `svt_aom_get_sg_filter_level_allintra` (`enc_mode_config.c:1431`)
+   returns **1 for `enc_mode <= ENC_MR`**, so at MR all-intra C DOES enable a full SGR sweep
+   and `RESTORE_SWITCHABLE`/`RESTORE_SGRPROJ` become emittable. The correct statement is:
+   *SGR is dead for all-intra M0..M13 (`sg_filter_lvl = 0`), and MR is exactly the preset
+   where C turns it on.* Wiener-only is therefore full parity across the port's whole
+   REACHABLE domain — because `SpeedConfig::preset` is a `u8` (`speed_config.rs:15`) and
+   `ENC_MR` is **-1** (`EbSvtAv1Enc.h:45`, `MIN_ENC_PRESET ENC_MR` at `EbConfigMacros.h:41`),
+   so MR/MRP/MRS are structurally unreachable here. Do not cite this guard as "C never
+   searches SGR"; cite it as "the port cannot express the only preset where C does."
+   The same shape applies to CDEF search level 1 (16+48 candidates,
+   `enc_mode_config.c:904-947`), which is likewise MR-only.
+
+5b. **All-intra clamps M10..M13 to M9 in C, and the port does NOT replicate that at
+   `EncodePipeline::new`.** `Globals/enc_handle.c:4415-4419` remaps any all-intra
+   `enc_mode > ENC_M9` down to M9 with a warning. Only `AvifEncoder::speed_to_preset`
+   (`avif.rs:311`) and the `c_quant` `eff_mode` (`pipeline.rs:1429`) apply it. This is
+   byte-neutral on the C-faithful 4:2:0 path (every tool predicate is `<=M6/<=M7/<=M8` and
+   `FunnelCfg::for_preset`'s `_ =>` arm covers `9..=255`), but `SpeedConfig::from_preset(13)`
+   genuinely differs from `(9)` — `max_partition_depth` 1 vs 2, `max_intra_candidates` 2 vs
+   4, `subpel_precision` 0 vs 1, `lambda_scale` 1.4 vs 1.2, `enable_adst`/
+   `enable_directional_modes` false vs true — and those fields ARE live on the monochrome
+   and inter paths. Consequence: **every "M10/M11/M12/M13" byte-identity result is a second
+   measurement of M9, not independent coverage.**
 6. **Monochrome is DECODE-conformance-validated, NOT byte-vs-C.** C v4.2.0 cannot encode mono:
    `verify_settings:470` rejects `EB_YUV400` and the still/avif capture is hardwired to
    `EB_YUV420` (`capture_c_trace.c:164`, `avif=true`) — so **there is no C mono oracle**. The
