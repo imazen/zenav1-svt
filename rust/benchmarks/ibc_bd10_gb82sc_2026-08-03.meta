@@ -1,0 +1,28 @@
+# 10-bit IntraBC port — gb82-sc screen corpus, before/after
+Commit:   0901f408d + the bd10 IBC working tree
+Host:     darwin arm64 (Apple), C oracle = in-tree v4.2.0 Bin/Release
+Corpus:   ~/work/zen/codec-corpus/gb82-sc (10 images), 512x512 CENTRE CROPS
+Grid:     10 images x presets {0,2,3,4} x bd {8,10}, qp 20 = 80 cells
+Tool:     identity_run `crop:` vs capture_c_trace, `cmp` + aomdec decodability
+Files:    _before.tsv = palette ported, IBC still gated out of the bd10 funnel
+          .tsv        = both ported
+
+## bd8 — REGRESSION CHECK: byte-identical before vs after, all 40 cells.
+The IBC bd10 arm is gated on `bd10_funnel`, false at 8 bits, so this is
+byte-neutral by construction — verified, not assumed (git stash A/B).
+
+## bd10 — the measured win. Mean size delta vs C: +23.58% -> +0.42%.
+imac_dark p0  +63.08% -> -0.14%      terminal p2  +75.25% -> -1.24%
+imac_g3  p0   +56.35% -> +0.08%      terminal p3  +72.19% -> -1.86%
+imessage p0   +30.69% -> -0.53%      windows  p2  +28.31% -> +0.02%
+
+Byte-identity is 2/40 at bd10 (and 10/40 at bd8) — these are the SAME
+sc_class5 RD near-tie cells screen_ibc_gate.sh pins at bd8 (78 of its 100
+cells diverge there too). What changed is that the port now codes IntraBC at
+10 bits at all: size parity within ~0.4% of C instead of +23.6%.
+
+Residual outlier: terminal p4 +13.64% (from +60.36%) and the p4 column
+generally — the documented-open bd10 preset-4 residual, independently
+reproduced by the `screenrep` synthetic cells.
+
+Decodability: 80/80 streams decode under aomdec, both depths, before and after.

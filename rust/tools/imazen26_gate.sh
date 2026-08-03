@@ -27,6 +27,8 @@
 #   AOMDEC         optional; decodability check skipped LOUDLY if unset+absent.
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=lib_nice.sh
+. "$HERE/lib_nice.sh"
 RS_ROOT=$(cd "$HERE/.." && pwd)
 
 RUN_BIN="$RS_ROOT/target/release/examples/identity_run"
@@ -96,7 +98,7 @@ CELLS=(
 # @@CELLS_END@@
 
 echo "priming builds..." >&2
-( cd "$RS_ROOT" && CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}" nice -n 19 ionice -c3 \
+( cd "$RS_ROOT" && CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}" $LOWPRI \
     cargo build --release -p zenav1-svt --features symtrace --example identity_run ) >&2 \
   || { echo "port build failed" >&2; exit 2; }
 "$HERE/capture_c_trace/build.sh" >/dev/null 2>&1 || { echo "C driver build failed" >&2; exit 2; }
@@ -112,11 +114,11 @@ for cell in "${CELLS[@]}"; do
   [ -f "$png" ] || { echo "  MISSING  $base (not in $IM26_DIR)" >&2; fail=$((fail+1)); failed+=("$base[missing]"); continue; }
   tag="${base%.png}__p${preset}_q${qp}_bd${bd}"
   d="$OUT/$tag"; mkdir -p "$d"
-  if ! SVTAV1_BD="$bd" nice -n 19 ionice -c3 \
+  if ! SVTAV1_BD="$bd" $LOWPRI \
         "$RUN_BIN" "crop:$png" "$DIM" "$DIM" "$qp" "$preset" "$d/rs" >/dev/null 2>"$d/rs.err"; then
     fail=$((fail+1)); failed+=("$tag[rs-encode-err]"); echo "  RS-ERR   $tag"; continue
   fi
-  if ! nice -n 19 ionice -c3 \
+  if ! $LOWPRI \
         "$CT_BIN" "$DIM" "$DIM" "$qp" "$preset" "$d/rs.yuv" "$d/c.obu" "$bd" >/dev/null 2>/dev/null; then
     fail=$((fail+1)); failed+=("$tag[c-encode-err]"); echo "  C-ERR    $tag"; continue
   fi

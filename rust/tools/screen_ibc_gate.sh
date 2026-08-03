@@ -19,6 +19,8 @@
 # Env: SIG_IMGS / SIG_PRESETS / SIG_QPS / SIG_DIM override the grid.
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=lib_nice.sh
+. "$HERE/lib_nice.sh"
 RS_ROOT=$(cd "$HERE/.." && pwd)
 
 RUN_BIN="$RS_ROOT/target/release/examples/identity_run"
@@ -87,10 +89,10 @@ is_byte_exact() {
 }
 
 echo "priming builds..." >&2
-( cd "$RS_ROOT" && CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}" nice -n 19 ionice -c3 \
+( cd "$RS_ROOT" && CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}" $LOWPRI \
     cargo build --release -p zenav1-svt --example identity_run ) >&2 \
   || { echo "port build failed" >&2; exit 2; }
-( cd "$HERE/decode_diff" && CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}" nice -n 19 ionice -c3 \
+( cd "$HERE/decode_diff" && CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}" $LOWPRI \
     cargo build --release ) >&2 || { echo "decode-diff build failed" >&2; exit 2; }
 "$HERE/capture_c_trace/build.sh" >/dev/null 2>&1 || { echo "C driver build failed" >&2; exit 2; }
 [ -x "$RUN_BIN" ] && [ -x "$CT_BIN" ] && [ -x "$DD_BIN" ] || { echo "binaries missing" >&2; exit 2; }
@@ -109,11 +111,11 @@ for img in "${IMGS[@]}"; do
     for qp in "${QPS[@]}"; do
       tag="${img}_p${p}_q${qp}"
       d="$OUT/$tag"; mkdir -p "$d"
-      if ! SVTAV1_RECON_DUMP="$d/rs" SVTAV1_BD=8 timeout "$CELL_TIMEOUT" nice -n 19 ionice -c3 \
+      if ! SVTAV1_RECON_DUMP="$d/rs" SVTAV1_BD=8 timeout "$CELL_TIMEOUT" $LOWPRI \
             "$RUN_BIN" "crop:$png" "$DIM" "$DIM" "$qp" "$p" "$d/rs" >/dev/null 2>&1; then
         errs=$((errs+1)); map_lines+=("$tag PORT-ENCODE-ERR"); echo "ERR  $tag port-encode"; continue
       fi
-      if ! SVT_NO_AUTO_CMAKE=1 timeout "$CELL_TIMEOUT" nice -n 19 ionice -c3 \
+      if ! SVT_NO_AUTO_CMAKE=1 timeout "$CELL_TIMEOUT" $LOWPRI \
             "$CT_BIN" "$DIM" "$DIM" "$qp" "$p" "$d/rs.yuv" "$d/c.obu" 8 >/dev/null 2>&1; then
         errs=$((errs+1)); map_lines+=("$tag C-ENCODE-ERR"); echo "ERR  $tag c-encode"; continue
       fi

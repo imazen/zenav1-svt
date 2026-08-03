@@ -24,6 +24,8 @@
 # long ratchet, and divergences are expected findings, not test failures).
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=lib_nice.sh
+. "$HERE/lib_nice.sh"
 RS_ROOT=$(cd "$HERE/.." && pwd)
 SUFFIX="${1:-latest}"
 OUT="$RS_ROOT/benchmarks/real_image_identity_${SUFFIX}.tsv"
@@ -77,7 +79,7 @@ fi
 # identical" (a signaling-only divergence, e.g. entropy/header noise with no
 # pixel impact) separately from a real pixel divergence.
 DECODE_DIFF_BIN="$RS_ROOT/tools/decode_diff/target/release/decode-diff"
-(cd "$RS_ROOT/tools/decode_diff" && nice -n 19 ionice -c3 env CARGO_BUILD_JOBS=8 \
+(cd "$RS_ROOT/tools/decode_diff" && $LOWPRI env CARGO_BUILD_JOBS=8 \
     cargo build --release -q) >&2 || { echo "decode-diff build failed" >&2; exit 2; }
 
 # Round a PNG's dimension up to the next multiple of 64 (the pipeline requires

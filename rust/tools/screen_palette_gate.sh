@@ -33,6 +33,8 @@
 # Exit non-zero on ANY divergence or if anti-vacuity fails.
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=lib_nice.sh
+. "$HERE/lib_nice.sh"
 RS_ROOT=$(cd "$HERE/.." && pwd)
 
 RUN_BIN="$RS_ROOT/target/release/examples/identity_run"
@@ -49,7 +51,7 @@ PRESET="${SP_PRESET:-6}"
 DIM="${SP_DIM:-512}"
 
 echo "priming builds..." >&2
-( cd "$RS_ROOT" && CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}" nice -n 19 ionice -c3 \
+( cd "$RS_ROOT" && CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}" $LOWPRI \
     cargo build --release -p zenav1-svt --features symtrace --example identity_run ) >&2 \
   || { echo "port build failed" >&2; exit 2; }
 "$HERE/capture_c_trace/build.sh" >/dev/null 2>&1 || { echo "C driver build failed" >&2; exit 2; }
@@ -66,11 +68,11 @@ for img in "${IMGS[@]}"; do
     tag="${img}_p${PRESET}_q${qp}"
     d="$OUT/$tag"; mkdir -p "$d"
     rm -f "$d/rs.ptree"
-    if ! SVTAV1_PACKTREE="$d/rs.ptree" SVTAV1_BD=8 nice -n 19 ionice -c3 \
+    if ! SVTAV1_PACKTREE="$d/rs.ptree" SVTAV1_BD=8 $LOWPRI \
           "$RUN_BIN" "crop:$png" "$DIM" "$DIM" "$qp" "$PRESET" "$d/rs" >/dev/null 2>/dev/null; then
       fail=$((fail+1)); failed+=("$tag[port-encode-error]"); echo "  RS-ERR   $tag"; continue
     fi
-    if ! SVT_NO_AUTO_CMAKE=1 nice -n 19 ionice -c3 \
+    if ! SVT_NO_AUTO_CMAKE=1 $LOWPRI \
           "$CT_BIN" "$DIM" "$DIM" "$qp" "$PRESET" "$d/rs.yuv" "$d/c.obu" 8 >/dev/null 2>/dev/null; then
       fail=$((fail+1)); failed+=("$tag[c-encode-error]"); echo "  C-ERR    $tag"; continue
     fi

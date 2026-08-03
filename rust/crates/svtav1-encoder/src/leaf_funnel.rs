@@ -3680,6 +3680,47 @@ pub(crate) fn evaluate_leaf(
         );
         (u_out, v_out)
     };
+    // The IntraBC twin of `chroma_eval10`: an IBC candidate's chroma is the DV
+    // copy / half-pel bilinear from the chroma recon (NOT an intra uv mode), so
+    // the bd10 arm cannot reuse `chroma_eval10` -- that would score the
+    // candidate against a prediction it does not use. The tx-type rule is the
+    // INTER one the u8 arm already applies (the luma winner's txb-0 type when
+    // the chroma ext set allows it, else DCT; tx_type_search,
+    // product_coding_loop.c:5087-5096).
+    let chroma_eval10_ibc = |fx: &FunnelCtx<'_>,
+                             b: &Bd10Rd,
+                             dv: svtav1_types::motion::Mv,
+                             tt: usize|
+     -> (TxUnitOutHbd, TxUnitOutHbd) {
+        let mut u_pred = vec![0u16; cw * chh];
+        let mut v_pred = vec![0u16; cw * chh];
+        let frame_ch = frame.frame_h_px / 2;
+        crate::intrabc_pred::predict_intrabc_chroma(
+            fx.u_recon10.as_deref().unwrap(), fx.c_stride, ccx, ccy, cw, chh,
+            fx.c_stride, frame_ch, dv, &mut u_pred,
+        );
+        crate::intrabc_pred::predict_intrabc_chroma(
+            fx.v_recon10.as_deref().unwrap(), fx.c_stride, ccx, ccy, cw, chh,
+            fx.c_stride, frame_ch, dv, &mut v_pred,
+        );
+        let rd = |plane_dir: usize| TxRdArgs {
+            spatial_dist: true,
+            intra_dir: plane_dir,
+            coeff_rate_est_lvl: cfg.coeff_rate_est_lvl,
+            tx_bias: frame.tx_bias,
+        };
+        let u_out = tx_unit_hbd(
+            &b.u_src10, cw, 0, &u_pred, cw, 0, cw, chh, tt, 1, cb_tsc, cb_dsc, &b.qt_u,
+            frame.rdoq_level, b.lambda, frame.sharpness, rates, do_rdoq, b.bd,
+            b.qt_u.qm_level, Some(&rd(0)),
+        );
+        let v_out = tx_unit_hbd(
+            &b.v_src10, cw, 0, &v_pred, cw, 0, cw, chh, tt, 1, cr_tsc, cr_dsc, &b.qt_v,
+            frame.rdoq_level, b.lambda, frame.sharpness, rates, do_rdoq, b.bd,
+            b.qt_v.qm_level, Some(&rd(0)),
+        );
+        (u_out, v_out)
+    };
     let chroma_eval = |fx: &FunnelCtx<'_>, uv: u8, uv_delta: i8| -> (TxUnitOut, TxUnitOut) {
         let mut u_pred = vec![0u8; cw * chh];
         let mut v_pred = vec![0u8; cw * chh];
@@ -4535,10 +4576,27 @@ pub(crate) fn evaluate_leaf(
 
     // ---- inject_intra_bc_candidates (IBC chunk 8; mode_decision.c
     //      :3596-3618 gate + :3127-3163 injection + :2976-3126 search) ----
-    // bd10 excluded like palette: the IBC predictor is u8-only here; at
-    // bd10 the FH still carries allow_intrabc but every block codes
-    // use_intrabc=0 (the chunk-1 state) — decodable, divergence expected.
-    if cfg.allow_intrabc && !bd10_funnel {
+    // IBC AT 10 BITS (task #94 / #71). Formerly `&& !bd10_funnel`, on the
+    // grounds that the IBC predictor was u8-only: at bd10 the frame header
+    // still carried allow_intrabc while every block coded use_intrabc=0.
+    // Decodable, but a guaranteed divergence from C wherever C picks a DV --
+    // and the cost is far larger than the palette one it shipped alongside.
+    // MEASURED on the gb82-sc screen corpus (512x512 centre crops, q20,
+    // port vs real C at bd10, IBC gated out):
+    //     terminal  p2  C 7611 B   port 13338 B   +75.2%
+    //     terminal  p3  C 7889 B   port 13584 B   +72.2%
+    //     windows95 p3  C 13398 B  port 13810 B    +3.1%
+    // At bd8 the same cells code 890 / 362 IntraBC blocks, so this is the
+    // whole of the delta on copy-friendly content.
+    //
+    // The DV SEARCH already ran at 8 bits and stays there -- that is C's own
+    // asymmetry, not a shortcut (the search reads the source plane, the
+    // predictor reads the recon; map SS A.6), and it is the arm the
+    // c_parity_intrabc_search / _hash / _mvp differentials pin. What was
+    // missing is only the COMPENSATION at 10 bits, which is now generic over
+    // `ReconSample` (see intrabc_pred.rs: the bilinear closed forms are
+    // provably identical for bd <= 10).
+    if cfg.allow_intrabc {
         if let (Some(ibc), Some(dvt)) = (fx.ibc, frame.dv_tables.as_ref()) {
             let gate = fx.ibc_gate;
             let do_ibc = crate::intrabc::do_intra_bc_gate(
@@ -4651,7 +4709,23 @@ pub(crate) fn evaluate_leaf(
                     crate::intrabc_pred::predict_intrabc_luma(
                         y_recon, y_stride, abs_x, abs_y, w, h, dv, &mut pred,
                     );
-                    let satd = if frame.mds0_ssd {
+                    // The SAME block copy on the 10-bit canvas. This is the
+                    // prediction `tx_unit_hbd` residuals against; leaving it
+                    // empty is what made an IBC candidate unrepresentable at
+                    // bd10 (and is why the injection was gated out).
+                    let mut pred10: Vec<u16> = Vec::new();
+                    if bd10_funnel {
+                        pred10 = vec![0u16; w * h];
+                        crate::intrabc_pred::predict_intrabc_luma(
+                            fx.y_recon10.as_deref().unwrap(),
+                            y_stride, abs_x, abs_y, w, h, dv, &mut pred10,
+                        );
+                    }
+                    let satd = if bd10_funnel {
+                        // Score MDS0 at the real depth, like every other
+                        // candidate's bd10 arm above.
+                        hadamard_satd_hbd(&blk_y_src10, w, 0, &pred10, w, h)
+                    } else if frame.mds0_ssd {
                         let mut sse: u64 = 0;
                         for r in 0..h {
                             let srow = y_src_off + r * y_src_stride;
@@ -4674,11 +4748,11 @@ pub(crate) fn evaluate_leaf(
                         &rates.intrabc_fac_bits,
                     );
                     let flr = u64::from(flr32);
-                    let fast_cost = rdcost(
-                        lambda,
-                        flr,
-                        if frame.mds0_ssd { satd } else { satd << 4 },
-                    );
+                    let fast_cost = if bd10_funnel {
+                        rdcost(lambda_bd10_fast, flr, satd << 4)
+                    } else {
+                        rdcost(lambda, flr, if frame.mds0_ssd { satd } else { satd << 4 })
+                    };
                     cands.push(Cand {
                         mode: 0, // DC_PRED (the coded neighbour-visible mode)
                         delta: 0,
@@ -4686,7 +4760,7 @@ pub(crate) fn evaluate_leaf(
                         uv: 0, // UV_DC_PRED
                         uv_delta: 0,
                         pred,
-                        pred10: Vec::new(),
+                        pred10,
                         flr,
                         fcr: 0,
                         fast_cost,
@@ -5945,6 +6019,9 @@ pub(crate) fn evaluate_leaf(
         //      Skipped entirely for non-chroma-ref blocks (C gates every
         //      chroma stage on ctx->has_uv).
         let cand = &cands[ci];
+        // The INTER chroma tx type the IBC arm derives below, so the bd10 twin
+        // can use the SAME one instead of re-deriving it from the intra rule.
+        let mut ibc_uv_tt: Option<usize> = None;
         let (mut u_out, mut v_out) = if has_uv && cand.ibc.is_some() {
             // IBC chunk 7: IntraBC chroma — the DV copy / half-pel bilinear
             // from the chroma recon canvases (enc_inter_prediction chroma
@@ -5980,6 +6057,7 @@ pub(crate) fn evaluate_leaf(
                 fx.v_src, fx.c_stride, ccy * fx.c_stride + ccx, &v_pred, cw, 0, cw, chh, tt,
                 1, cr_tsc, cr_dsc, 0, &qt_v, frame, rates, do_rdoq, true,
             );
+            ibc_uv_tt = Some(tt);
             (u_out, v_out)
         } else if has_uv {
             chroma_eval(fx, cand.uv, cand.uv_delta)
@@ -5988,7 +6066,11 @@ pub(crate) fn evaluate_leaf(
         };
         // bd10 chroma full loop — the decision terms for this candidate.
         let mut uv_out10 = match (&bd10_rd, has_uv) {
-            (Some(b), true) => Some(chroma_eval10(fx, b, cand.uv, cand.uv_delta)),
+            (Some(b), true) => Some(match (cand.ibc, ibc_uv_tt) {
+                // IBC: the DV copy at 10 bits, with the inter tx-type rule.
+                (Some((dv, _)), Some(tt)) => chroma_eval10_ibc(fx, b, dv, tt),
+                _ => chroma_eval10(fx, b, cand.uv, cand.uv_delta),
+            }),
             // !has_uv: C runs NO chroma stage, so every chroma term is exactly
             // zero at either depth (TxUnitOut::absent()'s contract).
             _ => None,

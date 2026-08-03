@@ -20,6 +20,8 @@
 #     matches too, drop this assert and fold the cells into the byte gates.
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=lib_nice.sh
+. "$HERE/lib_nice.sh"
 RS_ROOT=$(cd "$HERE/.." && pwd)
 
 RUN_BIN="$RS_ROOT/target/release/examples/identity_run"
@@ -40,7 +42,7 @@ CELLS=(
 DIM="${FH_DIM:-512}"
 
 echo "priming builds..." >&2
-( cd "$RS_ROOT" && CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}" nice -n 19 ionice -c3 \
+( cd "$RS_ROOT" && CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}" $LOWPRI \
     cargo build --release -p zenav1-svt --features symtrace --example identity_run ) >&2 \
   || { echo "port build failed" >&2; exit 2; }
 "$HERE/capture_c_trace/build.sh" >/dev/null 2>&1 || { echo "C driver build failed" >&2; exit 2; }
@@ -57,11 +59,11 @@ for cell in "${CELLS[@]}"; do
   tag="${img}_p${p}_q${qp}"
   d="$OUT/$tag"; mkdir -p "$d"
   rm -f "$d/rs.fh"
-  if ! SVTAV1_FHDUMP="$d/rs.fh" SVTAV1_BD=8 nice -n 19 ionice -c3 \
+  if ! SVTAV1_FHDUMP="$d/rs.fh" SVTAV1_BD=8 $LOWPRI \
         "$RUN_BIN" "crop:$png" "$DIM" "$DIM" "$qp" "$p" "$d/rs" >/dev/null 2>&1; then
     echo "FAIL $tag rs-encode"; fail=1; continue
   fi
-  if ! SVT_NO_AUTO_CMAKE=1 nice -n 19 ionice -c3 \
+  if ! SVT_NO_AUTO_CMAKE=1 $LOWPRI \
         "$CT_BIN" "$DIM" "$DIM" "$qp" "$p" "$d/rs.yuv" "$d/c.obu" 8 >/dev/null 2>&1; then
     echo "FAIL $tag c-encode"; fail=1; continue
   fi

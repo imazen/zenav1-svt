@@ -31,6 +31,8 @@
 #   WCS_CORPORA "cid22 clic screen"
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=lib_nice.sh
+. "$HERE/lib_nice.sh"
 RS_ROOT=$(cd "$HERE/.." && pwd)
 
 RUN_BIN="$RS_ROOT/target/release/examples/identity_run"
@@ -95,7 +97,7 @@ export WCS_CELL_TIMEOUT="${WCS_CELL_TIMEOUT:-300}"
 [ -x "$AOMDEC" ] || { echo "wider_corpus_sweep: aomdec not found (set AOMDEC=)" >&2; exit 2; }
 
 echo "priming builds (freshness check)..." >&2
-(cd "$RS_ROOT" && CARGO_BUILD_JOBS=8 nice -n 19 ionice -c3 \
+(cd "$RS_ROOT" && CARGO_BUILD_JOBS=8 $LOWPRI \
    cargo build --release -p zenav1-svt --features symtrace --example identity_run) >&2 \
    || { echo "port build failed" >&2; exit 2; }
 "$HERE/capture_c_trace/build.sh" >/dev/null 2>&1 || { echo "C driver build failed" >&2; exit 2; }
@@ -144,7 +146,7 @@ done >"$JOBFILE"
 
 start=$(date +%s)
 while IFS=$'\t' read -r corpus content stem bd preset qp d; do
-  nice -n 19 ionice -c3 "$selfpath" --cell \
+  $LOWPRI "$selfpath" --cell \
     "$corpus" "$content" "$stem" 512 512 "$bd" "$preset" "$qp" "$d" "$OUT" &
   while (( $(jobs -rp | wc -l) >= PAR )); do wait -n; done
 done <"$JOBFILE"

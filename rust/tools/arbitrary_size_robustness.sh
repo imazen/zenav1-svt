@@ -25,6 +25,8 @@
 # Env: AOMDEC (path to aomdec; auto-detected from common build dirs otherwise).
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=lib_nice.sh
+. "$HERE/lib_nice.sh"
 RS_ROOT=$(cd "$HERE/.." && pwd)
 cd "$RS_ROOT"
 
