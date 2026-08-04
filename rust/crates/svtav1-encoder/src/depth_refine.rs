@@ -315,6 +315,17 @@ struct RefineEnv<'a> {
     tables: &'a M6Pd0Tables,
     max_pd0: usize,
     min_pd0: usize,
+    /// C `max_sq_size` (enc_dec_process.c:1814-1817):
+    /// `ctx->max_block_size`, then `MIN(.., 32)` when
+    /// `static_config.max_tx_size == 32`.
+    ///
+    /// This used to be the literal 64. The port ALREADY derives
+    /// `max_tx_size = 32` at tune IQ with qp <= 45 (`hdr_mode.rs`) and threads
+    /// it into every PD0 entry, so hardcoding 64 here admitted a shallower
+    /// depth than C tests: at `--tune 3`, qp <= 45, presets 0-5 a 32x32 node
+    /// got `s = -1` where C gives 0, and a 16x16 node `s = -2` where C gives
+    /// -1.
+    max_sq: usize,
 }
 
 /// C `update_pred_th_offset` (enc_dec_process.c:1545) + the deviation
@@ -353,11 +364,10 @@ fn set_start_end_depth(
             _ => e,
         }
     };
-    // max_sq_size = 64 (max_block_size 64 below M8, I_SLICE cap 64,
-    // default max_tx_size): :1835-1839.
-    if sq == 64 {
+    // C :1819-1823, against the real `max_sq_size` (see `RefineEnv::max_sq`).
+    if sq == env.max_sq {
         s = 0;
-    } else if s == -2 && sq * 2 == 64 {
+    } else if s == -2 && sq * 2 == env.max_sq {
         s = -1;
     }
 
@@ -607,7 +617,7 @@ pub(crate) fn build_refined_scan(
     // the root spans a whole superblock — i.e. every SB64 case and the tests
     // below. The SB128 pipeline passes the whole-128-SB fold instead (see
     // `build_refined_scan_at`).
-    build_refined_scan_at(root, ctrls, lambda, tables, 0, 0, None)
+    build_refined_scan_at(root, ctrls, lambda, tables, 0, 0, None, 64)
 }
 
 /// [`build_refined_scan`] with the SB's pixel origin, so the NSQDBG REFINE
@@ -632,6 +642,9 @@ pub(crate) fn build_refined_scan_at(
     // at SB128 where units.len() > 1; at SB64 the fold equals the root's own
     // max/min, so passing it is byte-identical.
     sb_max_min: Option<(usize, usize)>,
+    // C `static_config.max_tx_size` (32 or 64; tune IQ sets 32 at qp <= 45).
+    // Caps `max_sq_size` -- see `RefineEnv::max_sq`.
+    max_tx_size: u8,
 ) -> RefScan {
     let mut max_pd0 = 0usize;
     let mut min_pd0 = 255usize;
@@ -653,6 +666,9 @@ pub(crate) fn build_refined_scan_at(
         tables,
         max_pd0,
         min_pd0,
+        // C: max_block_size (64 on this still/I_SLICE path, below M8) capped
+        // to 32 when static_config.max_tx_size == 32 (enc_dec_process.c:1814).
+        max_sq: if max_tx_size == 32 { 32 } else { 64 },
     };
     refine_depth(&env, root, None, sb_x, sb_y).0
 }
@@ -2232,5 +2248,61 @@ mod tests {
         for c in scan.children.as_ref().unwrap().iter() {
             assert!(c.test_this && !c.split_flag && c.children.is_none());
         }
+    }
+
+    /// `max_sq_size` must follow `static_config.max_tx_size`
+    /// (enc_dec_process.c:1814-1817), not the literal 64 it was hardcoded to.
+    ///
+    /// C caps `max_sq_size` to 32 when `max_tx_size == 32`, which the port
+    /// already derives at tune IQ with qp <= 45 (`hdr_mode.rs`) and threads
+    /// into every PD0 entry. With the cap missing, a 32x32 node was allowed
+    /// `s_depth = -1` (test a 64x64 parent) where C forces 0, admitting a
+    /// shallower depth C never tests.
+    ///
+    /// ANTI-VACUITY: this asserts the two `max_tx_size` values produce
+    /// DIFFERENT scans. With the old hardcoded 64 both arms are identical and
+    /// the final assert fails.
+    #[test]
+    fn max_sq_size_follows_max_tx_size() {
+        // A 32x32 PD0 leaf that was tested and not split: `set_start_end_depth`
+        // may hand it a parent depth unless `sq == max_sq`.
+        let leaf32 = |cost: u64| Pd0Eval {
+            sq: 32,
+            tested: true,
+            cost,
+            split: false,
+            off: false,
+            children: None,
+        };
+        let eval = Pd0Eval {
+            sq: 64,
+            tested: true,
+            cost: 100,
+            split: true,
+            off: false,
+            children: Some(Box::new([leaf32(25), leaf32(25), leaf32(25), leaf32(25)])),
+        };
+        // A preset whose refinement mode is ADAPTIVE (so s_depth can be nonzero
+        // at all) -- presets 0-5 per DrCtrls::for_preset.
+        let ctrls = DrCtrls::for_preset(4);
+        let tables = crate::pd0::build_m6_pd0_tables(160);
+
+        let scan64 = build_refined_scan_at(&eval, &ctrls, 248207, &tables, 0, 0, None, 64);
+        let scan32 = build_refined_scan_at(&eval, &ctrls, 248207, &tables, 0, 0, None, 32);
+
+        // At max_tx_size 32 the 32x32 nodes ARE the max square, so C forces
+        // s_depth = 0 -- they must not request their 64x64 parent.
+        let parent_tested = |sc: &RefScan| sc.test_this;
+        assert!(
+            parent_tested(&scan64) != parent_tested(&scan32),
+            "max_tx_size must change whether the 64x64 parent is admitted \
+             (64 -> {}, 32 -> {}); if these agree, the max_sq cap is not wired",
+            parent_tested(&scan64),
+            parent_tested(&scan32)
+        );
+        assert!(
+            !parent_tested(&scan32),
+            "at max_tx_size 32 a 32x32 node is the max square: C forces s_depth = 0"
+        );
     }
 }

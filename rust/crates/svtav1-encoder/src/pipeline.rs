@@ -7463,6 +7463,11 @@ fn encode_tile_rows(
                                 x0,
                                 y0,
                                 sb_max_min,
+                                // C `static_config.max_tx_size` -- the same
+                                // value already threaded into the PD0 entries
+                                // just above, and the reason `max_sq_size` is
+                                // not always 64 (enc_dec_process.c:1814-1817).
+                                max_tx_size,
                             );
                             // Partition rates at the real contexts, from
                             // the same (possibly chained) frame context as
