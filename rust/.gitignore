@@ -28,3 +28,4 @@ tools/perf_c_encode/perf_c_encode
 .workongoing
 tools/decode_diff/target/
 tools/decode_diff/Cargo.lock
+benchmarks/identity_full_8bit_latest.tsv

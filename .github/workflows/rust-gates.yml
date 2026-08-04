@@ -99,6 +99,15 @@ jobs:
         run: |
           ./tools/bd10_hbd_src_gate.sh
 
+      - name: SIMD tier invariance (encoder bytes must not depend on dispatch tier)
+        working-directory: rust
+        # Encodes real cells under EVERY archmage tier and asserts identical
+        # OBUs. Every byte-parity gate here assumes the port emits one bitstream
+        # per input regardless of ISA; before this test nothing checked it. It
+        # is also what proved C -- not the port -- is the ISA-dependent side of
+        # the bd10 preset-7 screen split (docs/SUSPECTED-C-BUGS.md #9).
+        run: cargo test -p zenav1-svt --test tier_invariance
+
       - name: regression spot-check (one cell per bug ever fixed)
         working-directory: rust
         # ~90s. Every cell is the MINIMAL REPRODUCER of a bug that once shipped,

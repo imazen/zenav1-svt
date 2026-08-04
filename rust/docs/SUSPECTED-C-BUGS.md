@@ -155,6 +155,60 @@ port's own inter path emits a stream neither `aomdec` nor `dav1d` can decode
 
 ---
 
+## 9. C's encoded bitstream depends on the HOST ISA (bd10 screen, preset 7)
+
+**Status: REPRODUCED (we match C-on-x86-64 and therefore differ from
+C-on-aarch64). Pins are ISA-scoped as a result.**
+
+The same input produces a DIFFERENT C bitstream on x86-64 than on aarch64:
+`screen 64x64 q55 p7 bd10` is **119 bytes on x86-64 and 117 on aarch64**, and
+`screen 128x128 q55 p7 bd10` is **356 vs 350**. Not a length-only difference in
+principle — these are simply the two cells where it was caught.
+
+**How we know it is C and not us.** `svtav1/tests/tier_invariance.rs` encodes
+these exact cells under every archmage dispatch tier and asserts byte-identical
+output. It is green, and the scalar tier is portable integer Rust, so
+`port(aarch64) == port(scalar) == port(x86-64)`. The port emits 119 / 356
+everywhere. `screen_palette_bd_gate.sh` matches on x86-64 and differs on
+aarch64, so C must be emitting 119 / 356 on one host and 117 / 350 on the other.
+
+**Why it is believable rather than surprising.** Entry #6 above: C's `_c` and
+SIMD kernels genuinely disagree — `svt_aom_hadamard_32x32_c` vs `_avx2` at bd10
+magnitudes, pinned in `c_parity_hadamard.rs`. Preset 7 runs the MDS0 Hadamard
+fast loop, and these are bd10 cells. An RD comparison decided on a kernel whose
+two implementations disagree will flip a mode somewhere, and a flipped mode is a
+different bitstream.
+
+C's aarch64 output does **not** vary within the architecture: `SVT_CPU_FLAGS=1`
+(Neon only) and the default (all Neon extensions) give identical bytes. The
+split is x86-64 vs aarch64.
+
+**What this means for this port — the load-bearing part.** *"Byte-identical to
+C" is a per-ISA claim wherever a bd10 RD path touches a disagreeing kernel.*
+Consequences already applied:
+
+- `screen_palette_bd_gate.sh` scopes those two pins with `uname -m`. A flat list
+  cannot be right on both hosts: pinning unconditionally fails x86-64 (the
+  pinned cell matches), not pinning fails aarch64 (the unpinned cell differs).
+- A parity result should say which host produced it. A green sweep on one
+  architecture is not automatically a green sweep on the other, and until this
+  entry existed nothing in the repo said so.
+- Do **not** "fix" the port toward C-on-aarch64. It already agrees with
+  C-on-x86-64, which is the reference configuration the gates were built on, and
+  chasing the other would just move the divergence to the other host.
+
+`capture_c_trace` now takes `SVT_CPU_FLAGS` (default: unchanged library
+behaviour) to pin C's RTCD level. `SVT_CPU_FLAGS=0` — pure C kernels, the
+cleanest way to test this class — **segfaults on aarch64**, where Neon is
+mandatory and zeroing the flags leaves null RTCD pointers. It works on x86-64.
+
+**Open:** how wide is this? Only two cells are known, both bd10 preset 7 screen.
+Nobody has swept for others, which would need parity runs on both architectures
+and a diff of the verdict sets — worth doing before any claim that a bd10 sweep
+is architecture-independent.
+
+---
+
 ## Adding an entry
 
 State the C `file:line`, quote the code, say why it looks wrong, and — this is

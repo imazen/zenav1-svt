@@ -76,17 +76,54 @@ read -r -a CONTENTS <<<"${SP_CONTENTS:-screen}"
 # yet confirmed: the NSQ recon-distortion gate keeps the u8 path at p4/p5
 # (depth_refine.rs) where C scores it at hbd_md.
 KNOWN_DIFF=(
-  # bd10 q55 at preset 7: the two cells the CDEF screen arm did NOT close.
-  # Byte COUNT differs here (117 vs 119, 350 vs 356), unlike the header-field
-  # class the arm fixed, so this is tile-payload -- the same bd10 residual band
-  # the bd10_nonflat gate's open cells sit in, not a CDEF issue.
-  "screen_64_q55_p7_bd10"
-  "screen_128_q55_p7_bd10"
   "screenrep_64_q20_p4_bd10"
   "screenrep_64_q32_p4_bd10"
   "screenrep_128_q20_p4_bd10"
   "screenrep_128_q32_p4_bd10"
 )
+
+# --- ISA-SCOPED PINS -------------------------------------------------------
+# `screen 64/128 q55 p7 bd10` byte-match on x86-64 and DIFFER on aarch64, and
+# that is not a port bug: it is C's own output changing with the host ISA.
+#
+# MEASURED 2026-08-04, in this order:
+#   1. This gate went red on the x86-64 CI runner demanding both cells be
+#      PROMOTED (the self-promoting pin doing its job). On the aarch64 dev host
+#      the same gate passed with both still pinned, reproducing the recorded
+#      counts exactly: C=117 port=119 and C=350 port=356.
+#   2. The port is NOT the ISA-dependent side. svtav1/tests/tier_invariance.rs
+#      encodes these exact cells under EVERY archmage dispatch tier and asserts
+#      byte-identical output; it is green. The scalar tier is portable integer
+#      Rust, so port(aarch64) == port(scalar) == port(x86-64) = 119 / 356.
+#   3. Therefore C(x86-64) = 119 / 356 while C(aarch64) = 117 / 350 -- C's
+#      encoder emits a DIFFERENT BITSTREAM for the same input depending on which
+#      kernels its RTCD dispatched.
+#   4. Consistent with a known upstream property, not a new theory: C's `_c` and
+#      SIMD kernels genuinely disagree at bd10 magnitudes
+#      (`svt_aom_hadamard_32x32_c` vs `_avx2`, pinned in c_parity_hadamard.rs),
+#      and preset 7 runs the MDS0 Hadamard fast loop. Recorded as entry #9 of
+#      docs/SUSPECTED-C-BUGS.md.
+#   5. C's aarch64 output does NOT vary within the arch: SVT_CPU_FLAGS=1
+#      (Neon only) and the default (all Neon extensions) produce identical
+#      bytes. The split is x86-64-vs-aarch64, not "any SIMD at all".
+#
+# CONSEQUENCE, and the reason this list is now conditional: "byte-identical to
+# C" is a PER-ISA statement for these cells. A flat pin list cannot be right on
+# both hosts -- pinning unconditionally makes x86-64 fail (pinned cell matches),
+# and not pinning makes aarch64 fail (unpinned cell differs). Scoping it is the
+# only honest option; deleting the cells to make both hosts quiet would throw
+# away the one gate that can see this.
+#
+# SVT_CPU_FLAGS=0 (pure C kernels everywhere) would settle it directly by
+# running both hosts on the same kernels. It SEGFAULTS on aarch64 -- Neon is
+# mandatory there and zeroing the flags leaves null RTCD pointers -- so the
+# comparison is not available. The knob is wired in capture_c_trace.c anyway
+# because on x86-64 it works and is the fastest way to test this class again.
+case "$(uname -m)" in
+  arm64 | aarch64)
+    KNOWN_DIFF+=("screen_64_q55_p7_bd10" "screen_128_q55_p7_bd10")
+    ;;
+esac
 is_known_diff() {
   local needle=$1 k
   for k in "${KNOWN_DIFF[@]}"; do

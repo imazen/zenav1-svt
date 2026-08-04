@@ -190,6 +190,35 @@ int main(int argc, char** argv) {
     cfg.encoder_bit_depth      = bit_depth;
     cfg.encoder_color_format   = EB_YUV420;
     cfg.frame_rate_numerator   = 30; /* matches the F30:1 y4m the perf gate feeds the app */
+    /* SVT_CPU_FLAGS (optional): pin the C encoder's RTCD dispatch level.
+     * Absent => library default EB_CPU_FLAGS_ALL, i.e. the fastest kernels the
+     * host supports -- which is what every existing gate has always measured,
+     * so the baseline is untouched.
+     *
+     * WHY THIS EXISTS. C's `_c` and SIMD kernels are not always equivalent --
+     * `svt_aom_hadamard_32x32_c` and `_avx2` genuinely disagree at bd10
+     * magnitudes (pinned in c_parity_hadamard.rs, see docs/SUSPECTED-C-BUGS.md
+     * #6). So "byte-identical to C" can be a function of WHICH C kernels the
+     * host dispatched, and a cell that matches on an AVX2 runner while
+     * differing on a Neon one is not necessarily a port bug at all. Without a
+     * way to pin the level there is no way to tell those apart, and the honest
+     * answer is a coin flip dressed up as a measurement.
+     *
+     * Usage: SVT_CPU_FLAGS=0 forces the pure-C kernels on any host. The bit
+     * values are ARCH-SPECIFIC (EbSvtAv1.h:434-470) -- x86 bit 8 is AVX2,
+     * aarch64 bit 0 is Neon -- so 0 is the only value that means the same
+     * thing everywhere, and it is the one worth reaching for first. */
+    {
+        const char* cpu_flags_env = getenv("SVT_CPU_FLAGS");
+        if (cpu_flags_env && *cpu_flags_env) {
+            char*             end = NULL;
+            unsigned long long v  = strtoull(cpu_flags_env, &end, 0);
+            if (end == cpu_flags_env || *end != '\0')
+                die("SVT_CPU_FLAGS is not a number", EB_ErrorBadParameter);
+            cfg.use_cpu_flags = (EbCpuFlags)v;
+            fprintf(stderr, "capture_c_trace: use_cpu_flags pinned to 0x%llx\n", v);
+        }
+    }
     cfg.frame_rate_denominator = 1;
     /* task #86: tile rows, log2 domain — direct passthrough into
      * cfg.tile_rows, which the public API documents as "Log 2 Tile Rows...
