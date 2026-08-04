@@ -292,6 +292,26 @@ inside the frame? That points at the BOUNDARY-node handling (rates, the injected
 shape, the forced-split path) or at the refinement gates' thresholds on the
 smaller edge geometry — not at straddling blocks.
 
+**Where in the stream it happens.** All three probed cells have BYTE-IDENTICAL
+frame headers — the divergence is entirely tile payload, so the deblock/CDEF/LR
+searches (which run on the recon) already agree:
+
+| cell | C / port payload | first differing byte |
+|---|---|---|
+| 104x72 q20 p5 | 1562 / 1564 | 11 — but only because the payload LENGTHS differ, so the leb128 size field moves. Not a header bug. |
+| 96x80 q48 p5  |  167 /  165 | 11, same reason |
+| **72x88 q20 p5** | **1244 / 1244** | **1056 of 1265 (~83 % through)** |
+
+**Start with `72x88 q20 p5`.** Equal payload lengths means no size-field noise,
+and 83 % through a 2x2-SB frame puts the first divergence in the LAST superblocks
+— the right/bottom/corner partial ones, which is exactly the new edge code. The
+corner SB there is the interesting one: its 64x64 root at (64,64) has both flags
+false (forced split), its only in-frame child is a 32x32 that is one-false
+(injected VERT), and the frame is just 8 px wide at that column.
+
+Reproduce: `tools/identity_diff.sh 72 88 20 5 gradient`, then
+`SVTAV1_PACKTREE=/tmp/t.txt` (delete it first — it APPENDS) for the port's tree.
+
 **Candidate 1 (cropped-TX distortion) is RULED OUT.** The obvious suspect was
 that the refined path's leaves miss the cropped-TX spatial distortion the
 fixed-tree path gets — a straddling block priced over its pad rows is exactly
