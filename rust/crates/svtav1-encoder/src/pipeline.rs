@@ -753,19 +753,26 @@ impl EncodePipeline {
             return false;
         }
         let (w, h) = (self.width as usize, self.height as usize);
-        if w % 64 != 0 || h % 64 != 0 {
-            return false;
-        }
         // Monochrome builds no funnel (`use_funnel` requires 4:2:0). The
         // post-pass cannot stand in for it below preset 9 either: it hardcodes
         // the RDOQ txb_skip/dc_sign contexts to 0/0, which is correct only
         // where `real_coeff_ctx` is off — i.e. only in the eff-M9 band. So
         // mono bd10 is faithful at preset >= 9 and nowhere else.
         let preset = self.speed_config.preset;
+        // The eff-M9 band's ONLY level producer is the level-only re-encode
+        // post-pass, and that pass is still 64-aligned-only: its `recon10`
+        // buffers are ALIGNED-sized (not SB-extent), its writes are unclipped,
+        // and its Split arms map children by a fixed `(type, len)` offset table
+        // that a pruned/tail-truncated partial-SB child list does not satisfy.
+        // See `bd10_reencode_node` and `bd10_frame_aligned`. The full-RD band
+        // (preset <= 8) has no such restriction — it rides the shared, already
+        // partial-SB-correct funnel.
+        let aligned = w % 64 == 0 && h % 64 == 0;
         if !chroma_420 {
-            return preset >= 9;
+            return preset >= 9 && aligned;
         }
-        preset >= 9 || bd10_full_rd_supported(self.bit_depth, preset, chroma_420, w, h)
+        (preset >= 9 && aligned)
+            || bd10_full_rd_supported(self.bit_depth, preset, chroma_420, w, h)
     }
 
     /// Bit-depth configurations this encoder cannot encode faithfully, refused
@@ -822,8 +829,11 @@ impl EncodePipeline {
         }
         if self.width % 64 != 0 || self.height % 64 != 0 {
             return Some(
-                "10-bit requires 64-aligned encode dimensions: no bd10 producer is partial-SB \
-                 aware, so the encode would be 8-bit-quantized under a 10-bit sequence header",
+                "10-bit at preset >= 9 requires 64-aligned encode dimensions: that band's only \
+                 level producer is the level-only re-encode post-pass, which is not partial-SB \
+                 aware (aligned-sized recon buffers, unclipped straddle writes, fixed child \
+                 offsets), so the encode would be 8-bit-quantized under a 10-bit sequence \
+                 header. Preset <= 8 (the full-RD funnel) does support partial superblocks",
             );
         }
         Some(
@@ -1364,6 +1374,50 @@ impl EncodePipeline {
                 },
             )
             .transpose()?;
+        // Task #94 partial-SB: the SB-extent twins of the two buffers above,
+        // for the NATIVE 10-bit source. `HbdSource` is padded TRUE->ALIGNED
+        // only (`try_encode_frame_420_hbd`), so on a partial-SB frame a
+        // straddling block's `blk_y_src10` gather would run past the plane
+        // (bottom-right) or wrap into the next row (right edge) — exactly the
+        // two failure modes `sb_input_owned` / `sb_chroma_owned` exist to kill
+        // on the u8 side. Build the same shapes here so `FunnelSrc10` can carry
+        // `in_stride` / `w/2` and index identically to the u8 gather.
+        //
+        // Luma: `ext_w * ext_h` at stride `ext_w`. The aligned plane already
+        // replicates the TRUE edge into `[true_w, w)` / `[true_h, h)`, so
+        // replicating its ALIGNED edge outward reproduces `pad_input_plane`'s
+        // TRUE-edge fill byte-for-byte. Chroma: aligned stride `w/2` with the
+        // same extra-row count as `sb_chroma_owned` (a right-straddle chroma
+        // read wraps down into later stride rows, so rows alone are not
+        // enough). 64-aligned frames take neither branch — byte-neutral.
+        let hbd_sb_owned: Option<(
+            alloc::vec::Vec<u16>,
+            alloc::vec::Vec<u16>,
+            alloc::vec::Vec<u16>,
+        )> = match hbd_source.as_ref() {
+            Some(hbd) if sb_input_owned.is_some() => {
+                let y = pad_plane_replicate_u16(&hbd.y, w, w, h, ext_w, ext_h)?;
+                let (u, v) = if hbd.u.is_empty() {
+                    (alloc::vec::Vec::new(), alloc::vec::Vec::new())
+                } else {
+                    let (acw, ach) = (w / 2, h / 2);
+                    let (ext_ch_h, ext_cw) = (ext_h / 2, ext_w / 2);
+                    let n_rows = ext_ch_h + ext_cw.div_ceil(acw) + 2;
+                    let mut up = svtav1_types::try_vec![0u16; n_rows * acw]?;
+                    let mut vp = svtav1_types::try_vec![0u16; n_rows * acw]?;
+                    for r in 0..n_rows {
+                        let sr = r.min(ach - 1);
+                        up[r * acw..(r + 1) * acw]
+                            .copy_from_slice(&hbd.u[sr * acw..(sr + 1) * acw]);
+                        vp[r * acw..(r + 1) * acw]
+                            .copy_from_slice(&hbd.v[sr * acw..(sr + 1) * acw]);
+                    }
+                    (up, vp)
+                };
+                Some((y, u, v))
+            }
+            _ => None,
+        };
 
         // Screen-content derivation (allintra): scm 3 auto-detect at
         // preset <= 7 (enc_handle.c:4514-4527), off at M8+; palette level
@@ -1873,9 +1927,15 @@ impl EncodePipeline {
             self.bit_depth,
             // Task #6 chunk 1: the native 10-bit source for the bd10 MD
             // funnel (`None` on every u8 path).
-            hbd_source
-                .as_ref()
-                .map(|h| (h.y.as_slice(), h.u.as_slice(), h.v.as_slice())),
+            // The SB-extent-padded twins when the frame has a partial SB (see
+            // `hbd_sb_owned`), else the aligned planes — identical on every
+            // 64-aligned frame.
+            match hbd_sb_owned.as_ref() {
+                Some((y, u, v)) => Some((y.as_slice(), u.as_slice(), v.as_slice())),
+                None => hbd_source
+                    .as_ref()
+                    .map(|h| (h.y.as_slice(), h.u.as_slice(), h.v.as_slice())),
+            },
             &hbd_used_flag,
             // Superres chunk B.4: C's stale full-res variance array.
             stale_vars.as_deref(),
@@ -1911,7 +1971,14 @@ impl EncodePipeline {
         // 10-bit recon per block (`commit_leaf`, leaf_funnel.rs). Where the
         // post-pass DOES run (eff-M9 band) it overwrites the coded levels, so
         // its recon wins — handled after the post-pass below.
-        let sb95_ext_w = w.div_ceil(sb_size) * sb_size;
+        // STRIDE (task #94 partial-SB): the per-tile canvases are SB-extent
+        // SIZED but ALIGNED-STRIDED — `commit_leaf` writes them at `y_stride`
+        // (= the aligned `w`) / `fx.c_stride` (= `w/2`), the SB-extent product
+        // existing only so a right-straddle write wraps into slack instead of
+        // out of bounds (see `ext_w`/`ext_h` at the allocation site). Reading
+        // them back at the SB-EXTENT stride was byte-inert only because every
+        // gated bd10 cell had `ext_w == w`; on a partial-SB frame it scrambled
+        // the merged 10-bit recon that the bd10 deblock/CDEF/LR searches read.
         let mut canvas10: Option<(Vec<u16>, Vec<u16>, Vec<u16>)> = tile_recons
             .first()
             .and_then(|t| t.3.as_ref())
@@ -1933,11 +2000,10 @@ impl EncodePipeline {
                 let (y0, y1) = (r0 * sb_size, (r1 * sb_size).min(h));
                 let (x0, x1) = (c0 * sb_size, (c1 * sb_size).min(w));
                 for r in y0..y1 {
-                    cy[r * w + x0..r * w + x1]
-                        .copy_from_slice(&ty[r * sb95_ext_w + x0..r * sb95_ext_w + x1]);
+                    cy[r * w + x0..r * w + x1].copy_from_slice(&ty[r * w + x0..r * w + x1]);
                 }
                 let (cw, cxs, cxe) = (w / 2, x0 / 2, x1 / 2);
-                let cst = sb95_ext_w / 2;
+                let cst = cw;
                 for r in y0 / 2..y1 / 2 {
                     cu[r * cw + cxs..r * cw + cxe]
                         .copy_from_slice(&tu[r * cst + cxs..r * cst + cxe]);
@@ -6508,8 +6574,16 @@ fn dump_tree_leaves(tree: &crate::partition::PartitionTree, x: usize, y: usize) 
 ///   eff-M9 (p9..p13) is CLOSED via the MDS0 funnel + post-pass and is left
 ///   EXACTLY as it is; widening to it is a follow-up that must be re-verified
 ///   against the whole gate.
-/// - **complete-SB only** — `tx_unit_hbd` is not partial-SB-aware. (The p0..=5
-///   `refined` path is independently full-SB-gated.)
+/// - **any SB geometry, complete or partial** (2026-08-04). This used to be
+///   complete-SB-only on the stated grounds that `tx_unit_hbd` is not
+///   partial-SB-aware; that was MEASURED WRONG. `tx_unit_hbd` takes explicit
+///   `(w, h, stride, off)` and its only geometry-sensitive term is
+///   `TxRdArgs::crop`, which is the bd10 TWIN of the u8 cropped-TX distortion
+///   and is already fed the same `blk_crop`/`uv_crop` (leaf_funnel.rs). The
+///   real partial-SB machinery — the PD0 edge predicates, the edge-aware PD1
+///   depth-refinement walk, the one-false shape injection, the SB-extent recon
+///   canvases and `commit_leaf`'s straddle clip — is SHARED with the u8 path,
+///   which is 36/36 at partial SB. So the bd10 full-RD funnel inherits it.
 /// - **palette off** — a palette candidate has no 10-bit prediction here.
 ///
 /// CfL is handled inside `evaluate_leaf` instead of here, because whether it is
@@ -6517,7 +6591,13 @@ fn dump_tree_leaves(tree: &crate::partition::PartitionTree, x: usize, y: usize) 
 /// not a config one: under the bd10 full-RD the CfL candidate is not offered,
 /// which leaves a CfL block as a VISIBLE mode divergence rather than a
 /// mixed-domain compare. See the comment at the `cfl_gate` site.
-fn bd10_full_rd_supported(bit_depth: u8, preset: u8, chroma_420: bool, w: usize, h: usize) -> bool {
+fn bd10_full_rd_supported(
+    bit_depth: u8,
+    preset: u8,
+    chroma_420: bool,
+    _w: usize,
+    _h: usize,
+) -> bool {
     // `chroma_420` is load-bearing, not decoration: the funnel this gate
     // enables is only ever constructed when `use_funnel` holds, and that
     // requires 4:2:0. Without this term the gate returned TRUE for a
@@ -6532,7 +6612,7 @@ fn bd10_full_rd_supported(bit_depth: u8, preset: u8, chroma_420: bool, w: usize,
     // a compile-time tautology that read like a screen-content precondition.
     // Palette at bd10 is now handled inside the funnel (see
     // `search_palette_luma_hbd`), so no such precondition is needed.
-    bit_depth == 10 && preset <= 8 && chroma_420 && w % 64 == 0 && h % 64 == 0
+    bit_depth == 10 && preset <= 8 && chroma_420
 }
 
 fn encode_tile_rows(
@@ -6640,9 +6720,11 @@ fn encode_tile_rows(
     Vec<crate::partition::BlockDecision>,
     Vec<crate::partition::PartitionTree>,
     // bd10 FULL-RD only: this tile's committed 10-bit winner recon, as
-    // frame-extent (`ext_w` / `ext_w/2`-strided) Y/U/V canvases with only
-    // this tile's SB region written. `None` outside the bd10 full-RD
-    // envelope. See `Bd10Canvas` at the merge site.
+    // SB-extent-SIZED but ALIGNED-STRIDED (`w` / `w/2`) Y/U/V canvases with
+    // only this tile's SB region written. The extra size absorbs a
+    // right-straddle write's wrap; the stride is the aligned width, exactly
+    // like the u8 `tile_frame_recon`. `None` outside the bd10 full-RD
+    // envelope. See the merge site.
     Option<(Vec<u16>, Vec<u16>, Vec<u16>)>,
 )>> {
     let encode_one_tile = |tile_idx: usize| -> crate::EncodeResult<(
@@ -6927,16 +7009,22 @@ fn encode_tile_rows(
         let mut tile_decisions: Vec<crate::partition::BlockDecision> = Vec::new();
         let mut tile_trees: Vec<crate::partition::PartitionTree> = Vec::new();
         let mut tile_frame_recon = svtav1_types::try_vec![128u8; ext_w * ext_h]?;
-        // bd10 LUMA mode funnel (task #94): a parallel TRUE 10-bit recon canvas,
-        // maintained ONLY for complete-SB eff-M9 (preset ≥ 9) bd10 frames so the
-        // per-block mode decision (evaluate_leaf MDS0) is made on the 10-bit
-        // recon rather than the MSB-truncated u8 recon (which scales SATD ×4 on
-        // `sample<<2` content and cannot flip the survivor). bd8 and every other
-        // bd10 preset/partial-SB allocate NOTHING and pass `None` into FunnelCtx
-        // → the funnel is byte-IDENTICAL. Frame-persistent (a block reads its
-        // left/above SB's committed 10-bit recon); each SB's FunnelCtx borrows
-        // it. On a 64-aligned frame ext_w==w, so this mirrors tile_frame_recon.
-        let bd10_complete_sb = bit_depth == 10 && w % 64 == 0 && h % 64 == 0;
+        // bd10 LUMA mode funnel (task #94): a parallel TRUE 10-bit recon canvas
+        // so the per-block mode decision (evaluate_leaf MDS0) is made on the
+        // 10-bit recon rather than the MSB-truncated u8 recon (which scales
+        // SATD ×4 on `sample<<2` content and cannot flip the survivor). bd8
+        // allocates NOTHING and passes `None` into FunnelCtx → the funnel is
+        // byte-IDENTICAL. Frame-persistent (a block reads its left/above SB's
+        // committed 10-bit recon); each SB's FunnelCtx borrows it.
+        //
+        // The canvas is SB-extent SIZED at the ALIGNED stride, exactly like the
+        // u8 `tile_frame_recon` above, and `commit_leaf` applies the SAME
+        // straddle clip to it as to the u8 recon — so a partial SB is in bounds
+        // by construction. This predicate used to carry `w % 64 == 0 && h % 64
+        // == 0`; that was the fourth independent copy of the bd10 alignment
+        // gate, and it was screening a hazard the buffer shape had already
+        // removed.
+        let bd10_canvas_ok = bit_depth == 10;
         // bd10 FULL-RD (task #94, MODE axis): below eff-M9 the coded mode is
         // the MDS1/MDS3 full-RD winner, not the MDS0 survivor, so the bd10
         // canvas alone is not enough — widening only MDS0 to M6..M8 was
@@ -6952,19 +7040,19 @@ fn encode_tile_rows(
         // Everything outside that envelope keeps the existing behaviour.
         let bd10_full_rd =
             bd10_full_rd_supported(bit_depth, speed_config.preset, chroma_420, w, h);
-        let bd10_luma_funnel =
-            bd10_complete_sb && (speed_config.preset >= 9 || bd10_full_rd);
+        let bd10_luma_funnel = bd10_canvas_ok && (speed_config.preset >= 9 || bd10_full_rd);
         // Task #6 chunk 1: hand the funnel the REAL 10-bit source when the
-        // caller supplied one AND a bd10 stage is armed to read it. The bd10
-        // envelope is 64-aligned (`bd10_complete_sb`), so the SB-extended
-        // `in_stride` equals `w` and a block's `(abs_x, abs_y)` indexes these
-        // planes exactly like the u8 `sb_input`.
+        // caller supplied one AND a bd10 stage is armed to read it. The planes
+        // arrive already SB-extent-padded when the frame has a partial SB
+        // (`hbd_sb_owned`), so the LUMA stride is `in_stride` — the same stride
+        // the u8 `sb_input` gather uses — and a block's `(abs_x, abs_y)` indexes
+        // them identically. Chroma keeps the ALIGNED stride `w/2` with extra
+        // rows, matching `sb_chroma_owned`.
         let funnel_src10 = hbd_src.filter(|_| bd10_luma_funnel).map(|(y10, u10, v10)| {
-            debug_assert_eq!(in_stride, w, "bd10 hbd source assumes a 64-aligned frame");
-            debug_assert!(y10.len() >= w * h);
+            debug_assert!(y10.len() >= in_stride * h, "hbd luma plane must cover the frame");
             crate::leaf_funnel::FunnelSrc10 {
                 y: y10,
-                y_stride: w,
+                y_stride: in_stride,
                 u: u10,
                 v: v10,
                 c_stride: w / 2,

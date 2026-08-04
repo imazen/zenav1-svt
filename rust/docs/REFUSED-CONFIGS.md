@@ -25,8 +25,8 @@ aloud in a status report before anyone acted on it.
 
 | where | refusal |
 |---|---|
+| `crates/svtav1-encoder/src/pipeline.rs` | 10-bit at preset >= 9 requires 64-aligned encode dimensions: that band's only level producer is the level-only re-encode post-pass, which is not partial-SB aware (aligned-sized recon buffers, unclipped straddle writes, fixed child offsets), so the encode would be 8-bit-quantized under a 10-bit sequence header. Preset <= 8 (the full-RD funnel) does support partial superblocks |
 | `crates/svtav1-encoder/src/pipeline.rs` | 10-bit monochrome needs preset >= 9: below that neither bd10 producer runs (the full-RD funnel requires 4:2:0, and the level-only post-pass would miscode with its 0/0 RDOQ contexts), so the encode would be 8-bit-quantized under a 10-bit sequence header |
-| `crates/svtav1-encoder/src/pipeline.rs` | 10-bit requires 64-aligned encode dimensions: no bd10 producer is partial-SB aware, so the encode would be 8-bit-quantized under a 10-bit sequence header |
 | `crates/svtav1-encoder/src/pipeline.rs` | bit depth must be 8 or 10 — C v4.2.0 rejects every other depth at encoder init (svt_av1_verify_settings, Globals/enc_settings.c:460) and this port has no 12-bit kernels |
 | `crates/svtav1-encoder/src/pipeline.rs` | inter frames are not implemented: the inter path emits a stream neither aomdec nor dav1d can decode (malformed sequence/frame header fields, MV coding against fresh CDFs). This encoder is still-image only — encode a single key frame |
 | `crates/svtav1-encoder/src/pipeline.rs` | monochrome encode requires 8-aligned dims (arbitrary-dims padding is wired on the 4:2:0 path only) |
