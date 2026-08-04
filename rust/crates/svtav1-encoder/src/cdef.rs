@@ -106,43 +106,95 @@ impl CdefPick {
     }
 }
 
-/// C-exact port of `svt_pick_cdef_from_qp` (enc_cdef.c:849), intra branch
-/// (`is_screen_content = 0`, `frame_type == KEY_FRAME`), plus the
-/// `CDEF_DAMPING_FROM_QP` damping derivation (enc_cdef.c:923).
+/// C-exact port of `svt_pick_cdef_from_qp` (enc_cdef.c:823) for a KEY frame
+/// (`frame_type == KEY_FRAME`, so C's `is_intra` is true and the inter arm at
+/// :845-852 is unreachable here), plus the `CDEF_DAMPING_FROM_QP` damping
+/// derivation (enc_cdef.c:897).
 ///
-/// `q = svt_aom_ac_quant_qtx(base_q_idx, 0, 8) >> 0` is the 8-bit AC step;
-/// the strength fits are evaluated in f32 exactly as C does (float
-/// constants, left-associated sum, `roundf` = round-half-away-from-zero,
-/// which is `f32::round`), then clamped to the 4-/2-bit field ranges and
-/// packed `f1 * CDEF_SEC_STRENGTHS + f2`.
+/// `is_screen_content` selects between C's two reachable arms. C computes the
+/// flag as `allintra ? ppcs->sc_class5 : ppcs->sc_class1` (enc_cdef.c:913-916)
+/// — for this all-intra still encoder that is **`sc_class5`**, the same
+/// frame-level derivation that gates palette/IBC (`sc_detect::ScDerivation`).
+/// It is only consulted on the `use_qp_strength` fast path (enc_cdef.c:912),
+/// i.e. `cdef_search_level == 10` = allintra M7+; screen detection is itself
+/// force-disabled at M8+ (enc_handle.c:4641-4651), so at a default config the
+/// screen arm is reachable at **preset M7 exactly**, extending to M8-M13 when
+/// a tune forces `screen_content_mode = 3`.
+///
+/// `q = svt_aom_ac_quant_qtx(base_q_idx, 0, bd) >> (bd - 8)` is the AC step
+/// normalized back to the 8-bit scale. The two arms differ in BOTH the fit
+/// constants and the float semantics, and the port reproduces each exactly:
+///
+/// - intra arm (:853-861): `f`-suffixed literals, so C evaluates in **f32**,
+///   then `roundf` = round-half-away-from-zero = `f32::round`.
+/// - screen arm (:837-844): the literals carry **no** `f` suffix, so every
+///   product and sum promotes to **f64**, and there is NO `roundf` — the
+///   `(int32_t)` cast **truncates toward zero** (`as i32` in Rust does the
+///   same, and the value is in range so `as` cannot saturate).
+///
+/// Both then clamp to the 4-/2-bit field ranges and pack
+/// `f1 * CDEF_SEC_STRENGTHS + f2` (`CDEF_SEC_STRENGTHS = 4`,
+/// definitions.h:1705).
 ///
 /// Firing profile on the AC table (C-verified in tests +
-/// tests/c_parity_cdef_pick.rs): zero at very low qindex (<= ~50, CDEF
-/// hurts near-lossless), luma pri kicks in around the qindex-60 knee
-/// (y = 4 at qindex 63/80), growing to y = 9/17/43 at qindex 128/172/220
-/// and saturating at 63 (pri 15 / sec field 3) at qindex 255.
-pub fn pick_cdef_params_key_frame(qindex: u8, bit_depth: u8) -> CdefFrameParams {
+/// tests/c_parity_cdef_pick.rs):
+///
+/// - intra: zero at very low qindex (<= ~50, CDEF hurts near-lossless), luma
+///   pri kicks in around the qindex-60 knee (y = 4 at qindex 63/80), growing
+///   to y = 9/17/43 at qindex 128/172/220 and saturating at 63 (pri 15 / sec
+///   field 3) at qindex 255.
+/// - screen: a NON-ZERO uv floor everywhere (uv = 1 already at qindex 0, from
+///   the `+1.17022324` intercept truncating to 1), far gentler luma growth
+///   (y = 1 from qindex ~14 to ~100, 25 at 200, 60 at 255) and a uv strength
+///   that peaks at 13 and collapses back to 0 by qindex 255 as the negative
+///   quadratic terms take over. MEASURED: the two arms disagree at 252/256
+///   bd8 qindexes and 251/256 bd10 qindexes, so this flag is a real
+///   frame-header byte divergence, not a rounding nicety.
+pub fn pick_cdef_params_key_frame(
+    qindex: u8,
+    bit_depth: u8,
+    is_screen_content: bool,
+) -> CdefFrameParams {
     // C `q = ac_quant_qtx(qindex, 0, bd) >> (bd - 8)` (enc_cdef.c:829-830) —
-    // the per-bd AC step normalized back to the 8-bit scale, so the f32 fit
+    // the per-bd AC step normalized back to the 8-bit scale, so the fit
     // constants below stay bit-depth-independent. bd8: AC_QLOOKUP_8 >> 0.
     let q_raw = match bit_depth {
         8 => AC_QLOOKUP_8[qindex as usize] as i32,
         10 => crate::bd10::AC_QLOOKUP_10[qindex as usize] as i32,
         _ => unreachable!("bit_depth must be 8 or 10 (bd12 out of scope, bd10-port-map.md)"),
     };
-    let q = (q_raw >> (bit_depth - 8)) as f32;
+    let q_i = q_raw >> (bit_depth - 8);
 
-    // enc_cdef.c:880-888 (Intra branch), verbatim constants.
-    let y_f1 =
-        (q * q * 0.000_003_373_197_4_f32 + q * 0.008_070_594_f32 + 0.018_763_4_f32).round() as i32;
-    let y_f2 = (q * q * 0.000_002_916_734_3_f32 + q * 0.002_779_862_4_f32 + 0.007_940_5_f32).round()
-        as i32;
-    let uv_f1 = (q * q * -0.000_013_079_099_5_f32 + q * 0.012_892_405_f32 - 0.007_483_88_f32)
-        .round() as i32;
-    let uv_f2 = (q * q * 0.000_003_265_178_3_f32 + q * 0.000_355_201_83_f32 + 0.002_280_92_f32)
-        .round() as i32;
+    let (y_f1, y_f2, uv_f1, uv_f2) = if is_screen_content {
+        // enc_cdef.c:837-844 (screen-content branch), verbatim constants.
+        // NOTE the double-precision evaluation and the TRUNCATING cast —
+        // C has no `roundf` on this arm, unlike the intra one below. The
+        // expression order is C's: `k * q * q` (left-associated) then
+        // `+ k2 * q` then `+ k3`.
+        let q = q_i as f64;
+        let y_f1 = (5.88217781e-06 * q * q + 6.10391455e-03 * q + 9.95043102e-02) as i32;
+        let y_f2 = (-7.79934857e-06 * q * q + 6.58957830e-03 * q + 8.81045025e-01) as i32;
+        let uv_f1 = (-6.79500136e-06 * q * q + 1.02695586e-02 * q + 1.36126802e-01) as i32;
+        let uv_f2 = (-9.99613695e-08 * q * q - 1.79361339e-05 * q + 1.17022324e+0) as i32;
+        (y_f1, y_f2, uv_f1, uv_f2)
+    } else {
+        // enc_cdef.c:853-861 (Intra branch), verbatim constants. Here C's
+        // expression order is `q * q * k` (note: the multiplicand comes
+        // LAST, unlike the screen arm) and the literals are `f`-suffixed,
+        // so the whole fit is f32 + `roundf`.
+        let q = q_i as f32;
+        let y_f1 = (q * q * 0.000_003_373_197_4_f32 + q * 0.008_070_594_f32 + 0.018_763_4_f32)
+            .round() as i32;
+        let y_f2 = (q * q * 0.000_002_916_734_3_f32 + q * 0.002_779_862_4_f32 + 0.007_940_5_f32)
+            .round() as i32;
+        let uv_f1 = (q * q * -0.000_013_079_099_5_f32 + q * 0.012_892_405_f32 - 0.007_483_88_f32)
+            .round() as i32;
+        let uv_f2 = (q * q * 0.000_003_265_178_3_f32 + q * 0.000_355_201_83_f32 + 0.002_280_92_f32)
+            .round() as i32;
+        (y_f1, y_f2, uv_f1, uv_f2)
+    };
 
-    // "Clamp to AV1 limits" (enc_cdef.c:891-895).
+    // "Clamp to AV1 limits" (enc_cdef.c:863-867).
     let y_f1 = y_f1.clamp(0, 15);
     let y_f2 = y_f2.clamp(0, 3);
     let uv_f1 = uv_f1.clamp(0, 15);
@@ -1511,15 +1563,15 @@ mod tests {
     /// q(128): ac=176 -> y = 9, uv = 8; q(30): ac=37 -> all zero.
     #[test]
     fn strength_formula_anchors() {
-        let p255 = pick_cdef_params_key_frame(255, 8);
+        let p255 = pick_cdef_params_key_frame(255, 8, false);
         assert_eq!(
             (p255.damping, p255.y_strength, p255.uv_strength),
             (6, 63, 3)
         );
-        let p128 = pick_cdef_params_key_frame(128, 8);
+        let p128 = pick_cdef_params_key_frame(128, 8, false);
         assert_eq!((p128.damping, p128.y_strength, p128.uv_strength), (5, 9, 8));
         // Very low q: everything zero (CDEF off near-lossless).
-        let p30 = pick_cdef_params_key_frame(30, 8);
+        let p30 = pick_cdef_params_key_frame(30, 8, false);
         assert_eq!((p30.y_strength, p30.uv_strength), (0, 0));
         assert_eq!(p30.damping, 3);
         assert!(!p30.any(true) && !p30.any(false));
@@ -1531,21 +1583,21 @@ mod tests {
     #[test]
     fn firing_profile_and_ranges() {
         for q in 0..=255u16 {
-            let p = pick_cdef_params_key_frame(q as u8, 8);
+            let p = pick_cdef_params_key_frame(q as u8, 8, false);
             assert!((3..=6).contains(&p.damping), "damping range at {q}");
             assert!(p.y_strength <= 63 && p.uv_strength <= 63);
         }
         // Zero below the knee (near-lossless protection)...
-        assert_eq!(pick_cdef_params_key_frame(50, 8).y_strength, 0);
+        assert_eq!(pick_cdef_params_key_frame(50, 8, false).y_strength, 0);
         // ...firing across the entire gate matrix.
         for (q, want_y) in [(80u8, 4u8), (128, 9), (172, 17), (220, 43), (255, 63)] {
             assert_eq!(
-                pick_cdef_params_key_frame(q, 8).y_strength,
+                pick_cdef_params_key_frame(q, 8, false).y_strength,
                 want_y,
                 "luma CDEF strength at qindex {q}"
             );
         }
-        assert!(pick_cdef_params_key_frame(80, 8).uv_strength != 0);
+        assert!(pick_cdef_params_key_frame(80, 8, false).uv_strength != 0);
     }
 
     /// bd10 qp-fast-path anchors (task #94). C `svt_pick_cdef_from_qp`
@@ -1561,22 +1613,22 @@ mod tests {
     fn strength_formula_anchors_bd10() {
         // qindex 160 (cli qp 40): FH-byte-verified (gradient 64x64 q40 p13
         // bd10 op-trace — first divergence moved off FH onto the tile).
-        let p160 = pick_cdef_params_key_frame(160, 10);
+        let p160 = pick_cdef_params_key_frame(160, 10, false);
         assert_eq!((p160.damping, p160.y_strength, p160.uv_strength), (5, 13, 12));
         // A spread of qindexes across the fit's range, hand-traced from
         // AC_QLOOKUP_10>>2 + the intra fit (bd10 differs from bd8 here).
-        let p172 = pick_cdef_params_key_frame(172, 10);
+        let p172 = pick_cdef_params_key_frame(172, 10, false);
         assert_eq!((p172.damping, p172.y_strength, p172.uv_strength), (5, 17, 13));
-        let p220 = pick_cdef_params_key_frame(220, 10);
+        let p220 = pick_cdef_params_key_frame(220, 10, false);
         assert_eq!((p220.damping, p220.y_strength, p220.uv_strength), (6, 43, 7));
-        let p255 = pick_cdef_params_key_frame(255, 10);
+        let p255 = pick_cdef_params_key_frame(255, 10, false);
         assert_eq!((p255.damping, p255.y_strength, p255.uv_strength), (6, 63, 3));
         // Contrast: bd8 and bd10 genuinely diverge (the whole point of the
         // fix). 16 qindexes differ; the knee shifts because AC_QLOOKUP_10>>2
         // crosses the CDEF-off threshold at a different qindex than
         // AC_QLOOKUP_8. q52: luma strength 4 (bd8) vs 0 (bd10).
-        assert_eq!(pick_cdef_params_key_frame(52, 8).y_strength, 4);
-        assert_eq!(pick_cdef_params_key_frame(52, 10).y_strength, 0);
+        assert_eq!(pick_cdef_params_key_frame(52, 8, false).y_strength, 4);
+        assert_eq!(pick_cdef_params_key_frame(52, 10, false).y_strength, 0);
     }
 
     /// The finish_cdef_search RD pick pinned against the instrumented C
@@ -1625,12 +1677,12 @@ mod tests {
     /// Damping steps exactly at the C breakpoints.
     #[test]
     fn damping_from_qp_breakpoints() {
-        assert_eq!(pick_cdef_params_key_frame(0, 8).damping, 3);
-        assert_eq!(pick_cdef_params_key_frame(63, 8).damping, 3);
-        assert_eq!(pick_cdef_params_key_frame(64, 8).damping, 4);
-        assert_eq!(pick_cdef_params_key_frame(127, 8).damping, 4);
-        assert_eq!(pick_cdef_params_key_frame(128, 8).damping, 5);
-        assert_eq!(pick_cdef_params_key_frame(191, 8).damping, 5);
-        assert_eq!(pick_cdef_params_key_frame(192, 8).damping, 6);
+        assert_eq!(pick_cdef_params_key_frame(0, 8, false).damping, 3);
+        assert_eq!(pick_cdef_params_key_frame(63, 8, false).damping, 3);
+        assert_eq!(pick_cdef_params_key_frame(64, 8, false).damping, 4);
+        assert_eq!(pick_cdef_params_key_frame(127, 8, false).damping, 4);
+        assert_eq!(pick_cdef_params_key_frame(128, 8, false).damping, 5);
+        assert_eq!(pick_cdef_params_key_frame(191, 8, false).damping, 5);
+        assert_eq!(pick_cdef_params_key_frame(192, 8, false).damping, 6);
     }
 }

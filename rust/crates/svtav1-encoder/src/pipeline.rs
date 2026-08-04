@@ -2904,9 +2904,23 @@ impl EncodePipeline {
                     }
                 }
             } else {
+                // C's `use_qp_strength` fast path takes the screen-content
+                // arm of `svt_pick_cdef_from_qp` when
+                // `allintra ? ppcs->sc_class5 : ppcs->sc_class1` is set
+                // (enc_cdef.c:913-918) — allintra here, so sc_class5. This
+                // is the FRAME-level derivation the frame header is written
+                // from (the same `sc_derivation` that gates palette/IBC
+                // above), not a tile-local one. Reachable at preset M7
+                // exactly under a default config: use_qp_strength needs
+                // cdef_search_level == 10 (allintra M7+,
+                // enc_mode_config.c:3543-3600) and screen detection is
+                // force-disabled at M8+ (enc_handle.c:4641-4651, mirrored by
+                // `derive_allintra_sc`'s `preset <= 7` gate); it extends to
+                // M8-M13 when a tune forces screen_content_mode = 3.
                 crate::cdef::CdefPick::single(crate::cdef::pick_cdef_params_key_frame(
                     base_qindex,
                     self.bit_depth,
+                    sc_derivation.classes.sc_class5,
                 ))
             }
         } else {

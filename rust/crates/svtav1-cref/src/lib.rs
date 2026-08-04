@@ -1222,15 +1222,50 @@ pub fn compute_cdef_dist_8bit(
     }
 }
 
-// ---- CDEF strength picker (intra branch, C float semantics) ----
+// ---- CDEF strength picker (all three branches, C float/double semantics) ----
 
 unsafe extern "C" {
+    fn ref_pick_cdef_from_qp(
+        base_q_idx: i32,
+        bit_depth: i32,
+        is_screen_content: i32,
+        is_intra: i32,
+        pred_y_strength: *mut i32,
+        pred_uv_strength: *mut i32,
+    );
     fn ref_pick_cdef_from_qp_intra(
         base_q_idx: i32,
         bit_depth: i32,
         pred_y_strength: *mut i32,
         pred_uv_strength: *mut i32,
     );
+}
+
+/// Reference `svt_pick_cdef_from_qp` (enc_cdef.c:823) at the given bit depth
+/// (8/10/12 — the `EbBitDepth` enum value), selecting the branch the way C
+/// does: `is_screen_content` wins over everything, else `is_intra` picks the
+/// intra vs inter fit. Returns the packed `(y_strength, uv_strength)` pair,
+/// evaluated with C's expression semantics (the screen arm is `double` +
+/// truncating cast; the other two are `float` + `roundf`) against the
+/// library's real `svt_aom_ac_quant_qtx`.
+pub fn pick_cdef_from_qp(
+    base_q_idx: u8,
+    bit_depth: u8,
+    is_screen_content: bool,
+    is_intra: bool,
+) -> (i32, i32) {
+    let (mut y, mut uv) = (0i32, 0i32);
+    unsafe {
+        ref_pick_cdef_from_qp(
+            base_q_idx as i32,
+            bit_depth as i32,
+            i32::from(is_screen_content),
+            i32::from(is_intra),
+            &mut y,
+            &mut uv,
+        )
+    };
+    (y, uv)
 }
 
 /// Reference `svt_pick_cdef_from_qp` intra branch at the given bit depth
@@ -1243,6 +1278,14 @@ pub fn pick_cdef_from_qp_intra(base_q_idx: u8, bit_depth: u8) -> (i32, i32) {
         ref_pick_cdef_from_qp_intra(base_q_idx as i32, bit_depth as i32, &mut y, &mut uv)
     };
     (y, uv)
+}
+
+/// Reference `svt_pick_cdef_from_qp` SCREEN-CONTENT branch (enc_cdef.c:837-844)
+/// at the given bit depth. C reaches this arm when
+/// `allintra ? ppcs->sc_class5 : ppcs->sc_class1` is set (enc_cdef.c:913-916),
+/// i.e. on `sc_class5` frames for the all-intra still path.
+pub fn pick_cdef_from_qp_screen(base_q_idx: u8, bit_depth: u8) -> (i32, i32) {
+    pick_cdef_from_qp(base_q_idx, bit_depth, true, true)
 }
 
 /// bd8 convenience wrapper (kept for existing callers).

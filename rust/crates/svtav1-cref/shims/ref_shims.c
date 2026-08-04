@@ -629,35 +629,72 @@ uint64_t ref_compute_cdef_dist_8bit(const uint8_t* plane, int32_t dstride, const
 }
 
 /* ---- CDEF strength-from-QP picker (svt_pick_cdef_from_qp is static; this
-   replicates its intra branch verbatim from enc_cdef.c:849 against the
-   REAL svt_aom_ac_quant_qtx, pinning the C float-expression semantics the
-   Rust port must reproduce bit-exactly) ---- */
+   replicates ALL THREE of its branches verbatim from enc_cdef.c:823-872
+   against the REAL svt_aom_ac_quant_qtx, pinning the C float/double
+   expression semantics the Rust port must reproduce bit-exactly) ----
+
+   Branch selection in C (enc_cdef.c:837, :845, :853):
+     is_screen_content -> the SCREEN arm  (double literals, TRUNCATING cast)
+     else !is_intra    -> the INTER arm   (float literals, roundf)
+     else              -> the INTRA arm   (float literals, roundf)
+   `is_screen_content` is `allintra ? ppcs->sc_class5 : ppcs->sc_class1`
+   (enc_cdef.c:913-916) -- for the still/all-intra port that is sc_class5. */
 
 #include <math.h>
 
 int16_t svt_aom_ac_quant_qtx(int32_t qindex, int32_t delta, EbBitDepth bit_depth);
 
-void ref_pick_cdef_from_qp_intra(int32_t base_q_idx, int32_t bit_depth,
-                                 int32_t* pred_y_strength, int32_t* pred_uv_strength) {
+void ref_pick_cdef_from_qp(int32_t base_q_idx, int32_t bit_depth, int32_t is_screen_content,
+                           int32_t is_intra, int32_t* pred_y_strength, int32_t* pred_uv_strength) {
     /* svt_pick_cdef_from_qp (enc_cdef.c:829-830): bd-aware AC step
        normalized back to the 8-bit scale. bit_depth is the EbBitDepth enum
        value (8/10/12), passed straight to svt_aom_ac_quant_qtx. */
     int32_t q = svt_aom_ac_quant_qtx(base_q_idx, 0, bit_depth);
     q >>= (bit_depth - 8);
 
-    /* enc_cdef.c:880-888, Intra branch, verbatim. */
-    int32_t y_f1  = (int32_t)roundf(q * q * 0.0000033731974f + q * 0.008070594f + 0.0187634f);
-    int32_t y_f2  = (int32_t)roundf(q * q * 0.0000029167343f + q * 0.0027798624f + 0.0079405f);
-    int32_t uv_f1 = (int32_t)roundf(q * q * -0.0000130790995f + q * 0.012892405f - 0.00748388f);
-    int32_t uv_f2 = (int32_t)roundf(q * q * 0.0000032651783f + q * 0.00035520183f + 0.00228092f);
+    int32_t y_f1 = 0, y_f2 = 0, uv_f1 = 0, uv_f2 = 0;
 
+    if (is_screen_content) {
+        /* enc_cdef.c:837-844, screen-content branch, verbatim. NOTE the
+           literals carry NO `f` suffix, so every product/sum is evaluated in
+           DOUBLE, and the cast TRUNCATES toward zero (there is no roundf
+           here, unlike the other two branches). */
+        y_f1 = (int32_t)(5.88217781e-06 * q * q + 6.10391455e-03 * q + 9.95043102e-02);
+
+        y_f2 = (int32_t)(-7.79934857e-06 * q * q + 6.58957830e-03 * q + 8.81045025e-01);
+
+        uv_f1 = (int32_t)(-6.79500136e-06 * q * q + 1.02695586e-02 * q + 1.36126802e-01);
+
+        uv_f2 = (int32_t)(-9.99613695e-08 * q * q - 1.79361339e-05 * q + 1.17022324e+0);
+    } else if (!is_intra) {
+        /* enc_cdef.c:845-852, Inter branch, verbatim. */
+        y_f1  = (int32_t)roundf(q * q * -0.0000023593946f + q * 0.0068615186f + 0.02709886f);
+        y_f2  = (int32_t)roundf(q * q * -0.00000057629734f + q * 0.0013993345f + 0.03831067f);
+        uv_f1 = (int32_t)roundf(q * q * -0.0000007095069f + q * 0.0034628846f + 0.00887099f);
+        uv_f2 = (int32_t)roundf(q * q * 0.00000023874085f + q * 0.00028223585f + 0.05576307f);
+    } else {
+        /* enc_cdef.c:853-861, Intra branch, verbatim. */
+        y_f1  = (int32_t)roundf(q * q * 0.0000033731974f + q * 0.008070594f + 0.0187634f);
+        y_f2  = (int32_t)roundf(q * q * 0.0000029167343f + q * 0.0027798624f + 0.0079405f);
+        uv_f1 = (int32_t)roundf(q * q * -0.0000130790995f + q * 0.012892405f - 0.00748388f);
+        uv_f2 = (int32_t)roundf(q * q * 0.0000032651783f + q * 0.00035520183f + 0.00228092f);
+    }
+
+    /* "Clamp to AV1 limits" (enc_cdef.c:863-867). */
     y_f1  = y_f1 < 0 ? 0 : (y_f1 > 15 ? 15 : y_f1);
     y_f2  = y_f2 < 0 ? 0 : (y_f2 > 3 ? 3 : y_f2);
     uv_f1 = uv_f1 < 0 ? 0 : (uv_f1 > 15 ? 15 : uv_f1);
     uv_f2 = uv_f2 < 0 ? 0 : (uv_f2 > 3 ? 3 : uv_f2);
 
+    /* Pack primary + secondary, CDEF_SEC_STRENGTHS = 4 (enc_cdef.c:869-871,
+       definitions.h:1705). */
     *pred_y_strength  = y_f1 * 4 + y_f2;
     *pred_uv_strength = uv_f1 * 4 + uv_f2;
+}
+
+void ref_pick_cdef_from_qp_intra(int32_t base_q_idx, int32_t bit_depth,
+                                 int32_t* pred_y_strength, int32_t* pred_uv_strength) {
+    ref_pick_cdef_from_qp(base_q_idx, bit_depth, 0, 1, pred_y_strength, pred_uv_strength);
 }
 
 /* ---- RD multiplier base (rc_process.c:365) ----

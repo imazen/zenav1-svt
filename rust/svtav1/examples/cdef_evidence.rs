@@ -82,7 +82,10 @@ fn main() {
     for content in ["edges", "gradient"] {
         for qp in [43u8, 55, 63] {
             let qindex = qp_to_qindex(qp);
-            let params = svtav1_encoder::cdef::pick_cdef_params_key_frame(qindex, 8);
+            // `gen_content` produces synthetic edges/gradients, never
+            // screen content, so this evidence walk stays on C's intra arm
+            // (`sc_class5 = 0`, enc_cdef.c:913-916).
+            let params = svtav1_encoder::cdef::pick_cdef_params_key_frame(qindex, 8, false);
             let y = gen_content(content, sz);
             let rc = RcConfig {
                 mode: RcMode::Cqp,
