@@ -354,11 +354,24 @@ SVTAV1_DBG_MI=20,4`):
    | split (two 8x8)        | 7,576,441 | 3,921,260 + 3,641,104 + rate **281** |
 
    Note the rates come from the binary alike alphabet and already favour split
-   (281 vs 850); the block costs are what carry the decision. C must price that
-   16x8 higher or its two 8x8s lower. Legality is verified identical and the
-   rates are verified against `svt_aom_partition_rate_cost`, so the live
-   suspects are the `PARENT_COST_BIAS` (995) compare at a boundary node and
-   whether the refinement scan should admit depth 16 there at all.
+   (281 vs 850); **the block costs are what carry the decision.**
+
+   Everything around the block costs has now been read against C's
+   `test_split_partition` (product_coding_loop.c:10770-10845) and matches:
+   - the split rate is `RDCOST(full_lambda, above_split_rate, 0)` with the `*2`
+     bias applied only when `!use_accurate_part_ctx` — which is 1 at M2..M8, so
+     no doubling at p5, as the port assumes;
+   - the final compare is `parent_cost_bias * parent_rd <= split_cost * 1000`,
+     identical to the port's;
+   - the out-of-bounds `continue` precedes the early-exit check, which is what
+     finding 1 above fixed.
+
+   So legality, rates, bias and compare are ALL verified identical, and the
+   divergence is inside the leaf block cost itself — the port's 16x8 at (16,80)
+   is too cheap relative to its two 8x8s, by under 1 %. Pinning that needs a
+   C-side MD leaf dump (the `-Wl,--wrap` PICKPART/MD instrumentation, i.e. a
+   GNU-ld host) rather than more reading: every surrounding quantity has been
+   eliminated.
 
 **Reproduce:** `tools/identity_diff.sh 72 88 20 5 gradient`, then
 `SVTAV1_PACKTREE=/tmp/t.txt` (delete it first — it APPENDS) for the port's tree.
