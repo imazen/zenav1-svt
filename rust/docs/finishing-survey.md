@@ -397,6 +397,27 @@ node. The discriminator to reach for first is which SB the first divergence
 lands in — `SVTAV1_PACKTREE` gives the port's tree, but the C-side tree needs
 the `-Wl,--wrap` PICKPART dump, i.e. a GNU-ld host.
 
+**The remainder is ONE class, not several.** Classifying all 63 remaining
+p0..p5 dims divergences by geometry:
+
+| geometry | kind | presets failing |
+|---|---|---|
+| 104x72, 65x65, 72x88 | partial | **0,1,2,3,4,5** |
+| 80x88   | partial | 0,1,2,4,5 |
+| 120x104 | partial | 0,1,4,5 |
+| 96x80   | partial | 5 only |
+| 512x512 / 256x256 / 384x256 | aligned | scattered — the #71 screen RD class |
+
+Every partial-SB failure sits on five geometries and fails at nearly every
+preset in the band, while the passing partial geometries (32x32, 48x48, 96x80)
+pass at nearly every preset. That is the signature of ONE root reproducing
+wherever the edge geometry allows it — not a pile of independent near-ties — so
+the (16,80) leaf-cost question above is worth the C-side instrumentation it
+needs: closing it should move most of the 63.
+
+The aligned failures are a separate, already-known class (#71 screen RD at large
+sizes) and are unrelated.
+
 ### C2b. The two real-corpus images at presets 0..4 (`1028637.png`, `graph.png`)
 
 MEASURED 2026-08-04 (512x512 centre crop, presets 0..5 x qp{5,20,32,48,63},
