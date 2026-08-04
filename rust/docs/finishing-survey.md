@@ -309,7 +309,35 @@ corner SB there is the interesting one: its 64x64 root at (64,64) has both flags
 false (forced split), its only in-frame child is a 32x32 that is one-false
 (injected VERT), and the frame is just 8 px wide at that column.
 
-Reproduce: `tools/identity_diff.sh 72 88 20 5 gradient`, then
+**The legality is VERIFIED IDENTICAL — so it is a COST question, not a rules
+question.** Traced `set_blocks_to_test` (enc_dec_process.c:1394-1437) against
+that exact node (16x16 at (16,80), `has_cols` true, `has_rows` false, allintra
+M5 → `nsq_geom_level` 3 → `enabled = 1`, `min_nsq_block_size = 8`):
+
+- the force-split early-out needs `sq_size <= MAX(min_nsq = 4,
+  min_nsq_block_size = 8)` = 8; the node is 16, so C does NOT force-split;
+- `max_part` = `PART_V` (via `inj_hv_incomp`), and the in-loop filter
+  `if ((has_cols && part != PART_H) || (has_rows && part != PART_V)) continue;`
+  drops PART_N and PART_V and keeps **PART_H only** — `tot_shapes = 1`.
+
+That is exactly what the port injects. C is allowed to keep a 16x8 here and
+chooses not to, so the port's edge shape is too CHEAP or its split too
+EXPENSIVE. Rates are not the suspect either: `edge_shape_bits` /
+`edge_split_bits` were checked against `svt_aom_partition_rate_cost`
+(rd_cost.c:1834-1866), including the easily-inverted detail that `!has_rows`
+selects the **vert**_alike table and `!has_cols` the **horz**_alike one, and the
+`[p == PARTITION_SPLIT]` bool index. Remaining suspects: the `PARENT_COST_BIAS`
+(995) compare at a boundary node, and whether the refinement scan should admit
+depth 16 there at all.
+
+One correction to the port's own paraphrase while verifying: `pd0.rs` calls the
+`sq_size <= MAX(...)` term "inert ... edge nodes are always >= 16 wide". True at
+M0..M3, where `min_nsq_block_size` is 0. At **M4..M6 it is 8** (geom level 3), so
+the term would fire on an 8x8 one-false node — still unreachable, because an 8x8
+node on an 8-aligned frame always has `hbs = 4` and both flags true, but
+unreachable for a different reason than the comment gives.
+
+**Reproduce:** `tools/identity_diff.sh 72 88 20 5 gradient`, then
 `SVTAV1_PACKTREE=/tmp/t.txt` (delete it first — it APPENDS) for the port's tree.
 
 **Candidate 1 (cropped-TX distortion) is RULED OUT.** The obvious suspect was
