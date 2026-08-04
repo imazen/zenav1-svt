@@ -1,6 +1,84 @@
 # SVT-AV1 Rust Port — Status
 
-Last updated: 2026-08-03 (audit-driven port wave) — C baseline **v4.2.0**
+Last updated: 2026-08-04 (bd10 partial superblocks) — C baseline **v4.2.0**
+
+## 10-BIT AT ARBITRARY DIMENSIONS — the refusal is gone (2026-08-04)
+
+Until this date `bit_depth_config_error` refused **every** 10-bit encode whose
+aligned dims were not a multiple of 64 — the product case for 10-bit AVIF, since
+real images are not 64-aligned:
+
+> "10-bit requires 64-aligned encode dimensions: no bd10 producer is partial-SB
+> aware, so the encode would be 8-bit-quantized under a 10-bit sequence header"
+
+No bd10 gate could have caught it either way: `bd10_matrix.sh` sweeps
+`BD10_SIZES=64 128` and `bd10_nonflat_gate.sh` only 64x64/128x128, so no bd10
+gate reached a partial superblock at all.
+
+**`tools/bd10_partial_sb_gate.sh` — 157/157 byte-identical, all previously
+refused.** Wired into CI. `tools/arbitrary_size_robustness.sh` went from
+**80/80 panic-free + 48 refused as out-of-envelope** to **128/128 with 0
+refused** — those 48 are exactly these cells, and every one now decodes under
+the AV1 reference decoder.
+
+The stated blocker was the wrong function. `tx_unit_hbd` takes explicit
+`(w, h, src_stride, src_off)`; its only geometry term is `TxRdArgs::crop`, which
+the post-pass never even supplies (`rd: None`). `bd10_tree_supported`, blamed
+elsewhere for the same gate, takes no coordinates and no frame dims at all. The
+exposure was entirely in the CALLERS:
+
+- preset ≤ 8 (full-RD funnel) needed **only the gate lifted** — it rides the
+  same partition search and leaf funnel as the 8-bit path, which is partial-SB
+  correct (`partial_sb_gate.sh` 146/146);
+- preset ≥ 9 (level-only re-encode post-pass) needed real work: SB-extent-sized
+  `recon10` (was ALIGNED-sized, so a straddling leaf wrote past the buffer or
+  wrapped a row), straddle-clipped recon writes, SB-extent-padded 10-bit
+  sources, and the pack's skip-off-frame-quadrant child walk in place of a fixed
+  `(partition_type, children.len())` offset table — which both `panic!`s on a
+  pruned child list AND, when the count happens to fit, places a
+  right-edge-pruned bottom-left child at the top-right offset.
+
+Two bugs fixed en route that were byte-inert before and would have corrupted
+after: the per-tile bd10 canvas merge read at the SB-EXTENT stride while
+`commit_leaf` writes at the ALIGNED stride, and the native-u16 source had no
+SB-extent twin (its `debug_assert_eq!(in_stride, w)` was asserting that the
+frame had no partial SB).
+
+### The residual, measured rather than asserted
+
+Data: `benchmarks/bd10_partial_sb_2026-08-04.tsv`.
+
+|  | cells | MATCH | bd10-only failures |
+|---|---|---|---|
+| bd8 @ partial-SB, p0..p8 | 594 | 565 | — |
+| bd8 @ 64-aligned, p0..p8 | 270 | 270 | — |
+| bd10 @ 64-aligned, p0..p8 | 270 | 241 | 29 = **21.5%** of non-flat cells |
+| bd10 @ partial-SB, p0..p8 | 594 | 490 | 78 = **26.3%** of non-flat cells |
+| bd10 @ 64-aligned, p9..p13 | 90 | 90 | 0 |
+| bd10 @ partial-SB, p9..p13 | 330 | 310 | 3 configs (a 4th fails at bd8 too) |
+
+Every failing cell on every grid is `gradient`; `uniform` is 100% everywhere. In
+the p0..p8 band the residual is the known bd10 NON-FLAT gap
+(`bd10_nonflat_gate.sh`, 197/309 at 64-ALIGNED dims) plus ~5 percentage points
+from partial-SB geometry. In the eff-M9 band it is four configurations, one of
+which (`gradient 48x48 q20 p9`) is localized to a bd10 MDS0 fast-cost near-tie
+on the frame's FIRST 32x32 block — a block that straddles nothing and has no
+neighbours, so no partial-SB machinery participates. A representative slice is
+PINNED self-promotingly in the gate. None of it is claimed closed;
+`docs/bd10-port-map.md` has the per-cell trail.
+
+### Safety measurement (the failure this would otherwise hide)
+
+A runtime decline — `bd10_tree_supported` false on any SB — at preset ≥ 9
+silently drops a frame to 8-bit-quantized levels under a 10-bit sequence header,
+because `bd10_levels_native` approves that band from CONFIG alone and the
+`hbd_source.is_some() && !hbd_used` backstop needs a NATIVE u16 source to fire.
+Probed 297 cells under `SVTAV1_BD10_POSTPASS=1`: `runs=true`,
+`unsupported_sbs=0/N` on all 297, and all 297 printed the diagnostic line (the
+positive control — a probe that silently never ran reports the same zero). Not
+reachable on that grid; NOT proven unreachable in general, since
+`FunnelCfg::for_preset`'s `9..=255` arm can express `tx_depth == 1`. Closing
+that hole is a standing follow-up and it PRE-DATES this work.
 
 ## 8-BIT: the comprehensive gate, and what it measures (2026-08-03)
 

@@ -17,8 +17,44 @@ Crates are not published to crates.io yet — depend by git.
   `ScSignal` structs gained fields (`enable_superres`, `superres`), which is a
   break only for out-of-crate struct literals — there are none.
 
+### Added
+
+- **10-bit encoding at NON-64-ALIGNED dimensions — the product case for 10-bit
+  AVIF** (`bd10_partial_sb_gate.sh`, **157/157 byte-identical to the C
+  reference**; every one of those cells was a refusal before). Both bd10 level
+  producers now handle partial superblocks: the full-RD funnel (preset ≤ 8),
+  which needed only the gate lifted because it rides the same partition search
+  and leaf funnel as the already-partial-SB-correct 8-bit path; and the
+  level-only re-encode post-pass (preset ≥ 9), which needed SB-extent-sized
+  recon buffers, straddle-clipped recon writes, SB-extent-padded 10-bit
+  sources, and the pack's skip-off-frame-quadrant child walk in place of a
+  fixed `(partition_type, children.len())` offset table that a pruned
+  partial-SB child list makes both `panic!`-prone and positionally wrong.
+  `bit_depth_config_error` no longer refuses ANY 10-bit configuration on
+  dimension grounds; `docs/REFUSED-CONFIGS.md` drops 12 → 10 CAPABILITY
+  refusals, and `arbitrary_size_robustness.sh` goes from 80/80 with **48
+  refused** to **128/128 with 0 refused** — those 48 are exactly these cells,
+  and every one now decodes under the AV1 reference decoder.
+  Data: `benchmarks/bd10_partial_sb_2026-08-04.tsv`; full record in
+  `docs/bd10-port-map.md`. Residual (NOT closed, pinned self-promotingly in the
+  gate): a set of non-flat cells, measured to be the known bd10 non-flat gap
+  (21.5% of non-flat cells at 64-aligned dims vs 26.3% at partial-SB dims;
+  `uniform` is 100% everywhere) rather than a partial-SB gap.
+
 ### Fixed
 
+- **The bd10 per-tile recon canvases were MERGED at the wrong stride.**
+  `commit_leaf` writes them at the ALIGNED stride (the SB-extent product exists
+  only so a right-straddle write wraps into slack rather than out of bounds),
+  but the frame merge read them at the SB-EXTENT stride. Byte-inert while every
+  gated bd10 cell had `ext_w == w`; it scrambled the 10-bit recon that the bd10
+  deblock / CDEF / Wiener searches read the moment a frame had a partial SB.
+- **The native-u16 source had no SB-extent twin.** `HbdSource` is padded
+  TRUE→ALIGNED only while `blk_y_src10` gathers by absolute coordinates, so a
+  straddling block would read past the plane or wrap into the next row. Added
+  the `sb_input` / `sb_chroma_owned` equivalents and threaded `in_stride` into
+  `FunnelSrc10`; the `debug_assert_eq!(in_stride, w, "bd10 hbd source assumes a
+  64-aligned frame")` that stood in for this is gone.
 - **Two out-of-bounds panics on the public encode API**
   (`crates/svtav1-encoder/src/intrabc_hash.rs`). C computes
   `x_end = pic_width - block_size + 1` as a SIGNED int
