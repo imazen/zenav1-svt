@@ -23,13 +23,26 @@ overturned by measurement below).
 | `max_tx_size` cap | depth refinement hardcoded 64 | unit witness; byte-neutral at default |
 | SB qindex in PD0 | partition search used the FRAME base qindex | 18/18 tune×qp recon parity |
 
-Two audit claims were MEASURED WRONG and are recorded as such:
+Three claims were MEASURED WRONG in the course of this wave and are recorded as
+such, because a status doc that only lists wins trains the next session to trust
+the audit text over measurement — which is how several of these bugs shipped:
 - the bd10 chroma recon proxy overwrite (a real dead-code defect) is
   byte-INERT on every cell reachable here, not the wide-blast-radius corruption
   the audit predicted;
 - the CDEF screen-arm port initially shipped with a VACUOUS gate — deleting the
   wiring left the whole suite green — caught by the adversarial verifier, not by
-  the port's own tests.
+  the port's own tests;
+- **my own** claim that C's `end_tx_depth` frame-boundary rule was "measured
+  unreachable". It is LIVE at preset 7. The probe behind the claim was an inline
+  shell loop that silently never ran, and `grep -c` on empty output returns 0.
+  Both the revert and the doc entry had to be undone (`4eca22119`, `d05decedf`).
+
+That last one produced two standing rules, now in `rust/CLAUDE.md`:
+**dead-looking C stays translated and documented, never reverted** (the analysis
+calling it dead is often wrong, and upstream can re-enable a path with one
+commit); and **a negative result needs an observed positive control** before it
+is trusted, since a silent harness and a genuine absence are indistinguishable
+from an exit code.
 
 Standing gap this wave did not close: there is still **no 8-bit byte-vs-C
 identity gate in CI at any preset** (`identity_matrix.sh` always exits 0 by
