@@ -3652,6 +3652,12 @@ pub(crate) struct EntropyCtx {
     /// Passed to [`EntropyCtx::new`] rather than stamped afterwards like
     /// `allow_intrabc`: a forgotten stamp here is a silent bitstream
     /// corruption, and the compiler can enforce a parameter.
+    /// ALIGNED frame extent in PIXELS (`width_4x4 * 4`). Needed by any packer
+    /// that must clip a block to the part inside the frame -- see the palette
+    /// map tokens, which C writes over `rows_within_bounds x cols_within_bounds`
+    /// (`svt_aom_get_block_dimensions`, palette.c:217-245), not the full block.
+    aligned_w_px: usize,
+    aligned_h_px: usize,
     bit_depth: u8,
     /// [SVT_HDR_MODE] per-SB delta-q emission state (C write_modes_b,
     /// entropy_coding.c:4997): `Some((delta_q_res, prev_qindex))` when the
@@ -3799,6 +3805,8 @@ impl EntropyCtx {
         let width_c4 = width_4x4.div_ceil(2);
         let height_c4 = height_4x4.div_ceil(2);
         Self {
+            aligned_w_px: width_4x4 * 4,
+            aligned_h_px: height_4x4 * 4,
             above_mode: alloc::vec![0u8; width_4x4], // DC_PRED = 0
             left_mode: alloc::vec![0u8; height_4x4],
             above_uv_mode: alloc::vec![0u8; width_4x4],
@@ -4911,8 +4919,33 @@ fn encode_block_syntax(
     if let Some((colors, idx_map)) = decision.palette.as_ref() {
         let w = decision.width as usize;
         let h = decision.height as usize;
+        // C tokenizes and packs the map over the part of the block INSIDE the
+        // frame -- `rows_within_bounds` / `cols_within_bounds` from
+        // `svt_aom_get_block_dimensions` (palette.c:217-245), derived from
+        // `mb_to_bottom_edge` / `mb_to_right_edge`, which go negative exactly
+        // when the block straddles the aligned extent. The map STRIDE stays the
+        // full block width; only the traversal shrinks.
+        //
+        // Writing the full block instead emits color-index symbols for rows and
+        // columns the decoder never reads, which desyncs the tile. That was
+        // latent while nothing straddled: 64-aligned frames have no straddling
+        // block, and before the edge-aware PD1 walk a partial SB never reached
+        // palette at presets 0..5. Enabling it turned this into three
+        // DECODE-FAILs (screen 56x56 / 120x120 / 65x257 at q20 p0).
+        let rows = h.min(ectx.aligned_h_px.saturating_sub(block_y));
+        let cols = w.min(ectx.aligned_w_px.saturating_sub(block_x));
+        debug_assert!(
+            rows >= 1 && cols >= 1,
+            "a coded block always has at least one in-frame row and column"
+        );
         svtav1_entropy::context::write_palette_map_tokens(
-            writer, frame_ctx, idx_map, w, h, w, colors.len(),
+            writer,
+            frame_ctx,
+            idx_map,
+            w,
+            rows,
+            cols,
+            colors.len(),
         );
     }
 

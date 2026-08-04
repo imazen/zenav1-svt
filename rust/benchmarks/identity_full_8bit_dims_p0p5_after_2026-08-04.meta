@@ -1,4 +1,5 @@
-AFTER the edge-aware PD1 depth-refinement walk (presets 0..5, partial SBs).
+AFTER the edge-aware PD1 depth-refinement walk AND the palette map-clip fix
+(presets 0..5, partial SBs).
 
 host:    Darwin arm64
 date:    2026-08-04
@@ -14,9 +15,9 @@ Same grid as the PRE-FIX baselines, so the columns are directly comparable:
   preset   partial-SB          64-aligned
     p0       7/36 ->  24/36      23/24 -> 23/24
     p1       7/36 ->  24/36      22/24 -> 22/24
-    p2      10/36 ->  28/36      22/24 -> 22/24
+    p2      10/36 ->  29/36      22/24 -> 22/24
     p3      11/36 ->  33/36      21/24 -> 21/24
-    p4      12/36 ->  29/36      22/24 -> 22/24
+    p4      12/36 ->  28/36      22/24 -> 22/24
     p5      25/36 ->  25/36      24/24 -> 24/24
 
 The aligned column is UNCHANGED at every preset -- the change is byte-neutral
@@ -29,3 +30,11 @@ DIFFERENT root from the one this fixed, not a weaker case of it; p5 is the last
 preset before the funnel path changes shape, so that is where to look. Not
 diagnosed here -- recorded so the next session does not assume the two are the
 same problem.
+
+UPDATE 2026-08-04 (same day): re-measured after the palette map-clip fix, which
+clips the palette color-index map to the IN-FRAME rows/cols on both the pack and
+the RD side (C `svt_aom_get_block_dimensions`). Net-neutral on the count -- p2
+gained a cell, p4 lost one, total unchanged at 297/360 -- but it is the fix that
+makes three previously UNDECODABLE partial-SB screen streams decode, so the
+count is not the point. Byte-parity could not see it: two of the three had the
+same length as C's stream.

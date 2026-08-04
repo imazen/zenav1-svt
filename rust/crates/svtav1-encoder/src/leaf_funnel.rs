@@ -4546,9 +4546,28 @@ pub(crate) fn evaluate_leaf(
                 ) as u64)
                 << 9;
             let mut map_bits = 0u64;
-            crate::palette::color_map_wavefront(&pc.idx_map, w, h, w, n, |_i, _j, ctx, idx| {
-                map_bits += rates.palette_ycolor[n - 2][ctx][idx as usize] as u64;
-            });
+            // C prices the map over the IN-FRAME part of the block, not the
+            // whole block: `get_palette_params_rate` (palette.c:569-580) fills
+            // `params->rows` / `params->cols` from `svt_aom_get_block_dimensions`
+            // -- the same `rows_within_bounds` / `cols_within_bounds` the PACK
+            // side uses (entropy_coding.c:5083). Both sides must agree, or a
+            // straddling palette block is priced over rows the writer never
+            // emits and the RD tie moves.
+            //
+            // Identical to `w`/`h` unless the block straddles the aligned
+            // extent, which only happens on a partial SB.
+            let map_rows = h.min(frame.frame_h_px.saturating_sub(abs_y));
+            let map_cols = w.min(frame.frame_w_px.saturating_sub(abs_x));
+            crate::palette::color_map_wavefront(
+                &pc.idx_map,
+                w, // stride: the FULL block width, only the traversal shrinks
+                map_rows,
+                map_cols,
+                n,
+                |_i, _j, ctx, idx| {
+                    map_bits += rates.palette_ycolor[n - 2][ctx][idx as usize] as u64;
+                },
+            );
             // Palette candidates flow through the same svt_aom_intra_fast_cost
             // else-arm tail as regular intra — the no-intrabc flag charge
             // (rd_cost.c:629-631) applies to them identically (IBC chunk 3).

@@ -78,6 +78,30 @@ noPanic() {
   fi
 }
 
+# decodes <label> <content> <w> <h> <qp> <preset> <bd>
+# Asserts the port's stream DECODES under the reference decoder.
+#
+# Byte-parity cannot express this class: a desynced stream can be the same
+# LENGTH as C's and still be undecodable (the palette map-clip bug below
+# produced 317B where C produced 317B). Skipped, loudly, when no aomdec is on
+# PATH -- a decode assertion with no decoder must never be counted as a pass.
+decodes() {
+  local label=$1 content=$2 w=$3 h=$4 qp=$5 p=$6 bd=${7:-8}
+  local dec=${AOMDEC:-$(command -v aomdec || true)}
+  if [ -z "$dec" ]; then
+    skip=$((skip+1)); skipped+=("$label (no aomdec on PATH; set AOMDEC=)")
+    return
+  fi
+  SVTAV1_BD="$bd" $LOWPRI "$RUN" "$content" "$w" "$h" "$qp" "$p" "$W/rs" >/dev/null 2>&1 || {
+    fail=$((fail+1)); failed+=("$label rs-err"); return
+  }
+  if "$dec" --summary -o /dev/null "$W/rs.obu" >/dev/null 2>&1; then
+    pass=$((pass+1))
+  else
+    fail=$((fail+1)); failed+=("$label DECODE-FAIL ($(wc -c < "$W/rs.obu" | tr -d ' ')B)")
+  fi
+}
+
 # ratio <label> <content> <w> <h> <qp> <preset> <bd> <max_abs_pct>
 # Asserts the port's stream is within <max_abs_pct> of C's SIZE.
 #
@@ -218,6 +242,24 @@ fi
 
 # 2026-07-13 — intra edge fill used 128 where the decoder replicates edges, and
 # dr_prediction_z2 had dx/dy swapped. Edge content at a low qp is the witness.
+# 2026-08-04 — palette map tokens were written over the WHOLE block, not the
+# part inside the frame. C writes `rows_within_bounds x cols_within_bounds`
+# (svt_aom_get_block_dimensions, palette.c:217-245) on BOTH the pack side
+# (entropy_coding.c:5083) and the RD side (get_palette_params_rate, :569-580);
+# the port passed the full block width/height to both. A straddling palette
+# block therefore emitted color-index symbols the decoder never reads ->
+# whole-tile desync.
+#
+# Latent until the edge-aware PD1 walk landed the same day: 64-aligned frames
+# have no straddling block, and before that walk a partial SB never reached
+# palette at presets 0..5. Enabling it produced three DECODE-FAILs in CI --
+# screen 56x56 / 120x120 / 65x257 at q20 p0. Note 65x257 and 56x56 were the
+# SAME LENGTH as C's stream while undecodable, which is exactly why these are
+# decode cells and not byte cells: byte-parity cannot see this class.
+decodes "palette-map-clip-56"   screen  56  56 20 0
+decodes "palette-map-clip-120"  screen 120 120 20 0
+decodes "palette-map-clip-65"   screen  65 257 20 0
+
 byte "intra-edge-fill"   diag 64 64 20 6
 byte "intra-edge-dr-z2"  diag 128 128 32 4
 
