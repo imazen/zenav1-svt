@@ -5785,6 +5785,26 @@ pub(crate) fn evaluate_leaf(
         // cells where C itself codes depth-2 IntraBC (q32 p0 mi(36,16) 16x16;
         // q48 p2 mi(16,0) 32x32) — which is the arbitration the earlier grind
         // said the corpus could not provide.
+        //
+        //
+        // THE ARBITRATION CASE NOW EXISTS (found 2026-08-04 with the
+        // `SVTAV1_TXDEPTH_XY` / C `SVT_TXDEPTH_XY` depth-cost pair, on a
+        // real-C drill): gb82-sc **graph.png 512x512 q63 preset 0**, block
+        // mi(8,80) — a 32x32 IntraBC leaf at (320,32), dv (0,-2496). C's
+        // stream codes it at **tx_depth 2**, so the depth-2 IBC var-tx pack
+        // chain finally has a byte-verified oracle. MEASURED depth costs,
+        // BIT-IDENTICAL on the depths both sides search:
+        //     d=0  ycb 6790  txsz 814   dist 13648528  cost 1972278747  (both)
+        //     d=1  ycb 16003 txsz 1308  dist  8029920  cost 1540665092  (both)
+        //     d=2  ycb 31118 txsz 2316  dist  4069248  cost 1511340117  (C only)
+        // so the port loses this cell purely by never SEARCHING d=2 — every
+        // term it does compute already matches C exactly. C's coded syntax
+        // for that block (from the in-source op trace, first ops after the
+        // block marker) is 5 txfm_partition flags all = 1 (one at 32x32 +
+        // four at 16x16) — i.e. a UNIFORM 8x8 tiling, the shape the port's
+        // uniform-`depth` model already represents — then per-txb
+        // all_zero / tx_type over the 16-type inter set (`CDF nsyms=16`) /
+        // `eob_pt_64` (`CDF nsyms=7`). Widen the caps against THAT stream.
         let cand_end_depth = if cands[ci].ibc.is_some() {
             if txs_active { end_tx_depth_inter(w, h, &cfg) } else { 0 }
         } else {
@@ -6213,6 +6233,24 @@ pub(crate) fn evaluate_leaf(
                 0
             };
             let cost = rdcost(lambda3, dep_bits + tx_size_bits, dep_dist);
+            // SVTAV1_TXDEPTH_XY="x,y": per-tx_depth RD terms at one pinned
+            // block ORIGIN — the port counterpart of the C
+            // `perform_tx_partitioning` depth compare
+            // (product_coding_loop.c:5425-5432), so a tx-depth flip can be
+            // attributed to the coeff rate, the tx_size rate or the
+            // distortion without re-deriving any of them.
+            #[cfg(feature = "std")]
+            {
+                static XY: std::sync::OnceLock<Option<(usize, usize)>> =
+                    std::sync::OnceLock::new();
+                if dbg_xy(&XY, "SVTAV1_TXDEPTH_XY") == Some((abs_x, abs_y)) {
+                    eprintln!(
+                        "PTXDEPTH org=({abs_x},{abs_y}) {w}x{h} d={depth} ibc={} mode={} ycb={dep_bits} txsz={tx_size_bits} dist={dep_dist} cost={cost} best={best_cost}",
+                        u8::from(cands[ci].ibc.is_some()),
+                        cands[ci].mode,
+                    );
+                }
+            }
             // Depth 0 never aborts (the abort guard is `depth > 0`), so this
             // is always populated for every candidate that reaches MDS3.
             if depth == 0 {

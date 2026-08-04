@@ -834,6 +834,34 @@ C fn(s) it ports/verifies, the gate that proves it, byte-inertness surface, size
    bilinear row-select to exact half-pel; correct only under the luma-integer-DV +
    4:2:0 invariant. A port threading the real Q4 fraction into a generic bilinear kernel
    must produce identical output — pin with an odd-DV chroma unit diff.
+13a. **TXS depth-class clamp for IBC — the arbitration case NOW EXISTS (2026-08-04).**
+   C's `get_start_end_tx_depth` (product_coding_loop.c:6728-6733) keys the TXS depth
+   caps on `is_intra_mode(cand->block_mi.mode)`, and an IntraBC candidate keeps mode
+   `DC_PRED` — so C searches IBC tx depths under the **intra** caps (2/2 at p0..p3,
+   txs_level 2), not the inter caps (1/1). `leaf_funnel.rs`'s `cand_end_depth` keeps the
+   inter caps on purpose: widening was measured to flip `windows95_p0_q20` to a byte
+   match, but any cell where the port then PICKS an IBC depth-2 winner emitted a stream
+   the decode oracle read differently (16 cells self-desync in the depth-2 inter var-tx
+   pack chain), and the note recorded that **no C stream on this corpus coded depth-2
+   IBC to arbitrate against**. One now does: **gb82-sc `graph.png` 512x512 q63 preset 0,
+   block mi(8,80)** — a 32x32 IntraBC leaf at (320,32), dv (0,-2496) — is coded by C at
+   `tx_depth 2` (EPACK `txd=2 ibc=1`). Measured per-depth RD (`SVTAV1_TXDEPTH_XY` on the
+   port vs `SVT_TXDEPTH_XY` on an instrumented C build), BIT-IDENTICAL on every depth
+   both sides search:
+
+   | depth | ycb bits | tx_size bits | dist | cost | searched by |
+   |---|---|---|---|---|---|
+   | 0 | 6790 | 814 | 13648528 | 1972278747 | C + port |
+   | 1 | 16003 | 1308 | 8029920 | 1540665092 | C + port |
+   | 2 | 31118 | 2316 | 4069248 | **1511340117** | **C only** |
+
+   So the port loses that cell purely by not SEARCHING d=2 — every term it does compute
+   already matches C exactly. C's coded syntax there is 5 `txfm_partition` flags all = 1
+   (one at 32x32 + four at 16x16), i.e. a **uniform 8x8 tiling** — the shape the port's
+   uniform-`depth` model already represents — followed by per-txb all_zero / tx_type over
+   the 16-type inter set (`CDF nsyms=16`) / `eob_pt_64` (`CDF nsyms=7`). Widen the caps
+   against THAT stream; it is the missing oracle for the var-tx pack chain.
+
 13. **The whole translation is UNVERIFIED:** treat every intrabc.rs value as a hypothesis
    until its `c_parity_*` diff lands (Chunk 2+). Citations + the level table + gates
    spot-check clean (§B.3), but runtime fidelity is unproven. aom-rs lesson: its OWN
