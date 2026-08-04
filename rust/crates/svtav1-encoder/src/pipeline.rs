@@ -7479,6 +7479,29 @@ fn encode_tile_rows(
                             // content at M0-M2 uses a lower/more-thorough level
                             // (1/1/5) that admits the depth descent the
                             // !sc_class5 level-6 row over-prunes.
+                            // ONE predicate, used by BOTH the PD0 eval that
+                            // builds the refinement scan and the PD1 walk that
+                            // consumes it. They MUST agree: if PD0 injects an
+                            // edge shape at a one-false node while the walk
+                            // force-splits it, the walk descends into a scan
+                            // node that has no children and panics.
+                            // `svt_aom_get_nsq_geom_level_allintra` returns 0
+                            // -- geometry DISABLED -- only for allintra
+                            // enc_mode > M6 (enc_mode_config.c:8240). This
+                            // branch is presets 0..=5, so geometry is always on
+                            // and a one-false node keeps its injected edge
+                            // shape.
+                            //
+                            // Do NOT reach for `NsqCfg::for_preset_qp(..).
+                            // enabled` here. That is `set_nsq_search_ctrls`
+                            // (:6496-6786) -- the SEARCH heuristics -- and it
+                            // returns `off()` at p4/p5, which is a different
+                            // statement from "no NSQ shapes exist". MEASURED
+                            // 2026-08-04: wiring it in force-split every
+                            // one-false node at p4/p5 and cost 29 cells --
+                            // partial-SB p4 28/36 -> 12/36 and p5 25/36 ->
+                            // 13/36. Search-off is not geometry-off.
+                            let nsq_geom_enabled = speed_config.preset <= 6;
                             let dr = crate::depth_refine::DrCtrls::for_preset_sc(
                                 speed_config.preset,
                                 tile_sc.classes.sc_class5,
@@ -7508,11 +7531,11 @@ fn encode_tile_rows(
                                 // (get_max_block_size_allintra base th ~0
                                 // through M7) — never on this p<=5 branch.
                                 false,
-                                // NSQ enabled: this branch is preset 0..=5
-                                // (nsq_geom_level 1/2/3), so a one-false node
-                                // keeps its edge shape. Inert here (full-SB
-                                // gated), but correct for the predicate.
-                                true,
+                                // NSQ geometry: a one-false node keeps its
+                                // edge shape when NSQ shapes exist, and
+                                // force-splits when they do not (p4/p5, where
+                                // `NsqCfg::for_preset_qp` is `off()`).
+                                nsq_geom_enabled,
                                 // ALIGNED dims — this `refined` path is
                                 // full-SB-gated (see `refined` above), so the
                                 // edge/off branches never fire; passing the
@@ -7575,7 +7598,7 @@ fn encode_tile_rows(
                                             if dr.disallow_4x4 { 8 } else { 4 },
                                             funnel_cfg.coeff_rate_est_lvl,
                                             false,
-                                            true,
+                                            nsq_geom_enabled,
                                             w,
                                             h,
                                             tile_sb_row_start * sb_size,
@@ -7707,9 +7730,23 @@ fn encode_tile_rows(
                                 // predicate. Dead on a 64-aligned frame.
                                 w,
                                 h,
-                                // NSQ geometry is enabled for every preset that
-                                // reaches this branch (0..=5).
-                                true,
+                                // Whether NSQ geometry exists at this preset,
+                                // which decides what a ONE-FALSE boundary node
+                                // does: inject the single edge shape (H/V), or
+                                // force-split like a both-false node.
+                                //
+                                // NOT hardcoded true. `NsqCfg::for_preset_qp`
+                                // returns `off()` for presets 4 and 5 (its base
+                                // table is nonzero only for 0..=3), and
+                                // `shapes_for_size` already treats `!enabled` as
+                                // square-only -- so at p4/p5 there is no legal
+                                // edge shape to inject and C force-splits.
+                                //
+                                // MEASURED: with `true` here, p5 coded a 16x8 at
+                                // (16,80) on `gradient 72x88 q20` where C splits
+                                // to two 8x8s -- the ONLY structural difference
+                                // between the port's tree and C's on that frame.
+                                nsq_geom_enabled,
                             )
                         } else {
                             // Same computation as pd0_pick_sb_partition_m6
