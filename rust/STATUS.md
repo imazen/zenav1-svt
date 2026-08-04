@@ -1,6 +1,40 @@
 # SVT-AV1 Rust Port — Status
 
-Last updated: 2026-08-03 (bd10 palette) — C baseline **v4.2.0**
+Last updated: 2026-08-03 (audit-driven port wave) — C baseline **v4.2.0**
+
+## Audit-driven port wave (2026-08-03)
+
+A full-file C-vs-Rust audit (18 domains + 4 cross-cutting verticals, each
+adversarially verified) produced a ranked backlog; this wave landed its top
+items. Reports: `/Users/lilith/tmp/svt-port-audit-2026-08-03/` (not in-tree —
+regenerate rather than trust; they are AI output and several claims were
+overturned by measurement below).
+
+| item | what it was | evidence |
+|---|---|---|
+| bd10 palette | funnel refused palette candidates at 10 bits | screen 128x128 q32: port 664B vs C 327B (p0) → byte-identical; new gate 58/58 |
+| bd10 IntraBC | funnel refused IBC candidates at 10 bits | gb82-sc corpus mean size delta **+23.58% → +0.42%**; `terminal` p2 +75.2% → −1.2% |
+| CDEF screen arm | `svt_pick_cdef_from_qp`'s screen branch unported | 10/12 preset-7 screen cells now byte-match; 512-cell C differential |
+| variance-boost normalizer | `svt_av1_normalize_sb_delta_q` missing on the MAINLINE path | recon-vs-decoder **0/60 → 60/60**; new CI gate |
+| cropped-TX distortion | `frame_geom::cropped_tx_dims` written but never called | `partial_sb_gate` **101 → 104/104** (3 straddle cells closed) |
+| WHT kernels | AV1 lossless transform absent in both directions | 12 differentials vs the real exported C symbols |
+| inter frames | emitted an UNDECODABLE stream through the public API | aomdec "Corrupt frame detected" / dav1d "No data decoded" → now refused |
+| 10/12-bit configs | emitted 8-bit-quantized levels under a 10-bit header | refused at the `encode_frame_impl` choke point |
+| `max_tx_size` cap | depth refinement hardcoded 64 | unit witness; byte-neutral at default |
+| SB qindex in PD0 | partition search used the FRAME base qindex | 18/18 tune×qp recon parity |
+
+Two audit claims were MEASURED WRONG and are recorded as such:
+- the bd10 chroma recon proxy overwrite (a real dead-code defect) is
+  byte-INERT on every cell reachable here, not the wide-blast-radius corruption
+  the audit predicted;
+- the CDEF screen-arm port initially shipped with a VACUOUS gate — deleting the
+  wiring left the whole suite green — caught by the adversarial verifier, not by
+  the port's own tests.
+
+Standing gap this wave did not close: there is still **no 8-bit byte-vs-C
+identity gate in CI at any preset** (`identity_matrix.sh` always exits 0 by
+design and is not in the workflow), so every "byte-identical" claim outside the
+CI gate list is a hand-run measurement.
 
 ## bd10 PALETTE — the M6 bd10 screen-content gap CLOSED (2026-08-03)
 
@@ -48,12 +82,13 @@ same class as `bd10_nonflat_gate`'s open cells (diag/gradient at bd10), not a
 palette issue — but it is now reproducible from synthetic content, where it
 previously needed a photo corpus.
 
-**IBC at bd10 is still gated out** (`!bd10_funnel`). No witness could be
-constructed for it: on every synthetic screen content tried, C itself codes
-ZERO IntraBC blocks and the port matches C byte-for-byte at bd8 (e.g. 256x256
-`screenrep` p0/p2 = 20097 B / 20091 B, IDENTICAL). Exercising it needs the real
-screen corpus (`SCREEN_DIR`, not present on this box). Do not port it blind —
-without a cell that fails first, a fix is a claim, not a fact.
+**IBC at bd10 — CLOSED 2026-08-03.** The witness that synthetic content could
+not provide came from the real screen corpus, which IS on this box at
+`~/work/zen/codec-corpus/gb82-sc` (the gates' `SCREEN_DIR` default points at a
+Linux path). It could not be run before because ten gate scripts hard-coded
+`nice -n 19 ionice -c3`, and `ionice` is util-linux — `nice` execs its argument
+vector, so on macOS the missing binary killed the command outright. Fixed via
+`tools/lib_nice.sh` (probes for the tool). See the port-wave table above.
 
 ### Measurement caveat for arm64 hosts
 
