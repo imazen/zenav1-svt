@@ -320,7 +320,22 @@ REMAINING (diverge, NOT in the gate — all DECODABLE):
   partial-SB PD0 variance matches C and the 96x80 search restructure can land.
 - subres off at incomplete b64 (enc_mode_config.c:7327).
 - end_tx_depth=0 for blocks touching the ALIGNED boundary
-  (product_coding_loop.c:6710-6717).
+  (product_coding_loop.c:6710-6717). **MEASURED UNREACHABLE 2026-08-03 — do not
+  "fix" this without first re-checking the premise.** The rule is real in C
+  (`if (blk_org + b{w,h} <= aligned_{w,h}) *end_tx_depth = get_end_tx_depth(...)
+  else 0`), and the port's MDS3 tx-depth selection genuinely has no boundary
+  term. But an instrumented build that logs every leaf whose `abs + dim` exceeds
+  the aligned extent, run over the straddle dims 80x88 / 104x88 / 72x88 at
+  presets 6/7/8, prints **zero** such leaves — no straddling block reaches that
+  code. Adding the term is therefore dead code, and an A/B over 48 partial-SB
+  cells ({80x88,104x88,72x88,96x80,88x72,120x104,72x120,104x72} x p{6,7,8} x
+  q{32,55}) is byte-IDENTICAL with and without it (42 match / 6 diverge, the
+  same 6 either way).
+  So the open partial-SB divergences are NOT this. Either the straddle leaves
+  are resolved before MDS3, or the port does not produce them where C does — and
+  which of those it is should be settled BEFORE anyone spends effort here. The
+  6 diverging cells above (all q55, at 80x88 / 104x88 / 72x88, p7 and p8) are
+  the concrete reproducer to drill.
 - depth-removal disabled when sb_geom requires 8x8 coverage
   (enc_mode_config.c:3253-3264 dimensions_require_8x8); allintra
   disallow_8x8 unconditionally false (:8212).
