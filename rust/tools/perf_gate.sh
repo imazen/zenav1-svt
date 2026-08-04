@@ -70,13 +70,13 @@ mkdir -p "$WORK"
 
 echo "=== perf_gate: building port example (release, NO target-cpu=native) ==="
 # `env -u RUSTFLAGS` guarantees no ambient -C target-cpu=native leaks in.
-if ! nice -n 19 ionice -c 3 env -u RUSTFLAGS \
+if ! $LOWPRI env -u RUSTFLAGS \
     cargo build --release -p zenav1-svt --example perf_encode 2>&1 | tail -3; then
     echo "perf_gate: port build failed" >&2
     exit 1
 fi
 echo "=== perf_gate: building C reference harness ==="
-if ! nice -n 19 ionice -c 3 "$HERE/perf_c_encode/build.sh" 2>&1 | tail -3; then
+if ! $LOWPRI "$HERE/perf_c_encode/build.sh" 2>&1 | tail -3; then
     echo "perf_gate: C harness build failed" >&2
     exit 1
 fi

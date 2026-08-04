@@ -17,6 +17,27 @@ Crates are not published to crates.io yet — depend by git.
   `ScSignal` structs gained fields (`enable_superres`, `superres`), which is a
   break only for out-of-crate struct literals — there are none.
 
+### Fixed
+
+- **Two out-of-bounds panics on the public encode API**
+  (`crates/svtav1-encoder/src/intrabc_hash.rs`). C computes
+  `x_end = pic_width - block_size + 1` as a SIGNED int
+  (`hash_motion.c:195-196`, `:222-223`), so a picture smaller than the hash
+  block just yields an empty loop; the port used `usize`, underflowed to ~2^64
+  and indexed off the end. A 32x32 screen frame at preset 0 panicked twice
+  (`len is 1024 but the index is 1024`, and `index 2048`). Found by the new
+  8-bit gate's dims tier — no earlier gate encoded anything below 60x60 with
+  the screen-content tools armed.
+
+### Changed
+
+- **`tools/arbitrary_size_robustness.sh` now sweeps `screen` content as well as
+  `gradient`, and adds sub-64 cells.** It previously ran gradient only, which
+  never arms the screen-content detector — so palette and IntraBC were off in
+  every cell and the gate could not reach the code paths they use. It ran
+  straight past the `intrabc_hash` panics above. A panic-freedom gate that
+  cannot arm half the encoder's tools is not a panic-freedom gate.
+
 ### Added
 
 - **A comprehensive 8-bit byte-parity gate, and CI coverage for it**

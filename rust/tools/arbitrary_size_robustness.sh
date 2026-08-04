@@ -22,7 +22,18 @@
 #   - presets 0/1/3/5 (funnel M0-M2, CfL always-on) + 6 (detector-gated) +
 #     9/13 (LPD0), across bd8 and bd10 and low/high qp.
 #
+# CONTENT (added 2026-08-03): every cell runs on BOTH `gradient` AND `screen`.
+# This gate previously encoded `gradient` only, and `gradient` never arms the
+# screen-content detector — so palette and IntraBC were switched OFF in every
+# cell and the gate could not observe the code paths they reach. That was not
+# hypothetical: `tools/identity_full_8bit.sh` found a real OOB panic in
+# `intrabc_hash.rs` on a 32x32 SCREEN frame at preset 0 (a `usize` underflow
+# where C uses a signed int), which this gate ran straight past because its
+# equivalent cells carried gradient. A panic-freedom gate that cannot arm half
+# the encoder's tools is not a panic-freedom gate.
+#
 # Env: AOMDEC (path to aomdec; auto-detected from common build dirs otherwise).
+#      ASR_CONTENTS to override the content list (default "gradient screen").
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=lib_nice.sh
@@ -42,7 +53,7 @@ command -v "$AOMDEC" >/dev/null 2>&1 || { echo "aomdec not found (set AOMDEC=/pa
 
 # Freshness: build the release runner (buffered; loud only on failure).
 _bl=$(mktemp)
-if ! CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}" nice -n 19 ionice -c 3 \
+if ! CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}" $LOWPRI \
       cargo build --release -p zenav1-svt --example identity_run >"$_bl" 2>&1; then
   cat "$_bl" >&2; rm -f "$_bl"
   echo "arbitrary_size_robustness: BUILD FAILED" >&2; exit 1
@@ -83,12 +94,23 @@ CELLS=(
   "512 384 32 3 8"                                          # SB64 control at an SB128 size
 )
 
+read -r -a CONTENTS <<<"${ASR_CONTENTS:-gradient screen}"
+
+# Sub-64 dims that specifically reproduce the intrabc_hash underflow class:
+# a picture SMALLER than a hash block, with the screen tools armed.
+CELLS+=(
+  "32 32 20 0 8"   "32 32 45 0 10"   "32 32 20 1 8"
+  "48 48 20 0 8"   "48 48 45 1 10"
+  "16 16 20 0 8"   "24 24 45 0 8"
+)
+
 pass=0; fail=0; failed=()
+for content in "${CONTENTS[@]}"; do
 for cell in "${CELLS[@]}"; do
   read -r w h qp p bd <<<"$cell"
-  tag="${w}x${h}_q${qp}_p${p}_bd${bd}"
+  tag="${content}_${w}x${h}_q${qp}_p${p}_bd${bd}"
   pfx="$OUT/$tag"
-  if ! SVTAV1_BD="$bd" timeout 180 "$BIN" gradient "$w" "$h" "$qp" "$p" "$pfx" >/dev/null 2>"$pfx.err"; then
+  if ! SVTAV1_BD="$bd" timeout 180 "$BIN" "$content" "$w" "$h" "$qp" "$p" "$pfx" >/dev/null 2>"$pfx.err"; then
     if grep -q "panicked at" "$pfx.err"; then
       fail=$((fail+1)); failed+=("$tag PANIC: $(grep -m1 'panicked at' "$pfx.err" | sed 's/.*panicked at //')")
     else
@@ -105,6 +127,7 @@ for cell in "${CELLS[@]}"; do
     fail=$((fail+1)); failed+=("$tag DECODE-FAIL")
   fi
   rm -f "$pfx.obu" "$pfx.yuv"
+done
 done
 rm -rf "$OUT"
 echo "arbitrary-size robustness: $pass / $((pass+fail)) panic-free + aomdec-decodable"
