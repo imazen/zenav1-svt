@@ -337,6 +337,29 @@ the term would fire on an 8x8 one-false node — still unreachable, because an 8
 node on an 8-aligned frame always has `hbs = 4` and both flags true, but
 unreachable for a different reason than the comment gives.
 
+**Two findings from instrumenting that node** (`SVTAV1_NSQDBG=1
+SVTAV1_DBG_MI=20,4`):
+
+1. **FIXED** — `test_split` ran its per-quadrant early exit BEFORE the in-frame
+   check, so an out-of-frame quadrant could abort the split (`NSQDBG TSX ...
+   i=2 parent=7520607 split=7576441`; i=2 is at y=88 on an 88-tall frame). Both
+   real children had already been evaluated. Byte-neutral on today's grid — 0
+   cells changed verdict — and wrong regardless.
+2. **STILL OPEN** — with that out of the way the node makes a genuine cost
+   compare and the port still keeps the parent by 0.7 %:
+
+   | | cost | components |
+   |---|---|---|
+   | parent (injected 16x8) | 7,520,607 | block 7,478,024 + part_rate **850** |
+   | split (two 8x8)        | 7,576,441 | 3,921,260 + 3,641,104 + rate **281** |
+
+   Note the rates come from the binary alike alphabet and already favour split
+   (281 vs 850); the block costs are what carry the decision. C must price that
+   16x8 higher or its two 8x8s lower. Legality is verified identical and the
+   rates are verified against `svt_aom_partition_rate_cost`, so the live
+   suspects are the `PARENT_COST_BIAS` (995) compare at a boundary node and
+   whether the refinement scan should admit depth 16 there at all.
+
 **Reproduce:** `tools/identity_diff.sh 72 88 20 5 gradient`, then
 `SVTAV1_PACKTREE=/tmp/t.txt` (delete it first — it APPENDS) for the port's tree.
 
