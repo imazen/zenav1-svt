@@ -111,12 +111,11 @@ As of 2026-08-03 there are none — 2,495 cells:
   rather than assumed to follow a neighbour.
 - **The remaining gap is presets 0..5**, in two classes: residual partial-SB
   geometry and RD divergence on two specific images.
-- **Partial-SB is now 24-33/36 across p0..p4** (was 7-12/36) after the
-  edge-aware PD1 walk; **p5 is unchanged at 25/36 and is a DIFFERENT root** —
-  p6 and p7 are byte-identical on every cell p5 fails, so it is specific to the
-  refined walk, and it is NOT about straddling leaves (four of the five failing
-  cells code zero of them, measured against a working positive control).
-  `docs/finishing-survey.md` §C2a has the table.
+- **Partial-SB is RESOLVED: 36/36 at p0/p1/p2/p3/p5 and 34/36 at p4** (was
+  7-12/36 at p0-p4, 25/36 at p5). Two roots, both in the PD1 refinement path —
+  the walk never ran on a partial SB, and a boundary PD0 leaf must never be
+  refined because C's `tested_blk[PART_N][0]` is false there.
+  `docs/finishing-survey.md` §C2a.
 - **The two images are localized, not fixed** (§C2b): preset 5 is byte-identical
   for both at every qp; the frame header matches and the divergence is entirely
   tile payload. Both screen-content tools are load-bearing — disabling palette

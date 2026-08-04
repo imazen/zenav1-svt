@@ -247,7 +247,49 @@ pointable from source alone.
   is **RULED OUT**: it landed 2026-08-03 and all ten cells still diverge with it
   live (measured 2026-08-04, positive control green). No candidate stands.
 
-### C2a. The p4/p5 straddle remainder is in the REFINED walk, not shared with p7/p8
+### C2a. Partial-SB p0..p5 — RESOLVED (36/36 at five of six presets)
+
+**Status: FIXED 2026-08-04.** Partial-SB geometry per preset (36 cells each):
+p0/p1/p2/p3/p5 are **36/36**, p4 is 34/36. Was 7-12/36 at p0-p4 and 25/36 at p5.
+64-aligned unchanged throughout. Dims tier 297/360 -> 348/360.
+
+TWO roots, both in the PD1 depth-refinement path:
+
+1. **The walk did not run at all on a partial SB.** `pipeline.rs`'s `refined`
+   required `full_sb`, so presets 0..5 dropped to the plain PD0 fixed tree — a
+   search C never runs. C runs PD0 + PD1 refinement at EVERY superblock;
+   `set_blocks_to_test` only narrows which d1 shapes a boundary node may test.
+   (This is also why every preset >= 6 was already 36/36: there C's refinement
+   degenerates to PRED_PART_ONLY, so the fixed tree IS C's answer.)
+2. **A boundary PD0 leaf must never be refined.** C's `tested_blk[PART_N][0]`
+   is FALSE at a single-edge node — `svt_aom_pick_partition_pd0` writes
+   `block_data[PART_H|PART_V][0]` and never costs the square
+   (product_coding_loop.c:10548-10560) — so every PD1 gate that reads a PD0
+   cost is skipped there (enc_dec_process.c:1550/1566/1586/1634/1698-1712/
+   1859/1868; C's comment at :1547 says why). The port had ONE `tested` flag and
+   fed the boundary RECT cost to those gates as a square PART_N cost. Now a
+   separate `sq_tested` predicate.
+
+Root 2 is what the long localization below was circling: the (16,80) node's
+16x8-vs-split cost compare was the *symptom* of a node that should not have been
+offered the choice. Everything that localization eliminated — legality, rates,
+bias, the compare itself — was correctly eliminated; the answer was one level
+up. The investigation trail is kept because the eliminations remain valid and
+the method (instrument the one disagreeing node, verify each surrounding
+quantity against C, refuse to guess) is what made root 2 recognisable when the
+workflow agent surfaced it.
+
+The `full_sb` half was found here; the `sq_tested` half came from the background
+workflow agent (worktree 6be30c662) and was reconciled onto main rather than
+merged — its base was 55 commits behind. The combination beats either input:
+the agent measured p0 26 / p2 31 / p4 32 on a base predating the palette
+map-clip, which removes a partial-SB screen failure mode worth ~10 cells.
+
+**Remaining:** 2 partial cells at p4, plus the aligned `screen` cells at
+256/384/512 which are the #71 over-picking class and not a geometry issue.
+
+<details><summary>Localization trail (kept for method; roots now known)</summary>
+
 
 MEASURED 2026-08-04, after the edge-aware PD1 walk landed. Sweeping the three
 geometries where p5 still diverges across presets 4..7 (`~/tmp/straddle.sh`,
@@ -417,6 +459,9 @@ needs: closing it should move most of the 63.
 
 The aligned failures are a separate, already-known class (#71 screen RD at large
 sizes) and are unrelated.
+
+
+</details>
 
 ### C2b. The two real-corpus images at presets 0..4 (`1028637.png`, `graph.png`)
 
