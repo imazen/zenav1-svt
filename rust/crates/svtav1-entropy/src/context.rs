@@ -909,6 +909,34 @@ pub fn partition_alike_split_cost(
     av1_cost_symbol((cdf[0] as u32).max(4 /* EC_MIN_PROB */))
 }
 
+/// Both sides of the BINARY partition alphabet C gathers at a boundary node
+/// (`svt_aom_partition_rate_cost`, rd_cost.c:1846-1863): `(edge_shape, split)`.
+///
+/// At a node with exactly one of `has_rows` / `has_cols` false the syntax is
+/// not the 10-symbol alphabet but a single bool -- "split, or the one legal
+/// edge shape" -- read from a CDF gathered onto the stack. The RD search must
+/// price BOTH sides from that same gathered pair, or it compares an edge shape
+/// against a split using two different alphabets.
+///
+/// `bottom_edge` is `!has_rows` (H is the legal shape); otherwise it is the
+/// right edge and V is legal. For the gathered 2-symbol icdf `[x, 0]`,
+/// `P(sym1 = SPLIT) = x` and `P(sym0 = shape) = 32768 - x`.
+pub fn partition_alike_costs(
+    partition_cdf_row: &[AomCdfProb],
+    bottom_edge: bool,
+    is_128: bool,
+) -> (u32, u32) {
+    let mut cdf = [0 as AomCdfProb; 3];
+    if bottom_edge {
+        partition_gather_vert_alike(&mut cdf, partition_cdf_row, is_128);
+    } else {
+        partition_gather_horz_alike(&mut cdf, partition_cdf_row, is_128);
+    }
+    let split_p = (cdf[0] as u32).max(4 /* EC_MIN_PROB */);
+    let shape_p = (32768 - cdf[0] as u32).max(4);
+    (av1_cost_symbol(shape_p), av1_cost_symbol(split_p))
+}
+
 /// Encode a skip flag using CDF.
 pub fn write_skip(w: &mut AomWriter, fc: &mut FrameContext, ctx: usize, skip: bool) {
     let sym = if skip { 1 } else { 0 };

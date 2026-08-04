@@ -1,0 +1,31 @@
+AFTER the edge-aware PD1 depth-refinement walk (presets 0..5, partial SBs).
+
+host:    Darwin arm64
+date:    2026-08-04
+command: IF_TIER=dims IF_PRESETS="1 2 3 5" ./tools/identity_full_8bit.sh
+         IF_TIER=dims IF_PRESETS="0 4"     ./tools/identity_full_8bit.sh
+grid:    15 geometries x {gradient,screen} x qp{20,48} x preset{0,1,2,3,4,5}
+         = 360 cells. 0 harness errors.
+
+Same grid as the PRE-FIX baselines, so the columns are directly comparable:
+  before p1/p2/p3/p5: identity_full_8bit_dims_p1235_2026-08-04.tsv
+  before p0/p4:       identity_full_8bit_dims_2026-08-03.tsv
+
+  preset   partial-SB          64-aligned
+    p0       7/36 ->  24/36      23/24 -> 23/24
+    p1       7/36 ->  24/36      22/24 -> 22/24
+    p2      10/36 ->  28/36      22/24 -> 22/24
+    p3      11/36 ->  33/36      21/24 -> 21/24
+    p4      12/36 ->  29/36      22/24 -> 22/24
+    p5      25/36 ->  25/36      24/24 -> 24/24
+
+The aligned column is UNCHANGED at every preset -- the change is byte-neutral
+on 64-aligned frames by construction (every edge branch is dead when both
+has_rows and has_cols are true), and this is the measurement that says so
+rather than the argument.
+
+p5 did not move. Its 11 remaining partial-SB divergences are therefore a
+DIFFERENT root from the one this fixed, not a weaker case of it; p5 is the last
+preset before the funnel path changes shape, so that is where to look. Not
+diagnosed here -- recorded so the next session does not assume the two are the
+same problem.

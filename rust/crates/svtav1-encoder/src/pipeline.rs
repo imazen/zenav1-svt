@@ -7389,11 +7389,18 @@ fn encode_tile_rows(
                             None => m6_pd0_tables
                                 .get_or_insert_with(|| crate::pd0::build_m6_pd0_tables(sb_qindex)),
                         };
-                        // The PD1 depth-refinement path (depth_refine.rs) is not
-                        // yet edge-aware, so partial SBs at presets 0..=5 fall
-                        // back to the plain PD0 fixed tree below (which carries
-                        // the forced edge splits). Full SBs are unaffected.
-                        let refined = matches!(speed_config.preset, 0..=5) && use_funnel && full_sb;
+                        // The PD1 depth-refinement walk IS edge-aware as of
+                        // 2026-08-04 (depth_refine.rs: forced split at a
+                        // both-false node, the single injected shape at a
+                        // one-false node priced from the BINARY alphabet, and
+                        // off-frame quadrants skipped), so partial SBs no
+                        // longer fall back to the plain PD0 fixed tree. That
+                        // fallback was the structural reason presets 0..=5
+                        // could not byte-match C on non-64-aligned geometry:
+                        // C runs its PD1 refinement on every SB, complete or
+                        // not, so a partial SB taking a DIFFERENT SEARCH could
+                        // only match by coincidence.
+                        let refined = matches!(speed_config.preset, 0..=5) && use_funnel;
                         if refined {
                             // M4/M5 (`dr_mode = 1`, PD0_DEPTH_ADAPTIVE):
                             // PD1 re-decides depths around the PD0 tree —
@@ -7414,8 +7421,16 @@ fn encode_tile_rows(
                                 tile_sc.classes.sc_class5,
                             );
                             let eval = crate::pd0::pd0_pick_sb_partition_m6_eval(
-                                encode_input,
-                                w,
+                                // SB-EXTENT padded plane, not the raw frame:
+                                // `compute_b64_variance` reads a full 64x64
+                                // unclamped, so a partial SB must read C's
+                                // replicated border rather than running off the
+                                // end (or stride-wrapping into the next row).
+                                // Identical to `encode_input`/`w` on a
+                                // 64-aligned frame -- `sb_input_owned` is None
+                                // there -- so this is byte-neutral.
+                                sb_input,
+                                in_stride,
                                 x0,
                                 y0,
                                 cli_qp as u32,
@@ -7487,8 +7502,8 @@ fn encode_tile_rows(
                                             continue;
                                         }
                                         crate::pd0::pd0_pick_sb_partition_m6_eval(
-                                            encode_input,
-                                            w,
+                                            sb_input,
+                                            in_stride,
                                             ux,
                                             uy,
                                             cli_qp as u32,
@@ -7594,8 +7609,8 @@ fn encode_tile_rows(
                             crate::depth_refine::decide_sb_refined(
                                 &scan,
                                 &mut fx,
-                                encode_input,
-                                w,
+                                sb_input,
+                                in_stride,
                                 &mut tile_frame_recon,
                                 w,
                                 // PD1 partition-rate lambda. C `test_depth` /
@@ -7625,6 +7640,13 @@ fn encode_tile_rows(
                                 dr.disallow_4x4,
                                 x0,
                                 y0,
+                                // ALIGNED extent for the spec-5.11.4 edge
+                                // predicate. Dead on a 64-aligned frame.
+                                w,
+                                h,
+                                // NSQ geometry is enabled for every preset that
+                                // reaches this branch (0..=5).
+                                true,
                             )
                         } else {
                             // Same computation as pd0_pick_sb_partition_m6
