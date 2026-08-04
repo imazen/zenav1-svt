@@ -101,12 +101,17 @@ jobs:
 
       - name: SIMD tier invariance (encoder bytes must not depend on dispatch tier)
         working-directory: rust
+        # ZENAV1_SKIP_CORPUS_TESTS=1: the IntraBC tier cell needs the gb82-sc
+        # corpus, which is not in-tree. The skip is set HERE, in the workflow,
+        # so it is visible in the chain rather than decided inside the test —
+        # the only form of skip this project allows. Dev hosts with the corpus
+        # run it by default.
         # Encodes real cells under EVERY archmage tier and asserts identical
         # OBUs. Every byte-parity gate here assumes the port emits one bitstream
         # per input regardless of ISA; before this test nothing checked it. It
         # is also what proved C -- not the port -- is the ISA-dependent side of
         # the bd10 preset-7 screen split (docs/SUSPECTED-C-BUGS.md #9).
-        run: cargo test -p zenav1-svt --test tier_invariance
+        run: ZENAV1_SKIP_CORPUS_TESTS=1 cargo test -p zenav1-svt --test tier_invariance
 
       - name: regression spot-check (one cell per bug ever fixed)
         working-directory: rust

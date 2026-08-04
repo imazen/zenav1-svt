@@ -286,6 +286,28 @@ else
   skip=$((skip+1)); skipped+=("ibc-outofset-txtype (no $SCREEN_DIR/graph.png)")
 fi
 
+# 2026-08-04 — extended partitions (H4/V4/HA/HB/VA/VB) panicked when a
+# STRADDLING node's tail sub-blocks fell outside the aligned frame. Such a node
+# is NOT a boundary node (has_rows && has_cols are both true) but its block
+# still reaches past the extent, so its last H4/V4 children start outside and
+# code nothing. The pack's offset table matched only the full child count and
+# `panic!("unsupported partition shape (Horz4, 3)")`.
+#
+# OBSERVED on a 512x481 luma crop of gb82-sc/graph.png at preset 2 — a PUBLIC
+# API panic on legal input, which this project's contract forbids outright.
+#
+# It survived every gate because the identity harness rejects odd dims for
+# `crop:` content ("I420 needs even dims"), so no cell could reach an
+# odd-height REAL-content frame. It was found by the IntraBC tier-invariance
+# test, which builds its own planes and never goes through that check — a
+# reminder that a harness precondition is also a coverage hole.
+#
+# Asserted here on synthetic content at the same geometry (the panic is in the
+# PACK and content-independent once the shape is picked); the real-content
+# reproducer lives in the tier gate.
+noPanic "h4-straddle-tail-481" gradient 512 481 32 2
+noPanic "h4-straddle-tail-200" gradient 256 200 32 2
+
 byte "intra-edge-fill"   diag 64 64 20 6
 byte "intra-edge-dr-z2"  diag 128 128 32 4
 

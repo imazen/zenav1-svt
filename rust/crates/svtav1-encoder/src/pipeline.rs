@@ -5723,28 +5723,47 @@ fn encode_partition_tree(
                     let quarter_h = h / 4;
                     let offsets: &[(usize, usize)] = match (ptype, n) {
                         // 2 tops (w/2 x h/2) + full-width bottom (w x h/2)
-                        (crate::partition::PartitionType::HorzA, 3) => {
+                        (crate::partition::PartitionType::HorzA, 1..=3) => {
                             &[(0, 0), (half_w, 0), (0, half_h)]
                         }
                         // full-width top + 2 bottoms
-                        (crate::partition::PartitionType::HorzB, 3) => {
+                        (crate::partition::PartitionType::HorzB, 1..=3) => {
                             &[(0, 0), (0, half_h), (half_w, half_h)]
                         }
                         // 2 lefts (w/2 x h/2) + full-height right (w/2 x h)
-                        (crate::partition::PartitionType::VertA, 3) => {
+                        (crate::partition::PartitionType::VertA, 1..=3) => {
                             &[(0, 0), (0, half_h), (half_w, 0)]
                         }
                         // full-height left + 2 rights
-                        (crate::partition::PartitionType::VertB, 3) => {
+                        (crate::partition::PartitionType::VertB, 1..=3) => {
                             &[(0, 0), (half_w, 0), (half_w, half_h)]
                         }
-                        (crate::partition::PartitionType::Horz4, 4) => &[
+                        // FEWER THAN 4 IS LEGAL AT A FRAME BOUNDARY. A node
+                        // that is not itself a boundary node (has_rows &&
+                        // has_cols both true) can still STRADDLE the aligned
+                        // extent, and then its H4/V4 sub-blocks at the tail
+                        // start outside the frame and code nothing
+                        // (`svt_aom_write_modes_sb` early return). Children are
+                        // dropped from the TAIL — highest y for H4, highest x
+                        // for V4 — so zipping the surviving children against
+                        // the full offset list pairs them correctly; a middle
+                        // child cannot be dropped while a later one survives.
+                        //
+                        // This panicked as `unsupported partition shape
+                        // (Horz4, 3)` on a 512x481 crop of gb82-sc/graph.png at
+                        // preset 2. It went unnoticed because the identity
+                        // harness rejects odd dims for `crop:` ("I420 needs
+                        // even dims"), so no gate could reach an odd-height
+                        // real-content frame — the panic was found by the new
+                        // IntraBC tier-invariance test, which builds its own
+                        // planes and therefore does not go through that check.
+                        (crate::partition::PartitionType::Horz4, 1..=4) => &[
                             (0, 0),
                             (0, quarter_h),
                             (0, 2 * quarter_h),
                             (0, 3 * quarter_h),
                         ],
-                        (crate::partition::PartitionType::Vert4, 4) => &[
+                        (crate::partition::PartitionType::Vert4, 1..=4) => &[
                             (0, 0),
                             (quarter_w, 0),
                             (2 * quarter_w, 0),

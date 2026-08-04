@@ -232,3 +232,80 @@ fn partial_superblock_output_is_tier_invariant() {
         }
     }
 }
+
+/// The REAL screen corpus, because synthetic content cannot reach IntraBC.
+///
+/// Measured and recorded elsewhere in this repo: no synthetic content codes an
+/// IntraBC block at any preset. So every test above — all of which use
+/// generated planes — leaves the entire IBC path with ZERO tier coverage, and
+/// IBC is where the most recent bitstream fix landed (the out-of-set tx-type
+/// rate). A NEON IBC kernel that is not bit-exact with its scalar twin would
+/// produce a different bitstream on ARM and nothing here would notice.
+///
+/// SKIPPING IS CALLER-CONTROLLED, never silent. The corpus is not in-tree, so
+/// this test needs a path; absent one it FAILS with instructions rather than
+/// quietly passing. CI, which has no corpus, sets `ZENAV1_SKIP_CORPUS_TESTS=1`
+/// in the workflow — a decision visible in the chain (workflow -> env -> test),
+/// which is the only form of skip this project allows.
+#[test]
+fn intrabc_output_is_tier_invariant_on_real_screen_content() {
+    if std::env::var_os("ZENAV1_SKIP_CORPUS_TESTS").is_some() {
+        eprintln!(
+            "tier_invariance: SKIPPED by ZENAV1_SKIP_CORPUS_TESTS — the IntraBC \
+             tier check did NOT run in this invocation"
+        );
+        return;
+    }
+    let root = std::env::var("ZENAV1_CORPUS_ROOT").unwrap_or_else(|_| {
+        format!("{}/work/zen/codec-corpus", std::env::var("HOME").unwrap_or_default())
+    });
+    let img = format!("{root}/gb82-sc/graph.png");
+    let path = std::path::Path::new(&img);
+    assert!(
+        path.exists(),
+        "screen corpus not found at {img}.\n\
+         Set ZENAV1_CORPUS_ROOT to a tree containing gb82-sc/graph.png, or set \
+         ZENAV1_SKIP_CORPUS_TESTS=1 to skip this check DELIBERATELY. It is not \
+         skipped by default because synthetic content never codes an IntraBC \
+         block, so this is the only tier coverage the IBC path has."
+    );
+    let (y, w, h) = decode_png_luma(path);
+    // 512x512 centre crop, matching what the identity gates feed.
+    let (cw, ch) = (512usize.min(w), 512usize.min(h));
+    let (x0, y0) = ((w - cw) / 2, (h - ch) / 2);
+    let crop: Vec<u8> = (0..ch)
+        .flat_map(|r| y[(y0 + r) * w + x0..(y0 + r) * w + x0 + cw].to_vec())
+        .collect();
+    let plane = move |_w: usize, _h: usize| crop.clone();
+    // preset 2 arms IntraBC (intrabc_level 5) and q63/q32 are where the recent
+    // IBC fix was measured.
+    for &qp in &[63u8, 32] {
+        let n = assert_tier_invariant(&format!("graph.png {cw}x{ch} q{qp} p2 bd8"), || {
+            encode_8bit(&plane, cw, ch, qp, 2)
+        });
+        assert!(n > 64, "corpus cell produced {n}B — too small to be real");
+    }
+}
+
+/// Minimal 8-bit greyscale extraction from a PNG via the `png` dev-dependency.
+fn decode_png_luma(path: &std::path::Path) -> (Vec<u8>, usize, usize) {
+    let f = std::io::BufReader::new(std::fs::File::open(path).expect("open png"));
+    let decoder = png::Decoder::new(f);
+    let mut reader = decoder.read_info().expect("png header");
+    let mut buf = vec![0u8; reader.output_buffer_size().expect("png buffer size")];
+    let info = reader.next_frame(&mut buf).expect("png frame");
+    let (w, h) = (info.width as usize, info.height as usize);
+    let ch = info.color_type.samples();
+    let y = (0..w * h)
+        .map(|i| {
+            if ch >= 3 {
+                // BT.601 luma, the same convention the identity harness uses.
+                let (r, g, b) = (buf[i * ch] as u32, buf[i * ch + 1] as u32, buf[i * ch + 2] as u32);
+                ((77 * r + 150 * g + 29 * b) >> 8) as u8
+            } else {
+                buf[i * ch]
+            }
+        })
+        .collect();
+    (y, w, h)
+}
