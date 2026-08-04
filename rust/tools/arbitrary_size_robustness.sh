@@ -104,13 +104,27 @@ CELLS+=(
   "16 16 20 0 8"   "24 24 45 0 8"
 )
 
-pass=0; fail=0; failed=()
+pass=0; fail=0; refused=0; failed=(); refused_cells=()
 for content in "${CONTENTS[@]}"; do
 for cell in "${CELLS[@]}"; do
   read -r w h qp p bd <<<"$cell"
   tag="${content}_${w}x${h}_q${qp}_p${p}_bd${bd}"
   pfx="$OUT/$tag"
-  if ! SVTAV1_BD="$bd" timeout 180 "$BIN" "$content" "$w" "$h" "$qp" "$p" "$pfx" >/dev/null 2>"$pfx.err"; then
+  SVTAV1_BD="$bd" timeout 180 "$BIN" "$content" "$w" "$h" "$qp" "$p" "$pfx" \
+    >/dev/null 2>"$pfx.err"
+  rc=$?
+  if [ "$rc" -eq 3 ]; then
+    # identity_run exit 3 = the encoder REFUSED this configuration with a typed
+    # error. That is the CORRECT behaviour for a config outside the verified
+    # envelope (rust/CLAUDE.md: refuse, never emit a plausible-but-wrong
+    # stream), so it is neither a pass nor a failure here — this gate asks
+    # "does it crash or produce an undecodable stream", and a refusal does
+    # neither. Counted and listed so a refusal can never be mistaken for
+    # coverage.
+    refused=$((refused+1)); refused_cells+=("$tag: $(sed -n 's/.*REFUSED by the encoder: //p' "$pfx.err" | head -1)")
+    continue
+  fi
+  if [ "$rc" -ne 0 ]; then
     if grep -q "panicked at" "$pfx.err"; then
       fail=$((fail+1)); failed+=("$tag PANIC: $(grep -m1 'panicked at' "$pfx.err" | sed 's/.*panicked at //')")
     else
@@ -130,5 +144,10 @@ for cell in "${CELLS[@]}"; do
 done
 done
 rm -rf "$OUT"
-echo "arbitrary-size robustness: $pass / $((pass+fail)) panic-free + aomdec-decodable"
+echo "arbitrary-size robustness: $pass / $((pass + fail)) panic-free + aomdec-decodable" \
+     "($refused refused as out-of-envelope)"
+if ((refused)); then
+  echo "  REFUSED (typed error, NOT a crash — the correct out-of-envelope behaviour):"
+  printf '    %s\n' "${refused_cells[@]}"
+fi
 if [ "$fail" -gt 0 ]; then printf 'FAILED: %s\n' "${failed[@]}"; exit 1; fi

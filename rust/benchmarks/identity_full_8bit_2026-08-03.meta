@@ -59,3 +59,27 @@ frame at preset 0, through the PUBLIC encode API:
   generate_block_hash_value              index out of bounds: len 1024, index 1024
   add_to_hash_map_by_row_with_precal     index out of bounds: len 1024, index 2048
 No earlier gate encoded anything below 60x60 with the screen-content tools armed.
+
+## REAL-CORPUS TIER (IF_TIER=real, IF_REAL_N=6): 403/450, 0 harness errors
+File: identity_full_8bit_real_2026-08-03.tsv
+18 images x 512x512 centre crop x qp {5,20,32,48,63} x preset {0,4,6,10,13}
+
+                p0      p4      p6      p10     p13
+  gb82-photo    30/30   30/30   30/30   30/30   30/30
+  CID22-photo   26/30   26/30   30/30   30/30   30/30
+  gb82-screen   10/30   11/30   30/30   30/30   30/30
+
+**At preset 6 and above the port is byte-identical to C on EVERY real image
+tested — photographic and screen, at every qp from 5 to 63.** The entire gap is
+presets 0 and 4, and it is the two already-known classes:
+
+  - gb82-screen p0/p4 (39 cells) — the #71 palette/IBC calibration class, the
+    same one tools/screen_ibc_gate.sh pins. codec_wiki and gmessages are 25/25
+    (they are the non-sc_class5 controls); graph, gui, imac_dark and imac_g3
+    diverge by roughly +-1%.
+  - CID22 1028637.png (8 cells) — a photo RD near-tie band, +-0.4%, at p0/p4
+    only. The other five CID22 images and all six gb82 photos are 25/25.
+
+Magnitudes are small and BOTH directions (the port is smaller than C about as
+often as larger), which is the signature of a near-tie rather than a systematic
+mis-cost.

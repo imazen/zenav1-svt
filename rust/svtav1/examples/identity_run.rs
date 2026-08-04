@@ -494,10 +494,10 @@ fn main() {
                 .expect("hbd 4:2:0 encode inside the documented envelope")
         }
     } else if mono {
-        pipeline.encode_frame(&y, w)
+        unwrap_or_refuse(pipeline.try_encode_frame(&y, w))
     } else {
         pipeline = pipeline.with_chroma_420(true);
-        pipeline.encode_frame_420(&y, &u, &v, w)
+        unwrap_or_refuse(pipeline.try_encode_frame_420(&y, &u, &v, w))
     };
     std::fs::write(format!("{prefix}.obu"), &obu).expect("write .obu");
 
@@ -542,5 +542,24 @@ fn main() {
              superblocks (sb128_geom::derive_super_block_size); this port emitted a valid \
              64px-SB stream that will NOT byte-match."
         );
+    }
+}
+
+/// Turn a pipeline refusal into a DISTINCT exit status instead of a panic.
+///
+/// The encoder deliberately REFUSES configurations it cannot encode faithfully
+/// (unsupported bit depth, qp 0 / lossless, an inter frame, an out-of-envelope
+/// superres) rather than emit a plausible-but-wrong stream. Going through the
+/// infallible `encode_frame*` wrappers turned every one of those into a panic
+/// via their `.expect()`, which is indistinguishable from a real crash to a
+/// harness — `tools/arbitrary_size_robustness.sh` reported 48 refusals as
+/// PANIC. Exit code 3 lets a gate tell "correctly refused" from "crashed".
+fn unwrap_or_refuse(r: svtav1_encoder::EncodeResult<Vec<u8>>) -> Vec<u8> {
+    match r {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("identity_run: REFUSED by the encoder: {e}");
+            std::process::exit(3);
+        }
     }
 }

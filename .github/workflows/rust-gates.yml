@@ -128,6 +128,46 @@ jobs:
         run: |
           ./tools/screen_palette_bd_gate.sh
 
+      - name: partial-SB / odd-dimension identity (8-bit)
+        working-directory: rust
+        # 104 cells: partial superblocks, odd dims, straddle and both-partial
+        # geometry vs the C oracle. A real pass/fail gate since it was written
+        # (its last statement is `[ "$fail" -eq 0 ]`) — it was simply never
+        # wired here.
+        run: |
+          ./tools/partial_sb_gate.sh
+
+      - name: tile identity — rows AND columns (8-bit)
+        working-directory: rust
+        # 29 cells across TileRowsLog2 x TileColsLog2 on divisible and ragged
+        # SB grids, each asserting the C oracle's bytes actually CHANGED under
+        # the tile request (anti-vacuity: both log2s clamp to the geometry, so
+        # an unhonourable request silently yields a single-tile encode) and
+        # that aomdec accepts the port's stream.
+        run: |
+          AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" ./tools/tile_gate.sh
+
+      - name: SB128 identity — allintra M0/M1 above 240p (8-bit)
+        working-directory: rust
+        # 22 cells. Each asserts the oracle really emitted a 128px superblock,
+        # so a mis-sized cell fails loudly instead of silently testing SB64.
+        # The gb82-sc cells drop with a loud warning when SC_CORPUS is absent,
+        # which it is here — that decision is made in the script, not buried
+        # in a silently-skipping cell.
+        run: |
+          AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" ./tools/sb128_gate.sh
+
+      - name: arbitrary-size robustness — panic-free + decodable
+        working-directory: rust
+        # 128 cells (gradient AND screen) x arbitrary/odd/partial/sub-64 dims.
+        # This is the gate that must catch a crash on the public API. It ran
+        # gradient-only until 2026-08-03, so palette and IntraBC were switched
+        # off in every cell — and it sailed past two real OOB panics that the
+        # 8-bit identity gate then found on a 32x32 SCREEN frame.
+        # A refusal (typed error, exit 3) is reported separately from a crash.
+        run: |
+          AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" ./tools/arbitrary_size_robustness.sh
+
       - name: superres identity + conformance (chunk B.3)
         working-directory: rust
         # Byte-parity vs C at SUPERRES_FIXED + decodability at the UPSCALED
