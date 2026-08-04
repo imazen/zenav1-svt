@@ -272,12 +272,26 @@ That is a much tighter target than "partial SB at low preset", and it is why p5
 did not move at all when the edge rules landed: the edge rules only fire at
 boundary nodes, and these are not boundary nodes.
 
-Where to look, in order: whether the refined path's leaf evaluations receive the
-cropped-TX spatial distortion (`frame.frame_w_px` / `frame_h_px` →
-`cropped_tx_dims{,_uv}`) that the fixed-tree path gets — a straddling block
-priced over its pad rows is exactly the failure the crop fixed for p6 at q55,
-and the qp-dependence here (q48 failing where q20 passes on 72x88/80x88 at p4)
-has the same signature.
+**Candidate 1 (cropped-TX distortion) is RULED OUT.** The obvious suspect was
+that the refined path's leaves miss the cropped-TX spatial distortion the
+fixed-tree path gets — a straddling block priced over its pad rows is exactly
+the failure the crop fixed for p6 at q55, and the qp-dependence here (q48
+failing where q20 passes on 72x88/80x88 at p4) has the same signature. Checked
+by reading the call chain: `depth_refine.rs:1788` calls
+`leaf_funnel::evaluate_leaf`, and the crop is computed INSIDE that function
+(`leaf_funnel.rs:3627` `uv_crop`, `:3634` `blk_crop`, both from the shared
+`FunnelFrame`'s `frame_w_px`/`frame_h_px`). Both paths therefore get it. Not
+the root.
+
+Remaining candidates, untested: the walk's `test_split` early-exit thresholds
+and parent-vs-split compare at a node whose children straddle (the child RD sums
+include pad-region cost that C's may not); the PD0 `Pd0Eval` costs feeding
+`build_refined_scan_at` at a straddling node (PD0's `block_cost` reads a full
+`sq_size` block from the padded plane — correct for C, but the refinement GATES
+compare those costs against thresholds); and the NSQ shape gates at a straddling
+node. The discriminator to reach for first is which SB the first divergence
+lands in — `SVTAV1_PACKTREE` gives the port's tree, but the C-side tree needs
+the `-Wl,--wrap` PICKPART dump, i.e. a GNU-ld host.
 
 ### C2b. The two real-corpus images at presets 0..4 (`1028637.png`, `graph.png`)
 
