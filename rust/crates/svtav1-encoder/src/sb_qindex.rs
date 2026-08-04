@@ -136,6 +136,56 @@ pub struct SbQindexPlan {
     pub delta_q_res: u8,
 }
 
+/// C `svt_av1_normalize_sb_delta_q` (rc_aq.c:827-868) — MAINLINE, and shared:
+/// this is the ONE definition in the C tree (it sits outside every
+/// `#if SVT_HDR_MODE` block, unlike `svt_av1_variance_adjust_qp` /
+/// `av1_get_deltaq_sb_variance_boost`, which are defined twice), so BOTH the
+/// fork and the mainline arm below call it — exactly like the single C call
+/// site in `generate_sb_qindex` (rc_process.c:741-744), which runs
+/// unconditionally after `svt_av1_rc_init_sb_qindex` whenever
+/// `delta_q_present && delta_q_res != 1`.
+///
+/// It snaps every SB qindex onto the residue class of the FRAME base modulo
+/// `delta_q_res`, which is what makes the pack's TRUNCATING integer divide
+/// `(cur - prev) / delta_q_res` (entropy_coding.c:5002) exact. Without it the
+/// encoder stores `prev = cur` while a conforming decoder stores
+/// `prev = prev + reduced * delta_q_res` — the residues never cancel, so the
+/// error COMPOUNDS across the SB raster and the two sides dequantize with
+/// different qindexes. That is a corruption class, not a rate inefficiency.
+///
+/// `base_q_idx` is whatever the FRAME HEADER will signal — which differs by
+/// mode, and is why this takes it as a parameter rather than reading a
+/// "normalized base": the fork arm resignals the recentered base
+/// (rc_aq.c:293-299, `if (readjust_base_q_idx)`), while MAINLINE never touches
+/// `ppcs->frm_hdr.quantization_params.base_q_idx` at all (rc_aq.c:455 is
+/// `(void)readjust_base_q_idx`), so the mainline call must key on the ORIGINAL
+/// frame base. Keying mainline on the recentered value would put every SB in
+/// the wrong residue class and reintroduce the same drift.
+///
+/// C exactness notes: `mask = ~(delta_q_res - 1)` is a `uint8_t` there, so
+/// `adjusted & mask` clears the low `log2(res)` bits of a value already
+/// clamped to `1..=255` — identical to the `i32` `!(res - 1)` used here for
+/// every reachable input. `normalized == 0` (reachable only when
+/// `adjusted < res` and the base's remainder is 0) is remapped to `delta_q_res`
+/// because qindex 0 means lossless.
+pub fn normalize_sb_delta_q(base_q_idx: u8, delta_q_res: u8, sb_qindex: &mut [i32]) {
+    debug_assert!(
+        matches!(delta_q_res, 2 | 4 | 8),
+        "C asserts res in {{2,4,8}}"
+    );
+    let res = i32::from(delta_q_res);
+    let mask = !(res - 1);
+    let remainder = i32::from(base_q_idx) & !mask;
+    // Push each SB toward the nearest multiple of `res` RELATIVE to the base
+    // before truncating (C's `(res - remainder) - (res / 2)`).
+    let adjustment = (res - remainder) - (res / 2);
+    for q in sb_qindex.iter_mut() {
+        let adjusted = (*q + adjustment).clamp(1, MAXQ);
+        let normalized = (adjusted & mask) + remainder;
+        *q = if normalized == 0 { res } else { normalized };
+    }
+}
+
 /// C `get_delta_q_res` (resource_coordination_process.c:319).
 pub fn delta_q_res_for(cli_qp: u8, enable_variance_boost: bool) -> u8 {
     if !enable_variance_boost {
@@ -195,20 +245,32 @@ pub fn variance_adjust_qp_mainline(
     }
     let range = (max_q - min_q).min(max_range);
     let normalized_base = min_q + (range >> 1);
-    let plan: alloc::vec::Vec<u8> = sbq
-        .iter()
-        .map(|&q| {
-            let offset = (q - normalized_base).clamp(-(max_range >> 1), max_range >> 1);
-            (normalized_base + offset).clamp(1, MAXQ) as u8
-        })
-        .collect();
+    for q in sbq.iter_mut() {
+        let offset = (*q - normalized_base).clamp(-(max_range >> 1), max_range >> 1);
+        *q = (normalized_base + offset).clamp(1, MAXQ);
+    }
+
+    // C `generate_sb_qindex` (rc_process.c:741-744) — MAINLINE, outside every
+    // `#if SVT_HDR_MODE` block: `svt_av1_rc_init_sb_qindex` (which is where the
+    // boost above lives) is ALWAYS followed by
+    // `if (delta_q_present && delta_q_res != 1) svt_av1_normalize_sb_delta_q(pcs)`.
+    // Skipping it desynchronizes the encoder from a conforming decoder (see
+    // [`normalize_sb_delta_q`]). The base handed in is the ORIGINAL frame base,
+    // because mainline never resignals it (rc_aq.c:455 `(void)readjust_base_q_idx`)
+    // — `normalized_base` above only re-expresses the per-SB offsets and is NOT
+    // what the frame header carries on this path.
+    let res = delta_q_res_for(cli_qp, true);
+    if res != 1 {
+        normalize_sb_delta_q(base_qindex, res, &mut sbq);
+    }
+
     SbQindexPlan {
         // MAINLINE keeps the frame base as-is: C's `readjust_base_q_idx` is
         // `(void)`-ignored (rc_aq.c:455), so `normalized_base_q_idx` only
         // re-expresses the per-SB values. (The fork path DOES resignal it.)
         base_qindex,
-        delta_q_res: delta_q_res_for(cli_qp, true),
-        sb_qindex: plan,
+        delta_q_res: res,
+        sb_qindex: sbq.iter().map(|&q| q as u8).collect(),
     }
 }
 
@@ -263,18 +325,14 @@ pub fn variance_adjust_qp(
         *q = (normalized_base + offset).clamp(1, MAXQ);
     }
 
-    // delta_q_res normalization (svt_av1_normalize_sb_delta_q), res != 1.
+    // delta_q_res normalization (svt_av1_normalize_sb_delta_q, rc_aq.c:830 —
+    // the same single C function the mainline arm calls; see
+    // [`normalize_sb_delta_q`]). The FORK resignals the recentered base
+    // (rc_aq.c:293-299), so THIS arm keys the residue class on
+    // `normalized_base` — that is the value its frame header carries.
     let res = delta_q_res_for(cli_qp, true);
     if res != 1 {
-        let resi = i32::from(res);
-        let mask = !(resi - 1);
-        let remainder = normalized_base & !mask;
-        let adjustment = (resi - remainder) - (resi / 2);
-        for q in sbq.iter_mut() {
-            let adjusted = (*q + adjustment).clamp(1, MAXQ);
-            let normalized = (adjusted & mask) + remainder;
-            *q = if normalized == 0 { resi } else { normalized };
-        }
+        normalize_sb_delta_q(normalized_base as u8, res, &mut sbq);
     }
 
     SbQindexPlan {
@@ -340,6 +398,57 @@ mod tests {
         assert!(plan.sb_qindex.iter().all(|&q| q == plan.base_qindex));
         assert!(plan.base_qindex < 200, "flat content must boost (lower q)");
         assert_eq!(plan.delta_q_res, 1);
+    }
+
+    /// The mainline arm must run `svt_av1_normalize_sb_delta_q`
+    /// (rc_process.c:741-744), keyed on the ORIGINAL frame base — which is what
+    /// mainline signals, since rc_aq.c:455 `(void)`s `readjust_base_q_idx`.
+    ///
+    /// Chosen so the two candidate bases land in DIFFERENT residue classes:
+    /// cli_qp 55 -> base qindex 220, res 8, 220 % 8 == 4, while the recentered
+    /// base the boost computes is a different value mod 8. Keying on the
+    /// recentered base (i.e. copying the fork arm verbatim) fails this.
+    #[test]
+    fn mainline_plan_is_congruent_to_the_signalled_base() {
+        let flat = crate::pd0::SbVariance([2u16; 85]);
+        let tex = crate::pd0::SbVariance([3000u16; 85]);
+        let mid = crate::pd0::SbVariance([48u16; 85]);
+        let vars = [flat, mid.clone(), tex, mid];
+        let base = crate::rate_control::qp_to_qindex(55);
+        assert_eq!(base, 220);
+        let plan = variance_adjust_qp_mainline(base, &vars, 3, 6, 2, 55, 8);
+        assert_eq!(plan.delta_q_res, 8);
+        assert_eq!(plan.base_qindex, base, "mainline never resignals the base");
+        // Non-vacuity: the boost must actually spread the SBs apart.
+        assert!(plan.sb_qindex.iter().any(|&q| q != plan.sb_qindex[0]));
+        for (i, &q) in plan.sb_qindex.iter().enumerate() {
+            assert_eq!(
+                (i32::from(q) - i32::from(base)).rem_euclid(8),
+                0,
+                "sb {i} qindex {q} is not congruent to base {base} mod 8 — the \
+                 pack's truncating (cur-prev)/res would desync the decoder"
+            );
+        }
+    }
+
+    /// The helper is the port of the ONE C definition (rc_aq.c:830); pin its
+    /// two hand-traceable edge behaviors: the `normalized == 0` -> `delta_q_res`
+    /// remap (qindex 0 is lossless), and the nonzero-remainder residue class.
+    #[test]
+    fn normalize_sb_delta_q_edges() {
+        // base 8 (remainder 0), res 8: adjustment = (8-0)-4 = 4.
+        // q=1 -> adjusted 5 -> 5 & !7 = 0 -> +0 = 0 -> remapped to res (8).
+        let mut q = [1i32];
+        normalize_sb_delta_q(8, 8, &mut q);
+        assert_eq!(q, [8]);
+        // base 220 (220 % 8 == 4), res 8: adjustment = (8-4)-4 = 0.
+        // q=200 -> 200 & !7 = 200 -> +4 = 204 == 220 - 16 (same class).
+        let mut q = [200i32, 221, 255];
+        normalize_sb_delta_q(220, 8, &mut q);
+        assert_eq!(q, [204, 220, 252]);
+        for &v in &q {
+            assert_eq!((v - 220).rem_euclid(8), 0);
+        }
     }
 
     #[test]

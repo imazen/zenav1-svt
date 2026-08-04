@@ -2448,3 +2448,53 @@ void ref_interpolate_core(const uint8_t* input, int32_t in_length, uint8_t* outp
     }
     svt_av1_interpolate_core_c(input, in_length, output, out_length, f);
 }
+
+/* ---- svt_av1_normalize_sb_delta_q (rc_aq.c:830, EXPORTED) ---- */
+#include "rc_process.h" /* svt_av1_normalize_sb_delta_q */
+
+/* Drives the REAL C delta-q normalizer over calloc'd PictureControlSet /
+ * PictureParentControlSet / SequenceControlSet shells plus a SuperBlock array
+ * carrying the qindexes — the same shell pattern the IntraBC shims above use.
+ * There is only ONE definition of this function in the C tree (it lives
+ * OUTSIDE every `#if SVT_HDR_MODE` block, unlike svt_av1_variance_adjust_qp),
+ * so this shim is the oracle for BOTH the fork and the mainline Rust arms.
+ *
+ * The function reads ppcs->frm_hdr.delta_q_params.delta_q_res,
+ * ppcs->frm_hdr.quantization_params.base_q_idx, ppcs->frame_superres_enabled,
+ * ppcs->frame_resize_enabled, scs->sb_total_count, and rewrites
+ * pcs->sb_ptr_array[i]->qindex in place. superres/resize stay 0 (calloc) —
+ * the still/AVIF path — so sb_cnt == scs->sb_total_count.
+ *
+ * `qindexes` is IN/OUT: caller-supplied per-SB qindexes, overwritten with the
+ * normalized values. */
+void ref_normalize_sb_delta_q(uint8_t base_q_idx, uint8_t delta_q_res, uint8_t* qindexes,
+                              uint16_t sb_count) {
+    PictureParentControlSet* ppcs = (PictureParentControlSet*)calloc(1, sizeof(*ppcs));
+    PictureControlSet*       pcs  = (PictureControlSet*)calloc(1, sizeof(*pcs));
+    SequenceControlSet*      scs  = (SequenceControlSet*)calloc(1, sizeof(*scs));
+    SuperBlock*              sbs  = (SuperBlock*)calloc(sb_count, sizeof(SuperBlock));
+    SuperBlock**             arr  = (SuperBlock**)calloc(sb_count, sizeof(SuperBlock*));
+
+    pcs->ppcs                                    = ppcs;
+    ppcs->scs                                    = scs;
+    ppcs->frm_hdr.quantization_params.base_q_idx = base_q_idx;
+    ppcs->frm_hdr.delta_q_params.delta_q_res     = delta_q_res;
+    ppcs->frm_hdr.delta_q_params.delta_q_present = 1;
+    scs->sb_total_count                          = sb_count;
+    for (uint16_t i = 0; i < sb_count; i++) {
+        sbs[i].qindex = qindexes[i];
+        arr[i]        = &sbs[i];
+    }
+    pcs->sb_ptr_array = arr;
+
+    svt_av1_normalize_sb_delta_q(pcs);
+
+    for (uint16_t i = 0; i < sb_count; i++) {
+        qindexes[i] = sbs[i].qindex;
+    }
+    free(arr);
+    free(sbs);
+    free(scs);
+    free(pcs);
+    free(ppcs);
+}

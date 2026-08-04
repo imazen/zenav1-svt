@@ -559,6 +559,25 @@ pub fn sub_mean_squared_8x8(block: &[u8], stride: u32) -> u64 {
 }
 
 unsafe extern "C" {
+    fn ref_normalize_sb_delta_q(base_q_idx: u8, delta_q_res: u8, qindexes: *mut u8, sb_count: u16);
+}
+
+/// C `svt_av1_normalize_sb_delta_q` (rc_aq.c:830) driven over a shim-built
+/// `PictureControlSet` shell. The ONE definition in the C tree (outside every
+/// `#if SVT_HDR_MODE` block), so it is the oracle for both port arms.
+///
+/// `sb_qindex` is rewritten in place with the normalized values. `delta_q_res`
+/// must be 2, 4 or 8 (C asserts it).
+pub fn normalize_sb_delta_q(base_q_idx: u8, delta_q_res: u8, sb_qindex: &mut [u8]) {
+    assert!(
+        matches!(delta_q_res, 2 | 4 | 8),
+        "C asserts delta_q_res in {{2,4,8}}"
+    );
+    let n = u16::try_from(sb_qindex.len()).expect("sb_count fits u16 (C sb_total_count is u16)");
+    unsafe { ref_normalize_sb_delta_q(base_q_idx, delta_q_res, sb_qindex.as_mut_ptr(), n) }
+}
+
+unsafe extern "C" {
     fn ref_noise_normalization(
         dequant_dc: i16,
         dequant_ac: i16,

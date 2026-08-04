@@ -122,6 +122,17 @@ jobs:
         run: |
           AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" ./tools/recon_parity.sh
 
+      - name: Variance-boost delta-q recon parity (mainline, tune IQ)
+        working-directory: rust
+        # The default recon-parity matrix never signals per-SB delta-q
+        # (tune PSNR => enable_variance_boost false), so it cannot see a
+        # delta-q desync. This cell arms tune IQ at qp >= 20 so
+        # delta_q_res >= 2 and checks that every planned SB qindex survives
+        # the pack's truncating (cur-prev)/delta_q_res against the decoder's
+        # prev + reduced*delta_q_res accumulator. Fails vacuous runs (exit 2).
+        run: |
+          AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" ./tools/variance_boost_recon.sh
+
       # Performance ratchet intentionally NOT run here: shared runners are
       # too noisy for the <=1.20x wall-time gate; it runs on the fixed HW
       # matrix (see benchmarks/*.meta for the current measured baselines).

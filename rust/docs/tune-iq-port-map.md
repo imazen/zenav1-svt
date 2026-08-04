@@ -83,6 +83,75 @@ exactly (65B == 65B, was 64B vs 65B) and the first divergence moved from
 flag, the delta-q value AND its sign, the y-mode, and ~190 coefficient symbols
 now all match C.
 
+## Follow-up (2026-08-03): the mainline arm was still missing the NORMALIZER
+
+The 2026-07-25 fix above ported the mainline boost KERNEL, but not the step C
+runs immediately after it. `generate_sb_qindex` (rc_process.c:734-748) is:
+
+```c
+svt_av1_rc_init_sb_qindex(pcs, scs);
+if (ppcs->frm_hdr.delta_q_params.delta_q_present && ppcs->frm_hdr.delta_q_params.delta_q_res != 1) {
+    svt_av1_normalize_sb_delta_q(pcs);
+}
+```
+
+Both lines are MAINLINE — outside every `#if SVT_HDR_MODE` block. And unlike
+`svt_av1_variance_adjust_qp` / `av1_get_deltaq_sb_variance_boost`,
+`svt_av1_normalize_sb_delta_q` has exactly ONE definition in the tree
+(rc_aq.c:827-868, confirmed with `grep -n` + the enclosing `#if` map), so the
+same function serves both builds.
+
+It snaps every SB qindex onto the residue class of the FRAME base mod
+`delta_q_res`. That is what makes the pack's TRUNCATING divide exact: the writer
+emits `(cur - prev) / delta_q_res` and stores `prev = cur`
+(entropy_coding.c:4996-5015), while a conforming decoder stores
+`prev = prev + reduced * delta_q_res` (spec 5.11.41). Off the residue class the
+remainder is dropped by the divide and never restored, and because `prev`
+carries forward, **the error COMPOUNDS across the SB raster** — encoder and
+decoder dequantize different SBs with different qindexes. Corruption class, not
+a rate inefficiency.
+
+**Which base the normalizer keys on differs by mode, and copying the fork arm
+verbatim is a second, subtler bug.** The fork resignals the recentered base
+(rc_aq.c:293-299, `if (readjust_base_q_idx) ppcs->frm_hdr.quantization_params
+.base_q_idx = normalized_base_q_idx;`), so when the normalizer reads
+`base_q_idx` it sees the recentered value. Mainline never writes it back
+(rc_aq.c:455 is `(void)readjust_base_q_idx`), so the normalizer sees the
+ORIGINAL frame base — which is also what the frame header signals and what the
+pack's `prev` is initialised to. Keying mainline on the recentered value puts
+every SB in the wrong class and reintroduces the same drift.
+
+Landed as `sb_qindex::normalize_sb_delta_q(base_q_idx, delta_q_res, &mut sbq)`
+— one Rust definition mirroring C's one definition — called from
+`variance_adjust_qp_mainline` with the ORIGINAL base and from the fork
+`variance_adjust_qp` with `normalized_base` (the fork arm's inline copy was
+replaced by the call; byte-identical).
+
+Reachability: `HdrForkConfig::apply_tune_overrides` sets
+`enable_variance_boost = true` for TUNE_IQ / TUNE_MS_SSIM regardless of mode
+(hdr_mode.rs:330-346) and the pipeline calls it unconditionally, so plain
+MAINLINE + `hdr.tune = 3` at CLI qp >= 20 (qindex >= 80 => `delta_q_res >= 2`)
+hits it.
+
+MEASURED (2026-08-03):
+
+| evidence | before (normalizer skipped) | after |
+|---|---|---|
+| `tools/variance_boost_recon.sh` (60 cells: 2 contents x 3 sizes x qp{20,30,40,55,63} x preset{6,10}) | **0 passed, 60 failed** — up to 11.9k luma px + 5.8k chroma px per cell diverge between encoder recon and aomdec; 256/440 planned SB qindexes outside the base residue class | **60 passed, 0 failed**; 0 residue violations |
+| `c_parity_sb_qindex::normalize_sb_delta_q_matches_c_exhaustive` (base 1..=255 x res{2,4,8} x qindex 1..=255 vs the real exported C via `ref_normalize_sb_delta_q`) | n/a (new) | pass |
+| `c_parity_sb_qindex::mainline_plan_survives_c_pack_decoder_roundtrip` | FAIL: "qp 20 res 2 sb 8: decoder reconstructs 72, encoder used 71" | pass |
+| `tools/identity_matrix.sh` default 54 cells (tune PSNR => boost off) | 54/54 identical | 54/54 identical (change is inert with the boost off) |
+| `tools/recon_parity.sh` | 432/432 | 432/432 |
+
+Example failing plan at qp 40 (base 160, res 8): `[99, 160, 105, 99]` — 99 % 8
+== 3 and 105 % 8 == 1, neither congruent to 160 % 8 == 0. After the fix every
+entry is congruent.
+
+The C oracle is a new `ref_normalize_sb_delta_q` shim that callocs
+pcs/ppcs/scs + a `SuperBlock` array and calls the real exported symbol (the
+same shell pattern the IntraBC shims use) — strongest evidence tier, not
+hand-derived vectors.
+
 ## The one remaining symbol
 
 At op 197 both encoders are deep in a run of 4-symbol coefficient CDFs; C codes

@@ -69,3 +69,10 @@ identity w="64" h="64" qp="40" preset="13" content="uniform":
 # RIM_IMAGES, RIM_PRESETS, RIM_QPS, RIM_CELL_TIMEOUT (see the script header).
 real-identity suffix="latest":
     tools/real_image_matrix.sh {{suffix}}
+
+# Recon-parity gate for the MAINLINE variance-boost per-SB delta-q path
+# (tune IQ => enable_variance_boost, qp >= 20 => delta_q_res >= 2). Proves the
+# planned SB qindexes survive the pack's truncating (cur-prev)/delta_q_res and
+# the decoder's prev + reduced*delta_q_res accumulator. Needs aomdec (AOMDEC=).
+variance-boost-recon outdir="target/variance_boost_recon":
+    tools/variance_boost_recon.sh {{outdir}}
