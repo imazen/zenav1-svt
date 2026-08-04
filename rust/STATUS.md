@@ -116,13 +116,18 @@ As of 2026-08-03 there are none — 2,495 cells:
   the walk never ran on a partial SB, and a boundary PD0 leaf must never be
   refined because C's `tested_blk[PART_N][0]` is false there.
   `docs/finishing-survey.md` §C2a.
-- **The two images are localized, not fixed** (§C2b): preset 5 is byte-identical
-  for both at every qp; the frame header matches and the divergence is entirely
-  tile payload. Both screen-content tools are load-bearing — disabling palette
-  costs 8-10 % in bytes and moves the port FURTHER from C — so the convenient
+- **The two images: one cell of graph.png closed, the rest still open** (§C2b).
+  `graph.png 512x512 q63 p2` (C=252B/port=252B, same length, differing from
+  offset 160) is byte-identical after the IntraBC out-of-set tx-type fix. The
+  other 29 graph cells and the photo's p0..p4 cells still diverge. Preset 5 is
+  byte-identical for both images at every qp; headers match and the divergence
+  is entirely tile payload. Both screen tools are load-bearing — disabling
+  palette costs 8-10 % and moves the port FURTHER from C — so the convenient
   "#71 over-picking" reading is refuted for these cells.
 
-Default gate: **1036/1036 + 4 pinned, 0 harness errors.**
+Default gate: **1038/1038 + 2 pinned, 0 harness errors.** (Two #71 pins were
+promoted 2026-08-04 when the luma-palette uv-flag row was corrected — the
+self-promoting pin doing its job.)
 
 ### How the coverage hole was found (the p1/p2/p3/p7 audit)
 

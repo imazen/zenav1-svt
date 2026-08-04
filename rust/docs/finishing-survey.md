@@ -465,43 +465,22 @@ sizes) and are unrelated.
 
 ### C2b. The two real-corpus images at presets 0..4 (`1028637.png`, `graph.png`)
 
-MEASURED 2026-08-04 (512x512 centre crop, presets 0..5 x qp{5,20,32,48,63},
-`~/tmp/two_images.sh`; the corpus paths are `codec-corpus/CID22/CID22-512/
-training/` and `codec-corpus/gb82-sc/`):
+**One cell CLOSED 2026-08-04.** `graph.png 512x512 q63 p2` — the cleanest
+localization target (C=252B / port=252B, same length, first differing byte 160)
+— is byte-identical after the IntraBC out-of-set tx-type fix (see the registry
+cell `ibc-outofset-txtype`). C's tx-type rate tables are TX-TYPE-indexed and
+only scatter costs into the queried set, so an out-of-set query reads a literal
+0; the port's symbol-indexed tables returned symbol 0's real rate.
 
-- **preset 5 is byte-identical for BOTH images at every qp** (10/10 cells). The
-  divergence is confined to presets 0..4.
-- `1028637.png` (CID22 photo): q63 identical at every preset; q5/q20/q32/q48
-  diverge at p0..p4.
-- `graph.png` (gb82-sc screen): identical at q63 for p1/p3/p4 and at every qp
-  for p5; the rest diverge.
-- Where the lengths match closely enough for the field walk to run, **the frame
-  header is byte-identical and the divergence is entirely tile payload** (e.g.
-  `graph q63 p2`: C=252B port=252B, headers identical, first differing byte 160
-  of 252). So this is an RD-decision divergence, not a syntax or header bug.
-
-**Both screen-content tools are LOAD-BEARING and neither is simply
-over-picking.** Bisected with the new `SVTAV1_SC_TOOLS` knob (see below), on
-`graph.png`:
-
-| cell | default | palette off | IBC off | both off |
-|---|---|---|---|---|
-| q32 p0 (C=3781B) | 3792 | **4186** | 3792 | 4178 |
-| q32 p2 (C=4002B) | 3990 | **4304** | 3998 | 4353 |
-| q32 p4 (C=4093B) | 4087 | **4472** | 4111 | 4573 |
-
-Turning palette off costs 8-10 % in bytes and moves the port much FURTHER from
-C, so the port's palette is winning real RD rather than winning spuriously. IBC
-is inert at p0 q32 (identical byte count with it off) and active from p2 up.
-This refutes the convenient reading that the screen divergence is #71
-over-picking at these cells; the port is close to C in SIZE and differs in
-WHICH decisions it makes.
-
-**Not localized further here, and the reason is a real constraint:** this host
-is aarch64/ld64, so `capture_c_trace` has no `-Wl,--wrap` op trace and
-`identity_diff.sh` degrades to byte + header-field comparison. Symbol-level
-localization of a tile-payload flip needs a GNU-ld host. The next step is that
-trace, not more guessing from byte counts.
+**Still open: 29 of graph.png's 30 cells, and the photo's p0..p4.** Preset 5 is
+byte-identical for BOTH images at every qp. Headers match; the divergence is
+entirely tile payload. Both screen tools are load-bearing (disabling palette
+costs 8-10 % and moves the port further from C), so this is not simple
+over-picking. The photo's remaining root is localized but unfixed: the
+independent-chroma search prices its UV_DC row with
+`palette_uv_mode_fac_bits[0][*]` while `check_best_indepedant_cfl`
+(product_coding_loop.c:3893) compares that against a CfL cost carrying
+`ind_palette_cost_diff`.
 
 ### C3. The 2 SB128 pins (`gradient 512x384 / 448x384 q32 p0`)
 - A single leaf-cost RD near-tie at a 32×32 node: C codes PARTITION_VERT_4, port codes
