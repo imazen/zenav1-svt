@@ -2,6 +2,58 @@
 
 Last updated: 2026-08-03 (audit-driven port wave) — C baseline **v4.2.0**
 
+## 8-BIT: the comprehensive gate, and what it measures (2026-08-03)
+
+8-bit 4:2:0 is the port's primary product surface, and until this date **no
+8-bit byte-vs-C identity gate ran in CI at any preset**. `identity_matrix.sh`
+is a scoreboard that exits 0 whatever the tally and was not in the workflow
+anyway. `tools/identity_full_8bit.sh` is the gate that fixes that; it is wired
+into `.github/workflows/rust-gates.yml` and fails on harness errors as well as
+divergences, so a cell that could not run cannot look like a pass.
+
+**Default run: 738/738 byte-identical, +2 pinned, 0 harness errors.**
+
+| tier | axes | cells |
+|---|---|---|
+| synthetic | {uniform,gradient,diag,screen} x {64,128}px x qp{5,20,32,48,63} x **presets 0..13** | 560 |
+| dims | 15 geometries 32x32..512x512 (odd 65x65, straddle 80x88, both-partial 120x104) x 2 content x qp{20,48} x p{6,9,13} | 180 |
+
+Every preset 0..13 is byte-identical on 64-aligned content at every swept qp,
+q5 and q63 included. Presets 10..13 are swept as DISTINCT configurations rather
+than assumed equal to M9 — C clamps all-intra above M9
+(`enc_handle.c:4415-4419`), the port does not.
+
+### What is NOT clean, measured rather than assumed
+
+Running the dims tier with the unclaimed band (`IF_PRESETS="0 4"`, committed as
+`benchmarks/identity_full_8bit_dims_2026-08-03.tsv`) gives p0 30/60 and p4
+34/60 against p6/p9/p13 at 60/60. The 56 divergences split into exactly two
+ALREADY-KNOWN classes and no third:
+
+- **53 partial-SB at p0/p4** — presets 0-5 skip the C-faithful PD1 walk on a
+  non-64-aligned SB (`pipeline.rs`'s `refined` requires `full_sb`), so the
+  search is structurally different. See `docs/arbitrary-dims-port-map.md`.
+- **3 ALIGNED `screen` cells at 256/384/512** — the #71 screen-content RD
+  class, the same one the production-corpus sweep sees on its M0 screen
+  classes.
+
+Pinned in the gate, self-promotingly: `screen 64x64 q63 p1` and
+`screen 128x128 q63 p1`. These are the SMALLEST known reproducer of #71 — the
+documented witnesses were 512x512 photo/EPICA cells. Isolated: p0 and p2 at the
+same qp are identical, q48/q55 identical at every preset, and with palette
+forced off the port drops to 60B against C's 64B (SMALLER), so C codes palette
+there too and the two simply decide differently.
+
+### Two panics the sweep found on the PUBLIC API
+
+`intrabc_hash.rs` computed `x_end = pic_width - block_size + 1` in `usize`. C
+computes it SIGNED (`hash_motion.c:195-196`, `:222-223`) so a picture smaller
+than the hash block yields an empty loop; in `usize` it underflows to ~2^64 and
+indexes off the end. A 32x32 screen frame at preset 0 panicked twice
+(`len 1024, index 1024` and `index 2048`). No earlier gate encoded anything
+below 60x60 with the screen-content tools armed — which is precisely why it
+survived. Fixed with `checked_sub` + early return, regression-tested.
+
 ## Audit-driven port wave (2026-08-03)
 
 A full-file C-vs-Rust audit (18 domains + 4 cross-cutting verticals, each
