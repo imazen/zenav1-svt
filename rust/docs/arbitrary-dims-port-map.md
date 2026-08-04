@@ -320,22 +320,41 @@ REMAINING (diverge, NOT in the gate — all DECODABLE):
   partial-SB PD0 variance matches C and the 96x80 search restructure can land.
 - subres off at incomplete b64 (enc_mode_config.c:7327).
 - end_tx_depth=0 for blocks touching the ALIGNED boundary
-  (product_coding_loop.c:6710-6717). **MEASURED UNREACHABLE 2026-08-03 — do not
-  "fix" this without first re-checking the premise.** The rule is real in C
-  (`if (blk_org + b{w,h} <= aligned_{w,h}) *end_tx_depth = get_end_tx_depth(...)
-  else 0`), and the port's MDS3 tx-depth selection genuinely has no boundary
-  term. But an instrumented build that logs every leaf whose `abs + dim` exceeds
-  the aligned extent, run over the straddle dims 80x88 / 104x88 / 72x88 at
-  presets 6/7/8, prints **zero** such leaves — no straddling block reaches that
-  code. Adding the term is therefore dead code, and an A/B over 48 partial-SB
-  cells ({80x88,104x88,72x88,96x80,88x72,120x104,72x120,104x72} x p{6,7,8} x
-  q{32,55}) is byte-IDENTICAL with and without it (42 match / 6 diverge, the
-  same 6 either way).
-  So the open partial-SB divergences are NOT this. Either the straddle leaves
-  are resolved before MDS3, or the port does not produce them where C does — and
-  which of those it is should be settled BEFORE anyone spends effort here. The
-  6 diverging cells above (all q55, at 80x88 / 104x88 / 72x88, p7 and p8) are
-  the concrete reproducer to drill.
+  (product_coding_loop.c:6710-6717). **PORTED 2026-08-03** — `leaf_funnel.rs`,
+  the MDS3 `end_depth` derivation.
+
+  **CORRECTION.** An earlier revision of this entry claimed the rule was
+  "MEASURED UNREACHABLE". That was WRONG, and it is recorded here because the
+  METHOD failed, not the analysis. The probe behind it was an inline shell loop
+  that silently produced no output at all; `grep -c` on nothing returns 0, which
+  was read as "no straddling leaves". Re-run from a script file, the same probe
+  reports one straddling leaf per frame on every cell tested:
+
+  | cell | straddling leaf | txs_active | end_tx_depth would be |
+  |---|---|---|---|
+  | `{80,104,72}x88` q55 p6 | (0,64) 64x32 | true | 0 — no-op |
+  | `{80,104,72}x88` q55 **p7** | (32,64) 32x32 | true | **1 — LIVE** |
+  | `{80,104,72}x88` q55 p8 | (32,64) 32x32 | false | 0 — no-op |
+
+  So the rule is genuinely live at preset 7: without the boundary term the port
+  searches tx depth 1 on a leaf C pins to 0. It IS byte-inert on the 48
+  partial-SB cells swept ({80x88,104x88,72x88,96x80,88x72,120x104,72x120,104x72}
+  x p{6,7,8} x q{32,55}) — it changes the searched depth set without flipping a
+  verdict — but inert-on-what-was-measured is not unreachable.
+
+  **Two rules this cost us, kept here so the next session inherits them:**
+  1. A "this C rule has no counterpart to fix" conclusion must come from a probe
+     whose POSITIVE control was observed — you saw it print something, somewhere
+     — before its zero is trusted. A silent harness and a genuine absence are
+     indistinguishable from an exit code or a `grep -c`.
+  2. A faithful translation that LOOKS dead is kept and documented, never
+     reverted. The analysis calling it dead can be wrong (it was, here), and
+     upstream may re-enable the path. Carrying a correct translation with a
+     reachability note is far cheaper than re-deriving it.
+
+  The 6 still-diverging cells (q55, 80x88 / 104x88 / 72x88, p7 and p8) remain
+  the concrete reproducer for the REMAINING partial-SB gap, which is not this.
+
 - depth-removal disabled when sb_geom requires 8x8 coverage
   (enc_mode_config.c:3253-3264 dimensions_require_8x8); allintra
   disallow_8x8 unconditionally false (:8212).
