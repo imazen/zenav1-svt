@@ -1,0 +1,35 @@
+PRE-FIX BASELINE for the partial-SB preset-0..5 restructure.
+
+commit:   9b79b9dc3
+host:     Darwin arm64
+date:     2026-08-04
+command:  IF_TIER=dims IF_PRESETS="1 2 3 5" ./tools/identity_full_8bit.sh
+grid:     15 geometries x {gradient,screen} x qp{20,48} x preset{1,2,3,5} = 240 cells
+result:   142/240 byte-identical, 0 pinned, 0 harness errors
+
+WHY THIS FILE EXISTS. p0 and p4 were already measured into
+identity_full_8bit_dims_2026-08-03.tsv; p1/p2/p3/p5 were only ever measured
+ad-hoc, so there was no committed "before" to compare an eventual fix against.
+An improvement claim needs both sides to be real measurements on the same grid
+-- a remembered aggregate is not a baseline.
+
+BREAKDOWN (partial-SB = aligned dims not a multiple of 64):
+
+  preset   partial-SB   64-aligned
+    p1        7/36        22/24
+    p2       10/36        22/24
+    p3       11/36        21/24
+    p5       25/36        24/24
+
+Two known divergence classes, no third:
+  - partial-SB at p1..p5 -- presets 0-5 skip the C-faithful PD1 walk on a
+    non-64-aligned SB (pipeline.rs `refined` requires full_sb), so the search
+    is structurally different from C's. The p5 25/36 vs p1 7/36 gradient is
+    consistent with that: p5 is the last preset before the funnel path changes
+    shape. Tracked in docs/arbitrary-dims-port-map.md.
+  - 2-3 ALIGNED `screen` cells per preset at 256/384/512 -- the screen-content
+    RD class (#71 palette/IBC over-picking at low preset), the same class the
+    production-corpus sweep sees on its M0 screen classes.
+
+TO COMPARE AN AFTER: re-run the identical command and diff per-cell verdicts
+against this file. Do NOT compare against a differently-shaped grid.
