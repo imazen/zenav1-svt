@@ -55,9 +55,17 @@
 # :5752-5754; `cropped_tx_width_uv`/`_height_uv`, full_loop.c:2228-2232). The
 # port scored the WHOLE tx block, mis-pricing every straddling block. Wiring the
 # crop closed the p6 q55 straddle-win trio (80x88 / 104x88 / 72x88), now gated
-# below; the p7/p8 q55 + 200x120 q40/55 cells still diverge (a different root —
-# item (a) of that group, the `end_tx_depth` frame-boundary force-to-0 at
-# product_coding_loop.c:6712-6717 — is the standing candidate).
+# below; the p7/p8 q55 + 200x120 q40/55 cells still diverge (a different root).
+#
+# THAT CANDIDATE IS NOW RULED OUT (measured 2026-08-04). This comment used to
+# name `end_tx_depth` (the frame-boundary force-to-0, product_coding_loop.c:
+# 6712-6717) as the standing suspect "which is NOT ported". It IS ported now
+# (leaf_funnel.rs, landed 2026-08-03) and all ten named cells STILL diverge:
+# 200x120 q40/q55 at p7 and p8, 80x88/104x88/72x88 q55 at p7, and 120x120 q55
+# at p6/p7/p8 — every one still DIFFERS with the rule live, against a positive
+# control (96x80 q32 p6 and 64x64 q20 p6, both IDENTICAL in the same run) that
+# proves the probe fires. So the high-qp p7/p8 remainder has an UNIDENTIFIED
+# root; do not spend time re-implementing end_tx_depth for it.
 #
 # Scope: bd8 4:2:0. preset 6 (PD0_LVL_1 fixed tree) + presets 7/8 (LVL_1, NSQ
 # disabled) + presets 9/10/13 (LPD0).

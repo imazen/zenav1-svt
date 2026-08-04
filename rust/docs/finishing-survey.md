@@ -147,9 +147,12 @@ instrumented-C per-candidate RD dump.
 - **STILL OPEN (a different root):** `200x120 q40/55` at p7/p8 and `80x88/104x88/72x88/
   120x120 q55` at p7/p8, plus `120x120 q55 p6`. Their bytes DID move with the crop (so
   the crop is live there too) but they still diverge — consistent with the port-map's
-  read that the high-qp p7/p8 remainder is a separate root. The standing candidate is
-  item (a) of the same group: the `end_tx_depth` frame-boundary force-to-0
-  (`product_coding_loop.c:6712-6717`), which is NOT ported.
+  read that the high-qp p7/p8 remainder is a separate root. **The candidate named
+  here is now RULED OUT (measured 2026-08-04).** This entry used to say the
+  suspect was `end_tx_depth` (`product_coding_loop.c:6712-6717`) "which is NOT
+  ported". It IS ported (leaf_funnel.rs, landed 2026-08-03) and every one of the
+  ten cells still diverges with it live — verified against a positive control in
+  the same run, so the zero is trustworthy. The root is UNIDENTIFIED.
 
 ### A3. bd10 partial-SB falls back to u8 (not byte-exact)
 
@@ -239,8 +242,10 @@ pointable from source alone.
 - `cropped_tx_dims` IS now wired (§A2, landed 2026-08-03). It closed the p6 q55 trio
   (80x88 / 104x88 / 72x88) and MOVED the p7/p8 cells' bytes, but did NOT close them —
   so the remainder is confirmed a separate root, as the map suspected
-  (arbitrary-dims-port-map.md:277). Next candidate: the `end_tx_depth` frame-boundary
-  force-to-0 (product_coding_loop.c:6712-6717), unported.
+  (arbitrary-dims-port-map.md:277). The next candidate named here — the
+  `end_tx_depth` frame-boundary force-to-0 (product_coding_loop.c:6712-6717) —
+  is **RULED OUT**: it landed 2026-08-03 and all ten cells still diverge with it
+  live (measured 2026-08-04, positive control green). No candidate stands.
 
 ### C3. The 2 SB128 pins (`gradient 512x384 / 448x384 q32 p0`)
 - A single leaf-cost RD near-tie at a 32×32 node: C codes PARTITION_VERT_4, port codes
