@@ -51,23 +51,51 @@ def corpus(path):
 
 
 def bucket(r):
-    t = r["_tier"]
-    if t == "synthetic":
+    """Classify a row by WHAT IT IS, not by which file it came from.
+
+    The tier used to be derived from the filename (`_dims` -> dims, `_real` ->
+    real, else synthetic). That silently mis-filed every row of a FULL sweep,
+    whose filename carries no tier marker: its dims geometries landed in the
+    `synth` column and the dims columns read `--` for every preset the full gate
+    covers. The cell knows what it is — a 512x512 corpus crop is real content
+    and a 65x65 frame is partial-SB geometry — so ask the cell.
+    """
+    content = r["content"]
+    if "/" in content or content.startswith(("crop:", "file:", "raw:")):
+        return "real-" + corpus(content)
+    w, h = int(r["width"]), int(r["height"])
+    aligned = w % 64 == 0 and h % 64 == 0
+    # The synthetic tier is exactly {64,128} squares; every other geometry
+    # belongs to the dims sweep. A 64x64 or 128x128 cell appears in both tiers
+    # and is the same cell either way, so counting it once as `synth` is right.
+    if w == h and w in (64, 128):
         return "synth"
-    if t == "real":
-        return "real-" + corpus(r["content"])
-    aligned = int(r["width"]) % 64 == 0 and int(r["height"]) % 64 == 0
     return "dims-aligned" if aligned else "dims-partial"
 
 
 def main():
-    files = sorted(glob.glob(os.path.join(BASE, "identity_full_8bit*.tsv")))
-    rows = []
+    # Oldest first, so a later sweep's verdict for the SAME cell overwrites an
+    # earlier one. Without this the matrix is cumulative-over-history: a cell
+    # that failed in April and passes today counts as both, and a preset whose
+    # bugs were fixed still reads as failing forever. (Measured 2026-08-04: p0
+    # dims-partial showed 67/108 the day it became 36/36.) Coverage is about
+    # WHICH cells exist; the pass rate beside it has to reflect the CURRENT
+    # tree or nobody will trust either number.
+    # `identity_full_8bit_latest.tsv` is INCLUDED deliberately: it is the
+    # scratch pointer the last run wrote, which makes it the newest evidence
+    # there is. Excluding it blanked p6..p13's dims columns to `--`, because
+    # those presets' most recent verdicts live only there. It is gitignored, so
+    # a fresh clone simply has one fewer source.
+    files = sorted(
+        glob.glob(os.path.join(BASE, "identity_full_8bit*.tsv")),
+        key=lambda f: (os.path.getmtime(f), f),
+    )
+    latest = {}
     for fn in files:
         with open(fn) as fh:
             for r in csv.DictReader(fh, delimiter="\t"):
-                r["_tier"] = tier(fn)
-                rows.append(r)
+                latest[(r["content"], r["width"], r["height"], r["qp"], r["preset"])] = r
+    rows = list(latest.values())
     if not rows:
         sys.exit(f"no identity_full_8bit*.tsv under {BASE}")
 
@@ -87,7 +115,7 @@ def main():
             w.writerow([p] + [f"{g[(p,c)][0]}/{g[(p,c)][1]}" if g[(p, c)][1] else "" for c in cols])
         return
 
-    print(f"8-BIT COVERAGE MATRIX — {len(rows)} cells across {len(files)} sweeps\n")
+    print(f"8-BIT COVERAGE MATRIX — {len(rows)} distinct cells, newest verdict per cell, from {len(files)} sweeps\n")
     print("      " + "".join(c.center(16) for c in cols))
     gaps = []
     for p in range(14):
