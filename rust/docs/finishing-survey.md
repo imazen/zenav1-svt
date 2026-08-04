@@ -263,14 +263,34 @@ positive control `gradient 64x64 q20 p6` IDENTICAL in the same run):
 shared "straddle geometry" root with the p7/p8 high-qp remainder (C2 above), and
 the two should not be chased together — the earlier reading that they were the
 same family is refuted. p6/p7 take the fixed-tree PD0 path; p4/p5 take the
-refined PD1 walk. The failures live in **the refined walk's handling of a
-STRADDLING node** — one where `has_rows && has_cols` are BOTH true (so it is not
-a boundary node and takes the normal shape list) but the block still extends
-past the aligned extent.
+refined PD1 walk, so the remainder is specific to **the refined walk on a
+partial SB**.
 
-That is a much tighter target than "partial SB at low preset", and it is why p5
-did not move at all when the edge rules landed: the edge rules only fire at
-boundary nodes, and these are not boundary nodes.
+**It is NOT about straddling leaves — that guess was measured and killed.** The
+first version of this entry said the failures lived in the walk's handling of a
+STRADDLING node (a block reaching past the aligned extent). Counting straddling
+leaves in `SVTAV1_PACKTREE` for the five p5-failing cells says otherwise:
+
+| cell | leaves | straddling |
+|---|---|---|
+| 72x88 q20   | 126 | **0** |
+| 80x88 q20   | 152 | **0** |
+| 104x72 q20  |  38 | **0** |
+| 96x80 q48   |  14 | **0** |
+| 65x65 q48   |  21 | 18 |
+
+Four of the five code NO straddling leaf at all. The probe is trustworthy: the
+positive control (`80x88 q55 p6`, the straddle case this repo already documents)
+reports the expected `(0,64) 64x32 -> (64,96)` leaf, so the zeros are real
+absences and not a silent harness. (The first attempt at this count WAS a silent
+harness — it filtered on `x=`/`y=`/`w=`/`h=` keys the dump does not emit, and
+returned 0 for everything including the control.)
+
+So the open question is narrower and differently shaped than "straddle": why
+does the refined walk diverge on a partial SB whose coded leaves are all fully
+inside the frame? That points at the BOUNDARY-node handling (rates, the injected
+shape, the forced-split path) or at the refinement gates' thresholds on the
+smaller edge geometry — not at straddling blocks.
 
 **Candidate 1 (cropped-TX distortion) is RULED OUT.** The obvious suspect was
 that the refined path's leaves miss the cropped-TX spatial distortion the
