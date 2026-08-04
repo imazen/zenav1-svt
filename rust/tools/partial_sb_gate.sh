@@ -59,6 +59,12 @@
 # item (a) of that group, the `end_tx_depth` frame-boundary force-to-0 at
 # product_coding_loop.c:6712-6717 — is the standing candidate).
 #
+# LARGE non-multiple-of-64 dims (2026-08-04). The gate previously topped out at
+# 200x120; nothing covered the sizes a real caller actually passes. MEASURED at
+# presets 6/8/10/13: 512x481, 1000x700 and the rest of the geometries below all
+# ENCODE, DECODE under aomdec, and byte-match C. Cells added so "non-multiple-of-64
+# works at preset >= 6" is a gate rather than a recollection.
+#
 # Scope: bd8 4:2:0. presets 0-5 (PD0_LVL_1 + the edge-aware PD1 depth-
 # refinement walk, added 2026-08-04 — see the p0-p5 block at the end of CELLS)
 # + preset 6 (PD0_LVL_1 fixed tree) + presets 7/8 (LVL_1, NSQ disabled) +
@@ -330,6 +336,11 @@ CELLS=(
   "screen 96 80 48 0"
   "screen 120 104 20 5"
   "screen 104 72 48 5"
+  "gradient 512 481 32 6"
+  "gradient 512 481 32 10"
+  "gradient 1000 700 32 6"
+  "gradient 1000 700 32 13"
+  "gradient 200 120 32 8"
 )
 
 # --- ISA-SCOPED CELL --------------------------------------------------------
