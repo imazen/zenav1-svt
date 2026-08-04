@@ -167,6 +167,33 @@ exits **3** on a typed refusal, and gates count that separately.
 `arbitrary_size_robustness.sh` once reported 48 correct refusals as PANIC — it
 could not tell the port's best behaviour from its worst.
 
+## 6b. A refusal is not a solution — check the ledger
+
+```bash
+tools/refusal_inventory.sh          # regenerate docs/REFUSED-CONFIGS.md
+python3 tools/coverage_matrix.py    # what is COVERED
+```
+
+Refusing an out-of-envelope config beats emitting a wrong bitstream (§6). That
+rule is right and it stays. Know its side effect:
+
+- `arbitrary_size_robustness.sh` counts its **48 refusals as PASSES**, because
+  refusing IS the correct behaviour. Nothing in that line separates "genuinely
+  out of scope" from "nobody did the work".
+- `coverage_matrix.py` prints `--` for an untested axis — but a REFUSED config
+  produces no cell at all, so it cannot even show as `--`. The one tool built to
+  surface gaps is blind to this one.
+- Nothing ages a refusal. No owner, no expiry.
+
+**Measured cost, 2026-08-04:** 10-bit at non-64-aligned dimensions — the actual
+AVIF product case — sat behind `bit_depth_config_error` while every gate was
+green. It was quoted in a status report the same day and moved past, because the
+scoreboard said fine.
+
+`docs/REFUSED-CONFIGS.md` splits refusals into **CONTRACT** (caller misuse,
+permanent) and **CAPABILITY** (unimplemented — debt), and is CI-gated so the list
+cannot accrete quietly. **Read the CAPABILITY table as a backlog.**
+
 ## 7. Dead-looking C stays translated
 
 If a faithful translation appears to have no effect: **keep it, document the

@@ -149,5 +149,12 @@ echo "arbitrary-size robustness: $pass / $((pass + fail)) panic-free + aomdec-de
 if ((refused)); then
   echo "  REFUSED (typed error, NOT a crash — the correct out-of-envelope behaviour):"
   printf '    %s\n' "${refused_cells[@]}"
+  # A refusal is the right BEHAVIOUR and is counted as a pass above, which is
+  # also how a capability gap hides in a green gate. Name the ledger here so the
+  # number is read as "N configs we cannot yet encode", not as "N handled".
+  echo
+  echo "  ^ these count as PASSES because refusing beats emitting a wrong stream."
+  echo "    That also means this gate goes green on work nobody has done."
+  echo "    Which of these are DEBT vs permanent caller-misuse: docs/REFUSED-CONFIGS.md"
 fi
 if [ "$fail" -gt 0 ]; then printf 'FAILED: %s\n' "${failed[@]}"; exit 1; fi

@@ -113,6 +113,16 @@ jobs:
         # the bd10 preset-7 screen split (docs/SUSPECTED-C-BUGS.md #9).
         run: ZENAV1_SKIP_CORPUS_TESTS=1 cargo test -p zenav1-svt --test tier_invariance
 
+      - name: refusal inventory is current (capability debt stays visible)
+        working-directory: rust
+        # Every config the encoder REFUSES, split into CONTRACT (caller misuse,
+        # permanent) and CAPABILITY (not implemented -- debt). A refusal makes a
+        # gap look handled: the robustness gate counts its 48 refusals as
+        # PASSES, and coverage_matrix.py cannot show a refused config even as
+        # a dash, because a refused config produces no cell at all. This keeps
+        # the CAPABILITY list countable so it cannot quietly accrete.
+        run: ./tools/refusal_inventory.sh --check
+
       - name: PORT-NOTE index is current (verification-debt ledger cannot drift)
         working-directory: rust
         # CLAUDE.md indexes every PORT-NOTE(unverified) marker -- the list of
