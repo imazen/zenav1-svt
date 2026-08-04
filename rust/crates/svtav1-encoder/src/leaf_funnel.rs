@@ -5498,7 +5498,31 @@ pub(crate) fn evaluate_leaf(
     // (txs_lvl6_gate): C only bumps txs on for SBs the pd0 detector left at
     // PD0_LVL_6 (undemoted); demoted PD0_LVL_5 SBs keep TXS off (depth 0).
     let txs_active = cfg.txs_on && (!cfg.txs_lvl6_gate || sb_is_lvl6);
-    let end_depth = if txs_active {
+    // C `get_start_end_tx_depth` (product_coding_loop.c:6710-6717):
+    //
+    //     // end_tx_depth set to zero for blocks which go beyond the picture
+    //     // boundaries
+    //     if (blk_org_x + bwidth <= aligned_width &&
+    //         blk_org_y + bheight <= aligned_height)
+    //         *end_tx_depth = get_end_tx_depth(bsize);
+    //     else
+    //         *end_tx_depth = 0;
+    //
+    // A leaf that STRADDLES the aligned frame edge is searched at tx depth 0
+    // only. The port had no boundary term and searched a depth C never tests.
+    //
+    // MEASURED reachability (2026-08-03, `gradient {80,104,72}x88 q55`, one
+    // straddling leaf per frame):
+    //   p6  leaf (0,64) 64x32   txs_active=true   end_tx_depth would be 0 -> no-op
+    //   p7  leaf (32,64) 32x32  txs_active=true   end_tx_depth would be 1 -> LIVE
+    //   p8  leaf (32,64) 32x32  txs_active=false  end_tx_depth would be 0 -> no-op
+    // So this is a real divergence at preset 7. It is byte-INERT on the 48
+    // partial-SB cells swept ({80x88,104x88,72x88,96x80,88x72,120x104,72x120,
+    // 104x72} x p{6,7,8} x q{32,55}) — it changes the searched depth set without
+    // flipping any cell's verdict there — but "inert on what we measured" is not
+    // "unreachable", and the p7 arm is exercised.
+    let in_frame = abs_x + w <= frame.frame_w_px && abs_y + h <= frame.frame_h_px;
+    let end_depth = if txs_active && in_frame {
         end_tx_depth(w, h, &cfg)
     } else {
         0
