@@ -140,10 +140,21 @@ pub struct SbQindexPlan {
 /// this is the ONE definition in the C tree (it sits outside every
 /// `#if SVT_HDR_MODE` block, unlike `svt_av1_variance_adjust_qp` /
 /// `av1_get_deltaq_sb_variance_boost`, which are defined twice), so BOTH the
-/// fork and the mainline arm below call it — exactly like the single C call
-/// site in `generate_sb_qindex` (rc_process.c:741-744), which runs
-/// unconditionally after `svt_av1_rc_init_sb_qindex` whenever
+/// fork and the mainline arm below call it — like the C call site in
+/// `generate_sb_qindex` (rc_process.c:741-744), which runs unconditionally
+/// after `svt_av1_rc_init_sb_qindex` whenever
 /// `delta_q_present && delta_q_res != 1`.
+///
+/// C has a SECOND call site, `recode_loop_decision_maker`
+/// (enc_dec_process.c:2065-2068), which reruns the boost + this normalizer
+/// inside the rate-control recode loop. It is unreachable here (the port has
+/// no recode loop: `do_recode` is a VBR/CBR bitrate-targeting decision and the
+/// still/CQP path never recodes). Worth knowing when reading the base-keying
+/// note below: that site passes `readjust_base_q_idx = false`
+/// (enc_dec_process.c:2056-2057) even in the FORK build, so "the fork
+/// resignals the base" is a property of the `rc_init_sb_qindex` call site,
+/// not of the fork build as such — which is exactly why the base is a
+/// PARAMETER here rather than something this function derives.
 ///
 /// It snaps every SB qindex onto the residue class of the FRAME base modulo
 /// `delta_q_res`, which is what makes the pack's TRUNCATING integer divide
@@ -413,7 +424,7 @@ mod tests {
         let flat = crate::pd0::SbVariance([2u16; 85]);
         let tex = crate::pd0::SbVariance([3000u16; 85]);
         let mid = crate::pd0::SbVariance([48u16; 85]);
-        let vars = [flat, mid.clone(), tex, mid];
+        let vars = [flat, mid, tex, mid];
         let base = crate::rate_control::qp_to_qindex(55);
         assert_eq!(base, 220);
         let plan = variance_adjust_qp_mainline(base, &vars, 3, 6, 2, 55, 8);

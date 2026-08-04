@@ -76,6 +76,14 @@ fn normalize_sb_delta_q_matches_c_exhaustive() {
 
             let mut rs: Vec<i32> = inputs.iter().map(|&q| i32::from(q)).collect();
             sb_qindex::normalize_sb_delta_q(base, res, &mut rs);
+            // The port's helper works in i32 while C's `sb_ptr->qindex` is a
+            // uint8_t. Prove the port stays inside the u8 domain BEFORE the
+            // narrowing cast below, so a hypothetical out-of-range value can
+            // never be laundered into a match by wrapping.
+            assert!(
+                rs.iter().all(|&q| (0..=255).contains(&q)),
+                "base {base} res {res}: port produced a qindex outside 0..=255: {rs:?}"
+            );
             let rs_out: Vec<u8> = rs.iter().map(|&q| q as u8).collect();
 
             assert_eq!(rs_out, c_out, "base {base} res {res}");
@@ -104,6 +112,15 @@ fn normalize_sb_delta_q_matches_c_exhaustive() {
 /// This is the corruption witness in miniature: without the normalizer the two
 /// accumulators diverge and the error COMPOUNDS across the SB raster, so a
 /// later SB's decoded qindex can be far from the encoder's.
+///
+/// EVIDENCE TIER: unlike `normalize_sb_delta_q_matches_c_exhaustive` above,
+/// this test calls NO C function — the pack/decoder pair is hand-simulated
+/// from entropy_coding.c:4996-5015 and spec 5.11.41. It also deliberately
+/// simulates a delta at EVERY SB, whereas C (and pipeline.rs:4586-4599) emit
+/// one only when `super_block_upper_left && (bsize != sb_size || !skip)`;
+/// that is the strictly harder condition, so a pass here implies a pass under
+/// C's guard. The end-to-end aomdec check is
+/// `svtav1/examples/variance_boost_recon.rs`.
 #[test]
 fn mainline_plan_survives_c_pack_decoder_roundtrip() {
     let mut rng = Rng(0x9e3779b97f4a7c15);
