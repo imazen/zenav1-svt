@@ -114,6 +114,15 @@ take no env override, so `real_image_matrix.sh` and `screen_ibc_gate.sh` cannot
 build their pixel-classification oracle elsewhere. They now fail with a message
 that says exactly that. Treat it as a harness failure, never as a parity result.
 
+**A harness PRECONDITION is a coverage hole.** `identity_run`'s `crop:` mode
+rejects odd dimensions ("I420 needs even dims"), so no gate cell could ever
+encode an odd-height frame of REAL content. That precondition hid a public-API
+panic (`unsupported partition shape (Horz4, 3)`) on a shape only real content
+picks, through every sweep in this repo. It was found by a test that builds its
+own planes and therefore skips the check. When a harness refuses an input,
+write down what that makes untestable — the refusal is not the same as the
+input being impossible.
+
 **On this platform there is no arithmetic-coder op trace.** `capture_c_trace`
 needs `-Wl,--wrap`, which Apple's `ld64` lacks, so `build.sh` falls back to a
 byte-only driver and `identity_diff.sh` degrades to a byte + header-field
