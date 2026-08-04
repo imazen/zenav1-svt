@@ -193,7 +193,16 @@ if [[ " $TIER " == *" dims "* || " $TIER " == *" all "* ]]; then
   #      RD class (#71 palette/IBC over-picking at low preset), the same one
   #      the production-corpus sweep sees on its M0 screen classes.
   # No unexplained class. Raise IF_PRESETS when either lands.
-  read -r -a D_PRESETS <<<"${IF_PRESETS:-6 7 8 9 10 11 12 13}"
+  # PRESET 5 ADDED 2026-08-04: it is now 60/60 on this tier (36/36 partial +
+  # 24/24 aligned) after the two partial-SB roots were fixed — the walk not
+  # running on a partial SB, and a boundary PD0 leaf being refined when C's
+  # `tested_blk[PART_N][0]` says it must not be. Gating it is a measurement.
+  #
+  # p0..p4 are NOT in the default yet, and the reason is the ALIGNED column, not
+  # geometry: partial-SB is 36/36 at p0/p1/p2/p3 and 34/36 at p4, but each still
+  # misses 1-3 ALIGNED `screen` cells at 256/384/512 — the #71 over-picking RD
+  # class. Raise this to `0 1 2 3 4 5 6 ...` when those close, or pin them.
+  read -r -a D_PRESETS <<<"${IF_PRESETS:-5 6 7 8 9 10 11 12 13}"
   read -r -a D_QPS     <<<"${IF_QPS:-20 48}"
   echo "== tier dims: ${#DIMS[@]} geometries x ${#D_QPS[@]}q x ${#D_PRESETS[@]}p x 2 content ==" >&2
   for d in "${DIMS[@]}"; do

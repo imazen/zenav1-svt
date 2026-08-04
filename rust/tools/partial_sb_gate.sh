@@ -55,20 +55,18 @@
 # :5752-5754; `cropped_tx_width_uv`/`_height_uv`, full_loop.c:2228-2232). The
 # port scored the WHOLE tx block, mis-pricing every straddling block. Wiring the
 # crop closed the p6 q55 straddle-win trio (80x88 / 104x88 / 72x88), now gated
-# below; the p7/p8 q55 + 200x120 q40/55 cells still diverge (a different root).
+# below; the p7/p8 q55 + 200x120 q40/55 cells still diverge (a different root —
+# item (a) of that group, the `end_tx_depth` frame-boundary force-to-0 at
+# product_coding_loop.c:6712-6717 — is the standing candidate).
 #
-# THAT CANDIDATE IS NOW RULED OUT (measured 2026-08-04). This comment used to
-# name `end_tx_depth` (the frame-boundary force-to-0, product_coding_loop.c:
-# 6712-6717) as the standing suspect "which is NOT ported". It IS ported now
-# (leaf_funnel.rs, landed 2026-08-03) and all ten named cells STILL diverge:
-# 200x120 q40/q55 at p7 and p8, 80x88/104x88/72x88 q55 at p7, and 120x120 q55
-# at p6/p7/p8 — every one still DIFFERS with the rule live, against a positive
-# control (96x80 q32 p6 and 64x64 q20 p6, both IDENTICAL in the same run) that
-# proves the probe fires. So the high-qp p7/p8 remainder has an UNIDENTIFIED
-# root; do not spend time re-implementing end_tx_depth for it.
+# Scope: bd8 4:2:0. presets 0-5 (PD0_LVL_1 + the edge-aware PD1 depth-
+# refinement walk, added 2026-08-04 — see the p0-p5 block at the end of CELLS)
+# + preset 6 (PD0_LVL_1 fixed tree) + presets 7/8 (LVL_1, NSQ disabled) +
+# presets 9/10/13 (LPD0).
 #
-# Scope: bd8 4:2:0. preset 6 (PD0_LVL_1 fixed tree) + presets 7/8 (LVL_1, NSQ
-# disabled) + presets 9/10/13 (LPD0).
+# Cell count: 104 before the p0-p5 block, +37 = 141 (counted at 355d228cd and
+# ec154e8be). The landing report for that block said "36 new cells, 105 -> 141";
+# the two errors cancelled, the totals are 37 and 104.
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 RS_ROOT=$(cd "$HERE/.." && pwd)
@@ -245,6 +243,91 @@ CELLS=(
   "gradient 72 72 32 8"    # 8-aligned both partial
   "gradient 63 63 40 8"    # odd full SB (true-dim header + crop, no partial SB)
   "gradient 73 73 32 8"    # odd both, aligned 80x80 partial
+  # PRESETS 0-5 — the PD1 DEPTH-REFINEMENT band, added 2026-08-04.
+  #
+  # Until then this gate had ZERO cells below preset 6, because `pipeline.rs`
+  # gated the C-faithful PD1 refinement walk on a COMPLETE superblock
+  # (`refined = matches!(preset, 0..=5) && use_funnel && full_sb`), so a
+  # partial SB at those presets fell back to the plain PD0 fixed tree — a
+  # search C never runs. C runs its normal PD0 + PD1 refinement at every SB;
+  # only WHICH d1 shapes a boundary node may test changes
+  # (`set_blocks_to_test`, enc_dec_process.c:1394-1438). The walk is now
+  # edge-aware (depth_refine.rs) and the `full_sb` gate is gone.
+  #
+  # Two C rules carry these cells (both byte-inert on a 64-aligned frame):
+  #   1. `set_blocks_to_test` at a boundary — both flags false => forced SPLIT;
+  #      exactly one false => EXACTLY ONE injected shape (H at the bottom edge,
+  #      V at the right edge) with PARTITION_NONE EXCLUDED, only its first rect
+  #      coded (`shape_block_cnt--`, product_coding_loop.c:10899-10904), priced
+  #      through the BINARY split-vs-{H,V} alphabet
+  #      (`svt_aom_partition_rate_cost`, rd_cost.c:1846-1866); out-of-frame
+  #      quadrants skipped in `test_split_partition` (:10802-10808).
+  #   2. `tested_blk[PART_N][0]` — a boundary PD0 node costs its RECT, not the
+  #      square, so EVERY PD1 refinement gate that reads a PD0 cost is skipped
+  #      there (enc_dec_process.c:1547-1550 says so in as many words) and the
+  #      node is coded at its own depth, never refined.
+  # Deleting either rule fails cells below: (1) is load-bearing for every cell
+  # here, (2) specifically for the q48 ones (72x88 / 104x72 / 96x80 / 65x65).
+  #
+  # ANTI-VACUITY RE-MEASURED 2026-08-04 (independent adversarial pass, exact
+  # counts from this gate, 141 cells total; the 104 pre-#95-p0p5 cells stay
+  # green in every arm):
+  #   * restore `refined = ... && full_sb` in pipeline.rs -> 118/141
+  #     (23 failures, ALL in the 37-cell p0-p5 block added below);
+  #   * `Pd0Eval::sq_tested = tested` (drop the tested_blk[PART_N][0]
+  #     distinction, rule 2) -> 130/141 (11 failures: 96x80 q48 p5,
+  #     72x88 q48 p0/p3 + q20/q48 p5, 80x88 q20 p5, 104x72 q48 p0 + q20/q48 p5,
+  #     120x104 q48 p5, 65x65 q48 p5);
+  #   * swap entries [0]/[1] of `partition_alike_costs` -> 131/141, and 6 of
+  #     the 10 failures are PRE-EXISTING p6 cells, so the boundary rate table's
+  #     index semantics (`p == PARTITION_SPLIT`) are pinned on both the new and
+  #     the old consumer.
+  # Not pinned by any cell: the H4/V4 4th-quarter drop in `shape_block_cnt_edge`
+  # (deleting both terms keeps this gate at 141/141) — see that fn's doc.
+  #
+  # MEASURED (9 non-64-aligned dims-tier geometries x {gradient,screen} x
+  # {q20,q48} = 36 cells per preset): p0 7->26, p1 7->26, p2 10->31,
+  # p3 11->36, p4 12->32, p5 25->36. Every `gradient` cell passes at p0..p3
+  # and p5; the residual is `screen` at p0/p1/p2 (+4 cells at p4), the #71
+  # palette/IBC RD class that also fires on ALIGNED 256/384/512 screen frames.
+  # Only byte-verified cells are listed here.
+  "gradient 96 80 20 5"    # milestone geometry through the refinement walk
+  "gradient 96 80 48 5"
+  "gradient 96 80 20 4"
+  "gradient 96 80 48 4"    # was 193B vs C 177B before the restructure
+  "gradient 96 80 20 0"
+  "gradient 96 80 48 0"
+  "gradient 72 88 20 0"    # straddle-win geometry, deepest refinement level
+  "gradient 72 88 48 0"    # needs rule (2): 166B vs C 165B without sq_tested
+  "gradient 72 88 20 3"
+  "gradient 72 88 48 3"
+  "gradient 72 88 20 5"
+  "gradient 72 88 48 5"
+  "gradient 80 88 20 0"    # straddle, both-partial second SB row
+  "gradient 80 88 20 5"
+  "gradient 104 72 20 0"   # thin 8-tall bottom edge + straddling right SB
+  "gradient 104 72 48 0"   # needs rule (2)
+  "gradient 104 72 20 5"
+  "gradient 104 72 48 5"
+  "gradient 120 104 20 0"  # multi-SB both-partial (2304B vs C 2046B before)
+  "gradient 120 104 48 0"
+  "gradient 120 104 20 3"
+  "gradient 120 104 48 5"
+  "gradient 65 65 20 0"    # odd both, aligned 72x72
+  "gradient 65 65 48 0"
+  "gradient 65 65 20 4"
+  "gradient 65 65 48 5"    # needs rule (2)
+  "gradient 48 48 20 0"    # sub-64 single partial SB (H4 4th-quarter drop)
+  "gradient 48 48 48 0"
+  "gradient 48 48 20 2"
+  "gradient 32 32 20 0"    # tiny: the whole frame is one both-false corner SB
+  "gradient 32 32 48 5"
+  "screen 32 32 20 0"      # screen through the same geometry
+  "screen 48 48 20 0"
+  "screen 96 80 20 0"
+  "screen 96 80 48 0"
+  "screen 120 104 20 5"
+  "screen 104 72 48 5"
 )
 for cell in "${CELLS[@]}"; do
   read -r content w h qp p <<<"$cell"
