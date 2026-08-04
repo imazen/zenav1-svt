@@ -24,3 +24,6 @@ cbuild-static-hdr-config.log
 
 # Committed test fixtures (lr_search_c_capture include_bytes! inputs, 4 KB each)
 !rust/crates/svtav1-encoder/tests/data/*.bin
+
+# Agent worktrees created by the Workflow tool (never committed).
+.claude/

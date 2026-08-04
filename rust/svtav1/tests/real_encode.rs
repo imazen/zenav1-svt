@@ -838,34 +838,6 @@ fn obu_structure_key_frame() {
     );
 }
 
-#[test]
-fn obu_structure_multi_frame() {
-    // Encode a 3-frame sequence and validate structure
-    let mut pipeline = svtav1_encoder::pipeline::EncodePipeline::new(
-        64,
-        64,
-        10,
-        svtav1_encoder::rate_control::RcConfig::default(),
-        4,
-        64,
-    );
-    let y_plane = make_gradient(64, 64);
-
-    // Frame 0: key frame (TD + SH + Frame)
-    let bs0 = pipeline.encode_frame(&y_plane, 64);
-    let (obu_type, _) = parse_obu_header(bs0[0]);
-    assert_eq!(obu_type, 2, "frame 0 should start with TD");
-
-    // Frame 1: inter frame (just Frame OBU, no SH)
-    let bs1 = pipeline.encode_frame(&y_plane, 64);
-    assert!(!bs1.is_empty(), "frame 1 should produce output");
-    let (obu_type, _) = parse_obu_header(bs1[0]);
-    assert_eq!(obu_type, 6, "inter frame should be Frame OBU (type 6)");
-
-    // Frame 2: inter frame
-    let bs2 = pipeline.encode_frame(&y_plane, 64);
-    assert!(!bs2.is_empty(), "frame 2 should produce output");
-}
 
 #[test]
 fn obu_sequence_header_profile() {
@@ -919,80 +891,7 @@ fn obu_sequence_header_profile() {
 // Multi-frame encoding quality tests
 // =============================================================================
 
-#[test]
-fn multi_frame_bitstream_sizes_decrease() {
-    // Inter frames should be smaller than the key frame for static content
-    let mut pipeline = svtav1_encoder::pipeline::EncodePipeline::new(
-        64,
-        64,
-        8,
-        svtav1_encoder::rate_control::RcConfig::default(),
-        4,
-        64,
-    );
-    let y_plane = make_gradient(64, 64);
 
-    let mut sizes = Vec::new();
-    for _ in 0..5 {
-        let bs = pipeline.encode_frame(&y_plane, 64);
-        sizes.push(bs.len());
-    }
-
-    // Frame 0 (key) should be largest (has SH + full key frame)
-    // Inter frames should be smaller (temporal prediction reduces residual)
-    eprintln!("Frame sizes: {:?}", sizes);
-    assert!(
-        sizes[0] > sizes[1],
-        "key frame ({}) should be larger than first inter ({})",
-        sizes[0],
-        sizes[1]
-    );
-}
-
-#[test]
-fn multi_frame_full_sh_obu_structure() {
-    // Verify multi-frame encoding uses full (non-reduced) SH
-    let mut pipeline = svtav1_encoder::pipeline::EncodePipeline::new(
-        64,
-        64,
-        8,
-        svtav1_encoder::rate_control::RcConfig::default(),
-        4,
-        64,
-    );
-    let y_plane = make_gradient(64, 64);
-
-    // Frame 0: key with full SH
-    let bs0 = pipeline.encode_frame(&y_plane, 64);
-    // Parse TD
-    let mut pos = 0;
-    let _ = parse_obu_header(bs0[pos]);
-    pos += 1;
-    let _td_size = read_uleb128(&bs0, &mut pos);
-
-    // Parse SH
-    let (obu_type, _) = parse_obu_header(bs0[pos]);
-    pos += 1;
-    assert_eq!(obu_type, 1, "SH type");
-    let sh_size = read_uleb128(&bs0, &mut pos) as usize;
-    let sh_byte = bs0[pos];
-    let still_picture = (sh_byte >> 2) & 1;
-    // Multi-frame should NOT use still_picture
-    assert_eq!(
-        still_picture, 0,
-        "multi-frame SH should have still_picture=0"
-    );
-    pos += sh_size;
-
-    // Frame OBU
-    let (obu_type, _) = parse_obu_header(bs0[pos]);
-    assert_eq!(obu_type, 6, "Frame OBU");
-
-    // Frame 1: inter
-    let bs1 = pipeline.encode_frame(&y_plane, 64);
-    let (obu_type, _) = parse_obu_header(bs1[0]);
-    assert_eq!(obu_type, 6, "inter frame should be Frame OBU");
-}
 
 #[test]
 fn speed_presets_affect_output_size() {
@@ -1020,68 +919,55 @@ fn speed_presets_affect_output_size() {
     }
 }
 
+/// The five tests that used to live here encoded MULTI-FRAME sequences and
+/// asserted properties of the result (sizes decrease, OBU structure, full
+/// non-reduced sequence header, a file written for "external decoder testing").
+///
+/// Every one of those streams was UNDECODABLE. Measured 2026-08-03 on a
+/// 5-frame 64x64 gradient through the public `encode_frame` API:
+///   aomdec: "Corrupt frame detected: Failed to decode tile data" at frame 1
+///   dav1d:  "Overrun in OBU bit buffer" ... "No data decoded"
+/// The inter path emits a malformed sequence header (spec-5.5.1 field order,
+/// `initial_display_delay_present_flag`, an illegal 8-bit `refresh_frame_flags`
+/// on a shown key frame, a missing `disable_frame_end_update_cdf`) and codes
+/// MVs against fresh per-block CDFs. The tests passed because not one of them
+/// ever ran a decoder — they asserted sizes and OBU framing only.
+///
+/// `encode_frame_impl` now REFUSES an inter frame with a typed error rather
+/// than emitting those bytes, so this asserts the contract that replaced them.
+/// That is a STRONGER assertion than the ones removed: it cannot be satisfied
+/// by a corrupt stream. Restore real multi-frame tests when the inter path is
+/// ported — and gate them on a decoder, which is what would have caught this.
 #[test]
-fn encode_10_frame_sequence() {
-    // Encode a longer sequence and verify all frames produce output
+fn inter_frames_are_refused_not_corrupted() {
+    use svtav1_encoder::EncodeError;
     let mut pipeline = svtav1_encoder::pipeline::EncodePipeline::new(
         64,
         64,
         8,
         svtav1_encoder::rate_control::RcConfig::default(),
         4,
-        32,
+        64,
     );
     let y_plane = make_gradient(64, 64);
 
-    let mut total_bytes = 0;
-    for i in 0..10 {
-        let bs = pipeline.encode_frame(&y_plane, 64);
-        assert!(!bs.is_empty(), "frame {} produced empty output", i);
-        total_bytes += bs.len();
-    }
-    assert_eq!(pipeline.frame_count, 10);
-    eprintln!("10 frames: {} total bytes", total_bytes);
+    // Frame 0 is the KEY frame: a valid still, and it must keep working.
+    let key = pipeline
+        .try_encode_frame(&y_plane, 64)
+        .expect("the key frame of a GOP is a valid still and must still encode");
+    assert!(!key.is_empty(), "key frame must produce bytes");
+
+    // Frame 1 is an INTER frame: refused, with a typed error rather than the
+    // undecodable bytes it used to return.
+    let err = pipeline
+        .try_encode_frame(&y_plane, 64)
+        .expect_err("an inter frame must be refused, not encoded");
+    assert!(
+        matches!(err.error(), EncodeError::UnsupportedConfig(_)),
+        "expected UnsupportedConfig, got {err:?}"
+    );
 }
 
-#[test]
-fn write_multi_frame_bitstream_to_disk() {
-    // Write a complete multi-frame bitstream for external decoder testing
-    let mut pipeline = svtav1_encoder::pipeline::EncodePipeline::new(
-        128,
-        128,
-        6,
-        svtav1_encoder::rate_control::RcConfig {
-            mode: svtav1_encoder::rate_control::RcMode::Cqp,
-            qp: 30,
-            ..svtav1_encoder::rate_control::RcConfig::default()
-        },
-        4,
-        32,
-    );
-
-    let mut bitstream = Vec::new();
-    for i in 0..5 {
-        // Slight variation per frame to test inter prediction
-        let mut y_plane = make_gradient(128, 128);
-        // Shift pattern by frame index to create motion
-        for r in 0..128usize {
-            for c in 0..128usize {
-                let shifted_c = (c + i * 2) % 128;
-                y_plane[r * 128 + c] = ((r + shifted_c) as u8).wrapping_mul(3).wrapping_add(16);
-            }
-        }
-        let bs = pipeline.encode_frame(&y_plane, 128);
-        bitstream.extend_from_slice(&bs);
-    }
-
-    let path = std::path::Path::new("/tmp/svtav1_multiframe.obu");
-    std::fs::write(path, &bitstream).expect("failed to write");
-    eprintln!(
-        "Wrote 5-frame bitstream to {path:?} ({} bytes)",
-        bitstream.len()
-    );
-    eprintln!("Test with: dav1d -i /tmp/svtav1_multiframe.obu -o /dev/null");
-}
 
 // =============================================================================
 // Differential quality and speed tests (zenavif backend validation)

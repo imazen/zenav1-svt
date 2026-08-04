@@ -1110,6 +1110,39 @@ impl EncodePipeline {
         if let Some(why) = self.bit_depth_config_error(chroma.is_some()) {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(why)));
         }
+        // MULTI-FRAME IS NOT ENCODABLE — refuse it rather than emit a corrupt
+        // stream. The 4:2:0 path already asserted this below; the MONOCHROME
+        // path did not, so `EncodePipeline::new(w, h, preset, rc, hier,
+        // /*intra_period=*/64).encode_frame(..)` produced inter frames with:
+        //   - the sequence header's `order_hint_bits_minus_1` written BEFORE
+        //     `seq_choose_screen_content_tools` / `seq_choose_integer_mv`,
+        //     where spec 5.5.1 and C (entropy_coding.c:2812-2838) put it after;
+        //   - `initial_display_delay_present_flag` hardcoded 0, omitting the
+        //     five bits C always writes (enc_handle.c:4981-4993,
+        //     entropy_coding.c:3731,:3749-3755);
+        //   - an illegal 8-bit `refresh_frame_flags` on a SHOWN key frame
+        //     (C writes it only `if (!show_frame)`, entropy_coding.c:3404-3407);
+        //   - no `disable_frame_end_update_cdf`, which shifts `tile_info()` and
+        //     every following field by one bit (entropy_coding.c:3553-3559);
+        //   - MV coding against FRESH per-block CDFs, and an inter frame header
+        //     with an admittedly incomplete `tile_info()` (obu.rs).
+        //
+        // MEASURED 2026-08-03 on a 5-frame 64x64 gradient encode through the
+        // public API: aomdec reports "Corrupt frame detected: Failed to decode
+        // tile data" at frame 1, and dav1d reports "Overrun in OBU bit buffer"
+        // then "No data decoded". So this is not a byte-parity gap — it is the
+        // zero-tolerance corruption class, on the public entry point.
+        //
+        // The fix is deliberately a REFUSAL, not a header patch: the inter path
+        // beyond the header is unported too (no chroma in the DPB, homegrown ME,
+        // fresh-CDF MV coding), so correcting the four fields would buy a
+        // better-formed header on top of a stream that still cannot decode.
+        //
+        // The predicate is the FRAME TYPE, not `intra_period` — see the check
+        // beside `is_key` below. A caller may legitimately construct a pipeline
+        // with a GOP structure and encode only its key frame; that stream is a
+        // valid still and is what several tests do. Only an actual INTER frame
+        // is unencodable.
         // TUNE overrides (C `svt_av1_enc_set_parameter`, enc_handle.c:4889).
         // `--tune 3` (IQ, "still image only") and `--tune 4` (MS-SSIM) are not
         // single RD knobs: C rewrites qm on/min/max (luma AND chroma),
@@ -1180,12 +1213,25 @@ impl EncodePipeline {
 
         // Step 1: Determine frame type from GOP structure
         let is_key = self.gop.is_key_frame(display_order);
-        // The 4:2:0 path is still-frame only: inter frames would need
-        // chroma in the DPB and a chroma-aware inter frame header.
-        assert!(
-            chroma.is_none() || is_key,
-            "chroma_420 pipeline supports still/key frames only (intra_period <= 1)"
-        );
+        // INTER FRAMES ARE NOT ENCODABLE ON EITHER PATH — refuse, don't emit.
+        //
+        // The 4:2:0 arm has always asserted this (it would additionally need
+        // chroma in the DPB and a chroma-aware inter frame header). The
+        // MONOCHROME arm did not, and it is the one that shipped a corrupt
+        // stream: see the measured aomdec/dav1d failures documented at the
+        // `bit_depth_config_error` call site above. Both arms now take the same
+        // typed `Err` — a caller mistake must never become a decoder's problem.
+        //
+        // Keyed on the FRAME TYPE rather than `intra_period` so that
+        // constructing a pipeline with a GOP structure and encoding only its
+        // key frame keeps working: that stream is a valid still.
+        if !is_key {
+            return Err(whereat::at!(EncodeError::UnsupportedConfig(
+                "inter frames are not implemented: the inter path emits a stream neither aomdec \
+                 nor dav1d can decode (malformed sequence/frame header fields, MV coding against \
+                 fresh CDFs). This encoder is still-image only — encode a single key frame",
+            )));
+        }
         let temporal_layer = if is_key {
             0
         } else {
@@ -1792,6 +1838,10 @@ impl EncodePipeline {
             qm_levels,
             if self.hdr.is_fork() { self.hdr.tx_bias } else { 0 },
             self.hdr.is_fork() && self.hdr.complex_hvs == 1,
+            // The SAME resolved detector preset the frame-level derivation above
+            // used, so the MD walk and the pack cannot disagree about screen
+            // content (see the parameter's doc on `encode_tile_rows`).
+            sc_preset,
             self.hdr.is_fork() && self.hdr.alt_ssim_tuning,
             self.hdr.is_fork() && self.hdr.alt_lambda_factors,
             (self.hdr.tune == crate::tune::TUNE_IQ)
@@ -6377,6 +6427,19 @@ fn encode_tile_rows(
     qm_levels: [u8; 3],
     hdr_tx_bias: u8,
     hdr_complex_hvs: bool,
+    // The preset the SCREEN-CONTENT detector runs at, resolved by the CALLER.
+    //
+    // Not `speed_config.preset`: tune-IQ forces `screen_content_mode = 3` at
+    // every preset (enc_handle.c:4914), and the port models that force by
+    // clamping the detector's preset to 7 (the highest preset where scm-3
+    // auto-detection is live, enc_handle.c:4641-4651). The frame side already
+    // did that; this side used the RAW preset, so at preset >= 8 under tune-IQ
+    // the two disagreed -- the frame header and the real pack coded per-block
+    // palette flags from the frame derivation while the funnel priced ZERO bits
+    // for them and injected no palette candidate, and both simulated CDF
+    // contexts drifted from the pack. Passing the resolved value makes the
+    // tile-side comment below ("identical inputs -> identical result") true.
+    sc_preset: u8,
     hdr_alt_ssim: bool,
     hdr_alt_lambda: bool,
     hdr_iq_lambda_weight: Option<u32>,
@@ -6479,13 +6542,7 @@ fn encode_tile_rows(
         // result): the MD walk's rates + its per-SB CDF evolution must see
         // the same allow_sct as the real pack or the chains desync on
         // screen-content frames.
-        let tile_sc = crate::sc_detect::derive_allintra_sc(
-            speed_config.preset,
-            encode_input,
-            w,
-            w,
-            h,
-        );
+        let tile_sc = crate::sc_detect::derive_allintra_sc(sc_preset, encode_input, w, w, h);
         let mut funnel_cfg = crate::leaf_funnel::FunnelCfg::for_preset(speed_config.preset);
         funnel_cfg.allow_sct = tile_sc.allow_screen_content_tools;
         // THE palette flip-on: with the level stamped, the funnel injects
@@ -7985,12 +8042,29 @@ mod tests {
             16,
         );
         let y_plane = vec![100u8; 64 * 64];
-        for i in 0..5 {
-            let bitstream = pipeline.encode_frame(&y_plane, 64);
-            assert!(!bitstream.is_empty(), "frame {i} should produce output");
+        // The KEY frame encodes; the frame/RC state machine advances for it.
+        let bitstream = pipeline
+            .try_encode_frame(&y_plane, 64)
+            .expect("key frame must encode");
+        assert!(!bitstream.is_empty(), "key frame should produce output");
+        assert_eq!(pipeline.frame_count, 1);
+        assert_eq!(pipeline.rc_state.total_frames, 1);
+        // Every following frame is an INTER frame, which `encode_frame_impl`
+        // now refuses rather than emitting the undecodable bytes this loop used
+        // to collect (measured: aomdec "Corrupt frame detected", dav1d "No data
+        // decoded" -- see the refusal's comment). The counters must NOT advance
+        // on a refusal, so the caller can retry a supported config.
+        for i in 1..5 {
+            let err = pipeline
+                .try_encode_frame(&y_plane, 64)
+                .expect_err("inter frame {i} must be refused");
+            assert!(
+                matches!(err.error(), crate::EncodeError::UnsupportedConfig(_)),
+                "frame {i}: expected UnsupportedConfig, got {err:?}"
+            );
         }
-        assert_eq!(pipeline.frame_count, 5);
-        assert_eq!(pipeline.rc_state.total_frames, 5);
+        assert_eq!(pipeline.frame_count, 1, "a refused frame must not advance the counter");
+        assert_eq!(pipeline.rc_state.total_frames, 1);
     }
 
     #[test]

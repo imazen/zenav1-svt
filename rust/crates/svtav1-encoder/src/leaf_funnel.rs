@@ -7264,10 +7264,24 @@ pub(crate) fn evaluate_leaf(
                 cand.v_eob = v_out.eob;
                 cand.u_cul = u_out.cul;
                 cand.v_cul = v_out.cul;
+                // bd8 (and any bd10 leaf whose chroma loop did not run): the
+                // u8-quantizer recon IS the coded recon.
+                //
+                // This pair USED TO SIT AFTER the match, unconditionally — which
+                // silently overwrote the Some-arm's truncated-10-bit assignment
+                // above and made that whole branch (and its justification
+                // comment) dead code. The consequence was not local: `u_recon` /
+                // `v_recon` feed the entropy-walk chroma plane (pipeline.rs), the
+                // frame u8 chroma canvas that the CDEF / Wiener-LR / deblock
+                // searches read (`commit_leaf`), and the NSQ quad-dist gate. So a
+                // bd10 full-RD frame ran all of those against a recon that did
+                // not correspond to the levels it actually coded. The chroma
+                // re-encode post-pass that would have repaired it does not run
+                // here either — `bd10_postpass_runs = !bd10_full_rd`.
+                cand.u_recon = u_out.recon;
+                cand.v_recon = v_out.recon;
             }
         }
-        cand.u_recon = u_out.recon;
-        cand.v_recon = v_out.recon;
         if let Some((u10, v10)) = uv_out10.take() {
             cand.u_recon10 = u10.recon;
             cand.v_recon10 = v10.recon;
