@@ -75,7 +75,42 @@ LIMIT, stated because it is the same class of gap this work set out to close:
 the CI identity step runs the synthetic tier at ONE size to fit the job budget,
 so partial-SB byte-parity and real content remain hand-run.
 
-### Per-preset coverage: the p1/p2/p3/p7 audit
+### Per-preset coverage: COMPLETE (all 14 presets x all 5 axes)
+
+`python3 tools/coverage_matrix.py` consolidates every
+`benchmarks/identity_full_8bit*.tsv` and prints `--` for an axis with no cells.
+As of 2026-08-03 there are none — 2,495 cells:
+
+| preset | synth | dims-aligned | dims-partial | real-photo | real-screen |
+|---|---|---|---|---|---|
+| p0 | 40/40 | 23/24 | 7/36 | 56/60 | 10/30 |
+| p1 | 40/40 | 22/24 | 7/36 | 26/30 | 11/15 |
+| p2 | 40/40 | 22/24 | 10/36 | 26/30 | 10/15 |
+| p3 | 40/40 | 21/24 | 11/36 | 26/30 | 11/15 |
+| p4 | 40/40 | 22/24 | 12/36 | 56/60 | 11/30 |
+| p5 | 40/40 | **24/24** | 25/36 | **30/30** | **15/15** |
+| p6 | 100/100 | **24/24** | **36/36** | **60/60** | **30/30** |
+| p7 | 100/100 | **24/24** | 34/36 | **30/30** | **15/15** |
+| p8 | 40/40 | **24/24** | **36/36** | **30/30** | **15/15** |
+| p9 | 100/100 | **24/24** | **36/36** | **30/30** | **15/15** |
+| p10 | 40/40 | **24/24** | **36/36** | **60/60** | **30/30** |
+| p11 | 40/40 | **24/24** | **36/36** | **30/30** | **15/15** |
+| p12 | 40/40 | **24/24** | **36/36** | **30/30** | **15/15** |
+| p13 | 100/100 | **24/24** | **36/36** | **60/60** | **30/30** |
+
+- **Every preset >= 5 is byte-identical to C on real content — photo AND
+  screen.** Nothing in that band diverges on any real image tested.
+- **Every preset >= 6 is 24/24 aligned and 34-36/36 partial**; p8/p10/p11/p12
+  are 36/36. The dims gate default is now ALL of 6..13, measured per preset
+  rather than assumed to follow a neighbour.
+- **The remaining gap is presets 0..4 only**, in the two known classes:
+  partial-SB geometry, and RD near-ties on two specific images.
+- **p5 is the transition preset**: aligned and real-content clean, partial
+  25/36 against 7-12/36 for p0-p4 — finer-grained than the docs' "0-5" band.
+
+Default gate: **1036/1036 + 4 pinned, 0 harness errors.**
+
+### How the coverage hole was found (the p1/p2/p3/p7 audit)
 
 The first sweeps covered presets 0..13 on synthetic content but only
 {0,4,6,9|10,13} on real content and geometry — so p1, p2, p3 and p7 lived in one

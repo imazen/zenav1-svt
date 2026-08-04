@@ -181,8 +181,12 @@ if [[ " $TIER " == *" dims "* || " $TIER " == *" all "* ]]; then
     "128 128" "192 192" "256 256"    # medium
     "384 256" "512 512"              # large
   )
-  # DEFAULT p6/p9/p13 — the presets at which partial-SB support is CLAIMED.
-  # `partial_sb_gate.sh` has zero cells below preset 6 for the same reason.
+  # DEFAULT = EVERY preset >= 6, the band at which partial-SB support is
+  # CLAIMED. (`partial_sb_gate.sh` has zero cells below preset 6 for the same
+  # reason.) Widened from {6,9,13} to all of 6..13 on 2026-08-03 once every
+  # preset had been measured individually rather than assumed to follow its
+  # neighbours — p8/p10/p11/p12 are 36/36 on partial geometry and 24/24 on
+  # aligned, so gating them is a measurement, not a hope.
   #
   # MEASURED 2026-08-03 with p0 and p4 added (benchmarks/
   # identity_full_8bit_dims_2026-08-03.tsv, reproduce with IF_PRESETS="0 4"):
@@ -198,7 +202,7 @@ if [[ " $TIER " == *" dims "* || " $TIER " == *" all "* ]]; then
   #      RD class (#71 palette/IBC over-picking at low preset), the same one
   #      the production-corpus sweep sees on its M0 screen classes.
   # No unexplained class. Raise IF_PRESETS when either lands.
-  read -r -a D_PRESETS <<<"${IF_PRESETS:-6 7 9 13}"
+  read -r -a D_PRESETS <<<"${IF_PRESETS:-6 7 8 9 10 11 12 13}"
   read -r -a D_QPS     <<<"${IF_QPS:-20 48}"
   echo "== tier dims: ${#DIMS[@]} geometries x ${#D_QPS[@]}q x ${#D_PRESETS[@]}p x 2 content ==" >&2
   for d in "${DIMS[@]}"; do
