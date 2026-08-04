@@ -1131,9 +1131,30 @@ impl Pd0Tree {
 #[derive(Debug, Clone)]
 pub struct Pd0Eval {
     pub sq: usize,
-    /// C `tested_blk[PART_N][0]` — PART_N was costed at this node.
+    /// Some d1 shape was costed at this node — C `pc_tree->rdc.valid` after
+    /// `svt_aom_pick_partition_pd0`. At a one-false BOUNDARY node the costed
+    /// shape is PART_H/PART_V, NOT the square: see [`Pd0Eval::sq_tested`].
     pub tested: bool,
-    /// C `block_data[PART_N][0]->cost` (valid iff `tested`).
+    /// C `tested_blk[PART_N][0]` — the SQUARE PART_N was costed at this node,
+    /// so `block_data[PART_N][0]->cost` is readable.
+    ///
+    /// This is STRICTLY narrower than [`Pd0Eval::tested`] on a partial SB:
+    /// `svt_aom_pick_partition_pd0` (product_coding_loop.c:10548-10560) writes
+    /// `block_data[shape][0]` for the ONE shape `set_blocks_to_test` injected,
+    /// which at a single-edge node is PART_H / PART_V. Every PD1
+    /// depth-refinement gate that reads a PD0 cost is guarded on
+    /// `tested_blk[PART_N][0]` for exactly that reason — C spells it out at
+    /// `update_pred_th_offset` (enc_dec_process.c:1547-1549): *"For incomplete
+    /// blocks, H/V partitions may be allowed, while square is not. In those
+    /// cases, the selected depth may not have a valid SQ cost, so we need to
+    /// check that the SQ block is available before using the cost."*
+    /// Consequence: a boundary PD0 leaf gets `s_depth = e_depth = 0` — it is
+    /// never refined, only coded at its own depth.
+    ///
+    /// Identical to `tested` on a 64-aligned frame (no node is one-false).
+    pub sq_tested: bool,
+    /// C `pc_tree->rdc.rd_cost` — the costed shape's cost (valid iff
+    /// `tested`). The SQUARE cost only when `sq_tested`.
     pub cost: u64,
     /// PD0 picked SPLIT at this node (`pc_tree->partition`).
     pub split: bool,
@@ -1149,6 +1170,7 @@ impl Pd0Eval {
         Pd0Eval {
             sq,
             tested: false,
+            sq_tested: false,
             cost: 0,
             split: false,
             off: false,
@@ -1161,6 +1183,7 @@ impl Pd0Eval {
         Pd0Eval {
             sq,
             tested: false,
+            sq_tested: false,
             cost: 0,
             split: false,
             off: true,
@@ -1711,6 +1734,7 @@ impl<'a> Pd0Ctx<'a> {
             let eval = Pd0Eval {
                 sq: sq_size,
                 tested: false,
+                sq_tested: false,
                 cost: 0,
                 split: true,
                 off: false,
@@ -1746,6 +1770,11 @@ impl<'a> Pd0Ctx<'a> {
         let mut eval = Pd0Eval {
             sq: sq_size,
             tested,
+            // C `tested_blk[PART_N][0]`: a one-false node costs its injected
+            // PART_H/PART_V, so the SQUARE slot stays untested
+            // (svt_aom_pick_partition_pd0, product_coding_loop.c:10548-10560).
+            // `one_false` is never true on a 64-aligned frame.
+            sq_tested: tested && !one_false,
             cost: parent_cost.unwrap_or(0),
             split: false,
             off: false,

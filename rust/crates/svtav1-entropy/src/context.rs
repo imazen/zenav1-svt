@@ -900,41 +900,41 @@ pub fn partition_alike_split_cost(
     bottom_edge: bool,
     is_128: bool,
 ) -> u32 {
-    let mut cdf = [0 as AomCdfProb; 3];
-    if bottom_edge {
-        partition_gather_vert_alike(&mut cdf, partition_cdf_row, is_128);
-    } else {
-        partition_gather_horz_alike(&mut cdf, partition_cdf_row, is_128);
-    }
-    av1_cost_symbol((cdf[0] as u32).max(4 /* EC_MIN_PROB */))
+    partition_alike_costs(partition_cdf_row, bottom_edge, is_128)[1]
 }
 
-/// Both sides of the BINARY partition alphabet C gathers at a boundary node
-/// (`svt_aom_partition_rate_cost`, rd_cost.c:1846-1863): `(edge_shape, split)`.
+/// BOTH entries of C's `partition_{vert,horz}_alike_fac_bits[ctx]`
+/// (md_rate_estimation.c:88-118): `[0]` = the cost of coding the single legal
+/// rect shape (PARTITION_HORZ at a `!has_rows` node, PARTITION_VERT at a
+/// `!has_cols` node — anything that is NOT PARTITION_SPLIT), `[1]` = the cost
+/// of coding PARTITION_SPLIT. `svt_aom_partition_rate_cost` (rd_cost.c:1846-1863)
+/// indexes this table with `p == PARTITION_SPLIT`, so the `[0]` entry is a real,
+/// consumed rate — `update_skip_nsq_based_on_split_rate` and `test_depth`'s
+/// `part_rate` both read it at a boundary node.
 ///
-/// At a node with exactly one of `has_rows` / `has_cols` false the syntax is
-/// not the 10-symbol alphabet but a single bool -- "split, or the one legal
-/// edge shape" -- read from a CDF gathered onto the stack. The RD search must
-/// price BOTH sides from that same gathered pair, or it compares an edge shape
-/// against a split using two different alphabets.
-///
-/// `bottom_edge` is `!has_rows` (H is the legal shape); otherwise it is the
-/// right edge and V is legal. For the gathered 2-symbol icdf `[x, 0]`,
-/// `P(sym1 = SPLIT) = x` and `P(sym0 = shape) = 32768 - x`.
+/// C runs `svt_aom_get_syntax_rate_from_cdf` over the gathered 2-symbol icdf
+/// `[x, 0]`, which exits after entry 0 when `x == 0` and leaves entry 1
+/// uninitialised — C then patches entry 1 to `av1_cost_symbol(EC_MIN_PROB)`
+/// (md_rate_estimation.c:96). The `.max(EC_MIN_PROB)` floors below reproduce
+/// both that patch and the `svt_aom_get_syntax_rate_from_cdf` probability floor.
 pub fn partition_alike_costs(
     partition_cdf_row: &[AomCdfProb],
     bottom_edge: bool,
     is_128: bool,
-) -> (u32, u32) {
+) -> [u32; 2] {
     let mut cdf = [0 as AomCdfProb; 3];
     if bottom_edge {
         partition_gather_vert_alike(&mut cdf, partition_cdf_row, is_128);
     } else {
         partition_gather_horz_alike(&mut cdf, partition_cdf_row, is_128);
     }
-    let split_p = (cdf[0] as u32).max(4 /* EC_MIN_PROB */);
-    let shape_p = (32768 - cdf[0] as u32).max(4);
-    (av1_cost_symbol(shape_p), av1_cost_symbol(split_p))
+    const EC_MIN_PROB: u32 = 4;
+    let split_p15 = cdf[0] as u32;
+    let rect_p15 = CDF_PROB_TOP as u32 - split_p15;
+    [
+        av1_cost_symbol(rect_p15.max(EC_MIN_PROB)),
+        av1_cost_symbol(split_p15.max(EC_MIN_PROB)),
+    ]
 }
 
 /// Encode a skip flag using CDF.

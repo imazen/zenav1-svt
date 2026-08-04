@@ -399,7 +399,10 @@ fn set_start_end_depth(
         // update_pred_th_offset (:1545): cost-band modulation (M5 only).
         if ctrls.band_mod {
             let max_cost = rdcost(env.lambda, 16, ctrls.max_cost_multiplier * (sq * sq) as u64);
-            if node.tested && node.cost <= max_cost {
+            // C `update_pred_th_offset` (enc_dec_process.c:1550) guards on
+            // `tested_blk[PART_N][0]`: an incomplete block whose PART_N was
+            // never costed has no SQ cost to band.
+            if node.sq_tested && node.cost <= max_cost {
                 let band_size = max_cost / ctrls.max_band_cnt;
                 let band_idx = (node.cost / band_size) as usize;
                 // cost == max_cost lands on band_idx == max_band_cnt; the
@@ -420,7 +423,8 @@ fn set_start_end_depth(
         // when splitting the PARENT is very cheap relative to its cost.
         if s != 0 && ctrls.lower_split_th != 0 {
             if let Some(p) = parent {
-                if p.tested {
+                // C :1566 `pc_tree->parent->tested_blk[PART_N][0]`.
+                if p.sq_tested {
                     let split_cost = rdcost(env.lambda, env.tables.split_bits(p.sq), 0);
                     if split_cost * 10000 < p.cost * ctrls.lower_split_th {
                         s = 0;
@@ -430,7 +434,8 @@ fn set_start_end_depth(
         }
         // split_rate_th (+20, CLN_PD0 :1594-1619): drop the child depth
         // when splitting THIS block is expensive relative to its cost.
-        if ctrls.split_rate_th != 0 && node.tested {
+        // C :1586 `split_cost_th && pc_tree->tested_blk[PART_N][0]`.
+        if ctrls.split_rate_th != 0 && node.sq_tested {
             let th = ctrls.split_rate_th + 20;
             let split_cost = rdcost(env.lambda, env.tables.split_bits(sq), 0);
             if split_cost * 1000 > node.cost * th {
@@ -441,8 +446,11 @@ fn set_start_end_depth(
 
         // is_parent_to_current_deviation_small (:1650): only called for
         // tested blocks below the SB size (:1876-1883).
-        if s != 0 && node.tested && sq < 64 {
-            match parent.filter(|p| p.tested) {
+        // C :1859-1861 — "Check tested_blk b/c use block's cost inside".
+        if s != 0 && node.sq_tested && sq < 64 {
+            // C `is_parent_to_current_deviation_small`'s own
+            // `pc_tree->parent->tested_blk[PART_N][0]` guard (:1634).
+            match parent.filter(|p| p.sq_tested) {
                 Some(p) => {
                     // s1 used RAW + offset (the qp-scaling is disabled:
                     // depths_qp_based_th_scaling = 0 for allintra <= M6);
@@ -488,11 +496,16 @@ fn set_start_end_depth(
 
         // is_child_to_current_deviation_small (:1709): gated on tested +
         // sq > 4 (:1885-1892).
-        if e != 0 && node.tested && sq > 4 {
+        // C :1868-1870 — the same tested_blk guard on the child arm.
+        if e != 0 && node.sq_tested && sq > 4 {
             let tested_children: Vec<&Pd0Eval> = node
                 .children
                 .as_ref()
-                .map(|ch| ch.iter().filter(|c| c.tested).collect())
+                // C `is_child_to_current_deviation_small` (:1697-1712) sums
+                // `split[i]->block_data[PART_N][0]->cost` only for children
+                // whose `tested_blk[PART_N][0]` is set — a boundary child
+                // contributes neither cost nor count.
+                .map(|ch| ch.iter().filter(|c| c.sq_tested).collect())
                 .unwrap_or_default();
             if !tested_children.is_empty() {
                 // e1 qp-scaled with factors 1/1 (scaling disabled) + off;
@@ -532,14 +545,14 @@ fn set_start_end_depth(
         let ch_costs: Vec<u64> = node
             .children
             .as_ref()
-            .map(|ch| ch.iter().filter(|c| c.tested).map(|c| c.cost).collect())
+            .map(|ch| ch.iter().filter(|c| c.sq_tested).map(|c| c.cost).collect())
             .unwrap_or_default();
         eprintln!(
             "NSQDBG REFINE mi=({},{}) sq={} tested={} cost={} pcost={} maxpd0={} minpd0={} sb={} psb={} ch={:?} s={} e={}",
             abs_y / 4,
             abs_x / 4,
             sq,
-            u8::from(node.tested),
+            u8::from(node.sq_tested),
             node.cost,
             parent.map(|p| p.cost as i64).unwrap_or(-1),
             env.max_pd0,
@@ -683,53 +696,42 @@ pub(crate) fn build_refined_scan_at(
 /// symbols, 4..15 carry 10 (64-SB frames never touch the 128 rows).
 pub(crate) struct PartRates {
     rows: [[i32; 10]; 16],
-    /// The BINARY split-vs-{H,V} alphabet used at a boundary node, indexed
-    /// `[ctx_row][bottom_edge]` as `(edge_shape_bits, split_bits)`. Built from
-    /// the same CDF rows; unused on a 64-aligned frame, where no node is a
-    /// boundary node.
-    alike: [[(u64, u64); 2]; 16],
+    /// C `partition_vert_alike_fac_bits[ctx][p == PARTITION_SPLIT]` — the
+    /// BOTTOM-edge (`!has_rows`) binary alphabet (md_rate_estimation.c:89-97).
+    vert_alike: [[u32; 2]; 16],
+    /// C `partition_horz_alike_fac_bits[ctx][p == PARTITION_SPLIT]` — the
+    /// RIGHT-edge (`!has_cols`) binary alphabet (md_rate_estimation.c:110-118).
+    horz_alike: [[u32; 2]; 16],
 }
 
 impl PartRates {
     pub(crate) fn from_fc(fc: &svtav1_entropy::context::FrameContext) -> Self {
         let mut rows = [[0i32; 10]; 16];
+        let mut vert_alike = [[0u32; 2]; 16];
+        let mut horz_alike = [[0u32; 2]; 16];
         for (row, out) in rows.iter_mut().enumerate() {
             let nsyms = if row < 4 { 4 } else { 10 };
             crate::quant::syntax_rate_from_cdf(&mut out[..nsyms], &fc.partition_cdf[row]);
+            // is_128 = false: SB64 squares are <= 64x64. C builds both the
+            // 16x16 and the 128x128 gather per context row; the 128 rows are
+            // unreachable here (an SB128 refined path would need the `true`
+            // variant, which `partition_alike_costs` already takes).
+            vert_alike[row] = svtav1_entropy::context::partition_alike_costs(
+                &fc.partition_cdf[row],
+                true, // !has_rows -> vert_alike (bottom edge)
+                false,
+            );
+            horz_alike[row] = svtav1_entropy::context::partition_alike_costs(
+                &fc.partition_cdf[row],
+                false, // !has_cols -> horz_alike (right edge)
+                false,
+            );
         }
-        // Boundary alphabet, from the SAME rows. `ctx_row = bsl * 4 + sub_ctx`
-        // (PARTITION_PLOFFSET = 4), so `bsl = row / 4` and the node is 128-wide
-        // exactly at bsl 4 -- which is what `partition_gather_*_alike` needs to
-        // know, since a 128 node has no H4/V4 to fold in.
-        let mut alike = [[(0u64, 0u64); 2]; 16];
-        for (row, out) in alike.iter_mut().enumerate() {
-            let is_128 = row / 4 == 4;
-            for (bottom_edge, slot) in out.iter_mut().enumerate() {
-                let (shape, split) = svtav1_entropy::context::partition_alike_costs(
-                    &fc.partition_cdf[row],
-                    bottom_edge == 1,
-                    is_128,
-                );
-                *slot = (shape as u64, split as u64);
-            }
+        PartRates {
+            rows,
+            vert_alike,
+            horz_alike,
         }
-        PartRates { rows, alike }
-    }
-
-    /// Cost of coding the single legal EDGE SHAPE at a boundary node.
-    /// `bottom_edge` is `!has_rows`.
-    #[inline]
-    pub(crate) fn edge_shape_bits(&self, ctx_row: usize, bottom_edge: bool) -> u64 {
-        debug_assert!(ctx_row < 16);
-        self.alike[ctx_row][usize::from(bottom_edge)].0
-    }
-
-    /// Cost of coding SPLIT at a boundary node -- the binary alphabet's other
-    /// side, NOT `bits(ctx_row, Split)`.
-    #[inline]
-    pub(crate) fn edge_split_bits(&self, ctx_row: usize, bottom_edge: bool) -> u64 {
-        debug_assert!(ctx_row < 16);
-        self.alike[ctx_row][usize::from(bottom_edge)].1
     }
 
     /// `svt_aom_partition_rate_cost` (rd_cost.c:1834) for in-frame square
@@ -739,6 +741,38 @@ impl PartRates {
     pub(crate) fn bits(&self, ctx_row: usize, p: PartitionType) -> u64 {
         debug_assert!(ctx_row < 16);
         self.rows[ctx_row][p as usize] as u64
+    }
+
+    /// The FULL `svt_aom_partition_rate_cost` (rd_cost.c:1834-1867), including
+    /// the two frame-boundary arms the port previously never reached:
+    ///
+    /// * `!has_rows && !has_cols` -> 0 (the node codes no partition symbol);
+    /// * `!has_rows && has_cols`  -> `partition_vert_alike_fac_bits[ctx][split]`;
+    /// * `has_rows && !has_cols`  -> `partition_horz_alike_fac_bits[ctx][split]`.
+    ///
+    /// On a 64-aligned frame every node has both flags true, so this is exactly
+    /// [`PartRates::bits`] there.
+    #[inline]
+    pub(crate) fn bits_edge(
+        &self,
+        ctx_row: usize,
+        p: PartitionType,
+        has_rows: bool,
+        has_cols: bool,
+    ) -> u64 {
+        debug_assert!(ctx_row < 16);
+        if has_rows && has_cols {
+            return self.rows[ctx_row][p as usize] as u64;
+        }
+        if !has_rows && !has_cols {
+            return 0;
+        }
+        let table = if !has_rows {
+            &self.vert_alike
+        } else {
+            &self.horz_alike
+        };
+        table[ctx_row][usize::from(p == PartitionType::Split)] as u64
     }
 }
 
@@ -944,60 +978,92 @@ pub(crate) struct DepthWalk<'a, 'b> {
     /// `ctx->disallow_4x4` — the skip_sub quadrant-arm's 8x8 clause
     /// (product_coding_loop.c:10156-10158).
     pub disallow_4x4: bool,
-    /// ALIGNED frame extent (`FrameDims::{width,height}`, the true dims rounded
-    /// up to a multiple of 8) — NOT the true dims and NOT the SB extent.
-    ///
-    /// Drives the spec-5.11.4 / `set_blocks_to_test` (enc_dec_process.c:1394)
-    /// edge predicate below. On a 64-aligned frame every node has both flags
-    /// true, so every edge branch is dead and the walk is byte-identical to the
-    /// pre-edge version — which is what makes this safe to enable everywhere.
+    /// ALIGNED frame dims (the `av1_cm->mi_cols`/`mi_rows` grid, in pixels).
+    /// Every `has_rows`/`has_cols` predicate in `set_blocks_to_test`
+    /// (enc_dec_process.c:1397-1398), `test_depth` (:10896-10897),
+    /// `test_split_partition` (:10805) and `svt_aom_partition_rate_cost`
+    /// (rd_cost.c:1831-1832) is against this grid. On a 64-aligned frame every
+    /// node has both flags true, so every branch keyed on them is dead.
     pub aligned_w: usize,
     pub aligned_h: usize,
-    /// `svt_aom_get_nsq_geom_level_allintra != 0`. When NSQ geometry is
-    /// disabled (allintra CLI preset >= M7) C injects NO edge shape and a
-    /// one-false boundary node force-splits; when enabled it injects exactly
-    /// one. This walk only runs at presets 0..=5, where NSQ is always enabled,
-    /// so the field exists to keep the predicate honest rather than to select
-    /// behaviour today.
-    pub nsq_enabled: bool,
+    /// `ctx->nsq_geom_ctrls.enabled` (`svt_aom_get_nsq_geom_level_allintra`,
+    /// enc_mode_config.c: allintra enc_mode <= M6 -> level 1/2/3 -> enabled).
+    /// Gates the ONE-shape injection at a single-edge node: with geometry off,
+    /// `set_blocks_to_test` yields `tot_shapes = 0` and the node force-splits
+    /// (enc_dec_process.c:1405-1410).
+    pub nsq_geom_enabled: bool,
 }
 
-/// The shape `set_blocks_to_test`'s `inj_hv_incomp` injects at a boundary node,
-/// or `None` when the node is fully inside and takes the normal shape list.
+/// C `set_blocks_to_test`'s edge predicate (enc_dec_process.c:1397-1398) — the
+/// same `hbs`-against-the-aligned-grid test `test_depth`,
+/// `test_split_partition` and `svt_aom_partition_rate_cost` each re-derive.
+#[inline]
+fn edge_flags(abs_x: usize, abs_y: usize, size: usize, aw: usize, ah: usize) -> (bool, bool) {
+    let half = size / 2;
+    (abs_y + half < ah, abs_x + half < aw)
+}
+
+/// The free form of [`DepthWalk::shapes_at`] — C `set_blocks_to_test`
+/// (enc_dec_process.c:1394-1438). Split out so the edge rules are unit-testable
+/// without a live funnel context.
+fn shapes_at_edge(
+    size: usize,
+    nsq: &NsqCfg,
+    nsq_geom_enabled: bool,
+    has_rows: bool,
+    has_cols: bool,
+) -> &'static [PartitionType] {
+    const NONE_AT_ALL: [PartitionType; 0] = [];
+    const H_ONLY: [PartitionType; 1] = [PartitionType::Horz];
+    const V_ONLY: [PartitionType; 1] = [PartitionType::Vert];
+    if has_rows && has_cols {
+        return shapes_for_size(size, nsq);
+    }
+    if (!has_rows && !has_cols) || !nsq_geom_enabled {
+        return &NONE_AT_ALL;
+    }
+    if !has_rows { &H_ONLY } else { &V_ONLY }
+}
+
+/// The free form of [`DepthWalk::shape_block_cnt`] — C `test_depth`'s
+/// `shape_block_cnt--` (product_coding_loop.c:10899-10904).
 ///
-/// C (enc_dec_process.c:1394-1438) decides against the ALIGNED grid with
-/// `hbs = half the node's pixel extent`:
-///   - both flags false  -> `tot_shapes = 0`: FORCED SPLIT, no shape is costed;
-///   - exactly one false -> exactly ONE shape, and PARTITION_NONE is EXCLUDED
-///     (H at the bottom edge where `!has_rows`, V at the right edge where
-///     `!has_cols`), with SPLIT still evaluated against it;
-///   - NSQ geometry disabled -> no shape is injected at all, so a one-false
-///     node force-splits like a both-false one.
-///
-/// Returning `Err(())` means forced split. `Ok(None)` means "not an edge node".
-fn edge_shape(
-    aligned_w: usize,
-    aligned_h: usize,
+/// REACHABILITY, MEASURED 2026-08-04 (adversarial re-verification): the
+/// `!has_rows || !has_cols` arm is LIVE — deleting it fails partial-SB cells.
+/// The two H4/V4 quarter clauses are **inert on every cell measured so far**:
+/// with both terms deleted, `tools/partial_sb_gate.sh` still reports 141/141
+/// and a further 13 probe geometries chosen to target them (aligned 40/48 on
+/// one axis x {96,120,128} on the other, gradient+screen, presets 0-3, where a
+/// 64x64 node has both edge flags true yet its 4th quarter starts at/after the
+/// aligned extent) are byte-identical to C with or without them. So the clause
+/// is a faithful transcription of a C line whose effect no measured cell
+/// observes — kept and documented per the "DEAD-LOOKING C STAYS TRANSLATED"
+/// rule in rust/CLAUDE.md, NOT because it was seen to fire. Its behaviour is
+/// pinned by `partial_sb_edge_tests::shape_block_cnt_drops_out_of_frame_subblocks`
+/// alone. If you need it live, note that H4/V4 must first WIN the d1 compare at
+/// such a node, which is what the probes did not achieve.
+#[allow(clippy::too_many_arguments)]
+fn shape_block_cnt_edge(
+    size: usize,
+    shape: PartitionType,
+    n: usize,
     abs_x: usize,
     abs_y: usize,
-    size: usize,
-    nsq_enabled: bool,
-) -> Result<Option<PartitionType>, ()> {
-    let half = size / 2;
-    let (has_rows, has_cols) =
-        crate::frame_geom::edge_has_rows_cols(aligned_w, aligned_h, abs_x, abs_y, half);
-    if has_rows && has_cols {
-        return Ok(None);
-    }
-    if (!has_rows && !has_cols) || !nsq_enabled {
-        return Err(());
-    }
-    // Exactly one false, NSQ geometry enabled.
-    Ok(Some(if !has_rows {
-        PartitionType::Horz
+    aligned_w: usize,
+    aligned_h: usize,
+    has_rows: bool,
+    has_cols: bool,
+) -> usize {
+    let quarter = size / 4;
+    if !has_rows
+        || !has_cols
+        || (shape == PartitionType::Horz4 && abs_y + 3 * quarter >= aligned_h)
+        || (shape == PartitionType::Vert4 && abs_x + 3 * quarter >= aligned_w)
+    {
+        n - 1
     } else {
-        PartitionType::Vert
-    }))
+        n
+    }
 }
 
 struct NodeRes {
@@ -1270,20 +1336,37 @@ impl DepthWalk<'_, '_> {
         std_deviation < ss.quad_deviation_th && coeff_perc < ss.coeff_perc
     }
 
+    /// Save/restore span of a node rect on the ALIGNED-strided recon planes.
+    /// A node whose square extent STRADDLES past the aligned width would, at
+    /// stride `y_stride`, read/write the off-aligned columns out of the row and
+    /// into the NEXT row's low columns. `commit_leaf` already clips its writes
+    /// to the row boundary for exactly that reason (leaf_funnel.rs:7705), so
+    /// nothing inside the node ever modifies those wrapped bytes and the
+    /// snapshot must clip identically — otherwise `restore_snap` would write
+    /// stale bytes over an already-committed neighbour's recon. Byte-neutral
+    /// wherever nothing straddles (`abs + span <= stride`), i.e. always on a
+    /// 64-aligned frame.
+    #[inline]
+    fn clip_span(stride: usize, abs: usize, span: usize) -> usize {
+        span.min(stride.saturating_sub(abs))
+    }
+
     fn take_snap(&self, abs_x: usize, abs_y: usize, size: usize) -> NodeSnap {
+        let yw = Self::clip_span(self.y_stride, abs_x, size);
         let mut y = alloc::vec![0u8; size * size];
         for r in 0..size {
             let src = (abs_y + r) * self.y_stride + abs_x;
-            y[r * size..(r + 1) * size].copy_from_slice(&self.y_recon[src..src + size]);
+            y[r * size..r * size + yw].copy_from_slice(&self.y_recon[src..src + yw]);
         }
         let half = size / 2;
         let (cx, cy) = (abs_x / 2, abs_y / 2);
+        let cwid = Self::clip_span(self.fx.c_stride, cx, half);
         let mut u = alloc::vec![0u8; half * half];
         let mut v = alloc::vec![0u8; half * half];
         for r in 0..half {
             let src = (cy + r) * self.fx.c_stride + cx;
-            u[r * half..(r + 1) * half].copy_from_slice(&self.fx.u_recon[src..src + half]);
-            v[r * half..(r + 1) * half].copy_from_slice(&self.fx.v_recon[src..src + half]);
+            u[r * half..r * half + cwid].copy_from_slice(&self.fx.u_recon[src..src + cwid]);
+            v[r * half..r * half + cwid].copy_from_slice(&self.fx.v_recon[src..src + cwid]);
         }
         NodeSnap {
             ectx: self.fx.ectx.clone(),
@@ -1295,16 +1378,18 @@ impl DepthWalk<'_, '_> {
 
     fn restore_snap(&mut self, snap: &NodeSnap, abs_x: usize, abs_y: usize, size: usize) {
         *self.fx.ectx = snap.ectx.clone();
+        let yw = Self::clip_span(self.y_stride, abs_x, size);
         for r in 0..size {
             let dst = (abs_y + r) * self.y_stride + abs_x;
-            self.y_recon[dst..dst + size].copy_from_slice(&snap.y[r * size..(r + 1) * size]);
+            self.y_recon[dst..dst + yw].copy_from_slice(&snap.y[r * size..r * size + yw]);
         }
         let half = size / 2;
         let (cx, cy) = (abs_x / 2, abs_y / 2);
+        let cwid = Self::clip_span(self.fx.c_stride, cx, half);
         for r in 0..half {
             let dst = (cy + r) * self.fx.c_stride + cx;
-            self.fx.u_recon[dst..dst + half].copy_from_slice(&snap.u[r * half..(r + 1) * half]);
-            self.fx.v_recon[dst..dst + half].copy_from_slice(&snap.v[r * half..(r + 1) * half]);
+            self.fx.u_recon[dst..dst + cwid].copy_from_slice(&snap.u[r * half..r * half + cwid]);
+            self.fx.v_recon[dst..dst + cwid].copy_from_slice(&snap.v[r * half..r * half + cwid]);
         }
     }
 
@@ -1597,46 +1682,62 @@ impl DepthWalk<'_, '_> {
         false
     }
 
-    /// C `svt_aom_pick_partition` (product_coding_loop.c:11549) —
-    /// test_depth (:11396, the d1 shape loop) + the sub-depth walk.
-    fn pick(&mut self, scan: &RefScan, abs_x: usize, abs_y: usize) -> NodeRes {
-        let size = scan.sq;
-        let mut split_flag = scan.split_flag;
+    /// C `set_blocks_to_test` (enc_dec_process.c:1394-1438) for this node —
+    /// the d1 shape list, honouring the frame-boundary rules. Returns an EMPTY
+    /// list for C's `tot_shapes = 0` (forced SPLIT).
+    ///
+    /// The three C rules this reproduces, none of which can fire on a
+    /// 64-aligned frame (both flags are always true there, so the function
+    /// degenerates to `shapes_for_size`):
+    ///  * both flags false -> `tot_shapes = 0` (:1405-1410);
+    ///  * exactly one false, NSQ geometry OFF -> also `tot_shapes = 0` (same
+    ///    clause; the `sq_size <= MAX(min_nsq, min_nsq_block_size)` term is
+    ///    inert here — an edge node on an 8-aligned frame is always >= 16);
+    ///  * exactly one false, NSQ geometry ON -> `inj_hv_incomp` keeps EXACTLY
+    ///    ONE shape and EXCLUDES PARTITION_NONE (:1417-1421): PART_H when
+    ///    `!has_rows`, PART_V when `!has_cols`. Note `max_part` is PART_V for
+    ///    an incomplete node even when `md_disallow_nsq_search` is set (:1414
+    ///    ANDs that term with `!inj_hv_incomp`), so presets 4/5 — whose NSQ
+    ///    SEARCH is off — still inject the edge shape.
+    fn shapes_at(&self, size: usize, has_rows: bool, has_cols: bool) -> &'static [PartitionType] {
+        shapes_at_edge(size, self.nsq, self.nsq_geom_enabled, has_rows, has_cols)
+    }
 
-        // spec 5.11.4 / `set_blocks_to_test`. Every branch below is DEAD on a
-        // 64-aligned frame (both flags true at every node), so the aligned
-        // matrix is byte-identical to the pre-edge walk by construction.
-        let edge = edge_shape(
-            self.aligned_w,
-            self.aligned_h,
+    /// C `test_depth`'s `shape_block_cnt` adjustment (product_coding_loop.c:
+    /// 10899-10904): a single-edge node codes only the FIRST rect of its
+    /// injected shape (the in-frame half), and an H4/V4 whose 4th quarter
+    /// starts outside the aligned frame drops that quarter.
+    fn shape_block_cnt(
+        &self,
+        size: usize,
+        shape: PartitionType,
+        n: usize,
+        abs_x: usize,
+        abs_y: usize,
+        has_rows: bool,
+        has_cols: bool,
+    ) -> usize {
+        shape_block_cnt_edge(
+            size,
+            shape,
+            n,
             abs_x,
             abs_y,
-            size,
-            self.nsq_enabled,
-        );
-        // FORCED SPLIT: C costs no shape at all here, so there is no parent
-        // candidate for `test_split` to compare against -- the node splits
-        // unconditionally. Recursing with `parent_rd = None` is exactly that:
-        // the per-quadrant early exit and the final parent-vs-split compare are
-        // both keyed on `Some`.
-        if edge.is_err() {
-            debug_assert!(
-                size > 4,
-                "an edge node must be splittable; 8x8 nodes are never edge \
-                 nodes on an 8-aligned frame (hbs = 4 keeps both flags true)"
-            );
-            match self.test_split(scan, abs_x, abs_y, None) {
-                SplitOut::Chosen(res) => return *res,
-                // Unreachable with `parent_rd = None` (both arms need a parent),
-                // but a panic here would be a silent-corruption trade: an edge
-                // node with no decision emits nothing where the pack expects a
-                // coded block.
-                SplitOut::ParentKept | SplitOut::Invalid => {
-                    unreachable!("forced-split edge node cannot keep a parent it never costed")
-                }
-            }
-        }
-        let injected = edge.unwrap_or(None);
+            self.aligned_w,
+            self.aligned_h,
+            has_rows,
+            has_cols,
+        )
+    }
+
+    /// C `svt_aom_pick_partition` (product_coding_loop.c:11549) —
+    /// test_depth (:11396, the d1 shape loop) + the sub-depth walk.
+    /// `None` mirrors C's `pc_tree->rdc.valid == 0` return: the node produced
+    /// no valid partition at all, which invalidates the parent's SPLIT.
+    fn pick(&mut self, scan: &RefScan, abs_x: usize, abs_y: usize) -> Option<NodeRes> {
+        let size = scan.sq;
+        let mut split_flag = scan.split_flag;
+        let (has_rows, has_cols) = edge_flags(abs_x, abs_y, size, self.aligned_w, self.aligned_h);
 
         // C test_depth state: rdc (best partition so far), the SQ info,
         // the H/V child costs for the H4/V4 gates, and the winning
@@ -1648,20 +1749,13 @@ impl DepthWalk<'_, '_> {
         let mut snap: Option<NodeSnap> = None;
         let mut committed_since_snap = false;
 
-        if scan.test_this {
+        let shapes = self.shapes_at(size, has_rows, has_cols);
+        // C `svt_aom_pick_partition`: `if (mds->tot_shapes) test_depth(...)`.
+        // An empty list is `tot_shapes = 0` — the node force-splits.
+        if scan.test_this && !shapes.is_empty() {
             // update_part_neighs: partition contexts read once per node.
             let (ctx_row, _) = self.fx.ectx.partition_ctx(abs_x, abs_y, size);
 
-            // At a boundary node C's list is exactly the injected shape, with
-            // PARTITION_NONE excluded; elsewhere it is the normal list.
-            let injected_slice;
-            let shapes: &[PartitionType] = match injected {
-                Some(sh) => {
-                    injected_slice = [sh];
-                    &injected_slice
-                }
-                None => shapes_for_size(size, self.nsq),
-            };
             for &shape in shapes {
                 // Restore the pre-shape state (C: copy [1] -> [0] at
                 // nsi == 0 when a previous shape saved it).
@@ -1677,55 +1771,39 @@ impl DepthWalk<'_, '_> {
                 // `bsize < BLOCK_8X8`: a 4x4 codes NO partition symbol. The only
                 // square `size` node below 8 is the 4x4 (4x8/8x4 are NSQ children,
                 // not square nodes), so gate the partition rate there.
-                let part_rate = if size < 8 {
-                    0
-                } else if let Some(sh) = injected {
-                    // Boundary node: the syntax is the BINARY split-vs-shape
-                    // bool, so the shape must be priced from that alphabet --
-                    // pricing it with the 10-symbol `bits()` would compare an
-                    // edge shape against `test_split`'s boundary split rate
-                    // using two different alphabets.
-                    debug_assert_eq!(sh, shape, "a boundary node tests only the injected shape");
+                let part_rate = if size >= 8 {
                     self.part_rates
-                        .edge_shape_bits(ctx_row, sh == PartitionType::Horz)
+                        .bits_edge(ctx_row, shape, has_rows, has_cols)
                 } else {
-                    self.part_rates.bits(ctx_row, shape)
+                    0
                 };
                 let mut part_cost = rdcost(self.lambda, part_rate, 0);
                 let mut children = shape_children(size, shape);
-                if injected.is_some() {
-                    // C codes only the children whose ORIGIN is inside the
-                    // aligned frame (`svt_aom_write_modes_sb` returns early
-                    // otherwise). At a bottom edge the H shape's second half
-                    // starts at `y + size/2 >= aligned_h`; at a right edge the
-                    // V shape's second half starts at `x + size/2 >=
-                    // aligned_w`. Exactly one child survives, which is why the
-                    // boundary block is a single fitting rect and not a pair.
-                    children.retain(|&(dx, dy, _, _)| {
-                        abs_x + dx < self.aligned_w && abs_y + dy < self.aligned_h
-                    });
-                    debug_assert_eq!(
-                        children.len(),
-                        1,
-                        "a one-false boundary node keeps exactly one in-frame child"
-                    );
-                }
+                // C `shape_block_cnt--` (product_coding_loop.c:10899-10904):
+                // drop the trailing out-of-frame sub-block. Inert on a
+                // 64-aligned frame (both flags true, H4/V4 quarters in-frame).
+                children.truncate(self.shape_block_cnt(
+                    size,
+                    shape,
+                    children.len(),
+                    abs_x,
+                    abs_y,
+                    has_rows,
+                    has_cols,
+                ));
                 let mut evals: Vec<LeafEval> = Vec::with_capacity(children.len());
                 let mut valid = true;
 
                 for (nsi, &(dx, dy, cw, ch)) in children.iter().enumerate() {
+                    // C `get_skip_processing_nsq_block`'s four gates each
+                    // return false when `pc_tree->tested_blk[PART_N][0]` is
+                    // unset (product_coding_loop.c:9717, 9852, 10067, and
+                    // `update_skip_nsq_shapes`), which is exactly the
+                    // single-edge node where PART_N is never tested.
                     if shape != PartitionType::None && nsi == 0 && sq_info.is_some() {
                         // faster_md_settings_nsq: I-slice-dead (C gates
                         // the call on slice_type != I_SLICE, :11470).
-                        //
-                        // `sq_info.is_some()` guards the BOUNDARY case: C
-                        // excludes PARTITION_NONE from a boundary node's shape
-                        // list, so no SQ block is ever costed there and all
-                        // four skip gates below -- every one of which is a
-                        // comparison AGAINST the SQ winner -- have nothing to
-                        // compare with. C cannot fire them either; skipping is
-                        // faithful, not a shortcut.
-                        let sq = sq_info.as_ref().expect("PART_N tested first");
+                        let sq = sq_info.as_ref().expect("checked above");
                         let best_part = best
                             .as_ref()
                             .map(|(p, _, _)| *p)
@@ -1981,7 +2059,7 @@ impl DepthWalk<'_, '_> {
         let parent_rd = best.as_ref().map(|(_, rd, _)| *rd);
         if split_flag {
             match self.test_split(scan, abs_x, abs_y, parent_rd) {
-                SplitOut::Chosen(res) => return *res,
+                SplitOut::Chosen(res) => return Some(*res),
                 SplitOut::ParentKept | SplitOut::Invalid => {
                     // Parent (best shape) stays; fall through to its
                     // commit (test_split_partition's winner overwrite).
@@ -1999,7 +2077,14 @@ impl DepthWalk<'_, '_> {
                 self.restore_snap(&sn, abs_x, abs_y, size);
             }
         }
-        let (win_part, win_rd, win_evals) = best.expect("refined node with no valid shape");
+        // C `svt_aom_pick_partition` returns `pc_tree->rdc.valid` — 0 when the
+        // node tested no shape AND its SPLIT was invalid. Reachable only on a
+        // partial SB: a `set_child_to_be_tested`-created child (split_flag
+        // false, tot_shapes forced 1) that lands on a BOTH-false node, where
+        // `set_blocks_to_test` then zeroes tot_shapes and there is nothing to
+        // fall back to. The parent's SPLIT is invalidated
+        // (product_coding_loop.c:10826-10829), which keeps its own depth.
+        let (win_part, win_rd, win_evals) = best?;
         if win_part == PartitionType::None {
             let sq = sq_info.expect("SQ info for PART_N winner");
             commit_leaf(
@@ -2010,11 +2095,11 @@ impl DepthWalk<'_, '_> {
                 PartitionType::None as u8,
             );
             let decision = crate::partition::funnel_block_decision(sq.ev.to_choice(), size, size);
-            return NodeRes {
+            return Some(NodeRes {
                 rd: win_rd,
                 tree: PartitionTree::Leaf(decision.clone()),
                 decisions: alloc::vec![decision],
-            };
+            });
         }
         let mut decisions: Vec<BlockDecision> = Vec::with_capacity(win_evals.len());
         let mut child_trees: Vec<PartitionTree> = Vec::with_capacity(win_evals.len());
@@ -2024,7 +2109,7 @@ impl DepthWalk<'_, '_> {
             decisions.push(d.clone());
             child_trees.push(PartitionTree::Leaf(d));
         }
-        NodeRes {
+        Some(NodeRes {
             rd: win_rd,
             tree: PartitionTree::Split {
                 partition_type: win_part,
@@ -2033,7 +2118,7 @@ impl DepthWalk<'_, '_> {
                 children: child_trees,
             },
             decisions,
-        }
+        })
     }
 
     /// C `test_split_partition` (product_coding_loop.c:11304).
@@ -2046,26 +2131,19 @@ impl DepthWalk<'_, '_> {
     ) -> SplitOut {
         let size = scan.sq;
         let (ctx_row, _) = self.fx.ectx.partition_ctx(abs_x, abs_y, size);
-        let half = size / 2;
-        let (has_rows, has_cols) =
-            crate::frame_geom::edge_has_rows_cols(self.aligned_w, self.aligned_h, abs_x, abs_y, half);
+        let (has_rows, has_cols) = edge_flags(abs_x, abs_y, size, self.aligned_w, self.aligned_h);
         // use_accurate_part_ctx = 1: no x2 bias.
-        //
-        // The RATE depends on which alphabet the node codes in
-        // (`svt_aom_partition_rate_cost`, rd_cost.c:1846-1863):
-        //   - both flags false -> the split is IMPLIED, no symbol is coded, 0;
-        //   - exactly one false -> the BINARY split-vs-{H,V} bool;
-        //   - otherwise         -> the full 10-symbol alphabet.
-        // On a 64-aligned frame only the last arm is reachable.
-        let split_rate = if !has_rows && !has_cols {
-            0
-        } else if !has_rows || !has_cols {
-            self.part_rates.edge_split_bits(ctx_row, !has_rows)
-        } else {
-            self.part_rates.bits(ctx_row, PartitionType::Split)
-        };
+        // The SPLIT rate is the boundary BINARY alphabet's at a one-false node
+        // and 0 at a both-false node — C calls the same
+        // `svt_aom_partition_rate_cost` here as everywhere else
+        // (product_coding_loop.c:10784-10791). Identical to `bits` on a
+        // 64-aligned frame.
+        let split_rate =
+            self.part_rates
+                .bits_edge(ctx_row, PartitionType::Split, has_rows, has_cols);
         let mut split_cost = rdcost(self.lambda, split_rate, 0);
 
+        let half = size / 2;
         let children = scan.children.as_ref().expect("split_flag children");
         let mut trees: Vec<PartitionTree> = Vec::with_capacity(4);
         let mut decisions: Vec<BlockDecision> = Vec::new();
@@ -2073,18 +2151,11 @@ impl DepthWalk<'_, '_> {
         for (i, child) in children.iter().enumerate() {
             let cx = abs_x + (i & 1) * half;
             let cy = abs_y + (i >> 1) * half;
-            // OFF-FRAME QUADRANTS ARE SKIPPED BEFORE THE EARLY EXIT, not after.
-            // A quadrant whose origin is outside the aligned frame codes
-            // nothing (C `svt_aom_write_modes_sb` early return) and C's loop
-            // never reaches it, so it must not get a turn at the per-quadrant
-            // early-exit test either.
-            //
-            // MEASURED: with the check below the early exit, `gradient 72x88
-            // q20 p5` aborted the split of the 16x16 boundary node at (16,80)
-            // on i=2 -- an out-of-frame quadrant -- keeping the injected 16x8
-            // where C splits to two 8x8s (NSQDBG TSX ... i=2 parent=7520607
-            // split=7576441). Both real children had already been evaluated;
-            // the abort was decided by a child that does not exist.
+            // C `test_split_partition` (product_coding_loop.c:10802-10808):
+            // "if block fully outside pic, don't process" — the quadrant is
+            // skipped BEFORE the early-exit compare, so the next in-frame
+            // quadrant still sees its own `i` (and hence the 1000 threshold).
+            // Never taken on a 64-aligned frame.
             if cx >= self.aligned_w || cy >= self.aligned_h {
                 continue;
             }
@@ -2114,7 +2185,12 @@ impl DepthWalk<'_, '_> {
                     return SplitOut::Invalid;
                 }
             }
-            let res = self.pick(child, cx, cy);
+            // C: `if (!valid_split_partition) return false;` — every quadrant
+            // must produce a valid partition for SPLIT to be selectable
+            // (product_coding_loop.c:10825-10829).
+            let Some(res) = self.pick(child, cx, cy) else {
+                return SplitOut::Invalid;
+            };
             child_rd[i] = res.rd;
             split_cost += res.rd;
             trees.push(res.tree);
@@ -2185,9 +2261,12 @@ pub(crate) fn decide_sb_refined(
     disallow_4x4: bool,
     sb_x: usize,
     sb_y: usize,
+    // ALIGNED frame dims + `nsq_geom_ctrls.enabled` — the partial-SB edge
+    // rules. On a 64-aligned frame every predicate keyed on them is true and
+    // this walk is byte-identical to the pre-#95 one.
     aligned_w: usize,
     aligned_h: usize,
-    nsq_enabled: bool,
+    nsq_geom_enabled: bool,
 ) -> crate::partition::PartitionResult {
     let mut walk = DepthWalk {
         fx,
@@ -2201,9 +2280,13 @@ pub(crate) fn decide_sb_refined(
         disallow_4x4,
         aligned_w,
         aligned_h,
-        nsq_enabled,
+        nsq_geom_enabled,
     };
-    let res = walk.pick(scan, sb_x, sb_y);
+    // The SB root is always in-frame and always splittable, so C's
+    // `rdc.valid == 0` return cannot reach the top of a superblock.
+    let res = walk
+        .pick(scan, sb_x, sb_y)
+        .expect("SB root produced no valid partition");
     let num_blocks = res.decisions.len() as u32;
     crate::partition::PartitionResult {
         partition_type: match &res.tree {
@@ -2408,6 +2491,7 @@ mod tests {
         let eval = Pd0Eval {
             sq: 64,
             tested: true,
+            sq_tested: true,
             cost: 100,
             split: true,
             off: false,
@@ -2415,6 +2499,7 @@ mod tests {
                 Pd0Eval {
                     sq: 32,
                     tested: true,
+                    sq_tested: true,
                     cost: 25,
                     split: false,
                     off: false,
@@ -2423,6 +2508,7 @@ mod tests {
                 Pd0Eval {
                     sq: 32,
                     tested: true,
+                    sq_tested: true,
                     cost: 25,
                     split: false,
                     off: false,
@@ -2431,6 +2517,7 @@ mod tests {
                 Pd0Eval {
                     sq: 32,
                     tested: true,
+                    sq_tested: true,
                     cost: 25,
                     split: false,
                     off: false,
@@ -2439,6 +2526,7 @@ mod tests {
                 Pd0Eval {
                     sq: 32,
                     tested: true,
+                    sq_tested: true,
                     cost: 25,
                     split: false,
                     off: false,
@@ -2474,6 +2562,7 @@ mod tests {
         let leaf32 = |cost: u64| Pd0Eval {
             sq: 32,
             tested: true,
+            sq_tested: true,
             cost,
             split: false,
             off: false,
@@ -2482,6 +2571,7 @@ mod tests {
         let eval = Pd0Eval {
             sq: 64,
             tested: true,
+            sq_tested: true,
             cost: 100,
             split: true,
             off: false,
@@ -2508,6 +2598,200 @@ mod tests {
         assert!(
             !parent_tested(&scan32),
             "at max_tx_size 32 a 32x32 node is the max square: C forces s_depth = 0"
+        );
+    }
+}
+
+#[cfg(test)]
+mod partial_sb_edge_tests {
+    use super::*;
+
+    /// C `set_blocks_to_test` (enc_dec_process.c:1394-1438) at a frame
+    /// boundary. This is the rule the PD1 walk was missing entirely: before
+    /// the partial-SB fix, presets 0..=5 never ran this walk on an incomplete
+    /// superblock at all (`pipeline.rs`'s `refined` required `full_sb`), so a
+    /// non-64-aligned frame took a structurally different search than C's.
+    ///
+    /// ANTI-VACUITY: every assert below is about a `has_rows`/`has_cols` FALSE
+    /// case. On a 64-aligned frame both are always true and only the two
+    /// interior asserts are exercised — which is exactly why the aligned gate
+    /// stays at 1036/1036 while the partial cells moved 72 -> 187 of 216.
+    #[test]
+    fn set_blocks_to_test_edge_rules() {
+        let nsq_on = NsqCfg::for_preset_qp(3, 20); // NSQ SEARCH on (preset <= 3)
+        let nsq_off = NsqCfg::off(); // presets 4/5: md_disallow_nsq_search
+        // Interior node, NSQ search on: the full N/H/V/H4/V4 list.
+        assert_eq!(shapes_at_edge(32, &nsq_on, true, true, true).len(), 5);
+        // Interior node, NSQ search off: PART_N only.
+        assert_eq!(
+            shapes_at_edge(32, &nsq_off, true, true, true),
+            &[PartitionType::None]
+        );
+        // BOTH flags false -> tot_shapes = 0 -> forced SPLIT (:1405-1410).
+        assert!(shapes_at_edge(32, &nsq_on, true, false, false).is_empty());
+        assert!(shapes_at_edge(32, &nsq_off, true, false, false).is_empty());
+        // BOTTOM edge (!has_rows) -> EXACTLY PART_H, PARTITION_NONE EXCLUDED
+        // (:1417-1421).
+        assert_eq!(
+            shapes_at_edge(32, &nsq_on, true, false, true),
+            &[PartitionType::Horz]
+        );
+        // RIGHT edge (!has_cols) -> EXACTLY PART_V.
+        assert_eq!(
+            shapes_at_edge(32, &nsq_on, true, true, false),
+            &[PartitionType::Vert]
+        );
+        // The edge shape is injected even when the NSQ *search* is disabled:
+        // C ANDs `md_disallow_nsq_search` with `!inj_hv_incomp` (:1414). That
+        // is what lets presets 4/5 code a boundary rect at all.
+        assert_eq!(
+            shapes_at_edge(32, &nsq_off, true, false, true),
+            &[PartitionType::Horz]
+        );
+        // NSQ GEOMETRY off (allintra enc_mode > M6) -> no shape is injected and
+        // the node force-splits (the presets >= 7 rule, same clause :1405).
+        assert!(shapes_at_edge(32, &nsq_on, false, false, true).is_empty());
+    }
+
+    /// C `test_depth`'s `shape_block_cnt--` (product_coding_loop.c:10899-10904).
+    #[test]
+    fn shape_block_cnt_drops_out_of_frame_subblocks() {
+        // Interior 64x64 in a 128x128 aligned frame: nothing dropped.
+        assert_eq!(
+            shape_block_cnt_edge(64, PartitionType::Horz, 2, 0, 0, 128, 128, true, true),
+            2
+        );
+        assert_eq!(
+            shape_block_cnt_edge(64, PartitionType::Horz4, 4, 0, 0, 128, 128, true, true),
+            4
+        );
+        // A single-edge node codes ONLY the first rect (the in-frame half).
+        assert_eq!(
+            shape_block_cnt_edge(64, PartitionType::Horz, 2, 0, 64, 128, 88, false, true),
+            1
+        );
+        assert_eq!(
+            shape_block_cnt_edge(64, PartitionType::Vert, 2, 64, 0, 72, 128, true, false),
+            1
+        );
+        // H4 at y = 0 in a 48-tall aligned frame: has_rows is TRUE (0+32 < 48),
+        // yet the 4th quarter starts at y = 48 == aligned_h, so it is dropped.
+        assert_eq!(
+            shape_block_cnt_edge(64, PartitionType::Horz4, 4, 0, 0, 64, 48, true, true),
+            3
+        );
+        // The V4 mirror on a 48-wide aligned frame.
+        assert_eq!(
+            shape_block_cnt_edge(64, PartitionType::Vert4, 4, 0, 0, 48, 64, true, true),
+            3
+        );
+    }
+
+    /// C `svt_aom_partition_rate_cost`'s boundary arms (rd_cost.c:1846-1866).
+    /// The port's `PartRates` only ever indexed the full 10-symbol alphabet; at
+    /// a boundary node C prices the BINARY split-vs-{H,V} alphabet instead, and
+    /// BOTH entries are live (entry 0 is `test_depth`'s `part_rate` for the
+    /// injected rect, and `update_skip_nsq_based_on_split_rate` reads it too).
+    #[test]
+    fn partition_rate_uses_the_boundary_alphabet() {
+        let fc = svtav1_entropy::context::FrameContext::new_default();
+        let r = PartRates::from_fc(&fc);
+        // 32x32 -> bsl 2 -> ctx row 8 (left = above = 0).
+        let row = 8usize;
+        let full_split = r.bits(row, PartitionType::Split);
+        let full_horz = r.bits(row, PartitionType::Horz);
+        // Interior: unchanged, the full alphabet.
+        assert_eq!(
+            r.bits_edge(row, PartitionType::Split, true, true),
+            full_split
+        );
+        // Both false: C returns 0 — the node codes no partition symbol.
+        assert_eq!(r.bits_edge(row, PartitionType::Split, false, false), 0);
+        assert_eq!(r.bits_edge(row, PartitionType::Horz, false, false), 0);
+        // Bottom edge: the vert_alike binary pair. SPLIT and the rect must
+        // differ from each other and from the full-alphabet costs, else the
+        // whole boundary-rate distinction would be vacuous.
+        let b_split = r.bits_edge(row, PartitionType::Split, false, true);
+        let b_rect = r.bits_edge(row, PartitionType::Horz, false, true);
+        assert_ne!(b_split, b_rect);
+        assert_ne!(b_split, full_split);
+        assert_ne!(b_rect, full_horz);
+        // Right edge uses the OTHER gather, and the two tables are genuinely
+        // different (C's horz/vert alike gathers are asymmetric).
+        let r_split = r.bits_edge(row, PartitionType::Split, true, false);
+        let r_rect = r.bits_edge(row, PartitionType::Vert, true, false);
+        assert_ne!(r_split, b_split);
+        assert_ne!(r_rect, b_rect);
+        // The boundary table is keyed on `p == PARTITION_SPLIT` ONLY, so every
+        // non-SPLIT symbol collapses onto the same rect entry.
+        assert_eq!(r.bits_edge(row, PartitionType::None, true, false), r_rect);
+        assert_eq!(r.bits_edge(row, PartitionType::Horz4, true, false), r_rect);
+    }
+
+    /// C's `tested_blk[PART_N][0]` guard on every PD1 refinement gate
+    /// (enc_dec_process.c:1550, 1566, 1586, 1634, 1698-1711, 1859, 1868),
+    /// spelled out in C's own comment at :1547 — "For incomplete blocks, H/V
+    /// partitions may be allowed, while square is not ... check that the SQ
+    /// block is available before using the cost."
+    ///
+    /// A PD0 leaf that only ever costed its boundary rect must therefore get
+    /// `s_depth = e_depth = 0`: it is coded at its own depth, never refined.
+    /// Without the `Pd0Eval::sq_tested` distinction the rect cost was fed to
+    /// the deviation gates as if it were a square PART_N cost.
+    #[test]
+    fn boundary_pd0_leaf_is_never_refined() {
+        let tables = crate::pd0::build_m6_pd0_tables(160);
+        let ctrls = DrCtrls::for_preset(4); // ADAPTIVE, s1 = e1 = 15
+        let kid16 = || crate::pd0::Pd0Eval {
+            sq: 16,
+            tested: true,
+            sq_tested: true,
+            cost: 5_000_000,
+            split: false,
+            off: false,
+            children: None,
+        };
+        // A PD0 leaf at 32x32 whose four visited 16x16 children came in far
+        // cheaper — `is_child_to_current_deviation_small` admits the child
+        // depth (e = 1) whenever the SQ cost is available.
+        let leaf32 = |sq_tested: bool| crate::pd0::Pd0Eval {
+            sq: 32,
+            tested: true,
+            sq_tested,
+            cost: 100_000_000,
+            split: false,
+            off: false,
+            children: Some(alloc::boxed::Box::new([kid16(), kid16(), kid16(), kid16()])),
+        };
+        let mk = |sq_tested: bool| crate::pd0::Pd0Eval {
+            sq: 64,
+            tested: true,
+            sq_tested: true,
+            cost: 400_000_000,
+            split: true,
+            off: false,
+            children: Some(alloc::boxed::Box::new([
+                leaf32(sq_tested),
+                leaf32(true),
+                leaf32(true),
+                leaf32(true),
+            ])),
+        };
+        let with_sq = build_refined_scan(&mk(true), &ctrls, 25650, &tables);
+        let boundary = build_refined_scan(&mk(false), &ctrls, 25650, &tables);
+        let q0 = |s: &RefScan| {
+            let c = s.children.as_ref().expect("root splits");
+            (c[0].split_flag, c[0].children.is_some())
+        };
+        assert_eq!(
+            q0(&with_sq),
+            (true, true),
+            "a square-costed PD0 leaf admits the child depth"
+        );
+        assert_eq!(
+            q0(&boundary),
+            (false, false),
+            "a boundary PD0 leaf has no SQ cost: C skips both deviation gates"
         );
     }
 }

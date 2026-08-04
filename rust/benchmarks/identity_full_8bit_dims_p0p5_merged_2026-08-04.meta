@@ -1,0 +1,28 @@
+AFTER reconciling the workflow agent's `sq_tested` fix onto main.
+
+date:    2026-08-04
+command: IF_TIER=dims IF_PRESETS="0 1 2 3 4 5" ./tools/identity_full_8bit.sh
+grid:    same 360 cells as the two earlier baselines, so all three compare directly
+result:  348/360, 0 harness errors
+
+  preset   partial-SB                       64-aligned
+           pre-fix -> my walk -> +sq_tested
+    p0       7/36  ->  24/36  ->  36/36       23/24 (unchanged throughout)
+    p1       7/36  ->  24/36  ->  36/36       22/24
+    p2      10/36  ->  29/36  ->  36/36       22/24
+    p3      11/36  ->  33/36  ->  36/36       21/24
+    p4      12/36  ->  28/36  ->  34/36       22/24
+    p5      25/36  ->  25/36  ->  36/36       24/24
+
+The aligned column never moves. Five of six presets are now PERFECT on partial
+geometry; p4 is 34/36.
+
+The final result is better than EITHER contributing change alone. The agent
+measured p0 26 / p1 26 / p2 31 / p3 36 / p4 32 / p5 36 on its own base, which
+predates the palette map-clip fix (in-frame rows/cols for the color-index map).
+The two are complementary: the clip removes a whole failure mode on partial-SB
+screen cells that the refinement fix alone leaves in place.
+
+REMAINING 12 of 360: the aligned `screen` cells at 256/384/512 (the #71
+palette/IBC over-picking RD class, unrelated to geometry) plus 2 partial cells
+at p4.
