@@ -120,6 +120,33 @@ byte-only driver and `identity_diff.sh` degrades to a byte + header-field
 comparison. Byte verdicts are unaffected; symbol-level localization needs a
 GNU-ld host.
 
+## 5b. Drills you don't have to write
+
+Localizing a divergence starts with narrowing WHAT changed, not reading code.
+These are committed so nobody rebuilds them in a scratch dir:
+
+```bash
+tools/drill_two_images.sh     # per-preset/per-qp verdicts for the two open images
+tools/sc_tool_bisect.sh       # palette? IntraBC? neither? (SVTAV1_SC_TOOLS)
+tools/regression_spotcheck.sh # every fixed bug, ~90s
+python3 tools/coverage_matrix.py
+```
+
+`SVTAV1_SC_TOOLS={nopalette,noibc,none}` forces a screen-content tool off at
+runtime so you can bisect without editing and rebuilding. It deliberately does
+NOT touch `allow_screen_content_tools` (the frame-header bit), so the streams
+stay comparable — only the RD candidate set changes.
+
+**Read the sizes it prints, not just the verdicts.** On `graph.png` at q32,
+turning palette off moves the port FURTHER from C (3792 → 4186 against C's
+3781). That is how "the port over-picks palette" was refuted for those cells:
+the port's palette is winning real RD.
+
+`SVT_CPU_FLAGS=<mask>` does the same job on the C side — it pins C's RTCD
+dispatch level, which is how you test whether a divergence is C's own SIMD
+choice (see `docs/SUSPECTED-C-BUGS.md` #9). `SVT_CPU_FLAGS=0` is pure-C kernels
+and works on x86-64; it SEGFAULTS on aarch64, where Neon is mandatory.
+
 ## 6. Refuse, never emit a plausible-but-wrong stream
 
 Out-of-envelope configs return a typed `Err` from `encode_frame_impl`. They do
