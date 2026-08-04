@@ -202,10 +202,28 @@ behaviour) to pin C's RTCD level. `SVT_CPU_FLAGS=0` — pure C kernels, the
 cleanest way to test this class — **segfaults on aarch64**, where Neon is
 mandatory and zeroing the flags leaves null RTCD pointers. It works on x86-64.
 
-**Open:** how wide is this? Only two cells are known, both bd10 preset 7 screen.
-Nobody has swept for others, which would need parity runs on both architectures
-and a diff of the verdict sets — worth doing before any claim that a bd10 sweep
-is architecture-independent.
+**WIDER THAN FIRST THOUGHT (updated 2026-08-04).** A third cell turned up from
+a completely different corner: `gradient 96x80 q48 preset 0`, **8-bit**,
+synthetic gradient, partial-SB geometry. Byte-identical on aarch64
+(C=217B port=217B) and failing on the x86-64 runner. The port is again not the
+variable side — `tier_invariance.rs` covers that exact cell across every
+dispatch tier and is green.
+
+That matters because the tidy explanation no longer covers it. The first two
+cells were bd10 / preset 7 / screen, which the `svt_aom_hadamard_32x32_c` vs
+`_avx2` disagreement at bd10 magnitudes explains neatly. This one is bd8 /
+preset 0 / gradient. Whatever the mechanism is, **it is not confined to bd10, to
+screen content, or to the hadamard kernel** — so do not assume an 8-bit sweep is
+architecture-independent either.
+
+How it reached CI is itself the lesson: the cell was added by a run on the host
+where it passes. **A gate cell validated on one architecture is a per-architecture
+claim.** Cells now get `uname -m` scoping when they turn out to be one
+(`partial_sb_gate.sh`, `screen_palette_bd_gate.sh`).
+
+**Open:** nobody has swept for the full extent. It needs parity runs on both
+architectures and a diff of the verdict sets. Until then, treat any new
+byte-parity cell as provisional until it has been seen green on both.
 
 ---
 

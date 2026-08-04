@@ -215,11 +215,20 @@ fn encoder_output_is_tier_invariant_across_the_matrix() {
 /// aligned path, and a tier bug there would be invisible to the cells above.
 #[test]
 fn partial_superblock_output_is_tier_invariant() {
-    for &(w, h) in &[(96usize, 80usize), (65, 65), (120, 104)] {
-        for &preset in &[6u8, 7] {
-            assert_tier_invariant(&format!("gradient {w}x{h} q32 p{preset} bd8"), || {
-                encode_8bit(&gradient_plane, w, h, 32, preset)
-            });
+    // Presets 0..5 run the EDGE-AWARE PD1 REFINEMENT WALK on a partial SB — a
+    // path that did not exist until 2026-08-04 and had no tier coverage. It is
+    // also where a cross-host disagreement showed up: `gradient 96x80 q48 p0`
+    // byte-matches C on aarch64 and fails the same gate on the x86-64 runner.
+    // Either the port is tier-dependent there (a shipping bug) or C is (entry
+    // #9 of docs/SUSPECTED-C-BUGS.md), and only this gate can tell them apart
+    // without a machine of the other architecture.
+    for &(w, h) in &[(96usize, 80usize), (65, 65), (120, 104), (72, 88), (104, 72)] {
+        for &preset in &[0u8, 1, 2, 3, 4, 5, 6, 7] {
+            for &qp in &[32u8, 48] {
+                assert_tier_invariant(&format!("gradient {w}x{h} q{qp} p{preset} bd8"), || {
+                    encode_8bit(&gradient_plane, w, h, qp, preset)
+                });
+            }
         }
     }
 }

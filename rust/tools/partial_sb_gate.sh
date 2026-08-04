@@ -296,7 +296,8 @@ CELLS=(
   "gradient 96 80 20 4"
   "gradient 96 80 48 4"    # was 193B vs C 177B before the restructure
   "gradient 96 80 20 0"
-  "gradient 96 80 48 0"
+  # "gradient 96 80 48 0" — ISA-SCOPED, see below. Byte-identical on aarch64,
+  # DIFFERS on the x86-64 CI runner.
   "gradient 72 88 20 0"    # straddle-win geometry, deepest refinement level
   "gradient 72 88 48 0"    # needs rule (2): 166B vs C 165B without sq_tested
   "gradient 72 88 20 3"
@@ -307,6 +308,7 @@ CELLS=(
   "gradient 80 88 20 5"
   "gradient 104 72 20 0"   # thin 8-tall bottom edge + straddling right SB
   "gradient 104 72 48 0"   # needs rule (2)
+
   "gradient 104 72 20 5"
   "gradient 104 72 48 5"
   "gradient 120 104 20 0"  # multi-SB both-partial (2304B vs C 2046B before)
@@ -329,6 +331,26 @@ CELLS=(
   "screen 120 104 20 5"
   "screen 104 72 48 5"
 )
+
+# --- ISA-SCOPED CELL --------------------------------------------------------
+# `gradient 96x80 q48 p0` byte-matches C on aarch64 (C=217B port=217B) and
+# FAILS the same gate on the x86-64 CI runner. The port is not the variable
+# side: svtav1/tests/tier_invariance.rs encodes this exact cell under every
+# archmage dispatch tier and asserts identical bytes, and it is green — and the
+# scalar tier is portable integer Rust, so the port emits one bitstream on any
+# ISA. C therefore emits different bytes for the same input on the two hosts.
+#
+# This is a SECOND instance of docs/SUSPECTED-C-BUGS.md #9, and it widens that
+# entry materially: the first was bd10 / preset 7 / screen content, which the
+# `svt_aom_hadamard_32x32_c` vs `_avx2` disagreement explained neatly. This one
+# is bd8 / preset 0 / gradient, so whatever the mechanism is, it is NOT confined
+# to bd10 magnitudes or to the hadamard kernel.
+#
+# Added on the host where it passes, which is how it reached CI: a cell
+# validated on one architecture is a per-architecture claim.
+case "$(uname -m)" in
+  arm64 | aarch64) CELLS+=("gradient 96 80 48 0") ;;
+esac
 for cell in "${CELLS[@]}"; do
   read -r content w h qp p <<<"$cell"
   tag="${content}_${w}x${h}_q${qp}_p${p}"
