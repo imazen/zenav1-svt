@@ -1,7 +1,7 @@
 # Screen-content detection port map (task #71, extracted 2026-07-16 from v4.2.0 C)
 
 Complete port-ready map of the allintra sc-detection pipeline. Verified against
-`/root/svtav1/Source` at the v4.2.0 tag by whole-chain trace. Feeds #71 work
+`reference/svt-av1/Source` at the v4.2.0 tag by whole-chain trace. Feeds #71 work
 items 1–3 (detection → level tables → header bit).
 
 ## Call chain (allintra, default multi-threaded)

@@ -5441,7 +5441,7 @@ fn partition_edge_flags(
 /// the packed layout the walk's Split arm expects.
 ///
 /// WHY FORCED-SPLIT IS CORRECT HERE, NOT A HEURISTIC (verified first-hand
-/// against /root/svtav1/Source, 2026-07-19 — this supersedes the port map's
+/// against reference/svt-av1/Source, 2026-07-19 — this supersedes the port map's
 /// "UNVERIFIED for textured content" caveat):
 ///
 /// C `set_blocks_to_be_tested` (Codec/enc_dec_process.c:1483-1499) computes

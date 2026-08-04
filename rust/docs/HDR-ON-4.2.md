@@ -11,7 +11,7 @@
 # svt-av1-hdr (Chromedome) rebased onto mainline v4.2.0-rc
 
 Repo: `/root/svt-av1-hdr-on-4.2`, branch `hdr-on-4.2`, base `v4.2.0-rc` (`0da2ed9`).
-Built 2026-07-15. Companion diff reference: `/root/svtav1-diff-reference/REFERENCE.md`.
+Built 2026-07-15. Companion diff reference: `reference/svt-av1-diff-reference/REFERENCE.md`.
 Purpose: produce a **hybrid C oracle** (`v4.2 + fork features`) so the Rust port
 (`zenav1-svt`) can differentially test HDR-fork features under its bit-identity mandate.
 
@@ -243,11 +243,11 @@ unset / 0        -> lib Bin/Release,    cbuild-static, capture_c_trace.bin
 Build the fork oracle once:
 
 ```bash
-cmake -S /root/svtav1 -B /root/svtav1/cbuild-static-hdr \
+cmake -S reference/svt-av1 -B reference/svt-av1/cbuild-static-hdr \
   -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DBUILD_APPS=OFF \
   -DBUILD_TESTING=OFF -DSVT_AV1_LTO=OFF -DSVT_HDR_MODE=ON \
-  -DCMAKE_OUTPUT_DIRECTORY=/root/svtav1/Bin/ReleaseHdr/
-cmake --build /root/svtav1/cbuild-static-hdr -j8
+  -DCMAKE_OUTPUT_DIRECTORY=reference/svt-av1/Bin/ReleaseHdr/
+cmake --build reference/svt-av1/cbuild-static-hdr -j8
 ```
 
 Two invariants are load-bearing and must not be "simplified":

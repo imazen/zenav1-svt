@@ -777,7 +777,7 @@ paths (presets <= 8, inter, partial SBs) are untouched. Pinned test
 Matrix: still **18/36** (`benchmarks/identity_matrix_2026-07-13.tsv`
 regenerated; all uniform cells IDENTICAL, divergences strictly later).
 Gates re-run green: recon-parity 216/0, decode conformance 525/0 mono +
-700/0 chroma, `cargo test --workspace` all green (no test-input
+700/0 chroma, `cargo nextest run --workspace` all green (no test-input
 changes).
 
 ### Remaining subsystems for gradient p13/p10 identity (updated)
@@ -891,7 +891,7 @@ in a scratch copy of the C tree (prints inside
 - identity matrix **30/36** (+12; all uniform + all gradient M13/M10)
 - recon parity 216/0 (C-exact quantizer keeps encoder recon == aomdec)
 - decode conformance 525/0 mono + 700/0 chroma
-- `cargo test --workspace` green (no test-input changes needed)
+- `cargo nextest run --workspace` green (no test-input changes needed)
 
 ### Next subsystem (owns all 6 remaining cells)
 
@@ -905,7 +905,7 @@ on gradient-64 q55 p6.
 ## 2026-07-13 (wave2, M6 chunk): gradient preset-6 diagnosis — the briefed theory was (again) partially wrong
 
 Differ reruns on all 6 cells + C-vs-C tile comparison (p6 vs p10 traces) +
-an instrumented scratch build (`/root/svtav1-instr`, SVT_M6DBG env-gated
+an instrumented scratch build (`reference/svt-av1-instr`, SVT_M6DBG env-gated
 prints in enc_mode_config.c / product_coding_loop.c / restoration_pick.c /
 enc_cdef.c; instrumented OBUs verified byte-identical to baseline on every
 cell before trusting any dump). Corrections to the going-in theory:
@@ -1058,7 +1058,7 @@ Matrix `benchmarks/identity_matrix_2026-07-14.tsv`: **30/36**, zero
 regressions (all uniform + all gradient M10/M13 IDENTICAL). Gates:
 recon-parity 216/0 (CDEF firing on 127 streams — count moved because
 s6/s8 now use searched strengths), decode conformance 525/0 mono +
-700/0 chroma under aomdec AND dav1d, `cargo test --workspace` 588/0
+700/0 chroma under aomdec AND dav1d, `cargo nextest run --workspace` 588/0
 (no test-input changes).
 
 ### Remaining divergence per cell (all strictly later than before)
@@ -1211,7 +1211,7 @@ every gradient-p6 first divergence strictly later and tile-op-classified.
 
 ### Instrumented ground truth + the C-dgd validation (the chunk's key experiment)
 
-Scratch build `/root/svtav1-instr` (SVT_LRDBG prints in
+Scratch build `reference/svt-av1-instr` (SVT_LRDBG prints in
 restoration_pick.c; **instrumented OBUs byte-identical to baseline on
 all 6 gradient-p6 cells** before trusting any dump; deleted after).
 Captures at `docs/captures/gradient_*_p6.lrdbg.txt`: per-cell solved
@@ -1236,7 +1236,7 @@ default taps with score 0, also pinned).
   aomdec's byte-for-byte everywhere it fires.
 - decode conformance **525/0 mono + 700/0 chroma** under aomdec AND
   dav1d (LR syntax parses on both reference decoders).
-- `cargo test --workspace` **605/0** (+17 new; the one pre-existing
+- `cargo nextest run --workspace` **605/0** (+17 new; the one pre-existing
   test touched — golden `wiener_filter_identity` — now drives the
   C-exact kernel with a STRICTER exact-equality assertion, replacing
   the deleted sketch's +-1-tolerance check).
@@ -1365,7 +1365,7 @@ reports **36 / 36 byte-identical** (scoreboard
 - identity matrix **36/36** (`benchmarks/identity_matrix_check.tsv`) —
   all uniform + ALL gradient cells at presets 13/10/6, both sizes,
   all qps; zero regressions.
-- `cargo test --workspace --no-fail-fast`: **609 passed / 0 failed**
+- `cargo nextest run --workspace --no-fail-fast`: **609 passed / 0 failed**
   (+4 new differential suites; no test-input changes).
 - recon-parity + decode conformance: see the gate outputs in the
   session close-out (run after this doc's commit).
@@ -1398,7 +1398,7 @@ they run PD0_LVL_1 with lower intra/rdoq/txt levels — unported). Two commits.
 
 ### Verified C config deltas (instrumented `svt_aom_sig_deriv_enc_dec_allintra` dump)
 
-Scratch build `/root/svtav1-instr` (SVT_M7DBG env-gated prints in
+Scratch build `reference/svt-av1-instr` (SVT_M7DBG env-gated prints in
 enc_mode_config.c + product_coding_loop.c + mode_decision.c; instrumented
 OBUs byte-identical to baseline; deleted after). Config dump captured for
 M6/M7/M8/M9 (docs/captures/m7m8m9_funnel.txt):
@@ -1462,7 +1462,7 @@ elsewhere -> static default tables).
 
 - identity matrix **60/60 for presets 6-10** (M6/M7/M8/M9/M10 all 12/12);
   all-presets total **60/132** (M0-M5 unported).
-- `cargo test --workspace --no-fail-fast`: **613 passed / 0 failed**.
+- `cargo nextest run --workspace --no-fail-fast`: **613 passed / 0 failed**.
 - recon-parity **216/0** (eff-M9 funnel self-consistent on real content;
   CDEF 127/216, wiener 58/216).
 - decode conformance **525/0 mono + 700/0 chroma** (aomdec + dav1d).
@@ -1484,7 +1484,7 @@ elsewhere -> static default tables).
 ## 2026-07-14 (wave2, M0-M5 chunk): FH filter searches ported — matrix 60 -> 96/132, every uniform cell at every preset byte-identical
 
 Session scope: the M0-M5 frontier (was 0/12 per preset). Instrumented
-scratch build `/root/svtav1-instr` (SVT_M5DBG + SVT_DLFDBG prints;
+scratch build `reference/svt-av1-instr` (SVT_M5DBG + SVT_DLFDBG prints;
 **all 24 instrumented OBUs byte-identical to baseline** before trusting
 dumps; deleted after). Ground truth: `docs/captures/m0m5_config_dlf.txt`
 (the complete per-preset config dump, the DLF search walks, and the M5
@@ -1683,7 +1683,7 @@ now carries block dims (chroma TX + pu_edge) AND a per-mi luma TX grid.
   2104864 px filtered / 879030 changed; LR wiener 87/270, 150 RUs).
 - decode conformance (aomdec AND dav1d 1.5.1): mono **630/0**, chroma
   **840/0**.
-- cargo test --workspace: 36/36 suites, 0 failures (new:
+- cargo nextest run --workspace: 36/36 suites, 0 failures (new:
   c_parity_intra_edge 4 suites, m5 config pins, full uv-tx rows).
 
 ### Remaining for M0-M4 (the 30 gradient cells)
@@ -1698,7 +1698,7 @@ allintra nfl count needs an is_highest_layer instrument check).
 ## 2026-07-14 (wave2, M4 chunk): preset 4 COMPLETE — matrix 102 -> 108/132, presets 4-10 all 84/84
 
 Session scope: the 6 gradient M4 cells. No fresh C instrumentation was
-needed (the /root/svtav1-instr scratch was never built): every config
+needed (the reference/svt-av1-instr scratch was never built): every config
 delta was re-verified against the C SOURCE, the M5DBG CFG enc_mode=4
 capture row supplied the runtime ground truth, and — for the one cell
 the config alone did not close — the C-p4-vs-C-p5 trace comparison plus
@@ -1807,7 +1807,7 @@ At M4 (e1 15 + intra_level-1 leaf costs) the 16x16 depth WINS once.
 - decode conformance (aomdec AND dav1d): mono **630/0**, chroma
   **840/0** (both matrices already include speed 4, so the new walk is
   covered without test changes).
-- `cargo test --workspace --no-fail-fast`: **36 suites, 625 passed,
+- `cargo nextest run --workspace --no-fail-fast`: **36 suites, 625 passed,
   0 failed** (+8 new pins: m4 cfg/candidate-shape, dr ctrls, m5/m4
   scan shapes vs the WIN-dump admission pattern, pred-part-only
   equivalence, mds2_rank_factor rows).
@@ -1831,7 +1831,7 @@ the now-complete M4 base), then M1/M0.
 ## 2026-07-14 (wave2, M2+M3 NSQ chunk): presets 2 and 3 COMPLETE — matrix 108 -> 120/132, presets 2-10 all 108/108
 
 Session scope: the 12 gradient M2/M3 cells (M3 first per the plan).
-Fresh instrumentation in `/root/svtav1-instr` (SVT_NSQDBG prints:
+Fresh instrumentation in `reference/svt-av1-instr` (SVT_NSQDBG prints:
 per-shape BLK/SKIP/SHAPE/ABORT rows with gate ids, TS/TSX inter-depth
 compares, TREE dumps, PD0B per-node PD0 evals, NSQCFG runtime rows,
 PSQ residual checksums + buffer-pointer traces; **all instrumented
@@ -1956,7 +1956,7 @@ line-by-line against C.
   2313760 px filtered / 920602 changed; LR wiener 104/324, 178 RUs).
 - decode conformance (aomdec AND dav1d, speed 3 added): mono
   **735/0**, chroma **980/0**.
-- `cargo test --workspace --no-fail-fast`: **36 suites, 628 passed,
+- `cargo nextest run --workspace --no-fail-fast`: **36 suites, 628 passed,
   0 failed** (+3 pins: txb geometry vs the C dump, M2/M3 funnel cfg,
   NsqCfg rows vs the NSQCFG captures; finish_cdef_rd pins updated to
   the new full-lev return SHAPE, same values).
@@ -2088,7 +2088,7 @@ Two things must land before M0 can be routed:
 - recon_parity: **378/0** (speed 1 ADDED — the funnel now owns speed 1).
 - decode_conformance: mono **840/0** + chroma **1120/0** (aomdec + dav1d,
   speed 1 ADDED).
-- cargo test --workspace: **628/0**.
+- cargo nextest run --workspace: **628/0**.
 
 ## 2026-07-14 (wave2, M0 sub-8 chunk): filter-intra tx_type CDF fix — M0 ROUTED, conformance unblocked, matrix 126 -> 130/132
 
@@ -2173,7 +2173,7 @@ of the x=36/x=44 4x16 blocks at M0 q20 (which fi/H candidate C ranks where).
   are gone).
 - decode_conformance: mono **945/0** + chroma **1260/0** (aomdec AND dav1d,
   speed 0 owned by the funnel).
-- cargo test --workspace: **662/0**.
+- cargo nextest run --workspace: **662/0**.
 - Build profile: opt-level 2 for release+test (deps stay opt-3); identity
   matrix re-verified byte-identical at opt-2 (opt-level does not affect
   bit-exactness — no FMA contraction without target-feature=+fma), ~faster
@@ -2201,7 +2201,7 @@ partition/mode/tx RD. Cell: `1001682.png 512x512 q40 p10`.
 
 ### Root cause (scratch-C instrumented, byte-identical-verified, then deleted)
 
-Instrumented `/root/svtav1-instr` (2 TUs recompiled with the exact CODEC
+Instrumented `reference/svt-av1-instr` (2 TUs recompiled with the exact CODEC
 flags, `ar r` into a *copy* of `libSvtAv1Enc.a`; env-gated prints; OBUs
 byte-identical to baseline with the env unset — proven before trusting).
 Captured C's per-block PD0 costs for SB 28 vs Rust's (`SVTAV1_PD0DBG`):
@@ -2254,7 +2254,7 @@ which is exactly why synthetic identity never exposed this.
   single new class (below).
 - Synthetic identity matrix (presets 0-10): **130/132** — unchanged (2 =
   pre-existing M0 gradient q20 residual). Factor 0 for all 64/128 cells.
-- `cargo test --workspace`: **662/0** (pd0 cost tests
+- `cargo nextest run --workspace`: **662/0** (pd0 cost tests
   `lvl5_block_costs_match_c_q40`, `gradient64_trees_match_c` etc. green —
   they pass ires_factor 0 for 64x64 frames).
 - recon_parity: **432/0** (AOMDEC=/root/aomdec-build/aomdec; CDEF fired on
@@ -2358,9 +2358,9 @@ decision the PD0 tree build used — same fn, same inputs) and passes it to
   so TXS stays off, factor unchanged).
 - recon_parity (AOMDEC): **432 passed, 0 failed** (CDEF 236/432, LR
   wiener 137/432).
-- `cargo test --workspace`: **662 passed, 0 failed**.
-- C tree pristine (`git -C /root/svtav1 status` clean of non-svtav1-rs);
-  scratch `/root/svtav1-instr` deleted.
+- `cargo nextest run --workspace`: **662 passed, 0 failed**.
+- C tree pristine (`git -C reference/svt-av1 status` clean of non-svtav1-rs);
+  scratch `reference/svt-av1-instr` deleted.
 
 ### Next real-content divergence (NOT this chunk)
 
@@ -2376,7 +2376,7 @@ next class.
 
 Root-caused and fixed the M7 real-content residual (task #70). The prior
 chunk (0a7ead360) framed it as a "DCT_ADST chroma coeff-cost divergence"
-(C cb=10746 vs ours 6246). Instrumented scratch C (`/root/svtav1-instr`,
+(C cb=10746 vs ours 6246). Instrumented scratch C (`reference/svt-av1-instr`,
 `-Wl,--wrap` of `svt_aom_txb_estimate_coeff_bits` + `svt_aom_full_cost` —
 no lib rebuild, OBUs byte-identical to baseline, deleted after) DISPROVED
 that framing: `svt_av1_cost_coeffs_txb` returns the exact SAME chroma bits
@@ -2424,11 +2424,11 @@ full; lvl 0 -> per-plane approx). Commit 5e0937ef4.
 - real-image matrix `RIM_PRESETS="7 8 10"` (CID22-512 training, 20 imgs x 3
   qps = 180): **176/180** — **M7 57/60** (was 36/60), M8 59/60, M10 60/60
   (no regression). CID22 validation probe 2775196 q40 p7: VERDICT IDENTICAL.
-- `cargo test --workspace`: **662 passed / 0 failed**.
+- `cargo nextest run --workspace`: **662 passed / 0 failed**.
 - synthetic `identity_matrix` (presets 0-10): **130/132** (unchanged — the 2
   pre-existing M0 gradient q20 cells).
 - recon_parity (AOMDEC): **432 passed / 0 failed** (CDEF 236/432, wiener 137/432).
-- C tree pristine; scratch `/root/svtav1-instr` deleted.
+- C tree pristine; scratch `reference/svt-av1-instr` deleted.
 
 ### Residual (next tier, DISTINCT class — not chroma coeff-cost)
 
@@ -2464,7 +2464,7 @@ restoration.rs) and is not the primary M6 gap; the recon feeding it is.
 
 ### Localization (scratch-C instrumented; OBUs byte-identical baseline; deleted)
 
-Instrumented `/root/svtav1-instr` (dlf_process.c recon dump at the pre-cdef-prep
+Instrumented `reference/svt-av1-instr` (dlf_process.c recon dump at the pre-cdef-prep
 point; entropy_coding.c `write_modes_b` leaf dump; full_loop.c
 `svt_aom_quantize_inv_quantize` + `svt_av1_optimize_b` `update_coeff_general`
 per-coeff dump — every build verified to reproduce baseline OBUs byte-for-byte
@@ -2551,12 +2551,12 @@ structurally unaffected, but the synthetic gate must still be re-run).
 
 ### Gates (this chunk — diagnosis only, no functional change)
 
-- `cargo test --workspace`: **662 passed / 0 failed**.
+- `cargo nextest run --workspace`: **662 passed / 0 failed**.
 - recon_parity (AOMDEC): **432 passed / 0 failed** (CDEF 236/432, wiener 137/432).
 - synthetic `identity_matrix` (presets 0-10): **130/132** (unchanged).
 - real M7/M8/M10 spot (4 imgs q40): **12/12 IDENTICAL** (no regression); real
   M6 same imgs **0/4** (honest baseline: 3 FH / 1 tile, all the avg_cdf cascade).
-- C tree pristine; scratch `/root/svtav1-instr` deleted.
+- C tree pristine; scratch `reference/svt-av1-instr` deleted.
 - Repo change: diagnostic aids only — `identity_run` env-gated recon dump
   (`SVTAV1_RECON_DUMP`) + `tx_depth` added to the `SVTAV1_DUMP_TREE` leaf line.
   No encoder-output change.
@@ -2575,7 +2575,7 @@ rows 0-2, and rows 3+ still cascade.
 ### CDEF search is C-exact (proven, not asserted)
 
 Scratch-C instrumented `cdef_seg_search` + `finish_cdef_search`
-(`/root/svtav1-instr`, surgically recompiled `cdef_process.c.o`/`enc_cdef.c.o`
+(`reference/svt-av1-instr`, surgically recompiled `cdef_process.c.o`/`enc_cdef.c.o`
 into a copy of `Bin/Release/libSvtAv1Enc.a` — no full-tree rebuild; env-gated
 `CDEFDBG`/`CDEFRECON`; deleted at end). Dumped, for 1001682 q40 p6, the per-fb
 per-candidate mse rows (luma + joint UV), the config, and the RD pick; compared
@@ -2656,15 +2656,15 @@ real M6 advances past the recon cascade; M2-M5 share it.
 
 ### Gates (this chunk — verification only, no encoder-output change)
 
-- `cargo test --workspace`: **664 passed / 0 failed**.
+- `cargo nextest run --workspace`: **664 passed / 0 failed**.
 - recon_parity (AOMDEC): **432 passed / 0 failed** (CDEF 236/432, wiener 137/432).
 - synthetic `identity_matrix` (presets 0-10): **130/132** (unchanged).
 - real M7/M8/M10 spot (4 imgs q40): **12/12 IDENTICAL** (no regression).
 - real M2-M6 (3 imgs q40): **0/15**, all FH (honest baseline; unchanged by this
   chunk — output byte-for-byte the same as 9563ac471, so the committed
   `benchmarks/real_image_identity_2026-07-15.tsv` remains current).
-- C tree pristine (`git -C /root/svtav1 status --short` clean of non-svtav1-rs);
-  scratch `/root/svtav1-instr` deleted.
+- C tree pristine (`git -C reference/svt-av1 status --short` clean of non-svtav1-rs);
+  scratch `reference/svt-av1-instr` deleted.
 - Repo change: one diagnostic aid — `cdef.rs` env-gated `SVTAV1_CDEF_DBG`
   (per-fb mse rows + RD pick). No encoder-output change.
 
@@ -2694,7 +2694,7 @@ Rust's `avg_cdf_entries` (cdf.rs:46) flat-averages the whole stored array. The
 
 ### The avg_cdf chain is C-EXACT (instrumented C; OBUs byte-identical baseline; deleted)
 
-Scratch C `/root/svtav1-instr` (enc_dec_process.c: dump `ec_ctx_array[sb]`
+Scratch C `reference/svt-av1-instr` (enc_dec_process.c: dump `ec_ctx_array[sb]`
 post-configure per SB — the exact chain_base seed; every build verified to
 reproduce the baseline OBU byte-for-byte with env unset; deleted at end, C tree
 pristine). Compared chroma `coeff_base_eob_cdf[0][1][0..3]` (cbeobU) + luma
@@ -2768,14 +2768,14 @@ tail-truncation. The uniform 2-3x eob inflation points at (3) or (2), not (1).
 
 - Rust encoder output byte-identical (`1001682 q40 p6` = 10706 B, unchanged)
   with and without the aid.
-- `cargo test --workspace`: **664 passed / 0 failed**.
+- `cargo nextest run --workspace`: **664 passed / 0 failed**.
 - recon_parity (AOMDEC): **432 passed / 0 failed** (CDEF 236/432, wiener 137/432).
 - synthetic `identity_matrix` (presets 0-10): **130/132** (unchanged; 2 tile =
   known M0/M1 gradient).
 - real M7/M8/M10 spot (4 imgs q40): **12/12 IDENTICAL** (no regression).
-- C tree pristine (`git -C /root/svtav1 status --short` shows only
+- C tree pristine (`git -C reference/svt-av1 status --short` shows only
   `rust/.../pipeline.rs`, the `SVTAV1_CHAIN_DUMP` aid); scratch
-  `/root/svtav1-instr` deleted.
+  `reference/svt-av1-instr` deleted.
 - Repo change: one diagnostic aid — pipeline.rs env-gated `SVTAV1_CHAIN_DUMP`
   (per-SB chain_base coeff CDF). No encoder-output change.
 

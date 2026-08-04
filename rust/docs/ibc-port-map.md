@@ -63,7 +63,7 @@
 
 Port-ready map of the SVT-AV1 v4.2.0 intra-block-copy path for the **allintra KEY
 bd8 4:2:0 screen-content** envelope. C reference read READ-ONLY at
-`/root/svtav1--ibc-scope/Source/Lib/Codec/` (v4.2.0, base `ca96121d7`). This maps
+`reference/svt-av1--ibc-scope/Source/Lib/Codec/` (v4.2.0, base `ca96121d7`). This maps
 the LARGEST remaining byte-parity gap: screen images (`/root/work/codec-corpus/
 gb82-sc/*.png`, sc_class5) use real intrabc DV blocks on every preset 0–4 bd8 cell
 (measured: graph 1–170 blocks/cell, gui 10–307). IBC turns OFF at M5+ so p5+ never
@@ -599,7 +599,7 @@ C fn(s) it ports/verifies, the gate that proves it, byte-inertness surface, size
 > ALL machinery dormant + FFI-verified first and flip the gate LAST as the activation
 > step that should immediately byte-match. (i) matches this codebase's self-promoting
 > pinned-gate house style; (ii) keeps the flip strictly to the end. Run
-> `cargo test --workspace` after each chunk to confirm non-screen inertness either way.
+> `cargo nextest run --workspace` after each chunk to confirm non-screen inertness either way.
 
 **Chunk 0 — Reconcile the two intrabc.rs + wire CDF/ndvc state.** (small, no gate flip)
 - Delete/quarantine `svtav1-dsp/src/intrabc.rs`'s non-faithful `is_valid_intrabc_mv` +
@@ -759,7 +759,7 @@ C fn(s) it ports/verifies, the gate that proves it, byte-inertness surface, size
 - **The gate is the safety net:** `allow_intrabc = enable_intrabc && sc_class5 && M≤4`
   (enc_mode_config.c:2344). The 340+ passing cells are non-screen or M5+ → `allow_intrabc
   =false` → `svt_aom_allow_intrabc` false → all IBC code unreachable. Run
-  `cargo test --workspace` after each chunk; any non-screen-cell delta is a gate leak.
+  `cargo nextest run --workspace` after each chunk; any non-screen-cell delta is a gate leak.
 - **Prefer exported-C FFI differentials** (`c_parity_*`) before the byte gate, per the
   evidence hierarchy. **Export status VERIFIED** (`grep static` per fn):
   - **EXPORTED T-symbols (direct FFI diff):** `svt_aom_is_dv_valid`

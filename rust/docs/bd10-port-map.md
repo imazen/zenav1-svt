@@ -271,7 +271,7 @@ NOT dribble-able. This is the single highest-impact bd10 item (100% of real cont
 **The "16x-scale-invariance / true-bd10-MD" framing above is WRONG for the PARTITION flip.**
 The partition tree is NOT decided by a bd10 RD comparison at all — it is decided by an **8-bit
 full-RD PD0** whose *level* C switches on bit depth. Traced end-to-end against the real C
-(read-only `/root/svtav1/Source/`) with a temporary `svt_aom_pick_partition_pd0` / DRMODE wrap
+(read-only `reference/svt-av1/Source/`) with a temporary `svt_aom_pick_partition_pd0` / DRMODE wrap
 (added to `wrap_recon.c`, used, then reverted — the harness is back at its committed state):
 
 **THE bd-dependent gate** — `set_pd0_ctrls` (`enc_mode_config.c:5413-5418`):
@@ -459,7 +459,7 @@ cdef/restoration, keeping every existing u8 call path as the `Pixel=u8` instanti
 bd10 RD-precision decision — they are an **8-bit speed-feature gate** C flips because bd10 forces
 `pd0_level = PD0_LVL_0`, exactly the same mechanism as the PD0_LVL_0 partition fix.
 
-**Root cause (traced end-to-end vs real C, read-only `/root/svtav1/Source/`):** the eff-M9 per-SB
+**Root cause (traced end-to-end vs real C, read-only `reference/svt-av1/Source/`):** the eff-M9 per-SB
 TXS coupling in `svt_aom_sig_deriv_enc_dec_allintra` (enc_mode_config.c:8114-8118):
 ```c
 uint8_t txs_level =
@@ -530,7 +530,7 @@ the tx_depth flips.
 
 **The "diag q5/q12 = bd10 re-encode coded-LEVEL divergence on some LUMA leaf (quant / optimize_b
 RDOQ / 64-dim fold)" framing above (the CORRECTED-SAMEPART-DIFF q5/q12 bullet) was WRONG about the
-plane.** Root-caused end-to-end (read-only `/root/svtav1/Source/`) via a NEW C `--wrap` interposer
+plane.** Root-caused end-to-end (read-only `reference/svt-av1/Source/`) via a NEW C `--wrap` interposer
 plus decode-both localization:
 
 **Method (the instrumentation the diagnosis was blocked on):** the existing `SVT_CCOEF_OUT` wrap
@@ -1009,7 +1009,7 @@ closed-but-unmeasured on one side and open on the other.
 
 `tools/bd10_nonflat_gate.sh` **127 -> 170** (all 40 p7/p8 + the 3 new p6).
 Unchanged: identity_matrix 54/54, partial_sb_gate 101/101, bd10_matrix 36/36,
-bd10_photo_gate 112/112, hdr_bd10_gate 46/46, `cargo test --workspace` green,
+bd10_photo_gate 112/112, hdr_bd10_gate 46/46, `cargo nextest run --workspace` green,
 135-cell bd10 p6/p7/p8 panic sweep (incl. partial-SB 96/200/72) 0 failures.
 
 ### p6 residual — the axis mix CHANGED, which is the useful part
@@ -1535,7 +1535,7 @@ MD recon now agrees for **466 blocks instead of 4** on `2119713 q32 p6`
 (510 of 1639 common blocks fully edge-identical, up from 4), and p7/p8 close
 completely. All nine gates green after the change: identity 54/54, partial-SB
 101/101, bd10 matrix 36/36, non-flat 180/180, **photo 130/130**, hdr 46/46,
-sb128 18/18, tile 25/25, `cargo test --workspace` 58 binaries / 0 failures.
+sb128 18/18, tile 25/25, `cargo nextest run --workspace` 58 binaries / 0 failures.
 
 ### What preset 6 still needs (a NEW, separate root)
 
@@ -2105,7 +2105,7 @@ BE the root for these cells.
   Added to `bd10_nonflat_gate.sh` (307 → 309). **The whole synthetic p0..p3 sweep
   is now 128/128.** All gates green/unchanged: `identity_matrix` 54/54 (bd8-inert),
   `bd10_matrix` 36/36, `bd10_photo` 154/154, `recon_parity` 13/13, `partial_sb`
-  101/101, `sb128` 18/18, `tile` 25/25, `arbitrary` 57/57, `cargo test --workspace`
+  101/101, `sb128` 18/18, `tile` 25/25, `arbitrary` 57/57, `cargo nextest run --workspace`
   876/0.
 
 ### REAL-PHOTO p0..p3 — CLOSED ✅ (2026-07-23): C's UNSTABLE sorts, post-MDS1 AND MDS0

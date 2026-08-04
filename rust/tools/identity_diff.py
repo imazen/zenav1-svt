@@ -471,7 +471,7 @@ def diff_traces(c_ops, r_ops, ctx):
 #
 # icdf[0] values below are AOM_ICDF(a0) = CDF_PROB_TOP - a0 (CDF_PROB_TOP =
 # 32768), read from the default CDFs in
-# /root/svtav1/Source/Lib/Codec/cabac_context_model.c (verified 2026-07-16):
+# reference/svt-av1/Source/Lib/Codec/cabac_context_model.c (verified 2026-07-16):
 #   default_wiener_restore_cdf     = AOM_CDF2(11570)       -> icdf[0]=21198
 #   default_sgrproj_restore_cdf    = AOM_CDF2(16855)       -> icdf[0]=15913
 #   default_switchable_restore_cdf = AOM_CDF3(9413, 22581) -> icdf[0]=23355

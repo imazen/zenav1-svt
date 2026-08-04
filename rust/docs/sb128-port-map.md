@@ -285,7 +285,7 @@ gate is 18/18 (4 SB64 controls + 12 byte-exact + 2 self-promoting pins).
 Every SB64 gate re-verified byte-UNCHANGED after each commit:
 identity_matrix 54/54, partial_sb 101/101, bd10_matrix 36/36,
 bd10_nonflat 170/170, bd10_photo 112/112, hdr_bd10 46/46,
-`cargo test --workspace` 58 suites green.
+`cargo nextest run --workspace` 58 suites green.
 
 ## The architecture that made it small
 
@@ -420,7 +420,7 @@ in the bd8 ind_uv fast loop. bd8-only; bd10 arm untouched. Promoted in
 `tools/sb128_gate.sh` (SB128_BYTE_EXACT, now 18/18). Byte-inert on every green
 cell: identity_matrix 54/54, sb128 18/18, partial_sb 101/101, tile 25/25,
 arbitrary_size 57/57, bd10 {matrix 36, nonflat 307, photo 154, recon 13}, and
-`cargo test --workspace`.
+`cargo nextest run --workspace`.
 
 NOTE the 424 SB64 repro is NOT fully closed by this: 512/448 are multiples of
 64 but 424 = 6*64 + **40**, so it has a partial-width edge SB (mi_col 96) with

@@ -283,7 +283,7 @@ is the biggest single lever.
   1024² p10 178.3 → 144.7 ms, 1024² p13 176.8 → 148.8 ms (256² is noise-dominated at
   ~15 ms, so read the slope, not that row). The dst16 arm
   carries the same win to the bd10/bd12 search (not in the bd8 perf grid; verified by
-  the bd10 gates). All 11 byte-identity gates + `cargo test --workspace` green;
+  the bd10 gates). All 11 byte-identity gates + `cargo nextest run --workspace` green;
   `#![forbid(unsafe_code)]` intact. Data: benchmarks/perf_{before,after}_cdef.tsv.
 
 - **`txb_init_levels` SIMD (AVX2) — coeff-level packing** (`crates/svtav1-entropy/src/

@@ -165,7 +165,7 @@ cmake --build cbuild-static -j
 
 # 2. Run the port's tests and byte-identity gates.
 cd rust
-cargo nextest run --workspace     # or: cargo test --workspace
+cargo nextest run --workspace     # or: cargo nextest run --workspace
 export SVT_CREF_LIB_DIR=$(pwd)/../Bin/Release
 ./tools/identity_matrix.sh        #  54 cells
 ./tools/partial_sb_gate.sh        # 101 cells

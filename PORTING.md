@@ -155,7 +155,7 @@ exits 0 — read its printed tally).
 ./tools/partial_sb_gate.sh        # 101 cells — partial-superblock / odd dims
 ./tools/bd10_matrix.sh            # 36 cells — 10-bit uniform
 ./tools/bd10_nonflat_gate.sh      # 79 cells — 10-bit with coded residual
-cargo test --workspace            # unit + differential parity suites
+cargo nextest run --workspace            # unit + differential parity suites
 ```
 
 Single cell, with a full first-divergence classification and an op-level trace

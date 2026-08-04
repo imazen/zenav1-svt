@@ -113,6 +113,16 @@ jobs:
         # the bd10 preset-7 screen split (docs/SUSPECTED-C-BUGS.md #9).
         run: ZENAV1_SKIP_CORPUS_TESTS=1 cargo test -p zenav1-svt --test tier_invariance
 
+      - name: PORT-NOTE index is current (verification-debt ledger cannot drift)
+        working-directory: rust
+        # CLAUDE.md indexes every PORT-NOTE(unverified) marker -- the list of
+        # places whose bit-exactness vs C is asserted but not proven. A
+        # publication audit (issue #8) found the hand-maintained version had
+        # drifted BOTH ways: under-counting some files, omitting others, and
+        # still listing markers that had been cleared. It is generated now, and
+        # this gate keeps it honest.
+        run: ./tools/portnote_index.sh --check
+
       - name: regression spot-check (one cell per bug ever fixed)
         working-directory: rust
         # ~90s. Every cell is the MINIMAL REPRODUCER of a bug that once shipped,

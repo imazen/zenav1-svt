@@ -1,7 +1,7 @@
 # Finishing survey — ranked fix list toward full still-frame byte-identity
 
-Read-only source-to-source survey, 2026-07-19. C reference `/root/svtav1/Source/`
-(READ-ONLY), Rust port `/root/svtav1/rust/crates/`. Scope of this pass: **arbitrarily-
+Read-only source-to-source survey, 2026-07-19. C reference `reference/svt-av1/Source/`
+(READ-ONLY), Rust port `reference/svt-av1/rust/crates/`. Scope of this pass: **arbitrarily-
 sized still frames** first, then a stub/hardcode/stale-marker sweep, then the named
 open residuals. Nothing was built or edited to produce this (a concurrent agent holds
 the build slot); every claim is a source read with a `file:line`, and agent-reported

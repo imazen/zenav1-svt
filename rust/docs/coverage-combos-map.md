@@ -1,7 +1,7 @@
 # Feature-combination coverage map (SB128×tiles, bd10×tiles, real×tiles)
 
 Measured 2026-07-22 on branch `coverage/combos` (off CI-green `ef14c4a3e`).
-Reference: mainline C at `/root/svtav1/Bin/Release` (`SVT_CREF_LIB_DIR`).
+Reference: mainline C at `reference/svt-av1/Bin/Release` (`SVT_CREF_LIB_DIR`).
 Gate: `tools/coverage_combos_gate.sh`. Scoreboard:
 `benchmarks/coverage_combos_latest.tsv`.
 

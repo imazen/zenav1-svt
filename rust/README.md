@@ -146,7 +146,7 @@ Requires Rust 1.85+ (2024 edition).
 ```bash
 cargo build --workspace
 cargo clippy --workspace        # 0 warnings
-cargo test --workspace
+cargo nextest run --workspace
 ```
 
 ## Safety

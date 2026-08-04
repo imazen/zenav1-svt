@@ -4,7 +4,7 @@ Rust static tables for crates/svtav1-encoder/src/bd10_qlookup_tables.rs.
 
 Written under the 2026-07-17 bulk-write directive; NOT yet run. Usage:
   python3 xtask/transcribe_bd10_qlookup.py \
-      /root/svtav1/Source/Lib/Codec/inv_transforms.c \
+      reference/svt-av1/Source/Lib/Codec/inv_transforms.c \
       crates/svtav1-encoder/src/bd10_qlookup_tables.rs
 Then in bd10.rs replace the unimplemented!() placeholders per its
 PORT-NOTE. Follows the same shape as xtask/transcribe_qm.py.
