@@ -81,25 +81,16 @@ KNOWN_DIFF=(
   "screen 72 88 48 7"
   "screen 80 88 48 7"
   # ---------------------------------------------------------------------
-  # screen q63 p1 — the PALETTE DECISION gap (#71 over-picking family).
-  #
-  # Found by this gate on its first full run (2026-08-03); no previous gate
-  # could reach it, because none drove screen content and none swept preset 1.
-  # It is the SMALLEST known reproducer of the #71 class — 64x64 synthetic,
-  # where the documented witnesses were 512x512 photo/EPICA cells.
-  #
-  # MEASURED, and note the middle row is what rules out a trivial explanation:
-  #   palette ON  (shipping)  C=64B  port=71B   port codes 4 palette leaves
-  #   palette OFF (probe)     C=64B  port=60B   port SMALLER than C
-  # so C codes palette here too; the two encoders simply make different
-  # palette decisions. Preset 0 and preset 2 at the same qp are IDENTICAL,
-  # and q48/q55 are identical at every preset — this is a preset-1-at-max-qp
-  # near-tie, not a systematic palette break.
-  #
-  # Tracking: #71 (palette calibration). Do NOT promote by loosening; promote
-  # only when the RD decision matches C.
-  "screen 64 64 63 1"
-  "screen 128 128 63 1"
+  # PROMOTED 2026-08-04 — "screen 64 64 63 1" and "screen 128 128 63 1" now
+  # byte-match. They were the #71 palette-over-picking pins (C=64B/port=71B and
+  # C=185B/port=193B). Root: the MDS3 ind-uv chroma rewrite
+  # (leaf_funnel.rs, C `update_intra_chroma_mode` product_coding_loop.c:7095)
+  # rebuilt EVERY candidate's uv fast rate with palette_uv_mode_fac_bits[0][0],
+  # including luma-palette candidates, which C prices with the [1][0] row
+  # (rd_cost.c:518-520, `use_palette_y` off the REAL candidate). That
+  # under-costed a palette candidate's chroma flag at every ind_uv_last_mds
+  # preset and tipped the palette-vs-regular RD tie. Promoted with the fix,
+  # not by loosening.
 )
 is_known() {
   local n=$1 k

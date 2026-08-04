@@ -207,21 +207,24 @@ byte "cropped-tx-72x88"  gradient 72  88 55 6
 # docs/arbitrary-dims-port-map.md instead; give it a cell if a witness ever
 # appears.
 
-# 2026-08-03 — the SCREEN q63 p1 palette-decision cell. Pinned as KNOWN-DIFF in
-# identity_full_8bit.sh (#71 family) — asserted here as NOT-identical so that a
-# fix announces itself instead of silently changing the envelope. This is the
-# self-promoting contract in its smallest form.
-if SVTAV1_BD=8 $LOWPRI "$RUN" screen 64 64 63 1 "$W/pin" >/dev/null 2>&1 &&
-   SVT_TRACE_OUT=/dev/null $LOWPRI "$CT" 64 64 63 1 "$W/pin.yuv" "$W/pinc.obu" 8 >/dev/null 2>&1; then
-  if cmp -s "$W/pinc.obu" "$W/pin.obu"; then
-    fail=$((fail+1))
-    failed+=("PINNED CELL screen 64x64 q63 p1 NOW MATCHES — promote it out of KNOWN_DIFF in identity_full_8bit.sh and delete this check")
-  else
-    pass=$((pass+1))
-  fi
-else
-  fail=$((fail+1)); failed+=("pinned-cell harness error")
-fi
+# 2026-08-04 — PROMOTED. `screen 64x64 q63 p1` and `screen 128x128 q63 p1` were
+# the #71 palette-over-picking pins (C=64B/port=71B and C=185B/port=193B) and
+# this script used to assert they still DIFFER, so that a fix would announce
+# itself rather than silently change the envelope. They now byte-match, the
+# anti-assertion fired exactly as designed, and the cells are promoted here into
+# ordinary regression guards.
+#
+# Root: the MDS3 ind-uv chroma rewrite rebuilt EVERY candidate's uv fast rate
+# with `palette_uv_mode_fac_bits[0][0]`, including luma-palette candidates,
+# which C prices with the `[1][0]` row (rd_cost.c:518-520, `use_palette_y` read
+# off the REAL candidate). That under-costed a palette candidate's chroma flag.
+#
+# This is the self-promoting contract completing its full cycle: pinned as
+# known-diff -> asserted-differing here -> fix lands -> gate demands promotion ->
+# promoted in identity_full_8bit.sh and here. A pin that can never be promoted
+# is just a permanent excuse.
+byte "sc-q63-p1-64"   screen  64  64 63 1
+byte "sc-q63-p1-128"  screen 128 128 63 1
 
 # ---------------------------------------------------------------------------
 # Earlier fixes, kept because they are cheap and each once shipped.

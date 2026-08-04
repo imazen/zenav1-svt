@@ -186,3 +186,33 @@ claim nobody tested and that is more dangerous than a failing one.
   and 45/45 on real content. Finer-grained than the docs' "presets 0-5" band.
 
 Default gate run after widening: **1036/1036 + 4 pinned, 0 harness errors.**
+
+## UPDATE 2026-08-04 — two of the four pins promoted (this file's TSVs are now
+## two rows stale)
+
+`screen 64 64 63 1` (C 64 B, port 71 B) and `screen 128 128 63 1` (C 185 B,
+port 193 B) — the #71 palette-over-picking pins recorded above — are now
+byte-IDENTICAL and have been promoted out of `KNOWN_DIFF`. Root cause: the MDS3
+independent-uv chroma rewrite in `leaf_funnel.rs` rebuilt every candidate's uv
+fast rate with `palette_uv_mode_fac_bits[0][0]`, including LUMA-PALETTE
+candidates, which C prices with the `[1][0]` row — C's recompute there is
+`svt_aom_get_intra_uv_fast_rate(pcs, ctx, cand_bf, 1)` on the REAL candidate
+(`update_intra_chroma_mode`, product_coding_loop.c:7095; the row is chosen by
+`use_palette_y = cand->palette_info && palette_size[0] > 0`, rd_cost.c:518-520).
+That under-costed a palette candidate's chroma flag at every `ind_uv_last_mds`
+preset (M1..M5) and tipped the palette-vs-regular RD tie toward palette.
+
+Re-measured 2026-08-04 on the same host/oracle:
+
+  default gate (synthetic + dims)  **1038 / 1038 byte-identical, +2 pinned,
+                                   0 harness errors** (was 1036/1036 + 4)
+  cells whose port bytes moved     2 — exactly the two promoted cells
+  real tier (IF_TIER=real, 450)    403 IDENTICAL / 47 DIFFERS, unchanged;
+                                   6 already-DIFFERS preset-4 cells shifted
+                                   bytes, none flipped either way
+
+Anti-vacuity, run both ways: with the fix reverted the two cells report
+`UNEXPECTED DIVERGENCES  screen 64 64 63 1 [C=64 port=71]` /
+`screen 128 128 63 1 [C=185 port=193]` (0/2); restored, 2/2.
+
+The two remaining pins (`screen 72 88 48 7`, `screen 80 88 48 7`) are unchanged.

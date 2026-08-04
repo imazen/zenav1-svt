@@ -4833,6 +4833,20 @@ pub(crate) fn evaluate_leaf(
                     buckets,
                     hv2,
                 );
+                // Diagnostic (SVTAV1_IBCDBG): what the DV search actually
+                // returned for this block. Without it a "C codes IntraBC here
+                // and the port does not" verdict cannot distinguish "the
+                // search found no DV" from "it found one and the RD lost".
+                #[cfg(feature = "std")]
+                if std::env::var_os("SVTAV1_IBCDBG").is_some()
+                    && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
+                {
+                    eprintln!(
+                        "NSQDBG IBCSEARCH mi=({},{}) {}x{} hash_elig={} bucket={} dv_ref=({},{}) ndv={} dvs={:?}",
+                        abs_y / 4, abs_x / 4, w, h, hash_eligible,
+                        bucket_entries.len(), dv_ref.y, dv_ref.x, dvs.len(), dvs,
+                    );
+                }
                 for dv in dvs {
                     // Prediction: the RECON-domain block copy (the ONE
                     // search-vs-predict asymmetry — map §A.6).
@@ -5710,7 +5724,29 @@ pub(crate) fn evaluate_leaf(
                 fcr += rates.angle[uvm as usize - 1][(3 + uvd) as usize] as u64;
             }
             if uvm == 0 {
-                fcr += pal_uv_no; // rd_cost.c:514 (inside uv fast rate)
+                // rd_cost.c:515-521 — the UV_DC palette-flag row is keyed on
+                // `use_palette_y = cand->palette_info && palette_size[0] > 0`
+                // read off the REAL candidate, and C's recompute here is
+                // `svt_aom_get_intra_uv_fast_rate(pcs, ctx, cand_bf, 1)` on
+                // that same candidate (update_intra_chroma_mode,
+                // product_coding_loop.c:7095). So a LUMA-PALETTE candidate
+                // pays the [1] row, not the [0] row every regular candidate
+                // pays — the same distinction the injection site (:4596)
+                // already makes. C's rewrite is conditional (only when the uv
+                // pair actually changed, :7084); when it does NOT fire the
+                // candidate keeps the fast_chroma_rate injection gave it,
+                // which for a palette candidate is ALSO the [1] row — so the
+                // port's unconditional recompute is C-identical only if it
+                // uses the same row. Charging [0] here undid :4596 for every
+                // ind_uv_last_mds preset (M1..M5), under-costing a palette
+                // candidate's chroma flag and biasing the palette-vs-regular
+                // RD tie toward palette (#71 over-picking). MEASURED
+                // 2026-08-04: flips `screen 64 64 63 1` (C 64B, port 71->64B)
+                // and `screen 128 128 63 1` (C 185B, port 193->185B) to byte
+                // MATCH — both KNOWN_DIFF pins of tools/identity_full_8bit.sh,
+                // promoted in this commit — and moves NO other cell of the
+                // 976-cell synthetic+dims scoreboard.
+                fcr += if c.palette.is_some() { pal_uv_no_y1 } else { pal_uv_no };
             }
             c.fcr = fcr;
             }
@@ -5732,6 +5768,23 @@ pub(crate) fn evaluate_leaf(
         // arbitrate). Until that chain is proven, keep the inter caps:
         // every emitted stream stays self-consistent (depth <= 1, where
         // the inter z-order == raster).
+        // MEASURED 2026-08-04 (CID22 1028637 512x512 crop q32 p0, mi(36,16)
+        // 16x16): widening this to the intra caps is NECESSARY but NOT
+        // SUFFICIENT for the block C codes as IntraBC at tx_depth 2. With the
+        // inter cap the port's IBC candidate is capped at depth 1, picks depth
+        // 0 and costs 17_683_025; with the intra cap it reaches depth 2 and
+        // costs 16_821_993 — still beaten by the SMOOTH_H intra candidate at
+        // 16_371_896, so the block stays intra either way. At depth 2 the IBC
+        // candidate is CHEAPER in rate than that winner (68_090 vs 69_158, in
+        // 1/512-bit units) and loses purely on distortion (33_264 vs 28_208) —
+        // with the SAME DV as C (search returns exactly dv_ref = (0,-1024),
+        // which is why C codes MV_JOINT_ZERO) and an identical recon to copy
+        // from. So the second gap is in the DEPTH-2 var-tx handling of an
+        // inter-classified candidate, i.e. the same unproven chain the
+        // paragraph above pins for the PACK side. This image finally supplies
+        // cells where C itself codes depth-2 IntraBC (q32 p0 mi(36,16) 16x16;
+        // q48 p2 mi(16,0) 32x32) — which is the arbitration the earlier grind
+        // said the corpus could not provide.
         let cand_end_depth = if cands[ci].ibc.is_some() {
             if txs_active { end_tx_depth_inter(w, h, &cfg) } else { 0 }
         } else {
@@ -6960,11 +7013,43 @@ pub(crate) fn evaluate_leaf(
                 // it u8-only (this branch was `&& bd10_rd.is_none()`), so no
                 // bd10 leaf below p6 could ever pick CfL while C does — the
                 // block (16,80) divergence on 1001682 q12 p5.
+                // The TABLE-side uv fast rate for the arbitration. C compares
+                // against `ctx->best_uv_cost[mode]`, which the independent
+                // chroma search built with `svt_aom_get_intra_uv_fast_rate(
+                // pcs, ctx, cand_bf, 0)` over its OWN buffers
+                // (product_coding_loop.c:7484) — candidates that carry
+                // `palette_info == NULL`, so their UV_DC row is priced with
+                // `palette_uv_mode_fac_bits[0][0]` (rd_cost.c:514-521).
+                // `ind_palette_cost_diff` (:3912-3925) is precisely what
+                // converts that [0] row to this candidate's [1] row.
+                //
+                // `fcr_final` is the CANDIDATE's fast_chroma_rate, and a
+                // luma-palette candidate's already carries the [1] row (built
+                // at :4596 — C does the same, get_intra_uv_fast_rate sees the
+                // real palette_info). Feeding it in here AND adding
+                // ind_pal_diff counts the [1]-[0] delta TWICE, which pushed
+                // the non-CfL side above CfL on an otherwise-matching block.
+                // Rebuild the palette-free row instead — the same expression
+                // used for every non-palette candidate's fcr (:4261, :5668,
+                // :6849), so this is a no-op wherever no luma palette is in
+                // play.
+                let fcr_ind = {
+                    let mut f =
+                        rates.uv[cfl_allowed][cand.mode as usize][uv_mode_final as usize] as u64;
+                    if use_angle && matches!(uv_mode_final, 1..=8) {
+                        f += rates.angle[uv_mode_final as usize - 1]
+                            [(3 + uv_delta_final) as usize] as u64;
+                    }
+                    if uv_mode_final == 0 {
+                        f += pal_uv_no; // rd_cost.c:514 (inside uv fast rate)
+                    }
+                    f
+                };
                 match &bd10_rd {
                     None => {
                         let best_uv_cost = rdcost(
                             lambda,
-                            u_out.bits as u64 + v_out.bits as u64 + fcr_final,
+                            u_out.bits as u64 + v_out.bits as u64 + fcr_ind,
                             u_out.dist + v_out.dist,
                         );
                         // Alpha search: md_cfl_rd_pick_alpha (transform domain,
@@ -7034,7 +7119,7 @@ pub(crate) fn evaluate_leaf(
                                     "NSQDBG CFLARB mi=({},{}) {}x{} m={} arb=({},{}) ncb={}+{}+{} ncd={}+{} nc={} cflrd={} idx={} sgn={} cb={}+{}+{} cd={}+{} cfl={} udc={} vdc={}",
                                     abs_y / 4, abs_x / 4, w, h, cand.mode,
                                     uv_mode_final, uv_delta_final,
-                                    u_out.bits, v_out.bits, fcr_final,
+                                    u_out.bits, v_out.bits, fcr_ind,
                                     u_out.dist, v_out.dist, best_uv_cost,
                                     cfl_rd, cfl_idx, cfl_signs,
                                     u_cfl_out.bits, v_cfl_out.bits, cfl_fast_rate,
@@ -7106,7 +7191,9 @@ pub(crate) fn evaluate_leaf(
                             let (u10b, v10b) = uv_out10.as_ref().unwrap();
                             rdcost(
                                 b.lambda,
-                                u10b.bits as u64 + v10b.bits as u64 + fcr_final,
+                                // `fcr_ind`, not `fcr_final` — the table-side
+                                // palette-free row; see the bd8 arm's note.
+                                u10b.bits as u64 + v10b.bits as u64 + fcr_ind,
                                 u10b.dist + v10b.dist,
                             )
                         };
@@ -7381,7 +7468,7 @@ pub(crate) fn evaluate_leaf(
             && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
         {
             eprintln!(
-                "NSQDBG CAND mi=({},{}) {}x{} ci={} mode={} fi={} delta={} uv={} flr={} fcr={} coeff_rate={} dist={} full={}",
+                "NSQDBG CAND mi=({},{}) {}x{} ci={} mode={} fi={} delta={} uv={} ibc={} txd={} enddepth={} flr={} fcr={} coeff_rate={} dist={} full={}",
                 abs_y / 4,
                 abs_x / 4,
                 w,
@@ -7391,6 +7478,9 @@ pub(crate) fn evaluate_leaf(
                 cand.fi,
                 cand.delta,
                 uv_mode_final,
+                u8::from(cand.ibc.is_some()),
+                best_depth,
+                cand_end_depth,
                 cand.flr,
                 fcr_final,
                 coeff_rate,

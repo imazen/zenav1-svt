@@ -4546,6 +4546,27 @@ fn encode_block_syntax(
             );
         }
     }
+    // Diagnostic (SVTAV1_BLKMARK=1): the same identity, but on STDERR and
+    // therefore INTERLEAVED with the `symtrace` op log — which is what turns
+    // an "op index N diverges" verdict into "block mi=(r,c) diverges". The
+    // file dump above cannot do that: it is a separate stream with no
+    // ordering relation to the op trace. Emitted at the top of
+    // `encode_block_syntax`, i.e. after the block's partition symbol and
+    // before every one of its mode/coeff symbols.
+    #[cfg(feature = "std")]
+    if std::env::var_os("SVTAV1_BLKMARK").is_some() {
+        std::eprintln!(
+            "W BLKMARK mi=({},{}) {}x{} mode={} uv={} pal={} ibc={}",
+            block_y / 4,
+            block_x / 4,
+            decision.width,
+            decision.height,
+            decision.intra_mode,
+            decision.uv_mode,
+            decision.palette.as_ref().map(|p| p.0.len()).unwrap_or(0),
+            u8::from(decision.use_intrabc),
+        );
+    }
     // Diagnostic (SVTAV1_PACKTREE_COEFF): the block's PACKED nonzero
     // luma+chroma levels as (raster_idx:level) pairs — the port counterpart
     // of the C QLEV/CCOEF wrap dumps (final coded levels). Two modes:
