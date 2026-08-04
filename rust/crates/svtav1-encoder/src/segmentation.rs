@@ -635,33 +635,77 @@ pub fn segment_filter_level(
     lvl_seg
 }
 
-/// C `md_config_process.c:992-1009`: per-segment lossless flags plus the
-/// frame-level `coded_lossless` they imply.
+/// C `md_config_process.c:992-1017`: per-segment lossless flags, the
+/// frame-level `coded_lossless` they imply, AND the two consequences C draws
+/// from them. Takes `seg` by `&mut` because one of those consequences is that
+/// C DISABLES segmentation.
 ///
-/// Returns `(lossless[MAX_SEGMENTS], coded_lossless)`. When segmentation is
-/// disabled C leaves both untouched (this returns all-false / false, the
-/// zero-initialized state C starts from).
+/// Returns `(lossless[MAX_SEGMENTS], coded_lossless)`.
 ///
-/// Bug-for-bug: the sum is computed and narrowed through `int16_t` TWICE in C
-/// (`(int16_t)((int16_t)base_q_idx + feature_data[...])`) before the `<= 0`
-/// test, so a base + offset that overflows `int16_t` wraps. `base_q_idx` is
-/// 0..255 and offsets are ±2·log2-range, so the wrap is unreachable in
-/// practice — reproduced anyway.
-pub fn derive_lossless(seg: &SegmentationParams, base_q_idx: i32) -> ([bool; MAX_SEGMENTS], bool) {
+/// Three parts, all of which the first revision of this port got wrong or
+/// omitted (found by the adversarial verification pass):
+///
+/// 1. **Per-segment flags** (`:994-1000`). Bug-for-bug: the sum is computed and
+///    narrowed through `int16_t` TWICE in C
+///    (`(int16_t)((int16_t)base_q_idx + feature_data[...])`) before the `<= 0`
+///    test, so a base + offset overflowing `int16_t` wraps. `base_q_idx` is
+///    0..255 and offsets are ±2·log2-range, so the wrap is unreachable in
+///    practice — reproduced anyway.
+///
+/// 2. **The mixed-lossless auto-disable** (`:1010-1013`):
+///    ```c
+///    // To Do: fix the case of lossy and lossless segments in the same frame
+///    if (!frm_hdr->coded_lossless && has_lossless_segment)
+///        frm_hdr->segmentation_params.segmentation_enabled = 0;
+///    ```
+///    A frame carrying BOTH lossless and lossy segments cannot be coded, so C
+///    drops segmentation for the whole frame. Omitting this left the port
+///    signalling segmentation on a frame C would have turned it off for.
+///
+/// 3. **The segmentation-disabled arm** (`:1015-1017`):
+///    ```c
+///    if (!frm_hdr->segmentation_params.segmentation_enabled)
+///        frm_hdr->coded_lossless = pcs->lossless[0] = !base_q_idx;
+///    ```
+///    NOT "leave both untouched", which is what this used to claim and do. At
+///    `base_q_idx == 0` with segmentation off, C sets BOTH `coded_lossless` and
+///    `lossless[0]` to TRUE — that is precisely how a plain `--qp 0` still
+///    reaches the lossless path. Returning `false` there would have made a
+///    future lossless wiring silently skip its own envelope. Note this arm runs
+///    AFTER (2), so a frame disabled by the mixed-lossless rule falls through
+///    into it, exactly as in C.
+pub fn derive_lossless(
+    seg: &mut SegmentationParams,
+    base_q_idx: i32,
+) -> ([bool; MAX_SEGMENTS], bool) {
     let mut lossless = [false; MAX_SEGMENTS];
-    if !seg.segmentation_enabled {
-        return (lossless, false);
-    }
-    let mut coded_lossless = true;
-    for segment_id in 0..MAX_SEGMENTS {
-        let sum = (base_q_idx as i16).wrapping_add(seg.feature_data[segment_id][SEG_LVL_ALT_Q]);
-        lossless[segment_id] = sum <= 0;
-    }
-    for &l in lossless.iter() {
-        if !l {
-            coded_lossless = false;
-            break;
+    let mut coded_lossless = false;
+    if seg.segmentation_enabled {
+        let mut has_lossless_segment = false;
+        for segment_id in 0..MAX_SEGMENTS {
+            let sum = (base_q_idx as i16).wrapping_add(seg.feature_data[segment_id][SEG_LVL_ALT_Q]);
+            lossless[segment_id] = sum <= 0;
+            has_lossless_segment = has_lossless_segment || lossless[segment_id];
         }
+        coded_lossless = true;
+        for &l in lossless.iter() {
+            if !l {
+                coded_lossless = false;
+                break;
+            }
+        }
+        // md_config_process.c:1011-1013.
+        if !coded_lossless && has_lossless_segment {
+            seg.segmentation_enabled = false;
+        }
+    }
+    // md_config_process.c:1015-1017 — reached both when segmentation was off to
+    // begin with AND when the clause above just turned it off.
+    if !seg.segmentation_enabled {
+        let l0 = base_q_idx == 0;
+        lossless = [false; MAX_SEGMENTS];
+        lossless[0] = l0;
+        coded_lossless = l0;
     }
     (lossless, coded_lossless)
 }
@@ -1065,32 +1109,70 @@ mod tests {
 
     #[test]
     fn derive_lossless_matches_md_config_process() {
+        // (1) Segmentation DISABLED, base_q_idx > 0: nothing lossless.
+        // md_config_process.c:1015-1017 sets coded_lossless = lossless[0] =
+        // !base_q_idx, so a nonzero base gives all-false / false.
         let mut seg = SegmentationParams::default();
-        // disabled: C leaves the zero-init state
-        assert_eq!(derive_lossless(&seg, 0), ([false; MAX_SEGMENTS], false));
+        assert_eq!(derive_lossless(&mut seg, 30), ([false; MAX_SEGMENTS], false));
 
+        // (2) Segmentation DISABLED at base_q_idx == 0 — the plain `--qp 0`
+        // lossless entry. C sets BOTH coded_lossless and lossless[0] TRUE here.
+        // The first revision of this port returned all-false/false, which would
+        // have made a future lossless wiring skip its own envelope.
+        let mut seg = SegmentationParams::default();
+        let (lossless, coded) = derive_lossless(&mut seg, 0);
+        assert!(coded, "base_q_idx 0 with segmentation off IS coded_lossless");
+        assert!(lossless[0], "and lossless[0] is set with it");
+        assert_eq!(lossless[1..], [false; MAX_SEGMENTS - 1][..]);
+
+        let mut seg = SegmentationParams::default();
         seg.segmentation_enabled = true;
         for (i, off) in [8i16, 6, 4, 2, 0, -2, -4, -6].iter().enumerate() {
             seg.feature_data[i][SEG_LVL_ALT_Q] = *off;
         }
-        // base 10: every segment lands > 0 -> nothing lossless.
-        let (lossless, coded) = derive_lossless(&seg, 10);
+        // (3) base 10: every segment lands > 0 -> nothing lossless, and since
+        // has_lossless_segment is false the auto-disable does NOT fire.
+        let mut s10 = seg;
+        let (lossless, coded) = derive_lossless(&mut s10, 10);
         assert_eq!(lossless, [false; MAX_SEGMENTS]);
         assert!(!coded);
-        // base 5: 5-6 = -1 <= 0 -> segment 7 is lossless.
-        let (lossless, coded) = derive_lossless(&seg, 5);
+        assert!(
+            s10.segmentation_enabled,
+            "no lossless segment -> segmentation must stay enabled"
+        );
+
+        // (4) THE MIXED-LOSSLESS AUTO-DISABLE (md_config_process.c:1011-1013).
+        // base 5: 5 + (-6) = -1 <= 0, so segment 7 alone is lossless while the
+        // rest are lossy. C cannot code that frame, so it turns segmentation
+        // OFF -- and then :1015-1017 re-derives from base_q_idx, which is 5,
+        // giving all-false / false. Omitting the auto-disable left the port
+        // reporting segment 7 lossless AND segmentation enabled.
+        let mut s5 = seg;
+        let (lossless, coded) = derive_lossless(&mut s5, 5);
+        assert!(
+            !s5.segmentation_enabled,
+            "a frame with both lossless and lossy segments must disable segmentation"
+        );
         assert_eq!(
             lossless,
-            [false, false, false, false, false, false, false, true]
+            [false; MAX_SEGMENTS],
+            "after the auto-disable, :1015-1017 re-derives from base_q_idx = 5"
         );
         assert!(!coded);
-        // base 0 with all-zero offsets: every segment lossless -> coded_lossless.
-        let all_zero = SegmentationParams {
+
+        // (5) base 0 with all-zero offsets: EVERY segment is lossless, so
+        // coded_lossless is true and the auto-disable does NOT fire (it needs
+        // !coded_lossless). Segmentation stays enabled.
+        let mut all_zero = SegmentationParams {
             segmentation_enabled: true,
             ..SegmentationParams::default()
         };
-        let (lossless, coded) = derive_lossless(&all_zero, 0);
+        let (lossless, coded) = derive_lossless(&mut all_zero, 0);
         assert_eq!(lossless, [true; MAX_SEGMENTS]);
         assert!(coded);
+        assert!(
+            all_zero.segmentation_enabled,
+            "a fully-lossless frame keeps segmentation enabled"
+        );
     }
 }

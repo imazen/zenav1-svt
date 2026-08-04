@@ -8,9 +8,11 @@
 //! (chunk 2 pack side); [`cropped_tx_dims`] / [`cropped_tx_dims_uv`] back the
 //! leaf funnel's spatial RD distortion (chunk 2 (b)+(c) — `leaf_funnel::
 //! tx_unit` / `tx_unit_hbd` / `txt_search`), all covered by tests below.
-//! [`sb_geom`], [`pad_input_plane`] and the `mi_*`/`sb_*` accessors are still
-//! unwired — the pipeline re-derives those inline; route them through here as
-//! the remaining chunk-2 work lands, so the frame extent has ONE definition.
+//! [`pad_input_plane`] backs the pipeline's TRUE->ALIGNED edge replication and
+//! its SB-extent variance source (two live call sites). [`sb_geom`] and the
+//! `mi_*`/`sb_*` accessors are still unwired — the pipeline re-derives those
+//! inline; route them through here as the remaining chunk-2 work lands, so the
+//! frame extent has ONE definition.
 //!
 //! THE model (map §0): TWO boundary systems coexist.
 //! - ALIGNED (mi grid): true dims rounded UP to a multiple of 8
@@ -240,12 +242,25 @@ pub fn pad_input_plane(plane: &mut [u8], dims: &FrameDims, sb: usize) {
 /// takes the FULL tx dims and cannot crop — there is no pixel geometry in
 /// the coefficient domain.
 ///
-/// PORT-NOTE: C's subtraction is a plain `int` difference and may go
-/// NEGATIVE if the tx origin were outside the aligned frame; this returns
-/// 0 there instead. Both mean "no rows/cols" to the kernels, and the case
-/// is unreachable anyway — a CODED tx block's ORIGIN is always inside the
-/// aligned frame (spec 5.11.4 edge-forced splits skip off-frame children);
-/// only its EXTENT can straddle, which is exactly what this clips.
+/// PORT-NOTE: C's subtraction is a plain `int` difference and may go NEGATIVE
+/// if the tx origin were outside the aligned frame; this returns 0 there
+/// instead (`saturating_sub`). Both mean "no rows/cols" to the kernels.
+///
+/// What keeps the origin inside the aligned frame is NOT what an earlier
+/// revision of this note claimed. It cited spec 5.11.4's edge-forced splits
+/// "skipping off-frame children"; the real guard in C is
+/// `get_start_end_tx_depth` (product_coding_loop.c:6710-6717), which pins
+/// `end_tx_depth = 0` for any block reaching past the aligned edge — so a
+/// straddling block is never SUBDIVIDED, and every tx block it does produce
+/// starts at the block origin, which is in-frame. That rule is now ported
+/// (`leaf_funnel.rs`, the MDS3 `end_depth` derivation); before it was, the
+/// port could subdivide a straddling block and this function's 0-return was
+/// load-bearing rather than unreachable.
+///
+/// MEASURED: straddling LEAVES do occur (e.g. `gradient 80x88` q55 p6 has a
+/// leaf at (0,64) 64x32 against an 88-row aligned frame, cropped to 64x24), so
+/// the CLIP is live; it is only the negative-origin case that is unreachable.
+/// The debug_assert below pins that distinction.
 pub fn cropped_tx_dims(
     dims: &FrameDims,
     tx_x: usize,
@@ -253,6 +268,13 @@ pub fn cropped_tx_dims(
     txw: usize,
     txh: usize,
 ) -> (usize, usize) {
+    debug_assert!(
+        tx_x < dims.aligned_w && tx_y < dims.aligned_h,
+        "tx origin ({tx_x},{tx_y}) outside the aligned frame {}x{} — C would \
+         compute a NEGATIVE extent here; see this fn's PORT-NOTE",
+        dims.aligned_w,
+        dims.aligned_h
+    );
     (
         txw.min(dims.aligned_w.saturating_sub(tx_x)),
         txh.min(dims.aligned_h.saturating_sub(tx_y)),

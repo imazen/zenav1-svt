@@ -130,6 +130,41 @@ The full localization trail (kept for method reference):
 - **REPRO (committed harness):** `identity_run` now takes `raw:<i420.yuv>` content. Generate the exact YUV (see the g48 generator in the session log — 48×48 gradient replicated to 64×64 + flat-128 chroma), then `tools/identity_diff.sh 64 64 20 0 raw:<yuv>` shows op-1 divergence and produces the port's undecodable `rs.obu`. `SVTAV1_PACKTREE=<f>` dumps the port's partition tree (shows the 4:1 → sub-8 blocks).
 - **NEXT (the fix pass) — root is PALETTE-on-420, exact symbol mismatch still to pinpoint.** Exhaustively RULED OUT by reading C-vs-port: `is_chroma_reference`/`has_uv`, chroma pair geometry, 4:1/HV4 (bisect), `allow_palette` (both `bsize>=BLOCK_8X8` enum-order incl. 4X16/16X4/8X32; block_size_index maps correct), the UV-palette-flag `is_chroma_ref` gate, and the `[Y-flag,colors,UV-flag]`-then-map ORDER (C write_palette_mode_info entropy_coding.c:4355 matches). Since MONO passes (all palette LUMA syntax — flag/size/colors/cache-flags/map — correct) and the 420-only delta is {UV-flag (ruled out), chroma-coeffs}, the remaining suspects are: (a) the palette candidate's CHROMA decision in the funnel (`decision.chroma_dec` for a palette winner) being inconsistent with what the pack codes — check whether the palette candidate reconstructs/decides chroma the same as a regular UV_DC candidate; (b) the palette block's chroma tx-size/type. TO PINPOINT: build a position-reporting decode of the port's `rs.obu` (aomdec/dav1d report only "tile data" with no offset), OR finer-bisect (zero the chroma coeffs of palette blocks only; or reduce to a SINGLE palette block). Do NOT band-aid by disabling palette on 420 (C codes this into a decodable stream — the port's palette-420 chroma must be fixed to match). #71 over-picking AMPLIFIES exposure (more palette blocks = more desync surface) but is not the coding-bug root. This is the #1 gate per the mandate above.
 
+## DEAD-LOOKING C STAYS TRANSLATED AND DOCUMENTED — never reverted (2026-08-03)
+
+When a faithful translation of a C rule appears to have no effect, **keep it and
+document the reachability finding**. Do NOT revert it, and do NOT skip porting
+it because analysis says it is unreachable. Two independent reasons:
+
+1. **The analysis is often wrong.** On 2026-08-03 this exact call was made and
+   reversed within the hour: C's `end_tx_depth` frame-boundary rule
+   (product_coding_loop.c:6710-6717) was ported, judged unreachable, reverted,
+   and documented as "MEASURED UNREACHABLE" — then re-measured as **live at
+   preset 7** (a straddling 32x32 leaf whose `end_tx_depth` would be 1 where C
+   pins 0). The revert and the doc claim both had to be undone.
+2. **Upstream may re-enable it.** A path dead behind today's `verify_settings`
+   or preset table can be turned on by one C commit. A carried translation with
+   a reachability note becomes live for free; a deleted one has to be
+   rediscovered, usually by a parity failure nobody can localise.
+
+**What to write instead of deleting:** keep the code, cite the C `file:line`,
+and record what you measured — which presets/configs reach it, which do not, and
+what the sweep showed. `// PORT-NOTE(unverified)` is for unverified behaviour;
+plain measured prose is right for "ported, faithful, currently inert here".
+
+**The measurement rule this cost us:** a NEGATIVE result (no leaf straddles, no
+palette block coded, zero cells changed) is only trustworthy if the harness
+demonstrated a POSITIVE control first — you saw it print something, somewhere.
+The `end_tx_depth` mistake came from an inline shell loop that silently never
+ran; `grep -c` on empty output returns 0, which is indistinguishable from a
+genuine absence. Prefer a script FILE over an inline shell loop for any probe
+whose zero you intend to act on, and print a per-cell line even when the count
+is zero so a silent harness is visible.
+
+Corollary for gates: this is the same failure the anti-vacuity rule below
+addresses from the other side. A gate that cannot reach a feature, and a probe
+that cannot run, both report success.
+
 ## Gate Discipline — a gate that would pass without the feature is a DEFECT
 
 A byte-parity gate can pass for the wrong reason: if the feature under test does
