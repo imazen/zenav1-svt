@@ -2071,6 +2071,23 @@ impl DepthWalk<'_, '_> {
         let mut decisions: Vec<BlockDecision> = Vec::new();
         let mut child_rd = [0u64; 4]; // NSQDBG only: per-quadrant pick() RD
         for (i, child) in children.iter().enumerate() {
+            let cx = abs_x + (i & 1) * half;
+            let cy = abs_y + (i >> 1) * half;
+            // OFF-FRAME QUADRANTS ARE SKIPPED BEFORE THE EARLY EXIT, not after.
+            // A quadrant whose origin is outside the aligned frame codes
+            // nothing (C `svt_aom_write_modes_sb` early return) and C's loop
+            // never reaches it, so it must not get a turn at the per-quadrant
+            // early-exit test either.
+            //
+            // MEASURED: with the check below the early exit, `gradient 72x88
+            // q20 p5` aborted the split of the 16x16 boundary node at (16,80)
+            // on i=2 -- an out-of-frame quadrant -- keeping the injected 16x8
+            // where C splits to two 8x8s (NSQDBG TSX ... i=2 parent=7520607
+            // split=7576441). Both real children had already been evaluated;
+            // the abort was decided by a child that does not exist.
+            if cx >= self.aligned_w || cy >= self.aligned_h {
+                continue;
+            }
             // Per-quadrant early exit vs the parent depth cost
             // (:11346-11360; th 50 for i == 0, else 1000; bias 995).
             if let Some(prd) = parent_rd {
@@ -2096,16 +2113,6 @@ impl DepthWalk<'_, '_> {
                     }
                     return SplitOut::Invalid;
                 }
-            }
-            let cx = abs_x + (i & 1) * half;
-            let cy = abs_y + (i >> 1) * half;
-            // A quadrant whose ORIGIN is outside the aligned frame codes
-            // nothing at all (C `svt_aom_write_modes_sb` early return). It
-            // contributes no cost, no tree node and no decision -- descending
-            // into it would both mis-price the split and emit blocks the pack
-            // never writes.
-            if cx >= self.aligned_w || cy >= self.aligned_h {
-                continue;
             }
             let res = self.pick(child, cx, cy);
             child_rd[i] = res.rd;
