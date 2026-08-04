@@ -2265,6 +2265,120 @@ fn fwd_txfm2d_32x32_dct_dct_impl_neon(
     fwd_txfm2d_c_exact(input, output, stride, 32, 32, 0, 0, false, false);
 }
 
+// =============================================================================
+// Forward 4x4 Walsh-Hadamard transform (AV1 lossless / qindex 0)
+//
+// AV1 lossless does NOT use the DCT: `svt_aom_estimate_transform`
+// (transforms.c:3948-3961) routes `svt_av1_is_lossless_segment(pcs, seg_id) &&
+// transform_size == TX_4X4` to `svt_av1_fwht4x4` instead, asserting
+// `transform_type == DCT_DCT`. Any other tx size falls through to the normal
+// DCT path (a deliberate guard for gitlab#2373 — a larger lossless block must
+// still fill the whole coeff buffer).
+//
+// NOT WIRED into `txfm_dispatch` on purpose: the frame-level lossless
+// derivation (`svt_av1_is_lossless_segment`, segment qindex == 0 with no
+// deltas) is a separate port item, so an unreachable-but-correct kernel is the
+// intended end state of this chunk.
+// =============================================================================
+
+/// C `UNIT_QUANT_SHIFT` (transforms.h:25; identically inv_transforms.h:23).
+pub const UNIT_QUANT_SHIFT: u32 = 2;
+
+/// C `UNIT_QUANT_FACTOR` (transforms.h:26) = `1 << UNIT_QUANT_SHIFT`.
+pub const UNIT_QUANT_FACTOR: i64 = 1 << UNIT_QUANT_SHIFT;
+
+/// 4-point reversible, orthonormal Walsh-Hadamard transform in 3.5 adds,
+/// 0.5 shifts per pixel — C `svt_av1_fwht4x4_c` (transforms.c:3878-3928).
+/// Shared by the 8-bit and high-bit-depth lossless paths (the C comment at
+/// transforms.c:3874-3877 says so explicitly; nothing in the body depends on
+/// bit depth because the input is already a residual).
+///
+/// `input` is a 4x4 residual block at row stride `stride`; `output` receives
+/// 16 coefficients packed at stride 4.
+///
+/// Two passes, and they are NOT symmetric — this trips up anyone assuming the
+/// usual "column pass, transpose, row pass" shape:
+/// * pass 0 transforms each **column** of `input` and stores the result of
+///   column `i` into **row** `i` of `output` (C advances `ip_pass0` by 1 and
+///   `op` by 4), i.e. it transposes;
+/// * pass 1 transforms each **column** of `output` in place, writing back to
+///   the same column (C advances both `ip` and `op` by 1), i.e. it does not.
+///
+/// Net effect: `output` is the TRANSPOSE of the natural 2D coefficient matrix.
+/// C undoes that in `svt_aom_estimate_transform` (transforms.c:3952-3956) with
+/// an explicit `coeff_buffer[(j << 2) + i] = dst[(i << 2) + j]` loop before
+/// quantization — the inverse WHT consumes natural (un-transposed) order.
+/// That transpose belongs to the dispatch layer and is intentionally NOT
+/// folded in here, exactly as in C.
+///
+/// Arithmetic notes (bug-for-bug):
+/// * C carries every intermediate in `int64_t`, so with `int16_t` inputs no
+///   step can overflow — the loose analytic bound is 5 x the pass-0 bound of
+///   163839, under 2^22 after the x4 scale, and the MEASURED peak over every
+///   saturated corner plus 20k random full-i16 blocks is 524288 = 2^19
+///   (tests/c_parity_wht.rs `fwht4x4_intermediates_never_leave_i32`). The port
+///   uses `i64` anyway, to match C rather than to need the width.
+/// * `>> 1` is an arithmetic shift on a possibly-negative value (floor, not
+///   truncate-toward-zero). Rust's `>>` on a signed type is arithmetic, so it
+///   matches gcc/clang.
+/// * the stores are C `(int32_t)` casts of an `int64_t`; Rust's `as i32` is the
+///   same modular truncation.
+pub fn fwht4x4(input: &[i16], output: &mut [TranLow], stride: usize) {
+    assert!(
+        output.len() >= 16,
+        "fwht4x4 output must hold 16 coefficients"
+    );
+    assert!(
+        input.len() >= 3 * stride + 4,
+        "fwht4x4 input must hold 4 rows of 4 at stride {stride}"
+    );
+
+    // Pass 0: WHT of each column of `input` -> row `i` of `output`.
+    for i in 0..4 {
+        let mut a1 = i64::from(input[i]);
+        let mut b1 = i64::from(input[stride + i]);
+        let mut c1 = i64::from(input[2 * stride + i]);
+        let mut d1 = i64::from(input[3 * stride + i]);
+
+        a1 += b1;
+        d1 -= c1;
+        let e1 = (a1 - d1) >> 1;
+        b1 = e1 - b1;
+        c1 = e1 - c1;
+        a1 -= c1;
+        d1 += b1;
+
+        // C store order is (a1, c1, d1, b1) — not (a1, b1, c1, d1).
+        output[i * 4] = a1 as i32;
+        output[i * 4 + 1] = c1 as i32;
+        output[i * 4 + 2] = d1 as i32;
+        output[i * 4 + 3] = b1 as i32;
+    }
+
+    // Pass 1: WHT of each column of `output`, in place, scaled by
+    // UNIT_QUANT_FACTOR. C reads all four inputs before storing, so the
+    // in-place update is well defined.
+    for i in 0..4 {
+        let mut a1 = i64::from(output[i]);
+        let mut b1 = i64::from(output[4 + i]);
+        let mut c1 = i64::from(output[8 + i]);
+        let mut d1 = i64::from(output[12 + i]);
+
+        a1 += b1;
+        d1 -= c1;
+        let e1 = (a1 - d1) >> 1;
+        b1 = e1 - b1;
+        c1 = e1 - c1;
+        a1 -= c1;
+        d1 += b1;
+
+        output[i] = (a1 * UNIT_QUANT_FACTOR) as i32;
+        output[4 + i] = (c1 * UNIT_QUANT_FACTOR) as i32;
+        output[8 + i] = (d1 * UNIT_QUANT_FACTOR) as i32;
+        output[12 + i] = (b1 * UNIT_QUANT_FACTOR) as i32;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -727,6 +727,105 @@ pub fn inv_txfm2d_add(n: usize, coeffs: &[i32], base: &[u16], tx_type: usize) ->
     out
 }
 
+// ---- Walsh-Hadamard transform (AV1 lossless / qindex 0) ----
+
+unsafe extern "C" {
+    fn ref_fwht4x4(input: *mut i16, output: *mut i32, stride: u32);
+    fn ref_highbd_iwht4x4_16_add(
+        input: *const i32,
+        dest_r: *const u16,
+        stride_r: i32,
+        dest_w: *mut u16,
+        stride_w: i32,
+        bd: i32,
+    );
+    fn ref_highbd_iwht4x4_1_add(
+        input: *const i32,
+        dest_r: *const u16,
+        stride_r: i32,
+        dest_w: *mut u16,
+        stride_w: i32,
+        bd: i32,
+    );
+}
+
+/// Reference forward 4x4 Walsh-Hadamard (`svt_av1_fwht4x4_c`,
+/// transforms.c:3878). `input` is a 4x4 residual block at row stride `stride`.
+/// Returns the 16 coefficients packed at stride 4.
+pub fn fwht4x4(input: &[i16], stride: usize) -> Vec<i32> {
+    assert!(input.len() >= 3 * stride + 4);
+    let mut inp = input.to_vec();
+    let mut out = vec![0i32; 16];
+    unsafe { ref_fwht4x4(inp.as_mut_ptr(), out.as_mut_ptr(), stride as u32) };
+    out
+}
+
+fn iwht4x4_add_common(
+    f: unsafe extern "C" fn(*const i32, *const u16, i32, *mut u16, i32, i32),
+    coeffs: &[i32],
+    base: &[u16],
+    stride_r: usize,
+    stride_w: usize,
+    bd: u8,
+) -> Vec<u16> {
+    assert!(base.len() >= 3 * stride_r + 4 && stride_w >= 4);
+    // The C kernels write only the 4x4 window; pre-fill so a caller can tell
+    // written cells from untouched ones.
+    let mut out = vec![0u16; 3 * stride_w + 4];
+    unsafe {
+        f(
+            coeffs.as_ptr(),
+            base.as_ptr(),
+            stride_r as i32,
+            out.as_mut_ptr(),
+            stride_w as i32,
+            i32::from(bd),
+        )
+    };
+    out
+}
+
+/// Reference `svt_av1_highbd_iwht4x4_16_add_c` (inv_transforms.c:2782):
+/// inverse WHT of `coeffs` (16 values at stride 4) added onto `base`.
+/// Returns the destination buffer (`3 * stride_w + 4` samples).
+pub fn highbd_iwht4x4_16_add(
+    coeffs: &[i32],
+    base: &[u16],
+    stride_r: usize,
+    stride_w: usize,
+    bd: u8,
+) -> Vec<u16> {
+    assert!(coeffs.len() >= 16);
+    iwht4x4_add_common(
+        ref_highbd_iwht4x4_16_add,
+        coeffs,
+        base,
+        stride_r,
+        stride_w,
+        bd,
+    )
+}
+
+/// Reference `svt_av1_highbd_iwht4x4_1_add_c` (inv_transforms.c:2843), the
+/// `eob <= 1` arm. Reads only `coeffs[0]`.
+pub fn highbd_iwht4x4_1_add(
+    coeffs: &[i32],
+    base: &[u16],
+    stride_r: usize,
+    stride_w: usize,
+    bd: u8,
+) -> Vec<u16> {
+    assert!(!coeffs.is_empty());
+    iwht4x4_add_common(
+        ref_highbd_iwht4x4_1_add,
+        coeffs,
+        base,
+        stride_r,
+        stride_w,
+        bd,
+    )
+}
+
 /// Reference 2D forward transform (rectangular `w` x `h`, 8-bit).
 /// `input` is packed row-major with stride `w`.
 pub fn fwd_txfm2d_rect(w: usize, h: usize, input: &[i16], tx_type: usize) -> Vec<i32> {

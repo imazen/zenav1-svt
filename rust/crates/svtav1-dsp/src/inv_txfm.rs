@@ -11,6 +11,9 @@
 use crate::fwd_txfm::{
     COS_BIT, COSPI, NEW_SQRT2, NEW_SQRT2_BITS, SINPI, half_btf, round_shift_array, round_shift_i64,
 };
+// C defines UNIT_QUANT_SHIFT twice with the same value — transforms.h:25 for
+// the forward WHT and inv_transforms.h:23 for the inverse. One constant here.
+use crate::fwd_txfm::UNIT_QUANT_SHIFT;
 use alloc::vec;
 use archmage::prelude::*;
 use svtav1_types::transform::TranLow;
@@ -2257,6 +2260,183 @@ pub fn inv_txfm2d_16x64_dct_dct(input: &[TranLow], output: &mut [TranLow], strid
 pub fn inv_txfm2d_64x16_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
     let m = mod_input_64(input, 64, 16);
     inv_txfm2d_c_exact(&m, 64, output, stride, 64, 16, 0, 0, false, false);
+}
+
+// =============================================================================
+// Inverse 4x4 Walsh-Hadamard transform (AV1 lossless / qindex 0)
+//
+// C reaches these from `svt_av1_highbd_inv_txfm_add_4x4`
+// (inv_transforms.c:2874-2896): when `txfm_param->lossless` it asserts
+// `tx_type == DCT_DCT` and calls the `static highbd_iwht4x4_add` selector
+// instead of `svt_av1_inv_txfm2d_add_4x4`. The TX_4X4 arm of
+// `svt_av1_highbd_inv_txfm_add` (inv_transforms.c:3212-3218) carries the C
+// comment: "this is like av1_short_idct4x4 but has a special case around
+// eob<=1 which is significant (not just an optimization) for the lossless
+// case" — see `highbd_iwht4x4_1_add`'s doc for what that significance is.
+//
+// NOT WIRED into `txfm_dispatch` on purpose (see `fwd_txfm::fwht4x4`).
+// =============================================================================
+
+/// The C `dest_r` / `dest_w` split — SVT reads the prediction from one buffer
+/// and writes the reconstruction to another, with independent strides. C
+/// permits the two to alias (same pointer, same stride) and that is safe there
+/// because each loop iteration reads all four samples of column `i` before
+/// writing any of them, and never touches another column — so an aliased call
+/// is byte-identical to a split one where `dest_w` starts as a copy of
+/// `dest_r`. The port takes the split form, which expresses both.
+///
+/// C `svt_av1_highbd_iwht4x4_16_add_c` (inv_transforms.c:2782-2841): 4-point
+/// reversible, orthonormal inverse Walsh-Hadamard in 3.5 adds, 0.5 shifts per
+/// pixel, fused with the reconstruction add.
+///
+/// `input` is 16 coefficients packed at stride 4, in natural (un-transposed)
+/// order — see `fwd_txfm::fwht4x4`'s doc for why the forward kernel's own
+/// output is transposed relative to this.
+///
+/// Passes, again asymmetric but differently from the forward: pass 0 reads
+/// **row** `i` and writes **row** `i` (C advances `ip`/`op` by 4), pass 1 reads
+/// **column** `i` and writes **column** `i` of `dest_w` (C advances by 1).
+/// Neither pass transposes.
+///
+/// Arithmetic notes (bug-for-bug):
+/// * every intermediate is C `TranLow` = `int32_t` (definitions.h:1007), NOT
+///   `int64_t` as in the forward. Signed overflow is UB in C but wraps on
+///   gcc/clang; the port uses `wrapping_*` so it reproduces the compiled
+///   behaviour without panicking in debug builds.
+/// * the input load order is `(a1, c1, d1, b1)` and the store order is
+///   `(a1, b1, c1, d1)` — the permutation that undoes the forward's.
+/// * C calls `range_check_value(_, bd + 1)` on all four pass-1 results and
+///   **discards the return value**. That function (inv_transforms.c:2765-2780)
+///   is a no-op in this build anyway: `CONFIG_COEFFICIENT_RANGE_CHECKING` is 0
+///   (definitions.h:356) and `DO_RANGE_CHECK_CLAMP` is never defined, so both
+///   `#if` bodies vanish and it returns `value`. Not ported; nothing to port.
+pub fn highbd_iwht4x4_16_add(
+    input: &[TranLow],
+    dest_r: &[u16],
+    stride_r: usize,
+    dest_w: &mut [u16],
+    stride_w: usize,
+    bd: u8,
+) {
+    assert!(input.len() >= 16, "iwht4x4 input must hold 16 coefficients");
+    assert!(dest_r.len() >= 3 * stride_r + 4 && dest_w.len() >= 3 * stride_w + 4);
+
+    let mut output = [0i32; 16];
+
+    // Pass 0: row `i` -> row `i`, with the UNIT_QUANT_SHIFT descale.
+    for i in 0..4 {
+        let mut a1 = input[i * 4] >> UNIT_QUANT_SHIFT;
+        let mut c1 = input[i * 4 + 1] >> UNIT_QUANT_SHIFT;
+        let mut d1 = input[i * 4 + 2] >> UNIT_QUANT_SHIFT;
+        let mut b1 = input[i * 4 + 3] >> UNIT_QUANT_SHIFT;
+
+        a1 = a1.wrapping_add(c1);
+        d1 = d1.wrapping_sub(b1);
+        let e1 = a1.wrapping_sub(d1) >> 1;
+        b1 = e1.wrapping_sub(b1);
+        c1 = e1.wrapping_sub(c1);
+        a1 = a1.wrapping_sub(b1);
+        d1 = d1.wrapping_add(c1);
+
+        output[i * 4] = a1;
+        output[i * 4 + 1] = b1;
+        output[i * 4 + 2] = c1;
+        output[i * 4 + 3] = d1;
+    }
+
+    // Pass 1: column `i` -> column `i` of the destination, fused with the add.
+    for i in 0..4 {
+        let mut a1 = output[i];
+        let mut c1 = output[4 + i];
+        let mut d1 = output[8 + i];
+        let mut b1 = output[12 + i];
+
+        a1 = a1.wrapping_add(c1);
+        d1 = d1.wrapping_sub(b1);
+        let e1 = a1.wrapping_sub(d1) >> 1;
+        b1 = e1.wrapping_sub(b1);
+        c1 = e1.wrapping_sub(c1);
+        a1 = a1.wrapping_sub(b1);
+        d1 = d1.wrapping_add(c1);
+
+        for (row, v) in [a1, b1, c1, d1].into_iter().enumerate() {
+            dest_w[stride_w * row + i] =
+                crate::hbd::highbd_clip_pixel_add(dest_r[stride_r * row + i], i64::from(v), bd);
+        }
+    }
+}
+
+/// C `svt_av1_highbd_iwht4x4_1_add_c` (inv_transforms.c:2843-2872) — the
+/// `eob <= 1` arm of the inverse WHT.
+///
+/// This is **load-bearing, not an optimization**, and the C comment at
+/// inv_transforms.c:3214-3216 says so. Reason: the caller only guarantees the
+/// first `eob` entries of the coefficient buffer are meaningful. With
+/// `eob <= 1` this kernel reads `input[0]` and NOTHING ELSE, so whatever stale
+/// bytes sit at `input[1..16]` cannot reach the reconstruction. Feed the same
+/// buffer to `highbd_iwht4x4_16_add` and those stale entries DO change the
+/// output — the c_parity suite pins exactly that (a port shipping only the
+/// 16-coefficient variant would be WRONG, not merely slow). When the tail is
+/// genuinely zero the two kernels agree exactly, which the same suite pins.
+///
+/// C declares `(void)bd;` at the top and then uses `bd` anyway in the four
+/// `highbd_clip_pixel_add` calls — a vestigial cast-to-void, harmless, and the
+/// port keeps the real `bd` behaviour (there is nothing else it could do).
+///
+/// Note this kernel never calls `range_check_value` at all (the 16-coefficient
+/// variant does, pointlessly — see its doc).
+pub fn highbd_iwht4x4_1_add(
+    input: &[TranLow],
+    dest_r: &[u16],
+    stride_r: usize,
+    dest_w: &mut [u16],
+    stride_w: usize,
+    bd: u8,
+) {
+    assert!(!input.is_empty(), "iwht4x4_1 needs at least the DC term");
+    assert!(dest_r.len() >= 3 * stride_r + 4 && dest_w.len() >= 3 * stride_w + 4);
+
+    // Pass 0: DC-only, so the whole first pass collapses to one butterfly whose
+    // result is broadcast across the row.
+    let a1 = input[0] >> UNIT_QUANT_SHIFT;
+    let e1 = a1 >> 1;
+    let tmp = [a1.wrapping_sub(e1), e1, e1, e1];
+
+    // Pass 1: column `i` -> column `i`, same collapse.
+    for i in 0..4 {
+        let e1 = tmp[i] >> 1;
+        let a1 = tmp[i].wrapping_sub(e1);
+        for (row, v) in [a1, e1, e1, e1].into_iter().enumerate() {
+            dest_w[stride_w * row + i] =
+                crate::hbd::highbd_clip_pixel_add(dest_r[stride_r * row + i], i64::from(v), bd);
+        }
+    }
+}
+
+/// C `highbd_iwht4x4_add` (inv_transforms.c:2874-2881) — the eob selector the
+/// lossless arm of `svt_av1_highbd_inv_txfm_add_4x4` (inv_transforms.c:2891)
+/// calls.
+///
+/// PORT-NOTE(unverified): the selector itself is `static` in C
+/// (inv_transforms.c:2874) so it has no exported symbol to shim; the two
+/// kernels it dispatches to ARE both differentially verified
+/// (tests/c_parity_wht.rs). The branch is a single `eob > 1` comparison
+/// transcribed from that line. To verify directly, add a `ref_shims.c` wrapper
+/// once `svt_av1_highbd_inv_txfm_add_4x4` is shimmed with a `TxfmParam`.
+pub fn highbd_iwht4x4_add(
+    input: &[TranLow],
+    dest_r: &[u16],
+    stride_r: usize,
+    dest_w: &mut [u16],
+    stride_w: usize,
+    eob: i32,
+    bd: u8,
+) {
+    if eob > 1 {
+        highbd_iwht4x4_16_add(input, dest_r, stride_r, dest_w, stride_w, bd);
+    } else {
+        highbd_iwht4x4_1_add(input, dest_r, stride_r, dest_w, stride_w, bd);
+    }
 }
 
 #[cfg(test)]

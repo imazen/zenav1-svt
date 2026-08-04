@@ -424,6 +424,35 @@ void ref_inv_txfm2d_add_rect(int32_t w, int32_t h, const int32_t* input, uint16_
     }
 }
 
+/* ---- Walsh-Hadamard transform (AV1 lossless / qindex 0) ----
+   Forward: transforms.c:3878 (bound SET_SSE41 on x86 / SET_ONLY_C elsewhere,
+   aom_dsp_rtcd.c:319/:919/:1301 — the _sse4_1 twin only exists in an x86_64
+   build of the library, so only the _c symbol is shimmed here).
+   Inverse: inv_transforms.c:2782 (16-coefficient) and :2843 (eob<=1). Both
+   inverse entries take uint8_t* destinations and CONVERT_TO_SHORTPTR them
+   internally, so the shim hands them the CONVERT_TO_BYTEPTR form
+   (definitions.h:1019-1020, the libaom pointer<<1/>>1 trick). */
+
+void svt_av1_fwht4x4_c(int16_t* input, int32_t* output, uint32_t stride);
+void svt_av1_highbd_iwht4x4_16_add_c(const int32_t* input, uint8_t* dest8_r, int32_t stride_r, uint8_t* dest8_w,
+                                     int32_t stride_w, int32_t bd);
+void svt_av1_highbd_iwht4x4_1_add_c(const int32_t* in, uint8_t* dest8_r, int32_t dest_stride_r, uint8_t* dest8_w,
+                                    int32_t dest_stride_w, int32_t bd);
+
+void ref_fwht4x4(int16_t* input, int32_t* output, uint32_t stride) { svt_av1_fwht4x4_c(input, output, stride); }
+
+void ref_highbd_iwht4x4_16_add(const int32_t* input, const uint16_t* dest_r, int32_t stride_r, uint16_t* dest_w,
+                               int32_t stride_w, int32_t bd) {
+    svt_av1_highbd_iwht4x4_16_add_c(
+        input, CONVERT_TO_BYTEPTR(dest_r), stride_r, CONVERT_TO_BYTEPTR(dest_w), stride_w, bd);
+}
+
+void ref_highbd_iwht4x4_1_add(const int32_t* input, const uint16_t* dest_r, int32_t stride_r, uint16_t* dest_w,
+                              int32_t stride_w, int32_t bd) {
+    svt_av1_highbd_iwht4x4_1_add_c(
+        input, CONVERT_TO_BYTEPTR(dest_r), stride_r, CONVERT_TO_BYTEPTR(dest_w), stride_w, bd);
+}
+
 /* ---- Deblocking loop filter kernels + thresholds ---- */
 
 #include "deblocking_common.h"
