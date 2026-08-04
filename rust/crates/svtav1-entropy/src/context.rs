@@ -1776,8 +1776,17 @@ pub fn write_segment_id(
 
 /// Whether an inter-frame block codes its segment id at the PRE-skip or
 /// POST-skip position — C `write_inter_segment_id`'s two arms
-/// (entropy_coding.c:4889-4925). The I_SLICE path spells the same split
-/// inline at entropy_coding.c:4983-4993.
+/// (entropy_coding.c:4889-4925).
+///
+/// The I_SLICE path (entropy_coding.c:4983-4993) uses the SAME
+/// `seg_id_pre_skip` split, but NOT the same call: it passes the block's real
+/// `skip_coeff` at both positions, whereas this inter path passes HARDCODED
+/// literals — `1` in the post-skip-with-skip arm (:4907) and `0` in the
+/// fall-through (:4921). An earlier revision of this comment said the I_SLICE
+/// path "spells the same split inline", which reads as "same semantics" and is
+/// wrong about the skip argument. The distinction matters because
+/// `write_segment_id`'s `skip` parameter selects between coding the id and
+/// forcing it to the predicted value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SegIdPosition {
     /// C `pre_skip = 1`: the call made BEFORE `encode_skip_coeff_av1`.

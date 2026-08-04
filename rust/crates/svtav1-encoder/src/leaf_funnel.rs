@@ -9410,6 +9410,75 @@ mod tests {
     /// ANTI-VACUITY is asserted in the test itself: the same C kernel over the
     /// FULL tx dims must give a DIFFERENT number, which is exactly what the
     /// port produced before the crop was wired.
+    /// The crop reaches THREE consumers in `tx_unit`'s spatial arm: the plain
+    /// SSE, `tx_bias::facade_bias`, and `ac_bias::psy_full_dist`. The
+    /// differential above runs at `tx_bias == 0 && ac_bias_eff == 0.0` —
+    /// exactly the configuration where the latter two are no-ops — so it
+    /// covered one of the three. Flagged by the adversarial pass.
+    ///
+    /// This drives the psy consumer against the REAL exported C kernel
+    /// (`svt_cref::psy_distortion` -> `get_svt_psy_full_dist`'s inner
+    /// distortion, which C calls with `cropped_tx_width/height` and the FULL
+    /// recon stride at product_coding_loop.c:4834/:4862 and :5803/:5831).
+    ///
+    /// ANTI-VACUITY: asserts the cropped and FULL-dims results differ, so a
+    /// regression that passed full dims to the psy call would fail here.
+    #[test]
+    fn cropped_psy_distortion_matches_c_on_a_straddling_txb() {
+        use crate::frame_geom::{cropped_tx_dims, FrameDims};
+        let dims = FrameDims::new(96, 80);
+        let stride = 128usize;
+        let mut src = alloc::vec![0u8; stride * stride];
+        let mut s: u32 = 0x9e37_79b9;
+        for px in src.iter_mut() {
+            s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            *px = (s >> 20) as u8;
+        }
+        // Bottom straddle: a 16x32 txb at (32,64) keeps 80-64 = 16 of 32 rows.
+        let (tx_x, tx_y, w, h) = (32usize, 64usize, 16usize, 32usize);
+        let (crop_w, crop_h) = cropped_tx_dims(&dims, tx_x, tx_y, w, h);
+        assert_eq!((crop_w, crop_h), (16, 16), "the txb must actually straddle");
+
+        let src_off = tx_y * stride + tx_x;
+        let mut recon = alloc::vec![0u8; w * h];
+        for (i, r) in recon.iter_mut().enumerate() {
+            *r = src[src_off + (i / w) * stride + (i % w)].wrapping_add(23);
+        }
+
+        // C: cropped area, FULL recon stride.
+        let c_cropped = svtav1_cref::psy_distortion(
+            &src[src_off..],
+            stride as u32,
+            &recon,
+            w as u32,
+            crop_w as u32,
+            crop_h as u32,
+        );
+        let c_full = svtav1_cref::psy_distortion(
+            &src[src_off..],
+            stride as u32,
+            &recon,
+            w as u32,
+            w as u32,
+            h as u32,
+        );
+        assert_ne!(
+            c_cropped, c_full,
+            "ANTI-VACUITY: cropped and full psy distortion must differ on a \
+             straddling txb, else this test cannot detect the wrong dims"
+        );
+
+        let port = svtav1_dsp::ac_bias::psy_full_dist(
+            &src, src_off, stride, &recon, 0, w, crop_w, crop_h, 1.0,
+        );
+        // psy_full_dist folds C's `llrint(psy * ac_bias)`; at ac_bias 1.0 that
+        // is the kernel value itself.
+        assert_eq!(
+            port, c_cropped,
+            "port psy_full_dist at the cropped dims must equal the real C kernel"
+        );
+    }
+
     #[test]
     fn cropped_tx_distortion_matches_c_spatial_facade() {
         use crate::frame_geom::{cropped_tx_dims, cropped_tx_dims_uv, FrameDims};

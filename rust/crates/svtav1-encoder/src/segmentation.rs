@@ -435,6 +435,12 @@ pub fn roi_map_apply_segmentation_based_quantization(
     org_x: i32,
     org_y: i32,
     base_q_idx: i32,
+    // C's `blk_ptr->segment_id` ON ENTRY. C's downward walk only WRITES
+    // `blk_ptr->segment_id` when it finds a non-lossless segment; if none
+    // qualifies it falls through leaving the incoming value in place
+    // (segmentation.c:121-129). Taking it as a parameter is what lets this
+    // function reproduce that fall-through instead of inventing a 0.
+    incoming_segment_id: u8,
 ) -> u8 {
     // C: `uint8_t segment_id = MAX_SEGMENTS;` — the "no intersection" sentinel.
     let mut segment_id: u8 = MAX_SEGMENTS as u8;
@@ -473,12 +479,15 @@ pub fn roi_map_apply_segmentation_based_quantization(
     }
 
     // C: `for (int i = segment_id; i >= 0; i--)` — first non-lossless wins.
-    // PORT-NOTE: if EVERY i down to 0 is lossless, C leaves
-    // `blk_ptr->segment_id` at its incoming value (stale from the previous
-    // block) and its trailing assert fires in debug. This port returns 0,
-    // which is the only defensible total answer; the C path is
-    // assert-guarded so the divergence is unreachable in a debug C build.
-    let mut out: u8 = 0;
+    //
+    // If EVERY i down to 0 is lossless, C's loop never assigns and
+    // `blk_ptr->segment_id` KEEPS ITS INCOMING VALUE (segmentation.c:121-129),
+    // then the trailing assert at :131-133 fires in a debug build. An earlier
+    // revision of this port returned 0 there, calling it "the only defensible
+    // total answer" — but C's answer is observable (release builds do not
+    // assert), so the faithful total answer is the incoming id, which is what
+    // this now returns.
+    let mut out: u8 = incoming_segment_id;
     for i in (0..=segment_id as usize).rev() {
         let q_index = base_q_idx + i32::from(seg.feature_data[i][SEG_LVL_ALT_Q]);
         if q_index > 0 {
@@ -960,9 +969,60 @@ mod tests {
                 BlockSize::Block64x64,
                 0,
                 0,
-                40
+                40,
+                0, // incoming segment_id (irrelevant: the walk finds a segment)
             ),
             6
+        );
+    }
+
+    /// C's downward walk (segmentation.c:121-129) only WRITES
+    /// `blk_ptr->segment_id` when it finds a segment whose
+    /// `base_q_idx + ALT_Q > 0`. If every candidate from the mapped id down to
+    /// 0 is lossless it falls through, leaving the INCOMING value in place —
+    /// and C's assert at :131-133 then fires in a debug build while a release
+    /// build ships that value.
+    ///
+    /// The port reproduces BOTH halves, which is why this test is
+    /// `should_panic`: the `debug_assert!` mirrors C's assert (so a debug build
+    /// stops in the same place C does), and the value it would have returned in
+    /// release is now the incoming id rather than a fabricated 0.
+    ///
+    /// The return-value half cannot be asserted from a debug test build for
+    /// exactly that reason; it is pinned by construction instead —
+    /// `let mut out: u8 = incoming_segment_id;` is the loop's initial value, so
+    /// a fall-through returns it. An earlier revision initialised `out` to 0
+    /// and would have shipped 0 here.
+    #[test]
+    #[should_panic(expected = "asserts the chosen segment is not lossless")]
+    fn roi_map_all_lossless_walk_asserts_exactly_where_c_does() {
+        let map = [3u8, 3, 3, 3, 3, 3, 3, 3];
+        let roi = RoiMapEvt {
+            b64_seg_map: &map,
+            seg_qp: [0; MAX_SEGMENTS],
+            max_seg_id: 7,
+        };
+        // Every segment carries an ALT_Q driving base 4 to <= 0, so no
+        // candidate in 3..=0 qualifies and C never assigns.
+        let mut seg = SegmentationParams {
+            segmentation_enabled: true,
+            ..SegmentationParams::default()
+        };
+        for row in seg.feature_data.iter_mut() {
+            row[SEG_LVL_ALT_Q] = -4;
+        }
+        let _ = roi_map_apply_segmentation_based_quantization(
+            &seg,
+            &roi,
+            4,
+            false,
+            128,
+            64,
+            BlockSize::Block64x64,
+            0,
+            0,
+            4,
+            7, // the incoming blk_ptr->segment_id
         );
     }
 
@@ -993,7 +1053,8 @@ mod tests {
                 BlockSize::Block128x128,
                 0,
                 0,
-                40
+                40,
+                0, // incoming segment_id (irrelevant: the walk finds a segment)
             ),
             2
         );
@@ -1009,7 +1070,8 @@ mod tests {
                 BlockSize::Block64x64,
                 0,
                 0,
-                40
+                40,
+                0, // incoming segment_id (irrelevant: the walk finds a segment)
             ),
             5
         );
@@ -1025,7 +1087,8 @@ mod tests {
                 BlockSize::Block64x64,
                 64,
                 64,
-                40
+                40,
+                0, // incoming segment_id (irrelevant: the walk finds a segment)
             ),
             2
         );
