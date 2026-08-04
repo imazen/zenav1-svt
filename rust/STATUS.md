@@ -44,6 +44,37 @@ same qp are identical, q48/q55 identical at every preset, and with palette
 forced off the port drops to 60B against C's 64B (SMALLER), so C codes palette
 there too and the two simply decide differently.
 
+### Real corpus: preset 6 and above is byte-identical on EVERY image tested
+
+450 cells, 18 images at 512x512 centre crop x qp{5,20,32,48,63} x p{0,4,6,10,13}
+(`benchmarks/identity_full_8bit_real_2026-08-03.tsv`), 403/450:
+
+|            | p0 | p4 | p6 | p10 | p13 |
+|---|---|---|---|---|---|
+| gb82 photo | 30/30 | 30/30 | **30/30** | **30/30** | **30/30** |
+| CID22 photo | 26/30 | 26/30 | **30/30** | **30/30** | **30/30** |
+| gb82 screen | 10/30 | 11/30 | **30/30** | **30/30** | **30/30** |
+
+The entire gap is presets 0/4, in the two already-known classes: the #71
+palette/IBC calibration band on sc_class5 screen images (`codec_wiki` and
+`gmessages`, the non-detected controls, are 25/25), and one CID22 photo in an RD
+near-tie band. Magnitudes ±0.4%–±1% in BOTH directions — near-ties, not a
+systematic mis-cost.
+
+Across synthetic + dims + real that is ~1,500 8-bit cells with **no unexplained
+divergence class**.
+
+### CI now gates, for 8-bit
+
+every preset 0..13 x 4 content classes x the full qp range; partial-SB and odd
+geometry (104 cells); tiles, rows and columns (29); SB128 (22); and
+panic-freedom on gradient AND screen (80). All four of the latter already failed
+loudly — they were simply never in the workflow.
+
+LIMIT, stated because it is the same class of gap this work set out to close:
+the CI identity step runs the synthetic tier at ONE size to fit the job budget,
+so partial-SB byte-parity and real content remain hand-run.
+
 ### Two panics the sweep found on the PUBLIC API
 
 `intrabc_hash.rs` computed `x_end = pic_width - block_size + 1` in `usize`. C

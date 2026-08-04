@@ -31,6 +31,16 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Changed
 
+- **CI gates four more 8-bit surfaces**: partial-SB / odd dimensions (104
+  cells), tiles across rows AND columns (29), SB128 (22), and panic-freedom on
+  gradient AND screen (80). All four already failed loudly — they were simply
+  never in the workflow.
+- **`identity_run` reports a REFUSAL distinctly from a crash** (exit 3). It
+  called the infallible `encode_frame*` wrappers, whose `.expect()` turned every
+  deliberate out-of-envelope refusal into a panic; `arbitrary_size_robustness.sh`
+  therefore reported 48 correct bd10 refusals as PANIC, unable to tell the
+  port's best behaviour from its worst. That gate now reads 80/80 + 48 refused
+  where it read 80/128, on identical encoder behaviour.
 - **`tools/arbitrary_size_robustness.sh` now sweeps `screen` content as well as
   `gradient`, and adds sub-64 cells.** It previously ran gradient only, which
   never arms the screen-content detector — so palette and IntraBC were off in
