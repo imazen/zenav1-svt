@@ -221,9 +221,24 @@ where it passes. **A gate cell validated on one architecture is a per-architectu
 claim.** Cells now get `uname -m` scoping when they turn out to be one
 (`partial_sb_gate.sh`, `screen_palette_bd_gate.sh`).
 
-**Open:** nobody has swept for the full extent. It needs parity runs on both
-architectures and a diff of the verdict sets. Until then, treat any new
-byte-parity cell as provisional until it has been seen green on both.
+**How wide, measured rather than feared (2026-08-04).** The x86-64 CI run that
+caught the third cell also ran the full default 8-bit gate — **1098 cells**
+across every preset 0..13, the full qp range, four content classes, and the
+dims tier including partial geometry — and PASSED it, with the identical 1098
+passing locally on aarch64. Adding `partial_sb_gate.sh`'s 141 cells, that is
+~1240 cells exercised on both architectures with **exactly one** disagreement.
+
+So this is rare, not pervasive: it is not a reason to distrust the parity
+gates wholesale. It IS a reason to treat any single new cell as provisional
+until seen green on both, because the three known instances span bd8 and bd10,
+presets 0 and 7, gradient and screen, aligned and partial — i.e. there is no
+sub-domain you can declare safe in advance.
+
+**Still open:** CI runs x86-64 only, so the aarch64 side is guarded only by
+whoever happens to run the gates locally. The systematic fix is a second CI
+runner building the C oracle on aarch64 and diffing the verdict sets; until
+that exists, discoveries will keep arriving one cell at a time, the way this
+one did.
 
 ---
 
