@@ -153,3 +153,69 @@ fn preset7_screen_encode_runs_and_differs_from_the_nonscreen_preset() {
          detection-disabled preset-8 encode"
     );
 }
+
+/// THE WIRING GATE (added by the adversarial verification pass, 2026-08-03).
+///
+/// The three tests above do NOT observe the pipeline at all: two call
+/// `pick_cdef_params_key_frame` / `derive_allintra_sc` directly, and the
+/// third only asserts that a preset-7 encode differs from a preset-8 one —
+/// which is true for a dozen unrelated reasons. MEASURED: replacing the
+/// pipeline's `sc_derivation.classes.sc_class5` argument with a literal
+/// `false` (i.e. deleting the wiring half of this port) left the ENTIRE
+/// 951-test workspace green. Per `rust/CLAUDE.md` "Gate Discipline — a gate
+/// that would pass without the feature is a DEFECT", that is a defect.
+///
+/// This test closes it by reading the strengths the pipeline actually wrote
+/// into the frame header (`last_cdef_signaled`) and requiring them to be the
+/// SCREEN arm's values on an `sc_class5` frame and the INTRA arm's on a
+/// photo frame. Byte-count checks cannot see this: `cdef_y_strength[0]` and
+/// `cdef_uv_strength[0]` are fixed-width header fields, so a wrong arm moves
+/// no byte boundary (the measured probe kept the stream at 155 bytes and
+/// changed exactly two bytes in place).
+#[test]
+fn pipeline_signals_the_screen_arm_on_an_sc_class5_frame() {
+    let chroma = vec![128u8; (W / 2) * (H / 2)];
+    let qindex = svtav1_encoder::rate_control::qp_to_qindex(40);
+    let screen_expect = pick_cdef_params_key_frame(qindex, 8, true);
+    let intra_expect = pick_cdef_params_key_frame(qindex, 8, false);
+    // The cell is only meaningful if the two arms actually differ here.
+    assert_ne!(
+        (screen_expect.y_strength, screen_expect.uv_strength),
+        (intra_expect.y_strength, intra_expect.uv_strength),
+        "qp 40 (qindex {qindex}) must be a cell where the arms disagree, \
+         else this gate is vacuous"
+    );
+
+    for (label, plane, expect, other) in [
+        ("screen", screen_plane(), screen_expect, intra_expect),
+        ("photo", photo_plane(), intra_expect, screen_expect),
+    ] {
+        let rc = RcConfig {
+            mode: RcMode::Cqp,
+            qp: 40,
+            ..Default::default()
+        };
+        let mut p = EncodePipeline::new(W as u32, H as u32, 7, rc, 0, 1)
+            .with_chroma_420(true)
+            .with_thread_count(1);
+        let obu = p.encode_frame_420(&plane, &chroma, &chroma, W);
+        assert!(!obu.is_empty(), "{label} plane produced no bitstream");
+        let got = p
+            .last_cdef_signaled
+            .expect("the pipeline must record the signaled CDEF strengths");
+        assert_eq!(
+            (got.y_strength, got.uv_strength),
+            (expect.y_strength, expect.uv_strength),
+            "the {label} frame must signal the {} arm's strengths at qindex \
+             {qindex} (got {got:?}); if this fails, check that pipeline.rs \
+             still passes `sc_derivation.classes.sc_class5` to \
+             pick_cdef_params_key_frame (enc_cdef.c:913-918)",
+            if label == "screen" { "SCREEN" } else { "INTRA" }
+        );
+        assert_ne!(
+            (got.y_strength, got.uv_strength),
+            (other.y_strength, other.uv_strength),
+            "the {label} frame must NOT signal the other arm's strengths"
+        );
+    }
+}

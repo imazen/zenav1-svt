@@ -139,6 +139,14 @@ pub struct EncodePipeline {
     /// CDEF evidence counters for the last encoded frame (non-vacuity
     /// reporting: how many pixels the signaled strengths actually touched).
     pub last_cdef_stats: crate::cdef::CdefStats,
+    /// The CDEF strength set 0 actually signaled in the last frame header
+    /// (`cdef_damping` / `cdef_y_strength[0]` / `cdef_uv_strength[0]`),
+    /// `None` until a frame has been encoded. Evidence surface for gating
+    /// WHICH arm of `svt_pick_cdef_from_qp` (enc_cdef.c:823) the pipeline
+    /// selected — the packed strengths are fixed-width header fields, so a
+    /// wrong arm changes no byte COUNT and is invisible to a length or
+    /// "streams differ" check.
+    pub last_cdef_signaled: Option<crate::cdef::CdefFrameParams>,
     /// Loop-restoration evidence for the last encoded frame: per-plane
     /// frame types (0 NONE / 1 WIENER) + the number of RUs that signaled
     /// wiener. Zeroed when the search does not run.
@@ -330,6 +338,7 @@ impl EncodePipeline {
             last_recon10_y: None,
             last_recon10_uv: None,
             last_cdef_stats: crate::cdef::CdefStats::default(),
+            last_cdef_signaled: None,
             last_lr_stats: ([0; 3], 0),
             tile_rows_log2: 0,
             tile_cols_log2: 0,
@@ -2926,6 +2935,16 @@ impl EncodePipeline {
         } else {
             crate::cdef::CdefPick::single(crate::cdef::CdefFrameParams::default())
         };
+        // Non-vacuity evidence (same role as `last_cdef_stats` /
+        // `last_lr_stats`): the strength set 0 actually WRITTEN into the
+        // frame header. Without this a gate cannot observe which arm of
+        // `svt_pick_cdef_from_qp` the pipeline selected, so dropping the
+        // `sc_class5` argument would be invisible to the whole suite.
+        self.last_cdef_signaled = Some(crate::cdef::CdefFrameParams {
+            damping: cdef_params.damping,
+            y_strength: cdef_params.strengths[0].0,
+            uv_strength: cdef_params.strengths[0].1,
+        });
         // cdef_bits > 0 adds per-SB cdef_idx literals to the tile — the
         // walk is re-run with the emission armed (recon is untouched by
         // the extra syntax; C's EC pass simply runs after the cdef
