@@ -125,9 +125,30 @@ fn pad_rgb_replicate(rgb: &[u8], pw: usize, ph: usize, w: usize, h: usize) -> Ve
 /// ARGBToI420 shape) before converting, so U/V are (w/2)x(h/2). This choice
 /// is arbitrary but FIXED: both encoders consume the identical .yuv this
 /// writes, so the comparison stays apples-to-apples regardless of the exact
-/// coefficients. (w,h) must be even.
+/// coefficients.
+///
+/// ODD DIMENSIONS ARE SUPPORTED. They used to be rejected here
+/// (`assert!(w % 2 == 0 && h % 2 == 0, "I420 needs even dims")`), and that
+/// assert was a HARNESS limitation being mistaken for a real constraint: AV1
+/// 4:2:0 with odd luma dims is well defined (CEILING chroma, `(w+1)/2`), the
+/// port has supported it since the #95 odd-dims work, and the synthetic content
+/// paths already exercised it. Only this 2x2 averaging loop could not do it,
+/// because it read a full 2x2 RGB block unconditionally and would run off the
+/// end of the last column/row.
+///
+/// The cost of that assert was NOT a missing convenience — it was a coverage
+/// hole. No gate cell could encode an odd-height frame of REAL content, and
+/// hiding behind it was a public-API panic (`unsupported partition shape
+/// (Horz4, 3)`) on a partition shape that only real content picks, reachable at
+/// 512x481 on the gb82-sc corpus.
+///
+/// An edge chroma sample now averages the 1, 2 or 4 source pixels that actually
+/// exist. Which edge rule to use is arbitrary in the same way the coefficients
+/// are (libyuv duplicates the last column instead) — what matters is that both
+/// encoders read the identical .yuv, and they do. For EVEN dims every sample
+/// still averages a full 2x2, so every existing cell is byte-neutral.
 fn rgb_to_i420_bt601(rgb: &[u8], w: usize, h: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-    assert!(w % 2 == 0 && h % 2 == 0, "I420 needs even dims");
+    assert!(w > 0 && h > 0, "empty frame");
     let mut y = vec![0u8; w * h];
     for r in 0..h {
         for c in 0..w {
@@ -136,7 +157,8 @@ fn rgb_to_i420_bt601(rgb: &[u8], w: usize, h: usize) -> (Vec<u8>, Vec<u8>, Vec<u
             y[r * w + c] = clip8(((66 * rr + 129 * gg + 25 * bb + 128) >> 8) + 16);
         }
     }
-    let (cw, ch) = (w / 2, h / 2);
+    // CEILING chroma, matching `encode_frame_420` and the pic-buffer convention.
+    let (cw, ch) = ((w + 1) / 2, (h + 1) / 2);
     let mut u = vec![0u8; cw * ch];
     let mut v = vec![0u8; cw * ch];
     for cr in 0..ch {
@@ -144,15 +166,25 @@ fn rgb_to_i420_bt601(rgb: &[u8], w: usize, h: usize) -> (Vec<u8>, Vec<u8>, Vec<u
             let mut sr = 0i32;
             let mut sg = 0i32;
             let mut sb = 0i32;
+            let mut n = 0i32;
             for dr in 0..2 {
                 for dc in 0..2 {
-                    let i = ((cr * 2 + dr) * w + (cc * 2 + dc)) * 3;
+                    // Clamp to the pixels that exist: at an odd right/bottom
+                    // edge the 2x2 group is half or a quarter present.
+                    let (sy, sx) = (cr * 2 + dr, cc * 2 + dc);
+                    if sy >= h || sx >= w {
+                        continue;
+                    }
+                    let i = (sy * w + sx) * 3;
                     sr += rgb[i] as i32;
                     sg += rgb[i + 1] as i32;
                     sb += rgb[i + 2] as i32;
+                    n += 1;
                 }
             }
-            let (rr, gg, bb) = ((sr + 2) >> 2, (sg + 2) >> 2, (sb + 2) >> 2);
+            debug_assert!(n > 0, "a chroma sample always covers >= 1 luma pixel");
+            let half = n / 2;
+            let (rr, gg, bb) = ((sr + half) / n, (sg + half) / n, (sb + half) / n);
             u[cr * cw + cc] = clip8(((-38 * rr - 74 * gg + 112 * bb + 128) >> 8) + 128);
             v[cr * cw + cc] = clip8(((112 * rr - 94 * gg - 18 * bb + 128) >> 8) + 128);
         }
