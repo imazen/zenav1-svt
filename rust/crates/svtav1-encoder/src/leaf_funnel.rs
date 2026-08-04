@@ -358,6 +358,32 @@ impl MdRates {
             return 0;
         }
         let sq_tx = cc::TXSIZE_SQR_MAP[c_tx_size];
+        // SHIPPED-C QUIRK, second half (md_rate_estimation.c:225-243): C's
+        // `{intra,inter}_tx_type_fac_bits` are indexed by the RAW `TxType`,
+        // and `svt_aom_get_syntax_rate_from_cdf(..., av1_ext_tx_inv[set])`
+        // SCATTERS the per-symbol costs into only the tx types that belong to
+        // `set`. Every other entry keeps its zero-init value, so a query for a
+        // tx type OUTSIDE the row's set reads a literal 0 — it is not a symbol
+        // lookup at all.
+        //
+        // This port keeps the tables SYMBOL-indexed, so it has to reproduce
+        // that "unpopulated entry" explicitly. Without the guard,
+        // `AV1_EXT_TX_IND[set][out_of_set_type]` is 0 (that table's own
+        // filler) and the out-of-set query silently returns SYMBOL 0's cost,
+        // which is a real, large rate.
+        //
+        // The only caller that can query out-of-set is the IntraBC coeff cost
+        // via the `cost_dir` remap in `cost_coeffs_txb` (the tx type comes
+        // from the INTER search set while the row read is the INTRA set).
+        // MEASURED on gb82-sc graph.png 512x512 q63 preset 2, block mi(8,80)
+        // (a 32x32 IntraBC leaf), luma txb (16,0) 16x16 with V_DCT: C prices
+        // the tx type at 0 (V_DCT is in the INTER 16x16 set DTT9_IDTX_1DDCT
+        // but not the INTRA one, DTT4_IDTX) for a txb cost of 2808; the port
+        // charged symbol 0 (= IDTX, 2489) for 5297, which flipped the per-txb
+        // TXT winner to DCT_DCT/eob=0 where C codes V_DCT/eob=1.
+        if AV1_EXT_TX_USED[set_type][tx_type] == 0 {
+            return 0;
+        }
         let sym = cc::AV1_EXT_TX_IND[set_type][tx_type];
         if is_inter {
             self.inter_ext_tx[eset as usize * 4 + sq_tx][sym]
@@ -9031,6 +9057,61 @@ mod tests {
         // 32x32: intra DCT-only (rate 0); inter DCT_IDTX (2 types, nonzero).
         assert_eq!(rates.txt_rate(cc::TX_32X32, 0, cc::DCT_DCT), 0);
         assert!(rates.txt_rate(cc::TX_32X32, INTER_TXT_DIR, cc::DCT_DCT) > 0);
+    }
+
+    /// SHIPPED-C QUIRK, second half: a tx type OUTSIDE the queried row's ext
+    /// set costs ZERO, because C's `{intra,inter}_tx_type_fac_bits` are
+    /// TX-TYPE-indexed and `svt_aom_get_syntax_rate_from_cdf(...,
+    /// av1_ext_tx_inv[set])` (md_rate_estimation.c:225-243) only ever writes
+    /// the set's own members — every other entry keeps its zero init.
+    ///
+    /// Reachable in exactly one place: the IntraBC coeff cost, whose
+    /// `cost_dir` remap in `cost_coeffs_txb` (mirroring
+    /// `svt_av1_cost_coeffs_txb`'s `is_inter = is_inter_mode(mode)` WITHOUT
+    /// `|| use_intrabc`, rd_cost.c:392) reads the INTRA row for a tx type that
+    /// came from the INTER search set. This port's tables are SYMBOL-indexed,
+    /// so without the membership guard `AV1_EXT_TX_IND[set][out_of_set_type]`
+    /// returns its own 0 filler and the query silently prices SYMBOL 0.
+    ///
+    /// Witness (measured, gb82-sc graph.png 512x512 q63 preset 2): block
+    /// mi(8,80), a 32x32 IntraBC leaf, luma txb (16,0) 16x16. C prices V_DCT
+    /// at 0 for a txb cost of 2808; symbol 0 of that row is IDTX and costs
+    /// 2489 more, taking the port to 5297 and flipping the per-txb TXT winner
+    /// to DCT_DCT/eob=0 where C codes V_DCT/eob=1.
+    #[test]
+    fn txt_rate_out_of_set_type_costs_zero_like_c() {
+        let fc = FrameContext::new_default();
+        let cfc = cc::CoeffFc::default_for_qindex(255);
+        let rates = build_md_rates(&fc, &cfc);
+        // The witnessed geometry: 16x16 on the INTRA row (the IntraBC
+        // `cost_dir` remap sends intra_dir = DC_PRED = 0). TxType ids 10/11 =
+        // V_DCT / H_DCT — both members of the INTER 16x16 set
+        // (DTT9_IDTX_1DDCT) and neither a member of the INTRA one
+        // (DTT4_IDTX).
+        let tx = cc::TX_16X16;
+        let intra_set = cc::ext_tx_set_type(tx, false, false);
+        for t in [10usize, 11usize] {
+            assert_eq!(
+                AV1_EXT_TX_USED[intra_set][t], 0,
+                "precondition: tx type {t} must be outside the intra 16x16 set"
+            );
+            assert_eq!(
+                rates.txt_rate(tx, 0, t),
+                0,
+                "out-of-set tx type {t} must cost 0 on the intra row (C never \
+                 populates that entry), not symbol 0's rate"
+            );
+        }
+        // Anti-vacuity: symbol 0 of that very row IS expensive, so the guard
+        // is doing real work rather than agreeing with an all-zero table.
+        let eset = cc::EXT_TX_SET_INDEX[0][intra_set] as usize;
+        let row = (eset * 4 + cc::TXSIZE_SQR_MAP[tx]) * 13;
+        assert!(
+            rates.intra_ext_tx[row][0] > 0,
+            "symbol 0 of the intra 16x16 DC row must be nonzero"
+        );
+        // In-set types on the same row still price normally.
+        assert!(rates.txt_rate(tx, 0, cc::DCT_DCT) > 0);
     }
 
     /// bd10 ind_uv fast metric: [`residual_sad_hbd`] is the 16-bit SAD C sorts

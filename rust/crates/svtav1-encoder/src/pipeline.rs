@@ -4462,8 +4462,31 @@ fn encode_block_syntax(
     chroma: &mut Option<ChromaPass<'_>>,
     geom: &mut crate::deblock::DeblockGeom,
 ) {
+    // Diagnostic (SVTAV1_TRACEMARK=1): a block-boundary marker written INTO
+    // the symtrace op stream on stderr, so a first-diverging-op index maps
+    // straight onto a coded block. Opt-in — off for every existing caller —
+    // because that stream is parsed as data by identity_diff.py, which
+    // ignores unknown `#` lines (as does any C-side counterpart marker).
+    #[cfg(feature = "std")]
+    if std::env::var_os("SVTAV1_TRACEMARK").is_some() {
+        std::eprintln!(
+            "# BLK mi=({},{}) bsize={} ibc={}",
+            block_y / 4,
+            block_x / 4,
+            svtav1_entropy::context::block_size_index(
+                decision.width as usize,
+                decision.height as usize
+            ),
+            u8::from(decision.use_intrabc),
+        );
+    }
     // Diagnostic (SVTAV1_PACKTREE=<path>): one line per coded leaf — the
     // port's FINAL tree, file-only (no stderr noise; token-frugal drills).
+    // `off=` is the entropy writer's byte position at block entry, which maps
+    // a byte-level OBU divergence (`cmp -l`) straight onto a coded block; the
+    // companion `PDV` line carries the IntraBC DV + its predictor + the tx
+    // type (all invisible in the PTREE row, and the first things to rule out
+    // when an IBC block diverges).
     // tools/tree_diff.py joins it against the C-side CTREE dump (the
     // svt_aom_update_mi_map --wrap, valid at every preset) and prints only
     // the flips. Field domains mirror the C wrap: C BlockSize enum id via
@@ -4484,9 +4507,10 @@ fn encode_block_syntax(
                 .unwrap_or((0, 0));
             let _ = writeln!(
                 f,
-                "PTREE mi=({},{}) bsize={} part={} mode={} uv={} fi={} ady={} aduv={} txd={} yeob={} ueob={} veob={} cflidx={} cflsgn={} pal={} ibc={}",
+                "PTREE mi=({},{}) off={} bsize={} part={} mode={} uv={} fi={} ady={} aduv={} txd={} yeob={} ueob={} veob={} cflidx={} cflsgn={} pal={} ibc={}",
                 block_y / 4,
                 block_x / 4,
+                writer.bytes_written(),
                 svtav1_entropy::context::block_size_index(
                     decision.width as usize,
                     decision.height as usize
@@ -4508,6 +4532,17 @@ fn encode_block_syntax(
                 // impossible to assert that a screen-content gate cell actually
                 // exercised IBC rather than merely enabling it.
                 u8::from(decision.use_intrabc),
+            );
+            let _ = writeln!(
+                f,
+                "PDV mi=({},{}) dvr={} dvc={} dvrefr={} dvrefc={} txt={}",
+                block_y / 4,
+                block_x / 4,
+                decision.dv.y,
+                decision.dv.x,
+                decision.dv_ref.y,
+                decision.dv_ref.x,
+                decision.tx_type,
             );
         }
     }

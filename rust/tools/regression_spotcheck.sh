@@ -260,6 +260,29 @@ decodes "palette-map-clip-56"   screen  56  56 20 0
 decodes "palette-map-clip-120"  screen 120 120 20 0
 decodes "palette-map-clip-65"   screen  65 257 20 0
 
+# 2026-08-04 — an out-of-set tx type must cost ZERO in the IntraBC coeff rate.
+# C's `{intra,inter}_tx_type_fac_bits` are TX-TYPE-indexed and
+# `svt_aom_get_syntax_rate_from_cdf(..., av1_ext_tx_inv[set])`
+# (md_rate_estimation.c:225-243) SCATTERS costs into only the types belonging to
+# that set, leaving every other entry at its zero init. A query for a type
+# outside the row's set therefore reads a literal 0 — not a symbol lookup. This
+# port keeps the tables SYMBOL-indexed, so it charged symbol 0's (large) rate
+# instead. Only the IntraBC coeff cost can query out-of-set (the type comes from
+# the INTER search set while the row read is the INTRA set).
+#
+# OBSERVED before the fix: gb82-sc graph.png 512x512 q63 p2 was C=252B /
+# port=252B — the SAME LENGTH with different bytes from OBU offset 160. At block
+# mi(8,80), luma txb (16,0) 16x16 V_DCT, C priced the tx type at 0 for a txb
+# cost of 2808 while the port charged 2489 for 5297, flipping the TXT winner to
+# DCT_DCT/eob=0 where C codes V_DCT/eob=1. Fixed by 71b90b97e.
+#
+# Needs the real screen corpus: no synthetic content codes an IntraBC block.
+if [ -f "$SCREEN_DIR/graph.png" ]; then
+  byte "ibc-outofset-txtype" "crop:$SCREEN_DIR/graph.png" 512 512 63 2
+else
+  skip=$((skip+1)); skipped+=("ibc-outofset-txtype (no $SCREEN_DIR/graph.png)")
+fi
+
 byte "intra-edge-fill"   diag 64 64 20 6
 byte "intra-edge-dr-z2"  diag 128 128 32 4
 
