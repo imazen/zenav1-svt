@@ -2498,3 +2498,340 @@ void ref_normalize_sb_delta_q(uint8_t base_q_idx, uint8_t delta_q_res, uint8_t* 
     free(pcs);
     free(ppcs);
 }
+
+/* ---- Segmentation (G2.4, 2026-08-03) --------------------------------------
+ *
+ * Every function below drives a NON-STATIC C symbol verbatim; nothing here
+ * re-implements C logic. The `static` members of the vertical
+ * (`get_variance_for_cu`, `roi_map_*`, `encode_segmentation`,
+ * `svt_aom_get_segment_id`, `write_inter_segment_id`) have no exported symbol
+ * and are exercised only INDIRECTLY (through the exported callers below) or,
+ * where that is impossible, by hand-derived vectors on the Rust side.
+ *
+ * The big encoder structs are calloc'd here and only the handful of fields
+ * the target function reads are populated. That is safe because this shim
+ * compiles against the REAL headers, so every field offset is the real one.
+ */
+#include "segmentation.h"        /* svt_aom_setup_segmentation, find_segment_qps, ... */
+#include "segmentation_params.h" /* svt_aom_segmentation_feature_{bits,signed,max} */
+
+/* These three are non-static in entropy_coding.c but have no prototype in any
+ * header (C lets a definition stand alone). Declared verbatim from
+ * entropy_coding.c:4777, :4825 and :4847 so the shim links the real symbols. */
+int  svt_av1_neg_interleave(int x, int ref, int max);
+int  svt_av1_get_spatial_seg_prediction(PictureControlSet* pcs, MacroBlockD* xd, uint32_t blk_org_x,
+                                        uint32_t blk_org_y, int* cdf_index);
+void svt_av1_update_segmentation_map(PictureControlSet* pcs, BlockSize bsize, uint32_t blk_org_x,
+                                     uint32_t blk_org_y, uint8_t segment_id);
+void write_segment_id(PictureControlSet* pcs, FRAME_CONTEXT* frame_context, AomWriter* ec_writer,
+                      BlockSize bsize, uint32_t blk_org_x, uint32_t blk_org_y, EcBlkStruct* blk_ptr,
+                      bool skip_coeff);
+
+void ref_segmentation_feature_tables(int32_t* bits, int32_t* is_signed, int32_t* maxv) {
+    for (int j = 0; j < SEG_LVL_MAX; ++j) {
+        bits[j]      = svt_aom_segmentation_feature_bits[j];
+        is_signed[j] = svt_aom_segmentation_feature_signed[j];
+        maxv[j]      = svt_aom_segmentation_feature_max[j];
+    }
+}
+
+int32_t ref_neg_interleave(int32_t x, int32_t ref, int32_t max) {
+    return svt_av1_neg_interleave(x, ref, max);
+}
+
+/* calculate_segmentation_data (segmentation.c:249): pure function of
+ * feature_enabled -> {last_active_seg_id, seg_id_pre_skip}. The in/out
+ * scalars start from the caller-supplied values so the "does not clear
+ * first" behaviour is observable. */
+void ref_calculate_segmentation_data(const int16_t* feature_enabled_flat, uint8_t* last_active_seg_id,
+                                     uint8_t* seg_id_pre_skip) {
+    SegmentationParams sp;
+    memset(&sp, 0, sizeof(sp));
+    memcpy(sp.feature_enabled, feature_enabled_flat, sizeof(sp.feature_enabled));
+    sp.last_active_seg_id = *last_active_seg_id;
+    sp.seg_id_pre_skip    = *seg_id_pre_skip;
+    calculate_segmentation_data(&sp);
+    *last_active_seg_id = sp.last_active_seg_id;
+    *seg_id_pre_skip    = sp.seg_id_pre_skip;
+}
+
+/* svt_aom_setup_segmentation (segmentation.c:228), non-ROI arm. Drives
+ * find_segment_qps + calculate_segmentation_data end to end.
+ *
+ * `variance` is b64_total_count rows of `block_count` SvtVarType samples
+ * (the shape pcs.c:1280 allocates). Outputs the whole SegmentationParams the
+ * C call produced. */
+void ref_setup_segmentation(uint8_t aq_mode, const uint16_t* variance, uint32_t b64_total_count,
+                            uint32_t block_count, uint8_t* enabled, uint8_t* update_map,
+                            uint8_t* temporal_update, uint8_t* update_data, int16_t* feature_data_flat,
+                            int16_t* feature_enabled_flat, uint8_t* last_active_seg_id,
+                            uint8_t* seg_id_pre_skip, int16_t* variance_bin_edge) {
+    PictureControlSet*       pcs  = (PictureControlSet*)calloc(1, sizeof(PictureControlSet));
+    PictureParentControlSet* ppcs = (PictureParentControlSet*)calloc(1, sizeof(PictureParentControlSet));
+    SequenceControlSet*      scs  = (SequenceControlSet*)calloc(1, sizeof(SequenceControlSet));
+    SvtVarType**             var  = (SvtVarType**)calloc(b64_total_count, sizeof(SvtVarType*));
+    for (uint32_t i = 0; i < b64_total_count; ++i) {
+        var[i] = (SvtVarType*)calloc(block_count, sizeof(SvtVarType));
+        for (uint32_t j = 0; j < block_count; ++j) { var[i][j] = (SvtVarType)variance[i * block_count + j]; }
+    }
+    pcs->ppcs                  = ppcs;
+    pcs->scs                   = scs;
+    pcs->b64_total_count       = b64_total_count;
+    ppcs->scs                  = scs;
+    ppcs->variance             = var;
+    ppcs->roi_map_evt          = NULL;
+    scs->static_config.aq_mode = aq_mode;
+
+    svt_aom_setup_segmentation(pcs, scs);
+
+    SegmentationParams* sp = &ppcs->frm_hdr.segmentation_params;
+    *enabled               = sp->segmentation_enabled;
+    *update_map            = sp->segmentation_update_map;
+    *temporal_update       = sp->segmentation_temporal_update;
+    *update_data           = sp->segmentation_update_data;
+    memcpy(feature_data_flat, sp->feature_data, sizeof(sp->feature_data));
+    memcpy(feature_enabled_flat, sp->feature_enabled, sizeof(sp->feature_enabled));
+    *last_active_seg_id = sp->last_active_seg_id;
+    *seg_id_pre_skip    = sp->seg_id_pre_skip;
+    memcpy(variance_bin_edge, sp->variance_bin_edge, sizeof(sp->variance_bin_edge));
+
+    for (uint32_t i = 0; i < b64_total_count; ++i) { free(var[i]); }
+    free(var);
+    free(scs);
+    free(ppcs);
+    free(pcs);
+}
+
+/* svt_aom_apply_segmentation_based_quantization (segmentation.c:136), non-ROI
+ * arm — this is the only reachable driver for the `static`
+ * get_variance_for_cu (segmentation.c:23).
+ *
+ * `variance` is the WHOLE contiguous plane (b64_total_count * block_count
+ * samples) and the rows are pointed into it exactly the way EB_MALLOC_2D
+ * does (svt_malloc.h:275-281: one allocation, `p2d[w] = p2d[0] + w*height`).
+ * That layout is load-bearing: get_variance_for_cu's BLOCK_16X8 arm computes
+ * `index1 = index0 + org_y` with org_y in PIXELS, which exceeds the 85-entry
+ * row for org_y >= 2 and reads into the NEXT b64's row. Allocating each row
+ * separately would make that read heap garbage instead of the neighbouring
+ * b64's real samples. */
+uint8_t ref_apply_segmentation_based_quantization(const int16_t* variance_bin_edge,
+                                                  const int16_t* feature_data_flat, int32_t base_q_idx,
+                                                  const uint16_t* variance, uint32_t b64_total_count,
+                                                  uint32_t block_count, uint32_t sb_index, int32_t bsize,
+                                                  int32_t org_x, int32_t org_y) {
+    PictureControlSet*       pcs  = (PictureControlSet*)calloc(1, sizeof(PictureControlSet));
+    PictureParentControlSet* ppcs = (PictureParentControlSet*)calloc(1, sizeof(PictureParentControlSet));
+    SuperBlock*              sb   = (SuperBlock*)calloc(1, sizeof(SuperBlock));
+    BlkStruct*               blk  = (BlkStruct*)calloc(1, sizeof(BlkStruct));
+    SvtVarType**             var  = (SvtVarType**)calloc(b64_total_count, sizeof(SvtVarType*));
+    SvtVarType* backing = (SvtVarType*)calloc((size_t)b64_total_count * block_count, sizeof(SvtVarType));
+    for (uint32_t i = 0; i < b64_total_count; ++i) {
+        var[i] = backing + (size_t)i * block_count;
+        for (uint32_t j = 0; j < block_count; ++j) {
+            var[i][j] = (SvtVarType)variance[(size_t)i * block_count + j];
+        }
+    }
+
+    pcs->ppcs                                    = ppcs;
+    ppcs->variance                               = var;
+    ppcs->roi_map_evt                            = NULL;
+    ppcs->frm_hdr.quantization_params.base_q_idx = base_q_idx;
+    memcpy(ppcs->frm_hdr.segmentation_params.variance_bin_edge,
+           variance_bin_edge,
+           sizeof(ppcs->frm_hdr.segmentation_params.variance_bin_edge));
+    memcpy(ppcs->frm_hdr.segmentation_params.feature_data,
+           feature_data_flat,
+           sizeof(ppcs->frm_hdr.segmentation_params.feature_data));
+    sb->index       = sb_index;
+    blk->segment_id = 0;
+
+    svt_aom_apply_segmentation_based_quantization(pcs, sb, blk, (BlockSize)bsize, org_x, org_y);
+    uint8_t out = blk->segment_id;
+
+    free(backing);
+    free(var);
+    free(blk);
+    free(sb);
+    free(ppcs);
+    free(pcs);
+    return out;
+}
+
+/* svt_av1_get_spatial_seg_prediction (entropy_coding.c:4777) + the static
+ * svt_aom_get_segment_id it calls three times. */
+int32_t ref_get_spatial_seg_prediction(const uint8_t* seg_map, int32_t mi_cols, int32_t mi_rows,
+                                       int32_t mi_row, int32_t mi_col, int32_t left_available,
+                                       int32_t up_available, int32_t* cdf_index) {
+    PictureControlSet*       pcs  = (PictureControlSet*)calloc(1, sizeof(PictureControlSet));
+    PictureParentControlSet* ppcs = (PictureParentControlSet*)calloc(1, sizeof(PictureParentControlSet));
+    Av1Common*               cm   = (Av1Common*)calloc(1, sizeof(Av1Common));
+    SegmentationNeighborMap* map  = (SegmentationNeighborMap*)calloc(1, sizeof(SegmentationNeighborMap));
+    MacroBlockD*             xd   = (MacroBlockD*)calloc(1, sizeof(MacroBlockD));
+
+    map->map_size = (uint32_t)(mi_cols * mi_rows);
+    map->data     = (uint8_t*)malloc(map->map_size);
+    memcpy(map->data, seg_map, map->map_size);
+
+    cm->mi_cols                    = mi_cols;
+    cm->mi_rows                    = mi_rows;
+    pcs->ppcs                      = ppcs;
+    ppcs->av1_cm                   = cm;
+    pcs->segmentation_neighbor_map = map;
+    xd->left_available             = (bool)left_available;
+    xd->up_available               = (bool)up_available;
+
+    int32_t idx  = -1;
+    int32_t pred = svt_av1_get_spatial_seg_prediction(
+        pcs, xd, (uint32_t)(mi_col << MI_SIZE_LOG2), (uint32_t)(mi_row << MI_SIZE_LOG2), &idx);
+    *cdf_index = idx;
+
+    free(map->data);
+    free(map);
+    free(cm);
+    free(xd);
+    free(ppcs);
+    free(pcs);
+    return pred;
+}
+
+/* svt_av1_update_segmentation_map (entropy_coding.c:4847). */
+void ref_update_segmentation_map(uint8_t* seg_map, int32_t mi_cols, int32_t mi_rows, int32_t bsize,
+                                 int32_t mi_row, int32_t mi_col, uint8_t segment_id) {
+    PictureControlSet*       pcs  = (PictureControlSet*)calloc(1, sizeof(PictureControlSet));
+    PictureParentControlSet* ppcs = (PictureParentControlSet*)calloc(1, sizeof(PictureParentControlSet));
+    Av1Common*               cm   = (Av1Common*)calloc(1, sizeof(Av1Common));
+    SegmentationNeighborMap* map  = (SegmentationNeighborMap*)calloc(1, sizeof(SegmentationNeighborMap));
+
+    map->map_size = (uint32_t)(mi_cols * mi_rows);
+    map->data     = (uint8_t*)malloc(map->map_size);
+    memcpy(map->data, seg_map, map->map_size);
+
+    cm->mi_cols                    = mi_cols;
+    cm->mi_rows                    = mi_rows;
+    pcs->ppcs                      = ppcs;
+    ppcs->av1_cm                   = cm;
+    pcs->segmentation_neighbor_map = map;
+
+    svt_av1_update_segmentation_map(pcs,
+                                    (BlockSize)bsize,
+                                    (uint32_t)(mi_col << MI_SIZE_LOG2),
+                                    (uint32_t)(mi_row << MI_SIZE_LOG2),
+                                    segment_id);
+    memcpy(seg_map, map->data, map->map_size);
+
+    free(map->data);
+    free(map);
+    free(cm);
+    free(ppcs);
+    free(pcs);
+}
+
+/* svt_aom_wb_write_inv_signed_literal (entropy_coding.c:1377) — the only
+ * nontrivial primitive inside the `static` encode_segmentation. Writes ONE
+ * value into a real AomWriteBitBuffer and returns the emitted bits. */
+uint32_t ref_wb_write_inv_signed_literal(int32_t data, int32_t bits, uint8_t* out_bits) {
+    uint8_t           buf[64];
+    AomWriteBitBuffer wb;
+    memset(buf, 0, sizeof(buf));
+    wb.bit_buffer = buf;
+    wb.bit_offset = 0;
+    svt_aom_wb_write_inv_signed_literal(&wb, data, bits);
+    for (uint32_t i = 0; i < wb.bit_offset; ++i) { out_bits[i] = (buf[i >> 3] >> (7 - (i & 7))) & 1; }
+    return wb.bit_offset;
+}
+
+/* write_segment_id (entropy_coding.c:4867) — NON-static, so this drives the
+ * real symbol through the real range coder and the real seg CDFs.
+ *
+ * Returns the coded byte count; `out_bytes` receives the payload,
+ * `seg_map` is updated in place (write_segment_id stamps the block's
+ * footprint), `out_cdf` receives the adapted spatial_pred_seg_cdf row and
+ * `out_segment_id` the value write_segment_id left in mbmi (it overwrites it
+ * with the spatial prediction on the skip path).
+ *
+ * `ref_fc_init` must have been called first — the CDFs come from g_fc. */
+uint32_t ref_write_segment_id(uint8_t* seg_map, int32_t mi_cols, int32_t mi_rows, int32_t bsize,
+                              int32_t mi_row, int32_t mi_col, int32_t left_available,
+                              int32_t up_available, uint8_t last_active_seg_id, uint8_t segment_id,
+                              int32_t skip_coeff, uint8_t* out_bytes, uint16_t* out_cdf,
+                              uint8_t* out_segment_id) {
+    PictureControlSet*       pcs  = (PictureControlSet*)calloc(1, sizeof(PictureControlSet));
+    PictureParentControlSet* ppcs = (PictureParentControlSet*)calloc(1, sizeof(PictureParentControlSet));
+    Av1Common*               cm   = (Av1Common*)calloc(1, sizeof(Av1Common));
+    SegmentationNeighborMap* map  = (SegmentationNeighborMap*)calloc(1, sizeof(SegmentationNeighborMap));
+    MacroBlockD*             xd   = (MacroBlockD*)calloc(1, sizeof(MacroBlockD));
+    EcBlkStruct*             blk  = (EcBlkStruct*)calloc(1, sizeof(EcBlkStruct));
+
+    map->map_size = (uint32_t)(mi_cols * mi_rows);
+    map->data     = (uint8_t*)malloc(map->map_size);
+    memcpy(map->data, seg_map, map->map_size);
+
+    cm->mi_cols                    = mi_cols;
+    cm->mi_rows                    = mi_rows;
+    pcs->ppcs                      = ppcs;
+    ppcs->av1_cm                   = cm;
+    pcs->segmentation_neighbor_map = map;
+    blk->av1xd                     = xd;
+    xd->left_available             = (bool)left_available;
+    xd->up_available               = (bool)up_available;
+
+    ppcs->frm_hdr.segmentation_params.segmentation_enabled = 1;
+    ppcs->frm_hdr.segmentation_params.last_active_seg_id   = last_active_seg_id;
+
+    /* get_mbmi (adaptive_mv_pred.c:1522) reads mi_stride / mi_grid_base /
+     * mip and rewrites the grid entry, so all three must be real. */
+    pcs->mi_stride               = mi_cols;
+    pcs->disallow_4x4_all_frames = 0;
+    pcs->disallow_8x8_all_frames = 0;
+    pcs->mip                     = (MbModeInfo*)calloc((size_t)(mi_cols * mi_rows), sizeof(MbModeInfo));
+    pcs->mi_grid_base            = (MbModeInfo**)calloc((size_t)(mi_cols * mi_rows), sizeof(MbModeInfo*));
+    for (int32_t i = 0; i < mi_cols * mi_rows; ++i) { pcs->mi_grid_base[i] = &pcs->mip[i]; }
+    pcs->mip[mi_row * mi_cols + mi_col].segment_id = segment_id;
+
+    AomWriter w;
+    memset(&w, 0, sizeof(w));
+    uint8_t* ec_buf = (uint8_t*)malloc(1 << 16);
+    svt_od_ec_enc_init(&w.ec);
+    w.ec.buf         = ec_buf;
+    svt_od_ec_enc_reset(&w.ec);
+    w.allow_update_cdf = 1;
+
+    write_segment_id(pcs,
+                     &g_fc,
+                     &w,
+                     (BlockSize)bsize,
+                     (uint32_t)(mi_col << MI_SIZE_LOG2),
+                     (uint32_t)(mi_row << MI_SIZE_LOG2),
+                     blk,
+                     (bool)skip_coeff);
+
+    uint32_t nbytes = 0;
+    uint8_t* data   = svt_od_ec_enc_done(&w.ec, &nbytes);
+    if (data && nbytes) { memcpy(out_bytes, data, nbytes); }
+    memcpy(seg_map, map->data, map->map_size);
+    memcpy(out_cdf, g_fc.seg.spatial_pred_seg_cdf, sizeof(g_fc.seg.spatial_pred_seg_cdf));
+    *out_segment_id = pcs->mip[mi_row * mi_cols + mi_col].segment_id;
+
+    free(ec_buf);
+    free(pcs->mi_grid_base);
+    free(pcs->mip);
+    free(blk);
+    free(xd);
+    free(map->data);
+    free(map);
+    free(cm);
+    free(ppcs);
+    free(pcs);
+    return nbytes;
+}
+
+/* FRAME_CONTEXT segmentation CDF tables — the REF_TBL macro cannot spell a
+ * dotted member name, so these are open-coded. */
+size_t ref_fc_sizeof_seg_tree_cdf(void) { return sizeof(g_fc.seg.tree_cdf); }
+void   ref_fc_copy_seg_tree_cdf(uint16_t* dst) { memcpy(dst, &g_fc.seg.tree_cdf, sizeof(g_fc.seg.tree_cdf)); }
+size_t ref_fc_sizeof_seg_pred_cdf(void) { return sizeof(g_fc.seg.pred_cdf); }
+void   ref_fc_copy_seg_pred_cdf(uint16_t* dst) { memcpy(dst, &g_fc.seg.pred_cdf, sizeof(g_fc.seg.pred_cdf)); }
+size_t ref_fc_sizeof_spatial_pred_seg_cdf(void) { return sizeof(g_fc.seg.spatial_pred_seg_cdf); }
+void   ref_fc_copy_spatial_pred_seg_cdf(uint16_t* dst) {
+    memcpy(dst, &g_fc.seg.spatial_pred_seg_cdf, sizeof(g_fc.seg.spatial_pred_seg_cdf));
+}

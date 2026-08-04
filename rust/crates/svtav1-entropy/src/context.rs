@@ -6,6 +6,8 @@
 //! Ported from `cabac_context_model.c/h`.
 
 use crate::cdf::{AomCdfProb, CDF_PROB_TOP};
+use svtav1_types::restoration::MAX_SEGMENTS;
+use svtav1_types::segmentation::SegmentationParams;
 
 // =============================================================================
 // Context sizes from the AV1 spec
@@ -270,7 +272,58 @@ pub struct FrameContext {
     /// allintra port that means IntraBC blocks only (`is_inter_block` is
     /// true for `use_intrabc`, block_structures.h:115-121).
     pub txfm_partition_cdf: [[AomCdfProb; 3]; TXFM_PARTITION_CONTEXTS],
+
+    // --- Segmentation (C FRAME_CONTEXT.seg, `struct segmentation_probs`,
+    //     cabac_context_model.h:272-276) ---
+    /// C `seg.tree_cdf` — the segment-id tree used when the map is coded
+    /// WITHOUT spatial prediction. SVT never takes that path (every
+    /// `write_segment_id` call uses `spatial_pred_seg_cdf`), but the field is
+    /// part of FRAME_CONTEXT and is averaged by `avg_cdf_symbols`
+    /// (enc_dec_process.c:2643), so it is carried for parity of that average.
+    pub seg_tree_cdf: [AomCdfProb; MAX_SEGMENTS + 1],
+
+    /// C `seg.pred_cdf[SEG_TEMPORAL_PRED_CTXS]` — the temporal
+    /// `seg_id_predicted` flag. Unreachable in SVT (the temporal-update arms
+    /// are `assert(0)`), carried for the same averaging-parity reason.
+    pub seg_pred_cdf: [[AomCdfProb; 3]; SEG_TEMPORAL_PRED_CTXS],
+
+    /// C `seg.spatial_pred_seg_cdf[SPATIAL_PREDICTION_PROBS]` — the CDF
+    /// `write_segment_id` (entropy_coding.c:4884-4885) codes the
+    /// neg-interleaved id against, row selected by
+    /// `svt_av1_get_spatial_seg_prediction`'s `cdf_index`.
+    pub spatial_pred_seg_cdf: [[AomCdfProb; MAX_SEGMENTS + 1]; SPATIAL_PREDICTION_PROBS],
 }
+
+/// C `SEG_TEMPORAL_PRED_CTXS` (cabac_context_model.h:264).
+pub const SEG_TEMPORAL_PRED_CTXS: usize = 3;
+/// C `SPATIAL_PREDICTION_PROBS` (cabac_context_model.h:265).
+pub const SPATIAL_PREDICTION_PROBS: usize = 3;
+
+/// C `default_seg_tree_cdf` (cabac_context_model.c:652-654),
+/// `AOM_CDF8(4096, 8192, 12288, 16384, 20480, 24576, 28672)` in ICDF storage
+/// (`32768 - cum`), with the structural 0 and the count slot.
+#[rustfmt::skip]
+static DEFAULT_SEG_TREE_CDF: [AomCdfProb; MAX_SEGMENTS + 1] =
+    [28672, 24576, 20480, 16384, 12288, 8192, 4096, 0, 0];
+
+/// C `default_segment_pred_cdf` (cabac_context_model.c:656-658),
+/// three rows of `AOM_CDF2(128 * 128)` = ICDF `32768 - 16384`.
+#[rustfmt::skip]
+static DEFAULT_SEGMENT_PRED_CDF: [[AomCdfProb; 3]; SEG_TEMPORAL_PRED_CTXS] =
+    [[16384, 0, 0], [16384, 0, 0], [16384, 0, 0]];
+
+/// C `default_spatial_pred_seg_tree_cdf` (cabac_context_model.c:660-664) in
+/// ICDF storage.
+#[rustfmt::skip]
+static DEFAULT_SPATIAL_PRED_SEG_CDF:
+    [[AomCdfProb; MAX_SEGMENTS + 1]; SPATIAL_PREDICTION_PROBS] = [
+    // AOM_CDF8( 5622,  7893, 16093, 18233, 27809, 28373, 32533)
+    [27146, 24875, 16675, 14535, 4959, 4395, 235, 0, 0],
+    // AOM_CDF8(14274, 18230, 22557, 24935, 29980, 30851, 32344)
+    [18494, 14538, 10211, 7833, 2788, 1917, 424, 0, 0],
+    // AOM_CDF8(27527, 28487, 28723, 28890, 32397, 32647, 32679)
+    [5241, 4281, 4045, 3878, 371, 121, 89, 0, 0],
+];
 
 /// C `TXFM_PARTITION_CONTEXTS` = `(TX_SIZES - TX_8X8) * 6 - 3` = 21
 /// (blockd.h-equivalent; definitions.h).
@@ -525,6 +578,12 @@ impl FrameContext {
             // table (drift-tested vs FcTable::Nmvc in tests/c_parity_mv.rs).
             ndvc: crate::mv_coding::NmvContext::default(),
             txfm_partition_cdf: crate::default_cdfs::TXFM_PARTITION_CDF,
+            // Segmentation defaults (cabac_context_model.c:652-664, installed
+            // at :765-766 and :784). Inert on every current gate cell — no
+            // writer site emits `segmentation_enabled = 1` yet.
+            seg_tree_cdf: DEFAULT_SEG_TREE_CDF,
+            seg_pred_cdf: DEFAULT_SEGMENT_PRED_CDF,
+            spatial_pred_seg_cdf: DEFAULT_SPATIAL_PRED_SEG_CDF,
         }
     }
 
@@ -595,6 +654,14 @@ impl FrameContext {
         avg(self.eob_flag_cdf.as_flattened_mut().as_flattened_mut(), tr.eob_flag_cdf.as_flattened().as_flattened(), wt_left, wt_tr);
         avg(self.single_ref_cdf.as_flattened_mut().as_flattened_mut(), tr.single_ref_cdf.as_flattened().as_flattened(), wt_left, wt_tr);
         avg(self.comp_ref_cdf.as_flattened_mut().as_flattened_mut(), tr.comp_ref_cdf.as_flattened().as_flattened(), wt_left, wt_tr);
+        // Segmentation — C averages all three seg CDFs
+        // (enc_dec_process.c:2643-2645). Byte-neutral today: no writer site
+        // enables segmentation, so both neighbours hold the identical
+        // defaults and `avg_cdf_entries` is the identity on equal inputs
+        // (`(a*wl + a*wt + denom/2) / denom == a`).
+        avg(&mut self.seg_tree_cdf, &tr.seg_tree_cdf, wt_left, wt_tr);
+        avg(self.seg_pred_cdf.as_flattened_mut(), tr.seg_pred_cdf.as_flattened(), wt_left, wt_tr);
+        avg(self.spatial_pred_seg_cdf.as_flattened_mut(), tr.spatial_pred_seg_cdf.as_flattened(), wt_left, wt_tr);
     }
 }
 
@@ -1483,6 +1550,331 @@ pub fn write_tx_type(w: &mut AomWriter, tx_type: u8) {
     w.write_literal(tx_type as u32, 4);
 }
 
+// =============================================================================
+// Segmentation: per-block segment_id coding (C entropy_coding.c:4727-4925)
+//
+// NOT WIRED: no caller reaches these yet — every frame-header writer site
+// still emits `segmentation_enabled = 0`, and `write_modes_b`'s port has no
+// segment-id call. See `svtav1_encoder::segmentation` for the decision-side
+// half and the reachability argument.
+// =============================================================================
+
+/// The per-4x4 segment-id plane C keeps as `SegmentationNeighborMap`
+/// (segmentation_params.h:29-33) — `pcs->segmentation_neighbor_map`.
+///
+/// C resets it to `~0` (0xFF) at the start of every picture
+/// (`reset_segmentation_map`, enc_dec_process.c:132-135), NOT to 0. That is
+/// safe because [`get_segment_id`] is only ever read over already-coded
+/// positions; an unwritten cell would produce `min(MAX_SEGMENTS, 255) =
+/// MAX_SEGMENTS` and trip C's `assert(segment_id < MAX_SEGMENTS)`.
+#[derive(Clone, Debug)]
+pub struct SegmentationMap {
+    /// Row-major per-4x4 ids, `mi_rows * mi_cols` entries. C indexes this
+    /// with `cm->mi_cols` as the stride.
+    pub data: alloc::vec::Vec<u8>,
+    /// C `cm->mi_cols`.
+    pub mi_cols: usize,
+    /// C `cm->mi_rows`.
+    pub mi_rows: usize,
+}
+
+impl SegmentationMap {
+    /// Allocate and reset (C's `EB_CALLOC` + `reset_segmentation_map`).
+    pub fn new(mi_cols: usize, mi_rows: usize) -> Self {
+        Self {
+            data: alloc::vec![0xFFu8; mi_cols * mi_rows],
+            mi_cols,
+            mi_rows,
+        }
+    }
+
+    /// C `reset_segmentation_map` (enc_dec_process.c:132-135): fill with
+    /// `~0`, once per picture before the first tile group.
+    pub fn reset(&mut self) {
+        self.data.fill(0xFF);
+    }
+
+    /// C `svt_aom_get_segment_id` (entropy_coding.c:4727-4744): the MINIMUM
+    /// id over the block's in-frame mi footprint.
+    ///
+    /// `bw`/`bh` are `mi_size_wide/high[bsize]`; every in-tree C call site
+    /// passes `BLOCK_4X4`, i.e. `bw = bh = 1`, but the general form is what
+    /// the function implements.
+    pub fn get_segment_id(&self, bw: usize, bh: usize, mi_row: usize, mi_col: usize) -> usize {
+        let mi_offset = mi_row * self.mi_cols + mi_col;
+        let xmis = (self.mi_cols - mi_col).min(bw);
+        let ymis = (self.mi_rows - mi_row).min(bh);
+        let mut segment_id = MAX_SEGMENTS;
+        for y in 0..ymis {
+            for x in 0..xmis {
+                segment_id = segment_id.min(usize::from(self.data[mi_offset + y * self.mi_cols + x]));
+            }
+        }
+        debug_assert!(
+            segment_id < MAX_SEGMENTS,
+            "C asserts 0 <= segment_id < MAX_SEGMENTS; a 0xFF cell means an \
+             uncoded position was read"
+        );
+        segment_id
+    }
+
+    /// C `svt_av1_update_segmentation_map` (entropy_coding.c:4847-4865):
+    /// stamp `segment_id` over the block's in-frame mi footprint.
+    pub fn update(&mut self, bw: usize, bh: usize, mi_row: usize, mi_col: usize, segment_id: u8) {
+        let mi_offset = mi_row * self.mi_cols + mi_col;
+        let xmis = (self.mi_cols - mi_col).min(bw);
+        let ymis = (self.mi_rows - mi_row).min(bh);
+        for y in 0..ymis {
+            for x in 0..xmis {
+                self.data[mi_offset + y * self.mi_cols + x] = segment_id;
+            }
+        }
+    }
+}
+
+/// C `svt_av1_neg_interleave` (entropy_coding.c:4825-4845): map a segment id
+/// to the symbol actually coded, given the spatial prediction `reference` and
+/// the alphabet size `max` (= `last_active_seg_id + 1`).
+///
+/// The mapping zig-zags outward from `reference` so that ids close to the
+/// prediction get small symbols, then falls back to the raw id (or its
+/// mirror) once the zig-zag would leave `[0, max)`.
+///
+/// C `assert(x < max)` guards the entry; kept as a debug assert.
+pub fn neg_interleave(x: i32, reference: i32, max: i32) -> i32 {
+    debug_assert!(x < max);
+    let diff = x - reference;
+    if reference == 0 {
+        return x;
+    }
+    if reference >= max - 1 {
+        return -x + max - 1;
+    }
+    if 2 * reference < max {
+        if diff.abs() <= reference {
+            if diff > 0 { (diff << 1) - 1 } else { (-diff) << 1 }
+        } else {
+            x
+        }
+    } else if diff.abs() < max - reference {
+        if diff > 0 { (diff << 1) - 1 } else { (-diff) << 1 }
+    } else {
+        (max - x) - 1
+    }
+}
+
+/// C `svt_av1_get_spatial_seg_prediction` (entropy_coding.c:4777-4823).
+///
+/// Returns `(prediction, cdf_index)`: the predicted segment id and the
+/// `spatial_pred_seg_cdf` row to code against. `left_available` /
+/// `up_available` are `xd->left_available` / `xd->up_available`, which the
+/// caller has already resolved (they are tile-relative, not frame-relative).
+///
+/// The three neighbours are read at BLOCK_4X4 granularity — C passes
+/// `BLOCK_4X4` to `svt_aom_get_segment_id` at all three sites, so `bw = bh
+/// = 1`.
+pub fn get_spatial_seg_prediction(
+    map: &SegmentationMap,
+    mi_row: usize,
+    mi_col: usize,
+    left_available: bool,
+    up_available: bool,
+) -> (usize, usize) {
+    // C uses -1 for "unavailable"; keep the same sentinel so the comparison
+    // chain below is a transliteration.
+    let mut prev_ul: i32 = -1; // top left segment_id
+    let mut prev_l: i32 = -1; // left segment_id
+    let mut prev_u: i32 = -1; // top segment_id
+
+    if up_available && left_available {
+        prev_ul = map.get_segment_id(1, 1, mi_row - 1, mi_col - 1) as i32;
+    }
+    if up_available {
+        prev_u = map.get_segment_id(1, 1, mi_row - 1, mi_col) as i32;
+    }
+    if left_available {
+        prev_l = map.get_segment_id(1, 1, mi_row, mi_col - 1) as i32;
+    }
+
+    // Pick CDF index based on number of matching/out-of-bounds segment IDs.
+    let cdf_index = if prev_ul < 0 || prev_u < 0 || prev_l < 0 {
+        0 // Edge case
+    } else if prev_ul == prev_u && prev_ul == prev_l {
+        2
+    } else if prev_ul == prev_u || prev_ul == prev_l || prev_u == prev_l {
+        1
+    } else {
+        0
+    };
+
+    // If 2 or more are identical returns that as predictor, otherwise prev_l.
+    let prediction = if prev_u == -1 {
+        // edge case
+        if prev_l == -1 { 0 } else { prev_l }
+    } else if prev_l == -1 {
+        // edge case
+        prev_u
+    } else if prev_ul == prev_u {
+        prev_u
+    } else {
+        prev_l
+    };
+    (prediction as usize, cdf_index)
+}
+
+/// C `write_segment_id` (entropy_coding.c:4867-4887).
+///
+/// `bw`/`bh` are `mi_size_wide/high[bsize]`; `segment_id` is the block's
+/// decided id; `last_active_seg_id` comes from the frame's
+/// `SegmentationParams`. The caller must have already checked
+/// `segmentation_enabled` (C early-returns on it, so the check is kept here
+/// too via `enabled`).
+///
+/// When `skip_coeff` is set the id is NOT coded: the decoder infers the
+/// spatial prediction, so the encoder must overwrite the block's own id with
+/// that prediction (C mutates `mbmi->segment_id`) — this returns the id the
+/// caller must store back.
+#[allow(clippy::too_many_arguments)]
+pub fn write_segment_id(
+    w: &mut AomWriter,
+    fc: &mut FrameContext,
+    map: &mut SegmentationMap,
+    enabled: bool,
+    last_active_seg_id: u8,
+    bw: usize,
+    bh: usize,
+    mi_row: usize,
+    mi_col: usize,
+    left_available: bool,
+    up_available: bool,
+    segment_id: u8,
+    skip_coeff: bool,
+) -> u8 {
+    if !enabled {
+        return segment_id;
+    }
+    let (spatial_pred, cdf_num) =
+        get_spatial_seg_prediction(map, mi_row, mi_col, left_available, up_available);
+    if skip_coeff {
+        map.update(bw, bh, mi_row, mi_col, spatial_pred as u8);
+        return spatial_pred as u8;
+    }
+    let coded_id = neg_interleave(
+        i32::from(segment_id),
+        spatial_pred as i32,
+        i32::from(last_active_seg_id) + 1,
+    );
+    debug_assert!((0..MAX_SEGMENTS as i32).contains(&coded_id));
+    w.write_symbol(
+        coded_id as usize,
+        &mut fc.spatial_pred_seg_cdf[cdf_num],
+        MAX_SEGMENTS,
+    );
+    map.update(bw, bh, mi_row, mi_col, segment_id);
+    segment_id
+}
+
+/// Whether an inter-frame block codes its segment id at the PRE-skip or
+/// POST-skip position — C `write_inter_segment_id`'s two arms
+/// (entropy_coding.c:4889-4925). The I_SLICE path spells the same split
+/// inline at entropy_coding.c:4983-4993.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SegIdPosition {
+    /// C `pre_skip = 1`: the call made BEFORE `encode_skip_coeff_av1`.
+    PreSkip,
+    /// C `pre_skip = 0`: the call made AFTER it.
+    PostSkip,
+}
+
+/// C `write_inter_segment_id` (entropy_coding.c:4889-4925).
+///
+/// Returns the id the caller must store back into the block (see
+/// [`write_segment_id`]'s skip semantics), or `None` when this call site
+/// codes nothing at all.
+///
+/// The TEMPORAL-update arm is deliberately **not** ported: both of C's
+/// `segmentation_temporal_update` branches are `SVT_ERROR(...)` +
+/// `assert(0)` with the real work commented out (entropy_coding.c:4908-4912
+/// and :4917-4920), i.e. C itself cannot reach an enabled temporal update —
+/// `svt_aom_setup_segmentation` (segmentation.c:239) and
+/// `roi_map_setup_segmentation` (:167) both hardcode it to `false`. Porting
+/// it would mean inventing syntax that has no C behaviour to match.
+#[allow(clippy::too_many_arguments)]
+pub fn write_inter_segment_id(
+    w: &mut AomWriter,
+    fc: &mut FrameContext,
+    map: &mut SegmentationMap,
+    seg: &SegmentationParams,
+    position: SegIdPosition,
+    bw: usize,
+    bh: usize,
+    mi_row: usize,
+    mi_col: usize,
+    left_available: bool,
+    up_available: bool,
+    segment_id: u8,
+    skip: bool,
+) -> Option<u8> {
+    if !seg.segmentation_enabled {
+        return None;
+    }
+    if !seg.segmentation_update_map {
+        return None;
+    }
+    let pre_skip = seg.seg_id_pre_skip != 0;
+    match position {
+        SegIdPosition::PreSkip => {
+            if !pre_skip {
+                return None;
+            }
+        }
+        SegIdPosition::PostSkip => {
+            if pre_skip {
+                return None;
+            }
+            if skip {
+                let id = write_segment_id(
+                    w,
+                    fc,
+                    map,
+                    true,
+                    seg.last_active_seg_id,
+                    bw,
+                    bh,
+                    mi_row,
+                    mi_col,
+                    left_available,
+                    up_available,
+                    segment_id,
+                    true,
+                );
+                // C's `if (segmentation_temporal_update)` arm here is
+                // SVT_ERROR + assert(0) — see this function's doc comment.
+                debug_assert!(!seg.segmentation_temporal_update);
+                return Some(id);
+            }
+        }
+    }
+    // C's outer `if (segmentation_temporal_update)` arm is likewise
+    // SVT_ERROR + assert(0); only the else-branch is real.
+    debug_assert!(!seg.segmentation_temporal_update);
+    Some(write_segment_id(
+        w,
+        fc,
+        map,
+        true,
+        seg.last_active_seg_id,
+        bw,
+        bh,
+        mi_row,
+        mi_col,
+        left_available,
+        up_available,
+        segment_id,
+        false,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1911,5 +2303,92 @@ mod tests {
             before_d, fc_d.partition_cdf[5],
             "gathered binary arm must leave the frame-context CDF untouched"
         );
+    }
+
+    // ---- Segmentation ----
+
+    /// `SegmentationMap::new` must reproduce C's `reset_segmentation_map`
+    /// (enc_dec_process.c:132-135): `~0`, NOT zero. A zero-filled map would
+    /// silently make every unwritten neighbour read as segment 0 instead of
+    /// tripping C's `assert(segment_id < MAX_SEGMENTS)`.
+    #[test]
+    fn segmentation_map_resets_to_all_ones() {
+        let mut m = SegmentationMap::new(4, 3);
+        assert_eq!(m.data, alloc::vec![0xFFu8; 12]);
+        m.update(1, 1, 0, 0, 5);
+        assert_eq!(m.data[0], 5);
+        m.reset();
+        assert_eq!(m.data, alloc::vec![0xFFu8; 12]);
+    }
+
+    /// `write_inter_segment_id`'s pre/post-skip routing
+    /// (entropy_coding.c:4889-4925). The symbol emission it delegates to is
+    /// byte-pinned against the exported C `write_segment_id` in
+    /// `svtav1-encoder/tests/c_parity_segmentation.rs`; this asserts only
+    /// WHICH call site fires.
+    #[test]
+    fn write_inter_segment_id_position_routing() {
+        let base = SegmentationParams {
+            segmentation_enabled: true,
+            segmentation_update_map: true,
+            segmentation_temporal_update: false,
+            segmentation_update_data: true,
+            last_active_seg_id: 3,
+            ..SegmentationParams::default()
+        };
+        let run = |seg: &SegmentationParams, pos: SegIdPosition, skip: bool| -> Option<u8> {
+            let mut fc = FrameContext::new_default();
+            let mut map = SegmentationMap::new(8, 8);
+            map.data.fill(0);
+            let mut w = AomWriter::new(64);
+            write_inter_segment_id(
+                &mut w, &mut fc, &mut map, seg, pos, 1, 1, 2, 2, true, true, 2, skip,
+            )
+        };
+
+        // seg_id_pre_skip = 0 -> only the POST-skip site codes.
+        let seg = base;
+        assert_eq!(run(&seg, SegIdPosition::PreSkip, false), None);
+        assert_eq!(run(&seg, SegIdPosition::PostSkip, false), Some(2));
+
+        // seg_id_pre_skip = 1 -> only the PRE-skip site codes.
+        let mut seg = base;
+        seg.seg_id_pre_skip = 1;
+        assert_eq!(run(&seg, SegIdPosition::PreSkip, false), Some(2));
+        assert_eq!(run(&seg, SegIdPosition::PostSkip, false), None);
+
+        // POST-skip with skip=1 takes the inferred-prediction path: nothing
+        // is coded and the id becomes the spatial prediction (0 on an
+        // all-zero map), not the block's own 2.
+        let seg = base;
+        assert_eq!(run(&seg, SegIdPosition::PostSkip, true), Some(0));
+
+        // Disabled / no map update -> nothing anywhere.
+        let mut seg = base;
+        seg.segmentation_enabled = false;
+        assert_eq!(run(&seg, SegIdPosition::PostSkip, false), None);
+        let mut seg = base;
+        seg.segmentation_update_map = false;
+        assert_eq!(run(&seg, SegIdPosition::PostSkip, false), None);
+        assert_eq!(run(&seg, SegIdPosition::PreSkip, false), None);
+    }
+
+    /// The skip path must not code a symbol AND must stamp the prediction.
+    #[test]
+    fn write_segment_id_skip_path_codes_nothing() {
+        let mut fc = FrameContext::new_default();
+        let mut map = SegmentationMap::new(8, 8);
+        map.data.fill(3);
+        let cdf_before = fc.spatial_pred_seg_cdf;
+
+        let mut w = AomWriter::new(64);
+        let id = write_segment_id(
+            &mut w, &mut fc, &mut map, true, 7, 2, 2, 4, 4, true, true, 5, true,
+        );
+        // Every neighbour is 3, so the prediction is 3 and the block's own 5
+        // is discarded.
+        assert_eq!(id, 3);
+        assert_eq!(map.get_segment_id(1, 1, 4, 4), 3);
+        assert_eq!(fc.spatial_pred_seg_cdf, cdf_before, "no symbol, no adaptation");
     }
 }

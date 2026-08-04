@@ -39,6 +39,7 @@ pub mod perceptual;
 pub mod picture;
 pub mod pipeline;
 pub mod sc_detect;
+pub mod segmentation;
 pub mod frame_geom;
 pub mod sb128_geom;
 pub mod bd10;

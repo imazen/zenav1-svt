@@ -7,6 +7,10 @@
 
 use alloc::vec::Vec;
 use svtav1_types::bitstream::{MAX_TILE_AREA, MAX_TILE_COLS, MAX_TILE_ROWS, MAX_TILE_WIDTH};
+use svtav1_types::restoration::MAX_SEGMENTS;
+use svtav1_types::segmentation::{
+    SEG_LVL_MAX, SEGMENTATION_FEATURE_BITS, SEGMENTATION_FEATURE_SIGNED, SegmentationParams,
+};
 
 /// CICP color description for AV1 sequence headers.
 ///
@@ -302,6 +306,13 @@ impl BitWriter {
     /// Number of bytes written (rounded up).
     pub fn bytes_written(&self) -> usize {
         self.bit_offset.div_ceil(8) as usize
+    }
+
+    /// Number of BITS written so far. `data()` zero-pads the final byte, so
+    /// a caller that needs the exact payload length (a differential bit-layout
+    /// check, say) must read this rather than `bytes_written() * 8`.
+    pub fn bit_len(&self) -> usize {
+        self.bit_offset as usize
     }
 
     /// Get the written data.
@@ -1656,6 +1667,84 @@ fn write_tile_info(
     }
 }
 
+/// C `svt_aom_wb_write_inv_signed_literal` (entropy_coding.c:1377-1379):
+/// `svt_aom_wb_write_literal(wb, data, bits + 1)` — i.e. the low `bits + 1`
+/// bits of `data`'s two's-complement representation, MSB first. This is the
+/// spec's `su(1 + bits)`.
+///
+/// Kept next to `write_segmentation_params`, its only caller in this port;
+/// the delta-Q writer open-codes the same shape inline (`d & 0x7f`, 7 bits).
+#[inline]
+fn write_inv_signed_literal(wb: &mut BitWriter, data: i32, bits: u32) {
+    // `write_bits` only emits the low `n` bits of its argument, so the cast
+    // is the mask: for bits = 6 a value of -10 writes 0b1110110 (7 bits).
+    wb.write_bits(data as u32, bits + 1);
+}
+
+/// `segmentation_params()` — spec 5.9.14, C `encode_segmentation`
+/// (entropy_coding.c:2247-2276).
+///
+/// `primary_ref_none` is `frm_hdr.primary_ref_frame == PRIMARY_REF_NONE`,
+/// which is always true for a KEY frame: C only signals the three update
+/// flags when a primary reference EXISTS (there is prior state to inherit);
+/// with PRIMARY_REF_NONE the decoder infers
+/// `update_map = update_data = 1, temporal_update = 0` (spec 5.9.14) and C
+/// writes nothing.
+///
+/// Feature payloads use `svt_aom_segmentation_feature_bits[j]` and the
+/// signed/unsigned split from `svt_aom_segmentation_feature_signed[j]`
+/// (segmentation_params.c:16-18). Note `bits[SEG_LVL_SKIP] =
+/// bits[SEG_LVL_GLOBALMV] = 0`: those are bare enable flags whose "payload"
+/// is a zero-length literal, so the enable bit is all that is coded.
+///
+/// C has a literal `//TODO: add clamping` at :2263 — feature_data is written
+/// UNCLAMPED, so a value outside `svt_aom_segmentation_feature_max[j]`
+/// silently truncates to the low bits. Reproduced (no clamp) so the port
+/// matches C byte-for-byte if a caller ever supplies an out-of-range value;
+/// [`svtav1_types::segmentation::SEGMENTATION_FEATURE_MAX`] is transcribed
+/// for whenever C adds the clamp.
+///
+/// # Not wired
+///
+/// The five in-tree callers still write a hardcoded
+/// `segmentation_enabled = 0`. Calling this with a default
+/// [`SegmentationParams`] emits exactly that single zero bit, so switching a
+/// site over is byte-neutral until a caller actually enables segmentation.
+pub fn write_segmentation_params(
+    wb: &mut BitWriter,
+    seg: &SegmentationParams,
+    primary_ref_none: bool,
+) {
+    wb.write_bit(seg.segmentation_enabled);
+    if !seg.segmentation_enabled {
+        return;
+    }
+    if !primary_ref_none {
+        wb.write_bit(seg.segmentation_update_map);
+        if seg.segmentation_update_map {
+            wb.write_bit(seg.segmentation_temporal_update);
+        }
+        wb.write_bit(seg.segmentation_update_data);
+    }
+    if seg.segmentation_update_data {
+        for i in 0..MAX_SEGMENTS {
+            for j in 0..SEG_LVL_MAX {
+                let enabled = seg.feature_enabled[i][j] != 0;
+                wb.write_bit(enabled);
+                if enabled {
+                    let data = i32::from(seg.feature_data[i][j]);
+                    let bits = SEGMENTATION_FEATURE_BITS[j] as u32;
+                    if SEGMENTATION_FEATURE_SIGNED[j] != 0 {
+                        write_inv_signed_literal(wb, data, bits);
+                    } else {
+                        wb.write_bits(data as u32, bits);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Write an inter frame header (non-reduced SH).
 pub fn write_inter_frame_header(
     base_qindex: u8,
@@ -1862,6 +1951,104 @@ mod tests {
         assert_eq!(uleb_encode(0), vec![0]);
         assert_eq!(uleb_encode(1), vec![1]);
         assert_eq!(uleb_encode(127), vec![127]);
+    }
+
+    /// Expand a `BitWriter`'s payload into one `u8` per bit, MSB first.
+    fn bits_of(wb: &BitWriter) -> Vec<u8> {
+        let data = wb.data();
+        (0..wb.bit_len())
+            .map(|i| (data[i / 8] >> (7 - (i % 8))) & 1)
+            .collect()
+    }
+
+    /// Disabled segmentation must emit EXACTLY the single zero bit the five
+    /// hardcoded `wb.write_bit(false)` writer sites emit today — that is what
+    /// makes switching a site over to this function byte-neutral.
+    #[test]
+    fn segmentation_params_disabled_is_one_zero_bit() {
+        let seg = SegmentationParams::default();
+        for primary_ref_none in [true, false] {
+            let mut wb = BitWriter::new();
+            write_segmentation_params(&mut wb, &seg, primary_ref_none);
+            assert_eq!(bits_of(&wb), vec![0u8]);
+        }
+    }
+
+    /// The three update flags are coded ONLY when a primary reference exists
+    /// (C `encode_segmentation`, entropy_coding.c:2251-2257), and the
+    /// temporal flag only nests under `update_map`.
+    #[test]
+    fn segmentation_params_update_flag_gating() {
+        let mut seg = SegmentationParams {
+            segmentation_enabled: true,
+            segmentation_update_map: true,
+            segmentation_temporal_update: false,
+            segmentation_update_data: false,
+            ..SegmentationParams::default()
+        };
+        // primary_ref_none: no flags at all, and update_data==false skips the
+        // feature loop -> one bit total.
+        let mut wb = BitWriter::new();
+        write_segmentation_params(&mut wb, &seg, true);
+        assert_eq!(bits_of(&wb), vec![1u8]);
+
+        // primary ref present: enabled, update_map, temporal_update, update_data.
+        let mut wb = BitWriter::new();
+        write_segmentation_params(&mut wb, &seg, false);
+        assert_eq!(bits_of(&wb), vec![1, 1, 0, 0]);
+
+        // update_map = 0 drops the nested temporal bit.
+        seg.segmentation_update_map = false;
+        let mut wb = BitWriter::new();
+        write_segmentation_params(&mut wb, &seg, false);
+        assert_eq!(bits_of(&wb), vec![1, 0, 0]);
+    }
+
+    /// Feature payload widths: `bits[j] + signed[j]` per
+    /// `svt_aom_segmentation_feature_{bits,signed}`, and `bits == 0` features
+    /// (SEG_LVL_SKIP / SEG_LVL_GLOBALMV) code their enable bit only.
+    #[test]
+    fn segmentation_params_feature_payload_widths() {
+        use svtav1_types::segmentation::{
+            SEG_LVL_ALT_LF_Y_V, SEG_LVL_ALT_Q, SEG_LVL_GLOBALMV, SEG_LVL_REF_FRAME, SEG_LVL_SKIP,
+        };
+        let mut seg = SegmentationParams {
+            segmentation_enabled: true,
+            segmentation_update_data: true,
+            ..SegmentationParams::default()
+        };
+        // Segment 0 only, one feature at a time.
+        let cases: [(usize, i16, usize); 5] = [
+            (SEG_LVL_ALT_Q, -37, 9),       // su(1+8)
+            (SEG_LVL_ALT_LF_Y_V, 21, 7),   // su(1+6)
+            (SEG_LVL_REF_FRAME, 5, 3),     // f(3), unsigned
+            (SEG_LVL_SKIP, 0, 0),          // f(0) — nothing
+            (SEG_LVL_GLOBALMV, 0, 0),      // f(0) — nothing
+        ];
+        for (feature, data, payload_bits) in cases {
+            seg.feature_enabled = [[0; SEG_LVL_MAX]; MAX_SEGMENTS];
+            seg.feature_data = [[0; SEG_LVL_MAX]; MAX_SEGMENTS];
+            seg.feature_enabled[0][feature] = 1;
+            seg.feature_data[0][feature] = data;
+            let mut wb = BitWriter::new();
+            write_segmentation_params(&mut wb, &seg, true);
+            let bits = bits_of(&wb);
+            // 1 enabled bit + 8*8 enable bits + payload
+            assert_eq!(
+                bits.len(),
+                1 + MAX_SEGMENTS * SEG_LVL_MAX + payload_bits,
+                "total width for feature {feature}"
+            );
+            if payload_bits > 0 {
+                let start = 1 + feature + 1;
+                let coded: i32 = bits[start..start + payload_bits]
+                    .iter()
+                    .fold(0i32, |acc, &b| (acc << 1) | i32::from(b));
+                // The low `payload_bits` bits of the two's-complement value.
+                let mask = (1i32 << payload_bits) - 1;
+                assert_eq!(coded, i32::from(data) & mask, "payload for feature {feature}");
+            }
+        }
     }
 
     #[test]

@@ -230,6 +230,378 @@ fc_tables! {
     (Ndvc, ref_fc_sizeof_ndvc, ref_fc_copy_ndvc),
     (InterExtTx, ref_fc_sizeof_inter_ext_tx_cdf, ref_fc_copy_inter_ext_tx_cdf),
     (TxfmPartition, ref_fc_sizeof_txfm_partition_cdf, ref_fc_copy_txfm_partition_cdf),
+    (SegTree, ref_fc_sizeof_seg_tree_cdf, ref_fc_copy_seg_tree_cdf),
+    (SegPred, ref_fc_sizeof_seg_pred_cdf, ref_fc_copy_seg_pred_cdf),
+    (SegSpatialPred, ref_fc_sizeof_spatial_pred_seg_cdf, ref_fc_copy_spatial_pred_seg_cdf),
+}
+
+// ---- Segmentation oracles (G2.4, 2026-08-03) ----
+//
+// Every entry point below drives an EXPORTED C symbol
+// (`nm libSvtAv1Enc.a` shows all of them as `T`), so these are the strongest
+// evidence tier this project has. The vertical's `static` members
+// (`get_variance_for_cu`, `roi_map_setup_segmentation`,
+// `roi_map_apply_segmentation_based_quantization`, `encode_segmentation`,
+// `svt_aom_get_segment_id`, `write_inter_segment_id`) have no symbol and are
+// covered indirectly (through these callers) or by hand-derived vectors.
+
+unsafe extern "C" {
+    fn ref_segmentation_feature_tables(bits: *mut i32, is_signed: *mut i32, maxv: *mut i32);
+    fn ref_neg_interleave(x: i32, r: i32, max: i32) -> i32;
+    fn ref_calculate_segmentation_data(
+        feature_enabled_flat: *const i16,
+        last_active_seg_id: *mut u8,
+        seg_id_pre_skip: *mut u8,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn ref_setup_segmentation(
+        aq_mode: u8,
+        variance: *const u16,
+        b64_total_count: u32,
+        block_count: u32,
+        enabled: *mut u8,
+        update_map: *mut u8,
+        temporal_update: *mut u8,
+        update_data: *mut u8,
+        feature_data_flat: *mut i16,
+        feature_enabled_flat: *mut i16,
+        last_active_seg_id: *mut u8,
+        seg_id_pre_skip: *mut u8,
+        variance_bin_edge: *mut i16,
+    );
+    fn ref_apply_segmentation_based_quantization(
+        variance_bin_edge: *const i16,
+        feature_data_flat: *const i16,
+        base_q_idx: i32,
+        variance: *const u16,
+        b64_total_count: u32,
+        block_count: u32,
+        sb_index: u32,
+        bsize: i32,
+        org_x: i32,
+        org_y: i32,
+    ) -> u8;
+    fn ref_get_spatial_seg_prediction(
+        seg_map: *const u8,
+        mi_cols: i32,
+        mi_rows: i32,
+        mi_row: i32,
+        mi_col: i32,
+        left_available: i32,
+        up_available: i32,
+        cdf_index: *mut i32,
+    ) -> i32;
+    fn ref_update_segmentation_map(
+        seg_map: *mut u8,
+        mi_cols: i32,
+        mi_rows: i32,
+        bsize: i32,
+        mi_row: i32,
+        mi_col: i32,
+        segment_id: u8,
+    );
+    fn ref_wb_write_inv_signed_literal(data: i32, bits: i32, out_bits: *mut u8) -> u32;
+    #[allow(clippy::too_many_arguments)]
+    fn ref_write_segment_id(
+        seg_map: *mut u8,
+        mi_cols: i32,
+        mi_rows: i32,
+        bsize: i32,
+        mi_row: i32,
+        mi_col: i32,
+        left_available: i32,
+        up_available: i32,
+        last_active_seg_id: u8,
+        segment_id: u8,
+        skip_coeff: i32,
+        out_bytes: *mut u8,
+        out_cdf: *mut u16,
+        out_segment_id: *mut u8,
+    ) -> u32;
+}
+
+/// C `SEG_LVL_MAX` — the width of the three feature tables.
+pub const SEG_LVL_MAX: usize = 8;
+/// C `MAX_SEGMENTS`.
+pub const MAX_SEGMENTS: usize = 8;
+
+/// The three exported const tables from `segmentation_params.c:16-21`, read
+/// out of the linked library: `(bits, signed, max)`.
+pub fn segmentation_feature_tables() -> ([i32; SEG_LVL_MAX], [i32; SEG_LVL_MAX], [i32; SEG_LVL_MAX])
+{
+    let mut bits = [0i32; SEG_LVL_MAX];
+    let mut sgn = [0i32; SEG_LVL_MAX];
+    let mut maxv = [0i32; SEG_LVL_MAX];
+    unsafe {
+        ref_segmentation_feature_tables(bits.as_mut_ptr(), sgn.as_mut_ptr(), maxv.as_mut_ptr())
+    };
+    (bits, sgn, maxv)
+}
+
+/// C `svt_av1_neg_interleave` (entropy_coding.c:4825) — exported symbol.
+pub fn neg_interleave(x: i32, reference: i32, max: i32) -> i32 {
+    unsafe { ref_neg_interleave(x, reference, max) }
+}
+
+/// C `calculate_segmentation_data` (segmentation.c:249) — exported symbol.
+/// Takes the INCOMING `(last_active_seg_id, seg_id_pre_skip)` so the
+/// accumulate-don't-clear behaviour is observable, and returns the outgoing
+/// pair.
+pub fn calculate_segmentation_data(
+    feature_enabled: &[[i16; SEG_LVL_MAX]; MAX_SEGMENTS],
+    last_active_seg_id: u8,
+    seg_id_pre_skip: u8,
+) -> (u8, u8) {
+    let mut last = last_active_seg_id;
+    let mut pre = seg_id_pre_skip;
+    unsafe {
+        ref_calculate_segmentation_data(
+            feature_enabled.as_flattened().as_ptr(),
+            &mut last,
+            &mut pre,
+        )
+    };
+    (last, pre)
+}
+
+/// The `SegmentationParams` fields `svt_aom_setup_segmentation` writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RefSegmentationParams {
+    pub enabled: bool,
+    pub update_map: bool,
+    pub temporal_update: bool,
+    pub update_data: bool,
+    pub feature_data: [[i16; SEG_LVL_MAX]; MAX_SEGMENTS],
+    pub feature_enabled: [[i16; SEG_LVL_MAX]; MAX_SEGMENTS],
+    pub last_active_seg_id: u8,
+    pub seg_id_pre_skip: u8,
+    pub variance_bin_edge: [i16; MAX_SEGMENTS],
+}
+
+/// C `svt_aom_setup_segmentation` (segmentation.c:228) — exported symbol,
+/// non-ROI arm (the shim leaves `ppcs->roi_map_evt` NULL). Drives
+/// `find_segment_qps` + `calculate_segmentation_data` end to end.
+///
+/// `variance` is `b64_total_count` rows of `block_count` samples, matching
+/// the `EB_MALLOC_2D(variance, b64_total_count, block_count)` shape
+/// (pcs.c:1280).
+pub fn setup_segmentation(
+    aq_mode: u8,
+    variance: &[u16],
+    b64_total_count: u32,
+    block_count: u32,
+) -> RefSegmentationParams {
+    assert_eq!(variance.len(), (b64_total_count * block_count) as usize);
+    let mut enabled = 0u8;
+    let mut update_map = 0u8;
+    let mut temporal_update = 0u8;
+    let mut update_data = 0u8;
+    let mut feature_data = [[0i16; SEG_LVL_MAX]; MAX_SEGMENTS];
+    let mut feature_enabled = [[0i16; SEG_LVL_MAX]; MAX_SEGMENTS];
+    let mut last_active_seg_id = 0u8;
+    let mut seg_id_pre_skip = 0u8;
+    let mut variance_bin_edge = [0i16; MAX_SEGMENTS];
+    unsafe {
+        ref_setup_segmentation(
+            aq_mode,
+            variance.as_ptr(),
+            b64_total_count,
+            block_count,
+            &mut enabled,
+            &mut update_map,
+            &mut temporal_update,
+            &mut update_data,
+            feature_data.as_flattened_mut().as_mut_ptr(),
+            feature_enabled.as_flattened_mut().as_mut_ptr(),
+            &mut last_active_seg_id,
+            &mut seg_id_pre_skip,
+            variance_bin_edge.as_mut_ptr(),
+        )
+    };
+    RefSegmentationParams {
+        enabled: enabled != 0,
+        update_map: update_map != 0,
+        temporal_update: temporal_update != 0,
+        update_data: update_data != 0,
+        feature_data,
+        feature_enabled,
+        last_active_seg_id,
+        seg_id_pre_skip,
+        variance_bin_edge,
+    }
+}
+
+/// C `svt_aom_apply_segmentation_based_quantization` (segmentation.c:136) —
+/// exported symbol, non-ROI arm. Returns the assigned `segment_id`. This is
+/// the only reachable driver for the `static` `get_variance_for_cu`.
+///
+/// `variance` is the WHOLE contiguous plane (`b64_total_count * block_count`
+/// samples) laid out exactly as `EB_MALLOC_2D` does, because C's BLOCK_16X8
+/// index arithmetic reads PAST the selected b64's row into the next one —
+/// see the shim's comment and `svtav1_encoder::segmentation`'s doc.
+/// `bsize` is the raw `BlockSize` enum value.
+#[allow(clippy::too_many_arguments)]
+pub fn apply_segmentation_based_quantization(
+    variance_bin_edge: &[i16; MAX_SEGMENTS],
+    feature_data: &[[i16; SEG_LVL_MAX]; MAX_SEGMENTS],
+    base_q_idx: i32,
+    variance: &[u16],
+    b64_total_count: u32,
+    block_count: u32,
+    sb_index: u32,
+    bsize: i32,
+    org_x: i32,
+    org_y: i32,
+) -> u8 {
+    assert_eq!(variance.len(), (b64_total_count * block_count) as usize);
+    assert!(sb_index < b64_total_count);
+    unsafe {
+        ref_apply_segmentation_based_quantization(
+            variance_bin_edge.as_ptr(),
+            feature_data.as_flattened().as_ptr(),
+            base_q_idx,
+            variance.as_ptr(),
+            b64_total_count,
+            block_count,
+            sb_index,
+            bsize,
+            org_x,
+            org_y,
+        )
+    }
+}
+
+/// C `svt_av1_get_spatial_seg_prediction` (entropy_coding.c:4777) — exported
+/// symbol. Returns `(prediction, cdf_index)`.
+pub fn get_spatial_seg_prediction(
+    seg_map: &[u8],
+    mi_cols: i32,
+    mi_rows: i32,
+    mi_row: i32,
+    mi_col: i32,
+    left_available: bool,
+    up_available: bool,
+) -> (i32, i32) {
+    assert_eq!(seg_map.len(), (mi_cols * mi_rows) as usize);
+    let mut cdf_index = -1i32;
+    let pred = unsafe {
+        ref_get_spatial_seg_prediction(
+            seg_map.as_ptr(),
+            mi_cols,
+            mi_rows,
+            mi_row,
+            mi_col,
+            i32::from(left_available),
+            i32::from(up_available),
+            &mut cdf_index,
+        )
+    };
+    (pred, cdf_index)
+}
+
+/// C `svt_aom_wb_write_inv_signed_literal` (entropy_coding.c:1377) —
+/// exported symbol. Returns the emitted bits, MSB first, one `u8` per bit.
+/// This is the only nontrivial primitive inside the `static`
+/// `encode_segmentation`.
+pub fn wb_write_inv_signed_literal(data: i32, bits: i32) -> Vec<u8> {
+    let mut out = vec![0u8; 64];
+    let n = unsafe { ref_wb_write_inv_signed_literal(data, bits, out.as_mut_ptr()) };
+    out.truncate(n as usize);
+    out
+}
+
+/// What C's `write_segment_id` produced for one block.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RefWriteSegmentId {
+    /// Coded payload from the real range coder.
+    pub bytes: Vec<u8>,
+    /// The segmentation map after the call (write_segment_id stamps the
+    /// block's mi footprint).
+    pub seg_map: Vec<u8>,
+    /// `FRAME_CONTEXT.seg.spatial_pred_seg_cdf` after adaptation, flattened.
+    pub spatial_pred_seg_cdf: Vec<u16>,
+    /// `mbmi->segment_id` after the call — C OVERWRITES it with the spatial
+    /// prediction on the `skip_coeff` path.
+    pub segment_id: u8,
+}
+
+/// C `write_segment_id` (entropy_coding.c:4867) — exported symbol, driven
+/// through the real range coder and the real `g_fc.seg` CDFs.
+///
+/// Call [`fc_init`] first (and hold the caller's `fc_init` mutex): the CDFs
+/// come from the process-global C frame context and this call ADAPTS them.
+#[allow(clippy::too_many_arguments)]
+pub fn write_segment_id(
+    seg_map: &[u8],
+    mi_cols: i32,
+    mi_rows: i32,
+    bsize: i32,
+    mi_row: i32,
+    mi_col: i32,
+    left_available: bool,
+    up_available: bool,
+    last_active_seg_id: u8,
+    segment_id: u8,
+    skip_coeff: bool,
+) -> RefWriteSegmentId {
+    assert_eq!(seg_map.len(), (mi_cols * mi_rows) as usize);
+    let mut map = seg_map.to_vec();
+    let mut bytes = vec![0u8; 1024];
+    // SPATIAL_PREDICTION_PROBS * CDF_SIZE(MAX_SEGMENTS) = 3 * 9
+    let mut cdf = vec![0u16; 3 * (MAX_SEGMENTS + 1)];
+    let mut out_id = 0u8;
+    let n = unsafe {
+        ref_write_segment_id(
+            map.as_mut_ptr(),
+            mi_cols,
+            mi_rows,
+            bsize,
+            mi_row,
+            mi_col,
+            i32::from(left_available),
+            i32::from(up_available),
+            last_active_seg_id,
+            segment_id,
+            i32::from(skip_coeff),
+            bytes.as_mut_ptr(),
+            cdf.as_mut_ptr(),
+            &mut out_id,
+        )
+    };
+    bytes.truncate(n as usize);
+    RefWriteSegmentId {
+        bytes,
+        seg_map: map,
+        spatial_pred_seg_cdf: cdf,
+        segment_id: out_id,
+    }
+}
+
+/// C `svt_av1_update_segmentation_map` (entropy_coding.c:4847) — exported
+/// symbol. Stamps in place and returns the mutated map.
+pub fn update_segmentation_map(
+    seg_map: &[u8],
+    mi_cols: i32,
+    mi_rows: i32,
+    bsize: i32,
+    mi_row: i32,
+    mi_col: i32,
+    segment_id: u8,
+) -> Vec<u8> {
+    assert_eq!(seg_map.len(), (mi_cols * mi_rows) as usize);
+    let mut out = seg_map.to_vec();
+    unsafe {
+        ref_update_segmentation_map(
+            out.as_mut_ptr(),
+            mi_cols,
+            mi_rows,
+            bsize,
+            mi_row,
+            mi_col,
+            segment_id,
+        )
+    };
+    out
 }
 
 // ---- MV entropy encode oracle (AUDIT 2026-07-14) ----
