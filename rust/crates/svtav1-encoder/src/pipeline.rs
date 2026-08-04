@@ -6941,7 +6941,29 @@ fn encode_tile_rows(
                 // clamp(0, 63) that lived here was the CLI/qindex
                 // conflation and is gone — qindex saturates at u8 range.
                 let _ = (sb_row, sb_col, &sb_qp_offsets);
-                let sb_qindex = base_qindex;
+                // C `svt_aom_mode_decision_configure_sb` (md_process.c:800-803):
+                //     ctx->qp_index = delta_q_present || r0_delta_qp_md
+                //                   ? sb_qp : base_q_idx;
+                // and `ctx->qp_index` drives the WHOLE MD context — the PD0
+                // tables and the partition search included, not just the leaf.
+                //
+                // This was pinned to `base_qindex`. The per-SB value was already
+                // threaded into the leaf funnel a few lines above
+                // (`f.base_qindex = sbq`), so with variance boost on the funnel
+                // and the partition search were pricing against DIFFERENT
+                // quantizers within the same superblock.
+                //
+                // `sb_qindex_plan.is_some()` is exactly the port's
+                // `delta_q_present`: the plan is built only under
+                // `hdr.enable_variance_boost`, and the same `Option` gates the
+                // frame header's delta-q signalling (`delta_q_res_signal`). C's
+                // second disjunct, `r0_delta_qp_md`, is TPL-driven and always
+                // false for a single still (no lookahead), so it is not modelled
+                // — see the CRF==CQP note in rust/CLAUDE.md.
+                let sb_qindex = match sb_qindex_plan {
+                    Some(plan) => plan[sb_row * sb_cols + sb_col],
+                    None => base_qindex,
+                };
                 // ---------------------------------------------- SB128 (#91)
                 // The b64 CODING UNITS of this superblock, in C's coding
                 // order (`sb128_geom::sb_coding_units`). SVT's b64 grid is
