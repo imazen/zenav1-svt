@@ -48,6 +48,27 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Fixed
 
+- **Partial-superblock RD mis-pricing: the cropped-TX distortion bound is now
+  wired** (#95 chunk 2 (b)+(c)). On a frame whose aligned dims are not a
+  multiple of 64, a coded TX block can straddle the frame edge; C prices only
+  the part inside the ALIGNED frame (`cropped_tx_width`/`cropped_tx_height`,
+  `Source/Lib/Codec/product_coding_loop.c:4664-4665` and `:5752-5754`;
+  `cropped_tx_width_uv`/`_height_uv`, `full_loop.c:2228-2232`), while the port
+  scored the whole block — so every boundary block was mis-priced. The
+  already-written `frame_geom::cropped_tx_dims` (plus a new `cropped_tx_dims_uv`
+  for C's chroma-domain expression) now feeds `leaf_funnel::tx_unit`,
+  `tx_unit_hbd` and `txt_search`. The crop touches ONLY the spatial distortion
+  kernels; the residual, transform, quantizer, RDOQ, recon and coefficient rate
+  still run over the full TX block, exactly as in C.
+  Measured crop-off → crop-on over 48 partial-SB cells: 8 changed bytes,
+  **3 went divergent → byte-identical to C** (`gradient 80x88 / 104x88 / 72x88
+  at q55 preset 6`, the straddle-win trio), **0 regressed**. Those three are now
+  gated: `tools/partial_sb_gate.sh` 101 → **104/104**. Byte-neutral everywhere
+  else (`identity_matrix` 54/54, `bd10_matrix` 36/36) — on a 64-aligned frame
+  the crop is the identity. New differential test
+  `leaf_funnel::tests::cropped_tx_distortion_matches_c_spatial_facade` pins the
+  cropped distortion to the real exported
+  `svt_spatial_full_distortion_kernel_facade` via `svtav1-cref`.
 - `coeff_c_txb_init_levels_partial_zero_no_stale_reads` failed at default test
   parallelism: archmage token disabling is process-wide, so a sibling
   permutation test could move it onto the scalar arm. It now holds

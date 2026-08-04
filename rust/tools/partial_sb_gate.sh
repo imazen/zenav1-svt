@@ -49,6 +49,16 @@
 # (decoded pixels identical); a few high-qp q55 straddle/multi-SB cells at p7/p8
 # hit a separate genuine near-tie. Neither is gated.
 #
+# CROPPED-TX RD DISTORTION (task #95 (b)+(c), landed 2026-08-03): C prices a
+# boundary TX block's SPATIAL distortion only over the part inside the ALIGNED
+# frame (`cropped_tx_width`/`_height`, product_coding_loop.c:4664-4665 and
+# :5752-5754; `cropped_tx_width_uv`/`_height_uv`, full_loop.c:2228-2232). The
+# port scored the WHOLE tx block, mis-pricing every straddling block. Wiring the
+# crop closed the p6 q55 straddle-win trio (80x88 / 104x88 / 72x88), now gated
+# below; the p7/p8 q55 + 200x120 q40/55 cells still diverge (a different root —
+# item (a) of that group, the `end_tx_depth` frame-boundary force-to-0 at
+# product_coding_loop.c:6712-6717 — is the standing candidate).
+#
 # Scope: bd8 4:2:0. preset 6 (PD0_LVL_1 fixed tree) + presets 7/8 (LVL_1, NSQ
 # disabled) + presets 9/10/13 (LPD0).
 set -uo pipefail
@@ -118,6 +128,20 @@ CELLS=(
   "gradient 72 88 32 6"
   "gradient 80 104 40 6"   # all-qp match
   "gradient 104 80 48 6"   # all-qp match
+  # q55 STRADDLE-WIN cells — UNBLOCKED by the cropped-TX RD distortion
+  # (task #95 (b)+(c), C product_coding_loop.c:4664 + full_loop.c:2228). These
+  # three were the documented "high-qp both-partial near-tie" follow-up: the
+  # port priced a straddling boundary block's spatial SSE over the WHOLE tx
+  # block (including the rows/cols outside the aligned frame, which C never
+  # scores), so at q55 — where the RD margins are widest and the pad rows
+  # dominate — the depth/mode pick flipped. With the crop wired they are
+  # byte-identical. MEASURED before/after (crop OFF -> ON) on 2026-08-03: these
+  # three went DIFF -> MATCH, 8 of 48 swept partial-SB cells changed bytes at
+  # all, and NO cell regressed. They are the gate's anti-vacuity anchor for the
+  # crop: delete the crop and these three fail.
+  "gradient 80 88 55 6"
+  "gradient 104 88 55 6"
+  "gradient 72 88 55 6"
   # PRESETS >= 9 (M9 LPD0 / PD0_LVL_5/6) — the higher-LVL boundary path. Two
   # LPD0-only roots (both byte-neutral for full SBs and for LVL_1 presets 0-6):
   #   1. subres forced OFF on an INCOMPLETE b64 (enc_mode_config.c:7326,

@@ -458,8 +458,17 @@ pub struct FunnelFrame {
     pub dv_tables: Option<crate::intrabc::MvCostTables>,
     /// Frame height in pixels (`mi_rows * 4`, the ALIGNED height) — the
     /// C `mb_to_bottom_edge` bottom clip the inter var-tx walk applies
-    /// (entropy_coding.c:4444-4452). Only read by IBC candidates.
+    /// (entropy_coding.c:4444-4452). Read by IBC candidates AND, with
+    /// `frame_w_px`, by the cropped-TX RD distortion bound below.
     pub frame_h_px: usize,
+    /// Frame width in pixels — the ALIGNED width, C `pcs->ppcs->aligned_width`
+    /// (pcs.h:1031). Paired with `frame_h_px` it is the `FrameDims` the
+    /// cropped-TX distortion bound needs (`frame_geom::cropped_tx_dims` /
+    /// `_uv`, C product_coding_loop.c:4664 + full_loop.c:2228): on a PARTIAL
+    /// superblock a coded TX block may straddle the aligned extent, and C
+    /// prices only the part that is inside the frame. Equal to the aligned
+    /// dims on every 64-aligned frame, where the crop is the identity.
+    pub frame_w_px: usize,
     /// Per-preset intra-leaf config (M6 vs intra_level-7 M7/M8).
     pub cfg: FunnelCfg,
 }
@@ -1634,6 +1643,16 @@ fn compute_cul_level(scan: &[u16], qcoeff: &[i32], eob: u16) -> u8 {
 ///
 /// `spatial_dist`: MDS3 (recon vs source SSE << 4); else the MDS1
 /// freq-domain path. `do_rdoq` follows C `mds_do_rdoq && rdoq enabled`.
+///
+/// `crop`: the cropped-TX distortion extent — C `cropped_tx_width` /
+/// `cropped_tx_height` (product_coding_loop.c:4664, and the chroma
+/// `_uv` twin at full_loop.c:2228), from `frame_geom::cropped_tx_dims`.
+/// It clips ONLY the spatial distortion kernels (SSE / psy / tx-bias
+/// facade) to the part of this TX block that is inside the ALIGNED
+/// frame — never the residual, transform, quantizer, RDOQ, recon or
+/// coefficient rate, all of which C runs over the FULL tx block. On a
+/// 64-aligned frame `crop == (w, h)` and every expression below is
+/// unchanged; only a partial-superblock straddle can make them differ.
 #[allow(clippy::too_many_arguments)]
 fn tx_unit(
     src: &[u8],
@@ -1654,7 +1673,10 @@ fn tx_unit(
     rates: &MdRates,
     do_rdoq: bool,
     spatial_dist: bool,
+    crop: (usize, usize),
 ) -> TxUnitOut {
+    let (crop_w, crop_h) = crop;
+    debug_assert!(crop_w <= w && crop_h <= h, "crop must clip, never extend");
     let n = w * h;
     let c_tx = cc::tx_size_from_dims(w, h);
     let rs_tx_type = TX_TYPE_FROM_C[tx_type];
@@ -1815,10 +1837,14 @@ fn tx_unit(
     }
 
     let dist = if spatial_dist {
+        // C `svt_spatial_full_distortion_kernel_facade(..., cropped_tx_width,
+        // cropped_tx_height, ...)`: the SSE walks the CROPPED extent (the recon
+        // keeps its full `w` stride), so a straddling boundary TX block is
+        // priced only over its in-frame part.
         let mut sse: u64 = 0;
-        for r in 0..h {
+        for r in 0..crop_h {
             let srow = src_off + r * src_stride;
-            for c in 0..w {
+            for c in 0..crop_w {
                 let d = src[srow + c] as i64 - recon[r * w + c] as i64;
                 sse += (d * d) as u64;
             }
@@ -1841,8 +1867,12 @@ fn tx_unit(
                 sse as i64,
                 class,
                 true,
-                w as u32,
-                h as u32,
+                // The facade IS the cropped-dims call site in C
+                // (`svt_spatial_full_distortion_kernel_facade(...,
+                // cropped_tx_width, cropped_tx_height, ...)`), so its
+                // area/size inputs are the CROPPED ones too.
+                crop_w as u32,
+                crop_h as u32,
                 0,
                 if frame.ac_bias_eff > 0.0 { 1.0 } else { 0.0 },
                 frame.tx_bias,
@@ -1853,6 +1883,9 @@ fn tx_unit(
         // in full_loop.c). tx_bias=0 (fork default) keeps the facade a
         // plain SSE, so this is the whole fork-default delta here.
         if frame.ac_bias_eff > 0.0 {
+            // C `get_svt_psy_full_dist(..., cropped_tx_width,
+            // cropped_tx_height, ...)` (product_coding_loop.c:4834/:4862,
+            // :5803/:5831) — cropped area, full recon stride.
             sse += svtav1_dsp::ac_bias::psy_full_dist(
                 src,
                 src_off,
@@ -1860,8 +1893,8 @@ fn tx_unit(
                 &recon,
                 0,
                 w,
-                w,
-                h,
+                crop_w,
+                crop_h,
                 frame.ac_bias_eff,
             );
         }
@@ -2079,6 +2112,13 @@ pub(crate) struct TxRdArgs {
     /// `[SVT_HDR_MODE]` fork tx-bias facade strength (`FunnelFrame::tx_bias`).
     /// The facade is pure arithmetic on the SSE, so it applies at any depth.
     pub tx_bias: u8,
+    /// The cropped-TX distortion extent (`frame_geom::cropped_tx_dims` /
+    /// `_uv`), exactly as the u8 [`tx_unit`]'s `crop` — C reaches the same
+    /// `svt_spatial_full_distortion_kernel_facade` at both depths (only the
+    /// kernel behind it is bit-depth-selected), so the cropped dims are the
+    /// same inputs. Clips ONLY the spatial arm; `(w, h)` on a 64-aligned
+    /// frame.
+    pub crop: (usize, usize),
 }
 
 /// bd10 FULL-RD context for the MDS1 / MDS3 stages (task #94, MODE axis).
@@ -2332,8 +2372,13 @@ pub(crate) fn tx_unit_hbd(
         None => (0u64, 0i32),
         Some(a) => {
             let dist = if a.spatial_dist {
+                // Cropped area, FULL recon stride — the bd10 twin of the u8
+                // site (C passes `cropped_tx_width`/`_height` into the same
+                // facade at both depths).
+                let (crop_w, crop_h) = a.crop;
+                debug_assert!(crop_w <= w && crop_h <= h, "crop must clip, never extend");
                 let mut sse = svtav1_dsp::hbd::full_distortion_kernel16_bits(
-                    src, src_off, src_stride, &recon, 0, w, w, h,
+                    src, src_off, src_stride, &recon, 0, w, crop_w, crop_h,
                 );
                 // [SVT_HDR_MODE] fork tx-bias facade (pic_operators.c:265-292):
                 // pure integer scaling of the SSE by prediction-mode class, so
@@ -2348,8 +2393,8 @@ pub(crate) fn tx_unit_hbd(
                         sse as i64,
                         class,
                         true,
-                        w as u32,
-                        h as u32,
+                        crop_w as u32,
+                        crop_h as u32,
                         0,
                         0.0,
                         a.tx_bias,
@@ -2648,6 +2693,11 @@ fn md_cfl_rd_pick_alpha(
     c_off: usize,
     cw: usize,
     chh: usize,
+    // This block's chroma cropped-TX distortion extent (`frame_geom::
+    // cropped_tx_dims_uv`). Inert here — `av1_cost_calc_cfl` scores the
+    // TRANSFORM domain — but threaded so the chroma TX calls all name the
+    // same C quantity.
+    uv_crop: (usize, usize),
     cb_tsc: usize,
     cb_dsc: usize,
     cr_tsc: usize,
@@ -2688,7 +2738,7 @@ fn md_cfl_rd_pick_alpha(
         let out = tx_unit(
             src, c_stride, c_off, &cfl_pred, cw, 0, cw, chh, 0, 1, tsc, dsc, 0,
             if plane == 0 { qt_u } else { qt_v }, frame, rates,
-            do_rdoq, false,
+            do_rdoq, false, uv_crop,
         );
         (out.dist, out.bits)
     };
@@ -3551,6 +3601,38 @@ pub(crate) fn evaluate_leaf(
     let ccx = ((abs_x >> 3) << 3) / 2 + if w >= 8 { (abs_x % 8) / 2 } else { 0 };
     let ccy = ((abs_y >> 3) << 3) / 2 + if h >= 8 { (abs_y % 8) / 2 } else { 0 };
 
+    // ---- cropped-TX RD distortion bound (task #95 chunk 2 (b)+(c)) ----
+    // C prices the SPATIAL distortion of a TX block only over the part that
+    // lies inside the ALIGNED frame (`cropped_tx_width`/`_height`,
+    // product_coding_loop.c:4664; `cropped_tx_width_uv`/`_height_uv`,
+    // full_loop.c:2228). That matters ONLY on a partial superblock, where a
+    // coded block may straddle the aligned extent; on a 64-aligned frame both
+    // crops are the identity and every distortion expression is unchanged.
+    //
+    // The ALIGNED frame extent the bound is taken against. `FrameDims::new`
+    // would re-derive it from TRUE dims; the funnel already carries the
+    // aligned values, so construct them directly (aligned-of-aligned is a
+    // fixed point — the dims are multiples of 8).
+    let aligned_dims = crate::frame_geom::FrameDims {
+        true_w: frame.frame_w_px,
+        true_h: frame.frame_h_px,
+        aligned_w: frame.frame_w_px,
+        aligned_h: frame.frame_h_px,
+    };
+    // The CHROMA crop is candidate-independent (one chroma txb per block:
+    // `tu_count` is 1 at every tx_depth on the chroma path, full_loop.c:2221,
+    // so `txb_origin` is always (0,0) and `ccx`/`ccy` — which already ARE
+    // `ROUND_UV(luma) >> 1` — are the C origins), so it is computed once here
+    // and shared by every chroma tx_unit call below.
+    let uv_crop = crate::frame_geom::cropped_tx_dims_uv(&aligned_dims, ccx, ccy, cw, chh);
+    // The whole-block LUMA crop — the depth-0 txb's crop, which is what the
+    // MDS1 luma full loop (one txb at the block origin) computes. MDS1 scores
+    // the FREQ-domain distortion, where the crop is inert (C's coefficient
+    // -domain facade takes the full tx dims); it is threaded anyway so every
+    // luma call site names the same C quantity, and so a future spatial MDS1
+    // (C's `!is_inter && tx_depth` arm) is already correct.
+    let blk_crop = crate::frame_geom::cropped_tx_dims(&aligned_dims, abs_x, abs_y, w, h);
+
     // bd10 FULL-RD (task #94, MODE axis): the MDS1/MDS3 inputs at true depth.
     // Built once per leaf; `None` on every u8 path AND on bd10 leaves where
     // only the MDS0 funnel is enabled, so both stay byte-identical.
@@ -3667,6 +3749,7 @@ pub(crate) fn evaluate_leaf(
             intra_dir: plane_dir,
             coeff_rate_est_lvl: cfg.coeff_rate_est_lvl,
             tx_bias: frame.tx_bias,
+            crop: uv_crop,
         };
         let u_out = tx_unit_hbd(
             &b.u_src10, cw, 0, &u_pred, cw, 0, cw, chh, tt, 1, cb_tsc, cb_dsc, &b.qt_u,
@@ -3708,6 +3791,7 @@ pub(crate) fn evaluate_leaf(
             intra_dir: plane_dir,
             coeff_rate_est_lvl: cfg.coeff_rate_est_lvl,
             tx_bias: frame.tx_bias,
+            crop: uv_crop,
         };
         let u_out = tx_unit_hbd(
             &b.u_src10, cw, 0, &u_pred, cw, 0, cw, chh, tt, 1, cb_tsc, cb_dsc, &b.qt_u,
@@ -3774,6 +3858,7 @@ pub(crate) fn evaluate_leaf(
             rates,
             do_rdoq,
             true,
+            uv_crop,
         );
         let v_out = tx_unit(
             fx.v_src,
@@ -3794,6 +3879,7 @@ pub(crate) fn evaluate_leaf(
             rates,
             do_rdoq,
             true,
+            uv_crop,
         );
         (u_out, v_out)
     };
@@ -5044,6 +5130,7 @@ pub(crate) fn evaluate_leaf(
             rates,
             false, // no RDOQ at MDS1
             false, // freq-domain dist
+            blk_crop,
         );
         // bd10 FULL-RD (task #94): C's MDS1 at hbd_md != 0 runs the SAME
         // luma-only full loop on 10-bit pixels — 10-bit residual, bd10 quant
@@ -5081,6 +5168,7 @@ pub(crate) fn evaluate_leaf(
                     intra_dir,
                     coeff_rate_est_lvl: cfg.coeff_rate_est_lvl,
                     tx_bias: frame.tx_bias,
+                    crop: blk_crop,
                 }),
             )
         });
@@ -5809,6 +5897,18 @@ pub(crate) fn evaluate_leaf(
                 };
                 #[cfg(not(feature = "std"))]
                 let txt_dbg_tag = None;
+                // C `cropped_tx_width`/`cropped_tx_height` for THIS txb
+                // (product_coding_loop.c:4664-4665 / :5752-5754): the tx
+                // origin is the block origin plus the txb offset, and the
+                // bound is the ALIGNED frame extent. Identity on a
+                // 64-aligned frame.
+                let txb_crop = crate::frame_geom::cropped_tx_dims(
+                    &aligned_dims,
+                    abs_x + tx_x,
+                    abs_y + tx_y,
+                    txw,
+                    txh,
+                );
                 let (out, out10, txt) = txt_search(
                     y_src,
                     y_src_stride,
@@ -5816,6 +5916,7 @@ pub(crate) fn evaluate_leaf(
                     &txb_pred,
                     txw,
                     txh,
+                    txb_crop,
                     depth,
                     tsc,
                     dsc,
@@ -6051,11 +6152,11 @@ pub(crate) fn evaluate_leaf(
             };
             let u_out = tx_unit(
                 fx.u_src, fx.c_stride, ccy * fx.c_stride + ccx, &u_pred, cw, 0, cw, chh, tt,
-                1, cb_tsc, cb_dsc, 0, &qt_u, frame, rates, do_rdoq, true,
+                1, cb_tsc, cb_dsc, 0, &qt_u, frame, rates, do_rdoq, true, uv_crop,
             );
             let v_out = tx_unit(
                 fx.v_src, fx.c_stride, ccy * fx.c_stride + ccx, &v_pred, cw, 0, cw, chh, tt,
-                1, cr_tsc, cr_dsc, 0, &qt_v, frame, rates, do_rdoq, true,
+                1, cr_tsc, cr_dsc, 0, &qt_v, frame, rates, do_rdoq, true, uv_crop,
             );
             ibc_uv_tt = Some(tt);
             (u_out, v_out)
@@ -6310,6 +6411,7 @@ pub(crate) fn evaluate_leaf(
                     rates,
                     do_rdoq,
                     false,
+                    uv_crop,
                 );
                 let v_nc = tx_unit(
                     fx.v_src,
@@ -6330,6 +6432,7 @@ pub(crate) fn evaluate_leaf(
                     rates,
                     do_rdoq,
                     false,
+                    uv_crop,
                 );
                 let non_cfl_cost = rdcost(
                     lambda,
@@ -6477,6 +6580,7 @@ pub(crate) fn evaluate_leaf(
                             intra_dir: 0,
                             coeff_rate_est_lvl: cfg.coeff_rate_est_lvl,
                             tx_bias: frame.tx_bias,
+                            crop: uv_crop,
                         }),
                     );
                     (o.dist, o.bits)
@@ -6528,6 +6632,7 @@ pub(crate) fn evaluate_leaf(
                                     intra_dir: 0,
                                     coeff_rate_est_lvl: cfg.coeff_rate_est_lvl,
                                     tx_bias: frame.tx_bias,
+                                    crop: uv_crop,
                                 }),
                             )
                         };
@@ -6555,6 +6660,7 @@ pub(crate) fn evaluate_leaf(
                             c_off,
                             cw,
                             chh,
+                            uv_crop,
                             cb_tsc,
                             cb_dsc,
                             cr_tsc,
@@ -6617,6 +6723,7 @@ pub(crate) fn evaluate_leaf(
                         rates,
                         do_rdoq,
                         true,
+                        uv_crop,
                     );
                     v_out = tx_unit(
                         fx.v_src,
@@ -6637,6 +6744,7 @@ pub(crate) fn evaluate_leaf(
                         rates,
                         do_rdoq,
                         true,
+                        uv_crop,
                     );
                     // bd10: the coded chroma at the decision depth. C runs the
                     // SAME chosen-alpha `svt_cfl_predict_hbd` + full TX here
@@ -6650,6 +6758,7 @@ pub(crate) fn evaluate_leaf(
                             intra_dir: 0,
                             coeff_rate_est_lvl: cfg.coeff_rate_est_lvl,
                             tx_bias: frame.tx_bias,
+                            crop: uv_crop,
                         };
                         let mut u_cfl10 = vec![0u16; cw * chh];
                         let mut v_cfl10 = vec![0u16; cw * chh];
@@ -6801,6 +6910,7 @@ pub(crate) fn evaluate_leaf(
                             c_off,
                             cw,
                             chh,
+                            uv_crop,
                             cb_tsc,
                             cb_dsc,
                             cr_tsc,
@@ -6829,11 +6939,11 @@ pub(crate) fn evaluate_leaf(
                             );
                             let u_cfl_out = tx_unit(
                                 fx.u_src, fx.c_stride, c_off, &u_cfl, cw, 0, cw, chh, 0, 1,
-                                cb_tsc, cb_dsc, 0, &qt_u, frame, rates, do_rdoq, true,
+                                cb_tsc, cb_dsc, 0, &qt_u, frame, rates, do_rdoq, true, uv_crop,
                             );
                             let v_cfl_out = tx_unit(
                                 fx.v_src, fx.c_stride, c_off, &v_cfl, cw, 0, cw, chh, 0, 1,
-                                cr_tsc, cr_dsc, 0, &qt_v, frame, rates, do_rdoq, true,
+                                cr_tsc, cr_dsc, 0, &qt_v, frame, rates, do_rdoq, true, uv_crop,
                             );
                             let cfl_fast_rate = rates.uv[cfl_allowed][cand.mode as usize]
                                 [UV_CFL_PRED_IDX]
@@ -6978,6 +7088,7 @@ pub(crate) fn evaluate_leaf(
                                     intra_dir: 0,
                                     coeff_rate_est_lvl: cfg.coeff_rate_est_lvl,
                                     tx_bias: frame.tx_bias,
+                                    crop: uv_crop,
                                 }),
                             );
                             (o.dist, o.bits)
@@ -7000,6 +7111,7 @@ pub(crate) fn evaluate_leaf(
                                 intra_dir: 0,
                                 coeff_rate_est_lvl: cfg.coeff_rate_est_lvl,
                                 tx_bias: frame.tx_bias,
+                                crop: uv_crop,
                             };
                             let mut u_cfl10 = vec![0u16; cw * chh];
                             let mut v_cfl10 = vec![0u16; cw * chh];
@@ -7063,10 +7175,12 @@ pub(crate) fn evaluate_leaf(
                                 u_out = tx_unit(
                                     fx.u_src, fx.c_stride, c_off, &u_cfl, cw, 0, cw, chh, 0, 1,
                                     cb_tsc, cb_dsc, 0, &qt_u, frame, rates, do_rdoq, true,
+                                    uv_crop,
                                 );
                                 v_out = tx_unit(
                                     fx.v_src, fx.c_stride, c_off, &v_cfl, cw, 0, cw, chh, 0, 1,
                                     cr_tsc, cr_dsc, 0, &qt_v, frame, rates, do_rdoq, true,
+                                    uv_crop,
                                 );
                                 uv_out10 = Some((u10, v10));
                                 uv_mode_final = UV_CFL_PRED_IDX as u8;
@@ -8308,6 +8422,12 @@ struct TxtDbg {
 /// 4660): DCT-only above 16x16 intra (ext-tx set), otherwise the intra
 /// tx-type groups with SATD early exit + rate-cost gate. Returns the best
 /// type's unit output.
+///
+/// `crop` is this txb's cropped-TX distortion extent — C computes it ONCE
+/// per txb at :4664-4665 (and identically in `perform_dct_dct_tx` at
+/// :5752-5754), i.e. OUTSIDE the tx-type loop, so every candidate type is
+/// scored over the same in-frame region. Passed in rather than derived
+/// here because the caller owns the absolute txb origin.
 #[allow(clippy::too_many_arguments)]
 fn txt_search(
     src: &[u8],
@@ -8316,6 +8436,7 @@ fn txt_search(
     pred: &[u8],
     w: usize,
     h: usize,
+    crop: (usize, usize),
     depth: u8,
     txb_skip_ctx: usize,
     dc_sign_ctx: usize,
@@ -8460,6 +8581,7 @@ fn txt_search(
                 rates,
                 do_rdoq,
                 true, // MDS3 spatial dist
+                crop,
             );
             // bd10 FULL-RD (task #94): the same TX unit at true depth. Every
             // gate around it (group order, ext-tx set, the rate-cost th, the
@@ -8494,6 +8616,7 @@ fn txt_search(
                         intra_dir,
                         coeff_rate_est_lvl: frame.cfg.coeff_rate_est_lvl,
                         tx_bias: frame.tx_bias,
+                        crop,
                     }),
                 )
             });
@@ -9209,5 +9332,247 @@ mod tests {
         assert_eq!(uv_tx_type(2, 16, 16), 2);
         assert_eq!(uv_tx_type(9, 16, 16), 3);
         assert_eq!(uv_tx_type(2, 32, 32), 0); // 64x64 luma -> DCT only
+    }
+
+    /// A minimal mainline (non-fork) [`FunnelFrame`] for the TX-unit tests:
+    /// every fork knob off, so `tx_unit`'s spatial arm is the plain SSE << 4
+    /// that C's `svt_spatial_full_distortion_kernel_facade` produces at
+    /// `tx_bias == 0 && ac_bias == 0`.
+    fn test_frame(base_qindex: u8, frame_w_px: usize, frame_h_px: usize) -> FunnelFrame {
+        FunnelFrame {
+            sb_mi_size: 16,
+            lambda: 100_000,
+            cli_qp: 32,
+            rdoq_level: 0,
+            base_qindex,
+            bit_depth: 8,
+            qindex_u: base_qindex,
+            qindex_v: base_qindex,
+            ac_bias_eff: 0.0,
+            sharpness: 0,
+            sharp_tx_active: false,
+            noise_norm_strength: 0,
+            qm_levels: [15, 15, 15],
+            mds0_ssd: false,
+            tune_ssim: false,
+            tune_ssim_threshold: 1.03,
+            tx_bias: 0,
+            dv_tables: None,
+            frame_h_px,
+            frame_w_px,
+            cfg: FunnelCfg::for_preset(6),
+        }
+    }
+
+    /// Task #95 (b)+(c) — the CROPPED-TX RD distortion, differentially pinned
+    /// to the REAL exported C kernel.
+    ///
+    /// C computes a boundary TX block's SPATIAL distortion only over the part
+    /// inside the ALIGNED frame: `cropped_tx_width`/`cropped_tx_height`
+    /// (product_coding_loop.c:4664-4665, re-derived identically in
+    /// `perform_dct_dct_tx` at :5752-5754) and `cropped_tx_width_uv`/`_height_uv`
+    /// (full_loop.c:2228-2232), which it then passes straight into
+    /// `svt_spatial_full_distortion_kernel_facade` (:4818/:4846, :5781/:5809,
+    /// full_loop.c:2376/:2405) — the FULL tx stride, the CROPPED area.
+    ///
+    /// That facade IS exported and is what `cref::spatial_facade` drives, so
+    /// this is the strongest evidence tier: the port's `tx_unit` distortion is
+    /// compared against the real C kernel invoked with the C-derived cropped
+    /// dims, on a straddling geometry taken from a real partial-superblock
+    /// frame (aligned 96x80: an SB(1,0) 16x32 txb at (32,64) hangs 16 rows
+    /// past the bottom; an SB(0,1) 32x16 txb at (64,32) hangs 8 columns past
+    /// the right — cf. `edge_flags_match_c_rule_on_the_96x80_milestone`).
+    ///
+    /// ANTI-VACUITY is asserted in the test itself: the same C kernel over the
+    /// FULL tx dims must give a DIFFERENT number, which is exactly what the
+    /// port produced before the crop was wired.
+    #[test]
+    fn cropped_tx_distortion_matches_c_spatial_facade() {
+        use crate::frame_geom::{cropped_tx_dims, cropped_tx_dims_uv, FrameDims};
+        // Aligned 96x80 partial-SB frame (the #95 milestone geometry).
+        let dims = FrameDims::new(96, 80);
+        assert_eq!((dims.aligned_w, dims.aligned_h), (96, 80));
+        let frame = test_frame(120, dims.aligned_w, dims.aligned_h);
+        let fc = FrameContext::new_default();
+        let cfc = cc::CoeffFc::default_for_qindex(frame.base_qindex);
+        let rates = build_md_rates(&fc, &cfc);
+        let qt = crate::quant::build_quant_table(frame.base_qindex);
+
+        // Source plane at the SB extent (128x128) — a partial SB's straddling
+        // rows/cols live in the edge-replicated pad, exactly as the encoder
+        // lays it out (`frame_geom::pad_input_plane`).
+        let stride = 128usize;
+        let mut src = alloc::vec![0u8; stride * stride];
+        let mut s: u32 = 0x2545_f491;
+        for px in src.iter_mut() {
+            s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            *px = (s >> 20) as u8;
+        }
+
+        // (tx origin x, y, tx w, h, plane_type) — a bottom straddle, a right
+        // straddle, and a fully-interior control.
+        let cases: [(usize, usize, usize, usize, usize); 3] = [
+            (32, 64, 16, 32, 0), // bottom: 80 - 64 = 16 of 32 rows in frame
+            (64, 32, 32, 16, 0), // right:  96 - 64 = 32 -> full; use 40 below
+            (16, 16, 16, 16, 0), // interior control (crop == full)
+        ];
+        let mut saw_crop = false;
+        for &(tx_x, tx_y, w, h, plane_type) in &cases {
+            let crop = cropped_tx_dims(&dims, tx_x, tx_y, w, h);
+            let src_off = tx_y * stride + tx_x;
+            // A prediction that is NOT the source, so the SSE is non-trivial
+            // and the cropped and uncropped sums genuinely differ.
+            let mut pred = alloc::vec![0u8; w * h];
+            for (i, p) in pred.iter_mut().enumerate() {
+                *p = src[src_off + (i / w) * stride + (i % w)].wrapping_add(17);
+            }
+            let out = tx_unit(
+                &src, stride, src_off, &pred, w, 0, w, h, cc::DCT_DCT, plane_type, 0, 0, 0,
+                &qt, &frame, &rates, false, /* do_rdoq */
+                true,  /* spatial_dist */
+                crop,
+            );
+            // The REAL C facade, cropped area + full recon stride — the exact
+            // call C makes at product_coding_loop.c:4839-4853.
+            let c_cropped = svtav1_cref::spatial_facade(
+                &src[src_off..],
+                stride as u32,
+                &out.recon,
+                w as u32,
+                crop.0 as u32,
+                crop.1 as u32,
+                0,     // DC_PRED
+                0,     // UV_DC_PRED
+                false, // is_chroma
+                false, // is_interintra
+                0,     // comp_type
+                0,     // temporal_layer_index (still = layer 0)
+                0.0,   // ac_bias off
+                0,     // tx_bias off (mainline)
+            );
+            assert_eq!(
+                out.dist,
+                c_cropped << 4,
+                "cropped spatial dist mismatch at tx ({tx_x},{tx_y}) {w}x{h}"
+            );
+            // ANTI-VACUITY: on a straddling txb the UNcropped kernel — what
+            // the port computed before this wiring — must differ.
+            let c_full = svtav1_cref::spatial_facade(
+                &src[src_off..],
+                stride as u32,
+                &out.recon,
+                w as u32,
+                w as u32,
+                h as u32,
+                0,
+                0,
+                false,
+                false,
+                0,
+                0,
+                0.0,
+                0,
+            );
+            if crop != (w, h) {
+                saw_crop = true;
+                assert_ne!(
+                    c_full, c_cropped,
+                    "straddling txb ({tx_x},{tx_y}) {w}x{h} must be crop-sensitive"
+                );
+                assert_ne!(
+                    out.dist,
+                    c_full << 4,
+                    "tx_unit must NOT price the out-of-frame part of ({tx_x},{tx_y}) {w}x{h}"
+                );
+            } else {
+                assert_eq!(c_full, c_cropped, "interior control must be crop-inert");
+            }
+        }
+        assert!(saw_crop, "no straddling case exercised — test is vacuous");
+
+        // ---- CHROMA (full_loop.c:2228-2232) ----
+        // The chroma crop is taken in the CHROMA domain from the ROUND_UV
+        // origin: `(aligned_w >> 1) - (ROUND_UV(luma_x) >> 1)`. Aligned 96x80
+        // -> chroma 48x40; a 16x16 chroma txb at (32,32) hangs 8 rows past the
+        // chroma bottom.
+        let (ccx, ccy, cw, chh) = (32usize, 32usize, 16usize, 16usize);
+        let uv_crop = cropped_tx_dims_uv(&dims, ccx, ccy, cw, chh);
+        assert_eq!(uv_crop, (16, 8));
+        let c_off = ccy * stride + ccx;
+        let mut uv_pred = alloc::vec![0u8; cw * chh];
+        for (i, p) in uv_pred.iter_mut().enumerate() {
+            *p = src[c_off + (i / cw) * stride + (i % cw)].wrapping_sub(23);
+        }
+        let uv_out = tx_unit(
+            &src, stride, c_off, &uv_pred, cw, 0, cw, chh, cc::DCT_DCT, 1, 0, 0, 0, &qt,
+            &frame, &rates, false, true, uv_crop,
+        );
+        let uv_c_cropped = svtav1_cref::spatial_facade(
+            &src[c_off..],
+            stride as u32,
+            &uv_out.recon,
+            cw as u32,
+            uv_crop.0 as u32,
+            uv_crop.1 as u32,
+            0,
+            0,
+            true, // is_chroma
+            false,
+            0,
+            0,
+            0.0,
+            0,
+        );
+        assert_eq!(uv_out.dist, uv_c_cropped << 4, "chroma cropped dist mismatch");
+        let uv_c_full = svtav1_cref::spatial_facade(
+            &src[c_off..],
+            stride as u32,
+            &uv_out.recon,
+            cw as u32,
+            cw as u32,
+            chh as u32,
+            0,
+            0,
+            true,
+            false,
+            0,
+            0,
+            0.0,
+            0,
+        );
+        assert_ne!(uv_c_full, uv_c_cropped, "chroma case must be crop-sensitive");
+        assert_ne!(uv_out.dist, uv_c_full << 4, "chroma must not price out-of-frame rows");
+    }
+
+    /// The cropped-TX bound itself, as hand-derived from the C expressions
+    /// (product_coding_loop.c:4664-4665 luma, full_loop.c:2228-2232 chroma).
+    /// Complements the differential above, which pins the CONSUMPTION.
+    #[test]
+    fn cropped_tx_dims_match_the_c_expressions() {
+        use crate::frame_geom::{cropped_tx_dims, cropped_tx_dims_uv, FrameDims};
+        let d = FrameDims::new(96, 80);
+        // Interior: no crop.
+        assert_eq!(cropped_tx_dims(&d, 0, 0, 64, 64), (64, 64));
+        assert_eq!(cropped_tx_dims(&d, 32, 32, 16, 16), (16, 16));
+        // Bottom straddle: MIN(32, 80 - 64) = 16 rows.
+        assert_eq!(cropped_tx_dims(&d, 32, 64, 16, 32), (16, 16));
+        // Right straddle: MIN(32, 96 - 80) = 16 cols.
+        assert_eq!(cropped_tx_dims(&d, 80, 0, 32, 32), (16, 32));
+        // Both.
+        assert_eq!(cropped_tx_dims(&d, 80, 64, 32, 32), (16, 16));
+        // Chroma: bound is (aligned >> 1) - chroma_origin, chroma dims 48x40.
+        assert_eq!(cropped_tx_dims_uv(&d, 0, 0, 32, 32), (32, 32));
+        assert_eq!(cropped_tx_dims_uv(&d, 32, 32, 16, 16), (16, 8));
+        assert_eq!(cropped_tx_dims_uv(&d, 40, 32, 8, 8), (8, 8));
+        assert_eq!(cropped_tx_dims_uv(&d, 32, 24, 16, 16), (16, 16));
+        // 64-aligned frame: BOTH crops are the identity at every geometry —
+        // the byte-neutrality guarantee for every full-SB gate cell.
+        let full = FrameDims::new(128, 128);
+        for &(x, y, w, h) in &[(0usize, 0usize, 64usize, 64usize), (64, 64, 64, 64), (96, 112, 32, 16)] {
+            assert_eq!(cropped_tx_dims(&full, x, y, w, h), (w, h));
+        }
+        for &(x, y, w, h) in &[(0usize, 0usize, 32usize, 32usize), (32, 48, 32, 16)] {
+            assert_eq!(cropped_tx_dims_uv(&full, x, y, w, h), (w, h));
+        }
     }
 }

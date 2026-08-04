@@ -6665,6 +6665,11 @@ fn encode_tile_rows(
                     false, // approx_inter_rate: structurally 0 on allintra
                 ),
                 frame_h_px: h,
+                // The ALIGNED frame width (C `pcs->ppcs->aligned_width`) — the
+                // other half of the cropped-TX RD distortion bound. `w`/`h` in
+                // this scope are already the aligned dims (see the `ext_w` /
+                // `ext_h` SB-extent derivation above, which rounds them UP).
+                frame_w_px: w,
                 cfg: funnel_cfg,
             })
         } else {

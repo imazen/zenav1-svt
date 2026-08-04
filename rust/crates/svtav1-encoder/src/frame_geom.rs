@@ -4,12 +4,13 @@
 //! docs/arbitrary-dims-port-map.md.
 //!
 //! WIRING STATUS: [`FrameDims::new`] backs the pipeline's true-vs-aligned dims
-//! (chunk 1) and [`edge_has_rows_cols`] backs `pipeline::partition_edge_flags`
-//! (chunk 2 pack side), both covered by tests below. [`sb_geom`],
-//! [`cropped_tx_dims`], [`pad_input_plane`] and the `mi_*`/`sb_*` accessors are
-//! still unwired — the pipeline re-derives those inline; route them through
-//! here as the chunk-2 search restructure lands, so the frame extent has ONE
-//! definition.
+//! (chunk 1); [`edge_has_rows_cols`] backs `pipeline::partition_edge_flags`
+//! (chunk 2 pack side); [`cropped_tx_dims`] / [`cropped_tx_dims_uv`] back the
+//! leaf funnel's spatial RD distortion (chunk 2 (b)+(c) — `leaf_funnel::
+//! tx_unit` / `tx_unit_hbd` / `txt_search`), all covered by tests below.
+//! [`sb_geom`], [`pad_input_plane`] and the `mi_*`/`sb_*` accessors are still
+//! unwired — the pipeline re-derives those inline; route them through here as
+//! the remaining chunk-2 work lands, so the frame extent has ONE definition.
 //!
 //! THE model (map §0): TWO boundary systems coexist.
 //! - ALIGNED (mi grid): true dims rounded UP to a multiple of 8
@@ -215,9 +216,36 @@ pub fn pad_input_plane(plane: &mut [u8], dims: &FrameDims, sb: usize) {
     }
 }
 
-/// C cropped-tx RDO bound (product_coding_loop.c:4664, full_loop.c:2228):
-/// the DISTORTION metric (only — never the coded residual/tx) crops to
-/// the ALIGNED boundary. Returns the (w, h) the distortion kernels see.
+/// C LUMA cropped-tx RDO bound — the DISTORTION metric only (never the
+/// coded residual / transform / quantizer) crops to the ALIGNED boundary.
+/// Returns the (w, h) the spatial distortion kernels see.
+///
+/// VERIFIED against BOTH C luma sites (2026-08-03, re-read in full):
+/// - `tx_type_search`, product_coding_loop.c:4664-4665:
+///   `MIN((int)txbwidth,  aligned_width  - (blk_org_x + txb_origin_x))`
+///   `MIN((int)txbheight, aligned_height - (blk_org_y + txb_origin_y))`
+///   consumed at :4818/:4834/:4846/:4862 (spatial SSD pred+resid and the
+///   two `get_svt_psy_full_dist` adds) and :4993/:5034/:5044/:5060 (the
+///   tune-SSIM kernels).
+/// - `perform_dct_dct_tx`, product_coding_loop.c:5752-5754: the same
+///   expression with `(uint8_t)` casts (inert — tx dims are <= 64) and
+///   `tx_height >> ctx->mds_subres_step` for the height. The port's funnel
+///   never subsamples the residual (`mds_subres_step == 0` on every
+///   allintra MD path it reproduces), so `txh` IS the post-shift height
+///   and the two expressions coincide. Consumed at :5763..:5832.
+///
+/// Both sites are inside the `mds_do_spatial_sse || (!is_inter &&
+/// tx_depth)` branch: the coefficient-domain (freq) distortion arm
+/// (`svt_aom_picture_full_distortion32_bits_single_facade`, :4879 / :5852)
+/// takes the FULL tx dims and cannot crop — there is no pixel geometry in
+/// the coefficient domain.
+///
+/// PORT-NOTE: C's subtraction is a plain `int` difference and may go
+/// NEGATIVE if the tx origin were outside the aligned frame; this returns
+/// 0 there instead. Both mean "no rows/cols" to the kernels, and the case
+/// is unreachable anyway — a CODED tx block's ORIGIN is always inside the
+/// aligned frame (spec 5.11.4 edge-forced splits skip off-frame children);
+/// only its EXTENT can straddle, which is exactly what this clips.
 pub fn cropped_tx_dims(
     dims: &FrameDims,
     tx_x: usize,
@@ -228,6 +256,45 @@ pub fn cropped_tx_dims(
     (
         txw.min(dims.aligned_w.saturating_sub(tx_x)),
         txh.min(dims.aligned_h.saturating_sub(tx_y)),
+    )
+}
+
+/// C CHROMA cropped-tx RDO bound — `svt_aom_full_loop_uv`, full_loop.c:
+/// 2228-2232 (VERIFIED 2026-08-03, read in full with its consumers at
+/// :2356..:2429 for Cb and :2574..:2647 for Cr):
+/// ```text
+/// cropped_tx_width_uv  = MIN((uint32_t)tx_width_uv,
+///     (aligned_width  >> 1) - (ROUND_UV(blk_org_x + txb_origin_x) >> 1));
+/// cropped_tx_height_uv = MIN((uint32_t)tx_height_uv,
+///     (aligned_height >> 1) - (ROUND_UV(blk_org_y + txb_origin_y) >> 1));
+/// ```
+/// Note this is NOT [`cropped_tx_dims`] on luma coordinates: C subtracts in
+/// the CHROMA domain, from the ROUND_UV-anchored chroma origin (`ROUND_UV(x)
+/// = (x >> 3) << 3`, definitions.h:348 — the sub-8x8 chroma-reference PAIR
+/// origin). `ccx`/`ccy` are therefore already `ROUND_UV(luma) >> 1`, which is
+/// exactly what the port's leaf funnel computes for its chroma plane coords.
+/// `aligned_w`/`aligned_h` are multiples of 8, so `>> 1` is exact.
+///
+/// Like the luma twin this is consumed ONLY by the spatial arm (`is_full_loop
+/// && ctx->mds_do_spatial_sse`, :2313); the coefficient-domain else-arm
+/// (:2447) takes the full `tx_width_uv`/`tx_height_uv`.
+///
+/// PORT-NOTE: C's chroma difference is compared as `unsigned` (the `MIN`'s
+/// `(uint32_t)` operand forces the conversion), so an underflow there would
+/// wrap to a huge value and select `tx_width_uv` — the opposite of the luma
+/// site's negative. Unreachable for the same reason (a coded block's chroma
+/// origin is inside the aligned chroma frame), and `saturating_sub` picks
+/// the safe reading.
+pub fn cropped_tx_dims_uv(
+    dims: &FrameDims,
+    ccx: usize,
+    ccy: usize,
+    cw: usize,
+    chh: usize,
+) -> (usize, usize) {
+    (
+        cw.min((dims.aligned_w >> 1).saturating_sub(ccx)),
+        chh.min((dims.aligned_h >> 1).saturating_sub(ccy)),
     )
 }
 

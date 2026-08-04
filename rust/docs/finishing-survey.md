@@ -50,7 +50,7 @@ access ~40 lines up (leaf_funnel.rs:5090–5388) — same root, different line, 
 | # | Item | §|
 |---|---|---|
 | 1 | Make the 65×65 (preset 0–5 partial-SB) path **panic-free** via a runtime guard/CfL-on-edge suppression (byte-identity is separate, multi-pass) | A1 |
-| 2 | Wire `frame_geom::cropped_tx_dims` into the funnel distortion (candidate close for the high-qp straddle residual; also the one written-but-DEAD helper that maps to a real C behaviour) | A2 |
+| 2 | ~~Wire `frame_geom::cropped_tx_dims` into the funnel distortion~~ **DONE 2026-08-03** — closed the p6 q55 straddle-win trio (gate 101 → 104); the p7/p8 high-qp remainder is a different root | A2 |
 | 3 | Delete/refresh **stale docs** that actively mislead: STATUS.md SB128 "NOT landed" block, STATUS.md:195 bd10 "unported" list, sb128_geom PORT-NOTEs 276/322, CLAUDE.md queue #4 | D1 |
 | 4 | Route the pipeline's inline geometry through the DEAD `frame_geom` helpers (`sb_geom`, `mi_cols/rows`, `seq_size_bits`) — one definition of the frame extent | D2 |
 | 5 | Discharge the `seq_size_bits` PORT-NOTE (frame_geom.rs:253) — already proven correct by the odd-dim gate; mark verified | D2 |
@@ -121,35 +121,35 @@ instrumented-C per-candidate RD dump.
 - **Blast:** stops the public-API crash on every preset-0–5 partial-SB frame. Byte-cells:
   none until the multi-pass port lands (there is no preset-0–5 partial-SB gate today).
 
-### A2. High-qp straddle / multi-SB residual — wire cropped-RDO distortion
+### A2. High-qp straddle / multi-SB residual — wire cropped-RDO distortion — **LANDED 2026-08-03 (PARTIAL close)**
 
 - **What:** partial-SB "straddle" cells at p7/p8 diverge at high qp (`200x120 q40/55`,
   `80x88/104x88/72x88/120x120 q55`) — the port codes a different byte count. C crops the
   RDO **distortion** metric to the aligned extent for a tx that reaches past it; the port
-  sums the full (padded) region → different RD → different partition/mode pick.
-- **Where (Rust):** the funnel distortion is computed over the **nominal** tx dims —
-  `tx_unit` / `TxRdArgs` (`crates/svtav1-encoder/src/leaf_funnel.rs:1586` freq,
-  1841/2096 spatial). `frame_geom::cropped_tx_dims` (`frame_geom.rs:221`) exists, is
-  correct, and is **DEAD** (no caller — verified by grep).
-- **Where (C):** `Source/Lib/Codec/full_loop.c:2228-2230` (`cropped_tx_width_uv` /
-  `cropped_tx_height_uv = MIN(tx_dim, aligned - origin)`) and
-  `product_coding_loop.c:4664` (luma cropped distortion). Confirmed the C consumers pass
-  the cropped dims to the distortion kernels (full_loop.c:2356-2384).
-- **Fix:** thread the aligned dims into the funnel and, at each distortion call, pass
-  `cropped_tx_dims(dims, abs_x+tx_x, abs_y+tx_y, txw, txh)` to the distortion kernel
-  (recon-vs-source SSE and the freq-domain path) while the coded residual/TX stays full.
-  This is exactly what `cropped_tx_dims` was written for.
-- **Risk:** **shared distortion path** — touches every leaf's RD. It is byte-neutral by
-  construction where `cropped == nominal` (all full-SB frames and all non-straddling
-  partial blocks), but re-verify `identity_matrix` (6/10/13) + `partial_sb_gate` (101) +
-  `bd10_*` are byte-unchanged.
-- **Blast:** candidate close for the 5–6 high-qp straddle cells. **CAVEAT (honest):** the
-  arbitrary-dims-port-map (line 261–278) concluded the *low-mid-qp* straddle cells were
-  NOT an uncropped-distortion problem (they shared the boundary-COST root, since fixed)
-  and flags the high-qp remainder as "a separate genuine RD near-tie". So wiring
-  `cropped_tx_dims` is the **first thing to try** but must be validated with a
-  differential — if it does not close them, the remainder is a §C-class near-tie, not a
-  shotgun fix.
+  summed the full (padded) region → different RD → different partition/mode pick.
+- **Where (Rust) — NOW WIRED:** `frame_geom::cropped_tx_dims` + the new
+  `cropped_tx_dims_uv` feed `leaf_funnel::tx_unit`'s new `crop` parameter,
+  `TxRdArgs::crop` (the bd10 twin) and `txt_search`'s new `crop` argument.
+  `FunnelFrame` gained `frame_w_px` (the aligned width; `frame_h_px` already existed)
+  so the leaf can build the `FrameDims` the bound is taken against.
+- **Where (C):** `Source/Lib/Codec/product_coding_loop.c:4664-4665` (`tx_type_search`)
+  and `:5752-5754` (`perform_dct_dct_tx`, the same expression with inert `(uint8_t)`
+  casts + `tx_height >> mds_subres_step`) for LUMA; `full_loop.c:2228-2232`
+  (`cropped_tx_width_uv`/`_height_uv`, computed in the CHROMA domain from the ROUND_UV
+  origin) for chroma. All three feed ONLY the spatial arm
+  (`svt_spatial_full_distortion_kernel_facade` + `get_svt_psy_full_dist` + the tune-SSIM
+  kernel); the coefficient-domain arm takes the FULL tx dims and cannot crop.
+- **MEASURED (2026-08-03, crop OFF → ON on the same build, 48 partial-SB cells):**
+  8 cells changed bytes, **3 went DIFF → MATCH** (`80x88 q55 p6`, `104x88 q55 p6`,
+  `72x88 q55 p6` — the documented straddle-win trio), **0 regressed**. Those three are
+  now gated in `tools/partial_sb_gate.sh` (101 → 104 cells).
+  Byte-neutral elsewhere: `identity_matrix` 54/54, `bd10_matrix` 36/36, workspace 945/945.
+- **STILL OPEN (a different root):** `200x120 q40/55` at p7/p8 and `80x88/104x88/72x88/
+  120x120 q55` at p7/p8, plus `120x120 q55 p6`. Their bytes DID move with the crop (so
+  the crop is live there too) but they still diverge — consistent with the port-map's
+  read that the high-qp p7/p8 remainder is a separate root. The standing candidate is
+  item (a) of the same group: the `end_tx_depth` frame-boundary force-to-0
+  (`product_coding_loop.c:6712-6717`), which is NOT ported.
 
 ### A3. bd10 partial-SB falls back to u8 (not byte-exact)
 
@@ -236,8 +236,11 @@ pointable from source alone.
   cropped padding region; qp-specific. **Multi-pass** (`SVT_CCOEF_XY` dump vs port coeff).
 
 ### C2. High-qp straddle p7/p8 near-tie
-- See §A2 — try wiring `cropped_tx_dims` first; if that does not close it, the map flags
-  it as a genuine RD near-tie (arbitrary-dims-port-map.md:277).
+- `cropped_tx_dims` IS now wired (§A2, landed 2026-08-03). It closed the p6 q55 trio
+  (80x88 / 104x88 / 72x88) and MOVED the p7/p8 cells' bytes, but did NOT close them —
+  so the remainder is confirmed a separate root, as the map suspected
+  (arbitrary-dims-port-map.md:277). Next candidate: the `end_tx_depth` frame-boundary
+  force-to-0 (product_coding_loop.c:6712-6717), unported.
 
 ### C3. The 2 SB128 pins (`gradient 512x384 / 448x384 q32 p0`)
 - A single leaf-cost RD near-tie at a 32×32 node: C codes PARTITION_VERT_4, port codes
@@ -292,9 +295,9 @@ pointable from source alone.
   restructure — the real work)". Stale: chunk 2 LANDED (arbitrary-dims-port-map.md, 101/101).
 
 ### D2. Dead `frame_geom` helpers — route inline derivations through them (SHOTGUN, maintainability)
-- `frame_geom.rs` `sb_geom`, `cropped_tx_dims`, `mi_cols/mi_rows`, `seq_size_bits` are
-  correct but **DEAD** (only `FrameDims::new`, `pad_input_plane`, `edge_has_rows_cols` are
-  wired). The pipeline re-derives the frame extent inline (e.g. `cwid = w/2`,
+- `frame_geom.rs` `sb_geom`, `mi_cols/mi_rows`, `seq_size_bits` are correct but **DEAD**
+  (`FrameDims::new`, `pad_input_plane`, `edge_has_rows_cols` and — since 2026-08-03 —
+  `cropped_tx_dims`/`cropped_tx_dims_uv` are wired). The pipeline re-derives the frame extent inline (e.g. `cwid = w/2`,
   `sb_ext_w/h`, `w.div_ceil(sb)`). The module doc (frame_geom.rs:8-12) and CLAUDE.md:618
   ask for this. One definition of the extent removes a class of drift bugs.
 - `seq_size_bits` PORT-NOTE (frame_geom.rs:253) says "swap to this at #95 chunk 2 and

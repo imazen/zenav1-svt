@@ -174,11 +174,24 @@ PANIC-FREE incl. odd dims (484 cells dims×qp, all decodable). Landed pieces:
   PRODUCT so straddling reads/writes never OOB. Verified PANIC-FREE: 240
   partial-SB cells (dims x qp) all decodable, 0 panics.
 
+CROPPED-TX RD DISTORTION LANDED 2026-08-03 (task #95 (b)+(c)): C prices a
+boundary TX block's SPATIAL distortion only over the part inside the ALIGNED
+frame (`cropped_tx_width`/`_height`, product_coding_loop.c:4664-4665 and
+:5752-5754; `cropped_tx_width_uv`/`_height_uv`, full_loop.c:2228-2232). The
+already-written `frame_geom::cropped_tx_dims` (+ the new `_uv` sibling) is now
+wired through `leaf_funnel::tx_unit` / `tx_unit_hbd` / `txt_search`. MEASURED
+crop OFF->ON over 48 partial-SB cells: 8 changed bytes, 3 went DIFF->MATCH
+(80x88 / 104x88 / 72x88 at q55 p6 — the straddle-WIN trio), 0 regressed;
+partial_sb_gate 101 -> 104, identity_matrix 54/54, bd10_matrix 36/36 unchanged.
+
 REMAINING (decodable-DIFF, documented in docs/arbitrary-dims-port-map.md, NOT
-gated): straddle-WIN cells (80x88, 104x88, 72x88 — C keeps a straddling leaf)
-need cropped-RDO distortion + a true sb_ext chroma STRIDE (not just product
-slack); 65x65 odd-width (harness even-dim + DLF floor-vs-ceiling chroma); the
-M9+ boundary edge-shape cost (wired on LVL_1 only). See CLAUDE.md #95.
+gated): the high-qp p7/p8 straddle/multi-SB cells (200x120 q40/55, 80x88 /
+104x88 / 72x88 / 120x120 q55) — their bytes MOVED with the crop but still
+diverge, so a separate root (candidate: the `end_tx_depth` frame-boundary
+force-to-0, product_coding_loop.c:6712-6717, unported); a true sb_ext chroma
+STRIDE (not just product slack); 65x65 odd-width (harness even-dim + DLF
+floor-vs-ceiling chroma); the M9+ boundary edge-shape cost (wired on LVL_1
+only). See CLAUDE.md #95.
 
 ## SB128 (128x128 superblocks) — selection rule + plumbing (task #91, 2026-07-19)
 

@@ -805,14 +805,37 @@ shared file, THEIR fork arms win, OUR mainline arms win.
      legal rect, whose in-frame child is fully inside. Note 8x8 nodes can
      never be edge nodes while aligned dims are a multiple of 8 (hbs=4 keeps
      both flags true), so the `width <= MIN_BLOCK_SIZE` base case is safe.
-   Then: cropped-RDO distortion (`frame_geom::cropped_tx_dims`, already
-   written + dead), `pd0::compute_b64_variance` needs clamped reads before
+   Then: cropped-RDO distortion (**LANDED 2026-08-03** — see the (b)+(c)
+   note below), `pd0::compute_b64_variance` needs clamped reads before
    the `use_pd0` gate (pipeline.rs ~:3592) can be relaxed, and the two soft
    64-gates (`c_quant` at ~:451, `use_pd0`) plus the two 64-multiple asserts
    come off LAST. NOTE `frame_geom.rs` already contains `sb_geom`,
    `edge_has_rows_cols`, `cropped_tx_dims`, `pad_input_plane`,
-   `mi_cols/mi_rows/sb_cols/sb_rows` — all correct, all DEAD except
-   `FrameDims::new`; route through them rather than re-deriving inline.
+   `mi_cols/mi_rows/sb_cols/sb_rows` — all correct; `FrameDims::new`,
+   `pad_input_plane`, `edge_has_rows_cols` and (since 2026-08-03)
+   `cropped_tx_dims`/`cropped_tx_dims_uv` are WIRED, the rest are still
+   dead — route through them rather than re-deriving inline.
+   **(b)+(c) CROPPED-TX DISTORTION — LANDED 2026-08-03.** C prices a boundary
+   TX block's SPATIAL distortion only over the part inside the ALIGNED frame:
+   `cropped_tx_width`/`cropped_tx_height` (`tx_type_search`,
+   product_coding_loop.c:4664-4665, re-derived in `perform_dct_dct_tx` at
+   :5752-5754 with inert `(uint8_t)` casts + `tx_height >> mds_subres_step`)
+   and `cropped_tx_width_uv`/`_height_uv` (`svt_aom_full_loop_uv`,
+   full_loop.c:2228-2232 — computed in the CHROMA domain from the ROUND_UV
+   origin, NOT the luma helper on luma coords). All three feed ONLY the
+   spatial arm (`svt_spatial_full_distortion_kernel_facade` +
+   `get_svt_psy_full_dist` + the tune-SSIM kernel); the coefficient-domain
+   arm takes the FULL tx dims and cannot crop. Wired via a new `crop` param
+   on `leaf_funnel::tx_unit` / `txt_search` and `TxRdArgs::crop` (bd10 twin),
+   fed by `frame_geom::cropped_tx_dims{,_uv}`; `FunnelFrame` gained
+   `frame_w_px` (aligned width). MEASURED crop OFF->ON over 48 partial-SB
+   cells: 8 changed bytes, **3 went DIFF->MATCH** (gradient 80x88 / 104x88 /
+   72x88 at q55 p6 — the documented straddle-WIN trio), **0 regressed**;
+   partial_sb_gate 101 -> **104/104**, identity_matrix 54/54, bd10_matrix
+   36/36, workspace 945/945. The p7/p8 high-qp remainder still diverges (its
+   bytes DID move, so it is a DIFFERENT root — candidate: item (a), the
+   `end_tx_depth` frame-boundary force-to-0, product_coding_loop.c:6712-6717,
+   unported).
    Filters need NO work: CDEF already clamps partial fbs explicitly, DLF/LR
    are mi/frame-driven (verified). Gate: 96x80 (exercises all three edge
    cases: right at SB(0,1), bottom at SB(1,0), both at SB(1,1)) then 65x65.
@@ -883,7 +906,10 @@ after the code is in. Rules:
   below (verification/integration, not translation):**
   - `crates/svtav1-encoder/src/frame_geom.rs` (#95 chunk 1): FrameDims
     true/aligned model, pad_input_plane, edge_has_rows_cols,
-    cropped_tx_dims, DLF floor-chroma vs ceiling split, LR unit
+    cropped_tx_dims (+ cropped_tx_dims_uv — both WIRED 2026-08-03 into the
+    leaf funnel's spatial RD distortion, differentially pinned to the real
+    `svt_spatial_full_distortion_kernel_facade`), DLF floor-chroma vs
+    ceiling split, LR unit
     collapse, <64 restoration disable. Markers: edge predicates
     (96x80 milestone), pad byte-compare, odd-width chroma differential.
   - `crates/svtav1-encoder/src/sb128_geom.rs` (#91 chunk 1):
