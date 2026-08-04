@@ -75,6 +75,47 @@ LIMIT, stated because it is the same class of gap this work set out to close:
 the CI identity step runs the synthetic tier at ONE size to fit the job budget,
 so partial-SB byte-parity and real content remain hand-run.
 
+### Per-preset coverage: the p1/p2/p3/p7 audit
+
+The first sweeps covered presets 0..13 on synthetic content but only
+{0,4,6,9|10,13} on real content and geometry — so p1, p2, p3 and p7 lived in one
+tier. That matters because of WHICH feature is unique to each.
+
+`intrabc_level` is p0->3, p1->4, p2->5, p3->6, p4->7, p5+ ->0, so p1/p2/p3 are
+the only presets carrying levels 4/5/6. MEASURED IntraBC blocks coded (q20):
+
+| content | p0 | p1 | p2 | p3 | p4 | p7 |
+|---|---|---|---|---|---|---|
+| synthetic `screen` 128² | 0 | 0 | 0 | 0 | 0 | 0 |
+| real screen 512² | 674 | 588 | 792 | 890 | 558 | 0 |
+
+**IntraBC never wins a block on synthetic content at any preset** — palette does,
+so the synthetic tier covered the palette half of the screen vertical and none of
+the IntraBC half. Levels 4/5/6 therefore had no byte-parity coverage at all.
+(p7's zero is correct: level 0 above p4. Its unique combination is palette_level
+7 + the CDEF qp-strength arm + live screen detection, which
+`screen_palette_bd_gate.sh` covers with 12 p7 cells.)
+
+Coverage added — `identity_full_8bit_{real,dims}_p1237_2026-08-03.tsv`:
+
+| | p1 | p2 | p3 | p7 |
+|---|---|---|---|---|
+| real, CID22 photo | 11/15 | 11/15 | 11/15 | **15/15** |
+| real, gb82 photo | **15/15** | **15/15** | **15/15** | **15/15** |
+| real, gb82 screen | 11/15 | 10/15 | 11/15 | **15/15** |
+| dims, aligned | 22/24 | 22/24 | 21/24 | **24/24** |
+| dims, partial | 7/36 | 10/36 | 11/36 | **34/36** |
+
+**p7 is essentially production-clean** and is now in the dims gate (its two
+misses, `screen` q48 at 72x88 / 80x88, are pinned). p1/p2/p3 land in exactly the
+classes p0/p4 already showed — the same two images (`1028637.png`,
+`graph.png`), `screen` q48 on large aligned sizes, and the documented
+presets-0..5 partial-SB structural gap. No new class, no new image.
+
+MEASUREMENT CAUTION: `SVTAV1_PACKTREE` APPENDS. A first pass at the table above
+did not remove the file per run and reported cumulative counts (p7 appeared to
+code 3502 IntraBC blocks). Remove it per run.
+
 ### Two panics the sweep found on the PUBLIC API
 
 `intrabc_hash.rs` computed `x_end = pic_width - block_size + 1` in `usize`. C

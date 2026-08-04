@@ -72,6 +72,15 @@ SVT_TRACE_OUT=/dev/null $LOWPRI "$CT" 64 64 40 13 "$W/warm.yuv" "$W/warm.obu" 8 
 # ---------------------------------------------------------------------------
 KNOWN_DIFF=(
   # ---------------------------------------------------------------------
+  # screen q48 p7 on two partial-SB geometries — the #71 screen class at a
+  # partial superblock. MEASURED 2026-08-03 when p7 was added to the dims
+  # tier: p7 is 24/24 on ALIGNED geometry and 34/36 on partial, and these are
+  # the only two misses. Both are `screen` at q48, +-0.5%; every `gradient`
+  # cell at p7 passes at every geometry. So this is the palette/IBC decision
+  # band, not a p7 geometry defect.
+  "screen 72 88 48 7"
+  "screen 80 88 48 7"
+  # ---------------------------------------------------------------------
   # screen q63 p1 — the PALETTE DECISION gap (#71 over-picking family).
   #
   # Found by this gate on its first full run (2026-08-03); no previous gate
@@ -189,7 +198,7 @@ if [[ " $TIER " == *" dims "* || " $TIER " == *" all "* ]]; then
   #      RD class (#71 palette/IBC over-picking at low preset), the same one
   #      the production-corpus sweep sees on its M0 screen classes.
   # No unexplained class. Raise IF_PRESETS when either lands.
-  read -r -a D_PRESETS <<<"${IF_PRESETS:-6 9 13}"
+  read -r -a D_PRESETS <<<"${IF_PRESETS:-6 7 9 13}"
   read -r -a D_QPS     <<<"${IF_QPS:-20 48}"
   echo "== tier dims: ${#DIMS[@]} geometries x ${#D_QPS[@]}q x ${#D_PRESETS[@]}p x 2 content ==" >&2
   for d in "${DIMS[@]}"; do

@@ -5,13 +5,13 @@ Tool:    tools/identity_full_8bit.sh (default tiers: synthetic + dims)
 Files:   identity_full_8bit_2026-08-03.tsv        default gate run (this file)
          identity_full_8bit_dims_2026-08-03.tsv   dims tier WITH p0/p4 added
 
-## Default gate run: 738/738 byte-identical, +2 pinned, 0 harness errors (exit 0)
+## Default gate run: 796/796 byte-identical, +4 pinned, 0 harness errors (exit 0)
 
   synthetic  4 content {uniform,gradient,diag,screen} x {64,128}px
              x qp {5,20,32,48,63} x EVERY preset 0..13   = 560 cells
   dims       15 geometries (32x32 .. 512x512, incl. odd 65x65, straddle
              80x88, both-partial 120x104) x 2 content x qp {20,48}
-             x preset {6,9,13}                            = 180 cells
+             x preset {6,7,9,13}                          = 240 cells
 
 Every preset 0..13 is byte-identical on 64-aligned content at every swept qp,
 including q5 and q63. C clamps all-intra presets above M9 to M9
@@ -83,3 +83,60 @@ presets 0 and 4, and it is the two already-known classes:
 Magnitudes are small and BOTH directions (the port is smaller than C about as
 often as larger), which is the signature of a near-tie rather than a systematic
 mis-cost.
+
+## PER-PRESET COVERAGE AUDIT (2026-08-03) — the p1/p2/p3/p7 question
+
+The first sweeps covered presets 0..13 on 64/128px SYNTHETIC content, but the
+dims and real tiers ran only {0,4,6,9|10,13}. So p1, p2, p3 and p7 existed in
+exactly one tier. That matters because of WHICH feature each preset uniquely
+turns on.
+
+### The unique axis is IntraBC, and synthetic content cannot reach it
+
+`intrabc_level` by preset (sc_detect.rs, C enc_mode_config.c:2374-2390):
+p0->3, p1->4, p2->5, p3->6, p4->7, p5+ ->0. So p1/p2/p3 are the ONLY presets
+carrying levels 4/5/6.
+
+MEASURED IntraBC blocks actually coded (SVTAV1_PACKTREE, q20):
+
+  content                    p0    p1    p2    p3    p4    p7
+  synthetic `screen` 128x128   0     0     0     0     0     0
+  real screen (terminal) 512  674   588   792   890   558     0
+
+**IntraBC never wins a block on synthetic content at any preset.** Palette does
+(92-130 leaves at 128px), so the synthetic tier covers the palette half of the
+screen vertical and NONE of the IntraBC half. With the real tier skipping
+p1/p2/p3, levels 4/5/6 had no byte-parity coverage anywhere. p7 correctly codes
+zero IntraBC (level 0 above p4) — its unique combination is instead
+palette_level 7 + the CDEF qp-strength arm + screen detection still live, which
+is the intersection tools/screen_palette_bd_gate.sh now covers with 12 p7 cells.
+
+CAUTION for whoever measures this next: the SVTAV1_PACKTREE dump APPENDS. A
+first pass at the table above did not remove the file per run and reported
+cumulative counts (p7 appeared to code 3502 IntraBC blocks). Remove it per run.
+
+### Coverage added, and what it found
+
+identity_full_8bit_real_p1237_2026-08-03.tsv  (3 images x 3 corpora x 5 qp)
+                  p1      p2      p3      p7
+  CID22-photo    11/15   11/15   11/15   15/15
+  gb82-photo     15/15   15/15   15/15   15/15
+  gb82-screen    11/15   10/15   11/15   15/15      -> 155/180
+
+identity_full_8bit_dims_p1237_2026-08-03.tsv  (15 geometries x 2 content x 2 qp)
+              aligned   partial
+  p1          22/24     7/36
+  p2          22/24     10/36
+  p3          21/24     11/36
+  p7          24/24     34/36                       -> 151/240
+
+**p7 is essentially production-clean**: 45/45 on real content across all three
+corpora, 24/24 on aligned geometry, 34/36 on partial. Its two misses are
+`screen` q48 at 72x88 and 80x88 — now pinned, and p7 is in the dims gate.
+
+p1/p2/p3 divergences land in exactly the classes p0/p4 already showed, with NO
+new class and NO new image: every real-content miss is `1028637.png` (the CID22
+RD near-tie band) or `graph.png` (the #71 screen band); every ALIGNED dims miss
+is `screen` at q48 on 256/384/512; the partial-dims misses are the documented
+presets-0..5 partial-SB structural gap. Magnitudes -1.6%..+1.5%, both
+directions.
