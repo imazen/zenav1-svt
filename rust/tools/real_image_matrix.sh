@@ -26,13 +26,14 @@ set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=lib_nice.sh
 . "$HERE/lib_nice.sh"
+. "$(dirname "$0")/lib_corpus.sh"
 RS_ROOT=$(cd "$HERE/.." && pwd)
 SUFFIX="${1:-latest}"
 OUT="$RS_ROOT/benchmarks/real_image_identity_${SUFFIX}.tsv"
 mkdir -p "$RS_ROOT/benchmarks"
 
 # --- Config (all env-overridable, like identity_matrix.sh) --------------------
-CORPUS="${RIM_CORPUS:-/root/work/codec-corpus/CID22/CID22-512/training}"
+CORPUS="${RIM_CORPUS:-$(corpus_dir codec-corpus/CID22/CID22-512/training)}"
 read -r -a PRESETS <<<"${RIM_PRESETS:-2 6 10}"
 read -r -a QPS <<<"${RIM_QPS:-20 40 55}"
 # Number of images to sample (evenly spaced across the sorted corpus for a
@@ -80,7 +81,17 @@ fi
 # pixel impact) separately from a real pixel divergence.
 DECODE_DIFF_BIN="$RS_ROOT/tools/decode_diff/target/release/decode-diff"
 (cd "$RS_ROOT/tools/decode_diff" && $LOWPRI env CARGO_BUILD_JOBS=8 \
-    cargo build --release -q) >&2 || { echo "decode-diff build failed" >&2; exit 2; }
+    cargo build --release -q) >&2 || {
+    echo "decode-diff build FAILED." >&2
+    echo "  Most likely cause: tools/decode_diff/Cargo.toml has a hard-coded" >&2
+    echo "  path dependency on /root/aom-rs/crates/aom-decode, which exists" >&2
+    echo "  only on the Linux CI image. There is no env override -- Cargo" >&2
+    echo "  path deps are literal -- so on another host this gate cannot build" >&2
+    echo "  its pixel-classification oracle." >&2
+    echo "  This is a HARNESS portability failure, NOT a parity result: no" >&2
+    echo "  conclusion about the port may be drawn from it." >&2
+    exit 2
+}
 
 # Round a PNG's dimension up to the next multiple of 64 (the pipeline requires
 # 64-aligned encode dims; identity_run edge-replicates the image into that box).

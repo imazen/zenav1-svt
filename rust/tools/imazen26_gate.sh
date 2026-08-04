@@ -29,11 +29,12 @@ set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=lib_nice.sh
 . "$HERE/lib_nice.sh"
+. "$(dirname "$0")/lib_corpus.sh"
 RS_ROOT=$(cd "$HERE/.." && pwd)
 
 RUN_BIN="$RS_ROOT/target/release/examples/identity_run"
 CT_BIN="$HERE/capture_c_trace/capture_c_trace.bin"
-IM26_DIR="${IM26_DIR:-/root/work/imazen26-cache/K300}"
+IM26_DIR="${IM26_DIR:-$(corpus_dir imazen26-cache/K300)}"
 IM26_MANIFEST="${IM26_MANIFEST:-$(dirname "$IM26_DIR")/K300.tsv}"
 : "${SVT_CREF_LIB_DIR:=$(cd "$RS_ROOT/.." && pwd)/Bin/Release}"
 export SVT_CREF_LIB_DIR

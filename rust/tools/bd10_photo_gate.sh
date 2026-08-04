@@ -42,6 +42,7 @@
 # encoding anything is worse than one that fails.
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
+. "$HERE/lib_corpus.sh"
 RS_ROOT=$(cd "$HERE/.." && pwd)
 cd "$RS_ROOT"
 
@@ -60,7 +61,7 @@ command -v "$aomdec" >/dev/null 2>&1 || {
     exit 2
 }
 
-CORPUS="${BD10_PHOTO_CORPUS:-/root/work/codec-corpus/CID22/CID22-512/training}"
+CORPUS="${BD10_PHOTO_CORPUS:-$(corpus_dir codec-corpus/CID22/CID22-512/training)}"
 if [ ! -d "$CORPUS" ]; then
     echo "bd10 photo gate: corpus not found at $CORPUS" >&2
     echo "  set BD10_PHOTO_CORPUS=<dir of 512x512 PNGs> to point at it." >&2
@@ -143,7 +144,7 @@ PRESETS_F=(5)
 # resource (like sb128_gate's SC_CORPUS cells): override with
 # BD10_CLIC_CORPUS; if absent the cell FAILS LOUDLY as missing — never a
 # silent skip.
-CLIC_CORPUS="${BD10_CLIC_CORPUS:-/root/work/codec-corpus/clic2025}"
+CLIC_CORPUS="${BD10_CLIC_CORPUS:-$(corpus_dir codec-corpus/clic2025)}"
 IMAGE_G="$CLIC_CORPUS/final-test/8426ed2245c791232862b0a0b2a62a1f17031e8e6e38921fe939df0b3a05ac41.png"
 # Group H — presets 0-3 (the last photographic band), closed 2026-07-23 by
 # TWO C-exact NON-STABLE sorts at bd10 (leaf_funnel.rs): C's candidate sorts
@@ -167,7 +168,7 @@ QPS_H=(5 32)
 PRESETS_H=(0 1 2 3)
 # The third proven-flipped cell is a CLIC center-crop (crop: spec, not file:).
 # Full content-spec cells: "spec|W|H|qp|preset".
-CLIC_DIR_G="${BD10_PHOTO_CLIC_DIR:-/root/work/codec-corpus/clic2025}"
+CLIC_DIR_G="${BD10_PHOTO_CLIC_DIR:-$(corpus_dir codec-corpus/clic2025)}"
 SPEC_CELLS_H=(
     "crop:$CLIC_DIR_G/final-test/02809272b4ca9b08af45771501b741296187c7e26907efb44abbbfcb6cd804f7.png|512|512|5|2"
 )

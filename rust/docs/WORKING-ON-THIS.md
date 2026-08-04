@@ -99,6 +99,21 @@ two real out-of-bounds panics. Synthetic content also **never** codes an IntraBC
 block at any preset (measured), so IntraBC can only be tested on the real screen
 corpus. Ask what your test actually reaches, not what it nominally covers.
 
+**Corpus gates look for their images in several roots, and say so when they
+miss.** Fourteen gates once hard-coded `/root/work/codec-corpus/...` — the path
+on one CI image — so on any other host every image `SKIP-MISSING`d.
+`screen_palette_gate.sh` then reported `0 / 0 byte-identical` and failed
+anti-vacuity; with the corpora found it is `50 / 50` with 38 palette-coding
+cells. They now resolve through `tools/lib_corpus.sh` (`$ZENAV1_CORPUS_ROOT`,
+then `~/work/zen`, then `/root/work`, then `~/work`). Same lesson as `ionice`
+and `-Wl,--wrap`: **probe, never assume one host.**
+
+**`tools/decode_diff` cannot build off the CI image.** Its `Cargo.toml` has a
+literal path dependency on `/root/aom-rs/crates/aom-decode`, and Cargo path deps
+take no env override, so `real_image_matrix.sh` and `screen_ibc_gate.sh` cannot
+build their pixel-classification oracle elsewhere. They now fail with a message
+that says exactly that. Treat it as a harness failure, never as a parity result.
+
 **On this platform there is no arithmetic-coder op trace.** `capture_c_trace`
 needs `-Wl,--wrap`, which Apple's `ld64` lacks, so `build.sh` falls back to a
 byte-only driver and `identity_diff.sh` degrades to a byte + header-field

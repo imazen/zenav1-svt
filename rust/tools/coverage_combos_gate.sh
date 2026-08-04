@@ -58,6 +58,7 @@
 # SVT_CREF_LIB_DIR must point at the C reference lib (mainline Bin/Release).
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
+. "$HERE/lib_corpus.sh"
 RS_ROOT=$(cd "$HERE/.." && pwd)
 cd "$RS_ROOT"
 OUT="${TMPDIR:-/tmp}/covcombos.$$"
@@ -82,8 +83,8 @@ command -v "$aomdec" >/dev/null 2>&1 || [ -x "$aomdec" ] || {
 }
 [ -n "$aomdec" ] && echo "decodability check: $aomdec"
 
-CID="${CID_CORPUS:-/root/work/codec-corpus/CID22/CID22-512/training}"
-SC="${SC_CORPUS:-/root/work/codec-corpus/gb82-sc}"
+CID="${CID_CORPUS:-$(corpus_dir codec-corpus/CID22/CID22-512/training)}"
+SC="${SC_CORPUS:-$(corpus_dir codec-corpus/gb82-sc)}"
 
 # ---------------------------------------------------------------------------
 # CELLS. Format: "axis bd content w h qp preset rows_log2 cols_log2"

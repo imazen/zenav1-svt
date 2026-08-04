@@ -247,6 +247,46 @@ pointable from source alone.
   is **RULED OUT**: it landed 2026-08-03 and all ten cells still diverge with it
   live (measured 2026-08-04, positive control green). No candidate stands.
 
+### C2b. The two real-corpus images at presets 0..4 (`1028637.png`, `graph.png`)
+
+MEASURED 2026-08-04 (512x512 centre crop, presets 0..5 x qp{5,20,32,48,63},
+`~/tmp/two_images.sh`; the corpus paths are `codec-corpus/CID22/CID22-512/
+training/` and `codec-corpus/gb82-sc/`):
+
+- **preset 5 is byte-identical for BOTH images at every qp** (10/10 cells). The
+  divergence is confined to presets 0..4.
+- `1028637.png` (CID22 photo): q63 identical at every preset; q5/q20/q32/q48
+  diverge at p0..p4.
+- `graph.png` (gb82-sc screen): identical at q63 for p1/p3/p4 and at every qp
+  for p5; the rest diverge.
+- Where the lengths match closely enough for the field walk to run, **the frame
+  header is byte-identical and the divergence is entirely tile payload** (e.g.
+  `graph q63 p2`: C=252B port=252B, headers identical, first differing byte 160
+  of 252). So this is an RD-decision divergence, not a syntax or header bug.
+
+**Both screen-content tools are LOAD-BEARING and neither is simply
+over-picking.** Bisected with the new `SVTAV1_SC_TOOLS` knob (see below), on
+`graph.png`:
+
+| cell | default | palette off | IBC off | both off |
+|---|---|---|---|---|
+| q32 p0 (C=3781B) | 3792 | **4186** | 3792 | 4178 |
+| q32 p2 (C=4002B) | 3990 | **4304** | 3998 | 4353 |
+| q32 p4 (C=4093B) | 4087 | **4472** | 4111 | 4573 |
+
+Turning palette off costs 8-10 % in bytes and moves the port much FURTHER from
+C, so the port's palette is winning real RD rather than winning spuriously. IBC
+is inert at p0 q32 (identical byte count with it off) and active from p2 up.
+This refutes the convenient reading that the screen divergence is #71
+over-picking at these cells; the port is close to C in SIZE and differs in
+WHICH decisions it makes.
+
+**Not localized further here, and the reason is a real constraint:** this host
+is aarch64/ld64, so `capture_c_trace` has no `-Wl,--wrap` op trace and
+`identity_diff.sh` degrades to byte + header-field comparison. Symbol-level
+localization of a tile-payload flip needs a GNU-ld host. The next step is that
+trace, not more guessing from byte counts.
+
 ### C3. The 2 SB128 pins (`gradient 512x384 / 448x384 q32 p0`)
 - A single leaf-cost RD near-tie at a 32×32 node: C codes PARTITION_VERT_4, port codes
   NONE — V4 **loses by 0.207 %** in the port's NSQ dump. Proven NOT SB128 (reproduces at

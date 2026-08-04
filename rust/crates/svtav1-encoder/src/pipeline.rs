@@ -6583,11 +6583,38 @@ fn encode_tile_rows(
         // (chunk 5). sc_derivation.palette_level is 0 on every non-sc
         // frame, so non-screen-content streams are untouched.
         funnel_cfg.palette_level = tile_sc.palette_level;
+        // SVTAV1_SC_TOOLS (DIAGNOSTIC ONLY, absent = unchanged): force one of
+        // the two screen-content tools off to localize a screen divergence to
+        // palette or IntraBC without editing and rebuilding.
+        //
+        //   SVTAV1_SC_TOOLS=nopalette   palette_level = 0
+        //   SVTAV1_SC_TOOLS=noibc       allow_intrabc = false
+        //   SVTAV1_SC_TOOLS=none        both off
+        //
+        // These deliberately do NOT touch `allow_screen_content_tools` (the
+        // frame-header bit), so the streams stay comparable: only the RD
+        // candidate set changes. A bisect that also flipped the header would
+        // move the syntax and prove nothing about which tool caused a flip.
+        //
+        // Exists because localizing the graph.png preset-0..4 divergence
+        // otherwise meant hand-editing this line and rebuilding, once per
+        // hypothesis -- and an edit-to-measure loop is where measurements stop
+        // getting made.
+        match std::env::var("SVTAV1_SC_TOOLS").as_deref() {
+            Ok("nopalette") => funnel_cfg.palette_level = 0,
+            Ok("none") => funnel_cfg.palette_level = 0,
+            _ => {}
+        }
         // IBC chunk 3: the frame-level svt_aom_allow_intrabc (always
         // I-slice + sct on this path) — arms the per-candidate
         // intrabc_fac_bits[0] charge in the funnel. False on every
         // non-screen / p5+ frame (byte-inert there).
         funnel_cfg.allow_intrabc = tile_sc.allow_intrabc;
+        // See SVTAV1_SC_TOOLS above.
+        match std::env::var("SVTAV1_SC_TOOLS").as_deref() {
+            Ok("noibc") | Ok("none") => funnel_cfg.allow_intrabc = false,
+            _ => {}
+        }
         let cwid = w / 2;
         // SB extent (task #95 chunk 2): a boundary block whose square (or edge)
         // block STRADDLES the aligned extent writes past aligned into the
@@ -7250,7 +7277,10 @@ fn encode_tile_rows(
                 // ones, starting from a 64x64 root that carries the
                 // spec-5.11.4 forced edge splits. Complete units are
                 // unaffected (cur_w == cur_h == unit_size).
-                let full_sb = cur_w == unit_size && cur_h == unit_size;
+                // Retained (underscored) rather than deleted: the PD1 walk no
+                // longer needs it, but it is the canonical "is this unit
+                // complete?" predicate and the next edge-aware path will.
+                let _full_sb = cur_w == unit_size && cur_h == unit_size;
                 let sb_result = if use_pd0 {
                     if speed_config.preset >= 9 {
                         let tree = if bit_depth == 10 {

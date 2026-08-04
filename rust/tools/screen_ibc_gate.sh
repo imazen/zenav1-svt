@@ -21,12 +21,13 @@ set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=lib_nice.sh
 . "$HERE/lib_nice.sh"
+. "$(dirname "$0")/lib_corpus.sh"
 RS_ROOT=$(cd "$HERE/.." && pwd)
 
 RUN_BIN="$RS_ROOT/target/release/examples/identity_run"
 CT_BIN="$HERE/capture_c_trace/capture_c_trace"
 DD_BIN="$HERE/decode_diff/target/release/decode-diff"
-SCREEN_DIR="${SCREEN_DIR:-/root/work/codec-corpus/gb82-sc}"
+SCREEN_DIR="${SCREEN_DIR:-$(corpus_dir codec-corpus/gb82-sc)}"
 : "${SVT_CREF_LIB_DIR:=$(cd "$RS_ROOT/.." && pwd)/Bin/Release}"
 export SVT_CREF_LIB_DIR
 
@@ -93,7 +94,17 @@ echo "priming builds..." >&2
     cargo build --release -p zenav1-svt --example identity_run ) >&2 \
   || { echo "port build failed" >&2; exit 2; }
 ( cd "$HERE/decode_diff" && CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}" $LOWPRI \
-    cargo build --release ) >&2 || { echo "decode-diff build failed" >&2; exit 2; }
+    cargo build --release ) >&2 || {
+    echo "decode-diff build FAILED." >&2
+    echo "  Most likely cause: tools/decode_diff/Cargo.toml has a hard-coded" >&2
+    echo "  path dependency on /root/aom-rs/crates/aom-decode, which exists" >&2
+    echo "  only on the Linux CI image. There is no env override -- Cargo" >&2
+    echo "  path deps are literal -- so on another host this gate cannot build" >&2
+    echo "  its pixel-classification oracle." >&2
+    echo "  This is a HARNESS portability failure, NOT a parity result: no" >&2
+    echo "  conclusion about the port may be drawn from it." >&2
+    exit 2
+}
 "$HERE/capture_c_trace/build.sh" >/dev/null 2>&1 || { echo "C driver build failed" >&2; exit 2; }
 [ -x "$RUN_BIN" ] && [ -x "$CT_BIN" ] && [ -x "$DD_BIN" ] || { echo "binaries missing" >&2; exit 2; }
 

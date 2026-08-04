@@ -32,6 +32,7 @@
 # pattern — the skip decision is made HERE at the caller).
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
+. "$HERE/lib_corpus.sh"
 RS_ROOT=$(cd "$HERE/.." && pwd)
 cd "$RS_ROOT"
 
@@ -46,8 +47,8 @@ command -v "$aomdec" >/dev/null 2>&1 || {
     exit 2
 }
 
-CID22="${PHOTO_P0_CORPUS:-/root/work/codec-corpus/CID22/CID22-512/training}"
-CLIC="${PHOTO_P0_CLIC:-/root/work/codec-corpus/clic2025/training}"
+CID22="${PHOTO_P0_CORPUS:-$(corpus_dir codec-corpus/CID22/CID22-512/training)}"
+CLIC="${PHOTO_P0_CLIC:-$(corpus_dir codec-corpus/clic2025/training)}"
 if [ ! -d "$CID22" ]; then
     echo "photo p0 gate: CID22 corpus not found at $CID22" >&2
     echo "  set PHOTO_P0_CORPUS=<dir of 512x512 PNGs> to point at it." >&2

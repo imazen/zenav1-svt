@@ -59,6 +59,7 @@
 # Exit 0 iff A, B, C, D and E all hold.
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
+. "$HERE/lib_corpus.sh"
 RS_ROOT=$(cd "$HERE/.." && pwd)
 cd "$RS_ROOT"
 OUT="${TMPDIR:-/tmp}/sb128gate.$$"
@@ -172,7 +173,7 @@ SB128_BYTE_EXACT=(
 # coverage_combos_gate.sh's real cells). SC_CORPUS overrides the dir; when it is
 # absent the cells are dropped with a LOUD warning — the corpus-presence decision
 # is made HERE at the caller, never buried inside a silently-skipping cell.
-SC_CORPUS="${SC_CORPUS:-/root/work/codec-corpus/gb82-sc}"
+SC_CORPUS="${SC_CORPUS:-$(corpus_dir codec-corpus/gb82-sc)}"
 _wiki_png="$SC_CORPUS/codec_wiki.png"
 if [ -f "$_wiki_png" ]; then
   SB128_CELLS+=("crop:$_wiki_png 512 512 48 0" "crop:$_wiki_png 512 512 63 0"

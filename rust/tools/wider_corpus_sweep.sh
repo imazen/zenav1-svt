@@ -33,6 +33,7 @@ set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=lib_nice.sh
 . "$HERE/lib_nice.sh"
+. "$(dirname "$0")/lib_corpus.sh"
 RS_ROOT=$(cd "$HERE/.." && pwd)
 
 RUN_BIN="$RS_ROOT/target/release/examples/identity_run"
@@ -44,9 +45,9 @@ fi
 
 # Corpus dirs (env-overridable, e.g. WCS_CID22_DIR=/mnt/v/collections/imazen26 to
 # swap in the production corpus when /mnt/v is mounted).
-CID22_DIR="${WCS_CID22_DIR:-/root/work/codec-corpus/CID22/CID22-512/training}"
-CLIC_DIR="${WCS_CLIC_DIR:-/root/work/codec-corpus/clic2025}"
-SCREEN_DIR="${WCS_SCREEN_DIR:-/root/work/codec-corpus/gb82-sc}"
+CID22_DIR="${WCS_CID22_DIR:-$(corpus_dir codec-corpus/CID22/CID22-512/training)}"
+CLIC_DIR="${WCS_CLIC_DIR:-$(corpus_dir codec-corpus/clic2025)}"
+SCREEN_DIR="${WCS_SCREEN_DIR:-$(corpus_dir codec-corpus/gb82-sc)}"
 
 # ---- single-cell mode (re-invoked by xargs) ---------------------------------
 # argv after script name: --cell corpus content stem W H bd preset qp outdir out_tsv

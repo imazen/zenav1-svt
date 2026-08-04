@@ -37,6 +37,7 @@ set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=lib_nice.sh
 . "$HERE/lib_nice.sh"
+. "$(dirname "$0")/lib_corpus.sh"
 RS_ROOT=$(cd "$HERE/.." && pwd)
 
 RUN_BIN="$RS_ROOT/target/release/examples/identity_run"
@@ -46,8 +47,8 @@ if [ -z "$AOMDEC" ]; then
   for c in aomdec /root/aomdec-debug/aomdec; do command -v "$c" >/dev/null 2>&1 && { AOMDEC=$c; break; }; done
 fi
 
-IM26_DIR="${IM26_DIR:-/root/work/imazen26-cache/K300}"
-IM26_MANIFEST="${IM26_MANIFEST:-/root/work/imazen26-cache/K300.tsv}"
+IM26_DIR="${IM26_DIR:-$(corpus_dir imazen26-cache/K300)}"
+IM26_MANIFEST="${IM26_MANIFEST:-$(corpus_dir imazen26-cache/K300.tsv)}"
 
 # ---- single-cell mode (re-invoked by the orchestrator) ----------------------
 # argv after --cell: class stem path W H bd preset qp outdir out_tsv

@@ -18,11 +18,12 @@ set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=lib_nice.sh
 . "$HERE/lib_nice.sh"
+. "$(dirname "$0")/lib_corpus.sh"
 RS_ROOT=$(cd "$HERE/.." && pwd)
 
 RUN_BIN="$RS_ROOT/target/release/examples/identity_run"
 CT_BIN="$HERE/capture_c_trace/capture_c_trace"
-SCREEN_DIR="${SCREEN_DIR:-/root/work/codec-corpus/gb82-sc}"
+SCREEN_DIR="${SCREEN_DIR:-$(corpus_dir codec-corpus/gb82-sc)}"
 # Default to the REPO-root Bin symlink (rust/Bin does not exist; the other
 # gates are invoked with SVT_CREF_LIB_DIR set explicitly).
 : "${SVT_CREF_LIB_DIR:=$(cd "$RS_ROOT/.." && pwd)/Bin/Release}"

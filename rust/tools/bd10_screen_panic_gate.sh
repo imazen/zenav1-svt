@@ -24,6 +24,7 @@
 # If absent the gate FAILS LOUDLY (never a silent skip).
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
+. "$HERE/lib_corpus.sh"
 RS_ROOT=$(cd "$HERE/.." && pwd)
 cd "$RS_ROOT"
 
@@ -33,7 +34,7 @@ if [ -z "$AOMDEC" ]; then
 fi
 command -v "$AOMDEC" >/dev/null 2>&1 || { echo "bd10 screen panic gate: aomdec not found (set AOMDEC=)" >&2; exit 2; }
 
-CORPUS="${BD10_SCREEN_CORPUS:-/root/work/codec-corpus/gb82-sc}"
+CORPUS="${BD10_SCREEN_CORPUS:-$(corpus_dir codec-corpus/gb82-sc)}"
 if [ ! -d "$CORPUS" ]; then
     echo "bd10 screen panic gate: corpus not found at $CORPUS" >&2
     echo "  set BD10_SCREEN_CORPUS=<dir of screen PNGs> to point at it." >&2
