@@ -184,13 +184,14 @@ jobs:
 
       - name: bd10 partial-SB identity (10-bit at non-64-aligned dims)
         working-directory: rust
-        # 119 cells. Until 2026-08-04 EVERY one of these was refused
-        # ("no bd10 producer is partial-SB aware") — the product case for
-        # 10-bit AVIF — and no bd10 gate could reach a partial superblock
-        # (bd10_matrix sweeps 64/128, bd10_nonflat only 64x64/128x128). Also
-        # pins, self-promotingly, the band that is STILL refused (preset >= 9,
-        # whose only level producer is the not-yet-partial-SB-aware level-only
-        # re-encode post-pass).
+        # 157 cells across BOTH bd10 level producers (preset <= 8 full-RD
+        # funnel, preset >= 9 level-only re-encode post-pass). Until 2026-08-04
+        # EVERY one of these was refused ("no bd10 producer is partial-SB
+        # aware") — the product case for 10-bit AVIF — and no bd10 gate could
+        # reach a partial superblock at all (bd10_matrix sweeps 64/128,
+        # bd10_nonflat only 64x64/128x128). Also pins the residual non-flat
+        # divergences self-promotingly, so a fix cannot land unnoticed and the
+        # residual cannot silently grow.
         run: |
           ./tools/bd10_partial_sb_gate.sh
 

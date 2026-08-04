@@ -2,7 +2,7 @@
 
 # Configs this encoder refuses
 
-**12 CAPABILITY refusals** (unimplemented — this is DEBT) and **45
+**11 CAPABILITY refusals** (unimplemented — this is DEBT) and **47
 CONTRACT refusals** (caller misuse — permanent and correct).
 
 Regenerate with `tools/refusal_inventory.sh`; `--check` is a CI gate.
@@ -25,7 +25,6 @@ aloud in a status report before anyone acted on it.
 
 | where | refusal |
 |---|---|
-| `crates/svtav1-encoder/src/pipeline.rs` | 10-bit at preset >= 9 requires 64-aligned encode dimensions: that band's only level producer is the level-only re-encode post-pass, which is not partial-SB aware (aligned-sized recon buffers, unclipped straddle writes, fixed child offsets), so the encode would be 8-bit-quantized under a 10-bit sequence header. Preset <= 8 (the full-RD funnel) does support partial superblocks |
 | `crates/svtav1-encoder/src/pipeline.rs` | 10-bit monochrome needs preset >= 9: below that neither bd10 producer runs (the full-RD funnel requires 4:2:0, and the level-only post-pass would miscode with its 0/0 RDOQ contexts), so the encode would be 8-bit-quantized under a 10-bit sequence header |
 | `crates/svtav1-encoder/src/pipeline.rs` | bit depth must be 8 or 10 — C v4.2.0 rejects every other depth at encoder init (svt_av1_verify_settings, Globals/enc_settings.c:460) and this port has no 12-bit kernels |
 | `crates/svtav1-encoder/src/pipeline.rs` | inter frames are not implemented: the inter path emits a stream neither aomdec nor dav1d can decode (malformed sequence/frame header fields, MV coding against fresh CDFs). This encoder is still-image only — encode a single key frame |
@@ -51,8 +50,10 @@ aloud in a status report before anyone acted on it.
 | `crates/svtav1-encoder/src/pipeline.rs` | a cancelled frame must not advance frame_count |
 | `crates/svtav1-encoder/src/pipeline.rs` | a fired stop token must yield Err, never Ok or a panic |
 | `crates/svtav1-encoder/src/pipeline.rs` | aligned dims must be 8-aligned; got {aw}x{ah} for true {tw}x{th} |
+| `crates/svtav1-encoder/src/pipeline.rs` | bd10 chroma reencode: in-frame quadrant count must equal the packed child count |
 | `crates/svtav1-encoder/src/pipeline.rs` | bd10 chroma reencode: unsupported partition {other:?} |
 | `crates/svtav1-encoder/src/pipeline.rs` | bd10 level-only post-pass would run where real_coeff_ctx is true (preset {}): its 0/0 RDOQ contexts would miscode the levels |
+| `crates/svtav1-encoder/src/pipeline.rs` | bd10 reencode: in-frame quadrant count must equal the packed child count |
 | `crates/svtav1-encoder/src/pipeline.rs` | bd10 reencode: tx_depth {} not yet ported (DC-only first cell) |
 | `crates/svtav1-encoder/src/pipeline.rs` | bd10 reencode: unsupported partition {other:?} |
 | `crates/svtav1-encoder/src/pipeline.rs` | cdef re-walk chroma recon must be identical |

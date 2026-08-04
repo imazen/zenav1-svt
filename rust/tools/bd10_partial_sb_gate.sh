@@ -26,12 +26,17 @@
 # refusal rested on was wrong: that function takes explicit `(w, h, stride,
 # off)` and its only geometry term is the crop, which is already wired.
 #
-# SCOPE — presets 0..8 only. Preset >= 9 (eff-M9) is STILL REFUSED at partial
-# SB and that refusal is gated at the bottom of this file, self-promotingly: its
-# only level producer is the level-only re-encode post-pass, which is genuinely
-# not partial-SB aware (ALIGNED-sized `recon10` buffers, unclipped straddle
-# writes, and a fixed `(partition_type, children.len())` child-offset table that
-# a pruned / tail-truncated partial-SB child list does not satisfy).
+# SCOPE — presets 0..13, i.e. BOTH bd10 level producers. Preset <= 8 is the
+# full-RD funnel (above); preset >= 9 is the level-only re-encode post-pass,
+# which needed real work: SB-extent-sized `recon10` (it was ALIGNED-sized),
+# straddle-clipped recon writes, SB-extent-padded 10-bit sources, and the pack's
+# skip-off-frame-quadrant child walk in place of a fixed
+# `(partition_type, children.len())` offset table. See the p9 block below.
+#
+# A residual set of NON-FLAT cells still diverges. It is the known bd10
+# non-flat gap, not a partial-SB one — the numbers and the control measurements
+# are in the PINNED block at the bottom, which pins a representative slice
+# self-promotingly so the residual cannot silently move in either direction.
 #
 # ISA NOTE. Cells are validated on the host that added them. C itself emits
 # different bytes for the same input on different architectures for a small
@@ -186,6 +191,63 @@ CELLS=(
   "uniform 512 481 55 8"   # 38 B
   "gradient 512 481 20 6"  # 18021 B
   "gradient 512 481 55 6"  # 1427 B
+  # ---- PRESET >= 9 (eff-M9), the LEVEL-ONLY RE-ENCODE POST-PASS band.
+  # This band has no full-RD funnel: the coded 10-bit levels come from
+  # `bd10_reencode_luma` / `_chroma`, which walk the decided trees a second
+  # time. That pass was the LAST thing genuinely not partial-SB aware, and the
+  # four things it needed are what these cells exercise:
+  #   * SB-extent-sized `recon10` (it was ALIGNED-sized, so a straddling leaf
+  #     wrote past the buffer at the bottom-right and wrapped a row at the
+  #     right edge);
+  #   * the straddle clip on the recon writes (`commit_leaf`'s rule);
+  #   * SB-extent-padded 10-bit sources (`sb_input` / `sb_chroma_owned` twins) —
+  #     the residual gather reads the full block width;
+  #   * the pack's child walk (skip off-frame quadrant ORIGINS, pull packed
+  #     children in order) instead of a fixed `(type, len)` offset table. A
+  #     right-edge-only prune leaves [q0, q2]; the old `zip` put the
+  #     BOTTOM-LEFT child at the TOP-RIGHT offset, and a pruned SPLIT/HORZ/VERT
+  #     child count hit `panic!("bd10 reencode: unsupported partition")`.
+  # p10..p13 all clamp to eff-M9 in C (enc_handle.c:4415-4419), so a p13 cell is
+  # a second measurement of p9, not independent coverage — two are kept as a
+  # smoke check and the rest of the band is p9.
+  "uniform 96 80 20 9"     # 28 B
+  "uniform 96 80 55 9"     # 28 B
+  "gradient 96 80 20 9"    # 1696 B
+  "gradient 96 80 32 9"    # 875 B
+  "gradient 96 80 55 9"    # 105 B
+  "gradient 96 80 32 13"   # 875 B   (p13 == p9, smoke check)
+  "uniform 96 64 32 9"     # 24 B
+  "gradient 96 64 20 9"    # 1264 B
+  "gradient 96 64 32 9"    # 774 B
+  "gradient 96 64 55 9"    # 91 B
+  "uniform 64 80 32 9"     # 26 B
+  "gradient 64 80 20 9"    # 1143 B
+  "gradient 64 80 32 9"    # 596 B
+  "gradient 64 80 55 9"    # 72 B
+  "uniform 72 72 32 9"     # 32 B
+  "gradient 72 72 20 9"    # 1158 B
+  "gradient 72 72 32 9"    # 592 B
+  "gradient 72 72 55 9"    # 90 B
+  "uniform 65 65 32 9"     # 32 B
+  "gradient 65 65 20 9"    # 996 B
+  "gradient 65 65 32 9"    # 584 B
+  "gradient 65 65 55 9"    # 87 B
+  "gradient 65 65 32 13"   # 584 B   (p13 == p9, smoke check)
+  "gradient 80 88 20 9"    # 1616 B
+  "gradient 80 88 32 9"    # 817 B
+  "gradient 72 88 20 9"    # 1425 B
+  "gradient 72 88 32 9"    # 715 B
+  "gradient 120 120 20 9"  # 2884 B
+  "gradient 120 120 32 9"  # 1507 B
+  "gradient 120 120 55 9"  # 175 B
+  "gradient 200 120 20 9"  # 4707 B
+  "gradient 200 120 32 9"  # 2435 B
+  "gradient 48 48 32 9"    # 325 B
+  "gradient 48 48 55 9"    # 60 B
+  "uniform 512 481 32 9"   # 38 B
+  "gradient 512 481 20 9"  # 24786 B
+  "gradient 512 481 32 9"  # 11569 B
+  "gradient 512 481 55 9"  # 1498 B
 )
 
 for cell in "${CELLS[@]}"; do
@@ -227,38 +289,63 @@ for cell in "${CELLS[@]}"; do
   fi
 done
 big=$(printf '%s\n' "${CELLS[@]}" | grep -c '^gradient')
-if [ "$big" -lt 40 ]; then
+if [ "$big" -lt 60 ]; then
   echo "ANTI-VACUITY FAIL: only $big non-flat cells; a uniform-only bd10 gate is vacuous"
   vac=1
 fi
 
-# --- THE STILL-REFUSED BAND (self-promoting pin) --------------------------
-# preset >= 9 at a partial SB must STILL be refused (exit 3 from identity_run's
-# unwrap_or_refuse). If someone makes the level-only post-pass partial-SB aware,
-# these start ENCODING and this block fails until the cells are promoted into
-# CELLS above — the same self-promoting discipline identity_full_8bit.sh uses.
-REFUSED=(
-  "gradient 96 80 32 9"
-  "gradient 96 80 32 10"
-  "gradient 65 65 32 13"
-  "gradient 512 481 20 9"
+# --- PINNED DIVERGENCES (self-promoting) ----------------------------------
+# NOTHING about bd10 partial-SB is refused any more, so there is no refusal
+# left to pin. What IS still open is a RESIDUAL SET of non-flat cells where the
+# port and C disagree. Pinning a representative slice keeps the residual honest
+# in both directions: a pinned cell that starts MATCHING fails this gate until
+# it is promoted into CELLS (a fix can never land unnoticed), and one that
+# stops encoding at all fails as a harness error.
+#
+# The residual is NOT a partial-SB gap — it is the KNOWN bd10 non-flat gap
+# (`bd10_nonflat_gate.sh`, 197/309 at 64-ALIGNED dims), measured on both
+# geometries on 2026-08-04 over 11 geometries x p0..p8 x q{20,32,55} x
+# {uniform,gradient}:
+#
+#   bd8  @ partial-SB      565 / 594     (29 cells fail at 8 bit too)
+#   bd10 @ 64-aligned      241 / 270     -> 29 bd10-only = 21.5% of non-flat
+#   bd10 @ partial-SB      490 / 594     -> 78 bd10-only = 26.3% of non-flat
+#   bd10 @ partial-SB p9+  310 / 330     (3 bd10-only configs, 1 fails at bd8)
+#
+# Every failing cell on every one of those grids is `gradient`; uniform is
+# 100%. Raw per-cell data: benchmarks/bd10_partial_sb_2026-08-04.tsv.
+PINNED=(
+  # bd10-only at the eff-M9 band (bd8 matches these two)
+  "gradient 80 88 55 9"
+  "gradient 48 48 20 9"
+  # bd10-only at the full-RD band
+  "gradient 96 80 20 4"
+  "gradient 65 65 20 2"
+  # fails at bd8 TOO — pinned so a bd10 claim is never read as covering it
+  "gradient 72 88 55 9"
 )
-refused_ok=0
-refused_bad=()
-for cell in "${REFUSED[@]}"; do
+pin_ok=0
+pin_bad=()
+for cell in "${PINNED[@]}"; do
   read -r content w h qp p <<<"$cell"
-  SVTAV1_BD=10 "$HERE/identity_run" "$content" "$w" "$h" "$qp" "$p" "$OUT/rs" >/dev/null 2>&1
-  rc=$?
-  if [ "$rc" -eq 3 ]; then
-    refused_ok=$((refused_ok + 1))
+  tag="${content}_${w}x${h}_q${qp}_p${p}"
+  if ! SVTAV1_BD=10 "$HERE/identity_run" "$content" "$w" "$h" "$qp" "$p" "$OUT/rs" >/dev/null 2>&1; then
+    pin_bad+=("${tag}[rs-err]"); continue
+  fi
+  if ! SVT_TRACE_OUT=/dev/null "$HERE/capture_c_trace/capture_c_trace" \
+      "$w" "$h" "$qp" "$p" "$OUT/rs.yuv" "$OUT/c.obu" 10 >/dev/null 2>&1; then
+    pin_bad+=("${tag}[c-err]"); continue
+  fi
+  if cmp -s "$OUT/rs.obu" "$OUT/c.obu"; then
+    pin_bad+=("${tag}[NOW MATCHES — promote it into CELLS]")
   else
-    refused_bad+=("${content}_${w}x${h}_q${qp}_p${p}[rc=$rc]")
+    pin_ok=$((pin_ok + 1))
   fi
 done
 
 rm -rf "$OUT"
 echo "bd10 partial-SB identity: $pass / $((pass + fail)) byte-identical"
-echo "bd10 partial-SB preset>=9 still refused: $refused_ok / ${#REFUSED[@]}"
+echo "bd10 partial-SB pinned divergences still diverging: $pin_ok / ${#PINNED[@]}"
 [ "$fail" -gt 0 ] && printf 'FAILED: %s\n' "${failed[@]}"
-[ "${#refused_bad[@]}" -gt 0 ] && printf 'NO LONGER REFUSED (promote it into CELLS): %s\n' "${refused_bad[@]}"
-[ "$fail" -eq 0 ] && [ "$vac" -eq 0 ] && [ "${#refused_bad[@]}" -eq 0 ]
+[ "${#pin_bad[@]}" -gt 0 ] && printf 'PIN BROKEN: %s\n' "${pin_bad[@]}"
+[ "$fail" -eq 0 ] && [ "$vac" -eq 0 ] && [ "${#pin_bad[@]}" -eq 0 ]

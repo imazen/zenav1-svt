@@ -759,20 +759,17 @@ impl EncodePipeline {
         // where `real_coeff_ctx` is off — i.e. only in the eff-M9 band. So
         // mono bd10 is faithful at preset >= 9 and nowhere else.
         let preset = self.speed_config.preset;
-        // The eff-M9 band's ONLY level producer is the level-only re-encode
-        // post-pass, and that pass is still 64-aligned-only: its `recon10`
-        // buffers are ALIGNED-sized (not SB-extent), its writes are unclipped,
-        // and its Split arms map children by a fixed `(type, len)` offset table
-        // that a pruned/tail-truncated partial-SB child list does not satisfy.
-        // See `bd10_reencode_node` and `bd10_frame_aligned`. The full-RD band
-        // (preset <= 8) has no such restriction — it rides the shared, already
-        // partial-SB-correct funnel.
-        let aligned = w % 64 == 0 && h % 64 == 0;
+        // NO GEOMETRY TERM (2026-08-04). Both bd10 level producers are now
+        // partial-SB aware: the full-RD funnel (preset <= 8) rides the shared,
+        // already-correct partition search and leaf funnel, and the level-only
+        // re-encode post-pass (preset >= 9) got SB-extent recon buffers,
+        // straddle-clipped writes, SB-extent-padded sources, and the pack's
+        // skip-off-frame-quadrant child walk. Both are gated per-CELL below
+        // rather than by dimension.
         if !chroma_420 {
-            return preset >= 9 && aligned;
+            return preset >= 9;
         }
-        (preset >= 9 && aligned)
-            || bd10_full_rd_supported(self.bit_depth, preset, chroma_420, w, h)
+        preset >= 9 || bd10_full_rd_supported(self.bit_depth, preset, chroma_420, w, h)
     }
 
     /// Bit-depth configurations this encoder cannot encode faithfully, refused
@@ -825,15 +822,6 @@ impl EncodePipeline {
                  full-RD funnel requires 4:2:0, and the level-only post-pass would miscode with \
                  its 0/0 RDOQ contexts), so the encode would be 8-bit-quantized under a 10-bit \
                  sequence header",
-            );
-        }
-        if self.width % 64 != 0 || self.height % 64 != 0 {
-            return Some(
-                "10-bit at preset >= 9 requires 64-aligned encode dimensions: that band's only \
-                 level producer is the level-only re-encode post-pass, which is not partial-SB \
-                 aware (aligned-sized recon buffers, unclipped straddle writes, fixed child \
-                 offsets), so the encode would be 8-bit-quantized under a 10-bit sequence \
-                 header. Preset <= 8 (the full-RD funnel) does support partial superblocks",
             );
         }
         Some(
@@ -2127,14 +2115,20 @@ impl EncodePipeline {
             // it is false, for M5 (4:2:0 still) true.
             let bd10_edge_filter =
                 crate::leaf_funnel::FunnelCfg::for_preset(self.speed_config.preset).edge_filter;
-            // The bd10 re-encode (`tx_unit_hbd`) is not yet partial-SB-aware: an
-            // edge/straddle block (frame dims not a multiple of 64) has an
-            // out-of-envelope transform footprint the highbd tx unit can't map,
-            // so a partial-SB bd10 frame must FALL BACK to the u8 output rather
-            // than panic. Complete-SB frames (every current bd10 gate cell is
-            // 64-aligned) are unaffected. Partial-SB bd10 is a documented
-            // follow-up (docs/bd10-port-map.md).
-            let bd10_frame_aligned = w % 64 == 0 && h % 64 == 0;
+            // PARTIAL SB (2026-08-04): this used to be gated on
+            // `w % 64 == 0 && h % 64 == 0` with the rationale that
+            // "`tx_unit_hbd` is not partial-SB-aware". That named the wrong
+            // function — `tx_unit_hbd` takes explicit `(w, h, stride, off)` and
+            // is handed `rd: None` here, so it has no geometry term at all.
+            // The real exposure was in the CALLERS, and all of it is now fixed:
+            // `recon10` is SB-extent-sized (was ALIGNED-sized, so a straddling
+            // write ran past the buffer or wrapped a row), the recon writes are
+            // straddle-clipped like `commit_leaf`'s, the sources are the
+            // SB-extent-padded `sb_input`/`sb_chroma_owned` twins, and the Split
+            // arms walk quadrant SLOTS skipping off-frame origins instead of
+            // zipping a fixed `(type, len)` offset table that a pruned child
+            // list does not satisfy. See `bd10_reencode_luma` /
+            // `bd10_reencode_node`.
             // NOTE (measured, task #94): the bd10 FULL-RD funnel now also
             // produces 10-bit coded levels, computed with each txb's REAL
             // entropy contexts — whereas this post-pass hardcodes the RDOQ
@@ -2177,7 +2171,6 @@ impl EncodePipeline {
                 h,
             );
             let bd10_postpass_runs = !bd10_full_rd
-                && bd10_frame_aligned
                 && all_trees
                     .iter()
                     .all(|t| bd10_tree_supported(t, bd10_edge_filter));
@@ -2211,7 +2204,7 @@ impl EncodePipeline {
                     .filter(|t| !bd10_tree_supported(t, bd10_edge_filter))
                     .count();
                 eprintln!(
-                    "BD10_POSTPASS runs={bd10_postpass_runs} aligned={bd10_frame_aligned} \
+                    "BD10_POSTPASS runs={bd10_postpass_runs} \
                      unsupported_sbs={unsupported}/{} edge_filter={bd10_edge_filter}",
                     all_trees.len()
                 );
@@ -2222,13 +2215,22 @@ impl EncodePipeline {
                 // entered through `try_encode_frame_*_hbd` (so the coded
                 // levels carry the low 2 bits), else the `u8 << shift`
                 // widening this site always did.
-                let src10: alloc::vec::Vec<u16> = match hbd_source.as_ref() {
-                    Some(hbd) => {
-                        debug_assert_eq!(hbd.y.len(), encode_input.len());
+                // It is the SB-EXTENT-padded plane (`sb_input` / `hbd_sb_owned`
+                // at `in_stride`), not the aligned one: a straddling leaf's
+                // residual gather reads the full block width. Identical to the
+                // aligned plane on every 64-aligned frame, where
+                // `sb_input == encode_input` and `in_stride == w`.
+                let src10: alloc::vec::Vec<u16> = match hbd_sb_owned
+                    .as_ref()
+                    .map(|(y, _, _)| y)
+                    .or_else(|| hbd_source.as_ref().map(|h| &h.y))
+                {
+                    Some(y10) => {
+                        debug_assert_eq!(y10.len(), sb_input.len());
                         hbd_used = true;
-                        hbd.y.clone()
+                        y10.clone()
                     }
-                    None => encode_input.iter().map(|&s| (s as u16) << shift).collect(),
+                    None => sb_input.iter().map(|&s| (s as u16) << shift).collect(),
                 };
                 // bd10 full MD lambda (C full_lambda_md[1], md_process.c:725-759):
                 // computed from the bd10 rdmult base (dc_qlookup_10 + ROUND_
@@ -2243,6 +2245,7 @@ impl EncodePipeline {
                     w,
                     h,
                     &src10,
+                    in_stride,
                     base_qindex,
                     cq.rdoq_level,
                     lambda_bd10,
@@ -2262,22 +2265,27 @@ impl EncodePipeline {
                 // qindex == base_qindex in mainline (all FH chroma deltas 0),
                 // matching the walk's `base_q_idx` chroma coding.
                 if let Some((u_src, v_src)) = sb_chroma_owned.as_ref() {
-                    // Task #6 chunk 1: real 10-bit chroma when supplied (the
-                    // bd10 envelope is 64-aligned, so `sb_chroma_owned` is the
-                    // untouched aligned chroma and the hbd planes match it
-                    // element-for-element).
-                    let (u10, v10): (alloc::vec::Vec<u16>, alloc::vec::Vec<u16>) =
-                        match hbd_source.as_ref().filter(|hbd| !hbd.u.is_empty()) {
-                            Some(hbd) => {
-                                debug_assert_eq!(hbd.u.len(), u_src.len());
-                                hbd_used = true;
-                                (hbd.u.clone(), hbd.v.clone())
-                            }
-                            None => (
-                                u_src.iter().map(|&s| (s as u16) << shift).collect(),
-                                v_src.iter().map(|&s| (s as u16) << shift).collect(),
-                            ),
-                        };
+                    // Task #6 chunk 1: real 10-bit chroma when supplied. Both
+                    // sides are the SB-extent shape (`sb_chroma_owned` /
+                    // `hbd_sb_owned`), which is the untouched aligned chroma on
+                    // a 64-aligned frame — so the two planes match
+                    // element-for-element either way.
+                    let hbd_uv = hbd_sb_owned
+                        .as_ref()
+                        .map(|(_, u, v)| (u, v))
+                        .or_else(|| hbd_source.as_ref().map(|h| (&h.u, &h.v)))
+                        .filter(|(u, _)| !u.is_empty());
+                    let (u10, v10): (alloc::vec::Vec<u16>, alloc::vec::Vec<u16>) = match hbd_uv {
+                        Some((hu, hv)) => {
+                            debug_assert_eq!(hu.len(), u_src.len());
+                            hbd_used = true;
+                            (hu.clone(), hv.clone())
+                        }
+                        None => (
+                            u_src.iter().map(|&s| (s as u16) << shift).collect(),
+                            v_src.iter().map(|&s| (s as u16) << shift).collect(),
+                        ),
+                    };
                     let uv10 = bd10_reencode_chroma(
                         &mut all_trees,
                         sb_cols,
@@ -2307,9 +2315,15 @@ impl EncodePipeline {
                         [qm_levels[1], qm_levels[2]],
                         self.hdr.sharpness,
                     )?;
-                    self.last_recon10_uv = Some(uv10);
+                    // Crop the SB-extent canvases to the in-frame planes every
+                    // downstream consumer expects (the bd10 deblock-level /
+                    // CDEF-strength / Wiener-LR searches compare them against
+                    // `w*h` and `(w/2)*(h/2)` sources at the ALIGNED stride).
+                    // Both are already aligned-strided, so the crop is a prefix.
+                    let cn = (w / 2) * (h / 2);
+                    self.last_recon10_uv = Some((uv10.0[..cn].to_vec(), uv10.1[..cn].to_vec()));
                 }
-                self.last_recon10_y = Some(recon10);
+                self.last_recon10_y = Some(recon10[..w * h].to_vec());
             }
         }
 
@@ -5939,6 +5953,14 @@ fn bd10_tree_supported(tree: &crate::partition::PartitionTree, edge_filter: bool
     }
 }
 
+/// Returns the frame's 10-bit luma recon as an **SB-extent-sized, ALIGNED-
+/// strided** canvas — the same shape the funnel's `tile_frame_recon10` has, and
+/// for the same reason: a boundary leaf may STRADDLE the aligned extent, and
+/// C's recon picture has SB-extent stride so the straddle lands in place. Here
+/// the stride stays aligned (`w`) and the slack absorbs a right-straddle write's
+/// wrap; the caller crops the in-frame `w * h` region for `last_recon10_y`.
+/// On a 64-aligned frame the extent equals the aligned dims, so the buffer and
+/// every write are byte-identical to the pre-partial-SB pass.
 #[allow(clippy::too_many_arguments)]
 fn bd10_reencode_luma(
     all_trees: &mut [crate::partition::PartitionTree],
@@ -5946,7 +5968,12 @@ fn bd10_reencode_luma(
     sb_size: usize,
     w: usize,
     h: usize,
+    // The 10-bit SOURCE, padded to the SB extent at `src_stride` (the u16 twin
+    // of `sb_input` / `in_stride`). A straddling leaf's residual gather reads
+    // the full block width, so an ALIGNED-sized source would wrap into the next
+    // row (right edge) or run past the plane (bottom right).
     src10: &[u16],
+    src_stride: usize,
     base_qindex: u8,
     rdoq_level: u8,
     lambda_bd10: u64,
@@ -5961,7 +5988,9 @@ fn bd10_reencode_luma(
     let cfc = svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex);
     let rates = crate::leaf_funnel::build_md_rates(&fc, &cfc);
     let qt = crate::quant::build_quant_table_bd_sharp(base_qindex, bd, sharpness);
-    let mut recon10 = svtav1_types::try_vec![0u16; w * h]?;
+    let ext_w = w.div_ceil(sb_size) * sb_size;
+    let ext_h = h.div_ceil(sb_size) * sb_size;
+    let mut recon10 = svtav1_types::try_vec![0u16; ext_w * ext_h]?;
     for (sb_idx, tree) in all_trees.iter_mut().enumerate() {
         let sb_col = sb_idx % sb_cols;
         let sb_row = sb_idx / sb_cols;
@@ -5973,6 +6002,7 @@ fn bd10_reencode_luma(
             &mut recon10,
             w,
             src10,
+            src_stride,
             &qt,
             rdoq_level,
             lambda_bd10,
@@ -5999,6 +6029,7 @@ fn bd10_reencode_node(
     recon10: &mut [u16],
     stride: usize,
     src10: &[u16],
+    src_stride: usize,
     qt: &crate::quant::QuantTable,
     rdoq_level: u8,
     lambda: u64,
@@ -6070,11 +6101,11 @@ fn bd10_reencode_node(
                 &mut pred,
                 bd,
             );
-            let src_off = y * stride + x;
+            let src_off = y * src_stride + x;
             // RDOQ contexts are 0/0 at eff-M9 (rate_est_level 0).
             let out = crate::leaf_funnel::tx_unit_hbd(
                 src10,
-                stride,
+                src_stride,
                 src_off,
                 &pred,
                 bw,
@@ -6114,9 +6145,20 @@ fn bd10_reencode_node(
             d.eob = out.eob;
             // Write the 10-bit recon back for neighbour prediction of the next
             // block in decode order.
+            //
+            // STRADDLE CLIP (task #94 partial-SB) — the same rule `commit_leaf`
+            // applies to the funnel's canvases: a boundary leaf whose width
+            // reaches past the ALIGNED extent would spill past the row boundary
+            // and, this buffer being SB-extent-sized but aligned-strided, WRAP
+            // into the next row's low columns, corrupting an already-committed
+            // neighbour that a later block predicts from. Nothing ever READS
+            // past the aligned extent, so clipping the write matches C's
+            // readable recon exactly, and it is a no-op wherever
+            // `x + bw <= stride` (every 64-aligned frame).
+            let wr = bw.min(stride.saturating_sub(x));
             for r in 0..bh {
                 let drow = (y + r) * stride + x;
-                recon10[drow..drow + bw].copy_from_slice(&out.recon[r * bw..(r + 1) * bw]);
+                recon10[drow..drow + wr].copy_from_slice(&out.recon[r * bw..r * bw + wr]);
             }
         }
         Tr::Split {
@@ -6131,37 +6173,73 @@ fn bd10_reencode_node(
             let hh = nh / 2;
             let qw = nw / 4;
             let qh = nh / 4;
-            let offs: alloc::vec::Vec<(usize, usize)> = match (*partition_type, children.len()) {
-                (PT::Split, 4) => alloc::vec![(0, 0), (hw, 0), (0, hh), (hw, hh)],
-                (PT::Horz, 2) => alloc::vec![(0, 0), (0, hh)],
-                (PT::Vert, 2) => alloc::vec![(0, 0), (hw, 0)],
-                (PT::HorzA, 3) => alloc::vec![(0, 0), (hw, 0), (0, hh)],
-                (PT::HorzB, 3) => alloc::vec![(0, 0), (0, hh), (hw, hh)],
-                (PT::VertA, 3) => alloc::vec![(0, 0), (0, hh), (hw, 0)],
-                (PT::VertB, 3) => alloc::vec![(0, 0), (hw, 0), (hw, hh)],
-                (PT::Horz4, 4) => alloc::vec![(0, 0), (0, qh), (0, 2 * qh), (0, 3 * qh)],
-                (PT::Vert4, 4) => alloc::vec![(0, 0), (qw, 0), (2 * qw, 0), (3 * qw, 0)],
-                other => panic!("bd10 reencode: unsupported partition {other:?}"),
-            };
-            for (child, (dx, dy)) in children.iter_mut().zip(offs) {
+            // Child origins, derived EXACTLY the way `encode_partition_tree`
+            // derives them (the pack walk), because on a partial SB the child
+            // list is no longer a fixed length:
+            //   * SPLIT walks the four quadrant SLOTS and SKIPS any whose
+            //     ORIGIN is outside the aligned frame, pulling the packed
+            //     children in order. Zipping a pruned list against the full
+            //     offset table mis-places them — a right-edge-only prune leaves
+            //     [q0, q2] and would put the BOTTOM-LEFT child at the
+            //     TOP-RIGHT offset.
+            //   * HORZ/VERT may carry a single in-frame child (C codes block 1
+            //     only if `mi_row + hbs < mi_rows`, entropy_coding.c:5490).
+            //   * the extended shapes drop children from the TAIL, so a
+            //     zip against the full list still pairs correctly.
+            // The previous `(partition_type, children.len())` match would have
+            // `panic!`ed on every one of those shapes.
+            let mut recurse = |child: &mut crate::partition::PartitionTree, cx, cy| {
                 bd10_reencode_node(
-                    sb_mi_size,
-                    child,
-                    x + dx,
-                    y + dy,
-                    recon10,
-                    stride,
-                    src10,
-                    qt,
-                    rdoq_level,
-                    lambda,
-                    rates,
-                    edge_filter,
-                    frame_w,
-                    frame_h,
-                    bd,
-                    qm_level,
+                    sb_mi_size, child, cx, cy, recon10, stride, src10, src_stride, qt, rdoq_level,
+                    lambda, rates, edge_filter, frame_w, frame_h, bd, qm_level,
                 );
+            };
+            match *partition_type {
+                PT::Split => {
+                    let mut ci = 0usize;
+                    for i in 0..4usize {
+                        let cx = x + (i & 1) * hw;
+                        let cy = y + (i >> 1) * hh;
+                        if cx >= frame_w || cy >= frame_h {
+                            continue;
+                        }
+                        recurse(&mut children[ci], cx, cy);
+                        ci += 1;
+                    }
+                    debug_assert_eq!(
+                        ci,
+                        children.len(),
+                        "bd10 reencode: in-frame quadrant count must equal the packed child count"
+                    );
+                }
+                PT::Horz => {
+                    let (first, rest) = children.split_at_mut(1);
+                    recurse(&mut first[0], x, y);
+                    if let Some(bot) = rest.first_mut() {
+                        recurse(bot, x, y + hh);
+                    }
+                }
+                PT::Vert => {
+                    let (first, rest) = children.split_at_mut(1);
+                    recurse(&mut first[0], x, y);
+                    if let Some(right) = rest.first_mut() {
+                        recurse(right, x + hw, y);
+                    }
+                }
+                ext => {
+                    let offs: &[(usize, usize)] = match ext {
+                        PT::HorzA => &[(0, 0), (hw, 0), (0, hh)],
+                        PT::HorzB => &[(0, 0), (0, hh), (hw, hh)],
+                        PT::VertA => &[(0, 0), (0, hh), (hw, 0)],
+                        PT::VertB => &[(0, 0), (hw, 0), (hw, hh)],
+                        PT::Horz4 => &[(0, 0), (0, qh), (0, 2 * qh), (0, 3 * qh)],
+                        PT::Vert4 => &[(0, 0), (qw, 0), (2 * qw, 0), (3 * qw, 0)],
+                        other => panic!("bd10 reencode: unsupported partition {other:?}"),
+                    };
+                    for (child, &(dx, dy)) in children.iter_mut().zip(offs) {
+                        recurse(child, x + dx, y + dy);
+                    }
+                }
             }
         }
     }
@@ -6193,11 +6271,16 @@ fn bd10_reencode_chroma(
     sb_size: usize,
     w: usize,
     h: usize,
+    // The 10-bit CHROMA source, in the SB-extent shape `sb_chroma_owned` has
+    // (aligned stride `cstride`, extra edge-replicated rows) so a straddling
+    // block's residual gather stays in bounds.
     u_src10: &[u16],
     v_src10: &[u16],
     cstride: usize,
-    // The frame's 10-bit LUMA recon from `bd10_reencode_luma`, `w*h` at
-    // stride `y_stride` — the CfL AC source for UV_CFL_PRED leaves.
+    // The frame's 10-bit LUMA recon from `bd10_reencode_luma` — the SB-EXTENT
+    // canvas at stride `y_stride`, not the cropped `w*h`. It is the CfL AC
+    // source for UV_CFL_PRED leaves, and `cfl_ac_from_frame_recon_hbd` reads
+    // `max(bh, 8)` rows from the block origin, which straddles on a partial SB.
     y_recon10: &[u16],
     y_stride: usize,
     // Frame-level chroma qindex (== base_qindex) — sources ONLY the coeff-rate
@@ -6239,8 +6322,12 @@ fn bd10_reencode_chroma(
     let qt_u = crate::quant::build_quant_table_bd_sharp(qindex_u, bd, sharpness);
     let qt_v = crate::quant::build_quant_table_bd_sharp(qindex_v, bd, sharpness);
     let (cframe_w, cframe_h) = (w / 2, h / 2);
-    let mut recon10_u = svtav1_types::try_vec![0u16; cframe_w * cframe_h]?;
-    let mut recon10_v = svtav1_types::try_vec![0u16; cframe_w * cframe_h]?;
+    // SB-extent-sized, ALIGNED-strided — the chroma twin of the luma canvas
+    // above (and of `fun_u_recon` / `fun_v_recon` in the funnel). The caller
+    // crops the in-frame `cframe_w * cframe_h` region.
+    let ext_cbuf = (w.div_ceil(sb_size) * sb_size / 2) * (h.div_ceil(sb_size) * sb_size / 2);
+    let mut recon10_u = svtav1_types::try_vec![0u16; ext_cbuf]?;
+    let mut recon10_v = svtav1_types::try_vec![0u16; ext_cbuf]?;
     for (sb_idx, tree) in all_trees.iter_mut().enumerate() {
         let sb_col = sb_idx % sb_cols;
         let sb_row = sb_idx / sb_cols;
@@ -6351,9 +6438,12 @@ fn bd10_reencode_chroma_plane(
         qm_level,
         None, // level-only re-encode: no RD terms
     );
+    // Straddle clip — see the luma twin in `bd10_reencode_node`. A no-op
+    // wherever `cx + cw <= cstride`.
+    let cwr = cw.min(cstride.saturating_sub(cx));
     for r in 0..ch {
         let drow = (cy + r) * cstride + cx;
-        recon10[drow..drow + cw].copy_from_slice(&out.recon[r * cw..(r + 1) * cw]);
+        recon10[drow..drow + cwr].copy_from_slice(&out.recon[r * cw..r * cw + cwr]);
     }
     let shift = (bd - 8) as u32;
     let rec_u8: alloc::vec::Vec<u8> = out.recon.iter().map(|&s| (s >> shift).min(255) as u8).collect();
@@ -6467,24 +6557,17 @@ fn bd10_reencode_chroma_node(
             let hh = nh / 2;
             let qw = nw / 4;
             let qh = nh / 4;
-            let offs: alloc::vec::Vec<(usize, usize)> = match (*partition_type, children.len()) {
-                (PT::Split, 4) => alloc::vec![(0, 0), (hw, 0), (0, hh), (hw, hh)],
-                (PT::Horz, 2) => alloc::vec![(0, 0), (0, hh)],
-                (PT::Vert, 2) => alloc::vec![(0, 0), (hw, 0)],
-                (PT::HorzA, 3) => alloc::vec![(0, 0), (hw, 0), (0, hh)],
-                (PT::HorzB, 3) => alloc::vec![(0, 0), (0, hh), (hw, hh)],
-                (PT::VertA, 3) => alloc::vec![(0, 0), (0, hh), (hw, 0)],
-                (PT::VertB, 3) => alloc::vec![(0, 0), (hw, 0), (hw, hh)],
-                (PT::Horz4, 4) => alloc::vec![(0, 0), (0, qh), (0, 2 * qh), (0, 3 * qh)],
-                (PT::Vert4, 4) => alloc::vec![(0, 0), (qw, 0), (2 * qw, 0), (3 * qw, 0)],
-                other => panic!("bd10 chroma reencode: unsupported partition {other:?}"),
-            };
-            for (child, (dx, dy)) in children.iter_mut().zip(offs) {
+            // Identical child-origin derivation to the luma twin — see the long
+            // note in `bd10_reencode_node`. `x`/`y` here are LUMA coordinates
+            // (the chroma origin is derived per leaf), so the in-frame test uses
+            // the LUMA frame extent, which is `cframe_* * 2`.
+            let (lframe_w, lframe_h) = (cframe_w * 2, cframe_h * 2);
+            let mut recurse = |child: &mut crate::partition::PartitionTree, cx, cy| {
                 bd10_reencode_chroma_node(
                     sb_mi_size,
                     child,
-                    x + dx,
-                    y + dy,
+                    cx,
+                    cy,
                     recon10_u,
                     recon10_v,
                     cstride,
@@ -6503,6 +6586,54 @@ fn bd10_reencode_chroma_node(
                     bd,
                     qm_uv,
                 );
+            };
+            match *partition_type {
+                PT::Split => {
+                    let mut ci = 0usize;
+                    for i in 0..4usize {
+                        let cx = x + (i & 1) * hw;
+                        let cy = y + (i >> 1) * hh;
+                        if cx >= lframe_w || cy >= lframe_h {
+                            continue;
+                        }
+                        recurse(&mut children[ci], cx, cy);
+                        ci += 1;
+                    }
+                    debug_assert_eq!(
+                        ci,
+                        children.len(),
+                        "bd10 chroma reencode: in-frame quadrant count must equal the packed \
+                         child count"
+                    );
+                }
+                PT::Horz => {
+                    let (first, rest) = children.split_at_mut(1);
+                    recurse(&mut first[0], x, y);
+                    if let Some(bot) = rest.first_mut() {
+                        recurse(bot, x, y + hh);
+                    }
+                }
+                PT::Vert => {
+                    let (first, rest) = children.split_at_mut(1);
+                    recurse(&mut first[0], x, y);
+                    if let Some(right) = rest.first_mut() {
+                        recurse(right, x + hw, y);
+                    }
+                }
+                ext => {
+                    let offs: &[(usize, usize)] = match ext {
+                        PT::HorzA => &[(0, 0), (hw, 0), (0, hh)],
+                        PT::HorzB => &[(0, 0), (0, hh), (hw, hh)],
+                        PT::VertA => &[(0, 0), (0, hh), (hw, 0)],
+                        PT::VertB => &[(0, 0), (hw, 0), (hw, hh)],
+                        PT::Horz4 => &[(0, 0), (0, qh), (0, 2 * qh), (0, 3 * qh)],
+                        PT::Vert4 => &[(0, 0), (qw, 0), (2 * qw, 0), (3 * qw, 0)],
+                        other => panic!("bd10 chroma reencode: unsupported partition {other:?}"),
+                    };
+                    for (child, &(dx, dy)) in children.iter_mut().zip(offs) {
+                        recurse(child, x + dx, y + dy);
+                    }
+                }
             }
         }
     }

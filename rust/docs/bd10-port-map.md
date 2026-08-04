@@ -2221,3 +2221,127 @@ took the remaining TWO sites, found one session apart:
    divergences were downstream symptoms of MD near-ties changing the recon the
    search reads, not an independent root — none remain on the closed p0..p3/p5
    bands; watch for it on p4.
+
+---
+
+## 2026-08-04 — PARTIAL SUPERBLOCKS AT bd10 (the refusal is gone, both producers)
+
+`bit_depth_config_error` refused every 10-bit encode whose ALIGNED dims were not
+a multiple of 64 — the product case for 10-bit AVIF. It is removed. Both bd10
+level producers now handle partial superblocks:
+
+| band | producer | status |
+|---|---|---|
+| preset <= 8 | full-RD funnel (`bd10_full_rd_supported`) | rides the shared, already-partial-SB-correct search — needed only the GATE lifted |
+| preset >= 9 | level-only re-encode post-pass (`bd10_reencode_luma` / `_chroma`) | needed real work, below |
+
+### The stated blocker was the wrong function
+
+Five sites carried `w % 64 == 0 && h % 64 == 0` (`bd10_levels_native`,
+`bit_depth_config_error`, `bd10_full_rd_supported`, `bd10_complete_sb`,
+`bd10_frame_aligned`), and the rationale attached to most of them was
+"`tx_unit_hbd` is not partial-SB-aware". That is false. `tx_unit_hbd` takes
+explicit `(w, h, src_stride, src_off, pred_stride, pred_off)`; its only
+geometry-sensitive term is `TxRdArgs::crop`, the bd10 twin of the u8 cropped-TX
+distortion, which has been fed the same `blk_crop` / `uv_crop` since
+2026-08-03 — and the post-pass passes `rd: None`, so it computes no distortion
+at all. A second stale claim, at `bd10_levels_native`'s doc and at
+`pipeline.rs:744`, said the post-pass was gated because `bd10_tree_supported`
+"cannot map an edge/straddle footprint": that predicate takes no coordinates and
+no frame dims, only a tree and a bool, so it cannot express a geometry condition
+even in principle. **The exposure was entirely in the CALLERS.**
+
+### What the full-RD band inherited for free
+
+The bd10 funnel is the SAME `leaf_funnel` + `pd0` + `depth_refine` code the
+8-bit path uses, which is partial-SB correct (`partial_sb_gate.sh` 146/146). So
+the PD0 edge predicates + forced split, the edge-aware PD1 depth-refinement
+walk, the one-false shape injection, the extended-partition tail truncation, the
+SB-extent-sized recon canvases and `commit_leaf`'s straddle clip (already
+applied to the bd10 canvases) were all already there.
+
+### Two real bugs, byte-inert before, guaranteed to corrupt after
+
+1. **The per-tile bd10 canvas merge read at the SB-EXTENT stride** while
+   `commit_leaf` WRITES those canvases at the ALIGNED stride. The SB-extent
+   product exists only so a right-straddle write wraps into slack rather than
+   out of bounds — the stride is `w` / `w/2`, exactly like the u8
+   `tile_frame_recon`. On every previously-gated cell `ext_w == w`, so the two
+   coincided; on a partial-SB frame the merged 10-bit recon that the bd10
+   deblock / CDEF / Wiener searches read was scrambled.
+2. **The native-u16 SOURCE had no SB-extent twin.** `HbdSource` is padded
+   TRUE->ALIGNED only, and `blk_y_src10` gathers by absolute coordinates, so a
+   straddling block would read past the plane (bottom right) or wrap into the
+   next row (right edge). Added `hbd_sb_owned` with the exact shapes of
+   `sb_input_owned` / `sb_chroma_owned`; `FunnelSrc10` now carries `in_stride`.
+   The `debug_assert_eq!(in_stride, w, "bd10 hbd source assumes a 64-aligned
+   frame")` that stood in for this asserted the frame had NO partial SB.
+
+### The post-pass work (preset >= 9)
+
+- `recon10` is SB-extent-SIZED at the ALIGNED stride (was `w * h`); the caller
+  crops the in-frame region for `last_recon10_y` / `_uv`, which every
+  downstream consumer expects at `w*h` / `(w/2)*(h/2)`.
+- Recon writes are straddle-clipped, the same rule as `commit_leaf`.
+- The 10-bit sources are the SB-extent-padded `sb_input` / `sb_chroma_owned`
+  twins at `in_stride`, not the aligned planes.
+- **The child mapping was the real defect.** Both Split arms matched on
+  `(partition_type, children.len())` and `zip`ped a fixed offset table. On a
+  partial SB the search prunes off-frame quadrants and tail-truncates extended
+  shapes, so `(Split, 4)` / `(Horz, 2)` / `(Vert, 2)` stop matching and the arm
+  hits `panic!("bd10 reencode: unsupported partition")`. Worse, `zip` is
+  positionally WRONG even when the count happens to fit: a right-edge-only prune
+  leaves `[q0, q2]` and puts the BOTTOM-LEFT child at the TOP-RIGHT offset. Both
+  walkers now mirror `encode_partition_tree` — walk the four quadrant SLOTS,
+  skip any whose ORIGIN is off-frame, pull the packed children in order, with a
+  `debug_assert_eq!(ci, children.len())`; HORZ/VERT use `children.get(1)`; the
+  extended shapes keep the zip because they drop from the TAIL.
+
+### MEASURED (aarch64, C oracle = in-tree v4.2.0 at `--lp 1`)
+
+New gate `tools/bd10_partial_sb_gate.sh`: **157 / 157 byte-identical**, all of
+which were REFUSED before. Anti-vacuity anchor: `gradient 96x80 q32 preset 6`
+at bd10 — no stream at all before, **882 bytes == C's 882** now.
+
+`tools/arbitrary_size_robustness.sh`: **128/128 panic-free + aomdec-decodable,
+0 refused** (was 80/80 with **48 refused as out-of-envelope** — see
+`docs/REFUSED-CONFIGS.md`, which cites that exact number as the reason refusals
+must be countable). Those 48 are the bd10 partial-SB cells.
+
+Unchanged: `bd10_matrix` 36/36, `bd10_nonflat_gate` 197/309 (pre-existing),
+`bd10_hbd_src_gate` 97/100 (pre-existing — verified identical at the
+pre-session base `562d596dc`), `partial_sb_gate` 146/146,
+`identity_full_8bit` 1098/1098 + 2 pinned, `regression_spotcheck` 23/23,
+`cargo nextest --workspace` 1017/1017.
+
+### The residual is the bd10 NON-FLAT gap, not a partial-SB one
+
+Full per-cell data: `benchmarks/bd10_partial_sb_2026-08-04.tsv`.
+
+|  | cells | MATCH | bd10-only failures |
+|---|---|---|---|
+| bd8 @ partial-SB, p0..p8 | 594 | 565 | — |
+| bd8 @ 64-aligned, p0..p8 | 270 | 270 | — |
+| bd10 @ 64-aligned, p0..p8 | 270 | 241 | 29 = **21.5%** of non-flat cells |
+| bd10 @ partial-SB, p0..p8 | 594 | 490 | 78 = **26.3%** of non-flat cells |
+| bd10 @ partial-SB, p9..p13 | 330 | 310 | 3 configs (1 of the 4 fails at bd8 too) |
+
+Every failing cell on every grid is `gradient`; `uniform` is 100% everywhere.
+So partial-SB geometry costs ~5 percentage points on top of a gap that already
+exists at aligned dims and is scored by `bd10_nonflat_gate.sh` (197/309). That
+~5 points is NOT closed and is not claimed to be.
+
+### Safety measurement: does the post-pass ever DECLINE at partial SB?
+
+A runtime decline (`bd10_tree_supported` false on any SB) at preset >= 9 would
+silently drop the frame to 8-bit-quantized levels under a 10-bit sequence
+header — `bd10_levels_native` approves that band from CONFIG alone, and the
+`hbd_source.is_some() && !hbd_used` backstop needs a NATIVE u16 source to fire.
+Probed 297 cells (11 partial-SB geometries x {uniform, gradient, diag} x
+q{20,32,55} x p{9,10,13}) under `SVTAV1_BD10_POSTPASS=1`:
+**`runs=true`, `unsupported_sbs=0/N` on all 297, and all 297 printed the
+diagnostic line** (the positive control — a silent harness would show as
+`missing_diagnostic_line`). Not reachable on that grid; NOT proven unreachable
+in general, since `FunnelCfg::for_preset`'s `9..=255` arm can express
+`tx_depth == 1`. Closing that hole (make the decline an `Err`, or port
+`tx_depth > 0`) is the standing follow-up.
