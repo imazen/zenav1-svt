@@ -18,6 +18,17 @@ including q5 and q63. C clamps all-intra presets above M9 to M9
 (enc_handle.c:4415-4419) but the PORT does not, so 10..13 were swept as
 distinct configurations rather than assumed equal to M9.
 
+## The M9 clamp, MEASURED rather than read
+
+For all 40 (content, size, qp) combinations in the synthetic tier, C's presets
+9, 10, 11, 12 and 13 produce byte-IDENTICAL streams — an independent
+confirmation of the all-intra clamp at enc_handle.c:4415-4419, from the oracle's
+own output rather than from reading its source. Since the port is
+byte-identical to C at every one of those presets, the port's p10..p13 output
+equals C's M9 output too, even though the port does not implement the clamp.
+That is why sweeping 10..13 is worth the cells: it verifies the equivalence
+instead of assuming it.
+
 ## The 2 pinned cells (self-promoting)
 
   screen 64x64   q63 p1   C=64B  port=71B
