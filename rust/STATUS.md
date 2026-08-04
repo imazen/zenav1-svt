@@ -30,9 +30,15 @@ Running the dims tier with the unclaimed band (`IF_PRESETS="0 4"`, committed as
 34/60 against p6/p9/p13 at 60/60. The 56 divergences split into exactly two
 ALREADY-KNOWN classes and no third:
 
-- **53 partial-SB at p0/p4** — presets 0-5 skip the C-faithful PD1 walk on a
-  non-64-aligned SB (`pipeline.rs`'s `refined` requires `full_sb`), so the
-  search is structurally different. See `docs/arbitrary-dims-port-map.md`.
+- **53 partial-SB at p0/p4** — presets 0-5 skipped the C-faithful PD1 walk on a
+  non-64-aligned SB (`pipeline.rs`'s `refined` required `full_sb`), so the
+  search was structurally different. **LARGELY FIXED 2026-08-04**: the PD1 walk
+  is now edge-aware (forced split at a both-false node, the single injected
+  shape priced from the BINARY alphabet at a one-false node, off-frame quadrants
+  skipped) and `refined` no longer requires `full_sb`. Partial-SB pass rates
+  went p0 7→24/36, p1 7→24, p2 10→29, p3 11→33, p4 12→28, with the 64-aligned
+  columns UNCHANGED at every preset. p5 did not move (25/36) — see below. See
+  `docs/arbitrary-dims-port-map.md` and `docs/finishing-survey.md` §C2a.
 - **3 ALIGNED `screen` cells at 256/384/512** — the #71 screen-content RD
   class, the same one the production-corpus sweep sees on its M0 screen
   classes.
@@ -103,10 +109,19 @@ As of 2026-08-03 there are none — 2,495 cells:
 - **Every preset >= 6 is 24/24 aligned and 34-36/36 partial**; p8/p10/p11/p12
   are 36/36. The dims gate default is now ALL of 6..13, measured per preset
   rather than assumed to follow a neighbour.
-- **The remaining gap is presets 0..4 only**, in the two known classes:
-  partial-SB geometry, and RD near-ties on two specific images.
-- **p5 is the transition preset**: aligned and real-content clean, partial
-  25/36 against 7-12/36 for p0-p4 — finer-grained than the docs' "0-5" band.
+- **The remaining gap is presets 0..5**, in two classes: residual partial-SB
+  geometry and RD divergence on two specific images.
+- **Partial-SB is now 24-33/36 across p0..p4** (was 7-12/36) after the
+  edge-aware PD1 walk; **p5 is unchanged at 25/36 and is a DIFFERENT root** —
+  p6 and p7 are byte-identical on every cell p5 fails, so it is specific to the
+  refined walk, and it is NOT about straddling leaves (four of the five failing
+  cells code zero of them, measured against a working positive control).
+  `docs/finishing-survey.md` §C2a has the table.
+- **The two images are localized, not fixed** (§C2b): preset 5 is byte-identical
+  for both at every qp; the frame header matches and the divergence is entirely
+  tile payload. Both screen-content tools are load-bearing — disabling palette
+  costs 8-10 % in bytes and moves the port FURTHER from C — so the convenient
+  "#71 over-picking" reading is refuted for these cells.
 
 Default gate: **1036/1036 + 4 pinned, 0 harness errors.**
 
