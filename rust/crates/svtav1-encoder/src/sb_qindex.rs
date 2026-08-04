@@ -156,7 +156,7 @@ pub struct SbQindexPlan {
 /// `base_q_idx` is whatever the FRAME HEADER will signal — which differs by
 /// mode, and is why this takes it as a parameter rather than reading a
 /// "normalized base": the fork arm resignals the recentered base
-/// (rc_aq.c:293-299, `if (readjust_base_q_idx)`), while MAINLINE never touches
+/// (rc_aq.c:299-306, `if (readjust_base_q_idx)`), while MAINLINE never touches
 /// `ppcs->frm_hdr.quantization_params.base_q_idx` at all (rc_aq.c:455 is
 /// `(void)readjust_base_q_idx`), so the mainline call must key on the ORIGINAL
 /// frame base. Keying mainline on the recentered value would put every SB in
@@ -328,7 +328,7 @@ pub fn variance_adjust_qp(
     // delta_q_res normalization (svt_av1_normalize_sb_delta_q, rc_aq.c:830 —
     // the same single C function the mainline arm calls; see
     // [`normalize_sb_delta_q`]). The FORK resignals the recentered base
-    // (rc_aq.c:293-299), so THIS arm keys the residue class on
+    // (rc_aq.c:299-306), so THIS arm keys the residue class on
     // `normalized_base` — that is the value its frame header carries.
     let res = delta_q_res_for(cli_qp, true);
     if res != 1 {

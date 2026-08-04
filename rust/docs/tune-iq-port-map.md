@@ -113,7 +113,7 @@ a rate inefficiency.
 
 **Which base the normalizer keys on differs by mode, and copying the fork arm
 verbatim is a second, subtler bug.** The fork resignals the recentered base
-(rc_aq.c:293-299, `if (readjust_base_q_idx) ppcs->frm_hdr.quantization_params
+(rc_aq.c:299-306, `if (readjust_base_q_idx) ppcs->frm_hdr.quantization_params
 .base_q_idx = normalized_base_q_idx;`), so when the normalizer reads
 `base_q_idx` it sees the recentered value. Mainline never writes it back
 (rc_aq.c:455 is `(void)readjust_base_q_idx`), so the normalizer sees the
