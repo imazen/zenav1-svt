@@ -19,6 +19,22 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **A comprehensive 8-bit byte-parity gate, and CI coverage for it**
+  (`tools/identity_full_8bit.sh`). Until now there was **no 8-bit
+  byte-vs-C identity gate in CI at any preset**: `identity_matrix.sh` is a
+  scoreboard whose own header says "Exit 0 always", and it was not in the
+  workflow either — so every 8-bit byte-identity claim, on the port's primary
+  product surface, rested on hand-run measurements that nothing re-checked.
+  The new gate exits nonzero, sweeps **every preset 0..13** (C clamps all-intra
+  above M9 to M9 but the port does not, so 10..13 are distinct configurations
+  here), carries low-q density where structural problems hide, covers
+  partial-SB / odd / tiny / large geometry and four content classes including
+  screen, pins divergences **self-promotingly** (a pinned cell that starts
+  matching fails until promoted), and fails on harness errors so a cell that
+  could not run can never look like a pass. `identity_matrix.sh` keeps its
+  scoreboard role and gains `IM_STRICT=1` for gate use.
+
+
 - **Native 10-bit input** (#6). `EncodePipeline::try_encode_frame_420_hbd` /
   `try_encode_frame_hbd` take real `u16` planes. The low 2 bits reach the mode
   decision, the coded levels, and the deblock / CDEF / Wiener searches — the

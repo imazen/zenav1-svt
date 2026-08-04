@@ -99,6 +99,24 @@ jobs:
         run: |
           ./tools/bd10_hbd_src_gate.sh
 
+      - name: 8-bit identity — EVERY preset 0..13, full qp range, 4 content classes
+        working-directory: rust
+        # THE gate this repo went without. `identity_matrix.sh` is a scoreboard
+        # that exits 0 whatever the tally AND was never in this workflow, so
+        # nothing re-checked 8-bit byte-identity -- the port's primary product
+        # surface. This one exits nonzero, sweeps every preset (C clamps
+        # all-intra above M9 to M9 but the PORT does not, so 10..13 are distinct
+        # configurations here), carries low-q density where the structural
+        # problems hide, and fails on harness errors too so a cell that could
+        # not run can never look like a pass.
+        #
+        # CI runs the synthetic tier at one size to stay inside the job budget;
+        # the dims tier (partial-SB / odd / tiny / large) and the real-corpus
+        # tier are local. See the script header.
+        run: |
+          IF_TIER=synthetic IF_SIZES=64 ./tools/identity_full_8bit.sh \
+            target/identity_full_8bit_ci.tsv
+
       - name: screen-content palette identity (bd8 AND bd10)
         working-directory: rust
         # The ONLY gate that reaches the palette path: every other synthetic

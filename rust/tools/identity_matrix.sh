@@ -6,8 +6,22 @@
 # which fix unlocks the most cells.
 #
 # Writes a scoreboard to benchmarks/identity_matrix_<date>.tsv (pass a date
-# suffix as $1; default 'latest') and prints a summary. Exit 0 always (this
-# is a measurement/tracking gate, not pass/fail — identity is a long ratchet).
+# suffix as $1; default 'latest') and prints a summary.
+#
+# EXIT CODE. This is a SCOREBOARD by default: it exits 0 whatever the tally, so
+# the decision-parity campaign can watch the ratchet without a red build. That
+# is deliberate — but for two years it also meant NOTHING re-checked 8-bit
+# byte-identity, because this script was the only 8-bit identity sweep and it
+# could not fail. Two things fix that:
+#
+#   * `IM_STRICT=1` makes THIS script exit 1 on any non-IDENTICAL cell, so a
+#     targeted sweep can be used as a gate.
+#   * `tools/identity_full_8bit.sh` is the real pass/fail 8-bit gate (every
+#     preset 0..13, low-q density, partial/odd dims, screen content, with
+#     self-promoting pins) and is the one wired into CI.
+#
+# Prefer identity_full_8bit.sh when you want a gate; keep this for the
+# stage-classified divergence map, which is what it is good at.
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 RS_ROOT=$(cd "$HERE/.." && pwd)
@@ -77,3 +91,11 @@ echo "identity matrix: $identical / $total byte-identical"
 echo "first-divergence stage histogram (non-identical cells):"
 awk -F'\t' 'NR>1 && $5=="DIFFERS" {print $6}' "$OUT" | sort | uniq -c | sort -rn
 echo "scoreboard: $OUT"
+
+# IM_STRICT=1 turns the scoreboard into a gate (see the header). Off by default
+# so the tracking use stays non-blocking.
+if [[ -n "${IM_STRICT:-}" && "$identical" -ne "$total" ]]; then
+  echo "IM_STRICT: $((total - identical)) of $total cells are not byte-identical" >&2
+  exit 1
+fi
+exit 0

@@ -128,8 +128,13 @@ fn identity_hash_value(a: u8, b: u8, c: u8, d: u8) -> u32 {
 /// `y_crop_* = width/height` of the padded source, pic_buffer_desc.c:510+).
 pub fn generate_block_2x2_hash_value(pic: &[u8], stride: usize, w: usize, h: usize, dst: &mut [u32]) {
     debug_assert!(dst.len() >= w * h);
-    let x_end = w - 2 + 1;
-    let y_end = h - 2 + 1;
+    // Same signed-vs-usize hazard as `generate_block_hash_value` below, for
+    // the 2x2 base case (C `svt_av1_generate_block_2x2_hash_value`,
+    // hash_motion.c:170-190). A 1x1 or 0-sized picture makes `w - 2 + 1`
+    // underflow; C's signed `x_end` just yields an empty loop.
+    let (Some(x_end), Some(y_end)) = ((w + 1).checked_sub(2), (h + 1).checked_sub(2)) else {
+        return;
+    };
     for y in 0..y_end {
         for x in 0..x_end {
             let p = &pic[y * stride + x..];
@@ -150,8 +155,28 @@ pub fn generate_block_2x2_hash_value(pic: &[u8], stride: usize, w: usize, h: usi
 /// uses `to_le_bytes` explicitly.
 pub fn generate_block_hash_value(w: usize, h: usize, block_size: usize, src: &[u32], dst: &mut [u32]) {
     debug_assert!(src.len() >= w * h && dst.len() >= w * h);
-    let x_end = w - block_size + 1;
-    let y_end = h - block_size + 1;
+    // C computes these as SIGNED ints (hash_motion.c:195-196):
+    //     const int x_end = picture->y_crop_width  - block_size + 1;
+    //     const int y_end = picture->y_crop_height - block_size + 1;
+    // and `for (x_pos = 0; x_pos < x_end; ...)` simply does not execute when
+    // the result is negative — a picture smaller than the hash block produces
+    // no hashes, which is well-defined and is what C ships.
+    //
+    // In `usize` that subtraction UNDERFLOWS and wraps to ~2^64, so the loop
+    // ran essentially forever and indexed straight off the end. MEASURED: a
+    // 32x32 screen frame at preset 0 panicked with "index out of bounds: the
+    // len is 1024 but the index is 1024" (`src[pos]`, y=0 x=1024) through the
+    // PUBLIC encode API. Found by tools/identity_full_8bit.sh's dims tier —
+    // no previous gate encoded anything smaller than 60x60 with the
+    // screen-content tools armed.
+    //
+    // `checked_sub` reproduces C's "loop body never runs" for the same inputs.
+    let (Some(x_end), Some(y_end)) = (
+        (w + 1).checked_sub(block_size),
+        (h + 1).checked_sub(block_size),
+    ) else {
+        return;
+    };
     let src_size = block_size >> 1;
     for y in 0..y_end {
         for x in 0..x_end {
@@ -255,8 +280,18 @@ pub fn add_to_hash_map_by_row_with_precal_data(
     block_size: usize,
     max_cand_per_bucket: u16,
 ) {
-    let x_end = pic_width - block_size + 1;
-    let y_end = pic_height - block_size + 1;
+    // Signed in C (hash_motion.c:222-223): a picture smaller than the hash
+    // block gives a negative `x_end`/`y_end`, and every loop below is
+    // `x_pos < x_end`, so C simply adds nothing to the table. The `usize`
+    // subtraction wraps instead — the same class of bug as
+    // `generate_block_hash_value` above, and reached by the same 32x32
+    // preset-0 screen cell (panic: "len is 1024 but the index is 2048").
+    let (Some(x_end), Some(y_end)) = (
+        (pic_width + 1).checked_sub(block_size),
+        (pic_height + 1).checked_sub(block_size),
+    ) else {
+        return;
+    };
 
     let add_value = hash_block_size_to_index(block_size as i32)
         .expect("hash block size must be one of 4/8/16/32/64/128")
@@ -596,5 +631,51 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A picture SMALLER than the hash block size must produce no hashes and
+    /// no table entries — not a panic.
+    ///
+    /// C computes `x_end = pic_width - block_size + 1` as a SIGNED int
+    /// (hash_motion.c:195-196, :222-223); when it goes negative every loop
+    /// body is simply skipped. The port used `usize`, so the subtraction
+    /// underflowed and wrapped to ~2^64, and the loops indexed off the end.
+    ///
+    /// MEASURED before the fix, through the PUBLIC encode API on a 32x32
+    /// screen frame at preset 0 (where IntraBC is armed):
+    ///   generate_block_hash_value          -> "len is 1024 but the index is 1024"
+    ///   add_to_hash_map_by_row_with_precal -> "len is 1024 but the index is 2048"
+    /// Found by `tools/identity_full_8bit.sh`'s dims tier; no earlier gate
+    /// encoded anything below 60x60 with the screen-content tools on.
+    #[test]
+    fn hash_helpers_are_total_when_the_picture_is_smaller_than_the_block() {
+        // 16x16 picture, 32x32 and 64x64 hash blocks: strictly smaller.
+        let (w, h) = (16usize, 16usize);
+        let src = alloc::vec![0u32; w * h];
+        let mut dst = alloc::vec![0u32; w * h];
+        for block_size in [32usize, 64, 128] {
+            generate_block_hash_value(w, h, block_size, &src, &mut dst);
+            assert!(
+                dst.iter().all(|&v| v == 0),
+                "no hash may be written when the block does not fit"
+            );
+            let mut table = HashTable::new();
+            add_to_hash_map_by_row_with_precal_data(&mut table, &src, w, h, block_size, 16);
+        }
+        // The 2x2 base case on a degenerate 1-pixel-wide picture.
+        let pic = alloc::vec![0u8; 1];
+        let mut d2 = alloc::vec![0u32; 1];
+        generate_block_2x2_hash_value(&pic, 1, 1, 1, &mut d2);
+        assert_eq!(d2[0], 0);
+
+        // Anti-vacuity: a picture LARGER than the block still hashes.
+        let (bw, bh) = (64usize, 64usize);
+        let bsrc = alloc::vec![7u32; bw * bh];
+        let mut bdst = alloc::vec![0u32; bw * bh];
+        generate_block_hash_value(bw, bh, 32, &bsrc, &mut bdst);
+        assert!(
+            bdst.iter().any(|&v| v != 0),
+            "a fitting block MUST produce hashes, else this test proves nothing"
+        );
     }
 }
