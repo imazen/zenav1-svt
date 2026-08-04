@@ -247,6 +247,38 @@ pointable from source alone.
   is **RULED OUT**: it landed 2026-08-03 and all ten cells still diverge with it
   live (measured 2026-08-04, positive control green). No candidate stands.
 
+### C2a. The p4/p5 straddle remainder is in the REFINED walk, not shared with p7/p8
+
+MEASURED 2026-08-04, after the edge-aware PD1 walk landed. Sweeping the three
+geometries where p5 still diverges across presets 4..7 (`~/tmp/straddle.sh`,
+positive control `gradient 64x64 q20 p6` IDENTICAL in the same run):
+
+| geometry | p4 q20 | p4 q48 | p5 q20 | p5 q48 | p6 q20 | p6 q48 | p7 q20 | p7 q48 |
+|---|---|---|---|---|---|---|---|---|
+| 72x88  | OK | **NOT** | **NOT** | **NOT** | OK | OK | OK | OK |
+| 80x88  | OK | **NOT** | **NOT** | OK | OK | OK | OK | OK |
+| 104x72 | OK | OK | **NOT** | **NOT** | OK | OK | OK | OK |
+
+**p6 and p7 are byte-identical on every one of these cells.** So this is NOT a
+shared "straddle geometry" root with the p7/p8 high-qp remainder (C2 above), and
+the two should not be chased together — the earlier reading that they were the
+same family is refuted. p6/p7 take the fixed-tree PD0 path; p4/p5 take the
+refined PD1 walk. The failures live in **the refined walk's handling of a
+STRADDLING node** — one where `has_rows && has_cols` are BOTH true (so it is not
+a boundary node and takes the normal shape list) but the block still extends
+past the aligned extent.
+
+That is a much tighter target than "partial SB at low preset", and it is why p5
+did not move at all when the edge rules landed: the edge rules only fire at
+boundary nodes, and these are not boundary nodes.
+
+Where to look, in order: whether the refined path's leaf evaluations receive the
+cropped-TX spatial distortion (`frame.frame_w_px` / `frame_h_px` →
+`cropped_tx_dims{,_uv}`) that the fixed-tree path gets — a straddling block
+priced over its pad rows is exactly the failure the crop fixed for p6 at q55,
+and the qp-dependence here (q48 failing where q20 passes on 72x88/80x88 at p4)
+has the same signature.
+
 ### C2b. The two real-corpus images at presets 0..4 (`1028637.png`, `graph.png`)
 
 MEASURED 2026-08-04 (512x512 centre crop, presets 0..5 x qp{5,20,32,48,63},
