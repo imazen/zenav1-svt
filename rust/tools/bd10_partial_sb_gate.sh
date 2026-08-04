@@ -314,6 +314,14 @@ fi
 #
 # Every failing cell on every one of those grids is `gradient`; uniform is
 # 100%. Raw per-cell data: benchmarks/bd10_partial_sb_2026-08-04.tsv.
+# The eff-M9 four are LOCALIZED (docs/bd10-port-map.md, "The eff-M9 residual,
+# LOCALIZED"): at 64-ALIGNED dims that band is 90/90, so unlike p0..p8 this
+# residual really is partial-SB-conditional — except `48x48 q20 p9`, which is
+# not. Its only tree difference from C is the FIRST leaf (x0 y0 32x32, V_PRED
+# vs H_PRED): a block at the frame origin that straddles nothing and has NO
+# above and NO left neighbour, so no partial-SB machinery participates in its
+# cost. It is a bd10 MDS0 fast-cost near-tie, the same class
+# bd10_nonflat_gate.sh has 112 of.
 PINNED=(
   # bd10-only at the eff-M9 band (bd8 matches these two)
   "gradient 80 88 55 9"

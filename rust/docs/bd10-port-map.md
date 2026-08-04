@@ -2345,3 +2345,53 @@ diagnostic line** (the positive control — a silent harness would show as
 in general, since `FunnelCfg::for_preset`'s `9..=255` arm can express
 `tx_depth == 1`. Closing that hole (make the decline an `Err`, or port
 `tx_depth > 0`) is the standing follow-up.
+
+### The eff-M9 residual, LOCALIZED (2026-08-04)
+
+At 64-ALIGNED dims the eff-M9 band is **90 / 90** (5 geometries x q{20,32,55} x
+p{9,10,13} x {uniform, gradient}) — so unlike the p0..p8 band, the eff-M9
+residual really is partial-SB-conditional. It is FOUR configurations, each
+replicated across p9/p10/p11/p12/p13 (which all clamp to eff-M9, so those are
+one measurement, not five):
+
+| cell | bytes (port / C) | bd8 twin | what it is |
+|---|---|---|---|
+| `gradient 48x48 q20 p9` | 573 / 573 | MATCH | bd10 MDS0 near-tie, NOT partial-SB — see below |
+| `gradient 80x88 q55 p9` | 107 / 107 | MATCH | level divergence in a LATE block |
+| `gradient 200x120 q55 p9` | 264 / 265 | MATCH | not localized |
+| `gradient 72x88 q55 p9` | 101 / 101 | **DIFF at bd8 too** | not a bd10 issue |
+
+**`48x48 q20 p9` is not a partial-SB defect.** A/B on the bd10 MDS0 10-bit recon
+canvas (`bd10_luma_funnel`): with the canvas forced off at partial SB the cell
+byte-matches C; with it on it does not. `SVTAV1_DUMP_TREE` shows exactly one
+difference between the two trees — the FIRST leaf, `x0 y0 32x32`, is `mode 1`
+(V_PRED) with the canvas off and `mode 2` (H_PRED) with it on. That block is at
+the frame origin: it straddles nothing, and it has NO above and NO left
+neighbour, so no partial-SB machinery and no canvas CONTENT participates in its
+cost at all. The flip is between the two fast costs themselves —
+`rdcost(lambda_bd10_fast, rate, satd10 << 4)` vs `rdcost(lambda, rate,
+satd << 4)` — on a block where V predicts flat `base - 1` and H predicts flat
+`base + 1`, i.e. a near-tie decided by the bd10 lambda/SATD scale. Same class as
+`bd10_nonflat_gate`'s 112 open cells.
+
+**Do NOT "fix" it by gating the canvas on alignment.** C does not change its MD
+bit depth according to whether the frame is 64-aligned; a geometry-conditional
+canvas would buy this one cell by making the encoder inconsistent with itself
+(the canvas is ON at 64-aligned dims, where the band is 90/90). Measured both
+ways over the 198-cell eff-M9 partial grid: canvas ON 186/198, canvas OFF
+189/198 — a 3-cell (one-configuration) difference, all of it this near-tie.
+
+**`80x88 q55 p9`** — frame header byte-identical (27 fields), tile payload
+identical for 76 of 86 bytes and then diverging, i.e. one of the LAST blocks
+(the frame's bottom-straddling row). The bd8 and bd10 trees have identical
+structure, modes and tx types, so the SEARCH agrees and the divergence is in the
+coded levels. Not localized further.
+
+**Ruled out, with the measurement:** `recon10` / `recon10_u` / `recon10_v` were
+0-initialized while their u8 twins are 128. Enlarging them to the SB extent
+makes `extract_neighbors_hbd`'s `idx < recon.len()` guard admit slack indices an
+ALIGNED-sized buffer rejected (rejection = "extend the last sample", admission =
+"predict against black"), so this looked like the root. Seeding them with
+`128 << (bd - 8)` changed **0 of 198** cells. The seed is kept regardless — it
+makes the bd10 canvases agree with their u8 twins by construction rather than by
+luck — but it is not the root, and the note in the source says so.

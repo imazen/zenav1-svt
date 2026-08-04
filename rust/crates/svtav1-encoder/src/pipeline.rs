@@ -5990,7 +5990,21 @@ fn bd10_reencode_luma(
     let qt = crate::quant::build_quant_table_bd_sharp(base_qindex, bd, sharpness);
     let ext_w = w.div_ceil(sb_size) * sb_size;
     let ext_h = h.div_ceil(sb_size) * sb_size;
-    let mut recon10 = svtav1_types::try_vec![0u16; ext_w * ext_h]?;
+    // Seeded with the 10-bit DC default, NOT 0 — the seed the u8
+    // `tile_frame_recon` (128) and the funnel's `tile_frame_recon10` (512)
+    // both carry. The reason it is worth carrying: this buffer is now
+    // SB-extent-SIZED, so `extract_neighbors_hbd`'s `idx < recon.len()` guard
+    // admits slack-region indices that an ALIGNED-sized buffer rejected, and
+    // rejecting meant "extend the last available sample" while admitting a
+    // ZERO would mean predicting against black.
+    // MEASURED byte-inert (2026-08-04) across the whole 198-cell partial-SB
+    // eff-M9 grid — 0 of 198 cells changed verdict or byte count — so no read
+    // reaches an unwritten cell today. Kept anyway: it costs nothing, it makes
+    // the bd10 canvas agree with its u8 twin by construction instead of by
+    // luck, and a `0` seed here is a silent wrong-pixels failure the moment one
+    // does. (rust/CLAUDE.md: dead-looking translations stay, with the
+    // measurement written down.)
+    let mut recon10 = svtav1_types::try_vec![(128u16 << (bd - 8)); ext_w * ext_h]?;
     for (sb_idx, tree) in all_trees.iter_mut().enumerate() {
         let sb_col = sb_idx % sb_cols;
         let sb_row = sb_idx / sb_cols;
@@ -6326,8 +6340,12 @@ fn bd10_reencode_chroma(
     // above (and of `fun_u_recon` / `fun_v_recon` in the funnel). The caller
     // crops the in-frame `cframe_w * cframe_h` region.
     let ext_cbuf = (w.div_ceil(sb_size) * sb_size / 2) * (h.div_ceil(sb_size) * sb_size / 2);
-    let mut recon10_u = svtav1_types::try_vec![0u16; ext_cbuf]?;
-    let mut recon10_v = svtav1_types::try_vec![0u16; ext_cbuf]?;
+    // Seeded with the 10-bit DC default like the luma canvas above (and like
+    // the funnel's `fun_u_recon` / `fun_v_recon`, which are 128u8) — see the
+    // note there for why 0 is wrong once the buffer is SB-extent-sized.
+    let seed: u16 = 128u16 << (bd - 8);
+    let mut recon10_u = svtav1_types::try_vec![seed; ext_cbuf]?;
+    let mut recon10_v = svtav1_types::try_vec![seed; ext_cbuf]?;
     for (sb_idx, tree) in all_trees.iter_mut().enumerate() {
         let sb_col = sb_idx % sb_cols;
         let sb_row = sb_idx / sb_cols;
