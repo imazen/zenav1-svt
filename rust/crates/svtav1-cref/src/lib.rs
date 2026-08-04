@@ -769,7 +769,7 @@ unsafe extern "C" {
 }
 
 /// Reference forward 4x4 Walsh-Hadamard (`svt_av1_fwht4x4_c`,
-/// transforms.c:3878). `input` is a 4x4 residual block at row stride `stride`.
+/// transforms.c:3879). `input` is a 4x4 residual block at row stride `stride`.
 /// Returns the 16 coefficients packed at stride 4.
 pub fn fwht4x4(input: &[i16], stride: usize) -> Vec<i32> {
     assert!(input.len() >= 3 * stride + 4);

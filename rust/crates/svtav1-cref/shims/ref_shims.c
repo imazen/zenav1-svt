@@ -425,7 +425,7 @@ void ref_inv_txfm2d_add_rect(int32_t w, int32_t h, const int32_t* input, uint16_
 }
 
 /* ---- Walsh-Hadamard transform (AV1 lossless / qindex 0) ----
-   Forward: transforms.c:3878 (bound SET_SSE41 on x86 / SET_ONLY_C elsewhere,
+   Forward: transforms.c:3879 (bound SET_SSE41 on x86 / SET_ONLY_C elsewhere,
    aom_dsp_rtcd.c:319/:919/:1301 — the _sse4_1 twin only exists in an x86_64
    build of the library, so only the _c symbol is shimmed here).
    Inverse: inv_transforms.c:2782 (16-coefficient) and :2843 (eob<=1). Both

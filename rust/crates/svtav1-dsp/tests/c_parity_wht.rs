@@ -1,7 +1,7 @@
 //! Differential parity: the AV1 lossless (qindex 0) Walsh-Hadamard kernels vs
 //! the C reference.
 //!
-//! * forward `svt_av1_fwht4x4_c` (transforms.c:3878),
+//! * forward `svt_av1_fwht4x4_c` (transforms.c:3879),
 //! * inverse `svt_av1_highbd_iwht4x4_16_add_c` (inv_transforms.c:2782),
 //! * inverse `svt_av1_highbd_iwht4x4_1_add_c` (inv_transforms.c:2843).
 //!
@@ -62,6 +62,19 @@ impl Rng {
             1 => -(1 << 23),
             2 => 0,
             _ => (self.next() as i32) % (1 << 23),
+        }
+    }
+    /// The WHOLE `int32_t` domain, biased toward the saturation corners. Unlike
+    /// [`Rng::coeff`] this DOES drive the inverse's intermediates past
+    /// `int32_t`, which is where C has signed-overflow UB and the port has
+    /// `wrapping_*` — see `inv_wht_matches_c_in_the_int32_wrap_regime`.
+    fn coeff_wrapping(&mut self) -> i32 {
+        match self.next() % 8 {
+            0 => i32::MAX,
+            1 => i32::MIN,
+            2 => i32::MAX - (self.next() as i32 & 0xffff),
+            3 => i32::MIN + (self.next() as i32 & 0xffff),
+            _ => self.next() as i32,
         }
     }
     fn pixel(&mut self, bd: u8) -> u16 {
@@ -161,7 +174,7 @@ fn fwht4x4_matches_c_at_every_extremal_corner() {
 // -----------------------------------------------------------------------------
 
 /// Scalar transcription of `svt_av1_fwht4x4_sse4_1`
-/// (ASM_SSE4_1/highbd_fwd_txfm_sse4.c:14835-14891). The four `__m128i`
+/// (ASM_SSE4_1/highbd_fwd_txfm_sse4.c:14835-14884). The four `__m128i`
 /// registers hold rows; lane `k` of every register is column `k`, so the
 /// vector body is this loop with `i32` (NOT `i64`) arithmetic. `wrapping_*`
 /// models the modular wrap of `_mm_add_epi32` / `_mm_sub_epi32`.
@@ -197,7 +210,7 @@ fn fwht4x4_sse4_1_model(input: &[i16], stride: usize) -> [i32; 16] {
         }
         op = next;
         if pass == 0 {
-            // transpose_32bit_4x4 (highbd_fwd_txfm_sse4.c:14806)
+            // transpose_32bit_4x4 (highbd_fwd_txfm_sse4.c:14807)
             let mut t = [[0i32; 4]; 4];
             for (r, row) in t.iter_mut().enumerate() {
                 for (c, v) in row.iter_mut().enumerate() {
@@ -451,6 +464,35 @@ fn eob1_variant_is_load_bearing_not_an_optimization() {
     );
 }
 
+/// The port carries every inverse intermediate in `i32` with `wrapping_*`,
+/// on the stated premise that this "reproduces the compiled behaviour" of C,
+/// whose `TranLow` arithmetic is signed-overflow UB. The fuzz above
+/// deliberately stays under `|c| <= 2^23` so no intermediate ever overflows —
+/// which means that premise was ASSERTED but never MEASURED, and a real C
+/// build is free to exploit the UB (it is compiled without `-fwrapv`).
+///
+/// This closes that gap: the whole `int32_t` coefficient domain, biased toward
+/// `i32::MIN`/`i32::MAX`, where the inverse's butterflies genuinely wrap.
+/// MEASURED 2026-08-03 on the prebuilt `libSvtAv1Enc.a`: 0 divergences in
+/// 5000 blocks per kernel. If a future C build starts exploiting the UB this
+/// fails loudly, and the port must switch to whatever the compiler actually
+/// emits rather than to `wrapping_*` by assumption.
+#[test]
+fn inv_wht_matches_c_in_the_int32_wrap_regime() {
+    let mut rng = Rng(0x5741_4c53_4800_0060);
+    for _ in 0..5000 {
+        let mut coeffs = [0i32; 16];
+        for v in coeffs.iter_mut() {
+            *v = rng.coeff_wrapping();
+        }
+        let base: Vec<u16> = (0..16).map(|_| rng.pixel(8)).collect();
+        check_inv(&coeffs, &base, 4, 4, 8, true);
+        for bd in [8u8, 10, 12] {
+            check_inv(&coeffs, &base, 4, 4, bd, false);
+        }
+    }
+}
+
 /// `highbd_iwht4x4_add` (inv_transforms.c:2874) is `static` in C, so this
 /// pins the port's selector against the two shimmed kernels directly.
 #[test]
@@ -480,7 +522,7 @@ fn selector_dispatches_by_eob_like_c() {
 /// `iwht(transpose(fwht(residual)))` reconstructs the residual EXACTLY.
 ///
 /// The transpose is C's, not ours: `svt_aom_estimate_transform`
-/// (transforms.c:3952-3956) writes `coeff_buffer[(j << 2) + i] = dst[(i << 2) + j]`
+/// (transforms.c:3955-3959) writes `coeff_buffer[(j << 2) + i] = dst[(i << 2) + j]`
 /// after calling `svt_av1_fwht4x4`, because the forward kernel's two passes
 /// contain a net transpose while the inverse's contain none. Getting that wrong
 /// is silent: the roundtrip stops being lossless but nothing traps.
@@ -517,4 +559,39 @@ fn wht_roundtrip_is_lossless() {
             recon.to_vec()
         );
     }
+}
+
+/// Anti-vacuity for the test above: `wht_roundtrip_is_lossless` proves the
+/// roundtrip works WITH the dispatch-layer transpose, but not that the
+/// transpose is REQUIRED — a symmetric coefficient matrix would make it a
+/// no-op and the test would pass either way, quietly blessing a wiring chunk
+/// that dropped it. This runs the same roundtrip with the transpose OMITTED
+/// and requires it to break. MEASURED: 500/500 blocks reconstruct WRONG, so
+/// `fwht4x4`'s "output is the TRANSPOSE of the natural coefficient matrix"
+/// doc claim is load-bearing, and the wiring chunk must carry
+/// `coeff_buffer[(j << 2) + i] = dst[(i << 2) + j]` (transforms.c:3955-3959).
+#[test]
+fn dispatch_transpose_is_load_bearing() {
+    let mut rng = Rng(0x5741_4c53_4800_0051);
+    let mut broke = 0usize;
+    let trials = 500usize;
+    for _ in 0..trials {
+        let pred: Vec<u16> = (0..16).map(|_| rng.pixel(8)).collect();
+        let src: Vec<u16> = (0..16).map(|_| rng.pixel(8)).collect();
+        let residual: Vec<i16> = (0..16).map(|i| src[i] as i16 - pred[i] as i16).collect();
+
+        let mut dst = [0i32; 16];
+        fwht4x4(&residual, &mut dst, 4);
+        // Deliberately NO transpose — feed the kernel output straight in.
+        let mut recon = vec![0u16; 16];
+        highbd_iwht4x4_16_add(&dst, &pred, 4, &mut recon, 4, 8);
+        if recon != src {
+            broke += 1;
+        }
+    }
+    assert!(
+        broke > trials * 4 / 5,
+        "omitting the dispatch transpose only broke {broke}/{trials} blocks — \
+         if this drops, fwht4x4's net-transpose doc claim needs re-deriving"
+    );
 }

@@ -2266,10 +2266,10 @@ pub fn inv_txfm2d_64x16_dct_dct(input: &[TranLow], output: &mut [TranLow], strid
 // Inverse 4x4 Walsh-Hadamard transform (AV1 lossless / qindex 0)
 //
 // C reaches these from `svt_av1_highbd_inv_txfm_add_4x4`
-// (inv_transforms.c:2874-2896): when `txfm_param->lossless` it asserts
+// (inv_transforms.c:2883-2898): when `txfm_param->lossless` it asserts
 // `tx_type == DCT_DCT` and calls the `static highbd_iwht4x4_add` selector
 // instead of `svt_av1_inv_txfm2d_add_4x4`. The TX_4X4 arm of
-// `svt_av1_highbd_inv_txfm_add` (inv_transforms.c:3212-3218) carries the C
+// `svt_av1_highbd_inv_txfm_add` (inv_transforms.c:3213-3218) carries the C
 // comment: "this is like av1_short_idct4x4 but has a special case around
 // eob<=1 which is significant (not just an optimization) for the lossless
 // case" — see `highbd_iwht4x4_1_add`'s doc for what that significance is.
@@ -2414,7 +2414,7 @@ pub fn highbd_iwht4x4_1_add(
 }
 
 /// C `highbd_iwht4x4_add` (inv_transforms.c:2874-2881) — the eob selector the
-/// lossless arm of `svt_av1_highbd_inv_txfm_add_4x4` (inv_transforms.c:2891)
+/// lossless arm of `svt_av1_highbd_inv_txfm_add_4x4` (inv_transforms.c:2893)
 /// calls.
 ///
 /// PORT-NOTE(unverified): the selector itself is `static` in C

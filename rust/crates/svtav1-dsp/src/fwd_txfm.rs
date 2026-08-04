@@ -2269,7 +2269,7 @@ fn fwd_txfm2d_32x32_dct_dct_impl_neon(
 // Forward 4x4 Walsh-Hadamard transform (AV1 lossless / qindex 0)
 //
 // AV1 lossless does NOT use the DCT: `svt_aom_estimate_transform`
-// (transforms.c:3948-3961) routes `svt_av1_is_lossless_segment(pcs, seg_id) &&
+// (transforms.c:3950-3961) routes `svt_av1_is_lossless_segment(pcs, seg_id) &&
 // transform_size == TX_4X4` to `svt_av1_fwht4x4` instead, asserting
 // `transform_type == DCT_DCT`. Any other tx size falls through to the normal
 // DCT path (a deliberate guard for gitlab#2373 — a larger lossless block must
@@ -2288,9 +2288,9 @@ pub const UNIT_QUANT_SHIFT: u32 = 2;
 pub const UNIT_QUANT_FACTOR: i64 = 1 << UNIT_QUANT_SHIFT;
 
 /// 4-point reversible, orthonormal Walsh-Hadamard transform in 3.5 adds,
-/// 0.5 shifts per pixel — C `svt_av1_fwht4x4_c` (transforms.c:3878-3928).
+/// 0.5 shifts per pixel — C `svt_av1_fwht4x4_c` (transforms.c:3879-3931).
 /// Shared by the 8-bit and high-bit-depth lossless paths (the C comment at
-/// transforms.c:3874-3877 says so explicitly; nothing in the body depends on
+/// transforms.c:3875-3878 says so explicitly; nothing in the body depends on
 /// bit depth because the input is already a residual).
 ///
 /// `input` is a 4x4 residual block at row stride `stride`; `output` receives
@@ -2305,7 +2305,7 @@ pub const UNIT_QUANT_FACTOR: i64 = 1 << UNIT_QUANT_SHIFT;
 ///   the same column (C advances both `ip` and `op` by 1), i.e. it does not.
 ///
 /// Net effect: `output` is the TRANSPOSE of the natural 2D coefficient matrix.
-/// C undoes that in `svt_aom_estimate_transform` (transforms.c:3952-3956) with
+/// C undoes that in `svt_aom_estimate_transform` (transforms.c:3955-3959) with
 /// an explicit `coeff_buffer[(j << 2) + i] = dst[(i << 2) + j]` loop before
 /// quantization — the inverse WHT consumes natural (un-transposed) order.
 /// That transpose belongs to the dispatch layer and is intentionally NOT
