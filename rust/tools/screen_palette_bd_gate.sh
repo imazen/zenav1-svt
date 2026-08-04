@@ -34,7 +34,16 @@ read -r -a QPS <<<"${SP_QPS:-20 32 55}"
 # Palette is live at preset <= 7 on sc_class5 content (sc_detect.rs, C
 # enc_mode_config.c:2374-2390); above that palette_level is 0, so those presets
 # would be vacuous by construction and are deliberately not swept here.
-read -r -a PRESETS <<<"${SP_PRESETS:-0 2 4 6}"
+#
+# PRESET 7 EARNS ITS PLACE TWICE. It is the only preset where C's CDEF
+# use_qp_strength fast path (cdef_search_level == 10, allintra M7+) and screen
+# detection (force-disabled at M8+, enc_handle.c:4641-4651) BOTH hold, so it is
+# the only default-config preset that exercises the CDEF screen-content
+# qp-strength arm. The audit found M7 in no sweep in the repo at all; with the
+# arm ported, 10 of these 12 cells byte-match, and with the arm's flag forced
+# false 10 of 12 FAIL at an IDENTICAL byte count (the strengths are fixed-width
+# frame-header fields, so a length check is structurally blind to them).
+read -r -a PRESETS <<<"${SP_PRESETS:-0 2 4 6 7}"
 read -r -a BDS <<<"${SP_BDS:-8 10}"
 # DEFAULT is `screen` alone -- low-colour, palette-dominated, which is what this
 # gate exists to guard.
@@ -67,6 +76,12 @@ read -r -a CONTENTS <<<"${SP_CONTENTS:-screen}"
 # yet confirmed: the NSQ recon-distortion gate keeps the u8 path at p4/p5
 # (depth_refine.rs) where C scores it at hbd_md.
 KNOWN_DIFF=(
+  # bd10 q55 at preset 7: the two cells the CDEF screen arm did NOT close.
+  # Byte COUNT differs here (117 vs 119, 350 vs 356), unlike the header-field
+  # class the arm fixed, so this is tile-payload -- the same bd10 residual band
+  # the bd10_nonflat gate's open cells sit in, not a CDEF issue.
+  "screen_64_q55_p7_bd10"
+  "screen_128_q55_p7_bd10"
   "screenrep_64_q20_p4_bd10"
   "screenrep_64_q32_p4_bd10"
   "screenrep_128_q20_p4_bd10"
