@@ -113,6 +113,17 @@ paths stay `use svtav1_encoder::…` / `use svtav1_dsp::…`, and the crate
 directories keep their `crates/svtav1-*` names (the port maps and bug log
 reference those paths). See [`../PORTING.md`](../PORTING.md) for the full table.
 
+## Working on this port
+
+**Read [`docs/WORKING-ON-THIS.md`](docs/WORKING-ON-THIS.md) first.** It is the
+one-page orientation: the fast inner loop (`cargo nextest` +
+`tools/regression_spotcheck.sh`, ~90s), when the 25-45 minute sweeps are
+actually needed, the evidence tiers, and the harness traps that have each
+produced a confident wrong answer. Companion files:
+[`docs/SUSPECTED-C-BUGS.md`](docs/SUSPECTED-C-BUGS.md) (upstream defects we
+reproduce on purpose — a C bug is still the oracle) and
+`python3 tools/coverage_matrix.py` (what is *covered*, not what passes).
+
 ## How verification works
 
 Three layers, strongest first:

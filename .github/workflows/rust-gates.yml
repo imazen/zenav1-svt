@@ -99,6 +99,17 @@ jobs:
         run: |
           ./tools/bd10_hbd_src_gate.sh
 
+      - name: regression spot-check (one cell per bug ever fixed)
+        working-directory: rust
+        # ~90s. Every cell is the MINIMAL REPRODUCER of a bug that once shipped,
+        # so a red cell names its own regression instead of leaving someone to
+        # bisect a 1000-cell sweep. Runs FIRST for that reason. The rule for
+        # adding a cell (enforced in the script's header): it must have FAILED
+        # before its fix and PASSED after -- a cell that never failed cannot
+        # detect the regression of a fix it never witnessed.
+        run: |
+          RS_AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" ./tools/regression_spotcheck.sh
+
       - name: 8-bit identity — EVERY preset 0..13, full qp range, 4 content classes
         working-directory: rust
         # THE gate this repo went without. `identity_matrix.sh` is a scoreboard

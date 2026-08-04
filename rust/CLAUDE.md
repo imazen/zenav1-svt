@@ -1,5 +1,22 @@
 # SVT-AV1 Rust Port Rules
 
+## START HERE
+
+New to this port, or resuming after a gap? Read
+**`docs/WORKING-ON-THIS.md`** before your first change. It is the pit-of-success
+orientation — inner loop, evidence tiers, and the harness traps that have each
+cost this project real time (a probe that silently never ran; a dump that
+appends; a shell script edited while bash was executing it; a gate that could
+not reach the feature it was named for).
+
+Two companions to it:
+- `docs/SUSPECTED-C-BUGS.md` — upstream defects we reproduce ON PURPOSE. A C
+  bug is still the oracle; check here before "fixing" something that looks
+  insane in the port.
+- `tools/regression_spotcheck.sh` — one cell per bug we have ever fixed, ~90s.
+  Run it after every change. If you fix a bug and do not add a cell, the next
+  person gets to rediscover it.
+
 ## CONFORMANCE MANDATE
 
 **NEVER stop working while ANY conformance or parity issue remains.** If the bitstream does not decode with rav1d-safe at ALL tested sizes, the work is NOT DONE. If any differential test shows a decode failure, investigate the root cause and fix it before committing documentation, before updating handoffs, before doing anything else. Conformance failures are the #1 priority — above new features, above performance, above code cleanup. Do not describe a conformance failure as "expected" or "known" — describe it as "BLOCKING" and fix it in the same session.
