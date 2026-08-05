@@ -292,6 +292,27 @@ This also rules out a compile-time-selected SIMD variant (magetypes uniform vs
 optimized) for these cells: any such selection is byte-neutral, or the hashes
 would differ.
 
+3. **C's OWN bytes, measured on both ISAs — the last inferential step, closed.**
+   Built `libSvtAv1Enc.a` + `capture_c_trace` inside the emulated x86-64 VM
+   (repo mounted READ-ONLY, copied out to build, so the host's aarch64 lib was
+   never touched) and ran the same cells on both:
+
+   | cell (bd10) | C on aarch64 | C on x86-64 | port (both) |
+   |---|---|---|---|
+   | `48x48 q20 p9` | 573 B `fb8cd18f…` | 573 B `6500a491…` | 573 B `6500a491…` |
+   | `96x80 q20 p4` | **1648 B** `3c20b288…` | **1647 B** `f184844f…` | 1647 B `f184844f…` |
+   | `65x65 q20 p2` | 959 B `5218b9a6…` | 959 B `3284cf96…` | 959 B `3284cf96…` |
+   | `96x80 q32 p6` **(control)** | 882 B `f449391c…` | 882 B `f449391c…` | 882 B `f449391c…` |
+
+   C emits a DIFFERENT stream per architecture on all three. The port emits one
+   stream on both, and it is C's x86-64 stream. The control matches everywhere,
+   so this is not harness noise.
+
+**What that means for the pins.** The ISA-scoped pins are pinning C's *aarch64*
+behaviour, not a port gap. On the reference architecture the port already agrees
+with C at these cells. Do NOT "fix" the port toward C-on-aarch64: it would break
+agreement on x86-64, which is where the gates were built and where CI runs.
+
 **Still open:** CI runs x86-64 only, so the aarch64 side is guarded only by
 whoever happens to run the gates locally. The systematic fix is a second CI
 runner building the C oracle on aarch64 and diffing the verdict sets; until
