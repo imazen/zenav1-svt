@@ -234,6 +234,31 @@ until seen green on both, because the three known instances span bd8 and bd10,
 presets 0 and 7, gradient and screen, aligned and partial — i.e. there is no
 sub-domain you can declare safe in advance.
 
+**INSTANCES 4-6 (2026-08-05), bd10 partial-SB gradient.** Three cells in
+`bd10_partial_sb_gate.sh` match C on x86-64 and differ on aarch64:
+
+| cell | on aarch64 |
+|---|---|
+| `gradient 48x48 q20 p9` bd10 | C=573 port=573 — same length, different bytes |
+| `gradient 96x80 q20 p4` bd10 | C=1648 port=1647 |
+| `gradient 65x65 q20 p2` bd10 | C=959 port=959 — same length |
+
+The port is again not the variable side, measured on THESE EXACT CELLS rather
+than their neighbourhood (`tier_invariance.rs::
+bd10_partial_sb_pinned_cells_are_tier_invariant`). That distinction mattered:
+the pins sit at presets 9/4/2 and a 48x48 geometry no surrounding sweep reaches,
+so neighbourhood coverage would have proven nothing about them. bd10 at
+partial-SB geometry had NO tier coverage at all before this — those configs
+could not run until the 64-alignment refusal was lifted — which is exactly where
+a port-side ISA dependence could have hidden.
+
+**Revise the "rare, not pervasive" reading above accordingly.** Six instances
+now span bd10/p7/screen, bd8/p0/gradient, and bd10/partial-SB/gradient at three
+separate presets. The count is still small against ~1240 cells, but there is no
+longer any sub-domain that can be assumed architecture-independent — not a bit
+depth, not a preset band, not a content class, not a geometry. Every ISA-scoped
+pin so far was found by CI going red, never by looking.
+
 **Still open:** CI runs x86-64 only, so the aarch64 side is guarded only by
 whoever happens to run the gates locally. The systematic fix is a second CI
 runner building the C oracle on aarch64 and diffing the verdict sets; until
