@@ -229,6 +229,18 @@ fn partial_superblock_output_is_tier_invariant() {
                     encode_8bit(&gradient_plane, w, h, qp, preset)
                 });
             }
+            // bd10 AT PARTIAL-SB GEOMETRY had no tier coverage until the
+            // 64-alignment refusal was lifted (2026-08-04) -- the configs
+            // simply could not run. It is also where three pinned cells
+            // disagree between the aarch64 dev host and the x86-64 runner, so
+            // this is the gate that says whether the port or C is the variable
+            // side. Without it, "C is ISA-dependent again" would be an
+            // assumption dressed as a conclusion.
+            for &qp in &[20u8, 32] {
+                assert_tier_invariant(&format!("gradient {w}x{h} q{qp} p{preset} bd10"), || {
+                    encode_10bit(&gradient_plane, w, h, qp, preset)
+                });
+            }
         }
     }
 }
@@ -308,4 +320,33 @@ fn decode_png_luma(path: &std::path::Path) -> (Vec<u8>, usize, usize) {
         })
         .collect();
     (y, w, h)
+}
+
+/// The EXACT cells where the aarch64 dev host and the x86-64 CI runner disagree.
+///
+/// `bd10_partial_sb_gate.sh` pins five known-diverging cells. On x86-64 three of
+/// them MATCH C (the self-promoting pin fires, demanding promotion); on aarch64
+/// all three DIFFER. Testing the neighbourhood is not enough — a tier bug could
+/// live in exactly these configs and nowhere else — so this pins the specific
+/// cells, including the presets (9, 4, 2) and geometry (48x48) the sweep above
+/// does not reach.
+///
+/// Green here means the port emits one bitstream per input on any ISA, which
+/// leaves C as the ISA-dependent side (docs/SUSPECTED-C-BUGS.md #9). Red would
+/// mean the port is the variable side, which is a shipping bug.
+#[test]
+fn bd10_partial_sb_pinned_cells_are_tier_invariant() {
+    for &(w, h, qp, preset) in &[
+        (48usize, 48usize, 20u8, 9u8),  // x86-64 matches, aarch64 differs
+        (96, 80, 20, 4),                // x86-64 matches, aarch64 differs
+        (65, 65, 20, 2),                // x86-64 matches, aarch64 differs
+        (80, 88, 55, 9),                // diverges on both
+        (72, 88, 55, 9),                // diverges on both (bd8 too)
+    ] {
+        let n = assert_tier_invariant(
+            &format!("PIN gradient {w}x{h} q{qp} p{preset} bd10"),
+            || encode_10bit(&gradient_plane, w, h, qp, preset),
+        );
+        assert!(n > 64, "pinned cell produced {n}B — too small to be real");
+    }
 }

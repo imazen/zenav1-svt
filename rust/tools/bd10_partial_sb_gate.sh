@@ -323,15 +323,38 @@ fi
 # cost. It is a bd10 MDS0 fast-cost near-tie, the same class
 # bd10_nonflat_gate.sh has 112 of.
 PINNED=(
-  # bd10-only at the eff-M9 band (bd8 matches these two)
+  # bd10-only at the eff-M9 band
   "gradient 80 88 55 9"
-  "gradient 48 48 20 9"
-  # bd10-only at the full-RD band
-  "gradient 96 80 20 4"
-  "gradient 65 65 20 2"
   # fails at bd8 TOO — pinned so a bd10 claim is never read as covering it
   "gradient 72 88 55 9"
 )
+
+# --- ISA-SCOPED PINS -------------------------------------------------------
+# Three more cells diverge on aarch64 and MATCH C on the x86-64 runner:
+#   gradient 48x48  q20 p9   (C=573  port=573,  same length)
+#   gradient 96x80  q20 p4   (C=1648 port=1647)
+#   gradient 65x65  q20 p2   (C=959  port=959,  same length)
+# Pinning them unconditionally makes x86-64 red (the self-promoting pin fires,
+# correctly, demanding promotion); not pinning them makes aarch64 red. Both
+# cannot be satisfied by one list, because the two hosts genuinely disagree.
+#
+# The PORT is not the variable side, and that is measured rather than assumed:
+# `tier_invariance.rs::bd10_partial_sb_pinned_cells_are_tier_invariant` encodes
+# THESE EXACT FIVE CELLS under every archmage dispatch tier and asserts
+# byte-identical output. It is green. The scalar tier is portable integer Rust,
+# so the port emits one bitstream on any ISA; C emits two. (Testing the
+# neighbourhood would not have been enough — these are presets 9/4/2 and a
+# 48x48 geometry that the surrounding sweeps do not cover.)
+#
+# This is docs/SUSPECTED-C-BUGS.md #9, instances 4-6, and it widens that entry
+# again: the first three were bd10-p7-screen, bd8-p0-gradient, and now these are
+# bd10 partial-SB gradient at three different presets. No sub-domain is safe to
+# assume architecture-independent.
+case "$(uname -m)" in
+  arm64 | aarch64)
+    PINNED+=("gradient 48 48 20 9" "gradient 96 80 20 4" "gradient 65 65 20 2")
+    ;;
+esac
 pin_ok=0
 pin_bad=()
 for cell in "${PINNED[@]}"; do
