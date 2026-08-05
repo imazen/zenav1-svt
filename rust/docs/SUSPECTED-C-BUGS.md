@@ -259,6 +259,39 @@ longer any sub-domain that can be assumed architecture-independent — not a bit
 depth, not a preset band, not a content class, not a geometry. Every ISA-scoped
 pin so far was found by CI going red, never by looking.
 
+**PROVEN DIRECTLY 2026-08-05 — the port is ISA-invariant, measured, not
+inferred.** Every earlier argument here rested on `tier_invariance.rs`, and that
+argument had a HOLE worth naming because it looked airtight:
+`for_each_token_permutation` walks the tiers present on the host it runs on, so
+a difference that is uniform across tiers on each host and differs BETWEEN hosts
+— a per-ISA libm, or a compile-time-selected kernel variant — is invisible to
+it. "The scalar tier is portable integer Rust" collapses the moment a float
+transcendental sits in a decision path, and there are 24 such sites.
+
+Closed with a local emulated x86-64 Linux VM (colima + QEMU, glibc — the CI
+runner's libc), no CI involved:
+
+1. **Transcendentals: 402/402 bit-identical** (`tools/fp_cross_isa.sh`). Apple
+   libm vs glibc, with `black_box` on every input — without it LLVM folds these
+   at compile time with its own host-independent evaluator and the comparison is
+   of LLVM against itself.
+2. **The port's own bytes: identical on both ISAs.** Same source built for both,
+   same cells, SHA-256 compared (`tools/cross_isa_port_check.sh`):
+
+   | cell (bd10) | aarch64 | x86-64 |
+   |---|---|---|
+   | `48x48 q20 p9` | 573 B `6500a491aa0cd508` | 573 B `6500a491aa0cd508` |
+   | `96x80 q20 p4` | 1647 B `f184844f744c2415` | 1647 B `f184844f744c2415` |
+   | `65x65 q20 p2` | 959 B `3284cf968b415ef7` | 959 B `3284cf968b415ef7` |
+
+   Those are exactly the three cells that byte-match C on x86-64 and differ here.
+   The port emits the same stream on both; C does not. **C is the variable
+   side** — no longer an inference.
+
+This also rules out a compile-time-selected SIMD variant (magetypes uniform vs
+optimized) for these cells: any such selection is byte-neutral, or the hashes
+would differ.
+
 **Still open:** CI runs x86-64 only, so the aarch64 side is guarded only by
 whoever happens to run the gates locally. The systematic fix is a second CI
 runner building the C oracle on aarch64 and diffing the verdict sets; until
