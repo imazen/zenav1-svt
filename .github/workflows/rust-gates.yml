@@ -10,6 +10,15 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # No CI runner has the image corpora (they are not in-tree), so the corpus-
+  # gated tests must skip HERE, at the workflow level, where the decision is
+  # visible in the chain (workflow -> env -> test) rather than being made inside
+  # a test body. Set at workflow scope on purpose: the same test runs from BOTH
+  # the "Workspace tests" step (`cargo nextest run --workspace`) and the
+  # dedicated tier-invariance step, and setting it on only one of them is
+  # exactly how this broke — six red builds, all of them my own test failing on
+  # a missing corpus.
+  ZENAV1_SKIP_CORPUS_TESTS: "1"
 
 jobs:
   gates:
@@ -101,17 +110,16 @@ jobs:
 
       - name: SIMD tier invariance (encoder bytes must not depend on dispatch tier)
         working-directory: rust
-        # ZENAV1_SKIP_CORPUS_TESTS=1: the IntraBC tier cell needs the gb82-sc
-        # corpus, which is not in-tree. The skip is set HERE, in the workflow,
-        # so it is visible in the chain rather than decided inside the test —
-        # the only form of skip this project allows. Dev hosts with the corpus
-        # run it by default.
+        # The IntraBC tier cell needs the gb82-sc corpus, which is not in-tree;
+        # ZENAV1_SKIP_CORPUS_TESTS is set at WORKFLOW scope (top of this file)
+        # so every step that runs the suite inherits it. Dev hosts with the
+        # corpus run it by default.
         # Encodes real cells under EVERY archmage tier and asserts identical
         # OBUs. Every byte-parity gate here assumes the port emits one bitstream
         # per input regardless of ISA; before this test nothing checked it. It
         # is also what proved C -- not the port -- is the ISA-dependent side of
         # the bd10 preset-7 screen split (docs/SUSPECTED-C-BUGS.md #9).
-        run: ZENAV1_SKIP_CORPUS_TESTS=1 cargo test -p zenav1-svt --test tier_invariance
+        run: cargo test -p zenav1-svt --test tier_invariance
 
       - name: refusal inventory is current (capability debt stays visible)
         working-directory: rust
