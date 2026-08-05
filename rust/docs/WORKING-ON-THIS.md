@@ -156,6 +156,51 @@ dispatch level, which is how you test whether a divergence is C's own SIMD
 choice (see `docs/SUSPECTED-C-BUGS.md` #9). `SVT_CPU_FLAGS=0` is pure-C kernels
 and works on x86-64; it SEGFAULTS on aarch64, where Neon is mandatory.
 
+## 5c. Cross-ISA questions need an emulator, not an argument
+
+CI runs ONE architecture. Every cross-ISA question was therefore answered by
+inference until 2026-08-05, and the inference had a hole big enough to matter:
+
+> `tier_invariance.rs` walks the SIMD tiers present on the host it runs on. A
+> difference that is uniform across tiers on EACH host and differs BETWEEN hosts
+> — a per-ISA libm, a compile-time-selected kernel variant — is invisible to it.
+> Tier-invariance within a host does not imply invariance across hosts.
+
+Set up the local emulator once:
+
+```bash
+brew install qemu lima-additional-guestagents
+colima start --profile x86 --arch x86_64 --cpu 4 --memory 6 --vm-type qemu
+```
+
+Then:
+
+```bash
+tools/fp_cross_isa.sh            # are the transcendentals bit-identical?
+tools/cross_isa_port_check.sh    # does the PORT emit the same bytes on both?
+```
+
+The second needs no C oracle: to ask "is the PORT the variable side?" you only
+need the port's own bytes on two ISAs. Run it whenever a pinned cell looks
+host-dependent, BEFORE concluding anything about C.
+
+**Three traps, each of which yields a confident wrong answer:**
+
+- **LLVM constant-folds transcendentals.** With `-O` and loop-constant inputs it
+  evaluates them at compile time with its own host-independent evaluator and
+  never calls either libm — so a naive dump compares LLVM against itself and
+  prints "identical" no matter what the libms do. `black_box` every input, and
+  check the folded and unfolded runs agree before trusting a cross-host result.
+- **musl is not glibc.** CI is Ubuntu. A musl container compares a libm CI never
+  uses, and can report a difference that does not exist there (or miss one that
+  does). The tools use `rust:1-slim` deliberately.
+- **The emulated build SHARES `target/`.** No `--target` is passed, so it leaves
+  an x86-64 ELF at `target/release/examples/identity_run`. Left alone the next
+  gate silently runs a foreign binary. `cross_isa_port_check.sh` rebuilds
+  natively at the end; if you build by hand, do the same. For the C library,
+  mount the repo **read-only** and copy out — the host's
+  `Bin/Release/libSvtAv1Enc.a` is aarch64 and load-bearing.
+
 ## 6. Refuse, never emit a plausible-but-wrong stream
 
 Out-of-envelope configs return a typed `Err` from `encode_frame_impl`. They do
