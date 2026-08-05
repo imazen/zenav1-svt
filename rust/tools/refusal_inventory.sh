@@ -57,6 +57,15 @@ SRC=(crates/svtav1-encoder/src/pipeline.rs svtav1/src/avif.rs)
 # A refusal message spanning continuation lines is joined before matching, so a
 # wrapped string cannot hide its own keywords.
 collect() {
+    # Match refusal CONSTRUCTS, not "any string that sounds like a refusal".
+    #
+    # The first version regexed every long string literal containing
+    # must/only/not. That swept in comment prose and `debug_assert!` messages
+    # ("HORZ/VERT children must be leaf blocks, not split nodes"), which are not
+    # refusals at all — so the ledger was both wrong and, because the noise
+    # shifted with unrelated edits, unstable. A refusal is a string handed to
+    # `UnsupportedConfig(...)`, or returned as `Some("...")` from a
+    # `*_config_error` predicate. Nothing else counts.
     python3 - "${SRC[@]}" <<'PY'
 import re, sys
 
@@ -67,16 +76,35 @@ CAP = re.compile(
     re.I,
 )
 
+UNSUP = re.compile(r'UnsupportedConfig\(\s*"((?:[^"\\]|\\.)*)"')
+# A third construct: `EncodeError::InvalidDimensions { reason: "..." }`. Missing
+# it dropped the two real monochrome-geometry refusals from the ledger.
+REASON = re.compile(r'\breason:\s*"((?:[^"\\]|\\.)*)"')
+# Trailing comma and `.to_string()` are both common; requiring a bare
+# `)` right after the string silently dropped half the real refusals.
+SOMES = re.compile(r'\bSome\(\s*"((?:[^"\\]|\\.)*)"\s*(?:\.to_string\(\))?\s*,?\s*\)')
+FNDEF = re.compile(r"\n\s*(?:pub(?:\(crate\))?\s+)?fn\s+([a-z_0-9]+)")
+
 for path in sys.argv[1:]:
     src = open(path).read()
-    # Join Rust string-literal continuations (`\` at end of line) so a wrapped
-    # message is matched as one string.
-    joined = re.sub(r"\\\s*\n\s*", " ", src)
-    for m in re.finditer(r'"((?:[^"\\]|\\.){40,400})"', joined):
-        msg = " ".join(m.group(1).split())
-        if not re.search(r"requires|only|must|no |not |unsupported|cannot", msg, re.I):
+    joined = re.sub(r"\\\s*\n\s*", " ", src)   # join Rust string continuations
+
+    found = set(m.group(1) for m in UNSUP.finditer(joined))
+    found |= set(m.group(1) for m in REASON.finditer(joined))
+
+    # `Some("...")` counts only inside a fn whose name ends in _config_error.
+    bounds = [(m.start(), m.group(1)) for m in FNDEF.finditer(joined)]
+    for i, (pos, name) in enumerate(bounds):
+        if not name.endswith("_config_error"):
             continue
-        # Skip doc/comment prose: require it to look like a user-facing refusal.
+        stop = bounds[i + 1][0] if i + 1 < len(bounds) else len(joined)
+        for m in SOMES.finditer(joined[pos:stop]):
+            found.add(m.group(1))
+
+    for msg in found:
+        msg = " ".join(msg.split())
+        if len(msg) < 20:
+            continue
         kind = "CAPABILITY" if CAP.search(msg) else "CONTRACT"
         print(f"{kind}\t{path}\t{msg}")
 PY
@@ -84,7 +112,11 @@ PY
 
 generate() {
     local rows cap con
-    rows=$(collect | sort -u)
+    # LC_ALL=C: byte collation, not locale collation. Without it macOS and the
+    # Linux CI runner order the same rows differently and `--check` fails on a
+    # diff that is pure sort order — which is exactly how this gate first went
+    # red.
+    rows=$(collect | LC_ALL=C sort -u)
     cap=$(printf '%s\n' "$rows" | grep -c '^CAPABILITY' || true)
     con=$(printf '%s\n' "$rows" | grep -c '^CONTRACT' || true)
 
