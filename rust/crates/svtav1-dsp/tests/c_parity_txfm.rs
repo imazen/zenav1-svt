@@ -389,7 +389,33 @@ fn inv_named_square_wrappers_flat_dc_match_c() {
 // Extend `SIMD_SQUARE` as more sizes are vectorized.
 // ============================================================================
 
-use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+use archmage::testing::{CompileTimePolicy, TokenPermutation, for_each_token_permutation};
+
+/// Walk every dispatch tier, and PROVE the walk was not empty.
+///
+/// `for_each_token_permutation` returns a `#[must_use] PermutationReport` whose
+/// `permutations_run` is the anti-vacuity counter. Every site in this file used
+/// to drop it, so a walk that visited zero tiers — the closure never running,
+/// the differential never executing — was indistinguishable from a pass. That
+/// is precisely the silent-harness failure `rust/CLAUDE.md` §5 warns about, and
+/// two other sites in this workspace (`svtav1-entropy/tests/c_parity.rs:949`,
+/// `svtav1/tests/tier_invariance.rs:164`) already guard against it. This makes
+/// the remaining sites consistent with them.
+///
+/// The bar is `>= 1` rather than `>= 2` because the number of permutable tiers
+/// is a property of the HOST: on a machine whose baseline already includes the
+/// only accelerated tier there is exactly one. Asserting `>= 2` would be a
+/// host-dependent gate. `>= 1` catches the case that actually hides a bug — the
+/// body never running at all.
+#[track_caller]
+fn walk_tiers(what: &str, f: impl FnMut(&TokenPermutation)) {
+    let report = for_each_token_permutation(CompileTimePolicy::WarnStderr, f);
+    assert!(
+        report.permutations_run >= 1,
+        "{what}: the tier walk ran ZERO permutations, so this differential \
+         asserted nothing. Report: {report}"
+    );
+}
 
 const SIMD_SQUARE: [(usize, TxSize); 4] = [
     (8, TxSize::Tx8x8),
@@ -419,7 +445,7 @@ fn fwd_dct_simd_all_tiers_match_c() {
             let res16 = simd_residual(pat, n * n, &mut rng);
             let c_out = cref::fwd_txfm2d(n, &res16, 0); // DCT_DCT
             let res32: Vec<i32> = res16.iter().map(|&v| v as i32).collect();
-            for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            walk_tiers("fwd_dct_simd_all_tiers_match_c", |_perm| {
                 let mut ours = vec![0i32; n * n];
                 assert!(svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
                     &res32,
@@ -463,7 +489,7 @@ fn fwd_dct_simd_rect_all_tiers_match_c() {
             let res16 = simd_residual(pat, w * h, &mut rng);
             let c_out = cref::fwd_txfm2d_rect(w, h, &res16, 0); // DCT_DCT
             let res32: Vec<i32> = res16.iter().map(|&v| v as i32).collect();
-            for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            walk_tiers("fwd_dct_simd_rect_all_tiers_match_c", |_perm| {
                 let mut ours = vec![0i32; w * h];
                 assert!(svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
                     &res32,
@@ -513,7 +539,7 @@ fn inv_dct_simd_rect_all_tiers_identical_and_recon_match_c() {
             let c_recon = cref::inv_txfm2d_add_rect(w, h, &coeffs, &base, 0);
 
             let mut first_res: Option<Vec<i32>> = None;
-            for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            walk_tiers("inv_dct_simd_rect_all_tiers_identical_and_recon_match_c", |_perm| {
                 let mut our_res = vec![0i32; w * h];
                 named_inv_rect(w, h, &coeffs, &mut our_res, w);
                 match &first_res {
@@ -569,7 +595,7 @@ fn inv_dct_simd_all_tiers_identical_and_recon_match_c() {
             let c_recon = cref::inv_txfm2d_add(n, &cref_coeffs, &base, 0);
 
             let mut first: Option<Vec<i32>> = None;
-            for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            walk_tiers("inv_dct_simd_all_tiers_identical_and_recon_match_c", |_perm| {
                 let mut res = vec![0i32; n * n];
                 assert!(svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch(
                     &port_coeffs,
@@ -642,7 +668,7 @@ fn fwd_adst_simd_all_tiers_match_c() {
             let res16 = simd_residual(pat, w * h, &mut rng);
             let c_out = cref_fwd_any(w, h, &res16, txi);
             let res32: Vec<i32> = res16.iter().map(|&v| v as i32).collect();
-            for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            walk_tiers("fwd_adst_simd_all_tiers_match_c", |_perm| {
                 let mut ours = vec![0i32; w * h];
                 assert!(svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
                     &res32, &mut ours, w, ts, txt
@@ -684,7 +710,7 @@ fn inv_adst_simd_all_tiers_identical_and_recon_match_c() {
             let c_recon = cref_inv_add_any(w, h, &coeffs, &base, txi);
 
             let mut first_res: Option<Vec<i32>> = None;
-            for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            walk_tiers("inv_adst_simd_all_tiers_identical_and_recon_match_c", |_perm| {
                 let mut our_res = vec![0i32; w * h];
                 assert!(svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch(
                     &coeffs, &mut our_res, w, ts, txt
@@ -747,7 +773,7 @@ fn run_bd10_tier_check(w: usize, h: usize, ts: TxSize, txt: TxType, rng: &mut Rn
             }
         };
         let mut first_res: Option<Vec<i32>> = None;
-        for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+        walk_tiers("inv_simd_bd10_all_tiers_identical_rect_and_adst", |_perm| {
             let mut our_res = vec![0i32; w * h];
             assert!(svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch_bd(
                 &coeffs, &mut our_res, w, ts, txt, 10
@@ -833,7 +859,7 @@ fn fwd_ext_simd_all_tiers_match_c() {
             let res16 = simd_residual(pat, w * h, &mut rng);
             let c_out = cref_fwd_any(w, h, &res16, txi);
             let res32: Vec<i32> = res16.iter().map(|&v| v as i32).collect();
-            for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            walk_tiers("fwd_ext_simd_all_tiers_match_c", |_perm| {
                 let mut ours = vec![0i32; w * h];
                 assert!(
                     svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(&res32, &mut ours, w, ts, txt),
@@ -876,7 +902,7 @@ fn inv_ext_simd_all_tiers_identical_and_recon_match_c() {
             let c_recon = cref_inv_add_any(w, h, &coeffs, &base, txi);
 
             let mut first_res: Option<Vec<i32>> = None;
-            for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            walk_tiers("inv_ext_simd_all_tiers_identical_and_recon_match_c", |_perm| {
                 let mut our_res = vec![0i32; w * h];
                 assert!(svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch(
                     &coeffs, &mut our_res, w, ts, txt
@@ -982,7 +1008,7 @@ fn fwd_4dim_simd_all_tiers_match_c() {
             };
             let c_out = cref_fwd_any(w, h, &res16, txi);
             let res32: Vec<i32> = res16.iter().map(|&v| v as i32).collect();
-            for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            walk_tiers("fwd_4dim_simd_all_tiers_match_c", |_perm| {
                 let mut ours = vec![0i32; w * h];
                 assert!(
                     svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(&res32, &mut ours, w, ts, txt),
@@ -1025,7 +1051,7 @@ fn inv_4dim_simd_all_tiers_identical_and_recon_match_c() {
             let c_recon = cref_inv_add_any(w, h, &coeffs, &base, txi);
 
             let mut first_res: Option<Vec<i32>> = None;
-            for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            walk_tiers("inv_4dim_simd_all_tiers_identical_and_recon_match_c", |_perm| {
                 let mut our_res = vec![0i32; w * h];
                 assert!(svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch(
                     &coeffs, &mut our_res, w, ts, txt

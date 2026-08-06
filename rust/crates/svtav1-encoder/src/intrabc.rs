@@ -381,6 +381,24 @@ pub fn qp_based_th_scaling_factors(enable: bool, qp: u32) -> (u32, u32) {
 fn libm_exp(x: f64) -> f64 {
     x.exp()
 }
+/// REACHABILITY, MEASURED 2026-08-06 rather than argued. This stub is the only
+/// `unimplemented!` on the encoder's config-reachable surface: the pipeline
+/// calls `scale_mesh_patterns_by_qp` whenever the funnel arms IntraBC (4:2:0
+/// key + screen content, presets M0..M4), and `qp >= 46` — i.e. a low quality
+/// setting — takes the `libm_exp` branch. In a `std` build that is `x.exp()`.
+///
+/// It is NOT reachable today, and the reason is not a guard: the no_std
+/// configuration **does not compile**. `cargo check -p zenav1-svt-encoder
+/// --no-default-features` fails with two errors in `pipeline.rs` (bare
+/// `std::env::var` for `SVTAV1_SC_TOOLS`, ungated). So the crate's
+/// `#![cfg_attr(not(feature = "std"), no_std)]` and its ~40 feature gates are
+/// aspirational, not a shipping configuration.
+///
+/// IF THE NO_STD BUILD IS EVER FIXED, this must be resolved in the SAME change
+/// — otherwise fixing two `env::var` lines silently turns a low-quality
+/// screen-content encode into a panic. Wire a no_std `exp` (a minimax rational
+/// is ample for one call per frame) or return a typed
+/// `EncodeError::UnsupportedConfig`; do not leave the `unimplemented!`.
 #[cfg(not(feature = "std"))]
 fn libm_exp(_x: f64) -> f64 {
     unimplemented!("PORT-NOTE(unverified): no_std exp() not wired -- see doc comment")

@@ -1,0 +1,123 @@
+# cancellation latency — how long `cancel()` takes to stop an in-flight encode
+date: 2026-08-06
+commit: see `git log` for eng/quality-program (before = 4c5c13246)
+host: 12-core arm64 macOS (8 perf + 4 efficiency), 24 GiB, load avg 2-5 during the run
+harness: rust/svtav1/examples/cancel_latency.rs
+command: ./target/release/examples/cancel_latency --sizes 64,256,1024,4096 \
+           --preset {13,8,6} --qp 40 --points 12 --reps 3 --baseline-reps 2 --out <tsv>
+build: nice -n 19, RUSTC_WRAPPER=sccache, -j 4, release (opt-level 2), NO target-cpu=native
+run:   NOT under nice — `nice -n 19` maps to background QoS on Darwin (efficiency
+       cores) and distorts wall clock. The harness records the observed niceness
+       in each TSV header; every row below reads `nice=0`.
+metric: wall time from the instant the caller asks to stop (Instant::now()
+        immediately before flipping the token) to the instant
+        `try_encode_frame_420` returns — REGARDLESS of whether the encode
+        honoured the cancel. Cells that returned Ok with a pending cancel are
+        counted as `ignored` and their wait is still scored: an encode that runs
+        another 224 ms and then returns Ok has not cancelled in 0 ms.
+content: deterministic gradient (the `perf_encode`/`identity_run` recipe), 4:2:0,
+         8-bit, single tile, CQP.
+percentiles: nearest-rank over all scored cells at that size.
+
+## BEFORE (4c5c13246 — the stop plumbing as it shipped)
+
+preset 8, benchmarks/cancel_latency_p8_before_2026-08-06.tsv
+
+  size  baseline_ms  n   honoured ignored  p50    p90     p99      max     >20ms
+    64        0.394  32     23       9    0.091   0.226   0.248    0.248     0
+   256        7.046  36     29       7    0.611   1.225   1.340    1.340     0
+  1024       95.480  43     36       7    2.586   5.171  16.484   16.484     0
+  4096      925.545  45     33      12   15.830 162.033 224.291  224.291    13
+
+Root cause, LOCALIZED by phase instrumentation (scratch `eprintln` timers at each
+`Step N` boundary of `encode_frame_impl`, 4096x4096 preset 8, 800 ms total):
+
+  setup ->  Step 4 (MD + tile encode)      5.1 ->  535.8 ms   POLLED (per SB row)
+  Step 6   (entropy walk)                535.9 ->  595.2 ms   POLLED (per SB row)
+  Step 6a  (deblock level pick + apply)  595.2 ->  619.2 ms   NOT POLLED
+  Step 6a' (CDEF pick + frame apply)     619.2 ->  768.1 ms   NOT POLLED  <-- coarsest
+  Step 6a''(Wiener LR search + apply)    768.1 ->  768.2 ms   NOT POLLED (off at p8)
+  Step 6b..8 (grain, OBU, recon, RC)     768.2 ->  777.2 ms   NOT POLLED
+  return (drop of the frame's buffers)   777.2 ->  800.2 ms   n/a
+
+The whole post-entropy tail — 205 ms, 25.6% of the frame — took no token at all.
+A cancel landing anywhere in it was IGNORED: the encode ran to completion and
+returned `Ok`. That is the `ignored` column above, and it is exactly the 12 cells
+at f >= 0.75.
+
+At 1024x1024 preset 6 the Wiener LR search alone is 90.4 ms of a 280 ms frame
+(32%), also entirely un-polled — the same defect, a different dominant phase.
+
+## AFTER
+
+Polls added (all guarded by `may_stop()`, so byte-inert on the default
+`Unstoppable` token — see `svtav1_encoder::stop_check`):
+  - 9 phase-boundary polls in `encode_frame_impl` (Steps 4c, 5, 6a, 6a', 6a'',
+    6b, 7, 7b, 8) — bounds a wait by ONE phase, not the whole tail
+  - `cdef::apply_cdef_frame` / `_hbd`: per 64x64 filter-block ROW
+  - `cdef::cdef_search_still` / `_hbd`: per 64x64 filter-block ROW
+  - `restoration::search_restoration_still_bd`: per plane + per 256x256
+    restoration unit
+  - `deblock::apply_deblock_frame` / `_hbd`: per plane
+  - `deblock::search_filter_level`: per step of the level bisection
+  - MD search + entropy walk: per SB ROW -> per SUPERBLOCK
+
+  preset 13 (cancel_latency_p13_2026-08-06.tsv)
+  size  baseline_ms  n   honoured ignored  p50    p90     p99      max     >20ms
+    64        0.377  24     24       0    0.064   0.197   0.211    0.211     0
+   256        4.739  34     34       0    0.140   0.213   0.313    0.313     0
+  1024       77.220  36     36       0    0.478   1.253   1.515    1.515     0
+  4096      884.808  36     36       0    4.526  18.563  28.207   28.207     3
+
+  preset 8 (cancel_latency_p8_2026-08-06.tsv)
+  size  baseline_ms  n   honoured ignored  p50    p90     p99      max     >20ms
+    64        0.445  23     22       1    0.105   0.263   0.267    0.267     0
+   256        7.212  29     29       0    0.144   0.353   0.361    0.361     0
+  1024      101.164  34     34       0    0.408   1.489   1.728    1.728     0
+  4096      962.893  36     36       0    3.871  17.331  18.138   18.138     0
+
+  preset 6 (cancel_latency_p6_2026-08-06.tsv, Wiener LR live)
+  size  baseline_ms  n   honoured ignored  p50    p90     p99      max     >20ms
+    64        2.291  27     27       0    0.368   1.438   1.443    1.443     0
+   256       33.744  31     31       0    0.923   1.457   1.952    1.952     0
+  1024      390.162  36     36       0    1.111   3.898   4.124    4.124     0
+  4096     5077.960  36     36       0    6.130  20.597  21.657   21.657     6
+
+VERDICT vs the 20 ms bar:
+  - MET at 64x64, 256x256 and 1024x1024 at every preset measured. Worst p99
+    across all of them is 4.12 ms (1024x1024 preset 6).
+  - NOT MET at 4096x4096 (16.7 MP): p99 18.1 ms (p8), 21.7 ms (p6), 28.2 ms
+    (p13). Down from 224 ms, and no cell is ignored any more, but 3-6 cells per
+    preset still breach.
+  - Zero `ignored` cells everywhere except one 64x64 cell whose 0.445 ms encode
+    finished before the cancel landed (max wait 0.267 ms — immaterial).
+
+## The 4096x4096 residual is TEARDOWN, not poll density (measured, not argued)
+
+A 48-point fine sweep at 4096x4096 preset 8
+(cancel_latency_fine_p8_2026-08-06.tsv) shows the wait is FLAT at 15-18 ms for
+every cancel point from f = 0.59 to f = 0.96, and <= 5 ms below f = 0.53. A
+sparse poll would produce a sawtooth (wait decreasing across each un-polled
+phase); a flat floor that only appears once the frame's working set is fully
+allocated is a fixed exit cost.
+
+Corroborated independently on the SUCCESS path: in the phase profile above, the
+last statement of `encode_frame_impl` (the Step 8 RC update) finishes at 777.2 ms
+and the caller's timer stops at 800.2 ms — 23 ms spent dropping the frame's
+buffers with no encoder work left to do.
+
+So the remaining 4096x4096 breach is the cost of freeing a 16.7 MP frame's
+working set, which the encode pays whether it is cancelled or not. Adding more
+polls cannot move it; buffer reuse across frames would. Not attempted here.
+
+## Byte-identity
+
+Every poll is `if stop.may_stop() { stop.check()? }`. The default token is
+`enough::Unstoppable`, whose `may_stop()` is `false`, so on every existing path
+the poll is a not-taken branch that touches no encoder state.
+
+Evidence: 144-cell self-fingerprint (md5 of the emitted .obu over
+content={gradient,uniform} x size={64,128,256,512} x preset={2,4,6,8,10,13} x
+qp={20,40,55}) is IDENTICAL before and after — re-run after each of the three
+increments. Plus the workspace differential suite and the C-oracle gates; see
+the commit messages.

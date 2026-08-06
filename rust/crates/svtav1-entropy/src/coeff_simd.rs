@@ -17,9 +17,15 @@
 
 use archmage::prelude::*;
 
+use crate::coeff_c::{TX_PAD_HOR, levels_origin};
+// Read only by `nz_map_ctxs_impl_v3` and the `NZ_OFFSET` table it indexes. NOT
+// dead code — see the `NZ_OFFSET` note below. Importing these unconditionally
+// warned on every non-x86 build, which is exactly the noise that hides a real
+// dead-code warning.
+#[cfg(target_arch = "x86_64")]
 use crate::coeff_c::{
-    TX_CLASS_2D, TX_CLASS_HORIZ, TX_PAD_HOR, TX_SIZES_ALL, levels_origin, nz_map_ctx_offset_1d,
-    nz_map_ctx_offset_2d, txb_bwl, txb_high, txb_wide,
+    TX_CLASS_2D, TX_CLASS_HORIZ, TX_SIZES_ALL, nz_map_ctx_offset_1d, nz_map_ctx_offset_2d, txb_bwl,
+    txb_high, txb_wide,
 };
 
 /// Fill the coefficient level map. `levels_buf` is assumed pre-zeroed by the
@@ -150,6 +156,7 @@ fn pack8_v3(_token: Desktop64, src: &[i32; 8], dst: &mut [u8; 8]) {
 
 /// Maximum coefficient count for any coded transform block (32×32 after the
 /// 64→32 dimension cap for coefficient coding).
+#[cfg(target_arch = "x86_64")]
 const MAX_TXB_COEFFS: usize = 32 * 32;
 
 /// Per-`(tx_class, tx_size)` position-base context offset — C
@@ -159,9 +166,22 @@ const MAX_TXB_COEFFS: usize = 32 * 32;
 /// `tests/c_parity.rs` pins to the exported C `ref_nz_map_ctx_offset`), so the
 /// SIMD fill needs no re-transcribed SSE2 vector constants — the classic
 /// nz-map byte-diff source. Values fit `u8` (0..=36); only `idx < width*height`
-/// is populated and read. ~57 KiB of `.rodata`.
+/// is populated and read.
+///
+/// SIZE, measured rather than guessed: `3 * 19 * 1024 = 58_368` bytes = 57.0 KiB
+/// of `.rodata`, of which 22_320 bytes (38%) are actually populated — the rest
+/// is the padding to `MAX_TXB_COEFFS` for tx sizes smaller than 32x32. It is a
+/// `static` initialised by a `const fn`, so rustc's const interpreter builds it
+/// at compile time; nothing is computed at run time.
+///
+/// x86-GATED, and NOT dead code on other targets: the only reader is
+/// `nz_map_ctxs_impl_v3`. Without the gate every aarch64/wasm build warned that
+/// this and its two helpers were unused, which is exactly the noise that hides
+/// a real dead-code warning.
+#[cfg(target_arch = "x86_64")]
 static NZ_OFFSET: [[[u8; MAX_TXB_COEFFS]; TX_SIZES_ALL]; 3] = build_nz_offset();
 
+#[cfg(target_arch = "x86_64")]
 const fn build_nz_offset() -> [[[u8; MAX_TXB_COEFFS]; TX_SIZES_ALL]; 3] {
     let mut t = [[[0u8; MAX_TXB_COEFFS]; TX_SIZES_ALL]; 3];
     let mut cls = 0usize;

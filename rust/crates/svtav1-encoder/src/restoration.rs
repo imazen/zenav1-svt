@@ -640,9 +640,10 @@ pub fn search_restoration_still(
     h: usize,
     has_chroma: bool,
     rdmult: i64,
+    stop: &dyn enough::Stop,
 ) -> crate::EncodeResult<FrameRestInfo> {
     search_restoration_still_bd(
-        ctrls, src_y, src_u, src_v, recon_y, recon_u, recon_v, w, h, has_chroma, rdmult, 8,
+        ctrls, src_y, src_u, src_v, recon_y, recon_u, recon_v, w, h, has_chroma, rdmult, 8, stop,
     )
 }
 
@@ -672,6 +673,7 @@ pub fn search_restoration_still_bd<P: LrPixel>(
     has_chroma: bool,
     rdmult: i64,
     bit_depth: u8,
+    stop: &dyn enough::Stop,
 ) -> crate::EncodeResult<FrameRestInfo> {
     debug_assert!(ctrls.enabled);
     let wn_luma = if ctrls.filter_tap_lvl == 1 {
@@ -688,6 +690,11 @@ pub fn search_restoration_still_bd<P: LrPixel>(
     let mut planes = alloc::vec::Vec::new();
 
     for plane in 0..3usize {
+        // Feature 1: byte-inert cooperative-cancellation poll. The Wiener LR
+        // search is the largest un-polled block at the slow presets — MEASURED
+        // at 90 ms of a 280 ms 1024x1024 preset-6 frame
+        // (benchmarks/cancel_latency_*), all of it inside this loop.
+        crate::stop_check(stop)?;
         let is_uv = plane > 0;
         let ss = i32::from(is_uv);
         // C whole_frame_rect (restoration.c:58-59): the plane rect is the
@@ -762,7 +769,21 @@ pub fn search_restoration_still_bd<P: LrPixel>(
             );
         });
 
+        // Feature 1: `foreach_rest_unit_in_tile` takes `FnMut(..) -> ()`, so the
+        // poll cannot `?` out of the closure — it latches the error and the
+        // remaining units short-circuit. One restoration unit is 256x256, which
+        // is the granularity this buys; with the default `Unstoppable` token
+        // `cancelled` stays `None` for the whole walk and the extra test is a
+        // predictable not-taken branch.
+        let mut cancelled: Option<whereat::At<crate::EncodeError>> = None;
         foreach_rest_unit_in_tile(&rect, hunits, unit_size, ss, |limits, unit_idx| {
+            if cancelled.is_some() {
+                return;
+            }
+            if let Err(e) = crate::stop_check(stop) {
+                cancelled = Some(e);
+                return;
+            }
             // search_wiener_seg.
             let win2 = wiener_win * wiener_win;
             let mut m = [0i64; WIENER_WIN * WIENER_WIN];
@@ -830,6 +851,9 @@ pub fn search_restoration_still_bd<P: LrPixel>(
             units[unit_idx as usize].sse_wiener = sse;
             units[unit_idx as usize].wiener = wi;
         });
+        if let Some(e) = cancelled {
+            return Err(e);
+        }
 
         // ---- finish phase: frame-level {NONE, WIENER} RD ----
         // r = RESTORE_NONE walk: bits stay 0 (search_norestore_finish).

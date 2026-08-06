@@ -11,6 +11,64 @@ the last gate: "a fast encoder that emits different bytes is worthless").
 overhead — at the fast presets the port's fixed per-frame cost is already *below*
 C's. See the numbers below.
 
+> ## READ THIS FIRST — every number below x86-64, except the 2026-08-06 arm64 row
+>
+> Every ratio in this document apart from the aarch64 section was measured on
+> **`dev-32gb`, a 16-core x86-64 box**, and every kernel in the "Landed
+> byte-inert optimizations" campaign is an **AVX2 (`v3`) arm**. Those numbers do
+> not describe an aarch64 machine, and until 2026-08-06 the NEON tier had **no
+> committed port-vs-C measurement at all**.
+>
+> ### FIRST aarch64 MEASUREMENT — 2026-08-06, commit `1a701b755`
+>
+> `benchmarks/perf_2026-08-06-arm64.{tsv,raw.tsv,meta}`. 12-core Apple Silicon
+> (8P + 4E), macOS, gradient, qp 40, 20 paired rounds, sizes 64–1024, **15/15
+> cells byte-identical**. Timed runs NOT niced (Darwin maps `nice -n 19` to
+> background QoS / efficiency cores).
+>
+> | preset | port intercept | port slope | C intercept | C slope | slope-ratio | intercept-ratio |
+> |---|---|---|---|---|---|---|
+> | p6  | 5.689 ms | 274.77 ms/MP | 1.128 ms | 38.86 ms/MP | **7.07×** | 5.04× |
+> | p10 | 0.199 ms |  67.50 ms/MP | 0.209 ms |  8.49 ms/MP | **7.95×** | 0.95× |
+> | p13 | 0.261 ms |  67.73 ms/MP | 0.214 ms |  8.44 ms/MP | **8.03×** | 1.22× |
+>
+> For scale, the post-campaign x86-64 numbers are 5.18× (p6), 2.00× (p10), 1.92×
+> (p13) — so on aarch64 the port sits roughly **4× further from C at the fast
+> presets**. The intercept is already at parity (0.95×/1.22× at p10/p13), so the
+> entire gap is per-pixel slope, i.e. kernels. That is consistent with where the
+> SIMD actually lives:
+>
+> - the shared transform kernels DO have a NEON arm, but it is
+>   **dimension-bounded** — `NEON_FWD_MAX_DIM = 16`, `NEON_INV_MAX_DIM = 8`
+>   (`txfm_simd.rs`); larger shapes fall through to the scalar core, and at
+>   256×256+ most of the transform work is larger than that;
+> - `get_nz_map_contexts`' SIMD (`nz_map_ctxs_impl_v3` + the 57 KiB `NZ_OFFSET`
+>   table) is **x86-only** — there is no NEON arm, so the coefficient-context
+>   walk is scalar on this machine.
+>
+> Not acted on: this is a status measurement, not an optimisation campaign. The
+> measurable next steps are a NEON `get_nz_map_contexts` and raising the NEON
+> transform dimension caps, both checkable with
+> `cargo bench -p zenav1-svt-dsp --bench kernel_tiers` before any encoder work.
+>
+> ### The gate was SILENTLY DEAD from the submodule move until 2026-08-06
+>
+> `tools/perf_c_encode/build.sh` still pointed its `-I` flags at `$ROOT/Source/…`,
+> the pre-submodule location of the C tree. After the move to
+> `reference/svt-av1/` every include resolved to a missing directory, the build
+> died on `#include "EbSvtAv1.h"`, and `perf_gate.sh` aborted at "C harness build
+> failed". `capture_c_trace/build.sh` was updated for the move; this one was
+> missed. That is why the newest perf artifact before today was 2026-07-23 —
+> not because nobody ran it, but because running it could not work. Fixed.
+>
+> **Staleness of everything else in this file:** the headline x86-64 fit is
+> 2026-07-20 / `d4c75a762`, and the newest x86 data is 2026-07-23. Since then
+> `svtav1-dsp` gained the aarch64 tier for the shared transform kernels
+> (`3a2069f4f`, 2026-07-28) and new WHT kernels (2026-08-03), `svtav1-entropy`
+> changed on 2026-08-04 and `svtav1-encoder` on 2026-08-05 — all in the measured
+> areas. Treat the x86-64 numbers as ~2 weeks stale on top of being
+> wrong-architecture for this box.
+
 ## The honest caveat
 
 G4 per the criteria is measured *"once parity holds."* Parity holds on the

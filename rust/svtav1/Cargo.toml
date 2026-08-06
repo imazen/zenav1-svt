@@ -29,6 +29,9 @@ png = "0.18.1"
 # Dev-only: no release build carries it.
 archmage = { workspace = true, features = ["testable_dispatch"] }
 zenav1-svt-encoder = { workspace = true }
+# `examples/cancel_latency.rs` installs a real `enough::Stop` implementation to
+# MEASURE how long `cancel()` takes to stop an in-flight encode. Example-only.
+enough = { workspace = true }
 
 [lints]
 workspace = true

@@ -137,6 +137,10 @@ impl BlockSize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // This crate is `no_std`; `Vec` is not in the prelude. Without this import
+    // `cargo test -p zenav1-svt-types` fails to build, and only the workspace
+    // run passed because feature unification pulled in `std` from a sibling.
+    use alloc::vec::Vec;
 
     #[test]
     fn block_size_discriminants_match_c() {

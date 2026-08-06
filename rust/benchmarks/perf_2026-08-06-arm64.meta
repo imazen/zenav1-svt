@@ -1,0 +1,61 @@
+# perf_gate fit + verdict
+date: 2026-08-06T22:40:47Z
+commit: 1a701b755
+host: mac (12 cores)
+content: gradient
+grid: content=gradient sizes=[64 128 256 512 1024] presets=[6 10 13] qp=40 rounds=20 warmup=1
+harness: interleaved paired (randomized per-round order); no target-cpu=native; setup excluded both sides
+target: <= ~1.2x C wall clock (matched preset+qp, byte-identical envelope)
+fits (ms = intercept + slope*pixels):
+  p6   port: intercept=5.689 ms  slope=274.7663 ms/MP   |   C: intercept=1.128 ms  slope=38.8554 ms/MP   |   slope-ratio=7.07x  intercept-ratio=5.04x
+  p10  port: intercept=0.199 ms  slope=67.4987 ms/MP   |   C: intercept=0.209 ms  slope=8.4938 ms/MP   |   slope-ratio=7.95x  intercept-ratio=0.95x
+  p13  port: intercept=0.261 ms  slope=67.7284 ms/MP   |   C: intercept=0.214 ms  slope=8.4381 ms/MP   |   slope-ratio=8.03x  intercept-ratio=1.22x
+
+# ---- context added by hand (the harness cannot know these) -----------------
+arch: aarch64 (Apple Silicon, 8 performance + 4 efficiency cores), macOS
+cpu-tier: this is the FIRST port-vs-C measurement on the NEON tier. Every
+  previously committed ratio (perf_2026-07-20 and the whole "Landed byte-inert
+  optimizations" campaign in docs/perf-status.md) was taken on `dev-32gb`, a
+  16-core x86-64 box, and every kernel that campaign added is an AVX2
+  (`incant!([v3, neon, scalar])` v3) arm. None of those numbers describe this
+  machine.
+niceness: 0 — the TIMED encodes are NOT niced. `perf_gate.sh` applies `$LOWPRI`
+  to its two build steps only (lines 73, 79), never to the measurement, which is
+  the correct behaviour here: on Darwin `nice -n 19` maps to background QoS and
+  schedules onto efficiency cores.
+load: 1.8-2.1 (1-min) before and after; other work was running on the box, so
+  treat these as an honest first reading rather than a quiet-machine best case.
+identity: 15 of 15 cells byte-identical to the C encoder, so every ratio
+  compares the same work.
+
+# ---- why this gate had not been run since 2026-07-23 -----------------------
+`tools/perf_c_encode/build.sh` still pointed its four `-I` flags at
+`$ROOT/Source/...`, the pre-submodule location of the C reference tree. After
+the move to `reference/svt-av1/`, every include resolved to a missing directory
+and the build died on `#include "EbSvtAv1.h"` — which aborts the whole gate at
+"C harness build failed". `capture_c_trace/build.sh` was updated for the move;
+this one was missed, so the perf gate was SILENTLY UNRUNNABLE and the newest
+committed perf artifact stayed at 2026-07-23. Fixed in the same commit as this
+measurement.
+
+# ---- reading ---------------------------------------------------------------
+arm64 slope-ratios are 7.07x (p6), 7.95x (p10), 8.03x (p13). For scale, the
+x86-64 numbers after the SIMD campaign were 5.18x (p6), 2.00x (p10), 1.92x
+(p13) — so on aarch64 the port is roughly 4x further from C at the fast presets
+than it is on x86-64. That is consistent with where the SIMD actually lives, not
+a surprise:
+  * the shared transform kernels DO have a NEON arm, but it is
+    DIMENSION-BOUNDED (`NEON_FWD_MAX_DIM = 16`, `NEON_INV_MAX_DIM = 8` in
+    txfm_simd.rs); larger shapes fall through to the scalar core, and at
+    256x256+ most of the transform work is larger than that;
+  * `svtav1-entropy`'s `get_nz_map_contexts` SIMD (`nz_map_ctxs_impl_v3`, and
+    the 57 KiB `NZ_OFFSET` table it indexes) is x86-ONLY — there is no NEON arm
+    at all, so the coefficient-context walk is scalar here;
+  * the intercept story differs too: p10/p13 intercept-ratios are 0.95x/1.22x
+    (the port's fixed per-frame cost is at parity with C on this machine), so
+    the whole gap is per-pixel slope, i.e. kernels.
+NOT ACTED ON. This is a status measurement, not the start of an optimisation
+campaign. The next honest step, if one is wanted, is a NEON arm for
+`get_nz_map_contexts` and raising the NEON transform dimension caps — both
+measurable with `cargo bench -p zenav1-svt-dsp --bench kernel_tiers` before any
+encoder-level work.

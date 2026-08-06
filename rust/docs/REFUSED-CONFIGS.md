@@ -2,7 +2,7 @@
 
 # Configs this encoder refuses
 
-**10 CAPABILITY refusals** (unimplemented — this is DEBT) and **17
+**10 CAPABILITY refusals** (unimplemented — this is DEBT) and **23
 CONTRACT refusals** (caller misuse — permanent and correct).
 
 Regenerate with `tools/refusal_inventory.sh`; `--check` is a CI gate.
@@ -49,11 +49,17 @@ aloud in a status report before anyone acted on it.
 | `crates/svtav1-encoder/src/pipeline.rs` | native 10-bit input needs a bd10 consumer: 64-aligned dims and either preset >= 9 or a full-RD-capable preset <= 8 (non-screen content) — see docs/hbd-input-port-map.md chunk 2 |
 | `crates/svtav1-encoder/src/pipeline.rs` | native 10-bit monochrome input needs the bd10 level re-encode post-pass: 64-aligned dims at preset >= 9 — see docs/hbd-input-port-map.md chunk 2 |
 | `crates/svtav1-encoder/src/pipeline.rs` | native 10-bit source went unconsumed (the bd10 level re-encode was skipped for this frame's partition trees) — the encode would have silently truncated to 8 bits; see docs/hbd-input-port-map.md chunk 2 |
-| `crates/svtav1-encoder/src/pipeline.rs` | superres with loop restoration enabled (allintra preset <= 6) is not wired yet — C runs LR on the UPSCALED frame; use preset >= 7 |
+| `crates/svtav1-encoder/src/pipeline.rs` | superres is not wired for frames that also run loop restoration (allintra preset <= 6, unless the frame is small enough that restoration is force-disabled) — C runs LR on the UPSCALED frame while this port searches and applies it at the coded width; use preset >= 7 |
 | `crates/svtav1-encoder/src/pipeline.rs` | try_encode_frame_420_hbd requires the pipeline to be built with with_chroma_420(true) |
 | `crates/svtav1-encoder/src/pipeline.rs` | try_encode_frame_420_hbd requires with_bit_depth(10) (8-bit sources use encode_frame_420; 12-bit is outside C's shipping envelope) |
 | `crates/svtav1-encoder/src/pipeline.rs` | try_encode_frame_hbd is the monochrome entry point; use try_encode_frame_420_hbd on a 4:2:0 pipeline |
 | `crates/svtav1-encoder/src/pipeline.rs` | try_encode_frame_hbd requires with_bit_depth(10) |
 | `crates/svtav1-encoder/src/pipeline.rs` | u/v planes must each be at least (true_w/2 x true_h/2) |
+| `svtav1/src/avif.rs` | 4:2:0 needs even width and height (odd dims have no whole chroma plane) |
+| `svtav1/src/avif.rs` | a chroma plane is shorter than (height/2) * (width/2) |
 | `svtav1/src/avif.rs` | bit depth must be 8 or 10 (C v4.2.0 rejects every other depth at encoder init) |
+| `svtav1/src/avif.rs` | luma plane is shorter than (height - 1) * y_stride + width |
 | `svtav1/src/avif.rs` | only 4:2:0 chroma is implemented (and C v4.2.0 ships 420 only) |
+| `svtav1/src/avif.rs` | pixel buffer is shorter than (height - 1) * stride + width |
+| `svtav1/src/avif.rs` | stride is smaller than the width (rows would overlap) |
+| `svtav1/src/avif.rs` | width and height must both be non-zero |

@@ -36,7 +36,11 @@
 //! C's cfg.tile_columns / the C driver's SVT_TILE_COLUMNS (task #96).
 //! Both are CLAMPED to what the frame geometry supports, exactly like C
 //! (`svt_aom_set_tile_info`), so an over-request degrades rather than
-//! diverging. `tools/tile_gate.sh` drives the pair as SVTAV1_TILES.
+//! diverging. `tools/tile_gate.sh` drives the pair as SVTAV1_TILE_ROWS_LOG2 /
+//! SVTAV1_TILE_COLS_LOG2 — the names this example actually reads. (It used to
+//! say `SVTAV1_TILES`, which nothing reads: following that doc set an env var
+//! that was silently ignored, the exact silent-harness trap CLAUDE.md warns
+//! about.)
 //!
 //! Env: SVTAV1_SB (task #91) — pin the superblock size to 64 or 128.
 //! UNSET (the default) derives it with C's own rule

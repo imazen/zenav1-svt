@@ -351,13 +351,14 @@ pub fn apply_cdef_frame(
     chroma_420: bool,
     geom: &DeblockGeom,
     params: &CdefPick,
-) -> CdefStats {
+    stop: &dyn enough::Stop,
+) -> crate::EncodeResult<CdefStats> {
     let mut stats = CdefStats::default();
     // Decoder's frame-level gate (libaom decodeframe.c:5417 do_cdef):
     // `cdef_bits || strengths[0]` — with bits > 0 the pass runs even when
     // set 0 is zero (other sets may filter).
     if !params.any(!chroma_420) {
-        return stats;
+        return Ok(stats);
     }
     assert!(width % 8 == 0 && height % 8 == 0, "8-aligned frames only");
 
@@ -379,6 +380,11 @@ pub fn apply_cdef_frame(
     let mut var = [[0i32; 8]; 8];
 
     for fbr in 0..nvfb {
+        // Feature 1: byte-inert cooperative-cancellation poll. This pass was
+        // MEASURED as the largest single un-polled block in the encode — 149 ms
+        // of a 926 ms 4096x4096 preset-8 frame (benchmarks/cancel_latency_*),
+        // so a cancel landing here used to be ignored outright.
+        crate::stop_check(stop)?;
         let vsize = 64.min(height - fbr * 64); // nvb << 2 in C mi units
         for fbc in 0..nhfb {
             let hsize = 64.min(width - fbc * 64);
@@ -501,7 +507,7 @@ pub fn apply_cdef_frame(
             }
         }
     }
-    stats
+    Ok(stats)
 }
 
 /// Build one plane's padded fb source: `src[r][c]` = snapshot pixel when
@@ -562,9 +568,10 @@ pub fn apply_cdef_frame_hbd(
     geom: &DeblockGeom,
     params: &CdefPick,
     bit_depth: u8,
-) {
+    stop: &dyn enough::Stop,
+) -> crate::EncodeResult<()> {
     if !params.any(!chroma_420) {
-        return;
+        return Ok(());
     }
     assert!(width % 8 == 0 && height % 8 == 0, "8-aligned frames only");
     assert!(bit_depth == 10, "bd12 out of scope (docs/bd10-port-map.md)");
@@ -586,6 +593,9 @@ pub fn apply_cdef_frame_hbd(
     let mut var = [[0i32; 8]; 8];
 
     for fbr in 0..nvfb {
+        // Feature 1: byte-inert cooperative-cancellation poll (the bd10 twin of
+        // the u8 pass's per-filter-block-row check).
+        crate::stop_check(stop)?;
         let vsize = 64.min(height - fbr * 64);
         for fbc in 0..nhfb {
             let hsize = 64.min(width - fbc * 64);
@@ -701,6 +711,7 @@ pub fn apply_cdef_frame_hbd(
             }
         }
     }
+    Ok(())
 }
 
 /// Run the C-exact block kernel into `buf` and account evidence counters.
@@ -1172,6 +1183,7 @@ pub fn cdef_search_still(
     chroma_420: bool,
     geom: &DeblockGeom,
     qindex: u8,
+    stop: &dyn enough::Stop,
 ) -> crate::EncodeResult<CdefSearchPick> {
     assert!(width % 8 == 0 && height % 8 == 0, "8-aligned frames only");
     let damping = 3 + (qindex as i32 >> 6);
@@ -1190,6 +1202,10 @@ pub fn cdef_search_still(
     let mut dlist: Vec<(usize, usize)> = Vec::with_capacity(64);
 
     for fbr in 0..nvfb {
+        // Feature 1: byte-inert cooperative-cancellation poll — the CDEF
+        // strength search (allintra presets <= 6) is a whole-frame pass with
+        // no other yield point.
+        crate::stop_check(stop)?;
         let vsize = 64.min(height - fbr * 64);
         for fbc in 0..nhfb {
             let hsize = 64.min(width - fbc * 64);
@@ -1375,6 +1391,7 @@ pub fn cdef_search_still_hbd(
     geom: &DeblockGeom,
     qindex: u8,
     bit_depth: u8,
+    stop: &dyn enough::Stop,
 ) -> crate::EncodeResult<CdefSearchPick> {
     assert!(width % 8 == 0 && height % 8 == 0, "8-aligned frames only");
     assert!(bit_depth == 10, "bd12 out of scope (docs/bd10-port-map.md)");
@@ -1394,6 +1411,10 @@ pub fn cdef_search_still_hbd(
     let mut dlist_byx: Vec<(u8, u8)> = Vec::with_capacity(64);
 
     for fbr in 0..nvfb {
+        // Feature 1: byte-inert cooperative-cancellation poll — the CDEF
+        // strength search (allintra presets <= 6) is a whole-frame pass with
+        // no other yield point.
+        crate::stop_check(stop)?;
         let vsize = 64.min(height - fbr * 64);
         for fbc in 0..nhfb {
             let hsize = 64.min(width - fbc * 64);

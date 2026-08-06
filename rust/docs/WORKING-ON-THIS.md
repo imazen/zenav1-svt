@@ -261,6 +261,44 @@ patched.
 So: **re-measure before you build on a doc claim.** If a doc and the source
 disagree, the source wins and the doc gets fixed in the same change.
 
+### Open, as of 2026-08-06
+
+- **`tools/bd10_hbd_src_gate.sh` is RED on aarch64: 97/100.** Failing cells:
+  `gradient_64_q8_p6`, `gradient_128_q8_p8`, `gradient_128_q20_p8`. Verified
+  pre-existing (same three cells, same counts, on a clean tree). CI runs this
+  gate unnarrowed on x86-64, so this is most likely **instance #7 of the
+  cross-ISA class** in `docs/SUSPECTED-C-BUGS.md` #9 — but that has NOT been
+  established, and §7's rule applies: do not file a possible port bug as an
+  upstream quirk. Resolving it needs the documented protocol — extend
+  `tier_invariance.rs` over these exact three cells first, then
+  `tools/cross_isa_port_check.sh` (which needs the colima x86 VM from §5c).
+  Until then the pins stay un-scoped and the gate stays red here.
+  `STATUS.md`'s "Known failing test: (none)" line is about the TEST SUITE,
+  which is green (1039/1039); it does not cover the shell gates.
+- **The `no_std` configuration of `zenav1-svt-encoder` does not compile.**
+  `cargo check -p zenav1-svt-encoder --no-default-features` fails on two ungated
+  `std::env::var` calls in `pipeline.rs` (`SVTAV1_SC_TOOLS`). The crate's
+  `#![cfg_attr(not(feature = "std"), no_std)]` and its ~40 feature gates are
+  therefore aspirational, not a shipping configuration — and `just test-minimal`
+  does not catch it, because `--no-default-features` still turns encoder `std`
+  on through the `zenav1-svt -> zenav1-svt-encoder` edge. If you fix those two
+  lines, you MUST also resolve `intrabc::libm_exp`'s `unimplemented!()` in the
+  same change: it is reachable at screen content + qp >= 46 on presets M0..M4,
+  so repairing the build would silently turn a low-quality screen-content
+  encode into a panic. The stub carries this note too.
+- **The perf gate ran for the first time since 2026-07-23** — it had been
+  silently unrunnable (stale `-I` paths in `tools/perf_c_encode/build.sh` after
+  the C tree moved into the `reference/svt-av1` submodule). Fixed, and the FIRST
+  aarch64 port-vs-C numbers are in `benchmarks/perf_2026-08-06-arm64.meta`:
+  slope-ratios 7.07x/7.95x/8.03x at p6/p10/p13, roughly 4x further from C than
+  the x86-64 post-campaign figures, because the SIMD campaign was AVX2-only.
+  Every other number in `docs/perf-status.md` is x86-64 and ~2 weeks stale.
+- **Cancellation latency is measured now**, not assumed:
+  `benchmarks/cancel_latency_2026-08-06.meta`. It meets a 20 ms bar at 64/256/
+  1024 at every preset measured (worst p99 4.12 ms) and does NOT at 4096x4096
+  (p99 18-28 ms), where the residual is frame-buffer teardown on the way out,
+  not poll density — the success path pays the same 15-23 ms.
+
 ## 9. Where the bodies are
 
 | you want | look at |

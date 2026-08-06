@@ -620,6 +620,17 @@ fn refine_depth(
 }
 
 /// C `perform_pred_depth_refinement` (enc_dec_process.c:1985).
+///
+/// This is the C-FAITHFUL 4-argument signature and it is kept deliberately —
+/// production calls [`build_refined_scan_at`], the port's extension carrying the
+/// extra `sb_x`/`sb_y`/`sb_max_min`/`max_tx_size` parameters that SB128 and the
+/// NSQDBG dump need (docs/sb128-port-map.md). Keeping the C shape means the
+/// per-SB64 call and its capture-pinned tests read exactly like the C they were
+/// transcribed from; `#[cfg(test)]`-gating it would delete that correspondence
+/// from the shipped crate, which the repo's "dead-looking C stays translated"
+/// rule forbids. `allow(dead_code)` only outside `cfg(test)`, where the six
+/// callers live, so a real orphaning still shows up in a test build.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn build_refined_scan(
     root: &Pd0Eval,
     ctrls: &DrCtrls,

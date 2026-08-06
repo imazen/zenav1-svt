@@ -187,11 +187,14 @@ pub struct EncodePipeline {
     pub sb_size_override: Option<usize>,
     /// What C's rule alone asked for, BEFORE the override and the
     /// capability fallback. Stored rather than recovered from `sb_size` +
-    /// `sb128_fallback`: once `sb128_encode_supported` stops being a
-    /// constant false, `(sb_size, fallback)` no longer determines the
-    /// derived value (an explicit `Some(128)` on a supported preset would
-    /// be indistinguishable from a derived 128), and a later
-    /// `with_sb_size(None)` would silently resolve to the wrong grid.
+    /// `sb128_fallback`: `sb128_encode_supported` is now a constant TRUE
+    /// (it was a constant false when this field was added), so
+    /// `(sb_size, fallback)` no longer determines the derived value — an
+    /// explicit `Some(128)` on a supported preset is indistinguishable from
+    /// a derived 128, and a later `with_sb_size(None)` would silently
+    /// resolve to the wrong grid. Consequence worth knowing: `fell_back`
+    /// can no longer be set, so `sb128_fallback` is permanently `false` and
+    /// the fallback prose above describes a path that is no longer taken.
     pub derived_sb_size: usize,
     /// True when [`Self::sb_size`] was forced back to 64 because the C rule
     /// asked for 128 on a cell the SB128 encode path does not support yet.
@@ -371,14 +374,17 @@ impl EncodePipeline {
     /// `merge_sb_units` and `sb128_geom::sb_coding_units`. Everything below
     /// the root is the byte-proven per-64 path.
     ///
-    /// STILL UNPORTED, so still gated (see `sb128_root_always_split`):
-    /// a genuine 128-level NONE/HORZ/VERT RD search (this path is
-    /// forced-SPLIT), the b64<->sb stat bridges (`get_sb128_variance` /
-    /// `get_sb128_me_data`), and the CDEF 4-quadrant three-phase contract.
+    /// STILL UNPORTED: a genuine 128-level NONE/HORZ/VERT RD search (this
+    /// path is forced-SPLIT — see the unconditional `PartitionType::Split`
+    /// in `merge_sb_units`), the b64<->sb stat bridges
+    /// (`get_sb128_variance` / `get_sb128_me_data`), and the CDEF
+    /// 4-quadrant three-phase contract.
     fn sb128_encode_supported(preset: u8) -> bool {
-        // Preset gate only; the CONTENT gate (forced-SPLIT validity) is
-        // applied per-frame in `encode_frame_internal`, which can see the
-        // pixels. Presets 0/1 are the only ones C ever codes at 128 in
+        // Preset gate only. A CONTENT gate (forced-SPLIT validity, needing
+        // the pixels) was planned per-frame and is NOT implemented: the only
+        // runtime check is `merge_sb_units`' `debug_assert!(is_key, ..)`,
+        // which is compiled out in release.
+        // Presets 0/1 are the only ones C ever codes at 128 in
         // allintra (`derive_super_block_size`), so anything else reaching
         // here is an `SVTAV1_SB=128` override — honour it, the walk is
         // preset-agnostic.
@@ -402,13 +408,50 @@ impl EncodePipeline {
     /// `Some(128)` on a cell whose encode path is unsupported still falls
     /// back to 64 and sets [`Self::sb128_fallback`] — the override chooses
     /// what to ASK for, not what to bypass.
+    ///
+    /// # Errors
+    ///
+    /// Only 64 and 128 are AV1 superblock sizes. Any other value is RECORDED
+    /// and refused as [`EncodeError::UnsupportedConfig`] at the
+    /// `encode_frame_impl` choke point (see [`Self::sb_size_config_error`]),
+    /// exactly like an unsupported bit depth or superres denominator — the
+    /// pipeline's own `sb_size` is left alone so nothing downstream ever sees
+    /// the bad value.
+    ///
+    /// MEASURED before this was added: `with_sb_size(Some(96))` reached
+    /// `entropy::context::block_size_index` and panicked with "no BlockSize for
+    /// 96x96" in a RELEASE build, through `try_encode_frame_420` — the
+    /// fallible API. `Some(32)` panicked in `pd0.rs` instead. The only guard
+    /// was a `debug_assert!` in `resolve_sb_size`, which is compiled out
+    /// exactly where it mattered.
     pub fn with_sb_size(mut self, sb: Option<usize>) -> Self {
         self.sb_size_override = sb;
+        if Self::sb_size_override_error(sb).is_some() {
+            return self;
+        }
         let (sb_size, fell_back) =
             Self::resolve_sb_size(self.derived_sb_size, sb, self.speed_config.preset);
         self.sb_size = sb_size;
         self.sb128_fallback = fell_back;
         self
+    }
+
+    /// The one legality rule for [`Self::sb_size_override`]: AV1 has exactly
+    /// two superblock sizes.
+    fn sb_size_override_error(sb: Option<usize>) -> Option<&'static str> {
+        match sb {
+            None | Some(64) | Some(128) => None,
+            Some(_) => Some(
+                "superblock size override must be 64 or 128 — AV1 signals the choice as a single \
+                 `use_128x128_superblock` bit, so no other value exists",
+            ),
+        }
+    }
+
+    /// Choke-point twin of [`Self::sb_size_override_error`], named to match the
+    /// other `*_config_error` predicates the refusal inventory scans.
+    fn sb_size_config_error(&self) -> Option<&'static str> {
+        Self::sb_size_override_error(self.sb_size_override)
     }
 
     /// Enable super-resolution at `denom` (9..=16) — superres chunk B.3.
@@ -425,11 +468,29 @@ impl EncodePipeline {
     /// Off by default (denominator 8), matching C. Re-derives the aligned
     /// encode dims and the superblock size from the CODED width, exactly as
     /// [`Self::new`] would have for a frame of that width.
+    /// # Errors
+    ///
+    /// An out-of-range `denom` is NOT rejected here — it is recorded and
+    /// refused as [`EncodeError::UnsupportedConfig`] by
+    /// [`Self::superres_config_error`] at the `encode_frame_impl` choke point,
+    /// like every other unsupported configuration.
     pub fn with_superres(mut self, denom: u8) -> Self {
-        assert!(
-            (9..=16).contains(&denom),
-            "SuperresDenom must be 9..=16 (8 = unscaled = no superres); got {denom}"
-        );
+        // This used to `assert!((9..=16).contains(&denom))` INSIDE the builder,
+        // which made a caller-supplied config value abort the process even for
+        // callers using the fallible `try_encode_frame*` API — and
+        // `with_superres(8)`, the value this method's own doc calls "unscaled =
+        // no superres", was one of the aborting values. The typed check in
+        // `superres_config_error` was unreachable behind it.
+        //
+        // Record the request and return early WITHOUT recomputing the geometry:
+        // `scaled_size` divides by `denom`, so denom 0 is a divide-by-zero, and
+        // deriving dims from a denominator we are about to refuse is pointless.
+        // The pipeline therefore keeps its non-superres geometry and the encode
+        // returns `Err(UnsupportedConfig("SuperresDenom must be 9..=16"))`.
+        if !(9..=16).contains(&denom) {
+            self.superres_denom = Some(denom);
+            return self;
+        }
         let coded =
             u32::from(svtav1_dsp::superres::scaled_size(self.upscaled_width as u16, denom));
         self.superres_denom = Some(denom);
@@ -643,8 +704,12 @@ impl EncodePipeline {
     /// purely at the boundary: the legacy `assert!`s become typed
     /// [`EncodeError`]s, and the cooperative cancellation token
     /// ([`Self::stop`]) is checked once at entry. The legacy method is left
-    /// untouched. Internally this calls the SAME infallible
-    /// `encode_frame_impl`, so it cannot change the emitted bytes.
+    /// untouched. Internally this calls the SAME `encode_frame_impl`, so it
+    /// cannot change the emitted bytes. (That core is itself FALLIBLE — it
+    /// has its own config refusals, fallible allocations and in-encode stop
+    /// checks; the panicking wrapper is what turns those into an `.expect()`.
+    /// This doc used to call it "infallible", which sent anyone auditing the
+    /// error paths straight past the body.)
     pub fn try_encode_frame(&mut self, y_plane: &[u8], y_stride: usize) -> EncodeResult<Vec<u8>> {
         // (a) Validate — mirror the `encode_frame` asserts.
         if self.width != self.true_width || self.height != self.true_height {
@@ -895,7 +960,11 @@ impl EncodePipeline {
             ),
         ) {
             return Some(
-                "superres with loop restoration enabled (allintra preset <= 6) is not wired yet                  — C runs LR on the UPSCALED frame; use preset >= 7",
+                "superres is not wired for frames that also run loop restoration \
+                 (allintra preset <= 6, unless the frame is small enough that \
+                 restoration is force-disabled) — C runs LR on the UPSCALED frame \
+                 while this port searches and applies it at the coded width; use \
+                 preset >= 7",
             );
         }
         if self.bit_depth != 8 {
@@ -1108,6 +1177,33 @@ impl EncodePipeline {
         if let Some(why) = self.superres_config_error() {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(why)));
         }
+        // Same choke point, same rule, for the superblock-size override. A
+        // non-{64,128} value used to reach the entropy writer and panic there
+        // in release builds (`no BlockSize for 96x96`).
+        if let Some(why) = self.sb_size_config_error() {
+            return Err(whereat::at!(EncodeError::UnsupportedConfig(why)));
+        }
+        // ... and for a frame AV1 cannot tile at all. `TileGrid::resolve` picks
+        // each axis with `requested.clamp(min, max)`, and `Ord::clamp` panics
+        // when `min > max` — which happens above 64 * MAX_TILE_WIDTH = 262144 px
+        // of width (MEASURED: 262144x64 encoded, 262208x64 aborted the process
+        // through `try_encode_frame_420`), and on the row axis via
+        // MAX_TILE_AREA / MAX_TILE_ROWS. Such a frame is genuinely unencodable
+        // in AV1, so it gets a typed refusal here rather than a clamp panic
+        // three crates away.
+        if let Some(why) = svtav1_entropy::obu::TileLimits::for_frame(
+            self.width,
+            self.height,
+            self.sb_size as u32,
+        )
+        .untileable_reason(self.tile_cols_log2)
+        {
+            return Err(whereat::at!(EncodeError::InvalidDimensions {
+                width: self.true_width,
+                height: self.true_height,
+                reason: why,
+            }));
+        }
         // Same choke point, same rule, for the bit-depth axis: a 10-bit request
         // that no bd10 stage can serve would emit 8-bit-quantized levels under a
         // 10-bit sequence header. See `bit_depth_config_error`. This covers the
@@ -1216,6 +1312,19 @@ impl EncodePipeline {
         // closure, and `encode_tile_rows` all check the same token. The default
         // `Unstoppable` token's `may_stop()` is `false`, so every guarded check
         // below is a byte-inert false-branch.
+        //
+        // WHY THE POLLS ARE WHERE THEY ARE. Each `Step N` below opens with a
+        // `stop_check(&stop)?`, which bounds a cancel's wait by the length of
+        // ONE phase. Before those existed the whole post-entropy tail — deblock,
+        // CDEF, loop restoration, film grain, OBU assembly, recon publish, RC —
+        // polled nothing, and a cancel landing in it was IGNORED: the encode ran
+        // to completion and returned `Ok`. That tail was MEASURED at 205 ms of a
+        // 926 ms 4096x4096 preset-8 frame. The phase timings, the per-size
+        // percentiles and the verdict against a 20 ms bar live in ONE place —
+        // `benchmarks/cancel_latency_2026-08-06.meta`, produced by
+        // `svtav1/examples/cancel_latency.rs`. Do not restate the numbers at the
+        // individual poll sites; nine copies of one measurement is eight that go
+        // stale unnoticed.
         let stop = self.stop.clone();
 
         // Step 1: Determine frame type from GOP structure
@@ -2014,9 +2123,7 @@ impl EncodePipeline {
             for sb_row in tile_sb_row_start..tile_sb_row_end {
                 // Feature 1: byte-inert cooperative-cancellation check (no-op
                 // for the default `Unstoppable` token — `may_stop()` is false).
-                if stop.may_stop() {
-                    stop.check().map_err(EncodeError::from).map_err(whereat::at)?;
-                }
+                crate::stop_check(&stop)?;
                 for sb_col in tile_sb_col_start..tile_sb_col_end {
                     tree_slots[sb_row * sb_cols + sb_col] = Some(tile_trees[tree_k].clone());
                     tree_k += 1;
@@ -2025,9 +2132,7 @@ impl EncodePipeline {
             let mut offset = 0;
             for sb_row in tile_sb_row_start..tile_sb_row_end {
                 // Feature 1: byte-inert cooperative-cancellation check.
-                if stop.may_stop() {
-                    stop.check().map_err(EncodeError::from).map_err(whereat::at)?;
-                }
+                crate::stop_check(&stop)?;
                 for sb_col in tile_sb_col_start..tile_sb_col_end {
                     let x0 = sb_col * sb_size;
                     let y0 = sb_row * sb_size;
@@ -2075,6 +2180,9 @@ impl EncodePipeline {
             .map(|t| t.expect("every SB is covered by exactly one tile"))
             .collect();
 
+        // Feature 1: phase-boundary cancellation poll (the bd10 luma level re-encode) — see the
+        // `stop` note at the top of this function.
+        crate::stop_check(&stop)?;
         // Step 4c: bd10 LUMA re-encode (task #94, the u16 MD path). The u8
         // funnel above produced C's partition/mode/tx decisions (RD is
         // ~16x-scale-invariant for `sample << 2` content); this pass recomputes
@@ -2238,7 +2346,7 @@ impl EncodePipeline {
                 // ×16 of the bd8 lambda — see kf_full_lambda_bd10.
                 let lambda_bd10 =
                     u64::from(crate::pd0::kf_full_lambda_bd10(base_qindex, tpl_adjusted_qp as u32));
-                let recon10 = bd10_reencode_luma(
+                let recon10 = crate::bd10_reencode::bd10_reencode_luma(
                     &mut all_trees,
                     sb_cols,
                     sb_size,
@@ -2286,7 +2394,7 @@ impl EncodePipeline {
                             v_src.iter().map(|&s| (s as u16) << shift).collect(),
                         ),
                     };
-                    let uv10 = bd10_reencode_chroma(
+                    let uv10 = crate::bd10_reencode::bd10_reencode_chroma(
                         &mut all_trees,
                         sb_cols,
                         sb_size,
@@ -2327,6 +2435,9 @@ impl EncodePipeline {
             }
         }
 
+        // Feature 1: phase-boundary cancellation poll (the post-reconstruction filter chain) — see the
+        // `stop` note at the top of this function.
+        crate::stop_check(&stop)?;
         // Step 5: Post-reconstruction filters.
         //
         // Deblocking is SIGNALED and applied decoder-exactly further down
@@ -2502,9 +2613,7 @@ impl EncodePipeline {
             for tile_idx in 0..tile_grid.num_tiles() {
                 // Feature 1: byte-inert cooperative-cancellation check, once per
                 // tile of each entropy re-walk (this closure runs up to 3x).
-                if stop.may_stop() {
-                    stop.check().map_err(EncodeError::from).map_err(whereat::at)?;
-                }
+                crate::stop_check(&stop)?;
                 let (tile_sb_row_start, tile_sb_row_end) =
                     tile_grid.row_span(tile_idx / tile_grid.tile_cols);
                 let (tile_sb_col_start, tile_sb_col_end) =
@@ -2568,12 +2677,13 @@ impl EncodePipeline {
                 let mut prev_sb_row = usize::MAX;
 
                 for sb_row in tile_sb_row_start..tile_sb_row_end {
-                    // Feature 1: byte-inert cooperative-cancellation check, once
-                    // per SB row of the entropy walk.
-                    if stop.may_stop() {
-                        stop.check().map_err(EncodeError::from).map_err(whereat::at)?;
-                    }
                     for sb_col in tile_sb_col_start..tile_sb_col_end {
+                        // Feature 1: byte-inert cooperative-cancellation check,
+                        // once per SUPERBLOCK of the entropy walk. Per SB ROW
+                        // (what this used to be) is ~1.6 ms at 4096x4096, and
+                        // this closure runs up to 3x per frame — the same
+                        // granularity argument as the MD loop above.
+                        crate::stop_check(&stop)?;
                         let sb_idx = sb_row * sb_cols + sb_col;
                         let tree = &all_trees[sb_idx];
                         // [SVT_HDR_MODE] per-SB delta-q: the SB's planned qindex
@@ -2703,6 +2813,9 @@ impl EncodePipeline {
         let (mut tile_data, deblock_geom, mut u_recon, mut v_recon, mut tile_size_bytes_minus_1) =
             run_entropy_walk(None, None)?;
 
+        // Feature 1: phase-boundary cancellation poll (the deblock level pick + frame apply) — see the
+        // `stop` note at the top of this function.
+        crate::stop_check(&stop)?;
         // Step 6a: Deblocking — pick the levels the frame header will
         // signal (C svt_av1_pick_filter_level_by_q closed form) and apply
         // the filter decoder-exactly to the OUTPUT reconstruction. The
@@ -2820,7 +2933,7 @@ impl EncodePipeline {
                             early_exit_convergence,
                             bit_depth: self.bit_depth,
                         };
-                        crate::deblock::pick_filter_levels_full_search(&input)?
+                        crate::deblock::pick_filter_levels_full_search(&input, &stop)?
                     }
                     None => {
                         let input = crate::deblock::DlfSearchInput::<u8> {
@@ -2838,7 +2951,7 @@ impl EncodePipeline {
                             early_exit_convergence,
                             bit_depth: self.bit_depth,
                         };
-                        crate::deblock::pick_filter_levels_full_search(&input)?
+                        crate::deblock::pick_filter_levels_full_search(&input, &stop)?
                     }
                 }
             } else {
@@ -2861,7 +2974,8 @@ impl EncodePipeline {
                     &lf_levels,
                     lf_sharp_eff,
                     self.bit_depth,
-                );
+                    &stop,
+                )?;
             }
         }
         if lf_levels.any() {
@@ -2875,9 +2989,13 @@ impl EncodePipeline {
                 &deblock_geom,
                 &lf_levels,
                 lf_sharp_eff, // = signaled loop_filter_sharpness
-            );
+                &stop,
+            )?;
         }
 
+        // Feature 1: phase-boundary cancellation poll (the CDEF strength pick + frame apply) — see the
+        // `stop` note at the top of this function.
+        crate::stop_check(&stop)?;
         // Step 6a': CDEF — decoder order is deblock -> CDEF (-> restoration,
         // unported). Key frames signal the qp-picked strengths
         // (svt_pick_cdef_from_qp intra branch) and apply the decoder-exact
@@ -2961,6 +3079,7 @@ impl EncodePipeline {
                                 &deblock_geom,
                                 base_qindex,
                                 self.bit_depth,
+                                &stop,
                             )?
                         }
                         None => crate::cdef::cdef_search_still(
@@ -2976,6 +3095,7 @@ impl EncodePipeline {
                             chroma.is_some(),
                             &deblock_geom,
                             base_qindex,
+                            &stop,
                         )?,
                     };
                     match searched {
@@ -3056,7 +3176,8 @@ impl EncodePipeline {
             chroma.is_some(),
             &deblock_geom,
             &cdef_params,
-        );
+            &stop,
+        )?;
         // bd10: apply CDEF to the 10-bit canvas too. Not for output — the u8
         // chain above still produces that — but because the Wiener LR search
         // reads the POST-CDEF recon, and at 10 bits that must be the 10-bit
@@ -3073,9 +3194,13 @@ impl EncodePipeline {
                 &deblock_geom,
                 &cdef_params,
                 self.bit_depth,
-            );
+                &stop,
+            )?;
         }
 
+        // Feature 1: phase-boundary cancellation poll (the Wiener loop-restoration search + apply) — see the
+        // `stop` note at the top of this function.
+        crate::stop_check(&stop)?;
         // Step 6a'': Wiener loop restoration — C order deblock -> CDEF ->
         // LR. The C-exact search (restoration_seg_search +
         // rest_finish_search at the allintra wn_filter controls) picks
@@ -3226,6 +3351,7 @@ impl EncodePipeline {
                             true,
                             rdmult,
                             self.bit_depth,
+                            &stop,
                         )?
                     }
                     None => crate::restoration::search_restoration_still(
@@ -3240,6 +3366,7 @@ impl EncodePipeline {
                         lr_true_h,
                         chroma.is_some(),
                         rdmult,
+                        &stop,
                     )?,
                 };
                 #[cfg(feature = "std")]
@@ -3330,11 +3457,17 @@ impl EncodePipeline {
             }
         }
 
+        // Feature 1: phase-boundary cancellation poll (film-grain estimation) — see the
+        // `stop` note at the top of this function.
+        crate::stop_check(&stop)?;
         // Step 6b: Film grain estimation (compare source to reconstruction)
         let _grain_params = crate::film_grain::estimate_film_grain(&encode_input, &recon, w, h, w);
         // grain_params would be signaled in the frame header OBU
         // and used by the decoder to re-synthesize grain
 
+        // Feature 1: phase-boundary cancellation poll (OBU assembly) — see the
+        // `stop` note at the top of this function.
+        crate::stop_check(&stop)?;
         // Step 7: Build OBU bitstream
         // Use full (non-reduced) sequence header for multi-frame sequences,
         // still-picture header only for single-frame mode. is_single_frame
@@ -3471,6 +3604,9 @@ impl EncodePipeline {
             )
         };
 
+        // Feature 1: phase-boundary cancellation poll (the recon publish + DPB update) — see the
+        // `stop` note at the top of this function.
+        crate::stop_check(&stop)?;
         // Step 7: Publish recon for the recon-parity gate, then update DPB.
         //
         // Superres chunk B.3: what a DECODER outputs is the coded-width recon
@@ -3515,6 +3651,9 @@ impl EncodePipeline {
         };
         self.dpb.refresh(pcs.refresh_frame_flags, &ref_frame);
 
+        // Feature 1: phase-boundary cancellation poll (the rate-control update) — see the
+        // `stop` note at the top of this function.
+        crate::stop_check(&stop)?;
         // Step 8: Update rate control state
         update_rc_state(&mut self.rc_state, bitstream.len() as u64 * 8, pcs.qp);
 
@@ -5953,710 +6092,6 @@ fn bd10_tree_supported(tree: &crate::partition::PartitionTree, edge_filter: bool
     }
 }
 
-/// Returns the frame's 10-bit luma recon as an **SB-extent-sized, ALIGNED-
-/// strided** canvas — the same shape the funnel's `tile_frame_recon10` has, and
-/// for the same reason: a boundary leaf may STRADDLE the aligned extent, and
-/// C's recon picture has SB-extent stride so the straddle lands in place. Here
-/// the stride stays aligned (`w`) and the slack absorbs a right-straddle write's
-/// wrap; the caller crops the in-frame `w * h` region for `last_recon10_y`.
-/// On a 64-aligned frame the extent equals the aligned dims, so the buffer and
-/// every write are byte-identical to the pre-partial-SB pass.
-#[allow(clippy::too_many_arguments)]
-fn bd10_reencode_luma(
-    all_trees: &mut [crate::partition::PartitionTree],
-    sb_cols: usize,
-    sb_size: usize,
-    w: usize,
-    h: usize,
-    // The 10-bit SOURCE, padded to the SB extent at `src_stride` (the u16 twin
-    // of `sb_input` / `in_stride`). A straddling leaf's residual gather reads
-    // the full block width, so an ALIGNED-sized source would wrap into the next
-    // row (right edge) or run past the plane (bottom right).
-    src10: &[u16],
-    src_stride: usize,
-    base_qindex: u8,
-    rdoq_level: u8,
-    lambda_bd10: u64,
-    edge_filter: bool,
-    bd: u8,
-    qm_level: u8,
-    // [SVT_HDR_MODE] fork loop_filter_sharpness (static_config.sharpness). 0 in
-    // mainline → the quant table is byte-identical to build_quant_table_bd.
-    sharpness: i8,
-) -> crate::EncodeResult<alloc::vec::Vec<u16>> {
-    let fc = svtav1_entropy::context::FrameContext::new_default();
-    let cfc = svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex);
-    let rates = crate::leaf_funnel::build_md_rates(&fc, &cfc);
-    let qt = crate::quant::build_quant_table_bd_sharp(base_qindex, bd, sharpness);
-    let ext_w = w.div_ceil(sb_size) * sb_size;
-    let ext_h = h.div_ceil(sb_size) * sb_size;
-    // Seeded with the 10-bit DC default, NOT 0 — the seed the u8
-    // `tile_frame_recon` (128) and the funnel's `tile_frame_recon10` (512)
-    // both carry. The reason it is worth carrying: this buffer is now
-    // SB-extent-SIZED, so `extract_neighbors_hbd`'s `idx < recon.len()` guard
-    // admits slack-region indices that an ALIGNED-sized buffer rejected, and
-    // rejecting meant "extend the last available sample" while admitting a
-    // ZERO would mean predicting against black.
-    // MEASURED byte-inert (2026-08-04) across the whole 198-cell partial-SB
-    // eff-M9 grid — 0 of 198 cells changed verdict or byte count — so no read
-    // reaches an unwritten cell today. Kept anyway: it costs nothing, it makes
-    // the bd10 canvas agree with its u8 twin by construction instead of by
-    // luck, and a `0` seed here is a silent wrong-pixels failure the moment one
-    // does. (rust/CLAUDE.md: dead-looking translations stay, with the
-    // measurement written down.)
-    let mut recon10 = svtav1_types::try_vec![(128u16 << (bd - 8)); ext_w * ext_h]?;
-    for (sb_idx, tree) in all_trees.iter_mut().enumerate() {
-        let sb_col = sb_idx % sb_cols;
-        let sb_row = sb_idx / sb_cols;
-        bd10_reencode_node(
-            sb_size / 4,
-            tree,
-            sb_col * sb_size,
-            sb_row * sb_size,
-            &mut recon10,
-            w,
-            src10,
-            src_stride,
-            &qt,
-            rdoq_level,
-            lambda_bd10,
-            &rates,
-            edge_filter,
-            w,
-            h,
-            bd,
-            qm_level,
-        );
-    }
-    Ok(recon10)
-}
-
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
-fn bd10_reencode_node(
-    // C `seq_header.sb_mi_size` (16 SB64 / 32 SB128) — the intra
-    // availability tables index by `mi & (sb_mi_size - 1)` (task #91).
-    sb_mi_size: usize,
-    tree: &mut crate::partition::PartitionTree,
-    x: usize,
-    y: usize,
-    recon10: &mut [u16],
-    stride: usize,
-    src10: &[u16],
-    src_stride: usize,
-    qt: &crate::quant::QuantTable,
-    rdoq_level: u8,
-    lambda: u64,
-    rates: &crate::leaf_funnel::MdRates,
-    edge_filter: bool,
-    frame_w: usize,
-    frame_h: usize,
-    bd: u8,
-    qm_level: u8,
-) {
-    use crate::partition::PartitionTree as Tr;
-    use crate::partition::PartitionType as PT;
-    match tree {
-        Tr::Leaf(d) => {
-            let bw = d.width as usize;
-            let bh = d.height as usize;
-            assert_eq!(
-                d.tx_depth, 0,
-                "bd10 reencode: tx_depth {} not yet ported (DC-only first cell)",
-                d.tx_depth
-            );
-            // Predict luma at 10-bit from the running 10-bit recon plane.
-            let mut pred = alloc::vec![0u16; bw * bh];
-            // Luma geom for directional prediction (ss=0; tx_depth 0 ⇒ tx==block,
-            // row_off=col_off=0). filt_type is consulted only when edge_filter is
-            // set, and the gate (`bd10_tree_supported`) admits directional leaves
-            // ONLY when edge_filter is false — so 0 is inert here.
-            let geom = crate::leaf_funnel::UnitGeom {
-                mi_row: y >> 2,
-                mi_col: x >> 2,
-                bw_px: bw,
-                bh_px: bh,
-                sb_mi_size,
-                ss: 0,
-                frame_w,
-                frame_h,
-                // PORT-NOTE(task #96): the bd10 re-encode runs AFTER the
-                // per-tile search merges, so it has no tile grid threaded and
-                // treats the frame as one tile. Byte-neutral for every gated
-                // bd10 cell (all single-tile).
-                //
-                // MEASURED CORRECTION (bd10 x tiles coverage, 2026-07-22): this
-                // whole_frame TileMi is NOT the bd10 x multi-tile divergence
-                // root. Threading per-tile bounds here was verified
-                // BYTE-INERT on the diverging cells (stash "cov-combos:
-                // byte-inert bd10 re-encode tile threading"). The actual root
-                // is UPSTREAM: the port's eff-M9 partition search picks a
-                // different tree at a tile boundary at bd10 (tree_diff on
-                // gradient 256x256 q40 p10 r1c1: port keeps bsize 9 at the
-                // y=128 tile-row-boundary SBs mi(32,16)/(32,48) where C — at
-                // BOTH bit depths — splits to bsize 6; the port matches C at
-                // bd8 tiles and at bd10 single-tile). See
-                // docs/coverage-combos-map.md (axis "bd10 x tiles").
-                tile: crate::intra_edge::TileMi::whole_frame(frame_w, frame_h),
-            };
-            crate::leaf_funnel::predict_unit_hbd(
-                recon10,
-                stride,
-                x,
-                y,
-                bw,
-                bh,
-                d.intra_mode,
-                d.angle_delta,
-                d.filter_intra_mode,
-                &geom,
-                edge_filter,
-                0,
-                &mut pred,
-                bd,
-            );
-            let src_off = y * src_stride + x;
-            // RDOQ contexts are 0/0 at eff-M9 (rate_est_level 0).
-            let out = crate::leaf_funnel::tx_unit_hbd(
-                src10,
-                src_stride,
-                src_off,
-                &pred,
-                bw,
-                0,
-                bw,
-                bh,
-                d.tx_type as usize,
-                0, // luma plane
-                0, // txb_skip_ctx
-                0, // dc_sign_ctx
-                qt,
-                rdoq_level,
-                lambda,
-                0, // sharpness
-                rates,
-                rdoq_level != 0,
-                bd,
-                qm_level,
-                None, // level-only re-encode: no RD terms
-            );
-            // Overwrite the coded LUMA levels with the 10-bit result. The walk
-            // re-derives the scan-order eob + skip from these coeffs.
-            //
-            // `out.qcoeff` is the TIGHT (32-capped) packed txb at stride pw; the
-            // entropy walk (pipeline.rs `tx_depth==0` arm) — like the u8
-            // `funnel_block_decision` (partition.rs) — expects `d.qcoeffs` as a
-            // full w*h raster at stride w, from which it re-packs the low-freq
-            // quadrant. Re-expand so 64-dim transforms (pw<w) don't read past
-            // the tight buffer (was: a 64x64 DC leaf at high qindex panicked in
-            // the walk's stride-w pack).
-            let (pw, ph) = (bw.min(32), bh.min(32));
-            let mut full = alloc::vec![0i32; bw * bh];
-            for r in 0..ph {
-                full[r * bw..r * bw + pw].copy_from_slice(&out.qcoeff[r * pw..r * pw + pw]);
-            }
-            d.qcoeffs = full;
-            d.eob = out.eob;
-            // Write the 10-bit recon back for neighbour prediction of the next
-            // block in decode order.
-            //
-            // STRADDLE CLIP (task #94 partial-SB) — the same rule `commit_leaf`
-            // applies to the funnel's canvases: a boundary leaf whose width
-            // reaches past the ALIGNED extent would spill past the row boundary
-            // and, this buffer being SB-extent-sized but aligned-strided, WRAP
-            // into the next row's low columns, corrupting an already-committed
-            // neighbour that a later block predicts from. Nothing ever READS
-            // past the aligned extent, so clipping the write matches C's
-            // readable recon exactly, and it is a no-op wherever
-            // `x + bw <= stride` (every 64-aligned frame).
-            let wr = bw.min(stride.saturating_sub(x));
-            for r in 0..bh {
-                let drow = (y + r) * stride + x;
-                recon10[drow..drow + wr].copy_from_slice(&out.recon[r * bw..r * bw + wr]);
-            }
-        }
-        Tr::Split {
-            partition_type,
-            width,
-            height,
-            children,
-        } => {
-            let nw = *width as usize;
-            let nh = *height as usize;
-            let hw = nw / 2;
-            let hh = nh / 2;
-            let qw = nw / 4;
-            let qh = nh / 4;
-            // Child origins, derived EXACTLY the way `encode_partition_tree`
-            // derives them (the pack walk), because on a partial SB the child
-            // list is no longer a fixed length:
-            //   * SPLIT walks the four quadrant SLOTS and SKIPS any whose
-            //     ORIGIN is outside the aligned frame, pulling the packed
-            //     children in order. Zipping a pruned list against the full
-            //     offset table mis-places them — a right-edge-only prune leaves
-            //     [q0, q2] and would put the BOTTOM-LEFT child at the
-            //     TOP-RIGHT offset.
-            //   * HORZ/VERT may carry a single in-frame child (C codes block 1
-            //     only if `mi_row + hbs < mi_rows`, entropy_coding.c:5490).
-            //   * the extended shapes drop children from the TAIL, so a
-            //     zip against the full list still pairs correctly.
-            // The previous `(partition_type, children.len())` match would have
-            // `panic!`ed on every one of those shapes.
-            let mut recurse = |child: &mut crate::partition::PartitionTree, cx, cy| {
-                bd10_reencode_node(
-                    sb_mi_size, child, cx, cy, recon10, stride, src10, src_stride, qt, rdoq_level,
-                    lambda, rates, edge_filter, frame_w, frame_h, bd, qm_level,
-                );
-            };
-            match *partition_type {
-                PT::Split => {
-                    let mut ci = 0usize;
-                    for i in 0..4usize {
-                        let cx = x + (i & 1) * hw;
-                        let cy = y + (i >> 1) * hh;
-                        if cx >= frame_w || cy >= frame_h {
-                            continue;
-                        }
-                        recurse(&mut children[ci], cx, cy);
-                        ci += 1;
-                    }
-                    debug_assert_eq!(
-                        ci,
-                        children.len(),
-                        "bd10 reencode: in-frame quadrant count must equal the packed child count"
-                    );
-                }
-                PT::Horz => {
-                    let (first, rest) = children.split_at_mut(1);
-                    recurse(&mut first[0], x, y);
-                    if let Some(bot) = rest.first_mut() {
-                        recurse(bot, x, y + hh);
-                    }
-                }
-                PT::Vert => {
-                    let (first, rest) = children.split_at_mut(1);
-                    recurse(&mut first[0], x, y);
-                    if let Some(right) = rest.first_mut() {
-                        recurse(right, x + hw, y);
-                    }
-                }
-                ext => {
-                    let offs: &[(usize, usize)] = match ext {
-                        PT::HorzA => &[(0, 0), (hw, 0), (0, hh)],
-                        PT::HorzB => &[(0, 0), (0, hh), (hw, hh)],
-                        PT::VertA => &[(0, 0), (0, hh), (hw, 0)],
-                        PT::VertB => &[(0, 0), (hw, 0), (hw, hh)],
-                        PT::Horz4 => &[(0, 0), (0, qh), (0, 2 * qh), (0, 3 * qh)],
-                        PT::Vert4 => &[(0, 0), (qw, 0), (2 * qw, 0), (3 * qw, 0)],
-                        other => panic!("bd10 reencode: unsupported partition {other:?}"),
-                    };
-                    for (child, &(dx, dy)) in children.iter_mut().zip(offs) {
-                        recurse(child, x + dx, y + dy);
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// bd10 CHROMA re-encode (task #94). The luma re-encode (`bd10_reencode_luma`)
-/// recomputes only luma levels; chroma stays at the u8 MD decision
-/// (`chroma_dec`). For content whose CHROMA has a coded residual (e.g. the
-/// `diag` diagonal edge — its subsampled chroma is NOT flat), the u8 chroma
-/// levels diverge from C's bd10 chroma quant: C's higher-precision chroma
-/// prediction (the ~+20/px hbd-predictor rounding) yields a small DC residual
-/// that quantizes to ±1 at bd10 where the MSB-truncated u8 path rounds to 0.
-/// Decode-both localization proved the LUMA plane is already byte-identical
-/// (`bd10_reencode_luma`) and every chroma divergence is exactly this (port
-/// codes flat 512 where C codes a coded 511). This walk mirrors the luma pass
-/// on the U and V planes: predict at bd10 (`predict_unit_hbd` on the running
-/// bd10 chroma recon), residual/tx/quant at bd10 (`tx_unit_hbd`, plane 1, the
-/// derived `uv_tx_type` + the bd10 chroma quant table), then OVERWRITE
-/// `chroma_dec` with the bd10 levels/eob. Gated to complete-SB, in-envelope
-/// trees (`bd10_tree_supported`, which now also rejects CfL / directional-uv-
-/// with-edge-filter); flat-chroma content (gradient/uniform) re-encodes to the
-/// SAME zero-coefficient result, so bd8 and the existing bd10 gate cells stay
-/// byte-unchanged. The stored u8 recon in `chroma_dec` is inert (the walk only
-/// copies it into the u8 chroma plane, which no `chroma_dec` block reads).
-#[allow(clippy::too_many_arguments)]
-fn bd10_reencode_chroma(
-    all_trees: &mut [crate::partition::PartitionTree],
-    sb_cols: usize,
-    sb_size: usize,
-    w: usize,
-    h: usize,
-    // The 10-bit CHROMA source, in the SB-extent shape `sb_chroma_owned` has
-    // (aligned stride `cstride`, extra edge-replicated rows) so a straddling
-    // block's residual gather stays in bounds.
-    u_src10: &[u16],
-    v_src10: &[u16],
-    cstride: usize,
-    // The frame's 10-bit LUMA recon from `bd10_reencode_luma` — the SB-EXTENT
-    // canvas at stride `y_stride`, not the cropped `w*h`. It is the CfL AC
-    // source for UV_CFL_PRED leaves, and `cfl_ac_from_frame_recon_hbd` reads
-    // `max(bh, 8)` rows from the block origin, which straddles on a partial SB.
-    y_recon10: &[u16],
-    y_stride: usize,
-    // Frame-level chroma qindex (== base_qindex) — sources ONLY the coeff-rate
-    // context (`cfc`), which C builds once per frame from base_qindex (never
-    // per plane). The per-plane quant TABLES use qindex_u/qindex_v below.
-    chroma_qindex: u8,
-    // [SVT_HDR_MODE] per-plane chroma quant qindex = base_qindex + the FH
-    // u_ac/v_ac delta (chroma_q.rs / pipeline qindex_u/qindex_v). C dequantizes
-    // chroma with the signaled per-plane deltas (separate_uv_delta_q=1), and the
-    // bd8 walk already quantizes U/V at these qindices — the bd10 chroma
-    // re-encode MUST too, or a small residual that survives at the finer plane
-    // qindex is dropped at base (the diag q5 Cr off-by-one: V_PRED predicts the
-    // no-neighbour default 511, source is flat 512, so +1/px; at qindex_v it
-    // codes, at base it rounds to 0 -> the port codes 511 where C codes 512).
-    // Using base for both also DESYNCS the port's own chroma recon from its
-    // signaled bitstream (the decoder dequantizes at qindex_v). Mainline: both
-    // == base_qindex (all FH chroma deltas 0) -> byte-inert.
-    qindex_u: u8,
-    qindex_v: u8,
-    rdoq_level: u8,
-    lambda: u64,
-    edge_filter: bool,
-    bd: u8,
-    // [SVT_HDR_MODE] per-plane QM levels [U, V] (15 = off). C derives them
-    // separately via `aom_get_qmlevel(base_qindex + delta_q_ac[plane], ...)`
-    // (md_config_process.c:271-279), so they can differ between Cb and Cr —
-    // the fork's chroma path gives Cb a +12 delta.
-    qm_uv: [u8; 2],
-    // [SVT_HDR_MODE] fork loop_filter_sharpness (static_config.sharpness). 0 in
-    // mainline → byte-identical to build_quant_table_bd. C applies the same
-    // qzbin/qround sharpening to the chroma quantizer rows (u/v_zbin/round).
-    sharpness: i8,
-) -> crate::EncodeResult<(alloc::vec::Vec<u16>, alloc::vec::Vec<u16>)> {
-    let fc = svtav1_entropy::context::FrameContext::new_default();
-    let cfc = svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(chroma_qindex);
-    let rates = crate::leaf_funnel::build_md_rates(&fc, &cfc);
-    // Per-plane chroma quant tables (== each other, and == the old single
-    // base-qindex table, whenever the FH chroma deltas are 0 -> mainline inert).
-    let qt_u = crate::quant::build_quant_table_bd_sharp(qindex_u, bd, sharpness);
-    let qt_v = crate::quant::build_quant_table_bd_sharp(qindex_v, bd, sharpness);
-    let (cframe_w, cframe_h) = (w / 2, h / 2);
-    // SB-extent-sized, ALIGNED-strided — the chroma twin of the luma canvas
-    // above (and of `fun_u_recon` / `fun_v_recon` in the funnel). The caller
-    // crops the in-frame `cframe_w * cframe_h` region.
-    let ext_cbuf = (w.div_ceil(sb_size) * sb_size / 2) * (h.div_ceil(sb_size) * sb_size / 2);
-    // Seeded with the 10-bit DC default like the luma canvas above (and like
-    // the funnel's `fun_u_recon` / `fun_v_recon`, which are 128u8) — see the
-    // note there for why 0 is wrong once the buffer is SB-extent-sized.
-    let seed: u16 = 128u16 << (bd - 8);
-    let mut recon10_u = svtav1_types::try_vec![seed; ext_cbuf]?;
-    let mut recon10_v = svtav1_types::try_vec![seed; ext_cbuf]?;
-    for (sb_idx, tree) in all_trees.iter_mut().enumerate() {
-        let sb_col = sb_idx % sb_cols;
-        let sb_row = sb_idx / sb_cols;
-        bd10_reencode_chroma_node(
-            sb_size / 4,
-            tree,
-            sb_col * sb_size,
-            sb_row * sb_size,
-            &mut recon10_u,
-            &mut recon10_v,
-            cstride,
-            u_src10,
-            v_src10,
-            y_recon10,
-            y_stride,
-            &qt_u,
-            &qt_v,
-            rdoq_level,
-            lambda,
-            &rates,
-            edge_filter,
-            cframe_w,
-            cframe_h,
-            bd,
-            qm_uv,
-        );
-    }
-    // The frame's true 10-bit CHROMA recon — the post-MD canvas the bd10
-    // post-filter chain (deblock -> CDEF search -> LR search) reads, the
-    // chroma twin of `bd10_reencode_luma`'s return. C keeps the same thing
-    // in the 16-bit recon picture (`svt_aom_get_recon_pic(.., is_16bit)`).
-    Ok((recon10_u, recon10_v))
-}
-
-/// Re-encode ONE chroma plane's leaf at bd10: predict -> residual/tx/quant ->
-/// recon, writing the bd10 recon back into `recon10` for neighbour prediction.
-/// Returns `(qcoeff raster, eob, u8-recon)`. `uv_tt`/geom/edge params mirror the
-/// walk's chroma coding (`write_chroma_txb`, `uv_tx_type`). The u8 recon is a
-/// sane truncation (`>> (bd-8)`) — it is inert (see `bd10_reencode_chroma`).
-#[allow(clippy::too_many_arguments)]
-fn bd10_reencode_chroma_plane(
-    recon10: &mut [u16],
-    src10: &[u16],
-    cstride: usize,
-    cx: usize,
-    cy: usize,
-    cw: usize,
-    ch: usize,
-    uv_mode: u8,
-    uv_angle_delta: i8,
-    uv_tt: usize,
-    geom: &crate::leaf_funnel::UnitGeom,
-    edge_filter: bool,
-    qt: &crate::quant::QuantTable,
-    rdoq_level: u8,
-    lambda: u64,
-    rates: &crate::leaf_funnel::MdRates,
-    bd: u8,
-    qm_level: u8,
-    // `Some((ac_luma_q3, alpha_q3))` for a UV_CFL_PRED leaf. C predicts CfL as
-    // `svt_cfl_predict_hbd(pred_buf_q3, dc_pred, alpha)` over a **DC** base
-    // (`cfl_prediction` regenerates DC at :3798-3801 before calling), so the
-    // mode passed to `predict_unit_hbd` is forced to UV_DC_PRED here.
-    cfl: Option<(&[i16], i32)>,
-) -> (alloc::vec::Vec<i32>, u16, alloc::vec::Vec<u8>) {
-    let mut pred = alloc::vec![0u16; cw * ch];
-    crate::leaf_funnel::predict_unit_hbd(
-        recon10,
-        cstride,
-        cx,
-        cy,
-        cw,
-        ch,
-        if cfl.is_some() { 0 } else { uv_mode },
-        if cfl.is_some() { 0 } else { uv_angle_delta },
-        crate::leaf_funnel::FI_NONE,
-        geom,
-        edge_filter,
-        0,
-        &mut pred,
-        bd,
-    );
-    if let Some((ac, alpha_q3)) = cfl {
-        let dc = pred.clone();
-        svtav1_dsp::hbd::cfl_predict_hbd(ac, &dc, cw, &mut pred, cw, alpha_q3, bd, cw, ch);
-    }
-    let src_off = cy * cstride + cx;
-    let out = crate::leaf_funnel::tx_unit_hbd(
-        src10,
-        cstride,
-        src_off,
-        &pred,
-        cw,
-        0,
-        cw,
-        ch,
-        uv_tt,
-        1, // chroma plane
-        0, // txb_skip_ctx (eff-M9 rate_est_level 0)
-        0, // dc_sign_ctx
-        qt,
-        rdoq_level,
-        lambda,
-        0, // sharpness
-        rates,
-        rdoq_level != 0,
-        bd,
-        qm_level,
-        None, // level-only re-encode: no RD terms
-    );
-    // Straddle clip — see the luma twin in `bd10_reencode_node`. A no-op
-    // wherever `cx + cw <= cstride`.
-    let cwr = cw.min(cstride.saturating_sub(cx));
-    for r in 0..ch {
-        let drow = (cy + r) * cstride + cx;
-        recon10[drow..drow + cwr].copy_from_slice(&out.recon[r * cw..r * cw + cwr]);
-    }
-    let shift = (bd - 8) as u32;
-    let rec_u8: alloc::vec::Vec<u8> = out.recon.iter().map(|&s| (s >> shift).min(255) as u8).collect();
-    (out.qcoeff, out.eob, rec_u8)
-}
-
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
-fn bd10_reencode_chroma_node(
-    // C `seq_header.sb_mi_size` (16 SB64 / 32 SB128), task #91.
-    sb_mi_size: usize,
-    tree: &mut crate::partition::PartitionTree,
-    x: usize,
-    y: usize,
-    recon10_u: &mut [u16],
-    recon10_v: &mut [u16],
-    cstride: usize,
-    u_src10: &[u16],
-    v_src10: &[u16],
-    y_recon10: &[u16],
-    y_stride: usize,
-    // Per-plane chroma quant tables (base + FH u_ac / v_ac delta). Equal in
-    // mainline (deltas 0) -> byte-inert.
-    qt_u: &crate::quant::QuantTable,
-    qt_v: &crate::quant::QuantTable,
-    rdoq_level: u8,
-    lambda: u64,
-    rates: &crate::leaf_funnel::MdRates,
-    edge_filter: bool,
-    cframe_w: usize,
-    cframe_h: usize,
-    bd: u8,
-    qm_uv: [u8; 2],
-) {
-    use crate::partition::PartitionTree as Tr;
-    use crate::partition::PartitionType as PT;
-    match tree {
-        Tr::Leaf(d) => {
-            let bw = d.width as usize;
-            let bh = d.height as usize;
-            // Chroma reference? (walk `blk_has_uv`, pipeline.rs). With the
-            // min-8x8 luma policy every leaf is a reference; kept for safety.
-            let bw_mi = bw / 4;
-            let bh_mi = bh / 4;
-            let has_uv = ((y / 4) % 2 == 1 || bh_mi % 2 == 0) && ((x / 4) % 2 == 1 || bw_mi % 2 == 0);
-            if !has_uv {
-                return;
-            }
-            // Chroma origin/dims — EXACTLY the walk's derivation.
-            let cw = bw.max(8) / 2;
-            let ch = bh.max(8) / 2;
-            let cx = ((x >> 3) << 3) / 2 + if bw >= 8 { (x % 8) / 2 } else { 0 };
-            let cy = ((y >> 3) << 3) / 2 + if bh >= 8 { (y % 8) / 2 } else { 0 };
-            // UV_CFL_PRED: C's chroma tx_type is forced to DCT_DCT
-            // (`cfl_prediction` :3796, `transform_type_uv = DCT_DCT`), and the
-            // prediction comes from the 10-bit LUMA recon rather than the
-            // chroma neighbours. `uv_tx_type` already maps mode 13 -> DCT_DCT,
-            // so only the prediction changes.
-            let uv_tt = crate::leaf_funnel::uv_tx_type(d.uv_mode, cw, ch);
-            let cfl_ac: Option<alloc::vec::Vec<i16>> = if d.uv_mode == 13 {
-                let mut ac =
-                    alloc::vec![0i16; svtav1_dsp::intra_pred::CFL_BUF_LINE * ch.max(1)];
-                crate::leaf_funnel::cfl_ac_from_frame_recon_hbd(
-                    y_recon10, y_stride, x, y, bw, bh, cw, ch, &mut ac,
-                );
-                Some(ac)
-            } else {
-                None
-            };
-            let cfl_u = cfl_ac
-                .as_ref()
-                .map(|ac| (&ac[..], crate::leaf_funnel::cfl_idx_to_alpha(d.cfl_alpha_idx, d.cfl_alpha_signs, 0)));
-            let cfl_v = cfl_ac
-                .as_ref()
-                .map(|ac| (&ac[..], crate::leaf_funnel::cfl_idx_to_alpha(d.cfl_alpha_idx, d.cfl_alpha_signs, 1)));
-            let geom = crate::leaf_funnel::UnitGeom {
-                mi_row: cy >> 2,
-                mi_col: cx >> 2,
-                bw_px: cw,
-                bh_px: ch,
-                sb_mi_size,
-                ss: 0,
-                frame_w: cframe_w,
-                frame_h: cframe_h,
-                // PORT-NOTE(task #96): see the luma twin above — bd10
-                // re-encode is post-merge and frame-scoped. The MEASURED
-                // CORRECTION there applies here too: whole_frame is NOT the
-                // bd10 x tiles root (threading was byte-inert); the partition
-                // search is. docs/coverage-combos-map.md.
-                tile: crate::intra_edge::TileMi::whole_frame(cframe_w, cframe_h),
-            };
-            let (u_q, u_eob, u_rec) = bd10_reencode_chroma_plane(
-                recon10_u, u_src10, cstride, cx, cy, cw, ch, d.uv_mode, d.uv_angle_delta, uv_tt, &geom,
-                edge_filter, qt_u, rdoq_level, lambda, rates, bd, qm_uv[0], cfl_u,
-            );
-            let (v_q, v_eob, v_rec) = bd10_reencode_chroma_plane(
-                recon10_v, v_src10, cstride, cx, cy, cw, ch, d.uv_mode, d.uv_angle_delta, uv_tt, &geom,
-                edge_filter, qt_v, rdoq_level, lambda, rates, bd, qm_uv[1], cfl_v,
-            );
-            d.chroma_dec = Some((u_q, v_q, u_eob, v_eob, u_rec, v_rec));
-        }
-        Tr::Split {
-            partition_type,
-            width,
-            height,
-            children,
-        } => {
-            let nw = *width as usize;
-            let nh = *height as usize;
-            let hw = nw / 2;
-            let hh = nh / 2;
-            let qw = nw / 4;
-            let qh = nh / 4;
-            // Identical child-origin derivation to the luma twin — see the long
-            // note in `bd10_reencode_node`. `x`/`y` here are LUMA coordinates
-            // (the chroma origin is derived per leaf), so the in-frame test uses
-            // the LUMA frame extent, which is `cframe_* * 2`.
-            let (lframe_w, lframe_h) = (cframe_w * 2, cframe_h * 2);
-            let mut recurse = |child: &mut crate::partition::PartitionTree, cx, cy| {
-                bd10_reencode_chroma_node(
-                    sb_mi_size,
-                    child,
-                    cx,
-                    cy,
-                    recon10_u,
-                    recon10_v,
-                    cstride,
-                    u_src10,
-                    v_src10,
-                    y_recon10,
-                    y_stride,
-                    qt_u,
-                    qt_v,
-                    rdoq_level,
-                    lambda,
-                    rates,
-                    edge_filter,
-                    cframe_w,
-                    cframe_h,
-                    bd,
-                    qm_uv,
-                );
-            };
-            match *partition_type {
-                PT::Split => {
-                    let mut ci = 0usize;
-                    for i in 0..4usize {
-                        let cx = x + (i & 1) * hw;
-                        let cy = y + (i >> 1) * hh;
-                        if cx >= lframe_w || cy >= lframe_h {
-                            continue;
-                        }
-                        recurse(&mut children[ci], cx, cy);
-                        ci += 1;
-                    }
-                    debug_assert_eq!(
-                        ci,
-                        children.len(),
-                        "bd10 chroma reencode: in-frame quadrant count must equal the packed \
-                         child count"
-                    );
-                }
-                PT::Horz => {
-                    let (first, rest) = children.split_at_mut(1);
-                    recurse(&mut first[0], x, y);
-                    if let Some(bot) = rest.first_mut() {
-                        recurse(bot, x, y + hh);
-                    }
-                }
-                PT::Vert => {
-                    let (first, rest) = children.split_at_mut(1);
-                    recurse(&mut first[0], x, y);
-                    if let Some(right) = rest.first_mut() {
-                        recurse(right, x + hw, y);
-                    }
-                }
-                ext => {
-                    let offs: &[(usize, usize)] = match ext {
-                        PT::HorzA => &[(0, 0), (hw, 0), (0, hh)],
-                        PT::HorzB => &[(0, 0), (0, hh), (hw, hh)],
-                        PT::VertA => &[(0, 0), (0, hh), (hw, 0)],
-                        PT::VertB => &[(0, 0), (hw, 0), (hw, hh)],
-                        PT::Horz4 => &[(0, 0), (0, qh), (0, 2 * qh), (0, 3 * qh)],
-                        PT::Vert4 => &[(0, 0), (qw, 0), (2 * qw, 0), (3 * qw, 0)],
-                        other => panic!("bd10 chroma reencode: unsupported partition {other:?}"),
-                    };
-                    for (child, &(dx, dy)) in children.iter_mut().zip(offs) {
-                        recurse(child, x + dx, y + dy);
-                    }
-                }
-            }
-        }
-    }
-}
-
 /// Recursive leaf printer for `SVTAV1_DUMP_TREE` (coding order).
 #[cfg(feature = "std")]
 fn dump_tree_leaves(tree: &crate::partition::PartitionTree, x: usize, y: usize) {
@@ -7260,14 +6695,17 @@ fn encode_tile_rows(
         part_config.c_quant = c_quant.clone();
 
         for sb_row in tile_sb_row_start..tile_sb_row_end {
-            // Feature 1: cooperative cancellation, checked once per SB row of
-            // the MD search. `may_stop()` short-circuits to `false` for the
-            // default `Unstoppable` token, so this is byte-inert unless a real
-            // stop token was installed via `with_stop`.
-            if stop.may_stop() {
-                stop.check().map_err(EncodeError::from).map_err(whereat::at)?;
-            }
             for sb_col in tile_sb_col_start..tile_sb_col_end {
+                // Feature 1: cooperative cancellation, checked once per
+                // SUPERBLOCK of the MD search. Per SB *ROW* (what this used to
+                // be) is ~10 ms at 4096x4096 — half the 20 ms responsiveness
+                // budget in a single un-yielding step, and MEASURED as the
+                // dominant term once the post-entropy phases got their own
+                // polls (benchmarks/cancel_latency_*). One SB is ~0.15 ms.
+                // `may_stop()` short-circuits to `false` for the default
+                // `Unstoppable` token, so this stays byte-inert unless a real
+                // stop token was installed via `with_stop`.
+                crate::stop_check(stop)?;
                 let sb_x0 = sb_col * sb_size;
                 let sb_y0 = sb_row * sb_size;
                 let sb_cur_w = sb_size.min(w - sb_x0);
@@ -8498,6 +7936,226 @@ mod tests {
             pipeline.frame_count, 0,
             "a cancelled frame must not advance frame_count"
         );
+    }
+
+    /// An out-of-envelope `with_superres` denominator must reach the caller as
+    /// a typed `Err`, not as a process abort.
+    ///
+    /// The builder used to `assert!` the 9..=16 range, so a caller using the
+    /// FALLIBLE API still died on a bad config value — and `with_superres(8)`,
+    /// the value the method's own doc calls "unscaled = no superres", was one
+    /// of the aborting values. `superres_config_error`'s typed check for the
+    /// same range was unreachable behind the assert.
+    #[test]
+    fn out_of_range_superres_denom_is_a_typed_error_not_a_panic() {
+        for denom in [0u8, 1, 8, 17, 255] {
+            let (w, h) = (64u32, 64u32);
+            let mut p = EncodePipeline::new(
+                w,
+                h,
+                8,
+                RcConfig {
+                    mode: RcMode::Cqp,
+                    qp: 40,
+                    ..RcConfig::default()
+                },
+                0,
+                1,
+            )
+            .with_chroma_420(true)
+            .with_superres(denom);
+            let (y, u, v) = (
+                vec![128u8; 64 * 64],
+                vec![128u8; 32 * 32],
+                vec![128u8; 32 * 32],
+            );
+            let err = p
+                .try_encode_frame_420(&y, &u, &v, 64)
+                .expect_err("denom {denom} is outside 9..=16 and must be refused");
+            assert!(
+                matches!(err.error(), EncodeError::UnsupportedConfig(_)),
+                "denom {denom}: expected UnsupportedConfig, got {err:?}"
+            );
+            assert!(
+                err.to_string().contains("9..=16"),
+                "denom {denom}: the message must name the valid range, got {err}"
+            );
+        }
+    }
+
+    /// The in-range denominators still work, so the fix above did not turn a
+    /// supported config into a refusal. 9..=16 minus the values whose coded
+    /// width leaves the port's superres envelope is not the point here — the
+    /// point is that the builder no longer decides, the choke point does.
+    #[test]
+    fn in_range_superres_denom_still_reaches_the_encode() {
+        let (w, h) = (256u32, 64u32);
+        let mut p = EncodePipeline::new(
+            w,
+            h,
+            10,
+            RcConfig {
+                mode: RcMode::Cqp,
+                qp: 40,
+                ..RcConfig::default()
+            },
+            0,
+            1,
+        )
+        .with_chroma_420(true)
+        .with_superres(16);
+        assert!(
+            p.true_width < w,
+            "denom 16 must halve the CODED width; got {} for {w}",
+            p.true_width
+        );
+        let (y, u, v) = (
+            vec![128u8; (w * h) as usize],
+            vec![128u8; (w * h / 4) as usize],
+            vec![128u8; (w * h / 4) as usize],
+        );
+        let out = p
+            .try_encode_frame_420(&y, &u, &v, w as usize)
+            .expect("preset 10 disables restoration, so superres is in envelope");
+        assert!(!out.is_empty());
+    }
+
+    /// A superblock-size override that is not 64 or 128 must be a typed `Err`,
+    /// not a panic — including in a RELEASE build, which is where it used to
+    /// bite.
+    ///
+    /// MEASURED before the fix (`cargo nextest run --release`, so
+    /// `debug_assertions` off): `Some(96)` and `Some(256)` panicked at
+    /// `svtav1-entropy/src/context.rs:1472` ("no BlockSize for 96x96") and
+    /// `Some(32)` at `svtav1-encoder/src/pd0.rs:96`, all reached through
+    /// `try_encode_frame_420`. The only guard was `resolve_sb_size`'s
+    /// `debug_assert!`, compiled out in exactly the build that mattered.
+    #[test]
+    fn out_of_range_sb_size_override_is_a_typed_error_not_a_panic() {
+        for n in [1usize, 32, 96, 127, 256] {
+            let (w, h) = (128u32, 128u32);
+            let mut p = EncodePipeline::new(
+                w,
+                h,
+                8,
+                RcConfig {
+                    mode: RcMode::Cqp,
+                    qp: 40,
+                    ..RcConfig::default()
+                },
+                0,
+                1,
+            )
+            .with_chroma_420(true)
+            .with_sb_size(Some(n));
+            // The bad value must not have reached the pipeline's own geometry.
+            assert!(
+                p.sb_size == 64 || p.sb_size == 128,
+                "sb_size {} escaped the override guard for request {n}",
+                p.sb_size
+            );
+            let (y, u, v) = (
+                vec![128u8; (w * h) as usize],
+                vec![128u8; (w * h / 4) as usize],
+                vec![128u8; (w * h / 4) as usize],
+            );
+            let err = p
+                .try_encode_frame_420(&y, &u, &v, w as usize)
+                .expect_err("a non-{64,128} superblock size must be refused");
+            assert!(
+                matches!(err.error(), EncodeError::UnsupportedConfig(_)),
+                "sb {n}: expected UnsupportedConfig, got {err:?}"
+            );
+            assert!(
+                err.to_string().contains("64 or 128"),
+                "sb {n}: the message must name the legal values, got {err}"
+            );
+        }
+    }
+
+    /// The two legal values still work — the guard did not turn a supported
+    /// config into a refusal.
+    #[test]
+    fn legal_sb_size_overrides_still_encode() {
+        for n in [64usize, 128] {
+            let (w, h) = (128u32, 128u32);
+            let mut p = EncodePipeline::new(
+                w,
+                h,
+                8,
+                RcConfig {
+                    mode: RcMode::Cqp,
+                    qp: 40,
+                    ..RcConfig::default()
+                },
+                0,
+                1,
+            )
+            .with_chroma_420(true)
+            .with_sb_size(Some(n));
+            assert_eq!(p.sb_size, n);
+            let (y, u, v) = (
+                vec![128u8; (w * h) as usize],
+                vec![128u8; (w * h / 4) as usize],
+                vec![128u8; (w * h / 4) as usize],
+            );
+            let out = p
+                .try_encode_frame_420(&y, &u, &v, w as usize)
+                .unwrap_or_else(|e| panic!("sb {n} must encode, got {e}"));
+            assert!(!out.is_empty(), "sb {n} produced no bytes");
+        }
+    }
+
+    /// A frame too wide for AV1 to tile must be a typed `Err`, not a clamp
+    /// panic three crates away.
+    ///
+    /// MEASURED before the fix (`cargo nextest run --release`): 262_144 x 64
+    /// encoded to 1112 bytes, and 262_208 x 64 — one superblock column wider —
+    /// aborted the process at `svtav1-entropy/src/obu.rs:1500`, inside
+    /// `Ord::clamp`, reached through the FALLIBLE `try_encode_frame_420`.
+    /// 64 tile columns x MAX_TILE_WIDTH 4096 px = 262_144 px is the exact
+    /// boundary, so both sides of it are pinned here.
+    #[test]
+    fn a_frame_too_wide_to_tile_is_a_typed_error_not_a_clamp_panic() {
+        let h = 64u32;
+        let run = |w: u32| {
+            let mut p = EncodePipeline::new(
+                w,
+                h,
+                12,
+                RcConfig {
+                    mode: RcMode::Cqp,
+                    qp: 55,
+                    ..RcConfig::default()
+                },
+                0,
+                1,
+            )
+            .with_chroma_420(true);
+            let (y, u, v) = (
+                vec![128u8; (w as usize) * (h as usize)],
+                vec![128u8; (w as usize / 2) * (h as usize / 2)],
+                vec![128u8; (w as usize / 2) * (h as usize / 2)],
+            );
+            p.try_encode_frame_420(&y, &u, &v, w as usize)
+        };
+
+        // The widest tileable frame still encodes — the guard is not overbroad.
+        let ok = run(262_144).expect("64 tile cols x 4096 px is exactly encodable");
+        assert!(!ok.is_empty());
+
+        // One superblock column past it is refused, by name.
+        for w in [262_208u32, 262_272, 524_288] {
+            let err = run(w).expect_err("{w} px is wider than AV1 can tile");
+            assert!(
+                matches!(err.error(), EncodeError::InvalidDimensions { .. }),
+                "w={w}: expected InvalidDimensions, got {err:?}"
+            );
+            assert!(
+                err.to_string().contains("262144"),
+                "w={w}: the message must name the limit, got {err}"
+            );
+        }
     }
 
     /// Feature 3: under `fallible-alloc`, an oversized-dimensions request to a
