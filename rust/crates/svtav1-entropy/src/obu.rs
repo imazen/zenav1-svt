@@ -1409,6 +1409,77 @@ fn tile_log2_blk(blk_size: u32, target: u32) -> u32 {
     k
 }
 
+/// The `svt_av1_get_tile_limits` (entropy_coding.c:2450) outputs, split out so
+/// the LEGALITY question can be asked before [`TileGrid::resolve`] answers the
+/// LAYOUT question.
+///
+/// WHY IT IS SEPARATE. `resolve` picks each axis with
+/// `requested.clamp(min, max)`, and `Ord::clamp` PANICS when `min > max`. That
+/// is not a hypothetical: AV1 caps a tile at `MAX_TILE_WIDTH` (4096 px) and a
+/// frame at `MAX_TILE_COLS` (64) tile columns, so a frame wider than
+/// 64 x 4096 = 262_144 px cannot be tiled at all, and `min_log2_tile_cols`
+/// overtakes `max_log2_tile_cols`. MEASURED through the fallible public API:
+/// 262_144 x 64 encodes fine, 262_208 x 64 aborted the process at the clamp.
+/// The row axis has the same shape via `MAX_TILE_AREA` / `MAX_TILE_ROWS`.
+///
+/// Such a frame is genuinely unencodable in AV1, so the answer is a typed
+/// refusal at the encoder's choke point — never a clamp panic, and never a
+/// silently-wrong grid from reordering the clamp.
+#[derive(Debug, Clone, Copy)]
+pub struct TileLimits {
+    /// Smallest legal `tile_cols_log2` (forced up by `MAX_TILE_WIDTH`).
+    pub min_log2_tile_cols: u32,
+    /// Largest legal `tile_cols_log2` (capped by `MAX_TILE_COLS`).
+    pub max_log2_tile_cols: u32,
+    /// Largest legal `tile_rows_log2` (capped by `MAX_TILE_ROWS`).
+    pub max_log2_tile_rows: u32,
+    /// Smallest legal total tile count, log2 (forced up by `MAX_TILE_AREA`).
+    pub min_log2_tiles: u32,
+}
+
+impl TileLimits {
+    /// C `svt_av1_get_tile_limits`. `sb_size` is in PIXELS (64 or 128).
+    pub fn for_frame(width: u32, height: u32, sb_size: u32) -> Self {
+        let sb_size_log2 = sb_size.trailing_zeros();
+        let sb_cols = width.div_ceil(sb_size);
+        let sb_rows = height.div_ceil(sb_size);
+        let max_tile_width_sb = (MAX_TILE_WIDTH as u32) >> sb_size_log2;
+        let max_tile_area_sb = (MAX_TILE_AREA as u32) >> (2 * sb_size_log2);
+        let min_log2_tile_cols = tile_log2_blk(max_tile_width_sb, sb_cols);
+        Self {
+            min_log2_tile_cols,
+            max_log2_tile_cols: tile_log2(sb_cols.min(MAX_TILE_COLS as u32)),
+            max_log2_tile_rows: tile_log2(sb_rows.min(MAX_TILE_ROWS as u32)),
+            min_log2_tiles: tile_log2_blk(max_tile_area_sb, sb_rows.saturating_mul(sb_cols))
+                .max(min_log2_tile_cols),
+        }
+    }
+
+    /// `Some(reason)` when no legal tile grid exists for this frame — i.e. when
+    /// either axis has `min > max` and [`TileGrid::resolve`]'s clamp would
+    /// panic. `requested_cols_log2` participates because the ROW minimum is
+    /// derived from the CHOSEN column count, exactly as in `resolve`.
+    pub fn untileable_reason(&self, requested_cols_log2: u8) -> Option<&'static str> {
+        if self.min_log2_tile_cols > self.max_log2_tile_cols {
+            return Some(
+                "frame is too wide to tile: AV1 caps a tile at MAX_TILE_WIDTH (4096 px) and a \
+                 frame at MAX_TILE_COLS (64) tile columns, so the widest encodable frame is \
+                 64 * 4096 = 262144 px",
+            );
+        }
+        let tile_cols_log2 =
+            u32::from(requested_cols_log2).clamp(self.min_log2_tile_cols, self.max_log2_tile_cols);
+        let min_log2_tile_rows = self.min_log2_tiles.saturating_sub(tile_cols_log2);
+        if min_log2_tile_rows > self.max_log2_tile_rows {
+            return Some(
+                "frame is too large to tile: MAX_TILE_AREA forces more tiles than \
+                 MAX_TILE_ROWS (64) tile rows can supply at this width",
+            );
+        }
+        None
+    }
+}
+
 /// The resolved uniform tile grid — a faithful port of C's
 /// `svt_av1_get_tile_limits` + `svt_av1_calculate_tile_cols` +
 /// `svt_av1_calculate_tile_rows`, driven in the order
@@ -1482,18 +1553,21 @@ impl TileGrid {
         // C: sb_size_log2 = log2_sb_size(MI units) + MI_SIZE_LOG2(2). For
         // a 64px SB log2_sb_size = log2(64/4) = 4 -> 6; for 128px it is
         // log2(128/4) = 5 -> 7 (the PIXEL log2).
-        let sb_size_log2 = sb_size.trailing_zeros();
+        let TileLimits {
+            min_log2_tile_cols,
+            max_log2_tile_cols,
+            max_log2_tile_rows,
+            min_log2_tiles,
+            ..
+        } = TileLimits::for_frame(width, height, sb_size);
         let sb_cols = width.div_ceil(sb_size);
         let sb_rows = height.div_ceil(sb_size);
-
-        // --- svt_av1_get_tile_limits (entropy_coding.c:2450) ---
-        let max_tile_width_sb = (MAX_TILE_WIDTH as u32) >> sb_size_log2;
-        let max_tile_area_sb = (MAX_TILE_AREA as u32) >> (2 * sb_size_log2);
-        let min_log2_tile_cols = tile_log2_blk(max_tile_width_sb, sb_cols);
-        let max_log2_tile_cols = tile_log2(sb_cols.min(MAX_TILE_COLS as u32));
-        let max_log2_tile_rows = tile_log2(sb_rows.min(MAX_TILE_ROWS as u32));
-        let min_log2_tiles =
-            tile_log2_blk(max_tile_area_sb, sb_rows * sb_cols).max(min_log2_tile_cols);
+        debug_assert!(
+            TileLimits::for_frame(width, height, sb_size)
+                .untileable_reason(requested_cols_log2)
+                .is_none(),
+            "TileGrid::resolve requires a tileable frame;              call TileLimits::for_frame(..).untileable_reason(..) first"
+        );
 
         // --- columns first (svt_aom_set_tile_info:2555-2560) ---
         let tile_cols_log2 =

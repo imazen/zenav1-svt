@@ -408,13 +408,50 @@ impl EncodePipeline {
     /// `Some(128)` on a cell whose encode path is unsupported still falls
     /// back to 64 and sets [`Self::sb128_fallback`] — the override chooses
     /// what to ASK for, not what to bypass.
+    ///
+    /// # Errors
+    ///
+    /// Only 64 and 128 are AV1 superblock sizes. Any other value is RECORDED
+    /// and refused as [`EncodeError::UnsupportedConfig`] at the
+    /// `encode_frame_impl` choke point (see [`Self::sb_size_config_error`]),
+    /// exactly like an unsupported bit depth or superres denominator — the
+    /// pipeline's own `sb_size` is left alone so nothing downstream ever sees
+    /// the bad value.
+    ///
+    /// MEASURED before this was added: `with_sb_size(Some(96))` reached
+    /// `entropy::context::block_size_index` and panicked with "no BlockSize for
+    /// 96x96" in a RELEASE build, through `try_encode_frame_420` — the
+    /// fallible API. `Some(32)` panicked in `pd0.rs` instead. The only guard
+    /// was a `debug_assert!` in `resolve_sb_size`, which is compiled out
+    /// exactly where it mattered.
     pub fn with_sb_size(mut self, sb: Option<usize>) -> Self {
         self.sb_size_override = sb;
+        if Self::sb_size_override_error(sb).is_some() {
+            return self;
+        }
         let (sb_size, fell_back) =
             Self::resolve_sb_size(self.derived_sb_size, sb, self.speed_config.preset);
         self.sb_size = sb_size;
         self.sb128_fallback = fell_back;
         self
+    }
+
+    /// The one legality rule for [`Self::sb_size_override`]: AV1 has exactly
+    /// two superblock sizes.
+    fn sb_size_override_error(sb: Option<usize>) -> Option<&'static str> {
+        match sb {
+            None | Some(64) | Some(128) => None,
+            Some(_) => Some(
+                "superblock size override must be 64 or 128 — AV1 signals the choice as a single \
+                 `use_128x128_superblock` bit, so no other value exists",
+            ),
+        }
+    }
+
+    /// Choke-point twin of [`Self::sb_size_override_error`], named to match the
+    /// other `*_config_error` predicates the refusal inventory scans.
+    fn sb_size_config_error(&self) -> Option<&'static str> {
+        Self::sb_size_override_error(self.sb_size_override)
     }
 
     /// Enable super-resolution at `denom` (9..=16) — superres chunk B.3.
@@ -431,11 +468,29 @@ impl EncodePipeline {
     /// Off by default (denominator 8), matching C. Re-derives the aligned
     /// encode dims and the superblock size from the CODED width, exactly as
     /// [`Self::new`] would have for a frame of that width.
+    /// # Errors
+    ///
+    /// An out-of-range `denom` is NOT rejected here — it is recorded and
+    /// refused as [`EncodeError::UnsupportedConfig`] by
+    /// [`Self::superres_config_error`] at the `encode_frame_impl` choke point,
+    /// like every other unsupported configuration.
     pub fn with_superres(mut self, denom: u8) -> Self {
-        assert!(
-            (9..=16).contains(&denom),
-            "SuperresDenom must be 9..=16 (8 = unscaled = no superres); got {denom}"
-        );
+        // This used to `assert!((9..=16).contains(&denom))` INSIDE the builder,
+        // which made a caller-supplied config value abort the process even for
+        // callers using the fallible `try_encode_frame*` API — and
+        // `with_superres(8)`, the value this method's own doc calls "unscaled =
+        // no superres", was one of the aborting values. The typed check in
+        // `superres_config_error` was unreachable behind it.
+        //
+        // Record the request and return early WITHOUT recomputing the geometry:
+        // `scaled_size` divides by `denom`, so denom 0 is a divide-by-zero, and
+        // deriving dims from a denominator we are about to refuse is pointless.
+        // The pipeline therefore keeps its non-superres geometry and the encode
+        // returns `Err(UnsupportedConfig("SuperresDenom must be 9..=16"))`.
+        if !(9..=16).contains(&denom) {
+            self.superres_denom = Some(denom);
+            return self;
+        }
         let coded =
             u32::from(svtav1_dsp::superres::scaled_size(self.upscaled_width as u16, denom));
         self.superres_denom = Some(denom);
@@ -1121,6 +1176,33 @@ impl EncodePipeline {
         // entry point funnels through, so no path can slip past it.
         if let Some(why) = self.superres_config_error() {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(why)));
+        }
+        // Same choke point, same rule, for the superblock-size override. A
+        // non-{64,128} value used to reach the entropy writer and panic there
+        // in release builds (`no BlockSize for 96x96`).
+        if let Some(why) = self.sb_size_config_error() {
+            return Err(whereat::at!(EncodeError::UnsupportedConfig(why)));
+        }
+        // ... and for a frame AV1 cannot tile at all. `TileGrid::resolve` picks
+        // each axis with `requested.clamp(min, max)`, and `Ord::clamp` panics
+        // when `min > max` — which happens above 64 * MAX_TILE_WIDTH = 262144 px
+        // of width (MEASURED: 262144x64 encoded, 262208x64 aborted the process
+        // through `try_encode_frame_420`), and on the row axis via
+        // MAX_TILE_AREA / MAX_TILE_ROWS. Such a frame is genuinely unencodable
+        // in AV1, so it gets a typed refusal here rather than a clamp panic
+        // three crates away.
+        if let Some(why) = svtav1_entropy::obu::TileLimits::for_frame(
+            self.width,
+            self.height,
+            self.sb_size as u32,
+        )
+        .untileable_reason(self.tile_cols_log2)
+        {
+            return Err(whereat::at!(EncodeError::InvalidDimensions {
+                width: self.true_width,
+                height: self.true_height,
+                reason: why,
+            }));
         }
         // Same choke point, same rule, for the bit-depth axis: a 10-bit request
         // that no bd10 stage can serve would emit 8-bit-quantized levels under a
@@ -8558,6 +8640,226 @@ mod tests {
             pipeline.frame_count, 0,
             "a cancelled frame must not advance frame_count"
         );
+    }
+
+    /// An out-of-envelope `with_superres` denominator must reach the caller as
+    /// a typed `Err`, not as a process abort.
+    ///
+    /// The builder used to `assert!` the 9..=16 range, so a caller using the
+    /// FALLIBLE API still died on a bad config value — and `with_superres(8)`,
+    /// the value the method's own doc calls "unscaled = no superres", was one
+    /// of the aborting values. `superres_config_error`'s typed check for the
+    /// same range was unreachable behind the assert.
+    #[test]
+    fn out_of_range_superres_denom_is_a_typed_error_not_a_panic() {
+        for denom in [0u8, 1, 8, 17, 255] {
+            let (w, h) = (64u32, 64u32);
+            let mut p = EncodePipeline::new(
+                w,
+                h,
+                8,
+                RcConfig {
+                    mode: RcMode::Cqp,
+                    qp: 40,
+                    ..RcConfig::default()
+                },
+                0,
+                1,
+            )
+            .with_chroma_420(true)
+            .with_superres(denom);
+            let (y, u, v) = (
+                vec![128u8; 64 * 64],
+                vec![128u8; 32 * 32],
+                vec![128u8; 32 * 32],
+            );
+            let err = p
+                .try_encode_frame_420(&y, &u, &v, 64)
+                .expect_err("denom {denom} is outside 9..=16 and must be refused");
+            assert!(
+                matches!(err.error(), EncodeError::UnsupportedConfig(_)),
+                "denom {denom}: expected UnsupportedConfig, got {err:?}"
+            );
+            assert!(
+                err.to_string().contains("9..=16"),
+                "denom {denom}: the message must name the valid range, got {err}"
+            );
+        }
+    }
+
+    /// The in-range denominators still work, so the fix above did not turn a
+    /// supported config into a refusal. 9..=16 minus the values whose coded
+    /// width leaves the port's superres envelope is not the point here — the
+    /// point is that the builder no longer decides, the choke point does.
+    #[test]
+    fn in_range_superres_denom_still_reaches_the_encode() {
+        let (w, h) = (256u32, 64u32);
+        let mut p = EncodePipeline::new(
+            w,
+            h,
+            10,
+            RcConfig {
+                mode: RcMode::Cqp,
+                qp: 40,
+                ..RcConfig::default()
+            },
+            0,
+            1,
+        )
+        .with_chroma_420(true)
+        .with_superres(16);
+        assert!(
+            p.true_width < w,
+            "denom 16 must halve the CODED width; got {} for {w}",
+            p.true_width
+        );
+        let (y, u, v) = (
+            vec![128u8; (w * h) as usize],
+            vec![128u8; (w * h / 4) as usize],
+            vec![128u8; (w * h / 4) as usize],
+        );
+        let out = p
+            .try_encode_frame_420(&y, &u, &v, w as usize)
+            .expect("preset 10 disables restoration, so superres is in envelope");
+        assert!(!out.is_empty());
+    }
+
+    /// A superblock-size override that is not 64 or 128 must be a typed `Err`,
+    /// not a panic — including in a RELEASE build, which is where it used to
+    /// bite.
+    ///
+    /// MEASURED before the fix (`cargo nextest run --release`, so
+    /// `debug_assertions` off): `Some(96)` and `Some(256)` panicked at
+    /// `svtav1-entropy/src/context.rs:1472` ("no BlockSize for 96x96") and
+    /// `Some(32)` at `svtav1-encoder/src/pd0.rs:96`, all reached through
+    /// `try_encode_frame_420`. The only guard was `resolve_sb_size`'s
+    /// `debug_assert!`, compiled out in exactly the build that mattered.
+    #[test]
+    fn out_of_range_sb_size_override_is_a_typed_error_not_a_panic() {
+        for n in [1usize, 32, 96, 127, 256] {
+            let (w, h) = (128u32, 128u32);
+            let mut p = EncodePipeline::new(
+                w,
+                h,
+                8,
+                RcConfig {
+                    mode: RcMode::Cqp,
+                    qp: 40,
+                    ..RcConfig::default()
+                },
+                0,
+                1,
+            )
+            .with_chroma_420(true)
+            .with_sb_size(Some(n));
+            // The bad value must not have reached the pipeline's own geometry.
+            assert!(
+                p.sb_size == 64 || p.sb_size == 128,
+                "sb_size {} escaped the override guard for request {n}",
+                p.sb_size
+            );
+            let (y, u, v) = (
+                vec![128u8; (w * h) as usize],
+                vec![128u8; (w * h / 4) as usize],
+                vec![128u8; (w * h / 4) as usize],
+            );
+            let err = p
+                .try_encode_frame_420(&y, &u, &v, w as usize)
+                .expect_err("a non-{64,128} superblock size must be refused");
+            assert!(
+                matches!(err.error(), EncodeError::UnsupportedConfig(_)),
+                "sb {n}: expected UnsupportedConfig, got {err:?}"
+            );
+            assert!(
+                err.to_string().contains("64 or 128"),
+                "sb {n}: the message must name the legal values, got {err}"
+            );
+        }
+    }
+
+    /// The two legal values still work — the guard did not turn a supported
+    /// config into a refusal.
+    #[test]
+    fn legal_sb_size_overrides_still_encode() {
+        for n in [64usize, 128] {
+            let (w, h) = (128u32, 128u32);
+            let mut p = EncodePipeline::new(
+                w,
+                h,
+                8,
+                RcConfig {
+                    mode: RcMode::Cqp,
+                    qp: 40,
+                    ..RcConfig::default()
+                },
+                0,
+                1,
+            )
+            .with_chroma_420(true)
+            .with_sb_size(Some(n));
+            assert_eq!(p.sb_size, n);
+            let (y, u, v) = (
+                vec![128u8; (w * h) as usize],
+                vec![128u8; (w * h / 4) as usize],
+                vec![128u8; (w * h / 4) as usize],
+            );
+            let out = p
+                .try_encode_frame_420(&y, &u, &v, w as usize)
+                .unwrap_or_else(|e| panic!("sb {n} must encode, got {e}"));
+            assert!(!out.is_empty(), "sb {n} produced no bytes");
+        }
+    }
+
+    /// A frame too wide for AV1 to tile must be a typed `Err`, not a clamp
+    /// panic three crates away.
+    ///
+    /// MEASURED before the fix (`cargo nextest run --release`): 262_144 x 64
+    /// encoded to 1112 bytes, and 262_208 x 64 — one superblock column wider —
+    /// aborted the process at `svtav1-entropy/src/obu.rs:1500`, inside
+    /// `Ord::clamp`, reached through the FALLIBLE `try_encode_frame_420`.
+    /// 64 tile columns x MAX_TILE_WIDTH 4096 px = 262_144 px is the exact
+    /// boundary, so both sides of it are pinned here.
+    #[test]
+    fn a_frame_too_wide_to_tile_is_a_typed_error_not_a_clamp_panic() {
+        let h = 64u32;
+        let run = |w: u32| {
+            let mut p = EncodePipeline::new(
+                w,
+                h,
+                12,
+                RcConfig {
+                    mode: RcMode::Cqp,
+                    qp: 55,
+                    ..RcConfig::default()
+                },
+                0,
+                1,
+            )
+            .with_chroma_420(true);
+            let (y, u, v) = (
+                vec![128u8; (w as usize) * (h as usize)],
+                vec![128u8; (w as usize / 2) * (h as usize / 2)],
+                vec![128u8; (w as usize / 2) * (h as usize / 2)],
+            );
+            p.try_encode_frame_420(&y, &u, &v, w as usize)
+        };
+
+        // The widest tileable frame still encodes — the guard is not overbroad.
+        let ok = run(262_144).expect("64 tile cols x 4096 px is exactly encodable");
+        assert!(!ok.is_empty());
+
+        // One superblock column past it is refused, by name.
+        for w in [262_208u32, 262_272, 524_288] {
+            let err = run(w).expect_err("{w} px is wider than AV1 can tile");
+            assert!(
+                matches!(err.error(), EncodeError::InvalidDimensions { .. }),
+                "w={w}: expected InvalidDimensions, got {err:?}"
+            );
+            assert!(
+                err.to_string().contains("262144"),
+                "w={w}: the message must name the limit, got {err}"
+            );
+        }
     }
 
     /// Feature 3: under `fallible-alloc`, an oversized-dimensions request to a
