@@ -85,8 +85,39 @@ REASON = re.compile(r'\breason:\s*"((?:[^"\\]|\\.)*)"')
 SOMES = re.compile(r'\bSome\(\s*"((?:[^"\\]|\\.)*)"\s*(?:\.to_string\(\))?\s*,?\s*\)')
 FNDEF = re.compile(r"\n\s*(?:pub(?:\(crate\))?\s+)?fn\s+([a-z_0-9]+)")
 
+def strip_test_modules(src):
+    """Drop `#[cfg(test)] mod ... { .. }` bodies by brace counting.
+
+    A refusal string in a TEST is a fixture, not debt. Without this, adding a
+    test that pins a refusal's wording (e.g. one asserting the pipeline's
+    `reason` survives the AVIF error mapping) silently added a CAPABILITY row
+    to the ledger — the ledger is supposed to be the authoritative backlog, so
+    a fixture in it is worse than a missing entry.
+    """
+    out, i, n = [], 0, len(src)
+    while True:
+        m = re.compile(r'#\[cfg\(\s*(?:all\(\s*)?test\b').search(src, i)
+        if not m:
+            out.append(src[i:])
+            return "".join(out)
+        out.append(src[i:m.start()])
+        j = src.find("{", m.end())
+        if j < 0:
+            return "".join(out)
+        depth, k = 0, j
+        while k < n:
+            if src[k] == "{":
+                depth += 1
+            elif src[k] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            k += 1
+        i = k + 1
+
+
 for path in sys.argv[1:]:
-    src = open(path).read()
+    src = strip_test_modules(open(path).read())
     joined = re.sub(r"\\\s*\n\s*", " ", src)   # join Rust string continuations
 
     found = set(m.group(1) for m in UNSUP.finditer(joined))

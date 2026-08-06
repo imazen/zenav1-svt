@@ -1,5 +1,7 @@
-//! C-exact leaf intra-mode decision funnel (allintra presets 4..=10,
-//! still/PD1 fixed-tree path).
+//! C-exact leaf intra-mode decision funnel (ALL allintra presets — the
+//! `FunnelCfg::for_preset` match has arms for 0..=8 plus a 9+ tail; the doc
+//! used to say 4..=10 and the funnel has since grown down to preset 0),
+//! still/PD1 fixed-tree path.
 //!
 //! Per-preset configuration lives in [`FunnelCfg::for_preset`]; the M5
 //! extension (mode_end PAETH, angular deltas {-3,0,+3}, SH-gated edge-
@@ -47,9 +49,13 @@
 //!   CHROMA full loop (CHROMA_MODE_1: uv follows luma;
 //!   `svt_aom_full_loop_uv` full_loop.c:2161) with the
 //!   chroma-complexity detector (:6095) gating CFL (cfl level 4,
-//!   cplx_th 10 — CFL is only *evaluated* when the detector fires;
-//!   flat-chroma content never fires it; if it fires we currently keep
-//!   the non-CFL uv mode, documented as a residual gap), full cost =
+//!   cplx_th 10 — CFL is only *evaluated* when the detector fires, and
+//!   flat-chroma content never fires it; when it does fire CFL competes
+//!   normally and CAN WIN, taking `uv_mode_final = UV_CFL_PRED_IDX` with
+//!   the full `md_cfl_rd_pick_alpha` / `md_cfl_alpha_search` alpha search
+//!   and the `use_accurate_cfl` rate. The old note here said the winner was
+//!   discarded as "a residual gap"; that has not been true since the alpha
+//!   search landed), full cost =
 //!   `svt_aom_full_cost` (rd_cost.c:1357).
 //! - Winner: lowest full cost, first-in-order ties
 //!   (`svt_aom_product_full_mode_decision`, mode_decision.c:3869).
@@ -714,8 +720,11 @@ pub struct FunnelCfg {
 
 impl FunnelCfg {
     /// C-exact per-preset derivation for the still/420 allintra path.
-    /// Presets 6/7/8/9+ (the funnel scope); other presets never construct
-    /// one. Presets >= 9 clamp to eff-M9 (enc_handle.c:4634).
+    /// EVERY preset constructs one: the match below has explicit arms for
+    /// 0, 1, 2, 3, 4, 5, 6, 7, 8 and a `_` tail for 9.., and presets 2..=5
+    /// have their own capture-pinned tests (`m2_m3_funnel_cfg_matches_capture`,
+    /// `m4_cfg_matches_capture`, `m5_cfg_matches_capture`). The doc used to
+    /// say 6/7/8/9+ only. Presets >= 9 clamp to eff-M9 (enc_handle.c:4634).
     pub fn for_preset(preset: u8) -> Self {
         // M6+ common tail (intra_level 6/7/8: mode_end SMOOTH, angular
         // level 4, txt groups 5/4 satd 10 rate 100, uv follows luma, no
@@ -3358,16 +3367,6 @@ impl LeafEval {
     /// candidate's depth-0 residual at TRUE 10 bits. Empty on the u8 path.
     pub(crate) fn psq_resid10(&self) -> &[i32] {
         &self.psq_resid10
-    }
-
-    /// Winner luma recon (w x h raster).
-    pub(crate) fn y_recon(&self) -> &[u8] {
-        &self.win.y_recon
-    }
-
-    /// Winner chroma recons ((size/2)^2 rasters).
-    pub(crate) fn uv_recon(&self) -> (&[u8], &[u8]) {
-        (&self.win.u_recon, &self.win.v_recon)
     }
 
     /// The walk/entropy-pass view of the winner.

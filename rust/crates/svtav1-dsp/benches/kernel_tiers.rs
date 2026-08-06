@@ -28,7 +28,9 @@ const TIER_NAME: &str = if cfg!(target_arch = "aarch64") { "neon" } else { "v3(a
 
 #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 fn set_simd(enabled: bool) -> bool {
-    use archmage::SimdToken;
+    // `dangerously_disable_token_process_wide` is an INHERENT fn on the token
+    // in archmage 0.9 (it was a `SimdToken` trait method in 0.8), so no trait
+    // import is needed here.
     TierToken::dangerously_disable_token_process_wide(!enabled).is_ok()
 }
 #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]

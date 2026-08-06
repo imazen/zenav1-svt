@@ -607,7 +607,7 @@ impl AvifEncoder {
     /// for.
     ///
     /// `with_lossless(true)` would otherwise return a LOSSY stream and
-    /// `with_chroma_subsampling(Yuv422/Yuv444)` a 4:2:0 one — both
+    /// `with_chroma_subsampling(Yuv444)` a 4:2:0 one — both
     /// indistinguishable from success at the call site. (4:2:2 / 4:4:4 are
     /// outside SVT-AV1 v4.2.0's own shipping envelope too:
     /// `svt_av1_verify_settings`, enc_settings.c:470, "Only support 420 now".)

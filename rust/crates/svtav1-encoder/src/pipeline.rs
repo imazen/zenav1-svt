@@ -187,11 +187,14 @@ pub struct EncodePipeline {
     pub sb_size_override: Option<usize>,
     /// What C's rule alone asked for, BEFORE the override and the
     /// capability fallback. Stored rather than recovered from `sb_size` +
-    /// `sb128_fallback`: once `sb128_encode_supported` stops being a
-    /// constant false, `(sb_size, fallback)` no longer determines the
-    /// derived value (an explicit `Some(128)` on a supported preset would
-    /// be indistinguishable from a derived 128), and a later
-    /// `with_sb_size(None)` would silently resolve to the wrong grid.
+    /// `sb128_fallback`: `sb128_encode_supported` is now a constant TRUE
+    /// (it was a constant false when this field was added), so
+    /// `(sb_size, fallback)` no longer determines the derived value — an
+    /// explicit `Some(128)` on a supported preset is indistinguishable from
+    /// a derived 128, and a later `with_sb_size(None)` would silently
+    /// resolve to the wrong grid. Consequence worth knowing: `fell_back`
+    /// can no longer be set, so `sb128_fallback` is permanently `false` and
+    /// the fallback prose above describes a path that is no longer taken.
     pub derived_sb_size: usize,
     /// True when [`Self::sb_size`] was forced back to 64 because the C rule
     /// asked for 128 on a cell the SB128 encode path does not support yet.
@@ -371,14 +374,17 @@ impl EncodePipeline {
     /// `merge_sb_units` and `sb128_geom::sb_coding_units`. Everything below
     /// the root is the byte-proven per-64 path.
     ///
-    /// STILL UNPORTED, so still gated (see `sb128_root_always_split`):
-    /// a genuine 128-level NONE/HORZ/VERT RD search (this path is
-    /// forced-SPLIT), the b64<->sb stat bridges (`get_sb128_variance` /
-    /// `get_sb128_me_data`), and the CDEF 4-quadrant three-phase contract.
+    /// STILL UNPORTED: a genuine 128-level NONE/HORZ/VERT RD search (this
+    /// path is forced-SPLIT — see the unconditional `PartitionType::Split`
+    /// in `merge_sb_units`), the b64<->sb stat bridges
+    /// (`get_sb128_variance` / `get_sb128_me_data`), and the CDEF
+    /// 4-quadrant three-phase contract.
     fn sb128_encode_supported(preset: u8) -> bool {
-        // Preset gate only; the CONTENT gate (forced-SPLIT validity) is
-        // applied per-frame in `encode_frame_internal`, which can see the
-        // pixels. Presets 0/1 are the only ones C ever codes at 128 in
+        // Preset gate only. A CONTENT gate (forced-SPLIT validity, needing
+        // the pixels) was planned per-frame and is NOT implemented: the only
+        // runtime check is `merge_sb_units`' `debug_assert!(is_key, ..)`,
+        // which is compiled out in release.
+        // Presets 0/1 are the only ones C ever codes at 128 in
         // allintra (`derive_super_block_size`), so anything else reaching
         // here is an `SVTAV1_SB=128` override — honour it, the walk is
         // preset-agnostic.
@@ -643,8 +649,12 @@ impl EncodePipeline {
     /// purely at the boundary: the legacy `assert!`s become typed
     /// [`EncodeError`]s, and the cooperative cancellation token
     /// ([`Self::stop`]) is checked once at entry. The legacy method is left
-    /// untouched. Internally this calls the SAME infallible
-    /// `encode_frame_impl`, so it cannot change the emitted bytes.
+    /// untouched. Internally this calls the SAME `encode_frame_impl`, so it
+    /// cannot change the emitted bytes. (That core is itself FALLIBLE — it
+    /// has its own config refusals, fallible allocations and in-encode stop
+    /// checks; the panicking wrapper is what turns those into an `.expect()`.
+    /// This doc used to call it "infallible", which sent anyone auditing the
+    /// error paths straight past the body.)
     pub fn try_encode_frame(&mut self, y_plane: &[u8], y_stride: usize) -> EncodeResult<Vec<u8>> {
         // (a) Validate — mirror the `encode_frame` asserts.
         if self.width != self.true_width || self.height != self.true_height {
@@ -895,7 +905,11 @@ impl EncodePipeline {
             ),
         ) {
             return Some(
-                "superres with loop restoration enabled (allintra preset <= 6) is not wired yet                  — C runs LR on the UPSCALED frame; use preset >= 7",
+                "superres is not wired for frames that also run loop restoration \
+                 (allintra preset <= 6, unless the frame is small enough that \
+                 restoration is force-disabled) — C runs LR on the UPSCALED frame \
+                 while this port searches and applies it at the coded width; use \
+                 preset >= 7",
             );
         }
         if self.bit_depth != 8 {
@@ -1216,6 +1230,19 @@ impl EncodePipeline {
         // closure, and `encode_tile_rows` all check the same token. The default
         // `Unstoppable` token's `may_stop()` is `false`, so every guarded check
         // below is a byte-inert false-branch.
+        //
+        // WHY THE POLLS ARE WHERE THEY ARE. Each `Step N` below opens with a
+        // `stop_check(&stop)?`, which bounds a cancel's wait by the length of
+        // ONE phase. Before those existed the whole post-entropy tail — deblock,
+        // CDEF, loop restoration, film grain, OBU assembly, recon publish, RC —
+        // polled nothing, and a cancel landing in it was IGNORED: the encode ran
+        // to completion and returned `Ok`. That tail was MEASURED at 205 ms of a
+        // 926 ms 4096x4096 preset-8 frame. The phase timings, the per-size
+        // percentiles and the verdict against a 20 ms bar live in ONE place —
+        // `benchmarks/cancel_latency_2026-08-06.meta`, produced by
+        // `svtav1/examples/cancel_latency.rs`. Do not restate the numbers at the
+        // individual poll sites; nine copies of one measurement is eight that go
+        // stale unnoticed.
         let stop = self.stop.clone();
 
         // Step 1: Determine frame type from GOP structure
@@ -2071,11 +2098,8 @@ impl EncodePipeline {
             .map(|t| t.expect("every SB is covered by exactly one tile"))
             .collect();
 
-        // Feature 1: byte-inert cooperative-cancellation poll at the phase
-        // boundary — bounds a cancel's wait by the length of ONE phase (here,
-        // the bd10 luma level re-encode), not by the whole post-entropy
-        // tail, which was MEASURED at 205 ms of a 926 ms 4096x4096 preset-8
-        // frame before these polls existed (svtav1/examples/cancel_latency.rs).
+        // Feature 1: phase-boundary cancellation poll (the bd10 luma level re-encode) — see the
+        // `stop` note at the top of this function.
         crate::stop_check(&stop)?;
         // Step 4c: bd10 LUMA re-encode (task #94, the u16 MD path). The u8
         // funnel above produced C's partition/mode/tx decisions (RD is
@@ -2329,11 +2353,8 @@ impl EncodePipeline {
             }
         }
 
-        // Feature 1: byte-inert cooperative-cancellation poll at the phase
-        // boundary — bounds a cancel's wait by the length of ONE phase (here,
-        // the post-reconstruction filter chain), not by the whole post-entropy
-        // tail, which was MEASURED at 205 ms of a 926 ms 4096x4096 preset-8
-        // frame before these polls existed (svtav1/examples/cancel_latency.rs).
+        // Feature 1: phase-boundary cancellation poll (the post-reconstruction filter chain) — see the
+        // `stop` note at the top of this function.
         crate::stop_check(&stop)?;
         // Step 5: Post-reconstruction filters.
         //
@@ -2710,11 +2731,8 @@ impl EncodePipeline {
         let (mut tile_data, deblock_geom, mut u_recon, mut v_recon, mut tile_size_bytes_minus_1) =
             run_entropy_walk(None, None)?;
 
-        // Feature 1: byte-inert cooperative-cancellation poll at the phase
-        // boundary — bounds a cancel's wait by the length of ONE phase (here,
-        // the deblock level pick + frame apply), not by the whole post-entropy
-        // tail, which was MEASURED at 205 ms of a 926 ms 4096x4096 preset-8
-        // frame before these polls existed (svtav1/examples/cancel_latency.rs).
+        // Feature 1: phase-boundary cancellation poll (the deblock level pick + frame apply) — see the
+        // `stop` note at the top of this function.
         crate::stop_check(&stop)?;
         // Step 6a: Deblocking — pick the levels the frame header will
         // signal (C svt_av1_pick_filter_level_by_q closed form) and apply
@@ -2893,11 +2911,8 @@ impl EncodePipeline {
             )?;
         }
 
-        // Feature 1: byte-inert cooperative-cancellation poll at the phase
-        // boundary — bounds a cancel's wait by the length of ONE phase (here,
-        // the CDEF strength pick + frame apply), not by the whole post-entropy
-        // tail, which was MEASURED at 205 ms of a 926 ms 4096x4096 preset-8
-        // frame before these polls existed (svtav1/examples/cancel_latency.rs).
+        // Feature 1: phase-boundary cancellation poll (the CDEF strength pick + frame apply) — see the
+        // `stop` note at the top of this function.
         crate::stop_check(&stop)?;
         // Step 6a': CDEF — decoder order is deblock -> CDEF (-> restoration,
         // unported). Key frames signal the qp-picked strengths
@@ -3101,11 +3116,8 @@ impl EncodePipeline {
             )?;
         }
 
-        // Feature 1: byte-inert cooperative-cancellation poll at the phase
-        // boundary — bounds a cancel's wait by the length of ONE phase (here,
-        // the Wiener loop-restoration search + apply), not by the whole post-entropy
-        // tail, which was MEASURED at 205 ms of a 926 ms 4096x4096 preset-8
-        // frame before these polls existed (svtav1/examples/cancel_latency.rs).
+        // Feature 1: phase-boundary cancellation poll (the Wiener loop-restoration search + apply) — see the
+        // `stop` note at the top of this function.
         crate::stop_check(&stop)?;
         // Step 6a'': Wiener loop restoration — C order deblock -> CDEF ->
         // LR. The C-exact search (restoration_seg_search +
@@ -3363,22 +3375,16 @@ impl EncodePipeline {
             }
         }
 
-        // Feature 1: byte-inert cooperative-cancellation poll at the phase
-        // boundary — bounds a cancel's wait by the length of ONE phase (here,
-        // film-grain estimation), not by the whole post-entropy
-        // tail, which was MEASURED at 205 ms of a 926 ms 4096x4096 preset-8
-        // frame before these polls existed (svtav1/examples/cancel_latency.rs).
+        // Feature 1: phase-boundary cancellation poll (film-grain estimation) — see the
+        // `stop` note at the top of this function.
         crate::stop_check(&stop)?;
         // Step 6b: Film grain estimation (compare source to reconstruction)
         let _grain_params = crate::film_grain::estimate_film_grain(&encode_input, &recon, w, h, w);
         // grain_params would be signaled in the frame header OBU
         // and used by the decoder to re-synthesize grain
 
-        // Feature 1: byte-inert cooperative-cancellation poll at the phase
-        // boundary — bounds a cancel's wait by the length of ONE phase (here,
-        // OBU assembly), not by the whole post-entropy
-        // tail, which was MEASURED at 205 ms of a 926 ms 4096x4096 preset-8
-        // frame before these polls existed (svtav1/examples/cancel_latency.rs).
+        // Feature 1: phase-boundary cancellation poll (OBU assembly) — see the
+        // `stop` note at the top of this function.
         crate::stop_check(&stop)?;
         // Step 7: Build OBU bitstream
         // Use full (non-reduced) sequence header for multi-frame sequences,
@@ -3516,11 +3522,8 @@ impl EncodePipeline {
             )
         };
 
-        // Feature 1: byte-inert cooperative-cancellation poll at the phase
-        // boundary — bounds a cancel's wait by the length of ONE phase (here,
-        // the recon publish + DPB update), not by the whole post-entropy
-        // tail, which was MEASURED at 205 ms of a 926 ms 4096x4096 preset-8
-        // frame before these polls existed (svtav1/examples/cancel_latency.rs).
+        // Feature 1: phase-boundary cancellation poll (the recon publish + DPB update) — see the
+        // `stop` note at the top of this function.
         crate::stop_check(&stop)?;
         // Step 7: Publish recon for the recon-parity gate, then update DPB.
         //
@@ -3566,11 +3569,8 @@ impl EncodePipeline {
         };
         self.dpb.refresh(pcs.refresh_frame_flags, &ref_frame);
 
-        // Feature 1: byte-inert cooperative-cancellation poll at the phase
-        // boundary — bounds a cancel's wait by the length of ONE phase (here,
-        // the rate-control update), not by the whole post-entropy
-        // tail, which was MEASURED at 205 ms of a 926 ms 4096x4096 preset-8
-        // frame before these polls existed (svtav1/examples/cancel_latency.rs).
+        // Feature 1: phase-boundary cancellation poll (the rate-control update) — see the
+        // `stop` note at the top of this function.
         crate::stop_check(&stop)?;
         // Step 8: Update rate control state
         update_rc_state(&mut self.rc_state, bitstream.len() as u64 * 8, pcs.qp);

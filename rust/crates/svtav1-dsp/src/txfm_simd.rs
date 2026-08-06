@@ -27,16 +27,25 @@
 //! for every size, under every archmage dispatch tier — so a range violation
 //! would fail the build, not ship a wrong pixel.
 //!
-//! Only the AVX2 (`v3`) arm is vectorized; the `neon`/`scalar` arms report
-//! "not handled" and the caller falls through to the scalar core (the CDEF /
-//! `txb_init_levels` pattern). Additive — no scalar path is modified.
+//! BOTH the AVX2 (`v3`) and NEON arms are vectorized — the shared kernels are
+//! `include!`d into each and compile against that arm's primitives. The NEON
+//! arm is DIMENSION-BOUNDED rather than absent: `NEON_FWD_MAX_DIM` /
+//! `NEON_INV_MAX_DIM` (set from the measured table above them) cap which shapes
+//! it takes, and larger shapes report "not handled" so the caller falls through
+//! to the scalar core (the CDEF / `txb_init_levels` pattern). Non-x86,
+//! non-aarch64 targets take the scalar core for everything. Additive — no
+//! scalar path is modified.
 
 #![allow(clippy::too_many_arguments)]
 
 use crate::fwd_txfm::{
-    COS_BIT, FWD_COS_BIT_COL, FWD_COS_BIT_ROW, NEW_SQRT2, NEW_SQRT2_BITS, SINPI, cospi_arr,
-    fwd_txfm_shift, sinpi_arr,
+    COS_BIT, FWD_COS_BIT_COL, FWD_COS_BIT_ROW, NEW_SQRT2, SINPI, cospi_arr, fwd_txfm_shift,
+    sinpi_arr,
 };
+// Used only by `mod v3`'s `rect_scale` (the aarch64 twin has its own). Importing
+// it unconditionally warned on every non-x86 build; it is NOT dead code.
+#[cfg(target_arch = "x86_64")]
+use crate::fwd_txfm::NEW_SQRT2_BITS;
 use crate::inv_txfm::{NEW_INV_SQRT2, inv_txfm_shift};
 use archmage::prelude::*;
 use svtav1_types::transform::TranLow;
