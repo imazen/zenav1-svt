@@ -66,6 +66,7 @@ pub mod segmentation;
 pub mod frame_geom;
 pub mod sb128_geom;
 pub mod bd10;
+pub mod bd10_reencode;
 pub mod intrabc;
 pub mod intrabc_hash;
 pub mod intrabc_mvp;
