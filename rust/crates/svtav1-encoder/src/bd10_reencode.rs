@@ -103,7 +103,6 @@ pub(crate) fn bd10_reencode_luma(
 }
 
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 fn bd10_reencode_node(
     // C `seq_header.sb_mi_size` (16 SB64 / 32 SB128) — the intra
     // availability tables index by `mi & (sb_mi_size - 1)` (task #91).
@@ -539,7 +538,6 @@ fn bd10_reencode_chroma_plane(
     (out.qcoeff, out.eob, rec_u8)
 }
 
-#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 fn bd10_reencode_chroma_node(
     // C `seq_header.sb_mi_size` (16 SB64 / 32 SB128), task #91.
