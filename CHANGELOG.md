@@ -12,12 +12,84 @@ Crates are not published to crates.io yet — depend by git.
 ### QUEUED BREAKING CHANGES
 
 <!-- Batch API breaks here; ship them in one version bump, never piecemeal. -->
-- None queued. `EncodePipeline`'s new surface (`try_encode_frame_420_hbd`,
+- `EncodePipeline`'s earlier new surface (`try_encode_frame_420_hbd`,
   `try_encode_frame_hbd`, `with_superres`) is additive; the `SeqTools` and
   `ScSignal` structs gained fields (`enable_superres`, `superres`), which is a
   break only for out-of-crate struct literals — there are none.
+- **`svtav1::avif::EncodeError` gained payloads and `#[non_exhaustive]`**
+  (2026-08-06). `InvalidDimensions` -> `InvalidDimensions { width, height,
+  reason }` and `InvalidQuality` -> `InvalidQuality { quality }`. The unit
+  variants served five structurally different failures and rendered as one
+  string; `from_pipeline_error` additionally DISCARDED the pipeline's
+  `{width, height, reason}`. The only in-tree consumer of `svtav1::avif` is
+  `quality_to_qp_static`, untouched.
+- **The post-filter functions take a cooperative stop token** (2026-08-06):
+  `cdef::{apply_cdef_frame, apply_cdef_frame_hbd, cdef_search_still,
+  cdef_search_still_hbd}`, `restoration::{search_restoration_still,
+  search_restoration_still_bd}`, `deblock::{apply_deblock_frame,
+  apply_deblock_frame_hbd, pick_filter_levels_full_search}` each gained a
+  `stop: &dyn enough::Stop` parameter and, where they did not already, return
+  `EncodeResult`. Needed because the entire post-entropy tail polled no token
+  and a cancel landing there was ignored outright — measured at 205 ms of a
+  926 ms 4096x4096 frame. The only out-of-crate caller in tree is
+  `svtav1-encoder/tests/lr_search_c_capture.rs`, updated.
+- New additive public items (NOT breaks, listed so the release notes have them):
+  `svtav1_encoder::stop_check`, `svtav1_encoder::bd10_reencode` (a pure move of
+  the bd10 level re-encode post-pass out of `pipeline.rs`),
+  `svtav1_entropy::obu::TileLimits`.
 
 ### Added
+
+- **Cancellation is measured, and the whole encode is polled** (`bbaefef8`,
+  `70106899`). `svtav1/examples/cancel_latency.rs` measures ask-to-return wall
+  time across the encode at 64/256/1024/4096. It found that the entire
+  post-entropy tail — deblock, CDEF, loop restoration, film grain, OBU assembly,
+  recon publish, RC — took no stop token: 205 ms of a 926 ms 4096x4096 preset-8
+  frame, during which a cancel was IGNORED and the encode returned `Ok`. Polls
+  added at every phase boundary and inside the CDEF, restoration and deblock
+  passes; the MD and entropy walks went from per-SB-row to per-superblock. The
+  20 ms bar is now met at 64/256/1024 at every preset measured (worst p99
+  4.12 ms); at 4096x4096 the residual 18-28 ms is frame-buffer teardown, not
+  poll density. Byte-inert. Record: `benchmarks/cancel_latency_2026-08-06.meta`.
+- **First aarch64 port-vs-C perf numbers** (`b6b03d72`) —
+  `benchmarks/perf_2026-08-06-arm64.*`, 15/15 cells byte-identical, slope-ratios
+  7.07x/7.95x/8.03x at p6/p10/p13. Every previously committed ratio was x86-64.
+- Self-consistency pins for the block/transform geometry tables (`38d9b492`) —
+  `svtav1-tables` had no tests, and four of its tables have no call sites at all.
+
+### Fixed
+
+- **Three caller-config panics that reached the FALLIBLE API** (`1a701b75`):
+  `with_superres(denom)` asserted its range inside the builder (so even
+  `try_encode_frame*` users aborted, and `with_superres(8)` — "no superres" per
+  its own doc — was one of them); `with_sb_size(Some(n))` for n not in {64,128}
+  panicked in RELEASE builds inside the entropy writer, guarded only by a
+  `debug_assert`; and a frame wider than 64 x MAX_TILE_WIDTH = 262144 px
+  panicked in `Ord::clamp` inside `TileGrid::resolve` (262144x64 encoded,
+  262208x64 aborted). All three are typed `EncodeError`s now, with both sides of
+  each boundary pinned.
+- **The AVIF errors say what was wrong** (`906eb4c8`) — see QUEUED BREAKING
+  CHANGES. Also found: `InvalidQuality` is reachable only through NaN, because
+  `with_quality` clamps everything finite.
+- **The perf gate was silently unrunnable** since the C tree moved into the
+  `reference/svt-av1` submodule (`b6b03d72`) — `tools/perf_c_encode/build.sh`
+  kept the pre-submodule `-I` paths, so the gate aborted at "C harness build
+  failed" and the newest perf artifact stayed at 2026-07-23.
+- `tools/refusal_inventory.sh` scanned `#[cfg(test)]` modules, so a test pinning
+  a refusal's wording added a phantom CAPABILITY row to the authoritative debt
+  ledger (`c2aa84da`).
+- `cargo test -p zenav1-svt-types` did not compile (`Vec` missing from a no_std
+  test module); only the workspace run passed, via feature unification
+  (`38d9b492`).
+- Eleven `PermutationReport`s were dropped in `c_parity_txfm.rs`, so a SIMD-tier
+  walk that visited zero tiers was indistinguishable from a pass (`c2aa84da`).
+  Now asserted non-empty; measured at 25 permutations on aarch64.
+- Six false documentation claims corrected, including two that cited symbols
+  which do not exist (`sb128_root_always_split`, `encode_frame_internal`), one
+  that declared the NEON transform tier absent when it exists, and one that said
+  CFL's winner is discarded when it has not been for some time (`c2aa84da`).
+
+### Added (continued)
 
 - **10-bit encoding at NON-64-ALIGNED dimensions — the product case for 10-bit
   AVIF** (`bd10_partial_sb_gate.sh`, **157/157 byte-identical to the C
