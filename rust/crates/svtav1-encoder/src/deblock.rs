@@ -268,6 +268,7 @@ fn try_filter_plane<P: DlfPixel>(
 ///
 /// Returns (best level, ss_err[0], ss_err[best]) — the zero/best SSEs feed
 /// the caller's bookkeeping (pcs->zero_filt_sse / best_filt_sse).
+#[allow(clippy::too_many_arguments)]
 fn search_filter_level<P: DlfPixel>(
     input: &DlfSearchInput<'_, P>,
     scratch: &mut Vec<P>,
@@ -275,7 +276,8 @@ fn search_filter_level<P: DlfPixel>(
     dir: i32,
     last_frame_filter_level: [i32; 4],
     conv_th: i32,
-) -> (i32, i64, i64) {
+    stop: &dyn enough::Stop,
+) -> crate::EncodeResult<(i32, i64, i64)> {
     let min_filter_level = 0i32;
     let max_filter_level = MAX_LOOP_FILTER;
     let mut filt_direction = 0i32;
@@ -319,6 +321,11 @@ fn search_filter_level<P: DlfPixel>(
 
     let mut tot_convergence = 0i32;
     while filter_step > 0 {
+        // Feature 1: byte-inert cooperative-cancellation poll. Each iteration
+        // can run up to two `try_level` trials, and ONE trial filters and
+        // SSE-scores the whole plane — that is the granularity of this search
+        // and therefore the granularity of the poll.
+        crate::stop_check(stop)?;
         let filt_high = (filt_mid + filter_step).min(max_filter_level);
         let filt_low = (filt_mid - filter_step).max(min_filter_level);
 
@@ -366,7 +373,7 @@ fn search_filter_level<P: DlfPixel>(
     }
     best_err = ss_err[filt_best as usize];
 
-    (filt_best, ss_err[0], best_err)
+    Ok((filt_best, ss_err[0], best_err))
 }
 
 /// C-exact `svt_av1_pick_filter_level(.., LPF_PICK_FROM_FULL_IMAGE)`
@@ -437,6 +444,7 @@ pub fn recondbg_dump(
 
 pub fn pick_filter_levels_full_search<P: DlfPixel>(
     input: &DlfSearchInput<'_, P>,
+    stop: &dyn enough::Stop,
 ) -> crate::EncodeResult<LfLevels> {
     let mut scratch: Vec<P> = svtav1_types::try_with_capacity![input.width * input.height]?;
     let last = [0i32; 4];
@@ -449,7 +457,8 @@ pub fn pick_filter_levels_full_search<P: DlfPixel>(
         2,
         last,
         input.early_exit_convergence,
-    );
+        stop,
+    )?;
 
     // Chroma filtering is not allowed when the luma filters are off; when
     // luma is on, key frames search U and V independently (dir = 0).
@@ -463,7 +472,8 @@ pub fn pick_filter_levels_full_search<P: DlfPixel>(
             0,
             last,
             input.early_exit_convergence,
-        );
+            stop,
+        )?;
         let (v, _, _) = search_filter_level(
             input,
             &mut scratch,
@@ -471,7 +481,8 @@ pub fn pick_filter_levels_full_search<P: DlfPixel>(
             0,
             last,
             input.early_exit_convergence,
-        );
+            stop,
+        )?;
         (u, v)
     };
 
@@ -866,7 +877,8 @@ pub fn apply_deblock_frame(
     geom: &DeblockGeom,
     lv: &LfLevels,
     sharpness: u8,
-) {
+    stop: &dyn enough::Stop,
+) -> crate::EncodeResult<()> {
     debug_assert_eq!(geom.mi_cols, width / 4);
     debug_assert_eq!(geom.mi_rows, height / 4);
     let l = lv.levels;
@@ -874,18 +886,30 @@ pub fn apply_deblock_frame(
     // check_planes_to_loop_filter: both luma levels zero disables ALL
     // planes; chroma planes need their own level nonzero.
     if l[0] == 0 && l[1] == 0 {
-        return;
+        return Ok(());
     }
+    // Feature 1: byte-inert cooperative-cancellation poll, per PLANE. The whole
+    // apply pass MEASURED 24 ms at 4096x4096 preset 8 (1.5 ms at 1024x1024), so
+    // per-plane is the granularity this buys — going finer would mean threading
+    // a token into the shared `DlfPixel` kernels, which the LEVEL SEARCH also
+    // calls on scratch copies. Deliberately not done: at 4096x4096 the measured
+    // cancellation floor is ~15-23 ms of frame-buffer TEARDOWN on the way out
+    // (the same cost the success path pays), so a finer poll here would not
+    // move the number. See benchmarks/cancel_latency_2026-08-06.meta.
+    crate::stop_check(stop)?;
     filter_plane(y, width, width, height, 0, 0, l[0], l[1], geom, sharpness);
     if chroma_420 {
         let (cw, ch) = (width / 2, height / 2);
         if l[2] != 0 {
+            crate::stop_check(stop)?;
             filter_plane(u, cw, cw, ch, 1, 1, l[2], l[2], geom, sharpness);
         }
         if l[3] != 0 {
+            crate::stop_check(stop)?;
             filter_plane(v, cw, cw, ch, 2, 1, l[3], l[3], geom, sharpness);
         }
     }
+    Ok(())
 }
 
 /// Highbd twin of [`apply_deblock_frame`] — same plane gating, same edge
@@ -905,23 +929,29 @@ pub fn apply_deblock_frame_hbd(
     lv: &LfLevels,
     sharpness: u8,
     bd: u8,
-) {
+    stop: &dyn enough::Stop,
+) -> crate::EncodeResult<()> {
     debug_assert_eq!(geom.mi_cols, width / 4);
     debug_assert_eq!(geom.mi_rows, height / 4);
     let l = lv.levels;
     if l[0] == 0 && l[1] == 0 {
-        return;
+        return Ok(());
     }
+    // Feature 1: byte-inert per-plane poll (the bd10 twin of the u8 pass).
+    crate::stop_check(stop)?;
     filter_plane_hbd(y, width, width, height, 0, 0, l[0], l[1], geom, sharpness, bd);
     if chroma_420 {
         let (cw, ch) = (width / 2, height / 2);
         if l[2] != 0 {
+            crate::stop_check(stop)?;
             filter_plane_hbd(u, cw, cw, ch, 1, 1, l[2], l[2], geom, sharpness, bd);
         }
         if l[3] != 0 {
+            crate::stop_check(stop)?;
             filter_plane_hbd(v, cw, cw, ch, 2, 1, l[3], l[3], geom, sharpness, bd);
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]

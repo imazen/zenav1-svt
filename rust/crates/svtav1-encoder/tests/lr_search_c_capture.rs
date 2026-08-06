@@ -37,7 +37,18 @@ fn run_cell(dgd: &[u8], rdmult: i64) -> svtav1_encoder::restoration::FrameRestIn
     let flat = vec![128u8; (w / 2) * (h / 2)];
     let ctrls = wn_filter_ctrls_allintra(6);
     search_restoration_still(
-        &ctrls, &src_y, &flat, &flat, dgd, &flat, &flat, w, h, true, rdmult,
+        &ctrls,
+        &src_y,
+        &flat,
+        &flat,
+        dgd,
+        &flat,
+        &flat,
+        w,
+        h,
+        true,
+        rdmult,
+        &enough::Unstoppable,
     )
     .expect("restoration search is infallible on the default (trusted) test path")
 }

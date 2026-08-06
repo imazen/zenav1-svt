@@ -2014,9 +2014,7 @@ impl EncodePipeline {
             for sb_row in tile_sb_row_start..tile_sb_row_end {
                 // Feature 1: byte-inert cooperative-cancellation check (no-op
                 // for the default `Unstoppable` token — `may_stop()` is false).
-                if stop.may_stop() {
-                    stop.check().map_err(EncodeError::from).map_err(whereat::at)?;
-                }
+                crate::stop_check(&stop)?;
                 for sb_col in tile_sb_col_start..tile_sb_col_end {
                     tree_slots[sb_row * sb_cols + sb_col] = Some(tile_trees[tree_k].clone());
                     tree_k += 1;
@@ -2025,9 +2023,7 @@ impl EncodePipeline {
             let mut offset = 0;
             for sb_row in tile_sb_row_start..tile_sb_row_end {
                 // Feature 1: byte-inert cooperative-cancellation check.
-                if stop.may_stop() {
-                    stop.check().map_err(EncodeError::from).map_err(whereat::at)?;
-                }
+                crate::stop_check(&stop)?;
                 for sb_col in tile_sb_col_start..tile_sb_col_end {
                     let x0 = sb_col * sb_size;
                     let y0 = sb_row * sb_size;
@@ -2075,6 +2071,12 @@ impl EncodePipeline {
             .map(|t| t.expect("every SB is covered by exactly one tile"))
             .collect();
 
+        // Feature 1: byte-inert cooperative-cancellation poll at the phase
+        // boundary — bounds a cancel's wait by the length of ONE phase (here,
+        // the bd10 luma level re-encode), not by the whole post-entropy
+        // tail, which was MEASURED at 205 ms of a 926 ms 4096x4096 preset-8
+        // frame before these polls existed (svtav1/examples/cancel_latency.rs).
+        crate::stop_check(&stop)?;
         // Step 4c: bd10 LUMA re-encode (task #94, the u16 MD path). The u8
         // funnel above produced C's partition/mode/tx decisions (RD is
         // ~16x-scale-invariant for `sample << 2` content); this pass recomputes
@@ -2327,6 +2329,12 @@ impl EncodePipeline {
             }
         }
 
+        // Feature 1: byte-inert cooperative-cancellation poll at the phase
+        // boundary — bounds a cancel's wait by the length of ONE phase (here,
+        // the post-reconstruction filter chain), not by the whole post-entropy
+        // tail, which was MEASURED at 205 ms of a 926 ms 4096x4096 preset-8
+        // frame before these polls existed (svtav1/examples/cancel_latency.rs).
+        crate::stop_check(&stop)?;
         // Step 5: Post-reconstruction filters.
         //
         // Deblocking is SIGNALED and applied decoder-exactly further down
@@ -2502,9 +2510,7 @@ impl EncodePipeline {
             for tile_idx in 0..tile_grid.num_tiles() {
                 // Feature 1: byte-inert cooperative-cancellation check, once per
                 // tile of each entropy re-walk (this closure runs up to 3x).
-                if stop.may_stop() {
-                    stop.check().map_err(EncodeError::from).map_err(whereat::at)?;
-                }
+                crate::stop_check(&stop)?;
                 let (tile_sb_row_start, tile_sb_row_end) =
                     tile_grid.row_span(tile_idx / tile_grid.tile_cols);
                 let (tile_sb_col_start, tile_sb_col_end) =
@@ -2568,12 +2574,13 @@ impl EncodePipeline {
                 let mut prev_sb_row = usize::MAX;
 
                 for sb_row in tile_sb_row_start..tile_sb_row_end {
-                    // Feature 1: byte-inert cooperative-cancellation check, once
-                    // per SB row of the entropy walk.
-                    if stop.may_stop() {
-                        stop.check().map_err(EncodeError::from).map_err(whereat::at)?;
-                    }
                     for sb_col in tile_sb_col_start..tile_sb_col_end {
+                        // Feature 1: byte-inert cooperative-cancellation check,
+                        // once per SUPERBLOCK of the entropy walk. Per SB ROW
+                        // (what this used to be) is ~1.6 ms at 4096x4096, and
+                        // this closure runs up to 3x per frame — the same
+                        // granularity argument as the MD loop above.
+                        crate::stop_check(&stop)?;
                         let sb_idx = sb_row * sb_cols + sb_col;
                         let tree = &all_trees[sb_idx];
                         // [SVT_HDR_MODE] per-SB delta-q: the SB's planned qindex
@@ -2703,6 +2710,12 @@ impl EncodePipeline {
         let (mut tile_data, deblock_geom, mut u_recon, mut v_recon, mut tile_size_bytes_minus_1) =
             run_entropy_walk(None, None)?;
 
+        // Feature 1: byte-inert cooperative-cancellation poll at the phase
+        // boundary — bounds a cancel's wait by the length of ONE phase (here,
+        // the deblock level pick + frame apply), not by the whole post-entropy
+        // tail, which was MEASURED at 205 ms of a 926 ms 4096x4096 preset-8
+        // frame before these polls existed (svtav1/examples/cancel_latency.rs).
+        crate::stop_check(&stop)?;
         // Step 6a: Deblocking — pick the levels the frame header will
         // signal (C svt_av1_pick_filter_level_by_q closed form) and apply
         // the filter decoder-exactly to the OUTPUT reconstruction. The
@@ -2820,7 +2833,7 @@ impl EncodePipeline {
                             early_exit_convergence,
                             bit_depth: self.bit_depth,
                         };
-                        crate::deblock::pick_filter_levels_full_search(&input)?
+                        crate::deblock::pick_filter_levels_full_search(&input, &stop)?
                     }
                     None => {
                         let input = crate::deblock::DlfSearchInput::<u8> {
@@ -2838,7 +2851,7 @@ impl EncodePipeline {
                             early_exit_convergence,
                             bit_depth: self.bit_depth,
                         };
-                        crate::deblock::pick_filter_levels_full_search(&input)?
+                        crate::deblock::pick_filter_levels_full_search(&input, &stop)?
                     }
                 }
             } else {
@@ -2861,7 +2874,8 @@ impl EncodePipeline {
                     &lf_levels,
                     lf_sharp_eff,
                     self.bit_depth,
-                );
+                    &stop,
+                )?;
             }
         }
         if lf_levels.any() {
@@ -2875,9 +2889,16 @@ impl EncodePipeline {
                 &deblock_geom,
                 &lf_levels,
                 lf_sharp_eff, // = signaled loop_filter_sharpness
-            );
+                &stop,
+            )?;
         }
 
+        // Feature 1: byte-inert cooperative-cancellation poll at the phase
+        // boundary — bounds a cancel's wait by the length of ONE phase (here,
+        // the CDEF strength pick + frame apply), not by the whole post-entropy
+        // tail, which was MEASURED at 205 ms of a 926 ms 4096x4096 preset-8
+        // frame before these polls existed (svtav1/examples/cancel_latency.rs).
+        crate::stop_check(&stop)?;
         // Step 6a': CDEF — decoder order is deblock -> CDEF (-> restoration,
         // unported). Key frames signal the qp-picked strengths
         // (svt_pick_cdef_from_qp intra branch) and apply the decoder-exact
@@ -2961,6 +2982,7 @@ impl EncodePipeline {
                                 &deblock_geom,
                                 base_qindex,
                                 self.bit_depth,
+                                &stop,
                             )?
                         }
                         None => crate::cdef::cdef_search_still(
@@ -2976,6 +2998,7 @@ impl EncodePipeline {
                             chroma.is_some(),
                             &deblock_geom,
                             base_qindex,
+                            &stop,
                         )?,
                     };
                     match searched {
@@ -3056,7 +3079,8 @@ impl EncodePipeline {
             chroma.is_some(),
             &deblock_geom,
             &cdef_params,
-        );
+            &stop,
+        )?;
         // bd10: apply CDEF to the 10-bit canvas too. Not for output — the u8
         // chain above still produces that — but because the Wiener LR search
         // reads the POST-CDEF recon, and at 10 bits that must be the 10-bit
@@ -3073,9 +3097,16 @@ impl EncodePipeline {
                 &deblock_geom,
                 &cdef_params,
                 self.bit_depth,
-            );
+                &stop,
+            )?;
         }
 
+        // Feature 1: byte-inert cooperative-cancellation poll at the phase
+        // boundary — bounds a cancel's wait by the length of ONE phase (here,
+        // the Wiener loop-restoration search + apply), not by the whole post-entropy
+        // tail, which was MEASURED at 205 ms of a 926 ms 4096x4096 preset-8
+        // frame before these polls existed (svtav1/examples/cancel_latency.rs).
+        crate::stop_check(&stop)?;
         // Step 6a'': Wiener loop restoration — C order deblock -> CDEF ->
         // LR. The C-exact search (restoration_seg_search +
         // rest_finish_search at the allintra wn_filter controls) picks
@@ -3226,6 +3257,7 @@ impl EncodePipeline {
                             true,
                             rdmult,
                             self.bit_depth,
+                            &stop,
                         )?
                     }
                     None => crate::restoration::search_restoration_still(
@@ -3240,6 +3272,7 @@ impl EncodePipeline {
                         lr_true_h,
                         chroma.is_some(),
                         rdmult,
+                        &stop,
                     )?,
                 };
                 #[cfg(feature = "std")]
@@ -3330,11 +3363,23 @@ impl EncodePipeline {
             }
         }
 
+        // Feature 1: byte-inert cooperative-cancellation poll at the phase
+        // boundary — bounds a cancel's wait by the length of ONE phase (here,
+        // film-grain estimation), not by the whole post-entropy
+        // tail, which was MEASURED at 205 ms of a 926 ms 4096x4096 preset-8
+        // frame before these polls existed (svtav1/examples/cancel_latency.rs).
+        crate::stop_check(&stop)?;
         // Step 6b: Film grain estimation (compare source to reconstruction)
         let _grain_params = crate::film_grain::estimate_film_grain(&encode_input, &recon, w, h, w);
         // grain_params would be signaled in the frame header OBU
         // and used by the decoder to re-synthesize grain
 
+        // Feature 1: byte-inert cooperative-cancellation poll at the phase
+        // boundary — bounds a cancel's wait by the length of ONE phase (here,
+        // OBU assembly), not by the whole post-entropy
+        // tail, which was MEASURED at 205 ms of a 926 ms 4096x4096 preset-8
+        // frame before these polls existed (svtav1/examples/cancel_latency.rs).
+        crate::stop_check(&stop)?;
         // Step 7: Build OBU bitstream
         // Use full (non-reduced) sequence header for multi-frame sequences,
         // still-picture header only for single-frame mode. is_single_frame
@@ -3471,6 +3516,12 @@ impl EncodePipeline {
             )
         };
 
+        // Feature 1: byte-inert cooperative-cancellation poll at the phase
+        // boundary — bounds a cancel's wait by the length of ONE phase (here,
+        // the recon publish + DPB update), not by the whole post-entropy
+        // tail, which was MEASURED at 205 ms of a 926 ms 4096x4096 preset-8
+        // frame before these polls existed (svtav1/examples/cancel_latency.rs).
+        crate::stop_check(&stop)?;
         // Step 7: Publish recon for the recon-parity gate, then update DPB.
         //
         // Superres chunk B.3: what a DECODER outputs is the coded-width recon
@@ -3515,6 +3566,12 @@ impl EncodePipeline {
         };
         self.dpb.refresh(pcs.refresh_frame_flags, &ref_frame);
 
+        // Feature 1: byte-inert cooperative-cancellation poll at the phase
+        // boundary — bounds a cancel's wait by the length of ONE phase (here,
+        // the rate-control update), not by the whole post-entropy
+        // tail, which was MEASURED at 205 ms of a 926 ms 4096x4096 preset-8
+        // frame before these polls existed (svtav1/examples/cancel_latency.rs).
+        crate::stop_check(&stop)?;
         // Step 8: Update rate control state
         update_rc_state(&mut self.rc_state, bitstream.len() as u64 * 8, pcs.qp);
 
@@ -7260,14 +7317,17 @@ fn encode_tile_rows(
         part_config.c_quant = c_quant.clone();
 
         for sb_row in tile_sb_row_start..tile_sb_row_end {
-            // Feature 1: cooperative cancellation, checked once per SB row of
-            // the MD search. `may_stop()` short-circuits to `false` for the
-            // default `Unstoppable` token, so this is byte-inert unless a real
-            // stop token was installed via `with_stop`.
-            if stop.may_stop() {
-                stop.check().map_err(EncodeError::from).map_err(whereat::at)?;
-            }
             for sb_col in tile_sb_col_start..tile_sb_col_end {
+                // Feature 1: cooperative cancellation, checked once per
+                // SUPERBLOCK of the MD search. Per SB *ROW* (what this used to
+                // be) is ~10 ms at 4096x4096 — half the 20 ms responsiveness
+                // budget in a single un-yielding step, and MEASURED as the
+                // dominant term once the post-entropy phases got their own
+                // polls (benchmarks/cancel_latency_*). One SB is ~0.15 ms.
+                // `may_stop()` short-circuits to `false` for the default
+                // `Unstoppable` token, so this stays byte-inert unless a real
+                // stop token was installed via `with_stop`.
+                crate::stop_check(stop)?;
                 let sb_x0 = sb_col * sb_size;
                 let sb_y0 = sb_row * sb_size;
                 let sb_cur_w = sb_size.min(w - sb_x0);
