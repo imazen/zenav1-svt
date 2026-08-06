@@ -20,6 +20,14 @@ set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../../.." && pwd) # <repo> (rust/tools/perf_c_encode -> repo root)
+# The C reference tree is the `reference/svt-av1` submodule, not `$ROOT/Source`.
+# This script kept the pre-submodule paths after the move, so every include
+# resolved to a directory that does not exist and the build died on
+# `#include "EbSvtAv1.h"` — which took the WHOLE perf gate down with it
+# (perf_gate.sh aborts at "C harness build failed"). That is why the newest
+# committed perf numbers are 2026-07-23: the gate has been unrunnable since.
+# `capture_c_trace/build.sh` was updated at the time; this one was missed.
+C_ROOT="$ROOT/reference/svt-av1"
 
 LIB_DIR="${SVT_CREF_LIB_DIR:-$ROOT/Bin/Release}"
 LIB="$LIB_DIR/libSvtAv1Enc.a"
@@ -39,7 +47,7 @@ fi
 
 if [[ ! -f "$LIB" ]]; then
     echo "error: $LIB not found. Build the C reference first:" >&2
-    echo "  cmake -S $ROOT -B $CMAKE_DIR -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \\" >&2
+    echo "  cmake -S $C_ROOT -B $CMAKE_DIR -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \\" >&2
     echo "        -DBUILD_APPS=OFF -DBUILD_TESTING=OFF -DSVT_AV1_LTO=OFF \\" >&2
     echo "        -DCMAKE_OUTPUT_DIRECTORY=$LIB_DIR/ && cmake --build $CMAKE_DIR -j" >&2
     exit 1
@@ -56,10 +64,10 @@ fi
 # reference lib ships runtime SIMD dispatch, and the perf gate forbids native.
 cc -O2 -o "$OUT" \
     "$HERE/perf_c_encode.c" \
-    -I"$ROOT/Source/API" \
-    -I"$ROOT/Source/Lib/Codec" \
-    -I"$ROOT/Source/Lib/Globals" \
-    -I"$ROOT/Source/Lib/C_DEFAULT" \
+    -I"$C_ROOT/Source/API" \
+    -I"$C_ROOT/Source/Lib/Codec" \
+    -I"$C_ROOT/Source/Lib/Globals" \
+    -I"$C_ROOT/Source/Lib/C_DEFAULT" \
     "$LIB" -lpthread -lm
 
 echo "perf_c_encode: built $OUT (lib=$LIB)"
