@@ -43,11 +43,27 @@ pub struct EncodedAvif {
 
 /// Errors that can occur during AVIF encoding.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum EncodeError {
-    /// Image dimensions are invalid (zero, too large, or not aligned).
-    InvalidDimensions,
+    /// Image dimensions, stride or buffer length are invalid for this request.
+    ///
+    /// Carries the requested geometry and the specific rule that was broken.
+    /// A bare "invalid dimensions" cannot distinguish an odd height from a
+    /// buffer that is three bytes short, and both are caller mistakes with
+    /// different fixes.
+    InvalidDimensions {
+        /// Requested width in pixels.
+        width: u32,
+        /// Requested height in pixels.
+        height: u32,
+        /// Which rule was broken.
+        reason: &'static str,
+    },
     /// Quality value is out of the valid range (1.0-100.0).
-    InvalidQuality,
+    InvalidQuality {
+        /// The value that was rejected.
+        quality: f32,
+    },
     /// Encoding failed with a description.
     EncodeFailed(String),
     /// A builder knob was set that this encoder records but does not consume,
@@ -60,8 +76,17 @@ impl core::fmt::Display for EncodeError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::UnsupportedConfig(what) => write!(f, "Unsupported configuration: {what}"),
-            Self::InvalidDimensions => write!(f, "Invalid image dimensions"),
-            Self::InvalidQuality => write!(f, "Quality must be between 1.0 and 100.0"),
+            Self::InvalidDimensions {
+                width,
+                height,
+                reason,
+            } => write!(f, "Invalid image dimensions {width}x{height}: {reason}"),
+            Self::InvalidQuality { quality } => {
+                write!(
+                    f,
+                    "Quality {quality} is outside the valid range 1.0..=100.0"
+                )
+            }
             Self::EncodeFailed(msg) => write!(f, "Encode failed: {msg}"),
         }
     }
@@ -437,20 +462,39 @@ impl AvifEncoder {
         height: u32,
         y_stride: u32,
     ) -> Result<EncodedAvif, EncodeError> {
-        if width == 0 || height == 0 || width % 2 != 0 || height % 2 != 0 {
-            return Err(EncodeError::InvalidDimensions);
+        if width == 0 || height == 0 {
+            return Err(EncodeError::InvalidDimensions {
+                width,
+                height,
+                reason: "width and height must both be non-zero",
+            });
+        }
+        if width % 2 != 0 || height % 2 != 0 {
+            return Err(EncodeError::InvalidDimensions {
+                width,
+                height,
+                reason: "4:2:0 needs even width and height (odd dims have no whole chroma plane)",
+            });
         }
 
         let y_len_needed = (height - 1) * y_stride + width;
         if (y.len() as u32) < y_len_needed {
-            return Err(EncodeError::InvalidDimensions);
+            return Err(EncodeError::InvalidDimensions {
+                width,
+                height,
+                reason: "luma plane is shorter than (height - 1) * y_stride + width",
+            });
         }
 
         let chroma_w = width / 2;
         let chroma_h = height / 2;
         let chroma_len_needed = (chroma_h - 1) * chroma_w + chroma_w;
         if (u.len() as u32) < chroma_len_needed || (v.len() as u32) < chroma_len_needed {
-            return Err(EncodeError::InvalidDimensions);
+            return Err(EncodeError::InvalidDimensions {
+                width,
+                height,
+                reason: "a chroma plane is shorter than (height/2) * (width/2)",
+            });
         }
 
         self.validate_quality()?;
@@ -488,14 +532,26 @@ impl AvifEncoder {
         stride: u32,
     ) -> Result<(), EncodeError> {
         if width == 0 || height == 0 {
-            return Err(EncodeError::InvalidDimensions);
+            return Err(EncodeError::InvalidDimensions {
+                width,
+                height,
+                reason: "width and height must both be non-zero",
+            });
         }
         if stride < width {
-            return Err(EncodeError::InvalidDimensions);
+            return Err(EncodeError::InvalidDimensions {
+                width,
+                height,
+                reason: "stride is smaller than the width (rows would overlap)",
+            });
         }
         let needed = (height - 1) as usize * stride as usize + width as usize;
         if buf_len < needed {
-            return Err(EncodeError::InvalidDimensions);
+            return Err(EncodeError::InvalidDimensions {
+                width,
+                height,
+                reason: "pixel buffer is shorter than (height - 1) * stride + width",
+            });
         }
         Ok(())
     }
@@ -519,7 +575,17 @@ impl AvifEncoder {
             svtav1_encoder::EncodeError::UnsupportedConfig(what) => {
                 EncodeError::UnsupportedConfig(what)
             }
-            svtav1_encoder::EncodeError::InvalidDimensions { .. } => EncodeError::InvalidDimensions,
+            // Forward the pipeline's geometry AND its reason. Collapsing this
+            // to a bare variant threw away the only part a caller can act on.
+            svtav1_encoder::EncodeError::InvalidDimensions {
+                width,
+                height,
+                reason,
+            } => EncodeError::InvalidDimensions {
+                width: *width,
+                height: *height,
+                reason,
+            },
             // Cancellation and allocation failure carry runtime detail worth
             // surfacing verbatim; `#[non_exhaustive]` keeps this wildcard.
             _ => EncodeError::EncodeFailed(rendered()),
@@ -529,7 +595,9 @@ impl AvifEncoder {
     /// Validate quality range.
     fn validate_quality(&self) -> Result<(), EncodeError> {
         if !(1.0..=100.0).contains(&self.quality) {
-            return Err(EncodeError::InvalidQuality);
+            return Err(EncodeError::InvalidQuality {
+                quality: self.quality,
+            });
         }
         Ok(())
     }
@@ -755,11 +823,11 @@ mod tests {
         let pixels = vec![0u8; 16];
         assert!(matches!(
             enc.encode_y8(&pixels, 0, 16, 16),
-            Err(EncodeError::InvalidDimensions)
+            Err(EncodeError::InvalidDimensions { .. })
         ));
         assert!(matches!(
             enc.encode_y8(&pixels, 16, 0, 16),
-            Err(EncodeError::InvalidDimensions)
+            Err(EncodeError::InvalidDimensions { .. })
         ));
     }
 
@@ -769,8 +837,148 @@ mod tests {
         let pixels = vec![0u8; 10]; // too small for 16x16
         assert!(matches!(
             enc.encode_y8(&pixels, 16, 16, 16),
-            Err(EncodeError::InvalidDimensions)
+            Err(EncodeError::InvalidDimensions { .. })
         ));
+    }
+
+    /// Every geometry rejection must name the rule it broke AND echo the
+    /// geometry back. `InvalidDimensions` used to be a payload-free unit
+    /// variant shared by five structurally different failures, so a caller who
+    /// passed an odd height and a caller whose buffer was three bytes short got
+    /// the identical string "Invalid image dimensions" — true, and useless.
+    ///
+    /// This test is deliberately written against the RENDERED message rather
+    /// than the variant, because the rendered message is what a caller reads in
+    /// a log. It asserts the reasons are DISTINCT, so collapsing them back into
+    /// one generic string fails here rather than in someone's bug report.
+    #[test]
+    fn every_dimension_rejection_names_its_own_rule() {
+        let enc = AvifEncoder::new();
+        let buf = vec![0u8; 16 * 16];
+        let chroma = vec![0u8; 8 * 8];
+
+        let cases: Vec<(&str, EncodeError)> = vec![
+            ("zero width", enc.encode_y8(&buf, 0, 16, 16).unwrap_err()),
+            (
+                "stride < width",
+                enc.encode_y8(&buf, 16, 16, 8).unwrap_err(),
+            ),
+            (
+                "short luma buffer",
+                enc.encode_y8(&buf[..10], 16, 16, 16).unwrap_err(),
+            ),
+            (
+                "odd dims on the 4:2:0 path",
+                enc.encode_yuv420(&buf, &chroma, &chroma, 15, 16, 15)
+                    .unwrap_err(),
+            ),
+            (
+                "short chroma plane",
+                enc.encode_yuv420(&buf, &chroma[..3], &chroma, 16, 16, 16)
+                    .unwrap_err(),
+            ),
+        ];
+
+        let mut reasons = Vec::new();
+        for (label, err) in &cases {
+            let EncodeError::InvalidDimensions {
+                width,
+                height,
+                reason,
+            } = err
+            else {
+                panic!("{label}: expected InvalidDimensions, got {err:?}");
+            };
+            let rendered = err.to_string();
+            assert!(
+                rendered.contains(&format!("{width}x{height}")),
+                "{label}: the message must echo the requested geometry, got {rendered:?}"
+            );
+            assert!(
+                rendered.contains(reason),
+                "{label}: the message must carry the reason, got {rendered:?}"
+            );
+            assert!(
+                reason.len() > 20,
+                "{label}: {reason:?} is too terse to act on"
+            );
+            reasons.push(*reason);
+        }
+        let unique: std::collections::BTreeSet<&str> = reasons.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            reasons.len(),
+            "each rejection must have its OWN reason; got duplicates in {reasons:?}"
+        );
+    }
+
+    /// `EncodeError::InvalidQuality` has exactly ONE reachable trigger, and it
+    /// is not the obvious one.
+    ///
+    /// `with_quality` CLAMPS into 1.0..=100.0 and `quality` is a private field,
+    /// so no finite out-of-range value survives to `validate_quality`. NaN does:
+    /// `f32::clamp` propagates NaN, and `RangeInclusive::contains` is false for
+    /// it. Both halves are pinned here — the clamp (so a future change that
+    /// stops clamping is caught) and the NaN path (so the variant is not
+    /// quietly unreachable dead code) — plus the message naming the value.
+    #[test]
+    fn quality_rejection_is_reachable_only_through_nan() {
+        let img = vec![0u8; 16 * 16];
+
+        // Finite out-of-range values are clamped, not rejected.
+        for q in [-10.0f32, 0.5, 100.5, 1e9] {
+            let enc = AvifEncoder::new().with_quality(q);
+            assert!(
+                (1.0..=100.0).contains(&enc.quality),
+                "with_quality({q}) must clamp into 1.0..=100.0, got {}",
+                enc.quality
+            );
+            assert!(
+                !matches!(
+                    enc.encode_y8(&img, 16, 16, 16),
+                    Err(EncodeError::InvalidQuality { .. })
+                ),
+                "a clamped quality must not be rejected ({q})"
+            );
+        }
+
+        // NaN survives the clamp and is the one thing that trips the check.
+        let enc = AvifEncoder::new().with_quality(f32::NAN);
+        assert!(enc.quality.is_nan(), "f32::clamp must propagate NaN");
+        let err = enc.encode_y8(&img, 16, 16, 16).unwrap_err();
+        let EncodeError::InvalidQuality { quality } = err else {
+            panic!("expected InvalidQuality, got {err:?}");
+        };
+        assert!(quality.is_nan());
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("NaN") && rendered.contains("100"),
+            "the message must name the rejected value and the range, got {rendered:?}"
+        );
+    }
+
+    /// A refusal raised inside the pipeline must reach the AVIF caller with its
+    /// reason intact. `from_pipeline_error` used to match
+    /// `InvalidDimensions { .. }` and rebuild a payload-free variant, throwing
+    /// away the only part of the error a caller could act on.
+    #[test]
+    fn pipeline_dimension_refusals_keep_their_reason() {
+        let inner = svtav1_encoder::EncodeError::InvalidDimensions {
+            width: 63,
+            height: 65,
+            reason: "monochrome encode requires 8-aligned dims",
+        };
+        let mapped = AvifEncoder::from_pipeline_error(&inner, || "rendered".to_string());
+        let EncodeError::InvalidDimensions {
+            width,
+            height,
+            reason,
+        } = mapped
+        else {
+            panic!("expected InvalidDimensions, got {mapped:?}");
+        };
+        assert_eq!((width, height), (63, 65));
+        assert_eq!(reason, "monochrome encode requires 8-aligned dims");
     }
 
     #[test]
@@ -793,7 +1001,7 @@ mod tests {
         let v = vec![0u8; 8 * 8];
         assert!(matches!(
             enc.encode_yuv420(&y, &u, &v, 15, 16, 15),
-            Err(EncodeError::InvalidDimensions)
+            Err(EncodeError::InvalidDimensions { .. })
         ));
     }
 
