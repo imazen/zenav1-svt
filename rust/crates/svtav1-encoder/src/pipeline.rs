@@ -3280,6 +3280,16 @@ impl EncodePipeline {
                         .last_recon_pre_cdef
                         .as_ref()
                         .expect("pre-CDEF recon captured above");
+                    // Task #95 goal 1 / issue #11: the boundary save and the
+                    // unit walk take the SAME TRUE extent the search sized the
+                    // RU grid from (C drives all three off one
+                    // `whole_frame_rect`), read at the ALIGNED canvas strides
+                    // the planes are stored at. Passing the aligned extent here
+                    // while the grid was counted on the true one made the walk
+                    // visit more units than the grid holds — an out-of-bounds
+                    // index whenever alignment crossed a `count_units_in_tile`
+                    // boundary (e.g. true 383 -> 1 unit, aligned 384 -> 2).
+                    // Byte-neutral for 8-aligned dims (true == aligned).
                     let bounds = crate::restoration::save_lr_boundaries(
                         pre_y,
                         pre_u,
@@ -3287,16 +3297,20 @@ impl EncodePipeline {
                         &recon,
                         &u_recon,
                         &v_recon,
+                        lr_true_w,
+                        lr_true_h,
                         w,
-                        h,
+                        cw,
                         chroma.is_some(),
                     );
                     crate::restoration::apply_restoration_frame(
                         &mut recon,
                         &mut u_recon,
                         &mut v_recon,
+                        lr_true_w,
+                        lr_true_h,
                         w,
-                        h,
+                        cw,
                         chroma.is_some(),
                         &rest_info,
                         &bounds,
