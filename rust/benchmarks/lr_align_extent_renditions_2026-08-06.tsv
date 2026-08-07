@@ -1,0 +1,61 @@
+rendition	qp	content	verdict	note
+383x512	1	gradient	SAME	
+383x512	1	screen	SAME	
+383x512	15	gradient	FIXED_UNPANICKED	PANIC:the len is 2 but the index is 2
+383x512	15	screen	SAME	
+383x512	30	gradient	FIXED_UNPANICKED	PANIC:the len is 2 but the index is 2
+383x512	30	screen	SAME	
+383x512	45	gradient	FIXED_UNPANICKED	PANIC:the len is 2 but the index is 2
+383x512	45	screen	SAME	
+383x512	54	gradient	FIXED_UNPANICKED	PANIC:the len is 2 but the index is 2
+383x512	54	screen	SAME	
+383x512	63	gradient	FIXED_UNPANICKED	PANIC:the len is 2 but the index is 2
+383x512	63	screen	FIXED_UNPANICKED	PANIC:the len is 2 but the index is 2
+766x1024	1	gradient	SAME	
+766x1024	1	screen	SAME	
+766x1024	15	gradient	SAME	
+766x1024	15	screen	SAME	
+766x1024	30	gradient	SAME	
+766x1024	30	screen	SAME	
+766x1024	45	gradient	SAME	
+766x1024	45	screen	SAME	
+766x1024	54	gradient	SAME	
+766x1024	54	screen	SAME	
+766x1024	63	gradient	SAME	
+766x1024	63	screen	SAME	
+2048x1660	1	gradient	SAME	
+2048x1660	1	screen	SAME	
+2048x1660	15	gradient	FIXED_UNPANICKED	PANIC:the len is 48 but the index is 48
+2048x1660	15	screen	SAME	
+2048x1660	30	gradient	FIXED_UNPANICKED	PANIC:the len is 48 but the index is 48
+2048x1660	30	screen	SAME	
+2048x1660	45	gradient	FIXED_UNPANICKED	PANIC:the len is 48 but the index is 48
+2048x1660	45	screen	SAME	
+2048x1660	54	gradient	FIXED_UNPANICKED	PANIC:the len is 48 but the index is 48
+2048x1660	54	screen	SAME	
+2048x1660	63	gradient	FIXED_UNPANICKED	PANIC:the len is 48 but the index is 48
+2048x1660	63	screen	FIXED_UNPANICKED	PANIC:the len is 48 but the index is 48
+1914x2560	1	gradient	SAME	
+1914x2560	1	screen	SAME	
+1914x2560	15	gradient	FIXED_UNPANICKED	PANIC:the len is 70 but the index is 70
+1914x2560	15	screen	SAME	
+1914x2560	30	gradient	FIXED_UNPANICKED	PANIC:the len is 70 but the index is 70
+1914x2560	30	screen	SAME	
+1914x2560	45	gradient	FIXED_UNPANICKED	PANIC:the len is 70 but the index is 70
+1914x2560	45	screen	SAME	
+1914x2560	54	gradient	FIXED_UNPANICKED	PANIC:the len is 70 but the index is 70
+1914x2560	54	screen	SAME	
+1914x2560	63	gradient	FIXED_UNPANICKED	PANIC:the len is 70 but the index is 70
+1914x2560	63	screen	FIXED_UNPANICKED	PANIC:the len is 70 but the index is 70
+2297x3072	1	gradient	SAME	
+2297x3072	1	screen	SAME	
+2297x3072	15	gradient	SAME	
+2297x3072	15	screen	SAME	
+2297x3072	30	gradient	SAME	
+2297x3072	30	screen	SAME	
+2297x3072	45	gradient	SAME	
+2297x3072	45	screen	SAME	
+2297x3072	54	gradient	SAME	
+2297x3072	54	screen	SAME	
+2297x3072	63	gradient	SAME	
+2297x3072	63	screen	SAME	

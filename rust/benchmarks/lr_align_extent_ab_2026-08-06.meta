@@ -1,0 +1,83 @@
+LOOP-RESTORATION EXTENT FIX — PRE/POST BYTE-IDENTITY A/B — 2026-08-06
+=====================================================================
+Issue:  imazen/zenav1-svt#11 (restoration.rs:985 index out of bounds)
+Branch: fix/issue-11-lr-apply-true-dims (off main 4c5c13246)
+Fix:    38b19bd4d
+Host:   Darwin arm64 (aarch64), 2026-08-06
+Tool:   an A/B driver over two builds of `svtav1/examples/identity_run`, one at
+        main 4c5c13246 and one at the fix, comparing sha256 of the raw OBU
+        stream per cell. Both binaries encode the SAME generated .yuv.
+Summary (committed):  benchmarks/lr_align_extent_ab_2026-08-06.tsv
+Full per-cell log (NOT committed, sha256 pairs):
+        ~/tmp/zi11/ab_sweep.tsv
+
+GRID — 19 dims x 5 presets {0,3,6,9,13} x 4 cli qps {1,20,40,63}
+       x 2 bit depths {8,10} x 3 contents {uniform,gradient,screen} = 2,280 cells.
+Dims chosen to cross every geometry class relative to the defect: 64-aligned
+(64,128,256,512,320x256), 8-aligned-not-64 (56,72,120,200,384x512,766x384),
+non-8-aligned that do NOT cross a count_units_in_tile(256,..) boundary
+(65x64, 72x65, 257x120, 65x257, 258x258, 385x257, 500x504), and the one that
+DOES (383x512 — the smallest rendition issue #11 reported).
+
+RESULT
+  SAME             2,266   byte-identical stream pre-fix and post-fix
+  FIXED_UNPANICKED    14   pre-fix PANIC, post-fix a valid stream
+  DIFF                 0   no cell that worked before changed its bytes
+
+The 14 are all 383x512: gradient at p0/p3/p6 x qp{20,40,63} x bd{8,10} plus
+screen at p6/q63 x bd{8,10} — i.e. exactly the cells where the frame-level
+Wiener RD wins, which is what makes the defect content-dependent. 383 counts
+one horizontal restoration unit ((383+128)/256 = 1) while the aligned 384
+walks two, so a 1x2 grid received a 2x2 walk: "the len is 2 but the index is 2",
+the message in the issue verbatim.
+
+The other 18 dims are the control: no cell of theirs moved a byte, which is the
+claim the fix rests on (an extent change that must be inert wherever true ==
+aligned, and wherever the alignment does not cross a unit boundary).
+
+CROSS-CHECKS AGAINST THE C ENCODER (same host, same day, all post-fix)
+  tools/partial_sb_gate.sh          146/146 byte-identical
+  tools/bd10_partial_sb_gate.sh     157/157 byte-identical (+5/5 pinned
+                                    divergences still diverging, as pinned)
+  tools/bd10_matrix.sh               36/36  byte-identical
+  tools/regression_spotcheck.sh      26/26  (23 pre-existing + 3 new
+                                    lr-align-cross-* cells)
+  tools/arbitrary_size_robustness.sh 128/128 panic-free + aomdec-decodable
+  Direct cells: `gradient 383x512 q40 p6` bd8 AND bd10, `gradient 766x128 q40 p6`,
+  `gradient 258x128 q40 p6`, `gradient 385x257 q40 p6` — all IDENTICAL to the C
+  encoder post-fix. The first three PANICKED pre-fix, so the port now matches C
+  on input it previously could not encode at all.
+
+WHY NO BITSTREAM CHANGE WAS POSSIBLE. `apply_restoration_frame` and
+`save_lr_boundaries` run AFTER the tile has been entropy-coded; they touch only
+the published recon. The defect could crash the encode or corrupt the recon, but
+never the stream — which is why every non-panicking cell is byte-identical.
+
+REPRODUCING THE FIVE REPORTED RENDITIONS. The real assets
+(s3://zentrain/refs/imazen-26-hdr-grid-2026-06-14/) are not reachable from this
+host and /mnt/v does not exist here, so the renditions were reproduced by
+GEOMETRY with synthetic content at their exact dimensions — see
+benchmarks/lr_align_extent_renditions_2026-08-06.tsv.
+
+THE FIVE RENDITIONS BY GEOMETRY (lr_align_extent_renditions_2026-08-06.tsv)
+Each reported rendition at its exact dims, bd10 4:2:0 preset 6, cli qp
+{1,15,30,45,54,63} x {gradient,screen}: 60 cells, 42 SAME, 18 FIXED_UNPANICKED,
+0 DIFF, 0 still broken. The observed panic indices match the arithmetic model
+of the defect exactly:
+
+  rendition    overflowing plane   grid (h x v)   walk (h x v)   observed panic
+  383x512      luma                1 x 2          2 x 2          len 2, index 2
+  2048x1660    luma                8 x 6          8 x 7          len 48, index 48
+  1914x2560    luma                7 x 10         8 x 10         len 70, index 70
+  766x1024     CHROMA              1 x 2          2 x 2          (not armed here)
+  2297x3072    CHROMA              4 x 6          5 x 6          (not armed here)
+
+The two CHROMA-side renditions stay SAME under this harness because
+identity_run's synthetic content carries FLAT chroma (u = v = 128), so the
+chroma planes pick RESTORE_NONE and the chroma unit walk never runs -- the same
+reason the pre-existing synthetic robustness matrix could not reach this bug on
+real photographs. The chroma half is covered instead by
+`svtav1/tests/issue11_repro.rs::issue11_766x128_chroma_unit_walk_stays_in_the_grid`,
+which feeds textured chroma at the identical crossing (true ceil(766/2) = 383 ->
+1 unit, applied 768/2 = 384 -> 2) and panicked "len is 1 but the index is 1"
+pre-fix.
