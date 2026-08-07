@@ -711,7 +711,7 @@ pub fn search_restoration_still_bd<P: LrPixel>(
         // (8-aligned) true dims ceiling == floor, so every existing cell is
         // byte-neutral.
         let (pw, ph) = if is_uv {
-            ((w + 1) / 2, (h + 1) / 2)
+            (w.div_ceil(2), h.div_ceil(2))
         } else {
             (w, h)
         };
@@ -953,7 +953,7 @@ pub fn save_lr_boundaries(
         let ss = i32::from(is_uv);
         // C whole_frame_rect: ROUND_POWER_OF_TWO (= CEILING) for chroma.
         let (pw, ph) = if is_uv {
-            ((w + 1) / 2, (h + 1) / 2)
+            (w.div_ceil(2), h.div_ceil(2))
         } else {
             (w, h)
         };
@@ -1012,7 +1012,7 @@ pub fn apply_restoration_frame(
         let ss = i32::from(is_uv);
         // C whole_frame_rect: ROUND_POWER_OF_TWO (= CEILING) for chroma.
         let (pw, ph) = if is_uv {
-            ((w + 1) / 2, (h + 1) / 2)
+            (w.div_ceil(2), h.div_ceil(2))
         } else {
             (w, h)
         };
