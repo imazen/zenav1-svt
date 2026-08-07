@@ -1,5 +1,20 @@
 # DSP kernels on aarch64: the NEON tier was never implemented — 2026-07-28
 
+> **Re-verified at HEAD 2026-08-07 — read
+> `rust/benchmarks/neon_tier_audit_2026-08-07.md` alongside this file.**
+> Two claims below have moved. (1) `quant_coding` and `inter_pred`, listed here
+> as placeholders, now have real intrinsics. (2) The shared-source transform
+> port described at the end of this file WAS done — `txfm_simd.rs` has a
+> `mod neon` — but it is `[i32; 8]` arrays relying on autovectorisation, not
+> intrinsics, and it is capped at `NEON_FWD_MAX_DIM = 16` /
+> `NEON_INV_MAX_DIM = 8` because past those dims it measured *slower* than
+> scalar. So forward 32/64-point and inverse 16/32/64-point transforms still
+> have **no vector tier on aarch64**, and they are top-ten self-time leaves in
+> the whole-encoder profile. Also: the seven `*_impl_neon` arms in
+> `fwd_txfm.rs`/`inv_txfm.rs` have bodies byte-identical to their `_impl_scalar`
+> siblings (harmless — the real dispatch is one level down in `txfm_simd` — but
+> the names mislead an audit).
+
 Platform: Apple Silicon (aarch64, NEON), darwin 25.5.0
 Bench: `rust/crates/svtav1-dsp/benches/kernel_tiers.rs` (zenbench, interleaved arms)
 
