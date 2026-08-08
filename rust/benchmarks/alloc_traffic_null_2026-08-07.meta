@@ -1,0 +1,61 @@
+# "Allocator traffic" (ranked opportunity #6) measures NULL on this box
+
+date: 2026-08-07
+host: Apple M4 Pro (12 logical cores), darwin 25.5.0
+config: 8-bit 4:2:0, still/allintra (hierarchical_levels=0, intra_period=1),
+        CQP qp40, tiles 0/0, single-threaded, gradient, no target-cpu=native
+harness: tools/perf_ab.sh — interleaved paired, randomised per-round order,
+         median of paired ratios + p25/p75, neither side niced
+
+## The claim
+
+The 2026-08-07 perf attribution ranked allocator traffic #6: "6.5 % of p6,
+7.7 % of p10, 12 % of p2; 98-334x C … Bit-identical-safe, high tractability
+(hoist to scratch)". A re-profile taken AFTER the transform port raised the
+malloc/free + memset/memmove/bzero family to **15.47 % of preset-6 self time**
+at 512x512 — the largest single category on the profile at that point.
+
+It does not convert to wall clock.
+
+## What was tried, and what it measured
+
+**Shipped (kept, because it is a real win):** `tx_unit`'s five purely-internal
+buffers moved to a per-thread `TxScratch`, removing 5 of the 7 heap allocations
+per transform unit — the highest-frequency allocation site in the encoder.
+That measured **1.014x-1.034x** (commit "reuse tx_unit's five internal
+buffers"). So the category is not entirely inert; the *first* 5-of-7 was worth
+2-3 %.
+
+**Everything after that measured null or negative.** Three further rounds,
+each byte-identical (120/120 cells) and each A/B'd on its own:
+
+| change | 128 p2 | 128 p6 | 128 p10 | 512 p2 | 512 p6 | 512 p10 |
+|---|---|---|---|---|---|---|
+| hadamard_satd + coeff_contexts x2 as STACK arrays | 1.000x | **0.983x** | 1.008x | 1.002x | 1.006x | 1.008x |
+| the same three as per-thread SCRATCH (n=11) | 0.997x | 0.996x | 1.016x | 0.995x | 1.002x | **0.985x** |
+| compute_stats' `d`/`s` planes as per-thread scratch (n=11) | — | 0.984x | 1.022x | — | 1.000x | 1.006x |
+
+Every one of those straddles 1.0. The stack-array form is actively WORSE at
+128x128 p6 (0.983x): `[i16; 1024]` + `[i32; 1024]` costs a 6 KB zero-fill per
+`hadamard_satd` call, which is more than the small malloc it replaced. The
+per-thread-scratch form removes the zero-fill but pays a `RefCell` borrow plus
+a `Drop` return, and comes out at 0.985x at 512 p10.
+
+Only the `compute_stats` scratch was kept, and only because the allocation it
+removes was introduced by the Wiener rewrite in the same series (~270 KB per
+restoration unit) — cleaning up one's own regression, not a measured win. The
+`hadamard_satd` / `coeff_contexts` changes were reverted.
+
+## Reading
+
+`sample` attributes 1 ms wall-clock ticks to whatever is on top of the stack.
+On macOS a large share of the time that lands in the malloc family is page-fault
+and zone-lock work that simply moves elsewhere when the call is removed. A
+15 % self-time share in malloc/memset is therefore NOT a 15 % opportunity here.
+
+**Do not spend more time on allocation removal in this encoder without first
+demonstrating a wall-clock delta on a small pilot.** The remaining known sites
+are `TxUnitOut::{qcoeff, recon}` (2 allocations per transform unit, moved out
+of the struct by callers so a recycling pool would need a `PooledVec` newtype
+and a 5-site refactor) and `pd0`'s returned `qcoeff`/`dqcoeff`. Given the
+numbers above, neither is likely to pay.
