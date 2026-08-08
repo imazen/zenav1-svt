@@ -225,21 +225,6 @@ fn nz_map_ctxs_impl_scalar(
     crate::coeff_c::nz_map_contexts_scan_order(levels, scan, eob, tx_size, tx_class, coeff_contexts);
 }
 
-#[cfg(target_arch = "aarch64")]
-#[arcane]
-fn nz_map_ctxs_impl_neon(
-    _token: NeonToken,
-    levels: &[u8],
-    scan: &[u16],
-    eob: usize,
-    tx_size: usize,
-    tx_class: usize,
-    coeff_contexts: &mut [i8],
-) {
-    // Scan-order until `svt_av1_get_nz_map_contexts_neon` is ported.
-    crate::coeff_c::nz_map_contexts_scan_order(levels, scan, eob, tx_size, tx_class, coeff_contexts);
-}
-
 /// `svt_av1_get_nz_map_contexts_sse2` (encodetxb_sse2.c:450), verbatim: fill
 /// `coeff_contexts[0..w*h]` with every position's raster nz-map context, zero
 /// the 2D DC, then stamp the scan-last position with its scan-index context.
@@ -382,9 +367,166 @@ fn nz_map_ctxs_impl_v3(
     };
 }
 
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+/// `svt_av1_get_nz_map_contexts_neon` in the shape the SSE2 arm above already
+/// proved: the SAME driver (identical chunking, identical NZ_OFFSET table,
+/// identical DC zero and scan-last stamp), with the 16-lane leaf swapped for
+/// [`nz_kernel16_neon`]. Only the leaf differs between the two SIMD tiers, so
+/// the tier-forced parity suite covers both through one code path.
+fn nz_map_ctxs_impl_neon(
+    token: NeonToken,
+    levels: &[u8],
+    scan: &[u16],
+    eob: usize,
+    tx_size: usize,
+    tx_class: usize,
+    coeff_contexts: &mut [i8],
+) {
+    let w = txb_wide(tx_size);
+    let h = txb_high(tx_size);
+    let stride = w + TX_PAD_HOR;
+    let origin = levels_origin(w);
+    // Third/fourth/fifth stencil taps past the right (+1) and below (+stride)
+    // ones — C's `offsets[3]` per tx_class (encodetxb_sse2.c:470-496).
+    let (off0, off1, off2) = match tx_class {
+        TX_CLASS_2D => (2, stride + 1, 2 * stride),
+        TX_CLASS_HORIZ => (2, 3, 4),
+        _ => (2 * stride, 3 * stride, 4 * stride),
+    };
+    let table = &NZ_OFFSET[tx_class][tx_size];
+
+    match w {
+        4 => {
+            // 4 rows × 4 columns per iteration (h % 4 == 0).
+            let mut row = 0usize;
+            while row < h {
+                let base = origin + row * stride;
+                let idx = row * 4;
+                let l0 = gather4(levels, base + 1, stride);
+                let l1 = gather4(levels, base + stride, stride);
+                let l2 = gather4(levels, base + off0, stride);
+                let l3 = gather4(levels, base + off1, stride);
+                let l4 = gather4(levels, base + off2, stride);
+                nz_kernel16_neon(
+                    token,
+                    &l0,
+                    &l1,
+                    &l2,
+                    &l3,
+                    &l4,
+                    table[idx..idx + 16].try_into().unwrap(),
+                    (&mut coeff_contexts[idx..idx + 16]).try_into().unwrap(),
+                );
+                row += 4;
+            }
+        }
+        8 => {
+            // 2 rows × 8 columns per iteration (h % 2 == 0).
+            let mut row = 0usize;
+            while row < h {
+                let base = origin + row * stride;
+                let idx = row * 8;
+                let l0 = gather8(levels, base + 1, stride);
+                let l1 = gather8(levels, base + stride, stride);
+                let l2 = gather8(levels, base + off0, stride);
+                let l3 = gather8(levels, base + off1, stride);
+                let l4 = gather8(levels, base + off2, stride);
+                nz_kernel16_neon(
+                    token,
+                    &l0,
+                    &l1,
+                    &l2,
+                    &l3,
+                    &l4,
+                    table[idx..idx + 16].try_into().unwrap(),
+                    (&mut coeff_contexts[idx..idx + 16]).try_into().unwrap(),
+                );
+                row += 2;
+            }
+        }
+        _ => {
+            // w ∈ {16, 32}: 16 columns of one row per iteration; all five taps
+            // are direct contiguous loads.
+            let mut row = 0usize;
+            while row < h {
+                let mut cg = 0usize;
+                while cg < w {
+                    let base = origin + row * stride + cg;
+                    let idx = row * w + cg;
+                    nz_kernel16_neon(
+                        token,
+                        levels[base + 1..base + 17].try_into().unwrap(),
+                        levels[base + stride..base + stride + 16].try_into().unwrap(),
+                        levels[base + off0..base + off0 + 16].try_into().unwrap(),
+                        levels[base + off1..base + off1 + 16].try_into().unwrap(),
+                        levels[base + off2..base + off2 + 16].try_into().unwrap(),
+                        table[idx..idx + 16].try_into().unwrap(),
+                        (&mut coeff_contexts[idx..idx + 16]).try_into().unwrap(),
+                    );
+                    cg += 16;
+                }
+                row += 1;
+            }
+        }
+    }
+
+    // DC of a 2D block is context 0 (`(tx_class | coeff_idx) == 0` in
+    // `get_nz_map_ctx_from_stats`); the raster fill computed `count + 0`.
+    // C's 2D fill helpers end with the same `coeff_contexts[0] = 0`.
+    if tx_class == TX_CLASS_2D {
+        coeff_contexts[0] = 0;
+    }
+    // The scan-last coefficient uses its scan-index context, not neighbours
+    // (`eob >= 2` here, so `last >= 1` and the `scan_idx == 0 → 0` arm of the
+    // scalar `_c` is unreachable — C `_sse2` handled it in its `eob == 1`
+    // early-out, our public wrapper likewise).
+    let bwl = txb_bwl(tx_size);
+    let last = eob - 1;
+    let pos = scan[last] as usize;
+    coeff_contexts[pos] = if last <= (h << bwl) / 8 {
+        1
+    } else if last <= (h << bwl) / 4 {
+        2
+    } else {
+        3
+    };
+}
+
+/// NEON twin of [`nz_kernel16_v3`], instruction for instruction:
+/// `_mm_min_epu8` -> `vminq_u8`, `_mm_add_epi8` -> `vaddq_u8`,
+/// `_mm_avg_epu8(c, 0)` -> `vrhaddq_u8(c, 0)` (both are `(c + 0 + 1) >> 1`),
+/// `_mm_loadu_si128`/`_mm_storeu_si128` -> `vld1q_u8`/`vst1q_u8`. Every lane is
+/// an independent u8 computation with no cross-lane term, so the two tiers are
+/// byte-identical by construction; the five-tap sum is at most 5*3 = 15, so no
+/// lane can wrap.
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn nz_kernel16_neon(
+    _token: NeonToken,
+    l0: &[u8; 16],
+    l1: &[u8; 16],
+    l2: &[u8; 16],
+    l3: &[u8; 16],
+    l4: &[u8; 16],
+    offtab: &[u8; 16],
+    out: &mut [i8; 16],
+) {
+    let c3 = vdupq_n_u8(3);
+    let mut c = vminq_u8(vld1q_u8(l0), c3);
+    c = vaddq_u8(c, vminq_u8(vld1q_u8(l1), c3));
+    c = vaddq_u8(c, vminq_u8(vld1q_u8(l2), c3));
+    c = vaddq_u8(c, vminq_u8(vld1q_u8(l3), c3));
+    c = vaddq_u8(c, vminq_u8(vld1q_u8(l4), c3));
+    c = vrhaddq_u8(c, vdupq_n_u8(0));
+    c = vminq_u8(c, vdupq_n_u8(4));
+    c = vaddq_u8(c, vld1q_u8(offtab));
+    vst1q_s8(out, vreinterpretq_s8_u8(c));
+}
+
 /// Gather 4 rows × 4 bytes at `s`, `s + stride`, … into one 16-lane block —
 /// C `load_8bit_4x4_to_1_reg_sse2` (4 dword loads).
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[inline(always)]
 fn gather4(levels: &[u8], s: usize, stride: usize) -> [u8; 16] {
     let mut a = [0u8; 16];
@@ -397,7 +539,7 @@ fn gather4(levels: &[u8], s: usize, stride: usize) -> [u8; 16] {
 
 /// Gather 2 rows × 8 bytes at `s`, `s + stride` into one 16-lane block —
 /// C `load_8bit_8x2_to_1_reg_sse2` (2 qword loads).
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[inline(always)]
 fn gather8(levels: &[u8], s: usize, stride: usize) -> [u8; 16] {
     let mut a = [0u8; 16];
