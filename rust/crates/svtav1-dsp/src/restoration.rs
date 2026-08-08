@@ -276,15 +276,64 @@ fn compute_stats_impl_scalar(
     );
 }
 
+/// The largest region row this NEON path will accumulate in `i32` before
+/// draining to `i64`. Every product is `|y| * |y| <= 255 * 255 = 65025`, so a
+/// row of `W` products peaks at `W * 65025`; at `W = 32000` that is
+/// `2.081e9 < i32::MAX = 2.147e9`. Real callers are bounded by
+/// `RESTORATION_UNITPELS_HORZ_MAX` (< 512), three orders of magnitude below —
+/// the constant exists so the bound is STRUCTURAL (a wider region falls back to
+/// the scalar core) rather than a comment nobody re-checks.
+#[cfg(target_arch = "aarch64")]
+const NEON_STATS_MAX_ROW: usize = 32_000;
+
 #[cfg(target_arch = "aarch64")]
 #[arcane]
 #[allow(clippy::too_many_arguments)]
-/// NEON `compute_stats`: the AVX2 arm's body verbatim, with `mac_row_i32_v3`
-/// swapped for `mac_row_i32_neon`. Everything else in that function — the
-/// column-major window gather, the i32 per-row scratch, the flush into i64,
-/// and the upper-to-lower triangle mirror — is tier-agnostic scalar Rust, so
-/// nothing is re-derived. Pinned against real C by
-/// `tests/c_parity_wiener.rs::compute_stats_all_tiers_match_c`.
+/// NEON `compute_stats` — the same sums, re-associated so the inner loop runs
+/// over PIXELS instead of over the H matrix.
+///
+/// The previous NEON arm was the AVX2 body with a 4-lane MAC: per source pixel
+/// it gathered the `win x win` window into `y` with `win2` strided scalar loads
+/// and then ran `win2` short multiply-accumulate calls over a `win2 x win2` i32
+/// scratch. That touches the whole upper triangle — 1225 i32 cells at
+/// `win = 7` — for EVERY pixel, so it moves ~10 KB of accumulator traffic per
+/// pixel and averages well under one useful multiply per instruction. It was
+/// the single most expensive function in the encoder: 22.7 % of the port's
+/// preset-6 self time at 512x512, ~26x the C reference's
+/// `svt_av1_compute_stats_neon`.
+///
+/// The reformulation. Write `k = kk * win + l` (C's index order: `kk` is the
+/// window COLUMN offset, `l` the ROW offset). Then for the pixel at
+/// `(i, j)`, `y_(i,j)[k] = dgd[(i - halfwin + l) * stride + (j - halfwin + kk)] - avg`.
+/// Hold `k` fixed and sweep `j`: that is a CONTIGUOUS run of `dgd`. So
+///
+/// ```text
+///   H[k][t] = sum_i  ( sum_j  y_(i,j)[k] * y_(i,j)[t] )
+///           = sum_i  dot( row_k(i), row_t(i), width )
+///   M[k]    = sum_i  dot( row_k(i), src_row(i), width )
+/// ```
+///
+/// — each an ordinary dot product of two contiguous `i16` arrays. Two
+/// consequences: the accumulators live in registers for a whole row instead of
+/// in a 9.6 KB scratch, and `vmlal_s16` / `vmlal_high_s16` do the widen,
+/// multiply and accumulate in ONE instruction, 8 products per two of them.
+///
+/// The `- avg` subtraction is also hoisted: it used to run `win2` times per
+/// pixel (once per gathered window element); now it runs once per source pixel,
+/// into the `d` / `s` sub-average buffers, exactly as the C NEON kernel's
+/// `compute_sub_avg` does.
+///
+/// BYTE-IDENTITY. The set of products is unchanged and every product is exact
+/// in `i32` (`|y| <= 255`, so `|y_k * y_t| <= 65025`). The grouping is
+/// unchanged too: this accumulates one REGION ROW of products in `i32` and
+/// flushes that row's partial sums into the `i64` output — the identical
+/// grouping the previous arm documented and the AVX2 arm still uses. Within a
+/// row the four vector lanes sum disjoint subsets and are horizontally added,
+/// which is a re-association of exact `i32` additions and therefore also
+/// unchanged. Pinned by
+/// `tests/c_parity_wiener.rs::compute_stats_all_tiers_match_c` (220 iterations,
+/// widths 1..90 including every SIMD-boundary case, both window sizes) against
+/// real C.
 fn compute_stats_impl_neon(
     token: NeonToken,
     wiener_win: usize,
@@ -302,73 +351,139 @@ fn compute_stats_impl_neon(
     h: &mut [i64],
 ) {
     let win2 = wiener_win * wiener_win;
-    let halfwin = (wiener_win >> 1) as i32;
+    let halfwin = wiener_win >> 1;
     assert!(m.len() >= win2 && h.len() >= win2 * win2);
-    let avg = find_average(dgd, dgd_origin, dgd_stride, h_start, h_end, v_start, v_end) as i16;
 
+    let width = (h_end - h_start).max(0) as usize;
+    let height = (v_end - v_start).max(0) as usize;
+    // Wider than the i32 row accumulator can hold, or degenerate: hand it to
+    // the scalar reference rather than risk a silently wrong moment matrix.
+    if width == 0 || height == 0 || width > NEON_STATS_MAX_ROW {
+        compute_stats_scalar_core(
+            wiener_win, dgd, dgd_origin, dgd_stride, src, src_origin, src_stride, h_start, h_end,
+            v_start, v_end, m, h,
+        );
+        return;
+    }
+
+    let avg = find_average(dgd, dgd_origin, dgd_stride, h_start, h_end, v_start, v_end) as i16;
     m[..win2].fill(0);
     h[..win2 * win2].fill(0);
     let m = &mut m[..win2];
     let h = &mut h[..win2 * win2];
 
-    const N2MAX: usize = WIENER_WIN * WIENER_WIN;
-    // Per-region-row i32 scratch. Bounded to one row of products (see the fn
-    // doc), so the i32 sums never overflow and the flush is byte-exact.
-    let mut m_acc = [0i32; N2MAX];
-    let mut h_acc = [0i32; N2MAX * N2MAX];
-    let mut y = [0i16; N2MAX];
-
-    for i in v_start..v_end {
-        m_acc[..win2].fill(0);
-        h_acc[..win2 * win2].fill(0);
-        let stride = dgd_stride as isize;
-        let row0 = (i - halfwin) as isize; // top window row (relative to origin)
-        for j in h_start..h_end {
-            let sidx = src_origin as isize + i as isize * src_stride as isize + j as isize;
-            let x = src[sidx as usize] as i16 - avg;
-            // Gather the win x win window into `y`, column-major (k = column
-            // offset outer, l = row offset inner) — the exact C `idx` order, so
-            // every y[idx] keeps its C meaning. Exclusive ranges + an
-            // incremental `didx += stride` replace the inclusive-range double
-            // loop and its per-element `(i+l)*stride` multiply; values are
-            // unchanged.
-            let mut idx = 0usize;
-            for kk in 0..wiener_win {
-                let col = (j - halfwin) as isize + kk as isize;
-                let mut didx = dgd_origin as isize + row0 * stride + col;
-                for _ in 0..wiener_win {
-                    y[idx] = dgd[didx as usize] as i16 - avg;
-                    idx += 1;
-                    didx += stride;
-                }
-            }
-            // M[k] += y[k]*x for k in 0..win2 (full row).
-            mac_row_i32_neon(token, &mut m_acc[..win2], &y[..win2], x as i32);
-            // Upper-triangular H[k][l] += y[k]*y[l], l >= k.
-            for k in 0..win2 {
-                let yk = y[k] as i32;
-                let base = k * win2;
-                mac_row_i32_neon(token, &mut h_acc[base + k..base + win2], &y[k..win2], yk);
+    // Sub-average planes, the C NEON kernel's `compute_sub_avg` step.
+    //   `d`: (width + 2*halfwin) x (height + 2*halfwin), the dgd window support.
+    //   `s`: width x height, the source region.
+    // Both are `i16` and both are laid out tightly, which is what turns the
+    // per-pixel window gather into contiguous loads.
+    let dw = width + 2 * halfwin;
+    let dh = height + 2 * halfwin;
+    let mut d = alloc::vec![0i16; dw * dh];
+    let mut s = alloc::vec![0i16; width * height];
+    {
+        let d_row0 = dgd_origin as isize
+            + (v_start as isize - halfwin as isize) * dgd_stride as isize
+            + (h_start as isize - halfwin as isize);
+        for r in 0..dh {
+            let base = (d_row0 + r as isize * dgd_stride as isize) as usize;
+            let srcrow = &dgd[base..base + dw];
+            for (o, &p) in d[r * dw..r * dw + dw].iter_mut().zip(srcrow) {
+                *o = p as i16 - avg;
             }
         }
-        // Flush this row's i32 partial sums into the i64 output (bounds-check-free
-        // zips; same additions, so still byte-exact).
-        for (mv, &ma) in m.iter_mut().zip(m_acc[..win2].iter()) {
-            *mv += ma as i64;
-        }
-        for k in 0..win2 {
-            let base = k * win2;
-            for (hv, &ha) in h[base + k..base + win2].iter_mut().zip(h_acc[base + k..base + win2].iter()) {
-                *hv += ha as i64;
+        let s_row0 = src_origin as isize
+            + v_start as isize * src_stride as isize
+            + h_start as isize;
+        for r in 0..height {
+            let base = (s_row0 + r as isize * src_stride as isize) as usize;
+            let srcrow = &src[base..base + width];
+            for (o, &p) in s[r * width..r * width + width].iter_mut().zip(srcrow) {
+                *o = p as i16 - avg;
             }
         }
     }
+
+    // Row offset within `d` for window index k, and its column offset.
+    // k = kk * win + l  =>  row += l, col += kk.
+    let mut d_off = [0usize; WIENER_WIN * WIENER_WIN];
+    for (k, off) in d_off[..win2].iter_mut().enumerate() {
+        let (kk, l) = (k / wiener_win, k % wiener_win);
+        *off = l * dw + kk;
+    }
+
+    for i in 0..height {
+        let srow = &s[i * width..i * width + width];
+        let dbase = i * dw;
+        for k in 0..win2 {
+            let dk = &d[dbase + d_off[k]..dbase + d_off[k] + width];
+            m[k] += dot_i16_neon(token, dk, srow) as i64;
+            let hrow = &mut h[k * win2..(k + 1) * win2];
+            for (t, hv) in hrow.iter_mut().enumerate().skip(k) {
+                let dt = &d[dbase + d_off[t]..dbase + d_off[t] + width];
+                *hv += dot_i16_neon(token, dk, dt) as i64;
+            }
+        }
+    }
+
     // Mirror the upper triangle to the lower (once), as the scalar does.
     for k in 0..win2 {
         for l in (k + 1)..win2 {
             h[l * win2 + k] = h[k * win2 + l];
         }
     }
+}
+
+/// `sum_i a[i] * b[i]` over equal-length `i16` slices, accumulated in `i32`.
+///
+/// `vmlal_s16` / `vmlal_high_s16` widen-multiply-accumulate in one instruction,
+/// so eight products cost two of them plus two loads. Two independent
+/// accumulator pairs keep the multiply pipeline fed across the 16-element body.
+///
+/// Exactness: the caller bounds every element to `[-255, 255]` and the row
+/// length to [`NEON_STATS_MAX_ROW`], so no lane can overflow `i32` (see
+/// [`compute_stats_impl_neon`]). The horizontal add at the end and the scalar
+/// tail are exact `i32` additions of the same products, so the result does not
+/// depend on the lane split.
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn dot_i16_neon(_token: NeonToken, a: &[i16], b: &[i16]) -> i32 {
+    debug_assert_eq!(a.len(), b.len());
+    let mut acc0 = vdupq_n_s32(0);
+    let mut acc1 = vdupq_n_s32(0);
+    let mut acc2 = vdupq_n_s32(0);
+    let mut acc3 = vdupq_n_s32(0);
+    let mut ai = a.chunks_exact(16);
+    let mut bi = b.chunks_exact(16);
+    for (x, y) in ai.by_ref().zip(bi.by_ref()) {
+        let x0: &[i16; 8] = x[..8].try_into().unwrap();
+        let x1: &[i16; 8] = x[8..].try_into().unwrap();
+        let y0: &[i16; 8] = y[..8].try_into().unwrap();
+        let y1: &[i16; 8] = y[8..].try_into().unwrap();
+        let xv0 = vld1q_s16(x0);
+        let yv0 = vld1q_s16(y0);
+        let xv1 = vld1q_s16(x1);
+        let yv1 = vld1q_s16(y1);
+        acc0 = vmlal_s16(acc0, vget_low_s16(xv0), vget_low_s16(yv0));
+        acc1 = vmlal_high_s16(acc1, xv0, yv0);
+        acc2 = vmlal_s16(acc2, vget_low_s16(xv1), vget_low_s16(yv1));
+        acc3 = vmlal_high_s16(acc3, xv1, yv1);
+    }
+    let mut ai8 = ai.remainder().chunks_exact(8);
+    let mut bi8 = bi.remainder().chunks_exact(8);
+    for (x, y) in ai8.by_ref().zip(bi8.by_ref()) {
+        let xc: &[i16; 8] = x.try_into().unwrap();
+        let yc: &[i16; 8] = y.try_into().unwrap();
+        let xv = vld1q_s16(xc);
+        let yv = vld1q_s16(yc);
+        acc0 = vmlal_s16(acc0, vget_low_s16(xv), vget_low_s16(yv));
+        acc1 = vmlal_high_s16(acc1, xv, yv);
+    }
+    let mut sum = vaddvq_s32(vaddq_s32(vaddq_s32(acc0, acc1), vaddq_s32(acc2, acc3)));
+    for (&x, &y) in ai8.remainder().iter().zip(bi8.remainder()) {
+        sum += x as i32 * y as i32;
+    }
+    sum
 }
 
 /// Scalar reference — verbatim `svt_av1_compute_stats_c`. The M and H
