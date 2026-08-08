@@ -134,6 +134,25 @@ need_file() { [ -f "$1" ] || { skip=$((skip+1)); skipped+=("$2 — $1 absent"); 
 echo "== regression spot-check: one cell per fixed bug =="
 
 # ---------------------------------------------------------------------------
+# 2026-08-06 — LOOP RESTORATION applied over the ALIGNED extent while the RU
+# grid was counted on the TRUE one (issue #11). C sizes the grid
+# (svt_av1_alloc_restoration_struct) and walks the units
+# (svt_av1_loop_restoration_filter_frame, svt_av1_loop_restoration_save_boundary_lines)
+# off ONE whole_frame_rect(&cm->frm_size, ..), and cm->frm_size is the
+# pre-8-alignment size (pcs.c:1337). The port passed the aligned w/h to the
+# apply + boundary-save while the search used the true dims, so wherever the
+# 8-alignment crosses a count_units_in_tile(256, ..) boundary the walk visited
+# more units than the grid holds. MEASURED before: `gradient 383x512 q40 p6`
+# panicked "restoration.rs:985: index out of bounds: the len is 2 but the index
+# is 2" (true 383 -> 1 horizontal unit, aligned 384 -> 2), at bd8 AND bd10;
+# `gradient 766x128` the same on CHROMA (ceil(766/2)=383 vs 768/2=384), len 1
+# index 1. After: byte-identical to C. Reported on 5 real renditions
+# (1914x2560, 2048x1660, 2297x3072, 766x1024, 383x512), 115 of 34,200 cells.
+byte "lr-align-cross-383x512-bd8"  gradient 383 512 40 6 8
+byte "lr-align-cross-383x512-bd10" gradient 383 512 40 6 10
+byte "lr-align-cross-chroma-766"   gradient 766 128 40 6 8
+
+# ---------------------------------------------------------------------------
 # 2026-08-03 — bd10 PALETTE was gated out of the mode-decision funnel entirely.
 # 12801d936. The port coded ZERO palette blocks at 10 bits where C codes
 # hundreds. MEASURED before: screen 128x128 q32 p0 -> C 327B, port 664B (2.03x);

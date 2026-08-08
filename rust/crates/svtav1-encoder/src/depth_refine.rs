@@ -1108,7 +1108,7 @@ struct SqInfo {
 /// (docs/captures/nsq_m2m3/) on stderr for direct MD-level diffing.
 #[cfg(feature = "std")]
 fn nsqdbg_on() -> bool {
-    std::env::var_os("SVTAV1_NSQDBG").is_some()
+    crate::dbgenv::nsqdbg()
 }
 
 /// SVTAV1_DBG_MI="mi_row,mi_col": restrict NSQDBG output to the one 64px SB

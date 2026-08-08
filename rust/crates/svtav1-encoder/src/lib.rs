@@ -13,6 +13,9 @@ whereat::define_at_crate_info!();
 pub use svtav1_types::{EncodeError, EncodeResult};
 
 pub mod cdef;
+/// Cached presence checks for the debug env vars (internal; see the module doc
+/// for why the uncached `getenv` was ~1 % of encode wall time).
+mod dbgenv;
 pub mod deblock;
 pub mod depth_refine;
 pub mod encode_loop;

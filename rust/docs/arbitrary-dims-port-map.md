@@ -145,6 +145,25 @@ changes, both byte-neutral for even/8-aligned dims (ceiling == floor there):
    fixed the odd-HEIGHT FH `lr_type[0]` divergence (C=WIENER, Rust=NONE) that the
    7 aligned-padding rows caused.
 
+   **COMPLETED 2026-08-06 (issue #11).** Change 2 converted the SEARCH and the
+   SYNTAX (`corners_in_sb`) but left the two APPLY-side consumers,
+   `apply_restoration_frame` and `save_lr_boundaries`, on the ALIGNED dims —
+   with FLOOR chroma at that. C has no such split: `whole_frame_rect` is
+   evaluated once per consumer from the same `frm_size`, so the unit COUNT
+   (`svt_av1_alloc_restoration_struct`, restoration.c:75-101) and the unit WALK
+   (`svt_aom_foreach_rest_unit_in_frame`, restoration.c:1288; and
+   `svt_aom_save_tile_row_boundary_lines`, restoration.c:1591, whose caller
+   passes `frame->crop_widths/crop_heights` + `frame->strides`) are structurally
+   the same grid. In the port they could disagree, and did whenever the
+   8-alignment crossed a `count_units_in_tile(256, ..)` boundary — true 383
+   counts ONE horizontal unit, aligned 384 walks TWO — indexing `pr.units` out
+   of bounds. Both now take the TRUE extent plus an explicit aligned STRIDE
+   (`PaddedPlaneT::from_strided` / `copy_crop_to_strided`), and chroma rounds UP
+   (`ROUND_POWER_OF_TWO`) like C. Byte-neutral by construction for 8-aligned
+   dims and measured byte-neutral everywhere else: the previously-panicking
+   cells are byte-identical to C (`regression_spotcheck.sh` `lr-align-cross-*`),
+   and a 2,280-cell pre/post A/B changed no working cell's stream.
+
 GATED odd cells: 65x64/65x63/71x64/73x64/81x64 (odd width, right-edge partial),
 73x73 (odd both, aligned 80x80), 63x96/63x48 (odd width + ≥32-tall bottom
 partial), 63x63 (odd both, full SB = odd header + true crop, no partial SB).

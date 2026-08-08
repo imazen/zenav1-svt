@@ -2198,7 +2198,7 @@ impl EncodePipeline {
             // is live" is the first question any recon-parity investigation
             // has to answer and it is not otherwise observable from outside.
             #[cfg(feature = "std")]
-            if std::env::var_os("SVTAV1_BD10_POSTPASS").is_some() {
+            if crate::dbgenv::bd10_postpass() {
                 let unsupported = all_trees
                     .iter()
                     .filter(|t| !bd10_tree_supported(t, bd10_edge_filter))
@@ -2365,7 +2365,7 @@ impl EncodePipeline {
         // to correlate a recon-parity diff position with the block that
         // produced it.
         #[cfg(feature = "std")]
-        if std::env::var_os("SVTAV1_DUMP_TREE").is_some() {
+        if crate::dbgenv::dump_tree() {
             for (sb_idx, tree) in all_trees.iter().enumerate() {
                 let bx = (sb_idx % sb_cols) * sb_size;
                 let by = (sb_idx / sb_cols) * sb_size;
@@ -3243,7 +3243,7 @@ impl EncodePipeline {
                     )?,
                 };
                 #[cfg(feature = "std")]
-                if std::env::var_os("SVTAV1_DUMP_LR").is_some() {
+                if crate::dbgenv::dump_lr() {
                     for (p, pr) in rest_info.planes.iter().enumerate() {
                         eprintln!(
                             "LR plane={p} frame_rtype={} units={:?}",
@@ -3280,6 +3280,16 @@ impl EncodePipeline {
                         .last_recon_pre_cdef
                         .as_ref()
                         .expect("pre-CDEF recon captured above");
+                    // Task #95 goal 1 / issue #11: the boundary save and the
+                    // unit walk take the SAME TRUE extent the search sized the
+                    // RU grid from (C drives all three off one
+                    // `whole_frame_rect`), read at the ALIGNED canvas strides
+                    // the planes are stored at. Passing the aligned extent here
+                    // while the grid was counted on the true one made the walk
+                    // visit more units than the grid holds — an out-of-bounds
+                    // index whenever alignment crossed a `count_units_in_tile`
+                    // boundary (e.g. true 383 -> 1 unit, aligned 384 -> 2).
+                    // Byte-neutral for 8-aligned dims (true == aligned).
                     let bounds = crate::restoration::save_lr_boundaries(
                         pre_y,
                         pre_u,
@@ -3287,16 +3297,20 @@ impl EncodePipeline {
                         &recon,
                         &u_recon,
                         &v_recon,
+                        lr_true_w,
+                        lr_true_h,
                         w,
-                        h,
+                        cw,
                         chroma.is_some(),
                     );
                     crate::restoration::apply_restoration_frame(
                         &mut recon,
                         &mut u_recon,
                         &mut v_recon,
+                        lr_true_w,
+                        lr_true_h,
                         w,
-                        h,
+                        cw,
                         chroma.is_some(),
                         &rest_info,
                         &bounds,
@@ -4548,7 +4562,7 @@ fn encode_block_syntax(
     // because that stream is parsed as data by identity_diff.py, which
     // ignores unknown `#` lines (as does any C-side counterpart marker).
     #[cfg(feature = "std")]
-    if std::env::var_os("SVTAV1_TRACEMARK").is_some() {
+    if crate::dbgenv::tracemark() {
         std::eprintln!(
             "# BLK mi=({},{}) bsize={} ibc={}",
             block_y / 4,
@@ -4573,7 +4587,7 @@ fn encode_block_syntax(
     // block_size_index; fi 5 = none; uv 13 = CFL; skip is derived on the
     // diff side from yeob/ueob/veob (C dumps the all-plane skip bit).
     #[cfg(feature = "std")]
-    if let Some(path) = std::env::var_os("SVTAV1_PACKTREE") {
+    if let Some(path) = crate::dbgenv::packtree() {
         use std::io::Write;
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
@@ -4634,7 +4648,7 @@ fn encode_block_syntax(
     // `encode_block_syntax`, i.e. after the block's partition symbol and
     // before every one of its mode/coeff symbols.
     #[cfg(feature = "std")]
-    if std::env::var_os("SVTAV1_BLKMARK").is_some() {
+    if crate::dbgenv::blkmark() {
         std::eprintln!(
             "W BLKMARK mi=({},{}) {}x{} mode={} uv={} pal={} ibc={}",
             block_y / 4,
@@ -4655,7 +4669,7 @@ fn encode_block_syntax(
     //     (coding order), for a whole-frame join vs the C SVT_QLEVELS_OUT
     //     dump. Backward-compatible: existing "r,c" callers are unchanged.
     #[cfg(feature = "std")]
-    if let Ok(xy) = std::env::var("SVTAV1_PACKTREE_COEFF") {
+    if let Some(xy) = crate::dbgenv::packtree_coeff() {
         let is_pin = xy.contains(',');
         let want: alloc::vec::Vec<usize> =
             xy.split(',').filter_map(|s| s.trim().parse().ok()).collect();
@@ -4707,7 +4721,7 @@ fn encode_block_syntax(
     // Diagnostic (SVTAV1_PART_DUMP): every coded leaf's geometry + skip, to
     // diff the partition tree against the C entropy coder. No output change.
     #[cfg(feature = "std")]
-    if std::env::var_os("SVTAV1_PART_DUMP").is_some() {
+    if crate::dbgenv::part_dump() {
         eprintln!(
             "RSPART x{block_x} y{block_y} {}x{} skip={} ymode={} uvmode={} txd={}",
             decision.width,
@@ -5200,7 +5214,7 @@ fn encode_block_syntax(
             // scan-order eob per depth-0 leaf (the tree dump's d.eob is a
             // raster-order artifact). No output change.
             #[cfg(feature = "std")]
-            if std::env::var_os("SVTAV1_CODED_EOB").is_some() {
+            if crate::dbgenv::coded_eob() {
                 let nz = coeffs.iter().filter(|&&c| c != 0).count();
                 eprintln!(
                     "CODED x{block_x} y{block_y} {w}x{h} tx{tx_type} scan_eob={eob} nz={nz}"
@@ -5247,7 +5261,7 @@ fn encode_block_syntax(
                 let tx_x = block_x + rel_x;
                 let tx_y = block_y + rel_y;
                 #[cfg(feature = "std")]
-                if std::env::var_os("SVTAV1_PACKTXB").is_some() {
+                if crate::dbgenv::packtxb() {
                     let nz = decision.txb_qcoeffs[txb].iter().filter(|&&v| v != 0).count();
                     eprintln!(
                         "PACKTXB blk=({block_x},{block_y}) {w}x{h} d={} ibc={} txb={txb} pos=({rel_x},{rel_y}) tt={} nz={nz}",
@@ -5321,7 +5335,7 @@ fn encode_block_syntax(
                 crate::leaf_funnel::uv_tx_type(decision.uv_mode, cw, ch)
             };
             #[cfg(feature = "std")]
-            if std::env::var_os("SVTAV1_CODED_EOB").is_some() {
+            if crate::dbgenv::coded_eob() {
                 let uv_ts = svtav1_entropy::coeff_c::tx_size_from_dims(cw, ch);
                 let sidx =
                     svtav1_entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[uv_tt as usize] as usize;
@@ -7308,7 +7322,7 @@ fn encode_tile_rows(
                     // default) + the delta-q qdiff stats factor
                     // (rc_process.c:437-446; this path is fork-only).
                     #[cfg(feature = "std")]
-                    if std::env::var("SVTAV1_LAMBDA_DBG").is_ok() {
+                    if crate::dbgenv::lambda_dbg_set() {
                         std::eprintln!(
                             "sb lam alt={} sbq={} base={} -> {}",
                             hdr_alt_lambda,
@@ -7515,7 +7529,7 @@ fn encode_tile_rows(
                 // sb36; the recon divergence is a downstream leaf-coeff
                 // issue, NOT the chain). No encoder-output change.
                 #[cfg(feature = "std")]
-                if funnel_chain && std::env::var_os("SVTAV1_CHAIN_DUMP").is_some() {
+                if funnel_chain && crate::dbgenv::chain_dump() {
                     let dflt_cfc;
                     let cfc: &svtav1_entropy::coeff_c::CoeffFc = match &chain_base {
                         Some((_, cfc)) => cfc.as_ref(),
@@ -7544,7 +7558,7 @@ fn encode_tile_rows(
                 // two files -> first SB whose rate seed diverges (the "every
                 // leaf cost in the SB shifted" divergence class).
                 #[cfg(feature = "std")]
-                if funnel_chain && std::env::var_os("SVTAV1_SEED_DUMP").is_some() {
+                if funnel_chain && crate::dbgenv::seed_dump() {
                     let dflt;
                     let (fc, cfc): (
                         &svtav1_entropy::context::FrameContext,
@@ -8111,7 +8125,7 @@ fn encode_tile_rows(
                                 max_tx_size,
                             );
                             #[cfg(feature = "std")]
-                            if std::env::var_os("SVTAV1_PD0DBG").is_some()
+                            if crate::dbgenv::pd0dbg()
                                 && crate::depth_refine::nsqdbg_here(x0, y0)
                             {
                                 fn walk(e: &crate::pd0::Pd0Eval, x: usize, y: usize) {

@@ -651,27 +651,41 @@ fn try_inv_dct_square_impl_neon(
 // ============================================================================
 
 /// Largest dimension at which the aarch64 tier is measured to BEAT the scalar
-/// transform, per direction.
+/// transform, per direction. 64 is the largest AV1 transform dimension, so as
+/// of the real-NEON primitives (2026-08-07) these guards never fire — they are
+/// kept because they are the mechanism that would confine a future regression
+/// to the sizes it affects, and because the numbers below have to be re-taken
+/// if the primitives change again.
 ///
-/// The shared 8-lane kernels are not a uniform win here — the advantage shrinks
-/// with size and goes negative. Measured (benches/kernel_tiers.rs, M-series,
-/// neon vs forced scalar, CI excluding zero on every row):
+/// HISTORY, and it is the point of the guard. When `mod neon` carried its
+/// 8-lane vector as `[i32; 8]` and relied on LLVM autovectorisation, the tier
+/// was not a uniform win — the advantage shrank with size and went NEGATIVE,
+/// which is why the caps were 16 (fwd) and 8 (inv):
 ///
-/// | shape | fwd            | inv            |
+/// | shape | fwd (autovec)  | inv (autovec)  |
 /// |-------|----------------|----------------|
 /// | 8x8   | 224 -> 109 ns  | 373 -> 322 ns  |
 /// | 16x16 | 588 -> 547 ns  | 1.2 -> 1.7 us  |
 /// | 32x32 | 2.6 -> 2.7 us  | 5.1 -> 8.6 us  |
 ///
-/// So forward pays through 16 and inverse only through 8; beyond that the
-/// scalar transform is faster and the `try_*` protocol returns false to keep
-/// it. Non-square/ext/adst/4dim shapes run the SAME inner kernels, so they are
+/// With the primitives rewritten as real `[int32x4_t; 2]` intrinsics the tier
+/// wins at EVERY dimension, by 3x-10x (benches/kernel_tiers.rs, zenbench
+/// interleaved arms, neon vs forced scalar, Apple M4 Pro):
+///
+/// | shape | fwd neon | fwd scalar | inv neon | inv scalar |
+/// |-------|----------|------------|----------|------------|
+/// | 8x8   |  22.4 ns |   218.5 ns |  38.4 ns |   376.4 ns |
+/// | 16x16 |   191 ns |     593 ns |   253 ns |    1211 ns |
+/// | 32x32 |   758 ns |    2546 ns |  1.13 us |    5.10 us |
+/// | 64x64 |  3.68 us |   12.10 us |  5.63 us |   25.40 us |
+///
+/// Non-square/ext/adst/4dim shapes run the SAME inner kernels, so they are
 /// bounded by `max(w, h)` against these same limits — interpolation inside the
 /// measured range, not extrapolation past it.
 #[cfg(target_arch = "aarch64")]
-const NEON_FWD_MAX_DIM: usize = 16;
+const NEON_FWD_MAX_DIM: usize = 64;
 #[cfg(target_arch = "aarch64")]
-const NEON_INV_MAX_DIM: usize = 8;
+const NEON_INV_MAX_DIM: usize = 64;
 
 /// aarch64 tier for the shared transform kernels.
 ///
@@ -682,11 +696,21 @@ const NEON_INV_MAX_DIM: usize = 8;
 /// type, the token type, and the handful of intrinsics they call directly — so
 /// the identical source compiles here untouched.
 ///
-/// The vector type is `[i32; 8]` in plain safe Rust, NOT hand-written NEON
-/// intrinsics. On aarch64 NEON is BASELINE, so LLVM autovectorizes this
-/// 8-lane-shaped code; the whole point of the shared files is that the shape is
-/// already right. That also keeps the module free of `unsafe` and of any
-/// lane-order reasoning, which is where hand-ported transforms go wrong.
+/// The vector type is `[int32x4_t; 2]` — a pair of NEON registers standing in
+/// for one 8-lane x86 vector, the same carrying convention the CDEF and SATD
+/// ports in this crate use. It was previously `[i32; 8]` in plain safe Rust on
+/// the theory that LLVM would autovectorise 8-lane-shaped code since NEON is
+/// baseline on aarch64. **Measured, that theory failed above the smallest
+/// sizes**: the autovectorised inverse 16x16 came out at 1.7 us against
+/// scalar's 1.2, and 32x32 at 8.6 us against 5.1, which is why
+/// [`NEON_INV_MAX_DIM`] was 8 and the port ran scalar transforms for every
+/// larger block. The real intrinsics win at every dimension by 3x-10x — see
+/// the table on [`NEON_FWD_MAX_DIM`]. Do not re-attempt the autovectorisation
+/// route.
+///
+/// Everything is still safe Rust (`#![forbid(unsafe_code)]` holds): the
+/// intrinsics come through archmage's safe wrappers, gated by a `#[rite(neon)]`
+/// token region, and take fixed-size array references rather than raw pointers.
 ///
 /// Every function here is a transcription of the x86 one's DOCUMENTED
 /// semantics, not of its instruction sequence — see `mod v3` for the derivations
@@ -701,64 +725,56 @@ mod neon {
     /// The shared files' token type. Aliased so their `#[rite]` signatures and
     /// `Desktop64` mentions resolve here.
     pub(super) type Desktop64 = NeonToken;
-    /// The shared files' 8-lane vector.
-    pub(super) type __m256i = [i32; 8];
+    /// The shared files' 8-lane vector, carried as a pair of NEON i32x4s.
+    pub(super) type __m256i = [int32x4_t; 2];
     /// The shared files' runtime shift-count type.
     pub(super) type __m128i = i32;
 
     // ----- shims for the intrinsics the shared files call directly -----
 
-    #[inline(always)]
+    #[rite(neon)]
     pub(super) fn _mm256_setzero_si256() -> __m256i {
-        [0; 8]
+        [vdupq_n_s32(0); 2]
     }
-    #[inline(always)]
+    #[rite(neon)]
     pub(super) fn _mm256_add_epi32(a: __m256i, b: __m256i) -> __m256i {
-        core::array::from_fn(|i| a[i].wrapping_add(b[i]))
+        [vaddq_s32(a[0], b[0]), vaddq_s32(a[1], b[1])]
     }
-    #[inline(always)]
+    #[rite(neon)]
     pub(super) fn _mm256_sub_epi32(a: __m256i, b: __m256i) -> __m256i {
-        core::array::from_fn(|i| a[i].wrapping_sub(b[i]))
+        [vsubq_s32(a[0], b[0]), vsubq_s32(a[1], b[1])]
     }
-    /// Truncating 32x32 low product, exactly like `_mm256_mullo_epi32`.
-    #[inline(always)]
+    /// Truncating 32x32 low product, exactly like `_mm256_mullo_epi32`
+    /// (`vmulq_s32` keeps the low 32 bits, i.e. wraps, which is what the x86
+    /// arm's doc relies on).
+    #[rite(neon)]
     pub(super) fn _mm256_mullo_epi32(a: __m256i, b: __m256i) -> __m256i {
-        core::array::from_fn(|i| a[i].wrapping_mul(b[i]))
+        [vmulq_s32(a[0], b[0]), vmulq_s32(a[1], b[1])]
     }
     /// Arithmetic shift right by a runtime count, like `_mm256_sra_epi32`.
-    #[inline(always)]
+    /// NEON has no variable right shift; a NEGATIVE count on `vshlq_s32` is
+    /// the arithmetic right shift.
+    #[rite(neon)]
     pub(super) fn _mm256_sra_epi32(a: __m256i, sh: __m128i) -> __m256i {
-        core::array::from_fn(|i| a[i] >> sh)
+        let n = vdupq_n_s32(-sh);
+        [vshlq_s32(a[0], n), vshlq_s32(a[1], n)]
     }
     /// Logical shift left by a constant, like `_mm256_slli_epi32::<N>`.
-    #[inline(always)]
+    #[rite(neon)]
     pub(super) fn _mm256_slli_epi32<const N: i32>(a: __m256i) -> __m256i {
-        core::array::from_fn(|i| ((a[i] as u32) << N) as i32)
+        let n = vdupq_n_s32(N);
+        [vshlq_s32(a[0], n), vshlq_s32(a[1], n)]
     }
     /// Package a runtime shift count, like `_mm_cvtsi32_si128`.
-    #[inline(always)]
+    #[rite(neon)]
     pub(super) fn _mm_cvtsi32_si128(v: i32) -> __m128i {
         v
     }
-    /// NOTE the reversed argument order: x86's `set` takes lane 7 FIRST.
-    #[inline(always)]
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn _mm256_set_epi32(
-        e7: i32, e6: i32, e5: i32, e4: i32, e3: i32, e2: i32, e1: i32, e0: i32,
-    ) -> __m256i {
-        [e0, e1, e2, e3, e4, e5, e6, e7]
-    }
-    /// Lane gather by index, like `_mm256_permutevar8x32_epi32`.
-    #[inline(always)]
-    pub(super) fn _mm256_permutevar8x32_epi32(v: __m256i, idx: __m256i) -> __m256i {
-        core::array::from_fn(|i| v[(idx[i] & 7) as usize])
-    }
-
     // ----- the primitive set (mirrors `mod v3`) -----
 
     #[rite(neon)]
     pub(super) fn splat(_t: Desktop64, v: i32) -> __m256i {
-        [v; 8]
+        [vdupq_n_s32(v); 2]
     }
 
     /// `((w0·n0 + w1·n1) + round) >> bit`. Truncating 32-bit products, matching
@@ -774,25 +790,35 @@ mod neon {
         rnd: __m256i,
         sh: __m128i,
     ) -> __m256i {
-        core::array::from_fn(|i| {
-            let x = w0[i].wrapping_mul(n0[i]);
-            let y = w1[i].wrapping_mul(n1[i]);
-            x.wrapping_add(y).wrapping_add(rnd[i]) >> sh
-        })
+        let n = vdupq_n_s32(-sh);
+        let lo = vmlaq_s32(vmulq_s32(w0[0], n0[0]), w1[0], n1[0]);
+        let hi = vmlaq_s32(vmulq_s32(w0[1], n0[1]), w1[1], n1[1]);
+        [
+            vshlq_s32(vaddq_s32(lo, rnd[0]), n),
+            vshlq_s32(vaddq_s32(hi, rnd[1]), n),
+        ]
     }
 
     #[rite(neon)]
     pub(super) fn clampv(_t: Desktop64, v: __m256i, lo: __m256i, hi: __m256i) -> __m256i {
-        core::array::from_fn(|i| v[i].min(hi[i]).max(lo[i]))
+        [
+            vmaxq_s32(vminq_s32(v[0], hi[0]), lo[0]),
+            vmaxq_s32(vminq_s32(v[1], hi[1]), lo[1]),
+        ]
     }
 
     #[rite(neon)]
     pub(super) fn round_shift_v(_t: Desktop64, v: __m256i, bit: i32) -> __m256i {
         if bit > 0 {
-            let rnd = 1i32 << (bit as u32 - 1);
-            core::array::from_fn(|i| (v[i].wrapping_add(rnd)) >> bit)
+            let rnd = vdupq_n_s32(1 << (bit as u32 - 1));
+            let n = vdupq_n_s32(-bit);
+            [
+                vshlq_s32(vaddq_s32(v[0], rnd), n),
+                vshlq_s32(vaddq_s32(v[1], rnd), n),
+            ]
         } else if bit < 0 {
-            core::array::from_fn(|i| ((v[i] as u32) << (-bit) as u32) as i32)
+            let n = vdupq_n_s32(-bit);
+            [vshlq_s32(v[0], n), vshlq_s32(v[1], n)]
         } else {
             v
         }
@@ -800,42 +826,92 @@ mod neon {
 
     #[rite(neon)]
     pub(super) fn wraplow(_t: Desktop64, v: __m256i, lo: __m256i, hi: __m256i) -> __m256i {
-        core::array::from_fn(|i| v[i].min(hi[i]).max(lo[i]))
+        [
+            vmaxq_s32(vminq_s32(v[0], hi[0]), lo[0]),
+            vmaxq_s32(vminq_s32(v[1], hi[1]), lo[1]),
+        ]
     }
 
     /// `(v*k + (1<<11)) >> 12` with a TRUE i64 product — the scalar widens, so a
     /// 32-bit product would overflow for large coefficients. Simpler here than
     /// on AVX2, which lacks a signed 64-bit arithmetic shift and has to split
-    /// even/odd lanes.
+    /// even/odd lanes: `vmull_s32` / `vmull_high_s32` give the widened products
+    /// directly and `vrshrn_n_s64::<12>` does the +(1<<11) rounding AND the
+    /// narrowing in one instruction.
     #[rite(neon)]
     pub(super) fn rect_scale(_t: Desktop64, v: __m256i, k: i32) -> __m256i {
-        core::array::from_fn(|i| {
-            let p = v[i] as i64 * k as i64;
-            ((p + (1i64 << 11)) >> 12) as i32
-        })
+        let kk = vdup_n_s32(k);
+        let kq = vdupq_n_s32(k);
+        let f = |x: int32x4_t| -> int32x4_t {
+            let p0 = vmull_s32(vget_low_s32(x), kk);
+            let p1 = vmull_high_s32(x, kq);
+            vcombine_s32(vrshrn_n_s64::<12>(p0), vrshrn_n_s64::<12>(p1))
+        };
+        [f(v[0]), f(v[1])]
     }
 
-    /// 8x8 transpose of eight 8-lane vectors.
+    /// 4x4 i32 transpose — the building block of [`transpose8`].
+    #[rite(neon)]
+    fn transpose4(a: [int32x4_t; 4]) -> [int32x4_t; 4] {
+        let t0 = vtrn1q_s32(a[0], a[1]);
+        let t1 = vtrn2q_s32(a[0], a[1]);
+        let t2 = vtrn1q_s32(a[2], a[3]);
+        let t3 = vtrn2q_s32(a[2], a[3]);
+        [
+            vcombine_s32(vget_low_s32(t0), vget_low_s32(t2)),
+            vcombine_s32(vget_low_s32(t1), vget_low_s32(t3)),
+            vcombine_s32(vget_high_s32(t0), vget_high_s32(t2)),
+            vcombine_s32(vget_high_s32(t1), vget_high_s32(t3)),
+        ]
+    }
+
+    /// 8x8 transpose of eight 8-lane vectors: four 4x4 transposes plus the
+    /// off-diagonal quadrant swap (`out[r][0]` takes rows 0..4's low half,
+    /// `out[r][1]` takes rows 4..8's low half, and symmetrically for the
+    /// high halves).
     #[rite(neon)]
     pub(super) fn transpose8(_t: Desktop64, inp: &[__m256i; 8]) -> [__m256i; 8] {
-        let mut out = [[0i32; 8]; 8];
-        for (r, row) in inp.iter().enumerate() {
-            for (c, &val) in row.iter().enumerate() {
-                out[c][r] = val;
-            }
-        }
-        out
+        let a = transpose4([inp[0][0], inp[1][0], inp[2][0], inp[3][0]]); // rows 0-3, cols 0-3
+        let b = transpose4([inp[4][0], inp[5][0], inp[6][0], inp[7][0]]); // rows 4-7, cols 0-3
+        let c = transpose4([inp[0][1], inp[1][1], inp[2][1], inp[3][1]]); // rows 0-3, cols 4-7
+        let d = transpose4([inp[4][1], inp[5][1], inp[6][1], inp[7][1]]); // rows 4-7, cols 4-7
+        [
+            [a[0], b[0]],
+            [a[1], b[1]],
+            [a[2], b[2]],
+            [a[3], b[3]],
+            [c[0], d[0]],
+            [c[1], d[1]],
+            [c[2], d[2]],
+            [c[3], d[3]],
+        ]
+    }
+
+    /// `out.lane(i) = in.lane(7 - i)`. Reversing an `int32x4_t` is
+    /// `vrev64q_s32` (swap within each 64-bit half) followed by a swap of the
+    /// two halves, which `vextq_s32::<2>` against itself does; the pair's two
+    /// registers then trade places.
+    #[rite(neon)]
+    pub(super) fn perm_rev8(_t: Desktop64, v: __m256i) -> __m256i {
+        let r = |x: int32x4_t| -> int32x4_t {
+            let s = vrev64q_s32(x);
+            vextq_s32::<2>(s, s)
+        };
+        [r(v[1]), r(v[0])]
     }
 
     #[rite(neon)]
     pub(super) fn load8(_t: Desktop64, buf: &[i32], off: usize) -> __m256i {
-        let a: &[i32; 8] = buf[off..off + 8].try_into().unwrap();
-        *a
+        let lo: &[i32; 4] = buf[off..off + 4].try_into().unwrap();
+        let hi: &[i32; 4] = buf[off + 4..off + 8].try_into().unwrap();
+        [vld1q_s32(lo), vld1q_s32(hi)]
     }
 
     #[rite(neon)]
     pub(super) fn store8(_t: Desktop64, buf: &mut [i32], off: usize, v: __m256i) {
-        buf[off..off + 8].copy_from_slice(&v);
+        let (lo, hi) = buf[off..off + 8].split_at_mut(4);
+        vst1q_s32(lo.try_into().unwrap(), v[0]);
+        vst1q_s32(hi.try_into().unwrap(), v[1]);
     }
 
     include!("txfm_simd_kernels.rs");
@@ -857,6 +933,14 @@ mod v3 {
     #[rite]
     pub(super) fn splat(_t: Desktop64, v: i32) -> __m256i {
         _mm256_set1_epi32(v)
+    }
+
+    /// `out.lane(i) = in.lane(7 - i)` — a single `vpermd`.
+    /// `set_epi32(e7,..,e0)` puts e7 in lane 7, so this index vector is
+    /// `idx[i] = 7 - i`.
+    #[rite]
+    pub(super) fn perm_rev8(_t: Desktop64, v: __m256i) -> __m256i {
+        _mm256_permutevar8x32_epi32(v, _mm256_set_epi32(0, 1, 2, 3, 4, 5, 6, 7))
     }
 
     /// Vector `half_btf`: `((w0·n0 + w1·n1) + round) >> bit`, arithmetic shift.

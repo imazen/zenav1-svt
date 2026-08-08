@@ -43,6 +43,27 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Fixed
 
+- **Loop restoration walked a different unit grid than the one the search
+  sized — an out-of-bounds panic on the public encode API** (issue #11,
+  `restoration.rs:985`, `index out of bounds: the len is 2 but the index is 2`).
+  C derives the restoration-unit count (`svt_av1_alloc_restoration_struct`) and
+  every unit walk (`svt_av1_loop_restoration_filter_frame`,
+  `svt_av1_loop_restoration_save_boundary_lines`) from ONE
+  `whole_frame_rect(&cm->frm_size, ..)`, and `cm->frm_size` is the pre-8-alignment
+  coded size (`pcs.c:1337`, `picture_width - non_m8_pad_w`), CEILING-subsampled
+  for chroma. The port's SEARCH used the true extent (task #95 goal 1) but
+  `apply_restoration_frame` / `save_lr_boundaries` were still handed the ALIGNED
+  `w`/`h`, so wherever the 8-alignment crossed a `count_units_in_tile(256, ..)`
+  boundary the walk visited more units than the grid holds: true 383 counts one
+  horizontal unit, aligned 384 walks two. Both now take the true extent plus the
+  aligned canvas STRIDE, and chroma rounds up like C rather than down. Reported
+  on 5 real renditions (115 of 34,200 HDR-grid cells); reproduced synthetically
+  at `383x512` / `766x128` / `258x128` / `385x257` at bd8 AND bd10. The
+  bitstream was never affected — the panic came after the tile was written — and
+  the previously-panicking cells are now byte-identical to the C encoder
+  (`regression_spotcheck.sh` cells `lr-align-cross-*`). A 2,280-cell A/B of the
+  pre- and post-fix encoders over 19 dimensions × 5 presets × 4 qps × 2 depths ×
+  3 contents shows every previously-working cell byte-unchanged.
 - **The bd10 per-tile recon canvases were MERGED at the wrong stride.**
   `commit_leaf` writes them at the ALIGNED stride (the SB-extent product exists
   only so a right-straddle write wraps into slack rather than out of bounds),

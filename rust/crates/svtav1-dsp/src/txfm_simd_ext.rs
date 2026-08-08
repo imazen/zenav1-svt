@@ -26,15 +26,15 @@
 // Primitive: reverse the 8 i32 lanes (the FLIPADST left-right block mirror).
 // ---------------------------------------------------------------------------
 
-/// `out.lane(i) = in.lane(7 - i)` — a single `vpermd`, pure data movement →
-/// bit-exact. Used for the `lr_flip` horizontal mirror of a block's column
-/// outputs (forward) / inputs (inverse).
+/// `out.lane(i) = in.lane(7 - i)` — pure data movement, so bit-exact. Used for
+/// the `lr_flip` horizontal mirror of a block's column outputs (forward) /
+/// inputs (inverse). The lane shuffle itself is a backend primitive
+/// (`perm_rev8`): one `vpermd` on AVX2, a `vrev64q` + half swap per NEON
+/// register pair.
 #[cfg_attr(target_arch = "x86_64", rite(v3))]
 #[cfg_attr(target_arch = "aarch64", rite(neon))]
-pub(super) fn reverse8(_t: Desktop64, v: __m256i) -> __m256i {
-    // set_epi32(e7,..,e0) puts e7 in lane 7; so this is idx[i] = 7 - i.
-    let idx = _mm256_set_epi32(0, 1, 2, 3, 4, 5, 6, 7);
-    _mm256_permutevar8x32_epi32(v, idx)
+pub(super) fn reverse8(t: Desktop64, v: __m256i) -> __m256i {
+    perm_rev8(t, v)
 }
 
 // ---------------------------------------------------------------------------

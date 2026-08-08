@@ -1644,6 +1644,63 @@ impl TxUnitOut {
     }
 }
 
+/// Reusable per-thread scratch for [`tx_unit`]'s five purely-internal buffers.
+///
+/// `tx_unit` used to heap-allocate seven `Vec`s per transform unit, and it runs
+/// once per (candidate x tx type x tx unit) — the hottest allocation site in the
+/// encoder. Profiling the port at 512x512 measured the malloc/free family at
+/// **5.5 % of preset-6 self time, 6.7 % at preset 10 and ~9.9 % at preset 2**,
+/// against 0.01–0.15 ms on the C side, which allocates none of this per TU.
+///
+/// Five of the seven never escape the function (`residual`, `coeffs`, `packed`,
+/// `dq_full`, `inv`) and are hoisted here. The remaining two (`qcoeff`, `recon`)
+/// are moved into the returned [`TxUnitOut`] and still allocate.
+///
+/// Byte-identity argument, buffer by buffer — the whole point is that a reused
+/// buffer must not leak a previous TU's bytes into this one:
+/// * `residual` and `packed` were `Vec::with_capacity` + a loop that pushes
+///   EVERY element, so they were never zero-initialised to begin with; here they
+///   are `clear()`ed and refilled the same way. Same values, same order.
+/// * `coeffs`, `dq_full` and `inv` were `vec![0; n]`; here they are resized and
+///   explicitly `fill(0)`ed over the working length before use. Same bytes.
+///   (`dq_full` in particular is only partially overwritten — the fold copies a
+///   `pw x ph` corner into a `w x h` buffer — so its zeroing is load-bearing and
+///   is kept verbatim rather than reasoned away.)
+///
+/// Sizes are bounded by the largest AV1 transform, 64x64, so the scratch tops out
+/// at 4096 i32 per full-size buffer and never reallocates after warmup.
+#[derive(Default)]
+struct TxScratch {
+    residual: Vec<i32>,
+    coeffs: Vec<i32>,
+    packed: Vec<i32>,
+    dq_full: Vec<i32>,
+    inv: Vec<i32>,
+}
+
+impl TxScratch {
+    /// Resize `buf` to `n` and zero it — the exact replacement for a
+    /// `vec![0; n]` that the reused-buffer version must reproduce byte for byte.
+    #[inline]
+    fn zeroed(buf: &mut Vec<i32>, n: usize) -> &mut [i32] {
+        if buf.len() < n {
+            buf.resize(n, 0);
+        }
+        let s = &mut buf[..n];
+        s.fill(0);
+        s
+    }
+}
+
+#[cfg(feature = "std")]
+std::thread_local! {
+    static TX_SCRATCH: core::cell::RefCell<TxScratch> =
+        const { core::cell::RefCell::new(TxScratch {
+            residual: Vec::new(), coeffs: Vec::new(), packed: Vec::new(),
+            dq_full: Vec::new(), inv: Vec::new(),
+        }) };
+}
+
 /// C `svt_av1_compute_cul_level` (full_loop.c:1356).
 fn compute_cul_level(scan: &[u16], qcoeff: &[i32], eob: u16) -> u8 {
     let mut cul: u32 = 0;
@@ -1701,28 +1758,87 @@ fn tx_unit(
     spatial_dist: bool,
     crop: (usize, usize),
 ) -> TxUnitOut {
+    // Borrow the per-thread scratch (see [`TxScratch`]). `try_borrow_mut`
+    // rather than `borrow_mut`: tx_unit calls only DSP / quant / rate kernels
+    // and never re-enters itself, but a future re-entrant caller should get a
+    // fresh scratch, not a panic.
+    #[cfg(feature = "std")]
+    {
+        let taken = TX_SCRATCH.with(|cell| {
+            cell.try_borrow_mut().ok().map(|mut sc| {
+                #[allow(clippy::too_many_arguments)]
+                tx_unit_inner(
+                    &mut sc, src, src_stride, src_off, pred, pred_stride, pred_off, w, h, tx_type,
+                    plane_type, txb_skip_ctx, dc_sign_ctx, intra_dir, qt, frame, rates, do_rdoq,
+                    spatial_dist, crop,
+                )
+            })
+        });
+        if let Some(out) = taken {
+            return out;
+        }
+    }
+    let mut sc = TxScratch::default();
+    tx_unit_inner(
+        &mut sc, src, src_stride, src_off, pred, pred_stride, pred_off, w, h, tx_type, plane_type,
+        txb_skip_ctx, dc_sign_ctx, intra_dir, qt, frame, rates, do_rdoq, spatial_dist, crop,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn tx_unit_inner(
+    sc: &mut TxScratch,
+    src: &[u8],
+    src_stride: usize,
+    src_off: usize,
+    pred: &[u8],
+    pred_stride: usize,
+    pred_off: usize,
+    w: usize,
+    h: usize,
+    tx_type: usize,
+    plane_type: usize,
+    txb_skip_ctx: usize,
+    dc_sign_ctx: usize,
+    intra_dir: usize,
+    qt: &QuantTable,
+    frame: &FunnelFrame,
+    rates: &MdRates,
+    do_rdoq: bool,
+    spatial_dist: bool,
+    crop: (usize, usize),
+) -> TxUnitOut {
     let (crop_w, crop_h) = crop;
     debug_assert!(crop_w <= w && crop_h <= h, "crop must clip, never extend");
     let n = w * h;
     let c_tx = cc::tx_size_from_dims(w, h);
     let rs_tx_type = TX_TYPE_FROM_C[tx_type];
 
-    // Build directly (uninit capacity + push) rather than `vec![0; n]` + full
-    // overwrite: every element is written below, so the zero-fill was dead. This
-    // pushes exactly h*w = n values in row-major order — byte-identical contents,
-    // no `calloc`/`memset`.
-    let mut residual = Vec::with_capacity(n);
-    for r in 0..h {
-        let srow = src_off + r * src_stride;
-        let prow = pred_off + r * pred_stride;
-        for c in 0..w {
-            residual.push(src[srow + c] as i32 - pred[prow + c] as i32);
-        }
+    // Build directly (clear + push, into the reused scratch) rather than
+    // `vec![0; n]` + full overwrite: every element is written below, so the
+    // zero-fill was dead. This pushes exactly h*w = n values in row-major order
+    // — byte-identical contents, no `calloc`/`memset`, and after warmup no
+    // allocation either.
+    let TxScratch { residual, coeffs, packed: packed_buf, dq_full, inv } = sc;
+    if residual.len() < n {
+        residual.resize(n, 0);
     }
-    let mut coeffs = vec![0i32; n];
+    let residual = &mut residual[..n];
+    // Every element is written by the kernel, so no zero-fill is needed and
+    // the reused buffer cannot leak a previous TU's values.
+    svtav1_dsp::residual::residual_i32(
+        &src[src_off..],
+        src_stride,
+        &pred[pred_off..],
+        pred_stride,
+        w,
+        h,
+        residual,
+    );
+    let coeffs = TxScratch::zeroed(coeffs, n);
     let ok = svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
-        &residual,
-        &mut coeffs,
+        residual,
+        coeffs,
         w,
         rs_tx_size(w, h),
         rs_tx_type,
@@ -1732,7 +1848,7 @@ fn tx_unit(
     // 64-dim fold (svt_handle_transform64x64) + energy of discarded coeffs.
     let mut three_quad_energy: u64 = 0;
     let (pw, ph) = (w.min(32), h.min(32));
-    let mut packed = if w > 32 || h > 32 {
+    let packed: &[i32] = if w > 32 || h > 32 {
         if w == 64 && h == 64 {
             three_quad_energy = energy_region(&coeffs[32..], 64, 32, 32)
                 + energy_region(&coeffs[32 * 64..], 64, 64, 32);
@@ -1744,16 +1860,21 @@ fn tx_unit(
             // 32x64 / 16x64: bottom w-wide, (h-32)-tall region.
             three_quad_energy = energy_region(&coeffs[32 * w..], w, w, h - 32);
         }
-        // Uninit capacity + extend rather than `vec![0; pw*ph]` + full copy: the
-        // loop copies every one of the pw*ph elements, so the zero-fill was dead.
-        // Byte-identical contents (same pw-wide rows in order), no `calloc`/`memset`.
-        let mut v = Vec::with_capacity(pw * ph);
+        // Clear + extend rather than `vec![0; pw*ph]` + full copy: the loop
+        // copies every one of the pw*ph elements, so the zero-fill was dead.
+        // Byte-identical contents (same pw-wide rows in order).
+        packed_buf.clear();
+        packed_buf.reserve(pw * ph);
         for r in 0..ph {
-            v.extend_from_slice(&coeffs[r * w..r * w + pw]);
+            packed_buf.extend_from_slice(&coeffs[r * w..r * w + pw]);
         }
-        v
+        &packed_buf[..pw * ph]
     } else {
-        coeffs.clone()
+        // No 64-dim fold: the packed coefficients ARE `coeffs` (pw*ph == n), so
+        // borrow instead of cloning. `packed` is read-only from here on — the
+        // quantizer writes qcoeff/dqcoeff, never its input — which is what makes
+        // dropping the copy byte-inert.
+        &coeffs[..n]
     };
 
     let scan = svtav1_entropy::scan_tables::scan(
@@ -1774,10 +1895,10 @@ fn tx_unit(
     let mut eob = if do_rdoq {
         let mut e = match qm {
             Some((wt, iwt)) => crate::qm::quantize_fp_qm(
-                &packed, scan, qt, log_scale, wt, iwt, &mut qcoeff, &mut dqcoeff,
+                packed, scan, qt, log_scale, wt, iwt, &mut qcoeff, &mut dqcoeff,
             ),
             None => {
-                crate::quant::quantize_fp(&packed, scan, qt, log_scale, &mut qcoeff, &mut dqcoeff)
+                crate::quant::quantize_fp(packed, scan, qt, log_scale, &mut qcoeff, &mut dqcoeff)
             }
         };
         if e != 0 {
@@ -1802,27 +1923,26 @@ fn tx_unit(
                 cut_off_num,
                 cut_off_denum,
             };
-            crate::quant::optimize_b(&packed, &mut qcoeff, &mut dqcoeff, &mut e, scan, qt, &o);
+            crate::quant::optimize_b(packed, &mut qcoeff, &mut dqcoeff, &mut e, scan, qt, &o);
         }
         e
     } else {
         match qm {
             Some((wt, iwt)) => crate::qm::quantize_b_qm(
-                &packed, scan, qt, log_scale, wt, iwt, &mut qcoeff, &mut dqcoeff,
+                packed, scan, qt, log_scale, wt, iwt, &mut qcoeff, &mut dqcoeff,
             ),
             None => {
-                crate::quant::quantize_b(&packed, scan, qt, log_scale, &mut qcoeff, &mut dqcoeff)
+                crate::quant::quantize_b(packed, scan, qt, log_scale, &mut qcoeff, &mut dqcoeff)
             }
         }
     };
-    let _ = &mut packed;
     let _ = &mut eob;
     // [SVT_HDR_MODE] fork noise normalization (see FunnelFrame field doc).
     if frame.noise_norm_strength > 0 && plane_type == 0 && eob != 0 && tx_type != 9 {
         crate::noise_norm::perform_noise_normalization(
             &qt.dequant,
             qm.map(|(_, iwt)| iwt),
-            &packed,
+            packed,
             &mut qcoeff,
             &mut dqcoeff,
             &mut eob,
@@ -1836,25 +1956,30 @@ fn tx_unit(
     // prediction — C inverts whenever spatial SSE or intra tx_depth > 0).
     let mut recon = vec![0u8; n];
     if eob > 0 {
-        let mut dq_full = vec![0i32; n];
+        // `dq_full` is only PARTIALLY overwritten below (a pw x ph corner into a
+        // w x h buffer), so zeroing it is load-bearing, not decorative — it is
+        // kept exactly as the `vec![0i32; n]` it replaces.
+        let dq_full = TxScratch::zeroed(dq_full, n);
         for r in 0..ph {
             dq_full[r * w..r * w + pw].copy_from_slice(&dqcoeff[r * pw..(r + 1) * pw]);
         }
-        let mut inv = vec![0i32; n];
+        let inv = TxScratch::zeroed(inv, n);
         let ok = svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch(
-            &dq_full,
-            &mut inv,
+            dq_full,
+            inv,
             w,
             rs_tx_size(w, h),
             rs_tx_type,
         );
         debug_assert!(ok, "inv txfm {w}x{h} type {tx_type}");
-        for r in 0..h {
-            let prow = pred_off + r * pred_stride;
-            for c in 0..w {
-                recon[r * w + c] = (pred[prow + c] as i32 + inv[r * w + c]).clamp(0, 255) as u8;
-            }
-        }
+        svtav1_dsp::residual::recon_add_clamp(
+            &pred[pred_off..],
+            pred_stride,
+            inv,
+            w,
+            h,
+            &mut recon,
+        );
     } else {
         for r in 0..h {
             let prow = pred_off + r * pred_stride;
@@ -1867,14 +1992,8 @@ fn tx_unit(
         // cropped_tx_height, ...)`: the SSE walks the CROPPED extent (the recon
         // keeps its full `w` stride), so a straddling boundary TX block is
         // priced only over its in-frame part.
-        let mut sse: u64 = 0;
-        for r in 0..crop_h {
-            let srow = src_off + r * src_stride;
-            for c in 0..crop_w {
-                let d = src[srow + c] as i64 - recon[r * w + c] as i64;
-                sse += (d * d) as u64;
-            }
-        }
+        let mut sse: u64 =
+            svtav1_dsp::variance::sse(&src[src_off..], src_stride, &recon, w, crop_w, crop_h);
         // [SVT_HDR_MODE] fork tx-bias facade layer (pic_operators.c:252):
         // the spatial SSE is biased by prediction-mode class + tx size
         // BEFORE the psy add (the facade IS the SSE producer at the C call
@@ -1928,17 +2047,11 @@ fn tx_unit(
     } else {
         // Freq-domain: svt_aom_picture_full_distortion32_bits_single
         // (RESIDUAL) + three_quad + RIGHT_SIGNED_SHIFT((1 - scale) * 2).
-        let mut d: u64 = 0;
-        if eob > 0 {
-            for i in 0..pw * ph {
-                let e = (packed[i] - dqcoeff[i]) as i64;
-                d += (e * e) as u64;
-            }
+        let mut d: u64 = if eob > 0 {
+            svtav1_dsp::residual::sse_i32(&packed[..pw * ph], &dqcoeff[..pw * ph])
         } else {
-            for i in 0..pw * ph {
-                d += (packed[i] as i64 * packed[i] as i64) as u64;
-            }
-        }
+            svtav1_dsp::residual::sq_sum_i32(&packed[..pw * ph])
+        };
         d += three_quad_energy;
         let shift = (1 - log_scale as i32) * 2;
         if shift < 0 { d << (-shift) } else { d >> shift }
@@ -4085,7 +4198,7 @@ pub(crate) fn evaluate_leaf(
             };
             uv_rd.push((uvm, uvd, bits, dist));
             #[cfg(feature = "std")]
-            if std::env::var_os("SVTAV1_NSQDBG").is_some()
+            if crate::dbgenv::nsqdbg()
                 && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
             {
                 eprintln!(
@@ -4127,7 +4240,7 @@ pub(crate) fn evaluate_leaf(
         ind_uv = Some(table);
     }
     #[cfg(feature = "std")]
-    if std::env::var_os("SVTAV1_NSQDBG").is_some() && crate::depth_refine::nsqdbg_here(abs_x, abs_y) {
+    if crate::dbgenv::nsqdbg() && crate::depth_refine::nsqdbg_here(abs_x, abs_y) {
         if let Some(t) = &ind_uv {
             eprintln!("NSQDBG UVTAB mi=({},{}) {}x{} t={:?}", abs_y / 4, abs_x / 4, w, h, t);
         }
@@ -4324,7 +4437,7 @@ pub(crate) fn evaluate_leaf(
             ),
         };
         #[cfg(feature = "std")]
-        if std::env::var_os("SVTAV1_CANDDBG").is_some()
+        if crate::dbgenv::canddbg()
             && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
         {
             eprintln!(
@@ -4604,7 +4717,7 @@ pub(crate) fn evaluate_leaf(
             };
             let flr = r_mode + r_fi + r_yes + r_size + r_uniform + r_colors + map_bits + r_ibc_no;
             #[cfg(feature = "std")]
-            if std::env::var_os("SVTAV1_PALBRK").is_some()
+            if crate::dbgenv::palbrk()
                 && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
             {
                 eprintln!(
@@ -4646,7 +4759,7 @@ pub(crate) fn evaluate_leaf(
                 if frame.mds0_ssd { satd } else { satd << 4 },
             );
             #[cfg(feature = "std")]
-            if std::env::var_os("SVTAV1_CANDDBG").is_some()
+            if crate::dbgenv::canddbg()
                 && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
             {
                 eprintln!(
@@ -4838,7 +4951,7 @@ pub(crate) fn evaluate_leaf(
                 // and the port does not" verdict cannot distinguish "the
                 // search found no DV" from "it found one and the RD lost".
                 #[cfg(feature = "std")]
-                if std::env::var_os("SVTAV1_IBCDBG").is_some()
+                if crate::dbgenv::ibcdbg()
                     && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
                 {
                     eprintln!(
@@ -5278,7 +5391,7 @@ pub(crate) fn evaluate_leaf(
         cand.mds1_has_coeff = has;
         cand.full_cost = rdcost(dec_lambda, cand.flr + cand.fcr + coeff_rate, dec_dist);
         #[cfg(feature = "std")]
-        if std::env::var_os("SVTAV1_CANDDBG").is_some()
+        if crate::dbgenv::canddbg()
             && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
         {
             eprintln!(
@@ -5673,7 +5786,7 @@ pub(crate) fn evaluate_leaf(
                 let (bits, dist) = uv_rd[k];
                 let cost = rdcost(uv_lambda, bits + fcr2, dist);
                 #[cfg(feature = "std")]
-                if std::env::var_os("SVTAV1_CANDDBG").is_some()
+                if crate::dbgenv::canddbg()
                     && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
                 {
                     eprintln!(
@@ -7150,7 +7263,7 @@ pub(crate) fn evaluate_leaf(
                                 u_cfl_out.dist + v_cfl_out.dist,
                             );
                             #[cfg(feature = "std")]
-                            if std::env::var_os("SVTAV1_NSQDBG").is_some()
+                            if crate::dbgenv::nsqdbg()
                                 && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
                             {
                                 eprintln!(
@@ -7207,7 +7320,7 @@ pub(crate) fn evaluate_leaf(
                             }
                         } else {
                             #[cfg(feature = "std")]
-                            if std::env::var_os("SVTAV1_NSQDBG").is_some()
+                            if crate::dbgenv::nsqdbg()
                                 && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
                             {
                                 eprintln!(
@@ -7502,7 +7615,7 @@ pub(crate) fn evaluate_leaf(
         // UV_CFL_PRED mode + alpha rate replaces the non-CFL uv fast rate).
         let full = rdcost(lambda3, cand.flr + fcr_final + coeff_rate, dist);
         #[cfg(feature = "std")]
-        if std::env::var_os("SVTAV1_CANDDBG").is_some()
+        if crate::dbgenv::canddbg()
             && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
         {
             eprintln!(

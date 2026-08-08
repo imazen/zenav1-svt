@@ -20,6 +20,7 @@ set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../../.." && pwd) # <repo> (rust/tools/perf_c_encode -> repo root)
+C_ROOT="$ROOT/reference/svt-av1" # the C reference submodule (imazen/zenav1-svt-c)
 
 LIB_DIR="${SVT_CREF_LIB_DIR:-$ROOT/Bin/Release}"
 LIB="$LIB_DIR/libSvtAv1Enc.a"
@@ -35,6 +36,12 @@ if [[ -z "${SVT_CREF_LIB_DIR:-}" && -z "${SVT_NO_AUTO_CMAKE:-}" && -d "$CMAKE_DI
         echo "       SVT_NO_AUTO_CMAKE=1 if you know the lib is current." >&2
         exit 1
     fi
+fi
+
+if [[ ! -d "$C_ROOT/Source" ]]; then
+    echo "error: C reference headers missing at $C_ROOT/Source." >&2
+    echo "       Run: git submodule update --init" >&2
+    exit 1
 fi
 
 if [[ ! -f "$LIB" ]]; then
@@ -56,10 +63,10 @@ fi
 # reference lib ships runtime SIMD dispatch, and the perf gate forbids native.
 cc -O2 -o "$OUT" \
     "$HERE/perf_c_encode.c" \
-    -I"$ROOT/Source/API" \
-    -I"$ROOT/Source/Lib/Codec" \
-    -I"$ROOT/Source/Lib/Globals" \
-    -I"$ROOT/Source/Lib/C_DEFAULT" \
+    -I"$C_ROOT/Source/API" \
+    -I"$C_ROOT/Source/Lib/Codec" \
+    -I"$C_ROOT/Source/Lib/Globals" \
+    -I"$C_ROOT/Source/Lib/C_DEFAULT" \
     "$LIB" -lpthread -lm
 
 echo "perf_c_encode: built $OUT (lib=$LIB)"

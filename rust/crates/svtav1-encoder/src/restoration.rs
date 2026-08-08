@@ -172,12 +172,22 @@ impl<T: Copy + Default> PaddedPlaneT<T> {
     /// Copy a tight `w x h` plane into padded storage (borders zero until
     /// `extend()` replicates them).
     pub fn from_tight(src: &[T], w: usize, h: usize) -> Self {
+        Self::from_strided(src, w, w, h)
+    }
+
+    /// Copy the top-left `w x h` window of a plane stored at `src_stride`
+    /// into padded storage. The recon canvases are sized on the ALIGNED
+    /// (mi-grid) dims while loop restoration works on the TRUE frame extent
+    /// (C `whole_frame_rect` reads `frm_size`, which pcs.c:1337 sets to
+    /// `picture_width - non_m8_pad_w`), so the two differ by up to 7 px and
+    /// the window has to be taken at the canvas stride.
+    pub fn from_strided(src: &[T], src_stride: usize, w: usize, h: usize) -> Self {
         let stride = w + 2 * PLANE_BORDER;
         let mut data = alloc::vec![T::default(); stride * (h + 2 * PLANE_BORDER)];
         let origin = PLANE_BORDER * stride + PLANE_BORDER;
         for y in 0..h {
             data[origin + y * stride..origin + y * stride + w]
-                .copy_from_slice(&src[y * w..y * w + w]);
+                .copy_from_slice(&src[y * src_stride..y * src_stride + w]);
         }
         PaddedPlaneT {
             data,
@@ -199,11 +209,13 @@ impl<T: Copy + Default> PaddedPlaneT<T> {
         }
     }
 
-    /// Copy the crop back into a tight buffer.
-    #[allow(dead_code)]
-    fn copy_crop_to(&self, dst: &mut [T]) {
+    /// Copy the crop back into the top-left `w x h` window of a buffer
+    /// stored at `dst_stride`. Columns/rows of `dst` outside the window are
+    /// left untouched — C filters only the `whole_frame_rect` extent too, so
+    /// the aligned padding keeps its post-CDEF content.
+    fn copy_crop_to_strided(&self, dst: &mut [T], dst_stride: usize) {
         for y in 0..self.h {
-            dst[y * self.w..y * self.w + self.w].copy_from_slice(
+            dst[y * dst_stride..y * dst_stride + self.w].copy_from_slice(
                 &self.data[self.origin + y * self.stride..self.origin + y * self.stride + self.w],
             );
         }
@@ -699,7 +711,7 @@ pub fn search_restoration_still_bd<P: LrPixel>(
         // (8-aligned) true dims ceiling == floor, so every existing cell is
         // byte-neutral.
         let (pw, ph) = if is_uv {
-            ((w + 1) / 2, (h + 1) / 2)
+            (w.div_ceil(2), h.div_ceil(2))
         } else {
             (w, h)
         };
@@ -913,6 +925,14 @@ pub fn search_restoration_still_bd<P: LrPixel>(
 /// Build the stripe-boundary line buffers exactly like the C pipeline:
 /// after-deblock (pre-CDEF) pass + after-CDEF pass per plane.
 /// `pre_cdef_*` = post-deblock planes, `post_cdef_*` = final CDEF'd planes.
+///
+/// `w`/`h` are the TRUE (coded) luma dims — C
+/// `svt_av1_loop_restoration_save_boundary_lines` (restoration.c:1665) passes
+/// `frame->crop_widths/crop_heights` as the extent and `frame->strides` as the
+/// stride, and `svt_aom_save_tile_row_boundary_lines` bounds its stripe walk by
+/// `whole_frame_rect(&cm->frm_size, ..)`, which is the coded (pre-8-alignment)
+/// size, CEILING for chroma. `stride_y`/`stride_uv` are the ALIGNED canvas
+/// strides the planes are actually stored at. Equal for an 8-aligned frame.
 #[allow(clippy::too_many_arguments)]
 pub fn save_lr_boundaries(
     pre_y: &[u8],
@@ -923,13 +943,21 @@ pub fn save_lr_boundaries(
     post_v: &[u8],
     w: usize,
     h: usize,
+    stride_y: usize,
+    stride_uv: usize,
     has_chroma: bool,
 ) -> alloc::vec::Vec<StripeBoundaries> {
     let mut out = alloc::vec::Vec::new();
     for plane in 0..3usize {
         let is_uv = plane > 0;
         let ss = i32::from(is_uv);
-        let (pw, ph) = if is_uv { (w / 2, h / 2) } else { (w, h) };
+        // C whole_frame_rect: ROUND_POWER_OF_TWO (= CEILING) for chroma.
+        let (pw, ph) = if is_uv {
+            (w.div_ceil(2), h.div_ceil(2))
+        } else {
+            (w, h)
+        };
+        let stride = if is_uv { stride_uv } else { stride_y };
         let mut bnd = alloc_stripe_boundaries(w as i32, h as i32, ss);
         if is_uv && !has_chroma {
             out.push(bnd);
@@ -940,8 +968,8 @@ pub fn save_lr_boundaries(
             1 => (pre_u, post_u),
             _ => (pre_v, post_v),
         };
-        save_tile_row_boundary_lines(pre, 0, pw, pw as i32, ph as i32, ss, false, &mut bnd);
-        save_tile_row_boundary_lines(post, 0, pw, pw as i32, ph as i32, ss, true, &mut bnd);
+        save_tile_row_boundary_lines(pre, 0, stride, pw as i32, ph as i32, ss, false, &mut bnd);
+        save_tile_row_boundary_lines(post, 0, stride, pw as i32, ph as i32, ss, true, &mut bnd);
         out.push(bnd);
     }
     out
@@ -950,6 +978,15 @@ pub fn save_lr_boundaries(
 /// C `svt_av1_loop_restoration_filter_frame` (restoration.c:1154): apply
 /// the signaled restoration to the final recon planes in place (the output
 /// copy — prediction sources are untouched by the caller's contract).
+///
+/// `w`/`h` are the TRUE (coded) luma dims and MUST be the same extent the
+/// search sized the RU grid from: C runs both `svt_av1_alloc_restoration_struct`
+/// (which sets `horz_units_per_tile` / `units_per_tile`) and this walk off ONE
+/// `whole_frame_rect(&cm->frm_size, ..)` (restoration.c:51, 81, 1281), so the
+/// unit count and the unit walk cannot disagree. `stride_y`/`stride_uv` are the
+/// ALIGNED canvas strides the recon planes are stored at; the window outside
+/// the true extent keeps its post-CDEF content, exactly as in C where the rect
+/// stops at the coded size.
 #[allow(clippy::too_many_arguments)]
 pub fn apply_restoration_frame(
     recon_y: &mut [u8],
@@ -957,6 +994,8 @@ pub fn apply_restoration_frame(
     recon_v: &mut [u8],
     w: usize,
     h: usize,
+    stride_y: usize,
+    stride_uv: usize,
     has_chroma: bool,
     info: &FrameRestInfo,
     boundaries: &[StripeBoundaries],
@@ -971,13 +1010,19 @@ pub fn apply_restoration_frame(
             continue;
         }
         let ss = i32::from(is_uv);
-        let (pw, ph) = if is_uv { (w / 2, h / 2) } else { (w, h) };
+        // C whole_frame_rect: ROUND_POWER_OF_TWO (= CEILING) for chroma.
+        let (pw, ph) = if is_uv {
+            (w.div_ceil(2), h.div_ceil(2))
+        } else {
+            (w, h)
+        };
+        let stride = if is_uv { stride_uv } else { stride_y };
         let recon: &mut [u8] = match plane {
             0 => recon_y,
             1 => recon_u,
             _ => recon_v,
         };
-        let mut data = PaddedPlane::from_tight(recon, pw, ph);
+        let mut data = PaddedPlane::from_strided(recon, stride, pw, ph);
         extend_frame(&mut data.data, data.origin, pw, ph, data.stride, 3, 3);
         let mut dst = PaddedPlane::empty(pw, ph);
         let rect = plane_rect(pw as i32, ph as i32);
@@ -1001,7 +1046,7 @@ pub fn apply_restoration_frame(
                 dst.stride,
             );
         });
-        dst.copy_crop_to(recon);
+        dst.copy_crop_to_strided(recon, stride);
     }
 }
 

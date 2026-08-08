@@ -299,6 +299,8 @@ fn bench_dsp(suite: &mut Suite) {
         txbench!("inv_txfm2d_8x8_dct", 8, inv_txfm::inv_txfm2d_8x8_dct_dct);
         txbench!("inv_txfm2d_16x16_dct", 16, inv_txfm::inv_txfm2d_16x16_dct_dct);
         txbench!("inv_txfm2d_32x32_dct", 32, inv_txfm::inv_txfm2d_32x32_dct_dct);
+        txbench!("fwd_txfm2d_64x64_dct", 64, fwd_txfm::fwd_txfm2d_64x64_dct_dct);
+        txbench!("inv_txfm2d_64x64_dct", 64, inv_txfm::inv_txfm2d_64x64_dct_dct);
     }
 
     // Quantize: measured to decide whether a magic-reciprocal NEON port is

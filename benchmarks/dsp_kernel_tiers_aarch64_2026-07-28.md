@@ -1,4 +1,46 @@
+> **SUPERSEDED IN PART — 2026-08-07.** Read this note before acting on anything
+> below. The 2026-08-07 aarch64 DSP series (branch `perf/dsp-gap-2026-08-07`,
+> record `rust/benchmarks/perf_gap_2026-08-07-postopt.md`) closed most of the
+> gaps this survey scoped, and one of its central recommendations turned out to
+> be wrong:
+>
+> * **"The transforms: measured, scoped, NOT ported"** (the last section) — now
+>   PORTED, as real `[int32x4_t; 2]` intrinsics. The `[i32; 8]`
+>   plus-autovectorisation shortcut this survey proposed WAS implemented in the
+>   interim and **does not pay above the smallest sizes** (inverse 16x16
+>   1.2 -> 1.7 us, 32x32 5.1 -> 8.6 us vs scalar), which is why
+>   `NEON_INV_MAX_DIM` sat at 8. With real intrinsics the tier wins at every
+>   dimension by 3x-10x. Do not re-attempt the autovectorisation route.
+> * Also since ported: Wiener `compute_stats` (rewritten as dot products, 4-6x),
+>   the nz-map context kernel, `txb_init_levels`' fill, the 4-wide chroma CDEF
+>   filter, and new residual / recon-add / coefficient-distortion kernels.
+> * Whole-encoder effect: port/C wall-clock slope ratio 7.0-8.0x -> 3.5-4.9x;
+>   the port is 1.60x-2.23x faster than its pre-change self and now BEATS C at
+>   32x32 for presets 6, 10 and 13.
+> * Measured negatives recorded alongside: `benchmarks/alloc_traffic_null_2026-08-07.meta`
+>   (allocator traffic is a null, and hoisting compute_stats' row loop is a
+>   regression) and `benchmarks/recon_lazy_refuted_2026-08-07.meta` (deblock and
+>   CDEF *application* both feed the bitstream — they cannot be made lazy at
+>   preset <= 10).
+> * Its Finding 3 note — "on ARM the C encoder dispatches its own NEON kernels,
+>   so ARM parity should ultimately be pinned against *those*" — is still open.
+
 # DSP kernels on aarch64: the NEON tier was never implemented — 2026-07-28
+
+> **Re-verified at HEAD 2026-08-07 — read
+> `rust/benchmarks/neon_tier_audit_2026-08-07.md` alongside this file.**
+> Two claims below have moved. (1) `quant_coding` and `inter_pred`, listed here
+> as placeholders, now have real intrinsics. (2) The shared-source transform
+> port described at the end of this file WAS done — `txfm_simd.rs` has a
+> `mod neon` — but it is `[i32; 8]` arrays relying on autovectorisation, not
+> intrinsics, and it is capped at `NEON_FWD_MAX_DIM = 16` /
+> `NEON_INV_MAX_DIM = 8` because past those dims it measured *slower* than
+> scalar. So forward 32/64-point and inverse 16/32/64-point transforms still
+> have **no vector tier on aarch64**, and they are top-ten self-time leaves in
+> the whole-encoder profile. Also: the seven `*_impl_neon` arms in
+> `fwd_txfm.rs`/`inv_txfm.rs` have bodies byte-identical to their `_impl_scalar`
+> siblings (harmless — the real dispatch is one level down in `txfm_simd` — but
+> the names mislead an audit).
 
 Platform: Apple Silicon (aarch64, NEON), darwin 25.5.0
 Bench: `rust/crates/svtav1-dsp/benches/kernel_tiers.rs` (zenbench, interleaved arms)
