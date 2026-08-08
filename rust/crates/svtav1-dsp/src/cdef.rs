@@ -441,6 +441,135 @@ pub(crate) fn cdef_filter_cols8_neon(
     }
 }
 
+/// 4-lane twin of [`cdef_load8_u16_neon`] for the 4-wide chroma shapes.
+/// Same SIGN-extension (the buffer is read as `int16_t`, so taps at or above
+/// 0x8000 are negative — the exact bug `filter_block_sign_straddle_matches_c`
+/// exists to catch).
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn cdef_load4_u16_neon(_token: NeonToken, inb: &[u16], idx: usize) -> int32x4_t {
+    let a: &[u16; 4] = inb[idx..idx + 4].try_into().unwrap();
+    vmovl_s16(vreinterpret_s16_u16(vld1_u16(a)))
+}
+
+/// 4-wide chroma CDEF — [`cdef_filter_cols8_neon`] with one `int32x4_t` per row
+/// instead of a pair. C ships this shape as
+/// `svt_av1_cdef_filter_block_4xn_8_native_neon`; the port previously fell back
+/// to [`cdef_filter_block_core`] for BLOCK_4X4 / BLOCK_4X8, which profiling
+/// measured at 6.08 % of the port's preset-10 self time at 512x512.
+///
+/// Byte-identity rests on the same property as the 8-wide arm: each output
+/// pixel is an INDEPENDENT 12-tap integer sum, so columns map to lanes with no
+/// cross-lane reduction, and the number of lanes cannot change a result. `sum`
+/// accumulates in i32 and is sign-truncated to i16 once at the end
+/// (`(x << 16) >> 16`); two's-complement addition is associative mod 2^16, so
+/// that equals the scalar's per-tap `wrapping_add::<i16>`.
+#[cfg(target_arch = "aarch64")]
+#[rite]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn cdef_filter_cols4_neon(
+    token: NeonToken,
+    inb: &[u16],
+    ioff: usize,
+    pri_strength: i32,
+    sec_strength: i32,
+    dir: i32,
+    pri_damping: i32,
+    sec_damping: i32,
+    coeff_shift: i32,
+    rows: i32,
+    sub: i32,
+    out: &mut [i32; 32],
+) {
+    let s = CDEF_BSTRIDE as i32;
+    let pri_taps = CDEF_PRI_TAPS[((pri_strength >> coeff_shift) & 1) as usize];
+    let sec_taps = CDEF_SEC_TAPS[((pri_strength >> coeff_shift) & 1) as usize];
+
+    let pri_active = pri_strength != 0;
+    let sec_active = sec_strength != 0;
+    let pri_shift = if pri_active {
+        (pri_damping - get_msb(pri_strength as u32)).max(0)
+    } else {
+        0
+    };
+    let sec_shift = if sec_active {
+        (sec_damping - get_msb(sec_strength as u32)).max(0)
+    } else {
+        0
+    };
+    let pri_shift_v = vdupq_n_s32(pri_shift);
+    let sec_shift_v = vdupq_n_s32(sec_shift);
+    let pri_thr = vdupq_n_s32(pri_strength);
+    let sec_thr = vdupq_n_s32(sec_strength);
+    let sentinel = vdupq_n_s32(CDEF_VERY_LARGE as i32);
+    let eight = vdupq_n_s32(8);
+
+    let p_off = [
+        cdef_direction(dir, 0),
+        -cdef_direction(dir, 0),
+        cdef_direction(dir, 1),
+        -cdef_direction(dir, 1),
+    ];
+    let p_cof = [pri_taps[0], pri_taps[0], pri_taps[1], pri_taps[1]];
+    let s_off = [
+        cdef_direction(dir + 2, 0),
+        -cdef_direction(dir + 2, 0),
+        cdef_direction(dir - 2, 0),
+        -cdef_direction(dir - 2, 0),
+        cdef_direction(dir + 2, 1),
+        -cdef_direction(dir + 2, 1),
+        cdef_direction(dir - 2, 1),
+        -cdef_direction(dir - 2, 1),
+    ];
+    let s_cof = [
+        sec_taps[0], sec_taps[0], sec_taps[0], sec_taps[0], sec_taps[1], sec_taps[1], sec_taps[1],
+        sec_taps[1],
+    ];
+
+    let mut i = 0i32;
+    while i < rows {
+        let base = (ioff as i32 + i * s) as usize;
+        let x = cdef_load4_u16_neon(token, inb, base);
+        let mut sum = vdupq_n_s32(0);
+        let mut mx = x;
+        let mut mn = x;
+
+        for t in 0..4usize {
+            let idx = (base as i32 + p_off[t]) as usize;
+            let tap = cdef_load4_u16_neon(token, inb, idx);
+            let cof = vdupq_n_s32(p_cof[t]);
+            let diff = vsubq_s32(tap, x);
+            let c = cdef_constrain4_neon(token, diff, pri_thr, pri_shift_v, pri_active);
+            sum = vaddq_s32(sum, vmulq_s32(c, cof));
+            let is_sent = vceqq_s32(tap, sentinel);
+            mx = vbslq_s32(is_sent, mx, vmaxq_s32(mx, tap));
+            mn = vminq_s32(mn, tap);
+        }
+        for t in 0..8usize {
+            let idx = (base as i32 + s_off[t]) as usize;
+            let tap = cdef_load4_u16_neon(token, inb, idx);
+            let cof = vdupq_n_s32(s_cof[t]);
+            let diff = vsubq_s32(tap, x);
+            let c = cdef_constrain4_neon(token, diff, sec_thr, sec_shift_v, sec_active);
+            sum = vaddq_s32(sum, vmulq_s32(c, cof));
+            let is_sent = vceqq_s32(tap, sentinel);
+            mx = vbslq_s32(is_sent, mx, vmaxq_s32(mx, tap));
+            mn = vminq_s32(mn, tap);
+        }
+
+        // sign-extend the low 16 bits, then x + ((8 + sum - (sum<0)) >> 4)
+        let sw = vshrq_n_s32::<16>(vshlq_n_s32::<16>(sum));
+        let neg = vreinterpretq_s32_u32(vshrq_n_u32::<31>(vreinterpretq_u32_s32(sw)));
+        let adj = vshrq_n_s32::<4>(vsubq_s32(vaddq_s32(eight, sw), neg));
+        let val = vaddq_s32(x, adj);
+        let y = vminq_s32(vmaxq_s32(val, mn), mx);
+        let dst: &mut [i32; 4] =
+            (&mut out[i as usize * 4..i as usize * 4 + 4]).try_into().unwrap();
+        vst1q_s32(dst, y);
+        i += sub;
+    }
+}
+
 #[cfg(target_arch = "aarch64")]
 #[arcane]
 #[allow(clippy::too_many_arguments)]
@@ -460,39 +589,62 @@ fn cdef_filter_block_impl_neon(
     coeff_shift: i32,
     subsampling_factor: usize,
 ) {
-    // Only the cols == 8 shapes take the vector path, exactly as the AVX2 arm
-    // does; the rare 4-wide chroma shapes fall back to the scalar core.
-    if !(bsize == BLOCK_8X8 || bsize == BLOCK_8X4) {
-        cdef_filter_block_core(
-            dst, doff, dstride, inb, ioff, pri_strength, sec_strength, dir, pri_damping,
-            sec_damping, bsize, coeff_shift, subsampling_factor,
-        );
-        return;
-    }
     let rows = if bsize == BLOCK_8X8 || bsize == BLOCK_4X8 { 8 } else { 4 };
-    let mut scratch = [0i32; 64];
-    cdef_filter_cols8_neon(
-        token,
-        inb,
-        ioff,
-        pri_strength,
-        sec_strength,
-        dir,
-        pri_damping,
-        sec_damping,
-        coeff_shift,
-        rows,
-        subsampling_factor as i32,
-        &mut scratch,
-    );
-    let mut i = 0i32;
-    while i < rows {
-        let drow = doff + i as usize * dstride;
-        let srow = i as usize * 8;
-        for j in 0..8usize {
-            dst[drow + j] = scratch[srow + j] as u8;
+    let cols = if bsize == BLOCK_8X8 || bsize == BLOCK_8X4 { 8 } else { 4 };
+    // Both column shapes now take a vector path. The 8-wide arm is the
+    // original; the 4-wide chroma arm ([`cdef_filter_cols4_neon`]) is the same
+    // kernel at one int32x4 per row instead of two, which is what the C
+    // reference ships as `svt_av1_cdef_filter_block_4xn_8_native_neon`.
+    if cols == 8 {
+        let mut scratch = [0i32; 64];
+        cdef_filter_cols8_neon(
+            token,
+            inb,
+            ioff,
+            pri_strength,
+            sec_strength,
+            dir,
+            pri_damping,
+            sec_damping,
+            coeff_shift,
+            rows,
+            subsampling_factor as i32,
+            &mut scratch,
+        );
+        let mut i = 0i32;
+        while i < rows {
+            let drow = doff + i as usize * dstride;
+            let srow = i as usize * 8;
+            for j in 0..8usize {
+                dst[drow + j] = scratch[srow + j] as u8;
+            }
+            i += subsampling_factor as i32;
         }
-        i += subsampling_factor as i32;
+    } else {
+        let mut scratch = [0i32; 32];
+        cdef_filter_cols4_neon(
+            token,
+            inb,
+            ioff,
+            pri_strength,
+            sec_strength,
+            dir,
+            pri_damping,
+            sec_damping,
+            coeff_shift,
+            rows,
+            subsampling_factor as i32,
+            &mut scratch,
+        );
+        let mut i = 0i32;
+        while i < rows {
+            let drow = doff + i as usize * dstride;
+            let srow = i as usize * 4;
+            for j in 0..4usize {
+                dst[drow + j] = scratch[srow + j] as u8;
+            }
+            i += subsampling_factor as i32;
+        }
     }
 }
 
