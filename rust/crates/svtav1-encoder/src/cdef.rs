@@ -1293,7 +1293,7 @@ pub fn cdef_search_still(
     // content: at every fb whose post-deblock recon matches C the mse rows
     // are byte-identical. No effect on the encoded stream.
     #[cfg(feature = "std")]
-    if std::env::var_os("SVTAV1_CDEF_DBG").is_some() {
+    if crate::dbgenv::cdef_dbg() {
         let mut ysum = alloc::vec![0u64; n_cand];
         let mut uvsum = alloc::vec![0u64; n_cand];
         for (i, &(fbr, fbc)) in fb_addr.iter().enumerate() {
@@ -1508,7 +1508,7 @@ pub fn cdef_search_still_hbd(
     }
     let (bits, lev0, lev1) = finish_cdef_rd_bd(&mse, n_cand, qindex, bit_depth);
     #[cfg(feature = "std")]
-    if std::env::var_os("SVTAV1_CDEF_DBG").is_some() {
+    if crate::dbgenv::cdef_dbg() {
         let mut ysum = alloc::vec![0u64; n_cand];
         let mut uvsum = alloc::vec![0u64; n_cand];
         for (i, &(fbr, fbc)) in fb_addr.iter().enumerate() {

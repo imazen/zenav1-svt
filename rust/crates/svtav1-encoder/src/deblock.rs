@@ -412,7 +412,7 @@ pub fn recondbg_dump(
     height: usize,
     chroma_420: bool,
 ) {
-    if std::env::var_os("SVTAV1_RECONDBG").is_none() {
+    if !crate::dbgenv::recondbg() {
         return;
     }
     let (cw, ch) = (width / 2, height / 2);

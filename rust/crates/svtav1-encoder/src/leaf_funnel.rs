@@ -4085,7 +4085,7 @@ pub(crate) fn evaluate_leaf(
             };
             uv_rd.push((uvm, uvd, bits, dist));
             #[cfg(feature = "std")]
-            if std::env::var_os("SVTAV1_NSQDBG").is_some()
+            if crate::dbgenv::nsqdbg()
                 && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
             {
                 eprintln!(
@@ -4127,7 +4127,7 @@ pub(crate) fn evaluate_leaf(
         ind_uv = Some(table);
     }
     #[cfg(feature = "std")]
-    if std::env::var_os("SVTAV1_NSQDBG").is_some() && crate::depth_refine::nsqdbg_here(abs_x, abs_y) {
+    if crate::dbgenv::nsqdbg() && crate::depth_refine::nsqdbg_here(abs_x, abs_y) {
         if let Some(t) = &ind_uv {
             eprintln!("NSQDBG UVTAB mi=({},{}) {}x{} t={:?}", abs_y / 4, abs_x / 4, w, h, t);
         }
@@ -4324,7 +4324,7 @@ pub(crate) fn evaluate_leaf(
             ),
         };
         #[cfg(feature = "std")]
-        if std::env::var_os("SVTAV1_CANDDBG").is_some()
+        if crate::dbgenv::canddbg()
             && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
         {
             eprintln!(
@@ -4604,7 +4604,7 @@ pub(crate) fn evaluate_leaf(
             };
             let flr = r_mode + r_fi + r_yes + r_size + r_uniform + r_colors + map_bits + r_ibc_no;
             #[cfg(feature = "std")]
-            if std::env::var_os("SVTAV1_PALBRK").is_some()
+            if crate::dbgenv::palbrk()
                 && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
             {
                 eprintln!(
@@ -4646,7 +4646,7 @@ pub(crate) fn evaluate_leaf(
                 if frame.mds0_ssd { satd } else { satd << 4 },
             );
             #[cfg(feature = "std")]
-            if std::env::var_os("SVTAV1_CANDDBG").is_some()
+            if crate::dbgenv::canddbg()
                 && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
             {
                 eprintln!(
@@ -4838,7 +4838,7 @@ pub(crate) fn evaluate_leaf(
                 // and the port does not" verdict cannot distinguish "the
                 // search found no DV" from "it found one and the RD lost".
                 #[cfg(feature = "std")]
-                if std::env::var_os("SVTAV1_IBCDBG").is_some()
+                if crate::dbgenv::ibcdbg()
                     && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
                 {
                     eprintln!(
@@ -5278,7 +5278,7 @@ pub(crate) fn evaluate_leaf(
         cand.mds1_has_coeff = has;
         cand.full_cost = rdcost(dec_lambda, cand.flr + cand.fcr + coeff_rate, dec_dist);
         #[cfg(feature = "std")]
-        if std::env::var_os("SVTAV1_CANDDBG").is_some()
+        if crate::dbgenv::canddbg()
             && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
         {
             eprintln!(
@@ -5673,7 +5673,7 @@ pub(crate) fn evaluate_leaf(
                 let (bits, dist) = uv_rd[k];
                 let cost = rdcost(uv_lambda, bits + fcr2, dist);
                 #[cfg(feature = "std")]
-                if std::env::var_os("SVTAV1_CANDDBG").is_some()
+                if crate::dbgenv::canddbg()
                     && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
                 {
                     eprintln!(
@@ -7150,7 +7150,7 @@ pub(crate) fn evaluate_leaf(
                                 u_cfl_out.dist + v_cfl_out.dist,
                             );
                             #[cfg(feature = "std")]
-                            if std::env::var_os("SVTAV1_NSQDBG").is_some()
+                            if crate::dbgenv::nsqdbg()
                                 && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
                             {
                                 eprintln!(
@@ -7207,7 +7207,7 @@ pub(crate) fn evaluate_leaf(
                             }
                         } else {
                             #[cfg(feature = "std")]
-                            if std::env::var_os("SVTAV1_NSQDBG").is_some()
+                            if crate::dbgenv::nsqdbg()
                                 && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
                             {
                                 eprintln!(
@@ -7502,7 +7502,7 @@ pub(crate) fn evaluate_leaf(
         // UV_CFL_PRED mode + alpha rate replaces the non-CFL uv fast rate).
         let full = rdcost(lambda3, cand.flr + fcr_final + coeff_rate, dist);
         #[cfg(feature = "std")]
-        if std::env::var_os("SVTAV1_CANDDBG").is_some()
+        if crate::dbgenv::canddbg()
             && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
         {
             eprintln!(
