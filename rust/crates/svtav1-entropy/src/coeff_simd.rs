@@ -59,16 +59,59 @@ fn fill_levels_impl_scalar(
     fill_levels_core(coeff, width, height, levels_buf);
 }
 
+/// NEON fill, the twin of [`fill_levels_impl_v3`]: each row of `width`
+/// coefficients (8/16/32 here; `width == 4` falls back to the scalar core) is
+/// packed 8 columns at a time.
 #[cfg(target_arch = "aarch64")]
 #[arcane]
 fn fill_levels_impl_neon(
-    _token: NeonToken,
+    token: NeonToken,
     coeff: &[i32],
     width: usize,
     height: usize,
     levels_buf: &mut [u8],
 ) {
-    fill_levels_core(coeff, width, height, levels_buf);
+    if width < 8 {
+        // Only BLOCK width 4 (a row is a single 4-lane group with a 4-byte pad
+        // gap to the next row's destination); not worth a masked path.
+        fill_levels_core(coeff, width, height, levels_buf);
+        return;
+    }
+    let stride = width + TX_PAD_HOR;
+    let origin = levels_origin(width);
+    for r in 0..height {
+        let cb = r * width;
+        let db = origin + r * stride;
+        let mut c = 0usize;
+        // width is 8/16/32 here, so this consumes the row exactly (no remainder).
+        while c + 8 <= width {
+            let src: &[i32; 8] = coeff[cb + c..cb + c + 8].try_into().unwrap();
+            let dst: &mut [u8; 8] = (&mut levels_buf[db + c..db + c + 8]).try_into().unwrap();
+            pack8_neon(token, src, dst);
+            c += 8;
+        }
+    }
+}
+
+/// Map 8 contiguous `i32` coefficients to 8 `u8` levels `min(|x|, 127)`.
+///
+/// Same exactness argument as [`fill_levels_impl_v3`], and it turns on the same
+/// detail: `vabsq_s32(i32::MIN)` yields `0x8000_0000` (ARM's SABS does not
+/// saturate), which read as UNSIGNED is 2^31 and therefore min-clamps to 127 —
+/// exactly what Rust's `unsigned_abs().min(127)` gives. Doing the min as
+/// `vminq_s32` instead would read that bit pattern as negative and store 0,
+/// which is why the compare is `vminq_u32` on the reinterpreted vector. Values
+/// are then in `[0, 127]`, so the two narrowing steps cannot lose anything.
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn pack8_neon(_token: NeonToken, src: &[i32; 8], dst: &mut [u8; 8]) {
+    let lo: &[i32; 4] = src[..4].try_into().unwrap();
+    let hi: &[i32; 4] = src[4..].try_into().unwrap();
+    let cap = vdupq_n_u32(127);
+    let a0 = vminq_u32(vreinterpretq_u32_s32(vabsq_s32(vld1q_s32(lo))), cap);
+    let a1 = vminq_u32(vreinterpretq_u32_s32(vabsq_s32(vld1q_s32(hi))), cap);
+    let n16 = vcombine_u16(vmovn_u32(a0), vmovn_u32(a1));
+    vst1_u8(dst, vmovn_u16(n16));
 }
 
 /// AVX2 fill. Each row of `width` coefficients (`width` ∈ {8, 16, 32} on this
@@ -576,4 +619,65 @@ fn nz_kernel16_v3(
     c = _mm_min_epu8(c, _mm_set1_epi8(4));
     c = _mm_add_epi8(c, _mm_loadu_si128(offtab));
     _mm_storeu_si128(out, c);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::coeff_c::{TX_PAD_2D, TX_SIZES_ALL};
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    /// Every dispatch tier of [`fill_levels`] agrees with [`fill_levels_core`]
+    /// on the EXTREME coefficient values, `i32::MIN` included.
+    ///
+    /// `tests/c_parity.rs` cannot cover `i32::MIN` — C's `abs(INT_MIN)` is
+    /// undefined behaviour, so the C oracle is not a valid reference there — but
+    /// the SIMD arms still have to reproduce Rust's `unsigned_abs().min(127)`,
+    /// and that value is exactly where a plausible-looking implementation goes
+    /// wrong: `vabsq_s32`/`_mm256_abs_epi32` return the bit pattern
+    /// `0x8000_0000`, which a SIGNED min against 127 reads as negative and
+    /// stores as 0 instead of 127. This pins the unsigned compare.
+    #[test]
+    fn fill_levels_all_tiers_match_core_on_extremes() {
+        use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+        let extremes = [
+            i32::MIN,
+            i32::MIN + 1,
+            -128,
+            -127,
+            -126,
+            -1,
+            0,
+            1,
+            126,
+            127,
+            128,
+            i32::MAX - 1,
+            i32::MAX,
+        ];
+        for ts in 0..TX_SIZES_ALL {
+            let width = txb_wide(ts);
+            let height = txb_high(ts);
+            let n = width * height;
+            let stride = width + TX_PAD_HOR;
+            let origin = levels_origin(width);
+            let region = height * stride;
+            for phase in 0..extremes.len() {
+                let coeffs: Vec<i32> =
+                    (0..n).map(|i| extremes[(i + phase) % extremes.len()]).collect();
+                let mut want = vec![0u8; TX_PAD_2D];
+                fill_levels_core(&coeffs, width, height, &mut want);
+                let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+                    let mut got = vec![0u8; TX_PAD_2D];
+                    fill_levels(&coeffs, width, height, &mut got);
+                    assert_eq!(
+                        &got[origin..origin + region],
+                        &want[origin..origin + region],
+                        "fill_levels tier != core: ts={ts} phase={phase} w={width} h={height}"
+                    );
+                });
+            }
+        }
+    }
 }

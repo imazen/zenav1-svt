@@ -379,8 +379,15 @@ fn compute_stats_impl_neon(
     // per-pixel window gather into contiguous loads.
     let dw = width + 2 * halfwin;
     let dh = height + 2 * halfwin;
-    let mut d = alloc::vec![0i16; dw * dh];
-    let mut s = alloc::vec![0i16; width * height];
+    // Reused per thread: compute_stats runs once per restoration unit per
+    // filter-tap level, and a 256x256 unit needs ~137 KB of `d` plus ~131 KB of
+    // `s`. Allocating that per call put the malloc/free family back on the
+    // profile; C allocates per call too (`svt_aom_memalign` in
+    // `svt_av1_compute_stats_neon`) but that is not a reason to copy the cost.
+    // Contents are fully overwritten below before any read, so reuse cannot
+    // leak a previous unit's pixels.
+    let mut scratch = StatsScratch::take(dw * dh, width * height);
+    let (d, s) = scratch.split();
     {
         let d_row0 = dgd_origin as isize
             + (v_start as isize - halfwin as isize) * dgd_stride as isize
@@ -430,6 +437,69 @@ fn compute_stats_impl_neon(
     for k in 0..win2 {
         for l in (k + 1)..win2 {
             h[l * win2 + k] = h[k * win2 + l];
+        }
+    }
+}
+
+/// Per-thread sub-average scratch for [`compute_stats_impl_neon`].
+///
+/// One `Vec<i16>` holding `d` then `s` back to back, grown to the largest
+/// restoration unit seen and never shrunk. `take` hands out a guard so the
+/// buffer returns to the thread slot on drop even on an early return; if the
+/// slot is already borrowed (re-entrancy, which does not happen today) the
+/// guard owns a fresh allocation instead of panicking.
+#[cfg(target_arch = "aarch64")]
+struct StatsScratch {
+    buf: alloc::vec::Vec<i16>,
+    dlen: usize,
+    #[cfg(feature = "std")]
+    pooled: bool,
+}
+
+#[cfg(all(target_arch = "aarch64", feature = "std"))]
+std::thread_local! {
+    static STATS_SCRATCH: core::cell::RefCell<alloc::vec::Vec<i16>> =
+        const { core::cell::RefCell::new(alloc::vec::Vec::new()) };
+}
+
+#[cfg(target_arch = "aarch64")]
+impl StatsScratch {
+    fn take(dlen: usize, slen: usize) -> Self {
+        let need = dlen + slen;
+        #[cfg(feature = "std")]
+        {
+            if let Some(mut buf) =
+                STATS_SCRATCH.with(|c| c.try_borrow_mut().ok().map(|mut b| core::mem::take(&mut *b)))
+            {
+                if buf.len() < need {
+                    buf.resize(need, 0);
+                }
+                return StatsScratch { buf, dlen, pooled: true };
+            }
+        }
+        StatsScratch {
+            buf: alloc::vec![0i16; need],
+            dlen,
+            #[cfg(feature = "std")]
+            pooled: false,
+        }
+    }
+
+    fn split(&mut self) -> (&mut [i16], &mut [i16]) {
+        self.buf.split_at_mut(self.dlen)
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", feature = "std"))]
+impl Drop for StatsScratch {
+    fn drop(&mut self) {
+        if self.pooled {
+            let buf = core::mem::take(&mut self.buf);
+            STATS_SCRATCH.with(|c| {
+                if let Ok(mut slot) = c.try_borrow_mut() {
+                    *slot = buf;
+                }
+            });
         }
     }
 }
