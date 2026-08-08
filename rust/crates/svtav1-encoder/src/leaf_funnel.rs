@@ -1820,15 +1820,21 @@ fn tx_unit_inner(
     // — byte-identical contents, no `calloc`/`memset`, and after warmup no
     // allocation either.
     let TxScratch { residual, coeffs, packed: packed_buf, dq_full, inv } = sc;
-    residual.clear();
-    residual.reserve(n);
-    for r in 0..h {
-        let srow = src_off + r * src_stride;
-        let prow = pred_off + r * pred_stride;
-        for c in 0..w {
-            residual.push(src[srow + c] as i32 - pred[prow + c] as i32);
-        }
+    if residual.len() < n {
+        residual.resize(n, 0);
     }
+    let residual = &mut residual[..n];
+    // Every element is written by the kernel, so no zero-fill is needed and
+    // the reused buffer cannot leak a previous TU's values.
+    svtav1_dsp::residual::residual_i32(
+        &src[src_off..],
+        src_stride,
+        &pred[pred_off..],
+        pred_stride,
+        w,
+        h,
+        residual,
+    );
     let coeffs = TxScratch::zeroed(coeffs, n);
     let ok = svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
         residual,
@@ -1966,12 +1972,14 @@ fn tx_unit_inner(
             rs_tx_type,
         );
         debug_assert!(ok, "inv txfm {w}x{h} type {tx_type}");
-        for r in 0..h {
-            let prow = pred_off + r * pred_stride;
-            for c in 0..w {
-                recon[r * w + c] = (pred[prow + c] as i32 + inv[r * w + c]).clamp(0, 255) as u8;
-            }
-        }
+        svtav1_dsp::residual::recon_add_clamp(
+            &pred[pred_off..],
+            pred_stride,
+            inv,
+            w,
+            h,
+            &mut recon,
+        );
     } else {
         for r in 0..h {
             let prow = pred_off + r * pred_stride;
@@ -1984,14 +1992,8 @@ fn tx_unit_inner(
         // cropped_tx_height, ...)`: the SSE walks the CROPPED extent (the recon
         // keeps its full `w` stride), so a straddling boundary TX block is
         // priced only over its in-frame part.
-        let mut sse: u64 = 0;
-        for r in 0..crop_h {
-            let srow = src_off + r * src_stride;
-            for c in 0..crop_w {
-                let d = src[srow + c] as i64 - recon[r * w + c] as i64;
-                sse += (d * d) as u64;
-            }
-        }
+        let mut sse: u64 =
+            svtav1_dsp::variance::sse(&src[src_off..], src_stride, &recon, w, crop_w, crop_h);
         // [SVT_HDR_MODE] fork tx-bias facade layer (pic_operators.c:252):
         // the spatial SSE is biased by prediction-mode class + tx size
         // BEFORE the psy add (the facade IS the SSE producer at the C call
@@ -2045,17 +2047,11 @@ fn tx_unit_inner(
     } else {
         // Freq-domain: svt_aom_picture_full_distortion32_bits_single
         // (RESIDUAL) + three_quad + RIGHT_SIGNED_SHIFT((1 - scale) * 2).
-        let mut d: u64 = 0;
-        if eob > 0 {
-            for i in 0..pw * ph {
-                let e = (packed[i] - dqcoeff[i]) as i64;
-                d += (e * e) as u64;
-            }
+        let mut d: u64 = if eob > 0 {
+            svtav1_dsp::residual::sse_i32(&packed[..pw * ph], &dqcoeff[..pw * ph])
         } else {
-            for i in 0..pw * ph {
-                d += (packed[i] as i64 * packed[i] as i64) as u64;
-            }
-        }
+            svtav1_dsp::residual::sq_sum_i32(&packed[..pw * ph])
+        };
         d += three_quad_energy;
         let shift = (1 - log_scale as i32) * 2;
         if shift < 0 { d << (-shift) } else { d >> shift }
