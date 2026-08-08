@@ -1644,6 +1644,63 @@ impl TxUnitOut {
     }
 }
 
+/// Reusable per-thread scratch for [`tx_unit`]'s five purely-internal buffers.
+///
+/// `tx_unit` used to heap-allocate seven `Vec`s per transform unit, and it runs
+/// once per (candidate x tx type x tx unit) — the hottest allocation site in the
+/// encoder. Profiling the port at 512x512 measured the malloc/free family at
+/// **5.5 % of preset-6 self time, 6.7 % at preset 10 and ~9.9 % at preset 2**,
+/// against 0.01–0.15 ms on the C side, which allocates none of this per TU.
+///
+/// Five of the seven never escape the function (`residual`, `coeffs`, `packed`,
+/// `dq_full`, `inv`) and are hoisted here. The remaining two (`qcoeff`, `recon`)
+/// are moved into the returned [`TxUnitOut`] and still allocate.
+///
+/// Byte-identity argument, buffer by buffer — the whole point is that a reused
+/// buffer must not leak a previous TU's bytes into this one:
+/// * `residual` and `packed` were `Vec::with_capacity` + a loop that pushes
+///   EVERY element, so they were never zero-initialised to begin with; here they
+///   are `clear()`ed and refilled the same way. Same values, same order.
+/// * `coeffs`, `dq_full` and `inv` were `vec![0; n]`; here they are resized and
+///   explicitly `fill(0)`ed over the working length before use. Same bytes.
+///   (`dq_full` in particular is only partially overwritten — the fold copies a
+///   `pw x ph` corner into a `w x h` buffer — so its zeroing is load-bearing and
+///   is kept verbatim rather than reasoned away.)
+///
+/// Sizes are bounded by the largest AV1 transform, 64x64, so the scratch tops out
+/// at 4096 i32 per full-size buffer and never reallocates after warmup.
+#[derive(Default)]
+struct TxScratch {
+    residual: Vec<i32>,
+    coeffs: Vec<i32>,
+    packed: Vec<i32>,
+    dq_full: Vec<i32>,
+    inv: Vec<i32>,
+}
+
+impl TxScratch {
+    /// Resize `buf` to `n` and zero it — the exact replacement for a
+    /// `vec![0; n]` that the reused-buffer version must reproduce byte for byte.
+    #[inline]
+    fn zeroed(buf: &mut Vec<i32>, n: usize) -> &mut [i32] {
+        if buf.len() < n {
+            buf.resize(n, 0);
+        }
+        let s = &mut buf[..n];
+        s.fill(0);
+        s
+    }
+}
+
+#[cfg(feature = "std")]
+std::thread_local! {
+    static TX_SCRATCH: core::cell::RefCell<TxScratch> =
+        const { core::cell::RefCell::new(TxScratch {
+            residual: Vec::new(), coeffs: Vec::new(), packed: Vec::new(),
+            dq_full: Vec::new(), inv: Vec::new(),
+        }) };
+}
+
 /// C `svt_av1_compute_cul_level` (full_loop.c:1356).
 fn compute_cul_level(scan: &[u16], qcoeff: &[i32], eob: u16) -> u8 {
     let mut cul: u32 = 0;
@@ -1701,17 +1758,70 @@ fn tx_unit(
     spatial_dist: bool,
     crop: (usize, usize),
 ) -> TxUnitOut {
+    // Borrow the per-thread scratch (see [`TxScratch`]). `try_borrow_mut`
+    // rather than `borrow_mut`: tx_unit calls only DSP / quant / rate kernels
+    // and never re-enters itself, but a future re-entrant caller should get a
+    // fresh scratch, not a panic.
+    #[cfg(feature = "std")]
+    {
+        let taken = TX_SCRATCH.with(|cell| {
+            cell.try_borrow_mut().ok().map(|mut sc| {
+                #[allow(clippy::too_many_arguments)]
+                tx_unit_inner(
+                    &mut sc, src, src_stride, src_off, pred, pred_stride, pred_off, w, h, tx_type,
+                    plane_type, txb_skip_ctx, dc_sign_ctx, intra_dir, qt, frame, rates, do_rdoq,
+                    spatial_dist, crop,
+                )
+            })
+        });
+        if let Some(out) = taken {
+            return out;
+        }
+    }
+    let mut sc = TxScratch::default();
+    tx_unit_inner(
+        &mut sc, src, src_stride, src_off, pred, pred_stride, pred_off, w, h, tx_type, plane_type,
+        txb_skip_ctx, dc_sign_ctx, intra_dir, qt, frame, rates, do_rdoq, spatial_dist, crop,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn tx_unit_inner(
+    sc: &mut TxScratch,
+    src: &[u8],
+    src_stride: usize,
+    src_off: usize,
+    pred: &[u8],
+    pred_stride: usize,
+    pred_off: usize,
+    w: usize,
+    h: usize,
+    tx_type: usize,
+    plane_type: usize,
+    txb_skip_ctx: usize,
+    dc_sign_ctx: usize,
+    intra_dir: usize,
+    qt: &QuantTable,
+    frame: &FunnelFrame,
+    rates: &MdRates,
+    do_rdoq: bool,
+    spatial_dist: bool,
+    crop: (usize, usize),
+) -> TxUnitOut {
     let (crop_w, crop_h) = crop;
     debug_assert!(crop_w <= w && crop_h <= h, "crop must clip, never extend");
     let n = w * h;
     let c_tx = cc::tx_size_from_dims(w, h);
     let rs_tx_type = TX_TYPE_FROM_C[tx_type];
 
-    // Build directly (uninit capacity + push) rather than `vec![0; n]` + full
-    // overwrite: every element is written below, so the zero-fill was dead. This
-    // pushes exactly h*w = n values in row-major order — byte-identical contents,
-    // no `calloc`/`memset`.
-    let mut residual = Vec::with_capacity(n);
+    // Build directly (clear + push, into the reused scratch) rather than
+    // `vec![0; n]` + full overwrite: every element is written below, so the
+    // zero-fill was dead. This pushes exactly h*w = n values in row-major order
+    // — byte-identical contents, no `calloc`/`memset`, and after warmup no
+    // allocation either.
+    let TxScratch { residual, coeffs, packed: packed_buf, dq_full, inv } = sc;
+    residual.clear();
+    residual.reserve(n);
     for r in 0..h {
         let srow = src_off + r * src_stride;
         let prow = pred_off + r * pred_stride;
@@ -1719,10 +1829,10 @@ fn tx_unit(
             residual.push(src[srow + c] as i32 - pred[prow + c] as i32);
         }
     }
-    let mut coeffs = vec![0i32; n];
+    let coeffs = TxScratch::zeroed(coeffs, n);
     let ok = svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
-        &residual,
-        &mut coeffs,
+        residual,
+        coeffs,
         w,
         rs_tx_size(w, h),
         rs_tx_type,
@@ -1732,7 +1842,7 @@ fn tx_unit(
     // 64-dim fold (svt_handle_transform64x64) + energy of discarded coeffs.
     let mut three_quad_energy: u64 = 0;
     let (pw, ph) = (w.min(32), h.min(32));
-    let mut packed = if w > 32 || h > 32 {
+    let packed: &[i32] = if w > 32 || h > 32 {
         if w == 64 && h == 64 {
             three_quad_energy = energy_region(&coeffs[32..], 64, 32, 32)
                 + energy_region(&coeffs[32 * 64..], 64, 64, 32);
@@ -1744,16 +1854,21 @@ fn tx_unit(
             // 32x64 / 16x64: bottom w-wide, (h-32)-tall region.
             three_quad_energy = energy_region(&coeffs[32 * w..], w, w, h - 32);
         }
-        // Uninit capacity + extend rather than `vec![0; pw*ph]` + full copy: the
-        // loop copies every one of the pw*ph elements, so the zero-fill was dead.
-        // Byte-identical contents (same pw-wide rows in order), no `calloc`/`memset`.
-        let mut v = Vec::with_capacity(pw * ph);
+        // Clear + extend rather than `vec![0; pw*ph]` + full copy: the loop
+        // copies every one of the pw*ph elements, so the zero-fill was dead.
+        // Byte-identical contents (same pw-wide rows in order).
+        packed_buf.clear();
+        packed_buf.reserve(pw * ph);
         for r in 0..ph {
-            v.extend_from_slice(&coeffs[r * w..r * w + pw]);
+            packed_buf.extend_from_slice(&coeffs[r * w..r * w + pw]);
         }
-        v
+        &packed_buf[..pw * ph]
     } else {
-        coeffs.clone()
+        // No 64-dim fold: the packed coefficients ARE `coeffs` (pw*ph == n), so
+        // borrow instead of cloning. `packed` is read-only from here on — the
+        // quantizer writes qcoeff/dqcoeff, never its input — which is what makes
+        // dropping the copy byte-inert.
+        &coeffs[..n]
     };
 
     let scan = svtav1_entropy::scan_tables::scan(
@@ -1774,10 +1889,10 @@ fn tx_unit(
     let mut eob = if do_rdoq {
         let mut e = match qm {
             Some((wt, iwt)) => crate::qm::quantize_fp_qm(
-                &packed, scan, qt, log_scale, wt, iwt, &mut qcoeff, &mut dqcoeff,
+                packed, scan, qt, log_scale, wt, iwt, &mut qcoeff, &mut dqcoeff,
             ),
             None => {
-                crate::quant::quantize_fp(&packed, scan, qt, log_scale, &mut qcoeff, &mut dqcoeff)
+                crate::quant::quantize_fp(packed, scan, qt, log_scale, &mut qcoeff, &mut dqcoeff)
             }
         };
         if e != 0 {
@@ -1802,27 +1917,26 @@ fn tx_unit(
                 cut_off_num,
                 cut_off_denum,
             };
-            crate::quant::optimize_b(&packed, &mut qcoeff, &mut dqcoeff, &mut e, scan, qt, &o);
+            crate::quant::optimize_b(packed, &mut qcoeff, &mut dqcoeff, &mut e, scan, qt, &o);
         }
         e
     } else {
         match qm {
             Some((wt, iwt)) => crate::qm::quantize_b_qm(
-                &packed, scan, qt, log_scale, wt, iwt, &mut qcoeff, &mut dqcoeff,
+                packed, scan, qt, log_scale, wt, iwt, &mut qcoeff, &mut dqcoeff,
             ),
             None => {
-                crate::quant::quantize_b(&packed, scan, qt, log_scale, &mut qcoeff, &mut dqcoeff)
+                crate::quant::quantize_b(packed, scan, qt, log_scale, &mut qcoeff, &mut dqcoeff)
             }
         }
     };
-    let _ = &mut packed;
     let _ = &mut eob;
     // [SVT_HDR_MODE] fork noise normalization (see FunnelFrame field doc).
     if frame.noise_norm_strength > 0 && plane_type == 0 && eob != 0 && tx_type != 9 {
         crate::noise_norm::perform_noise_normalization(
             &qt.dequant,
             qm.map(|(_, iwt)| iwt),
-            &packed,
+            packed,
             &mut qcoeff,
             &mut dqcoeff,
             &mut eob,
@@ -1836,14 +1950,17 @@ fn tx_unit(
     // prediction — C inverts whenever spatial SSE or intra tx_depth > 0).
     let mut recon = vec![0u8; n];
     if eob > 0 {
-        let mut dq_full = vec![0i32; n];
+        // `dq_full` is only PARTIALLY overwritten below (a pw x ph corner into a
+        // w x h buffer), so zeroing it is load-bearing, not decorative — it is
+        // kept exactly as the `vec![0i32; n]` it replaces.
+        let dq_full = TxScratch::zeroed(dq_full, n);
         for r in 0..ph {
             dq_full[r * w..r * w + pw].copy_from_slice(&dqcoeff[r * pw..(r + 1) * pw]);
         }
-        let mut inv = vec![0i32; n];
+        let inv = TxScratch::zeroed(inv, n);
         let ok = svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch(
-            &dq_full,
-            &mut inv,
+            dq_full,
+            inv,
             w,
             rs_tx_size(w, h),
             rs_tx_type,
