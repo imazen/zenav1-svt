@@ -1,0 +1,70 @@
+# "Make deblock + CDEF application lazy" — REFUTED, and the free part measures null
+
+date: 2026-08-07
+host: Apple M4 Pro (12 logical cores), darwin 25.5.0
+commit: see git log for perf/dsp-gap-2026-08-07
+config: 8-bit 4:2:0, still/allintra (hierarchical_levels=0, intra_period=1),
+        CQP, tiles 0/0, single-threaded, gradient+uniform, no target-cpu=native
+
+## What was claimed
+
+The 2026-08-07 perf-attribution pass ranked "make deblock + CDEF *application*
+lazy at fast presets" as opportunity #4 — 23 % of the preset-10 gap (CDEF apply
+3.11 ms vs C 0.00, deblock apply 0.55 vs 0.00) — and called it
+"bit-identical-safe (bytes already proven identical)". It explicitly flagged
+that it had NOT run the experiment: "I did not experimentally confirm the
+'recon has no consumer' claim ... Somebody must do that before acting on it."
+
+It also suggested killing "the `recon.clone()` + 2 chroma clones at
+pipeline.rs:3049".
+
+## What the experiment says
+
+Method: gate each piece behind its own env var, encode a 72-cell grid
+({64,128,256} x p{2,6,10,13} x qp{20,40,55}, gradient), md5 every OBU, diff
+against the ungated control (`tools/byteid_fingerprint.sh`).
+
+| gated off                               | cells whose OBU CHANGED |
+|-----------------------------------------|-------------------------|
+| `last_recon_unfiltered` snapshot        | 0 / 72                  |
+| `last_recon_pre_cdef` snapshot          | **9 / 72**              |
+| `last_recon` snapshot                   | 0 / 72                  |
+| `apply_cdef_frame`                      | **10 / 72**             |
+| `apply_deblock_frame`                   | **5 / 72**              |
+
+So the claim is **refuted**: both application passes feed the bitstream. The
+mechanism is loop restoration, which is enabled for preset <= 10
+(`speed_config.rs: enable_restoration: p <= 10`) and whose search reads the
+POST-CDEF recon, while its stripe-boundary save reads the PRE-CDEF snapshot
+(`pipeline.rs`, `save_lr_boundaries(pre_y, pre_u, pre_v, &recon, ...)` — the
+`.expect("pre-CDEF recon captured above")` site). Deleting the pre-CDEF
+snapshot does not merely change bytes, it panics the encoder on some cells
+(those rows report BYTES=0).
+
+That leaves only presets >= 11 as a place where the apply passes could be
+skipped — and at p13 they are already cheap relative to the rest.
+
+## And the "free" part is worth nothing
+
+The two snapshots that ARE free (`last_recon_unfiltered`, `last_recon`;
+0/72 cells changed) were measured with `tools/perf_ab.sh`, interleaved paired,
+randomised order, n=9, neither side niced:
+
+| cell        | with snapshots | without | speedup |
+|-------------|----------------|---------|---------|
+| 256x256 p6  | 20.699 ms      | 20.834  | 0.991x  |
+| 256x256 p10 |  3.964 ms      |  3.939  | 0.996x  |
+| 512x512 p6  | 63.816 ms      | 63.919  | 1.003x  |
+| 512x512 p10 | 17.012 ms      | 16.967  | 1.000x  |
+
+Null. Two full-frame triple clones per frame is ~0.8 MB of memcpy at 512x512,
+which does not register against a 17 ms encode. They are `pub` fields consumed
+by 9 in-tree examples and one integration test (`svtav1/tests/real_encode.rs`),
+so gating them behind a builder flag would be a public-API change and a
+10-site refactor **for no measured gain**. Not done, deliberately.
+
+## What to do instead
+
+Attack the CDEF cost bit-identically, by making the filter faster. That is the
+4-wide chroma NEON kernel landed in this series: 1.056x whole-encoder at
+512x512 p10/p13, with all 120 byte-identity cells unchanged.
