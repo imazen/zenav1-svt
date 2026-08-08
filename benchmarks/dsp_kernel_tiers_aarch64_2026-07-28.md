@@ -1,3 +1,30 @@
+> **SUPERSEDED IN PART — 2026-08-07.** Read this note before acting on anything
+> below. The 2026-08-07 aarch64 DSP series (branch `perf/dsp-gap-2026-08-07`,
+> record `rust/benchmarks/perf_gap_2026-08-07-postopt.md`) closed most of the
+> gaps this survey scoped, and one of its central recommendations turned out to
+> be wrong:
+>
+> * **"The transforms: measured, scoped, NOT ported"** (the last section) — now
+>   PORTED, as real `[int32x4_t; 2]` intrinsics. The `[i32; 8]`
+>   plus-autovectorisation shortcut this survey proposed WAS implemented in the
+>   interim and **does not pay above the smallest sizes** (inverse 16x16
+>   1.2 -> 1.7 us, 32x32 5.1 -> 8.6 us vs scalar), which is why
+>   `NEON_INV_MAX_DIM` sat at 8. With real intrinsics the tier wins at every
+>   dimension by 3x-10x. Do not re-attempt the autovectorisation route.
+> * Also since ported: Wiener `compute_stats` (rewritten as dot products, 4-6x),
+>   the nz-map context kernel, `txb_init_levels`' fill, the 4-wide chroma CDEF
+>   filter, and new residual / recon-add / coefficient-distortion kernels.
+> * Whole-encoder effect: port/C wall-clock slope ratio 7.0-8.0x -> 3.5-4.9x;
+>   the port is 1.60x-2.23x faster than its pre-change self and now BEATS C at
+>   32x32 for presets 6, 10 and 13.
+> * Measured negatives recorded alongside: `benchmarks/alloc_traffic_null_2026-08-07.meta`
+>   (allocator traffic is a null, and hoisting compute_stats' row loop is a
+>   regression) and `benchmarks/recon_lazy_refuted_2026-08-07.meta` (deblock and
+>   CDEF *application* both feed the bitstream — they cannot be made lazy at
+>   preset <= 10).
+> * Its Finding 3 note — "on ARM the C encoder dispatches its own NEON kernels,
+>   so ARM parity should ultimately be pinned against *those*" — is still open.
+
 # DSP kernels on aarch64: the NEON tier was never implemented — 2026-07-28
 
 > **Re-verified at HEAD 2026-08-07 — read
