@@ -135,16 +135,42 @@ same way and it saw nothing. That is why the new test uses an outside oracle.
 `#![forbid(unsafe_code)]` proven active, not read: a planted `unsafe { }` in
 this file fails the build with `error: usage of an 'unsafe' block`.
 
-## 5. NOT MEASURED — the wall cost of the fix, and the perf gap
+## 5. The wall cost of the fix — MEASURED (null), and the gap — NOT re-measured
 
-**The NEON witness's cost is NOT MEASURED.** It adds 3 instructions per 4 lanes
-(`vqsubq_s32`, `veorq_u32`, `vorrq_u32`) to a kernel family the 2026-07
-re-profile put at 11.47 % of preset-6 self time. On a wide out-of-order core a
-loop already carrying 2 loads + 1 sub + 2 `vmlal` may absorb them for free —
-or may not. Nobody has run the A/B.
+**The NEON witness costs nothing detectable at n=9.** It adds 3 instructions
+per 4 lanes (`vqsubq_s32`, `veorq_u32`, `vorrq_u32`) to a kernel family the
+2026-07 re-profile put at 11.47 % of preset-6 self time. `tools/perf_ab.sh`,
+witness-removed vs witness, 9 interleaved paired rounds per cell, order
+randomised, NEITHER SIDE NICED, all 9 cells byte-identical
+(`sse_i32_witness_ab_2026-08-11.{tsv,raw.tsv}`):
 
-**The port-vs-C gap was NOT re-measured on the fixed build either.** The
-standing numbers stay the 2026-08-11 ones (`perf_gap_2026-08-11.tsv`: slope
+| cell | base ms (min..max) | cand ms (min..max) | median ratio |
+|---|---|---|---|
+| 64 p2 | 30.783 .. 31.666 | 30.700 .. 31.714 | 1.0011 |
+| 64 p6 | 0.767 .. 0.802 | 0.758 .. 0.790 | 0.9950 |
+| 64 p10 | 0.184 .. 0.196 | 0.183 .. 0.189 | 0.9780 |
+| 256 p2 | 300.19 .. 303.79 | 299.98 .. 304.80 | 1.0015 |
+| 256 p6 | 13.153 .. 13.441 | 13.105 .. 13.525 | 1.0000 |
+| 256 p10 | 1.871 .. 1.929 | 1.851 .. 2.009 | 1.0013 |
+| 512 p2 | 681.21 .. 685.39 | 678.98 .. 687.06 | 0.9977 |
+| 512 p6 | 41.629 .. 42.707 | 41.223 .. 42.327 | 0.9863 |
+| 512 p10 | 8.383 .. 8.688 | 8.337 .. 8.695 | 0.9963 |
+
+Median of the cell ratios 0.9977, range 0.978 .. 1.0015, and **every cell's
+min/max bands OVERLAP between the arms** — including the 0.978 at 64 p10,
+which is a 0.0012 ms difference on a 0.19 ms encode. This is a null, not a win.
+
+**TAG — the box was NOT quiet.** The neighbouring agent's timed campaign
+(`bench_a0rows`, `bench_a0rect`, 100 % CPU) resumed part-way through this run,
+and `mds_stores` spiked to 109 %. It was idle for the 60 s preceding the
+launch and this host has no `measlock`. Paired ratios survive that; absolutes
+do not — read the ms columns as shape only. Load also widens the noise, so
+this bounds the witness's cost loosely rather than proving it is exactly zero:
+a sub-1 % real cost could hide inside these bands. Re-run on a quiet box if a
+1 % claim ever depends on it.
+
+**The port-vs-C gap was NOT re-measured on the fixed build.** The standing
+numbers stay the 2026-08-11 ones (`perf_gap_2026-08-11.tsv`: slope
 ratio p2 4.12x, p6 3.52x, p10 3.53x, p13 3.51x). They were taken pre-fix; since
 the fix is byte-identical they are still comparing the same output, but they do
 not include the witness's cost.

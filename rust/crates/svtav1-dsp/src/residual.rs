@@ -430,13 +430,13 @@ fn sse_i32_impl_v3(_token: Desktop64, a: &[i32], b: &[i32]) -> u64 {
 /// returns the exact scalar core. Fast path exact, slow path exact — no tier
 /// silently wrapping.
 ///
-/// **The witness's wall cost is NOT MEASURED.** It adds 3 instructions per 4
-/// lanes to a kernel the 2026-07 re-profile put at 11.47 % of preset-6 self
-/// time (with `residual_i32` and `recon_add_clamp`), so it could be free on a
-/// load-bound wide core or could show up. The A/B was not run because another
-/// agent held the box with a live timed campaign and this host has no
-/// `measlock`. Instrument: `cargo bench -p zenav1-svt-dsp --bench kernel_tiers`
-/// plus `tools/perf_gap_campaign.sh`, un-niced, on a quiet box.
+/// **The witness's wall cost measured NULL** — `tools/perf_ab.sh`,
+/// witness-removed vs witness, 9 interleaved paired rounds x 9 cells
+/// (64/256/512 x preset 2/6/10), median cell ratio 0.9977 with every arm's
+/// min/max band overlapping and all 9 cells byte-identical. Tagged: the box
+/// was not quiet (a neighbouring agent's campaign resumed mid-run), so this
+/// bounds the cost loosely rather than proving zero — a sub-1 % cost could
+/// hide in the bands. `benchmarks/sse_i32_witness_ab_2026-08-11.tsv`.
 ///
 /// Re-association: the scalar adds the squares left to right into one u64; this
 /// adds them into four independent i64 lanes and sums the lanes at the end.
