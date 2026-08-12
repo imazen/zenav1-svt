@@ -23,6 +23,27 @@ systematic first-divergence — `use_128x128_superblock` C=1 vs port=0
 synthetic matrix is ≤240p so 64-SB everywhere). Tracked as task #91;
 `benchmarks/real_image_identity_p01_2026-07-16.tsv` is the baseline.
 
+**2026-08-11 — the OPEN divergence class is PARTIAL SUPERBLOCKS ON REAL
+CONTENT (issue #15), and its first suspect is eliminated.** 648 cells, 581
+identical / 67 differ; every differing cell has an aligned extent that is not a
+multiple of 64, or true dims below the aligned extent. Smallest reproducer:
+`terminal` 96x88 preset 4 qp 33 (port 521 B vs C 523 B). The axis is ALIGNMENT,
+not size — aligned 1024 and 2048 are byte-identical on synthetic AND real
+content (`benchmarks/unaligned_real_identity_2026-08-11.meta`).
+
+- **ELIMINATED as a cause: `sse_i32`'s arithmetic width.** The kernel subtracted
+  in i32 where C subtracts in `int64_t`, which would have handed the RD search a
+  wrapped distortion exactly where a partial SB carries extreme padded
+  coefficients. Measured with a census build: **0 wraps in 59,088,480 elements**
+  over all 67 divergent cells plus 60 clean ones, max |difference| 788 against
+  an i32 ceiling of 2,147,483,647. The width was fixed anyway (it was a real
+  divergence from C's contract and a red test) and is byte-inert: 0 of those 648
+  cells moved. `benchmarks/sse_i32_width_2026-08-11.meta`.
+- **The natural next probe cannot run on the macOS box.** Per-symbol
+  localization needs `capture_c_trace`'s op trace, which needs `-Wl,--wrap`
+  (see WORKING-ON-THIS.md section 5). On Apple `ld64` the driver is byte-only.
+  #15 needs a GNU-ld host, or a decision-level bisect that compares bytes only.
+
 This document is the divergence map of the identity campaign. **2026-07-13
 update: the campaign's first byte-identical stream landed** — uniform 64x64
 CLI-qp 40 preset 13 prints `VERDICT: streams IDENTICAL` (exit 0): all 22

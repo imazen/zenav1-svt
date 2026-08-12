@@ -43,6 +43,25 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Fixed
 
+- **`sse_i32` subtracted coefficients in i32 where C subtracts in `int64_t`,
+  and panicked in debug where C's `uint64_t` wraps** (`svtav1-dsp`
+  `residual.rs`; C `svt_full_distortion_kernel32_bits_c`, `pic_operators.c:86`).
+  Three widths were Rust's rather than C's — the subtraction (`(x - y) as i64`),
+  the square, and the accumulator — and the accumulator is what left
+  `residual_recon_distortion_all_tiers_match_core` RED on `main`. All three now
+  match C in every build. The NEON arm cannot widen first (no i64xi64 multiply
+  exists to square an `int64x2_t`), so it keeps `vsubq_s32` and DETECTS a wrap
+  by comparing against `vqsubq_s32`, falling back to the exact scalar core;
+  fast path exact, slow path exact. New gate
+  `sse_i32_matches_c_widths_at_i32_extremes` checks every tier against an i128
+  oracle and asserts its own case set discriminates the two widths. **Byte-inert
+  on every grid** (byteid 168/168 with 0 cells moved, unaligned scan 648 cells
+  with 0 changed, partial_sb 146/146, decode grid 120/120, recon parity
+  432/432). Measured: the wrap is unreachable on a real encode — 0 in 59,088,480
+  elements, max |difference| 788 against an i32 ceiling of 2,147,483,647
+  (`benchmarks/sse_i32_width_2026-08-11.meta`), so this does NOT explain issue
+  #15, which stays open.
+
 - **Loop restoration walked a different unit grid than the one the search
   sized — an out-of-bounds panic on the public encode API** (issue #11,
   `restoration.rs:985`, `index out of bounds: the len is 2 but the index is 2`).
