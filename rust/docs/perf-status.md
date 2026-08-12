@@ -1,5 +1,54 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **CURRENT (2026-08-11, aarch64 / Apple M4 Pro — read this first).** Everything
+> below the "Results — 2026-07-20" heading is the **x86-64/AVX2 history** on
+> `dev-32gb`. The live numbers on the aarch64 box are:
+>
+> | preset | slope ratio port/C | was (2026-08-07) | 1024² cell ratio |
+> |---|---|---|---|
+> | p2 | 4.12x | 4.11x | 4.09 |
+> | p6 | 3.52x | 3.50x | 3.49 |
+> | p10 | **3.53x** | 4.85x | 3.46 |
+> | p13 | **3.51x** | 4.83x | 3.45 |
+>
+> The port is still FASTER than C at 32-64 px on the fast presets (0.76x/0.78x
+> at 64²) — its fixed per-frame cost is 0.86x C's. All 24 cells byte-identical.
+> `benchmarks/perf_gap_2026-08-11.{tsv,raw.tsv,meta}`.
+>
+> The p10/p13 step came from ONE change: the in-loop deblock and CDEF
+> *application* passes are now skipped when nothing reads the reconstruction
+> (`EncodePipeline::with_recon_output`, default off — C's API produces no recon
+> either). 1.35-1.39x whole-encode at p10/p13, 1.11-1.15x at p7, byte-inert at
+> preset >= 7 (0/90 cells) and deliberately still applied at preset <= 6, where
+> the CDEF and Wiener searches read the filtered pixels (13/36 cells change
+> there). `benchmarks/perf_postfilter_2026-08-11.meta`.
+>
+> **Where the remaining gap is** — `/usr/bin/sample`, 1 ms, 20 s steady state,
+> self time, 512² (percent of port self time):
+>
+> | stage | p10 | p6 |
+> |---|---|---|
+> | MD / leaf / partition driver | 24.2 % | 16.1 % |
+> | TRANSFORMS | 16.7 % | 16.6 % |
+> | ENTROPY / coeff | 15.9 % | 12.7 % |
+> | **alloc (malloc/free)** | **14.0 %** | 8.6 % |
+> | **libc mem (memmove/memset/bzero)** | **11.0 %** | 6.9 % |
+> | QUANT / RDOQ | 4.8 % | 4.9 % |
+> | INTRA PRED | 3.8 % | 2.7 % |
+> | LOOP RESTORATION | 0 % | 12.5 % |
+> | CDEF | 0 % | 9.3 % |
+>
+> **The #1 remaining lever at p10 is allocator + memcpy traffic: 25.0 % of self
+> time combined**, against C's ~0.1 % (C allocates nothing per block). It is
+> DIFFUSE, which is why the three 2026-08-07 scratch-hoist attempts measured
+> null (`alloc_traffic_null_2026-08-07.meta`): a call-graph attribution of the
+> mem-family leaves puts the largest single parent at 2.4 % of mem samples and
+> the rest spread over hundreds of sites, dominated by `BlockDecision`
+> clone/`drop_glue` and `encode_fixed_tree` (at p6 that one parent is 34.6 % of
+> mem samples). Fixing it is a data-layout change — pooling the per-block
+> decision's `Vec` members into an arena reused across the partition search —
+> not another hoist. Nothing smaller than that will move it.
+
 Measured baseline for **G4** (docs/ACCEPTANCE-CRITERIA.md → "Performance"): the
 port's per-frame still-image encode wall time against the real C reference,
 on the byte-identical envelope. This is the honest starting point of the
