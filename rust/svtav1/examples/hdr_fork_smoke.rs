@@ -51,7 +51,8 @@ fn run(mode: &str, qp: u8, preset: u8, out_prefix: &str) {
         RcConfig { mode: RcMode::Cqp, qp, ..RcConfig::default() },
         4,
         1,
-    );
+    )
+    .with_recon_output(true);
     p.chroma_420 = true;
     if mode == "fork" {
         p.hdr = HdrForkConfig::hdr_fork();

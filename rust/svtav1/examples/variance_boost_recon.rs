@@ -149,7 +149,8 @@ fn main() {
                         ..Default::default()
                     };
                     let mut p = EncodePipeline::new(w as u32, h as u32, speed, rc, 0, 1)
-                        .with_chroma_420(true);
+                        .with_chroma_420(true)
+                        .with_recon_output(true);
                     // MAINLINE mode (the default) + tune IQ: apply_tune_overrides
                     // turns variance boost on regardless of mode.
                     p.hdr.tune = svtav1_encoder::tune::TUNE_IQ;

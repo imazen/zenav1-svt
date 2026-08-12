@@ -1,0 +1,125 @@
+# Post-filter application is dead work at preset >= 7 — measured, gated, landed
+
+date: 2026-08-11
+host: Apple M4 Pro (8P + 4E), darwin 25.5.0, 12 logical cores
+config: 8-bit 4:2:0, still/allintra (hierarchical_levels=0, intra_period=1), CQP
+        qp 40, tiles 0/0, single-threaded, no `-C target-cpu=native`
+change: `EncodePipeline::with_recon_output(bool)` (default OFF) + the
+        `postfilter_consumed` gate in `encode_frame_420_core`
+
+## The claim
+
+On a still frame whose loop restoration is off — every preset >= 7, since
+`seq_tools_for_preset` sets Wiener level 0 there — nothing reads the deblocked
+and CDEF-filtered reconstruction. The bitstream is already written; the DPB is
+never read because every frame is a key frame at `intra_period <= 1`; the CDEF
+*search* (preset <= 6) is not running. The two apply passes exist purely to
+materialise `last_recon`. C does not do this work either: its preset-10 profile
+contains zero CDEF and zero loop-filter samples while emitting a byte-identical
+stream (`encode_gap_attribution_2026-08-07.md` §5).
+
+The 2026-08-07 pass ranked this #4 and then a follow-up REFUTED it
+(`recon_lazy_refuted_2026-08-07.meta`) — correctly, for the question it asked:
+gated off UNCONDITIONALLY, the passes change bytes on 13 of 36 preset-2/6 cells,
+and deleting the pre-CDEF snapshot panics the LR path. What that experiment did
+not separate is that ALL of its changed cells are preset <= 6. Split by preset,
+the answer flips for the fast half.
+
+## Byte-inertness (the gate)
+
+`tools/byteid_fingerprint.sh`, {64,128,256} x qp{20,40,55} x {gradient,uniform},
+same binary with and without the skip:
+
+| preset | cells whose OBU changed |
+|---|---|
+| 2 | 6/18 |
+| 6 | 7/18 |
+| 7 | **0/18** |
+| 8 | **0/18** |
+| 9 | **0/18** |
+| 10 | **0/18** |
+| 13 | **0/18** |
+
+The p2/p6 rows are the anti-vacuity witness: the same experiment that shows 0/90
+at presets 7..13 shows the passes ARE load-bearing below that, so the gate can
+fail and the preset split is real, not an artifact of a skip that never fired.
+
+Post-change verification on the landed code:
+- `tools/byteid_fingerprint.sh` full default grid (now 32..2048): **168/168
+  port == C** (`byteid_fingerprint_2026-08-11.tsv`).
+- `tools/decode_gate_grid.sh`: **120/120** aomdec + dav1d OK, 120/120
+  byte-identical to C.
+- `tools/partial_sb_gate.sh`: **146/146** byte-identical.
+- `tools/recon_parity.sh`: **432/432** — the opt-in path still produces the
+  decoder-exact recon (this gate now sets `with_recon_output(true)`, and its
+  s10 cases prove the flag re-enables the passes).
+- `cargo nextest run --workspace`: 1027/1028. The one failure,
+  `zenav1-svt-dsp residual::tests::residual_recon_distortion_all_tiers_match_core`,
+  is PRE-EXISTING on main (reproduced with these changes stashed) — see the note
+  at the end.
+
+## Wall clock
+
+`tools/perf_ab.sh`, 9 interleaved paired rounds per cell, order randomised per
+round, one untimed warmup per sample, NEITHER SIDE NICED, both arms the SAME
+binary (the candidate arm sets the skip through an env-gated wrapper, so there
+is no rebuild difference between arms). Every cell `ident=Y`.
+
+| size | preset | base ms | cand ms | ratio | speedup | [p25, p75] |
+|---|---|---|---|---|---|---|
+| 256 | 7 | 6.852 | 6.110 | 0.901 | 1.110x | [0.874, 0.906] |
+| 256 | 10 | 2.624 | 1.882 | 0.717 | **1.394x** | [0.714, 0.721] |
+| 256 | 13 | 2.628 | 1.907 | 0.720 | **1.389x** | [0.703, 0.729] |
+| 512 | 7 | 25.988 | 22.523 | 0.871 | 1.148x | [0.859, 0.874] |
+| 512 | 10 | 11.571 | 8.560 | 0.734 | **1.363x** | [0.720, 0.753] |
+| 512 | 13 | 11.538 | 8.489 | 0.743 | **1.347x** | [0.727, 0.750] |
+| 1024 | 7 | 82.671 | 71.319 | 0.868 | 1.152x | [0.855, 0.873] |
+| 1024 | 10 | 42.984 | 31.074 | 0.724 | **1.380x** | [0.713, 0.739] |
+| 1024 | 13 | 42.968 | 31.089 | 0.723 | **1.384x** | [0.711, 0.727] |
+
+**Identity control** (the same base binary against itself, same grid, same 9
+rounds, run immediately after): ratios **0.992 to 1.018**, i.e. a +-2 % band.
+Every cell above is far outside it.
+
+Box state: NOT idle. Another agent held one core at 90-100 % (a `bench_a*`
+grid in a different repo) for the whole run, so the absolute ms are inflated;
+the paired interleaved ratios and the control band are the metric, and both
+arms saw the same load. Preset 7 gains less than 10/13 because CDEF's *search*
+is off at 7 but the frame still carries more MD work per pixel, so the fixed
+filter cost is a smaller share.
+
+Why p7 < p10/p13: identical absolute saving, larger denominator.
+
+## Where it came from (profile)
+
+`/usr/bin/sample`, 1 ms, 20 s, steady-state warmup loop, self time, port at
+512x512 preset 10 before the change:
+
+| leaf | self % |
+|---|---|
+| `cdef::cdef_filter_block` | 11.10 |
+| `encoder::cdef::filter_and_count` | 3.89 |
+| `cdef::cdef_find_dir` | 3.64 |
+| `encoder::cdef::apply_cdef_frame` | 2.34 |
+| **CDEF total** | **20.97** |
+| `_xzm_free` + `_xzm_xzone_malloc` | 6.46 |
+| `_platform_memmove` + `_platform_memset` | 7.24 |
+
+The measured 1.38x is consistent with removing the CDEF cluster plus the three
+whole-frame recon clones (`last_recon`, `last_recon_unfiltered`,
+`last_recon_pre_cdef`) that the same change stops making.
+
+## Not fixed, pre-existing: `sse_i32` overflows in the overflow-checked profile
+
+`residual_recon_distortion_all_tiers_match_core` panics at
+`crates/svtav1-dsp/src/residual.rs:249` ("attempt to add with overflow"), on
+main, with this change stashed. Root cause: the C oracle
+(`svt_full_distortion_kernel32_bits_c`, pic_operators.c:86) computes
+`(int64_t)coeff[i] - recon_coeff[i]` — the cast promotes the subtraction to
+**64-bit** — while both port arms subtract in 32 bits (`(x - y) as i64` in
+`sse_i32_core`, `vsubq_s32` in the NEON arm). The test feeds full-range i32, so
+the scalar arm traps in the test profile; in release both port arms wrap
+identically, so the encoder is self-consistent and real transform coefficients
+cannot reach the range. Fixing it exactly means widening the NEON subtract too
+(there is no i64x2 multiply in NEON), which is a kernel change with its own
+byte gate — deliberately NOT bundled into this commit.

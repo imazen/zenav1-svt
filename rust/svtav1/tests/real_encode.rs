@@ -504,7 +504,8 @@ fn quality_vs_bitrate_monotonic() {
             rc,
             0,
             1,
-        );
+        )
+        .with_recon_output(true);
         // The probe exists to capture decoder-exact recon for PSNR; its
         // stream differs from the AvifEncoder one only in SH color bytes
         // (AvifEncoder signals explicit CICP; the pipeline default is

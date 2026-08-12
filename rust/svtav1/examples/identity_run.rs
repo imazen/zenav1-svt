@@ -465,7 +465,11 @@ fn main() {
         .with_tile_rows_log2(tile_rows_log2)
         .with_tile_cols_log2(tile_cols_log2)
         .with_bit_depth(bd)
-        .with_sb_size(sb_size);
+        .with_sb_size(sb_size)
+        // The recon dumps below (SVTAV1_RECON_BIN and friends) read
+        // last_recon*, which is opt-in since the post-filter passes that
+        // produce it are byte-inert at preset >= 7.
+        .with_recon_output(true);
     // NOTE: the warning goes to STDOUT, never stderr — identity_diff.sh
     // captures this process's stderr verbatim into `rs.trace` (the symtrace
     // op stream the differ parses), so any stray stderr line corrupts every

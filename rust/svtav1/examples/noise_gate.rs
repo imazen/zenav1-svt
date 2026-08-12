@@ -41,7 +41,8 @@ fn main() {
         let mut p = EncodePipeline::new(
             w, h, 6,
             RcConfig { mode: RcMode::Cqp, qp, ..RcConfig::default() }, 4, 1,
-        );
+        )
+        .with_recon_output(true);
         p.chroma_420 = true;
         p.hdr = HdrForkConfig::hdr_fork();
         p.hdr.noise_strength = strength;

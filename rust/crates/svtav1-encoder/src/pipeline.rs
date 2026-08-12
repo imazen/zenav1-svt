@@ -99,6 +99,9 @@ pub struct EncodePipeline {
     hbd_source: Option<HbdSource>,
     /// CICP color description.
     pub color_description: svtav1_entropy::obu::ColorDescription,
+    /// Produce the decoder-exact reconstruction (`last_recon*`) for this
+    /// pipeline. Off by default; see [`Self::with_recon_output`].
+    pub(crate) recon_output: bool,
     /// Opt-in 4:2:0 chroma mode (default false = monochrome).
     ///
     /// When set, frames are encoded via [`Self::encode_frame_420`] with
@@ -112,6 +115,13 @@ pub struct EncodePipeline {
     /// U/V empty in mono mode). This is what a conforming decoder must
     /// reproduce BIT-EXACTLY — the recon-parity gate compares it against
     /// aomdec's output.
+    ///
+    /// **`None` unless [`Self::with_recon_output`] was set** (default off,
+    /// matching the C reference, whose API also produces no reconstruction
+    /// unless the caller asks — `SvtAv1EncApp -o recon`). Materialising it
+    /// is not free: on a still frame with loop restoration off (preset >= 7)
+    /// the deblock and CDEF *application* passes exist ONLY to produce it,
+    /// and they cost 27-39 % of the encode. See `with_recon_output`.
     pub last_recon: Option<(Vec<u8>, Vec<u8>, Vec<u8>)>,
     /// The same reconstruction BEFORE the in-loop deblocking filter was
     /// applied (equals `last_recon` when the picked levels are all zero).
@@ -332,6 +342,7 @@ impl EncodePipeline {
             // with_color_description.
             color_description: svtav1_entropy::obu::ColorDescription::default(),
             chroma_420: false,
+            recon_output: false,
             last_recon: None,
             last_recon_unfiltered: None,
             last_recon_pre_cdef: None,
@@ -396,6 +407,35 @@ impl EncodePipeline {
         } else {
             (want, false)
         }
+    }
+
+    /// Produce the decoder-exact reconstruction in `last_recon` /
+    /// `last_recon_unfiltered` / `last_recon_pre_cdef` (default: OFF).
+    ///
+    /// WHY IT IS OFF BY DEFAULT (measured 2026-08-11, Apple M4 Pro): the
+    /// reconstruction is not an input to the bitstream on a still frame whose
+    /// loop restoration is disabled — which is every preset >= 7, since
+    /// `seq_tools_for_preset` turns Wiener off there — so the in-loop deblock
+    /// and CDEF *application* passes run purely to materialise it. Skipping
+    /// them is byte-inert (90/90 cells of {64,128,256} x p{7,8,9,10,13} x
+    /// qp{20,40,55} x {gradient,uniform} unchanged) and buys **1.36-1.39x at
+    /// p10/p13 and 1.11-1.15x at p7** on the whole encode (n=9 interleaved
+    /// paired rounds/cell, identity control band 0.99-1.02). At preset <= 6
+    /// the passes stay on regardless: the CDEF search and the Wiener search
+    /// both read the filtered recon, so they feed the bitstream there — and
+    /// the same experiment shows 13/36 of those cells change bytes when the
+    /// passes are removed.
+    ///
+    /// The C reference behaves the same way: `svt_av1_enc_get_packet` yields
+    /// no reconstruction, and `SvtAv1EncApp` only produces one under `-o`.
+    /// Its profile at preset 10 contains zero CDEF and zero loop-filter
+    /// samples while emitting byte-identical output.
+    ///
+    /// Turn it ON for recon parity, PSNR/evidence tooling, or anything that
+    /// reads the `last_recon*` fields — they are `None` otherwise.
+    pub fn with_recon_output(mut self, enabled: bool) -> Self {
+        self.recon_output = enabled;
+        self
     }
 
     /// Pin the superblock size instead of deriving it (`SVTAV1_SB`).
@@ -2847,9 +2887,33 @@ impl EncodePipeline {
         } else {
             crate::deblock::LfLevels::default()
         };
-        self.last_recon_unfiltered = Some((recon.clone(), u_recon.clone(), v_recon.clone()));
+        // The in-loop post-filters (deblock -> CDEF) are applied here for two
+        // possible consumers: (1) an in-frame search that measures distortion
+        // on the filtered pixels — the CDEF search and the Wiener loop-
+        // restoration search, both preset <= 6 — or the LR stripe-boundary
+        // save; (2) the caller, via `last_recon*` / a later frame predicting
+        // from this recon through the DPB. When NONE of those exist the
+        // filtered pixels are dead: nothing reads them and the bitstream is
+        // already written. C behaves identically (its preset-10 profile
+        // contains zero CDEF/LPF samples for byte-identical output).
+        //
+        // Byte-inertness is measured, not assumed: skipping the two apply
+        // passes changed 0/90 cells at presets 7..13 and 13/36 at presets 2/6
+        // (tools/byteid_fingerprint.sh, {64,128,256} x qp{20,40,55} x
+        // {gradient,uniform}) — see benchmarks/perf_postfilter_2026-08-11.meta.
+        let postfilter_consumed = seq_tools.enable_restoration
+            || crate::cdef::allintra_preset_uses_cdef_search(self.speed_config.preset)
+            || self.recon_output
+            // A later frame may predict from this recon via the DPB. Only an
+            // all-key sequence (`intra_period <= 1`) provably has no such
+            // reader — every `self.dpb.get(..)` site is gated on `!is_key`.
+            || !is_single_frame;
+        if self.recon_output {
+            self.last_recon_unfiltered =
+                Some((recon.clone(), u_recon.clone(), v_recon.clone()));
+        }
         if let Some((y10, u10, v10)) = recon10.as_mut() {
-            if lf_levels.any() {
+            if lf_levels.any() && postfilter_consumed {
                 crate::deblock::apply_deblock_frame_hbd(
                     y10,
                     u10,
@@ -2864,7 +2928,7 @@ impl EncodePipeline {
                 );
             }
         }
-        if lf_levels.any() {
+        if lf_levels.any() && postfilter_consumed {
             crate::deblock::apply_deblock_frame(
                 &mut recon,
                 &mut u_recon,
@@ -3046,23 +3110,30 @@ impl EncodePipeline {
             tile_data = tile_cdef;
             tile_size_bytes_minus_1 = tsb_c;
         }
-        self.last_recon_pre_cdef = Some((recon.clone(), u_recon.clone(), v_recon.clone()));
-        self.last_cdef_stats = crate::cdef::apply_cdef_frame(
-            &mut recon,
-            &mut u_recon,
-            &mut v_recon,
-            w,
-            h,
-            chroma.is_some(),
-            &deblock_geom,
-            &cdef_params,
-        );
+        // The pre-CDEF snapshot is load-bearing when LR is on (its stripe
+        // boundaries are saved from it below), and an evidence aid otherwise.
+        if seq_tools.enable_restoration || self.recon_output {
+            self.last_recon_pre_cdef =
+                Some((recon.clone(), u_recon.clone(), v_recon.clone()));
+        }
+        if postfilter_consumed {
+            self.last_cdef_stats = crate::cdef::apply_cdef_frame(
+                &mut recon,
+                &mut u_recon,
+                &mut v_recon,
+                w,
+                h,
+                chroma.is_some(),
+                &deblock_geom,
+                &cdef_params,
+            );
+        }
         // bd10: apply CDEF to the 10-bit canvas too. Not for output — the u8
         // chain above still produces that — but because the Wiener LR search
         // reads the POST-CDEF recon, and at 10 bits that must be the 10-bit
         // one (C: rest_process runs after cdef_process on the same 16-bit
         // recon picture CDEF just filtered in place).
-        if let Some((y10, u10, v10)) = recon10.as_mut() {
+        if let (Some((y10, u10, v10)), true) = (recon10.as_mut(), postfilter_consumed) {
             crate::cdef::apply_cdef_frame_hbd(
                 y10,
                 u10,
@@ -3519,7 +3590,9 @@ impl EncodePipeline {
                 v_recon = v_up;
             }
         }
-        self.last_recon = Some((recon.clone(), u_recon.clone(), v_recon.clone()));
+        if self.recon_output {
+            self.last_recon = Some((recon.clone(), u_recon.clone(), v_recon.clone()));
+        }
         let ref_frame = ReferenceFrame {
             y_plane: recon,
             width: self.width,

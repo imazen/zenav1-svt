@@ -138,7 +138,8 @@ fn main() {
                             ..Default::default()
                         };
                         let mut p = EncodePipeline::new(enc as u32, enc as u32, speed, rc, 0, 1)
-                            .with_chroma_420(chroma);
+                            .with_chroma_420(chroma)
+                            .with_recon_output(true);
                         let (u, v);
                         let obu = if chroma {
                             u = (0..(enc / 2) * (enc / 2))

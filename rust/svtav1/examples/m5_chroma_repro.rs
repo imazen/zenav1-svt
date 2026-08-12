@@ -48,7 +48,9 @@ fn main() {
         qp: 20,
         ..Default::default()
     };
-    let mut p = EncodePipeline::new(enc as u32, enc as u32, 5, rc, 0, 1).with_chroma_420(true);
+    let mut p = EncodePipeline::new(enc as u32, enc as u32, 5, rc, 0, 1)
+        .with_chroma_420(true)
+        .with_recon_output(true);
     let obu = p.encode_frame_420(&y, &u, &v, enc);
     let (_ry, ru, rv) = p.last_recon.clone().expect("recon");
     let (_uy, uu, _uv2) = p.last_recon_unfiltered.clone().expect("unfiltered");

@@ -14,7 +14,7 @@ fn main() {
     let v: Vec<u8> = (0..cwh).map(|i| ((i%96)+64) as u8).collect();
     for tune in [0u8, 1, 2, 3, 4, 5] {
         for qp in [20u8, 40, 55] {
-            let mut p = EncodePipeline::new(w,h,preset, RcConfig{mode:RcMode::Cqp,qp,..RcConfig::default()},4,1);
+            let mut p = EncodePipeline::new(w,h,preset, RcConfig{mode:RcMode::Cqp,qp,..RcConfig::default()},4,1).with_recon_output(true);
             p.chroma_420=true;
             p.hdr=HdrForkConfig::hdr_fork();
             p.hdr.tune=tune;
