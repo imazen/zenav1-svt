@@ -1,0 +1,11 @@
+# perf_gap fit
+date: 2026-08-12T02:41:17Z
+commit: bdff3700f
+host: mac (12 logical cores)
+grid: content=gradient sizes=[32 64 128 256 512 1024] presets=[2 6 10 13] qp=40 rounds=9 warmup=1
+harness: interleaved paired, randomized per-round order; no target-cpu=native; NEITHER SIDE NICED; setup excluded both sides
+fits (ms = a + b*pixels):
+  p2   port: a=80.0128 ms  b=1929.67 ms/MP   |   C: a=24.0551 ms  b=468.46 ms/MP   |   slope-ratio=4.12x  intercept-ratio=3.33x
+  p6   port: a=2.1593 ms  b=133.73 ms/MP   |   C: a=0.9907 ms  b=38.03 ms/MP   |   slope-ratio=3.52x  intercept-ratio=2.18x
+  p10  port: a=0.1958 ms  b=29.10 ms/MP   |   C: a=0.2268 ms  b=8.25 ms/MP   |   slope-ratio=3.53x  intercept-ratio=0.86x
+  p13  port: a=0.2031 ms  b=28.97 ms/MP   |   C: a=0.2307 ms  b=8.25 ms/MP   |   slope-ratio=3.51x  intercept-ratio=0.88x
