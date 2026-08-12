@@ -18,7 +18,13 @@ RS_ROOT=$(cd "$HERE/.." && pwd)
 cd "$RS_ROOT"
 
 OUT="${1:?usage: byteid_fingerprint.sh <out.tsv>}"
-read -r -a SIZES <<<"${BID_SIZES:-32 64 128 256 512}"
+# 1024 and 2048 added 2026-08-11 (issue #15 action 1). Both are byte-identical
+# to C on synthetic AND real content — the divergence #15 saw is an ALIGNMENT
+# effect, not a size one (see tools/unaligned_identity_scan.sh and
+# benchmarks/unaligned_real_identity_2026-08-11.meta). Keeping them here is what
+# makes the perf gate's port-vs-port fingerprint cover production sizes; the
+# whole grid at preset 2 / 2048 is ~6 s per cell, the rest are sub-second.
+read -r -a SIZES <<<"${BID_SIZES:-32 64 128 256 512 1024 2048}"
 read -r -a PRESETS <<<"${BID_PRESETS:-2 6 10 13}"
 read -r -a QPS <<<"${BID_QPS:-20 40 55}"
 read -r -a CONTENTS <<<"${BID_CONTENT:-gradient uniform}"

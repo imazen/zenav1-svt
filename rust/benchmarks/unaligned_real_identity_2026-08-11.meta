@@ -1,0 +1,87 @@
+# issue #15 settlement — port-vs-C byte identity: the axis is ALIGNMENT, not size
+
+host: Apple M-series (darwin 25.5.0), commit at run time: see the TSV header
+oracle: tools/perf_c_encode (C v4.2.0 in-tree static lib, matched still/AVIF CQP
+        config: --rc 0 --aq-mode 0 --lp 1 --avif 1, 8-bit 4:2:0, single tile,
+        30 fps) driven on the exact .yuv identity_run wrote — one input stream.
+tool:   tools/unaligned_identity_scan.sh (this record's producer)
+
+## 1. The size hypothesis in #15 is REFUTED
+
+ALIGNED square sizes are byte-identical to C well past 512:
+
+| grid | cells | port == C |
+|---|---|---|
+| synthetic gradient, 256/512/640/768/1024, preset 8 qp 40 | 5 | 5/5 |
+| real photo (clic2025 crop), sizes 256/512/1024/2048 x presets {2,6,8,13} x qp {20,40,55} | 48 | 48/48 |
+| real screen+photo (gui, graph, city-lossless), 256/512/1024 x presets {2,6,8,13} x qp {20,40,55} | 108 | 96/108 |
+
+The 12 screen/photo misses are ALL preset 2 (gui at 512 and 1024, graph at 512,
+city-lossless at 1024 — 3 qps each), first differing byte 12 (frame header
+onward). That is the known M2-M5 real-content class in docs/IDENTITY-STATUS.md
+("30 of 31 diverging cells have different byte counts … a recon cascade"), and
+it is a PRESET effect that needs enough content to fire, not a size threshold:
+presets 6, 8 and 13 are 81/81 identical at these same sizes, including 2048.
+
+## 2. What DOES diverge: partial superblocks on real content
+
+648 cells (6 images x 6 dims x 6 presets x 3 qps), 581 identical / 67 differ.
+Every differing cell has an ALIGNED extent that is not a multiple of 64, or
+true dims below the aligned extent (a straddle):
+
+| requested | aligned | partial-SB shape | differ |
+|---|---|---|---|
+| 64x64 | 64x64 | none (control) | 0/108 |
+| 256x160 | 256x160 | 32-tall bottom SB | 0/108 |
+| 188x256 | 192x256 | straddle (true 188 < aligned 192) | 3/108 |
+| 128x136 | 128x136 | 8-tall bottom SB | 11/108 |
+| 96x88 | 96x88 | 24-tall bottom SB | 19/108 |
+| 256x166 | 256x168 | 40-tall bottom SB + straddle | 34/108 |
+
+By preset: p2 17, p4 17, p6 10, p8 7, p10 8, p13 8 (of 108 each) — so this is
+NOT confined to the <=M6 NSQ path; presets 8-13 diverge too.
+By content: graph 35, terminal 12, clic photo 11, gui 4, city 3, flowers 2 —
+screen content is the worst but no class is clean.
+
+Every port stream in the drill set DECODES under aomdec (checked on 48 cells):
+this is an RD divergence, not corruption.
+
+Smallest reproducer found: 96x88 preset 4 qp 33 on a real screenshot —
+port 403 B vs C 392 B, 24 differing bytes, first at offset 11 (frame header).
+The SAME dims on synthetic `gradient` byte-match, which is why
+tools/partial_sb_gate.sh (gradient-only, <= 200x120) never saw it.
+
+## 3. Why the existing gates missed it
+
+- tools/real_image_matrix.sh runs real photos but calls `png_dims_aligned`,
+  which rounds every dimension UP to a multiple of 64. Its comment claimed
+  "the pipeline requires 64-aligned encode dims" — that is false (partial_sb_gate
+  encodes 65x63), and the rounding is what hid this class.
+- tools/partial_sb_gate.sh runs partial superblocks but only synthetic
+  gradient/uniform content at <= 200x120.
+- tools/byteid_fingerprint.sh (the perf campaign's identity gate) swept square
+  64-aligned sizes 32..512 only.
+
+## 4. A harness trap found en route (NOT the cause of #15's numbers)
+
+Comparing the port against `SvtAv1EncApp` at the App's DEFAULT frame rate
+instead of the port's 30 fps moves `seq_level_idx` (5 -> 8) at 512 and 1024,
+because C derives the level from the luma-sample RATE. That is a 2-byte
+sequence-header difference at offset 4 in every cell of those sizes and none at
+256 or 2048 — which mimics "identity breaks above 512" exactly. Measured:
+48-cell grid, App at 60000/1000 differs by 2 bytes at 512 and 1024, agrees at
+256 and 2048; App at 30/1 or 25/1 is byte-identical to the port everywhere.
+The encode_rd harness was NOT affected (its y4m carries F25:1, and its own
+artifacts show first-diff at byte 12, never 4) — but any future cross-encoder
+check must match fps, not just dimensions.
+
+## 5. Replay of the encode_rd campaign's own artifacts
+
+The 864 artifacts of `encode_rd_validate_2026-08-08` were re-read from
+~/tmp/encrd/artifacts and compared payload-to-payload (IVF stripped):
+**173 identical, 43 differ.** The differing cells are 097cb426 at 754x1024,
+codec_wiki at 256x166 and 1024x666, graph at 796x480 — every one of them an
+unaligned dimension. Thirteen of the 43 are at the "256" size tag, so #15's
+"13/13 identical at 256, 0/13 at 1024" is a property of the two particular
+prep dimensions it sampled (188x256 happens to be nearly clean, 754x1024 is
+not), not of size.

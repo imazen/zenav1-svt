@@ -93,14 +93,25 @@ DECODE_DIFF_BIN="$RS_ROOT/tools/decode_diff/target/release/decode-diff"
     exit 2
 }
 
-# Round a PNG's dimension up to the next multiple of 64 (the pipeline requires
-# 64-aligned encode dims; identity_run edge-replicates the image into that box).
+# Round a PNG's dimension up to a multiple of RIM_ALIGN (identity_run
+# edge-replicates the image into that box).
+#
+# CORRECTION 2026-08-11 (issue #15): the old comment here said "the pipeline
+# requires 64-aligned encode dims". It does not — partial_sb_gate.sh encodes
+# 65x63 — and that false premise is why this matrix, the ONLY real-content
+# identity gate, has never once tested a partial superblock. Crossing real
+# content with unaligned dims finds divergences at every preset:
+# tools/unaligned_identity_scan.sh, 67 of 648 cells, e.g. 96x88 p4 q33 at
+# 403 B (port) vs 392 B (C) where the same dims on `gradient` byte-match.
+# RIM_ALIGN=1 runs each image at its TRUE dimensions; 64 (the default) keeps
+# this scoreboard's historical baseline comparable.
 png_dims_aligned() {
-  python3 - "$1" <<'PY'
+  python3 - "$1" "${RIM_ALIGN:-64}" <<'PY'
 import struct, sys
 d = open(sys.argv[1], "rb").read(24)
 w, h = struct.unpack(">II", d[16:24])
-up = lambda x: (x + 63) // 64 * 64
+a = max(1, int(sys.argv[2]))
+up = lambda x: (x + a - 1) // a * a
 print(up(w), up(h))
 PY
 }
