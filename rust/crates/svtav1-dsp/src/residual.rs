@@ -9,8 +9,13 @@
 //! All three are pure element-wise maps or a sum of independent products, so
 //! lanes carry no cross-element dependency and the SIMD arms are **bit-identical
 //! to the scalar reference by construction** — the only ordering that changes is
-//! the addition order inside [`sse_i32`]'s accumulator, and that is exact
-//! integer addition (see its doc for the overflow bound).
+//! the addition order inside [`sse_i32`]'s accumulator, and two's-complement
+//! addition is associative even when it wraps.
+//!
+//! The distortion kernels reproduce C's ARITHMETIC WIDTHS, not Rust's defaults:
+//! C subtracts coefficients in `int64_t` and accumulates in a wrapping
+//! `uint64_t`. See [`sse_i32_core`] for the three places that matters and what
+//! was measured about each.
 
 #[allow(unused_imports)]
 use archmage::prelude::*;
@@ -238,15 +243,162 @@ fn recon_add_clamp_impl_neon(
 /// (`svt_aom_picture_full_distortion32_bits_single`). Pass `b` empty-equivalent
 /// by calling [`sq_sum_i32`] when there is no subtrahend.
 pub fn sse_i32(a: &[i32], b: &[i32]) -> u64 {
+    #[cfg(feature = "__ovf_probe")]
+    ovf_probe::observe(a, b);
     incant!(sse_i32_impl(a, b), [v3, neon, scalar])
 }
 
+/// TEMPORARY census instrument (`--features __ovf_probe`), 2026-08-11.
+///
+/// Answers one question with a measurement instead of an argument: does the
+/// i32-domain subtraction that [`sse_i32`] used to perform (before it was
+/// widened to match C's `(int64_t)coeff[i] - recon_coeff[i]`,
+/// `pic_operators.c:86`) ever WRAP on a real encode, and therefore ever feed
+/// the RD search a different distortion than C's?
+///
+/// It re-walks every `(a, b)` pair the encoder scores and counts, per element,
+/// the wrapping i32 difference against the exact widened one. Zero cost when
+/// the feature is off (the call is `cfg`-ed out entirely).
+#[cfg(feature = "__ovf_probe")]
+pub mod ovf_probe {
+    use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
+
+    pub static CALLS: AtomicU64 = AtomicU64::new(0);
+    pub static ELEMS: AtomicU64 = AtomicU64::new(0);
+    /// Elements where `x.wrapping_sub(y) != (x as i64) - (y as i64)`.
+    pub static DIFF_WRAPS: AtomicU64 = AtomicU64::new(0);
+    /// Elements where the resulting SQUARE differs (a wrapped difference whose
+    /// magnitude is unchanged, e.g. exactly `2^31`, still squares the same).
+    pub static TERM_DIFFERS: AtomicU64 = AtomicU64::new(0);
+    /// Calls whose whole returned distortion differs between the two forms —
+    /// the only divergence that can change an RD decision.
+    pub static CALL_DIFFERS: AtomicU64 = AtomicU64::new(0);
+    /// Calls where the exact u64 accumulator wraps (C's `uint64_t` does too,
+    /// so this is not by itself a divergence from C — it is a range fact).
+    pub static ACC_WRAPS: AtomicU64 = AtomicU64::new(0);
+    pub static MAX_ABS_COEFF: AtomicU64 = AtomicU64::new(0);
+    /// Max |exact difference| seen. i32-domain subtraction wraps iff this
+    /// exceeds `i32::MAX` (2_147_483_647).
+    pub static MAX_ABS_DIFF: AtomicU64 = AtomicU64::new(0);
+
+    fn bump_max(cell: &AtomicU64, v: u64) {
+        let mut cur = cell.load(Relaxed);
+        while v > cur {
+            match cell.compare_exchange_weak(cur, v, Relaxed, Relaxed) {
+                Ok(_) => return,
+                Err(c) => cur = c,
+            }
+        }
+    }
+
+    pub fn observe(a: &[i32], b: &[i32]) {
+        CALLS.fetch_add(1, Relaxed);
+        let mut n = 0u64;
+        let mut wraps = 0u64;
+        let mut terms = 0u64;
+        let (mut exact, mut wrapped) = (0u64, 0u64);
+        let mut acc_wrapped = false;
+        let (mut maxc, mut maxd) = (0u64, 0u64);
+        for (&x, &y) in a.iter().zip(b) {
+            n += 1;
+            let e_exact = (x as i64) - (y as i64);
+            let e_wrap = x.wrapping_sub(y) as i64;
+            if e_exact != e_wrap {
+                wraps += 1;
+            }
+            let t_exact = (e_exact.wrapping_mul(e_exact)) as u64;
+            let t_wrap = (e_wrap.wrapping_mul(e_wrap)) as u64;
+            if t_exact != t_wrap {
+                terms += 1;
+            }
+            let (s, o) = exact.overflowing_add(t_exact);
+            exact = s;
+            acc_wrapped |= o;
+            wrapped = wrapped.wrapping_add(t_wrap);
+            maxc = maxc.max(x.unsigned_abs() as u64).max(y.unsigned_abs() as u64);
+            maxd = maxd.max(e_exact.unsigned_abs());
+        }
+        ELEMS.fetch_add(n, Relaxed);
+        if wraps > 0 {
+            DIFF_WRAPS.fetch_add(wraps, Relaxed);
+        }
+        if terms > 0 {
+            TERM_DIFFERS.fetch_add(terms, Relaxed);
+        }
+        if exact != wrapped {
+            CALL_DIFFERS.fetch_add(1, Relaxed);
+        }
+        if acc_wrapped {
+            ACC_WRAPS.fetch_add(1, Relaxed);
+        }
+        bump_max(&MAX_ABS_COEFF, maxc);
+        bump_max(&MAX_ABS_DIFF, maxd);
+    }
+
+    /// Positive control for the census: data that DOES wrap must be counted.
+    /// A probe whose zero cannot be distinguished from a probe that never ran
+    /// is not evidence (rust/CLAUDE.md, "DEAD-LOOKING C STAYS TRANSLATED").
+    /// Run with `cargo test -p zenav1-svt-dsp --features __ovf_probe
+    /// ovf_probe_counts_a_real_wrap -- --exact`.
+    #[test]
+    fn ovf_probe_counts_a_real_wrap() {
+        let before = DIFF_WRAPS.load(Relaxed);
+        let a = [i32::MAX, 5, i32::MIN, 7];
+        let b = [-1, 3, 1, 7];
+        let _ = super::sse_i32(&a, &b);
+        let fired = DIFF_WRAPS.load(Relaxed) - before;
+        assert_eq!(fired, 2, "expected both extremes to wrap; census is blind");
+    }
+
+    /// One TSV-ish line, printed by the harness after an encode.
+    pub fn report(tag: &str) -> alloc::string::String {
+        alloc::format!(
+            "OVFPROBE\t{tag}\tcalls={}\telems={}\tdiff_wraps={}\tterm_differs={}\t\
+             call_differs={}\tacc_wraps={}\tmax_abs_coeff={}\tmax_abs_diff={}",
+            CALLS.load(Relaxed),
+            ELEMS.load(Relaxed),
+            DIFF_WRAPS.load(Relaxed),
+            TERM_DIFFERS.load(Relaxed),
+            CALL_DIFFERS.load(Relaxed),
+            ACC_WRAPS.load(Relaxed),
+            MAX_ABS_COEFF.load(Relaxed),
+            MAX_ABS_DIFF.load(Relaxed),
+        )
+    }
+}
+
+/// Bit-exact transcription of `svt_full_distortion_kernel32_bits_c`'s RESIDUAL
+/// term (`Codec/pic_operators.c:86`):
+///
+/// ```c
+/// residual_distortion += (int64_t)SQR((int64_t)(coeff[i]) - (recon_coeff[i]));
+/// ```
+///
+/// Three widths matter and each one is C's, not Rust's default:
+///
+/// * **The subtraction is in `int64_t`.** C's cast promotes BOTH operands
+///   before subtracting, so the difference of two `int32_t` can never wrap.
+///   This loop used to compute `(x - y) as i64` — an i32 subtraction, THEN a
+///   widen — which wraps for differences outside i32 and would hand the RD
+///   search a distortion C never computes. (Measured 2026-08-11: it never
+///   fires on a real encode — 0 wraps in 59,088,480 elements over 127 cells,
+///   max |difference| 788 against an i32 ceiling of 2,147,483,647. The fix is
+///   for the arithmetic contract, not for an observed miscompare; see
+///   `benchmarks/sse_i32_width_2026-08-11.meta`.)
+/// * **The square wraps rather than panicking.** After widening, `e` can reach
+///   `2^32` in magnitude and `e * e` then exceeds `i64::MAX`; C's signed
+///   multiply wraps in practice, and a debug-build panic where the release
+///   build silently wraps is its own defect. `wrapping_mul` pins both builds
+///   to the C result. The low 64 bits are the same read signed or unsigned.
+/// * **The accumulator wraps.** C accumulates into `uint64_t`, which is
+///   defined to wrap; `+=` on a Rust `u64` panics in debug instead. That is
+///   what made `residual_recon_distortion_all_tiers_match_core` red.
 #[inline]
 fn sse_i32_core(a: &[i32], b: &[i32]) -> u64 {
     let mut d: u64 = 0;
     for (&x, &y) in a.iter().zip(b) {
-        let e = (x - y) as i64;
-        d += (e * e) as u64;
+        let e = (x as i64) - (y as i64);
+        d = d.wrapping_add(e.wrapping_mul(e) as u64);
     }
     d
 }
@@ -262,35 +414,58 @@ fn sse_i32_impl_v3(_token: Desktop64, a: &[i32], b: &[i32]) -> u64 {
 }
 
 /// Four i64 lanes accumulate the squared differences; `vmlal_s32` /
-/// `vmlal_high_s32` give the widened product-accumulate directly, so the
-/// per-lane sum is exact in i64 exactly as the scalar's is.
+/// `vmlal_high_s32` give the widened product-accumulate directly, so each term
+/// is an exact i64 product exactly as the scalar's is.
+///
+/// **Why the difference is still taken in i32 here, when the scalar widens
+/// first.** `vsubl_s32` would give the exact `int64x2_t` difference, but there
+/// is no i64xi64 multiply in NEON to square it with (`vmull_s32` widens
+/// 32x32->64, which is the operation we already have via `vmlal_s32`), and
+/// synthesising a 64x64 square from 32-bit halves costs more than the whole
+/// kernel. So this arm keeps the cheap `vsubq_s32` and **detects** the only
+/// case where it is not the C answer: an i32 subtraction wraps iff it differs
+/// from the SATURATING one, so the loop ORs `vsubq_s32 ^ vqsubq_s32` into a
+/// witness (three extra instructions per 4 lanes, no reduction in the loop)
+/// and, if the witness is nonzero at the end, discards the vector result and
+/// returns the exact scalar core. Fast path exact, slow path exact — no tier
+/// silently wrapping. Measured cost of the witness: see
+/// `benchmarks/sse_i32_width_2026-08-11.meta`.
 ///
 /// Re-association: the scalar adds the squares left to right into one u64; this
 /// adds them into four independent i64 lanes and sums the lanes at the end.
-/// Every partial sum is exact (no wrapping — coefficients are transform
-/// outputs, and even the theoretical worst case of 1024 squares of a full i32
-/// difference is under 2^73... which is why the scalar itself widens to i64
-/// per term and the *total* is the value both forms produce), so the two agree
-/// bit for bit by associativity of integer addition.
+/// Two's-complement addition is a group operation mod 2^64, so re-association
+/// is bit-exact even where the total wraps — and on the fast path every TERM is
+/// exact (a widened i32xi32 product), which is what makes the two agree.
 #[cfg(target_arch = "aarch64")]
 #[arcane]
 fn sse_i32_impl_neon(_token: NeonToken, a: &[i32], b: &[i32]) -> u64 {
     let n = a.len().min(b.len());
     let mut acc0 = vdupq_n_s64(0);
     let mut acc1 = vdupq_n_s64(0);
+    let mut wrapped = vdupq_n_u32(0);
     let mut i = 0usize;
     while i + 4 <= n {
         let xa: &[i32; 4] = a[i..i + 4].try_into().unwrap();
         let ya: &[i32; 4] = b[i..i + 4].try_into().unwrap();
-        let d = vsubq_s32(vld1q_s32(xa), vld1q_s32(ya));
+        let x = vld1q_s32(xa);
+        let y = vld1q_s32(ya);
+        let d = vsubq_s32(x, y);
+        // Nonzero in any lane whose i32 difference wrapped.
+        wrapped = vorrq_u32(
+            wrapped,
+            veorq_u32(vreinterpretq_u32_s32(d), vreinterpretq_u32_s32(vqsubq_s32(x, y))),
+        );
         acc0 = vmlal_s32(acc0, vget_low_s32(d), vget_low_s32(d));
         acc1 = vmlal_high_s32(acc1, d, d);
         i += 4;
     }
+    if vmaxvq_u32(wrapped) != 0 {
+        return sse_i32_core(a, b);
+    }
     let mut d = (vaddvq_s64(vaddq_s64(acc0, acc1))) as u64;
     for k in i..n {
-        let e = (a[k] - b[k]) as i64;
-        d += (e * e) as u64;
+        let e = (a[k] as i64) - (b[k] as i64);
+        d = d.wrapping_add(e.wrapping_mul(e) as u64);
     }
     d
 }
@@ -300,12 +475,17 @@ pub fn sq_sum_i32(a: &[i32]) -> u64 {
     incant!(sq_sum_i32_impl(a), [v3, neon, scalar])
 }
 
+/// The PREDICTION term of the same C kernel (`pic_operators.c:87`):
+/// `prediction_distortion += (int64_t)SQR((int64_t)(coeff[i]));`. Widening one
+/// `int32_t` cannot overflow, so only the accumulator width matters here — and
+/// C's is a wrapping `uint64_t`, where Rust's `+=` panics in debug. Same
+/// reasoning as [`sse_i32_core`].
 #[inline]
 fn sq_sum_i32_core(a: &[i32]) -> u64 {
     let mut d: u64 = 0;
     for &x in a {
         let e = x as i64;
-        d += (e * e) as u64;
+        d = d.wrapping_add((e * e) as u64);
     }
     d
 }
@@ -337,7 +517,7 @@ fn sq_sum_i32_impl_neon(_token: NeonToken, a: &[i32]) -> u64 {
     let mut d = (vaddvq_s64(vaddq_s64(acc0, acc1))) as u64;
     for &x in &a[i..n] {
         let e = x as i64;
-        d += (e * e) as u64;
+        d = d.wrapping_add((e * e) as u64);
     }
     d
 }
@@ -406,5 +586,96 @@ mod tests {
                 assert_eq!(sq_sum_i32(&ca), swant, "sq_sum_i32 {w}x{h}");
             });
         }
+    }
+
+    /// C's residual term computed in `i128` and reduced mod 2^64 at the very
+    /// end. It shares no code with the kernels under test: the arithmetic is
+    /// exact and only the final reduction reproduces `uint64_t`'s wrap, so it
+    /// pins BOTH of C's widths (`pic_operators.c:86`) independently of how the
+    /// port spells them.
+    fn sse_oracle_i128(a: &[i32], b: &[i32]) -> u64 {
+        let mut acc: i128 = 0;
+        for (&x, &y) in a.iter().zip(b) {
+            let e = x as i128 - y as i128;
+            acc += e * e;
+        }
+        (acc as u128 & u64::MAX as u128) as u64
+    }
+
+    /// The width bug this test exists to catch: subtract in i32 (wrapping),
+    /// THEN widen. Present only so the test can PROVE its inputs discriminate
+    /// the two forms — a case set where this agrees with the oracle would make
+    /// the assertions below vacuous.
+    fn sse_i32_subtract_then_widen(a: &[i32], b: &[i32]) -> u64 {
+        let mut d: u64 = 0;
+        for (&x, &y) in a.iter().zip(b) {
+            let e = x.wrapping_sub(y) as i64;
+            d = d.wrapping_add(e.wrapping_mul(e) as u64);
+        }
+        d
+    }
+
+    /// Every tier reproduces C's `int64_t` subtraction and wrapping `uint64_t`
+    /// accumulator at inputs where a 32-bit subtraction would wrap.
+    ///
+    /// Measured 2026-08-11: this does NOT happen on a real encode (0 wraps in
+    /// 59,088,480 elements; max |difference| 788 against an i32 ceiling of
+    /// 2,147,483,647 — `benchmarks/sse_i32_width_2026-08-11.meta`). The gate
+    /// is on the arithmetic contract, so that a future caller with a wider
+    /// coefficient domain — 10/12-bit, a lossless path, an inter residual —
+    /// cannot silently inherit a wrapped distortion.
+    #[test]
+    fn sse_i32_matches_c_widths_at_i32_extremes() {
+        // Cases chosen so the wrap lands in the VECTOR body, in the SCALAR
+        // tail, and in a length below one vector — the three places the NEON
+        // arm treats differently.
+        let cases: [(alloc::vec::Vec<i32>, alloc::vec::Vec<i32>); 6] = [
+            // Widest possible difference (2^32 - 1); its square exceeds i64.
+            (vec![i32::MAX; 8], vec![i32::MIN; 8]),
+            (vec![i32::MIN; 8], vec![i32::MAX; 8]),
+            // Wrap only in the 3-element tail of a 7-element slice. (The two
+            // wrapped terms must not be symmetric: with `i32::MAX` in both
+            // slots their mod-2^64 errors are +-2^33 and CANCEL, and the case
+            // silently stops discriminating.)
+            (vec![1, 2, 3, 4, i32::MAX, i32::MAX - 5, 6], vec![1, 0, 3, 0, -2, i32::MIN, 6]),
+            // Wrap only in the vector body; clean tail.
+            (vec![i32::MIN, 5, -7, 9, 11, 13, 15], vec![i32::MAX, 1, 1, 1, 1, 1, 1]),
+            // Shorter than one vector.
+            (vec![i32::MIN, 3], vec![7, 3]),
+            // Accumulator wrap: 64 squares of ~2^62 sum past 2^64.
+            (vec![i32::MIN; 64], vec![0; 64]),
+        ];
+        let mut discriminating = 0usize;
+        for (i, (a, b)) in cases.iter().enumerate() {
+            let want = sse_oracle_i128(a, b);
+            if sse_i32_subtract_then_widen(a, b) != want {
+                discriminating += 1;
+            }
+            assert_eq!(sse_i32_core(a, b), want, "scalar core, case {i}");
+            let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_p| {
+                assert_eq!(sse_i32(a, b), want, "sse_i32 case {i}");
+            });
+            // sq_sum's own accumulator must wrap like C's uint64_t too.
+            let sq_want = {
+                let mut acc: i128 = 0;
+                for &x in a {
+                    acc += (x as i128) * (x as i128);
+                }
+                (acc as u128 & u64::MAX as u128) as u64
+            };
+            assert_eq!(sq_sum_i32_core(a), sq_want, "sq_sum core, case {i}");
+            let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_p| {
+                assert_eq!(sq_sum_i32(a), sq_want, "sq_sum_i32 case {i}");
+            });
+        }
+        // Anti-vacuity: without this the case set could be all small values and
+        // every assertion above would pass on the broken kernel too.
+        // Case 5 carries no wrap by construction (it exists for the
+        // accumulator), so 5 of 6 is the maximum available here.
+        assert_eq!(
+            discriminating, 5,
+            "expected 5 of 6 cases to distinguish an i32 subtraction from C's \
+             i64 one — the gate has no teeth"
+        );
     }
 }

@@ -34,3 +34,4 @@ unsafe_encoding = ["zenav1-svt-dsp/unchecked_dsp", "zenav1-svt-entropy/unchecked
 # Feature 3: forward fallible allocation to svtav1-types (parallels the
 # unconditional std forwarding above).
 fallible-alloc = ["zenav1-svt-types/fallible-alloc"]
+__ovf_probe = ["zenav1-svt-dsp/__ovf_probe"]

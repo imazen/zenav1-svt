@@ -570,6 +570,13 @@ fn main() {
         sb_size_used,
         obu.len()
     );
+    #[cfg(feature = "__ovf_probe")]
+    eprintln!(
+        "{}",
+        svtav1_encoder::dsp::residual::ovf_probe::report(&format!(
+            "{content}:{w}x{h}:qp{qp}:p{preset}"
+        ))
+    );
     if sb128_fallback {
         // Loud, so a gate cell can never silently "pass" while the port
         // quietly coded a different superblock geometry than C did.

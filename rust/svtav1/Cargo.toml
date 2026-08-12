@@ -43,3 +43,4 @@ symtrace = ["zenav1-svt-entropy/symtrace"]
 # Feature 3: forward fallible allocation down to the encoder/types so the
 # gates (e.g. golden_parity) can be run with `--features fallible-alloc`.
 fallible-alloc = ["zenav1-svt-encoder/fallible-alloc"]
+__ovf_probe = ["zenav1-svt-encoder/__ovf_probe"]

@@ -28,6 +28,9 @@ workspace = true
 default = []
 std = ["zenav1-svt-types/std"]
 unchecked_dsp = []
+# TEMPORARY (2026-08-11) census instrument: count i32-subtraction wraps inside
+# `residual::sse_i32` on a real encode. See `residual::ovf_probe`.
+__ovf_probe = ["std"]
 
 # `perf_report` uses `svtav1_dsp::bench`, which is `#[cfg(feature = "std")]`.
 # Without this, a bare `cargo test -p zenav1-svt-dsp` fails to BUILD the
