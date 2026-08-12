@@ -1,0 +1,147 @@
+# `sse_i32`'s arithmetic width vs C — a census, a fix, and a REFUTED hypothesis
+
+host: Apple M4 Pro (darwin 25.5.0), base commit `d2ef9fb65`
+oracle: `svt_full_distortion_kernel32_bits_c`, `reference/svt-av1/Source/Lib/
+        Codec/pic_operators.c:86-87`
+records: `sse_i32_ovf_census_2026-08-11.tsv` (this run's per-cell counts)
+
+## 0. Headline
+
+- The hypothesis that `sse_i32`'s 32-bit subtraction explains issue #15's
+  partial-superblock RD divergence is **DEAD**. 0 wraps in **59,088,480**
+  elements across 127 real-content cells — including all 67 cells that diverge
+  from C. Max |difference| observed: **788**, against an i32 ceiling of
+  2,147,483,647 (a factor of 2.7 million).
+- The width bug was real and is **fixed anyway** (it diverged from C's
+  contract, and it left `residual_recon_distortion_all_tiers_match_core` RED on
+  `main`). The fix is **byte-inert**: 0 of 648 unaligned real-content cells and
+  0 of 168 fingerprint cells moved.
+- #15 is therefore **still open and still un-root-caused**. One more suspect is
+  eliminated; nothing is explained.
+
+## 1. What was wrong
+
+`crates/svtav1-dsp/src/residual.rs`, `sse_i32_core`:
+
+```rust
+let e = (x - y) as i64;     // subtract in i32, THEN widen
+d += (e * e) as u64;
+```
+
+C promotes both operands first — `(int64_t)(coeff[i]) - (recon_coeff[i])` — so
+its difference of two `int32_t` can never wrap. Three widths differ, not one:
+
+| site | port (before) | C | consequence |
+|---|---|---|---|
+| subtraction | i32, wraps | `int64_t`, exact | wrong distortion outside i32 |
+| square | `i64 *`, debug-panics | `SQR((int64_t))`, wraps | debug/release divergence |
+| accumulator | `u64 +=`, debug-panics | `uint64_t`, wraps | **this is what was RED** |
+
+The red test's panic was `attempt to add with overflow` at the ACCUMULATOR, not
+at the subtraction — the test's synthetic coefficients (`i32 >> 0..19`) sum
+past 2^64. Both were fixed; only the accumulator was making the test red.
+
+The NEON arm had the same i32 subtraction via `vsubq_s32`. The x86-64 `v3` arm
+delegates to the scalar core and inherited the fix for free.
+
+## 2. Task 1 — the probe, and its answer
+
+Instrument: `residual::ovf_probe` (feature `__ovf_probe`, off by default). It
+re-walks every `(a, b)` pair the encoder scores and counts, per element, the
+wrapping i32 difference against the exact widened one, plus the per-call
+distortion under both forms.
+
+Positive control first (`residual::ovf_probe::ovf_probe_counts_a_real_wrap`):
+on `[i32::MAX, 5, i32::MIN, 7] - [-1, 3, 1, 7]` the census reads exactly 2. A
+zero from this probe is a measured zero, not a probe that never ran.
+
+The three cells the brief named, plus one large aligned control:
+
+| cell | port vs C | calls | elements | diff_wraps | max abs coeff | max abs diff |
+|---|---|---|---|---|---|---|
+| terminal 96x88 p4 qp33 (the #15 reproducer) | **DIFFERS** 521 vs 523 B | 2,062 | 198,176 | **0** | 9,620 | 163 |
+| gradient 96x88 p4 qp33 (same dims, matches) | IDENTICAL 827 B | 1,066 | 272,896 | 0 | 12,958 | 117 |
+| terminal 64x64 p4 qp33 (aligned control) | IDENTICAL 297 B | 989 | 85,760 | 0 | 9,620 | 165 |
+| clic photo 2048x2048 p8 qp40 (large aligned) | IDENTICAL 9,649 B | 1,393 | 1,193,536 | 0 | 12,209 | 190 |
+
+Widened to the whole divergent set — all 67 DIFFERS cells of
+`unaligned_real_identity_2026-08-11.tsv` plus 60 IDENTICAL ones:
+
+```
+cells=127  calls=285,837  elements=59,088,480
+diff_wraps=0  term_differs=0  call_differs=0  acc_wraps=0
+max_abs_coeff=18,648  max_abs_diff=788
+```
+
+**The link does not exist.** The distortion the port fed its RD search was the
+same number C's was, on every cell that diverges. This also independently
+confirms the range assumption in C's own 8-bit NEON kernel
+(`ASM_NEON/picture_operators_intrinsic_neon.c`, the `#else` arm): coefficients
+stay inside int16, so its `vmulq_s32` low-32-bit square is exact too, and all
+three forms — C scalar, C NEON, port — agree bit for bit on real input.
+
+Not measured: 10-bit. The census ran the 8-bit 4:2:0 path only.
+
+## 3. Task 2 — the fix, and what it cost the bitstream
+
+Scalar/`v3`: `(x as i64) - (y as i64)`, `wrapping_mul`, `wrapping_add`.
+
+NEON: `vsubl_s32` gives the exact widened difference, but there is no
+i64xi64 multiply in NEON to square it with, and synthesising a 64x64 square
+from 32-bit halves costs more than the kernel. So the arm keeps `vsubq_s32` and
+DETECTS the only case where that is not C's answer — an i32 subtraction wraps
+iff it differs from the saturating one — by ORing `vsubq_s32 ^ vqsubq_s32` into
+a witness (3 instructions per 4 lanes, no reduction inside the loop) and
+returning the exact scalar core if the witness is nonzero at the end. Fast path
+exact, slow path exact, no tier left silently wrapping.
+
+Byte consequence — **none measured**, on every grid available:
+
+| gate | result |
+|---|---|
+| `byteid_fingerprint.sh` (168 cells, 32..2048) | 168/168 == C before AND after; **0 cells moved** (md5 set-diff by name) |
+| `unaligned_identity_scan.sh` (648 real-content cells) | 581 identical / 67 differ, before AND after; **0 cells changed** verdict or byte count |
+| `partial_sb_gate.sh` | 146/146 |
+| `decode_gate_grid.sh` | 120/120 aomdec+dav1d, 120/120 == C |
+| `recon_parity.sh` | 432/432 (CDEF fired on 199 streams, Wiener on 118) |
+| `cargo test --workspace` | 1,031 passed, 0 failed |
+
+That is the expected result given section 2: with zero wraps, the two forms are
+the same arithmetic. It is reported as a measurement, not as a prediction.
+
+## 4. The gate, and proof it has teeth
+
+`sse_i32_matches_c_widths_at_i32_extremes` checks every tier against an `i128`
+oracle reduced mod 2^64 — an oracle that shares no code with the kernel. Six
+cases put the wrap in the vector body, in the scalar tail, below one vector,
+and in the accumulator; the test ASSERTS that 5 of the 6 discriminate an i32
+subtraction from C's i64 one, so the case set cannot silently go vacuous. (One
+case did: two symmetric `i32::MAX` terms have mod-2^64 errors of +-2^33 that
+CANCEL. It was changed to `i32::MAX` / `i32::MAX - 5`.)
+
+Three planted mutations, each caught:
+
+| mutation | result |
+|---|---|
+| NEON fallback disabled (`if false && vmaxvq_u32(wrapped) != 0`) | FAIL `sse_i32 case 0`: left 8, right 18446744004990074888 |
+| scalar core back to `x.wrapping_sub(y) as i64` | FAIL `scalar core, case 0`: left 8, right 18446744004990074888 |
+| `sq_sum` accumulator back to `d += ...` | FAIL (overflow panic), and it takes the pre-existing tier test down with it |
+
+Note what the PRE-EXISTING `residual_recon_distortion_all_tiers_match_core`
+did on the first two: **passed**. Its reference is `sse_i32_core` itself, so it
+gates tier-vs-tier agreement, never fidelity to C. Both tiers were wrong the
+same way and it saw nothing. That is why the new test uses an outside oracle.
+
+`#![forbid(unsafe_code)]` proven active, not read: a planted `unsafe { }` in
+this file fails the build with `error: usage of an 'unsafe' block`.
+
+## 5. Reproduce
+
+```
+cargo test -p zenav1-svt-dsp --lib residual
+cargo test -p zenav1-svt-dsp --features __ovf_probe --lib ovf_probe -- --exact \
+    residual::ovf_probe::ovf_probe_counts_a_real_wrap
+cargo build --release -p zenav1-svt --features __ovf_probe --example identity_run
+target/release/examples/identity_run crop:<png> 96 88 33 4 /tmp/p   # OVFPROBE on stderr
+tools/byteid_fingerprint.sh out.tsv ; tools/unaligned_identity_scan.sh out2.tsv
+```
