@@ -428,8 +428,15 @@ fn sse_i32_impl_v3(_token: Desktop64, a: &[i32], b: &[i32]) -> u64 {
 /// witness (three extra instructions per 4 lanes, no reduction in the loop)
 /// and, if the witness is nonzero at the end, discards the vector result and
 /// returns the exact scalar core. Fast path exact, slow path exact — no tier
-/// silently wrapping. Measured cost of the witness: see
-/// `benchmarks/sse_i32_width_2026-08-11.meta`.
+/// silently wrapping.
+///
+/// **The witness's wall cost is NOT MEASURED.** It adds 3 instructions per 4
+/// lanes to a kernel the 2026-07 re-profile put at 11.47 % of preset-6 self
+/// time (with `residual_i32` and `recon_add_clamp`), so it could be free on a
+/// load-bound wide core or could show up. The A/B was not run because another
+/// agent held the box with a live timed campaign and this host has no
+/// `measlock`. Instrument: `cargo bench -p zenav1-svt-dsp --bench kernel_tiers`
+/// plus `tools/perf_gap_campaign.sh`, un-niced, on a quiet box.
 ///
 /// Re-association: the scalar adds the squares left to right into one u64; this
 /// adds them into four independent i64 lanes and sums the lanes at the end.
