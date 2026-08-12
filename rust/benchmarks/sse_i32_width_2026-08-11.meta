@@ -175,6 +175,6 @@ cargo test -p zenav1-svt-dsp --lib residual
 cargo test -p zenav1-svt-dsp --features __ovf_probe --lib ovf_probe -- --exact \
     residual::ovf_probe::ovf_probe_counts_a_real_wrap
 cargo build --release -p zenav1-svt --features __ovf_probe --example identity_run
-target/release/examples/identity_run crop:<png> 96 88 33 4 /tmp/p   # OVFPROBE on stderr
+target/release/examples/identity_run crop:<png> 96 88 33 4 ~/tmp/p  # OVFPROBE on stdout
 tools/byteid_fingerprint.sh out.tsv ; tools/unaligned_identity_scan.sh out2.tsv
 ```
