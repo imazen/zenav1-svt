@@ -63,16 +63,17 @@
 > self time, gradient 512², port at `29847e5d3` (11,478 leaf samples), with the
 > C reference's own profile on the identical cell for scale:
 >
-> | binary | port p10 | C p10 |
-> |---|---:|---:|
-> | the encoder itself | 79.5 % | 95.0 % |
-> | `libsystem_malloc` | 10.8 % | 0.49 % |
-> | `libsystem_platform` (memmove/memset/bzero) | 9.0 % | 2.70 % |
+> | binary | port p10, 08-11 | port p10, now | C p10 |
+> |---|---:|---:|---:|
+> | the encoder itself | 75.5 % | 81.2 % | 95.0 % |
+> | `libsystem_malloc` | 11.9 % | 9.0 % | 0.49 % |
+> | `libsystem_platform` (memmove/memset/bzero) | 10.9 % | 8.1 % | 2.70 % |
 >
-> **The alloc + libc-mem excess over C is ~16.6 points of the port's self time,
-> i.e. an arithmetic ceiling of 1/(1-0.166) = 1.20x** — not the 1.33x that
-> quoting the port's 19.8 % alone suggests. Nearest-app-ancestor attribution of
-> the malloc-family samples ranks it: `leaf_funnel::evaluate_leaf` 26.0 %,
+> **The alloc + libc-mem excess over C is still ~13.9 points of the port's self
+> time (was 19.6 before this session), i.e. an arithmetic ceiling of
+> 1/(1-0.139) = 1.16x** — not the 1.33x that quoting the port's 17.1 % alone
+> suggests. Nearest-app-ancestor attribution of the malloc-family samples (taken
+> at `29847e5d3`) ranks it: `leaf_funnel::evaluate_leaf` 26.0 %,
 > `leaf_funnel::tx_unit_inner` 13.6 %, `partition::extract_neighbors_tiled`
 > 7.7 %, `pd0::Pd0Ctx::lvl5_like_block_cost` 6.6 %, `pd0::tx_quant_core` 4.3 %,
 > `partition::funnel_block_decision` 4.3 %, then a long tail.
