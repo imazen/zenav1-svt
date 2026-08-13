@@ -1517,16 +1517,11 @@ pub(crate) fn funnel_block_decision(
     w: usize,
     h: usize,
 ) -> BlockDecision {
+    let mut choice = choice;
     let (qcoeffs, eob, tx_type) = if choice.tx_depth == 0 {
         // Unpack the packed (<= 32-capped) txb into the full
         // w x h raster the depth-0 walk path expects.
         let (pw, ph) = (w.min(32), h.min(32));
-        let mut full = alloc::vec![0i32; w * h];
-        for r in 0..ph {
-            for c in 0..pw {
-                full[r * w + c] = choice.txb_qcoeffs[0][r * pw + c];
-            }
-        }
         let tx_type = choice.txb_tx_types[0];
         // AV1 eob is a SCAN-ORDER quantity. The previous raster-order
         // last-nonzero was only ever consumed as `== 0` (correct either way),
@@ -1546,6 +1541,24 @@ pub(crate) fn funnel_block_decision(
                 eob = (i + 1) as u16;
             }
         }
+        // No 64-dim fold on this block: the "packed" txb IS the full w x h
+        // raster (`pw == w && ph == h`, and `tx_unit` sizes the buffer
+        // `pw * ph`), so the unpack above was a byte-for-byte copy of it into a
+        // freshly allocated `Vec` that was then dropped along with the source.
+        // Take it instead. Blocks with a 64-dim side still unpack, because
+        // there the raster is genuinely larger than the packed corner and the
+        // rows/columns past 32 must stay zero.
+        let full = if pw == w && ph == h {
+            core::mem::take(&mut choice.txb_qcoeffs[0])
+        } else {
+            let mut full = alloc::vec![0i32; w * h];
+            for r in 0..ph {
+                for c in 0..pw {
+                    full[r * w + c] = choice.txb_qcoeffs[0][r * pw + c];
+                }
+            }
+            full
+        };
         (full, eob, tx_type)
     } else {
         let total: u32 = choice.txb_eobs.iter().map(|&e| e as u32).sum();

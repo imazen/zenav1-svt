@@ -90,7 +90,14 @@ impl PictureControlSet {
 #[derive(Debug)]
 pub struct DecodedPictureBuffer {
     /// Reference frame slots. None = empty slot.
-    slots: [Option<ReferenceFrame>; REF_FRAMES],
+    ///
+    /// `Arc` because a KEY frame's `refresh_frame_flags` is 0xFF: every slot
+    /// receives the SAME picture, and deep-cloning a full Y plane eight times
+    /// per frame was 4.2 % of the port's `memmove`/`memset` self time. The
+    /// slots are read-only once stored (`get` hands out `&ReferenceFrame`), so
+    /// sharing one allocation is observationally identical to eight copies.
+    /// The type stays private — `store`/`get`/`refresh` are unchanged.
+    slots: [Option<alloc::sync::Arc<ReferenceFrame>>; REF_FRAMES],
 }
 
 /// A reference frame stored in the DPB.
@@ -118,14 +125,14 @@ impl DecodedPictureBuffer {
     /// Store a reference frame in the specified slot.
     pub fn store(&mut self, slot: usize, frame: ReferenceFrame) {
         if slot < REF_FRAMES {
-            self.slots[slot] = Some(frame);
+            self.slots[slot] = Some(alloc::sync::Arc::new(frame));
         }
     }
 
     /// Get a reference to a frame in the specified slot.
     pub fn get(&self, slot: usize) -> Option<&ReferenceFrame> {
         if slot < REF_FRAMES {
-            self.slots[slot].as_ref()
+            self.slots[slot].as_deref()
         } else {
             None
         }
@@ -133,9 +140,14 @@ impl DecodedPictureBuffer {
 
     /// Refresh slots based on the refresh_frame_flags bitmask.
     pub fn refresh(&mut self, flags: u8, frame: &ReferenceFrame) {
+        if flags == 0 {
+            return;
+        }
+        // ONE clone, shared by every refreshed slot (see the `slots` doc).
+        let shared = alloc::sync::Arc::new(frame.clone());
         for i in 0..REF_FRAMES {
             if flags & (1 << i) != 0 {
-                self.slots[i] = Some(frame.clone());
+                self.slots[i] = Some(alloc::sync::Arc::clone(&shared));
             }
         }
     }

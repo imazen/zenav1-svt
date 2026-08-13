@@ -1,0 +1,46 @@
+# A/B: two more duplicated copies removed (depth-0 qcoeff raster, DPB refresh)
+
+date: 2026-08-13
+host: mac (Apple aarch64, 12 logical cores; box idle, top foreign 5.9% CPU)
+base: 6ad044d00   cand: this commit
+harness: rust/tools/perf_ab.sh, interleaved paired, randomised per-round order,
+         NEITHER SIDE NICED, both arms `-C llvm-args=-align-all-functions=4`.
+grid:    content=gradient sizes=[256 512 1024] presets=[6 10] qp=40 rounds=21
+ident:   all cells ident=Y; byteid_fingerprint 168/168 unchanged AND == C;
+         decode_gate_grid 120/120; partial_sb_gate 146/146; recon_parity
+         432/432; workspace nextest 1029/1029.
+
+| size | preset | n  | cand ratio | control ratio | cand-vs-control |
+|-----:|:------:|---:|-----------:|--------------:|----------------:|
+|  256 | 6      | 21 |     1.0043 |        0.9956 |          +0.9pp |
+|  256 | 10     | 21 |     0.9782 |        1.0099 |          −3.2pp |
+|  512 | 6      | 21 |     1.0024 |        0.9937 |          +0.9pp |
+|  512 | 10     | 21 |     0.9782 |        0.9980 |          −2.0pp |
+| 1024 | 6      | 21 |     0.9966 |        0.9971 |          −0.1pp |
+| 1024 | 10     | 21 |     0.9883 |        0.9987 |          −1.0pp |
+
+Control = the base binary against a byte-identical copy of itself, run in the
+same session. Reads ~1-2% at p10, null at p6 — the same tier split as the two
+earlier decision-path changes, for the same reason (p6 spends far longer per
+block inside the RD search itself).
+
+## What the two changes remove
+
+1. **`funnel_block_decision`'s depth-0 qcoeff "unpack".** At `tx_depth == 0` it
+   allocated a fresh `w*h` `i32` raster and copied the packed txb into its
+   `min(w,32) x min(h,32)` corner. On every block WITHOUT a 64-dim side —
+   i.e. `pw == w && ph == h` — that is a byte-for-byte copy of a buffer that
+   is dropped two lines later, so it is now a `mem::take`. Blocks with a
+   64-wide or 64-tall transform still unpack, because there the raster really
+   is larger than the packed corner and the rows/columns past 32 must be zero.
+
+2. **`DecodedPictureBuffer::refresh` cloned the whole picture once per set
+   bit.** A KEY frame's `refresh_frame_flags` is 0xFF, so a single still-image
+   encode deep-cloned its Y plane EIGHT times into eight slots that are only
+   ever read through `&ReferenceFrame`. The slots now hold
+   `Arc<ReferenceFrame>` and `refresh` clones once. Private field; `store`,
+   `get` and `refresh` keep their signatures, so no API change.
+
+Profile that pointed at (2): `DecodedPictureBuffer::refresh` was 4.2% of the
+`libsystem_platform` (memmove/memset/bzero) self samples at gradient 512x512
+preset 10.
