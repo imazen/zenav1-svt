@@ -330,6 +330,28 @@ noPanic "h4-straddle-tail-200" gradient 256 200 32 2
 byte "intra-edge-fill"   diag 64 64 20 6
 byte "intra-edge-dr-z2"  diag 128 128 32 4
 
+# 2026-08-13 (issue #15) — the palette SEARCH ran over the whole block on a
+# block that straddles the aligned frame edge, where C searches only the
+# in-frame part (`svt_aom_get_block_dimensions`' rows/cols_within_bounds,
+# palette.c:217-245, consumed at :401-439). The padded rows beyond the picture
+# edge voted in the colour histogram, the dominant-colour scan and the k-means
+# seed range, so a straddling block got different palette COLOURS than C's.
+# The rate side and the pack side already cropped; only the search did not.
+#
+# OBSERVED: gb82-sc/terminal.png cropped to 96x88 (a 24-tall bottom SB) at
+# preset 4 qp 33 was C=523B / port=521B, first differing byte at offset 11.
+# The Linux `--wrap` op trace (rust/tools/ctrace-linux) put the first divergent
+# symbol at op 4626 of 6299 — inside a 37-bit literal run right after a
+# `palette_y_size` CDF — i.e. the palette colour literals, with the partition
+# and mode symbols before it all matching. Fixed by cropping the search.
+#
+# Needs the real screen corpus: synthetic content never codes a palette block.
+if [ -f "$SCREEN_DIR/terminal.png" ]; then
+  byte "palette-straddle-search-96x88" "crop:$SCREEN_DIR/terminal.png" 96 88 33 4
+else
+  skip=$((skip+1)); skipped+=("palette-straddle-search-96x88 (no $SCREEN_DIR/terminal.png)")
+fi
+
 # ---------------------------------------------------------------------------
 total=$((pass + fail))
 echo

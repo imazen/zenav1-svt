@@ -5142,12 +5142,37 @@ pub(crate) fn evaluate_leaf(
         // stride `w` (the real u16 samples when the caller entered through a
         // `*_hbd` entry point, else the `u8 << 2` widening), so the hbd search
         // reads exactly what C's `input_frame16bit` would give it.
+        //
+        // C SEARCHES over the IN-FRAME part of the block, not the whole block:
+        // `search_palette_luma` (palette.c:401-403) takes its `rows`/`cols`
+        // from `svt_aom_get_block_dimensions`' `rows_within_bounds` /
+        // `cols_within_bounds` (palette.c:217-245), and feeds exactly those to
+        // `svt_av1_count_colors` (:409-411), to the `data[]` / `lb` / `ub` fill
+        // (:427-439) and to `av1_calc_indices` (:323) — the index map is then
+        // edge-REPLICATED out to the nominal block (`extend_palette_color_map`,
+        // :324). Passing the full block instead lets the padded rows/columns
+        // beyond the picture edge vote in the colour histogram, the
+        // dominant-colour scan, the k-means seed range `[lb, ub]` and every
+        // k-means iteration — so a straddling block gets DIFFERENT palette
+        // colours than C's, and the colour literals desync the bitstream from
+        // C's (issue #15).
+        //
+        // The RATE side (`map_rows`/`map_cols` below) and the PACK side
+        // (`pipeline.rs`, `write_palette_map_tokens`) already cropped; only the
+        // SEARCH did not, so the three sites disagreed with each other about
+        // which block a palette candidate describes.
+        //
+        // Identical to `w`/`h` on every 64-aligned frame, where nothing
+        // straddles — which is why this was invisible to every gate until the
+        // unaligned real-content scan crossed the two axes.
+        let pal_rows = h.min(frame.frame_h_px.saturating_sub(abs_y));
+        let pal_cols = w.min(frame.frame_w_px.saturating_sub(abs_x));
         let pal_cands = if bd10_funnel {
             crate::palette::search_palette_luma_hbd(
                 &blk_y_src10,
                 w,
-                h,
-                w,
+                pal_rows,
+                pal_cols,
                 w,
                 h,
                 &ctrls,
@@ -5161,8 +5186,8 @@ pub(crate) fn evaluate_leaf(
                 y_src_stride,
                 y_src_off % y_src_stride,
                 y_src_off / y_src_stride,
-                h,
-                w,
+                pal_rows,
+                pal_cols,
                 w,
                 h,
                 &ctrls,
@@ -5256,9 +5281,11 @@ pub(crate) fn evaluate_leaf(
             // emits and the RD tie moves.
             //
             // Identical to `w`/`h` unless the block straddles the aligned
-            // extent, which only happens on a partial SB.
-            let map_rows = h.min(frame.frame_h_px.saturating_sub(abs_y));
-            let map_cols = w.min(frame.frame_w_px.saturating_sub(abs_x));
+            // extent, which only happens on a partial SB. Same numbers the
+            // SEARCH above uses — ONE definition, because the search, the rate
+            // and the pack disagreeing about the block's in-frame extent is
+            // exactly the defect issue #15 turned out to be.
+            let (map_rows, map_cols) = (pal_rows, pal_cols);
             crate::palette::color_map_wavefront(
                 &pc.idx_map,
                 w, // stride: the FULL block width, only the traversal shrinks
