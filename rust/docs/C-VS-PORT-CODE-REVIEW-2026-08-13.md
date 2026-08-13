@@ -10,6 +10,14 @@ cited to an existing record in `benchmarks/` or `docs/`. Every structural claim
 is cited to `file:line` on **both** sides. Where a claim is a hunch it is
 labelled `SPECULATIVE` and no number is attached to it.
 
+> **STATUS UPDATE 2026-08-13 (later the same day): R1 and R2 have been priced,
+> built, measured and LANDED.** §7 asked whoever picked them up to record the
+> census result here; the outcome is at the top of §4 below, and the two
+> corrections to this document's own scope claims are in §4 R1/R2. Slope
+> ratios moved p10 3.06x -> **2.89x**, p13 3.07x -> **2.89x**, p6 3.39x ->
+> **3.27x**, p2 4.14x -> **3.93x** (`benchmarks/perf_gap_2026-08-13-r1r2.meta`).
+> R3-R9 are untouched.
+
 Written while another agent was concurrently editing `partition.rs`,
 `depth_refine.rs` and `pipeline.rs` (the `BlockDecision` / arena work). Line
 numbers in those three files may have moved; the symbol names have not.
@@ -237,6 +245,22 @@ Byte-identity column: **SAFE** = cannot change the OBU by construction ·
 
 ### R1. Gate the inverse transform + reconstruction on C's own predicate
 
+**LANDED 2026-08-13 (`56d19efe1`). MEASURED 1.021x-1.053x at qp40 on 12 of 12
+cells (256/512/1024 x p6/p8/p10/p13), 28 of 28 cells below 1.0 across 6 presets
+x 3 sizes x 2 qps against a byte-identical-binary control that split 13/15
+(sign test p = 3.7e-9). Record: `benchmarks/recon_gate_r1_ab_2026-08-13.meta`.**
+
+The census this item asked for (`benchmarks/txunit_census_2026-08-13.tsv`,
+feature `__txcensus`) put the DISCARDED share of inverse-transform PIXEL work
+at 40-50 % (p10/p13), 36-50 % (p8), 43-51 % (p7), 28-53 % (p6), 24-44 % (p2) —
+so the falsifier ("a call census showing the `spatial_dist == false` population
+is a small share") did not fire, and the doubling arm was not needed. All three
+sites were proved dead by an exhaustive scan of every occurrence of the binding
+in its own scope; the proofs are in the commit message. **One correction to the
+site table below:** it implies three contributing sites at the fast presets. At
+p10/p13 only MDS1 contributes — the CfL and non-CfL-chroma sites both sit
+behind `cfg.cfl_enabled`, which `FunnelCfg::for_preset` sets false from M7 up.
+
 **Evidence: SOURCE (both sides) + PROFILED (stage share).** Byte-identity:
 **PROVE** (per call site).
 
@@ -323,6 +347,33 @@ showing the inverse transform at those sites prices near zero.
 ---
 
 ### R2. Stop computing the exact coefficient rate at the sites that discard it
+
+**LANDED 2026-08-13 (`8179a7d94`). MEASURED 1.038x-1.060x at p10/p13 qp20 on 6
+of 6 cells (quartile-disjoint from the control); 1.018x-1.022x at 256 qp40;
+NULL at 512/1024 qp40 and null at p2/p6/p7/p8. Record:
+`benchmarks/ratemode_r2_ab_2026-08-13.meta`.**
+
+Two things this item got wrong, both settled by the census:
+
+1. **The scope note treats the level-2 tier (presets 7-8) as a live arm. It is
+   effectively dead.** It requires `eob < (w*h)>>6`, which fired on 164 of
+   8,404 calls in ONE of eighteen p7/p8 cells (328 coefficients in total) and
+   on zero calls in the other seventeen. R2's whole value is the LEVEL-0 tier
+   at p10/p13. The level-2 reorder still landed — it is a branch swap — but it
+   prices at zero, and the p7/p8 A/B rows confirm it.
+2. **The framing "the value is dead" was unnecessarily weak.** On the level-0
+   branch `tx_unit` can produce the closed form ITSELF from the same inputs
+   (`eob`, `w*h`) that the depth loop applies afterwards, so the shipped change
+   is an arithmetic identity and needs no deadness argument at all. The one
+   place the substituted value IS observed is `txt_search`'s per-tx-type cost
+   compare — inert only under `only_dct`, which `coeff_rate_est_lvl == 0`
+   implies; `txt_search` now demotes to `Exact` otherwise, structurally.
+
+The falsifier ("a counter showing the discarding branch is rarely taken") half
+fired: it is taken on 71-74 % of calls at qp20, 31-56 % at qp40, and **0 %** at
+qp55, where `end_depth == 0` puts the frame off the `perform_tx_partitioning`
+path entirely. The wall-clock win tracks that share, which is the evidence that
+it is the mechanism and not code placement.
 
 **Evidence: SOURCE (both sides) + PROFILED (stage share).** Byte-identity:
 **SAFE** (the value is dead).

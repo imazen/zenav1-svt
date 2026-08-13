@@ -107,11 +107,39 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Changed
 
-- **Encode speed: the port-vs-C per-pixel slope gap closes to 3.06x at preset
-  10 and 3.07x at preset 13** (from 3.53x / 3.51x), and 3.39x at preset 6 (from
-  3.52x); preset 2 is unmoved. All 24 campaign cells byte-identical to C
-  (`rust/benchmarks/perf_gap_2026-08-13-final.meta`). Four byte-identical
-  changes, every one of them removing a duplicated COPY of something already
+- **Encode speed: the port-vs-C per-pixel slope gap closes to 2.89x at presets
+  10 and 13, 3.27x at preset 6, and — for the first time this campaign — 3.93x
+  at preset 2** (from 3.06x / 3.07x / 3.39x / 4.14x). All 24 campaign cells
+  byte-identical to C (`rust/benchmarks/perf_gap_2026-08-13-r1r2.meta`). Two
+  byte-identical changes, and unlike everything before them these remove work
+  whose result was **discarded**, not duplicated — the two top findings of
+  `rust/docs/C-VS-PORT-CODE-REVIEW-2026-08-13.md`:
+  - **R1: the inverse transform + reconstruction ran even where the
+    reconstruction is thrown away.** C gates both on `mds_do_spatial_sse ||
+    (!is_inter && tx_depth)` (product_coding_loop.c:4783-4784) and the all-intra
+    derivation pins `spatial_sse_full_loop_level = 3`, so C inverts nothing at
+    MDS1/MDS2; the port inverted unconditionally. A census measured the
+    discarded share of inverse-transform pixel work at 40-50% (p10/p13), 36-50%
+    (p8), 43-51% (p7), 28-53% (p6) and 24-44% (p2). Three call sites (MDS1
+    luma, the CfL alpha search, the non-CfL chroma re-cost) now pass an explicit
+    `need_recon = false`, each with an exhaustive-scan proof that the
+    reconstruction is unread in its whole binding scope. 56d19efe1 — A/B 12/12
+    cells 1.021-1.053x at qp40, and 28 of 28 cells below 1.0 across 6 presets x
+    3 sizes x 2 qps against a control arm that split 13/15 (sign test
+    p = 3.7e-9).
+  - **R2: the exact coefficient rate was computed and then overwritten**
+    wherever C's closed forms apply. C's rate tiers are an `if / else if /
+    else` and the estimator is never reached on those arms
+    (product_coding_loop.c:4914-4934, :5540-5564); the port called
+    `cost_coeffs_txb` first and discarded it. Now evaluated in C's order.
+    8179a7d94 — 1.038-1.060x at p10/p13 **qp20**, null at qp40/512+; the wall
+    clock tracks the census share of replaced coefficient work (51-54% at qp20,
+    16-38% at qp40, zero at qp55), which is what identifies the win as the
+    mechanism rather than code placement.
+  - the census instrument behind both, `leaf_funnel::txcensus` (cargo feature
+    `__txcensus`, off by default, zero cost when off). 7dec5f24e.
+- Preceding this, four byte-identical changes that took p10/p13 from 3.53x to
+  3.06x, every one of them removing a duplicated COPY of something already
   computed rather than making an allocation cheaper:
   - the frame's block-decision set was materialised **four** times per frame —
     a leaf-level clone so the partition tree and a parallel `decisions` list

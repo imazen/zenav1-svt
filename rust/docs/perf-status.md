@@ -4,18 +4,50 @@
 > below the "Results — 2026-07-20" heading is the **x86-64/AVX2 history** on
 > `dev-32gb`. The live numbers on the aarch64 box are:
 >
-> | preset | slope ratio port/C | was (08-11) | was (08-07) |
-> |---|---|---|---|
-> | p2 | 4.14x | 4.12x | 4.11x |
-> | p6 | **3.39x** | 3.52x | 3.50x |
-> | p10 | **3.06x** | 3.53x | 4.85x |
-> | p13 | **3.07x** | 3.51x | 4.83x |
+> | preset | slope ratio port/C | was (08-13 mid) | was (08-11) | was (08-07) |
+> |---|---|---|---|---|
+> | p2 | **3.93x** | 4.14x | 4.12x | 4.11x |
+> | p6 | **3.27x** | 3.39x | 3.52x | 3.50x |
+> | p10 | **2.89x** | 3.06x | 3.53x | 4.85x |
+> | p13 | **2.89x** | 3.07x | 3.51x | 4.83x |
 >
-> The port is still FASTER than C at 32-64 px on the fast presets (0.46x at 32²
-> and 0.81x at 64² on p10/p13, 0.78x at 32² on p6) — its fixed per-frame cost is
-> 0.87x C's at p10. All 24 cells byte-identical.
-> `benchmarks/perf_gap_2026-08-13-final.{tsv,raw.tsv,meta}` (an intermediate
-> run after the first two of the four commits is `perf_gap_2026-08-13.*`).
+> The port is still FASTER than C at 32-64 px on the fast presets — its fixed
+> per-frame cost is 0.93x C's at p10. All 24 cells byte-identical.
+> `benchmarks/perf_gap_2026-08-13-r1r2.{tsv,raw.tsv,meta}` (the mid-session run
+> is `perf_gap_2026-08-13-final.*`, and an earlier one `perf_gap_2026-08-13.*`).
+>
+> **The 08-13-mid -> here step is the code review's R1 and R2** — the first two
+> findings of `docs/C-VS-PORT-CODE-REVIEW-2026-08-13.md`, and the first two
+> changes of the campaign that remove work whose result was DISCARDED rather
+> than DUPLICATED. Note this is the first movement at **p2** all session.
+>
+> * `56d19efe1` **R1 — the inverse transform ran even where the reconstruction
+>   is thrown away.** C gates it on `mds_do_spatial_sse || (!is_inter &&
+>   tx_depth)` (product_coding_loop.c:4783-4784) and all-intra pins
+>   `spatial_sse_full_loop_level = 3`, so C inverts NOTHING at MDS1/MDS2. A
+>   census put the discarded share of inverse-transform pixel work at 40-50 %
+>   (p10/p13), 36-50 % (p8), 43-51 % (p7), 28-53 % (p6), 24-44 % (p2). Three
+>   call sites opt out via an explicit `need_recon`, each with an
+>   exhaustive-scan dead-proof in the commit message. A/B: 12/12 cells
+>   1.021-1.053x at qp40, 28 of 28 cells below 1.0 across 6 presets x 3 sizes
+>   x 2 qps (control arm 13 below / 15 above; sign test p = 3.7e-9).
+>   `benchmarks/recon_gate_r1_ab_2026-08-13.meta`.
+> * `8179a7d94` **R2 — the exact coefficient rate was computed and then
+>   overwritten** wherever C's closed forms apply (C's tiers are an
+>   `if / else if / else`; the estimator is never reached on those arms). Now
+>   evaluated in C's order. 1.038-1.060x at p10/p13 **qp20**, and null at
+>   qp40/512+ — the wall clock tracks the census share of replaced coefficient
+>   work exactly (51-54 % at qp20, 16-38 % at qp40, ZERO at qp55).
+>   `benchmarks/ratemode_r2_ab_2026-08-13.meta`.
+> * `7dec5f24e` — the census instrument behind both
+>   (`benchmarks/txunit_census_2026-08-13.tsv`, feature `__txcensus`).
+>
+> Two corrections to the review, both from the census: its R2 scope treats the
+> **level-2** tier (p7/p8) as a live arm — it fires on 164 of 8,404 calls in one
+> of eighteen p7/p8 cells and zero in the other seventeen, so R2's value is
+> entirely the level-0 tier at p10/p13; and its R1 site table implies three
+> contributing sites at the fast presets — at p10/p13 only MDS1 contributes,
+> the other two sit behind `cfg.cfl_enabled`, false from M7 up.
 >
 > The 08-11 -> 08-13 step is four byte-identical changes, and every one of them
 > REMOVES A DUPLICATED COPY of something already computed — none of them makes
