@@ -1836,13 +1836,13 @@ impl<'a> Pd0Ctx<'a> {
             // split_cost_th(50) for i == 0, else early_exit_th(0 -> 1000);
             // parent_cost_bias = 1000. Identical ths at LVL_5 and LVL_1
             // (depth_early_exit level 1 for both, enc_mode_config.c:9282).
-            if self.mode != Pd0Mode::Lvl6 {
-                if let Some(pc) = parent_cost {
-                    let th: u128 = if i == 0 { 50 } else { 1000 };
-                    if (pc as u128) * th * 1000 <= (split_cost as u128) * 1_000_000 {
-                        split_valid = false;
-                        break;
-                    }
+            if self.mode != Pd0Mode::Lvl6
+                && let Some(pc) = parent_cost
+            {
+                let th: u128 = if i == 0 { 50 } else { 1000 };
+                if (pc as u128) * th * 1000 <= (split_cost as u128) * 1_000_000 {
+                    split_valid = false;
+                    break;
                 }
             }
             let (child_cost, child_eval) = self.pick(half, cx, cy);
@@ -1867,10 +1867,10 @@ impl<'a> Pd0Ctx<'a> {
         }
 
         // parent_cost_bias = 1000 (allintra): parent wins on <=.
-        if let Some(pc) = parent_cost {
-            if pc * 1000 <= split_cost * 1000 {
-                return (pc, eval);
-            }
+        if let Some(pc) = parent_cost
+            && pc * 1000 <= split_cost * 1000
+        {
+            return (pc, eval);
         }
         eval.split = true;
         (split_cost, eval)

@@ -149,12 +149,12 @@ fn main() {
             continue;
         };
         let val = val.trim();
-        if name.ends_with("_TOKEN") && val.starts_with('"') {
-            if let Some(tok) = val.trim_matches('"').strip_prefix("") {
-                if tok.starts_with('-') {
-                    macros.insert(name.to_string(), tok.to_string());
-                }
-            }
+        if name.ends_with("_TOKEN")
+            && val.starts_with('"')
+            && let Some(tok) = val.trim_matches('"').strip_prefix("")
+            && tok.starts_with('-')
+        {
+            macros.insert(name.to_string(), tok.to_string());
         }
     }
     // Pass 2: ConfigDescription entries `{FOO_TOKEN, "help..."}` (help may

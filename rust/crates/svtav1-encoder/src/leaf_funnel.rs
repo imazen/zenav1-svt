@@ -4780,17 +4780,18 @@ pub(crate) fn evaluate_leaf(
         ind_uv = Some(table);
     }
     #[cfg(feature = "std")]
-    if crate::dbgenv::nsqdbg() && crate::depth_refine::nsqdbg_here(abs_x, abs_y) {
-        if let Some(t) = &ind_uv {
-            eprintln!(
-                "NSQDBG UVTAB mi=({},{}) {}x{} t={:?}",
-                abs_y / 4,
-                abs_x / 4,
-                w,
-                h,
-                t
-            );
-        }
+    if crate::dbgenv::nsqdbg()
+        && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
+        && let Some(t) = &ind_uv
+    {
+        eprintln!(
+            "NSQDBG UVTAB mi=({},{}) {}x{} t={:?}",
+            abs_y / 4,
+            abs_x / 4,
+            w,
+            h,
+            t
+        );
     }
     let fi_elig = cfg.filter_intra && fi_allowed_bsize;
     let mut cand_modes: Vec<(u8, i8, u8)> = Vec::new();
@@ -5416,232 +5417,232 @@ pub(crate) fn evaluate_leaf(
     // missing is only the COMPENSATION at 10 bits, which is now generic over
     // `ReconSample` (see intrabc_pred.rs: the bilinear closed forms are
     // provably identical for bd <= 10).
-    if cfg.allow_intrabc {
-        if let (Some(ibc), Some(dvt)) = (fx.ibc, frame.dv_tables.as_ref()) {
-            let gate = fx.ibc_gate;
-            let do_ibc = crate::intrabc::do_intra_bc_gate(
-                &ibc.ctrls,
-                palette_ran,
-                (cands.len() - cands_before_palette) as u32,
-                gate.is_part_n,
-                w.max(h) as i32, // sq_size: only the (allintra-off) b4 gate reads it
-                (false, false),  // parent_n0: b4_parent_gating is off at every level
-                gate.sibling_n0,
-            );
-            if do_ibc {
-                let mi_row = (abs_y / 4) as i32;
-                let mi_col = (abs_x / 4) as i32;
-                let grid_stride = ibc.mi_cols;
-                let base = mi_row * grid_stride + mi_col;
-                // C's MVP scan runs against the live mi state where the
-                // CURRENT cell carries the block's own partition (the
-                // `has_top_right` VERT_A read) — stamp it before building
-                // the stack (commit will overwrite the cell either way).
-                let mvp = fx.ibc_mvp.as_deref_mut().expect("ibc_mvp with ibc state");
-                mvp[base as usize].partition = gate.partition;
-                let stack = {
-                    let grid = crate::intrabc_mvp::MvpGrid {
-                        entries: mvp,
-                        stride: grid_stride,
-                        base,
-                    };
-                    let bctx = crate::intrabc_mvp::derive_block_ctx(
-                        mi_row,
-                        mi_col,
-                        c_bsize_index(w, h),
-                        ibc.mi_rows,
-                        ibc.mi_cols,
-                        ibc.tile,
-                        ibc.sb_mi_size,
-                    );
-                    crate::intrabc_mvp::generate_mvp_table_intra_frame(&grid, &bctx)
+    if cfg.allow_intrabc
+        && let (Some(ibc), Some(dvt)) = (fx.ibc, frame.dv_tables.as_ref())
+    {
+        let gate = fx.ibc_gate;
+        let do_ibc = crate::intrabc::do_intra_bc_gate(
+            &ibc.ctrls,
+            palette_ran,
+            (cands.len() - cands_before_palette) as u32,
+            gate.is_part_n,
+            w.max(h) as i32, // sq_size: only the (allintra-off) b4 gate reads it
+            (false, false),  // parent_n0: b4_parent_gating is off at every level
+            gate.sibling_n0,
+        );
+        if do_ibc {
+            let mi_row = (abs_y / 4) as i32;
+            let mi_col = (abs_x / 4) as i32;
+            let grid_stride = ibc.mi_cols;
+            let base = mi_row * grid_stride + mi_col;
+            // C's MVP scan runs against the live mi state where the
+            // CURRENT cell carries the block's own partition (the
+            // `has_top_right` VERT_A read) — stamp it before building
+            // the stack (commit will overwrite the cell either way).
+            let mvp = fx.ibc_mvp.as_deref_mut().expect("ibc_mvp with ibc state");
+            mvp[base as usize].partition = gate.partition;
+            let stack = {
+                let grid = crate::intrabc_mvp::MvpGrid {
+                    entries: mvp,
+                    stride: grid_stride,
+                    base,
                 };
-                // dv_ref = nearest/near coercion + find_ref_dv fallback
-                // (mode_decision.c:3019-3033); C stamps it back onto
-                // ref_mv_stack[INTRA_FRAME][0].this_mv = cand->pred_mv[0].
-                let dv_ref =
-                    crate::intrabc_mvp::compose_dv_ref(&stack, ibc.tile, ibc.sb_mi_size, mi_row);
-                // Per-block hash query (square + size-gated), the bucket
-                // fetched once and offered to both directions.
-                let hash_eligible = crate::intrabc::hash_search_eligible(
-                    w as i32,
-                    h as i32,
-                    ibc.ctrls.max_block_size_hash,
-                );
-                let (bucket_entries, hv2) = if hash_eligible {
-                    let mut bufs = crate::intrabc_hash::BlockHashBuffers::default();
-                    let (hv1, hv2) = crate::intrabc_hash::get_block_hash_value(
-                        &y_src[abs_y * y_src_stride + abs_x..],
-                        y_src_stride,
-                        w,
-                        &mut bufs,
-                    );
-                    (
-                        ibc.hash
-                            .bucket(hv1)
-                            .iter()
-                            .map(|e| crate::intrabc::BlockHashEntry {
-                                x: i32::from(e.x),
-                                y: i32::from(e.y),
-                                hash_value2: e.hash_value2,
-                            })
-                            .collect::<Vec<_>>(),
-                        hv2,
-                    )
-                } else {
-                    (Vec::new(), 0)
-                };
-                let buckets: [Option<&[crate::intrabc::BlockHashEntry]>; 2] = if hash_eligible {
-                    [Some(&bucket_entries), Some(&bucket_entries)]
-                } else {
-                    [None, None]
-                };
-                let dvs = crate::intrabc::intra_bc_search(
-                    y_src, // SOURCE pixels (A.3 fact 1), frame-origin absolute
-                    y_src_stride,
-                    w as i32,
-                    h as i32,
-                    (w / 4) as i32,
-                    (h / 4) as i32,
+                let bctx = crate::intrabc_mvp::derive_block_ctx(
                     mi_row,
                     mi_col,
+                    c_bsize_index(w, h),
                     ibc.mi_rows,
                     ibc.mi_cols,
-                    ibc.sb_mi_size,
-                    ibc.sb_size_log2_mi,
-                    ibc.sb_size_px,
                     ibc.tile,
-                    dv_ref,
-                    &ibc.sites,
-                    &ibc.ctrls,
-                    ibc.sad_per_bit,
-                    ibc.error_per_bit,
-                    false, // approx_inter_rate: structurally 0 on allintra
-                    &ibc.search_tables,
-                    buckets,
-                    hv2,
+                    ibc.sb_mi_size,
                 );
-                // Diagnostic (SVTAV1_IBCDBG): what the DV search actually
-                // returned for this block. Without it a "C codes IntraBC here
-                // and the port does not" verdict cannot distinguish "the
-                // search found no DV" from "it found one and the RD lost".
-                #[cfg(feature = "std")]
-                if crate::dbgenv::ibcdbg() && crate::depth_refine::nsqdbg_here(abs_x, abs_y) {
-                    eprintln!(
-                        "NSQDBG IBCSEARCH mi=({},{}) {}x{} hash_elig={} bucket={} dv_ref=({},{}) ndv={} dvs={:?}",
-                        abs_y / 4,
-                        abs_x / 4,
+                crate::intrabc_mvp::generate_mvp_table_intra_frame(&grid, &bctx)
+            };
+            // dv_ref = nearest/near coercion + find_ref_dv fallback
+            // (mode_decision.c:3019-3033); C stamps it back onto
+            // ref_mv_stack[INTRA_FRAME][0].this_mv = cand->pred_mv[0].
+            let dv_ref =
+                crate::intrabc_mvp::compose_dv_ref(&stack, ibc.tile, ibc.sb_mi_size, mi_row);
+            // Per-block hash query (square + size-gated), the bucket
+            // fetched once and offered to both directions.
+            let hash_eligible = crate::intrabc::hash_search_eligible(
+                w as i32,
+                h as i32,
+                ibc.ctrls.max_block_size_hash,
+            );
+            let (bucket_entries, hv2) = if hash_eligible {
+                let mut bufs = crate::intrabc_hash::BlockHashBuffers::default();
+                let (hv1, hv2) = crate::intrabc_hash::get_block_hash_value(
+                    &y_src[abs_y * y_src_stride + abs_x..],
+                    y_src_stride,
+                    w,
+                    &mut bufs,
+                );
+                (
+                    ibc.hash
+                        .bucket(hv1)
+                        .iter()
+                        .map(|e| crate::intrabc::BlockHashEntry {
+                            x: i32::from(e.x),
+                            y: i32::from(e.y),
+                            hash_value2: e.hash_value2,
+                        })
+                        .collect::<Vec<_>>(),
+                    hv2,
+                )
+            } else {
+                (Vec::new(), 0)
+            };
+            let buckets: [Option<&[crate::intrabc::BlockHashEntry]>; 2] = if hash_eligible {
+                [Some(&bucket_entries), Some(&bucket_entries)]
+            } else {
+                [None, None]
+            };
+            let dvs = crate::intrabc::intra_bc_search(
+                y_src, // SOURCE pixels (A.3 fact 1), frame-origin absolute
+                y_src_stride,
+                w as i32,
+                h as i32,
+                (w / 4) as i32,
+                (h / 4) as i32,
+                mi_row,
+                mi_col,
+                ibc.mi_rows,
+                ibc.mi_cols,
+                ibc.sb_mi_size,
+                ibc.sb_size_log2_mi,
+                ibc.sb_size_px,
+                ibc.tile,
+                dv_ref,
+                &ibc.sites,
+                &ibc.ctrls,
+                ibc.sad_per_bit,
+                ibc.error_per_bit,
+                false, // approx_inter_rate: structurally 0 on allintra
+                &ibc.search_tables,
+                buckets,
+                hv2,
+            );
+            // Diagnostic (SVTAV1_IBCDBG): what the DV search actually
+            // returned for this block. Without it a "C codes IntraBC here
+            // and the port does not" verdict cannot distinguish "the
+            // search found no DV" from "it found one and the RD lost".
+            #[cfg(feature = "std")]
+            if crate::dbgenv::ibcdbg() && crate::depth_refine::nsqdbg_here(abs_x, abs_y) {
+                eprintln!(
+                    "NSQDBG IBCSEARCH mi=({},{}) {}x{} hash_elig={} bucket={} dv_ref=({},{}) ndv={} dvs={:?}",
+                    abs_y / 4,
+                    abs_x / 4,
+                    w,
+                    h,
+                    hash_eligible,
+                    bucket_entries.len(),
+                    dv_ref.y,
+                    dv_ref.x,
+                    dvs.len(),
+                    dvs,
+                );
+            }
+            for dv in dvs {
+                // Prediction: the RECON-domain block copy (the ONE
+                // search-vs-predict asymmetry — map §A.6).
+                let mut pred = vec![0u8; w * h];
+                crate::intrabc_pred::predict_intrabc_luma(
+                    y_recon, y_stride, abs_x, abs_y, w, h, dv, &mut pred,
+                );
+                // The SAME block copy on the 10-bit canvas. This is the
+                // prediction `tx_unit_hbd` residuals against; leaving it
+                // empty is what made an IBC candidate unrepresentable at
+                // bd10 (and is why the injection was gated out).
+                let mut pred10: Vec<u16> = Vec::new();
+                if bd10_funnel {
+                    pred10 = vec![0u16; w * h];
+                    crate::intrabc_pred::predict_intrabc_luma(
+                        fx.y_recon10.as_deref().unwrap(),
+                        y_stride,
+                        abs_x,
+                        abs_y,
                         w,
                         h,
-                        hash_eligible,
-                        bucket_entries.len(),
-                        dv_ref.y,
-                        dv_ref.x,
-                        dvs.len(),
-                        dvs,
-                    );
-                }
-                for dv in dvs {
-                    // Prediction: the RECON-domain block copy (the ONE
-                    // search-vs-predict asymmetry — map §A.6).
-                    let mut pred = vec![0u8; w * h];
-                    crate::intrabc_pred::predict_intrabc_luma(
-                        y_recon, y_stride, abs_x, abs_y, w, h, dv, &mut pred,
-                    );
-                    // The SAME block copy on the 10-bit canvas. This is the
-                    // prediction `tx_unit_hbd` residuals against; leaving it
-                    // empty is what made an IBC candidate unrepresentable at
-                    // bd10 (and is why the injection was gated out).
-                    let mut pred10: Vec<u16> = Vec::new();
-                    if bd10_funnel {
-                        pred10 = vec![0u16; w * h];
-                        crate::intrabc_pred::predict_intrabc_luma(
-                            fx.y_recon10.as_deref().unwrap(),
-                            y_stride,
-                            abs_x,
-                            abs_y,
-                            w,
-                            h,
-                            dv,
-                            &mut pred10,
-                        );
-                    }
-                    let satd = if bd10_funnel {
-                        // Score MDS0 at the real depth, like every other
-                        // candidate's bd10 arm above.
-                        hadamard_satd_hbd(&blk_y_src10, w, 0, &pred10, w, h)
-                    } else if frame.mds0_ssd {
-                        let mut sse: u64 = 0;
-                        for r in 0..h {
-                            let srow = y_src_off + r * y_src_stride;
-                            for c in 0..w {
-                                let d = i64::from(y_src[srow + c]) - i64::from(pred[r * w + c]);
-                                sse += (d * d) as u64;
-                            }
-                        }
-                        sse
-                    } else {
-                        hadamard_satd(y_src, y_src_stride, y_src_off, &pred, w, h)
-                    };
-                    // svt_aom_intra_fast_cost use_intrabc arm (rd_cost.c
-                    // :531-545): rate = mv_bit_cost(dv, pred_dv, dv tables,
-                    // MV_COST_WEIGHT_SUB) + intrabc_fac_bits[1]; chroma 0.
-                    let (flr32, _) = crate::intrabc::intrabc_fast_cost_rates(
                         dv,
-                        dv_ref,
-                        dvt,
-                        &rates.intrabc_fac_bits,
+                        &mut pred10,
                     );
-                    let flr = u64::from(flr32);
-                    let fast_cost = if bd10_funnel {
-                        rdcost(lambda_bd10_fast, flr, satd << 4)
-                    } else {
-                        rdcost(lambda, flr, if frame.mds0_ssd { satd } else { satd << 4 })
-                    };
-                    cands.push(Cand {
-                        mode: 0, // DC_PRED (the coded neighbour-visible mode)
-                        delta: 0,
-                        fi: FI_NONE,
-                        uv: 0, // UV_DC_PRED
-                        uv_delta: 0,
-                        pred,
-                        pred10,
-                        flr,
-                        fcr: 0,
-                        fast_cost,
-                        full_cost: u64::MAX,
-                        mds3_cost_ssim: u64::MAX,
-                        mds1_has_coeff: false,
-                        tx_depth: 0,
-                        txb_q: Vec::new(),
-                        txb_eob: Vec::new(),
-                        txb_cul: Vec::new(),
-                        txb_type: Vec::new(),
-                        y_recon: Vec::new(),
-                        y_recon10: Vec::new(),
-                        u_recon10: Vec::new(),
-                        v_recon10: Vec::new(),
-                        y_recon_d0: Vec::new(),
-                        y_bits: 0,
-                        y_dist: 0,
-                        u_q: Vec::new(),
-                        v_q: Vec::new(),
-                        u_eob: 0,
-                        v_eob: 0,
-                        u_cul: 0,
-                        v_cul: 0,
-                        u_recon: Vec::new(),
-                        v_recon: Vec::new(),
-                        cfl_alpha_idx: 0,
-                        cfl_alpha_signs: 0,
-                        palette: None,
-                        ibc: Some((dv, dv_ref)),
-                        mds3_cost: u64::MAX,
-                        block_has_coeff: false,
-                        total_rate: 0,
-                        full_dist: 0,
-                    });
                 }
+                let satd = if bd10_funnel {
+                    // Score MDS0 at the real depth, like every other
+                    // candidate's bd10 arm above.
+                    hadamard_satd_hbd(&blk_y_src10, w, 0, &pred10, w, h)
+                } else if frame.mds0_ssd {
+                    let mut sse: u64 = 0;
+                    for r in 0..h {
+                        let srow = y_src_off + r * y_src_stride;
+                        for c in 0..w {
+                            let d = i64::from(y_src[srow + c]) - i64::from(pred[r * w + c]);
+                            sse += (d * d) as u64;
+                        }
+                    }
+                    sse
+                } else {
+                    hadamard_satd(y_src, y_src_stride, y_src_off, &pred, w, h)
+                };
+                // svt_aom_intra_fast_cost use_intrabc arm (rd_cost.c
+                // :531-545): rate = mv_bit_cost(dv, pred_dv, dv tables,
+                // MV_COST_WEIGHT_SUB) + intrabc_fac_bits[1]; chroma 0.
+                let (flr32, _) = crate::intrabc::intrabc_fast_cost_rates(
+                    dv,
+                    dv_ref,
+                    dvt,
+                    &rates.intrabc_fac_bits,
+                );
+                let flr = u64::from(flr32);
+                let fast_cost = if bd10_funnel {
+                    rdcost(lambda_bd10_fast, flr, satd << 4)
+                } else {
+                    rdcost(lambda, flr, if frame.mds0_ssd { satd } else { satd << 4 })
+                };
+                cands.push(Cand {
+                    mode: 0, // DC_PRED (the coded neighbour-visible mode)
+                    delta: 0,
+                    fi: FI_NONE,
+                    uv: 0, // UV_DC_PRED
+                    uv_delta: 0,
+                    pred,
+                    pred10,
+                    flr,
+                    fcr: 0,
+                    fast_cost,
+                    full_cost: u64::MAX,
+                    mds3_cost_ssim: u64::MAX,
+                    mds1_has_coeff: false,
+                    tx_depth: 0,
+                    txb_q: Vec::new(),
+                    txb_eob: Vec::new(),
+                    txb_cul: Vec::new(),
+                    txb_type: Vec::new(),
+                    y_recon: Vec::new(),
+                    y_recon10: Vec::new(),
+                    u_recon10: Vec::new(),
+                    v_recon10: Vec::new(),
+                    y_recon_d0: Vec::new(),
+                    y_bits: 0,
+                    y_dist: 0,
+                    u_q: Vec::new(),
+                    v_q: Vec::new(),
+                    u_eob: 0,
+                    v_eob: 0,
+                    u_cul: 0,
+                    v_cul: 0,
+                    u_recon: Vec::new(),
+                    v_recon: Vec::new(),
+                    cfl_alpha_idx: 0,
+                    cfl_alpha_signs: 0,
+                    palette: None,
+                    ibc: Some((dv, dv_ref)),
+                    mds3_cost: u64::MAX,
+                    block_has_coeff: false,
+                    total_rate: 0,
+                    full_dist: 0,
+                });
             }
         }
     }

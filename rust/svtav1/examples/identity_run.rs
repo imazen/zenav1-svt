@@ -514,10 +514,10 @@ fn main() {
     // variance boost, and for IQ max_tx_size + screen content) via
     // `HdrForkConfig::apply_tune_overrides`, which the pipeline calls at
     // encode time. Unset => tune 1 (PSNR) => every pre-existing cell unchanged.
-    if let Ok(t) = std::env::var("SVTAV1_TUNE") {
-        if let Ok(v) = t.parse::<u8>() {
-            pipeline.hdr.tune = v;
-        }
+    if let Ok(t) = std::env::var("SVTAV1_TUNE")
+        && let Ok(v) = t.parse::<u8>()
+    {
+        pipeline.hdr.tune = v;
     }
     let obu = if hbd_src {
         // Task #6: the native-10-bit entry points — the port sees the SAME
@@ -561,15 +561,15 @@ fn main() {
     }
     // bd10 diagnostic: dump the re-encode pass's true-10-bit LUMA recon (u16
     // LE) for the self-consistency check vs the decoder's prefilter output.
-    if let Ok(path) = std::env::var("SVTAV1_BD10_RECON") {
-        if let Some(r10) = pipeline.last_recon10_y.as_ref() {
-            let mut b = Vec::with_capacity(r10.len() * 2);
-            for &v in r10 {
-                b.extend_from_slice(&v.to_le_bytes());
-            }
-            std::fs::write(&path, &b).expect("write recon10");
-            eprintln!("SVTAV1_BD10_RECON -> {path} ({} u16)", r10.len());
+    if let Ok(path) = std::env::var("SVTAV1_BD10_RECON")
+        && let Some(r10) = pipeline.last_recon10_y.as_ref()
+    {
+        let mut b = Vec::with_capacity(r10.len() * 2);
+        for &v in r10 {
+            b.extend_from_slice(&v.to_le_bytes());
         }
+        std::fs::write(&path, &b).expect("write recon10");
+        eprintln!("SVTAV1_BD10_RECON -> {path} ({} u16)", r10.len());
     }
     println!(
         "identity_run: {content} {w}x{h} qp={qp} preset={preset} sb={} -> {} bytes",

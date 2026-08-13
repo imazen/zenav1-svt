@@ -421,14 +421,15 @@ fn set_start_end_depth(
         }
         // lower_depth_split_cost_th (:1573-1592): drop the parent depth
         // when splitting the PARENT is very cheap relative to its cost.
-        if s != 0 && ctrls.lower_split_th != 0 {
-            if let Some(p) = parent {
-                // C :1566 `pc_tree->parent->tested_blk[PART_N][0]`.
-                if p.sq_tested {
-                    let split_cost = rdcost(env.lambda, env.tables.split_bits(p.sq), 0);
-                    if split_cost * 10000 < p.cost * ctrls.lower_split_th {
-                        s = 0;
-                    }
+        if s != 0
+            && ctrls.lower_split_th != 0
+            && let Some(p) = parent
+        {
+            // C :1566 `pc_tree->parent->tested_blk[PART_N][0]`.
+            if p.sq_tested {
+                let split_cost = rdcost(env.lambda, env.tables.split_bits(p.sq), 0);
+                if split_cost * 10000 < p.cost * ctrls.lower_split_th {
+                    s = 0;
                 }
             }
         }
@@ -1638,31 +1639,27 @@ impl DepthWalk<'_, '_> {
             sq_weight += Self::CONSERVATIVE_OFFSET_0;
         }
         let sq_cost = sq.ev.block_cost();
-        if shape == PartitionType::Horz4 {
-            if let Some(h) = h_children {
-                let h_cost = h[0].0 + h[1].0;
-                let mut skip = h_cost > (sq_cost * sq_weight) / 100;
-                if !skip {
-                    if let Some(v) = v_children {
-                        let v_cost = v[0].0 + v[1].0;
-                        skip = h_cost > (v_cost * self.nsq.hv_weight) / 100;
-                    }
-                }
-                return skip;
-            }
-        }
-        if shape == PartitionType::Vert4 {
-            if let Some(v) = v_children {
+        if shape == PartitionType::Horz4
+            && let Some(h) = h_children
+        {
+            let h_cost = h[0].0 + h[1].0;
+            let mut skip = h_cost > (sq_cost * sq_weight) / 100;
+            if !skip && let Some(v) = v_children {
                 let v_cost = v[0].0 + v[1].0;
-                let mut skip = v_cost > (sq_cost * sq_weight) / 100;
-                if !skip {
-                    if let Some(h) = h_children {
-                        let h_cost = h[0].0 + h[1].0;
-                        skip = v_cost > (h_cost * self.nsq.hv_weight) / 100;
-                    }
-                }
-                return skip;
+                skip = h_cost > (v_cost * self.nsq.hv_weight) / 100;
             }
+            return skip;
+        }
+        if shape == PartitionType::Vert4
+            && let Some(v) = v_children
+        {
+            let v_cost = v[0].0 + v[1].0;
+            let mut skip = v_cost > (sq_cost * sq_weight) / 100;
+            if !skip && let Some(h) = h_children {
+                let h_cost = h[0].0 + h[1].0;
+                skip = v_cost > (h_cost * self.nsq.hv_weight) / 100;
+            }
+            return skip;
         }
         false
     }
@@ -1772,12 +1769,10 @@ impl DepthWalk<'_, '_> {
             for &shape in shapes {
                 // Restore the pre-shape state (C: copy [1] -> [0] at
                 // nsi == 0 when a previous shape saved it).
-                if committed_since_snap {
-                    if let Some(sn) = snap.take() {
-                        self.restore_snap(&sn, abs_x, abs_y, size);
-                        snap = Some(sn);
-                        committed_since_snap = false;
-                    }
+                if committed_since_snap && let Some(sn) = snap.take() {
+                    self.restore_snap(&sn, abs_x, abs_y, size);
+                    snap = Some(sn);
+                    committed_since_snap = false;
                 }
 
                 // C `svt_aom_partition_rate_cost` (rd_cost.c:1837) returns 0 for
@@ -1924,24 +1919,24 @@ impl DepthWalk<'_, '_> {
                     part_cost += ev.block_cost();
                     evals.push(ev);
 
-                    if let Some((_, best_rd, _)) = &best {
-                        if part_cost >= *best_rd {
-                            #[cfg(feature = "std")]
-                            if nsqdbg_here(abs_x, abs_y) {
-                                eprintln!(
-                                    "NSQDBG ABORT mi=({},{}) bsize={} shape={} nsi={} part_cost={} best={}",
-                                    abs_y / 4,
-                                    abs_x / 4,
-                                    c_bsize_sq(size),
-                                    c_part(shape),
-                                    nsi,
-                                    part_cost,
-                                    best_rd,
-                                );
-                            }
-                            valid = false;
-                            break;
+                    if let Some((_, best_rd, _)) = &best
+                        && part_cost >= *best_rd
+                    {
+                        #[cfg(feature = "std")]
+                        if nsqdbg_here(abs_x, abs_y) {
+                            eprintln!(
+                                "NSQDBG ABORT mi=({},{}) bsize={} shape={} nsi={} part_cost={} best={}",
+                                abs_y / 4,
+                                abs_x / 4,
+                                c_bsize_sq(size),
+                                c_part(shape),
+                                nsi,
+                                part_cost,
+                                best_rd,
+                            );
                         }
+                        valid = false;
+                        break;
                     }
 
                     if nsi + 1 < children.len() {
@@ -2051,23 +2046,23 @@ impl DepthWalk<'_, '_> {
 
             // skip_sub_depth cond1 (svt_aom_pick_partition:11563-11568) —
             // on the SQ winner's quadrant dists.
-            if let Some(sq) = &sq_info {
-                if split_flag && size <= Self::skip_sub().max_size {
-                    if let Some(quad) = &sq.quad {
-                        if self.sub_depth_skip_cond1(&sq.ev, quad) {
-                            split_flag = false;
-                        }
-                    }
-                }
+            if let Some(sq) = &sq_info
+                && split_flag
+                && size <= Self::skip_sub().max_size
+                && let Some(quad) = &sq.quad
+                && self.sub_depth_skip_cond1(&sq.ev, quad)
+            {
+                split_flag = false;
             }
 
             // C: restore [1] -> [0] before the sub-depth walk.
-            if committed_since_snap && split_flag {
-                if let Some(sn) = snap.take() {
-                    self.restore_snap(&sn, abs_x, abs_y, size);
-                    snap = Some(sn);
-                    committed_since_snap = false;
-                }
+            if committed_since_snap
+                && split_flag
+                && let Some(sn) = snap.take()
+            {
+                self.restore_snap(&sn, abs_x, abs_y, size);
+                snap = Some(sn);
+                committed_since_snap = false;
             }
         }
 
@@ -2087,10 +2082,8 @@ impl DepthWalk<'_, '_> {
         // shape's partial commits are still live, restore first —
         // equivalent to C's winner-overwrite since every write spans
         // exactly the block.
-        if committed_since_snap {
-            if let Some(sn) = snap.take() {
-                self.restore_snap(&sn, abs_x, abs_y, size);
-            }
+        if committed_since_snap && let Some(sn) = snap.take() {
+            self.restore_snap(&sn, abs_x, abs_y, size);
         }
         // C `svt_aom_pick_partition` returns `pc_tree->rdc.valid` — 0 when the
         // node tested no shape AND its SPLIT was invalid. Reachable only on a
@@ -2236,10 +2229,10 @@ impl DepthWalk<'_, '_> {
                 chose,
             );
         }
-        if let Some(prd) = parent_rd {
-            if (Self::PARENT_COST_BIAS as u128) * (prd as u128) <= (split_cost as u128) * 1000 {
-                return SplitOut::ParentKept;
-            }
+        if let Some(prd) = parent_rd
+            && (Self::PARENT_COST_BIAS as u128) * (prd as u128) <= (split_cost as u128) * 1000
+        {
+            return SplitOut::ParentKept;
         }
         SplitOut::Chosen(Box::new(NodeRes {
             rd: split_cost,

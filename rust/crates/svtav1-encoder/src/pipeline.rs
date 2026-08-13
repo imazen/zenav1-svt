@@ -1323,10 +1323,10 @@ impl EncodePipeline {
                 // Collect available reference frames for TF
                 let mut ref_frames: alloc::vec::Vec<&[u8]> = alloc::vec::Vec::new();
                 for slot in 0..svtav1_types::reference::REF_FRAMES {
-                    if let Some(rf) = self.dpb.get(slot) {
-                        if rf.y_plane.len() == n {
-                            ref_frames.push(&rf.y_plane);
-                        }
+                    if let Some(rf) = self.dpb.get(slot)
+                        && rf.y_plane.len() == n
+                    {
+                        ref_frames.push(&rf.y_plane);
                     }
                     if ref_frames.len() >= 3 {
                         break;
@@ -1909,16 +1909,16 @@ impl EncodePipeline {
         // reads them off static_config inside svt_av1_optimize_txb; the
         // sharp-tx gate `(use_sharpness||sharp_tx) && delta_q_present &&
         // plane==0` is unconditional for sharp_tx=1, full_loop.c:1070-1078).
-        if self.hdr.is_fork() {
-            if let Some(cq) = c_quant.as_mut() {
-                let cfg = alloc::sync::Arc::get_mut(cq)
-                    .expect("c_quant is unshared before tile encoding starts");
-                cfg.hdr_fork = true;
-                cfg.sharpness = self.hdr.sharpness;
-                cfg.noise_norm_strength = self.hdr.noise_norm_strength;
-                cfg.sharp_tx_active = sharp_tx_active;
-                cfg.qm_levels = qm_levels;
-            }
+        if self.hdr.is_fork()
+            && let Some(cq) = c_quant.as_mut()
+        {
+            let cfg = alloc::sync::Arc::get_mut(cq)
+                .expect("c_quant is unshared before tile encoding starts");
+            cfg.hdr_fork = true;
+            cfg.sharpness = self.hdr.sharpness;
+            cfg.noise_norm_strength = self.hdr.noise_norm_strength;
+            cfg.sharp_tx_active = sharp_tx_active;
+            cfg.qm_levels = qm_levels;
         }
         let tile_recons = encode_tile_rows(
             &encode_input,
@@ -2949,21 +2949,22 @@ impl EncodePipeline {
         if self.recon_output {
             self.last_recon_unfiltered = Some((recon.clone(), u_recon.clone(), v_recon.clone()));
         }
-        if let Some((y10, u10, v10)) = recon10.as_mut() {
-            if lf_levels.any() && postfilter_consumed {
-                crate::deblock::apply_deblock_frame_hbd(
-                    y10,
-                    u10,
-                    v10,
-                    w,
-                    h,
-                    true,
-                    &deblock_geom,
-                    &lf_levels,
-                    lf_sharp_eff,
-                    self.bit_depth,
-                );
-            }
+        if let Some((y10, u10, v10)) = recon10.as_mut()
+            && lf_levels.any()
+            && postfilter_consumed
+        {
+            crate::deblock::apply_deblock_frame_hbd(
+                y10,
+                u10,
+                v10,
+                w,
+                h,
+                true,
+                &deblock_geom,
+                &lf_levels,
+                lf_sharp_eff,
+                self.bit_depth,
+            );
         }
         if lf_levels.any() && postfilter_consumed {
             crate::deblock::apply_deblock_frame(
@@ -4966,17 +4967,15 @@ fn encode_block_syntax(
     // literals the encoder never wrote: a CORRUPT tile, not merely a
     // mismatched one. At SB64 `index` is always 0 and this is bit-for-bit
     // the previous behaviour.
-    if !skip {
-        if let Some(st) = ectx.cdef_sb.as_mut() {
-            let index = if st.sb128 {
-                ((block_x >> 6) & 1) + 2 * ((block_y >> 6) & 1)
-            } else {
-                0
-            };
-            if !st.transmitted[index] {
-                st.transmitted[index] = true;
-                writer.write_literal(u32::from(st.strengths[index]), u32::from(st.bits));
-            }
+    if !skip && let Some(st) = ectx.cdef_sb.as_mut() {
+        let index = if st.sb128 {
+            ((block_x >> 6) & 1) + 2 * ((block_y >> 6) & 1)
+        } else {
+            0
+        };
+        if !st.transmitted[index] {
+            st.transmitted[index] = true;
+            writer.write_literal(u32::from(st.strengths[index]), u32::from(st.bits));
         }
     }
 

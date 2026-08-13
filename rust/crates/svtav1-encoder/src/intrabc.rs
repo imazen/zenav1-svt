@@ -1902,8 +1902,8 @@ pub fn full_pixel_search(
         run_mesh_search = false;
     }
 
-    if run_mesh_search {
-        if let Some(((ex_x, ex_y), var_ex)) = intrabc_full_pixel_exhaustive(
+    if run_mesh_search
+        && let Some(((ex_x, ex_y), var_ex)) = intrabc_full_pixel_exhaustive(
             pic,
             stride,
             block_origin,
@@ -1917,13 +1917,12 @@ pub fn full_pixel_search(
             tables,
             error_per_bit,
             approx_inter_rate,
-        ) {
-            if var_ex < var {
-                best_x = ex_x;
-                best_y = ex_y;
-                var = var_ex;
-            }
-        }
+        )
+        && var_ex < var
+    {
+        best_x = ex_x;
+        best_y = ex_y;
+        var = var_ex;
     }
 
     (best_x, best_y, var)
