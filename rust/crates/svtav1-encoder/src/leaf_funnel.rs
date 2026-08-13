@@ -2255,8 +2255,45 @@ fn tx_unit_inner(
         if shift < 0 { d << (-shift) } else { d >> shift }
     };
 
-    let real_bits = if eob > 0 {
-        cost_coeffs_txb(
+    // ---- coefficient rate: C's `if / else if / else` tier, in C's order ----
+    //
+    // C never calls the real estimator when a closed form applies — the tiers
+    // are literally an if/else-if/else and only the taken arm runs
+    // (product_coding_loop.c:4914-4934, identically :5540-5564, :5883-5890).
+    // The port used to compute `cost_coeffs_txb` FIRST and then throw it away
+    // on the closed-form branches. Same numbers, in C's order.
+    //
+    // `coeff_rate_est_lvl == 2` (M7/M8 allintra, rate_est_level 4): the LUMA
+    // coeff RATE used in the RD compare is the fast per-txb approximation, not
+    // the real entropy cost — `th = (txw*txh)>>6`, `eob < th ? 6000+eob*1000 :
+    // real`. C applies it identically in every luma tx path (tx_type_search
+    // product_coding_loop.c:4976, perform_dct_dct_tx :5619, the multi-txb loop
+    // :5951), all reached from the shared `full_loop_core`, so it prices BOTH
+    // the MDS1 NIC pruning and the MDS3 mode/tx-type decision. Chroma keeps the
+    // real cost here; its own eob-approximation (`skip_chroma_rate_est`,
+    // full_loop.c:1922) is applied by the caller. Level 1 (M6) keeps the real
+    // cost. `eob==0` folds into `eob < th` (th >= 1 for every >= 8x8 TX) ->
+    // 6000, matching C's tx_type_search / coeff-shaving eob==0 luma price.
+    //
+    // `RateMode::Lvl0Closed` is level 0 (eff-M9) on the
+    // `perform_tx_partitioning` path: the depth loop applied this same formula
+    // to `tx_unit`'s output and dropped the exact rate entirely. Producing it
+    // here is the identical arithmetic on the identical inputs (`eob`, `w*h`),
+    // so the depth loop's own expression — left untouched — still computes the
+    // same number it always did.
+    let closed_lvl2 =
+        plane_type == 0 && frame.cfg.coeff_rate_est_lvl == 2 && (eob as usize) < ((w * h) >> 6);
+    let bits = match rate_mode {
+        RateMode::Lvl0Closed => {
+            let th = (w * h) >> 6;
+            if (eob as usize) < th {
+                6000 + eob as i32 * 1000
+            } else {
+                3000 + eob as i32 * 100
+            }
+        }
+        RateMode::Exact if closed_lvl2 => 6000 + eob as i32 * 1000,
+        RateMode::Exact if eob > 0 => cost_coeffs_txb(
             &qcoeff,
             eob,
             c_tx,
@@ -2266,32 +2303,8 @@ fn tx_unit_inner(
             dc_sign_ctx,
             intra_dir,
             rates,
-        )
-    } else {
-        cost_skip_txb(c_tx, plane_type, txb_skip_ctx, rates)
-    };
-    // C `coeff_rate_est_lvl == 2` (M7/M8 allintra, rate_est_level 4): the
-    // LUMA coeff RATE used in the RD compare is the fast per-txb
-    // approximation, not the real entropy cost — `th = (txw*txh)>>6`,
-    // `eob < th ? 6000 + eob*1000 : real`. C applies it identically in
-    // every luma tx path (tx_type_search product_coding_loop.c:4976,
-    // perform_dct_dct_tx :5619, the multi-txb loop :5951), all reached from
-    // the shared `full_loop_core`, so it prices BOTH the MDS1 NIC pruning
-    // and the MDS3 mode/tx-type decision. Chroma keeps the real cost here;
-    // its own eob-approximation (`skip_chroma_rate_est`, full_loop.c:1922)
-    // is applied by the caller. Level 0 (eff-M9) is handled in the depth
-    // loop (unchanged); level 1 (M6) keeps the real cost. `eob==0` folds
-    // into `eob < th` (th >= 1 for every >= 8x8 TX) -> 6000, matching C's
-    // tx_type_search / coeff-shaving eob==0 luma price.
-    let bits = if plane_type == 0 && frame.cfg.coeff_rate_est_lvl == 2 {
-        let th = (w * h) >> 6;
-        if (eob as usize) < th {
-            6000 + eob as i32 * 1000
-        } else {
-            real_bits
-        }
-    } else {
-        real_bits
+        ),
+        RateMode::Exact => cost_skip_txb(c_tx, plane_type, txb_skip_ctx, rates),
     };
     // R1/R2 census (feature `__txcensus`, off by default). `rate_replaced` = a
     // closed form supersedes the exact `cost_coeffs_txb` result on this call:
@@ -2300,12 +2313,9 @@ fn tx_unit_inner(
     // new parameters are observed only.
     #[cfg(feature = "__txcensus")]
     {
-        let lvl2_repl =
-            plane_type == 0 && frame.cfg.coeff_rate_est_lvl == 2 && (eob as usize) < ((w * h) >> 6);
-        let rate_replaced = rate_mode == RateMode::Lvl0Closed || lvl2_repl;
+        let rate_replaced = rate_mode == RateMode::Lvl0Closed || closed_lvl2;
         txcensus::observe((w * h) as u64, eob as u64, need_recon, rate_replaced);
     }
-    let _ = (need_recon, rate_mode);
     let cul = compute_cul_level(scan, &qcoeff, eob);
 
     TxUnitOut {
@@ -9114,6 +9124,17 @@ fn txt_search(
     } else {
         div_round(frame.cfg.txt_satd_th * qw, qwd)
     } as i64;
+
+    // C's level-0 closed form replaces `out.bits`, which also feeds the
+    // per-tx-type `cost` compare below. That is inert only when exactly ONE
+    // type is evaluated (`only_dct`), where `best` is assigned on the sole
+    // iteration whatever the cost. `coeff_rate_est_lvl == 0` implies
+    // `txt_on == false` (`FunnelCfg::for_preset`'s `_ =>` arm sets both), which
+    // implies `only_dct`, so the demotion below never fires today — it is a
+    // structural guard so a future preset table cannot make the search
+    // rate-sensitive behind our back.
+    let rate_mode = if only_dct { rate_mode } else { RateMode::Exact };
+    debug_assert!(only_dct || rate_mode == RateMode::Exact);
 
     let mut best: Option<TxUnitOut> = None;
     // The bd10 twin of the SELECTED type (not of the u8-best type): when the

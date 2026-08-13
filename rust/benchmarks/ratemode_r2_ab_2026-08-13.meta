@@ -1,0 +1,98 @@
+# R2 — stop computing the exact coefficient rate where a closed form replaces it
+
+date: 2026-08-13
+host: mac (Apple aarch64, 12 logical cores), box shared with another agent —
+      every timed run wrapped in `~/bin/measlock` (mutual exclusion + wait for
+      quiet). NEITHER SIDE NICED.
+base: 7dec5f24e (the census commit; behaviourally identical to cb4652c44)
+cand: this commit
+build: both arms `RUSTFLAGS=-C llvm-args=-align-all-functions=4`, no
+       `target-cpu=native`. Control arm = a byte-IDENTICAL SECOND COPY of the
+       base binary (`md5` equal), run in the same session on the same grid.
+harness: rust/tools/perf_ab.sh — interleaved paired rounds, order randomised
+       per round, one untimed warmup inside each sample.
+noise floor: the repo's documented identity band is [0.9843, 1.0190]; anything
+       inside it is NULL whatever its sign.
+
+## What changed
+
+`tx_unit_inner` used to compute `cost_coeffs_txb` FIRST and then discard it on
+the two branches where C's closed forms apply. C's rate tiers are an
+`if / else if / else` and the estimator is never reached on those arms
+(`product_coding_loop.c:4914-4934`, `:5540-5564`, `:5883-5890`). The port now
+evaluates the tiers in C's order.
+
+This is NOT a dead-value elimination and needs no deadness proof: on
+`RateMode::Lvl0Closed` `tx_unit` produces the SAME closed form
+(`th = (w*h)>>6; eob < th ? 6000+eob*1000 : 3000+eob*100`) from the SAME inputs
+(`eob`, `w*h`) that the MDS3 depth loop applies to the result afterwards. The
+depth loop's own expression is untouched.
+
+The one place the substituted value is genuinely observed is `txt_search`'s
+per-tx-type `cost` compare. That is inert only when exactly one type is
+evaluated, so `txt_search` DEMOTES `Lvl0Closed` to `Exact` unless `only_dct`.
+`coeff_rate_est_lvl == 0` implies `txt_on == false` implies `only_dct`
+(`FunnelCfg::for_preset`'s `_ =>` arm), so the demotion never fires today; it
+exists so a future preset table cannot make the search rate-sensitive silently.
+
+## Measured — qp 20 (where the census says R2 fires hardest)
+
+| cell      | n  | R2 ratio | control ratio | verdict |
+|-----------|---:|---------:|--------------:|---------|
+| 256 p10   | 25 |  0.9461  | 0.9958        | REAL 1.057x |
+| 256 p13   | 25 |  0.9438  | 1.0056        | REAL 1.060x |
+| 512 p10   | 25 |  0.9539  | 0.9952        | REAL 1.048x |
+| 512 p13   | 25 |  0.9519  | 1.0021        | REAL 1.051x |
+| 1024 p10  | 25 |  0.9538  | 0.9981        | REAL 1.048x |
+| 1024 p13  | 25 |  0.9632  | 1.0013        | REAL 1.038x |
+
+Six of six outside the noise band, all in the same direction; every control
+cell inside it. p25/p75 in the TSVs: the R2 arm's p75 (0.958-0.973) never
+reaches the control arm's p25 (0.973-0.989), so the distributions are disjoint
+at the quartiles, not just at the median.
+
+## Measured — qp 40 (the census says roughly a third of qp20's share)
+
+| cell      | n  | R2 ratio | control ratio | verdict |
+|-----------|---:|---------:|--------------:|---------|
+| 256 p10   | 25 |  0.9784  | 1.0000        | REAL 1.022x |
+| 256 p13   | 25 |  0.9819  | 0.9965        | REAL 1.018x (marginal) |
+| 512 p10   | 25 |  0.9988  | 1.0041        | NULL |
+| 512 p13   | 25 |  0.9975  | 1.0009        | NULL |
+| 1024 p10  | 25 |  0.9881  | 0.9969        | NULL (inside [0.984, 1.019]) |
+| 1024 p13  | 25 |  0.9897  | 1.0015        | NULL |
+
+## Measured — no regression anywhere R2 does not fire (qp 40, n=9)
+
+p2 / p6 / p7 / p8 at 256 and 512: R2 ratios 0.9965-1.0107, control ratios
+0.9933-1.0125. Every cell inside the band on both arms. The reordering adds one
+boolean per `tx_unit` call at those presets and costs nothing measurable.
+
+## Why the qp gradient, and the review correction it implies
+
+`benchmarks/txunit_census_2026-08-13.tsv`: the share of `cost_coeffs_txb`
+COEFFICIENT work the closed form replaces is 51-54 % at p10/p13 qp20, 16-38 %
+at qp40, and **0 % at qp55** (`end_depth == 0` there, so the level-0 closed form
+is not on the `perform_tx_partitioning` path at all). The wall-clock tracks that
+share, which is the strongest evidence that the win is the mechanism claimed and
+not a layout artefact.
+
+The review scoped R2 as "presets >= 9 (level 0) AND presets 7-8 (level 2)". The
+level-2 arm is effectively dead: it needs `eob < (w*h)>>6`, which fired on 164
+of 8,404 calls in ONE of eighteen p7/p8 cells (328 coefficients in total) and on
+zero calls in the other seventeen. It is still landed — it is a branch swap —
+but it should be priced at zero, and the p7/p8 rows above confirm that.
+
+## Byte-identity
+
+byteid_fingerprint 168/168, `port_md5 == c_md5` on all 168, and the whole file
+`diff`s clean against the pre-change fingerprint. decode_gate_grid 120/120
+(aomdec + dav1d, byte-identical to C). partial_sb_gate 146/146. recon_parity
+432/432 (199 streams fired CDEF, 118 signalled wiener). Workspace nextest
+1029/1029.
+
+## Not done
+
+The bd10 mirror (`tx_unit_hbd` / `TxRdArgs`) still computes the exact rate on
+both closed-form branches — same defect, same fix shape, not touched here. It is
+reachable only from the bd10 re-encode pass, which none of the gap cells run.
