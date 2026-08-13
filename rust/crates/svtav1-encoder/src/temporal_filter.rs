@@ -59,7 +59,10 @@ pub struct TfResult {
 ///
 /// Averages the center frame with motion-compensated versions of
 /// neighboring frames, weighted by pixel-level similarity.
-#[allow(clippy::manual_checked_ops)] // the `> 0` guard scopes a whole block, not a single
+// `clippy::manual_checked_ops` post-dates the 1.89 MSRV floor's clippy, so the
+// allow has to tolerate being unknown there (`cargo +1.89 clippy` otherwise
+// reports `unknown lint` at this line).
+#[allow(unknown_lints, clippy::manual_checked_ops)] // the `> 0` guard scopes a whole block, not a single
 // division; `checked_div` cannot express it without restructuring hot RD control flow
 pub fn temporal_filter(
     center_frame: &[u8],

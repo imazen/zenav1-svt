@@ -3950,7 +3950,10 @@ pub(crate) fn decide_leaf_rect(
 /// C `md_encode_block` (the neighbour arrays / MD recon planes are
 /// untouched; the caller commits the winning depth via [`commit_leaf`]).
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::manual_checked_ops)]
+// `clippy::manual_checked_ops` post-dates the 1.89 MSRV floor's clippy, so the
+// allow has to tolerate being unknown there (`cargo +1.89 clippy` otherwise
+// reports `unknown lint` at this line).
+#[allow(unknown_lints, clippy::manual_checked_ops)]
 // the `> 0` guard scopes a whole block, not a single
 // division; `checked_div` cannot express it without restructuring hot RD control flow
 pub(crate) fn evaluate_leaf(
@@ -8165,6 +8168,14 @@ pub(crate) fn evaluate_leaf(
                                 };
                             let best_uv_adj =
                                 (best_uv_cost as i64).saturating_add(ind_pal_diff) as u64;
+                            // NOT `best_uv_adj >= cfl_uv_cost` (what clippy <=1.89's
+                            // nonminimal_bool asks for; current stable no longer does):
+                            // the C predicate at product_coding_loop.c:3928 is
+                            // `best_uv_cost + ind_palette_cost_diff < cfl_uv_cost` =
+                            // REVERT to non-CfL, and this arm is its negation. The tie
+                            // case documented above turned on getting that inversion
+                            // exactly right, so the shape stays visible.
+                            #[allow(clippy::nonminimal_bool)]
                             if !(best_uv_adj < cfl_uv_cost) {
                                 u_out = u_cfl_out;
                                 v_out = v_cfl_out;
@@ -8415,6 +8426,14 @@ pub(crate) fn evaluate_leaf(
                                 };
                             let best_uv_adj =
                                 (best_uv_cost as i64).saturating_add(ind_pal_diff) as u64;
+                            // NOT `best_uv_adj >= cfl_uv_cost` (what clippy <=1.89's
+                            // nonminimal_bool asks for; current stable no longer does):
+                            // the C predicate at product_coding_loop.c:3928 is
+                            // `best_uv_cost + ind_palette_cost_diff < cfl_uv_cost` =
+                            // REVERT to non-CfL, and this arm is its negation. The tie
+                            // case documented above turned on getting that inversion
+                            // exactly right, so the shape stays visible.
+                            #[allow(clippy::nonminimal_bool)]
                             if !(best_uv_adj < cfl_uv_cost) {
                                 // u8 chroma canvas follows the decision (the
                                 // pre-filter searches read it at bd10).
@@ -8964,7 +8983,10 @@ pub(crate) fn evaluate_leaf(
 /// Every array write spans exactly the block, so re-committing a parent
 /// block after its children were committed overwrites them completely
 /// (the C winner-overwrite in `test_split_partition`).
-#[allow(clippy::manual_checked_ops)] // the `> 0` guard scopes a whole block, not a single
+// `clippy::manual_checked_ops` post-dates the 1.89 MSRV floor's clippy, so the
+// allow has to tolerate being unknown there (`cargo +1.89 clippy` otherwise
+// reports `unknown lint` at this line).
+#[allow(unknown_lints, clippy::manual_checked_ops)] // the `> 0` guard scopes a whole block, not a single
 // division; `checked_div` cannot express it without restructuring hot RD control flow
 pub(crate) fn commit_leaf(
     fx: &mut FunnelCtx<'_>,

@@ -5281,6 +5281,10 @@ fn encode_block_syntax(
             // -> the var-tx walk over txfm_partition_cdf; the skip arm
             // codes NOTHING and stamps the BLOCK dims (set_txfm_ctxs with
             // skip && is_inter).
+            // Left un-De-Morgan'd (clippy <=1.89 nonminimal_bool suggests
+            // `!(skip || w == 4 && h == 4)`; current stable does not): the form
+            // mirrors C's `!(is_inter && skip)` cited two lines above.
+            #[allow(clippy::nonminimal_bool)]
             if !skip && !(w == 4 && h == 4) {
                 writer_tx_size_vartx_bridge(writer, frame_ctx, ectx, block_x, block_y, w, h, depth);
                 let (txw, txh) = crate::leaf_funnel::txb_dims_at_depth(w, h, depth);
