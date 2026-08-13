@@ -128,7 +128,7 @@ fn single_block_variance_is_not_c_two_block_variance() {
     let mut block = vec![0u8; 16];
     block[5] = 1;
     let (our_num, _) = variance(&block, 4, 4, 4);
-    let (c_var, _sse) = cref::variance(4, 4, &block, 0, 4, &vec![0u8; 16], 0, 4);
+    let (c_var, _sse) = cref::variance(4, 4, &block, 0, 4, &[0u8; 16], 0, 4);
     assert_eq!(our_num, 15, "our N^2-scaled numerator");
     assert_eq!(c_var, 1, "C two-block variance vs zeros (integer trunc)");
     assert_ne!(

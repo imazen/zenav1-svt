@@ -176,6 +176,8 @@ pub fn qp_to_lambda(qp: u8) -> f64 {
 /// hierarchical/temporal-layer deltas apply here, and the 0..63 clamps in
 /// each arm are the CLI boundary clamp. The pipeline converts the result
 /// to qindex via [`qp_to_qindex`] exactly once afterwards.
+#[allow(clippy::manual_checked_ops)] // the `> 0` guard scopes a whole block, not a single
+// division; `checked_div` cannot express it without restructuring hot RD control flow
 pub fn assign_picture_qp(config: &RcConfig, state: &RcState, temporal_layer: u8) -> u8 {
     match config.mode {
         RcMode::Cqp => {

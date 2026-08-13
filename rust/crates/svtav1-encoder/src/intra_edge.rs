@@ -553,7 +553,6 @@ pub enum DirEdges {
 /// (only PARTITION_VERT_A/B select different availability tables; this
 /// encoder never emits those, so callers pass `PartitionType::None`).
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 pub fn build_directional_edges(
     recon: &[u8],
     stride: usize,

@@ -106,7 +106,7 @@ fn encode_8bit(
     preset: u8,
 ) -> Vec<u8> {
     let y = plane(w, h);
-    let (cw, ch) = ((w + 1) / 2, (h + 1) / 2);
+    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
     let u = vec![128u8; cw * ch];
     let v = vec![128u8; cw * ch];
     let rc = cqp(qp);
@@ -125,7 +125,7 @@ fn encode_10bit(
     // Widen the 8-bit generator to 10-bit the same way the harness does, so the
     // content is the identical picture at a higher depth.
     let y: Vec<u16> = plane(w, h).iter().map(|&s| (s as u16) << 2).collect();
-    let (cw, ch) = ((w + 1) / 2, (h + 1) / 2);
+    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
     let u = vec![512u16; cw * ch];
     let v = vec![512u16; cw * ch];
     let rc = cqp(qp);

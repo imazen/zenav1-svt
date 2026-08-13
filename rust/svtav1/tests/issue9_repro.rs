@@ -48,6 +48,8 @@ fn encode(qp: u8, mutate: impl FnOnce(&mut EncodePipeline)) -> Vec<u8> {
 fn mainline_quality_knobs_are_reachable_issue_9() {
     let base = encode(32, |_| {});
 
+    #[allow(clippy::type_complexity)]
+    // inline tuple documents the shape; a `type` alias would hide it
     let cases: Vec<(&str, Box<dyn Fn(&mut EncodePipeline)>)> = vec![
         (
             "tune=3 (IQ)",
@@ -92,8 +94,10 @@ fn tune_iq_pulls_the_whole_c_override_block_issue_9() {
     // plus the same seven fields. I asserted that equality first and it failed;
     // the premise was mine, not a port defect.
     for (qp, want_tx) in [(32u8, 32u8), (55u8, 64u8)] {
-        let mut cfg = svtav1_encoder::hdr_mode::HdrForkConfig::default();
-        cfg.tune = 3;
+        let mut cfg = svtav1_encoder::hdr_mode::HdrForkConfig {
+            tune: 3,
+            ..Default::default()
+        };
         cfg.apply_tune_overrides(qp);
         assert!(cfg.enable_qm, "tune 3 must enable QM");
         assert_eq!((cfg.min_qm_level, cfg.max_qm_level), (4, 10));

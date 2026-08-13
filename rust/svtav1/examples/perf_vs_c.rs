@@ -39,7 +39,7 @@ fn gen_frame(sz: usize) -> Vec<u8> {
 
 fn write_y4m(path: &str, y: &[u8], sz: usize) {
     let mut f = std::fs::File::create(path).unwrap();
-    write!(f, "YUV4MPEG2 W{sz} H{sz} F30:1 Ip A1:1 C420jpeg\n").unwrap();
+    writeln!(f, "YUV4MPEG2 W{sz} H{sz} F30:1 Ip A1:1 C420jpeg").unwrap();
     f.write_all(b"FRAME\n").unwrap();
     f.write_all(y).unwrap();
     f.write_all(&vec![128u8; (sz / 2) * (sz / 2)]).unwrap();

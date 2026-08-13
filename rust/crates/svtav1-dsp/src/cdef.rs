@@ -1130,89 +1130,6 @@ pub fn cdef_filter_block_8bit(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Spec 7.15.3 Cdef_Directions cross-check: the padded table's live rows
-    /// (index 2..10) decoded back to (dy, dx) must equal the spec table.
-    #[test]
-    fn direction_table_matches_spec() {
-        const SPEC: [[[i32; 2]; 2]; 8] = [
-            [[-1, 1], [-2, 2]],
-            [[0, 1], [-1, 2]],
-            [[0, 1], [0, 2]],
-            [[0, 1], [1, 2]],
-            [[1, 1], [2, 2]],
-            [[1, 0], [2, 1]],
-            [[1, 0], [2, 0]],
-            [[1, 0], [2, -1]],
-        ];
-        let s = CDEF_BSTRIDE as i32;
-        for dir in 0..8 {
-            for k in 0..2 {
-                let off = cdef_direction(dir, k);
-                // decode: dy = round-to-nearest row (offsets have |dx| <= 2)
-                let dy = if off >= 0 {
-                    (off + s / 2) / s
-                } else {
-                    -((-off + s / 2) / s)
-                };
-                let dx = off - dy * s;
-                assert_eq!([dy, dx], SPEC[dir as usize][k], "dir {dir} k {k}");
-            }
-        }
-        // padded ends replicate dir 6,7 and 0,1
-        assert_eq!(cdef_direction(-2, 0), cdef_direction(6, 0));
-        assert_eq!(cdef_direction(-1, 1), cdef_direction(7, 1));
-        assert_eq!(cdef_direction(8, 0), cdef_direction(0, 0));
-        assert_eq!(cdef_direction(9, 1), cdef_direction(1, 1));
-    }
-
-    /// A flat block has no direction energy: var must be 0 and filtering at
-    /// any strength must be the identity.
-    #[test]
-    fn flat_block_identity() {
-        let mut inb = alloc::vec![CDEF_VERY_LARGE; CDEF_INBUF_SIZE];
-        let ioff = CDEF_VBORDER * CDEF_BSTRIDE + CDEF_HBORDER;
-        for r in 0..8 {
-            for c in 0..8 {
-                inb[ioff + r * CDEF_BSTRIDE + c] = 77;
-            }
-        }
-        let (_dir, var) = cdef_find_dir(&inb[ioff..], CDEF_BSTRIDE, 0);
-        assert_eq!(var, 0);
-        let mut dst = [0u8; 64];
-        cdef_filter_block(&mut dst, 0, 8, &inb, ioff, 15, 4, 3, 6, 6, BLOCK_8X8, 0, 1);
-        assert!(dst.iter().all(|&v| v == 77));
-    }
-
-    /// constrain() reproduces the C damping shape at hand-checked points.
-    #[test]
-    fn constrain_c_values() {
-        // threshold 0 -> 0 regardless
-        assert_eq!(constrain(1000, 0, 6), 0);
-        // shift = max(0, 4 - msb(4)=2) = 2: c(5,4,4) = min(5, 4 - (5>>2)) = 3
-        assert_eq!(constrain(5, 4, 4), 3);
-        assert_eq!(constrain(-5, 4, 4), -3);
-        // sentinel-sized diff is fully damped to 0
-        assert_eq!(constrain(0x7f7f - 128, 15, 6), 0);
-        assert_eq!(constrain(0x4000 - 128, 15, 6), 0);
-        // large threshold, small diff: passes through
-        assert_eq!(constrain(2, 15, 3), 2);
-    }
-
-    /// adjust_strength C anchor points.
-    #[test]
-    fn adjust_strength_c_values() {
-        assert_eq!(adjust_strength(12, 0), 0);
-        // var=63: var>>6 = 0 -> i=0 -> (12*4+8)>>4 = 3
-        assert_eq!(adjust_strength(12, 63), 3);
-        // var=1<<18: i = min(msb(1<<12)=12, 12) -> (12*16+8)>>4 = 12
-        assert_eq!(adjust_strength(12, 1 << 18), 12);
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Search-side distortion (enc_cdef.c) — shared by the bd8 and bd10 searches.
 // ---------------------------------------------------------------------------
@@ -1299,4 +1216,87 @@ pub fn compute_cdef_dist_8bit(
         }
     }
     sum >> (2 * coeff_shift)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Spec 7.15.3 Cdef_Directions cross-check: the padded table's live rows
+    /// (index 2..10) decoded back to (dy, dx) must equal the spec table.
+    #[test]
+    fn direction_table_matches_spec() {
+        const SPEC: [[[i32; 2]; 2]; 8] = [
+            [[-1, 1], [-2, 2]],
+            [[0, 1], [-1, 2]],
+            [[0, 1], [0, 2]],
+            [[0, 1], [1, 2]],
+            [[1, 1], [2, 2]],
+            [[1, 0], [2, 1]],
+            [[1, 0], [2, 0]],
+            [[1, 0], [2, -1]],
+        ];
+        let s = CDEF_BSTRIDE as i32;
+        for dir in 0..8 {
+            for k in 0..2 {
+                let off = cdef_direction(dir, k);
+                // decode: dy = round-to-nearest row (offsets have |dx| <= 2)
+                let dy = if off >= 0 {
+                    (off + s / 2) / s
+                } else {
+                    -((-off + s / 2) / s)
+                };
+                let dx = off - dy * s;
+                assert_eq!([dy, dx], SPEC[dir as usize][k], "dir {dir} k {k}");
+            }
+        }
+        // padded ends replicate dir 6,7 and 0,1
+        assert_eq!(cdef_direction(-2, 0), cdef_direction(6, 0));
+        assert_eq!(cdef_direction(-1, 1), cdef_direction(7, 1));
+        assert_eq!(cdef_direction(8, 0), cdef_direction(0, 0));
+        assert_eq!(cdef_direction(9, 1), cdef_direction(1, 1));
+    }
+
+    /// A flat block has no direction energy: var must be 0 and filtering at
+    /// any strength must be the identity.
+    #[test]
+    fn flat_block_identity() {
+        let mut inb = alloc::vec![CDEF_VERY_LARGE; CDEF_INBUF_SIZE];
+        let ioff = CDEF_VBORDER * CDEF_BSTRIDE + CDEF_HBORDER;
+        for r in 0..8 {
+            for c in 0..8 {
+                inb[ioff + r * CDEF_BSTRIDE + c] = 77;
+            }
+        }
+        let (_dir, var) = cdef_find_dir(&inb[ioff..], CDEF_BSTRIDE, 0);
+        assert_eq!(var, 0);
+        let mut dst = [0u8; 64];
+        cdef_filter_block(&mut dst, 0, 8, &inb, ioff, 15, 4, 3, 6, 6, BLOCK_8X8, 0, 1);
+        assert!(dst.iter().all(|&v| v == 77));
+    }
+
+    /// constrain() reproduces the C damping shape at hand-checked points.
+    #[test]
+    fn constrain_c_values() {
+        // threshold 0 -> 0 regardless
+        assert_eq!(constrain(1000, 0, 6), 0);
+        // shift = max(0, 4 - msb(4)=2) = 2: c(5,4,4) = min(5, 4 - (5>>2)) = 3
+        assert_eq!(constrain(5, 4, 4), 3);
+        assert_eq!(constrain(-5, 4, 4), -3);
+        // sentinel-sized diff is fully damped to 0
+        assert_eq!(constrain(0x7f7f - 128, 15, 6), 0);
+        assert_eq!(constrain(0x4000 - 128, 15, 6), 0);
+        // large threshold, small diff: passes through
+        assert_eq!(constrain(2, 15, 3), 2);
+    }
+
+    /// adjust_strength C anchor points.
+    #[test]
+    fn adjust_strength_c_values() {
+        assert_eq!(adjust_strength(12, 0), 0);
+        // var=63: var>>6 = 0 -> i=0 -> (12*4+8)>>4 = 3
+        assert_eq!(adjust_strength(12, 63), 3);
+        // var=1<<18: i = min(msb(1<<12)=12, 12) -> (12*16+8)>>4 = 12
+        assert_eq!(adjust_strength(12, 1 << 18), 12);
+    }
 }

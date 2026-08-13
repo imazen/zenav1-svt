@@ -103,7 +103,7 @@ fn quantize_impl_neon(
 
     // Bail to scalar when the f32 quotient would not be provably exact, when
     // the AC divisor is unusable, or when the block is too short to vectorize.
-    if n < 8 || dq_ac <= 0 || shift < 0 || shift > 24 {
+    if n < 8 || dq_ac <= 0 || !(0..=24).contains(&shift) {
         return quantize_core(coeffs, qparam, qcoeffs, dqcoeffs, eob_hint);
     }
     let mut max_abs: i64 = 0;

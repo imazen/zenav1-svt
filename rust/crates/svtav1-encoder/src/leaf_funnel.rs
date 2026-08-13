@@ -3815,11 +3815,17 @@ impl LeafEval {
     }
 
     /// Winner luma recon (w x h raster).
+    ///
+    /// Kept alongside the used `psq_resid`/`psq_resid10` family so the
+    /// winner's buffers have a uniform read surface; no live caller today.
+    #[allow(dead_code)]
     pub(crate) fn y_recon(&self) -> &[u8] {
         &self.win.y_recon
     }
 
-    /// Winner chroma recons ((size/2)^2 rasters).
+    /// Winner chroma recons ((size/2)^2 rasters). See [`y_recon`](Self::y_recon)
+    /// for why this has no live caller.
+    #[allow(dead_code)]
     pub(crate) fn uv_recon(&self) -> (&[u8], &[u8]) {
         (&self.win.u_recon, &self.win.v_recon)
     }
@@ -3944,6 +3950,11 @@ pub(crate) fn decide_leaf_rect(
 /// C `md_encode_block` (the neighbour arrays / MD recon planes are
 /// untouched; the caller commits the winning depth via [`commit_leaf`]).
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::manual_checked_ops)]
+// the `> 0` guard scopes a whole block, not a single
+// division; `checked_div` cannot express it without restructuring hot RD control flow
+#[allow(clippy::unnecessary_unwrap)] // the `if let` rewrite needs a let-chain (Rust 1.88);
+// this workspace declares rust-version = "1.85"
 pub(crate) fn evaluate_leaf(
     fx: &mut FunnelCtx<'_>,
     y_src: &[u8],
@@ -5673,7 +5684,7 @@ pub(crate) fn evaluate_leaf(
     // here: allintra mds0_level == 0 (enc_mode_config.c:10042) sets
     // pruning_method_th = 0, so no class-th cut runs.
     let lane_pool = |lane: &[usize], cands: &[Cand], cap: usize| -> Vec<usize> {
-        if lane.len() <= cap - 1 {
+        if lane.len() < cap {
             return lane.to_vec();
         }
         let argmax_first = |pool: &[usize]| -> usize {
@@ -8955,6 +8966,8 @@ pub(crate) fn evaluate_leaf(
 /// Every array write spans exactly the block, so re-committing a parent
 /// block after its children were committed overwrites them completely
 /// (the C winner-overwrite in `test_split_partition`).
+#[allow(clippy::manual_checked_ops)] // the `> 0` guard scopes a whole block, not a single
+// division; `checked_div` cannot express it without restructuring hot RD control flow
 pub(crate) fn commit_leaf(
     fx: &mut FunnelCtx<'_>,
     y_recon: &mut [u8],

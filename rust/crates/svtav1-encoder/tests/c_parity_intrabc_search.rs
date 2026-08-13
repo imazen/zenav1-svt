@@ -405,6 +405,8 @@ fn c_parity_full_pixel_search() {
     // Mesh configurations: level-3 real ctrls (thresh 1<<20, patterns
     // (256,8)/(64,1)), forced-always (thresh 0, mv_diff -1), and
     // forced-never (huge mv_diff threshold kills it).
+    #[allow(clippy::type_complexity)]
+    // inline tuple documents the shape; a `type` alias would hide it
     let mesh_cfgs: [(u64, i32, [(i32, i32); 4]); 3] = [
         (1u64 << 20, 0, [(256, 8), (64, 1), (0, 0), (0, 0)]),
         (0, -1, [(256, 8), (64, 1), (0, 0), (0, 0)]),

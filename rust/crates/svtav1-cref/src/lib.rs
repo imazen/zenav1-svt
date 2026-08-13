@@ -80,7 +80,7 @@ impl RefEcEnc {
     /// (C layout: slice must hold `nsymbs + 1` entries, counter at `[nsymbs]`).
     pub fn write_symbol(&mut self, symb: usize, cdf: &mut [u16], nsymbs: usize) {
         assert!(!self.finished);
-        assert!(symb < nsymbs && cdf.len() >= nsymbs + 1);
+        assert!(symb < nsymbs && cdf.len() > nsymbs);
         unsafe { ref_write_symbol(self.ptr(), symb as i32, cdf.as_mut_ptr(), nsymbs as i32) };
     }
 
@@ -117,7 +117,7 @@ impl Drop for RefEcEnc {
 /// C layout: `cdf[nsymbs]` is the adaptation counter, so the slice must hold
 /// at least `nsymbs + 1` entries.
 pub fn update_cdf(cdf: &mut [u16], val: usize, nsymbs: usize) {
-    assert!(cdf.len() >= nsymbs + 1 && val < nsymbs);
+    assert!(cdf.len() > nsymbs && val < nsymbs);
     unsafe { ref_update_cdf(cdf.as_mut_ptr(), val as i8, nsymbs as i32) };
 }
 

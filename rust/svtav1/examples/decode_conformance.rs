@@ -90,6 +90,8 @@ fn main() {
     let chroma_mode = std::env::args().nth(2).as_deref() == Some("chroma");
     std::fs::create_dir_all(&outdir).expect("create outdir");
 
+    #[allow(clippy::type_complexity)]
+    // inline tuple documents the shape; a `type` alias would hide it
     let mut contents: Vec<(&str, fn(usize, usize) -> Vec<u8>)> = vec![
         ("gradient", make_gradient),
         ("uniform", make_uniform),

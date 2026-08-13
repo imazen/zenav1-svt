@@ -417,6 +417,8 @@ pub fn recondbg_dump(
     }
     let (cw, ch) = (width / 2, height / 2);
     let bin = std::env::var("SVTAV1_RECON_BIN").ok();
+    #[allow(clippy::type_complexity)]
+    // inline tuple documents the shape; a `type` alias would hide it
     let mut planes: alloc::vec::Vec<(usize, &[u8], &[u8], usize, usize)> =
         alloc::vec![(0, y_src, y_recon, width, height)];
     if chroma_420 {

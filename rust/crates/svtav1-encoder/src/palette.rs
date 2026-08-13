@@ -368,7 +368,7 @@ pub fn k_means_dim1(
 ) {
     assert!(data.len() >= n);
     assert!(indices.len() >= n);
-    assert!(k >= 1 && k <= PALETTE_MAX_SIZE);
+    assert!((1..=PALETTE_MAX_SIZE).contains(&k));
 
     let mut this_dist = calc_indices_dim1(data, centroids, indices, n, k);
     let mut pre_centroids = [0i32; PALETTE_MAX_SIZE];

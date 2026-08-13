@@ -622,6 +622,9 @@ fn refine_depth(
 }
 
 /// C `perform_pred_depth_refinement` (enc_dec_process.c:1985).
+#[allow(dead_code)] // faithful C port with no live caller today. rust/CLAUDE.md
+// "DEAD-LOOKING C STAYS TRANSLATED AND DOCUMENTED — never reverted": the
+// reachability analysis has been wrong before and upstream can re-enable the path.
 pub(crate) fn build_refined_scan(
     root: &Pd0Eval,
     ctrls: &DrCtrls,
@@ -1550,7 +1553,7 @@ impl DepthWalk<'_, '_> {
         // H 2, D45..D67 3..8, SMOOTH* 9..11, PAETH 12).
         let mode = sq.ev.mode();
         match mode {
-            0 | 1 | 2 => max_dev *= 2,
+            0..=2 => max_dev *= 2,
             3..=12 => max_dev <<= 2,
             _ => {}
         }
@@ -1744,6 +1747,8 @@ impl DepthWalk<'_, '_> {
     /// test_depth (:11396, the d1 shape loop) + the sub-depth walk.
     /// `None` mirrors C's `pc_tree->rdc.valid == 0` return: the node produced
     /// no valid partition at all, which invalidates the parent's SPLIT.
+    #[allow(clippy::unnecessary_unwrap)] // the `if let` rewrite needs a let-chain (Rust 1.88);
+    // this workspace declares rust-version = "1.85"
     fn pick(&mut self, scan: &RefScan, abs_x: usize, abs_y: usize) -> Option<NodeRes> {
         let size = scan.sq;
         let mut split_flag = scan.split_flag;

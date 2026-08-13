@@ -1254,7 +1254,7 @@ fn key_frame_header_bits_lr(
             Some(res) => {
                 debug_assert!(matches!(res, 1 | 2 | 4 | 8));
                 wb.write_bit(true); // delta_q_present = 1
-                wb.write_bits(u32::from(res.trailing_zeros()), 2); // delta_q_res log2
+                wb.write_bits(res.trailing_zeros(), 2); // delta_q_res log2
                 // delta_lf_params(): read only when delta_q_present &&
                 // !allow_intrabc (spec 5.9.18).
                 if !sc.allow_intrabc {
@@ -2316,7 +2316,7 @@ mod tests {
         // (no header bits at all) regardless of tile_size_bytes_minus_1.
         let tile0 = vec![1u8, 2, 3];
         assert_eq!(
-            build_tile_group_multi(&[tile0.clone()], 3),
+            build_tile_group_multi(std::slice::from_ref(&tile0), 3),
             build_tile_group_single(&tile0)
         );
     }

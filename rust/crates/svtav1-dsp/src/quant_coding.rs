@@ -673,6 +673,7 @@ mod tests {
     /// magnitudes: quant may be negative (invert_quant), quant_shift a power
     /// of two, dequant the AC/DC step. Fixed representative rows across the
     /// qindex range plus the extremes.
+    #[allow(clippy::type_complexity)] // inline tuple documents the shape; a `type` alias would hide it
     const ROWS: &[([i32; 2], [i32; 2], [i32; 2], [i32; 2], [i32; 2], [i32; 2])] = &[
         // (zbin, round, quant, quant_shift, quant_fp, dequant) — qindex 0
         (

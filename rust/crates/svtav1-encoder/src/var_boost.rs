@@ -175,6 +175,73 @@ pub fn fork_variance_store(sum_sq_minus_meansq: u64) -> f64 {
     sum_sq_minus_meansq as f64 / f64::from(1u32 << 16)
 }
 
+/// C **mainline** `av1_get_deltaq_sb_variance_boost` (rc_aq.c:350).
+///
+/// C defines this function TWICE. The fork build (`SVT_HDR_MODE`, rc_aq.c:87)
+/// takes `(mean, double* variances)` — that is [`deltaq_sb_variance_boost`]
+/// above. The MAINLINE build takes **`uint16_t* variances` and no `mean`**, and
+/// reads `ppcs->variance[sb_addr]`: the integer per-b64 array picture analysis
+/// builds, i.e. exactly [`crate::pd0::compute_b64_variance`]'s output. Feeding
+/// the fork variant (f64 variances scaled `/65536`) on a mainline encode
+/// computes the boost in the wrong input domain and returns 0 — which is what
+/// made mainline tune IQ emit a flat delta-q plan where C emits a real one.
+///
+/// `variances` is the 85-entry b64 map; the 8x8 level starts at index 21
+/// (C `ME_TIER_ZERO_PU_8x8_0`).
+pub fn deltaq_sb_variance_boost_mainline(
+    base_q_idx: u8,
+    variances: &[u16; 85],
+    strength: u8,
+    bit_depth: u8,
+    octile: u8,
+    curve: u8,
+) -> i32 {
+    debug_assert!((1..=8).contains(&octile));
+    debug_assert!((1..=4).contains(&strength));
+    // Order the 64 8x8 variances ascending (C: memcpy + qsort).
+    let mut ordered = [0u16; SUBBLOCKS_IN_SB];
+    ordered.copy_from_slice(&variances[21..21 + SUBBLOCKS_IN_SB]);
+    ordered.sort_unstable();
+
+    // Sample the octile, the one below and the one above, using the LAST
+    // subblock of each octile as its representative.
+    let mid_idx = octile as usize * SUBBLOCKS_IN_OCTILE - 1;
+    let low_idx = (SUBBLOCKS_IN_OCTILE - 1).max(mid_idx.saturating_sub(SUBBLOCKS_IN_OCTILE));
+    let upp_idx = (SUBBLOCKS_IN_SB - 1).min(mid_idx + SUBBLOCKS_IN_OCTILE);
+
+    // 1:2:1 weighting with rounding.
+    let mut variance = (i32::from(ordered[low_idx])
+        + i32::from(ordered[mid_idx]) * 2
+        + i32::from(ordered[upp_idx])
+        + 2)
+        / 4;
+    // variance 0 is a flat patch or a very fine gradient; C cannot tell them
+    // apart at this resolution and boosts them.
+    if variance == 0 {
+        variance = 1;
+    }
+
+    const STRENGTHS: [f64; 5] = [0.0, 0.65, 1.1, 1.6, 2.5];
+    let v = f64::from(variance);
+    let mut qstep_ratio = match curve {
+        // low/medium-contrast curve
+        1 => 0.25 * f64::from(strength) * (-v.log2() + 8.0) + 1.0,
+        // still-picture curve (tuned for SSIMULACRA2 on CID22) — tune IQ's
+        2 => 0.15 * f64::from(strength) * (-v.log2() + 10.0) + 1.0,
+        _ => 1.018f64.powf(STRENGTHS[strength as usize] * (-10.0 * v.log2() + 80.0)),
+    };
+    qstep_ratio = qstep_ratio.clamp(1.0, VAR_BOOST_MAX_QSTEP_RATIO_BOOST);
+
+    let base_q = convert_qindex_to_q_fp8(i32::from(base_q_idx), bit_depth);
+    let target_q = (f64::from(base_q) / qstep_ratio) as i32;
+    let qdelta = -compute_qdelta_fp(base_q, target_q, bit_depth);
+    let boost = match curve {
+        2 => (i32::from(base_q_idx) + 544) * qdelta / (255 + 1024),
+        _ => (i32::from(base_q_idx) + 40) * qdelta / (255 + 40),
+    };
+    boost.min(VAR_BOOST_MAX_DELTAQ_RANGE)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,13 +310,16 @@ mod tests {
     #[test]
     fn curve0_comment_table_qsteps() {
         for (var, expect) in [
-            (256.0, 1.0),
+            // f64 suffixes pin the literal type: the `(var as f64)` cast this
+            // replaced was a no-op per clippy::unnecessary_cast but was what
+            // drove inference for the whole array.
+            (256.0f64, 1.0f64),
             (64.0, 1.330),
             (16.0, 1.769),
             (4.0, 2.354),
             (1.0, 3.132),
         ] {
-            let q = 1.018f64.powf(0.8 * (-10.0 * (var as f64).log2() + 80.0));
+            let q = 1.018f64.powf(0.8 * (-10.0 * var.log2() + 80.0));
             let q = q.clamp(1.0, 8.0);
             assert!(
                 (q - expect).abs() < 0.002,
@@ -257,71 +327,4 @@ mod tests {
             );
         }
     }
-}
-
-/// C **mainline** `av1_get_deltaq_sb_variance_boost` (rc_aq.c:350).
-///
-/// C defines this function TWICE. The fork build (`SVT_HDR_MODE`, rc_aq.c:87)
-/// takes `(mean, double* variances)` — that is [`deltaq_sb_variance_boost`]
-/// above. The MAINLINE build takes **`uint16_t* variances` and no `mean`**, and
-/// reads `ppcs->variance[sb_addr]`: the integer per-b64 array picture analysis
-/// builds, i.e. exactly [`crate::pd0::compute_b64_variance`]'s output. Feeding
-/// the fork variant (f64 variances scaled `/65536`) on a mainline encode
-/// computes the boost in the wrong input domain and returns 0 — which is what
-/// made mainline tune IQ emit a flat delta-q plan where C emits a real one.
-///
-/// `variances` is the 85-entry b64 map; the 8x8 level starts at index 21
-/// (C `ME_TIER_ZERO_PU_8x8_0`).
-pub fn deltaq_sb_variance_boost_mainline(
-    base_q_idx: u8,
-    variances: &[u16; 85],
-    strength: u8,
-    bit_depth: u8,
-    octile: u8,
-    curve: u8,
-) -> i32 {
-    debug_assert!((1..=8).contains(&octile));
-    debug_assert!((1..=4).contains(&strength));
-    // Order the 64 8x8 variances ascending (C: memcpy + qsort).
-    let mut ordered = [0u16; SUBBLOCKS_IN_SB];
-    ordered.copy_from_slice(&variances[21..21 + SUBBLOCKS_IN_SB]);
-    ordered.sort_unstable();
-
-    // Sample the octile, the one below and the one above, using the LAST
-    // subblock of each octile as its representative.
-    let mid_idx = octile as usize * SUBBLOCKS_IN_OCTILE - 1;
-    let low_idx = (SUBBLOCKS_IN_OCTILE - 1).max(mid_idx.saturating_sub(SUBBLOCKS_IN_OCTILE));
-    let upp_idx = (SUBBLOCKS_IN_SB - 1).min(mid_idx + SUBBLOCKS_IN_OCTILE);
-
-    // 1:2:1 weighting with rounding.
-    let mut variance = (i32::from(ordered[low_idx])
-        + i32::from(ordered[mid_idx]) * 2
-        + i32::from(ordered[upp_idx])
-        + 2)
-        / 4;
-    // variance 0 is a flat patch or a very fine gradient; C cannot tell them
-    // apart at this resolution and boosts them.
-    if variance == 0 {
-        variance = 1;
-    }
-
-    const STRENGTHS: [f64; 5] = [0.0, 0.65, 1.1, 1.6, 2.5];
-    let v = f64::from(variance);
-    let mut qstep_ratio = match curve {
-        // low/medium-contrast curve
-        1 => 0.25 * f64::from(strength) * (-v.log2() + 8.0) + 1.0,
-        // still-picture curve (tuned for SSIMULACRA2 on CID22) — tune IQ's
-        2 => 0.15 * f64::from(strength) * (-v.log2() + 10.0) + 1.0,
-        _ => 1.018f64.powf(STRENGTHS[strength as usize] * (-10.0 * v.log2() + 80.0)),
-    };
-    qstep_ratio = qstep_ratio.clamp(1.0, VAR_BOOST_MAX_QSTEP_RATIO_BOOST);
-
-    let base_q = convert_qindex_to_q_fp8(i32::from(base_q_idx), bit_depth);
-    let target_q = (f64::from(base_q) / qstep_ratio) as i32;
-    let qdelta = -compute_qdelta_fp(base_q, target_q, bit_depth);
-    let boost = match curve {
-        2 => (i32::from(base_q_idx) + 544) * qdelta / (255 + 1024),
-        _ => (i32::from(base_q_idx) + 40) * qdelta / (255 + 40),
-    };
-    boost.min(VAR_BOOST_MAX_DELTAQ_RANGE)
 }

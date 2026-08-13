@@ -1108,17 +1108,9 @@ pub fn corners_in_sb(
 /// `EntropyCodingContext.wiener_info[3]`, reset to the default filter at
 /// the first SB of each tile (`svt_av1_reset_loop_restoration`,
 /// ec_process.c:199; decoder mirror `av1_reset_loop_restoration`).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct LrWalkRefs {
     pub wiener: [WienerInfo; 3],
-}
-
-impl Default for LrWalkRefs {
-    fn default() -> Self {
-        LrWalkRefs {
-            wiener: [WienerInfo::default(); 3],
-        }
-    }
 }
 
 /// C `loop_restoration_write_sb_coeffs` over every RU cornered in this SB

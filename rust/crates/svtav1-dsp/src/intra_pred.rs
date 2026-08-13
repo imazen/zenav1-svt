@@ -540,6 +540,8 @@ pub const EDGE_ORIGIN: usize = 16;
 pub const EDGE_BUF_LEN: usize = 64 * 2 + 32;
 
 /// C `svt_aom_intra_edge_filter_strength` (intra_prediction.c:180).
+#[allow(clippy::if_same_then_else)] // C intra_prediction.c:190-197 really does have two
+// identical `d >= 40` arms for blk_wh <= 12 and <= 16; the port stays shape-faithful
 pub fn intra_edge_filter_strength(bs0: i32, bs1: i32, delta: i32, filt_type: i32) -> i32 {
     let d = delta.abs();
     let blk_wh = bs0 + bs1;

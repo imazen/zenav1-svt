@@ -1869,9 +1869,13 @@ mod tests {
             &cfg, &tcoeffs, &mut q, &mut dq, scan, 160, 2, 0, 0, 256, false, 15,
         );
         let t = build_quant_table(160);
+        // The decoder's dequant is `(q * dqv) >> log_scale`; this cell is
+        // c_tx_size 2 (16x16), whose log_scale is 0. Kept as a named binding
+        // so the shift stays visible in the mirror formula.
+        let log_scale = 0u32;
         for i in 0..n {
-            let expect =
-                ((q[i].unsigned_abs() as i64 * t.dequant[usize::from(i != 0)] as i64) >> 0) as i32;
+            let expect = ((q[i].unsigned_abs() as i64 * t.dequant[usize::from(i != 0)] as i64)
+                >> log_scale) as i32;
             assert_eq!(dq[i].abs(), expect, "dq mirror at {i}");
             assert_eq!(dq[i] < 0, q[i] < 0 && q[i] != 0, "sign at {i}");
         }

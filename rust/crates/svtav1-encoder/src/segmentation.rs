@@ -1257,8 +1257,10 @@ mod tests {
         assert!(lossless[0], "and lossless[0] is set with it");
         assert_eq!(lossless[1..], [false; MAX_SEGMENTS - 1][..]);
 
-        let mut seg = SegmentationParams::default();
-        seg.segmentation_enabled = true;
+        let mut seg = SegmentationParams {
+            segmentation_enabled: true,
+            ..Default::default()
+        };
         for (i, off) in [8i16, 6, 4, 2, 0, -2, -4, -6].iter().enumerate() {
             seg.feature_data[i][SEG_LVL_ALT_Q] = *off;
         }

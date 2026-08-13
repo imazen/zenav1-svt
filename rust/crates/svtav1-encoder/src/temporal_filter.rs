@@ -59,6 +59,8 @@ pub struct TfResult {
 ///
 /// Averages the center frame with motion-compensated versions of
 /// neighboring frames, weighted by pixel-level similarity.
+#[allow(clippy::manual_checked_ops)] // the `> 0` guard scopes a whole block, not a single
+// division; `checked_div` cannot express it without restructuring hot RD control flow
 pub fn temporal_filter(
     center_frame: &[u8],
     ref_frames: &[&[u8]],

@@ -34,8 +34,8 @@
 #![allow(clippy::too_many_arguments)]
 
 use crate::fwd_txfm::{
-    COS_BIT, FWD_COS_BIT_COL, FWD_COS_BIT_ROW, NEW_SQRT2, NEW_SQRT2_BITS, SINPI, cospi_arr,
-    fwd_txfm_shift, sinpi_arr,
+    COS_BIT, FWD_COS_BIT_COL, FWD_COS_BIT_ROW, NEW_SQRT2, SINPI, cospi_arr, fwd_txfm_shift,
+    sinpi_arr,
 };
 use crate::inv_txfm::{NEW_INV_SQRT2, inv_txfm_shift};
 use archmage::prelude::*;

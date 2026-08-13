@@ -582,7 +582,7 @@ pub fn write_coefficients_v2(
         );
 
         // EOB low-bits: equiprobable
-        let num_lo_bits = eob_bin as u32 - 2;
+        let num_lo_bits = eob_bin - 2;
         if num_lo_bits > 0 {
             writer.write_literal(lo_bits as u32, num_lo_bits);
         }

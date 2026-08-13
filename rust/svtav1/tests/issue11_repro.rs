@@ -78,7 +78,7 @@ fn pipeline(w: usize, h: usize, qp: u8, bd: u8) -> EncodePipeline {
 #[test]
 fn issue11_bd10_420_383x512_luma_unit_walk_stays_in_the_grid() {
     let (w, h) = (383usize, 512usize);
-    let (cw, ch) = ((w + 1) / 2, (h + 1) / 2);
+    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
     let y = widen(&gradient_y(w, h));
     let u = widen(&textured_uv(cw, ch, 0));
     let v = widen(&textured_uv(cw, ch, 41));
@@ -104,7 +104,7 @@ fn issue11_bd10_420_383x512_luma_unit_walk_stays_in_the_grid() {
 #[test]
 fn issue11_766x128_chroma_unit_walk_stays_in_the_grid() {
     let (w, h) = (766usize, 128usize);
-    let (cw, ch) = ((w + 1) / 2, (h + 1) / 2);
+    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
     let y = gradient_y(w, h);
     let u = textured_uv(cw, ch, 0);
     let v = textured_uv(cw, ch, 41);
@@ -138,7 +138,7 @@ fn issue11_alignment_crossing_widths_encode() {
     //   766 -> 768  YES chroma (true 383 -> 1 col, applied 384 -> 2)
     for &w in &[258usize, 383, 385, 639, 766] {
         let h = 128usize;
-        let (cw, ch) = ((w + 1) / 2, (h + 1) / 2);
+        let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
         let y = gradient_y(w, h);
         let u = textured_uv(cw, ch, 0);
         let v = textured_uv(cw, ch, 41);

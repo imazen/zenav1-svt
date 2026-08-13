@@ -109,7 +109,7 @@ impl OdEcEnc {
         let mut l = self.low;
         let mut r = u32::from(self.rng);
         debug_assert!(r >= 32768);
-        let v = ((r >> 8) * (f >> EC_PROB_SHIFT) >> (7 - EC_PROB_SHIFT)) + EC_MIN_PROB;
+        let v = (((r >> 8) * (f >> EC_PROB_SHIFT)) >> (7 - EC_PROB_SHIFT)) + EC_MIN_PROB;
         if val {
             l += u64::from(r - v);
         }
@@ -133,14 +133,14 @@ impl OdEcEnc {
         let n = nsyms - 1;
         if fl < 32768 {
             // `s > 0` here: fl == 32768 exactly when s == 0.
-            let u = ((r >> 8) * (fl >> EC_PROB_SHIFT) >> (7 - EC_PROB_SHIFT))
+            let u = (((r >> 8) * (fl >> EC_PROB_SHIFT)) >> (7 - EC_PROB_SHIFT))
                 + EC_MIN_PROB * (n - (s - 1)) as u32;
-            let v = ((r >> 8) * (fh >> EC_PROB_SHIFT) >> (7 - EC_PROB_SHIFT))
+            let v = (((r >> 8) * (fh >> EC_PROB_SHIFT)) >> (7 - EC_PROB_SHIFT))
                 + EC_MIN_PROB * (n - s) as u32;
             l += u64::from(r - u);
             r = u - v;
         } else {
-            r -= ((r >> 8) * (fh >> EC_PROB_SHIFT) >> (7 - EC_PROB_SHIFT))
+            r -= (((r >> 8) * (fh >> EC_PROB_SHIFT)) >> (7 - EC_PROB_SHIFT))
                 + EC_MIN_PROB * (n - s) as u32;
         }
         self.normalize(l, r);

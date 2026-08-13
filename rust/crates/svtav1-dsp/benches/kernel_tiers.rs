@@ -35,7 +35,6 @@ const TIER_NAME: &str = if cfg!(target_arch = "aarch64") {
 
 #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 fn set_simd(enabled: bool) -> bool {
-    use archmage::SimdToken;
     TierToken::dangerously_disable_token_process_wide(!enabled).is_ok()
 }
 #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
@@ -191,7 +190,7 @@ fn bench_dsp(suite: &mut Suite) {
         // Raster quantizers: whole-block quantize over 1024 coeffs (32x32).
         let coeffs: &'static [i32] = Box::leak(
             (0..1024)
-                .map(|i| (((i * 5779) % 4001) as i32) - 2000)
+                .map(|i| ((i * 5779) % 4001) - 2000)
                 .collect::<Vec<i32>>()
                 .into_boxed_slice(),
         );
@@ -248,7 +247,7 @@ fn bench_dsp(suite: &mut Suite) {
                 .into_boxed_slice(),
         );
         for win in [5usize, 7] {
-            suite.compare(&format!("wiener_compute_stats_win{win}_64x64"), move |g| {
+            suite.compare(format!("wiener_compute_stats_win{win}_64x64"), move |g| {
                 for (arm, simd) in [(TIER_NAME, true), ("scalar", false)] {
                     g.bench(arm, move |b| {
                         let mut mm = vec![0i64; win * win];
@@ -410,7 +409,7 @@ fn bench_dsp(suite: &mut Suite) {
     {
         let coeffs: &'static [i32] = Box::leak(
             (0..1024)
-                .map(|i| ((i * 7919) % 8192) as i32 - 4096)
+                .map(|i| ((i * 7919) % 8192) - 4096)
                 .collect::<Vec<i32>>()
                 .into_boxed_slice(),
         );
@@ -436,7 +435,7 @@ fn bench_dsp(suite: &mut Suite) {
     {
         let coeffs: &'static [i32] = Box::leak(
             (0..1024)
-                .map(|i| ((i * 7919) % 4096) as i32 - 2048)
+                .map(|i| ((i * 7919) % 4096) - 2048)
                 .collect::<Vec<i32>>()
                 .into_boxed_slice(),
         );

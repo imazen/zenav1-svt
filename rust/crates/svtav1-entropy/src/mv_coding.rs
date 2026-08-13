@@ -115,7 +115,7 @@ pub fn get_mv_class(z: i32) -> (u8, i32) {
     };
     // mv_class_base(c) = c ? (CLASS0_SIZE << (c + 2)) : 0
     let base = if class != 0 {
-        ((CLASS0_SIZE as i32) << (class as i32 + 2)) as i32
+        (CLASS0_SIZE as i32) << (class as i32 + 2)
     } else {
         0
     };

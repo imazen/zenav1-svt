@@ -160,7 +160,7 @@ pub fn quantize_b_qm(
             let round = (t.round[iz] + ((1 << log_scale) >> 1)) >> log_scale;
             let mut tmp = i64::from((abs_coeff + round).clamp(i16::MIN as i32, i16::MAX as i32));
             tmp *= w;
-            let tmp32 = ((((tmp * t.quant[iz] as i64) >> 16) + tmp) * t.quant_shift[iz] as i64
+            let tmp32 = (((((tmp * t.quant[iz] as i64) >> 16) + tmp) * t.quant_shift[iz] as i64)
                 >> (16 - log_scale + AOM_QM_BITS)) as i32;
             qcoeff[rc] = (tmp32 ^ coeff_sign) - coeff_sign;
             let dequant =

@@ -1334,7 +1334,7 @@ pub fn cdef_search_still(
         .map(|gi| (cfg.fs[lev0[gi]] as u8, cfg.fs[lev1[gi]] as u8))
         .collect();
     Ok(CdefSearchPick::Picked(CdefPick {
-        damping: (3 + (qindex >> 6)) as u8,
+        damping: 3 + (qindex >> 6),
         bits: bits as u8,
         strengths,
         fb_idx,
@@ -1547,7 +1547,7 @@ pub fn cdef_search_still_hbd(
         .map(|gi| (cfg.fs[lev0[gi]] as u8, cfg.fs[lev1[gi]] as u8))
         .collect();
     Ok(CdefSearchPick::Picked(CdefPick {
-        damping: (3 + (qindex >> 6)) as u8,
+        damping: 3 + (qindex >> 6),
         bits: bits as u8,
         strengths,
         fb_idx,

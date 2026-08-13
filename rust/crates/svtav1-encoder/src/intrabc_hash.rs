@@ -597,7 +597,8 @@ mod tests {
         }
         let mut t2 = HashTable::new();
         add_to_hash_map_by_row_with_precal_data(&mut t2, &one_bucket_hash, w, h, 4, 256);
-        let hv1 = (0x1234_5678u32 & 0xffff) + (0 << 16);
+        let add_value = hash_block_size_to_index(4).unwrap() << CRC_BITS;
+        let hv1 = (0x1234_5678u32 & 0xffff) + add_value;
         let bucket = t2.bucket(hv1);
         assert_eq!(bucket.len(), 25);
         for (k, e) in bucket.iter().enumerate() {
@@ -619,7 +620,8 @@ mod tests {
         let pic_hash = vec![0xABCDu32; w * h];
         let mut table = HashTable::new();
         add_to_hash_map_by_row_with_precal_data(&mut table, &pic_hash, w, h, 4, 3);
-        let hv1 = (0xABCDu32 & 0xffff) + 0;
+        let add_value = hash_block_size_to_index(4).unwrap() << CRC_BITS;
+        let hv1 = (0xABCDu32 & 0xffff) + add_value;
         let bucket = table.bucket(hv1);
         assert_eq!(bucket.len(), 3);
         // First three of the hierarchical order for the 5x5 grid:

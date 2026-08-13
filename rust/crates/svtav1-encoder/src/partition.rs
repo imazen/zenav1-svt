@@ -441,6 +441,8 @@ fn restore_region(
 /// write the partition type at each node, then recurse into children.
 /// This tree captures the full partition structure for an SB.
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)] // boxing `Leaf(BlockDecision)` would put an allocation
+// on every leaf of the partition search; unmeasured perf change, and this tree is hot
 pub enum PartitionTree {
     /// Leaf node: PARTITION_NONE — encode block directly.
     Leaf(BlockDecision),

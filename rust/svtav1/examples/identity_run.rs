@@ -158,7 +158,7 @@ fn rgb_to_i420_bt601(rgb: &[u8], w: usize, h: usize) -> (Vec<u8>, Vec<u8>, Vec<u
         }
     }
     // CEILING chroma, matching `encode_frame_420` and the pic-buffer convention.
-    let (cw, ch) = ((w + 1) / 2, (h + 1) / 2);
+    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
     let mut u = vec![0u8; cw * ch];
     let mut v = vec![0u8; cw * ch];
     for cr in 0..ch {
@@ -218,7 +218,7 @@ fn main() {
     // it). For EVEN dims ceiling == floor, so every existing cell is byte-
     // neutral. Chunk 1 (full-SB) + chunk 2 (partial-SB) already handled the
     // aligned/8-round + partial-SB edge coding; this only adds odd true dims.
-    let (cw, ch) = ((w + 1) / 2, (h + 1) / 2);
+    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
 
     let (y, u, v) = if let Some(path) = content.strip_prefix("raw:") {
         // Raw I420 8-bit YUV file (w*h luma + 2*(w/2)*(h/2) chroma), used to
@@ -486,8 +486,8 @@ fn main() {
         // `raw:` with no superres) vs "a statistic C derives BEFORE scaling".
         if let Ok(path) = std::env::var("SVTAV1_SR_DUMP") {
             let cwid = pipeline.true_width as usize;
-            let (ucw, uch) = ((w + 1) / 2, (h + 1) / 2);
-            let ccw = (cwid + 1) / 2;
+            let (ucw, uch) = (w.div_ceil(2), h.div_ceil(2));
+            let ccw = cwid.div_ceil(2);
             let mut yd = vec![0u8; cwid * h];
             let mut ud = vec![0u8; ccw * uch];
             let mut vd = vec![0u8; ccw * uch];

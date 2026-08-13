@@ -90,6 +90,8 @@ fn sharp_tx_is_live_in_fork_mode() {
 
 #[test]
 fn noise_norm_is_live_in_fork_mode() {
+    #[allow(clippy::single_element_loop)] // a sweep grid that happens to hold one cell today;
+    // the loop form keeps the `{preset}`/`{qp}` assert messages and the extension point
     for (preset, qp) in [(6u8, 40u8)] {
         let mut on = HdrForkConfig::hdr_fork();
         on.noise_norm_strength = 4;
@@ -147,6 +149,8 @@ fn photon_noise_is_live_in_fork_mode() {
     // --noise N (fork knob, default 0): SH film_grain_params_present + FH
     // film_grain_params with the synthesized table. Streams must differ
     // from noise-off and grow by roughly the table size (~100+ bits).
+    #[allow(clippy::single_element_loop)] // a sweep grid that happens to hold one cell today;
+    // the loop form keeps the `{preset}`/`{qp}` assert messages and the extension point
     for (preset, qp) in [(6u8, 40u8)] {
         let mut on = HdrForkConfig::hdr_fork();
         on.noise_strength = 12;
@@ -266,7 +270,7 @@ fn tune_policies_are_live_in_fork_mode() {
         }
         // VQ/FILM_GRAIN only differ via the LF sharpness +2 (needs LF
         // active); the SSIM-family tunes rescale every block lambda.
-        if matches!(tune, 2 | 3 | 4) {
+        if matches!(tune, 2..=4) {
             assert_eq!(flipped, 3, "tune {tune} inert on some cells");
         } else {
             assert!(flipped > 0, "tune {tune} inert on all cells");

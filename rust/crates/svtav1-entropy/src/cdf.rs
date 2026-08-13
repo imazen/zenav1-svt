@@ -62,9 +62,9 @@ pub fn avg_cdf_entries(left: &mut [AomCdfProb], tr: &[AomCdfProb], wt_left: i32,
 /// bit-for-bit against the linked C reference in `tests/c_parity.rs`.
 #[inline]
 pub fn update_cdf(cdf: &mut [AomCdfProb], val: usize, nsymbs: usize) {
-    debug_assert!(nsymbs >= 2 && nsymbs < 17);
+    debug_assert!((2..17).contains(&nsymbs));
     debug_assert!(val < nsymbs);
-    debug_assert!(cdf.len() >= nsymbs + 1);
+    debug_assert!(cdf.len() > nsymbs);
 
     let count = cdf[nsymbs];
     // rate = 4 + (count > 15) + (count > 31) + (nsymbs > 3), folded into a

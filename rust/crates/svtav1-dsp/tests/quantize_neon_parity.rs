@@ -77,7 +77,7 @@ fn quantize_matches_scalar_across_shapes_and_divisors() {
 
 #[test]
 fn quantize_handles_zero_dequant() {
-    let coeffs: Vec<i32> = (0..64).map(|i| (i as i32) * 37 - 900).collect();
+    let coeffs: Vec<i32> = (0..64).map(|i| i * 37 - 900).collect();
     for &(dc, ac) in &[(0i32, 24i32), (20, 0), (0, 0)] {
         let qp = QuantParam {
             dequant: [dc, ac],
@@ -98,10 +98,10 @@ fn quantize_falls_back_past_the_f32_exact_bound() {
     // anything bigger tests nothing but the test's own arithmetic. With
     // shift=4 and dequant=24: coeff 1<<22 gives shifted 1<<26 (past the bound,
     // so the fallback runs) and q*dequant = 67,108,848, well inside i32.
-    let under: Vec<i32> = (0..64).map(|i| 1 << 15 | (i as i32)).collect();
-    let over: Vec<i32> = (0..64).map(|i| (1 << 22) + (i as i32) * 1013).collect();
+    let under: Vec<i32> = (0..64).map(|i| 1 << 15 | i).collect();
+    let over: Vec<i32> = (0..64).map(|i| (1 << 22) + i * 1013).collect();
     let mixed: Vec<i32> = (0..64)
-        .map(|i| if i == 31 { 1 << 22 } else { i as i32 * 11 })
+        .map(|i| if i == 31 { 1 << 22 } else { i * 11 })
         .collect();
     for &shift in &[0i32, 2, 4] {
         let qp = QuantParam {

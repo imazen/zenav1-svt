@@ -609,7 +609,7 @@ impl EncodePipeline {
         );
         let (tw, th) = (self.true_width as usize, self.true_height as usize);
         // TRUE chroma dims (4:2:0 ceiling, matching the input .yuv layout).
-        let (tcw, tch) = ((tw + 1) / 2, (th + 1) / 2);
+        let (tcw, tch) = (tw.div_ceil(2), th.div_ceil(2));
         let cn_true = tcw * tch;
         assert!(
             u.len() >= cn_true && v.len() >= cn_true,
@@ -665,7 +665,7 @@ impl EncodePipeline {
             "aligned dims must be 8-aligned; got {aw}x{ah} for true {tw}x{th}"
         );
         // TRUE chroma dims (4:2:0 ceiling, matching the input .yuv layout).
-        let (tcw, tch) = ((tw + 1) / 2, (th + 1) / 2);
+        let (tcw, tch) = (tw.div_ceil(2), th.div_ceil(2));
         if aw == tw && ah == th {
             // Natively 8-aligned: pass through unchanged (byte-identical to
             // the pre-#95 path).
@@ -745,7 +745,7 @@ impl EncodePipeline {
             )));
         }
         let (tw, th) = (self.true_width as usize, self.true_height as usize);
-        let (tcw, tch) = ((tw + 1) / 2, (th + 1) / 2);
+        let (tcw, tch) = (tw.div_ceil(2), th.div_ceil(2));
         let cn_true = tcw * tch;
         if u.len() < cn_true || v.len() < cn_true {
             return Err(whereat::at!(EncodeError::InvalidDimensions {
@@ -881,6 +881,7 @@ impl EncodePipeline {
     /// Chroma is resized at its OWN widths (4:2:0 ceiling on both sides), so
     /// the coded chroma width is `(coded_w + 1) / 2` — the same rounding the
     /// rest of the pipeline uses.
+    #[allow(clippy::type_complexity)] // ported C signature: a `type` alias here would hide the shape and churn the byte-identity gate for no benefit
     fn superres_downscale_420(
         &mut self,
         y: &[u8],
@@ -893,8 +894,8 @@ impl EncodePipeline {
         };
         let (uw, th) = (self.upscaled_width as usize, self.true_height as usize);
         let cw = self.true_width as usize;
-        let (ucw, uch) = ((uw + 1) / 2, (th + 1) / 2);
-        let ccw = (cw + 1) / 2;
+        let (ucw, uch) = (uw.div_ceil(2), th.div_ceil(2));
+        let ccw = cw.div_ceil(2);
         let mut yd = svtav1_types::try_vec![0u8; cw * th]?;
         let mut ud = svtav1_types::try_vec![0u8; ccw * uch]?;
         let mut vd = svtav1_types::try_vec![0u8; ccw * uch]?;
@@ -916,9 +917,7 @@ impl EncodePipeline {
     /// stream that says "upscale me" over content the encoder handled with the
     /// wrong geometry.
     fn superres_config_error(&self) -> Option<&'static str> {
-        let Some(denom) = self.superres_denom else {
-            return None;
-        };
+        let denom = self.superres_denom?;
         if !(9..=16).contains(&denom) {
             return Some("SuperresDenom must be 9..=16");
         }
@@ -1009,7 +1008,7 @@ impl EncodePipeline {
             )));
         }
         let (tw, th) = (self.true_width as usize, self.true_height as usize);
-        let (tcw, tch) = ((tw + 1) / 2, (th + 1) / 2);
+        let (tcw, tch) = (tw.div_ceil(2), th.div_ceil(2));
         if y.len() < (th - 1) * y_stride + tw || u.len() < tcw * tch || v.len() < tcw * tch {
             return Err(whereat::at!(EncodeError::InvalidDimensions {
                 width: self.true_width,
@@ -2506,6 +2505,8 @@ impl EncodePipeline {
         // the post-CDEF recon, so the tile must be re-written AFTER
         // deblock+CDEF when any plane signals wiener — C's pipeline order
         // (rest_process before the EC kernel) gives it the same view.
+        #[allow(clippy::type_complexity)]
+        // inline tuple documents the shape; a `type` alias would hide it
         let run_entropy_walk = |lr: Option<&crate::restoration::FrameRestInfo>,
                                 cdef_walk: Option<&crate::cdef::CdefPick>|
          -> crate::EncodeResult<(
@@ -3243,7 +3244,7 @@ impl EncodePipeline {
                 // tight true/ceil buffers from the aligned-strided recon +
                 // source (luma stride `w`, chroma stride `cw`); on an 8-aligned
                 // frame true == aligned, so these are byte-neutral copies.
-                let (lr_tcw, lr_tch) = ((lr_true_w + 1) / 2, (lr_true_h + 1) / 2);
+                let (lr_tcw, lr_tch) = (lr_true_w.div_ceil(2), lr_true_h.div_ceil(2));
                 let extract_tight = |src: &[u8], src_stride: usize, pw: usize, ph: usize| {
                     let mut out = alloc::vec![0u8; pw * ph];
                     for r in 0..ph {
@@ -4003,8 +4004,8 @@ impl EntropyCtx {
         allow_sct: bool,
         bit_depth: u8,
     ) -> Self {
-        let width_8x8 = (width_4x4 + 1) / 2;
-        let height_8x8 = (height_4x4 + 1) / 2;
+        let width_8x8 = width_4x4.div_ceil(2);
+        let height_8x8 = height_4x4.div_ceil(2);
         // Chroma-plane 4x4 units: (w/2)/4 = width_4x4/2 (frames are
         // 64-aligned so this divides exactly; div_ceil for safety).
         let width_c4 = width_4x4.div_ceil(2);
@@ -4370,7 +4371,7 @@ impl EntropyCtx {
     /// (SMOOTH/SMOOTH_V/SMOOTH_H), else 0. Neighbours are the blocks at
     /// (mi_row - 1, mi_col) / (mi_row, mi_col - 1); unavailable -> 0.
     pub(crate) fn filt_type_y(&self, x: usize, y: usize) -> i32 {
-        let smooth = |m: u8| matches!(m, 9 | 10 | 11);
+        let smooth = |m: u8| matches!(m, 9..=11);
         let ab = y > 0 && smooth(self.above_mode[x / 4]);
         let le = x > self.tile_left_px && smooth(self.left_mode[y / 4]);
         i32::from(ab || le)
@@ -4380,7 +4381,7 @@ impl EntropyCtx {
     /// modes (chroma_above/left_mbmi; min-8x8 blocks make the +1-mi
     /// group offsets land in the same neighbour block).
     pub(crate) fn filt_type_uv(&self, x: usize, y: usize) -> i32 {
-        let smooth = |m: u8| matches!(m, 9 | 10 | 11);
+        let smooth = |m: u8| matches!(m, 9..=11);
         let ab = y > 0 && smooth(self.above_uv_mode[x / 4]);
         let le = x > self.tile_left_px && smooth(self.left_uv_mode[y / 4]);
         i32::from(ab || le)
@@ -4714,7 +4715,7 @@ fn encode_block_syntax(
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&path)
+            .open(path)
         {
             let (ueob, veob) = decision
                 .chroma_dec
@@ -4835,7 +4836,7 @@ fn encode_block_syntax(
                 if let Ok(mut f) = std::fs::OpenOptions::new()
                     .create(true)
                     .append(true)
-                    .open(&xy)
+                    .open(xy)
                 {
                     let _ = writeln!(f, "{line}");
                 }
@@ -4851,8 +4852,8 @@ fn encode_block_syntax(
             decision.width,
             decision.height,
             decision.eob == 0,
-            decision.intra_mode as u8,
-            decision.uv_mode as u8,
+            decision.intra_mode,
+            decision.uv_mode,
             decision.tx_depth
         );
     }
@@ -6227,7 +6228,6 @@ fn bd10_reencode_luma(
 }
 
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 fn bd10_reencode_node(
     // C `seq_header.sb_mi_size` (16 SB64 / 32 SB128) — the intra
     // availability tables index by `mi & (sb_mi_size - 1)` (task #91).
@@ -6683,7 +6683,6 @@ fn bd10_reencode_chroma_plane(
 }
 
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 fn bd10_reencode_chroma_node(
     // C `seq_header.sb_mi_size` (16 SB64 / 32 SB128), task #91.
     sb_mi_size: usize,
@@ -7018,6 +7017,7 @@ fn bd10_full_rd_supported(
     bit_depth == 10 && preset <= 8 && chroma_420
 }
 
+#[allow(clippy::type_complexity)] // ported C signature: a `type` alias here would hide the shape and churn the byte-identity gate for no benefit
 fn encode_tile_rows(
     encode_input: &[u8],
     // Task #95 chunk 2: source padded to the SB extent (== `encode_input` for
