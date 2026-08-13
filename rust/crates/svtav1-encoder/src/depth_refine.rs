@@ -1747,8 +1747,6 @@ impl DepthWalk<'_, '_> {
     /// test_depth (:11396, the d1 shape loop) + the sub-depth walk.
     /// `None` mirrors C's `pc_tree->rdc.valid == 0` return: the node produced
     /// no valid partition at all, which invalidates the parent's SPLIT.
-    #[allow(clippy::unnecessary_unwrap)] // the `if let` rewrite needs a let-chain (Rust 1.88);
-    // this workspace declares rust-version = "1.85"
     fn pick(&mut self, scan: &RefScan, abs_x: usize, abs_y: usize) -> Option<NodeRes> {
         let size = scan.sq;
         let mut split_flag = scan.split_flag;
@@ -1815,10 +1813,12 @@ impl DepthWalk<'_, '_> {
                     // unset (product_coding_loop.c:9717, 9852, 10067, and
                     // `update_skip_nsq_shapes`), which is exactly the
                     // single-edge node where PART_N is never tested.
-                    if shape != PartitionType::None && nsi == 0 && sq_info.is_some() {
+                    if shape != PartitionType::None
+                        && nsi == 0
+                        && let Some(sq) = sq_info.as_ref()
+                    {
                         // faster_md_settings_nsq: I-slice-dead (C gates
                         // the call on slice_type != I_SLICE, :11470).
-                        let sq = sq_info.as_ref().expect("checked above");
                         let best_part = best
                             .as_ref()
                             .map(|(p, _, _)| *p)

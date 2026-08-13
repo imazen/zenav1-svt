@@ -3953,8 +3953,6 @@ pub(crate) fn decide_leaf_rect(
 #[allow(clippy::manual_checked_ops)]
 // the `> 0` guard scopes a whole block, not a single
 // division; `checked_div` cannot express it without restructuring hot RD control flow
-#[allow(clippy::unnecessary_unwrap)] // the `if let` rewrite needs a let-chain (Rust 1.88);
-// this workspace declares rust-version = "1.85"
 pub(crate) fn evaluate_leaf(
     fx: &mut FunnelCtx<'_>,
     y_src: &[u8],
@@ -4541,7 +4539,7 @@ pub(crate) fn evaluate_leaf(
     // at injection) so every candidate's MDS0 fast cost prices its FINAL uv
     // pair — which drives the NIC survivor order. The table itself is
     // candidate-independent, so building it here is timing-exact.
-    if has_uv && cfg.ind_uv_independent.is_some() {
+    if has_uv && let Some(ind_uv_independent) = cfg.ind_uv_independent {
         // C `search_best_independent_uv_mode` (product_coding_loop.c:7778),
         // chroma_level 1/2 (ind_uv_last_mds 0/1): a FULL independent uv
         // search over ALL uv modes, not just the survivors' uv-follows-luma
@@ -4549,7 +4547,7 @@ pub(crate) fn evaluate_leaf(
         // an intra candidate survived (skip_ind_uv_if_only_dc = 0 here, and
         // the inter-vs-intra arm is I-slice-dead) — so it always runs for
         // our intra blocks.
-        let uv_nic = cfg.ind_uv_independent.unwrap() as u64;
+        let uv_nic = ind_uv_independent as u64;
 
         // 1. Inject ALL uv modes DC..mode_end with angle deltas, in the C
         //    uv_mode-then-delta order (:7807-7849): angular_pred_level >= 4
@@ -7021,14 +7019,13 @@ pub(crate) fn evaluate_leaf(
         // The INTER chroma tx type the IBC arm derives below, so the bd10 twin
         // can use the SAME one instead of re-deriving it from the intra rule.
         let mut ibc_uv_tt: Option<usize> = None;
-        let (mut u_out, mut v_out) = if has_uv && cand.ibc.is_some() {
+        let (mut u_out, mut v_out) = if has_uv && let Some((dv, _)) = cand.ibc {
             // IBC chunk 7: IntraBC chroma — the DV copy / half-pel bilinear
             // from the chroma recon canvases (enc_inter_prediction chroma
             // arm, sf_identity), with the INTER chroma tx type rule: the
             // luma winner's txb-0 type when the chroma ext set allows it,
             // else DCT (tx_type_search, product_coding_loop.c:5087-5096).
             // No CfL, no ind-uv, no detector (all intra-only).
-            let (dv, _) = cand.ibc.unwrap();
             let mut u_pred = vec![0u8; cw * chh];
             let mut v_pred = vec![0u8; cw * chh];
             let frame_ch = frame.frame_h_px / 2;
