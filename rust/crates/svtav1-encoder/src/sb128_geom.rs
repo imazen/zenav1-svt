@@ -272,13 +272,13 @@ pub fn sb128_bridge_max(vals: [Option<u32>; 4]) -> u32 {
 /// 128-variant block (given that block's bsize at the fb's own mi)?
 /// - Phase 1 (search): if yes -> SKIP the fb entirely (stats stay stale).
 /// - Phase 3 (apply): if yes -> dirinit forced fresh (cached dir stale).
-/// bsize codes: 0 = not 128-variant, 1 = 128x128, 2 = 128x64, 3 = 64x128.
-/// PORT-NOTE(unverified): phase 2 (explicit cdef_strength fan-out to the
-/// covered quadrant slots keyed by bsize, enc_cdef.c:874-893) and the
-/// write_cdef 64-mask quadrant indexing (entropy_coding.c:3986-4017)
-/// must land IN THE SAME CHUNK as the consumers; a synthetic unit test
-/// vs a filter-every-64-independently reference is required before the
-/// SB128 gate flips (map chunk 8).
+///   bsize codes: 0 = not 128-variant, 1 = 128x128, 2 = 128x64, 3 = 64x128.
+///   PORT-NOTE(unverified): phase 2 (explicit cdef_strength fan-out to the
+///   covered quadrant slots keyed by bsize, enc_cdef.c:874-893) and the
+///   write_cdef 64-mask quadrant indexing (entropy_coding.c:3986-4017)
+///   must land IN THE SAME CHUNK as the consumers; a synthetic unit test
+///   vs a filter-every-64-independently reference is required before the
+///   SB128 gate flips (map chunk 8).
 pub fn cdef_fb_is_stale_quadrant(fbc: usize, fbr: usize, bsize128: u8) -> bool {
     match bsize128 {
         1 => (fbc & 1 != 0) || (fbr & 1 != 0),
@@ -319,9 +319,9 @@ pub fn sb_header_params(sb: usize) -> (bool, usize, u32, u32) {
 ///   easy to conflate).
 /// - the literal is emitted at the FIRST NON-SKIP block of the quadrant
 ///   (cdef_bits wide), then the slot latches.
-/// PORT-NOTE(unverified): the port's current writer emits cdef_idx once
-/// per 64-SB via its own path; at SB128 wiring, replace with this state
-/// machine + a synthetic 4-quadrant unit test.
+///   PORT-NOTE(unverified): the port's current writer emits cdef_idx once
+///   per 64-SB via its own path; at SB128 wiring, replace with this state
+///   machine + a synthetic 4-quadrant unit test.
 pub struct CdefTransmit {
     transmitted: [bool; 4],
 }

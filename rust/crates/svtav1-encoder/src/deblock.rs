@@ -387,18 +387,18 @@ fn search_filter_level<P: DlfPixel>(
 /// - The dlf_process zero-SSE guard (`zero_filt_sse == -1` recompute) can
 ///   never fire: the luma search starts at level 0, so ss_err[0] is always
 ///   evaluated and zero_filt_sse != -1. Not ported (documented no-op).
-/// SVTAV1_RECONDBG: dump SSE(source, UNFILTERED recon) per plane + the raw
-/// pre-DLF recon planes (SVTAV1_RECON_BIN=<prefix> → `<prefix>.p{0,1,2}`,
-/// tightly packed). Pure function of the recon — separates "the filter
-/// searches diverge" from "the recon they read already diverges". C's
-/// counterpart is the --wrap interposer in tools/capture_c_trace/
-/// wrap_recon.c, which reports C's own `picture_sse_calculations` at the
-/// same pipeline point (dlf_process.c:101 — recon final, not yet
-/// deblocked). Called from the pipeline BEFORE the DLF path split so it
-/// fires at EVERY preset (it used to live inside
-/// `pick_filter_levels_full_search`, dead at presets >= M6 whose dlf level
-/// uses the closed-form picker — the #90 coverage gap). Validate on a
-/// byte-identical cell before trusting a mismatch on a diverging one.
+///   SVTAV1_RECONDBG: dump SSE(source, UNFILTERED recon) per plane + the raw
+///   pre-DLF recon planes (SVTAV1_RECON_BIN=<prefix> → `<prefix>.p{0,1,2}`,
+///   tightly packed). Pure function of the recon — separates "the filter
+///   searches diverge" from "the recon they read already diverges". C's
+///   counterpart is the --wrap interposer in tools/capture_c_trace/
+///   wrap_recon.c, which reports C's own `picture_sse_calculations` at the
+///   same pipeline point (dlf_process.c:101 — recon final, not yet
+///   deblocked). Called from the pipeline BEFORE the DLF path split so it
+///   fires at EVERY preset (it used to live inside
+///   `pick_filter_levels_full_search`, dead at presets >= M6 whose dlf level
+///   uses the closed-form picker — the #90 coverage gap). Validate on a
+///   byte-identical cell before trusting a mismatch on a diverging one.
 #[cfg(feature = "std")]
 #[allow(clippy::too_many_arguments)]
 pub fn recondbg_dump(

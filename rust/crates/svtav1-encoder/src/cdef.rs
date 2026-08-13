@@ -1357,10 +1357,10 @@ pub fn cdef_search_still(
 /// 4. `svt_aom_compute_cdef_dist_16bit` normalizes the SSE by
 ///    `>> 2 * coeff_shift` (enc_cdef.c:112) so the RD lambda stays on the
 ///    8-bit scale.
-/// The recon/source planes are the TRUE 10-bit ones (C: `cdef_input_recon`
-/// from the 16-bit recon picture, `cdef_input_source` from
-/// `pcs->input_frame16bit`, cdef_process.c:330-332), and the RD lambda is
-/// `svt_aom_lambda_assign(.., EB_TEN_BIT, .., multiply_lambda = false)`.
+///    The recon/source planes are the TRUE 10-bit ones (C: `cdef_input_recon`
+///    from the 16-bit recon picture, `cdef_input_source` from
+///    `pcs->input_frame16bit`, cdef_process.c:330-332), and the RD lambda is
+///    `svt_aom_lambda_assign(.., EB_TEN_BIT, .., multiply_lambda = false)`.
 #[allow(clippy::too_many_arguments)]
 pub fn cdef_search_still_hbd(
     cfg: &CdefSearchCfg,

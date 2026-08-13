@@ -6,8 +6,8 @@
 //! (`cdef.rs`), distortion (`full_distortion_kernel16_*`), CfL (`cfl_*_hbd`) and
 //! the intra predictors are all invoked from production (the bd10 full-RD funnel
 //! + post-pass, docs/bd10-port-map.md). Only the `dc/ac_qlookup_10/_12` arms
-//! below stay unwired — the real bd10 quant tables live in the encoder crate
-//! (`svtav1_encoder::bd10`), so these copies are dead by crate-dedup, not a gap.
+//!   below stay unwired — the real bd10 quant tables live in the encoder crate
+//!   (`svtav1_encoder::bd10`), so these copies are dead by crate-dedup, not a gap.
 //!
 //! Translated per `docs/bd10-port-map.md` (the spec — plain `u16` pixel
 //! planes everywhere; the C 8+2 unpacked-plane split is an *input ingestion

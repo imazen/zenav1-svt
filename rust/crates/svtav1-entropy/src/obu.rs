@@ -147,10 +147,10 @@ pub struct SeqTools {
     /// (libaom build_intra_predictors `disable_edge_filter`), so the
     /// encoder's reconstruction path must do the same. C allintra
     /// derivation (`svt_aom_sig_deriv_pre_analysis_scs`,
-    /// enc_mode_config.c:4036-4048): 1 iff `dist_based_ang_intra_level
-    /// >= 1 || angular_pred_level[intra_level] in {2, 3}` — true ONLY at
-    /// M5 (intra_level 2 -> angular_pred_level 2) among representable
-    /// allintra presets.
+    /// enc_mode_config.c:4036-4048): 1 iff
+    /// `dist_based_ang_intra_level >= 1 || angular_pred_level[intra_level]
+    /// in {2, 3}` — true ONLY at M5 (intra_level 2 -> angular_pred_level 2)
+    /// among representable allintra presets.
     pub enable_intra_edge_filter: bool,
     /// SH `enable_restoration` (spec 5.5.1): gates the FH lr_params()
     /// fields (spec 5.9.20) — every frame header of the sequence must

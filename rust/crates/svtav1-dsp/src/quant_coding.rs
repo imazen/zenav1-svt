@@ -37,10 +37,10 @@
 //!   * b path: `tmp*quant <= 32767*32767 < 1.08e9`; `(...>>16 + tmp) *
 //!     quant_shift <= 49151*16384 < 8.06e8`; both fit i32.
 //!   * `tmp32 * dequant`: `tmp32 <= ~49146`, `dequant <= 1828` → `< 9e7`.
-//! So `_mm256_mullo_epi32` (low 32 bits) equals the scalar i64 product exactly.
-//! The HIGHBD variants drop the INT16 clamp (coeffs reach ~2^19), so `a *
+//!     So `_mm256_mullo_epi32` (low 32 bits) equals the scalar i64 product exactly.
+//!     The HIGHBD variants drop the INT16 clamp (coeffs reach ~2^19), so `a *
 //! quant_fp` can exceed i32 — they are NOT covered here and stay scalar in the
-//! encoder.
+//!     encoder.
 
 use archmage::prelude::*;
 

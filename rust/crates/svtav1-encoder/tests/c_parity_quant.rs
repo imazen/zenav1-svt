@@ -17,9 +17,9 @@
 //!     transcribes;
 //!   * `dispatch = true`  — the RTCD pointer, i.e. the kernel the C encoder
 //!     ACTUALLY calls on this box.
-//! and cross-check the two C paths against each other, so a SIMD-vs-C
-//! difference in the reference can never masquerade as a port bug (or hide
-//! one).
+//!     and cross-check the two C paths against each other, so a SIMD-vs-C
+//!     difference in the reference can never masquerade as a port bug (or hide
+//!     one).
 //!
 //! QM is off on the allintra path (`enable_qm = 0`, av1_cx_iface base default),
 //! so the facade's non-QM branch is the one under test.

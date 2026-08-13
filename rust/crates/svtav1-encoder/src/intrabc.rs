@@ -83,9 +83,9 @@ use svtav1_types::transform::TxType;
 // `palette.rs`'s `divide_and_round`/`lcg_next` for the same pattern).
 // =============================================================================
 
-/// C `ROUND_POWER_OF_TWO(value, n)` (definitions.h:478): `(value + (1<<n>>1))
-/// >> n`. Only called with `n >= 1` in this module (matches every call site
-/// below).
+/// C `ROUND_POWER_OF_TWO(value, n)` (definitions.h:478):
+/// `(value + (1<<n>>1)) >> n`. Only called with `n >= 1` in this module
+/// (matches every call site below).
 #[inline]
 fn round_power_of_two(value: i32, n: u32) -> i32 {
     (value + ((1i32 << n) >> 1)) >> n

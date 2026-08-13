@@ -15,8 +15,8 @@
 //!    `svt_aom_variance*` quantity (different signature and, because C divides
 //!    `sum^2/N` with integer truncation, a different value). It is verified
 //!    here against the exact numerator rebuilt from two C oracles:
-//!        sum(x)   = svt_aom_sad(block, zeros)        (pixels are >= 0)
-//!        sum(x^2) = sse-output of svt_aom_variance(block, zeros)
+//!    sum(x)   = svt_aom_sad(block, zeros)        (pixels are >= 0)
+//!    sum(x^2) = sse-output of svt_aom_variance(block, zeros)
 //!    so the check is still fully C-grounded and bit-exact.
 
 use svtav1_cref as cref;

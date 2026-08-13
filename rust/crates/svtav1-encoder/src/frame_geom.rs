@@ -143,9 +143,9 @@ pub fn sb_geom(dims: &FrameDims, sb: usize, sb_x: usize, sb_y: usize) -> (usize,
 /// - !has_cols  -> binary SPLIT-vs-VERT (shape must be PART_V)
 /// - !has_rows  -> binary SPLIT-vs-HORZ (shape must be PART_H)
 /// - both false -> forced SPLIT, NO symbol coded
-/// Takes the ALIGNED extent directly (rather than a [`FrameDims`]) so the
-/// pack walk — which knows the frame only through the deblock geometry — can
-/// share this one rule instead of re-deriving it; `pipeline::
+///   Takes the ALIGNED extent directly (rather than a [`FrameDims`]) so the
+///   pack walk — which knows the frame only through the deblock geometry — can
+///   share this one rule instead of re-deriving it; `pipeline::
 /// partition_edge_flags` delegates here.
 ///
 /// Note a size invariant that keeps the search's base case safe: while the

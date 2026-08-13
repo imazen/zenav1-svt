@@ -18,8 +18,8 @@
 //! - Unit filter: `svt_av1_loop_restoration_filter_unit` +
 //!   `get_stripe_boundary_info` + `{setup,restore}_processing_stripe_boundary`
 //!   + `wiener_filter_stripe` (restoration.c:216-421, 1040-1110), the
-//!   decoder-authoritative stripe walk (libaom av1/common/restoration.c is
-//!   the same code).
+//!     decoder-authoritative stripe walk (libaom av1/common/restoration.c is
+//!     the same code).
 //! - Boundary capture: `svt_aom_save_deblock_boundary_lines` /
 //!   `svt_aom_save_cdef_boundary_lines` / `svt_aom_save_tile_row_boundary_lines`
 //!   (restoration.c:1507-1662) — the two-pass (post-deblock, post-CDEF)

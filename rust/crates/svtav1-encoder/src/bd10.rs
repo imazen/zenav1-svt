@@ -84,10 +84,10 @@ pub fn ac_qlookup_10(qindex: u8) -> i16 {
 
 /// hbd_md resolution for the allintra path (C enc_mode_config.c:2476-2483
 /// + enable_hbd_mode_decision = bd>8 ? DEFAULT : 0). Returns the MD
-/// precision the port must replicate per preset. 0 = 8-bit MD (bd8
-/// streams), 1 = true 10-bit, 2 = DUAL (== 1 for intra; IntraBC
-/// compensation searches at 8-bit).
-/// --hbd-mds is NEVER consulted on the allintra path (map §2).
+///   precision the port must replicate per preset. 0 = 8-bit MD (bd8
+///   streams), 1 = true 10-bit, 2 = DUAL (== 1 for intra; IntraBC
+///   compensation searches at 8-bit).
+///   --hbd-mds is NEVER consulted on the allintra path (map §2).
 pub fn allintra_hbd_md(encoder_bit_depth: u8, _preset: u8) -> u8 {
     if encoder_bit_depth <= 8 {
         0
