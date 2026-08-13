@@ -44,7 +44,7 @@ fn gen_luma(content: &str, w: usize, h: usize) -> Vec<u8> {
             let sb = (r / 64) * sb_cols + (c / 64);
             y[r * w + c] = match content {
                 "mixed" => {
-                    if sb % 3 == 0 {
+                    if sb.is_multiple_of(3) {
                         128
                     } else if sb % 3 == 1 {
                         (((r * 7) ^ (c * 13)) & 0xFF) as u8
@@ -53,7 +53,7 @@ fn gen_luma(content: &str, w: usize, h: usize) -> Vec<u8> {
                     }
                 }
                 _ => {
-                    if sb % 2 == 0 {
+                    if sb.is_multiple_of(2) {
                         120
                     } else {
                         (((r * 255) / h) as u8) ^ (((c * 3) & 0x3F) as u8)

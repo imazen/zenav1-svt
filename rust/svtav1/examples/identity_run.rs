@@ -226,7 +226,7 @@ fn main() {
         // decode_conformance failure cases (replicated-border padded content)
         // that synthetic uniform/gradient don't reproduce.
         assert!(
-            w % 2 == 0 && h % 2 == 0,
+            w.is_multiple_of(2) && h.is_multiple_of(2),
             "raw: I420 harness requires even dims (floor .yuv layout); got {w}x{h}"
         );
         let bytes = std::fs::read(path).expect("read raw yuv");

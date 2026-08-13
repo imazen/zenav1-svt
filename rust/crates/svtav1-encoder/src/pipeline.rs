@@ -576,7 +576,8 @@ impl EncodePipeline {
         // emit an undecodable stream, so they stay restricted to full 64x64
         // SBs — rejecting out-of-scope dims beats mis-coding them.
         assert!(
-            (self.width % 64 == 0 && self.height % 64 == 0) || self.speed_config.preset >= 6,
+            (self.width.is_multiple_of(64) && self.height.is_multiple_of(64))
+                || self.speed_config.preset >= 6,
             "monochrome encode_frame supports partial SBs only on the PD0 path (preset >= 6); \
              got {}x{} at preset {} — use a multiple of 64 or preset >= 6",
             self.width,
@@ -699,7 +700,9 @@ impl EncodePipeline {
                          wired on the 4:2:0 path only)",
             }));
         }
-        if (self.width % 64 != 0 || self.height % 64 != 0) && self.speed_config.preset < 6 {
+        if (!self.width.is_multiple_of(64) || !self.height.is_multiple_of(64))
+            && self.speed_config.preset < 6
+        {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(
                 "monochrome encode supports partial SBs only on the PD0 path (preset >= 6); use a \
                  multiple of 64 or preset >= 6",
@@ -3687,7 +3690,7 @@ pub(crate) fn palette_cache(
 ) -> alloc::vec::Vec<u16> {
     let x4 = block_x / 4;
     let y4 = block_y / 4;
-    let mut above_n = if block_y % 64 != 0 && x4 < ectx.above_palette.len() {
+    let mut above_n = if !block_y.is_multiple_of(64) && x4 < ectx.above_palette.len() {
         ectx.above_palette[x4] as usize
     } else {
         0
@@ -4870,7 +4873,8 @@ fn encode_block_syntax(
     let blk_has_uv = {
         let bw_mi = decision.width as usize / 4;
         let bh_mi = decision.height as usize / 4;
-        ((block_y / 4) % 2 == 1 || bh_mi % 2 == 0) && ((block_x / 4) % 2 == 1 || bw_mi % 2 == 0)
+        ((block_y / 4) % 2 == 1 || bh_mi.is_multiple_of(2))
+            && ((block_x / 4) % 2 == 1 || bw_mi.is_multiple_of(2))
     };
     // Task #86: chroma-plane tile-row origin (exact halving — see
     // encode_chroma_block_dc's doc comment). Copied out of `ectx` before
@@ -4980,7 +4984,7 @@ fn encode_block_syntax(
     // mode_info -> read_delta_qindex): only at the SB's upper-left block,
     // and only when (bsize != sb_size || !skip). sb_size is 64 here.
     if let Some((res, prev)) = ectx.delta_q_state {
-        let super_block_upper_left = block_x % 64 == 0 && block_y % 64 == 0;
+        let super_block_upper_left = block_x.is_multiple_of(64) && block_y.is_multiple_of(64);
         let is_sb_sized = decision.width == 64 && decision.height == 64;
         if super_block_upper_left && (!is_sb_sized || !skip) {
             let cur = ectx.delta_q_sb_qindex;
@@ -6719,8 +6723,8 @@ fn bd10_reencode_chroma_node(
             // min-8x8 luma policy every leaf is a reference; kept for safety.
             let bw_mi = bw / 4;
             let bh_mi = bh / 4;
-            let has_uv =
-                ((y / 4) % 2 == 1 || bh_mi % 2 == 0) && ((x / 4) % 2 == 1 || bw_mi % 2 == 0);
+            let has_uv = ((y / 4) % 2 == 1 || bh_mi.is_multiple_of(2))
+                && ((x / 4) % 2 == 1 || bw_mi.is_multiple_of(2));
             if !has_uv {
                 return;
             }

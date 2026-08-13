@@ -521,7 +521,7 @@ pub struct DeblockGeom {
 impl DeblockGeom {
     /// Frame dims must be mi-aligned (the pipeline is 64-aligned).
     pub fn new(width: usize, height: usize) -> Self {
-        assert!(width % 4 == 0 && height % 4 == 0);
+        assert!(width.is_multiple_of(4) && height.is_multiple_of(4));
         let mi_cols = width / 4;
         let mi_rows = height / 4;
         let n = mi_cols * mi_rows;

@@ -231,7 +231,7 @@ impl Encoder {
                 "Width and height must be > 0".into(),
             ));
         }
-        if config.width % 2 != 0 || config.height % 2 != 0 {
+        if !config.width.is_multiple_of(2) || !config.height.is_multiple_of(2) {
             return Err(EncoderError::InvalidConfig(
                 "Width and height must be even".into(),
             ));

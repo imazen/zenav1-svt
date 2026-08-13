@@ -66,8 +66,8 @@ fn ssim_nxn(s: &[u8], sp: usize, r: &[u8], rp: usize, n: usize) -> f64 {
 /// C `ssim()` (mode_decision.c): 8x8 tiling when both dims are multiples
 /// of 8, else 4x4; per-tile CLIP3(0,1), mean over tiles.
 pub fn ssim_blocks(s: &[u8], sp: usize, r: &[u8], rp: usize, width: usize, height: usize) -> f64 {
-    debug_assert!(width % 4 == 0 && height % 4 == 0);
-    let n = if width % 8 == 0 && height % 8 == 0 {
+    debug_assert!(width.is_multiple_of(4) && height.is_multiple_of(4));
+    let n = if width.is_multiple_of(8) && height.is_multiple_of(8) {
         8
     } else {
         4

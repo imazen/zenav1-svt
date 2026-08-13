@@ -59,7 +59,7 @@ fn main() {
     let warmup: usize = args.get(7).map(|s| s.parse().expect("warmup")).unwrap_or(1);
 
     assert!(
-        w % 2 == 0 && h % 2 == 0,
+        w.is_multiple_of(2) && h.is_multiple_of(2),
         "perf harness uses even dims (floor==ceiling chroma)"
     );
 

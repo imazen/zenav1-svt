@@ -43,12 +43,12 @@ impl FrameDims {
     /// arithmetic is duplicated at resource_coordination_process.c:717-729
     /// — ported ONCE here on purpose).
     pub fn new(true_w: usize, true_h: usize) -> Self {
-        let pad_r = if true_w % MIN_BLOCK_SIZE != 0 {
+        let pad_r = if !true_w.is_multiple_of(MIN_BLOCK_SIZE) {
             MIN_BLOCK_SIZE - (true_w % MIN_BLOCK_SIZE)
         } else {
             0
         };
-        let pad_b = if true_h % MIN_BLOCK_SIZE != 0 {
+        let pad_b = if !true_h.is_multiple_of(MIN_BLOCK_SIZE) {
             MIN_BLOCK_SIZE - (true_h % MIN_BLOCK_SIZE)
         } else {
             0

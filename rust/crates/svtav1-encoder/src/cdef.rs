@@ -357,7 +357,10 @@ pub fn apply_cdef_frame(
     if !params.any(!chroma_420) {
         return stats;
     }
-    assert!(width % 8 == 0 && height % 8 == 0, "8-aligned frames only");
+    assert!(
+        width.is_multiple_of(8) && height.is_multiple_of(8),
+        "8-aligned frames only"
+    );
 
     let damping = params.damping as i32; // + coeff_shift (=0 at 8-bit)
 
@@ -564,7 +567,10 @@ pub fn apply_cdef_frame_hbd(
     if !params.any(!chroma_420) {
         return;
     }
-    assert!(width % 8 == 0 && height % 8 == 0, "8-aligned frames only");
+    assert!(
+        width.is_multiple_of(8) && height.is_multiple_of(8),
+        "8-aligned frames only"
+    );
     assert!(bit_depth == 10, "bd12 out of scope (docs/bd10-port-map.md)");
     let coeff_shift = (bit_depth - 8) as i32;
     let damping = params.damping as i32 + coeff_shift;
@@ -1171,7 +1177,10 @@ pub fn cdef_search_still(
     geom: &DeblockGeom,
     qindex: u8,
 ) -> crate::EncodeResult<CdefSearchPick> {
-    assert!(width % 8 == 0 && height % 8 == 0, "8-aligned frames only");
+    assert!(
+        width.is_multiple_of(8) && height.is_multiple_of(8),
+        "8-aligned frames only"
+    );
     let damping = 3 + (qindex as i32 >> 6);
     let nvfb = height.div_ceil(64);
     let nhfb = width.div_ceil(64);
@@ -1377,7 +1386,10 @@ pub fn cdef_search_still_hbd(
     qindex: u8,
     bit_depth: u8,
 ) -> crate::EncodeResult<CdefSearchPick> {
-    assert!(width % 8 == 0 && height % 8 == 0, "8-aligned frames only");
+    assert!(
+        width.is_multiple_of(8) && height.is_multiple_of(8),
+        "8-aligned frames only"
+    );
     assert!(bit_depth == 10, "bd12 out of scope (docs/bd10-port-map.md)");
     let coeff_shift = (bit_depth - 8) as i32;
     let damping = 3 + (qindex as i32 >> 6);

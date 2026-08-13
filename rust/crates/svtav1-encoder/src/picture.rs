@@ -201,7 +201,13 @@ impl GopStructure {
         let mut layer = self.hierarchical_levels;
         let mut step = 1u32;
         while step < self.mini_gop_size {
-            if pos_in_gop % (self.mini_gop_size / step) == 0 {
+            // The divisor cannot be 0: the loop invariant `step <
+            // mini_gop_size` makes `mini_gop_size / step >= 1`, so this is the
+            // same value the `%` form computed. (`is_multiple_of` DOES differ
+            // from `% n == 0` at n == 0 — it answers `self == 0` where `%`
+            // panics — so the invariant is what makes the swap behaviour-
+            // preserving here, not the rewrite itself.)
+            if pos_in_gop.is_multiple_of(self.mini_gop_size / step) {
                 return layer.saturating_sub(1);
             }
             layer = layer.saturating_sub(1);
@@ -212,10 +218,13 @@ impl GopStructure {
 
     /// Determine if a frame at this position should be a key frame.
     pub fn is_key_frame(&self, display_order: u64) -> bool {
+        // Kept explicit: `intra_period == 0` reaches the `%` as a zero divisor.
+        // `is_multiple_of(0)` happens to answer `display_order == 0` — the same
+        // thing — but the guard states the intent and predates the rewrite.
         if self.intra_period == 0 {
             return display_order == 0;
         }
-        display_order % self.intra_period as u64 == 0
+        display_order.is_multiple_of(self.intra_period as u64)
     }
 }
 

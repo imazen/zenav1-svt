@@ -571,7 +571,7 @@ pub fn build_directional_edges(
     // All pipeline frames are 64-aligned; the debug_assert documents that
     // unaligned dims would need the decoder's padded-recon semantics.
     debug_assert_eq!(recon.len() % stride, 0);
-    debug_assert!(frame_w % 8 == 0 && frame_h % 8 == 0);
+    debug_assert!(frame_w.is_multiple_of(8) && frame_h.is_multiple_of(8));
     let mi_cols = 2 * ((frame_w + 7) >> 3);
     let mi_rows = 2 * ((frame_h + 7) >> 3);
     let mi_row = abs_y >> 2;

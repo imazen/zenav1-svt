@@ -4068,8 +4068,8 @@ pub(crate) fn evaluate_leaf(
     // (common_utils.h:315): sub-8 blocks carry chroma only at odd mi in
     // the sub-8 dimension; the chroma block then covers the PAIR
     // (bsize_uv dims = max(dim,8)/2 at the ROUND_UV origin).
-    let has_uv =
-        ((abs_y / 4) % 2 == 1 || (h / 4) % 2 == 0) && ((abs_x / 4) % 2 == 1 || (w / 4) % 2 == 0);
+    let has_uv = ((abs_y / 4) % 2 == 1 || (h / 4).is_multiple_of(2))
+        && ((abs_x / 4) % 2 == 1 || (w / 4).is_multiple_of(2));
 
     // Block geometry for the directional predictor (availability tables +
     // frame-edge clamps) and the per-block C `get_filt_type` inputs (the
