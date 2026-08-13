@@ -107,11 +107,12 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Changed
 
-- **Encode speed: the port-vs-C per-pixel slope gap closes to 3.18x at preset
-  10 and 3.11x at preset 13** (from 3.53x / 3.51x), and 3.39x at preset 6 (from
+- **Encode speed: the port-vs-C per-pixel slope gap closes to 3.06x at preset
+  10 and 3.07x at preset 13** (from 3.53x / 3.51x), and 3.39x at preset 6 (from
   3.52x); preset 2 is unmoved. All 24 campaign cells byte-identical to C
-  (`rust/benchmarks/perf_gap_2026-08-13.meta`). Two byte-identical changes, both
-  in the per-coded-block decision path:
+  (`rust/benchmarks/perf_gap_2026-08-13-final.meta`). Four byte-identical
+  changes, every one of them removing a duplicated COPY of something already
+  computed rather than making an allocation cheaper:
   - the frame's block-decision set was materialised **four** times per frame —
     a leaf-level clone so the partition tree and a parallel `decisions` list
     could both own it, an aggregation of that list up the tree, a deep clone
@@ -123,6 +124,16 @@ Crates are not published to crates.io yet — depend by git.
   - `LeafEval::to_choice` deep-cloned seven of the winning candidate's buffers
     only because it ran *before* `commit_leaf`; both callers now commit first
     and `into_choice` moves (6ad044d00, A/B 1.02-1.03x at p10).
+  - `funnel_block_decision`'s depth-0 qcoeff "unpack" was a byte-for-byte copy
+    on every block without a 64-dim transform side, and
+    `DecodedPictureBuffer::refresh` deep-cloned the whole picture once per set
+    bit of `refresh_frame_flags` — eight full Y planes per KEY frame, into
+    slots only ever read as `&ReferenceFrame` (now `Arc`-shared; the field is
+    private and `store`/`get`/`refresh` keep their signatures, so no API
+    change). 81a1bb111, A/B 1.01-1.02x at p10.
+  - the per-SB reconstruction staging buffer (an allocation, a zero-fill and a
+    second pass over every pixel of every superblock) is gone; **measured
+    null**, kept only because it is strictly less work.
 - **Measured negative, recorded so it is not retried**: a thread-local `Vec`
   pool for the mode-decision buffers removed a whole class of allocations from
   the profile (`drop_glue::<Cand>` 7.1% of malloc samples -> 0) and measured

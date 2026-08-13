@@ -4,20 +4,22 @@
 > below the "Results — 2026-07-20" heading is the **x86-64/AVX2 history** on
 > `dev-32gb`. The live numbers on the aarch64 box are:
 >
-> | preset | slope ratio port/C | was (08-11) | was (08-07) | 1024² cell ratio |
-> |---|---|---|---|---|
-> | p2 | 4.16x | 4.12x | 4.11x | 4.13 |
-> | p6 | **3.39x** | 3.52x | 3.50x | 3.38 |
-> | p10 | **3.18x** | 3.53x | 4.85x | 3.12 |
-> | p13 | **3.11x** | 3.51x | 4.83x | 3.07 |
+> | preset | slope ratio port/C | was (08-11) | was (08-07) |
+> |---|---|---|---|
+> | p2 | 4.14x | 4.12x | 4.11x |
+> | p6 | **3.39x** | 3.52x | 3.50x |
+> | p10 | **3.06x** | 3.53x | 4.85x |
+> | p13 | **3.07x** | 3.51x | 4.83x |
 >
 > The port is still FASTER than C at 32-64 px on the fast presets (0.46x at 32²
 > and 0.81x at 64² on p10/p13, 0.78x at 32² on p6) — its fixed per-frame cost is
 > 0.87x C's at p10. All 24 cells byte-identical.
-> `benchmarks/perf_gap_2026-08-13.{tsv,raw.tsv,meta}`.
+> `benchmarks/perf_gap_2026-08-13-final.{tsv,raw.tsv,meta}` (an intermediate
+> run after the first two of the four commits is `perf_gap_2026-08-13.*`).
 >
-> The 08-11 -> 08-13 step is two changes, both byte-identical, both in the
-> per-coded-block decision path:
+> The 08-11 -> 08-13 step is four byte-identical changes, and every one of them
+> REMOVES A DUPLICATED COPY of something already computed — none of them makes
+> an allocation cheaper (see the corrections below for why that matters):
 >
 > * `29847e5d3` — **the frame's block-decision set was materialised FOUR
 >   times.** A `BlockDecision` owns up to nine heap `Vec`s; it was cloned at
@@ -33,9 +35,21 @@
 >   and `into_choice` MOVES. A/B 1.016-1.027x at p10, null at p6
 >   (`benchmarks/into_choice_ab_2026-08-13.tsv`).
 >
-> p2 did not move (4.12 -> 4.16 is inside its own spread): both changes are
-> per-coded-block costs and p2 spends ~60x longer per block inside the RD
-> search itself.
+> * `81a1bb111` — **`funnel_block_decision`'s depth-0 qcoeff "unpack" was a
+>   byte-for-byte copy** on every block without a 64-dim side, and
+>   **`DecodedPictureBuffer::refresh` deep-cloned the whole picture once per
+>   set bit** of `refresh_frame_flags` — eight full Y planes per KEY frame,
+>   into slots only ever read as `&ReferenceFrame` (now `Arc`-shared, private
+>   field, no API change). A/B 1.012-1.022x at p10, null at p6
+>   (`benchmarks/qcoeff_dpb_ab_2026-08-13.meta`).
+> * the per-SB recon staging buffer (an allocation, a zero-fill and a second
+>   pass over every pixel of every superblock) is gone. **Measured null**
+>   (`benchmarks/sb_recon_staging_null_2026-08-13.tsv`); kept only because it
+>   is strictly less work.
+>
+> p2 did not move all session (4.12 -> 4.16 -> 4.14, inside its own spread):
+> every change is a per-coded-block cost and p2 spends ~60x longer per block
+> inside the RD search itself.
 >
 > The 08-11 p10/p13 step before that came from ONE change: the in-loop deblock
 > and CDEF *application* passes are skipped when nothing reads the

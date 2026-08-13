@@ -8361,13 +8361,16 @@ fn encode_tile_rows(
                 }
 
                 // Keep the per-SB recon list layout for downstream consumers.
-                let mut sb_recon = alloc::vec![0u8; sb_cur_w * sb_cur_h];
+                // Append this SB's rows straight from the tile canvas. The
+                // staging `vec![0u8; sb_cur_w * sb_cur_h]` this replaces was
+                // filled row by row and then copied wholesale into
+                // `tile_recon` — an allocation, a zero-fill and a second pass
+                // over every pixel of every superblock, for bytes that were
+                // already contiguous per row. Same bytes, same order.
                 for r in 0..sb_cur_h {
                     let src_off = (sb_y0 + r) * w + sb_x0;
-                    sb_recon[r * sb_cur_w..(r + 1) * sb_cur_w]
-                        .copy_from_slice(&tile_frame_recon[src_off..src_off + sb_cur_w]);
+                    tile_recon.extend_from_slice(&tile_frame_recon[src_off..src_off + sb_cur_w]);
                 }
-                tile_recon.extend_from_slice(&sb_recon);
                 if let Some(tree) = sb_result.tree {
                     tile_trees.push(tree);
                 }

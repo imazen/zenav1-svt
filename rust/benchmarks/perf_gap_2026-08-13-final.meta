@@ -1,0 +1,53 @@
+# perf_gap fit
+date: 2026-08-13T13:31:11Z
+commit: 81a1bb111
+host: mac (12 logical cores)
+grid: content=gradient sizes=[32 64 128 256 512 1024] presets=[2 6 10 13] qp=40 rounds=9 warmup=1
+harness: interleaved paired, randomized per-round order; no target-cpu=native; NEITHER SIDE NICED; setup excluded both sides
+fits (ms = a + b*pixels):
+  p2   port: a=78.6573 ms  b=1949.63 ms/MP   |   C: a=23.1866 ms  b=470.71 ms/MP   |   slope-ratio=4.14x  intercept-ratio=3.39x
+  p6   port: a=2.1399 ms  b=129.01 ms/MP   |   C: a=0.9217 ms  b=38.10 ms/MP   |   slope-ratio=3.39x  intercept-ratio=2.32x
+  p10  port: a=0.1786 ms  b=25.59 ms/MP   |   C: a=0.1994 ms  b=8.35 ms/MP   |   slope-ratio=3.06x  intercept-ratio=0.90x
+  p13  port: a=0.1942 ms  b=25.38 ms/MP   |   C: a=0.2066 ms  b=8.27 ms/MP   |   slope-ratio=3.07x  intercept-ratio=0.94x
+
+## The session's movement (2026-08-11 baseline -> here)
+
+| preset | slope ratio 08-11 | slope ratio (this run) | port slope 08-11 | port slope now | port/port |
+|:------:|------------------:|-----------------------:|-----------------:|---------------:|----------:|
+| p2     | 4.12x             | 4.14x                  | 1929.67 ms/MP    | 1949.63 ms/MP  | 1.010     |
+| p6     | 3.52x             | **3.39x**              |  133.73 ms/MP    |  129.01 ms/MP  | 0.965     |
+| p10    | 3.53x             | **3.06x**              |   29.10 ms/MP    |   25.59 ms/MP  | 0.879     |
+| p13    | 3.51x             | **3.07x**              |   28.97 ms/MP    |   25.38 ms/MP  | 0.876     |
+
+Same grid, box, harness and byte-identity precondition as
+`perf_gap_2026-08-11.meta`; all 24 cells byte-identical to C in both.
+
+Four byte-identical commits, all of them REMOVING A DUPLICATED COPY of
+something the encoder had already computed — none of them making an
+allocation cheaper:
+
+| commit | what | A/B at p10 |
+|---|---|---|
+| `29847e5d3` | the frame's block-decision set was materialised FOUR times (one of the four written and never read) | 1.072-1.111x |
+| `6ad044d00` | `to_choice` cloned seven of the winner's buffers only because it ran before `commit_leaf` | 1.016-1.027x |
+| `81a1bb111` | depth-0 qcoeff "unpack" that was a byte-for-byte copy on every non-64-dim block; DPB `refresh` cloning the whole picture 8x per KEY frame | 1.012-1.022x |
+| this one | the per-SB recon staging buffer (alloc + zero-fill + second pass over every pixel) | null, see below |
+
+The per-SB staging removal measures **null** (0.9972-1.0077 at n=25 against a
+control reading 1.0012-1.0136) and is kept only because it is strictly less
+work — one fewer allocation, one fewer zero-fill and one fewer pass per
+superblock — not because it was measured to help.
+
+**p2 has not moved all session** (4.12 -> 4.16 -> 4.14, inside its own spread:
+its 1024 cell is a single ~2 s encode and the fit leans on it). Every change
+here is a per-coded-block cost, and p2 spends roughly 60x longer per block
+inside the RD search itself, so the same absolute saving is ~1/60 of the
+relative saving it is at p10.
+
+**What is NOT closed.** The alloc + libc-mem excess over C is still ~16 points
+of the port's self time (`libsystem_malloc` ~10%, `libsystem_platform` ~9%,
+against C's 0.49% / 2.70%), an arithmetic ceiling of ~1.20x that is untouched
+by any of this — and the one prescribed way to take it, pooling the buffers,
+measured null (`alloc_bufpool_null_2026-08-13.meta`). The remaining 3.06x at
+p10 is per-pixel compute in MD/partition (24%), transforms (17%) and
+entropy/coeff (16%), plus that allocator excess.
