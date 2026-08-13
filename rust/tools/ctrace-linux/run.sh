@@ -64,6 +64,25 @@ if [[ -n "${SVT_TRACE_OUT:-}" && "${SVT_TRACE_OUT}" != /dev/null ]]; then
     TRACE_ARG=$(map "$SVT_TRACE_OUT")
 fi
 
+# The `wrap_recon.c` interposers are driven by their own env vars, all of
+# which name an OUTPUT PATH (SVT_CTREE_OUT, SVT_PICKPART_OUT, SVT_QLEVELS_OUT,
+# SVT_CCOEF_OUT, SVT_CCOST_OUT, SVT_PART_OUT, SVT_SEED_OUT). Map each path the
+# same way as the trace, and pass the non-path selectors through untouched.
+# They all APPEND, so truncate first — a stale dump read as fresh is the
+# `SVTAV1_PACKTREE` trap in rust/CLAUDE.md, from the other side.
+DUMP_ENV=()
+for v in SVT_CTREE_OUT SVT_PICKPART_OUT SVT_QLEVELS_OUT SVT_CCOEF_OUT \
+    SVT_CCOST_OUT SVT_PART_OUT SVT_SEED_OUT; do
+    if [[ -n "${!v:-}" ]]; then
+        : >"${!v}"
+        DUMP_ENV+=(-e "$v=$(map "${!v}")")
+    fi
+done
+for v in SVT_PICKPART_MIROW SVT_PICKPART_MICOL SVT_CCOEF_XY SVT_QLEVELS_XY \
+    SVT_QLEVELS_COMP SVT_PART_MI; do
+    [[ -n "${!v:-}" ]] && DUMP_ENV+=(-e "$v=${!v}")
+done
+
 docker build --platform "$PLATFORM" -t "$IMAGE" "$HERE" >"$WORK/docker-build.log" 2>&1 || {
     cat "$WORK/docker-build.log" >&2
     exit 1
@@ -75,5 +94,6 @@ exec docker run --rm --platform "$PLATFORM" \
     -v zenav1-svt-ctrace-cbuild:/cbuild \
     -e SVT_TRACE_OUT="$TRACE_ARG" \
     -e SVT_BUILD_JOBS="${SVT_BUILD_JOBS:-6}" \
+    "${DUMP_ENV[@]+"${DUMP_ENV[@]}"}" \
     "$IMAGE" bash /repo/rust/tools/ctrace-linux/incontainer.sh \
     "$W" "$H" "$QP" "$PRESET" "$IN" "$OUT" "$BD"

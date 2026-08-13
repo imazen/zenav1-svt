@@ -1530,6 +1530,8 @@ impl<'a> Pd0Ctx<'a> {
             abs_y,
             sq_size,
             sq_size,
+            self.aligned_w,
+            self.aligned_h,
         );
         let mut pred = vec![0u8; sq_size * sq_size];
         svtav1_dsp::intra_pred::predict_dc(
@@ -1611,6 +1613,8 @@ impl<'a> Pd0Ctx<'a> {
             bh,
             self.tile_top,
             self.tile_left,
+            self.aligned_w,
+            self.aligned_h,
         );
         let mut pred = vec![0u8; bw * bh];
         svtav1_dsp::intra_pred::predict_dc(

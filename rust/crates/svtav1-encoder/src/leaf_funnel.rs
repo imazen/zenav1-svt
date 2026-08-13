@@ -1281,6 +1281,11 @@ fn predict_unit(
         h,
         geom.tile.top_px(geom.ss),
         geom.tile.left_px(geom.ss),
+        // C n_top_px/n_left_px: this plane's ALIGNED extent, so a block
+        // straddling a partial superblock replicates the frame edge instead
+        // of reading recon a conforming decoder never produces.
+        geom.frame_w >> geom.ss,
+        geom.frame_h >> geom.ss,
     );
     if fi_mode != FI_NONE {
         let mut above_c = vec![0u8; w + 1];
@@ -4077,15 +4082,24 @@ pub(crate) fn evaluate_leaf(
     // Block geometry for the directional predictor (availability tables +
     // frame-edge clamps) and the per-block C `get_filt_type` inputs (the
     // above/left CODED-BLOCK modes' smoothness, per plane).
-    let frame_h_px = y_recon.len() / y_stride;
+    // The ALIGNED luma extent, NOT the recon buffer's shape. `y_recon.len() /
+    // y_stride` was wrong on a partial superblock: the recon working buffers
+    // keep the aligned STRIDE but are sized to the SB-extent PRODUCT
+    // (`pipeline.rs`, "SB extent (task #95 chunk 2)"), so at 96x88 that
+    // division yields 170 rows, `dr_predict` derives `mi_rows = 44`, and the
+    // frame-edge clamp `yd` it exists to compute never fires. C takes the same
+    // quantity from `mb_to_bottom_edge` (`svt_aom_init_xd`,
+    // adaptive_mv_pred.c:1055 -> `enc_intra_prediction.c:492`), i.e. the
+    // ALIGNED extent. Byte-neutral on any frame where the two agree — every
+    // 64-aligned one.
     let y_geom = UnitGeom {
         mi_row: abs_y >> 2,
         mi_col: abs_x >> 2,
         bw_px: w,
         bh_px: h,
         ss: 0,
-        frame_w: y_stride,
-        frame_h: frame_h_px,
+        frame_w: frame.frame_w_px,
+        frame_h: frame.frame_h_px,
         sb_mi_size: fx.frame.sb_mi_size,
         // Task #96: the tile this SB belongs to. The per-tile walk stamps
         // it on the funnel's own EntropyCtx (`fun_ectx`), so the MD
@@ -9585,19 +9599,38 @@ fn predict_unit_overlay(
             }
         }
     };
+    // C `n_top_px` / `n_left_px` (`build_intra_predictors` via
+    // `svt_av1_predict_intra_block`'s `xr`/`yd`, enc_intra_prediction.c:489-492
+    // + :540-543): reference samples past the ALIGNED frame extent are not
+    // read — the last real sample is replicated. Spec 7.11.2 writes the same
+    // rule as a coordinate clamp (`Min(maxY, ...)`), which is what the two
+    // `.min()`s below are: clamping the canvas source coordinate reproduces
+    // C's replication exactly, because the last real sample IS the one at the
+    // extent. Identical to the unclamped read whenever the txb is inside the
+    // extent, i.e. always on a 64-aligned frame.
+    let max_x = (geom.frame_w >> geom.ss).saturating_sub(1) as isize;
+    let max_y = (geom.frame_h >> geom.ss).saturating_sub(1) as isize;
     // top row (incl. corner) and left col of the canvas
     for cx in 0..cw_dim {
-        canvas[cx] = sample(abs_tx_x as isize + cx as isize - 1, abs_tx_y as isize - 1);
+        canvas[cx] = sample(
+            (abs_tx_x as isize + cx as isize - 1).min(max_x),
+            abs_tx_y as isize - 1,
+        );
     }
     for cy in 1..ch_dim {
-        canvas[cy * cw_dim] = sample(abs_tx_x as isize - 1, abs_tx_y as isize + cy as isize - 1);
+        canvas[cy * cw_dim] = sample(
+            abs_tx_x as isize - 1,
+            (abs_tx_y as isize + cy as isize - 1).min(max_y),
+        );
     }
     // Predict at canvas coords (1, 1): availability mirrors the absolute
     // position (frame edges) — and, task #96, the TILE edges, which C
     // gates on identically (`mi_row > tile->mi_row_start`). Both origins
-    // are 0 for a single-tile encode.
-    let has_above = abs_tx_y > geom.tile.top_px(geom.ss);
-    let has_left = abs_tx_x > geom.tile.left_px(geom.ss);
+    // are 0 for a single-tile encode. C then selects the DC / edge-fill
+    // variants on `n_*_px > 0`, which additionally excludes a txb whose own
+    // origin is already past the extent (reachable inside a straddling leaf).
+    let has_above = abs_tx_y > geom.tile.top_px(geom.ss) && (abs_tx_x as isize) <= max_x;
+    let has_left = abs_tx_x > geom.tile.left_px(geom.ss) && (abs_tx_y as isize) <= max_y;
     let above: Vec<u8> = if has_above {
         canvas[1..cw_dim].to_vec()
     } else {

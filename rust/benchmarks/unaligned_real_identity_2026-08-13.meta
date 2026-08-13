@@ -1,0 +1,80 @@
+# issue #15 — partial-superblock RD divergence: root-caused and fixed, 67 -> 3
+
+Companion to `unaligned_real_identity_2026-08-13.tsv` (the re-run of
+`tools/unaligned_identity_scan.sh` after the two fixes below). Supersedes the
+`2026-08-11` pair as the current scoreboard; that one stays as the pre-fix
+baseline the per-cell join is taken against.
+
+host: Apple M-series (darwin 25.5.0), aarch64
+oracle: tools/perf_c_encode (C v4.2.0 in-tree static lib, matched still/AVIF
+        CQP config: --rc 0 --aq-mode 0 --lp 1 --avif 1, 8-bit 4:2:0, single
+        tile, 30 fps both sides)
+grid:   6 images (3 photo + 3 screen) x 6 dims x 6 presets x 3 qps = 648 cells
+
+## Result
+
+| run | commit | DIFFERS |
+|---|---|---|
+| baseline (`unaligned_real_identity_2026-08-11.tsv`) | b9cce569d | 67 / 648 |
+| after the palette-search crop | 84e3c8627 | 63 / 648 |
+| after the intra reference-sample clamp | this file | **3 / 648** |
+
+Per-cell join against the baseline: **64 cells fixed, 0 broken.** The three
+survivors are all `188x256` (true 188 -> aligned 192, the only RIGHT-straddle
+in the grid with true != aligned): `city-lossless p2 q33`,
+`terminal p2 q55`, `terminal p4 q12`.
+
+## The two causes
+
+1. **Palette SEARCH ran over the whole block** where C searches only the
+   in-frame part (`svt_aom_get_block_dimensions`' `rows_within_bounds` /
+   `cols_within_bounds`, palette.c:217-245, consumed at :401-439). Fixed
+   84e3c8627. Localized with the C `-Wl,--wrap` op trace (first divergent op
+   4626 of 6299, inside the palette colour literals).
+
+2. **Intra reference samples were not clamped to the ALIGNED frame extent.**
+   C caps the count of real above/left samples at `n_top_px` / `n_left_px`
+   (`build_intra_predictors`, via `svt_av1_predict_intra_block`'s `xr`/`yd`,
+   enc_intra_prediction.c:489-492 + :540-543) and replicates past it; spec
+   7.11.2 states the same rule as a coordinate clamp. The port read the recon
+   buffer instead, which on a partial superblock is sized to the SB-extent
+   PRODUCT — so a straddling block predicted from rows/columns a conforming
+   decoder replicates. This was an encoder/decoder prediction MISMATCH, not
+   only a byte-identity gap.
+
+## Gates re-run at the fixed commit (all green, none relaxed)
+
+| gate | result |
+|---|---|
+| `tools/byteid_fingerprint.sh` (168 cells, 32..2048) | cells=168, port==C on 168, **0 rows moved** vs `byteid_fingerprint_2026-08-11.tsv` |
+| `tools/partial_sb_gate.sh` | 146 / 146 byte-identical |
+| `tools/recon_parity.sh` (AOMDEC=/opt/homebrew/bin/aomdec) | 432 passed, 0 failed |
+| `tools/decode_gate_grid.sh` | cells=120, aomdec+dav1d OK=120, byte-identical to C=120 |
+| `tools/regression_spotcheck.sh` | 27 / 27 (incl. the new palette-straddle cell) |
+| `cargo +stable nextest run --workspace` (debug and `--release`) | 1030 / 1030 |
+| `cargo +stable clippy --workspace --all-targets` | 0 warnings |
+| `cargo +1.89 clippy --workspace --all-targets` | 0 warnings |
+| `cargo +1.89 test --workspace` | 0 failures |
+| `cargo +stable fmt --all -- --check` | clean |
+
+## Coverage note (a hole this bug walked through)
+
+`recon_parity.sh`'s 432 cases are all 64-aligned squares, and
+`decode_gate_grid.sh`'s 120 cells likewise, so neither could reach a
+straddling block — the exact shape where the encoder's recon diverged from a
+conforming decoder's. `partial_sb_gate.sh` does run partial superblocks but is
+byte-identity-only on synthetic content. The crossing case is only covered by
+`unaligned_identity_scan.sh`, which is a tracking scoreboard (always exits 0),
+plus the new unit test
+`partition::tests::extract_neighbors_clamps_to_aligned_extent` (which asserts
+its own anti-vacuity: the unclamped call must expose the out-of-frame data).
+
+## Tooling
+
+The op-trace localization needed `-Wl,--wrap`, which Apple ld64 lacks. It ran
+in a Linux arm64 container: `rust/tools/ctrace-linux/{Dockerfile,run.sh,
+incontainer.sh,diff_cell.sh}`. The container's C oracle was verified
+byte-identical to the macOS one BEFORE any trace was trusted — on the
+diverging cell (`terminal` 96x88 p4 q33, 523 B, md5
+95ab4add265a7c923907119cd0d35654) and on an aligned control
+(`terminal` 64x64 p4 q33, 297 B, where port == C == container-C).

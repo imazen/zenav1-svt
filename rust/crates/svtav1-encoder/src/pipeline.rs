@@ -4882,6 +4882,11 @@ fn encode_block_syntax(
     // the closure below so the closure doesn't need to borrow `ectx` too.
     let chroma_tile_top = ectx.tile_top_px / 2;
     let chroma_tile_left = ectx.tile_left_px / 2; // task #96, same halving rule
+    // The chroma plane's ALIGNED extent, for the reference-sample clamp
+    // (`extract_neighbors_tiled`'s `plane_w`/`plane_h`). Same copy-out-of-ectx
+    // reason as the tile origins above.
+    let chroma_plane_w = ectx.aligned_w_px / 2;
+    let chroma_plane_h = ectx.aligned_h_px / 2;
     let chroma_blocks = chroma.as_mut().filter(|_| blk_has_uv).map(|cp| {
         let cw = (decision.width as usize).max(8) / 2;
         let ch = (decision.height as usize).max(8) / 2;
@@ -4923,6 +4928,8 @@ fn encode_block_syntax(
                 cp.qm_u,
                 chroma_tile_top,
                 chroma_tile_left,
+                chroma_plane_w,
+                chroma_plane_h,
             );
             let (v_q, v_eob) = crate::partition::encode_chroma_block_dc(
                 cp.v_src,
@@ -4937,6 +4944,8 @@ fn encode_block_syntax(
                 cp.qm_v,
                 chroma_tile_top,
                 chroma_tile_left,
+                chroma_plane_w,
+                chroma_plane_h,
             );
             (u_q, u_eob, v_q, v_eob)
         }
@@ -7516,6 +7525,12 @@ fn encode_tile_rows(
         // C `seq_header.sb_mi_size` (task #91): 16 at SB64 (the struct
         // default, so every pre-SB128 path is byte-identical), 32 at SB128.
         part_config.sb_mi_size = sb_size / 4;
+        // The ALIGNED luma extent (C `pcs->ppcs->aligned_width/height`): the
+        // clamp for intra reference samples. `w`/`h` here ARE the aligned dims
+        // (`encode_frame_420` pads TRUE -> ALIGNED before calling this), NOT
+        // the SB extent the recon working buffers are sized to.
+        part_config.aligned_w = w;
+        part_config.aligned_h = h;
         if chroma_420 {
             // 4:2:0 policy: min luma block dim 8, so every coded block is a
             // chroma reference with chroma dims exactly (w/2, h/2) >= 4.

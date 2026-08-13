@@ -70,6 +70,13 @@ pub struct PartitionSearchConfig {
     /// is byte-identical by construction; `pipeline` overrides it from the
     /// derived SB size.
     pub sb_mi_size: usize,
+    /// The ALIGNED luma frame extent (C `pcs->ppcs->aligned_width` /
+    /// `aligned_height`). Reference-sample reads clamp to it — see
+    /// [`extract_neighbors_tiled`]'s `plane_w`/`plane_h`. `usize::MAX` means
+    /// "no clamp", which is what every 64-aligned caller effectively gets;
+    /// the pipeline sets the real extent so a partial superblock is correct.
+    pub aligned_w: usize,
+    pub aligned_h: usize,
 }
 
 impl PartitionSearchConfig {
@@ -88,6 +95,8 @@ impl PartitionSearchConfig {
             tile_top_px: 0,
             tile_left_px: 0,
             sb_mi_size: 16,
+            aligned_w: usize::MAX,
+            aligned_h: usize::MAX,
         }
     }
 
@@ -106,6 +115,8 @@ impl PartitionSearchConfig {
             tile_top_px: 0,
             tile_left_px: 0,
             sb_mi_size: 16,
+            aligned_w: usize::MAX,
+            aligned_h: usize::MAX,
         }
     }
 }
@@ -206,8 +217,12 @@ pub(crate) fn extract_neighbors(
     abs_y: usize,
     width: usize,
     height: usize,
+    plane_w: usize,
+    plane_h: usize,
 ) -> (alloc::vec::Vec<u8>, alloc::vec::Vec<u8>, u8, bool, bool) {
-    extract_neighbors_tiled(recon, stride, abs_x, abs_y, width, height, 0, 0)
+    extract_neighbors_tiled(
+        recon, stride, abs_x, abs_y, width, height, 0, 0, plane_w, plane_h,
+    )
 }
 
 /// Extract prediction neighbors for a block at absolute position
@@ -241,6 +256,8 @@ pub(crate) fn extract_neighbors_tiled(
     height: usize,
     tile_top: usize,
     tile_left: usize,
+    plane_w: usize,
+    plane_h: usize,
 ) -> (alloc::vec::Vec<u8>, alloc::vec::Vec<u8>, u8, bool, bool) {
     // Task #86: `tile_top` is this plane's tile-row origin (0 = single
     // tile row / unchanged pre-#86 behavior). AV1 intra prediction never
@@ -257,6 +274,37 @@ pub(crate) fn extract_neighbors_tiled(
     // left column. `tile_left` is 0 for a single-column frame, so this is
     // byte-identical to the previous `abs_x > 0` there.
     let has_left = abs_x > tile_left;
+
+    // C `n_top_px` / `n_left_px` (`build_intra_predictors`, via
+    // `svt_av1_predict_intra_block`'s `xr`/`yd`, enc_intra_prediction.c:489-492
+    // + :540-543): the count of REAL reference samples is capped by the ALIGNED
+    // frame extent, and everything past it replicates the last real sample.
+    // Spec 7.11.2 states the same rule as a coordinate clamp
+    // (`CurrFrame[plane][Min(maxY, ...)][...]`, maxY = MiRows*MI_SIZE-1).
+    //
+    // `plane_w`/`plane_h` are that extent in THIS plane's pixel domain. They
+    // are NOT the recon buffer's shape: on a partial superblock the working
+    // buffers keep the aligned stride but are sized to the SB-extent product,
+    // so a block straddling the bottom would otherwise read the encoder's own
+    // recon of rows a conforming decoder replicates instead -- an encoder/
+    // decoder prediction mismatch, not merely a byte-identity gap. Identical
+    // to `width`/`height` whenever the block is fully inside the extent, i.e.
+    // always on a 64-aligned frame.
+    let n_top_px = if has_above {
+        width.min(plane_w.saturating_sub(abs_x))
+    } else {
+        0
+    };
+    let n_left_px = if has_left {
+        height.min(plane_h.saturating_sub(abs_y))
+    } else {
+        0
+    };
+    // C selects the DC/edge-fill variants on `n_*_px > 0`, not on the raw
+    // availability flags, and they differ for a TX unit whose origin is
+    // already past the extent (reachable inside a straddling leaf).
+    let has_above = n_top_px > 0;
+    let has_left = n_left_px > 0;
 
     // C left_ref[0] / above_ref[0]: the first sample of each neighbor edge.
     let left_ref0 = if has_left {
@@ -277,7 +325,7 @@ pub(crate) fn extract_neighbors_tiled(
         for i in 0..width {
             let x = abs_x + i;
             let idx = row * stride + x;
-            if x < stride && idx < recon.len() {
+            if i < n_top_px && x < stride && idx < recon.len() {
                 last = recon[idx];
             }
             // else: extend the last available sample, like C
@@ -294,7 +342,7 @@ pub(crate) fn extract_neighbors_tiled(
         let mut last = left_ref0.unwrap_or(129);
         for i in 0..height {
             let idx = (abs_y + i) * stride + col;
-            if idx < recon.len() {
+            if i < n_left_px && idx < recon.len() {
                 last = recon[idx];
             }
             v.push(last);
@@ -1880,9 +1928,14 @@ pub fn encode_chroma_block_dc(
     qm_level: u8,
     tile_top: usize,
     tile_left: usize,
+    // This CHROMA plane's aligned extent — the reference-sample clamp
+    // (`extract_neighbors_tiled`'s `plane_w`/`plane_h`).
+    plane_w: usize,
+    plane_h: usize,
 ) -> (alloc::vec::Vec<i32>, u16) {
-    let (above, left, _top_left, has_above, has_left) =
-        extract_neighbors_tiled(recon, stride, cx, cy, cw, ch, tile_top, tile_left);
+    let (above, left, _top_left, has_above, has_left) = extract_neighbors_tiled(
+        recon, stride, cx, cy, cw, ch, tile_top, tile_left, plane_w, plane_h,
+    );
 
     let mut pred = alloc::vec![0u8; cw * ch];
     svtav1_dsp::intra_pred::predict_dc(&mut pred, cw, &above, &left, cw, ch, has_above, has_left);
@@ -1947,6 +2000,8 @@ fn encode_with_neighbors(
         height,
         config.tile_top_px,
         config.tile_left_px,
+        config.aligned_w,
+        config.aligned_h,
     );
     encode_single_block(
         src,
@@ -2558,7 +2613,8 @@ mod tests {
         // Both edges unavailable: the C decoder fills above with base-1 = 127
         // and left with base+1 = 129 (libaom reconintra.c), top-left 128.
         let frame = vec![100u8; 64 * 64];
-        let (above, left, tl, has_above, has_left) = extract_neighbors(&frame, 64, 0, 0, 8, 8);
+        let (above, left, tl, has_above, has_left) =
+            extract_neighbors(&frame, 64, 0, 0, 8, 8, 64, 64);
         assert!(!has_above);
         assert!(!has_left);
         assert!(above.iter().all(|&v| v == 127), "above fill: {above:?}");
@@ -2578,7 +2634,7 @@ mod tests {
             }
         }
         // Block at (8, 0): top frame edge, left column available (value 32).
-        let (above, left, tl, has_above, has_left) = extract_neighbors(&frame, w, 8, 0, 8, 8);
+        let (above, left, tl, has_above, has_left) = extract_neighbors(&frame, w, 8, 0, 8, 8, w, w);
         assert!(!has_above);
         assert!(has_left);
         assert!(
@@ -2589,7 +2645,7 @@ mod tests {
         assert_eq!(tl, 32, "top-left = left_ref[0] when only left exists");
 
         // Block at (0, 8): left frame edge, above row available (value 32).
-        let (above, left, tl, has_above, has_left) = extract_neighbors(&frame, w, 0, 8, 8, 8);
+        let (above, left, tl, has_above, has_left) = extract_neighbors(&frame, w, 0, 8, 8, 8, w, w);
         assert!(has_above);
         assert!(!has_left);
         assert!(above.iter().all(|&v| v == 32));
@@ -2610,7 +2666,8 @@ mod tests {
                 frame[r * w + c] = ((r + c) % 256) as u8;
             }
         }
-        let (above, _left, _tl, has_above, has_left) = extract_neighbors(&frame, w, 0, 64, 8, 8);
+        let (above, _left, _tl, has_above, has_left) =
+            extract_neighbors(&frame, w, 0, 64, 8, 8, w, h);
         assert!(has_above);
         assert!(!has_left);
         for i in 0..8 {
@@ -2636,7 +2693,7 @@ mod tests {
             }
         }
         let (above, left, tl, has_above, has_left) =
-            extract_neighbors_tiled(&frame, w, 0, 64, 8, 8, 64, 0);
+            extract_neighbors_tiled(&frame, w, 0, 64, 8, 8, 64, 0, w, h);
         assert!(!has_above, "row 64 IS this tile's own top row");
         assert!(!has_left);
         // Unavailable-above fallback: left_ref[0] if left exists, else 127
@@ -2661,7 +2718,7 @@ mod tests {
         // fallback is unambiguous.
         frame[64 * w + 3] = 200;
         let (above, _left, tl, has_above, has_left) =
-            extract_neighbors_tiled(&frame, w, 4, 64, 8, 8, 64, 0);
+            extract_neighbors_tiled(&frame, w, 4, 64, 8, 8, 64, 0, w, 128);
         assert!(!has_above);
         assert!(has_left);
         assert!(
@@ -2682,7 +2739,7 @@ mod tests {
             frame[71 * w + c] = 77;
         }
         let (above, _left, _tl, has_above, _has_left) =
-            extract_neighbors_tiled(&frame, w, 0, 72, 8, 8, 64, 0);
+            extract_neighbors_tiled(&frame, w, 0, 72, 8, 8, 64, 0, w, 128);
         assert!(has_above, "row 72 is inside the tile (top row = 64)");
         assert!(above.iter().all(|&v| v == 77));
     }
@@ -2705,7 +2762,7 @@ mod tests {
         }
         // Block at (64, 0) where the tile's left column IS 64.
         let (_above, left, _tl, _has_above, has_left) =
-            extract_neighbors_tiled(&frame, w, 64, 0, 8, 8, 0, 64);
+            extract_neighbors_tiled(&frame, w, 64, 0, 8, 8, 0, 64, w, h);
         assert!(!has_left, "col 64 IS this tile's own left column");
         assert!(
             left.iter().all(|&v| v != 200),
@@ -2715,14 +2772,14 @@ mod tests {
         // One SB further right, INSIDE the same tile: left is available
         // again and reads the real recon.
         let (_a2, left2, _tl2, _ha2, has_left2) =
-            extract_neighbors_tiled(&frame, w, 72, 0, 8, 8, 0, 64);
+            extract_neighbors_tiled(&frame, w, 72, 0, 8, 8, 0, 64, w, h);
         assert!(has_left2, "col 72 is interior to the tile (left col = 64)");
         assert!(left2.iter().all(|&v| v == 0), "left2 = {left2:?}");
 
         // tile_left = 0 (single tile column) is the pre-#96 behaviour:
         // abs_x > 0 alone decides, so col 64 DOES see its left neighbour.
         let (_a3, left3, _tl3, _ha3, has_left3) =
-            extract_neighbors_tiled(&frame, w, 64, 0, 8, 8, 0, 0);
+            extract_neighbors_tiled(&frame, w, 64, 0, 8, 8, 0, 0, w, h);
         assert!(has_left3);
         assert!(left3.iter().all(|&v| v == 200));
     }
@@ -2737,11 +2794,67 @@ mod tests {
                 frame[r * w + c] = ((r * 2 + c) % 256) as u8;
             }
         }
-        let (_above, left, _tl, _has_above, has_left) = extract_neighbors(&frame, w, 64, 0, 8, 8);
+        let (_above, left, _tl, _has_above, has_left) =
+            extract_neighbors(&frame, w, 64, 0, 8, 8, w, h);
         assert!(has_left);
         for i in 0..8 {
             assert_eq!(left[i], ((i * 2 + 63) % 256) as u8);
         }
+    }
+
+    /// Issue #15: a block straddling the ALIGNED frame edge must stop
+    /// reading real reference samples AT that edge and replicate the last
+    /// one, exactly like C's `n_left_px` / `n_top_px`
+    /// (`build_intra_predictors`, via `svt_av1_predict_intra_block`'s
+    /// `xr`/`yd`, enc_intra_prediction.c:489-492 + :540-543) and spec
+    /// 7.11.2's `Min(maxY, ...)` clamp.
+    ///
+    /// The buffer deliberately HOLDS distinct data past the extent — that is
+    /// the real situation on a partial superblock, where the recon working
+    /// buffers keep the aligned stride but are sized to the SB-extent product
+    /// and a straddling block has already written its own recon there. Before
+    /// the fix those rows/columns were read, so the encoder predicted from
+    /// pixels no conforming decoder produces.
+    #[test]
+    fn extract_neighbors_clamps_to_aligned_extent() {
+        // 96x88 aligned inside a 96x128 SB-extent buffer — the #15 shape.
+        let (w, ext_h, aligned_h) = (96usize, 128usize, 88usize);
+        let mut frame = vec![0u8; w * ext_h];
+        for r in 0..ext_h {
+            // Left column (x = 63) of the block at (64, 64): 10 in-frame,
+            // 99 past the aligned bottom.
+            frame[r * w + 63] = if r < aligned_h { 10 } else { 99 };
+        }
+        let (_above, left, _tl, _ha, has_left) =
+            extract_neighbors_tiled(&frame, w, 64, 64, 32, 32, 0, 0, w, aligned_h);
+        assert!(has_left);
+        assert_eq!(left.len(), 32);
+        assert!(
+            left.iter().all(|&v| v == 10),
+            "rows past aligned_h must replicate the last in-frame sample, not              read the buffer: {left:?}"
+        );
+        // Anti-vacuity: the same call WITHOUT the clamp does read the 99s, so
+        // this test discriminates the fix rather than passing either way.
+        let (_a2, left2, _tl2, _ha2, _hl2) =
+            extract_neighbors_tiled(&frame, w, 64, 64, 32, 32, 0, 0, w, ext_h);
+        assert!(
+            left2.contains(&99),
+            "unclamped extent must expose the out-of-frame data this test guards"
+        );
+
+        // Column mirror: 188x256 true -> 192x256 aligned, block at x = 160.
+        let (aw, h) = (192usize, 64usize);
+        let mut f2 = vec![0u8; aw * h];
+        for c in 0..aw {
+            f2[15 * aw + c] = if c < 188 { 20 } else { 88 };
+        }
+        let (above, _l3, _tl3, has_above, _hl3) =
+            extract_neighbors_tiled(&f2, aw, 160, 16, 32, 32, 0, 0, 188, h);
+        assert!(has_above);
+        assert!(
+            above.iter().all(|&v| v == 20),
+            "columns past the extent must replicate: {above:?}"
+        );
     }
 
     #[test]
@@ -2753,7 +2866,8 @@ mod tests {
         for c in 0..w {
             frame[7 * w + c] = 200; // row 7 — above a block at y=8 inside the SB
         }
-        let (above, _left, _tl, has_above, _has_left) = extract_neighbors(&frame, w, 8, 8, 8, 8);
+        let (above, _left, _tl, has_above, _has_left) =
+            extract_neighbors(&frame, w, 8, 8, 8, 8, w, w);
         assert!(has_above);
         assert!(
             above.iter().all(|&v| v == 200),
