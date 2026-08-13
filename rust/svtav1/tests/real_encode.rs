@@ -839,7 +839,6 @@ fn obu_structure_key_frame() {
     );
 }
 
-
 #[test]
 fn obu_sequence_header_profile() {
     // Verify sequence header starts with correct profile bits
@@ -891,8 +890,6 @@ fn obu_sequence_header_profile() {
 // =============================================================================
 // Multi-frame encoding quality tests
 // =============================================================================
-
-
 
 #[test]
 fn speed_presets_affect_output_size() {
@@ -968,7 +965,6 @@ fn inter_frames_are_refused_not_corrupted() {
         "expected UnsupportedConfig, got {err:?}"
     );
 }
-
 
 // =============================================================================
 // Differential quality and speed tests (zenavif backend validation)

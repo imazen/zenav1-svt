@@ -1159,7 +1159,9 @@ fn wiener_filter_identity() {
     rst::extend_frame(&mut src, origin, w, h, stride, 4, 3);
     let zero = [0i16; 8];
     let mut dst = vec![0u8; stride * (h + 2 * b)];
-    rst::wiener_convolve_add_src(&src, origin, stride, &mut dst, origin, stride, &zero, &zero, w, h);
+    rst::wiener_convolve_add_src(
+        &src, origin, stride, &mut dst, origin, stride, &zero, &zero, w, h,
+    );
     for r in 0..h {
         for c in 0..w {
             assert_eq!(

@@ -172,7 +172,10 @@ fn dump_all_transcendental_bits_for_cross_isa_diff() {
     println!("# fp-determinism dump v1");
     for qp in 46u32..=63 {
         let ex = -((qp.max(40) as f64) - 35.0) / 10.0;
-        println!("pd0_qp_th\t{qp}\t{:#018x}", ((1.05 - ex.exp()) * 10000.0).to_bits());
+        println!(
+            "pd0_qp_th\t{qp}\t{:#018x}",
+            ((1.05 - ex.exp()) * 10000.0).to_bits()
+        );
     }
     for qp in 0u8..=63 {
         let q = qp as f64;

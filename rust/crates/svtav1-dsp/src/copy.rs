@@ -541,25 +541,28 @@ mod dispatch_tests {
                 block_average_inner(&mut ref_avg, stride, &a, stride, &b, stride, width, height);
                 let mut ref_blend = vec![0u8; n];
                 block_blend_inner(
-                    &mut ref_blend, stride, &a, stride, &b, stride, &mask, stride, width, height,
+                    &mut ref_blend,
+                    stride,
+                    &a,
+                    stride,
+                    &b,
+                    stride,
+                    &mask,
+                    stride,
+                    width,
+                    height,
                 );
 
                 let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
                     let mut got = vec![0u8; n];
                     block_average(&mut got, stride, &a, stride, &b, stride, width, height);
-                    assert_eq!(
-                        got, ref_avg,
-                        "average w={width} h={height} tier {_perm}"
-                    );
+                    assert_eq!(got, ref_avg, "average w={width} h={height} tier {_perm}");
 
                     let mut got = vec![0u8; n];
                     block_blend(
                         &mut got, stride, &a, stride, &b, stride, &mask, stride, width, height,
                     );
-                    assert_eq!(
-                        got, ref_blend,
-                        "blend w={width} h={height} tier {_perm}"
-                    );
+                    assert_eq!(got, ref_blend, "blend w={width} h={height} tier {_perm}");
                 });
             }
         }
@@ -576,7 +579,9 @@ mod dispatch_tests {
         for (mval, expect) in [(0u8, &b), (64u8, &a)] {
             let mask = vec![mval; width];
             let mut got = vec![0u8; width];
-            block_blend(&mut got, width, &a, width, &b, width, &mask, width, width, 1);
+            block_blend(
+                &mut got, width, &a, width, &b, width, &mask, width, width, 1,
+            );
             assert_eq!(&got, expect, "mask={mval} must select exactly");
         }
     }

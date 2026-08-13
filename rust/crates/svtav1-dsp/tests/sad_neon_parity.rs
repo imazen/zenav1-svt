@@ -10,7 +10,12 @@
 //! encoder uses.
 
 fn scalar_sad(
-    src: &[u8], src_stride: usize, rf: &[u8], ref_stride: usize, w: usize, h: usize,
+    src: &[u8],
+    src_stride: usize,
+    rf: &[u8],
+    ref_stride: usize,
+    w: usize,
+    h: usize,
 ) -> u32 {
     let mut sum = 0u32;
     for row in 0..h {

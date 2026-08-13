@@ -749,25 +749,100 @@ impl CoeffFc {
     /// averaging on frames wider than two super-blocks.
     pub fn avg_cdf_with(&mut self, tr: &CoeffFc, wt_left: i32, wt_tr: i32) {
         use crate::cdf::avg_cdf_entries as avg;
-        avg(self.txb_skip_cdf.as_flattened_mut(), tr.txb_skip_cdf.as_flattened(), wt_left, wt_tr);
-        avg(self.eob_extra_cdf.as_flattened_mut(), tr.eob_extra_cdf.as_flattened(), wt_left, wt_tr);
-        avg(self.dc_sign_cdf.as_flattened_mut(), tr.dc_sign_cdf.as_flattened(), wt_left, wt_tr);
-        avg(self.eob_flag_cdf16.as_flattened_mut(), tr.eob_flag_cdf16.as_flattened(), wt_left, wt_tr);
-        avg(self.eob_flag_cdf32.as_flattened_mut(), tr.eob_flag_cdf32.as_flattened(), wt_left, wt_tr);
-        avg(self.eob_flag_cdf64.as_flattened_mut(), tr.eob_flag_cdf64.as_flattened(), wt_left, wt_tr);
-        avg(self.eob_flag_cdf128.as_flattened_mut(), tr.eob_flag_cdf128.as_flattened(), wt_left, wt_tr);
-        avg(self.eob_flag_cdf256.as_flattened_mut(), tr.eob_flag_cdf256.as_flattened(), wt_left, wt_tr);
-        avg(self.eob_flag_cdf512.as_flattened_mut(), tr.eob_flag_cdf512.as_flattened(), wt_left, wt_tr);
-        avg(self.eob_flag_cdf1024.as_flattened_mut(), tr.eob_flag_cdf1024.as_flattened(), wt_left, wt_tr);
-        avg(self.coeff_base_eob_cdf.as_flattened_mut(), tr.coeff_base_eob_cdf.as_flattened(), wt_left, wt_tr);
-        avg(self.coeff_base_cdf.as_flattened_mut(), tr.coeff_base_cdf.as_flattened(), wt_left, wt_tr);
-        avg(self.coeff_br_cdf.as_flattened_mut(), tr.coeff_br_cdf.as_flattened(), wt_left, wt_tr);
-        avg(self.intra_ext_tx_cdf.as_flattened_mut(), tr.intra_ext_tx_cdf.as_flattened(), wt_left, wt_tr);
+        avg(
+            self.txb_skip_cdf.as_flattened_mut(),
+            tr.txb_skip_cdf.as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            self.eob_extra_cdf.as_flattened_mut(),
+            tr.eob_extra_cdf.as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            self.dc_sign_cdf.as_flattened_mut(),
+            tr.dc_sign_cdf.as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            self.eob_flag_cdf16.as_flattened_mut(),
+            tr.eob_flag_cdf16.as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            self.eob_flag_cdf32.as_flattened_mut(),
+            tr.eob_flag_cdf32.as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            self.eob_flag_cdf64.as_flattened_mut(),
+            tr.eob_flag_cdf64.as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            self.eob_flag_cdf128.as_flattened_mut(),
+            tr.eob_flag_cdf128.as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            self.eob_flag_cdf256.as_flattened_mut(),
+            tr.eob_flag_cdf256.as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            self.eob_flag_cdf512.as_flattened_mut(),
+            tr.eob_flag_cdf512.as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            self.eob_flag_cdf1024.as_flattened_mut(),
+            tr.eob_flag_cdf1024.as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            self.coeff_base_eob_cdf.as_flattened_mut(),
+            tr.coeff_base_eob_cdf.as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            self.coeff_base_cdf.as_flattened_mut(),
+            tr.coeff_base_cdf.as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            self.coeff_br_cdf.as_flattened_mut(),
+            tr.coeff_br_cdf.as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            self.intra_ext_tx_cdf.as_flattened_mut(),
+            tr.intra_ext_tx_cdf.as_flattened(),
+            wt_left,
+            wt_tr,
+        );
         // C AVG_CDF_STRIDE over inter_ext_tx_cdf sets 1..3 (enc_dec_process.c
         // :2675-2677); set 0 + the beyond-nsymbs tails are identical zeros on
         // both sides, so the full-slice average is value-equivalent (the same
         // established convention as intra_ext_tx_cdf above).
-        avg(self.inter_ext_tx_cdf.as_flattened_mut(), tr.inter_ext_tx_cdf.as_flattened(), wt_left, wt_tr);
+        avg(
+            self.inter_ext_tx_cdf.as_flattened_mut(),
+            tr.inter_ext_tx_cdf.as_flattened(),
+            wt_left,
+            wt_tr,
+        );
     }
 }
 

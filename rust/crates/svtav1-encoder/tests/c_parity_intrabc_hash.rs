@@ -88,7 +88,9 @@ fn c_parity_crc32c() {
     // and (mis)alignments to cover C's alignment-prologue + quadword loop.
     let backing: Vec<u8> = (0..4096).map(|_| rng.below(256) as u8).collect();
     let mut checked = 0u64;
-    for len in [0usize, 1, 2, 3, 4, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 100, 1000] {
+    for len in [
+        0usize, 1, 2, 3, 4, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 100, 1000,
+    ] {
         for off in 0..8usize {
             let buf = &backing[off..off + len];
             assert_eq!(
@@ -188,12 +190,16 @@ fn c_parity_hash_table_buckets_and_order() {
         let pic = screen_frame(&mut rng, w, h, stride);
 
         // Port side: the whole generate_ibc_data recipe in one call.
-        let rs_table = hash::generate_ibc_data(&pic, stride, w, h, max_hash, max_cand, disallow_4x4);
+        let rs_table =
+            hash::generate_ibc_data(&pic, stride, w, h, max_hash, max_cand, disallow_4x4);
 
         // C side: same recipe driven through the exported build fns
         // (mirrors generate_ibc_data md_config_process.c:585-617).
         let mut c_table = cref::CHashTable::new();
-        let mut c_vals = [cref::generate_block_2x2_hash(&pic, stride, w, h), vec![0u32; w * h]];
+        let mut c_vals = [
+            cref::generate_block_2x2_hash(&pic, stride, w, h),
+            vec![0u32; w * h],
+        ];
         let mut src_idx = 0usize;
         let mut size = 4usize;
         while size <= usize::from(max_hash) {
@@ -238,8 +244,14 @@ fn c_parity_hash_table_buckets_and_order() {
         }
         // Anti-vacuity: the screen frame must produce a real table — many
         // buckets, some crowded (repeats), lots of entries.
-        assert!(nonempty > 100, "vacuous table: {nonempty} non-empty buckets");
-        assert!(multi > 10, "no crowded buckets: repeats missing from fixture");
+        assert!(
+            nonempty > 100,
+            "vacuous table: {nonempty} non-empty buckets"
+        );
+        assert!(
+            multi > 10,
+            "no crowded buckets: repeats missing from fixture"
+        );
         assert!(total_entries > 1000, "only {total_entries} entries");
         // With the tiny cap, at least one bucket must have been truncated
         // at exactly the cap (drop-later semantics exercised).
@@ -292,7 +304,11 @@ fn c_parity_block_hash_query() {
                 "query diverges at ({x},{y}) size {size}"
             );
             // Consistency with the frame pyramid (the hit condition).
-            assert_eq!(rs_hv2, cur[y * w + x], "query != frame array at ({x},{y}) size {size}");
+            assert_eq!(
+                rs_hv2,
+                cur[y * w + x],
+                "query != frame array at ({x},{y}) size {size}"
+            );
             checked += 1;
         }
         size <<= 1;

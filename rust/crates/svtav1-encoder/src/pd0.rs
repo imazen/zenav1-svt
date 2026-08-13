@@ -840,7 +840,11 @@ pub(crate) fn build_tx_type_rates_dc_from_fc(
     fc: &svtav1_entropy::coeff_c::CoeffFc,
 ) -> TxTypeRatesDc {
     use svtav1_entropy::coeff_c as cc;
-    let mut rates = TxTypeRatesDc { tx4: 0, tx8: 0, tx16: 0 };
+    let mut rates = TxTypeRatesDc {
+        tx4: 0,
+        tx8: 0,
+        tx16: 0,
+    };
     for tx_size in [0usize, 1, 2] {
         // TX_4X4 = 0, TX_8X8 = 1, TX_16X16 = 2 in the C TxSize enum.
         let set_type = cc::ext_tx_set_type(tx_size, false, false);
@@ -1720,13 +1724,19 @@ impl<'a> Pd0Ctx<'a> {
                 total += match self.mode {
                     // LVL_0 and LVL_5 both have `use_accurate_part_ctx = 0`
                     // (allintra above M8) -> the boundary SPLIT rate is doubled.
-                    Pd0Mode::Lvl5 | Pd0Mode::Lvl0 => {
-                        rdcost(self.lambda, 2 * partition_alike_split_bits(sq_size, !has_rows), 0)
-                    }
+                    Pd0Mode::Lvl5 | Pd0Mode::Lvl0 => rdcost(
+                        self.lambda,
+                        2 * partition_alike_split_bits(sq_size, !has_rows),
+                        0,
+                    ),
                     Pd0Mode::Lvl6 => 0,
                     Pd0Mode::Lvl1 => {
                         let tables = self.lvl1.expect("LVL_1 requires tables");
-                        rdcost(self.lambda, tables.boundary_split_bits(sq_size, !has_rows), 0)
+                        rdcost(
+                            self.lambda,
+                            tables.boundary_split_bits(sq_size, !has_rows),
+                            0,
+                        )
                     }
                 };
             }
@@ -2337,11 +2347,7 @@ mod tests {
             (32, 0, 32, 22111622),
             (32, 32, 32, 22521222),
         ] {
-            assert_eq!(
-                ctx.lvl0_block_cost(sq, ox, oy),
-                cost,
-                "sq={sq} ({ox},{oy})"
-            );
+            assert_eq!(ctx.lvl0_block_cost(sq, ox, oy), cost, "sq={sq} ({ox},{oy})");
         }
     }
 
@@ -2664,16 +2670,72 @@ mod tests {
     #[test]
     fn m6_gradient64_trees_match_c() {
         let y = gradient64();
-        let t20 = pd0_pick_sb_partition_m6(&y, 64, 0, 0, 20, 80, &build_m6_pd0_tables(80), 1, true, 64, 64, None, 64);
+        let t20 = pd0_pick_sb_partition_m6(
+            &y,
+            64,
+            0,
+            0,
+            20,
+            80,
+            &build_m6_pd0_tables(80),
+            1,
+            true,
+            64,
+            64,
+            None,
+            64,
+        );
         assert_eq!(t20.leaf_sizes(), vec![32; 4]);
-        let t40 = pd0_pick_sb_partition_m6(&y, 64, 0, 0, 40, 160, &build_m6_pd0_tables(160), 1, true, 64, 64, None, 64);
+        let t40 = pd0_pick_sb_partition_m6(
+            &y,
+            64,
+            0,
+            0,
+            40,
+            160,
+            &build_m6_pd0_tables(160),
+            1,
+            true,
+            64,
+            64,
+            None,
+            64,
+        );
         assert_eq!(t40.leaf_sizes(), vec![32; 4]);
-        let t55 = pd0_pick_sb_partition_m6(&y, 64, 0, 0, 55, 220, &build_m6_pd0_tables(220), 1, true, 64, 64, None, 64);
+        let t55 = pd0_pick_sb_partition_m6(
+            &y,
+            64,
+            0,
+            0,
+            55,
+            220,
+            &build_m6_pd0_tables(220),
+            1,
+            true,
+            64,
+            64,
+            None,
+            64,
+        );
         assert_eq!(t55, Pd0Tree::Leaf(64));
         // Uniform content: exact DC prediction, zero residual -> 64 NONE
         // (keeps every uniform p6 identity cell byte-identical).
         let u = vec![128u8; 64 * 64];
-        let tu = pd0_pick_sb_partition_m6(&u, 64, 0, 0, 40, 160, &build_m6_pd0_tables(160), 1, true, 64, 64, None, 64);
+        let tu = pd0_pick_sb_partition_m6(
+            &u,
+            64,
+            0,
+            0,
+            40,
+            160,
+            &build_m6_pd0_tables(160),
+            1,
+            true,
+            64,
+            64,
+            None,
+            64,
+        );
         assert_eq!(tu, Pd0Tree::Leaf(64));
     }
 }
@@ -2741,7 +2803,10 @@ mod lambda_c_parity {
                     != super::kf_full_lambda_8bit_unweighted(q as u8)
             })
             .count();
-        assert!(differ > 200, "bd8/bd10 lambdas differ at only {differ} qindexes");
+        assert!(
+            differ > 200,
+            "bd8/bd10 lambdas differ at only {differ} qindexes"
+        );
     }
 
     /// The LR search's `x->rdmult` = `pic_full_lambda[EB_{8,10}_BIT_MD]`

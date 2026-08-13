@@ -136,7 +136,9 @@ fn hbd_intra_predictors_match_c() {
                     let mut ours = vec![0u16; h * stride];
                     port_predict(mode, &mut ours, stride, &above, &left, top_left, w, h, bd);
 
-                    let c = cref::highbd_intra_pred(mode, stride, &above, &left, top_left, w, h, bd as i32);
+                    let c = cref::highbd_intra_pred(
+                        mode, stride, &above, &left, top_left, w, h, bd as i32,
+                    );
 
                     for row in 0..h {
                         let a = &ours[row * stride..row * stride + w];
@@ -172,24 +174,42 @@ fn hbd_intra_harness_known_answers() {
         // V replicates the above row down every column.
         let v = cref::highbd_intra_pred(cref::HbdIntraPred::V, stride, &above, &left, 0, w, h, bd);
         for row in 0..h {
-            assert_eq!(&v[row * stride..row * stride + w], &above[..], "V row {row} bd{bd}");
+            assert_eq!(
+                &v[row * stride..row * stride + w],
+                &above[..],
+                "V row {row} bd{bd}"
+            );
         }
 
         // H replicates each left sample across its row.
-        let hpred = cref::highbd_intra_pred(cref::HbdIntraPred::H, stride, &above, &left, 0, w, h, bd);
+        let hpred =
+            cref::highbd_intra_pred(cref::HbdIntraPred::H, stride, &above, &left, 0, w, h, bd);
         for row in 0..h {
             assert!(
-                hpred[row * stride..row * stride + w].iter().all(|&p| p == left[row]),
+                hpred[row * stride..row * stride + w]
+                    .iter()
+                    .all(|&p| p == left[row]),
                 "H row {row} bd{bd}"
             );
         }
 
         // DC128 fills 128 << (bd - 8) regardless of neighbours.
-        let d128 = cref::highbd_intra_pred(cref::HbdIntraPred::Dc128, stride, &above, &left, 0, w, h, bd);
+        let d128 = cref::highbd_intra_pred(
+            cref::HbdIntraPred::Dc128,
+            stride,
+            &above,
+            &left,
+            0,
+            w,
+            h,
+            bd,
+        );
         let expect = 128u16 << (bd as u16 - 8);
         for row in 0..h {
             assert!(
-                d128[row * stride..row * stride + w].iter().all(|&p| p == expect),
+                d128[row * stride..row * stride + w]
+                    .iter()
+                    .all(|&p| p == expect),
                 "DC128 bd{bd} expected {expect}"
             );
         }

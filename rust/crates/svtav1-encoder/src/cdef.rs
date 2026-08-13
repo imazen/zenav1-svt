@@ -84,9 +84,7 @@ impl CdefPick {
     /// Decoder `do_cdef` gate (libaom decodeframe.c:5417):
     /// `cdef_bits || strengths[0].y || strengths[0].uv`.
     pub fn any(&self, monochrome: bool) -> bool {
-        self.bits != 0
-            || self.strengths[0].0 != 0
-            || (!monochrome && self.strengths[0].1 != 0)
+        self.bits != 0 || self.strengths[0].0 != 0 || (!monochrome && self.strengths[0].1 != 0)
     }
 
     pub fn signal(&self) -> svtav1_entropy::obu::CdefSignal {
@@ -1297,7 +1295,10 @@ pub fn cdef_search_still(
         let mut ysum = alloc::vec![0u64; n_cand];
         let mut uvsum = alloc::vec![0u64; n_cand];
         for (i, &(fbr, fbc)) in fb_addr.iter().enumerate() {
-            eprintln!("RS_CDEF_FB fbr={fbr} fbc={fbc} Y={:?} UV={:?}", mse[i][0], mse[i][1]);
+            eprintln!(
+                "RS_CDEF_FB fbr={fbr} fbc={fbc} Y={:?} UV={:?}",
+                mse[i][0], mse[i][1]
+            );
             for gi in 0..n_cand {
                 ysum[gi] += mse[i][0][gi];
                 uvsum[gi] += mse[i][1][gi];
@@ -1512,7 +1513,10 @@ pub fn cdef_search_still_hbd(
         let mut ysum = alloc::vec![0u64; n_cand];
         let mut uvsum = alloc::vec![0u64; n_cand];
         for (i, &(fbr, fbc)) in fb_addr.iter().enumerate() {
-            eprintln!("RS_CDEF_FB fbr={fbr} fbc={fbc} Y={:?} UV={:?}", mse[i][0], mse[i][1]);
+            eprintln!(
+                "RS_CDEF_FB fbr={fbr} fbc={fbc} Y={:?} UV={:?}",
+                mse[i][0], mse[i][1]
+            );
             for gi in 0..n_cand {
                 ysum[gi] += mse[i][0][gi];
                 uvsum[gi] += mse[i][1][gi];
@@ -1614,15 +1618,27 @@ mod tests {
         // qindex 160 (cli qp 40): FH-byte-verified (gradient 64x64 q40 p13
         // bd10 op-trace — first divergence moved off FH onto the tile).
         let p160 = pick_cdef_params_key_frame(160, 10, false);
-        assert_eq!((p160.damping, p160.y_strength, p160.uv_strength), (5, 13, 12));
+        assert_eq!(
+            (p160.damping, p160.y_strength, p160.uv_strength),
+            (5, 13, 12)
+        );
         // A spread of qindexes across the fit's range, hand-traced from
         // AC_QLOOKUP_10>>2 + the intra fit (bd10 differs from bd8 here).
         let p172 = pick_cdef_params_key_frame(172, 10, false);
-        assert_eq!((p172.damping, p172.y_strength, p172.uv_strength), (5, 17, 13));
+        assert_eq!(
+            (p172.damping, p172.y_strength, p172.uv_strength),
+            (5, 17, 13)
+        );
         let p220 = pick_cdef_params_key_frame(220, 10, false);
-        assert_eq!((p220.damping, p220.y_strength, p220.uv_strength), (6, 43, 7));
+        assert_eq!(
+            (p220.damping, p220.y_strength, p220.uv_strength),
+            (6, 43, 7)
+        );
         let p255 = pick_cdef_params_key_frame(255, 10, false);
-        assert_eq!((p255.damping, p255.y_strength, p255.uv_strength), (6, 63, 3));
+        assert_eq!(
+            (p255.damping, p255.y_strength, p255.uv_strength),
+            (6, 63, 3)
+        );
         // Contrast: bd8 and bd10 genuinely diverge (the whole point of the
         // fix). 16 qindexes differ; the knee shifts because AC_QLOOKUP_10>>2
         // crosses the CDEF-off threshold at a different qindex than

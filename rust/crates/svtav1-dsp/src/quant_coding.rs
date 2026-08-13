@@ -65,7 +65,9 @@ pub fn quantize_fp_raster(
     log_scale: i32,
 ) {
     incant!(
-        quantize_fp_raster_impl(coeffs, qcoeff, dqcoeff, rounding, quant_fp, dequant, log_scale),
+        quantize_fp_raster_impl(
+            coeffs, qcoeff, dqcoeff, rounding, quant_fp, dequant, log_scale
+        ),
         [v3, neon, scalar]
     );
 }
@@ -142,7 +144,9 @@ fn quantize_fp_raster_impl_scalar(
     dequant: &[i32; 2],
     log_scale: i32,
 ) {
-    quantize_fp_raster_core(coeffs, qcoeff, dqcoeff, rounding, quant_fp, dequant, log_scale);
+    quantize_fp_raster_core(
+        coeffs, qcoeff, dqcoeff, rounding, quant_fp, dequant, log_scale,
+    );
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -226,7 +230,9 @@ fn quantize_fp_raster_impl_neon(
     // DC fix-up: the vector body ran position 0 with AC constants — redo it
     // with the DC (iz = 0) row. (No-op-correct if the tail already did it.)
     if n > 0 {
-        fp_one(0, 0, coeffs, qcoeff, dqcoeff, rounding, quant_fp, dequant, log_scale);
+        fp_one(
+            0, 0, coeffs, qcoeff, dqcoeff, rounding, quant_fp, dequant, log_scale,
+        );
     }
 }
 
@@ -306,7 +312,9 @@ fn quantize_fp_raster_impl_v3(
     // DC fix-up: the vector body ran position 0 with AC constants — redo it
     // with the DC (iz = 0) row. (No-op-correct if the tail already did it.)
     if n > 0 {
-        fp_one(0, 0, coeffs, qcoeff, dqcoeff, rounding, quant_fp, dequant, log_scale);
+        fp_one(
+            0, 0, coeffs, qcoeff, dqcoeff, rounding, quant_fp, dequant, log_scale,
+        );
     }
 }
 
@@ -338,7 +346,15 @@ pub fn quantize_b_raster(
 ) {
     incant!(
         quantize_b_raster_impl(
-            coeffs, qcoeff, dqcoeff, zbins, round, quant, quant_shift, dequant, log_scale
+            coeffs,
+            qcoeff,
+            dqcoeff,
+            zbins,
+            round,
+            quant,
+            quant_shift,
+            dequant,
+            log_scale
         ),
         [v3, neon, scalar]
     );
@@ -423,7 +439,15 @@ fn quantize_b_raster_impl_scalar(
     log_scale: i32,
 ) {
     quantize_b_raster_core(
-        coeffs, qcoeff, dqcoeff, zbins, round, quant, quant_shift, dequant, log_scale,
+        coeffs,
+        qcoeff,
+        dqcoeff,
+        zbins,
+        round,
+        quant,
+        quant_shift,
+        dequant,
+        log_scale,
     );
 }
 
@@ -507,7 +531,17 @@ fn quantize_b_raster_impl_neon(
     }
     if n > 0 {
         b_one(
-            0, 0, coeffs, qcoeff, dqcoeff, zbins, round, quant, quant_shift, dequant, log_scale,
+            0,
+            0,
+            coeffs,
+            qcoeff,
+            dqcoeff,
+            zbins,
+            round,
+            quant,
+            quant_shift,
+            dequant,
+            log_scale,
         );
     }
 }
@@ -589,7 +623,17 @@ fn quantize_b_raster_impl_v3(
     }
     if n > 0 {
         b_one(
-            0, 0, coeffs, qcoeff, dqcoeff, zbins, round, quant, quant_shift, dequant, log_scale,
+            0,
+            0,
+            coeffs,
+            qcoeff,
+            dqcoeff,
+            zbins,
+            round,
+            quant,
+            quant_shift,
+            dequant,
+            log_scale,
         );
     }
 }
@@ -599,7 +643,7 @@ mod tests {
     use super::*;
     use alloc::vec;
     use alloc::vec::Vec;
-    use archmage::testing::{for_each_token_permutation, CompileTimePolicy};
+    use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
 
     struct Rng(u64);
     impl Rng {
@@ -631,13 +675,41 @@ mod tests {
     /// qindex range plus the extremes.
     const ROWS: &[([i32; 2], [i32; 2], [i32; 2], [i32; 2], [i32; 2], [i32; 2])] = &[
         // (zbin, round, quant, quant_shift, quant_fp, dequant) — qindex 0
-        ([2, 2], [64, 64], [1, 1], [16384, 16384], [16384, 16384], [4, 4]),
+        (
+            [2, 2],
+            [64, 64],
+            [1, 1],
+            [16384, 16384],
+            [16384, 16384],
+            [4, 4],
+        ),
         // qindex 220 (from quant.rs capture)
-        ([326, 583], [195, 349], [-1255, -29571], [128, 128], [125, 70], [522, 933]),
+        (
+            [326, 583],
+            [195, 349],
+            [-1255, -29571],
+            [128, 128],
+            [125, 70],
+            [522, 933],
+        ),
         // a mid row (qindex ~128-ish shape)
-        ([120, 180], [90, 130], [-8000, -12000], [256, 256], [420, 300], [156, 220]),
+        (
+            [120, 180],
+            [90, 130],
+            [-8000, -12000],
+            [256, 256],
+            [420, 300],
+            [156, 220],
+        ),
         // high qindex 255-ish (large dequant)
-        ([700, 1200], [400, 700], [-20000, -30000], [128, 128], [40, 30], [1336, 1828]),
+        (
+            [700, 1200],
+            [400, 700],
+            [-20000, -30000],
+            [128, 128],
+            [40, 30],
+            [1336, 1828],
+        ),
     ];
 
     fn n_for(class: usize) -> usize {
@@ -665,7 +737,13 @@ mod tests {
                     let mut ref_q = vec![0i32; n];
                     let mut ref_dq = vec![0i32; n];
                     quantize_fp_raster_core(
-                        &coeffs, &mut ref_q, &mut ref_dq, &round_fp, &quant_fp, &dequant, log_scale,
+                        &coeffs,
+                        &mut ref_q,
+                        &mut ref_dq,
+                        &round_fp,
+                        &quant_fp,
+                        &dequant,
+                        log_scale,
                     );
 
                     let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
@@ -674,7 +752,10 @@ mod tests {
                         quantize_fp_raster(
                             &coeffs, &mut q, &mut dq, &round_fp, &quant_fp, &dequant, log_scale,
                         );
-                        assert_eq!(q, ref_q, "fp qcoeff tier mismatch ri={ri} n={n} ls={log_scale}");
+                        assert_eq!(
+                            q, ref_q,
+                            "fp qcoeff tier mismatch ri={ri} n={n} ls={log_scale}"
+                        );
                         assert_eq!(
                             dq, ref_dq,
                             "fp dqcoeff tier mismatch ri={ri} n={n} ls={log_scale}"
@@ -705,7 +786,14 @@ mod tests {
                     let mut ref_q = vec![0i32; n];
                     let mut ref_dq = vec![0i32; n];
                     quantize_b_raster_core(
-                        &coeffs, &mut ref_q, &mut ref_dq, &zbins, &rnd, &quant, &qshift, &dequant,
+                        &coeffs,
+                        &mut ref_q,
+                        &mut ref_dq,
+                        &zbins,
+                        &rnd,
+                        &quant,
+                        &qshift,
+                        &dequant,
                         log_scale,
                     );
 
@@ -716,8 +804,14 @@ mod tests {
                             &coeffs, &mut q, &mut dq, &zbins, &rnd, &quant, &qshift, &dequant,
                             log_scale,
                         );
-                        assert_eq!(q, ref_q, "b qcoeff tier mismatch ri={ri} n={n} ls={log_scale}");
-                        assert_eq!(dq, ref_dq, "b dqcoeff tier mismatch ri={ri} n={n} ls={log_scale}");
+                        assert_eq!(
+                            q, ref_q,
+                            "b qcoeff tier mismatch ri={ri} n={n} ls={log_scale}"
+                        );
+                        assert_eq!(
+                            dq, ref_dq,
+                            "b dqcoeff tier mismatch ri={ri} n={n} ls={log_scale}"
+                        );
                     });
                 }
             }

@@ -268,7 +268,15 @@ fn c_scalar_and_dispatched_agree() {
                 &mut sq,
                 &mut sdq,
             );
-            let d_eob = f(&c.coeff, &row, c.scan, c.log_scale, true, &mut dq_, &mut ddq);
+            let d_eob = f(
+                &c.coeff,
+                &row,
+                c.scan,
+                c.log_scale,
+                true,
+                &mut dq_,
+                &mut ddq,
+            );
             let ctx = format!(
                 "{kind} {} scan_class={} qindex={} log_scale={}",
                 c.tx, c.scan_class, c.qindex, c.log_scale

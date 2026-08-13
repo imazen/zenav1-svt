@@ -524,8 +524,9 @@ fn finer_tile_search_wiener<P: LrPixel>(
     bit_depth: u8,
 ) -> i64 {
     let plane_off = (WIENER_WIN - wiener_win) >> 1;
-    let mut err =
-        try_restoration_unit(dgd, trial, src, src_stride, limits, rect, ss, wiener, bit_depth);
+    let mut err = try_restoration_unit(
+        dgd, trial, src, src_stride, limits, rect, ss, wiener, bit_depth,
+    );
     if !ctrls.use_refinement {
         return err;
     }
@@ -1145,9 +1146,16 @@ pub fn write_lr_for_sb(
     let num_planes = if monochrome { 1 } else { 3 };
     for plane in 0..num_planes {
         let pr = &info.planes[plane];
-        let Some((rcol0, rcol1, rrow0, rrow1)) =
-            corners_in_sb(pr, plane > 0, mi_row, mi_col, sb_mi, frame_w, frame_h, sr_denom)
-        else {
+        let Some((rcol0, rcol1, rrow0, rrow1)) = corners_in_sb(
+            pr,
+            plane > 0,
+            mi_row,
+            mi_col,
+            sb_mi,
+            frame_w,
+            frame_h,
+            sr_denom,
+        ) else {
             continue;
         };
         debug_assert_eq!(
@@ -1325,10 +1333,24 @@ mod superres_lr_geom_tests {
         for sb in 0..(upscaled_w / 64) {
             let mi_col = (sb * 16) as i32;
             let unscaled = corners_in_sb(
-                &pr(unit_size), false, 0, mi_col, 16, upscaled_w, frame_h, None,
+                &pr(unit_size),
+                false,
+                0,
+                mi_col,
+                16,
+                upscaled_w,
+                frame_h,
+                None,
             );
             let scaled = corners_in_sb(
-                &pr(unit_size), false, 0, mi_col, 16, upscaled_w, frame_h, Some(16),
+                &pr(unit_size),
+                false,
+                0,
+                mi_col,
+                16,
+                upscaled_w,
+                frame_h,
+                Some(16),
             );
             if unscaled != scaled {
                 differing += 1;

@@ -13,8 +13,8 @@
 
 use svtav1_cref as cref;
 use svtav1_entropy::mv_coding::{
-    NmvContext, encode_mv_diff, get_mv_class, MvSubpelPrecision, MV_CLASSES, MV_FP_SIZE,
-    MV_JOINTS, MV_OFFSET_BITS,
+    MV_CLASSES, MV_FP_SIZE, MV_JOINTS, MV_OFFSET_BITS, MvSubpelPrecision, NmvContext,
+    encode_mv_diff, get_mv_class,
 };
 use svtav1_entropy::writer::AomWriter;
 
@@ -74,7 +74,13 @@ fn default_nmv_context_matches_c() {
     }
 
     // Sanity: 5 (joints) + 2 * (12+10+5+3+3+3+3+30) = 143 u16.
-    let per_comp = (MV_CLASSES + 1) + 2 * (MV_FP_SIZE + 1) + (MV_FP_SIZE + 1) + 3 + 3 + 3 + 3
+    let per_comp = (MV_CLASSES + 1)
+        + 2 * (MV_FP_SIZE + 1)
+        + (MV_FP_SIZE + 1)
+        + 3
+        + 3
+        + 3
+        + 3
         + MV_OFFSET_BITS * 3;
     assert_eq!(rust_flat.len(), (MV_JOINTS + 1) + 2 * per_comp);
     assert_eq!(

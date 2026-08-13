@@ -599,69 +599,248 @@ impl FrameContext {
     pub fn avg_cdf_with(&mut self, tr: &FrameContext, wt_left: i32, wt_tr: i32) {
         use crate::cdf::avg_cdf_entries as avg;
         // 1D
-        avg(&mut self.filter_intra_mode_cdf, &tr.filter_intra_mode_cdf, wt_left, wt_tr);
+        avg(
+            &mut self.filter_intra_mode_cdf,
+            &tr.filter_intra_mode_cdf,
+            wt_left,
+            wt_tr,
+        );
         avg(&mut self.cfl_sign_cdf, &tr.cfl_sign_cdf, wt_left, wt_tr);
         // IntraBC: C averages intrabc_cdf + the whole ndvc alongside nmvc
         // (enc_dec_process.c:2638-2640, avg_nmv :2567-2579 — every CDF field).
         avg(&mut self.intrabc_cdf, &tr.intrabc_cdf, wt_left, wt_tr);
         // C averages txfm_partition_cdf with the rest (AVERAGE_CDF over
         // FRAME_CONTEXT covers it; only IntraBC blocks evolve it here).
-        avg(self.txfm_partition_cdf.as_flattened_mut(), tr.txfm_partition_cdf.as_flattened(), wt_left, wt_tr);
-        avg(&mut self.ndvc.joints_cdf, &tr.ndvc.joints_cdf, wt_left, wt_tr);
+        avg(
+            self.txfm_partition_cdf.as_flattened_mut(),
+            tr.txfm_partition_cdf.as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            &mut self.ndvc.joints_cdf,
+            &tr.ndvc.joints_cdf,
+            wt_left,
+            wt_tr,
+        );
         for i in 0..2 {
             let (l, r) = (&mut self.ndvc.comps[i], &tr.ndvc.comps[i]);
             avg(&mut l.classes_cdf, &r.classes_cdf, wt_left, wt_tr);
-            avg(l.class0_fp_cdf.as_flattened_mut(), r.class0_fp_cdf.as_flattened(), wt_left, wt_tr);
+            avg(
+                l.class0_fp_cdf.as_flattened_mut(),
+                r.class0_fp_cdf.as_flattened(),
+                wt_left,
+                wt_tr,
+            );
             avg(&mut l.fp_cdf, &r.fp_cdf, wt_left, wt_tr);
             avg(&mut l.sign_cdf, &r.sign_cdf, wt_left, wt_tr);
             avg(&mut l.class0_hp_cdf, &r.class0_hp_cdf, wt_left, wt_tr);
             avg(&mut l.hp_cdf, &r.hp_cdf, wt_left, wt_tr);
             avg(&mut l.class0_cdf, &r.class0_cdf, wt_left, wt_tr);
-            avg(l.bits_cdf.as_flattened_mut(), r.bits_cdf.as_flattened(), wt_left, wt_tr);
+            avg(
+                l.bits_cdf.as_flattened_mut(),
+                r.bits_cdf.as_flattened(),
+                wt_left,
+                wt_tr,
+            );
         }
-        avg(self.cfl_alpha_cdf.as_flattened_mut(), tr.cfl_alpha_cdf.as_flattened(), wt_left, wt_tr);
-        avg(&mut self.wiener_restore_cdf, &tr.wiener_restore_cdf, wt_left, wt_tr);
+        avg(
+            self.cfl_alpha_cdf.as_flattened_mut(),
+            tr.cfl_alpha_cdf.as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            &mut self.wiener_restore_cdf,
+            &tr.wiener_restore_cdf,
+            wt_left,
+            wt_tr,
+        );
         avg(&mut self.delta_q_cdf, &tr.delta_q_cdf, wt_left, wt_tr);
         // 2D
-        avg(self.partition_cdf.as_flattened_mut(), tr.partition_cdf.as_flattened(), wt_left, wt_tr);
-        avg(self.skip_cdf.as_flattened_mut(), tr.skip_cdf.as_flattened(), wt_left, wt_tr);
-        avg(self.skip_mode_cdf.as_flattened_mut(), tr.skip_mode_cdf.as_flattened(), wt_left, wt_tr);
-        avg(self.intra_inter_cdf.as_flattened_mut(), tr.intra_inter_cdf.as_flattened(), wt_left, wt_tr);
-        avg(self.y_mode_cdf.as_flattened_mut(), tr.y_mode_cdf.as_flattened(), wt_left, wt_tr);
-        avg(self.angle_delta_cdf.as_flattened_mut(), tr.angle_delta_cdf.as_flattened(), wt_left, wt_tr);
-        avg(self.filter_intra_cdfs.as_flattened_mut(), tr.filter_intra_cdfs.as_flattened(), wt_left, wt_tr);
-        avg(self.inter_compound_mode_cdf.as_flattened_mut(), tr.inter_compound_mode_cdf.as_flattened(), wt_left, wt_tr);
-        avg(self.newmv_cdf.as_flattened_mut(), tr.newmv_cdf.as_flattened(), wt_left, wt_tr);
-        avg(self.globalmv_cdf.as_flattened_mut(), tr.globalmv_cdf.as_flattened(), wt_left, wt_tr);
-        avg(self.refmv_cdf.as_flattened_mut(), tr.refmv_cdf.as_flattened(), wt_left, wt_tr);
-        avg(self.drl_cdf.as_flattened_mut(), tr.drl_cdf.as_flattened(), wt_left, wt_tr);
-        avg(self.txb_skip_cdf.as_flattened_mut(), tr.txb_skip_cdf.as_flattened(), wt_left, wt_tr);
-        avg(self.interp_filter_cdf.as_flattened_mut(), tr.interp_filter_cdf.as_flattened(), wt_left, wt_tr);
-        avg(self.comp_inter_cdf.as_flattened_mut(), tr.comp_inter_cdf.as_flattened(), wt_left, wt_tr);
+        avg(
+            self.partition_cdf.as_flattened_mut(),
+            tr.partition_cdf.as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            self.skip_cdf.as_flattened_mut(),
+            tr.skip_cdf.as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            self.skip_mode_cdf.as_flattened_mut(),
+            tr.skip_mode_cdf.as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            self.intra_inter_cdf.as_flattened_mut(),
+            tr.intra_inter_cdf.as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            self.y_mode_cdf.as_flattened_mut(),
+            tr.y_mode_cdf.as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            self.angle_delta_cdf.as_flattened_mut(),
+            tr.angle_delta_cdf.as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            self.filter_intra_cdfs.as_flattened_mut(),
+            tr.filter_intra_cdfs.as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            self.inter_compound_mode_cdf.as_flattened_mut(),
+            tr.inter_compound_mode_cdf.as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            self.newmv_cdf.as_flattened_mut(),
+            tr.newmv_cdf.as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            self.globalmv_cdf.as_flattened_mut(),
+            tr.globalmv_cdf.as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            self.refmv_cdf.as_flattened_mut(),
+            tr.refmv_cdf.as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            self.drl_cdf.as_flattened_mut(),
+            tr.drl_cdf.as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            self.txb_skip_cdf.as_flattened_mut(),
+            tr.txb_skip_cdf.as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            self.interp_filter_cdf.as_flattened_mut(),
+            tr.interp_filter_cdf.as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            self.comp_inter_cdf.as_flattened_mut(),
+            tr.comp_inter_cdf.as_flattened(),
+            wt_left,
+            wt_tr,
+        );
         // palette CDFs (C enc_dec_process.c:2595-2609; the color-index
         // rows use AVG_CDF_STRIDE with nsymbs=j+2, which full-row
         // averaging reproduces because the per-row tails are zero on
         // both inputs and each row's count slot is at the same index).
-        avg(self.palette_uv_mode_cdf.as_flattened_mut(), tr.palette_uv_mode_cdf.as_flattened(), wt_left, wt_tr);
-        avg(self.palette_y_mode_cdf.as_flattened_mut().as_flattened_mut(), tr.palette_y_mode_cdf.as_flattened().as_flattened(), wt_left, wt_tr);
-        avg(self.palette_y_size_cdf.as_flattened_mut(), tr.palette_y_size_cdf.as_flattened(), wt_left, wt_tr);
-        avg(self.palette_y_color_index_cdf.as_flattened_mut().as_flattened_mut(), tr.palette_y_color_index_cdf.as_flattened().as_flattened(), wt_left, wt_tr);
+        avg(
+            self.palette_uv_mode_cdf.as_flattened_mut(),
+            tr.palette_uv_mode_cdf.as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            self.palette_y_mode_cdf
+                .as_flattened_mut()
+                .as_flattened_mut(),
+            tr.palette_y_mode_cdf.as_flattened().as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            self.palette_y_size_cdf.as_flattened_mut(),
+            tr.palette_y_size_cdf.as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            self.palette_y_color_index_cdf
+                .as_flattened_mut()
+                .as_flattened_mut(),
+            tr.palette_y_color_index_cdf.as_flattened().as_flattened(),
+            wt_left,
+            wt_tr,
+        );
         // 3D
-        avg(self.kf_y_mode_cdf.as_flattened_mut().as_flattened_mut(), tr.kf_y_mode_cdf.as_flattened().as_flattened(), wt_left, wt_tr);
-        avg(self.uv_mode_cdf.as_flattened_mut().as_flattened_mut(), tr.uv_mode_cdf.as_flattened().as_flattened(), wt_left, wt_tr);
-        avg(self.tx_size_cdf.as_flattened_mut().as_flattened_mut(), tr.tx_size_cdf.as_flattened().as_flattened(), wt_left, wt_tr);
-        avg(self.dc_sign_cdf.as_flattened_mut().as_flattened_mut(), tr.dc_sign_cdf.as_flattened().as_flattened(), wt_left, wt_tr);
-        avg(self.eob_flag_cdf.as_flattened_mut().as_flattened_mut(), tr.eob_flag_cdf.as_flattened().as_flattened(), wt_left, wt_tr);
-        avg(self.single_ref_cdf.as_flattened_mut().as_flattened_mut(), tr.single_ref_cdf.as_flattened().as_flattened(), wt_left, wt_tr);
-        avg(self.comp_ref_cdf.as_flattened_mut().as_flattened_mut(), tr.comp_ref_cdf.as_flattened().as_flattened(), wt_left, wt_tr);
+        avg(
+            self.kf_y_mode_cdf.as_flattened_mut().as_flattened_mut(),
+            tr.kf_y_mode_cdf.as_flattened().as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            self.uv_mode_cdf.as_flattened_mut().as_flattened_mut(),
+            tr.uv_mode_cdf.as_flattened().as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            self.tx_size_cdf.as_flattened_mut().as_flattened_mut(),
+            tr.tx_size_cdf.as_flattened().as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            self.dc_sign_cdf.as_flattened_mut().as_flattened_mut(),
+            tr.dc_sign_cdf.as_flattened().as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            self.eob_flag_cdf.as_flattened_mut().as_flattened_mut(),
+            tr.eob_flag_cdf.as_flattened().as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            self.single_ref_cdf.as_flattened_mut().as_flattened_mut(),
+            tr.single_ref_cdf.as_flattened().as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            self.comp_ref_cdf.as_flattened_mut().as_flattened_mut(),
+            tr.comp_ref_cdf.as_flattened().as_flattened(),
+            wt_left,
+            wt_tr,
+        );
         // Segmentation — C averages all three seg CDFs
         // (enc_dec_process.c:2643-2645). Byte-neutral today: no writer site
         // enables segmentation, so both neighbours hold the identical
         // defaults and `avg_cdf_entries` is the identity on equal inputs
         // (`(a*wl + a*wt + denom/2) / denom == a`).
         avg(&mut self.seg_tree_cdf, &tr.seg_tree_cdf, wt_left, wt_tr);
-        avg(self.seg_pred_cdf.as_flattened_mut(), tr.seg_pred_cdf.as_flattened(), wt_left, wt_tr);
-        avg(self.spatial_pred_seg_cdf.as_flattened_mut(), tr.spatial_pred_seg_cdf.as_flattened(), wt_left, wt_tr);
+        avg(
+            self.seg_pred_cdf.as_flattened_mut(),
+            tr.seg_pred_cdf.as_flattened(),
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            self.spatial_pred_seg_cdf.as_flattened_mut(),
+            tr.spatial_pred_seg_cdf.as_flattened(),
+            wt_left,
+            wt_tr,
+        );
     }
 }
 
@@ -789,7 +968,11 @@ const PARTITION_VERT_4: usize = 9;
 /// reproduce C's arithmetic bit-for-bit, so this stays unfloored. `wrapping_sub`
 /// mirrors C's `uint16_t` arithmetic (a well-formed CDF never underflows).
 fn cdf_element_prob(cdf: &[AomCdfProb], element: usize) -> AomCdfProb {
-    let prev = if element > 0 { cdf[element - 1] } else { CDF_PROB_TOP };
+    let prev = if element > 0 {
+        cdf[element - 1]
+    } else {
+        CDF_PROB_TOP
+    };
     prev.wrapping_sub(cdf[element])
 }
 
@@ -1132,7 +1315,10 @@ fn write_delta_encoded_colors(w: &mut AomWriter, colors: &[u16], bit_depth: u32,
     for i in 1..num {
         debug_assert!((colors[i] as u32) < (1 << bit_depth));
         let delta = colors[i] as i32 - colors[i - 1] as i32;
-        debug_assert!(delta >= min_val, "colors must be ascending with gaps >= min_val");
+        debug_assert!(
+            delta >= min_val,
+            "colors must be ascending with gaps >= min_val"
+        );
         deltas[i - 1] = delta;
         max_delta = max_delta.max(delta);
     }
@@ -1236,11 +1422,21 @@ pub fn write_palette_mode_info(
     if y_mode == 0 {
         debug_assert!(neighbor_ctx < 3);
         y_used = palette.is_some();
-        w.write_symbol(usize::from(y_used), &mut fc.palette_y_mode_cdf[bctx][neighbor_ctx], 2);
+        w.write_symbol(
+            usize::from(y_used),
+            &mut fc.palette_y_mode_cdf[bctx][neighbor_ctx],
+            2,
+        );
         if let Some((colors, cache_found, out_of_cache)) = palette {
             let n = colors.len();
-            debug_assert!((PALETTE_MIN_SIZE..=svtav1_types::prediction::PALETTE_MAX_SIZE).contains(&n));
-            w.write_symbol(n - PALETTE_MIN_SIZE, &mut fc.palette_y_size_cdf[bctx], PALETTE_SIZES);
+            debug_assert!(
+                (PALETTE_MIN_SIZE..=svtav1_types::prediction::PALETTE_MAX_SIZE).contains(&n)
+            );
+            w.write_symbol(
+                n - PALETTE_MIN_SIZE,
+                &mut fc.palette_y_size_cdf[bctx],
+                PALETTE_SIZES,
+            );
             write_palette_colors_y(w, n, cache_found, out_of_cache, bit_depth);
         }
     }
@@ -1355,7 +1551,9 @@ fn palette_map_pixel_ctx(color_map: &[u8], stride: usize, i: usize, j: usize) ->
             scores[1] = scores[2];
             color_neighbors[1] = color_neighbors[2];
         }
-        if scores[0] < scores[1] || (scores[0] == scores[1] && color_neighbors[0] > color_neighbors[1]) {
+        if scores[0] < scores[1]
+            || (scores[0] == scores[1] && color_neighbors[0] > color_neighbors[1])
+        {
             scores.swap(0, 1);
             color_neighbors.swap(0, 1);
         }
@@ -1389,7 +1587,10 @@ fn palette_map_pixel_ctx(color_map: &[u8], stride: usize, i: usize, j: usize) ->
     }
     debug_assert!(hash > 0 && hash <= 8);
     let ctx = 9 - hash as i32;
-    debug_assert!(ctx >= 0 && (ctx as usize) < 5, "PALETTE_COLOR_INDEX_CONTEXTS == 5");
+    debug_assert!(
+        ctx >= 0 && (ctx as usize) < 5,
+        "PALETTE_COLOR_INDEX_CONTEXTS == 5"
+    );
     (ctx as usize, color_new_idx)
 }
 
@@ -1436,7 +1637,11 @@ pub fn write_palette_map_tokens(
             let i = k - j;
             let (ctx, color_new_idx) = palette_map_pixel_ctx(map, stride, i, j);
             debug_assert!((color_new_idx as usize) < n);
-            w.write_symbol(color_new_idx as usize, &mut fc.palette_y_color_index_cdf[n_idx][ctx], n);
+            w.write_symbol(
+                color_new_idx as usize,
+                &mut fc.palette_y_color_index_cdf[n_idx][ctx],
+                n,
+            );
         }
     }
 }
@@ -1447,28 +1652,28 @@ pub fn write_palette_map_tokens(
 /// such as `filter_intra_cdfs[BlockSize]`.
 pub fn block_size_index(width: usize, height: usize) -> usize {
     match (width, height) {
-        (4, 4) => 0,     // BLOCK_4X4
-        (4, 8) => 1,     // BLOCK_4X8
-        (8, 4) => 2,     // BLOCK_8X4
-        (8, 8) => 3,     // BLOCK_8X8
-        (8, 16) => 4,    // BLOCK_8X16
-        (16, 8) => 5,    // BLOCK_16X8
-        (16, 16) => 6,   // BLOCK_16X16
-        (16, 32) => 7,   // BLOCK_16X32
-        (32, 16) => 8,   // BLOCK_32X16
-        (32, 32) => 9,   // BLOCK_32X32
-        (32, 64) => 10,  // BLOCK_32X64
-        (64, 32) => 11,  // BLOCK_64X32
-        (64, 64) => 12,  // BLOCK_64X64
-        (64, 128) => 13, // BLOCK_64X128
-        (128, 64) => 14, // BLOCK_128X64
+        (4, 4) => 0,      // BLOCK_4X4
+        (4, 8) => 1,      // BLOCK_4X8
+        (8, 4) => 2,      // BLOCK_8X4
+        (8, 8) => 3,      // BLOCK_8X8
+        (8, 16) => 4,     // BLOCK_8X16
+        (16, 8) => 5,     // BLOCK_16X8
+        (16, 16) => 6,    // BLOCK_16X16
+        (16, 32) => 7,    // BLOCK_16X32
+        (32, 16) => 8,    // BLOCK_32X16
+        (32, 32) => 9,    // BLOCK_32X32
+        (32, 64) => 10,   // BLOCK_32X64
+        (64, 32) => 11,   // BLOCK_64X32
+        (64, 64) => 12,   // BLOCK_64X64
+        (64, 128) => 13,  // BLOCK_64X128
+        (128, 64) => 14,  // BLOCK_128X64
         (128, 128) => 15, // BLOCK_128X128
-        (4, 16) => 16,   // BLOCK_4X16
-        (16, 4) => 17,   // BLOCK_16X4
-        (8, 32) => 18,   // BLOCK_8X32
-        (32, 8) => 19,   // BLOCK_32X8
-        (16, 64) => 20,  // BLOCK_16X64
-        (64, 16) => 21,  // BLOCK_64X16
+        (4, 16) => 16,    // BLOCK_4X16
+        (16, 4) => 17,    // BLOCK_16X4
+        (8, 32) => 18,    // BLOCK_8X32
+        (32, 8) => 19,    // BLOCK_32X8
+        (16, 64) => 20,   // BLOCK_16X64
+        (64, 16) => 21,   // BLOCK_64X16
         _ => panic!("no BlockSize for {width}x{height}"),
     }
 }
@@ -1520,7 +1725,11 @@ pub fn write_cfl_alphas(w: &mut AomWriter, fc: &mut FrameContext, idx: u8, joint
     w.write_symbol(js, &mut fc.cfl_sign_cdf, CFL_JOINT_SIGNS);
     if cfl_sign_u(js) != 0 {
         let cdf_u = &mut fc.cfl_alpha_cdf[cfl_context_u(js)];
-        w.write_symbol((idx >> CFL_ALPHABET_SIZE_LOG2) as usize, cdf_u, CFL_ALPHABET_SIZE);
+        w.write_symbol(
+            (idx >> CFL_ALPHABET_SIZE_LOG2) as usize,
+            cdf_u,
+            CFL_ALPHABET_SIZE,
+        );
     }
     if cfl_sign_v(js) != 0 {
         let cdf_v = &mut fc.cfl_alpha_cdf[cfl_context_v(js)];
@@ -1635,7 +1844,8 @@ impl SegmentationMap {
         let mut segment_id = MAX_SEGMENTS;
         for y in 0..ymis {
             for x in 0..xmis {
-                segment_id = segment_id.min(usize::from(self.data[mi_offset + y * self.mi_cols + x]));
+                segment_id =
+                    segment_id.min(usize::from(self.data[mi_offset + y * self.mi_cols + x]));
             }
         }
         debug_assert!(
@@ -1680,12 +1890,20 @@ pub fn neg_interleave(x: i32, reference: i32, max: i32) -> i32 {
     }
     if 2 * reference < max {
         if diff.abs() <= reference {
-            if diff > 0 { (diff << 1) - 1 } else { (-diff) << 1 }
+            if diff > 0 {
+                (diff << 1) - 1
+            } else {
+                (-diff) << 1
+            }
         } else {
             x
         }
     } else if diff.abs() < max - reference {
-        if diff > 0 { (diff << 1) - 1 } else { (-diff) << 1 }
+        if diff > 0 {
+            (diff << 1) - 1
+        } else {
+            (-diff) << 1
+        }
     } else {
         (max - x) - 1
     }
@@ -2251,7 +2469,10 @@ mod tests {
         write_palette_map_tokens(&mut w2, &mut fc2, &map, 2, 2, 2, 2);
         let some_bytes = w2.done().to_vec();
 
-        assert_ne!(none_bytes, some_bytes, "palette Some arm must code additional symbols");
+        assert_ne!(
+            none_bytes, some_bytes,
+            "palette Some arm must code additional symbols"
+        );
     }
 
     /// Hand-derived vector for the frame-edge partition CDF gathers.
@@ -2275,7 +2496,10 @@ mod tests {
         for (e, slot) in probs.iter_mut().enumerate() {
             *slot = cdf_element_prob(&icdf, e);
         }
-        assert_eq!(probs, [3000, 4000, 2000, 5000, 1000, 2000, 3000, 4000, 6000, 2768]);
+        assert_eq!(
+            probs,
+            [3000, 4000, 2000, 5000, 1000, 2000, 3000, 4000, 6000, 2768]
+        );
 
         // horz_alike: subtract P(HORZ=1) + P(SPLIT=3) + P(HORZ_A=4)
         //           + P(HORZ_B=5) + P(VERT_A=6) + P(HORZ_4=8)
@@ -2314,7 +2538,10 @@ mod tests {
         let mut w_b = AomWriter::new(256);
         write_partition_edge(&mut w_b, &mut fc_b, 5, 3, 10, false, true, true);
         let edge_interior = w_b.done().to_vec();
-        assert_eq!(plain, edge_interior, "interior edge-write must match write_partition");
+        assert_eq!(
+            plain, edge_interior,
+            "interior edge-write must match write_partition"
+        );
         assert_eq!(
             fc_a.partition_cdf[5], fc_b.partition_cdf[5],
             "interior edge-write must adapt the CDF identically"
@@ -2328,8 +2555,14 @@ mod tests {
         let nothing = w_c.done().to_vec();
         let mut w_empty = AomWriter::new(256);
         let empty = w_empty.done().to_vec();
-        assert_eq!(nothing, empty, "off-frame quadrant must code no partition symbol");
-        assert_eq!(before, fc_c.partition_cdf[5], "forced-SPLIT must not adapt the CDF");
+        assert_eq!(
+            nothing, empty,
+            "off-frame quadrant must code no partition symbol"
+        );
+        assert_eq!(
+            before, fc_c.partition_cdf[5],
+            "forced-SPLIT must not adapt the CDF"
+        );
 
         // Binary arm: must NOT adapt the persistent CDF (C gathers on the stack).
         let mut fc_d = FrameContext::new_default();
@@ -2426,6 +2659,9 @@ mod tests {
         // is discarded.
         assert_eq!(id, 3);
         assert_eq!(map.get_segment_id(1, 1, 4, 4), 3);
-        assert_eq!(fc.spatial_pred_seg_cdf, cdf_before, "no symbol, no adaptation");
+        assert_eq!(
+            fc.spatial_pred_seg_cdf, cdf_before,
+            "no symbol, no adaptation"
+        );
     }
 }

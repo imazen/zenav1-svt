@@ -265,7 +265,14 @@ fn nz_map_ctxs_impl_scalar(
     tx_class: usize,
     coeff_contexts: &mut [i8],
 ) {
-    crate::coeff_c::nz_map_contexts_scan_order(levels, scan, eob, tx_size, tx_class, coeff_contexts);
+    crate::coeff_c::nz_map_contexts_scan_order(
+        levels,
+        scan,
+        eob,
+        tx_size,
+        tx_class,
+        coeff_contexts,
+    );
 }
 
 /// `svt_av1_get_nz_map_contexts_sse2` (encodetxb_sse2.c:450), verbatim: fill
@@ -374,7 +381,9 @@ fn nz_map_ctxs_impl_v3(
                     nz_kernel16_v3(
                         token,
                         levels[base + 1..base + 17].try_into().unwrap(),
-                        levels[base + stride..base + stride + 16].try_into().unwrap(),
+                        levels[base + stride..base + stride + 16]
+                            .try_into()
+                            .unwrap(),
                         levels[base + off0..base + off0 + 16].try_into().unwrap(),
                         levels[base + off1..base + off1 + 16].try_into().unwrap(),
                         levels[base + off2..base + off2 + 16].try_into().unwrap(),
@@ -500,7 +509,9 @@ fn nz_map_ctxs_impl_neon(
                     nz_kernel16_neon(
                         token,
                         levels[base + 1..base + 17].try_into().unwrap(),
-                        levels[base + stride..base + stride + 16].try_into().unwrap(),
+                        levels[base + stride..base + stride + 16]
+                            .try_into()
+                            .unwrap(),
                         levels[base + off0..base + off0 + 16].try_into().unwrap(),
                         levels[base + off1..base + off1 + 16].try_into().unwrap(),
                         levels[base + off2..base + off2 + 16].try_into().unwrap(),
@@ -664,8 +675,9 @@ mod tests {
             let origin = levels_origin(width);
             let region = height * stride;
             for phase in 0..extremes.len() {
-                let coeffs: Vec<i32> =
-                    (0..n).map(|i| extremes[(i + phase) % extremes.len()]).collect();
+                let coeffs: Vec<i32> = (0..n)
+                    .map(|i| extremes[(i + phase) % extremes.len()])
+                    .collect();
                 let mut want = vec![0u8; TX_PAD_2D];
                 fill_levels_core(&coeffs, width, height, &mut want);
                 let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {

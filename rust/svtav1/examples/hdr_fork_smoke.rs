@@ -3,10 +3,10 @@
 //! planes, and prints their paths. The caller (tools/hdr_fork_decode_gate.sh)
 //! then decodes with aomdec and asserts recon == decoder output for BOTH
 //! modes — proving fork-mode signaling matches application.
+use std::io::Write;
 use svtav1_encoder::hdr_mode::HdrForkConfig;
 use svtav1_encoder::pipeline::EncodePipeline;
 use svtav1_encoder::rate_control::{RcConfig, RcMode};
-use std::io::Write;
 
 fn ivf(w: u32, h: u32, frame: &[u8]) -> Vec<u8> {
     let mut v = Vec::new();
@@ -48,7 +48,11 @@ fn run(mode: &str, qp: u8, preset: u8, out_prefix: &str) {
         w,
         h,
         preset,
-        RcConfig { mode: RcMode::Cqp, qp, ..RcConfig::default() },
+        RcConfig {
+            mode: RcMode::Cqp,
+            qp,
+            ..RcConfig::default()
+        },
         4,
         1,
     )
@@ -73,7 +77,9 @@ fn run(mode: &str, qp: u8, preset: u8, out_prefix: &str) {
 }
 
 fn main() {
-    let dir = std::env::args().nth(1).unwrap_or_else(|| "/tmp/hdr_fork_smoke".into());
+    let dir = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "/tmp/hdr_fork_smoke".into());
     std::fs::create_dir_all(&dir).unwrap();
     let preset: u8 = std::env::args()
         .nth(2)

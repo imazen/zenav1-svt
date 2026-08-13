@@ -95,10 +95,7 @@ mod tests {
             BiasModeClass::IntraNeutral,
             BiasModeClass::Other,
         ] {
-            assert_eq!(
-                facade_bias(10_000, class, true, 64, 64, 3, 0.0, 0),
-                10_000
-            );
+            assert_eq!(facade_bias(10_000, class, true, 64, 64, 3, 0.0, 0), 10_000);
         }
     }
 

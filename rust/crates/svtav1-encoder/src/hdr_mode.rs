@@ -261,14 +261,23 @@ impl HdrForkConfig {
     ///   prevent.
     #[cfg(feature = "std")]
     pub fn from_env() -> Self {
-        let fork = std::env::var("SVT_HDR_MODE").map(|v| v == "1").unwrap_or(false);
-        let mut c = if fork { Self::hdr_fork_c_mode1() } else { Self::mainline() };
+        let fork = std::env::var("SVT_HDR_MODE")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        let mut c = if fork {
+            Self::hdr_fork_c_mode1()
+        } else {
+            Self::mainline()
+        };
 
         fn get<T: std::str::FromStr>(name: &str, slot: &mut T) {
             if let Ok(v) = std::env::var(name) {
-                *slot = v
-                    .parse()
-                    .unwrap_or_else(|_| panic!("{name}: cannot parse {v:?} as {}", std::any::type_name::<T>()));
+                *slot = v.parse().unwrap_or_else(|_| {
+                    panic!(
+                        "{name}: cannot parse {v:?} as {}",
+                        std::any::type_name::<T>()
+                    )
+                });
             }
         }
         fn get_bool(name: &str, slot: &mut bool) {
@@ -278,21 +287,36 @@ impl HdrForkConfig {
         }
 
         get("SVT_FORK_AC_BIAS", &mut c.ac_bias);
-        get("SVT_FORK_QP_SCALE_COMPRESS_STRENGTH", &mut c.qp_scale_compress_strength);
+        get(
+            "SVT_FORK_QP_SCALE_COMPRESS_STRENGTH",
+            &mut c.qp_scale_compress_strength,
+        );
         get("SVT_FORK_SHARP_TX", &mut c.sharp_tx);
         get("SVT_FORK_TX_BIAS", &mut c.tx_bias);
         get("SVT_FORK_COMPLEX_HVS", &mut c.complex_hvs);
         get("SVT_FORK_NOISE_NORM_STRENGTH", &mut c.noise_norm_strength);
-        get("SVT_FORK_NOISE_ADAPTIVE_FILTERING", &mut c.noise_adaptive_filtering);
+        get(
+            "SVT_FORK_NOISE_ADAPTIVE_FILTERING",
+            &mut c.noise_adaptive_filtering,
+        );
         get("SVT_FORK_CDEF_SCALING", &mut c.cdef_scaling);
         get("SVT_FORK_NOISE_STRENGTH", &mut c.noise_strength);
-        get("SVT_FORK_NOISE_CHROMA_FROM_LUMA", &mut c.noise_chroma_from_luma);
-        get("SVT_FORK_NOISE_STRENGTH_CHROMA", &mut c.noise_strength_chroma);
+        get(
+            "SVT_FORK_NOISE_CHROMA_FROM_LUMA",
+            &mut c.noise_chroma_from_luma,
+        );
+        get(
+            "SVT_FORK_NOISE_STRENGTH_CHROMA",
+            &mut c.noise_strength_chroma,
+        );
         get("SVT_FORK_NOISE_SIZE", &mut c.noise_size);
         get("SVT_FORK_KF_TF_STRENGTH", &mut c.kf_tf_strength);
         get("SVT_FORK_TF_STRENGTH", &mut c.tf_strength);
         get("SVT_FORK_TUNE", &mut c.tune);
-        get("SVT_FORK_VARIANCE_BOOST_STRENGTH", &mut c.variance_boost_strength);
+        get(
+            "SVT_FORK_VARIANCE_BOOST_STRENGTH",
+            &mut c.variance_boost_strength,
+        );
         get("SVT_FORK_VARIANCE_OCTILE", &mut c.variance_octile);
         get("SVT_FORK_VARIANCE_BOOST_CURVE", &mut c.variance_boost_curve);
         get("SVT_FORK_MIN_QM_LEVEL", &mut c.min_qm_level);
@@ -303,7 +327,10 @@ impl HdrForkConfig {
         get_bool("SVT_FORK_ALT_LAMBDA_FACTORS", &mut c.alt_lambda_factors);
         get_bool("SVT_FORK_ALT_SSIM_TUNING", &mut c.alt_ssim_tuning);
         get_bool("SVT_FORK_ENABLE_QM", &mut c.enable_qm);
-        get_bool("SVT_FORK_ENABLE_VARIANCE_BOOST", &mut c.enable_variance_boost);
+        get_bool(
+            "SVT_FORK_ENABLE_VARIANCE_BOOST",
+            &mut c.enable_variance_boost,
+        );
         c
     }
 
@@ -425,7 +452,10 @@ mod tests {
         // (hdr_fork()) diverge from the oracle's — the distinction this test
         // exists to hold.
         let upstream = HdrForkConfig::hdr_fork();
-        assert_ne!(upstream, f, "hdr_fork() must not be confused with the MODE1 oracle config");
+        assert_ne!(
+            upstream, f,
+            "hdr_fork() must not be confused with the MODE1 oracle config"
+        );
         assert_eq!(upstream.ac_bias, 1.0);
         assert_eq!(upstream.sharp_tx, 1);
     }

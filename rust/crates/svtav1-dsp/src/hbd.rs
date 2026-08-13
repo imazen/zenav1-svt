@@ -166,14 +166,26 @@ pub fn highbd_clip_pixel_add(dest: u16, trans: i64, bd: u8) -> u16 {
 /// C `highbd_v_predictor` (intra_prediction.c:1202-1210). `bd` unused (C:
 /// `(void)bd;`) — kept in the signature only for call-shape parity with the
 /// other hbd predictors and the directional dispatcher.
-pub fn predict_v_hbd(dst: &mut [u16], dst_stride: usize, above: &[u16], width: usize, height: usize) {
+pub fn predict_v_hbd(
+    dst: &mut [u16],
+    dst_stride: usize,
+    above: &[u16],
+    width: usize,
+    height: usize,
+) {
     for row in 0..height {
         dst[row * dst_stride..row * dst_stride + width].copy_from_slice(&above[..width]);
     }
 }
 
 /// C `highbd_h_predictor` (intra_prediction.c:1212-1220). `bd` unused.
-pub fn predict_h_hbd(dst: &mut [u16], dst_stride: usize, left: &[u16], width: usize, height: usize) {
+pub fn predict_h_hbd(
+    dst: &mut [u16],
+    dst_stride: usize,
+    left: &[u16],
+    width: usize,
+    height: usize,
+) {
     for row in 0..height {
         let val = left[row];
         for col in 0..width {
@@ -216,7 +228,8 @@ pub fn predict_paeth_hbd(
 ) {
     for row in 0..height {
         for col in 0..width {
-            dst[row * dst_stride + col] = paeth_predictor_single_hbd(left[row], above[col], top_left);
+            dst[row * dst_stride + col] =
+                paeth_predictor_single_hbd(left[row], above[col], top_left);
         }
     }
 }
@@ -242,8 +255,8 @@ pub fn predict_dc_hbd(
 ) {
     let dc = match (has_above, has_left) {
         (true, true) => {
-            let sum: u32 =
-                above[..width].iter().map(|&v| v as u32).sum::<u32>() + left[..height].iter().map(|&v| v as u32).sum::<u32>();
+            let sum: u32 = above[..width].iter().map(|&v| v as u32).sum::<u32>()
+                + left[..height].iter().map(|&v| v as u32).sum::<u32>();
             let count = (width + height) as u32;
             ((sum + count / 2) / count) as u16
         }
@@ -274,13 +287,13 @@ static SM_WEIGHTS_16_HBD: [u8; 16] = [
     255, 225, 196, 170, 145, 123, 102, 84, 68, 54, 43, 33, 26, 20, 17, 16,
 ];
 static SM_WEIGHTS_32_HBD: [u8; 32] = [
-    255, 240, 225, 210, 196, 182, 169, 157, 145, 133, 122, 111, 101, 92, 83, 74, 66, 59, 52, 45, 39, 34, 29, 25, 21,
-    17, 14, 12, 10, 9, 8, 8,
+    255, 240, 225, 210, 196, 182, 169, 157, 145, 133, 122, 111, 101, 92, 83, 74, 66, 59, 52, 45,
+    39, 34, 29, 25, 21, 17, 14, 12, 10, 9, 8, 8,
 ];
 static SM_WEIGHTS_64_HBD: [u8; 64] = [
-    255, 248, 240, 233, 225, 218, 210, 203, 196, 189, 182, 176, 169, 163, 156, 150, 144, 138, 133, 127, 121, 116,
-    111, 106, 101, 96, 91, 86, 82, 77, 73, 69, 65, 61, 57, 54, 50, 47, 44, 41, 38, 35, 32, 29, 27, 25, 22, 20, 18, 16,
-    15, 13, 12, 10, 9, 8, 7, 6, 6, 5, 5, 4, 4, 4,
+    255, 248, 240, 233, 225, 218, 210, 203, 196, 189, 182, 176, 169, 163, 156, 150, 144, 138, 133,
+    127, 121, 116, 111, 106, 101, 96, 91, 86, 82, 77, 73, 69, 65, 61, 57, 54, 50, 47, 44, 41, 38,
+    35, 32, 29, 27, 25, 22, 20, 18, 16, 15, 13, 12, 10, 9, 8, 7, 6, 6, 5, 5, 4, 4, 4,
 ];
 
 fn smooth_weights_hbd(n: usize) -> &'static [u8] {
@@ -296,7 +309,14 @@ fn smooth_weights_hbd(n: usize) -> &'static [u8] {
 
 /// C `highbd_smooth_predictor` (intra_prediction.c:1260-1286). `bd` unused
 /// (C: `(void)bd;`); `divide_round(_, 9)` = `(x + 256) >> 9`.
-pub fn predict_smooth_hbd(dst: &mut [u16], dst_stride: usize, above: &[u16], left: &[u16], width: usize, height: usize) {
+pub fn predict_smooth_hbd(
+    dst: &mut [u16],
+    dst_stride: usize,
+    above: &[u16],
+    left: &[u16],
+    width: usize,
+    height: usize,
+) {
     let below_pred = left[height - 1] as u32;
     let right_pred = above[width - 1] as u32;
     let sm_weights_h = smooth_weights_hbd(height);
@@ -307,7 +327,9 @@ pub fn predict_smooth_hbd(dst: &mut [u16], dst_stride: usize, above: &[u16], lef
             let ww = sm_weights_w[col] as u32;
             let top = above[col] as u32;
             let lft = left[row] as u32;
-            let pred = (wh * top + (256 - wh) * below_pred + ww * lft + (256 - ww) * right_pred + 256) / 512;
+            let pred =
+                (wh * top + (256 - wh) * below_pred + ww * lft + (256 - ww) * right_pred + 256)
+                    / 512;
             dst[row * dst_stride + col] = pred as u16;
         }
     }
@@ -379,9 +401,10 @@ pub fn predict_smooth_h_hbd(
 /// Duplicated from `intra_pred.rs`'s private `DR_INTRA_DERIVATIVE` (same
 /// C provenance, `eb_dr_intra_derivative`).
 static DR_INTRA_DERIVATIVE_HBD: [u16; 90] = [
-    0, 0, 0, 1023, 0, 0, 547, 0, 0, 372, 0, 0, 0, 0, 273, 0, 0, 215, 0, 0, 178, 0, 0, 151, 0, 0, 132, 0, 0, 116, 0, 0,
-    102, 0, 0, 0, 90, 0, 0, 80, 0, 0, 71, 0, 0, 64, 0, 0, 57, 0, 0, 51, 0, 0, 45, 0, 0, 0, 40, 0, 0, 35, 0, 0, 31, 0,
-    0, 27, 0, 0, 23, 0, 0, 19, 0, 0, 15, 0, 0, 0, 0, 11, 0, 0, 7, 0, 0, 3, 0, 0,
+    0, 0, 0, 1023, 0, 0, 547, 0, 0, 372, 0, 0, 0, 0, 273, 0, 0, 215, 0, 0, 178, 0, 0, 151, 0, 0,
+    132, 0, 0, 116, 0, 0, 102, 0, 0, 0, 90, 0, 0, 80, 0, 0, 71, 0, 0, 64, 0, 0, 57, 0, 0, 51, 0, 0,
+    45, 0, 0, 0, 40, 0, 0, 35, 0, 0, 31, 0, 0, 27, 0, 0, 23, 0, 0, 19, 0, 0, 15, 0, 0, 0, 0, 11, 0,
+    0, 7, 0, 0, 3, 0, 0,
 ];
 
 fn get_dx_hbd(angle: i32) -> i32 {
@@ -431,7 +454,8 @@ pub fn filter_intra_edge_high(p: &mut [u16], start: usize, sz: usize, strength: 
 
 /// C `filter_intra_edge_corner_high` (intra_prediction.c:2482-2489).
 pub fn filter_intra_edge_corner_high(above: &mut [u16], left: &mut [u16], origin: usize) {
-    let s = (left[origin] as i32 * 5 + above[origin - 1] as i32 * 6 + above[origin] as i32 * 5 + 8) >> 4;
+    let s = (left[origin] as i32 * 5 + above[origin - 1] as i32 * 6 + above[origin] as i32 * 5 + 8)
+        >> 4;
     above[origin - 1] = s as u16;
     left[origin - 1] = s as u16;
 }
@@ -453,7 +477,8 @@ pub fn upsample_intra_edge_high(p: &mut [u16], origin: usize, sz: usize, bd: u8)
 
     p[origin - 2] = input[0];
     for i in 0..sz {
-        let s = -(input[i] as i32) + 9 * input[i + 1] as i32 + 9 * input[i + 2] as i32 - input[i + 3] as i32;
+        let s = -(input[i] as i32) + 9 * input[i + 1] as i32 + 9 * input[i + 2] as i32
+            - input[i + 3] as i32;
         let s = clip_pixel_highbd((s + 8) >> 4, bd);
         p[origin + 2 * i - 1] = s;
         p[origin + 2 * i] = input[i + 2];
@@ -586,8 +611,8 @@ fn dr_z3_edged_hbd(
         let mut r = 0usize;
         while r < bh {
             if base < max_base_y {
-                let val =
-                    left[origin + base as usize] as i32 * (32 - shift) + left[origin + base as usize + 1] as i32 * shift;
+                let val = left[origin + base as usize] as i32 * (32 - shift)
+                    + left[origin + base as usize + 1] as i32 * shift;
                 dst[r * dst_stride + c] = clip_pixel_highbd((val + 16) >> 5, bd);
             } else {
                 let fill = left[origin + max_base_y as usize];
@@ -625,7 +650,17 @@ pub fn dr_predictor_edged_hbd(
     let dx = get_dx_hbd(angle);
     let dy = get_dy_hbd(angle);
     if angle > 0 && angle < 90 {
-        dr_z1_edged_hbd(dst, dst_stride, width, height, above, origin, upsample_above, dx, bd);
+        dr_z1_edged_hbd(
+            dst,
+            dst_stride,
+            width,
+            height,
+            above,
+            origin,
+            upsample_above,
+            dx,
+            bd,
+        );
     } else if angle > 90 && angle < 180 {
         dr_z2_edged_hbd(
             dst,
@@ -642,7 +677,17 @@ pub fn dr_predictor_edged_hbd(
             bd,
         );
     } else if angle > 180 && angle < 270 {
-        dr_z3_edged_hbd(dst, dst_stride, width, height, left, origin, upsample_left, dy, bd);
+        dr_z3_edged_hbd(
+            dst,
+            dst_stride,
+            width,
+            height,
+            left,
+            origin,
+            upsample_left,
+            dy,
+            bd,
+        );
     } else if angle == 90 {
         predict_v_hbd(dst, dst_stride, &above[origin..], width, height);
     } else if angle == 180 {
@@ -776,8 +821,10 @@ pub fn predict_filter_intra_hbd(
                     + taps[k][4] as i32 * p4
                     + taps[k][5] as i32 * p5
                     + taps[k][6] as i32 * p6;
-                buffer[r + r_offset][c + c_offset] =
-                    clip_pixel_highbd(round_power_of_two_signed_hbd(val, FILTER_INTRA_SCALE_BITS_HBD), bd);
+                buffer[r + r_offset][c + c_offset] = clip_pixel_highbd(
+                    round_power_of_two_signed_hbd(val, FILTER_INTRA_SCALE_BITS_HBD),
+                    bd,
+                );
             }
         }
     }
@@ -805,7 +852,13 @@ pub fn predict_filter_intra_hbd(
 /// C `svt_cfl_luma_subsampling_420_hbd_c` (intra_prediction.c:437-445): 2x2
 /// luma downsample to Q3, high bit depth. Uses `intra_pred::CFL_BUF_LINE`
 /// (`pub`, bd-independent stride constant) directly.
-pub fn cfl_luma_subsampling_420_hbd(luma: &[u16], luma_stride: usize, output_q3: &mut [i16], width: usize, height: usize) {
+pub fn cfl_luma_subsampling_420_hbd(
+    luma: &[u16],
+    luma_stride: usize,
+    output_q3: &mut [i16],
+    width: usize,
+    height: usize,
+) {
     for j in (0..height).step_by(2) {
         let out_row = (j / 2) * crate::intra_pred::CFL_BUF_LINE;
         for i in (0..width).step_by(2) {
@@ -846,7 +899,10 @@ pub fn cfl_predict_hbd(
 ) {
     for j in 0..height {
         for i in 0..width {
-            let scaled = get_scaled_luma_q0_hbd(alpha_q3, pred_buf_q3[j * crate::intra_pred::CFL_BUF_LINE + i]);
+            let scaled = get_scaled_luma_q0_hbd(
+                alpha_q3,
+                pred_buf_q3[j * crate::intra_pred::CFL_BUF_LINE + i],
+            );
             let val = scaled + pred[j * pred_stride + i] as i32;
             dst[j * dst_stride + i] = clip_pixel_highbd(val, bd);
         }
@@ -922,7 +978,14 @@ pub fn full_distortion_kernel16_bits(
 /// `uint32_t` accumulation is well-defined modular arithmetic, not UB, so
 /// this port mirrors the wraparound exactly via `wrapping_add` rather than
 /// widening to a type that would silently disagree with C on overflow.
-pub fn highbd_variance(a: &[u16], a_stride: usize, b: &[u16], b_stride: usize, w: usize, h: usize) -> (u32, u32) {
+pub fn highbd_variance(
+    a: &[u16],
+    a_stride: usize,
+    b: &[u16],
+    b_stride: usize,
+    w: usize,
+    h: usize,
+) -> (u32, u32) {
     let mut sad: i32 = 0;
     let mut sse: u32 = 0;
     for row in 0..h {
@@ -945,7 +1008,14 @@ pub fn highbd_variance(a: &[u16], a_stride: usize, b: &[u16], b_stride: usize, w
 /// crate-house `(width, height)` order per task instruction to mirror
 /// house conventions; callers wiring this to C's `svt_aom_sad_16b_kernel`
 /// call sites MUST swap the last two arguments.
-pub fn highbd_sad_kernel(src: &[u16], src_stride: usize, ref_: &[u16], ref_stride: usize, width: usize, height: usize) -> u32 {
+pub fn highbd_sad_kernel(
+    src: &[u16],
+    src_stride: usize,
+    ref_: &[u16],
+    ref_stride: usize,
+    width: usize,
+    height: usize,
+) -> u32 {
     let mut sad: u32 = 0;
     for row in 0..height {
         let src_row = row * src_stride;
@@ -1058,7 +1128,17 @@ fn highbd_filter_mask(
 /// C `highbd_filter_mask3_chroma` (deblocking_common.c:679-690) for 6-tap edges.
 #[inline]
 #[allow(clippy::too_many_arguments)]
-fn highbd_filter_mask3_chroma(limit: u8, blimit: u8, p2: u16, p1: u16, p0: u16, q0: u16, q1: u16, q2: u16, bd: u8) -> i8 {
+fn highbd_filter_mask3_chroma(
+    limit: u8,
+    blimit: u8,
+    p2: u16,
+    p1: u16,
+    p0: u16,
+    q0: u16,
+    q1: u16,
+    q2: u16,
+    bd: u8,
+) -> i8 {
     let shift = bd as i32 - 8;
     let (limit16, blimit16) = ((limit as i32) << shift, (blimit as i32) << shift);
     let (p2, p1, p0) = (p2 as i32, p1 as i32, p0 as i32);
@@ -1074,7 +1154,16 @@ fn highbd_filter_mask3_chroma(limit: u8, blimit: u8, p2: u16, p1: u16, p0: u16, 
 
 /// C `highbd_flat_mask3_chroma` (deblocking_common.c:194-203).
 #[inline]
-fn highbd_flat_mask3_chroma(thresh: u8, p2: u16, p1: u16, p0: u16, q0: u16, q1: u16, q2: u16, bd: u8) -> i8 {
+fn highbd_flat_mask3_chroma(
+    thresh: u8,
+    p2: u16,
+    p1: u16,
+    p0: u16,
+    q0: u16,
+    q1: u16,
+    q2: u16,
+    bd: u8,
+) -> i8 {
     let thresh16 = (thresh as i32) << (bd as i32 - 8);
     let (p2, p1, p0) = (p2 as i32, p1 as i32, p0 as i32);
     let (q0, q1, q2) = (q0 as i32, q1 as i32, q2 as i32);
@@ -1090,7 +1179,18 @@ fn highbd_flat_mask3_chroma(thresh: u8, p2: u16, p1: u16, p0: u16, q0: u16, q1: 
 /// (and here) for the wider "flat2" check in the 14-tap filter.
 #[inline]
 #[allow(clippy::too_many_arguments)]
-fn highbd_flat_mask4(thresh: u8, p3: u16, p2: u16, p1: u16, p0: u16, q0: u16, q1: u16, q2: u16, q3: u16, bd: u8) -> i8 {
+fn highbd_flat_mask4(
+    thresh: u8,
+    p3: u16,
+    p2: u16,
+    p1: u16,
+    p0: u16,
+    q0: u16,
+    q1: u16,
+    q2: u16,
+    q3: u16,
+    bd: u8,
+) -> i8 {
     let thresh16 = (thresh as i32) << (bd as i32 - 8);
     let (p3, p2, p1, p0) = (p3 as i32, p2 as i32, p1 as i32, p0 as i32);
     let (q0, q1, q2, q3) = (q0 as i32, q1 as i32, q2 as i32, q3 as i32);
@@ -1193,8 +1293,10 @@ fn highbd_filter14(mask: i8, thresh: u8, flat: i8, flat2: i8, w: &mut [u16; 14],
         w[3] = rpot4_hbd(p6 * 4 + p5 + p4 * 2 + p3 * 2 + p2 * 2 + p1 + p0 + q0 + q1 + q2);
         w[4] = rpot4_hbd(p6 * 3 + p5 + p4 + p3 * 2 + p2 * 2 + p1 * 2 + p0 + q0 + q1 + q2 + q3);
         w[5] = rpot4_hbd(p6 * 2 + p5 + p4 + p3 + p2 * 2 + p1 * 2 + p0 * 2 + q0 + q1 + q2 + q3 + q4);
-        w[6] = rpot4_hbd(p6 + p5 + p4 + p3 + p2 + p1 * 2 + p0 * 2 + q0 * 2 + q1 + q2 + q3 + q4 + q5);
-        w[7] = rpot4_hbd(p5 + p4 + p3 + p2 + p1 + p0 * 2 + q0 * 2 + q1 * 2 + q2 + q3 + q4 + q5 + q6);
+        w[6] =
+            rpot4_hbd(p6 + p5 + p4 + p3 + p2 + p1 * 2 + p0 * 2 + q0 * 2 + q1 + q2 + q3 + q4 + q5);
+        w[7] =
+            rpot4_hbd(p5 + p4 + p3 + p2 + p1 + p0 * 2 + q0 * 2 + q1 * 2 + q2 + q3 + q4 + q5 + q6);
         w[8] = rpot4_hbd(p4 + p3 + p2 + p1 + p0 + q0 * 2 + q1 * 2 + q2 * 2 + q3 + q4 + q5 + q6 * 2);
         w[9] = rpot4_hbd(p3 + p2 + p1 + p0 + q0 + q1 * 2 + q2 * 2 + q3 * 2 + q4 + q5 + q6 * 3);
         w[10] = rpot4_hbd(p2 + p1 + p0 + q0 + q1 + q2 * 2 + q3 * 2 + q4 * 2 + q5 + q6 * 4);
@@ -1256,7 +1358,8 @@ pub fn lpf_horizontal_6_hbd(buf: &mut [u16], off: usize, pitch: usize, t: LfThre
     for i in 0..4 {
         let base = off + i;
         let mut w: [u16; 6] = gather16(buf, base, pitch);
-        let mask = highbd_filter_mask3_chroma(t.lim, t.mblim, w[0], w[1], w[2], w[3], w[4], w[5], bd);
+        let mask =
+            highbd_filter_mask3_chroma(t.lim, t.mblim, w[0], w[1], w[2], w[3], w[4], w[5], bd);
         let flat = highbd_flat_mask3_chroma(1, w[0], w[1], w[2], w[3], w[4], w[5], bd);
         highbd_filter6(mask, t.hev_thr, flat, &mut w, bd);
         scatter16(buf, base, pitch, &w);
@@ -1268,7 +1371,8 @@ pub fn lpf_vertical_6_hbd(buf: &mut [u16], off: usize, pitch: usize, t: LfThresh
     for i in 0..4 {
         let base = off + i * pitch;
         let mut w: [u16; 6] = gather16(buf, base, 1);
-        let mask = highbd_filter_mask3_chroma(t.lim, t.mblim, w[0], w[1], w[2], w[3], w[4], w[5], bd);
+        let mask =
+            highbd_filter_mask3_chroma(t.lim, t.mblim, w[0], w[1], w[2], w[3], w[4], w[5], bd);
         let flat = highbd_flat_mask3_chroma(1, w[0], w[1], w[2], w[3], w[4], w[5], bd);
         highbd_filter6(mask, t.hev_thr, flat, &mut w, bd);
         scatter16(buf, base, 1, &w);
@@ -1280,7 +1384,9 @@ pub fn lpf_horizontal_8_hbd(buf: &mut [u16], off: usize, pitch: usize, t: LfThre
     for i in 0..4 {
         let base = off + i;
         let mut w: [u16; 8] = gather16(buf, base, pitch);
-        let mask = highbd_filter_mask(t.lim, t.mblim, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], bd);
+        let mask = highbd_filter_mask(
+            t.lim, t.mblim, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], bd,
+        );
         let flat = highbd_flat_mask4(1, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], bd);
         highbd_filter8(mask, t.hev_thr, flat, &mut w, bd);
         scatter16(buf, base, pitch, &w);
@@ -1292,7 +1398,9 @@ pub fn lpf_vertical_8_hbd(buf: &mut [u16], off: usize, pitch: usize, t: LfThresh
     for i in 0..4 {
         let base = off + i * pitch;
         let mut w: [u16; 8] = gather16(buf, base, 1);
-        let mask = highbd_filter_mask(t.lim, t.mblim, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], bd);
+        let mask = highbd_filter_mask(
+            t.lim, t.mblim, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], bd,
+        );
         let flat = highbd_flat_mask4(1, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], bd);
         highbd_filter8(mask, t.hev_thr, flat, &mut w, bd);
         scatter16(buf, base, 1, &w);
@@ -1303,7 +1411,9 @@ pub fn lpf_vertical_8_hbd(buf: &mut [u16], off: usize, pitch: usize, t: LfThresh
 /// `highbd_mb_lpf_horizontal_edge_w` / `highbd_mb_lpf_vertical_edge_w`
 /// inner loop (deblocking_common.c:629-672 / 741-780).
 fn lpf14_window_hbd(w: &mut [u16; 14], t: LfThresh, bd: u8) {
-    let mask = highbd_filter_mask(t.lim, t.mblim, w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], bd);
+    let mask = highbd_filter_mask(
+        t.lim, t.mblim, w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], bd,
+    );
     let flat = highbd_flat_mask4(1, w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], bd);
     let flat2 = highbd_flat_mask4(1, w[0], w[1], w[2], w[6], w[7], w[11], w[12], w[13], bd);
     highbd_filter14(mask, t.hev_thr, flat, flat2, w, bd);
@@ -1437,8 +1547,19 @@ pub fn cdef_filter_block_hbd(
 ) {
     incant!(
         cdef_filter_block_hbd_impl(
-            dst, doff, dstride, inb, ioff, pri_strength, sec_strength, dir, pri_damping,
-            sec_damping, bsize, coeff_shift, subsampling_factor
+            dst,
+            doff,
+            dstride,
+            inb,
+            ioff,
+            pri_strength,
+            sec_strength,
+            dir,
+            pri_damping,
+            sec_damping,
+            bsize,
+            coeff_shift,
+            subsampling_factor
         ),
         [v3, neon, scalar]
     )
@@ -1462,8 +1583,19 @@ fn cdef_filter_block_hbd_impl_scalar(
     subsampling_factor: usize,
 ) {
     cdef_filter_block_hbd_core(
-        dst, doff, dstride, inb, ioff, pri_strength, sec_strength, dir, pri_damping, sec_damping,
-        bsize, coeff_shift, subsampling_factor,
+        dst,
+        doff,
+        dstride,
+        inb,
+        ioff,
+        pri_strength,
+        sec_strength,
+        dir,
+        pri_damping,
+        sec_damping,
+        bsize,
+        coeff_shift,
+        subsampling_factor,
     );
 }
 
@@ -1495,15 +1627,34 @@ fn cdef_filter_block_hbd_impl_neon(
     coeff_shift: i32,
     subsampling_factor: usize,
 ) {
-    let cols = if bsize == BLOCK_8X8 || bsize == BLOCK_8X4 { 8 } else { 4 };
+    let cols = if bsize == BLOCK_8X8 || bsize == BLOCK_8X4 {
+        8
+    } else {
+        4
+    };
     if cols != 8 {
         cdef_filter_block_hbd_core(
-            dst, doff, dstride, inb, ioff, pri_strength, sec_strength, dir, pri_damping,
-            sec_damping, bsize, coeff_shift, subsampling_factor,
+            dst,
+            doff,
+            dstride,
+            inb,
+            ioff,
+            pri_strength,
+            sec_strength,
+            dir,
+            pri_damping,
+            sec_damping,
+            bsize,
+            coeff_shift,
+            subsampling_factor,
         );
         return;
     }
-    let rows = if bsize == BLOCK_8X8 || bsize == BLOCK_4X8 { 8 } else { 4 };
+    let rows = if bsize == BLOCK_8X8 || bsize == BLOCK_4X8 {
+        8
+    } else {
+        4
+    };
     let mut scratch = [0i32; 64];
     crate::cdef::cdef_filter_cols8_neon(
         token,
@@ -1553,15 +1704,34 @@ fn cdef_filter_block_hbd_impl_v3(
     coeff_shift: i32,
     subsampling_factor: usize,
 ) {
-    let cols = if bsize == BLOCK_8X8 || bsize == BLOCK_8X4 { 8 } else { 4 };
+    let cols = if bsize == BLOCK_8X8 || bsize == BLOCK_8X4 {
+        8
+    } else {
+        4
+    };
     if cols != 8 {
         cdef_filter_block_hbd_core(
-            dst, doff, dstride, inb, ioff, pri_strength, sec_strength, dir, pri_damping,
-            sec_damping, bsize, coeff_shift, subsampling_factor,
+            dst,
+            doff,
+            dstride,
+            inb,
+            ioff,
+            pri_strength,
+            sec_strength,
+            dir,
+            pri_damping,
+            sec_damping,
+            bsize,
+            coeff_shift,
+            subsampling_factor,
         );
         return;
     }
-    let rows = if bsize == BLOCK_8X8 || bsize == BLOCK_4X8 { 8 } else { 4 };
+    let rows = if bsize == BLOCK_8X8 || bsize == BLOCK_4X8 {
+        8
+    } else {
+        4
+    };
     let mut scratch = [0i32; 64];
     crate::cdef::cdef_filter_cols8_v3(
         token,
@@ -1610,8 +1780,16 @@ fn cdef_filter_block_hbd_core(
     let s = CDEF_BSTRIDE as i32;
     let pri_taps = CDEF_PRI_TAPS_HBD[((pri_strength >> coeff_shift) & 1) as usize];
     let sec_taps = CDEF_SEC_TAPS_HBD[((pri_strength >> coeff_shift) & 1) as usize];
-    let rows = if bsize == BLOCK_8X8 || bsize == BLOCK_4X8 { 8 } else { 4 };
-    let cols = if bsize == BLOCK_8X8 || bsize == BLOCK_8X4 { 8 } else { 4 };
+    let rows = if bsize == BLOCK_8X8 || bsize == BLOCK_4X8 {
+        8
+    } else {
+        4
+    };
+    let cols = if bsize == BLOCK_8X8 || bsize == BLOCK_8X4 {
+        8
+    } else {
+        4
+    };
 
     let at = |i: i32, j: i32, off: i32| -> u16 { inb[(ioff as i32 + i * s + j + off) as usize] };
 
@@ -1625,8 +1803,14 @@ fn cdef_filter_block_hbd_core(
             for k in 0..2usize {
                 let p0 = at(i, j, cdef_direction_hbd(dir, k)) as i16;
                 let p1 = at(i, j, -cdef_direction_hbd(dir, k)) as i16;
-                sum = sum.wrapping_add((pri_taps[k] * constrain_hbd(p0 as i32 - x as i32, pri_strength, pri_damping)) as i16);
-                sum = sum.wrapping_add((pri_taps[k] * constrain_hbd(p1 as i32 - x as i32, pri_strength, pri_damping)) as i16);
+                sum = sum.wrapping_add(
+                    (pri_taps[k] * constrain_hbd(p0 as i32 - x as i32, pri_strength, pri_damping))
+                        as i16,
+                );
+                sum = sum.wrapping_add(
+                    (pri_taps[k] * constrain_hbd(p1 as i32 - x as i32, pri_strength, pri_damping))
+                        as i16,
+                );
                 if p0 as u16 != CDEF_VERY_LARGE {
                     max = (p0 as i32).max(max);
                 }
@@ -1655,10 +1839,22 @@ fn cdef_filter_block_hbd_core(
                 min = (s1 as i32).min(min);
                 min = (s2 as i32).min(min);
                 min = (s3 as i32).min(min);
-                sum = sum.wrapping_add((sec_taps[k] * constrain_hbd(s0 as i32 - x as i32, sec_strength, sec_damping)) as i16);
-                sum = sum.wrapping_add((sec_taps[k] * constrain_hbd(s1 as i32 - x as i32, sec_strength, sec_damping)) as i16);
-                sum = sum.wrapping_add((sec_taps[k] * constrain_hbd(s2 as i32 - x as i32, sec_strength, sec_damping)) as i16);
-                sum = sum.wrapping_add((sec_taps[k] * constrain_hbd(s3 as i32 - x as i32, sec_strength, sec_damping)) as i16);
+                sum = sum.wrapping_add(
+                    (sec_taps[k] * constrain_hbd(s0 as i32 - x as i32, sec_strength, sec_damping))
+                        as i16,
+                );
+                sum = sum.wrapping_add(
+                    (sec_taps[k] * constrain_hbd(s1 as i32 - x as i32, sec_strength, sec_damping))
+                        as i16,
+                );
+                sum = sum.wrapping_add(
+                    (sec_taps[k] * constrain_hbd(s2 as i32 - x as i32, sec_strength, sec_damping))
+                        as i16,
+                );
+                sum = sum.wrapping_add(
+                    (sec_taps[k] * constrain_hbd(s3 as i32 - x as i32, sec_strength, sec_damping))
+                        as i16,
+                );
             }
             let y = (x as i32 + ((8 + sum as i32 - i32::from(sum < 0)) >> 4)).clamp(min, max);
             dst[doff + i as usize * dstride + j as usize] = y as u16;

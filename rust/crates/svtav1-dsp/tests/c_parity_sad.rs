@@ -75,7 +75,10 @@ fn sad_matches_c_all_sizes_random() {
 
             let got = sad(&src, src_stride, &refb, ref_stride, w, h);
             let want = cref::sad(w, h, &src, 0, src_stride, &refb, 0, ref_stride);
-            assert_eq!(got, want, "SAD {w}x{h} src_s={src_stride} ref_s={ref_stride}");
+            assert_eq!(
+                got, want,
+                "SAD {w}x{h} src_s={src_stride} ref_s={ref_stride}"
+            );
         }
     }
 }

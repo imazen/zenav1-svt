@@ -214,8 +214,14 @@ impl IbcCtrls {
                 exhaustive_mesh_thresh: 1 << 20,
                 mesh_search_mv_diff_threshold: -1,
                 mesh_patterns: [
-                    MeshPattern { range: 256, interval: 1 },
-                    MeshPattern { range: 256, interval: 1 },
+                    MeshPattern {
+                        range: 256,
+                        interval: 1,
+                    },
+                    MeshPattern {
+                        range: 256,
+                        interval: 1,
+                    },
                     MeshPattern::default(),
                     MeshPattern::default(),
                 ],
@@ -232,8 +238,14 @@ impl IbcCtrls {
                 exhaustive_mesh_thresh: 1 << 20,
                 mesh_search_mv_diff_threshold: -1,
                 mesh_patterns: [
-                    MeshPattern { range: 256, interval: 8 },
-                    MeshPattern { range: 64, interval: 1 },
+                    MeshPattern {
+                        range: 256,
+                        interval: 8,
+                    },
+                    MeshPattern {
+                        range: 64,
+                        interval: 1,
+                    },
                     MeshPattern::default(),
                     MeshPattern::default(),
                 ],
@@ -250,8 +262,14 @@ impl IbcCtrls {
                 exhaustive_mesh_thresh: 1 << 20,
                 mesh_search_mv_diff_threshold: 0,
                 mesh_patterns: [
-                    MeshPattern { range: 256, interval: 8 },
-                    MeshPattern { range: 64, interval: 1 },
+                    MeshPattern {
+                        range: 256,
+                        interval: 8,
+                    },
+                    MeshPattern {
+                        range: 64,
+                        interval: 1,
+                    },
                     MeshPattern::default(),
                     MeshPattern::default(),
                 ],
@@ -268,8 +286,14 @@ impl IbcCtrls {
                 exhaustive_mesh_thresh: 1 << 24,
                 mesh_search_mv_diff_threshold: 0,
                 mesh_patterns: [
-                    MeshPattern { range: 256, interval: 8 },
-                    MeshPattern { range: 32, interval: 1 },
+                    MeshPattern {
+                        range: 256,
+                        interval: 8,
+                    },
+                    MeshPattern {
+                        range: 32,
+                        interval: 1,
+                    },
                     MeshPattern::default(),
                     MeshPattern::default(),
                 ],
@@ -286,8 +310,14 @@ impl IbcCtrls {
                 exhaustive_mesh_thresh: 1 << 24,
                 mesh_search_mv_diff_threshold: 0,
                 mesh_patterns: [
-                    MeshPattern { range: 256, interval: 8 },
-                    MeshPattern { range: 32, interval: 1 },
+                    MeshPattern {
+                        range: 256,
+                        interval: 8,
+                    },
+                    MeshPattern {
+                        range: 32,
+                        interval: 1,
+                    },
                     MeshPattern::default(),
                     MeshPattern::default(),
                 ],
@@ -429,8 +459,16 @@ pub fn scale_mesh_patterns_by_qp(ctrls: &mut IbcCtrls, scs_mesh_qp_scaling: bool
 /// C `is_chroma_reference` (common_utils.h:315-319). `bw`/`bh` are MI-unit
 /// block dims (`mi_size_wide`/`mi_size_high`, NOT pixels).
 #[inline]
-pub fn is_chroma_reference(mi_row: i32, mi_col: i32, bw_mi: i32, bh_mi: i32, ss_x: i32, ss_y: i32) -> bool {
-    ((mi_row & 1) != 0 || (bh_mi & 1) == 0 || ss_y == 0) && ((mi_col & 1) != 0 || (bw_mi & 1) == 0 || ss_x == 0)
+pub fn is_chroma_reference(
+    mi_row: i32,
+    mi_col: i32,
+    bw_mi: i32,
+    bh_mi: i32,
+    ss_x: i32,
+    ss_y: i32,
+) -> bool {
+    ((mi_row & 1) != 0 || (bh_mi & 1) == 0 || ss_y == 0)
+        && ((mi_col & 1) != 0 || (bw_mi & 1) == 0 || ss_x == 0)
 }
 
 /// C `INTRABC_DELAY_PIXELS` / `INTRABC_DELAY_SB64` (inter_prediction.h:
@@ -534,7 +572,9 @@ pub fn is_dv_valid(
 
     let gradient = 1 + INTRABC_DELAY_SB64 + i32::from(sb_size_px > 64);
     let wf_offset = gradient * (active_sb_row - src_sb_row);
-    if src_sb_row > active_sb_row || src_sb64_col >= active_sb64_col - INTRABC_DELAY_SB64 + wf_offset {
+    if src_sb_row > active_sb_row
+        || src_sb64_col >= active_sb64_col - INTRABC_DELAY_SB64 + wf_offset
+    {
         return false;
     }
 
@@ -573,7 +613,10 @@ pub fn find_ref_dv(tile: TileMiBounds, mib_size: i32, mi_row: i32) -> Mv {
     };
     y *= 8;
     x *= 8;
-    Mv { x: x as i16, y: y as i16 }
+    Mv {
+        x: x as i16,
+        y: y as i16,
+    }
 }
 
 /// The `dv_ref` composition inlined at the top of `intra_bc_search`
@@ -592,10 +635,28 @@ pub fn find_ref_dv(tile: TileMiBounds, mib_size: i32, mi_row: i32) -> Mv {
 /// blocks always start this way (empty ref_mv_stack), so `find_ref_dv`'s
 /// deterministic spec fallback is what actually fires for the interesting
 /// (currently reachable) case.
-pub fn resolve_dv_ref(nearestmv: Mv, nearmv: Mv, tile: TileMiBounds, mib_size: i32, mi_row: i32) -> Mv {
-    let nearestmv = if nearestmv == Mv::INVALID { Mv::ZERO } else { nearestmv };
-    let nearmv = if nearmv == Mv::INVALID { Mv::ZERO } else { nearmv };
-    let dv_ref = if nearestmv == Mv::ZERO { nearmv } else { nearestmv };
+pub fn resolve_dv_ref(
+    nearestmv: Mv,
+    nearmv: Mv,
+    tile: TileMiBounds,
+    mib_size: i32,
+    mi_row: i32,
+) -> Mv {
+    let nearestmv = if nearestmv == Mv::INVALID {
+        Mv::ZERO
+    } else {
+        nearestmv
+    };
+    let nearmv = if nearmv == Mv::INVALID {
+        Mv::ZERO
+    } else {
+        nearmv
+    };
+    let dv_ref = if nearestmv == Mv::ZERO {
+        nearmv
+    } else {
+        nearestmv
+    };
     if dv_ref == Mv::ZERO {
         find_ref_dv(tile, mib_size, mi_row)
     } else {
@@ -664,7 +725,10 @@ pub fn set_mv_search_range(mv_limits: &mut FullMvLimits, mv: Mv) {
 /// `mv_limits`.
 #[inline]
 fn is_mv_in(mv_limits: FullMvLimits, x: i32, y: i32) -> bool {
-    x >= mv_limits.col_min && x <= mv_limits.col_max && y >= mv_limits.row_min && y <= mv_limits.row_max
+    x >= mv_limits.col_min
+        && x <= mv_limits.col_max
+        && y >= mv_limits.row_min
+        && y <= mv_limits.row_max
 }
 
 /// C `mv_check_bounds` (mode_decision.c:2964-2967). `dv` is EIGHTH-PEL
@@ -675,7 +739,10 @@ fn is_mv_in(mv_limits: FullMvLimits, x: i32, y: i32) -> bool {
 pub fn mv_check_bounds(mv_limits: FullMvLimits, dv: Mv) -> bool {
     let y8 = i32::from(dv.y) >> 3;
     let x8 = i32::from(dv.x) >> 3;
-    y8 < mv_limits.row_min || y8 > mv_limits.row_max || x8 < mv_limits.col_min || x8 > mv_limits.col_max
+    y8 < mv_limits.row_min
+        || y8 > mv_limits.row_max
+        || x8 < mv_limits.col_min
+        || x8 > mv_limits.col_max
 }
 
 /// C `svt_av1_get_mv_joint` (rd_cost.c:45-51) as a 0..=3 table index
@@ -742,7 +809,9 @@ pub fn build_nmv_component_cost_table(
     comp: &svtav1_entropy::mv_coding::NmvComponent,
     precision: MvSubpelPrecision,
 ) -> MvComponentCost {
-    use svtav1_entropy::mv_coding::{CLASS0_BITS, CLASS0_SIZE, MV_CLASSES, MV_FP_SIZE, MV_OFFSET_BITS};
+    use svtav1_entropy::mv_coding::{
+        CLASS0_BITS, CLASS0_SIZE, MV_CLASSES, MV_FP_SIZE, MV_OFFSET_BITS,
+    };
 
     let mut sign_cost = [0i32; 2];
     crate::quant::syntax_rate_from_cdf(&mut sign_cost, &comp.sign_cdf);
@@ -850,7 +919,8 @@ pub fn mv_err_cost(mv: Mv, ref_mv: Mv, tables: &MvCostTables, error_per_bit: i32
     let cost = i64::from(mv_table_cost(diff_x, diff_y, tables)) * i64::from(error_per_bit);
     round_power_of_two_64(
         cost,
-        7 /* RDDIV_BITS */ + 9 /* AV1_PROB_COST_SHIFT */ - RD_EPB_SHIFT + PIXEL_TRANSFORM_ERROR_SCALE,
+        7 /* RDDIV_BITS */ + 9 /* AV1_PROB_COST_SHIFT */ - RD_EPB_SHIFT
+            + PIXEL_TRANSFORM_ERROR_SCALE,
     ) as i32
 }
 
@@ -877,7 +947,15 @@ pub fn mv_err_cost_light(mv: Mv, ref_mv: Mv) -> i32 {
 /// (a `ref_shims.c` wrapper, matching this project's established pattern
 /// for hard-to-reach C internals, e.g. `palette.rs`'s six `static`-only
 /// functions).
-pub fn mvsad_err_cost(mv_x: i32, mv_y: i32, ref_mv_x: i32, ref_mv_y: i32, sad_per_bit: i32, approx_inter_rate: bool, tables: &MvCostTables) -> i32 {
+pub fn mvsad_err_cost(
+    mv_x: i32,
+    mv_y: i32,
+    ref_mv_x: i32,
+    ref_mv_y: i32,
+    sad_per_bit: i32,
+    approx_inter_rate: bool,
+    tables: &MvCostTables,
+) -> i32 {
     if approx_inter_rate {
         return mvsad_err_cost_light(mv_x, mv_y, ref_mv_x, ref_mv_y);
     }
@@ -889,7 +967,10 @@ pub fn mvsad_err_cost(mv_x: i32, mv_y: i32, ref_mv_x: i32, ref_mv_y: i32, sad_pe
     // tables and per-bit scalars are never negative), so plain i32
     // `wrapping_mul` reproduces the C `unsigned` multiply bit-for-bit
     // without needing an actual unsigned type here.
-    round_power_of_two(cost.wrapping_mul(sad_per_bit), 9 /* AV1_PROB_COST_SHIFT */)
+    round_power_of_two(
+        cost.wrapping_mul(sad_per_bit),
+        9, /* AV1_PROB_COST_SHIFT */
+    )
 }
 
 /// C `mvsad_err_cost_light` (av1me.c:134-139, `static`).
@@ -943,7 +1024,14 @@ fn window(pic: &[u8], stride: usize, block_origin: (i32, i32), rel_x: i32, rel_y
 /// This is the CROSS-STAGE metric of the whole DV search (hash candidate
 /// costing, diamond-vs-diamond, diamond-vs-mesh, refine adoption — map
 /// §A.3 fact 7); the RTCD SIMD variants are bit-identical.
-pub fn variance_of_diff(a: &[u8], a_stride: usize, b: &[u8], b_stride: usize, w: usize, h: usize) -> u32 {
+pub fn variance_of_diff(
+    a: &[u8],
+    a_stride: usize,
+    b: &[u8],
+    b_stride: usize,
+    w: usize,
+    h: usize,
+) -> u32 {
     let mut sum: i32 = 0;
     let mut sse: u32 = 0;
     for row in 0..h {
@@ -1029,7 +1117,11 @@ pub struct SearchSiteConfig {
 
 pub fn init_search_sites(stride: usize) -> SearchSiteConfig {
     let mut sites = Vec::with_capacity(89);
-    sites.push(SearchSite { mv_x: 0, mv_y: 0, offset: 0 });
+    sites.push(SearchSite {
+        mv_x: 0,
+        mv_y: 0,
+        offset: 0,
+    });
     let mut len = MAX_FIRST_STEP;
     while len > 0 {
         let ss_mvs: [(i32, i32); 8] = [
@@ -1051,7 +1143,10 @@ pub fn init_search_sites(stride: usize) -> SearchSiteConfig {
         }
         len /= 2;
     }
-    SearchSiteConfig { sites, searches_per_step: 8 }
+    SearchSiteConfig {
+        sites,
+        searches_per_step: 8,
+    }
 }
 
 /// C `svt_av1_diamond_search_sad_c` (av1me.c:291-420, EXPORTED symbol --
@@ -1111,8 +1206,23 @@ pub fn diamond_search_sad(
     let tot_steps = (cfg.sites.len() / cfg.searches_per_step) as i32 - search_param;
 
     let what = window(pic, stride, block_origin, 0, 0);
-    let mut bestsad = svtav1_dsp::sad::sad(what, stride, window(pic, stride, block_origin, best_x, best_y), stride, bw, bh) as i32
-        + mvsad_err_cost(best_x, best_y, fcenter_x, fcenter_y, sad_per_bit, approx_inter_rate, tables);
+    let mut bestsad = svtav1_dsp::sad::sad(
+        what,
+        stride,
+        window(pic, stride, block_origin, best_x, best_y),
+        stride,
+        bw,
+        bh,
+    ) as i32
+        + mvsad_err_cost(
+            best_x,
+            best_y,
+            fcenter_x,
+            fcenter_y,
+            sad_per_bit,
+            approx_inter_rate,
+            tables,
+        );
 
     let mut i = 1usize;
     let mut best_site = 0usize;
@@ -1129,9 +1239,24 @@ pub fn diamond_search_sad(
                 for t in 0..4 {
                     let this_x = best_x + ss[i + t].mv_x;
                     let this_y = best_y + ss[i + t].mv_y;
-                    let mut sad = svtav1_dsp::sad::sad(what, stride, window(pic, stride, block_origin, this_x, this_y), stride, bw, bh) as i32;
+                    let mut sad = svtav1_dsp::sad::sad(
+                        what,
+                        stride,
+                        window(pic, stride, block_origin, this_x, this_y),
+                        stride,
+                        bw,
+                        bh,
+                    ) as i32;
                     if sad < bestsad {
-                        sad += mvsad_err_cost(this_x, this_y, fcenter_x, fcenter_y, sad_per_bit, approx_inter_rate, tables);
+                        sad += mvsad_err_cost(
+                            this_x,
+                            this_y,
+                            fcenter_x,
+                            fcenter_y,
+                            sad_per_bit,
+                            approx_inter_rate,
+                            tables,
+                        );
                         if sad < bestsad {
                             bestsad = sad;
                             best_site = i + t;
@@ -1145,9 +1270,24 @@ pub fn diamond_search_sad(
                 let this_x = best_x + ss[i].mv_x;
                 let this_y = best_y + ss[i].mv_y;
                 if is_mv_in(mv_limits, this_x, this_y) {
-                    let mut sad = svtav1_dsp::sad::sad(what, stride, window(pic, stride, block_origin, this_x, this_y), stride, bw, bh) as i32;
+                    let mut sad = svtav1_dsp::sad::sad(
+                        what,
+                        stride,
+                        window(pic, stride, block_origin, this_x, this_y),
+                        stride,
+                        bw,
+                        bh,
+                    ) as i32;
                     if sad < bestsad {
-                        sad += mvsad_err_cost(this_x, this_y, fcenter_x, fcenter_y, sad_per_bit, approx_inter_rate, tables);
+                        sad += mvsad_err_cost(
+                            this_x,
+                            this_y,
+                            fcenter_x,
+                            fcenter_y,
+                            sad_per_bit,
+                            approx_inter_rate,
+                            tables,
+                        );
                         if sad < bestsad {
                             bestsad = sad;
                             best_site = i;
@@ -1198,8 +1338,23 @@ pub fn refining_search_sad(
     let mut x = start_x;
     let mut y = start_y;
     let what = window(pic, stride, block_origin, 0, 0);
-    let mut best_sad = svtav1_dsp::sad::sad(what, stride, window(pic, stride, block_origin, x, y), stride, bw, bh) as i32
-        + mvsad_err_cost(x, y, fcenter_x, fcenter_y, sad_per_bit, approx_inter_rate, tables);
+    let mut best_sad = svtav1_dsp::sad::sad(
+        what,
+        stride,
+        window(pic, stride, block_origin, x, y),
+        stride,
+        bw,
+        bh,
+    ) as i32
+        + mvsad_err_cost(
+            x,
+            y,
+            fcenter_x,
+            fcenter_y,
+            sad_per_bit,
+            approx_inter_rate,
+            tables,
+        );
 
     for _ in 0..search_range {
         let mut best_site: Option<usize> = None;
@@ -1207,9 +1362,24 @@ pub fn refining_search_sad(
             let nx = x + dx;
             let ny = y + dy;
             if is_mv_in(mv_limits, nx, ny) {
-                let mut sad = svtav1_dsp::sad::sad(what, stride, window(pic, stride, block_origin, nx, ny), stride, bw, bh) as i32;
+                let mut sad = svtav1_dsp::sad::sad(
+                    what,
+                    stride,
+                    window(pic, stride, block_origin, nx, ny),
+                    stride,
+                    bw,
+                    bh,
+                ) as i32;
                 if sad < best_sad {
-                    sad += mvsad_err_cost(nx, ny, fcenter_x, fcenter_y, sad_per_bit, approx_inter_rate, tables);
+                    sad += mvsad_err_cost(
+                        nx,
+                        ny,
+                        fcenter_x,
+                        fcenter_y,
+                        sad_per_bit,
+                        approx_inter_rate,
+                        tables,
+                    );
                     if sad < best_sad {
                         best_sad = sad;
                         best_site = Some(j);
@@ -1283,8 +1453,18 @@ pub fn full_pixel_diamond(
     // compare, but the INT_MAX "not found" sentinel is passed through.
     let mut bestsme = if sad0 < i32::MAX {
         get_mvpred_var(
-            pic, stride, block_origin, bw, bh, best_x, best_y, center_eighth_pel, tables, error_per_bit,
-            approx_inter_rate, true,
+            pic,
+            stride,
+            block_origin,
+            bw,
+            bh,
+            best_x,
+            best_y,
+            center_eighth_pel,
+            tables,
+            error_per_bit,
+            approx_inter_rate,
+            true,
         )
     } else {
         sad0
@@ -1324,8 +1504,18 @@ pub fn full_pixel_diamond(
             num00 = this_num00;
             let thissme = if cand_sad < i32::MAX {
                 get_mvpred_var(
-                    pic, stride, block_origin, bw, bh, cand_x, cand_y, center_eighth_pel, tables,
-                    error_per_bit, approx_inter_rate, true,
+                    pic,
+                    stride,
+                    block_origin,
+                    bw,
+                    bh,
+                    cand_x,
+                    cand_y,
+                    center_eighth_pel,
+                    tables,
+                    error_per_bit,
+                    approx_inter_rate,
+                    true,
                 )
             } else {
                 cand_sad
@@ -1360,8 +1550,18 @@ pub fn full_pixel_diamond(
         );
         let thissme = if rsad < i32::MAX {
             get_mvpred_var(
-                pic, stride, block_origin, bw, bh, rx, ry, center_eighth_pel, tables, error_per_bit,
-                approx_inter_rate, true,
+                pic,
+                stride,
+                block_origin,
+                bw,
+                bh,
+                rx,
+                ry,
+                center_eighth_pel,
+                tables,
+                error_per_bit,
+                approx_inter_rate,
+                true,
             )
         } else {
             rsad
@@ -1423,11 +1623,30 @@ pub fn exhaustive_mesh_search(
     let col_step = if step > 1 { step } else { 4 };
     let what = window(pic, stride, block_origin, 0, 0);
 
-    let fcx = center_full_pel.0.clamp(mv_limits.col_min, mv_limits.col_max);
-    let fcy = center_full_pel.1.clamp(mv_limits.row_min, mv_limits.row_max);
+    let fcx = center_full_pel
+        .0
+        .clamp(mv_limits.col_min, mv_limits.col_max);
+    let fcy = center_full_pel
+        .1
+        .clamp(mv_limits.row_min, mv_limits.row_max);
     let mut best_mv = (fcx, fcy);
-    let mut best_sad = svtav1_dsp::sad::sad(what, stride, window(pic, stride, block_origin, fcx, fcy), stride, bw, bh) as i32
-        + mvsad_err_cost(fcx, fcy, ref_mv_full.0, ref_mv_full.1, sad_per_bit, approx_inter_rate, tables);
+    let mut best_sad = svtav1_dsp::sad::sad(
+        what,
+        stride,
+        window(pic, stride, block_origin, fcx, fcy),
+        stride,
+        bw,
+        bh,
+    ) as i32
+        + mvsad_err_cost(
+            fcx,
+            fcy,
+            ref_mv_full.0,
+            ref_mv_full.1,
+            sad_per_bit,
+            approx_inter_rate,
+            tables,
+        );
 
     let start_row = (-range).max(mv_limits.row_min - fcy);
     let start_col = (-range).max(mv_limits.col_min - fcx);
@@ -1448,9 +1667,25 @@ pub fn exhaustive_mesh_search(
             for i in 0..n {
                 let mx = fcx + c + i;
                 let my = fcy + r;
-                let sad = svtav1_dsp::sad::sad(what, stride, window(pic, stride, block_origin, mx, my), stride, bw, bh) as i32;
+                let sad = svtav1_dsp::sad::sad(
+                    what,
+                    stride,
+                    window(pic, stride, block_origin, mx, my),
+                    stride,
+                    bw,
+                    bh,
+                ) as i32;
                 if sad < best_sad {
-                    let sad2 = sad + mvsad_err_cost(mx, my, ref_mv_full.0, ref_mv_full.1, sad_per_bit, approx_inter_rate, tables);
+                    let sad2 = sad
+                        + mvsad_err_cost(
+                            mx,
+                            my,
+                            ref_mv_full.0,
+                            ref_mv_full.1,
+                            sad_per_bit,
+                            approx_inter_rate,
+                            tables,
+                        );
                     if sad2 < best_sad {
                         best_sad = sad2;
                         best_mv = (mx, my);
@@ -1499,7 +1734,10 @@ pub fn intrabc_full_pixel_exhaustive(
     error_per_bit: i32,
     approx_inter_rate: bool,
 ) -> Option<((i32, i32), i32)> {
-    let ref_mv_full = (i32::from(ref_mv_eighth_pel.x) >> 3, i32::from(ref_mv_eighth_pel.y) >> 3);
+    let ref_mv_full = (
+        i32::from(ref_mv_eighth_pel.x) >> 3,
+        i32::from(ref_mv_eighth_pel.y) >> 3,
+    );
 
     let mut range = ctrls.mesh_patterns[0].range;
     let interval0 = ctrls.mesh_patterns[0].interval;
@@ -1513,8 +1751,19 @@ pub fn intrabc_full_pixel_exhaustive(
     let interval = interval0.max(range / base_interval_div);
 
     let (mut search_mv, mut best_cost) = exhaustive_mesh_search(
-        pic, stride, block_origin, bw, bh, ref_mv_full, range, interval, sad_per_bit, center_full_pel, mv_limits,
-        tables, approx_inter_rate,
+        pic,
+        stride,
+        block_origin,
+        bw,
+        bh,
+        ref_mv_full,
+        range,
+        interval,
+        sad_per_bit,
+        center_full_pel,
+        mv_limits,
+        tables,
+        approx_inter_rate,
     );
 
     // C's own `interval` local is never re-read after this gate (each
@@ -1527,8 +1776,19 @@ pub fn intrabc_full_pixel_exhaustive(
                 break;
             }
             let (mv2, cost2) = exhaustive_mesh_search(
-                pic, stride, block_origin, bw, bh, ref_mv_full, pattern.range, pattern.interval, sad_per_bit,
-                search_mv, mv_limits, tables, approx_inter_rate,
+                pic,
+                stride,
+                block_origin,
+                bw,
+                bh,
+                ref_mv_full,
+                pattern.range,
+                pattern.interval,
+                sad_per_bit,
+                search_mv,
+                mv_limits,
+                tables,
+                approx_inter_rate,
             );
             search_mv = mv2;
             best_cost = cost2;
@@ -1540,8 +1800,18 @@ pub fn intrabc_full_pixel_exhaustive(
 
     if best_cost < i32::MAX {
         best_cost = get_mvpred_var(
-            pic, stride, block_origin, bw, bh, search_mv.0, search_mv.1, ref_mv_eighth_pel, tables, error_per_bit,
-            approx_inter_rate, true,
+            pic,
+            stride,
+            block_origin,
+            bw,
+            bh,
+            search_mv.0,
+            search_mv.1,
+            ref_mv_eighth_pel,
+            tables,
+            error_per_bit,
+            approx_inter_rate,
+            true,
         );
     }
     Some((search_mv, best_cost))
@@ -1623,8 +1893,10 @@ pub fn full_pixel_search(
     // against the unclamped seed — divergent whenever the direction box
     // excludes the dv_ref (e.g. LEFT direction at an SB's first column,
     // where col_max = -bw < 0 = dv_ref.x >> 3).
-    let mvp_full_x = (i32::from(ref_mv_eighth_pel.x) >> 3).clamp(mv_limits.col_min, mv_limits.col_max);
-    let mvp_full_y = (i32::from(ref_mv_eighth_pel.y) >> 3).clamp(mv_limits.row_min, mv_limits.row_max);
+    let mvp_full_x =
+        (i32::from(ref_mv_eighth_pel.x) >> 3).clamp(mv_limits.col_min, mv_limits.col_max);
+    let mvp_full_y =
+        (i32::from(ref_mv_eighth_pel.y) >> 3).clamp(mv_limits.row_min, mv_limits.row_max);
     let full_pel_mv_diff = (mvp_full_x - best_x).abs().max((mvp_full_y - best_y).abs());
     if full_pel_mv_diff <= ctrls.mesh_search_mv_diff_threshold {
         run_mesh_search = false;
@@ -1632,8 +1904,19 @@ pub fn full_pixel_search(
 
     if run_mesh_search {
         if let Some(((ex_x, ex_y), var_ex)) = intrabc_full_pixel_exhaustive(
-            pic, stride, block_origin, bw, bh, ctrls, (best_x, best_y), sad_per_bit, ref_mv_eighth_pel, mv_limits,
-            tables, error_per_bit, approx_inter_rate,
+            pic,
+            stride,
+            block_origin,
+            bw,
+            bh,
+            ctrls,
+            (best_x, best_y),
+            sad_per_bit,
+            ref_mv_eighth_pel,
+            mv_limits,
+            tables,
+            error_per_bit,
+            approx_inter_rate,
         ) {
             if var_ex < var {
                 best_x = ex_x;
@@ -1725,7 +2008,18 @@ pub fn hash_search_best_in_bucket(
             x: (8 * (entry.x - x_pos)) as i16,
             y: (8 * (entry.y - y_pos)) as i16,
         };
-        if !is_dv_valid(dv, mi_row, mi_col, bw, bh, bw_mi, bh_mi, tile, sb_size_log2_mi, sb_size_px) {
+        if !is_dv_valid(
+            dv,
+            mi_row,
+            mi_col,
+            bw,
+            bh,
+            bw_mi,
+            bh_mi,
+            tile,
+            sb_size_log2_mi,
+            sb_size_px,
+        ) {
             continue;
         }
         let hash_x = entry.x - x_pos;
@@ -1734,8 +2028,18 @@ pub fn hash_search_best_in_bucket(
             continue;
         }
         let cost = get_mvpred_var(
-            pic, stride, block_origin, bw as usize, bh as usize, hash_x, hash_y, ref_mv_eighth_pel, tables,
-            error_per_bit, approx_inter_rate, true,
+            pic,
+            stride,
+            block_origin,
+            bw as usize,
+            bh as usize,
+            hash_x,
+            hash_y,
+            ref_mv_eighth_pel,
+            tables,
+            error_per_bit,
+            approx_inter_rate,
+            true,
         );
         if cost < best_cost {
             best_cost = cost;
@@ -1766,7 +2070,14 @@ pub enum IntrabcMotionDirection {
 /// `assert_release` checks are a real (if soft/logging-only) C invariant.
 /// `mi_width`/`mi_height` are MI-unit block dims (`mi_size_wide`/
 /// `mi_size_high`), NOT the pixel dims [`direction_mv_limits`] takes.
-pub fn frame_mv_limits(mi_row: i32, mi_col: i32, mi_width: i32, mi_height: i32, mi_rows: i32, mi_cols: i32) -> FullMvLimits {
+pub fn frame_mv_limits(
+    mi_row: i32,
+    mi_col: i32,
+    mi_width: i32,
+    mi_height: i32,
+    mi_rows: i32,
+    mi_cols: i32,
+) -> FullMvLimits {
     FullMvLimits {
         row_min: -(((mi_row + mi_height) * 4) + AOM_INTERP_EXTEND),
         col_min: -(((mi_col + mi_width) * 4) + AOM_INTERP_EXTEND),
@@ -1869,7 +2180,16 @@ pub fn intra_bc_search(
     let hash_eligible = hash_search_eligible(bw, bh, ctrls.max_block_size_hash);
 
     for (dir_idx, &dir) in directions.iter().enumerate() {
-        let mut mv_limits = direction_mv_limits(dir, tile, mi_row, mi_col, bw, bh, sb_mi_size, sb_size_log2_mi);
+        let mut mv_limits = direction_mv_limits(
+            dir,
+            tile,
+            mi_row,
+            mi_col,
+            bw,
+            bh,
+            sb_mi_size,
+            sb_size_log2_mi,
+        );
         // C `assert_release`: the direction bound must be a subset of the
         // whole-frame bound (soft/logging-only in C, a hard debug_assert
         // here).
@@ -1932,9 +2252,23 @@ pub fn intra_bc_search(
                 tables,
                 approx_inter_rate,
             );
-            let dv = Mv { x: (bx * 8) as i16, y: (by * 8) as i16 };
+            let dv = Mv {
+                x: (bx * 8) as i16,
+                y: (by * 8) as i16,
+            };
             if !mv_check_bounds(mv_limits, dv)
-                && is_dv_valid(dv, mi_row, mi_col, bw, bh, bw_mi, bh_mi, tile, sb_size_log2_mi, sb_size_px)
+                && is_dv_valid(
+                    dv,
+                    mi_row,
+                    mi_col,
+                    bw,
+                    bh,
+                    bw_mi,
+                    bh_mi,
+                    tile,
+                    sb_size_log2_mi,
+                    sb_size_px,
+                )
             {
                 dv_cand.push(dv);
             }
@@ -1962,7 +2296,10 @@ pub const MV_COST_WEIGHT_SUB: i32 = 120;
 pub fn mv_bit_cost(mv: Mv, ref_mv: Mv, tables: &MvCostTables, weight: i32) -> i32 {
     let diff_x = i32::from(mv.x) - i32::from(ref_mv.x);
     let diff_y = i32::from(mv.y) - i32::from(ref_mv.y);
-    round_power_of_two(mv_table_cost(diff_x, diff_y, tables) * weight, 7 /* RDDIV_BITS */)
+    round_power_of_two(
+        mv_table_cost(diff_x, diff_y, tables) * weight,
+        7, /* RDDIV_BITS */
+    )
 }
 
 /// C `svt_av1_mv_bit_cost_light` (rd_cost.c:59-65) -- textually identical
@@ -2037,7 +2374,11 @@ pub fn intrabc_fast_cost_rates(
 /// enc_mode_config.c:7888/8005/8121 -- a plain field copy, not a function,
 /// so not translated as one here) MD's own candidate-injection gate.
 #[inline]
-pub fn allow_intrabc_frame(is_i_slice: bool, allow_screen_content_tools: bool, allow_intrabc: bool) -> bool {
+pub fn allow_intrabc_frame(
+    is_i_slice: bool,
+    allow_screen_content_tools: bool,
+    allow_intrabc: bool,
+) -> bool {
     is_i_slice && allow_screen_content_tools && allow_intrabc
 }
 
@@ -2097,7 +2438,14 @@ pub fn do_intra_bc_gate(
     if ctrls.palette_hint && !eval_intrabc_after_palette(palette_ran, palette_candidates_injected) {
         return false;
     }
-    parent_gate_allows_intrabc(is_part_n, sq_size, ctrls.b4_parent_gating, ctrls.nsq_parent_gating, parent_n0, sibling_n0)
+    parent_gate_allows_intrabc(
+        is_part_n,
+        sq_size,
+        ctrls.b4_parent_gating,
+        ctrls.nsq_parent_gating,
+        parent_n0,
+        sibling_n0,
+    )
 }
 
 /// C `ModeDecisionCandidate` fields `inject_intra_bc_candidates`
@@ -2192,7 +2540,14 @@ pub use svtav1_entropy::default_cdfs::INTRABC_CDF as INTRABC_DEFAULT_CDF;
 /// fractional-pel bits, spec 5.11.35). `dv_ref` is `blk_ptr->predmv[0]`
 /// (== [`IbcCandidate::pred_dv`]); `dv` is `mbmi->block_mi.mv[INTRA_FRAME]`
 /// (== [`IbcCandidate::dv`]).
-pub fn write_intrabc_info(w: &mut AomWriter, intrabc_cdf: &mut [u16], ndvc: &mut NmvContext, use_intrabc: bool, dv: Mv, dv_ref: Mv) {
+pub fn write_intrabc_info(
+    w: &mut AomWriter,
+    intrabc_cdf: &mut [u16],
+    ndvc: &mut NmvContext,
+    use_intrabc: bool,
+    dv: Mv,
+    dv_ref: Mv,
+) {
     w.write_symbol(usize::from(use_intrabc), intrabc_cdf, 2);
     if use_intrabc {
         let diff_row = i32::from(dv.y) - i32::from(dv_ref.y);
@@ -2272,7 +2627,12 @@ mod tests {
     use super::*;
 
     fn tile_full_frame(mi_cols: i32, mi_rows: i32) -> TileMiBounds {
-        TileMiBounds { mi_col_start: 0, mi_col_end: mi_cols, mi_row_start: 0, mi_row_end: mi_rows }
+        TileMiBounds {
+            mi_col_start: 0,
+            mi_col_end: mi_cols,
+            mi_row_start: 0,
+            mi_row_end: mi_rows,
+        }
     }
 
     #[test]
@@ -2327,7 +2687,13 @@ mod tests {
         let tile = tile_full_frame(32, 32);
         // Room above (mi_row - mib_size >= tile_row_start): vertical-only.
         let dv_below = find_ref_dv(tile, 16, 20);
-        assert_eq!(dv_below, Mv { x: 0, y: -16 * 4 * 8 });
+        assert_eq!(
+            dv_below,
+            Mv {
+                x: 0,
+                y: -16 * 4 * 8
+            }
+        );
         // No room above: horizontal-only, delayed by INTRABC_DELAY_PIXELS.
         let dv_top = find_ref_dv(tile, 16, 0);
         assert_eq!(
@@ -2431,13 +2797,41 @@ mod tests {
     #[test]
     fn parent_gate_b4_and_nsq() {
         // PART_N, sq_size=4, gating on, parent tested but didn't use IBC.
-        assert!(!parent_gate_allows_intrabc(true, 4, true, false, (true, false), (false, false)));
+        assert!(!parent_gate_allows_intrabc(
+            true,
+            4,
+            true,
+            false,
+            (true, false),
+            (false, false)
+        ));
         // Same but parent DID use IBC -> allowed.
-        assert!(parent_gate_allows_intrabc(true, 4, true, false, (true, true), (false, false)));
+        assert!(parent_gate_allows_intrabc(
+            true,
+            4,
+            true,
+            false,
+            (true, true),
+            (false, false)
+        ));
         // sq_size != 4 -> b4 gate never fires regardless of parent state.
-        assert!(parent_gate_allows_intrabc(true, 8, true, false, (true, false), (false, false)));
+        assert!(parent_gate_allows_intrabc(
+            true,
+            8,
+            true,
+            false,
+            (true, false),
+            (false, false)
+        ));
         // NSQ branch mirrors the same shape via sibling_n0.
-        assert!(!parent_gate_allows_intrabc(false, 8, false, true, (false, false), (true, false)));
+        assert!(!parent_gate_allows_intrabc(
+            false,
+            8,
+            false,
+            true,
+            (false, false),
+            (true, false)
+        ));
     }
 
     #[test]
@@ -2462,8 +2856,14 @@ mod tests {
         assert_eq!(tables.comp_cost[1].cost(0), 0);
         // Cost table lookup clamps symmetrically past MV_MAX (see
         // MvComponentCost's doc PORT-NOTE) rather than panicking.
-        assert_eq!(tables.comp_cost[0].cost(MV_MAX + 10), tables.comp_cost[0].cost(MV_MAX));
-        assert_eq!(tables.comp_cost[0].cost(-MV_MAX - 10), tables.comp_cost[0].cost(-MV_MAX));
+        assert_eq!(
+            tables.comp_cost[0].cost(MV_MAX + 10),
+            tables.comp_cost[0].cost(MV_MAX)
+        );
+        assert_eq!(
+            tables.comp_cost[0].cost(-MV_MAX - 10),
+            tables.comp_cost[0].cost(-MV_MAX)
+        );
     }
 
     #[test]
@@ -2482,13 +2882,23 @@ mod tests {
     fn set_mv_search_range_narrows_only() {
         // C's guards ONLY narrow: a computed bound of +/-MAX_FULL_PEL_VAL
         // (1023) must NOT widen tighter input limits (+/-1000 stays).
-        let mut limits = FullMvLimits { col_min: -1000, col_max: 1000, row_min: -1000, row_max: 1000 };
+        let mut limits = FullMvLimits {
+            col_min: -1000,
+            col_max: 1000,
+            row_min: -1000,
+            row_max: 1000,
+        };
         let mv = Mv { x: 0, y: 0 };
         set_mv_search_range(&mut limits, mv);
         assert_eq!(limits.col_min, -1000);
         assert_eq!(limits.col_max, 1000);
         // Narrower input bound stays narrower (intersection, not overwrite).
-        let mut tight = FullMvLimits { col_min: -5, col_max: 5, row_min: -5, row_max: 5 };
+        let mut tight = FullMvLimits {
+            col_min: -5,
+            col_max: 5,
+            row_min: -5,
+            row_max: 5,
+        };
         set_mv_search_range(&mut tight, mv);
         assert_eq!(tight.col_min, -5);
         assert_eq!(tight.col_max, 5);

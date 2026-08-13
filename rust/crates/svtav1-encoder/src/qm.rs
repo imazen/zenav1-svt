@@ -88,7 +88,11 @@ pub fn still_get_qmlevel(qindex: i32, min: i32, max: i32) -> i32 {
 /// (wt, iwt) slices for (qm level, chroma?, C TxSize index), or None when
 /// the level is identity (15) — callers then use the non-QM kernels.
 /// The C plane class is `c >= 1` — U and V share the chroma tables.
-pub fn qm_slices(level: usize, is_chroma: bool, c_tx: usize) -> Option<(&'static [u8], &'static [u8])> {
+pub fn qm_slices(
+    level: usize,
+    is_chroma: bool,
+    c_tx: usize,
+) -> Option<(&'static [u8], &'static [u8])> {
     if level >= NUM_QM_LEVELS - 1 {
         return None;
     }
@@ -260,9 +264,10 @@ pub fn quantize_fp_hbd_qm(
         let abs_coeff = i64::from((coeff ^ coeff_sign) - coeff_sign);
         if abs_coeff * w >= i64::from(t.dequant[iz]) << (AOM_QM_BITS - (1 + log_scale)) {
             // NO INT16 clamp (highbd path) — C full_loop.c:355-356.
-            let tmp = abs_coeff
-                + i64::from((t.round_fp[iz] + ((1 << log_scale) >> 1)) >> log_scale);
-            let abs_qcoeff = ((tmp * i64::from(t.quant_fp[iz]) * w) >> (shift + AOM_QM_BITS)) as i32;
+            let tmp =
+                abs_coeff + i64::from((t.round_fp[iz] + ((1 << log_scale) >> 1)) >> log_scale);
+            let abs_qcoeff =
+                ((tmp * i64::from(t.quant_fp[iz]) * w) >> (shift + AOM_QM_BITS)) as i32;
             qcoeff[rc] = (abs_qcoeff ^ coeff_sign) - coeff_sign;
             let abs_dq = ((i64::from(abs_qcoeff) * i64::from(dequant)) >> log_scale) as i32;
             dqcoeff[rc] = (abs_dq ^ coeff_sign) - coeff_sign;
@@ -397,4 +402,3 @@ mod tests {
         assert_eq!(&w[..4], &[32, 24, 14, 11]);
     }
 }
-

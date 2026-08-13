@@ -107,7 +107,11 @@ pub fn get_mv_class(z: i32) -> (u8, i32) {
         10
     } else {
         let k = (z >> 3) as u32;
-        if k == 0 { 0 } else { (31 - k.leading_zeros()) as u8 }
+        if k == 0 {
+            0
+        } else {
+            (31 - k.leading_zeros()) as u8
+        }
     };
     // mv_class_base(c) = c ? (CLASS0_SIZE << (c + 2)) : 0
     let base = if class != 0 {
@@ -246,7 +250,11 @@ fn encode_mv_component(
     // Fractional bits
     if (precision as i32) > (MvSubpelPrecision::None as i32) {
         if mv_class == 0 {
-            w.write_symbol(fr as usize, &mut mvcomp.class0_fp_cdf[d as usize], MV_FP_SIZE);
+            w.write_symbol(
+                fr as usize,
+                &mut mvcomp.class0_fp_cdf[d as usize],
+                MV_FP_SIZE,
+            );
         } else {
             w.write_symbol(fr as usize, &mut mvcomp.fp_cdf, MV_FP_SIZE);
         }

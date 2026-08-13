@@ -58,11 +58,7 @@ pub fn qzbin_factor(qindex: u8, dc_quant_qtx: i32, bd: u8) -> i32 {
         10 => 592,
         _ => 2368,
     };
-    if dc_quant_qtx < th {
-        84
-    } else {
-        80
-    }
+    if dc_quant_qtx < th { 84 } else { 80 }
 }
 
 /// Inverse-transform range check bounds (C check_range/HIGHBD_WRAPLOW,

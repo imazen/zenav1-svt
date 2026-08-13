@@ -510,9 +510,7 @@ fn compute_cdef_dist_16bit_matches_c() {
                 *v = (rng.next() % 1024) as u16;
             }
             let count = 1 + rng.range(16) as usize;
-            let dlist: Vec<(u8, u8)> = (0..count)
-                .map(|i| ((i / 4) as u8, (i % 4) as u8))
-                .collect();
+            let dlist: Vec<(u8, u8)> = (0..count).map(|i| ((i / 4) as u8, (i % 4) as u8)).collect();
             let coeff_shift = if round % 4 == 3 { 0 } else { 2 };
             let sub = if bsize == cdef::BLOCK_4X4 {
                 1
@@ -573,9 +571,7 @@ fn compute_cdef_dist_8bit_matches_c() {
                 *v = rng.byte();
             }
             let count = 1 + rng.range(16) as usize;
-            let dlist: Vec<(u8, u8)> = (0..count)
-                .map(|i| ((i / 4) as u8, (i % 4) as u8))
-                .collect();
+            let dlist: Vec<(u8, u8)> = (0..count).map(|i| ((i / 4) as u8, (i % 4) as u8)).collect();
             let sub = if bsize == cdef::BLOCK_4X4 {
                 1
             } else {
@@ -593,8 +589,9 @@ fn compute_cdef_dist_8bit_matches_c() {
                 0,
                 sub as usize,
             );
-            let theirs =
-                cref::compute_cdef_dist_8bit(&plane, plane_off, plane_w, &packed, &dlist, bsize, 0, sub);
+            let theirs = cref::compute_cdef_dist_8bit(
+                &plane, plane_off, plane_w, &packed, &dlist, bsize, 0, sub,
+            );
             assert_eq!(
                 ours, theirs,
                 "cdef dist 8bit diverges: bsize {bsize} count {count} sub {sub} off {plane_off}"
@@ -648,12 +645,36 @@ fn filter_block_dispatch_all_tiers_match_c() {
         // dst8 arm: C reference, then port under EVERY dispatch tier.
         let mut theirs8 = [0xAAu8; 64];
         cref::cdef_filter_block_8(
-            &mut theirs8, 0, 8, &inb, IOFF, pri, sec, dir, pd, sd, bsize, coeff_shift, sub as u8,
+            &mut theirs8,
+            0,
+            8,
+            &inb,
+            IOFF,
+            pri,
+            sec,
+            dir,
+            pd,
+            sd,
+            bsize,
+            coeff_shift,
+            sub as u8,
         );
         let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
             let mut ours = [0xAAu8; 64];
             cdef::cdef_filter_block(
-                &mut ours, 0, 8, &inb, IOFF, pri, sec, dir, pd, sd, bsize, coeff_shift, sub,
+                &mut ours,
+                0,
+                8,
+                &inb,
+                IOFF,
+                pri,
+                sec,
+                dir,
+                pd,
+                sd,
+                bsize,
+                coeff_shift,
+                sub,
             );
             assert_eq!(
                 ours, theirs8,
@@ -665,12 +686,36 @@ fn filter_block_dispatch_all_tiers_match_c() {
         // dst16 (bd10) arm: same.
         let mut theirs16 = [0xBBBBu16; 64];
         cref::cdef_filter_block_16(
-            &mut theirs16, 0, 8, &inb, IOFF, pri, sec, dir, pd, sd, bsize, coeff_shift, sub as u8,
+            &mut theirs16,
+            0,
+            8,
+            &inb,
+            IOFF,
+            pri,
+            sec,
+            dir,
+            pd,
+            sd,
+            bsize,
+            coeff_shift,
+            sub as u8,
         );
         let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
             let mut ours = [0xBBBBu16; 64];
             svtav1_dsp::hbd::cdef_filter_block_hbd(
-                &mut ours, 0, 8, &inb, IOFF, pri, sec, dir, pd, sd, bsize, coeff_shift, sub,
+                &mut ours,
+                0,
+                8,
+                &inb,
+                IOFF,
+                pri,
+                sec,
+                dir,
+                pd,
+                sd,
+                bsize,
+                coeff_shift,
+                sub,
             );
             assert_eq!(
                 ours.as_slice(),
@@ -722,8 +767,12 @@ fn filter_block_sign_straddle_matches_c() {
 
         let mut ours8 = [0u8; 64];
         let mut c8 = [0u8; 64];
-        cdef::cdef_filter_block(&mut ours8, 0, 8, &inb, IOFF, pri, sec, dir, pd, sd, bsize, 0, sub);
-        cref::cdef_filter_block_8(&mut c8, 0, 8, &inb, IOFF, pri, sec, dir, pd, sd, bsize, 0, sub as u8);
+        cdef::cdef_filter_block(
+            &mut ours8, 0, 8, &inb, IOFF, pri, sec, dir, pd, sd, bsize, 0, sub,
+        );
+        cref::cdef_filter_block_8(
+            &mut c8, 0, 8, &inb, IOFF, pri, sec, dir, pd, sd, bsize, 0, sub as u8,
+        );
         assert_eq!(
             ours8, c8,
             "dst8 sign-straddle != C: round {round} pri {pri} sec {sec} dir {dir} sub {sub}"
@@ -732,7 +781,19 @@ fn filter_block_sign_straddle_matches_c() {
         let mut ours16 = [0u16; 64];
         let mut c16 = [0u16; 64];
         svtav1_dsp::hbd::cdef_filter_block_hbd(
-            &mut ours16, 0, 8, &inb, IOFF, pri, sec, dir, pd, sd, bsize, 0, sub,
+            &mut ours16,
+            0,
+            8,
+            &inb,
+            IOFF,
+            pri,
+            sec,
+            dir,
+            pd,
+            sd,
+            bsize,
+            0,
+            sub,
         );
         cref::cdef_filter_block_16(
             &mut c16, 0, 8, &inb, IOFF, pri, sec, dir, pd, sd, bsize, 0, sub as u8,

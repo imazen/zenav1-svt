@@ -1923,7 +1923,17 @@ pub fn inv_txfm2d_c_exact(
     lr_flip: bool,
 ) -> bool {
     inv_txfm2d_c_exact_bd(
-        input, input_stride, output, out_stride, w, h, row_1d, col_1d, ud_flip, lr_flip, 8,
+        input,
+        input_stride,
+        output,
+        out_stride,
+        w,
+        h,
+        row_1d,
+        col_1d,
+        ud_flip,
+        lr_flip,
+        8,
     )
 }
 

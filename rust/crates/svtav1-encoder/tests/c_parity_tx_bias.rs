@@ -6,7 +6,7 @@
 //! asserting end-to-end equality with the real C for every intra mode,
 //! chroma variant, tx_bias level, temporal layer and ac_bias setting.
 use svtav1_cref as cref;
-use svtav1_encoder::tx_bias::{facade_bias, BiasModeClass};
+use svtav1_encoder::tx_bias::{BiasModeClass, facade_bias};
 
 // AV1 PredictionMode values (definitions.h enum order).
 const DC_PRED: u8 = 0;
@@ -77,8 +77,8 @@ fn facade_matches_c_for_intra_modes() {
                     for &ac_bias in &[0.0f64, 1.0] {
                         for &layer in &[0u8, 2, 5] {
                             let c = cref::spatial_facade(
-                                &a, w as u32, &b, w as u32, w as u32, h as u32,
-                                mode, mode, // UV enum mirrors luma for these
+                                &a, w as u32, &b, w as u32, w as u32, h as u32, mode,
+                                mode, // UV enum mirrors luma for these
                                 is_chroma, false, 0, layer, ac_bias, tx_bias,
                             );
                             let r = facade_bias(

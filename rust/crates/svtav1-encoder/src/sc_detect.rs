@@ -421,7 +421,9 @@ pub fn derive_allintra_sc(
             Some((padded, ps, pw, ph)) => {
                 is_screen_content_antialiasing_aware(&padded, ps, pw, ph, fast_detection)
             }
-            None => is_screen_content_antialiasing_aware(y, y_stride, width, height, fast_detection),
+            None => {
+                is_screen_content_antialiasing_aware(y, y_stride, width, height, fast_detection)
+            }
         }
     } else {
         ScClasses::default()

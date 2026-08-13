@@ -154,7 +154,9 @@ fn convolve_horiz_impl_neon(
     width: usize,
     height: usize,
 ) {
-    convolve_horiz_body_neon(token, src, src_stride, dst, dst_stride, filter, width, height);
+    convolve_horiz_body_neon(
+        token, src, src_stride, dst, dst_stride, filter, width, height,
+    );
 }
 
 #[inline]
@@ -271,7 +273,10 @@ fn convolve_vert_body_neon(
                 lo = vmlal_n_s16(lo, vget_low_s16(s16), filter[k]);
                 hi = vmlal_n_s16(hi, vget_high_s16(s16), filter[k]);
             }
-            let packed = vcombine_s16(vqrshrn_n_s32::<FILTER_BITS>(lo), vqrshrn_n_s32::<FILTER_BITS>(hi));
+            let packed = vcombine_s16(
+                vqrshrn_n_s32::<FILTER_BITS>(lo),
+                vqrshrn_n_s32::<FILTER_BITS>(hi),
+            );
             let out: &mut [u8; 8] = (&mut dst[d_row + col..d_row + col + 8]).try_into().unwrap();
             vst1_u8(out, vqmovun_s16(packed));
             col += 8;
@@ -757,5 +762,7 @@ fn convolve_vert_impl_neon(
     width: usize,
     height: usize,
 ) {
-    convolve_vert_body_neon(token, src, src_stride, dst, dst_stride, filter, width, height);
+    convolve_vert_body_neon(
+        token, src, src_stride, dst, dst_stride, filter, width, height,
+    );
 }

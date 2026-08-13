@@ -404,7 +404,11 @@ mod tests {
 
     #[test]
     fn flat_frame_uniform_boost_recenters() {
-        let v = SbVariance { var_8x8: [0.5; 64], var_64x64: 0.5, mean: 30000 };
+        let v = SbVariance {
+            var_8x8: [0.5; 64],
+            var_64x64: 0.5,
+            mean: 30000,
+        };
         let plan = variance_adjust_qp(200, &vec![v.clone(); 4], 2, 5, 0, 10, 8);
         assert!(plan.sb_qindex.iter().all(|&q| q == plan.base_qindex));
         assert!(plan.base_qindex < 200, "flat content must boost (lower q)");
@@ -464,8 +468,16 @@ mod tests {
 
     #[test]
     fn mixed_frame_offsets_clamped_and_normalized() {
-        let flat = SbVariance { var_8x8: [0.5; 64], var_64x64: 0.5, mean: 30000 };
-        let tex = SbVariance { var_8x8: [4096.0; 64], var_64x64: 4096.0, mean: 30000 };
+        let flat = SbVariance {
+            var_8x8: [0.5; 64],
+            var_64x64: 0.5,
+            mean: 30000,
+        };
+        let tex = SbVariance {
+            var_8x8: [4096.0; 64],
+            var_64x64: 4096.0,
+            mean: 30000,
+        };
         let plan = variance_adjust_qp(200, &[flat, tex], 2, 5, 0, 40, 8);
         let res = i32::from(plan.delta_q_res);
         assert_eq!(res, 8);

@@ -68,7 +68,8 @@ fn paeth_matches_scalar_for_every_block_shape() {
                     for col in 0..w {
                         let want = scalar_paeth(above[col], left[row], tl);
                         assert_eq!(
-                            got[row * stride + col], want,
+                            got[row * stride + col],
+                            want,
                             "mismatch at {w}x{h} tl={tl} row={row} col={col}"
                         );
                     }

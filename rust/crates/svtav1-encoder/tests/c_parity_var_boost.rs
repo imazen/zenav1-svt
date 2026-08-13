@@ -34,9 +34,13 @@ fn convert_qindex_to_q_fp8_matches_c_all_qindex() {
 /// bug it exists to catch.
 #[test]
 fn convert_qindex_to_q_fp8_actually_depends_on_bit_depth() {
-    let differs = (0..=255i32)
-        .any(|q| var_boost::convert_qindex_to_q_fp8(q, 8) != var_boost::convert_qindex_to_q_fp8(q, 10));
-    assert!(differs, "bd8 and bd10 fp8 Q curves are identical — bit depth is being ignored");
+    let differs = (0..=255i32).any(|q| {
+        var_boost::convert_qindex_to_q_fp8(q, 8) != var_boost::convert_qindex_to_q_fp8(q, 10)
+    });
+    assert!(
+        differs,
+        "bd8 and bd10 fp8 Q curves are identical — bit depth is being ignored"
+    );
 }
 
 #[test]

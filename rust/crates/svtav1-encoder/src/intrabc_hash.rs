@@ -58,7 +58,11 @@ const CRC32C_TABLE: [u32; 256] = {
         let mut crc = n as u32;
         let mut k = 0;
         while k < 8 {
-            crc = if crc & 1 != 0 { (crc >> 1) ^ POLY } else { crc >> 1 };
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ POLY
+            } else {
+                crc >> 1
+            };
             k += 1;
         }
         table[n] = crc;
@@ -126,7 +130,13 @@ fn identity_hash_value(a: u8, b: u8, c: u8, d: u8) -> u32 {
 /// `generate_ibc_data` call site these are the ALIGNED picture dims
 /// (`pcs->ppcs->aligned_width/height`; the `enhanced_pic` 8-bit link sets
 /// `y_crop_* = width/height` of the padded source, pic_buffer_desc.c:510+).
-pub fn generate_block_2x2_hash_value(pic: &[u8], stride: usize, w: usize, h: usize, dst: &mut [u32]) {
+pub fn generate_block_2x2_hash_value(
+    pic: &[u8],
+    stride: usize,
+    w: usize,
+    h: usize,
+    dst: &mut [u32],
+) {
     debug_assert!(dst.len() >= w * h);
     // Same signed-vs-usize hazard as `generate_block_hash_value` below, for
     // the 2x2 base case (C `svt_av1_generate_block_2x2_hash_value`,
@@ -153,7 +163,13 @@ pub fn generate_block_2x2_hash_value(pic: &[u8], stride: usize, w: usize, h: usi
 /// 16 bytes — C casts the `uint32_t p[4]` array to bytes, i.e.
 /// LITTLE-ENDIAN per-word byte order on every supported target; this port
 /// uses `to_le_bytes` explicitly.
-pub fn generate_block_hash_value(w: usize, h: usize, block_size: usize, src: &[u32], dst: &mut [u32]) {
+pub fn generate_block_hash_value(
+    w: usize,
+    h: usize,
+    block_size: usize,
+    src: &[u32],
+    dst: &mut [u32],
+) {
     debug_assert!(src.len() >= w * h && dst.len() >= w * h);
     // C computes these as SIGNED ints (hash_motion.c:195-196):
     //     const int x_end = picture->y_crop_width  - block_size + 1;
@@ -223,7 +239,9 @@ impl HashTable {
     /// (hash_motion.c:101-113) — fresh empty table. (C's idempotent
     /// "clear if exists" arm maps to just constructing a new value.)
     pub fn new() -> Self {
-        Self { buckets: vec![Vec::new(); HASH_TABLE_BUCKETS] }
+        Self {
+            buckets: vec![Vec::new(); HASH_TABLE_BUCKETS],
+        }
     }
 
     /// C `svt_av1_hash_table_count` (hash_motion.c:140-146).
@@ -422,7 +440,9 @@ pub fn get_block_hash_value(
         for y in 0..sub_block_in_width {
             for x in 0..sub_block_in_width {
                 let src_pos = (y << 1) * src_sub_block_in_width + (x << 1);
-                debug_assert!(src_pos + src_sub_block_in_width + 1 < AOM_BUFFER_SIZE_FOR_BLOCK_HASH);
+                debug_assert!(
+                    src_pos + src_sub_block_in_width + 1 < AOM_BUFFER_SIZE_FOR_BLOCK_HASH
+                );
                 let to_hash = [
                     bufs.bufs[src_idx][src_pos],
                     bufs.bufs[src_idx][src_pos + 1],
@@ -473,7 +493,13 @@ pub fn generate_ibc_data(
         vec![0u32; aligned_width * aligned_height],
     ];
 
-    generate_block_2x2_hash_value(pic, stride, aligned_width, aligned_height, &mut block_hash_values[0]);
+    generate_block_2x2_hash_value(
+        pic,
+        stride,
+        aligned_width,
+        aligned_height,
+        &mut block_hash_values[0],
+    );
 
     let mut src_idx = 0usize;
     let mut size = 4usize;
@@ -488,7 +514,11 @@ pub fn generate_ibc_data(
         };
         generate_block_hash_value(aligned_width, aligned_height, size, src_buf, dst_buf);
         if size != 4 || !pic_disallow_4x4 {
-            let dst_ref = if dst_idx == 0 { &block_hash_values[0] } else { &block_hash_values[1] };
+            let dst_ref = if dst_idx == 0 {
+                &block_hash_values[0]
+            } else {
+                &block_hash_values[1]
+            };
             add_to_hash_map_by_row_with_precal_data(
                 &mut table,
                 dst_ref,
@@ -610,7 +640,9 @@ mod tests {
         let mut state = 0x1234_5678_9abc_def0u64;
         for y in 0..h {
             for x in 0..w {
-                state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 pic[y * stride + x] = (state >> 33) as u8;
             }
         }
@@ -625,7 +657,8 @@ mod tests {
             let add_value = hash_block_size_to_index(size as i32).unwrap() << CRC_BITS;
             for y in (0..h - size + 1).step_by(5) {
                 for x in (0..w - size + 1).step_by(3) {
-                    let (hv1, hv2) = get_block_hash_value(&pic[y * stride + x..], stride, size, &mut bufs);
+                    let (hv1, hv2) =
+                        get_block_hash_value(&pic[y * stride + x..], stride, size, &mut bufs);
                     assert_eq!(hv2, cur[y * w + x], "hv2 mismatch at ({x},{y}) size {size}");
                     assert_eq!(hv1, (cur[y * w + x] & 0xffff) + add_value);
                 }

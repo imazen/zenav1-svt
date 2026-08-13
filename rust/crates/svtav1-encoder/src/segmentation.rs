@@ -1176,7 +1176,10 @@ mod tests {
         // md_config_process.c:1015-1017 sets coded_lossless = lossless[0] =
         // !base_q_idx, so a nonzero base gives all-false / false.
         let mut seg = SegmentationParams::default();
-        assert_eq!(derive_lossless(&mut seg, 30), ([false; MAX_SEGMENTS], false));
+        assert_eq!(
+            derive_lossless(&mut seg, 30),
+            ([false; MAX_SEGMENTS], false)
+        );
 
         // (2) Segmentation DISABLED at base_q_idx == 0 — the plain `--qp 0`
         // lossless entry. C sets BOTH coded_lossless and lossless[0] TRUE here.
@@ -1184,7 +1187,10 @@ mod tests {
         // have made a future lossless wiring skip its own envelope.
         let mut seg = SegmentationParams::default();
         let (lossless, coded) = derive_lossless(&mut seg, 0);
-        assert!(coded, "base_q_idx 0 with segmentation off IS coded_lossless");
+        assert!(
+            coded,
+            "base_q_idx 0 with segmentation off IS coded_lossless"
+        );
         assert!(lossless[0], "and lossless[0] is set with it");
         assert_eq!(lossless[1..], [false; MAX_SEGMENTS - 1][..]);
 
@@ -1217,8 +1223,7 @@ mod tests {
             "a frame with both lossless and lossy segments must disable segmentation"
         );
         assert_eq!(
-            lossless,
-            [false; MAX_SEGMENTS],
+            lossless, [false; MAX_SEGMENTS],
             "after the auto-disable, :1015-1017 re-derives from base_q_idx = 5"
         );
         assert!(!coded);

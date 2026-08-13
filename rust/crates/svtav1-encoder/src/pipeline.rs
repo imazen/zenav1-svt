@@ -401,7 +401,10 @@ impl EncodePipeline {
     /// Returns `(sb_size, fell_back)`.
     fn resolve_sb_size(derived: usize, override_: Option<usize>, preset: u8) -> (usize, bool) {
         let want = override_.unwrap_or(derived);
-        debug_assert!(want == 64 || want == 128, "sb_size must be 64 or 128, got {want}");
+        debug_assert!(
+            want == 64 || want == 128,
+            "sb_size must be 64 or 128, got {want}"
+        );
         if want == 128 && !Self::sb128_encode_supported(preset) {
             (64, true)
         } else {
@@ -470,12 +473,13 @@ impl EncodePipeline {
             (9..=16).contains(&denom),
             "SuperresDenom must be 9..=16 (8 = unscaled = no superres); got {denom}"
         );
-        let coded =
-            u32::from(svtav1_dsp::superres::scaled_size(self.upscaled_width as u16, denom));
+        let coded = u32::from(svtav1_dsp::superres::scaled_size(
+            self.upscaled_width as u16,
+            denom,
+        ));
         self.superres_denom = Some(denom);
         self.true_width = coded;
-        let dims =
-            crate::frame_geom::FrameDims::new(coded as usize, self.true_height as usize);
+        let dims = crate::frame_geom::FrameDims::new(coded as usize, self.true_height as usize);
         self.width = dims.aligned_w as u32;
         self.height = dims.aligned_h as u32;
         // The SB derivation keys off the ALIGNED dims, which just changed.
@@ -928,20 +932,20 @@ impl EncodePipeline {
             self.speed_config.preset,
             self.gop.intra_period <= 1,
         );
-        if tools.enable_restoration && !crate::frame_geom::small_frame_disables_restoration(
-            &crate::frame_geom::FrameDims::new(
-                self.upscaled_width as usize,
-                self.true_height as usize,
-            ),
-        ) {
+        if tools.enable_restoration
+            && !crate::frame_geom::small_frame_disables_restoration(
+                &crate::frame_geom::FrameDims::new(
+                    self.upscaled_width as usize,
+                    self.true_height as usize,
+                ),
+            )
+        {
             return Some(
                 "superres with loop restoration enabled (allintra preset <= 6) is not wired yet                  — C runs LR on the UPSCALED frame; use preset >= 7",
             );
         }
         if self.bit_depth != 8 {
-            return Some(
-                "superres is 8-bit only so far (the u16 source downscale is unported)",
-            );
+            return Some("superres is 8-bit only so far (the u16 source downscale is unported)");
         }
         None
     }
@@ -1236,7 +1240,12 @@ impl EncodePipeline {
                 let mut v = alloc::vec::Vec::with_capacity(cols * rows);
                 for by in 0..rows {
                     for bx in 0..cols {
-                        v.push(crate::pd0::compute_b64_variance(&padded, ext_w, bx * 64, by * 64));
+                        v.push(crate::pd0::compute_b64_variance(
+                            &padded,
+                            ext_w,
+                            bx * 64,
+                            by * 64,
+                        ));
                     }
                 }
                 v
@@ -1473,8 +1482,7 @@ impl EncodePipeline {
             Some(3) => self.speed_config.preset.min(7),
             _ => self.speed_config.preset,
         };
-        let sc_derivation =
-            crate::sc_detect::derive_allintra_sc(sc_preset, &encode_input, w, w, h);
+        let sc_derivation = crate::sc_detect::derive_allintra_sc(sc_preset, &encode_input, w, w, h);
 
         // Step 3c: Frame-level adaptive QP — OPT-IN via RcConfig.aq_mode.
         //
@@ -1542,7 +1550,12 @@ impl EncodePipeline {
             for r in 0..sb_rows_p {
                 for c in 0..sb_cols_p {
                     vars.push(crate::sb_qindex::compute_sb_variances(
-                        &encode_input, w, w, h, c * 64, r * 64,
+                        &encode_input,
+                        w,
+                        w,
+                        h,
+                        c * 64,
+                        r * 64,
                     ));
                 }
             }
@@ -1757,7 +1770,6 @@ impl EncodePipeline {
         let tile_rows_log2 = tile_grid.tile_rows_log2;
         let tile_cols_log2 = tile_grid.tile_cols_log2;
 
-
         // [SVT_HDR_MODE] fork chroma-q: derive the FH per-plane deltas and
         // the plane qindexes the quantizer must use. Mainline: all zero.
         let chroma_deltas = if self.hdr.is_fork() {
@@ -1882,9 +1894,7 @@ impl EncodePipeline {
                     self.hdr.noise_size,
                     self.color_description.full_range,
                 );
-                let mut seed = 7391u16.wrapping_add(
-                    3381u16.wrapping_mul(self.frame_count as u16),
-                );
+                let mut seed = 7391u16.wrapping_add(3381u16.wrapping_mul(self.frame_count as u16));
                 if seed == 0 {
                     seed = 7391;
                 }
@@ -1925,9 +1935,17 @@ impl EncodePipeline {
             sb_plan.as_ref().map(|p| p.sb_qindex.as_slice()),
             (chroma_deltas.u_ac, chroma_deltas.v_ac),
             sharp_tx_active,
-            if self.hdr.is_fork() { self.hdr.noise_norm_strength } else { 0 },
+            if self.hdr.is_fork() {
+                self.hdr.noise_norm_strength
+            } else {
+                0
+            },
             qm_levels,
-            if self.hdr.is_fork() { self.hdr.tx_bias } else { 0 },
+            if self.hdr.is_fork() {
+                self.hdr.tx_bias
+            } else {
+                0
+            },
             self.hdr.is_fork() && self.hdr.complex_hvs == 1,
             // The SAME resolved detector preset the frame-level derivation above
             // used, so the MD walk and the pack cannot disagree about screen
@@ -2059,7 +2077,9 @@ impl EncodePipeline {
                 // Feature 1: byte-inert cooperative-cancellation check (no-op
                 // for the default `Unstoppable` token — `may_stop()` is false).
                 if stop.may_stop() {
-                    stop.check().map_err(EncodeError::from).map_err(whereat::at)?;
+                    stop.check()
+                        .map_err(EncodeError::from)
+                        .map_err(whereat::at)?;
                 }
                 for sb_col in tile_sb_col_start..tile_sb_col_end {
                     tree_slots[sb_row * sb_cols + sb_col] = tile_trees.next();
@@ -2069,7 +2089,9 @@ impl EncodePipeline {
             for sb_row in tile_sb_row_start..tile_sb_row_end {
                 // Feature 1: byte-inert cooperative-cancellation check.
                 if stop.may_stop() {
-                    stop.check().map_err(EncodeError::from).map_err(whereat::at)?;
+                    stop.check()
+                        .map_err(EncodeError::from)
+                        .map_err(whereat::at)?;
                 }
                 for sb_col in tile_sb_col_start..tile_sb_col_end {
                     let x0 = sb_col * sb_size;
@@ -2279,8 +2301,10 @@ impl EncodePipeline {
                 // computed from the bd10 rdmult base (dc_qlookup_10 + ROUND_
                 // POWER_OF_TWO(,4) + frame-type-factor 128 + the *16), NOT a
                 // ×16 of the bd8 lambda — see kf_full_lambda_bd10.
-                let lambda_bd10 =
-                    u64::from(crate::pd0::kf_full_lambda_bd10(base_qindex, tpl_adjusted_qp as u32));
+                let lambda_bd10 = u64::from(crate::pd0::kf_full_lambda_bd10(
+                    base_qindex,
+                    tpl_adjusted_qp as u32,
+                ));
                 let recon10 = bd10_reencode_luma(
                     &mut all_trees,
                     sb_cols,
@@ -2540,13 +2564,14 @@ impl EncodePipeline {
             // Task #96: and per tile COLUMN too. The tile group's tile
             // order is raster over the grid (row-major), which is the
             // order a decoder consumes the size-prefixed payloads in.
-            let mut tile_bitstreams: Vec<Vec<u8>> =
-                Vec::with_capacity(tile_grid.num_tiles());
+            let mut tile_bitstreams: Vec<Vec<u8>> = Vec::with_capacity(tile_grid.num_tiles());
             for tile_idx in 0..tile_grid.num_tiles() {
                 // Feature 1: byte-inert cooperative-cancellation check, once per
                 // tile of each entropy re-walk (this closure runs up to 3x).
                 if stop.may_stop() {
-                    stop.check().map_err(EncodeError::from).map_err(whereat::at)?;
+                    stop.check()
+                        .map_err(EncodeError::from)
+                        .map_err(whereat::at)?;
                 }
                 let (tile_sb_row_start, tile_sb_row_end) =
                     tile_grid.row_span(tile_idx / tile_grid.tile_cols);
@@ -2558,7 +2583,8 @@ impl EncodePipeline {
                 let mut frame_ctx = svtav1_entropy::context::FrameContext::new_default();
                 // C-exact coefficient CDFs for the base_q_idx bucket
                 // (svt_av1_default_coef_probs semantics) — qindex domain.
-                let mut coeff_fc = svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex);
+                let mut coeff_fc =
+                    svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex);
                 let mut ectx = EntropyCtx::new(
                     w4,
                     h4,
@@ -2614,7 +2640,9 @@ impl EncodePipeline {
                     // Feature 1: byte-inert cooperative-cancellation check, once
                     // per SB row of the entropy walk.
                     if stop.may_stop() {
-                        stop.check().map_err(EncodeError::from).map_err(whereat::at)?;
+                        stop.check()
+                            .map_err(EncodeError::from)
+                            .map_err(whereat::at)?;
                     }
                     for sb_col in tile_sb_col_start..tile_sb_col_end {
                         let sb_idx = sb_row * sb_cols + sb_col;
@@ -2700,8 +2728,8 @@ impl EncodePipeline {
                                 lr_true_w,
                                 lr_true_h,
                                 chroma.is_none(),
-                                                            self.superres_denom,
-);
+                                self.superres_denom,
+                            );
                         }
 
                         encode_partition_tree(
@@ -2736,7 +2764,10 @@ impl EncodePipeline {
                 svtav1_entropy::obu::tile_size_bytes_minus_1_for(&non_last_lens);
 
             Ok((
-                svtav1_entropy::obu::build_tile_group_multi(&tile_bitstreams, tile_size_bytes_minus_1),
+                svtav1_entropy::obu::build_tile_group_multi(
+                    &tile_bitstreams,
+                    tile_size_bytes_minus_1,
+                ),
                 deblock_geom,
                 u_recon,
                 v_recon,
@@ -2824,8 +2855,7 @@ impl EncodePipeline {
         } else if is_key {
             if is_single_frame && self.speed_config.preset <= 5 {
                 let (su, sv) = chroma.unwrap_or((&[][..], &[][..]));
-                let early_exit_convergence =
-                    if self.speed_config.preset <= 3 { 0 } else { 1 };
+                let early_exit_convergence = if self.speed_config.preset <= 3 { 0 } else { 1 };
                 match recon10.as_ref() {
                     // bd10: search on the true 10-bit unfiltered recon
                     // against the true 10-bit source, with the highbd lpf
@@ -2834,8 +2864,9 @@ impl EncodePipeline {
                     // deblocking_filter.c:768).
                     Some((y10, u10, v10)) => {
                         let sh = (self.bit_depth - 8) as u32;
-                        let widen =
-                            |p: &[u8]| -> Vec<u16> { p.iter().map(|&s| (s as u16) << sh).collect() };
+                        let widen = |p: &[u8]| -> Vec<u16> {
+                            p.iter().map(|&s| (s as u16) << sh).collect()
+                        };
                         // Task #6 chunk 2: the deblock level search compares the
                         // 10-bit recon against the 10-bit SOURCE. With a native
                         // HBD source that is the caller's real u16 (so the low 2
@@ -2912,8 +2943,7 @@ impl EncodePipeline {
             // reader — every `self.dpb.get(..)` site is gated on `!is_key`.
             || !is_single_frame;
         if self.recon_output {
-            self.last_recon_unfiltered =
-                Some((recon.clone(), u_recon.clone(), v_recon.clone()));
+            self.last_recon_unfiltered = Some((recon.clone(), u_recon.clone(), v_recon.clone()));
         }
         if let Some((y10, u10, v10)) = recon10.as_mut() {
             if lf_levels.any() && postfilter_consumed {
@@ -3116,8 +3146,7 @@ impl EncodePipeline {
         // The pre-CDEF snapshot is load-bearing when LR is on (its stripe
         // boundaries are saved from it below), and an evidence aid otherwise.
         if seq_tools.enable_restoration || self.recon_output {
-            self.last_recon_pre_cdef =
-                Some((recon.clone(), u_recon.clone(), v_recon.clone()));
+            self.last_recon_pre_cdef = Some((recon.clone(), u_recon.clone(), v_recon.clone()));
         }
         if postfilter_consumed {
             self.last_cdef_stats = crate::cdef::apply_cdef_frame(
@@ -3515,7 +3544,11 @@ impl EncodePipeline {
                 delta_q_res_signal,
                 // [SVT_HDR_MODE] frame QM levels (fork enable_qm); None in
                 // mainline mode. The quantizers used the SAME levels.
-                if qm_levels == [15; 3] { None } else { Some(qm_levels) },
+                if qm_levels == [15; 3] {
+                    None
+                } else {
+                    Some(qm_levels)
+                },
                 film_grain.as_ref(),
                 // task #86: real tile rows. tile_rows_log2 was resolved
                 // (clamped) before encode_tile_rows/run_entropy_walk ran;
@@ -3575,9 +3608,7 @@ impl EncodePipeline {
                 self.height as usize,
             );
             let mut y_up = svtav1_types::try_vec![0u8; uw * hh]?;
-            svtav1_dsp::superres::upscale_normative_plane(
-                &recon, cw, cw, &mut y_up, uw, uw, hh,
-            );
+            svtav1_dsp::superres::upscale_normative_plane(&recon, cw, cw, &mut y_up, uw, uw, hh);
             recon = y_up;
             if chroma.is_some() {
                 let (ccw, cuw, chh) = (cw / 2, uw.div_ceil(2), hh / 2);
@@ -3648,7 +3679,11 @@ impl EncodePipeline {
 // nonzero sizes and the merge loop runs; on non-sc content no leaf wins a
 // palette so it stays on the empty-cache early return (`above_n == 0 &&
 // left_n == 0`), keeping those gates byte-identical.
-pub(crate) fn palette_cache(ectx: &EntropyCtx, block_x: usize, block_y: usize) -> alloc::vec::Vec<u16> {
+pub(crate) fn palette_cache(
+    ectx: &EntropyCtx,
+    block_x: usize,
+    block_y: usize,
+) -> alloc::vec::Vec<u16> {
     let x4 = block_x / 4;
     let y4 = block_y / 4;
     let mut above_n = if block_y % 64 != 0 && x4 < ectx.above_palette.len() {
@@ -4287,7 +4322,14 @@ impl EntropyCtx {
     /// current leaf, until #71 chunk 3/4 injection wires a winning
     /// candidate through `BlockDecision.palette`). Stamped over the
     /// block's full mi span, exactly like [`Self::record_block`].
-    pub(crate) fn record_palette(&mut self, x: usize, y: usize, w: usize, h: usize, colors: Option<&[u16]>) {
+    pub(crate) fn record_palette(
+        &mut self,
+        x: usize,
+        y: usize,
+        w: usize,
+        h: usize,
+        colors: Option<&[u16]>,
+    ) {
         let x4 = x / 4;
         let y4 = y / 4;
         let w4 = w / 4;
@@ -4432,7 +4474,11 @@ impl EntropyCtx {
         h: usize,
         use_intrabc: bool,
     ) {
-        let (bw, bh) = if use_intrabc { (w as u8, h as u8) } else { (0, 0) };
+        let (bw, bh) = if use_intrabc {
+            (w as u8, h as u8)
+        } else {
+            (0, 0)
+        };
         let x4 = x / 4;
         let y4 = y / 4;
         for i in x4..(x4 + w / 4).min(self.above_inter_bw.len()) {
@@ -4747,8 +4793,10 @@ fn encode_block_syntax(
     #[cfg(feature = "std")]
     if let Some(xy) = crate::dbgenv::packtree_coeff() {
         let is_pin = xy.contains(',');
-        let want: alloc::vec::Vec<usize> =
-            xy.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+        let want: alloc::vec::Vec<usize> = xy
+            .split(',')
+            .filter_map(|s| s.trim().parse().ok())
+            .collect();
         let pinned = is_pin && want.len() == 2 && want[0] == block_y / 4 && want[1] == block_x / 4;
         if pinned || !is_pin {
             let fmt_nz = |q: &[i32], cap: usize| -> alloc::string::String {
@@ -4831,8 +4879,18 @@ fn encode_block_syntax(
     let chroma_blocks = chroma.as_mut().filter(|_| blk_has_uv).map(|cp| {
         let cw = (decision.width as usize).max(8) / 2;
         let ch = (decision.height as usize).max(8) / 2;
-        let cx = ((block_x >> 3) << 3) / 2 + if decision.width >= 8 { (block_x % 8) / 2 } else { 0 };
-        let cy = ((block_y >> 3) << 3) / 2 + if decision.height >= 8 { (block_y % 8) / 2 } else { 0 };
+        let cx = ((block_x >> 3) << 3) / 2
+            + if decision.width >= 8 {
+                (block_x % 8) / 2
+            } else {
+                0
+            };
+        let cy = ((block_y >> 3) << 3) / 2
+            + if decision.height >= 8 {
+                (block_y % 8) / 2
+            } else {
+                0
+            };
         if let Some((u_q, v_q, u_eob, v_eob, u_rec, v_rec)) = decision.chroma_dec.as_ref() {
             // Funnel-decided chroma (M6 leaf funnel): the decision phase
             // already predicted (per the decided uv_mode), quantized and
@@ -4847,12 +4905,32 @@ fn encode_block_syntax(
             (u_q.clone(), *u_eob, v_q.clone(), *v_eob)
         } else {
             let (u_q, u_eob) = crate::partition::encode_chroma_block_dc(
-                cp.u_src, cp.u_recon, cp.stride, cx, cy, cw, ch, cp.qindex_u, cp.c_quant,
-                cp.qm_u, chroma_tile_top, chroma_tile_left,
+                cp.u_src,
+                cp.u_recon,
+                cp.stride,
+                cx,
+                cy,
+                cw,
+                ch,
+                cp.qindex_u,
+                cp.c_quant,
+                cp.qm_u,
+                chroma_tile_top,
+                chroma_tile_left,
             );
             let (v_q, v_eob) = crate::partition::encode_chroma_block_dc(
-                cp.v_src, cp.v_recon, cp.stride, cx, cy, cw, ch, cp.qindex_v, cp.c_quant,
-                cp.qm_v, chroma_tile_top, chroma_tile_left,
+                cp.v_src,
+                cp.v_recon,
+                cp.stride,
+                cx,
+                cy,
+                cw,
+                ch,
+                cp.qindex_v,
+                cp.c_quant,
+                cp.qm_v,
+                chroma_tile_top,
+                chroma_tile_left,
             );
             (u_q, u_eob, v_q, v_eob)
         }
@@ -5067,7 +5145,8 @@ fn encode_block_syntax(
         let pal_cache = palette_cache(ectx, block_x, block_y);
         pal_found = alloc::vec![false; pal_cache.len()];
         pal_out = alloc::vec![0u16; colors.len()];
-        pal_n_out = crate::palette::index_color_cache(&pal_cache, colors, &mut pal_found, &mut pal_out);
+        pal_n_out =
+            crate::palette::index_color_cache(&pal_cache, colors, &mut pal_found, &mut pal_out);
     }
     if !decision.is_inter
         && !use_intrabc // C :5026: palette mode-info suppressed for IntraBC
@@ -5078,10 +5157,13 @@ fn encode_block_syntax(
         )
     {
         let neighbor_ctx = ectx.palette_neighbor_ctx(block_x, block_y);
-        let palette_arg = decision
-            .palette
-            .as_ref()
-            .map(|(colors, _idx_map)| (colors.as_slice(), pal_found.as_slice(), &pal_out[..pal_n_out]));
+        let palette_arg = decision.palette.as_ref().map(|(colors, _idx_map)| {
+            (
+                colors.as_slice(),
+                pal_found.as_slice(),
+                &pal_out[..pal_n_out],
+            )
+        });
         svtav1_entropy::context::write_palette_mode_info(
             writer,
             frame_ctx,
@@ -5196,9 +5278,7 @@ fn encode_block_syntax(
             // codes NOTHING and stamps the BLOCK dims (set_txfm_ctxs with
             // skip && is_inter).
             if !skip && !(w == 4 && h == 4) {
-                writer_tx_size_vartx_bridge(
-                    writer, frame_ctx, ectx, block_x, block_y, w, h, depth,
-                );
+                writer_tx_size_vartx_bridge(writer, frame_ctx, ectx, block_x, block_y, w, h, depth);
                 let (txw, txh) = crate::leaf_funnel::txb_dims_at_depth(w, h, depth);
                 ectx.record_txfm_dims(block_x, block_y, w, h, txw, txh);
             } else {
@@ -5214,7 +5294,14 @@ fn encode_block_syntax(
         } else {
             if is_key && !(w == 4 && h == 4) {
                 let ctx = ectx.tx_size_ctx(block_x, block_y, w, h);
-                svtav1_entropy::context::write_tx_depth(writer, frame_ctx, w, h, ctx, depth as usize);
+                svtav1_entropy::context::write_tx_depth(
+                    writer,
+                    frame_ctx,
+                    w,
+                    h,
+                    ctx,
+                    depth as usize,
+                );
             }
             // set_txfm_ctxs records the CHOSEN tx dims (the C
             // tx_depth_to_tx_size chain — rect blocks halve the LONG dim
@@ -5292,9 +5379,7 @@ fn encode_block_syntax(
             #[cfg(feature = "std")]
             if crate::dbgenv::coded_eob() {
                 let nz = coeffs.iter().filter(|&&c| c != 0).count();
-                eprintln!(
-                    "CODED x{block_x} y{block_y} {w}x{h} tx{tx_type} scan_eob={eob} nz={nz}"
-                );
+                eprintln!("CODED x{block_x} y{block_y} {w}x{h} tx{tx_type} scan_eob={eob} nz={nz}");
             }
             let cul_level = coeff_c::write_coeffs_txb_1d(
                 coeff_fc,
@@ -5338,7 +5423,10 @@ fn encode_block_syntax(
                 let tx_y = block_y + rel_y;
                 #[cfg(feature = "std")]
                 if crate::dbgenv::packtxb() {
-                    let nz = decision.txb_qcoeffs[txb].iter().filter(|&&v| v != 0).count();
+                    let nz = decision.txb_qcoeffs[txb]
+                        .iter()
+                        .filter(|&&v| v != 0)
+                        .count();
                     eprintln!(
                         "PACKTXB blk=({block_x},{block_y}) {w}x{h} d={} ibc={} txb={txb} pos=({rel_x},{rel_y}) tt={} nz={nz}",
                         decision.tx_depth, decision.use_intrabc, decision.txb_tx_types[txb],
@@ -5457,10 +5545,18 @@ fn encode_block_syntax(
         if chroma_blocks.is_some() {
             let cw = (decision.width as usize).max(8) / 2;
             let ch = (decision.height as usize).max(8) / 2;
-            let cx =
-                ((block_x >> 3) << 3) / 2 + if decision.width >= 8 { (block_x % 8) / 2 } else { 0 };
+            let cx = ((block_x >> 3) << 3) / 2
+                + if decision.width >= 8 {
+                    (block_x % 8) / 2
+                } else {
+                    0
+                };
             let cy = ((block_y >> 3) << 3) / 2
-                + if decision.height >= 8 { (block_y % 8) / 2 } else { 0 };
+                + if decision.height >= 8 {
+                    (block_y % 8) / 2
+                } else {
+                    0
+                };
             ectx.record_coeff_uv(0, cx, cy, cw, ch, 0);
             ectx.record_coeff_uv(1, cx, cy, cw, ch, 0);
         }
@@ -5497,7 +5593,10 @@ fn encode_block_syntax(
         block_y,
         decision.width as usize,
         decision.height as usize,
-        decision.palette.as_ref().map(|(colors, _idx_map)| colors.as_slice()),
+        decision
+            .palette
+            .as_ref()
+            .map(|(colors, _idx_map)| colors.as_slice()),
     );
 
     // Deblocking geometry: exactly what the decoder derives per mi from
@@ -5716,8 +5815,14 @@ fn encode_partition_tree(
                      has_rows={has_rows} has_cols={has_cols} — illegal per spec 5.11.4"
                 );
                 svtav1_entropy::context::write_partition_edge(
-                    writer, frame_ctx, ctx, 0, nsymbs, // 0 = PARTITION_NONE
-                    w == 128, has_rows, has_cols,
+                    writer,
+                    frame_ctx,
+                    ctx,
+                    0,
+                    nsymbs, // 0 = PARTITION_NONE
+                    w == 128,
+                    has_rows,
+                    has_cols,
                 );
             }
 
@@ -6015,8 +6120,8 @@ fn bd10_tree_supported(tree: &crate::partition::PartitionTree, edge_filter: bool
             // but the post-pass rejects silently drops the WHOLE FRAME out of
             // the re-encode, which is a far worse (invisible) failure than a
             // visible mode divergence.
-            let uv_directional = matches!(d.uv_mode, 3..=8)
-                || (matches!(d.uv_mode, 1 | 2) && d.uv_angle_delta != 0);
+            let uv_directional =
+                matches!(d.uv_mode, 3..=8) || (matches!(d.uv_mode, 1 | 2) && d.uv_angle_delta != 0);
             let uv_ok = !uv_directional || !edge_filter;
             // A palette or IntraBC leaf is NOT re-encodable by this post-pass:
             // `bd10_reencode_node` predicts every leaf with
@@ -6294,8 +6399,23 @@ fn bd10_reencode_node(
             // `panic!`ed on every one of those shapes.
             let mut recurse = |child: &mut crate::partition::PartitionTree, cx, cy| {
                 bd10_reencode_node(
-                    sb_mi_size, child, cx, cy, recon10, stride, src10, src_stride, qt, rdoq_level,
-                    lambda, rates, edge_filter, frame_w, frame_h, bd, qm_level,
+                    sb_mi_size,
+                    child,
+                    cx,
+                    cy,
+                    recon10,
+                    stride,
+                    src10,
+                    src_stride,
+                    qt,
+                    rdoq_level,
+                    lambda,
+                    rates,
+                    edge_filter,
+                    frame_w,
+                    frame_h,
+                    bd,
+                    qm_level,
                 );
             };
             match *partition_type {
@@ -6554,7 +6674,11 @@ fn bd10_reencode_chroma_plane(
         recon10[drow..drow + cwr].copy_from_slice(&out.recon[r * cw..r * cw + cwr]);
     }
     let shift = (bd - 8) as u32;
-    let rec_u8: alloc::vec::Vec<u8> = out.recon.iter().map(|&s| (s >> shift).min(255) as u8).collect();
+    let rec_u8: alloc::vec::Vec<u8> = out
+        .recon
+        .iter()
+        .map(|&s| (s >> shift).min(255) as u8)
+        .collect();
     (out.qcoeff, out.eob, rec_u8)
 }
 
@@ -6596,7 +6720,8 @@ fn bd10_reencode_chroma_node(
             // min-8x8 luma policy every leaf is a reference; kept for safety.
             let bw_mi = bw / 4;
             let bh_mi = bh / 4;
-            let has_uv = ((y / 4) % 2 == 1 || bh_mi % 2 == 0) && ((x / 4) % 2 == 1 || bw_mi % 2 == 0);
+            let has_uv =
+                ((y / 4) % 2 == 1 || bh_mi % 2 == 0) && ((x / 4) % 2 == 1 || bw_mi % 2 == 0);
             if !has_uv {
                 return;
             }
@@ -6612,8 +6737,7 @@ fn bd10_reencode_chroma_node(
             // so only the prediction changes.
             let uv_tt = crate::leaf_funnel::uv_tx_type(d.uv_mode, cw, ch);
             let cfl_ac: Option<alloc::vec::Vec<i16>> = if d.uv_mode == 13 {
-                let mut ac =
-                    alloc::vec![0i16; svtav1_dsp::intra_pred::CFL_BUF_LINE * ch.max(1)];
+                let mut ac = alloc::vec![0i16; svtav1_dsp::intra_pred::CFL_BUF_LINE * ch.max(1)];
                 crate::leaf_funnel::cfl_ac_from_frame_recon_hbd(
                     y_recon10, y_stride, x, y, bw, bh, cw, ch, &mut ac,
                 );
@@ -6621,12 +6745,18 @@ fn bd10_reencode_chroma_node(
             } else {
                 None
             };
-            let cfl_u = cfl_ac
-                .as_ref()
-                .map(|ac| (&ac[..], crate::leaf_funnel::cfl_idx_to_alpha(d.cfl_alpha_idx, d.cfl_alpha_signs, 0)));
-            let cfl_v = cfl_ac
-                .as_ref()
-                .map(|ac| (&ac[..], crate::leaf_funnel::cfl_idx_to_alpha(d.cfl_alpha_idx, d.cfl_alpha_signs, 1)));
+            let cfl_u = cfl_ac.as_ref().map(|ac| {
+                (
+                    &ac[..],
+                    crate::leaf_funnel::cfl_idx_to_alpha(d.cfl_alpha_idx, d.cfl_alpha_signs, 0),
+                )
+            });
+            let cfl_v = cfl_ac.as_ref().map(|ac| {
+                (
+                    &ac[..],
+                    crate::leaf_funnel::cfl_idx_to_alpha(d.cfl_alpha_idx, d.cfl_alpha_signs, 1),
+                )
+            });
             let geom = crate::leaf_funnel::UnitGeom {
                 mi_row: cy >> 2,
                 mi_col: cx >> 2,
@@ -6644,12 +6774,46 @@ fn bd10_reencode_chroma_node(
                 tile: crate::intra_edge::TileMi::whole_frame(cframe_w, cframe_h),
             };
             let (u_q, u_eob, u_rec) = bd10_reencode_chroma_plane(
-                recon10_u, u_src10, cstride, cx, cy, cw, ch, d.uv_mode, d.uv_angle_delta, uv_tt, &geom,
-                edge_filter, qt_u, rdoq_level, lambda, rates, bd, qm_uv[0], cfl_u,
+                recon10_u,
+                u_src10,
+                cstride,
+                cx,
+                cy,
+                cw,
+                ch,
+                d.uv_mode,
+                d.uv_angle_delta,
+                uv_tt,
+                &geom,
+                edge_filter,
+                qt_u,
+                rdoq_level,
+                lambda,
+                rates,
+                bd,
+                qm_uv[0],
+                cfl_u,
             );
             let (v_q, v_eob, v_rec) = bd10_reencode_chroma_plane(
-                recon10_v, v_src10, cstride, cx, cy, cw, ch, d.uv_mode, d.uv_angle_delta, uv_tt, &geom,
-                edge_filter, qt_v, rdoq_level, lambda, rates, bd, qm_uv[1], cfl_v,
+                recon10_v,
+                v_src10,
+                cstride,
+                cx,
+                cy,
+                cw,
+                ch,
+                d.uv_mode,
+                d.uv_angle_delta,
+                uv_tt,
+                &geom,
+                edge_filter,
+                qt_v,
+                rdoq_level,
+                lambda,
+                rates,
+                bd,
+                qm_uv[1],
+                cfl_v,
             );
             d.chroma_dec = Some((u_q, v_q, u_eob, v_eob, u_rec, v_rec));
         }
@@ -6954,17 +7118,19 @@ fn encode_tile_rows(
     // `false`, so the guarded check compiles to a cheap false-branch and the
     // search output stays byte-identical.
     stop: &dyn enough::Stop,
-) -> crate::EncodeResult<Vec<(
-    Vec<u8>,
-    Vec<crate::partition::PartitionTree>,
-    // bd10 FULL-RD only: this tile's committed 10-bit winner recon, as
-    // SB-extent-SIZED but ALIGNED-STRIDED (`w` / `w/2`) Y/U/V canvases with
-    // only this tile's SB region written. The extra size absorbs a
-    // right-straddle write's wrap; the stride is the aligned width, exactly
-    // like the u8 `tile_frame_recon`. `None` outside the bd10 full-RD
-    // envelope. See the merge site.
-    Option<(Vec<u16>, Vec<u16>, Vec<u16>)>,
-)>> {
+) -> crate::EncodeResult<
+    Vec<(
+        Vec<u8>,
+        Vec<crate::partition::PartitionTree>,
+        // bd10 FULL-RD only: this tile's committed 10-bit winner recon, as
+        // SB-extent-SIZED but ALIGNED-STRIDED (`w` / `w/2`) Y/U/V canvases with
+        // only this tile's SB region written. The extra size absorbs a
+        // right-straddle write's wrap; the stride is the aligned width, exactly
+        // like the u8 `tile_frame_recon`. `None` outside the bd10 full-RD
+        // envelope. See the merge site.
+        Option<(Vec<u16>, Vec<u16>, Vec<u16>)>,
+    )>,
+> {
     let encode_one_tile = |tile_idx: usize| -> crate::EncodeResult<(
         Vec<u8>,
         Vec<crate::partition::PartitionTree>,
@@ -6994,10 +7160,8 @@ fn encode_tile_rows(
         // the per-SB CDF chain gate below is 2..=6. 7/8/9+ use
         // update_cdf_level 0 (static default tables all frame).
         // eff-M9 (intra_level 8) arms the is_dc_only gate inside the funnel.
-        let use_funnel = chroma_420
-            && chroma_src.is_some()
-            && ref_frame_data.is_none()
-            && c_quant.is_some();
+        let use_funnel =
+            chroma_420 && chroma_src.is_some() && ref_frame_data.is_none() && c_quant.is_some();
         // Same sc derivation as the pack side (identical inputs -> identical
         // result): the MD walk's rates + its per-SB CDF evolution must see
         // the same allow_sct as the real pack or the chains desync on
@@ -7059,7 +7223,13 @@ fn encode_tile_rows(
         let mut fun_u_recon = svtav1_types::try_vec![128u8; if use_funnel { ext_cbuf } else { 0 }]?;
         let mut fun_v_recon = svtav1_types::try_vec![128u8; if use_funnel { ext_cbuf } else { 0 }]?;
         let mut fun_ectx = if use_funnel {
-            let mut e = EntropyCtx::new(w / 4, h / 4, true, tile_sc.allow_screen_content_tools, bit_depth);
+            let mut e = EntropyCtx::new(
+                w / 4,
+                h / 4,
+                true,
+                tile_sc.allow_screen_content_tools,
+                bit_depth,
+            );
             // Task #86: consistent with the other EntropyCtx instances
             // this tile constructs — see the real pack walk's identical
             // assignment for the rationale (leaf_funnel.rs itself is a
@@ -7137,53 +7307,54 @@ fn encode_tile_rows(
         // I-slice frame-constant `svt_aom_estimate_mv_rate` build) and the
         // per-block scalars (sadperbit16 from base_q_idx, errorperbit from
         // the funnel lambda >> RD_EPB_SHIFT).
-        let ibc_state: Option<alloc::boxed::Box<crate::leaf_funnel::IbcFrameState>> =
-            if use_funnel && funnel_cfg.allow_intrabc {
-                let mut ctrls = crate::intrabc::IbcCtrls::for_level(tile_sc.intrabc_level);
-                // scs->qp_based_th_scaling_ctrls.intra_bc_mesh_qp_scaling is
-                // true on the allintra path (scale_mesh_patterns_by_qp doc).
-                crate::intrabc::scale_mesh_patterns_by_qp(&mut ctrls, true, cli_qp as u32);
-                let hash = crate::intrabc_hash::generate_ibc_data(
-                    encode_input,
-                    w,
-                    w,
-                    h,
-                    ctrls.max_block_size_hash,
-                    ctrls.max_cand_per_bucket,
-                    speed_config.preset >= 4, // pic_disallow_4x4 (depth_refine derivation)
-                );
-                // svt_aom_get_sad_per_bit(base_q_idx, 0): init_me_luts_bd's
-                // `(int)(0.0418*q + 2.4107)` with q = ac_qlookup/4.0
-                // (rc_process.c:186-190, mode_decision.c:2052-2063).
-                let q8 = f64::from(svtav1_dsp::quant_tables::AC_QLOOKUP_8[base_qindex as usize]) / 4.0;
-                let sad_per_bit = (0.0418 * q8 + 2.4107) as i32;
-                let error_per_bit = ((pic_lambda) >> crate::intrabc::RD_EPB_SHIFT).max(1) as i32;
-                Some(alloc::boxed::Box::new(crate::leaf_funnel::IbcFrameState {
-                    ctrls,
-                    hash,
-                    sites: crate::intrabc::init_search_sites(w),
-                    search_tables: crate::intrabc::build_nmv_cost_table(
-                        &svtav1_entropy::mv_coding::NmvContext::default(),
-                        svtav1_entropy::mv_coding::MvSubpelPrecision::Low,
-                    ),
-                    sad_per_bit,
-                    error_per_bit,
-                    mi_rows: (h / 4) as i32,
-                    mi_cols: (w / 4) as i32,
-                    tile: crate::intrabc::TileMiBounds {
-                        mi_row_start: (tile_sb_row_start * sb_size / 4) as i32,
-                        mi_row_end: ((tile_sb_row_end * sb_size / 4).min(h / 4)) as i32,
-                        mi_col_start: (tile_sb_col_start * sb_size / 4) as i32,
-                        mi_col_end: ((tile_sb_col_end * sb_size / 4).min(w / 4)) as i32,
-                    },
-                    sb_mi_size: (sb_size / 4) as i32,
-                    sb_size_log2_mi: (sb_size as u32 / 4).trailing_zeros(),
-                    sb_size_px: sb_size as i32,
-                    disallow_4x4: speed_config.preset >= 4,
-                }))
-            } else {
-                None
-            };
+        let ibc_state: Option<alloc::boxed::Box<crate::leaf_funnel::IbcFrameState>> = if use_funnel
+            && funnel_cfg.allow_intrabc
+        {
+            let mut ctrls = crate::intrabc::IbcCtrls::for_level(tile_sc.intrabc_level);
+            // scs->qp_based_th_scaling_ctrls.intra_bc_mesh_qp_scaling is
+            // true on the allintra path (scale_mesh_patterns_by_qp doc).
+            crate::intrabc::scale_mesh_patterns_by_qp(&mut ctrls, true, cli_qp as u32);
+            let hash = crate::intrabc_hash::generate_ibc_data(
+                encode_input,
+                w,
+                w,
+                h,
+                ctrls.max_block_size_hash,
+                ctrls.max_cand_per_bucket,
+                speed_config.preset >= 4, // pic_disallow_4x4 (depth_refine derivation)
+            );
+            // svt_aom_get_sad_per_bit(base_q_idx, 0): init_me_luts_bd's
+            // `(int)(0.0418*q + 2.4107)` with q = ac_qlookup/4.0
+            // (rc_process.c:186-190, mode_decision.c:2052-2063).
+            let q8 = f64::from(svtav1_dsp::quant_tables::AC_QLOOKUP_8[base_qindex as usize]) / 4.0;
+            let sad_per_bit = (0.0418 * q8 + 2.4107) as i32;
+            let error_per_bit = ((pic_lambda) >> crate::intrabc::RD_EPB_SHIFT).max(1) as i32;
+            Some(alloc::boxed::Box::new(crate::leaf_funnel::IbcFrameState {
+                ctrls,
+                hash,
+                sites: crate::intrabc::init_search_sites(w),
+                search_tables: crate::intrabc::build_nmv_cost_table(
+                    &svtav1_entropy::mv_coding::NmvContext::default(),
+                    svtav1_entropy::mv_coding::MvSubpelPrecision::Low,
+                ),
+                sad_per_bit,
+                error_per_bit,
+                mi_rows: (h / 4) as i32,
+                mi_cols: (w / 4) as i32,
+                tile: crate::intrabc::TileMiBounds {
+                    mi_row_start: (tile_sb_row_start * sb_size / 4) as i32,
+                    mi_row_end: ((tile_sb_row_end * sb_size / 4).min(h / 4)) as i32,
+                    mi_col_start: (tile_sb_col_start * sb_size / 4) as i32,
+                    mi_col_end: ((tile_sb_col_end * sb_size / 4).min(w / 4)) as i32,
+                },
+                sb_mi_size: (sb_size / 4) as i32,
+                sb_size_log2_mi: (sb_size as u32 / 4).trailing_zeros(),
+                sb_size_px: sb_size as i32,
+                disallow_4x4: speed_config.preset >= 4,
+            }))
+        } else {
+            None
+        };
         // The MD mode-info grid the MVP scans read (C mi_grid_base as MD
         // stamps it) — frame-wide, one entry per 4x4 cell.
         let mut ibc_mvp_grid: alloc::vec::Vec<crate::intrabc_mvp::MvpMiEntry> =
@@ -7221,7 +7392,13 @@ fn encode_tile_rows(
             // The chain simulation re-codes each SB's symbols to evolve the
             // per-SB frame contexts — it must code the same no-palette
             // flags as the real pack or the palette CDF rows drift.
-            let mut e = EntropyCtx::new(w / 4, h / 4, true, tile_sc.allow_screen_content_tools, bit_depth);
+            let mut e = EntropyCtx::new(
+                w / 4,
+                h / 4,
+                true,
+                tile_sc.allow_screen_content_tools,
+                bit_depth,
+            );
             // IBC chunk 1: same use_intrabc flag coding as the real pack —
             // the chain's intrabc_cdf must evolve identically (the C
             // MD-side twin, update_stats md_rate_estimation.c:854-855).
@@ -7274,8 +7451,7 @@ fn encode_tile_rows(
         //   - mainline tools only: ac-bias / noise-norm are fork features whose
         //     u16 psy kernels are unported (tx_unit_hbd applies neither).
         // Everything outside that envelope keeps the existing behaviour.
-        let bd10_full_rd =
-            bd10_full_rd_supported(bit_depth, speed_config.preset, chroma_420, w, h);
+        let bd10_full_rd = bd10_full_rd_supported(bit_depth, speed_config.preset, chroma_420, w, h);
         let bd10_luma_funnel = bd10_canvas_ok && (speed_config.preset >= 9 || bd10_full_rd);
         // Task #6 chunk 1: hand the funnel the REAL 10-bit source when the
         // caller supplied one AND a bd10 stage is armed to read it. The planes
@@ -7285,7 +7461,10 @@ fn encode_tile_rows(
         // them identically. Chroma keeps the ALIGNED stride `w/2` with extra
         // rows, matching `sb_chroma_owned`.
         let funnel_src10 = hbd_src.filter(|_| bd10_luma_funnel).map(|(y10, u10, v10)| {
-            debug_assert!(y10.len() >= in_stride * h, "hbd luma plane must cover the frame");
+            debug_assert!(
+                y10.len() >= in_stride * h,
+                "hbd luma plane must cover the frame"
+            );
             crate::leaf_funnel::FunnelSrc10 {
                 y: y10,
                 y_stride: in_stride,
@@ -7309,7 +7488,10 @@ fn encode_tile_rows(
             alloc::vec::Vec<u16>,
         ) = if bd10_full_rd {
             let n = (ext_w / 2) * (ext_h / 2);
-            (svtav1_types::try_vec![512u16; n]?, svtav1_types::try_vec![512u16; n]?)
+            (
+                svtav1_types::try_vec![512u16; n]?,
+                svtav1_types::try_vec![512u16; n]?,
+            )
         } else {
             (alloc::vec::Vec::new(), alloc::vec::Vec::new())
         };
@@ -7352,7 +7534,9 @@ fn encode_tile_rows(
             // default `Unstoppable` token, so this is byte-inert unless a real
             // stop token was installed via `with_stop`.
             if stop.may_stop() {
-                stop.check().map_err(EncodeError::from).map_err(whereat::at)?;
+                stop.check()
+                    .map_err(EncodeError::from)
+                    .map_err(whereat::at)?;
             }
             for sb_col in tile_sb_col_start..tile_sb_col_end {
                 let sb_x0 = sb_col * sb_size;
@@ -7387,10 +7571,10 @@ fn encode_tile_rows(
                 if let (Some(plan), Some(f)) = (sb_qindex_plan, fun_frame.as_mut()) {
                     let sbq = plan[sb_row * sb_cols + sb_col];
                     f.base_qindex = sbq;
-                    f.qindex_u = (i32::from(sbq) + i32::from(chroma_ac_deltas.0))
-                        .clamp(0, 255) as u8;
-                    f.qindex_v = (i32::from(sbq) + i32::from(chroma_ac_deltas.1))
-                        .clamp(0, 255) as u8;
+                    f.qindex_u =
+                        (i32::from(sbq) + i32::from(chroma_ac_deltas.0)).clamp(0, 255) as u8;
+                    f.qindex_v =
+                        (i32::from(sbq) + i32::from(chroma_ac_deltas.1)).clamp(0, 255) as u8;
                     // [SVT_HDR_MODE] per-SB lambda: alt KF factor (fork
                     // default) + the delta-q qdiff stats factor
                     // (rc_process.c:437-446; this path is fork-only).
@@ -7556,8 +7740,8 @@ fn encode_tile_rows(
                 // ESTIMATES (candidate cost comparisons), never the
                 // coded bitstream, whose entropy state comes from the
                 // separately-reset `run_entropy_walk`.
-                let local_sb_index = (sb_row - tile_sb_row_start) * tile_sb_cols
-                    + (sb_col - tile_sb_col_start);
+                let local_sb_index =
+                    (sb_row - tile_sb_row_start) * tile_sb_cols + (sb_col - tile_sb_col_start);
                 let chain_base = if funnel_chain {
                     // C `ec_ctx_array[sb]` neighbor rule for the rate-estimation
                     // CDF (enc_dec_process.c:3002-3022). `pic_based_rate_est` is
@@ -7567,8 +7751,7 @@ fn encode_tile_rows(
                     // top-right = not tile-top row AND the SB one to the right
                     // exists (so the last column has no top-right).
                     let left_avail = sb_col > tile_sb_col_start;
-                    let topright_avail =
-                        sb_row > tile_sb_row_start && sb_col + 1 < tile_sb_col_end;
+                    let topright_avail = sb_row > tile_sb_row_start && sb_col + 1 < tile_sb_col_end;
                     if left_avail && topright_avail {
                         // both -> copy left, then avg with top-right (3:1).
                         // C AVG_CDF_WEIGHT_LEFT / AVG_CDF_WEIGHT_TOP
@@ -7700,528 +7883,74 @@ fn encode_tile_rows(
                 // `None` at SB64 (units.len() == 1) → byte-identical.
                 let mut sb_pd0_max_min: Option<(usize, usize)> = None;
                 for &(x0, y0) in units.iter() {
-                let cur_w = unit_size.min(w - x0);
-                let cur_h = unit_size.min(h - y0);
-                // C-exact partition source gate.
-                // Task #95 chunk 2: partial units (cur_w/cur_h < unit_size)
-                // take the PD0 fixed-tree path too — C decides the ENTIRE
-                // partition tree in PD0 for every b64 including incomplete
-                // ones, starting from a 64x64 root that carries the
-                // spec-5.11.4 forced edge splits. Complete units are
-                // unaffected (cur_w == cur_h == unit_size).
-                // Retained (underscored) rather than deleted: the PD1 walk no
-                // longer needs it, but it is the canonical "is this unit
-                // complete?" predicate and the next edge-aware path will.
-                let _full_sb = cur_w == unit_size && cur_h == unit_size;
-                let sb_result = if use_pd0 {
-                    if speed_config.preset >= 9 {
-                        let tree = if bit_depth == 10 {
-                            // C `set_pd0_ctrls` (enc_mode_config.c:5415) FORCES
-                            // PD0_LVL_0 (full-RD partition search) at bd10 (hbd_md
-                            // set), regardless of preset — where bd8 uses the
-                            // preset's LVL_6/LVL_5 variance heuristic. LVL_0 runs
-                            // at 8-bit on the same MSB-truncated `sb_input`, so
-                            // this is a pure partition change; the coded levels
-                            // are recomputed at 10-bit by bd10_reencode_luma.
-                            crate::pd0::pd0_pick_sb_partition_lvl0(
-                                sb_input,
-                                in_stride,
-                                x0,
-                                y0,
-                                cli_qp as u32,
-                                sb_qindex,
-                                // [SVT_HDR_MODE] Frame luma QM level. C forces
-                                // PD0_LVL_0 at bd10 whose light encode applies
-                                // the matrix when using_qmatrix (fork default);
-                                // mainline/QM-off leave qm_levels = [15;3], so
-                                // this is the non-QM (byte-inert) path there.
-                                qm_levels[0],
-                                crate::pd0::input_resolution_factor(w * h),
-                                w,
-                                h,
-                                // Superres chunk B.4: this SB's STALE full-res variance entry.
-                                sb_stale_vars,
-                                // C `static_config.max_tx_size` (tune IQ sets 32 at qp<=45).
-                                max_tx_size,
-                            )
-                        } else {
-                            crate::pd0::pd0_pick_sb_partition(
-                                sb_input,
-                                in_stride,
-                                x0,
-                                y0,
-                                cli_qp as u32,
-                                sb_qindex,
-                                // C `input_resolution_factor[input_resolution]`:
-                                // per-picture coeff-rate addend keyed on w*h.
-                                crate::pd0::input_resolution_factor(w * h),
-                                // ALIGNED dims — the spec-5.11.4 edge predicate grid.
-                                w,
-                                h,
-                                // Superres chunk B.4: this SB's STALE full-res variance entry.
-                                sb_stale_vars,
-                                // C `static_config.max_tx_size` (tune IQ sets 32 at qp<=45).
-                                max_tx_size,
-                            )
-                        };
-                        // The same per-SB variance map C's picture analysis
-                        // feeds to is_dc_only_safe (pcs->ppcs->variance): the
-                        // fixed-tree leaves use it to force the C-exact
-                        // DC-only intra candidate set where the gate fires.
-                        let sb_vars = sb_stale_vars.copied().unwrap_or_else(|| {
-                            crate::pd0::compute_b64_variance(sb_input, in_stride, x0, y0)
-                        });
-                        let mut funnel_ctx = if use_funnel {
-                            let (u_src, v_src) = chroma_src.unwrap();
-                            Some(crate::leaf_funnel::FunnelCtx {
-                                u_src,
-                                v_src,
-                                src10: funnel_src10,
-                                u_recon: &mut fun_u_recon,
-                                v_recon: &mut fun_v_recon,
-                                c_stride: cwid,
-                                ectx: fun_ectx.as_mut().unwrap(),
-                                rates: fun_rates.as_deref().unwrap(),
-                                frame: fun_frame.as_ref().unwrap(),
-                                // bd10 luma mode funnel (task #94): true 10-bit
-                                // recon canvas for the per-block mode decision;
-                                // None (bd8 / other presets / partial-SB) is
-                                // byte-identical.
-                                y_recon10: if bd10_luma_funnel {
-                                    Some(&mut tile_frame_recon10)
-                                } else {
-                                    None
-                                },
-                                u_recon10: if bd10_full_rd {
-                                    Some(&mut tile_frame_u_recon10)
-                                } else {
-                                    None
-                                },
-                                v_recon10: if bd10_full_rd {
-                                    Some(&mut tile_frame_v_recon10)
-                                } else {
-                                    None
-                                },
-                                // IBC chunk 8: frame IntraBC state + the MD mi grid.
-                                ibc: ibc_state.as_deref(),
-                                ibc_mvp: if ibc_state.is_some() {
-                                    Some(&mut ibc_mvp_grid)
-                                } else {
-                                    None
-                                },
-                                ibc_gate: Default::default(),
-                                full_rd10: bd10_full_rd,
-                            })
-                        } else {
-                            None
-                        };
-                        crate::partition::encode_fixed_tree(
-                            &sb_input[y0 * in_stride + x0..],
-                            in_stride,
-                            &mut tile_frame_recon,
-                            w,
-                            &tree,
-                            unit_size,
-                            sb_qindex,
-                            &part_config,
-                            x0,
-                            y0,
-                            w,
-                            h,
-                            &sb_vars,
-                            (x0, y0),
-                            funnel_ctx.as_mut(),
-                        )
-                    } else {
-                        // Per-SB PD0 rate tables from the chain (C rebuilds
-                        // rate_est_table from ec_ctx_array[sb] BEFORE the
-                        // SB's PD0 runs — the drifting SPLIT rates).
-                        let chained_tables = if funnel_chain {
-                            Some(match &chain_base {
-                                Some((fc, cfc)) => {
-                                    crate::pd0::build_m6_pd0_tables_from_ctx(fc, cfc)
-                                }
-                                None => crate::pd0::build_m6_pd0_tables(sb_qindex),
-                            })
-                        } else {
-                            None
-                        };
-                        let tables = match &chained_tables {
-                            Some(t) => t,
-                            None => m6_pd0_tables
-                                .get_or_insert_with(|| crate::pd0::build_m6_pd0_tables(sb_qindex)),
-                        };
-                        // The PD1 depth-refinement walk IS edge-aware as of
-                        // 2026-08-04 (depth_refine.rs: forced split at a
-                        // both-false node, the single injected shape at a
-                        // one-false node priced from the BINARY alphabet, and
-                        // off-frame quadrants skipped), so partial SBs no
-                        // longer fall back to the plain PD0 fixed tree. That
-                        // fallback was the structural reason presets 0..=5
-                        // could not byte-match C on non-64-aligned geometry:
-                        // C runs its PD1 refinement on every SB, complete or
-                        // not, so a partial SB taking a DIFFERENT SEARCH could
-                        // only match by coincidence.
-                        let refined = matches!(speed_config.preset, 0..=5) && use_funnel;
-                        if refined {
-                            // M4/M5 (`dr_mode = 1`, PD0_DEPTH_ADAPTIVE):
-                            // PD1 re-decides depths around the PD0 tree —
-                            // depth_refine.rs. The refinement gates run on
-                            // the PD0 PART_N costs; the walk evaluates the
-                            // admitted depths through the leaf funnel and
-                            // compares with real partition rates
-                            // (bias 995). M6+ (PRED_PART_ONLY) keeps the
-                            // fixed-tree path below (identical outcome:
-                            // s = e = 0 everywhere).
-                            // C's allintra depth-refinement level is sc_class5-
-                            // aware (enc_mode_config.c:10067-10090): screen
-                            // content at M0-M2 uses a lower/more-thorough level
-                            // (1/1/5) that admits the depth descent the
-                            // !sc_class5 level-6 row over-prunes.
-                            // ONE predicate, used by BOTH the PD0 eval that
-                            // builds the refinement scan and the PD1 walk that
-                            // consumes it. They MUST agree: if PD0 injects an
-                            // edge shape at a one-false node while the walk
-                            // force-splits it, the walk descends into a scan
-                            // node that has no children and panics.
-                            // `svt_aom_get_nsq_geom_level_allintra` returns 0
-                            // -- geometry DISABLED -- only for allintra
-                            // enc_mode > M6 (enc_mode_config.c:8240). This
-                            // branch is presets 0..=5, so geometry is always on
-                            // and a one-false node keeps its injected edge
-                            // shape.
-                            //
-                            // Do NOT reach for `NsqCfg::for_preset_qp(..).
-                            // enabled` here. That is `set_nsq_search_ctrls`
-                            // (:6496-6786) -- the SEARCH heuristics -- and it
-                            // returns `off()` at p4/p5, which is a different
-                            // statement from "no NSQ shapes exist". MEASURED
-                            // 2026-08-04: wiring it in force-split every
-                            // one-false node at p4/p5 and cost 29 cells --
-                            // partial-SB p4 28/36 -> 12/36 and p5 25/36 ->
-                            // 13/36. Search-off is not geometry-off.
-                            let nsq_geom_enabled = speed_config.preset <= 6;
-                            let dr = crate::depth_refine::DrCtrls::for_preset_sc(
-                                speed_config.preset,
-                                tile_sc.classes.sc_class5,
-                            );
-                            let eval = crate::pd0::pd0_pick_sb_partition_m6_eval(
-                                // SB-EXTENT padded plane, not the raw frame:
-                                // `compute_b64_variance` reads a full 64x64
-                                // unclamped, so a partial SB must read C's
-                                // replicated border rather than running off the
-                                // end (or stride-wrapping into the next row).
-                                // Identical to `encode_input`/`w` on a
-                                // 64-aligned frame -- `sb_input_owned` is None
-                                // there -- so this is byte-neutral.
-                                sb_input,
-                                in_stride,
-                                x0,
-                                y0,
-                                cli_qp as u32,
-                                sb_qindex,
-                                tables,
-                                if dr.disallow_4x4 { 8 } else { 4 },
-                                // M4/M5: rate_est_level 1 -> coeff_rate_est_lvl 1
-                                // (real PD0 coeff rate). M7/M8's level-2 PD0
-                                // approximation only fires when this is >= 2.
-                                funnel_cfg.coeff_rate_est_lvl,
-                                // max-block variance cap: M8+ only
-                                // (get_max_block_size_allintra base th ~0
-                                // through M7) — never on this p<=5 branch.
-                                false,
-                                // NSQ geometry: a one-false node keeps its
-                                // edge shape when NSQ shapes exist, and
-                                // force-splits when they do not (p4/p5, where
-                                // `NsqCfg::for_preset_qp` is `off()`).
-                                nsq_geom_enabled,
-                                // ALIGNED dims — this `refined` path is
-                                // full-SB-gated (see `refined` above), so the
-                                // edge/off branches never fire; passing the
-                                // frame dims keeps the predicate well-defined.
-                                w,
-                                h,
-                                // Tile pixel origin (full-SB refined path is
-                                // single-tile-only in the tested envelope; 0
-                                // when untiled → byte-inert).
-                                tile_sb_row_start * sb_size,
-                                tile_sb_col_start * sb_size,
-                                // Superres chunk B.4: this SB's STALE full-res variance entry.
-                                sb_stale_vars,
-                                // C `static_config.max_tx_size` (tune IQ sets 32 at qp<=45).
-                                max_tx_size,
-                            );
-                            let cq = c_quant.as_ref().unwrap();
-                            // 8-BIT lambda even at bd10 — deliberate, not an
-                            // oversight. C's `perform_pred_depth_refinement`
-                            // (enc_dec_process.c:3017) runs INSIDE the window
-                            // where `hbd_md` is forced to 0 (:2965, restored at
-                            // :3023), so `is_parent_to_current_deviation_small`
-                            // / `is_child_to_current_deviation_small` select
-                            // `full_lambda_md[EB_8_BIT_MD]` /
-                            // `full_sb_lambda_md[EB_8_BIT_MD]` at BOTH bit
-                            // depths, over PD0 costs that are themselves
-                            // bit-depth-identical. The bd10 lambda belongs to
-                            // the PD1 WALK below, not to this scan.
-                            // Whole-128-SB PD0 max/min fold (C
-                            // `get_max_min_pd0_depths`). At SB128 (units.len() >
-                            // 1) fold every coding-unit quadrant's PD0 eval;
-                            // cached across the unit loop. `None` at SB64 → the
-                            // scan derives max/min from `eval` alone, unchanged.
-                            let sb_max_min = if units.len() > 1 {
-                                if sb_pd0_max_min.is_none() {
-                                    let mut mx = 0usize;
-                                    let mut mn = 255usize;
-                                    for &(ux, uy) in units.iter() {
-                                        // Only fold FULL 64x64 units: the m6 PD0
-                                        // eval reads a whole 64x64 source block,
-                                        // so a partial edge unit (non-64-aligned
-                                        // frame) would read out of bounds. Every
-                                        // SB128 gate cell is 64-aligned → all
-                                        // units full → this never skips. A
-                                        // non-64-aligned SB128 frame needs the
-                                        // partial-SB (#95) treatment anyway
-                                        // (partial units take the fixed-tree
-                                        // path, not this refined one).
-                                        if ux + unit_size > w || uy + unit_size > h {
-                                            continue;
-                                        }
-                                        crate::pd0::pd0_pick_sb_partition_m6_eval(
-                                            sb_input,
-                                            in_stride,
-                                            ux,
-                                            uy,
-                                            cli_qp as u32,
-                                            sb_qindex,
-                                            tables,
-                                            if dr.disallow_4x4 { 8 } else { 4 },
-                                            funnel_cfg.coeff_rate_est_lvl,
-                                            false,
-                                            nsq_geom_enabled,
-                                            w,
-                                            h,
-                                            tile_sb_row_start * sb_size,
-                                            tile_sb_col_start * sb_size,
-                                            // Superres chunk B.4: this SB's STALE full-res variance entry.
-                                            sb_stale_vars,
-                                            // C `static_config.max_tx_size`.
-                                            max_tx_size,
-                                        )
-                                        .max_min_picked(&mut mx, &mut mn);
-                                    }
-                                    sb_pd0_max_min = Some((mx, mn));
-                                }
-                                sb_pd0_max_min
+                    let cur_w = unit_size.min(w - x0);
+                    let cur_h = unit_size.min(h - y0);
+                    // C-exact partition source gate.
+                    // Task #95 chunk 2: partial units (cur_w/cur_h < unit_size)
+                    // take the PD0 fixed-tree path too — C decides the ENTIRE
+                    // partition tree in PD0 for every b64 including incomplete
+                    // ones, starting from a 64x64 root that carries the
+                    // spec-5.11.4 forced edge splits. Complete units are
+                    // unaffected (cur_w == cur_h == unit_size).
+                    // Retained (underscored) rather than deleted: the PD1 walk no
+                    // longer needs it, but it is the canonical "is this unit
+                    // complete?" predicate and the next edge-aware path will.
+                    let _full_sb = cur_w == unit_size && cur_h == unit_size;
+                    let sb_result = if use_pd0 {
+                        if speed_config.preset >= 9 {
+                            let tree = if bit_depth == 10 {
+                                // C `set_pd0_ctrls` (enc_mode_config.c:5415) FORCES
+                                // PD0_LVL_0 (full-RD partition search) at bd10 (hbd_md
+                                // set), regardless of preset — where bd8 uses the
+                                // preset's LVL_6/LVL_5 variance heuristic. LVL_0 runs
+                                // at 8-bit on the same MSB-truncated `sb_input`, so
+                                // this is a pure partition change; the coded levels
+                                // are recomputed at 10-bit by bd10_reencode_luma.
+                                crate::pd0::pd0_pick_sb_partition_lvl0(
+                                    sb_input,
+                                    in_stride,
+                                    x0,
+                                    y0,
+                                    cli_qp as u32,
+                                    sb_qindex,
+                                    // [SVT_HDR_MODE] Frame luma QM level. C forces
+                                    // PD0_LVL_0 at bd10 whose light encode applies
+                                    // the matrix when using_qmatrix (fork default);
+                                    // mainline/QM-off leave qm_levels = [15;3], so
+                                    // this is the non-QM (byte-inert) path there.
+                                    qm_levels[0],
+                                    crate::pd0::input_resolution_factor(w * h),
+                                    w,
+                                    h,
+                                    // Superres chunk B.4: this SB's STALE full-res variance entry.
+                                    sb_stale_vars,
+                                    // C `static_config.max_tx_size` (tune IQ sets 32 at qp<=45).
+                                    max_tx_size,
+                                )
                             } else {
-                                None
+                                crate::pd0::pd0_pick_sb_partition(
+                                    sb_input,
+                                    in_stride,
+                                    x0,
+                                    y0,
+                                    cli_qp as u32,
+                                    sb_qindex,
+                                    // C `input_resolution_factor[input_resolution]`:
+                                    // per-picture coeff-rate addend keyed on w*h.
+                                    crate::pd0::input_resolution_factor(w * h),
+                                    // ALIGNED dims — the spec-5.11.4 edge predicate grid.
+                                    w,
+                                    h,
+                                    // Superres chunk B.4: this SB's STALE full-res variance entry.
+                                    sb_stale_vars,
+                                    // C `static_config.max_tx_size` (tune IQ sets 32 at qp<=45).
+                                    max_tx_size,
+                                )
                             };
-                            let scan = crate::depth_refine::build_refined_scan_at(
-                                &eval,
-                                &dr,
-                                cq.lambda as u64,
-                                tables,
-                                x0,
-                                y0,
-                                sb_max_min,
-                                // C `static_config.max_tx_size` -- the same
-                                // value already threaded into the PD0 entries
-                                // just above, and the reason `max_sq_size` is
-                                // not always 64 (enc_dec_process.c:1814-1817).
-                                max_tx_size,
-                            );
-                            // Partition rates at the real contexts, from
-                            // the same (possibly chained) frame context as
-                            // the funnel's syntax rates.
-                            let part_rates = match &chain_base {
-                                Some((fc, _)) => crate::depth_refine::PartRates::from_fc(fc),
-                                None => crate::depth_refine::PartRates::from_fc(
-                                    &svtav1_entropy::context::FrameContext::new_default(),
-                                ),
-                            };
-                            let (u_src, v_src) = chroma_src.unwrap();
-                            let mut fx = crate::leaf_funnel::FunnelCtx {
-                                u_src,
-                                v_src,
-                                src10: funnel_src10,
-                                u_recon: &mut fun_u_recon,
-                                v_recon: &mut fun_v_recon,
-                                c_stride: cwid,
-                                ectx: fun_ectx.as_mut().unwrap(),
-                                rates: fun_rates.as_deref().unwrap(),
-                                frame: fun_frame.as_ref().unwrap(),
-                                // bd10 PART axis (task #94): the PD1
-                                // depth-refine + NSQ walk compares LEAF block
-                                // costs, and C's PD1 runs at `hbd_md = 2` (true
-                                // 10-bit) — `test_depth` /
-                                // `test_split_partition` sum
-                                // `block_data[shape][nsi]->cost` from an MDS3
-                                // that predicted, quantized and measured
-                                // distortion at 10 bits. Running that walk on
-                                // 8-bit leaf costs picked C's *bd8* shape. The
-                                // same `full_rd10` chain that closed p7/p8
-                                // (MODE axis) now feeds this walk. bd8 and
-                                // every out-of-envelope bd10 frame keep `None`
-                                // / `false` → byte-IDENTICAL.
-                                y_recon10: if bd10_luma_funnel {
-                                    Some(&mut tile_frame_recon10)
-                                } else {
-                                    None
-                                },
-                                u_recon10: if bd10_full_rd {
-                                    Some(&mut tile_frame_u_recon10)
-                                } else {
-                                    None
-                                },
-                                v_recon10: if bd10_full_rd {
-                                    Some(&mut tile_frame_v_recon10)
-                                } else {
-                                    None
-                                },
-                                // IBC chunk 8: frame IntraBC state + the MD mi grid.
-                                ibc: ibc_state.as_deref(),
-                                ibc_mvp: if ibc_state.is_some() {
-                                    Some(&mut ibc_mvp_grid)
-                                } else {
-                                    None
-                                },
-                                ibc_gate: Default::default(),
-                                full_rd10: bd10_full_rd,
-                            };
-                            let nsq = crate::depth_refine::NsqCfg::for_preset_qp(
-                                speed_config.preset,
-                                cli_qp as u32,
-                            );
-                            crate::depth_refine::decide_sb_refined(
-                                &scan,
-                                &mut fx,
-                                sb_input,
-                                in_stride,
-                                &mut tile_frame_recon,
-                                w,
-                                // PD1 partition-rate lambda. C `test_depth` /
-                                // `test_split_partition` /
-                                // `update_skip_nsq_based_on_split_rate` /
-                                // `update_skip_nsq_based_on_sq_recon_dist` all
-                                // select `full_sb_lambda_md[EB_10_BIT_MD]` (==
-                                // `full_lambda_md[EB_10_BIT_MD]`,
-                                // md_process.c:763-764) when `hbd_md != 0`
-                                // (product_coding_loop.c:9725, 9859, 10782,
-                                // 10887). It MUST move with the leaf costs: the
-                                // gates are ratio compares between an
-                                // RDCOST(λ, part_rate, 0) term and a block cost.
-                                // NOTE the refinement SCAN above deliberately
-                                // keeps the 8-bit lambda — see
-                                // `build_refined_scan_at`'s call site.
-                                if bd10_full_rd {
-                                    u64::from(crate::pd0::kf_full_lambda_bd10(
-                                        base_qindex,
-                                        cli_qp as u32,
-                                    ))
-                                } else {
-                                    cq.lambda as u64
-                                },
-                                &part_rates,
-                                &nsq,
-                                dr.disallow_4x4,
-                                x0,
-                                y0,
-                                // ALIGNED extent for the spec-5.11.4 edge
-                                // predicate. Dead on a 64-aligned frame.
-                                w,
-                                h,
-                                // Whether NSQ geometry exists at this preset,
-                                // which decides what a ONE-FALSE boundary node
-                                // does: inject the single edge shape (H/V), or
-                                // force-split like a both-false node.
-                                //
-                                // NOT hardcoded true. `NsqCfg::for_preset_qp`
-                                // returns `off()` for presets 4 and 5 (its base
-                                // table is nonzero only for 0..=3), and
-                                // `shapes_for_size` already treats `!enabled` as
-                                // square-only -- so at p4/p5 there is no legal
-                                // edge shape to inject and C force-splits.
-                                //
-                                // MEASURED: with `true` here, p5 coded a 16x8 at
-                                // (16,80) on `gradient 72x88 q20` where C splits
-                                // to two 8x8s -- the ONLY structural difference
-                                // between the port's tree and C's on that frame.
-                                nsq_geom_enabled,
-                            )
-                        } else {
-                            // Same computation as pd0_pick_sb_partition_m6
-                            // (that fn is exactly _eval(min_sq=8).tree()),
-                            // via the eval form so the per-node PD0 costs
-                            // are dumpable (SVTAV1_PD0DBG + SVTAV1_DBG_MI)
-                            // for depth-flip drills at M6-M8 — the C
-                            // counterpart is the PICKPART wrap, which fires
-                            // at every preset.
-                            let eval = crate::pd0::pd0_pick_sb_partition_m6_eval(
-                                sb_input,
-                                in_stride,
-                                x0,
-                                y0,
-                                cli_qp as u32,
-                                sb_qindex,
-                                tables,
-                                8,
-                                // M6: coeff_rate_est_lvl 1 (real PD0 coeff
-                                // rate, unchanged). M7/M8: 2 -> the C
-                                // perform_tx_pd0 `eob<th ? 6000+eob*500`
-                                // approximation that lowers the parent-NONE
-                                // cost and matches C's partition depth.
-                                funnel_cfg.coeff_rate_est_lvl,
-                                // C get_max_block_size_allintra: the
-                                // 64-variance cap fires at M8+ only, and
-                                // stays at sb_size for incomplete edge SBs.
-                                speed_config.preset >= 8
-                                    && x0 + 64 <= w
-                                    && y0 + 64 <= h,
-                                // NSQ geom enabled iff enc_mode <= M6
-                                // (svt_aom_get_nsq_geom_level_allintra: presets
-                                // 0..=6 → level 1/2/3 → enabled; presets 7/8 →
-                                // level 0 → disabled). When disabled, a
-                                // one-false boundary node force-splits (no edge
-                                // shape) — the presets 7/8 partial-SB fix.
-                                speed_config.preset <= 6,
-                                // ALIGNED dims — the spec-5.11.4 edge grid.
-                                w,
-                                h,
-                                // This tile's pixel origin: the M6 PD0 leaf-cost
-                                // DC prediction must not read across a tile
-                                // boundary (C up/left_available respect tiles).
-                                // 0 for a single-tile frame → byte-inert.
-                                tile_sb_row_start * sb_size,
-                                tile_sb_col_start * sb_size,
-                                // Superres chunk B.4: this SB's STALE full-res variance entry.
-                                sb_stale_vars,
-                                // C `static_config.max_tx_size` (tune IQ sets 32 at qp<=45).
-                                max_tx_size,
-                            );
-                            #[cfg(feature = "std")]
-                            if crate::dbgenv::pd0dbg()
-                                && crate::depth_refine::nsqdbg_here(x0, y0)
-                            {
-                                fn walk(e: &crate::pd0::Pd0Eval, x: usize, y: usize) {
-                                    eprintln!(
-                                        "NSQDBG PD0 mi=({},{}) sq={} tested={} cost={} split={}",
-                                        y / 4,
-                                        x / 4,
-                                        e.sq,
-                                        e.tested,
-                                        e.cost,
-                                        e.split
-                                    );
-                                    if let Some(ch) = e.children.as_ref() {
-                                        let h = e.sq / 2;
-                                        walk(&ch[0], x, y);
-                                        walk(&ch[1], x + h, y);
-                                        walk(&ch[2], x, y + h);
-                                        walk(&ch[3], x + h, y + h);
-                                    }
-                                }
-                                walk(&eval, x0, y0);
-                            }
-                            let tree = eval.tree();
+                            // The same per-SB variance map C's picture analysis
+                            // feeds to is_dc_only_safe (pcs->ppcs->variance): the
+                            // fixed-tree leaves use it to force the C-exact
+                            // DC-only intra candidate set where the gate fires.
                             let sb_vars = sb_stale_vars.copied().unwrap_or_else(|| {
                                 crate::pd0::compute_b64_variance(sb_input, in_stride, x0, y0)
                             });
@@ -8237,6 +7966,10 @@ fn encode_tile_rows(
                                     ectx: fun_ectx.as_mut().unwrap(),
                                     rates: fun_rates.as_deref().unwrap(),
                                     frame: fun_frame.as_ref().unwrap(),
+                                    // bd10 luma mode funnel (task #94): true 10-bit
+                                    // recon canvas for the per-block mode decision;
+                                    // None (bd8 / other presets / partial-SB) is
+                                    // byte-identical.
                                     y_recon10: if bd10_luma_funnel {
                                         Some(&mut tile_frame_recon10)
                                     } else {
@@ -8252,10 +7985,13 @@ fn encode_tile_rows(
                                     } else {
                                         None
                                     },
-                                    // bd10 post-pass: IBC is bd8-only (the injection
-                                    // self-gates on bd10 too).
-                                    ibc: None,
-                                    ibc_mvp: None,
+                                    // IBC chunk 8: frame IntraBC state + the MD mi grid.
+                                    ibc: ibc_state.as_deref(),
+                                    ibc_mvp: if ibc_state.is_some() {
+                                        Some(&mut ibc_mvp_grid)
+                                    } else {
+                                        None
+                                    },
                                     ibc_gate: Default::default(),
                                     full_rd10: bd10_full_rd,
                                 })
@@ -8279,26 +8015,472 @@ fn encode_tile_rows(
                                 (x0, y0),
                                 funnel_ctx.as_mut(),
                             )
+                        } else {
+                            // Per-SB PD0 rate tables from the chain (C rebuilds
+                            // rate_est_table from ec_ctx_array[sb] BEFORE the
+                            // SB's PD0 runs — the drifting SPLIT rates).
+                            let chained_tables = if funnel_chain {
+                                Some(match &chain_base {
+                                    Some((fc, cfc)) => {
+                                        crate::pd0::build_m6_pd0_tables_from_ctx(fc, cfc)
+                                    }
+                                    None => crate::pd0::build_m6_pd0_tables(sb_qindex),
+                                })
+                            } else {
+                                None
+                            };
+                            let tables = match &chained_tables {
+                                Some(t) => t,
+                                None => m6_pd0_tables.get_or_insert_with(|| {
+                                    crate::pd0::build_m6_pd0_tables(sb_qindex)
+                                }),
+                            };
+                            // The PD1 depth-refinement walk IS edge-aware as of
+                            // 2026-08-04 (depth_refine.rs: forced split at a
+                            // both-false node, the single injected shape at a
+                            // one-false node priced from the BINARY alphabet, and
+                            // off-frame quadrants skipped), so partial SBs no
+                            // longer fall back to the plain PD0 fixed tree. That
+                            // fallback was the structural reason presets 0..=5
+                            // could not byte-match C on non-64-aligned geometry:
+                            // C runs its PD1 refinement on every SB, complete or
+                            // not, so a partial SB taking a DIFFERENT SEARCH could
+                            // only match by coincidence.
+                            let refined = matches!(speed_config.preset, 0..=5) && use_funnel;
+                            if refined {
+                                // M4/M5 (`dr_mode = 1`, PD0_DEPTH_ADAPTIVE):
+                                // PD1 re-decides depths around the PD0 tree —
+                                // depth_refine.rs. The refinement gates run on
+                                // the PD0 PART_N costs; the walk evaluates the
+                                // admitted depths through the leaf funnel and
+                                // compares with real partition rates
+                                // (bias 995). M6+ (PRED_PART_ONLY) keeps the
+                                // fixed-tree path below (identical outcome:
+                                // s = e = 0 everywhere).
+                                // C's allintra depth-refinement level is sc_class5-
+                                // aware (enc_mode_config.c:10067-10090): screen
+                                // content at M0-M2 uses a lower/more-thorough level
+                                // (1/1/5) that admits the depth descent the
+                                // !sc_class5 level-6 row over-prunes.
+                                // ONE predicate, used by BOTH the PD0 eval that
+                                // builds the refinement scan and the PD1 walk that
+                                // consumes it. They MUST agree: if PD0 injects an
+                                // edge shape at a one-false node while the walk
+                                // force-splits it, the walk descends into a scan
+                                // node that has no children and panics.
+                                // `svt_aom_get_nsq_geom_level_allintra` returns 0
+                                // -- geometry DISABLED -- only for allintra
+                                // enc_mode > M6 (enc_mode_config.c:8240). This
+                                // branch is presets 0..=5, so geometry is always on
+                                // and a one-false node keeps its injected edge
+                                // shape.
+                                //
+                                // Do NOT reach for `NsqCfg::for_preset_qp(..).
+                                // enabled` here. That is `set_nsq_search_ctrls`
+                                // (:6496-6786) -- the SEARCH heuristics -- and it
+                                // returns `off()` at p4/p5, which is a different
+                                // statement from "no NSQ shapes exist". MEASURED
+                                // 2026-08-04: wiring it in force-split every
+                                // one-false node at p4/p5 and cost 29 cells --
+                                // partial-SB p4 28/36 -> 12/36 and p5 25/36 ->
+                                // 13/36. Search-off is not geometry-off.
+                                let nsq_geom_enabled = speed_config.preset <= 6;
+                                let dr = crate::depth_refine::DrCtrls::for_preset_sc(
+                                    speed_config.preset,
+                                    tile_sc.classes.sc_class5,
+                                );
+                                let eval = crate::pd0::pd0_pick_sb_partition_m6_eval(
+                                    // SB-EXTENT padded plane, not the raw frame:
+                                    // `compute_b64_variance` reads a full 64x64
+                                    // unclamped, so a partial SB must read C's
+                                    // replicated border rather than running off the
+                                    // end (or stride-wrapping into the next row).
+                                    // Identical to `encode_input`/`w` on a
+                                    // 64-aligned frame -- `sb_input_owned` is None
+                                    // there -- so this is byte-neutral.
+                                    sb_input,
+                                    in_stride,
+                                    x0,
+                                    y0,
+                                    cli_qp as u32,
+                                    sb_qindex,
+                                    tables,
+                                    if dr.disallow_4x4 { 8 } else { 4 },
+                                    // M4/M5: rate_est_level 1 -> coeff_rate_est_lvl 1
+                                    // (real PD0 coeff rate). M7/M8's level-2 PD0
+                                    // approximation only fires when this is >= 2.
+                                    funnel_cfg.coeff_rate_est_lvl,
+                                    // max-block variance cap: M8+ only
+                                    // (get_max_block_size_allintra base th ~0
+                                    // through M7) — never on this p<=5 branch.
+                                    false,
+                                    // NSQ geometry: a one-false node keeps its
+                                    // edge shape when NSQ shapes exist, and
+                                    // force-splits when they do not (p4/p5, where
+                                    // `NsqCfg::for_preset_qp` is `off()`).
+                                    nsq_geom_enabled,
+                                    // ALIGNED dims — this `refined` path is
+                                    // full-SB-gated (see `refined` above), so the
+                                    // edge/off branches never fire; passing the
+                                    // frame dims keeps the predicate well-defined.
+                                    w,
+                                    h,
+                                    // Tile pixel origin (full-SB refined path is
+                                    // single-tile-only in the tested envelope; 0
+                                    // when untiled → byte-inert).
+                                    tile_sb_row_start * sb_size,
+                                    tile_sb_col_start * sb_size,
+                                    // Superres chunk B.4: this SB's STALE full-res variance entry.
+                                    sb_stale_vars,
+                                    // C `static_config.max_tx_size` (tune IQ sets 32 at qp<=45).
+                                    max_tx_size,
+                                );
+                                let cq = c_quant.as_ref().unwrap();
+                                // 8-BIT lambda even at bd10 — deliberate, not an
+                                // oversight. C's `perform_pred_depth_refinement`
+                                // (enc_dec_process.c:3017) runs INSIDE the window
+                                // where `hbd_md` is forced to 0 (:2965, restored at
+                                // :3023), so `is_parent_to_current_deviation_small`
+                                // / `is_child_to_current_deviation_small` select
+                                // `full_lambda_md[EB_8_BIT_MD]` /
+                                // `full_sb_lambda_md[EB_8_BIT_MD]` at BOTH bit
+                                // depths, over PD0 costs that are themselves
+                                // bit-depth-identical. The bd10 lambda belongs to
+                                // the PD1 WALK below, not to this scan.
+                                // Whole-128-SB PD0 max/min fold (C
+                                // `get_max_min_pd0_depths`). At SB128 (units.len() >
+                                // 1) fold every coding-unit quadrant's PD0 eval;
+                                // cached across the unit loop. `None` at SB64 → the
+                                // scan derives max/min from `eval` alone, unchanged.
+                                let sb_max_min = if units.len() > 1 {
+                                    if sb_pd0_max_min.is_none() {
+                                        let mut mx = 0usize;
+                                        let mut mn = 255usize;
+                                        for &(ux, uy) in units.iter() {
+                                            // Only fold FULL 64x64 units: the m6 PD0
+                                            // eval reads a whole 64x64 source block,
+                                            // so a partial edge unit (non-64-aligned
+                                            // frame) would read out of bounds. Every
+                                            // SB128 gate cell is 64-aligned → all
+                                            // units full → this never skips. A
+                                            // non-64-aligned SB128 frame needs the
+                                            // partial-SB (#95) treatment anyway
+                                            // (partial units take the fixed-tree
+                                            // path, not this refined one).
+                                            if ux + unit_size > w || uy + unit_size > h {
+                                                continue;
+                                            }
+                                            crate::pd0::pd0_pick_sb_partition_m6_eval(
+                                                sb_input,
+                                                in_stride,
+                                                ux,
+                                                uy,
+                                                cli_qp as u32,
+                                                sb_qindex,
+                                                tables,
+                                                if dr.disallow_4x4 { 8 } else { 4 },
+                                                funnel_cfg.coeff_rate_est_lvl,
+                                                false,
+                                                nsq_geom_enabled,
+                                                w,
+                                                h,
+                                                tile_sb_row_start * sb_size,
+                                                tile_sb_col_start * sb_size,
+                                                // Superres chunk B.4: this SB's STALE full-res variance entry.
+                                                sb_stale_vars,
+                                                // C `static_config.max_tx_size`.
+                                                max_tx_size,
+                                            )
+                                            .max_min_picked(&mut mx, &mut mn);
+                                        }
+                                        sb_pd0_max_min = Some((mx, mn));
+                                    }
+                                    sb_pd0_max_min
+                                } else {
+                                    None
+                                };
+                                let scan = crate::depth_refine::build_refined_scan_at(
+                                    &eval,
+                                    &dr,
+                                    cq.lambda as u64,
+                                    tables,
+                                    x0,
+                                    y0,
+                                    sb_max_min,
+                                    // C `static_config.max_tx_size` -- the same
+                                    // value already threaded into the PD0 entries
+                                    // just above, and the reason `max_sq_size` is
+                                    // not always 64 (enc_dec_process.c:1814-1817).
+                                    max_tx_size,
+                                );
+                                // Partition rates at the real contexts, from
+                                // the same (possibly chained) frame context as
+                                // the funnel's syntax rates.
+                                let part_rates = match &chain_base {
+                                    Some((fc, _)) => crate::depth_refine::PartRates::from_fc(fc),
+                                    None => crate::depth_refine::PartRates::from_fc(
+                                        &svtav1_entropy::context::FrameContext::new_default(),
+                                    ),
+                                };
+                                let (u_src, v_src) = chroma_src.unwrap();
+                                let mut fx = crate::leaf_funnel::FunnelCtx {
+                                    u_src,
+                                    v_src,
+                                    src10: funnel_src10,
+                                    u_recon: &mut fun_u_recon,
+                                    v_recon: &mut fun_v_recon,
+                                    c_stride: cwid,
+                                    ectx: fun_ectx.as_mut().unwrap(),
+                                    rates: fun_rates.as_deref().unwrap(),
+                                    frame: fun_frame.as_ref().unwrap(),
+                                    // bd10 PART axis (task #94): the PD1
+                                    // depth-refine + NSQ walk compares LEAF block
+                                    // costs, and C's PD1 runs at `hbd_md = 2` (true
+                                    // 10-bit) — `test_depth` /
+                                    // `test_split_partition` sum
+                                    // `block_data[shape][nsi]->cost` from an MDS3
+                                    // that predicted, quantized and measured
+                                    // distortion at 10 bits. Running that walk on
+                                    // 8-bit leaf costs picked C's *bd8* shape. The
+                                    // same `full_rd10` chain that closed p7/p8
+                                    // (MODE axis) now feeds this walk. bd8 and
+                                    // every out-of-envelope bd10 frame keep `None`
+                                    // / `false` → byte-IDENTICAL.
+                                    y_recon10: if bd10_luma_funnel {
+                                        Some(&mut tile_frame_recon10)
+                                    } else {
+                                        None
+                                    },
+                                    u_recon10: if bd10_full_rd {
+                                        Some(&mut tile_frame_u_recon10)
+                                    } else {
+                                        None
+                                    },
+                                    v_recon10: if bd10_full_rd {
+                                        Some(&mut tile_frame_v_recon10)
+                                    } else {
+                                        None
+                                    },
+                                    // IBC chunk 8: frame IntraBC state + the MD mi grid.
+                                    ibc: ibc_state.as_deref(),
+                                    ibc_mvp: if ibc_state.is_some() {
+                                        Some(&mut ibc_mvp_grid)
+                                    } else {
+                                        None
+                                    },
+                                    ibc_gate: Default::default(),
+                                    full_rd10: bd10_full_rd,
+                                };
+                                let nsq = crate::depth_refine::NsqCfg::for_preset_qp(
+                                    speed_config.preset,
+                                    cli_qp as u32,
+                                );
+                                crate::depth_refine::decide_sb_refined(
+                                    &scan,
+                                    &mut fx,
+                                    sb_input,
+                                    in_stride,
+                                    &mut tile_frame_recon,
+                                    w,
+                                    // PD1 partition-rate lambda. C `test_depth` /
+                                    // `test_split_partition` /
+                                    // `update_skip_nsq_based_on_split_rate` /
+                                    // `update_skip_nsq_based_on_sq_recon_dist` all
+                                    // select `full_sb_lambda_md[EB_10_BIT_MD]` (==
+                                    // `full_lambda_md[EB_10_BIT_MD]`,
+                                    // md_process.c:763-764) when `hbd_md != 0`
+                                    // (product_coding_loop.c:9725, 9859, 10782,
+                                    // 10887). It MUST move with the leaf costs: the
+                                    // gates are ratio compares between an
+                                    // RDCOST(λ, part_rate, 0) term and a block cost.
+                                    // NOTE the refinement SCAN above deliberately
+                                    // keeps the 8-bit lambda — see
+                                    // `build_refined_scan_at`'s call site.
+                                    if bd10_full_rd {
+                                        u64::from(crate::pd0::kf_full_lambda_bd10(
+                                            base_qindex,
+                                            cli_qp as u32,
+                                        ))
+                                    } else {
+                                        cq.lambda as u64
+                                    },
+                                    &part_rates,
+                                    &nsq,
+                                    dr.disallow_4x4,
+                                    x0,
+                                    y0,
+                                    // ALIGNED extent for the spec-5.11.4 edge
+                                    // predicate. Dead on a 64-aligned frame.
+                                    w,
+                                    h,
+                                    // Whether NSQ geometry exists at this preset,
+                                    // which decides what a ONE-FALSE boundary node
+                                    // does: inject the single edge shape (H/V), or
+                                    // force-split like a both-false node.
+                                    //
+                                    // NOT hardcoded true. `NsqCfg::for_preset_qp`
+                                    // returns `off()` for presets 4 and 5 (its base
+                                    // table is nonzero only for 0..=3), and
+                                    // `shapes_for_size` already treats `!enabled` as
+                                    // square-only -- so at p4/p5 there is no legal
+                                    // edge shape to inject and C force-splits.
+                                    //
+                                    // MEASURED: with `true` here, p5 coded a 16x8 at
+                                    // (16,80) on `gradient 72x88 q20` where C splits
+                                    // to two 8x8s -- the ONLY structural difference
+                                    // between the port's tree and C's on that frame.
+                                    nsq_geom_enabled,
+                                )
+                            } else {
+                                // Same computation as pd0_pick_sb_partition_m6
+                                // (that fn is exactly _eval(min_sq=8).tree()),
+                                // via the eval form so the per-node PD0 costs
+                                // are dumpable (SVTAV1_PD0DBG + SVTAV1_DBG_MI)
+                                // for depth-flip drills at M6-M8 — the C
+                                // counterpart is the PICKPART wrap, which fires
+                                // at every preset.
+                                let eval = crate::pd0::pd0_pick_sb_partition_m6_eval(
+                                    sb_input,
+                                    in_stride,
+                                    x0,
+                                    y0,
+                                    cli_qp as u32,
+                                    sb_qindex,
+                                    tables,
+                                    8,
+                                    // M6: coeff_rate_est_lvl 1 (real PD0 coeff
+                                    // rate, unchanged). M7/M8: 2 -> the C
+                                    // perform_tx_pd0 `eob<th ? 6000+eob*500`
+                                    // approximation that lowers the parent-NONE
+                                    // cost and matches C's partition depth.
+                                    funnel_cfg.coeff_rate_est_lvl,
+                                    // C get_max_block_size_allintra: the
+                                    // 64-variance cap fires at M8+ only, and
+                                    // stays at sb_size for incomplete edge SBs.
+                                    speed_config.preset >= 8 && x0 + 64 <= w && y0 + 64 <= h,
+                                    // NSQ geom enabled iff enc_mode <= M6
+                                    // (svt_aom_get_nsq_geom_level_allintra: presets
+                                    // 0..=6 → level 1/2/3 → enabled; presets 7/8 →
+                                    // level 0 → disabled). When disabled, a
+                                    // one-false boundary node force-splits (no edge
+                                    // shape) — the presets 7/8 partial-SB fix.
+                                    speed_config.preset <= 6,
+                                    // ALIGNED dims — the spec-5.11.4 edge grid.
+                                    w,
+                                    h,
+                                    // This tile's pixel origin: the M6 PD0 leaf-cost
+                                    // DC prediction must not read across a tile
+                                    // boundary (C up/left_available respect tiles).
+                                    // 0 for a single-tile frame → byte-inert.
+                                    tile_sb_row_start * sb_size,
+                                    tile_sb_col_start * sb_size,
+                                    // Superres chunk B.4: this SB's STALE full-res variance entry.
+                                    sb_stale_vars,
+                                    // C `static_config.max_tx_size` (tune IQ sets 32 at qp<=45).
+                                    max_tx_size,
+                                );
+                                #[cfg(feature = "std")]
+                                if crate::dbgenv::pd0dbg()
+                                    && crate::depth_refine::nsqdbg_here(x0, y0)
+                                {
+                                    fn walk(e: &crate::pd0::Pd0Eval, x: usize, y: usize) {
+                                        eprintln!(
+                                            "NSQDBG PD0 mi=({},{}) sq={} tested={} cost={} split={}",
+                                            y / 4,
+                                            x / 4,
+                                            e.sq,
+                                            e.tested,
+                                            e.cost,
+                                            e.split
+                                        );
+                                        if let Some(ch) = e.children.as_ref() {
+                                            let h = e.sq / 2;
+                                            walk(&ch[0], x, y);
+                                            walk(&ch[1], x + h, y);
+                                            walk(&ch[2], x, y + h);
+                                            walk(&ch[3], x + h, y + h);
+                                        }
+                                    }
+                                    walk(&eval, x0, y0);
+                                }
+                                let tree = eval.tree();
+                                let sb_vars = sb_stale_vars.copied().unwrap_or_else(|| {
+                                    crate::pd0::compute_b64_variance(sb_input, in_stride, x0, y0)
+                                });
+                                let mut funnel_ctx = if use_funnel {
+                                    let (u_src, v_src) = chroma_src.unwrap();
+                                    Some(crate::leaf_funnel::FunnelCtx {
+                                        u_src,
+                                        v_src,
+                                        src10: funnel_src10,
+                                        u_recon: &mut fun_u_recon,
+                                        v_recon: &mut fun_v_recon,
+                                        c_stride: cwid,
+                                        ectx: fun_ectx.as_mut().unwrap(),
+                                        rates: fun_rates.as_deref().unwrap(),
+                                        frame: fun_frame.as_ref().unwrap(),
+                                        y_recon10: if bd10_luma_funnel {
+                                            Some(&mut tile_frame_recon10)
+                                        } else {
+                                            None
+                                        },
+                                        u_recon10: if bd10_full_rd {
+                                            Some(&mut tile_frame_u_recon10)
+                                        } else {
+                                            None
+                                        },
+                                        v_recon10: if bd10_full_rd {
+                                            Some(&mut tile_frame_v_recon10)
+                                        } else {
+                                            None
+                                        },
+                                        // bd10 post-pass: IBC is bd8-only (the injection
+                                        // self-gates on bd10 too).
+                                        ibc: None,
+                                        ibc_mvp: None,
+                                        ibc_gate: Default::default(),
+                                        full_rd10: bd10_full_rd,
+                                    })
+                                } else {
+                                    None
+                                };
+                                crate::partition::encode_fixed_tree(
+                                    &sb_input[y0 * in_stride + x0..],
+                                    in_stride,
+                                    &mut tile_frame_recon,
+                                    w,
+                                    &tree,
+                                    unit_size,
+                                    sb_qindex,
+                                    &part_config,
+                                    x0,
+                                    y0,
+                                    w,
+                                    h,
+                                    &sb_vars,
+                                    (x0, y0),
+                                    funnel_ctx.as_mut(),
+                                )
+                            }
                         }
-                    }
-                } else {
-                    crate::partition::partition_search_with_config(
-                        &encode_input[y0 * w + x0..],
-                        w,
-                        &mut tile_frame_recon,
-                        w,
-                        cur_w,
-                        cur_h,
-                        sb_qindex,
-                        sb_lambda,
-                        speed_config.max_partition_depth as u32,
-                        &part_config,
-                        x0,
-                        y0,
-                        ref_ctx.as_ref(),
-                    )
-                };
-                unit_results.push(sb_result);
+                    } else {
+                        crate::partition::partition_search_with_config(
+                            &encode_input[y0 * w + x0..],
+                            w,
+                            &mut tile_frame_recon,
+                            w,
+                            cur_w,
+                            cur_h,
+                            sb_qindex,
+                            sb_lambda,
+                            speed_config.max_partition_depth as u32,
+                            &part_config,
+                            x0,
+                            y0,
+                            ref_ctx.as_ref(),
+                        )
+                    };
+                    unit_results.push(sb_result);
                 } // end per-b64 coding-unit loop
 
                 // Merge the b64 units into this SUPERBLOCK's result. At SB64
@@ -8651,7 +8833,10 @@ mod tests {
                 "frame {i}: expected UnsupportedConfig, got {err:?}"
             );
         }
-        assert_eq!(pipeline.frame_count, 1, "a refused frame must not advance the counter");
+        assert_eq!(
+            pipeline.frame_count, 1,
+            "a refused frame must not advance the counter"
+        );
         assert_eq!(pipeline.rc_state.total_frames, 1);
     }
 
@@ -8766,7 +8951,10 @@ mod tests {
         let p = EncodePipeline::new(512, 384, 0, RcConfig::default(), 0, 1);
         assert_eq!(p.sb_size, 128, "512x384 p0 is an SB128 cell in C");
         assert_eq!(p.derived_sb_size, 128);
-        assert!(!p.sb128_fallback, "the SB128 encode path is capability-enabled");
+        assert!(
+            !p.sb128_fallback,
+            "the SB128 encode path is capability-enabled"
+        );
         // preset 2 at the same size is genuinely SB64 in C.
         let p = EncodePipeline::new(512, 384, 2, RcConfig::default(), 0, 1);
         assert_eq!(p.sb_size, 64);
@@ -8775,7 +8963,10 @@ mod tests {
         // honoured, because the walk is size- (and preset-) agnostic.
         let p = EncodePipeline::new(64, 64, 0, RcConfig::default(), 0, 1).with_sb_size(Some(128));
         assert_eq!(p.sb_size, 128);
-        assert_eq!(p.derived_sb_size, 64, "the C rule's own answer is preserved");
+        assert_eq!(
+            p.derived_sb_size, 64,
+            "the C rule's own answer is preserved"
+        );
         assert!(!p.sb128_fallback);
         // Explicit 64 on an SB128 cell pins 64 — the anti-vacuity witness's
         // "force the port to the wrong size" mode. Not a fallback: the
@@ -8795,8 +8986,14 @@ mod tests {
         // (e.g. if a future chunk re-gates a preset). Assert the contract
         // directly so the plumbing cannot rot while it is unreachable.
         assert_eq!(EncodePipeline::resolve_sb_size(128, None, 0), (128, false));
-        assert_eq!(EncodePipeline::resolve_sb_size(128, Some(64), 0), (64, false));
-        assert_eq!(EncodePipeline::resolve_sb_size(64, Some(128), 0), (128, false));
+        assert_eq!(
+            EncodePipeline::resolve_sb_size(128, Some(64), 0),
+            (64, false)
+        );
+        assert_eq!(
+            EncodePipeline::resolve_sb_size(64, Some(128), 0),
+            (128, false)
+        );
     }
 
     /// Task #91: the b64 coding units of one superblock, in C's coding
@@ -8809,7 +9006,10 @@ mod tests {
         use crate::sb128_geom::sb_coding_units;
         // SB64: always exactly one unit, whatever the frame extent.
         assert_eq!(sb_coding_units(0, 0, 64, 512, 384), alloc::vec![(0, 0)]);
-        assert_eq!(sb_coding_units(448, 320, 64, 512, 384), alloc::vec![(448, 320)]);
+        assert_eq!(
+            sb_coding_units(448, 320, 64, 512, 384),
+            alloc::vec![(448, 320)]
+        );
         // SB128 interior: four quadrants, Z-order (raster within the SB).
         assert_eq!(
             sb_coding_units(0, 0, 128, 512, 384),
@@ -8831,6 +9031,9 @@ mod tests {
             alloc::vec![(0, 384), (64, 384)]
         );
         // Both partial: only the top-left quadrant survives.
-        assert_eq!(sb_coding_units(384, 384, 128, 448, 448), alloc::vec![(384, 384)]);
+        assert_eq!(
+            sb_coding_units(384, 384, 128, 448, 448),
+            alloc::vec![(384, 384)]
+        );
     }
 }

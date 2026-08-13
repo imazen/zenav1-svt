@@ -399,9 +399,8 @@ fn compute_stats_impl_neon(
                 *o = p as i16 - avg;
             }
         }
-        let s_row0 = src_origin as isize
-            + v_start as isize * src_stride as isize
-            + h_start as isize;
+        let s_row0 =
+            src_origin as isize + v_start as isize * src_stride as isize + h_start as isize;
         for r in 0..height {
             let base = (s_row0 + r as isize * src_stride as isize) as usize;
             let srcrow = &src[base..base + width];
@@ -468,13 +467,19 @@ impl StatsScratch {
         let need = dlen + slen;
         #[cfg(feature = "std")]
         {
-            if let Some(mut buf) =
-                STATS_SCRATCH.with(|c| c.try_borrow_mut().ok().map(|mut b| core::mem::take(&mut *b)))
-            {
+            if let Some(mut buf) = STATS_SCRATCH.with(|c| {
+                c.try_borrow_mut()
+                    .ok()
+                    .map(|mut b| core::mem::take(&mut *b))
+            }) {
                 if buf.len() < need {
                     buf.resize(need, 0);
                 }
-                return StatsScratch { buf, dlen, pooled: true };
+                return StatsScratch {
+                    buf,
+                    dlen,
+                    pooled: true,
+                };
             }
         }
         StatsScratch {
@@ -722,7 +727,10 @@ fn compute_stats_impl_v3(
         }
         for k in 0..win2 {
             let base = k * win2;
-            for (hv, &ha) in h[base + k..base + win2].iter_mut().zip(h_acc[base + k..base + win2].iter()) {
+            for (hv, &ha) in h[base + k..base + win2]
+                .iter_mut()
+                .zip(h_acc[base + k..base + win2].iter())
+            {
                 *hv += ha as i64;
             }
         }
@@ -794,11 +802,7 @@ const WIENER_TAP_SCALE_FACTOR: i64 = 1 << 16;
 #[inline]
 fn wrap_index(i: usize, wiener_win: usize) -> usize {
     let halfwin1 = (wiener_win >> 1) + 1;
-    if i >= halfwin1 {
-        wiener_win - 1 - i
-    } else {
-        i
-    }
+    if i >= halfwin1 { wiener_win - 1 - i } else { i }
 }
 
 /// C `linsolve_wiener` (restoration_pick.c:752). Returns false when singular.
@@ -938,20 +942,27 @@ fn normalize_and_solve(
 
 /// C `wiener_decompose_sep_sym` (restoration_pick.c:901): 4 alternating
 /// update rounds from the mid-tap starting point.
-pub fn wiener_decompose_sep_sym(wiener_win: usize, m: &[i64], h: &[i64], a: &mut [i32], b: &mut [i32]) {
+pub fn wiener_decompose_sep_sym(
+    wiener_win: usize,
+    m: &[i64],
+    h: &[i64],
+    a: &mut [i32],
+    b: &mut [i32],
+) {
     const INIT_FILT: [i32; WIENER_WIN] = [
         WIENER_FILT_TAP0_MIDV,
         WIENER_FILT_TAP1_MIDV,
         WIENER_FILT_TAP2_MIDV,
-        WIENER_FILT_STEP - 2 * (WIENER_FILT_TAP0_MIDV + WIENER_FILT_TAP1_MIDV + WIENER_FILT_TAP2_MIDV),
+        WIENER_FILT_STEP
+            - 2 * (WIENER_FILT_TAP0_MIDV + WIENER_FILT_TAP1_MIDV + WIENER_FILT_TAP2_MIDV),
         WIENER_FILT_TAP2_MIDV,
         WIENER_FILT_TAP1_MIDV,
         WIENER_FILT_TAP0_MIDV,
     ];
     let plane_off = (WIENER_WIN - wiener_win) >> 1;
     for i in 0..wiener_win {
-        let v = (WIENER_TAP_SCALE_FACTOR / WIENER_FILT_STEP as i64) as i32
-            * INIT_FILT[i + plane_off];
+        let v =
+            (WIENER_TAP_SCALE_FACTOR / WIENER_FILT_STEP as i64) as i32 * INIT_FILT[i + plane_off];
         a[i] = v;
         b[i] = v;
     }
@@ -995,7 +1006,13 @@ pub fn finalize_sym_filter(wiener_win: usize, f: &[i32], fi: &mut [i16; 8]) {
 
 /// C `compute_score` (restoration_pick.c:934): x'Ax - 2x'b of the solved
 /// filter minus the identity filter; > 0 means the filter should revert.
-pub fn compute_score(wiener_win: usize, m: &[i64], h: &[i64], vfilt: &[i16; 8], hfilt: &[i16; 8]) -> i64 {
+pub fn compute_score(
+    wiener_win: usize,
+    m: &[i64],
+    h: &[i64],
+    vfilt: &[i16; 8],
+    hfilt: &[i16; 8],
+) -> i64 {
     let mut a = [0i16; WIENER_WIN];
     let mut b = [0i16; WIENER_WIN];
     let plane_off = (WIENER_WIN - wiener_win) >> 1;
@@ -1104,11 +1121,7 @@ pub struct StripeBoundaries {
 }
 
 /// C `get_stripe_boundary_info` (restoration.c:216).
-fn get_stripe_boundary_info(
-    limits: &TileLimits,
-    tile_rect: &PixelRect,
-    ss_y: i32,
-) -> (bool, bool) {
+fn get_stripe_boundary_info(limits: &TileLimits, tile_rect: &PixelRect, ss_y: i32) -> (bool, bool) {
     let mut copy_above = true;
     let mut copy_below = true;
 
@@ -1116,7 +1129,12 @@ fn get_stripe_boundary_info(
     let runit_offset = RESTORATION_UNIT_OFFSET >> ss_y;
 
     let first_stripe_in_tile = limits.v_start == tile_rect.top;
-    let this_stripe_height = full_stripe_height - if first_stripe_in_tile { runit_offset } else { 0 };
+    let this_stripe_height = full_stripe_height
+        - if first_stripe_in_tile {
+            runit_offset
+        } else {
+            0
+        };
     let last_stripe_in_tile = limits.v_start + this_stripe_height >= tile_rect.bottom;
 
     if first_stripe_in_tile {
@@ -1325,7 +1343,15 @@ pub fn loop_restoration_filter_unit(
 
         if need_boundaries {
             setup_processing_stripe_boundary(
-                &remaining, rsb, rsb_row, h, data, data_origin, stride, &mut rlbs, copy_above,
+                &remaining,
+                rsb,
+                rsb_row,
+                h,
+                data,
+                data_origin,
+                stride,
+                &mut rlbs,
+                copy_above,
                 copy_below,
             );
         }
@@ -1343,7 +1369,14 @@ pub fn loop_restoration_filter_unit(
         );
         if need_boundaries {
             restore_processing_stripe_boundary(
-                &remaining, &rlbs, h, data, data_origin, stride, copy_above, copy_below,
+                &remaining,
+                &rlbs,
+                h,
+                data,
+                data_origin,
+                stride,
+                copy_above,
+                copy_below,
             );
         }
 
@@ -1374,7 +1407,11 @@ pub fn foreach_rest_unit_in_tile(
     let mut i = 0i32;
     while y0 < tile_h {
         let remaining_h = tile_h - y0;
-        let h = if remaining_h < ext_size { remaining_h } else { unit_size };
+        let h = if remaining_h < ext_size {
+            remaining_h
+        } else {
+            unit_size
+        };
 
         let mut limits = TileLimits {
             h_start: 0,
@@ -1392,7 +1429,11 @@ pub fn foreach_rest_unit_in_tile(
         let mut j = 0i32;
         while x0 < tile_w {
             let remaining_w = tile_w - x0;
-            let w = if remaining_w < ext_size { remaining_w } else { unit_size };
+            let w = if remaining_w < ext_size {
+                remaining_w
+            } else {
+                unit_size
+            };
             limits.h_start = tile_rect.left + x0;
             limits.h_end = tile_rect.left + x0 + w;
 
@@ -1407,7 +1448,14 @@ pub fn foreach_rest_unit_in_tile(
 }
 
 /// C `extend_lines` (restoration.c:1492), 8-bit.
-fn extend_lines(buf: &mut [u8], start: usize, width: usize, height: usize, stride: usize, extend: usize) {
+fn extend_lines(
+    buf: &mut [u8],
+    start: usize,
+    width: usize,
+    height: usize,
+    stride: usize,
+    extend: usize,
+) {
     for i in 0..height {
         let row = start + i * stride;
         let left = buf[row];
@@ -1568,12 +1616,26 @@ pub fn save_tile_row_boundary_lines(
         } else {
             if !use_deblock_above {
                 save_cdef_boundary_lines(
-                    src, src_origin, src_stride, src_width, y0, frame_stripe, true, boundaries,
+                    src,
+                    src_origin,
+                    src_stride,
+                    src_width,
+                    y0,
+                    frame_stripe,
+                    true,
+                    boundaries,
                 );
             }
             if !use_deblock_below {
                 save_cdef_boundary_lines(
-                    src, src_origin, src_stride, src_width, y1 - 1, frame_stripe, false, boundaries,
+                    src,
+                    src_origin,
+                    src_stride,
+                    src_width,
+                    y1 - 1,
+                    frame_stripe,
+                    false,
+                    boundaries,
                 );
             }
         }
@@ -2009,7 +2071,16 @@ mod tests {
         };
         let mut dst = alloc::vec![0u8; stride * (h + 2 * b)];
         wiener_convolve_add_src(
-            &src, origin, stride, &mut dst, origin, stride, &zero.hfilter, &zero.vfilter, w, h,
+            &src,
+            origin,
+            stride,
+            &mut dst,
+            origin,
+            stride,
+            &zero.hfilter,
+            &zero.vfilter,
+            w,
+            h,
         );
         for y in 0..h {
             for x in 0..w {

@@ -137,10 +137,22 @@ fn satd_4x4_impl_neon(
     let a2 = vtrn1_s16(t[2], t[3]);
     let a3 = vtrn2_s16(t[2], t[3]);
     let tr = [
-        vreinterpret_s16_s32(vtrn1_s32(vreinterpret_s32_s16(a0), vreinterpret_s32_s16(a2))),
-        vreinterpret_s16_s32(vtrn1_s32(vreinterpret_s32_s16(a1), vreinterpret_s32_s16(a3))),
-        vreinterpret_s16_s32(vtrn2_s32(vreinterpret_s32_s16(a0), vreinterpret_s32_s16(a2))),
-        vreinterpret_s16_s32(vtrn2_s32(vreinterpret_s32_s16(a1), vreinterpret_s32_s16(a3))),
+        vreinterpret_s16_s32(vtrn1_s32(
+            vreinterpret_s32_s16(a0),
+            vreinterpret_s32_s16(a2),
+        )),
+        vreinterpret_s16_s32(vtrn1_s32(
+            vreinterpret_s32_s16(a1),
+            vreinterpret_s32_s16(a3),
+        )),
+        vreinterpret_s16_s32(vtrn2_s32(
+            vreinterpret_s32_s16(a0),
+            vreinterpret_s32_s16(a2),
+        )),
+        vreinterpret_s16_s32(vtrn2_s32(
+            vreinterpret_s32_s16(a1),
+            vreinterpret_s32_s16(a3),
+        )),
     ];
 
     // Pass 2, then sum |coefficient| over all 16.
@@ -244,8 +256,12 @@ fn satd_8x8_impl_neon(
     // i16's 32767. No widening or saturation is involved, so this is exact.
     let mut d = [vdupq_n_s16(0); 8];
     for (row, slot) in d.iter_mut().enumerate() {
-        let s: &[u8; 8] = src[row * src_stride..row * src_stride + 8].try_into().unwrap();
-        let r: &[u8; 8] = ref_[row * ref_stride..row * ref_stride + 8].try_into().unwrap();
+        let s: &[u8; 8] = src[row * src_stride..row * src_stride + 8]
+            .try_into()
+            .unwrap();
+        let r: &[u8; 8] = ref_[row * ref_stride..row * ref_stride + 8]
+            .try_into()
+            .unwrap();
         *slot = vsubq_s16(
             vreinterpretq_s16_u16(vmovl_u8(vld1_u8(s))),
             vreinterpretq_s16_u16(vmovl_u8(vld1_u8(r))),

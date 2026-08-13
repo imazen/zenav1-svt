@@ -248,14 +248,20 @@ fn add_ref_mv_candidate(
             // == rf[0] == INTRA_FRAME
             let this_refmv = candidate.mv[r];
             let mut index = usize::from(*refmv_count);
-            for (i, entry) in ref_mv_stack.iter_mut().enumerate().take(usize::from(*refmv_count)) {
+            for (i, entry) in ref_mv_stack
+                .iter_mut()
+                .enumerate()
+                .take(usize::from(*refmv_count))
+            {
                 if entry.this_mv.as_int() == this_refmv.as_int() {
                     entry.weight += weight * len;
                     index = i;
                     break;
                 }
             }
-            if index == usize::from(*refmv_count) && usize::from(*refmv_count) < MAX_REF_MV_STACK_SIZE {
+            if index == usize::from(*refmv_count)
+                && usize::from(*refmv_count) < MAX_REF_MV_STACK_SIZE
+            {
                 ref_mv_stack[index].this_mv = this_refmv;
                 ref_mv_stack[index].weight = weight * len;
                 *refmv_count += 1;
@@ -308,12 +314,21 @@ fn scan_row_mbmi(
 
         let mut weight = 2i32;
         if ctx.n8_w >= n8_w_8 && ctx.n8_w <= n8_w {
-            let inc = (-max_row_offset + row_offset + 1).min(i32::from(NUM_4X4_BLOCKS_HIGH[cand_bsize]));
+            let inc =
+                (-max_row_offset + row_offset + 1).min(i32::from(NUM_4X4_BLOCKS_HIGH[cand_bsize]));
             weight = weight.max(inc); // << shift(0)
             *processed_rows = inc - row_offset - 1;
         }
 
-        add_ref_mv_candidate(candidate, refmv_count, ref_match_count, newmv_count, ref_mv_stack, len, weight);
+        add_ref_mv_candidate(
+            candidate,
+            refmv_count,
+            ref_match_count,
+            newmv_count,
+            ref_mv_stack,
+            len,
+            weight,
+        );
         i += len;
     }
 }
@@ -358,12 +373,21 @@ fn scan_col_mbmi(
 
         let mut weight = 2i32;
         if ctx.n8_h >= n8_h_8 && ctx.n8_h <= n8_h {
-            let inc = (-max_col_offset + col_offset + 1).min(i32::from(NUM_4X4_BLOCKS_WIDE[cand_bsize]));
+            let inc =
+                (-max_col_offset + col_offset + 1).min(i32::from(NUM_4X4_BLOCKS_WIDE[cand_bsize]));
             weight = weight.max(inc);
             *processed_cols = inc - col_offset - 1;
         }
 
-        add_ref_mv_candidate(candidate, refmv_count, ref_match_count, newmv_count, ref_mv_stack, len, weight);
+        add_ref_mv_candidate(
+            candidate,
+            refmv_count,
+            ref_match_count,
+            newmv_count,
+            ref_mv_stack,
+            len,
+            weight,
+        );
         i += len;
     }
 }
@@ -498,7 +522,10 @@ fn scan_row_col_light(
 
     // Single reference frame extension (:577-647). ROW-1 rescan:
     let mut idx = 0i32;
-    while max_row_offset.abs() >= 1 && idx < mi_size && usize::from(*refmv_count) < MAX_MV_REF_CANDIDATES {
+    while max_row_offset.abs() >= 1
+        && idx < mi_size
+        && usize::from(*refmv_count) < MAX_MV_REF_CANDIDATES
+    {
         let candidate = grid.at(-grid.stride + idx);
         let candidate_bsize = usize::from(candidate.bsize);
         for r in 0..2usize {
@@ -507,7 +534,11 @@ fn scan_row_col_light(
                 // flip (:590-594) is unreachable and not carried.
                 let this_mv = candidate.mv[r];
                 let mut stack_idx = usize::from(*refmv_count);
-                for (i, e) in ref_mv_stack.iter().enumerate().take(usize::from(*refmv_count)) {
+                for (i, e) in ref_mv_stack
+                    .iter()
+                    .enumerate()
+                    .take(usize::from(*refmv_count))
+                {
                     if this_mv.as_int() == e.this_mv.as_int() {
                         stack_idx = i;
                         break;
@@ -525,14 +556,21 @@ fn scan_row_col_light(
 
     // COL-1 rescan:
     let mut idx = 0i32;
-    while max_col_offset.abs() >= 1 && idx < mi_size && usize::from(*refmv_count) < MAX_MV_REF_CANDIDATES {
+    while max_col_offset.abs() >= 1
+        && idx < mi_size
+        && usize::from(*refmv_count) < MAX_MV_REF_CANDIDATES
+    {
         let candidate = grid.at(idx * grid.stride - 1);
         let candidate_bsize = usize::from(candidate.bsize);
         for r in 0..2usize {
             if candidate.ref_frame[r] > 0 {
                 let this_mv = candidate.mv[r];
                 let mut stack_idx = usize::from(*refmv_count);
-                for (i, e) in ref_mv_stack.iter().enumerate().take(usize::from(*refmv_count)) {
+                for (i, e) in ref_mv_stack
+                    .iter()
+                    .enumerate()
+                    .take(usize::from(*refmv_count))
+                {
                     if this_mv.as_int() == e.this_mv.as_int() {
                         stack_idx = i;
                         break;
@@ -732,7 +770,14 @@ pub fn setup_ref_mv_list_intra(grid: &MvpGrid, ctx: &MvpBlockCtx) -> MvpStack {
 
     // Light rescan (:957-961).
     if usize::from(refmv_count) < MAX_MV_REF_CANDIDATES {
-        scan_row_col_light(grid, ctx, &mut stack, &mut refmv_count, max_row_offset, max_col_offset);
+        scan_row_col_light(
+            grid,
+            ctx,
+            &mut stack,
+            &mut refmv_count,
+            max_row_offset,
+            max_col_offset,
+        );
     }
 
     // Final clamp (:963-970; single-ref: this_mv only).
@@ -742,7 +787,11 @@ pub fn setup_ref_mv_list_intra(grid: &MvpGrid, ctx: &MvpBlockCtx) -> MvpStack {
         clamp_mv_ref(&mut entry.this_mv, bw_px, bh_px, ctx);
     }
 
-    MvpStack { stack, count: refmv_count, mode_context }
+    MvpStack {
+        stack,
+        count: refmv_count,
+        mode_context,
+    }
 }
 
 /// C `svt_aom_generate_av1_mvp_table`'s `INTRA_FRAME` slice
@@ -818,9 +867,18 @@ mod tests {
     #[test]
     fn intra_only_grid_gives_empty_stack() {
         let entries = flat_grid(32, 32);
-        let tile = TileMiBounds { mi_col_start: 0, mi_col_end: 32, mi_row_start: 0, mi_row_end: 32 };
+        let tile = TileMiBounds {
+            mi_col_start: 0,
+            mi_col_end: 32,
+            mi_row_start: 0,
+            mi_row_end: 32,
+        };
         let ctx = derive_block_ctx(8, 8, 3 /*8x8*/, 32, 32, tile, 16);
-        let grid = MvpGrid { entries: &entries, stride: 32, base: 8 * 32 + 8 };
+        let grid = MvpGrid {
+            entries: &entries,
+            stride: 32,
+            base: 8 * 32 + 8,
+        };
         let out = generate_mvp_table_intra_frame(&grid, &ctx);
         assert_eq!(out.count, 0);
         // gm-fill leaves this_mv zero in slots 0..2 with zero weight.
@@ -857,9 +915,18 @@ mod tests {
                 };
             }
         }
-        let tile = TileMiBounds { mi_col_start: 0, mi_col_end: 32, mi_row_start: 0, mi_row_end: 32 };
+        let tile = TileMiBounds {
+            mi_col_start: 0,
+            mi_col_end: 32,
+            mi_row_start: 0,
+            mi_row_end: 32,
+        };
         let ctx = derive_block_ctx(8, 8, 3, 32, 32, tile, 16);
-        let grid = MvpGrid { entries: &entries, stride: 32, base: 8 * 32 + 8 };
+        let grid = MvpGrid {
+            entries: &entries,
+            stride: 32,
+            base: 8 * 32 + 8,
+        };
         let out = generate_mvp_table_intra_frame(&grid, &ctx);
         assert_eq!(out.count, 1);
         assert_eq!(out.stack[0].this_mv.as_int(), dv.as_int());

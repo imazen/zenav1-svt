@@ -56,7 +56,11 @@ fn fuzz_dim_gen(dim: usize, iters: usize, seed: u64, bd10: bool) {
         let stride = dim + (rng.next() as usize % 3) * 8;
         let mut src = vec![0i16; stride * dim + 8];
         for v in src.iter_mut() {
-            *v = if bd10 { rng.residual_bd10() } else { rng.residual() };
+            *v = if bd10 {
+                rng.residual_bd10()
+            } else {
+                rng.residual()
+            };
         }
         let mut c_out = vec![0i32; dim * dim];
         let mut r_out = vec![0i32; dim * dim];
@@ -67,7 +71,10 @@ fn fuzz_dim_gen(dim: usize, iters: usize, seed: u64, bd10: bool) {
             32 => hadamard::aom_hadamard_32x32(&src, stride, &mut r_out),
             _ => unreachable!(),
         }
-        assert_eq!(c_out, r_out, "hadamard {dim}x{dim} iter {it} stride {stride}");
+        assert_eq!(
+            c_out, r_out,
+            "hadamard {dim}x{dim} iter {it} stride {stride}"
+        );
         assert_eq!(
             cref::satd(&c_out),
             hadamard::aom_satd(&r_out),
@@ -131,7 +138,11 @@ fn fuzz_dim_avx2(dim: usize, iters: usize, seed: u64, bd10: bool) {
         let stride = dim + (rng.next() as usize % 3) * 8;
         let mut src = vec![0i16; stride * dim + 8];
         for v in src.iter_mut() {
-            *v = if bd10 { rng.residual_bd10() } else { rng.residual() };
+            *v = if bd10 {
+                rng.residual_bd10()
+            } else {
+                rng.residual()
+            };
         }
         let mut c_out = vec![0i32; dim * dim];
         let mut r_out = vec![0i32; dim * dim];

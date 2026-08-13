@@ -64,7 +64,6 @@ fn random_cdf(rng: &mut Rng, nsymbs: usize) -> Vec<u16> {
     cdf
 }
 
-
 /// Serializes every test that calls `cref::fc_init`.
 ///
 /// `fc_init(q)` initializes a PROCESS-GLOBAL C frame context and the
@@ -591,7 +590,10 @@ fn coeff_c_levels_and_contexts_match_c() {
                 // via dense-eob trials.
                 for &pos in scan[..eob].iter() {
                     let p = pos as usize;
-                    assert_eq!(rust_ctx[p], c_ctx[p], "nz ctx ts={ts} type={tx_type} pos={p}");
+                    assert_eq!(
+                        rust_ctx[p], c_ctx[p],
+                        "nz ctx ts={ts} type={tx_type} pos={p}"
+                    );
                 }
 
                 // br context parity at every nonzero position.
@@ -750,12 +752,12 @@ fn coeff_c_txb_init_levels_partial_zero_no_stale_reads() {
 fn txb_gen_coeffs(pat: usize, n: usize, rng: &mut Rng) -> Vec<i32> {
     match pat {
         0 => vec![0i32; n],
-        1 => vec![127i32; n],   // exactly INT8_MAX
-        2 => vec![128i32; n],   // first clamped value
+        1 => vec![127i32; n], // exactly INT8_MAX
+        2 => vec![128i32; n], // first clamped value
         3 => vec![-127i32; n],
         4 => vec![-128i32; n],
-        5 => vec![i32::MAX; n], // positive extreme
-        6 => vec![-i32::MAX; n], // negative extreme (i32::MIN + 1; C-abs safe)
+        5 => vec![i32::MAX; n],                  // positive extreme
+        6 => vec![-i32::MAX; n],                 // negative extreme (i32::MIN + 1; C-abs safe)
         7 => (0..n).map(|c| c as i32).collect(), // ramp crossing 127
         8 => (0..n).map(|c| -(c as i32)).collect(),
         9 => (0..n)
@@ -852,8 +854,7 @@ fn nz_map_contexts_simd_matches_c() {
         for &tx_type in &[0usize, 10, 11] {
             // DCT_DCT (2D), V_DCT (VERT), H_DCT (HORIZ)
             let tx_class = coeff_c::TX_TYPE_TO_CLASS[tx_type];
-            let scan =
-                scan_tables::scan(ts, scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type] as usize);
+            let scan = scan_tables::scan(ts, scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type] as usize);
             let c_scan: Vec<i16> = scan.iter().map(|&v| v as i16).collect();
 
             // eob targets that pin the scan-last context buckets (`<=(h<<bwl)/8`
@@ -881,8 +882,7 @@ fn nz_map_contexts_simd_matches_c() {
                 for i in 0..target_last {
                     if i == target_last - 1 || dense || rng.below(2) == 0 {
                         let mag = 1 + rng.below(6) as i32; // straddles the clip-to-3
-                        coeffs[scan[i] as usize] =
-                            if rng.below(2) == 0 { mag } else { -mag };
+                        coeffs[scan[i] as usize] = if rng.below(2) == 0 { mag } else { -mag };
                     }
                 }
 

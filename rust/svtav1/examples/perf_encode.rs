@@ -58,7 +58,10 @@ fn main() {
     let prefix = &args[6];
     let warmup: usize = args.get(7).map(|s| s.parse().expect("warmup")).unwrap_or(1);
 
-    assert!(w % 2 == 0 && h % 2 == 0, "perf harness uses even dims (floor==ceiling chroma)");
+    assert!(
+        w % 2 == 0 && h % 2 == 0,
+        "perf harness uses even dims (floor==ceiling chroma)"
+    );
 
     let y = gen_content(content, w, h);
     let (cw, ch) = (w / 2, h / 2);
@@ -78,7 +81,11 @@ fn main() {
     // derived by C's own rule. `new(w,h,preset,rc, hierarchical_levels=0,
     // intra_period=1)` == allintra/still.
     let build = || {
-        let rc = RcConfig { mode: RcMode::Cqp, qp, ..RcConfig::default() };
+        let rc = RcConfig {
+            mode: RcMode::Cqp,
+            qp,
+            ..RcConfig::default()
+        };
         EncodePipeline::new(w as u32, h as u32, preset, rc, 0, 1)
             .with_bit_depth(8)
             .with_tile_rows_log2(0)

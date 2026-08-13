@@ -241,10 +241,7 @@ fn predict_paeth_impl_neon(
 
             // if p_top <= p_left && p_top <= p_tl { top }
             // else if p_left <= p_tl { lft } else { tl }
-            let take_top = vandq_u16(
-                vcleq_s16(p_top_v, p_left_v),
-                vcleq_s16(p_top_v, p_tl_v),
-            );
+            let take_top = vandq_u16(vcleq_s16(p_top_v, p_left_v), vcleq_s16(p_top_v, p_tl_v));
             let take_left = vcleq_s16(p_left_v, p_tl_v);
 
             let pred = vbslq_s16(take_left, lft_v, tl_v);
@@ -1518,7 +1515,7 @@ mod dispatch_tests {
     use super::*;
     use alloc::vec;
     use alloc::vec::Vec;
-    use archmage::testing::{for_each_token_permutation, CompileTimePolicy};
+    use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
 
     #[test]
     fn paeth_all_dispatch_levels() {

@@ -459,7 +459,6 @@ pub fn write_sequence_header_ex(
     )
 }
 
-
 /// [SVT_HDR_MODE] FH `film_grain_params` (spec 5.9.30) — the photon-noise
 /// table the fork's `--noise*` synthesizes (svtav1-encoder::noise_gen).
 /// KEY-frame form only (update_parameters is implicit 1).
@@ -1030,8 +1029,23 @@ pub fn write_key_frame_header_full_lr(
     tile_size_bytes_minus_1: u8,
 ) -> Vec<u8> {
     write_key_frame_header_full_lr_sb(
-        width, height, base_qindex, reduced_sh, monochrome, lf_levels, lf_sharpness, cdef, lr, sc,
-        chroma_q, delta_q_res, qm, fgs, tile_rows_log2, tile_cols_log2, tile_size_bytes_minus_1,
+        width,
+        height,
+        base_qindex,
+        reduced_sh,
+        monochrome,
+        lf_levels,
+        lf_sharpness,
+        cdef,
+        lr,
+        sc,
+        chroma_q,
+        delta_q_res,
+        qm,
+        fgs,
+        tile_rows_log2,
+        tile_cols_log2,
+        tile_size_bytes_minus_1,
         64,
     )
 }
@@ -2019,11 +2033,11 @@ mod tests {
         };
         // Segment 0 only, one feature at a time.
         let cases: [(usize, i16, usize); 5] = [
-            (SEG_LVL_ALT_Q, -37, 9),       // su(1+8)
-            (SEG_LVL_ALT_LF_Y_V, 21, 7),   // su(1+6)
-            (SEG_LVL_REF_FRAME, 5, 3),     // f(3), unsigned
-            (SEG_LVL_SKIP, 0, 0),          // f(0) — nothing
-            (SEG_LVL_GLOBALMV, 0, 0),      // f(0) — nothing
+            (SEG_LVL_ALT_Q, -37, 9),     // su(1+8)
+            (SEG_LVL_ALT_LF_Y_V, 21, 7), // su(1+6)
+            (SEG_LVL_REF_FRAME, 5, 3),   // f(3), unsigned
+            (SEG_LVL_SKIP, 0, 0),        // f(0) — nothing
+            (SEG_LVL_GLOBALMV, 0, 0),    // f(0) — nothing
         ];
         for (feature, data, payload_bits) in cases {
             seg.feature_enabled = [[0; SEG_LVL_MAX]; MAX_SEGMENTS];
@@ -2046,7 +2060,11 @@ mod tests {
                     .fold(0i32, |acc, &b| (acc << 1) | i32::from(b));
                 // The low `payload_bits` bits of the two's-complement value.
                 let mask = (1i32 << payload_bits) - 1;
-                assert_eq!(coded, i32::from(data) & mask, "payload for feature {feature}");
+                assert_eq!(
+                    coded,
+                    i32::from(data) & mask,
+                    "payload for feature {feature}"
+                );
             }
         }
     }
@@ -2210,7 +2228,11 @@ mod tests {
         assert_eq!(wb.bit_offset, 9);
         // 1, 0, 1,1,0, 1,0, 0,0 -> 0b1011_0100 0b0xxx_xxxx
         assert_eq!(wb.data()[0], 0b1011_0100);
-        assert_eq!(wb.data()[1] & 0b1000_0000, 0, "ctx id LSB = 0 (value 2, not 3)");
+        assert_eq!(
+            wb.data()[1] & 0b1000_0000,
+            0,
+            "ctx id LSB = 0 (value 2, not 3)"
+        );
     }
 
     #[test]
@@ -2368,8 +2390,7 @@ mod tests {
     #[test]
     fn sh_420_default_byte_identical_to_c() {
         const C_SH_PAYLOAD: [u8; 6] = [0x18, 0x15, 0x7f, 0xfc, 0x20, 0x08];
-        let ours =
-            write_sequence_header_ex(
+        let ours = write_sequence_header_ex(
             64,
             64,
             true,
@@ -2428,12 +2449,14 @@ mod tests {
     #[test]
     fn fh_lr_params_all_none_bit_shape() {
         // 4:2:0: 3 planes -> +6 bits.
-        let base = key_frame_header_bits(64, 64, 160, true, false, [19, 19, 9, 9], [4, 14, 14], false);
+        let base =
+            key_frame_header_bits(64, 64, 160, true, false, [19, 19, 9, 9], [4, 14, 14], false);
         let lr = key_frame_header_bits(64, 64, 160, true, false, [19, 19, 9, 9], [4, 14, 14], true);
         assert_eq!(base.bit_offset, 64, "p13-shape FH must stay 64 bits");
         assert_eq!(lr.bit_offset, 70, "3-plane all-NONE lr_params adds 6 bits");
         // Mono: 1 plane -> +2 bits.
-        let base_m = key_frame_header_bits(64, 64, 160, true, true, [19, 19, 0, 0], [4, 14, 0], false);
+        let base_m =
+            key_frame_header_bits(64, 64, 160, true, true, [19, 19, 0, 0], [4, 14, 0], false);
         let lr_m = key_frame_header_bits(64, 64, 160, true, true, [19, 19, 0, 0], [4, 14, 0], true);
         assert_eq!(lr_m.bit_offset - base_m.bit_offset, 2);
         // The inserted lr_type bits are zeros (RESTORE_NONE), positioned
@@ -2608,7 +2631,8 @@ mod tests {
             full_range: true,
             ..ColorDescription::srgb()
         };
-        let ours = write_sequence_header_ex(64, 64, true, 8, &color, false, 30.0, SeqTools::default());
+        let ours =
+            write_sequence_header_ex(64, 64, true, 8, &color, false, 30.0, SeqTools::default());
         // Strip OBU header (1 byte) + leb128 size (1 byte for these sizes).
         assert_eq!(ours[0], 0b0_0001_0_1_0);
         let our_payload = &ours[2..];
@@ -2682,8 +2706,10 @@ mod tests {
         // differing region is no longer all-zero: the tx_mode_select=1
         // bit sits at bit 42 (mono) vs bit 50 (420), so mono byte 5 is
         // 0x20 while 420 has byte 5 = 0x00 and the set bit in byte 6.
-        let bits_420 = key_frame_header_bits(64, 64, 30, true, false, [0; 4], [3, 0, 0], false).bit_offset;
-        let bits_mono = key_frame_header_bits(64, 64, 30, true, true, [0; 4], [3, 0, 0], false).bit_offset;
+        let bits_420 =
+            key_frame_header_bits(64, 64, 30, true, false, [0; 4], [3, 0, 0], false).bit_offset;
+        let bits_mono =
+            key_frame_header_bits(64, 64, 30, true, true, [0; 4], [3, 0, 0], false).bit_offset;
         assert_eq!(bits_mono, 44, "mono reduced-SH FH is 44 bits pre-align");
         assert_eq!(bits_420, 52, "420 adds DeltaQUDc + DeltaQUAc + uv cdef");
         let mono = write_key_frame_header_full(64, 64, 30, true, true, [0; 4], [3, 0, 0], false);
@@ -2702,20 +2728,22 @@ mod tests {
     #[test]
     fn fh_loop_filter_level_bit_layout() {
         // Mono: nonzero luma levels add no chroma bits.
-        let zero = key_frame_header_bits(64, 64, 30, true, true, [0; 4], [3, 0, 0], false).bit_offset;
-        let mono =
-            key_frame_header_bits(64, 64, 30, true, true, [2, 2, 1, 1], [3, 0, 0], false).bit_offset;
+        let zero =
+            key_frame_header_bits(64, 64, 30, true, true, [0; 4], [3, 0, 0], false).bit_offset;
+        let mono = key_frame_header_bits(64, 64, 30, true, true, [2, 2, 1, 1], [3, 0, 0], false)
+            .bit_offset;
         assert_eq!(mono, zero, "mono FH never codes chroma levels");
 
         // 420: +12 bits (two 6-bit chroma levels) when l0||l1.
-        let z420 = key_frame_header_bits(64, 64, 30, true, false, [0; 4], [3, 0, 0], false).bit_offset;
-        let c420 =
-            key_frame_header_bits(64, 64, 30, true, false, [2, 2, 1, 1], [3, 0, 0], false).bit_offset;
+        let z420 =
+            key_frame_header_bits(64, 64, 30, true, false, [0; 4], [3, 0, 0], false).bit_offset;
+        let c420 = key_frame_header_bits(64, 64, 30, true, false, [2, 2, 1, 1], [3, 0, 0], false)
+            .bit_offset;
         assert_eq!(c420, z420 + 12, "420 FH codes U/V levels iff l0||l1");
         // Zero luma levels suppress the chroma level fields even if
         // uv levels are nonzero (the decoder cannot read them).
-        let z420uv =
-            key_frame_header_bits(64, 64, 30, true, false, [0, 0, 1, 1], [3, 0, 0], false).bit_offset;
+        let z420uv = key_frame_header_bits(64, 64, 30, true, false, [0, 0, 1, 1], [3, 0, 0], false)
+            .bit_offset;
         assert_eq!(z420uv, z420);
 
         // Hand-derive the mono field bytes with levels [3,3,_,_]: identical
@@ -2756,11 +2784,14 @@ mod tests {
     /// setup_cdef reads uv iff num_planes > 1).
     #[test]
     fn fh_cdef_params_bit_layout() {
-        let base = key_frame_header_bits(64, 64, 220, true, true, [0; 4], [3, 0, 0], false).bit_offset;
+        let base =
+            key_frame_header_bits(64, 64, 220, true, true, [0; 4], [3, 0, 0], false).bit_offset;
         // Strength/damping values change bits, never the field count.
-        let hot = key_frame_header_bits(64, 64, 220, true, true, [0; 4], [6, 43, 7], false).bit_offset;
+        let hot =
+            key_frame_header_bits(64, 64, 220, true, true, [0; 4], [6, 43, 7], false).bit_offset;
         assert_eq!(base, hot, "mono cdef fields are fixed-width");
-        let b420 = key_frame_header_bits(64, 64, 220, true, false, [0; 4], [6, 43, 7], false).bit_offset;
+        let b420 =
+            key_frame_header_bits(64, 64, 220, true, false, [0; 4], [6, 43, 7], false).bit_offset;
         assert_eq!(
             b420,
             hot + 2 + 6,

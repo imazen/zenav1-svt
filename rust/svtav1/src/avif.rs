@@ -831,7 +831,11 @@ mod tests {
     fn max_quality_is_a_typed_error_not_a_panic() {
         let pixels = vec![100u8; 16 * 16];
         for q in [100.0f32, 99.9, 99.5] {
-            assert_eq!(AvifEncoder::quality_to_qp_static(q), 0, "q{q} must map to qp 0");
+            assert_eq!(
+                AvifEncoder::quality_to_qp_static(q),
+                0,
+                "q{q} must map to qp 0"
+            );
             let err = AvifEncoder::new()
                 .with_quality(q)
                 .encode_y8(&pixels, 16, 16, 16)

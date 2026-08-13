@@ -77,7 +77,11 @@ fn count_wiener_bits_composition() {
     };
     for iter in 0..500 {
         let win5 = iter % 2 == 0;
-        let win = if win5 { lr::WIENER_WIN_CHROMA } else { lr::WIENER_WIN };
+        let win = if win5 {
+            lr::WIENER_WIN_CHROMA
+        } else {
+            lr::WIENER_WIN
+        };
         let v = rand_filter(&mut rng, win5);
         let h = rand_filter(&mut rng, win5);
         let rv = rand_filter(&mut rng, win5);
@@ -166,10 +170,24 @@ fn write_wiener_filter_stream_and_ref_chain() {
     let mut w = AomWriter::new(256);
     let mut ref_v = [3, -7, 15, -2 * (3 - 7 + 15), 15, -7, 3, 0]; // set_default_wiener
     let mut ref_h = ref_v;
-    lr::write_wiener_filter(&mut w, lr::WIENER_WIN_CHROMA, &v1, &h1, &mut ref_v, &mut ref_h);
+    lr::write_wiener_filter(
+        &mut w,
+        lr::WIENER_WIN_CHROMA,
+        &v1,
+        &h1,
+        &mut ref_v,
+        &mut ref_h,
+    );
     assert_eq!(ref_v, v1);
     assert_eq!(ref_h, h1);
-    lr::write_wiener_filter(&mut w, lr::WIENER_WIN_CHROMA, &v2, &h2, &mut ref_v, &mut ref_h);
+    lr::write_wiener_filter(
+        &mut w,
+        lr::WIENER_WIN_CHROMA,
+        &v2,
+        &h2,
+        &mut ref_v,
+        &mut ref_h,
+    );
     assert_eq!(ref_v, v2);
     assert_eq!(ref_h, h2);
     let bytes = w.done().to_vec();

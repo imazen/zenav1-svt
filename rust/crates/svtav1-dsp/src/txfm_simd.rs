@@ -61,7 +61,11 @@ fn simd_rect_supported(w: usize, h: usize) -> bool {
 /// square/rect DCT paths). FLIPADST(2)/IDENTITY(3) stay scalar.
 #[inline]
 fn simd_adst_supported(w: usize, h: usize, col_1d: u8, row_1d: u8) -> bool {
-    col_1d <= 1 && row_1d <= 1 && (col_1d == 1 || row_1d == 1) && matches!(w, 8 | 16) && matches!(h, 8 | 16)
+    col_1d <= 1
+        && row_1d <= 1
+        && (col_1d == 1 || row_1d == 1)
+        && matches!(w, 8 | 16)
+        && matches!(h, 8 | 16)
 }
 
 /// `(w, h, col_1d, row_1d)` the "extended" SIMD path (FLIPADST / IDENTITY /
@@ -79,7 +83,15 @@ fn simd_ext_supported(w: usize, h: usize, col_1d: u8, row_1d: u8) -> bool {
     if col_1d == 3 && row_1d == 3 {
         return matches!(
             (w, h),
-            (8, 8) | (16, 16) | (32, 32) | (8, 16) | (16, 8) | (16, 32) | (32, 16) | (8, 32) | (32, 8)
+            (8, 8)
+                | (16, 16)
+                | (32, 32)
+                | (8, 16)
+                | (16, 8)
+                | (16, 32)
+                | (32, 16)
+                | (8, 32)
+                | (32, 8)
         );
     }
     matches!((w, h), (8, 8) | (16, 16) | (8, 16) | (16, 8))
@@ -205,7 +217,17 @@ pub fn try_inv_adst(
         return false;
     }
     incant!(
-        try_inv_adst_impl(input, input_stride, output, out_stride, w, h, col_1d, row_1d, bd),
+        try_inv_adst_impl(
+            input,
+            input_stride,
+            output,
+            out_stride,
+            w,
+            h,
+            col_1d,
+            row_1d,
+            bd
+        ),
         [v3, neon, scalar]
     )
 }
@@ -256,7 +278,19 @@ pub fn try_inv_ext(
         return false;
     }
     incant!(
-        try_inv_ext_impl(input, input_stride, output, out_stride, w, h, col_1d, row_1d, ud, lr, bd),
+        try_inv_ext_impl(
+            input,
+            input_stride,
+            output,
+            out_stride,
+            w,
+            h,
+            col_1d,
+            row_1d,
+            ud,
+            lr,
+            bd
+        ),
         [v3, neon, scalar]
     )
 }
@@ -305,7 +339,19 @@ pub fn try_inv_4dim(
         return false;
     }
     incant!(
-        try_inv_4dim_impl(input, input_stride, output, out_stride, w, h, col_1d, row_1d, ud, lr, bd),
+        try_inv_4dim_impl(
+            input,
+            input_stride,
+            output,
+            out_stride,
+            w,
+            h,
+            col_1d,
+            row_1d,
+            ud,
+            lr,
+            bd
+        ),
         [v3, neon, scalar]
     )
 }
@@ -495,7 +541,20 @@ fn try_inv_ext_impl_neon(
     if w.max(h) > NEON_INV_MAX_DIM {
         return false;
     }
-    neon::inv_ext(t, input, input_stride, output, out_stride, w, h, col_1d, row_1d, ud, lr, bd)
+    neon::inv_ext(
+        t,
+        input,
+        input_stride,
+        output,
+        out_stride,
+        w,
+        h,
+        col_1d,
+        row_1d,
+        ud,
+        lr,
+        bd,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -573,7 +632,20 @@ fn try_inv_4dim_impl_neon(
     if w.max(h) > NEON_INV_MAX_DIM {
         return false;
     }
-    neon::inv_4dim(t, input, input_stride, output, out_stride, w, h, col_1d, row_1d, ud, lr, bd)
+    neon::inv_4dim(
+        t,
+        input,
+        input_stride,
+        output,
+        out_stride,
+        w,
+        h,
+        col_1d,
+        row_1d,
+        ud,
+        lr,
+        bd,
+    )
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -611,7 +683,18 @@ fn try_inv_adst_impl_neon(
     if w.max(h) > NEON_INV_MAX_DIM {
         return false;
     }
-    neon::inv_adst(t, input, input_stride, output, out_stride, w, h, col_1d, row_1d, bd)
+    neon::inv_adst(
+        t,
+        input,
+        input_stride,
+        output,
+        out_stride,
+        w,
+        h,
+        col_1d,
+        row_1d,
+        bd,
+    )
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -1167,7 +1250,18 @@ fn try_inv_adst_impl_v3(
     row_1d: u8,
     bd: u8,
 ) -> bool {
-    v3::inv_adst(t, input, input_stride, output, out_stride, w, h, col_1d, row_1d, bd)
+    v3::inv_adst(
+        t,
+        input,
+        input_stride,
+        output,
+        out_stride,
+        w,
+        h,
+        col_1d,
+        row_1d,
+        bd,
+    )
 }
 
 /// AVX2 forward extended 2D transform (FLIPADST / IDENTITY / V_/H_). `v3` only.
@@ -1207,7 +1301,20 @@ fn try_inv_ext_impl_v3(
     lr: bool,
     bd: u8,
 ) -> bool {
-    v3::inv_ext(t, input, input_stride, output, out_stride, w, h, col_1d, row_1d, ud, lr, bd)
+    v3::inv_ext(
+        t,
+        input,
+        input_stride,
+        output,
+        out_stride,
+        w,
+        h,
+        col_1d,
+        row_1d,
+        ud,
+        lr,
+        bd,
+    )
 }
 
 /// AVX2 forward 4-dim 2D transform (4x4 / 4x8 / 8x4 / 4x16 / 16x4). `v3` only.
@@ -1247,5 +1354,18 @@ fn try_inv_4dim_impl_v3(
     lr: bool,
     bd: u8,
 ) -> bool {
-    v3::inv_4dim(t, input, input_stride, output, out_stride, w, h, col_1d, row_1d, ud, lr, bd)
+    v3::inv_4dim(
+        t,
+        input,
+        input_stride,
+        output,
+        out_stride,
+        w,
+        h,
+        col_1d,
+        row_1d,
+        ud,
+        lr,
+        bd,
+    )
 }

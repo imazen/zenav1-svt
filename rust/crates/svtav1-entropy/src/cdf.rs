@@ -154,11 +154,22 @@ mod tests {
         // wt_left=3, wt_tr=1: entry = (left*3 + tr*1 + (3+1)/2) / (3+1)
         //                            = (left*3 + tr + 2) / 4  (integer).
         let expect = |l: u32, t: u32| ((l * 3 + t + 2) / 4) as u16;
-        let cases = [(100u16, 200u16), (200, 100), (10, 20), (0, 0), (32767, 32767), (32767, 0)];
+        let cases = [
+            (100u16, 200u16),
+            (200, 100),
+            (10, 20),
+            (0, 0),
+            (32767, 32767),
+            (32767, 0),
+        ];
         for (l, t) in cases {
             let mut left = [l];
             avg_cdf_entries(&mut left, &[t], 3, 1);
-            assert_eq!(left[0], expect(u32::from(l), u32::from(t)), "avg({l},{t}) with 3:1");
+            assert_eq!(
+                left[0],
+                expect(u32::from(l), u32::from(t)),
+                "avg({l},{t}) with 3:1"
+            );
         }
         // The pass is element-wise across the whole array (including the
         // adaptation counter at the tail), exactly like C's `j <= nsymbs`

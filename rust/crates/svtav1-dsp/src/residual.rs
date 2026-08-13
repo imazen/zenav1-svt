@@ -315,7 +315,9 @@ pub mod ovf_probe {
             exact = s;
             acc_wrapped |= o;
             wrapped = wrapped.wrapping_add(t_wrap);
-            maxc = maxc.max(x.unsigned_abs() as u64).max(y.unsigned_abs() as u64);
+            maxc = maxc
+                .max(x.unsigned_abs() as u64)
+                .max(y.unsigned_abs() as u64);
             maxd = maxd.max(e_exact.unsigned_abs());
         }
         ELEMS.fetch_add(n, Relaxed);
@@ -460,7 +462,10 @@ fn sse_i32_impl_neon(_token: NeonToken, a: &[i32], b: &[i32]) -> u64 {
         // Nonzero in any lane whose i32 difference wrapped.
         wrapped = vorrq_u32(
             wrapped,
-            veorq_u32(vreinterpretq_u32_s32(d), vreinterpretq_u32_s32(vqsubq_s32(x, y))),
+            veorq_u32(
+                vreinterpretq_u32_s32(d),
+                vreinterpretq_u32_s32(vqsubq_s32(x, y)),
+            ),
         );
         acc0 = vmlal_s32(acc0, vget_low_s32(d), vget_low_s32(d));
         acc1 = vmlal_high_s32(acc1, d, d);
@@ -532,12 +537,14 @@ fn sq_sum_i32_impl_neon(_token: NeonToken, a: &[i32]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
     use alloc::vec;
     use alloc::vec::Vec;
+    use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
 
     fn lcg(state: &mut u64) -> u64 {
-        *state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         *state >> 33
     }
 
@@ -549,13 +556,29 @@ mod tests {
     fn residual_recon_distortion_all_tiers_match_core() {
         let mut st = 0x5EED_1234_u64;
         for &(w, h) in &[
-            (4usize, 4usize), (8, 8), (16, 16), (32, 32), (64, 64), (4, 16), (16, 4),
-            (8, 32), (32, 8), (5, 3), (7, 9), (13, 2), (1, 1), (3, 1),
+            (4usize, 4usize),
+            (8, 8),
+            (16, 16),
+            (32, 32),
+            (64, 64),
+            (4, 16),
+            (16, 4),
+            (8, 32),
+            (32, 8),
+            (5, 3),
+            (7, 9),
+            (13, 2),
+            (1, 1),
+            (3, 1),
         ] {
             let sstride = w + 7;
             let pstride = w + 3;
-            let src: Vec<u8> = (0..sstride * h + 32).map(|_| (lcg(&mut st) & 0xff) as u8).collect();
-            let pred: Vec<u8> = (0..pstride * h + 32).map(|_| (lcg(&mut st) & 0xff) as u8).collect();
+            let src: Vec<u8> = (0..sstride * h + 32)
+                .map(|_| (lcg(&mut st) & 0xff) as u8)
+                .collect();
+            let pred: Vec<u8> = (0..pstride * h + 32)
+                .map(|_| (lcg(&mut st) & 0xff) as u8)
+                .collect();
             // Residual
             let mut want = vec![0i32; w * h];
             residual_i32_core(&src, sstride, &pred, pstride, w, h, &mut want);
@@ -582,10 +605,12 @@ mod tests {
                 assert_eq!(got, rwant, "recon {w}x{h}");
             });
             // Coefficient-domain distortion, including large magnitudes.
-            let ca: Vec<i32> =
-                (0..w * h).map(|_| (lcg(&mut st) as i32) >> ((lcg(&mut st) % 20) as u32)).collect();
-            let cb: Vec<i32> =
-                (0..w * h).map(|_| (lcg(&mut st) as i32) >> (12 + (lcg(&mut st) % 8) as u32)).collect();
+            let ca: Vec<i32> = (0..w * h)
+                .map(|_| (lcg(&mut st) as i32) >> ((lcg(&mut st) % 20) as u32))
+                .collect();
+            let cb: Vec<i32> = (0..w * h)
+                .map(|_| (lcg(&mut st) as i32) >> (12 + (lcg(&mut st) % 8) as u32))
+                .collect();
             let dwant = sse_i32_core(&ca, &cb);
             let swant = sq_sum_i32_core(&ca);
             let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_p| {
@@ -644,9 +669,15 @@ mod tests {
             // wrapped terms must not be symmetric: with `i32::MAX` in both
             // slots their mod-2^64 errors are +-2^33 and CANCEL, and the case
             // silently stops discriminating.)
-            (vec![1, 2, 3, 4, i32::MAX, i32::MAX - 5, 6], vec![1, 0, 3, 0, -2, i32::MIN, 6]),
+            (
+                vec![1, 2, 3, 4, i32::MAX, i32::MAX - 5, 6],
+                vec![1, 0, 3, 0, -2, i32::MIN, 6],
+            ),
             // Wrap only in the vector body; clean tail.
-            (vec![i32::MIN, 5, -7, 9, 11, 13, 15], vec![i32::MAX, 1, 1, 1, 1, 1, 1]),
+            (
+                vec![i32::MIN, 5, -7, 9, 11, 13, 15],
+                vec![i32::MAX, 1, 1, 1, 1, 1, 1],
+            ),
             // Shorter than one vector.
             (vec![i32::MIN, 3], vec![7, 3]),
             // Accumulator wrap: 64 squares of ~2^62 sum past 2^64.

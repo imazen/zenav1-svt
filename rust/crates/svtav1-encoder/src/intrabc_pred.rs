@@ -212,7 +212,8 @@ pub fn predict_intrabc_chroma<S: ReconSample>(
             for r in 0..ch {
                 for c in 0..cw {
                     let (x, y) = (pos_x + c as i64, pos_y + r as i64);
-                    let s = sample(x, y) + sample(x + 1, y) + sample(x, y + 1) + sample(x + 1, y + 1);
+                    let s =
+                        sample(x, y) + sample(x + 1, y) + sample(x, y + 1) + sample(x + 1, y + 1);
                     dst[r * cw + c] = S::from_i64((s + 2) >> 2);
                 }
             }
@@ -264,7 +265,10 @@ mod tests {
                     let mut sum = 1 << (bd + FILTER_BITS - 1);
                     for (k, &t) in xf.iter().enumerate() {
                         if t != 0 {
-                            sum += t * px(sx as i64 + x as i64 - 3 + k as i64, sy as i64 + y as i64 - 3);
+                            sum += t * px(
+                                sx as i64 + x as i64 - 3 + k as i64,
+                                sy as i64 + y as i64 - 3,
+                            );
                         }
                     }
                     im[y * w + x] = round_pot(sum, ROUND_0);
@@ -291,7 +295,8 @@ mod tests {
                     let mut res = 0i32;
                     for (k, &t) in xf.iter().enumerate() {
                         if t != 0 {
-                            res += t * px(sx as i64 + x as i64 - 3 + k as i64, sy as i64 + y as i64);
+                            res +=
+                                t * px(sx as i64 + x as i64 - 3 + k as i64, sy as i64 + y as i64);
                         }
                     }
                     let res = round_pot(res, ROUND_0);
@@ -304,7 +309,8 @@ mod tests {
                     let mut res = 0i32;
                     for (k, &t) in yf.iter().enumerate() {
                         if t != 0 {
-                            res += t * px(sx as i64 + x as i64, sy as i64 + y as i64 - 3 + k as i64);
+                            res +=
+                                t * px(sx as i64 + x as i64, sy as i64 + y as i64 - 3 + k as i64);
                         }
                     }
                     out[y * w + x] = round_pot(res, FILTER_BITS).clamp(0, 255) as u8;
@@ -336,7 +342,16 @@ mod tests {
         let frame = lcg_frame(&mut seed, stride * 64);
         let mut dst = vec![0u8; 8 * 8];
         // Block at (32, 32), DV (-128, -64) eighth-pel = (-16, -8) px.
-        predict_intrabc_luma(&frame, stride, 32, 32, 8, 8, Mv { x: -128, y: -64 }, &mut dst);
+        predict_intrabc_luma(
+            &frame,
+            stride,
+            32,
+            32,
+            8,
+            8,
+            Mv { x: -128, y: -64 },
+            &mut dst,
+        );
         for r in 0..8 {
             for c in 0..8 {
                 assert_eq!(dst[r * 8 + c], frame[(24 + r) * stride + 16 + c]);
@@ -356,12 +371,12 @@ mod tests {
         let plane = lcg_frame(&mut seed, c_stride * fch);
         // (dv.x, dv.y) eighth-pel; odd/even full-pel combinations.
         let cases: [(i16, i16); 6] = [
-            (-64, -32),  // even/even -> copy
-            (-56, -32),  // odd/even  -> x half-pel
-            (-64, -40),  // even/odd  -> y half-pel
-            (-56, -40),  // odd/odd   -> 2d
-            (-8, -8),    // minimal odd/odd
-            (40, -104),  // positive x odd, negative y odd
+            (-64, -32), // even/even -> copy
+            (-56, -32), // odd/even  -> x half-pel
+            (-64, -40), // even/odd  -> y half-pel
+            (-56, -40), // odd/odd   -> 2d
+            (-8, -8),   // minimal odd/odd
+            (40, -104), // positive x odd, negative y odd
         ];
         for (dvx, dvy) in cases {
             let dv = Mv { x: dvx, y: dvy };
@@ -395,7 +410,18 @@ mod tests {
             *p = (i % 251) as u8;
         }
         let mut dst = vec![0u8; 4 * 4];
-        predict_intrabc_chroma(&plane, c_stride, 8, 8, 4, 4, 32, 32, Mv { x: -8, y: 0 }, &mut dst);
+        predict_intrabc_chroma(
+            &plane,
+            c_stride,
+            8,
+            8,
+            4,
+            4,
+            32,
+            32,
+            Mv { x: -8, y: 0 },
+            &mut dst,
+        );
         let a = u16::from(plane[8 * c_stride + 7]);
         let b = u16::from(plane[8 * c_stride + 8]);
         assert_eq!(dst[0], ((a + b + 1) >> 1) as u8);

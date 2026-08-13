@@ -250,8 +250,19 @@ pub fn cdef_filter_block(
 ) {
     incant!(
         cdef_filter_block_impl(
-            dst, doff, dstride, inb, ioff, pri_strength, sec_strength, dir, pri_damping,
-            sec_damping, bsize, coeff_shift, subsampling_factor
+            dst,
+            doff,
+            dstride,
+            inb,
+            ioff,
+            pri_strength,
+            sec_strength,
+            dir,
+            pri_damping,
+            sec_damping,
+            bsize,
+            coeff_shift,
+            subsampling_factor
         ),
         [v3, neon, scalar]
     )
@@ -275,8 +286,19 @@ fn cdef_filter_block_impl_scalar(
     subsampling_factor: usize,
 ) {
     cdef_filter_block_core(
-        dst, doff, dstride, inb, ioff, pri_strength, sec_strength, dir, pri_damping, sec_damping,
-        bsize, coeff_shift, subsampling_factor,
+        dst,
+        doff,
+        dstride,
+        inb,
+        ioff,
+        pri_strength,
+        sec_strength,
+        dir,
+        pri_damping,
+        sec_damping,
+        bsize,
+        coeff_shift,
+        subsampling_factor,
     );
 }
 
@@ -386,7 +408,13 @@ pub(crate) fn cdef_filter_cols8_neon(
         -cdef_direction(dir - 2, 1),
     ];
     let s_cof = [
-        sec_taps[0], sec_taps[0], sec_taps[0], sec_taps[0], sec_taps[1], sec_taps[1], sec_taps[1],
+        sec_taps[0],
+        sec_taps[0],
+        sec_taps[0],
+        sec_taps[0],
+        sec_taps[1],
+        sec_taps[1],
+        sec_taps[1],
         sec_taps[1],
     ];
 
@@ -522,7 +550,13 @@ pub(crate) fn cdef_filter_cols4_neon(
         -cdef_direction(dir - 2, 1),
     ];
     let s_cof = [
-        sec_taps[0], sec_taps[0], sec_taps[0], sec_taps[0], sec_taps[1], sec_taps[1], sec_taps[1],
+        sec_taps[0],
+        sec_taps[0],
+        sec_taps[0],
+        sec_taps[0],
+        sec_taps[1],
+        sec_taps[1],
+        sec_taps[1],
         sec_taps[1],
     ];
 
@@ -563,8 +597,9 @@ pub(crate) fn cdef_filter_cols4_neon(
         let adj = vshrq_n_s32::<4>(vsubq_s32(vaddq_s32(eight, sw), neg));
         let val = vaddq_s32(x, adj);
         let y = vminq_s32(vmaxq_s32(val, mn), mx);
-        let dst: &mut [i32; 4] =
-            (&mut out[i as usize * 4..i as usize * 4 + 4]).try_into().unwrap();
+        let dst: &mut [i32; 4] = (&mut out[i as usize * 4..i as usize * 4 + 4])
+            .try_into()
+            .unwrap();
         vst1q_s32(dst, y);
         i += sub;
     }
@@ -589,8 +624,16 @@ fn cdef_filter_block_impl_neon(
     coeff_shift: i32,
     subsampling_factor: usize,
 ) {
-    let rows = if bsize == BLOCK_8X8 || bsize == BLOCK_4X8 { 8 } else { 4 };
-    let cols = if bsize == BLOCK_8X8 || bsize == BLOCK_8X4 { 8 } else { 4 };
+    let rows = if bsize == BLOCK_8X8 || bsize == BLOCK_4X8 {
+        8
+    } else {
+        4
+    };
+    let cols = if bsize == BLOCK_8X8 || bsize == BLOCK_8X4 {
+        8
+    } else {
+        4
+    };
     // Both column shapes now take a vector path. The 8-wide arm is the
     // original; the 4-wide chroma arm ([`cdef_filter_cols4_neon`]) is the same
     // kernel at one int32x4 per row instead of two, which is what the C
@@ -675,15 +718,34 @@ fn cdef_filter_block_impl_v3(
     coeff_shift: i32,
     subsampling_factor: usize,
 ) {
-    let cols = if bsize == BLOCK_8X8 || bsize == BLOCK_8X4 { 8 } else { 4 };
+    let cols = if bsize == BLOCK_8X8 || bsize == BLOCK_8X4 {
+        8
+    } else {
+        4
+    };
     if cols != 8 {
         cdef_filter_block_core(
-            dst, doff, dstride, inb, ioff, pri_strength, sec_strength, dir, pri_damping,
-            sec_damping, bsize, coeff_shift, subsampling_factor,
+            dst,
+            doff,
+            dstride,
+            inb,
+            ioff,
+            pri_strength,
+            sec_strength,
+            dir,
+            pri_damping,
+            sec_damping,
+            bsize,
+            coeff_shift,
+            subsampling_factor,
         );
         return;
     }
-    let rows = if bsize == BLOCK_8X8 || bsize == BLOCK_4X8 { 8 } else { 4 };
+    let rows = if bsize == BLOCK_8X8 || bsize == BLOCK_4X8 {
+        8
+    } else {
+        4
+    };
     let mut scratch = [0i32; 64];
     cdef_filter_cols8_v3(
         token,
@@ -810,7 +872,13 @@ pub(crate) fn cdef_filter_cols8_v3(
         -cdef_direction(dir - 2, 1),
     ];
     let s_cof = [
-        sec_taps[0], sec_taps[0], sec_taps[0], sec_taps[0], sec_taps[1], sec_taps[1], sec_taps[1],
+        sec_taps[0],
+        sec_taps[0],
+        sec_taps[0],
+        sec_taps[0],
+        sec_taps[1],
+        sec_taps[1],
+        sec_taps[1],
         sec_taps[1],
     ];
 
@@ -1191,8 +1259,8 @@ pub fn compute_cdef_dist_16bit(
         let mut i = 0usize;
         while i < bh {
             for j in 0..bw {
-                let e = plane[poff + i * pstride + j] as i32
-                    - packed[packed_off + i * bw + j] as i32;
+                let e =
+                    plane[poff + i * pstride + j] as i32 - packed[packed_off + i * bw + j] as i32;
                 sum += (e * e) as u64;
             }
             i += subsampling_factor;

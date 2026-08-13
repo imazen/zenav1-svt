@@ -182,7 +182,10 @@ mod tests {
     #[test]
     fn qindex_to_q_fp8_endpoints() {
         // AC_QLOOKUP_8[0]=4 -> 256; [255]=1828 -> 116992 (table-derived).
-        assert_eq!(convert_qindex_to_q_fp8(0, 8), i32::from(AC_QLOOKUP_8[0]) << 6);
+        assert_eq!(
+            convert_qindex_to_q_fp8(0, 8),
+            i32::from(AC_QLOOKUP_8[0]) << 6
+        );
         assert_eq!(
             convert_qindex_to_q_fp8(255, 8),
             i32::from(AC_QLOOKUP_8[255]) << 6
@@ -239,7 +242,13 @@ mod tests {
     /// recomputing the closed form at the comment's variance points.
     #[test]
     fn curve0_comment_table_qsteps() {
-        for (var, expect) in [(256.0, 1.0), (64.0, 1.330), (16.0, 1.769), (4.0, 2.354), (1.0, 3.132)] {
+        for (var, expect) in [
+            (256.0, 1.0),
+            (64.0, 1.330),
+            (16.0, 1.769),
+            (4.0, 2.354),
+            (1.0, 3.132),
+        ] {
             let q = 1.018f64.powf(0.8 * (-10.0 * (var as f64).log2() + 80.0));
             let q = q.clamp(1.0, 8.0);
             assert!(
@@ -249,7 +258,6 @@ mod tests {
         }
     }
 }
-
 
 /// C **mainline** `av1_get_deltaq_sb_variance_boost` (rc_aq.c:350).
 ///

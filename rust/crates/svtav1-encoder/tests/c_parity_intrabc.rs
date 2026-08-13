@@ -356,8 +356,16 @@ fn c_parity_build_nmv_cost_table() {
                 },
             );
             let rs_dv = intrabc::build_nmv_cost_table(&ndvc, MvSubpelPrecision::None);
-            assert_eq!(rs_nmv.joint_cost.as_slice(), &c.nmv_joint, "nmv joint (iter {iter} hp {hp})");
-            assert_eq!(rs_dv.joint_cost.as_slice(), &c.dv_joint, "dv joint (iter {iter})");
+            assert_eq!(
+                rs_nmv.joint_cost.as_slice(),
+                &c.nmv_joint,
+                "nmv joint (iter {iter} hp {hp})"
+            );
+            assert_eq!(
+                rs_dv.joint_cost.as_slice(),
+                &c.dv_joint,
+                "dv joint (iter {iter})"
+            );
             for comp in 0..2 {
                 let c_nmv = &c.nmv_costs[comp * cref::MV_VALS..(comp + 1) * cref::MV_VALS];
                 let c_dv = &c.dv_costs[comp * cref::MV_VALS..(comp + 1) * cref::MV_VALS];
@@ -391,8 +399,14 @@ fn c_parity_estimate_mv_rate_gating() {
     // approx_inter_rate: early return BEFORE the dv arm — dv untouched
     // even with allow_intrabc=1; nmv zeroed.
     let c = cref::estimate_mv_rate(true, true, false, None, None, SENTINEL);
-    assert!(c.dv_joint.iter().all(|&v| v == SENTINEL), "approx must skip dv fill");
-    assert!(c.dv_costs.iter().all(|&v| v == SENTINEL), "approx must skip dv fill");
+    assert!(
+        c.dv_joint.iter().all(|&v| v == SENTINEL),
+        "approx must skip dv fill"
+    );
+    assert!(
+        c.dv_costs.iter().all(|&v| v == SENTINEL),
+        "approx must skip dv fill"
+    );
     assert!(c.nmv_joint.iter().all(|&v| v == 0));
     assert!(c.nmv_costs.iter().all(|&v| v == 0));
 }
@@ -434,7 +448,7 @@ fn c_parity_mv_costs() {
         ];
         for _ in 0..400 {
             let m = |rng: &mut Rng| rng.range_i32(-2048, 2048) as i16;
-            cases.push(((m(&mut rng) , m(&mut rng)), (m(&mut rng), m(&mut rng))));
+            cases.push(((m(&mut rng), m(&mut rng)), (m(&mut rng), m(&mut rng))));
         }
         for &(mv, refmv) in &cases {
             let rmv = Mv { x: mv.0, y: mv.1 };
@@ -447,7 +461,10 @@ fn c_parity_mv_costs() {
             for weight in [intrabc::MV_COST_WEIGHT_SUB, 108] {
                 let rs_cost = intrabc::mv_bit_cost(rmv, rref, &rs, weight);
                 let c_cost = cref::mv_bit_cost(mv, refmv, &c.dv_joint, c_dv0, c_dv1, weight);
-                assert_eq!(rs_cost, c_cost, "mv_bit_cost diverges mv={mv:?} ref={refmv:?} w={weight}");
+                assert_eq!(
+                    rs_cost, c_cost,
+                    "mv_bit_cost diverges mv={mv:?} ref={refmv:?} w={weight}"
+                );
             }
             assert_eq!(
                 intrabc::mv_bit_cost_light(rmv, rref),
@@ -457,7 +474,10 @@ fn c_parity_mv_costs() {
             for epb in [1, 63, 1024, 7276] {
                 let rs_cost = intrabc::mv_err_cost(rmv, rref, &rs, epb);
                 let c_cost = cref::mv_err_cost(mv, refmv, &c.dv_joint, c_dv0, c_dv1, epb);
-                assert_eq!(rs_cost, c_cost, "mv_err_cost diverges mv={mv:?} ref={refmv:?} epb={epb}");
+                assert_eq!(
+                    rs_cost, c_cost,
+                    "mv_err_cost diverges mv={mv:?} ref={refmv:?} epb={epb}"
+                );
             }
             assert_eq!(
                 intrabc::mv_err_cost_light(rmv, rref),
@@ -507,7 +527,10 @@ fn c_parity_mvsad_err_cost_formula() {
             + c_dv0[(intrabc::MV_MAX + dy.clamp(-intrabc::MV_MAX, intrabc::MV_MAX)) as usize]
             + c_dv1[(intrabc::MV_MAX + dx.clamp(-intrabc::MV_MAX, intrabc::MV_MAX)) as usize];
         let c_cost = ((cost as u32).wrapping_mul(spb as u32).wrapping_add(1 << 8) >> 9) as i32;
-        assert_eq!(rs_cost, c_cost, "mvsad_err_cost diverges mv=({mx},{my}) ref=({rx},{ry}) spb={spb}");
+        assert_eq!(
+            rs_cost, c_cost,
+            "mvsad_err_cost diverges mv=({mx},{my}) ref=({rx},{ry}) spb={spb}"
+        );
         // approx arm.
         assert_eq!(
             intrabc::mvsad_err_cost(mx, my, rx, ry, spb, true, &rs),
@@ -595,15 +618,106 @@ fn ibc_ctrls_level_table_transcription_lock() {
         dir: u8,
     }
     let rows = [
-        Row { level: 1, hint: false, nsq: false, b4: false, max_hash: 64, max_cand: 256, thresh: 1 << 20, mv_diff_th: -1, p0: (256, 1), p1: (256, 1), qp_scaling: false, dir: 0 },
-        Row { level: 2, hint: true, nsq: false, b4: false, max_hash: 64, max_cand: 256, thresh: 1 << 20, mv_diff_th: -1, p0: (256, 8), p1: (64, 1), qp_scaling: false, dir: 0 },
-        Row { level: 3, hint: true, nsq: true, b4: false, max_hash: 64, max_cand: 256, thresh: 1 << 20, mv_diff_th: 0, p0: (256, 8), p1: (64, 1), qp_scaling: true, dir: 0 },
-        Row { level: 4, hint: true, nsq: true, b4: false, max_hash: 64, max_cand: 64, thresh: 1 << 24, mv_diff_th: 0, p0: (256, 8), p1: (32, 1), qp_scaling: true, dir: 0 },
-        Row { level: 5, hint: true, nsq: true, b4: false, max_hash: 8, max_cand: 64, thresh: 1 << 24, mv_diff_th: 0, p0: (256, 8), p1: (32, 1), qp_scaling: true, dir: 0 },
+        Row {
+            level: 1,
+            hint: false,
+            nsq: false,
+            b4: false,
+            max_hash: 64,
+            max_cand: 256,
+            thresh: 1 << 20,
+            mv_diff_th: -1,
+            p0: (256, 1),
+            p1: (256, 1),
+            qp_scaling: false,
+            dir: 0,
+        },
+        Row {
+            level: 2,
+            hint: true,
+            nsq: false,
+            b4: false,
+            max_hash: 64,
+            max_cand: 256,
+            thresh: 1 << 20,
+            mv_diff_th: -1,
+            p0: (256, 8),
+            p1: (64, 1),
+            qp_scaling: false,
+            dir: 0,
+        },
+        Row {
+            level: 3,
+            hint: true,
+            nsq: true,
+            b4: false,
+            max_hash: 64,
+            max_cand: 256,
+            thresh: 1 << 20,
+            mv_diff_th: 0,
+            p0: (256, 8),
+            p1: (64, 1),
+            qp_scaling: true,
+            dir: 0,
+        },
+        Row {
+            level: 4,
+            hint: true,
+            nsq: true,
+            b4: false,
+            max_hash: 64,
+            max_cand: 64,
+            thresh: 1 << 24,
+            mv_diff_th: 0,
+            p0: (256, 8),
+            p1: (32, 1),
+            qp_scaling: true,
+            dir: 0,
+        },
+        Row {
+            level: 5,
+            hint: true,
+            nsq: true,
+            b4: false,
+            max_hash: 8,
+            max_cand: 64,
+            thresh: 1 << 24,
+            mv_diff_th: 0,
+            p0: (256, 8),
+            p1: (32, 1),
+            qp_scaling: true,
+            dir: 0,
+        },
         // Cases 6 / MAX(7): C assigns ONLY enabled/hint/nsq/b4/max_hash/
         // max_cand/thresh/search_dir; mesh fields fall through (port: zeroed).
-        Row { level: 6, hint: true, nsq: true, b4: false, max_hash: 8, max_cand: 32, thresh: u64::MAX, mv_diff_th: 0, p0: (0, 0), p1: (0, 0), qp_scaling: false, dir: 0 },
-        Row { level: 7, hint: true, nsq: true, b4: false, max_hash: 8, max_cand: 32, thresh: u64::MAX, mv_diff_th: 0, p0: (0, 0), p1: (0, 0), qp_scaling: false, dir: 1 },
+        Row {
+            level: 6,
+            hint: true,
+            nsq: true,
+            b4: false,
+            max_hash: 8,
+            max_cand: 32,
+            thresh: u64::MAX,
+            mv_diff_th: 0,
+            p0: (0, 0),
+            p1: (0, 0),
+            qp_scaling: false,
+            dir: 0,
+        },
+        Row {
+            level: 7,
+            hint: true,
+            nsq: true,
+            b4: false,
+            max_hash: 8,
+            max_cand: 32,
+            thresh: u64::MAX,
+            mv_diff_th: 0,
+            p0: (0, 0),
+            p1: (0, 0),
+            qp_scaling: false,
+            dir: 1,
+        },
     ];
     assert!(!IbcCtrls::for_level(0).enabled);
     for r in &rows {
@@ -612,26 +726,61 @@ fn ibc_ctrls_level_table_transcription_lock() {
         assert_eq!(c.palette_hint, r.hint, "level {} hint", r.level);
         assert_eq!(c.nsq_parent_gating, r.nsq, "level {} nsq", r.level);
         assert_eq!(c.b4_parent_gating, r.b4, "level {} b4", r.level);
-        assert_eq!(c.max_block_size_hash, r.max_hash, "level {} max_hash", r.level);
-        assert_eq!(c.max_cand_per_bucket, r.max_cand, "level {} max_cand", r.level);
-        assert_eq!(c.exhaustive_mesh_thresh, r.thresh, "level {} thresh", r.level);
-        assert_eq!(c.mesh_search_mv_diff_threshold, r.mv_diff_th, "level {} mv_diff", r.level);
+        assert_eq!(
+            c.max_block_size_hash, r.max_hash,
+            "level {} max_hash",
+            r.level
+        );
+        assert_eq!(
+            c.max_cand_per_bucket, r.max_cand,
+            "level {} max_cand",
+            r.level
+        );
+        assert_eq!(
+            c.exhaustive_mesh_thresh, r.thresh,
+            "level {} thresh",
+            r.level
+        );
+        assert_eq!(
+            c.mesh_search_mv_diff_threshold, r.mv_diff_th,
+            "level {} mv_diff",
+            r.level
+        );
         assert_eq!(
             c.mesh_patterns,
             [
-                MeshPattern { range: r.p0.0, interval: r.p0.1 },
-                MeshPattern { range: r.p1.0, interval: r.p1.1 },
+                MeshPattern {
+                    range: r.p0.0,
+                    interval: r.p0.1
+                },
+                MeshPattern {
+                    range: r.p1.0,
+                    interval: r.p1.1
+                },
                 MeshPattern::default(),
                 MeshPattern::default(),
             ],
             "level {} patterns",
             r.level
         );
-        assert_eq!(c.mesh_qp_scaling, r.qp_scaling, "level {} qp_scaling", r.level);
+        assert_eq!(
+            c.mesh_qp_scaling, r.qp_scaling,
+            "level {} qp_scaling",
+            r.level
+        );
         assert_eq!(c.search_dir, r.dir, "level {} dir", r.level);
     }
     // The allintra level derivation (enc_mode_config.c:2344-2371).
-    for (preset, level) in [(0u8, 3u8), (1, 4), (2, 5), (3, 6), (4, 7), (5, 0), (6, 0), (10, 0)] {
+    for (preset, level) in [
+        (0u8, 3u8),
+        (1, 4),
+        (2, 5),
+        (3, 6),
+        (4, 7),
+        (5, 0),
+        (6, 0),
+        (10, 0),
+    ] {
         assert_eq!(intrabc::allintra_intrabc_level(preset, true, true), level);
         assert_eq!(intrabc::allintra_intrabc_level(preset, false, true), 0);
         assert_eq!(intrabc::allintra_intrabc_level(preset, true, false), 0);
@@ -658,7 +807,11 @@ fn c_parity_intrabc_fac_bits() {
     let fc = FrameContext::new_default();
     let cfc = svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(60);
     let rates = svtav1_encoder::leaf_funnel::build_md_rates(&fc, &cfc);
-    assert_eq!(rates.intrabc_fac_bits, [51, 1982], "port default intrabc_fac_bits");
+    assert_eq!(
+        rates.intrabc_fac_bits,
+        [51, 1982],
+        "port default intrabc_fac_bits"
+    );
 
     // Randomized (adapted-looking) CDFs: fill formula locked against C.
     let mut rng = Rng(0x1BC0_D51D_0006);
@@ -669,14 +822,20 @@ fn c_parity_intrabc_fac_bits() {
         let mut fc = FrameContext::new_default();
         fc.intrabc_cdf = cdf3;
         let rates = svtav1_encoder::leaf_funnel::build_md_rates(&fc, &cfc);
-        assert_eq!(rates.intrabc_fac_bits, c, "fac bits diverge (iter {iter}, cdf {cdf3:?})");
+        assert_eq!(
+            rates.intrabc_fac_bits, c,
+            "fac bits diverge (iter {iter}, cdf {cdf3:?})"
+        );
     }
 
     // !allow_intrabc: C leaves the fields untouched (sentinel survives) —
     // the port's unconditional fresh fill is safe because its only
     // consumers are gated on the same frame flag (rd_cost.c:629/:531).
     let c = cref::estimate_syntax_rate_intrabc(None, false, SENTINEL);
-    assert_eq!(c, [SENTINEL; 2], "C must not fill fac bits when !allow_intrabc");
+    assert_eq!(
+        c, [SENTINEL; 2],
+        "C must not fill fac bits when !allow_intrabc"
+    );
 }
 
 /// `build_dv_cost_tables` gating (the estimate_mv_rate dv arm + the
@@ -716,8 +875,14 @@ fn intrabc_fast_cost_rates_shape() {
     let mut rng = Rng(0x1BC0_D51D_0007);
     for _ in 0..500 {
         let m = |rng: &mut Rng| (rng.range_i32(-1000, 1000) * 8) as i16;
-        let dv = Mv { x: m(&mut rng), y: m(&mut rng) };
-        let pred = Mv { x: m(&mut rng), y: m(&mut rng) };
+        let dv = Mv {
+            x: m(&mut rng),
+            y: m(&mut rng),
+        };
+        let pred = Mv {
+            x: m(&mut rng),
+            y: m(&mut rng),
+        };
         let (flr, fcr) = intrabc::intrabc_fast_cost_rates(dv, pred, &tables, &fac);
         let want = intrabc::mv_bit_cost(dv, pred, &tables, intrabc::MV_COST_WEIGHT_SUB) + fac[1];
         assert_eq!(flr, want as u32, "IBC fast luma rate: mv_rate + fac[1]");

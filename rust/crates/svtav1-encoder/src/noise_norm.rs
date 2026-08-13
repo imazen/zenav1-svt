@@ -160,14 +160,34 @@ mod tests {
         let mut dq = [50i32; 16];
         let mut eob = 5u16;
         let q0 = q;
-        perform_noise_normalization(&[100, 100], None, &coeff, &mut q, &mut dq, &mut eob, scan, 0, 4);
+        perform_noise_normalization(
+            &[100, 100],
+            None,
+            &coeff,
+            &mut q,
+            &mut dq,
+            &mut eob,
+            scan,
+            0,
+            4,
+        );
         assert_eq!(q, q0, "4x4 must early-exit");
         let scan = scan_for(1); // TX_8X8
         let coeff = [100i32; 64];
         let mut q = [1i32; 64];
         let mut dq = [50i32; 64];
         let q0 = q;
-        perform_noise_normalization(&[100, 100], None, &coeff, &mut q, &mut dq, &mut eob, scan, 1, 0);
+        perform_noise_normalization(
+            &[100, 100],
+            None,
+            &coeff,
+            &mut q,
+            &mut dq,
+            &mut eob,
+            scan,
+            1,
+            0,
+        );
         assert_eq!(q, q0, "strength 0 must early-exit");
     }
 
@@ -185,7 +205,17 @@ mod tests {
         // = 100): gap 4, step 100, ratio = (96<<4)/100 = 15 >= 9.
         coeff[scan[1] as usize] = 96;
         let mut eob = 1u16;
-        perform_noise_normalization(&[100, 100], None, &coeff, &mut q, &mut dq, &mut eob, scan, 1, 1);
+        perform_noise_normalization(
+            &[100, 100],
+            None,
+            &coeff,
+            &mut q,
+            &mut dq,
+            &mut eob,
+            scan,
+            1,
+            1,
+        );
         assert_eq!(q[scan[1] as usize], 1);
         assert_eq!(dq[scan[1] as usize], 100);
         assert_eq!(eob, 2);

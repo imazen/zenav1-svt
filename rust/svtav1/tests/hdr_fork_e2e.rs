@@ -97,10 +97,7 @@ fn noise_norm_is_live_in_fork_mode() {
         off.noise_norm_strength = 0;
         let a = encode_with(Some(on), qp, preset);
         let b = encode_with(Some(off), qp, preset);
-        assert_ne!(
-            a, b,
-            "p{preset} qp{qp}: noise_norm_strength knob is inert"
-        );
+        assert_ne!(a, b, "p{preset} qp{qp}: noise_norm_strength knob is inert");
     }
 }
 

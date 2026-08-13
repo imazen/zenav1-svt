@@ -31,7 +31,14 @@ impl Rng {
 
 /// Fill a rows x cols block (stride >= cols) drawing from a palette of
 /// `ncolors` random values — exercises both sides of every threshold.
-fn fill_paletted(rng: &mut Rng, buf: &mut [u8], stride: usize, rows: usize, cols: usize, ncolors: usize) {
+fn fill_paletted(
+    rng: &mut Rng,
+    buf: &mut [u8],
+    stride: usize,
+    rows: usize,
+    cols: usize,
+    ncolors: usize,
+) {
     let palette: Vec<u8> = (0..ncolors).map(|_| rng.byte()).collect();
     for r in 0..rows {
         for c in 0..cols {
@@ -44,7 +51,12 @@ fn fill_paletted(rng: &mut Rng, buf: &mut [u8], stride: usize, rows: usize, cols
 fn count_colors_matches_c() {
     let mut rng = Rng(0x5c_de7ec7_0001);
     // (rows, cols, stride) incl. non-tight strides.
-    let shapes = [(8usize, 8usize, 8usize), (16, 16, 16), (8, 8, 23), (16, 16, 31)];
+    let shapes = [
+        (8usize, 8usize, 8usize),
+        (16, 16, 16),
+        (8, 8, 23),
+        (16, 16, 31),
+    ];
     for &(rows, cols, stride) in &shapes {
         let mut buf = vec![0u8; rows * stride];
         for ncolors in [1usize, 2, 3, 4, 5, 6, 8, 16, 39, 40, 41, 64, 200] {
@@ -163,13 +175,22 @@ fn detector_classes_on_constructed_planes() {
     let mut screen = vec![0u8; w * h];
     for r in 0..h {
         for c in 0..w {
-            screen[r * w + c] = if ((r / 4) + (c / 4)) % 2 == 0 { 16 } else { 240 };
+            screen[r * w + c] = if ((r / 4) + (c / 4)) % 2 == 0 {
+                16
+            } else {
+                240
+            };
         }
     }
     for fast in [false, true] {
         let cls = sc_detect::is_screen_content_antialiasing_aware(&screen, w, w, h, fast);
         assert!(
-            cls.sc_class0 && cls.sc_class1 && cls.sc_class2 && cls.sc_class3 && cls.sc_class4 && cls.sc_class5,
+            cls.sc_class0
+                && cls.sc_class1
+                && cls.sc_class2
+                && cls.sc_class3
+                && cls.sc_class4
+                && cls.sc_class5,
             "screen plane fast={fast}: {cls:?}"
         );
     }

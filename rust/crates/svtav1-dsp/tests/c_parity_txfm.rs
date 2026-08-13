@@ -404,8 +404,12 @@ fn simd_residual(pat: usize, n: usize, rng: &mut Rng) -> Vec<i16> {
     match pat {
         0 => vec![255i16; n],
         1 => vec![-255i16; n],
-        2 => (0..n).map(|i| if i % 2 == 0 { 255 } else { -255 }).collect(),
-        3 => (0..n).map(|i| if (i / 4) % 2 == 0 { 255 } else { -255 }).collect(),
+        2 => (0..n)
+            .map(|i| if i % 2 == 0 { 255 } else { -255 })
+            .collect(),
+        3 => (0..n)
+            .map(|i| if (i / 4) % 2 == 0 { 255 } else { -255 })
+            .collect(),
         4 => (0..n).map(|i| if i % 3 == 0 { 255 } else { 0 }).collect(),
         _ => (0..n).map(|_| rng.residual()).collect(),
     }
@@ -519,14 +523,20 @@ fn inv_dct_simd_rect_all_tiers_identical_and_recon_match_c() {
                 match &first_res {
                     None => first_res = Some(our_res.clone()),
                     Some(f) => {
-                        assert_eq!(&our_res, f, "inv rect {w}x{h} pat {pat}: tier residual != scalar")
+                        assert_eq!(
+                            &our_res, f,
+                            "inv rect {w}x{h} pat {pat}: tier residual != scalar"
+                        )
                     }
                 }
                 let recon: Vec<u16> = our_res
                     .iter()
                     .map(|&r| (128 + r).clamp(0, 255) as u16)
                     .collect();
-                assert_eq!(recon, c_recon, "inv rect {w}x{h} pat {pat}: SIMD tier recon != C");
+                assert_eq!(
+                    recon, c_recon,
+                    "inv rect {w}x{h} pat {pat}: SIMD tier recon != C"
+                );
             });
         }
     }
@@ -581,12 +591,19 @@ fn inv_dct_simd_all_tiers_identical_and_recon_match_c() {
                 // (b) all tiers produce byte-identical residuals (SIMD==scalar)
                 match &first {
                     None => first = Some(res.clone()),
-                    Some(f) => assert_eq!(&res, f, "inv {n}x{n} pat {pat}: tier residual != scalar"),
+                    Some(f) => {
+                        assert_eq!(&res, f, "inv {n}x{n} pat {pat}: tier residual != scalar")
+                    }
                 }
                 // (a) recon == real C
-                let recon: Vec<u16> =
-                    res.iter().map(|&r| (128 + r).clamp(0, 255) as u16).collect();
-                assert_eq!(recon, c_recon, "inv {n}x{n} pat {pat}: SIMD tier recon != C");
+                let recon: Vec<u16> = res
+                    .iter()
+                    .map(|&r| (128 + r).clamp(0, 255) as u16)
+                    .collect();
+                assert_eq!(
+                    recon, c_recon,
+                    "inv {n}x{n} pat {pat}: SIMD tier recon != C"
+                );
             });
         }
     }
@@ -687,7 +704,11 @@ fn inv_adst_simd_all_tiers_identical_and_recon_match_c() {
             for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
                 let mut our_res = vec![0i32; w * h];
                 assert!(svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch(
-                    &coeffs, &mut our_res, w, ts, txt
+                    &coeffs,
+                    &mut our_res,
+                    w,
+                    ts,
+                    txt
                 ));
                 match &first_res {
                     None => first_res = Some(our_res.clone()),
@@ -750,7 +771,12 @@ fn run_bd10_tier_check(w: usize, h: usize, ts: TxSize, txt: TxType, rng: &mut Rn
         for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
             let mut our_res = vec![0i32; w * h];
             assert!(svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch_bd(
-                &coeffs, &mut our_res, w, ts, txt, 10
+                &coeffs,
+                &mut our_res,
+                w,
+                ts,
+                txt,
+                10
             ));
             match &first_res {
                 None => first_res = Some(our_res.clone()),
@@ -879,7 +905,11 @@ fn inv_ext_simd_all_tiers_identical_and_recon_match_c() {
             for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
                 let mut our_res = vec![0i32; w * h];
                 assert!(svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch(
-                    &coeffs, &mut our_res, w, ts, txt
+                    &coeffs,
+                    &mut our_res,
+                    w,
+                    ts,
+                    txt
                 ));
                 match &first_res {
                     None => first_res = Some(our_res.clone()),
@@ -1028,7 +1058,11 @@ fn inv_4dim_simd_all_tiers_identical_and_recon_match_c() {
             for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
                 let mut our_res = vec![0i32; w * h];
                 assert!(svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch(
-                    &coeffs, &mut our_res, w, ts, txt
+                    &coeffs,
+                    &mut our_res,
+                    w,
+                    ts,
+                    txt
                 ));
                 match &first_res {
                     None => first_res = Some(our_res.clone()),

@@ -117,7 +117,15 @@ struct VarTxWalk<'a, S: FnMut(usize, bool)> {
 impl<S: FnMut(usize, bool)> VarTxWalk<'_, S> {
     /// C `txfm_partition_update` (entropy_coding.c:4453-4468): stamp the
     /// UNIT's footprint (`txb` dims) with the CODED tx dims.
-    fn update(&mut self, blk_row: usize, blk_col: usize, txw: usize, txh: usize, unit_w: usize, unit_h: usize) {
+    fn update(
+        &mut self,
+        blk_row: usize,
+        blk_col: usize,
+        txw: usize,
+        txh: usize,
+        unit_w: usize,
+        unit_h: usize,
+    ) {
         for c in self.above.iter_mut().skip(blk_col).take(unit_w / 4) {
             *c = txw as u8;
         }
@@ -252,9 +260,18 @@ pub(crate) fn tx_size_bits_vartx(
     frame_h_px: usize,
 ) -> u64 {
     let mut bits: u64 = 0;
-    drive_walk(above_seed, left_seed, w, h, tx_depth, abs_y, frame_h_px, |ctx, split| {
-        bits += fac_bits[ctx][usize::from(split)] as u64;
-    });
+    drive_walk(
+        above_seed,
+        left_seed,
+        w,
+        h,
+        tx_depth,
+        abs_y,
+        frame_h_px,
+        |ctx, split| {
+            bits += fac_bits[ctx][usize::from(split)] as u64;
+        },
+    );
     bits
 }
 
@@ -274,9 +291,18 @@ pub(crate) fn write_tx_size_vartx(
     abs_y: usize,
     frame_h_px: usize,
 ) {
-    drive_walk(above_seed, left_seed, w, h, tx_depth, abs_y, frame_h_px, |ctx, split| {
-        writer.write_symbol(usize::from(split), &mut fc.txfm_partition_cdf[ctx], 2);
-    });
+    drive_walk(
+        above_seed,
+        left_seed,
+        w,
+        h,
+        tx_depth,
+        abs_y,
+        frame_h_px,
+        |ctx, split| {
+            writer.write_symbol(usize::from(split), &mut fc.txfm_partition_cdf[ctx], 2);
+        },
+    );
 }
 
 #[cfg(test)]
@@ -292,7 +318,9 @@ mod tests {
         depth: u8,
     ) -> alloc::vec::Vec<(usize, bool)> {
         let mut v = alloc::vec::Vec::new();
-        drive_walk(above, left, w, h, depth, 0, 1 << 16, |ctx, split| v.push((ctx, split)));
+        drive_walk(above, left, w, h, depth, 0, 1 << 16, |ctx, split| {
+            v.push((ctx, split))
+        });
         v
     }
 
@@ -380,7 +408,9 @@ mod tests {
         // The cost fn and the writer must visit identical (ctx, split)
         // sequences for the same block state.
         let mut cost_syms = alloc::vec::Vec::new();
-        drive_walk(&[8; 8], &[16; 8], 32, 16, 1, 0, 1 << 16, |c, s| cost_syms.push((c, s)));
+        drive_walk(&[8; 8], &[16; 8], 32, 16, 1, 0, 1 << 16, |c, s| {
+            cost_syms.push((c, s))
+        });
         let mut fc = FrameContext::new_default();
         let mut w = AomWriter::new(1 << 12);
         write_tx_size_vartx(&mut w, &mut fc, &[8; 8], &[16; 8], 32, 16, 1, 0, 1 << 16);

@@ -1532,8 +1532,7 @@ pub(crate) fn funnel_block_decision(
         // dump matches the bitstream (the coder re-derives it identically at
         // pipeline.rs `write_coeffs_txb_1d`).
         let tx_size = svtav1_entropy::coeff_c::tx_size_from_dims(pw, ph);
-        let sidx =
-            svtav1_entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type as usize] as usize;
+        let sidx = svtav1_entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type as usize] as usize;
         let scan = svtav1_entropy::scan_tables::scan(tx_size, sidx);
         let mut eob = 0u16;
         for (i, &pos) in scan.iter().enumerate() {
@@ -1937,17 +1936,16 @@ fn encode_with_neighbors(
     partition: svtav1_types::partition::PartitionType,
     dc_only: bool,
 ) -> PartitionResult {
-    let (above, left, top_left, has_above, has_left) =
-        extract_neighbors_tiled(
-            recon,
-            recon_stride,
-            abs_x,
-            abs_y,
-            width,
-            height,
-            config.tile_top_px,
-            config.tile_left_px,
-        );
+    let (above, left, top_left, has_above, has_left) = extract_neighbors_tiled(
+        recon,
+        recon_stride,
+        abs_x,
+        abs_y,
+        width,
+        height,
+        config.tile_top_px,
+        config.tile_left_px,
+    );
     encode_single_block(
         src,
         src_stride,

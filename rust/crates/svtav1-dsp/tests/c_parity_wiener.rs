@@ -195,7 +195,11 @@ fn compute_stats_all_tiers_match_c() {
     for iter in 0..220usize {
         let (w, h) = if iter < widths.len() * 2 {
             let wv = widths[iter % widths.len()];
-            let hv = if iter < widths.len() { 1 + (iter % 6) } else { widths[(iter + 3) % widths.len()] };
+            let hv = if iter < widths.len() {
+                1 + (iter % 6)
+            } else {
+                widths[(iter + 3) % widths.len()]
+            };
             (wv, hv)
         } else {
             (1 + rng.range(90) as usize, 1 + rng.range(90) as usize)
@@ -388,7 +392,10 @@ fn filter_unit_matches_c() {
                 );
             }
         }
-        assert_eq!(data_c, data_r, "post-call data diverges iter {iter} (setup/restore mismatch)");
+        assert_eq!(
+            data_c, data_r,
+            "post-call data diverges iter {iter} (setup/restore mismatch)"
+        );
     }
 }
 

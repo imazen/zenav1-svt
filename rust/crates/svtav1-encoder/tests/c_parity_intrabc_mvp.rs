@@ -34,16 +34,16 @@ impl Rng {
 
 /// (bsize enum, w_mi, h_mi) placement set for the random grids.
 const SIZES: [(u8, i32, i32); 11] = [
-    (0, 1, 1),   // 4x4
-    (1, 1, 2),   // 4x8
-    (2, 2, 1),   // 8x4
-    (3, 2, 2),   // 8x8
-    (4, 2, 4),   // 8x16
-    (5, 4, 2),   // 16x8
-    (6, 4, 4),   // 16x16
-    (7, 4, 8),   // 16x32
-    (8, 8, 4),   // 32x16
-    (9, 8, 8),   // 32x32
+    (0, 1, 1),    // 4x4
+    (1, 1, 2),    // 4x8
+    (2, 2, 1),    // 8x4
+    (3, 2, 2),    // 8x8
+    (4, 2, 4),    // 8x16
+    (5, 4, 2),    // 16x8
+    (6, 4, 4),    // 16x16
+    (7, 4, 8),    // 16x32
+    (8, 8, 4),    // 32x16
+    (9, 8, 8),    // 32x32
     (12, 16, 16), // 64x64
 ];
 
@@ -79,7 +79,10 @@ fn random_grid(rng: &mut Rng, rows: usize, cols: usize, ibc_pct: u64) -> Vec<mvp
                 dv_pool[rng.below(dv_pool.len() as u64) as usize]
             } else if rng.below(8) == 0 {
                 // Extreme DV: exercises clamp_mv_ref.
-                Mv { x: -16000, y: 15992 }
+                Mv {
+                    x: -16000,
+                    y: 15992,
+                }
             } else {
                 Mv {
                     x: ((rng.below(300) as i32 - 290) * 8) as i16,
@@ -149,11 +152,16 @@ fn c_parity_setup_ref_mv_list_intra() {
         let (mi_rows, mi_cols) = (48i32, 48i32);
         let tiles = [
             (0i32, 48i32, 0i32, 48i32),
-            (0, 48, 8, 48),   // tile starting at col 8
-            (16, 48, 0, 40),  // tile starting at row 16, ending col 40
+            (0, 48, 8, 48),  // tile starting at col 8
+            (16, 48, 0, 40), // tile starting at row 16, ending col 40
         ];
         for &(trs, tre, tcs, tce) in &tiles {
-            let tile = TileMiBounds { mi_row_start: trs, mi_row_end: tre, mi_col_start: tcs, mi_col_end: tce };
+            let tile = TileMiBounds {
+                mi_row_start: trs,
+                mi_row_end: tre,
+                mi_col_start: tcs,
+                mi_col_end: tce,
+            };
             for &(bsize, w_mi, h_mi) in &SIZES {
                 for &sb128 in &[false, true] {
                     let sb_mi_size = if sb128 { 32 } else { 16 };
@@ -242,11 +250,26 @@ fn c_parity_setup_ref_mv_list_intra() {
     // Anti-vacuity: the sweep must exercise the machinery for real.
     assert!(checked > 1200, "too few MVP cases: {checked}");
     assert!(nonzero_count > 400, "stacks mostly empty: {nonzero_count}");
-    assert!(multi_count > 150, "multi-entry stacks (sort/dedup arm) rare: {multi_count}");
-    assert!(mode_ctx_values.len() >= 3, "mode_context degenerate: {mode_ctx_values:?}");
-    assert!(sec_rect_cases > 40, "is_sec_rect arm untested: {sec_rect_cases}");
-    assert!(vert_a_cases > 5, "has_top_right VERT_A arm untested: {vert_a_cases}");
-    assert!(subtile_cases > 300, "sub-tile availability untested: {subtile_cases}");
+    assert!(
+        multi_count > 150,
+        "multi-entry stacks (sort/dedup arm) rare: {multi_count}"
+    );
+    assert!(
+        mode_ctx_values.len() >= 3,
+        "mode_context degenerate: {mode_ctx_values:?}"
+    );
+    assert!(
+        sec_rect_cases > 40,
+        "is_sec_rect arm untested: {sec_rect_cases}"
+    );
+    assert!(
+        vert_a_cases > 5,
+        "has_top_right VERT_A arm untested: {vert_a_cases}"
+    );
+    assert!(
+        subtile_cases > 300,
+        "sub-tile availability untested: {subtile_cases}"
+    );
 }
 
 /// Directed: dv_ref composition — empty stack falls back to find_ref_dv;
@@ -254,17 +277,40 @@ fn c_parity_setup_ref_mv_list_intra() {
 #[test]
 fn compose_dv_ref_matches_c_semantics() {
     let (rows, cols) = (52usize, 52usize);
-    let tile = TileMiBounds { mi_row_start: 0, mi_row_end: 48, mi_col_start: 0, mi_col_end: 48 };
+    let tile = TileMiBounds {
+        mi_row_start: 0,
+        mi_row_end: 48,
+        mi_col_start: 0,
+        mi_col_end: 48,
+    };
 
     // Empty neighbourhood -> find_ref_dv fallback (both first-SB-row and
     // interior forms).
     let grid = vec![mvp::MvpMiEntry::default(); rows * cols];
     for (mi_row, expect) in [
-        (0i32, Mv { x: (-4 * 16 - 256) as i16, y: 0 }.as_int()), // first SB row: ((-4*mib-256)*8... see below
-        (16, Mv { x: 0, y: -(16 * 4 * 8) as i16 }.as_int()),
+        (
+            0i32,
+            Mv {
+                x: (-4 * 16 - 256) as i16,
+                y: 0,
+            }
+            .as_int(),
+        ), // first SB row: ((-4*mib-256)*8... see below
+        (
+            16,
+            Mv {
+                x: 0,
+                y: -(16 * 4 * 8) as i16,
+            }
+            .as_int(),
+        ),
     ] {
         let ctx = mvp::derive_block_ctx(mi_row, 16, 3, 48, 48, tile, 16);
-        let g = mvp::MvpGrid { entries: &grid, stride: cols as i32, base: mi_row * cols as i32 + 16 };
+        let g = mvp::MvpGrid {
+            entries: &grid,
+            stride: cols as i32,
+            base: mi_row * cols as i32 + 16,
+        };
         let out = mvp::generate_mvp_table_intra_frame(&g, &ctx);
         assert_eq!(out.count, 0);
         let dv_ref = mvp::compose_dv_ref(&out, tile, 16, mi_row);
@@ -293,7 +339,11 @@ fn compose_dv_ref_matches_c_semantics() {
         };
     }
     let ctx = mvp::derive_block_ctx(16, 16, 3, 48, 48, tile, 16);
-    let g = mvp::MvpGrid { entries: &grid2, stride: cols as i32, base: 16 * cols as i32 + 16 };
+    let g = mvp::MvpGrid {
+        entries: &grid2,
+        stride: cols as i32,
+        base: 16 * cols as i32 + 16,
+    };
     let out = mvp::generate_mvp_table_intra_frame(&g, &ctx);
     assert!(out.count >= 1);
     let dv_ref = mvp::compose_dv_ref(&out, tile, 16, 16);

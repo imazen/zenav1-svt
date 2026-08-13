@@ -9,9 +9,7 @@
 
 use svtav1_dsp::quant::{QuantParam, quantize};
 
-fn scalar(
-    coeffs: &[i32], qp: &QuantParam, qc: &mut [i32], dqc: &mut [i32], hint: usize,
-) -> usize {
+fn scalar(coeffs: &[i32], qp: &QuantParam, qc: &mut [i32], dqc: &mut [i32], hint: usize) -> usize {
     let n = coeffs.len().min(qc.len()).min(dqc.len()).min(hint);
     let mut eob = 0;
     for i in 0..n {
@@ -59,8 +57,16 @@ fn quantize_matches_scalar_across_shapes_and_divisors() {
         for &dc in &[1i32, 8, 20, 255] {
             for &ac in &[1i32, 12, 24, 300] {
                 for &shift in &[0i32, 1, 2, 4] {
-                    let qp = QuantParam { dequant: [dc, ac], shift };
-                    check(&coeffs, &qp, len, &format!("len={len} dc={dc} ac={ac} shift={shift}"));
+                    let qp = QuantParam {
+                        dequant: [dc, ac],
+                        shift,
+                    };
+                    check(
+                        &coeffs,
+                        &qp,
+                        len,
+                        &format!("len={len} dc={dc} ac={ac} shift={shift}"),
+                    );
                     // Partial eob_hint must also agree.
                     check(&coeffs, &qp, len / 2, &format!("len={len} half-hint"));
                 }
@@ -73,7 +79,10 @@ fn quantize_matches_scalar_across_shapes_and_divisors() {
 fn quantize_handles_zero_dequant() {
     let coeffs: Vec<i32> = (0..64).map(|i| (i as i32) * 37 - 900).collect();
     for &(dc, ac) in &[(0i32, 24i32), (20, 0), (0, 0)] {
-        let qp = QuantParam { dequant: [dc, ac], shift: 2 };
+        let qp = QuantParam {
+            dequant: [dc, ac],
+            shift: 2,
+        };
         check(&coeffs, &qp, 64, &format!("dequant dc={dc} ac={ac}"));
     }
 }
@@ -95,7 +104,10 @@ fn quantize_falls_back_past_the_f32_exact_bound() {
         .map(|i| if i == 31 { 1 << 22 } else { i as i32 * 11 })
         .collect();
     for &shift in &[0i32, 2, 4] {
-        let qp = QuantParam { dequant: [20, 24], shift };
+        let qp = QuantParam {
+            dequant: [20, 24],
+            shift,
+        };
         check(&under, &qp, 64, &format!("under bound, shift={shift}"));
         check(&over, &qp, 64, &format!("OVER bound, shift={shift}"));
         check(&mixed, &qp, 64, &format!("one huge coeff, shift={shift}"));
@@ -105,6 +117,9 @@ fn quantize_falls_back_past_the_f32_exact_bound() {
 #[test]
 fn quantize_all_zero_gives_eob_zero() {
     let coeffs = vec![0i32; 64];
-    let qp = QuantParam { dequant: [20, 24], shift: 2 };
+    let qp = QuantParam {
+        dequant: [20, 24],
+        shift: 2,
+    };
     check(&coeffs, &qp, 64, "all zero");
 }

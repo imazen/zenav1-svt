@@ -23,7 +23,14 @@ use svtav1_dsp::ac_bias::psy_distortion;
 
 /// C `svt_aom_similarity` for bd=8: c1/c2 are the SSIM stabilizers scaled
 /// by count^2 >> 12 (cc1 = 64^2*(.01*255)^2, cc2 = 64^2*(.03*255)^2).
-fn similarity(sum_s: u32, sum_r: u32, sum_sq_s: u32, sum_sq_r: u32, sum_sxr: u32, count: i64) -> f64 {
+fn similarity(
+    sum_s: u32,
+    sum_r: u32,
+    sum_sq_s: u32,
+    sum_sq_r: u32,
+    sum_sxr: u32,
+    count: i64,
+) -> f64 {
     const CC1: i64 = 26634;
     const CC2: i64 = 239708;
     let c1 = ((CC1 * count * count) >> 12) as f64;
@@ -40,7 +47,8 @@ fn similarity(sum_s: u32, sum_r: u32, sum_sq_s: u32, sum_sq_r: u32, sum_sxr: u32
 
 /// One n x n tile's SSIM score (C `svt_ssim_8x8_c` / `svt_ssim_4x4_c`).
 fn ssim_nxn(s: &[u8], sp: usize, r: &[u8], rp: usize, n: usize) -> f64 {
-    let (mut sum_s, mut sum_r, mut sum_sq_s, mut sum_sq_r, mut sum_sxr) = (0u32, 0u32, 0u32, 0u32, 0u32);
+    let (mut sum_s, mut sum_r, mut sum_sq_s, mut sum_sq_r, mut sum_sxr) =
+        (0u32, 0u32, 0u32, 0u32, 0u32);
     for i in 0..n {
         for j in 0..n {
             let sv = u32::from(s[i * sp + j]);
@@ -59,7 +67,11 @@ fn ssim_nxn(s: &[u8], sp: usize, r: &[u8], rp: usize, n: usize) -> f64 {
 /// of 8, else 4x4; per-tile CLIP3(0,1), mean over tiles.
 pub fn ssim_blocks(s: &[u8], sp: usize, r: &[u8], rp: usize, width: usize, height: usize) -> f64 {
     debug_assert!(width % 4 == 0 && height % 4 == 0);
-    let n = if width % 8 == 0 && height % 8 == 0 { 8 } else { 4 };
+    let n = if width % 8 == 0 && height % 8 == 0 {
+        8
+    } else {
+        4
+    };
     let mut total = 0.0f64;
     let mut samples = 0u32;
     let mut i = 0;
@@ -136,7 +148,10 @@ mod tests {
     #[test]
     fn identical_planes_score_one() {
         let img: alloc::vec::Vec<u8> = (0..64 * 64).map(|i| (i % 251) as u8).collect();
-        assert_eq!(spatial_full_distortion_ssim(&img, 0, 64, &img, 0, 64, 64, 64, 0.0), 0);
+        assert_eq!(
+            spatial_full_distortion_ssim(&img, 0, 64, &img, 0, 64, 64, 64, 0.0),
+            0
+        );
         let s = ssim_blocks(&img, 64, &img, 64, 16, 16);
         assert!((s - 1.0).abs() < 1e-12);
     }

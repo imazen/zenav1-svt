@@ -39,7 +39,16 @@ fn scalar_satd_8x8(src: &[u8], ss: usize, rf: &[u8], rs: usize) -> u32 {
         let (a6, a7) = (tmp[16 + col] - tmp[48 + col], tmp[24 + col] - tmp[56 + col]);
         let (b0, b1, b2, b3) = (a0 + a2, a1 + a3, a0 - a2, a1 - a3);
         let (b4, b5, b6, b7) = (a4 + a6, a5 + a7, a4 - a6, a5 - a7);
-        for v in [b0 + b1, b0 - b1, b2 + b3, b2 - b3, b4 + b5, b4 - b5, b6 + b7, b6 - b7] {
+        for v in [
+            b0 + b1,
+            b0 - b1,
+            b2 + b3,
+            b2 - b3,
+            b4 + b5,
+            b4 - b5,
+            b6 + b7,
+            b6 - b7,
+        ] {
             satd += v.unsigned_abs();
         }
     }

@@ -85,11 +85,7 @@ fn count_primitive_quniform(n: u16, v: u16) -> i32 {
     }
     let l = get_msb(n as u32 - 1) as i32 + 1;
     let m = (1i32 << l) - n as i32;
-    if (v as i32) < m {
-        l - 1
-    } else {
-        l
-    }
+    if (v as i32) < m { l - 1 } else { l }
 }
 
 /// C `svt_aom_write_primitive_subexpfin` (entropy_coding.c:2954).

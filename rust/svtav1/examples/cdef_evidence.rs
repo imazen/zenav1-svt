@@ -92,8 +92,8 @@ fn main() {
                 qp,
                 ..Default::default()
             };
-            let mut p = EncodePipeline::new(sz as u32, sz as u32, 4, rc, 0, 1)
-                .with_recon_output(true);
+            let mut p =
+                EncodePipeline::new(sz as u32, sz as u32, 4, rc, 0, 1).with_recon_output(true);
             let obu = p.encode_frame(&y, sz);
             let (post, _, _) = p.last_recon.clone().unwrap();
             let (pre_cdef, _, _) = p.last_recon_pre_cdef.clone().unwrap();

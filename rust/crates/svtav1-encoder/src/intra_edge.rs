@@ -1207,13 +1207,35 @@ pub fn dr_predict_hbd<S: Fn(usize, usize) -> u16>(
     let shape_ok = is_av1_block_shape(g.bw_px, g.bh_px);
     let have_top_right = shape_ok
         && has_top_right(
-            g.sb_mi_size, g.bw_px, g.bh_px, g.mi_row, g.mi_col, have_top, right_available, partition,
-            txw_mi, g.row_off, g.col_off, g.ss, g.ss,
+            g.sb_mi_size,
+            g.bw_px,
+            g.bh_px,
+            g.mi_row,
+            g.mi_col,
+            have_top,
+            right_available,
+            partition,
+            txw_mi,
+            g.row_off,
+            g.col_off,
+            g.ss,
+            g.ss,
         );
     let have_bottom_left = shape_ok
         && has_bottom_left(
-            g.sb_mi_size, g.bw_px, g.bh_px, g.mi_row, g.mi_col, bottom_available, have_left,
-            partition, txh_mi, g.row_off, g.col_off, g.ss, g.ss,
+            g.sb_mi_size,
+            g.bw_px,
+            g.bh_px,
+            g.mi_row,
+            g.mi_col,
+            bottom_available,
+            have_left,
+            partition,
+            txh_mi,
+            g.row_off,
+            g.col_off,
+            g.ss,
+            g.ss,
         );
 
     let n_top_px = if have_top { txwpx.min(xr + txwpx) } else { 0 };
@@ -1237,7 +1259,11 @@ pub fn dr_predict_hbd<S: Fn(usize, usize) -> u16>(
     // Early flat exit (build_intra_predictors_high:289-301).
     if (!need_above && n_left_px == 0) || (!need_left && n_top_px == 0) {
         let val = if need_left {
-            if n_top_px > 0 { above_ref(0) } else { (base + 1) as u16 }
+            if n_top_px > 0 {
+                above_ref(0)
+            } else {
+                (base + 1) as u16
+            }
         } else if n_left_px > 0 {
             left_ref(0)
         } else {
@@ -1665,25 +1691,52 @@ mod tests {
         // Directional angles: D45..D203 (modes 3..=8) and V/H (1,2) with a
         // nonzero delta — the cases that route through dr_predict.
         let cases: &[(u8, i8)] = &[
-            (3, 0), (4, 0), (5, 0), (6, 0), (7, 0), (8, 0),
-            (3, 2), (4, -2), (5, 3), (6, -3), (7, 1), (8, -1),
-            (1, 1), (1, -2), (2, 2), (2, -3),
+            (3, 0),
+            (4, 0),
+            (5, 0),
+            (6, 0),
+            (7, 0),
+            (8, 0),
+            (3, 2),
+            (4, -2),
+            (5, 3),
+            (6, -3),
+            (7, 1),
+            (8, -1),
+            (1, 1),
+            (1, -2),
+            (2, 2),
+            (2, -3),
         ];
         // Interior, top-edge, left-edge and corner positions × square sizes.
         let blocks: &[(usize, usize, usize, usize)] = &[
-            (64, 64, 32, 32), (72, 68, 8, 8), (80, 80, 16, 16),
-            (96, 0, 16, 16), (0, 96, 16, 16), (0, 0, 8, 8),
-            (64, 0, 32, 32), (0, 64, 32, 32), (16, 48, 16, 16),
+            (64, 64, 32, 32),
+            (72, 68, 8, 8),
+            (80, 80, 16, 16),
+            (96, 0, 16, 16),
+            (0, 96, 16, 16),
+            (0, 0, 8, 8),
+            (64, 0, 32, 32),
+            (0, 64, 32, 32),
+            (16, 48, 16, 16),
         ];
         for &(px, py, txw, txh) in blocks {
             for &(mode, delta) in cases {
                 let p_angle = MODE_TO_ANGLE_MAP[mode as usize] + delta as i32 * 3;
                 let g = DrGeom {
-                    px, py, txw, txh,
-                    mi_row: py >> 2, mi_col: px >> 2,
-                    bw_px: txw, bh_px: txh,
-                    row_off: 0, col_off: 0, ss: 0,
-                    frame_w: 128, frame_h: 128,
+                    px,
+                    py,
+                    txw,
+                    txh,
+                    mi_row: py >> 2,
+                    mi_col: px >> 2,
+                    bw_px: txw,
+                    bh_px: txh,
+                    row_off: 0,
+                    col_off: 0,
+                    ss: 0,
+                    frame_w: 128,
+                    frame_h: 128,
                     // 64px superblocks — this bd8-vs-bd10 equivalence test
                     // is about the predictor, not the SB geometry.
                     sb_mi_size: 16,
@@ -1694,12 +1747,23 @@ mod tests {
                         let mut d8 = alloc::vec![0u8; txw * txh];
                         dr_predict(
                             |x, y| recon[y * stride + x],
-                            &g, p_angle, edge_filter, filt_type, P_NONE, &mut d8,
+                            &g,
+                            p_angle,
+                            edge_filter,
+                            filt_type,
+                            P_NONE,
+                            &mut d8,
                         );
                         let mut d16 = alloc::vec![0u16; txw * txh];
                         dr_predict_hbd(
                             |x, y| recon16[y * stride + x],
-                            &g, p_angle, edge_filter, filt_type, P_NONE, &mut d16, 8,
+                            &g,
+                            p_angle,
+                            edge_filter,
+                            filt_type,
+                            P_NONE,
+                            &mut d16,
+                            8,
                         );
                         for (i, (&a, &b)) in d8.iter().zip(d16.iter()).enumerate() {
                             assert_eq!(

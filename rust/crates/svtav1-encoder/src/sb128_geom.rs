@@ -299,9 +299,9 @@ pub fn sb_header_params(sb: usize) -> (bool, usize, u32, u32) {
     let is128 = sb == 128;
     (
         is128,
-        if is128 { 32 } else { 16 },  // sb_mi_size
-        if is128 { 5 } else { 4 },    // MI-domain log2
-        if is128 { 7 } else { 6 },    // PIXEL-domain log2
+        if is128 { 32 } else { 16 }, // sb_mi_size
+        if is128 { 5 } else { 4 },   // MI-domain log2
+        if is128 { 7 } else { 6 },   // PIXEL-domain log2
     )
 }
 
@@ -424,27 +424,47 @@ mod tests {
         let base = SbSizeInputs::default();
         // Each force-64 clause independently overrides the allintra-M0 128.
         for f in [
-            SbSizeInputs { variance_boost: true, ..base },
+            SbSizeInputs {
+                variance_boost: true,
+                ..base
+            },
             SbSizeInputs { rtc: true, ..base },
-            SbSizeInputs { resize: true, ..base },
-            SbSizeInputs { sframe: true, ..base },
+            SbSizeInputs {
+                resize: true,
+                ..base
+            },
+            SbSizeInputs {
+                sframe: true,
+                ..base
+            },
         ] {
             assert_eq!(derive_super_block_size(512, 384, 0, &f), 64, "{f:?}");
         }
         // fast_decode only forces 64 ABOVE 360p — at 512x384 (360p range)
         // the `!(res <= 360p)` guard makes it inert.
-        let fd = SbSizeInputs { fast_decode: true, qp: 32, ..base };
+        let fd = SbSizeInputs {
+            fast_decode: true,
+            qp: 32,
+            ..base
+        };
         assert_eq!(derive_super_block_size(512, 384, 0, &fd), 128);
         // 640x512 = 327,680 >= 360p TH -> the fast_decode clause fires.
         assert_eq!(derive_super_block_size(640, 512, 0, &fd), 64);
         // ... but only while qp <= 56.
-        let fd57 = SbSizeInputs { fast_decode: true, qp: 57, ..base };
+        let fd57 = SbSizeInputs {
+            fast_decode: true,
+            qp: 57,
+            ..base
+        };
         assert_eq!(derive_super_block_size(640, 512, 0, &fd57), 128);
     }
 
     #[test]
     fn derive_super_block_size_non_allintra_branches() {
-        let inter = SbSizeInputs { allintra: false, ..SbSizeInputs::default() };
+        let inter = SbSizeInputs {
+            allintra: false,
+            ..SbSizeInputs::default()
+        };
         // enc_mode <= ENC_MR (-1) -> 128
         assert_eq!(derive_super_block_size(512, 384, -1, &inter), 128);
         // M0..M5 -> qp-dependent (<= 57 -> 64)

@@ -647,11 +647,7 @@ pub fn get_mv_class(z: i32) -> (i32, i32) {
 /// driving the real `svt_av1_get_mv_class` + `aom_write_symbol`. `precision`
 /// is the `MvSubpelPrecision` int (-1 none, 0 low, 1 high). Returns the
 /// finalized od_ec byte stream.
-pub fn encode_mv_seq(
-    mvs: &[(i16, i16)],
-    refs: &[(i16, i16)],
-    precision: i32,
-) -> Vec<u8> {
+pub fn encode_mv_seq(mvs: &[(i16, i16)], refs: &[(i16, i16)], precision: i32) -> Vec<u8> {
     assert_eq!(mvs.len(), refs.len());
     let n = mvs.len();
     let mv_y: Vec<i32> = mvs.iter().map(|m| m.1 as i32).collect();
@@ -671,7 +667,10 @@ pub fn encode_mv_seq(
             out.len() as u32,
         )
     };
-    assert!(nbytes as usize <= out.len(), "MV seq exceeded oracle buffer");
+    assert!(
+        nbytes as usize <= out.len(),
+        "MV seq exceeded oracle buffer"
+    );
     out.truncate(nbytes as usize);
     out
 }
@@ -894,12 +893,34 @@ unsafe extern "C" {
 }
 
 /// C `svt_psy_distortion` (8-bit).
-pub fn psy_distortion(input: &[u8], input_stride: u32, recon: &[u8], recon_stride: u32, width: u32, height: u32) -> u64 {
-    unsafe { ref_psy_distortion(input.as_ptr(), input_stride, recon.as_ptr(), recon_stride, width, height) }
+pub fn psy_distortion(
+    input: &[u8],
+    input_stride: u32,
+    recon: &[u8],
+    recon_stride: u32,
+    width: u32,
+    height: u32,
+) -> u64 {
+    unsafe {
+        ref_psy_distortion(
+            input.as_ptr(),
+            input_stride,
+            recon.as_ptr(),
+            recon_stride,
+            width,
+            height,
+        )
+    }
 }
 
 /// C `svt_psy_adjust_rate_light`.
-pub fn psy_adjust_rate_light(coeff: &[i32], coeff_bits: u64, width: u32, height: u32, ac_bias: f64) -> u64 {
+pub fn psy_adjust_rate_light(
+    coeff: &[i32],
+    coeff_bits: u64,
+    width: u32,
+    height: u32,
+    ac_bias: f64,
+) -> u64 {
     unsafe { svt_psy_adjust_rate_light(coeff.as_ptr(), coeff_bits, width, height, ac_bias) }
 }
 
@@ -1425,18 +1446,50 @@ pub fn full_distortion_kernel16(
 
 /// Reference `svt_aom_variance_highbd_c`: returns `(sse, variance)` for two
 /// u16 planes over `w x h`.
-pub fn variance_highbd(a: &[u16], a_stride: usize, b: &[u16], b_stride: usize, w: usize, h: usize) -> (u32, u32) {
+pub fn variance_highbd(
+    a: &[u16],
+    a_stride: usize,
+    b: &[u16],
+    b_stride: usize,
+    w: usize,
+    h: usize,
+) -> (u32, u32) {
     let mut sse = 0u32;
-    let var =
-        unsafe { ref_variance_highbd(a.as_ptr(), a_stride as i32, b.as_ptr(), b_stride as i32, w as i32, h as i32, &mut sse) };
+    let var = unsafe {
+        ref_variance_highbd(
+            a.as_ptr(),
+            a_stride as i32,
+            b.as_ptr(),
+            b_stride as i32,
+            w as i32,
+            h as i32,
+            &mut sse,
+        )
+    };
     (sse, var)
 }
 
 /// Reference `svt_aom_sad_16b_kernel_c`. The C order is `(.., height, width)`;
 /// this wrapper takes `(width, height)` to match the port's house convention
 /// and swaps internally.
-pub fn sad_16b_kernel(src: &[u16], src_stride: usize, r: &[u16], ref_stride: usize, width: usize, height: usize) -> u32 {
-    unsafe { ref_sad_16b_kernel(src.as_ptr(), src_stride as u32, r.as_ptr(), ref_stride as u32, height as u32, width as u32) }
+pub fn sad_16b_kernel(
+    src: &[u16],
+    src_stride: usize,
+    r: &[u16],
+    ref_stride: usize,
+    width: usize,
+    height: usize,
+) -> u32 {
+    unsafe {
+        ref_sad_16b_kernel(
+            src.as_ptr(),
+            src_stride as u32,
+            r.as_ptr(),
+            ref_stride as u32,
+            height as u32,
+            width as u32,
+        )
+    }
 }
 
 /// Reference `svt_aom_update_sharpness` limits: `(lim, mblim)` arrays
@@ -1764,9 +1817,7 @@ pub fn pick_cdef_from_qp(
 /// semantics against the library's `svt_aom_ac_quant_qtx`.
 pub fn pick_cdef_from_qp_intra(base_q_idx: u8, bit_depth: u8) -> (i32, i32) {
     let (mut y, mut uv) = (0i32, 0i32);
-    unsafe {
-        ref_pick_cdef_from_qp_intra(base_q_idx as i32, bit_depth as i32, &mut y, &mut uv)
-    };
+    unsafe { ref_pick_cdef_from_qp_intra(base_q_idx as i32, bit_depth as i32, &mut y, &mut uv) };
     (y, uv)
 }
 
@@ -3401,7 +3452,13 @@ pub fn dilate_block(
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn svt_av1_count_colors(src: *const u8, stride: i32, rows: i32, cols: i32, val_count: *mut i32) -> i32;
+    fn svt_av1_count_colors(
+        src: *const u8,
+        stride: i32,
+        rows: i32,
+        cols: i32,
+        val_count: *mut i32,
+    ) -> i32;
     fn svt_av1_index_color_cache(
         color_cache: *const u16,
         n_cache: i32,
@@ -3410,16 +3467,43 @@ unsafe extern "C" {
         cache_color_found: *mut u8,
         out_cache_colors: *mut i32,
     ) -> i32;
-    fn svt_av1_k_means_dim1_c(data: *const i32, centroids: *mut i32, indices: *mut u8, n: i32, k: i32, max_itr: i32);
-    fn svt_av1_calc_indices_dim1_c(data: *const i32, centroids: *const i32, indices: *mut u8, n: i32, k: i32);
+    fn svt_av1_k_means_dim1_c(
+        data: *const i32,
+        centroids: *mut i32,
+        indices: *mut u8,
+        n: i32,
+        k: i32,
+        max_itr: i32,
+    );
+    fn svt_av1_calc_indices_dim1_c(
+        data: *const i32,
+        centroids: *const i32,
+        indices: *mut u8,
+        n: i32,
+        k: i32,
+    );
 }
 
 /// Reference `svt_av1_count_colors` (pic_analysis_process.c:892). Writes
 /// the 256-bin histogram into `val_count` and returns the distinct-color
 /// count.
-pub fn count_colors(src: &[u8], stride: usize, rows: usize, cols: usize, val_count: &mut [i32; 256]) -> i32 {
+pub fn count_colors(
+    src: &[u8],
+    stride: usize,
+    rows: usize,
+    cols: usize,
+    val_count: &mut [i32; 256],
+) -> i32 {
     assert!(src.len() >= (rows - 1) * stride + cols);
-    unsafe { svt_av1_count_colors(src.as_ptr(), stride as i32, rows as i32, cols as i32, val_count.as_mut_ptr()) }
+    unsafe {
+        svt_av1_count_colors(
+            src.as_ptr(),
+            stride as i32,
+            rows as i32,
+            cols as i32,
+            val_count.as_mut_ptr(),
+        )
+    }
 }
 
 /// Reference `svt_av1_index_color_cache` (palette.c:111-141).
@@ -3450,7 +3534,13 @@ pub fn index_color_cache(
 /// Reference `svt_av1_k_means_dim1_c` (k_means_template.h, `dim=1`
 /// instantiation via palette.c:55-56). `centroids`/`indices` are mutated
 /// in place exactly as the C function does.
-pub fn k_means_dim1(data: &[i32], centroids: &mut [i32], indices: &mut [u8], k: usize, max_itr: i32) {
+pub fn k_means_dim1(
+    data: &[i32],
+    centroids: &mut [i32],
+    indices: &mut [u8],
+    k: usize,
+    max_itr: i32,
+) {
     let n = data.len();
     assert!(indices.len() >= n);
     assert!(centroids.len() >= k);
@@ -3472,7 +3562,15 @@ pub fn calc_indices_dim1(data: &[i32], centroids: &[i32], indices: &mut [u8], k:
     let n = data.len();
     assert!(indices.len() >= n);
     assert!(centroids.len() >= k);
-    unsafe { svt_av1_calc_indices_dim1_c(data.as_ptr(), centroids.as_ptr(), indices.as_mut_ptr(), n as i32, k as i32) }
+    unsafe {
+        svt_av1_calc_indices_dim1_c(
+            data.as_ptr(),
+            centroids.as_ptr(),
+            indices.as_mut_ptr(),
+            n as i32,
+            k as i32,
+        )
+    }
 }
 
 // ---- High-bit-depth intra predictors (intra_prediction.c sized macro) ----
@@ -3853,7 +3951,13 @@ pub fn generate_block_2x2_hash(pic: &[u8], stride: usize, w: usize, h: usize) ->
     assert!(pic.len() >= stride * h);
     let mut dst = vec![0u32; w * h];
     unsafe {
-        ref_generate_block_2x2_hash(pic.as_ptr(), stride as i32, w as i32, h as i32, dst.as_mut_ptr());
+        ref_generate_block_2x2_hash(
+            pic.as_ptr(),
+            stride as i32,
+            w as i32,
+            h as i32,
+            dst.as_mut_ptr(),
+        );
     }
     dst
 }
@@ -3863,7 +3967,13 @@ pub fn generate_block_hash(w: usize, h: usize, block_size: usize, src: &[u32]) -
     assert!(src.len() >= w * h);
     let mut dst = vec![0u32; w * h];
     unsafe {
-        ref_generate_block_hash(w as i32, h as i32, block_size as i32, src.as_ptr(), dst.as_mut_ptr());
+        ref_generate_block_hash(
+            w as i32,
+            h as i32,
+            block_size as i32,
+            src.as_ptr(),
+            dst.as_mut_ptr(),
+        );
     }
     dst
 }
@@ -3877,11 +3987,20 @@ pub struct CHashTable {
 
 impl CHashTable {
     pub fn new() -> Self {
-        Self { ptr: unsafe { ref_hash_table_create() } }
+        Self {
+            ptr: unsafe { ref_hash_table_create() },
+        }
     }
 
     /// `svt_aom_rtime_alloc_svt_av1_add_to_hash_map_by_row_with_precal_data`.
-    pub fn add(&mut self, pic_hash: &[u32], pic_width: usize, pic_height: usize, block_size: usize, max_cand_per_bucket: u16) {
+    pub fn add(
+        &mut self,
+        pic_hash: &[u32],
+        pic_width: usize,
+        pic_height: usize,
+        block_size: usize,
+        max_cand_per_bucket: u16,
+    ) {
         assert!(pic_hash.len() >= pic_width * pic_height);
         unsafe {
             ref_hash_table_add(
@@ -3911,10 +4030,19 @@ impl CHashTable {
         let mut ys = vec![0i16; count as usize];
         let mut hv2s = vec![0u32; count as usize];
         let got = unsafe {
-            ref_hash_table_read_bucket(self.ptr, hash_value1, xs.as_mut_ptr(), ys.as_mut_ptr(), hv2s.as_mut_ptr(), count)
+            ref_hash_table_read_bucket(
+                self.ptr,
+                hash_value1,
+                xs.as_mut_ptr(),
+                ys.as_mut_ptr(),
+                hv2s.as_mut_ptr(),
+                count,
+            )
         };
         assert_eq!(got, count);
-        (0..count as usize).map(|i| (xs[i], ys[i], hv2s[i])).collect()
+        (0..count as usize)
+            .map(|i| (xs[i], ys[i], hv2s[i]))
+            .collect()
     }
 
     pub(crate) fn raw(&self) -> *mut core::ffi::c_void {
@@ -3939,7 +4067,13 @@ pub fn get_block_hash_value(src: &[u8], stride: usize, block_size: usize) -> (u3
     assert!(src.len() >= stride * (block_size - 1) + block_size);
     let (mut hv1, mut hv2) = (0u32, 0u32);
     unsafe {
-        ref_get_block_hash_value(src.as_ptr(), stride as i32, block_size as i32, &mut hv1, &mut hv2);
+        ref_get_block_hash_value(
+            src.as_ptr(),
+            stride as i32,
+            block_size as i32,
+            &mut hv1,
+            &mut hv2,
+        );
     }
     (hv1, hv2)
 }
@@ -3949,8 +4083,20 @@ pub fn get_block_hash_value(src: &[u8], stride: usize, block_size: usize) -> (u3
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn ref_mefn_sdf(bsize: i32, src: *const u8, src_stride: i32, r: *const u8, ref_stride: i32) -> u32;
-    fn ref_mefn_vf(bsize: i32, src: *const u8, src_stride: i32, r: *const u8, ref_stride: i32) -> u32;
+    fn ref_mefn_sdf(
+        bsize: i32,
+        src: *const u8,
+        src_stride: i32,
+        r: *const u8,
+        ref_stride: i32,
+    ) -> u32;
+    fn ref_mefn_vf(
+        bsize: i32,
+        src: *const u8,
+        src_stride: i32,
+        r: *const u8,
+        ref_stride: i32,
+    ) -> u32;
     fn ref_diamond_search(
         pic: *const u8,
         stride: i32,
@@ -4061,13 +4207,29 @@ unsafe extern "C" {
 
 /// The exact per-bsize SAD kernel the C search binds (`svt_aom_mefn_ptr[bsize].sdf`).
 pub fn mefn_sdf(bsize: usize, src: &[u8], src_stride: usize, r: &[u8], ref_stride: usize) -> u32 {
-    unsafe { ref_mefn_sdf(bsize as i32, src.as_ptr(), src_stride as i32, r.as_ptr(), ref_stride as i32) }
+    unsafe {
+        ref_mefn_sdf(
+            bsize as i32,
+            src.as_ptr(),
+            src_stride as i32,
+            r.as_ptr(),
+            ref_stride as i32,
+        )
+    }
 }
 
 /// The exact per-bsize VARIANCE kernel (`svt_aom_mefn_ptr[bsize].vf`) — the
 /// cross-stage DV search metric.
 pub fn mefn_vf(bsize: usize, src: &[u8], src_stride: usize, r: &[u8], ref_stride: usize) -> u32 {
-    unsafe { ref_mefn_vf(bsize as i32, src.as_ptr(), src_stride as i32, r.as_ptr(), ref_stride as i32) }
+    unsafe {
+        ref_mefn_vf(
+            bsize as i32,
+            src.as_ptr(),
+            src_stride as i32,
+            r.as_ptr(),
+            ref_stride as i32,
+        )
+    }
 }
 
 /// Cost tables + context scalars shared by the search oracles. `dv_joint`
@@ -4220,7 +4382,11 @@ pub fn intrabc_hash_search(
             &mut oy,
         )
     };
-    if cost < i32::MAX { Some((ox, oy, cost)) } else { None }
+    if cost < i32::MAX {
+        Some((ox, oy, cost))
+    } else {
+        None
+    }
 }
 
 /// The intra_bc_search driver (mode_decision.c:2976-3125) transcribed over
@@ -4281,7 +4447,9 @@ pub fn intra_bc_search_driver(
             out_dv.as_mut_ptr(),
         )
     };
-    (0..n as usize).map(|i| (out_dv[i * 2], out_dv[i * 2 + 1])).collect()
+    (0..n as usize)
+        .map(|i| (out_dv[i * 2], out_dv[i * 2 + 1]))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

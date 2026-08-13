@@ -558,7 +558,9 @@ fn set_start_end_depth(
             env.max_pd0,
             env.min_pd0,
             env.tables.split_bits(sq),
-            parent.map(|p| env.tables.split_bits(p.sq) as i64).unwrap_or(-1),
+            parent
+                .map(|p| env.tables.split_bits(p.sq) as i64)
+                .unwrap_or(-1),
             ch_costs,
             if add_parent { s } else { 0 },
             if add_sub { e } else { 0 },
@@ -1277,7 +1279,8 @@ impl DepthWalk<'_, '_> {
                 for c in 0..2usize {
                     let mut d: u64 = 0;
                     for y in 0..quad {
-                        let sy = (ev.abs_y + r * quad + y) * self.y_src_stride + ev.abs_x + c * quad;
+                        let sy =
+                            (ev.abs_y + r * quad + y) * self.y_src_stride + ev.abs_x + c * quad;
                         let ry = (r * quad + y) * sq + c * quad;
                         for x in 0..quad {
                             let diff = self.y_src[sy + x] as i64 - yrec[ry + x] as i64;
@@ -1296,7 +1299,8 @@ impl DepthWalk<'_, '_> {
                 for c in 0..2usize {
                     let mut d: u64 = 0;
                     for y in 0..quad {
-                        let sy = (ev.abs_y + r * quad + y) * self.y_src_stride + ev.abs_x + c * quad;
+                        let sy =
+                            (ev.abs_y + r * quad + y) * self.y_src_stride + ev.abs_x + c * quad;
                         let ry = (r * quad + y) * sq + c * quad;
                         for x in 0..quad {
                             let diff = self.y_src[sy + x] as i64 - pred[ry + x] as i64;
@@ -2406,8 +2410,14 @@ mod tests {
         for p in 0..=6u8 {
             let a = DrCtrls::for_preset_sc(p, false);
             let b = DrCtrls::for_preset(p);
-            assert_eq!((a.s1_th, a.e1_th, a.adaptive), (b.s1_th, b.e1_th, b.adaptive));
-            assert_eq!((a.limit_to_pd0, a.split_rate_th), (b.limit_to_pd0, b.split_rate_th));
+            assert_eq!(
+                (a.s1_th, a.e1_th, a.adaptive),
+                (b.s1_th, b.e1_th, b.adaptive)
+            );
+            assert_eq!(
+                (a.limit_to_pd0, a.split_rate_th),
+                (b.limit_to_pd0, b.split_rate_th)
+            );
         }
         // The screen and non-screen rows differ exactly at M0/M1/M2.
         for p in [0u8, 1, 2] {
@@ -2445,8 +2455,9 @@ mod tests {
         let ctrls = DrCtrls::for_preset(5);
         for (qp, qindex, lambda) in [(20u32, 80u8, 25650u64), (40, 160, 248207)] {
             let tables = crate::pd0::build_m6_pd0_tables(qindex);
-            let eval =
-                crate::pd0::pd0_pick_sb_partition_m6_eval(&y, 64, 0, 0, qp, qindex, &tables, 8, 1, false, true, 64, 64, 0, 0, None, 64);
+            let eval = crate::pd0::pd0_pick_sb_partition_m6_eval(
+                &y, 64, 0, 0, qp, qindex, &tables, 8, 1, false, true, 64, 64, 0, 0, None, 64,
+            );
             assert!(eval.split, "q{qp}: PD0 splits the 64");
             let scan = build_refined_scan(&eval, &ctrls, lambda, &tables);
             assert!(!scan.test_this, "q{qp}: no 64x64 parent-depth eval");
@@ -2460,7 +2471,9 @@ mod tests {
         }
         // q55: 64x64 NONE, no deeper evals.
         let tables = crate::pd0::build_m6_pd0_tables(220);
-        let eval = crate::pd0::pd0_pick_sb_partition_m6_eval(&y, 64, 0, 0, 55, 220, &tables, 8, 1, false, true, 64, 64, 0, 0, None, 64);
+        let eval = crate::pd0::pd0_pick_sb_partition_m6_eval(
+            &y, 64, 0, 0, 55, 220, &tables, 8, 1, false, true, 64, 64, 0, 0, None, 64,
+        );
         assert!(!eval.split);
         let scan = build_refined_scan(&eval, &ctrls, 1527856, &tables);
         assert!(scan.test_this && !scan.split_flag && scan.children.is_none());
@@ -2476,7 +2489,9 @@ mod tests {
         let y = gradient64();
         let ctrls = DrCtrls::for_preset(4);
         let tables = crate::pd0::build_m6_pd0_tables(80);
-        let eval = crate::pd0::pd0_pick_sb_partition_m6_eval(&y, 64, 0, 0, 20, 80, &tables, 8, 1, false, true, 64, 64, 0, 0, None, 64);
+        let eval = crate::pd0::pd0_pick_sb_partition_m6_eval(
+            &y, 64, 0, 0, 20, 80, &tables, 8, 1, false, true, 64, 64, 0, 0, None, 64,
+        );
         assert!(eval.split);
         let scan = build_refined_scan(&eval, &ctrls, 25650, &tables);
         assert!(!scan.test_this && scan.split_flag);

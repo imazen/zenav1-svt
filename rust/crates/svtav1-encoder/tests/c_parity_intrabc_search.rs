@@ -47,7 +47,9 @@ impl Rng {
 fn random_cdf(rng: &mut Rng, out: &mut [u16]) {
     let nsymbs = out.len() - 1;
     loop {
-        let mut cuts: Vec<u16> = (0..nsymbs - 1).map(|_| 1 + rng.below(32766) as u16).collect();
+        let mut cuts: Vec<u16> = (0..nsymbs - 1)
+            .map(|_| 1 + rng.below(32766) as u16)
+            .collect();
         cuts.sort_unstable_by(|a, b| b.cmp(a));
         cuts.dedup();
         if cuts.len() == nsymbs - 1 {
@@ -119,7 +121,11 @@ struct Costs {
 }
 
 fn make_costs(rng: &mut Rng, errorperbit: i32) -> Costs {
-    let ndvc = if rng.below(2) == 0 { NmvContext::default() } else { random_nmv_context(rng) };
+    let ndvc = if rng.below(2) == 0 {
+        NmvContext::default()
+    } else {
+        random_nmv_context(rng)
+    };
     let flat = flatten_nmv(&ndvc);
     let c = cref::estimate_mv_rate(false, true, false, None, Some(&flat), -1);
     let (c0, c1) = c.dv_costs.split_at(cref::MV_VALS);
@@ -217,7 +223,8 @@ fn narrowed_limits(
     sb_log2: u32,
     dv_ref: Mv,
 ) -> Option<svtav1_types::motion::FullMvLimits> {
-    let mut l = intrabc::direction_mv_limits(dir, tile, mi_row, mi_col, bw, bh, sb_mi_size, sb_log2);
+    let mut l =
+        intrabc::direction_mv_limits(dir, tile, mi_row, mi_col, bw, bh, sb_mi_size, sb_log2);
     intrabc::set_mv_search_range(&mut l, dv_ref);
     if l.col_max < l.col_min || l.row_max < l.row_min {
         None
@@ -236,7 +243,17 @@ fn c_parity_search_kernels() {
     let (w, h, stride) = (160usize, 128usize, 168usize);
     let pic = screen_frame(&mut rng, w, h, stride);
     let mut checked = 0u64;
-    for &(bw, bh) in &[(4i32, 4i32), (8, 8), (16, 8), (8, 16), (16, 16), (32, 32), (64, 64), (32, 8), (8, 32)] {
+    for &(bw, bh) in &[
+        (4i32, 4i32),
+        (8, 8),
+        (16, 8),
+        (8, 16),
+        (16, 16),
+        (32, 32),
+        (64, 64),
+        (32, 8),
+        (8, 32),
+    ] {
         let bsize = bsize_of(bw, bh);
         for _ in 0..50 {
             let sx = rng.below((w - bw as usize) as u64) as usize;
@@ -247,10 +264,16 @@ fn c_parity_search_kernels() {
             let r = &pic[ry * stride + rx..];
             let c_sad = cref::mefn_sdf(bsize, s, stride, r, stride);
             let rs_sad = svtav1_dsp::sad::sad(s, stride, r, stride, bw as usize, bh as usize);
-            assert_eq!(rs_sad, c_sad, "sdf diverges {bw}x{bh} at ({sx},{sy})->({rx},{ry})");
+            assert_eq!(
+                rs_sad, c_sad,
+                "sdf diverges {bw}x{bh} at ({sx},{sy})->({rx},{ry})"
+            );
             let c_var = cref::mefn_vf(bsize, s, stride, r, stride);
             let rs_var = intrabc::variance_of_diff(s, stride, r, stride, bw as usize, bh as usize);
-            assert_eq!(rs_var, c_var, "vf diverges {bw}x{bh} at ({sx},{sy})->({rx},{ry})");
+            assert_eq!(
+                rs_var, c_var,
+                "vf diverges {bw}x{bh} at ({sx},{sy})->({rx},{ry})"
+            );
             checked += 1;
         }
     }
@@ -267,7 +290,12 @@ fn c_parity_diamond_search() {
     let (w, h, stride) = (448usize, 128usize, 456usize);
     let pic = screen_frame(&mut rng, w, h, stride);
     let (mi_rows, mi_cols) = ((h as i32) / MI, (w as i32) / MI);
-    let tile = intrabc::TileMiBounds { mi_col_start: 0, mi_col_end: mi_cols, mi_row_start: 0, mi_row_end: mi_rows };
+    let tile = intrabc::TileMiBounds {
+        mi_col_start: 0,
+        mi_col_end: mi_cols,
+        mi_row_start: 0,
+        mi_row_end: mi_rows,
+    };
     let costs = make_costs(&mut rng, 800 >> 6);
     let sc = costs.as_search_costs(false);
     let cfg = intrabc::init_search_sites(stride);
@@ -282,15 +310,18 @@ fn c_parity_diamond_search() {
             // occasionally to give the ABOVE box height).
             let bh_mi = bh / MI;
             let bw_mi = bw / MI;
-            let mi_row = (bh_mi + rng.below((mi_rows - 2 * bh_mi).max(1) as u64) as i32) / bh_mi * bh_mi;
-            let mi_col = (bw_mi + rng.below((mi_cols - 2 * bw_mi).max(1) as u64) as i32) / bw_mi * bw_mi;
+            let mi_row =
+                (bh_mi + rng.below((mi_rows - 2 * bh_mi).max(1) as u64) as i32) / bh_mi * bh_mi;
+            let mi_col =
+                (bw_mi + rng.below((mi_cols - 2 * bw_mi).max(1) as u64) as i32) / bw_mi * bw_mi;
             let dir = if rng.below(2) == 0 {
                 intrabc::IntrabcMotionDirection::Above
             } else {
                 intrabc::IntrabcMotionDirection::Left
             };
             let dv_ref = intrabc::find_ref_dv(tile, 16, mi_row);
-            let Some(limits) = narrowed_limits(dir, tile, mi_row, mi_col, bw, bh, 16, 4, dv_ref) else {
+            let Some(limits) = narrowed_limits(dir, tile, mi_row, mi_col, bw, bh, 16, 4, dv_ref)
+            else {
                 continue;
             };
             for search_param in [0i32, 1, 3, 5] {
@@ -317,7 +348,12 @@ fn c_parity_diamond_search() {
                     (i32::from(dv_ref.x), i32::from(dv_ref.y)),
                     search_param,
                     30,
-                    (limits.col_min, limits.col_max, limits.row_min, limits.row_max),
+                    (
+                        limits.col_min,
+                        limits.col_max,
+                        limits.row_min,
+                        limits.row_max,
+                    ),
                     &sc,
                 );
                 assert_eq!(
@@ -327,7 +363,12 @@ fn c_parity_diamond_search() {
                 );
                 let seed_x = i32::from(dv_ref.x) >> 3;
                 let seed_y = i32::from(dv_ref.y) >> 3;
-                if (c_x, c_y) != (seed_x.clamp(limits.col_min, limits.col_max), seed_y.clamp(limits.row_min, limits.row_max)) {
+                if (c_x, c_y)
+                    != (
+                        seed_x.clamp(limits.col_min, limits.col_max),
+                        seed_y.clamp(limits.row_min, limits.row_max),
+                    )
+                {
                     nontrivial += 1;
                 }
                 num00_seen += c_n00.max(0) as u64;
@@ -336,7 +377,10 @@ fn c_parity_diamond_search() {
         }
     }
     assert!(checked > 250, "too few diamond cases ran: {checked}");
-    assert!(nontrivial > 30, "diamond never moved off the seed: vacuous fixture");
+    assert!(
+        nontrivial > 30,
+        "diamond never moved off the seed: vacuous fixture"
+    );
     assert!(num00_seen > 0, "num00 never nonzero: skip path untested");
 }
 
@@ -350,7 +394,12 @@ fn c_parity_full_pixel_search() {
     let (w, h, stride) = (448usize, 128usize, 448usize);
     let pic = screen_frame(&mut rng, w, h, stride);
     let (mi_rows, mi_cols) = ((h as i32) / MI, (w as i32) / MI);
-    let tile = intrabc::TileMiBounds { mi_col_start: 0, mi_col_end: mi_cols, mi_row_start: 0, mi_row_end: mi_rows };
+    let tile = intrabc::TileMiBounds {
+        mi_col_start: 0,
+        mi_col_end: mi_cols,
+        mi_row_start: 0,
+        mi_row_end: mi_rows,
+    };
     let cfg = intrabc::init_search_sites(stride);
 
     // Mesh configurations: level-3 real ctrls (thresh 1<<20, patterns
@@ -369,7 +418,8 @@ fn c_parity_full_pixel_search() {
         for iter in 0..40 {
             let bh_mi = bh / MI;
             let bw_mi = bw / MI;
-            let mi_row = (bh_mi + rng.below((mi_rows - 2 * bh_mi).max(1) as u64) as i32) / bh_mi * bh_mi;
+            let mi_row =
+                (bh_mi + rng.below((mi_rows - 2 * bh_mi).max(1) as u64) as i32) / bh_mi * bh_mi;
             let mi_col = rng.below((mi_cols - bw_mi).max(1) as u64) as i32 / bw_mi * bw_mi;
             let dir = if rng.below(2) == 0 {
                 intrabc::IntrabcMotionDirection::Above
@@ -377,7 +427,8 @@ fn c_parity_full_pixel_search() {
                 intrabc::IntrabcMotionDirection::Left
             };
             let dv_ref = intrabc::find_ref_dv(tile, 16, mi_row);
-            let Some(limits) = narrowed_limits(dir, tile, mi_row, mi_col, bw, bh, 16, 4, dv_ref) else {
+            let Some(limits) = narrowed_limits(dir, tile, mi_row, mi_col, bw, bh, 16, 4, dv_ref)
+            else {
                 continue;
             };
             let block = (mi_col * MI, mi_row * MI);
@@ -391,7 +442,10 @@ fn c_parity_full_pixel_search() {
                 ctrls.exhaustive_mesh_thresh = thresh;
                 ctrls.mesh_search_mv_diff_threshold = mv_diff_th;
                 for (slot, &(r, i)) in ctrls.mesh_patterns.iter_mut().zip(patterns.iter()) {
-                    *slot = intrabc::MeshPattern { range: r, interval: i };
+                    *slot = intrabc::MeshPattern {
+                        range: r,
+                        interval: i,
+                    };
                 }
                 let (rs_x, rs_y, _var) = intrabc::full_pixel_search(
                     &pic,
@@ -417,7 +471,12 @@ fn c_parity_full_pixel_search() {
                     bsize,
                     (i32::from(dv_ref.x), i32::from(dv_ref.y)),
                     sadpb,
-                    (limits.col_min, limits.col_max, limits.row_min, limits.row_max),
+                    (
+                        limits.col_min,
+                        limits.col_max,
+                        limits.row_min,
+                        limits.row_max,
+                    ),
                     thresh,
                     mv_diff_th,
                     &patterns,
@@ -439,7 +498,10 @@ fn c_parity_full_pixel_search() {
         }
     }
     assert!(checked > 250, "too few full-search cases: {checked}");
-    assert!(mesh_effect > 0, "mesh never changed the winner: mesh path vacuous");
+    assert!(
+        mesh_effect > 0,
+        "mesh never changed the winner: mesh path vacuous"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -452,14 +514,22 @@ fn c_parity_intrabc_hash_search() {
     let (w, h, stride) = (640usize, 192usize, 640usize);
     let pic = screen_frame(&mut rng, w, h, stride);
     let (mi_rows, mi_cols) = ((h as i32) / MI, (w as i32) / MI);
-    let tile = intrabc::TileMiBounds { mi_col_start: 0, mi_col_end: mi_cols, mi_row_start: 0, mi_row_end: mi_rows };
+    let tile = intrabc::TileMiBounds {
+        mi_col_start: 0,
+        mi_col_end: mi_cols,
+        mi_row_start: 0,
+        mi_row_end: mi_rows,
+    };
     let (max_hash, max_cand) = (64u8, 256u16);
 
     // Port table + C table (chunk-4-locked equal; both built fresh here).
     let rs_table = intrabc_hash::generate_ibc_data(&pic, stride, w, h, max_hash, max_cand, false);
     let mut c_table = cref::CHashTable::new();
     {
-        let mut vals = [cref::generate_block_2x2_hash(&pic, stride, w, h), vec![0u32; w * h]];
+        let mut vals = [
+            cref::generate_block_2x2_hash(&pic, stride, w, h),
+            vec![0u32; w * h],
+        ];
         let mut src_idx = 0usize;
         let mut size = 4usize;
         while size <= usize::from(max_hash) {
@@ -491,19 +561,28 @@ fn c_parity_intrabc_hash_search() {
                 intrabc::IntrabcMotionDirection::Left
             };
             let dv_ref = intrabc::find_ref_dv(tile, 16, mi_row);
-            let Some(limits) = narrowed_limits(dir, tile, mi_row, mi_col, bs, bs, 16, 4, dv_ref) else {
+            let Some(limits) = narrowed_limits(dir, tile, mi_row, mi_col, bs, bs, 16, 4, dv_ref)
+            else {
                 continue;
             };
             let (x_pos, y_pos) = (mi_col * MI, mi_row * MI);
 
             // Port: query + bucket + selection.
-            let (hv1, hv2) =
-                intrabc_hash::get_block_hash_value(&pic[y_pos as usize * stride + x_pos as usize..], stride, bs as usize, &mut bufs);
+            let (hv1, hv2) = intrabc_hash::get_block_hash_value(
+                &pic[y_pos as usize * stride + x_pos as usize..],
+                stride,
+                bs as usize,
+                &mut bufs,
+            );
             let rs = intrabc::hash_search_best_in_bucket(
                 &rs_table
                     .bucket(hv1)
                     .iter()
-                    .map(|e| intrabc::BlockHashEntry { x: i32::from(e.x), y: i32::from(e.y), hash_value2: e.hash_value2 })
+                    .map(|e| intrabc::BlockHashEntry {
+                        x: i32::from(e.x),
+                        y: i32::from(e.y),
+                        hash_value2: e.hash_value2,
+                    })
                     .collect::<Vec<_>>(),
                 hv2,
                 x_pos,
@@ -537,7 +616,12 @@ fn c_parity_intrabc_hash_search() {
                 max_hash,
                 4,
                 (0, mi_rows, 0, mi_cols),
-                (limits.col_min, limits.col_max, limits.row_min, limits.row_max),
+                (
+                    limits.col_min,
+                    limits.col_max,
+                    limits.row_min,
+                    limits.row_max,
+                ),
                 &sc,
             );
 
@@ -567,7 +651,10 @@ fn c_parity_intrabc_hash_search() {
         }
     }
     assert!(checked > 120, "too few hash-search cases: {checked}");
-    assert!(hits > 20, "no hash hits: fixture has no repeats in range ({hits})");
+    assert!(
+        hits > 20,
+        "no hash hits: fixture has no repeats in range ({hits})"
+    );
     assert!(misses > 5, "no hash misses ({misses})");
     assert!(
         rejected_by_validity > 0,
@@ -585,13 +672,21 @@ fn c_parity_intra_bc_search_driver() {
     let (w, h, stride) = (640usize, 192usize, 640usize);
     let pic = screen_frame(&mut rng, w, h, stride);
     let (mi_rows, mi_cols) = ((h as i32) / MI, (w as i32) / MI);
-    let tile = intrabc::TileMiBounds { mi_col_start: 0, mi_col_end: mi_cols, mi_row_start: 0, mi_row_end: mi_rows };
+    let tile = intrabc::TileMiBounds {
+        mi_col_start: 0,
+        mi_col_end: mi_cols,
+        mi_row_start: 0,
+        mi_row_end: mi_rows,
+    };
     let (max_hash, max_cand) = (64u8, 256u16);
 
     let rs_table = intrabc_hash::generate_ibc_data(&pic, stride, w, h, max_hash, max_cand, false);
     let mut c_table = cref::CHashTable::new();
     {
-        let mut vals = [cref::generate_block_2x2_hash(&pic, stride, w, h), vec![0u32; w * h]];
+        let mut vals = [
+            cref::generate_block_2x2_hash(&pic, stride, w, h),
+            vec![0u32; w * h],
+        ];
         let mut src_idx = 0usize;
         let mut size = 4usize;
         while size <= usize::from(max_hash) {
@@ -707,10 +802,22 @@ fn c_parity_intra_bc_search_driver() {
                     ctrls.exhaustive_mesh_thresh,
                     ctrls.mesh_search_mv_diff_threshold,
                     &[
-                        (ctrls.mesh_patterns[0].range, ctrls.mesh_patterns[0].interval),
-                        (ctrls.mesh_patterns[1].range, ctrls.mesh_patterns[1].interval),
-                        (ctrls.mesh_patterns[2].range, ctrls.mesh_patterns[2].interval),
-                        (ctrls.mesh_patterns[3].range, ctrls.mesh_patterns[3].interval),
+                        (
+                            ctrls.mesh_patterns[0].range,
+                            ctrls.mesh_patterns[0].interval,
+                        ),
+                        (
+                            ctrls.mesh_patterns[1].range,
+                            ctrls.mesh_patterns[1].interval,
+                        ),
+                        (
+                            ctrls.mesh_patterns[2].range,
+                            ctrls.mesh_patterns[2].interval,
+                        ),
+                        (
+                            ctrls.mesh_patterns[3].range,
+                            ctrls.mesh_patterns[3].interval,
+                        ),
                     ],
                     if hash_on { Some(&c_table) } else { None },
                     sadpb,
@@ -740,7 +847,13 @@ fn c_parity_intra_bc_search_driver() {
         }
     }
     assert!(checked > 250, "too few driver cases: {checked}");
-    assert!(nonempty > 60, "driver produced too few candidates: vacuous ({nonempty})");
+    assert!(
+        nonempty > 60,
+        "driver produced too few candidates: vacuous ({nonempty})"
+    );
     assert!(two_cand > 20, "both-directions arm untested ({two_cand})");
-    assert!(hash_path > 20 && pixel_path > 20, "one search path untested (hash={hash_path} pixel={pixel_path})");
+    assert!(
+        hash_path > 20 && pixel_path > 20,
+        "one search path untested (hash={hash_path} pixel={pixel_path})"
+    );
 }

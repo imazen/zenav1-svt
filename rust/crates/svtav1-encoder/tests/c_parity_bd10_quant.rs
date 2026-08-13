@@ -16,7 +16,7 @@
 //! identity here IS full-range quantizer identity for the bd10 path.
 
 use svtav1_cref as cref;
-use svtav1_encoder::bd10::{ac_qlookup_10, dc_qlookup_10, AC_QLOOKUP_10, DC_QLOOKUP_10};
+use svtav1_encoder::bd10::{AC_QLOOKUP_10, DC_QLOOKUP_10, ac_qlookup_10, dc_qlookup_10};
 
 /// Every bd10 DC/AC step-table entry matches the real C quantizer at
 /// `EB_TEN_BIT` across the whole qindex range.

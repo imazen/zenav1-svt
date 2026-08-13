@@ -63,7 +63,10 @@ impl core::fmt::Display for EncodeError {
                 if context.is_empty() {
                     write!(f, "allocation of {requested_bytes} bytes failed")
                 } else {
-                    write!(f, "allocation of {requested_bytes} bytes failed for {context}")
+                    write!(
+                        f,
+                        "allocation of {requested_bytes} bytes failed for {context}"
+                    )
                 }
             }
             EncodeError::InvalidDimensions {

@@ -19,7 +19,9 @@ use svtav1_encoder::pipeline::EncodePipeline;
 use svtav1_encoder::rate_control::{RcConfig, RcMode};
 
 fn gradient(w: usize, h: usize) -> Vec<u8> {
-    (0..w * h).map(|i| ((i / w * 3 + i % w * 5) % 256) as u8).collect()
+    (0..w * h)
+        .map(|i| ((i / w * 3 + i % w * 5) % 256) as u8)
+        .collect()
 }
 
 fn encode(qp: u8, mutate: impl FnOnce(&mut EncodePipeline)) -> Vec<u8> {
@@ -27,7 +29,11 @@ fn encode(qp: u8, mutate: impl FnOnce(&mut EncodePipeline)) -> Vec<u8> {
     let y = gradient(w, h);
     let (cw, ch) = (w / 2, h / 2);
     let (u, v) = (vec![128u8; cw * ch], vec![128u8; cw * ch]);
-    let rc = RcConfig { mode: RcMode::Cqp, qp, ..RcConfig::default() };
+    let rc = RcConfig {
+        mode: RcMode::Cqp,
+        qp,
+        ..RcConfig::default()
+    };
     let mut p = EncodePipeline::new(w as u32, h as u32, 6, rc, 0, 1).with_chroma_420(true);
     assert_eq!(
         p.hdr.mode,
@@ -43,8 +49,14 @@ fn mainline_quality_knobs_are_reachable_issue_9() {
     let base = encode(32, |_| {});
 
     let cases: Vec<(&str, Box<dyn Fn(&mut EncodePipeline)>)> = vec![
-        ("tune=3 (IQ)", Box::new(|p: &mut EncodePipeline| p.hdr.tune = 3)),
-        ("enable_qm", Box::new(|p: &mut EncodePipeline| p.hdr.enable_qm = true)),
+        (
+            "tune=3 (IQ)",
+            Box::new(|p: &mut EncodePipeline| p.hdr.tune = 3),
+        ),
+        (
+            "enable_qm",
+            Box::new(|p: &mut EncodePipeline| p.hdr.enable_qm = true),
+        ),
         (
             "variance_boost s3",
             Box::new(|p: &mut EncodePipeline| {
@@ -52,7 +64,10 @@ fn mainline_quality_knobs_are_reachable_issue_9() {
                 p.hdr.variance_boost_strength = 3;
             }),
         ),
-        ("sharpness=7", Box::new(|p: &mut EncodePipeline| p.hdr.sharpness = 7)),
+        (
+            "sharpness=7",
+            Box::new(|p: &mut EncodePipeline| p.hdr.sharpness = 7),
+        ),
     ];
 
     for (label, set) in cases {
@@ -98,5 +113,8 @@ fn tune_iq_pulls_the_whole_c_override_block_issue_9() {
     let mut other = svtav1_encoder::hdr_mode::HdrForkConfig::default();
     let before = other.clone();
     other.apply_tune_overrides(32);
-    assert_eq!(other, before, "the override block must be a no-op for tune != 3/4");
+    assert_eq!(
+        other, before,
+        "the override block must be a no-op for tune != 3/4"
+    );
 }

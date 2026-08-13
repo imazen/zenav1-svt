@@ -45,7 +45,13 @@ impl Rng {
 #[test]
 fn count_colors_matches_c() {
     let mut rng = Rng(0xc0_107_5eed);
-    let shapes = [(8usize, 8usize, 8usize), (16, 16, 16), (8, 8, 23), (13, 17, 31), (64, 64, 64)];
+    let shapes = [
+        (8usize, 8usize, 8usize),
+        (16, 16, 16),
+        (8, 8, 23),
+        (13, 17, 31),
+        (64, 64, 64),
+    ];
     for &(rows, cols, stride) in &shapes {
         for ncolors in [1usize, 2, 5, 16, 64, 200] {
             let palette: Vec<u8> = (0..ncolors).map(|_| rng.byte()).collect();
@@ -61,7 +67,10 @@ fn count_colors_matches_c() {
                 let n_r = palette::count_colors(&buf, stride, rows, cols, &mut hist_r);
                 let n_c = cref::count_colors(&buf, stride, rows, cols, &mut hist_c);
                 assert_eq!(n_r as i32, n_c, "{rows}x{cols}s{stride} ncolors={ncolors}");
-                assert_eq!(hist_r, hist_c, "{rows}x{cols}s{stride} ncolors={ncolors} histogram");
+                assert_eq!(
+                    hist_r, hist_c,
+                    "{rows}x{cols}s{stride} ncolors={ncolors} histogram"
+                );
             }
         }
     }
@@ -116,10 +125,21 @@ fn index_color_cache_matches_c() {
         let j_c = cref::index_color_cache(&cache, &colors, &mut found_c, &mut out_c_i32);
 
         assert_eq!(j_r as i32, j_c, "cache={cache:?} colors={colors:?}");
-        assert_eq!(&out_r[..j_r], &out_c_i32[..j_r as usize].iter().map(|&v| v as u16).collect::<Vec<_>>(), "out mismatch cache={cache:?} colors={colors:?}");
+        assert_eq!(
+            &out_r[..j_r],
+            &out_c_i32[..j_r as usize]
+                .iter()
+                .map(|&v| v as u16)
+                .collect::<Vec<_>>(),
+            "out mismatch cache={cache:?} colors={colors:?}"
+        );
         if n_cache > 0 {
             let found_r_bytes: Vec<u8> = found_r[..n_cache].iter().map(|&b| b as u8).collect();
-            assert_eq!(found_r_bytes, found_c[..n_cache], "found mismatch cache={cache:?} colors={colors:?}");
+            assert_eq!(
+                found_r_bytes,
+                found_c[..n_cache],
+                "found mismatch cache={cache:?} colors={colors:?}"
+            );
         }
     }
 }
@@ -184,7 +204,11 @@ fn k_means_dim1_matches_c() {
                     let mut idx_c = vec![0u8; n];
                     cref::k_means_dim1(&data, &mut cc, &mut idx_c, k, max_itr as i32);
 
-                    assert_eq!(&cr[..k], &cc[..k], "n={n} k={k} max_itr={max_itr} centroids");
+                    assert_eq!(
+                        &cr[..k],
+                        &cc[..k],
+                        "n={n} k={k} max_itr={max_itr} centroids"
+                    );
                     assert_eq!(idx_r, idx_c, "n={n} k={k} max_itr={max_itr} indices");
                 }
             }
@@ -210,7 +234,9 @@ fn k_means_dim1_empty_cluster_reseed_matches_c() {
             let j = rng.below(i as u64 + 1) as usize;
             data.swap(i, j);
         }
-        let seed: Vec<i32> = (0..k).map(|i| 5 + (2 * i as i32 + 1) * (500 - 5) / k as i32 / 2).collect();
+        let seed: Vec<i32> = (0..k)
+            .map(|i| 5 + (2 * i as i32 + 1) * (500 - 5) / k as i32 / 2)
+            .collect();
 
         let mut cr = centroid_buf(&seed);
         let mut idx_r = vec![0u8; n];
@@ -220,7 +246,11 @@ fn k_means_dim1_empty_cluster_reseed_matches_c() {
         let mut idx_c = vec![0u8; n];
         cref::k_means_dim1(&data, &mut cc, &mut idx_c, k, 2);
 
-        assert_eq!(&cr[..k], &cc[..k], "reseed centroids data={data:?} seed={seed:?}");
+        assert_eq!(
+            &cr[..k],
+            &cc[..k],
+            "reseed centroids data={data:?} seed={seed:?}"
+        );
         assert_eq!(idx_r, idx_c, "reseed indices data={data:?} seed={seed:?}");
     }
 }
@@ -351,12 +381,18 @@ fn delta_encode_bits_hand_vectors() {
         vec![
             palette::DeltaEncodeStep { value: 0, bits: 8 },
             palette::DeltaEncodeStep { value: 3, bits: 2 },
-            palette::DeltaEncodeStep { value: 199, bits: 8 },
+            palette::DeltaEncodeStep {
+                value: 199,
+                bits: 8
+            },
             palette::DeltaEncodeStep { value: 0, bits: 6 },
             palette::DeltaEncodeStep { value: 0, bits: 6 },
         ]
     );
-    assert_eq!(palette::delta_encode_bits(&[0, 200, 201, 202], 8, 1), 8 + 2 + 8 + 6 + 6);
+    assert_eq!(
+        palette::delta_encode_bits(&[0, 200, 201, 202], 8, 1),
+        8 + 2 + 8 + 6 + 6
+    );
 }
 
 // =============================================================================
@@ -388,7 +424,10 @@ fn palette_color_index_context_lookup_matches_c_asserts() {
     // The remaining table slots (0, 1, 3, 4) are unreachable by either path
     // and are documented as invalid (-1) in the C source.
     for hash in [0usize, 1, 3, 4] {
-        assert_eq!(LOOKUP[hash], -1, "hash={hash} should be the documented invalid marker");
+        assert_eq!(
+            LOOKUP[hash], -1,
+            "hash={hash} should be the documented invalid marker"
+        );
     }
 }
 
@@ -401,20 +440,38 @@ fn palette_color_index_context_edge_hand_vectors() {
     // Top row (has_left only), stride=4, 1x4 map: [10, 3, 10, 10].
     let map = [10u8, 3, 10, 10];
     // (0,1): neighbor=map[0]=10 > current=3 -> idx=3+1=4.
-    assert_eq!(palette::palette_color_index_context(&map, 4, 0, 1, 16), (0, 4));
+    assert_eq!(
+        palette::palette_color_index_context(&map, 4, 0, 1, 16),
+        (0, 4)
+    );
     // (0,2): neighbor=map[1]=3, current=map[2]=10; 3<10, 3!=10 -> idx=10 unchanged.
-    assert_eq!(palette::palette_color_index_context(&map, 4, 0, 2, 16), (0, 10));
+    assert_eq!(
+        palette::palette_color_index_context(&map, 4, 0, 2, 16),
+        (0, 10)
+    );
     // (0,3): neighbor=map[2]=10 == current=map[3]=10 -> idx=0 (match).
-    assert_eq!(palette::palette_color_index_context(&map, 4, 0, 3, 16), (0, 0));
+    assert_eq!(
+        palette::palette_color_index_context(&map, 4, 0, 3, 16),
+        (0, 0)
+    );
 
     // Left column (has_above only), stride=1, 4x1 map: [7, 2, 7, 7].
     let map = [7u8, 2, 7, 7];
     // (1,0): neighbor=map[0]=7 > current=map[1]=2 -> idx=2+1=3.
-    assert_eq!(palette::palette_color_index_context(&map, 1, 1, 0, 16), (0, 3));
+    assert_eq!(
+        palette::palette_color_index_context(&map, 1, 1, 0, 16),
+        (0, 3)
+    );
     // (2,0): neighbor=map[1]=2, current=map[2]=7; 2<7,2!=7 -> idx=7 unchanged.
-    assert_eq!(palette::palette_color_index_context(&map, 1, 2, 0, 16), (0, 7));
+    assert_eq!(
+        palette::palette_color_index_context(&map, 1, 2, 0, 16),
+        (0, 7)
+    );
     // (3,0): neighbor=map[2]=7 == current=map[3]=7 -> idx=0 (match).
-    assert_eq!(palette::palette_color_index_context(&map, 1, 3, 0, 16), (0, 0));
+    assert_eq!(
+        palette::palette_color_index_context(&map, 1, 3, 0, 16),
+        (0, 0)
+    );
 }
 
 /// Interior, all three neighbors distinct (left=5, top=3, topleft=9 at the
@@ -433,14 +490,23 @@ fn palette_color_index_context_interior_all_distinct_hand_vectors() {
 
     // current=3 matches sorted slot0 (top, post-swap) -> idx=0.
     let map = mk(3);
-    assert_eq!(palette::palette_color_index_context(&map, stride, 1, 1, 16), (1, 0));
+    assert_eq!(
+        palette::palette_color_index_context(&map, stride, 1, 1, 16),
+        (1, 0)
+    );
     // current=7: greater than all three (3,5,9 all < 7? NO: 9>7) ->
     // idx0(3>7?no) idx1(5>7?no) idx2(9>7?yes)->idx=7+1=8.
     let map = mk(7);
-    assert_eq!(palette::palette_color_index_context(&map, stride, 1, 1, 16), (1, 8));
+    assert_eq!(
+        palette::palette_color_index_context(&map, stride, 1, 1, 16),
+        (1, 8)
+    );
     // current=1: less than all three -> cumulative +1 three times -> idx=1+3=4.
     let map = mk(1);
-    assert_eq!(palette::palette_color_index_context(&map, stride, 1, 1, 16), (1, 4));
+    assert_eq!(
+        palette::palette_color_index_context(&map, stride, 1, 1, 16),
+        (1, 4)
+    );
 }
 
 /// Interior, left==top only (merge case a) -> num_valid_colors=2, ctx=3
@@ -453,11 +519,20 @@ fn palette_color_index_context_interior_left_eq_top_hand_vectors() {
     let mk = |current: u8| -> Vec<u8> { vec![9, 4, 4, current] };
 
     let map = mk(4);
-    assert_eq!(palette::palette_color_index_context(&map, stride, 1, 1, 16), (3, 0));
+    assert_eq!(
+        palette::palette_color_index_context(&map, stride, 1, 1, 16),
+        (3, 0)
+    );
     let map = mk(9);
-    assert_eq!(palette::palette_color_index_context(&map, stride, 1, 1, 16), (3, 1));
+    assert_eq!(
+        palette::palette_color_index_context(&map, stride, 1, 1, 16),
+        (3, 1)
+    );
     let map = mk(2);
-    assert_eq!(palette::palette_color_index_context(&map, stride, 1, 1, 16), (3, 4));
+    assert_eq!(
+        palette::palette_color_index_context(&map, stride, 1, 1, 16),
+        (3, 4)
+    );
 }
 
 /// Interior, left==topleft only (merge case b) -> num_valid_colors=2, ctx=2
@@ -472,11 +547,20 @@ fn palette_color_index_context_interior_left_eq_topleft_hand_vectors() {
     let mk = |current: u8| -> Vec<u8> { vec![6, 2, 6, current] };
 
     let map = mk(6);
-    assert_eq!(palette::palette_color_index_context(&map, stride, 1, 1, 16), (2, 0));
+    assert_eq!(
+        palette::palette_color_index_context(&map, stride, 1, 1, 16),
+        (2, 0)
+    );
     let map = mk(2);
-    assert_eq!(palette::palette_color_index_context(&map, stride, 1, 1, 16), (2, 1));
+    assert_eq!(
+        palette::palette_color_index_context(&map, stride, 1, 1, 16),
+        (2, 1)
+    );
     let map = mk(9);
-    assert_eq!(palette::palette_color_index_context(&map, stride, 1, 1, 16), (2, 9));
+    assert_eq!(
+        palette::palette_color_index_context(&map, stride, 1, 1, 16),
+        (2, 9)
+    );
 }
 
 /// Interior, top==topleft only (merge case c) -> num_valid_colors=2, ctx=2
@@ -491,11 +575,20 @@ fn palette_color_index_context_interior_top_eq_topleft_hand_vectors() {
     let mk = |current: u8| -> Vec<u8> { vec![7, 7, 1, current] };
 
     let map = mk(7);
-    assert_eq!(palette::palette_color_index_context(&map, stride, 1, 1, 16), (2, 0));
+    assert_eq!(
+        palette::palette_color_index_context(&map, stride, 1, 1, 16),
+        (2, 0)
+    );
     let map = mk(1);
-    assert_eq!(palette::palette_color_index_context(&map, stride, 1, 1, 16), (2, 1));
+    assert_eq!(
+        palette::palette_color_index_context(&map, stride, 1, 1, 16),
+        (2, 1)
+    );
     let map = mk(0);
-    assert_eq!(palette::palette_color_index_context(&map, stride, 1, 1, 16), (2, 2));
+    assert_eq!(
+        palette::palette_color_index_context(&map, stride, 1, 1, 16),
+        (2, 2)
+    );
 }
 
 /// Interior, all three neighbors equal -> num_valid_colors=1, ctx=4
@@ -508,11 +601,20 @@ fn palette_color_index_context_interior_all_equal_hand_vectors() {
     let mk = |current: u8| -> Vec<u8> { vec![5, 5, 5, current] };
 
     let map = mk(5);
-    assert_eq!(palette::palette_color_index_context(&map, stride, 1, 1, 16), (4, 0));
+    assert_eq!(
+        palette::palette_color_index_context(&map, stride, 1, 1, 16),
+        (4, 0)
+    );
     let map = mk(2);
-    assert_eq!(palette::palette_color_index_context(&map, stride, 1, 1, 16), (4, 3));
+    assert_eq!(
+        palette::palette_color_index_context(&map, stride, 1, 1, 16),
+        (4, 3)
+    );
     let map = mk(9);
-    assert_eq!(palette::palette_color_index_context(&map, stride, 1, 1, 16), (4, 9));
+    assert_eq!(
+        palette::palette_color_index_context(&map, stride, 1, 1, 16),
+        (4, 9)
+    );
 }
 
 /// Anti-diagonal traversal order, hand-derived from the loop bounds
@@ -528,7 +630,9 @@ fn color_map_wavefront_traversal_order_hand_vectors() {
         // and count are under test here.
         let map = vec![0u8; rows * cols];
         let mut out = Vec::new();
-        palette::color_map_wavefront(&map, cols, rows, cols, 1, |i, j, _ctx, _idx| out.push((i, j)));
+        palette::color_map_wavefront(&map, cols, rows, cols, 1, |i, j, _ctx, _idx| {
+            out.push((i, j))
+        });
         out
     }
 
@@ -537,7 +641,16 @@ fn color_map_wavefront_traversal_order_hand_vectors() {
     assert_eq!(visited(2, 2), vec![(0, 1), (1, 0), (1, 1)]);
     assert_eq!(
         visited(3, 3),
-        vec![(0, 1), (1, 0), (0, 2), (1, 1), (2, 0), (1, 2), (2, 1), (2, 2)]
+        vec![
+            (0, 1),
+            (1, 0),
+            (0, 2),
+            (1, 1),
+            (2, 0),
+            (1, 2),
+            (2, 1),
+            (2, 2)
+        ]
     );
     // Degenerate 1x1: only (0,0) exists, which is always excluded -> empty.
     assert_eq!(visited(1, 1), vec![]);
@@ -550,13 +663,22 @@ fn color_map_wavefront_traversal_order_hand_vectors() {
         let mut seen = Vec::from([(0usize, 0usize)]);
         for &(i, j) in &order {
             if i > 0 {
-                assert!(seen.contains(&(i - 1, j)), "top not yet visited at {rows}x{cols} ({i},{j})");
+                assert!(
+                    seen.contains(&(i - 1, j)),
+                    "top not yet visited at {rows}x{cols} ({i},{j})"
+                );
             }
             if j > 0 {
-                assert!(seen.contains(&(i, j - 1)), "left not yet visited at {rows}x{cols} ({i},{j})");
+                assert!(
+                    seen.contains(&(i, j - 1)),
+                    "left not yet visited at {rows}x{cols} ({i},{j})"
+                );
             }
             if i > 0 && j > 0 {
-                assert!(seen.contains(&(i - 1, j - 1)), "topleft not yet visited at {rows}x{cols} ({i},{j})");
+                assert!(
+                    seen.contains(&(i - 1, j - 1)),
+                    "topleft not yet visited at {rows}x{cols} ({i},{j})"
+                );
             }
             seen.push((i, j));
         }

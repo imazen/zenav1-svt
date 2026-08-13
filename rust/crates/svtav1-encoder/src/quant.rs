@@ -111,8 +111,18 @@ fn apply_quant_sharpness_factors(qzbin: i32, qround: i32, qindex: u8, sharpness:
         } else {
             ((-sv) << 1).min(diff)
         };
-        let qzbin = (if sv > 0 { qzbin - offset } else { qzbin + offset }).clamp(1, 256);
-        let qround = (if sv > 0 { qround + offset } else { qround - offset }).clamp(1, 256);
+        let qzbin = (if sv > 0 {
+            qzbin - offset
+        } else {
+            qzbin + offset
+        })
+        .clamp(1, 256);
+        let qround = (if sv > 0 {
+            qround + offset
+        } else {
+            qround - offset
+        })
+        .clamp(1, 256);
         (qzbin, qround)
     } else {
         (qzbin, qround)
@@ -1415,7 +1425,6 @@ pub fn optimize_b(
             non_skip_cost,
             qcoeff,
             dqcoeff,
-        
             o.sharpness_flag,
         );
     }
@@ -1672,8 +1681,7 @@ pub fn quantize_inv_quantize_still(
     if eob != 0 {
         // [SVT_HDR_MODE] fork light-RDOQ: weakened trellis on low-DC chroma
         // (encode pass only). n_coeffs = adjusted txb pels (av1_get_max_eob).
-        let n_coeffs =
-            (coeff_c::txb_wide(c_tx_size) * coeff_c::txb_high(c_tx_size)) as u32;
+        let n_coeffs = (coeff_c::txb_wide(c_tx_size) * coeff_c::txb_high(c_tx_size)) as u32;
         let light_rdoq = light_rdoq_low_dc_chroma(
             cfg.hdr_fork,
             cfg.is_encode_pass,
@@ -1743,8 +1751,16 @@ mod tests {
     fn build_quant_table_bd10_dequant_matches_tables() {
         for &q in &[0u8, 1, 20, 40, 55, 128, 200, 255] {
             let t = build_quant_table_bd(q, 10);
-            assert_eq!(t.dequant[0], crate::bd10::dc_qlookup_10(q) as i32, "dc q={q}");
-            assert_eq!(t.dequant[1], crate::bd10::ac_qlookup_10(q) as i32, "ac q={q}");
+            assert_eq!(
+                t.dequant[0],
+                crate::bd10::dc_qlookup_10(q) as i32,
+                "dc q={q}"
+            );
+            assert_eq!(
+                t.dequant[1],
+                crate::bd10::ac_qlookup_10(q) as i32,
+                "ac q={q}"
+            );
         }
     }
 
@@ -1759,7 +1775,9 @@ mod tests {
         let t = build_quant_table_bd(160, 10);
         let scan: Vec<u16> = (0..16u16).collect();
         // (a) small coeffs (|c| < 32767): the clamp never fires -> identical.
-        let small: Vec<i32> = vec![1000, -2000, 300, 0, 500, -100, 42, 7, 0, 0, 0, 0, 0, 0, 0, 0];
+        let small: Vec<i32> = vec![
+            1000, -2000, 300, 0, 500, -100, 42, 7, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
         let (mut qa, mut da) = (vec![0i32; 16], vec![0i32; 16]);
         let (mut qb, mut db) = (vec![0i32; 16], vec![0i32; 16]);
         let ea = quantize_fp(&small, &scan, &t, 1, &mut qa, &mut da);
@@ -1847,8 +1865,7 @@ mod tests {
         let cfg = CodingQuantCfg::new(3, 248207, 160);
         let mut q = alloc::vec![0i32; n];
         let mut dq = alloc::vec![0i32; n];
-        let eob =
-            quantize_inv_quantize_still(
+        let eob = quantize_inv_quantize_still(
             &cfg, &tcoeffs, &mut q, &mut dq, scan, 160, 2, 0, 0, 256, false, 15,
         );
         let t = build_quant_table(160);

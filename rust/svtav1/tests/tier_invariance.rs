@@ -57,7 +57,11 @@ use svtav1_encoder::pipeline::EncodePipeline;
 use svtav1_encoder::rate_control::{RcConfig, RcMode};
 
 fn cqp(qp: u8) -> RcConfig {
-    RcConfig { mode: RcMode::Cqp, qp, ..RcConfig::default() }
+    RcConfig {
+        mode: RcMode::Cqp,
+        qp,
+        ..RcConfig::default()
+    }
 }
 
 /// Deterministic screen-like content — the same generator `identity_run`'s
@@ -94,7 +98,13 @@ fn gradient_plane(w: usize, h: usize) -> Vec<u8> {
     p
 }
 
-fn encode_8bit(plane: &dyn Fn(usize, usize) -> Vec<u8>, w: usize, h: usize, qp: u8, preset: u8) -> Vec<u8> {
+fn encode_8bit(
+    plane: &dyn Fn(usize, usize) -> Vec<u8>,
+    w: usize,
+    h: usize,
+    qp: u8,
+    preset: u8,
+) -> Vec<u8> {
     let y = plane(w, h);
     let (cw, ch) = ((w + 1) / 2, (h + 1) / 2);
     let u = vec![128u8; cw * ch];
@@ -105,7 +115,13 @@ fn encode_8bit(plane: &dyn Fn(usize, usize) -> Vec<u8>, w: usize, h: usize, qp: 
         .expect("in-envelope cell must encode")
 }
 
-fn encode_10bit(plane: &dyn Fn(usize, usize) -> Vec<u8>, w: usize, h: usize, qp: u8, preset: u8) -> Vec<u8> {
+fn encode_10bit(
+    plane: &dyn Fn(usize, usize) -> Vec<u8>,
+    w: usize,
+    h: usize,
+    qp: u8,
+    preset: u8,
+) -> Vec<u8> {
     // Widen the 8-bit generator to 10-bit the same way the harness does, so the
     // content is the identical picture at a higher depth.
     let y: Vec<u16> = plane(w, h).iter().map(|&s| (s as u16) << 2).collect();
@@ -181,8 +197,14 @@ fn bd10_screen_q55_p7_is_tier_invariant() {
         encode_10bit(&screen_plane, 128, 128, 55, 7)
     });
     // Anti-vacuity: these cells encode real content, not an empty stream.
-    assert!(n64 > 32, "64x64 bd10 screen cell produced {n64}B -- too small to be real");
-    assert!(n128 > 64, "128x128 bd10 screen cell produced {n128}B -- too small to be real");
+    assert!(
+        n64 > 32,
+        "64x64 bd10 screen cell produced {n64}B -- too small to be real"
+    );
+    assert!(
+        n128 > 64,
+        "128x128 bd10 screen cell produced {n128}B -- too small to be real"
+    );
 }
 
 /// Broader coverage across depth, content class and preset, so a tier bug in a
@@ -222,7 +244,13 @@ fn partial_superblock_output_is_tier_invariant() {
     // Either the port is tier-dependent there (a shipping bug) or C is (entry
     // #9 of docs/SUSPECTED-C-BUGS.md), and only this gate can tell them apart
     // without a machine of the other architecture.
-    for &(w, h) in &[(96usize, 80usize), (65, 65), (120, 104), (72, 88), (104, 72)] {
+    for &(w, h) in &[
+        (96usize, 80usize),
+        (65, 65),
+        (120, 104),
+        (72, 88),
+        (104, 72),
+    ] {
         for &preset in &[0u8, 1, 2, 3, 4, 5, 6, 7] {
             for &qp in &[32u8, 48] {
                 assert_tier_invariant(&format!("gradient {w}x{h} q{qp} p{preset} bd8"), || {
@@ -269,7 +297,10 @@ fn intrabc_output_is_tier_invariant_on_real_screen_content() {
         return;
     }
     let root = std::env::var("ZENAV1_CORPUS_ROOT").unwrap_or_else(|_| {
-        format!("{}/work/zen/codec-corpus", std::env::var("HOME").unwrap_or_default())
+        format!(
+            "{}/work/zen/codec-corpus",
+            std::env::var("HOME").unwrap_or_default()
+        )
     });
     let img = format!("{root}/gb82-sc/graph.png");
     let path = std::path::Path::new(&img);
@@ -312,7 +343,11 @@ fn decode_png_luma(path: &std::path::Path) -> (Vec<u8>, usize, usize) {
         .map(|i| {
             if ch >= 3 {
                 // BT.601 luma, the same convention the identity harness uses.
-                let (r, g, b) = (buf[i * ch] as u32, buf[i * ch + 1] as u32, buf[i * ch + 2] as u32);
+                let (r, g, b) = (
+                    buf[i * ch] as u32,
+                    buf[i * ch + 1] as u32,
+                    buf[i * ch + 2] as u32,
+                );
                 ((77 * r + 150 * g + 29 * b) >> 8) as u8
             } else {
                 buf[i * ch]
@@ -337,11 +372,11 @@ fn decode_png_luma(path: &std::path::Path) -> (Vec<u8>, usize, usize) {
 #[test]
 fn bd10_partial_sb_pinned_cells_are_tier_invariant() {
     for &(w, h, qp, preset) in &[
-        (48usize, 48usize, 20u8, 9u8),  // x86-64 matches, aarch64 differs
-        (96, 80, 20, 4),                // x86-64 matches, aarch64 differs
-        (65, 65, 20, 2),                // x86-64 matches, aarch64 differs
-        (80, 88, 55, 9),                // diverges on both
-        (72, 88, 55, 9),                // diverges on both (bd8 too)
+        (48usize, 48usize, 20u8, 9u8), // x86-64 matches, aarch64 differs
+        (96, 80, 20, 4),               // x86-64 matches, aarch64 differs
+        (65, 65, 20, 2),               // x86-64 matches, aarch64 differs
+        (80, 88, 55, 9),               // diverges on both
+        (72, 88, 55, 9),               // diverges on both (bd8 too)
     ] {
         let n = assert_tier_invariant(
             &format!("PIN gradient {w}x{h} q{qp} p{preset} bd10"),

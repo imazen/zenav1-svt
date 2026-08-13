@@ -27,7 +27,11 @@ fn main() {
             src[r * pw + c] = src[(sz - 1) * pw + c];
         }
     }
-    let rc = RcConfig { mode: RcMode::Cqp, qp: 20, ..RcConfig::default() };
+    let rc = RcConfig {
+        mode: RcMode::Cqp,
+        qp: 20,
+        ..RcConfig::default()
+    };
     let mut p = EncodePipeline::new(pw as u32, ph as u32, 3, rc, 0, 1).with_chroma_420(true);
     let u = vec![128u8; pw * ph / 4];
     let v = vec![128u8; pw * ph / 4];

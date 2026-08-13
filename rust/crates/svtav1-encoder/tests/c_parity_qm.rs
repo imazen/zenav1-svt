@@ -62,8 +62,7 @@ fn qm_quantize_matches_c_with_transcribed_tables() {
                     let t = quant::build_quant_table(qidx);
                     let row = row_from_table(&t);
                     for _ in 0..3 {
-                        let coeffs: Vec<i32> =
-                            (0..n).map(|_| rng.coeff(i16::MAX as i32)).collect();
+                        let coeffs: Vec<i32> = (0..n).map(|_| rng.coeff(i16::MAX as i32)).collect();
 
                         let mut rq = vec![0i32; n];
                         let mut rdq = vec![0i32; n];

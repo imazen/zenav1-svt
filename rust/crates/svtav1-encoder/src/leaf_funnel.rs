@@ -1404,7 +1404,10 @@ fn dbg_on(cell: &'static std::sync::OnceLock<bool>, var: &str) -> bool {
 /// parsed once. `Some((x, y))` selects a single block ORIGIN to dump; these
 /// dumps are per-txb verbose, so pinning is what keeps them usable.
 #[cfg(feature = "std")]
-fn dbg_xy(cell: &'static std::sync::OnceLock<Option<(usize, usize)>>, var: &str) -> Option<(usize, usize)> {
+fn dbg_xy(
+    cell: &'static std::sync::OnceLock<Option<(usize, usize)>>,
+    var: &str,
+) -> Option<(usize, usize)> {
     *cell.get_or_init(|| {
         let s = std::env::var(var).ok()?;
         let (a, b) = s.split_once(',')?;
@@ -1504,7 +1507,11 @@ pub(crate) fn cost_coeffs_txb(
         // flipping both the per-txb TXT winners ({0,10,0,10} vs the
         // port's {0,0,0,10}) and the candidate's total coeff rate (C ycb
         // 29518 vs port 32124) -> the IBC-vs-intra arbitration.
-        let cost_dir = if intra_dir == INTER_TXT_DIR { 0 } else { intra_dir };
+        let cost_dir = if intra_dir == INTER_TXT_DIR {
+            0
+        } else {
+            intra_dir
+        };
         cost += rates.txt_rate(c_tx_size, cost_dir, tx_type);
     }
     cost += crate::quant::eob_cost(eob as i32, eob_bits, costs, tx_class);
@@ -1557,7 +1564,15 @@ pub(crate) fn cost_coeffs_txb(
         level_cost(&mut cost, 0, qcoeff[0], true, true, &levels_buf);
         #[cfg(feature = "std")]
         ccost_log(
-            plane_type, c_tx_size, tx_type, eob, txb_skip_ctx, dc_sign_ctx, qcoeff, width, height,
+            plane_type,
+            c_tx_size,
+            tx_type,
+            eob,
+            txb_skip_ctx,
+            dc_sign_ctx,
+            qcoeff,
+            width,
+            height,
             cost,
         );
         return cost;
@@ -1593,7 +1608,16 @@ pub(crate) fn cost_coeffs_txb(
     }
     #[cfg(feature = "std")]
     ccost_log(
-        plane_type, c_tx_size, tx_type, eob, txb_skip_ctx, dc_sign_ctx, qcoeff, width, height, cost,
+        plane_type,
+        c_tx_size,
+        tx_type,
+        eob,
+        txb_skip_ctx,
+        dc_sign_ctx,
+        qcoeff,
+        width,
+        height,
+        cost,
     );
     cost
 }
@@ -2017,7 +2041,13 @@ fn tx_unit_inner(
     // zero-fill was dead. This pushes exactly h*w = n values in row-major order
     // — byte-identical contents, no `calloc`/`memset`, and after warmup no
     // allocation either.
-    let TxScratch { residual, coeffs, packed: packed_buf, dq_full, inv } = sc;
+    let TxScratch {
+        residual,
+        coeffs,
+        packed: packed_buf,
+        dq_full,
+        inv,
+    } = sc;
     if residual.len() < n {
         residual.resize(n, 0);
     }
@@ -2093,7 +2123,14 @@ fn tx_unit_inner(
     let mut eob = if do_rdoq {
         let mut e = match qm {
             Some((wt, iwt)) => crate::qm::quantize_fp_qm(
-                packed, scan, qt, log_scale, wt, iwt, &mut qcoeff, &mut dqcoeff,
+                packed,
+                scan,
+                qt,
+                log_scale,
+                wt,
+                iwt,
+                &mut qcoeff,
+                &mut dqcoeff,
             ),
             None => {
                 crate::quant::quantize_fp(packed, scan, qt, log_scale, &mut qcoeff, &mut dqcoeff)
@@ -2127,7 +2164,14 @@ fn tx_unit_inner(
     } else {
         match qm {
             Some((wt, iwt)) => crate::qm::quantize_b_qm(
-                packed, scan, qt, log_scale, wt, iwt, &mut qcoeff, &mut dqcoeff,
+                packed,
+                scan,
+                qt,
+                log_scale,
+                wt,
+                iwt,
+                &mut qcoeff,
+                &mut dqcoeff,
             ),
             None => {
                 crate::quant::quantize_b(packed, scan, qt, log_scale, &mut qcoeff, &mut dqcoeff)
@@ -2654,10 +2698,22 @@ pub(crate) fn tx_unit_hbd(
     let eob = if do_rdoq {
         let mut e = match qm {
             Some((wt, iwt)) => crate::qm::quantize_fp_hbd_qm(
-                &packed, scan, qt, log_scale, wt, iwt, &mut qcoeff, &mut dqcoeff,
+                &packed,
+                scan,
+                qt,
+                log_scale,
+                wt,
+                iwt,
+                &mut qcoeff,
+                &mut dqcoeff,
             ),
             None => crate::quant::quantize_fp_hbd(
-                &packed, scan, qt, log_scale, &mut qcoeff, &mut dqcoeff,
+                &packed,
+                scan,
+                qt,
+                log_scale,
+                &mut qcoeff,
+                &mut dqcoeff,
             ),
         };
         if e != 0 {
@@ -2692,11 +2748,23 @@ pub(crate) fn tx_unit_hbd(
         // (no INT16 clamp) — the SAME clamp-is-bd8-only class as the fp fix.
         match qm {
             Some((wt, iwt)) => crate::qm::quantize_b_hbd_qm(
-                &packed, scan, qt, log_scale, wt, iwt, &mut qcoeff, &mut dqcoeff,
+                &packed,
+                scan,
+                qt,
+                log_scale,
+                wt,
+                iwt,
+                &mut qcoeff,
+                &mut dqcoeff,
             ),
-            None => {
-                crate::quant::quantize_b_hbd(&packed, scan, qt, log_scale, &mut qcoeff, &mut dqcoeff)
-            }
+            None => crate::quant::quantize_b_hbd(
+                &packed,
+                scan,
+                qt,
+                log_scale,
+                &mut qcoeff,
+                &mut dqcoeff,
+            ),
         }
     };
 
@@ -2827,7 +2895,14 @@ pub(crate) fn tx_unit_hbd(
     };
 
     let cul = compute_cul_level(scan, &qcoeff, eob);
-    TxUnitOutHbd { eob, qcoeff, recon, cul, dist, bits }
+    TxUnitOutHbd {
+        eob,
+        qcoeff,
+        recon,
+        cul,
+        dist,
+        bits,
+    }
 }
 
 use crate::quant::TX_SCALE_TAB;
@@ -3114,9 +3189,25 @@ fn md_cfl_rd_pick_alpha(
         // is_full_loop=0 -> TRANSFORM-domain distortion, NOT the spatial SSE
         // that feeds the final block RD. spatial_dist=false mirrors that.
         let out = tx_unit(
-            src, c_stride, c_off, &cfl_pred, cw, 0, cw, chh, 0, 1, tsc, dsc, 0,
-            if plane == 0 { qt_u } else { qt_v }, frame, rates,
-            do_rdoq, false, uv_crop,
+            src,
+            c_stride,
+            c_off,
+            &cfl_pred,
+            cw,
+            0,
+            cw,
+            chh,
+            0,
+            1,
+            tsc,
+            dsc,
+            0,
+            if plane == 0 { qt_u } else { qt_v },
+            frame,
+            rates,
+            do_rdoq,
+            false,
+            uv_crop,
             // R1: this closure returns `(out.dist, out.bits)` and nothing else
             // — the recon is unread. C's `av1_cost_calc_cfl` reaches
             // `svt_aom_full_loop_uv` with `is_full_loop = 0`, so the
@@ -3490,7 +3581,11 @@ impl Default for IbcGateInput {
     /// The fixed-tree default: PART_N (square leaves; the gate always
     /// allows — b4 gating is off at every allintra IBC level).
     fn default() -> Self {
-        Self { partition: 0, is_part_n: true, sibling_n0: (false, false) }
+        Self {
+            partition: 0,
+            is_part_n: true,
+            sibling_n0: (false, false),
+        }
     }
 }
 
@@ -3791,7 +3886,17 @@ pub(crate) fn decide_leaf(
     sb_is_lvl6: bool,
 ) -> LeafChoice {
     decide_leaf_rect(
-        fx, y_src, y_src_stride, y_src_off, y_recon, y_stride, abs_x, abs_y, size, size, dc_only,
+        fx,
+        y_src,
+        y_src_stride,
+        y_src_off,
+        y_recon,
+        y_stride,
+        abs_x,
+        abs_y,
+        size,
+        size,
+        dc_only,
         sb_is_lvl6,
     )
 }
@@ -3882,7 +3987,10 @@ pub(crate) fn evaluate_leaf(
     let (lambda_bd10_full, lambda_bd10_fast) = if bd10_funnel {
         // Full bd10 MD lambda (C full_lambda_md[1] = compute_rd_mult(10bit)×16,
         // md_process.c:753) — used for the winner-recon RDOQ.
-        let lf = u64::from(crate::pd0::kf_full_lambda_bd10(frame.base_qindex, frame.cli_qp));
+        let lf = u64::from(crate::pd0::kf_full_lambda_bd10(
+            frame.base_qindex,
+            frame.cli_qp,
+        ));
         // MDS0 fast cost lambda. C's fast loop calls `av1_intra_fast_cost(...,
         // fast_lambda_md[1], satd<<4)`, and the port's `rdcost(λ, rate, satd<<4)`
         // has the IDENTICAL structure (`(rate*λ+256)>>9 + (satd<<4)<<7`) — so the
@@ -4118,43 +4226,100 @@ pub(crate) fn evaluate_leaf(
     // JOINT (luma + chroma): with the luma terms at 10 bits and chroma left at
     // 8, chroma would be ~16x under-weighted and every uv-follows-luma mode
     // flip would be decided on luma alone.
-    let chroma_eval10 = |fx: &FunnelCtx<'_>,
-                         b: &Bd10Rd,
-                         uv: u8,
-                         uv_delta: i8|
-     -> (TxUnitOutHbd, TxUnitOutHbd) {
-        let mut u_pred = vec![0u16; cw * chh];
-        let mut v_pred = vec![0u16; cw * chh];
-        let c_off10 = ccy * fx.c_stride + ccx;
-        predict_unit_hbd(
-            fx.u_recon10.as_deref().unwrap(), fx.c_stride, ccx, ccy, cw, chh, uv, uv_delta,
-            FI_NONE, &uv_geom, cfg.edge_filter, filt_type_uv, &mut u_pred, b.bd,
-        );
-        predict_unit_hbd(
-            fx.v_recon10.as_deref().unwrap(), fx.c_stride, ccx, ccy, cw, chh, uv, uv_delta,
-            FI_NONE, &uv_geom, cfg.edge_filter, filt_type_uv, &mut v_pred, b.bd,
-        );
-        let _ = c_off10;
-        let tt = uv_tx_type(uv, cw, chh);
-        let rd = |plane_dir: usize| TxRdArgs {
-            spatial_dist: true, // MDS3 chroma is the spatial SSE (<<4)
-            intra_dir: plane_dir,
-            coeff_rate_est_lvl: cfg.coeff_rate_est_lvl,
-            tx_bias: frame.tx_bias,
-            crop: uv_crop,
+    let chroma_eval10 =
+        |fx: &FunnelCtx<'_>, b: &Bd10Rd, uv: u8, uv_delta: i8| -> (TxUnitOutHbd, TxUnitOutHbd) {
+            let mut u_pred = vec![0u16; cw * chh];
+            let mut v_pred = vec![0u16; cw * chh];
+            let c_off10 = ccy * fx.c_stride + ccx;
+            predict_unit_hbd(
+                fx.u_recon10.as_deref().unwrap(),
+                fx.c_stride,
+                ccx,
+                ccy,
+                cw,
+                chh,
+                uv,
+                uv_delta,
+                FI_NONE,
+                &uv_geom,
+                cfg.edge_filter,
+                filt_type_uv,
+                &mut u_pred,
+                b.bd,
+            );
+            predict_unit_hbd(
+                fx.v_recon10.as_deref().unwrap(),
+                fx.c_stride,
+                ccx,
+                ccy,
+                cw,
+                chh,
+                uv,
+                uv_delta,
+                FI_NONE,
+                &uv_geom,
+                cfg.edge_filter,
+                filt_type_uv,
+                &mut v_pred,
+                b.bd,
+            );
+            let _ = c_off10;
+            let tt = uv_tx_type(uv, cw, chh);
+            let rd = |plane_dir: usize| TxRdArgs {
+                spatial_dist: true, // MDS3 chroma is the spatial SSE (<<4)
+                intra_dir: plane_dir,
+                coeff_rate_est_lvl: cfg.coeff_rate_est_lvl,
+                tx_bias: frame.tx_bias,
+                crop: uv_crop,
+            };
+            let u_out = tx_unit_hbd(
+                &b.u_src10,
+                cw,
+                0,
+                &u_pred,
+                cw,
+                0,
+                cw,
+                chh,
+                tt,
+                1,
+                cb_tsc,
+                cb_dsc,
+                &b.qt_u,
+                frame.rdoq_level,
+                b.lambda,
+                frame.sharpness,
+                rates,
+                do_rdoq,
+                b.bd,
+                b.qt_u.qm_level,
+                Some(&rd(0)),
+            );
+            let v_out = tx_unit_hbd(
+                &b.v_src10,
+                cw,
+                0,
+                &v_pred,
+                cw,
+                0,
+                cw,
+                chh,
+                tt,
+                1,
+                cr_tsc,
+                cr_dsc,
+                &b.qt_v,
+                frame.rdoq_level,
+                b.lambda,
+                frame.sharpness,
+                rates,
+                do_rdoq,
+                b.bd,
+                b.qt_v.qm_level,
+                Some(&rd(0)),
+            );
+            (u_out, v_out)
         };
-        let u_out = tx_unit_hbd(
-            &b.u_src10, cw, 0, &u_pred, cw, 0, cw, chh, tt, 1, cb_tsc, cb_dsc, &b.qt_u,
-            frame.rdoq_level, b.lambda, frame.sharpness, rates, do_rdoq, b.bd,
-            b.qt_u.qm_level, Some(&rd(0)),
-        );
-        let v_out = tx_unit_hbd(
-            &b.v_src10, cw, 0, &v_pred, cw, 0, cw, chh, tt, 1, cr_tsc, cr_dsc, &b.qt_v,
-            frame.rdoq_level, b.lambda, frame.sharpness, rates, do_rdoq, b.bd,
-            b.qt_v.qm_level, Some(&rd(0)),
-        );
-        (u_out, v_out)
-    };
     // The IntraBC twin of `chroma_eval10`: an IBC candidate's chroma is the DV
     // copy / half-pel bilinear from the chroma recon (NOT an intra uv mode), so
     // the bd10 arm cannot reuse `chroma_eval10` -- that would score the
@@ -4171,12 +4336,28 @@ pub(crate) fn evaluate_leaf(
         let mut v_pred = vec![0u16; cw * chh];
         let frame_ch = frame.frame_h_px / 2;
         crate::intrabc_pred::predict_intrabc_chroma(
-            fx.u_recon10.as_deref().unwrap(), fx.c_stride, ccx, ccy, cw, chh,
-            fx.c_stride, frame_ch, dv, &mut u_pred,
+            fx.u_recon10.as_deref().unwrap(),
+            fx.c_stride,
+            ccx,
+            ccy,
+            cw,
+            chh,
+            fx.c_stride,
+            frame_ch,
+            dv,
+            &mut u_pred,
         );
         crate::intrabc_pred::predict_intrabc_chroma(
-            fx.v_recon10.as_deref().unwrap(), fx.c_stride, ccx, ccy, cw, chh,
-            fx.c_stride, frame_ch, dv, &mut v_pred,
+            fx.v_recon10.as_deref().unwrap(),
+            fx.c_stride,
+            ccx,
+            ccy,
+            cw,
+            chh,
+            fx.c_stride,
+            frame_ch,
+            dv,
+            &mut v_pred,
         );
         let rd = |plane_dir: usize| TxRdArgs {
             spatial_dist: true,
@@ -4186,14 +4367,50 @@ pub(crate) fn evaluate_leaf(
             crop: uv_crop,
         };
         let u_out = tx_unit_hbd(
-            &b.u_src10, cw, 0, &u_pred, cw, 0, cw, chh, tt, 1, cb_tsc, cb_dsc, &b.qt_u,
-            frame.rdoq_level, b.lambda, frame.sharpness, rates, do_rdoq, b.bd,
-            b.qt_u.qm_level, Some(&rd(0)),
+            &b.u_src10,
+            cw,
+            0,
+            &u_pred,
+            cw,
+            0,
+            cw,
+            chh,
+            tt,
+            1,
+            cb_tsc,
+            cb_dsc,
+            &b.qt_u,
+            frame.rdoq_level,
+            b.lambda,
+            frame.sharpness,
+            rates,
+            do_rdoq,
+            b.bd,
+            b.qt_u.qm_level,
+            Some(&rd(0)),
         );
         let v_out = tx_unit_hbd(
-            &b.v_src10, cw, 0, &v_pred, cw, 0, cw, chh, tt, 1, cr_tsc, cr_dsc, &b.qt_v,
-            frame.rdoq_level, b.lambda, frame.sharpness, rates, do_rdoq, b.bd,
-            b.qt_v.qm_level, Some(&rd(0)),
+            &b.v_src10,
+            cw,
+            0,
+            &v_pred,
+            cw,
+            0,
+            cw,
+            chh,
+            tt,
+            1,
+            cr_tsc,
+            cr_dsc,
+            &b.qt_v,
+            frame.rdoq_level,
+            b.lambda,
+            frame.sharpness,
+            rates,
+            do_rdoq,
+            b.bd,
+            b.qt_v.qm_level,
+            Some(&rd(0)),
         );
         (u_out, v_out)
     };
@@ -4282,8 +4499,7 @@ pub(crate) fn evaluate_leaf(
 
     // No-palette flag pricing for this leaf (C svt_aom_allow_palette on the
     // LUMA bsize; both dims <= 64 and not 4x4/4x8/8x4).
-    let allow_pal =
-        svtav1_entropy::context::allow_palette(cfg.allow_sct, w, h);
+    let allow_pal = svtav1_entropy::context::allow_palette(cfg.allow_sct, w, h);
     // C svt_aom_get_palette_mode_ctx (rd_cost.c:583): neighbor palette-mode
     // ctx (above+left count of palette-coded neighbours, 0..=2), read from
     // the MD decision grid (stamped by commit_leaf in coding order). 0 until
@@ -4297,8 +4513,16 @@ pub(crate) fn evaluate_leaf(
     };
     // Regular (y-palette-off) candidates price the [0] row; the palette
     // candidate prices the [1] row (use_palette_y=1) via pal_uv_no_y1 below.
-    let pal_uv_no = if allow_pal { rates.palette_uv_no[0] as u64 } else { 0 };
-    let pal_uv_no_y1 = if allow_pal { rates.palette_uv_no[1] as u64 } else { 0 };
+    let pal_uv_no = if allow_pal {
+        rates.palette_uv_no[0] as u64
+    } else {
+        0
+    };
+    let pal_uv_no_y1 = if allow_pal {
+        rates.palette_uv_no[1] as u64
+    } else {
+        0
+    };
 
     let mut ind_uv: Option<[(u8, i8); 13]> = None;
     // C: at ind_uv_last_mds == 0 (the M0/M1 chroma config) the independent
@@ -4361,24 +4585,70 @@ pub(crate) fn evaluate_leaf(
             let fast_dist = match bd10_rd.as_ref() {
                 Some(b) => {
                     predict_unit_hbd(
-                        fx.u_recon10.as_deref().unwrap(), fx.c_stride, ccx, ccy, cw, chh, uvm,
-                        uvd, FI_NONE, &uv_geom, cfg.edge_filter, filt_type_uv, &mut u_pred10, b.bd,
+                        fx.u_recon10.as_deref().unwrap(),
+                        fx.c_stride,
+                        ccx,
+                        ccy,
+                        cw,
+                        chh,
+                        uvm,
+                        uvd,
+                        FI_NONE,
+                        &uv_geom,
+                        cfg.edge_filter,
+                        filt_type_uv,
+                        &mut u_pred10,
+                        b.bd,
                     );
                     predict_unit_hbd(
-                        fx.v_recon10.as_deref().unwrap(), fx.c_stride, ccx, ccy, cw, chh, uvm,
-                        uvd, FI_NONE, &uv_geom, cfg.edge_filter, filt_type_uv, &mut v_pred10, b.bd,
+                        fx.v_recon10.as_deref().unwrap(),
+                        fx.c_stride,
+                        ccx,
+                        ccy,
+                        cw,
+                        chh,
+                        uvm,
+                        uvd,
+                        FI_NONE,
+                        &uv_geom,
+                        cfg.edge_filter,
+                        filt_type_uv,
+                        &mut v_pred10,
+                        b.bd,
                     );
                     residual_sad_hbd(&b.u_src10, cw, 0, 0, &u_pred10, cw, chh)
                         + residual_sad_hbd(&b.v_src10, cw, 0, 0, &v_pred10, cw, chh)
                 }
                 None => {
                     predict_unit(
-                        fx.u_recon, fx.c_stride, ccx, ccy, cw, chh, uvm, uvd, FI_NONE, &uv_geom,
-                        cfg.edge_filter, filt_type_uv, &mut u_pred,
+                        fx.u_recon,
+                        fx.c_stride,
+                        ccx,
+                        ccy,
+                        cw,
+                        chh,
+                        uvm,
+                        uvd,
+                        FI_NONE,
+                        &uv_geom,
+                        cfg.edge_filter,
+                        filt_type_uv,
+                        &mut u_pred,
                     );
                     predict_unit(
-                        fx.v_recon, fx.c_stride, ccx, ccy, cw, chh, uvm, uvd, FI_NONE, &uv_geom,
-                        cfg.edge_filter, filt_type_uv, &mut v_pred,
+                        fx.v_recon,
+                        fx.c_stride,
+                        ccx,
+                        ccy,
+                        cw,
+                        chh,
+                        uvm,
+                        uvd,
+                        FI_NONE,
+                        &uv_geom,
+                        cfg.edge_filter,
+                        filt_type_uv,
+                        &mut v_pred,
                     );
                     residual_sad(fx.u_src, fx.c_stride, ccx, ccy, &u_pred, cw, chh)
                         + residual_sad(fx.v_src, fx.c_stride, ccx, ccy, &v_pred, cw, chh)
@@ -4446,18 +4716,22 @@ pub(crate) fn evaluate_leaf(
             let (bits, dist) = match bd10_rd.as_ref() {
                 Some(b) => {
                     let (u_out, v_out) = chroma_eval10(fx, b, uvm, uvd);
-                    (u_out.bits as u64 + v_out.bits as u64, u_out.dist + v_out.dist)
+                    (
+                        u_out.bits as u64 + v_out.bits as u64,
+                        u_out.dist + v_out.dist,
+                    )
                 }
                 None => {
                     let (u_out, v_out) = chroma_eval(fx, uvm, uvd);
-                    (u_out.bits as u64 + v_out.bits as u64, u_out.dist + v_out.dist)
+                    (
+                        u_out.bits as u64 + v_out.bits as u64,
+                        u_out.dist + v_out.dist,
+                    )
                 }
             };
             uv_rd.push((uvm, uvd, bits, dist));
             #[cfg(feature = "std")]
-            if crate::dbgenv::nsqdbg()
-                && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
-            {
+            if crate::dbgenv::nsqdbg() && crate::depth_refine::nsqdbg_here(abs_x, abs_y) {
                 eprintln!(
                     "NSQDBG UVRD mi=({},{}) {}x{} uv={uvm} uvd={uvd} bits={bits} dist={dist}",
                     abs_y / 4,
@@ -4499,7 +4773,14 @@ pub(crate) fn evaluate_leaf(
     #[cfg(feature = "std")]
     if crate::dbgenv::nsqdbg() && crate::depth_refine::nsqdbg_here(abs_x, abs_y) {
         if let Some(t) = &ind_uv {
-            eprintln!("NSQDBG UVTAB mi=({},{}) {}x{} t={:?}", abs_y / 4, abs_x / 4, w, h, t);
+            eprintln!(
+                "NSQDBG UVTAB mi=({},{}) {}x{} t={:?}",
+                abs_y / 4,
+                abs_x / 4,
+                w,
+                h,
+                t
+            );
         }
     }
     let fi_elig = cfg.filter_intra && fi_allowed_bsize;
@@ -4578,10 +4859,7 @@ pub(crate) fn evaluate_leaf(
         // applies the table.
         let (uv, uv_delta) = match &ind_uv {
             Some(tbl) if !cfg.ind_uv_last_mds1 => tbl[map_mode as usize],
-            _ => (
-                uv_from_y(map_mode),
-                if fi != FI_NONE { 0 } else { delta },
-            ),
+            _ => (uv_from_y(map_mode), if fi != FI_NONE { 0 } else { delta }),
         };
         let mut pred = vec![0u8; w * h];
         predict_unit(
@@ -4676,8 +4954,20 @@ pub(crate) fn evaluate_leaf(
             Some(canvas10) => {
                 pred10 = vec![0u16; w * h];
                 predict_unit_hbd(
-                    canvas10, y_stride, abs_x, abs_y, w, h, mode, delta, fi, &y_geom,
-                    cfg.edge_filter, filt_type_y, &mut pred10, frame.bit_depth,
+                    canvas10,
+                    y_stride,
+                    abs_x,
+                    abs_y,
+                    w,
+                    h,
+                    mode,
+                    delta,
+                    fi,
+                    &y_geom,
+                    cfg.edge_filter,
+                    filt_type_y,
+                    &mut pred10,
+                    frame.bit_depth,
                 );
                 let satd10 = hadamard_satd_hbd(&blk_y_src10, w, 0, &pred10, w, h);
                 #[cfg(feature = "std")]
@@ -4694,9 +4984,7 @@ pub(crate) fn evaluate_leaf(
             ),
         };
         #[cfg(feature = "std")]
-        if crate::dbgenv::canddbg()
-            && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
-        {
+        if crate::dbgenv::canddbg() && crate::depth_refine::nsqdbg_here(abs_x, abs_y) {
             eprintln!(
                 "NSQDBG PFAST mi=({},{}) {}x{} mode={} fi={} delta={} uv={} uvd={} flr={} fcr={} satd={} satd10={} pred10_0={} fast={}",
                 abs_y / 4,
@@ -4926,8 +5214,12 @@ pub(crate) fn evaluate_leaf(
             // bit-identical to the former empty-cache all-colours cost.
             let mut pal_found = alloc::vec![false; pal_cache.len()];
             let mut pal_out = alloc::vec![0u16; pc.colors.len()];
-            let n_out =
-                crate::palette::index_color_cache(&pal_cache, &pc.colors, &mut pal_found, &mut pal_out);
+            let n_out = crate::palette::index_color_cache(
+                &pal_cache,
+                &pc.colors,
+                &mut pal_found,
+                &mut pal_out,
+            );
             // C passes `scs->static_config.encoder_bit_depth` here
             // (`svt_av1_palette_color_cost_y`, rd_cost.c:600) — the same width
             // the WRITER uses (entropy_coding.c:4369). A hardcoded 8 would
@@ -4974,16 +5266,28 @@ pub(crate) fn evaluate_leaf(
             };
             let flr = r_mode + r_fi + r_yes + r_size + r_uniform + r_colors + map_bits + r_ibc_no;
             #[cfg(feature = "std")]
-            if crate::dbgenv::palbrk()
-                && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
-            {
+            if crate::dbgenv::palbrk() && crate::depth_refine::nsqdbg_here(abs_x, abs_y) {
                 eprintln!(
                     "NSQDBG PALBRK mi=({},{}) n={} mode={} fi={} yes={} size={} uniform={} colors={} map={} (63tok? map/512={})",
-                    abs_y / 4, abs_x / 4, n, r_mode, r_fi, r_yes, r_size, r_uniform, r_colors, map_bits, map_bits / 512,
+                    abs_y / 4,
+                    abs_x / 4,
+                    n,
+                    r_mode,
+                    r_fi,
+                    r_yes,
+                    r_size,
+                    r_uniform,
+                    r_colors,
+                    map_bits,
+                    map_bits / 512,
                 );
                 eprintln!(
                     "NSQDBG PALDATA mi=({},{}) n={} colors={:?} idxmap={:?}",
-                    abs_y / 4, abs_x / 4, n, pc.colors, pc.idx_map,
+                    abs_y / 4,
+                    abs_x / 4,
+                    n,
+                    pc.colors,
+                    pc.idx_map,
                 );
             }
             // Chroma: DC (palette-uv unsupported) with the y-palette-ON uv
@@ -5016,12 +5320,18 @@ pub(crate) fn evaluate_leaf(
                 if frame.mds0_ssd { satd } else { satd << 4 },
             );
             #[cfg(feature = "std")]
-            if crate::dbgenv::canddbg()
-                && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
-            {
+            if crate::dbgenv::canddbg() && crate::depth_refine::nsqdbg_here(abs_x, abs_y) {
                 eprintln!(
                     "NSQDBG PFAST mi=({},{}) {}x{} PAL n={} flr={} fcr={} satd={} fast={}",
-                    abs_y / 4, abs_x / 4, w, h, n, flr, fcr, satd, fast_cost,
+                    abs_y / 4,
+                    abs_x / 4,
+                    w,
+                    h,
+                    n,
+                    flr,
+                    fcr,
+                    satd,
+                    fast_cost,
                 );
             }
             cands.push(Cand {
@@ -5140,16 +5450,15 @@ pub(crate) fn evaluate_leaf(
                 // dv_ref = nearest/near coercion + find_ref_dv fallback
                 // (mode_decision.c:3019-3033); C stamps it back onto
                 // ref_mv_stack[INTRA_FRAME][0].this_mv = cand->pred_mv[0].
-                let dv_ref = crate::intrabc_mvp::compose_dv_ref(
-                    &stack,
-                    ibc.tile,
-                    ibc.sb_mi_size,
-                    mi_row,
-                );
+                let dv_ref =
+                    crate::intrabc_mvp::compose_dv_ref(&stack, ibc.tile, ibc.sb_mi_size, mi_row);
                 // Per-block hash query (square + size-gated), the bucket
                 // fetched once and offered to both directions.
-                let hash_eligible =
-                    crate::intrabc::hash_search_eligible(w as i32, h as i32, ibc.ctrls.max_block_size_hash);
+                let hash_eligible = crate::intrabc::hash_search_eligible(
+                    w as i32,
+                    h as i32,
+                    ibc.ctrls.max_block_size_hash,
+                );
                 let (bucket_entries, hv2) = if hash_eligible {
                     let mut bufs = crate::intrabc_hash::BlockHashBuffers::default();
                     let (hv1, hv2) = crate::intrabc_hash::get_block_hash_value(
@@ -5208,13 +5517,19 @@ pub(crate) fn evaluate_leaf(
                 // and the port does not" verdict cannot distinguish "the
                 // search found no DV" from "it found one and the RD lost".
                 #[cfg(feature = "std")]
-                if crate::dbgenv::ibcdbg()
-                    && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
-                {
+                if crate::dbgenv::ibcdbg() && crate::depth_refine::nsqdbg_here(abs_x, abs_y) {
                     eprintln!(
                         "NSQDBG IBCSEARCH mi=({},{}) {}x{} hash_elig={} bucket={} dv_ref=({},{}) ndv={} dvs={:?}",
-                        abs_y / 4, abs_x / 4, w, h, hash_eligible,
-                        bucket_entries.len(), dv_ref.y, dv_ref.x, dvs.len(), dvs,
+                        abs_y / 4,
+                        abs_x / 4,
+                        w,
+                        h,
+                        hash_eligible,
+                        bucket_entries.len(),
+                        dv_ref.y,
+                        dv_ref.x,
+                        dvs.len(),
+                        dvs,
                     );
                 }
                 for dv in dvs {
@@ -5233,7 +5548,13 @@ pub(crate) fn evaluate_leaf(
                         pred10 = vec![0u16; w * h];
                         crate::intrabc_pred::predict_intrabc_luma(
                             fx.y_recon10.as_deref().unwrap(),
-                            y_stride, abs_x, abs_y, w, h, dv, &mut pred10,
+                            y_stride,
+                            abs_x,
+                            abs_y,
+                            w,
+                            h,
+                            dv,
+                            &mut pred10,
                         );
                     }
                     let satd = if bd10_funnel {
@@ -5462,37 +5783,36 @@ pub(crate) fn evaluate_leaf(
     // previous union `sort_by_key(fast_cost)` matched C on all DISTINCT
     // costs but flipped cross-class tie/order corners (winner-scan ties,
     // uv_list order, mds1-best identity) — the screen multi-lane pins.
-    let (order, seg): (Vec<usize>, Option<(usize, usize, usize)>) = if has_palette_lane
-        || has_ibc_lane
-    {
-        let cap = (ncand as u32).min(nic1).max(1) as usize + 1;
-        let lane0: Vec<usize> = (0..ncand)
-            .filter(|&i| cands[i].palette.is_none() && cands[i].ibc.is_none())
-            .collect();
-        let lane3: Vec<usize> = (0..ncand).filter(|&i| cands[i].palette.is_some()).collect();
-        let lane4: Vec<usize> = (0..ncand).filter(|&i| cands[i].ibc.is_some()).collect();
-        // Per-class MDS0 replacement pool -> sort -> per-class dev-prune.
-        let s0 = sort_lane(lane_pool(&lane0, &cands, cap), &cands);
-        let s3 = sort_lane(lane_pool(&lane3, &cands, cap), &cands);
-        let s4 = sort_lane(lane_pool(&lane4, &cands, cap), &cands);
-        let k0 = dev_prune(&s0, &cands);
-        let k3 = dev_prune(&s3, &cands);
-        let k4 = dev_prune(&s4, &cands);
-        // MDS1 evaluates the per-class survivors, class-concatenated in
-        // class order (C0, C3, C4) — NOT cost-merged.
-        let mut u: Vec<usize> = s0[..k0].to_vec();
-        u.extend_from_slice(&s3[..k3]);
-        u.extend_from_slice(&s4[..k4]);
-        (u, Some((k0, k3, k4)))
-    } else {
-        // Single-class fast path (no palette candidates) — byte-identical
-        // to the prior single-pool behaviour: pool -> sort -> dev-prune.
-        let cap = (ncand as u32).min(nic1) as usize + 1;
-        let all: Vec<usize> = (0..ncand).collect();
-        let s = sort_lane(lane_pool(&all, &cands, cap), &cands);
-        let k = dev_prune(&s, &cands);
-        (s[..k].to_vec(), None)
-    };
+    let (order, seg): (Vec<usize>, Option<(usize, usize, usize)>) =
+        if has_palette_lane || has_ibc_lane {
+            let cap = (ncand as u32).min(nic1).max(1) as usize + 1;
+            let lane0: Vec<usize> = (0..ncand)
+                .filter(|&i| cands[i].palette.is_none() && cands[i].ibc.is_none())
+                .collect();
+            let lane3: Vec<usize> = (0..ncand).filter(|&i| cands[i].palette.is_some()).collect();
+            let lane4: Vec<usize> = (0..ncand).filter(|&i| cands[i].ibc.is_some()).collect();
+            // Per-class MDS0 replacement pool -> sort -> per-class dev-prune.
+            let s0 = sort_lane(lane_pool(&lane0, &cands, cap), &cands);
+            let s3 = sort_lane(lane_pool(&lane3, &cands, cap), &cands);
+            let s4 = sort_lane(lane_pool(&lane4, &cands, cap), &cands);
+            let k0 = dev_prune(&s0, &cands);
+            let k3 = dev_prune(&s3, &cands);
+            let k4 = dev_prune(&s4, &cands);
+            // MDS1 evaluates the per-class survivors, class-concatenated in
+            // class order (C0, C3, C4) — NOT cost-merged.
+            let mut u: Vec<usize> = s0[..k0].to_vec();
+            u.extend_from_slice(&s3[..k3]);
+            u.extend_from_slice(&s4[..k4]);
+            (u, Some((k0, k3, k4)))
+        } else {
+            // Single-class fast path (no palette candidates) — byte-identical
+            // to the prior single-pool behaviour: pool -> sort -> dev-prune.
+            let cap = (ncand as u32).min(nic1) as usize + 1;
+            let all: Vec<usize> = (0..ncand).collect();
+            let s = sort_lane(lane_pool(&all, &cands, cap), &cands);
+            let k = dev_prune(&s, &cands);
+            (s[..k].to_vec(), None)
+        };
     // C mds0_best (:9518-9524): strict `<` over the per-class sorted heads
     // in class order (the head survives every dev-prune, count >= 1). On
     // the single-class path this is order[0]; on the multi-lane concat it
@@ -5614,7 +5934,12 @@ pub(crate) fn evaluate_leaf(
             )
         });
         let (dec_eob, dec_bits, dec_dist, dec_lambda) = match &out10 {
-            Some(o) => (o.eob, o.bits as u64, o.dist, bd10_rd.as_ref().unwrap().lambda),
+            Some(o) => (
+                o.eob,
+                o.bits as u64,
+                o.dist,
+                bd10_rd.as_ref().unwrap().lambda,
+            ),
             None => (out.eob, out.bits as u64, out.dist, lambda),
         };
         let has = dec_eob > 0;
@@ -5660,9 +5985,7 @@ pub(crate) fn evaluate_leaf(
         cand.mds1_has_coeff = has;
         cand.full_cost = rdcost(dec_lambda, cand.flr + cand.fcr + coeff_rate, dec_dist);
         #[cfg(feature = "std")]
-        if crate::dbgenv::canddbg()
-            && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
-        {
+        if crate::dbgenv::canddbg() && crate::depth_refine::nsqdbg_here(abs_x, abs_y) {
             eprintln!(
                 "NSQDBG PMDS1 mi=({},{}) {}x{} mode={} fi={} delta={} uv={} coeff_rate={} dist={} full={}",
                 abs_y / 4,
@@ -5971,7 +6294,6 @@ pub(crate) fn evaluate_leaf(
     let tsz_cat = tx_size_cat(w, h);
     let tsz_ctx = fx.ectx.tx_size_ctx(abs_x, abs_y, w, h);
 
-
     // -- Independent chroma search before MDS3 (chroma_level 4:
     //    `search_best_mds3_uv_mode`, product_coding_loop.c:7561, invoked
     //    per :10098-10105 when `perform_ind_uv_search_last_mds` — at
@@ -6013,11 +6335,17 @@ pub(crate) fn evaluate_leaf(
             let (bits, dist) = match bd10_rd.as_ref() {
                 Some(b) => {
                     let (u_out, v_out) = chroma_eval10(fx, b, uvm, uvd);
-                    (u_out.bits as u64 + v_out.bits as u64, u_out.dist + v_out.dist)
+                    (
+                        u_out.bits as u64 + v_out.bits as u64,
+                        u_out.dist + v_out.dist,
+                    )
                 }
                 None => {
                     let (u_out, v_out) = chroma_eval(fx, uvm, uvd);
-                    (u_out.bits as u64 + v_out.bits as u64, u_out.dist + v_out.dist)
+                    (
+                        u_out.bits as u64 + v_out.bits as u64,
+                        u_out.dist + v_out.dist,
+                    )
                 }
             };
             uv_rd.push((bits, dist));
@@ -6055,9 +6383,7 @@ pub(crate) fn evaluate_leaf(
                 let (bits, dist) = uv_rd[k];
                 let cost = rdcost(uv_lambda, bits + fcr2, dist);
                 #[cfg(feature = "std")]
-                if crate::dbgenv::canddbg()
-                    && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
-                {
+                if crate::dbgenv::canddbg() && crate::depth_refine::nsqdbg_here(abs_x, abs_y) {
                     eprintln!(
                         "NSQDBG UVTAB2 mi=({},{}) luma={luma} uv={uvm} uvd={uvd} bits={bits} dist={dist} fcr={fcr2} cost={cost}",
                         abs_y / 4,
@@ -6093,44 +6419,48 @@ pub(crate) fn evaluate_leaf(
             // C update_intra_chroma_mode skips inter-classified candidates
             // (:7077 `!is_inter` gate) — an IntraBC cand keeps UV_DC.
             if (cfg.ind_uv_last_mds1 || cfg.ind_uv_mds3) && cands[ci].ibc.is_none() {
-            // The rewrite keys on the CODED luma mode (`cand->block_mi.mode`
-            // in update_intra_chroma_mode — DC for FILTER candidates), NOT
-            // the fi-mapped direction. A/B-verified (g64 p0): mapping the
-            // key broke q40.
-            let (uvm, uvd) = tbl[cands[ci].mode as usize];
-            let c = &mut cands[ci];
-            c.uv = uvm;
-            c.uv_delta = uvd;
-            let mut fcr = rates.uv[cfl_allowed][c.mode as usize][uvm as usize] as u64;
-            if use_angle && matches!(uvm, 1..=8) {
-                fcr += rates.angle[uvm as usize - 1][(3 + uvd) as usize] as u64;
-            }
-            if uvm == 0 {
-                // rd_cost.c:515-521 — the UV_DC palette-flag row is keyed on
-                // `use_palette_y = cand->palette_info && palette_size[0] > 0`
-                // read off the REAL candidate, and C's recompute here is
-                // `svt_aom_get_intra_uv_fast_rate(pcs, ctx, cand_bf, 1)` on
-                // that same candidate (update_intra_chroma_mode,
-                // product_coding_loop.c:7095). So a LUMA-PALETTE candidate
-                // pays the [1] row, not the [0] row every regular candidate
-                // pays — the same distinction the injection site (:4596)
-                // already makes. C's rewrite is conditional (only when the uv
-                // pair actually changed, :7084); when it does NOT fire the
-                // candidate keeps the fast_chroma_rate injection gave it,
-                // which for a palette candidate is ALSO the [1] row — so the
-                // port's unconditional recompute is C-identical only if it
-                // uses the same row. Charging [0] here undid :4596 for every
-                // ind_uv_last_mds preset (M1..M5), under-costing a palette
-                // candidate's chroma flag and biasing the palette-vs-regular
-                // RD tie toward palette (#71 over-picking). MEASURED
-                // 2026-08-04: flips `screen 64 64 63 1` (C 64B, port 71->64B)
-                // and `screen 128 128 63 1` (C 185B, port 193->185B) to byte
-                // MATCH — both KNOWN_DIFF pins of tools/identity_full_8bit.sh,
-                // promoted in this commit — and moves NO other cell of the
-                // 976-cell synthetic+dims scoreboard.
-                fcr += if c.palette.is_some() { pal_uv_no_y1 } else { pal_uv_no };
-            }
-            c.fcr = fcr;
+                // The rewrite keys on the CODED luma mode (`cand->block_mi.mode`
+                // in update_intra_chroma_mode — DC for FILTER candidates), NOT
+                // the fi-mapped direction. A/B-verified (g64 p0): mapping the
+                // key broke q40.
+                let (uvm, uvd) = tbl[cands[ci].mode as usize];
+                let c = &mut cands[ci];
+                c.uv = uvm;
+                c.uv_delta = uvd;
+                let mut fcr = rates.uv[cfl_allowed][c.mode as usize][uvm as usize] as u64;
+                if use_angle && matches!(uvm, 1..=8) {
+                    fcr += rates.angle[uvm as usize - 1][(3 + uvd) as usize] as u64;
+                }
+                if uvm == 0 {
+                    // rd_cost.c:515-521 — the UV_DC palette-flag row is keyed on
+                    // `use_palette_y = cand->palette_info && palette_size[0] > 0`
+                    // read off the REAL candidate, and C's recompute here is
+                    // `svt_aom_get_intra_uv_fast_rate(pcs, ctx, cand_bf, 1)` on
+                    // that same candidate (update_intra_chroma_mode,
+                    // product_coding_loop.c:7095). So a LUMA-PALETTE candidate
+                    // pays the [1] row, not the [0] row every regular candidate
+                    // pays — the same distinction the injection site (:4596)
+                    // already makes. C's rewrite is conditional (only when the uv
+                    // pair actually changed, :7084); when it does NOT fire the
+                    // candidate keeps the fast_chroma_rate injection gave it,
+                    // which for a palette candidate is ALSO the [1] row — so the
+                    // port's unconditional recompute is C-identical only if it
+                    // uses the same row. Charging [0] here undid :4596 for every
+                    // ind_uv_last_mds preset (M1..M5), under-costing a palette
+                    // candidate's chroma flag and biasing the palette-vs-regular
+                    // RD tie toward palette (#71 over-picking). MEASURED
+                    // 2026-08-04: flips `screen 64 64 63 1` (C 64B, port 71->64B)
+                    // and `screen 128 128 63 1` (C 185B, port 193->185B) to byte
+                    // MATCH — both KNOWN_DIFF pins of tools/identity_full_8bit.sh,
+                    // promoted in this commit — and moves NO other cell of the
+                    // 976-cell synthetic+dims scoreboard.
+                    fcr += if c.palette.is_some() {
+                        pal_uv_no_y1
+                    } else {
+                        pal_uv_no
+                    };
+                }
+                c.fcr = fcr;
             }
         }
         // ---- Luma: TX depth loop ----
@@ -6188,7 +6518,11 @@ pub(crate) fn evaluate_leaf(
         // all_zero / tx_type over the 16-type inter set (`CDF nsyms=16`) /
         // `eob_pt_64` (`CDF nsyms=7`). Widen the caps against THAT stream.
         let cand_end_depth = if cands[ci].ibc.is_some() {
-            if txs_active { end_tx_depth_inter(w, h, &cfg) } else { 0 }
+            if txs_active {
+                end_tx_depth_inter(w, h, &cfg)
+            } else {
+                0
+            }
         } else {
             end_depth
         };
@@ -6635,8 +6969,7 @@ pub(crate) fn evaluate_leaf(
             // distortion without re-deriving any of them.
             #[cfg(feature = "std")]
             {
-                static XY: std::sync::OnceLock<Option<(usize, usize)>> =
-                    std::sync::OnceLock::new();
+                static XY: std::sync::OnceLock<Option<(usize, usize)>> = std::sync::OnceLock::new();
                 if dbg_xy(&XY, "SVTAV1_TXDEPTH_XY") == Some((abs_x, abs_y)) {
                     eprintln!(
                         "PTXDEPTH org=({abs_x},{abs_y}) {w}x{h} d={depth} ibc={} mode={} ycb={dep_bits} txsz={tx_size_bits} dist={dep_dist} cost={cost} best={best_cost}",
@@ -6689,11 +7022,27 @@ pub(crate) fn evaluate_leaf(
             let mut v_pred = vec![0u8; cw * chh];
             let frame_ch = frame.frame_h_px / 2;
             crate::intrabc_pred::predict_intrabc_chroma(
-                fx.u_recon, fx.c_stride, ccx, ccy, cw, chh, fx.c_stride, frame_ch, dv,
+                fx.u_recon,
+                fx.c_stride,
+                ccx,
+                ccy,
+                cw,
+                chh,
+                fx.c_stride,
+                frame_ch,
+                dv,
                 &mut u_pred,
             );
             crate::intrabc_pred::predict_intrabc_chroma(
-                fx.v_recon, fx.c_stride, ccx, ccy, cw, chh, fx.c_stride, frame_ch, dv,
+                fx.v_recon,
+                fx.c_stride,
+                ccx,
+                ccy,
+                cw,
+                chh,
+                fx.c_stride,
+                frame_ch,
+                dv,
                 &mut v_pred,
             );
             let luma_tt = best_txb_type.first().copied().unwrap_or(0) as usize;
@@ -6705,14 +7054,48 @@ pub(crate) fn evaluate_leaf(
                 cc::DCT_DCT
             };
             let u_out = tx_unit(
-                fx.u_src, fx.c_stride, ccy * fx.c_stride + ccx, &u_pred, cw, 0, cw, chh, tt,
-                1, cb_tsc, cb_dsc, 0, &qt_u, frame, rates, do_rdoq, true, uv_crop,
+                fx.u_src,
+                fx.c_stride,
+                ccy * fx.c_stride + ccx,
+                &u_pred,
+                cw,
+                0,
+                cw,
+                chh,
+                tt,
+                1,
+                cb_tsc,
+                cb_dsc,
+                0,
+                &qt_u,
+                frame,
+                rates,
+                do_rdoq,
+                true,
+                uv_crop,
                 true,
                 RateMode::Exact,
             );
             let v_out = tx_unit(
-                fx.v_src, fx.c_stride, ccy * fx.c_stride + ccx, &v_pred, cw, 0, cw, chh, tt,
-                1, cr_tsc, cr_dsc, 0, &qt_v, frame, rates, do_rdoq, true, uv_crop,
+                fx.v_src,
+                fx.c_stride,
+                ccy * fx.c_stride + ccx,
+                &v_pred,
+                cw,
+                0,
+                cw,
+                chh,
+                tt,
+                1,
+                cr_tsc,
+                cr_dsc,
+                0,
+                &qt_v,
+                frame,
+                rates,
+                do_rdoq,
+                true,
+                uv_crop,
                 true,
                 RateMode::Exact,
             );
@@ -7069,8 +7452,7 @@ pub(crate) fn evaluate_leaf(
                 // the compare below because the chosen-alpha chroma TX needs
                 // them again once CfL wins.
                 let cfl10: Option<(Vec<i16>, Vec<u16>, Vec<u16>)> = bd10_rd.as_ref().map(|b| {
-                    let mut ac10 =
-                        vec![0i16; svtav1_dsp::intra_pred::CFL_BUF_LINE * chh.max(1)];
+                    let mut ac10 = vec![0i16; svtav1_dsp::intra_pred::CFL_BUF_LINE * chh.max(1)];
                     cfl_ac_subsample_hbd(
                         fx.y_recon10.as_deref().unwrap(),
                         y_stride,
@@ -7145,11 +7527,36 @@ pub(crate) fn evaluate_leaf(
                     };
                     let mut cfl_pred = vec![0u16; cw * chh];
                     svtav1_dsp::hbd::cfl_predict_hbd(
-                        ac10, dc, cw, &mut cfl_pred, cw, alpha_q3, b.bd, cw, chh,
+                        ac10,
+                        dc,
+                        cw,
+                        &mut cfl_pred,
+                        cw,
+                        alpha_q3,
+                        b.bd,
+                        cw,
+                        chh,
                     );
                     let o = tx_unit_hbd(
-                        src, cw, 0, &cfl_pred, cw, 0, cw, chh, 0, 1, tsc, dsc, qt,
-                        frame.rdoq_level, b.lambda, frame.sharpness, rates, do_rdoq, b.bd,
+                        src,
+                        cw,
+                        0,
+                        &cfl_pred,
+                        cw,
+                        0,
+                        cw,
+                        chh,
+                        0,
+                        1,
+                        tsc,
+                        dsc,
+                        qt,
+                        frame.rdoq_level,
+                        b.lambda,
+                        frame.sharpness,
+                        rates,
+                        do_rdoq,
+                        b.bd,
                         qt.qm_level,
                         Some(&TxRdArgs {
                             spatial_dist: false,
@@ -7194,24 +7601,38 @@ pub(crate) fn evaluate_leaf(
                                 b.bd,
                             );
                         }
-                        let freq10 = |src: &[u16],
-                                      pred: &[u16],
-                                      tsc: usize,
-                                      dsc: usize,
-                                      qt: &QuantTable| {
-                            tx_unit_hbd(
-                                src, cw, 0, pred, cw, 0, cw, chh, nc_tt, 1, tsc, dsc, qt,
-                                frame.rdoq_level, b.lambda, frame.sharpness, rates, do_rdoq,
-                                b.bd, qt.qm_level,
-                                Some(&TxRdArgs {
-                                    spatial_dist: false,
-                                    intra_dir: 0,
-                                    coeff_rate_est_lvl: cfg.coeff_rate_est_lvl,
-                                    tx_bias: frame.tx_bias,
-                                    crop: uv_crop,
-                                }),
-                            )
-                        };
+                        let freq10 =
+                            |src: &[u16], pred: &[u16], tsc: usize, dsc: usize, qt: &QuantTable| {
+                                tx_unit_hbd(
+                                    src,
+                                    cw,
+                                    0,
+                                    pred,
+                                    cw,
+                                    0,
+                                    cw,
+                                    chh,
+                                    nc_tt,
+                                    1,
+                                    tsc,
+                                    dsc,
+                                    qt,
+                                    frame.rdoq_level,
+                                    b.lambda,
+                                    frame.sharpness,
+                                    rates,
+                                    do_rdoq,
+                                    b.bd,
+                                    qt.qm_level,
+                                    Some(&TxRdArgs {
+                                        spatial_dist: false,
+                                        intra_dir: 0,
+                                        coeff_rate_est_lvl: cfg.coeff_rate_est_lvl,
+                                        tx_bias: frame.tx_bias,
+                                        crop: uv_crop,
+                                    }),
+                                )
+                            };
                         let u_nc10 = freq10(&b.u_src10, &u_p10, cb_tsc, cb_dsc, &b.qt_u);
                         let v_nc10 = freq10(&b.v_src10, &v_p10, cr_tsc, cr_dsc, &b.qt_v);
                         let nc10 =
@@ -7343,20 +7764,72 @@ pub(crate) fn evaluate_leaf(
                         let mut u_cfl10 = vec![0u16; cw * chh];
                         let mut v_cfl10 = vec![0u16; cw * chh];
                         svtav1_dsp::hbd::cfl_predict_hbd(
-                            ac10, u_dc10, cw, &mut u_cfl10, cw, alpha_cb, b.bd, cw, chh,
+                            ac10,
+                            u_dc10,
+                            cw,
+                            &mut u_cfl10,
+                            cw,
+                            alpha_cb,
+                            b.bd,
+                            cw,
+                            chh,
                         );
                         svtav1_dsp::hbd::cfl_predict_hbd(
-                            ac10, v_dc10, cw, &mut v_cfl10, cw, alpha_cr, b.bd, cw, chh,
+                            ac10,
+                            v_dc10,
+                            cw,
+                            &mut v_cfl10,
+                            cw,
+                            alpha_cr,
+                            b.bd,
+                            cw,
+                            chh,
                         );
                         let u10 = tx_unit_hbd(
-                            &b.u_src10, cw, 0, &u_cfl10, cw, 0, cw, chh, 0, 1, cb_tsc, cb_dsc,
-                            &b.qt_u, frame.rdoq_level, b.lambda, frame.sharpness, rates,
-                            do_rdoq, b.bd, b.qt_u.qm_level, Some(&rd10),
+                            &b.u_src10,
+                            cw,
+                            0,
+                            &u_cfl10,
+                            cw,
+                            0,
+                            cw,
+                            chh,
+                            0,
+                            1,
+                            cb_tsc,
+                            cb_dsc,
+                            &b.qt_u,
+                            frame.rdoq_level,
+                            b.lambda,
+                            frame.sharpness,
+                            rates,
+                            do_rdoq,
+                            b.bd,
+                            b.qt_u.qm_level,
+                            Some(&rd10),
                         );
                         let v10 = tx_unit_hbd(
-                            &b.v_src10, cw, 0, &v_cfl10, cw, 0, cw, chh, 0, 1, cr_tsc, cr_dsc,
-                            &b.qt_v, frame.rdoq_level, b.lambda, frame.sharpness, rates,
-                            do_rdoq, b.bd, b.qt_v.qm_level, Some(&rd10),
+                            &b.v_src10,
+                            cw,
+                            0,
+                            &v_cfl10,
+                            cw,
+                            0,
+                            cw,
+                            chh,
+                            0,
+                            1,
+                            cr_tsc,
+                            cr_dsc,
+                            &b.qt_v,
+                            frame.rdoq_level,
+                            b.lambda,
+                            frame.sharpness,
+                            rates,
+                            do_rdoq,
+                            b.bd,
+                            b.qt_v.qm_level,
+                            Some(&rd10),
                         );
                         uv_out10 = Some((u10, v10));
                     }
@@ -7403,8 +7876,7 @@ pub(crate) fn evaluate_leaf(
                     }
                     uv_mode_final = arb_uv;
                     uv_delta_final = arb_uvd;
-                    let mut f =
-                        rates.uv[cfl_allowed][cand.mode as usize][arb_uv as usize] as u64;
+                    let mut f = rates.uv[cfl_allowed][cand.mode as usize][arb_uv as usize] as u64;
                     if use_angle && matches!(arb_uv, 1..=8) {
                         f += rates.angle[arb_uv as usize - 1][(3 + arb_uvd) as usize] as u64;
                     }
@@ -7495,8 +7967,8 @@ pub(crate) fn evaluate_leaf(
                     let mut f =
                         rates.uv[cfl_allowed][cand.mode as usize][uv_mode_final as usize] as u64;
                     if use_angle && matches!(uv_mode_final, 1..=8) {
-                        f += rates.angle[uv_mode_final as usize - 1]
-                            [(3 + uv_delta_final) as usize] as u64;
+                        f += rates.angle[uv_mode_final as usize - 1][(3 + uv_delta_final) as usize]
+                            as u64;
                     }
                     if uv_mode_final == 0 {
                         f += pal_uv_no; // rd_cost.c:514 (inside uv fast rate)
@@ -7544,30 +8016,79 @@ pub(crate) fn evaluate_leaf(
                             let mut u_cfl = vec![0u8; cw * chh];
                             let mut v_cfl = vec![0u8; cw * chh];
                             svtav1_dsp::intra_pred::cfl_predict_lbd(
-                                &pred_buf_q3, &u_dc, cw, &mut u_cfl, cw, alpha_cb, cw, chh,
+                                &pred_buf_q3,
+                                &u_dc,
+                                cw,
+                                &mut u_cfl,
+                                cw,
+                                alpha_cb,
+                                cw,
+                                chh,
                             );
                             svtav1_dsp::intra_pred::cfl_predict_lbd(
-                                &pred_buf_q3, &v_dc, cw, &mut v_cfl, cw, alpha_cr, cw, chh,
+                                &pred_buf_q3,
+                                &v_dc,
+                                cw,
+                                &mut v_cfl,
+                                cw,
+                                alpha_cr,
+                                cw,
+                                chh,
                             );
                             let u_cfl_out = tx_unit(
-                                fx.u_src, fx.c_stride, c_off, &u_cfl, cw, 0, cw, chh, 0, 1,
-                                cb_tsc, cb_dsc, 0, &qt_u, frame, rates, do_rdoq, true, uv_crop,
+                                fx.u_src,
+                                fx.c_stride,
+                                c_off,
+                                &u_cfl,
+                                cw,
+                                0,
+                                cw,
+                                chh,
+                                0,
+                                1,
+                                cb_tsc,
+                                cb_dsc,
+                                0,
+                                &qt_u,
+                                frame,
+                                rates,
+                                do_rdoq,
+                                true,
+                                uv_crop,
                                 true,
                                 RateMode::Exact,
                             );
                             let v_cfl_out = tx_unit(
-                                fx.v_src, fx.c_stride, c_off, &v_cfl, cw, 0, cw, chh, 0, 1,
-                                cr_tsc, cr_dsc, 0, &qt_v, frame, rates, do_rdoq, true, uv_crop,
+                                fx.v_src,
+                                fx.c_stride,
+                                c_off,
+                                &v_cfl,
+                                cw,
+                                0,
+                                cw,
+                                chh,
+                                0,
+                                1,
+                                cr_tsc,
+                                cr_dsc,
+                                0,
+                                &qt_v,
+                                frame,
+                                rates,
+                                do_rdoq,
+                                true,
+                                uv_crop,
                                 true,
                                 RateMode::Exact,
                             );
-                            let cfl_fast_rate = rates.uv[cfl_allowed][cand.mode as usize]
-                                [UV_CFL_PRED_IDX]
-                                as u64
-                                + rates.cfl_alpha_fac_bits[cfl_signs as usize][0]
-                                    [(cfl_idx >> 4) as usize] as u64
-                                + rates.cfl_alpha_fac_bits[cfl_signs as usize][1]
-                                    [(cfl_idx & 15) as usize] as u64;
+                            let cfl_fast_rate =
+                                rates.uv[cfl_allowed][cand.mode as usize][UV_CFL_PRED_IDX] as u64
+                                    + rates.cfl_alpha_fac_bits[cfl_signs as usize][0]
+                                        [(cfl_idx >> 4) as usize]
+                                        as u64
+                                    + rates.cfl_alpha_fac_bits[cfl_signs as usize][1]
+                                        [(cfl_idx & 15) as usize]
+                                        as u64;
                             let cfl_uv_cost = rdcost(
                                 lambda,
                                 u_cfl_out.bits as u64 + v_cfl_out.bits as u64 + cfl_fast_rate,
@@ -7579,14 +8100,30 @@ pub(crate) fn evaluate_leaf(
                             {
                                 eprintln!(
                                     "NSQDBG CFLARB mi=({},{}) {}x{} m={} arb=({},{}) ncb={}+{}+{} ncd={}+{} nc={} cflrd={} idx={} sgn={} cb={}+{}+{} cd={}+{} cfl={} udc={} vdc={}",
-                                    abs_y / 4, abs_x / 4, w, h, cand.mode,
-                                    uv_mode_final, uv_delta_final,
-                                    u_out.bits, v_out.bits, fcr_ind,
-                                    u_out.dist, v_out.dist, best_uv_cost,
-                                    cfl_rd, cfl_idx, cfl_signs,
-                                    u_cfl_out.bits, v_cfl_out.bits, cfl_fast_rate,
-                                    u_cfl_out.dist, v_cfl_out.dist, cfl_uv_cost,
-                                    u_dc[0], v_dc[0]
+                                    abs_y / 4,
+                                    abs_x / 4,
+                                    w,
+                                    h,
+                                    cand.mode,
+                                    uv_mode_final,
+                                    uv_delta_final,
+                                    u_out.bits,
+                                    v_out.bits,
+                                    fcr_ind,
+                                    u_out.dist,
+                                    v_out.dist,
+                                    best_uv_cost,
+                                    cfl_rd,
+                                    cfl_idx,
+                                    cfl_signs,
+                                    u_cfl_out.bits,
+                                    v_cfl_out.bits,
+                                    cfl_fast_rate,
+                                    u_cfl_out.dist,
+                                    v_cfl_out.dist,
+                                    cfl_uv_cost,
+                                    u_dc[0],
+                                    v_dc[0]
                                 );
                             }
                             // C `check_best_indepedant_cfl` reverts to non-CfL
@@ -7610,15 +8147,13 @@ pub(crate) fn evaluate_leaf(
                             // four coeff/dist terms byte-match C (nc 6916533
                             // vs cfl 6916944) yet C codes CfL because its DC
                             // side carries +[1][0]-[0][0]; the port kept DC.
-                            let ind_pal_diff: i64 = if uv_mode_final == 0
-                                && allow_pal
-                                && cand.palette.is_some()
-                            {
-                                rdcost(lambda, pal_uv_no_y1, 0) as i64
-                                    - rdcost(lambda, pal_uv_no, 0) as i64
-                            } else {
-                                0
-                            };
+                            let ind_pal_diff: i64 =
+                                if uv_mode_final == 0 && allow_pal && cand.palette.is_some() {
+                                    rdcost(lambda, pal_uv_no_y1, 0) as i64
+                                        - rdcost(lambda, pal_uv_no, 0) as i64
+                                } else {
+                                    0
+                                };
                             let best_uv_adj =
                                 (best_uv_cost as i64).saturating_add(ind_pal_diff) as u64;
                             if !(best_uv_adj < cfl_uv_cost) {
@@ -7636,7 +8171,11 @@ pub(crate) fn evaluate_leaf(
                             {
                                 eprintln!(
                                     "NSQDBG CFLARB mi=({},{}) {}x{} m={} ALPHA-REJECT",
-                                    abs_y / 4, abs_x / 4, w, h, cand.mode
+                                    abs_y / 4,
+                                    abs_x / 4,
+                                    w,
+                                    h,
+                                    cand.mode
                                 );
                             }
                         }
@@ -7681,8 +8220,20 @@ pub(crate) fn evaluate_leaf(
                             (fx.v_recon10.as_deref().unwrap(), &mut v_dc10),
                         ] {
                             predict_unit_hbd(
-                                plane_recon, fx.c_stride, ccx, ccy, cw, chh, 0, 0, FI_NONE,
-                                &uv_geom, cfg.edge_filter, filt_type_uv, dst, b.bd,
+                                plane_recon,
+                                fx.c_stride,
+                                ccx,
+                                ccy,
+                                cw,
+                                chh,
+                                0,
+                                0,
+                                FI_NONE,
+                                &uv_geom,
+                                cfg.edge_filter,
+                                filt_type_uv,
+                                dst,
+                                b.bd,
                             );
                         }
                         // av1_cost_calc_cfl at hbd, TRANSFORM domain (is_full_
@@ -7695,12 +8246,37 @@ pub(crate) fn evaluate_leaf(
                             };
                             let mut cfl_pred = vec![0u16; cw * chh];
                             svtav1_dsp::hbd::cfl_predict_hbd(
-                                &ac10, dc, cw, &mut cfl_pred, cw, alpha_q3, b.bd, cw, chh,
+                                &ac10,
+                                dc,
+                                cw,
+                                &mut cfl_pred,
+                                cw,
+                                alpha_q3,
+                                b.bd,
+                                cw,
+                                chh,
                             );
                             let o = tx_unit_hbd(
-                                src, cw, 0, &cfl_pred, cw, 0, cw, chh, 0, 1, tsc, dsc, qt,
-                                frame.rdoq_level, b.lambda, frame.sharpness, rates, do_rdoq,
-                                b.bd, qt.qm_level,
+                                src,
+                                cw,
+                                0,
+                                &cfl_pred,
+                                cw,
+                                0,
+                                cw,
+                                chh,
+                                0,
+                                1,
+                                tsc,
+                                dsc,
+                                qt,
+                                frame.rdoq_level,
+                                b.lambda,
+                                frame.sharpness,
+                                rates,
+                                do_rdoq,
+                                b.bd,
+                                qt.qm_level,
                                 Some(&TxRdArgs {
                                     spatial_dist: false,
                                     intra_dir: 0,
@@ -7734,28 +8310,81 @@ pub(crate) fn evaluate_leaf(
                             let mut u_cfl10 = vec![0u16; cw * chh];
                             let mut v_cfl10 = vec![0u16; cw * chh];
                             svtav1_dsp::hbd::cfl_predict_hbd(
-                                &ac10, &u_dc10, cw, &mut u_cfl10, cw, alpha_cb, b.bd, cw, chh,
+                                &ac10,
+                                &u_dc10,
+                                cw,
+                                &mut u_cfl10,
+                                cw,
+                                alpha_cb,
+                                b.bd,
+                                cw,
+                                chh,
                             );
                             svtav1_dsp::hbd::cfl_predict_hbd(
-                                &ac10, &v_dc10, cw, &mut v_cfl10, cw, alpha_cr, b.bd, cw, chh,
+                                &ac10,
+                                &v_dc10,
+                                cw,
+                                &mut v_cfl10,
+                                cw,
+                                alpha_cr,
+                                b.bd,
+                                cw,
+                                chh,
                             );
                             let u10 = tx_unit_hbd(
-                                &b.u_src10, cw, 0, &u_cfl10, cw, 0, cw, chh, 0, 1, cb_tsc,
-                                cb_dsc, &b.qt_u, frame.rdoq_level, b.lambda, frame.sharpness,
-                                rates, do_rdoq, b.bd, b.qt_u.qm_level, Some(&rd10),
+                                &b.u_src10,
+                                cw,
+                                0,
+                                &u_cfl10,
+                                cw,
+                                0,
+                                cw,
+                                chh,
+                                0,
+                                1,
+                                cb_tsc,
+                                cb_dsc,
+                                &b.qt_u,
+                                frame.rdoq_level,
+                                b.lambda,
+                                frame.sharpness,
+                                rates,
+                                do_rdoq,
+                                b.bd,
+                                b.qt_u.qm_level,
+                                Some(&rd10),
                             );
                             let v10 = tx_unit_hbd(
-                                &b.v_src10, cw, 0, &v_cfl10, cw, 0, cw, chh, 0, 1, cr_tsc,
-                                cr_dsc, &b.qt_v, frame.rdoq_level, b.lambda, frame.sharpness,
-                                rates, do_rdoq, b.bd, b.qt_v.qm_level, Some(&rd10),
+                                &b.v_src10,
+                                cw,
+                                0,
+                                &v_cfl10,
+                                cw,
+                                0,
+                                cw,
+                                chh,
+                                0,
+                                1,
+                                cr_tsc,
+                                cr_dsc,
+                                &b.qt_v,
+                                frame.rdoq_level,
+                                b.lambda,
+                                frame.sharpness,
+                                rates,
+                                do_rdoq,
+                                b.bd,
+                                b.qt_v.qm_level,
+                                Some(&rd10),
                             );
-                            let cfl_fast_rate = rates.uv[cfl_allowed][cand.mode as usize]
-                                [UV_CFL_PRED_IDX]
-                                as u64
-                                + rates.cfl_alpha_fac_bits[cfl_signs as usize][0]
-                                    [(cfl_idx >> 4) as usize] as u64
-                                + rates.cfl_alpha_fac_bits[cfl_signs as usize][1]
-                                    [(cfl_idx & 15) as usize] as u64;
+                            let cfl_fast_rate =
+                                rates.uv[cfl_allowed][cand.mode as usize][UV_CFL_PRED_IDX] as u64
+                                    + rates.cfl_alpha_fac_bits[cfl_signs as usize][0]
+                                        [(cfl_idx >> 4) as usize]
+                                        as u64
+                                    + rates.cfl_alpha_fac_bits[cfl_signs as usize][1]
+                                        [(cfl_idx & 15) as usize]
+                                        as u64;
                             let cfl_uv_cost = rdcost(
                                 b.lambda,
                                 u10.bits as u64 + v10.bits as u64 + cfl_fast_rate,
@@ -7768,15 +8397,13 @@ pub(crate) fn evaluate_leaf(
                             // arm above: a luma-palette candidate's DC row pays
                             // the [1][0] palette-flag context the table priced
                             // as [0][0]; priced with this arm's 10-bit lambda.
-                            let ind_pal_diff: i64 = if uv_mode_final == 0
-                                && allow_pal
-                                && cand.palette.is_some()
-                            {
-                                rdcost(b.lambda, pal_uv_no_y1, 0) as i64
-                                    - rdcost(b.lambda, pal_uv_no, 0) as i64
-                            } else {
-                                0
-                            };
+                            let ind_pal_diff: i64 =
+                                if uv_mode_final == 0 && allow_pal && cand.palette.is_some() {
+                                    rdcost(b.lambda, pal_uv_no_y1, 0) as i64
+                                        - rdcost(b.lambda, pal_uv_no, 0) as i64
+                                } else {
+                                    0
+                                };
                             let best_uv_adj =
                                 (best_uv_cost as i64).saturating_add(ind_pal_diff) as u64;
                             if !(best_uv_adj < cfl_uv_cost) {
@@ -7785,21 +8412,67 @@ pub(crate) fn evaluate_leaf(
                                 let mut u_cfl = vec![0u8; cw * chh];
                                 let mut v_cfl = vec![0u8; cw * chh];
                                 svtav1_dsp::intra_pred::cfl_predict_lbd(
-                                    &pred_buf_q3, &u_dc, cw, &mut u_cfl, cw, alpha_cb, cw, chh,
+                                    &pred_buf_q3,
+                                    &u_dc,
+                                    cw,
+                                    &mut u_cfl,
+                                    cw,
+                                    alpha_cb,
+                                    cw,
+                                    chh,
                                 );
                                 svtav1_dsp::intra_pred::cfl_predict_lbd(
-                                    &pred_buf_q3, &v_dc, cw, &mut v_cfl, cw, alpha_cr, cw, chh,
+                                    &pred_buf_q3,
+                                    &v_dc,
+                                    cw,
+                                    &mut v_cfl,
+                                    cw,
+                                    alpha_cr,
+                                    cw,
+                                    chh,
                                 );
                                 u_out = tx_unit(
-                                    fx.u_src, fx.c_stride, c_off, &u_cfl, cw, 0, cw, chh, 0, 1,
-                                    cb_tsc, cb_dsc, 0, &qt_u, frame, rates, do_rdoq, true,
+                                    fx.u_src,
+                                    fx.c_stride,
+                                    c_off,
+                                    &u_cfl,
+                                    cw,
+                                    0,
+                                    cw,
+                                    chh,
+                                    0,
+                                    1,
+                                    cb_tsc,
+                                    cb_dsc,
+                                    0,
+                                    &qt_u,
+                                    frame,
+                                    rates,
+                                    do_rdoq,
+                                    true,
                                     uv_crop,
                                     true,
                                     RateMode::Exact,
                                 );
                                 v_out = tx_unit(
-                                    fx.v_src, fx.c_stride, c_off, &v_cfl, cw, 0, cw, chh, 0, 1,
-                                    cr_tsc, cr_dsc, 0, &qt_v, frame, rates, do_rdoq, true,
+                                    fx.v_src,
+                                    fx.c_stride,
+                                    c_off,
+                                    &v_cfl,
+                                    cw,
+                                    0,
+                                    cw,
+                                    chh,
+                                    0,
+                                    1,
+                                    cr_tsc,
+                                    cr_dsc,
+                                    0,
+                                    &qt_v,
+                                    frame,
+                                    rates,
+                                    do_rdoq,
+                                    true,
                                     uv_crop,
                                     true,
                                     RateMode::Exact,
@@ -7930,9 +8603,7 @@ pub(crate) fn evaluate_leaf(
         // UV_CFL_PRED mode + alpha rate replaces the non-CFL uv fast rate).
         let full = rdcost(lambda3, cand.flr + fcr_final + coeff_rate, dist);
         #[cfg(feature = "std")]
-        if crate::dbgenv::canddbg()
-            && crate::depth_refine::nsqdbg_here(abs_x, abs_y)
-        {
+        if crate::dbgenv::canddbg() && crate::depth_refine::nsqdbg_here(abs_x, abs_y) {
             eprintln!(
                 "NSQDBG CAND mi=({},{}) {}x{} ci={} mode={} fi={} delta={} uv={} ibc={} txd={} enddepth={} flr={} fcr={} coeff_rate={} dist={} full={}",
                 abs_y / 4,
@@ -7993,8 +8664,16 @@ pub(crate) fn evaluate_leaf(
                 // it). Keeping the u8-quantizer recon here instead would leave
                 // the recon inconsistent with the levels actually coded.
                 let sh = (frame.bit_depth - 8) as u32;
-                cand.u_recon = u10.recon.iter().map(|&s| (s >> sh).min(255) as u8).collect();
-                cand.v_recon = v10.recon.iter().map(|&s| (s >> sh).min(255) as u8).collect();
+                cand.u_recon = u10
+                    .recon
+                    .iter()
+                    .map(|&s| (s >> sh).min(255) as u8)
+                    .collect();
+                cand.v_recon = v10
+                    .recon
+                    .iter()
+                    .map(|&s| (s >> sh).min(255) as u8)
+                    .collect();
             }
             None => {
                 cand.u_q = u_out.qcoeff;
@@ -8199,8 +8878,20 @@ pub(crate) fn evaluate_leaf(
             let wc = &cands[win];
             let mut pred10 = vec![0u16; w * h];
             predict_unit_hbd(
-                canvas10, y_stride, abs_x, abs_y, w, h, wc.mode, wc.delta, wc.fi, &y_geom,
-                cfg.edge_filter, filt_type_y, &mut pred10, frame.bit_depth,
+                canvas10,
+                y_stride,
+                abs_x,
+                abs_y,
+                w,
+                h,
+                wc.mode,
+                wc.delta,
+                wc.fi,
+                &y_geom,
+                cfg.edge_filter,
+                filt_type_y,
+                &mut pred10,
+                frame.bit_depth,
             );
             // Task #6 chunk 1: real u16 source on a native-HBD encode; the
             // identical `u8 << 2` widening this site did inline otherwise.
@@ -8208,9 +8899,27 @@ pub(crate) fn evaluate_leaf(
             let tx_type = wc.txb_type.first().copied().unwrap_or(0) as usize;
             let qt10 = crate::quant::build_quant_table_bd(frame.base_qindex, frame.bit_depth);
             let out = tx_unit_hbd(
-                &blk_src10, w, 0, &pred10, w, 0, w, h, tx_type, 0, 0, 0, &qt10,
-                frame.rdoq_level, lambda_bd10_full, 0, rates, frame.rdoq_level != 0,
-                frame.bit_depth, frame.qm_levels[0], None,
+                &blk_src10,
+                w,
+                0,
+                &pred10,
+                w,
+                0,
+                w,
+                h,
+                tx_type,
+                0,
+                0,
+                0,
+                &qt10,
+                frame.rdoq_level,
+                lambda_bd10_full,
+                0,
+                rates,
+                frame.rdoq_level != 0,
+                frame.bit_depth,
+                frame.qm_levels[0],
+                None,
             );
             out.recon
         }
@@ -8280,7 +8989,10 @@ pub(crate) fn commit_leaf(
             };
             let (mi_x, mi_y) = (abs_x / 4, abs_y / 4);
             for my in mi_y..(mi_y + h / 4).min(mvp.len() / stride) {
-                for cell in mvp[my * stride + mi_x..(my * stride + mi_x + w / 4).min((my + 1) * stride)].iter_mut() {
+                for cell in mvp
+                    [my * stride + mi_x..(my * stride + mi_x + w / 4).min((my + 1) * stride)]
+                    .iter_mut()
+                {
                     *cell = entry;
                 }
             }
@@ -8351,8 +9063,13 @@ pub(crate) fn commit_leaf(
             static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
             dbg_on(&ON, "SVTAV1_CEDGE")
         } {
-            let lyb: u64 = ev.win_recon10[(h - 1) * w..h * w].iter().map(|&s| u64::from(s)).sum();
-            let lyr: u64 = (0..h).map(|r| u64::from(ev.win_recon10[r * w + w - 1])).sum();
+            let lyb: u64 = ev.win_recon10[(h - 1) * w..h * w]
+                .iter()
+                .map(|&s| u64::from(s))
+                .sum();
+            let lyr: u64 = (0..h)
+                .map(|r| u64::from(ev.win_recon10[r * w + w - 1]))
+                .sum();
             let col = |v: &[u16]| {
                 (0..chh)
                     .map(|r| v[r * cw + cw - 1].to_string())
@@ -8364,7 +9081,10 @@ pub(crate) fn commit_leaf(
             static XY: std::sync::OnceLock<Option<(usize, usize)>> = std::sync::OnceLock::new();
             let raw = (dbg_xy(&XY, "SVTAV1_CEDGE_XY") == Some((abs_x, abs_y))).then(|| {
                 let j = |it: alloc::vec::Vec<u16>| {
-                    it.iter().map(|v| v.to_string()).collect::<alloc::vec::Vec<_>>().join(",")
+                    it.iter()
+                        .map(|v| v.to_string())
+                        .collect::<alloc::vec::Vec<_>>()
+                        .join(",")
                 };
                 alloc::format!(
                     " lyB={} lyR={}",
@@ -8399,7 +9119,9 @@ pub(crate) fn commit_leaf(
         abs_y,
         w,
         h,
-        cand.palette.as_ref().map(|(colors, _idx)| colors.as_slice()),
+        cand.palette
+            .as_ref()
+            .map(|(colors, _idx)| colors.as_slice()),
     );
     // MD partition-context bytes (mode_decision_update_neighbor_arrays,
     // product_coding_loop.c:179-192: partition_context_lookup[bsize]
@@ -8566,7 +9288,12 @@ fn sub_tx_dims(tw: usize, th: usize) -> (usize, usize) {
 /// the min eob per split direction. `None` when the winner kept no
 /// coefficients (C leaves the ~0 sentinels, so the psq gate can't
 /// fire).
-pub(crate) fn min_nz_hv(ev: &LeafEval, qindex: u8, qm_level_y: u8, bit_depth: u8) -> Option<(u16, u16)> {
+pub(crate) fn min_nz_hv(
+    ev: &LeafEval,
+    qindex: u8,
+    qm_level_y: u8,
+    bit_depth: u8,
+) -> Option<(u16, u16)> {
     if !ev.block_has_coeff() {
         return None;
     }
@@ -8585,7 +9312,11 @@ pub(crate) fn min_nz_hv(ev: &LeafEval, qindex: u8, qm_level_y: u8, bit_depth: u8
     };
     // C's light quantize applies the PLANE_Y QM here too (full_loop.c:1282).
     qt.qm_level = qm_level_y;
-    let resid = if bd10 { ev.psq_resid10() } else { ev.psq_resid() };
+    let resid = if bd10 {
+        ev.psq_resid10()
+    } else {
+        ev.psq_resid()
+    };
     debug_assert_eq!(resid.len(), w * h);
 
     let half_eob = |ox: usize, oy: usize, tw: usize, th: usize| -> u16 {
@@ -9194,10 +9925,14 @@ fn txt_search(
                     && rdcost(gate_lambda, tx_type_rate, 0) * 1000
                         > dct_cost * frame.cfg.txt_rate_th
                 {
-                    txt_dbg!("cand txt={tx_type} SKIP rate_gate rate={tx_type_rate} dctcost={dct_cost}");
+                    txt_dbg!(
+                        "cand txt={tx_type} SKIP rate_gate rate={tx_type_rate} dctcost={dct_cost}"
+                    );
                     continue;
                 }
-                txt_dbg!("cand txt={tx_type} rate_gate_pass rate={tx_type_rate} dctcost={dct_cost}");
+                txt_dbg!(
+                    "cand txt={tx_type} rate_gate_pass rate={tx_type_rate} dctcost={dct_cost}"
+                );
             }
             let out = tx_unit(
                 src,
@@ -9577,15 +10312,36 @@ mod tests {
         // Depth 2, BLOCK_16X8 (C inter row):
         // {0,0},{4,0},{0,4},{4,4},{8,0},{12,0},{8,4},{12,4}.
         let c_16x8: [(usize, usize); 8] = [
-            (0, 0), (4, 0), (0, 4), (4, 4), (8, 0), (12, 0), (8, 4), (12, 4),
+            (0, 0),
+            (4, 0),
+            (0, 4),
+            (4, 4),
+            (8, 0),
+            (12, 0),
+            (8, 4),
+            (12, 4),
         ];
         for (i, &xy) in c_16x8.iter().enumerate() {
             assert_eq!(txb_org_inter(16, 8, 2, i), xy, "16x8 d2 txb{i}");
         }
         // Depth 2, BLOCK_16X16 (C inter row).
         let c_16x16: [(usize, usize); 16] = [
-            (0, 0), (4, 0), (0, 4), (4, 4), (8, 0), (12, 0), (8, 4), (12, 4),
-            (0, 8), (4, 8), (0, 12), (4, 12), (8, 8), (12, 8), (8, 12), (12, 12),
+            (0, 0),
+            (4, 0),
+            (0, 4),
+            (4, 4),
+            (8, 0),
+            (12, 0),
+            (8, 4),
+            (12, 4),
+            (0, 8),
+            (4, 8),
+            (0, 12),
+            (4, 12),
+            (8, 8),
+            (12, 8),
+            (8, 12),
+            (12, 12),
         ];
         for (i, &xy) in c_16x16.iter().enumerate() {
             assert_eq!(txb_org_inter(16, 16, 2, i), xy, "16x16 d2 txb{i}");
@@ -9702,7 +10458,16 @@ mod tests {
             s ^= s << 17;
             s
         };
-        for &(w, h) in &[(4usize, 4usize), (8, 8), (16, 16), (32, 32), (4, 8), (8, 4), (16, 8), (8, 16)] {
+        for &(w, h) in &[
+            (4usize, 4usize),
+            (8, 8),
+            (16, 16),
+            (32, 32),
+            (4, 8),
+            (8, 4),
+            (16, 8),
+            (8, 16),
+        ] {
             for _ in 0..300 {
                 let n = w * h;
                 let src: Vec<u16> = (0..n).map(|_| (next() % 1024) as u16).collect();
@@ -10095,7 +10860,7 @@ mod tests {
     /// regression that passed full dims to the psy call would fail here.
     #[test]
     fn cropped_psy_distortion_matches_c_on_a_straddling_txb() {
-        use crate::frame_geom::{cropped_tx_dims, FrameDims};
+        use crate::frame_geom::{FrameDims, cropped_tx_dims};
         let dims = FrameDims::new(96, 80);
         let stride = 128usize;
         let mut src = alloc::vec![0u8; stride * stride];
@@ -10151,7 +10916,7 @@ mod tests {
 
     #[test]
     fn cropped_tx_distortion_matches_c_spatial_facade() {
-        use crate::frame_geom::{cropped_tx_dims, cropped_tx_dims_uv, FrameDims};
+        use crate::frame_geom::{FrameDims, cropped_tx_dims, cropped_tx_dims_uv};
         // Aligned 96x80 partial-SB frame (the #95 milestone geometry).
         let dims = FrameDims::new(96, 80);
         assert_eq!((dims.aligned_w, dims.aligned_h), (96, 80));
@@ -10190,8 +10955,23 @@ mod tests {
                 *p = src[src_off + (i / w) * stride + (i % w)].wrapping_add(17);
             }
             let out = tx_unit(
-                &src, stride, src_off, &pred, w, 0, w, h, cc::DCT_DCT, plane_type, 0, 0, 0,
-                &qt, &frame, &rates, false, /* do_rdoq */
+                &src,
+                stride,
+                src_off,
+                &pred,
+                w,
+                0,
+                w,
+                h,
+                cc::DCT_DCT,
+                plane_type,
+                0,
+                0,
+                0,
+                &qt,
+                &frame,
+                &rates,
+                false, /* do_rdoq */
                 true,  /* spatial_dist */
                 crop,
                 true,
@@ -10269,8 +11049,25 @@ mod tests {
             *p = src[c_off + (i / cw) * stride + (i % cw)].wrapping_sub(23);
         }
         let uv_out = tx_unit(
-            &src, stride, c_off, &uv_pred, cw, 0, cw, chh, cc::DCT_DCT, 1, 0, 0, 0, &qt,
-            &frame, &rates, false, true, uv_crop,
+            &src,
+            stride,
+            c_off,
+            &uv_pred,
+            cw,
+            0,
+            cw,
+            chh,
+            cc::DCT_DCT,
+            1,
+            0,
+            0,
+            0,
+            &qt,
+            &frame,
+            &rates,
+            false,
+            true,
+            uv_crop,
             true,
             RateMode::Exact,
         );
@@ -10290,7 +11087,11 @@ mod tests {
             0.0,
             0,
         );
-        assert_eq!(uv_out.dist, uv_c_cropped << 4, "chroma cropped dist mismatch");
+        assert_eq!(
+            uv_out.dist,
+            uv_c_cropped << 4,
+            "chroma cropped dist mismatch"
+        );
         let uv_c_full = svtav1_cref::spatial_facade(
             &src[c_off..],
             stride as u32,
@@ -10307,8 +11108,15 @@ mod tests {
             0.0,
             0,
         );
-        assert_ne!(uv_c_full, uv_c_cropped, "chroma case must be crop-sensitive");
-        assert_ne!(uv_out.dist, uv_c_full << 4, "chroma must not price out-of-frame rows");
+        assert_ne!(
+            uv_c_full, uv_c_cropped,
+            "chroma case must be crop-sensitive"
+        );
+        assert_ne!(
+            uv_out.dist,
+            uv_c_full << 4,
+            "chroma must not price out-of-frame rows"
+        );
     }
 
     /// The cropped-TX bound itself, as hand-derived from the C expressions
@@ -10316,7 +11124,7 @@ mod tests {
     /// Complements the differential above, which pins the CONSUMPTION.
     #[test]
     fn cropped_tx_dims_match_the_c_expressions() {
-        use crate::frame_geom::{cropped_tx_dims, cropped_tx_dims_uv, FrameDims};
+        use crate::frame_geom::{FrameDims, cropped_tx_dims, cropped_tx_dims_uv};
         let d = FrameDims::new(96, 80);
         // Interior: no crop.
         assert_eq!(cropped_tx_dims(&d, 0, 0, 64, 64), (64, 64));
@@ -10335,7 +11143,11 @@ mod tests {
         // 64-aligned frame: BOTH crops are the identity at every geometry —
         // the byte-neutrality guarantee for every full-SB gate cell.
         let full = FrameDims::new(128, 128);
-        for &(x, y, w, h) in &[(0usize, 0usize, 64usize, 64usize), (64, 64, 64, 64), (96, 112, 32, 16)] {
+        for &(x, y, w, h) in &[
+            (0usize, 0usize, 64usize, 64usize),
+            (64, 64, 64, 64),
+            (96, 112, 32, 16),
+        ] {
             assert_eq!(cropped_tx_dims(&full, x, y, w, h), (w, h));
         }
         for &(x, y, w, h) in &[(0usize, 0usize, 32usize, 32usize), (32, 48, 32, 16)] {

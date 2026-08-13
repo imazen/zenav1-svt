@@ -27,8 +27,20 @@ impl Rng {
 
 /// AV1 luma/chroma block shapes the kernels are called on.
 const SHAPES: &[(usize, usize)] = &[
-    (4, 4), (8, 8), (16, 16), (32, 32), (64, 64), (4, 8), (8, 4),
-    (16, 8), (8, 16), (32, 16), (16, 32), (64, 32), (4, 16), (16, 64),
+    (4, 4),
+    (8, 8),
+    (16, 16),
+    (32, 32),
+    (64, 64),
+    (4, 8),
+    (8, 4),
+    (16, 8),
+    (8, 16),
+    (32, 16),
+    (16, 32),
+    (64, 32),
+    (4, 16),
+    (16, 64),
 ];
 
 /// A `w x h` region living at a non-zero offset inside a `stride`-padded plane
@@ -88,7 +100,11 @@ fn hbd_variance_matches_c() {
                 let b = plane(&mut rng, w, h, b_stride, 0, bd);
                 let (ours_sse, ours_var) = hbd::highbd_variance(&a, a_stride, &b, b_stride, w, h);
                 let (c_sse, c_var) = cref::variance_highbd(&a, a_stride, &b, b_stride, w, h);
-                assert_eq!((ours_sse, ours_var), (c_sse, c_var), "variance bd{bd} {w}x{h}");
+                assert_eq!(
+                    (ours_sse, ours_var),
+                    (c_sse, c_var),
+                    "variance bd{bd} {w}x{h}"
+                );
             }
         }
     }

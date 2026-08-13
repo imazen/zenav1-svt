@@ -71,10 +71,7 @@ fn noise_norm_matches_c() {
         let shift = svtav1_encoder::quant::TX_SCALE_TAB[c_tx];
         for strength in 0u8..=4 {
             for trial in 0..40 {
-                let dequant = [
-                    (rng.range(2000) + 8) as i16,
-                    (rng.range(2000) + 8) as i16,
-                ];
+                let dequant = [(rng.range(2000) + 8) as i16, (rng.range(2000) + 8) as i16];
                 let eob_target = if trial % 3 == 0 {
                     1
                 } else {
@@ -102,7 +99,12 @@ fn noise_norm_matches_c() {
                 let mut dq_c = dq0.clone();
                 let mut eob_c = eob0;
                 cref::noise_normalization(
-                    dequant, &coeff, &mut q_c, &mut dq_c, &mut eob_c, c_tx as i32,
+                    dequant,
+                    &coeff,
+                    &mut q_c,
+                    &mut dq_c,
+                    &mut eob_c,
+                    c_tx as i32,
                     0, // DCT_DCT
                     strength,
                 );

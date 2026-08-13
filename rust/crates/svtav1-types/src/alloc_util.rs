@@ -96,9 +96,9 @@ macro_rules! try_with_capacity {
         }
         #[cfg(not(feature = "fallible-alloc"))]
         {
-            Ok::<::alloc::vec::Vec<_>, $crate::error::EncodeError>(::alloc::vec::Vec::with_capacity(
-                $cap,
-            ))
+            Ok::<::alloc::vec::Vec<_>, $crate::error::EncodeError>(
+                ::alloc::vec::Vec::with_capacity($cap),
+            )
         }
     }};
 }

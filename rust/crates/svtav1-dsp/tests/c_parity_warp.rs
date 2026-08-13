@@ -39,7 +39,20 @@ fn c_warp_affine_identity_near_copy_smooth() {
     let (pw, ph) = (8usize, 8usize);
     let mut pred = vec![0u8; pw * ph];
     // Block at (p_col=8, p_row=8) — interior, no edge clamping.
-    cref::warp_affine(&mat, &refp, w, h, w, &mut pred, 8, 8, pw, ph, pw, (0, 0, 0, 0));
+    cref::warp_affine(
+        &mat,
+        &refp,
+        w,
+        h,
+        w,
+        &mut pred,
+        8,
+        8,
+        pw,
+        ph,
+        pw,
+        (0, 0, 0, 0),
+    );
     for r in 0..ph {
         for c in 0..pw {
             let got = pred[r * pw + c] as i32;
@@ -69,9 +82,25 @@ fn warp_prediction_diverges_from_c_on_zoom() {
     let (pw, ph) = (8usize, 8usize);
 
     let mut pred_c = vec![0u8; pw * ph];
-    cref::warp_affine(&mat, &refp, w, h, w, &mut pred_c, 8, 8, pw, ph, pw, (0, 0, 0, 0));
+    cref::warp_affine(
+        &mat,
+        &refp,
+        w,
+        h,
+        w,
+        &mut pred_c,
+        8,
+        8,
+        pw,
+        ph,
+        pw,
+        (0, 0, 0, 0),
+    );
     // Oracle produced a real (non-degenerate) block.
-    assert!(pred_c.iter().any(|&v| v != pred_c[0]), "C warp non-degenerate");
+    assert!(
+        pred_c.iter().any(|&v| v != pred_c[0]),
+        "C warp non-degenerate"
+    );
 
     let params = WarpedMotionParams {
         wmmat: [0, 0, half, 0, 0, half],

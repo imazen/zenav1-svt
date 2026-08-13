@@ -1998,13 +1998,31 @@ pub fn fwd_txfm2d_c_exact(
     // SIMD fast path: extended types — FLIPADST (all combos, with the block
     // edge flip), IDENTITY (IDTX), and the mixed V_/H_ types. Gated internally
     // by `simd_ext_supported`.
-    if crate::txfm_simd::try_fwd_ext(input, output, input_stride, w, h, col_1d, row_1d, ud_flip, lr_flip)
-    {
+    if crate::txfm_simd::try_fwd_ext(
+        input,
+        output,
+        input_stride,
+        w,
+        h,
+        col_1d,
+        row_1d,
+        ud_flip,
+        lr_flip,
+    ) {
         return true;
     }
     // SIMD fast path: 4-dim sizes (4x4/4x8/8x4/4x16/16x4), any tx type.
-    if crate::txfm_simd::try_fwd_4dim(input, output, input_stride, w, h, col_1d, row_1d, ud_flip, lr_flip)
-    {
+    if crate::txfm_simd::try_fwd_4dim(
+        input,
+        output,
+        input_stride,
+        w,
+        h,
+        col_1d,
+        row_1d,
+        ud_flip,
+        lr_flip,
+    ) {
         return true;
     }
     let col_func = match get_fwd_txfm_func(col_1d, h) {

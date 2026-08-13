@@ -38,14 +38,46 @@ fn kernels() -> [(cref::LpfKind, OurKernel, usize); 8] {
     let v_off = 2 * SIZE + 8; // vertical: edge between cols 7|8, rows 2..6
     let h_off = 8 * SIZE + 3; // horizontal: edge between rows 7|8, cols 3..7
     [
-        (cref::LpfKind::H4, hbd::lpf_horizontal_4_hbd as OurKernel, h_off),
-        (cref::LpfKind::V4, hbd::lpf_vertical_4_hbd as OurKernel, v_off),
-        (cref::LpfKind::H6, hbd::lpf_horizontal_6_hbd as OurKernel, h_off),
-        (cref::LpfKind::V6, hbd::lpf_vertical_6_hbd as OurKernel, v_off),
-        (cref::LpfKind::H8, hbd::lpf_horizontal_8_hbd as OurKernel, h_off),
-        (cref::LpfKind::V8, hbd::lpf_vertical_8_hbd as OurKernel, v_off),
-        (cref::LpfKind::H14, hbd::lpf_horizontal_14_hbd as OurKernel, h_off),
-        (cref::LpfKind::V14, hbd::lpf_vertical_14_hbd as OurKernel, v_off),
+        (
+            cref::LpfKind::H4,
+            hbd::lpf_horizontal_4_hbd as OurKernel,
+            h_off,
+        ),
+        (
+            cref::LpfKind::V4,
+            hbd::lpf_vertical_4_hbd as OurKernel,
+            v_off,
+        ),
+        (
+            cref::LpfKind::H6,
+            hbd::lpf_horizontal_6_hbd as OurKernel,
+            h_off,
+        ),
+        (
+            cref::LpfKind::V6,
+            hbd::lpf_vertical_6_hbd as OurKernel,
+            v_off,
+        ),
+        (
+            cref::LpfKind::H8,
+            hbd::lpf_horizontal_8_hbd as OurKernel,
+            h_off,
+        ),
+        (
+            cref::LpfKind::V8,
+            hbd::lpf_vertical_8_hbd as OurKernel,
+            v_off,
+        ),
+        (
+            cref::LpfKind::H14,
+            hbd::lpf_horizontal_14_hbd as OurKernel,
+            h_off,
+        ),
+        (
+            cref::LpfKind::V14,
+            hbd::lpf_vertical_14_hbd as OurKernel,
+            v_off,
+        ),
     ]
 }
 
@@ -59,7 +91,11 @@ fn fill(content: u32, rng: &mut Rng, vertical: bool, buf: &mut [u16], bd: u8) {
             let base = (rng.range(maxv as u64 + 1)) as i32;
             let amp = rng.range(6) as i32;
             for px in buf.iter_mut() {
-                let n = if amp == 0 { 0 } else { rng.range(2 * amp as u64 + 1) as i32 - amp };
+                let n = if amp == 0 {
+                    0
+                } else {
+                    rng.range(2 * amp as u64 + 1) as i32 - amp
+                };
                 *px = (base + n).clamp(0, maxv as i32) as u16;
             }
         }
@@ -71,7 +107,11 @@ fn fill(content: u32, rng: &mut Rng, vertical: bool, buf: &mut [u16], bd: u8) {
                 for c in 0..SIZE {
                     let coord = if vertical { c } else { r };
                     let base = if coord < 8 { a } else { b };
-                    let n = if amp == 0 { 0 } else { rng.range(2 * amp as u64 + 1) as i32 - amp };
+                    let n = if amp == 0 {
+                        0
+                    } else {
+                        rng.range(2 * amp as u64 + 1) as i32 - amp
+                    };
                     buf[r * SIZE + c] = (base + n).clamp(0, maxv as i32) as u16;
                 }
             }
@@ -99,10 +139,16 @@ fn hbd_lpf_kernels_match_c_over_level_sharpness_space() {
                         let mut c_buf = buf.clone();
 
                         ours(&mut buf, off, SIZE, t, bd);
-                        cref::lpf_hbd(kind, &mut c_buf, off, SIZE, t.mblim, t.lim, t.hev_thr, bd as i32);
+                        cref::lpf_hbd(
+                            kind, &mut c_buf, off, SIZE, t.mblim, t.lim, t.hev_thr, bd as i32,
+                        );
 
                         if buf != c_buf {
-                            let i = buf.iter().zip(c_buf.iter()).position(|(a, b)| a != b).unwrap();
+                            let i = buf
+                                .iter()
+                                .zip(c_buf.iter())
+                                .position(|(a, b)| a != b)
+                                .unwrap();
                             panic!(
                                 "{kind:?} bd{bd} level {level} sharp {sharpness} content {content}: \
                                  first diff at (r{} c{}): ours={} c={}",
@@ -139,7 +185,9 @@ fn hbd_lpf_kernels_match_c_random_params() {
                 let mut c_buf = buf.clone();
 
                 ours(&mut buf, off, SIZE, t, bd);
-                cref::lpf_hbd(kind, &mut c_buf, off, SIZE, t.mblim, t.lim, t.hev_thr, bd as i32);
+                cref::lpf_hbd(
+                    kind, &mut c_buf, off, SIZE, t.mblim, t.lim, t.hev_thr, bd as i32,
+                );
                 assert_eq!(buf, c_buf, "{kind:?} bd{bd} random-params divergence");
             }
         }

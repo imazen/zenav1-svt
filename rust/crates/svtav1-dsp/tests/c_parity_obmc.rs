@@ -44,7 +44,15 @@ fn obmc_blend_above_matches_c() {
             let above: Vec<u8> = (0..above_stride * h).map(|_| rng.byte()).collect();
 
             let mut dst_rust = base.clone();
-            obmc_blend_above(&mut dst_rust, dst_stride, &above, above_stride, w, h, overlap);
+            obmc_blend_above(
+                &mut dst_rust,
+                dst_stride,
+                &above,
+                above_stride,
+                w,
+                h,
+                overlap,
+            );
 
             let mut dst_c = base.clone();
             cref::obmc_blend_above(&mut dst_c, dst_stride, &above, above_stride, w, overlap);
@@ -90,7 +98,15 @@ fn obmc_blend_above_partial_band_matches_c() {
         let above: Vec<u8> = (0..above_stride * overlap).map(|_| rng.byte()).collect();
 
         let mut dst_rust = base.clone();
-        obmc_blend_above(&mut dst_rust, dst_stride, &above, above_stride, w, h, overlap);
+        obmc_blend_above(
+            &mut dst_rust,
+            dst_stride,
+            &above,
+            above_stride,
+            w,
+            h,
+            overlap,
+        );
 
         // C blends exactly the overlap band; rows >= overlap are unchanged.
         let mut dst_c = base.clone();

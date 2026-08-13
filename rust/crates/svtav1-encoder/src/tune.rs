@@ -278,8 +278,7 @@ mod tests {
     #[test]
     fn factors_normalized_geomean_one() {
         // Non-alt path: geometric mean of factors is 1 after normalization.
-        let luma: alloc::vec::Vec<u8> =
-            (0..128 * 128).map(|i| ((i * 7) % 256) as u8).collect();
+        let luma: alloc::vec::Vec<u8> = (0..128 * 128).map(|i| ((i * 7) % 256) as u8).collect();
         let (f, nc, nr) = ssim_rdmult_factors(&luma, 128, 128, 128, false);
         assert_eq!((nc, nr), (8, 8));
         let g: f64 = f.iter().map(|v| v.ln()).sum::<f64>() / f.len() as f64;

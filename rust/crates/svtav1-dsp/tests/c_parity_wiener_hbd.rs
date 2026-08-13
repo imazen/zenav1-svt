@@ -188,20 +188,8 @@ fn highbd_compute_stats_matches_c() {
         let v_end = h as i32 - rng.range(4) as i32;
 
         cref::compute_stats_highbd(
-            win,
-            &dgd,
-            origin,
-            stride,
-            &src,
-            origin,
-            stride,
-            h_start,
-            h_end,
-            v_start,
-            v_end,
-            &mut m_c,
-            &mut h_c,
-            bd as i32,
+            win, &dgd, origin, stride, &src, origin, stride, h_start, h_end, v_start, v_end,
+            &mut m_c, &mut h_c, bd as i32,
         );
         rst::compute_stats_hbd(
             win, &dgd, origin, stride, &src, origin, stride, h_start, h_end, v_start, v_end,
@@ -332,7 +320,10 @@ fn highbd_filter_unit_search_matches_c() {
             10,
         );
         // `need_boundaries = 0` must not touch `data`.
-        assert_eq!(data_c, data, "iter {iter}: C mutated data at need_boundaries=0");
+        assert_eq!(
+            data_c, data,
+            "iter {iter}: C mutated data at need_boundaries=0"
+        );
         for y in 0..ph as usize {
             for x in 0..pw as usize {
                 assert_eq!(
@@ -374,7 +365,11 @@ fn highbd_sse_region_matches_c() {
         // so tall strips reach the truncation threshold.
         let class_ = if iter % 3 == 0 { 2 } else { iter % 3 };
         fill10(&mut rng, &mut a, class_);
-        fill10(&mut rng, &mut b, if class_ == 2 { 2 } else { (class_ + 1) % 3 });
+        fill10(
+            &mut rng,
+            &mut b,
+            if class_ == 2 { 2 } else { (class_ + 1) % 3 },
+        );
 
         let ours = rst::sse_region_hbd(&a, 0, a_stride, &b, 0, b_stride, w, h);
         let theirs = cref::highbd_get_sse(&a, 0, a_stride, &b, 0, b_stride, w, h);

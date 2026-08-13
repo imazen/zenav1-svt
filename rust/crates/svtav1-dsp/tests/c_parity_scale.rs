@@ -15,7 +15,7 @@
 //! convolve_2d_scale contract; then the `assert_ne!` becomes `assert_eq!`.
 
 use svtav1_cref as cref;
-use svtav1_dsp::scale::{scaled_prediction, ScaleFactors};
+use svtav1_dsp::scale::{ScaleFactors, scaled_prediction};
 
 const SUBPEL: i32 = 1 << 10; // SCALE_SUBPEL_BITS
 
@@ -26,11 +26,15 @@ fn c_convolve_2d_scale_unity_is_copy() {
     let w = 8usize;
     let h = 8usize;
     let stride = 32usize;
-    let src: Vec<u8> = (0..stride * 32).map(|i| ((i * 9 + 5) & 0xff) as u8).collect();
+    let src: Vec<u8> = (0..stride * 32)
+        .map(|i| ((i * 9 + 5) & 0xff) as u8)
+        .collect();
     let origin = 8 * stride + 8;
     let mut dst = vec![0u8; w * h];
     // step = 1<<10 (1:1), subpel 0 -> samples integer positions, phase 0 (identity).
-    cref::convolve_2d_scale(&src, origin, stride, &mut dst, w, w, h, 0, SUBPEL, 0, SUBPEL);
+    cref::convolve_2d_scale(
+        &src, origin, stride, &mut dst, w, w, h, 0, SUBPEL, 0, SUBPEL,
+    );
     for r in 0..h {
         for c in 0..w {
             assert_eq!(
@@ -57,15 +61,30 @@ fn scaled_prediction_diverges_from_c_on_fractional_scale() {
     let step = 3 * SUBPEL / 2; // 1536
     let origin = 8 * stride + 8;
     let mut dst_c = vec![0u8; w * h];
-    cref::convolve_2d_scale(&plane, origin, stride, &mut dst_c, w, w, h, 0, step, 0, step);
-    assert!(dst_c.iter().any(|&v| v != dst_c[0]), "C scale non-degenerate");
+    cref::convolve_2d_scale(
+        &plane, origin, stride, &mut dst_c, w, w, h, 0, step, 0, step,
+    );
+    assert!(
+        dst_c.iter().any(|&v| v != dst_c[0]),
+        "C scale non-degenerate"
+    );
 
     // Rust: nominal 1.5x downscale (x_scale = 1.5<<14) sampling from origin.
     let sf = ScaleFactors::new(48, 48, 32, 32); // ratio 1.5 -> x_scale=24576
     assert_eq!(sf.x_scale, 3 * (1 << 14) / 2);
     let mut dst_rust = vec![0u8; w * h];
     scaled_prediction(
-        &plane, stride, &mut dst_rust, w, /*block_x*/ 8, /*block_y*/ 8, w, h, &sf, 48, 48,
+        &plane,
+        stride,
+        &mut dst_rust,
+        w,
+        /*block_x*/ 8,
+        /*block_y*/ 8,
+        w,
+        h,
+        &sf,
+        48,
+        48,
     );
 
     assert_ne!(

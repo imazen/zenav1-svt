@@ -37,7 +37,13 @@ pub const PALETTE_MIN_SIZE: usize = 2;
 /// out-parameter too (`int* val_count`) because the chunk-3 dominant-color
 /// search reuses the same per-value counts (`search_palette_luma`,
 /// palette.c:405-412).
-pub fn count_colors(src: &[u8], stride: usize, rows: usize, cols: usize, val_count: &mut [i32; 256]) -> u16 {
+pub fn count_colors(
+    src: &[u8],
+    stride: usize,
+    rows: usize,
+    cols: usize,
+    val_count: &mut [i32; 256],
+) -> u16 {
     assert!(src.len() >= (rows - 1) * stride + cols);
     val_count.fill(0);
     for r in 0..rows {
@@ -91,7 +97,12 @@ pub fn count_colors_highbd(
 /// `colors.len()`; `colors.len()` must not exceed [`PALETTE_MAX_SIZE`] (the
 /// same fixed bound C's `in_cache_flags[PALETTE_MAX_SIZE]` scratch
 /// assumes).
-pub fn index_color_cache(cache: &[u16], colors: &[u16], found: &mut [bool], out: &mut [u16]) -> usize {
+pub fn index_color_cache(
+    cache: &[u16],
+    colors: &[u16],
+    found: &mut [bool],
+    out: &mut [u16],
+) -> usize {
     assert!(found.len() >= cache.len());
     assert!(out.len() >= colors.len());
     let n_cache = cache.len();
@@ -176,7 +187,11 @@ fn ceil_log2(n: i32) -> i32 {
 // tests/c_parity_palette.rs. Upgrade path: add a ref_shims.c wrapper
 // exposing it (or its `delta_encode_palette_colors` twin) once chunk 5
 // lands, matching the existing shim pattern for other static C helpers.
-pub fn delta_encode_steps(colors: &[u16], bit_depth: u32, min_val: u32) -> alloc::vec::Vec<DeltaEncodeStep> {
+pub fn delta_encode_steps(
+    colors: &[u16],
+    bit_depth: u32,
+    min_val: u32,
+) -> alloc::vec::Vec<DeltaEncodeStep> {
     let mut steps = alloc::vec::Vec::new();
     let num = colors.len();
     if num == 0 {
@@ -195,7 +210,10 @@ pub fn delta_encode_steps(colors: &[u16], bit_depth: u32, min_val: u32) -> alloc
     let mut deltas = alloc::vec::Vec::with_capacity(num - 1);
     for i in 1..num {
         let delta = colors[i] as i32 - colors[i - 1] as i32;
-        debug_assert!(delta >= min_val, "colors must be ascending with gaps >= min_val");
+        debug_assert!(
+            delta >= min_val,
+            "colors must be ascending with gaps >= min_val"
+        );
         deltas.push(delta);
         max_delta = max_delta.max(delta);
     }
@@ -261,7 +279,13 @@ fn lcg_rand16(state: &mut u32) -> u32 {
 /// precision and can never diverge from calling both C functions in
 /// sequence. Ties resolve to the FIRST (lowest) centroid index (strict
 /// `<` comparison, matching C).
-pub fn calc_indices_dim1(data: &[i32], centroids: &[i32], indices: &mut [u8], n: usize, k: usize) -> i64 {
+pub fn calc_indices_dim1(
+    data: &[i32],
+    centroids: &[i32],
+    indices: &mut [u8],
+    n: usize,
+    k: usize,
+) -> i64 {
     assert!(data.len() >= n);
     assert!(centroids.len() >= k);
     assert!(indices.len() >= n);
@@ -296,7 +320,13 @@ pub fn calc_indices_dim1(data: &[i32], centroids: &[i32], indices: &mut [u8], n:
 /// local every call, matching C's per-call `unsigned int rand_state =
 /// (unsigned int)data[0]`). Multiple empty clusters in the same call draw
 /// successive values from that one LCG stream.
-fn calc_centroids_dim1(data: &[i32], centroids: &mut [i32; PALETTE_MAX_SIZE], indices: &[u8], n: usize, k: usize) {
+fn calc_centroids_dim1(
+    data: &[i32],
+    centroids: &mut [i32; PALETTE_MAX_SIZE],
+    indices: &[u8],
+    n: usize,
+    k: usize,
+) {
     debug_assert!(n <= 32768);
     let mut count = [0i32; PALETTE_MAX_SIZE];
     let mut rand_state = data[0] as u32;
@@ -398,7 +428,14 @@ pub fn remove_duplicates(centroids: &mut [i32], k: usize) -> usize {
 // PORT-NOTE(unverified): `optimize_palette_colors` is `static
 // AOM_INLINE` in palette.c — no exported C symbol. Verified only by
 // hand-tracing the C source; see tests/c_parity_palette.rs.
-pub fn optimize_palette_colors(color_cache: &[u16], n_cache: usize, centroids: &mut [i32], k: usize, qp_index: u8, bit_depth: u32) {
+pub fn optimize_palette_colors(
+    color_cache: &[u16],
+    n_cache: usize,
+    centroids: &mut [i32],
+    k: usize,
+    qp_index: u8,
+    bit_depth: u32,
+) {
     if n_cache == 0 {
         return;
     }
@@ -450,7 +487,10 @@ pub fn extend_palette_color_map(
         }
     }
     for j in orig_height..new_height {
-        color_map.copy_within((orig_height - 1) * new_width..orig_height * new_width, j * new_width);
+        color_map.copy_within(
+            (orig_height - 1) * new_width..orig_height * new_width,
+            j * new_width,
+        );
     }
 }
 
@@ -487,7 +527,13 @@ const INVALID_COLOR_IDX: u8 = u8::MAX;
 // documented in the same test file. Upgrade path: add a ref_shims.c
 // wrapper exposing these two static functions directly, once justified by
 // a chunk-3+ need.
-pub fn palette_color_index_context(color_map: &[u8], stride: usize, i: usize, j: usize, palette_size: usize) -> (usize, u8) {
+pub fn palette_color_index_context(
+    color_map: &[u8],
+    stride: usize,
+    i: usize,
+    j: usize,
+    palette_size: usize,
+) -> (usize, u8) {
     assert!(i > 0 || j > 0);
     let has_above = i >= 1;
     let has_left = j >= 1;
@@ -542,7 +588,9 @@ pub fn palette_color_index_context(color_map: &[u8], stride: usize, i: usize, j:
                 scores[1] = scores[2];
                 color_neighbors[1] = color_neighbors[2];
             }
-            if scores[0] < scores[1] || (scores[0] == scores[1] && color_neighbors[0] > color_neighbors[1]) {
+            if scores[0] < scores[1]
+                || (scores[0] == scores[1] && color_neighbors[0] > color_neighbors[1])
+            {
                 scores.swap(0, 1);
                 color_neighbors.swap(0, 1);
             }
@@ -614,7 +662,8 @@ pub fn color_map_wavefront<F: FnMut(usize, usize, usize, u8)>(
         let j_lo = k.saturating_sub(rows - 1);
         for j in (j_lo..=j_hi).rev() {
             let i = k - j;
-            let (ctx, color_new_idx) = palette_color_index_context(color_map, stride, i, j, palette_size);
+            let (ctx, color_new_idx) =
+                palette_color_index_context(color_map, stride, i, j, palette_size);
             f(i, j, ctx, color_new_idx);
         }
     }
@@ -692,11 +741,36 @@ impl PaletteCtrls {
     pub fn for_level(level: u8) -> Self {
         match level {
             0 => PaletteCtrls::default(),
-            2 => PaletteCtrls { enabled: true, dominant_color_step: 2, kmean_color_step: 1, k_means_max_itr: 2 },
-            3 => PaletteCtrls { enabled: true, dominant_color_step: 0xFF, kmean_color_step: 1, k_means_max_itr: 2 },
-            4 => PaletteCtrls { enabled: true, dominant_color_step: 0xFF, kmean_color_step: 2, k_means_max_itr: 2 },
-            5 => PaletteCtrls { enabled: true, dominant_color_step: 0xFF, kmean_color_step: 3, k_means_max_itr: 2 },
-            7 => PaletteCtrls { enabled: true, dominant_color_step: 0xFF, kmean_color_step: 5, k_means_max_itr: 1 },
+            2 => PaletteCtrls {
+                enabled: true,
+                dominant_color_step: 2,
+                kmean_color_step: 1,
+                k_means_max_itr: 2,
+            },
+            3 => PaletteCtrls {
+                enabled: true,
+                dominant_color_step: 0xFF,
+                kmean_color_step: 1,
+                k_means_max_itr: 2,
+            },
+            4 => PaletteCtrls {
+                enabled: true,
+                dominant_color_step: 0xFF,
+                kmean_color_step: 2,
+                k_means_max_itr: 2,
+            },
+            5 => PaletteCtrls {
+                enabled: true,
+                dominant_color_step: 0xFF,
+                kmean_color_step: 3,
+                k_means_max_itr: 2,
+            },
+            7 => PaletteCtrls {
+                enabled: true,
+                dominant_color_step: 0xFF,
+                kmean_color_step: 5,
+                k_means_max_itr: 1,
+            },
             // PORT-NOTE(unverified): levels 1/6/8/9 exist in C but are
             // unreachable from the allintra derivation; transcribe if a
             // non-allintra mode ever needs them.
@@ -733,7 +807,14 @@ fn palette_rd_y(
     bit_depth: u32,
 ) -> Option<PaletteCand> {
     if opt_colors {
-        optimize_palette_colors(color_cache, color_cache.len(), centroids, n, qp_index, bit_depth);
+        optimize_palette_colors(
+            color_cache,
+            color_cache.len(),
+            centroids,
+            n,
+            qp_index,
+            bit_depth,
+        );
     }
     let k = remove_duplicates(centroids, n);
     if k < PALETTE_MIN_SIZE {
@@ -928,8 +1009,17 @@ fn search_palette_core(
         while n >= min_n as i32 {
             centroids[..n as usize].copy_from_slice(&top_colors[..n as usize]);
             if let Some(cand) = palette_rd_y(
-                &data, &mut centroids[..n as usize], n as usize,
-                false, &[], qp_index, rows, cols, block_w, block_h, bit_depth,
+                &data,
+                &mut centroids[..n as usize],
+                n as usize,
+                false,
+                &[],
+                qp_index,
+                rows,
+                cols,
+                block_w,
+                block_h,
+                bit_depth,
             ) {
                 out.push(cand);
             }
@@ -963,8 +1053,17 @@ fn search_palette_core(
             }
             // centroid_refinement: 0 at every allintra level — not ported.
             if let Some(cand) = palette_rd_y(
-                &data, &mut centroids[..nn], nn,
-                true, cache, qp_index, rows, cols, block_w, block_h, bit_depth,
+                &data,
+                &mut centroids[..nn],
+                nn,
+                true,
+                cache,
+                qp_index,
+                rows,
+                cols,
+                block_w,
+                block_h,
+                bit_depth,
             ) {
                 out.push(cand);
             }

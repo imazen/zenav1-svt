@@ -57,25 +57,24 @@ fn flatten(fg: &noise_gen::FilmGrainParams) -> Vec<i32> {
 fn noise_table_matches_c() {
     // EB_CR_STUDIO_RANGE = 0, EB_CR_FULL_RANGE = 1 (EbSvtAv1.h).
     let mut cells = 0usize;
-    for (w, h) in [(128u32, 128u32), (1280, 720), (1920, 1080), (3840, 2160), (2560, 1440)] {
+    for (w, h) in [
+        (128u32, 128u32),
+        (1280, 720),
+        (1920, 1080),
+        (3840, 2160),
+        (2560, 1440),
+    ] {
         for strength in [1u32, 8, 25, 50, 120, 200] {
             for chroma in [-1i32, 0, 12] {
                 for cfl in [0i32, 1] {
                     for size in [-1i32, 0, 5, 13] {
                         for full_range in [false, true] {
                             let c = cref::generate_noise_table(
-                                w, h, strength, chroma, cfl, size, true,
-                                full_range, false,
+                                w, h, strength, chroma, cfl, size, true, full_range, false,
                             )
                             .expect("C table");
                             let r = noise_gen::generate_noise_table(
-                                w,
-                                h,
-                                strength,
-                                chroma,
-                                cfl as i8,
-                                size as i8,
-                                full_range,
+                                w, h, strength, chroma, cfl as i8, size as i8, full_range,
                             );
                             assert_eq!(
                                 flatten(&r),

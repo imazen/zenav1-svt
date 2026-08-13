@@ -50,9 +50,7 @@ fn full_pel_distortion_equals_c_sad() {
         let src: Vec<u8> = (0..bw * bh).map(|_| rng.byte()).collect();
         let refp: Vec<u8> = (0..pw * ph).map(|_| rng.byte()).collect();
 
-        let res = full_pel_search(
-            &src, bw, &refp, pw, ox, oy, bw, bh, Mv::ZERO, 6, 6, pw, ph,
-        );
+        let res = full_pel_search(&src, bw, &refp, pw, ox, oy, bw, bh, Mv::ZERO, 6, 6, pw, ph);
 
         // The full-pel offset the searcher settled on.
         let mvx_full = (res.mv.x as i32) / 8;
@@ -90,9 +88,7 @@ fn full_pel_exact_match_zero_sad() {
         }
     }
 
-    let res = full_pel_search(
-        &src, bw, &refp, pw, ox, oy, bw, bh, Mv::ZERO, 8, 8, pw, ph,
-    );
+    let res = full_pel_search(&src, bw, &refp, pw, ox, oy, bw, bh, Mv::ZERO, 8, 8, pw, ph);
     assert_eq!(res.distortion, 0, "exact match should be zero SAD");
     assert_eq!(res.mv.x, ((tx as i32 - ox) * 8) as i16);
     assert_eq!(res.mv.y, ((ty as i32 - oy) * 8) as i16);

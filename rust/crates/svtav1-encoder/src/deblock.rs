@@ -912,7 +912,9 @@ pub fn apply_deblock_frame_hbd(
     if l[0] == 0 && l[1] == 0 {
         return;
     }
-    filter_plane_hbd(y, width, width, height, 0, 0, l[0], l[1], geom, sharpness, bd);
+    filter_plane_hbd(
+        y, width, width, height, 0, 0, l[0], l[1], geom, sharpness, bd,
+    );
     if chroma_420 {
         let (cw, ch) = (width / 2, height / 2);
         if l[2] != 0 {
@@ -941,7 +943,10 @@ mod tests {
         assert_eq!(pick_filter_levels_key_frame(0, 8).levels, [0, 0, 0, 0]);
         // Top of the table: q_step(255) = 1828 -> (32105164 - 421574 +
         // 131072) >> 18 = 121 -> clamps to 63; chroma 121/2 = 60.
-        assert_eq!(pick_filter_levels_key_frame(255, 8).levels, [63, 63, 60, 60]);
+        assert_eq!(
+            pick_filter_levels_key_frame(255, 8).levels,
+            [63, 63, 60, 60]
+        );
     }
 
     /// bd10 KEY arm (deblocking_filter.c:1070-1084): q = AC_QLOOKUP_10[qidx],
@@ -959,7 +964,10 @@ mod tests {
         // bd8 at the same qindex must be UNCHANGED (byte-neutral guarantee).
         let q8 = svtav1_dsp::quant_tables::AC_QLOOKUP_8[128] as i32;
         let e8 = (q8 * 17563 - 421574 + (1 << 17)) >> 18;
-        assert_eq!(pick_filter_levels_key_frame(128, 8).levels[0] as i32, e8.clamp(0, MAX_LOOP_FILTER));
+        assert_eq!(
+            pick_filter_levels_key_frame(128, 8).levels[0] as i32,
+            e8.clamp(0, MAX_LOOP_FILTER)
+        );
     }
 
     #[test]

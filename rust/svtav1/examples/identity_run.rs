@@ -371,7 +371,10 @@ fn main() {
     // content whose coded symbols are bit-depth-independent — uniform/skip,
     // where the decoder's DC prediction fills the 10-bit default and the coded
     // tile bytes are identical to bd8 apart from the SH high_bitdepth bit.
-    let bd: u8 = std::env::var("SVTAV1_BD").ok().and_then(|v| v.parse().ok()).unwrap_or(8);
+    let bd: u8 = std::env::var("SVTAV1_BD")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(8);
     // SVTAV1_HBD_SRC (task #6 chunk 2): generate a REAL 10-bit source instead
     // of `u8 << 2`. The low 2 bits carry a deterministic spatial pattern, so
     // both encoders see identical NON-widened 10-bit samples and the gate
@@ -547,7 +550,10 @@ fn main() {
                 b.extend_from_slice(uu);
                 b.extend_from_slice(vv);
                 std::fs::write(format!("{pfx}.{name}.bin"), &b).expect("write recon dump");
-                eprintln!("SVTAV1_RECON_DUMP {name} -> {pfx}.{name}.bin ({} bytes)", b.len());
+                eprintln!(
+                    "SVTAV1_RECON_DUMP {name} -> {pfx}.{name}.bin ({} bytes)",
+                    b.len()
+                );
             }
         };
         dump("pre", &pipeline.last_recon_unfiltered);

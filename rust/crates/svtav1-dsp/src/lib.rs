@@ -6,14 +6,14 @@
 
 extern crate alloc;
 
+pub mod ac_bias;
 #[cfg(feature = "std")]
 pub mod bench;
-pub mod hbd;
 pub mod cdef;
 pub mod copy;
 pub mod fwd_txfm;
-pub mod ac_bias;
 pub mod hadamard;
+pub mod hbd;
 pub mod inter_pred;
 pub mod intra_pred;
 // NOTE: no `intrabc` module here. A naive non-C-faithful placeholder
@@ -29,11 +29,11 @@ pub mod obmc;
 pub mod quant;
 pub mod quant_coding;
 pub mod quant_tables;
+pub mod residual;
+pub mod resize;
 pub mod restoration;
 pub mod sad;
 pub mod scale;
-pub mod residual;
-pub mod resize;
 pub mod superres;
 pub mod txfm_dispatch;
 pub mod txfm_simd;
