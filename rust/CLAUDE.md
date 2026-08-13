@@ -268,6 +268,24 @@ constraint and the doc that tracks lifting it.
   full `for_each_token_permutation` coverage is strictly better and unblocked.
 
 
+- **A bare `for_each_token_permutation(...)` call is a SILENT-COVERAGE
+  hazard — always consume the `PermutationReport`.** Measured 2026-08-13
+  while clearing 11 `unused PermutationReport` warnings in
+  `c_parity_txfm.rs`. The runner does NOT `catch_unwind`, so asserts inside
+  the closure do propagate — nothing swallows a failure. What the discarded
+  report carries is the only LIVENESS signal: `permutations_run` and
+  `warnings` (one per token archmage EXCLUDED because it is compile-time
+  guaranteed — `-Ctarget-cpu=native`, or a build without the
+  `testable_dispatch` dev-feature). `CompileTimePolicy::WarnStderr` prints
+  those to stderr, which the runner HIDES on a passing test, so an
+  `..._all_tiers_match_c` test degrades to a native-tier-only test and stays
+  green. Proof: drop `testable_dispatch` from `svtav1-dsp`'s dev-deps and
+  archmage excludes 5 tokens (NEON, NEON+AES, NEON+SHA3, NEON+CRC,
+  Arm64-v2); the pre-fix file reported `20 passed; 0 failed` on that reduced
+  coverage. Use `c_parity_txfm.rs`'s `for_each_tier(label, f)` helper (or
+  copy its two asserts: `warnings.is_empty()` and `permutations_run >= 2`).
+  Dev-host baseline with `testable_dispatch` on (aarch64): 25 permutations,
+  0 warnings, down to the all-tokens-disabled scalar arm.
 - `#[arcane]` = entry points only (after token summon). One per hot path.
 - `#[rite]` = inner helpers (no dispatch overhead). Default for all SIMD helpers.
 - `incant!` for multi-platform dispatch with `[v3, neon, scalar]` tiers.
