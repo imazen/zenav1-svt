@@ -389,7 +389,45 @@ fn inv_named_square_wrappers_flat_dc_match_c() {
 // Extend `SIMD_SQUARE` as more sizes are vectorized.
 // ============================================================================
 
-use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+use archmage::testing::{CompileTimePolicy, TokenPermutation, for_each_token_permutation};
+
+/// Sweep every dispatch-tier permutation, then assert the sweep had teeth.
+///
+/// The asserts inside `f` already propagate (the permutation runner does not
+/// `catch_unwind`), so a tier that disagrees with C fails the test. What the
+/// bare call was throwing away is the `#[must_use]` `PermutationReport`, and
+/// that report carries the only LIVENESS signal a caller gets:
+///
+/// * `permutations_run` — when a token is compile-time guaranteed (a
+///   `-Ctarget-cpu=native` in `RUSTFLAGS`, or a build without archmage's
+///   `testable_dispatch` dev-feature) it is silently excluded from the
+///   permutation set. With every token excluded the sweep collapses to the
+///   single "all enabled" arm, so an `..._all_tiers_match_c` test degrades
+///   into a native-tier-only test and still reports green.
+/// * `warnings` — one entry per excluded token. `CompileTimePolicy::WarnStderr`
+///   prints them to stderr, which the test runner hides on a PASSING test, so
+///   nothing observable distinguishes full coverage from partial coverage.
+///
+/// Measured on the dev host (aarch64, `testable_dispatch` on): 25 permutations,
+/// 0 warnings — down to the all-tokens-disabled scalar arm. The asserts below
+/// are what makes that a checked property instead of an assumption.
+fn for_each_tier(label: &str, f: impl FnMut(&TokenPermutation)) {
+    let report = for_each_token_permutation(CompileTimePolicy::WarnStderr, f);
+    assert!(
+        report.warnings.is_empty(),
+        "{label}: archmage excluded {} token(s) from the tier sweep, so this \
+         test covered FEWER tiers than its name claims: {:?}",
+        report.warnings.len(),
+        report.warnings
+    );
+    assert!(
+        report.permutations_run >= 2,
+        "{label}: the tier sweep ran {} permutation(s) -- only the native tier. \
+         A one-arm sweep cannot catch a SIMD-vs-scalar divergence, so a green \
+         result here would mean nothing.",
+        report.permutations_run
+    );
+}
 
 const SIMD_SQUARE: [(usize, TxSize); 4] = [
     (8, TxSize::Tx8x8),
@@ -423,7 +461,7 @@ fn fwd_dct_simd_all_tiers_match_c() {
             let res16 = simd_residual(pat, n * n, &mut rng);
             let c_out = cref::fwd_txfm2d(n, &res16, 0); // DCT_DCT
             let res32: Vec<i32> = res16.iter().map(|&v| v as i32).collect();
-            for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            for_each_tier("fwd_dct_simd_all_tiers_match_c", |_perm| {
                 let mut ours = vec![0i32; n * n];
                 assert!(svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
                     &res32,
@@ -467,7 +505,7 @@ fn fwd_dct_simd_rect_all_tiers_match_c() {
             let res16 = simd_residual(pat, w * h, &mut rng);
             let c_out = cref::fwd_txfm2d_rect(w, h, &res16, 0); // DCT_DCT
             let res32: Vec<i32> = res16.iter().map(|&v| v as i32).collect();
-            for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            for_each_tier("fwd_dct_simd_rect_all_tiers_match_c", |_perm| {
                 let mut ours = vec![0i32; w * h];
                 assert!(svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
                     &res32,
@@ -517,27 +555,30 @@ fn inv_dct_simd_rect_all_tiers_identical_and_recon_match_c() {
             let c_recon = cref::inv_txfm2d_add_rect(w, h, &coeffs, &base, 0);
 
             let mut first_res: Option<Vec<i32>> = None;
-            for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
-                let mut our_res = vec![0i32; w * h];
-                named_inv_rect(w, h, &coeffs, &mut our_res, w);
-                match &first_res {
-                    None => first_res = Some(our_res.clone()),
-                    Some(f) => {
-                        assert_eq!(
-                            &our_res, f,
-                            "inv rect {w}x{h} pat {pat}: tier residual != scalar"
-                        )
+            for_each_tier(
+                "inv_dct_simd_rect_all_tiers_identical_and_recon_match_c",
+                |_perm| {
+                    let mut our_res = vec![0i32; w * h];
+                    named_inv_rect(w, h, &coeffs, &mut our_res, w);
+                    match &first_res {
+                        None => first_res = Some(our_res.clone()),
+                        Some(f) => {
+                            assert_eq!(
+                                &our_res, f,
+                                "inv rect {w}x{h} pat {pat}: tier residual != scalar"
+                            )
+                        }
                     }
-                }
-                let recon: Vec<u16> = our_res
-                    .iter()
-                    .map(|&r| (128 + r).clamp(0, 255) as u16)
-                    .collect();
-                assert_eq!(
-                    recon, c_recon,
-                    "inv rect {w}x{h} pat {pat}: SIMD tier recon != C"
-                );
-            });
+                    let recon: Vec<u16> = our_res
+                        .iter()
+                        .map(|&r| (128 + r).clamp(0, 255) as u16)
+                        .collect();
+                    assert_eq!(
+                        recon, c_recon,
+                        "inv rect {w}x{h} pat {pat}: SIMD tier recon != C"
+                    );
+                },
+            );
         }
     }
 }
@@ -579,32 +620,35 @@ fn inv_dct_simd_all_tiers_identical_and_recon_match_c() {
             let c_recon = cref::inv_txfm2d_add(n, &cref_coeffs, &base, 0);
 
             let mut first: Option<Vec<i32>> = None;
-            for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
-                let mut res = vec![0i32; n * n];
-                assert!(svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch(
-                    &port_coeffs,
-                    &mut res,
-                    n,
-                    ts,
-                    TxType::DctDct
-                ));
-                // (b) all tiers produce byte-identical residuals (SIMD==scalar)
-                match &first {
-                    None => first = Some(res.clone()),
-                    Some(f) => {
-                        assert_eq!(&res, f, "inv {n}x{n} pat {pat}: tier residual != scalar")
+            for_each_tier(
+                "inv_dct_simd_all_tiers_identical_and_recon_match_c",
+                |_perm| {
+                    let mut res = vec![0i32; n * n];
+                    assert!(svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch(
+                        &port_coeffs,
+                        &mut res,
+                        n,
+                        ts,
+                        TxType::DctDct
+                    ));
+                    // (b) all tiers produce byte-identical residuals (SIMD==scalar)
+                    match &first {
+                        None => first = Some(res.clone()),
+                        Some(f) => {
+                            assert_eq!(&res, f, "inv {n}x{n} pat {pat}: tier residual != scalar")
+                        }
                     }
-                }
-                // (a) recon == real C
-                let recon: Vec<u16> = res
-                    .iter()
-                    .map(|&r| (128 + r).clamp(0, 255) as u16)
-                    .collect();
-                assert_eq!(
-                    recon, c_recon,
-                    "inv {n}x{n} pat {pat}: SIMD tier recon != C"
-                );
-            });
+                    // (a) recon == real C
+                    let recon: Vec<u16> = res
+                        .iter()
+                        .map(|&r| (128 + r).clamp(0, 255) as u16)
+                        .collect();
+                    assert_eq!(
+                        recon, c_recon,
+                        "inv {n}x{n} pat {pat}: SIMD tier recon != C"
+                    );
+                },
+            );
         }
     }
 }
@@ -659,7 +703,7 @@ fn fwd_adst_simd_all_tiers_match_c() {
             let res16 = simd_residual(pat, w * h, &mut rng);
             let c_out = cref_fwd_any(w, h, &res16, txi);
             let res32: Vec<i32> = res16.iter().map(|&v| v as i32).collect();
-            for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            for_each_tier("fwd_adst_simd_all_tiers_match_c", |_perm| {
                 let mut ours = vec![0i32; w * h];
                 assert!(svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
                     &res32, &mut ours, w, ts, txt
@@ -701,31 +745,34 @@ fn inv_adst_simd_all_tiers_identical_and_recon_match_c() {
             let c_recon = cref_inv_add_any(w, h, &coeffs, &base, txi);
 
             let mut first_res: Option<Vec<i32>> = None;
-            for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
-                let mut our_res = vec![0i32; w * h];
-                assert!(svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch(
-                    &coeffs,
-                    &mut our_res,
-                    w,
-                    ts,
-                    txt
-                ));
-                match &first_res {
-                    None => first_res = Some(our_res.clone()),
-                    Some(f) => assert_eq!(
-                        &our_res, f,
-                        "inv adst {w}x{h} {txt:?} pat {pat}: tier residual != scalar"
-                    ),
-                }
-                let recon: Vec<u16> = our_res
-                    .iter()
-                    .map(|&r| (128 + r).clamp(0, 255) as u16)
-                    .collect();
-                assert_eq!(
-                    recon, c_recon,
-                    "inv adst {w}x{h} {txt:?} pat {pat}: SIMD tier recon != C"
-                );
-            });
+            for_each_tier(
+                "inv_adst_simd_all_tiers_identical_and_recon_match_c",
+                |_perm| {
+                    let mut our_res = vec![0i32; w * h];
+                    assert!(svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch(
+                        &coeffs,
+                        &mut our_res,
+                        w,
+                        ts,
+                        txt
+                    ));
+                    match &first_res {
+                        None => first_res = Some(our_res.clone()),
+                        Some(f) => assert_eq!(
+                            &our_res, f,
+                            "inv adst {w}x{h} {txt:?} pat {pat}: tier residual != scalar"
+                        ),
+                    }
+                    let recon: Vec<u16> = our_res
+                        .iter()
+                        .map(|&r| (128 + r).clamp(0, 255) as u16)
+                        .collect();
+                    assert_eq!(
+                        recon, c_recon,
+                        "inv adst {w}x{h} {txt:?} pat {pat}: SIMD tier recon != C"
+                    );
+                },
+            );
         }
     }
 }
@@ -768,7 +815,7 @@ fn run_bd10_tier_check(w: usize, h: usize, ts: TxSize, txt: TxType, rng: &mut Rn
             }
         };
         let mut first_res: Option<Vec<i32>> = None;
-        for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+        for_each_tier("run_bd10_tier_check", |_perm| {
             let mut our_res = vec![0i32; w * h];
             assert!(svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch_bd(
                 &coeffs,
@@ -859,7 +906,7 @@ fn fwd_ext_simd_all_tiers_match_c() {
             let res16 = simd_residual(pat, w * h, &mut rng);
             let c_out = cref_fwd_any(w, h, &res16, txi);
             let res32: Vec<i32> = res16.iter().map(|&v| v as i32).collect();
-            for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            for_each_tier("fwd_ext_simd_all_tiers_match_c", |_perm| {
                 let mut ours = vec![0i32; w * h];
                 assert!(
                     svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(&res32, &mut ours, w, ts, txt),
@@ -902,41 +949,44 @@ fn inv_ext_simd_all_tiers_identical_and_recon_match_c() {
             let c_recon = cref_inv_add_any(w, h, &coeffs, &base, txi);
 
             let mut first_res: Option<Vec<i32>> = None;
-            for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
-                let mut our_res = vec![0i32; w * h];
-                assert!(svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch(
-                    &coeffs,
-                    &mut our_res,
-                    w,
-                    ts,
-                    txt
-                ));
-                match &first_res {
-                    None => first_res = Some(our_res.clone()),
-                    Some(f) => assert_eq!(
-                        &our_res, f,
-                        "inv ext {w}x{h} {txt:?} pat {pat}: tier residual != scalar"
-                    ),
-                }
-                let recon: Vec<u16> = our_res
-                    .iter()
-                    .map(|&r| (128 + r).clamp(0, 255) as u16)
-                    .collect();
-                if recon != c_recon {
-                    let first = recon
+            for_each_tier(
+                "inv_ext_simd_all_tiers_identical_and_recon_match_c",
+                |_perm| {
+                    let mut our_res = vec![0i32; w * h];
+                    assert!(svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch(
+                        &coeffs,
+                        &mut our_res,
+                        w,
+                        ts,
+                        txt
+                    ));
+                    match &first_res {
+                        None => first_res = Some(our_res.clone()),
+                        Some(f) => assert_eq!(
+                            &our_res, f,
+                            "inv ext {w}x{h} {txt:?} pat {pat}: tier residual != scalar"
+                        ),
+                    }
+                    let recon: Vec<u16> = our_res
                         .iter()
-                        .zip(c_recon.iter())
-                        .position(|(a, b)| a != b)
-                        .unwrap();
-                    panic!(
-                        "inv ext {w}x{h} {txt:?} pat {pat}: SIMD tier recon != C at {first} (r{} c{}): ours={} c={}",
-                        first / w,
-                        first % w,
-                        recon[first],
-                        c_recon[first]
-                    );
-                }
-            });
+                        .map(|&r| (128 + r).clamp(0, 255) as u16)
+                        .collect();
+                    if recon != c_recon {
+                        let first = recon
+                            .iter()
+                            .zip(c_recon.iter())
+                            .position(|(a, b)| a != b)
+                            .unwrap();
+                        panic!(
+                            "inv ext {w}x{h} {txt:?} pat {pat}: SIMD tier recon != C at {first} (r{} c{}): ours={} c={}",
+                            first / w,
+                            first % w,
+                            recon[first],
+                            c_recon[first]
+                        );
+                    }
+                },
+            );
         }
     }
 }
@@ -1012,7 +1062,7 @@ fn fwd_4dim_simd_all_tiers_match_c() {
             };
             let c_out = cref_fwd_any(w, h, &res16, txi);
             let res32: Vec<i32> = res16.iter().map(|&v| v as i32).collect();
-            for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            for_each_tier("fwd_4dim_simd_all_tiers_match_c", |_perm| {
                 let mut ours = vec![0i32; w * h];
                 assert!(
                     svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(&res32, &mut ours, w, ts, txt),
@@ -1055,41 +1105,44 @@ fn inv_4dim_simd_all_tiers_identical_and_recon_match_c() {
             let c_recon = cref_inv_add_any(w, h, &coeffs, &base, txi);
 
             let mut first_res: Option<Vec<i32>> = None;
-            for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
-                let mut our_res = vec![0i32; w * h];
-                assert!(svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch(
-                    &coeffs,
-                    &mut our_res,
-                    w,
-                    ts,
-                    txt
-                ));
-                match &first_res {
-                    None => first_res = Some(our_res.clone()),
-                    Some(f) => assert_eq!(
-                        &our_res, f,
-                        "inv 4dim {w}x{h} {txt:?} pat {pat}: tier residual != scalar"
-                    ),
-                }
-                let recon: Vec<u16> = our_res
-                    .iter()
-                    .map(|&r| (128 + r).clamp(0, 255) as u16)
-                    .collect();
-                if recon != c_recon {
-                    let first = recon
+            for_each_tier(
+                "inv_4dim_simd_all_tiers_identical_and_recon_match_c",
+                |_perm| {
+                    let mut our_res = vec![0i32; w * h];
+                    assert!(svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch(
+                        &coeffs,
+                        &mut our_res,
+                        w,
+                        ts,
+                        txt
+                    ));
+                    match &first_res {
+                        None => first_res = Some(our_res.clone()),
+                        Some(f) => assert_eq!(
+                            &our_res, f,
+                            "inv 4dim {w}x{h} {txt:?} pat {pat}: tier residual != scalar"
+                        ),
+                    }
+                    let recon: Vec<u16> = our_res
                         .iter()
-                        .zip(c_recon.iter())
-                        .position(|(a, b)| a != b)
-                        .unwrap();
-                    panic!(
-                        "inv 4dim {w}x{h} {txt:?} pat {pat}: SIMD tier recon != C at {first} (r{} c{}): ours={} c={}",
-                        first / w,
-                        first % w,
-                        recon[first],
-                        c_recon[first]
-                    );
-                }
-            });
+                        .map(|&r| (128 + r).clamp(0, 255) as u16)
+                        .collect();
+                    if recon != c_recon {
+                        let first = recon
+                            .iter()
+                            .zip(c_recon.iter())
+                            .position(|(a, b)| a != b)
+                            .unwrap();
+                        panic!(
+                            "inv 4dim {w}x{h} {txt:?} pat {pat}: SIMD tier recon != C at {first} (r{} c{}): ours={} c={}",
+                            first / w,
+                            first % w,
+                            recon[first],
+                            c_recon[first]
+                        );
+                    }
+                },
+            );
         }
     }
 }
