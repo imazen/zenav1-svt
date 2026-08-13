@@ -993,6 +993,21 @@ mod tests {
     /// `let mut out: u8 = incoming_segment_id;` is the loop's initial value, so
     /// a fall-through returns it. An earlier revision initialised `out` to 0
     /// and would have shipped 0 here.
+    /// Debug-only BY CONSTRUCTION: it asserts that a `debug_assert!` fires, and
+    /// `debug_assert!` is compiled out in release — so under `--release` this
+    /// test cannot panic and `should_panic` fails. That is not a flake and not
+    /// a reason to weaken it; the behaviour it pins genuinely does not exist in
+    /// a release build, mirroring C, which is the whole point of the test.
+    ///
+    /// The gate is `cfg(debug_assertions)` rather than `#[ignore]` so the
+    /// decision is visible in the source and the test cannot silently
+    /// self-skip. The release half — that the fall-through returns the INCOMING
+    /// id rather than a fabricated 0 — is covered by
+    /// [`roi_map_all_lossless_walk_returns_incoming_id`] below, which is
+    /// release-only for the mirror-image reason: in a debug build that same
+    /// call panics on the assert before it can return. Between the two, every
+    /// build configuration exercises this path.
+    #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "asserts the chosen segment is not lossless")]
     fn roi_map_all_lossless_walk_asserts_exactly_where_c_does() {
@@ -1023,6 +1038,54 @@ mod tests {
             0,
             4,
             7, // the incoming blk_ptr->segment_id
+        );
+    }
+
+    /// The release half of [`roi_map_all_lossless_walk_asserts_exactly_where_c_does`].
+    ///
+    /// C's downward walk falls through without writing when every candidate is
+    /// lossless, so a release build ships the INCOMING `segment_id`. The port
+    /// must do the same — `let mut out: u8 = incoming_segment_id;` is the
+    /// loop's initial value. An earlier revision initialised `out` to 0 and
+    /// would have shipped 0 here, silently disagreeing with C on exactly the
+    /// input where C's own assert says the situation is degenerate.
+    ///
+    /// Release-only: in a debug build the `debug_assert!` fires before the
+    /// function can return, which is what the companion test pins.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn roi_map_all_lossless_walk_returns_incoming_id() {
+        const INCOMING: u8 = 7;
+        let map = [3u8, 3, 3, 3, 3, 3, 3, 3];
+        let roi = RoiMapEvt {
+            b64_seg_map: &map,
+            seg_qp: [0; MAX_SEGMENTS],
+            max_seg_id: 7,
+        };
+        let mut seg = SegmentationParams {
+            segmentation_enabled: true,
+            ..SegmentationParams::default()
+        };
+        for row in seg.feature_data.iter_mut() {
+            row[SEG_LVL_ALT_Q] = -4;
+        }
+        let got = roi_map_apply_segmentation_based_quantization(
+            &seg,
+            &roi,
+            4,
+            false,
+            128,
+            64,
+            BlockSize::Block64x64,
+            0,
+            0,
+            4,
+            INCOMING,
+        );
+        assert_eq!(
+            got, INCOMING,
+            "an all-lossless walk must fall through and return the incoming \
+             segment id, as C does; returning 0 here would be a fabricated value"
         );
     }
 
