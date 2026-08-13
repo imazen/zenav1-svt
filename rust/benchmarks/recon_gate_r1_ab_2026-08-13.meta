@@ -1,0 +1,128 @@
+# R1 — gate the inverse transform + reconstruction on C's own predicate
+
+date: 2026-08-13
+host: mac (Apple aarch64, 12 logical cores), box shared with another agent —
+      every timed run wrapped in `~/bin/measlock`. NEITHER SIDE NICED.
+base: 8179a7d94 (R2 landed)   cand: this commit
+build: both arms `RUSTFLAGS=-C llvm-args=-align-all-functions=4`, no
+       `target-cpu=native`. Control arm = a byte-IDENTICAL SECOND COPY of the
+       base binary (equal md5), run in the same session on the same grid.
+harness: rust/tools/perf_ab.sh — interleaved paired rounds, randomised order,
+       one untimed warmup inside each sample.
+noise floor: [0.9843, 1.0190]. Anything inside it is NULL whatever its sign.
+
+## The three per-site dead-proofs
+
+The port inverse-transformed and reconstructed unconditionally. C gates on
+`ctx->mds_do_spatial_sse || (!is_inter && cand_bf->cand->block_mi.tx_depth)`
+(`product_coding_loop.c:4783-4784`), chroma twin `full_loop.c:2313`, single-TX
+luma `:5727`. All-intra pins `spatial_sse_full_loop_level = 3`
+(`enc_mode_config.c:10010`), so `mds_do_spatial_sse` is false at MDS1 (`:7025`)
+and MDS2 (`:7047`) — C inverts NOTHING there.
+
+Each site's proof is an exhaustive scan of every occurrence of the binding in
+its own scope, not "the immediate caller does not use it":
+
+1. **MDS1 luma** (`for &ci in order.iter().take(n1)`, a 161-line loop). `out` is
+   a `let` local to one iteration; it is never stored, moved or returned. Every
+   non-comment occurrence of `out` in the whole loop body is a single line:
+   `None => (out.eob, out.bits as u64, out.dist, lambda)`. No `.recon`, no
+   `.qcoeff`, no `.cul`. Nothing outside the loop can observe it.
+2. **CfL alpha search** (`plane_cost` closure, 34 lines). `out` is closure-local
+   and the closure's tail expression is `(out.dist, out.bits)` — the only other
+   occurrence. C's `av1_cost_calc_cfl` reaches `svt_aom_full_loop_uv` with
+   `is_full_loop = 0`, so the `is_full_loop && mds_do_spatial_sse` gate is false
+   for every alpha tried.
+3. **non-CfL chroma re-cost** (`u_nc` / `v_nc`). Inside the 876-line
+   `cfl_gate && cfl_uv_follows` block the only occurrence beyond the two
+   bindings is `u_nc.dist + v_nc.dist`. A whole-file scan finds ZERO other
+   mentions of either name. C recomputes this cost through `svt_aom_full_loop_uv`
+   with `is_full_loop = 0` (`product_coding_loop.c:3800-3860`), which likewise
+   never inverts. Its RATE deliberately comes from `u_out`/`v_out`, not from
+   these.
+
+Three of three proved; none deferred.
+
+Two structural safeguards, because a proof is only true of today's code:
+* the flag is an explicit `need_recon` parameter, NOT `spatial_dist` reused —
+  `spatial_dist == false && need_recon == true` is legal the moment a depth-1
+  neighbour prediction needs the reconstruction;
+* the effective predicate is `need_recon || spatial_dist`, so a future caller
+  that mislabels `need_recon` still gets correct spatial distortion;
+* the skipped buffer is `Vec::new()`, not a zeroed block: a consumer that
+  appears later gets an index panic, never a plausible black block.
+
+## Measured — qp 40, n=25
+
+| cell      | R1 ratio | control | | cell      | R1 ratio | control |
+|-----------|---------:|--------:|-|-----------|---------:|--------:|
+| 256  p6   | 0.9739   | 0.9988  | | 512  p6   | 0.9686   | 0.9998  |
+| 256  p8   | 0.9794   | 1.0003  | | 512  p8   | 0.9759   | 1.0023  |
+| 256  p10  | 0.9513   | 0.9945  | | 512  p10  | 0.9624   | 1.0020  |
+| 256  p13  | 0.9613   | 0.9994  | | 512  p13  | 0.9624   | 0.9989  |
+| 1024 p6   | 0.9694   | 1.0014  | | 1024 p10  | 0.9498   | 0.9991  |
+| 1024 p8   | 0.9724   | 1.0013  | | 1024 p13  | 0.9507   | 1.0029  |
+
+Twelve of twelve outside the band = **1.021x to 1.053x**; twelve of twelve
+control cells inside it.
+
+## Measured — qp 20, n=25
+
+| cell      | R1 ratio | control | verdict |
+|-----------|---------:|--------:|---------|
+| 256  p6   | 0.9845   | 0.9961  | NULL (inside band, by 0.0002) |
+| 256  p8   | 0.9877   | 1.0055  | NULL |
+| 256  p10  | 0.9719   | 1.0013  | REAL 1.029x |
+| 256  p13  | 0.9709   | 0.9923  | REAL 1.030x |
+| 512  p6   | 0.9879   | 1.0032  | NULL |
+| 512  p8   | 0.9770   | 0.9974  | REAL 1.024x |
+| 512  p10  | 0.9672   | 1.0024  | REAL 1.034x |
+| 512  p13  | 0.9743   | 1.0040  | REAL 1.026x |
+| 1024 p6   | 0.9853   | 1.0002  | NULL |
+| 1024 p8   | 0.9806   | 1.0028  | REAL 1.020x |
+| 1024 p10  | 0.9606   | 1.0016  | REAL 1.041x |
+| 1024 p13  | 0.9598   | 0.9995  | REAL 1.042x |
+
+Four p6 cells and one p8 cell land inside the band and are NULL cell-by-cell.
+
+## Measured — p2 and p7, qp 40, n=9
+
+| cell     | R1 ratio | control | verdict |
+|----------|---------:|--------:|---------|
+| 256  p2  | 0.9878   | 1.0010  | NULL (inside band) |
+| 512  p2  | 0.9751   | 0.9980  | REAL 1.026x |
+| 256  p7  | 0.9565   | 0.9997  | REAL 1.046x |
+| 512  p7  | 0.9689   | 1.0064  | REAL 1.032x |
+
+## The aggregate, which is stronger than any single cell
+
+**28 of 28 R1 cells came in below 1.0**, across 6 presets x 3 sizes x 2 qps.
+The control arm — a binary byte-identical to its own base — was 13 below and 15
+above. A sign test on 28/28 is p = 3.7e-9. The five cells that fall inside the
+band individually are still part of that run of 28; they are reported as null
+cell-by-cell and are not counted as evidence on their own.
+
+The effect size also tracks the census
+(`benchmarks/txunit_census_2026-08-13.tsv`), which put the discarded share of
+inverse-transform PIXEL work at 40-50 % at p10/p13, 36-50 % at p8, 43-51 % at
+p7, 28-53 % at p6 and 24-44 % at p2 — largest at the fast presets, where the
+measured speedup is also largest.
+
+## Byte-identity
+
+byteid_fingerprint 168/168, `port_md5 == c_md5` on all 168, whole file diffs
+CLEAN against the pre-session fingerprint. decode_gate_grid 120/120 (aomdec +
+dav1d, byte-identical to C). partial_sb_gate 146/146. recon_parity 432/432 —
+and that gate is not vacuous here: 199 of 432 streams fired CDEF over 2,461,408
+filtered pixels and 118 signalled wiener, unchanged from the base run.
+nextest --workspace 1029/1029.
+
+## Not done
+
+* The bd10 mirror `tx_unit_hbd` still reconstructs unconditionally. Same
+  defect, same three sites, untouched — it is reachable only from the bd10
+  re-encode pass, which no gap cell runs.
+* `TxUnitOut::qcoeff` is also unread at all three sites (`compute_cul_level`'s
+  `cul` likewise). Removing the qcoeff ESCAPE is R4's pooling question, not
+  R1's, and `qcoeff` is still an input to `cost_coeffs_txb` wherever the exact
+  rate survives — so it cannot simply be dropped.

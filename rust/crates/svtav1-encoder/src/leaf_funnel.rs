@@ -2150,10 +2150,28 @@ fn tx_unit_inner(
         );
     }
 
-    // Reconstruction (needed for spatial dist AND for depth-1 neighbor
-    // prediction — C inverts whenever spatial SSE or intra tx_depth > 0).
-    let mut recon = vec![0u8; n];
-    if eob > 0 {
+    // ---- Reconstruction, gated on C's own predicate ----
+    //
+    // C: `if (ctx->mds_do_spatial_sse || (!is_inter && cand_bf->cand->
+    // block_mi.tx_depth))` (product_coding_loop.c:4783-4784), with the chroma
+    // twin at full_loop.c:2313 (`is_full_loop && ctx->mds_do_spatial_sse`) and
+    // the single-TX luma site at :5727. The all-intra derivation pins
+    // `spatial_sse_full_loop_level = 3` (SSSE_MDS3, enc_mode_config.c:10010),
+    // so `mds_do_spatial_sse` is false at MDS1 (:7025) and MDS2 (:7047) and C
+    // inverse-transforms NOTHING at those stages.
+    //
+    // `need_recon` is the caller's answer to "do I read `out.recon`", proven
+    // per site at the three call sites that pass `false`. `|| spatial_dist` is
+    // belt-and-braces, not redundancy: the spatial-SSE arm below reads `recon`,
+    // so a future caller that mislabels `need_recon` still gets correct
+    // distortion instead of an empty slice.
+    let do_recon = need_recon || spatial_dist;
+    // Empty, not zeroed, when skipped: a consumer that appears later gets an
+    // index panic rather than a plausible black block.
+    let mut recon = if do_recon { vec![0u8; n] } else { Vec::new() };
+    if !do_recon {
+        // C's branch is simply not taken here.
+    } else if eob > 0 {
         // `dq_full` is only PARTIALLY overwritten below (a pw x ph corner into a
         // w x h buffer), so zeroing it is load-bearing, not decorative — it is
         // kept exactly as the `vec![0i32; n]` it replaces.
