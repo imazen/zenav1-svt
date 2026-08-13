@@ -220,6 +220,33 @@ knobs that were recorded and then ignored). When adding a feature whose envelope
 is narrower than its API, add the predicate next to those and name both the
 constraint and the doc that tracks lifting it.
 
+## MSRV: exercise the floor, don't just declare it (2026-08-13)
+
+`rust-version` is load-bearing in two directions and both have bitten:
+
+- **It gates CLIPPY's suggestions.** clippy suppresses any lint whose fix
+  needs an API or language feature newer than the declared floor. The
+  floor was a FALSE `1.85` (the crate could not resolve there at all —
+  archmage 0.9.28 needs 1.89), and correcting it to the true 1.89
+  immediately surfaced **79 previously-hidden lints**: 43
+  `manual_is_multiple_of` (`is_multiple_of` stabilised 1.87) and 27
+  `collapsible_if` (collapsible only once let-chains landed in 1.88).
+  So a wrong floor silently costs you lint coverage; expect a wave after
+  any bump.
+- **A targeted `#[allow]` can itself be un-lintable at the floor.** An
+  allow naming a lint NEWER than the floor's clippy (here
+  `clippy::manual_checked_ops`) makes `cargo +<msrv> clippy` emit
+  `unknown lint` at your own attribute. Write
+  `#[allow(unknown_lints, clippy::<new_lint>)]`.
+
+**Check both toolchains before calling a lint sweep done**:
+`cargo +stable clippy --workspace --all-targets` AND
+`cargo +<rust-version> clippy --workspace --all-targets`, plus
+`cargo +<rust-version> test --workspace` (and `--release`). They DO
+disagree: 1.89's clippy emits 3 `nonminimal_bool` that current stable has
+dropped. Note `cargo test` counts 1031 where nextest counts 1029 — the
+difference is 2 doctests, which nextest does not run.
+
 ## Commit Discipline
 - **Commit after EVERY meaningful change.** After porting a function, commit. After adding a test, commit. After fixing a test, commit. Never batch more than ~30 minutes of work into one commit.
 - **Push after every commit.** CI runs on remote.
