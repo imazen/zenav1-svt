@@ -1,0 +1,85 @@
+# NEGATIVE: a thread-local `Vec` pool for the mode-decision buffers measures NULL
+
+date: 2026-08-13
+host: mac (Apple aarch64, 12 logical cores)
+base: 29847e5d3 (after the decision-copy removal)
+status: **BUILT, byte-identical, measured null at n=31, NOT SHIPPED.**
+
+## What was built
+
+A `bufbank` module in `zenav1-svt-encoder`: one thread-local free-list per
+element type (`i32`/`u8`/`u16`), `take_*(n)` returning a `Vec` of length `n`
+with every element zero (`clear()` + `resize(n, 0)` — byte-for-byte what
+`vec![0; n]` returns, so a recycled buffer can never leak a previous tenant's
+bytes), and `give_*(v)` returning a buffer to the pool. `give` was a pure
+optimisation: a buffer that is never given back is dropped normally, so a
+missed `give` could cost speed and nothing else. Pool capped at 24 buffers per
+type; buffers above 16 Ki elements were not pooled. No `unsafe` — the crate's
+`#![forbid(unsafe_code)]` was untouched. Four unit tests, mutation-verified
+(deleting the `clear()` made 3 of 4 fail).
+
+Wired into the hottest sites the profile named:
+* the three per-candidate MDS0 luma predictions in `evaluate_leaf`
+  (`vec![0u8; w*h]`) and their bd10 `u16` twins,
+* a `recycle_cand` that hands every one of a finished `Cand`'s 15 buffers back
+  (called on all losing candidates at both `LeafEval` exits),
+* the `LeafEval`'s own `gate_y/u/v`, `psq_resid`, `psq_resid10` and the three
+  `win_*_recon10` buffers, given back in `into_choice`.
+
+## It worked, mechanically, and it bought nothing
+
+The allocator traffic really did drop — `/usr/bin/sample`, 1 ms, 15 s,
+gradient 512x512 p10, nearest-app-ancestor attribution:
+
+| | malloc family, % of self time | `drop_glue::<Cand>`, % of malloc |
+|---|---:|---:|
+| before (29847e5d3) | 10.78 % | 7.11 % |
+| after (pool)       |  9.84 % | 0 % (gone) |
+
+And the A/B measured nothing. Interleaved paired, both arms
+`-C llvm-args=-align-all-functions=4`, gradient qp40, against an in-grid
+byte-identical-binary control run in the same session:
+
+| cell    | n  | pool ratio | control ratio |
+|---------|---:|-----------:|--------------:|
+| 256 p10 | 31 |     0.9981 |        0.9956 |
+| 512 p10 | 31 |     0.9814 |        1.0026 |
+| 1024 p10| 31 |     1.0000 |        0.9988 |
+
+A six-cell n=15 pass first read 0.9966 / 0.9985 / 1.0052 / 0.9978 / 1.0024 /
+0.9913 — also inside the band. Every cell byte-identical; the 168-cell
+fingerprint was unchanged and still equal to C.
+
+## Why, and what it means for the next attempt
+
+The change removed ~0.94 points of self time from `libsystem_malloc` and
+added back the pool's own machinery: a `thread_local!` access, a `RefCell`
+borrow, a free-list scan and an explicit `resize`-memset per buffer. On
+macOS's xzone allocator, at the 64-4096-element sizes AV1 mode decision uses,
+**a thread-local `Vec` pool costs about what `malloc`/`free` costs.** The
+`vec![0; n]` it replaces goes through `calloc`, which for a recycled small
+allocation also memsets — so the pool does not even save the zeroing.
+
+This is the same lesson as rav1d-safe's AGENT_BRIEF §6 "price the MACHINERY
+the count reduction needs", one level down: the count reduction was real
+(a whole class of allocations gone from the profile) and the machinery ate it.
+
+Consequences for anyone picking this up:
+
+1. **Do not re-run this experiment.** Pooling `Vec`s one at a time is priced.
+   The remaining allocator traffic is ~9.8 % malloc + ~9.0 % libc-mem against
+   C's 0.49 % + 2.70 %, an arithmetic ceiling of ~1.19x, and it is spread over
+   `evaluate_leaf` (26 % of malloc samples), `tx_unit_inner` (13.6 %),
+   `extract_neighbors_tiled` (7.7 %), `Pd0Ctx::lvl5_like_block_cost` (6.6 %)
+   and a long tail.
+2. **The shape that is still unpriced is C's shape**: not a pool of `Vec`s but
+   ONE per-thread arena allocated at pipeline construction that every one of
+   these buffers is a `&mut [T]` slice INTO, with no per-buffer bookkeeping at
+   all. That removes the machinery this experiment paid for, and it is what
+   the C reference does (`svt_av1_enc_init` lays the whole working set out
+   once). It is a much larger refactor of `leaf_funnel.rs` because the buffers
+   currently escape into owned `Cand` / `TxUnitOut` / `LeafChoice` fields.
+3. **What DID pay was removing whole redundant COPIES**, not recycling the
+   allocations of copies that had to happen: `29847e5d3` (1.07-1.11x at p10)
+   and `6ad044d00` (1.02-1.03x at p10). Look for more duplicated work before
+   looking for cheaper allocation.

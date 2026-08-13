@@ -107,6 +107,30 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Changed
 
+- **Encode speed: the port-vs-C per-pixel slope gap closes to 3.18x at preset
+  10 and 3.11x at preset 13** (from 3.53x / 3.51x), and 3.39x at preset 6 (from
+  3.52x); preset 2 is unmoved. All 24 campaign cells byte-identical to C
+  (`rust/benchmarks/perf_gap_2026-08-13.meta`). Two byte-identical changes, both
+  in the per-coded-block decision path:
+  - the frame's block-decision set was materialised **four** times per frame —
+    a leaf-level clone so the partition tree and a parallel `decisions` list
+    could both own it, an aggregation of that list up the tree, a deep clone
+    into a `per_tile_decisions` that was **written and never read**, and a deep
+    clone of each superblock tree into its raster slot. Only the tree survives;
+    `PartitionResult::decisions` is now populated by the legacy
+    `partition_search` path alone and `num_blocks` comes from the new
+    `PartitionTree::count_leaves` (29847e5d3, A/B 1.07-1.11x at p10).
+  - `LeafEval::to_choice` deep-cloned seven of the winning candidate's buffers
+    only because it ran *before* `commit_leaf`; both callers now commit first
+    and `into_choice` moves (6ad044d00, A/B 1.02-1.03x at p10).
+- **Measured negative, recorded so it is not retried**: a thread-local `Vec`
+  pool for the mode-decision buffers removed a whole class of allocations from
+  the profile (`drop_glue::<Cand>` 7.1% of malloc samples -> 0) and measured
+  **null** at n=31 against an in-grid identity control. On macOS's xzone
+  allocator the pool's machinery costs about what `malloc`/`free` costs at
+  these sizes. `rust/benchmarks/alloc_bufpool_null_2026-08-13.meta` names the
+  shape that is still unpriced (one construction-time arena the buffers are
+  slices into, which is what the C reference does).
 - **CI gates four more 8-bit surfaces**: partial-SB / odd dimensions (104
   cells), tiles across rows AND columns (29), SB128 (22), and panic-freedom on
   gradient AND screen (80). All four already failed loudly — they were simply

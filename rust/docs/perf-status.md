@@ -1,53 +1,83 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
-> **CURRENT (2026-08-11, aarch64 / Apple M4 Pro — read this first).** Everything
+> **CURRENT (2026-08-13, aarch64 / Apple M4 Pro — read this first).** Everything
 > below the "Results — 2026-07-20" heading is the **x86-64/AVX2 history** on
 > `dev-32gb`. The live numbers on the aarch64 box are:
 >
-> | preset | slope ratio port/C | was (2026-08-07) | 1024² cell ratio |
-> |---|---|---|---|
-> | p2 | 4.12x | 4.11x | 4.09 |
-> | p6 | 3.52x | 3.50x | 3.49 |
-> | p10 | **3.53x** | 4.85x | 3.46 |
-> | p13 | **3.51x** | 4.83x | 3.45 |
+> | preset | slope ratio port/C | was (08-11) | was (08-07) | 1024² cell ratio |
+> |---|---|---|---|---|
+> | p2 | 4.16x | 4.12x | 4.11x | 4.13 |
+> | p6 | **3.39x** | 3.52x | 3.50x | 3.38 |
+> | p10 | **3.18x** | 3.53x | 4.85x | 3.12 |
+> | p13 | **3.11x** | 3.51x | 4.83x | 3.07 |
 >
-> The port is still FASTER than C at 32-64 px on the fast presets (0.76x/0.78x
-> at 64²) — its fixed per-frame cost is 0.86x C's. All 24 cells byte-identical.
-> `benchmarks/perf_gap_2026-08-11.{tsv,raw.tsv,meta}`.
+> The port is still FASTER than C at 32-64 px on the fast presets (0.46x at 32²
+> and 0.81x at 64² on p10/p13, 0.78x at 32² on p6) — its fixed per-frame cost is
+> 0.87x C's at p10. All 24 cells byte-identical.
+> `benchmarks/perf_gap_2026-08-13.{tsv,raw.tsv,meta}`.
 >
-> The p10/p13 step came from ONE change: the in-loop deblock and CDEF
-> *application* passes are now skipped when nothing reads the reconstruction
-> (`EncodePipeline::with_recon_output`, default off — C's API produces no recon
-> either). 1.35-1.39x whole-encode at p10/p13, 1.11-1.15x at p7, byte-inert at
-> preset >= 7 (0/90 cells) and deliberately still applied at preset <= 6, where
-> the CDEF and Wiener searches read the filtered pixels (13/36 cells change
-> there). `benchmarks/perf_postfilter_2026-08-11.meta`.
+> The 08-11 -> 08-13 step is two changes, both byte-identical, both in the
+> per-coded-block decision path:
 >
-> **Where the remaining gap is** — `/usr/bin/sample`, 1 ms, 20 s steady state,
-> self time, 512² (percent of port self time):
+> * `29847e5d3` — **the frame's block-decision set was materialised FOUR
+>   times.** A `BlockDecision` owns up to nine heap `Vec`s; it was cloned at
+>   each funnel leaf so the partition TREE and a parallel `decisions` list could
+>   both hold it, aggregated up the tree by ~25 `extend` calls, deep-cloned
+>   again into a `per_tile_decisions` that was **written and never read**, and
+>   the whole per-SB tree deep-cloned into its raster slot. Only the tree
+>   survives; `num_blocks` comes from `PartitionTree::count_leaves`. A/B
+>   1.072-1.111x at p10, 1.014-1.031x at p6
+>   (`benchmarks/alloc_decisioncopy_ab_2026-08-13.meta`).
+> * `6ad044d00` — **`to_choice` cloned seven of the winning candidate's buffers
+>   only because it ran before `commit_leaf`.** Both callers now commit first
+>   and `into_choice` MOVES. A/B 1.016-1.027x at p10, null at p6
+>   (`benchmarks/into_choice_ab_2026-08-13.tsv`).
 >
-> | stage | p10 | p6 |
-> |---|---|---|
-> | MD / leaf / partition driver | 24.2 % | 16.1 % |
-> | TRANSFORMS | 16.7 % | 16.6 % |
-> | ENTROPY / coeff | 15.9 % | 12.7 % |
-> | **alloc (malloc/free)** | **14.0 %** | 8.6 % |
-> | **libc mem (memmove/memset/bzero)** | **11.0 %** | 6.9 % |
-> | QUANT / RDOQ | 4.8 % | 4.9 % |
-> | INTRA PRED | 3.8 % | 2.7 % |
-> | LOOP RESTORATION | 0 % | 12.5 % |
-> | CDEF | 0 % | 9.3 % |
+> p2 did not move (4.12 -> 4.16 is inside its own spread): both changes are
+> per-coded-block costs and p2 spends ~60x longer per block inside the RD
+> search itself.
 >
-> **The #1 remaining lever at p10 is allocator + memcpy traffic: 25.0 % of self
-> time combined**, against C's ~0.1 % (C allocates nothing per block). It is
-> DIFFUSE, which is why the three 2026-08-07 scratch-hoist attempts measured
-> null (`alloc_traffic_null_2026-08-07.meta`): a call-graph attribution of the
-> mem-family leaves puts the largest single parent at 2.4 % of mem samples and
-> the rest spread over hundreds of sites, dominated by `BlockDecision`
-> clone/`drop_glue` and `encode_fixed_tree` (at p6 that one parent is 34.6 % of
-> mem samples). Fixing it is a data-layout change — pooling the per-block
-> decision's `Vec` members into an arena reused across the partition search —
-> not another hoist. Nothing smaller than that will move it.
+> The 08-11 p10/p13 step before that came from ONE change: the in-loop deblock
+> and CDEF *application* passes are skipped when nothing reads the
+> reconstruction (`EncodePipeline::with_recon_output`, default off — C's API
+> produces no recon either). 1.35-1.39x whole-encode at p10/p13, 1.11-1.15x at
+> p7, byte-inert at preset >= 7 (0/90 cells) and deliberately still applied at
+> preset <= 6, where the CDEF and Wiener searches read the filtered pixels
+> (13/36 cells change there). `benchmarks/perf_postfilter_2026-08-11.meta`.
+>
+> **Where the remaining gap is** — `/usr/bin/sample`, 1 ms, 15 s steady state,
+> self time, gradient 512², port at `29847e5d3` (11,478 leaf samples), with the
+> C reference's own profile on the identical cell for scale:
+>
+> | binary | port p10 | C p10 |
+> |---|---:|---:|
+> | the encoder itself | 79.5 % | 95.0 % |
+> | `libsystem_malloc` | 10.8 % | 0.49 % |
+> | `libsystem_platform` (memmove/memset/bzero) | 9.0 % | 2.70 % |
+>
+> **The alloc + libc-mem excess over C is ~16.6 points of the port's self time,
+> i.e. an arithmetic ceiling of 1/(1-0.166) = 1.20x** — not the 1.33x that
+> quoting the port's 19.8 % alone suggests. Nearest-app-ancestor attribution of
+> the malloc-family samples ranks it: `leaf_funnel::evaluate_leaf` 26.0 %,
+> `leaf_funnel::tx_unit_inner` 13.6 %, `partition::extract_neighbors_tiled`
+> 7.7 %, `pd0::Pd0Ctx::lvl5_like_block_cost` 6.6 %, `pd0::tx_quant_core` 4.3 %,
+> `partition::funnel_block_decision` 4.3 %, then a long tail.
+>
+> **Two corrections to what this section used to say.** (1) The claim that the
+> traffic is so diffuse that "the largest single parent is 2.4 % of mem
+> samples" does not survive re-measurement: at 1 ms self-time resolution with
+> nearest-app-ancestor attribution the top parent is 26 % and the top six cover
+> 62 %. (2) The prescription — "pool the per-block decision's `Vec` members into
+> an arena reused across the partition search" — was BUILT and measures
+> **NULL** at n=31 against an in-grid control, even though it demonstrably
+> removed a whole class of allocations from the profile. On macOS's xzone
+> allocator a thread-local `Vec` pool costs about what `malloc`/`free` costs at
+> these sizes, and the `calloc` it replaces was doing the same memset the pool's
+> `resize` does. Full record + what to try instead (one arena allocated at
+> pipeline construction that the buffers are `&mut [T]` slices INTO, with no
+> per-buffer bookkeeping — C's actual shape):
+> `benchmarks/alloc_bufpool_null_2026-08-13.meta`. **Do not re-run the pool
+> experiment.**
 
 Measured baseline for **G4** (docs/ACCEPTANCE-CRITERIA.md → "Performance"): the
 port's per-frame still-image encode wall time against the real C reference,
