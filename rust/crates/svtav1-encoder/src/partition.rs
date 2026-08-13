@@ -454,6 +454,18 @@ pub enum PartitionTree {
 }
 
 impl PartitionTree {
+    /// Number of leaf blocks in the tree — `collect_decisions().len()`
+    /// without deep-cloning every [`BlockDecision`] (each owns up to nine
+    /// `Vec`s) just to throw the clones away.
+    pub fn count_leaves(&self) -> usize {
+        match self {
+            PartitionTree::Leaf(_) => 1,
+            PartitionTree::Split { children, .. } => {
+                children.iter().map(PartitionTree::count_leaves).sum()
+            }
+        }
+    }
+
     /// Collect all leaf decisions in tree order (depth-first).
     pub fn collect_decisions(&self) -> alloc::vec::Vec<BlockDecision> {
         match self {
@@ -606,6 +618,14 @@ pub struct PartitionResult {
     /// Total rate (estimated bits).
     pub rate: u32,
     /// Per-block encoding decisions (flat list, for backward compat).
+    ///
+    /// Populated ONLY by the legacy [`partition_search`] path. The funnel
+    /// paths (`encode_fixed_tree`, `depth_refine::decide_sb`) leave it
+    /// empty and carry their decisions solely in `tree`: the duplicate was
+    /// a leaf-by-leaf deep clone of every [`BlockDecision`] (each owns up
+    /// to nine `Vec`s) that nothing downstream ever read. Use
+    /// [`PartitionTree::collect_decisions`] if you need the flat list, or
+    /// [`PartitionTree::count_leaves`] if you only need its length.
     pub decisions: alloc::vec::Vec<BlockDecision>,
     /// Recursive partition tree for spec-conformant bitstream encoding.
     pub tree: Option<PartitionTree>,
@@ -1670,14 +1690,15 @@ pub(crate) fn encode_fixed_tree(
                         partition_type: ptype,
                         width: size as u16,
                         height: size as u16,
-                        children: alloc::vec![PartitionTree::Leaf(decision.clone())],
+                        children: alloc::vec![PartitionTree::Leaf(decision)],
                     };
                     return PartitionResult {
                         partition_type: ptype,
                         rd_cost: 0,
                         distortion: 0,
                         rate: 0,
-                        decisions: alloc::vec![decision],
+                        // The tree is the only copy — see `PartitionResult::decisions`.
+                        decisions: alloc::vec::Vec::new(),
                         tree: Some(tree),
                         num_blocks: 1,
                     };
@@ -1696,13 +1717,14 @@ pub(crate) fn encode_fixed_tree(
                     sb_is_lvl6,
                 );
                 let decision = funnel_block_decision(choice, size, size);
-                let tree = PartitionTree::Leaf(decision.clone());
+                let tree = PartitionTree::Leaf(decision);
                 return PartitionResult {
                     partition_type: PartitionType::None,
                     rd_cost: 0,
                     distortion: 0,
                     rate: 0,
-                    decisions: alloc::vec![decision],
+                    // The tree is the only copy — see `PartitionResult::decisions`.
+                    decisions: alloc::vec::Vec::new(),
                     tree: Some(tree),
                     num_blocks: 1,
                 };

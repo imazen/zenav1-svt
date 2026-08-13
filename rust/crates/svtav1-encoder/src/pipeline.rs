@@ -1973,7 +1973,6 @@ impl EncodePipeline {
         )?;
         hbd_used |= hbd_used_flag.load(core::sync::atomic::Ordering::Relaxed);
 
-        let mut per_tile_decisions: Vec<Vec<crate::partition::BlockDecision>> = Vec::new();
         // Task #96: `all_trees` is indexed by RASTER sb_idx
         // (`sb_row * sb_cols + sb_col`) by every consumer — the entropy
         // walk, the CDEF/LR re-walks, the deblock geometry pass. Tile
@@ -2009,7 +2008,7 @@ impl EncodePipeline {
         // the merged 10-bit recon that the bd10 deblock/CDEF/LR searches read.
         let mut canvas10: Option<(Vec<u16>, Vec<u16>, Vec<u16>)> = tile_recons
             .first()
-            .and_then(|t| t.3.as_ref())
+            .and_then(|t| t.2.as_ref())
             .map(|_| -> crate::EncodeResult<(Vec<u16>, Vec<u16>, Vec<u16>)> {
                 Ok((
                     svtav1_types::try_vec![0u16; w * h]?,
@@ -2020,7 +2019,7 @@ impl EncodePipeline {
             .transpose()?;
         if let Some((cy, cu, cv)) = canvas10.as_mut() {
             for (tile_idx, t) in tile_recons.iter().enumerate() {
-                let Some((ty, tu, tv)) = t.3.as_ref() else {
+                let Some((ty, tu, tv)) = t.2.as_ref() else {
                     continue;
                 };
                 let (r0, r1) = tile_grid.row_span(tile_idx / tile_grid.tile_cols);
@@ -2041,16 +2040,21 @@ impl EncodePipeline {
             }
         }
 
-        // Merge tile recons into frame buffer and update MV map
-        for (tile_idx, (tile_recon, tile_decisions, tile_trees, _canvas10)) in
-            tile_recons.iter().enumerate()
-        {
-            per_tile_decisions.push(tile_decisions.clone());
+        // Merge tile recons into frame buffer and update MV map.
+        //
+        // CONSUMES `tile_recons`: every SB tree is MOVED into its raster slot
+        // instead of deep-cloned. The clone used to duplicate every
+        // `BlockDecision` in the frame — each carries up to nine owned `Vec`s
+        // (`qcoeffs`, the per-txb `Vec<Vec<i32>>`, the six-`Vec` `chroma_dec`,
+        // the palette pair) — so it was a whole extra allocate+memcpy+free of
+        // the frame's entire decision set for a value that is dropped a few
+        // lines later. `tile_recons` is not read after this loop.
+        for (tile_idx, (tile_recon, tile_trees, _canvas10)) in tile_recons.into_iter().enumerate() {
             let (tile_sb_row_start, tile_sb_row_end) =
                 tile_grid.row_span(tile_idx / tile_grid.tile_cols);
             let (tile_sb_col_start, tile_sb_col_end) =
                 tile_grid.col_span(tile_idx % tile_grid.tile_cols);
-            let mut tree_k = 0usize;
+            let mut tile_trees = tile_trees.into_iter();
             for sb_row in tile_sb_row_start..tile_sb_row_end {
                 // Feature 1: byte-inert cooperative-cancellation check (no-op
                 // for the default `Unstoppable` token — `may_stop()` is false).
@@ -2058,8 +2062,7 @@ impl EncodePipeline {
                     stop.check().map_err(EncodeError::from).map_err(whereat::at)?;
                 }
                 for sb_col in tile_sb_col_start..tile_sb_col_end {
-                    tree_slots[sb_row * sb_cols + sb_col] = Some(tile_trees[tree_k].clone());
-                    tree_k += 1;
+                    tree_slots[sb_row * sb_cols + sb_col] = tile_trees.next();
                 }
             }
             let mut offset = 0;
@@ -6953,7 +6956,6 @@ fn encode_tile_rows(
     stop: &dyn enough::Stop,
 ) -> crate::EncodeResult<Vec<(
     Vec<u8>,
-    Vec<crate::partition::BlockDecision>,
     Vec<crate::partition::PartitionTree>,
     // bd10 FULL-RD only: this tile's committed 10-bit winner recon, as
     // SB-extent-SIZED but ALIGNED-STRIDED (`w` / `w/2`) Y/U/V canvases with
@@ -6965,7 +6967,6 @@ fn encode_tile_rows(
 )>> {
     let encode_one_tile = |tile_idx: usize| -> crate::EncodeResult<(
         Vec<u8>,
-        Vec<crate::partition::BlockDecision>,
         Vec<crate::partition::PartitionTree>,
         Option<(Vec<u16>, Vec<u16>, Vec<u16>)>,
     )> {
@@ -7242,7 +7243,6 @@ fn encode_tile_rows(
         let mut sim_v = svtav1_types::try_vec![128u8; if funnel_chain { ext_cbuf } else { 0 }]?;
         let mut sim_prev_sb_row = usize::MAX;
         let mut fun_rates = fun_rates;
-        let mut tile_decisions: Vec<crate::partition::BlockDecision> = Vec::new();
         let mut tile_trees: Vec<crate::partition::PartitionTree> = Vec::new();
         let mut tile_frame_recon = svtav1_types::try_vec![128u8; ext_w * ext_h]?;
         // bd10 LUMA mode funnel (task #94): a parallel TRUE 10-bit recon canvas
@@ -8368,7 +8368,6 @@ fn encode_tile_rows(
                         .copy_from_slice(&tile_frame_recon[src_off..src_off + sb_cur_w]);
                 }
                 tile_recon.extend_from_slice(&sb_recon);
-                tile_decisions.extend(sb_result.decisions);
                 if let Some(tree) = sb_result.tree {
                     tile_trees.push(tree);
                 }
@@ -8389,7 +8388,7 @@ fn encode_tile_rows(
         } else {
             None
         };
-        Ok((tile_recon, tile_decisions, tile_trees, tile_canvas10))
+        Ok((tile_recon, tile_trees, tile_canvas10))
     };
 
     // Parallel encoding with std::thread::scope when available, BOUNDED to

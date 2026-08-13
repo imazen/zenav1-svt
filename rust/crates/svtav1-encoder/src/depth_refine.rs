@@ -47,7 +47,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 use crate::leaf_funnel::{FunnelCtx, LeafEval, commit_leaf, evaluate_leaf};
-use crate::partition::{BlockDecision, PartitionTree, PartitionType};
+use crate::partition::{PartitionTree, PartitionType};
 use crate::pd0::{M6Pd0Tables, Pd0Eval};
 
 /// C `RDCOST` (rd_cost.h:36).
@@ -1069,8 +1069,14 @@ fn shape_block_cnt_edge(
 struct NodeRes {
     /// C `pc_tree->rdc.rd_cost` (partition rate + block/subtree cost).
     rd: u64,
+    /// The node's partition tree. It is the ONLY copy of the node's block
+    /// decisions: a parallel `decisions: Vec<BlockDecision>` used to be
+    /// carried alongside it, deep-cloned leaf by leaf, and the only thing
+    /// anyone ever read out of it was its `len()` — which
+    /// `PartitionTree::count_leaves` answers without allocating. A
+    /// `BlockDecision` owns up to nine `Vec`s, so the duplicate was a full
+    /// second allocate+memcpy+free of every coded block in the frame.
     tree: PartitionTree,
-    decisions: Vec<BlockDecision>,
 }
 
 enum SplitOut {
@@ -2097,16 +2103,13 @@ impl DepthWalk<'_, '_> {
             let decision = crate::partition::funnel_block_decision(sq.ev.to_choice(), size, size);
             return Some(NodeRes {
                 rd: win_rd,
-                tree: PartitionTree::Leaf(decision.clone()),
-                decisions: alloc::vec![decision],
+                tree: PartitionTree::Leaf(decision),
             });
         }
-        let mut decisions: Vec<BlockDecision> = Vec::with_capacity(win_evals.len());
         let mut child_trees: Vec<PartitionTree> = Vec::with_capacity(win_evals.len());
         for ev in &win_evals {
             commit_leaf(self.fx, self.y_recon, self.y_stride, ev, win_part as u8);
             let d = crate::partition::funnel_block_decision(ev.to_choice(), ev.w, ev.h);
-            decisions.push(d.clone());
             child_trees.push(PartitionTree::Leaf(d));
         }
         Some(NodeRes {
@@ -2117,7 +2120,6 @@ impl DepthWalk<'_, '_> {
                 height: size as u16,
                 children: child_trees,
             },
-            decisions,
         })
     }
 
@@ -2146,7 +2148,6 @@ impl DepthWalk<'_, '_> {
         let half = size / 2;
         let children = scan.children.as_ref().expect("split_flag children");
         let mut trees: Vec<PartitionTree> = Vec::with_capacity(4);
-        let mut decisions: Vec<BlockDecision> = Vec::new();
         let mut child_rd = [0u64; 4]; // NSQDBG only: per-quadrant pick() RD
         for (i, child) in children.iter().enumerate() {
             let cx = abs_x + (i & 1) * half;
@@ -2194,7 +2195,6 @@ impl DepthWalk<'_, '_> {
             child_rd[i] = res.rd;
             split_cost += res.rd;
             trees.push(res.tree);
-            decisions.extend(res.decisions);
         }
 
         // Final compare (:11375): parent wins on
@@ -2239,7 +2239,6 @@ impl DepthWalk<'_, '_> {
                 height: size as u16,
                 children: trees,
             },
-            decisions,
         }))
     }
 }
@@ -2287,7 +2286,7 @@ pub(crate) fn decide_sb_refined(
     let res = walk
         .pick(scan, sb_x, sb_y)
         .expect("SB root produced no valid partition");
-    let num_blocks = res.decisions.len() as u32;
+    let num_blocks = res.tree.count_leaves() as u32;
     crate::partition::PartitionResult {
         partition_type: match &res.tree {
             PartitionTree::Leaf(_) => PartitionType::None,
@@ -2296,7 +2295,7 @@ pub(crate) fn decide_sb_refined(
         rd_cost: res.rd,
         distortion: 0,
         rate: 0,
-        decisions: res.decisions,
+        decisions: alloc::vec::Vec::new(),
         tree: Some(res.tree),
         num_blocks,
     }
