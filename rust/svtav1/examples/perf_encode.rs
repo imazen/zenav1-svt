@@ -108,6 +108,15 @@ fn main() {
     let ns = t.elapsed().as_nanos();
 
     std::fs::write(format!("{prefix}.obu"), &obu).expect("write .obu");
+    // STDERR, deliberately: stdout carries the single machine-readable line the
+    // drivers grep, and an extra line there breaks every one of them.
+    #[cfg(feature = "__txcensus")]
+    eprintln!(
+        "{}",
+        svtav1_encoder::leaf_funnel::txcensus::report(&format!(
+            "{content}:{w}x{h}:qp{qp}:p{preset}:warmup{warmup}"
+        ))
+    );
     // The ONLY stdout line — the driver greps it.
     println!("ENCODE_NS={ns} BYTES={}", obu.len());
 }

@@ -1613,11 +1613,153 @@ pub(crate) fn cost_skip_txb(
 // TX pipeline for one transform unit
 // ---------------------------------------------------------------------------
 
+/// How the caller consumes [`TxUnitOut::bits`] — C's coefficient-rate tier for
+/// this call site.
+///
+/// C's rate tiers are an `if / else if / else` and the real estimator is NEVER
+/// called when a closed form applies (`product_coding_loop.c:4914-4934`, and
+/// identically `:5540-5564`, `:5883-5890`). This enum carries that structure to
+/// the one place that can act on it. It is NOT a "this value is dead" hint: on
+/// [`RateMode::Lvl0Closed`] `bits` is still exactly the number the consumer
+/// uses, it is just produced by the closed form directly instead of by
+/// [`cost_coeffs_txb`] and then overwritten.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum RateMode {
+    /// The real per-coefficient entropy cost (C `svt_aom_txb_estimate_coeff_bits`).
+    Exact,
+    /// C `coeff_rate_est_lvl == 0` on the `perform_tx_partitioning` path:
+    /// `th = (txw*txh) >> 6; eob < th ? 6000 + eob*1000 : 3000 + eob*100`
+    /// (`product_coding_loop.c:5540-5564`). The port used to compute the exact
+    /// rate inside `tx_unit` and then discard it in the depth loop; computing
+    /// the closed form here instead is the SAME ARITHMETIC, so no deadness
+    /// argument is involved.
+    Lvl0Closed,
+}
+
+/// TEMPORARY census instrument (`--features __txcensus`), 2026-08-13.
+///
+/// Prices R1 and R2 of `docs/C-VS-PORT-CODE-REVIEW-2026-08-13.md` BEFORE either
+/// is built, in the `residual::ovf_probe` style: it answers "what share of
+/// `tx_unit`'s inverse-transform pixel work is thrown away" and "what share of
+/// `cost_coeffs_txb` calls have their result replaced by a closed form" with
+/// counters instead of an argument. Zero cost when the feature is off (every
+/// call site is `cfg`-ed out).
+#[cfg(feature = "__txcensus")]
+pub mod txcensus {
+    use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
+
+    /// Every `tx_unit_inner` call, and the sum of its `w*h`.
+    pub static TXU_CALLS: AtomicU64 = AtomicU64::new(0);
+    pub static TXU_PIX: AtomicU64 = AtomicU64::new(0);
+    /// Calls whose `recon` the caller discards (`need_recon == false`), split by
+    /// whether an inverse transform actually runs (`eob > 0`) or the prediction
+    /// is merely copied.
+    pub static TXU_DEADRECON_INV_CALLS: AtomicU64 = AtomicU64::new(0);
+    pub static TXU_DEADRECON_INV_PIX: AtomicU64 = AtomicU64::new(0);
+    pub static TXU_DEADRECON_COPY_CALLS: AtomicU64 = AtomicU64::new(0);
+    pub static TXU_DEADRECON_COPY_PIX: AtomicU64 = AtomicU64::new(0);
+    /// Calls that invert AND whose recon is read — the floor R1 cannot touch.
+    pub static TXU_LIVERECON_INV_CALLS: AtomicU64 = AtomicU64::new(0);
+    pub static TXU_LIVERECON_INV_PIX: AtomicU64 = AtomicU64::new(0);
+
+    /// `cost_coeffs_txb` calls whose result is USED as-is.
+    pub static CCT_LIVE_CALLS: AtomicU64 = AtomicU64::new(0);
+    pub static CCT_LIVE_PIX: AtomicU64 = AtomicU64::new(0);
+    pub static CCT_LIVE_EOB: AtomicU64 = AtomicU64::new(0);
+    /// `cost_coeffs_txb` calls a closed form replaces — R2's prize.
+    pub static CCT_REPL_CALLS: AtomicU64 = AtomicU64::new(0);
+    pub static CCT_REPL_PIX: AtomicU64 = AtomicU64::new(0);
+    pub static CCT_REPL_EOB: AtomicU64 = AtomicU64::new(0);
+
+    /// `n`: `w*h`. `eob`: post-quantize eob. `need_recon` / `rate_replaced` are
+    /// the two predicates R1 and R2 propose to act on.
+    pub fn observe(n: u64, eob: u64, need_recon: bool, rate_replaced: bool) {
+        TXU_CALLS.fetch_add(1, Relaxed);
+        TXU_PIX.fetch_add(n, Relaxed);
+        match (need_recon, eob > 0) {
+            (false, true) => {
+                TXU_DEADRECON_INV_CALLS.fetch_add(1, Relaxed);
+                TXU_DEADRECON_INV_PIX.fetch_add(n, Relaxed);
+            }
+            (false, false) => {
+                TXU_DEADRECON_COPY_CALLS.fetch_add(1, Relaxed);
+                TXU_DEADRECON_COPY_PIX.fetch_add(n, Relaxed);
+            }
+            (true, true) => {
+                TXU_LIVERECON_INV_CALLS.fetch_add(1, Relaxed);
+                TXU_LIVERECON_INV_PIX.fetch_add(n, Relaxed);
+            }
+            (true, false) => {}
+        }
+        if eob > 0 {
+            if rate_replaced {
+                CCT_REPL_CALLS.fetch_add(1, Relaxed);
+                CCT_REPL_PIX.fetch_add(n, Relaxed);
+                CCT_REPL_EOB.fetch_add(eob, Relaxed);
+            } else {
+                CCT_LIVE_CALLS.fetch_add(1, Relaxed);
+                CCT_LIVE_PIX.fetch_add(n, Relaxed);
+                CCT_LIVE_EOB.fetch_add(eob, Relaxed);
+            }
+        }
+    }
+
+    pub fn report(tag: &str) -> alloc::string::String {
+        alloc::format!(
+            "TXCENSUS\t{tag}\ttxu_calls={}\ttxu_pix={}\t\
+             deadrecon_inv_calls={}\tdeadrecon_inv_pix={}\t\
+             deadrecon_copy_calls={}\tdeadrecon_copy_pix={}\t\
+             liverecon_inv_calls={}\tliverecon_inv_pix={}\t\
+             cct_live_calls={}\tcct_live_pix={}\tcct_live_eob={}\t\
+             cct_repl_calls={}\tcct_repl_pix={}\tcct_repl_eob={}",
+            TXU_CALLS.load(Relaxed),
+            TXU_PIX.load(Relaxed),
+            TXU_DEADRECON_INV_CALLS.load(Relaxed),
+            TXU_DEADRECON_INV_PIX.load(Relaxed),
+            TXU_DEADRECON_COPY_CALLS.load(Relaxed),
+            TXU_DEADRECON_COPY_PIX.load(Relaxed),
+            TXU_LIVERECON_INV_CALLS.load(Relaxed),
+            TXU_LIVERECON_INV_PIX.load(Relaxed),
+            CCT_LIVE_CALLS.load(Relaxed),
+            CCT_LIVE_PIX.load(Relaxed),
+            CCT_LIVE_EOB.load(Relaxed),
+            CCT_REPL_CALLS.load(Relaxed),
+            CCT_REPL_PIX.load(Relaxed),
+            CCT_REPL_EOB.load(Relaxed),
+        )
+    }
+
+    /// Positive control: a probe whose zero cannot be told apart from a probe
+    /// that never ran is not evidence (rust/CLAUDE.md, "DEAD-LOOKING C STAYS
+    /// TRANSLATED"). Every bucket this census acts on must be reachable.
+    #[test]
+    fn txcensus_counts_every_bucket() {
+        let d = TXU_DEADRECON_INV_CALLS.load(Relaxed);
+        let c = TXU_DEADRECON_COPY_CALLS.load(Relaxed);
+        let l = TXU_LIVERECON_INV_CALLS.load(Relaxed);
+        let r = CCT_REPL_CALLS.load(Relaxed);
+        let v = CCT_LIVE_CALLS.load(Relaxed);
+        observe(64, 5, false, true);
+        observe(64, 0, false, false);
+        observe(64, 5, true, false);
+        assert_eq!(TXU_DEADRECON_INV_CALLS.load(Relaxed) - d, 1);
+        assert_eq!(TXU_DEADRECON_COPY_CALLS.load(Relaxed) - c, 1);
+        assert_eq!(TXU_LIVERECON_INV_CALLS.load(Relaxed) - l, 1);
+        assert_eq!(CCT_REPL_CALLS.load(Relaxed) - r, 1);
+        assert_eq!(CCT_LIVE_CALLS.load(Relaxed) - v, 1);
+    }
+}
+
 struct TxUnitOut {
     eob: u16,
     /// Packed (32-capped) quantized levels.
     qcoeff: Vec<i32>,
     /// Reconstructed pixels (w x h raster).
+    ///
+    /// EMPTY when the call passed `need_recon == false` — C skips the inverse
+    /// transform entirely at those stages (`product_coding_loop.c:4783-4784`).
+    /// Empty rather than zeroed deliberately: a caller that starts reading it
+    /// gets an index panic, never silently wrong pixels.
     recon: Vec<u8>,
     /// Frequency-domain RESIDUAL distortion (MDS1 path) or spatial SSE
     /// << 4 (MDS3 path), already shifted like C.
@@ -1736,6 +1878,19 @@ fn compute_cul_level(scan: &[u16], qcoeff: &[i32], eob: u16) -> u8 {
 /// coefficient rate, all of which C runs over the FULL tx block. On a
 /// 64-aligned frame `crop == (w, h)` and every expression below is
 /// unchanged; only a partial-superblock straddle can make them differ.
+///
+/// `need_recon`: does the CALLER read [`TxUnitOut::recon`]? C gates its inverse
+/// transform on `ctx->mds_do_spatial_sse || (!is_inter && cand->tx_depth)`
+/// (`product_coding_loop.c:4783-4784`, chroma twin `full_loop.c:2313`), and the
+/// all-intra derivation pins `spatial_sse_full_loop_level = 3`, so C's MDS1 and
+/// MDS2 invert nothing at all. This is an EXPLICIT caller parameter, not
+/// `spatial_dist` reused: `spatial_dist == false && need_recon == true` is a
+/// legal combination the moment a depth-1 neighbour prediction needs the
+/// reconstruction, and inferring it would make a future caller silently wrong.
+/// Default `true`.
+///
+/// `rate_mode`: which of C's coefficient-rate tiers this call site consumes —
+/// see [`RateMode`].
 #[allow(clippy::too_many_arguments)]
 fn tx_unit(
     src: &[u8],
@@ -1757,6 +1912,8 @@ fn tx_unit(
     do_rdoq: bool,
     spatial_dist: bool,
     crop: (usize, usize),
+    need_recon: bool,
+    rate_mode: RateMode,
 ) -> TxUnitOut {
     // Borrow the per-thread scratch (see [`TxScratch`]). `try_borrow_mut`
     // rather than `borrow_mut`: tx_unit calls only DSP / quant / rate kernels
@@ -1768,9 +1925,28 @@ fn tx_unit(
             cell.try_borrow_mut().ok().map(|mut sc| {
                 #[allow(clippy::too_many_arguments)]
                 tx_unit_inner(
-                    &mut sc, src, src_stride, src_off, pred, pred_stride, pred_off, w, h, tx_type,
-                    plane_type, txb_skip_ctx, dc_sign_ctx, intra_dir, qt, frame, rates, do_rdoq,
-                    spatial_dist, crop,
+                    &mut sc,
+                    src,
+                    src_stride,
+                    src_off,
+                    pred,
+                    pred_stride,
+                    pred_off,
+                    w,
+                    h,
+                    tx_type,
+                    plane_type,
+                    txb_skip_ctx,
+                    dc_sign_ctx,
+                    intra_dir,
+                    qt,
+                    frame,
+                    rates,
+                    do_rdoq,
+                    spatial_dist,
+                    crop,
+                    need_recon,
+                    rate_mode,
                 )
             })
         });
@@ -1780,8 +1956,28 @@ fn tx_unit(
     }
     let mut sc = TxScratch::default();
     tx_unit_inner(
-        &mut sc, src, src_stride, src_off, pred, pred_stride, pred_off, w, h, tx_type, plane_type,
-        txb_skip_ctx, dc_sign_ctx, intra_dir, qt, frame, rates, do_rdoq, spatial_dist, crop,
+        &mut sc,
+        src,
+        src_stride,
+        src_off,
+        pred,
+        pred_stride,
+        pred_off,
+        w,
+        h,
+        tx_type,
+        plane_type,
+        txb_skip_ctx,
+        dc_sign_ctx,
+        intra_dir,
+        qt,
+        frame,
+        rates,
+        do_rdoq,
+        spatial_dist,
+        crop,
+        need_recon,
+        rate_mode,
     )
 }
 
@@ -1807,6 +2003,8 @@ fn tx_unit_inner(
     do_rdoq: bool,
     spatial_dist: bool,
     crop: (usize, usize),
+    need_recon: bool,
+    rate_mode: RateMode,
 ) -> TxUnitOut {
     let (crop_w, crop_h) = crop;
     debug_assert!(crop_w <= w && crop_h <= h, "crop must clip, never extend");
@@ -2095,6 +2293,19 @@ fn tx_unit_inner(
     } else {
         real_bits
     };
+    // R1/R2 census (feature `__txcensus`, off by default). `rate_replaced` = a
+    // closed form supersedes the exact `cost_coeffs_txb` result on this call:
+    // either C's level-0 tier at the caller (`RateMode::Lvl0Closed`) or the
+    // level-2 tier right above. BEHAVIOUR IS UNCHANGED by this commit — the two
+    // new parameters are observed only.
+    #[cfg(feature = "__txcensus")]
+    {
+        let lvl2_repl =
+            plane_type == 0 && frame.cfg.coeff_rate_est_lvl == 2 && (eob as usize) < ((w * h) >> 6);
+        let rate_replaced = rate_mode == RateMode::Lvl0Closed || lvl2_repl;
+        txcensus::observe((w * h) as u64, eob as u64, need_recon, rate_replaced);
+    }
+    let _ = (need_recon, rate_mode);
     let cul = compute_cul_level(scan, &qcoeff, eob);
 
     TxUnitOut {
@@ -2878,6 +3089,13 @@ fn md_cfl_rd_pick_alpha(
             src, c_stride, c_off, &cfl_pred, cw, 0, cw, chh, 0, 1, tsc, dsc, 0,
             if plane == 0 { qt_u } else { qt_v }, frame, rates,
             do_rdoq, false, uv_crop,
+            // R1: this closure returns `(out.dist, out.bits)` and nothing else
+            // — the recon is unread. C's `av1_cost_calc_cfl` reaches
+            // `svt_aom_full_loop_uv` with `is_full_loop = 0`, so the
+            // `if (is_full_loop && ctx->mds_do_spatial_sse)` inverse-transform
+            // gate at full_loop.c:2313 is false for every alpha it tries.
+            false,
+            RateMode::Exact,
         );
         (out.dist, out.bits)
     };
@@ -4005,6 +4223,8 @@ pub(crate) fn evaluate_leaf(
             do_rdoq,
             true,
             uv_crop,
+            true,
+            RateMode::Exact,
         );
         let v_out = tx_unit(
             fx.v_src,
@@ -4026,6 +4246,8 @@ pub(crate) fn evaluate_leaf(
             do_rdoq,
             true,
             uv_crop,
+            true,
+            RateMode::Exact,
         );
         (u_out, v_out)
     };
@@ -5310,6 +5532,18 @@ pub(crate) fn evaluate_leaf(
             false, // no RDOQ at MDS1
             false, // freq-domain dist
             blk_crop,
+            // R1: MDS1's reconstruction is UNREAD. The loop body below takes
+            // only `out.eob / .bits / .dist` (and `out10`'s twins); grepping
+            // the whole MDS1 loop for `out.` finds exactly that one line. C
+            // agrees structurally: its inverse-transform gate is
+            // `mds_do_spatial_sse || (!is_inter && tx_depth)`
+            // (product_coding_loop.c:4783-4784), all-intra pins
+            // `spatial_sse_full_loop_level = 3` (SSSE_MDS3,
+            // enc_mode_config.c:10010) so `mds_do_spatial_sse` is FALSE at
+            // MDS1 (:7025), and MDS1 evaluates tx_depth 0 — both disjuncts
+            // false, so C inverts nothing here at any all-intra preset.
+            false,
+            RateMode::Exact,
         );
         // bd10 FULL-RD (task #94): C's MDS1 at hbd_md != 0 runs the SAME
         // luma-only full loop on 10-bit pixels — 10-bit residual, bd10 quant
@@ -6190,6 +6424,18 @@ pub(crate) fn evaluate_leaf(
                     lambda,
                     bd10_txb.as_ref(),
                     txt_dbg_tag,
+                    // R2: on this branch the exact coefficient rate is
+                    // COMPUTED AND THEN OVERWRITTEN by the closed form below
+                    // (`txb_bits`, :6230-ish). C never computes it — its rate
+                    // tiers are an `if / else if / else` and only the taken arm
+                    // runs (product_coding_loop.c:5540-5564). Producing the
+                    // closed form inside `tx_unit` yields the SAME `bits`
+                    // arithmetic, so this is not a deadness claim.
+                    if cfg.coeff_rate_est_lvl == 0 && end_depth > 0 {
+                        RateMode::Lvl0Closed
+                    } else {
+                        RateMode::Exact
+                    },
                 );
                 // SVTAV1_QLEV_XY="x,y": per-txb winner (tx_type, eob, levels)
                 // at one pinned block, to join against the C `--wrap
@@ -6433,10 +6679,14 @@ pub(crate) fn evaluate_leaf(
             let u_out = tx_unit(
                 fx.u_src, fx.c_stride, ccy * fx.c_stride + ccx, &u_pred, cw, 0, cw, chh, tt,
                 1, cb_tsc, cb_dsc, 0, &qt_u, frame, rates, do_rdoq, true, uv_crop,
+                true,
+                RateMode::Exact,
             );
             let v_out = tx_unit(
                 fx.v_src, fx.c_stride, ccy * fx.c_stride + ccx, &v_pred, cw, 0, cw, chh, tt,
                 1, cr_tsc, cr_dsc, 0, &qt_v, frame, rates, do_rdoq, true, uv_crop,
+                true,
+                RateMode::Exact,
             );
             ibc_uv_tt = Some(tt);
             (u_out, v_out)
@@ -6692,6 +6942,15 @@ pub(crate) fn evaluate_leaf(
                     do_rdoq,
                     false,
                     uv_crop,
+                    // R1: only `.dist` is read (the `non_cfl_cost` rdcost
+                    // below takes its RATE from `u_out`/`v_out`). C's
+                    // `cfl_prediction` recomputes this cost through
+                    // `svt_aom_full_loop_uv` with `is_full_loop = 0`
+                    // (product_coding_loop.c:3800-3860), which never enters
+                    // the `is_full_loop && mds_do_spatial_sse` inverse
+                    // transform at full_loop.c:2313.
+                    false,
+                    RateMode::Exact,
                 );
                 let v_nc = tx_unit(
                     fx.v_src,
@@ -6713,6 +6972,15 @@ pub(crate) fn evaluate_leaf(
                     do_rdoq,
                     false,
                     uv_crop,
+                    // R1: only `.dist` is read (the `non_cfl_cost` rdcost
+                    // below takes its RATE from `u_out`/`v_out`). C's
+                    // `cfl_prediction` recomputes this cost through
+                    // `svt_aom_full_loop_uv` with `is_full_loop = 0`
+                    // (product_coding_loop.c:3800-3860), which never enters
+                    // the `is_full_loop && mds_do_spatial_sse` inverse
+                    // transform at full_loop.c:2313.
+                    false,
+                    RateMode::Exact,
                 );
                 let non_cfl_cost = rdcost(
                     lambda,
@@ -7004,6 +7272,8 @@ pub(crate) fn evaluate_leaf(
                         do_rdoq,
                         true,
                         uv_crop,
+                        true,
+                        RateMode::Exact,
                     );
                     v_out = tx_unit(
                         fx.v_src,
@@ -7025,6 +7295,8 @@ pub(crate) fn evaluate_leaf(
                         do_rdoq,
                         true,
                         uv_crop,
+                        true,
+                        RateMode::Exact,
                     );
                     // bd10: the coded chroma at the decision depth. C runs the
                     // SAME chosen-alpha `svt_cfl_predict_hbd` + full TX here
@@ -7252,10 +7524,14 @@ pub(crate) fn evaluate_leaf(
                             let u_cfl_out = tx_unit(
                                 fx.u_src, fx.c_stride, c_off, &u_cfl, cw, 0, cw, chh, 0, 1,
                                 cb_tsc, cb_dsc, 0, &qt_u, frame, rates, do_rdoq, true, uv_crop,
+                                true,
+                                RateMode::Exact,
                             );
                             let v_cfl_out = tx_unit(
                                 fx.v_src, fx.c_stride, c_off, &v_cfl, cw, 0, cw, chh, 0, 1,
                                 cr_tsc, cr_dsc, 0, &qt_v, frame, rates, do_rdoq, true, uv_crop,
+                                true,
+                                RateMode::Exact,
                             );
                             let cfl_fast_rate = rates.uv[cfl_allowed][cand.mode as usize]
                                 [UV_CFL_PRED_IDX]
@@ -7490,11 +7766,15 @@ pub(crate) fn evaluate_leaf(
                                     fx.u_src, fx.c_stride, c_off, &u_cfl, cw, 0, cw, chh, 0, 1,
                                     cb_tsc, cb_dsc, 0, &qt_u, frame, rates, do_rdoq, true,
                                     uv_crop,
+                                    true,
+                                    RateMode::Exact,
                                 );
                                 v_out = tx_unit(
                                     fx.v_src, fx.c_stride, c_off, &v_cfl, cw, 0, cw, chh, 0, 1,
                                     cr_tsc, cr_dsc, 0, &qt_v, frame, rates, do_rdoq, true,
                                     uv_crop,
+                                    true,
+                                    RateMode::Exact,
                                 );
                                 uv_out10 = Some((u10, v10));
                                 uv_mode_final = UV_CFL_PRED_IDX as u8;
@@ -8765,6 +9045,7 @@ fn txt_search(
     lambda: u64,
     bd10: Option<&Bd10Txb<'_>>,
     dbg: Option<TxtDbg>,
+    rate_mode: RateMode,
 ) -> (TxUnitOut, Option<TxUnitOutHbd>, usize) {
     macro_rules! txt_dbg {
         ($($t:tt)*) => {
@@ -8899,6 +9180,8 @@ fn txt_search(
                 do_rdoq,
                 true, // MDS3 spatial dist
                 crop,
+                true,
+                rate_mode,
             );
             // bd10 FULL-RD (task #94): the same TX unit at true depth. Every
             // gate around it (group order, ext-tx set, the rate-cost th, the
@@ -9872,6 +10155,8 @@ mod tests {
                 &qt, &frame, &rates, false, /* do_rdoq */
                 true,  /* spatial_dist */
                 crop,
+                true,
+                RateMode::Exact,
             );
             // The REAL C facade, cropped area + full recon stride — the exact
             // call C makes at product_coding_loop.c:4839-4853.
@@ -9947,6 +10232,8 @@ mod tests {
         let uv_out = tx_unit(
             &src, stride, c_off, &uv_pred, cw, 0, cw, chh, cc::DCT_DCT, 1, 0, 0, 0, &qt,
             &frame, &rates, false, true, uv_crop,
+            true,
+            RateMode::Exact,
         );
         let uv_c_cropped = svtav1_cref::spatial_facade(
             &src[c_off..],

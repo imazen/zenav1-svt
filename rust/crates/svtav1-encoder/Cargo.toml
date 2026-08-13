@@ -35,3 +35,7 @@ unsafe_encoding = ["zenav1-svt-dsp/unchecked_dsp", "zenav1-svt-entropy/unchecked
 # unconditional std forwarding above).
 fallible-alloc = ["zenav1-svt-types/fallible-alloc"]
 __ovf_probe = ["zenav1-svt-dsp/__ovf_probe"]
+# TEMPORARY (2026-08-13) census instrument: prices R1 (discarded inverse
+# transforms) and R2 (discarded exact coefficient rates) of
+# docs/C-VS-PORT-CODE-REVIEW-2026-08-13.md. See `leaf_funnel::txcensus`.
+__txcensus = ["std"]
