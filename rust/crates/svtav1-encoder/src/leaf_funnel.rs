@@ -3484,8 +3484,16 @@ impl LeafEval {
     }
 
     /// The walk/entropy-pass view of the winner.
-    pub(crate) fn to_choice(&self) -> LeafChoice {
-        let cand = &self.win;
+    ///
+    /// Takes `self` and MOVES the winner's seven owned buffers into the
+    /// `LeafChoice` rather than cloning them. They were cloned only because
+    /// this used to run BEFORE `commit_leaf`, which borrows the `LeafEval`;
+    /// `commit_leaf` reads none of `to_choice`'s output and `to_choice` reads
+    /// none of `commit_leaf`'s side effects, so both callers simply commit
+    /// first and convert second. Same bytes, seven fewer allocate+memcpy+free
+    /// round trips per coded block.
+    pub(crate) fn into_choice(self) -> LeafChoice {
+        let cand = self.win;
         LeafChoice {
             mode: cand.mode,
             angle_delta: cand.delta,
@@ -3493,18 +3501,18 @@ impl LeafEval {
             uv_mode: cand.uv,
             uv_angle_delta: cand.uv_delta,
             tx_depth: cand.tx_depth,
-            txb_qcoeffs: cand.txb_q.clone(),
-            txb_eobs: cand.txb_eob.clone(),
-            txb_tx_types: cand.txb_type.clone(),
-            u_qcoeffs: cand.u_q.clone(),
-            v_qcoeffs: cand.v_q.clone(),
+            txb_qcoeffs: cand.txb_q,
+            txb_eobs: cand.txb_eob,
+            txb_tx_types: cand.txb_type,
+            u_qcoeffs: cand.u_q,
+            v_qcoeffs: cand.v_q,
             u_eob: cand.u_eob,
             v_eob: cand.v_eob,
-            u_recon: cand.u_recon.clone(),
-            v_recon: cand.v_recon.clone(),
+            u_recon: cand.u_recon,
+            v_recon: cand.v_recon,
             cfl_alpha_idx: cand.cfl_alpha_idx,
             cfl_alpha_signs: cand.cfl_alpha_signs,
-            palette: cand.palette.clone(),
+            palette: cand.palette,
             ibc: cand.ibc,
         }
     }
@@ -3577,9 +3585,8 @@ pub(crate) fn decide_leaf_rect(
         dc_only,
         sb_is_lvl6,
     );
-    let choice = ev.to_choice();
     commit_leaf(fx, y_recon, y_stride, &ev, fx_partition_for_commit(fx));
-    choice
+    ev.into_choice()
 }
 
 /// Evaluate one PART_N block through the funnel WITHOUT committing —

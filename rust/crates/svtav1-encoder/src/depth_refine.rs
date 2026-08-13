@@ -2100,16 +2100,17 @@ impl DepthWalk<'_, '_> {
                 &sq.ev,
                 PartitionType::None as u8,
             );
-            let decision = crate::partition::funnel_block_decision(sq.ev.to_choice(), size, size);
+            let decision = crate::partition::funnel_block_decision(sq.ev.into_choice(), size, size);
             return Some(NodeRes {
                 rd: win_rd,
                 tree: PartitionTree::Leaf(decision),
             });
         }
         let mut child_trees: Vec<PartitionTree> = Vec::with_capacity(win_evals.len());
-        for ev in &win_evals {
-            commit_leaf(self.fx, self.y_recon, self.y_stride, ev, win_part as u8);
-            let d = crate::partition::funnel_block_decision(ev.to_choice(), ev.w, ev.h);
+        for ev in win_evals {
+            commit_leaf(self.fx, self.y_recon, self.y_stride, &ev, win_part as u8);
+            let (ew, eh) = (ev.w, ev.h);
+            let d = crate::partition::funnel_block_decision(ev.into_choice(), ew, eh);
             child_trees.push(PartitionTree::Leaf(d));
         }
         Some(NodeRes {
