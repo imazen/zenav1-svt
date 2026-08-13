@@ -1,0 +1,46 @@
+# perf_gap fit
+date: 2026-08-13T13:11:48Z
+commit: 6ad044d00
+host: mac (12 logical cores)
+grid: content=gradient sizes=[32 64 128 256 512 1024] presets=[2 6 10 13] qp=40 rounds=9 warmup=1
+harness: interleaved paired, randomized per-round order; no target-cpu=native; NEITHER SIDE NICED; setup excluded both sides
+fits (ms = a + b*pixels):
+  p2   port: a=78.8302 ms  b=1943.35 ms/MP   |   C: a=23.6243 ms  b=467.33 ms/MP   |   slope-ratio=4.16x  intercept-ratio=3.34x
+  p6   port: a=2.0344 ms  b=131.13 ms/MP   |   C: a=0.8799 ms  b=38.64 ms/MP   |   slope-ratio=3.39x  intercept-ratio=2.31x
+  p10  port: a=0.1698 ms  b=26.45 ms/MP   |   C: a=0.1956 ms  b=8.32 ms/MP   |   slope-ratio=3.18x  intercept-ratio=0.87x
+  p13  port: a=0.1840 ms  b=26.21 ms/MP   |   C: a=0.1897 ms  b=8.42 ms/MP   |   slope-ratio=3.11x  intercept-ratio=0.97x
+
+## Movement vs the last campaign (benchmarks/perf_gap_2026-08-11.meta, commit bdff3700f)
+
+| preset | slope ratio 08-11 | slope ratio 08-13 | port slope 08-11 | port slope 08-13 | port/port |
+|:------:|------------------:|------------------:|-----------------:|-----------------:|----------:|
+| p2     | 4.12x             | **4.16x**         | 1929.67 ms/MP    | 1943.35 ms/MP    | 1.007     |
+| p6     | 3.52x             | **3.39x**         |  133.73 ms/MP    |  131.13 ms/MP    | 0.981     |
+| p10    | 3.53x             | **3.18x**         |   29.10 ms/MP    |   26.45 ms/MP    | 0.909     |
+| p13    | 3.51x             | **3.11x**         |   28.97 ms/MP    |   26.21 ms/MP    | 0.905     |
+
+Both campaigns: all cells byte-identical to C, same grid, same harness, same
+box, neither side niced, no `target-cpu=native`. Two commits separate them:
+
+* `29847e5d3` — the block-decision set was materialised FOUR times per frame
+  (leaf `decision.clone()` alongside `decisions: vec![decision]`, aggregated
+  up the tree, deep-cloned into a write-only `per_tile_decisions`, and the
+  whole per-SB tree deep-cloned into its raster slot). Three of the four are
+  gone. A/B: 1.072-1.111x at p10, 1.014-1.031x at p6
+  (`alloc_decisioncopy_ab_2026-08-13.meta`).
+* `6ad044d00` — `LeafEval::to_choice` cloned seven of the winner's buffers
+  because it ran before `commit_leaf`; both callers now commit first and
+  `into_choice` MOVES. A/B: 1.016-1.027x at p10, null at p6.
+
+**p2 did not move and reads 0.7% WORSE, which is inside its own run-to-run
+spread** (its 1024 cell is a single ~2.1 s encode and the fit leans on it).
+p2 drives the encode through `depth_refine`, whose share of per-block time in
+the decision buffers is far smaller than the fast tiers'; both changes are
+per-coded-block costs, so the tier that spends 60x longer per block on the RD
+search itself sees them least. Not a regression claim in either direction —
+it is a null.
+
+The port remains FASTER than C at 32x32 on every preset above 2 (0.46x at
+p10/p13, 0.78x at p6) and at 64x64 on the fast tiers (0.81x), and its
+per-frame intercept is still below C's at p10/p13 (0.87x / 0.97x). The whole
+remaining gap is per-pixel slope.
