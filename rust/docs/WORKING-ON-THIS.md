@@ -123,11 +123,39 @@ own planes and therefore skips the check. When a harness refuses an input,
 write down what that makes untestable — the refusal is not the same as the
 input being impossible.
 
-**On this platform there is no arithmetic-coder op trace.** `capture_c_trace`
-needs `-Wl,--wrap`, which Apple's `ld64` lacks, so `build.sh` falls back to a
-byte-only driver and `identity_diff.sh` degrades to a byte + header-field
-comparison. Byte verdicts are unaffected; symbol-level localization needs a
-GNU-ld host.
+**On macOS there is no arithmetic-coder op trace IN-PROCESS — run the C side in
+a Linux container instead.** `capture_c_trace` needs `-Wl,--wrap`, which
+Apple's `ld64` lacks, so `build.sh` falls back to a byte-only driver and
+`identity_diff.sh` degrades to a byte + header-field comparison. Byte verdicts
+are unaffected; symbol-level localization needs a GNU-ld host, and
+`tools/ctrace-linux/` is one:
+
+```bash
+# one cell, real content, full op-trace diff (crop:/file:/raw: all work)
+tools/ctrace-linux/diff_cell.sh 96 88 33 4 crop:/path/to/screenshot.png
+# raw driver, drop-in for tools/capture_c_trace/capture_c_trace's argv
+SVT_TRACE_OUT=~/tmp/zenav1-ctrace/c.trace \
+  tools/ctrace-linux/run.sh 96 88 33 4 in.yuv out.obu 8
+```
+
+It bind-mounts the repo READ-ONLY and builds the C lib + wrap driver into a
+docker volume, so it can never write into the tree (in particular it can never
+leave a Linux ELF where the macOS `capture_c_trace` wrapper would exec it). The
+`wrap_recon.c` dump vars are forwarded and their paths mapped:
+`SVT_CTREE_OUT` (join against `SVTAV1_PACKTREE` with `tools/tree_diff.py`),
+`SVT_QLEVELS_OUT` (+ `_XY`/`_COMP`), `SVT_PICKPART_OUT`, `SVT_CCOEF_OUT`,
+`SVT_CCOST_OUT`, `SVT_PART_OUT`, `SVT_SEED_OUT`. Scratch must live under
+`$CTRACE_WORK` (default `~/tmp/zenav1-ctrace`) — paths outside it are refused
+rather than silently written where the host cannot see them.
+
+**Verify the container oracle before trusting a trace from it.** Encode a cell
+that ALREADY agrees on the host and confirm the container's C bytes are
+identical; only then read the trace. Done for issue #15 on Linux arm64 vs
+macOS arm64: identical on the diverging cell (`terminal` 96x88 p4 q33, 523 B)
+and on an aligned control (`terminal` 64x64 p4 q33, 297 B, where port == C ==
+container-C). Build the image for the SAME architecture as the host oracle
+(`run.sh` does) — C's kernels are runtime-dispatched, so an x86 container is a
+different oracle, not the same one.
 
 ## 5b. Drills you don't have to write
 

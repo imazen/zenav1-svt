@@ -147,6 +147,70 @@ The full localization trail (kept for method reference):
 - **REPRO (committed harness):** `identity_run` now takes `raw:<i420.yuv>` content. Generate the exact YUV (see the g48 generator in the session log — 48×48 gradient replicated to 64×64 + flat-128 chroma), then `tools/identity_diff.sh 64 64 20 0 raw:<yuv>` shows op-1 divergence and produces the port's undecodable `rs.obu`. `SVTAV1_PACKTREE=<f>` dumps the port's partition tree (shows the 4:1 → sub-8 blocks).
 - **NEXT (the fix pass) — root is PALETTE-on-420, exact symbol mismatch still to pinpoint.** Exhaustively RULED OUT by reading C-vs-port: `is_chroma_reference`/`has_uv`, chroma pair geometry, 4:1/HV4 (bisect), `allow_palette` (both `bsize>=BLOCK_8X8` enum-order incl. 4X16/16X4/8X32; block_size_index maps correct), the UV-palette-flag `is_chroma_ref` gate, and the `[Y-flag,colors,UV-flag]`-then-map ORDER (C write_palette_mode_info entropy_coding.c:4355 matches). Since MONO passes (all palette LUMA syntax — flag/size/colors/cache-flags/map — correct) and the 420-only delta is {UV-flag (ruled out), chroma-coeffs}, the remaining suspects are: (a) the palette candidate's CHROMA decision in the funnel (`decision.chroma_dec` for a palette winner) being inconsistent with what the pack codes — check whether the palette candidate reconstructs/decides chroma the same as a regular UV_DC candidate; (b) the palette block's chroma tx-size/type. TO PINPOINT: build a position-reporting decode of the port's `rs.obu` (aomdec/dav1d report only "tile data" with no offset), OR finer-bisect (zero the chroma coeffs of palette blocks only; or reduce to a SINGLE palette block). Do NOT band-aid by disabling palette on 420 (C codes this into a decodable stream — the port's palette-420 chroma must be fixed to match). #71 over-picking AMPLIFIES exposure (more palette blocks = more desync surface) but is not the coding-bug root. This is the #1 gate per the mandate above.
 
+## FIXED 2026-08-13 — issue #15: partial-superblock RD divergence (67 -> 3 cells)
+
+Two independent alignment-conditioned defects, both invisible on a 64-aligned
+frame and therefore invisible to every pass/fail gate. Localized with the C
+`-Wl,--wrap` op trace run in a Linux container (`tools/ctrace-linux/`, see
+docs/WORKING-ON-THIS.md §5 — Apple ld64 has no `--wrap`).
+
+**1. The palette SEARCH ran over the whole block** (84e3c8627). C's
+`search_palette_luma` (palette.c:388-530) takes its `rows`/`cols` from
+`svt_aom_get_block_dimensions`' `rows_within_bounds`/`cols_within_bounds`
+(palette.c:217-245) and feeds them to `svt_av1_count_colors` (:409-411), the
+`data[]`/`lb`/`ub` fill (:427-439) and `av1_calc_indices` (:323); the index map
+is edge-replicated out to the nominal block afterwards (:324). `palette.rs`
+already carried both dimension pairs — the CALL SITE in `leaf_funnel.rs` passed
+the full block dims as the within-bounds dims, so padded rows/columns voted in
+the colour histogram, the dominant-colour argmax and the k-means seed range.
+The RATE side and the PACK side already cropped: **three sites, two of them
+right, and nothing made them share one definition.** They do now.
+
+**2. Intra reference samples were not clamped to the ALIGNED extent**
+(215af947d bd8, 0163004cc bd10). C caps the count of REAL above/left samples at
+`n_top_px`/`n_left_px` (`build_intra_predictors`, from
+`svt_av1_predict_intra_block`'s `xr`/`yd`, enc_intra_prediction.c:489-492 +
+:540-543, which come from `mb_to_right_edge`/`mb_to_bottom_edge` =
+`svt_aom_init_xd`, adaptive_mv_pred.c:1055-1058) and replicates past that. Spec
+7.11.2 states the same rule as a coordinate clamp. The port had it only on the
+DIRECTIONAL path, and fed it the WRONG EXTENT there:
+`UnitGeom::frame_h` was `y_recon.len() / y_stride`, but the recon working
+buffers keep the aligned STRIDE while being sized to the SB-EXTENT PRODUCT, so
+96x88 evaluated to 170 rows and the clamp never fired. The non-directional
+path (DC/V/H/SMOOTH*/PAETH/filter-intra) had no clamp at all.
+
+**This one was not just a byte-identity gap — it was an encoder/decoder
+prediction MISMATCH.** A straddling block predicted from the encoder's own
+recon of rows a conforming decoder replicates, so the decoder's pixels drift
+from the encoder's. Treat any "the port reads its recon buffer" geometry the
+same way: **the buffer's shape is not the frame's extent.**
+
+Two lessons worth carrying:
+
+- **The review that bounded this search (`docs/C-VS-PORT-CODE-REVIEW-2026-08-13.md`
+  §6) enumerated only `aligned_width`/`aligned_height` uses in the MD
+  translation units, and BOTH root causes were outside that set** — they reach
+  the same quantity through `xd->mb_to_*_edge`. When bounding a search on "the
+  frame extent", grep the DERIVED forms too: `mb_to_right_edge`,
+  `mb_to_bottom_edge`, `mi_rows`/`mi_cols`, `cm->mi_*`. (`svt_aom_get_txb_ctx`,
+  entropy_coding.c:259-262, is a third such site; the port's neighbour-span
+  clipping already matches it.)
+- **A gate that runs only 64-aligned dims cannot see any of this.**
+  `recon_parity.sh` (432 cases) and `decode_gate_grid.sh` (120) are all
+  64-aligned squares; `partial_sb_gate.sh` does run partial SBs but only
+  synthetic content, which never picks the affected modes. The crossing case
+  lives in `unaligned_identity_scan.sh`, which is a tracking SCOREBOARD (always
+  exits 0). Extending recon-parity to a partial-SB cell is open work.
+
+**Residual: 3 of 648 cells**, all `188x256` (the one grid dim where true !=
+aligned on the WIDTH axis: 188 -> 192). NOT root-caused, and NOT one class:
+`terminal p4 q12` is a single chroma UV_CFL_PRED-vs-UV_DC_PRED flip at
+mi=(46,46); `terminal p2 q55` a chroma D113+angle-delta-vs-DC flip at
+mi=(50,42); `city-lossless p2 q33` has an IDENTICAL tree (0 field flips) and
+first diverges at byte 16, i.e. a frame-header/post-filter search difference.
+The same content at the fully-aligned 192x256 byte-matches. Record:
+`benchmarks/unaligned_real_identity_2026-08-13.{tsv,meta}`.
+
 ## DEAD-LOOKING C STAYS TRANSLATED AND DOCUMENTED — never reverted (2026-08-03)
 
 When a faithful translation of a C rule appears to have no effect, **keep it and
