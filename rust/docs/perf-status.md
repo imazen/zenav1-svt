@@ -16,6 +16,54 @@
 > `benchmarks/perf_gap_2026-08-13-r1r2.{tsv,raw.tsv,meta}` (the mid-session run
 > is `perf_gap_2026-08-13-final.*`, and an earlier one `perf_gap_2026-08-13.*`).
 >
+> ### WHAT THE REMAINING GAP IS MADE OF (measured 2026-08-13 evening)
+>
+> `benchmarks/perf_class_attrib_2026-08-13.{tsv,meta}` — paired `/usr/bin/sample`
+> profiles of BOTH binaries on the same byte-identical cells, self time
+> attributed per symbol, shares scaled by the paired encode ms above. Buckets:
+> **SIMD_GAP** = the port's kernel is scalar-only on aarch64 and C ships a
+> `SET_NEON`-registered one; **SIMD_QUAL** = both sides vectorised; **ALLOC** =
+> allocator + libc mem; **SCALAR_BOTH** = code neither side vectorises.
+>
+> | cell | ratio | SIMD_GAP | SIMD_QUAL | ALLOC | SCALAR_BOTH |
+> |---|---|---|---|---|---|
+> | 512² p10 | 2.80x | 11.9 % | 17.3 % | 29.5 % | 41.3 % |
+> | 1024² p10 | 2.84x | 12.3 % | 17.1 % | 27.0 % | 43.6 % |
+> | 512² p6 | 3.10x | 27.7 % | 19.5 % | 21.7 % | 31.0 % |
+> | 512² p2 | 3.79x | 15.6 % | 26.2 % | 19.1 % | 39.1 % |
+>
+> **At the fast presets, missing SIMD coverage is ~12 % of the gap.** Driving
+> every scalar-where-C-is-NEON kernel to C's cost takes 512² p10 from 2.80x to
+> 2.47x; also matching C on the kernels BOTH sides vectorise (where the port is
+> 1.95-2.20x slower) gives 2.27x; a zero-allocation port on top gives 1.74x.
+> **1.03x is not reachable through SIMD, nor through SIMD plus allocation** —
+> it additionally needs the port's driver/entropy/RDOQ code (scalar in C too) to
+> get 2.1x faster, and nothing measured suggests a mechanism. At p6 the picture
+> is different: loop restoration (15.6 %) and CDEF (12.3 %) are 28 % of the gap
+> and are almost pure coverage (`compute_stats` 3.83 vs 0.75 ms,
+> `wiener_convolve_add_src` 10.3x, `cdef_find_dir` 15x) — that is where SIMD pays.
+>
+> Three classes are already at or past parity at p10 and are NOT levers any more:
+> INV_TXFM **1.08x** (R1's gate did its job), QUANT_RDOQ 1.13x, RANGE_CODER
+> 1.25x, and the coefficient WRITER is **0.77x — the port is faster than C**.
+> Two traps the `.meta` documents: `<deduplicated_symbol>` is 4.4 % of C's
+> samples and is almost all inverse transform (leaving it unattributed overstates
+> the transform gap ~2x), and the xzone allocator charges its own
+> `mach_absolute_time`/`madvise` to libsystem_kernel (~1.4 points of ALLOC).
+>
+> **Largest single item found, and it is NOT a SIMD gap: the MDS0 Hadamard.**
+> The port spends 4.79 % (512² p10) / 5.12 % (1024² p10) of its whole frame in
+> `hadamard_satd` + `dsp::hadamard::*`; C spends **zero** — `grep -ci
+> 'hadamard|satd'` over C's entire sampled call graph returns 0 at both cells
+> (7,126 and 19,073 samples) while `svt_aom_variance*_neon_dotprod` appears in
+> both. C's `fast_loop_core` takes the VARIANCE arm because
+> `mds0_use_hadamard_blk = mds0_use_hadamard_sb && fast_candidate_total_count > 1`
+> (product_coding_loop.c:9473) is false when the preset >= 9 `dc_only` gate
+> injects exactly one candidate. The port has no such gate
+> (`leaf_funnel.rs:4923`). Same class as R1/R2 — work whose result cannot reach
+> the bitstream — and the fix is C's gate plus C's variance arm, NOT a NEON
+> Hadamard (which would still be more work than C does).
+>
 > **The 08-13-mid -> here step is the code review's R1 and R2** — the first two
 > findings of `docs/C-VS-PORT-CODE-REVIEW-2026-08-13.md`, and the first two
 > changes of the campaign that remove work whose result was DISCARDED rather

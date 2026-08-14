@@ -1,0 +1,184 @@
+# Where the remaining port-vs-C encode gap actually is — a per-class sizing
+
+date: 2026-08-13 (evening session)
+host: mac / Apple M4 Pro, 12 logical cores. Foreign load present throughout:
+      a `qemu-system-x86_64` at ~18 % CPU (a concurrent agent's Linux op-trace
+      container) plus that agent's builds. `~/bin/measlock` was NOT taken —
+      nothing here is a timed A/B; see "What this is not" below.
+port commit: aa6f64dca (profiling binary rebuilt from it, see below)
+C reference: in-tree reference/svt-av1 @ v4.2.0, Bin/Release/libSvtAv1Enc.a
+artifacts:  perf_class_attrib_2026-08-13.tsv (the tables)
+            tools/perf_profile/{prof.sh,selftime.py,classify.py,attrib.py}
+
+## The question this answers
+
+`benchmarks/perf_gap_2026-08-13-r1r2.meta` puts the port at slope ratio p2 3.93x,
+p6 3.27x, p10 2.89x, p13 2.89x, all cells byte-identical. The target is 1.03x.
+`docs/C-VS-PORT-CODE-REVIEW-2026-08-13.md` ranked ideas from source structure but
+measured nothing, and flagged "C has NEON kernels the port runs scalar" as a
+candidate for the remaining multiple WITHOUT sizing it. This record sizes it.
+
+## Method
+
+* Both binaries run a steady-state loop of the SAME cell (the port harness's
+  `warmup` argument; the C harness's likewise) and are sampled with
+  `/usr/bin/sample <pid> <secs> 1`. The port's timed region and C's are >99 % of
+  their respective profiles (port: `main -> encode_frame_420` 15316 of 15324
+  samples; C: `main -> encode_once -> svt_av1_enc_send_picture` 6794 of 7126) —
+  so per-cycle setup does NOT pollute either side. It was checked, not assumed.
+* Node SELF time = node count - sum(children counts), summed per symbol over the
+  whole tree (recursion-safe). Rust symbols demangled with `rustfilt`.
+* `sample` prints `<deduplicated_symbol>` where an address maps to several
+  linker-folded (ICF) names. On the C side that is 310 of 7126 samples at
+  512² p10 — 4.4 %, the single largest unattributed block — and tracing its
+  PARENT frames showed 290 of the 310 sit under `inv_txfm_*_neon`. Attributing
+  by parent moves C's INV_TXFM from 0.125 ms to 0.232 ms and takes the
+  port/C inverse-transform ratio from 2.01x to **1.08x**. Any reading of these
+  profiles that leaves `<deduplicated_symbol>` unattributed will overstate the
+  transform gap by ~2x. (The port's `<deduplicated_symbol>` lives in
+  libsystem_malloc and is allocator time.)
+* Per-class ms = (class self samples / total samples) × the PAIRED per-encode ms
+  for that cell from `benchmarks/perf_gap_2026-08-13-r1r2.tsv` (n=9 interleaved
+  randomised-order rounds, byte-identity verified). The profile supplies the
+  SHARES; a real paired measurement supplies the SCALE. Nothing is extrapolated
+  between sizes — 512² and 1024² were each profiled directly.
+* Profiling binary: `CARGO_TARGET_DIR=target-perf RUSTFLAGS="-C debuginfo=1
+  -C llvm-args=-align-all-functions=4"`, no `target-cpu=native`, separate target
+  dir so the other agent's `target/` was never touched. Spot-checked against the
+  stock release binary on the profiled cell: 6.44 ms vs 6.33 ms at 512² p10 —
+  the debuginfo/alignment build is not measurably different work.
+
+## What this is NOT
+
+* Not a timed A/B. No claim here is a speedup. The shares are ratios within one
+  process and are robust to the foreign load; the absolute ms come from the
+  committed paired record, not from this session's clock.
+* One profile per (cell, side). No repetition, no confidence interval on a share.
+  Treat a 1-2 point difference between two classes as noise; the structure
+  (which class is 20 % vs 2 %) is what is being asserted.
+* bd8 4:2:0 still, `gradient` content, qp 40, `--lp 1`. The p6 numbers include
+  loop restoration and CDEF; p10/p13 do not (both off at preset >= 7).
+
+## RESULT 1 — the four buckets
+
+Every port symbol was tagged against the 2026-08-13 SIMD census:
+**SIMD_GAP** = the port's kernel is scalar-only on aarch64 AND C ships a
+`SET_NEON`-registered counterpart; **SIMD_QUAL** = both sides have a real vector
+arm; **ALLOC** = allocator + libc mem (memset/memmove/bzero, plus the xzone
+allocator's own `mach_absolute_time`/`madvise`, verified by parent frame);
+**SCALAR_BOTH** = driver, entropy writer, range coder and RDOQ code that is
+scalar in C too.
+
+| cell | ratio | SIMD_GAP | SIMD_QUAL | ALLOC | SCALAR_BOTH |
+|---|---|---|---|---|---|
+| 512² p10 | 2.80x | +11.9 % | +17.3 % | +29.5 % | +41.3 % |
+| 1024² p10 | 2.84x | +12.3 % | +17.1 % | +27.0 % | +43.6 % |
+| 512² p6 | 3.10x | +27.7 % | +19.5 % | +21.7 % | +31.0 % |
+| 512² p2 | 3.79x | +15.6 % | +26.2 % | +19.1 % | +39.1 % |
+
+(share of the port-minus-C delta; 512² and 1024² p10 agree to ~2 points, which
+is the only repeatability evidence in this record.)
+
+**The headline: at the fast presets where the 2.89x lives, missing SIMD coverage
+is ~12 % of the gap.** Driving every scalar-where-C-is-NEON kernel to C's cost
+takes 512² p10 from 2.80x to **2.47x**. Adding perfect parity on the kernels that
+are ALREADY vectorised on both sides (SIMD_QUAL, where the port is 1.95-2.20x
+slower than C's NEON) takes it to **2.27x**. Adding a zero-allocation port takes
+it to **1.74x**. The remaining 41-44 % is the port being 2.2-2.4x slower than C
+at code neither side vectorises.
+
+So: **1.03x is not reachable through SIMD work, and not reachable through SIMD
+plus allocation either.** To hit 1.03x every bucket must reach parity AND the
+SCALAR_BOTH bucket must additionally shrink from 3.48 ms to ~1.66 ms at 512²
+p10 — a 2.10x speedup of the port's driver/entropy/RDOQ code on top of
+everything else. Nothing measured here suggests a mechanism for that.
+
+## RESULT 2 — per class, 512² p10 (port ms / C ms / port over C)
+
+| class | port | C | ratio | share of gap |
+|---|---|---|---|---|
+| MD_DRIVER (evaluate_leaf, tx_unit_inner, pd0, partition) | 1.437 | 0.375 | 3.84x | 23.1 % |
+| ALLOC | 1.020 | 0.040 | 25.4x | 21.3 % |
+| COEFF_CTX (nz-map ctx, cost_coeffs_txb, fill_levels) | 0.778 | 0.034 | 22.8x | 16.2 % |
+| DISTORTION (hadamard/satd, sse, residual, variance) | 0.691 | 0.100 | 6.90x | 12.8 % |
+| LIBC_MEM | 0.590 | 0.174 | 3.39x | 9.0 % |
+| FWD_TXFM | 0.616 | 0.236 | 2.61x | 8.2 % |
+| SYNTAX_WRITE | 0.281 | 0.025 | 11.4x | 5.6 % |
+| INTRA_PRED | 0.337 | 0.103 | 3.28x | 5.1 % |
+| RANGE_CODER | 0.299 | 0.239 | 1.25x | 1.3 % |
+| QUANT_RDOQ | 0.401 | 0.357 | 1.13x | 1.0 % |
+| INV_TXFM | 0.251 | 0.232 | **1.08x** | 0.4 % |
+| COEFF_WRITE | 0.303 | 0.396 | **0.77x** | -2.0 % |
+
+Three classes are already at or past parity: the inverse transform (R1's gate did
+its job), the RDOQ/quantizer, and the coefficient WRITER — the port's
+`write_coeffs_txb_1d` is 23 % FASTER than C's `av1_write_coeffs_txb_1d`. The
+range coder is 1.25x. **Nothing in the entropy/quant column is a lever any more.**
+
+At 512² p6 the shape changes: LOOP_RESTORE +15.6 % (5.72x) and CDEF +12.3 %
+(7.82x) appear and are together 28 % of the p6 gap — and both are almost purely
+coverage: `restoration::compute_stats` 3.83 ms vs `svt_av1_compute_stats_neon`
+0.75 ms, `restoration::wiener_convolve_add_src` 1.04 ms vs
+`svt_av1_wiener_convolve_add_src_neon` 0.10 ms (10.3x), `cdef::cdef_find_dir`
+0.79 ms vs `cdef_dir_from_lines_neon` 0.05 ms (15x). That is where SIMD work pays.
+
+## RESULT 3 — a finding that is NOT a SIMD gap: the MDS0 Hadamard
+
+At 512² p10 the port spends **0.343 ms (4.79 % of its whole frame)** and at
+1024² p10 **1.282 ms (5.12 %)** in `leaf_funnel::hadamard_satd` +
+`dsp::hadamard::{hadamard_col8, aom_hadamard_8x8/16x16/32x32}`.
+
+**C spends zero.** Not "a little": `grep -ci 'hadamard|satd'` over C's entire
+sampled call graph returns **0** at 512² p10 (7,126 samples) and **0** at
+1024² p10 (19,073 samples), while `svt_aom_variance{8x8,16x16,32x32,64x64}_neon_dotprod`
+DO appear in both. That is not a per-unit speed difference — no scalar-vs-NEON
+ratio produces 0 samples against the port's 5 %.
+
+Read from the C source, this is C's `fast_loop_core` taking a DIFFERENT ARM:
+
+    product_coding_loop.c:1283   } else if (ctx->mds0_use_hadamard_blk) {   // hadamard_path
+    product_coding_loop.c:1296   } else { ... fn_ptr->vf(...)  }            // variance
+    product_coding_loop.c:9473   ctx->mds0_use_hadamard_blk =
+                                     ctx->mds0_use_hadamard_sb && fast_candidate_total_count > 1;
+
+`mds0_use_hadamard_sb` is `true` on the all-intra path (`enc_mode_config.c:8148`,
+inside `svt_aom_sig_deriv_enc_dec_allintra`), so the live term is
+`fast_candidate_total_count > 1`. At preset >= 9 the port's own funnel arms the
+`dc_only` gate (`FunnelCfg::dc_only_gate`, `leaf_funnel.rs:1078`) which injects
+exactly `{DC_PRED}` — one candidate — so C's condition is false and C takes the
+variance arm. The port has no such gate: `leaf_funnel.rs:4923` computes the
+Hadamard SATD unconditionally.
+
+Both arms then apply the same `<< 4` (C :1306) and feed the same fast cost, and
+the port currently passes 168/168 byte-identity while producing a DIFFERENT
+`luma_fast_dist` from C in exactly these blocks — which is itself the proof that
+the value is inert wherever the candidate count is 1.
+
+This is the same class as the review's R1 and R2 (work whose result cannot reach
+the bitstream), not a SIMD-coverage item, and it is the largest single one left
+at the presets the headline gap is quoted at. The fix is C's gate plus C's
+variance arm, not a NEON Hadamard — a NEON Hadamard would still be strictly more
+work than C does.
+
+The falsifier, if anyone wants to re-run it: a call census bucketed by injected
+candidate count. If most `hadamard_satd` calls at p10 have count > 1, the gate
+will not fire and the win is not there.
+
+## What else the profiles say, recorded so it is not re-derived
+
+* `coeff_c::nz_map_ctx` is 0.374 ms at 512² p10 (5.2 % of the port's frame) and
+  **784 of its 800 self samples have `quant::optimize_b` as their parent** — it
+  is the RDOQ trellis's per-coefficient context derivation, not the coefficient
+  writer's. C does the same work scalar inside `svt_aom_quantize_inv_quantize`.
+  Not a SIMD-coverage item; a candidate for the incremental-context trick.
+* `intra_pred::predict_dc` is 0.314 ms at 512² p10 / 1.073 ms at 1024² p10
+  (4.3 %) and is scalar; C's `svt_aom_dc_predictor_*_neon` total ~0.005 ms.
+  This IS a clean coverage gap. `intra_pred.rs` carries exactly one `incant!`
+  (PAETH); everything else in the file is scalar.
+* The xzone allocator charges its own `mach_absolute_time` (210 samples at 512²
+  p10) and `madvise` to libsystem_kernel; a profile that classes those as
+  "syscall" understates ALLOC by ~1.4 points.
+* C burns 233 samples (0.084 ms, 3.3 % of its 512² p10 frame) in
+  `build_nmv_component_cost_table` — motion-vector cost tables on an all-intra
+  still. The port does not. It is one of the few places C does work the port
+  does not, and it is why C's PIPELINE class is not near zero.
