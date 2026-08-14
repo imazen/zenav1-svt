@@ -1,4 +1,7 @@
 /target/
+# Alternate CARGO_TARGET_DIRs used by concurrent sessions (perf A/B runs keep
+# their own so a debug build cannot invalidate a timed release build).
+/target-perf/
 Cargo.lock
 *.swp
 *.swo

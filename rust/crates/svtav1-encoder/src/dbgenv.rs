@@ -87,6 +87,12 @@ presence_flags! {
     seed_dump => "SVTAV1_SEED_DUMP",
     /// `SVTAV1_RECONDBG`: post-deblock recon dump gate.
     recondbg => "SVTAV1_RECONDBG",
+    /// `SVTAV1_DLFDBG`: per-trial deblock-level search dump (`DLF_TRY
+    /// plane=<p> level=<l> sse=<v>` + `DLF_PICK plane=<p> level=<l>`).
+    /// The C counterpart is `RECON_SSE` from the `--wrap` interposer for
+    /// the level-0 trial; per-trial C values need the wrapped
+    /// `svt_av1_loop_filter_frame` dump (tools/capture_c_trace).
+    dlfdbg => "SVTAV1_DLFDBG",
     /// `SVTAV1_BD10_POSTPASS`: 10-bit post-pass gate.
     bd10_postpass => "SVTAV1_BD10_POSTPASS",
     /// `SVTAV1_LAMBDA_DBG`: per-superblock lambda derivation dump.
@@ -119,4 +125,12 @@ value_vars! {
     packtree => "SVTAV1_PACKTREE",
     /// `SVTAV1_PACKTREE_COEFF`: `"mi_row,mi_col"` pin, or a path for all leaves.
     packtree_coeff => "SVTAV1_PACKTREE_COEFF",
+    /// `SVTAV1_DLF_TRY_BIN=<prefix>`: dump the deblock-level search TRIAL
+    /// plane for the level named by [`dlf_try_level`] to `<prefix>.p<plane>`,
+    /// tightly packed. Pairs with the C `SVT_LFRECON_BIN` interposer
+    /// (tools/capture_c_trace/wrap_recon.c) so the two deblock kernels can be
+    /// diffed at ONE level on a byte-identical pre-filter recon.
+    dlf_try_bin => "SVTAV1_DLF_TRY_BIN",
+    /// `SVTAV1_DLF_TRY_LEVEL=<n>`: which trial [`dlf_try_bin`] captures.
+    dlf_try_level => "SVTAV1_DLF_TRY_LEVEL",
 }

@@ -87,6 +87,8 @@
 #include "md_process.h"
 
 void __real_svt_av1_loop_filter_init(PictureControlSet* pcs);
+void __real_svt_av1_loop_filter_frame(EbPictureBufferDesc* frame_buffer, PictureControlSet* pcs, int32_t plane_start,
+                                      int32_t plane_end);
 
 /* ---- partition-tree interposer -----------------------------------------
  * svt_aom_pick_partition (coding_loop.h:34, defined product_coding_loop.c:11549)
@@ -573,6 +575,83 @@ void __wrap_svt_aom_full_cost(PictureControlSet* pcs, ModeDecisionContext* ctx, 
                 fflush(f);
             }
         }
+    }
+}
+
+/* ---- POST-DEBLOCK recon interposer (SVT_LFRECON_BIN / SVT_LFRECON_OUT) ---
+ * `svt_av1_loop_filter_frame` is declared in deblocking_filter.h:47 and called
+ * from dlf_process.c:114 — a CROSS-TU call, so --wrap reaches it. The search's
+ * own calls (try_filter_frame, deblocking_filter.c:824) are intra-TU and are
+ * bound direct, so this fires exactly ONCE per picture: the FINAL application
+ * at the picked levels, on the recon restored from `temp_lf_recon_buffer`.
+ *
+ * That is what makes it a usable oracle for the port's deblock KERNEL: the
+ * port can be asked (SVTAV1_DLF_TRY_BIN + SVTAV1_DLF_TRY_LEVEL) to dump its
+ * search trial at C's picked level, and the two planes must be byte-identical
+ * given a byte-identical pre-filter recon (which SVT_RECON_BIN proves
+ * separately). Without this, a level-search divergence cannot be split into
+ * "the kernel differs" vs "the search control differs" — the level number
+ * alone is one bit of evidence for a 64-wide landscape.
+ *
+ * Dumps the ALIGNED plane extent, tightly packed (stride removed), same
+ * convention as SVT_RECON_BIN so the two dumps diff against each other and
+ * against the port's.
+ */
+void __wrap_svt_av1_loop_filter_frame(EbPictureBufferDesc* frame_buffer, PictureControlSet* pcs, int32_t plane_start,
+                                      int32_t plane_end) {
+    __real_svt_av1_loop_filter_frame(frame_buffer, pcs, plane_start, plane_end);
+
+    const char* binpath = getenv("SVT_LFRECON_BIN");
+    const char* outpath = getenv("SVT_LFRECON_OUT");
+    if ((!binpath || !*binpath) && (!outpath || !*outpath))
+        return;
+
+    static int lf_call_idx = 0;
+    const int  n           = lf_call_idx++;
+    if (n != 0)
+        return;
+
+    const bool           is_16bit = pcs->ppcs->scs->is_16bit_pipeline;
+    EbPictureBufferDesc* recon    = NULL;
+    svt_aom_get_recon_pic(pcs, &recon, is_16bit);
+    if (!recon)
+        return;
+
+    const uint32_t ss_x    = pcs->ppcs->scs->subsampling_x;
+    const uint32_t ss_y    = pcs->ppcs->scs->subsampling_y;
+    FrameHeader*   frm_hdr = &pcs->ppcs->frm_hdr;
+    FILE*          f       = (outpath && *outpath) ? fopen(outpath, "a") : NULL;
+    if (f) {
+        fprintf(f,
+                "LFRECON_LEVELS y0=%d y1=%d u=%d v=%d sharpness=%d plane_start=%d plane_end=%d\n",
+                (int)frm_hdr->loop_filter_params.filter_level[0], (int)frm_hdr->loop_filter_params.filter_level[1],
+                (int)frm_hdr->loop_filter_params.filter_level_u, (int)frm_hdr->loop_filter_params.filter_level_v,
+                (int)frm_hdr->loop_filter_params.sharpness_level, (int)plane_start, (int)plane_end);
+    }
+    for (int p = 0; p < 3; ++p) {
+        const uint32_t pw  = p ? (pcs->ppcs->aligned_width >> ss_x) : pcs->ppcs->aligned_width;
+        const uint32_t ph  = p ? (pcs->ppcs->aligned_height >> ss_y) : pcs->ppcs->aligned_height;
+        const uint64_t sse = picture_sse_calculations(pcs, recon, p);
+        if (f)
+            fprintf(f, "LFRECON_SSE plane=%d sse=%llu w=%u h=%u\n", p, (unsigned long long)sse, pw, ph);
+        if (!binpath || !*binpath)
+            continue;
+        char path[4096];
+        snprintf(path, sizeof(path), "%s.p%d", binpath, p);
+        FILE* bf = fopen(path, "wb");
+        if (!bf)
+            continue;
+        for (uint32_t r = 0; r < ph; ++r) {
+            if (is_16bit)
+                fwrite((const uint16_t*)recon->buffer[p] + (size_t)r * recon->stride[p], sizeof(uint16_t), pw, bf);
+            else
+                fwrite(recon->buffer[p] + (size_t)r * recon->stride[p], 1, pw, bf);
+        }
+        fclose(bf);
+    }
+    if (f) {
+        fflush(f);
+        fclose(f);
     }
 }
 

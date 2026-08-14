@@ -76,22 +76,34 @@ if [[ -n "${SVT_TRACE_OUT:-}" && "${SVT_TRACE_OUT}" != /dev/null ]]; then
     TRACE_ARG=$(map "$SVT_TRACE_OUT")
 fi
 
-# The `wrap_recon.c` interposers are driven by their own env vars, all of
-# which name an OUTPUT PATH (SVT_CTREE_OUT, SVT_PICKPART_OUT, SVT_QLEVELS_OUT,
-# SVT_CCOEF_OUT, SVT_CCOST_OUT, SVT_PART_OUT, SVT_SEED_OUT). Map each path the
-# same way as the trace, and pass the non-path selectors through untouched.
-# They all APPEND, so truncate first — a stale dump read as fresh is the
-# `SVTAV1_PACKTREE` trap in rust/CLAUDE.md, from the other side.
+# The `wrap_recon.c` interposers are driven by their own env vars, split into
+# two kinds: those that name an OUTPUT PATH (which must be remapped into the
+# container's /work view) and those that are plain SELECTORS (passed through).
+#
+# Keep `PATH_ENV` in sync with `getenv("SVT_..._OUT")` / `SVT_RECON_BIN` in
+# `tools/capture_c_trace/wrap_recon.c` — an unmapped path var is not an error,
+# it just silently writes inside the container and the host sees nothing, which
+# reads as "the interposer produced no data". (That is how the deblock-level
+# investigation first came up empty: SVT_RECON_OUT/SVT_RECON_BIN were absent
+# from this list.)
+#
+# The file dumps all APPEND, so truncate first — a stale dump read as fresh is
+# the `SVTAV1_PACKTREE` trap in rust/CLAUDE.md, from the other side.
 DUMP_ENV=()
 for v in SVT_CTREE_OUT SVT_PICKPART_OUT SVT_QLEVELS_OUT SVT_CCOEF_OUT \
-    SVT_CCOST_OUT SVT_PART_OUT SVT_SEED_OUT; do
+    SVT_CCOST_OUT SVT_PART_OUT SVT_SEED_OUT SVT_RECON_OUT SVT_RECON_BIN \
+    SVT_CEDGE_OUT SVT_FASTCOST_OUT SVT_FULLCOST_OUT SVT_UVLOOP_OUT \
+    SVT_PD0COST_OUT SVT_LFRECON_OUT SVT_LFRECON_BIN; do
     if [[ -n "${!v:-}" ]]; then
-        : >"${!v}"
+        # The *_BIN vars are PREFIXES (the interposer appends `.p<plane>`), so
+        # they have no file of their own to truncate.
+        [[ "$v" == *_BIN ]] || : >"${!v}"
         DUMP_ENV+=(-e "$v=$(map "${!v}")")
     fi
 done
 for v in SVT_PICKPART_MIROW SVT_PICKPART_MICOL SVT_CCOEF_XY SVT_QLEVELS_XY \
-    SVT_QLEVELS_COMP SVT_PART_MI; do
+    SVT_QLEVELS_COMP SVT_PART_MI SVT_CEDGE_XY SVT_FASTCOST_XY \
+    SVT_FULLCOST_XY SVT_UVLOOP_XY SVT_PD0COST_SBY; do
     [[ -n "${!v:-}" ]] && DUMP_ENV+=(-e "$v=${!v}")
 done
 
