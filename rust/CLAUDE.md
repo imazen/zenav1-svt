@@ -202,14 +202,80 @@ Two lessons worth carrying:
   lives in `unaligned_identity_scan.sh`, which is a tracking SCOREBOARD (always
   exits 0). Extending recon-parity to a partial-SB cell is open work.
 
-**Residual: 3 of 648 cells**, all `188x256` (the one grid dim where true !=
-aligned on the WIDTH axis: 188 -> 192). NOT root-caused, and NOT one class:
-`terminal p4 q12` is a single chroma UV_CFL_PRED-vs-UV_DC_PRED flip at
-mi=(46,46); `terminal p2 q55` a chroma D113+angle-delta-vs-DC flip at
-mi=(50,42); `city-lossless p2 q33` has an IDENTICAL tree (0 field flips) and
-first diverges at byte 16, i.e. a frame-header/post-filter search difference.
-The same content at the fully-aligned 192x256 byte-matches. Record:
-`benchmarks/unaligned_real_identity_2026-08-13.{tsv,meta}`.
+## 2026-08-14 — issue #15 continued: 3 -> 2 cells, and the last two are NOT alignment
+
+**3. The deblock filtered PAST the true frame width** (`9f716d791`). AV1 spec
+7.14.5 sets `onScreen = 0` — filters nothing — at `x >= FrameWidth` /
+`y >= FrameHeight`, and C enforces it: `svt_av1_setup_dst_planes` fills
+`plane_ptr->dst.width/height` with `max_input_luma_width -
+max_input_pad_right` (deblocking_filter.c:150-155, its own comment citing
+7.14.2), and `set_lpf_parameters` (:225-230) returns TX_4X4 with
+`filter_length = 0` above it. The port's edge walk ran the whole ALIGNED plane.
+
+The bound bites at MI-UNIT granularity, so it is only observable when a 4x4
+unit starts at or past the true edge — `true % 8 == 4`. That is why exactly ONE
+dimension in a 648-cell scan saw it (188 -> 192), and why 432 recon-parity
+cases and 120 decode-grid cells (all 64-aligned) could not. Note 192x256 is
+fully 64-aligned: **this is a true-vs-aligned defect, not a partial-SB one.**
+
+Why it moved bytes at all: the deblock LEVEL search measures its SSE over the
+ALIGNED plane (C `picture_sse_calculations` uses `aligned_width`), so filtering
+the four padding columns shifted the landscape it hill-climbs — SSE@10
+1137155 -> 1137303 (== C's), pick 13 -> 10 (== C). And like defect 2 it was an
+encoder/decoder mismatch: a conforming decoder derives those columns by the
+same 7.14.5 rule, and they feed the CDEF and LR searches.
+
+**4. The luma STRIDE was ignored on the 8-aligned path** (`18888bb47`). Every
+public entry point takes a `y_stride`; the TRUE != ALIGNED path honoured it
+(`pad_plane_replicate` reads at `src_stride`) and the pass-through did not —
+`y_plane[..w * h].to_vec()` reinterprets a padded buffer as tightly packed.
+Found by the new gate on its first run. Byte-neutral for every existing caller,
+because no gate had ever passed `y_stride != width`.
+
+**The residual 2 cells are NOT alignment defects — measured, not argued.** The
+2026-08-13 note claimed "the same content at the fully-aligned 192x256
+byte-matches"; that comparison used `crop:`, which centre-crops, so the two
+runs sampled DIFFERENT source windows. The controlled version
+(`tools/pad_yuv.py`: take the frame the 188-wide encode actually sees after its
+own TRUE->ALIGNED replication, feed it back as a genuine 192x256 `raw:` frame)
+reproduces BOTH flips at the same mi and the same op index with `true ==
+aligned` and no padding at all. A `crop:` breadth sweep agrees from the other
+side: 128x128 / 192x192 / 192x256 / 256x160 / 256x256 all IDENTICAL, 320x256
+DIFFERS — the divergence follows the CONTENT WINDOW, not the dimension.
+
+What they are: a chroma intra-mode divergence in the MDS3 chroma decision, one
+block per frame, on screen content — C picks its luma pair (uv-follows-luma) or
+CFL where the port falls back to UV_DC, with every luma symbol either side
+matching. Ruled out: the ind-uv CANDIDATE SET (`search_best_mds3_uv_mode`,
+product_coding_loop.c:7301-7383, builds the same "MDS3 survivors' (uv_mode, uv
+angle delta) + UV_DC" list the port does; the full mode x delta sweep at :7546
+belongs to `search_best_independent_uv_mode`, the M0/M1 entry, which preset 2
+never reaches). NOT root-caused further — and whether it is an RD near-tie has
+NOT been established, so do not repeat that as a finding. Record:
+`benchmarks/unaligned_real_identity_2026-08-14.{tsv,meta}`.
+
+**The coverage hole is now gated: `tools/alignment_gate.sh`** (`just
+align-gate`, in CI; `ALIGN_GATE_MODE=full` locally). It varies true-vs-aligned
+on each axis independently at EVERY residue mod 8, dims straddling 64 by +-1
+and odd amounts, odd dims (ceiling chroma), a POISONED padded luma stride, both
+bit depths, and `screen` content, with TWO oracles per cell: byte-identity to C
+AND encoder-recon == aomdec. Teeth proved by reverting all four fixes one at a
+time — 74/74 -> 68/74, 70/74, 70/74, 71/74
+(`benchmarks/alignment_gate_teeth_2026-08-14.md`). Three of the deblock arm's
+four failures are on the RECON leg, which is the argument for keeping two
+oracles: a C-only gate reports an encoder/decoder mismatch as "we differ from
+C", if it reports it at all.
+
+Two harness lessons from this round:
+
+- **`ctrace-linux/run.sh` mapped only 7 of the 13 `SVT_*_OUT` interposer
+  paths.** An unmapped one is not an error — the interposer writes inside the
+  container and the host sees nothing, which reads as "C never called this".
+  All 13 are mapped now; keep the list in sync with `wrap_recon.c`.
+- **`tools/identity_run` rebuilds the encoder on every invocation.** Editing
+  any `.rs` while a scan is running silently changes the encoder mid-sweep (or
+  fails the build and turns every remaining cell into `PORTFAIL`). One 648-cell
+  scan was lost to this. Do not touch Rust sources while a sweep is live.
 
 ## DEAD-LOOKING C STAYS TRANSLATED AND DOCUMENTED — never reverted (2026-08-03)
 

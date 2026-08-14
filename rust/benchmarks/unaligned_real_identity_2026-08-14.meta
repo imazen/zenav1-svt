@@ -1,0 +1,94 @@
+# issue #15 — 3 -> 2 of 648, and the last two are NOT alignment
+
+Companion to `unaligned_real_identity_2026-08-14.tsv` (`tools/unaligned_identity_scan.sh`
+re-run at `27b08f0d5`). Supersedes the `2026-08-13` pair as the current scoreboard.
+
+host: Apple M-series (darwin 25.5.0), aarch64
+oracle: tools/perf_c_encode (C v4.2.0 in-tree static lib, matched still/AVIF
+        CQP config, 8-bit 4:2:0, single tile, 30 fps both sides)
+grid:   6 images (3 photo + 3 screen) x 6 dims x 6 presets x 3 qps = 648 cells
+
+| run | commit | DIFFERS |
+|---|---|---|
+| baseline | `b9cce569d` | 67 / 648 |
+| + palette-search crop | `84e3c8627` | 63 / 648 |
+| + intra reference clamp | `215af947d` / `0163004cc` | 3 / 648 |
+| + deblock `onScreen` bound | `9f716d791` (this file) | **2 / 648** |
+
+`city-lossless 188x256 p2 q33` is fixed and byte-identical to C (md5
+`546d7c343debb1c56ead34b861a37db5`, 5019 B). 1 fixed, 0 broken.
+
+Survivors, both `terminal 188x256`, both 772 B / 2698 B == C's byte count:
+
+| cell | flip |
+|---|---|
+| `p2 q55` | one field: chroma `uv=5` + `aduv=-1` (C) vs `UV_DC_PRED` (port) at mi=(50,42) |
+| `p4 q12` | one field: chroma `UV_CFL_PRED` (C) vs `UV_DC_PRED` (port) at mi=(46,46) |
+
+## The controlled A/B — they are not alignment defects
+
+The 2026-08-13 note said "the same content at the fully-aligned 192x256
+byte-matches". That comparison used `crop:`, which CENTRE-CROPS: the 188-wide
+and 192-wide runs sampled DIFFERENT source windows, so two things changed at
+once and the result was not evidence about alignment.
+
+The controlled version (`tools/pad_yuv.py`, added for this): take the frame the
+188x256 encode actually sees AFTER its own TRUE->ALIGNED edge replication, and
+feed it back as a genuine 192x256 frame via `raw:`. Identical pixels;
+`true == aligned`; no padding, no straddle.
+
+```
+q55 p2: 188x256 DIFFERS | SAME PIXELS at 192x256 DIFFERS
+q12 p4: 188x256 DIFFERS | SAME PIXELS at 192x256 DIFFERS
+```
+
+Same single flip, same mi, same op index (`p4 q12`: op 29127, `CDF14 C=s13
+Rust=s0`, which is the op the 188-wide run reported too). **Alignment is
+exonerated for both.**
+
+The `crop:` breadth sweep says the same thing from the other side — the
+divergence follows the CONTENT WINDOW, not the dimension:
+
+| terminal crop | q55 p2 | q12 p4 |
+|---|---|---|
+| 128x128 | IDENTICAL | IDENTICAL |
+| 192x192 | IDENTICAL | IDENTICAL |
+| 192x256 | IDENTICAL | IDENTICAL |
+| 256x160 | IDENTICAL | IDENTICAL |
+| 256x256 | IDENTICAL | IDENTICAL |
+| **320x256** | **DIFFERS** | **DIFFERS** |
+
+## What they are, and what is ruled out
+
+A CHROMA INTRA MODE divergence in the MDS3 chroma decision, one block per
+frame, on real screen content. In `p2 q55` the LUMA symbols agree exactly
+either side of it (op 19563 `CDF13 s=5` y_mode, op 19564 `CDF7 s=2` = luma
+angle delta -1, both matching); only the `CDF14` uv_mode at op 19565 flips, and
+C's uv pair (5, -1) is precisely its luma pair — uv-follows-luma — while the
+port falls back to UV_DC.
+
+**Ruled out: the ind-uv CANDIDATE SET.** The obvious suspect was that C sweeps
+all uv modes x all 7 angle deltas where the port only tests the MDS3 survivors'
+pairs. It does not: `search_best_mds3_uv_mode` (product_coding_loop.c:7301-7383
+— the chroma_level-4 / `ind_uv_last_mds = 2` entry that preset 2 takes) builds
+its candidate list from `best_candidate_index_array`'s `(uv_mode,
+angle_delta[PLANE_TYPE_UV])` pairs, skipping inter/intrabc/UV_DC and
+duplicates, then appends UV_DC — which is exactly what `leaf_funnel.rs`'s
+`ind_uv_mds3` arm builds. The full mode x delta sweep at
+product_coding_loop.c:7546-7589 belongs to the OTHER function,
+`search_best_independent_uv_mode`, which is the chroma_level 1/2 (M0/M1) entry
+and is not reached at preset 2. C's own per-candidate dump at the flipped block
+(`SVT_UVLOOP_OUT`/`SVT_UVLOOP_XY="168,200"`, 157 calls) is consistent with that
+reading: the uv=5 rows walk the LUMA candidates' deltas, interleaved with the
+per-candidate CFL alpha search.
+
+**NOT root-caused beyond that.** The remaining candidates are the MDS3
+survivor SET / order (which pairs reach the uv list at all) and the chroma
+full-loop cost itself. Whether this is a genuine RD near-tie has NOT been
+established — no cost pair has been compared, so the "near-tie" reading from
+2026-08-13 remains a hypothesis and should not be repeated as a finding.
+
+Frame-level context for the same cell: the port codes 4 distinct uv modes
+(DC/V/PAETH/CFL) where C codes 13, over 126 joined blocks with exactly ONE
+final-tree flip — so the narrower spread is mostly invisible, and this is the
+block where it is not.
