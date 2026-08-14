@@ -6405,16 +6405,74 @@ pub(crate) fn evaluate_leaf(
     let tsz_ctx = fx.ectx.tx_size_ctx(abs_x, abs_y, w, h);
 
     // -- Independent chroma search before MDS3 (chroma_level 4:
-    //    `search_best_mds3_uv_mode`, product_coding_loop.c:7561, invoked
-    //    per :10098-10105 when `perform_ind_uv_search_last_mds` — at
-    //    least one MDS3 intra candidate whose (injected, uv-follows-luma)
-    //    uv mode is not UV_DC (skip_ind_uv_if_only_dc = 1; the
-    //    inter_vs_intra_cost_th=100 arm never fires on I-slices:
-    //    MAX_MODE_COST * 100 does not overflow and dwarfs any intra
-    //    cost). Produces best_uv[(luma mode)] -> (uv mode, uv delta);
-    //    `update_intra_chroma_mode` (:7326) then rewrites each MDS3
+    //    `search_best_mds3_uv_mode`, product_coding_loop.c:7301, invoked at
+    //    :9625-9637 when `perform_ind_uv_search_last_mds` (:1472-1504)
+    //    returns true. Produces best_uv[(luma mode)] -> (uv mode, uv delta);
+    //    `update_intra_chroma_mode` (:7063) then rewrites each MDS3
     //    candidate before its full loop. --
-    if cfg.ind_uv_mds3 && has_uv && order1.iter().take(n3).any(|&ci| cands[ci].uv != 0) {
+    //
+    // The gate has TWO arms, and the second one is live here (issue #15):
+    //
+    //  a) `mds3_intra_count` (:1478-1487) counts the MDS3 survivors that are
+    //     NOT inter-classified and — with `skip_ind_uv_if_only_dc = 1`, which
+    //     is chroma_level 4's setting (enc_mode_config.c:4373) — whose
+    //     injected (uv-follows-luma) uv mode is not UV_DC.
+    //  b) the `inter_vs_intra_cost_th` arm (:1498-1501) then ZEROES that count
+    //     when `best_inter_cost * th < best_intra_cost * 100`, th = 100 at
+    //     chroma_level 4 (enc_mode_config.c:4372) — i.e. when the best
+    //     inter-classified candidate's MDS1 full cost beats every intra
+    //     candidate's.
+    //
+    // Arm (b) was previously commented here as "never fires on I-slices,
+    // MAX_MODE_COST * 100 does not overflow and dwarfs any intra cost". The
+    // overflow half is right (MAX_MODE_COST = 13754408443200 * 8,
+    // coding_unit.h:37, so * 100 is ~1.1e16, far under 2^64) but the
+    // conclusion was WRONG: `is_inter` here is
+    // `is_inter_mode(mode) || use_intrabc` (:1479-1481), so on a SCREEN-CONTENT
+    // I-slice a winning IntraBC candidate makes `best_inter_cost` an ordinary
+    // finite cost and the arm fires. MEASURED on `terminal` 188x256 (the last
+    // two divergent cells of tools/unaligned_identity_scan.sh): at p2 q55
+    // mi=(50,42) C's MDS1 best intra = 97_762_561 vs best IntraBC = 84_376_537,
+    // and at p4 q12 mi=(46,46) 163_691 vs 148_994 — the arm fires in both, C
+    // sets `ind_uv_avail = 0` (confirmed directly by the
+    // `svt_aom_get_intra_uv_fast_rate` interposer, `indavail=0`), every MDS3
+    // candidate keeps its uv-follows-luma pair, and C codes uv=D113/-1 resp.
+    // UV_CFL where the port's table said UV_DC.
+    //
+    // C's `is_inter` for both the count and the two cost minima is
+    // `is_inter_mode(block_mi.mode) || block_mi.use_intrabc`; the port has no
+    // inter modes on this all-intra path, so IntraBC is the whole of it.
+    const IND_UV_INTER_VS_INTRA_TH: u64 = 100; // chroma_level 4, enc_mode_config.c:4372
+    let ind_uv_gate = cfg.ind_uv_mds3 && has_uv && {
+        let mut intra_count = 0usize;
+        let mut best_intra = u64::MAX;
+        let mut best_inter = u64::MAX;
+        for &ci in order1.iter().take(n3) {
+            let c = &cands[ci];
+            if c.ibc.is_some() {
+                best_inter = best_inter.min(c.full_cost);
+            } else {
+                if c.uv != 0 {
+                    intra_count += 1;
+                }
+                best_intra = best_intra.min(c.full_cost);
+            }
+        }
+        // C SEEDS both minima with MAX_MODE_COST and only ever lowers them, so
+        // an absent class — or a class whose every candidate costs more than
+        // the seed — compares as that CONSTANT, not as "infinity". Clamping
+        // the u64::MAX-seeded minima to it reproduces both cases exactly.
+        // With no IntraBC candidate this makes the arm inert as the old
+        // comment assumed: 1.1e16 is not < (an intra cost) * 100.
+        const MAX_MODE_COST: u64 = 13_754_408_443_200 * 8; // coding_unit.h:37
+        let best_intra = best_intra.min(MAX_MODE_COST);
+        let best_inter = best_inter.min(MAX_MODE_COST);
+        if best_inter * IND_UV_INTER_VS_INTRA_TH < best_intra * 100 {
+            intra_count = 0;
+        }
+        intra_count > 0
+    };
+    if ind_uv_gate {
         // Distinct (uv, uv_delta) pairs of the MDS3 survivors, in
         // survivor order, excluding UV_DC; then UV_DC (delta 0) last.
         let mut tested = [[false; 7]; 13];

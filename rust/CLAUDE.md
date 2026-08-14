@@ -202,7 +202,7 @@ Two lessons worth carrying:
   lives in `unaligned_identity_scan.sh`, which is a tracking SCOREBOARD (always
   exits 0). Extending recon-parity to a partial-SB cell is open work.
 
-## 2026-08-14 — issue #15 continued: 3 -> 2 cells, and the last two are NOT alignment
+## 2026-08-14 — issue #15 CLOSED: 3 -> 0 cells (the last two were not alignment)
 
 **3. The deblock filtered PAST the true frame width** (`9f716d791`). AV1 spec
 7.14.5 sets `onScreen = 0` — filters nothing — at `x >= FrameWidth` /
@@ -243,16 +243,67 @@ aligned` and no padding at all. A `crop:` breadth sweep agrees from the other
 side: 128x128 / 192x192 / 192x256 / 256x160 / 256x256 all IDENTICAL, 320x256
 DIFFERS — the divergence follows the CONTENT WINDOW, not the dimension.
 
-What they are: a chroma intra-mode divergence in the MDS3 chroma decision, one
+What they were: a chroma intra-mode divergence in the MDS3 chroma decision, one
 block per frame, on screen content — C picks its luma pair (uv-follows-luma) or
-CFL where the port falls back to UV_DC, with every luma symbol either side
-matching. Ruled out: the ind-uv CANDIDATE SET (`search_best_mds3_uv_mode`,
-product_coding_loop.c:7301-7383, builds the same "MDS3 survivors' (uv_mode, uv
-angle delta) + UV_DC" list the port does; the full mode x delta sweep at :7546
-belongs to `search_best_independent_uv_mode`, the M0/M1 entry, which preset 2
-never reaches). NOT root-caused further — and whether it is an RD near-tie has
-NOT been established, so do not repeat that as a finding. Record:
-`benchmarks/unaligned_real_identity_2026-08-14.{tsv,meta}`.
+CFL where the port fell back to UV_DC, with every luma symbol either side
+matching. Ruled out en route: the ind-uv CANDIDATE SET
+(`search_best_mds3_uv_mode`, product_coding_loop.c:7301-7383, builds the same
+"MDS3 survivors' (uv_mode, uv angle delta) + UV_DC" list the port does; the
+full mode x delta sweep at :7546 belongs to
+`search_best_independent_uv_mode`, the M0/M1 entry, which preset 2 never
+reaches). ROOT-CAUSED AND FIXED same day — see defect 5.
+
+## 5. The ind-uv search ran where C SKIPS it (`inter_vs_intra_cost_th` + IntraBC)
+
+**648 / 648.** Both residual cells, root cause identical, and it is a MISSING
+GATE — not a cost defect, not a lambda defect, and **not an RD near-tie** (the
+near-tie reading that survived two rounds as a hypothesis is now REFUTED, not
+confirmed: the port's own argmin had UV_DC at 5,369,553 vs C's pick at
+8,307,940, a 35% gap. The argmin should not have run at all).
+
+C calls `search_best_mds3_uv_mode` (product_coding_loop.c:7301) at :9625-9637
+only when `perform_ind_uv_search_last_mds` (:1472-1504) says so, and that
+predicate has TWO arms. The port modelled the first (`mds3_intra_count`,
+:1478-1487 — non-inter survivors whose injected uv mode is not UV_DC, under
+`skip_ind_uv_if_only_dc = 1`) and had nothing for the second: the
+`inter_vs_intra_cost_th` arm at :1498-1501 ZEROES that count when
+`best_inter_cost * th < best_intra_cost * 100`, th = 100 at chroma_level 4
+(enc_mode_config.c:4372).
+
+`is_inter` there is `is_inter_mode(mode) || use_intrabc` (:1479-1481). The old
+port comment argued the arm "never fires on I-slices: MAX_MODE_COST * 100 does
+not overflow and dwarfs any intra cost" — **the overflow half is right and the
+conclusion is wrong.** On SCREEN CONTENT an IntraBC candidate can win MDS1, and
+then `best_inter_cost` is an ordinary finite cost. That single fact explains
+every observed property of these two cells: screen content only, one block per
+frame, and following the CONTENT WINDOW rather than the dimension.
+
+Measured on the C side (`SVT_UVRATE_OUT` = the new
+`svt_aom_get_intra_uv_fast_rate` interposer, which prints `ctx->ind_uv_avail`
+directly, + `SVT_FULLCOST_OUT`'s new `ibc=` column for the two minima):
+
+| cell | block | C MDS1 best intra | C MDS1 best IntraBC | `indavail` |
+|---|---|---|---|---|
+| p2 q55 | mi=(50,42) 8x8 | 97,762,561 | 84,376,537 | **0** |
+| p4 q12 | mi=(46,46) 8x8 | 163,691 | 148,994 | **0** |
+
+Fixed in `leaf_funnel.rs` by implementing the predicate in full. Byte-neutral
+wherever no IntraBC candidate exists (the arm is then genuinely inert, exactly
+as the old comment assumed): `byteid_fingerprint` 168/168 with 0 rows moved.
+Record: `benchmarks/unaligned_real_identity_2026-08-14-induv.{tsv,meta}`,
+regression cell `ind-uv-ibc-cost-gate-188x256`.
+
+**The method lesson, and it is the same one twice now.** Both this and defect 2
+were missed by a search bounded on the wrong quantity. Here the bound was "the
+chroma decision" — `chroma_eval`'s cost, its lambda, the survivor order — and
+the defect was one level up, in whether that decision runs. When a port
+DECISION disagrees with C, enumerate C's ENTRY CONDITIONS before comparing its
+arithmetic; an interposer that prints the availability flag (`ind_uv_avail`)
+answers in one run what four rounds of cost archaeology did not. Corollary for
+"unreachable on this path" comments: `MAX_MODE_COST` reasoning about inter
+costs on an I-slice is only sound if `is_inter` means what you think — check
+the predicate, not the slice type. IntraBC is inter for most of C's inter/intra
+tests.
 
 **The coverage hole is now gated: `tools/alignment_gate.sh`** (`just
 align-gate`, in CI; `ALIGN_GATE_MODE=full` locally). It varies true-vs-aligned

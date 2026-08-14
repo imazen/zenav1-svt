@@ -352,6 +352,33 @@ else
   skip=$((skip+1)); skipped+=("palette-straddle-search-96x88 (no $SCREEN_DIR/terminal.png)")
 fi
 
+# 2026-08-14 (issue #15, the last 2 cells) — the MDS3 independent-chroma search
+# ran where C SKIPS it. C's gate is `perform_ind_uv_search_last_mds`
+# (product_coding_loop.c:1472-1504); its second arm zeroes the intra count when
+# `best_inter_cost * inter_vs_intra_cost_th < best_intra_cost * 100`
+# (th = 100 at chroma_level 4), and `is_inter` there is
+# `is_inter_mode(mode) || use_intrabc` — so a winning IntraBC candidate on
+# SCREEN CONTENT makes C skip the search, leave `ind_uv_avail = 0`, and code
+# every MDS3 candidate's injected uv-follows-luma chroma. The port had no such
+# arm and always ran the search, so its per-luma-mode uv table overrode the
+# injected pair with UV_DC.
+#
+# OBSERVED: gb82-sc/terminal.png cropped to 188x256, both cells the same byte
+# count as C and a single chroma-mode field flip in the final tree —
+#   p2 q55  772 B, 35 differing bytes from 737: uv=D113/aduv=-1 (C) vs UV_DC,
+#           mi=(50,42); C MDS1 best intra 97,762,561 vs best IntraBC 84,376,537
+#   p4 q12  2698 B, 319 differing bytes from 2377: UV_CFL_PRED (C) vs UV_DC,
+#           mi=(46,46); C MDS1 best intra 163,691 vs best IntraBC 148,994
+# Both measured on the C side with the `svt_aom_get_intra_uv_fast_rate`
+# interposer (`indavail=0`) + the `svt_aom_full_cost` one (the two minima).
+#
+# Needs the real screen corpus: only screen content wins an IntraBC candidate.
+if [ -f "$SCREEN_DIR/terminal.png" ]; then
+  byte "ind-uv-ibc-cost-gate-188x256" "crop:$SCREEN_DIR/terminal.png" 188 256 55 2
+else
+  skip=$((skip+1)); skipped+=("ind-uv-ibc-cost-gate-188x256 (no $SCREEN_DIR/terminal.png)")
+fi
+
 # ---------------------------------------------------------------------------
 total=$((pass + fail))
 echo

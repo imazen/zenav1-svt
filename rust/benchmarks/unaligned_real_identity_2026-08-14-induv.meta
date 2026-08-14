@@ -1,0 +1,126 @@
+# issue #15 — 2 -> 0 of 648. The last two cells were a MISSING GATE.
+
+Companion to `unaligned_real_identity_2026-08-14-induv.tsv`
+(`tools/unaligned_identity_scan.sh`). Supersedes
+`unaligned_real_identity_2026-08-14.{tsv,meta}` as the current scoreboard.
+
+host: Apple M-series (darwin 25.5.0), aarch64
+oracle: tools/perf_c_encode (C v4.2.0 in-tree static lib, matched still/AVIF
+        CQP config, 8-bit 4:2:0, single tile, 30 fps both sides)
+grid:   6 images (3 photo + 3 screen) x 6 dims x 6 presets x 3 qps = 648 cells
+
+| run | commit | DIFFERS |
+|---|---|---|
+| baseline | `b9cce569d` | 67 / 648 |
+| + palette-search crop | `84e3c8627` | 63 / 648 |
+| + intra reference clamp | `215af947d` / `0163004cc` | 3 / 648 |
+| + deblock `onScreen` bound | `9f716d791` | 2 / 648 |
+| + ind-uv inter-vs-intra gate | this file | **0 / 648** |
+
+Per-cell join against the `2026-08-14` run: **exactly 2 rows changed, both
+DIFFERS -> IDENTICAL. 2 fixed, 0 broken.** Byte counts were already equal on
+both (772 B and 2698 B); only the content moved.
+
+| cell | md5 (port == C) |
+|---|---|
+| `terminal 188x256 p2 q55` | `63ecead4ba0fb744a6da6d7670f9af6d` |
+| `terminal 188x256 p4 q12` | `dcd4c052e463fb628b630f1dc1e2c6bc` |
+
+## Root cause: C SKIPS the independent chroma search at those blocks
+
+Not a cost defect, not a lambda defect, and **not an RD near-tie** — the port
+ran a search C never ran.
+
+C's `search_best_mds3_uv_mode` (product_coding_loop.c:7301) is called at
+:9625-9637 only when `perform_ind_uv_search_last_mds` (:1472-1504) returns
+true. That predicate has two arms:
+
+1. `mds3_intra_count` (:1478-1487) counts MDS3 survivors that are not
+   inter-classified and — with `skip_ind_uv_if_only_dc = 1`, chroma_level 4's
+   setting (enc_mode_config.c:4373) — whose injected uv mode is not UV_DC.
+   The port modelled this one.
+2. `inter_vs_intra_cost_th` (:1498-1501) then **zeroes that count** when
+   `best_inter_cost * th < best_intra_cost * 100`, with th = 100 at
+   chroma_level 4 (enc_mode_config.c:4372). The port had no such arm.
+
+`is_inter` in both the count and the two minima is
+`is_inter_mode(block_mi.mode) || block_mi.use_intrabc` (:1479-1481). The old
+port comment argued arm 2 "never fires on I-slices: MAX_MODE_COST * 100 does
+not overflow and dwarfs any intra cost". The overflow half is right
+(MAX_MODE_COST = 13754408443200 * 8, coding_unit.h:37, so *100 is ~1.1e16, far
+under 2^64) but the conclusion is wrong: **on screen content an IntraBC
+candidate can win MDS1, and then `best_inter_cost` is an ordinary finite
+cost.** That is the whole bug, and it explains every observed property — screen
+content only, one block per frame, and following the CONTENT WINDOW rather than
+the dimension (320x256 differs, 256x256 does not).
+
+### Measured, both sides
+
+C side, via the new `svt_aom_get_intra_uv_fast_rate` interposer
+(`SVT_UVRATE_OUT`) + `svt_aom_full_cost` (`SVT_FULLCOST_OUT`, now carrying
+`ibc=`), run in the Linux `--wrap` container (`tools/ctrace-linux`):
+
+| cell | block | C MDS1 best intra | C MDS1 best IntraBC | arm 2 fires | `indavail` |
+|---|---|---|---|---|---|
+| p2 q55 | mi=(50,42), org=(168,200), 8x8 | 97,762,561 | 84,376,537 | yes | **0** |
+| p4 q12 | mi=(46,46), org=(184,184), 8x8 | 163,691 | 148,994 | yes | **0** |
+
+`indavail=0` is read directly off `ctx->ind_uv_avail` during MDS3, so it is a
+measurement of the skip, not an inference from it. Corroborating: at p2 q55 all
+26 `UVRATE` rows at that block have `luma == uv` (candidates keeping their
+injected uv-follows-luma pair) and none is the argmin loop's `luma != uv` shape,
+while 291 of the 306 block origins in the same frame DO show argmin rows.
+
+Port side, `NSQDBG UVTAB2` at the same block (p2 q55, luma = D113):
+
+| uv | uvd | coeff bits | dist | fast chroma rate | cost |
+|---|---|---|---|---|---|
+| 5 | -1 | 70 | 8208 | 2362 | 8,307,940 |
+| 5 | -2 | 70 | 8208 | 1719 | 6,389,168 |
+| **0** | **0** | 70 | 9824 | 1308 | **5,369,553** |
+
+So the port's argmin was not close — UV_DC beat C's pick by 35 %. **The costs
+were never the question**: the argmin itself should not have run. (This is the
+cost pair the previous rounds said had never been compared. It has now been
+compared, and it refutes the near-tie hypothesis rather than confirming it.)
+
+The port's MDS1 full costs match C's at that block on the two values the gate
+reads — best intra 97,762,561 and best IntraBC 84,376,537, identical to C — so
+the gate is evaluable in the port with no new plumbing.
+
+### Fix
+
+`leaf_funnel.rs` — the `cfg.ind_uv_mds3` gate now implements
+`perform_ind_uv_search_last_mds` in full: `!is_inter` on the count term, plus
+the `inter_vs_intra_cost_th = 100` arm over the two MAX_MODE_COST-seeded
+minima. With no IntraBC candidate the arm is inert exactly as the old comment
+assumed (1.1e16 is not < an intra cost * 100), which is why the change is
+byte-neutral off screen content.
+
+### Gates (this commit)
+
+| gate | result |
+|---|---|
+| `unaligned_identity_scan.sh` | **648 / 648** (was 646; 2 fixed, 0 broken) |
+| `byteid_fingerprint.sh` | cells=168, port==C on 168, **0 rows moved** vs `byteid_fingerprint_2026-08-11.tsv` |
+| `alignment_gate.sh` (`just align-gate`) | 74 / 74 |
+| `partial_sb_gate.sh` | 146 / 146 |
+| `bd10_partial_sb_gate.sh` | 159 / 159 + 3 / 3 pinned |
+| `bd10_matrix.sh` | 36 / 36 |
+| `recon_parity.sh` | 432 / 432 |
+| `decode_gate_grid.sh` | 120 / 120 aomdec+dav1d, 120 / 120 == C |
+| `regression_spotcheck.sh` | **28 / 28** (new cell `ind-uv-ibc-cost-gate-188x256`) |
+| `cargo nextest --workspace` debug + release | 1035 / 1035 each |
+| clippy stable + `+1.89`, `+1.89 test`, `fmt --all --check` | clean |
+| `#![forbid(unsafe_code)]` | proven live (planted `transmute` fails the build) |
+
+## Perf
+
+The new arm runs only where `cfg.ind_uv_mds3` is true — chroma_level 4, i.e.
+presets 2..5 (all-intra table, enc_mode_config.c:8573-8585). At preset 6+ the
+flag is false and the gate short-circuits before any of it. It replaces an
+`.any()` early-out with a full pass over the MDS3 survivors (a few dozen at
+most), and in exchange skips the whole per-uv full loop on the blocks where C
+skips it.
+
+See `perf_ab_induv_2026-08-14.tsv` for the port-vs-port A/B.

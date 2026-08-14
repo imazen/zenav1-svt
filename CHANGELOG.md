@@ -43,6 +43,25 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Fixed
 
+- **The MDS3 independent-chroma search ran on blocks where C skips it —
+  issue #15 closed at 648/648** (`leaf_funnel.rs`). C gates
+  `search_best_mds3_uv_mode` on `perform_ind_uv_search_last_mds`
+  (product_coding_loop.c:1472-1504); the port implemented only its first arm
+  and had nothing for the `inter_vs_intra_cost_th` arm (:1498-1501), which
+  zeroes the intra count when `best_inter_cost * 100 < best_intra_cost * 100`.
+  `is_inter` there is `is_inter_mode(mode) || use_intrabc`, so on SCREEN
+  CONTENT a winning IntraBC candidate makes C skip the search entirely, keep
+  `ind_uv_avail = 0`, and code each MDS3 candidate's injected uv-follows-luma
+  chroma — where the port's uv table substituted `UV_DC_PRED`. Measured on
+  `terminal` 188x256: p2 q55 C MDS1 best intra 97,762,561 vs best IntraBC
+  84,376,537 (C codes uv=D113/-1), p4 q12 163,691 vs 148,994 (C codes
+  `UV_CFL_PRED`); `ind_uv_avail = 0` read directly off C via the new
+  `svt_aom_get_intra_uv_fast_rate` interposer. This was the last of #15's 67
+  cells: `unaligned_identity_scan.sh` **646 → 648 / 648, 2 fixed, 0 broken**.
+  Byte-neutral wherever no IntraBC candidate exists — the arm is genuinely
+  inert there (`byteid_fingerprint` 168/168, **0 rows moved**). Regression cell
+  `ind-uv-ibc-cost-gate-188x256` (spot-check 27 → 28). Data:
+  `benchmarks/unaligned_real_identity_2026-08-14-induv.{tsv,meta}`.
 - **`sse_i32` subtracted coefficients in i32 where C subtracts in `int64_t`,
   and panicked in debug where C's `uint64_t` wraps** (`svtav1-dsp`
   `residual.rs`; C `svt_full_distortion_kernel32_bits_c`, `pic_operators.c:86`).
