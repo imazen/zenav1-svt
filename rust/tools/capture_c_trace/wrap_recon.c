@@ -566,11 +566,13 @@ void __wrap_svt_aom_full_cost(PictureControlSet* pcs, ModeDecisionContext* ctx, 
                 f = fopen(path, "w");
             if (f) {
                 fprintf(f,
-                        "CFULL org=(%u,%u) %ux%u st=%d mode=%d fi=%d ang=%d uv=%d ycb=%llu ydist=%llu cost=%llu\n",
+                        "CFULL org=(%u,%u) %ux%u st=%d mode=%d fi=%d ang=%d uv=%d ibc=%d ycb=%llu ydist=%llu "
+                        "cost=%llu\n",
                         (unsigned)ctx->blk_org_x, (unsigned)ctx->blk_org_y, block_size_wide[ctx->blk_geom->bsize],
                         block_size_high[ctx->blk_geom->bsize], (int)ctx->md_stage, (int)cand_bf->cand->block_mi.mode,
                         (int)cand_bf->cand->block_mi.filter_intra_mode, (int)cand_bf->cand->block_mi.angle_delta[0],
-                        (int)cand_bf->cand->block_mi.uv_mode, (unsigned long long)*y_coeff_bits,
+                        (int)cand_bf->cand->block_mi.uv_mode, (int)cand_bf->cand->block_mi.use_intrabc,
+                        (unsigned long long)*y_coeff_bits,
                         (unsigned long long)y_distortion[0][0], (unsigned long long)*(cand_bf->full_cost));
                 fflush(f);
             }
@@ -830,6 +832,69 @@ void __wrap_svt_aom_update_mi_map(PictureControlSet* pcs, ModeDecisionContext* c
             fflush(ef);
         }
     }
+}
+
+/* ---- chroma FAST-RATE interposer (issue #15, the last 2 unaligned cells) --
+ * svt_aom_get_intra_uv_fast_rate (rd_cost.c:476, exported T).
+ *
+ * `search_best_mds3_uv_mode` (product_coding_loop.c:7452-7501) is `static`, so
+ * its per-candidate argmin cannot be wrapped directly. But every input to that
+ * argmin IS reachable:
+ *   * coeff_rate / distortion per (uv_mode, uv angle delta) -> SVT_UVLOOP_OUT
+ *     (the interposer below);
+ *   * `cand_bf->fast_chroma_rate` -> THIS wrap, which is the exact call at
+ *     :7485, once per (luma intra mode) x (uv candidate) pair, in list order;
+ *   * `full_lambda` -> ctx->full_lambda_md[hbd_md] (:7307), dumped here too.
+ * Join them and C's `uv_cost = RDCOST(full_lambda, coeff_rate + fast_chroma_
+ * rate, distortion)` is reproducible to the bit, which is what comparing the
+ * port's `NSQDBG UVTAB2` rows against C requires.
+ *
+ * The same function is also called from :3739 / :3903 / :3934 / :7000 / :7095 /
+ * :7797 and rd_cost.c:621, so the dump carries `acc=` (use_accurate_cfl) and a
+ * call ordinal; the :7485 rows are the contiguous run with acc=0 that walks the
+ * uv list once per distinct luma mode.
+ *
+ * Env: SVT_UVRATE_OUT + optional SVT_UVRATE_XY="x,y" (unset / "all" = every
+ * block). Pure pass-through when unset — the C tree stays PRISTINE. */
+uint64_t __real_svt_aom_get_intra_uv_fast_rate(PictureControlSet* pcs, ModeDecisionContext* ctx,
+                                               ModeDecisionCandidateBuffer* cand_bf, bool use_accurate_cfl);
+
+uint64_t __wrap_svt_aom_get_intra_uv_fast_rate(PictureControlSet* pcs, ModeDecisionContext* ctx,
+                                               ModeDecisionCandidateBuffer* cand_bf, bool use_accurate_cfl) {
+    const uint64_t r = __real_svt_aom_get_intra_uv_fast_rate(pcs, ctx, cand_bf, use_accurate_cfl);
+    const char*    path = getenv("SVT_UVRATE_OUT");
+    if (path && *path) {
+        const char* xy  = getenv("SVT_UVRATE_XY");
+        int         px = -1, py = -1;
+        const int   all = !xy || !*xy || !strcmp(xy, "all");
+        if (!all)
+            sscanf(xy, "%d,%d", &px, &py);
+        if (all || ((int)ctx->blk_org_x == px && (int)ctx->blk_org_y == py)) {
+            static FILE*    f = NULL;
+            static unsigned n = 0;
+            if (!f)
+                f = fopen(path, "w");
+            if (f) {
+                fprintf(f,
+                        "UVRATE n=%u org=(%u,%u) %ux%u luma=%d uv=%d uvd=%d acc=%d rate=%llu lambda=%llu "
+                        "cflsigns=%d cflidx=%d indavail=%d hasuv=%d uvmode=%d indlast=%d skipdc=%d ivith=%d "
+                        "mds3n=%u ibc=%d\n",
+                        n++, (unsigned)ctx->blk_org_x, (unsigned)ctx->blk_org_y,
+                        block_size_wide[ctx->blk_geom->bsize], block_size_high[ctx->blk_geom->bsize],
+                        (int)cand_bf->cand->block_mi.mode, (int)cand_bf->cand->block_mi.uv_mode,
+                        (int)cand_bf->cand->block_mi.angle_delta[1], (int)use_accurate_cfl,
+                        (unsigned long long)r,
+                        (unsigned long long)ctx->full_lambda_md[ctx->hbd_md ? EB_10_BIT_MD : EB_8_BIT_MD],
+                        (int)cand_bf->cand->block_mi.cfl_alpha_signs, (int)cand_bf->cand->block_mi.cfl_alpha_idx,
+                        (int)ctx->ind_uv_avail, (int)ctx->has_uv, (int)ctx->uv_ctrls.uv_mode,
+                        (int)ctx->uv_ctrls.ind_uv_last_mds, (int)ctx->uv_ctrls.skip_ind_uv_if_only_dc,
+                        (int)ctx->uv_ctrls.inter_vs_intra_cost_th, (unsigned)ctx->md_stage_3_total_count,
+                        (int)cand_bf->cand->block_mi.use_intrabc);
+                fflush(f);
+            }
+        }
+    }
+    return r;
 }
 
 /* ---- chroma full-loop interposer ----------------------------------------
