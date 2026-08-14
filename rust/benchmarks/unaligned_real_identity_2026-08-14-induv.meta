@@ -200,13 +200,25 @@ DC candidates and the FIRST of the two IntraBC candidates at the same block all
 match. At the other cell (`p4 q12`, mi=(46,46)) **all 6 MDS1 costs match**,
 including its DC_PRED and its IntraBC candidate.
 
-Not root-caused. A ~103-unit rate item that applies to some but not all
-DC_PRED/UV_DC candidates is the shape of a per-candidate FLAG price (the
-`use_filter_intra` off-flag is coded exactly for DC_PRED blocks with
-`palette_size == 0`, mode_decision.c:107, which would exclude the palette rows
-that match) — but that is a HYPOTHESIS from the row pattern, not a measurement,
-and it does not explain why one IntraBC candidate matches and the other does
-not. Do not act on it without dumping the rate breakdown on both sides.
+Not root-caused. The row pattern first suggested the `use_filter_intra` off-flag
+(C codes it exactly for DC_PRED blocks with `palette_size == 0`,
+`svt_aom_filter_intra_allowed`, mode_decision.c:105-107 — which would exclude
+the palette DC rows that match). **That reading has since been CHECKED and
+WEAKENED, so do not carry it forward as the leading candidate:** the port already
+prices that flag on exactly those candidates —
+`leaf_funnel.rs:4987` `if fi_elig && mode == 0 { flr += rates.fi_flag[..][..] }`
+— and `flr` is in the MDS1 cost (`full_cost = rdcost(lambda, flr + fcr +
+coeff_rate, dist)`, :6096). It also never explained why one of the two IntraBC
+candidates matches and the other does not.
+
+**The decisive next probe, which was not run:** split the 103 units across the
+three MDS1 rate terms. The port already dumps them (`NSQDBG PFAST`'s `flr=`/
+`fcr=` at :5072 and `coeff_rate=` in the PMDS1 line), and C's side is already
+wrapped — `svt_aom_intra_fast_cost` is an existing interposer
+(`SVT_FASTCOST_OUT` + `SVT_FASTCOST_XY`, wrap_recon.c:543) and gives
+`fast_luma_rate`/`fast_chroma_rate` per candidate at the same block. One
+container run at `SVT_FASTCOST_XY="168,200"` localises the 103 to one term;
+guessing at the symbol before that is how the four rounds above lost time.
 
 Impact, measured rather than argued: none on anything currently gated. None of
 the three is a minimum of its class, so the new ind-uv gate evaluates the same

@@ -302,7 +302,13 @@ all 6 costs at the p4 q12 block match. It changes nothing gated today (none of
 the three is a class minimum, so the new gate is unaffected, and every gate is
 green) but the new gate READS MDS1 minima, so a cell where a mis-priced
 candidate is its class minimum would evaluate the arm differently from C.
-Numbers + the (unverified) filter-intra-flag hypothesis are in the meta.
+The obvious `use_filter_intra`-off-flag reading was CHECKED AND WEAKENED (the
+port already prices it at `leaf_funnel.rs:4987` and `flr` is in the MDS1 cost at
+:6096) — don't restart from it. The decisive un-run probe is one container run
+with `SVT_FASTCOST_XY="168,200"`: `svt_aom_intra_fast_cost` is already
+interposed and gives C's per-candidate `fast_luma_rate`/`fast_chroma_rate`, which
+splits the 103 units across `flr` / `fcr` / `coeff_rate` in one shot. Numbers in
+the meta.
 
 **The method lesson, and it is the same one twice now.** Both this and defect 2
 were missed by a search bounded on the wrong quantity. Here the bound was "the
