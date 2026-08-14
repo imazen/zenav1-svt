@@ -4,12 +4,20 @@
 > below the "Results — 2026-07-20" heading is the **x86-64/AVX2 history** on
 > `dev-32gb`. The live numbers on the aarch64 box are:
 >
-> | preset | slope ratio port/C | was (08-13 R1R2) | was (08-13 mid) | was (08-11) | was (08-07) |
-> |---|---|---|---|---|---|
-> | p2 | **3.91x** | 3.93x | 4.14x | 4.12x | 4.11x |
-> | p6 | **3.25x** | 3.27x | 3.39x | 3.52x | 3.50x |
-> | p10 | **2.71x** | 2.89x | 3.06x | 3.53x | 4.85x |
-> | p13 | **2.71x** | 2.89x | 3.07x | 3.51x | 4.83x |
+> | preset | slope ratio port/C | was (mds0var) | was (08-13 R1R2) | was (08-13 mid) | was (08-11) | was (08-07) |
+> |---|---|---|---|---|---|---|
+> | p2 | **3.77x** | 3.91x | 3.93x | 4.14x | 4.12x | 4.11x |
+> | p6 | **3.22x** | 3.25x | 3.27x | 3.39x | 3.52x | 3.50x |
+> | p10 | **2.74x** | 2.71x | 2.89x | 3.06x | 3.53x | 4.85x |
+> | p13 | **2.73x** | 2.71x | 2.89x | 3.07x | 3.51x | 4.83x |
+>
+> Current record: `benchmarks/perf_2026-08-13-hadamard.*` (24 cells, all
+> byte-identical, n=9). The p2/p6 step from the mds0var column is the NEON
+> Hadamard; p10/p13 moving 2.71 -> 2.74 is cross-session drift, not a
+> regression — the hadamard change is byte-inert AND work-inert at p >= 9 (the
+> MDS0 gate already took the port off that arm there), and its A/B measured
+> null at p10. Treat +/-0.03x between perf_gate runs as noise; the paired A/B
+> records are the attribution evidence.
 >
 > The p10/p13 step is the MDS0 variance-arm gate (`5bfbcd742`,
 > `benchmarks/perf_2026-08-13-mds0var.*`): C's `fast_loop_core` runs the
