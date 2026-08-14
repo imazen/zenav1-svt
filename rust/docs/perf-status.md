@@ -24,9 +24,16 @@
 > between these two runs, on a box with a concurrent agent on it).
 >
 > The port is still FASTER than C at 32-64 px on the fast presets — its fixed
-> per-frame cost is 0.93x C's at p10. All 24 cells byte-identical.
-> `benchmarks/perf_gap_2026-08-13-r1r2.{tsv,raw.tsv,meta}` (the mid-session run
-> is `perf_gap_2026-08-13-final.*`, and an earlier one `perf_gap_2026-08-13.*`).
+> per-frame cost is 0.86-0.90x C's at p10/p13. All 24 cells byte-identical.
+> Current record `benchmarks/perf_2026-08-13-mds0var.{tsv,raw.tsv,meta}`; the
+> R1R2 run is `perf_gap_2026-08-13-r1r2.*`, the mid-session one
+> `perf_gap_2026-08-13-final.*`, and an earlier one `perf_gap_2026-08-13.*`.
+>
+> The p2/p6 movement to look for next is `dsp::hadamard` — `aom_hadamard_8x8`
+> gained a real NEON arm (`benchmarks/hadamard_neon_ab_2026-08-13.meta`):
+> 1.028-1.042x at 512²/1024² p2 and p6, marginal at 256² p2, NULL at 256² p6.
+> The rest of that family's 7.5 % (p2) / 4.0 % (p6) frame share is
+> `leaf_funnel::hadamard_satd`'s own scalar residual-build loop, untouched.
 >
 > ### WHAT THE REMAINING GAP IS MADE OF (measured 2026-08-13 evening)
 >

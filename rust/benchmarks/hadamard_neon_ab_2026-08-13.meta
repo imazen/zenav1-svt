@@ -1,0 +1,79 @@
+# NEON 2D 8x8 Hadamard — A/B
+
+date: 2026-08-13 (evening). host: mac / Apple M4 Pro. measlock held for both runs.
+change: `svtav1-dsp/src/hadamard.rs` — `aom_hadamard_8x8` gains an `incant!`
+        dispatch with a real NEON arm (it had none; C dispatches its own through
+        `SET_NEON(svt_aom_hadamard_8x8, ..., _neon)`, common_dsp_rtcd.c:1603).
+        `aom_hadamard_16x16` / `_32x32` inherit it — they are built from it.
+
+## Why this kernel
+
+`benchmarks/perf_class_attrib_2026-08-13.tsv`: the Hadamard family is **7.54 %
+of the port's frame at 512x512 preset 2** and **3.97 % at preset 6**
+(`hadamard_satd` + `hadamard_col8` + `aom_hadamard_{8x8,16x16,32x32}`), and it
+is one of the census's clean SIMD-coverage items — port scalar, C NEON. It is
+NOT a factor at preset >= 9 any more: the MDS0 variance gate (`5bfbcd742`) took
+the port off C's Hadamard arm there, matching C.
+
+## Exactness
+
+`hadamard_col8` computes in `i32` and truncates to `i16` on store. Every
+operation is an add or a subtract, and truncation to 16 bits is a ring
+homomorphism for `+`/`-`, so the whole butterfly in wrapping `i16` NEON lanes is
+bit-identical to the scalar arm FOR ANY INPUT — not merely for in-range ones.
+That matters because the bd10 fast loop feeds 10-bit residuals through this
+kernel, where the scalar i32 intermediates do not wrap and the lanes do.
+
+Both passes run vertically (one lane per column, no cross-lane work) with an 8x8
+transpose between them and a second one before the store, because C stores
+`buffer2` straight through (`coeff[idx] = buffer2[idx]`) — unlike the 4x4 form,
+which transposes. The 4x4 kernel is deliberately NOT vectorised: `hadamard_col4`
+has a `>> 1` in its first stage, and an arithmetic shift is not a homomorphism
+mod 2^16, so the i16-lane argument above does not carry. It is 0.11 ms of 653.8
+at 512² p2 — not worth a separate correctness argument.
+
+New test `aom_hadamard_8x8_random_all_tiers_match_oracle`: every token
+permutation against an INDEPENDENT hand-written oracle (not the scalar arm),
+48 cases over strides 8..20 and BOTH bd8 (+/-511) and bd10 (+/-2047) residual
+ranges, `PermutationReport` consumed. The pre-existing
+`tests/c_parity_hadamard.rs` (14 tests, incl. `hadamard_8x8_matches_c_bd10_range`)
+also still passes.
+
+## Measurement (tools/perf_ab.sh, n=9 interleaved paired randomised rounds)
+
+Both arms built from one tree state with `-C llvm-args=-align-all-functions=4`;
+the baseline arm is the same source with the `incant!` replaced by a direct call
+to the scalar core.
+
+| cell | speedup | ratio [p25, p75] | control ratio |
+|---|---|---|---|
+| 256² p2  | 1.014x | [0.9732, 0.9874] | 1.0004 |
+| 256² p6  | 1.006x | [0.9824, 1.0028] | 0.9998 |
+| 512² p2  | **1.031x** | [0.9692, 0.9720] | 0.9981 |
+| 512² p6  | **1.028x** | [0.9611, 0.9788] | 0.9956 |
+| 1024² p2 | **1.042x** | [0.9567, 0.9607] | 0.9986 |
+| 1024² p6 | 1.019x | [0.9706, 0.9861] | 1.0014 |
+
+Honest reading: **4 of 6 cells are outside the repo noise floor [0.984, 1.019]
+(512²/1024² p2 and p6); 256² p2 at 0.9858 is marginal; 256² p6 at 0.9943 is
+NULL.** The identity control (byte-identical binaries, same grid) spans
+0.9956-1.0014, far tighter than the candidate at the four significant cells.
+All cells ident=Y.
+
+The win is smaller than the 7.5 % profile share because `leaf_funnel::
+hadamard_satd`'s own residual-build loop — 23.2 ms of 653.8 at 512² p2, 3.6 % of
+the frame — is still scalar and is NOT touched here. That loop is the obvious
+next slice.
+
+## Gates
+
+byteid_fingerprint 168/168 port==C, 0 rows moved vs
+`benchmarks/byteid_fingerprint_2026-08-11.tsv`; decode_gate_grid 120/120;
+partial_sb_gate 146/146; bd10_partial_sb_gate 159/159 (3/3 pinned still
+diverging); recon_parity 432/432; nextest 1035/1035 debug AND release; clippy
+-D warnings clean stable and 1.89; `cargo +1.89 test --no-run` clean; fmt clean.
+
+Harness note worth keeping: a first `partial_sb_gate` run reported 145/146 with
+`FAILED: gradient_65x64_q40_p13[c-err]` — the C harness erroring, not a byte
+mismatch — because a `cargo nextest` run was launched concurrently. Re-run
+alone: 146/146. Do not run a gate and a test suite at the same time on this box.

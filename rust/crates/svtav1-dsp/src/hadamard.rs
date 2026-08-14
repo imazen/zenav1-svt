@@ -464,6 +464,94 @@ mod tests {
         assert_eq!(satd_4x4(&src, 4, &ref_, 4), 80);
     }
 
+    /// Every dispatch tier of the 2D 8x8 Hadamard must agree with an
+    /// INDEPENDENT scalar oracle written from C's `hadamard_col8` +
+    /// `svt_aom_hadamard_8x8_c`, on random residuals at strides wider than the
+    /// block. Positional coefficients: unlike SATD, a wrong output permutation
+    /// or a wrong transpose changes the answer, and both are the mistakes a
+    /// vectorised Hadamard makes.
+    ///
+    /// The range deliberately includes 10-BIT residuals ([-1023, 1023]), where
+    /// the i16 lanes of the NEON arm wrap and the scalar arm's i32 intermediates
+    /// do not — they must still agree, because truncation to 16 bits commutes
+    /// with add/sub.
+    #[test]
+    fn aom_hadamard_8x8_random_all_tiers_match_oracle() {
+        use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+        let mut st = 0xD1B5_4A32_D192_ED03u64;
+        let mut next = move || {
+            st ^= st << 13;
+            st ^= st >> 7;
+            st ^= st << 17;
+            (st >> 33) as u32
+        };
+        fn oracle(src: &[i16], stride: usize) -> [i32; 64] {
+            let col = |v: &[i16], st: usize| -> [i16; 8] {
+                let s = |i: usize| v[i * st] as i32;
+                let (b0, b1) = (s(0) + s(1), s(0) - s(1));
+                let (b2, b3) = (s(2) + s(3), s(2) - s(3));
+                let (b4, b5) = (s(4) + s(5), s(4) - s(5));
+                let (b6, b7) = (s(6) + s(7), s(6) - s(7));
+                let (c0, c1) = (b0 + b2, b1 + b3);
+                let (c2, c3) = (b0 - b2, b1 - b3);
+                let (c4, c5) = (b4 + b6, b5 + b7);
+                let (c6, c7) = (b4 - b6, b5 - b7);
+                let mut o = [0i16; 8];
+                o[0] = (c0 + c4) as i16;
+                o[7] = (c1 + c5) as i16;
+                o[3] = (c2 + c6) as i16;
+                o[4] = (c3 + c7) as i16;
+                o[2] = (c0 - c4) as i16;
+                o[6] = (c1 - c5) as i16;
+                o[1] = (c2 - c6) as i16;
+                o[5] = (c3 - c7) as i16;
+                o
+            };
+            let mut b1 = [0i16; 64];
+            for idx in 0..8 {
+                b1[idx * 8..idx * 8 + 8].copy_from_slice(&col(&src[idx..], stride));
+            }
+            let mut b2 = [0i16; 64];
+            for idx in 0..8 {
+                b2[idx * 8..idx * 8 + 8].copy_from_slice(&col(&b1[idx..], 8));
+            }
+            // `svt_aom_hadamard_8x8_c` stores STRAIGHT through (unlike the 4x4
+            // form, which transposes) — `coeff[idx] = buffer2[idx]`.
+            let mut out = [0i32; 64];
+            for idx in 0..64 {
+                out[idx] = b2[idx] as i32;
+            }
+            out
+        }
+        for case in 0..48 {
+            let stride = 8 + (case % 5) * 3;
+            // bd8 residual range for most cases, bd10 for the rest.
+            let span: i32 = if case % 3 == 2 { 2047 } else { 511 };
+            let src: alloc::vec::Vec<i16> = (0..stride * 8 + 8)
+                .map(|_| ((next() % (span as u32 * 2 + 1)) as i32 - span) as i16)
+                .collect();
+            let expect = oracle(&src, stride);
+            let rep = for_each_token_permutation(CompileTimePolicy::WarnStderr, |perm| {
+                let mut got = [0i32; 64];
+                aom_hadamard_8x8(&src, stride, &mut got);
+                assert_eq!(
+                    got, expect,
+                    "hadamard_8x8 case {case} stride {stride} tier {perm}"
+                );
+            });
+            assert!(
+                rep.warnings.is_empty(),
+                "excluded tokens: {:?}",
+                rep.warnings
+            );
+            assert!(
+                rep.permutations_run >= 2,
+                "only {} permutations",
+                rep.permutations_run
+            );
+        }
+    }
+
     #[test]
     fn satd_8x8_identical() {
         let block = [128u8; 128];
@@ -622,7 +710,124 @@ pub fn aom_hadamard_4x4(src_diff: &[i16], src_stride: usize, coeff: &mut [i32]) 
 
 /// C `svt_aom_hadamard_8x8_c`: 2D 8x8 Hadamard of an int16 residual block
 /// (stride `src_stride`) into 64 int32 coefficients. No scaling.
+///
+/// C dispatches this through RTCD to `svt_aom_hadamard_8x8_neon`
+/// (`common_dsp_rtcd.c:1603`); it is also the inner kernel of the 16x16 and
+/// 32x32 forms below, so it carries the whole MDS0 Hadamard cost — 7.5 % of the
+/// port's frame at 512x512 preset 2 and 4.0 % at preset 6
+/// (`benchmarks/perf_class_attrib_2026-08-13.tsv`).
 pub fn aom_hadamard_8x8(src_diff: &[i16], src_stride: usize, coeff: &mut [i32]) {
+    incant!(
+        aom_hadamard_8x8_impl(src_diff, src_stride, coeff),
+        [v3, neon, scalar]
+    )
+}
+
+fn aom_hadamard_8x8_impl_scalar(
+    _token: ScalarToken,
+    src_diff: &[i16],
+    src_stride: usize,
+    coeff: &mut [i32],
+) {
+    aom_hadamard_8x8_core(src_diff, src_stride, coeff)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn aom_hadamard_8x8_impl_v3(
+    _token: Desktop64,
+    src_diff: &[i16],
+    src_stride: usize,
+    coeff: &mut [i32],
+) {
+    aom_hadamard_8x8_core(src_diff, src_stride, coeff)
+}
+
+/// Both passes run VERTICALLY (one lane per column, no cross-lane work) with a
+/// single 8x8 transpose between them, exactly like [`satd_8x8_impl_neon`] —
+/// except that the butterfly here must reproduce [`hadamard_col8`]'s PERMUTED
+/// output order, because these coefficients are positional (the SATD kernel
+/// only sums them, so any order does).
+///
+/// Exactness: `hadamard_col8` computes in `i32` and truncates to `i16` on
+/// store. Every operation is an add or a subtract, and truncation to 16 bits is
+/// a ring homomorphism for `+`/`-`, so doing the whole butterfly in wrapping
+/// `i16` lanes (`vaddq_s16`/`vsubq_s16`) yields bit-identical results — this is
+/// NOT an "in range so it does not matter" argument, it holds for any input,
+/// including the 10-bit residuals of the bd10 fast loop.
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn aom_hadamard_8x8_impl_neon(
+    token: NeonToken,
+    src_diff: &[i16],
+    src_stride: usize,
+    coeff: &mut [i32],
+) {
+    let mut d = [vdupq_n_s16(0); 8];
+    for (row, slot) in d.iter_mut().enumerate() {
+        let r: &[i16; 8] = src_diff[row * src_stride..row * src_stride + 8]
+            .try_into()
+            .unwrap();
+        *slot = vld1q_s16(r);
+    }
+    // Pass 1 gives o[k] lane j = coefficient k of column j (C's
+    // `buffer[j * 8 + k]`). Pass 2 reads `buffer[idx + i * 8]`, i.e. it needs
+    // lane `idx` to hold `o[idx][i]` — the transpose of that.
+    let o = hadamard_col8_vertical(token, d);
+    let u = transpose8x8_s16(token, o);
+    // C stores `buffer2` straight through (`coeff[idx] = buffer2[idx]`), and
+    // `q[k]` lane idx is `buffer2[idx * 8 + k]` — so output row idx is the
+    // vector across k, i.e. one more transpose.
+    let q = transpose8x8_s16(token, hadamard_col8_vertical(token, u));
+    for (i, v) in q.iter().enumerate() {
+        let dst: &mut [i32; 8] = (&mut coeff[i * 8..i * 8 + 8]).try_into().unwrap();
+        vst1q_s32(
+            (&mut dst[0..4]).try_into().unwrap(),
+            vmovl_s16(vget_low_s16(*v)),
+        );
+        vst1q_s32((&mut dst[4..8]).try_into().unwrap(), vmovl_high_s16(*v));
+    }
+}
+
+/// [`hadamard_col8`]'s butterfly applied VERTICALLY across eight vectors, with
+/// its permuted output order. Distinct from [`hadamard8_vertical`], which is
+/// the same transform in natural order (fine for SATD, wrong for coefficients).
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn hadamard_col8_vertical(_token: NeonToken, s: [int16x8_t; 8]) -> [int16x8_t; 8] {
+    let b0 = vaddq_s16(s[0], s[1]);
+    let b1 = vsubq_s16(s[0], s[1]);
+    let b2 = vaddq_s16(s[2], s[3]);
+    let b3 = vsubq_s16(s[2], s[3]);
+    let b4 = vaddq_s16(s[4], s[5]);
+    let b5 = vsubq_s16(s[4], s[5]);
+    let b6 = vaddq_s16(s[6], s[7]);
+    let b7 = vsubq_s16(s[6], s[7]);
+
+    let c0 = vaddq_s16(b0, b2);
+    let c1 = vaddq_s16(b1, b3);
+    let c2 = vsubq_s16(b0, b2);
+    let c3 = vsubq_s16(b1, b3);
+    let c4 = vaddq_s16(b4, b6);
+    let c5 = vaddq_s16(b5, b7);
+    let c6 = vsubq_s16(b4, b6);
+    let c7 = vsubq_s16(b5, b7);
+
+    // coeff[0]=c0+c4, [7]=c1+c5, [3]=c2+c6, [4]=c3+c7,
+    // coeff[2]=c0-c4, [6]=c1-c5, [1]=c2-c6, [5]=c3-c7
+    [
+        vaddq_s16(c0, c4),
+        vsubq_s16(c2, c6),
+        vsubq_s16(c0, c4),
+        vaddq_s16(c2, c6),
+        vaddq_s16(c3, c7),
+        vsubq_s16(c3, c7),
+        vsubq_s16(c1, c5),
+        vaddq_s16(c1, c5),
+    ]
+}
+
+fn aom_hadamard_8x8_core(src_diff: &[i16], src_stride: usize, coeff: &mut [i32]) {
     let mut buffer = [0i16; 64];
     let mut buffer2 = [0i16; 64];
     // Column pass: one butterfly per column, walking columns left→right.
