@@ -1,7 +1,16 @@
 # issue #15 — 3 -> 2 of 648, and the last two are NOT alignment
 
-Companion to `unaligned_real_identity_2026-08-14.tsv` (`tools/unaligned_identity_scan.sh`
-re-run at `27b08f0d5`). Supersedes the `2026-08-13` pair as the current scoreboard.
+> **SUPERSEDED same day by `unaligned_real_identity_2026-08-14-induv.{tsv,meta}`
+> (648/648).** The two survivors below were root-caused and fixed: C SKIPS
+> `search_best_mds3_uv_mode` at those blocks because
+> `perform_ind_uv_search_last_mds`'s `inter_vs_intra_cost_th` arm
+> (product_coding_loop.c:1498-1501) fires when a winning IntraBC candidate makes
+> `best_inter_cost` finite — the port had no such arm. **Read the two "remaining
+> suspects" named at the bottom of this file as REFUTED**: it is neither
+> `chroma_eval`'s cost/lambda nor the MDS3 survivor order, and it is not an RD
+> near-tie either (the port's argmin had UV_DC beating C's pick by 35%). The
+> rest of this file — the controlled `pad_yuv.py` A/B, the `crop:` breadth
+> sweep, the candidate-set exoneration — stands and is what bounded the search.
 
 host: Apple M-series (darwin 25.5.0), aarch64
 oracle: tools/perf_c_encode (C v4.2.0 in-tree static lib, matched still/AVIF
