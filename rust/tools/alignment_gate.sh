@@ -144,6 +144,21 @@ for wh in "188 256" "124 128" "125 129" "96 88" "190 130" "65 65"; do
     read -r w h <<<"$wh"
     CELLS+=("screen $w $h 33 2 8 0" "screen $w $h 12 4 8 0")
 done
+# The PALETTE-CROP cells specifically (defect 1). Found by measurement, not by
+# reasoning: with 84e3c8627 reverted the six cells above at q33/q12 all still
+# PASSED — the padded columns only change the colour histogram / k-means seed
+# when the block's in-frame part is a MINORITY of its colours, which on this
+# content needs a coarse quantizer (q55) and a preset whose search reaches
+# palette (4 and 6). Every one of these FAILS with the crop reverted; every one
+# passes with it. Aligned height 128 with true 88 => a 40-row bottom straddle.
+CELLS+=(
+    "screen 96 88 55 4 8 0"
+    "screen 96 88 55 6 8 0"
+    "screen 104 88 55 4 8 0"
+    "screen 88 88 55 6 8 0"
+    "screen 72 88 55 4 8 0"
+    "screen 80 88 55 6 8 0"
+)
 # --- 6. bd10 -------------------------------------------------------------
 # Defect 2 needed a SEPARATE bd10 fix after the bd8 one landed. Byte leg only.
 for wh in "188 256" "124 128" "125 129" "96 88"; do
