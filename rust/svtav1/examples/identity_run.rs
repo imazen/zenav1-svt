@@ -519,24 +519,68 @@ fn main() {
     {
         pipeline.hdr.tune = v;
     }
+    // SVTAV1_Y_STRIDE=<n> (>= w): hand the LUMA plane to the encoder at a
+    // stride WIDER than the frame, with the slack POISONED (0xA5 / 0x0A5A5).
+    //
+    // The project's pixel-buffer rule is that any multi-row function handles
+    // `stride != width`, and the encoder's public entry points take a luma
+    // stride — but no gate ever passed one that differed. The #15 intra-clamp
+    // defect turned on exactly that confusion in the other direction
+    // (`frame_h = y_recon.len() / y_stride` treated a buffer's shape as the
+    // frame's extent), so "a padded stride never changes the bitstream" is
+    // worth PROVING rather than assuming.
+    //
+    // Poison, not edge-replication: replicating would make a stray read of the
+    // padding return a plausible value and hide the bug. The `.yuv` the C
+    // oracle reads stays tightly packed, so a cell that byte-matches C at a
+    // padded stride has proven both halves at once.
+    let y_stride_env: Option<usize> = std::env::var("SVTAV1_Y_STRIDE")
+        .ok()
+        .and_then(|v| v.parse().ok());
+    if let Some(s) = y_stride_env {
+        assert!(s >= w, "SVTAV1_Y_STRIDE {s} is narrower than the frame ({w})");
+    }
+    let y_stride = y_stride_env.unwrap_or(w);
+    let restride = |p: &[u8], pw: usize, ph: usize| -> Vec<u8> {
+        if y_stride == pw {
+            return p.to_vec();
+        }
+        let mut o = vec![0xA5u8; y_stride * ph];
+        for r in 0..ph {
+            o[r * y_stride..r * y_stride + pw].copy_from_slice(&p[r * pw..r * pw + pw]);
+        }
+        o
+    };
+    let y_in = restride(&y, w, h);
+    let y10_in: Vec<u16> = if hbd_src && y_stride != w {
+        let mut o = vec![0xA5A5u16; y_stride * h];
+        for r in 0..h {
+            o[r * y_stride..r * y_stride + w].copy_from_slice(&y10[r * w..r * w + w]);
+        }
+        o
+    } else {
+        y10.clone()
+    };
+    let (y, y10) = (y_in, y10_in);
+
     let obu = if hbd_src {
         // Task #6: the native-10-bit entry points — the port sees the SAME
         // real u16 samples written to the .yuv the C oracle reads.
         if mono {
             pipeline
-                .try_encode_frame_hbd(&y10, w)
+                .try_encode_frame_hbd(&y10, y_stride)
                 .expect("hbd mono encode inside the documented envelope")
         } else {
             pipeline = pipeline.with_chroma_420(true);
             pipeline
-                .try_encode_frame_420_hbd(&y10, &u10, &v10, w)
+                .try_encode_frame_420_hbd(&y10, &u10, &v10, y_stride)
                 .expect("hbd 4:2:0 encode inside the documented envelope")
         }
     } else if mono {
-        unwrap_or_refuse(pipeline.try_encode_frame(&y, w))
+        unwrap_or_refuse(pipeline.try_encode_frame(&y, y_stride))
     } else {
         pipeline = pipeline.with_chroma_420(true);
-        unwrap_or_refuse(pipeline.try_encode_frame_420(&y, &u, &v, w))
+        unwrap_or_refuse(pipeline.try_encode_frame_420(&y, &u, &v, y_stride))
     };
     std::fs::write(format!("{prefix}.obu"), &obu).expect("write .obu");
 
@@ -558,6 +602,43 @@ fn main() {
         };
         dump("pre", &pipeline.last_recon_unfiltered);
         dump("post", &pipeline.last_recon_pre_cdef);
+    }
+    // SVTAV1_FINAL_RECON=<path>: the FINAL (deblock -> CDEF -> LR) encoder
+    // reconstruction, CROPPED to the true coded dims and tightly packed as
+    // I420 Y|U|V — byte-for-byte comparable with what `aomdec -o <f>.y4m`
+    // writes for this same stream.
+    //
+    // This is the oracle-free half of the alignment gate. Byte-identity to C
+    // cannot see an encoder/decoder prediction MISMATCH as a CORRECTNESS
+    // problem: if the port and C were both wrong the same way it would stay
+    // green. #15's intra-reference-clamp defect WAS such a mismatch (a
+    // straddling block predicted from recon rows a conforming decoder
+    // replicates), and it is the reason this dump exists.
+    //
+    // `last_recon` is at the ALIGNED stride; the crop to (true_w, true_h) is
+    // what a decoder outputs. Chroma uses CEILING dims, matching the .yuv
+    // layout and aomdec's y4m.
+    if let Ok(path) = std::env::var("SVTAV1_FINAL_RECON") {
+        let aw = pipeline.width as usize;
+        let (tw2, th2) = (pipeline.true_width as usize, pipeline.true_height as usize);
+        let (acw, tcw2, tch2) = (aw / 2, tw2.div_ceil(2), th2.div_ceil(2));
+        let crop = |p: &[u8], stride: usize, cw: usize, chh: usize| -> Vec<u8> {
+            let mut o = Vec::with_capacity(cw * chh);
+            for r in 0..chh {
+                o.extend_from_slice(&p[r * stride..r * stride + cw]);
+            }
+            o
+        };
+        let (ry, ru, rv) = pipeline
+            .last_recon
+            .as_ref()
+            .expect("with_recon_output(true) is set above");
+        let mut b = crop(ry, aw, tw2, th2);
+        if !ru.is_empty() {
+            b.extend_from_slice(&crop(ru, acw, tcw2, tch2));
+            b.extend_from_slice(&crop(rv, acw, tcw2, tch2));
+        }
+        std::fs::write(&path, &b).expect("write SVTAV1_FINAL_RECON");
     }
     // bd10 diagnostic: dump the re-encode pass's true-10-bit LUMA recon (u16
     // LE) for the self-consistency check vs the decoder's prefilter output.

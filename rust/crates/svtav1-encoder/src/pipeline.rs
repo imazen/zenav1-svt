@@ -222,6 +222,35 @@ pub struct EncodePipeline {
     pub stop: almost_enough::StopToken,
 }
 
+/// Tighten a strided plane to `w * h` contiguous bytes.
+///
+/// The public entry points all take a LUMA STRIDE, and the TRUE != ALIGNED
+/// path has always honoured it (`pad_plane_replicate` reads at `src_stride`).
+/// The 8-ALIGNED pass-through did not: it was `y_plane[..w * h].to_vec()`,
+/// which reinterprets a padded buffer as tightly packed and shears the image.
+/// Nothing caught it because no gate ever passed `y_stride != width` — the
+/// project's pixel-buffer rule ("any multi-row function handles a strided
+/// row") was documented on the API and unenforced by measurement.
+/// `tools/alignment_gate.sh` passes a POISONED padded stride, so it does now.
+fn gather_rows(
+    src: &[u8],
+    src_stride: usize,
+    w: usize,
+    h: usize,
+) -> crate::EncodeResult<alloc::vec::Vec<u8>> {
+    debug_assert!(src_stride >= w, "stride {src_stride} < width {w}");
+    if src_stride == w {
+        // The contiguous fast path stays a single copy — the strided branch is
+        // an addition, never a cost on the packed case.
+        return Ok(src[..w * h].to_vec());
+    }
+    let mut out = svtav1_types::try_vec![0u8; w * h]?;
+    for r in 0..h {
+        out[r * w..r * w + w].copy_from_slice(&src[r * src_stride..r * src_stride + w]);
+    }
+    Ok(out)
+}
+
 /// Edge-replicate a plane from a valid `sw x sh` region (read at
 /// `src_stride`) up to `dw x dh` (tightly packed at stride `dw`). The
 /// per-pixel `min`-clamp reproduces C `pad_input_picture`'s
@@ -1344,10 +1373,10 @@ impl EncodePipeline {
                     )?;
                     tf_result.filtered
                 } else {
-                    y_plane[..n].to_vec()
+                    gather_rows(y_plane, y_stride, w, h)?
                 }
             } else {
-                y_plane[..n].to_vec()
+                gather_rows(y_plane, y_stride, w, h)?
             };
 
         // Task #95 chunk 2 — partial-SB variance source. `compute_b64_variance`
