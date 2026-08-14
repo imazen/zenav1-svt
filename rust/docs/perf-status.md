@@ -35,6 +35,31 @@
 > The rest of that family's 7.5 % (p2) / 4.0 % (p6) frame share is
 > `leaf_funnel::hadamard_satd`'s own scalar residual-build loop, untouched.
 >
+> ### THE SIMD-COVERAGE QUEUE, RANKED BY MEASURED FRAME SHARE
+>
+> Every entry is a port function that is SCALAR on aarch64 with a
+> `SET_NEON`-registered C counterpart, with its self time as a share of the
+> port's whole frame at 512² (from `benchmarks/perf_class_attrib_2026-08-13.tsv`
+> — profile shares, not A/B results). Do NOT budget a win from these directly:
+> `aom_hadamard_8x8` was 1.88 % of p2 and delivered 1.031x at that cell because
+> the caller's own scalar loop stayed. Price each one, then build it.
+>
+> | port function | p6 share | p2 share | C counterpart |
+> |---|---|---|---|
+> | `restoration::compute_stats` | **9.83 %** | 0.60 % | `svt_av1_compute_stats_neon` (5.1x) |
+> | `cdef::cdef_filter_block` | 4.70 % | 2.73 % | has a NEON arm — this is SIMD *quality*, 5.6x |
+> | `restoration::wiener_convolve_add_src` | **2.68 %** | 1.17 % | `svt_av1_wiener_convolve_add_src_neon` (10.3x) |
+> | `cdef::cdef_find_dir` | **2.02 %** | — | `svt_aom_cdef_find_dir*_neon` (15x) |
+> | `intra_pred::dr_predictor_edged` | — | **4.51 %** | `svt_av1_dr_prediction_z{1,2,3}_neon` |
+> | `leaf_funnel::hadamard_satd` (its own residual loop) | 1.47 % | **3.55 %** | `svt_aom_residual_kernel*_neon` inside `hadamard_path` |
+> | `intra_pred::predict_dc` | 1.25 % | 0.29 % | `svt_aom_dc_predictor_WxH_neon` |
+> | `encoder::cdef::{filter_and_count, cdef_search_still}` | 1.98 % | 0.38 % | `svt_aom_compute_cdef_dist_8bit_neon_dotprod` |
+> | `intra_pred::predict_filter_intra` / `predict_smooth` | 1.57 % | 0.24 % | `svt_av1_filter_intra_predictor_neon`, `svt_aom_smooth_predictor_*_neon` |
+>
+> `intra_pred.rs` carries exactly ONE `incant!` (PAETH); the rest of the file is
+> scalar. Note archmage 0.9.28 has no standalone dotprod/i8mm token — those
+> capabilities are only reachable bundled in `Arm64V2Token`/`Arm64V3Token`.
+>
 > ### WHAT THE REMAINING GAP IS MADE OF (measured 2026-08-13 evening)
 >
 > `benchmarks/perf_class_attrib_2026-08-13.{tsv,meta}` — paired `/usr/bin/sample`
