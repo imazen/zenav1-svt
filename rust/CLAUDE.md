@@ -293,6 +293,17 @@ as the old comment assumed): `byteid_fingerprint` 168/168 with 0 rows moved.
 Record: `benchmarks/unaligned_real_identity_2026-08-14-induv.{tsv,meta}`,
 regression cell `ind-uv-ibc-cost-gate-188x256`.
 
+**Open lead found alongside it, NOT root-caused, currently harmless:** at
+mi=(50,42) of the p2 q55 cell, 54 of 57 MDS1 candidate costs are bit-identical
+to C and **3 differ, each by exactly ~103 rate units (0.20 bits) with the port
+CHEAPER** — all three `mode = DC_PRED, uv = UV_DC`, while the 11 palette DC
+candidates and one of the two IntraBC candidates at the same block match, and
+all 6 costs at the p4 q12 block match. It changes nothing gated today (none of
+the three is a class minimum, so the new gate is unaffected, and every gate is
+green) but the new gate READS MDS1 minima, so a cell where a mis-priced
+candidate is its class minimum would evaluate the arm differently from C.
+Numbers + the (unverified) filter-intra-flag hypothesis are in the meta.
+
 **The method lesson, and it is the same one twice now.** Both this and defect 2
 were missed by a search bounded on the wrong quantity. Here the bound was "the
 chroma decision" — `chroma_eval`'s cost, its lambda, the survivor order — and

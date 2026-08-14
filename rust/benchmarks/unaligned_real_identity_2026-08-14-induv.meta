@@ -174,3 +174,44 @@ preset. Read the slope-RATIO column, which cancels most of that: p2 improves
 the changed code cannot execute. The paired A/B above is the instrument that can
 attribute, and it says the change is inside the identity control's noise
 everywhere.
+
+## Open, unrelated, NOT root-caused: 3 of 57 MDS1 candidate costs at one block
+
+Noticed while verifying that the port's MDS1 full costs are the same quantity
+C's gate reads (they are — both minima the new gate consumes match C exactly at
+both cells). Recording it because it is adjacent to the gate, not because it
+affected anything measured here.
+
+At `terminal 188x256 p2 q55`, block mi=(50,42): joining the port's
+`NSQDBG PMDS1` rows against C's `SVT_FULLCOST_OUT` `st=1` rows positionally,
+**54 of 57 costs are bit-identical and 3 differ**, each by the same amount, the
+port always CHEAPER:
+
+| row | candidate | port full | C full | delta |
+|---|---|---|---|---|
+| 2 | mode=0 fi=0 uv=0 (filter-intra) | 124,588,651 | 124,896,012 | −307,361 |
+| 4 | mode=0 fi=5 uv=0 (DC_PRED) | 118,117,740 | 118,425,102 | −307,362 |
+| 57 | mode=0 fi=5 uv=0 ibc=1 | 140,267,980 | 140,575,342 | −307,362 |
+
+`ydist` is identical on all three, so the whole delta is RATE: at this block's
+lambda (1,527,856) −307,361 cost is **exactly ~103 rate units (0.20 bits)**.
+Every one of the three is `mode = DC_PRED, uv = UV_DC`; the 11 palette
+DC candidates and the FIRST of the two IntraBC candidates at the same block all
+match. At the other cell (`p4 q12`, mi=(46,46)) **all 6 MDS1 costs match**,
+including its DC_PRED and its IntraBC candidate.
+
+Not root-caused. A ~103-unit rate item that applies to some but not all
+DC_PRED/UV_DC candidates is the shape of a per-candidate FLAG price (the
+`use_filter_intra` off-flag is coded exactly for DC_PRED blocks with
+`palette_size == 0`, mode_decision.c:107, which would exclude the palette rows
+that match) — but that is a HYPOTHESIS from the row pattern, not a measurement,
+and it does not explain why one IntraBC candidate matches and the other does
+not. Do not act on it without dumping the rate breakdown on both sides.
+
+Impact, measured rather than argued: none on anything currently gated. None of
+the three is a minimum of its class, so the new ind-uv gate evaluates the same
+either way at this block; `unaligned_identity_scan` is 648/648,
+`byteid_fingerprint` 168/168 with 0 rows moved, and every other gate is green.
+The risk it names is narrow and real: the gate compares MDS1 minima, so a cell
+where one of these mis-priced candidates IS the minimum of its class would
+evaluate the arm differently from C.
