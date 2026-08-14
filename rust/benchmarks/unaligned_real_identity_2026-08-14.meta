@@ -82,11 +82,21 @@ and is not reached at preset 2. C's own per-candidate dump at the flipped block
 reading: the uv=5 rows walk the LUMA candidates' deltas, interleaved with the
 per-candidate CFL alpha search.
 
-**NOT root-caused beyond that.** The remaining candidates are the MDS3
-survivor SET / order (which pairs reach the uv list at all) and the chroma
-full-loop cost itself. Whether this is a genuine RD near-tie has NOT been
-established — no cost pair has been compared, so the "near-tie" reading from
-2026-08-13 remains a hypothesis and should not be repeated as a finding.
+**Also ruled out: the pair never reaching the list.** `leaf_funnel.rs`'s
+uv-follows-luma injection is `(uv_from_y(map_mode), delta)` — it carries the
+LUMA angle delta, not 0 — so a surviving luma-D113/delta-(-1) candidate injects
+exactly the `(5, -1)` pair C picks, and `ind_uv_mds3` puts every distinct
+survivor pair into `uv_list`. The candidate is therefore tested and loses on
+cost.
+
+**NOT root-caused beyond that.** What is left is the chroma full-loop cost
+itself (`chroma_eval` / the lambda it is compared under) or the MDS3 survivor
+ORDER feeding the per-luma-mode argmin. Measuring it needs a per-candidate cost
+dump inside `leaf_funnel.rs`, which a concurrent session owns; C's half is
+already available (`SVT_UVLOOP_OUT` gives `cbb/crb/cbd/crd` per uv candidate).
+Whether this is a genuine RD near-tie has NOT been established — no cost pair
+has been compared, so the "near-tie" reading from 2026-08-13 remains a
+hypothesis and should not be repeated as a finding.
 
 Frame-level context for the same cell: the port codes 4 distinct uv modes
 (DC/V/PAETH/CFL) where C codes 13, over 126 joined blocks with exactly ONE
