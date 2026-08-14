@@ -4,12 +4,24 @@
 > below the "Results — 2026-07-20" heading is the **x86-64/AVX2 history** on
 > `dev-32gb`. The live numbers on the aarch64 box are:
 >
-> | preset | slope ratio port/C | was (08-13 mid) | was (08-11) | was (08-07) |
-> |---|---|---|---|---|
-> | p2 | **3.93x** | 4.14x | 4.12x | 4.11x |
-> | p6 | **3.27x** | 3.39x | 3.52x | 3.50x |
-> | p10 | **2.89x** | 3.06x | 3.53x | 4.85x |
-> | p13 | **2.89x** | 3.07x | 3.51x | 4.83x |
+> | preset | slope ratio port/C | was (08-13 R1R2) | was (08-13 mid) | was (08-11) | was (08-07) |
+> |---|---|---|---|---|---|
+> | p2 | **3.91x** | 3.93x | 4.14x | 4.12x | 4.11x |
+> | p6 | **3.25x** | 3.27x | 3.39x | 3.52x | 3.50x |
+> | p10 | **2.71x** | 2.89x | 3.06x | 3.53x | 4.85x |
+> | p13 | **2.71x** | 2.89x | 3.07x | 3.51x | 4.83x |
+>
+> The p10/p13 step is the MDS0 variance-arm gate (`5bfbcd742`,
+> `benchmarks/perf_2026-08-13-mds0var.*`): C's `fast_loop_core` runs the
+> Hadamard fast distortion only when more than one candidate was injected
+> (`mds0_use_hadamard_blk`, product_coding_loop.c:9473), and at preset >= 9 the
+> `dc_only` gate injects exactly one — so C runs NO Hadamard there and the port
+> ran it unconditionally, at 4.8-5.1 % of its frame. Attribution is the paired
+> A/B (n=17, 9/9 cells 1.048-1.079x, identity control inside the noise floor,
+> slow presets NULL): `benchmarks/mds0_variance_ab_2026-08-13.meta`. Read the
+> A/B for the size of the change and this table for the position — the absolute
+> slopes carry cross-session drift (C's own p10 slope moved 8.26 -> 8.49 ms/MP
+> between these two runs, on a box with a concurrent agent on it).
 >
 > The port is still FASTER than C at 32-64 px on the fast presets — its fixed
 > per-frame cost is 0.93x C's at p10. All 24 cells byte-identical.
@@ -46,6 +58,11 @@
 > Three classes are already at or past parity at p10 and are NOT levers any more:
 > INV_TXFM **1.08x** (R1's gate did its job), QUANT_RDOQ 1.13x, RANGE_CODER
 > 1.25x, and the coefficient WRITER is **0.77x — the port is faster than C**.
+> **One item from this sizing has since been LANDED** — the MDS0 Hadamard below
+> (`5bfbcd742`, p10/p13 2.89x -> 2.71x). The bucket shares above are as measured
+> BEFORE it; the item sat in SIMD_GAP, so the SIMD_GAP share at p10 is now
+> smaller than the 11.9 % shown and the conclusion is strengthened, not weakened.
+>
 > Two traps the `.meta` documents: `<deduplicated_symbol>` is 4.4 % of C's
 > samples and is almost all inverse transform (leaving it unattributed overstates
 > the transform gap ~2x), and the xzone allocator charges its own
