@@ -1,0 +1,130 @@
+# MDS0: take C's variance arm when C takes it — A/B
+
+date: 2026-08-13 (evening)
+host: mac / Apple M4 Pro. `~/bin/measlock --load-ok` held for every timed run.
+      Foreign load throughout: a concurrent agent on the same checkout (its
+      `qemu-system-x86_64` at ~18 % plus its builds) — hence `--load-ok`, and
+      hence paired ratios only, never absolutes.
+change: `leaf_funnel.rs` MDS0 fast-distortion arm + `svtav1-dsp` `variance_diff`.
+records: .tsv (candidate), .raw.tsv (every paired sample), .control.tsv
+         (byte-identical-binary identity control), .slowpresets.tsv (p2/p6/p7/p8).
+
+## What changed
+
+C's `fast_loop_core` picks the MDS0 luma fast distortion from THREE arms
+(`product_coding_loop.c:1258-1307`): spatial SSD, `hadamard_path`, or the
+variance function `svt_aom_mefn_ptr[bsize].vf`. The Hadamard arm is gated:
+
+    product_coding_loop.c:9473
+      ctx->mds0_use_hadamard_blk = ctx->mds0_use_hadamard_sb && fast_candidate_total_count > 1;
+
+`mds0_use_hadamard_sb` is `true` on the all-intra path
+(`enc_mode_config.c:8148`, inside `svt_aom_sig_deriv_enc_dec_allintra`), so the
+live term is the injected-candidate count. The port had no such gate — it ran
+the Hadamard SATD unconditionally (`leaf_funnel.rs:4923` before this change).
+
+## How it was found, and the size of it
+
+`benchmarks/perf_class_attrib_2026-08-13.meta`. Profiling BOTH binaries on the
+same byte-identical cells showed the port spending **4.79 % of its whole frame
+at 512² p10 and 5.12 % at 1024² p10** in `hadamard_satd` +
+`dsp::hadamard::{hadamard_col8, aom_hadamard_*}` — and C spending **zero**:
+`grep -ci 'hadamard|satd'` over C's entire sampled call graph returns 0 across
+7,126 samples (512²) and 19,073 samples (1024²), while
+`svt_aom_variance{8x8,16x16,32x32,64x64}_neon_dotprod` appear in both. No
+scalar-vs-NEON ratio produces zero against 5 %; C was on a different arm.
+
+At preset >= 9 the port's own funnel arms `FunnelCfg::dc_only_gate`
+(`leaf_funnel.rs:1078`), which injects exactly `{DC_PRED}` — one candidate — so
+C's condition is false and C takes the variance arm. This is the same class as
+the code review's R1 and R2: work whose result cannot reach the bitstream.
+
+## Byte identity — why the gate is safe in the direction it is approximated
+
+`fast_candidate_total_count` in C counts EVERY injected candidate, and C injects
+all of them before `md_stage_0` runs. This funnel interleaves injection with
+evaluation, and the palette candidate count is an OUTPUT of the k-means search
+that runs after the regular-candidate loop. The port therefore OVER-approximates:
+
+    cand_modes.len() > 1 || palette_can_inject || cfg.allow_intrabc
+
+Over-approximating keeps the Hadamard arm on some blocks where C uses variance —
+which is precisely the behaviour that shipped and passed 168/168 byte identity
+before this change. It can never take the variance arm on a block where C takes
+the Hadamard one. The bd10 arms (`hadamard_satd_hbd`) are deliberately NOT
+gated: C's hbd arm uses `vf_hbd_10` = `svt_aom_highbd_10_variance{W}x{H}`, a
+different kernel family that is not ported, so those sites keep their existing
+(byte-identical, if wasteful) behaviour.
+
+`variance_diff` (`svtav1-dsp/src/variance.rs`) is C's `variance_c` +
+`VAR(W,H)` (`Lib/C_DEFAULT/variance.c:141,184`) exactly: signed `sum`, `sse`,
+then `sse - (uint32_t)(((int64_t)sum * sum) / (w * h))` — truncating integer
+division, before the subtraction, in u32. Scalar / v3 / NEON arms; the NEON arm
+computes `sum` as `sum(a) - sum(b)` and `sse` via `vabdq_u8` + `vmull_u8` drained
+per chunk/row. Tested against an INDEPENDENT hand-written oracle (not the scalar
+arm) over 13 shapes x 2 stride paddings x every token permutation, with the
+`PermutationReport` consumed (`warnings.is_empty()`, `permutations_run >= 2`).
+
+## Gates, all re-run after the change
+
+* `tools/byteid_fingerprint.sh` — **cells=168, port==C on 168**, and
+  `diff` against `benchmarks/byteid_fingerprint_2026-08-11.tsv`: **0 rows moved**.
+* `tools/decode_gate_grid.sh` — cells=120, aomdec+dav1d OK=120,
+  byte-identical to C=120, failures=0.
+* `tools/partial_sb_gate.sh` — **146 / 146** byte-identical.
+* `tools/bd10_partial_sb_gate.sh` — **159 / 159** byte-identical; the 3 pinned
+  divergences still diverge (3 / 3).
+* `AOMDEC=... tools/recon_parity.sh` — **432 passed, 0 failed**
+  (CDEF fired on 199/432 streams, LR on 118/432 — the gate reached the features).
+* `cargo nextest run --workspace` **1034/1034** debug AND release.
+* `cargo clippy --workspace --all-targets -- -D warnings` clean on **stable**
+  and on **1.89**; `cargo +1.89 test --workspace --no-run` clean.
+* `cargo fmt --check` (package-scoped) clean on both files this change touches.
+  It reports diffs in `deblock.rs`, `pipeline.rs` and `examples/identity_run.rs`
+  — a CONCURRENT agent's in-flight WIP in the same checkout, deliberately not
+  touched here.
+
+## Measurement
+
+Both arms built from ONE tree state, back to back, with
+`-C llvm-args=-align-all-functions=4`, no `target-cpu=native`. The baseline arm
+is the same binary with the gate forced true via `core::hint::black_box(true) ||`
+— a one-source-change arm, so nothing but the branch differs. Both arms verified
+to emit identical `.obu` before timing (and `perf_ab.sh` re-checks per cell:
+ident=Y on all 9). A first A/B pass was DISCARDED because the concurrent agent
+edited `pipeline.rs` between the two builds; the tree hash of the foreign files
+was checked to be stable across both builds of the reported pass.
+
+`tools/perf_ab.sh`, interleaved paired rounds in randomised order, n=17.
+
+| cell | speedup (base/cand) | [p25, p75] of ratio | control speedup |
+|---|---|---|---|
+| 256² p9  | **1.059x** | [0.9075, 0.9572] | 1.019x |
+| 256² p10 | **1.079x** | [0.9100, 0.9455] | 0.997x |
+| 256² p13 | **1.075x** | [0.9255, 0.9432] | 1.004x |
+| 512² p9  | **1.049x** | [0.9398, 0.9630] | 0.995x |
+| 512² p10 | **1.051x** | [0.9448, 0.9757] | 1.006x |
+| 512² p13 | **1.056x** | [0.9434, 0.9635] | 0.996x |
+| 1024² p9 | **1.056x** | [0.9240, 0.9557] | 0.996x |
+| 1024² p10| **1.068x** | [0.9188, 0.9470] | 0.998x |
+| 1024² p13| **1.048x** | [0.9258, 0.9699] | 1.000x |
+
+9 of 9 cells faster. The candidate's WORST ratio (0.9542) is below the identity
+control's WORST ratio (0.9812), and at 512²/1024² the two are quartile-disjoint
+(control min 0.9936 vs candidate max 0.9542). The repo noise floor is
+[0.9843, 1.0190]; every candidate cell is outside it, every control cell inside
+or on it.
+
+**Slow presets are NULL, and that is the mechanism check** (.slowpresets.tsv,
+n=7): p2 0.994-0.996x, p6 0.991-1.008x, p7 1.004-1.012x, p8 0.993-1.001x — all
+inside the noise floor. The gate needs a single injected candidate, which only
+the preset >= 9 `dc_only` gate produces; below that `cand_modes.len() > 1` and
+the Hadamard arm is kept, exactly as C keeps it. A win that showed up at p2
+would have meant the gate was firing where C runs `hadamard_path`, i.e. a bug.
+
+## What this does NOT do
+
+The Hadamard kernels stay scalar. At p2 the port still spends 46.4 ms/frame
+(7.1 % of 653.8 ms at 512²) in `hadamard_satd` + `aom_hadamard_8x8` +
+`hadamard_col8` where C runs `svt_aom_hadamard_*_neon` — there the SATD is
+genuinely needed and the remaining gap is a real SIMD-coverage item.

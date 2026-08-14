@@ -4856,6 +4856,38 @@ pub(crate) fn evaluate_leaf(
         }
     }
 
+    // C `mds0_use_hadamard_blk` (product_coding_loop.c:9473):
+    //
+    //     ctx->mds0_use_hadamard_blk =
+    //         ctx->mds0_use_hadamard_sb && fast_candidate_total_count > 1;
+    //
+    // `mds0_use_hadamard_sb` is true on the all-intra path
+    // (enc_mode_config.c:8148, svt_aom_sig_deriv_enc_dec_allintra), so the live
+    // term is the injected-candidate count. When it is 1, C's `fast_loop_core`
+    // takes the VARIANCE arm (:1296-1306) instead of `hadamard_path` (:1283) —
+    // both then shift by 4 and feed the same fast cost. At preset >= 9 the
+    // `dc_only` gate injects exactly {DC_PRED}, so C runs NO Hadamard there at
+    // all: profiling C at 512x512 and 1024x1024 preset 10 found ZERO samples in
+    // any hadamard/satd symbol across 7,126 and 19,073 samples respectively,
+    // while svt_aom_variance*_neon_dotprod appeared in both
+    // (benchmarks/perf_class_attrib_2026-08-13.meta). The port was computing the
+    // Hadamard SATD unconditionally — 4.8 % (512^2) / 5.1 % (1024^2) of its
+    // whole frame at p10.
+    //
+    // `fast_candidate_total_count` in C counts EVERY injected candidate, and C
+    // injects all of them before `md_stage_0` runs. This funnel interleaves
+    // injection with evaluation, so the palette and intra-BC candidate counts
+    // are not knowable here (the palette count is an output of the k-means
+    // search below). The count is therefore OVER-approximated: whenever palette
+    // or IBC injection can run at all, the Hadamard arm is kept. That direction
+    // is byte-safe by domination — it can only preserve the pre-existing
+    // behaviour on blocks where C would have used variance, which is exactly
+    // what shipped and passed 168/168 byte identity before this change; it can
+    // never take the variance arm on a block where C takes the Hadamard one.
+    let palette_can_inject =
+        svtav1_entropy::context::allow_palette(cfg.allow_sct, w, h) && cfg.palette_level > 0;
+    let mds0_use_hadamard = cand_modes.len() > 1 || palette_can_inject || cfg.allow_intrabc;
+
     let mut cands: Vec<Cand> = Vec::with_capacity(cand_modes.len());
     // MDS0 with `prune_using_best_mode` (product_coding_loop.c:1680-1737):
     // candidates are evaluated in injection order; the running best REGULAR
@@ -4930,8 +4962,22 @@ pub(crate) fn evaluate_leaf(
                 }
             }
             sse
-        } else {
+        } else if mds0_use_hadamard {
             hadamard_satd(y_src, y_src_stride, y_src_off, &pred, w, h)
+        } else {
+            // C fast_loop_core's variance arm (product_coding_loop.c:1296-1302):
+            // `fn_ptr->vf(pred, pred_stride, src, src_stride, &sse)` with
+            // `fn_ptr = &svt_aom_mefn_ptr[bsize]`, i.e. svt_aom_variance{W}x{H}.
+            // Argument order is (pred, src); the metric is symmetric in the two
+            // buffers (sse is, and only sum^2 is used), so this matches.
+            u64::from(svtav1_dsp::variance::variance_diff(
+                &pred,
+                w,
+                &y_src[y_src_off..],
+                y_src_stride,
+                w,
+                h,
+            ))
         };
 
         let mut flr = rates.kf_y[above_ctx][left_ctx][mode as usize] as u64;
