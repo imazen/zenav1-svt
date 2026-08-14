@@ -14,6 +14,18 @@
 # $CTRACE_WORK; the container sees them under /work. This is enforced, not
 # assumed — a path outside the mount would silently produce a file the host
 # never sees.
+#
+# You need a docker daemon of the HOST's architecture, because C's kernels are
+# runtime-dispatched and an x86 container would be a DIFFERENT oracle, not the
+# same one. On Apple silicon with colima that is a native (vz) arm64 profile —
+# an x86_64 qemu profile will not do:
+#
+#   colima start --profile arm --arch aarch64 --vm-type vz \
+#       --cpu 6 --memory 8 --disk 24 --mount-type virtiofs
+#   docker context use colima-arm
+#
+# The C lib + wrap driver are cached in the `zenav1-svt-ctrace-cbuild` docker
+# volume, so only the first run pays the ~1 min build.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
