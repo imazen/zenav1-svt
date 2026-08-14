@@ -48,6 +48,20 @@ clippy:
 # Local CI sanity check
 ci: fmt clippy test test-all test-minimal
 
+# Alignment / stride gate — the CI subset (74 cells, ~4 min).
+# true-vs-aligned on each axis at every residue mod 8, dims straddling 64,
+# odd dims (ceiling chroma), a poisoned padded luma stride, bd8 + bd10.
+# Two oracles per cell: byte-identity to C, and encoder-recon == aomdec.
+align-gate:
+    ALIGN_GATE_MODE=fast ./tools/alignment_gate.sh
+
+# The FULL sweep — same shapes across presets 0..13 and qp 12/55, plus bd10
+# breadth. Not in CI (minutes, not seconds). Run it after any change to frame
+# geometry, TRUE->ALIGNED padding, the deblock/CDEF/LR extents, or the intra
+# reference edges.
+align-gate-full:
+    ALIGN_GATE_MODE=full ./tools/alignment_gate.sh
+
 # Run benchmarks
 bench:
     cargo bench --workspace

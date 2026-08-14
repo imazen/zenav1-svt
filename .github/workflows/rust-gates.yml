@@ -203,6 +203,32 @@ jobs:
         run: |
           ./tools/bd10_partial_sb_gate.sh
 
+      - name: Alignment / stride gate (true-vs-aligned x stride x bit depth)
+        working-directory: rust
+        # The axis every other gate misses. `recon_parity` (432) and
+        # `decode_gate_grid` (120) are entirely 64-ALIGNED SQUARES;
+        # `partial_sb_gate` runs partial SBs but is byte-identity-only on
+        # synthetic content. Nothing crossed "the true frame size differs from
+        # the encode grid" with "does the encoder's own recon still equal a
+        # conforming decoder's" — which is how issue #15's 67 divergent cells,
+        # including a real encoder/decoder PREDICTION MISMATCH, stayed silent.
+        #
+        # 74 cells in `fast` mode: every residue mod 8 on each axis
+        # independently, dims straddling 64 by +-1 and odd amounts, odd dims
+        # (ceiling chroma), a POISONED padded luma stride, bd8 + bd10, and
+        # `screen` content at the q55/preset-4..6 corner where the palette
+        # search actually reaches a straddling block. Two oracles per cell:
+        # byte-identity to C AND encoder-recon == aomdec.
+        #
+        # Teeth PROVEN by reverting each of the four fixes it guards, one at a
+        # time (benchmarks/alignment_gate_teeth_2026-08-14.md): 74/74 ->
+        # 68/74, 70/74, 70/74, 71/74. `ALIGN_GATE_MODE=full` adds preset and
+        # qp breadth over the same shapes; run it locally after any change to
+        # frame geometry, padding, the deblock/CDEF/LR extents, or the intra
+        # reference edges.
+        run: |
+          AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" ./tools/alignment_gate.sh
+
       - name: tile identity — rows AND columns (8-bit)
         working-directory: rust
         # 29 cells across TileRowsLog2 x TileColsLog2 on divisible and ragged
