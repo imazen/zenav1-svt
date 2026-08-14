@@ -73,11 +73,26 @@ scalar in C too.
 |---|---|---|---|---|---|
 | 512² p10 | 2.80x | +11.9 % | +17.3 % | +29.5 % | +41.3 % |
 | 1024² p10 | 2.84x | +12.3 % | +17.1 % | +27.0 % | +43.6 % |
-| 512² p6 | 3.10x | +27.7 % | +19.5 % | +21.7 % | +31.0 % |
-| 512² p2 | 3.79x | +15.6 % | +26.2 % | +19.1 % | +39.1 % |
+| 512² p6 | 3.10x | +16.0 % | +31.2 % | +21.7 % | +31.0 % |
+| 512² p2 | 3.79x | +15.0 % | +26.9 % | +19.1 % | +39.1 % |
 
 (share of the port-minus-C delta; 512² and 1024² p10 agree to ~2 points, which
 is the only repeatability evidence in this record.)
+
+**CORRECTION 2026-08-13 (later, same day).** The p6/p2 SIMD rows above are the
+CORRECTED ones. `restoration::compute_stats` was first tagged SIMD_GAP on the
+strength of the review's R8 "`mac_row_i32_neon` is dead on aarch64" note. That
+note is about a DIFFERENT helper, used only by the AVX2 arm:
+`compute_stats_impl_neon` (`restoration.rs:337`) is a real NEON kernel that
+dot-products through `dot_i16_neon` (`:525`). It belongs in SIMD_QUAL. Moving it
+took p6 SIMD_GAP 27.7 % -> 16.0 % and SIMD_QUAL 19.5 % -> 31.2 % (p2:
+15.6 -> 15.0 and 26.2 -> 26.9; p10 is unaffected, restoration is off there).
+**This strengthens the conclusion** — even less of the gap is missing coverage —
+but it changes the p6 prescription: the biggest p6 item is a kernel that is
+already vectorised on both sides and is 5.1x slower than C's, so it needs a
+BETTER kernel, not a first one. The other three p6 items
+(`wiener_convolve_add_src`, `cdef_find_dir`, `compute_cdef_dist_8bit`) were
+re-verified scalar-only by direct source read.
 
 **The headline: at the fast presets where the 2.89x lives, missing SIMD coverage
 is ~12 % of the gap.** Driving every scalar-where-C-is-NEON kernel to C's cost

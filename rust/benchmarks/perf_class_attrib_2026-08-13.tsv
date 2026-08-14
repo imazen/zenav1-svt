@@ -78,6 +78,13 @@ cell	class	port_ms	C_ms	delta_ms	share_of_gap	port_over_C
 # SET_NEON-registered kernel; SIMD_QUAL = both sides vectorised; ALLOC = allocator+libc mem;
 # SCALAR_BOTH = driver / entropy / RDOQ scalar in C too.
 cell	bucket	port_ms	C_ms	delta_ms	share_of_gap	port_over_C
+# CORRECTED 2026-08-13 (later, same day): restoration::compute_stats was first
+# tagged SIMD_GAP. It is NOT — compute_stats_impl_neon (restoration.rs:337) is a
+# real NEON kernel via dot_i16_neon (:525); R8's dead-mac_row_i32_neon finding is
+# about a different helper used only by the AVX2 arm. Moving it to SIMD_QUAL takes
+# p6 SIMD_GAP 27.7% -> 16.0% and SIMD_QUAL 19.5% -> 31.2% (p2: 15.6->15.0 /
+# 26.2->26.9; p10 unaffected, compute_stats is 0 there). The headline conclusion is
+# STRENGTHENED: even less of the gap is missing SIMD coverage.
 512_p10	SIMD_GAP	0.6574	0.1101	+0.5473	+11.9%	5.97x
 512_p10	SIMD_QUAL	1.4633	0.6657	+0.7976	+17.3%	2.20x
 512_p10	ALLOC	1.5572	0.1991	+1.3582	+29.5%	7.82x
@@ -86,11 +93,11 @@ cell	bucket	port_ms	C_ms	delta_ms	share_of_gap	port_over_C
 1024_p10	SIMD_QUAL	5.6715	2.9028	+2.7686	+17.1%	1.95x
 1024_p10	ALLOC	4.8693	0.5003	+4.3690	+27.0%	9.73x
 1024_p10	SCALAR_BOTH	12.1294	5.0557	+7.0738	+43.6%	2.40x
-512_p6	SIMD_GAP	9.3106	2.0009	+7.3097	+27.7%	4.65x
-512_p6	SIMD_QUAL	8.9693	3.8152	+5.1542	+19.5%	2.35x
+512_p6	SIMD_GAP	5.4840	1.2513	+4.2326	+16.0%	4.38x
+512_p6	SIMD_QUAL	12.7959	4.5647	+8.2312	+31.2%	2.80x
 512_p6	ALLOC	6.2578	0.5243	+5.7335	+21.7%	11.93x
 512_p6	SCALAR_BOTH	14.3883	6.2046	+8.1837	+31.0%	2.32x
-512_p2	SIMD_GAP	102.2561	27.0916	+75.1645	+15.6%	3.77x
-512_p2	SIMD_QUAL	177.7599	51.4245	+126.3354	+26.2%	3.46x
+512_p2	SIMD_GAP	98.3286	26.3097	+72.0189	+15.0%	3.74x
+512_p2	SIMD_QUAL	181.6874	52.2064	+129.4810	+26.9%	3.48x
 512_p2	ALLOC	98.2717	6.3580	+91.9137	+19.1%	15.46x
 512_p2	SCALAR_BOTH	275.4909	87.4409	+188.0500	+39.1%	3.15x

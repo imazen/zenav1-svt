@@ -18,7 +18,6 @@ from collections import defaultdict
 # SIMD_GAP: verified scalar-only in the port (census 2026-08-13) with a
 # SET_NEON-registered C counterpart.
 PORT_SIMD_GAP = [
-    (r'restoration::compute_stats', 'svt_av1_compute_stats_neon'),
     (r'restoration::wiener_convolve_add_src', 'svt_av1_wiener_convolve_add_src_neon'),
     (r'cdef::cdef_find_dir', 'svt_aom_cdef_find_dir*_neon'),
     (r'cdef::compute_cdef_dist', 'svt_aom_compute_cdef_dist_8bit_neon*'),
@@ -39,6 +38,12 @@ PORT_SIMD_GAP = [
 ]
 # SIMD_QUAL: port has a real NEON arm here (incant! + #[arcane] aarch64 body).
 PORT_SIMD_QUAL = [
+    # VERIFIED 2026-08-13: compute_stats_impl_neon (restoration.rs:337) is a REAL
+    # NEON kernel — it dot-products through `dot_i16_neon` (:525). R8's
+    # "mac_row_i32_neon is dead" finding is about a DIFFERENT helper, used only
+    # by the AVX2 arm. So this is a SIMD-QUALITY gap (5.1x vs
+    # svt_av1_compute_stats_neon), not a coverage one.
+    r'restoration::compute_stats',
     r'txfm_simd::', r'fwd_txfm::', r'inv_txfm::', r'txfm_dispatch::',
     r'residual::(residual_i32|recon_add_clamp|sse_i32|sq_sum_i32)',
     r'variance::(sse|variance)', r'quant_coding::', r'dsp::quant::',
@@ -51,14 +56,14 @@ PORT_ALLOC = [r'xzm_', r'_malloc', r'malloc_', r'_free\b', r'\bfree\b', r'calloc
               r'mach_absolute_time', r'mach_vm_reclaim', r'rust_alloc', r'SpecFromElem']
 
 # --- C side ----------------------------------------------------------------
-C_SIMD_GAP = [r'compute_stats_neon', r'wiener_convolve.*neon', r'cdef_find_dir.*neon',
+C_SIMD_GAP = [r'wiener_convolve.*neon', r'cdef_find_dir.*neon',
               r'cdef_dir_from_lines_neon', r'compute_cdef_dist.*neon',
               r'predictor.*neon', r'dr_prediction.*neon', r'filter_intra.*neon',
               r'intra_edge.*neon', r'cfl.*neon', r'hadamard.*neon', r'satd.*neon',
               r'lpf_.*neon', r'compute_cul_level.*neon', r'hadamard_path',
               r'svt_av1_predict_intra_block', r'svt_av1_intra_prediction',
               r'intra_has_(top_right|bottom_left)', r'variance\d+x\d+_neon']
-C_SIMD_QUAL = [r'fwd_txfm2d.*neon', r'lbd_fwd_txfm', r'highbd_fdct', r'highbd_fadst',
+C_SIMD_QUAL = [r'compute_stats_neon', r'fwd_txfm2d.*neon', r'lbd_fwd_txfm', r'highbd_fdct', r'highbd_fadst',
                r'inv_txfm.*neon', r'dav1d_inv', r'dedupof_.*inv_txfm', r'quantize.*neon',
                r'residual_kernel.*neon', r'full_distortion.*neon', r'sse.*neon',
                r'sad.*neon', r'cdef_filter_block.*neon', r'cdef_filter_fb',

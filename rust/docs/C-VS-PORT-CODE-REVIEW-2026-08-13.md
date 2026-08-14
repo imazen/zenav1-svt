@@ -23,13 +23,14 @@ labelled `SPECULATIVE` and no number is attached to it.
 > is no at the fast presets.** `benchmarks/perf_class_attrib_2026-08-13.meta`
 > profiles BOTH binaries on the same byte-identical cells and splits the delta
 > into: port-scalar-where-C-is-NEON **11.9 %** (512² p10) / 12.3 % (1024² p10) /
-> 27.7 % (p6) / 15.6 % (p2); both-sides-vectorised-but-port-slower 17.1-26.2 %;
+> 16.0 % (p6) / 15.0 % (p2); both-sides-vectorised-but-port-slower 17.1-31.2 %;
 > allocator+libc 19.1-29.5 %; scalar-on-both-sides 31.0-43.6 %. Perfect SIMD
 > coverage takes 512² p10 from 2.80x to 2.47x, and SIMD + allocation together to
 > 1.74x. **1.03x is not reachable through either.** Read §7's closing advice —
 > "if the censuses come back small, say so and go do the SIMD grind instead" —
 > against that: the SIMD grind is worth doing at **p6** (LR 15.6 % + CDEF 12.3 %
-> of that gap, nearly pure coverage), not at p10/p13.
+> of that gap), not at p10/p13 — but see the compute_stats correction below for
+> which half of it is coverage and which is kernel quality.
 >
 > Also settled by measurement, and both correct the review:
 >
@@ -51,11 +52,16 @@ labelled `SPECULATIVE` and no number is attached to it.
 >   and treat its absence as a finding.** Zero `hadamard|satd` samples in 7,126
 >   is what exposed it, not a source read.
 > * R6's four named p6 kernels are now sized: `restoration::compute_stats`
->   3.83 ms vs `svt_av1_compute_stats_neon` 0.75 ms (5.1x, and the port's
->   `compute_stats_impl_neon` is one of R8's naming artefacts — only the `_v3`
->   arm is real, so aarch64 runs scalar), `wiener_convolve_add_src` 10.3x,
->   `cdef_find_dir` 15x. Together LR+CDEF are 28 % of the p6 gap. That is the
->   highest-value SIMD work left and it is at p6 only.
+>   3.83 ms vs `svt_av1_compute_stats_neon` 0.75 ms, `wiener_convolve_add_src`
+>   10.3x, `cdef_find_dir` 15x. Together LR+CDEF are 28 % of the p6 gap — the
+>   highest-value SIMD work left, and at p6 only. **Correction to my own first
+>   pass:** I read R8's "`mac_row_i32_neon` is dead on aarch64" as meaning
+>   `compute_stats` runs scalar. It does not — R8 is about a helper used only by
+>   the AVX2 arm; `compute_stats_impl_neon` (`restoration.rs:337`) dot-products
+>   through `dot_i16_neon` (`:525`) and is real. So the biggest p6 item is a
+>   QUALITY gap (5.1x against C's own NEON), which moved p6's buckets to
+>   SIMD_GAP 16.0 % / SIMD_QUAL 31.2 %. `wiener_convolve_add_src` and
+>   `cdef_find_dir` were then re-verified scalar-only by direct source read.
 > * R7: archmage 0.9.28 has **no standalone dotprod/i8mm token**; the
 >   capabilities are only reachable bundled inside `Arm64V2Token` (dotprod) and
 >   `Arm64V3Token` (i8mm). So the tier exists but not at the granularity the

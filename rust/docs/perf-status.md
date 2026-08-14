@@ -46,8 +46,8 @@
 >
 > | port function | p6 share | p2 share | C counterpart |
 > |---|---|---|---|
-> | `restoration::compute_stats` | **9.83 %** | 0.60 % | `svt_av1_compute_stats_neon` (5.1x) |
-> | `cdef::cdef_filter_block` | 4.70 % | 2.73 % | has a NEON arm — this is SIMD *quality*, 5.6x |
+> | `restoration::compute_stats` (**already NEON** — quality, not coverage) | **9.83 %** | 0.60 % | `svt_av1_compute_stats_neon` (5.1x) |
+> | `cdef::cdef_filter_block` (**already NEON** — quality) | 4.70 % | 2.73 % | 5.6x vs `cdef_filter_block_*_neon` |
 > | `restoration::wiener_convolve_add_src` | **2.68 %** | 1.17 % | `svt_av1_wiener_convolve_add_src_neon` (10.3x) |
 > | `cdef::cdef_find_dir` | **2.02 %** | — | `svt_aom_cdef_find_dir*_neon` (15x) |
 > | `intra_pred::dr_predictor_edged` | — | **4.51 %** | `svt_av1_dr_prediction_z{1,2,3}_neon` |
@@ -73,8 +73,8 @@
 > |---|---|---|---|---|---|
 > | 512² p10 | 2.80x | 11.9 % | 17.3 % | 29.5 % | 41.3 % |
 > | 1024² p10 | 2.84x | 12.3 % | 17.1 % | 27.0 % | 43.6 % |
-> | 512² p6 | 3.10x | 27.7 % | 19.5 % | 21.7 % | 31.0 % |
-> | 512² p2 | 3.79x | 15.6 % | 26.2 % | 19.1 % | 39.1 % |
+> | 512² p6 | 3.10x | 16.0 % | 31.2 % | 21.7 % | 31.0 % |
+> | 512² p2 | 3.79x | 15.0 % | 26.9 % | 19.1 % | 39.1 % |
 >
 > **At the fast presets, missing SIMD coverage is ~12 % of the gap.** Driving
 > every scalar-where-C-is-NEON kernel to C's cost takes 512² p10 from 2.80x to
@@ -83,9 +83,10 @@
 > **1.03x is not reachable through SIMD, nor through SIMD plus allocation** —
 > it additionally needs the port's driver/entropy/RDOQ code (scalar in C too) to
 > get 2.1x faster, and nothing measured suggests a mechanism. At p6 the picture
-> is different: loop restoration (15.6 %) and CDEF (12.3 %) are 28 % of the gap
-> and are almost pure coverage (`compute_stats` 3.83 vs 0.75 ms,
-> `wiener_convolve_add_src` 10.3x, `cdef_find_dir` 15x) — that is where SIMD pays.
+> is different: loop restoration (15.6 %) and CDEF (12.3 %) are 28 % of that gap
+> and are where SIMD pays — but `compute_stats` (3.83 vs 0.75 ms) is a QUALITY
+> item, already NEON on both sides, while `wiener_convolve_add_src` (10.3x) and
+> `cdef_find_dir` (15x) are coverage items, verified scalar by source read.
 >
 > Three classes are already at or past parity at p10 and are NOT levers any more:
 > INV_TXFM **1.08x** (R1's gate did its job), QUANT_RDOQ 1.13x, RANGE_CODER
