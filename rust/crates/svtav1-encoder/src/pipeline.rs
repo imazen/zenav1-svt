@@ -2563,8 +2563,7 @@ impl EncodePipeline {
             // scope, unaffected by tile-row boundaries, so this — like
             // u_recon/v_recon above — is allocated ONCE and each tile's
             // walk below only ever writes its own rows into it.
-            let mut deblock_geom =
-                crate::deblock::DeblockGeom::new(w, h, lr_true_w, lr_true_h);
+            let mut deblock_geom = crate::deblock::DeblockGeom::new(w, h, lr_true_w, lr_true_h);
             // Mode/skip context tracking at 4x4 granularity — frame-wide
             // sizing (not tile-height): block coords (bx, by) passed to
             // encode_partition_tree are ABSOLUTE frame positions, so a

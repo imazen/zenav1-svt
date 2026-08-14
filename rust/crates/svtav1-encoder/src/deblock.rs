@@ -279,7 +279,8 @@ fn try_filter_plane<P: DlfPixel>(
     // application at C's picked level — so pin this to that level and the two
     // planes must be byte-identical whenever the pre-filter recon is.
     #[cfg(feature = "std")]
-    if let (Some(prefix), Some(lvl)) = (crate::dbgenv::dlf_try_bin(), crate::dbgenv::dlf_try_level())
+    if let (Some(prefix), Some(lvl)) =
+        (crate::dbgenv::dlf_try_bin(), crate::dbgenv::dlf_try_level())
         && lvl.parse::<u8>() == Ok(lvl0)
         && lvl0 == lvl1
     {

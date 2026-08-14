@@ -538,7 +538,10 @@ fn main() {
         .ok()
         .and_then(|v| v.parse().ok());
     if let Some(s) = y_stride_env {
-        assert!(s >= w, "SVTAV1_Y_STRIDE {s} is narrower than the frame ({w})");
+        assert!(
+            s >= w,
+            "SVTAV1_Y_STRIDE {s} is narrower than the frame ({w})"
+        );
     }
     let y_stride = y_stride_env.unwrap_or(w);
     let restride = |p: &[u8], pw: usize, ph: usize| -> Vec<u8> {
