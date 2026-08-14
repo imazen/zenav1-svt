@@ -18,6 +18,49 @@ labelled `SPECULATIVE` and no number is attached to it.
 > **3.27x**, p2 4.14x -> **3.93x** (`benchmarks/perf_gap_2026-08-13-r1r2.meta`).
 > R3-R9 are untouched.
 
+> **STATUS UPDATE 2026-08-13 (evening): the review's central open question —
+> "is the remaining multiple SIMD coverage?" — has been MEASURED, and the answer
+> is no at the fast presets.** `benchmarks/perf_class_attrib_2026-08-13.meta`
+> profiles BOTH binaries on the same byte-identical cells and splits the delta
+> into: port-scalar-where-C-is-NEON **11.9 %** (512² p10) / 12.3 % (1024² p10) /
+> 27.7 % (p6) / 15.6 % (p2); both-sides-vectorised-but-port-slower 17.1-26.2 %;
+> allocator+libc 19.1-29.5 %; scalar-on-both-sides 31.0-43.6 %. Perfect SIMD
+> coverage takes 512² p10 from 2.80x to 2.47x, and SIMD + allocation together to
+> 1.74x. **1.03x is not reachable through either.** Read §7's closing advice —
+> "if the censuses come back small, say so and go do the SIMD grind instead" —
+> against that: the SIMD grind is worth doing at **p6** (LR 15.6 % + CDEF 12.3 %
+> of that gap, nearly pure coverage), not at p10/p13.
+>
+> Also settled by measurement, and both correct the review:
+>
+> * **INV_TXFM is at parity (1.08x), not 2.01x.** `sample` prints
+>   `<deduplicated_symbol>` for linker-folded names; it is 4.4 % of C's samples
+>   and 94 % of it sits under `inv_txfm_*_neon`. Any profile reading that leaves
+>   it unattributed overstates the transform gap ~2x. QUANT_RDOQ is 1.13x,
+>   RANGE_CODER 1.25x, and the coefficient WRITER is **0.77x — the port is
+>   faster than C**. None of those are levers any more.
+> * **A finding the review's §2 framing predicts but §4 does not list: the MDS0
+>   Hadamard.** C's `fast_loop_core` runs `hadamard_path` only when
+>   `fast_candidate_total_count > 1` (`product_coding_loop.c:9473`) and takes a
+>   variance arm otherwise; at preset >= 9 the `dc_only` gate injects one
+>   candidate, so C runs NO Hadamard and the port ran it unconditionally at
+>   4.8-5.1 % of its frame. Fixed in `5bfbcd742` (1.048-1.079x on 9/9 cells,
+>   p10/p13 slope 2.89x -> 2.71x). This was class (a) — computed and discarded —
+>   sitting in plain sight; the review found R1 and R2 in that class and stopped.
+>   **The lesson for the next audit: grep the C profile for a symbol you EXPECT
+>   and treat its absence as a finding.** Zero `hadamard|satd` samples in 7,126
+>   is what exposed it, not a source read.
+> * R6's four named p6 kernels are now sized: `restoration::compute_stats`
+>   3.83 ms vs `svt_av1_compute_stats_neon` 0.75 ms (5.1x, and the port's
+>   `compute_stats_impl_neon` is one of R8's naming artefacts — only the `_v3`
+>   arm is real, so aarch64 runs scalar), `wiener_convolve_add_src` 10.3x,
+>   `cdef_find_dir` 15x. Together LR+CDEF are 28 % of the p6 gap. That is the
+>   highest-value SIMD work left and it is at p6 only.
+> * R7: archmage 0.9.28 has **no standalone dotprod/i8mm token**; the
+>   capabilities are only reachable bundled inside `Arm64V2Token` (dotprod) and
+>   `Arm64V3Token` (i8mm). So the tier exists but not at the granularity the
+>   review assumed.
+
 Written while another agent was concurrently editing `partition.rs`,
 `depth_refine.rs` and `pipeline.rs` (the `BlockDecision` / arena work). Line
 numbers in those three files may have moved; the symbol names have not.
