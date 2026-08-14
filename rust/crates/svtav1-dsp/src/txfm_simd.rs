@@ -1091,7 +1091,12 @@ mod v3 {
     /// rect differential proves this byte-exact vs real C over edge inputs.
     #[rite]
     pub(super) fn rect_scale(_t: Desktop64, v: __m256i, k: i32) -> __m256i {
-        const BITS: i32 = NEW_SQRT2_BITS as i32; // 12
+        // Fully-qualified rather than added to the file-level `use` list: this
+        // is the ONLY reference to it, and it lives inside the x86_64-gated
+        // `v3` module, so an import would be an unused-import warning (and so
+        // a clippy failure) on aarch64. CI has been red since aafcc9d47 on
+        // exactly this — the aarch64 dev box never compiles this module.
+        const BITS: i32 = crate::fwd_txfm::NEW_SQRT2_BITS as i32; // 12
         let ks = _mm256_set1_epi32(k);
         let round = _mm256_set1_epi64x(1i64 << (BITS - 1)); // 2048
         // even lanes 0,2,4,6 → four i64 products in slots [0..4]
