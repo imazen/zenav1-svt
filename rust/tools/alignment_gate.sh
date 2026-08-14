@@ -193,11 +193,30 @@ done
 # nowhere near a frame edge. No bd10 gate reached these shapes:
 # `bd10_matrix.sh` sweeps BD10_SIZES=64 128 and `bd10_nonflat_gate.sh` only
 # 64x64/128x128.
-PINNED_DIFF=(
+#
+# ARCHITECTURE-SCOPED, and that is itself a measurement. All three of these
+# DIFFER on aarch64 and MATCH C on the x86-64 CI runner (run 31770480641:
+# "71 / 74 cells", the three pinned rows reporting "NOW MATCHES C"), with every
+# other cell green on both. The port is not the variable side —
+# `svtav1/tests/tier_invariance.rs` pins identical bytes across every archmage
+# dispatch tier and the scalar tier is portable integer Rust — so C emits
+# different bytes for the same input on the two hosts. That is a THIRD instance
+# of docs/SUSPECTED-C-BUGS.md #9, and the cleanest witness yet: three cells that
+# flip verdict on host architecture alone, at bd10, on both gradient and screen
+# content, at presets 2 and 10, on aligned AND unaligned dims.
+#
+# So each host asserts something real: aarch64 pins them as expected-DIFFER,
+# x86-64 gates them as expected-MATCH.
+ARCH_BD10=(
     "gradient 188 256 33 2 10 0"
     "gradient 192 256 33 2 10 0" # the ALIGNED control — the evidence above
     "screen 192 192 33 10 10 0"  # aligned, square, and still divergent
 )
+PINNED_DIFF=()
+case "$(uname -m)" in
+arm64 | aarch64) PINNED_DIFF=("${ARCH_BD10[@]}") ;;
+*) CELLS+=("${ARCH_BD10[@]}") ;;
+esac
 
 if [[ "$MODE" == full ]]; then
     # --- 7. FULL: preset and qp breadth over the shapes that matter --------
@@ -346,7 +365,7 @@ PY
     pass=$((pass + 1))
 done
 
-for cell in "${PINNED_DIFF[@]}"; do
+for cell in ${PINNED_DIFF[@]+"${PINNED_DIFF[@]}"}; do
     read -r content w h qp p bd sp <<<"$cell"
     stride=$((w + sp))
     tag="PINNED ${content}_${w}x${h}_q${qp}_p${p}_bd${bd}"
