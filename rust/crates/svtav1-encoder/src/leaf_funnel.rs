@@ -2472,8 +2472,18 @@ pub(crate) fn predict_unit_hbd(
         );
         return;
     }
-    let (above, left, top_left, has_above, has_left) =
-        crate::partition::extract_neighbors_hbd(recon, stride, abs_x, abs_y, w, h, bd);
+    let (above, left, top_left, has_above, has_left) = crate::partition::extract_neighbors_hbd(
+        recon,
+        stride,
+        abs_x,
+        abs_y,
+        w,
+        h,
+        bd,
+        // C n_top_px/n_left_px: this plane's ALIGNED extent (u8 twin's comment).
+        geom.frame_w >> geom.ss,
+        geom.frame_h >> geom.ss,
+    );
     if fi_mode != FI_NONE {
         // Filter-intra (highbd). C `build_intra_predictors_high` sets
         // above_row[-1] via the standard need_above_left logic (the base=512
@@ -9766,14 +9776,23 @@ fn predict_unit_overlay_hbd(
             }
         }
     };
+    // C n_top_px/n_left_px as a coordinate clamp — see the u8 twin.
+    let max_x = (geom.frame_w >> geom.ss).saturating_sub(1) as isize;
+    let max_y = (geom.frame_h >> geom.ss).saturating_sub(1) as isize;
     for cx in 0..cw_dim {
-        canvas[cx] = sample(abs_tx_x as isize + cx as isize - 1, abs_tx_y as isize - 1);
+        canvas[cx] = sample(
+            (abs_tx_x as isize + cx as isize - 1).min(max_x),
+            abs_tx_y as isize - 1,
+        );
     }
     for cy in 1..ch_dim {
-        canvas[cy * cw_dim] = sample(abs_tx_x as isize - 1, abs_tx_y as isize + cy as isize - 1);
+        canvas[cy * cw_dim] = sample(
+            abs_tx_x as isize - 1,
+            (abs_tx_y as isize + cy as isize - 1).min(max_y),
+        );
     }
-    let has_above = abs_tx_y > geom.tile.top_px(geom.ss);
-    let has_left = abs_tx_x > geom.tile.left_px(geom.ss);
+    let has_above = abs_tx_y > geom.tile.top_px(geom.ss) && (abs_tx_x as isize) <= max_x;
+    let has_left = abs_tx_x > geom.tile.left_px(geom.ss) && (abs_tx_y as isize) <= max_y;
     let above: Vec<u16> = if has_above {
         canvas[1..cw_dim].to_vec()
     } else {

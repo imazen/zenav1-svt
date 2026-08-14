@@ -385,10 +385,27 @@ pub(crate) fn extract_neighbors_hbd(
     width: usize,
     height: usize,
     bd: u8,
+    plane_w: usize,
+    plane_h: usize,
 ) -> (alloc::vec::Vec<u16>, alloc::vec::Vec<u16>, u16, bool, bool) {
     let base: u16 = 128u16 << (bd - 8);
     let has_above = abs_y > 0;
     let has_left = abs_x > 0;
+    // C `n_top_px` / `n_left_px` — see the u8 twin's comment. Same rule, same
+    // reason: on a partial superblock the recon buffer holds data past the
+    // ALIGNED extent that a conforming decoder replicates instead.
+    let n_top_px = if has_above {
+        width.min(plane_w.saturating_sub(abs_x))
+    } else {
+        0
+    };
+    let n_left_px = if has_left {
+        height.min(plane_h.saturating_sub(abs_y))
+    } else {
+        0
+    };
+    let has_above = n_top_px > 0;
+    let has_left = n_left_px > 0;
 
     let left_ref0 = if has_left {
         recon.get(abs_y * stride + abs_x - 1).copied()
@@ -408,7 +425,7 @@ pub(crate) fn extract_neighbors_hbd(
         for i in 0..width {
             let x = abs_x + i;
             let idx = row * stride + x;
-            if x < stride && idx < recon.len() {
+            if i < n_top_px && x < stride && idx < recon.len() {
                 last = recon[idx];
             }
             v.push(last);
@@ -424,7 +441,7 @@ pub(crate) fn extract_neighbors_hbd(
         let mut last = left_ref0.unwrap_or(base + 1);
         for i in 0..height {
             let idx = (abs_y + i) * stride + col;
-            if idx < recon.len() {
+            if i < n_left_px && idx < recon.len() {
                 last = recon[idx];
             }
             v.push(last);

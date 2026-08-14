@@ -248,6 +248,12 @@ CELLS=(
   "gradient 512 481 20 9"  # 24786 B
   "gradient 512 481 32 9"  # 11569 B
   "gradient 512 481 55 9"  # 1498 B
+  # Promoted from PINNED on 2026-08-13 by the intra reference-sample clamp
+  # (issue #15): the bd10 funnel read above/left recon past the ALIGNED extent
+  # on a straddling block, where C caps the real-sample count at
+  # `n_top_px`/`n_left_px` and replicates. Both were `q55 p9` eff-M9 cells.
+  "gradient 80 88 55 9"
+  "gradient 72 88 55 9"
 )
 
 for cell in "${CELLS[@]}"; do
@@ -322,12 +328,14 @@ fi
 # above and NO left neighbour, so no partial-SB machinery participates in its
 # cost. It is a bd10 MDS0 fast-cost near-tie, the same class
 # bd10_nonflat_gate.sh has 112 of.
-PINNED=(
-  # bd10-only at the eff-M9 band
-  "gradient 80 88 55 9"
-  # fails at bd8 TOO — pinned so a bd10 claim is never read as covering it
-  "gradient 72 88 55 9"
-)
+# 2026-08-13: BOTH original entries were PROMOTED into CELLS — the intra
+# reference-sample clamp (issue #15) made them match C. The self-promoting
+# mechanism worked exactly as designed: the gate went red with
+# "NOW MATCHES — promote it into CELLS" rather than letting a fix land
+# unnoticed. The residual bd10 non-flat gap described above is unchanged;
+# it simply no longer has a partial-SB representative to pin, so the array is
+# empty and only the ISA-scoped pins below populate it.
+PINNED=()
 
 # --- ISA-SCOPED PINS -------------------------------------------------------
 # Three more cells diverge on aarch64 and MATCH C on the x86-64 runner:
