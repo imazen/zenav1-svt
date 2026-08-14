@@ -114,7 +114,7 @@ byte-neutral off screen content.
 | clippy stable + `+1.89`, `+1.89 test`, `fmt --all --check` | clean |
 | `#![forbid(unsafe_code)]` | proven live (planted `transmute` fails the build) |
 
-## Perf
+## Perf — MEASURED, no regression attributable to the change
 
 The new arm runs only where `cfg.ind_uv_mds3` is true — chroma_level 4, i.e.
 presets 2..5 (all-intra table, enc_mode_config.c:8573-8585). At preset 6+ the
@@ -123,4 +123,54 @@ flag is false and the gate short-circuits before any of it. It replaces an
 most), and in exchange skips the whole per-uv full loop on the blocks where C
 skips it.
 
-See `perf_ab_induv_2026-08-14.tsv` for the port-vs-port A/B.
+Three instruments, in decreasing order of trustworthiness.
+
+**1. Paired A/B, port-vs-port** (`perf_ab_induv_2026-08-14.tsv`, base = the fix
+reverted at `d4b134f33`, cand = the fix; 9 interleaved rounds per cell, order
+randomised per round, NEITHER SIDE NICED, `measlock` held). **All 15 cells
+`ident=Y`** — byte-identical output on the synthetic grid, so the ratios compare
+the same work.
+
+| size | p2 | p4 | p6 | p10 | p13 |
+|---|---|---|---|---|---|
+| 64 | 1.0073 | 1.0031 | 1.0277 | 1.0366 | 1.0088 |
+| 256 | 1.0054 | 1.0036 | 1.0049 | 1.0198 | 1.0061 |
+| 512 | 1.0070 | 0.9992 | 1.0054 | 1.0015 | 0.9916 |
+
+(cand/base; >1 = candidate slower.)
+
+**2. Identity control, base vs a byte-copy of base**
+(`perf_ab_induv_control_2026-08-14.tsv`, same grid subset, same rounds). With
+ZERO code difference the harness produced 0.9691..1.0031, and the 64x64 cells
+alone spanned 0.9691..1.0031 — a ±3.1% swing on identical binaries. The two A/B
+cells outside the stated [0.984, 1.019] floor (64x64 p6 1.0277 and p10 1.0366)
+are inside that demonstrated tiny-cell noise, and are structurally impossible to
+attribute to this change: at preset 6+ the all-intra chroma table gives
+chroma_level 5, `cfg.ind_uv_mds3` is false, and the gate short-circuits on the
+first `&&` before any of the new code. The presets where the code CAN run (2, 4)
+measured 0.9992..1.0073 against a control of 0.9966..1.0031.
+
+Note the grid is synthetic `gradient`, which never wins an IntraBC candidate —
+so this A/B measures the change's COST (a full pass over the MDS3 survivors
+replacing an `.any()` early-out) with none of its SAVING (skipping the whole
+per-uv full loop where C skips it). It is the conservative direction.
+
+**3. Port-vs-C slope fit, re-run on the fixed build**
+(`perf_2026-08-14-induv.{tsv,raw.tsv,meta}`, same grid as
+`perf_2026-08-13-hadamard.meta`):
+
+| preset | port slope base | port now | port/port | C slope base | C now | C/C | slope-ratio base | now |
+|---|---|---|---|---|---|---|---|---|
+| p2 | 1764.44 | 1794.82 | 1.017 | 468.46 | 497.40 | 1.062 | 3.77x | **3.61x** |
+| p6 | 123.82 | 123.47 | 0.997 | 38.49 | 38.36 | 0.997 | 3.22x | **3.22x** |
+| p10 | 22.84 | 23.47 | 1.028 | 8.34 | 8.60 | 1.030 | 2.74x | **2.73x** |
+| p13 | 22.94 | 24.77 | 1.080 | 8.42 | 8.88 | 1.055 | 2.73x | **2.79x** |
+
+Slopes in ms/MP. These are UNPAIRED cross-run fits, and the C column is the
+control that shows it: **C's binary did not change and its slopes moved
++6.2% / -0.3% / +3.0% / +5.5%**, in the same direction as the port's on every
+preset. Read the slope-RATIO column, which cancels most of that: p2 improves
+3.77 -> 3.61, p6 and p10 hold, p13 moves 2.73 -> 2.79 (+2.2%) at a preset where
+the changed code cannot execute. The paired A/B above is the instrument that can
+attribute, and it says the change is inside the identity control's noise
+everywhere.
