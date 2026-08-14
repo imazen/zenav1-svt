@@ -2534,7 +2534,8 @@ impl EncodePipeline {
             // scope, unaffected by tile-row boundaries, so this — like
             // u_recon/v_recon above — is allocated ONCE and each tile's
             // walk below only ever writes its own rows into it.
-            let mut deblock_geom = crate::deblock::DeblockGeom::new(w, h);
+            let mut deblock_geom =
+                crate::deblock::DeblockGeom::new(w, h, lr_true_w, lr_true_h);
             // Mode/skip context tracking at 4x4 granularity — frame-wide
             // sizing (not tile-height): block coords (bx, by) passed to
             // encode_partition_tree are ABSOLUTE frame positions, so a
@@ -5677,7 +5678,7 @@ fn expect_leaf(tree: &crate::partition::PartitionTree) -> &crate::partition::Blo
 /// `has_rows = (y + hbs) < aligned_height`, `has_cols = (x + hbs) < aligned_width`.
 ///
 /// The ALIGNED frame extent is recovered from the deblock geometry, which is
-/// built from those same aligned dims (`DeblockGeom::new(w, h)`, ~:884) and is
+/// built from those same aligned dims (`DeblockGeom::new(w, h, ..)`, ~:884) and is
 /// already threaded through this whole walk — so the partition edge rules and
 /// the deblock walk can never disagree about where the frame ends. Aligned dims
 /// are always a multiple of 8, so `mi * 4` recovers the pixel extent exactly.
@@ -7431,7 +7432,13 @@ fn encode_tile_rows(
         } else {
             None
         };
-        let mut sim_geom = crate::deblock::DeblockGeom::new(w, h);
+        // WRITE-ONLY sink: the funnel chain's simulated entropy walk needs a
+        // `DeblockGeom` to `record_block` into, but nothing ever filters
+        // through it (the real one is built in `encode_frame_impl` and is the
+        // only geom `apply_deblock_frame` / the DLF search ever see). The
+        // true-dims pair is therefore inert here — passing the aligned dims
+        // keeps this from pretending to carry a crop it never uses.
+        let mut sim_geom = crate::deblock::DeblockGeom::new(w, h, w, h);
         let mut sim_u = svtav1_types::try_vec![128u8; if funnel_chain { ext_cbuf } else { 0 }]?;
         let mut sim_v = svtav1_types::try_vec![128u8; if funnel_chain { ext_cbuf } else { 0 }]?;
         let mut sim_prev_sb_row = usize::MAX;

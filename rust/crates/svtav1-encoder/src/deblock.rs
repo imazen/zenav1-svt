@@ -104,6 +104,12 @@ pub trait DlfPixel: Copy + Default {
 
     /// `picture_sse_calculations` (deblocking_filter.c:752).
     fn plane_sse(a: &[Self], b: &[Self], w: usize, h: usize) -> i64;
+
+    /// Little-endian bytes of one plane, for the `SVTAV1_DLF_TRY_BIN` dump
+    /// (debug only — same packing as C's `SVT_LFRECON_BIN` interposer:
+    /// 1 B/px at bd8, u16 LE at bd10).
+    #[cfg(feature = "std")]
+    fn dump_bytes(buf: &[Self]) -> alloc::vec::Vec<u8>;
 }
 
 impl DlfPixel for u8 {
@@ -127,6 +133,11 @@ impl DlfPixel for u8 {
 
     fn plane_sse(a: &[u8], b: &[u8], w: usize, h: usize) -> i64 {
         plane_sse(a, b, w, h)
+    }
+
+    #[cfg(feature = "std")]
+    fn dump_bytes(buf: &[u8]) -> alloc::vec::Vec<u8> {
+        buf.to_vec()
     }
 }
 
@@ -154,6 +165,11 @@ impl DlfPixel for u16 {
     /// is_16bit arm of `picture_sse_calculations`.
     fn plane_sse(a: &[u16], b: &[u16], w: usize, h: usize) -> i64 {
         svtav1_dsp::hbd::full_distortion_kernel16_bits(a, 0, w, b, 0, w, w, h) as i64
+    }
+
+    #[cfg(feature = "std")]
+    fn dump_bytes(buf: &[u16]) -> alloc::vec::Vec<u8> {
+        buf.iter().flat_map(|p| p.to_le_bytes()).collect()
     }
 }
 
@@ -253,7 +269,26 @@ fn try_filter_plane<P: DlfPixel>(
             input.bit_depth,
         );
     }
-    P::plane_sse(src, scratch, w, h)
+    let sse = P::plane_sse(src, scratch, w, h);
+    #[cfg(feature = "std")]
+    if crate::dbgenv::dlfdbg() {
+        std::eprintln!("DLF_TRY plane={plane} lvl0={lvl0} lvl1={lvl1} w={w} h={h} sse={sse}");
+    }
+    // Trial-plane dump: the port half of the deblock-KERNEL oracle. C's half
+    // is `SVT_LFRECON_BIN` (wrap_recon.c), which can only capture the FINAL
+    // application at C's picked level — so pin this to that level and the two
+    // planes must be byte-identical whenever the pre-filter recon is.
+    #[cfg(feature = "std")]
+    if let (Some(prefix), Some(lvl)) = (crate::dbgenv::dlf_try_bin(), crate::dbgenv::dlf_try_level())
+        && lvl.parse::<u8>() == Ok(lvl0)
+        && lvl0 == lvl1
+    {
+        let _ = std::fs::write(
+            std::format!("{prefix}.p{plane}"),
+            P::dump_bytes(&scratch[..w * h]),
+        );
+    }
+    sse
 }
 
 /// C `search_filter_level` (deblocking_filter.c:832) — the
@@ -365,6 +400,11 @@ fn search_filter_level<P: DlfPixel>(
         }
     }
     best_err = ss_err[filt_best as usize];
+
+    #[cfg(feature = "std")]
+    if crate::dbgenv::dlfdbg() {
+        std::eprintln!("DLF_PICK plane={plane} dir={dir} level={filt_best} sse={best_err}");
+    }
 
     (filt_best, ss_err[0], best_err)
 }
@@ -509,6 +549,25 @@ pub struct DeblockGeom {
     tw: Vec<u8>,
     /// Luma TX height in pixels per mi.
     th: Vec<u8>,
+    /// TRUE (unpadded, coded) LUMA frame width — NOT `mi_cols * 4`.
+    ///
+    /// AV1 spec 7.14.5 ("edge loop filter process") sets `onScreen = 0`, and
+    /// filters nothing, when `x >= FrameWidth` or `y >= FrameHeight`. C reads
+    /// the same bound off `plane_ptr->dst.width`, which
+    /// `svt_av1_setup_dst_planes` (deblocking_filter.c:150-155) deliberately
+    /// fills with `max_input_luma_width - max_input_pad_right` — its own
+    /// comment cites 7.14.2 for "should be the UNPADDED width/height" — and
+    /// `set_lpf_parameters` (:225-230) returns TX_4X4 with `filter_length = 0`
+    /// above it.
+    ///
+    /// The bound bites at MI-UNIT granularity, so it is only observable when
+    /// a 4x4 unit starts at or past the true edge, i.e. when
+    /// `true_w % 8 == 4` (aligned adds exactly 4 px: 188 -> 192). Every other
+    /// residue rounds up past the last mi start and the guard is inert —
+    /// which is why 188x256 was the only cell in a 648-cell scan that saw it.
+    true_w: usize,
+    /// TRUE (unpadded, coded) LUMA frame height — see [`Self::true_w`].
+    true_h: usize,
     /// `mbmi->skip_txfm && is_inter_block(mbmi)`: intra blocks are never
     /// "skipped" for deblocking purposes.
     skip_inter: Vec<bool>,
@@ -519,15 +578,21 @@ pub struct DeblockGeom {
 }
 
 impl DeblockGeom {
-    /// Frame dims must be mi-aligned (the pipeline is 64-aligned).
-    pub fn new(width: usize, height: usize) -> Self {
+    /// `width`/`height` are the ALIGNED (mi-grid) dims; `true_w`/`true_h` are
+    /// the CODED dims the frame header signals, which the spec-7.14.5
+    /// `onScreen` guard is measured against (see [`Self::true_w`]). They are
+    /// equal on an 8-aligned input.
+    pub fn new(width: usize, height: usize, true_w: usize, true_h: usize) -> Self {
         assert!(width.is_multiple_of(4) && height.is_multiple_of(4));
+        assert!(true_w <= width && true_h <= height);
         let mi_cols = width / 4;
         let mi_rows = height / 4;
         let n = mi_cols * mi_rows;
         Self {
             mi_cols,
             mi_rows,
+            true_w,
+            true_h,
             block_id: alloc::vec![u32::MAX; n],
             bw: alloc::vec![0; n],
             bh: alloc::vec![0; n],
@@ -638,6 +703,17 @@ fn lpf_params(
     ss: usize,
     level: u8,
 ) -> (usize, Option<u8>) {
+    // Spec 7.14.5 `onScreen`: nothing is filtered at or past the TRUE frame
+    // extent. C's identical guard is `set_lpf_parameters`
+    // (deblocking_filter.c:225-230) reading `plane_ptr->dst.width/height`,
+    // which `svt_av1_setup_dst_planes` fills with the UNPADDED dims; it
+    // returns TX_4X4 with `filter_length = 0`, so the caller advances by ONE
+    // mi unit and filters nothing. Chroma bound is `true >> ss`, C's own
+    // truncating shift (deblocking_filter.c:166), not a ceiling.
+    let (true_pw, true_ph) = (geom.true_w >> ss, geom.true_h >> ss);
+    if x >= true_pw || y >= true_ph {
+        return (1, None);
+    }
     // Chroma maps to the bottom/right mi of the co-located 8x8 luma block
     // (the `scale | ...` trick in C).
     let mi_row = ss | ((y << ss) >> 2);
@@ -931,6 +1007,109 @@ pub fn apply_deblock_frame_hbd(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Build a 192x256 luma plane of 8x8 intra blocks with pseudo-random
+    /// pixels and deblock it at `true_w`, returning the filtered plane.
+    fn deblock_192x256(true_w: usize, true_h: usize) -> alloc::vec::Vec<u8> {
+        const W: usize = 192;
+        const H: usize = 256;
+        let mut geom = DeblockGeom::new(W, H, true_w, true_h);
+        for by in (0..H).step_by(8) {
+            for bx in (0..W).step_by(8) {
+                geom.record_block(bx, by, 8, 8, false, false);
+            }
+        }
+        let mut buf = unfiltered_plane();
+        filter_plane(&mut buf, W, W, H, 0, 0, 32, 32, &geom, 0);
+        buf
+    }
+
+    /// Flat 8x8 tiles separated by a SMALL step. The deblock mask only fires
+    /// when the samples either side of an edge are close (`|p1 - p0| <= lim`),
+    /// so pseudo-random noise filters NOTHING and every assertion below would
+    /// be vacuous — measured: the anti-vacuity arm caught exactly that.
+    fn unfiltered_plane() -> alloc::vec::Vec<u8> {
+        const W: usize = 192;
+        const H: usize = 256;
+        let mut buf: alloc::vec::Vec<u8> = alloc::vec::Vec::with_capacity(W * H);
+        for r in 0..H {
+            for c in 0..W {
+                buf.push((100 + ((c / 8) * 3 + (r / 8) * 5) % 17) as u8);
+            }
+        }
+        buf
+    }
+
+    /// AV1 spec 7.14.5 `onScreen` / C `set_lpf_parameters`
+    /// (deblocking_filter.c:225-230): nothing is filtered at or past the TRUE
+    /// frame extent, even though the mi grid and every buffer run to the
+    /// 8-ALIGNED extent.
+    ///
+    /// This is the defect that made `city-lossless 188x256 p2 q33` pick
+    /// deblock level 13 where C picks 10: the level search measures its SSE
+    /// over the ALIGNED plane (C `picture_sse_calculations` uses
+    /// `aligned_width`), so filtering the four padding columns moves the
+    /// landscape the search hill-climbs.
+    ///
+    /// ANTI-VACUITY: the same call with `true_w == 192` MUST touch those
+    /// columns. Without that half, a test that only asserts "columns 188..191
+    /// are unchanged" would keep passing if `filter_plane` stopped filtering
+    /// altogether.
+    #[test]
+    fn deblock_skips_edges_past_the_true_frame_width() {
+        const W: usize = 192;
+        const H: usize = 256;
+        let unfiltered = unfiltered_plane();
+        let clamped = deblock_192x256(188, H);
+        let unclamped = deblock_192x256(W, H);
+
+        // Anti-vacuity: at true_w == aligned the pad columns DO get filtered,
+        // and the mi unit at x = 188 is the only difference between the runs.
+        let unclamped_moved = (0..H)
+            .flat_map(|r| (188..W).map(move |c| r * W + c))
+            .filter(|&i| unclamped[i] != unfiltered[i])
+            .count();
+        assert!(
+            unclamped_moved > 0,
+            "vacuous: filtering never touches columns 188..192 even at true_w == 192"
+        );
+
+        // The rule: with true_w = 188, no pixel at or past column 188 moves.
+        let bad: alloc::vec::Vec<(usize, usize)> = (0..H)
+            .flat_map(|r| (188..W).map(move |c| (r, c)))
+            .filter(|&(r, c)| clamped[r * W + c] != unfiltered[r * W + c])
+            .collect();
+        assert!(
+            bad.is_empty(),
+            "filtered {} pixels past the true frame width (first {:?})",
+            bad.len(),
+            bad.first()
+        );
+        // And the two runs must actually differ (the clamp is live).
+        assert_ne!(clamped, unclamped);
+    }
+
+    /// The same guard on the HEIGHT axis (`y >= FrameHeight`), which needs
+    /// its own case: `lpf_params` tests the two bounds independently and a
+    /// width-only fix would leave the vertical half open.
+    #[test]
+    fn deblock_skips_edges_past_the_true_frame_height() {
+        const W: usize = 192;
+        const H: usize = 256;
+        let unfiltered = unfiltered_plane();
+        let clamped = deblock_192x256(W, 252);
+        let unclamped = deblock_192x256(W, H);
+        let unclamped_moved = (252..H)
+            .flat_map(|r| (0..W).map(move |c| r * W + c))
+            .filter(|&i| unclamped[i] != unfiltered[i])
+            .count();
+        assert!(unclamped_moved > 0, "vacuous: rows 252..256 never filtered");
+        let bad = (252..H)
+            .flat_map(|r| (0..W).map(move |c| (r, c)))
+            .filter(|&(r, c)| clamped[r * W + c] != unfiltered[r * W + c])
+            .count();
+        assert_eq!(bad, 0, "filtered {bad} pixels past the true frame height");
+    }
 
     /// Hand-computed values of the C closed form (AC step table x the
     /// KEY_FRAME fit): q_step(30) = 34 -> (597142 - 421574 + 131072) >> 18
