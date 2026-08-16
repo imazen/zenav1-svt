@@ -660,17 +660,6 @@ fn main() {
         sb_size_used,
         obu.len()
     );
-    // STDOUT, deliberately: identity_diff.sh captures this process's STDERR as
-    // the symtrace op stream, and an extra line there corrupts every
-    // comparison. `--all-features` turns this probe on, so the trap is one
-    // `just`-recipe away from real.
-    #[cfg(feature = "__ovf_probe")]
-    println!(
-        "{}",
-        svtav1_encoder::dsp::residual::ovf_probe::report(&format!(
-            "{content}:{w}x{h}:qp{qp}:p{preset}"
-        ))
-    );
     if sb128_fallback {
         // Loud, so a gate cell can never silently "pass" while the port
         // quietly coded a different superblock geometry than C did.

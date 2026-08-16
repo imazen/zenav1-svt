@@ -12,11 +12,6 @@ whereat::define_at_crate_info!();
 // `svtav1_encoder::{EncodeError, EncodeResult}` alongside the pipeline.
 pub use svtav1_types::{EncodeError, EncodeResult};
 
-/// TEMPORARY (2026-08-11): expose the DSP crate so the identity harness can
-/// print `residual::ovf_probe`'s census. Probe-build only.
-#[cfg(feature = "__ovf_probe")]
-pub use svtav1_dsp as dsp;
-
 pub mod bd10;
 pub mod cdef;
 pub mod chroma_q;

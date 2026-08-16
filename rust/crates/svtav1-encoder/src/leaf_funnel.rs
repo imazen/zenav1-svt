@@ -1665,119 +1665,6 @@ enum RateMode {
     Lvl0Closed,
 }
 
-/// TEMPORARY census instrument (`--features __txcensus`), 2026-08-13.
-///
-/// Prices R1 and R2 of `docs/C-VS-PORT-CODE-REVIEW-2026-08-13.md` BEFORE either
-/// is built, in the `residual::ovf_probe` style: it answers "what share of
-/// `tx_unit`'s inverse-transform pixel work is thrown away" and "what share of
-/// `cost_coeffs_txb` calls have their result replaced by a closed form" with
-/// counters instead of an argument. Zero cost when the feature is off (every
-/// call site is `cfg`-ed out).
-#[cfg(feature = "__txcensus")]
-pub mod txcensus {
-    use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
-
-    /// Every `tx_unit_inner` call, and the sum of its `w*h`.
-    pub static TXU_CALLS: AtomicU64 = AtomicU64::new(0);
-    pub static TXU_PIX: AtomicU64 = AtomicU64::new(0);
-    /// Calls whose `recon` the caller discards (`need_recon == false`), split by
-    /// whether an inverse transform actually runs (`eob > 0`) or the prediction
-    /// is merely copied.
-    pub static TXU_DEADRECON_INV_CALLS: AtomicU64 = AtomicU64::new(0);
-    pub static TXU_DEADRECON_INV_PIX: AtomicU64 = AtomicU64::new(0);
-    pub static TXU_DEADRECON_COPY_CALLS: AtomicU64 = AtomicU64::new(0);
-    pub static TXU_DEADRECON_COPY_PIX: AtomicU64 = AtomicU64::new(0);
-    /// Calls that invert AND whose recon is read — the floor R1 cannot touch.
-    pub static TXU_LIVERECON_INV_CALLS: AtomicU64 = AtomicU64::new(0);
-    pub static TXU_LIVERECON_INV_PIX: AtomicU64 = AtomicU64::new(0);
-
-    /// `cost_coeffs_txb` calls whose result is USED as-is.
-    pub static CCT_LIVE_CALLS: AtomicU64 = AtomicU64::new(0);
-    pub static CCT_LIVE_PIX: AtomicU64 = AtomicU64::new(0);
-    pub static CCT_LIVE_EOB: AtomicU64 = AtomicU64::new(0);
-    /// `cost_coeffs_txb` calls a closed form replaces — R2's prize.
-    pub static CCT_REPL_CALLS: AtomicU64 = AtomicU64::new(0);
-    pub static CCT_REPL_PIX: AtomicU64 = AtomicU64::new(0);
-    pub static CCT_REPL_EOB: AtomicU64 = AtomicU64::new(0);
-
-    /// `n`: `w*h`. `eob`: post-quantize eob. `need_recon` / `rate_replaced` are
-    /// the two predicates R1 and R2 propose to act on.
-    pub fn observe(n: u64, eob: u64, need_recon: bool, rate_replaced: bool) {
-        TXU_CALLS.fetch_add(1, Relaxed);
-        TXU_PIX.fetch_add(n, Relaxed);
-        match (need_recon, eob > 0) {
-            (false, true) => {
-                TXU_DEADRECON_INV_CALLS.fetch_add(1, Relaxed);
-                TXU_DEADRECON_INV_PIX.fetch_add(n, Relaxed);
-            }
-            (false, false) => {
-                TXU_DEADRECON_COPY_CALLS.fetch_add(1, Relaxed);
-                TXU_DEADRECON_COPY_PIX.fetch_add(n, Relaxed);
-            }
-            (true, true) => {
-                TXU_LIVERECON_INV_CALLS.fetch_add(1, Relaxed);
-                TXU_LIVERECON_INV_PIX.fetch_add(n, Relaxed);
-            }
-            (true, false) => {}
-        }
-        if eob > 0 {
-            if rate_replaced {
-                CCT_REPL_CALLS.fetch_add(1, Relaxed);
-                CCT_REPL_PIX.fetch_add(n, Relaxed);
-                CCT_REPL_EOB.fetch_add(eob, Relaxed);
-            } else {
-                CCT_LIVE_CALLS.fetch_add(1, Relaxed);
-                CCT_LIVE_PIX.fetch_add(n, Relaxed);
-                CCT_LIVE_EOB.fetch_add(eob, Relaxed);
-            }
-        }
-    }
-
-    pub fn report(tag: &str) -> alloc::string::String {
-        alloc::format!(
-            "TXCENSUS\t{tag}\ttxu_calls={}\ttxu_pix={}\t\
-             deadrecon_inv_calls={}\tdeadrecon_inv_pix={}\t\
-             deadrecon_copy_calls={}\tdeadrecon_copy_pix={}\t\
-             liverecon_inv_calls={}\tliverecon_inv_pix={}\t\
-             cct_live_calls={}\tcct_live_pix={}\tcct_live_eob={}\t\
-             cct_repl_calls={}\tcct_repl_pix={}\tcct_repl_eob={}",
-            TXU_CALLS.load(Relaxed),
-            TXU_PIX.load(Relaxed),
-            TXU_DEADRECON_INV_CALLS.load(Relaxed),
-            TXU_DEADRECON_INV_PIX.load(Relaxed),
-            TXU_DEADRECON_COPY_CALLS.load(Relaxed),
-            TXU_DEADRECON_COPY_PIX.load(Relaxed),
-            TXU_LIVERECON_INV_CALLS.load(Relaxed),
-            TXU_LIVERECON_INV_PIX.load(Relaxed),
-            CCT_LIVE_CALLS.load(Relaxed),
-            CCT_LIVE_PIX.load(Relaxed),
-            CCT_LIVE_EOB.load(Relaxed),
-            CCT_REPL_CALLS.load(Relaxed),
-            CCT_REPL_PIX.load(Relaxed),
-            CCT_REPL_EOB.load(Relaxed),
-        )
-    }
-
-    /// Positive control: a probe whose zero cannot be told apart from a probe
-    /// that never ran is not evidence (rust/CLAUDE.md, "DEAD-LOOKING C STAYS
-    /// TRANSLATED"). Every bucket this census acts on must be reachable.
-    #[test]
-    fn txcensus_counts_every_bucket() {
-        let d = TXU_DEADRECON_INV_CALLS.load(Relaxed);
-        let c = TXU_DEADRECON_COPY_CALLS.load(Relaxed);
-        let l = TXU_LIVERECON_INV_CALLS.load(Relaxed);
-        let r = CCT_REPL_CALLS.load(Relaxed);
-        let v = CCT_LIVE_CALLS.load(Relaxed);
-        observe(64, 5, false, true);
-        observe(64, 0, false, false);
-        observe(64, 5, true, false);
-        assert_eq!(TXU_DEADRECON_INV_CALLS.load(Relaxed) - d, 1);
-        assert_eq!(TXU_DEADRECON_COPY_CALLS.load(Relaxed) - c, 1);
-        assert_eq!(TXU_LIVERECON_INV_CALLS.load(Relaxed) - l, 1);
-        assert_eq!(CCT_REPL_CALLS.load(Relaxed) - r, 1);
-        assert_eq!(CCT_LIVE_CALLS.load(Relaxed) - v, 1);
-    }
-}
 
 struct TxUnitOut {
     eob: u16,
@@ -2373,16 +2260,6 @@ fn tx_unit_inner(
         ),
         RateMode::Exact => cost_skip_txb(c_tx, plane_type, txb_skip_ctx, rates),
     };
-    // R1/R2 census (feature `__txcensus`, off by default). `rate_replaced` = a
-    // closed form supersedes the exact `cost_coeffs_txb` result on this call:
-    // either C's level-0 tier at the caller (`RateMode::Lvl0Closed`) or the
-    // level-2 tier right above. BEHAVIOUR IS UNCHANGED by this commit — the two
-    // new parameters are observed only.
-    #[cfg(feature = "__txcensus")]
-    {
-        let rate_replaced = rate_mode == RateMode::Lvl0Closed || closed_lvl2;
-        txcensus::observe((w * h) as u64, eob as u64, need_recon, rate_replaced);
-    }
     let cul = compute_cul_level(scan, &qcoeff, eob);
 
     TxUnitOut {
@@ -3841,9 +3718,6 @@ impl LeafEval {
     /// Winner chroma recons ((size/2)^2 rasters). See [`y_recon`](Self::y_recon)
     /// for why this has no live caller.
     #[allow(dead_code)]
-    pub(crate) fn uv_recon(&self) -> (&[u8], &[u8]) {
-        (&self.win.u_recon, &self.win.v_recon)
-    }
 
     /// The walk/entropy-pass view of the winner.
     ///
