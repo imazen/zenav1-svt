@@ -121,6 +121,21 @@ jobs:
         # the bd10 preset-7 screen split (docs/SUSPECTED-C-BUGS.md #9).
         run: cargo test -p zenav1-svt --test tier_invariance
 
+      - name: peak-RSS memory sweep (port vs C, tiny -> large)
+        working-directory: rust
+        # Records peak RSS across sizes so a memory regression is VISIBLE. This
+        # project required memory evidence from heaptrack/`time -v` in
+        # ACCEPTANCE-CRITERIA.md and then never measured any, so "how much does
+        # it use?" had no answer until 2026-08-16.
+        #
+        # Reports rather than thresholds, deliberately: RSS on a shared CI
+        # runner is noisy, and a tight bound would flake and get raised until it
+        # meant nothing. The committed baseline is benchmarks/mem_2026-08-16.meta
+        # (port 3.5 MiB fixed + ~29-34 MiB/MP; ~122 MiB at 4 MP). Compare
+        # against it by eye in the log; tighten to a gate only with a measured
+        # noise floor.
+        run: ./tools/mem_gate.sh 6 || true
+
       - name: refusal inventory is current (capability debt stays visible)
         working-directory: rust
         # Every config the encoder REFUSES, split into CONTRACT (caller misuse,

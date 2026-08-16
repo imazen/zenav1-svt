@@ -72,14 +72,17 @@ SVT_TRACE_OUT=/dev/null $LOWPRI "$CT" 64 64 40 13 "$W/warm.yuv" "$W/warm.obu" 8 
 # ---------------------------------------------------------------------------
 KNOWN_DIFF=(
   # ---------------------------------------------------------------------
-  # screen q48 p7 on two partial-SB geometries — the #71 screen class at a
-  # partial superblock. MEASURED 2026-08-03 when p7 was added to the dims
-  # tier: p7 is 24/24 on ALIGNED geometry and 34/36 on partial, and these are
-  # the only two misses. Both are `screen` at q48, +-0.5%; every `gradient`
-  # cell at p7 passes at every geometry. So this is the palette/IBC decision
-  # band, not a p7 geometry defect.
-  "screen 72 88 48 7"
-  "screen 80 88 48 7"
+  # PROMOTED 2026-08-16 — "screen 72 88 48 7" and "screen 80 88 48 7" now
+  # byte-match (C=187/port=187 and C=195/port=195). They were the last two
+  # partial-SB misses at p7, pinned 2026-08-03 as the #71 palette/IBC decision
+  # band. The self-promoting pin demanded this: the gate reported them as
+  # PROMOTE (2 of 1100) rather than letting a fix land unnoticed.
+  #
+  # Promoted UNCONDITIONALLY, not `uname -m`-scoped, and that distinction was
+  # MEASURED rather than assumed: both cells match on aarch64 AND on emulated
+  # x86-64 (tools/cross_isa_port_check.sh's VM, C oracle rebuilt there). Six
+  # earlier cells in this repo match on one architecture only, so checking
+  # first is the difference between a promotion and another red CI cycle.
   # ---------------------------------------------------------------------
   # PROMOTED 2026-08-04 — "screen 64 64 63 1" and "screen 128 128 63 1" now
   # byte-match. They were the #71 palette-over-picking pins (C=64B/port=71B and
