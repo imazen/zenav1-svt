@@ -1,0 +1,32 @@
+FIRST memory measurement of this port. Peak RSS, port vs C, aarch64/M4 Pro.
+
+commit:  see git log at this file's add
+command: tools/mem_gate.sh 6   and   MEM_SIZES="1024 1536 2048" tools/mem_gate.sh 6
+method:  /usr/bin/time -l "maximum resident set size" (the sanctioned evidence
+         per docs/ACCEPTANCE-CRITERIA.md:112). RSS is a ceiling on what the
+         process touched, not an allocator trace.
+config:  gradient, qp 32, preset 6, 8-bit 4:2:0.
+
+  size        MP     port KiB     C KiB   port/C
+  64x64       0.004      3632      7088     0.51
+  256x256     0.062      5744      9312     0.62
+  512x512     0.250     12288     15344     0.80
+  1024x1024   1.000     37984     36704     1.03
+  1536x1536   2.250     78480     71344     1.10
+  2048x2048   4.000    125424    119536     1.05
+
+The port uses HALF C's fixed overhead and slightly more per pixel; the two cross
+around 1 MP. At 4 MP the port is 122 MiB against C's 117 MiB.
+
+WHY THE FIT IS QUOTED TWICE. Least squares over the SMALL range (64..1024) gives
+  port 3.5 MiB fixed + 33.62 MiB/MP ; C 7.3 MiB + 28.72 MiB/MP
+and over the LARGE range (1024..2048)
+  port 7.2 MiB fixed + 29.20 MiB/MP ; C 8.9 MiB + 26.97 MiB/MP
+The slope moves with the range, so neither fit predicts the other end. That is
+the concrete reason this project bans extrapolating memory: a "MiB/MP" quoted
+from the small sweep would over-predict 4 MP by ~18 MiB. If a number is needed
+at a size not in this table, MEASURE it.
+
+NOT MEASURED: allocation counts, transient peaks between samples, bd10 (u16
+buffers roughly double the pixel-proportional term but that is a PREDICTION, not
+a measurement), and anything on Linux/glibc — this is macOS RSS.
