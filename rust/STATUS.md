@@ -203,9 +203,19 @@ As of 2026-08-03 there are none — 2,495 cells:
   palette costs 8-10 % and moves the port FURTHER from C — so the convenient
   "#71 over-picking" reading is refuted for these cells.
 
-Default gate: **1038/1038 + 2 pinned, 0 harness errors.** (Two #71 pins were
-promoted 2026-08-04 when the luma-palette uv-flag row was corrected — the
-self-promoting pin doing its job.)
+Default gate: **1100/1100 byte-identical, 0 pinned, 0 harness errors**
+(2026-08-16). The KNOWN_DIFF list is now EMPTY — every cell in the default
+8-bit gate matches C.
+
+Two rounds of promotion got it there, both driven by the self-promoting pin
+rather than by anyone noticing: `screen 64x64` and `128x128 q63 p1` on
+2026-08-04 (the luma-palette uv-flag row), then `screen 72x88` and `80x88 q48 p7`
+on 2026-08-16 (C=187/187 and C=195/195), which were the last two partial-SB
+misses at p7. The second pair was promoted UNCONDITIONALLY rather than
+`uname -m`-scoped, and that was measured: both match on aarch64 AND on emulated
+x86-64 with the C oracle rebuilt there. Six other cells in this repo match on one
+architecture only (`docs/SUSPECTED-C-BUGS.md` #9), so checking first is the
+difference between a promotion and a red CI cycle.
 
 ### How the coverage hole was found (the p1/p2/p3/p7 audit)
 

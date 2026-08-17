@@ -911,8 +911,13 @@ These numbers are MEASURED, not estimated.
 2. **Long-term code quality & human maintainability**: clear module
    boundaries, documented invariants, honest PORT-NOTE index, rustdoc on
    public surfaces, no dead code left behind, no mega-file growth
-   (leaf_funnel.rs is slated for a module split AFTER the EPICA
-   calibration lands — do not thrash hot files mid-drill).
+   (**leaf_funnel.rs WAS split 2026-08-16** — it is now the directory
+   module `leaf_funnel/` = `mod.rs` 8,491 + `tx_pipeline` 1,216 +
+   `rate_tables` 1,126 + `predict` 243 + `coeff_rate` 225, byte-neutral at
+   1100/1100. Older docs cite `leaf_funnel.rs:LINE`; those line numbers are
+   pre-split — RE-LOCATE BY SYMBOL, the names did not change. `mod.rs` at
+   8.5k is still oversized: the funnel core is one section and splitting it
+   needs understanding, not a script).
 3. **Lossless (q0)**: LESS important — do not prioritize over the above.
 4. **Performance (#93)**: LAST. Algorithmic/allocation work before SIMD
    when it does happen.
@@ -1208,7 +1213,7 @@ evidence (an FFI parity test, an identity cell, or a differential).
 | `crates/svtav1-encoder/src/palette.rs` | 10 |
 | `crates/svtav1-encoder/src/intrabc.rs` | 8 |
 | `crates/svtav1-dsp/src/hbd.rs` | 7 |
-| `crates/svtav1-encoder/src/leaf_funnel.rs` | 3 |
+| `crates/svtav1-encoder/src/leaf_funnel/mod.rs` | 3 |
 | `crates/svtav1-entropy/src/context.rs` | 2 |
 | `crates/svtav1-encoder/src/segmentation.rs` | 2 |
 | `crates/svtav1-encoder/src/sb128_geom.rs` | 2 |

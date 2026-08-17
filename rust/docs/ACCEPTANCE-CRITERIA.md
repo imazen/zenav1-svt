@@ -111,6 +111,25 @@ medium / large so per-call fixed cost never hides inside a "ms/MP" figure. Never
 extrapolate a measurement from one size to another — measure the size you claim.
 Memory numbers come from heaptrack or `time -v`, never from struct arithmetic.
 
+**MEASURED 2026-08-16** (`tools/mem_gate.sh`, record
+`benchmarks/mem_2026-08-16.meta`, reported in CI). Peak RSS, gradient qp32 p6,
+aarch64:
+
+| size | port | C | port/C |
+|---|---|---|---|
+| 64x64 | 3.5 MiB | 6.9 MiB | **0.51** |
+| 512x512 | 12.0 MiB | 15.0 MiB | 0.80 |
+| 1024x1024 | 37.1 MiB | 35.8 MiB | 1.03 |
+| 2048x2048 | 122 MiB | 117 MiB | 1.05 |
+
+The port uses HALF C's fixed overhead and slightly more per pixel; they cross
+around 1 MP. This measurement is also the concrete case for the
+never-extrapolate rule directly above it: least squares over 64..1024 gives
+33.6 MiB/MP, over 1024..2048 gives 29.2 — quoting the small-range slope at 4 MP
+over-predicts by ~18 MiB. NOT measured: allocation counts, transient peaks
+between samples, bd10 (u16 buffers roughly double the pixel term — a prediction,
+not a number), and Linux/glibc.
+
 ## Reliability
 
 Safe Rust throughout, fallible allocation on untrusted paths, bounded memory. Bitstream

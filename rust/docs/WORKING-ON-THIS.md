@@ -35,6 +35,29 @@ quantization or the bitstream writer. Not on every edit.
 `--` for an axis with no cells. A missing cell count is a coverage claim nobody
 tested, and it is strictly more dangerous than a failing one — see §5.
 
+## 2b. Perf and memory — where they actually are
+
+```bash
+tools/perf_gate.sh          # port-vs-C wall clock, paired statistics
+tools/mem_gate.sh 6         # peak RSS, port vs C, tiny -> large
+tools/fp_cross_isa.sh       # transcendentals, this host vs emulated x86-64
+```
+
+**Wall clock (2026-08-13, aarch64):** port/C slope 3.77x at p2, 3.22x p6, 2.74x
+p10, 2.73x p13 — and the port is FASTER than C below ~64 px on the fast presets
+(0.86-0.90x fixed cost). `docs/perf-status.md` leads with the live table and a
+SIMD-coverage queue ranked by measured frame share; read that before optimising
+anything, because the top entries are already NEON and the queue is about
+quality, not coverage.
+
+**Memory (2026-08-16, the first ever measured):** port 3.5 MiB fixed +
+~29-34 MiB/MP; C 7-9 MiB fixed + ~27-29. Half C's fixed cost, slightly more per
+pixel, crossing near 1 MP; 122 vs 117 MiB at 4 MP.
+`benchmarks/mem_2026-08-16.meta`. **Do not quote a MiB/MP figure at a size you
+did not measure** — the slope moves with the range (33.6 over 64..1024, 29.2
+over 1024..2048), which is the same never-extrapolate rule the wall-clock
+harness follows.
+
 ## 3. Adding a fix? Add its cell.
 
 When you fix a bug, add a line to `tools/regression_spotcheck.sh`. The rule,
@@ -229,6 +252,33 @@ host-dependent, BEFORE concluding anything about C.
   mount the repo **read-only** and copy out — the host's
   `Bin/Release/libSvtAv1Enc.a` is aarch64 and load-bearing.
 
+## 5d. Scripting a file split — three traps, all measured
+
+`leaf_funnel.rs` (11,247 lines) became `leaf_funnel/` on 2026-08-16, byte-neutral
+at 1100/1100. If you split another mega-file, the compiler catches everything —
+but only after you avoid these, each of which cost a rebuild cycle:
+
+- **A line regex cannot tell a struct field from a function parameter.** Bumping
+  `^    name: type,` to `pub(super)` also hit multi-line fn parameter lists: 744
+  errors. Parameters live inside `(`, fields inside `{`; only brace/paren depth
+  tracking distinguishes them.
+- **Locating sections by title text matches PROSE.** "The funnel" appears at
+  line 424 as well as its banner at 2852, so taking the first hit mis-sliced
+  every section and one module came out 9 lines long. Require the preceding line
+  to be a `// ----` rule.
+- **A glob re-export CAPS visibility.** `pub(crate) use m::*;` silently demoted a
+  genuinely-`pub` item and broke two integration tests; a blanket `pub use` then
+  warned on every module exporting nothing public. Use crate-scoped globs for
+  internals plus explicit `pub use` for the few real public items.
+
+File-private becomes `pub(super)` — the same scope, now that the "file" is a
+module tree. And the acceptance test is byte-identity, not a reading of the diff.
+
+**Pre-split line numbers.** Docs written before 2026-08-16 cite
+`leaf_funnel.rs:LINE`. Those numbers are stale for anything that moved into
+`tx_pipeline` / `rate_tables` / `predict` / `coeff_rate`. **Re-locate by symbol
+— every name is unchanged.** Do not chase the numbers.
+
 ## 6. Refuse, never emit a plausible-but-wrong stream
 
 Out-of-envelope configs return a typed `Err` from `encode_frame_impl`. They do
@@ -298,6 +348,8 @@ disagree, the source wins and the doc gets fixed in the same change.
 | every bug we have fixed, with its reproducer | `tools/regression_spotcheck.sh` |
 | C code that looks broken | `docs/SUSPECTED-C-BUGS.md` |
 | which C file a Rust module ports | `../PORTING.md` |
+| the leaf funnel (SPLIT 2026-08-16) | `leaf_funnel/{mod,tx_pipeline,rate_tables,predict,coeff_rate}.rs` |
+| perf + memory | `docs/perf-status.md`, `benchmarks/mem_2026-08-16.meta` |
 | the working agreement + envelope guards | `CLAUDE.md` |
 | per-feature plans and open chunks | `docs/*-port-map.md` |
 | committed measurements | `benchmarks/*.tsv` + the `.meta` beside each |

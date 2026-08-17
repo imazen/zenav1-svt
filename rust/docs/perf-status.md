@@ -146,7 +146,11 @@
 >   work exactly (51-54 % at qp20, 16-38 % at qp40, ZERO at qp55).
 >   `benchmarks/ratemode_r2_ab_2026-08-13.meta`.
 > * `7dec5f24e` — the census instrument behind both
->   (`benchmarks/txunit_census_2026-08-13.tsv`, feature `__txcensus`).
+>   (`benchmarks/txunit_census_2026-08-13.tsv`). **The `__txcensus` feature was
+>   DELETED 2026-08-16** along with `__ovf_probe`: both were self-labelled
+>   TEMPORARY, both had answered their question, and both had become permanent
+>   public surface across four manifests. The committed .tsv is the record; to
+>   re-census, re-add the instrument rather than expecting the flag to exist.
 >
 > Two corrections to the review, both from the census: its R2 scope treats the
 > **level-2** tier (p7/p8) as a live arm — it fires on 164 of 8,404 calls in one
