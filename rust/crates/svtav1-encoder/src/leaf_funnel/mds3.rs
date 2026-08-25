@@ -117,173 +117,11 @@ pub(super) fn run_mds3(
     let tsz_cat = tx_size_cat(w, h);
     let tsz_ctx = fx.ectx.tx_size_ctx(abs_x, abs_y, w, h);
 
-    // -- Independent chroma search before MDS3 (chroma_level 4:
-    //    `search_best_mds3_uv_mode`, product_coding_loop.c:7301, invoked at
-    //    :9625-9637 when `perform_ind_uv_search_last_mds` (:1472-1504)
-    //    returns true. Produces best_uv[(luma mode)] -> (uv mode, uv delta);
-    //    `update_intra_chroma_mode` (:7063) then rewrites each MDS3
-    //    candidate before its full loop. --
-    //
-    // The gate has TWO arms, and the second one is live here (issue #15):
-    //
-    //  a) `mds3_intra_count` (:1478-1487) counts the MDS3 survivors that are
-    //     NOT inter-classified and — with `skip_ind_uv_if_only_dc = 1`, which
-    //     is chroma_level 4's setting (enc_mode_config.c:4373) — whose
-    //     injected (uv-follows-luma) uv mode is not UV_DC.
-    //  b) the `inter_vs_intra_cost_th` arm (:1498-1501) then ZEROES that count
-    //     when `best_inter_cost * th < best_intra_cost * 100`, th = 100 at
-    //     chroma_level 4 (enc_mode_config.c:4372) — i.e. when the best
-    //     inter-classified candidate's MDS1 full cost beats every intra
-    //     candidate's.
-    //
-    // Arm (b) was previously commented here as "never fires on I-slices,
-    // MAX_MODE_COST * 100 does not overflow and dwarfs any intra cost". The
-    // overflow half is right (MAX_MODE_COST = 13754408443200 * 8,
-    // coding_unit.h:37, so * 100 is ~1.1e16, far under 2^64) but the
-    // conclusion was WRONG: `is_inter` here is
-    // `is_inter_mode(mode) || use_intrabc` (:1479-1481), so on a SCREEN-CONTENT
-    // I-slice a winning IntraBC candidate makes `best_inter_cost` an ordinary
-    // finite cost and the arm fires. MEASURED on `terminal` 188x256 (the last
-    // two divergent cells of tools/unaligned_identity_scan.sh): at p2 q55
-    // mi=(50,42) C's MDS1 best intra = 97_762_561 vs best IntraBC = 84_376_537,
-    // and at p4 q12 mi=(46,46) 163_691 vs 148_994 — the arm fires in both, C
-    // sets `ind_uv_avail = 0` (confirmed directly by the
-    // `svt_aom_get_intra_uv_fast_rate` interposer, `indavail=0`), every MDS3
-    // candidate keeps its uv-follows-luma pair, and C codes uv=D113/-1 resp.
-    // UV_CFL where the port's table said UV_DC.
-    //
-    // C's `is_inter` for both the count and the two cost minima is
-    // `is_inter_mode(block_mi.mode) || block_mi.use_intrabc`; the port has no
-    // inter modes on this all-intra path, so IntraBC is the whole of it.
-    const IND_UV_INTER_VS_INTRA_TH: u64 = 100; // chroma_level 4, enc_mode_config.c:4372
-    let ind_uv_gate = cfg.ind_uv_mds3 && has_uv && {
-        let mut intra_count = 0usize;
-        let mut best_intra = u64::MAX;
-        let mut best_inter = u64::MAX;
-        for &ci in order1.iter().take(n3) {
-            let c = &cands[ci];
-            if c.ibc.is_some() {
-                best_inter = best_inter.min(c.full_cost);
-            } else {
-                if c.uv != 0 {
-                    intra_count += 1;
-                }
-                best_intra = best_intra.min(c.full_cost);
-            }
-        }
-        // C SEEDS both minima with MAX_MODE_COST and only ever lowers them, so
-        // an absent class — or a class whose every candidate costs more than
-        // the seed — compares as that CONSTANT, not as "infinity". Clamping
-        // the u64::MAX-seeded minima to it reproduces both cases exactly.
-        // With no IntraBC candidate this makes the arm inert as the old
-        // comment assumed: 1.1e16 is not < (an intra cost) * 100.
-        const MAX_MODE_COST: u64 = 13_754_408_443_200 * 8; // coding_unit.h:37
-        let best_intra = best_intra.min(MAX_MODE_COST);
-        let best_inter = best_inter.min(MAX_MODE_COST);
-        if best_inter * IND_UV_INTER_VS_INTRA_TH < best_intra * 100 {
-            intra_count = 0;
-        }
-        intra_count > 0
-    };
-    if ind_uv_gate {
-        // Distinct (uv, uv_delta) pairs of the MDS3 survivors, in
-        // survivor order, excluding UV_DC; then UV_DC (delta 0) last.
-        let mut tested = [[false; 7]; 13];
-        let mut uv_list: Vec<(u8, i8)> = Vec::new();
-        for &ci in order1.iter().take(n3) {
-            let (uvm, uvd) = (cands[ci].uv, cands[ci].uv_delta);
-            if uvm == 0 || tested[uvm as usize][(3 + uvd) as usize] {
-                continue;
-            }
-            tested[uvm as usize][(3 + uvd) as usize] = true;
-            uv_list.push((uvm, uvd));
-        }
-        uv_list.push((0, 0));
+    // -- Independent chroma search before MDS3 -- see [`search_best_uv_mode`].
+    search_best_uv_mode(
+        fx, g, cx, bd10_rd, pal_uv_no, lambda, cands, order1, n3, ind_uv,
+    );
 
-        // Full loop per uv candidate: coeff_rate + SSD distortion
-        // (DIST_CALC_RESIDUAL — both planes summed).
-        //
-        // bd10 FULL-RD (task #94): C runs search_best_mds3_uv_mode ENTIRELY at
-        // hbd_md — `full_lambda = full_lambda_md[hbd_md ? EB_10_BIT_MD :
-        // EB_8_BIT_MD]` (product_coding_loop.c:7307) with 10-bit prediction/
-        // residual (:7397/:7415/:7429) and the 10-bit full-loop distortion
-        // (svt_aom_full_loop_uv, :7443). Deciding the uv mode on the u8
-        // `chroma_eval` + u8 `lambda` flips near-ties: on 1001682 q12 p5 block
-        // (0,0) the port picked UV_V_PRED where C picks UV_DC_PRED. Use the
-        // 10-bit twin at bd10; bd8 keeps `chroma_eval` and is byte-unchanged.
-        let mut uv_rd: Vec<(u64, u64)> = Vec::with_capacity(uv_list.len());
-        for &(uvm, uvd) in &uv_list {
-            let (bits, dist) = match bd10_rd.as_ref() {
-                Some(b) => {
-                    let (u_out, v_out) = chroma::eval_uv_hbd(cx, fx, b, uvm, uvd);
-                    (
-                        u_out.bits as u64 + v_out.bits as u64,
-                        u_out.dist + v_out.dist,
-                    )
-                }
-                None => {
-                    let (u_out, v_out) = chroma::eval_uv(cx, fx, uvm, uvd);
-                    (
-                        u_out.bits as u64 + v_out.bits as u64,
-                        u_out.dist + v_out.dist,
-                    )
-                }
-            };
-            uv_rd.push((bits, dist));
-        }
-
-        // Per distinct surviving luma mode (survivor order), pick the
-        // lowest-cost uv pair (strict less, list order on ties). At bd10 the
-        // compare uses the SAME 10-bit lambda C prices this search with
-        // (`full_lambda_md[EB_10_BIT_MD]`, :7307/:7491), matching the 10-bit
-        // `uv_rd` above; bd8 takes the `None` arm and keeps the u8 `lambda`.
-        let uv_lambda = bd10_rd.as_ref().map_or(lambda, |b| b.lambda);
-        let mut table = [(0u8, 0i8); 13];
-        let mut mode_seen = [false; 13];
-        for &ci in order1.iter().take(n3) {
-            // C search_best_mds3_uv_mode skips inter-classified candidates
-            // (product_coding_loop.c:7335 — an IntraBC cand keeps UV_DC and
-            // never seeds a per-luma-mode table row).
-            if cands[ci].ibc.is_some() {
-                continue;
-            }
-            let luma = cands[ci].mode as usize;
-            if mode_seen[luma] {
-                continue;
-            }
-            mode_seen[luma] = true;
-            let mut best_cost = u64::MAX;
-            for (k, &(uvm, uvd)) in uv_list.iter().enumerate() {
-                let mut fcr2 = rates.uv[cfl_allowed][luma][uvm as usize] as u64;
-                if use_angle && matches!(uvm, 1..=8) {
-                    fcr2 += rates.angle[uvm as usize - 1][(3 + uvd) as usize] as u64;
-                }
-                if uvm == 0 {
-                    fcr2 += pal_uv_no; // rd_cost.c:514 (inside uv fast rate)
-                }
-                let (bits, dist) = uv_rd[k];
-                let cost = rdcost(uv_lambda, bits + fcr2, dist);
-                #[cfg(feature = "std")]
-                if crate::dbgenv::canddbg() && crate::depth_refine::nsqdbg_here(abs_x, abs_y) {
-                    eprintln!(
-                        "NSQDBG UVTAB2 mi=({},{}) luma={luma} uv={uvm} uvd={uvd} bits={bits} dist={dist} fcr={fcr2} cost={cost}",
-                        abs_y / 4,
-                        abs_x / 4,
-                    );
-                }
-                if cost < best_cost {
-                    best_cost = cost;
-                    table[luma] = (uvm, uvd);
-                }
-            }
-        }
-        *ind_uv = Some(table);
-    }
-
-    // bd10 FULL-RD (task #94): every MDS3 rdcost — the depth compare, the txb
-    // early exits and the final block cost — must use the SAME lambda domain
-    // as the distortion it is comparing. C uses `full_lambda_md[hbd_md ? 1 : 0]`
-    // throughout (md_process.c:753), so one substitution covers all of them.
     let lambda3 = bd10_rd.as_ref().map_or(lambda, |b| b.lambda);
     for &ci in order1.iter().take(n3) {
         // `update_intra_chroma_mode`: rewrite the candidate's chroma from
@@ -2652,4 +2490,211 @@ pub(super) fn run_mds3(
             cands[ci].mds3_cost_ssim = rdcost(lambda, total_rate, ssim_dist);
         }
     }
+}
+
+/// C `search_best_mds3_uv_mode` (product_coding_loop.c:7301) and the
+/// `perform_ind_uv_search_last_mds` predicate (:1472) that gates it.
+///
+/// THE GATE IS THE POINT. That predicate has two arms and the port modelled
+/// only the first for a long time. The second -- `inter_vs_intra_cost_th`
+/// (:1498), which ZEROES the intra survivor count when
+/// `best_inter_cost * th < best_intra_cost * 100` -- looks dead on an I-slice
+/// until you notice `is_inter` there means `is_inter_mode(mode) || use_intrabc`
+/// (:1479). On screen content an IntraBC candidate can win MDS1, and then
+/// `best_inter_cost` is an ordinary finite cost and C SKIPS the search
+/// entirely. Running it anyway cost two partial-SB cells; see "defect 5" in
+/// `rust/CLAUDE.md`.
+///
+/// Writes the chosen (uv_mode, uv_delta) per luma mode into `ind_uv`, or
+/// leaves it `None` when C would not have searched.
+#[allow(clippy::too_many_arguments)]
+fn search_best_uv_mode(
+    fx: &mut FunnelCtx<'_>,
+    g: &LeafGeom,
+    cx: &chroma::ChromaCtx,
+    bd10_rd: &Option<Bd10Rd>,
+    pal_uv_no: u64,
+    lambda: u64,
+    cands: &[Cand],
+    order1: &[usize],
+    n3: usize,
+    ind_uv: &mut Option<[(u8, i8); 13]>,
+) {
+    let (frame, rates) = (fx.frame, fx.rates);
+    let cfg = frame.cfg;
+    let LeafGeom {
+        abs_x,
+        abs_y,
+        has_uv,
+        cfl_allowed,
+        use_angle,
+        ..
+    } = *g;
+    // -- Independent chroma search before MDS3 (chroma_level 4:
+    //    `search_best_mds3_uv_mode`, product_coding_loop.c:7301, invoked at
+    //    :9625-9637 when `perform_ind_uv_search_last_mds` (:1472-1504)
+    //    returns true. Produces best_uv[(luma mode)] -> (uv mode, uv delta);
+    //    `update_intra_chroma_mode` (:7063) then rewrites each MDS3
+    //    candidate before its full loop. --
+    //
+    // The gate has TWO arms, and the second one is live here (issue #15):
+    //
+    //  a) `mds3_intra_count` (:1478-1487) counts the MDS3 survivors that are
+    //     NOT inter-classified and — with `skip_ind_uv_if_only_dc = 1`, which
+    //     is chroma_level 4's setting (enc_mode_config.c:4373) — whose
+    //     injected (uv-follows-luma) uv mode is not UV_DC.
+    //  b) the `inter_vs_intra_cost_th` arm (:1498-1501) then ZEROES that count
+    //     when `best_inter_cost * th < best_intra_cost * 100`, th = 100 at
+    //     chroma_level 4 (enc_mode_config.c:4372) — i.e. when the best
+    //     inter-classified candidate's MDS1 full cost beats every intra
+    //     candidate's.
+    //
+    // Arm (b) was previously commented here as "never fires on I-slices,
+    // MAX_MODE_COST * 100 does not overflow and dwarfs any intra cost". The
+    // overflow half is right (MAX_MODE_COST = 13754408443200 * 8,
+    // coding_unit.h:37, so * 100 is ~1.1e16, far under 2^64) but the
+    // conclusion was WRONG: `is_inter` here is
+    // `is_inter_mode(mode) || use_intrabc` (:1479-1481), so on a SCREEN-CONTENT
+    // I-slice a winning IntraBC candidate makes `best_inter_cost` an ordinary
+    // finite cost and the arm fires. MEASURED on `terminal` 188x256 (the last
+    // two divergent cells of tools/unaligned_identity_scan.sh): at p2 q55
+    // mi=(50,42) C's MDS1 best intra = 97_762_561 vs best IntraBC = 84_376_537,
+    // and at p4 q12 mi=(46,46) 163_691 vs 148_994 — the arm fires in both, C
+    // sets `ind_uv_avail = 0` (confirmed directly by the
+    // `svt_aom_get_intra_uv_fast_rate` interposer, `indavail=0`), every MDS3
+    // candidate keeps its uv-follows-luma pair, and C codes uv=D113/-1 resp.
+    // UV_CFL where the port's table said UV_DC.
+    //
+    // C's `is_inter` for both the count and the two cost minima is
+    // `is_inter_mode(block_mi.mode) || block_mi.use_intrabc`; the port has no
+    // inter modes on this all-intra path, so IntraBC is the whole of it.
+    const IND_UV_INTER_VS_INTRA_TH: u64 = 100; // chroma_level 4, enc_mode_config.c:4372
+    let ind_uv_gate = cfg.ind_uv_mds3 && has_uv && {
+        let mut intra_count = 0usize;
+        let mut best_intra = u64::MAX;
+        let mut best_inter = u64::MAX;
+        for &ci in order1.iter().take(n3) {
+            let c = &cands[ci];
+            if c.ibc.is_some() {
+                best_inter = best_inter.min(c.full_cost);
+            } else {
+                if c.uv != 0 {
+                    intra_count += 1;
+                }
+                best_intra = best_intra.min(c.full_cost);
+            }
+        }
+        // C SEEDS both minima with MAX_MODE_COST and only ever lowers them, so
+        // an absent class — or a class whose every candidate costs more than
+        // the seed — compares as that CONSTANT, not as "infinity". Clamping
+        // the u64::MAX-seeded minima to it reproduces both cases exactly.
+        // With no IntraBC candidate this makes the arm inert as the old
+        // comment assumed: 1.1e16 is not < (an intra cost) * 100.
+        const MAX_MODE_COST: u64 = 13_754_408_443_200 * 8; // coding_unit.h:37
+        let best_intra = best_intra.min(MAX_MODE_COST);
+        let best_inter = best_inter.min(MAX_MODE_COST);
+        if best_inter * IND_UV_INTER_VS_INTRA_TH < best_intra * 100 {
+            intra_count = 0;
+        }
+        intra_count > 0
+    };
+    if ind_uv_gate {
+        // Distinct (uv, uv_delta) pairs of the MDS3 survivors, in
+        // survivor order, excluding UV_DC; then UV_DC (delta 0) last.
+        let mut tested = [[false; 7]; 13];
+        let mut uv_list: Vec<(u8, i8)> = Vec::new();
+        for &ci in order1.iter().take(n3) {
+            let (uvm, uvd) = (cands[ci].uv, cands[ci].uv_delta);
+            if uvm == 0 || tested[uvm as usize][(3 + uvd) as usize] {
+                continue;
+            }
+            tested[uvm as usize][(3 + uvd) as usize] = true;
+            uv_list.push((uvm, uvd));
+        }
+        uv_list.push((0, 0));
+
+        // Full loop per uv candidate: coeff_rate + SSD distortion
+        // (DIST_CALC_RESIDUAL — both planes summed).
+        //
+        // bd10 FULL-RD (task #94): C runs search_best_mds3_uv_mode ENTIRELY at
+        // hbd_md — `full_lambda = full_lambda_md[hbd_md ? EB_10_BIT_MD :
+        // EB_8_BIT_MD]` (product_coding_loop.c:7307) with 10-bit prediction/
+        // residual (:7397/:7415/:7429) and the 10-bit full-loop distortion
+        // (svt_aom_full_loop_uv, :7443). Deciding the uv mode on the u8
+        // `chroma_eval` + u8 `lambda` flips near-ties: on 1001682 q12 p5 block
+        // (0,0) the port picked UV_V_PRED where C picks UV_DC_PRED. Use the
+        // 10-bit twin at bd10; bd8 keeps `chroma_eval` and is byte-unchanged.
+        let mut uv_rd: Vec<(u64, u64)> = Vec::with_capacity(uv_list.len());
+        for &(uvm, uvd) in &uv_list {
+            let (bits, dist) = match bd10_rd.as_ref() {
+                Some(b) => {
+                    let (u_out, v_out) = chroma::eval_uv_hbd(cx, fx, b, uvm, uvd);
+                    (
+                        u_out.bits as u64 + v_out.bits as u64,
+                        u_out.dist + v_out.dist,
+                    )
+                }
+                None => {
+                    let (u_out, v_out) = chroma::eval_uv(cx, fx, uvm, uvd);
+                    (
+                        u_out.bits as u64 + v_out.bits as u64,
+                        u_out.dist + v_out.dist,
+                    )
+                }
+            };
+            uv_rd.push((bits, dist));
+        }
+
+        // Per distinct surviving luma mode (survivor order), pick the
+        // lowest-cost uv pair (strict less, list order on ties). At bd10 the
+        // compare uses the SAME 10-bit lambda C prices this search with
+        // (`full_lambda_md[EB_10_BIT_MD]`, :7307/:7491), matching the 10-bit
+        // `uv_rd` above; bd8 takes the `None` arm and keeps the u8 `lambda`.
+        let uv_lambda = bd10_rd.as_ref().map_or(lambda, |b| b.lambda);
+        let mut table = [(0u8, 0i8); 13];
+        let mut mode_seen = [false; 13];
+        for &ci in order1.iter().take(n3) {
+            // C search_best_mds3_uv_mode skips inter-classified candidates
+            // (product_coding_loop.c:7335 — an IntraBC cand keeps UV_DC and
+            // never seeds a per-luma-mode table row).
+            if cands[ci].ibc.is_some() {
+                continue;
+            }
+            let luma = cands[ci].mode as usize;
+            if mode_seen[luma] {
+                continue;
+            }
+            mode_seen[luma] = true;
+            let mut best_cost = u64::MAX;
+            for (k, &(uvm, uvd)) in uv_list.iter().enumerate() {
+                let mut fcr2 = rates.uv[cfl_allowed][luma][uvm as usize] as u64;
+                if use_angle && matches!(uvm, 1..=8) {
+                    fcr2 += rates.angle[uvm as usize - 1][(3 + uvd) as usize] as u64;
+                }
+                if uvm == 0 {
+                    fcr2 += pal_uv_no; // rd_cost.c:514 (inside uv fast rate)
+                }
+                let (bits, dist) = uv_rd[k];
+                let cost = rdcost(uv_lambda, bits + fcr2, dist);
+                #[cfg(feature = "std")]
+                if crate::dbgenv::canddbg() && crate::depth_refine::nsqdbg_here(abs_x, abs_y) {
+                    eprintln!(
+                        "NSQDBG UVTAB2 mi=({},{}) luma={luma} uv={uvm} uvd={uvd} bits={bits} dist={dist} fcr={fcr2} cost={cost}",
+                        abs_y / 4,
+                        abs_x / 4,
+                    );
+                }
+                if cost < best_cost {
+                    best_cost = cost;
+                    table[luma] = (uvm, uvd);
+                }
+            }
+        }
+        *ind_uv = Some(table);
+    }
+
+    // bd10 FULL-RD (task #94): every MDS3 rdcost — the depth compare, the txb
+    // early exits and the final block cost — must use the SAME lambda domain
+    // as the distortion it is comparing. C uses `full_lambda_md[hbd_md ? 1 : 0]`
+    // throughout (md_process.c:753), so one substitution covers all of them.
 }
