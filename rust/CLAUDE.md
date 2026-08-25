@@ -913,19 +913,19 @@ These numbers are MEASURED, not estimated.
    public surfaces, no dead code left behind, no mega-file growth
    (**leaf_funnel.rs is DONE, 2026-08-16 + 2026-08-25.** It is the directory
    module `leaf_funnel/`, largest file 2,655 lines: `mds3` 2,655,
-   `inject` 1,273, `tx_pipeline` 1,216, `rate_tables` 1,126, `mod` 1,011,
-   `tests` 875, `types` 638, `nic` 535, `cfl` 366, `txt` 353, `overlay` 326,
+   `inject` 1,273, `tx_pipeline` 1,216, `rate_tables` 1,126, `tests` 875,
+   `mod` 871, `types` 644, `nic` 535, `cfl` 366, `txt` 353, `overlay` 326,
    `chroma` 322, `tx_geom` 283, `predict` 243, `detect` 231, `commit` 228,
-   `coeff_rate` 225. Older docs cite `leaf_funnel.rs:LINE`; those line
+   `coeff_rate` 225, `mds1` 216. Older docs cite `leaf_funnel.rs:LINE`; those line
    numbers are pre-split — RE-LOCATE BY SYMBOL, the names did not change.
    The 2026-08-25 round found the real defect was narrower than the earlier
    "the funnel core is one section" note: **`evaluate_leaf` was 5,159 lines
    in ONE function**, and what pinned it there was three chroma-evaluation
    CLOSURES spanning the whole body. Turning those into functions over a
-   named `ChromaCtx` unblocked everything else; `evaluate_leaf` is now 772
+   named `ChromaCtx` unblocked everything else; `evaluate_leaf` is now 632
    lines that build the per-leaf carriers (`LeafGeom`, `ChromaCtx`,
-   `LeafBd10`, `PalFlagRates`) and call the phases: `inject` -> `nic` ->
-   MDS1 -> `nic` -> `mds3` -> winner. Every step was byte-neutral at
+   `LeafBd10`, `PalFlagRates`) and call the stages in order: `inject` ->
+   `nic` -> `mds1` -> `nic` -> `mds3` -> winner. Every step was byte-neutral at
    1100/1100 with the moved bodies proven VERBATIM by diffing them back
    against the original line ranges.)
 3. **Lossless (q0)**: LESS important — do not prioritize over the above.

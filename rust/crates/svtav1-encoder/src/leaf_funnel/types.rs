@@ -550,10 +550,8 @@ impl LeafEval {
 /// lifetime, which is why it is a named value rather than two dozen locals
 /// sharing one enormous scope.
 ///
-/// SCOPE: it carries what the extracted stages read. MDS1 still lives inline
-/// in `evaluate_leaf` and reads its inputs as locals; when it moves out, its
-/// inputs (`blk_crop`, the luma quant table) belong here too. Fields are added
-/// when a reader exists, never before.
+/// Fields are added when a reader exists, never before -- `skip_ctx`,
+/// `blk_crop` and `aligned_dims` each arrived with the stage that reads them.
 #[derive(Clone, Copy)]
 pub(super) struct LeafGeom {
     /// Luma block dims.
@@ -586,6 +584,9 @@ pub(super) struct LeafGeom {
     pub(super) left_ctx: usize,
     /// Real skip-coeff context, or 0 when the config does not price it.
     pub(super) skip_ctx: usize,
+    /// Spatial-distortion crop for the whole-block luma txb (C
+    /// `cropped_tx_width`/`_height`). The identity off a straddling block.
+    pub(super) blk_crop: (usize, usize),
     /// The ALIGNED frame extent, as the spatial-distortion crops are taken
     /// against it. NOT the recon buffer's shape -- that mistake was issue #15
     /// defect 2.
