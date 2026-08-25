@@ -583,11 +583,14 @@ pub(crate) fn evaluate_leaf(
         }
     };
 
+    // The independent-uv table. Written by whichever stage C builds it in --
+    // injection when `ind_uv_last_mds == 0` (M0/M1, so every candidate's fast
+    // cost prices its final uv pair), MDS3 otherwise -- hence the `&mut`
+    // threading rather than a return value from either.
     let mut ind_uv: Option<[(u8, i8); 13]> = None;
-    // -- Candidate injection + MDS0 -- see [`inject`].
-    // C `generate_md_stage_0_cand`: regular intra, filter-intra, palette, then
-    // IntraBC, each scored with the Hadamard SATD fast cost. The returned order
-    // is C's PROCESSING order and the MDS0 pool below depends on it.
+
+    // The per-leaf carriers the stages read. Each is derived once here and is
+    // constant for the leaf; see their docs in [`types`] and [`chroma`].
     let geom = LeafGeom {
         w,
         h,
@@ -612,6 +615,10 @@ pub(crate) fn evaluate_leaf(
         lambda_fast: lambda_bd10_fast,
         rd: &bd10_rd,
     };
+    // -- Candidate injection + MDS0 -- see [`inject`].
+    // C `generate_md_stage_0_cand`: regular intra, filter-intra, palette, then
+    // IntraBC, each scored with the Hadamard SATD fast cost. The returned order
+    // is C's PROCESSING order and the MDS0 pool below depends on it.
     let mut cands = inject::inject_candidates(
         fx,
         &geom,
