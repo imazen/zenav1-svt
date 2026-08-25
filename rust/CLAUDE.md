@@ -911,13 +911,23 @@ These numbers are MEASURED, not estimated.
 2. **Long-term code quality & human maintainability**: clear module
    boundaries, documented invariants, honest PORT-NOTE index, rustdoc on
    public surfaces, no dead code left behind, no mega-file growth
-   (**leaf_funnel.rs WAS split 2026-08-16** — it is now the directory
-   module `leaf_funnel/` = `mod.rs` 8,491 + `tx_pipeline` 1,216 +
-   `rate_tables` 1,126 + `predict` 243 + `coeff_rate` 225, byte-neutral at
-   1100/1100. Older docs cite `leaf_funnel.rs:LINE`; those line numbers are
-   pre-split — RE-LOCATE BY SYMBOL, the names did not change. `mod.rs` at
-   8.5k is still oversized: the funnel core is one section and splitting it
-   needs understanding, not a script).
+   (**leaf_funnel.rs is DONE, 2026-08-16 + 2026-08-25.** It is the directory
+   module `leaf_funnel/`, largest file 2,655 lines: `mds3` 2,655,
+   `inject` 1,273, `tx_pipeline` 1,216, `rate_tables` 1,126, `mod` 1,011,
+   `tests` 875, `types` 638, `nic` 535, `cfl` 366, `txt` 353, `overlay` 326,
+   `chroma` 322, `tx_geom` 283, `predict` 243, `detect` 231, `commit` 228,
+   `coeff_rate` 225. Older docs cite `leaf_funnel.rs:LINE`; those line
+   numbers are pre-split — RE-LOCATE BY SYMBOL, the names did not change.
+   The 2026-08-25 round found the real defect was narrower than the earlier
+   "the funnel core is one section" note: **`evaluate_leaf` was 5,159 lines
+   in ONE function**, and what pinned it there was three chroma-evaluation
+   CLOSURES spanning the whole body. Turning those into functions over a
+   named `ChromaCtx` unblocked everything else; `evaluate_leaf` is now 772
+   lines that build the per-leaf carriers (`LeafGeom`, `ChromaCtx`,
+   `LeafBd10`, `PalFlagRates`) and call the phases: `inject` -> `nic` ->
+   MDS1 -> `nic` -> `mds3` -> winner. Every step was byte-neutral at
+   1100/1100 with the moved bodies proven VERBATIM by diffing them back
+   against the original line ranges.)
 3. **Lossless (q0)**: LESS important — do not prioritize over the above.
 4. **Performance (#93)**: LAST. Algorithmic/allocation work before SIMD
    when it does happen.
@@ -1213,13 +1223,14 @@ evidence (an FFI parity test, an identity cell, or a differential).
 | `crates/svtav1-encoder/src/palette.rs` | 10 |
 | `crates/svtav1-encoder/src/intrabc.rs` | 8 |
 | `crates/svtav1-dsp/src/hbd.rs` | 7 |
-| `crates/svtav1-encoder/src/leaf_funnel/mod.rs` | 3 |
 | `crates/svtav1-entropy/src/context.rs` | 2 |
 | `crates/svtav1-encoder/src/segmentation.rs` | 2 |
 | `crates/svtav1-encoder/src/sb128_geom.rs` | 2 |
 | `crates/svtav1-encoder/src/pipeline.rs` | 2 |
+| `crates/svtav1-encoder/src/leaf_funnel/inject.rs` | 2 |
 | `crates/svtav1-encoder/tests/c_parity_palette.rs` | 1 |
 | `crates/svtav1-encoder/src/partition.rs` | 1 |
+| `crates/svtav1-encoder/src/leaf_funnel/mds3.rs` | 1 |
 | `crates/svtav1-encoder/src/intrabc_pred.rs` | 1 |
 | `crates/svtav1-encoder/src/frame_geom.rs` | 1 |
 | `crates/svtav1-encoder/src/bd10.rs` | 1 |

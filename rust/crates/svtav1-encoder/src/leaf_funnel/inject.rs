@@ -63,11 +63,17 @@ pub(super) fn inject_candidates(
         fi_allowed_bsize,
         above_ctx,
         left_ctx,
+        // `skip_ctx` and `aligned_dims` are MDS3 inputs; injection prices no
+        // residual and takes no distortion crop, so it reads neither.
+        ..
     } = *g;
     let (cw, chh, ccx, ccy) = (cx.cw, cx.chh, cx.ccx, cx.ccy);
     let uv_geom = cx.uv_geom;
     let filt_type_uv = cx.filt_type_uv;
     let PalFlagRates {
+        // `allow` only gates the rates below, which are already 0 when it is
+        // false, so injection reads the rates and not the flag.
+        allow: _,
         mode_ctx: pal_mode_ctx,
         y_no: pal_y_no,
         uv_no: pal_uv_no,

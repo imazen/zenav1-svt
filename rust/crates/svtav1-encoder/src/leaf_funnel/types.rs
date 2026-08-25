@@ -550,10 +550,10 @@ impl LeafEval {
 /// lifetime, which is why it is a named value rather than two dozen locals
 /// sharing one enormous scope.
 ///
-/// SCOPE: it currently carries what candidate injection reads. MDS1 and MDS3
-/// still live inline in `evaluate_leaf` and read their inputs as locals; when
-/// they move out, their inputs (`skip_ctx`, `blk_crop`, the luma quant table)
-/// belong here too. Fields are added when a reader exists, never before.
+/// SCOPE: it carries what the extracted stages read. MDS1 still lives inline
+/// in `evaluate_leaf` and reads its inputs as locals; when it moves out, its
+/// inputs (`blk_crop`, the luma quant table) belong here too. Fields are added
+/// when a reader exists, never before.
 #[derive(Clone, Copy)]
 pub(super) struct LeafGeom {
     /// Luma block dims.
@@ -584,6 +584,12 @@ pub(super) struct LeafGeom {
     /// Neighbour-derived intra-mode contexts.
     pub(super) above_ctx: usize,
     pub(super) left_ctx: usize,
+    /// Real skip-coeff context, or 0 when the config does not price it.
+    pub(super) skip_ctx: usize,
+    /// The ALIGNED frame extent, as the spatial-distortion crops are taken
+    /// against it. NOT the recon buffer's shape -- that mistake was issue #15
+    /// defect 2.
+    pub(super) aligned_dims: crate::frame_geom::FrameDims,
 }
 
 /// The 10-bit state a leaf evaluation carries, or the inert shape of it.
@@ -616,6 +622,8 @@ pub(super) struct LeafBd10<'a> {
 /// grid, not on any candidate), read by both candidate injection and MDS3.
 #[derive(Clone, Copy)]
 pub(super) struct PalFlagRates {
+    /// C `svt_aom_allow_palette` on the LUMA bsize.
+    pub(super) allow: bool,
     /// C `svt_aom_get_palette_mode_ctx` (rd_cost.c:583): the above+left count
     /// of palette-coded neighbours, 0..=2. Zero until a palette candidate wins
     /// a neighbour, so non-screen content is byte-identical.
