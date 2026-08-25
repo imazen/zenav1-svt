@@ -541,3 +541,90 @@ impl LeafEval {
         }
     }
 }
+
+/// Where this leaf is, what shape it is, and the neighbour-derived contexts
+/// that go with it -- C `blk_geom` plus
+/// `svt_aom_coding_loop_context_generation`.
+///
+/// Derived once at the top of a leaf evaluation and unchanged for its
+/// lifetime, which is why it is a named value rather than two dozen locals
+/// sharing one enormous scope.
+///
+/// SCOPE: it currently carries what candidate injection reads. MDS1 and MDS3
+/// still live inline in `evaluate_leaf` and read their inputs as locals; when
+/// they move out, their inputs (`skip_ctx`, `blk_crop`, the luma quant table)
+/// belong here too. Fields are added when a reader exists, never before.
+#[derive(Clone, Copy)]
+pub(super) struct LeafGeom {
+    /// Luma block dims.
+    pub(super) w: usize,
+    pub(super) h: usize,
+    /// Luma origin in the (aligned) frame.
+    pub(super) abs_x: usize,
+    pub(super) abs_y: usize,
+    /// C `is_chroma_reference` (common_utils.h:315): sub-8 blocks carry chroma
+    /// only at odd mi in the sub-8 dimension.
+    pub(super) has_uv: bool,
+    /// Prediction geometry for the luma unit: availability tables and the
+    /// frame-edge clamps, taken against the ALIGNED extent (C
+    /// `mb_to_right_edge`/`mb_to_bottom_edge`, NOT the recon buffer's shape --
+    /// see the issue #15 defect 2 note in CLAUDE.md).
+    pub(super) y_geom: UnitGeom,
+    /// C `get_filt_type` for luma: the above/left coded modes' smoothness.
+    pub(super) filt_type_y: i32,
+    /// C `BLOCK_SIZE` index for this block's dims.
+    pub(super) bsize_idx: usize,
+    /// C `is_cfl_allowed` (both dims <= 32), as the 0/1 index the rate tables
+    /// want.
+    pub(super) cfl_allowed: usize,
+    /// Angle deltas are only signalled at >= 8x8 (C `av1_use_angle_delta`).
+    pub(super) use_angle: bool,
+    /// C `svt_aom_filter_intra_allowed_bsize` (both dims <= 32).
+    pub(super) fi_allowed_bsize: bool,
+    /// Neighbour-derived intra-mode contexts.
+    pub(super) above_ctx: usize,
+    pub(super) left_ctx: usize,
+}
+
+/// The 10-bit state a leaf evaluation carries, or the inert shape of it.
+///
+/// `active` is C's bd10 mode funnel: when the bd10 recon canvas is present the
+/// MDS0 mode decision is made at TRUE 10 bits rather than on the MSB-truncated
+/// u8 recon. When it is false NONE of the bd10 branches run and every path is
+/// byte-identical to the 8-bit encoder.
+///
+/// A borrowing VIEW: the buffers live in the leaf evaluation itself (later
+/// stages read them directly), so this names the set without owning it.
+#[derive(Clone, Copy)]
+pub(super) struct LeafBd10<'a> {
+    /// The bd10 LUMA mode funnel is on for this leaf.
+    pub(super) active: bool,
+    /// Block-local 10-bit luma source (real u16 samples when the caller
+    /// supplied a native HBD source, else the same `u8 << shift` widening).
+    /// Empty when `active` is false.
+    pub(super) blk_y_src10: &'a [u16],
+    /// C `fast_lambda_md[1]` -- the MDS0 fast-cost lambda.
+    pub(super) lambda_fast: u64,
+    /// The MDS1/MDS3 inputs at true depth. `None` on every u8 path AND on a
+    /// bd10 leaf where only the MDS0 funnel is enabled.
+    pub(super) rd: &'a Option<Bd10Rd>,
+}
+
+/// The palette-flag rates for this leaf.
+///
+/// Per-leaf constants (they depend on the block size and the neighbour palette
+/// grid, not on any candidate), read by both candidate injection and MDS3.
+#[derive(Clone, Copy)]
+pub(super) struct PalFlagRates {
+    /// C `svt_aom_get_palette_mode_ctx` (rd_cost.c:583): the above+left count
+    /// of palette-coded neighbours, 0..=2. Zero until a palette candidate wins
+    /// a neighbour, so non-screen content is byte-identical.
+    pub(super) mode_ctx: usize,
+    /// Cost of the "no luma palette" flag.
+    pub(super) y_no: u64,
+    /// Cost of the "no chroma palette" flag, `use_palette_y = 0` row.
+    pub(super) uv_no: u64,
+    /// The same flag on the `use_palette_y = 1` row -- what a luma-palette
+    /// candidate pays (rd_cost.c:518-520).
+    pub(super) uv_no_y1: u64,
+}
