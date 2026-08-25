@@ -84,6 +84,7 @@ pub const FI_NONE: u8 = 5;
 use crate::quant::TX_SCALE_TAB;
 
 mod cfl;
+mod chroma;
 mod coeff_rate;
 mod commit;
 mod detect;
@@ -513,287 +514,27 @@ pub(crate) fn evaluate_leaf(
         (0, 0)
     };
 
-    // One full-loop chroma evaluation of a (uv_mode, uv_delta) pair —
-    // the shared body of `search_best_mds3_uv_mode`'s full loop and
-    // MDS3's `svt_aom_full_loop_uv` (identical settings: rdoq per frame
-    // policy, spatial SSE, real contexts).
-    // bd10 FULL-RD chroma (task #94): the 10-bit twin of `chroma_eval`. C's
-    // `svt_aom_full_loop_uv` reaches the same facades at both depths — the
-    // spatial chroma distortion is `svt_full_distortion_kernel16_bits` at
-    // hbd_md != 0 (pic_operators.c:257) — so only the pixel type, the quant
-    // table and the lambda move. This matters because the MDS3 block cost is
-    // JOINT (luma + chroma): with the luma terms at 10 bits and chroma left at
-    // 8, chroma would be ~16x under-weighted and every uv-follows-luma mode
-    // flip would be decided on luma alone.
-    let chroma_eval10 =
-        |fx: &FunnelCtx<'_>, b: &Bd10Rd, uv: u8, uv_delta: i8| -> (TxUnitOutHbd, TxUnitOutHbd) {
-            let mut u_pred = vec![0u16; cw * chh];
-            let mut v_pred = vec![0u16; cw * chh];
-            let c_off10 = ccy * fx.c_stride + ccx;
-            predict_unit_hbd(
-                fx.u_recon10.as_deref().unwrap(),
-                fx.c_stride,
-                ccx,
-                ccy,
-                cw,
-                chh,
-                uv,
-                uv_delta,
-                FI_NONE,
-                &uv_geom,
-                cfg.edge_filter,
-                filt_type_uv,
-                &mut u_pred,
-                b.bd,
-            );
-            predict_unit_hbd(
-                fx.v_recon10.as_deref().unwrap(),
-                fx.c_stride,
-                ccx,
-                ccy,
-                cw,
-                chh,
-                uv,
-                uv_delta,
-                FI_NONE,
-                &uv_geom,
-                cfg.edge_filter,
-                filt_type_uv,
-                &mut v_pred,
-                b.bd,
-            );
-            let _ = c_off10;
-            let tt = uv_tx_type(uv, cw, chh);
-            let rd = |plane_dir: usize| TxRdArgs {
-                spatial_dist: true, // MDS3 chroma is the spatial SSE (<<4)
-                intra_dir: plane_dir,
-                coeff_rate_est_lvl: cfg.coeff_rate_est_lvl,
-                tx_bias: frame.tx_bias,
-                crop: uv_crop,
-            };
-            let u_out = tx_unit_hbd(
-                &b.u_src10,
-                cw,
-                0,
-                &u_pred,
-                cw,
-                0,
-                cw,
-                chh,
-                tt,
-                1,
-                cb_tsc,
-                cb_dsc,
-                &b.qt_u,
-                frame.rdoq_level,
-                b.lambda,
-                frame.sharpness,
-                rates,
-                do_rdoq,
-                b.bd,
-                b.qt_u.qm_level,
-                Some(&rd(0)),
-            );
-            let v_out = tx_unit_hbd(
-                &b.v_src10,
-                cw,
-                0,
-                &v_pred,
-                cw,
-                0,
-                cw,
-                chh,
-                tt,
-                1,
-                cr_tsc,
-                cr_dsc,
-                &b.qt_v,
-                frame.rdoq_level,
-                b.lambda,
-                frame.sharpness,
-                rates,
-                do_rdoq,
-                b.bd,
-                b.qt_v.qm_level,
-                Some(&rd(0)),
-            );
-            (u_out, v_out)
-        };
-    // The IntraBC twin of `chroma_eval10`: an IBC candidate's chroma is the DV
-    // copy / half-pel bilinear from the chroma recon (NOT an intra uv mode), so
-    // the bd10 arm cannot reuse `chroma_eval10` -- that would score the
-    // candidate against a prediction it does not use. The tx-type rule is the
-    // INTER one the u8 arm already applies (the luma winner's txb-0 type when
-    // the chroma ext set allows it, else DCT; tx_type_search,
-    // product_coding_loop.c:5087-5096).
-    let chroma_eval10_ibc = |fx: &FunnelCtx<'_>,
-                             b: &Bd10Rd,
-                             dv: svtav1_types::motion::Mv,
-                             tt: usize|
-     -> (TxUnitOutHbd, TxUnitOutHbd) {
-        let mut u_pred = vec![0u16; cw * chh];
-        let mut v_pred = vec![0u16; cw * chh];
-        let frame_ch = frame.frame_h_px / 2;
-        crate::intrabc_pred::predict_intrabc_chroma(
-            fx.u_recon10.as_deref().unwrap(),
-            fx.c_stride,
-            ccx,
-            ccy,
-            cw,
-            chh,
-            fx.c_stride,
-            frame_ch,
-            dv,
-            &mut u_pred,
-        );
-        crate::intrabc_pred::predict_intrabc_chroma(
-            fx.v_recon10.as_deref().unwrap(),
-            fx.c_stride,
-            ccx,
-            ccy,
-            cw,
-            chh,
-            fx.c_stride,
-            frame_ch,
-            dv,
-            &mut v_pred,
-        );
-        let rd = |plane_dir: usize| TxRdArgs {
-            spatial_dist: true,
-            intra_dir: plane_dir,
-            coeff_rate_est_lvl: cfg.coeff_rate_est_lvl,
-            tx_bias: frame.tx_bias,
-            crop: uv_crop,
-        };
-        let u_out = tx_unit_hbd(
-            &b.u_src10,
-            cw,
-            0,
-            &u_pred,
-            cw,
-            0,
-            cw,
-            chh,
-            tt,
-            1,
-            cb_tsc,
-            cb_dsc,
-            &b.qt_u,
-            frame.rdoq_level,
-            b.lambda,
-            frame.sharpness,
-            rates,
-            do_rdoq,
-            b.bd,
-            b.qt_u.qm_level,
-            Some(&rd(0)),
-        );
-        let v_out = tx_unit_hbd(
-            &b.v_src10,
-            cw,
-            0,
-            &v_pred,
-            cw,
-            0,
-            cw,
-            chh,
-            tt,
-            1,
-            cr_tsc,
-            cr_dsc,
-            &b.qt_v,
-            frame.rdoq_level,
-            b.lambda,
-            frame.sharpness,
-            rates,
-            do_rdoq,
-            b.bd,
-            b.qt_v.qm_level,
-            Some(&rd(0)),
-        );
-        (u_out, v_out)
-    };
-    let chroma_eval = |fx: &FunnelCtx<'_>, uv: u8, uv_delta: i8| -> (TxUnitOut, TxUnitOut) {
-        let mut u_pred = vec![0u8; cw * chh];
-        let mut v_pred = vec![0u8; cw * chh];
-        predict_unit(
-            fx.u_recon,
-            fx.c_stride,
-            ccx,
-            ccy,
-            cw,
-            chh,
-            uv,
-            uv_delta,
-            FI_NONE,
-            &uv_geom,
-            cfg.edge_filter,
-            filt_type_uv,
-            &mut u_pred,
-        );
-        predict_unit(
-            fx.v_recon,
-            fx.c_stride,
-            ccx,
-            ccy,
-            cw,
-            chh,
-            uv,
-            uv_delta,
-            FI_NONE,
-            &uv_geom,
-            cfg.edge_filter,
-            filt_type_uv,
-            &mut v_pred,
-        );
-        let tt = uv_tx_type(uv, cw, chh);
-        let u_out = tx_unit(
-            fx.u_src,
-            fx.c_stride,
-            ccy * fx.c_stride + ccx,
-            &u_pred,
-            cw,
-            0,
-            cw,
-            chh,
-            tt,
-            1,
-            cb_tsc,
-            cb_dsc,
-            0,
-            &qt_u,
-            frame,
-            rates,
-            do_rdoq,
-            true,
-            uv_crop,
-            true,
-            RateMode::Exact,
-        );
-        let v_out = tx_unit(
-            fx.v_src,
-            fx.c_stride,
-            ccy * fx.c_stride + ccx,
-            &v_pred,
-            cw,
-            0,
-            cw,
-            chh,
-            tt,
-            1,
-            cr_tsc,
-            cr_dsc,
-            0,
-            &qt_v,
-            frame,
-            rates,
-            do_rdoq,
-            true,
-            uv_crop,
-            true,
-            RateMode::Exact,
-        );
-        (u_out, v_out)
+    // The per-leaf chroma context every chroma evaluation reads. All of it is
+    // candidate-INDEPENDENT (pair geometry from the ROUND_UV origin; neighbour
+    // txb contexts read once -- the neighbouring bytes cannot change during
+    // this block's own search), which is what lets the three arms in [`chroma`]
+    // be free functions over one shared value instead of closures capturing
+    // fourteen locals across the whole funnel body.
+    let cx = chroma::ChromaCtx {
+        cw,
+        chh,
+        ccx,
+        ccy,
+        uv_geom,
+        filt_type_uv,
+        uv_crop,
+        cb_tsc,
+        cb_dsc,
+        cr_tsc,
+        cr_dsc,
+        do_rdoq,
+        qt_u,
+        qt_v,
     };
 
     // No-palette flag pricing for this leaf (C svt_aom_allow_palette on the
@@ -1014,14 +755,14 @@ pub(crate) fn evaluate_leaf(
             // `chroma_eval` (the `None` arm is the original code).
             let (bits, dist) = match bd10_rd.as_ref() {
                 Some(b) => {
-                    let (u_out, v_out) = chroma_eval10(fx, b, uvm, uvd);
+                    let (u_out, v_out) = chroma::eval_uv_hbd(&cx, fx, b, uvm, uvd);
                     (
                         u_out.bits as u64 + v_out.bits as u64,
                         u_out.dist + v_out.dist,
                     )
                 }
                 None => {
-                    let (u_out, v_out) = chroma_eval(fx, uvm, uvd);
+                    let (u_out, v_out) = chroma::eval_uv(&cx, fx, uvm, uvd);
                     (
                         u_out.bits as u64 + v_out.bits as u64,
                         u_out.dist + v_out.dist,
@@ -2327,14 +2068,14 @@ pub(crate) fn evaluate_leaf(
         for &(uvm, uvd) in &uv_list {
             let (bits, dist) = match bd10_rd.as_ref() {
                 Some(b) => {
-                    let (u_out, v_out) = chroma_eval10(fx, b, uvm, uvd);
+                    let (u_out, v_out) = chroma::eval_uv_hbd(&cx, fx, b, uvm, uvd);
                     (
                         u_out.bits as u64 + v_out.bits as u64,
                         u_out.dist + v_out.dist,
                     )
                 }
                 None => {
-                    let (u_out, v_out) = chroma_eval(fx, uvm, uvd);
+                    let (u_out, v_out) = chroma::eval_uv(&cx, fx, uvm, uvd);
                     (
                         u_out.bits as u64 + v_out.bits as u64,
                         u_out.dist + v_out.dist,
@@ -3094,7 +2835,7 @@ pub(crate) fn evaluate_leaf(
             ibc_uv_tt = Some(tt);
             (u_out, v_out)
         } else if has_uv {
-            chroma_eval(fx, cand.uv, cand.uv_delta)
+            chroma::eval_uv(&cx, fx, cand.uv, cand.uv_delta)
         } else {
             (TxUnitOut::absent(), TxUnitOut::absent())
         };
@@ -3102,8 +2843,8 @@ pub(crate) fn evaluate_leaf(
         let mut uv_out10 = match (&bd10_rd, has_uv) {
             (Some(b), true) => Some(match (cand.ibc, ibc_uv_tt) {
                 // IBC: the DV copy at 10 bits, with the inter tx-type rule.
-                (Some((dv, _)), Some(tt)) => chroma_eval10_ibc(fx, b, dv, tt),
-                _ => chroma_eval10(fx, b, cand.uv, cand.uv_delta),
+                (Some((dv, _)), Some(tt)) => chroma::eval_uv_ibc_hbd(&cx, fx, b, dv, tt),
+                _ => chroma::eval_uv_hbd(&cx, fx, b, cand.uv, cand.uv_delta),
             }),
             // !has_uv: C runs NO chroma stage, so every chroma term is exactly
             // zero at either depth (TxUnitOut::absent()'s contract).
@@ -3855,7 +3596,7 @@ pub(crate) fn evaluate_leaf(
                 // uv-follows-luma freq decision above.
                 let (arb_uv, arb_uvd) = ind_uv.as_ref().unwrap()[cand.mode as usize];
                 if (cand.uv, cand.uv_delta) != (arb_uv, arb_uvd) {
-                    let (u2, v2) = chroma_eval(fx, arb_uv, arb_uvd);
+                    let (u2, v2) = chroma::eval_uv(&cx, fx, arb_uv, arb_uvd);
                     u_out = u2;
                     v_out = v2;
                     // bd10: the 10-bit chroma decision terms follow the re-key
@@ -3864,7 +3605,7 @@ pub(crate) fn evaluate_leaf(
                     // (FILTER candidate, no :7063 pre-rewrite); the mds3 configs
                     // pre-rewrote so this branch is a no-op there.
                     if let Some(b) = bd10_rd.as_ref() {
-                        uv_out10 = Some(chroma_eval10(fx, b, arb_uv, arb_uvd));
+                        uv_out10 = Some(chroma::eval_uv_hbd(&cx, fx, b, arb_uv, arb_uvd));
                     }
                     uv_mode_final = arb_uv;
                     uv_delta_final = arb_uvd;
