@@ -912,9 +912,9 @@ These numbers are MEASURED, not estimated.
    boundaries, documented invariants, honest PORT-NOTE index, rustdoc on
    public surfaces, no dead code left behind, no mega-file growth
    (**leaf_funnel.rs is DONE, 2026-08-16 + 2026-08-25.** It is the directory
-   module `leaf_funnel/`, largest file 2,655 lines: `mds3` 2,655,
+   module `leaf_funnel/`, largest file 2,700 lines: `mds3` 2,700,
    `inject` 1,273, `tx_pipeline` 1,216, `rate_tables` 1,126, `tests` 875,
-   `mod` 871, `types` 644, `nic` 535, `cfl` 366, `txt` 353, `overlay` 326,
+   `mod` 877, `types` 644, `nic` 535, `cfl` 366, `txt` 353, `overlay` 326,
    `chroma` 322, `tx_geom` 283, `predict` 243, `detect` 231, `commit` 228,
    `coeff_rate` 225, `mds1` 216. Older docs cite `leaf_funnel.rs:LINE`; those line
    numbers are pre-split — RE-LOCATE BY SYMBOL, the names did not change.
@@ -927,7 +927,17 @@ These numbers are MEASURED, not estimated.
    `LeafBd10`, `PalFlagRates`) and call the stages in order: `inject` ->
    `nic` -> `mds1` -> `nic` -> `mds3` -> winner. Every step was byte-neutral at
    1100/1100 with the moved bodies proven VERBATIM by diffing them back
-   against the original line ranges.)
+   against the original line ranges.
+   **WHAT IS STILL BIG, and the next cut if anyone wants it:** `mds3.rs` is
+   2,700 lines and ~2,370 of that is ONE loop body -- `run_mds3`'s
+   per-candidate evaluation (TXS depth sweep -> per-txb TXT search -> RDOQ ->
+   spatial SSE -> chroma full loop). The natural next unit is
+   `eval_candidate(...)` for one `Cand`, which needs the same treatment the
+   chroma closures got: find what actually crosses the loop-iteration
+   boundary and name it. Do NOT reach for a line-range script -- the reason
+   this round worked is that each cut was measured first (which locals the
+   region reads, whether anything downstream reads what it defines) and every
+   moved body was proven verbatim afterwards.)
 3. **Lossless (q0)**: LESS important — do not prioritize over the above.
 4. **Performance (#93)**: LAST. Algorithmic/allocation work before SIMD
    when it does happen.
