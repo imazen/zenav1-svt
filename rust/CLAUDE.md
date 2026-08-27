@@ -293,22 +293,22 @@ as the old comment assumed): `byteid_fingerprint` 168/168 with 0 rows moved.
 Record: `benchmarks/unaligned_real_identity_2026-08-14-induv.{tsv,meta}`,
 regression cell `ind-uv-ibc-cost-gate-188x256`.
 
-**Open lead found alongside it, NOT root-caused, currently harmless:** at
-mi=(50,42) of the p2 q55 cell, 54 of 57 MDS1 candidate costs are bit-identical
-to C and **3 differ, each by exactly ~103 rate units (0.20 bits) with the port
-CHEAPER** — all three `mode = DC_PRED, uv = UV_DC`, while the 11 palette DC
-candidates and one of the two IntraBC candidates at the same block match, and
-all 6 costs at the p4 q12 block match. It changes nothing gated today (none of
-the three is a class minimum, so the new gate is unaffected, and every gate is
-green) but the new gate READS MDS1 minima, so a cell where a mis-priced
-candidate is its class minimum would evaluate the arm differently from C.
-The obvious `use_filter_intra`-off-flag reading was CHECKED AND WEAKENED (the
-port already prices it at `leaf_funnel.rs:4987` and `flr` is in the MDS1 cost at
-:6096) — don't restart from it. The decisive un-run probe is one container run
-with `SVT_FASTCOST_XY="168,200"`: `svt_aom_intra_fast_cost` is already
-interposed and gives C's per-candidate `fast_luma_rate`/`fast_chroma_rate`, which
-splits the 103 units across `flr` / `fcr` / `coeff_rate` in one shot. Numbers in
-the meta.
+**The lead found alongside it — 3 of 57 MDS1 costs 103 rate units cheaper
+at mi=(50,42) — was ROOT-CAUSED AND FIXED 2026-08-27 (issue #16).** The
+probe the note asked for (`SVT_FASTCOST_XY` + `SVT_FULLCOST_XY` in the
+container vs `SVTAV1_CANDDBG`) split it in one run: every `PFAST` signalling
+rate matched C, `ydist` matched, and `port.coeff_rate − C.ycb` was 1457 on
+every directional candidate but 1354 on the DC-family ones — the delta lived
+in the tx-type rate row, on exactly the rows earlier IntraBC / DC blocks had
+ADAPTED. Root: C's MD-side `svt_av1_cost_coeffs_txb` keys `is_inter` on
+`is_inter_mode(mode)` WITHOUT `use_intrabc`, so in the encode pass an IntraBC
+txb adapts `intra_ext_tx_cdf[..][DC_PRED]` while the writer adapts the inter
+row (docs/SUSPECTED-C-BUGS.md #10). The port's chain simulation re-coded with
+writer semantics; `CoeffFc::md_side_ibc_txt_update` now reproduces the MD-side
+arm on the chain contexts only. After: 57/57 MDS1 costs equal C's, bytes
+unchanged (`benchmarks/issue16_mds1_txt_cdf_2026-08-27.md`). Lesson, same
+shape as the two before it: when an MD rate differs on ADAPTED rows only, the
+suspect is which CDF the rate table was rebuilt from, not the rate arithmetic.
 
 **The method lesson, and it is the same one twice now.** Both this and defect 2
 were missed by a search bounded on the wrong quantity. Here the bound was "the

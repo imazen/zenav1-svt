@@ -643,6 +643,19 @@ pub struct CoeffFc {
     /// INTER-classified blocks (on this allintra port: IntraBC only,
     /// `av1_write_tx_type`'s `is_inter` arm, entropy_coding.c:333-337).
     pub inter_ext_tx_cdf: [[AomCdfProb; 17]; 4 * 4],
+    /// SHIPPED-C QUIRK, CDF-UPDATE half (issue #16). `false` = bitstream
+    /// semantics (every real writer). `true` = this context is one of the
+    /// MD-side per-SB rate contexts C evolves in its ENCODE pass, where an
+    /// IntraBC block's luma tx type is adapted by
+    /// `av1_transform_type_rate_estimation` (rd_cost.c:107) at
+    /// `allow_update_cdf = 1` — called from `svt_av1_cost_coeffs_txb`, whose
+    /// `is_inter = is_inter_mode(mode)` (rd_cost.c) ignores `use_intrabc`. So
+    /// C updates `intra_ext_tx_cdf[intra_eset][sqr][DC_PRED]` with the INTRA
+    /// set's symbol and leaves the inter row untouched, while its writer
+    /// (`av1_write_tx_type`, `use_intrabc || is_inter_mode`) codes the inter
+    /// row. The MD rate tables C rebuilds per SB therefore see a DC row that
+    /// IntraBC blocks adapted. Only the encoder's chain simulation sets this.
+    pub md_side_ibc_txt_update: bool,
 }
 
 impl CoeffFc {
@@ -666,6 +679,7 @@ impl CoeffFc {
             coeff_br_cdf: [[0; 5]; 168],
             intra_ext_tx_cdf: [[0; 17]; 156],
             inter_ext_tx_cdf: [[0; 17]; 16],
+            md_side_ibc_txt_update: false,
         });
         fc.txb_skip_cdf
             .copy_from_slice(d::TXB_SKIP_CDF[q].as_flattened());
@@ -911,6 +925,41 @@ pub fn write_tx_type_inter(
     }
 }
 
+/// C `av1_transform_type_rate_estimation` (rd_cost.c:107) at
+/// `allow_update_cdf = 1` for an IntraBC block's luma txb — the MD-side CDF
+/// update C's encode pass performs (`coding_loop.c:1539` ->
+/// `svt_aom_txb_estimate_coeff_bits` -> `svt_av1_cost_coeffs_txb`, whose
+/// `is_inter = is_inter_mode(mode)` is FALSE for IntraBC). It takes the
+/// INTRA arm: the intra ext-tx set for `tx_size` (DCT-only at 32x32+, so no
+/// update there, unlike the writer's inter 12-/2-type sets), row
+/// `intra_ext_tx_cdf[intra_eset][square][DC_PRED]` (an IntraBC block's
+/// `mode` is DC_PRED, `filter_intra_mode` off), symbol
+/// `av1_ext_tx_ind[intra_set][tx_type]` — which is that table's filler 0 for
+/// a tx type outside the intra set (e.g. an inter-set flip type), so such a
+/// txb adapts the DCT_DCT symbol — and the intra set's symbol count. No
+/// `base_q_idx > 0` gate (that is the writer's; QP 0 is refused upstream).
+/// Nothing is written: only the CDF moves. See `CoeffFc::md_side_ibc_txt_update`.
+pub fn md_update_tx_type_ibc_quirk(
+    fc: &mut CoeffFc,
+    tx_type: usize,
+    tx_size: usize,
+    reduced_tx_set: bool,
+) {
+    if ext_tx_types(tx_size, false, reduced_tx_set) > 1 {
+        let square_tx_size = TXSIZE_SQR_MAP[tx_size];
+        let set_type = ext_tx_set_type(tx_size, false, reduced_tx_set);
+        let eset = ext_tx_set(tx_size, false, reduced_tx_set);
+        if eset > 0 {
+            let cdf = fc.intra_ext_tx(eset as usize, square_tx_size, 0 /* DC_PRED */);
+            crate::cdf::update_cdf(
+                cdf,
+                AV1_EXT_TX_IND[set_type][tx_type],
+                AV1_NUM_EXT_TX_SET[set_type],
+            );
+        }
+    }
+}
+
 /// Exact port of `av1_write_coeffs_txb_1d` (entropy_coding.c:448).
 ///
 /// `coeffs` is the raster-order coefficient block, `width x height` of the
@@ -958,7 +1007,15 @@ pub fn write_coeffs_txb_1d(
 
     if plane_type == 0 {
         if is_inter {
-            write_tx_type_inter(fc, w, tx_type, tx_size, base_q_idx, reduced_tx_set);
+            if fc.md_side_ibc_txt_update {
+                // MD-side context (issue #16): C's encode pass adapts the
+                // INTRA DC row for this IntraBC txb, not the inter row the
+                // bitstream writer codes. The symbol itself is not written
+                // — the chain simulation's arithmetic state is discarded.
+                md_update_tx_type_ibc_quirk(fc, tx_type, tx_size, reduced_tx_set);
+            } else {
+                write_tx_type_inter(fc, w, tx_type, tx_size, base_q_idx, reduced_tx_set);
+            }
         } else {
             write_tx_type_intra(
                 fc,

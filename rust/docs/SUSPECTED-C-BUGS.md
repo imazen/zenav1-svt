@@ -321,6 +321,62 @@ one did.
 
 ---
 
+## 10. The MD-side ext-tx CDF adapts an IntraBC block on the INTRA DC row
+
+**Status: REPRODUCED (issue #16, 2026-08-27).**
+
+`svt_av1_cost_coeffs_txb` (rd_cost.c) classifies the block for its tx-type
+rate as
+
+```c
+const bool is_inter = is_inter_mode(cand_bf->cand->block_mi.mode);
+```
+
+— `use_intrabc` is not consulted — and passes that to
+`av1_transform_type_rate_estimation` (rd_cost.c:107), which at
+`allow_update_cdf = 1` does
+
+```c
+update_cdf(fc->intra_ext_tx_cdf[ext_tx_set][square_tx_size][intra_dir],
+           av1_ext_tx_ind[tx_set_type][transform_type], av1_num_ext_tx_set[tx_set_type]);
+```
+
+with the INTRA `ext_tx_set` / `tx_set_type` and `intra_dir = mode = DC_PRED`
+(an IntraBC candidate's `mode`). That is the encode pass (coding_loop.c:1539
+→ `svt_aom_txb_estimate_coeff_bits(md_ctx, 1 /*allow_update_cdf*/,
+&pcs->ec_ctx_array[sb_index], …)`), i.e. the MD-side per-SB context every
+rate table is rebuilt from (`svt_aom_estimate_syntax_rate`,
+enc_dec_process.c:2900). The bitstream writer, `av1_write_tx_type`
+(entropy_coding.c:333-349), uses `is_inter = use_intrabc || is_inter_mode(mode)`
+and codes the INTER row. So for every IntraBC luma txb with coefficients, C's
+MD context adapts the intra DC row (with the intra set's symbol index — the
+table's filler 0, i.e. DCT_DCT, for an inter-only type such as a flip) and
+leaves the inter row alone; at 32x32+ the intra set is DCT-only and the MD
+side adapts nothing at all where the writer adapts the 12-/2-type inter row.
+
+Why it looks wrong: the same block adapts two different CDF rows depending on
+which of C's two `is_inter` definitions you ask, and the MD rate tables
+diverge from the stream's own statistics. It is harmless to the bitstream and
+invisible to every byte gate until a near-tie lands on a DC / IntraBC
+candidate.
+
+**Reachable: yes** — any screen-content frame with IntraBC coefficients
+(`sc_class5`, preset ≤ 4). Measured on `terminal` 188x256 p2 q55, mi=(50,42):
+3 of 57 MDS1 costs (both DC-family candidates + one IntraBC candidate) were
+103 rate units cheaper in the port with identical `ydist`, and every PFAST
+signalling rate identical — the delta was the adapted DC row's DCT_DCT rate
+(`benchmarks/issue16_mds1_txt_cdf_2026-08-27.md`).
+
+What the port does: the READ half was already reproduced (`coeff_rate.rs`
+`cost_dir` remap — an IntraBC candidate prices its tx type on the DC row, and
+`MdRates::txt_rate` returns 0 for an out-of-intra-set type). The UPDATE half
+is `CoeffFc::md_side_ibc_txt_update`: the pipeline's per-SB chain simulation
+(its stand-in for `ec_ctx_array[sb]`) sets it, and `write_coeffs_txb_1d` then
+routes an IntraBC txb through `md_update_tx_type_ibc_quirk` (intra set, DC
+row, no write) instead of `write_tx_type_inter`. Real writers never set it.
+Unit witness `md_side_ibc_tx_type_update_adapts_the_intra_dc_row_like_c`;
+after the fix all 57 MDS1 costs at that block equal C's.
+
 ## Adding an entry
 
 State the C `file:line`, quote the code, say why it looks wrong, and — this is

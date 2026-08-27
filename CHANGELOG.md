@@ -69,6 +69,26 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Fixed
 
+- **MDS1 candidate costs 103 rate units cheaper than C on DC / IntraBC
+  candidates — issue #16 root-caused and closed.** The probe the issue named
+  (`SVT_FASTCOST_XY` + `SVT_FULLCOST_XY` in the `--wrap` container vs the
+  port's `SVTAV1_CANDDBG` dump) split the delta in one run: all 57 signalling
+  rates and every `ydist` matched; only the tx-type rate on the ADAPTED CDF
+  rows (intra `DC_PRED`, inter) differed. C's MD-side coefficient cost
+  (`svt_av1_cost_coeffs_txb`) keys `is_inter` on `is_inter_mode(mode)` without
+  `use_intrabc`, so its encode pass adapts the intra DC ext-tx row for an
+  IntraBC txb while its writer adapts the inter row; the port's per-SB chain
+  simulation re-coded with writer semantics and rebuilt rate tables from a
+  DC row C never sees (`docs/SUSPECTED-C-BUGS.md` #10 — the UPDATE half of
+  the quirk whose READ half `cost_dir` already reproduced). Fix:
+  `CoeffFc::md_side_ibc_txt_update` on the chain contexts routes IntraBC
+  tx-type adaptation through `md_update_tx_type_ibc_quirk` (intra set, DC
+  row, no update at DCT-only sizes). After: 57/57 MDS1 costs at
+  `terminal 188x256 p2 q55` mi=(50,42) equal C's (was 54/57), stream unchanged.
+  Byte-neutral on every gate run: `regression_spotcheck` 28/28,
+  `alignment_gate` 74/74 (+ the IBC / palette screen gates, see the commit).
+  Unit witness `md_side_ibc_tx_type_update_adapts_the_intra_dc_row_like_c`
+  (mutation-verified). Record: `benchmarks/issue16_mds1_txt_cdf_2026-08-27.md`.
 - **The 10-bit reconstruction never received the loop restoration it
   signalled — issue #13.** `recon10` fed the Wiener SEARCH (taps picked on
   10-bit data, signalled in the frame header) but only the u8 chain was handed

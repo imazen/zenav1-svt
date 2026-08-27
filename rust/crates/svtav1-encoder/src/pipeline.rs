@@ -8629,6 +8629,15 @@ fn encode_tile_rows(
                             svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex),
                         )
                     });
+                    // Issue #16: this is C's MD-side `ec_ctx_array[sb]`, not
+                    // the bitstream's context. C's encode pass adapts an
+                    // IntraBC txb's tx type on the INTRA DC row here
+                    // (`svt_av1_cost_coeffs_txb`'s `is_inter_mode(mode)`
+                    // ignores `use_intrabc`), so the per-SB MD rate tables
+                    // rebuilt from this chain must see that adaptation — the
+                    // same quirk `cost_coeffs_txb`'s `cost_dir` remap reads.
+                    // Sticky across snapshots (the struct is cloned).
+                    cfc.md_side_ibc_txt_update = true;
                     if let Some(tree) = sb_result.tree.as_ref() {
                         let se = sim_ectx.as_mut().unwrap();
                         if sb_row != sim_prev_sb_row {

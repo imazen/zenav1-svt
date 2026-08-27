@@ -873,3 +873,126 @@ fn cropped_tx_dims_match_the_c_expressions() {
         assert_eq!(cropped_tx_dims_uv(&full, x, y, w, h), (w, h));
     }
 }
+
+/// Issue #16 — SHIPPED-C QUIRK, CDF-UPDATE half. C's encode pass evolves
+/// the MD-side per-SB context (`ec_ctx_array[sb]`) through
+/// `svt_av1_cost_coeffs_txb` at `allow_update_cdf = 1`, whose
+/// `is_inter = is_inter_mode(mode)` (rd_cost.c) ignores `use_intrabc`. An
+/// IntraBC luma txb therefore adapts `intra_ext_tx_cdf[..][DC_PRED]` with
+/// the INTRA set's symbol there, while the bitstream writer
+/// (`av1_write_tx_type`, `use_intrabc || is_inter_mode`) codes and adapts
+/// the inter row. The chain simulation must reproduce the MD-side arm or
+/// the per-SB rate tables it rebuilds price DCT_DCT on the DC row (and, via
+/// the `cost_dir` remap, every IntraBC candidate) differently from C —
+/// measured on `terminal` 188x256 p2 q55 mi=(50,42) as 3 of 57 MDS1 costs
+/// cheaper by exactly 103 rate units (0.20 bits) with the same `ydist`.
+#[test]
+fn md_side_ibc_tx_type_update_adapts_the_intra_dc_row_like_c() {
+    use svtav1_entropy::writer::AomWriter;
+    let base = cc::CoeffFc::default_for_qindex(60);
+    let tx = cc::TX_8X8;
+    let sqr = cc::TXSIZE_SQR_MAP[tx];
+    let intra_set = cc::ext_tx_set_type(tx, false, false);
+    let intra_eset = cc::EXT_TX_SET_INDEX[0][intra_set] as usize;
+    let dc_row = (intra_eset * 4 + sqr) * 13; // + DC_PRED = 0
+    let inter_set = cc::ext_tx_set_type(tx, true, false);
+    let inter_eset = cc::EXT_TX_SET_INDEX[1][inter_set] as usize;
+    let inter_row = inter_eset * 4 + sqr;
+    // One nonzero DC coefficient: eob = 1, so the tx type is coded.
+    let mut coeffs = vec![0i32; 64];
+    coeffs[0] = 3;
+    let code_ibc = |md_side: bool| -> alloc::boxed::Box<cc::CoeffFc> {
+        let mut fc = base.clone();
+        fc.md_side_ibc_txt_update = md_side;
+        let mut w = AomWriter::new(1024);
+        cc::write_coeffs_txb_1d(
+            &mut fc,
+            &mut w,
+            tx,
+            cc::DCT_DCT,
+            0,
+            0,
+            0,
+            &coeffs,
+            1,
+            0,
+            60,
+            false,
+            true, // is_inter: an IntraBC block
+        );
+        fc
+    };
+    let writer_side = code_ibc(false);
+    let md_side = code_ibc(true);
+    // Bitstream semantics: the inter row moved, the intra DC row did not.
+    assert_ne!(
+        writer_side.inter_ext_tx_cdf[inter_row], base.inter_ext_tx_cdf[inter_row],
+        "writer: inter row must adapt"
+    );
+    assert_eq!(
+        writer_side.intra_ext_tx_cdf[dc_row], base.intra_ext_tx_cdf[dc_row],
+        "writer: intra DC row must not move"
+    );
+    // C's MD side: the intra DC row moved, the inter row did not.
+    assert_ne!(
+        md_side.intra_ext_tx_cdf[dc_row], base.intra_ext_tx_cdf[dc_row],
+        "MD side: intra DC row must adapt (rd_cost.c:143 at is_inter = false)"
+    );
+    assert_eq!(
+        md_side.inter_ext_tx_cdf[inter_row], base.inter_ext_tx_cdf[inter_row],
+        "MD side: inter row must not move"
+    );
+    // And it is exactly the update an INTRA DC block coding DCT_DCT makes
+    // (same row, same intra-set symbol, same nsymbs).
+    let mut intra_ref = base.clone();
+    let mut w = AomWriter::new(1024);
+    cc::write_coeffs_txb_1d(
+        &mut intra_ref,
+        &mut w,
+        tx,
+        cc::DCT_DCT,
+        0,
+        0,
+        0,
+        &coeffs,
+        1,
+        0, // intra_dir = DC_PRED
+        60,
+        false,
+        false,
+    );
+    assert_eq!(
+        md_side.intra_ext_tx_cdf[dc_row], intra_ref.intra_ext_tx_cdf[dc_row],
+        "MD side must equal an intra DC DCT_DCT update"
+    );
+    // 32x32: the intra set is DCT-only, so C's MD side updates NOTHING —
+    // while the writer adapts the inter 2-type (DCT_IDTX) row.
+    let mut coeffs32 = vec![0i32; 32 * 32];
+    coeffs32[0] = 3;
+    let mut md32 = base.clone();
+    md32.md_side_ibc_txt_update = true;
+    let mut w = AomWriter::new(4096);
+    cc::write_coeffs_txb_1d(
+        &mut md32,
+        &mut w,
+        cc::TX_32X32,
+        cc::DCT_DCT,
+        0,
+        0,
+        0,
+        &coeffs32,
+        1,
+        0,
+        60,
+        false,
+        true,
+    );
+    assert_eq!(
+        md32.intra_ext_tx_cdf, base.intra_ext_tx_cdf,
+        "32x32 MD side: no intra update"
+    );
+    assert_eq!(
+        md32.inter_ext_tx_cdf, base.inter_ext_tx_cdf,
+        "32x32 MD side: no inter update"
+    );
+}
