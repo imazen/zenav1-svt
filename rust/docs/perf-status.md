@@ -470,7 +470,7 @@ is the biggest single lever.
   0xFF garbage and asserts `get_nz_map_contexts`/`br_ctx` still bit-match real C
   across all 19 tx sizes × {2D,VERT,HORIZ} (0xFF clips to context 3, so any
   over-read diverges), plus all 9 runnable identity gates + `cargo test
-  --workspace` (864 tests). Measured (callgrind, deterministic): 256² p6 frame
+  --workspace` (864 tests as of `3c34350ce`). Measured (callgrind, deterministic): 256² p6 frame
   instructions **685.9M → 577.3M (−15.8 %)**; `__memset` from the ~19 % #1 item to
   ~1.6 % (#9), and the per-txb calloc blob **44.9M → 9.2M**. Cross-size instr:
   128² −1.4 %, 512² −9.8 % (the win tracks the memset fraction, largest at 256²).

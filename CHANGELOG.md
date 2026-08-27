@@ -149,6 +149,28 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Changed
 
+- **Doc debt from the 2026-07-25 publication audit, second pass (issue #8).**
+  The HDR-fork verification bar no longer contradicts itself between
+  `README.md` and `rust/README.md`: fork mode IS byte-gated vs a
+  `SVT_HDR_MODE=ON` C build at 10-bit (`hdr_bd10_gate.sh` 64/64, standing);
+  the 8-bit 48/48 is a 2026-07-19 measurement (`docs/HDR-ON-4.2.md`) with no
+  standing gate script, and `hdr_fork_e2e` is named for what it is (liveness +
+  decode witnesses, 36/36). `identity_matrix` is described as its 54-cell
+  default grid, with the 132/132 figure dated to the 2026-07-16 wider sweep it
+  came from (`rust/README.md`, `C-TEST-PORTING-AUDIT.md`). `screen_ibc_gate`
+  20/100 -> 22/100 (the script's `BYTE_EXACT` list has 22 entries; 78 open).
+  `bd10_photo_gate` is 191 cells (counted from the script's groups A-H:
+  30+64+18+18+12+15+1+32+1); the 154 and 187 figures in `STATUS.md` are dated
+  records and now say so. Every test-count tally the audit listed (669/669,
+  873/873, 902/902, 915/915 x2, 864) carries `(as of <commit>)`, found with
+  `git log -S`. `finishing-survey.md`, `bd10-port-map.md` and `ibc-port-map.md`
+  open with a "line numbers as of <creation commit>; re-locate by symbol"
+  header. The fresh-box README lists `cargo-nextest`, `just`, `aomdec`/`dav1d`
+  and `tools/decode_diff` as the prerequisites cargo does not install.
+  Still open from #8: whether to commit `rust/Cargo.lock` (a decision, not a
+  doc fix), per-gate wall-clock budgets (unmeasured), the "landed work
+  described as open" sections of the port maps, and the CI runner matrix
+  (tracked under #4).
 - **Encode speed: the port-vs-C per-pixel slope gap closes to 2.89x at presets
   10 and 13, 3.27x at preset 6, and — for the first time this campaign — 3.93x
   at preset 2** (from 3.06x / 3.07x / 3.39x / 4.14x). All 24 campaign cells

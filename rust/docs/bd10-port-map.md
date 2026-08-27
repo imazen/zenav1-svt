@@ -1,5 +1,9 @@
 # 10-bit (bd10) port map (task #94, extracted 2026-07-17)
 
+> **Line numbers in this document are as of `5584555a9` (2026-07-17)** unless
+> a section states its own commit. The sources have drifted by 1-2k lines
+> since; re-locate every citation by SYMBOL NAME, not by line.
+
 C baseline note: Source/ = v4.2.0 + the SVT_HDR_MODE hybrid (PR #2). The
 mainline-mode build the identity harness links is v4.2.0-equivalent
 (36/36 + real spots green post-merge). This fork's intake is PACKED u16
@@ -2181,7 +2185,7 @@ took the remaining TWO sites, found one session apart:
   subgrid **57/60 base → 59/60 site-2 → 60/60 final**; p4 13/15 in all three
   builds (the p4 band is untouched by these sorts on this grid — its 2 DIFF
   cells are the known-open p4 scope). Full battery + `cargo nextest`
-  (915/915) green on the final build; `bd10_nonflat` 309/309 proves the
+  (915/915 as of `9b7fcc3fe`) green on the final build; `bd10_nonflat` 309/309 proves the
   exchange sorts byte-inert on the whole synthetic bd10 corpus.
 - **Modeling note (latent, screen-only):** C sorts PER CLASS post-MDS1; the
   port exchange-sorts the flat `order1` union and then filters per-class

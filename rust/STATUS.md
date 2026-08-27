@@ -621,7 +621,8 @@ closed `7062227 q5 p1/p2` + CLIC `02809272… q5 p2`; the prior session's
 (this session — closed `2119713 q5 p1`, a decode-IDENTICAL angle_delta tie
 found OUTSIDE the swept images; op-trace localized to op 66843). The ind-uv
 site had it already. Gates: `bd10_photo_gate.sh` +33 group-G cells (4 CID22
-images × q{5,32} × p0-3 + a CLIC crop spec cell) = **187/187**; battery
+images × q{5,32} × p0-3 + a CLIC crop spec cell) = **187/187** (as of that
+commit; 191 cells today); battery
 green: identity 54/54, bd10_matrix 36/36, nonflat 309/309, partial_sb
 101/101, sb128 20/20, tile 29/29, arbitrary 57/57, combos 40/40, panic
 60/60, palette 50/50, ibc-fh PASS, ibc rc=0, nextest 915/915. Remaining
@@ -652,7 +653,8 @@ decides the chroma uv mode + CfL at 10 bits and runs the deblock-level full sear
 at 10 bits. `bd10_tree_supported` now falls back to u8 ONLY for `tx_depth > 0`
 unconditionally (directional additionally when the SH edge filter is on). Current
 byte-identity coverage: `bd10_matrix` 36/36, `bd10_nonflat_gate` (diag+gradient,
-presets 0–13) 288, `bd10_photo_gate` (photographic, incl. preset 5) 154,
+presets 0–13) 288, `bd10_photo_gate` (photographic, incl. preset 5) 154 (as of
+2026-07-19; the gate is 191 cells today — groups G/H were added 2026-07-23),
 `bd10_recon_parity_gate` 13. The remaining bd10 residuals are the p0–p3 luma
 partition RD near-tie + `search_best_independent_uv_mode` (M0/M1) — see
 docs/bd10-port-map.md. The 2026-07-18 note below is kept as the historical record.

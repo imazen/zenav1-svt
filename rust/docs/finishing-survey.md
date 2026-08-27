@@ -1,5 +1,10 @@
 # Finishing survey — ranked fix list toward full still-frame byte-identity
 
+> **Line numbers in this document are as of `64fb951fc` (2026-07-19).** The
+> Rust sources have moved by 1-2k lines since (`leaf_funnel.rs` was split into
+> a module, `pipeline.rs` grew). Re-locate every citation by SYMBOL NAME, not
+> by line; a line number here is a hint about where to start grepping.
+
 Read-only source-to-source survey, 2026-07-19. C reference `reference/svt-av1/Source/`
 (READ-ONLY), Rust port `reference/svt-av1/rust/crates/`. Scope of this pass: **arbitrarily-
 sized still frames** first, then a stub/hardcode/stale-marker sweep, then the named

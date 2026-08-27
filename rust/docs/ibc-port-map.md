@@ -1,5 +1,9 @@
 # IntraBC (IBC / intra block copy) — port-ready map (IBC vertical scoping, 2026-07-22)
 
+> **Line numbers in this document are as of `ec4c52d5e` (2026-07-22)** for the
+> port and the C tree pinned then. Sources have drifted by 1-2k lines since;
+> re-locate every citation by SYMBOL NAME, not by line.
+
 > **LANDED SINCE THIS MAP — foundation (chunks 0-3, 2026-07-22) + SEARCH CORE
 > (chunks 4-6, 2026-07-23, branch `ibc/search-core`):**
 > - **Chunk 4** (`bb7a6e061`): `intrabc_hash.rs` — CRC-32C, frame pyramid,
@@ -22,7 +26,7 @@
 >   nearest/near, >1200 randomized-grid cases). §B.2.2 is CLOSED.
 >   Temporal-MVP (`use_ref_frame_mvs`) intentionally NOT ported (KEY-only).
 > - The search core is CALLABLE, UNWIRED machinery (wiring = chunks 7-8);
->   all 340+ cells verified byte-inert (nextest 902/902 + full gate sweep).
+>   all 340+ cells verified byte-inert (nextest 902/902 as of `1b64bc1b1` + full gate sweep).
 > - Wiring-time facts carried in the module docs: search reads the SOURCE
 >   plane 8-bit forced; the hash table hashes ALIGNED dims; fixtures must
 >   be ≥ 4 SB64s wide or `INTRABC_DELAY_SB64` rejects every DV.
@@ -51,7 +55,7 @@
 >   Fixed by 0xFF-init (intra-inert). VERIFIED: 100-cell self-consistency
 >   sweep (gb82-sc × p0-p4 × qp{20,48} × 512², aom-decode oracle) — every
 >   stream decodes to EXACTLY the port's own recon, 25,356 IBC blocks
->   coded; nextest 915/915; identity 54/54, bd10 36/36 + 309/309
+>   coded; nextest 915/915 (as of `8090b0ac6`); identity 54/54, bd10 36/36 + 309/309
 >   unchanged. The sc_class5 depth-refinement fix (`4b2c0355d`,
 >   cherry-picked from parity/screen-lowpreset) rides along — screen
 >   trees at p0-p2 need it for C parity.

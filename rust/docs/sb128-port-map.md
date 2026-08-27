@@ -493,7 +493,7 @@ cached once per SB, full-64-units only for bounds-safety) and passes it into
 `build_refined_scan_at` (new `sb_max_min: Option<(usize,usize)>` param).
 Gate: `tools/sb128_gate.sh` gains `codec_wiki 512x512 q48/q63 p0` (SC_CORPUS,
 local-only like coverage_combos). No regressions: sb128 20/20, identity 54/54,
-coverage_combos 40/40, nextest 873/873, bd10 {matrix 36, nonflat 309, photo
+coverage_combos 40/40, nextest 873/873 (as of `70e36bf61`), bd10 {matrix 36, nonflat 309, photo
 154}, partial_sb 101, tile 29, arbitrary_size 57.
 
 ## Two RESIDUAL near-ties on codec_wiki (SEPARATE roots, NOT the depth scope)

@@ -14,15 +14,15 @@ The encoder runs in one of two modes, selected at runtime via `EncodePipeline.hd
 | Mode | What it is | Verification bar |
 |---|---|---|
 | **Mainline** (default) | Stock SVT-AV1 v4.2.0-final behavior | **Byte-identical bitstreams** vs the real C library at matched configs (see envelope below) |
-| **HdrFork** (`HdrForkConfig::hdr_fork()`) | The svt-av1-hdr fork's feature set: psychovisual RD, quant matrices, photon-noise synthesis, variance boost, six tune policies | **Functionally verified**: per-kernel differentials against the exported C functions, per-knob liveness witnesses, and `aomdec` decode gates (encoder recon == reference-decoder output). *Not* byte-gated against a C fork binary |
+| **HdrFork** (`HdrForkConfig::hdr_fork()`) | The svt-av1-hdr fork's feature set: psychovisual RD, quant matrices, photon-noise synthesis, variance boost, six tune policies | **Byte-identical bitstreams** vs a `SVT_HDR_MODE=ON` build of the same C base at **10-bit** (`tools/hdr_bd10_gate.sh`, 64/64, standing gate). At **8-bit**: 48/48 byte-identical as measured 2026-07-19 (`docs/HDR-ON-4.2.md`) with **no standing gate script**, so the standing 8-bit bar is functional — per-kernel differentials against the exported C functions, per-knob liveness witnesses, and `aomdec` decode gates (encoder recon == reference-decoder output) |
 
-That distinction is the honest summary of the whole project: mainline mode is a drop-in bit-exact reimplementation on the envelope we have tested; fork mode is a faithful functional port whose every kernel is differentially tested against real C code, but whose end-to-end bytes have no C twin to compare against (the fork was rebased onto v4.2.0 by us — see `docs/HDR-ON-4.2.md`).
+That distinction is the honest summary of the whole project: mainline mode is a drop-in bit-exact reimplementation on the envelope we have tested; fork mode is a faithful port whose every kernel is differentially tested against real C code and whose end-to-end bytes ARE compared against a C twin — the `SVT_HDR_MODE=ON` build of the same v4.2.0 base we rebased the fork onto (see `docs/HDR-ON-4.2.md`) — but only the 10-bit side of that comparison is a standing, CI-runnable gate; the 8-bit 48/48 is a recorded measurement.
 
 ## What IS bit-identical (mainline mode)
 
 Verified against the in-tree C build of SVT-AV1 **v4.2.0 final** (`Bin/Release/libSvtAv1Enc.a`), still-picture/AVIF, CQP, `--lp 1`, 8-bit 4:2:0, via an OBU-level differ plus a full arithmetic-coder op trace (every range-coder call compared, including coder state):
 
-- **The full 132/132 synthetic identity matrix**: {uniform, gradient} content × {64, 128} px × qp {20, 40, 55} × **presets 0–10** — every cell byte-identical (`benchmarks/identity_matrix_132_full_2026-07-16.tsv`). Presets 11–13 are covered implicitly: the C library clamps all-intra presets above M9 down to M9.
+- **The synthetic identity matrix**: the default `tools/identity_matrix.sh` grid is **54 cells, 54/54** (CI runs its superset, `identity_full_8bit.sh`, every preset 0–13 at 64 px). The wider 132-cell sweep — {uniform, gradient} × {64, 128} px × qp {20, 40, 55} × presets 0–10 — was **132/132 as of 2026-07-16** (`benchmarks/identity_matrix_132_full_2026-07-16.tsv`) and is not a standing gate. Presets 11–13 are covered implicitly on the C side: the C library clamps all-intra presets above M9 down to M9 (the port does not, so `identity_full_8bit.sh` sweeps them as distinct configurations).
 - **Real-content regression spots**: 7/7 identical at the tracked configs.
 - **Tile rows**: frame header + tile group byte-identical to C (multi-tile-row phase 1).
 

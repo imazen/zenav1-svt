@@ -34,7 +34,8 @@ Consequences for classification:
   and asserts byte/word equality against the Rust port. Strongest bar.
 - **PORTED (e2e-covered)** — no direct unit differential, but the kernel is on the
   byte-identity encode path exercised by the identity gates (`tools/identity_matrix.sh`
-  132/132 synthetic + `real_image_matrix.sh` / `photo_p0_gate.sh` real content), so a
+  54/54 default synthetic grid — the 132-cell wider sweep was 132/132 as of 2026-07-16 —
+  + `real_image_matrix.sh` / `photo_p0_gate.sh` real content), so a
   divergence would surface as a stream mismatch. Plus inline `#[test]`s where noted.
 - **N/A (out of scope)** — feature the port deliberately does not implement (with the
   cited reason).

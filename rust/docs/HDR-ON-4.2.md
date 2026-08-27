@@ -6,7 +6,8 @@
 > flips, VLPD0 dead inter branch) are expressed directly as `#if SVT_HDR_MODE`
 > blocks. Verified: MODE0 == stock v4.2.0-final 108/108 cells incl single+multi
 > tile-group paths; MODE1 byte-matches the rc-hybrid's mode1 on all-intra; the
-> Rust differential suite is 669/669 green vs the MODE0 lib.
+> Rust differential suite is 669/669 green vs the MODE0 lib (as of `b9e51da26`,
+> 2026-07-19; test counts in this doc are that snapshot, not the current tally).
 
 # svt-av1-hdr (Chromedome) rebased onto mainline v4.2.0-rc
 

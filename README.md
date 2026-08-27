@@ -27,7 +27,7 @@ of the Rust crates.
 | Mode | What it is | Bar |
 |---|---|---|
 | **Mainline** (default) | Stock SVT-AV1 v4.2.0 behavior | **Byte-identical bitstreams** vs the real C library at matched configs |
-| **HdrFork** (`HdrForkConfig::hdr_fork()`) | The svt-av1-hdr feature set: psychovisual RD, quant matrices, photon-noise synthesis, variance boost, six tune policies | **Byte-identical bitstreams** vs a `SVT_HDR_MODE=ON` build of the same C base (8-bit 48/48, 10-bit 64/64 gated cells) |
+| **HdrFork** (`HdrForkConfig::hdr_fork()`) | The svt-av1-hdr feature set: psychovisual RD, quant matrices, photon-noise synthesis, variance boost, six tune policies | **Byte-identical bitstreams** vs a `SVT_HDR_MODE=ON` build of the same C base at **10-bit** (`rust/tools/hdr_bd10_gate.sh`, 64/64, a standing gate). At **8-bit** the fork was measured 48/48 byte-identical on 2026-07-19 (`rust/docs/HDR-ON-4.2.md`) but has **no standing gate script**; its standing 8-bit coverage is functional — per-kernel C differentials, per-knob liveness witnesses and `aomdec` decode gates (`hdr_fork_e2e`) |
 
 We rebased the fork's features onto v4.2.0 ourselves behind compile-time gates
 (see `rust/docs/HDR-ON-4.2.md`), so both modes have a real C twin to compare
@@ -50,8 +50,8 @@ under `rust/tools/`:
 | Multi-tile (rows × cols, all preset bands) | `tile_gate` | **29/29** |
 | Feature intersections: SB128×tiles, bd10×tiles, real×tiles | `coverage_combos_gate` | **40/40**² |
 | Screen content, palette, preset 6 | `screen_palette_gate` | **50/50** |
-| Screen content p0–p4 with **IntraBC** | `screen_ibc_gate` | **20/100**³ |
-| HDR-fork mode, 8-bit / 10-bit | `hdr_fork_e2e` + `hdr_bd10_gate` | **48/48** / **64/64** |
+| Screen content p0–p4 with **IntraBC** | `screen_ibc_gate` | **22/100**³ |
+| HDR-fork mode, 10-bit byte-vs-C / 8-bit | `hdr_bd10_gate` / `hdr_fork_e2e`⁴ | **64/64** / 36/36 decode⁴ |
 | Arbitrary dimensions: panic-free + decodable, every preset | `arbitrary_size_robustness` | **57/57** |
 
 ¹ the 3 open cells are a pinned palette near-tie on one image (tracked, self-promoting).
@@ -60,8 +60,13 @@ tile-boundary partition near-ties (bd10 / real content).
 ³ IntraBC (intra block copy) is fully implemented — hash pyramid, diamond+mesh
 DV search, MVP stack, inter var-tx coding — and every stream is self-consistent
 (decodes to exactly the encoder's own reconstruction; 25k+ IBC blocks verified,
-zero desync). The 80 open cells are pinned RD near-ties, each localized; the
-gate self-promotes them as they close.
+zero desync). The 78 open cells are pinned RD near-ties, each localized; the
+gate self-promotes them as they close (the script's `BYTE_EXACT` list is the
+count of record — 22 entries).
+⁴ `hdr_fork_e2e` is a liveness + `aomdec` decode witness suite (36/36 per-tune
+decode gates), not a byte-vs-C gate. The 8-bit fork's 48/48 byte-identity is a
+2026-07-19 measurement recorded in `rust/docs/HDR-ON-4.2.md` with no standing
+gate script; only the 10-bit fork is byte-gated (`hdr_bd10_gate`).
 
 Every gated stream decodes under `aomdec` and `dav1d`, and the decoder's output
 matches the encoder's own reconstruction byte-for-byte. Known open gaps are
@@ -163,9 +168,17 @@ cmake -S reference/svt-av1 -B cbuild-static -DCMAKE_BUILD_TYPE=Release \
       -DBUILD_SHARED_LIBS=OFF -DBUILD_APPS=OFF -DBUILD_TESTING=OFF -DSVT_AV1_LTO=OFF
 cmake --build cbuild-static -j
 
-# 2. Run the port's tests and byte-identity gates.
+# 2. Tooling the gates assume but cargo does not install: the test runner,
+#    `just` (the recipes in rust/justfile), and the AV1 reference decoder
+#    (`aomdec` — the recon/decode gates and svtav1/tests/issue13_repro.rs need
+#    it on PATH or in $AOMDEC; `dav1d` for decode_conformance.sh).
+#    `tools/screen_ibc_gate.sh` additionally needs the tools/decode_diff
+#    binary built (see rust/docs/WORKING-ON-THIS.md).
+cargo install cargo-nextest just
+
+# 3. Run the port's tests and byte-identity gates.
 cd rust
-cargo nextest run --workspace     # or: cargo nextest run --workspace
+cargo nextest run --workspace
 export SVT_CREF_LIB_DIR=$(pwd)/../Bin/Release
 ./tools/identity_matrix.sh        #  54 cells
 ./tools/partial_sb_gate.sh        # 101 cells
