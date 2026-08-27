@@ -1817,6 +1817,72 @@ pub(crate) fn encode_fixed_tree(
             // context for the gate: PART_N squares 8..64, 64x64 SB.
             let dc_only =
                 crate::pd0::is_dc_only_safe(sb_vars, size, abs_x - sb_org.0, abs_y - sb_org.1);
+            // The same spec-5.11.4 single-edge rule as the funnel arm above,
+            // for the MONOCHROME fixed-tree path (no funnel). A PD0 leaf that
+            // is a one-false node (the M6 PD0 keeps NSQ geometry on, so it
+            // TESTS such a node with the rect edge-shape cost instead of
+            // force-splitting it) may only be coded as PARTITION_HORZ
+            // (`!has_rows`) / PARTITION_VERT (`!has_cols`) with its single
+            // in-frame `size x size/2` / `size/2 x size` block — never as a
+            // PARTITION_NONE square: the pack refuses that (illegal per
+            // spec 5.11.4, `encode_partition_tree`'s debug_assert) and a
+            // release build would emit an undecodable / garbage stream. This
+            // arm is exactly what zenavif measured on every 8-aligned
+            // non-64-multiple mono cell at preset 6 (96x80 -> 18 dB garbage,
+            // 128x80 / 96x64 / 200x136 undecodable) while presets >= 7 (NSQ
+            // geometry off -> forced SPLIT in PD0) were clean. Byte-neutral on
+            // 64-aligned frames (both flags always true) and on 4:2:0 (the
+            // funnel arm returns first).
+            let half = size / 2;
+            let has_rows = abs_y + half < aligned_h;
+            let has_cols = abs_x + half < aligned_w;
+            if !has_rows || !has_cols {
+                let (bw, bh, ptype, tptype) = if !has_rows {
+                    (
+                        size,
+                        half,
+                        PartitionType::Horz,
+                        svtav1_types::partition::PartitionType::Horz,
+                    )
+                } else {
+                    (
+                        half,
+                        size,
+                        PartitionType::Vert,
+                        svtav1_types::partition::PartitionType::Vert,
+                    )
+                };
+                let block = encode_with_neighbors(
+                    src,
+                    src_stride,
+                    recon,
+                    recon_stride,
+                    bw,
+                    bh,
+                    qindex,
+                    config,
+                    abs_x,
+                    abs_y,
+                    None,
+                    tptype,
+                    dc_only,
+                );
+                let children: alloc::vec::Vec<PartitionTree> = block.tree.into_iter().collect();
+                return PartitionResult {
+                    partition_type: ptype,
+                    rd_cost: block.rd_cost,
+                    distortion: block.distortion,
+                    rate: block.rate,
+                    num_blocks: block.num_blocks,
+                    decisions: block.decisions,
+                    tree: Some(PartitionTree::Split {
+                        partition_type: ptype,
+                        width: size as u16,
+                        height: size as u16,
+                        children,
+                    }),
+                };
+            }
             encode_with_neighbors(
                 src,
                 src_stride,

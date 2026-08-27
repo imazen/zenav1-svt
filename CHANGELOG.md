@@ -91,6 +91,26 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Fixed
 
+- **Monochrome partial superblocks at preset 6 emitted an undecodable stream
+  (a `PARTITION_NONE` square coded at a frame edge).** The M6 PD0 keeps NSQ
+  geometry on, so a one-false edge node is TESTED with the rect edge-shape
+  cost instead of force-split; `encode_fixed_tree`'s funnel arm (4:2:0) codes
+  such a leaf as the single legal `PARTITION_HORZ` / `PARTITION_VERT` rect,
+  but the mono arm (no funnel) fell through to a full-size `PARTITION_NONE`
+  square — illegal per spec 5.11.4, refused by the pack's debug_assert in a
+  debug build and written as-is in release (96x80 / 128x80 / 200x136 gradient
+  at qp 10: "Corrupt frame detected" under aomdec; zenavif measured 18 dB
+  garbage at 96x80 q85). Presets >= 7 were never affected (NSQ geometry off
+  -> forced SPLIT in PD0) and 4:2:0 is byte-neutral by construction (its arm
+  returns first; on 64-aligned frames both edge flags are true). The mono arm
+  now applies the same rule. Found by zenavif's seam canary
+  `svt_rs_direct_mono_partial_sb_preset6_still_broken` the day its CI first
+  ran `cargo test` (dev profile) against this tree. Regression:
+  `pipeline::tests::mono_partial_sb_preset6_edge_leaf_codes_the_edge_shape`
+  (7 geometries; panicked with the pack's assert before, passes after) + three
+  `mono-partial-sb-p6-*` decode cells in `tools/regression_spotcheck.sh`.
+  Decode round-trip (rav1d-safe + aom-rs, 56 dB at 96x80) is gated on the
+  zenavif side.
 - **MDS1 candidate costs 103 rate units cheaper than C on DC / IntraBC
   candidates — issue #16 root-caused and closed.** The probe the issue named
   (`SVT_FASTCOST_XY` + `SVT_FULLCOST_XY` in the `--wrap` container vs the

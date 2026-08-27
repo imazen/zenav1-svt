@@ -147,6 +147,44 @@ The full localization trail (kept for method reference):
 - **REPRO (committed harness):** `identity_run` now takes `raw:<i420.yuv>` content. Generate the exact YUV (see the g48 generator in the session log — 48×48 gradient replicated to 64×64 + flat-128 chroma), then `tools/identity_diff.sh 64 64 20 0 raw:<yuv>` shows op-1 divergence and produces the port's undecodable `rs.obu`. `SVTAV1_PACKTREE=<f>` dumps the port's partition tree (shows the 4:1 → sub-8 blocks).
 - **NEXT (the fix pass) — root is PALETTE-on-420, exact symbol mismatch still to pinpoint.** Exhaustively RULED OUT by reading C-vs-port: `is_chroma_reference`/`has_uv`, chroma pair geometry, 4:1/HV4 (bisect), `allow_palette` (both `bsize>=BLOCK_8X8` enum-order incl. 4X16/16X4/8X32; block_size_index maps correct), the UV-palette-flag `is_chroma_ref` gate, and the `[Y-flag,colors,UV-flag]`-then-map ORDER (C write_palette_mode_info entropy_coding.c:4355 matches). Since MONO passes (all palette LUMA syntax — flag/size/colors/cache-flags/map — correct) and the 420-only delta is {UV-flag (ruled out), chroma-coeffs}, the remaining suspects are: (a) the palette candidate's CHROMA decision in the funnel (`decision.chroma_dec` for a palette winner) being inconsistent with what the pack codes — check whether the palette candidate reconstructs/decides chroma the same as a regular UV_DC candidate; (b) the palette block's chroma tx-size/type. TO PINPOINT: build a position-reporting decode of the port's `rs.obu` (aomdec/dav1d report only "tile data" with no offset), OR finer-bisect (zero the chroma coeffs of palette blocks only; or reduce to a SINGLE palette block). Do NOT band-aid by disabling palette on 420 (C codes this into a decodable stream — the port's palette-420 chroma must be fixed to match). #71 over-picking AMPLIFIES exposure (more palette blocks = more desync surface) but is not the coding-bug root. This is the #1 gate per the mandate above.
 
+## FIXED 2026-08-27 — MONO partial SBs at preset 6 coded PARTITION_NONE at a frame edge (undecodable)
+
+**Found by zenavif's seam canary** (`svt_rs_direct_mono_partial_sb_preset6_still_broken`,
+which pinned "mono at preset 6 is mis-coded on every partial-SB cell") the day
+zenavif's CI first ran `cargo test` in the DEV profile against this tree: the
+pack's `encode_partition_tree` debug_assert fired — `PARTITION_NONE leaf at a
+frame edge (64,0) 64x64: has_rows=true has_cols=false — illegal per spec
+5.11.4`. In release the assert is compiled out and the stream is written as-is.
+
+**Root (one arm):** `partition.rs::encode_fixed_tree`'s Leaf case applied the
+spec-5.11.4 single-edge rule (a one-false PD0 leaf codes as the single legal
+HORZ/VERT rect, never as a NONE square) ONLY inside `if let Some(fx) = funnel`
+— the 4:2:0 path. The MONOCHROME path builds no funnel, fell through to
+`encode_with_neighbors(size, size, .., PartitionType::None)`, and coded the
+full square. It is preset-6-specific because the M6 PD0 keeps NSQ geometry on
+(`nsq_enabled = preset <= 6`), so a one-false node is TESTED with the rect
+edge-shape cost and can WIN as a leaf; at presets >= 7 geometry is off and PD0
+force-splits every one-false node, so the arm is never reached (which is why
+zenavif measured presets 7-13 clean). Fix: the mono arm now takes the same
+single legal rect. Byte-neutral on 4:2:0 (the funnel arm returns first) and on
+every 64-aligned frame (both flags always true).
+
+**Measured (release, `SVTAV1_MONO=1 identity_run gradient .. 10 6` + aomdec):**
+96x80 2852B / 128x80 3808B / 200x136 8099B all "Corrupt frame detected" before;
+2525B / 3363B / 7877B all decode after; zenavif's direct-pipeline round-trip at
+96x80 went from the assert (debug) / 18 dB (release) to **56.18 dB** under
+rav1d-safe. Regression: `pipeline::tests::mono_partial_sb_preset6_edge_leaf_
+codes_the_edge_shape` (7 geometries, witnessed panicking before the fix) + three
+`mono-partial-sb-p6-*` `decodes` cells in `tools/regression_spotcheck.sh`. No C
+oracle exists for mono (envelope guard 6), so these are decode gates.
+
+**Lesson (same shape as the `leaf_funnel` tile_top gap above):** when a rule is
+implemented inside the funnel arm, grep for the no-funnel twin. The mono path
+shares the fixed tree, the pack and the deblock geometry with 4:2:0 but NOT the
+leaf coder — any edge/extent rule landed "in the funnel" is silently missing for
+mono until a mono decode gate exercises it, and `recon_parity`/`decode_conformance`
+run 64-aligned dims only.
+
 ## FIXED 2026-08-13 — issue #15: partial-superblock RD divergence (67 -> 3 cells)
 
 Two independent alignment-conditioned defects, both invisible on a 64-aligned

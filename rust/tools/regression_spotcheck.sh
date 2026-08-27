@@ -380,6 +380,25 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 2026-08-27 — MONOCHROME partial SBs at preset 6 coded a PARTITION_NONE
+# square at a frame edge. The M6 PD0 keeps NSQ geometry on, so a one-false
+# edge node is TESTED (rect edge-shape cost) instead of force-split; the
+# funnel arm of `encode_fixed_tree` (4:2:0) turned that leaf into the single
+# legal HORZ/VERT rect, the MONO arm did not and coded the full square. The
+# pack's debug_assert names it ("PARTITION_NONE leaf at a frame edge (64,0)
+# 64x64: has_rows=true has_cols=false — illegal per spec 5.11.4"); a release
+# build emitted it. Presets >= 7 (NSQ geometry off -> forced SPLIT) were never
+# affected, and 4:2:0 is untouched (byte-neutral by construction). Found by
+# zenavif's seam canary. MEASURED before (release, aomdec): 96x80 2852B, 128x80
+# 3808B, 200x136 8099B all "Corrupt frame detected"; after: 2525B / 3363B /
+# 7877B, all decode (and 96x80 round-trips at 56 dB under rav1d-safe on the
+# zenavif side). No C oracle: C v4.2.0 cannot encode mono (see CLAUDE.md
+# envelope guard 6), so these are decode cells, not byte cells.
+SVTAV1_MONO=1 decodes "mono-partial-sb-p6-96x80"   gradient  96  80 10 6
+SVTAV1_MONO=1 decodes "mono-partial-sb-p6-128x80"  gradient 128  80 10 6
+SVTAV1_MONO=1 decodes "mono-partial-sb-p6-200x136" gradient 200 136 10 6
+
+# ---------------------------------------------------------------------------
 total=$((pass + fail))
 echo
 echo "regression spot-check: $pass / $total"

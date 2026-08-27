@@ -8785,6 +8785,52 @@ mod tests {
         assert_eq!(pipeline.frame_count, 1);
     }
 
+    /// Task #95 mono partial SBs at preset 6 (found by zenavif's seam
+    /// canary, 2026-08-27). The M6 PD0 keeps NSQ geometry on, so a one-false
+    /// edge node is TESTED (rect edge-shape cost) rather than force-split;
+    /// the MONO fixed-tree walk then coded that leaf as a full PARTITION_NONE
+    /// square — illegal at an edge (spec 5.11.4). Observed failure before the
+    /// `encode_fixed_tree` fix, this exact test: `PARTITION_NONE leaf at a
+    /// frame edge (64,0) 64x64: has_rows=true has_cols=false` (the pack's
+    /// debug_assert; a release build emitted 18 dB garbage / undecodable
+    /// streams instead). Presets >= 7 never reached the arm (NSQ geometry
+    /// off -> forced SPLIT). Every geometry here is 8-aligned (mono has no
+    /// TRUE->ALIGNED padding) and non-64-multiple on at least one axis, so
+    /// each frame has a right-edge, bottom-edge and/or both-false SB. A
+    /// GRADIENT plane is used on purpose: uniform content codes everything
+    /// skip/NONE and would pass through the edge levels without a symbol.
+    /// The decode round-trip (rav1d-safe + aom-rs, 56 dB at 96x80) is gated
+    /// on the zenavif side (`svt_rs_direct_mono_partial_sb_preset6_roundtrips`).
+    #[test]
+    fn mono_partial_sb_preset6_edge_leaf_codes_the_edge_shape() {
+        for (w, h) in [
+            (96usize, 80usize),
+            (64, 72),
+            (72, 64),
+            (16, 72),
+            (128, 80),
+            (96, 64),
+            (200, 136),
+        ] {
+            let plane: Vec<u8> = (0..h)
+                .flat_map(|y| (0..w).map(move |x| (((x + y) * 255) / (w + h)) as u8))
+                .collect();
+            let rc = RcConfig {
+                mode: RcMode::Cqp,
+                qp: 10,
+                ..RcConfig::default()
+            };
+            let mut pipeline = EncodePipeline::new(w as u32, h as u32, 6, rc, 0, 1);
+            let bitstream = pipeline
+                .try_encode_frame(&plane, w)
+                .unwrap_or_else(|e| panic!("mono {w}x{h} preset 6 must encode: {e}"));
+            assert!(
+                !bitstream.is_empty(),
+                "mono {w}x{h} preset 6 produced no bytes"
+            );
+        }
+    }
+
     /// Issue #5: QP 0 derives base_qindex 0 = coded-lossless signaling, which
     /// the search/recon side does not implement — encoding would emit a
     /// valid-syntax stream of the WRONG image. The fallible entry must reject
