@@ -91,6 +91,33 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Fixed
 
+- **Monochrome straddling edge block wrapped its recon into the next row
+  (every SB row after the first decoded wrong on frames with a thin right
+  edge).** The second half of the mono partial-SB fix below: once a one-false
+  edge leaf is coded as the single legal rect, a thin right edge makes that
+  rect STRADDLE the aligned width (a VERT 32x64 at x=192 on an aligned-200
+  frame keeps 8 in-frame columns). `encode_single_block` stored the full
+  block width at the aligned stride, so the off-aligned columns wrapped into
+  the next row's columns 0..24 and overwrote an already-committed
+  neighbour's recon — the encoder then predicted the next SB ROW from wrapped
+  pixels the decoder never had. Measured (rav1d-safe, gradient qp 10, preset
+  6): 200x136 27.9 dB with the first SB row at 55 dB and the second at 23 dB
+  from column 0 outward; 136x200 25.0, 200x72 35.3, 72x136 31.0, 264x136
+  28.1, 200x200 24.4 dB; 192x136 / 200x64 / 64x136 clean (no thin right edge,
+  or nothing below it). aomdec DECODES the broken streams, so decodability
+  was hiding it. The store now carries the same straddle clip
+  `leaf_funnel::commit_leaf` already had (nothing reads past the aligned
+  extent — `extract_neighbors_tiled` clamps like the decoder's spec-7.11.2
+  replicate). After: 200x136 56.96 dB, every cell above 56-58 dB, 22/22
+  zenavif svt-rs tests. Regression: `mono-straddle-wrap-p6-200x136` in
+  `tools/regression_spotcheck.sh` — a recon oracle (encoder FINAL recon vs
+  `aomdec --rawvideo`, luma at true dims) on the `(x+y)` ramp fed as `raw:`
+  content, because on the synthetic `gradient` the PD0 resolves that node to
+  SPLIT and nothing straddles (bytes identical with and without the clip).
+  Witnessed before the clip: 14,720 of 27,200 luma bytes differ (encoder
+  recon 56.97 dB vs source, aomdec output 27.89 dB); after: byte-equal. A
+  96x80 control cell (32-wide edge, no straddle) is byte-equal either way.
+  The decoded round-trip over seven geometries is gated on the zenavif side.
 - **Monochrome partial superblocks at preset 6 emitted an undecodable stream
   (a `PARTITION_NONE` square coded at a frame edge).** The M6 PD0 keeps NSQ
   geometry on, so a one-false edge node is TESTED with the rect edge-shape

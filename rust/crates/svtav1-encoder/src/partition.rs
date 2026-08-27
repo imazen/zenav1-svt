@@ -2570,9 +2570,27 @@ fn encode_single_block(
         )
     });
 
+    // Task #95 straddle clip — the twin of `leaf_funnel::commit_leaf`'s. A
+    // boundary block whose recon STRADDLES past the aligned width (the mono
+    // fixed-tree path's single-edge rect at a thin right edge, e.g. a VERT
+    // 32x64 at x=192 on an aligned-200 frame with 8 in-frame columns) would
+    // write columns `abs_x..abs_x+width` into a row of stride `recon_stride`
+    // (= the aligned width): the off-aligned columns spill past the row and
+    // WRAP into the NEXT row's low columns, silently overwriting an already
+    // committed neighbour's recon that the next SB ROW then reads as its
+    // above intra reference — the encoder predicts from the wrapped pixels,
+    // the decoder from the real ones, and every SB row after the first
+    // decodes wrong from column 0 outward (MEASURED 2026-08-27: 200x136 mono
+    // preset 6 qp 10 decoded at 27.9 dB, first SB row 55 dB, second row
+    // 23 dB at column 0; 192x136 / 200x64 clean). Nothing reads past the
+    // aligned extent (`extract_neighbors_tiled` clamps to `config.aligned_w`,
+    // like the decoder's spec-7.11.2 replicate), so clipping the STORE is
+    // byte-neutral wherever nothing straddles.
+    let row_end = recon_stride.min(config.aligned_w);
+    let wr = width.min(row_end.saturating_sub(abs_x));
     for r in 0..height {
         let dst = (abs_y + r) * recon_stride + abs_x;
-        recon[dst..dst + width].copy_from_slice(&enc.recon[r * width..r * width + width]);
+        recon[dst..dst + wr].copy_from_slice(&enc.recon[r * width..r * width + wr]);
     }
 
     let decision = BlockDecision {

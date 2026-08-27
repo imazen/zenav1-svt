@@ -399,6 +399,63 @@ SVTAV1_MONO=1 decodes "mono-partial-sb-p6-128x80"  gradient 128  80 10 6
 SVTAV1_MONO=1 decodes "mono-partial-sb-p6-200x136" gradient 200 136 10 6
 
 # ---------------------------------------------------------------------------
+# 2026-08-27 — MONOCHROME straddling edge block WRAPPED its recon into the next
+# row (the second half of the fix above). Once the edge leaf is coded as the
+# single legal rect, a THIN right edge makes it straddle the aligned width (VERT
+# 32x64 at x=192 on aligned-200: 8 in-frame columns); `encode_single_block`
+# stored the full width at the aligned stride, so the 24 off-aligned columns
+# landed in the NEXT row's columns 0..24 and overwrote the already-committed
+# top-left SB's recon — the encoder then predicted the second SB row from
+# pixels the decoder never had. Decodability cannot see it (aomdec decodes the
+# stream) and byte-parity cannot either (C cannot encode mono), so this cell
+# uses the recon oracle: the encoder's FINAL reconstruction must equal the
+# decoder's output. Content matters: on the synthetic `gradient` the PD0
+# resolves that node to SPLIT and nothing straddles (bytes identical with and
+# without the clip), so the cell feeds the (x+y) ramp that makes the rect win.
+# MEASURED before the clip (release, this exact cell): 14,720 of 27,200 luma
+# bytes differ — encoder recon 56.97 dB vs source, aomdec output 27.89 dB;
+# after: byte-equal, 56.97 dB both. 96x80 (32-wide edge, no straddle) is
+# byte-equal either way, which is the control that proves the oracle live.
+ramp_yuv() { # <w> <h> <path>: 8-bit I420, luma (x+y)*255/(w+h), flat chroma
+  python3 - "$1" "$2" "$3" <<'PY'
+import sys
+w, h, p = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
+y = bytes((((x + yy) * 255) // (w + h)) for yy in range(h) for x in range(w))
+c = ((w + 1) // 2) * ((h + 1) // 2)
+open(p, "wb").write(y + bytes([128]) * (2 * c))
+PY
+}
+# monoReconEq <label> <content> <w> <h> <qp> <preset>
+# MONO encode; asserts the port's FINAL reconstruction (SVTAV1_FINAL_RECON, luma
+# plane at the true dims) equals aomdec's --rawvideo output byte-for-byte.
+monoReconEq() {
+  local label=$1 content=$2 w=$3 h=$4 qp=$5 p=$6
+  local dec=${AOMDEC:-$(command -v aomdec || true)}
+  if [ -z "$dec" ]; then
+    skip=$((skip+1)); skipped+=("$label (no aomdec on PATH; set AOMDEC=)")
+    return
+  fi
+  if ! SVTAV1_MONO=1 SVTAV1_FINAL_RECON="$W/rs.recon" $LOWPRI "$RUN" "$content" "$w" "$h" "$qp" "$p" "$W/rs" >/dev/null 2>&1; then
+    fail=$((fail+1)); failed+=("$label rs-err"); return
+  fi
+  if ! "$dec" --rawvideo -o "$W/rs.dec.yuv" "$W/rs.obu" >/dev/null 2>&1; then
+    fail=$((fail+1)); failed+=("$label DECODE-FAIL"); return
+  fi
+  head -c $((w * h)) "$W/rs.recon" > "$W/rs.recon.y"
+  head -c $((w * h)) "$W/rs.dec.yuv" > "$W/rs.dec.y"
+  if cmp -s "$W/rs.recon.y" "$W/rs.dec.y"; then
+    pass=$((pass+1))
+  else
+    fail=$((fail+1))
+    failed+=("$label RECON!=DECODE ($(cmp -l "$W/rs.recon.y" "$W/rs.dec.y" | wc -l | tr -d ' ') of $((w * h)) luma bytes differ)")
+  fi
+}
+ramp_yuv 200 136 "$W/ramp_200x136.yuv"
+monoReconEq "mono-straddle-wrap-p6-200x136" "raw:$W/ramp_200x136.yuv" 200 136 10 6
+ramp_yuv 96 80 "$W/ramp_96x80.yuv"
+monoReconEq "mono-straddle-control-p6-96x80" "raw:$W/ramp_96x80.yuv" 96 80 10 6
+
+# ---------------------------------------------------------------------------
 total=$((pass + fail))
 echo
 echo "regression spot-check: $pass / $total"

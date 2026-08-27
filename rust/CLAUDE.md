@@ -178,8 +178,38 @@ codes_the_edge_shape` (7 geometries, witnessed panicking before the fix) + three
 `mono-partial-sb-p6-*` `decodes` cells in `tools/regression_spotcheck.sh`. No C
 oracle exists for mono (envelope guard 6), so these are decode gates.
 
+**Defect 2, exposed by fixing defect 1 — the straddle WRAP (same day, second
+commit).** With the edge leaf now coded as a rect, a THIN right edge makes that
+rect straddle the aligned width (VERT 32x64 at x=192 on aligned-200: 8 in-frame
+columns). `encode_single_block` stored the full `width` at the aligned stride,
+so the off-aligned columns wrapped into the NEXT row's columns 0..24 and
+overwrote an already-committed neighbour's recon; the next SB ROW then
+predicted from wrapped pixels the decoder never had. Signature (rav1d-safe,
+gradient qp 10, per-SB PSNR): first SB row 55 dB, second row 23 dB at column 0
+fading rightward/downward; 200x136 27.9 dB total, 136x200 25.0, 200x72 35.3,
+72x136 31.0, 264x136 28.1, 200x200 24.4 — while 192x136 / 200x64 / 64x136
+(no thin right edge, or no row beneath it) were clean, and **aomdec decoded
+every broken stream**, so the `decodes` cells could not see it. Fix: the same
+straddle clip `leaf_funnel::commit_leaf` already carries, on the mono leaf
+coder's store. After: 200x136 56.96 dB, all cells 56-58 dB. Regression:
+`mono-straddle-wrap-p6-200x136` in `tools/regression_spotcheck.sh` (new
+`monoReconEq` helper: encoder FINAL recon vs `aomdec --rawvideo`). Two harness
+lessons from landing it: (1) a decoder-free witness does NOT exist for this
+class — the encoder's own recon is self-consistent with its wrong prediction
+(56.97 dB vs source while the decoder saw 27.89 dB), and `last_recon_unfiltered`
+is assembled from per-SB copies taken before the later straddler wraps the
+working buffer, so a recon-vs-source assert passed with the bug in place and
+was deleted; (2) CONTENT selects the partition — on `identity_run`'s synthetic
+`gradient` the PD0 resolves the (192,0) node to SPLIT and nothing straddles
+(bytes identical with and without the clip), so the cell feeds the `(x+y)`
+ramp as `raw:` content, which makes the VERT rect win (14,720 of 27,200 luma
+bytes differed before the clip; byte-equal after; the 96x80 control cell is
+byte-equal either way).
+
 **Lesson (same shape as the `leaf_funnel` tile_top gap above):** when a rule is
-implemented inside the funnel arm, grep for the no-funnel twin. The mono path
+implemented inside the funnel arm, grep for the no-funnel twin — and a
+decodable stream is not a correct one: gate mono on a round-trip PSNR (or
+recon-vs-decode), never on `aomdec` exit status alone. The mono path
 shares the fixed tree, the pack and the deblock geometry with 4:2:0 but NOT the
 leaf coder — any edge/extent rule landed "in the funnel" is silently missing for
 mono until a mono decode gate exercises it, and `recon_parity`/`decode_conformance`
