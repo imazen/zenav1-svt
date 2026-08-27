@@ -19,7 +19,8 @@ pub struct TargetOptions {
     /// Hard cap on trials (encode→judge cycles). The census k.
     pub max_encodes: u8,
     /// First trial qp. `None` = midpoint of the bounds (the content-blind
-    /// control; seed heads land here in a later, separately-gated wave).
+    /// control). The S1 anchor seed is the wired default source since
+    /// 2026-08-28 via [`TargetOptions::seeded`] (`crate::seed`).
     pub qp_start: Option<u8>,
 }
 

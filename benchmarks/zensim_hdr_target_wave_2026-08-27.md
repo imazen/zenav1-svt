@@ -153,5 +153,5 @@ hugely where the baseline seed is weak — the weakest baseline in the family
 got the largest win). Seeds: `benchmarks/zq_seed_s1_2026-08-27.tsv` (the
 3-const one-shot, sanctioned consts form); cells committed
 (`census_k{2,3}_s1.tsv`); harness seed injection via `TargetOptions.qp_start`
-(7th arg). Wiring qp_start into any production default = USER-GATED.
+(7th arg). Wiring qp_start into any production default = USER-GATED. ⇒ **APPROVED + WIRED 2026-08-28** (explicit user yes, AskUserQuestion): `svtav1-target/src/seed.rs` — S1 anchors + linear interpolation clamped to [70,88], `TargetOptions::seeded(target)` = the canonical constructor (plain Default stays midpoint); anchor/interp/clamp/NaN tests.
 
