@@ -69,3 +69,14 @@ table, but training it is MODELS-lane work, not this crate's. Routes:
     inversion + process-per-trial cost).
 Census judging stays INDEPENDENT of the in-loop score either way (the
 registered `--hdr`-route judge on decoded output).
+
+## CHUNK-2 FINAL SHAPE (2026-08-27): judge-as-closure
+The route-(a) judge chain (PQ→nits→PU→372→BHdr) lives in fleet/example
+code, not a clean zensim public entry — re-implementing it in-crate risks
+judge drift, the exact hazard the census avoids. Resolution: the crate's
+loop is **judge-agnostic** — `encode_to_target(source, target, opts,
+judge)` owns EncodePipeline+recon+bracketed-search and takes
+`judge: FnMut(&Recon10) -> Result<f64, E>`; the census HARNESS wires the
+fleet-proven judge (and can also wire route (b) later with zero crate
+change). The crate keeps ZERO metric dependencies; the BT.2020nc matrix
+note from the earlier design moves to the harness with the judge.

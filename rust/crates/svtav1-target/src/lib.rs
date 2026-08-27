@@ -13,5 +13,7 @@
 //! no decode-back dependency) → PU-domain judge.
 
 pub mod search;
+pub mod trial;
 
 pub use search::{TargetOptions, TargetSearchResult, search_target_qp};
+pub use trial::{TargetError, TrialOutput, encode_to_target};

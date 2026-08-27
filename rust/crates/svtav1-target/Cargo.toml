@@ -6,6 +6,6 @@ license = "AGPL-3.0-or-later"
 description = "zensim HDR target loop for the zenav1-svt still encoder (wave: benchmarks/zensim_hdr_target_wave_2026-08-27.md)"
 
 [dependencies]
-# Deliberately dependency-free in chunk 1: the bracketed search is pure.
-# Chunk 2 adds svtav1 (path) + zensim (git) for the trial cell + judge —
-# keeping the parity crates free of both, per the wave's location ruling.
+# The encoder facade only — the judge is INJECTED by the harness (wave md
+# chunk-2 final shape), so this crate carries ZERO metric dependencies.
+zenav1-svt = { path = "../../svtav1", package = "zenav1-svt" }
