@@ -123,7 +123,9 @@ pub enum TargetError<E> {
     Encode(String),
     /// `last_recon10_final` was `None` — outside the bd10 recon envelope.
     /// LOUD by design (the instrument's renditions are all 64-aligned).
-    ReconMissing { qp: u8 },
+    ReconMissing {
+        qp: u8,
+    },
     Judge(E),
 }
 
@@ -139,7 +141,8 @@ mod tests {
         let mut y = vec![0u16; w * h];
         for r in 0..h {
             for c in 0..w {
-                let g = 200.0 + 500.0 * (c as f32 / w as f32)
+                let g = 200.0
+                    + 500.0 * (c as f32 / w as f32)
                     + 90.0 * ((c as f32 * 0.35).sin() * (r as f32 * 0.27).cos());
                 y[r * w + c] = g.clamp(64.0, 940.0) as u16;
             }
@@ -152,7 +155,11 @@ mod tests {
 
     /// Judge: 100 − mean|Δ| in code-value units on luma — monotone in
     /// quality, cheap, and exercises the recon plumbing for real.
-    fn code_mad_judge(src_y: &[u16], w: usize, h: usize) -> impl FnMut(&TrialOutput) -> Result<f64, String> + '_ {
+    fn code_mad_judge(
+        src_y: &[u16],
+        w: usize,
+        h: usize,
+    ) -> impl FnMut(&TrialOutput) -> Result<f64, String> + '_ {
         move |out: &TrialOutput| {
             let ry = &out.recon10.0;
             let aw = out.aligned_w;
@@ -172,7 +179,12 @@ mod tests {
         let (y, u, v, w, h) = synth_source();
         let judge = code_mad_judge(&y, w, h);
         let (res, out) = encode_to_target(
-            &y, &u, &v, w, h, 8, /* fast preset */
+            &y,
+            &u,
+            &v,
+            w,
+            h,
+            8, /* fast preset */
             97.0,
             &TargetOptions {
                 tolerance: 0.0,

@@ -129,7 +129,11 @@ fn write_png16(path: &str, rgb: &[u16], w: usize, h: usize) {
         for &b in data {
             crc ^= u32::from(b);
             for _ in 0..8 {
-                crc = if crc & 1 != 0 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+                crc = if crc & 1 != 0 {
+                    (crc >> 1) ^ 0xEDB8_8320
+                } else {
+                    crc >> 1
+                };
             }
         }
         !crc
@@ -187,22 +191,42 @@ fn main() {
     let a: Vec<String> = std::env::args().collect();
     let (refs_tsv, refs_dir, targets_csv, k, zm_bin, out) =
         (&a[1], &a[2], &a[3], &a[4], &a[5], &a[6]);
+    // Optional 7th arg: seed table TSV (t\ttier\tqp0; tier `*` = any) — the
+    // S1/S2 registered seed arms. Absent = blind midpoint (the censused control).
+    let seed: std::collections::HashMap<(u32, String), u8> = a
+        .get(7)
+        .map(|path| {
+            std::fs::read_to_string(path)
+                .expect("seed tsv")
+                .lines()
+                .skip(1)
+                .filter(|l| !l.trim().is_empty())
+                .map(|l| {
+                    let f: Vec<&str> = l.split('\t').collect();
+                    (
+                        (f[0].parse::<f64>().unwrap() as u32, f[1].to_string()),
+                        f[2].parse::<u8>().unwrap(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let max_encodes: u8 = k.parse().expect("k");
     let targets: Vec<f64> = targets_csv.split(',').map(|t| t.parse().unwrap()).collect();
     let tmp = std::env::temp_dir().join(format!("svt_census_{}", std::process::id()));
     std::fs::create_dir_all(&tmp).expect("tmp");
     let mut tsv = std::fs::File::create(out).expect("out");
-    writeln!(tsv, "scene\ttier\ttarget\tqp\tencodes_used\tachieved\tabs_err\tbytes\tencode_s").unwrap();
+    writeln!(
+        tsv,
+        "scene\ttier\ttarget\tqp\tencodes_used\tachieved\tabs_err\tbytes\tencode_s"
+    )
+    .unwrap();
     for line in std::fs::read_to_string(refs_tsv).expect("refs").lines() {
         if line.starts_with('#') || line.starts_with("scene\t") {
             continue;
         }
         let mut f = line.split('\t');
-        let (scene, tier, rendition) = (
-            f.next().unwrap(),
-            f.next().unwrap(),
-            f.next().unwrap(),
-        );
+        let (scene, tier, rendition) = (f.next().unwrap(), f.next().unwrap(), f.next().unwrap());
         let ref_path = format!("{refs_dir}/{rendition}");
         let (rgb, w, h) = load_png16(&ref_path);
         let (sy, su, sv) = to_yuv420_bd10(&rgb, w, h);
@@ -224,14 +248,26 @@ fn main() {
                 write_png16(&recon_png_s, &rgbr, w, h);
                 let o = std::process::Command::new(&zm)
                     .args([
-                        "score", "--metric", "zensim", "--hdr", "--reference", &ref_path2,
-                        "--distorted", &recon_png_s,
+                        "score",
+                        "--metric",
+                        "zensim",
+                        "--hdr",
+                        "--reference",
+                        &ref_path2,
+                        "--distorted",
+                        &recon_png_s,
                     ])
                     .output()
                     .map_err(|e| format!("spawn: {e}"))?;
                 if !o.status.success() {
-                    return Err(format!("judge rc={:?}: {}", o.status.code(),
-                        String::from_utf8_lossy(&o.stderr).chars().take(200).collect::<String>()));
+                    return Err(format!(
+                        "judge rc={:?}: {}",
+                        o.status.code(),
+                        String::from_utf8_lossy(&o.stderr)
+                            .chars()
+                            .take(200)
+                            .collect::<String>()
+                    ));
                 }
                 let s = String::from_utf8_lossy(&o.stdout);
                 s.split("zensim=")
@@ -240,10 +276,20 @@ fn main() {
                     .ok_or_else(|| format!("unparsable judge output: {s}"))
             };
             let (res, outp) = encode_to_target(
-                &sy, &su, &sv, w, h, 6, t,
+                &sy,
+                &su,
+                &sv,
+                w,
+                h,
+                6,
+                t,
                 &TargetOptions {
                     tolerance: 0.0,
                     max_encodes,
+                    qp_start: seed
+                        .get(&(t as u32, tier.to_string()))
+                        .or_else(|| seed.get(&(t as u32, "*".to_string())))
+                        .copied(),
                     ..Default::default()
                 },
                 judge,
@@ -253,10 +299,17 @@ fn main() {
             writeln!(
                 tsv,
                 "{scene}\t{tier}\t{t:.0}\t{}\t{}\t{:.3}\t{:.3}\t{}\t{secs:.1}",
-                res.qp, res.encodes_used, res.score, (res.score - t).abs(), outp.bytes.len(),
+                res.qp,
+                res.encodes_used,
+                res.score,
+                (res.score - t).abs(),
+                outp.bytes.len(),
             )
             .unwrap();
-            eprintln!("{scene} t{t:.0}: qp={} achieved={:.2} ({secs:.0}s)", res.qp, res.score);
+            eprintln!(
+                "{scene} t{t:.0}: qp={} achieved={:.2} ({secs:.0}s)",
+                res.qp, res.score
+            );
         }
     }
     println!("census -> {out}");

@@ -164,7 +164,10 @@ mod tests {
         )
         .unwrap();
         assert!(!r.converged);
-        assert!(r.qp <= 8, "should walk toward the fine edge (bisection from 32 reaches ~4 in 4 trials): {r:?}");
+        assert!(
+            r.qp <= 8,
+            "should walk toward the fine edge (bisection from 32 reaches ~4 in 4 trials): {r:?}"
+        );
     }
 
     #[test]

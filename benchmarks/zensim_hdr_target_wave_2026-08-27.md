@@ -128,5 +128,30 @@ hits + per-t reported. Ties between S1/S2 break toward FEWER consts (S1).
 FAIL both ⇒ the anchor form is insufficient on this corpus; a learned head
 registers separately (never ships inside the codec per the standing rule).
 
-### Fit + census results
-(post-run)
+### Fit + census results — S1 PASSES BOTH GATES (4-5× margins); S2 loses the tie
+
+Fit (25,171 era-B cells, 842 non-census renditions; `scripts/fit_zq_seed_hdr.py`):
+**S1 = {t70→qp22, t80→qp13, t88→qp5}** (IQRs 19-22 / 11-14 / 1-6 — tight);
+S2's terciles barely move the anchors (only t88-small 5→3, which HURTS below).
+
+| arm | k | median \|err\| | ±2 hits | t70 | t80 | t88 |
+|---|---|---|---|---|---|---|
+| blind (censused) | 2 | 17.638 | 1/27 | 8.68 | 18.68 | 26.68 |
+| **S1** | 2 | **3.306** | **11/27** | 3.43 | 3.33 | **1.04** |
+| blind (censused) | 3 | 7.431 | 9/27 | 7.64 | 1.20 | 8.76 |
+| **S1** | 3 | **1.513** | **20/27** | 1.77 | 1.95 | 0.95 |
+| S2 | 2 | 3.427 | 8/27 | 3.43 | 3.33 | 3.70 |
+| S2 | 3 | 1.771 | 17/27 | 1.77 | 1.95 | 1.65 |
+
+**GATES: S1 PASSES both** (k2 3.306 ≤ 13.23; k3 1.513 ≤ 7.93) — an 81%
+k2 improvement; the seeded 2-encode budget beats the blind 3-encode budget
+2.2×; t88 (the blind seed's disaster, 26.68) collapses to ~1. S2 is worse
+than S1 at every cell it differs (the t88-small tercile anchor overshoots) —
+the frozen fewer-consts tie-break and the numbers agree: **S1 is the arm.**
+Family reading: svt now matches the family pattern exactly (fitted seed pays
+hugely where the baseline seed is weak — the weakest baseline in the family
+got the largest win). Seeds: `benchmarks/zq_seed_s1_2026-08-27.tsv` (the
+3-const one-shot, sanctioned consts form); cells committed
+(`census_k{2,3}_s1.tsv`); harness seed injection via `TargetOptions.qp_start`
+(7th arg). Wiring qp_start into any production default = USER-GATED.
+
