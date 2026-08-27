@@ -19,6 +19,32 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **The C reference oracle is cargo-driven, both variants, SHA-stamped —
+  issue #4 invariants B and C.** `crates/svtav1-cref/build.rs` used to link a
+  prebuilt `Bin/Release/libSvtAv1Enc.a` and panic with a cmake line to type by
+  hand; the `SVT_HDR_MODE=ON` oracle had no cargo path at all. Now a fresh
+  clone's first `cargo test` configures and builds `Bin/Release`
+  (mainline, `BUILD_APPS=ON` — the config CI and every shell tool already
+  assumed) and `Bin/ReleaseHdr` (fork), each stamped with the submodule's git
+  SHA + a config key in `.zenav1-cref-stamp`, so an unchanged tree never
+  rebuilds and a submodule move triggers an incremental `cmake --build`. A
+  pre-stamp hand build is trusted and stamped rather than rebuilt. Missing
+  cmake / cc / nasm (x86 only) panics with the install one-liner.
+  `SVT_CREF_LIB_DIR` (link a prebuilt archive, build nothing) and
+  `SVT_CREF_SKIP_HDR=1` are the knobs. CI's hand-typed cmake step is replaced
+  by `cargo build -p zenav1-svt-cref`. Measured locally (Apple-silicon
+  laptop, ninja + clang, `-j4`): mainline from nothing 245 objects / 15.6 s
+  wall, fork 238 objects / 16.0 s, the second `cargo build` a 0.75 s no-op;
+  the differential suites and `regression_spotcheck.sh` pass against the
+  cargo-built oracle.
+- **CI runs the pure-Rust tier on `windows-11-arm`, `macos-15-intel` and
+  `i686-unknown-linux-gnu` (via `cross`)** — issue #4 phase 4. The tier is
+  `cargo build --workspace --exclude zenav1-svt-cref` + `cargo test -p
+  zenav1-svt`: the facade's dev graph has no cref dependency, so the e2e /
+  golden-parity / SIMD-tier-invariance / issue-repro suites run with no C
+  toolchain. Corpus and decoder skips are set at workflow scope
+  (`ZENAV1_SKIP_CORPUS_TESTS`, `ZENAV1_SKIP_DECODER_TESTS`). Three
+  `real_encode.rs` tests wrote to a literal `/tmp`; they use the OS temp dir.
 - **10-bit encoding at NON-64-ALIGNED dimensions — the product case for 10-bit
   AVIF** (`bd10_partial_sb_gate.sh`, **157/157 byte-identical to the C
   reference**; every one of those cells was a refusal before). Both bd10 level

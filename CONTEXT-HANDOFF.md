@@ -22,13 +22,17 @@ git submodule update --init --recursive
 `cmake` + `ninja` + a C compiler, and `cargo-nextest`
 (`cargo install cargo-nextest`). Everything is `#![forbid(unsafe_code)]`.
 
-**Build the C oracle** — nothing that matters can be verified without it:
+**Build the C oracle** — nothing that matters can be verified without it.
+Since 2026-08-27 (issue #4) cargo does it: `crates/svtav1-cref/build.rs`
+configures and builds both variants on first use, SHA-stamped.
 
 ```bash
-cmake -S reference/svt-av1 -B cbuild-static -G Ninja -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_OUTPUT_DIRECTORY="$PWD/Bin/Release/" \
-  -DBUILD_SHARED_LIBS=OFF -DBUILD_APPS=ON -DBUILD_TESTING=OFF -DSVT_AV1_LTO=OFF
-cmake --build cbuild-static
+cd rust && cargo build -p zenav1-svt-cref    # or simply: cargo test
+# hand-typed equivalent (same flags):
+# cmake -S reference/svt-av1 -B cbuild-static -G Ninja -DCMAKE_BUILD_TYPE=Release \
+#   -DCMAKE_OUTPUT_DIRECTORY="$PWD/Bin/Release/" \
+#   -DBUILD_SHARED_LIBS=OFF -DBUILD_APPS=ON -DBUILD_TESTING=OFF -DSVT_AV1_LTO=OFF -DNATIVE=OFF
+# cmake --build cbuild-static
 ```
 
 That produces `Bin/Release/libSvtAv1Enc.a` (linked by the `svtav1-cref` crate's

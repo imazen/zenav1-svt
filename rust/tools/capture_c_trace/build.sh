@@ -93,10 +93,13 @@ if [[ -z "${SVT_CREF_LIB_DIR:-}" && -z "${SVT_NO_AUTO_CMAKE:-}" && -d "$CMAKE_DI
 fi
 
 if [[ ! -f "$LIB" ]]; then
-    echo "error: $LIB not found (SVT_HDR_MODE=$HDR_MODE). Build the C reference first:" >&2
-    echo "  cmake -S $C_ROOT -B $CMAKE_DIR -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \\" >&2
-    echo "        -DBUILD_APPS=OFF -DBUILD_TESTING=OFF -DSVT_AV1_LTO=OFF $CMAKE_HDR_FLAG \\" >&2
-    echo "        -DCMAKE_OUTPUT_DIRECTORY=$DEFAULT_LIB_DIR/ && cmake --build $CMAKE_DIR -j" >&2
+    echo "error: $LIB not found (SVT_HDR_MODE=$HDR_MODE). Build the C reference first —" >&2
+    echo "  cargo does it (both variants, SHA-stamped; rust/crates/svtav1-cref/build.rs):" >&2
+    echo "    (cd $ROOT/rust && cargo build -p zenav1-svt-cref)" >&2
+    echo "  or by hand, with the same flags:" >&2
+    echo "    cmake -S $C_ROOT -B $CMAKE_DIR -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \\" >&2
+    echo "          -DBUILD_APPS=OFF -DBUILD_TESTING=OFF -DSVT_AV1_LTO=OFF -DNATIVE=OFF $CMAKE_HDR_FLAG \\" >&2
+    echo "          -DCMAKE_OUTPUT_DIRECTORY=$DEFAULT_LIB_DIR/ && cmake --build $CMAKE_DIR -j" >&2
     exit 1
 fi
 

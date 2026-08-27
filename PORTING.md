@@ -39,17 +39,22 @@ Every differential test and identity run links or drives the in-tree C library.
 Build it once from the repo root:
 
 ```bash
-# The C reference is the SUBMODULE at reference/svt-av1, and the build MUST
-# place its outputs in Bin/Release — that is where svtav1-cref's build.rs
-# looks for libSvtAv1Enc.a.
-cmake -S reference/svt-av1 -B cbuild-static -G Ninja -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_OUTPUT_DIRECTORY="$PWD/Bin/Release/" \
-      -DBUILD_SHARED_LIBS=OFF -DBUILD_APPS=ON -DBUILD_TESTING=OFF -DSVT_AV1_LTO=OFF
-cmake --build cbuild-static
+# The C reference is the SUBMODULE at reference/svt-av1. CARGO builds it:
+# crates/svtav1-cref/build.rs configures + builds BOTH variants on first use
+# (Bin/Release = mainline SVT_HDR_MODE=OFF, with SvtAv1EncApp; Bin/ReleaseHdr
+# = fork SVT_HDR_MODE=ON), stamped with the submodule SHA so an unchanged tree
+# never rebuilds. Needs cmake + a C compiler (+ nasm on x86; ninja optional).
+cd rust && cargo build -p zenav1-svt-cref     # or just: cargo test
+# Equivalent hand build, if you ever need one (same flags build.rs uses):
+#   cmake -S reference/svt-av1 -B cbuild-static -G Ninja -DCMAKE_BUILD_TYPE=Release \
+#         -DCMAKE_OUTPUT_DIRECTORY="$PWD/Bin/Release/" -DBUILD_SHARED_LIBS=OFF \
+#         -DBUILD_APPS=ON -DBUILD_TESTING=OFF -DSVT_AV1_LTO=OFF -DNATIVE=OFF && \
+#   cmake --build cbuild-static
 ```
 
 `crates/svtav1-cref/build.rs` links `Bin/Release/libSvtAv1Enc.a` (override with
-`SVT_CREF_LIB_DIR`). The `tools/capture_c_trace` driver rebuilds and relinks
+`SVT_CREF_LIB_DIR` to link a prebuilt archive and build nothing;
+`SVT_CREF_SKIP_HDR=1` skips the fork variant). The `tools/capture_c_trace` driver rebuilds and relinks
 itself against `Source/` on every invocation, so it can never run stale.
 
 ## Crate → C source

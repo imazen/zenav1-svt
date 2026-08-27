@@ -46,12 +46,17 @@ jobs:
         with:
           tool: nextest
 
-      - name: Build C reference (static, the differential oracle)
-        run: |
-          cmake -S reference/svt-av1 -B cbuild-static -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_OUTPUT_DIRECTORY="$GITHUB_WORKSPACE/Bin/Release/" \
-            -DBUILD_SHARED_LIBS=OFF -DBUILD_APPS=ON -DBUILD_TESTING=OFF -DSVT_AV1_LTO=OFF
-          cmake --build cbuild-static
+      - name: Build C reference (static, the differential oracle) — cargo-driven
+        working-directory: rust
+        # Issue #4 invariant B: the C oracle is built by
+        # crates/svtav1-cref/build.rs (both variants: Bin/Release mainline for
+        # the shims and every c_parity_* test, Bin/ReleaseHdr for the
+        # SVT_HDR_MODE=ON byte gates), keyed on the submodule SHA. A fresh
+        # clone + `cargo test` does exactly this; running it as its own step
+        # keeps a C build failure attributed to the C build, not to the first
+        # test that needed it. The flags are the ones the old hand-typed cmake
+        # line used (Ninja, BUILD_APPS=ON, LTO off, NATIVE off).
+        run: cargo build -p zenav1-svt-cref
 
       - name: Cache libaom build (aomdec oracle)
         id: aom-cache
@@ -309,3 +314,68 @@ jobs:
       # Performance ratchet intentionally NOT run here: shared runners are
       # too noisy for the <=1.20x wall-time gate; it runs on the fixed HW
       # matrix (see benchmarks/*.meta for the current measured baselines).
+
+  pure-rust:
+    name: pure-Rust tier (${{ matrix.name }})
+    # Issue #4 phase 4: the product crates carry no C, so they must build and
+    # pass their C-free tests on every platform the CI policy names —
+    # windows-11-arm, macOS Intel, i686 — with no cmake and no C toolchain.
+    # The tier is the `zenav1-svt` facade: its dev graph has NO cref
+    # dependency (`cargo tree -p zenav1-svt -e dev,normal | grep cref` is
+    # empty), so `cargo test -p zenav1-svt` runs the e2e / golden-parity /
+    # SIMD-tier-invariance / issue-repro suites and links no C oracle. The
+    # differential + gate tier above stays x86-64 Linux, where the oracle is
+    # built. A byte-exact encoder that only ever ran on one ISA family has not
+    # been shown to be byte-exact.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: windows-11-arm, os: windows-11-arm }
+          - { name: macos-15-intel, os: macos-15-intel }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      # No corpus and no reference decoder on these runners. Both skips are
+      # made HERE, visibly (workflow -> env -> test) — never inside a test.
+      ZENAV1_SKIP_CORPUS_TESTS: "1"
+      ZENAV1_SKIP_DECODER_TESTS: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Build every product crate (no C toolchain, cref excluded)
+        working-directory: rust
+        run: cargo build --workspace --exclude zenav1-svt-cref
+      - name: Facade tests (e2e, golden parity, SIMD tier invariance, issue repros)
+        working-directory: rust
+        run: |
+          cargo test -p zenav1-svt --no-fail-fast
+          cargo test -p zenav1-svt --doc
+
+  pure-rust-i686:
+    name: pure-Rust tier (i686-unknown-linux-gnu via cross)
+    # 32-bit is a primary target: pointer-width and usize-overflow bugs in a
+    # frame-sized-buffer encoder only show up here (and in WASM).
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      ZENAV1_SKIP_CORPUS_TESTS: "1"
+      ZENAV1_SKIP_DECODER_TESTS: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+      - name: Build every product crate for i686 (cref excluded)
+        working-directory: rust
+        run: cross build --workspace --exclude zenav1-svt-cref --target i686-unknown-linux-gnu
+      - name: Facade tests on i686
+        working-directory: rust
+        run: cross test -p zenav1-svt --target i686-unknown-linux-gnu --no-fail-fast

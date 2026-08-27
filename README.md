@@ -162,11 +162,15 @@ the `zenav1-svt-` prefix (see [PORTING.md](PORTING.md)).
 ```bash
 git clone --recurse-submodules https://github.com/imazen/zenav1-svt && cd zenav1-svt
 
-# 1. Build the C reference oracle from the submodule. Needs cmake + nasm + cc.
-cmake -S reference/svt-av1 -B cbuild-static -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_OUTPUT_DIRECTORY="$PWD/Bin/Release/" \
-      -DBUILD_SHARED_LIBS=OFF -DBUILD_APPS=OFF -DBUILD_TESTING=OFF -DSVT_AV1_LTO=OFF
-cmake --build cbuild-static -j
+# 1. The C reference oracle is built BY CARGO (rust/crates/svtav1-cref/build.rs):
+#    the first `cargo test` / `cargo build -p zenav1-svt-cref` configures and
+#    builds BOTH variants — Bin/Release (mainline, SVT_HDR_MODE=OFF) and
+#    Bin/ReleaseHdr (fork, =ON) — keyed on the submodule's commit, so an
+#    unchanged tree never rebuilds. It needs cmake + a C compiler (+ nasm on
+#    x86, ninja optional) and panics with the install one-liner if one is
+#    missing. Knobs: SVT_CREF_LIB_DIR=<dir> links a prebuilt libSvtAv1Enc.a
+#    instead; SVT_CREF_SKIP_HDR=1 skips the fork variant.
+#    (Consumers of the published crates never run this — see "Install".)
 
 # 2. Tooling the gates assume but cargo does not install: the test runner,
 #    `just` (the recipes in rust/justfile), and the AV1 reference decoder
@@ -190,10 +194,9 @@ Each gate prints `<pass> / <total> byte-identical`. To drill into one cell:
 `./tools/drill_cell.sh <content> <w> <h> <qp> <preset>` (encode both sides,
 locate the first divergent block, dump both decision trees).
 
-For fork-mode gates, configure the ON oracle too:
-`cmake -S reference/svt-av1 -B cbuild-static-hdr -DSVT_HDR_MODE=ON -DCMAKE_OUTPUT_DIRECTORY="$PWD/Bin/ReleaseHdr/" …` — the
-harness selects it via `SVT_HDR_MODE=1` (see
-`rust/tools/capture_c_trace/build.sh`).
+The fork-mode gates (`tools/hdr_bd10_gate.sh`) link the ON oracle that the
+same cargo build produced in `Bin/ReleaseHdr`; the harness selects it via
+`SVT_HDR_MODE=1` (see `rust/tools/capture_c_trace/build.sh`).
 
 ## Layout
 

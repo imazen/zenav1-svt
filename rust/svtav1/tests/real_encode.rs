@@ -877,14 +877,16 @@ fn obu_sequence_header_profile() {
         sh_size
     );
 
-    // Write bitstream to temp file for external decoder testing
-    let path = std::path::Path::new("/tmp/svtav1_test_output.obu");
-    std::fs::write(path, &bitstream).expect("failed to write test bitstream");
+    // Write bitstream to a temp file for external decoder testing (the OS
+    // temp dir, not a literal /tmp — this tier also runs on the Windows CI
+    // runner).
+    let path = std::env::temp_dir().join("svtav1_test_output.obu");
+    std::fs::write(&path, &bitstream).expect("failed to write test bitstream");
     eprintln!(
         "Wrote test bitstream to {path:?} ({} bytes)",
         bitstream.len()
     );
-    eprintln!("Test with: dav1d -i /tmp/svtav1_test_output.obu -o /dev/null");
+    eprintln!("Test with: dav1d -i {} -o /dev/null", path.display());
 }
 
 // =============================================================================
@@ -1099,7 +1101,7 @@ fn dump_obu_comparison() {
     // Uniform gray (all skip)
     let gray = vec![128u8; 64 * 64];
     let obu_gray = enc.encode_to_av1_obu(&gray, 64, 64, 64).unwrap();
-    std::fs::write("/tmp/obu_gray64.bin", &obu_gray).unwrap();
+    std::fs::write(std::env::temp_dir().join("obu_gray64.bin"), &obu_gray).unwrap();
 
     // Gradient (non-skip)
     let mut grad = vec![0u8; 64 * 64];
@@ -1109,7 +1111,7 @@ fn dump_obu_comparison() {
         }
     }
     let obu_grad = enc.encode_to_av1_obu(&grad, 64, 64, 64).unwrap();
-    std::fs::write("/tmp/obu_grad64.bin", &obu_grad).unwrap();
+    std::fs::write(std::env::temp_dir().join("obu_grad64.bin"), &obu_grad).unwrap();
 
     eprintln!(
         "Gray: {} bytes, Gradient: {} bytes",

@@ -45,7 +45,8 @@ if [[ ! -d "$C_ROOT/Source" ]]; then
 fi
 
 if [[ ! -f "$LIB" ]]; then
-    echo "error: $LIB not found. Build the C reference first:" >&2
+    echo "error: $LIB not found. Build the C reference first — cargo does it" >&2
+    echo "  ((cd <repo>/rust && cargo build -p zenav1-svt-cref); see crates/svtav1-cref/build.rs), or by hand:" >&2
     echo "  cmake -S $ROOT -B $CMAKE_DIR -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \\" >&2
     echo "        -DBUILD_APPS=OFF -DBUILD_TESTING=OFF -DSVT_AV1_LTO=OFF \\" >&2
     echo "        -DCMAKE_OUTPUT_DIRECTORY=$LIB_DIR/ && cmake --build $CMAKE_DIR -j" >&2
