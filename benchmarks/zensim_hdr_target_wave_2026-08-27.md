@@ -33,3 +33,22 @@ phase A); seed/steering arms register their own bars later.
 ## Endgame
 Crate + harness example + census TSVs committed here; zensim plan +
 scorecard updated; any default/ship wiring is USER-GATED as always.
+
+## CHUNK-2 DESIGN RESOLUTION (2026-08-27, before implementation)
+- **Recon source**: `EncodePipeline::last_recon10_final` — the post-filter
+  10-bit reconstruction, "what a conforming decoder outputs, bit-exact"
+  (issue #13's surface, landed by the parity lane). Requires
+  `with_recon_output(true)` + a complete bd10 recon; ALL NINE frozen
+  instrument renditions are 64-aligned (verified: 1536x2048, 1024x768,
+  768x1024, 384x512, 512x384 — every dim % 64 == 0), satisfying the bd10
+  consumer envelope, so `None` recon = a loud error, never a fallback.
+- **Judge domain**: PQ CODE VALUES end to end — the corpus refs are 16-bit
+  PQ PNGs and the recon is 10-bit PQ codes; zensim's `foldapphdrpq`-class
+  HDR entry ingests PQ code values directly. The only conversion in the
+  trial cell is BT.2020nc LIMITED-range YUV420→RGB in code-value domain
+  (the standard matrix; unit-tested against reference vectors + a
+  round-trip through the fleet's to_yuv420_bd10 on a synthetic ramp).
+  No PU/nits math is re-implemented in this crate — the judge owns it.
+- Chunk 2 deliverable: `trial.rs` (encode+recon+convert+judge closure
+  builder) + the ramp round-trip test + ONE real-cell smoke (smallest
+  tier ref, t80, k1) before phase B census.
