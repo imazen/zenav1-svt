@@ -52,3 +52,20 @@ scorecard updated; any default/ship wiring is USER-GATED as always.
 - Chunk 2 deliverable: `trial.rs` (encode+recon+convert+judge closure
   builder) + the ramp round-trip test + ONE real-cell smoke (smallest
   tier ref, t80, k1) before phase B census.
+
+## CHUNK-2 OPEN FORK (recorded 2026-08-27; decided before implementation, not hacked)
+The in-loop score model: zensim's HDR entry points are FEATURE extractors
+(`compute_folded720_append2_features_hdr` → 944 slots) + a bake forward
+(`score_features_with_profile`); but the SHIPPED HDR bake (BHdr family) is
+372-class over the OLDER pu-linear front-end, and **no 944-HDR bake exists
+yet** — hdr_v3mix@944 (orientation-gated today) is exactly its training
+table, but training it is MODELS-lane work, not this crate's. Routes:
+(a) DEFAULT: in-loop score via the pu-linear-372 front + shipped BHdr
+    (matches the fleet's proven `--hdr` scoring semantics);
+(b) a 944-HDR bake once the MODELS lane trains it on hdr_v3mix@944 —
+    then the loop and the 944 extractor share one pass (preferred end
+    state; swap is a registered follow-up, never silent);
+(c) rejected: shelling the zenmetrics CLI from the loop (ownership
+    inversion + process-per-trial cost).
+Census judging stays INDEPENDENT of the in-loop score either way (the
+registered `--hdr`-route judge on decoded output).
