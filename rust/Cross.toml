@@ -1,0 +1,11 @@
+# `cross` (the i686-unknown-linux-gnu CI leg, .github/workflows/rust-gates.yml
+# `pure-rust-i686`) runs the build and the tests inside a container and does
+# NOT forward the host environment. The two caller-controlled skips this
+# project allows — set at WORKFLOW scope so the decision is visible in the
+# chain (workflow -> env -> test), never inside a test body — must therefore
+# be passed through explicitly, or the corpus-gated and decoder-gated tests
+# fail loudly for the wrong reason (measured on the first i686 run:
+# `issue13_repro` and `tier_invariance` both failed with "not found" while the
+# native windows-11-arm leg, which sees the env, passed).
+[build.env]
+passthrough = ["ZENAV1_SKIP_CORPUS_TESTS", "ZENAV1_SKIP_DECODER_TESTS", "AOMDEC", "ZENAV1_CORPUS_ROOT"]
