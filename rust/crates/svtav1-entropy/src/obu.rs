@@ -1265,13 +1265,27 @@ fn key_frame_header_bits_lr(
     }
     // delta_lf_params(): not signaled when delta_q_present=0
 
+    // ---- CodedLossless / AllLossless (spec 5.9.2 tail of
+    // read_quantization_params / segmentation: `LosslessArray[seg] =
+    // qindex == 0 && DeltaQYDc == 0 && DeltaQUAc == 0 && DeltaQUDc == 0 &&
+    // DeltaQVAc == 0 && DeltaQVDc == 0`, CodedLossless = all segments;
+    // AllLossless = CodedLossless && FrameWidth == UpscaledWidth). Segmentation
+    // is off (above), so every segment carries base_q_idx; DeltaQYDc is
+    // always 0 here and the chroma deltas are `chroma_q`. C:
+    // md_config_process.c:992-1017 (`coded_lossless = lossless[0] =
+    // !base_q_idx` when segmentation is off) and entropy_coding.c:3594-3612.
+    // Issue #5 chunk 1: the header half of the coded-lossless envelope —
+    // pipeline.rs still refuses base_qindex 0 until the tile half (TX_4X4
+    // WHT, no tx_size / tx_type symbols) is ported and byte-verified.
+    let coded_lossless = base_qindex == 0 && chroma_q.is_none_or(|d| d == [0; 4]);
+    let all_lossless = coded_lossless && sc.superres.denom.is_none();
+
     // ---- loop_filter_params() ----
-    // CodedLossless is only true when base_q_idx=0 AND all delta-Q=0 AND
-    // all segments have qindex 0. With base_q_idx>0 in practice, not lossless.
-    // When allow_intrabc: NO loop filter bits (spec 5.9.11 sets defaults).
+    // When CodedLossless or allow_intrabc: NO loop filter bits (spec 5.9.11
+    // sets the levels to 0; C entropy_coding.c:3597 skips encode_loopfilter).
     // Field set matches C encode_loopfilter (entropy_coding.c:2338) and
     // spec 5.9.11; libaom setup_loopfilter (decodeframe.c:1766) reads it.
-    if !sc.allow_intrabc {
+    if !sc.allow_intrabc && !coded_lossless {
         wb.write_bits(lf_levels[0] as u32, 6); // loop_filter_level[0]
         wb.write_bits(lf_levels[1] as u32, 6); // loop_filter_level[1]
         // NumPlanes=1: no loop_filter_level[2]/[3].
@@ -1292,11 +1306,10 @@ fn key_frame_header_bits_lr(
     // ---- cdef_params() ----
     // Spec 5.9.19; C write path encode_cdef (entropy_coding.c:2398), read
     // path libaom setup_cdef (decodeframe.c:1799). Present because the SH
-    // signals enable_cdef=1 and this header is neither CodedLossless
-    // (base_q_idx > 0 in practice — same standing assumption as
-    // loop_filter_params above) nor allow_intrabc.
-    // When allow_intrabc: NO cdef bits (spec 5.9.19 early-out).
-    if !sc.allow_intrabc {
+    // signals enable_cdef=1 and this header is neither CodedLossless nor
+    // allow_intrabc — either one means NO cdef bits (spec 5.9.19 early-out;
+    // C entropy_coding.c:3598-3600 under `!coded_lossless`).
+    if !sc.allow_intrabc && !coded_lossless {
         debug_assert!((3..=6).contains(&cdef.damping), "cdef_damping out of range");
         debug_assert_eq!(cdef.strengths.len(), 1usize << cdef.bits);
         wb.write_bits((cdef.damping - 3) as u32, 2); // cdef_damping_minus_3
@@ -1328,7 +1341,10 @@ fn key_frame_header_bits_lr(
     // decodeframe.c).
     // When allow_intrabc: NO lr bits (spec 5.9.20 folds allow_intrabc into
     // the same early-out as !enable_restoration).
-    if lr.enabled && !sc.allow_intrabc {
+    // AllLossless also folds in (spec 5.9.20: `if AllLossless || allow_intrabc
+    // || !enable_restoration` -> no lr bits; C entropy_coding.c:3594 codes
+    // restoration only in the `!all_lossless` arm).
+    if lr.enabled && !sc.allow_intrabc && !all_lossless {
         let num_planes = if monochrome { 1 } else { 3 };
         let mut all_none = true;
         let mut chroma_none = true;
@@ -1379,14 +1395,16 @@ fn key_frame_header_bits_lr(
     }
 
     // ---- read_tx_mode() ----
-    // Not CodedLossless (since base_q_idx may be nonzero) →
-    // TX_MODE_SELECT, like C: SVT always sets frm_hdr->tx_mode =
-    // TX_MODE_SELECT at these presets ("Use TX_MODE_SELECT even when
-    // txs_level == 0", enc_mode_config.c:15140-15143; written at
-    // entropy_coding.c:3659). The tile walk then codes a per-block
+    // CodedLossless -> TxMode = ONLY_4X4 and NO bit (spec 5.9.21; C
+    // entropy_coding.c:3608-3612). Otherwise TX_MODE_SELECT, like C: SVT
+    // always sets frm_hdr->tx_mode = TX_MODE_SELECT at these presets ("Use
+    // TX_MODE_SELECT even when txs_level == 0", enc_mode_config.c:15140-15143;
+    // written at entropy_coding.c:3659). The tile walk then codes a per-block
     // tx_depth symbol for every bsize > 4x4 (always depth 0 = largest —
     // matching what the LARGEST mode implied, but now in C's syntax).
-    wb.write_bit(true); // tx_mode_select = 1 → TX_MODE_SELECT
+    if !coded_lossless {
+        wb.write_bit(true); // tx_mode_select = 1 → TX_MODE_SELECT
+    }
 
     // For intra frames: no reference_select, skip_mode, warped_motion, global_motion
 

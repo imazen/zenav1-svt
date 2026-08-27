@@ -1656,6 +1656,13 @@ impl EncodePipeline {
         // Remove this gate only when the lossless envelope is ported +
         // byte-verified vs C (the aom-rs sibling's KB-5 closed this exact
         // class: forward WHT + lossless entropy-ctx + CfL-at-lossless).
+        // Chunk 1 (2026-08-27) landed the HEADER half: the FH writer codes
+        // CodedLossless exactly like C (tests/lossless_fh_c_capture.rs vs a
+        // committed qp-0 capture that decodes losslessly). Still missing: the
+        // tile half — TX_4X4-only txbs with no tx_size / tx_type symbols,
+        // WHT residuals, and C's lossless MD gates (mds_do_txt = 0, RDOQ off,
+        // `svt_av1_is_lossless_segment` sites in product_coding_loop.c /
+        // full_loop.c / rd_cost.c).
         if base_qindex == 0 {
             return Err(whereat::at!(crate::EncodeError::UnsupportedConfig(
                 "QP 0 (base_qindex 0 = coded-lossless) is not implemented; the \

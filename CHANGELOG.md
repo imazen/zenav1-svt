@@ -19,6 +19,28 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **Coded-lossless frame header, byte-identical to C — issue #5, chunk 1 of
+  the lossless envelope.** `key_frame_header_bits_lr` now derives
+  `CodedLossless` / `AllLossless` (spec 5.9.2: `base_q_idx == 0` with zero
+  chroma deltas, segmentation off; AllLossless additionally unscaled) and, like
+  C `write_uncompressed_header_obu` (entropy_coding.c:3594-3612), writes no
+  `loop_filter_params()`, `cdef_params()`, `lr_params()` or `tx_mode_select`
+  bits when it holds (`delta_q_present` was already gated on `base_q_idx > 0`).
+  Witness `crates/svtav1-encoder/tests/lossless_fh_c_capture.rs` against a
+  committed C capture (`tests/data/c_gradient64_p7_qp{0,1}.obu`, 64x64
+  gradient, preset 7): the qp-0 header is a byte prefix of C's frame OBU and
+  strictly shorter than the qp-1 header from the same parameters; the qp-1
+  control reproduces C's temporal delimiter, sequence header and frame-header
+  prefix so the parameter set is known-good. The qp-0 capture was checked to
+  decode LOSSLESSLY (aomdec output == source) before being adopted as an
+  oracle — `SUSPECTED-C-BUGS.md` #1's variance-boost caveat does not bite on
+  mainline defaults. Mutation-verified (forcing `coded_lossless = false`
+  fails the qp-0 test). **The public envelope is unchanged: QP 0 is still
+  refused** — the tile half (TX_4X4-only coding with no tx_size / tx_type
+  symbols, WHT residuals, lossless MD gates: `mds_do_txt = 0`, RDOQ off,
+  `svt_av1_is_lossless_segment` sites in product_coding_loop.c:7065/7173/
+  7376/7584, full_loop.c:1756/1925/1936, rd_cost.c) is the next chunk, and
+  the refusal comes off only when that is byte-verified against this oracle.
 - **The C reference oracle is cargo-driven, both variants, SHA-stamped —
   issue #4 invariants B and C.** `crates/svtav1-cref/build.rs` used to link a
   prebuilt `Bin/Release/libSvtAv1Enc.a` and panic with a cmake line to type by
