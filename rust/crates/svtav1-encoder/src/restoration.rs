@@ -37,11 +37,12 @@
 
 use svtav1_dsp::restoration::{
     PixelRect, RESTORATION_UNITSIZE_MAX, RESTORE_NONE, RESTORE_WIENER, StripeBoundaries,
-    TileLimits, WIENER_FILT_TAP0_MAXV, WIENER_FILT_TAP0_MINV, WIENER_FILT_TAP1_MAXV,
-    WIENER_FILT_TAP1_MINV, WIENER_FILT_TAP2_MAXV, WIENER_FILT_TAP2_MINV, WIENER_WIN,
-    WIENER_WIN_CHROMA, WienerInfo, alloc_stripe_boundaries, compute_score, compute_stats,
-    extend_frame, finalize_sym_filter, foreach_rest_unit_in_tile, loop_restoration_filter_unit,
-    save_tile_row_boundary_lines, sse_region, wiener_decompose_sep_sym,
+    StripeBoundariesT, TileLimits, WIENER_FILT_TAP0_MAXV, WIENER_FILT_TAP0_MINV,
+    WIENER_FILT_TAP1_MAXV, WIENER_FILT_TAP1_MINV, WIENER_FILT_TAP2_MAXV, WIENER_FILT_TAP2_MINV,
+    WIENER_WIN, WIENER_WIN_CHROMA, WienerInfo, alloc_stripe_boundaries_t, compute_score,
+    compute_stats, extend_frame, finalize_sym_filter, foreach_rest_unit_in_tile,
+    loop_restoration_filter_unit, loop_restoration_filter_unit_hbd, save_tile_row_boundary_lines,
+    sse_region, wiener_decompose_sep_sym,
 };
 
 /// `SVTAV1_LR_DBG` per-unit/per-step search dump (mirrors the sibling-C
@@ -278,6 +279,28 @@ pub trait LrPixel: Copy + Default {
         dst_stride: usize,
         bit_depth: u8,
     );
+
+    /// `svt_av1_loop_restoration_filter_unit` at `need_boundaries = 1` — the
+    /// decoder-exact APPLY arm (`svt_av1_loop_restoration_filter_frame`,
+    /// restoration.c:1154, `highbd = cm->use_highbitdepth`). Issue #13: the
+    /// u16 instantiation is what lets the 10-bit canvas receive the filter
+    /// the 10-bit search signalled.
+    #[allow(clippy::too_many_arguments)]
+    fn filter_unit_apply(
+        limits: &TileLimits,
+        rtype: u8,
+        wiener: &WienerInfo,
+        rsb: &StripeBoundariesT<Self>,
+        rect: &PixelRect,
+        ss: i32,
+        data: &mut [Self],
+        data_origin: usize,
+        stride: usize,
+        dst: &mut [Self],
+        dst_origin: usize,
+        dst_stride: usize,
+        bit_depth: u8,
+    );
 }
 
 impl LrPixel for u8 {
@@ -352,6 +375,40 @@ impl LrPixel for u8 {
             dst_stride,
         );
     }
+
+    fn filter_unit_apply(
+        limits: &TileLimits,
+        rtype: u8,
+        wiener: &WienerInfo,
+        rsb: &StripeBoundariesT<u8>,
+        rect: &PixelRect,
+        ss: i32,
+        data: &mut [u8],
+        data_origin: usize,
+        stride: usize,
+        dst: &mut [u8],
+        dst_origin: usize,
+        dst_stride: usize,
+        _bit_depth: u8,
+    ) {
+        loop_restoration_filter_unit(
+            true,
+            limits,
+            rtype,
+            wiener,
+            rsb,
+            rect,
+            0, // tile_stripe0 (single tile row)
+            ss,
+            ss,
+            data,
+            data_origin,
+            stride,
+            dst,
+            dst_origin,
+            dst_stride,
+        );
+    }
 }
 
 impl LrPixel for u16 {
@@ -412,6 +469,41 @@ impl LrPixel for u16 {
             wiener,
             rect,
             0,
+            ss,
+            ss,
+            data,
+            data_origin,
+            stride,
+            dst,
+            dst_origin,
+            dst_stride,
+            bit_depth as i32,
+        );
+    }
+
+    fn filter_unit_apply(
+        limits: &TileLimits,
+        rtype: u8,
+        wiener: &WienerInfo,
+        rsb: &StripeBoundariesT<u16>,
+        rect: &PixelRect,
+        ss: i32,
+        data: &mut [u16],
+        data_origin: usize,
+        stride: usize,
+        dst: &mut [u16],
+        dst_origin: usize,
+        dst_stride: usize,
+        bit_depth: u8,
+    ) {
+        loop_restoration_filter_unit_hbd(
+            true,
+            limits,
+            rtype,
+            wiener,
+            rsb,
+            rect,
+            0, // tile_stripe0 (single tile row)
             ss,
             ss,
             data,
@@ -948,6 +1040,29 @@ pub fn save_lr_boundaries(
     stride_uv: usize,
     has_chroma: bool,
 ) -> alloc::vec::Vec<StripeBoundaries> {
+    save_lr_boundaries_bd::<u8>(
+        pre_y, pre_u, pre_v, post_y, post_u, post_v, w, h, stride_y, stride_uv, has_chroma,
+    )
+}
+
+/// [`save_lr_boundaries`] at any [`LrPixel`] type — the `u16` instantiation
+/// saves the 10-bit post-deblock / post-CDEF context lines for the 10-bit
+/// apply (issue #13). C's `svt_aom_save_tile_row_boundary_lines` takes
+/// `use_highbd` and only rescales byte counts with it, so the walk is one body.
+#[allow(clippy::too_many_arguments)]
+pub fn save_lr_boundaries_bd<P: LrPixel>(
+    pre_y: &[P],
+    pre_u: &[P],
+    pre_v: &[P],
+    post_y: &[P],
+    post_u: &[P],
+    post_v: &[P],
+    w: usize,
+    h: usize,
+    stride_y: usize,
+    stride_uv: usize,
+    has_chroma: bool,
+) -> alloc::vec::Vec<StripeBoundariesT<P>> {
     let mut out = alloc::vec::Vec::new();
     for plane in 0..3usize {
         let is_uv = plane > 0;
@@ -959,7 +1074,7 @@ pub fn save_lr_boundaries(
             (w, h)
         };
         let stride = if is_uv { stride_uv } else { stride_y };
-        let mut bnd = alloc_stripe_boundaries(w as i32, h as i32, ss);
+        let mut bnd = alloc_stripe_boundaries_t::<P>(w as i32, h as i32, ss);
         if is_uv && !has_chroma {
             out.push(bnd);
             continue;
@@ -1001,6 +1116,32 @@ pub fn apply_restoration_frame(
     info: &FrameRestInfo,
     boundaries: &[StripeBoundaries],
 ) {
+    apply_restoration_frame_bd::<u8>(
+        recon_y, recon_u, recon_v, w, h, stride_y, stride_uv, has_chroma, info, boundaries, 8,
+    );
+}
+
+/// [`apply_restoration_frame`] at any [`LrPixel`] type. The `u16`
+/// instantiation is the 10-bit apply (issue #13): C runs ONE
+/// `svt_av1_loop_restoration_filter_frame` body at `highbd =
+/// cm->use_highbitdepth` and only the per-unit convolve differs, so the
+/// extend / unit walk / copy-back are this single generic body and the
+/// per-depth kernel is [`LrPixel::filter_unit_apply`]. `bit_depth` reaches
+/// the highbd convolve's rounding offsets and clamp; inert on `u8`.
+#[allow(clippy::too_many_arguments)]
+pub fn apply_restoration_frame_bd<P: LrPixel>(
+    recon_y: &mut [P],
+    recon_u: &mut [P],
+    recon_v: &mut [P],
+    w: usize,
+    h: usize,
+    stride_y: usize,
+    stride_uv: usize,
+    has_chroma: bool,
+    info: &FrameRestInfo,
+    boundaries: &[StripeBoundariesT<P>],
+    bit_depth: u8,
+) {
     for plane in 0..3usize {
         let pr = &info.planes[plane];
         if pr.frame_rtype == RESTORE_NONE {
@@ -1018,26 +1159,23 @@ pub fn apply_restoration_frame(
             (w, h)
         };
         let stride = if is_uv { stride_uv } else { stride_y };
-        let recon: &mut [u8] = match plane {
+        let recon: &mut [P] = match plane {
             0 => recon_y,
             1 => recon_u,
             _ => recon_v,
         };
-        let mut data = PaddedPlane::from_strided(recon, stride, pw, ph);
+        let mut data = PaddedPlaneT::<P>::from_strided(recon, stride, pw, ph);
         extend_frame(&mut data.data, data.origin, pw, ph, data.stride, 3, 3);
-        let mut dst = PaddedPlane::empty(pw, ph);
+        let mut dst = PaddedPlaneT::<P>::empty(pw, ph);
         let rect = plane_rect(pw as i32, ph as i32);
         foreach_rest_unit_in_tile(&rect, pr.hunits, pr.unit_size, ss, |limits, unit_idx| {
             let u = &pr.units[unit_idx as usize];
-            loop_restoration_filter_unit(
-                true,
+            P::filter_unit_apply(
                 limits,
                 u.rtype,
                 &u.wiener,
                 &boundaries[plane],
                 &rect,
-                0, // tile_stripe0 (single tile row)
-                ss,
                 ss,
                 &mut data.data,
                 data.origin,
@@ -1045,6 +1183,7 @@ pub fn apply_restoration_frame(
                 &mut dst.data,
                 dst.origin,
                 dst.stride,
+                bit_depth,
             );
         });
         dst.copy_crop_to_strided(recon, stride);

@@ -47,10 +47,12 @@
 #                This is the leg that makes an encoder/decoder mismatch a
 #                CORRECTNESS failure rather than a "we differ from C" failure:
 #                if the port and C were wrong the same way, the byte leg stays
-#                green and this one does not. bd8 only — at bd10 `last_recon`
-#                is the u8 chain, so there is nothing decoder-comparable to
-#                compare; bd10 is covered by the byte leg (which is what caught
-#                defect 2's bd10 half).
+#                green and this one does not. BOTH bit depths: at bd8 the
+#                dump is `last_recon` (u8); at bd10 it is `last_recon10_final`
+#                (u16 LE, issue #13 — the 10-bit canvas with deblock -> CDEF
+#                -> LR applied), compared against aomdec's C420p10 y4m sample
+#                for sample. Until 2026-08-27 this leg was bd8-only because
+#                no post-filter 10-bit recon existed to compare.
 #
 # TEETH (measured, not asserted — see benchmarks/alignment_gate_teeth_*.md):
 # each of the three fixes was reverted one at a time and this gate FAILED.
@@ -313,23 +315,31 @@ for cell in "${CELLS[@]}"; do
         continue
     fi
 
-    # --- RECON leg (bd8) ----------------------------------------------------
-    if [[ "$bd" == 8 ]]; then
+    # --- RECON leg (bd8 AND bd10) -------------------------------------------
+    # bps = bytes per sample in BOTH the dump and aomdec's y4m (u8 at bd8,
+    # u16 LE at bd10 — `C420p10`).
+    bps=1
+    [[ "$bd" == 10 ]] && bps=2
+    {
         rm -f "$OUT/rs.y4m"
         if ! "$AOMDEC" "$OUT/rs.obu" -o "$OUT/rs.y4m" >/dev/null 2>&1; then
             fail=$((fail + 1))
             failed+=("$tag[decode-err]")
             continue
         fi
-        verdict=$(python3 - "$OUT/rs.y4m" "$OUT/rs.recon" "$w" "$h" <<'PY'
+        verdict=$(python3 - "$OUT/rs.y4m" "$OUT/rs.recon" "$w" "$h" "$bps" <<'PY'
 import sys
-y4m, recon, w, h = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+y4m, recon, w, h, bps = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5])
 d = open(y4m, "rb").read()
 hdr = d.index(b"\n")
+if bps == 2 and b"C420p10" not in d[:hdr]:
+    print(f"FAIL y4m is not C420p10 at bd10: {d[:hdr]!r}")
+    sys.exit(0)
 fp = d.index(b"FRAME", hdr)
 start = d.index(b"\n", fp) + 1
 cw, ch = (w + 1) // 2, (h + 1) // 2
-need = w * h + 2 * cw * ch
+nsamp = w * h + 2 * cw * ch
+need = nsamp * bps
 dec = d[start:start + need]
 enc = open(recon, "rb").read()
 if len(dec) != need:
@@ -337,8 +347,11 @@ if len(dec) != need:
 elif len(enc) != need:
     print(f"FAIL recon size {len(enc)} != {need}")
 elif dec == enc:
-    print(f"OK {need}")
+    print(f"OK {nsamp}")
 else:
+    if bps == 2:
+        dec = [int.from_bytes(dec[k:k + 2], "little") for k in range(0, need, 2)]
+        enc = [int.from_bytes(enc[k:k + 2], "little") for k in range(0, need, 2)]
     n = sum(1 for a, b in zip(dec, enc) if a != b)
     i = next(i for i, (a, b) in enumerate(zip(dec, enc)) if a != b)
     pl = "Y" if i < w * h else ("U" if i < w * h + cw * ch else "V")
@@ -361,7 +374,7 @@ PY
             continue
             ;;
         esac
-    fi
+    }
     pass=$((pass + 1))
 done
 

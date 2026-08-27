@@ -146,6 +146,18 @@ pub struct EncodePipeline {
     /// re-encode was skipped (out-of-envelope tree / partial SB), in which
     /// case the port falls back to the u8 filter chain.
     pub last_recon10_uv: Option<(Vec<u16>, Vec<u16>)>,
+    /// bd10: the FINAL 10-bit reconstruction — the post-MD canvas above with
+    /// the whole in-loop chain applied (deblock -> CDEF -> loop restoration),
+    /// `(Y, U, V)` at the ALIGNED strides (`w` luma, `w/2` chroma). This is
+    /// what a conforming decoder outputs for a 10-bit stream, bit-exact, and
+    /// the 10-bit twin of [`Self::last_recon`].
+    ///
+    /// Issue #13: before this existed the 10-bit canvas fed the LR SEARCH and
+    /// then only the u8 chain received the apply, so no consumer could ever
+    /// see the 10-bit pixels a decoder produces when Wiener is signalled.
+    /// `None` unless [`Self::with_recon_output`] is set AND the frame produced
+    /// a complete 10-bit recon (same condition as `last_recon10_y`).
+    pub last_recon10_final: Option<(Vec<u16>, Vec<u16>, Vec<u16>)>,
     /// CDEF evidence counters for the last encoded frame (non-vacuity
     /// reporting: how many pixels the signaled strengths actually touched).
     pub last_cdef_stats: crate::cdef::CdefStats,
@@ -377,6 +389,7 @@ impl EncodePipeline {
             last_recon_pre_cdef: None,
             last_recon10_y: None,
             last_recon10_uv: None,
+            last_recon10_final: None,
             last_cdef_stats: crate::cdef::CdefStats::default(),
             last_cdef_signaled: None,
             last_lr_stats: ([0; 3], 0),
@@ -2187,6 +2200,7 @@ impl EncodePipeline {
         // "this frame produced a complete 10-bit recon", never a leftover.
         self.last_recon10_y = None;
         self.last_recon10_uv = None;
+        self.last_recon10_final = None;
         // The FULL-RD funnel's committed 10-bit canvas is the baseline (the
         // p0..p8 band). Where the level-only post-pass below also runs it
         // REPLACES the coded levels, so its recon supersedes this — the
@@ -3194,6 +3208,16 @@ impl EncodePipeline {
                 &cdef_params,
             );
         }
+        // bd10: the post-deblock / pre-CDEF 10-bit planes are the `after_cdef
+        // = 0` stripe-boundary context for the 10-bit LR apply (issue #13) —
+        // the 10-bit twin of `last_recon_pre_cdef` above, taken at the same
+        // point in the chain (dlf_process.c:134 saves them here in C).
+        let recon10_pre_cdef: Option<(Vec<u16>, Vec<u16>, Vec<u16>)> =
+            if seq_tools.enable_restoration {
+                recon10.clone()
+            } else {
+                None
+            };
         // bd10: apply CDEF to the 10-bit canvas too. Not for output — the u8
         // chain above still produces that — but because the Wiener LR search
         // reads the POST-CDEF recon, and at 10 bits that must be the 10-bit
@@ -3452,6 +3476,46 @@ impl EncodePipeline {
                         &rest_info,
                         &bounds,
                     );
+                    // Issue #13: the 10-bit canvas gets the SAME apply. The
+                    // search above picked these taps on the 10-bit recon and
+                    // the frame header signals them, so a decoder applies
+                    // them to its 10-bit output — until now no 10-bit plane
+                    // in the port ever received them. Same true extent, same
+                    // ALIGNED strides the 10-bit canvas is stored at (`w`
+                    // luma, `w / 2` chroma — see `tight10` above), boundary
+                    // lines from the 10-bit post-deblock (pre-CDEF) and
+                    // post-CDEF planes (C: rest_process.c on the 16-bit
+                    // recon picture, highbd = 1).
+                    if let (Some((y10, u10, v10)), Some((py10, pu10, pv10))) =
+                        (recon10.as_mut(), recon10_pre_cdef.as_ref())
+                    {
+                        let bounds10 = crate::restoration::save_lr_boundaries_bd::<u16>(
+                            py10,
+                            pu10,
+                            pv10,
+                            y10,
+                            u10,
+                            v10,
+                            lr_true_w,
+                            lr_true_h,
+                            w,
+                            w / 2,
+                            true,
+                        );
+                        crate::restoration::apply_restoration_frame_bd::<u16>(
+                            y10,
+                            u10,
+                            v10,
+                            lr_true_w,
+                            lr_true_h,
+                            w,
+                            w / 2,
+                            true,
+                            &rest_info,
+                            &bounds10,
+                            self.bit_depth,
+                        );
+                    }
                 }
                 self.last_lr_stats = (
                     [
@@ -3660,6 +3724,11 @@ impl EncodePipeline {
         }
         if self.recon_output {
             self.last_recon = Some((recon.clone(), u_recon.clone(), v_recon.clone()));
+            // Issue #13: the 10-bit final recon (deblock -> CDEF -> LR all
+            // applied to the 10-bit canvas). No superres arm: bd10 + superres
+            // is refused (`superres_config_error`), so the canvas is already
+            // at the output geometry.
+            self.last_recon10_final = recon10;
         }
         let ref_frame = ReferenceFrame {
             y_plane: recon,

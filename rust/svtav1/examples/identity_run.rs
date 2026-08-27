@@ -621,26 +621,47 @@ fn main() {
     // `last_recon` is at the ALIGNED stride; the crop to (true_w, true_h) is
     // what a decoder outputs. Chroma uses CEILING dims, matching the .yuv
     // layout and aomdec's y4m.
+    //
+    // At bd10 (issue #13) the dump is the 10-BIT final recon
+    // (`last_recon10_final`: deblock -> CDEF -> LR applied to the 10-bit
+    // canvas) as packed u16 LE in the same Y|U|V order — byte-comparable with
+    // aomdec's `C420p10` y4m, which is what `alignment_gate.sh`'s bd10 recon
+    // leg compares. Absent (a frame outside the bd10 envelope) is a hard
+    // error rather than a silent fallback to the u8 chain's recon, which is
+    // NOT what a 10-bit decoder outputs.
     if let Ok(path) = std::env::var("SVTAV1_FINAL_RECON") {
         let aw = pipeline.width as usize;
         let (tw2, th2) = (pipeline.true_width as usize, pipeline.true_height as usize);
         let (acw, tcw2, tch2) = (aw / 2, tw2.div_ceil(2), th2.div_ceil(2));
-        let crop = |p: &[u8], stride: usize, cw: usize, chh: usize| -> Vec<u8> {
+        fn crop<T: Copy>(p: &[T], stride: usize, cw: usize, chh: usize) -> Vec<T> {
             let mut o = Vec::with_capacity(cw * chh);
             for r in 0..chh {
                 o.extend_from_slice(&p[r * stride..r * stride + cw]);
             }
             o
-        };
-        let (ry, ru, rv) = pipeline
-            .last_recon
-            .as_ref()
-            .expect("with_recon_output(true) is set above");
-        let mut b = crop(ry, aw, tw2, th2);
-        if !ru.is_empty() {
-            b.extend_from_slice(&crop(ru, acw, tcw2, tch2));
-            b.extend_from_slice(&crop(rv, acw, tcw2, tch2));
         }
+        let b: Vec<u8> = if bd == 10 {
+            let (ry, ru, rv) = pipeline.last_recon10_final.as_ref().expect(
+                "SVTAV1_FINAL_RECON at bd10: last_recon10_final is None — this frame produced \
+                 no complete 10-bit recon (out of the bd10 envelope), so there is no 10-bit \
+                 final recon to dump; refusing to write the u8 chain's recon in its place",
+            );
+            let mut s = crop(ry, aw, tw2, th2);
+            s.extend_from_slice(&crop(ru, acw, tcw2, tch2));
+            s.extend_from_slice(&crop(rv, acw, tcw2, tch2));
+            s.iter().flat_map(|v| v.to_le_bytes()).collect()
+        } else {
+            let (ry, ru, rv) = pipeline
+                .last_recon
+                .as_ref()
+                .expect("with_recon_output(true) is set above");
+            let mut b = crop(ry, aw, tw2, th2);
+            if !ru.is_empty() {
+                b.extend_from_slice(&crop(ru, acw, tcw2, tch2));
+                b.extend_from_slice(&crop(rv, acw, tcw2, tch2));
+            }
+            b
+        };
         std::fs::write(&path, &b).expect("write SVTAV1_FINAL_RECON");
     }
     // bd10 diagnostic: dump the re-encode pass's true-10-bit LUMA recon (u16

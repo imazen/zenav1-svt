@@ -1973,6 +1973,32 @@ unsafe extern "C" {
         dst: *mut u16,
         dst_stride: i32,
     );
+    #[allow(clippy::too_many_arguments)]
+    fn ref_loop_restoration_filter_unit_highbd_bnd(
+        need_boundaries: u8,
+        h_start: i32,
+        h_end: i32,
+        v_start: i32,
+        v_end: i32,
+        rtype: i32,
+        vfilter: *const i16,
+        hfilter: *const i16,
+        bdry_above: *const u16,
+        bdry_below: *const u16,
+        bdry_stride: i32,
+        tile_left: i32,
+        tile_top: i32,
+        tile_right: i32,
+        tile_bottom: i32,
+        tile_stripe0: i32,
+        ss_x: i32,
+        ss_y: i32,
+        bit_depth: i32,
+        data: *mut u16,
+        stride: i32,
+        dst: *mut u16,
+        dst_stride: i32,
+    );
 }
 
 /// Reference `svt_av1_highbd_wiener_convolve_add_src_c` (convolve.c:200).
@@ -2123,6 +2149,61 @@ pub fn loop_restoration_filter_unit_highbd(
             rtype,
             vfilter.as_ptr(),
             hfilter.as_ptr(),
+            tile_rect.0,
+            tile_rect.1,
+            tile_rect.2,
+            tile_rect.3,
+            tile_stripe0,
+            ss_x,
+            ss_y,
+            bit_depth,
+            data.as_mut_ptr().add(data_origin),
+            stride as i32,
+            dst.as_mut_ptr().add(dst_origin),
+            dst_stride as i32,
+        );
+    }
+}
+
+/// Reference `svt_av1_loop_restoration_filter_unit` at `highbd = 1` with the
+/// stripe-boundary machinery live — the decoder-exact APPLY arm (issue #13).
+/// `bdry_above`/`bdry_below` are the `u16` boundary buffers at `bdry_stride`
+/// pixels (C's `RestorationStripeBoundaries` at `use_highbd`).
+#[allow(clippy::too_many_arguments)]
+pub fn loop_restoration_filter_unit_highbd_bnd(
+    need_boundaries: bool,
+    limits: (i32, i32, i32, i32),
+    rtype: u8,
+    vfilter: &[i16; 8],
+    hfilter: &[i16; 8],
+    bdry_above: &[u16],
+    bdry_below: &[u16],
+    bdry_stride: usize,
+    tile_rect: (i32, i32, i32, i32),
+    tile_stripe0: i32,
+    ss_x: i32,
+    ss_y: i32,
+    bit_depth: i32,
+    data: &mut [u16],
+    data_origin: usize,
+    stride: usize,
+    dst: &mut [u16],
+    dst_origin: usize,
+    dst_stride: usize,
+) {
+    unsafe {
+        ref_loop_restoration_filter_unit_highbd_bnd(
+            need_boundaries as u8,
+            limits.0,
+            limits.1,
+            limits.2,
+            limits.3,
+            rtype as i32,
+            vfilter.as_ptr(),
+            hfilter.as_ptr(),
+            bdry_above.as_ptr(),
+            bdry_below.as_ptr(),
+            bdry_stride as i32,
             tile_rect.0,
             tile_rect.1,
             tile_rect.2,

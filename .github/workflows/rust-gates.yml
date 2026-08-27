@@ -74,6 +74,14 @@ jobs:
         # nextest is the standard runner (faster, per-test isolation). It does
         # not run doctests; the workspace has 2 (svtav1/src/lib.rs, svtav1/src/avif.rs),
         # and `cargo test --doc` below is a guard if any are ever added.
+        #
+        # AOMDEC: `svtav1/tests/issue13_repro.rs` decodes its stream with the
+        # reference decoder built above and compares the encoder's published
+        # 10-bit recon against it. The test FAILS without a decoder (no silent
+        # skip); the only sanctioned skip is ZENAV1_SKIP_DECODER_TESTS=1, set
+        # by a caller, and this job has the decoder so it does not set it.
+        env:
+          AOMDEC: ${{ github.workspace }}/aom-build/aomdec
         run: |
           cargo nextest run --workspace --no-fail-fast
           cargo test --workspace --doc

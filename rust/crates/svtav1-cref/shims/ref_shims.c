@@ -925,6 +925,53 @@ void ref_loop_restoration_filter_unit_highbd(int32_t h_start, int32_t h_end, int
                                          /*optimized_lr*/ 0);
 }
 
+/* `svt_av1_loop_restoration_filter_unit` at highbd = 1 with the stripe-boundary
+   machinery live (need_boundaries selectable) — the decoder-exact APPLY arm
+   for the 10-bit recon (issue #13). C addresses the boundary buffers as
+   uint8_t* and scales every byte offset by `<< use_highbd`, so the uint16_t
+   buffers are handed over by pointer cast, exactly as the encoder's
+   `svt_av1_loop_restoration_filter_frame` does. */
+void ref_loop_restoration_filter_unit_highbd_bnd(uint8_t need_boundaries, int32_t h_start, int32_t h_end,
+                                                 int32_t v_start, int32_t v_end, int32_t rtype,
+                                                 const int16_t* vfilter, const int16_t* hfilter,
+                                                 const uint16_t* bdry_above, const uint16_t* bdry_below,
+                                                 int32_t bdry_stride, int32_t tile_left, int32_t tile_top,
+                                                 int32_t tile_right, int32_t tile_bottom, int32_t tile_stripe0,
+                                                 int32_t ss_x, int32_t ss_y, int32_t bit_depth, uint16_t* data,
+                                                 int32_t stride, uint16_t* dst, int32_t dst_stride) {
+    ref_rtcd_once();
+    RestorationTileLimits limits = {h_start, h_end, v_start, v_end};
+    Av1PixelRect          rect   = {tile_left, tile_top, tile_right, tile_bottom};
+    RestorationUnitInfo   rui;
+    memset(&rui, 0, sizeof(rui));
+    rui.restoration_type = (RestorationType)rtype;
+    memcpy(rui.wiener_info.vfilter, vfilter, 8 * sizeof(int16_t));
+    memcpy(rui.wiener_info.hfilter, hfilter, 8 * sizeof(int16_t));
+    RestorationStripeBoundaries rsb;
+    rsb.stripe_boundary_above  = (uint8_t*)bdry_above;
+    rsb.stripe_boundary_below  = (uint8_t*)bdry_below;
+    rsb.stripe_boundary_stride = bdry_stride;
+    rsb.stripe_boundary_size   = 0;
+    static RestorationLineBuffers rlbs; /* large; single-threaded tests */
+    svt_av1_loop_restoration_filter_unit(need_boundaries,
+                                         &limits,
+                                         &rui,
+                                         &rsb,
+                                         &rlbs,
+                                         &rect,
+                                         tile_stripe0,
+                                         ss_x,
+                                         ss_y,
+                                         /*highbd*/ 1,
+                                         bit_depth,
+                                         CONVERT_TO_BYTEPTR(data),
+                                         stride,
+                                         CONVERT_TO_BYTEPTR(dst),
+                                         dst_stride,
+                                         /*tmpbuf*/ NULL,
+                                         /*optimized_lr*/ 0);
+}
+
 /* Subexp-with-reference bit chain (tap coding). Returns the coded byte
    stream via the od_ec coder, so Rust can byte-compare its port. */
 void    svt_aom_write_primitive_refsubexpfin(AomWriter* w, uint16_t n, uint16_t k, uint16_t ref, uint16_t v);

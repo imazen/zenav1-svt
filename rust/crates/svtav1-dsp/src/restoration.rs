@@ -1109,16 +1109,24 @@ pub struct PixelRect {
     pub bottom: i32,
 }
 
-/// C `RestorationStripeBoundaries` (restoration.h:217), 8-bit only. Buffer
-/// column `i` corresponds to plane column `i - RESTORATION_EXTRA_HORZ`;
+/// C `RestorationStripeBoundaries` (restoration.h:217) at either bit depth.
+/// Buffer column `i` corresponds to plane column `i - RESTORATION_EXTRA_HORZ`;
 /// row `RESTORATION_CTX_VERT * frame_stripe + j` holds the j-th saved line
 /// of that stripe's boundary.
+///
+/// C keeps ONE `uint8_t*` buffer and scales every byte offset by
+/// `<< use_highbd` (restoration.c:249-400, :1492-1597); in PIXEL units the
+/// two depths are the same walk, which is what the type parameter expresses.
+/// `stride` is in pixels.
 #[derive(Clone, Debug, Default)]
-pub struct StripeBoundaries {
-    pub above: alloc::vec::Vec<u8>,
-    pub below: alloc::vec::Vec<u8>,
+pub struct StripeBoundariesT<T> {
+    pub above: alloc::vec::Vec<T>,
+    pub below: alloc::vec::Vec<T>,
     pub stride: usize,
 }
+
+/// The 8-bit boundaries (unchanged name for every existing caller).
+pub type StripeBoundaries = StripeBoundariesT<u8>;
 
 /// C `get_stripe_boundary_info` (restoration.c:216).
 fn get_stripe_boundary_info(limits: &TileLimits, tile_rect: &PixelRect, ss_y: i32) -> (bool, bool) {
@@ -1147,24 +1155,37 @@ fn get_stripe_boundary_info(limits: &TileLimits, tile_rect: &PixelRect, ss_y: i3
 }
 
 /// Line save/restore scratch — C `RestorationLineBuffers` (restoration.h:206),
-/// 8-bit, boundary rows only (the cdef/lr column buffers are unused in the
-/// single-tile path).
-struct LineBuffers {
-    above: [[u8; 400]; RESTORATION_BORDER as usize],
-    below: [[u8; 400]; RESTORATION_BORDER as usize],
+/// boundary rows only (the cdef/lr column buffers are unused in the
+/// single-tile path). C sizes the rows in BYTES (`tmp_save_above[..][RESTORATION_LINEBUFFER_WIDTH]`,
+/// 400 = `2 * RESTORATION_PROC_UNIT_SIZE * 2 + ...` at highbd), so 400 pixels
+/// per row covers both depths.
+struct LineBuffers<T> {
+    above: [[T; 400]; RESTORATION_BORDER as usize],
+    below: [[T; 400]; RESTORATION_BORDER as usize],
 }
 
-/// C `setup_processing_stripe_boundary` (restoration.c:249), opt=0, 8-bit.
+impl<T: Copy + Default> LineBuffers<T> {
+    fn new() -> Self {
+        LineBuffers {
+            above: [[T::default(); 400]; RESTORATION_BORDER as usize],
+            below: [[T::default(); 400]; RESTORATION_BORDER as usize],
+        }
+    }
+}
+
+/// C `setup_processing_stripe_boundary` (restoration.c:249), opt=0, at either
+/// bit depth (C's `use_highbd` only rescales the byte counts; every offset here
+/// is in pixels, so one body serves both).
 #[allow(clippy::too_many_arguments)]
-fn setup_processing_stripe_boundary(
+fn setup_processing_stripe_boundary<T: Copy>(
     limits: &TileLimits,
-    rsb: &StripeBoundaries,
+    rsb: &StripeBoundariesT<T>,
     rsb_row: i32,
     h: i32,
-    data: &mut [u8],
+    data: &mut [T],
     data_origin: usize,
     data_stride: usize,
-    rlbs: &mut LineBuffers,
+    rlbs: &mut LineBuffers<T>,
     copy_above: bool,
     copy_below: bool,
 ) {
@@ -1202,13 +1223,14 @@ fn setup_processing_stripe_boundary(
     }
 }
 
-/// C `restore_processing_stripe_boundary` (restoration.c:347), opt=0, 8-bit.
+/// C `restore_processing_stripe_boundary` (restoration.c:347), opt=0, at
+/// either bit depth (same pixel-unit walk as the setup above).
 #[allow(clippy::too_many_arguments)]
-fn restore_processing_stripe_boundary(
+fn restore_processing_stripe_boundary<T: Copy>(
     limits: &TileLimits,
-    rlbs: &LineBuffers,
+    rlbs: &LineBuffers<T>,
     h: i32,
-    data: &mut [u8],
+    data: &mut [T],
     data_origin: usize,
     data_stride: usize,
     copy_above: bool,
@@ -1276,6 +1298,86 @@ fn wiener_filter_stripe(
     }
 }
 
+/// The one per-depth kernel the unit filter needs: C's
+/// `wiener_filter_stripe` / `wiener_filter_stripe_highbd` split
+/// (restoration.c:399 / :987). Private — the public surface is the two typed
+/// entry points below.
+trait WienerStripePixel: Copy + Default {
+    #[allow(clippy::too_many_arguments)]
+    fn filter_stripe(
+        wiener: &WienerInfo,
+        stripe_width: i32,
+        stripe_height: i32,
+        procunit_width: i32,
+        src: &[Self],
+        src_origin: usize,
+        src_stride: usize,
+        dst: &mut [Self],
+        dst_origin: usize,
+        dst_stride: usize,
+        bd: i32,
+    );
+}
+
+impl WienerStripePixel for u8 {
+    fn filter_stripe(
+        wiener: &WienerInfo,
+        stripe_width: i32,
+        stripe_height: i32,
+        procunit_width: i32,
+        src: &[u8],
+        src_origin: usize,
+        src_stride: usize,
+        dst: &mut [u8],
+        dst_origin: usize,
+        dst_stride: usize,
+        _bd: i32,
+    ) {
+        wiener_filter_stripe(
+            wiener,
+            stripe_width,
+            stripe_height,
+            procunit_width,
+            src,
+            src_origin,
+            src_stride,
+            dst,
+            dst_origin,
+            dst_stride,
+        );
+    }
+}
+
+impl WienerStripePixel for u16 {
+    fn filter_stripe(
+        wiener: &WienerInfo,
+        stripe_width: i32,
+        stripe_height: i32,
+        procunit_width: i32,
+        src: &[u16],
+        src_origin: usize,
+        src_stride: usize,
+        dst: &mut [u16],
+        dst_origin: usize,
+        dst_stride: usize,
+        bd: i32,
+    ) {
+        wiener_filter_stripe_hbd(
+            wiener,
+            stripe_width,
+            stripe_height,
+            procunit_width,
+            src,
+            src_origin,
+            src_stride,
+            dst,
+            dst_origin,
+            dst_stride,
+            bd,
+        );
+    }
+}
+
 /// C `svt_av1_loop_restoration_filter_unit` (restoration.c:1040), 8-bit,
 /// wiener/none only (sgrproj is never searched or signaled at the ported
 /// presets — sg_filter_lvl = 0).
@@ -1302,6 +1404,93 @@ pub fn loop_restoration_filter_unit(
     dst_origin: usize,
     dst_stride: usize,
 ) {
+    filter_unit_impl(
+        need_boundaries,
+        limits,
+        rtype,
+        wiener,
+        rsb,
+        tile_rect,
+        tile_stripe0,
+        ss_x,
+        ss_y,
+        data,
+        data_origin,
+        stride,
+        dst,
+        dst_origin,
+        dst_stride,
+        8,
+    );
+}
+
+/// C `svt_av1_loop_restoration_filter_unit` (restoration.c:1040) at
+/// `highbd = 1` with BOTH `need_boundaries` arms — the decoder-exact APPLY
+/// twin of [`loop_restoration_filter_unit`] for the 10-bit recon (issue #13).
+///
+/// The stripe split, the boundary save/substitute/restore and the RESTORE_NONE
+/// copy are the same pixel-unit walk as at 8 bits (C only rescales byte
+/// counts by `use_highbd`); the convolve is `wiener_filter_stripe_highbd`.
+/// [`loop_restoration_filter_unit_search_hbd`] remains the boundary-less
+/// search arm and is untouched.
+#[allow(clippy::too_many_arguments)]
+pub fn loop_restoration_filter_unit_hbd(
+    need_boundaries: bool,
+    limits: &TileLimits,
+    rtype: u8,
+    wiener: &WienerInfo,
+    rsb: &StripeBoundariesT<u16>,
+    tile_rect: &PixelRect,
+    tile_stripe0: i32,
+    ss_x: i32,
+    ss_y: i32,
+    data: &mut [u16],
+    data_origin: usize,
+    stride: usize,
+    dst: &mut [u16],
+    dst_origin: usize,
+    dst_stride: usize,
+    bd: i32,
+) {
+    filter_unit_impl(
+        need_boundaries,
+        limits,
+        rtype,
+        wiener,
+        rsb,
+        tile_rect,
+        tile_stripe0,
+        ss_x,
+        ss_y,
+        data,
+        data_origin,
+        stride,
+        dst,
+        dst_origin,
+        dst_stride,
+        bd,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn filter_unit_impl<T: WienerStripePixel>(
+    need_boundaries: bool,
+    limits: &TileLimits,
+    rtype: u8,
+    wiener: &WienerInfo,
+    rsb: &StripeBoundariesT<T>,
+    tile_rect: &PixelRect,
+    tile_stripe0: i32,
+    ss_x: i32,
+    ss_y: i32,
+    data: &mut [T],
+    data_origin: usize,
+    stride: usize,
+    dst: &mut [T],
+    dst_origin: usize,
+    dst_stride: usize,
+    bd: i32,
+) {
     let unit_h = limits.v_end - limits.v_start;
     let unit_w = limits.h_end - limits.h_start;
     let data_tl = data_origin + limits.v_start as usize * stride + limits.h_start as usize;
@@ -1319,10 +1508,7 @@ pub fn loop_restoration_filter_unit(
     debug_assert_eq!(rtype, RESTORE_WIENER);
 
     let procunit_width = RESTORATION_PROC_UNIT_SIZE >> ss_x;
-    let mut rlbs = LineBuffers {
-        above: [[0; 400]; RESTORATION_BORDER as usize],
-        below: [[0; 400]; RESTORATION_BORDER as usize],
-    };
+    let mut rlbs = LineBuffers::<T>::new();
 
     let mut remaining = *limits;
     let mut i = 0i32;
@@ -1355,7 +1541,7 @@ pub fn loop_restoration_filter_unit(
                 copy_below,
             );
         }
-        wiener_filter_stripe(
+        T::filter_stripe(
             wiener,
             unit_w,
             h,
@@ -1366,6 +1552,7 @@ pub fn loop_restoration_filter_unit(
             dst,
             dst_tl + i as usize * dst_stride,
             dst_stride,
+            bd,
         );
         if need_boundaries {
             restore_processing_stripe_boundary(
@@ -1447,9 +1634,10 @@ pub fn foreach_rest_unit_in_tile(
     }
 }
 
-/// C `extend_lines` (restoration.c:1492), 8-bit.
-fn extend_lines(
-    buf: &mut [u8],
+/// C `extend_lines` (restoration.c:1492); the `use_highbitdepth` arm is the
+/// same fill in `uint16_t` units, so one generic body.
+fn extend_lines<T: Copy>(
+    buf: &mut [T],
     start: usize,
     width: usize,
     height: usize,
@@ -1465,10 +1653,11 @@ fn extend_lines(
     }
 }
 
-/// C `svt_aom_save_deblock_boundary_lines` (restoration.c:1507), no superres.
+/// C `svt_aom_save_deblock_boundary_lines` (restoration.c:1507), no superres,
+/// either bit depth (`use_highbd` there only rescales byte counts).
 #[allow(clippy::too_many_arguments)]
-fn save_deblock_boundary_lines(
-    src: &[u8],
+fn save_deblock_boundary_lines<T: Copy>(
+    src: &[T],
     src_origin: usize,
     src_stride: usize,
     src_width: i32,
@@ -1476,7 +1665,7 @@ fn save_deblock_boundary_lines(
     row: i32,
     stripe: i32,
     is_above: bool,
-    boundaries: &mut StripeBoundaries,
+    boundaries: &mut StripeBoundariesT<T>,
 ) {
     let bdry_buf = if is_above {
         &mut boundaries.above
@@ -1511,17 +1700,18 @@ fn save_deblock_boundary_lines(
     );
 }
 
-/// C `svt_aom_save_cdef_boundary_lines` (restoration.c:1561), no superres.
+/// C `svt_aom_save_cdef_boundary_lines` (restoration.c:1561), no superres,
+/// either bit depth.
 #[allow(clippy::too_many_arguments)]
-fn save_cdef_boundary_lines(
-    src: &[u8],
+fn save_cdef_boundary_lines<T: Copy>(
+    src: &[T],
     src_origin: usize,
     src_stride: usize,
     src_width: i32,
     row: i32,
     stripe: i32,
     is_above: bool,
-    boundaries: &mut StripeBoundaries,
+    boundaries: &mut StripeBoundariesT<T>,
 ) {
     let bdry_buf = if is_above {
         &mut boundaries.above
@@ -1550,16 +1740,20 @@ fn save_cdef_boundary_lines(
 /// C `svt_aom_save_tile_row_boundary_lines` (restoration.c:1591): one tile
 /// row spanning the whole frame. `after_cdef=false` saves deblocked context,
 /// `true` saves CDEF context where deblocked context was NOT saved.
+///
+/// Generic over the pixel type: `u8` is the existing 8-bit path (every caller
+/// infers it), `u16` is the highbd twin the 10-bit apply needs (issue #13) —
+/// C's `use_highbd` flag only rescales byte counts inside the helpers.
 #[allow(clippy::too_many_arguments)]
-pub fn save_tile_row_boundary_lines(
-    src: &[u8],
+pub fn save_tile_row_boundary_lines<T: Copy>(
+    src: &[T],
     src_origin: usize,
     src_stride: usize,
     src_width: i32,
     src_height: i32,
     ss_y: i32,
     after_cdef: bool,
-    boundaries: &mut StripeBoundaries,
+    boundaries: &mut StripeBoundariesT<T>,
 ) {
     let stripe_height = RESTORATION_PROC_UNIT_SIZE >> ss_y;
     let stripe_off = RESTORATION_UNIT_OFFSET >> ss_y;
@@ -1647,15 +1841,26 @@ pub fn save_tile_row_boundary_lines(
 /// (restoration.c:1685): rows for `ceil((8 + mi_rows*4) / 64)` stripes at a
 /// 32-aligned `plane_w + 8` stride.
 pub fn alloc_stripe_boundaries(frame_width: i32, frame_height: i32, ss_x: i32) -> StripeBoundaries {
+    alloc_stripe_boundaries_t::<u8>(frame_width, frame_height, ss_x)
+}
+
+/// [`alloc_stripe_boundaries`] at any pixel type (`u16` for the 10-bit apply).
+/// C allocates `stripe_boundary_size << use_highbd` BYTES (restoration.c:1685-
+/// 1700) — the same number of pixels at either depth.
+pub fn alloc_stripe_boundaries_t<T: Copy + Default>(
+    frame_width: i32,
+    frame_height: i32,
+    ss_x: i32,
+) -> StripeBoundariesT<T> {
     let ext_h = RESTORATION_UNIT_OFFSET + frame_height;
     let num_stripes = (ext_h + 63) / 64;
     let plane_w = ((frame_width + ss_x) >> ss_x) + 2 * RESTORATION_EXTRA_HORZ;
     // ALIGN_POWER_OF_TWO(plane_w, 5)
     let stride = ((plane_w + 31) & !31) as usize;
     let size = num_stripes as usize * stride * RESTORATION_CTX_VERT as usize;
-    StripeBoundaries {
-        above: alloc::vec![0u8; size],
-        below: alloc::vec![0u8; size],
+    StripeBoundariesT {
+        above: alloc::vec![T::default(); size],
+        below: alloc::vec![T::default(); size],
         stride,
     }
 }

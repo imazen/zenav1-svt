@@ -376,3 +376,127 @@ fn highbd_sse_region_matches_c() {
         assert_eq!(ours, theirs, "iter {iter} w{w} h{h} class {class_}");
     }
 }
+
+/// The decoder-exact APPLY arm at highbd (issue #13): full unit filter parity
+/// WITH the stripe-boundary machinery — random frame sizes (luma and
+/// subsampled chroma geometry, odd sizes), random `u16` boundary buffer
+/// contents standing in for the saved deblock/CDEF lines, both
+/// `need_boundaries` arms, `RESTORE_NONE` copies. `data` must also be
+/// identical AFTER the call: setup/restore must undo its temporary
+/// substitutions exactly, at the highbd byte scale C applies to every
+/// offset. The 8-bit twin is `c_parity_wiener.rs::filter_unit_matches_c`.
+#[test]
+fn highbd_filter_unit_with_boundaries_matches_c() {
+    let mut rng = Rng(0x5EED_0013);
+    for iter in 0..200 {
+        let ss = (iter % 2) as i32;
+        let plane_w = (8 + rng.range(140) as i32) >> ss << ss.max(0);
+        let plane_h = (8 + rng.range(140) as i32) >> ss << ss.max(0);
+        let pw = (plane_w >> ss).max(1);
+        let ph = (plane_h >> ss).max(1);
+
+        let b = 4usize;
+        let stride = pw as usize + 2 * b;
+        let rows = ph as usize + 2 * b;
+        let origin = b * stride + b;
+
+        let mut data = vec![0u16; stride * rows];
+        fill10(&mut rng, &mut data, iter % 3);
+        rst::extend_frame(&mut data, origin, pw as usize, ph as usize, stride, 3, 3);
+
+        let mut bnd = rst::alloc_stripe_boundaries_t::<u16>(plane_w, plane_h, ss);
+        for v in bnd.above.iter_mut() {
+            *v = rng.px10();
+        }
+        for v in bnd.below.iter_mut() {
+            *v = rng.px10();
+        }
+
+        let tile_rect = (0i32, 0i32, pw, ph);
+        let need_boundaries = iter % 4 != 3;
+        let rtype = if iter % 8 == 7 {
+            rst::RESTORE_NONE
+        } else {
+            rst::RESTORE_WIENER
+        };
+        let win5 = iter % 3 == 0;
+        let vf = random_filter(&mut rng, win5);
+        let hf = random_filter(&mut rng, win5);
+        let limits = (0i32, pw, 0i32, ph);
+
+        let mut data_c = data.clone();
+        let mut data_r = data.clone();
+        let mut dst_c = vec![0u16; stride * rows];
+        let mut dst_r = vec![0u16; stride * rows];
+
+        cref::loop_restoration_filter_unit_highbd_bnd(
+            need_boundaries,
+            limits,
+            rtype,
+            &vf,
+            &hf,
+            &bnd.above,
+            &bnd.below,
+            bnd.stride,
+            tile_rect,
+            0,
+            ss,
+            ss,
+            10,
+            &mut data_c,
+            origin,
+            stride,
+            &mut dst_c,
+            origin,
+            stride,
+        );
+        let rlimits = rst::TileLimits {
+            h_start: limits.0,
+            h_end: limits.1,
+            v_start: limits.2,
+            v_end: limits.3,
+        };
+        let rrect = rst::PixelRect {
+            left: tile_rect.0,
+            top: tile_rect.1,
+            right: tile_rect.2,
+            bottom: tile_rect.3,
+        };
+        let wi = rst::WienerInfo {
+            vfilter: vf,
+            hfilter: hf,
+        };
+        rst::loop_restoration_filter_unit_hbd(
+            need_boundaries,
+            &rlimits,
+            rtype,
+            &wi,
+            &bnd,
+            &rrect,
+            0,
+            ss,
+            ss,
+            &mut data_r,
+            origin,
+            stride,
+            &mut dst_r,
+            origin,
+            stride,
+            10,
+        );
+
+        for y in 0..ph as usize {
+            for x in 0..pw as usize {
+                assert_eq!(
+                    dst_c[origin + y * stride + x],
+                    dst_r[origin + y * stride + x],
+                    "dst diverges iter {iter} px ({x},{y}) pw{pw} ph{ph} ss{ss} nb={need_boundaries} rtype={rtype}"
+                );
+            }
+        }
+        assert_eq!(
+            data_c, data_r,
+            "post-call data diverges iter {iter} (highbd setup/restore mismatch)"
+        );
+    }
+}

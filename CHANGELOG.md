@@ -43,6 +43,29 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Fixed
 
+- **The 10-bit reconstruction never received the loop restoration it
+  signalled — issue #13.** `recon10` fed the Wiener SEARCH (taps picked on
+  10-bit data, signalled in the frame header) but only the u8 chain was handed
+  to `apply_restoration_frame`, so no 10-bit plane in the port ever carried the
+  filter a conforming decoder applies — and nothing could observe it, because
+  no post-filter 10-bit recon was published. Now: the DSP stripe-boundary
+  machinery (`StripeBoundariesT<T>`, `save_tile_row_boundary_lines`,
+  setup/restore) is generic over the pixel type with the u8 names unchanged,
+  `loop_restoration_filter_unit_hbd` is the highbd apply arm WITH boundaries
+  (C `svt_av1_loop_restoration_filter_unit` at `highbd = 1`, pinned by the new
+  `highbd_filter_unit_with_boundaries_matches_c` differential — 200 random
+  cells, both `need_boundaries` arms, `data` restored exactly), the encoder's
+  `save_lr_boundaries_bd` / `apply_restoration_frame_bd` are the generic
+  bodies (u8 delegates, byte-neutral by construction), and the pipeline
+  applies LR to the 10-bit canvas with boundary lines from the 10-bit
+  post-deblock / post-CDEF planes. Published as the additive
+  `EncodePipeline::last_recon10_final` (deblock -> CDEF -> LR on the 10-bit
+  canvas; the 10-bit twin of `last_recon`, `with_recon_output` gated).
+  Witness `svtav1/tests/issue13_repro.rs`: 383x512 bd10 p6 q40 (luma Wiener
+  fires) — `last_recon10_final` == `aomdec` sample for sample; with the apply
+  disabled 175,734 samples differ. `SVTAV1_FINAL_RECON` dumps the 10-bit final
+  recon (u16 LE) at bd10, and `alignment_gate.sh`'s RECON leg now runs at
+  BOTH bit depths (it was bd8-only because nothing 10-bit was comparable).
 - **The MDS3 independent-chroma search ran on blocks where C skips it —
   issue #15 closed at 648/648** (`leaf_funnel.rs`). C gates
   `search_best_mds3_uv_mode` on `perform_ind_uv_search_last_mds`
