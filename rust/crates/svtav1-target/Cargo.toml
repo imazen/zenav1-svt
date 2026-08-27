@@ -9,3 +9,6 @@ description = "zensim HDR target loop for the zenav1-svt still encoder (wave: be
 # The encoder facade only — the judge is INJECTED by the harness (wave md
 # chunk-2 final shape), so this crate carries ZERO metric dependencies.
 zenav1-svt = { path = "../../svtav1", package = "zenav1-svt" }
+
+[dev-dependencies]
+png = "0.18"

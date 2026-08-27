@@ -80,3 +80,25 @@ judge)` owns EncodePipeline+recon+bracketed-search and takes
 fleet-proven judge (and can also wire route (b) later with zero crate
 change). The crate keeps ZERO metric dependencies; the BT.2020nc matrix
 note from the earlier design moves to the harness with the judge.
+
+## PHASE-B CENSUS RESULT (2026-08-27) — the baseline, CLOSED
+Harness `rust/crates/svtav1-target/examples/zensim_census.rs`: judge =
+shelled `zenmetrics score --metric zensim --hdr` per trial (drift-free);
+in-harness math = the mirrored `to_yuv420_bd10` + its inverse
+(round-trip-gated in-binary; the gate caught an out-of-gamut TEST pattern
+on first run — physical-pattern fix, matrix unchanged) + a cICP splice
+([1,16,0,1], mirroring the corpus refs) the judge's PQ gate requires.
+
+| k | median \|err\| | ±2 hits | t70 | t80 | t88 | large/mid/small |
+|---|---|---|---|---|---|---|
+| 2 | 17.638 | 1/27 | 8.68 | 18.68 | 26.68 | 23.5 / 19.6 / 16.8 |
+| 3 | **7.431** | 9/27 | 7.64 | **1.20** | 8.76 | 7.4 / 7.6 / 6.3 |
+
+Blind-midpoint seeding over qp∈[1,63] dominates the error (t88 furthest
+from the midpoint, worst at k2; one extra bisection halves the median) —
+the family's seed-staircase/head levers have their HDR value proposition
+QUANTIFIED here; those arms register separately with the family bars.
+t88's k3 residual includes a reachability question (some scenes may not
+reach 88 on this judge at qp=1) — held in the per-scene TSVs for the next
+arm's registration. Cells + logs:
+`/mnt/v/output/zenav1-svt/instrument-census-2026-08-27/`.
