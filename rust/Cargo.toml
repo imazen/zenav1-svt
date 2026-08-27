@@ -6,6 +6,7 @@ members = [
     "crates/svtav1-entropy",
     "crates/svtav1-encoder",
     "crates/svtav1-cref",
+    "crates/svtav1-target",
     "svtav1",
 ]
 resolver = "3"
