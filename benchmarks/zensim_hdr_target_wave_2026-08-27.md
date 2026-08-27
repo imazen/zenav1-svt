@@ -102,3 +102,31 @@ t88's k3 residual includes a reachability question (some scenes may not
 reach 88 on this judge at qp=1) — held in the per-scene TSVs for the next
 arm's registration. Cells + logs:
 `/mnt/v/output/zenav1-svt/instrument-census-2026-08-27/`.
+
+## SEED ARM S1/S2 — REGISTERED 2026-08-27 ~12:4xZ (FROZEN pre-fit)
+
+The census quantified the blind-midpoint seed as the dominant error source
+(k2 17.638 / k3 7.431). This arm builds the family's one-shot seed in the
+sanctioned consts form (feedback_no_zenpredict_in_codecs).
+
+**Fit rule (frozen before computing any constant):**
+- Data: hdrgrid zenav1-svt cells, zensim from the ERA-B slice ONLY
+  (`zensim_scores_by_judge_era.parquet`, judge era B-9dffa5ca), q→qp via the
+  fleet's `svt_q_to_qp` (qp = round(63−q·63/100)); the 9 census instrument
+  SCENES are EXCLUDED from the fit (all their renditions) — census honesty.
+- Oracle per (rendition, t∈{70,80,88}): qp* = qp of the cell whose era-B
+  zensim is nearest t (unreachable→qp*=1).
+- **S1** = median qp* per t (3 consts). **S2** = median qp* per
+  (t, pixel-count tercile) (9 consts). Seeds clamp to [1,63].
+- Census phase-C: the SAME frozen 27-cell instrument + harness, seed table
+  injected via `TargetOptions.qp_start`; k2 + k3; judge unchanged.
+
+**Gates (frozen):** an arm PASSES if k2 median |err| ≤ 13.23 (≥25%
+improvement over the censused 17.638) AND k3 median |err| ≤ 7.93 (baseline
+7.431 + 0.5 tolerance — the seed must not hurt the 3-encode budget). ±2
+hits + per-t reported. Ties between S1/S2 break toward FEWER consts (S1).
+FAIL both ⇒ the anchor form is insufficient on this corpus; a learned head
+registers separately (never ships inside the codec per the standing rule).
+
+### Fit + census results
+(post-run)
