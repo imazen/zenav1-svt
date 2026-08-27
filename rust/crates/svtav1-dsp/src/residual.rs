@@ -246,7 +246,6 @@ pub fn sse_i32(a: &[i32], b: &[i32]) -> u64 {
     incant!(sse_i32_impl(a, b), [v3, neon, scalar])
 }
 
-
 /// Bit-exact transcription of `svt_full_distortion_kernel32_bits_c`'s RESIDUAL
 /// term (`Codec/pic_operators.c:86`):
 ///
