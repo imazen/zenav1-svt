@@ -63,3 +63,7 @@ pinned cell without closing one — gradient 64x64 p0/p1/p2/p3 2949/2969/2969/29
 (C 2854/2965/2965/2973), diag 64x64 p0/p1/p2/p3 558/1366/1366/1391 B (C
 341/1264/1264/1268), all still lossless. Reverted; the C-side PD0 cost dump is
 the next step (rust/CLAUDE.md, "FIXED 2026-08-28 — coded-lossless").
+
+CI subset (`LL_DIMS="64x64 96x80"`, 72 cells) on the same arm64 host: 56 / 72
+byte-identical + 16 pinned, 72/72 lossless, 57 s wall — the budget the
+workflow step carries.

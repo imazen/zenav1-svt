@@ -47,7 +47,10 @@ different host and must be recorded as such (`benchmarks/*.meta`).
 
 Notes:
 - "Build C reference" (141 s) is the cost the 2026-08-28 `actions/cache` step
-  removes on a submodule-SHA hit (issue #4 invariant C).
+  removes on a submodule-SHA hit (issue #4 invariant C). MEASURED on the
+  first run that could hit (33155232145, the third push after the cache
+  landed — the first two runs overlapped and both missed): cache restored,
+  "Build C reference" 9 s (08:25:10 -> 08:25:19), i.e. 132 s saved per run.
 - The pure-Rust matrix jobs in the same run: windows-11-arm 7m23s,
   macos-15-intel 5m02s, i686 via cross 1m55s (facade tests only, no C).
 - Corpus-gated gates (`photo_p0_gate`, `bd10_photo_gate`, `screen_*`,
