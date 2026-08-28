@@ -255,6 +255,29 @@ int main(int argc, char** argv) {
         cfg.tune = (uint8_t)atoi(tune_env);
     }
 
+    /* Issue #9 items 3-5 — three MAINLINE config knobs, each absent => the
+     * library default => every pre-existing cell unchanged.
+     *   SVT_MAX_TX_SIZE=32|64  -> cfg.max_tx_size (default 64,
+     *       enc_settings.c:1179; consumed enc_dec_process.c:1494-1500/:1815).
+     *   SVT_CRF_OFFSET=<0..3>  -> cfg.extended_crf_qindex_offset, the
+     *       quarter-step remainder of a fractional --crf (str_to_crf,
+     *       enc_settings.c:1662-1669; consumed rc_crf_cqp.c:471). `--crf 35.25`
+     *       == qp 35 + offset 1.
+     *   SVT_CSP=<0..2>         -> cfg.chroma_sample_position (default
+     *       EB_CSP_UNKNOWN, enc_settings.c:1112; written entropy_coding.c:2743). */
+    const char* max_tx_env = getenv("SVT_MAX_TX_SIZE");
+    if (max_tx_env) {
+        cfg.max_tx_size = (uint8_t)atoi(max_tx_env);
+    }
+    const char* crf_off_env = getenv("SVT_CRF_OFFSET");
+    if (crf_off_env) {
+        cfg.extended_crf_qindex_offset = (uint8_t)atoi(crf_off_env);
+    }
+    const char* csp_env = getenv("SVT_CSP");
+    if (csp_env) {
+        cfg.chroma_sample_position = (EbChromaSamplePosition)atoi(csp_env);
+    }
+
     /* Superres (superres chunk B.3): SVT_SUPERRES_KF_DENOM sets
      * `superres_mode = SUPERRES_FIXED(1)` + `superres_kf_denom = D`.
      * MEASURED: for a STILL (KEY) frame the KF denominator is the one that

@@ -29,12 +29,57 @@ Crates are not published to crates.io yet — depend by git.
   regression_spotcheck 33/33, decode_conformance 1260 + 1575 / 0 failed.
   Nothing is published yet, so this is a pre-release rename, not a semver
   event.
+- **`crate::pd0::pd0_pick_sb_partition{,_lvl0,_m6,_m6_eval}` take a
+  `lambda_weight: u32` after `qindex` (issue #9 item 4, 2026-08-28).** C's
+  frame `lambda_weight` (`pcs->lambda_weight`, enc_mode_config.c:10093-10115)
+  is a frame-level fact — the tune-IQ curve, the PSNR ladder, and the
+  extended-CRF bump — that these entry points cannot derive from their `qp`
+  argument once a fractional CRF moves `picture_qp` off `static_config.qp`.
+  Callers pass `pd0::frame_lambda_weight(picture_qp, tune_iq, bump)`;
+  `frame_lambda_weight(qp, false, 0)` reproduces the previous internal ladder
+  exactly, so the change is byte-neutral at CRF offset 0.
 - None queued otherwise. `EncodePipeline`'s new surface (`try_encode_frame_420_hbd`,
   `try_encode_frame_hbd`, `with_superres`) is additive; the `SeqTools` and
   `ScSignal` structs gained fields (`enable_superres`, `superres`), which is a
   break only for out-of-crate struct literals — there are none.
 
 ### Added
+
+- **Fractional CRF — issue #9 item 4.** `RcConfig` gains
+  `extended_crf_qindex_offset: u8` (quarter-qindex steps) and the
+  `RcConfig::crf(f32)` constructor that splits a fractional `--crf` exactly as
+  C's `str_to_crf` does (enc_settings.c:1655-1670): `--crf 35.25` is
+  `qp = 35, offset = 1`. The offset is consumed where C consumes it —
+  `scs_qindex = clamp_qindex(quantizer_to_qindex[qp] +
+  extended_crf_qindex_offset)` (rc_crf_cqp.c:471) — and the extended
+  63.25..70 range's frame `lambda_weight` bump (`+= offset * 28`,
+  enc_mode_config.c:10109-10114) is applied too. **The port now keeps C's TWO
+  qp values apart:** `static_config.qp` (the CLI value, unchanged by the
+  offset) still keys every level derivation, while `ppcs->picture_qp =
+  (base_q_idx + 2) >> 2` (rc_process.c:861) keys only the frame
+  `lambda_weight` ladder. Collapsing both onto the qindex-derived value
+  diverged from C at preset 2 / qp 20 / offsets 2-3 — measured, then fixed.
+  Offset 0 makes the two equal, so every pre-existing cell is unchanged.
+  **Gate: `tools/issue9_knobs_gate.sh`, fractional-CRF cells 19/19
+  byte-identical to the C oracle** (presets 2/6/10 x qp 20/40 x offsets 1-3,
+  plus the qp-63 extended-range cell), with an anti-vacuity check that fails
+  if a knob never moves the C oracle's own bytes.
+- **`max_tx_size` (32|64) — issue #9 item 3, now byte-gated.** Already
+  threaded through the PD0 scan and the depth refinement
+  (enc_dec_process.c:1494-1500 / :1815); `tools/issue9_knobs_gate.sh` adds the
+  C-oracle cells that prove it: **9/9 byte-identical** at
+  `max_tx_size = 32` over presets 2/6/10 x qp 20/40/55.
+- **`chroma_sample_position` — issue #9 item 5.**
+  `EncodePipeline::with_chroma_sample_position(0|1|2)` writes the two 4:2:0
+  `color_config` bits C writes from `static_config.chroma_sample_position`
+  (entropy_coding.c:2743); 3 is reserved and refused at encode time, matching
+  `verify_settings` (enc_settings.c:762). Default 0 (CSP_UNKNOWN) keeps every
+  pre-existing stream bit-identical. **Gate: 2/2 byte-identical** cells
+  (vertical + colocated).
+- **`EncodePipeline::knob_config_error`** refuses the three configurations C
+  rejects in `svt_av1_verify_settings` rather than encoding them:
+  `max_tx_size` outside {32, 64}, an `extended_crf_qindex_offset` above 3
+  (or above 28 at qp 63), and `chroma_sample_position > 2`.
 
 - **Coded-lossless (QP 0) ENCODES — issue #5 chunk 2, the tile half.** The
   refusal is gone on the 8-bit 4:2:0 still path (mainline mode, no

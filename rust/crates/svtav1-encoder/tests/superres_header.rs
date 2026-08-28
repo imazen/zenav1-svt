@@ -39,6 +39,7 @@ fn p6_tools(enable_superres: bool) -> SeqTools {
         enable_restoration: true,
         use_128x128_superblock: false,
         enable_superres,
+        chroma_sample_position: 0,
     }
 }
 

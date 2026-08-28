@@ -41,6 +41,20 @@ pub struct RcConfig {
     /// everything downstream (quantizer tables, frame-header base_q_idx,
     /// CDF q bucket, deblock picker) operates on the resulting qindex.
     pub qp: u8,
+    /// C `extended_crf_qindex_offset` (issue #9 item 4, FRACTIONAL CRF):
+    /// the quarter-step remainder of a fractional `--crf`, in QINDEX units.
+    /// `--crf 35.25` is `qp = 35, offset = 1`; `35.5` -> 2; `35.75` -> 3
+    /// (`str_to_crf`, enc_settings.c:1662-1669). Consumed exactly where C
+    /// consumes it — `scs_qindex = clamp_qindex(quantizer_to_qindex[qp] +
+    /// extended_crf_qindex_offset)` (rc_crf_cqp.c:471), with `picture_qp`
+    /// re-derived as `(base_q_idx + 2) >> 2` (rc_process.c:861). `0` (the
+    /// default) is byte-identical to the integer-qp encode. Use
+    /// [`RcConfig::crf`] to fill both fields from one `f32`.
+    ///
+    /// Valid: `0..=3` for `qp < 63`; C's extended range 63.25..70 maps to
+    /// `qp == 63` with an offset up to 28 (`verify_settings`,
+    /// enc_settings.c:270). Anything else is refused at encode time.
+    pub extended_crf_qindex_offset: u8,
     /// Target bitrate in kbps (for VBR/CBR).
     pub target_bitrate: u32,
     /// Maximum bitrate in kbps (for VBR/CBR).
@@ -60,6 +74,31 @@ pub struct RcConfig {
     pub aq_mode: u8,
 }
 
+impl RcConfig {
+    /// A CRF/CQP config from a FRACTIONAL `--crf` value, exactly as C's
+    /// `str_to_crf` (enc_settings.c:1655-1670) splits it: `qp = min(63,
+    /// trunc(crf))`, `extended_crf_qindex_offset = trunc(crf * 4) - qp * 4`
+    /// (quarter-qindex steps; 0..=3 below 63, up to 28 for the extended
+    /// 63.25..70 range). Negative or NaN input is treated as 0.0, > 70 is
+    /// clamped to 70 (C rejects those at `verify_settings`). Every other
+    /// field is the default.
+    pub fn crf(crf: f32) -> Self {
+        let crf = if crf.is_nan() {
+            0.0
+        } else {
+            crf.clamp(0.0, 70.0)
+        };
+        let extended_q_index = (crf * 4.0) as u32;
+        let qp = (crf as u32).min(63);
+        Self {
+            mode: RcMode::Crf,
+            qp: qp as u8,
+            extended_crf_qindex_offset: (extended_q_index - qp * 4) as u8,
+            ..Self::default()
+        }
+    }
+}
+
 impl Default for RcConfig {
     fn default() -> Self {
         Self {
@@ -70,6 +109,7 @@ impl Default for RcConfig {
             // --qp/--crf. The port previously defaulted to 30 with no cited
             // provenance.
             qp: 35,
+            extended_crf_qindex_offset: 0,
             target_bitrate: 0,
             max_bitrate: 0,
             buffer_size_ms: 1000,
@@ -138,6 +178,41 @@ pub const QUANTIZER_TO_QINDEX: [u8; 64] = [
 /// (the CLI boundary clamp — the only place the 0..63 range is enforced).
 pub fn qp_to_qindex(qp: u8) -> u8 {
     QUANTIZER_TO_QINDEX[qp.min(63) as usize]
+}
+
+/// C `svt_av1_rc_calc_qindex_crf_cqp` (rc_crf_cqp.c:471-513) for a still:
+/// `scs_qindex = clamp_qindex(quantizer_to_qindex[qp] +
+/// extended_crf_qindex_offset)`; `cqp_qindex_calc` returns it unchanged on
+/// `allintra` (:396-398); then the extended-CRF-range compression
+/// `new_qindex += (MAXQ - new_qindex) * offset / 56` fires only at
+/// `qp == MAX_QP_VALUE (63)` (:510-512). `clamp_qindex` clamps to the
+/// qindexes of `min_qp_allowed..max_qp_allowed`, whose C defaults are 0..63
+/// -> 0..255, i.e. a `u8` saturation here. With `offset == 0` this is
+/// exactly [`qp_to_qindex`], so every integer-qp encode is unchanged.
+///
+/// The `qp == 63` arm is inert with the default qp clamps — 255 + anything
+/// saturates to 255 and `(255 - 255) * k / 56 == 0` — and is kept because
+/// dead-looking C stays translated (rust/CLAUDE.md).
+pub fn qp_to_qindex_with_offset(qp: u8, extended_crf_qindex_offset: u8) -> u8 {
+    let qp = qp.min(63);
+    let mut q = (u32::from(QUANTIZER_TO_QINDEX[qp as usize])
+        + u32::from(extended_crf_qindex_offset))
+    .min(255);
+    if qp == 63 && extended_crf_qindex_offset != 0 {
+        q += (255 - q) * u32::from(extended_crf_qindex_offset) / 56;
+        q = q.min(255);
+    }
+    q as u8
+}
+
+/// C `picture_qp` after rate control: `clamp_qp((base_q_idx + 2) >> 2)`
+/// (rc_process.c:861). For every qindex [`qp_to_qindex`] produces this is
+/// the exact inverse (`(4n + 2) >> 2 == n`, `251 >> 2 == 62`, `257 >> 2 ==
+/// 64 -> 63`); for a fractional-CRF qindex it ROUNDS, which is what C's
+/// CLI-domain consumers (lambda, the `picture_qp`-keyed level derivations)
+/// then see.
+pub fn picture_qp_from_qindex(qindex: u8) -> u8 {
+    ((u32::from(qindex) + 2) >> 2).min(63) as u8
 }
 
 /// Inverse of [`qp_to_qindex`]: recover the CLI-domain QP (0..63) from a

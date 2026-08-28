@@ -221,8 +221,57 @@ pub(crate) fn kf_full_lambda_8bit_unweighted(qindex: u8) -> u32 {
     ((rdmult * 150) >> 7) as u32
 }
 
-pub(crate) fn kf_full_lambda_8bit(qindex: u8, cli_qp: u32) -> u32 {
-    kf_full_lambda_8bit_ex(qindex, cli_qp, false, 0)
+/// Only the tests reach this now: every production caller resolves the frame
+/// `lambda_weight` with [`frame_lambda_weight`] and goes through
+/// [`kf_full_lambda_8bit_lw`] or [`kf_full_lambda_8bit_tuned`].
+#[cfg(test)]
+pub(crate) fn kf_full_lambda_8bit(qindex: u8, picture_qp: u32) -> u32 {
+    kf_full_lambda_8bit_ex(qindex, picture_qp, false, 0)
+}
+
+/// C's frame `lambda_weight` for an all-intra still —
+/// `svt_aom_sig_deriv_mode_decision_config_allintra`
+/// (enc_mode_config.c:10093-10115), the ONE frame-level factor every MD
+/// lambda is scaled by (`av1_lambda_assign_md`, md_process.c:747-751):
+///
+/// * tune IQ -> the still-picture curve `CLIP3(0, 72, MIN(pq*4, (63-pq)*3))
+///   + 128` (:10099). It is C's `if` arm, so it REPLACES the PSNR ladder.
+/// * otherwise -> 0 below 16, 150 for 16..=55, 175 at >= 56 (:10101-10107;
+///   C's `!(enc_mode <= ENC_MR)` guard is always true here because `ENC_MR`
+///   is unreachable from a `u8` preset).
+/// * then, for the EXTENDED CRF range ONLY (`static_config.qp == 63` with a
+///   non-zero `extended_crf_qindex_offset`, i.e. CRF 63.25..70),
+///   `+= extended_crf_qindex_offset * 28` (:10109-10114).
+///
+/// The qp this keys on is `ppcs->picture_qp = clamp_qp((base_q_idx + 2) >> 2)`
+/// (rc_process.c:861) — re-derived from the (possibly fractional-CRF-offset)
+/// qindex — NOT `static_config.qp`, which every qp-keyed LEVEL derivation
+/// reads instead. The two are equal whenever the CRF offset is 0.
+pub(crate) fn frame_lambda_weight(picture_qp: u32, tune_iq: bool, extended_crf_bump: u32) -> u32 {
+    let ladder = if tune_iq {
+        crate::tune::iq_lambda_weight(picture_qp)
+    } else if picture_qp >= 56 {
+        175
+    } else if picture_qp >= 16 {
+        150
+    } else {
+        0
+    };
+    ladder + extended_crf_bump
+}
+
+/// [`kf_full_lambda_8bit`] with the frame `lambda_weight` supplied directly
+/// (already resolved by [`frame_lambda_weight`]) instead of re-derived from a
+/// qp. Used wherever the caller knows the frame weight — which is the only way
+/// the extended-CRF bump and the tune-IQ curve can reach a per-SB lambda.
+pub(crate) fn kf_full_lambda_8bit_lw(qindex: u8, lambda_weight: u32) -> u32 {
+    let dc_q = svtav1_dsp::quant_tables::DC_QLOOKUP_8[qindex as usize] as i64;
+    let rdmult = ((3.3 + 0.0015 * dc_q as f64) * (dc_q as f64) * (dc_q as f64)) as i64;
+    let mut lambda = ((rdmult * 150) >> 7) as u32;
+    if lambda_weight != 0 {
+        lambda = ((u64::from(lambda) * u64::from(lambda_weight)) >> 7) as u32;
+    }
+    lambda
 }
 
 /// [SVT_HDR_MODE] full form of the KF lambda chain (C `update_lambda`,
@@ -235,11 +284,11 @@ pub(crate) fn kf_full_lambda_8bit(qindex: u8, cli_qp: u32) -> u32 {
 ///   `lambda_weight` multiply follows, as in C's av1_lambda_assign_md.
 pub(crate) fn kf_full_lambda_8bit_ex(
     qindex: u8,
-    cli_qp: u32,
+    picture_qp: u32,
     alt_lambda_factors: bool,
     qdiff_vs_base: i32,
 ) -> u32 {
-    kf_full_lambda_8bit_tuned(qindex, cli_qp, alt_lambda_factors, qdiff_vs_base, None)
+    kf_full_lambda_8bit_tuned(qindex, picture_qp, alt_lambda_factors, qdiff_vs_base, None)
 }
 
 /// [SVT_HDR_MODE] full form incl. the TUNE_IQ still-picture
@@ -248,7 +297,7 @@ pub(crate) fn kf_full_lambda_8bit_ex(
 /// from the tune before the ladder ever runs).
 pub(crate) fn kf_full_lambda_8bit_tuned(
     qindex: u8,
-    cli_qp: u32,
+    picture_qp: u32,
     alt_lambda_factors: bool,
     qdiff_vs_base: i32,
     lambda_weight_override: Option<u32>,
@@ -266,13 +315,8 @@ pub(crate) fn kf_full_lambda_8bit_tuned(
     };
     rdmult = (rdmult * stats_factor) >> 7;
     let mut lambda = rdmult as u32;
-    let lambda_weight: u32 = lambda_weight_override.unwrap_or(if cli_qp >= 56 {
-        175
-    } else if cli_qp >= 16 {
-        150
-    } else {
-        0
-    });
+    let lambda_weight: u32 =
+        lambda_weight_override.unwrap_or_else(|| frame_lambda_weight(picture_qp, false, 0));
     if lambda_weight != 0 {
         lambda = ((lambda as u64 * lambda_weight as u64) >> 7) as u32;
     }
@@ -291,19 +335,13 @@ pub(crate) fn kf_full_lambda_8bit_tuned(
 /// - then the same `lambda_weight` ladder and `full_lambda_md[1] *= 16`
 ///   (md_process.c:753). Intra-scaling (temporal_layer>0) and scale_factor
 ///   (128) are no-ops on the KF still path — same as the bd8 builder.
-pub(crate) fn kf_full_lambda_bd10(qindex: u8, cli_qp: u32) -> u32 {
+pub(crate) fn kf_full_lambda_bd10(qindex: u8, picture_qp: u32) -> u32 {
     let q = crate::bd10::dc_qlookup_10(qindex) as i64;
     let mut rdmult = ((3.3 + 0.0015 * q as f64) * q as f64 * q as f64) as i64;
     rdmult = (rdmult + 8) >> 4; // ROUND_POWER_OF_TWO(_, 4) — bd10
     rdmult = (rdmult * 128) >> 7; // rd_frame_type_factor[1][KF_UPDATE] = 128
     let mut lambda = rdmult as u32;
-    let lambda_weight: u32 = if cli_qp >= 56 {
-        175
-    } else if cli_qp >= 16 {
-        150
-    } else {
-        0
-    };
+    let lambda_weight: u32 = frame_lambda_weight(picture_qp, false, 0);
     if lambda_weight != 0 {
         lambda = ((lambda as u64 * lambda_weight as u64) >> 7) as u32;
     }
@@ -1925,6 +1963,16 @@ pub fn pd0_pick_sb_partition(
     sb_y: usize,
     qp: u32,
     qindex: u8,
+    // C's frame `lambda_weight` (`pcs->lambda_weight`,
+    // enc_mode_config.c:10093-10115), resolved ONCE per frame by
+    // [`frame_lambda_weight`] and multiplied into every MD lambda
+    // (md_process.c:747-751). Passed in rather than re-derived from `qp`
+    // because it is keyed on `ppcs->picture_qp` (the qindex-derived value,
+    // which a fractional CRF moves off `static_config.qp`) and because the
+    // tune-IQ curve and the extended-CRF bump are frame-level facts this
+    // function cannot see. `frame_lambda_weight(qp, false, 0)` reproduces
+    // the pre-fractional-CRF value exactly.
+    lambda_weight: u32,
     ires_factor: u64,
     aligned_w: usize,
     aligned_h: usize,
@@ -1951,7 +1999,7 @@ pub fn pd0_pick_sb_partition(
     } else {
         Pd0Mode::Lvl6
     };
-    let lambda = kf_full_lambda_8bit(qindex, qp) as u64;
+    let lambda = kf_full_lambda_8bit_lw(qindex, lambda_weight) as u64;
     let mut ctx = Pd0Ctx {
         src,
         stride,
@@ -2025,6 +2073,16 @@ pub fn pd0_pick_sb_partition_lvl0(
     sb_y: usize,
     qp: u32,
     qindex: u8,
+    // C's frame `lambda_weight` (`pcs->lambda_weight`,
+    // enc_mode_config.c:10093-10115), resolved ONCE per frame by
+    // [`frame_lambda_weight`] and multiplied into every MD lambda
+    // (md_process.c:747-751). Passed in rather than re-derived from `qp`
+    // because it is keyed on `ppcs->picture_qp` (the qindex-derived value,
+    // which a fractional CRF moves off `static_config.qp`) and because the
+    // tune-IQ curve and the extended-CRF bump are frame-level facts this
+    // function cannot see. `frame_lambda_weight(qp, false, 0)` reproduces
+    // the pre-fractional-CRF value exactly.
+    lambda_weight: u32,
     // [SVT_HDR_MODE] Frame luma QM level (base_qindex-derived
     // `frm_hdr.quantization_params.qm[PLANE_Y]`); 15 = no matrices. C forces
     // PD0_LVL_0 at bd10 and its light encode applies QM when using_qmatrix
@@ -2052,7 +2110,7 @@ pub fn pd0_pick_sb_partition_lvl0(
         None => compute_b64_variance(src, stride, sb_x, sb_y),
     };
     let max_sq = max_block_size_allintra(vars.0[0], qp).min(max_tx_size as usize);
-    let lambda = kf_full_lambda_8bit(qindex, qp) as u64;
+    let lambda = kf_full_lambda_8bit_lw(qindex, lambda_weight) as u64;
     let mut ctx = Pd0Ctx {
         src,
         stride,
@@ -2111,6 +2169,16 @@ pub fn pd0_pick_sb_partition_m6(
     sb_y: usize,
     qp: u32,
     qindex: u8,
+    // C's frame `lambda_weight` (`pcs->lambda_weight`,
+    // enc_mode_config.c:10093-10115), resolved ONCE per frame by
+    // [`frame_lambda_weight`] and multiplied into every MD lambda
+    // (md_process.c:747-751). Passed in rather than re-derived from `qp`
+    // because it is keyed on `ppcs->picture_qp` (the qindex-derived value,
+    // which a fractional CRF moves off `static_config.qp`) and because the
+    // tune-IQ curve and the extended-CRF bump are frame-level facts this
+    // function cannot see. `frame_lambda_weight(qp, false, 0)` reproduces
+    // the pre-fractional-CRF value exactly.
+    lambda_weight: u32,
     tables: &M6Pd0Tables,
     coeff_rate_est_lvl: u8,
     nsq_enabled: bool,
@@ -2133,7 +2201,7 @@ pub fn pd0_pick_sb_partition_m6(
         Some(v) => *v,
         None => compute_b64_variance(src, stride, sb_x, sb_y),
     };
-    let lambda = kf_full_lambda_8bit(qindex, qp) as u64;
+    let lambda = kf_full_lambda_8bit_lw(qindex, lambda_weight) as u64;
     let mut ctx = Pd0Ctx {
         src,
         stride,
@@ -2179,6 +2247,16 @@ pub fn pd0_pick_sb_partition_m6_eval(
     sb_y: usize,
     qp: u32,
     qindex: u8,
+    // C's frame `lambda_weight` (`pcs->lambda_weight`,
+    // enc_mode_config.c:10093-10115), resolved ONCE per frame by
+    // [`frame_lambda_weight`] and multiplied into every MD lambda
+    // (md_process.c:747-751). Passed in rather than re-derived from `qp`
+    // because it is keyed on `ppcs->picture_qp` (the qindex-derived value,
+    // which a fractional CRF moves off `static_config.qp`) and because the
+    // tune-IQ curve and the extended-CRF bump are frame-level facts this
+    // function cannot see. `frame_lambda_weight(qp, false, 0)` reproduces
+    // the pre-fractional-CRF value exactly.
+    lambda_weight: u32,
     tables: &M6Pd0Tables,
     min_sq: usize,
     coeff_rate_est_lvl: u8,
@@ -2208,7 +2286,7 @@ pub fn pd0_pick_sb_partition_m6_eval(
         Some(v) => *v,
         None => compute_b64_variance(src, stride, sb_x, sb_y),
     };
-    let lambda = kf_full_lambda_8bit(qindex, qp) as u64;
+    let lambda = kf_full_lambda_8bit_lw(qindex, lambda_weight) as u64;
     // C `get_max_block_size_allintra` (enc_mode_config.c:7042): the
     // 64-variance cap fires ONLY at enc_mode >= M8 (base_var_th_cap is
     // (uint16_t)~0 = unlimited through M7, 7500 at M8+). A busy SB
@@ -2393,12 +2471,40 @@ mod tests {
         // parent where the LVL_6 heuristic over-splits to 16x 16x16). The
         // 64x64 force-splits (var64 5425 > qp-scaled cap -> max_sq 32).
         let y = gradient64();
-        let tree = pd0_pick_sb_partition_lvl0(&y, 64, 0, 0, 20, 80, 15, 0, 64, 64, None, 64);
+        let tree = pd0_pick_sb_partition_lvl0(
+            &y,
+            64,
+            0,
+            0,
+            20,
+            80,
+            frame_lambda_weight(20, false, 0),
+            15,
+            0,
+            64,
+            64,
+            None,
+            64,
+        );
         assert_eq!(tree.leaf_sizes(), vec![32, 32, 32, 32]);
         // q40 / q55 keep the same 4x32 shape here (the parent still wins);
         // q55's 64x64 is IN the depth set (max_sq 64) and PARENT wins outright
         // -> a single 64x64 leaf.
-        let t55 = pd0_pick_sb_partition_lvl0(&y, 64, 0, 0, 55, 220, 15, 0, 64, 64, None, 64);
+        let t55 = pd0_pick_sb_partition_lvl0(
+            &y,
+            64,
+            0,
+            0,
+            55,
+            220,
+            frame_lambda_weight(55, false, 0),
+            15,
+            0,
+            64,
+            64,
+            None,
+            64,
+        );
         assert_eq!(t55.leaf_sizes(), vec![64]);
     }
 
@@ -2561,18 +2667,70 @@ mod tests {
         // q20 (qindex 80): LVL_6, max 32 -> forced SPLIT at 64, every 32
         // SPLITs again, 16x16 leaves everywhere (C stream: op0 SPLIT,
         // op1 SPLIT, op2 NONE...).
-        let t20 = pd0_pick_sb_partition(&y, 64, 0, 0, 20, 80, 0, 64, 64, None, 64);
+        let t20 = pd0_pick_sb_partition(
+            &y,
+            64,
+            0,
+            0,
+            20,
+            80,
+            frame_lambda_weight(20, false, 0),
+            0,
+            64,
+            64,
+            None,
+            64,
+        );
         assert_eq!(t20.leaf_sizes(), vec![16; 16]);
         // q40 (qindex 160): LVL_5, max 32 -> forced SPLIT at 64, all four
         // 32x32 keep PARENT (C: op0 SPLIT, op1 NONE).
-        let t40 = pd0_pick_sb_partition(&y, 64, 0, 0, 40, 160, 0, 64, 64, None, 64);
+        let t40 = pd0_pick_sb_partition(
+            &y,
+            64,
+            0,
+            0,
+            40,
+            160,
+            frame_lambda_weight(40, false, 0),
+            0,
+            64,
+            64,
+            None,
+            64,
+        );
         assert_eq!(t40.leaf_sizes(), vec![32; 4]);
         // q55 (qindex 220): LVL_5, 64 in set and PARENT wins outright.
-        let t55 = pd0_pick_sb_partition(&y, 64, 0, 0, 55, 220, 0, 64, 64, None, 64);
+        let t55 = pd0_pick_sb_partition(
+            &y,
+            64,
+            0,
+            0,
+            55,
+            220,
+            frame_lambda_weight(55, false, 0),
+            0,
+            64,
+            64,
+            None,
+            64,
+        );
         assert_eq!(t55, Pd0Tree::Leaf(64));
         // Uniform: LVL_5 with zero residual everywhere -> 64x64 NONE.
         let u = vec![128u8; 64 * 64];
-        let tu = pd0_pick_sb_partition(&u, 64, 0, 0, 40, 160, 0, 64, 64, None, 64);
+        let tu = pd0_pick_sb_partition(
+            &u,
+            64,
+            0,
+            0,
+            40,
+            160,
+            frame_lambda_weight(40, false, 0),
+            0,
+            64,
+            64,
+            None,
+            64,
+        );
         assert_eq!(tu, Pd0Tree::Leaf(64));
     }
 
@@ -2712,6 +2870,7 @@ mod tests {
             0,
             20,
             80,
+            frame_lambda_weight(20, false, 0),
             &build_m6_pd0_tables(80),
             1,
             true,
@@ -2728,6 +2887,7 @@ mod tests {
             0,
             40,
             160,
+            frame_lambda_weight(40, false, 0),
             &build_m6_pd0_tables(160),
             1,
             true,
@@ -2744,6 +2904,7 @@ mod tests {
             0,
             55,
             220,
+            frame_lambda_weight(55, false, 0),
             &build_m6_pd0_tables(220),
             1,
             true,
@@ -2763,6 +2924,7 @@ mod tests {
             0,
             40,
             160,
+            frame_lambda_weight(40, false, 0),
             &build_m6_pd0_tables(160),
             1,
             true,

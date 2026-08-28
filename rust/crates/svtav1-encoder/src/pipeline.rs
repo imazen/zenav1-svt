@@ -99,6 +99,15 @@ pub struct EncodePipeline {
     hbd_source: Option<HbdSource>,
     /// CICP color description.
     pub color_description: crate::entropy::obu::ColorDescription,
+    /// SH `chroma_sample_position` (spec 6.4.2: 0 = CSP_UNKNOWN, 1 =
+    /// CSP_VERTICAL — chroma sited horizontally between luma samples,
+    /// vertically on them, the MPEG-2/H.264 "left" siting; 2 =
+    /// CSP_COLOCATED — on the top-left luma sample). C
+    /// `static_config.chroma_sample_position`, written verbatim into the
+    /// 4:2:0 color_config (entropy_coding.c:2743); default `EB_CSP_UNKNOWN`
+    /// (enc_settings.c:1112). Pure signalling — the encode itself is
+    /// siting-agnostic — so it changes only the two SH bits. Issue #9 item 5.
+    pub chroma_sample_position: u8,
     /// Produce the decoder-exact reconstruction (`last_recon*`) for this
     /// pipeline. Off by default; see [`Self::with_recon_output`].
     pub(crate) recon_output: bool,
@@ -382,6 +391,7 @@ impl EncodePipeline {
             // that know their color space (AVIF path) override via
             // with_color_description.
             color_description: crate::entropy::obu::ColorDescription::default(),
+            chroma_sample_position: 0,
             chroma_420: false,
             recon_output: false,
             last_recon: None,
@@ -571,6 +581,14 @@ impl EncodePipeline {
     /// Set CICP color description for wide gamut / HDR signaling.
     pub fn with_color_description(mut self, cd: crate::entropy::obu::ColorDescription) -> Self {
         self.color_description = cd;
+        self
+    }
+
+    /// Set the SH `chroma_sample_position` (0 unknown, 1 vertical, 2
+    /// colocated) — see [`Self::chroma_sample_position`]. Values > 2 are
+    /// refused at encode time.
+    pub fn with_chroma_sample_position(mut self, csp: u8) -> Self {
+        self.chroma_sample_position = csp;
         self
     }
 
@@ -859,6 +877,35 @@ impl EncodePipeline {
             return preset >= 9;
         }
         preset >= 9 || bd10_full_rd_supported(self.bit_depth, preset, chroma_420, w, h)
+    }
+
+    /// Config knobs C rejects in `svt_av1_verify_settings`, refused here so
+    /// the port never encodes a config the oracle cannot (issue #9):
+    ///
+    /// * `hdr.max_tx_size` must be 32 or 64 (enc_settings.c:922);
+    /// * `rc_config.extended_crf_qindex_offset`: C's `str_to_crf` only ever
+    ///   produces 0..=3 below qp 63, and `verify_settings` (:270) caps the
+    ///   qp-63 extended range at 7*4 = 28 (CRF 70);
+    /// * `chroma_sample_position` must be 0 (unknown), 1 (vertical) or 2
+    ///   (colocated) — 3 is reserved and rejected (:762-770).
+    fn knob_config_error(&self) -> Option<&'static str> {
+        if !matches!(self.hdr.max_tx_size, 32 | 64) {
+            return Some("max_tx_size must be 32 or 64 (C verify_settings, enc_settings.c:922)");
+        }
+        let off = self.rc_config.extended_crf_qindex_offset;
+        if (self.rc_config.qp < 63 && off > 3) || off > 28 {
+            return Some(
+                "extended_crf_qindex_offset must be 0..=3 (a quarter-step fractional CRF) or, at \
+                 qp 63, at most 28 (CRF 70) — C verify_settings, enc_settings.c:270",
+            );
+        }
+        if self.chroma_sample_position > 2 {
+            return Some(
+                "chroma_sample_position must be 0 (unknown), 1 (vertical) or 2 (colocated); 3 is \
+                 reserved (C verify_settings, enc_settings.c:762)",
+            );
+        }
+        None
     }
 
     /// Bit-depth configurations this encoder cannot encode faithfully, refused
@@ -1259,6 +1306,12 @@ impl EncodePipeline {
         if let Some(why) = self.bit_depth_config_error(chroma.is_some()) {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(why)));
         }
+        // Issue #9 items 3-5: the three config knobs C validates at init
+        // (`svt_av1_verify_settings`) and this port therefore refuses at the
+        // same choke point rather than encoding something C would never emit.
+        if let Some(why) = self.knob_config_error() {
+            return Err(whereat::at!(EncodeError::UnsupportedConfig(why)));
+        }
         // MULTI-FRAME IS NOT ENCODABLE — refuse it rather than emit a corrupt
         // stream. The 4:2:0 path already asserted this below; the MONOCHROME
         // path did not, so `EncodePipeline::new(w, h, preset, rc, hier,
@@ -1633,8 +1686,52 @@ impl EncodePipeline {
         // deblock level picker, FH base_q_idx) consumes ONLY this qindex.
         // Lambda is the documented exception: it stays CLI-qp-calibrated
         // (see qp_to_lambda) until C's lambda_rate_tables.h port lands.
+        // Issue #9 item 4 (fractional CRF): the quarter-step remainder rides
+        // in as a qindex offset exactly where C adds it (rc_crf_cqp.c:471).
+        //
+        // C then keeps TWO qp values and they are NOT interchangeable once the
+        // offset is non-zero:
+        //   * `scs->static_config.qp` — the CLI value, UNCHANGED by the
+        //     offset. Every qp-keyed LEVEL derivation reads it:
+        //     `svt_aom_get_nsq_search_level_allintra` (enc_mode_config.c:10014),
+        //     the qp-based-threshold scaling (:338), the coeff-level complexity
+        //     (md_config_process.c:620/651), the max-can-bsize picks
+        //     (enc_dec_process.c:1645/1723/2393), the IntraBC mesh scaling
+        //     (pd_process.c:3740) — all `static_config.qp`.
+        //   * `ppcs->picture_qp = clamp_qp((base_q_idx + 2) >> 2)`
+        //     (rc_process.c:861) — re-derived FROM the offset qindex, and read
+        //     only by the frame `lambda_weight` ladder
+        //     (enc_mode_config.c:10093-10108, both the tune-IQ curve and the
+        //     PSNR 0/150/175 tiers).
+        // `tpl_adjusted_qp` is this port's `static_config.qp` analogue, so it
+        // stays in the CLI domain and `picture_qp` is derived alongside it.
+        // MEASURED: collapsing both onto the qindex-derived value (the first
+        // cut of this change) diverged from C at preset 2 / qp 20 /
+        // offsets 2-3 — exactly the offsets where `(80+off+2)>>2` rolls from
+        // 20 to 21 — as `tools/issue9_knobs_gate.sh` cells
+        // `crf20.2-gradient-128-p2` / `crf20.3-...` (port 2664 B vs C 2628 B,
+        // first divergence FH `loop_filter_level[0]` C=4 Rust=5). With
+        // offset 0 the two values are equal, so every pre-existing cell is
+        // byte-identical either way.
         #[allow(unused_mut)]
-        let mut base_qindex = crate::rate_control::qp_to_qindex(tpl_adjusted_qp);
+        let mut base_qindex = crate::rate_control::qp_to_qindex_with_offset(
+            tpl_adjusted_qp,
+            self.rc_config.extended_crf_qindex_offset,
+        );
+        let mut picture_qp = crate::rate_control::picture_qp_from_qindex(base_qindex);
+        // C's EXTENDED-CRF lambda bump (enc_mode_config.c:10109-10114): for
+        // CRF 63.25..70 only — `static_config.qp == MAX_QP_VALUE (63)` with a
+        // non-zero `extended_crf_qindex_offset` — the frame `lambda_weight`
+        // gains `offset * 28`. This is the ONLY effect the offset has at qp 63:
+        // the qindex itself saturates (`quantizer_to_qindex[63] == 255`, and
+        // `clamp_qindex` caps at the max-qp qindex), so `(MAXQ - new_qindex) *
+        // offset / 56` in rc_crf_cqp.c:511 evaluates to 0 there. 0 on every
+        // other config, hence byte-inert everywhere else.
+        let lw_bump: u32 = if self.rc_config.qp == 63 {
+            u32::from(self.rc_config.extended_crf_qindex_offset) * 28
+        } else {
+            0
+        };
         // [SVT_HDR_MODE] fork Variance Boost: derive the per-SB qindex plan
         // (sb_qindex.rs = C variance_adjust_qp(readjust=true) chain). The
         // recentered base REPLACES base_qindex BEFORE every downstream
@@ -1693,7 +1790,14 @@ impl EncodePipeline {
                 )
             };
             base_qindex = plan.base_qindex;
-            tpl_adjusted_qp = ((i32::from(plan.base_qindex) + 2) >> 2).clamp(0, 63) as u8;
+            // The fork's recentered base moves BOTH: C's variance-boost path
+            // resignals `frm_hdr.base_q_idx` before rate control's
+            // `picture_qp` update, and the port has always carried the
+            // recentre into its single CLI-domain qp. Keep that (identical to
+            // the pre-split behaviour whenever the CRF offset is 0, which is
+            // every fork cell the gates cover).
+            picture_qp = crate::rate_control::picture_qp_from_qindex(plan.base_qindex);
+            tpl_adjusted_qp = picture_qp;
             Some(plan)
         } else {
             None
@@ -1778,11 +1882,18 @@ impl EncodePipeline {
                 };
                 let lambda = crate::pd0::kf_full_lambda_8bit_tuned(
                     base_qindex,
-                    tpl_adjusted_qp as u32,
+                    picture_qp as u32,
                     self.hdr.is_fork() && self.hdr.alt_lambda_factors,
                     0,
-                    (self.hdr.tune == crate::tune::TUNE_IQ)
-                        .then(|| crate::tune::iq_lambda_weight(tpl_adjusted_qp as u32)),
+                    // The frame `lambda_weight`, resolved exactly as C's
+                    // allintra block does (enc_mode_config.c:10093-10115):
+                    // the tune-IQ curve OR the PSNR ladder, then the
+                    // extended-CRF bump. Both key on `picture_qp`.
+                    Some(crate::pd0::frame_lambda_weight(
+                        picture_qp as u32,
+                        self.hdr.tune == crate::tune::TUNE_IQ,
+                        lw_bump,
+                    )),
                 );
                 Some(alloc::sync::Arc::new(crate::quant::CodingQuantCfg::new(
                     rdoq_level,
@@ -2064,10 +2175,12 @@ impl EncodePipeline {
             self.hdr.is_fork() && self.hdr.alt_ssim_tuning,
             self.hdr.is_fork() && self.hdr.alt_lambda_factors,
             (self.hdr.tune == crate::tune::TUNE_IQ)
-                .then(|| crate::tune::iq_lambda_weight(tpl_adjusted_qp as u32)),
+                .then(|| crate::tune::iq_lambda_weight(picture_qp as u32)),
             ssim_factors.as_ref(),
             base_qindex,
             tpl_adjusted_qp,
+            picture_qp,
+            lw_bump,
             self.hdr.sharpness,
             lambda,
             &self.speed_config,
@@ -2415,7 +2528,7 @@ impl EncodePipeline {
                 // ×16 of the bd8 lambda — see kf_full_lambda_bd10.
                 let lambda_bd10 = u64::from(crate::pd0::kf_full_lambda_bd10(
                     base_qindex,
-                    tpl_adjusted_qp as u32,
+                    picture_qp as u32,
                 ));
                 let recon10 = bd10_reencode_luma(
                     &mut all_trees,
@@ -2572,6 +2685,9 @@ impl EncodePipeline {
             // frame header signals (`SuperresParams::enabled_in_seq`) or the
             // decoder's bit walk desyncs. Off by default -> unchanged bit.
             t.enable_superres = self.superres_denom.is_some();
+            // Issue #9 item 5: C writes `static_config.chroma_sample_position`
+            // into the 4:2:0 color_config (entropy_coding.c:2743).
+            t.chroma_sample_position = self.chroma_sample_position;
             // [SVT_HDR_MODE] the fork ALWAYS signals separate_uv_delta_q
             // (its FH writes independent U/V deltas — entropy_coding.c
             // fork block hardcodes both flags true).
@@ -7262,6 +7378,17 @@ fn encode_tile_rows(
     ssim_factors: Option<&(alloc::vec::Vec<f64>, usize, usize)>,
     fh_base_qindex: u8,
     cli_qp: u8,
+    // C `ppcs->picture_qp = clamp_qp((base_q_idx + 2) >> 2)` (rc_process.c:861)
+    // — the qp the frame `lambda_weight` ladder is keyed on. Equal to `cli_qp`
+    // unless a fractional CRF put a non-zero `extended_crf_qindex_offset` into
+    // the qindex; every LEVEL derivation keeps reading `cli_qp`
+    // (`static_config.qp`), which the offset does not move.
+    picture_qp: u8,
+    // C's extended-CRF lambda bump: `lambda_weight += extended_crf_qindex_offset
+    // * 28` when `static_config.qp == MAX_QP_VALUE (63)` and the offset is
+    // non-zero (enc_mode_config.c:10109-10114) — i.e. CRF 63.25..70 only.
+    // 0 on every other config, which makes it byte-inert there.
+    lw_bump: u32,
     hdr_sharpness: i8,
     _lambda: u64, // Per-SB lambda computed from sb_qp_offsets
     speed_config: &crate::speed_config::SpeedConfig,
@@ -7812,7 +7939,18 @@ fn encode_tile_rows(
                             u32::from(crate::rate_control::qindex_to_qp(sbq)),
                             hdr_alt_lambda,
                             i32::from(sbq) - i32::from(fh_base_qindex),
-                            hdr_iq_lambda_weight,
+                            // Frame `lambda_weight` + the extended-CRF bump.
+                            // `None` with a zero bump keeps the pre-existing
+                            // per-SB PSNR ladder this site has always used.
+                            match (hdr_iq_lambda_weight, lw_bump) {
+                                (Some(w), b) => Some(w + b),
+                                (None, 0) => None,
+                                (None, b) => Some(crate::pd0::frame_lambda_weight(
+                                    u32::from(crate::rate_control::qindex_to_qp(sbq)),
+                                    false,
+                                    b,
+                                )),
+                            },
                         ));
                     }
                 }
@@ -8133,6 +8271,16 @@ fn encode_tile_rows(
                                     y0,
                                     cli_qp as u32,
                                     sb_qindex,
+                                    // C `pcs->lambda_weight` for this frame — the PSNR
+                                    // ladder keyed on `picture_qp` plus the extended-CRF
+                                    // bump (pd0::frame_lambda_weight). Identical to the
+                                    // old `kf_full_lambda_8bit(qindex, cli_qp)` ladder
+                                    // whenever the CRF offset is 0.
+                                    crate::pd0::frame_lambda_weight(
+                                        u32::from(picture_qp),
+                                        false,
+                                        lw_bump,
+                                    ),
                                     // [SVT_HDR_MODE] Frame luma QM level. C forces
                                     // PD0_LVL_0 at bd10 whose light encode applies
                                     // the matrix when using_qmatrix (fork default);
@@ -8155,6 +8303,16 @@ fn encode_tile_rows(
                                     y0,
                                     cli_qp as u32,
                                     sb_qindex,
+                                    // C `pcs->lambda_weight` for this frame — the PSNR
+                                    // ladder keyed on `picture_qp` plus the extended-CRF
+                                    // bump (pd0::frame_lambda_weight). Identical to the
+                                    // old `kf_full_lambda_8bit(qindex, cli_qp)` ladder
+                                    // whenever the CRF offset is 0.
+                                    crate::pd0::frame_lambda_weight(
+                                        u32::from(picture_qp),
+                                        false,
+                                        lw_bump,
+                                    ),
                                     // C `input_resolution_factor[input_resolution]`:
                                     // per-picture coeff-rate addend keyed on w*h.
                                     crate::pd0::input_resolution_factor(w * h),
@@ -8324,6 +8482,13 @@ fn encode_tile_rows(
                                     y0,
                                     cli_qp as u32,
                                     sb_qindex,
+                                    // C `pcs->lambda_weight` (pd0::frame_lambda_weight): the PSNR
+                                    // ladder on `picture_qp` + the extended-CRF bump.
+                                    crate::pd0::frame_lambda_weight(
+                                        u32::from(picture_qp),
+                                        false,
+                                        lw_bump,
+                                    ),
                                     tables,
                                     if dr.disallow_4x4 { 8 } else { 4 },
                                     // M4/M5: rate_est_level 1 -> coeff_rate_est_lvl 1
@@ -8397,6 +8562,13 @@ fn encode_tile_rows(
                                                 uy,
                                                 cli_qp as u32,
                                                 sb_qindex,
+                                                // C `pcs->lambda_weight` (pd0::frame_lambda_weight): the PSNR
+                                                // ladder on `picture_qp` + the extended-CRF bump.
+                                                crate::pd0::frame_lambda_weight(
+                                                    u32::from(picture_qp),
+                                                    false,
+                                                    lw_bump,
+                                                ),
                                                 tables,
                                                 if dr.disallow_4x4 { 8 } else { 4 },
                                                 funnel_cfg.coeff_rate_est_lvl,
@@ -8566,6 +8738,13 @@ fn encode_tile_rows(
                                     y0,
                                     cli_qp as u32,
                                     sb_qindex,
+                                    // C `pcs->lambda_weight` (pd0::frame_lambda_weight): the PSNR
+                                    // ladder on `picture_qp` + the extended-CRF bump.
+                                    crate::pd0::frame_lambda_weight(
+                                        u32::from(picture_qp),
+                                        false,
+                                        lw_bump,
+                                    ),
                                     tables,
                                     8,
                                     // M6: coeff_rate_est_lvl 1 (real PD0 coeff

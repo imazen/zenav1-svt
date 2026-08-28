@@ -178,6 +178,12 @@ pub struct SeqTools {
     /// Default false = no bit change anywhere, which is what every existing
     /// byte-identical gate cell encodes.
     pub enable_superres: bool,
+    /// SH `chroma_sample_position` (spec 5.5.2, 2 bits, written only for
+    /// 4:2:0 with `mono_chrome = 0`): 0 = CSP_UNKNOWN, 1 = CSP_VERTICAL,
+    /// 2 = CSP_COLOCATED. C `static_config.chroma_sample_position`
+    /// (entropy_coding.c:2743), default `EB_CSP_UNKNOWN` — every
+    /// pre-existing caller writes the same 0 bits.
+    pub chroma_sample_position: u8,
 }
 
 /// FH `superres_params()` (spec 5.9.8) — the frame's superres state.
@@ -806,7 +812,9 @@ fn write_sequence_header_inner(
         );
         wb.write_bit(color.full_range); // color_range
         // seq_profile 0: subsampling_x = subsampling_y = 1 implied, no bits.
-        wb.write_bits(0, 2); // chroma_sample_position = 0 (CSP_UNKNOWN)
+        // chroma_sample_position (C entropy_coding.c:2743 writes
+        // static_config.chroma_sample_position; 0 = CSP_UNKNOWN default).
+        wb.write_bits(u32::from(tools.chroma_sample_position & 3), 2);
         wb.write_bit(tools.separate_uv_delta_q); // separate_uv_delta_q (fork: 1)
     }
 
@@ -2451,6 +2459,7 @@ mod tests {
                 enable_restoration: true,
                 use_128x128_superblock: false,
                 enable_superres: false,
+                chroma_sample_position: 0,
             },
         );
         assert_eq!(ours[0], 0b0_0001_0_1_0); // SH OBU header

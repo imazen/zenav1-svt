@@ -519,6 +519,24 @@ fn main() {
     {
         pipeline.hdr.tune = v;
     }
+    // Issue #9 items 3-5 — the port-side twins of the C driver's
+    // SVT_MAX_TX_SIZE / SVT_CRF_OFFSET / SVT_CSP (one env vector, both
+    // encoders). Unset => defaults => every pre-existing cell unchanged.
+    if let Ok(t) = std::env::var("SVTAV1_MAX_TX_SIZE")
+        && let Ok(v) = t.parse::<u8>()
+    {
+        pipeline.hdr.max_tx_size = v;
+    }
+    if let Ok(t) = std::env::var("SVTAV1_CRF_OFFSET")
+        && let Ok(v) = t.parse::<u8>()
+    {
+        pipeline.rc_config.extended_crf_qindex_offset = v;
+    }
+    if let Ok(t) = std::env::var("SVTAV1_CSP")
+        && let Ok(v) = t.parse::<u8>()
+    {
+        pipeline.chroma_sample_position = v;
+    }
     // SVTAV1_Y_STRIDE=<n> (>= w): hand the LUMA plane to the encoder at a
     // stride WIDER than the frame, with the slack POISONED (0xA5 / 0x0A5A5).
     //

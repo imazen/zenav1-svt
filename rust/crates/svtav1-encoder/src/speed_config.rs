@@ -210,6 +210,9 @@ pub fn seq_tools_for_preset(preset: u8, allintra: bool) -> crate::entropy::obu::
         // enc_settings.c:1095) and is a CONFIG knob, not a speed feature —
         // the pipeline sets it when a caller opts in (superres chunk B).
         enable_superres: false,
+        // Signalling-only config knob (issue #9 item 5); the pipeline
+        // overwrites it from `EncodePipeline::chroma_sample_position`.
+        chroma_sample_position: 0,
     }
 }
 
