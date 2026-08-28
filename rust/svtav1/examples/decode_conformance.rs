@@ -87,8 +87,20 @@ fn main() {
     let outdir = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "target/decode_conformance".to_string());
-    let chroma_mode = std::env::args().nth(2).as_deref() == Some("chroma");
+    let arg2 = std::env::args().nth(2);
+    let chroma_mode = arg2.as_deref() == Some("chroma");
+    // Issue #9 item 6: the same corpus driven through the PUBLIC
+    // `AvifEncoder` surface instead of `EncodePipeline` — `encode_yuv420`
+    // (4:2:0, at the TRUE size, no caller-side padding) and `encode_y8`
+    // (monochrome). This is what proves the AVIF wrapper emits real AV1: it
+    // used to return three concatenated mono streams behind u32 length
+    // prefixes, which no decoder accepts.
+    let avif_mode = arg2.as_deref() == Some("avif");
     std::fs::create_dir_all(&outdir).expect("create outdir");
+    if avif_mode {
+        avif_corpus(&outdir);
+        return;
+    }
 
     #[allow(clippy::type_complexity)]
     // inline tuple documents the shape; a `type` alias would hide it
@@ -159,4 +171,51 @@ fn main() {
     }
     let mode = if chroma_mode { "chroma-420" } else { "mono" };
     eprintln!("wrote {count} {mode} streams to {outdir}");
+}
+
+/// Issue #9 item 6: emit the decode corpus through `AvifEncoder`'s public
+/// entry points.
+///
+/// Sizes are EVEN but deliberately not all 64-multiples: the 4:2:0 path
+/// signals the true frame size and pads internally, so `98x66` must decode as
+/// 98x66. Qualities span the CLI-qp range the wrapper can reach; speeds cover
+/// both sides of the preset-6 boundary (below it the monochrome path refuses
+/// partial superblocks, which is a typed error, not a stream).
+fn avif_corpus(outdir: &str) {
+    use svtav1::avif::AvifEncoder;
+    let sizes = [32usize, 48, 64, 66, 98, 128];
+    let qualities = [10.0f32, 35.0, 60.0, 85.0];
+    let speeds = [1u8, 5, 6, 8, 10];
+    let mut count = 0usize;
+    for &sz in &sizes {
+        for &q in &qualities {
+            for &speed in &speeds {
+                let enc = AvifEncoder::new().with_quality(q).with_speed(speed);
+                let y = make_gradient(sz, sz);
+                let (u, v) = make_chroma("color", sz / 2, sz / 2);
+                let obu = enc
+                    .encode_yuv420(&y, &u, &v, sz as u32, sz as u32, sz as u32)
+                    .expect("AvifEncoder::encode_yuv420")
+                    .data;
+                let name = format!("avif420_{sz}x{sz}_q{q}_s{speed}.obu");
+                std::fs::write(format!("{outdir}/{name}"), &obu).expect("write obu");
+                println!("{name}\t{} bytes", obu.len());
+                count += 1;
+
+                // Monochrome twin. Below preset 6 the pipeline refuses a
+                // partial superblock; that refusal is the CORRECT behaviour,
+                // so record it rather than writing a stream.
+                match enc.encode_y8(&y, sz as u32, sz as u32, sz as u32) {
+                    Ok(r) => {
+                        let name = format!("avifmono_{sz}x{sz}_q{q}_s{speed}.obu");
+                        std::fs::write(format!("{outdir}/{name}"), &r.data).expect("write obu");
+                        println!("{name}\t{} bytes", r.data.len());
+                        count += 1;
+                    }
+                    Err(e) => println!("avifmono_{sz}x{sz}_q{q}_s{speed}\tREFUSED: {e}"),
+                }
+            }
+        }
+    }
+    eprintln!("wrote {count} AvifEncoder streams to {outdir}");
 }

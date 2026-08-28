@@ -6,6 +6,7 @@
 # Usage:
 #   tools/decode_conformance.sh [outdir]           # mono matrix (default)
 #   tools/decode_conformance.sh <outdir> chroma    # 4:2:0 matrix
+#   tools/decode_conformance.sh <outdir> avif      # AvifEncoder public API
 #
 # Env:
 #   AOMDEC  path to the aomdec binary (default: `aomdec` on PATH)

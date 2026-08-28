@@ -29,6 +29,17 @@ Crates are not published to crates.io yet — depend by git.
   regression_spotcheck 33/33, decode_conformance 1260 + 1575 / 0 failed.
   Nothing is published yet, so this is a pre-release rename, not a semver
   event.
+- **`AvifEncoder` knob surface (issue #9 item 7, 2026-08-28).** REMOVED
+  `with_trellis`, `with_seg_boost`, the `seg_boost()` getter and
+  `with_still_image_tuning` — all four were recorded-and-ignored with no
+  counterpart in this pipeline or in C. `with_vaq(bool, f64)` is REPLACED by
+  `with_variance_boost(bool, u8)` (C's 1-4 strength scale). `encode_yuv420`
+  keeps its signature but its OUTPUT CONTRACT changes from three
+  length-prefixed monochrome streams to one real AV1 4:2:0 bitstream — the old
+  format was not decodable, so nothing can have depended on it.
+  `AvifEncoder::{enable_qm, enable_variance_boost}` now default to `false`
+  (C's mainline defaults); the emitted bytes for a caller that sets neither
+  are unchanged.
 - **`crate::pd0::pd0_pick_sb_partition{,_lvl0,_m6,_m6_eval}` take a
   `lambda_weight: u32` after `qindex` (issue #9 item 4, 2026-08-28).** C's
   frame `lambda_weight` (`pcs->lambda_weight`, enc_mode_config.c:10093-10115)
@@ -44,6 +55,26 @@ Crates are not published to crates.io yet — depend by git.
   break only for out-of-crate struct literals — there are none.
 
 ### Added
+
+- **`AvifEncoder::encode_yuv420` emits a REAL AV1 bitstream — issue #9 item 6.**
+  It returned three concatenated MONOCHROME streams behind u32 length prefixes,
+  as `Ok(...)`, which no decoder accepts. It now routes through
+  `EncodePipeline::with_chroma_420(true)` + `try_encode_frame_420` — the same
+  4:2:0 path every C-oracle gate covers — and is asserted BYTE-IDENTICAL to
+  driving that pipeline directly with the same config
+  (`encode_yuv420_is_the_mainline_420_path_byte_for_byte`). It also no longer
+  pre-pads: the pipeline signals the TRUE frame size and pads internally, so a
+  98x66 image is a 98x66 stream. **Gate: `tools/decode_conformance.sh <dir>
+  avif` — a new corpus driven entirely through `AvifEncoder`'s public entry
+  points, 240/240 streams decode under BOTH aomdec and dav1d** (120 4:2:0 +
+  120 monochrome, sizes {32,48,64,66,98,128} x qualities {10,35,60,85} x
+  speeds {1,5,6,8,10}).
+- **`AvifEncoder::with_lossless(true)` is now honoured on 4:2:0** — it sets
+  QP 0, the coded-lossless path issue #5 landed byte-identically to C. On the
+  monochrome path it stays a typed `UnsupportedConfig` (the mono leaf coder has
+  no lossless arm). Same for `quality > 99.2`, which maps to QP 0. This is the
+  first CAPABILITY refusal this port has ever RETIRED: the inventory goes 15 ->
+  14 capability refusals.
 
 - **Fractional CRF — issue #9 item 4.** `RcConfig` gains
   `extended_crf_qindex_offset: u8` (quarter-qindex steps) and the
@@ -247,6 +278,33 @@ Crates are not published to crates.io yet — depend by git.
   gate): a set of non-flat cells, measured to be the known bd10 non-flat gap
   (21.5% of non-flat cells at 64-aligned dims vs 26.3% at partial-SB dims;
   `uniform` is 100% everywhere) rather than a partial-SB gap.
+
+### Changed
+
+- **`AvifEncoder` has no inert knobs left — issue #9 item 7.** Two are now
+  wired to the real pipeline settings, each with a liveness test that fails if
+  the knob stops moving the emitted bytes:
+  - `with_qm(bool)` -> `EncodePipeline::hdr.enable_qm`.
+  - `with_variance_boost(bool, u8)` -> `hdr.{enable_variance_boost,
+    variance_boost_strength}`. **Replaces `with_vaq(bool, f64)`**; the strength
+    is now C's documented 1-4 scale, not an invented 0.0-1.0 float.
+  The remaining four were REMOVED rather than faked, because neither this
+  pipeline nor C has a counterpart: `with_trellis` (SVT-AV1 has no trellis
+  knob; RDOQ level comes from preset + coeff level, C-exactly),
+  `with_seg_boost` + the `seg_boost()` getter (no segmentation on the still
+  path), and `with_still_image_tuning` (the encoder is unconditionally
+  still-image: one KEY frame, temporal tools forced off for all-intra as C
+  does).
+- **`AvifEncoder::{enable_qm, enable_variance_boost}` now default to `false`**
+  — C's mainline defaults, and the bytes this encoder has always emitted. They
+  previously defaulted to `true` while being ignored, so leaving them `true`
+  once live would have silently changed every caller's output.
+- `AvifEncoder::encode_y8` is documented MONOCHROME-only (`mono_chrome = 1`):
+  correct for a gray image or an AVIF alpha plane, not a way to encode the luma
+  of a colour image. It still pre-pads to a multiple of 64 because
+  `EncodePipeline`'s TRUE -> ALIGNED padding is wired on the 4:2:0 path only —
+  so for a non-64-multiple gray image the coded frame is larger than
+  `EncodedAvif::{width, height}`. Arbitrary-dims MONOCHROME is a pipeline gap.
 
 ### Fixed
 

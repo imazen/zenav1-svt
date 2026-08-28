@@ -84,18 +84,17 @@ pub struct AvifEncoder {
     chroma_subsampling: ChromaSubsampling,
     /// Number of encoding threads (None = auto).
     threads: Option<usize>,
-    /// Enable quantization matrices.
+    /// C `static_config.enable_qm` — quantization matrices. Wired to
+    /// `EncodePipeline::hdr.enable_qm`; see [`AvifEncoder::with_qm`].
     enable_qm: bool,
-    /// Enable variance adaptive quantization.
-    enable_vaq: bool,
-    /// VAQ strength (0.0-1.0).
-    vaq_strength: f64,
-    /// Tune for still image encoding (disable temporal tools).
-    tune_still_image: bool,
-    /// Enable trellis quantization.
-    enable_trellis: bool,
-    /// Segment-level QP boost for flat regions.
-    seg_boost: f64,
+    /// C `static_config.enable_variance_boost` — the per-superblock
+    /// delta-q that IS SVT-AV1's still-image adaptive quantization. Wired to
+    /// `EncodePipeline::hdr.enable_variance_boost`.
+    enable_variance_boost: bool,
+    /// C `static_config.variance_boost_strength` (1-4, default 2; the docs
+    /// recommend 3 for stills). Wired to
+    /// `EncodePipeline::hdr.variance_boost_strength`.
+    variance_boost_strength: u8,
     /// Lossless encoding mode.
     lossless: bool,
     /// CICP color primaries (1=BT.709, 9=BT.2020, 12=P3).
@@ -125,12 +124,15 @@ impl AvifEncoder {
             bit_depth: 8,
             chroma_subsampling: ChromaSubsampling::Yuv420,
             threads: None,
-            enable_qm: true,
-            enable_vaq: true,
-            vaq_strength: 0.5,
-            tune_still_image: true,
-            enable_trellis: true,
-            seg_boost: 0.0,
+            // Both default OFF, which is C v4.2.0's mainline default
+            // (`svt_av1_set_default_params`: `enable_qm = 0`,
+            // `enable_variance_boost = 0` at SVT_HDR_MODE=0) AND the bytes
+            // this encoder has always emitted — the two knobs used to be
+            // recorded-and-ignored, and defaulting them to `true` now that
+            // they are live would silently change every caller's output.
+            enable_qm: false,
+            enable_variance_boost: false,
+            variance_boost_strength: 2,
             lossless: false,
             color_primaries: 1,           // BT.709
             transfer_characteristics: 13, // sRGB
@@ -219,34 +221,31 @@ impl AvifEncoder {
         self
     }
 
-    /// Enable or disable quantization matrices.
+    /// Enable or disable quantization matrices (C `--enable-qm`).
+    ///
+    /// LIVE: sets `EncodePipeline::hdr.enable_qm`, which drives the frame
+    /// header's `using_qmatrix` + qm levels and the quantizer itself. Off by
+    /// default, matching C's mainline default. Proven to change the emitted
+    /// bytes by `qm_knob_changes_bytes` below.
     pub fn with_qm(mut self, enable: bool) -> Self {
         self.enable_qm = enable;
         self
     }
 
-    /// Enable or disable variance adaptive quantization.
-    pub fn with_vaq(mut self, enable: bool, strength: f64) -> Self {
-        self.enable_vaq = enable;
-        self.vaq_strength = strength.clamp(0.0, 1.0);
-        self
-    }
-
-    /// Enable or disable still image tuning.
+    /// Enable or disable variance boost — SVT-AV1's still-image adaptive
+    /// quantization (C `--enable-variance-boost` / `--variance-boost-strength`).
     ///
-    /// When enabled, disables temporal prediction tools for better
-    /// single-frame compression.
-    pub fn with_still_image_tuning(mut self, enable: bool) -> Self {
-        self.tune_still_image = enable;
-        self
-    }
-
-    /// Enable or disable trellis quantization.
-    ///
-    /// CURRENTLY INERT: recorded for API compatibility, not consumed by the
-    /// encoder (the RDOQ policy comes from the preset/qindex, C-exactly).
-    pub fn with_trellis(mut self, enable: bool) -> Self {
-        self.enable_trellis = enable;
+    /// LIVE: sets `EncodePipeline::hdr.{enable_variance_boost,
+    /// variance_boost_strength}`, which derive a per-superblock qindex plan
+    /// and signal delta-q in the frame header. `strength` is C's 1-4 scale
+    /// (default 2; `Docs/Appendix-Variance-Boost.md:43` recommends 3 for
+    /// still images) and is clamped into that range — NOT the old
+    /// `with_vaq`'s inert 0.0-1.0 float. Off by default, matching C's
+    /// mainline default. Proven to change the emitted bytes by
+    /// `variance_boost_knob_changes_bytes` below.
+    pub fn with_variance_boost(mut self, enable: bool, strength: u8) -> Self {
+        self.enable_variance_boost = enable;
+        self.variance_boost_strength = strength.clamp(1, 4);
         self
     }
 
@@ -261,12 +260,6 @@ impl AvifEncoder {
         self
     }
 
-    /// Set the segment-level QP boost for flat regions.
-    pub fn with_seg_boost(mut self, boost: f64) -> Self {
-        self.seg_boost = boost;
-        self
-    }
-
     /// Set the chroma subsampling format.
     pub fn with_chroma_subsampling(mut self, cs: ChromaSubsampling) -> Self {
         self.chroma_subsampling = cs;
@@ -276,11 +269,6 @@ impl AvifEncoder {
     /// Get the configured chroma subsampling format.
     pub fn chroma_subsampling(&self) -> ChromaSubsampling {
         self.chroma_subsampling
-    }
-
-    /// Get the configured segment boost value.
-    pub fn seg_boost(&self) -> f64 {
-        self.seg_boost
     }
 
     /// Map quality (1.0-100.0) to the CLI-domain QP (0-63, C `--qp`
@@ -315,7 +303,59 @@ impl AvifEncoder {
         (preset as u8).min(9)
     }
 
-    /// Encode a single grayscale (Y-only) still image using the full pipeline.
+    /// Build the `EncodePipeline` every entry point shares, at the image's
+    /// TRUE dimensions.
+    ///
+    /// The pipeline performs its own TRUE -> 64-ALIGNED padding (edge
+    /// replication, exactly as C does) and signals the true size in the frame
+    /// header, so callers must NOT pre-pad: doing that emitted a stream whose
+    /// coded frame was larger than the image the caller asked for.
+    ///
+    /// Every live builder knob is applied here, once, so the mono and 4:2:0
+    /// entry points cannot drift apart in what they honour.
+    fn build_pipeline(&self, width: u32, height: u32) -> svtav1_encoder::pipeline::EncodePipeline {
+        let rc_config = svtav1_encoder::rate_control::RcConfig {
+            mode: svtav1_encoder::rate_control::RcMode::Cqp,
+            // `with_lossless(true)` IS QP 0 in AV1 (spec 5.9.12
+            // `CodedLossless`), which the 4:2:0 path implements
+            // byte-identically to C (issue #5). The monochrome path refuses
+            // the knob in `validate_inert_knobs` before reaching here.
+            qp: if self.lossless {
+                0
+            } else {
+                Self::quality_to_qp(self.quality)
+            },
+            ..svtav1_encoder::rate_control::RcConfig::default()
+        };
+        let mut pipeline = svtav1_encoder::pipeline::EncodePipeline::new(
+            width,
+            height,
+            Self::speed_to_preset(self.speed),
+            rc_config,
+            0,
+            1,
+        )
+        // Feature 4: route the `threads` knob into the bounded tile-parallel
+        // encode (`None`/`Some(0)` = auto). Byte-neutral at any value.
+        .with_thread_count(self.threads.unwrap_or(0));
+        pipeline.bit_depth = self.bit_depth;
+        pipeline.color_description = self.color_description();
+        // Issue #9 item 7: the two knobs that were recorded-and-ignored are
+        // now the real pipeline settings. Defaults are off, so this is
+        // byte-neutral for a caller that sets neither.
+        pipeline.hdr.enable_qm = self.enable_qm;
+        pipeline.hdr.enable_variance_boost = self.enable_variance_boost;
+        pipeline.hdr.variance_boost_strength = self.variance_boost_strength;
+        pipeline
+    }
+
+    /// Encode a single MONOCHROME (Y-only) still image using the full pipeline.
+    ///
+    /// **Gray only.** The emitted sequence header sets `mono_chrome = 1`, so
+    /// the result is a genuine AV1 grayscale still — correct for a gray image
+    /// and for an AVIF alpha auxiliary plane, and NOT a way to encode the luma
+    /// of a colour image (a decoder has no chroma to reconstruct). For colour,
+    /// use [`Self::encode_yuv420`], which emits one 4:2:0 stream.
     ///
     /// Uses the complete encoding pipeline: partition search with all 10
     /// partition types, intra prediction with mode RDO, transform + quantize,
@@ -332,63 +372,44 @@ impl AvifEncoder {
     ) -> Result<EncodedAvif, EncodeError> {
         self.validate_dimensions(pixels.len(), width, height, stride)?;
         self.validate_quality()?;
-        self.validate_inert_knobs()?;
+        self.validate_inert_knobs(false)?;
 
-        let qp = Self::quality_to_qp(self.quality);
-        let preset = Self::speed_to_preset(self.speed);
-        let w = width as usize;
-        let h = height as usize;
-
-        // Copy source with stride → contiguous buffer, edge-padded to SB alignment
-        // AV1 spec: use_128x128_superblock=0 → sb_size=64 always
+        // MONOCHROME NEEDS PRE-PADDING; 4:2:0 DOES NOT. `EncodePipeline`'s
+        // TRUE -> ALIGNED replicate-pad is wired on the 4:2:0 path only
+        // (`try_encode_frame` refuses `width != true_width` outright), so a
+        // mono caller has to hand in already-aligned planes. Pad to a
+        // multiple of 64 — not 8 — because below preset 6 the mono path also
+        // refuses partial superblocks, and the alignment must not depend on
+        // the speed knob. CONSEQUENCE, and a real limitation: the coded frame
+        // for a non-64-multiple gray image is the PADDED size, with the edge
+        // replicated into the pad, so `EncodedAvif::{width, height}` (the
+        // caller's true size) is smaller than the AV1 frame the container
+        // wraps. `encode_yuv420` has no such gap — it signals the true size
+        // at any even size. Arbitrary-dims MONO is a pipeline gap, not one
+        // this wrapper can close.
         let sb_size = 64usize;
-        let padded_w = w.div_ceil(sb_size) * sb_size;
-        let padded_h = h.div_ceil(sb_size) * sb_size;
+        let padded_w = (width as usize).div_ceil(sb_size) * sb_size;
+        let padded_h = (height as usize).div_ceil(sb_size) * sb_size;
+        let (w, h, st) = (width as usize, height as usize, stride as usize);
         let mut src = vec![128u8; padded_w * padded_h];
         for r in 0..h {
-            for c in 0..w {
-                src[r * padded_w + c] = pixels[r * stride as usize + c];
-            }
-            // Replicate last column to pad width
+            src[r * padded_w..r * padded_w + w].copy_from_slice(&pixels[r * st..r * st + w]);
+            // Replicate the last valid column across the width pad.
             for c in w..padded_w {
                 src[r * padded_w + c] = src[r * padded_w + w - 1];
             }
         }
-        // Replicate last row to pad height
+        // Replicate the last valid row down the height pad.
         for r in h..padded_h {
-            for c in 0..padded_w {
-                src[r * padded_w + c] = src[(h - 1) * padded_w + c];
-            }
+            src.copy_within((h - 1) * padded_w..h * padded_w, r * padded_w);
         }
-
-        // Use the full encoding pipeline (single key frame, still-picture mode)
-        let rc_config = svtav1_encoder::rate_control::RcConfig {
-            mode: svtav1_encoder::rate_control::RcMode::Cqp,
-            qp,
-            ..svtav1_encoder::rate_control::RcConfig::default()
-        };
-        let mut pipeline = svtav1_encoder::pipeline::EncodePipeline::new(
-            padded_w as u32,
-            padded_h as u32,
-            preset,
-            rc_config,
-            0,
-            1,
-        )
-        // Feature 4: route the previously-dead `threads` knob into the
-        // bounded tile-parallel encode (`None`/`Some(0)` = auto).
-        .with_thread_count(self.threads.unwrap_or(0));
-        pipeline.bit_depth = self.bit_depth;
-        pipeline.color_description = self.color_description();
+        let mut pipeline = self.build_pipeline(padded_w as u32, padded_h as u32);
 
         // Fallible entry point, NOT the infallible `encode_frame` wrapper: the
         // latter `.expect()`s on every refusal the pipeline can raise
-        // (unsupported bit depth, qp 0, an out-of-envelope superres/bd10
-        // config), turning a caller mistake into a process abort inside a
-        // Result-returning API. Routing through `try_encode_frame` is also what
-        // finally gives `EncodeError::EncodeFailed` a constructor — it was dead
-        // in the whole workspace, so `AvifEncoder` could not report ANY runtime
-        // encode failure.
+        // (unsupported bit depth, an out-of-envelope superres/bd10 config, a
+        // monochrome partial superblock below preset 6), turning a caller
+        // mistake into a process abort inside a Result-returning API.
         let bitstream = pipeline
             .try_encode_frame(&src, padded_w)
             .map_err(|e| Self::from_pipeline_error(e.error(), || e.to_string()))?;
@@ -417,17 +438,23 @@ impl AvifEncoder {
         Ok(result.data)
     }
 
-    /// Encode a YUV 4:2:0 image.
+    /// Encode a YUV 4:2:0 image into ONE real AV1 bitstream.
     ///
-    /// Encodes the luma plane through the full pipeline. Chroma planes
-    /// are encoded independently at half resolution. Each produces a
-    /// separate AV1 OBU stream; they're concatenated with length prefixes.
+    /// Routes through `EncodePipeline::with_chroma_420(true)` +
+    /// `try_encode_frame_420` — the same 4:2:0 path every byte-identity gate
+    /// in this repo exercises against the C encoder — so the output is a
+    /// single `mono_chrome = 0` AV1 stream that any AV1 decoder accepts.
     ///
-    /// TODO: switch to the real single-stream 4:2:0 path
-    /// (`EncodePipeline::with_chroma_420(true)` + `encode_frame_420`,
-    /// mono_chrome=0 sequence header) — kept on the legacy three-mono-plane
-    /// format for now because callers consume this length-prefixed layout;
-    /// changing the output contract needs its own migration.
+    /// It used to return three concatenated MONOCHROME streams behind u32
+    /// length prefixes, which is not AV1 at all: `data` did not decode, and
+    /// nothing in the return type said so (issue #9 item 6). That output
+    /// contract is gone.
+    ///
+    /// `y` is read at `y_stride`; `u` and `v` are read TIGHT at
+    /// `(width / 2) x (height / 2)`, which is the 4:2:0 plane layout of a
+    /// planar I420 buffer. Dimensions must be even (the pipeline itself
+    /// handles arbitrary — including non-64-multiple — even sizes by padding
+    /// internally and signalling the true size).
     pub fn encode_yuv420(
         &self,
         y: &[u8],
@@ -440,39 +467,25 @@ impl AvifEncoder {
         if width == 0 || height == 0 || !width.is_multiple_of(2) || !height.is_multiple_of(2) {
             return Err(EncodeError::InvalidDimensions);
         }
-
-        let y_len_needed = (height - 1) * y_stride + width;
-        if (y.len() as u32) < y_len_needed {
-            return Err(EncodeError::InvalidDimensions);
-        }
+        self.validate_dimensions(y.len(), width, height, y_stride)?;
 
         let chroma_w = width / 2;
         let chroma_h = height / 2;
-        let chroma_len_needed = (chroma_h - 1) * chroma_w + chroma_w;
-        if (u.len() as u32) < chroma_len_needed || (v.len() as u32) < chroma_len_needed {
+        let chroma_len_needed = (chroma_w * chroma_h) as usize;
+        if u.len() < chroma_len_needed || v.len() < chroma_len_needed {
             return Err(EncodeError::InvalidDimensions);
         }
 
         self.validate_quality()?;
+        self.validate_inert_knobs(true)?;
 
-        // Encode each plane through the full pipeline
-        let luma_result = self.encode_y8(y, width, height, y_stride)?;
-        let u_result = self.encode_y8(u, chroma_w, chroma_h, chroma_w)?;
-        let v_result = self.encode_y8(v, chroma_w, chroma_h, chroma_w)?;
-
-        // Length-prefixed plane concatenation for multi-plane embedding
-        let mut combined = Vec::with_capacity(
-            12 + luma_result.data.len() + u_result.data.len() + v_result.data.len(),
-        );
-        combined.extend_from_slice(&(luma_result.data.len() as u32).to_le_bytes());
-        combined.extend_from_slice(&luma_result.data);
-        combined.extend_from_slice(&(u_result.data.len() as u32).to_le_bytes());
-        combined.extend_from_slice(&u_result.data);
-        combined.extend_from_slice(&(v_result.data.len() as u32).to_le_bytes());
-        combined.extend_from_slice(&v_result.data);
+        let mut pipeline = self.build_pipeline(width, height).with_chroma_420(true);
+        let bitstream = pipeline
+            .try_encode_frame_420(y, u, v, y_stride as usize)
+            .map_err(|e| Self::from_pipeline_error(e.error(), || e.to_string()))?;
 
         Ok(EncodedAvif {
-            data: combined,
+            data: bitstream,
             width,
             height,
             bit_depth: self.bit_depth,
@@ -534,30 +547,31 @@ impl AvifEncoder {
         Ok(())
     }
 
-    /// Reject builder knobs that this encoder RECORDS but does not consume,
-    /// where ignoring them would silently emit output the caller did not ask
-    /// for.
+    /// Reject the configurations this encoder cannot honour, where ignoring
+    /// them would silently emit output the caller did not ask for.
     ///
-    /// `with_lossless(true)` would otherwise return a LOSSY stream and
-    /// `with_chroma_subsampling(Yuv422/Yuv444)` a 4:2:0 one — both
-    /// indistinguishable from success at the call site. (4:2:2 / 4:4:4 are
-    /// outside SVT-AV1 v4.2.0's own shipping envelope too:
-    /// `svt_av1_verify_settings`, enc_settings.c:470, "Only support 420 now".)
-    /// The purely advisory knobs — trellis, VAQ, QM, seg-boost,
-    /// still-image tuning — are documented as inert instead of rejected: they
-    /// change nothing a caller can observe.
-    fn validate_inert_knobs(&self) -> Result<(), EncodeError> {
-        if self.lossless {
-            // Issue #5 chunk 2: coded-lossless (QP 0) IS implemented on
-            // `EncodePipeline`'s 4:2:0 still path (byte-identical to C,
-            // tools/lossless_gate.sh). This wrapper still emits three
-            // MONOCHROME streams (the legacy output contract), and the mono
-            // leaf coder has no lossless arm — so the knob stays a typed
-            // refusal here rather than a lossy stream.
+    /// As of issue #9 item 7 there are NO inert knobs left: `with_qm` and
+    /// `with_variance_boost` are wired to the real pipeline settings, and
+    /// `with_trellis` / `with_vaq` / `with_seg_boost` /
+    /// `with_still_image_tuning` are gone (they had no counterpart in the
+    /// pipeline or in C — SVT-AV1 has no trellis or seg-boost knob, and this
+    /// encoder is unconditionally still-image: one KEY frame, temporal tools
+    /// forced off for all-intra exactly as C does).
+    ///
+    /// `chroma_420` says which entry point is asking. It matters for the two
+    /// lossless refusals: coded-lossless (QP 0) IS implemented on the 4:2:0
+    /// still path (issue #5, byte-identical to C under
+    /// `tools/lossless_gate.sh`) and is NOT implemented on the monochrome
+    /// leaf coder.
+    fn validate_inert_knobs(&self, chroma_420: bool) -> Result<(), EncodeError> {
+        if self.lossless && !chroma_420 {
+            // Issue #5 chunk 2 landed coded-lossless (QP 0) on the 4:2:0
+            // still path only; the monochrome leaf coder has no lossless arm,
+            // so on THIS path the knob would silently return a lossy stream.
             return Err(EncodeError::UnsupportedConfig(
-                "lossless encoding is not implemented on AvifEncoder's three-monochrome-stream \
-                 output; QP 0 (coded-lossless) is available on \
-                 EncodePipeline::try_encode_frame_420 (8-bit 4:2:0 stills, mainline mode)",
+                "lossless encoding is not implemented for monochrome (encode_y8); QP 0 \
+                 (coded-lossless) is available on encode_yuv420 — 8-bit 4:2:0 stills, mainline \
+                 mode",
             ));
         }
         if self.chroma_subsampling != ChromaSubsampling::Yuv420 {
@@ -585,12 +599,11 @@ impl AvifEncoder {
         // "maximum quality" input panicked through a Result-returning API.
         // Reject it here, as a typed error, at the same place the other
         // unsupported knobs are caught.
-        if Self::quality_to_qp(self.quality) == 0 {
+        if Self::quality_to_qp(self.quality) == 0 && !chroma_420 {
             return Err(EncodeError::UnsupportedConfig(
-                "quality > 99.2 maps to QP 0, which is lossless AV1 (WHT transform + lossless \
-                 header signalling); AvifEncoder's monochrome streams have no lossless arm (not \
-                 implemented) — use a lower quality, or EncodePipeline::try_encode_frame_420 at \
-                 QP 0 for a coded-lossless 4:2:0 still",
+                "quality > 99.2 maps to QP 0, which is coded-lossless AV1 (WHT transform + \
+                 lossless header signalling); the monochrome leaf coder has no lossless arm — use \
+                 a lower quality, or encode_yuv420 for a coded-lossless 4:2:0 still",
             ));
         }
         Ok(())
@@ -609,10 +622,10 @@ mod tests {
         assert_eq!(enc.bit_depth, 8);
         assert_eq!(enc.chroma_subsampling, ChromaSubsampling::Yuv420);
         assert!(enc.threads.is_none());
-        assert!(enc.enable_qm);
-        assert!(enc.enable_vaq);
-        assert!(enc.tune_still_image);
-        assert!(enc.enable_trellis);
+        // Both default OFF (C mainline defaults) now that they are LIVE.
+        assert!(!enc.enable_qm);
+        assert!(!enc.enable_variance_boost);
+        assert_eq!(enc.variance_boost_strength, 2);
         assert!(!enc.lossless);
     }
 
@@ -623,22 +636,236 @@ mod tests {
             .with_speed(3)
             .with_bit_depth(10)
             .with_num_threads(Some(4))
-            .with_qm(false)
-            .with_vaq(true, 0.8)
-            .with_still_image_tuning(false)
-            .with_trellis(false)
+            .with_qm(true)
+            .with_variance_boost(true, 3)
             .with_lossless(true);
 
         assert!((enc.quality - 90.0).abs() < f32::EPSILON);
         assert_eq!(enc.speed, 3);
         assert_eq!(enc.bit_depth, 10);
         assert_eq!(enc.threads, Some(4));
-        assert!(!enc.enable_qm);
-        assert!(enc.enable_vaq);
-        assert!((enc.vaq_strength - 0.8).abs() < f64::EPSILON);
-        assert!(!enc.tune_still_image);
-        assert!(!enc.enable_trellis);
+        assert!(enc.enable_qm);
+        assert!(enc.enable_variance_boost);
+        assert_eq!(enc.variance_boost_strength, 3);
         assert!(enc.lossless);
+    }
+
+    /// C's strength scale is 1-4 (`Docs/Parameters.md:124`), so 0 and 9 are
+    /// clamped rather than passed through into the boost kernel.
+    #[test]
+    fn variance_boost_strength_clamps_to_c_range() {
+        assert_eq!(
+            AvifEncoder::new()
+                .with_variance_boost(true, 0)
+                .variance_boost_strength,
+            1
+        );
+        assert_eq!(
+            AvifEncoder::new()
+                .with_variance_boost(true, 9)
+                .variance_boost_strength,
+            4
+        );
+    }
+
+    // ---- issue #9 items 6 + 7 ------------------------------------------
+    //
+    // One LIVENESS cell per knob that used to be recorded-and-ignored: the
+    // knob must change the emitted bytes. A knob that is "wired" but never
+    // moves a byte is the same silent no-op the issue is about, so these
+    // assert INEQUALITY against the same encode with the knob off.
+
+    /// 4:2:0 test content: a luma gradient plus two non-flat chroma planes.
+    fn yuv420(size: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let (cw, ch) = (size / 2, size / 2);
+        let mut y = vec![0u8; size * size];
+        for r in 0..size {
+            for c in 0..size {
+                y[r * size + c] = ((r * 255) / size) as u8 ^ ((c * 3) & 0x3F) as u8;
+            }
+        }
+        let mut u = vec![0u8; cw * ch];
+        let mut v = vec![0u8; cw * ch];
+        for r in 0..ch {
+            for c in 0..cw {
+                u[r * cw + c] = (((r * 3) & 0x7F) + 64) as u8;
+                v[r * cw + c] = (((c * 5) & 0x7F) + 64) as u8;
+            }
+        }
+        (y, u, v)
+    }
+
+    fn enc420(enc: &AvifEncoder, size: usize) -> Vec<u8> {
+        let (y, u, v) = yuv420(size);
+        enc.encode_yuv420(&y, &u, &v, size as u32, size as u32, size as u32)
+            .expect("4:2:0 encode")
+            .data
+    }
+
+    /// Item 6: `encode_yuv420` must produce the SAME bytes as driving the
+    /// mainline 4:2:0 pipeline directly with the same config — i.e. it is a
+    /// thin wrapper over the path every C-oracle gate covers, not a private
+    /// format. (It used to return three concatenated monochrome streams.)
+    #[test]
+    fn encode_yuv420_is_the_mainline_420_path_byte_for_byte() {
+        let size = 64usize;
+        let (y, u, v) = yuv420(size);
+        let enc = AvifEncoder::new().with_quality(60.0).with_speed(6);
+        let via_avif = enc
+            .encode_yuv420(&y, &u, &v, size as u32, size as u32, size as u32)
+            .expect("4:2:0 encode")
+            .data;
+
+        let rc = svtav1_encoder::rate_control::RcConfig {
+            mode: svtav1_encoder::rate_control::RcMode::Cqp,
+            qp: AvifEncoder::quality_to_qp(60.0),
+            ..svtav1_encoder::rate_control::RcConfig::default()
+        };
+        let mut direct = svtav1_encoder::pipeline::EncodePipeline::new(
+            size as u32,
+            size as u32,
+            AvifEncoder::speed_to_preset(6),
+            rc,
+            0,
+            1,
+        )
+        .with_thread_count(0)
+        .with_chroma_420(true);
+        direct.bit_depth = 8;
+        direct.color_description = enc.color_description();
+        let via_pipeline = direct.encode_frame_420(&y, &u, &v, size);
+
+        assert_eq!(
+            via_avif, via_pipeline,
+            "AvifEncoder::encode_yuv420 must BE the mainline 4:2:0 path"
+        );
+        // And it must be an AV1 stream, not a length-prefixed plane blob: the
+        // first OBU is a temporal delimiter (obu_type 2, has_size_field).
+        assert_eq!(via_avif[0] & 0x7f, 0b0_0010_0_1_0, "first OBU is not a TD");
+    }
+
+    /// Item 6: the same content through `encode_y8` is a DIFFERENT (mono)
+    /// stream — the two entry points are not interchangeable, which is why
+    /// `encode_y8` is documented gray-only.
+    #[test]
+    fn encode_y8_is_monochrome_not_the_luma_of_a_colour_image() {
+        let size = 64usize;
+        let (y, u, v) = yuv420(size);
+        let enc = AvifEncoder::new().with_quality(60.0).with_speed(6);
+        let mono = enc
+            .encode_y8(&y, size as u32, size as u32, size as u32)
+            .expect("mono encode")
+            .data;
+        let colour = enc
+            .encode_yuv420(&y, &u, &v, size as u32, size as u32, size as u32)
+            .expect("4:2:0 encode")
+            .data;
+        assert_ne!(mono, colour);
+    }
+
+    /// Item 7 liveness: `with_qm` reaches `hdr.enable_qm`.
+    #[test]
+    fn qm_knob_changes_bytes() {
+        let base = AvifEncoder::new().with_quality(60.0).with_speed(6);
+        let off = enc420(&base, 64);
+        let on = enc420(&base.clone().with_qm(true), 64);
+        assert_ne!(off, on, "with_qm(true) did not change the emitted bytes");
+    }
+
+    /// Item 7 liveness: `with_variance_boost` reaches
+    /// `hdr.{enable_variance_boost, variance_boost_strength}`. Two cells: the
+    /// enable flag moves the bytes, and so does the strength within it (a
+    /// strength that never mattered would be a no-op hiding inside a live
+    /// knob).
+    #[test]
+    fn variance_boost_knob_changes_bytes() {
+        let base = AvifEncoder::new().with_quality(60.0).with_speed(6);
+        let off = enc420(&base, 64);
+        let on = enc420(&base.clone().with_variance_boost(true, 2), 64);
+        assert_ne!(
+            off, on,
+            "with_variance_boost(true, _) did not change the emitted bytes"
+        );
+
+        // STRENGTH needs a frame with MORE THAN ONE superblock whose
+        // variances differ, AND the low-variance half must still code
+        // COEFFICIENTS. Two traps, both hit while writing this cell:
+        //   * a single-SB frame collapses to a flat plan (the per-SB values
+        //     are re-expressed against `min_q + range/2` in
+        //     `sb_qindex::variance_adjust_qp_mainline`), so every strength
+        //     gives the same plan;
+        //   * a PERFECTLY FLAT superblock codes as one 64x64 skip block, and
+        //     AV1 signals `delta_q` only when `MiSize != sbSize || !skip`
+        //     (spec 5.11.5) — so its planned qindex never reaches the
+        //     bitstream and the cell is vacuous even though the plan differs.
+        //     MEASURED: flat-left/noisy-right 128x128 gives plans
+        //     [72,100,72,100] / [62,...] / [56,...] for strengths 1/2/3 and
+        //     IDENTICAL bytes for all four.
+        // `yuv420_mixed` therefore uses a SHALLOW GRADIENT (low variance, but
+        // non-zero residual) on the left. Strengths 3 and 4 saturate to the
+        // same plan, so the cell compares 1 against 3.
+        let (y, u, v) = yuv420_mixed(128);
+        let enc_s = |st: u8| {
+            base.clone()
+                .with_variance_boost(true, st)
+                .encode_yuv420(&y, &u, &v, 128, 128, 128)
+                .expect("4:2:0 encode")
+                .data
+        };
+        assert_ne!(
+            enc_s(1),
+            enc_s(3),
+            "variance_boost_strength did not change the bytes"
+        );
+    }
+
+    /// 4:2:0 content whose superblock variances DIFFER while BOTH halves still
+    /// code coefficients: the left half is a shallow gradient (low variance,
+    /// non-zero residual), the right half is high-frequency.
+    fn yuv420_mixed(size: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let (cw, ch) = (size / 2, size / 2);
+        let mut y = vec![128u8; size * size];
+        for r in 0..size {
+            for c in 0..size {
+                y[r * size + c] = if c < size / 2 {
+                    (100 + ((r / 8 + c / 8) % 7)) as u8
+                } else {
+                    (((r * 37 + c * 91) % 256) ^ ((c * 13) & 0xFF)) as u8
+                };
+            }
+        }
+        let mut u = vec![128u8; cw * ch];
+        let mut v = vec![128u8; cw * ch];
+        for r in 0..ch {
+            for c in cw / 2..cw {
+                u[r * cw + c] = ((r * 7 + c * 3) % 256) as u8;
+                v[r * cw + c] = ((r * 3 + c * 11) % 256) as u8;
+            }
+        }
+        (y, u, v)
+    }
+
+    /// Item 7: `with_lossless(true)` is QP 0 on the 4:2:0 path (issue #5) and
+    /// a typed refusal on the monochrome one — never a silently lossy stream.
+    #[test]
+    fn lossless_is_qp0_on_420_and_refused_on_mono() {
+        let enc = AvifEncoder::new().with_speed(8).with_lossless(true);
+        let (y, u, v) = yuv420(64);
+        let ll = enc
+            .encode_yuv420(&y, &u, &v, 64, 64, 64)
+            .expect("coded-lossless 4:2:0 encode")
+            .data;
+        let lossy = enc420(&AvifEncoder::new().with_speed(8), 64);
+        assert!(
+            ll.len() > lossy.len(),
+            "lossless stream ({} B) should be larger than the lossy one ({} B)",
+            ll.len(),
+            lossy.len()
+        );
+        assert!(matches!(
+            enc.encode_y8(&y, 64, 64, 64),
+            Err(EncodeError::UnsupportedConfig(_))
+        ));
     }
 
     #[test]

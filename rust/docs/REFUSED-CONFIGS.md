@@ -2,7 +2,7 @@
 
 # Configs this encoder refuses
 
-**15 CAPABILITY refusals** (unimplemented — this is DEBT) and **17
+**14 CAPABILITY refusals** (unimplemented — this is DEBT) and **21
 CONTRACT refusals** (caller misuse — permanent and correct).
 
 Regenerate with `tools/refusal_inventory.sh`; `--check` is a CI gate.
@@ -38,8 +38,7 @@ aloud in a status report before anyone acted on it.
 | `crates/svtav1-encoder/src/pipeline.rs` | monochrome encode supports partial SBs only on the PD0 path (preset >= 6); use a multiple of 64 or preset >= 6 |
 | `crates/svtav1-encoder/src/pipeline.rs` | superres is 8-bit only so far (the u16 source downscale is unported) |
 | `crates/svtav1-encoder/src/pipeline.rs` | this 10-bit configuration has no bd10 stage to produce the coded levels; the encode would be 8-bit-quantized under a 10-bit sequence header |
-| `svtav1/src/avif.rs` | lossless encoding is not implemented on AvifEncoder's three-monochrome-stream output; QP 0 (coded-lossless) is available on EncodePipeline::try_encode_frame_420 (8-bit 4:2:0 stills, mainline mode) |
-| `svtav1/src/avif.rs` | quality > 99.2 maps to QP 0, which is lossless AV1 (WHT transform + lossless header signalling); AvifEncoder's monochrome streams have no lossless arm (not implemented) — use a lower quality, or EncodePipeline::try_encode_frame_420 at QP 0 for a coded-lossless 4:2:0 still |
+| `svtav1/src/avif.rs` | lossless encoding is not implemented for monochrome (encode_y8); QP 0 (coded-lossless) is available on encode_yuv420 — 8-bit 4:2:0 stills, mainline mode |
 
 ## CONTRACT — caller misuse (permanent, correct)
 
@@ -47,10 +46,13 @@ aloud in a status report before anyone acted on it.
 |---|---|
 | `crates/svtav1-encoder/src/pipeline.rs` | SuperresDenom must be 9..=16 |
 | `crates/svtav1-encoder/src/pipeline.rs` | chroma_420 pipeline supports still/key frames only (intra_period <= 1) |
+| `crates/svtav1-encoder/src/pipeline.rs` | chroma_sample_position must be 0 (unknown), 1 (vertical) or 2 (colocated); 3 is reserved (C verify_settings, enc_settings.c:762) |
 | `crates/svtav1-encoder/src/pipeline.rs` | encode_frame_420 requires the pipeline to be built with with_chroma_420(true) |
+| `crates/svtav1-encoder/src/pipeline.rs` | extended_crf_qindex_offset must be 0..=3 (a quarter-step fractional CRF) or, at qp 63, at most 28 (CRF 70) — C verify_settings, enc_settings.c:270 |
 | `crates/svtav1-encoder/src/pipeline.rs` | hbd luma plane must cover the true dims at y_stride |
 | `crates/svtav1-encoder/src/pipeline.rs` | hbd planes must cover the true dims (y at y_stride, u/v at true_w/2) |
 | `crates/svtav1-encoder/src/pipeline.rs` | hbd source carries a sample above the configured bit depth |
+| `crates/svtav1-encoder/src/pipeline.rs` | max_tx_size must be 32 or 64 (C verify_settings, enc_settings.c:922) |
 | `crates/svtav1-encoder/src/pipeline.rs` | native 10-bit input needs a bd10 consumer: 64-aligned dims and either preset >= 9 or a full-RD-capable preset <= 8 (non-screen content) — see docs/hbd-input-port-map.md chunk 2 |
 | `crates/svtav1-encoder/src/pipeline.rs` | native 10-bit monochrome input needs the bd10 level re-encode post-pass: 64-aligned dims at preset >= 9 — see docs/hbd-input-port-map.md chunk 2 |
 | `crates/svtav1-encoder/src/pipeline.rs` | native 10-bit source went unconsumed (the bd10 level re-encode was skipped for this frame's partition trees) — the encode would have silently truncated to 8 bits; see docs/hbd-input-port-map.md chunk 2 |
@@ -62,3 +64,4 @@ aloud in a status report before anyone acted on it.
 | `crates/svtav1-encoder/src/pipeline.rs` | u/v planes must each be at least (true_w/2 x true_h/2) |
 | `svtav1/src/avif.rs` | bit depth must be 8 or 10 (C v4.2.0 rejects every other depth at encoder init) |
 | `svtav1/src/avif.rs` | only 4:2:0 chroma is implemented (and C v4.2.0 ships 420 only) |
+| `svtav1/src/avif.rs` | quality > 99.2 maps to QP 0, which is coded-lossless AV1 (WHT transform + lossless header signalling); the monochrome leaf coder has no lossless arm — use a lower quality, or encode_yuv420 for a coded-lossless 4:2:0 still |
