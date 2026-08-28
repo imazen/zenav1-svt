@@ -11,8 +11,8 @@
 //! i16 contract range (see c_parity_quant.rs COEFF_BOUND note).
 
 use svtav1_cref as cref;
+use svtav1_encoder::entropy::scan_tables;
 use svtav1_encoder::{qm, quant};
-use svtav1_entropy::scan_tables;
 
 struct Rng(u64);
 impl Rng {

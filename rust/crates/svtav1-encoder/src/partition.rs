@@ -715,7 +715,7 @@ pub struct PartitionResult {
 /// the live neighbor context (C's md partition_context) is the next step
 /// toward C's md RDO.
 fn partition_rate_256(width: usize, sym: PartitionType) -> u32 {
-    (svtav1_entropy::context::partition_symbol_cost(width, 0, sym as usize) + 1) >> 1
+    (crate::entropy::context::partition_symbol_cost(width, 0, sym as usize) + 1) >> 1
 }
 
 /// Add the PARTITION_NONE symbol cost to a leaf result at a SQUARE node
@@ -1598,9 +1598,9 @@ pub(crate) fn funnel_block_decision(
         // scan-order eob from the packed txb with the coder's scan so the
         // dump matches the bitstream (the coder re-derives it identically at
         // pipeline.rs `write_coeffs_txb_1d`).
-        let tx_size = svtav1_entropy::coeff_c::tx_size_from_dims(pw, ph);
-        let sidx = svtav1_entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type as usize] as usize;
-        let scan = svtav1_entropy::scan_tables::scan(tx_size, sidx);
+        let tx_size = crate::entropy::coeff_c::tx_size_from_dims(pw, ph);
+        let sidx = crate::entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type as usize] as usize;
+        let scan = crate::entropy::scan_tables::scan(tx_size, sidx);
         let mut eob = 0u16;
         for (i, &pos) in scan.iter().enumerate() {
             if choice.txb_qcoeffs[0][pos as usize] != 0 {

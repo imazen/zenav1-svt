@@ -21,6 +21,7 @@ mod dbgenv;
 pub mod deblock;
 pub mod depth_refine;
 pub mod encode_loop;
+pub mod entropy;
 pub mod film_grain;
 pub mod frame_geom;
 pub mod hdr_mode;

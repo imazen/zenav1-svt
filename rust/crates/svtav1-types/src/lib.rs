@@ -25,6 +25,7 @@ pub mod quantization;
 pub mod reference;
 pub mod restoration;
 pub mod segmentation;
+pub mod tables;
 pub mod transform;
 
 pub use error::{EncodeError, EncodeResult};

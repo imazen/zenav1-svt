@@ -59,7 +59,7 @@ pub fn scaled_prediction(
     ref_width: usize,
     ref_height: usize,
 ) {
-    let filters = &svtav1_tables::interp::SUB_PEL_FILTERS_8;
+    let filters = &svtav1_types::tables::interp::SUB_PEL_FILTERS_8;
     const FILTER_CENTER: i32 = 3;
 
     for r in 0..height {

@@ -307,8 +307,8 @@ fn rdcost_matches_capture() {
 /// (default contexts, coeff tables at the respective qindexes).
 #[test]
 fn md_rates_match_c_captures() {
-    let fc = svtav1_entropy::context::FrameContext::new_default();
-    let cfc = svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(220);
+    let fc = crate::entropy::context::FrameContext::new_default();
+    let cfc = crate::entropy::coeff_c::CoeffFc::default_for_qindex(220);
     let r = build_md_rates(&fc, &cfc);
     // kf y mode at ctx (0,0): DC 547, SMOOTH 1556 (q55 64x64 flr).
     assert_eq!(r.kf_y[0][0][0], 547);
@@ -889,7 +889,7 @@ fn cropped_tx_dims_match_the_c_expressions() {
 /// cheaper by exactly 103 rate units (0.20 bits) with the same `ydist`.
 #[test]
 fn md_side_ibc_tx_type_update_adapts_the_intra_dc_row_like_c() {
-    use svtav1_entropy::writer::AomWriter;
+    use crate::entropy::writer::AomWriter;
     let base = cc::CoeffFc::default_for_qindex(60);
     let tx = cc::TX_8X8;
     let sqr = cc::TXSIZE_SQR_MAP[tx];

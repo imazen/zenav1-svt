@@ -12,9 +12,7 @@ name = "svtav1"
 
 [dependencies]
 zenav1-svt-types = { workspace = true, features = ["std"] }
-zenav1-svt-tables = { workspace = true }
 zenav1-svt-dsp = { workspace = true, features = ["std"] }
-zenav1-svt-entropy = { workspace = true, features = ["std"] }
 zenav1-svt-encoder = { workspace = true }
 
 [dev-dependencies]
@@ -24,7 +22,7 @@ png = "0.18.1"
 # `testable_dispatch` exposes for_each_token_permutation, which tests/
 # tier_invariance.rs uses to walk EVERY SIMD tier and assert the encoder emits
 # identical bytes on each. Cargo unifies the feature across the graph, so this
-# also enables it for the dsp/entropy crates' archmage -- which is what makes an
+# also enables it for the dsp/encoder crates' archmage -- which is what makes an
 # END-TO-END encode observe the disabled tiers rather than only this crate.
 # Dev-only: no release build carries it.
 archmage = { workspace = true, features = ["testable_dispatch"] }
@@ -39,7 +37,7 @@ std = []
 unsafe_encoding = ["zenav1-svt-encoder/unsafe_encoding"]
 # Per-symbol arithmetic-coder trace on stderr (identity harness:
 # tools/identity_diff.sh diffs it against the wrapped C library's trace).
-symtrace = ["zenav1-svt-entropy/symtrace"]
+symtrace = ["zenav1-svt-encoder/symtrace"]
 # Feature 3: forward fallible allocation down to the encoder/types so the
 # gates (e.g. golden_parity) can be run with `--features fallible-alloc`.
 fallible-alloc = ["zenav1-svt-encoder/fallible-alloc"]

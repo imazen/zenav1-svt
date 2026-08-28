@@ -7,8 +7,8 @@
 //!
 //! Ported from `AomWriter` in `bitstream_unit.h`.
 
-use crate::cdf::{AomCdfProb, update_cdf};
-use crate::range_coder::OdEcEnc;
+use crate::entropy::cdf::{AomCdfProb, update_cdf};
+use crate::entropy::range_coder::OdEcEnc;
 
 /// AV1 bitstream writer.
 ///

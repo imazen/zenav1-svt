@@ -138,7 +138,7 @@ pub(crate) fn cfl_ac_from_frame_recon_hbd(
 /// (idx, joint_sign, plane). plane 0 = Cb (U), 1 = Cr (V).
 #[inline]
 pub(crate) fn cfl_idx_to_alpha(alpha_idx: u8, joint_sign: u8, plane: usize) -> i32 {
-    use svtav1_entropy::context::{cfl_sign_u, cfl_sign_v};
+    use crate::entropy::context::{cfl_sign_u, cfl_sign_v};
     let js = joint_sign as usize;
     let alpha_sign = if plane == 0 {
         cfl_sign_u(js)

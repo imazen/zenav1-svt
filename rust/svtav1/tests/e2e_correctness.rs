@@ -649,8 +649,8 @@ mod me_encode_e2e {
 // ============================================================================
 
 mod entropy_e2e {
-    use svtav1_entropy::cdf::*;
-    use svtav1_entropy::writer::AomWriter;
+    use svtav1_encoder::entropy::cdf::*;
+    use svtav1_encoder::entropy::writer::AomWriter;
 
     #[test]
     fn encode_sequence_produces_bytes() {

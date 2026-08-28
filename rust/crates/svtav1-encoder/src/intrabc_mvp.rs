@@ -43,8 +43,8 @@
 //! grids with intrabc neighbours.
 
 use crate::intrabc::TileMiBounds;
-use svtav1_tables::block::{NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE};
 use svtav1_types::motion::{CandidateMv, MAX_REF_MV_STACK_SIZE, Mv};
+use svtav1_types::tables::block::{NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE};
 
 /// C `MVREF_ROWS` / `MVREF_COLS` (adaptive_mv_pred.c:30-31).
 const MVREF_ROWS: i32 = 3;

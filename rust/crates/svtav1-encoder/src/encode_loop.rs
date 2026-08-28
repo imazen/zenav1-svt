@@ -178,7 +178,7 @@ pub fn encode_block_tx_cq(
         // C operates on the ADJUSTED (32-capped) packed coefficient block
         // — pack the top-left quadrant for 64-dim transforms exactly like
         // svt_handle_transform64x64/64x32 leaves it (values unchanged).
-        let c_tx = svtav1_entropy::coeff_c::tx_size_from_dims(width, height);
+        let c_tx = crate::entropy::coeff_c::tx_size_from_dims(width, height);
         let packed_w = width.min(32);
         let packed_h = height.min(32);
         let packed: alloc::vec::Vec<i32> = if packed_w != width || packed_h != height {
@@ -191,11 +191,11 @@ pub fn encode_block_tx_cq(
         } else {
             coeffs.clone()
         };
-        let scan = svtav1_entropy::scan_tables::scan(
+        let scan = crate::entropy::scan_tables::scan(
             c_tx,
-            svtav1_entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type as usize] as usize,
+            crate::entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type as usize] as usize,
         );
-        let tx_class = svtav1_entropy::coeff_c::TX_TYPE_TO_CLASS[tx_type as usize];
+        let tx_class = crate::entropy::coeff_c::TX_TYPE_TO_CLASS[tx_type as usize];
         let mut pq = alloc::vec![0i32; packed_w * packed_h];
         let mut pdq = alloc::vec![0i32; packed_w * packed_h];
         crate::quant::quantize_inv_quantize_still(

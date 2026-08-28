@@ -1,9 +1,9 @@
-//! Generates `svtav1-entropy/src/scan_tables.rs` from the C reference's
+//! Generates `svtav1-encoder/src/entropy/scan_tables.rs` from the C reference's
 //! exported `eb_av1_scan_orders` / `tx_type_to_scan_index` data.
 //!
 //! Usage:
 //!   cargo run --release -p zenav1-svt-cref --bin gen_scan_tables \
-//!     > crates/svtav1-entropy/src/scan_tables.rs
+//!     > crates/svtav1-encoder/src/entropy/scan_tables.rs
 
 use svtav1_cref as cref;
 
@@ -20,7 +20,7 @@ fn main() {
          //!\n\
          //! GENERATED FILE — DO NOT EDIT. Regenerate with:\n\
          //!   cargo run --release -p zenav1-svt-cref --bin gen_scan_tables \\\n\
-         //!     > crates/svtav1-entropy/src/scan_tables.rs\n\
+         //!     > crates/svtav1-encoder/src/entropy/scan_tables.rs\n\
          //! The c_scan_tables_match test asserts these stay in sync with C.\n\n",
     );
 

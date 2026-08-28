@@ -12,11 +12,11 @@
 //! so this is a pre-existing wrong port, not v4.2 drift.
 
 use svtav1_cref as cref;
-use svtav1_entropy::mv_coding::{
+use svtav1_encoder::entropy::mv_coding::{
     MV_CLASSES, MV_FP_SIZE, MV_JOINTS, MV_OFFSET_BITS, MvSubpelPrecision, NmvContext,
     encode_mv_diff, get_mv_class,
 };
-use svtav1_entropy::writer::AomWriter;
+use svtav1_encoder::entropy::writer::AomWriter;
 
 struct Rng(u64);
 impl Rng {

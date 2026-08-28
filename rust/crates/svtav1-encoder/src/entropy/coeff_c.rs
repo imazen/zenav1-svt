@@ -9,10 +9,10 @@
 //! Uses C `TxSize` indices (0..19) and C `FRAME_CONTEXT` CDF layout
 //! throughout (values, structural 0, adaptation counter at `[nsymbs]`).
 
-use crate::cdf::AomCdfProb;
-use crate::default_cdfs as d;
-use crate::scan_tables;
-use crate::writer::AomWriter;
+use crate::entropy::cdf::AomCdfProb;
+use crate::entropy::default_cdfs as d;
+use crate::entropy::scan_tables;
+use crate::entropy::writer::AomWriter;
 
 // ---- C TxSize enum values ----
 pub const TX_4X4: usize = 0;
@@ -258,7 +258,7 @@ pub const fn levels_origin(width: usize) -> usize {
 /// C `svt_av1_txb_init_levels_c`: zero the padded map and fill
 /// `levels[row * (width+4) + col] = min(|coeff|, 127)` at the origin offset.
 ///
-/// The value fill is SIMD-dispatched (see [`crate::coeff_simd::fill_levels`]) —
+/// The value fill is SIMD-dispatched (see [`crate::entropy::coeff_simd::fill_levels`]) —
 /// byte-identical to the scalar map, proven against the exported real-C kernel
 /// under every dispatch tier in `tests/c_parity.rs`.
 pub fn txb_init_levels(coeff: &[i32], width: usize, height: usize, levels_buf: &mut [u8]) {
@@ -284,7 +284,7 @@ pub fn txb_init_levels(coeff: &[i32], width: usize, height: usize, levels_buf: &
     for b in levels_buf[..used].iter_mut() {
         *b = 0;
     }
-    crate::coeff_simd::fill_levels(coeff, width, height, levels_buf);
+    crate::entropy::coeff_simd::fill_levels(coeff, width, height, levels_buf);
 }
 
 /// C `get_padded_idx`.
@@ -506,7 +506,14 @@ pub fn get_nz_map_contexts(
         coeff_contexts[scan[0] as usize] = 0;
         return;
     }
-    crate::coeff_simd::nz_map_contexts(levels_buf, scan, eob, tx_size, tx_class, coeff_contexts);
+    crate::entropy::coeff_simd::nz_map_contexts(
+        levels_buf,
+        scan,
+        eob,
+        tx_size,
+        tx_class,
+        coeff_contexts,
+    );
 }
 
 /// C `svt_av1_get_nz_map_contexts_c` (encode_txb_ref_c.c:35) — the scan-order
@@ -762,7 +769,7 @@ impl CoeffFc {
     /// (`coeff_base_eob_cdf` → `base_eob_cost`), so it must track C's neighbor
     /// averaging on frames wider than two super-blocks.
     pub fn avg_cdf_with(&mut self, tr: &CoeffFc, wt_left: i32, wt_tr: i32) {
-        use crate::cdf::avg_cdf_entries as avg;
+        use crate::entropy::cdf::avg_cdf_entries as avg;
         avg(
             self.txb_skip_cdf.as_flattened_mut(),
             tr.txb_skip_cdf.as_flattened(),
@@ -951,7 +958,7 @@ pub fn md_update_tx_type_ibc_quirk(
         let eset = ext_tx_set(tx_size, false, reduced_tx_set);
         if eset > 0 {
             let cdf = fc.intra_ext_tx(eset as usize, square_tx_size, 0 /* DC_PRED */);
-            crate::cdf::update_cdf(
+            crate::entropy::cdf::update_cdf(
                 cdf,
                 AV1_EXT_TX_IND[set_type][tx_type],
                 AV1_NUM_EXT_TX_SET[set_type],

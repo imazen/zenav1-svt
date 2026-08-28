@@ -445,7 +445,7 @@ fn roundtrip_dct8_golden() {
 
 #[test]
 fn cdf_update_matches_c_algorithm() {
-    use svtav1_entropy::cdf::*;
+    use svtav1_encoder::entropy::cdf::*;
 
     // Verified by compiling and running the identical C algorithm (/tmp/test_cdf.c):
     //   rate = 4 + (0>>4) + (4>3) = 5
@@ -467,7 +467,7 @@ fn cdf_update_matches_c_algorithm() {
 
 #[test]
 fn cdf_update_10_iterations() {
-    use svtav1_entropy::cdf::*;
+    use svtav1_encoder::entropy::cdf::*;
 
     // Verify CDF after 10 updates with alternating symbols
     let mut cdf = [16384u16, 0, 0]; // binary CDF: nsymbs=2
@@ -934,7 +934,7 @@ fn directional_203_deg_zone3() {
 fn range_coder_invariant_rng_ge_32768() {
     // Spec 07: "After normalization, rng must be in [32768, 65535]"
     // The OdEcEnc maintains this invariant after every encode operation.
-    use svtav1_entropy::range_coder::OdEcEnc;
+    use svtav1_encoder::entropy::range_coder::OdEcEnc;
 
     let mut enc = OdEcEnc::new(4096);
     // After init, rng = 0x8000 = 32768
@@ -958,7 +958,7 @@ fn range_coder_invariant_rng_ge_32768() {
 fn cdf_update_rate_formula() {
     // Spec 07: "rate = 4 + (count >> 4) + (nsymbs > 3)"
     // Verify the rate computation matches the spec exactly.
-    use svtav1_entropy::cdf::*;
+    use svtav1_encoder::entropy::cdf::*;
 
     // nsymbs=2, count=0: rate = 4 + 0 + 0 = 4
     let mut cdf2 = [CDF_PROB_TOP / 2, 0, 0u16];
@@ -1000,7 +1000,7 @@ fn cdf_update_rate_formula() {
 #[test]
 fn cdf_counter_caps_at_32() {
     // Spec 07: "count is incremented until it reaches 32, then stays"
-    use svtav1_entropy::cdf::*;
+    use svtav1_encoder::entropy::cdf::*;
 
     let mut cdf = [CDF_PROB_TOP / 2, 0, 0u16];
     for _ in 0..100 {
@@ -1022,7 +1022,7 @@ fn obu_header_format() {
     // bit 5: obu_extension_flag = 0
     // bit 6: obu_has_size_field = 1
     // bit 7: obu_reserved_1bit = 0
-    use svtav1_entropy::obu::*;
+    use svtav1_encoder::entropy::obu::*;
 
     let header = write_obu_header(ObuType::SequenceHeader, false);
     assert_eq!(header.len(), 1, "non-extension OBU header is 1 byte");
@@ -1038,7 +1038,7 @@ fn obu_header_format() {
 #[test]
 fn uleb128_encoding_spec() {
     // Spec: LEB128 encodes values as 7-bit groups with continuation bit
-    use svtav1_entropy::obu::uleb_encode;
+    use svtav1_encoder::entropy::obu::uleb_encode;
 
     // Single byte: value < 128
     assert_eq!(uleb_encode(0), vec![0x00]);

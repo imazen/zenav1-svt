@@ -761,7 +761,7 @@ fn tx_quant_core(
     let packed_h = tx_h.min(32);
     let log_scale = TX_SCALE_TAB[c_tx_size];
     let entry = build_quant_entry(qindex_off);
-    let scan = svtav1_entropy::scan_tables::scan(c_tx_size, 0);
+    let scan = crate::entropy::scan_tables::scan(c_tx_size, 0);
     debug_assert_eq!(scan.len(), packed_w * packed_h);
     // [SVT_HDR_MODE] Quantization matrices in PD0. C's md_encode_block_pd0
     // quantize (`svt_aom_quantize_inv_quantize_light`, full_loop.c:1263)
@@ -837,9 +837,9 @@ pub struct TxTypeRatesDc {
 }
 
 pub(crate) fn build_tx_type_rates_dc_from_fc(
-    fc: &svtav1_entropy::coeff_c::CoeffFc,
+    fc: &crate::entropy::coeff_c::CoeffFc,
 ) -> TxTypeRatesDc {
-    use svtav1_entropy::coeff_c as cc;
+    use crate::entropy::coeff_c as cc;
     let mut rates = TxTypeRatesDc {
         tx4: 0,
         tx8: 0,
@@ -868,7 +868,7 @@ pub(crate) fn build_tx_type_rates_dc_from_fc(
 impl TxTypeRatesDc {
     #[inline]
     fn rate_for(&self, c_tx_size: usize) -> i32 {
-        use svtav1_entropy::coeff_c as cc;
+        use crate::entropy::coeff_c as cc;
         // C `av1_transform_type_rate_estimation` (rd_cost.c:107): the intra
         // tx-type bit is coded only when the ext-tx set is NOT DCT-only
         // (`sqr_up >= TX_32X32` => DCTONLY intra => 0), and its DCT_DCT cost
@@ -907,7 +907,7 @@ fn loop_cost_eob_pd0(
     levels_buf: &[u8],
     bwl: usize,
 ) -> i32 {
-    use svtav1_entropy::coeff_c as cc;
+    use crate::entropy::coeff_c as cc;
     const TX_CLASS: usize = cc::TX_CLASS_2D;
     let eob = eob as usize;
     let lit = cost_literal(1);
@@ -1023,13 +1023,13 @@ fn cost_coeffs_txb_pd0(
     tables: &crate::quant::CoeffCostTables,
     tx_rates: &TxTypeRatesDc,
 ) -> i32 {
-    use svtav1_entropy::coeff_c as cc;
+    use crate::entropy::coeff_c as cc;
     debug_assert!(eob > 0);
     let txs_ctx = cc::txsize_entropy_ctx(c_tx_size);
     let bwl = cc::txb_bwl(c_tx_size);
     let width = cc::txb_wide(c_tx_size);
     let height = cc::txb_high(c_tx_size);
-    let scan = svtav1_entropy::scan_tables::scan(c_tx_size, 0);
+    let scan = crate::entropy::scan_tables::scan(c_tx_size, 0);
     let coeff_costs = tables.txb(txs_ctx, 0);
     let eob_multi_size = cc::TXSIZE_LOG2_MINUS4[c_tx_size];
     let eob_bits = &tables.eob[eob_multi_size][0];
@@ -1065,7 +1065,7 @@ fn cost_coeffs_txb_pd0(
 
 /// C `av1_cost_skip_txb` (rd_cost.c:213) at context 0: the eob == 0 rate.
 fn cost_skip_txb_pd0(c_tx_size: usize, tables: &crate::quant::CoeffCostTables) -> i32 {
-    let txs_ctx = svtav1_entropy::coeff_c::txsize_entropy_ctx(c_tx_size);
+    let txs_ctx = crate::entropy::coeff_c::txsize_entropy_ctx(c_tx_size);
     tables.txb(txs_ctx, 0).txb_skip_cost[0][1]
 }
 
@@ -1324,8 +1324,8 @@ pub struct M6Pd0Tables {
 
 /// Build the PD0_LVL_1 tables for a frame (default CDFs at `qindex`).
 pub fn build_m6_pd0_tables(qindex: u8) -> M6Pd0Tables {
-    let fc = svtav1_entropy::context::FrameContext::new_default();
-    let cfc = svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(qindex);
+    let fc = crate::entropy::context::FrameContext::new_default();
+    let cfc = crate::entropy::coeff_c::CoeffFc::default_for_qindex(qindex);
     build_m6_pd0_tables_from_ctx(&fc, &cfc)
 }
 
@@ -1334,8 +1334,8 @@ pub fn build_m6_pd0_tables(qindex: u8) -> M6Pd0Tables {
 /// (enc_dec_process.c:3024-3043; the drifting 64x64 SPLIT rates
 /// 1195 -> 1221 -> 1244 -> 1268 across g128 q55's SBs come from here).
 pub fn build_m6_pd0_tables_from_ctx(
-    fc: &svtav1_entropy::context::FrameContext,
-    cfc: &svtav1_entropy::coeff_c::CoeffFc,
+    fc: &crate::entropy::context::FrameContext,
+    cfc: &crate::entropy::coeff_c::CoeffFc,
 ) -> M6Pd0Tables {
     // partition ctx row for sub-context 0 of each size class: bsl*4
     // (pipeline EntropyCtx::partition_ctx semantics; nsyms 10 for the
@@ -1359,12 +1359,12 @@ pub fn build_m6_pd0_tables_from_ctx(
         // Binary boundary SPLIT rate at the same ctx row (left = above = 0).
         // is_128 = false: PD0 squares here are <= 64. Slot 0 (8x8) computes a
         // value that is never consumed (8x8 is never an edge node).
-        vert_alike_split_bits[slot] = svtav1_entropy::context::partition_alike_split_cost(
+        vert_alike_split_bits[slot] = crate::entropy::context::partition_alike_split_cost(
             &fc.partition_cdf[ctx],
             true, // !has_rows -> vert_alike (bottom edge)
             false,
         ) as u64;
-        horz_alike_split_bits[slot] = svtav1_entropy::context::partition_alike_split_cost(
+        horz_alike_split_bits[slot] = crate::entropy::context::partition_alike_split_cost(
             &fc.partition_cdf[ctx],
             false, // !has_cols -> horz_alike (right edge)
             false,
@@ -1489,7 +1489,7 @@ struct Pd0Ctx<'a> {
 /// 0 (never updated in PD0), `has_rows`/`has_cols` are true for the fully
 /// in-picture blocks every current caller produces. Units: 1/512 bit.
 fn partition_split_bits(sq_size: usize) -> u64 {
-    svtav1_entropy::context::partition_symbol_cost(
+    crate::entropy::context::partition_symbol_cost(
         sq_size,
         0,
         crate::partition::PartitionType::Split as usize,
@@ -1499,7 +1499,7 @@ fn partition_split_bits(sq_size: usize) -> u64 {
 /// Binary SPLIT-vs-{H,V} "alike" rate at a one-false boundary node, on the
 /// DEFAULT partition CDF (LPD0 / PD0_LVL_5). `bottom_edge` = `!has_rows`.
 fn partition_alike_split_bits(sq_size: usize, bottom_edge: bool) -> u64 {
-    svtav1_entropy::context::partition_alike_split_symbol_cost(sq_size, bottom_edge, sq_size == 128)
+    crate::entropy::context::partition_alike_split_symbol_cost(sq_size, bottom_edge, sq_size == 128)
         as u64
 }
 
@@ -1508,7 +1508,7 @@ fn partition_alike_split_bits(sq_size: usize, bottom_edge: bool) -> u64 {
 /// as an approximation for every block size (rd_cost.c:1344-1349). 400
 /// units of 1/512 bit from the default tables.
 fn partition_none_bits_ctx0() -> u64 {
-    svtav1_entropy::context::partition_symbol_cost(
+    crate::entropy::context::partition_symbol_cost(
         8,
         0,
         crate::partition::PartitionType::None as usize,
@@ -1518,7 +1518,7 @@ fn partition_none_bits_ctx0() -> u64 {
 /// C `skip_fac_bits[0][0]` — cost of skip=0 at context 0 from the default
 /// skip CDF (icdf 1097 -> p(0) = 31671): 26 units of 1/512 bit.
 fn skip0_bits() -> u64 {
-    svtav1_entropy::context::av1_cost_symbol(32768 - 1097) as u64
+    crate::entropy::context::av1_cost_symbol(32768 - 1097) as u64
 }
 
 impl<'a> Pd0Ctx<'a> {

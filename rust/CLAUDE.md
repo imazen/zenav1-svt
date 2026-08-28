@@ -619,8 +619,9 @@ difference is 2 doctests, which nextest does not run.
     `for_each_token_permutation(CompileTimePolicy::WarnStderr, |_| { ... })`
     around the kernel call (it detects an already-held lock, so the two
     compose).
-- **Current state (audited 2026-07-24):** `testable_dispatch` is enabled only
-  for `svtav1-dsp` and `svtav1-entropy` (dev-deps), so only their test binaries
+- **Current state (audited 2026-07-24; entropy folded into the encoder crate
+  2026-08-28, issue #3):** `testable_dispatch` is enabled only for
+  `svtav1-dsp` and `svtav1-encoder` (dev-deps), so only their test binaries
   carry the hazard. `for_each_token_permutation` is used by
   `c_parity_{cdef,txfm,wiener}` + 10 dsp src modules; every other dsp test that
   calls a dispatched kernel now pins with `lock_token_testing` (31 tests across
@@ -1377,11 +1378,11 @@ evidence (an FFI parity test, an identity cell, or a differential).
 | `crates/svtav1-encoder/src/palette.rs` | 10 |
 | `crates/svtav1-encoder/src/intrabc.rs` | 8 |
 | `crates/svtav1-dsp/src/hbd.rs` | 7 |
-| `crates/svtav1-entropy/src/context.rs` | 2 |
 | `crates/svtav1-encoder/src/segmentation.rs` | 2 |
 | `crates/svtav1-encoder/src/sb128_geom.rs` | 2 |
 | `crates/svtav1-encoder/src/pipeline.rs` | 2 |
 | `crates/svtav1-encoder/src/leaf_funnel/inject.rs` | 2 |
+| `crates/svtav1-encoder/src/entropy/context.rs` | 2 |
 | `crates/svtav1-encoder/tests/c_parity_palette.rs` | 1 |
 | `crates/svtav1-encoder/src/partition.rs` | 1 |
 | `crates/svtav1-encoder/src/leaf_funnel/mds3.rs` | 1 |

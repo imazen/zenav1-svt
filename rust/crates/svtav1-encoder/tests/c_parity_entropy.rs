@@ -5,8 +5,8 @@
 //! results — both the emitted bytes and the adapted CDF state.
 
 use svtav1_cref as cref;
-use svtav1_entropy::cdf::update_cdf;
-use svtav1_entropy::range_coder::OdEcEnc;
+use svtav1_encoder::entropy::cdf::update_cdf;
+use svtav1_encoder::entropy::range_coder::OdEcEnc;
 
 /// Deterministic xorshift64* PRNG — no external deps, reproducible failures.
 struct Rng(u64);
@@ -259,7 +259,7 @@ fn ec_empty_and_tiny_streams_match_c() {
 #[test]
 fn c_default_cdf_tables_match() {
     let _fc = fc_guard();
-    use svtav1_entropy::default_cdfs as d;
+    use svtav1_encoder::entropy::default_cdfs as d;
 
     // Q-dependent coefficient tables: bucket k extracted at its
     // representative qindex.
@@ -426,7 +426,7 @@ fn c_default_cdf_tables_match() {
 #[test]
 fn frame_context_intrabc_defaults_match_c() {
     let _fc = fc_guard();
-    use svtav1_entropy::context::FrameContext;
+    use svtav1_encoder::entropy::context::FrameContext;
     cref::fc_init(60);
     let fc = FrameContext::new_default();
     assert_eq!(
@@ -470,7 +470,7 @@ fn frame_context_intrabc_defaults_match_c() {
 
 #[test]
 fn coeff_c_dims_and_scans_match_c() {
-    use svtav1_entropy::{coeff_c, scan_tables};
+    use svtav1_encoder::entropy::{coeff_c, scan_tables};
     for ts in 0..19usize {
         assert_eq!(coeff_c::txb_bwl(ts), cref::txb_bwl(ts), "bwl ts={ts}");
         assert_eq!(coeff_c::txb_wide(ts), cref::txb_wide(ts), "wide ts={ts}");
@@ -509,7 +509,7 @@ fn coeff_c_dims_and_scans_match_c() {
 
 #[test]
 fn coeff_c_eob_pos_token_matches_c() {
-    use svtav1_entropy::coeff_c;
+    use svtav1_encoder::entropy::coeff_c;
     for eob in 1..=1024i32 {
         let (t, extra) = coeff_c::eob_pos_token(eob);
         let (ct, cextra) = cref::get_eob_pos_token(eob);
@@ -519,7 +519,7 @@ fn coeff_c_eob_pos_token_matches_c() {
 
 #[test]
 fn coeff_c_levels_and_contexts_match_c() {
-    use svtav1_entropy::coeff_c;
+    use svtav1_encoder::entropy::coeff_c;
     let mut rng = Rng(0xC0FFEE_D00D_1234);
     // All square/rect sizes after adjustment; classes 2D/H/V via tx types.
     for ts in 0..19usize {
@@ -555,9 +555,9 @@ fn coeff_c_levels_and_contexts_match_c() {
                 );
 
                 // Scan + eob from the level map.
-                let scan = svtav1_entropy::scan_tables::scan(
+                let scan = svtav1_encoder::entropy::scan_tables::scan(
                     ts,
-                    svtav1_entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type] as usize,
+                    svtav1_encoder::entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type] as usize,
                 );
                 let mut eob = 0usize;
                 for (i, &pos) in scan.iter().enumerate() {
@@ -627,7 +627,7 @@ fn coeff_c_levels_and_contexts_match_c() {
 #[cfg(target_arch = "x86_64")]
 #[test]
 fn coeff_c_txb_init_levels_partial_zero_no_stale_reads() {
-    use svtav1_entropy::coeff_c;
+    use svtav1_encoder::entropy::coeff_c;
     // PIN THE DISPATCH TIER. The whole-buffer raster assert below compares the
     // port's RASTER arm against C's `_sse2` raster fill, which is only a valid
     // oracle while the v3 token is live: the scalar arm
@@ -673,9 +673,9 @@ fn coeff_c_txb_init_levels_partial_zero_no_stale_reads() {
                 let mut c_buf = [0u8; coeff_c::TX_PAD_2D];
                 cref::txb_init_levels(&coeffs, width, height, &mut c_buf[origin..]);
 
-                let scan = svtav1_entropy::scan_tables::scan(
+                let scan = svtav1_encoder::entropy::scan_tables::scan(
                     ts,
-                    svtav1_entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type] as usize,
+                    svtav1_encoder::entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type] as usize,
                 );
                 let mut eob = 0usize;
                 for (i, &pos) in scan.iter().enumerate() {
@@ -787,7 +787,7 @@ fn txb_gen_coeffs(pat: usize, n: usize, rng: &mut Rng) -> Vec<i32> {
 #[test]
 fn txb_init_levels_simd_matches_c() {
     use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
-    use svtav1_entropy::coeff_c;
+    use svtav1_encoder::entropy::coeff_c;
 
     let mut rng = Rng(0x7B12_C0DE_5EED_1234);
     for ts in 0..coeff_c::TX_SIZES_ALL {
@@ -841,8 +841,8 @@ fn txb_init_levels_simd_matches_c() {
 #[test]
 fn nz_map_contexts_simd_matches_c() {
     use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
-    use svtav1_entropy::coeff_c;
-    use svtav1_entropy::scan_tables;
+    use svtav1_encoder::entropy::coeff_c;
+    use svtav1_encoder::entropy::scan_tables;
 
     let mut rng = Rng(0x4E5A_9AB1_0FF5_E7C3);
     for ts in 0..coeff_c::TX_SIZES_ALL {

@@ -1,6 +1,6 @@
 //! SIMD fill for the coefficient level map (`svt_av1_txb_init_levels_c`).
 //!
-//! [`fill_levels`] is the per-txb inner map used by [`crate::coeff_c::txb_init_levels`]:
+//! [`fill_levels`] is the per-txb inner map used by [`crate::entropy::coeff_c::txb_init_levels`]:
 //! `levels[origin + r*(width+4) + c] = min(|coeff[r*width + c]|, 127)`. It is a
 //! pure, independent per-element map (integer `abs` → clamp to `INT8_MAX` →
 //! narrow to `u8`) with no cross-element reduction, so the columns of a row map
@@ -17,13 +17,13 @@
 
 use archmage::prelude::*;
 
-use crate::coeff_c::{
+use crate::entropy::coeff_c::{
     TX_CLASS_2D, TX_CLASS_HORIZ, TX_PAD_HOR, TX_SIZES_ALL, levels_origin, nz_map_ctx_offset_1d,
     nz_map_ctx_offset_2d, txb_bwl, txb_high, txb_wide,
 };
 
 /// Fill the coefficient level map. `levels_buf` is assumed pre-zeroed by the
-/// caller ([`crate::coeff_c::txb_init_levels`]); this writes only the `width`
+/// caller ([`crate::entropy::coeff_c::txb_init_levels`]); this writes only the `width`
 /// value columns of each of the `height` rows at the padded origin, leaving the
 /// horizontal/vertical pad bytes at 0.
 pub(crate) fn fill_levels(coeff: &[i32], width: usize, height: usize, levels_buf: &mut [u8]) {
@@ -182,7 +182,7 @@ fn pack8_v3(_token: Desktop64, src: &[i32; 8], dst: &mut [u8; 8]) {
 // order (contiguous 16-byte neighbour loads, no scattered gathers) and then
 // stamps the single scan-last (eob) position with its scan-index context. Both
 // agree at every scan position — the only ones any caller reads (verified for
-// both port call sites; see [`crate::coeff_c::get_nz_map_contexts`]).
+// both port call sites; see [`crate::entropy::coeff_c::get_nz_map_contexts`]).
 //
 // The `v3` arm below IS the `_sse2` kernel: it writes the raster contexts
 // directly into `coeff_contexts` (16 positions per iteration — one row chunk at
@@ -235,7 +235,7 @@ const fn build_nz_offset() -> [[[u8; MAX_TXB_COEFFS]; TX_SIZES_ALL]; 3] {
     t
 }
 
-/// Dispatch for [`crate::coeff_c::get_nz_map_contexts`] with `eob >= 2` (the
+/// Dispatch for [`crate::entropy::coeff_c::get_nz_map_contexts`] with `eob >= 2` (the
 /// `eob <= 1` cases short-circuit in the public wrapper). The v3 arm is the
 /// production `_sse2` raster kernel; scalar/NEON run the scan-order `_c` loop.
 /// All arms write identical bytes at every `scan[0..eob]` position (proven
@@ -265,7 +265,7 @@ fn nz_map_ctxs_impl_scalar(
     tx_class: usize,
     coeff_contexts: &mut [i8],
 ) {
-    crate::coeff_c::nz_map_contexts_scan_order(
+    crate::entropy::coeff_c::nz_map_contexts_scan_order(
         levels,
         scan,
         eob,
@@ -291,7 +291,7 @@ fn nz_map_ctxs_impl_scalar(
 ///
 /// Worst-case tap read (TX_CLASS_VERT, last row, last chunk) ends at byte
 /// `(TX_PAD_TOP + h + 3) * stride + w` — exactly the `used` extent
-/// [`crate::coeff_c::txb_init_levels`] zeroes (the same bound the scan-order
+/// [`crate::entropy::coeff_c::txb_init_levels`] zeroes (the same bound the scan-order
 /// reader reaches from the last coefficient), so the raster fill never reads a
 /// stale byte; `tests/c_parity.rs::
 /// coeff_c_txb_init_levels_partial_zero_no_stale_reads` polices this with 0xFF
@@ -635,7 +635,7 @@ fn nz_kernel16_v3(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::coeff_c::{TX_PAD_2D, TX_SIZES_ALL};
+    use crate::entropy::coeff_c::{TX_PAD_2D, TX_SIZES_ALL};
     use alloc::vec;
     use alloc::vec::Vec;
 

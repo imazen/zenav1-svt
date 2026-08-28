@@ -7,7 +7,7 @@
 //! AV1 inter prediction uses 8-tap separable filters for sub-pixel
 //! interpolation. Each filter is applied in two passes: horizontal
 //! then vertical. The filter coefficients come from
-//! `svtav1_tables::interp`.
+//! `svtav1_types::tables::interp`.
 
 use archmage::prelude::*;
 
@@ -24,7 +24,7 @@ pub const FILTER_CENTER: usize = 3;
 ///
 /// `src` should have at least `FILTER_CENTER` pixels of padding before the
 /// logical origin in each row (the caller must offset the slice).
-/// `filter` is an 8-tap kernel from `svtav1_tables::interp`.
+/// `filter` is an 8-tap kernel from `svtav1_types::tables::interp`.
 ///
 /// The output is clipped to `[0, 255]`.
 pub fn convolve_horiz(
@@ -188,7 +188,7 @@ fn convolve_horiz_inner(
 ///
 /// `src` should have at least `FILTER_CENTER` rows of padding above the
 /// logical origin (the caller must offset the slice).
-/// `filter` is an 8-tap kernel from `svtav1_tables::interp`.
+/// `filter` is an 8-tap kernel from `svtav1_types::tables::interp`.
 ///
 /// The output is clipped to `[0, 255]`.
 pub fn convolve_vert(
@@ -479,7 +479,7 @@ pub fn convolve_copy(
 mod tests {
     use super::*;
     use crate::copy::block_copy;
-    use svtav1_tables::interp::SUB_PEL_FILTERS_8;
+    use svtav1_types::tables::interp::SUB_PEL_FILTERS_8;
 
     /// `convolve_copy` must produce identical output to `block_copy`.
     #[test]
@@ -665,7 +665,7 @@ mod tests {
 mod dispatch_tests {
     use super::*;
     use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
-    use svtav1_tables::interp::SUB_PEL_FILTERS_8;
+    use svtav1_types::tables::interp::SUB_PEL_FILTERS_8;
 
     #[test]
     fn convolve_horiz_all_dispatch_levels() {

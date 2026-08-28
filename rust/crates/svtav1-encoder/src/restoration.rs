@@ -533,12 +533,12 @@ fn plane_rect(pw: i32, ph: i32) -> PixelRect {
 /// fc->wiener_restore_cdf, NULL)` (md_rate_estimation.c:250) over the
 /// pic-level (default) frame context — instrumented: [768, 320].
 fn wiener_restore_cost() -> [i64; 2] {
-    let icdf0 = svtav1_entropy::context::FrameContext::new_default().wiener_restore_cdf[0] as u32;
+    let icdf0 = crate::entropy::context::FrameContext::new_default().wiener_restore_cdf[0] as u32;
     let p0 = 32768 - icdf0;
     let p1 = icdf0;
     [
-        svtav1_entropy::context::av1_cost_symbol(p0) as i64,
-        svtav1_entropy::context::av1_cost_symbol(p1) as i64,
+        crate::entropy::context::av1_cost_symbol(p0) as i64,
+        crate::entropy::context::av1_cost_symbol(p1) as i64,
     ]
 }
 
@@ -956,7 +956,7 @@ pub fn search_restoration_still_bd<P: LrPixel>(
                 sse_frame += u.sse_none;
                 continue;
             }
-            let cnt = svtav1_entropy::lr::count_wiener_bits(
+            let cnt = crate::entropy::lr::count_wiener_bits(
                 wiener_win,
                 &u.wiener.vfilter,
                 &u.wiener.hfilter,
@@ -1260,8 +1260,8 @@ pub struct LrWalkRefs {
 /// luma: TAP0 is then coded as 0.
 #[allow(clippy::too_many_arguments)]
 pub fn write_lr_for_sb(
-    w: &mut svtav1_entropy::writer::AomWriter,
-    fc: &mut svtav1_entropy::context::FrameContext,
+    w: &mut crate::entropy::writer::AomWriter,
+    fc: &mut crate::entropy::context::FrameContext,
     info: &FrameRestInfo,
     refs: &mut LrWalkRefs,
     mi_row: i32,
@@ -1306,7 +1306,7 @@ pub fn write_lr_for_sb(
                         WIENER_WIN
                     };
                     let r = &mut refs.wiener[plane];
-                    svtav1_entropy::lr::write_wiener_filter(
+                    crate::entropy::lr::write_wiener_filter(
                         w,
                         win,
                         &u.wiener.vfilter,

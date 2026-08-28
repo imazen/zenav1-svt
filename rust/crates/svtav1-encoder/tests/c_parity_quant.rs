@@ -25,8 +25,8 @@
 //! so the facade's non-QM branch is the one under test.
 
 use svtav1_cref as cref;
+use svtav1_encoder::entropy::scan_tables;
 use svtav1_encoder::quant::{self, TX_SCALE_TAB};
-use svtav1_entropy::scan_tables;
 
 struct Rng(u64);
 impl Rng {

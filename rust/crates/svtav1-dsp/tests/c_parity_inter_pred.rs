@@ -16,7 +16,7 @@
 
 use svtav1_cref as cref;
 use svtav1_dsp::inter_pred::{convolve_2d, convolve_horiz, convolve_vert};
-use svtav1_tables::interp::SUB_PEL_FILTERS_8;
+use svtav1_types::tables::interp::SUB_PEL_FILTERS_8;
 
 struct Rng(u64);
 impl Rng {

@@ -98,7 +98,7 @@ pub struct EncodePipeline {
     /// 64-aligned-gated, so this stride equals the funnel's SB-extended one.
     hbd_source: Option<HbdSource>,
     /// CICP color description.
-    pub color_description: svtav1_entropy::obu::ColorDescription,
+    pub color_description: crate::entropy::obu::ColorDescription,
     /// Produce the decoder-exact reconstruction (`last_recon*`) for this
     /// pipeline. Off by default; see [`Self::with_recon_output`].
     pub(crate) recon_output: bool,
@@ -176,7 +176,7 @@ pub struct EncodePipeline {
     /// Requested `TileRowsLog2` (C `static_config.tile_rows` —
     /// EbSvtAv1Enc.h:607-611: "0 means no tiling, 1 means split into 2").
     /// Default 0 = single tile row (unchanged pre-task-#86 behavior).
-    /// The actually-encoded value is [`svtav1_entropy::obu::
+    /// The actually-encoded value is [`crate::entropy::obu::
     /// resolve_tile_rows_log2`] of this against the frame dims — a
     /// too-large request degrades exactly like C instead of panicking.
     /// Pairs with [`Self::tile_cols_log2`].
@@ -381,7 +381,7 @@ impl EncodePipeline {
             // color_range=0, byte-matching C at matched configs. Callers
             // that know their color space (AVIF path) override via
             // with_color_description.
-            color_description: svtav1_entropy::obu::ColorDescription::default(),
+            color_description: crate::entropy::obu::ColorDescription::default(),
             chroma_420: false,
             recon_output: false,
             last_recon: None,
@@ -569,7 +569,7 @@ impl EncodePipeline {
     }
 
     /// Set CICP color description for wide gamut / HDR signaling.
-    pub fn with_color_description(mut self, cd: svtav1_entropy::obu::ColorDescription) -> Self {
+    pub fn with_color_description(mut self, cd: crate::entropy::obu::ColorDescription) -> Self {
         self.color_description = cd;
         self
     }
@@ -1865,7 +1865,7 @@ impl EncodePipeline {
         // both encoded a trailing EMPTY tile and wrote an out-of-range
         // `context_update_tile_id`, which conforming decoders REJECT
         // ("Invalid context_update_tile"). See TileGrid's doc comment.
-        let tile_grid = svtav1_entropy::obu::TileGrid::resolve(
+        let tile_grid = crate::entropy::obu::TileGrid::resolve(
             self.width,
             self.height,
             // Task #91: the tile limits are SB-derived (spec 5.9.15) —
@@ -1993,7 +1993,7 @@ impl EncodePipeline {
         // [SVT_HDR_MODE] photon-noise film grain (--noise*): synthesize
         // the table per frame; seed 7391 + 3381*frame (C resource_
         // coordination assign_film_grain_random_seed; zero is bumped).
-        let film_grain: Option<svtav1_entropy::obu::FilmGrainParams> =
+        let film_grain: Option<crate::entropy::obu::FilmGrainParams> =
             if self.hdr.is_fork() && self.hdr.noise_strength > 0 {
                 let mut fg = crate::noise_gen::generate_noise_table(
                     self.width,
@@ -2692,13 +2692,13 @@ impl EncodePipeline {
                 let (tile_sb_col_start, tile_sb_col_end) =
                     tile_grid.col_span(tile_idx % tile_grid.tile_cols);
 
-                let mut writer = svtav1_entropy::writer::AomWriter::new(n + 256);
+                let mut writer = crate::entropy::writer::AomWriter::new(n + 256);
                 // CDF updates enabled — matches the frame header's disable_cdf_update=0
-                let mut frame_ctx = svtav1_entropy::context::FrameContext::new_default();
+                let mut frame_ctx = crate::entropy::context::FrameContext::new_default();
                 // C-exact coefficient CDFs for the base_q_idx bucket
                 // (svt_av1_default_coef_probs semantics) — qindex domain.
                 let mut coeff_fc =
-                    svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex);
+                    crate::entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex);
                 let mut ectx = EntropyCtx::new(
                     w4,
                     h4,
@@ -2875,10 +2875,10 @@ impl EncodePipeline {
                 .map(|t| t.len())
                 .collect();
             let tile_size_bytes_minus_1 =
-                svtav1_entropy::obu::tile_size_bytes_minus_1_for(&non_last_lens);
+                crate::entropy::obu::tile_size_bytes_minus_1_for(&non_last_lens);
 
             Ok((
-                svtav1_entropy::obu::build_tile_group_multi(
+                crate::entropy::obu::build_tile_group_multi(
                     &tile_bitstreams,
                     tile_size_bytes_minus_1,
                 ),
@@ -3321,7 +3321,7 @@ impl EncodePipeline {
         // (svt_av1_loop_restoration_filter_frame). Prediction sources are
         // untouched — the decoder's split.
         self.last_lr_stats = ([0; 3], 0);
-        let mut lr_signal = svtav1_entropy::obu::LrSignal::none(seq_tools.enable_restoration);
+        let mut lr_signal = crate::entropy::obu::LrSignal::none(seq_tools.enable_restoration);
         // IBC (chunk 1): unlike DLF/CDEF, C suppresses loop restoration at
         // PIPELINE EXECUTION, not signal-derivation — `if (ppcs->
         // enable_restoration && frm_hdr->allow_intrabc == 0)` gates BOTH the
@@ -3603,7 +3603,7 @@ impl EncodePipeline {
                         .filter(|u| u.rtype == svtav1_dsp::restoration::RESTORE_WIENER)
                         .count(),
                 );
-                lr_signal = svtav1_entropy::obu::LrSignal {
+                lr_signal = crate::entropy::obu::LrSignal {
                     enabled: true,
                     frame_types: [
                         rest_info.planes[0].frame_rtype,
@@ -3634,13 +3634,13 @@ impl EncodePipeline {
         // tile, but their FH + no-palette flag stream now match C for the
         // palette-only presets M5-M7; M2-M4 additionally need the IBC
         // vertical. Frames it does not fire on are unaffected.
-        let sc_signal = svtav1_entropy::obu::ScSignal {
+        let sc_signal = crate::entropy::obu::ScSignal {
             allow_screen_content_tools: sc_derivation.allow_screen_content_tools,
             allow_intrabc: sc_derivation.allow_intrabc,
             // Superres chunk B.3: signal what the encode actually did. Off by
             // default -> `SuperresParams::default()` -> zero bits written,
             // i.e. the pre-superres header layout exactly.
-            superres: svtav1_entropy::obu::SuperresParams {
+            superres: crate::entropy::obu::SuperresParams {
                 enabled_in_seq: self.superres_denom.is_some(),
                 denom: self.superres_denom,
             },
@@ -3648,8 +3648,8 @@ impl EncodePipeline {
 
         let bitstream = if is_key {
             let mut bs = alloc::vec::Vec::new();
-            bs.extend_from_slice(&svtav1_entropy::obu::write_temporal_delimiter());
-            bs.extend_from_slice(&svtav1_entropy::obu::write_sequence_header_ex(
+            bs.extend_from_slice(&crate::entropy::obu::write_temporal_delimiter());
+            bs.extend_from_slice(&crate::entropy::obu::write_sequence_header_ex(
                 // TRUE (unaligned) dims flow to the sequence header:
                 // max_frame_width/height_minus_1 carry the coded size, and
                 // the level derivation keys off the real picture size (C
@@ -3673,7 +3673,7 @@ impl EncodePipeline {
             // base_qindex is the SAME value used for quantization, CDF
             // bucket selection and the deblock picker above — the decoder's
             // dequant/CDF init must match the encoder's exactly.
-            let fh_bytes = svtav1_entropy::obu::write_key_frame_header_full_lr_sb(
+            let fh_bytes = crate::entropy::obu::write_key_frame_header_full_lr_sb(
                 self.width,
                 self.height,
                 base_qindex,
@@ -3747,15 +3747,15 @@ impl EncodePipeline {
             let mut frame_payload = alloc::vec::Vec::new();
             frame_payload.extend_from_slice(&fh_bytes);
             frame_payload.extend_from_slice(&tile_data);
-            bs.extend_from_slice(&svtav1_entropy::obu::write_obu(
-                svtav1_entropy::obu::ObuType::Frame,
+            bs.extend_from_slice(&crate::entropy::obu::write_obu(
+                crate::entropy::obu::ObuType::Frame,
                 &frame_payload,
             ));
             bs
         } else {
             // Inter frame: proper frame header with type, qindex, refresh
             // flags, ref indices.
-            svtav1_entropy::obu::write_inter_frame(
+            crate::entropy::obu::write_inter_frame(
                 base_qindex,
                 pcs.refresh_frame_flags,
                 display_order as u8,
@@ -4385,7 +4385,7 @@ impl EntropyCtx {
             _ => 8,
         };
         (
-            ctx.min(svtav1_entropy::context::PARTITION_CONTEXTS - 1),
+            ctx.min(crate::entropy::context::PARTITION_CONTEXTS - 1),
             nsymbs,
         )
     }
@@ -4570,7 +4570,7 @@ impl EntropyCtx {
         } else {
             0
         };
-        svtav1_entropy::context::intra_mode_context(mode)
+        crate::entropy::context::intra_mode_context(mode)
     }
 
     /// Get the left mode context at position (x, y) in pixel coordinates.
@@ -4581,7 +4581,7 @@ impl EntropyCtx {
         } else {
             0
         };
-        svtav1_entropy::context::intra_mode_context(mode)
+        crate::entropy::context::intra_mode_context(mode)
     }
 
     /// Get the skip context at position (x, y).
@@ -4590,7 +4590,7 @@ impl EntropyCtx {
         let y4 = y / 4;
         let above = x4 < self.above_skip.len() && self.above_skip[x4];
         let left = y4 < self.left_skip.len() && self.left_skip[y4];
-        svtav1_entropy::context::get_skip_context(above, left)
+        crate::entropy::context::get_skip_context(above, left)
     }
 
     /// tx_size context for a block at (x, y) of w x h pixels.
@@ -4753,8 +4753,8 @@ fn use_angle_delta(width: u16, height: u16) -> bool {
 /// only emits tx_type symbols for plane_type == 0.
 #[allow(clippy::too_many_arguments)]
 fn write_chroma_txb(
-    writer: &mut svtav1_entropy::writer::AomWriter,
-    coeff_fc: &mut svtav1_entropy::coeff_c::CoeffFc,
+    writer: &mut crate::entropy::writer::AomWriter,
+    coeff_fc: &mut crate::entropy::coeff_c::CoeffFc,
     ectx: &mut EntropyCtx,
     uv: usize,
     cx: usize,
@@ -4765,7 +4765,7 @@ fn write_chroma_txb(
     base_q_idx: u8,
     uv_tx_type: usize,
 ) {
-    use svtav1_entropy::coeff_c;
+    use crate::entropy::coeff_c;
     let tx_size = coeff_c::tx_size_from_dims(cw, ch);
     let (above, left) = ectx.coeff_neighbors_uv(uv, cx, cy, cw, ch);
     // plane != 0: txb_skip_ctx = (above nonzero) + (left nonzero) + 7,
@@ -4778,9 +4778,9 @@ fn write_chroma_txb(
     // computes it from UVMode via Mode_To_Txfm — spec compute_tx_type,
     // plane > 0 intra: UV_DC -> DCT_DCT, UV_V -> ADST_DCT,
     // UV_H -> DCT_ADST, UV_SMOOTH -> ADST_ADST; DCT-only above 16x16).
-    let scan = svtav1_entropy::scan_tables::scan(
+    let scan = crate::entropy::scan_tables::scan(
         tx_size,
-        svtav1_entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[uv_tx_type] as usize,
+        crate::entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[uv_tx_type] as usize,
     );
     let mut eob = 0i32;
     for (i, &pos) in scan.iter().enumerate() {
@@ -4816,8 +4816,8 @@ fn write_chroma_txb(
 /// the CDF-adapting write).
 #[allow(clippy::too_many_arguments)]
 fn writer_tx_size_vartx_bridge(
-    writer: &mut svtav1_entropy::writer::AomWriter,
-    frame_ctx: &mut svtav1_entropy::context::FrameContext,
+    writer: &mut crate::entropy::writer::AomWriter,
+    frame_ctx: &mut crate::entropy::context::FrameContext,
     ectx: &EntropyCtx,
     block_x: usize,
     block_y: usize,
@@ -4843,9 +4843,9 @@ fn writer_tx_size_vartx_bridge(
 #[allow(clippy::too_many_arguments)]
 fn encode_block_syntax(
     decision: &crate::partition::BlockDecision,
-    writer: &mut svtav1_entropy::writer::AomWriter,
-    frame_ctx: &mut svtav1_entropy::context::FrameContext,
-    coeff_fc: &mut svtav1_entropy::coeff_c::CoeffFc,
+    writer: &mut crate::entropy::writer::AomWriter,
+    frame_ctx: &mut crate::entropy::context::FrameContext,
+    coeff_fc: &mut crate::entropy::coeff_c::CoeffFc,
     base_q_idx: u8,
     ectx: &mut EntropyCtx,
     is_key: bool,
@@ -4865,7 +4865,7 @@ fn encode_block_syntax(
             "# BLK mi=({},{}) bsize={} ibc={}",
             block_y / 4,
             block_x / 4,
-            svtav1_entropy::context::block_size_index(
+            crate::entropy::context::block_size_index(
                 decision.width as usize,
                 decision.height as usize
             ),
@@ -4903,7 +4903,7 @@ fn encode_block_syntax(
                 block_y / 4,
                 block_x / 4,
                 writer.bytes_written(),
-                svtav1_entropy::context::block_size_index(
+                crate::entropy::context::block_size_index(
                     decision.width as usize,
                     decision.height as usize
                 ),
@@ -5132,7 +5132,7 @@ fn encode_block_syntax(
             .as_ref()
             .is_none_or(|(_, u_eob, _, v_eob)| *u_eob == 0 && *v_eob == 0);
     let skip_ctx = ectx.skip_ctx(block_x, block_y);
-    svtav1_entropy::context::write_skip(writer, frame_ctx, skip_ctx, skip);
+    crate::entropy::context::write_skip(writer, frame_ctx, skip_ctx, skip);
 
     // cdef_idx (C write_cdef, entropy_coding.c:3986-4017; spec read_cdef):
     // at the FIRST NON-SKIP coded block of each 64x64 FILTER BLOCK,
@@ -5168,7 +5168,7 @@ fn encode_block_syntax(
         if super_block_upper_left && (!is_sb_sized || !skip) {
             let cur = ectx.delta_q_sb_qindex;
             let reduced = (cur - prev) / i32::from(res);
-            svtav1_entropy::mv_coding::write_delta_q_index(
+            crate::entropy::mv_coding::write_delta_q_index(
                 writer,
                 &mut frame_ctx.delta_q_cdf,
                 reduced,
@@ -5205,7 +5205,7 @@ fn encode_block_syntax(
     // Mode syntax is ALWAYS coded — the skip flag only gates residuals
     // (AV1 intra_frame_mode_info reads y_mode regardless of skip).
     if !is_key {
-        svtav1_entropy::context::write_intra_inter(writer, frame_ctx, 0, decision.is_inter);
+        crate::entropy::context::write_intra_inter(writer, frame_ctx, 0, decision.is_inter);
     }
 
     if use_intrabc {
@@ -5213,11 +5213,11 @@ fn encode_block_syntax(
         // palette + filter_intra are ALL suppressed for an IntraBC block
         // (each writer is nested under `use_intrabc == 0`).
     } else if decision.is_inter {
-        svtav1_entropy::mv_coding::write_mv(writer, decision.mv.x, decision.mv.y, true);
+        crate::entropy::mv_coding::write_mv(writer, decision.mv.x, decision.mv.y, true);
     } else if is_key {
         let above_ctx = ectx.above_mode_ctx(block_x);
         let left_ctx = ectx.left_mode_ctx(block_y);
-        svtav1_entropy::context::write_intra_mode_kf(
+        crate::entropy::context::write_intra_mode_kf(
             writer,
             frame_ctx,
             above_ctx,
@@ -5230,9 +5230,9 @@ fn encode_block_syntax(
         // decoder reads the symbol for every directional mode on those
         // blocks; omitting it desyncs the tile.
         if use_angle_delta(decision.width, decision.height)
-            && svtav1_entropy::context::is_directional_mode(decision.intra_mode)
+            && crate::entropy::context::is_directional_mode(decision.intra_mode)
         {
-            svtav1_entropy::context::write_angle_delta(
+            crate::entropy::context::write_angle_delta(
                 writer,
                 frame_ctx,
                 decision.intra_mode,
@@ -5240,20 +5240,20 @@ fn encode_block_syntax(
             );
         }
     } else {
-        let bsize_group = svtav1_entropy::context::block_size_group(
+        let bsize_group = crate::entropy::context::block_size_group(
             decision.width as usize,
             decision.height as usize,
         );
-        svtav1_entropy::context::write_intra_mode_inter(
+        crate::entropy::context::write_intra_mode_inter(
             writer,
             frame_ctx,
             bsize_group,
             decision.intra_mode,
         );
         if use_angle_delta(decision.width, decision.height)
-            && svtav1_entropy::context::is_directional_mode(decision.intra_mode)
+            && crate::entropy::context::is_directional_mode(decision.intra_mode)
         {
-            svtav1_entropy::context::write_angle_delta(
+            crate::entropy::context::write_angle_delta(
                 writer,
                 frame_ctx,
                 decision.intra_mode,
@@ -5274,7 +5274,7 @@ fn encode_block_syntax(
     if chroma_blocks.is_some() && !use_intrabc {
         debug_assert!(!decision.is_inter, "420 path is key/intra only");
         let cfl_allowed = decision.width <= 32 && decision.height <= 32;
-        svtav1_entropy::context::write_uv_mode(
+        crate::entropy::context::write_uv_mode(
             writer,
             frame_ctx,
             cfl_allowed,
@@ -5284,8 +5284,8 @@ fn encode_block_syntax(
         // CfL alphas follow a UV_CFL_PRED chroma mode (encode_intra_chroma_
         // mode_av1, entropy_coding.c:1181; decoder read_cfl_alphas). CFL is
         // never directional, so angle_delta_uv is skipped for it.
-        if decision.uv_mode == svtav1_entropy::context::UV_CFL_PRED {
-            svtav1_entropy::context::write_cfl_alphas(
+        if decision.uv_mode == crate::entropy::context::UV_CFL_PRED {
+            crate::entropy::context::write_cfl_alphas(
                 writer,
                 frame_ctx,
                 decision.cfl_alpha_idx,
@@ -5296,9 +5296,9 @@ fn encode_block_syntax(
         // (read_intra_frame_mode_info, decodemv.c:833) — nonzero only
         // when the M5 ind-uv search picked a delta'd uv mode.
         if use_angle_delta(decision.width, decision.height)
-            && svtav1_entropy::context::is_directional_mode(decision.uv_mode)
+            && crate::entropy::context::is_directional_mode(decision.uv_mode)
         {
-            svtav1_entropy::context::write_angle_delta(
+            crate::entropy::context::write_angle_delta(
                 writer,
                 frame_ctx,
                 decision.uv_mode,
@@ -5334,7 +5334,7 @@ fn encode_block_syntax(
     }
     if !decision.is_inter
         && !use_intrabc // C :5026: palette mode-info suppressed for IntraBC
-        && svtav1_entropy::context::allow_palette(
+        && crate::entropy::context::allow_palette(
             ectx.allow_sct,
             decision.width as usize,
             decision.height as usize,
@@ -5348,7 +5348,7 @@ fn encode_block_syntax(
                 &pal_out[..pal_n_out],
             )
         });
-        svtav1_entropy::context::write_palette_mode_info(
+        crate::entropy::context::write_palette_mode_info(
             writer,
             frame_ctx,
             decision.width as usize,
@@ -5384,14 +5384,14 @@ fn encode_block_syntax(
         && decision.width <= 32
         && decision.height <= 32
     {
-        let bsize_idx = svtav1_entropy::context::block_size_index(
+        let bsize_idx = crate::entropy::context::block_size_index(
             decision.width as usize,
             decision.height as usize,
         );
         let used = decision.filter_intra_mode != 5;
-        svtav1_entropy::context::write_use_filter_intra(writer, frame_ctx, bsize_idx, used);
+        crate::entropy::context::write_use_filter_intra(writer, frame_ctx, bsize_idx, used);
         if used {
-            svtav1_entropy::context::write_filter_intra_mode(
+            crate::entropy::context::write_filter_intra_mode(
                 writer,
                 frame_ctx,
                 decision.filter_intra_mode,
@@ -5430,7 +5430,7 @@ fn encode_block_syntax(
             rows >= 1 && cols >= 1,
             "a coded block always has at least one in-frame row and column"
         );
-        svtav1_entropy::context::write_palette_map_tokens(
+        crate::entropy::context::write_palette_map_tokens(
             writer,
             frame_ctx,
             idx_map,
@@ -5488,7 +5488,7 @@ fn encode_block_syntax(
             // the neighbours' contexts.
             if is_key && !(w == 4 && h == 4) && base_q_idx > 0 {
                 let ctx = ectx.tx_size_ctx(block_x, block_y, w, h);
-                svtav1_entropy::context::write_tx_depth(
+                crate::entropy::context::write_tx_depth(
                     writer,
                     frame_ctx,
                     w,
@@ -5518,7 +5518,7 @@ fn encode_block_syntax(
         // plane_bsize == txsize_to_bsize[tx_size] and the luma
         // txb_skip_ctx fast path applies; dc_sign_ctx comes from the
         // per-4x4 (dc_sign << 6 | cul_level) neighbor bytes like C.
-        use svtav1_entropy::coeff_c;
+        use crate::entropy::coeff_c;
         let w = decision.width as usize;
         let h = decision.height as usize;
         // C `av1_read_tx_type`/`av1_get_tx_type` (decodemv.c:637): the luma
@@ -5557,9 +5557,9 @@ fn encode_block_syntax(
             // the bitstream eob must be relative to the C scan order for
             // this (tx_size, tx_type).
             let tx_type = decision.tx_type as usize;
-            let scan = svtav1_entropy::scan_tables::scan(
+            let scan = crate::entropy::scan_tables::scan(
                 tx_size,
-                svtav1_entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type] as usize,
+                crate::entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type] as usize,
             );
             let mut eob = 0i32;
             for (i, &pos) in scan.iter().enumerate() {
@@ -5631,9 +5631,9 @@ fn encode_block_syntax(
                     coeff_c::get_txb_ctx(0, above, left, false, false);
                 let tx_type = decision.txb_tx_types[txb] as usize;
                 let coeffs = &decision.txb_qcoeffs[txb];
-                let scan = svtav1_entropy::scan_tables::scan(
+                let scan = crate::entropy::scan_tables::scan(
                     tx_size,
-                    svtav1_entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type] as usize,
+                    crate::entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type] as usize,
                 );
                 let mut eob = 0i32;
                 for (i, &pos) in scan.iter().enumerate() {
@@ -5680,10 +5680,10 @@ fn encode_block_syntax(
                 } else {
                     decision.txb_tx_types.first().copied().unwrap_or(0)
                 } as usize;
-                let uv_tx = svtav1_entropy::coeff_c::adjusted_tx_size(
-                    svtav1_entropy::coeff_c::tx_size_from_dims(cw, ch),
+                let uv_tx = crate::entropy::coeff_c::adjusted_tx_size(
+                    crate::entropy::coeff_c::tx_size_from_dims(cw, ch),
                 );
-                let uv_set = svtav1_entropy::coeff_c::ext_tx_set_type(uv_tx, true, false);
+                let uv_set = crate::entropy::coeff_c::ext_tx_set_type(uv_tx, true, false);
                 if crate::leaf_funnel::ext_tx_used(uv_set, luma_tt) {
                     luma_tt
                 } else {
@@ -5694,10 +5694,9 @@ fn encode_block_syntax(
             };
             #[cfg(feature = "std")]
             if crate::dbgenv::coded_eob() {
-                let uv_ts = svtav1_entropy::coeff_c::tx_size_from_dims(cw, ch);
-                let sidx =
-                    svtav1_entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[uv_tt as usize] as usize;
-                let uv_scan = svtav1_entropy::scan_tables::scan(uv_ts, sidx);
+                let uv_ts = crate::entropy::coeff_c::tx_size_from_dims(cw, ch);
+                let sidx = crate::entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[uv_tt] as usize;
+                let uv_scan = crate::entropy::scan_tables::scan(uv_ts, sidx);
                 let eob_of = |q: &[i32]| {
                     let mut e = 0usize;
                     for (i, &p) in uv_scan.iter().enumerate() {
@@ -5980,9 +5979,9 @@ fn merge_sb_units(
 
 fn encode_partition_tree(
     tree: &crate::partition::PartitionTree,
-    writer: &mut svtav1_entropy::writer::AomWriter,
-    frame_ctx: &mut svtav1_entropy::context::FrameContext,
-    coeff_fc: &mut svtav1_entropy::coeff_c::CoeffFc,
+    writer: &mut crate::entropy::writer::AomWriter,
+    frame_ctx: &mut crate::entropy::context::FrameContext,
+    coeff_fc: &mut crate::entropy::coeff_c::CoeffFc,
     base_q_idx: u8,
     ectx: &mut EntropyCtx,
     is_key: bool,
@@ -6008,7 +6007,7 @@ fn encode_partition_tree(
                     "PARTITION_NONE leaf at a frame edge ({block_x},{block_y}) {w}x{h}: \
                      has_rows={has_rows} has_cols={has_cols} — illegal per spec 5.11.4"
                 );
-                svtav1_entropy::context::write_partition_edge(
+                crate::entropy::context::write_partition_edge(
                     writer,
                     frame_ctx,
                     ctx,
@@ -6044,7 +6043,7 @@ fn encode_partition_tree(
             let h = *height as usize;
             let (ctx, nsymbs) = ectx.partition_ctx(block_x, block_y, w);
             let (has_rows, has_cols) = partition_edge_flags(geom, block_x, block_y, w);
-            svtav1_entropy::context::write_partition_edge(
+            crate::entropy::context::write_partition_edge(
                 writer,
                 frame_ctx,
                 ctx,
@@ -6373,8 +6372,8 @@ fn bd10_reencode_luma(
     // mainline → the quant table is byte-identical to build_quant_table_bd.
     sharpness: i8,
 ) -> crate::EncodeResult<alloc::vec::Vec<u16>> {
-    let fc = svtav1_entropy::context::FrameContext::new_default();
-    let cfc = svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex);
+    let fc = crate::entropy::context::FrameContext::new_default();
+    let cfc = crate::entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex);
     let rates = crate::leaf_funnel::build_md_rates(&fc, &cfc);
     let qt = crate::quant::build_quant_table_bd_sharp(base_qindex, bd, sharpness);
     let ext_w = w.div_ceil(sb_size) * sb_size;
@@ -6731,8 +6730,8 @@ fn bd10_reencode_chroma(
     // qzbin/qround sharpening to the chroma quantizer rows (u/v_zbin/round).
     sharpness: i8,
 ) -> crate::EncodeResult<(alloc::vec::Vec<u16>, alloc::vec::Vec<u16>)> {
-    let fc = svtav1_entropy::context::FrameContext::new_default();
-    let cfc = svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(chroma_qindex);
+    let fc = crate::entropy::context::FrameContext::new_default();
+    let cfc = crate::entropy::coeff_c::CoeffFc::default_for_qindex(chroma_qindex);
     let rates = crate::leaf_funnel::build_md_rates(&fc, &cfc);
     // Per-plane chroma quant tables (== each other, and == the old single
     // base-qindex table, whenever the FH chroma deltas are 0 -> mainline inert).
@@ -7228,7 +7227,7 @@ fn encode_tile_rows(
     // and the frame header use, so the MD search, the coded symbols and
     // the signalled geometry can never disagree about where the tile
     // boundaries are.
-    tile_grid: svtav1_entropy::obu::TileGrid,
+    tile_grid: crate::entropy::obu::TileGrid,
     base_qindex: u8,
     // Per-plane chroma qindexes (== base_qindex in mainline mode).
     qindex_u: u8,
@@ -7449,8 +7448,8 @@ fn encode_tile_rows(
             None
         };
         let fun_rates = if use_funnel {
-            let fc = svtav1_entropy::context::FrameContext::new_default();
-            let cfc = svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex);
+            let fc = crate::entropy::context::FrameContext::new_default();
+            let cfc = crate::entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex);
             Some(crate::leaf_funnel::build_md_rates(&fc, &cfc))
         } else {
             None
@@ -7485,7 +7484,7 @@ fn encode_tile_rows(
                 // MV_SUBPEL_NONE — `build_dv_cost_tables`'s cadence doc) +
                 // the aligned frame height for the vartx bottom clip.
                 dv_tables: crate::intrabc::build_dv_cost_tables(
-                    &svtav1_entropy::mv_coding::NmvContext::default(),
+                    &crate::entropy::mv_coding::NmvContext::default(),
                     funnel_cfg.allow_intrabc,
                     false, // approx_inter_rate: structurally 0 on allintra
                 ),
@@ -7536,8 +7535,8 @@ fn encode_tile_rows(
                 hash,
                 sites: crate::intrabc::init_search_sites(w),
                 search_tables: crate::intrabc::build_nmv_cost_table(
-                    &svtav1_entropy::mv_coding::NmvContext::default(),
-                    svtav1_entropy::mv_coding::MvSubpelPrecision::Low,
+                    &crate::entropy::mv_coding::NmvContext::default(),
+                    crate::entropy::mv_coding::MvSubpelPrecision::Low,
                 ),
                 sad_per_bit,
                 error_per_bit,
@@ -7587,8 +7586,8 @@ fn encode_tile_rows(
         // path (chroma_src is Some) — mono never chains.
         let funnel_chain = use_funnel && matches!(speed_config.preset, 0..=6) && multi_sb;
         let mut chain_snaps: Vec<(
-            svtav1_entropy::context::FrameContext,
-            alloc::boxed::Box<svtav1_entropy::coeff_c::CoeffFc>,
+            crate::entropy::context::FrameContext,
+            alloc::boxed::Box<crate::entropy::coeff_c::CoeffFc>,
         )> = Vec::new();
         let mut sim_ectx = if funnel_chain {
             // The chain simulation re-codes each SB's symbols to evolve the
@@ -8001,11 +8000,11 @@ fn encode_tile_rows(
                 #[cfg(feature = "std")]
                 if funnel_chain && crate::dbgenv::chain_dump() {
                     let dflt_cfc;
-                    let cfc: &svtav1_entropy::coeff_c::CoeffFc = match &chain_base {
+                    let cfc: &crate::entropy::coeff_c::CoeffFc = match &chain_base {
                         Some((_, cfc)) => cfc.as_ref(),
                         None => {
                             dflt_cfc =
-                                svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex);
+                                crate::entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex);
                             &dflt_cfc
                         }
                     };
@@ -8031,14 +8030,14 @@ fn encode_tile_rows(
                 if funnel_chain && crate::dbgenv::seed_dump() {
                     let dflt;
                     let (fc, cfc): (
-                        &svtav1_entropy::context::FrameContext,
-                        &svtav1_entropy::coeff_c::CoeffFc,
+                        &crate::entropy::context::FrameContext,
+                        &crate::entropy::coeff_c::CoeffFc,
                     ) = match &chain_base {
                         Some((fc, cfc)) => (fc, cfc.as_ref()),
                         None => {
                             dflt = (
-                                svtav1_entropy::context::FrameContext::new_default(),
-                                svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex),
+                                crate::entropy::context::FrameContext::new_default(),
+                                crate::entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex),
                             );
                             (&dflt.0, &dflt.1)
                         }
@@ -8073,9 +8072,9 @@ fn encode_tile_rows(
                     fun_rates = Some(match &chain_base {
                         Some((fc, cfc)) => crate::leaf_funnel::build_md_rates(fc, cfc),
                         None => {
-                            let fc = svtav1_entropy::context::FrameContext::new_default();
+                            let fc = crate::entropy::context::FrameContext::new_default();
                             let cfc =
-                                svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex);
+                                crate::entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex);
                             crate::leaf_funnel::build_md_rates(&fc, &cfc)
                         }
                     });
@@ -8440,7 +8439,7 @@ fn encode_tile_rows(
                                 let part_rates = match &chain_base {
                                     Some((fc, _)) => crate::depth_refine::PartRates::from_fc(fc),
                                     None => crate::depth_refine::PartRates::from_fc(
-                                        &svtav1_entropy::context::FrameContext::new_default(),
+                                        &crate::entropy::context::FrameContext::new_default(),
                                     ),
                                 };
                                 let (u_src, v_src) = chroma_src.unwrap();
@@ -8720,8 +8719,8 @@ fn encode_tile_rows(
                 if funnel_chain {
                     let (mut fc, mut cfc) = chain_base.unwrap_or_else(|| {
                         (
-                            svtav1_entropy::context::FrameContext::new_default(),
-                            svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex),
+                            crate::entropy::context::FrameContext::new_default(),
+                            crate::entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex),
                         )
                     });
                     // Issue #16: this is C's MD-side `ec_ctx_array[sb]`, not
@@ -8741,7 +8740,7 @@ fn encode_tile_rows(
                         }
                         let (u_src, v_src) = chroma_src.unwrap();
                         let mut sim_writer =
-                            svtav1_entropy::writer::AomWriter::new(w * h * 2 + 256);
+                            crate::entropy::writer::AomWriter::new(w * h * 2 + 256);
                         let mut sim_chroma = Some(ChromaPass {
                             u_src,
                             v_src,

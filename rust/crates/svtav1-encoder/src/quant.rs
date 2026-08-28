@@ -38,7 +38,7 @@
 //! | g64  q55 | 5425 |  98 | NORMAL(2) | 3 | 1527856 |
 //! | g128 q20 | 1483 |  74 | LOW(1)    | 2 | 25650   |
 
-use svtav1_entropy::coeff_c;
+use crate::entropy::coeff_c;
 
 // ---------------------------------------------------------------------------
 // Quantizer table row (svt_av1_build_quantizer)
@@ -501,7 +501,7 @@ pub(crate) fn syntax_rate_from_cdf(costs: &mut [i32], cdf: &[u16]) {
         let cum = 32768 - v as u32; // AOM_ICDF
         let p15 = (cum - prev_cum).max(4);
         prev_cum = cum;
-        costs[i] = svtav1_entropy::context::av1_cost_symbol(p15) as i32;
+        costs[i] = crate::entropy::context::av1_cost_symbol(p15) as i32;
         if v == 0 {
             break;
         }
@@ -1861,7 +1861,7 @@ mod tests {
             let mag = (s >> 20) as i32 % 900;
             *c = if s & 1 == 0 { mag } else { -mag } / (1 + i as i32 / 16);
         }
-        let scan = svtav1_entropy::scan_tables::scan(2, 0);
+        let scan = crate::entropy::scan_tables::scan(2, 0);
         let cfg = CodingQuantCfg::new(3, 248207, 160);
         let mut q = alloc::vec![0i32; n];
         let mut dq = alloc::vec![0i32; n];

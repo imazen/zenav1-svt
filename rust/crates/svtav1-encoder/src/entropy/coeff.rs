@@ -17,9 +17,9 @@ use alloc::vec::Vec;
 #[allow(unused_imports)]
 use alloc::vec;
 
-use crate::cdf::AomCdfProb;
-use crate::default_coef_cdfs;
-use crate::writer::AomWriter;
+use crate::entropy::cdf::AomCdfProb;
+use crate::entropy::default_coef_cdfs;
+use crate::entropy::writer::AomWriter;
 
 /// Number of base levels for coefficient coding.
 pub const NUM_BASE_LEVELS: usize = 2;
@@ -378,14 +378,14 @@ fn generate_diagonal_scan(width: usize, height: usize) -> Vec<u16> {
 fn get_scan_table(width: usize, height: usize) -> Vec<u16> {
     // For 4x4: use the known-good hardcoded table
     if width == 4 && height == 4 {
-        return svtav1_tables::scan::DEFAULT_SCAN_4X4
+        return svtav1_types::tables::scan::DEFAULT_SCAN_4X4
             .iter()
             .map(|&x| x as u16)
             .collect();
     }
     // For 8x8: use the known-good hardcoded table
     if width == 8 && height == 8 {
-        return svtav1_tables::scan::DEFAULT_SCAN_8X8
+        return svtav1_types::tables::scan::DEFAULT_SCAN_8X8
             .iter()
             .map(|&x| x as u16)
             .collect();
@@ -1017,7 +1017,7 @@ pub struct CoeffContext {
 
 impl Default for CoeffContext {
     fn default() -> Self {
-        use crate::cdf::CDF_PROB_TOP;
+        use crate::entropy::cdf::CDF_PROB_TOP;
         let half = CDF_PROB_TOP / 2;
 
         // Base level CDF: 4 symbols (0, 1, 2, 3+) + sentinel + count
@@ -1286,7 +1286,7 @@ mod tests {
     #[test]
     fn diagonal_scan_4x4_matches_hardcoded() {
         let generated = generate_diagonal_scan(4, 4);
-        let hardcoded: Vec<u16> = svtav1_tables::scan::DEFAULT_SCAN_4X4
+        let hardcoded: Vec<u16> = svtav1_types::tables::scan::DEFAULT_SCAN_4X4
             .iter()
             .map(|&x| x as u16)
             .collect();
@@ -1296,7 +1296,7 @@ mod tests {
     #[test]
     fn diagonal_scan_8x8_matches_hardcoded() {
         let generated = generate_diagonal_scan(8, 8);
-        let hardcoded: Vec<u16> = svtav1_tables::scan::DEFAULT_SCAN_8X8
+        let hardcoded: Vec<u16> = svtav1_types::tables::scan::DEFAULT_SCAN_8X8
             .iter()
             .map(|&x| x as u16)
             .collect();

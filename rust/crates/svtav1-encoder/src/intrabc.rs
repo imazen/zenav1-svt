@@ -46,7 +46,7 @@
 //!   formulas (§5).
 //! - Injection gating (palette-hint coupling, NSQ/B4 parent gating) and
 //!   the candidate struct shape (§6).
-//! - The bitstream writer path, reusing `svtav1_entropy::mv_coding`'s
+//! - The bitstream writer path, reusing `crate::entropy::mv_coding`'s
 //!   already-verified `NmvContext`/`encode_mv_diff` (§7).
 //!
 //! **Documented only (cited, not transcribed — see the doc comment at each
@@ -70,9 +70,9 @@
 //!   compensation (recon-domain block copy), and tx-path reuse — see the
 //!   "RD integration" doc section near the bottom of this file.
 
+use crate::entropy::mv_coding::{MvSubpelPrecision, NmvContext, encode_mv_diff};
+use crate::entropy::writer::AomWriter;
 use alloc::vec::Vec;
-use svtav1_entropy::mv_coding::{MvSubpelPrecision, NmvContext, encode_mv_diff};
-use svtav1_entropy::writer::AomWriter;
 use svtav1_types::interp::InterpFilter;
 use svtav1_types::motion::{FullMvLimits, Mv};
 use svtav1_types::prediction::{MotionMode, PredictionMode, UvPredictionMode};
@@ -759,8 +759,8 @@ fn mv_joint_index(x: i32, y: i32) -> usize {
 
 /// C `svt_av1_get_mv_class` (`md_rate_estimation.c`, re-exported verified
 /// equivalent already in `svtav1-entropy`) -- reused directly, see
-/// `svtav1_entropy::mv_coding::get_mv_class`.
-pub use svtav1_entropy::mv_coding::get_mv_class;
+/// `crate::entropy::mv_coding::get_mv_class`.
+pub use crate::entropy::mv_coding::get_mv_class;
 
 /// C `MV_MAX` / `MV_VALS` (cabac_context_model.h:193-195). `MV_MAX_BITS =
 /// MV_CLASSES + CLASS0_BITS + 2 = 14`; note this is numerically the SAME
@@ -806,10 +806,10 @@ impl MvComponentCost {
 
 /// C `build_nmv_component_cost_table` (md_rate_estimation.c:387-444).
 pub fn build_nmv_component_cost_table(
-    comp: &svtav1_entropy::mv_coding::NmvComponent,
+    comp: &crate::entropy::mv_coding::NmvComponent,
     precision: MvSubpelPrecision,
 ) -> MvComponentCost {
-    use svtav1_entropy::mv_coding::{
+    use crate::entropy::mv_coding::{
         CLASS0_BITS, CLASS0_SIZE, MV_CLASSES, MV_FP_SIZE, MV_OFFSET_BITS,
     };
 
@@ -879,12 +879,12 @@ pub fn build_nmv_component_cost_table(
 /// `comps[1]` = horizontal/col/X (matches `NmvContext`'s field order).
 #[derive(Debug, Clone)]
 pub struct MvCostTables {
-    pub joint_cost: [i32; svtav1_entropy::mv_coding::MV_JOINTS],
+    pub joint_cost: [i32; crate::entropy::mv_coding::MV_JOINTS],
     pub comp_cost: [MvComponentCost; 2],
 }
 
 pub fn build_nmv_cost_table(ctx: &NmvContext, precision: MvSubpelPrecision) -> MvCostTables {
-    let mut joint_cost = [0i32; svtav1_entropy::mv_coding::MV_JOINTS];
+    let mut joint_cost = [0i32; crate::entropy::mv_coding::MV_JOINTS];
     crate::quant::syntax_rate_from_cdf(&mut joint_cost, &ctx.joints_cdf);
     MvCostTables {
         joint_cost,
@@ -2507,11 +2507,11 @@ pub fn build_intra_bc_candidate(dv: Mv, pred_dv: Mv) -> IbcCandidate {
 // =============================================================================
 // §7. Writer helpers + CDF consts -- `write_intrabc_info`
 // (entropy_coding.c:4405-4416) + `svt_av1_encode_dv` (entropy_coding.c:
-// 4381-4396, already a thin wrapper over `svtav1_entropy::mv_coding::
+// 4381-4396, already a thin wrapper over `crate::entropy::mv_coding::
 // encode_mv_diff` -- see below) + `default_intrabc_cdf` (cabac_context_
 // model.c:610-612).
 //
-// `svtav1_entropy::mv_coding` already carries a verified [`NmvContext`]
+// `crate::entropy::mv_coding` already carries a verified [`NmvContext`]
 // default (`NmvContext::default()`, `tests/c_parity_mv.rs`), and C's own
 // `ndvc` (the DV-specific entropy context) is seeded from the EXACT SAME
 // table (`fc->ndvc = default_nmv_context;`, cabac_context_model.c:795 --
@@ -2531,7 +2531,7 @@ pub fn build_intra_bc_candidate(dv: Mv, pred_dv: Mv) -> IbcCandidate {
 
 /// C `default_intrabc_cdf` (cabac_context_model.c:610-612): `AOM_CDF2(30531)`.
 /// Re-export of the generated table (see the consolidation note above).
-pub use svtav1_entropy::default_cdfs::INTRABC_CDF as INTRABC_DEFAULT_CDF;
+pub use crate::entropy::default_cdfs::INTRABC_CDF as INTRABC_DEFAULT_CDF;
 
 /// C `write_intrabc_info` (entropy_coding.c:4405-4416) + `svt_av1_encode_
 /// dv` (entropy_coding.c:4381-4396, inlined here as a call to

@@ -24,7 +24,7 @@
 //! [`SuperresParams`] carries the sequence flag separately from the frame
 //! denominator.
 
-use svtav1_entropy::obu::{
+use svtav1_encoder::entropy::obu::{
     CdefSignal, ColorDescription, LrSignal, ScSignal, SeqTools, SuperresParams,
     write_key_frame_header_full_lr_sb, write_sequence_header_ex,
 };

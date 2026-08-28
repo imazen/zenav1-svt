@@ -17,7 +17,7 @@
 //! Differentially tested against the exported C function via a
 //! minimal-struct shim (`tests/c_parity_noise_norm.rs`).
 
-use svtav1_entropy::coeff_c;
+use crate::entropy::coeff_c;
 
 /// C `get_qc_dqc_low` (full_loop.c:659): one quantization step DOWN from
 /// `abs_qc` (caller passes target+1), returning signed (qc_low, dqc_low).
@@ -145,7 +145,7 @@ pub fn perform_noise_normalization(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use svtav1_entropy::scan_tables;
+    use crate::entropy::scan_tables;
 
     fn scan_for(c_tx: usize) -> &'static [u16] {
         // DCT_DCT scan for the tests.

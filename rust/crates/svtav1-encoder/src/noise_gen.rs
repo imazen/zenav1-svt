@@ -9,7 +9,7 @@
 //! `svt_av1_generate_noise_table` (tests/c_parity_noise_gen.rs) across the
 //! strength/size/chroma/cfl/range grid.
 
-pub use svtav1_entropy::obu::FilmGrainParams;
+pub use crate::entropy::obu::FilmGrainParams;
 
 struct NoiseCoeffTable {
     lag: u8,

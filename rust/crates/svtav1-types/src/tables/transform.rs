@@ -1,5 +1,5 @@
 //! Transform-related lookup tables.
-use svtav1_types::transform::{TxSize, TxType, TxType1D};
+use crate::transform::{TxSize, TxType, TxType1D};
 
 /// Mapping from 2D TxType to (column 1D type, row 1D type).
 pub const TX_TYPE_TO_1D: [(TxType1D, TxType1D); TxType::COUNT] = [

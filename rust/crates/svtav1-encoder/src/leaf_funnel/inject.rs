@@ -439,7 +439,7 @@ pub(super) fn inject_candidates(
     // what shipped and passed 168/168 byte identity before this change; it can
     // never take the variance arm on a block where C takes the Hadamard one.
     let palette_can_inject =
-        svtav1_entropy::context::allow_palette(cfg.allow_sct, w, h) && cfg.palette_level > 0;
+        crate::entropy::context::allow_palette(cfg.allow_sct, w, h) && cfg.palette_level > 0;
     let mds0_use_hadamard = cand_modes.len() > 1 || palette_can_inject || cfg.allow_intrabc;
 
     let mut cands: Vec<Cand> = Vec::with_capacity(cand_modes.len());
@@ -736,11 +736,11 @@ pub(super) fn inject_candidates(
     // palette-hint coupling reads whether the palette injection RAN for
     // this block and whether it produced any candidate.
     let palette_ran =
-        svtav1_entropy::context::allow_palette(cfg.allow_sct, w, h) && cfg.palette_level > 0;
+        crate::entropy::context::allow_palette(cfg.allow_sct, w, h) && cfg.palette_level > 0;
     let cands_before_palette = cands.len();
     if palette_ran {
         let ctrls = crate::palette::PaletteCtrls::for_level(cfg.palette_level);
-        let bctx = svtav1_entropy::context::palette_bsize_ctx(w, h);
+        let bctx = crate::entropy::context::palette_bsize_ctx(w, h);
         // Neighbour palette color cache (C svt_get_palette_cache_y): merged
         // above+left palette colours, feeding BOTH the k-means centroid snap
         // (optimize_palette_colors, opt_colors=TRUE) INSIDE the search AND

@@ -12,7 +12,6 @@ name = "svtav1_dsp"
 
 [dependencies]
 zenav1-svt-types = { workspace = true }
-zenav1-svt-tables = { workspace = true }
 archmage = { workspace = true }
 magetypes = { workspace = true }
 

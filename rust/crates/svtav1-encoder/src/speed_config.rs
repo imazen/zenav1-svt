@@ -162,9 +162,9 @@ impl SpeedConfig {
 /// yet — signaling a tool without its frame/block syntax desyncs every
 /// decoder, so the multi-frame path keeps the pre-threading behavior
 /// until those ports land.
-pub fn seq_tools_for_preset(preset: u8, allintra: bool) -> svtav1_entropy::obu::SeqTools {
+pub fn seq_tools_for_preset(preset: u8, allintra: bool) -> crate::entropy::obu::SeqTools {
     if !allintra {
-        return svtav1_entropy::obu::SeqTools::default();
+        return crate::entropy::obu::SeqTools::default();
     }
     // get_filter_intra_level_allintra (enc_mode_config.c:12679).
     let filter_intra_level: u8 = if preset == 0 {
@@ -195,7 +195,7 @@ pub fn seq_tools_for_preset(preset: u8, allintra: bool) -> svtav1_entropy::obu::
     // {2,3}. Verified by the instrumented config dump (M5DBG CFG ang=2 at
     // enc_mode 5, ang=1 at <=4, ang=4 at >=6).
     let enable_intra_edge_filter = preset == 5;
-    svtav1_entropy::obu::SeqTools {
+    crate::entropy::obu::SeqTools {
         film_grain_params_present: false,
         separate_uv_delta_q: false, // mainline (fork wiring pending chroma-q quant threading)
         enable_filter_intra: filter_intra_level != 0,

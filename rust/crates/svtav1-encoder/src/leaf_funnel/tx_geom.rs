@@ -197,9 +197,9 @@ pub(crate) fn min_nz_hv(
         } else {
             coeffs
         };
-        let scan = svtav1_entropy::scan_tables::scan(
+        let scan = crate::entropy::scan_tables::scan(
             c_tx,
-            svtav1_entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[cc::DCT_DCT] as usize,
+            crate::entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[cc::DCT_DCT] as usize,
         );
         let mut qcoeff = vec![0i32; pw * ph];
         let mut dqcoeff = vec![0i32; pw * ph];

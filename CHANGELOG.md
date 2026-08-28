@@ -12,7 +12,24 @@ Crates are not published to crates.io yet — depend by git.
 ### QUEUED BREAKING CHANGES
 
 <!-- Batch API breaks here; ship them in one version bump, never piecemeal. -->
-- None queued. `EncodePipeline`'s new surface (`try_encode_frame_420_hbd`,
+- **Crate consolidation 6 → 4 publishable packages (issue #3, 2026-08-28).**
+  `zenav1-svt-tables` is folded into `zenav1-svt-types` as
+  `svtav1_types::tables::{block, interp, partition, scan, transform}` and
+  `zenav1-svt-entropy` into `zenav1-svt-encoder` as
+  `svtav1_encoder::entropy::{cdf, coeff, coeff_c, context, default_cdfs,
+  default_coef_cdfs, lr, mv_coding, obu, range_coder, scan_tables, tile,
+  writer}`; both former packages are deleted. Path rename only for the two
+  crates' consumers (`svtav1_tables::X` → `svtav1_types::tables::X`,
+  `svtav1_entropy::X` → `svtav1_encoder::entropy::X`); the facade keeps
+  `svtav1::tables` / `svtav1::entropy` as re-exports so facade users are
+  unaffected. The entropy crate's `unchecked_entropy` / `symtrace` features
+  moved onto `zenav1-svt-encoder` (the facade's `symtrace` forwards there).
+  Bitstream bytes unchanged: `byteid_fingerprint` 144/144 cells identical
+  before/after, identity_matrix 54/54, bd10 36/36, partial_sb 146/146,
+  regression_spotcheck 33/33, decode_conformance 1260 + 1575 / 0 failed.
+  Nothing is published yet, so this is a pre-release rename, not a semver
+  event.
+- None queued otherwise. `EncodePipeline`'s new surface (`try_encode_frame_420_hbd`,
   `try_encode_frame_hbd`, `with_superres`) is additive; the `SeqTools` and
   `ScSignal` structs gained fields (`enable_superres`, `superres`), which is a
   break only for out-of-crate struct literals — there are none.

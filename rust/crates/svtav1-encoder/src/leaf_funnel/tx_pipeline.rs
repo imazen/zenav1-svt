@@ -388,9 +388,9 @@ pub(super) fn tx_unit_inner(
         &coeffs[..n]
     };
 
-    let scan = svtav1_entropy::scan_tables::scan(
+    let scan = crate::entropy::scan_tables::scan(
         c_tx,
-        svtav1_entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type] as usize,
+        crate::entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type] as usize,
     );
     let log_scale = TX_SCALE_TAB[c_tx];
     // [SVT_HDR_MODE] QM slices for this txb (2D transforms only; U and V
@@ -616,7 +616,7 @@ pub(super) fn tx_unit_inner(
             svtav1_dsp::residual::sq_sum_i32(&packed[..pw * ph])
         };
         d += three_quad_energy;
-        let shift = (1 - log_scale as i32) * 2;
+        let shift = (1 - log_scale) * 2;
         if shift < 0 { d << (-shift) } else { d >> shift }
     };
 
@@ -976,9 +976,9 @@ pub(crate) fn tx_unit_hbd(
         coeffs.clone()
     };
 
-    let scan = svtav1_entropy::scan_tables::scan(
+    let scan = crate::entropy::scan_tables::scan(
         c_tx,
-        svtav1_entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type] as usize,
+        crate::entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type] as usize,
     );
     let log_scale = TX_SCALE_TAB[c_tx];
     let mut qcoeff = vec![0i32; pw * ph];
@@ -1163,7 +1163,7 @@ pub(crate) fn tx_unit_hbd(
                     }
                 }
                 d += three_quad_energy;
-                let shift = (1 - log_scale as i32) * 2;
+                let shift = (1 - log_scale) * 2;
                 if shift < 0 { d << (-shift) } else { d >> shift }
             };
             let real_bits = if eob > 0 {

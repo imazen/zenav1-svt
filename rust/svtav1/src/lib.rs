@@ -50,9 +50,9 @@ pub mod avif;
 
 pub use svtav1_dsp as dsp;
 pub use svtav1_encoder as encoder;
-pub use svtav1_entropy as entropy;
-pub use svtav1_tables as tables;
+pub use svtav1_encoder::entropy;
 pub use svtav1_types as types;
+pub use svtav1_types::tables;
 
 // Re-export key types at the crate root for convenience
 pub use svtav1_types::block::BlockSize;

@@ -11,7 +11,7 @@
 //!   at `icdf[nsyms-1]`, adaptation counter — unused here — at `icdf[nsyms]`)
 //! - Carry propagation both at flush time and at final `done()`
 
-use crate::cdf::AomCdfProb;
+use crate::entropy::cdf::AomCdfProb;
 use alloc::vec::Vec;
 
 /// Probability shift for range coding (`EC_PROB_SHIFT`).

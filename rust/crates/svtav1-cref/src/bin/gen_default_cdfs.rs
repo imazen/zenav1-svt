@@ -1,4 +1,4 @@
-//! Generates `svtav1-entropy/src/default_cdfs.rs` from the C reference.
+//! Generates `svtav1-encoder/src/entropy/default_cdfs.rs` from the C reference.
 //!
 //! Extracts every default CDF table from libSvtAv1Enc.a's FRAME_CONTEXT
 //! (via `svt_av1_default_coef_probs` + `svt_aom_init_mode_probs`) and emits
@@ -6,9 +6,9 @@
 //!
 //! Usage:
 //!   cargo run --release -p zenav1-svt-cref --bin gen_default_cdfs \
-//!     > crates/svtav1-entropy/src/default_cdfs.rs
+//!     > crates/svtav1-encoder/src/entropy/default_cdfs.rs
 //!
-//! A drift test in svtav1-entropy re-extracts at test time and asserts the
+//! A drift test in svtav1-encoder (tests/c_parity_entropy.rs) re-extracts at test time and asserts the
 //! committed tables match the linked C library bit for bit.
 
 use svtav1_cref::{FcTable, fc_init, fc_table};
@@ -256,7 +256,7 @@ fn main() {
          //!\n\
          //! GENERATED FILE — DO NOT EDIT. Regenerate with:\n\
          //!   cargo run --release -p zenav1-svt-cref --bin gen_default_cdfs \\\n\
-         //!     > crates/svtav1-entropy/src/default_cdfs.rs\n\
+         //!     > crates/svtav1-encoder/src/entropy/default_cdfs.rs\n\
          //! The c_default_cdfs_match test asserts these stay in sync with C.\n\
          \n\
          use crate::cdf::AomCdfProb;\n\

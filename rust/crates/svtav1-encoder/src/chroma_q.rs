@@ -25,7 +25,7 @@
 //! switch-on happens together with the per-plane quant threading (task #3
 //! remainder; see docs/HDR-ON-4.2.md).
 
-use svtav1_entropy::obu::ColorDescription;
+use crate::entropy::obu::ColorDescription;
 
 /// CICP constants (EbSvtAv1Formats.h).
 const EB_CICP_TC_SMPTE_2084: u8 = 16;

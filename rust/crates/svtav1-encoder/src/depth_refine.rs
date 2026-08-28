@@ -711,7 +711,7 @@ pub(crate) struct PartRates {
 }
 
 impl PartRates {
-    pub(crate) fn from_fc(fc: &svtav1_entropy::context::FrameContext) -> Self {
+    pub(crate) fn from_fc(fc: &crate::entropy::context::FrameContext) -> Self {
         let mut rows = [[0i32; 10]; 16];
         let mut vert_alike = [[0u32; 2]; 16];
         let mut horz_alike = [[0u32; 2]; 16];
@@ -722,12 +722,12 @@ impl PartRates {
             // 16x16 and the 128x128 gather per context row; the 128 rows are
             // unreachable here (an SB128 refined path would need the `true`
             // variant, which `partition_alike_costs` already takes).
-            vert_alike[row] = svtav1_entropy::context::partition_alike_costs(
+            vert_alike[row] = crate::entropy::context::partition_alike_costs(
                 &fc.partition_cdf[row],
                 true, // !has_rows -> vert_alike (bottom edge)
                 false,
             );
-            horz_alike[row] = svtav1_entropy::context::partition_alike_costs(
+            horz_alike[row] = crate::entropy::context::partition_alike_costs(
                 &fc.partition_cdf[row],
                 false, // !has_cols -> horz_alike (right edge)
                 false,
@@ -2707,7 +2707,7 @@ mod partial_sb_edge_tests {
     /// injected rect, and `update_skip_nsq_based_on_split_rate` reads it too).
     #[test]
     fn partition_rate_uses_the_boundary_alphabet() {
-        let fc = svtav1_entropy::context::FrameContext::new_default();
+        let fc = crate::entropy::context::FrameContext::new_default();
         let r = PartRates::from_fc(&fc);
         // 32x32 -> bsl 2 -> ctx row 8 (left = above = 0).
         let row = 8usize;

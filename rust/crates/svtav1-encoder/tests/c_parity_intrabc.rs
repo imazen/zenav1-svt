@@ -16,11 +16,11 @@
 //!   - `svt_aom_mv_err_cost` / `_light`     (av1me.c:141/:126)
 
 use svtav1_cref as cref;
-use svtav1_encoder::intrabc;
-use svtav1_entropy::mv_coding::{
+use svtav1_encoder::entropy::mv_coding::{
     CLASS0_SIZE, MV_CLASSES, MV_FP_SIZE, MV_OFFSET_BITS, MvSubpelPrecision, NmvComponent,
     NmvContext,
 };
+use svtav1_encoder::intrabc;
 use svtav1_types::motion::{FullMvLimits, Mv};
 
 /// Deterministic xorshift64* PRNG (house pattern — c_parity.rs).
@@ -53,7 +53,7 @@ impl Rng {
 /// input class (§C.3 of the map).
 #[test]
 fn c_parity_is_dv_valid() {
-    use svtav1_tables::block::{
+    use svtav1_types::tables::block::{
         BLOCK_SIZE_HIGH, BLOCK_SIZE_WIDE, NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE,
     };
     let mut rng = Rng(0x1BC0_D51D_0001);
@@ -796,7 +796,7 @@ fn ibc_ctrls_level_table_transcription_lock() {
 /// formula; the `!allow_intrabc` arm leaves the C fields untouched.
 #[test]
 fn c_parity_intrabc_fac_bits() {
-    use svtav1_entropy::context::FrameContext;
+    use svtav1_encoder::entropy::context::FrameContext;
 
     // Default CDF: C fills [51, 1982] (AOM_CDF2(30531)).
     let c = cref::estimate_syntax_rate_intrabc(None, true, SENTINEL);
@@ -805,7 +805,7 @@ fn c_parity_intrabc_fac_bits() {
     // The port's per-SB rate build carries the same values from the same
     // default context.
     let fc = FrameContext::new_default();
-    let cfc = svtav1_entropy::coeff_c::CoeffFc::default_for_qindex(60);
+    let cfc = svtav1_encoder::entropy::coeff_c::CoeffFc::default_for_qindex(60);
     let rates = svtav1_encoder::leaf_funnel::build_md_rates(&fc, &cfc);
     assert_eq!(
         rates.intrabc_fac_bits,

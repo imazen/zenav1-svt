@@ -5,7 +5,7 @@
 //! Contains all CDF tables needed for a single tile/frame.
 //! Ported from `cabac_context_model.c/h`.
 
-use crate::cdf::{AomCdfProb, CDF_PROB_TOP};
+use crate::entropy::cdf::{AomCdfProb, CDF_PROB_TOP};
 use svtav1_types::restoration::MAX_SEGMENTS;
 use svtav1_types::segmentation::SegmentationParams;
 
@@ -263,7 +263,7 @@ pub struct FrameContext {
     /// (cabac_context_model.c:795), but adapted independently: `ndvc` only
     /// ever codes IntraBC DVs (`svt_av1_encode_dv`, entropy_coding.c:4381,
     /// with literal `MV_SUBPEL_NONE` — sign/class/integer bits only).
-    pub ndvc: crate::mv_coding::NmvContext,
+    pub ndvc: crate::entropy::mv_coding::NmvContext,
 
     /// TX-partition split CDFs — C FRAME_CONTEXT.txfm_partition_cdf
     /// [TXFM_PARTITION_CONTEXTS][CDF2] (`default_txfm_partition_cdf`,
@@ -521,21 +521,21 @@ impl FrameContext {
             // uv_mode_cdf with these (libaom entropymode.c
             // default_uv_mode_cdf), so an all-zero table desyncs the stream
             // on the first uv_mode symbol.
-            uv_mode_cdf: crate::default_cdfs::UV_MODE_CDF,
-            palette_y_mode_cdf: crate::default_cdfs::PALETTE_Y_MODE_CDF,
-            palette_uv_mode_cdf: crate::default_cdfs::PALETTE_UV_MODE_CDF,
-            palette_y_size_cdf: crate::default_cdfs::PALETTE_Y_SIZE_CDF,
-            palette_y_color_index_cdf: crate::default_cdfs::PALETTE_Y_COLOR_INDEX_CDF,
+            uv_mode_cdf: crate::entropy::default_cdfs::UV_MODE_CDF,
+            palette_y_mode_cdf: crate::entropy::default_cdfs::PALETTE_Y_MODE_CDF,
+            palette_uv_mode_cdf: crate::entropy::default_cdfs::PALETTE_UV_MODE_CDF,
+            palette_y_size_cdf: crate::entropy::default_cdfs::PALETTE_Y_SIZE_CDF,
+            palette_y_color_index_cdf: crate::entropy::default_cdfs::PALETTE_Y_COLOR_INDEX_CDF,
             // Real AV1 defaults extracted from the C reference — the decoder
             // initializes angle_delta_cdf with these, so a uniform table
             // desyncs the stream on the first directional mode.
-            angle_delta_cdf: crate::default_cdfs::ANGLE_DELTA_CDF,
+            angle_delta_cdf: crate::entropy::default_cdfs::ANGLE_DELTA_CDF,
             // Real AV1 defaults (generated from the C reference and
             // drift-tested vs FcTable::FilterIntra in tests/c_parity.rs) —
             // the decoder initializes filter_intra_cdfs with these; wrong
             // values desync the stream on the first use_filter_intra flag.
-            filter_intra_cdfs: crate::default_cdfs::FILTER_INTRA_CDF,
-            filter_intra_mode_cdf: crate::default_cdfs::FILTER_INTRA_MODE_CDF,
+            filter_intra_cdfs: crate::entropy::default_cdfs::FILTER_INTRA_CDF,
+            filter_intra_mode_cdf: crate::entropy::default_cdfs::FILTER_INTRA_MODE_CDF,
             cfl_sign_cdf: CFL_SIGN_CDF_DEFAULT,
             cfl_alpha_cdf: CFL_ALPHA_CDF_DEFAULT,
             // AOM_CDF2(11570) in ICDF storage (32768 - 11570 = 21198) —
@@ -557,7 +557,7 @@ impl FrameContext {
             // drift-tested vs FcTable::TxSize) — the decoder initializes
             // tx_size_cdf with these; wrong values desync the stream on
             // the first tx_depth symbol.
-            tx_size_cdf: crate::default_cdfs::TX_SIZE_CDF,
+            tx_size_cdf: crate::entropy::default_cdfs::TX_SIZE_CDF,
             txb_skip_cdf: [[CDF_PROB_TOP / 2, 0, 0]; TXB_SKIP_CONTEXTS],
             dc_sign_cdf: [[[CDF_PROB_TOP / 2, 0, 0]; DC_SIGN_CONTEXTS]; PLANE_TYPES],
             eob_flag_cdf: [[[0; EOB_MAX_SYMS + 1]; 2]; PLANE_TYPES],
@@ -572,12 +572,12 @@ impl FrameContext {
             // C default_intrabc_cdf = AOM_CDF2(30531) (cabac_context_model.c:
             // 610-612); the generated table is drift-tested vs FcTable::IntraBc
             // in tests/c_parity.rs.
-            intrabc_cdf: crate::default_cdfs::INTRABC_CDF,
+            intrabc_cdf: crate::entropy::default_cdfs::INTRABC_CDF,
             // C seeds ndvc from default_nmv_context — the SAME table as nmvc
             // (cabac_context_model.c:795); NmvContext::default() is that
             // table (drift-tested vs FcTable::Nmvc in tests/c_parity_mv.rs).
-            ndvc: crate::mv_coding::NmvContext::default(),
-            txfm_partition_cdf: crate::default_cdfs::TXFM_PARTITION_CDF,
+            ndvc: crate::entropy::mv_coding::NmvContext::default(),
+            txfm_partition_cdf: crate::entropy::default_cdfs::TXFM_PARTITION_CDF,
             // Segmentation defaults (cabac_context_model.c:652-664, installed
             // at :765-766 and :784). Inert on every current gate cell — no
             // writer site emits `segmentation_enabled = 1` yet.
@@ -593,11 +593,11 @@ impl FrameContext {
     /// super-block's rate-estimation context from its left×3 + top-right×1
     /// neighbors when both are available (`pic_based_rate_est == false`, the
     /// only mode C ships). Every CDF array is averaged element-wise (see
-    /// [`crate::cdf::avg_cdf_entries`]); inter/MV/segmentation fields that never
+    /// [`crate::entropy::cdf::avg_cdf_entries`]); inter/MV/segmentation fields that never
     /// evolve in an intra frame hold equal defaults on both neighbors, so
     /// averaging them is a no-op there and this stays exact for still frames.
     pub fn avg_cdf_with(&mut self, tr: &FrameContext, wt_left: i32, wt_tr: i32) {
-        use crate::cdf::avg_cdf_entries as avg;
+        use crate::entropy::cdf::avg_cdf_entries as avg;
         // 1D
         avg(
             &mut self.filter_intra_mode_cdf,
@@ -848,7 +848,7 @@ impl FrameContext {
 // Syntax element encoding functions
 // =============================================================================
 
-use crate::writer::AomWriter;
+use crate::entropy::writer::AomWriter;
 
 /// Derive the skip context from above and left neighbors.
 /// AV1 spec Section 5.11.11: ctx = above_skip + left_skip.

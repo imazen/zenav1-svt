@@ -21,14 +21,12 @@ rust/            the Rust port
 Package names carry the `zenav1-svt-` prefix; each crate pins a **short
 `[lib] name`** so Rust paths stay `use svtav1_encoder::…`. Crate *directories*
 still read `crates/svtav1-*` — the port maps and bug log reference those paths,
-and issue #3 (consolidation 8 → 4) rewrites the layout anyway.
+and issue #3 (consolidation 8 → 4, completed 2026-08-28: `tables` folded into `types::tables`, `entropy` into `encoder::entropy`) kept them.
 
 | directory | package | Rust path |
 |---|---|---|
 | `crates/svtav1-types` | `zenav1-svt-types` | `svtav1_types` |
-| `crates/svtav1-tables` | `zenav1-svt-tables` | `svtav1_tables` |
 | `crates/svtav1-dsp` | `zenav1-svt-dsp` | `svtav1_dsp` |
-| `crates/svtav1-entropy` | `zenav1-svt-entropy` | `svtav1_entropy` |
 | `crates/svtav1-encoder` | `zenav1-svt-encoder` | `svtav1_encoder` |
 | `crates/svtav1-cref` | `zenav1-svt-cref` | `svtav1_cref` (test-only) |
 | `svtav1` | `zenav1-svt` | `svtav1` |
@@ -66,7 +64,7 @@ Modules: `block`, `block_mode`, `constants`, `frame`, `interp`, `motion`,
 `transform`, `bitstream`.
 *No gate of its own — exercised by every crate above it.*
 
-### `zenav1-svt-tables` — const lookup tables (`no_std`, no alloc)
+### `zenav1-svt-types::tables` — const lookup tables (`no_std`, no alloc; folded in from the former `zenav1-svt-tables` crate, issue #3)
 Scan orders, filter taps, block/partition geometry. Generated tables are emitted
 by the `zenav1-svt-cref` `gen_*` binaries and carry their regeneration command in
 the file header.
@@ -96,7 +94,7 @@ the file header.
 Gate: `cargo test -p zenav1-svt-dsp` — kernel differentials against the exported
 C functions via `zenav1-svt-cref`.
 
-### `zenav1-svt-entropy` — range coder, CDFs, OBU
+### `zenav1-svt-encoder::entropy` — range coder, CDFs, OBU (folded in from the former `zenav1-svt-entropy` crate, issue #3)
 
 | module | C source |
 |---|---|
@@ -108,7 +106,7 @@ C functions via `zenav1-svt-cref`.
 | `lr` | `restoration.h`, `entropy_coding.c` |
 | `obu` | `enc_settings.c` + the AV1 spec header syntax |
 
-Gate: `cargo test -p zenav1-svt-entropy`, plus the arithmetic-coder op trace in
+Gate: `cargo nextest run -p zenav1-svt-encoder --test c_parity_entropy --test c_parity_mv --test c_parity_lr_syntax --test superres_header`, plus the arithmetic-coder op trace in
 the identity harness (every range-coder call compared, including coder state).
 
 ### `zenav1-svt-encoder` — decisions

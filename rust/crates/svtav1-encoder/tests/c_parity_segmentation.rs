@@ -40,15 +40,15 @@
 //!   `segmentation_params_header_from_c_derived_state`.
 //! * `write_inter_segment_id` (`static`, entropy_coding.c:4889) — its
 //!   pre/post-skip routing is asserted structurally in
-//!   `svtav1_entropy::context`'s test module; its only real work is the
+//!   `svtav1_encoder::entropy::context`'s test module; its only real work is the
 //!   tier-1-pinned `write_segment_id` call.
 
 use svtav1_cref as cref;
-use svtav1_encoder::segmentation as seg;
-use svtav1_entropy::context::{
+use svtav1_encoder::entropy::context::{
     FrameContext, SEG_TEMPORAL_PRED_CTXS, SPATIAL_PREDICTION_PROBS, SegmentationMap,
     get_spatial_seg_prediction, neg_interleave,
 };
+use svtav1_encoder::segmentation as seg;
 use svtav1_types::block::BlockSize;
 use svtav1_types::restoration::MAX_SEGMENTS;
 use svtav1_types::segmentation::{
@@ -628,10 +628,10 @@ fn write_segment_id_matches_c() {
                 let mut fc = FrameContext::new_default();
                 let mut r_map = SegmentationMap::new(mi_cols as usize, mi_rows as usize);
                 r_map.data.copy_from_slice(&map);
-                let mut w = svtav1_entropy::writer::AomWriter::new(1024);
+                let mut w = svtav1_encoder::entropy::writer::AomWriter::new(1024);
                 let bw = (block_wide(bsize) / 4) as usize;
                 let bh = (block_high(bsize) / 4) as usize;
-                let r_id = svtav1_entropy::context::write_segment_id(
+                let r_id = svtav1_encoder::entropy::context::write_segment_id(
                     &mut w,
                     &mut fc,
                     &mut r_map,
@@ -675,7 +675,7 @@ fn write_segment_id_matches_c() {
 /// produce.
 #[test]
 fn inv_signed_literal_matches_c() {
-    use svtav1_entropy::obu::{BitWriter, write_segmentation_params};
+    use svtav1_encoder::entropy::obu::{BitWriter, write_segmentation_params};
     // The signed features are ALT_Q (8 bits) and the four LF deltas (6 bits).
     for &bits in &[6i32, 8] {
         let lim = 1i32 << bits; // su(1+bits) covers -lim..lim-1
@@ -719,7 +719,7 @@ fn inv_signed_literal_matches_c() {
 /// flagged as such in the module docs above.
 #[test]
 fn segmentation_params_header_from_c_derived_state() {
-    use svtav1_entropy::obu::{BitWriter, write_segmentation_params};
+    use svtav1_encoder::entropy::obu::{BitWriter, write_segmentation_params};
     let mut rng = Lcg(0x7777_0001);
     let (flat, _rows) = make_variance(4, &mut rng, 3000);
     let c = cref::setup_segmentation(1, &flat, 4, seg::VARIANCE_BLOCK_COUNT as u32);
@@ -776,7 +776,7 @@ fn segmentation_params_header_from_c_derived_state() {
 /// Expand a `BitWriter`'s payload back into individual bits. The writer pads
 /// the final byte with zeros, so the caller must know the expected length —
 /// every use here compares against a full expectation vector.
-fn decode_bits(wb: &svtav1_entropy::obu::BitWriter) -> Vec<u8> {
+fn decode_bits(wb: &svtav1_encoder::entropy::obu::BitWriter) -> Vec<u8> {
     let data = wb.data();
     let n = wb.bit_len();
     (0..n).map(|i| (data[i / 8] >> (7 - (i % 8))) & 1).collect()

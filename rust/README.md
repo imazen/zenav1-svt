@@ -97,16 +97,15 @@ The higher-level `svtav1::avif::AvifEncoder` wrapper provides quality/speed mapp
 
 ## Architecture
 
-Seven focused crates, minimal external dependencies (archmage for SIMD dispatch):
+Five packages (four publishable + the test-only C shim), minimal external dependencies (archmage for SIMD dispatch):
 
 ```
 zenav1-svt                  Public API, AVIF backend
   zenav1-svt-encoder        Pipeline, PD0/partition, mode-decision funnel, RDOQ,
                             QM, tunes, fork features, rate control
+                            + `entropy/`: range coder, CDF tables, OBU/FH/SH serialization
     zenav1-svt-dsp          SIMD transforms, prediction, filtering, psy kernels
-    zenav1-svt-entropy      Range coder, CDF tables, OBU/FH/SH serialization
-    zenav1-svt-tables       Const lookup tables, scan orders
-    zenav1-svt-types        Core AV1 type definitions
+    zenav1-svt-types        Core AV1 type definitions + `tables/` const lookup tables, scan orders
   zenav1-svt-cref           Test-only FFI shims to the real C library (differentials)
 ```
 

@@ -1145,8 +1145,8 @@ fn dump_obu_comparison() {
 
 #[test]
 fn partition_ctx_comparison() {
-    use svtav1_entropy::context::{FrameContext, write_partition, write_skip};
-    use svtav1_entropy::writer::AomWriter;
+    use svtav1_encoder::entropy::context::{FrameContext, write_partition, write_skip};
+    use svtav1_encoder::entropy::writer::AomWriter;
 
     // ctx=12 PARTITION_NONE + skip=true
     let mut w = AomWriter::new(64);
@@ -1290,10 +1290,10 @@ fn trace_gray64_tree() {
 
 #[test]
 fn compare_ctx12_vs_ctx15_horz() {
-    use svtav1_entropy::context::{
+    use svtav1_encoder::entropy::context::{
         FrameContext, get_partition_context, write_partition, write_skip,
     };
-    use svtav1_entropy::writer::AomWriter;
+    use svtav1_encoder::entropy::writer::AomWriter;
 
     // Simulate encoding PARTITION_HORZ + 2 children (each NONE + skip)
     // At ctx=15 (our current, sub=3)
@@ -1330,8 +1330,8 @@ fn compare_ctx12_vs_ctx15_horz() {
 
 #[test]
 fn exact_gray64_tile_data() {
-    use svtav1_entropy::context::*;
-    use svtav1_entropy::writer::AomWriter;
+    use svtav1_encoder::entropy::context::*;
+    use svtav1_encoder::entropy::writer::AomWriter;
 
     // Reproduce the exact pipeline encoding for gray 64x64:
     // PARTITION_HORZ at ctx=(has_above=false,has_left=false) → ctx=15
@@ -1374,8 +1374,8 @@ fn exact_gray64_tile_data() {
 
 #[test]
 fn exact_gray64_v2() {
-    use svtav1_entropy::context::*;
-    use svtav1_entropy::writer::AomWriter;
+    use svtav1_encoder::entropy::context::*;
+    use svtav1_encoder::entropy::writer::AomWriter;
 
     // Gray 64x64 PARTITION_HORZ: children are 64x32 (width=64!)
     // Child width=64 → bsl=3 → ctx=12 (with has_above=true, has_left=true → sub=0)
@@ -1407,8 +1407,8 @@ fn exact_gray64_v2() {
 
 #[test]
 fn range_coder_symbol_comparison() {
-    use svtav1_entropy::context::*;
-    use svtav1_entropy::writer::AomWriter;
+    use svtav1_encoder::entropy::context::*;
+    use svtav1_encoder::entropy::writer::AomWriter;
 
     let fc = FrameContext::new_default();
     for sym in 0..10u8 {
@@ -1422,7 +1422,7 @@ fn range_coder_symbol_comparison() {
 
 #[test]
 fn range_coder_state_trace() {
-    use svtav1_entropy::range_coder::OdEcEnc;
+    use svtav1_encoder::entropy::range_coder::OdEcEnc;
 
     let icdf: [u16; 11] = [12631, 11221, 9690, 3202, 2931, 2507, 2244, 1876, 1044, 0, 0];
 
@@ -1443,13 +1443,13 @@ fn range_coder_state_trace() {
 
 #[test]
 fn verify_gray64_tile_data() {
-    use svtav1_entropy::context::*;
-    use svtav1_entropy::writer::AomWriter;
+    use svtav1_encoder::entropy::context::*;
+    use svtav1_encoder::entropy::writer::AomWriter;
 
     // Reproduce gray64 encoding: HORZ(1) at ctx=12, children 64x32 NONE + skip
     let mut w = AomWriter::new(128);
     let mut fc = FrameContext::new_default();
-    let _cc = svtav1_entropy::coeff::CoeffContext::default();
+    let _cc = svtav1_encoder::entropy::coeff::CoeffContext::default();
 
     // With mode/skip tracking
     let w4 = 64 / 4;

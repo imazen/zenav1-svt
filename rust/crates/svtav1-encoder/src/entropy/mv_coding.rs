@@ -23,8 +23,8 @@
 //! full inter-frame integration is a separate task (the homegrown inter MD
 //! path does not yet subtract a real `ref_mv` or persist an nmvc).
 
-use crate::cdf::{AomCdfProb, aom_icdf};
-use crate::writer::AomWriter;
+use crate::entropy::cdf::{AomCdfProb, aom_icdf};
+use crate::entropy::writer::AomWriter;
 
 /// MV joint types (`MvJointType`, cabac_context_model.h:155).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -372,8 +372,8 @@ pub const DELTA_Q_SMALL: i32 = 3;
 /// Write one reduced SB delta-qindex (already divided by delta_q_res).
 /// C entropy_coding.c:3967 `av1_write_delta_q_index`.
 pub fn write_delta_q_index(
-    w: &mut crate::writer::AomWriter,
-    delta_q_cdf: &mut [crate::cdf::AomCdfProb],
+    w: &mut crate::entropy::writer::AomWriter,
+    delta_q_cdf: &mut [crate::entropy::cdf::AomCdfProb],
     delta_qindex: i32,
 ) {
     let sign = delta_qindex < 0;
@@ -401,10 +401,10 @@ mod delta_q_tests {
     /// primitives; this pins the delta-q COMPOSITION deterministically).
     #[test]
     fn delta_q_composition_shape() {
-        use crate::context::FrameContext;
+        use crate::entropy::context::FrameContext;
         for &dq in &[0i32, 1, -1, 2, -2, 3, 5, -9, 20, -60] {
             let mut fc = FrameContext::new_default();
-            let mut w = crate::writer::AomWriter::new(64);
+            let mut w = crate::entropy::writer::AomWriter::new(64);
             super::write_delta_q_index(&mut w, &mut fc.delta_q_cdf, dq);
             let data = w.done().to_vec();
             // must terminate and produce at least one byte; zero writes

@@ -9,7 +9,7 @@
 //!     > crates/svtav1-entropy/src/default_cdfs.rs
 //! The c_default_cdfs_match test asserts these stay in sync with C.
 
-use crate::cdf::AomCdfProb;
+use crate::entropy::cdf::AomCdfProb;
 
 /// Number of coefficient-CDF quality buckets (C `TOKEN_CDF_Q_CTXS`).
 pub const TOKEN_CDF_Q_CTXS: usize = 4;

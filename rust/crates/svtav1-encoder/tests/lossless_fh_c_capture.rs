@@ -25,11 +25,11 @@
 
 use svtav1_encoder::cdef::pick_cdef_params_key_frame;
 use svtav1_encoder::deblock::pick_filter_levels_key_frame;
-use svtav1_encoder::speed_config::seq_tools_for_preset;
-use svtav1_entropy::obu::{
+use svtav1_encoder::entropy::obu::{
     CdefSignal, ColorDescription, LrSignal, ScSignal, write_key_frame_header_full_lr_sb,
     write_sequence_header_ex, write_temporal_delimiter,
 };
+use svtav1_encoder::speed_config::seq_tools_for_preset;
 
 const C_QP0: &[u8] = include_bytes!("data/c_gradient64_p7_qp0.obu");
 const C_QP1: &[u8] = include_bytes!("data/c_gradient64_p7_qp1.obu");

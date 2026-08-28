@@ -82,7 +82,7 @@ pub struct MdRates {
     /// md_rate_estimation.c:222, from `fc->txfm_partition_cdf`) — the
     /// inter var-tx tx_size rate rows (`cost_tx_size_vartx`, rd_cost.c
     /// :1591-1650). IntraBC-only consumers.
-    pub txfm_partition_fac_bits: [[i32; 2]; svtav1_entropy::context::TXFM_PARTITION_CONTEXTS],
+    pub txfm_partition_fac_bits: [[i32; 2]; crate::entropy::context::TXFM_PARTITION_CONTEXTS],
     /// Coefficient cost tables (svt_aom_estimate_coefficients_rate).
     pub coeff: alloc::boxed::Box<CoeffCostTables>,
 }
@@ -161,7 +161,7 @@ pub fn build_md_rates(fc: &FrameContext, cfc: &cc::CoeffFc) -> alloc::boxed::Box
         palette_ycolor: [[[0; 8]; 5]; 7],
         intrabc_fac_bits: [0; 2],
         inter_ext_tx: [[0; 17]; 16],
-        txfm_partition_fac_bits: [[0; 2]; svtav1_entropy::context::TXFM_PARTITION_CONTEXTS],
+        txfm_partition_fac_bits: [[0; 2]; crate::entropy::context::TXFM_PARTITION_CONTEXTS],
         coeff: crate::quant::build_coeff_cost_tables_from_fc(cfc),
     });
     r.intrabc_fac_bits = costs_from_cdf::<2>(&fc.intrabc_cdf);
@@ -207,7 +207,7 @@ pub fn build_md_rates(fc: &FrameContext, cfc: &cc::CoeffFc) -> alloc::boxed::Box
             // non-screen frames (palette_ycolor unused).
             crate::quant::syntax_rate_from_cdf(
                 &mut tmp,
-                &svtav1_entropy::default_cdfs::PALETTE_Y_COLOR_INDEX_CDF[n][c],
+                &crate::entropy::default_cdfs::PALETTE_Y_COLOR_INDEX_CDF[n][c],
             );
             full[..nsym].copy_from_slice(&tmp);
             r.palette_ycolor[n][c] = full;
@@ -257,7 +257,7 @@ pub fn build_md_rates(fc: &FrameContext, cfc: &cc::CoeffFc) -> alloc::boxed::Box
     // joint-sign rate is folded into plane U only (matching the syntax:
     // sign coded once, U/V magnitudes follow).
     {
-        use svtav1_entropy::context as ctx;
+        use crate::entropy::context as ctx;
         let mut sign_fac_bits = [0i32; ctx::CFL_JOINT_SIGNS];
         crate::quant::syntax_rate_from_cdf(&mut sign_fac_bits, &fc.cfl_sign_cdf);
         for js in 0..ctx::CFL_JOINT_SIGNS {

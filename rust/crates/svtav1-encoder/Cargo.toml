@@ -12,9 +12,12 @@ name = "svtav1_encoder"
 
 [dependencies]
 zenav1-svt-types = { workspace = true, features = ["std"] }
-zenav1-svt-tables = { workspace = true }
 zenav1-svt-dsp = { workspace = true, features = ["std"] }
-zenav1-svt-entropy = { workspace = true, features = ["std"] }
+# The range coder / CDF tables / OBU writer live in `src/entropy/` (folded in
+# from the former zenav1-svt-entropy crate, issue #3); archmage + magetypes are
+# its SIMD coefficient-context kernels.
+archmage = { workspace = true }
+magetypes = { workspace = true }
 # Feature 1: cooperative cancellation (`Stop` trait + no-op `Unstoppable` +
 # type-erased `StopToken`). Feature 2: error-location tracing (`at!`).
 enough = { workspace = true }
@@ -23,6 +26,9 @@ whereat = { workspace = true }
 
 [dev-dependencies]
 zenav1-svt-cref = { path = "../svtav1-cref" }
+# `testable_dispatch` exposes for_each_token_permutation for the entropy
+# coefficient-context c_parity tests (all SIMD tiers vs C).
+archmage = { workspace = true, features = ["testable_dispatch"] }
 
 [lints]
 workspace = true
@@ -30,7 +36,12 @@ workspace = true
 [features]
 default = ["std"]
 std = []
-unsafe_encoding = ["zenav1-svt-dsp/unchecked_dsp", "zenav1-svt-entropy/unchecked_entropy"]
+unsafe_encoding = ["zenav1-svt-dsp/unchecked_dsp", "unchecked_entropy"]
+# Bounds-check elision in the entropy coder hot loops (former entropy-crate feature).
+unchecked_entropy = []
+# Prints every symbol written to stderr — for differential debugging against
+# a gdb-instrumented reference decoder / the identity harness. Requires std.
+symtrace = ["std"]
 # Feature 3: forward fallible allocation to svtav1-types (parallels the
 # unconditional std forwarding above).
 fallible-alloc = ["zenav1-svt-types/fallible-alloc"]

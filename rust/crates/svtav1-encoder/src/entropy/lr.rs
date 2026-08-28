@@ -17,7 +17,7 @@
 //! Tap coding constants cite restoration.h:129-151; the (n, k) pairs are
 //! fixed by the spec (5.11.58 read_lr_unit).
 
-use crate::writer::AomWriter;
+use crate::entropy::writer::AomWriter;
 
 /// WIENER_FILT_TAP bounds (restoration.h:129-147).
 pub const WIENER_FILT_TAP0_MINV: i32 = 3 - (1 << 4) / 2; // -5

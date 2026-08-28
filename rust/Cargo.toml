@@ -1,9 +1,7 @@
 [workspace]
 members = [
     "crates/svtav1-types",
-    "crates/svtav1-tables",
     "crates/svtav1-dsp",
-    "crates/svtav1-entropy",
     "crates/svtav1-encoder",
     "crates/svtav1-cref",
     "crates/svtav1-target",
@@ -22,9 +20,7 @@ repository = "https://github.com/imazen/zenav1-svt"
 # `[lib] name` (`svtav1_types`, ...) so interior `use svtav1_types::…` paths
 # stay stable across the rename.
 zenav1-svt-types = { path = "crates/svtav1-types" }
-zenav1-svt-tables = { path = "crates/svtav1-tables" }
 zenav1-svt-dsp = { path = "crates/svtav1-dsp" }
-zenav1-svt-entropy = { path = "crates/svtav1-entropy" }
 zenav1-svt-encoder = { path = "crates/svtav1-encoder" }
 
 archmage = "0.9"

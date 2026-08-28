@@ -31,8 +31,8 @@
 //! state with the flat block-span stamp (equivalent here because SVT only
 //! codes UNIFORM per-block tx sizes — every unit stamps the same dims).
 
-use svtav1_entropy::context::FrameContext;
-use svtav1_entropy::writer::AomWriter;
+use crate::entropy::context::FrameContext;
+use crate::entropy::writer::AomWriter;
 
 /// C `TX_SIZES` (the square chain 4..64).
 const TX_SIZES: i32 = 5;
@@ -250,7 +250,7 @@ fn drive_walk<S: FnMut(usize, bool)>(
 /// simply don't call this for skip.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn tx_size_bits_vartx(
-    fac_bits: &[[i32; 2]; svtav1_entropy::context::TXFM_PARTITION_CONTEXTS],
+    fac_bits: &[[i32; 2]; crate::entropy::context::TXFM_PARTITION_CONTEXTS],
     above_seed: &[u8],
     left_seed: &[u8],
     w: usize,

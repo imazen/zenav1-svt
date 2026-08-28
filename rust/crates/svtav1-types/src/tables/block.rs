@@ -1,5 +1,5 @@
 //! Block size lookup tables.
-use svtav1_types::block::BlockSize;
+use crate::block::BlockSize;
 
 /// Width in pixels for each BlockSize variant.
 pub const BLOCK_SIZE_WIDE: [u8; BlockSize::SIZES_ALL] = [

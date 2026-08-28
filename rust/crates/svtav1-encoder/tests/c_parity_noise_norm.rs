@@ -4,8 +4,8 @@
 //! across tx sizes, strengths, and both branches (textured eob>1, flat
 //! eob==1), asserting identical qcoeff/dqcoeff/eob afterwards.
 use svtav1_cref as cref;
+use svtav1_encoder::entropy::{coeff_c, scan_tables};
 use svtav1_encoder::noise_norm;
-use svtav1_entropy::{coeff_c, scan_tables};
 
 struct Rng(u64);
 impl Rng {

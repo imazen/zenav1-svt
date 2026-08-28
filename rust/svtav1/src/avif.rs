@@ -175,8 +175,8 @@ impl AvifEncoder {
     }
 
     /// Get the CICP color description.
-    fn color_description(&self) -> svtav1_entropy::obu::ColorDescription {
-        svtav1_entropy::obu::ColorDescription {
+    fn color_description(&self) -> svtav1_encoder::entropy::obu::ColorDescription {
+        svtav1_encoder::entropy::obu::ColorDescription {
             color_primaries: self.color_primaries,
             transfer_characteristics: self.transfer_characteristics,
             matrix_coefficients: self.matrix_coefficients,

@@ -33,7 +33,7 @@ pub fn warp_prediction(
     pic_height: usize,
 ) {
     let m = &params.wmmat;
-    let filters = &svtav1_tables::interp::SUB_PEL_FILTERS_8;
+    let filters = &svtav1_types::tables::interp::SUB_PEL_FILTERS_8;
     const FILTER_CENTER: i32 = 3; // Center tap index in 8-tap filter
 
     for r in 0..height {

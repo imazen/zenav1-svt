@@ -87,8 +87,8 @@ impl CdefPick {
         self.bits != 0 || self.strengths[0].0 != 0 || (!monochrome && self.strengths[0].1 != 0)
     }
 
-    pub fn signal(&self) -> svtav1_entropy::obu::CdefSignal {
-        svtav1_entropy::obu::CdefSignal {
+    pub fn signal(&self) -> crate::entropy::obu::CdefSignal {
+        crate::entropy::obu::CdefSignal {
             damping: self.damping,
             bits: self.bits,
             strengths: self.strengths.clone(),

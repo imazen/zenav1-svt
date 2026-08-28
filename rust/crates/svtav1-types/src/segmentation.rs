@@ -6,8 +6,8 @@
 //!
 //! This type is shared by the encoder-side math
 //! (`svtav1_encoder::segmentation`, a port of `segmentation.c`) and the
-//! bitstream writers (`svtav1_entropy::obu::write_segmentation_params`,
-//! `svtav1_entropy::context::write_segment_id`), so it lives in the types
+//! bitstream writers (`svtav1_encoder::entropy::obu::write_segmentation_params`,
+//! `svtav1_encoder::entropy::context::write_segment_id`), so it lives in the types
 //! crate — the same home as `MAX_SEGMENTS` and `MAX_LOOP_FILTER`.
 //!
 //! NOTE: nothing in the port emits `segmentation_enabled = 1` yet — the

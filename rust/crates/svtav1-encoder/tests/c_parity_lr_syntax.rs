@@ -3,8 +3,8 @@
 //! exhaustively over the exact (n, k) pairs the wiener taps use.
 
 use svtav1_cref as cref;
-use svtav1_entropy::lr;
-use svtav1_entropy::writer::AomWriter;
+use svtav1_encoder::entropy::lr;
+use svtav1_encoder::entropy::writer::AomWriter;
 
 /// Coded BYTES and bit counts must match C for every (ref, v) pair of every
 /// tap alphabet. Byte equality through a fresh od_ec coder pins the whole

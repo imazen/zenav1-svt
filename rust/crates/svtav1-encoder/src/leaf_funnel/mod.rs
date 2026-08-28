@@ -57,8 +57,8 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use svtav1_entropy::coeff_c as cc;
-use svtav1_entropy::context::FrameContext;
+use crate::entropy::coeff_c as cc;
+use crate::entropy::context::FrameContext;
 
 use crate::quant::{CoeffCostTables, QuantTable};
 
@@ -355,7 +355,7 @@ pub(crate) fn evaluate_leaf(
         0
     };
     let fi_allowed_bsize = w <= 32 && h <= 32;
-    let bsize_idx = svtav1_entropy::context::block_size_index(w, h);
+    let bsize_idx = crate::entropy::context::block_size_index(w, h);
     let cfl_allowed = usize::from(w <= 32 && h <= 32);
     let use_angle = !matches!((w, h), (4, 4) | (4, 8) | (8, 4));
     // C `is_chroma_reference(mi_row, mi_col, bsize, 1, 1)`
@@ -551,7 +551,7 @@ pub(crate) fn evaluate_leaf(
 
     // No-palette flag pricing for this leaf (C svt_aom_allow_palette on the
     // LUMA bsize; both dims <= 64 and not 4x4/4x8/8x4).
-    let allow_pal = svtav1_entropy::context::allow_palette(cfg.allow_sct, w, h);
+    let allow_pal = crate::entropy::context::allow_palette(cfg.allow_sct, w, h);
     // C svt_aom_get_palette_mode_ctx (rd_cost.c:583): neighbor palette-mode
     // ctx (above+left count of palette-coded neighbours, 0..=2), read from
     // the MD decision grid (stamped by commit_leaf in coding order). 0 until
@@ -565,7 +565,7 @@ pub(crate) fn evaluate_leaf(
             allow: allow_pal,
             mode_ctx,
             y_no: if allow_pal {
-                rates.palette_y_no[svtav1_entropy::context::palette_bsize_ctx(w, h)][mode_ctx]
+                rates.palette_y_no[crate::entropy::context::palette_bsize_ctx(w, h)][mode_ctx]
                     as u64
             } else {
                 0

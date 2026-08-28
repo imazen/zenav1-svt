@@ -20,12 +20,12 @@
 //! here is in the search itself.
 
 use svtav1_cref as cref;
-use svtav1_encoder::intrabc;
-use svtav1_encoder::intrabc_hash;
-use svtav1_entropy::mv_coding::{
+use svtav1_encoder::entropy::mv_coding::{
     CLASS0_SIZE, MV_CLASSES, MV_FP_SIZE, MV_OFFSET_BITS, MvSubpelPrecision, NmvComponent,
     NmvContext,
 };
+use svtav1_encoder::intrabc;
+use svtav1_encoder::intrabc_hash;
 use svtav1_types::motion::Mv;
 
 struct Rng(u64);

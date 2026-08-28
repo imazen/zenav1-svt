@@ -1,14 +1,9 @@
 //! Arithmetic coder, CDF tables, and context models.
 //!
 //! Ported from SVT-AV1's `bitstream_unit.c/h` and `cabac_context_model.h`.
-#![cfg_attr(not(feature = "std"), no_std)]
-#![forbid(unsafe_code)]
-
-#[cfg(feature = "std")]
-extern crate std;
-
-extern crate alloc;
-
+//! Folded in from the former `zenav1-svt-entropy` crate (issue #3): the
+//! range coder has exactly one consumer — this encoder — so it lives here as
+//! `svtav1_encoder::entropy::<module>`, byte-for-byte unchanged.
 pub mod cdf;
 pub mod coeff;
 pub mod coeff_c;

@@ -140,7 +140,7 @@ pub struct SeqTools {
     pub film_grain_params_present: bool,
     /// SH `enable_filter_intra` (spec 5.5.1): gates the per-block
     /// `use_filter_intra` symbol for eligible intra blocks
-    /// ([`crate::context::write_use_filter_intra`]).
+    /// ([`crate::entropy::context::write_use_filter_intra`]).
     pub enable_filter_intra: bool,
     /// SH `enable_intra_edge_filter` (spec 5.5.1): the DECODER then
     /// filters/upsamples directional-prediction edges

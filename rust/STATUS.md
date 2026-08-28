@@ -789,11 +789,10 @@ filters, chroma) still ours and next in line:
 
 ```
 rust/
-  crates/svtav1-types          Core AV1 types, enums, constants
-  crates/svtav1-tables         Const lookup tables (no_std)
+  crates/svtav1-types          Core AV1 types, enums, constants + src/tables/ const lookup tables
   crates/svtav1-dsp            Transforms, prediction, filters, quant (+ generated quant tables)
-  crates/svtav1-entropy        Range coder, CDFs, OBU, coefficient coding (+ generated CDF/scan tables)
   crates/svtav1-encoder        Pipeline, partition, mode decision, RC
+                               + src/entropy/: range coder, CDFs, OBU, coefficient coding (+ generated CDF/scan tables)
   crates/svtav1-cref           Test-only FFI harness over libSvtAv1Enc.a (the differential oracle)
   svtav1                       Public API, AVIF backend
 ```

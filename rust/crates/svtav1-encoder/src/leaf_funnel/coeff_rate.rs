@@ -74,9 +74,9 @@ pub(crate) fn cost_coeffs_txb(
     let bwl = cc::txb_bwl(c_tx_size);
     let width = cc::txb_wide(c_tx_size);
     let height = cc::txb_high(c_tx_size);
-    let scan = svtav1_entropy::scan_tables::scan(
+    let scan = crate::entropy::scan_tables::scan(
         c_tx_size,
-        svtav1_entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type] as usize,
+        crate::entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type] as usize,
     );
     let costs = rates.coeff.txb(txs_ctx, plane_type);
     let eob_bits = &rates.coeff.eob[cc::TXSIZE_LOG2_MINUS4[c_tx_size]][plane_type];
