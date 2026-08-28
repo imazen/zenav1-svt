@@ -104,8 +104,10 @@ fn load_png16(path: &str) -> (Vec<u16>, usize, usize) {
     assert_eq!(info.color_type, png::ColorType::Rgb, "{path}: not RGB");
     let (w, h) = (info.width as usize, info.height as usize);
     let rgb: Vec<u16> = buf[..info.buffer_size()]
-        .chunks_exact(2)
-        .map(|c| u16::from_be_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_be_bytes(*c))
         .collect();
     (rgb, w, h)
 }
@@ -138,8 +140,7 @@ fn write_png16(path: &str, rgb: &[u16], w: usize, h: usize) {
         }
         !crc
     }
-    let ihdr_end = 8 + 8 + 25 - 8 - 4 + 12; // signature + IHDR chunk (len 13): 8 + (8+13+4)
-    let ihdr_end = 8 + 8 + 13 + 4;
+    let ihdr_end = 8 + 8 + 13 + 4; // signature + IHDR chunk (len 13): 8 + (8+13+4)
     let mut chunk = Vec::new();
     chunk.extend_from_slice(&4u32.to_be_bytes());
     chunk.extend_from_slice(b"cICP");
@@ -174,8 +175,10 @@ fn main() {
         let (y, u, v) = to_yuv420_bd10(&rgb, w, h);
         let back = yuv420_bd10_to_rgb16(&y, &u, &v, w, h, w);
         let max_luma_err = rgb
-            .chunks_exact(3)
-            .zip(back.chunks_exact(3))
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .zip(back.as_chunks::<3>().0.iter())
             .map(|(a, b)| {
                 let la = KR * f64::from(a[0]) + KG * f64::from(a[1]) + KB * f64::from(a[2]);
                 let lb = KR * f64::from(b[0]) + KG * f64::from(b[1]) + KB * f64::from(b[2]);

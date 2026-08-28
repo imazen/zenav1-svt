@@ -436,6 +436,18 @@ pub struct FunnelFrame {
     /// prices only the part that is inside the frame. Equal to the aligned
     /// dims on every 64-aligned frame, where the crop is the identity.
     pub frame_w_px: usize,
+    /// C `svt_av1_is_lossless_segment` for this frame (issue #5): `base_q_idx
+    /// == 0` with zero chroma deltas and segmentation off, i.e. the frame
+    /// header's CodedLossless. When set, every 4x4 luma/chroma txb takes the
+    /// Walsh-Hadamard transform instead of the DCT (`svt_av1_estimate_transform`,
+    /// transforms.c:3950; `svt_aom_inv_transform_recon8bit`, full_loop.c:1925),
+    /// RDOQ is off (full_loop.c:1756), the tx-type search is off
+    /// (product_coding_loop.c:7065/7173), intra candidates whose chroma tx type
+    /// is not DCT_DCT are never injected (mode_decision.c:3245/3298/3393 and the
+    /// two uv searches at product_coding_loop.c:7376/7584), every 8x8 block is
+    /// coded at TX_4X4 (`mimic_only_tx_4x4`, product_coding_loop.c:6734) and no
+    /// tx_size bits are priced (`svt_aom_tx_size_bits`, rd_cost.c:1755).
+    pub coded_lossless: bool,
     /// Per-preset intra-leaf config (M6 vs intra_level-7 M7/M8).
     pub cfg: FunnelCfg,
 }
@@ -1025,6 +1037,33 @@ impl FunnelCfg {
         };
         cfg.bypass_encdec = preset >= 4;
         cfg
+    }
+
+    /// The MD-config overrides C applies to a coded-lossless frame
+    /// (`md_config_process.c:1039-1046` + the `mimic_only_tx_4x4` consumers),
+    /// on top of the preset's own config: `set_txs_controls` is forced to
+    /// `txs_level = 1` (enc_mode_config.c:6166 — enabled, max depth 2 for every
+    /// class, `prev_depth_coeff_exit_th` 1, group offsets 0, `quadrant_th_sf`
+    /// 0), the tx-type search is off for every candidate
+    /// (`mds_do_txt = 0`, product_coding_loop.c:7065/7173), and the eff-M9
+    /// PD0_LVL_6-coupled gates cannot fire because `pic_pd0_lvl` is forced to 0
+    /// (the `is_dc_only_safe` leaf gate and the per-SB TXS gate both key on
+    /// PD0_LVL_6). NSQ is already off at every preset this port reaches
+    /// (`nsq_search_level = 0`, enc_mode_config.c:4967) and `max_sq_size` 8 is
+    /// applied by the caller through the partition tree, not here.
+    pub fn apply_coded_lossless(&mut self) {
+        self.txs_on = true;
+        self.txs_max_sq = 2;
+        self.txs_max_nsq = 2;
+        self.txs_inter_max_sq = 2;
+        self.txs_inter_max_nsq = 2;
+        self.txs_prev_depth_exit = 1;
+        self.txt_d1_off = 0;
+        self.txt_d2_off = 0;
+        self.txs_quadrant_sf = 0;
+        self.txs_lvl6_gate = false;
+        self.dc_only_gate = false;
+        self.txt_on = false;
     }
 }
 

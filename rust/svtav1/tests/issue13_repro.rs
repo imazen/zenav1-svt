@@ -103,8 +103,10 @@ fn y4m_first_frame_u16(bytes: &[u8], w: usize, h: usize) -> Vec<u16> {
         2 * need
     );
     data[..2 * need]
-        .chunks_exact(2)
-        .map(|p| u16::from_le_bytes([p[0], p[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|p| u16::from_le_bytes(*p))
         .collect()
 }
 

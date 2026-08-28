@@ -19,6 +19,48 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **Coded-lossless (QP 0) ENCODES — issue #5 chunk 2, the tile half.** The
+  refusal is gone on the 8-bit 4:2:0 still path (mainline mode, no
+  screen-content tools, no superres); every arm outside that envelope keeps
+  a typed `UnsupportedConfig` (`EncodePipeline::lossless_config_error`,
+  ledgered in `docs/REFUSED-CONFIGS.md`). What landed, each cited to C:
+  the forced 8x8 / TX_4X4 partition tree (`pd0::lossless_tree` —
+  `max_sq_size` 8 under `mimic_only_tx_4x4`, enc_dec_process.c:1492), the
+  4x4 Walsh-Hadamard forward + inverse in `tx_unit` with C's transposed
+  coefficient store (transforms.c:3950, inv_transforms.c:3141 — the u16
+  scratch + `highbd_iwht4x4_16_add` always, never the eob<=1 shortcut),
+  depth 1 forced at EVERY MD stage incl. a per-txb-predicted MDS1 loop
+  (product_coding_loop.c:6734 inside `full_loop_core`), RDOQ and the
+  tx-type search off (full_loop.c:1756, :7065/:7173), the DCT-chroma-only
+  candidate filter on the regular / filter-intra / palette injection lists
+  and both uv searches (mode_decision.c:3245/3298/3393,
+  product_coding_loop.c:7376/7584 — which collapses the intra set to
+  {DC, PAETH} at qp 0), zero tx_size bits priced (rd_cost.c:1755) and no
+  tx_size symbol coded (entropy_coding.c:4657), RDOQ level 0, and
+  deblock / CDEF / LR neither searched nor applied
+  (md_config_process.c:1022-1035). `FunnelCfg::apply_coded_lossless` is C's
+  `txs_level = 1` override. **Gate: `tools/lossless_gate.sh`** (in CI on the
+  72-cell 64x64 + 96x80 subset): byte-identity to C AND `aomdec --rawvideo`
+  output == the source planes, per cell. Local arm64 run 2026-08-28
+  (`benchmarks/lossless_gate_2026-08-28.md`): **112 / 144 byte-identical +
+  32 pinned, 144 / 144 lossless** — presets 4..13 are 96/96 across
+  {gradient, diag, uniform} x {64x64, 128x128, 96x80, 200x136}; presets
+  0..3 on textured content are pinned self-promotingly (lossless in both
+  encoders, e.g. gradient 64x64 p3 port 2966 B vs C 2973 B; leads: M0..M2
+  allow 4x4 partitions so C's PD0_LVL_0 decides 8x8-vs-4x4 with a DCT-8x8
+  light encode, and M3 carries `bypass_encdec = 0`). Neutral at qp >= 1 by
+  construction and by measurement: identity_matrix 54/54, bd10_matrix 36/36,
+  regression_spotcheck 33/33, workspace 1051/1051. In-crate witnesses:
+  `tests/lossless_fh_c_capture.rs::qp0_coded_lossless_stream_matches_c_capture`
+  (full-stream equality to the committed C capture; MUTATION-VERIFIED —
+  DCT instead of WHT: 3759 B vs 2699 B; tx_size symbol coded: 2702 B) and
+  `pipeline::tests::qp0_420_encodes_losslessly_and_out_of_envelope_arms_refuse`
+  (recon == source at qp 0, lossy at qp 1, 10-bit and fork refused).
+  `AvifEncoder`'s three-monochrome-stream surface still refuses lossless
+  (the mono leaf coder has no WHT arm); its messages now say where QP 0 is
+  available. Also fixed while gating: rustc 1.98 clippy on `restoration.rs`
+  (`as_chunks` in the three NEON/AVX2 stats kernels, byte-neutral),
+  `picture.rs`, and the `zensim_census` example.
 - **Issue #8 doc-debt residuals closed, and `rust/Cargo.lock` is now
   committed.** The lock decision the audit asked for: the product is a
   byte-identical bitstream and `archmage` is a semver dependency, so an

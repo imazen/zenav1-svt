@@ -652,6 +652,8 @@ pub(crate) fn evaluate_leaf(
         y_src,
         y_src_stride,
         y_src_off,
+        y_recon,
+        y_stride,
         &mut cands,
         order,
         n1,

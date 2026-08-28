@@ -528,9 +528,13 @@ fn dot_i16_neon(_token: NeonToken, a: &[i16], b: &[i16]) -> i32 {
     let mut acc1 = vdupq_n_s32(0);
     let mut acc2 = vdupq_n_s32(0);
     let mut acc3 = vdupq_n_s32(0);
-    let mut ai = a.chunks_exact(16);
-    let mut bi = b.chunks_exact(16);
-    for (x, y) in ai.by_ref().zip(bi.by_ref()) {
+    // `as_chunks` (stable since 1.88, the MSRV's clippy insists on it over
+    // `chunks_exact(CONST)`): the body reads exact `[i16; 16]` chunks with no
+    // interior bounds checks, and the equal-length remainder handles the tail
+    // 8 lanes at a time, then scalar — lane-for-lane like the vector body.
+    let (a16, a_rem) = a.as_chunks::<16>();
+    let (b16, b_rem) = b.as_chunks::<16>();
+    for (x, y) in a16.iter().zip(b16.iter()) {
         let x0: &[i16; 8] = x[..8].try_into().unwrap();
         let x1: &[i16; 8] = x[8..].try_into().unwrap();
         let y0: &[i16; 8] = y[..8].try_into().unwrap();
@@ -544,18 +548,16 @@ fn dot_i16_neon(_token: NeonToken, a: &[i16], b: &[i16]) -> i32 {
         acc2 = vmlal_s16(acc2, vget_low_s16(xv1), vget_low_s16(yv1));
         acc3 = vmlal_high_s16(acc3, xv1, yv1);
     }
-    let mut ai8 = ai.remainder().chunks_exact(8);
-    let mut bi8 = bi.remainder().chunks_exact(8);
-    for (x, y) in ai8.by_ref().zip(bi8.by_ref()) {
-        let xc: &[i16; 8] = x.try_into().unwrap();
-        let yc: &[i16; 8] = y.try_into().unwrap();
+    let (a8, a_rem8) = a_rem.as_chunks::<8>();
+    let (b8, b_rem8) = b_rem.as_chunks::<8>();
+    for (xc, yc) in a8.iter().zip(b8.iter()) {
         let xv = vld1q_s16(xc);
         let yv = vld1q_s16(yc);
         acc0 = vmlal_s16(acc0, vget_low_s16(xv), vget_low_s16(yv));
         acc1 = vmlal_high_s16(acc1, xv, yv);
     }
     let mut sum = vaddvq_s32(vaddq_s32(vaddq_s32(acc0, acc1), vaddq_s32(acc2, acc3)));
-    for (&x, &y) in ai8.remainder().iter().zip(bi8.remainder()) {
+    for (&x, &y) in a_rem8.iter().zip(b_rem8) {
         sum += x as i32 * y as i32;
     }
     sum
@@ -756,16 +758,14 @@ fn compute_stats_impl_v3(
 #[rite]
 fn mac_row_i32_neon(_token: NeonToken, acc: &mut [i32], vals: &[i16], scalar: i32) {
     let s = vdupq_n_s32(scalar);
-    let mut ai = acc.chunks_exact_mut(4);
-    let mut vi = vals.chunks_exact(4);
-    for (a, v) in ai.by_ref().zip(vi.by_ref()) {
-        let vchunk: &[i16; 4] = v.try_into().unwrap();
-        let achunk: &mut [i32; 4] = a.try_into().unwrap();
+    let (a4, a_rem) = acc.as_chunks_mut::<4>();
+    let (v4, v_rem) = vals.as_chunks::<4>();
+    for (achunk, vchunk) in a4.iter_mut().zip(v4.iter()) {
         let v32 = vmovl_s16(vld1_s16(vchunk));
         let sum = vaddq_s32(vld1q_s32(achunk), vmulq_s32(v32, s));
         vst1q_s32(achunk, sum);
     }
-    for (a, &v) in ai.into_remainder().iter_mut().zip(vi.remainder()) {
+    for (a, &v) in a_rem.iter_mut().zip(v_rem) {
         *a += v as i32 * scalar;
     }
 }
@@ -778,19 +778,17 @@ fn mac_row_i32_neon(_token: NeonToken, acc: &mut [i32], vals: &[i16], scalar: i3
 #[rite]
 fn mac_row_i32_v3(_token: Desktop64, acc: &mut [i32], vals: &[i16], scalar: i32) {
     let s = _mm256_set1_epi32(scalar);
-    // `chunks_exact` leaves no interior bounds checks: each 8-lane body reads
+    // `as_chunks` leaves no interior bounds checks: each 8-lane body reads
     // the exact-length chunk, and the equal-length remainder handles the tail
     // (win2 = 25/49 is not a multiple of 8) lane-for-lane like the vector body.
-    let mut ai = acc.chunks_exact_mut(8);
-    let mut vi = vals.chunks_exact(8);
-    for (a, v) in ai.by_ref().zip(vi.by_ref()) {
-        let vchunk: &[i16; 8] = v.try_into().unwrap();
-        let achunk: &mut [i32; 8] = a.try_into().unwrap();
+    let (a8, a_rem) = acc.as_chunks_mut::<8>();
+    let (v8, v_rem) = vals.as_chunks::<8>();
+    for (achunk, vchunk) in a8.iter_mut().zip(v8.iter()) {
         let v32 = _mm256_cvtepi16_epi32(_mm_loadu_si128(vchunk));
         let sum = _mm256_add_epi32(_mm256_loadu_si256(achunk), _mm256_mullo_epi32(v32, s));
         _mm256_storeu_si256(achunk, sum);
     }
-    for (a, &v) in ai.into_remainder().iter_mut().zip(vi.remainder()) {
+    for (a, &v) in a_rem.iter_mut().zip(v_rem) {
         *a += v as i32 * scalar;
     }
 }

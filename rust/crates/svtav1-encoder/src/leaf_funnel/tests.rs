@@ -538,6 +538,7 @@ fn test_frame(base_qindex: u8, frame_w_px: usize, frame_h_px: usize) -> FunnelFr
         dv_tables: None,
         frame_h_px,
         frame_w_px,
+        coded_lossless: false,
         cfg: FunnelCfg::for_preset(6),
     }
 }

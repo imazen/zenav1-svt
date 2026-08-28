@@ -74,9 +74,9 @@ mod tests {
     #[test]
     fn interpolation_and_clamps() {
         assert_eq!(s1_qp_start(75.0), Some(18)); // (22+13)/2 = 17.5 rounds up
-        assert_eq!(s1_qp_start(84.0), Some(9));  // 13 + 0.5*(5-13) = 9
+        assert_eq!(s1_qp_start(84.0), Some(9)); // 13 + 0.5*(5-13) = 9
         assert_eq!(s1_qp_start(60.0), Some(22)); // clamp-flat below band
-        assert_eq!(s1_qp_start(95.0), Some(5));  // clamp-flat above band
+        assert_eq!(s1_qp_start(95.0), Some(5)); // clamp-flat above band
         assert_eq!(s1_qp_start(f64::NAN), None);
     }
 

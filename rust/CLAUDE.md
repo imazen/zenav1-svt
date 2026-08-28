@@ -147,6 +147,55 @@ The full localization trail (kept for method reference):
 - **REPRO (committed harness):** `identity_run` now takes `raw:<i420.yuv>` content. Generate the exact YUV (see the g48 generator in the session log — 48×48 gradient replicated to 64×64 + flat-128 chroma), then `tools/identity_diff.sh 64 64 20 0 raw:<yuv>` shows op-1 divergence and produces the port's undecodable `rs.obu`. `SVTAV1_PACKTREE=<f>` dumps the port's partition tree (shows the 4:1 → sub-8 blocks).
 - **NEXT (the fix pass) — root is PALETTE-on-420, exact symbol mismatch still to pinpoint.** Exhaustively RULED OUT by reading C-vs-port: `is_chroma_reference`/`has_uv`, chroma pair geometry, 4:1/HV4 (bisect), `allow_palette` (both `bsize>=BLOCK_8X8` enum-order incl. 4X16/16X4/8X32; block_size_index maps correct), the UV-palette-flag `is_chroma_ref` gate, and the `[Y-flag,colors,UV-flag]`-then-map ORDER (C write_palette_mode_info entropy_coding.c:4355 matches). Since MONO passes (all palette LUMA syntax — flag/size/colors/cache-flags/map — correct) and the 420-only delta is {UV-flag (ruled out), chroma-coeffs}, the remaining suspects are: (a) the palette candidate's CHROMA decision in the funnel (`decision.chroma_dec` for a palette winner) being inconsistent with what the pack codes — check whether the palette candidate reconstructs/decides chroma the same as a regular UV_DC candidate; (b) the palette block's chroma tx-size/type. TO PINPOINT: build a position-reporting decode of the port's `rs.obu` (aomdec/dav1d report only "tile data" with no offset), OR finer-bisect (zero the chroma coeffs of palette blocks only; or reduce to a SINGLE palette block). Do NOT band-aid by disabling palette on 420 (C codes this into a decodable stream — the port's palette-420 chroma must be fixed to match). #71 over-picking AMPLIFIES exposure (more palette blocks = more desync surface) but is not the coding-bug root. This is the #1 gate per the mandate above.
 
+## FIXED 2026-08-28 — coded-lossless (QP 0) encodes; issue #5 chunk 2
+
+**What the port does at `base_q_idx == 0` (mainline 4:2:0 8-bit stills):**
+C's `mimic_only_tx_4x4` envelope (md_config_process.c:1039-1046). Every
+square above 8x8 is forced SPLIT and every leaf is an 8x8 (`pd0::lossless_tree`
+— `max_sq_size` 8, enc_dec_process.c:1492; 4x4 is disallowed above M2), coded
+at TX_4X4 with the Walsh-Hadamard transform at EVERY MD stage (the depth
+force at product_coding_loop.c:6734 sits inside `full_loop_core`, so MDS1
+runs a per-txb-predicted 4-txb loop — `mds1::lossless_mds1_txbs`), with
+RDOQ off, the tx-type search off, no tx_size bits priced or coded, and only
+candidates whose CHROMA tx type is DCT_DCT injected (mode_decision.c:3245 —
+this collapses the regular intra set to {DC, PAETH}; the uv searches at
+product_coding_loop.c:7376/7584 filter the same way). Deblock / CDEF / LR are
+neither searched nor applied. `FunnelFrame::coded_lossless` +
+`FunnelCfg::apply_coded_lossless` carry the switches; `tx_unit` has the WHT
+arm (C stores the kernel output TRANSPOSED, transforms.c:3956; the inverse
+goes through a u16 scratch with `highbd_iwht4x4_16_add` ALWAYS — C forces
+`eob = max` because its read and write buffers differ, inv_transforms.c:3155).
+
+**Measured (`tools/lossless_gate.sh`, `benchmarks/lossless_gate_2026-08-28.md`):**
+112 / 144 byte-identical + 32 pinned, 144 / 144 decode to the source under
+aomdec. Presets 4..13 are 96/96 over {gradient, diag, uniform} x {64x64,
+128x128, 96x80, 200x136}. In-crate: `tests/lossless_fh_c_capture.rs` (full
+stream == the committed C capture, mutation-verified both ways).
+
+**The residual — presets 0..3 on textured content, pinned self-promotingly.**
+Both encoders are lossless there; the bytes differ (gradient 64x64 p3: port
+2966 B, C 2973 B). p1 == p2 on both sides; p0 and p3 differ from them. The
+two C knobs that flip exactly at that boundary, in order of likelihood:
+1. `svt_aom_get_disallow_4x4_default` is FALSE at <= M2: C's lossless PD0
+   (forced `pic_pd0_lvl = 0`, PD0_LVL_0 full-RD) still decides 8x8 vs four
+   4x4 leaves, and the light encode of the 8x8 candidate at PD0 uses the
+   DCT-8x8 (`svt_av1_estimate_transform`'s WHT arm is TX_4X4-only). The port
+   forces 8x8 leaves at every preset. Porting this = `pd0_pick_sb_partition_lvl0`
+   with `max_sq` 8 + `min_sq` 4 + the lossless costs, then the 4x4 leaves
+   through the funnel (4x4 blocks already exist on the 4:2:0 path at M0..M2).
+2. `svt_aom_get_bypass_encdec_allintra` is 0 at <= M3 (the only knob that
+   separates p3 from p4): EncDec re-runs on MD's decisions with the same
+   WHT/lossless wrapper (`svt_aom_inv_transform_recon_wrapper`,
+   full_loop.c:1909), so the pixels agree — the byte delta must be a rate /
+   decision-order effect of `bypass_encdec = 0` in MD (`md_stage_3`'s
+   `pf_shape` / `rdoq_ctrls` resets are gated on it, product_coding_loop.c:7141).
+Drill: `SVTAV1_CANDDBG` on the first divergent block of gradient 64x64 p3 vs
+the C `SVT_FULLCOST_OUT` interposer (`tools/ctrace-linux/`).
+
+**Refused at QP 0** (typed, ledgered in docs/REFUSED-CONFIGS.md): 10-bit,
+monochrome, fork mode (its chroma-q deltas leave the frame outside
+CodedLossless), screen-content tools, superres, inter frames.
+
 ## FIXED 2026-08-27 — MONO partial SBs at preset 6 coded PARTITION_NONE at a frame edge (undecodable)
 
 **Found by zenavif's seam canary** (`svt_rs_direct_mono_partial_sb_preset6_still_broken`,
@@ -1012,6 +1061,9 @@ and `benchmarks/mem_2026-08-16.meta` (peak RSS). Re-measure with
    discipline: measure what crosses the boundary BEFORE cutting, prove the
    moved body verbatim AFTER. Do not reach for a line-range script.)
 3. **Lossless (q0)**: LESS important — do not prioritize over the above.
+   (LANDED 2026-08-28 anyway, issue #5 chunk 2: byte-identical to C at
+   presets 4..13, lossless under aomdec at every preset; the residual is the
+   p0..p3 pinned set — see "FIXED 2026-08-28 — coded-lossless" below.)
 4. **Performance (#93)**: LAST. Algorithmic/allocation work before SIMD
    when it does happen.
 

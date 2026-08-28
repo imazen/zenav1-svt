@@ -115,6 +115,13 @@ pub(super) fn inject_candidates(
             } else {
                 1
             };
+            // Coded-lossless: C skips every uv candidate whose chroma tx
+            // type is not DCT_DCT (`search_best_independent_uv_mode`,
+            // product_coding_loop.c:7584-7587) — only UV_DC, UV_PAETH and
+            // UV_CFL map to DCT (`svt_aom_get_intra_uv_tx_type`).
+            if frame.coded_lossless && uv_tx_type(uvm, cw, chh) != cc::DCT_DCT {
+                continue;
+            }
             for k in 0..ndelta {
                 let d: i8 = if ndelta == 1 { 0 } else { k as i8 - 3 };
                 if cfg.angular_level >= 2 && matches!(d, -2 | -1 | 1 | 2) {
@@ -377,6 +384,30 @@ pub(super) fn inject_candidates(
         for fi_mode in 0..=cfg.fi_max {
             cand_modes.push((0, 0, fi_mode));
         }
+    }
+    // Coded-lossless (issue #5): C's regular / filter-intra / palette
+    // injection loops all `continue` past a candidate whose CHROMA tx type is
+    // not DCT_DCT (mode_decision.c:3245-3247, :3298-3300, :3393-3395) — the
+    // check uses the candidate's uv pair (uv-follows-luma, or the independent
+    // table when `ind_uv_avail`) and runs whether or not the block carries
+    // chroma. With `svt_aom_get_intra_uv_tx_type` only UV_DC / UV_PAETH /
+    // UV_CFL are DCT, so at qp 0 the regular set collapses to {DC, PAETH}
+    // (+ the filter modes that map to DC/PAETH). The filter runs on the
+    // injection LIST so `prune_best_mode` below sees the same sequence C's
+    // fast loop does. Palette candidates carry UV_DC and always pass.
+    if frame.coded_lossless {
+        cand_modes.retain(|&(mode, _delta, fi)| {
+            let map_mode = if fi != FI_NONE {
+                FIMODE_TO_INTRAMODE[fi as usize]
+            } else {
+                mode
+            };
+            let uv = match ind_uv.as_ref() {
+                Some(tbl) if !cfg.ind_uv_last_mds1 => tbl[map_mode as usize].0,
+                _ => uv_from_y(map_mode),
+            };
+            uv_tx_type(uv, cw, chh) == cc::DCT_DCT
+        });
     }
 
     // C `mds0_use_hadamard_blk` (product_coding_loop.c:9473):

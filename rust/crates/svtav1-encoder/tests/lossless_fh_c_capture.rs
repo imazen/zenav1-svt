@@ -172,3 +172,76 @@ fn qp0_coded_lossless_frame_header_matches_c_capture() {
         fh1.len()
     );
 }
+
+/// The identity harness's `gradient` content (`svtav1/examples/identity_run.rs`:
+/// `y[r][c] = ((r*255/h) ^ ((c*3) & 0x3f))`, flat 128 chroma) — the exact
+/// frame `capture_c_trace 64 64 <qp> 7` was fed for both committed captures.
+fn gradient_64() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let (w, h) = (64usize, 64usize);
+    let mut y = vec![0u8; w * h];
+    for r in 0..h {
+        for c in 0..w {
+            y[r * w + c] = (((r * 255) / h) as u8) ^ (((c * 3) & 0x3f) as u8);
+        }
+    }
+    (y, vec![128u8; w * h / 4], vec![128u8; w * h / 4])
+}
+
+fn encode_gradient_64(qp: u8) -> (Vec<u8>, svtav1_encoder::pipeline::EncodePipeline) {
+    use svtav1_encoder::pipeline::EncodePipeline;
+    use svtav1_encoder::rate_control::{RcConfig, RcMode};
+    let rc = RcConfig {
+        mode: RcMode::Cqp,
+        qp,
+        ..RcConfig::default()
+    };
+    let mut p = EncodePipeline::new(64, 64, 7, rc, 0, 1)
+        .with_chroma_420(true)
+        .with_recon_output(true);
+    let (y, u, v) = gradient_64();
+    let obu = p
+        .try_encode_frame_420(&y, &u, &v, 64)
+        .expect("gradient 64x64 preset 7 encodes");
+    (obu, p)
+}
+
+/// Control for the stream-level test below: the qp-1 (LOSSY) stream through
+/// the real pipeline is byte-identical to C's capture, so the encoder
+/// configuration the qp-0 test runs is the one the oracle was captured with.
+#[test]
+fn control_qp1_stream_matches_c_capture() {
+    let (obu, _) = encode_gradient_64(1);
+    assert_eq!(obu.len(), C_QP1.len(), "qp1 stream length");
+    assert!(obu == C_QP1, "qp1 stream must be byte-identical to C");
+}
+
+/// Issue #5 chunk 2 — THE gate: the qp-0 coded-lossless stream (TX_4X4 WHT
+/// txbs, no tx_size / tx_type symbols, no in-loop filters, DC/PAETH-only
+/// injection) is byte-identical to the C encoder's, and the encoder's own
+/// reconstruction equals the source (the capture was verified to decode
+/// losslessly under aomdec before adoption, so equality to it is a lossless
+/// decode by transitivity). MUTATION-VERIFIED: with the WHT arm replaced by
+/// the DCT, or the tx_size symbol coded, the bytes diverge.
+#[test]
+fn qp0_coded_lossless_stream_matches_c_capture() {
+    let (obu, p) = encode_gradient_64(0);
+    let (y, u, v) = gradient_64();
+    let (ry, ru, rv) = p.last_recon.as_ref().expect("recon_output");
+    assert_eq!(&ry[..], &y[..], "luma recon == source");
+    assert_eq!(&ru[..], &u[..], "Cb recon == source");
+    assert_eq!(&rv[..], &v[..], "Cr recon == source");
+    if obu != C_QP0 {
+        let first = obu
+            .iter()
+            .zip(C_QP0.iter())
+            .position(|(a, b)| a != b)
+            .unwrap_or(obu.len().min(C_QP0.len()));
+        panic!(
+            "qp0 stream differs from C: port {} B, C {} B, first divergent byte at {first}\nport {:02x?}\nC    {:02x?}",
+            obu.len(),
+            C_QP0.len(),
+            &obu[first.saturating_sub(8)..(first + 8).min(obu.len())],
+            &C_QP0[first.saturating_sub(8)..(first + 8).min(C_QP0.len())]
+        );
+    }
+}

@@ -244,6 +244,12 @@ fn search_best_uv_mode(
             if uvm == 0 || tested[uvm as usize][(3 + uvd) as usize] {
                 continue;
             }
+            // Coded-lossless: `search_best_mds3_uv_mode` skips a uv
+            // candidate whose chroma tx type is not DCT_DCT
+            // (product_coding_loop.c:7376-7379).
+            if frame.coded_lossless && uv_tx_type(uvm, cx.cw, cx.chh) != cc::DCT_DCT {
+                continue;
+            }
             tested[uvm as usize][(3 + uvd) as usize] = true;
             uv_list.push((uvm, uvd));
         }
@@ -580,7 +586,19 @@ fn eval_candidate(
     let mut d0_recon: Vec<u8> = Vec::new();
     let mut best_coeff_count = u32::MAX;
 
-    for depth in 0..=cand_end_depth {
+    // Coded-lossless: C `get_start_end_tx_depth` ends with "Force the use of
+    // TX_4X4 for 8x8 block(s)": `if (pcs->mimic_only_tx_4x4 && sq_size == 8)
+    // start = end = 1` (product_coding_loop.c:6734-6736), AFTER every other
+    // rule — including the frame-boundary `end_tx_depth = 0` and the
+    // `bypass_tx_th` shortcut — so a lossless 8x8 evaluates depth 1 only.
+    // Every lossless block IS 8x8 (max_sq_size 8, 4x4 disallowed at the
+    // presets this port reaches); the guard keeps the arm inert otherwise.
+    let (start_depth, cand_end_depth) = if frame.coded_lossless && w == 8 && h == 8 {
+        (1u8, 1u8)
+    } else {
+        (0u8, cand_end_depth)
+    };
+    for depth in start_depth..=cand_end_depth {
         // prev_depth_coeff_exit_th (1 at txs_level <=4; 100 at eff-M9
         // txs_level 5): skip a deeper depth when the best depth so far
         // kept fewer than the threshold's worth of non-zero coeffs.
@@ -938,6 +956,8 @@ fn eval_candidate(
                     } else {
                         0
                     }
+                } else if frame.coded_lossless {
+                    0 // svt_aom_tx_size_bits: no tx_size bits on a lossless segment
                 } else {
                     rates.tx_size[tsz_cat][tsz_ctx][depth as usize] as u64
                 };
@@ -970,7 +990,9 @@ fn eval_candidate(
             } else {
                 0
             }
-        } else if block_signals_txsize(w, h) {
+        } else if block_signals_txsize(w, h) && !frame.coded_lossless {
+            // C `svt_aom_tx_size_bits` (rd_cost.c:1755) prices 0 bits on a
+            // lossless segment — the pack writes no tx_size symbol either.
             rates.tx_size[tsz_cat][tsz_ctx][depth as usize] as u64
         } else {
             0
@@ -2547,7 +2569,7 @@ fn eval_candidate(
         } else {
             0
         }
-    } else if block_signals_txsize(w, h) {
+    } else if block_signals_txsize(w, h) && !frame.coded_lossless {
         rates.tx_size[tsz_cat][tsz_ctx][best_depth as usize] as u64
     } else {
         0

@@ -548,8 +548,16 @@ impl AvifEncoder {
     /// change nothing a caller can observe.
     fn validate_inert_knobs(&self) -> Result<(), EncodeError> {
         if self.lossless {
+            // Issue #5 chunk 2: coded-lossless (QP 0) IS implemented on
+            // `EncodePipeline`'s 4:2:0 still path (byte-identical to C,
+            // tools/lossless_gate.sh). This wrapper still emits three
+            // MONOCHROME streams (the legacy output contract), and the mono
+            // leaf coder has no lossless arm — so the knob stays a typed
+            // refusal here rather than a lossy stream.
             return Err(EncodeError::UnsupportedConfig(
-                "lossless encoding is not implemented; the encoder would emit a lossy stream",
+                "lossless encoding is not implemented on AvifEncoder's three-monochrome-stream \
+                 output; QP 0 (coded-lossless) is available on \
+                 EncodePipeline::try_encode_frame_420 (8-bit 4:2:0 stills, mainline mode)",
             ));
         }
         if self.chroma_subsampling != ChromaSubsampling::Yuv420 {
@@ -580,7 +588,9 @@ impl AvifEncoder {
         if Self::quality_to_qp(self.quality) == 0 {
             return Err(EncodeError::UnsupportedConfig(
                 "quality > 99.2 maps to QP 0, which is lossless AV1 (WHT transform + lossless \
-                 header signalling); lossless encoding is not implemented — use a lower quality",
+                 header signalling); AvifEncoder's monochrome streams have no lossless arm (not \
+                 implemented) — use a lower quality, or EncodePipeline::try_encode_frame_420 at \
+                 QP 0 for a coded-lossless 4:2:0 still",
             ));
         }
         Ok(())

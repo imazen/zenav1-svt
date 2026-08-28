@@ -331,6 +331,20 @@ jobs:
           CC_AXES="sb128 bd10" AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" \
             ./tools/coverage_combos_gate.sh
 
+      - name: coded-lossless identity + lossless decode (QP 0, issue #5)
+        working-directory: rust
+        # Two oracles per cell: byte-identity to C at qp 0 AND the reference
+        # decoder's output == the source planes (the property the CodedLossless
+        # header promises, and the one the pre-chunk-2 encoder violated).
+        # Textured content at presets 0..3 is PINNED (lossless in both
+        # encoders, an RD-decision residual) and self-promotes. CI runs the
+        # 64x64 + partial-SB 96x80 geometries (72 cells); the 128x128 /
+        # 200x136 twins are local (`tools/lossless_gate.sh`, 144 cells,
+        # benchmarks/lossless_gate_2026-08-28.md).
+        run: |
+          LL_DIMS="64x64 96x80" AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" \
+            ./tools/lossless_gate.sh
+
       - name: superres identity + conformance (chunk B.3)
         working-directory: rust
         # Byte-parity vs C at SUPERRES_FIXED + decodability at the UPSCALED

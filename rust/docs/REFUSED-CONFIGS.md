@@ -2,7 +2,7 @@
 
 # Configs this encoder refuses
 
-**10 CAPABILITY refusals** (unimplemented — this is DEBT) and **17
+**15 CAPABILITY refusals** (unimplemented — this is DEBT) and **17
 CONTRACT refusals** (caller misuse — permanent and correct).
 
 Regenerate with `tools/refusal_inventory.sh`; `--check` is a CI gate.
@@ -26,15 +26,20 @@ aloud in a status report before anyone acted on it.
 | where | refusal |
 |---|---|
 | `crates/svtav1-encoder/src/pipeline.rs` | 10-bit monochrome needs preset >= 9: below that neither bd10 producer runs (the full-RD funnel requires 4:2:0, and the level-only post-pass would miscode with its 0/0 RDOQ contexts), so the encode would be 8-bit-quantized under a 10-bit sequence header |
-| `crates/svtav1-encoder/src/pipeline.rs` | QP 0 (base_qindex 0 = coded-lossless) is not implemented; the emitted stream would decode to wrong pixels (issue #5). Use QP >= 1. |
+| `crates/svtav1-encoder/src/pipeline.rs` | QP 0 (coded-lossless) in HDR-fork mode is not implemented: the fork's chroma-q deltas leave the frame outside CodedLossless (spec 5.9.2) with base_q_idx 0 — use mainline mode or QP >= 1 |
+| `crates/svtav1-encoder/src/pipeline.rs` | QP 0 (coded-lossless) is 8-bit only so far: neither bd10 level producer has a WHT / TX_4X4 arm — use QP >= 1 at 10-bit |
+| `crates/svtav1-encoder/src/pipeline.rs` | QP 0 (coded-lossless) is not implemented for inter frames — encode a single key frame |
+| `crates/svtav1-encoder/src/pipeline.rs` | QP 0 (coded-lossless) is not implemented on the monochrome path (the mono leaf coder has no WHT / TX_4X4 arm and C v4.2.0 cannot produce a mono oracle) — use the 4:2:0 path or QP >= 1 |
+| `crates/svtav1-encoder/src/pipeline.rs` | QP 0 (coded-lossless) with screen-content tools (palette / IntraBC) is not byte-verified against C so far — use QP >= 1 on this content |
+| `crates/svtav1-encoder/src/pipeline.rs` | QP 0 (coded-lossless) with superres is not implemented (the frame is not AllLossless at the upscaled size) — use QP >= 1 |
 | `crates/svtav1-encoder/src/pipeline.rs` | bit depth must be 8 or 10 — C v4.2.0 rejects every other depth at encoder init (svt_av1_verify_settings, Globals/enc_settings.c:460) and this port has no 12-bit kernels |
 | `crates/svtav1-encoder/src/pipeline.rs` | inter frames are not implemented: the inter path emits a stream neither aomdec nor dav1d can decode (malformed sequence/frame header fields, MV coding against fresh CDFs). This encoder is still-image only — encode a single key frame |
 | `crates/svtav1-encoder/src/pipeline.rs` | monochrome encode requires 8-aligned dims (arbitrary-dims padding is wired on the 4:2:0 path only) |
 | `crates/svtav1-encoder/src/pipeline.rs` | monochrome encode supports partial SBs only on the PD0 path (preset >= 6); use a multiple of 64 or preset >= 6 |
 | `crates/svtav1-encoder/src/pipeline.rs` | superres is 8-bit only so far (the u16 source downscale is unported) |
 | `crates/svtav1-encoder/src/pipeline.rs` | this 10-bit configuration has no bd10 stage to produce the coded levels; the encode would be 8-bit-quantized under a 10-bit sequence header |
-| `svtav1/src/avif.rs` | lossless encoding is not implemented; the encoder would emit a lossy stream |
-| `svtav1/src/avif.rs` | quality > 99.2 maps to QP 0, which is lossless AV1 (WHT transform + lossless header signalling); lossless encoding is not implemented — use a lower quality |
+| `svtav1/src/avif.rs` | lossless encoding is not implemented on AvifEncoder's three-monochrome-stream output; QP 0 (coded-lossless) is available on EncodePipeline::try_encode_frame_420 (8-bit 4:2:0 stills, mainline mode) |
+| `svtav1/src/avif.rs` | quality > 99.2 maps to QP 0, which is lossless AV1 (WHT transform + lossless header signalling); AvifEncoder's monochrome streams have no lossless arm (not implemented) — use a lower quality, or EncodePipeline::try_encode_frame_420 at QP 0 for a coded-lossless 4:2:0 still |
 
 ## CONTRACT — caller misuse (permanent, correct)
 

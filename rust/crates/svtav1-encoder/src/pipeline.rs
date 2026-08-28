@@ -961,6 +961,60 @@ impl EncodePipeline {
     /// match what the encoder actually produced. Rejecting beats emitting a
     /// stream that says "upscale me" over content the encoder handled with the
     /// wrong geometry.
+    /// Issue #5: the coded-lossless (QP 0 / `base_q_idx` 0) envelope this port
+    /// has byte-verified against the C oracle, as a refusal predicate for
+    /// everything outside it. Each arm names the missing piece.
+    fn lossless_config_error(
+        &self,
+        chroma_420: bool,
+        is_key: bool,
+        allow_screen_content_tools: bool,
+    ) -> Option<&'static str> {
+        if self.hdr.is_fork() {
+            // The fork's chroma-q deltas (Cb +12) put every segment's chroma
+            // qindex above 0 while base_q_idx stays 0, so the frame is NOT
+            // CodedLossless yet quantizes luma at qindex 0 — and C's variance
+            // boost is internally inconsistent there (SUSPECTED-C-BUGS.md #1).
+            return Some(
+                "QP 0 (coded-lossless) in HDR-fork mode is not implemented: the fork's chroma-q \
+                 deltas leave the frame outside CodedLossless (spec 5.9.2) with base_q_idx 0 — \
+                 use mainline mode or QP >= 1",
+            );
+        }
+        if !chroma_420 {
+            return Some(
+                "QP 0 (coded-lossless) is not implemented on the monochrome path (the mono leaf \
+                 coder has no WHT / TX_4X4 arm and C v4.2.0 cannot produce a mono oracle) — \
+                 use the 4:2:0 path or QP >= 1",
+            );
+        }
+        if self.bit_depth != 8 {
+            return Some(
+                "QP 0 (coded-lossless) is 8-bit only so far: neither bd10 level producer has a \
+                 WHT / TX_4X4 arm — use QP >= 1 at 10-bit",
+            );
+        }
+        if !is_key || self.gop.intra_period > 1 {
+            return Some(
+                "QP 0 (coded-lossless) is not implemented for inter frames — encode a single \
+                 key frame",
+            );
+        }
+        if allow_screen_content_tools {
+            return Some(
+                "QP 0 (coded-lossless) with screen-content tools (palette / IntraBC) is not \
+                 byte-verified against C so far — use QP >= 1 on this content",
+            );
+        }
+        if self.superres_denom.is_some() {
+            return Some(
+                "QP 0 (coded-lossless) with superres is not implemented (the frame is not \
+                 AllLossless at the upscaled size) — use QP >= 1",
+            );
+        }
+        None
+    }
+
     fn superres_config_error(&self) -> Option<&'static str> {
         let denom = self.superres_denom?;
         if !(9..=16).contains(&denom) {
@@ -1646,28 +1700,27 @@ impl EncodePipeline {
         };
 
         // Issue #5: `base_qindex == 0` signals CODED-LOSSLESS in the frame
-        // header (WHT 4x4 transform, deblock/CDEF/LR forced off) — a path the
-        // search/recon side does NOT implement yet. Encoding anyway emits a
-        // valid-syntax, self-consistent bitstream of the WRONG image (decoders
-        // reconstruct via the lossless rules the encoder never used; measured
-        // ssim2 -200..-1100 vs source, and one 64x64 case rav1d rejects).
-        // Zero-tolerance corruption class: reject with a typed error instead
-        // of silently corrupting. QP 1 (qindex 4) is the verified floor.
-        // Remove this gate only when the lossless envelope is ported +
-        // byte-verified vs C (the aom-rs sibling's KB-5 closed this exact
-        // class: forward WHT + lossless entropy-ctx + CfL-at-lossless).
-        // Chunk 1 (2026-08-27) landed the HEADER half: the FH writer codes
-        // CodedLossless exactly like C (tests/lossless_fh_c_capture.rs vs a
-        // committed qp-0 capture that decodes losslessly). Still missing: the
-        // tile half — TX_4X4-only txbs with no tx_size / tx_type symbols,
-        // WHT residuals, and C's lossless MD gates (mds_do_txt = 0, RDOQ off,
-        // `svt_av1_is_lossless_segment` sites in product_coding_loop.c /
-        // full_loop.c / rd_cost.c).
-        if base_qindex == 0 {
-            return Err(whereat::at!(crate::EncodeError::UnsupportedConfig(
-                "QP 0 (base_qindex 0 = coded-lossless) is not implemented; the \
-                 emitted stream would decode to wrong pixels (issue #5). Use QP >= 1.",
-            )));
+        // header (spec 5.9.2 — with the zero chroma deltas and no
+        // segmentation of this port's mainline path, base_q_idx 0 IS
+        // CodedLossless), and the whole encode follows C's lossless rules:
+        // the header writes no deblock/CDEF/LR/tx_mode bits (chunk 1,
+        // 2026-08-27), every block is an 8x8 coded at TX_4X4 with the
+        // Walsh-Hadamard transform, no tx_size / tx_type symbols, RDOQ and
+        // the tx-type search off, only DCT-chroma candidates injected, and no
+        // in-loop filter runs (chunk 2, this arm's consumers below +
+        // leaf_funnel). The envelope that is byte-verified against the C
+        // oracle is `lossless_config_error`'s complement; everything outside
+        // it is REFUSED rather than encoded wrong (the pre-chunk-2 measurement
+        // of what "encoded wrong" looked like: ssim2 -200..-1100 vs source).
+        let coded_lossless = base_qindex == 0;
+        if coded_lossless
+            && let Some(why) = self.lossless_config_error(
+                chroma.is_some(),
+                is_key,
+                sc_derivation.allow_screen_content_tools,
+            )
+        {
+            return Err(whereat::at!(crate::EncodeError::UnsupportedConfig(why)));
         }
 
         // C-exact coding quantizer for the still/PD1 path (quant.rs): the
@@ -1716,7 +1769,13 @@ impl EncodePipeline {
                 );
                 // C clamps allintra presets above M9 to M9 (enc_handle.c:4634).
                 let eff_mode = self.speed_config.preset.min(9);
-                let rdoq_level = crate::quant::rdoq_level_allintra(eff_mode, coeff_lvl);
+                // Coded-lossless: `perform_rdoq = !svt_av1_is_lossless_segment
+                // && ...` (full_loop.c:1756) — RDOQ never runs at qp 0.
+                let rdoq_level = if coded_lossless {
+                    0
+                } else {
+                    crate::quant::rdoq_level_allintra(eff_mode, coeff_lvl)
+                };
                 let lambda = crate::pd0::kf_full_lambda_8bit_tuned(
                     base_qindex,
                     tpl_adjusted_qp as u32,
@@ -2037,6 +2096,7 @@ impl EncodePipeline {
             // Superres chunk B.4: C's stale full-res variance array.
             stale_vars.as_deref(),
             self.hdr.max_tx_size,
+            coded_lossless,
             self.thread_count,
             &stop,
         )?;
@@ -2904,7 +2964,12 @@ impl EncodePipeline {
         // neither the level pick nor the frame apply runs and the FH codes
         // no loop-filter params (obu.rs suppresses them on the same flag).
         // Only sc_class5 presets <= 4 frames take this arm.
-        let lf_levels = if sc_derivation.allow_intrabc {
+        // Coded-lossless: `dlf_ctrls.enabled = 0`, `cdef_level = 0` and (at
+        // AllLossless, which every unscaled lossless frame is) `enable_restoration
+        // = 0` (md_config_process.c:1022-1035): no search, no application, and
+        // the frame header carries none of the three (chunk 1). Same shape as
+        // the IntraBC frame-level suppression this predicate already handles.
+        let lf_levels = if sc_derivation.allow_intrabc || coded_lossless {
             crate::deblock::LfLevels::default()
         } else if is_key {
             if is_single_frame && self.speed_config.preset <= 5 {
@@ -3045,7 +3110,7 @@ impl EncodePipeline {
         // cdef_process re-zeroes cdef_params (cdef_process.c:692-697). The
         // all-zero-strength default makes apply_cdef_frame a structural
         // no-op and cdef_bits stays 0 (no per-SB syntax, no FH params).
-        let cdef_params = if sc_derivation.allow_intrabc {
+        let cdef_params = if sc_derivation.allow_intrabc || coded_lossless {
             crate::cdef::CdefPick::single(crate::cdef::CdefFrameParams::default())
         } else if is_key {
             // C splits the strength policy per preset (allintra
@@ -3264,7 +3329,8 @@ impl EncodePipeline {
         // forces all planes RESTORE_NONE). enable_restoration itself (and
         // the SH bit) stays UNCHANGED — do NOT fold this into the
         // derivation (docs/ibc-port-map.md §A.7).
-        if is_key && seq_tools.enable_restoration && !sc_derivation.allow_intrabc {
+        if is_key && seq_tools.enable_restoration && !sc_derivation.allow_intrabc && !coded_lossless
+        {
             let ctrls = crate::restoration::wn_filter_ctrls_allintra(self.speed_config.preset);
             if ctrls.enabled {
                 // C `x->rdmult` = `pic_full_lambda[bit_depth == EB_TEN_BIT ?
@@ -5414,7 +5480,13 @@ fn encode_block_syntax(
                 }
             }
         } else {
-            if is_key && !(w == 4 && h == 4) {
+            // C `av1_code_tx_size` (entropy_coding.c:4650-4658): the symbol is
+            // coded only at TX_MODE_SELECT on a block that signals txsize AND
+            // `!svt_av1_is_lossless_segment` — a coded-lossless frame
+            // (base_q_idx 0 on this port's mainline path) derives TxMode
+            // ONLY_4X4 and codes no depth. The 4x4 grid is still recorded for
+            // the neighbours' contexts.
+            if is_key && !(w == 4 && h == 4) && base_q_idx > 0 {
                 let ctx = ectx.tx_size_ctx(block_x, block_y, w, h);
                 svtav1_entropy::context::write_tx_depth(
                     writer,
@@ -7226,6 +7298,11 @@ fn encode_tile_rows(
     // (enc_handle.c:4914) and the partition search then refuses 64x64 squares
     // (enc_dec_process.c:1494-1495).
     max_tx_size: u8,
+    // Issue #5: the frame is CODED-LOSSLESS (base_q_idx 0, spec 5.9.2). Selects
+    // the forced 8x8 / TX_4X4 partition tree (`pd0::lossless_tree`) and the
+    // funnel's lossless arms (`FunnelFrame::coded_lossless`,
+    // `FunnelCfg::apply_coded_lossless`).
+    coded_lossless: bool,
     // Feature 4 (bounded threading): the maximum number of OS threads the
     // tile loop below may run at once (0 = auto via `available_parallelism`).
     // Bounds CONCURRENCY only — tiles are always joined and appended in
@@ -7289,6 +7366,9 @@ fn encode_tile_rows(
         // screen-content frames.
         let tile_sc = crate::sc_detect::derive_allintra_sc(sc_preset, encode_input, w, w, h);
         let mut funnel_cfg = crate::leaf_funnel::FunnelCfg::for_preset(speed_config.preset);
+        if coded_lossless {
+            funnel_cfg.apply_coded_lossless();
+        }
         funnel_cfg.allow_sct = tile_sc.allow_screen_content_tools;
         // THE palette flip-on: with the level stamped, the funnel injects
         // palette candidates (chunk 4) and the pack codes the winners
@@ -7415,6 +7495,7 @@ fn encode_tile_rows(
                 // this scope are already the aligned dims (see the `ext_w` /
                 // `ext_h` SB-extent derivation above, which rounds them UP).
                 frame_w_px: w,
+                coded_lossless,
                 cfg: funnel_cfg,
             })
         } else {
@@ -8030,8 +8111,15 @@ fn encode_tile_rows(
                     // complete?" predicate and the next edge-aware path will.
                     let _full_sb = cur_w == unit_size && cur_h == unit_size;
                     let sb_result = if use_pd0 {
-                        if speed_config.preset >= 9 {
-                            let tree = if bit_depth == 10 {
+                        if coded_lossless || speed_config.preset >= 9 {
+                            let tree = if coded_lossless {
+                                // Issue #5: every square above 8x8 is forced
+                                // SPLIT and every 8x8 is a leaf
+                                // (`mimic_only_tx_4x4` -> `max_sq_size` 8,
+                                // enc_dec_process.c:1492); PD0 has nothing
+                                // left to decide, at any preset.
+                                crate::pd0::lossless_tree(x0, y0, unit_size, w, h)
+                            } else if bit_depth == 10 {
                                 // C `set_pd0_ctrls` (enc_mode_config.c:5415) FORCES
                                 // PD0_LVL_0 (full-RD partition search) at bd10 (hbd_md
                                 // set), regardless of preset — where bd8 uses the
@@ -8831,13 +8919,14 @@ mod tests {
         }
     }
 
-    /// Issue #5: QP 0 derives base_qindex 0 = coded-lossless signaling, which
-    /// the search/recon side does not implement — encoding would emit a
-    /// valid-syntax stream of the WRONG image. The fallible entry must reject
-    /// it with a typed error (never silent corruption), and QP 1 — the exact
-    /// boundary the issue measured clean — must still encode.
+    /// Issue #5 chunk 2: QP 0 (base_qindex 0 = coded-lossless) ENCODES on the
+    /// 4:2:0 still path, and the encoder's own reconstruction equals the
+    /// source exactly — the property the frame header promises a decoder.
+    /// (Byte-identity to the C oracle is `tests/lossless_fh_c_capture.rs`;
+    /// this is the in-crate no-decoder witness.) Every arm outside the
+    /// verified envelope stays a typed refusal, never a wrong stream.
     #[test]
-    fn qp0_returns_unsupported_config_not_garbage() {
+    fn qp0_420_encodes_losslessly_and_out_of_envelope_arms_refuse() {
         let mk = |qp: u8| {
             EncodePipeline::new(
                 64,
@@ -8853,30 +8942,60 @@ mod tests {
             )
             .with_chroma_420(true)
         };
-        let y = vec![128u8; 64 * 64];
-        let u = vec![100u8; 32 * 32];
-        let v = vec![150u8; 32 * 32];
+        // Textured luma + textured chroma so the WHT/quant path carries real
+        // residual (a flat frame would pass with the transform disabled).
+        let y: Vec<u8> = (0..64 * 64)
+            .map(|i| (((i / 64) * 255 / 64) ^ (((i % 64) * 3) & 0x3f)) as u8)
+            .collect();
+        let u: Vec<u8> = (0..32 * 32).map(|i| (60 + (i * 7) % 130) as u8).collect();
+        let v: Vec<u8> = (0..32 * 32).map(|i| (200 - (i * 5) % 150) as u8).collect();
 
-        let err = mk(0)
+        let mut p0 = mk(0).with_recon_output(true);
+        let obu = p0
             .try_encode_frame_420(&y, &u, &v, 64)
-            .expect_err("QP 0 must be rejected, not encoded to garbage (issue #5)");
-        assert!(
-            matches!(err.error(), EncodeError::UnsupportedConfig(_)),
-            "expected EncodeError::UnsupportedConfig, got {err:?}"
-        );
-
-        // Anti-vacuity + the exact boundary: QP 1 (qindex 4) still encodes.
-        let obu = mk(1)
-            .try_encode_frame_420(&y, &u, &v, 64)
-            .expect("QP 1 is the verified floor and must keep encoding");
+            .expect("QP 0 is encodable on the 4:2:0 still path since chunk 2");
         assert!(!obu.is_empty());
+        let (ry, ru, rv) = p0.last_recon.as_ref().expect("recon_output");
+        assert_eq!(&ry[..], &y[..], "luma recon must equal the source at qp 0");
+        assert_eq!(&ru[..], &u[..], "Cb recon must equal the source at qp 0");
+        assert_eq!(&rv[..], &v[..], "Cr recon must equal the source at qp 0");
+        // Anti-vacuity for the assertion above: the same content at QP 1 is
+        // LOSSY (a recon == source check that also passes at qp 1 would prove
+        // nothing about the lossless path).
+        let mut p1 = mk(1).with_recon_output(true);
+        let obu1 = p1
+            .try_encode_frame_420(&y, &u, &v, 64)
+            .expect("QP 1 keeps encoding");
+        assert!(!obu1.is_empty());
+        let (ry1, _, _) = p1.last_recon.as_ref().expect("recon_output");
+        assert_ne!(&ry1[..], &y[..], "qp 1 must be lossy on this content");
+
+        // Out-of-envelope arms refuse with the typed error.
+        let err = mk(0)
+            .with_bit_depth(10)
+            .try_encode_frame_420(&y, &u, &v, 64)
+            .expect_err("QP 0 at 10-bit is not in the verified envelope");
+        assert!(matches!(err.error(), EncodeError::UnsupportedConfig(_)));
+        // Fork mode WITHOUT variance boost keeps base_q_idx at 0 while the
+        // fork's chroma-q deltas leave the frame outside CodedLossless: that
+        // is the refused arm. (With variance boost ON the fork re-signals the
+        // frame base above 0 — C rc_aq.c:226 `readjust_base_q_idx` — so the
+        // encode is an ordinary lossy one and never reaches the lossless path.)
+        let mut fork = mk(0);
+        fork.hdr = crate::hdr_mode::HdrForkConfig::hdr_fork();
+        fork.hdr.enable_variance_boost = false;
+        let err = fork
+            .try_encode_frame_420(&y, &u, &v, 64)
+            .expect_err("QP 0 in fork mode (base_q_idx 0, chroma deltas) is not CodedLossless");
+        assert!(matches!(err.error(), EncodeError::UnsupportedConfig(_)));
     }
 
-    /// Issue #5, legacy surface: the panicking `encode_frame` contract turns
-    /// the QP-0 rejection into a panic (never a silently-corrupt bitstream).
+    /// Issue #5, legacy surface: the MONOCHROME path has no lossless arm (and
+    /// no C oracle), so the panicking `encode_frame` contract turns its QP-0
+    /// refusal into a panic (never a silently-corrupt bitstream).
     #[test]
     #[should_panic(expected = "coded-lossless")]
-    fn qp0_legacy_encode_panics() {
+    fn qp0_legacy_mono_encode_panics() {
         let mut pipeline = EncodePipeline::new(
             64,
             64,

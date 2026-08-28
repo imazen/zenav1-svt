@@ -323,14 +323,38 @@ pub(super) fn tx_unit_inner(
         residual,
     );
     let coeffs = TxScratch::zeroed(coeffs, n);
-    let ok = svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
-        residual,
-        coeffs,
-        w,
-        rs_tx_size(w, h),
-        rs_tx_type,
-    );
-    debug_assert!(ok, "fwd txfm {w}x{h} type {tx_type}");
+    // Coded-lossless (issue #5): C `svt_av1_estimate_transform`
+    // (transforms.c:3950-3963) takes the 4x4 Walsh-Hadamard instead of the
+    // DCT when the segment is lossless AND the tx is TX_4X4 (larger sizes fall
+    // through — they cannot occur here because `mimic_only_tx_4x4` forces
+    // every 8x8 block to depth 1, but the guard is kept as C keeps it), and
+    // stores the kernel's output TRANSPOSED: `coeff_buffer[(j << 2) + i] =
+    // dst[(i << 2) + j]`. The lossless tx type is always DCT_DCT (asserted
+    // in C; the injection filter and `txt_on = false` guarantee it here).
+    let lossless_wht = frame.coded_lossless && w == 4 && h == 4;
+    if lossless_wht {
+        debug_assert_eq!(tx_type, cc::DCT_DCT, "lossless txb must be DCT_DCT");
+        let mut res16 = [0i16; 16];
+        for (d, &s) in res16.iter_mut().zip(residual.iter()) {
+            *d = s as i16;
+        }
+        let mut dst = [0i32; 16];
+        svtav1_dsp::fwd_txfm::fwht4x4(&res16, &mut dst, 4);
+        for i in 0..4 {
+            for j in 0..4 {
+                coeffs[(j << 2) + i] = dst[(i << 2) + j];
+            }
+        }
+    } else {
+        let ok = svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
+            residual,
+            coeffs,
+            w,
+            rs_tx_size(w, h),
+            rs_tx_type,
+        );
+        debug_assert!(ok, "fwd txfm {w}x{h} type {tx_type}");
+    }
 
     // 64-dim fold (svt_handle_transform64x64) + energy of discarded coeffs.
     let mut three_quad_energy: u64 = 0;
@@ -482,23 +506,43 @@ pub(super) fn tx_unit_inner(
         for r in 0..ph {
             dq_full[r * w..r * w + pw].copy_from_slice(&dqcoeff[r * pw..(r + 1) * pw]);
         }
-        let inv = TxScratch::zeroed(inv, n);
-        let ok = svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch(
-            dq_full,
-            inv,
-            w,
-            rs_tx_size(w, h),
-            rs_tx_type,
-        );
-        debug_assert!(ok, "inv txfm {w}x{h} type {tx_type}");
-        svtav1_dsp::residual::recon_add_clamp(
-            &pred[pred_off..],
-            pred_stride,
-            inv,
-            w,
-            h,
-            &mut recon,
-        );
+        if lossless_wht {
+            // C `svt_aom_inv_transform_recon8bit` (inv_transforms.c:3141):
+            // widens the 8-bit prediction into a u16 scratch, runs the highbd
+            // inverse with bd 8 (`svt_av1_inv_txfm_add_c`, :3266), and narrows.
+            // Its read and write buffers differ, so it forces `eob =
+            // av1_get_max_eob(TX_4X4)` and `highbd_iwht4x4_add` (:2874) always
+            // takes the 16-coefficient kernel — never the eob <= 1 shortcut.
+            let mut pred16 = [0u16; 16];
+            for r in 0..4 {
+                for c in 0..4 {
+                    pred16[r * 4 + c] = u16::from(pred[pred_off + r * pred_stride + c]);
+                }
+            }
+            let mut out16 = [0u16; 16];
+            svtav1_dsp::inv_txfm::highbd_iwht4x4_16_add(dq_full, &pred16, 4, &mut out16, 4, 8);
+            for (d, &s) in recon.iter_mut().zip(out16.iter()) {
+                *d = s as u8;
+            }
+        } else {
+            let inv = TxScratch::zeroed(inv, n);
+            let ok = svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch(
+                dq_full,
+                inv,
+                w,
+                rs_tx_size(w, h),
+                rs_tx_type,
+            );
+            debug_assert!(ok, "inv txfm {w}x{h} type {tx_type}");
+            svtav1_dsp::residual::recon_add_clamp(
+                &pred[pred_off..],
+                pred_stride,
+                inv,
+                w,
+                h,
+                &mut recon,
+            );
+        }
     } else {
         for r in 0..h {
             let prow = pred_off + r * pred_stride;

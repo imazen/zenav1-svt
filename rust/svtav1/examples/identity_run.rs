@@ -75,7 +75,7 @@ fn decode_png_rgb(path: &str) -> (Vec<u8>, usize, usize) {
         png::ColorType::Rgb => buf.to_vec(),
         png::ColorType::Rgba => {
             let mut o = Vec::with_capacity(w * h * 3);
-            for px in buf.chunks_exact(4) {
+            for px in buf.as_chunks::<4>().0 {
                 o.extend_from_slice(&px[..3]);
             }
             o
@@ -89,7 +89,7 @@ fn decode_png_rgb(path: &str) -> (Vec<u8>, usize, usize) {
         }
         png::ColorType::GrayscaleAlpha => {
             let mut o = Vec::with_capacity(w * h * 3);
-            for px in buf.chunks_exact(2) {
+            for px in buf.as_chunks::<2>().0 {
                 o.extend_from_slice(&[px[0], px[0], px[0]]);
             }
             o

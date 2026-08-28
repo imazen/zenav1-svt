@@ -58,6 +58,7 @@ record named:
 | Decode conformance (`aomdec` + `dav1d`), mono / 4:2:0 | `decode_conformance` | **1260** / **1575** streams |
 | Arbitrary dimensions: panic-free + decodable, every preset | `arbitrary_size_robustness` | **128/128** (0 refused) |
 | Regression spot-check (one cell per bug ever fixed) | `regression_spotcheck` | **29/29** |
+| Coded-lossless (QP 0): bytes vs C AND `aomdec` output == source | `lossless_gate` | **112/144** byte-identical, +32 pinned, 144/144 lossless (local 2026-08-28; CI runs the 72-cell subset) |
 
 | Axis (local, corpus-gated) | Gate | Cells |
 |---|---|---|
@@ -97,8 +98,12 @@ port maps in `rust/docs/`.
 4:4:4 / 4:2:2 / 12-bit are **not port gaps** — C SVT-AV1 v4.2.0 itself rejects
 them at init (`enc_settings.c:460` permits only 8/10-bit; `:470` "Only support
 420 now"), so the port already matches C's shipping *format* envelope exactly;
-the 422/444/12-bit code in the C tree is dead-gated behind those lines. QP 0
-(coded-lossless) is rejected with a typed error rather than implemented (issue #5).
+the 422/444/12-bit code in the C tree is dead-gated behind those lines. **QP 0
+(coded-lossless)** is implemented on the 8-bit 4:2:0 still path (issue #5):
+TX_4X4 Walsh-Hadamard txbs, no in-loop filters, byte-identical to C at presets
+4–13 and lossless under `aomdec` at every preset (`rust/tools/lossless_gate.sh`);
+presets 0–3 are pinned byte-diverging (lossless in both encoders). 10-bit, mono,
+fork-mode, screen-content and superres at QP 0 are refused with a typed error.
 **Monochrome** is decode-conformance-validated (aomdec + dav1d accept it, and the
 decoder output matches the encoder's recon bit-for-bit) rather than byte-vs-C —
 C v4.2.0 can't encode mono (`EB_YUV400` is rejected at init), so no C oracle

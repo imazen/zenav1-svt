@@ -1113,6 +1113,37 @@ pub enum Pd0Tree {
     Off,
 }
 
+/// The partition tree of a CODED-LOSSLESS coding unit (issue #5): C forces
+/// `max_sq_size = MIN(max_sq_size, 8)` when `mimic_only_tx_4x4` is set
+/// (enc_dec_process.c:1492-1493) and `min_sq_size` is 8 wherever 4x4 is
+/// disallowed (`svt_aom_get_disallow_4x4_default`: every preset above M2, and
+/// this port reaches the lossless envelope only there), so every square above
+/// 8x8 is never tested — only SPLIT — and every leaf is an 8x8 PARTITION_NONE
+/// (NSQ is off at these presets, `nsq_search_level = 0`). Quadrants whose
+/// origin lies at or past the ALIGNED frame extent are `Off`, exactly as
+/// `Pd0Eval::tree` produces them on a partial superblock.
+pub fn lossless_tree(
+    x0: usize,
+    y0: usize,
+    size: usize,
+    aligned_w: usize,
+    aligned_h: usize,
+) -> Pd0Tree {
+    if x0 >= aligned_w || y0 >= aligned_h {
+        return Pd0Tree::Off;
+    }
+    if size <= 8 {
+        return Pd0Tree::Leaf(size);
+    }
+    let half = size / 2;
+    Pd0Tree::Split(Box::new([
+        lossless_tree(x0, y0, half, aligned_w, aligned_h),
+        lossless_tree(x0 + half, y0, half, aligned_w, aligned_h),
+        lossless_tree(x0, y0 + half, half, aligned_w, aligned_h),
+        lossless_tree(x0 + half, y0 + half, half, aligned_w, aligned_h),
+    ]))
+}
+
 impl Pd0Tree {
     /// Leaf sizes in raster/coding order (debug aid). Off quadrants
     /// contribute nothing.
