@@ -173,24 +173,43 @@ aomdec. Presets 4..13 are 96/96 over {gradient, diag, uniform} x {64x64,
 stream == the committed C capture, mutation-verified both ways).
 
 **The residual — presets 0..3 on textured content, pinned self-promotingly.**
-Both encoders are lossless there; the bytes differ (gradient 64x64 p3: port
-2966 B, C 2973 B). p1 == p2 on both sides; p0 and p3 differ from them. The
-two C knobs that flip exactly at that boundary, in order of likelihood:
-1. `svt_aom_get_disallow_4x4_default` is FALSE at <= M2: C's lossless PD0
-   (forced `pic_pd0_lvl = 0`, PD0_LVL_0 full-RD) still decides 8x8 vs four
-   4x4 leaves, and the light encode of the 8x8 candidate at PD0 uses the
-   DCT-8x8 (`svt_av1_estimate_transform`'s WHT arm is TX_4X4-only). The port
-   forces 8x8 leaves at every preset. Porting this = `pd0_pick_sb_partition_lvl0`
-   with `max_sq` 8 + `min_sq` 4 + the lossless costs, then the 4x4 leaves
-   through the funnel (4x4 blocks already exist on the 4:2:0 path at M0..M2).
-2. `svt_aom_get_bypass_encdec_allintra` is 0 at <= M3 (the only knob that
-   separates p3 from p4): EncDec re-runs on MD's decisions with the same
-   WHT/lossless wrapper (`svt_aom_inv_transform_recon_wrapper`,
-   full_loop.c:1909), so the pixels agree — the byte delta must be a rate /
-   decision-order effect of `bypass_encdec = 0` in MD (`md_stage_3`'s
-   `pf_shape` / `rdoq_ctrls` resets are gated on it, product_coding_loop.c:7141).
-Drill: `SVTAV1_CANDDBG` on the first divergent block of gradient 64x64 p3 vs
-the C `SVT_FULLCOST_OUT` interposer (`tools/ctrace-linux/`).
+Both encoders are lossless there; the bytes differ from the FIRST coded
+symbol of the tile (gradient 64x64 p3: port 2966 B, C 2973 B; p1 == p2 on
+both sides). Root, by elimination: the port's p3 stream is byte-identical to
+its own p4 stream and to C's p4 — every funnel knob that separates p3 from
+p4 is inert at qp 0 — while C's p3 differs from C's p4. Of the all-intra
+knobs that flip at the M3 boundary (enc_mode_config.c, the
+`enc_mode <= ENC_M3` sites in `svt_aom_sig_deriv_enc_dec_allintra`), the
+only one that is LIVE under `mimic_only_tx_4x4` (nsq/txt/txs/pd0/depth
+refinement are all forced) and matters on an I-slice (update_cdf_level 1 vs
+2 differs in `update_mv` only) is **`svt_aom_get_disallow_4x4_allintra`
+(enc_mode_config.c:8181): 4x4 partitions are ALLOWED at <= M3** — exactly
+the failing set. C's lossless partition search (`pic_pd0_lvl` forced 0 =
+PD0_LVL_0, depth removal / refinement forced off, `max_sq_size` 8) therefore
+decides 8x8-vs-four-4x4 per block — at qp 0 every candidate's distortion is
+0, so it is a pure RATE comparison incl. the partition symbol — while the
+port forces 8x8 leaves (`pd0::lossless_tree`). `bypass_encdec = 0` at <= M3
+is NOT it: EncDec re-runs with the same lossless wrapper
+(`svt_aom_inv_transform_recon_wrapper`, full_loop.c:1909) and every
+`bypass_encdec` site in MD is buffer routing or an RDOQ/pf reset that is
+inert at qp 0. Next chunk: admit depths {8, 4} in `depth_refine::
+build_refined_scan_at` (dr 0 / bbdr 0) with a PD0_LVL_0 eval bounded to
+`max_sq` 8, evaluate both through the funnel (`decide_sb_refined`) at
+lossless — 4x4 leaves already code on the 4:2:0 path at these presets, and
+`tx_unit` takes the WHT for any 4x4 txb — then compare the inter-depth
+decision against C. **Tried and reverted the same day (measured, not
+argued):** a `Pd0Mode::Lvl0Lossless` pick (`max_sq` 8, `min_sq` 4, the
+8x8 candidate through the DCT-8x8 light encode at `qindex + 8`, the 4x4
+candidates through the WHT with C's transposed store, `perform_tx_pd0`'s
+`5000 + 100*eob` closed-form rate, PD1 at exactly the PD0 pick) moved
+every pinned cell WITHOUT closing one — gradient 64x64 p3 2966 -> 2979 B
+(C 2973), p1/p2 2940 -> 2969 B (C 2965), diag 64x64 p0 312 -> 558 B (C
+341): the port splits to 4x4 far more than C, so C's PD0 cost at qindex 0
+is NOT that model (the split decision is distortion-dominated there —
+`kf_full_lambda` at qindex 0 is tiny — so a small dist-model difference
+flips every block). Do not re-guess: dump C's PD0 per-block costs for the
+first 8x8 of gradient 64x64 p3 with the `SVT_*_OUT` interposers
+(`tools/ctrace-linux/`, Linux `--wrap` build) and fit the model to them.
 
 **Refused at QP 0** (typed, ledgered in docs/REFUSED-CONFIGS.md): 10-bit,
 monochrome, fork mode (its chroma-q deltas leave the frame outside

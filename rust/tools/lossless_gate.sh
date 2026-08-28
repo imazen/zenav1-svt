@@ -30,11 +30,12 @@
 # still REQUIRED there) but not byte-identical — an RD-decision residual, not a
 # pixel defect (MEASURED 2026-08-28: gradient 64x64 p3 port 2966 B vs C 2973 B,
 # both decode to the source; see docs/REFUSED-CONFIGS.md's neighbour, the
-# CHANGELOG entry, and rust/CLAUDE.md for the two leads: 4x4 partitions are
-# ALLOWED at M0..M2 (`svt_aom_get_disallow_4x4_default`), so C's PD0_LVL_0
-# decides 8x8-vs-4x4 there with a DCT-8x8 light encode, and M3 carries
-# `bypass_encdec = 0`). A pinned cell that starts byte-matching FAILS the
-# gate so the improvement gets promoted, never silently absorbed.
+# CHANGELOG entry, and rust/CLAUDE.md for the root: 4x4 partitions are
+# ALLOWED at M0..M3 in all-intra (`svt_aom_get_disallow_4x4_allintra`,
+# enc_mode_config.c:8181 — exactly the failing set), so C's lossless
+# partition search decides 8x8-vs-four-4x4 per block while the port forces
+# 8x8 leaves). A pinned cell that starts byte-matching FAILS the gate so the
+# improvement gets promoted, never silently absorbed.
 #
 # Exit 0 iff every non-pinned cell passes (1) and (2), every pinned cell
 # passes (2) and still differs, and no anti-vacuity premise fails.

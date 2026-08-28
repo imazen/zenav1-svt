@@ -46,9 +46,13 @@ Crates are not published to crates.io yet — depend by git.
   32 pinned, 144 / 144 lossless** — presets 4..13 are 96/96 across
   {gradient, diag, uniform} x {64x64, 128x128, 96x80, 200x136}; presets
   0..3 on textured content are pinned self-promotingly (lossless in both
-  encoders, e.g. gradient 64x64 p3 port 2966 B vs C 2973 B; leads: M0..M2
-  allow 4x4 partitions so C's PD0_LVL_0 decides 8x8-vs-4x4 with a DCT-8x8
-  light encode, and M3 carries `bypass_encdec = 0`). Neutral at qp >= 1 by
+  encoders, e.g. gradient 64x64 p3 port 2966 B vs C 2973 B; root by
+  elimination — the port's p3 == its p4 == C's p4, and the only M3-boundary
+  knob live at qp 0 is `svt_aom_get_disallow_4x4_allintra`: all-intra
+  allows 4x4 partitions at <= M3, so C's lossless partition search decides
+  8x8-vs-four-4x4 per block where the port forces 8x8 leaves; real CID22
+  crops at 64x64/512x512 are 8/8 byte-identical at p7/p12 and lossless at
+  p1). Neutral at qp >= 1 by
   construction and by measurement: identity_matrix 54/54, bd10_matrix 36/36,
   regression_spotcheck 33/33, workspace 1051/1051. In-crate witnesses:
   `tests/lossless_fh_c_capture.rs::qp0_coded_lossless_stream_matches_c_capture`

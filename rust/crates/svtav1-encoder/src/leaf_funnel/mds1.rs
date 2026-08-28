@@ -76,7 +76,7 @@ pub(super) fn run_mds1(
         } else {
             cand.mode as usize
         };
-        let out = if frame.coded_lossless {
+        let out = if frame.coded_lossless && w == 8 && h == 8 {
             // Coded-lossless: `get_start_end_tx_depth` forces depth 1 at EVERY
             // MD stage (product_coding_loop.c:6734 runs inside full_loop_core,
             // :6870), so C's MDS1 codes the 8x8 as four TX_4X4 WHT txbs with
@@ -85,7 +85,9 @@ pub(super) fn run_mds1(
             // is `mds_do_spatial_sse || (!is_inter && tx_depth)`). Freq-domain
             // distortion, exact coefficient rate, no RDOQ — the MDS1 contract
             // otherwise unchanged.
-            debug_assert!(w == 8 && h == 8, "lossless blocks are 8x8");
+            // (A 4x4 leaf — allowed at presets <= 3 — is a single TX_4X4 at
+            // depth 0 and takes the plain `tx_unit` below, whose WHT arm fires
+            // on any lossless 4x4 txb.)
             lossless_mds1_txbs(
                 fx,
                 y_src,
