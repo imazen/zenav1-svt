@@ -19,6 +19,34 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **Issue #8 doc-debt residuals closed, and `rust/Cargo.lock` is now
+  committed.** The lock decision the audit asked for: the product is a
+  byte-identical bitstream and `archmage` is a semver dependency, so an
+  unpinned fresh-box resolve could change codegen under the gates; the lock
+  pins what CI measured (`rust/README.md` "Building"; `cargo update` is its own
+  commit). Both READMEs' gate tables are re-tallied from CI run 33101031800
+  (`1ed7db46`) and split into CI-run vs corpus-gated-local blocks with each
+  local number dated and its committed artifact named (or "no committed
+  artifact" said outright — the 177/180 `real_image_matrix` figure was one;
+  the committed real-corpus record is the 450-cell
+  `identity_full_8bit_real_2026-08-03.tsv`, 403 IDENTICAL, p6/p10/p13
+  90/90). `rust/README.md`'s "197/309 non-flat" was an arm64 measurement
+  (309/309 on x86 CI); "Rust 1.85+" is 1.89 (the real `rust-version`); test
+  counts are 1056 as of `1ed7db46`. Unbacked MEASURED numbers are now
+  labelled as such at the citation (CLAUDE.md kernel throughput,
+  perf-status.md's never-committed `perf_{before,after}_cdef.tsv`,
+  HDR-ON-4.2.md 48/48, ACCEPTANCE-CRITERIA 0/36, bd10-port-map's 540-cell
+  `/tmp` sweep, ibc-port-map's 25,356 blocks). Docs that described landed
+  work as open carry a dated STATUS banner verified against source:
+  finishing-survey D7 + ibc-port-map §B (IntraBC is wired, `allow_intrabc`
+  derived, dsp placeholder deleted), C-TEST-PORTING-AUDIT 1h (superres
+  ported + CI-gated; `scale.rs` still the pinned stub), STATUS.md
+  "Architecture direction", practical-usage-plan, sc-detection-port-map,
+  arbitrary-dims-port-map, IDENTITY-STATUS, `specs/README.md` (pinned
+  pre-v4.2.0; the C tree wins). Per-gate wall-clock budgets exist for the
+  first time: `rust/benchmarks/gate_wallclock_ci_2026-08-27.md` (every CI
+  step's duration from the same run; the job is ~21 min, the three largest
+  steps 207/167/141 s), linked from WORKING-ON-THIS.md §2b.
 - **CI caches the cargo-built C oracle, keyed on the submodule SHA — issue
   #4 invariant C's last open piece.** `.github/workflows/rust-gates.yml`
   restores `Bin/Release` + `Bin/ReleaseHdr` (lib, `SvtAv1EncApp`, the

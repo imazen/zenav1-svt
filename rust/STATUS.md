@@ -59,7 +59,9 @@ Data: `benchmarks/bd10_partial_sb_2026-08-04.tsv`.
 
 Every failing cell on every grid is `gradient`; `uniform` is 100% everywhere. In
 the p0..p8 band the residual is the known bd10 NON-FLAT gap
-(`bd10_nonflat_gate.sh`, 197/309 at 64-ALIGNED dims) plus ~5 percentage points
+(`bd10_nonflat_gate.sh`, 197/309 at 64-ALIGNED dims — an arm64 measurement,
+see "Measurement caveat for arm64 hosts" below; x86 CI measures 309/309 as of
+`1ed7db46`) plus ~5 percentage points
 from partial-SB geometry. In the eff-M9 band it is four configurations, one of
 which (`gradient 48x48 q20 p9`) is localized to a bd10 MDS0 fast-cost near-tie
 on the frame's FIRST 32x32 block — a block that straddles nothing and has no
@@ -752,6 +754,14 @@ corrupting inter references, which was the real reason inter frames
 outweighed the key frame. Workspace fully green.)
 
 ## Architecture direction
+
+> **STATUS 2026-08-28 — the four items below have all landed; this section is
+> kept as the original plan.** (1) chroma 4:2:0 with C decision parity, (2)
+> deblock/CDEF/Wiener searches + application, (3) directional-mode edge
+> extension, and (4) decision-layer parity are what the CI gate tables in
+> `../README.md` measure (every preset 0–13, 8- and 10-bit, tiles, SB128,
+> partial SBs, superres). The current backlog is `docs/REFUSED-CONFIGS.md`
+> (capability refusals) and the open GitHub issues, not this list.
 
 Module-by-module faithful port of C SVT-AV1 behind `svtav1-cref`
 differential harnesses (see `docs/PORT-coeff-writer.md` for the worked

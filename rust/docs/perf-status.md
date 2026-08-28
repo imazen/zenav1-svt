@@ -520,7 +520,10 @@ is the biggest single lever.
   ~15 ms, so read the slope, not that row). The dst16 arm
   carries the same win to the bd10/bd12 search (not in the bd8 perf grid; verified by
   the bd10 gates). All 11 byte-identity gates + `cargo nextest run --workspace` green;
-  `#![forbid(unsafe_code)]` intact. Data: benchmarks/perf_{before,after}_cdef.tsv.
+  `#![forbid(unsafe_code)]` intact. Data: benchmarks/perf_{before,after}_cdef.tsv
+  — **those two files were never committed** (issue #8 audit, 2026-08-28); the
+  numbers in this block are unbacked and must not be cited. The committed perf
+  records are the `benchmarks/perf_2026-*.{tsv,raw.tsv,meta}` triples.
 
 - **`txb_init_levels` SIMD (AVX2) — coeff-level packing** (`crates/svtav1-entropy/src/
   coeff_simd.rs`, commit `2e71f1f9d`). The per-txb coeff-magnitude → level-buffer pack

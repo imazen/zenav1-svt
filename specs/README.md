@@ -2,7 +2,14 @@
 
 Comprehensive specifications of the SVT-AV1 encoder, derived from source code and test analysis. Sufficient for an algorithm-for-algorithm port to another language.
 
-**Source:** [gitlab.com/AOMediaCodec/SVT-AV1](https://gitlab.com/AOMediaCodec/SVT-AV1) at commit `003643d4`
+**Source:** [gitlab.com/AOMediaCodec/SVT-AV1](https://gitlab.com/AOMediaCodec/SVT-AV1) at commit `003643d4` (pre-v4.2.0)
+
+> **The oracle the port is gated against is v4.2.0** (`reference/svt-av1` @
+> `imazen-parity`, the submodule pin), not `003643d4`. These specs were written
+> against the older commit and have not been re-derived; where a spec and the C
+> tree disagree, the C tree wins (rust/CLAUDE.md "Documentation & Comments":
+> read source, trace call trees). Use them for algorithm orientation, cite the C
+> `file:line` for anything byte-affecting.
 **Total:** 19 spec files, 12,403 lines
 
 ## Spec Index

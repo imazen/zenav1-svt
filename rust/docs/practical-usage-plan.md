@@ -1,6 +1,12 @@
 # Practical usage plan — what real SVT-AV1 AVIF/still encoding looks like, and how the port should prioritize
 
-Status: research note (2026-07-19). READ-ONLY analysis; additive. Written to reprioritize
+Status: research note (2026-07-19). READ-ONLY analysis; additive.
+
+> **2026-08-28:** gate status quoted below has moved — e.g. "tune IQ ... very
+> likely not yet byte-gated" (§ below) predates `tools/hdr_bd10_gate.sh` (64/64,
+> every tune at 10-bit) and the per-tune `hdr_fork_e2e` decode gates. For what
+> is gated today read the tables in `../../README.md`; read this file for the
+> *usage* analysis it was written for. Written to reprioritize
 the byte-identity roadmap against *real-world* SVT-AV1 still-image usage. Every external claim
 is cited with a URL. Where mainline default, quality-community recommendation, and actual-pipeline
 behavior differ, they are labelled separately — they are **not** interchangeable.

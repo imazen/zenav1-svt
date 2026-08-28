@@ -1,5 +1,14 @@
 # Arbitrary dimensions port map (task #95, extracted 2026-07-17 from v4.2.0 C)
 
+> **STATUS 2026-08-28 — chunks 1 and 2 landed.** Partial superblocks and odd
+> dimensions byte-match C at preset >= 6 and 64-aligned at every preset
+> (`tools/partial_sb_gate.sh` 145/145 and `tools/alignment_gate.sh` 74/74 in
+> CI as of `1ed7db46`); 10-bit follows (`bd10_partial_sb_gate.sh` 159/159);
+> `arbitrary_size_robustness.sh` 128/128 with 0 refused. The "REMAINING" /
+> "not yet wired" passages below describe the 2026-07-17..08-04 state — the
+> open residual today is the p0–p5 partial-SB RD divergence class recorded in
+> `benchmarks/identity_full_8bit_dims_*` and `rust/CLAUDE.md` (issue #15 notes).
+
 allintra KEY bd8 4:2:0 single-tile scope. THE model: TWO boundary systems
 coexist — conflating them is the #1 porting risk.
 

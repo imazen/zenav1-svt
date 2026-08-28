@@ -289,7 +289,7 @@ distinction.
 
 | Config | Result |
 |---|---|
-| **Fork @ bd8** | **48/48 byte-identical** — `{gradient,diag}` x `{64,128}²` x q`{12,20,32,40,55,63}` x p`{10,13}`. The bd8 fork port was already correct; this is the first time it could be *proven*. |
+| **Fork @ bd8** | **48/48 byte-identical** — `{gradient,diag}` x `{64,128}²` x q`{12,20,32,40,55,63}` x p`{10,13}`. The bd8 fork port was already correct; this is the first time it could be *proven*. **A 2026-07-19 measurement with no committed artifact and no standing gate script** (issue #8): the only byte-vs-fork-C gate that runs is the 10-bit `tools/hdr_bd10_gate.sh` on the next row; the 8-bit fork's standing coverage is `svtav1/tests/hdr_fork_e2e.rs` (liveness + `aomdec` decode). |
 | **Fork @ bd10** | **64/64 byte-identical** (was 0/64 -> 46/64 -> 54/64 -> 58/64). The full sweep `{gradient,diag}` x `{64,128}²` x q`{5,12,20,32,40,48,55,63}` x p`{10,13}` matches the fork oracle; gated at 64/64 by `tools/hdr_bd10_gate.sh`, with an anti-vacuity check that the fork and mainline oracles genuinely differ. |
 
 ### Roots fixed

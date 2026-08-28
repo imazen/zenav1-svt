@@ -969,7 +969,11 @@ Release-mode benchmarks (x86_64 AVX2):
 - SAD 16x16: ~18 Gpix/s (archmage auto-vectorization)
 - fwd_txfm 4x4: ~170 Mpix/s
 - fwd_txfm 8x8: ~215 Mpix/s
-These numbers are MEASURED, not estimated.
+These numbers were measured on the 2026-07 x86_64 box, but **no committed
+artifact backs them** (issue #8 audit) — do not cite them; the measurements
+with provenance are `docs/perf-status.md` (wall clock, `benchmarks/perf_*.meta`)
+and `benchmarks/mem_2026-08-16.meta` (peak RSS). Re-measure with
+`tools/perf_gate.sh` before quoting a kernel throughput.
 
 ## PRODUCTION PRIORITIES (user directive 2026-07-17 — BINDING ORDER)
 

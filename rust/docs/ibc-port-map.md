@@ -55,7 +55,9 @@
 >   Fixed by 0xFF-init (intra-inert). VERIFIED: 100-cell self-consistency
 >   sweep (gb82-sc × p0-p4 × qp{20,48} × 512², aom-decode oracle) — every
 >   stream decodes to EXACTLY the port's own recon, 25,356 IBC blocks
->   coded; nextest 915/915 (as of `8090b0ac6`); identity 54/54, bd10 36/36 + 309/309
+>   coded (the count is from that session's log; **no committed artifact**
+>   records it — the standing witnesses are `tools/screen_ibc_gate.sh` and
+>   `benchmarks/ibc_bd10_gb82sc_2026-08-03.{tsv,meta}`); nextest 915/915 (as of `8090b0ac6`); identity 54/54, bd10 36/36 + 309/309
 >   unchanged. The sc_class5 depth-refinement fix (`4b2c0355d`,
 >   cherry-picked from parity/screen-lowpreset) rides along — screen
 >   trees at p0-p2 need it for C parity.
@@ -365,6 +367,15 @@ Search/derivation side, per tool (asymmetric — do not treat by analogy):
 ---
 
 ## §B. Port state audit (exists vs missing) — precise
+
+> **STATUS 2026-08-28 — this audit is HISTORICAL.** B.1's "hardcoded false"
+> switch is gone: `sc_detect.rs` derives `allow_intrabc` from
+> `IbcCtrls::for_level(intrabc_level).enabled` (grep `allow_intrabc` there).
+> B.3's encoder `intrabc.rs` is wired into the leaf funnel (`leaf_funnel/`
+> and `pipeline.rs` reference `intrabc::` at 19 sites) and gated by
+> `tools/screen_ibc_gate.sh` (22/100 byte-exact, 78 pinned near-ties, every
+> stream decoding to the encoder's own recon). B.4's `svtav1-dsp/src/intrabc.rs`
+> placeholder was DELETED in chunk 0. Read §B for what the gaps *were*.
 
 ### B.1 EXISTS
 

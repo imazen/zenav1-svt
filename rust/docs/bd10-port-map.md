@@ -2147,7 +2147,10 @@ took the remaining TWO sites, found one session apart:
   DLF level reads the changed recon). Closes `7062227 q5 p1`, `7062227 q5
   p2`, CLIC `02809272b4ca… q5 p2` — the prior session's 540-cell sweep
   (27 CID22+CLIC images × p0-3 × q{5,20,32,48,63}) went **537/540 →
-  540/540** (`/tmp/p0bd10_rerun_baseline.tsv`, `/tmp/p0bd10_after_sweep.log`);
+  540/540** (`/tmp/p0bd10_rerun_baseline.tsv`, `/tmp/p0bd10_after_sweep.log` —
+  scratch files, **not committed and since lost**; the 540-cell figure is
+  unbacked, the committed p0–p3 photo record is
+  `benchmarks/bd10_photo_p0p3_2026-07-23.tsv`);
   the 3 flips A/B-re-proven this session (diverge without, byte-match with,
   byte sizes matching the baseline TSV's).
 - **Site 3 — MDS0 per-class fast cost (`evaluate_leaf`'s `sort_lane`;

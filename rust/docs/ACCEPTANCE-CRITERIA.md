@@ -52,7 +52,8 @@ sanity check, but it is not part of "done".
 Mainline parity is the baseline; the HDR/PSY fork is a **gated delta on top of it**.
 This is not a stylistic choice — the fork is v4.1-based and is *not additive*. It makes
 unconditional changes (the loop-filter guard, the uint16→double variance path) that
-measured 0/36 parity against mainline. So fork features land behind `SVT_HDR_MODE`,
+measured 0/36 parity against mainline (a 2026-07 measurement with no committed
+artifact — the *conclusion* is what this section carries). So fork features land behind `SVT_HDR_MODE`,
 rebased onto the v4.2 baseline, and each one needs **two witnesses**:
 
 1. **Mode off** → byte-identical to mainline C. This is the anti-regression witness.

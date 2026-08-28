@@ -143,6 +143,15 @@ Consequences for classification:
 
 ### 1h. Superres (still-picture tool, currently stubbed)
 
+> **STATUS 2026-08-28 — superres is PORTED and gated, `scale.rs` is not.**
+> `svtav1-dsp/src/superres.rs` is the normative 64-phase upscale (its
+> `c_parity_superres.rs` witness now `assert_eq!`s), the encoder side is
+> opt-in via `EncodePipeline::with_superres`, and `tools/superres_gate.sh`
+> runs in CI (512/512 byte-parity + decode at the upscaled size, as of
+> `1ed7db46`). `scale.rs` (inter reference scaling, `convolve_2d_scale`) is
+> still the stub `c_parity_scale.rs` pins with `assert_ne!` — inter-only, out
+> of the still envelope. The rows below are the 2026-07-24 state.
+
 | C test file | Kernel under test | Rust coverage | Class |
 |---|---|---|---|
 | *(no dedicated C file; via `ResizeTest` + normative upscale)* | `av1_convolve_horiz_rs` / `resize_filter_normative` | `c_parity_superres.rs` — **witness: `superres.rs` is a STUB**, pins divergence | **GAP** (in-scope still tool; superres defaults off, out of current envelope) |

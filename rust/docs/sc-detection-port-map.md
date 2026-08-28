@@ -1,5 +1,11 @@
 # Screen-content detection port map (task #71, extracted 2026-07-16 from v4.2.0 C)
 
+> **STATUS 2026-08-28 — landed.** Work items 1–3 (detection → level tables →
+> header bit) are `crates/svtav1-encoder/src/sc_detect.rs`, differentially
+> pinned by `tests/c_parity_sc_detect.rs`; `allow_intrabc` is derived there
+> too (no longer hardcoded). This map is now the C-side reference for that
+> module.
+
 Complete port-ready map of the allintra sc-detection pipeline. Verified against
 `reference/svt-av1/Source` at the v4.2.0 tag by whole-chain trace. Feeds #71 work
 items 1–3 (detection → level tables → header bit).

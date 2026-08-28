@@ -50,6 +50,14 @@ SIMD-coverage queue ranked by measured frame share; read that before optimising
 anything, because the top entries are already NEON and the queue is about
 quality, not coverage.
 
+**Per-gate wall clock (CI, x86-64 `ubuntu-latest`, measured 2026-08-27):**
+`benchmarks/gate_wallclock_ci_2026-08-27.md` — every CI step's duration from
+run 33101031800, so "how long does gate X take" has a measured answer. The
+whole differential job is ~21 min; the three biggest single steps are the
+SIMD tier-invariance suite (207 s), the workspace test suite (167 s) and the
+C oracle build (141 s, cached since 2026-08-28). Local arm64 numbers differ;
+measure with `time` and record the host.
+
 **Memory (2026-08-16, the first ever measured):** port 3.5 MiB fixed +
 ~29-34 MiB/MP; C 7-9 MiB fixed + ~27-29. Half C's fixed cost, slightly more per
 pixel, crossing near 1 MP; 122 vs 117 MiB at 4 MP.

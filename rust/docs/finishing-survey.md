@@ -591,6 +591,13 @@ independent-chroma search prices its UV_DC row with
   byte-matches. **Not shotgun** (needs an edge-clipped palette cell).
 
 ### D7. `intrabc.rs` is an ENTIRELY DEAD module (2375 lines) — decide: wire or document
+
+> **STATUS 2026-08-28 — option (a) happened.** `intrabc.rs` is wired into the
+> funnel injection (`leaf_funnel/inject.rs`, `pipeline.rs`), `sc_detect.rs`
+> derives `allow_intrabc` from the level, and `tools/screen_ibc_gate.sh`
+> (22/100 byte-exact + 78 self-promoting pins, all streams decoding to the
+> port's own recon) is the gate. See `docs/ibc-port-map.md`'s header for the
+> chunk-by-chunk landing record. The text below is the 2026-07-19 finding.
 - `pub mod intrabc;` compiles, but `intra_bc_search`, `build_intra_bc_candidate`, and
   `IbcCtrls` have **zero callers** anywhere in the crate (grep-verified — only
   self-references + its own `#[cfg(test)]`). All 7 of its PORT-NOTE/`unimplemented!`

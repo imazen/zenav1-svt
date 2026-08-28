@@ -1,5 +1,14 @@
 # Bitstream Identity Status — Rust `EncodePipeline` vs C SVT-AV1
 
+> **2026-08-28: this file is the CAMPAIGN HISTORY (2026-07-13 → 07-16), not
+> the current scoreboard.** Every tally in it is dated to its section. The live
+> tallies are the CI gate tables in `../../README.md`; the harness has since
+> grown axes this file never lists — tiles (`tile_gate`), SB128
+> (`sb128_gate`), 10-bit and native-u16 input (`bd10_*`), partial superblocks
+> and true-vs-aligned geometry (`partial_sb_gate`, `alignment_gate`), superres,
+> screen content / palette / IntraBC, and the feature-intersection gate
+> (`coverage_combos_gate`) — all under `tools/`.
+
 Date: 2026-07-13 · branch `wave2/entropy-c-parity` · C baseline: in-tree
 **v4.2.0 (final tag, retargeted 2026-07-16 from v4.2.0-rc — all-intra output
 byte-identical between the two; 669/669 workspace differential tests +

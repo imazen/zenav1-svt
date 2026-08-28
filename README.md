@@ -7,7 +7,7 @@ with the [svt-av1-hdr](https://github.com/juliobbv-p/svt-av1-hdr) fork's
 perceptual feature set available behind a runtime switch — and *that* mode
 byte-gated too, against a `SVT_HDR_MODE=ON` build of the same C base.
 
-**`#![forbid(unsafe_code)]` · ~80k lines · 7 crates · 900+ tests · no C in the product path**
+**`#![forbid(unsafe_code)]` · ~80k lines · 7 crates · 1056 tests (nextest, as of `1ed7db46`) · no C in the product path**
 
 > **Experimental.** The envelope below is real and gated, but it is an envelope:
 > single still frame, CQP only. Not yet a general-purpose video encoder. Crates
@@ -37,26 +37,46 @@ bytes against.
 
 Verified via OBU byte comparison **plus** a full arithmetic-coder op trace
 (every range-coder call, including coder state), each line an asserted gate
-under `rust/tools/`:
+under `rust/tools/`. The first block runs in CI on every push (tallies as of `1ed7db46` (CI run 33101031800, 2026-08-27)
+— `gh run view 33101031800`); the second block needs image corpora that are
+not in-tree, so those tallies are dated local measurements with the committed
+record named:
 
-| Axis | Gate | Cells |
+| Axis (CI, every push) | Gate | Cells |
 |---|---|---|
-| Synthetic matrix (content × size × qp × preset) | `identity_matrix` | **54/54** |
-| Partial superblocks / odd dimensions (spec 5.11.4 edges) | `partial_sb_gate` | **101/101** |
-| Real photographs, presets **0–13**, 8-bit (CID22) | `photo_p0_gate` + `real_image_matrix` | **8/8** + 177/180¹ |
-| 10-bit synthetic, presets 0–13 | `bd10_matrix` + `bd10_nonflat_gate` | **36/36** + **309/309** |
-| 10-bit real photographs, presets **0–13** (CID22 + CLIC) | `bd10_photo_gate` | **191/191** |
-| SB128 superblocks (incl. high-qp partition depths) | `sb128_gate` | **18/18** (14 SB128 cells + 4 SB64 controls) |
+| Synthetic, **every preset 0–13**, full qp range, 4 content classes, 64 px | `identity_full_8bit` (superset of the 54-cell `identity_matrix`) | **280/280** |
+| Partial superblocks / odd dimensions (spec 5.11.4 edges) | `partial_sb_gate` | **145/145** |
+| True-vs-aligned × stride × bit depth, two oracles (bytes vs C AND recon vs `aomdec`) | `alignment_gate` | **74/74** |
+| 10-bit synthetic, presets 0–13 | `bd10_matrix` + `bd10_nonflat_gate` + `bd10_hbd_src_gate` | **36/36** + **309/309** + **100/100** |
+| 10-bit at non-64-aligned dims, both bd10 producers | `bd10_partial_sb_gate` | **159/159** |
+| SB128 superblocks (incl. high-qp partition depths) | `sb128_gate` | **18/18** (14 SB128 cells + 4 SB64 controls; 22 with the gb82-sc corpus) |
 | Multi-tile (rows × cols, all preset bands) | `tile_gate` | **29/29** |
-| Feature intersections: SB128×tiles, bd10×tiles, real×tiles | `coverage_combos_gate` | **40/40**² |
-| Screen content, palette, preset 6 | `screen_palette_gate` | **50/50** |
+| Feature intersections: SB128×tiles, bd10×tiles | `coverage_combos_gate` (`CC_AXES="sb128 bd10"`) | 16/16 byte-exact + bd10 pins² |
+| Screen content, palette, 8- AND 10-bit | `screen_palette_bd_gate` | **60/60** |
+| Superres, byte-parity + decode at the upscaled size | `superres_gate` | **512/512** |
+| Encoder recon == `aomdec` output, byte-exact | `recon_parity` + `variance_boost_recon` | **432/432** + **60/60** |
+| Decode conformance (`aomdec` + `dav1d`), mono / 4:2:0 | `decode_conformance` | **1260** / **1575** streams |
+| Arbitrary dimensions: panic-free + decodable, every preset | `arbitrary_size_robustness` | **128/128** (0 refused) |
+| Regression spot-check (one cell per bug ever fixed) | `regression_spotcheck` | **29/29** |
+
+| Axis (local, corpus-gated) | Gate | Cells |
+|---|---|---|
+| Real photographs, presets **0–13**, 8-bit (CID22) | `identity_full_8bit` real tier | 403/450, 2026-08-03 (`rust/benchmarks/identity_full_8bit_real_2026-08-03.tsv`): p6/p10/p13 **90/90 each**, p0 66/90, p4 67/90¹ |
+| Real photographs, preset 0, 8-bit | `photo_p0_gate` | **8/8** (closed 2026-07-23, `rust/STATUS.md`; no committed artifact) |
+| 10-bit real photographs, presets **0–13** (CID22 + CLIC) | `bd10_photo_gate` | **191/191** (191 = the script's cell count, groups A–H; the tally is a local run recorded here 2026-07-24 with no committed 191-cell artifact — the committed record is the p0–p3 `bd10_photo_p0p3_2026-07-23.tsv`) |
+| Feature intersections: real×tiles | `coverage_combos_gate` axis 3 | 8/12 byte-exact, 4 pinned (2026-07-22, `coverage_combos_latest.tsv`) |
+| Screen content, palette, preset 6 (gb82-sc) | `screen_palette_gate` | **50/50** (recorded here 2026-07-24; no committed artifact — the CI-run 10-bit twin `screen_palette_bd_gate` is in the table above) |
 | Screen content p0–p4 with **IntraBC** | `screen_ibc_gate` | **22/100**³ |
 | HDR-fork mode, 10-bit byte-vs-C / 8-bit | `hdr_bd10_gate` / `hdr_fork_e2e`⁴ | **64/64** / 36/36 decode⁴ |
-| Arbitrary dimensions: panic-free + decodable, every preset | `arbitrary_size_robustness` | **57/57** |
 
-¹ the 3 open cells are a pinned palette near-tie on one image (tracked, self-promoting).
-² 16/16 SB128×tiles byte-exact; the 12 pinned cells are localized eff-M9
-tile-boundary partition near-ties (bd10 / real content).
+¹ the earlier "177/180 `real_image_matrix`" figure was a 2026-07 local run with
+no committed artifact; the committed real-corpus record is the 450-cell sweep
+above. The p0/p4 residual is real-content RD divergence at the low presets
+(pinned per cell in that TSV), not a decode issue — every cell decodes.
+² SB128×tiles 16/16 byte-exact; the bd10×tiles pinned cells are localized
+eff-M9 tile-boundary partition near-ties, self-promoting (a pin that starts
+matching fails the gate so it gets promoted). Local arm64 record:
+`rust/benchmarks/coverage_combos_2026-08-28_arm64_axes12.tsv`.
 ³ IntraBC (intra block copy) is fully implemented — hash pyramid, diamond+mesh
 DV search, MVP stack, inter var-tx coding — and every stream is self-consistent
 (decodes to exactly the encoder's own reconstruction; 25k+ IBC blocks verified,
@@ -134,7 +154,8 @@ The encoder is hardened for library use, not just parity testing:
 zenav1-svt = { git = "https://github.com/imazen/zenav1-svt" }
 ```
 
-Requires Rust 1.85+ (2024 edition). **No C toolchain, no cmake, no `build.rs`**
+Requires Rust 1.89+ (2024 edition; `rust-version` in `rust/Cargo.toml` is the
+floor CI exercises). **No C toolchain, no cmake, no `build.rs`**
 in the product crates — the port is pure safe Rust; the C reference is a
 *test-time* dependency only (and only after `git submodule update --init`).
 

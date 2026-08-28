@@ -5,7 +5,7 @@
 
 A pure-Rust, still-picture (AVIF/all-intra) port of [SVT-AV1](https://gitlab.com/AOMediaCodec/SVT-AV1) v4.2.0, verified **byte-identical** to the C encoder on its tested envelope, with the [svt-av1-hdr](https://github.com/juliobbv-p/svt-av1-hdr) fork's perceptual feature set available behind a runtime switch.
 
-**~87k lines | 7 crates | 930+ tests | `#![forbid(unsafe_code)]` | AGPL-3.0 or commercial**
+**~87k lines | 7 crates | 1056 tests (nextest, as of `1ed7db46`) | `#![forbid(unsafe_code)]` | AGPL-3.0 or commercial**
 
 ## Two modes, two verification bars
 
@@ -31,7 +31,7 @@ Every stream additionally decodes with the reference decoder (`aomdec`), and the
 ### Known open identity gaps (tracked, not hidden)
 
 - **SB128 superblocks**: landed (C enables 128-px superblocks above 240p at ≤M1) — `tools/sb128_gate.sh` 18/18 (14 SB128 cells + 4 SB64 controls). Residual low-preset real-content divergences are RD near-ties; port map: `docs/sb128-port-map.md` (task #91).
-- **Envelope limits**: 8- and 10-bit input (native `&[u16]` entry points, CI-gated), single frame (still), CQP-only rate control. Dimensions are arbitrary at BOTH bit depths — no configuration is refused on dimension grounds any more (`tools/bd10_partial_sb_gate.sh` 157/157 at 10-bit non-64-aligned dims; `tools/arbitrary_size_robustness.sh` 128/128 with 0 refused). 8-bit partial-SB byte-matches at preset ≥ 6 and 64-aligned at all presets; at 10-bit a set of non-flat cells still diverges, which is the known bd10 non-flat gap (`tools/bd10_nonflat_gate.sh`, 197/309 at 64-ALIGNED dims), not a partial-SB one — the controls are in `benchmarks/bd10_partial_sb_2026-08-04.tsv`. Encoding is **deterministic tile-parallel** (`with_thread_count`; byte-identical at any thread count), NOT single-threaded. CQP is not a stub: for a single still it is byte-identical to SVT-AV1's default CRF (`benchmarks/crf_cqp_equivalence_2026-07-24.md`). Superres is opt-in and gated; HDR static metadata ([#7](https://github.com/imazen/zenav1-svt/issues/7)) is the next priority — maps in `docs/bd10-port-map.md` and `docs/arbitrary-dims-port-map.md`.
+- **Envelope limits**: 8- and 10-bit input (native `&[u16]` entry points, CI-gated), single frame (still), CQP-only rate control. Dimensions are arbitrary at BOTH bit depths — no configuration is refused on dimension grounds any more (`tools/bd10_partial_sb_gate.sh` 157/157 at 10-bit non-64-aligned dims; `tools/arbitrary_size_robustness.sh` 128/128 with 0 refused). 8-bit partial-SB byte-matches at preset ≥ 6 and 64-aligned at all presets; at 10-bit the non-flat gap has since closed on x86 — `tools/bd10_nonflat_gate.sh` is **309/309** in CI (as of `1ed7db46`, run 33101031800) and `tools/bd10_partial_sb_gate.sh` **159/159**; the same non-flat gate measures 197/309 when run on an **arm64** host, which is a C-side ISA dependence of the oracle, not a port gap (`STATUS.md` "Measurement caveat for arm64 hosts"). The 2026-08-04 controls are in `benchmarks/bd10_partial_sb_2026-08-04.tsv`. Encoding is **deterministic tile-parallel** (`with_thread_count`; byte-identical at any thread count), NOT single-threaded. CQP is not a stub: for a single still it is byte-identical to SVT-AV1's default CRF (`benchmarks/crf_cqp_equivalence_2026-07-24.md`). Superres is opt-in and gated; HDR static metadata ([#7](https://github.com/imazen/zenav1-svt/issues/7)) is the next priority — maps in `docs/bd10-port-map.md` and `docs/arbitrary-dims-port-map.md`.
 
 `docs/IDENTITY-STATUS.md` is the full divergence map and campaign history.
 
@@ -133,7 +133,7 @@ Three layers, strongest first:
 3. **Decode gates** (`aomdec`): every gated stream must decode, and the decoder's output must equal the encoder's own reconstruction byte-for-byte — the AV1-conformance floor that holds in both modes, including for streams no C twin exists for.
 
 ```bash
-cargo nextest run --workspace    # 930+ tests (nextest, NOT cargo test — see CLAUDE.md)
+cargo nextest run --workspace    # 1056 tests as of 1ed7db46 (nextest, NOT cargo test — see CLAUDE.md)
 just identity 64 64 40 6 gradient  # one identity cell vs the C library
 ```
 
@@ -141,13 +141,20 @@ Building the C reference (needed for differentials and identity runs): see `docs
 
 ## Building
 
-Requires Rust 1.85+ (2024 edition).
+Requires Rust 1.89+ (2024 edition) — `rust-version` in `Cargo.toml`, and CI
+checks that floor rather than merely declaring it (see `CLAUDE.md` "MSRV").
 
 ```bash
 cargo build --workspace
 cargo clippy --workspace        # 0 warnings
 cargo nextest run --workspace
 ```
+
+`Cargo.lock` is **committed** (since 2026-08-28, issue #8). This project's
+product is a byte-identical bitstream, and the SIMD dispatch crate (`archmage`)
+is a normal semver dependency — an unpinned resolve on a fresh box could pick a
+different minor and change codegen under the gates. The lock pins what CI
+measured; `cargo update` deliberately, in its own commit, and re-run the gates.
 
 ## Safety
 

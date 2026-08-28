@@ -2,7 +2,8 @@
 # Alternate CARGO_TARGET_DIRs used by concurrent sessions (perf A/B runs keep
 # their own so a debug build cannot invalidate a timed release build).
 /target-perf/
-Cargo.lock
+# Cargo.lock is COMMITTED (issue #8, 2026-08-28): the product is a byte-identical
+# bitstream and archmage is a semver dep, so the resolve CI measured is pinned.
 *.swp
 *.swo
 *~
