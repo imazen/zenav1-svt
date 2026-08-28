@@ -2000,7 +2000,13 @@ impl EncodePipeline {
                 self.hdr.tune,
             )
         } else {
-            crate::chroma_q::ChromaQDeltas::default()
+            // MAINLINE chroma-q (rc_crf_cqp.c's `#else` arm): all-zero at
+            // every tune but IQ, where C boosts chroma by
+            // `CLIP3(0, 16, new_qindex/2 - 14)`. This used to be hardcoded
+            // to zero, which made tune IQ 0/6 byte-identical to the C oracle
+            // on `tools/issue9_knobs_gate.sh` — the ONLY divergence, with the
+            // tile payload already matching byte-for-byte in size.
+            crate::chroma_q::mainline_chroma_q_deltas(base_qindex, self.hdr.tune)
         };
         let qindex_u = (i32::from(base_qindex) + i32::from(chroma_deltas.u_ac)).clamp(0, 255) as u8;
         let qindex_v = (i32::from(base_qindex) + i32::from(chroma_deltas.v_ac)).clamp(0, 255) as u8;
@@ -2181,6 +2187,7 @@ impl EncodePipeline {
             tpl_adjusted_qp,
             picture_qp,
             lw_bump,
+            self.hdr.tune == crate::tune::TUNE_IQ,
             self.hdr.sharpness,
             lambda,
             &self.speed_config,
@@ -3812,19 +3819,22 @@ impl EncodePipeline {
                 // ones the tile signals and the output recon had applied.
                 &lr_signal,
                 sc_signal,
-                // [SVT_HDR_MODE] fork chroma-q deltas: the quantizer above
-                // used qindex_u/qindex_v built from EXACTLY these deltas, so
-                // signaling and application agree (chroma_q.rs). Mainline
-                // passes None = the zero-delta bit pattern.
-                if self.hdr.is_fork() {
+                // Chroma-q deltas: the quantizer above used qindex_u /
+                // qindex_v built from EXACTLY these deltas, so signaling and
+                // application agree (chroma_q.rs). BOTH modes derive them now
+                // — the fork block unconditionally, MAINLINE only under tune
+                // IQ (rc_crf_cqp.c's `#else` arm). `None` selects the
+                // zero-delta bit pattern, which is what every non-tune-IQ
+                // mainline encode still gets.
+                if chroma_deltas.is_zero() {
+                    None
+                } else {
                     Some([
                         chroma_deltas.u_dc,
                         chroma_deltas.u_ac,
                         chroma_deltas.v_dc,
                         chroma_deltas.v_ac,
                     ])
-                } else {
-                    None
                 },
                 // [SVT_HDR_MODE] per-SB delta-q res (variance boost). The
                 // same value gates the walk's per-SB delta symbols.
@@ -7389,6 +7399,9 @@ fn encode_tile_rows(
     // non-zero (enc_mode_config.c:10109-10114) — i.e. CRF 63.25..70 only.
     // 0 on every other config, which makes it byte-inert there.
     lw_bump: u32,
+    // C `static_config.tune == TUNE_IQ`: picks the still-picture
+    // `lambda_weight` curve over the PSNR ladder (enc_mode_config.c:10094).
+    tune_iq: bool,
     hdr_sharpness: i8,
     _lambda: u64, // Per-SB lambda computed from sb_qp_offsets
     speed_config: &crate::speed_config::SpeedConfig,
@@ -8278,7 +8291,7 @@ fn encode_tile_rows(
                                     // whenever the CRF offset is 0.
                                     crate::pd0::frame_lambda_weight(
                                         u32::from(picture_qp),
-                                        false,
+                                        tune_iq,
                                         lw_bump,
                                     ),
                                     // [SVT_HDR_MODE] Frame luma QM level. C forces
@@ -8310,7 +8323,7 @@ fn encode_tile_rows(
                                     // whenever the CRF offset is 0.
                                     crate::pd0::frame_lambda_weight(
                                         u32::from(picture_qp),
-                                        false,
+                                        tune_iq,
                                         lw_bump,
                                     ),
                                     // C `input_resolution_factor[input_resolution]`:
@@ -8486,7 +8499,7 @@ fn encode_tile_rows(
                                     // ladder on `picture_qp` + the extended-CRF bump.
                                     crate::pd0::frame_lambda_weight(
                                         u32::from(picture_qp),
-                                        false,
+                                        tune_iq,
                                         lw_bump,
                                     ),
                                     tables,
@@ -8742,7 +8755,7 @@ fn encode_tile_rows(
                                     // ladder on `picture_qp` + the extended-CRF bump.
                                     crate::pd0::frame_lambda_weight(
                                         u32::from(picture_qp),
-                                        false,
+                                        tune_iq,
                                         lw_bump,
                                     ),
                                     tables,

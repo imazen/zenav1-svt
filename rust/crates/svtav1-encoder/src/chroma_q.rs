@@ -54,6 +54,52 @@ fn clip3(lo: i32, hi: i32, v: i32) -> i32 {
     v.clamp(lo, hi)
 }
 
+/// MAINLINE v4.2.0's chroma qindex derivation (`rc_crf_cqp.c:592-602`, the
+/// `#else /* mainline v4.2.0-rc */` arm — a DIFFERENT block from the fork one
+/// above, not a subset of it):
+///
+/// ```text
+/// chroma_qindex = new_qindex + key_frame_chroma_qindex_offset   // 0 by default
+/// if (tune == TUNE_IQ) chroma_qindex -= CLIP3(0, 16, new_qindex / 2 - 14);
+/// chroma_qindex = clamp_qindex(chroma_qindex);
+/// delta_q_dc[1] = delta_q_ac[1] = delta_q_dc[2] = delta_q_ac[2]
+///     = CLIP3(-64, 63, chroma_qindex - new_qindex);
+/// ```
+///
+/// Three things differ from the fork arm and each one was a wrong guess
+/// waiting to happen: the ramp is off `new_qindex` (not the post-offset
+/// `chroma_qindex_adjustment`), the clip ceiling is 16 (not 12), and U gets
+/// NO `+12` — both planes carry the SAME delta, so `diff_uv_delta` is 0.
+///
+/// At any tune but IQ this is all-zero, which is why every non-tune-IQ cell
+/// in the gates is unaffected.
+///
+/// FOUND BY MEASUREMENT (2026-08-28): `tools/issue9_knobs_gate.sh`'s tune-IQ
+/// cells were 0/6 byte-identical to the C oracle with the whole tune-IQ
+/// override block ported. `tools/identity_diff.sh` on
+/// `gradient 128x128 q40 p6 SVT_TUNE=3` put the FIRST divergence at
+/// `FH delta_q_u_dc.coded C=1 Rust=0` with the tile payload the same size on
+/// both sides (1040 B) — the port emitted no chroma delta because this
+/// derivation was gated behind `is_fork()`.
+pub fn mainline_chroma_q_deltas(new_qindex: u8, tune: u8) -> ChromaQDeltas {
+    let new_qindex = i32::from(new_qindex);
+    // `key_frame_chroma_qindex_offset` is 0 by default and this port exposes
+    // no chroma qindex offsets, so `chroma_qindex` starts at `new_qindex`.
+    let mut chroma_qindex = new_qindex;
+    if tune == crate::tune::TUNE_IQ {
+        chroma_qindex -= clip3(0, 16, new_qindex / 2 - 14);
+    }
+    // clamp_qindex at default min/max_qp_allowed = [0, 255].
+    chroma_qindex = chroma_qindex.clamp(0, 255);
+    let d = clip3(-64, 63, chroma_qindex - new_qindex) as i8;
+    ChromaQDeltas {
+        u_dc: d,
+        u_ac: d,
+        v_dc: d,
+        v_ac: d,
+    }
+}
+
 /// The fork's chroma qindex derivation for the port's envelope
 /// (no per-layer chroma offsets, no tune). Returns the FH delta set.
 pub fn fork_chroma_q_deltas(new_qindex: u8, color: &ColorDescription) -> ChromaQDeltas {
