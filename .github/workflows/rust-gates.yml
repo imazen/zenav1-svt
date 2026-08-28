@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -46,6 +46,30 @@ jobs:
         with:
           tool: nextest
 
+      - name: C oracle cache key (submodule SHA + build.rs)
+        id: cref-key
+        # Issue #4 invariant C: "CI caches keyed on the same SHA" as the
+        # build.rs stamp. The stamp is `<submodule HEAD> <config key>`, so a
+        # cache entry is valid for exactly one submodule commit and one
+        # build.rs (whose CONFIG_VERSION / cmake flags define the config key).
+        run: echo "sha=$(git -C reference/svt-av1 rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the cargo-built C oracle (both variants)
+        uses: actions/cache@v6
+        with:
+          # Only the OUTPUT dirs — lib + SvtAv1EncApp + the .zenav1-cref-stamp.
+          # Deliberately NOT cbuild-static{,-hdr}: a restored ninja tree sees
+          # every freshly checked-out source as newer than its objects and
+          # rebuilds anyway (inside the shell tools' silent `cmake --build`
+          # freshness check), which is slower than no cache at all. With no
+          # build dir present those tools skip that check, and build.rs finds
+          # archive + matching stamp and does nothing. Measured before this
+          # step existed: 141 s per run for the C build (run 33101031800).
+          path: |
+            Bin/Release
+            Bin/ReleaseHdr
+          key: cref-v1-${{ runner.os }}-${{ steps.cref-key.outputs.sha }}-${{ hashFiles('rust/crates/svtav1-cref/build.rs') }}
+
       - name: Build C reference (static, the differential oracle) — cargo-driven
         working-directory: rust
         # Issue #4 invariant B: the C oracle is built by
@@ -55,12 +79,17 @@ jobs:
         # clone + `cargo test` does exactly this; running it as its own step
         # keeps a C build failure attributed to the C build, not to the first
         # test that needed it. The flags are the ones the old hand-typed cmake
-        # line used (Ninja, BUILD_APPS=ON, LTO off, NATIVE off).
-        run: cargo build -p zenav1-svt-cref
+        # line used (Ninja, BUILD_APPS=ON, LTO off, NATIVE off). On a cache
+        # hit above this is a no-op (stamp matches); the two `ls` lines make
+        # hit-vs-miss visible in the log either way.
+        run: |
+          cargo build -p zenav1-svt-cref
+          ls -la ../Bin/Release/libSvtAv1Enc.a ../Bin/Release/.zenav1-cref-stamp
+          ls -la ../Bin/ReleaseHdr/libSvtAv1Enc.a ../Bin/ReleaseHdr/.zenav1-cref-stamp
 
       - name: Cache libaom build (aomdec oracle)
         id: aom-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: aom-build/aomdec
           key: aomdec-v3-${{ runner.os }}
@@ -288,6 +317,20 @@ jobs:
         run: |
           AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" ./tools/arbitrary_size_robustness.sh
 
+      - name: feature-combination identity — SB128 x tiles, bd10 x tiles (8-bit + 10-bit)
+        working-directory: rust
+        # Issue #8 item 7 (the corpus-free gates belong in CI). The gate's
+        # third axis (real content x tiles) needs the CID22 + gb82-sc corpora,
+        # which no runner has; CC_AXES makes that a CALLER decision, visible
+        # here, rather than a silent in-script skip. Axes 1-2 are 28 cells,
+        # four encodes each (port/C x tiled/single) plus aomdec on the tiled
+        # stream; byte-exact cells are asserted and diverging ones are pinned
+        # self-promotingly (a pinned cell that starts matching FAILS the gate
+        # so the improvement is recorded).
+        run: |
+          CC_AXES="sb128 bd10" AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" \
+            ./tools/coverage_combos_gate.sh
+
       - name: superres identity + conformance (chunk B.3)
         working-directory: rust
         # Byte-parity vs C at SUPERRES_FIXED + decodability at the UPSCALED
@@ -341,7 +384,7 @@ jobs:
       ZENAV1_SKIP_CORPUS_TESTS: "1"
       ZENAV1_SKIP_DECODER_TESTS: "1"
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -365,7 +408,7 @@ jobs:
       ZENAV1_SKIP_CORPUS_TESTS: "1"
       ZENAV1_SKIP_DECODER_TESTS: "1"
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:

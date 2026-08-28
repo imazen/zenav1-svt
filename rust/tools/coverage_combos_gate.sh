@@ -56,6 +56,12 @@
 #
 # Exit 0 iff A, C, D, E hold for every cell.  Env: AOMDEC=/path/to/aomdec.
 # SVT_CREF_LIB_DIR must point at the C reference lib (mainline Bin/Release).
+#
+# CC_AXES (default "sb128 bd10 real") selects which axes run. Axis 3 needs the
+# CID22 + gb82-sc corpora, which CI runners do not have; the CI step passes
+# CC_AXES="sb128 bd10" so the skip is the CALLER's, visible in the workflow,
+# never a silent in-script file-exists check (an axis that is skipped is
+# announced on stderr and counted in the final line).
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 . "$HERE/lib_corpus.sh"
@@ -277,7 +283,9 @@ run_axis() {
     local tiled="DIFF"
     if cmp -s "$OUT/rs.obu" "$OUT/c.obu"; then tiled="MATCH"; fi
 
-    local cb rb; cb=$(stat -c%s "$OUT/c.obu"); rb=$(stat -c%s "$OUT/rs.obu")
+    # `wc -c <` rather than `stat -c%s`: BSD stat (macOS) has no -c, and the
+    # error it printed instead was the only sign the byte columns were empty.
+    local cb rb; cb=$(wc -c <"$OUT/c.obu" | tr -d ' '); rb=$(wc -c <"$OUT/rs.obu" | tr -d ' ')
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$axis" "$bd" "$short_content" "$w" "$h" "$qp" "$p" "$r" "$c" "$sb" "$vac" "$ctlm" "$tiled" "$cb" "$rb" >>"$SCORE"
 
@@ -328,14 +336,29 @@ run_axis() {
   echo "--- $axis_name: $axis_pass byte-exact / $axis_diff pinned-diverging / $axis_contentdiv content-diverges ---"
 }
 
-run_axis "SB128 x tiles" "${SB128_CELLS[@]}"
-run_axis "bd10 x tiles"  "${BD10_CELLS[@]}"
-run_axis "real x tiles"  "${REAL_CELLS[@]}"
+CC_AXES="${CC_AXES:-sb128 bd10 real}"
+skipped_axes=()
+axis_selected() { case " $CC_AXES " in *" $1 "*) return 0;; *) return 1;; esac; }
+if axis_selected sb128; then run_axis "SB128 x tiles" "${SB128_CELLS[@]}"; else skipped_axes+=(sb128); fi
+if axis_selected bd10;  then run_axis "bd10 x tiles"  "${BD10_CELLS[@]}";  else skipped_axes+=(bd10);  fi
+if axis_selected real;  then run_axis "real x tiles"  "${REAL_CELLS[@]}";  else skipped_axes+=(real);  fi
+if [ "${#skipped_axes[@]}" -gt 0 ]; then
+  echo "WARNING: axes SKIPPED by the caller via CC_AXES='$CC_AXES': ${skipped_axes[*]}" >&2
+fi
+if [ "$((pass + fail))" -eq 0 ]; then
+  echo "coverage combos gate: no axis selected (CC_AXES='$CC_AXES') — refusing to report 0/0 as a pass" >&2
+  rm -rf "$OUT"
+  exit 2
+fi
 
 rm -rf "$OUT"
 total=$((pass + fail))
 echo
-echo "coverage combos gate: $pass / $total"
+if [ "${#skipped_axes[@]}" -gt 0 ]; then
+  echo "coverage combos gate: $pass / $total  (axes skipped by caller: ${skipped_axes[*]})"
+else
+  echo "coverage combos gate: $pass / $total"
+fi
 echo "scoreboard: $SCORE"
 if [ "$fail" -gt 0 ]; then
   printf 'FAILED: %s\n' "${failed[@]}"

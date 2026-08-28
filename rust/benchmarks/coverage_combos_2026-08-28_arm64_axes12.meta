@@ -1,0 +1,14 @@
+gate:     tools/coverage_combos_gate.sh, CC_AXES="sb128 bd10" (axis 3 real-content skipped by the caller)
+commit:   1ed7db46edf1 (main@origin 2026-08-27) + the CC_AXES / wc -c edits of this change
+host:     aarch64 (Apple silicon laptop), C oracle Bin/Release built by cargo (crates/svtav1-cref/build.rs)
+command:  SVT_CREF_LIB_DIR=$PWD/../Bin/Release CC_AXES="sb128 bd10" ./tools/coverage_combos_gate.sh
+wall:     3:00 (105 s user / 72 s system), 28 cells x (2 port + 2 C encodes) + aomdec
+result:   26 / 28 -- axis 1 (SB128 x tiles) 16/16 byte-exact; axis 2 (bd10 x tiles) 4 byte-exact
+          / 6 pinned-diverging / 2 CONTROL-REGRESSED:
+            bd10_diag_256x256_q40_p10_r1c1  (single-tile control no longer matches C on THIS host)
+            bd10_diag_256x256_q40_p13_r2c2  (same)
+caveat:   arm64 -- C's bd10 non-flat path is ISA-dependent on this host (STATUS.md "Measurement
+          caveat for arm64 hosts": bd10_nonflat_gate measures 197/309 here vs 309/309 on x86 CI),
+          so a bd10 non-flat control divergence measured here is NOT evidence of a port regression
+          until the x86 CI step (added in this change) reproduces it. No bd10 gate covers diag at
+          256x256 / eff-M9; these two cells are the first to sweep that shape.

@@ -19,6 +19,29 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **CI caches the cargo-built C oracle, keyed on the submodule SHA — issue
+  #4 invariant C's last open piece.** `.github/workflows/rust-gates.yml`
+  restores `Bin/Release` + `Bin/ReleaseHdr` (lib, `SvtAv1EncApp`, the
+  `.zenav1-cref-stamp`) from `actions/cache` under a key of `<submodule HEAD>
+  + hash(build.rs)`; on a hit `cargo build -p zenav1-svt-cref` is a stamp
+  no-op. Only the output dirs are cached, on purpose: a restored ninja tree
+  would see the fresh checkout as newer than every object and rebuild inside
+  the shell tools' silent `cmake --build` freshness check. Measured cost being
+  removed: 141 s per run (run 33101031800). `actions/checkout` v5 -> v7 and
+  `actions/cache` v4 -> v6 (the v4 entry was on the Node 20 deprecation
+  path).
+- **`coverage_combos_gate.sh` runs in CI (issue #8 item 7) with a
+  caller-selected axis set.** New `CC_AXES` env (default `sb128 bd10 real`);
+  CI passes `sb128 bd10` because axis 3 needs the CID22 / gb82-sc corpora, so
+  the skip lives in the workflow, not in a file-exists check; a run that
+  selects no axis exits 2 rather than reporting 0/0. Also `wc -c` replaces
+  `stat -c%s` (BSD stat has no `-c`; the byte columns were empty on macOS).
+  Local arm64 measurement of axes 1+2 before wiring:
+  `benchmarks/coverage_combos_2026-08-28_arm64_axes12.{tsv,meta}` — 26/28,
+  SB128 x tiles 16/16 byte-exact, and TWO bd10 `diag 256x256` eff-M9 cells
+  whose single-tile CONTROL diverges on this host; the x86 CI run is the
+  arbiter (bd10 non-flat is ISA-dependent on the C side here, STATUS.md
+  "Measurement caveat for arm64 hosts").
 - **Coded-lossless frame header, byte-identical to C — issue #5, chunk 1 of
   the lossless envelope.** `key_frame_header_bits_lr` now derives
   `CodedLossless` / `AllLossless` (spec 5.9.2: `base_q_idx == 0` with zero
