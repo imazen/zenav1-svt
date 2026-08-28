@@ -321,6 +321,50 @@ one did.
 
 ---
 
+**HOW WIDE, RE-MEASURED 2026-08-28 — and it is MUCH wider at bd10 than the
+paragraph above suggests.** The "~1240 cells, exactly one disagreement" figure
+is an **8-bit** figure. Running the bd10 gates on macOS/clang/aarch64 against
+the same commit CI passes on x86-64:
+
+| gate | CI (x86-64, Linux/gcc) | local (aarch64, macOS/clang) |
+|---|---|---|
+| `bd10_matrix.sh` (uniform, synthetic) | 36/36 | 36/36 |
+| `bd10_hbd_src_gate.sh` (synthetic, real 10-bit low bits) | 100/100 | 97/100 |
+| `bd10_nonflat_gate.sh` (synthetic, non-flat) | **309/309** | **197/309** |
+| `bd10_photo_gate.sh` (real photographic; NOT in CI) | — | **53/191** |
+
+The port is not the variable side, checked two ways rather than assumed:
+`tier_invariance.rs` holds its bytes constant across every archmage dispatch
+tier, and a sample of the failing photographic cells (`1484678 q12 p10`,
+`1001682 q12 p7`, `1001682 q12 p5`) was re-encoded by a build of the
+PRE-SESSION tree (`bfae1b69`) in a sibling workspace — byte-identical port
+output, still differing from local C. So the divergence tracks the C build, not
+the port.
+
+The pattern within it is informative: **flat and low-complexity synthetic
+content agrees; non-flat and photographic content diverges.** That is the
+signature of an RD comparison decided by a kernel whose implementations
+disagree (entry #6), reached far more often once the residual has real
+structure. `bd10_nonflat_gate.sh` and `bd10_photo_gate.sh` therefore carry NO
+aarch64 pins here — 112 and 138 cells is not a pin list, it is a statement
+about the oracle, and pinning them would bury it.
+
+Two consequences already applied:
+
+- `bd10_hbd_src_gate.sh` and `bd10_hbd_pq_gate.sh` carry `uname -m`-scoped
+  pins for their specific cells (3 and 12), self-promoting as always.
+- **A corpus-free PQ tier was added to `bd10_hbd_src_gate.sh`** precisely so
+  the x86-64 reference host sees PQ-shaped 10-bit low bits at preset 6 — the
+  band where the photographic PQ gate needs its pins. No CI runner has the
+  image corpora (`ZENAV1_SKIP_CORPUS_TESTS` at workflow scope), so a
+  photographic gate can never answer a question on the reference host; a
+  synthetic one can. That tier is 18/18 on aarch64 too, which is what says the
+  photographic p6 pins are about content, not about the low bits.
+
+**The standing recommendation from this entry — an aarch64 CI runner — is now
+quantified: it would move ~250 bd10 cells from "unknown on half our hardware"
+to measured.** Until it exists, a bd10 parity claim MUST name its host.
+
 ## 10. The MD-side ext-tx CDF adapts an IntraBC block on the INTRA DC row
 
 **Status: REPRODUCED (issue #16, 2026-08-27).**

@@ -382,12 +382,73 @@ fn main() {
     // the SAME bytes the C driver reads, so the oracle needs no changes —
     // `capture_c_trace` already consumes a 16-bit-LE .yuv at bd10.
     let hbd_src = bd > 8 && std::env::var_os("SVTAV1_HBD_SRC").is_some();
+    // SVTAV1_HBD_PQ: a 10-bit source whose low bits come from a REAL transfer
+    // curve rather than a synthetic pattern — the HDR shape of task #6.
+    //
+    // The luma is treated as sRGB-encoded, linearized, mapped onto a 1000-nit
+    // display, run through the SMPTE ST 2084 (PQ) OETF, and quantized to
+    // 10-bit LIMITED range (64..940). The chroma is rescaled from 8-bit
+    // limited (16..240) to 10-bit limited (64..960) — a non-power-of-two
+    // remap, so its low 2 bits also carry signal.
+    //
+    // WHAT THIS IS AND IS NOT, stated so nobody over-reads the gate that uses
+    // it: it is a genuine 10-bit CODE-VALUE distribution — the low bits are a
+    // consequence of a real nonlinear curve, and no `<< 2` can produce them —
+    // derived from photographic content. It is NOT a native HDR camera
+    // capture; the highlight detail an 8-bit master already clipped does not
+    // come back. For what this gate tests — that the caller's low 2 bits
+    // survive the u16 entry, the MD funnel, the coded levels and the
+    // post-filter searches, byte-identically to C — the code-value
+    // distribution is the load-bearing part.
+    //
+    // CICP is deliberately NOT varied. In MAINLINE v4.2.0 the encode is
+    // CICP-independent apart from the header bits: the only reads of
+    // `transfer_characteristics` / `color_primaries` in the codec are the
+    // chroma-q boosts at rc_crf_cqp.c:573-586, which sit inside
+    // `#if SVT_HDR_MODE`. `capture_c_trace` sets no CICP either, so both
+    // encoders use the same defaults and the comparison stays about samples.
+    let hbd_pq = hbd_src && std::env::var_os("SVTAV1_HBD_PQ").is_some();
     let low_bits = |v: usize, r: usize, c: usize| -> u16 {
         // 0..3, varying in BOTH directions (a constant or row-only pattern
         // would be invisible to a horizontal-only predictor).
         (((r * 3 + c * 5 + v) % 4) as u16) & 3
     };
-    let (y10, u10, v10): (Vec<u16>, Vec<u16>, Vec<u16>) = if hbd_src {
+    // SMPTE ST 2084 PQ OETF on normalized linear light (1.0 = 10000 nits).
+    let pq_oetf = |l: f64| -> f64 {
+        const M1: f64 = 2610.0 / 16384.0;
+        const M2: f64 = 2523.0 / 4096.0 * 128.0;
+        const C1: f64 = 3424.0 / 4096.0;
+        const C2: f64 = 2413.0 / 4096.0 * 32.0;
+        const C3: f64 = 2392.0 / 4096.0 * 32.0;
+        let lm = l.max(0.0).powf(M1);
+        ((C1 + C2 * lm) / (1.0 + C3 * lm)).powf(M2)
+    };
+    let (y10, u10, v10): (Vec<u16>, Vec<u16>, Vec<u16>) = if hbd_pq {
+        let y10 = y
+            .iter()
+            .map(|&s| {
+                // sRGB EOTF on the 8-bit luma code, then a 1000-nit peak.
+                let e = f64::from(s) / 255.0;
+                let lin = if e <= 0.04045 {
+                    e / 12.92
+                } else {
+                    ((e + 0.055) / 1.055).powf(2.4)
+                };
+                let n = pq_oetf(lin * 1000.0 / 10000.0);
+                (64.0 + n * 876.0).round().clamp(0.0, 1023.0) as u16
+            })
+            .collect();
+        // 8-bit limited (16..240) -> 10-bit limited (64..960).
+        let cmap = |p: &[u8]| -> Vec<u16> {
+            p.iter()
+                .map(|&s| {
+                    let v = (f64::from(s) - 16.0) * (960.0 - 64.0) / (240.0 - 16.0) + 64.0;
+                    v.round().clamp(0.0, 1023.0) as u16
+                })
+                .collect()
+        };
+        (y10, cmap(&u), cmap(&v))
+    } else if hbd_src {
         let shift = (bd - 8) as u32;
         let mk = |p: &[u8], pw: usize| -> Vec<u16> {
             p.iter()

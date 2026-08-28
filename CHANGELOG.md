@@ -279,6 +279,30 @@ Crates are not published to crates.io yet — depend by git.
   (21.5% of non-flat cells at 64-aligned dims vs 26.3% at partial-SB dims;
   `uniform` is 100% everywhere) rather than a partial-SB gap.
 
+- **PQ-shaped 10-bit source + a photographic native-10-bit gate (issue #7 /
+  task #6 chunk 2b).** `identity_run` gains `SVTAV1_HBD_PQ`: the 8-bit luma is
+  linearized as sRGB, mapped to a 1000-nit display, run through the SMPTE
+  ST 2084 (PQ) OETF and quantized to 10-bit limited range; chroma is rescaled
+  8-bit limited -> 10-bit limited. The low bits are then a consequence of a
+  real transfer curve rather than the synthetic `(3r + 5c + v) % 4` pattern the
+  chunk-2 gate uses, and the code-value histogram is PQ-shaped. Two gates
+  consume it: a corpus-free PQ tier inside `tools/bd10_hbd_src_gate.sh`
+  (**18/18 byte-identical**, and it runs in CI where a photographic gate
+  cannot — no runner has the corpora), and the new
+  `tools/bd10_hbd_pq_gate.sh` on real CID22-512 photographs (**presets 8 and 9
+  40/40 byte-identical**; preset 6 carries 12 `uname -m`-scoped aarch64 pins,
+  see below).
+- **Measured: C's per-host bitstream divergence is far wider at bd10 than
+  `docs/SUSPECTED-C-BUGS.md` #9 recorded.** Same commit, same port binary:
+  `bd10_nonflat_gate.sh` is 309/309 in CI (x86-64) and **197/309** locally
+  (aarch64/macOS); `bd10_photo_gate.sh` (not in CI) is **53/191** locally. The
+  port is not the variable side — `tier_invariance.rs` holds its bytes across
+  every dispatch tier, and failing photographic cells were re-encoded by a
+  build of the pre-session tree (`bfae1b69`) with byte-identical output. Flat
+  and low-complexity synthetic content agrees on both hosts; non-flat and
+  photographic content diverges. Entry #9 now carries the table and the
+  quantified case for an aarch64 CI runner.
+
 ### Changed
 
 - **`AvifEncoder` has no inert knobs left — issue #9 item 7.** Two are now

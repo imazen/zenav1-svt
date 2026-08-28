@@ -1,6 +1,6 @@
 # Native 10-bit input (real u16 source) — port map (issue #6)
 
-**Status: CHUNKS 1 + 2 LANDED 2026-07-24 (35743ebd5, f319ec298). Chunk 3 (HDR metadata) open.** The port already processes at
+**Status: CHUNKS 1 + 2 LANDED 2026-07-24 (35743ebd5, f319ec298); chunk 2b (PQ-shaped code values + a photographic gate) 2026-08-28. Chunk 3 (HDR metadata) open.** The port already processes at
 **true 10-bit internally** (the u16 MD/recon path exists — `leaf_funnel.rs:2130`, `pipeline.rs:4862+`),
 but **source enters as `u8` and is widened `<< 2` at ~43 sites**, so the low 2 bits of a real
 10-bit source are never seen. This map threads *real* u16 source into the existing u16 path.
@@ -112,6 +112,52 @@ Thread `hbd_source` into the remaining sites (deblock/CDEF/LR distortion, recon 
   C reference sees the SAME low bits.
 - **Byte-parity gate**: real-10-bit source → port `encode_frame_420_hbd` == C at bd10, across
   the bd10 matrix + a photographic 10-bit corpus (native 10-bit PNG/y4m, not 8-bit widened).
+
+## Chunk 2b — PQ-shaped 10-bit code values (2026-08-28)
+
+Chunk 2's gate proves the caller's low 2 bits survive end-to-end, but its low
+bits are a synthetic `(3r + 5c + v) % 4` pattern. Two things that cannot
+represent: photographic structure, and a real transfer curve. `identity_run`
+gained `SVTAV1_HBD_PQ` for the second: the 8-bit luma is linearized as sRGB,
+mapped onto a 1000-nit display, run through the SMPTE ST 2084 (PQ) OETF and
+quantized to 10-bit LIMITED range (64..940); chroma is rescaled from 8-bit
+limited (16..240) to 10-bit limited (64..960). The low bits are then a
+consequence of a nonlinear curve — no `<< 2` produces them — and the
+code-value histogram is PQ-shaped, dense in the shadows and sparse in the
+highlights, which is what an HDR still hands an encoder.
+
+**Honest scope.** This is a PQ-shaped 10-bit code-value distribution derived
+from an 8-bit master, NOT a native HDR capture: highlight detail the 8-bit
+master already clipped does not come back. What it tests is the 10-bit SAMPLE
+path (u16 entry → MD funnel → coded levels → deblock/CDEF/LR searches) on
+realistic code values. CICP is deliberately not varied — in MAINLINE v4.2.0 the
+encode is CICP-independent apart from the header bits (the only reads of
+`transfer_characteristics` / `color_primaries` are the chroma-q boosts at
+rc_crf_cqp.c:573-586, inside `#if SVT_HDR_MODE`), and `capture_c_trace` sets no
+CICP either.
+
+Two gates use it:
+
+- **`tools/bd10_hbd_src_gate.sh` PQ tier** — synthetic, therefore corpus-free,
+  therefore it RUNS IN CI on the x86-64 reference host. `{64,128}` x qp
+  `{8,20,32}` x preset `{6,8,9}`. **18/18 byte-identical**, aarch64 included.
+  Preset 6 is in it on purpose: it is the only preset that runs the CDEF
+  strength and Wiener LR searches (docs/bd10-port-map.md group E), so it is
+  where a 10-bit post-filter precision gap would show.
+- **`tools/bd10_hbd_pq_gate.sh`** — real photographic (CID22-512), 5 named
+  images x qp `{8,20,32,55}` x preset `{6,8,9}`. NOT in CI: no runner has the
+  corpora. **Presets 8 and 9 are 40/40 byte-identical on aarch64.** Preset 6
+  carries 12 `uname -m`-scoped aarch64 pins.
+
+**Why those 12 are ISA-scoped rather than recorded as a 10-bit gap.** On this
+aarch64 host the C oracle is itself the variable at bd10 on non-flat content —
+`bd10_nonflat_gate.sh` is 309/309 in CI and 197/309 locally, and
+`bd10_photo_gate.sh` is 53/191 locally including widened-u8 preset-6 cells that
+have nothing to do with the low bits. The port side is unchanged (verified
+against `bfae1b69` in a sibling workspace) and is dispatch-tier-invariant. The
+synthetic PQ tier passing p6 on aarch64 is the discriminator: PQ low bits at p6
+are fine, photographic bd10 on this host is not. Full record:
+docs/SUSPECTED-C-BUGS.md #9.
 
 ## Chunk 3 — HDR static metadata (separate; issue #7, zenavif#33)
 
