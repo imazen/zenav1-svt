@@ -905,6 +905,33 @@ impl EncodePipeline {
                  reserved (C verify_settings, enc_settings.c:762)",
             );
         }
+        // Issue #9 item 8 — the `aq_mode` SEMANTIC divergence, refused rather
+        // than documented, because documentation does not stop a caller from
+        // copying C's default and silently getting different pixels.
+        //
+        // C's `--aq-mode` default is 2, and for a single still it is INERT:
+        // aq-mode-2's deltaq (`svt_aom_sb_qp_derivation_tpl_la`, rc_aq.c:899)
+        // is gated on `tpl_ctrls.enable && r0 != 0`, i.e. TPL lookahead, which
+        // one frame has none of (`r0` inits 0, pcs.c:1299). This port's
+        // non-zero `aq_mode` instead runs a HOMEGROWN frame-level VAQ + TPL
+        // shift (the `rc_config.aq_mode != 0` branch below) that is a port of
+        // nothing — so `aq_mode = 2`, the value a caller copies straight out
+        // of C's documentation, means "C: no change" and "port: shift the
+        // whole frame's qindex". That is the exact shape of divergence this
+        // encoder refuses everywhere else.
+        //
+        // 0 (the default) is the value that MATCHES C for a still. C's
+        // segmentation-side `aq_mode` is a different parameter and stays
+        // C-parity-tested (`segmentation::setup_segmentation`,
+        // tests/c_parity_segmentation.rs).
+        if self.rc_config.aq_mode != 0 {
+            return Some(
+                "aq_mode must be 0: C's aq-mode deltaq is TPL-gated and therefore INERT for a \
+                 single still (rc_aq.c:899), so C's own default of 2 changes nothing there, while \
+                 this port's non-zero aq_mode runs a homegrown frame-level VAQ/TPL qindex shift \
+                 that is a port of nothing — see issue #9 item 8",
+            );
+        }
         None
     }
 

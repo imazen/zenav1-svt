@@ -1301,9 +1301,13 @@ fn speed_config_disables_features_at_high_preset() {
     // Preset 13 should disable more features than preset 0
     assert!(!fast.enable_filter_intra);
     assert!(slow.enable_filter_intra);
-    assert!(!fast.enable_palette);
-    assert!(slow.enable_palette);
-    assert!(!fast.enable_obmc);
-    assert!(slow.enable_obmc);
+    // `enable_palette` / `enable_obmc` were pruned (issue #9 item 9): nothing
+    // read them, so asserting them tested a decorative table. The palette
+    // decision comes from C's own `svt_aom_get_palette_level` chain via the
+    // funnel, and OBMC is an inter tool this still encoder does not have.
+    assert!(!fast.enable_adst);
+    assert!(slow.enable_adst);
+    assert!(!fast.enable_directional_modes);
+    assert!(slow.enable_directional_modes);
     assert!(fast.max_intra_candidates < slow.max_intra_candidates);
 }

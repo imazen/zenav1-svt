@@ -279,6 +279,19 @@ Crates are not published to crates.io yet — depend by git.
   (21.5% of non-flat cells at 64-aligned dims vs 26.3% at partial-SB dims;
   `uniform` is 100% everywhere) rather than a partial-SB gap.
 
+- **MAINLINE's chroma-q derivation is ported (tune IQ), refs #9 item 2.**
+  `rc_crf_cqp.c` has TWO chroma-qindex blocks separated by `#if SVT_HDR_MODE`
+  and this port had only the fork one, gated behind `is_fork()`, so mainline
+  always emitted zero chroma deltas. The mainline arm (`:592-602`) is a
+  DIFFERENT derivation, not a subset: the ramp is off `new_qindex` rather than
+  the post-offset value, the clip ceiling is 16 rather than 12, and U gets no
+  `+12` (both planes carry the same delta). Found by
+  `tools/identity_diff.sh` on `gradient 128x128 q40 p6 SVT_TUNE=3`, which put
+  the first divergence at `FH delta_q_u_dc.coded C=1 Rust=0` with the tile
+  payload already the same size on both sides. All-zero at any tune but IQ, so
+  every non-tune-IQ cell is byte-identical by construction. Tune IQ is still
+  NOT byte-identical to C — the knobs gate is 31/36 with a 1-6 byte tile-payload
+  residual — but the frame header now matches.
 - **PQ-shaped 10-bit source + a photographic native-10-bit gate (issue #7 /
   task #6 chunk 2b).** `identity_run` gains `SVTAV1_HBD_PQ`: the 8-bit luma is
   linearized as sRGB, mapped to a 1000-nit display, run through the SMPTE
@@ -302,6 +315,30 @@ Crates are not published to crates.io yet — depend by git.
   and low-complexity synthetic content agrees on both hosts; non-flat and
   photographic content diverges. Entry #9 now carries the table and the
   quantified case for an aarch64 CI runner.
+
+- **`RcConfig::aq_mode != 0` is now REFUSED (issue #9 item 8).** C's
+  `--aq-mode` default is 2 and it is INERT for a single still — aq-mode-2's
+  deltaq is TPL-gated (`rc_aq.c:899`) and one frame has no lookahead — while
+  this port's non-zero `aq_mode` ran a HOMEGROWN frame-level VAQ/TPL qindex
+  shift that is a port of nothing. So `aq_mode = 2`, the value a caller copies
+  straight out of C's documentation, meant "C: no change" and "port: shift the
+  whole frame". Refused rather than documented, because documentation does not
+  stop a caller from copying C's default. `0` (the default) is the value that
+  matches C. C's segmentation-side `aq_mode` is a different parameter and stays
+  C-parity-tested.
+- **`SpeedConfig` lost 12 dead fields (issue #9 item 9).** `enable_cdef`,
+  `enable_restoration`, `enable_cfl`, `enable_palette`, `enable_identity_tx`,
+  `enable_obmc`, `enable_warped_motion`, `enable_compound`,
+  `subpel_precision`, `hme_levels`, `me_search_width`, `me_search_height` had
+  ZERO consumers anywhere in the workspace while reading as an authoritative
+  preset table — two tests asserted `enable_palette` / `enable_obmc`, which
+  tested nothing but the table's own initializer. Note the issue's own list was
+  partly wrong and is corrected here: **`max_intra_candidates` is LIVE**
+  (`PartitionSearchConfig::from_speed_config` → the NIC cap at
+  `partition.rs:2206`), as are `enable_adst`, `enable_directional_modes`,
+  `enable_filter_intra`, `rdo_tx_decision`, `max_partition_depth`,
+  `lambda_scale` and `preset`; `enable_temporal_filter` is read on the dormant
+  inter path and stays.
 
 ### Changed
 
@@ -331,6 +368,29 @@ Crates are not published to crates.io yet — depend by git.
   `EncodedAvif::{width, height}`. Arbitrary-dims MONOCHROME is a pipeline gap.
 
 ### Fixed
+
+- **Mainline chroma delta-q desynced every decoder — `entropy::obu::ChromaQSignal`
+  (2026-08-28).** Porting mainline's chroma-q derivation (below) made tune IQ
+  produce non-zero chroma deltas, and they were emitted through the only form
+  the frame-header writer had: the FORK's `diff_uv_delta = 1` + four
+  independent deltas. That form REQUIRES the sequence header to have signalled
+  `separate_uv_delta_q = 1`; the fork's does, MAINLINE's signals 0, and spec
+  5.9.12 reads `diff_uv_delta` only when that bit is 1 — so the extra bit and
+  the two extra V deltas shifted every following bit of the frame header. Not a
+  byte-count difference: a desync. `tools/variance_boost_recon.sh` went 0
+  passed / 60 failed, every cell DECODE FAILED (CI run 33220828356), and a
+  plain tune-IQ 128x128 q40 p6 encode was rejected by aomdec AND dav1d.
+  The fix is a type rather than a branch — `ChromaQSignal::Shared { dc, ac }`
+  (SH bit 0, one pair reused for V, no `diff_uv_delta`) vs
+  `ChromaQSignal::Separate([i8; 4])` (SH bit 1, the fork's four) — so a frame
+  header that disagrees with its sequence header no longer type-checks. The
+  same SH bit also gates `qm_v`, which was keyed on `chroma_q.is_some()` and
+  would have emitted a stray 4-bit field the moment QM and tune IQ were on
+  together. After: variance_boost_recon **60/60**, decode_conformance 4:2:0
+  1575/0. Two cells added to `tools/regression_spotcheck.sh` (now **35/35**),
+  earned the hard way — the writer was temporarily reverted to the buggy form
+  and both cells confirmed to fail under aomdec, then restored.
+
 
 - **Monochrome straddling edge block wrapped its recon into the next row
   (every SB row after the first decoded wrong on frames with a thin right

@@ -2,7 +2,7 @@
 
 # Configs this encoder refuses
 
-**14 CAPABILITY refusals** (unimplemented — this is DEBT) and **21
+**14 CAPABILITY refusals** (unimplemented — this is DEBT) and **22
 CONTRACT refusals** (caller misuse — permanent and correct).
 
 Regenerate with `tools/refusal_inventory.sh`; `--check` is a CI gate.
@@ -45,6 +45,7 @@ aloud in a status report before anyone acted on it.
 | where | refusal |
 |---|---|
 | `crates/svtav1-encoder/src/pipeline.rs` | SuperresDenom must be 9..=16 |
+| `crates/svtav1-encoder/src/pipeline.rs` | aq_mode must be 0: C's aq-mode deltaq is TPL-gated and therefore INERT for a single still (rc_aq.c:899), so C's own default of 2 changes nothing there, while this port's non-zero aq_mode runs a homegrown frame-level VAQ/TPL qindex shift that is a port of nothing — see issue #9 item 8 |
 | `crates/svtav1-encoder/src/pipeline.rs` | chroma_420 pipeline supports still/key frames only (intra_period <= 1) |
 | `crates/svtav1-encoder/src/pipeline.rs` | chroma_sample_position must be 0 (unknown), 1 (vertical) or 2 (colocated); 3 is reserved (C verify_settings, enc_settings.c:762) |
 | `crates/svtav1-encoder/src/pipeline.rs` | encode_frame_420 requires the pipeline to be built with with_chroma_420(true) |
