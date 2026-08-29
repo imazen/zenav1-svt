@@ -962,6 +962,42 @@ pub struct CdefSignal {
 /// are independently-computed byte-identical siblings, and disagreement
 /// between them produces a non-decodable stream. Both are unused (any
 /// value is fine, `0` by convention) when `tile_rows_log2 == 0`.
+/// The chroma delta-q a frame header carries, TIED to the sequence header's
+/// `separate_uv_delta_q` bit — the two must agree or a conforming decoder
+/// desyncs, so the type makes disagreeing impossible.
+///
+/// Spec 5.9.12: `diff_uv_delta` is read ONLY when the SH signalled
+/// `separate_uv_delta_q = 1`. Writing the `diff_uv_delta` bit under a SH that
+/// signalled 0 shifts every following bit — which is exactly the bug this
+/// enum replaced: the mainline tune-IQ chroma-q derivation started producing
+/// non-zero deltas, they were emitted through the fork's four-delta form, and
+/// all 60 cells of `tools/variance_boost_recon.sh` went to DECODE FAILED
+/// (CI run 33220828356).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChromaQSignal {
+    /// SH `separate_uv_delta_q = 0` (MAINLINE): ONE `(dc, ac)` pair, read as
+    /// `DeltaQUDc`/`DeltaQUAc` and reused for V because `diff_uv_delta` is 0
+    /// without being coded. No `diff_uv_delta` bit is written.
+    ///
+    /// This is what mainline C produces: `rc_crf_cqp.c:600-601` assigns the
+    /// SAME value to `delta_q_{dc,ac}[1]` and `[2]`.
+    Shared { dc: i8, ac: i8 },
+    /// SH `separate_uv_delta_q = 1` (the svt-av1-hdr fork): `diff_uv_delta = 1`
+    /// then independent `[u_dc, u_ac, v_dc, v_ac]`. The fork's U delta carries
+    /// a further `+12`, so U and V genuinely differ.
+    Separate([i8; 4]),
+}
+
+impl ChromaQSignal {
+    /// True when every delta is zero — the frame is still CodedLossless-eligible.
+    pub fn is_zero(&self) -> bool {
+        match self {
+            Self::Shared { dc, ac } => *dc == 0 && *ac == 0,
+            Self::Separate(d) => *d == [0; 4],
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn write_key_frame_header_full_lr_sb(
     width: u32,
@@ -974,7 +1010,7 @@ pub fn write_key_frame_header_full_lr_sb(
     cdef: &CdefSignal,
     lr: &LrSignal,
     sc: ScSignal,
-    chroma_q: Option<[i8; 4]>,
+    chroma_q: Option<ChromaQSignal>,
     delta_q_res: Option<u8>,
     qm: Option<[u8; 3]>,
     fgs: Option<&FilmGrainParams>,
@@ -1028,7 +1064,7 @@ pub fn write_key_frame_header_full_lr(
     cdef: &CdefSignal,
     lr: &LrSignal,
     sc: ScSignal,
-    chroma_q: Option<[i8; 4]>,
+    chroma_q: Option<ChromaQSignal>,
     delta_q_res: Option<u8>,
     qm: Option<[u8; 3]>,
     fgs: Option<&FilmGrainParams>,
@@ -1113,7 +1149,7 @@ fn key_frame_header_bits_lr(
     cdef: &CdefSignal,
     lr: &LrSignal,
     sc: ScSignal,
-    chroma_q: Option<[i8; 4]>,
+    chroma_q: Option<ChromaQSignal>,
     delta_q_res: Option<u8>,
     qm: Option<[u8; 3]>,
     fgs: Option<&FilmGrainParams>,
@@ -1211,22 +1247,30 @@ fn key_frame_header_bits_lr(
         // diff_uv_delta, then U and (if diff) V deltas. delta_q syntax
         // (spec 5.9.13 read_delta_q): 1-bit delta_coded, then su(1+6)
         // = 7-bit two's-complement inv_signed_literal.
+        let write_delta = |wb: &mut BitWriter, d: i8| {
+            if d == 0 {
+                wb.write_bit(false); // delta_coded = 0
+            } else {
+                wb.write_bit(true); // delta_coded = 1
+                wb.write_bits((d as i32 & 0x7f) as u32, 7); // su(1+6)
+            }
+        };
         match chroma_q {
             None => {
                 wb.write_bit(false); // DeltaQUDc: delta_coded = 0
                 wb.write_bit(false); // DeltaQUAc: delta_coded = 0
             }
-            Some([u_dc, u_ac, v_dc, v_ac]) => {
-                // Requires the SH to have signaled separate_uv_delta_q=1
-                // (the fork always does): diff_uv_delta = 1.
+            // SH separate_uv_delta_q = 0: NO diff_uv_delta bit (the decoder
+            // does not read one), U deltas only, V reuses them.
+            Some(ChromaQSignal::Shared { dc, ac }) => {
+                write_delta(&mut wb, dc);
+                write_delta(&mut wb, ac);
+            }
+            // SH separate_uv_delta_q = 1 (fork): diff_uv_delta then all four.
+            Some(ChromaQSignal::Separate([u_dc, u_ac, v_dc, v_ac])) => {
                 wb.write_bit(true); // diff_uv_delta
                 for d in [u_dc, u_ac, v_dc, v_ac] {
-                    if d == 0 {
-                        wb.write_bit(false); // delta_coded = 0
-                    } else {
-                        wb.write_bit(true); // delta_coded = 1
-                        wb.write_bits((d as i32 & 0x7f) as u32, 7); // su(1+6)
-                    }
+                    write_delta(&mut wb, d);
                 }
             }
         }
@@ -1241,7 +1285,12 @@ fn key_frame_header_bits_lr(
             wb.write_bit(true); // using_qmatrix = 1
             wb.write_bits(u32::from(qm_y), 4);
             wb.write_bits(u32::from(qm_u), 4);
-            if chroma_q.is_some() {
+            // qm_v is written ONLY when the SH signalled
+            // separate_uv_delta_q = 1 — the same bit that gates
+            // diff_uv_delta, so it follows the SEPARATE variant, not merely
+            // "chroma deltas exist". Keying it on `is_some()` would emit a
+            // stray 4-bit field on the mainline Shared path.
+            if matches!(chroma_q, Some(ChromaQSignal::Separate(_))) {
                 wb.write_bits(u32::from(qm_v), 4);
             } else {
                 debug_assert_eq!(qm_u, qm_v, "qm_v needs separate_uv_delta_q");
@@ -1285,7 +1334,7 @@ fn key_frame_header_bits_lr(
     // Issue #5 chunk 1: the header half of the coded-lossless envelope —
     // pipeline.rs still refuses base_qindex 0 until the tile half (TX_4X4
     // WHT, no tx_size / tx_type symbols) is ported and byte-verified.
-    let coded_lossless = base_qindex == 0 && chroma_q.is_none_or(|d| d == [0; 4]);
+    let coded_lossless = base_qindex == 0 && chroma_q.is_none_or(|d| d.is_zero());
     let all_lossless = coded_lossless && sc.superres.denom.is_none();
 
     // ---- loop_filter_params() ----

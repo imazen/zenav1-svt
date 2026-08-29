@@ -3828,13 +3828,31 @@ impl EncodePipeline {
                 // mainline encode still gets.
                 if chroma_deltas.is_zero() {
                     None
-                } else {
-                    Some([
+                } else if self.hdr.is_fork() {
+                    // The fork's SH signals separate_uv_delta_q = 1, so the FH
+                    // carries diff_uv_delta + four independent deltas (its U
+                    // delta has a further +12, so U and V really do differ).
+                    Some(crate::entropy::obu::ChromaQSignal::Separate([
                         chroma_deltas.u_dc,
                         chroma_deltas.u_ac,
                         chroma_deltas.v_dc,
                         chroma_deltas.v_ac,
-                    ])
+                    ]))
+                } else {
+                    // MAINLINE: the SH signals separate_uv_delta_q = 0, so the
+                    // FH must NOT write a diff_uv_delta bit — one (dc, ac)
+                    // pair, reused for V. C assigns the same value to
+                    // delta_q_{dc,ac}[1] and [2] (rc_crf_cqp.c:600-601), which
+                    // this asserts rather than assumes.
+                    debug_assert_eq!(
+                        (chroma_deltas.u_dc, chroma_deltas.u_ac),
+                        (chroma_deltas.v_dc, chroma_deltas.v_ac),
+                        "mainline chroma-q must be plane-symmetric (SH separate_uv_delta_q = 0)"
+                    );
+                    Some(crate::entropy::obu::ChromaQSignal::Shared {
+                        dc: chroma_deltas.u_dc,
+                        ac: chroma_deltas.u_ac,
+                    })
                 },
                 // [SVT_HDR_MODE] per-SB delta-q res (variance boost). The
                 // same value gates the walk's per-SB delta symbols.

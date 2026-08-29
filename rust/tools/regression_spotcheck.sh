@@ -456,6 +456,27 @@ ramp_yuv 96 80 "$W/ramp_96x80.yuv"
 monoReconEq "mono-straddle-control-p6-96x80" "raw:$W/ramp_96x80.yuv" 96 80 10 6
 
 # ---------------------------------------------------------------------------
+# 2026-08-28 — MAINLINE tune-IQ chroma delta-q was emitted in the FORK's
+# four-delta form, under a sequence header that signalled
+# separate_uv_delta_q = 0. Spec 5.9.12 reads `diff_uv_delta` ONLY when that SH
+# bit is 1, so the extra bit (and the two extra V deltas) shifted every
+# following bit of the frame header. Latent until the mainline chroma-q
+# derivation (rc_crf_cqp.c's `#else` arm) was ported and started producing
+# non-zero deltas at tune 3.
+#
+# OBSERVED BEFORE the fix: `tools/variance_boost_recon.sh` 0 passed / 60
+# failed, every cell "DECODE FAILED" (CI run 33220828356); a plain tune-IQ
+# 128x128 q40 p6 encode was 1069 B and rejected by aomdec AND dav1d. AFTER:
+# 60/60, and the same cell is 1067 B and decodes under both.
+#
+# The fix is a type, not a branch: `entropy::obu::ChromaQSignal` is `Shared`
+# (SH bit 0, one dc/ac pair, no diff_uv_delta) or `Separate` (SH bit 1, the
+# fork's four), so a frame header that disagrees with its sequence header no
+# longer type-checks.
+SVTAV1_TUNE=3 decodes "tuneiq-chromaq-fh-128"    gradient 128 128 40 6
+SVTAV1_TUNE=3 decodes "tuneiq-chromaq-fh-64-q20" gradient  64  64 20 6
+
+# ---------------------------------------------------------------------------
 total=$((pass + fail))
 echo
 echo "regression spot-check: $pass / $total"
