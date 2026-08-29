@@ -203,13 +203,20 @@ impl AvifEncoder {
         self
     }
 
-    /// Set the bit depth (8, 10, or 12).
+    /// Set the bit depth. **8 and 10 are the only encodable depths**; every
+    /// other value is recorded verbatim here and refused as a typed
+    /// [`EncodeError::UnsupportedConfig`] at encode time by
+    /// `validate_inert_knobs` — the same place 12 has always been refused.
+    ///
+    /// This deliberately does NOT coerce. It used to map every depth but
+    /// 10/12 to `8` silently, so `with_bit_depth(9)` (a typo) or
+    /// `with_bit_depth(src.depth)` where the source was 16-bit both produced a
+    /// valid 8-bit encode that the caller believed was deep — and
+    /// `EncodedAvif.bit_depth` reported the coerced 8, so even a caller who
+    /// checked saw agreement. Refusing loudly is the project's rule for any
+    /// path that would otherwise emit plausible-but-wrong output.
     pub fn with_bit_depth(mut self, depth: u8) -> Self {
-        self.bit_depth = match depth {
-            10 => 10,
-            12 => 12,
-            _ => 8,
-        };
+        self.bit_depth = depth;
         self
     }
 
@@ -1110,6 +1117,36 @@ mod tests {
             matches!(err, EncodeError::UnsupportedConfig(_)),
             "expected UnsupportedConfig, got {err:?}"
         );
+    }
+
+    /// `with_bit_depth` used to map every depth but 10/12 to **8, silently**
+    /// (`_ => 8`), so a typo'd `with_bit_depth(9)` — or a `u8` computed from a
+    /// source image's real depth, e.g. 16 — produced a perfectly valid 8-bit
+    /// encode that the caller believed was deep. Nothing in the return value
+    /// said otherwise: `EncodedAvif.bit_depth` reported the coerced 8, so even
+    /// a caller who checked saw agreement. That is the silent-wrong-output
+    /// class this project refuses; the builder now stores the request verbatim
+    /// and `validate_inert_knobs` refuses it as a typed error at encode time,
+    /// exactly as it already did for 12.
+    /// Anti-vacuity: with the `_ => 8` arm restored, BOTH assertions fail —
+    /// the depth reads 8 and the encode returns `Ok`.
+    #[test]
+    fn unsupported_bit_depth_is_not_silently_coerced_to_8() {
+        for depth in [0u8, 1, 7, 9, 11, 16, 255] {
+            let enc = AvifEncoder::new().with_bit_depth(depth);
+            assert_eq!(
+                enc.bit_depth, depth,
+                "with_bit_depth({depth}) must record the request verbatim, not coerce it"
+            );
+            let pixels = vec![100u8; 16 * 16];
+            let err = enc
+                .encode_y8(&pixels, 16, 16, 16)
+                .expect_err("an unsupported bit depth must be refused, not silently encoded at 8");
+            assert!(
+                matches!(err, EncodeError::UnsupportedConfig(_)),
+                "depth {depth}: expected UnsupportedConfig, got {err:?}"
+            );
+        }
     }
 
     /// 10-bit through the u8 entry points only produces TRUE 10-bit coded

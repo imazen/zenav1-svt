@@ -9,6 +9,7 @@
 .cache/
 .DS_Store
 .workongoing
+.workongoing*
 .jj/
 
 # C-oracle build output (built FROM the reference/svt-av1 submodule; the
