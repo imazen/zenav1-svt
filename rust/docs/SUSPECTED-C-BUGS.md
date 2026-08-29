@@ -421,6 +421,34 @@ row, no write) instead of `write_tx_type_inter`. Real writers never set it.
 Unit witness `md_side_ibc_tx_type_update_adapts_the_intra_dc_row_like_c`;
 after the fix all 57 MDS1 costs at that block equal C's.
 
+## Harness note — `identity_diff.sh` can MIS-NAME the diverging field
+
+Not a C bug; a trap in our own differ, recorded here because it cost time on
+2026-08-28 and the file is where a reader looks for "why did the tool tell me
+something wrong".
+
+Chasing the tune-IQ residual (`gradient 128x128 q40 p6`, `SVT_TUNE=3` on both
+encoders) the differ reported:
+
+    STAGE: FH | cdef_damping_minus_3 C=2 Rust=3
+
+The port's CDEF damping is **5**, measured by instrumenting the pipeline —
+`3 + (base_q_idx >> 6)` with `base_q_idx = 160`, which is exactly C's
+`CDEF_DAMPING_FROM_QP` (enc_cdef.c:1446) — and the writer emits
+`damping - 3 = 2` (`entropy/obu.rs:1372`). So the port writes the SAME value
+the differ says C wrote, and the named field is not the one that differs.
+
+The raw bytes say what actually happened: the first differing byte is at
+**offset 11**, `0x9e` vs `0x9d` — a single bit — and every byte after it
+re-aligns immediately. A same-length field with a different VALUE, not a
+length shift, and not the field the differ named.
+
+**Rule: treat the differ's FIELD NAME as a hint and its STAGE as the fact.**
+Before acting on a named field, confirm the value at the source (instrument
+the producer, or diff the raw bytes and locate the bit). The differ walks the
+header with its own model of the layout; when an earlier field's value moves a
+later field's meaning, the name it prints can point at the wrong one.
+
 ## Adding an entry
 
 State the C `file:line`, quote the code, say why it looks wrong, and — this is
