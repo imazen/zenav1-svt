@@ -60,19 +60,51 @@ def c_functions():
                 out.setdefault(f"{sub}/{fn}", []).append(name)
     return out
 
-def rust_blob():
-    parts = []
+def rust_defs():
+    """Every function NAME defined in port source.
+
+    STRICT by construction, and it has to be. The first version of this tool
+    asked `any(stem in blob)` over a concatenation of every .rs and .c file
+    including tests and cref shims — so a name mentioned ANYWHERE counted as
+    ported. Measured consequences on the 2026-08-31 wave, by the completeness
+    audit:
+
+      * >=79 rows flipped to "ported" because a lane's module doc listed them
+        as NOT ported. `cyclic_refresh_init`, `rtc_cyclic_refresh_init` and
+        `kf_group_rate_assingment` each appear in exactly one place in the
+        tree: a `//!` line enumerating what was left out. The tool read "we
+        did not port X" as evidence that X is ported, converting a lane's
+        honesty into credit.
+      * 30 more flipped on a cref shim or a test mention alone, with no port
+        function at all.
+
+    So: only `fn <name>` in NON-TEST, NON-CREF Rust source counts. cref is
+    excluded because it is the C oracle's binding layer — a name there is
+    evidence the C function was CALLED, which is the opposite of ported.
+
+    This still UNDER-credits real work in one known way, and that is the safer
+    direction: a lane that parameterizes N C functions into one table (as
+    wp-transforms did for the 54 `highbd_fwd_txfm_WxH*` entries) reads as N
+    misses. Such collapses are disclosed in the lanes' port maps; check there
+    before treating a MISSING row as untouched.
+    """
+    defs = set()
+    fn_re = re.compile(r"\bfn\s+([a-z_][a-z0-9_]*)")
     for base in RSRC:
         for dirpath, dirnames, filenames in os.walk(base):
             dirnames[:] = [d for d in dirnames if d not in ("target", ".git", "vendor")]
+            if os.sep + "tests" in dirpath or "svtav1-cref" in dirpath:
+                continue
             for f in filenames:
-                if f.endswith((".rs", ".c")):
-                    parts.append(open(os.path.join(dirpath, f), errors="ignore").read())
-    return "\n".join(parts)
+                if not f.endswith(".rs"):
+                    continue
+                text = open(os.path.join(dirpath, f), errors="ignore").read()
+                defs.update(fn_re.findall(text))
+    return defs
 
 def main():
     cfns = c_functions()
-    blob = rust_blob()
+    defs = rust_defs()
     rows = []
     for path, names in cfns.items():
         for n in sorted(set(names)):
@@ -81,7 +113,7 @@ def main():
             for p in ("svt_aom_", "svt_av1_", "svt_"):
                 if n.startswith(p):
                     stems.add(n[len(p):])
-            hit = any(s in blob for s in stems)
+            hit = any(st in defs for st in stems)
             rows.append((path, n, "ported" if hit else "MISSING"))
 
     per_file = {}
@@ -95,7 +127,7 @@ def main():
 
     total = len(rows)
     ported = sum(1 for r in rows if r[2] == "ported")
-    print(f"C functions found: {total}   name-matched in the Rust tree: {ported}"
+    print(f"C functions found: {total}   with a matching `fn` in port source: {ported}"
           f"   no match: {total - ported}   ({100.0 * ported / total:.1f}% matched)")
     print()
     print(f"{'file':44} {'total':>6} {'matched':>8} {'gap':>5}")
