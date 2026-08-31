@@ -186,11 +186,31 @@ x86_64-linux for the first time; both had been green on aarch64-darwin all day.
   `*_ensure_rtcd()` first**, even when the function it wraps is a `_c` spelling
   — the `_c` body can still reach an RTCD pointer.
 
+- **AVX-512 kernels use ALIGNED stores, and only x86 has AVX-512.**
+  `svt_av1_fwd_txfm2d_*_avx512` write columns with `vmovdqa32` (64-byte
+  aligned); the real encoder satisfies that because every residual/coefficient
+  buffer is `EB_MALLOC_ALIGNED`. A Rust `Vec<i32>` is 4-byte aligned, so the
+  store faults — `SIGSEGV` inside `av1_fdct64_new_avx512`, not a NULL
+  dereference. `ref_shims.c:1315` had already documented and solved the AVX2
+  (`_mm256_load_si256`, 32-byte) form of this for `ref_quantize_b`; the
+  transform shims re-hit it one ISA wider. **Stage caller buffers through
+  `_Alignas(64)` scratch**, and copy the OUTPUT buffer in as well as out when
+  the test prefills it and asserts C leaves untouched positions alone.
+
 The general rule: **a differential passes on the host you ran it on. Nothing
 more.** Before a `c_parity_*` file is quoted as tier-1 evidence, run it on the
 other ISA — `ssh r7900x` is the x86 box — because the ways an oracle can be
 accidentally right (static layout, per-ISA dispatch tables, devirtualized
-symbols) are all invisible from inside one host.
+symbols, an ISA that simply lacks the instruction that would have trapped)
+are all invisible from inside one host.
+
+**Measured on 2026-08-31**, the first day the suite was run on both: three
+separate lanes landed shims that were green on aarch64-darwin and broken on
+x86_64-linux the same day — 2 tests (obmc), 7 (entropy_inter), 9 (transforms),
+18 in total, one instance of each trap above. Every one of them re-broke a
+pattern `ref_shims.c` had already solved and commented. **Before you write a
+new shim, grep `ref_shims.c` for the entry closest to yours** — the caller
+contract you need is very likely already written down there.
 
 **On macOS there is no arithmetic-coder op trace IN-PROCESS — run the C side in
 a Linux container instead.** `capture_c_trace` needs `-Wl,--wrap`, which

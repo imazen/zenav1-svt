@@ -10,6 +10,7 @@
  * `static const` dispatch tables, which are not state.
  */
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "transforms.h"
@@ -203,10 +204,83 @@ static void txfm_pf_ensure_rtcd(void) {
     }
 }
 
+/* ---- 64-byte staging for the AVX-512 transform kernels ----
+ *
+ * `svt_av1_fwd_txfm2d_*_avx512` store their columns with `vmovdqa32`, the
+ * ALIGNED 64-byte store. The real encoder satisfies that because every
+ * residual / coefficient buffer is EB_MALLOC_ALIGNED; a plain Rust `Vec<i16>`
+ * / `Vec<i32>` is 2- or 4-byte aligned, and the store faults.
+ *
+ * Same caller-contract gap `ref_quantize_b` documents in ref_shims.c:1315 for
+ * the AVX2 `_mm256_load_si256`, one ISA wider — and AVX-512 exists only on
+ * x86, so on aarch64 the NEON/C path is dispatched and the violation is
+ * invisible. MEASURED 2026-08-31 on x86_64-linux (Ryzen 9 7950X): SIGSEGV in
+ * `svt_av1_fwd_txfm2d_32x32_avx512` at `vmovdqa32 %zmm0,-0x40(%rax)` with the
+ * target 48 bytes past a 64-byte boundary. All 9 tests across
+ * `c_parity_estimate_transform.rs` and `c_parity_txfm_pf_entry.rs` died there;
+ * all 9 passed on aarch64-darwin.
+ *
+ * Stage through 64-byte-aligned scratch so the shim reproduces the contract
+ * the library assumes rather than a weaker one. The coefficient buffer is
+ * copied IN as well as out: these tests prefill it with random values and
+ * assert that C leaves the positions it does not write untouched, so the
+ * scratch must start from the caller's bytes, not from zero. Bounds abort()
+ * loudly — the same discipline as ref_quantize_b — so a caller outside the
+ * envelope cannot silently truncate. */
+extern const int32_t tx_size_wide[];
+extern const int32_t tx_size_high[];
+
+#define TXFM_PF_MAX_ROWS   64  /* TX_64X64 is the largest transform */
+#define TXFM_PF_MAX_STRIDE 192 /* callers use w + small; 128 of headroom */
+#define TXFM_PF_MAX_ELEMS  (TXFM_PF_MAX_ROWS * TXFM_PF_MAX_STRIDE)
+
+static int32_t txfm_pf_dim(const int32_t* table, int32_t tx_size) {
+    const int32_t d = table[tx_size];
+    if (d <= 0 || d > TXFM_PF_MAX_ROWS) {
+        abort();
+    }
+    return d;
+}
+
+static int32_t txfm_pf_stride(int32_t stride) {
+    if (stride <= 0 || stride > TXFM_PF_MAX_STRIDE) {
+        abort();
+    }
+    return stride;
+}
+
+/* Heap variant for the estimate_transform entry, which already allocates its
+ * context structs. `aligned_alloc` is C11-and-not-MSVC, so over-allocate and
+ * stash the raw pointer just below the aligned one — portable C99. */
+static void* txfm_pf_alloc64(size_t bytes) {
+    void* raw = malloc(bytes + 64 + sizeof(void*));
+    if (!raw) {
+        abort();
+    }
+    uintptr_t p = (uintptr_t)raw + sizeof(void*);
+    p           = (p + 63u) & ~(uintptr_t)63u;
+    ((void**)p)[-1] = raw;
+    return (void*)p;
+}
+
+static void txfm_pf_free64(void* p) {
+    if (p) {
+        free(((void**)p)[-1]);
+    }
+}
+
 void ref_wht_fwd_txfm(int16_t* src_diff, int32_t bw, int32_t* coeff, int32_t tx_size, int32_t pf_shape,
                       int32_t bit_depth, int32_t is_hbd) {
     txfm_pf_ensure_rtcd();
-    svt_av1_wht_fwd_txfm(src_diff, bw, coeff, (TxSize)tx_size, (TxCoeffShape)pf_shape, bit_depth, is_hbd);
+    const size_t rows   = (size_t)txfm_pf_dim(tx_size_high, tx_size);
+    const size_t stride = (size_t)txfm_pf_stride(bw);
+    const size_t nout   = rows * (size_t)txfm_pf_dim(tx_size_wide, tx_size);
+    _Alignas(64) int16_t a_in[TXFM_PF_MAX_ELEMS];
+    _Alignas(64) int32_t a_out[TXFM_PF_MAX_ELEMS];
+    memcpy(a_in, src_diff, rows * stride * sizeof(int16_t));
+    memcpy(a_out, coeff, nout * sizeof(int32_t));
+    svt_av1_wht_fwd_txfm(a_in, bw, a_out, (TxSize)tx_size, (TxCoeffShape)pf_shape, bit_depth, is_hbd);
+    memcpy(coeff, a_out, nout * sizeof(int32_t));
 }
 
 /* variant: 0 = default, 1 = _n2, 2 = _n4. */
@@ -221,13 +295,21 @@ void ref_highbd_fwd_txfm(int32_t variant, int16_t* src_diff, int32_t* coeff, int
     p.tx_set_type = EXT_TX_SET_ALL16;
     p.bd          = bd;
     p.is_hbd      = (bd > 8);
+    const size_t rows   = (size_t)txfm_pf_dim(tx_size_high, tx_size);
+    const size_t stride = (size_t)txfm_pf_stride(diff_stride);
+    const size_t nout   = rows * (size_t)txfm_pf_dim(tx_size_wide, tx_size);
+    _Alignas(64) int16_t a_in[TXFM_PF_MAX_ELEMS];
+    _Alignas(64) int32_t a_out[TXFM_PF_MAX_ELEMS];
+    memcpy(a_in, src_diff, rows * stride * sizeof(int16_t));
+    memcpy(a_out, coeff, nout * sizeof(int32_t));
     if (variant == 2) {
-        svt_av1_highbd_fwd_txfm_n4(src_diff, coeff, diff_stride, &p);
+        svt_av1_highbd_fwd_txfm_n4(a_in, a_out, diff_stride, &p);
     } else if (variant == 1) {
-        svt_av1_highbd_fwd_txfm_n2(src_diff, coeff, diff_stride, &p);
+        svt_av1_highbd_fwd_txfm_n2(a_in, a_out, diff_stride, &p);
     } else {
-        svt_av1_highbd_fwd_txfm(src_diff, coeff, diff_stride, &p);
+        svt_av1_highbd_fwd_txfm(a_in, a_out, diff_stride, &p);
     }
+    memcpy(coeff, a_out, nout * sizeof(int32_t));
 }
 
 /* ---- svt_handle_transform* (full and N2_N4 variants) ---- */
@@ -358,11 +440,20 @@ int32_t ref_estimate_transform(int16_t* residual_buffer, uint32_t residual_strid
     blk->segment_id                                        = 0;
     ctx->blk_ptr                                           = blk;
 
+    /* Same 64-byte AVX-512 staging as ref_wht_fwd_txfm above. */
+    const size_t rows  = (size_t)txfm_pf_dim(tx_size_high, transform_size);
+    const size_t rstr  = (size_t)txfm_pf_stride((int32_t)residual_stride);
+    const size_t cstr  = (size_t)txfm_pf_stride((int32_t)coeff_stride);
+    int16_t*     a_in  = (int16_t*)txfm_pf_alloc64(TXFM_PF_MAX_ELEMS * sizeof(int16_t));
+    int32_t*     a_out = (int32_t*)txfm_pf_alloc64(TXFM_PF_MAX_ELEMS * sizeof(int32_t));
+    memcpy(a_in, residual_buffer, rows * rstr * sizeof(int16_t));
+    memcpy(a_out, coeff_buffer, rows * cstr * sizeof(int32_t));
+
     EbErrorType rc = svt_aom_estimate_transform(pcs,
                                                 ctx,
-                                                residual_buffer,
+                                                a_in,
                                                 residual_stride,
-                                                coeff_buffer,
+                                                a_out,
                                                 coeff_stride,
                                                 (TxSize)transform_size,
                                                 three_quad_energy,
@@ -370,6 +461,9 @@ int32_t ref_estimate_transform(int16_t* residual_buffer, uint32_t residual_strid
                                                 (TxType)transform_type,
                                                 (PlaneType)component_type,
                                                 (TxCoeffShape)trans_coeff_shape);
+    memcpy(coeff_buffer, a_out, rows * cstr * sizeof(int32_t));
+    txfm_pf_free64(a_in);
+    txfm_pf_free64(a_out);
     free(blk);
     free(ctx);
     free(ppcs);

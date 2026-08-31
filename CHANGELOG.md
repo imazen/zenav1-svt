@@ -579,6 +579,24 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Fixed
 
+- **16 more x86_64-only shim SIGSEGVs, from two lanes that landed the same
+  day.** Found by re-running the suite on x86 after the obmc fix below; all 16
+  were green on aarch64-darwin. (a) `c_parity_entropy_inter` (7 tests):
+  `ec_build_xd` and `EC_FC_TABLE` call `svt_aom_init_mode_probs`, whose
+  `COPY_CDF` is bare `svt_memcpy` (`cabac_context_model.c:735`, while the same
+  file uses the null-safe `SVT_MEMCPY` at :1923) — the NULL RTCD pointer again;
+  both sites now route through a one-shot `ec_init_mode_probs`. (b)
+  `c_parity_estimate_transform` + `c_parity_txfm_pf_entry` (9 tests):
+  `svt_av1_fwd_txfm2d_*_avx512` store with `vmovdqa32`, the 64-byte ALIGNED
+  store, into Rust `Vec` buffers that are 2/4-byte aligned — measured fault at
+  `vmovdqa32 %zmm0,-0x40(%rax)`, target 48 bytes past a 64-byte boundary.
+  `ref_wht_fwd_txfm`, `ref_highbd_fwd_txfm` and `ref_estimate_transform` now
+  stage through 64-byte-aligned scratch (copying the coefficient buffer IN as
+  well as out, since these tests prefill it and assert C leaves unwritten
+  positions alone). Both are re-breaks of contracts `ref_shims.c` had already
+  documented — the RTCD one-shot at :790 and the AVX2 32-byte staging at :1315.
+  Verified 1542/1542 on x86_64-linux and 1535/1535 on aarch64-darwin.
+
 - **Two `c_parity_obmc_search` oracles were unsound; both were green on
   aarch64 by accident and broke on x86_64.** Found by the first cross-ISA run
   of the suite (2026-08-31): `convolve8_matches_c` failed with a whole-block

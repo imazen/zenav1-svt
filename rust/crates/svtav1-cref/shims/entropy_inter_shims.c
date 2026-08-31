@@ -104,6 +104,31 @@ void        svt_aom_wb_write_signed_primitive_refsubexpfin(AomWriteBitBuffer* wb
                                                            int16_t v);
 void        svt_aom_init_mode_probs(FRAME_CONTEXT* fc);
 
+/* `svt_aom_init_mode_probs` copies every default CDF table with `COPY_CDF`,
+ * which is `svt_memcpy` (cabac_context_model.c:735) — an RTCD FUNCTION POINTER
+ * in .bss (common_dsp_rtcd.h:1083), NULL until
+ * `svt_aom_setup_common_rtcd_internal` runs. The same file uses the null-safe
+ * `SVT_MEMCPY` at :1923, so the bare spelling at :735 is a call site that
+ * assumes setup already happened. On aarch64 the hazard cannot fire: NEON
+ * devirtualization rewrites `svt_memcpy` to the concrete `svt_memcpy_neon`
+ * (common_dsp_rtcd_neon_devirt.h:266). On x86-64 the call lands at rip=0x0.
+ * MEASURED 2026-08-31: without this, all 7 tests in
+ * `c_parity_entropy_inter.rs` SIGSEGV on x86_64-linux and pass on
+ * aarch64-darwin. `g_ec_rtcd_ready` is an idempotent one-shot, not per-call
+ * state — a racing double-init lands the same pointers. */
+typedef uint64_t EcCpuFlags;
+EcCpuFlags svt_aom_get_cpu_flags_to_use(void);
+void       svt_aom_setup_common_rtcd_internal(uint64_t flags);
+
+static int  g_ec_rtcd_ready = 0;
+static void ec_init_mode_probs(FRAME_CONTEXT* fc) {
+    if (!g_ec_rtcd_ready) {
+        svt_aom_setup_common_rtcd_internal(svt_aom_get_cpu_flags_to_use());
+        g_ec_rtcd_ready = 1;
+    }
+    svt_aom_init_mode_probs(fc);
+}
+
 /* ---- neighbour description ----
  * One neighbour is 10 int32s so the Rust side can build the exact
  * BlockModeInfo fields every context function reads:
@@ -159,7 +184,7 @@ static void ec_build_xd(EcXd* s, const int32_t* above, const int32_t* left, int 
     s->xd.left_available = (int8_t)(left_avail != 0);
     s->xd.above_mbmi     = above[0] ? &s->above : NULL;
     s->xd.left_mbmi      = left[0] ? &s->left : NULL;
-    svt_aom_init_mode_probs(&s->fc);
+    ec_init_mode_probs(&s->fc);
     s->xd.tile_ctx = &s->fc;
 }
 
@@ -349,7 +374,7 @@ int32_t ref_ec_wb_signed_refsubexpfin(int32_t n, int32_t k, int32_t ref, int32_t
     }                                                                            \
     void ref_ec_copy_##name(uint16_t* dst) {                                     \
         FRAME_CONTEXT fc;                                                        \
-        svt_aom_init_mode_probs(&fc);                                            \
+        ec_init_mode_probs(&fc);                                            \
         memcpy(dst, &fc.field, sizeof(fc.field));                                \
     }
 
