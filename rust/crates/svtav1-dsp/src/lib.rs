@@ -36,6 +36,7 @@ pub mod port_masked_blend;
 pub mod port_masked_compound;
 pub mod port_model_rd;
 pub mod port_obmc_data;
+pub mod port_obmc_pred;
 pub mod port_wedge_masks;
 pub mod port_wedge_search;
 pub mod port_scale_factors;
