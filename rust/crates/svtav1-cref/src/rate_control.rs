@@ -187,3 +187,131 @@ pub fn rate_factor_deltas() -> [f64; 6] {
 pub fn rate_factor_levels() -> [i32; 7] {
     unsafe { svt_av1_rate_factor_levels }
 }
+
+// ---------------------------------------------------------------------------
+// `svt_aom_set_rc_param` (pass2_strategy.c:906) and `svt_av1_rc_init`
+// (rc_process.c:495) — both EXPORTED, both taking a `SequenceControlSet*`.
+//
+// The shim `calloc`s a real SequenceControlSet + EncodeContext per call and
+// drives the real symbol; these structs are the flattened in/out parameter
+// blocks. Field order MUST match `shims/rc_shims.c` exactly.
+// ---------------------------------------------------------------------------
+
+/// Flattened inputs to `svt_aom_set_rc_param` — the fields the C function
+/// actually reads off `SequenceControlSet`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SetRcParamIn {
+    pub first_pass_downsample: i32,
+    pub max_input_luma_width: u32,
+    pub max_input_luma_height: u32,
+    pub encoder_bit_depth: i32,
+    pub vbr_min_section_pct: i32,
+    pub vbr_max_section_pct: i32,
+    pub rate_control_mode: i32,
+    pub min_qp_allowed: i32,
+    pub max_qp_allowed: i32,
+    pub gop_constraint_rc: i32,
+    pub over_shoot_pct: i32,
+    pub under_shoot_pct: i32,
+    pub maximum_buffer_size_ms: i64,
+    pub starting_buffer_level_ms: i64,
+    pub optimal_buffer_level_ms: i64,
+    pub max_intra_bitrate_pct: u32,
+    pub max_inter_bitrate_pct: u32,
+    pub sframe_dist: i32,
+    pub sframe_mode: i32,
+}
+
+/// Flattened outputs of `svt_aom_set_rc_param`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SetRcParamOut {
+    pub frame_width: i32,
+    pub frame_height: i32,
+    pub mb_rows: i32,
+    pub mb_cols: i32,
+    pub num_mbs: i32,
+    pub bit_depth: i32,
+    pub vbrmin_section: i32,
+    pub vbrmax_section: i32,
+    pub mode: i32,
+    pub best_allowed_q: i32,
+    pub worst_allowed_q: i32,
+    pub over_shoot_pct: i32,
+    pub under_shoot_pct: i32,
+    pub maximum_buffer_size_ms: i64,
+    pub starting_buffer_level_ms: i64,
+    pub optimal_buffer_level_ms: i64,
+    pub max_intra_bitrate_pct: u32,
+    pub max_inter_bitrate_pct: u32,
+    pub sframe_dist: i32,
+    pub sframe_mode: i32,
+}
+
+/// Flattened inputs to `svt_av1_rc_init`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RcInitIn {
+    pub mode: i32,
+    pub best_allowed_q: i32,
+    pub worst_allowed_q: i32,
+    pub starting_buffer_level: i64,
+    pub avg_frame_bandwidth: i32,
+    pub hierarchical_levels: i32,
+    pub frame_rate_numerator: i32,
+    pub frame_rate_denominator: i32,
+}
+
+/// Flattened outputs of `svt_av1_rc_init`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RcInitOut {
+    pub avg_frame_qindex_key: i32,
+    pub avg_frame_qindex_inter: i32,
+    pub last_q_key: i32,
+    pub last_q_inter: i32,
+    pub buffer_level: i64,
+    pub bits_off_target: i64,
+    pub rolling_target_bits: i32,
+    pub rolling_actual_bits: i32,
+    pub total_actual_bits: i64,
+    pub total_target_bits: i64,
+    pub frames_since_key: i32,
+    pub frames_since_cdf_update: i32,
+    pub this_key_frame_forced: i32,
+    pub rate_correction_factors: [f64; 7],
+    pub baseline_gf_interval: i32,
+    pub worst_quality: i32,
+    pub best_quality: i32,
+    pub cur_avg_base_me_dist: u32,
+    pub prev_avg_base_me_dist: u32,
+    pub avg_frame_low_motion: i32,
+}
+
+unsafe extern "C" {
+    fn ref_rc_set_rc_param(input: *const SetRcParamIn, out: *mut SetRcParamOut);
+    fn ref_rc_init(input: *const RcInitIn, out: *mut RcInitOut);
+}
+
+/// Drive the real `svt_aom_set_rc_param` on a per-call `SequenceControlSet`.
+#[must_use]
+pub fn set_rc_param(input: &SetRcParamIn) -> SetRcParamOut {
+    let mut out = SetRcParamOut::default();
+    unsafe { ref_rc_set_rc_param(input, &mut out) };
+    out
+}
+
+/// Drive the real `svt_av1_rc_init` on a per-call `SequenceControlSet`.
+///
+/// SAFETY NOTE FOR CALLERS: when `mode != AOM_Q` the C function calls
+/// `svt_av1_new_framerate` -> `av1_rc_update_framerate`, which reads further
+/// `static_config` fields off the zeroed control set. `frame_rate_numerator` /
+/// `frame_rate_denominator` are therefore exposed on [`RcInitIn`]; pass
+/// non-zero values on any non-AOM_Q call.
+#[must_use]
+pub fn rc_init(input: &RcInitIn) -> RcInitOut {
+    let mut out = RcInitOut::default();
+    unsafe { ref_rc_init(input, &mut out) };
+    out
+}

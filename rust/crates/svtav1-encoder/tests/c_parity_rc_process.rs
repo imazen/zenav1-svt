@@ -379,3 +379,277 @@ fn exported_table_read_is_not_vacuous() {
         "svt_av1_rate_factor_deltas read as {deltas:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Sequence-level setup: `svt_aom_set_rc_param` + `svt_av1_rc_init`.
+//
+// Both are EXPORTED and both take a `SequenceControlSet*`; the shim
+// `calloc`s a real one per call (never a `static` — that race was measured in
+// this repo today) and drives the real symbol. Tier 1.
+// ---------------------------------------------------------------------------
+
+/// A tiny xorshift so the sweeps are reproducible without a dependency.
+struct Rng(u64);
+impl Rng {
+    fn next(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.0 = x;
+        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+    fn below(&mut self, n: u64) -> u64 {
+        self.next() % n
+    }
+}
+
+#[test]
+fn set_rc_param_matches_c() {
+    let mut rng = Rng(0x5eed_1234_9abc_def0);
+    // Dimensions: the C field is uint16_t, so stay inside it. The listed
+    // widths bracket every `w % 16` residue class, which is what separates
+    // `((w+15)/16) << 1` from `(2w+15)/16` on the downsample arm.
+    let dims: Vec<u32> = (1..=17u32)
+        .chain([31, 32, 33, 63, 64, 65, 127, 128, 176, 640, 1920, 3840, 7680])
+        .collect();
+    let mut cells = 0usize;
+    for &w in &dims {
+        for &h in &dims {
+            for &fpd in &[false, true] {
+                for rc_mode in 0..=2i32 {
+                    for &gop_rc in &[false, true] {
+                        let inp = svtav1_encoder::port_rc_process::SetRcParamInput {
+                            first_pass_downsample: fpd,
+                            max_input_luma_width: w,
+                            max_input_luma_height: h,
+                            encoder_bit_depth: [8, 10, 12][(rng.below(3)) as usize],
+                            vbr_min_section_pct: rng.below(200) as i32,
+                            vbr_max_section_pct: rng.below(2000) as i32,
+                            rate_control_mode: rc_mode,
+                            min_qp_allowed: rng.below(64) as i32,
+                            max_qp_allowed: rng.below(64) as i32,
+                            gop_constraint_rc: gop_rc,
+                            over_shoot_pct: rng.below(1001) as i32,
+                            under_shoot_pct: rng.below(101) as i32,
+                            maximum_buffer_size_ms: rng.below(1_000_000) as i64,
+                            starting_buffer_level_ms: rng.below(1_000_000) as i64,
+                            optimal_buffer_level_ms: rng.below(1_000_000) as i64,
+                            max_intra_bitrate_pct: rng.below(10_000) as u32,
+                            max_inter_bitrate_pct: rng.below(10_000) as u32,
+                            sframe_dist: rng.below(1000) as i32,
+                            sframe_mode: rng.below(3) as i32,
+                        };
+                        let c_in = svtav1_cref::rate_control::SetRcParamIn {
+                            first_pass_downsample: i32::from(inp.first_pass_downsample),
+                            max_input_luma_width: inp.max_input_luma_width,
+                            max_input_luma_height: inp.max_input_luma_height,
+                            encoder_bit_depth: inp.encoder_bit_depth,
+                            vbr_min_section_pct: inp.vbr_min_section_pct,
+                            vbr_max_section_pct: inp.vbr_max_section_pct,
+                            rate_control_mode: inp.rate_control_mode,
+                            min_qp_allowed: inp.min_qp_allowed,
+                            max_qp_allowed: inp.max_qp_allowed,
+                            gop_constraint_rc: i32::from(inp.gop_constraint_rc),
+                            over_shoot_pct: inp.over_shoot_pct,
+                            under_shoot_pct: inp.under_shoot_pct,
+                            maximum_buffer_size_ms: inp.maximum_buffer_size_ms,
+                            starting_buffer_level_ms: inp.starting_buffer_level_ms,
+                            optimal_buffer_level_ms: inp.optimal_buffer_level_ms,
+                            max_intra_bitrate_pct: inp.max_intra_bitrate_pct,
+                            max_inter_bitrate_pct: inp.max_inter_bitrate_pct,
+                            sframe_dist: inp.sframe_dist,
+                            sframe_mode: inp.sframe_mode,
+                        };
+                        let want = svtav1_cref::rate_control::set_rc_param(&c_in);
+                        let got = svtav1_encoder::port_rc_process::set_rc_param(&inp);
+                        assert_eq!(got.frame_width, want.frame_width, "frame_width {inp:?}");
+                        assert_eq!(got.frame_height, want.frame_height, "frame_height {inp:?}");
+                        assert_eq!(got.mb_cols, want.mb_cols, "mb_cols {inp:?}");
+                        assert_eq!(got.mb_rows, want.mb_rows, "mb_rows {inp:?}");
+                        assert_eq!(got.num_mbs, want.num_mbs, "num_mbs {inp:?}");
+                        assert_eq!(got.bit_depth, want.bit_depth, "bit_depth {inp:?}");
+                        assert_eq!(got.vbrmin_section, want.vbrmin_section, "vbrmin {inp:?}");
+                        assert_eq!(got.vbrmax_section, want.vbrmax_section, "vbrmax {inp:?}");
+                        assert_eq!(got.mode, want.mode, "mode {inp:?}");
+                        assert_eq!(got.best_allowed_q, want.best_allowed_q, "best_q {inp:?}");
+                        assert_eq!(got.worst_allowed_q, want.worst_allowed_q, "worst_q {inp:?}");
+                        assert_eq!(got.over_shoot_pct, want.over_shoot_pct, "over {inp:?}");
+                        assert_eq!(got.under_shoot_pct, want.under_shoot_pct, "under {inp:?}");
+                        assert_eq!(
+                            got.maximum_buffer_size_ms, want.maximum_buffer_size_ms,
+                            "max_buf {inp:?}"
+                        );
+                        assert_eq!(
+                            got.starting_buffer_level_ms, want.starting_buffer_level_ms,
+                            "start_buf {inp:?}"
+                        );
+                        assert_eq!(
+                            got.optimal_buffer_level_ms, want.optimal_buffer_level_ms,
+                            "opt_buf {inp:?}"
+                        );
+                        assert_eq!(
+                            got.max_intra_bitrate_pct, want.max_intra_bitrate_pct,
+                            "intra_pct {inp:?}"
+                        );
+                        assert_eq!(
+                            got.max_inter_bitrate_pct, want.max_inter_bitrate_pct,
+                            "inter_pct {inp:?}"
+                        );
+                        assert_eq!(got.sframe_dist, want.sframe_dist, "sframe_dist {inp:?}");
+                        assert_eq!(got.sframe_mode, want.sframe_mode, "sframe_mode {inp:?}");
+                        cells += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(cells > 5_000, "sweep collapsed to {cells} cells");
+}
+
+/// The downsample MB-count arm is exactly the "assume the index/order looks
+/// like what it looks like" trap. Prove C really computes `((w+15)/16) << 1`
+/// and NOT `(2w+15)/16`, by finding a width where the two disagree and
+/// reading C's answer.
+#[test]
+fn set_rc_param_downsample_mb_cols_is_ceil_then_double() {
+    // w = 17: ((17+15)/16)<<1 == 4, but (34+15)/16 == 3. They differ.
+    let mut c_in = svtav1_cref::rate_control::SetRcParamIn {
+        first_pass_downsample: 1,
+        max_input_luma_width: 17,
+        max_input_luma_height: 17,
+        ..Default::default()
+    };
+    c_in.max_qp_allowed = 63;
+    let want = svtav1_cref::rate_control::set_rc_param(&c_in);
+    assert_eq!(
+        want.mb_cols, 4,
+        "C's downsample mb_cols for w=17 is {} — if this is 3, C ceil-divides \
+         the DOUBLED width and the port's comment is wrong",
+        want.mb_cols
+    );
+    assert_ne!(
+        want.mb_cols,
+        (2 * 17 + 15) / 16,
+        "the two readings must differ here"
+    );
+}
+
+#[test]
+fn rc_init_matches_c() {
+    let mut rng = Rng(0xabcd_0f0f_1234_5678);
+    let mut cells = 0usize;
+    for mode in 0..=2i32 {
+        for hier in 0..=5i32 {
+            for _ in 0..64 {
+                let best = rng.below(256) as i32;
+                let worst = rng.below(256) as i32;
+                let inp = svtav1_encoder::port_rc_process::RcInitInput {
+                    mode,
+                    best_allowed_q: best,
+                    worst_allowed_q: worst,
+                    starting_buffer_level: rng.below(1_000_000_000) as i64,
+                    avg_frame_bandwidth: rng.below(10_000_000) as i32,
+                    hierarchical_levels: hier,
+                };
+                let c_in = svtav1_cref::rate_control::RcInitIn {
+                    mode: inp.mode,
+                    best_allowed_q: inp.best_allowed_q,
+                    worst_allowed_q: inp.worst_allowed_q,
+                    starting_buffer_level: inp.starting_buffer_level,
+                    avg_frame_bandwidth: inp.avg_frame_bandwidth,
+                    hierarchical_levels: inp.hierarchical_levels,
+                    // Only read on the `mode != AOM_Q` tail
+                    // (`svt_av1_new_framerate`); non-zero so C's own
+                    // divide-by-frame-rate cannot trip on the zeroed set.
+                    frame_rate_numerator: 60_000,
+                    frame_rate_denominator: 1_000,
+                };
+                let want = svtav1_cref::rate_control::rc_init(&c_in);
+                let got = svtav1_encoder::port_rc_process::rc_init(&inp);
+                assert_eq!(
+                    got.avg_frame_qindex_key, want.avg_frame_qindex_key,
+                    "avg_frame_qindex[KEY] {inp:?}"
+                );
+                assert_eq!(
+                    got.avg_frame_qindex_inter, want.avg_frame_qindex_inter,
+                    "avg_frame_qindex[INTER] {inp:?}"
+                );
+                assert_eq!(got.last_q_key, want.last_q_key, "last_q[KEY] {inp:?}");
+                assert_eq!(got.last_q_inter, want.last_q_inter, "last_q[INTER] {inp:?}");
+                assert_eq!(got.buffer_level, want.buffer_level, "buffer_level {inp:?}");
+                assert_eq!(
+                    got.bits_off_target, want.bits_off_target,
+                    "bits_off_target {inp:?}"
+                );
+                assert_eq!(
+                    got.rolling_target_bits, want.rolling_target_bits,
+                    "rolling_target {inp:?}"
+                );
+                assert_eq!(
+                    got.rolling_actual_bits, want.rolling_actual_bits,
+                    "rolling_actual {inp:?}"
+                );
+                assert_eq!(got.total_actual_bits, want.total_actual_bits);
+                assert_eq!(got.total_target_bits, want.total_target_bits);
+                assert_eq!(
+                    got.frames_since_key, want.frames_since_key,
+                    "frames_since_key {inp:?}"
+                );
+                assert_eq!(got.frames_since_cdf_update, want.frames_since_cdf_update);
+                assert_eq!(got.this_key_frame_forced, want.this_key_frame_forced);
+                assert_eq!(
+                    got.rate_correction_factors, want.rate_correction_factors,
+                    "rate_correction_factors {inp:?}"
+                );
+                assert_eq!(
+                    got.baseline_gf_interval, want.baseline_gf_interval,
+                    "baseline_gf_interval {inp:?}"
+                );
+                assert_eq!(
+                    got.worst_quality, want.worst_quality,
+                    "worst_quality {inp:?}"
+                );
+                assert_eq!(got.best_quality, want.best_quality, "best_quality {inp:?}");
+                assert_eq!(got.cur_avg_base_me_dist, want.cur_avg_base_me_dist);
+                assert_eq!(got.prev_avg_base_me_dist, want.prev_avg_base_me_dist);
+                assert_eq!(got.avg_frame_low_motion, want.avg_frame_low_motion);
+                cells += 1;
+            }
+        }
+    }
+    assert_eq!(cells, 3 * 6 * 64);
+}
+
+/// Anti-vacuity for the two above: prove the shim's output block is really
+/// being written by C and is not just the zeroed `Default`. `frames_since_key`
+/// is C's hardcoded 8 and `rate_correction_factors[KF_STD]` is the 1.0
+/// override — both are non-zero for a reason, and both would be 0 if the FFI
+/// out-parameter were not populated.
+#[test]
+fn rc_init_c_side_output_is_populated_not_zeroed() {
+    let c_in = svtav1_cref::rate_control::RcInitIn {
+        mode: 2, // AOM_Q
+        best_allowed_q: 0,
+        worst_allowed_q: 255,
+        starting_buffer_level: 0,
+        avg_frame_bandwidth: 0,
+        hierarchical_levels: 4,
+        frame_rate_numerator: 60_000,
+        frame_rate_denominator: 1_000,
+    };
+    let out = svtav1_cref::rate_control::rc_init(&c_in);
+    assert_eq!(
+        out.frames_since_key, 8,
+        "C's rc->frames_since_key read as {} — the shim out-parameter is not \
+         being populated (everything would compare equal against a zeroed port)",
+        out.frames_since_key
+    );
+    assert_eq!(
+        out.rate_correction_factors[5], 1.0,
+        "rate_correction_factors[KF_STD=5] read as {}",
+        out.rate_correction_factors[5]
+    );
+    assert_eq!(out.rate_correction_factors[0], 0.7);
+    assert_eq!(out.baseline_gf_interval, 16);
+}

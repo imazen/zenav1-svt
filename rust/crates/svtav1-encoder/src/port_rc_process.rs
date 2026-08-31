@@ -471,3 +471,278 @@ pub fn calculate_boost_bits(frame_count: i32, mut boost: i32, total_group_bits: 
     // frame_count >= 1, so the quotient is at most total_group_bits).
     (bits as i32).max(0)
 }
+
+// ---------------------------------------------------------------------------
+// Sequence-level RC setup: `svt_aom_set_rc_param` + `svt_av1_rc_init`
+// ---------------------------------------------------------------------------
+//
+// These two run once per sequence and produce `rc.best_quality` /
+// `rc.worst_quality` — the clamp bounds inside `compute_qdelta_by_rate` above,
+// and the `AOMMAX`/`clamp` bounds in `adjust_active_best_and_worst_quality`.
+// Neither had a Rust counterpart: the port's inventory matched
+// `svt_av1_rc_init` against the STRING "svt_av1_rc_init_sb_qindex" inside two
+// doc comments (sb_qindex.rs:145, :265) and reported it ported. It was not.
+
+/// C `enum aom_rc_mode` (encoder.h:32).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(i32)]
+pub enum AomRcMode {
+    Vbr = 0,
+    Cbr = 1,
+    Q = 2,
+}
+
+/// C `SvtAv1RcMode` (EbSvtAv1Enc.h:177) — the CONFIG-side enum, whose numbering
+/// is NOT `AomRcMode`'s. `set_rc_param` is the translation between them, and
+/// mixing them up silently selects the wrong rate-control mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(i32)]
+pub enum SvtAv1RcMode {
+    CqpOrCrf = 0,
+    Vbr = 1,
+    Cbr = 2,
+}
+
+/// The fields of `SequenceControlSet` that C's `svt_aom_set_rc_param` reads.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SetRcParamInput {
+    pub first_pass_downsample: bool,
+    pub max_input_luma_width: u32,
+    pub max_input_luma_height: u32,
+    pub encoder_bit_depth: i32,
+    pub vbr_min_section_pct: i32,
+    pub vbr_max_section_pct: i32,
+    /// A [`SvtAv1RcMode`] discriminant.
+    pub rate_control_mode: i32,
+    pub min_qp_allowed: i32,
+    pub max_qp_allowed: i32,
+    pub gop_constraint_rc: bool,
+    pub over_shoot_pct: i32,
+    pub under_shoot_pct: i32,
+    pub maximum_buffer_size_ms: i64,
+    pub starting_buffer_level_ms: i64,
+    pub optimal_buffer_level_ms: i64,
+    pub max_intra_bitrate_pct: u32,
+    pub max_inter_bitrate_pct: u32,
+    pub sframe_dist: i32,
+    pub sframe_mode: i32,
+}
+
+/// The `EncodeContext` fields C's `svt_aom_set_rc_param` writes: `frame_info`,
+/// `two_pass_cfg`, `rc_cfg` and `sf_cfg`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SetRcParamOutput {
+    pub frame_width: i32,
+    pub frame_height: i32,
+    pub mb_rows: i32,
+    pub mb_cols: i32,
+    pub num_mbs: i32,
+    pub bit_depth: i32,
+    pub vbrmin_section: i32,
+    pub vbrmax_section: i32,
+    /// An [`AomRcMode`] discriminant.
+    pub mode: i32,
+    pub best_allowed_q: i32,
+    pub worst_allowed_q: i32,
+    pub over_shoot_pct: i32,
+    pub under_shoot_pct: i32,
+    pub maximum_buffer_size_ms: i64,
+    pub starting_buffer_level_ms: i64,
+    pub optimal_buffer_level_ms: i64,
+    pub max_intra_bitrate_pct: u32,
+    pub max_inter_bitrate_pct: u32,
+    pub sframe_dist: i32,
+    pub sframe_mode: i32,
+}
+
+/// C `svt_aom_set_rc_param` (pass2_strategy.c:906), EXPORTED.
+///
+/// REACHED IN THE PORT'S EXACT CONFIGURATION: resource_coordination_process.c
+/// :1074-1078 takes this branch when `pass == ENC_SINGLE_PASS && !lap_rc`, and
+/// `lap_rc` is 1 only for VBR single-pass (enc_handle.c:4623-4627).
+///
+/// Its `best_allowed_q` / `worst_allowed_q` become `rc->best_quality` /
+/// `rc->worst_quality` via [`rc_init`], and those are the clamp bounds inside
+/// [`compute_qdelta_by_rate`] — so the inter qindex path is wrong without it.
+///
+/// INDEX-ORDER NOTE, since this is exactly the class of thing that gets
+/// inferred wrongly: on the `first_pass_downsample` arm the MB counts are
+/// `((w + 15) / 16) << 1` — the ceiling division happens on the ORIGINAL
+/// width and the RESULT is doubled. That is not the same as
+/// `(2w + 15) / 16` whenever `w % 16` is in 1..=8, so a "double the width
+/// first" reading is wrong on most widths.
+#[must_use]
+pub fn set_rc_param(input: &SetRcParamInput) -> SetRcParamOutput {
+    let mut out = SetRcParamOutput::default();
+    let w = input.max_input_luma_width as i32;
+    let h = input.max_input_luma_height as i32;
+    if input.first_pass_downsample {
+        out.frame_width = w << 1;
+        out.frame_height = h << 1;
+        out.mb_cols = ((w + 16 - 1) / 16) << 1;
+        out.mb_rows = ((h + 16 - 1) / 16) << 1;
+    } else {
+        out.frame_width = w;
+        out.frame_height = h;
+        out.mb_cols = (w + 16 - 1) / 16;
+        out.mb_rows = (h + 16 - 1) / 16;
+    }
+    out.num_mbs = out.mb_cols * out.mb_rows;
+    out.bit_depth = input.encoder_bit_depth;
+    out.vbrmin_section = input.vbr_min_section_pct;
+    out.vbrmax_section = input.vbr_max_section_pct;
+    out.mode = if input.rate_control_mode == SvtAv1RcMode::Vbr as i32 {
+        AomRcMode::Vbr as i32
+    } else if input.rate_control_mode == SvtAv1RcMode::Cbr as i32 {
+        AomRcMode::Cbr as i32
+    } else {
+        AomRcMode::Q as i32
+    };
+    out.best_allowed_q = i32::from(quantizer_to_qindex(input.min_qp_allowed));
+    out.worst_allowed_q = i32::from(quantizer_to_qindex(input.max_qp_allowed));
+    if input.gop_constraint_rc {
+        out.over_shoot_pct = 0;
+        out.under_shoot_pct = 0;
+    } else {
+        out.over_shoot_pct = input.over_shoot_pct;
+        out.under_shoot_pct = input.under_shoot_pct;
+    }
+    let is_vbr = out.mode == AomRcMode::Vbr as i32;
+    out.maximum_buffer_size_ms = if is_vbr {
+        240_000
+    } else {
+        input.maximum_buffer_size_ms
+    };
+    out.starting_buffer_level_ms = if is_vbr {
+        60_000
+    } else {
+        input.starting_buffer_level_ms
+    };
+    out.optimal_buffer_level_ms = if is_vbr {
+        60_000
+    } else {
+        input.optimal_buffer_level_ms
+    };
+    out.max_intra_bitrate_pct = input.max_intra_bitrate_pct;
+    out.max_inter_bitrate_pct = input.max_inter_bitrate_pct;
+    out.sframe_dist = input.sframe_dist;
+    out.sframe_mode = input.sframe_mode;
+    out
+}
+
+/// C's `quantizer_to_qindex[qp]`. Delegates to the port's existing table so
+/// there is exactly one copy; the differential on [`set_rc_param`] pins it,
+/// because C indexes its own table on the same `min_qp_allowed` / `max_qp_allowed`.
+fn quantizer_to_qindex(qp: i32) -> u8 {
+    crate::rate_control::QUANTIZER_TO_QINDEX[qp.clamp(0, 63) as usize]
+}
+
+/// The `RATE_CONTROL` fields C's `svt_av1_rc_init` reads before writing.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RcInitInput {
+    /// An [`AomRcMode`] discriminant (i.e. `rc_cfg.mode`, the OUTPUT of
+    /// [`set_rc_param`] — not the config-side [`SvtAv1RcMode`]).
+    pub mode: i32,
+    pub best_allowed_q: i32,
+    pub worst_allowed_q: i32,
+    pub starting_buffer_level: i64,
+    pub avg_frame_bandwidth: i32,
+    pub hierarchical_levels: i32,
+}
+
+/// The `RATE_CONTROL` fields C's `svt_av1_rc_init` writes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RcInitOutput {
+    pub avg_frame_qindex_key: i32,
+    pub avg_frame_qindex_inter: i32,
+    pub last_q_key: i32,
+    pub last_q_inter: i32,
+    pub buffer_level: i64,
+    pub bits_off_target: i64,
+    pub rolling_target_bits: i32,
+    pub rolling_actual_bits: i32,
+    pub total_actual_bits: i64,
+    pub total_target_bits: i64,
+    pub frames_since_key: i32,
+    pub frames_since_cdf_update: i32,
+    pub this_key_frame_forced: i32,
+    pub rate_correction_factors: [f64; 7],
+    pub baseline_gf_interval: i32,
+    pub worst_quality: i32,
+    pub best_quality: i32,
+    pub cur_avg_base_me_dist: u32,
+    pub prev_avg_base_me_dist: u32,
+    pub avg_frame_low_motion: i32,
+}
+
+/// C `svt_av1_rc_init` (rc_process.c:495), EXPORTED.
+///
+/// **This function was recorded as "ported" and is not.** The port's inventory
+/// matched it by name against the string `svt_av1_rc_init_sb_qindex` inside
+/// doc comments at `sb_qindex.rs:145` and `:265`; there was no implementation.
+/// rc_crf_cqp.c:487 calls it at `picture_number == 0` under TPL.
+///
+/// It produces `rc->best_quality` / `rc->worst_quality` (the
+/// [`compute_qdelta_by_rate`] clamp) and the two counters that make the
+/// CQP/CRF CDF story work — see [`RcInitOutput::frames_since_key`].
+///
+/// LOAD-BEARING NON-EXECUTION, do NOT "fix" it: in CQP/CRF mode
+/// `svt_aom_update_rc_counts` never runs (rc_process.c:791 is on the
+/// non-AOM_Q arm; packetization_process.c:602 is under
+/// `if (scs->static_config.rate_control_mode)` and CQP_OR_CRF == 0), so
+/// `frames_since_key` stays at this seed of 8 and `frames_since_cdf_update`
+/// stays 0 for the WHOLE sequence regardless of frame count.
+/// `should_disable_cdf_update` (enc_mode_config.c:9484-9501) reads exactly
+/// those two and therefore evaluates `8 >= 30 && 0 < 8` == false forever, so
+/// `disable_cdf_update` is always 0 in this envelope. A port that helpfully
+/// increments the counters diverges from C on long GOPs at fast presets.
+///
+/// INDEX TRAP: `rate_correction_factors` is sized `MAX_TEMPORAL_LAYERS + 1`
+/// (7) but the non-CBR override writes `[KF_STD]`, and `KF_STD` is a
+/// [`RateFactorLevel`] == 5, not a temporal-layer index. Two different index
+/// spaces share one array.
+///
+/// NOT PORTED HERE (and deliberately): the `mode != AOM_Q` tail calls
+/// `svt_av1_new_framerate` -> `av1_rc_update_framerate`, which belongs to
+/// `rc_vbr_cbr.c`'s surface and computes `avg_frame_bandwidth` /
+/// `max_frame_bandwidth` from the target bit rate. This function returns the
+/// AOM_Q-complete result; a VBR/CBR caller must run that step itself. Stated
+/// rather than silently omitted.
+#[must_use]
+pub fn rc_init(input: &RcInitInput) -> RcInitOutput {
+    let cbr = input.mode == AomRcMode::Cbr as i32;
+    let seed = if cbr {
+        input.worst_allowed_q
+    } else {
+        (input.worst_allowed_q + input.best_allowed_q) / 2
+    };
+    let mut rate_correction_factors = [0.7f64; 7];
+    if !cbr {
+        rate_correction_factors[RateFactorLevel::KfStd as usize] = 1.0;
+    }
+    RcInitOutput {
+        avg_frame_qindex_key: seed,
+        avg_frame_qindex_inter: seed,
+        last_q_key: seed,
+        last_q_inter: seed,
+        buffer_level: input.starting_buffer_level,
+        bits_off_target: input.starting_buffer_level,
+        rolling_target_bits: input.avg_frame_bandwidth,
+        rolling_actual_bits: input.avg_frame_bandwidth,
+        total_actual_bits: 0,
+        total_target_bits: 0,
+        // "Sensible default for first frame" — C's own comment. See the
+        // load-bearing-non-execution note above: in CQP/CRF this 8 is the
+        // value for the entire sequence.
+        frames_since_key: 8,
+        frames_since_cdf_update: 0,
+        this_key_frame_forced: 0,
+        rate_correction_factors,
+        baseline_gf_interval: 1 << input.hierarchical_levels,
+        worst_quality: input.worst_allowed_q,
+        best_quality: input.best_allowed_q,
+        cur_avg_base_me_dist: 0,
+        prev_avg_base_me_dist: 0,
+        avg_frame_low_motion: 0,
+    }
+}
