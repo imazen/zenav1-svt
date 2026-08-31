@@ -477,3 +477,272 @@ pub fn set_gm_controls(gm_level: u8, input_resolution: u8) -> [u32; 16] {
     unsafe { ref_set_gm_controls(gm_level, i32::from(input_resolution), out.as_mut_ptr()) };
     out
 }
+
+// ---------------------------------------------------------------------------
+// ME signal derivation
+// ---------------------------------------------------------------------------
+
+/// Number of `u32` slots the ME dump uses. Mirrors the C shim's `ME_O_COUNT`,
+/// which carries a compile-time assertion on this value.
+pub const ME_OUT_SLOTS: usize = 62;
+
+/// Slot indices of the ME dump, mirroring the C shim's `ME_O_*` enum.
+pub mod me_slot {
+    /// `me_sa.sa_min.width`
+    pub const SA_MIN_W: usize = 0;
+    /// `me_sa.sa_min.height`
+    pub const SA_MIN_H: usize = 1;
+    /// `me_sa.sa_max.width`
+    pub const SA_MAX_W: usize = 2;
+    /// `me_sa.sa_max.height`
+    pub const SA_MAX_H: usize = 3;
+    /// `num_hme_sa_w`
+    pub const NUM_HME_W: usize = 4;
+    /// `num_hme_sa_h`
+    pub const NUM_HME_H: usize = 5;
+    /// `hme_l0_sa.sa_min.width` (TF: `hme_l0_sa_default_tf`)
+    pub const HME_L0_MIN_W: usize = 6;
+    /// `hme_l0_sa.sa_min.height`
+    pub const HME_L0_MIN_H: usize = 7;
+    /// `hme_l0_sa.sa_max.width`
+    pub const HME_L0_MAX_W: usize = 8;
+    /// `hme_l0_sa.sa_max.height`
+    pub const HME_L0_MAX_H: usize = 9;
+    /// `hme_l1_sa.width`
+    pub const HME_L1_W: usize = 10;
+    /// `hme_l1_sa.height`
+    pub const HME_L1_H: usize = 11;
+    /// `hme_l2_sa.width`
+    pub const HME_L2_W: usize = 12;
+    /// `hme_l2_sa.height`
+    pub const HME_L2_H: usize = 13;
+    /// `enable_hme_flag`
+    pub const EN_HME: usize = 14;
+    /// `enable_hme_level0_flag`
+    pub const EN_HME_L0: usize = 15;
+    /// `enable_hme_level1_flag`
+    pub const EN_HME_L1: usize = 16;
+    /// `enable_hme_level2_flag`
+    pub const EN_HME_L2: usize = 17;
+    /// `hme_search_method`
+    pub const HME_METHOD: usize = 18;
+    /// `me_search_method`
+    pub const ME_METHOD: usize = 19;
+    /// `reduce_hme_l0_sr_th_min`
+    pub const RED_HME_MIN: usize = 20;
+    /// `reduce_hme_l0_sr_th_max`
+    pub const RED_HME_MAX: usize = 21;
+    /// `prehme_ctrl.enable`
+    pub const PREHME_EN: usize = 22;
+    /// `prehme_ctrl.prehme_sa_cfg[0].sa_min.width`
+    pub const PREHME_V_MIN_W: usize = 23;
+    /// `prehme_ctrl.prehme_sa_cfg[0].sa_min.height`
+    pub const PREHME_V_MIN_H: usize = 24;
+    /// `prehme_ctrl.prehme_sa_cfg[0].sa_max.width`
+    pub const PREHME_V_MAX_W: usize = 25;
+    /// `prehme_ctrl.prehme_sa_cfg[0].sa_max.height`
+    pub const PREHME_V_MAX_H: usize = 26;
+    /// `prehme_ctrl.prehme_sa_cfg[1].sa_min.width`
+    pub const PREHME_H_MIN_W: usize = 27;
+    /// `prehme_ctrl.prehme_sa_cfg[1].sa_min.height`
+    pub const PREHME_H_MIN_H: usize = 28;
+    /// `prehme_ctrl.prehme_sa_cfg[1].sa_max.width`
+    pub const PREHME_H_MAX_W: usize = 29;
+    /// `prehme_ctrl.prehme_sa_cfg[1].sa_max.height`
+    pub const PREHME_H_MAX_H: usize = 30;
+    /// `prehme_ctrl.skip_search_line`
+    pub const PREHME_SKIP_LINE: usize = 31;
+    /// `prehme_ctrl.l1_early_exit`
+    pub const PREHME_L1_EXIT: usize = 32;
+    /// `me_hme_prune_ctrls.enable_me_hme_ref_pruning`
+    pub const PRUNE_EN: usize = 33;
+    /// `me_hme_prune_ctrls.prune_ref_if_hme_sad_dev_bigger_than_th`
+    pub const PRUNE_HME_DEV: usize = 34;
+    /// `me_hme_prune_ctrls.prune_ref_if_me_sad_dev_bigger_than_th`
+    pub const PRUNE_ME_DEV: usize = 35;
+    /// `me_hme_prune_ctrls.zz_sad_th`
+    pub const PRUNE_ZZ_TH: usize = 36;
+    /// `me_hme_prune_ctrls.zz_sad_pct`
+    pub const PRUNE_ZZ_PCT: usize = 37;
+    /// `me_hme_prune_ctrls.phme_sad_th`
+    pub const PRUNE_PHME_TH: usize = 38;
+    /// `me_hme_prune_ctrls.phme_sad_pct`
+    pub const PRUNE_PHME_PCT: usize = 39;
+    /// `me_sr_adjustment_ctrls.enable_me_sr_adjustment`
+    pub const SR_EN: usize = 40;
+    /// `me_sr_adjustment_ctrls.reduce_me_sr_based_on_mv_length_th`
+    pub const SR_MV_LEN_TH: usize = 41;
+    /// `me_sr_adjustment_ctrls.stationary_hme_sad_abs_th`
+    pub const SR_STAT_TH: usize = 42;
+    /// `me_sr_adjustment_ctrls.stationary_me_sr_divisor`
+    pub const SR_STAT_DIV: usize = 43;
+    /// `me_sr_adjustment_ctrls.reduce_me_sr_based_on_hme_sad_abs_th`
+    pub const SR_RED_TH: usize = 44;
+    /// `me_sr_adjustment_ctrls.me_sr_divisor_for_low_hme_sad`
+    pub const SR_LOW_DIV: usize = 45;
+    /// `me_sr_adjustment_ctrls.distance_based_hme_resizing`
+    pub const SR_DIST_RESIZE: usize = 46;
+    /// `mv_based_sa_adj.enabled`
+    pub const MVSA_EN: usize = 47;
+    /// `mv_based_sa_adj.nearest_ref_only`
+    pub const MVSA_NEAREST: usize = 48;
+    /// `mv_based_sa_adj.mv_size_th`
+    pub const MVSA_MV_TH: usize = 49;
+    /// `mv_based_sa_adj.sa_multiplier`
+    pub const MVSA_MULT: usize = 50;
+    /// `me_8x8_var_ctrls.enabled`
+    pub const VAR_EN: usize = 51;
+    /// `me_8x8_var_ctrls.me_sr_div4_th`
+    pub const VAR_DIV4: usize = 52;
+    /// `me_8x8_var_ctrls.me_sr_div2_th`
+    pub const VAR_DIV2: usize = 53;
+    /// `me_8x8_var_ctrls.me_sr_mult2_th`
+    pub const VAR_MULT2: usize = 54;
+    /// `prune_me_candidates_th`
+    pub const PRUNE_CAND_TH: usize = 55;
+    /// `sc_class_me_boost`
+    pub const SC_BOOST: usize = 56;
+    /// `use_best_unipred_cand_only`
+    pub const BEST_UNIPRED: usize = 57;
+    /// `me_early_exit_th`
+    pub const EARLY_EXIT: usize = 58;
+    /// `me_static_b64_th`
+    pub const STATIC_B64: usize = 59;
+    /// `me_safe_limit_zz_th`
+    pub const SAFE_ZZ: usize = 60;
+    /// `prev_me_stage_based_exit_th`
+    pub const PREV_STAGE: usize = 61;
+}
+
+unsafe extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn ref_sig_deriv_me(
+        enc_mode: i8,
+        sc_class5: u8,
+        input_resolution: i32,
+        rtc: u8,
+        is_base: u8,
+        hierarchical_levels: u8,
+        en_hme: u8,
+        en_hme_l0: u8,
+        en_hme_l1: u8,
+        en_hme_l2: u8,
+        use_best_unipred: u8,
+        me_qp_scaling: u8,
+        hme_qp_scaling: u8,
+        qp: u32,
+        safe_limit_nref: u8,
+        safe_limit_zz_th: u32,
+        out: *mut u32,
+    );
+    fn ref_sig_deriv_me_tf(
+        hme_me_level: u8,
+        input_resolution: i32,
+        qp_opt: u8,
+        tf_me_qp_scaling: u8,
+        qp: u32,
+        tf_en_hme: u8,
+        tf_en_hme_l0: u8,
+        tf_en_hme_l1: u8,
+        tf_en_hme_l2: u8,
+        out: *mut u32,
+    );
+}
+
+/// Inputs to [`sig_deriv_me`], mirroring what C reads off the SCS / PPCS.
+#[derive(Debug, Clone, Copy)]
+pub struct MeArgs {
+    /// `pcs->enc_mode`
+    pub enc_mode: i8,
+    /// `pcs->sc_class5`
+    pub sc_class5: u8,
+    /// `scs->input_resolution`
+    pub input_resolution: u8,
+    /// `scs->static_config.rtc`
+    pub rtc: bool,
+    /// `frame_is_boosted(pcs)`
+    pub is_base: bool,
+    /// `pcs->hierarchical_levels`
+    pub hierarchical_levels: u8,
+    /// `pcs->enable_hme_flag`
+    pub en_hme: u8,
+    /// `pcs->enable_hme_level0_flag`
+    pub en_hme_l0: u8,
+    /// `pcs->enable_hme_level1_flag`
+    pub en_hme_l1: u8,
+    /// `pcs->enable_hme_level2_flag`
+    pub en_hme_l2: u8,
+    /// `pcs->use_best_me_unipred_cand_only`
+    pub use_best_unipred: u8,
+    /// `scs->qp_based_th_scaling_ctrls.me_qp_based_th_scaling`
+    pub me_qp_scaling: bool,
+    /// `scs->qp_based_th_scaling_ctrls.hme_qp_based_th_scaling`
+    pub hme_qp_scaling: bool,
+    /// `scs->static_config.qp`
+    pub qp: u32,
+    /// `scs->mrp_ctrls.safe_limit_nref`
+    pub safe_limit_nref: u8,
+    /// `scs->mrp_ctrls.safe_limit_zz_th`
+    pub safe_limit_zz_th: u32,
+}
+
+/// C `svt_aom_sig_deriv_me` driven on a synthetic SCS / PPCS, with the whole
+/// resulting `MeContext` dumped by slot (see [`me_slot`]).
+#[must_use]
+pub fn sig_deriv_me(a: MeArgs) -> [u32; ME_OUT_SLOTS] {
+    let mut out = [0u32; ME_OUT_SLOTS];
+    unsafe {
+        ref_sig_deriv_me(
+            a.enc_mode,
+            a.sc_class5,
+            i32::from(a.input_resolution),
+            u8::from(a.rtc),
+            u8::from(a.is_base),
+            a.hierarchical_levels,
+            a.en_hme,
+            a.en_hme_l0,
+            a.en_hme_l1,
+            a.en_hme_l2,
+            a.use_best_unipred,
+            u8::from(a.me_qp_scaling),
+            u8::from(a.hme_qp_scaling),
+            a.qp,
+            a.safe_limit_nref,
+            a.safe_limit_zz_th,
+            out.as_mut_ptr(),
+        );
+    }
+    out
+}
+
+/// C `svt_aom_sig_deriv_me_tf` driven on a synthetic PPCS.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn sig_deriv_me_tf(
+    hme_me_level: u8,
+    input_resolution: u8,
+    qp_opt: bool,
+    tf_me_qp_scaling: bool,
+    qp: u32,
+    tf_en_hme: u8,
+    tf_en_hme_l0: u8,
+    tf_en_hme_l1: u8,
+    tf_en_hme_l2: u8,
+) -> [u32; ME_OUT_SLOTS] {
+    let mut out = [0u32; ME_OUT_SLOTS];
+    unsafe {
+        ref_sig_deriv_me_tf(
+            hme_me_level,
+            i32::from(input_resolution),
+            u8::from(qp_opt),
+            u8::from(tf_me_qp_scaling),
+            qp,
+            tf_en_hme,
+            tf_en_hme_l0,
+            tf_en_hme_l1,
+            tf_en_hme_l2,
+            out.as_mut_ptr(),
+        );
+    }
+    out
+}

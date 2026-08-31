@@ -36,6 +36,7 @@
 
 pub mod ctrls;
 pub mod leaf;
+pub mod me;
 
 /// C `ResolutionRange` (`Codec/definitions.h:1822`).
 ///
