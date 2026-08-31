@@ -569,3 +569,422 @@ pub fn get_relative_dist_enc(
         )
     }
 }
+
+// ---------------------------------------------------------------------------
+// 10/12-bit (highbd) MC kernels.
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn ref_highbd_convolve_2d_sr(
+        src: *const u16,
+        src_stride: i32,
+        dst: *mut u16,
+        dst_stride: i32,
+        w: i32,
+        h: i32,
+        filt_x: c_int,
+        fx_size: c_int,
+        filt_y: c_int,
+        fy_size: c_int,
+        subpel_x_q4: i32,
+        subpel_y_q4: i32,
+        bd: c_int,
+    );
+    fn ref_highbd_convolve_x_sr(
+        src: *const u16,
+        src_stride: i32,
+        dst: *mut u16,
+        dst_stride: i32,
+        w: i32,
+        h: i32,
+        filt_x: c_int,
+        fx_size: c_int,
+        subpel_x_q4: i32,
+        bd: c_int,
+    );
+    fn ref_highbd_convolve_y_sr(
+        src: *const u16,
+        src_stride: i32,
+        dst: *mut u16,
+        dst_stride: i32,
+        w: i32,
+        h: i32,
+        filt_y: c_int,
+        fy_size: c_int,
+        subpel_y_q4: i32,
+        bd: c_int,
+    );
+    fn ref_highbd_convolve_2d_copy_sr(
+        src: *const u16,
+        src_stride: i32,
+        dst: *mut u16,
+        dst_stride: i32,
+        w: i32,
+        h: i32,
+        bd: c_int,
+    );
+    fn ref_highbd_jnt_convolve_2d(
+        src: *const u16,
+        src_stride: i32,
+        dst16: *mut u16,
+        dst16_stride: i32,
+        conv_buf: *mut u16,
+        conv_stride: c_int,
+        w: i32,
+        h: i32,
+        filt_x: c_int,
+        fx_size: c_int,
+        filt_y: c_int,
+        fy_size: c_int,
+        subpel_x_q4: i32,
+        subpel_y_q4: i32,
+        bd: c_int,
+        do_average: c_int,
+        use_jnt: c_int,
+        fwd: c_int,
+        bck: c_int,
+    );
+    fn ref_highbd_jnt_convolve_x(
+        src: *const u16,
+        src_stride: i32,
+        dst16: *mut u16,
+        dst16_stride: i32,
+        conv_buf: *mut u16,
+        conv_stride: c_int,
+        w: i32,
+        h: i32,
+        filt_x: c_int,
+        fx_size: c_int,
+        subpel_x_q4: i32,
+        bd: c_int,
+        do_average: c_int,
+        use_jnt: c_int,
+        fwd: c_int,
+        bck: c_int,
+    );
+    fn ref_highbd_jnt_convolve_y(
+        src: *const u16,
+        src_stride: i32,
+        dst16: *mut u16,
+        dst16_stride: i32,
+        conv_buf: *mut u16,
+        conv_stride: c_int,
+        w: i32,
+        h: i32,
+        filt_y: c_int,
+        fy_size: c_int,
+        subpel_y_q4: i32,
+        bd: c_int,
+        do_average: c_int,
+        use_jnt: c_int,
+        fwd: c_int,
+        bck: c_int,
+    );
+    fn ref_highbd_jnt_convolve_2d_copy(
+        src: *const u16,
+        src_stride: i32,
+        dst16: *mut u16,
+        dst16_stride: i32,
+        conv_buf: *mut u16,
+        conv_stride: c_int,
+        w: i32,
+        h: i32,
+        bd: c_int,
+        do_average: c_int,
+        use_jnt: c_int,
+        fwd: c_int,
+        bck: c_int,
+    );
+}
+
+/// Reference `svt_av1_highbd_convolve_2d_sr_c` (inter_prediction.c:784).
+#[allow(clippy::too_many_arguments)]
+pub fn highbd_convolve_2d_sr(
+    src: &[u16],
+    src_origin: usize,
+    src_stride: usize,
+    dst: &mut [u16],
+    dst_stride: usize,
+    w: usize,
+    h: usize,
+    filt_x: i32,
+    fx_size: i32,
+    filt_y: i32,
+    fy_size: i32,
+    subpel_x_q4: i32,
+    subpel_y_q4: i32,
+    bd: i32,
+) {
+    assert!(dst.len() >= (h - 1) * dst_stride + w);
+    unsafe {
+        ref_highbd_convolve_2d_sr(
+            src.as_ptr().add(src_origin),
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            w as i32,
+            h as i32,
+            filt_x,
+            fx_size,
+            filt_y,
+            fy_size,
+            subpel_x_q4,
+            subpel_y_q4,
+            bd,
+        );
+    }
+}
+
+/// Reference `svt_av1_highbd_convolve_x_sr_c` (inter_prediction.c:731).
+#[allow(clippy::too_many_arguments)]
+pub fn highbd_convolve_x_sr(
+    src: &[u16],
+    src_origin: usize,
+    src_stride: usize,
+    dst: &mut [u16],
+    dst_stride: usize,
+    w: usize,
+    h: usize,
+    filt_x: i32,
+    fx_size: i32,
+    subpel_x_q4: i32,
+    bd: i32,
+) {
+    assert!(dst.len() >= (h - 1) * dst_stride + w);
+    unsafe {
+        ref_highbd_convolve_x_sr(
+            src.as_ptr().add(src_origin),
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            w as i32,
+            h as i32,
+            filt_x,
+            fx_size,
+            subpel_x_q4,
+            bd,
+        );
+    }
+}
+
+/// Reference `svt_av1_highbd_convolve_y_sr_c` (inter_prediction.c:758).
+#[allow(clippy::too_many_arguments)]
+pub fn highbd_convolve_y_sr(
+    src: &[u16],
+    src_origin: usize,
+    src_stride: usize,
+    dst: &mut [u16],
+    dst_stride: usize,
+    w: usize,
+    h: usize,
+    filt_y: i32,
+    fy_size: i32,
+    subpel_y_q4: i32,
+    bd: i32,
+) {
+    assert!(dst.len() >= (h - 1) * dst_stride + w);
+    unsafe {
+        ref_highbd_convolve_y_sr(
+            src.as_ptr().add(src_origin),
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            w as i32,
+            h as i32,
+            filt_y,
+            fy_size,
+            subpel_y_q4,
+            bd,
+        );
+    }
+}
+
+/// Reference `svt_av1_highbd_convolve_2d_copy_sr_c` (inter_prediction.c:713).
+#[allow(clippy::too_many_arguments)]
+pub fn highbd_convolve_2d_copy_sr(
+    src: &[u16],
+    src_origin: usize,
+    src_stride: usize,
+    dst: &mut [u16],
+    dst_stride: usize,
+    w: usize,
+    h: usize,
+    bd: i32,
+) {
+    assert!(dst.len() >= (h - 1) * dst_stride + w);
+    unsafe {
+        ref_highbd_convolve_2d_copy_sr(
+            src.as_ptr().add(src_origin),
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            w as i32,
+            h as i32,
+            bd,
+        );
+    }
+}
+
+/// Reference `svt_av1_highbd_jnt_convolve_2d_c` (inter_prediction.c:1034).
+#[allow(clippy::too_many_arguments)]
+pub fn highbd_jnt_convolve_2d(
+    src: &[u16],
+    src_origin: usize,
+    src_stride: usize,
+    dst: &mut [u16],
+    dst_stride: usize,
+    conv_buf: &mut [u16],
+    conv_stride: usize,
+    w: usize,
+    h: usize,
+    filt_x: i32,
+    fx_size: i32,
+    filt_y: i32,
+    fy_size: i32,
+    subpel_x_q4: i32,
+    subpel_y_q4: i32,
+    bd: i32,
+    cfg: JntCfg,
+) {
+    assert!(conv_buf.len() >= (h - 1) * conv_stride + w);
+    unsafe {
+        ref_highbd_jnt_convolve_2d(
+            src.as_ptr().add(src_origin),
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            conv_buf.as_mut_ptr(),
+            conv_stride as i32,
+            w as i32,
+            h as i32,
+            filt_x,
+            fx_size,
+            filt_y,
+            fy_size,
+            subpel_x_q4,
+            subpel_y_q4,
+            bd,
+            i32::from(cfg.do_average),
+            i32::from(cfg.use_jnt),
+            cfg.fwd,
+            cfg.bck,
+        );
+    }
+}
+
+/// Reference `svt_av1_highbd_jnt_convolve_x_c` (inter_prediction.c:905).
+#[allow(clippy::too_many_arguments)]
+pub fn highbd_jnt_convolve_x(
+    src: &[u16],
+    src_origin: usize,
+    src_stride: usize,
+    dst: &mut [u16],
+    dst_stride: usize,
+    conv_buf: &mut [u16],
+    conv_stride: usize,
+    w: usize,
+    h: usize,
+    filt_x: i32,
+    fx_size: i32,
+    subpel_x_q4: i32,
+    bd: i32,
+    cfg: JntCfg,
+) {
+    assert!(conv_buf.len() >= (h - 1) * conv_stride + w);
+    unsafe {
+        ref_highbd_jnt_convolve_x(
+            src.as_ptr().add(src_origin),
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            conv_buf.as_mut_ptr(),
+            conv_stride as i32,
+            w as i32,
+            h as i32,
+            filt_x,
+            fx_size,
+            subpel_x_q4,
+            bd,
+            i32::from(cfg.do_average),
+            i32::from(cfg.use_jnt),
+            cfg.fwd,
+            cfg.bck,
+        );
+    }
+}
+
+/// Reference `svt_av1_highbd_jnt_convolve_y_c` (inter_prediction.c:950).
+#[allow(clippy::too_many_arguments)]
+pub fn highbd_jnt_convolve_y(
+    src: &[u16],
+    src_origin: usize,
+    src_stride: usize,
+    dst: &mut [u16],
+    dst_stride: usize,
+    conv_buf: &mut [u16],
+    conv_stride: usize,
+    w: usize,
+    h: usize,
+    filt_y: i32,
+    fy_size: i32,
+    subpel_y_q4: i32,
+    bd: i32,
+    cfg: JntCfg,
+) {
+    assert!(conv_buf.len() >= (h - 1) * conv_stride + w);
+    unsafe {
+        ref_highbd_jnt_convolve_y(
+            src.as_ptr().add(src_origin),
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            conv_buf.as_mut_ptr(),
+            conv_stride as i32,
+            w as i32,
+            h as i32,
+            filt_y,
+            fy_size,
+            subpel_y_q4,
+            bd,
+            i32::from(cfg.do_average),
+            i32::from(cfg.use_jnt),
+            cfg.fwd,
+            cfg.bck,
+        );
+    }
+}
+
+/// Reference `svt_av1_highbd_jnt_convolve_2d_copy_c` (inter_prediction.c:995).
+#[allow(clippy::too_many_arguments)]
+pub fn highbd_jnt_convolve_2d_copy(
+    src: &[u16],
+    src_origin: usize,
+    src_stride: usize,
+    dst: &mut [u16],
+    dst_stride: usize,
+    conv_buf: &mut [u16],
+    conv_stride: usize,
+    w: usize,
+    h: usize,
+    bd: i32,
+    cfg: JntCfg,
+) {
+    assert!(conv_buf.len() >= (h - 1) * conv_stride + w);
+    unsafe {
+        ref_highbd_jnt_convolve_2d_copy(
+            src.as_ptr().add(src_origin),
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            conv_buf.as_mut_ptr(),
+            conv_stride as i32,
+            w as i32,
+            h as i32,
+            bd,
+            i32::from(cfg.do_average),
+            i32::from(cfg.use_jnt),
+            cfg.fwd,
+            cfg.bck,
+        );
+    }
+}

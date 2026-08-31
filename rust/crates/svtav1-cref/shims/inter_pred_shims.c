@@ -183,3 +183,71 @@ int ref_get_relative_dist_enc(int enable_order_hint, int order_hint_bits, int re
     sh.order_hint_info.order_hint_bits   = (uint8_t)order_hint_bits;
     return svt_aom_get_relative_dist_enc(&sh, ref_hint, order_hint);
 }
+
+/* ---- 10/12-bit (highbd) kernels --------------------------------------- */
+
+void ref_highbd_convolve_2d_sr(const uint16_t* src, int32_t src_stride, uint16_t* dst, int32_t dst_stride, int32_t w,
+                               int32_t h, int filt_x, int fx_size, int filt_y, int fy_size, int32_t subpel_x_q4,
+                               int32_t subpel_y_q4, int bd) {
+    const InterpFilterParams fx = pick_params(filt_x, fx_size);
+    const InterpFilterParams fy = pick_params(filt_y, fy_size);
+    ConvolveParams           cp = get_conv_params_no_round(0, NULL, 0, 0, bd);
+    svt_av1_highbd_convolve_2d_sr_c(
+        src, src_stride, dst, dst_stride, w, h, &fx, &fy, subpel_x_q4, subpel_y_q4, &cp, bd);
+}
+
+void ref_highbd_convolve_x_sr(const uint16_t* src, int32_t src_stride, uint16_t* dst, int32_t dst_stride, int32_t w,
+                              int32_t h, int filt_x, int fx_size, int32_t subpel_x_q4, int bd) {
+    const InterpFilterParams fx = pick_params(filt_x, fx_size);
+    ConvolveParams           cp = get_conv_params_no_round(0, NULL, 0, 0, bd);
+    svt_av1_highbd_convolve_x_sr_c(src, src_stride, dst, dst_stride, w, h, &fx, &fx, subpel_x_q4, 0, &cp, bd);
+}
+
+void ref_highbd_convolve_y_sr(const uint16_t* src, int32_t src_stride, uint16_t* dst, int32_t dst_stride, int32_t w,
+                              int32_t h, int filt_y, int fy_size, int32_t subpel_y_q4, int bd) {
+    const InterpFilterParams fy = pick_params(filt_y, fy_size);
+    ConvolveParams           cp = get_conv_params_no_round(0, NULL, 0, 0, bd);
+    svt_av1_highbd_convolve_y_sr_c(src, src_stride, dst, dst_stride, w, h, &fy, &fy, 0, subpel_y_q4, &cp, bd);
+}
+
+void ref_highbd_convolve_2d_copy_sr(const uint16_t* src, int32_t src_stride, uint16_t* dst, int32_t dst_stride,
+                                    int32_t w, int32_t h, int bd) {
+    const InterpFilterParams fx = pick_params(0, 8);
+    ConvolveParams           cp = get_conv_params_no_round(0, NULL, 0, 0, bd);
+    svt_av1_highbd_convolve_2d_copy_sr_c(src, src_stride, dst, dst_stride, w, h, &fx, &fx, 0, 0, &cp, bd);
+}
+
+void ref_highbd_jnt_convolve_2d(const uint16_t* src, int32_t src_stride, uint16_t* dst16, int32_t dst16_stride,
+                                uint16_t* conv_buf, int conv_stride, int32_t w, int32_t h, int filt_x, int fx_size,
+                                int filt_y, int fy_size, int32_t subpel_x_q4, int32_t subpel_y_q4, int bd,
+                                int do_average, int use_jnt, int fwd, int bck) {
+    const InterpFilterParams fx = pick_params(filt_x, fx_size);
+    const InterpFilterParams fy = pick_params(filt_y, fy_size);
+    ConvolveParams           cp = jnt_params(conv_buf, conv_stride, bd, do_average, use_jnt, fwd, bck);
+    svt_av1_highbd_jnt_convolve_2d_c(
+        src, src_stride, dst16, dst16_stride, w, h, &fx, &fy, subpel_x_q4, subpel_y_q4, &cp, bd);
+}
+
+void ref_highbd_jnt_convolve_x(const uint16_t* src, int32_t src_stride, uint16_t* dst16, int32_t dst16_stride,
+                               uint16_t* conv_buf, int conv_stride, int32_t w, int32_t h, int filt_x, int fx_size,
+                               int32_t subpel_x_q4, int bd, int do_average, int use_jnt, int fwd, int bck) {
+    const InterpFilterParams fx = pick_params(filt_x, fx_size);
+    ConvolveParams           cp = jnt_params(conv_buf, conv_stride, bd, do_average, use_jnt, fwd, bck);
+    svt_av1_highbd_jnt_convolve_x_c(src, src_stride, dst16, dst16_stride, w, h, &fx, &fx, subpel_x_q4, 0, &cp, bd);
+}
+
+void ref_highbd_jnt_convolve_y(const uint16_t* src, int32_t src_stride, uint16_t* dst16, int32_t dst16_stride,
+                               uint16_t* conv_buf, int conv_stride, int32_t w, int32_t h, int filt_y, int fy_size,
+                               int32_t subpel_y_q4, int bd, int do_average, int use_jnt, int fwd, int bck) {
+    const InterpFilterParams fy = pick_params(filt_y, fy_size);
+    ConvolveParams           cp = jnt_params(conv_buf, conv_stride, bd, do_average, use_jnt, fwd, bck);
+    svt_av1_highbd_jnt_convolve_y_c(src, src_stride, dst16, dst16_stride, w, h, &fy, &fy, 0, subpel_y_q4, &cp, bd);
+}
+
+void ref_highbd_jnt_convolve_2d_copy(const uint16_t* src, int32_t src_stride, uint16_t* dst16, int32_t dst16_stride,
+                                     uint16_t* conv_buf, int conv_stride, int32_t w, int32_t h, int bd, int do_average,
+                                     int use_jnt, int fwd, int bck) {
+    const InterpFilterParams fx = pick_params(0, 8);
+    ConvolveParams           cp = jnt_params(conv_buf, conv_stride, bd, do_average, use_jnt, fwd, bck);
+    svt_av1_highbd_jnt_convolve_2d_copy_c(src, src_stride, dst16, dst16_stride, w, h, &fx, &fx, 0, 0, &cp, bd);
+}
