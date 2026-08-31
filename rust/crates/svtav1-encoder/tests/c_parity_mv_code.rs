@@ -1121,3 +1121,63 @@ fn update_mv_cadence_is_level1_non_i_slice_only() {
         );
     }
 }
+
+/// `copy_mv_rate` + its cadence (`sb_mv_rate`, enc_dec_process.c:36-56 and
+/// :2802-2806 / :2908-2912). The COPY arm must reuse the frame tables
+/// verbatim and must NOT rebuild from the SB's adapted context; the REBUILD
+/// arm must equal a direct `svt_aom_estimate_mv_rate` over that SB context.
+/// Both arms are checked against C's own tables, and the two arms are proved
+/// DISTINCT so "reuse" is not vacuously "rebuild".
+#[test]
+fn c_parity_sb_mv_rate_cadence() {
+    let mut rng = Rng(0x0C3_4001);
+    let frame_ctx = NmvContext::default();
+    let sb_ctx = random_nmv_context(&mut rng);
+    let (ff, sf) = (flatten_nmv(&frame_ctx), flatten_nmv(&sb_ctx));
+    assert_ne!(ff, sf, "the two contexts must differ for this test to bite");
+
+    for hp in [false, true] {
+        let c_frame = cref::estimate_mv_rate(false, false, hp, Some(&ff), None, DV_SENTINEL);
+        let c_sb = cref::estimate_mv_rate(false, false, hp, Some(&sf), None, DV_SENTINEL);
+        assert_ne!(
+            c_frame.nmv_costs, c_sb.nmv_costs,
+            "hp={hp}: C built identical tables from different contexts"
+        );
+
+        let frame_rate = imc::estimate_mv_rate(&frame_ctx, &frame_ctx, hp, false, false);
+
+        // update_mv OFF: the frame tables, byte for byte.
+        let copied = imc::sb_mv_rate(false, &frame_rate, &sb_ctx, &sb_ctx, hp, false, false);
+        // update_mv ON: rebuilt from the SB context.
+        let rebuilt = imc::sb_mv_rate(true, &frame_rate, &sb_ctx, &sb_ctx, hp, false, false);
+
+        let (cf, cs) = (copied.nmv.tables().unwrap(), rebuilt.nmv.tables().unwrap());
+        assert_eq!(
+            cf.joint_cost.as_slice(),
+            &c_frame.nmv_joint,
+            "copy joint hp={hp}"
+        );
+        assert_eq!(
+            cs.joint_cost.as_slice(),
+            &c_sb.nmv_joint,
+            "rebuild joint hp={hp}"
+        );
+        for comp in 0..2 {
+            let cfc = &c_frame.nmv_costs[comp * cref::MV_VALS..(comp + 1) * cref::MV_VALS];
+            let csc = &c_sb.nmv_costs[comp * cref::MV_VALS..(comp + 1) * cref::MV_VALS];
+            for v in -intrabc::MV_MAX..=intrabc::MV_MAX {
+                let idx = (intrabc::MV_MAX + v) as usize;
+                assert_eq!(
+                    cf.comp_cost[comp].cost(v),
+                    cfc[idx],
+                    "copy comp={comp} v={v}"
+                );
+                assert_eq!(
+                    cs.comp_cost[comp].cost(v),
+                    csc[idx],
+                    "rebuild comp={comp} v={v}"
+                );
+            }
+        }
+    }
+}

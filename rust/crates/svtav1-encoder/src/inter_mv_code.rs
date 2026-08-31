@@ -346,6 +346,43 @@ pub fn estimate_mv_rate(
     }
 }
 
+/// C `copy_mv_rate` (enc_dec_process.c:36-56) plus the cadence choice its two
+/// call sites make (`:2802-2806` and `:2908-2912`): what MD's per-SB rate
+/// tables hold.
+///
+/// When `cdf_ctrl.update_mv` is set ([`cdf_update_mv`]), C re-runs
+/// `svt_aom_estimate_mv_rate` per superblock against that SB's own adapting
+/// `ec_ctx_array[sb]`; when it is clear, C copies the FRAME-level tables once
+/// (built at frame genesis from `pcs->md_frame_context`) and reuses them for
+/// every SB. Passing the SB context in the second case would be wrong even
+/// though it is the same context on the first SB.
+///
+/// C's copy is a `memcpy` of only the SELECTED hp/non-hp array plus, gated on
+/// `allow_intrabc`, the dv pair — the unselected array is left stale. That is
+/// unobservable here because [`MvRateEstimate`] owns exactly the selected
+/// tables, so the copy is a clone.
+pub fn sb_mv_rate(
+    update_mv: bool,
+    frame_rate: &MvRateEstimate,
+    sb_nmvc: &NmvContext,
+    sb_ndvc: &NmvContext,
+    allow_high_precision_mv: bool,
+    allow_intrabc: bool,
+    approx_inter_rate: bool,
+) -> MvRateEstimate {
+    if update_mv {
+        estimate_mv_rate(
+            sb_nmvc,
+            sb_ndvc,
+            allow_high_precision_mv,
+            allow_intrabc,
+            approx_inter_rate,
+        )
+    } else {
+        frame_rate.clone()
+    }
+}
+
 /// C `svt_av1_mv_bit_cost` (rd_cost.c:70-78) over an [`NmvRate`], including
 /// the `approx_inter_rate` zero-table arm.
 ///
