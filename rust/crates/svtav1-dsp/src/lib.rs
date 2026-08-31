@@ -37,6 +37,7 @@ pub mod port_model_rd;
 pub mod port_obmc_data;
 pub mod port_wedge_masks;
 pub mod port_scale_factors;
+pub mod port_resize_hbd;
 pub mod port_sgr;
 pub mod port_warp;
 pub mod quant;

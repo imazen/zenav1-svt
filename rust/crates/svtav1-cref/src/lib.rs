@@ -5899,3 +5899,93 @@ pub fn refine_integerized_param(
         )
     }
 }
+
+// --- resize.c: the high-bit-depth resize ladder ---
+
+unsafe extern "C" {
+    fn ref_highbd_interpolate_core(
+        input: *const u16,
+        in_length: i32,
+        output: *mut u16,
+        out_length: i32,
+        bd: i32,
+        bank: i32,
+    );
+    fn ref_highbd_down2_symeven(input: *const u16, length: i32, output: *mut u16, bd: i32);
+    #[allow(clippy::too_many_arguments)]
+    fn ref_highbd_resize_plane_horizontal(
+        input: *const u16,
+        height: i32,
+        width: i32,
+        in_stride: i32,
+        output: *mut u16,
+        width2: i32,
+        out_stride: i32,
+        bd: i32,
+    ) -> i32;
+}
+
+/// Reference `svt_av1_highbd_interpolate_core_c` (resize.c:489) with an
+/// explicit filter bank (0 = filters1000 / normative, 1 = 875, 2 = 750,
+/// 3 = 625, 4 = 500 — C's `choose_interp_filter` ladder).
+pub fn highbd_interpolate_core(
+    input: &[u16],
+    in_length: usize,
+    output: &mut [u16],
+    out_length: usize,
+    bd: i32,
+    bank: i32,
+) {
+    assert!(input.len() >= in_length && output.len() >= out_length);
+    unsafe {
+        ref_highbd_interpolate_core(
+            input.as_ptr(),
+            in_length as i32,
+            output.as_mut_ptr(),
+            out_length as i32,
+            bd,
+            bank,
+        );
+    }
+}
+
+/// Reference `svt_av1_highbd_down2_symeven_c` (resize.c:568).
+pub fn highbd_down2_symeven(input: &[u16], length: usize, output: &mut [u16], bd: i32) {
+    assert!(input.len() >= length && output.len() >= length.div_ceil(2));
+    unsafe { ref_highbd_down2_symeven(input.as_ptr(), length as i32, output.as_mut_ptr(), bd) };
+}
+
+/// Reference `svt_av1_highbd_resize_plane_horizontal` (resize.c:761) — the
+/// high-bit-depth superres SOURCE downscale, `width` -> `width2` at unchanged
+/// height. Drives C's `static` `highbd_resize_multistep` (down2 steps +
+/// polyphase interpolate), so this one oracle covers every arm of the ladder.
+#[allow(clippy::too_many_arguments)]
+pub fn highbd_resize_plane_horizontal(
+    input: &[u16],
+    height: usize,
+    width: usize,
+    in_stride: usize,
+    output: &mut [u16],
+    width2: usize,
+    out_stride: usize,
+    bd: i32,
+) {
+    assert!(input.len() >= (height - 1) * in_stride + width);
+    assert!(output.len() >= (height - 1) * out_stride + width2);
+    let rc = unsafe {
+        ref_highbd_resize_plane_horizontal(
+            input.as_ptr(),
+            height as i32,
+            width as i32,
+            in_stride as i32,
+            output.as_mut_ptr(),
+            width2 as i32,
+            out_stride as i32,
+            bd,
+        )
+    };
+    assert_eq!(
+        rc, 0,
+        "svt_av1_highbd_resize_plane_horizontal failed (rc {rc})"
+    );
+}

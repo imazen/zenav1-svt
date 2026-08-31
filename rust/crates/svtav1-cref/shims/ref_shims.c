@@ -3607,3 +3607,52 @@ int64_t ref_refine_integerized_param(int32_t rfn_early_exit, int32_t* wm_io, int
     free(gm);
     return e;
 }
+
+/* ---- resize.c: the high-bit-depth resize ladder ----
+ *
+ * svt_av1_highbd_interpolate_core_c, svt_av1_highbd_down2_symeven_c and
+ * svt_av1_highbd_resize_plane_horizontal are EXPORTED; the last one DRIVES
+ * the file's statics (highbd_resize_multistep, highbd_interpolate,
+ * highbd_down2_symodd), so it covers the whole ladder at tier 1.
+ *
+ * These take a REAL uint16_t*, not a CONVERT_TO_SHORTPTR-encoded uint8_t*
+ * (a third high-bit-depth convention in this tree -- warp uses the 8+2 pair,
+ * restoration uses CONVERT_TO_SHORTPTR, resize uses a plain uint16_t*). */
+#include "resize.h"
+
+void svt_av1_highbd_interpolate_core_c(const uint16_t* const input, int in_length, uint16_t* output, int out_length,
+                                       int bd, const int16_t* interp_filters);
+void svt_av1_highbd_down2_symeven_c(const uint16_t* const input, int length, uint16_t* output, int bd);
+EbErrorType svt_av1_highbd_resize_plane_horizontal(const uint16_t* const input, int height, int width, int in_stride,
+                                                   uint16_t* output, int height2, int width2, int out_stride, int bd);
+
+/* `bank`: 0 = filters1000 (the normative upscale table), 1 = 875, 2 = 750,
+   3 = 625, 4 = 500 -- C's choose_interp_filter ladder, same indexing the
+   8-bit ref_interpolate_core shim uses. */
+void ref_highbd_interpolate_core(const uint16_t* input, int32_t in_length, uint16_t* output, int32_t out_length,
+                                 int32_t bd, int32_t bank) {
+    const int16_t* f;
+    switch (bank) {
+    case 1: f = &svt_aom_av1_filteredinterp_filters875[0][0]; break;
+    case 2: f = &svt_aom_av1_filteredinterp_filters750[0][0]; break;
+    case 3: f = &svt_aom_av1_filteredinterp_filters625[0][0]; break;
+    case 4: f = &svt_aom_av1_filteredinterp_filters500[0][0]; break;
+    default: f = &svt_av1_resize_filter_normative[0][0]; break;
+    }
+    svt_av1_highbd_interpolate_core_c(input, in_length, output, out_length, bd, f);
+}
+
+void ref_highbd_down2_symeven(const uint16_t* input, int32_t length, uint16_t* output, int32_t bd) {
+    svt_av1_highbd_down2_symeven_c(input, length, output, bd);
+}
+
+int32_t ref_highbd_resize_plane_horizontal(const uint16_t* input, int32_t height, int32_t width, int32_t in_stride,
+                                           uint16_t* output, int32_t width2, int32_t out_stride, int32_t bd) {
+    /* highbd_resize_multistep calls svt_av1_highbd_down2_symeven, which is an
+       RTCD FUNCTION POINTER (not the _c symbol). Without this it is NULL and
+       the call segfaults at address 0 -- measured 2026-08-31. */
+    ref_rtcd_once();
+    ref_dsp_rtcd_once();
+    return (int32_t)svt_av1_highbd_resize_plane_horizontal(
+        input, height, width, in_stride, output, height, width2, out_stride, bd);
+}
