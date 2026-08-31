@@ -154,7 +154,18 @@ fn main() {
         }
     };
 
-    cc::Build::new()
+    // Promote three `static` pd_process.c functions to linkable symbols so the
+    // wp-picstruct differential can reach them at evidence tier 1. Runs BEFORE
+    // the shim compile because the shim's tier-1 entry points are behind the
+    // define this returns. See the function for the whole rationale and the
+    // failure modes it deliberately tolerates.
+    let picstruct_statics = link_globalized_pd_statics(&repo_root, &out_dir_path());
+
+    let mut shims = cc::Build::new();
+    if picstruct_statics {
+        shims.define("SVTAV1_CREF_PICSTRUCT_STATICS", "1");
+    }
+    shims
         .file(manifest.join("shims/ref_shims.c"))
         // Inter MVP oracle (chunk C2) — its own TU so the C2 and C3 lanes
         // never share a shim file in one working copy.
@@ -193,6 +204,149 @@ fn main() {
     println!("cargo:rustc-link-lib=static=SvtAv1Enc");
     println!("cargo:rustc-link-lib=pthread");
     println!("cargo:rustc-link-lib=m");
+}
+
+fn out_dir_path() -> PathBuf {
+    PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is always set for a build script"))
+}
+
+/// Make `set_ref_list_counts` and `set_all_ref_frame_type` linkable.
+///
+/// Both are `static` in `Codec/pd_process.c`, so `nm -g` on
+/// `libSvtAv1Enc.a` does not find them and a differential against the real C
+/// code would be impossible — the port would be stuck at evidence tier 4 for
+/// two of the highest-value functions in the picture-decision group
+/// (`docs/WORKING-ON-THIS.md` §4). They DO survive in the CMake object file as
+/// local (`t`) symbols, so `llvm-objcopy --globalize-symbol` on a PRIVATE COPY
+/// of that object promotes them without touching the C tree or the archive.
+///
+/// Linking the promoted object alongside the archive does NOT produce
+/// duplicate symbols: the object supplies every symbol `pd_process.c.o` would
+/// have, so the archive member is never pulled in. Verified on macOS arm64
+/// before this was wired up (a standalone `cc probe.c globalized.o
+/// libSvtAv1Enc.a` links and the three addresses resolve).
+///
+/// **This is best-effort and MUST stay best-effort.** The object exists only
+/// after the C library has been built into `<repo>/cbuild-static`, which does
+/// not happen when the caller points `SVT_CREF_LIB_DIR` at a prebuilt archive,
+/// and `llvm-objcopy` is not on every host. When either is missing this
+/// function emits a `cargo:warning` naming exactly what is unavailable and
+/// returns; the `picstruct_statics` cfg stays off and the tier-1 tests that
+/// need it do not compile.
+///
+/// That is a skip, so per the project's no-silent-skip rule the DECISION is
+/// the caller's, not the test's: set
+/// `SVT_CREF_REQUIRE_PICSTRUCT_STATICS=1` and
+/// `picstruct_statics_oracle_is_available` fails loudly instead. CI can turn
+/// that on once the object is known to be present on its image.
+#[must_use]
+fn link_globalized_pd_statics(repo_root: &Path, out_dir: &Path) -> bool {
+    println!("cargo:rustc-check-cfg=cfg(picstruct_statics)");
+    println!("cargo:rerun-if-env-changed=SVT_CREF_REQUIRE_PICSTRUCT_STATICS");
+    println!("cargo:rerun-if-env-changed=LLVM_OBJCOPY");
+
+    // ONLY functions whose compiled ABI has been checked against the source
+    // signature belong here. Globalizing makes a symbol linkable; it does NOT
+    // make the declared signature right. `scene_transition_detector` is the
+    // counterexample and is deliberately absent: LLVM promoted its
+    // `PictureParentControlSet** window` parameter to the current PPCS, so
+    // calling it as declared segfaults. Disassemble the prologue before adding
+    // a name here (see shims/picstruct_shims.c for the two checks that passed).
+    const SYMS: [&str; 2] = ["set_ref_list_counts", "set_all_ref_frame_type"];
+
+    let src = repo_root.join("cbuild-static/Source/Lib/Codec/CMakeFiles/CODEC.dir/pd_process.c.o");
+    println!("cargo:rerun-if-changed={}", src.display());
+    if !src.exists() {
+        println!(
+            "cargo:warning=picstruct tier-1 statics unavailable: {} not found (the C library              has not been built into <repo>/cbuild-static on this host).              set_ref_list_counts / set_all_ref_frame_type stay at              evidence tier 4.",
+            src.display()
+        );
+        return false;
+    }
+
+    let Some(objcopy) = find_objcopy() else {
+        println!(
+            "cargo:warning=picstruct tier-1 statics unavailable: no llvm-objcopy found (tried              $LLVM_OBJCOPY, llvm-objcopy, objcopy, /opt/homebrew/opt/llvm/bin/llvm-objcopy).              set_ref_list_counts / set_all_ref_frame_type stay at              evidence tier 4."
+        );
+        return false;
+    };
+
+    let dst = out_dir.join("pd_process_globalized.o");
+    if fs::copy(&src, &dst).is_err() {
+        println!("cargo:warning=picstruct tier-1 statics unavailable: could not copy the object");
+        return false;
+    }
+    // Mach-O prefixes C symbols with an underscore; ELF does not. Pass both
+    // spellings and let objcopy ignore the one that does not match.
+    let mut cmd = Command::new(&objcopy);
+    for s in SYMS {
+        cmd.arg(format!("--globalize-symbol={s}"));
+        cmd.arg(format!("--globalize-symbol=_{s}"));
+    }
+    cmd.arg(&dst);
+    match cmd.status() {
+        Ok(st) if st.success() => {}
+        other => {
+            println!(
+                "cargo:warning=picstruct tier-1 statics unavailable: {} failed ({other:?})",
+                objcopy.display()
+            );
+            return false;
+        }
+    }
+
+    // Wrap the object in an archive rather than emitting `rustc-link-arg`:
+    // a link-arg applies only to THIS crate's own link, while
+    // `rustc-link-lib` + `rustc-link-search` propagate to every dependent
+    // binary — which is where the differential test actually links. Measured:
+    // with the link-arg form the encoder's test binary failed with
+    // "Undefined symbols: _set_ref_list_counts, _set_all_ref_frame_type".
+    //
+    // Archive ORDER matters: this one is emitted BEFORE SvtAv1Enc, so the
+    // shim pulls this member (defining every pd_process.c symbol) and the
+    // archive's own pd_process.c.o member is then never pulled — which is why
+    // there is no duplicate-symbol error.
+    let archive = out_dir.join("libpd_statics.a");
+    let _ = fs::remove_file(&archive);
+    match Command::new("ar")
+        .arg("crs")
+        .arg(&archive)
+        .arg(&dst)
+        .status()
+    {
+        Ok(st) if st.success() => {}
+        other => {
+            println!(
+                "cargo:warning=picstruct tier-1 statics unavailable: `ar crs` failed ({other:?})"
+            );
+            return false;
+        }
+    }
+    println!("cargo:rustc-link-search=native={}", out_dir.display());
+    println!("cargo:rustc-link-lib=static=pd_statics");
+    println!("cargo:rustc-cfg=picstruct_statics");
+    // The shim TU compiles its tier-1 entry points only when the promotion
+    // succeeded, so the crate still builds on a host without the object.
+    true
+}
+
+/// First working objcopy, or `None`. `--version` is the probe because a name
+/// on PATH is not proof it runs (a broken shim, a wrong architecture).
+fn find_objcopy() -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(p) = env::var("LLVM_OBJCOPY") {
+        candidates.push(PathBuf::from(p));
+    }
+    candidates.push(PathBuf::from("llvm-objcopy"));
+    candidates.push(PathBuf::from("objcopy"));
+    candidates.push(PathBuf::from("/opt/homebrew/opt/llvm/bin/llvm-objcopy"));
+    candidates.push(PathBuf::from("/usr/local/opt/llvm/bin/llvm-objcopy"));
+    candidates.into_iter().find(|c| {
+        Command::new(c)
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success())
+    })
 }
 
 /// The submodule's HEAD commit, or `None` when git is unavailable (then the

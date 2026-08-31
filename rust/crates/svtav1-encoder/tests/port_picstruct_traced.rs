@@ -640,8 +640,14 @@ fn traced_rtc_flat_refresh_mask_covers_unused_slots() {
 /// `set_frame_display_params` (`pd_process.c:1132-1161`) — all four outcomes.
 #[test]
 fn traced_set_frame_display_params() {
-    let mut ctx = pp::PicDecisionCtx::default();
-    ctx.mini_gop_length[0] = 4;
+    let ctx = pp::PicDecisionCtx {
+        mini_gop_length: {
+            let mut a = [0u32; 8];
+            a[0] = 4;
+            a
+        },
+        ..Default::default()
+    };
 
     // Low delay: always shown, never show-existing, returns true.
     let mut pic = pp::PicParams {
@@ -981,8 +987,14 @@ fn traced_set_mini_gop_structure_random_access_reports_dg() {
 /// SEQUENCE hierarchy, everyone else takes the MINI-GOP's.
 #[test]
 fn traced_get_pred_struct_for_frame_idr_takes_sequence_hierarchy() {
-    let mut map = pp::MiniGopMap::default();
-    map.hierarchical_levels[0] = 2;
+    let mut map = pp::MiniGopMap {
+        hierarchical_levels: {
+            let mut a = [0u32; pp::MINI_GOP_MAX_COUNT];
+            a[0] = 2;
+            a
+        },
+        ..Default::default()
+    };
 
     let mut idr = key_frame(0);
     pp::get_pred_struct_for_frame(
@@ -1088,8 +1100,14 @@ fn traced_get_pic_idx_in_mg_low_delay_and_random_access() {
         pred_structure: pp::PredStructure::RandomAccess,
         ..ld_flat_cqp_seq()
     };
-    let mut map = pp::MiniGopMap::default();
-    map.start_index[1] = 4;
+    let map = pp::MiniGopMap {
+        start_index: {
+            let mut a = [0u32; pp::MINI_GOP_MAX_COUNT];
+            a[1] = 4;
+            a
+        },
+        ..Default::default()
+    };
     let mut pic = inter_frame(10, 3);
     pic.frame_offset = 999;
     assert_eq!(
@@ -1106,11 +1124,13 @@ fn traced_get_pic_idx_in_mg_low_delay_and_random_access() {
 /// if/else CHAIN and its priority.
 #[test]
 fn traced_update_pred_struct_and_pic_type_position_chain() {
-    let base_map = || {
-        let mut m = pp::MiniGopMap::default();
-        m.length[0] = 8;
-        m.idr_count[0] = 0;
-        m
+    let base_map = || pp::MiniGopMap {
+        length: {
+            let mut a = [0u32; pp::MINI_GOP_MAX_COUNT];
+            a[0] = 8;
+            a
+        },
+        ..Default::default()
     };
     let base_pic = || {
         let mut p = inter_frame(10, 0);
@@ -1792,4 +1812,263 @@ fn traced_list_and_ref_idx_tables() {
     assert_eq!(idx, [0, 1, 2, 3, 0, 1, 2]);
     // Slot 0 is INTRA_FRAME and both tables carry a 0 there.
     assert_eq!((pp::get_list_idx(0), pp::get_ref_frame_idx(0)), (0, 0));
+}
+
+// ---------------------------------------------------------------------------
+// Histogram scene detection — tier 4
+// ---------------------------------------------------------------------------
+//
+// `scene_transition_detector` is `static` AND its globalized symbol is
+// unusable: LLVM promoted its `PictureParentControlSet** window` parameter to
+// the current PPCS, so calling the promoted symbol with the source signature
+// segfaults (the finding is written up in `c_parity_picstruct_statics.rs`).
+// So this one is tier 4 with no upgrade path short of a byte-identity gate.
+
+fn flat_hist(f: impl Fn(usize, usize, usize) -> u32) -> Box<pp::RegionHistograms> {
+    let mut h = Box::new([[[0u32; 256]; 4]; 4]);
+    for w in 0..4 {
+        for y in 0..4 {
+            for b in 0..256 {
+                h[w][y][b] = f(w, y, b);
+            }
+        }
+    }
+    h
+}
+
+/// `calc_ahd` (`pd_process.c:55-84`) — the sum AND the active-region count.
+///
+/// Derivation: with a constant per-bin difference of `d` over 256 bins, each
+/// region contributes `256 * d`, and the active-region test is
+/// `ahd_per_region > region_width * region_height`. At 64x64 with a 4x4 grid
+/// each region is 16x16 = 256 pixels, so `d = 1` gives exactly 256 which is
+/// NOT `> 256` (no region counts), while `d = 2` gives 512 which is.
+#[test]
+fn traced_calc_ahd_sum_and_active_region_threshold() {
+    let a = flat_hist(|_, _, _| 10);
+    let b1 = flat_hist(|_, _, _| 9);
+    let (ahd, active) = pp::calc_ahd(&a, &b1, 64, 64, 4, 4);
+    assert_eq!(ahd, 16 * 256, "16 regions x 256 bins x |10-9|");
+    assert_eq!(active, 0, "256 is not > 256");
+
+    let b2 = flat_hist(|_, _, _| 8);
+    let (ahd, active) = pp::calc_ahd(&a, &b2, 64, 64, 4, 4);
+    assert_eq!(ahd, 16 * 512);
+    assert_eq!(active, 16, "512 > 256 in every region");
+
+    // A smaller active region grid changes the pixel count per region and so
+    // the threshold: at 2x2 over 64x64 each region is 32x32 = 1024 pixels, so
+    // 512 no longer qualifies -- and only 4 regions are visited at all.
+    let (ahd, active) = pp::calc_ahd(&a, &b2, 64, 64, 2, 2);
+    assert_eq!(ahd, 4 * 512);
+    assert_eq!(active, 0);
+
+    // Identical histograms: zero, and no active region.
+    assert_eq!(pp::calc_ahd(&a, &a, 64, 64, 4, 4), (0, 0));
+}
+
+/// `calc_ahd_pd` (`pd_process.c:5192-5215`) — the SIMPLER of the two, with no
+/// region-size test at all.
+///
+/// The two functions are easy to conflate; this pins that `calc_ahd_pd`
+/// returns only the sum and never looks at the picture dimensions.
+#[test]
+fn traced_calc_ahd_pd_is_sum_only() {
+    let a = flat_hist(|w, h, b| (w * 4 + h + b) as u32);
+    let b = flat_hist(|w, h, b| (w * 4 + h + b) as u32 + 3);
+    assert_eq!(pp::calc_ahd_pd(&a, &b, 4, 4), 16 * 256 * 3);
+    assert_eq!(pp::calc_ahd_pd(&a, &b, 2, 2), 4 * 256 * 3);
+    assert_eq!(pp::calc_ahd_pd(&a, &b, 1, 1), 256 * 3);
+    assert_eq!(pp::calc_ahd_pd(&a, &a, 4, 4), 0);
+}
+
+/// `copy_histograms` (`pd_process.c:4703-4719`) — it copies the FULL 4x4 grid.
+///
+/// The loops run over `MAX_NUMBER_OF_REGIONS_IN_{WIDTH,HEIGHT}`, not over the
+/// sequence's active region counts, so regions the detector never reads are
+/// still refreshed. A port that copied only the active regions would leave
+/// stale data behind and diverge the moment the region count changed.
+#[test]
+fn traced_copy_histograms_copies_the_full_grid() {
+    let mut state = pp::SceneDetectState::default();
+    let h = flat_hist(|w, y, b| (w * 1000 + y * 100 + b) as u32);
+    let mut inten = [[0u64; 4]; 4];
+    for w in 0..4 {
+        for y in 0..4 {
+            inten[w][y] = (w * 10 + y) as u64;
+        }
+    }
+    pp::copy_histograms(&mut state, &h, &inten);
+    for w in 0..4 {
+        for y in 0..4 {
+            assert_eq!(
+                state.prev_picture_histogram[w][y][255], h[w][y][255],
+                "[{w}][{y}]"
+            );
+            assert_eq!(state.prev_average_intensity_per_region[w][y], inten[w][y]);
+        }
+    }
+    // Including the corner a 2x2 detector would never touch.
+    assert_eq!(state.prev_picture_histogram[3][3][0], h[3][3][0]);
+}
+
+/// `num_64x64_in_pic` — the `NUM64x64INPIC` macro's shift.
+///
+/// `svt_log2f(BLOCK_SIZE_64) << 1` is `6 << 1` = 12, so the macro is
+/// `(w * h) >> 12`, not a division by 64.
+#[test]
+fn traced_num_64x64_in_pic_shift() {
+    assert_eq!(pp::num_64x64_in_pic(64, 64), 1);
+    assert_eq!(pp::num_64x64_in_pic(1920, 1080), (1920 * 1080) >> 12);
+    assert_eq!(
+        pp::num_64x64_in_pic(63, 63),
+        0,
+        "a sub-64x64 region rounds to zero"
+    );
+    assert_eq!(pp::num_64x64_in_pic(0, 0), 0);
+}
+
+/// `scene_transition_detector` (`pd_process.c:256-378`) — the accumulating
+/// region size, which is the quirk that makes this function hard to port.
+///
+/// Derivation. `region_width` and `region_height` are declared OUTSIDE the
+/// region loops and updated inside with `+=`. At 1918x1078 with a 4x4 grid the
+/// base sizes are 479 and 269, and the remainders are
+/// `1918 - 4*479 = 2` and `1078 - 4*269 = 2`. The height remainder is added on
+/// EVERY last-height iteration, i.e. once per width column, so `region_height`
+/// is 269, 271, 273, 275 in successive columns; the width remainder is added
+/// on every iteration of the FINAL column, so `region_width` walks 479 -> 487
+/// there. The threshold therefore differs between regions of identical actual
+/// size.
+///
+/// This test does not re-derive the whole detector; it pins the observable
+/// consequence: with a picture size that divides evenly the verdict is
+/// insensitive to which region carries a given difference, and with one that
+/// does not, it is not.
+#[test]
+fn traced_scene_transition_detector_region_size_accumulates() {
+    // A difference big enough to trip the threshold in a SMALL region but not
+    // in a large one, placed in the last region (largest accumulated size).
+    let make = |spike_w: usize, spike_h: usize, amount: u32| {
+        (
+            flat_hist(move |w, y, _| {
+                if w == spike_w && y == spike_h {
+                    amount
+                } else {
+                    0
+                }
+            }),
+            flat_hist(|_, _, _| 0),
+        )
+    };
+
+    // Evenly divisible: 1024x1024 over 4x4 gives 256x256 regions with zero
+    // remainder, so no accumulation happens and every region has the same
+    // threshold. The same spike must give the same per-region verdict wherever
+    // it sits.
+    let mut verdicts_even = Vec::new();
+    for (sw, sh) in [(0usize, 0usize), (3, 3), (1, 2)] {
+        let (cur, prev) = make(sw, sh, 40_000);
+        let mut st = pp::SceneDetectState {
+            prev_picture_histogram: prev,
+            ..Default::default()
+        };
+        let cur_i = [[100u64; 4]; 4];
+        let fut_i = [[200u64; 4]; 4];
+        let r = pp::scene_transition_detector(&mut st, &cur, &cur_i, &fut_i, 1024, 1024, 4, 4);
+        verdicts_even.push((r, st.ahd_running_avg[sw][sh]));
+    }
+    assert!(
+        verdicts_even.iter().all(|v| *v == verdicts_even[0]),
+        "with no remainder the region position must not matter: {verdicts_even:?}"
+    );
+
+    // The running average update: when NO abrupt change is seen, the region's
+    // average moves to (3*avg + ahd)/4. Starting from 0 with ahd 0, it stays 0.
+    let (cur, prev) = make(0, 0, 0);
+    let mut st = pp::SceneDetectState {
+        prev_picture_histogram: prev,
+        ..Default::default()
+    };
+    let flat_i = [[100u64; 4]; 4];
+    let changed = pp::scene_transition_detector(&mut st, &cur, &flat_i, &flat_i, 1024, 1024, 4, 4);
+    assert!(!changed, "identical histograms are not a scene change");
+    assert_eq!(st.ahd_running_avg, [[0u32; 4]; 4]);
+    assert!(!st.reset_running_avg, "no region was abrupt");
+
+    // reset_running_avg latches when at least half the regions are abrupt, and
+    // on the NEXT call it seeds the running average with the raw ahd instead
+    // of blending. Drive two frames to reach it.
+    let (cur, prev) = (flat_hist(|_, _, _| 5000), flat_hist(|_, _, _| 0));
+    let mut st = pp::SceneDetectState {
+        prev_picture_histogram: prev,
+        ..Default::default()
+    };
+    let cur_i = [[10u64; 4]; 4];
+    let fut_i = [[200u64; 4]; 4];
+    let _ = pp::scene_transition_detector(&mut st, &cur, &cur_i, &fut_i, 1024, 1024, 4, 4);
+    assert!(
+        st.reset_running_avg,
+        "every region difference is huge -> all abrupt"
+    );
+    // My first hand-derivation of the next two steps was WRONG and the test
+    // caught it. On frame 1 `reset_running_avg` is still FALSE (C's ctor
+    // zeroes it), so the seed does not happen; and the region IS abrupt, so
+    // the blend in the else-branch does not happen either. The average is
+    // therefore untouched at 0 after frame 1 — the latch only takes effect on
+    // the NEXT call.
+    assert_eq!(
+        st.ahd_running_avg[0][0], 0,
+        "frame 1 neither seeds nor blends"
+    );
+    let _ = pp::scene_transition_detector(&mut st, &cur, &cur_i, &fut_i, 1024, 1024, 4, 4);
+    // Each region's ahd is 256 bins x |5000 - 0|.
+    assert_eq!(
+        st.ahd_running_avg[0][0],
+        256 * 5000,
+        "with reset latched the average is SEEDED with ahd, not blended"
+    );
+}
+
+/// `perform_scene_change_detection` (`pd_process.c:4682-4700`) — which arm runs.
+///
+/// Measured settings, not guesses: `static_config.scene_change_detection` is
+/// force-zeroed (`enc_settings.c:839-843`) so the first arm is dead in
+/// mainline, while `vq_ctrls.sharpness_ctrls.scene_transition` is 1 in both
+/// arms of `derive_vq_params` and zeroed only for LOW_DELAY
+/// (`enc_handle.c:3282, 3291, 3324-3326`), so the SECOND arm is live in random
+/// access.
+#[test]
+fn traced_perform_scene_change_detection_arms() {
+    // Arm 1 (dead in mainline): the detector result becomes scene_change_flag
+    // and cra_flag is forced true.
+    let o = pp::perform_scene_change_detection(true, true, -1, false, || true);
+    assert!(o.scene_change_flag && o.cra_flag && o.is_scene_change_detected);
+    assert_eq!(
+        o.transition_detected, -1,
+        "arm 1 never touches transition_detected"
+    );
+
+    // Arm 2 (live in RA): scene_change_flag stays false and the result lands in
+    // transition_detected instead.
+    let o = pp::perform_scene_change_detection(false, true, -1, false, || true);
+    assert!(!o.scene_change_flag && !o.cra_flag);
+    assert_eq!(o.transition_detected, 1);
+
+    let o = pp::perform_scene_change_detection(false, true, 0, false, || false);
+    assert_eq!(o.transition_detected, 0);
+
+    // Already latched at 1: the detector is NOT re-run and the value stands.
+    let o = pp::perform_scene_change_detection(false, true, 1, false, || {
+        panic!("the detector must not run while transition_detected is latched")
+    });
+    assert_eq!(o.transition_detected, 1);
+
+    // Sharpness transition off (LOW_DELAY): neither arm runs.
+    let o = pp::perform_scene_change_detection(false, false, -1, true, || {
+        panic!("the detector must not run with both gates off")
+    });
+    assert!(!o.scene_change_flag);
+    assert!(o.cra_flag, "an incoming cra_flag survives");
+    assert_eq!(o.transition_detected, -1);
 }

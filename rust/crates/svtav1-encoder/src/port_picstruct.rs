@@ -3299,3 +3299,366 @@ pub fn copy_tf_params(
         TfParamsChoice::Disabled
     }
 }
+
+// ---------------------------------------------------------------------------
+// Histogram-based scene detection — pd_process.c:55-84, 256-378, 4682-4719,
+// 5192-5215
+// ---------------------------------------------------------------------------
+//
+// Reachability, measured rather than inferred. `static_config.scene_change_detection`
+// is force-zeroed with a warning (`enc_settings.c:839-843`), which makes it
+// tempting to call the whole detector dead. It is NOT:
+// `vq_ctrls.sharpness_ctrls.scene_transition` is set to 1 in BOTH arms of
+// `derive_vq_params` (`enc_handle.c:3282, 3291`) and only zeroed for
+// LOW_DELAY (`3324-3326`), so the transition path runs in random access and
+// its output becomes `pcs->transition_present`. `scs->calc_hist` follows the
+// same shape (`enc_handle.c:1353` makes it 1 whenever any TF type is
+// enabled), so `calc_ahd_pd` — and hence `pcs->ahd_error`, read at
+// `motion_estimation.c:1245` — is live there too.
+
+/// C `HISTOGRAM_NUMBER_OF_BINS` (`pcs.h:39`).
+pub const HISTOGRAM_NUMBER_OF_BINS: usize = 256;
+/// C `MAX_NUMBER_OF_REGIONS_IN_WIDTH` (`pcs.h:40`).
+pub const MAX_NUMBER_OF_REGIONS_IN_WIDTH: usize = 4;
+/// C `MAX_NUMBER_OF_REGIONS_IN_HEIGHT` (`pcs.h:41`).
+pub const MAX_NUMBER_OF_REGIONS_IN_HEIGHT: usize = 4;
+/// C `FLASH_TH` (`pd_process.c:170`).
+pub const FLASH_TH: u8 = 5;
+/// C `FADE_TH` (`pd_process.c:171`).
+pub const FADE_TH: u8 = 3;
+/// C `SCENE_TH` (`pd_process.c:172`).
+pub const SCENE_TH: u32 = 3000;
+
+/// C `NUM64x64INPIC(w, h)` (`pd_process.c:173`).
+///
+/// The macro is `((w * h) >> (svt_log2f(BLOCK_SIZE_64) << 1))`, i.e.
+/// `(w * h) >> 12` — `log2(64) == 6`, doubled is 12. Written out rather than
+/// re-deriving the shift at each call site.
+#[inline]
+#[must_use]
+pub fn num_64x64_in_pic(w: u32, h: u32) -> u32 {
+    (w.wrapping_mul(h)) >> 12
+}
+
+/// A per-region luma histogram plane, as `pcs->picture_histogram` holds it.
+pub type RegionHistograms = [[[u32; HISTOGRAM_NUMBER_OF_BINS]; MAX_NUMBER_OF_REGIONS_IN_HEIGHT];
+    MAX_NUMBER_OF_REGIONS_IN_WIDTH];
+/// `pcs->average_intensity_per_region` (`pcs.h:852`).
+///
+/// It is `uint64_t[4][4]`, NOT `uint8_t[4][4]` — the values are 8-bit luma
+/// means but the storage is 64-bit, and `scene_transition_detector` narrows
+/// each one with an explicit `(int16_t)` cast before subtracting. Modelling it
+/// as `u8` would silently change what an out-of-range value does.
+pub type RegionIntensities =
+    [[u64; MAX_NUMBER_OF_REGIONS_IN_HEIGHT]; MAX_NUMBER_OF_REGIONS_IN_WIDTH];
+
+/// C `calc_ahd` (`pd_process.c:55-84`) — static.
+///
+/// Accumulated histogram difference between two pictures, plus a count of the
+/// regions whose own difference exceeds their pixel count. Fills
+/// `tf_ahd_error_to_central`, which `temporal_filtering.c:2879` uses to drop
+/// dissimilar pictures from the filter window.
+///
+/// Returns `(ahd, active_region_cnt_increment)`. C takes `active_region_cnt`
+/// as an in/out pointer and only ever INCREMENTS it, so the caller adds.
+///
+/// Note the region size: `ref_pcs->enhanced_pic->{width,height}` divided by
+/// the region counts, with NO remainder handling — unlike
+/// [`scene_transition_detector`], which does add the remainder (and does it in
+/// a way that accumulates; see there).
+#[must_use]
+pub fn calc_ahd(
+    input_hist: &RegionHistograms,
+    ref_hist: &RegionHistograms,
+    ref_width: u32,
+    ref_height: u32,
+    regions_per_width: usize,
+    regions_per_height: usize,
+) -> (u32, u8) {
+    let region_width = ref_width / regions_per_width as u32;
+    let region_height = ref_height / regions_per_height as u32;
+    let mut ahd: u32 = 0;
+    let mut active_region_cnt: u8 = 0;
+    for w in 0..regions_per_width {
+        for h in 0..regions_per_height {
+            let mut ahd_per_region: u32 = 0;
+            for bin in 0..HISTOGRAM_NUMBER_OF_BINS {
+                ahd_per_region = ahd_per_region.wrapping_add(
+                    (input_hist[w][h][bin] as i32 - ref_hist[w][h][bin] as i32).unsigned_abs(),
+                );
+            }
+            ahd = ahd.wrapping_add(ahd_per_region);
+            if ahd_per_region > region_width.wrapping_mul(region_height) {
+                active_region_cnt = active_region_cnt.wrapping_add(1);
+            }
+        }
+    }
+    (ahd, active_region_cnt)
+}
+
+/// C `calc_ahd_pd` (`pd_process.c:5192-5215`) — static.
+///
+/// Fills `pcs->ahd_error`, read by `motion_estimation.c:1245` as an ME gating
+/// threshold. Live whenever `scs->calc_hist` is set, which is whenever any TF
+/// type is enabled — i.e. in the default random-access config.
+///
+/// Unlike [`calc_ahd`] this one sums a single running total with no per-region
+/// bookkeeping and no region-size test.
+#[must_use]
+pub fn calc_ahd_pd(
+    cur_hist: &RegionHistograms,
+    prev_hist: &RegionHistograms,
+    regions_per_width: usize,
+    regions_per_height: usize,
+) -> u32 {
+    let mut ahd: u32 = 0;
+    for w in 0..regions_per_width {
+        for h in 0..regions_per_height {
+            for bin in 0..HISTOGRAM_NUMBER_OF_BINS {
+                ahd = ahd.wrapping_add(
+                    (cur_hist[w][h][bin] as i32 - prev_hist[w][h][bin] as i32).unsigned_abs(),
+                );
+            }
+        }
+    }
+    ahd
+}
+
+/// The cross-picture detector state `scene_transition_detector` carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SceneDetectState {
+    /// C `ctx->ahd_running_avg[w][h]`.
+    pub ahd_running_avg: [[u32; MAX_NUMBER_OF_REGIONS_IN_HEIGHT]; MAX_NUMBER_OF_REGIONS_IN_WIDTH],
+    /// C `ctx->reset_running_avg`.
+    pub reset_running_avg: bool,
+    /// C `ctx->prev_picture_histogram`.
+    pub prev_picture_histogram: alloc::boxed::Box<RegionHistograms>,
+    /// C `ctx->prev_average_intensity_per_region`.
+    pub prev_average_intensity_per_region: RegionIntensities,
+}
+
+impl Default for SceneDetectState {
+    fn default() -> Self {
+        Self {
+            ahd_running_avg: [[0; MAX_NUMBER_OF_REGIONS_IN_HEIGHT]; MAX_NUMBER_OF_REGIONS_IN_WIDTH],
+            // C's ctor zeroes the context, so reset_running_avg starts FALSE
+            // and the first picture therefore folds its ahd into a zero
+            // running average rather than seeding it. That asymmetry is C's.
+            reset_running_avg: false,
+            prev_picture_histogram: alloc::boxed::Box::new(
+                [[[0u32; HISTOGRAM_NUMBER_OF_BINS]; MAX_NUMBER_OF_REGIONS_IN_HEIGHT];
+                    MAX_NUMBER_OF_REGIONS_IN_WIDTH],
+            ),
+            prev_average_intensity_per_region: [[0; MAX_NUMBER_OF_REGIONS_IN_HEIGHT];
+                MAX_NUMBER_OF_REGIONS_IN_WIDTH],
+        }
+    }
+}
+
+/// C `scene_transition_detector` (`pd_process.c:256-378`) — static.
+///
+/// Its output becomes `pcs->transition_present` via `init_pic_settings`, which
+/// sharpness-tuned MD reads. Random access only.
+///
+/// **THE TRAP, and it is a real C quirk that must be reproduced, not tidied.**
+/// `region_width` and `region_height` are declared OUTSIDE the region loops
+/// and updated inside with `region_width += region_width_offset;`. The offsets
+/// are non-zero only on the last row/column, so:
+/// * `region_height` grows by the height remainder on EVERY last-height
+///   iteration, i.e. once per width column, and the growth persists into the
+///   next column;
+/// * `region_width` grows by the width remainder on every iteration of the
+///   FINAL width column, i.e. `regions_per_height` times.
+///
+/// `region_threshold` is computed from those accumulating values, so the
+/// threshold is different in later regions than in earlier ones even for
+/// identically sized regions. Transcribed literally.
+///
+/// Returns whether a scene change was detected; updates
+/// `state.ahd_running_avg` and `state.reset_running_avg` in place.
+#[must_use]
+pub fn scene_transition_detector(
+    state: &mut SceneDetectState,
+    current_hist: &RegionHistograms,
+    current_intensity: &RegionIntensities,
+    future_intensity: &RegionIntensities,
+    picture_width: u32,
+    picture_height: u32,
+    regions_per_width: usize,
+    regions_per_height: usize,
+) -> bool {
+    let mut is_abrupt_change_count: u32 = 0;
+    let mut is_scene_change_count: u32 = 0;
+
+    // C: (uint32_t)(((float)((w_regions * h_regions) * 50) / 100) + 0.5)
+    let region_count_threshold =
+        ((((regions_per_width * regions_per_height) * 50) as f32 / 100.0) + 0.5) as u32;
+
+    // Declared OUTSIDE the loops in C and mutated inside — see the doc.
+    let mut region_width = picture_width / regions_per_width as u32;
+    let mut region_height = picture_height / regions_per_height as u32;
+
+    for w in 0..regions_per_width {
+        for h in 0..regions_per_height {
+            let mut is_abrupt_change = false;
+            let mut is_scene_change = false;
+
+            let mut ahd: u32 = 0;
+
+            let region_width_offset = if w == regions_per_width - 1 {
+                picture_width.wrapping_sub(regions_per_width as u32 * region_width)
+            } else {
+                0
+            };
+            let region_height_offset = if h == regions_per_height - 1 {
+                picture_height.wrapping_sub(regions_per_height as u32 * region_height)
+            } else {
+                0
+            };
+            region_width = region_width.wrapping_add(region_width_offset);
+            region_height = region_height.wrapping_add(region_height_offset);
+
+            let region_threshold =
+                SCENE_TH.wrapping_mul(num_64x64_in_pic(region_width, region_height));
+
+            for bin in 0..HISTOGRAM_NUMBER_OF_BINS {
+                ahd = ahd.wrapping_add(
+                    (current_hist[w][h][bin] as i32
+                        - state.prev_picture_histogram[w][h][bin] as i32)
+                        .unsigned_abs(),
+                );
+            }
+
+            if state.reset_running_avg {
+                state.ahd_running_avg[w][h] = ahd;
+            }
+
+            let ahd_error = (state.ahd_running_avg[w][h] as i32 - ahd as i32).unsigned_abs();
+
+            if ahd_error > region_threshold && ahd >= ahd_error {
+                is_abrupt_change = true;
+            }
+            if is_abrupt_change {
+                // Average intensity differences, all narrowed to uint8_t by C
+                // AFTER the abs — a difference above 255 wraps, which is
+                // reproduced with the same truncation.
+                // C: `(uint8_t)ABS((int16_t)a - (int16_t)b)`. Each 64-bit
+                // value is TRUNCATED to int16 first, the subtraction happens
+                // in `int` after integer promotion, and the absolute value is
+                // then truncated to uint8. All three narrowings are
+                // reproduced exactly; collapsing them changes the result for
+                // any value outside 0..=255.
+                let aid = |a: u64, b: u64| -> u8 {
+                    let d = i32::from(a as i16) - i32::from(b as i16);
+                    d.unsigned_abs() as u8
+                };
+                let prev = state.prev_average_intensity_per_region[w][h];
+                let aid_future_past = aid(future_intensity[w][h], prev);
+                let aid_future_present = aid(future_intensity[w][h], current_intensity[w][h]);
+                let aid_present_past = aid(current_intensity[w][h], prev);
+
+                if aid_future_past < FLASH_TH
+                    && aid_future_present >= FLASH_TH
+                    && aid_present_past >= FLASH_TH
+                {
+                    // A flash, not a scene change.
+                } else if aid_future_present < FADE_TH && aid_present_past < FADE_TH {
+                    // A fade, not a scene change.
+                } else {
+                    is_scene_change = true;
+                }
+            } else {
+                state.ahd_running_avg[w][h] = (3u32
+                    .wrapping_mul(state.ahd_running_avg[w][h])
+                    .wrapping_add(ahd))
+                    / 4;
+            }
+            is_abrupt_change_count += u32::from(is_abrupt_change);
+            is_scene_change_count += u32::from(is_scene_change);
+        }
+    }
+
+    state.reset_running_avg = is_abrupt_change_count >= region_count_threshold;
+    is_scene_change_count >= region_count_threshold
+}
+
+/// What `perform_scene_change_detection` decided.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SceneChangeOutcome {
+    /// C `pcs->scene_change_flag`.
+    pub scene_change_flag: bool,
+    /// C `pcs->cra_flag` after the update.
+    pub cra_flag: bool,
+    /// C `ctx->transition_detected`.
+    pub transition_detected: i32,
+    /// C `ctx->is_scene_change_detected`.
+    pub is_scene_change_detected: bool,
+}
+
+/// C `perform_scene_change_detection` (`pd_process.c:4682-4700`) — static.
+///
+/// Which of the two detector calls fires is the whole content of this
+/// function, and both are gated on settings measured above:
+/// * `static_config.scene_change_detection` is force-zeroed
+///   (`enc_settings.c:839-843`), so the first arm is dead in mainline;
+/// * `vq_ctrls.sharpness_ctrls.scene_transition` is 1 in both arms of
+///   `derive_vq_params` and zeroed only for LOW_DELAY, so the SECOND arm is
+///   live in random access.
+///
+/// The second arm also only runs while `transition_detected` is -1 or 0 — once
+/// a transition is latched at 1 it stays until `init_pic_settings` consumes it
+/// at a base-layer picture.
+///
+/// `run_detector` is the [`scene_transition_detector`] result, computed by the
+/// caller because it needs the picture window; `None` means the caller
+/// determined neither arm fires.
+#[must_use]
+pub fn perform_scene_change_detection(
+    scene_change_detection_enabled: bool,
+    sharpness_scene_transition: bool,
+    transition_detected_in: i32,
+    cra_flag_in: bool,
+    run_detector: impl FnOnce() -> bool,
+) -> SceneChangeOutcome {
+    let mut transition_detected = transition_detected_in;
+    let scene_change_flag = if scene_change_detection_enabled {
+        run_detector()
+    } else {
+        if sharpness_scene_transition
+            && (transition_detected_in == -1 || transition_detected_in == 0)
+        {
+            transition_detected = i32::from(run_detector());
+        }
+        false
+    };
+    SceneChangeOutcome {
+        scene_change_flag,
+        cra_flag: if scene_change_flag { true } else { cra_flag_in },
+        transition_detected,
+        is_scene_change_detected: scene_change_flag,
+    }
+}
+
+/// C `copy_histograms` (`pd_process.c:4703-4719`) — static.
+///
+/// Carries the current picture's histogram forward for the next input
+/// picture. Without it [`calc_ahd_pd`] and [`scene_transition_detector`] read
+/// zeros and every downstream threshold decision flips.
+///
+/// Trap: the loops run over `MAX_NUMBER_OF_REGIONS_IN_{WIDTH,HEIGHT}` (4 and
+/// 4), NOT over `scs->picture_analysis_number_of_regions_per_*`. So regions
+/// the detector never reads are copied anyway — reproduced, because a port
+/// that copied only the active regions would leave stale data in the rest and
+/// diverge the moment the region count changes.
+pub fn copy_histograms(
+    state: &mut SceneDetectState,
+    picture_histogram: &RegionHistograms,
+    average_intensity_per_region: &RegionIntensities,
+) {
+    for w in 0..MAX_NUMBER_OF_REGIONS_IN_WIDTH {
+        for h in 0..MAX_NUMBER_OF_REGIONS_IN_HEIGHT {
+            state.prev_picture_histogram[w][h] = picture_histogram[w][h];
+            state.prev_average_intensity_per_region[w][h] = average_intensity_per_region[w][h];
+        }
+    }
+}

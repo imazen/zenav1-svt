@@ -328,3 +328,102 @@ int32_t ref_get_similar_ref_brightness(uint8_t slice_type, uint8_t hierarchical_
     free(ppcs);
     return r;
 }
+
+/* ---- set_ref_list_counts / set_all_ref_frame_type / scene_transition_detector
+       (pd_process.c:1804-1900, 1044-1099, 256-378) ----
+ *
+ * These three are `static` in pd_process.c. build.rs promotes them to global
+ * symbols with `llvm-objcopy --globalize-symbol` on a PRIVATE COPY of the
+ * CMake object file and links that object alongside the archive, so these
+ * shims drive the REAL C code (evidence tier 1) rather than a transcription.
+ *
+ * Guarded by SVTAV1_CREF_PICSTRUCT_STATICS, which build.rs defines only when
+ * that promotion actually happened. */
+#ifdef SVTAV1_CREF_PICSTRUCT_STATICS
+
+void set_ref_list_counts(PictureParentControlSet* pcs, PictureDecisionContext* ctx);
+void set_all_ref_frame_type(PictureDecisionContext* ctx, PictureParentControlSet* ppcs,
+                            MvReferenceFrame ref_frame_arr[], uint8_t* tot_ref_frames);
+
+void ref_set_ref_list_counts(uint8_t slice_type, uint8_t frame_type, uint8_t update_type, uint8_t is_overlay,
+                             uint8_t pic_pred_type, uint8_t seq_pred_structure, const uint64_t* ref_poc_array,
+                             uint8_t base_l0, uint8_t base_l1, uint8_t nonbase_l0, uint8_t nonbase_l1,
+                             uint64_t picture_number, uint64_t sframe_poc, uint8_t* out_l0, uint8_t* out_l1) {
+    PictureParentControlSet* ppcs = (PictureParentControlSet*)calloc(1, sizeof(*ppcs));
+    SequenceControlSet*      scs  = (SequenceControlSet*)calloc(1, sizeof(*scs));
+    PredictionStructure*     ps   = (PredictionStructure*)calloc(1, sizeof(*ps));
+    PictureDecisionContext*  ctx  = (PictureDecisionContext*)calloc(1, sizeof(*ctx));
+
+    ppcs->slice_type              = (SliceType)slice_type;
+    ppcs->frm_hdr.frame_type      = (FrameType)frame_type;
+    ppcs->update_type             = (SvtAv1FrameUpdateType)update_type;
+    ppcs->is_overlay              = is_overlay != 0;
+    ppcs->picture_number          = picture_number;
+    ps->pred_type                 = (PredStructure)pic_pred_type;
+    ppcs->pred_struct_ptr         = ps;
+    scs->static_config.pred_structure       = (PredStructure)seq_pred_structure;
+    scs->mrp_ctrls.base_ref_list0_count     = base_l0;
+    scs->mrp_ctrls.base_ref_list1_count     = base_l1;
+    scs->mrp_ctrls.non_base_ref_list0_count = nonbase_l0;
+    scs->mrp_ctrls.non_base_ref_list1_count = nonbase_l1;
+    ppcs->scs                     = scs;
+    ctx->sframe_poc               = sframe_poc;
+    for (int i = 0; i < 7; ++i) {
+        ppcs->av1_ref_signal.ref_poc_array[i] = ref_poc_array[i];
+    }
+
+    set_ref_list_counts(ppcs, ctx);
+    *out_l0 = ppcs->ref_list0_count;
+    *out_l1 = ppcs->ref_list1_count;
+    free(ctx);
+    free(ps);
+    free(scs);
+    free(ppcs);
+}
+
+/* ctx->sframe_poc is left 0 so prune_sframe_refs (called at the tail of
+ * set_all_ref_frame_type) is a no-op, matching the port's envelope. */
+uint8_t ref_set_all_ref_frame_type(uint8_t slice_type, uint8_t l0_try, uint8_t l1_try, int8_t* out_arr) {
+    PictureParentControlSet* ppcs = (PictureParentControlSet*)calloc(1, sizeof(*ppcs));
+    SequenceControlSet*      scs  = (SequenceControlSet*)calloc(1, sizeof(*scs));
+    PictureDecisionContext*  ctx  = (PictureDecisionContext*)calloc(1, sizeof(*ctx));
+
+    ppcs->slice_type          = (SliceType)slice_type;
+    ppcs->ref_list0_count_try = l0_try;
+    ppcs->ref_list1_count_try = l1_try;
+    ppcs->scs                 = scs;
+
+    uint8_t tot = 0;
+    set_all_ref_frame_type(ctx, ppcs, ppcs->ref_frame_type_arr, &tot);
+    for (uint8_t i = 0; i < tot; ++i) {
+        out_arr[i] = (int8_t)ppcs->ref_frame_type_arr[i];
+    }
+    free(ctx);
+    free(scs);
+    free(ppcs);
+    return tot;
+}
+
+/* scene_transition_detector is DELIBERATELY NOT shimmed here, and the reason
+ * is a measured hazard that applies to this whole technique:
+ *
+ *   `llvm-objcopy --globalize-symbol` gives you a LINKABLE symbol. It does NOT
+ *   give you the source-level ABI. LLVM is free to change the calling
+ *   convention of an `internal` function, and for scene_transition_detector it
+ *   did: the source signature is
+ *     (PictureDecisionContext*, SequenceControlSet*, PictureParentControlSet** window)
+ *   but the compiled symbol's third argument is the CURRENT PPCS itself
+ *   (argument promotion of window[1]) --
+ *     80e0: ldr  w10, [x1, #0x86c]   ; scs->picture_analysis_number_of_regions_per_width
+ *     8110: ldr  x15, [x2, #0x28]    ; x2->enhanced_pic  (PPCS+40), not window[1]
+ *     8114: ldrh w14, [x15, #0x68]   ; ->width
+ *   Calling it with the source signature reads enhanced_pic out of the array
+ *   and segfaults on a NULL+0x68, which is exactly what happened.
+ *
+ * The two functions that ARE shimmed above were checked the same way and their
+ * ABIs are unchanged: set_ref_list_counts starts `ldrb w8, [x0, #0xe8]`
+ * (PPCS.slice_type at offset 232) so x0 is the PPCS and x1 the context, and
+ * set_all_ref_frame_type uses x0..x3 for its four source parameters. A
+ * globalized static is only usable at tier 1 after that check. */
+
+#endif /* SVTAV1_CREF_PICSTRUCT_STATICS */

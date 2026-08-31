@@ -393,3 +393,122 @@ pub fn get_similar_ref_brightness(
         ) != 0
     }
 }
+
+// ---------------------------------------------------------------------------
+// The three `static` pd_process.c functions promoted by build.rs
+// ---------------------------------------------------------------------------
+//
+// `set_ref_list_counts`, `set_all_ref_frame_type` and
+// `scene_transition_detector` are `static` in C, so `nm -g` on
+// libSvtAv1Enc.a does not find them. build.rs promotes them with
+// `llvm-objcopy --globalize-symbol` on a PRIVATE COPY of the CMake object
+// file and links that object alongside the archive; see
+// `link_globalized_pd_statics` there. When the object or objcopy is missing
+// on the host, build.rs emits a `cargo:warning` and the `picstruct_statics`
+// cfg stays off, so everything below disappears rather than half-linking.
+
+/// Whether build.rs was able to promote the `static` pd_process.c functions on
+/// this host, i.e. whether [`set_ref_list_counts`] and
+/// [`set_all_ref_frame_type`] exist.
+///
+/// The SKIP DECISION BELONGS TO THE CALLER, not to a test body: set
+/// `SVT_CREF_REQUIRE_PICSTRUCT_STATICS=1` to turn an unavailable oracle into a
+/// loud test failure instead of a narrower test suite.
+pub const PICSTRUCT_STATICS_AVAILABLE: bool = cfg!(picstruct_statics);
+
+#[cfg(picstruct_statics)]
+unsafe extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn ref_set_ref_list_counts(
+        slice_type: u8,
+        frame_type: u8,
+        update_type: u8,
+        is_overlay: u8,
+        pic_pred_type: u8,
+        seq_pred_structure: u8,
+        ref_poc_array: *const u64,
+        base_l0: u8,
+        base_l1: u8,
+        nonbase_l0: u8,
+        nonbase_l1: u8,
+        picture_number: u64,
+        sframe_poc: u64,
+        out_l0: *mut u8,
+        out_l1: *mut u8,
+    );
+
+    fn ref_set_all_ref_frame_type(slice_type: u8, l0_try: u8, l1_try: u8, out_arr: *mut i8) -> u8;
+}
+
+/// C `set_ref_list_counts` (`pd_process.c:1804-1900`), reached through the
+/// promoted symbol. Returns `(ref_list0_count, ref_list1_count)`, or `None`
+/// when the promotion was not possible on this host (see
+/// [`PICSTRUCT_STATICS_AVAILABLE`]).
+#[must_use]
+#[allow(clippy::too_many_arguments, unused_variables)]
+pub fn set_ref_list_counts(
+    slice_type: u8,
+    frame_type: u8,
+    update_type: u8,
+    is_overlay: bool,
+    pic_pred_type: u8,
+    seq_pred_structure: u8,
+    ref_poc_array: &[u64; 7],
+    base_l0: u8,
+    base_l1: u8,
+    nonbase_l0: u8,
+    nonbase_l1: u8,
+    picture_number: u64,
+    sframe_poc: u64,
+) -> Option<(u8, u8)> {
+    #[cfg(picstruct_statics)]
+    {
+        let (mut l0, mut l1) = (0u8, 0u8);
+        unsafe {
+            ref_set_ref_list_counts(
+                slice_type,
+                frame_type,
+                update_type,
+                u8::from(is_overlay),
+                pic_pred_type,
+                seq_pred_structure,
+                ref_poc_array.as_ptr(),
+                base_l0,
+                base_l1,
+                nonbase_l0,
+                nonbase_l1,
+                picture_number,
+                sframe_poc,
+                &mut l0,
+                &mut l1,
+            );
+        }
+        Some((l0, l1))
+    }
+    #[cfg(not(picstruct_statics))]
+    {
+        None
+    }
+}
+
+/// C `set_all_ref_frame_type` (`pd_process.c:1044-1099`), reached through the
+/// promoted symbol. Returns the ordered candidate set, or `None` when the
+/// promotion was not possible on this host.
+///
+/// `ctx->sframe_poc` is left 0 so the `prune_sframe_refs` tail is a no-op,
+/// matching the port's envelope.
+#[must_use]
+#[allow(unused_variables)]
+pub fn set_all_ref_frame_type(slice_type: u8, l0_try: u8, l1_try: u8) -> Option<Vec<i8>> {
+    #[cfg(picstruct_statics)]
+    {
+        let mut arr = [0i8; 32];
+        let tot =
+            unsafe { ref_set_all_ref_frame_type(slice_type, l0_try, l1_try, arr.as_mut_ptr()) };
+        Some(arr[..tot as usize].to_vec())
+    }
+    #[cfg(not(picstruct_statics))]
+    {
+        None
+    }
+}
