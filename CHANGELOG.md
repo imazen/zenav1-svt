@@ -142,7 +142,21 @@ Crates are not published to crates.io yet — depend by git.
   (enc_dec_process.c:36-56, :2802-2806, :2908-2912), and `svt_aom_mv_err_cost`
   / `_light` over the NMV tables (av1me.c:141/:126 — the arm the inter sub-pel
   search reads through `x->mv_cost_stack`, which `c_parity_intrabc.rs` covers
-  only at `MvSubpelPrecision::None` over the DV tables).
+  only at `MvSubpelPrecision::None` over the DV tables). `FrameContext` gains
+  the `nmvc` field C's `FRAME_CONTEXT` has beside `ndvc` (seeded from the same
+  `default_nmv_context`, cabac_context_model.c:794-795) and `avg_cdf_with` now
+  averages BOTH through the ported `avg_nmv`, as C's `avg_cdf_symbols` does
+  (enc_dec_process.c:2638-2639), replacing an inline re-enumeration of `ndvc`'s
+  fields. Byte-neutral: nothing reads `nmvc` yet (the inter refusal still
+  stands), and averaging two equal contexts is the identity — pinned by
+  `avg_nmv_matches_the_previous_inline_ndvc_enumeration` (replays the old
+  inline code verbatim), `avg_cdf_with_actually_averages_nmvc` (anti-vacuity:
+  fails if the new call is dropped) and `nmvc_defaults_and_is_inert_under_avg`.
+  The module docs also record the nine-step emission order around the MV write
+  (entropy_coding.c:5196-5300), which of those steps have no port, and the two
+  traps in it — the DRL predicate being a different mode set from the MV
+  predicate, and the MV write reading the already-`lower_mv_precision`-rounded
+  `predmv[ref]` rather than a raw ref-MV-stack entry.
   Gate: `crates/svtav1-encoder/tests/c_parity_mv_code.rs`, 17 tests driving
   the REAL exported symbols `svt_av1_encode_mv`, `svt_av1_get_mv_joint`,
   `svt_aom_estimate_mv_rate`, `svt_av1_mv_bit_cost{,_light}`,

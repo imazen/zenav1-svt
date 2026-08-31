@@ -258,6 +258,20 @@ pub struct FrameContext {
     /// (md_rate_estimation.c:854-855).
     pub intrabc_cdf: [AomCdfProb; 3],
 
+    /// Inter MV entropy context — C `FRAME_CONTEXT.nmvc`. Seeded from
+    /// `default_nmv_context` (cabac_context_model.c:794) exactly like
+    /// [`Self::ndvc`], and adapted independently of it: `nmvc` codes INTER
+    /// MV differences (`svt_av1_encode_mv`, entropy_coding.c:1492, at the
+    /// frame's `MvSubpelPrecision`) while `ndvc` codes only IntraBC DVs at
+    /// `MV_SUBPEL_NONE`. The writer adapts it in place on any frame with
+    /// `allow_update_cdf`; MD's shadow replay
+    /// ([`crate::inter_mv_code::update_mv_stats`]) is separately gated by
+    /// `cdf_ctrl.update_mv`. Inert on every current gate cell — the public
+    /// entry point still refuses inter frames — but it is the frame-level
+    /// context an inter pack must thread, and without it a per-block fresh
+    /// context is not decodable.
+    pub nmvc: crate::entropy::mv_coding::NmvContext,
+
     /// DV (displacement vector) entropy context — C FRAME_CONTEXT.ndvc.
     /// Seeded from the EXACT same `default_nmv_context` as `nmvc`
     /// (cabac_context_model.c:795), but adapted independently: `ndvc` only
@@ -576,6 +590,9 @@ impl FrameContext {
             // C seeds ndvc from default_nmv_context — the SAME table as nmvc
             // (cabac_context_model.c:795); NmvContext::default() is that
             // table (drift-tested vs FcTable::Nmvc in tests/c_parity_mv.rs).
+            // C seeds BOTH nmvc and ndvc from default_nmv_context
+            // (cabac_context_model.c:794-795).
+            nmvc: crate::entropy::mv_coding::NmvContext::default(),
             ndvc: crate::entropy::mv_coding::NmvContext::default(),
             txfm_partition_cdf: crate::entropy::default_cdfs::TXFM_PARTITION_CDF,
             // Segmentation defaults (cabac_context_model.c:652-664, installed
@@ -617,33 +634,16 @@ impl FrameContext {
             wt_left,
             wt_tr,
         );
-        avg(
-            &mut self.ndvc.joints_cdf,
-            &tr.ndvc.joints_cdf,
-            wt_left,
-            wt_tr,
-        );
-        for i in 0..2 {
-            let (l, r) = (&mut self.ndvc.comps[i], &tr.ndvc.comps[i]);
-            avg(&mut l.classes_cdf, &r.classes_cdf, wt_left, wt_tr);
-            avg(
-                l.class0_fp_cdf.as_flattened_mut(),
-                r.class0_fp_cdf.as_flattened(),
-                wt_left,
-                wt_tr,
-            );
-            avg(&mut l.fp_cdf, &r.fp_cdf, wt_left, wt_tr);
-            avg(&mut l.sign_cdf, &r.sign_cdf, wt_left, wt_tr);
-            avg(&mut l.class0_hp_cdf, &r.class0_hp_cdf, wt_left, wt_tr);
-            avg(&mut l.hp_cdf, &r.hp_cdf, wt_left, wt_tr);
-            avg(&mut l.class0_cdf, &r.class0_cdf, wt_left, wt_tr);
-            avg(
-                l.bits_cdf.as_flattened_mut(),
-                r.bits_cdf.as_flattened(),
-                wt_left,
-                wt_tr,
-            );
-        }
+        // C `avg_cdf_symbols` averages nmvc THEN ndvc through the same
+        // `avg_nmv` helper (enc_dec_process.c:2638-2639). The port used to
+        // re-enumerate ndvc's fields inline here; it now calls the single
+        // ported `avg_nmv`, which is field-coverage-tested in
+        // `tests/c_parity_mv_code.rs::avg_nmv_covers_every_field`. The
+        // replacement is byte-neutral by construction (same fields, same
+        // order, same per-entry `avg_cdf_entries`) and is pinned as such by
+        // `avg_nmv_matches_the_previous_inline_ndvc_enumeration` below.
+        crate::inter_mv_code::avg_nmv(&mut self.nmvc, &tr.nmvc, wt_left, wt_tr);
+        crate::inter_mv_code::avg_nmv(&mut self.ndvc, &tr.ndvc, wt_left, wt_tr);
         avg(
             self.cfl_alpha_cdf.as_flattened_mut(),
             tr.cfl_alpha_cdf.as_flattened(),
@@ -2663,5 +2663,185 @@ mod tests {
             fc.spatial_pred_seg_cdf, cdf_before,
             "no symbol, no adaptation"
         );
+    }
+
+    /// The `avg_cdf_with` refactor (the inline `ndvc` field enumeration
+    /// became a call to [`crate::inter_mv_code::avg_nmv`]) must be
+    /// byte-neutral. This replays the PREVIOUS inline enumeration verbatim on
+    /// a clone and asserts the two agree field-for-field, so the refactor
+    /// cannot have dropped or reordered a field.
+    ///
+    /// It also proves the inputs actually differ — averaging two equal
+    /// contexts is the identity (`avg_cdf_equal_contexts_is_identity`), so a
+    /// test over equal contexts would pass no matter what the helper did.
+    #[test]
+    fn avg_nmv_matches_the_previous_inline_ndvc_enumeration() {
+        use crate::entropy::cdf::avg_cdf_entries as avg;
+        use crate::entropy::mv_coding::{MvSubpelPrecision, NmvContext};
+        use crate::inter_mv_code::update_mv_stats;
+        use svtav1_types::motion::Mv;
+
+        // Two DIFFERENT contexts, built by adapting the default through two
+        // different MV sequences.
+        let mut left = NmvContext::default();
+        let mut tr = NmvContext::default();
+        for k in 0..40i32 {
+            let m = Mv {
+                x: (k * 37 % 601 - 300) as i16,
+                y: (k * 53 % 401 - 200) as i16,
+            };
+            update_mv_stats(&mut left, m, Mv::ZERO, MvSubpelPrecision::High);
+            let m2 = Mv {
+                x: (k * 11 % 257 - 128) as i16,
+                y: (k * 97 % 511 - 255) as i16,
+            };
+            update_mv_stats(&mut tr, m2, Mv::ZERO, MvSubpelPrecision::Low);
+        }
+        assert_ne!(
+            left.joints_cdf, tr.joints_cdf,
+            "the two contexts must differ or this test is vacuous"
+        );
+
+        // C AVG_CDF_WEIGHT_LEFT / AVG_CDF_WEIGHT_TOP (enc_dec_process.c).
+        let (wt_left, wt_tr) = (3i32, 1i32);
+
+        // The PREVIOUS inline enumeration, verbatim.
+        let mut want = left.clone();
+        avg(&mut want.joints_cdf, &tr.joints_cdf, wt_left, wt_tr);
+        for i in 0..2 {
+            let (l, r) = (&mut want.comps[i], &tr.comps[i]);
+            avg(&mut l.classes_cdf, &r.classes_cdf, wt_left, wt_tr);
+            avg(
+                l.class0_fp_cdf.as_flattened_mut(),
+                r.class0_fp_cdf.as_flattened(),
+                wt_left,
+                wt_tr,
+            );
+            avg(&mut l.fp_cdf, &r.fp_cdf, wt_left, wt_tr);
+            avg(&mut l.sign_cdf, &r.sign_cdf, wt_left, wt_tr);
+            avg(&mut l.class0_hp_cdf, &r.class0_hp_cdf, wt_left, wt_tr);
+            avg(&mut l.hp_cdf, &r.hp_cdf, wt_left, wt_tr);
+            avg(&mut l.class0_cdf, &r.class0_cdf, wt_left, wt_tr);
+            avg(
+                l.bits_cdf.as_flattened_mut(),
+                r.bits_cdf.as_flattened(),
+                wt_left,
+                wt_tr,
+            );
+        }
+        assert_ne!(
+            want.joints_cdf, left.joints_cdf,
+            "averaging changed nothing — the probe is inert"
+        );
+
+        let mut got = left.clone();
+        crate::inter_mv_code::avg_nmv(&mut got, &tr, wt_left, wt_tr);
+
+        assert_eq!(got.joints_cdf, want.joints_cdf, "joints_cdf");
+        for i in 0..2 {
+            let (g, w) = (&got.comps[i], &want.comps[i]);
+            assert_eq!(g.classes_cdf, w.classes_cdf, "comps[{i}].classes_cdf");
+            assert_eq!(g.class0_fp_cdf, w.class0_fp_cdf, "comps[{i}].class0_fp_cdf");
+            assert_eq!(g.fp_cdf, w.fp_cdf, "comps[{i}].fp_cdf");
+            assert_eq!(g.sign_cdf, w.sign_cdf, "comps[{i}].sign_cdf");
+            assert_eq!(g.class0_hp_cdf, w.class0_hp_cdf, "comps[{i}].class0_hp_cdf");
+            assert_eq!(g.hp_cdf, w.hp_cdf, "comps[{i}].hp_cdf");
+            assert_eq!(g.class0_cdf, w.class0_cdf, "comps[{i}].class0_cdf");
+            assert_eq!(g.bits_cdf, w.bits_cdf, "comps[{i}].bits_cdf");
+        }
+    }
+
+    /// Anti-vacuity for the field above: `avg_cdf_with` must ACTUALLY average
+    /// `nmvc`, which the inert-on-defaults test cannot show (averaging equal
+    /// contexts is the identity either way). Give the two neighbours
+    /// DIFFERENT `nmvc`s and require the result to move.
+    #[test]
+    fn avg_cdf_with_actually_averages_nmvc() {
+        use crate::entropy::mv_coding::MvSubpelPrecision;
+        use crate::inter_mv_code::update_mv_stats;
+        use svtav1_types::motion::Mv;
+
+        let mut left = FrameContext::new_default();
+        let mut tr = FrameContext::new_default();
+        for k in 0..24i32 {
+            update_mv_stats(
+                &mut left.nmvc,
+                // x == 0 on most entries -> mostly MV_JOINT_HZVNZ.
+                Mv {
+                    x: if k % 4 == 0 {
+                        (k * 29 % 401 - 200) as i16
+                    } else {
+                        0
+                    },
+                    y: (k * 71 % 301 - 149) as i16,
+                },
+                Mv::ZERO,
+                MvSubpelPrecision::High,
+            );
+        }
+        for k in 0..24i32 {
+            update_mv_stats(
+                &mut tr.nmvc,
+                // y == 0 on most entries -> mostly MV_JOINT_HNZVZ.
+                Mv {
+                    x: (k * 13 % 199 - 98) as i16,
+                    y: if k % 4 == 0 {
+                        (k * 41 % 257 - 128) as i16
+                    } else {
+                        0
+                    },
+                },
+                Mv::ZERO,
+                MvSubpelPrecision::Low,
+            );
+        }
+        assert_ne!(
+            left.nmvc.joints_cdf, tr.nmvc.joints_cdf,
+            "the two nmvc contexts must differ or this test is vacuous"
+        );
+        let before = left.nmvc.clone();
+        let want = {
+            let mut w = left.nmvc.clone();
+            crate::inter_mv_code::avg_nmv(&mut w, &tr.nmvc, 3, 1);
+            w
+        };
+        assert_ne!(
+            want.joints_cdf, before.joints_cdf,
+            "avg_nmv itself changed nothing — the probe is inert"
+        );
+        left.avg_cdf_with(&tr, 3, 1);
+        assert_eq!(
+            left.nmvc.joints_cdf, want.joints_cdf,
+            "avg_cdf_with did not average nmvc"
+        );
+        for i in 0..2 {
+            assert_eq!(left.nmvc.comps[i].bits_cdf, want.comps[i].bits_cdf);
+            assert_eq!(
+                left.nmvc.comps[i].class0_fp_cdf,
+                want.comps[i].class0_fp_cdf
+            );
+        }
+    }
+
+    /// The new `nmvc` field must not perturb any current gate: nothing writes
+    /// an inter MV yet, so both neighbours always hold the DEFAULT context and
+    /// averaging equal contexts is the identity.
+    #[test]
+    fn nmvc_defaults_and_is_inert_under_avg() {
+        use crate::entropy::mv_coding::NmvContext;
+        let fc = FrameContext::new_default();
+        assert_eq!(fc.nmvc.joints_cdf, NmvContext::default().joints_cdf);
+        let mut left = FrameContext::new_default();
+        let tr = FrameContext::new_default();
+        let before = left.nmvc.clone();
+        left.avg_cdf_with(&tr, 3, 1);
+        assert_eq!(
+            left.nmvc.joints_cdf, before.joints_cdf,
+            "averaging two default nmvc contexts must be the identity"
+        );
+        for i in 0..2 {
+            assert_eq!(left.nmvc.comps[i].classes_cdf, before.comps[i].classes_cdf);
+            assert_eq!(left.nmvc.comps[i].bits_cdf, before.comps[i].bits_cdf);
+        }
     }
 }

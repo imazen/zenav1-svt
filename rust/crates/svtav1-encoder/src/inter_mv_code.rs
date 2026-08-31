@@ -71,6 +71,55 @@
 //! behaviour and byte-identity requires reproducing it — [`estimate_mv_rate`]
 //! deliberately takes no `force_integer_mv` argument for this reason.
 //!
+//! # Where the MV write sits in the block walk
+//!
+//! Recorded here because the wiring chunk would otherwise re-derive it from
+//! `write_modes_b`. C's inter branch (entropy_coding.c:5196-5300) emits, per
+//! block, in this order:
+//!
+//! 1. `svt_aom_collect_neighbors_ref_counts_new(xd)` — not a symbol, but it
+//!    populates the ref-count contexts step 2 reads, so it must run first.
+//! 2. `write_ref_frames(ppcs, xd, w)`.
+//! 3. `mode_ctx = svt_aom_mode_context_analyzer(blk->inter_mode_ctx, rf)` —
+//!    one value feeding step 4 and the DRL contexts.
+//! 4. `write_inter_compound_mode` if `is_inter_compound_mode(mode)`, else
+//!    `write_inter_mode` if `is_inter_singleref_mode(mode)`. Those two
+//!    predicates partition the whole inter range with no gap
+//!    (`SINGLE_INTER_MODE_START = NEARESTMV = 13` .. `SINGLE_INTER_MODE_END =
+//!    NEAREST_NEARESTMV = 17`, then `17 ..= NEW_NEWMV = 24`, definitions.h:
+//!    1622/1626), so this if/else-if is EXHAUSTIVE — every inter block emits
+//!    exactly one mode symbol here. It is not a filter.
+//! 5. `write_drl_idx` if `mode == NEWMV || mode == NEW_NEWMV ||
+//!    have_nearmv_in_inter_mode(mode)`.
+//! 6. **The MV difference(s)** — [`write_inter_block_mvs`], C:5216-5244.
+//! 7. interintra (`is_interintra_used` / `interintra_mode` /
+//!    `wedge_interintra` / `wedge_idx`), gated
+//!    `seq.enable_interintra_compound && svt_aom_is_interintra_allowed(mbmi)`.
+//! 8. `write_motion_mode`.
+//! 9. compound group idx / compound index / compound type / wedge idx, gated
+//!    `has_second_ref`.
+//!
+//! `svt_aom_update_stats` (md_rate_estimation.c:995-1046) replays the SAME
+//! order into the per-SB MD context; [`update_inter_block_mv_stats`] is its
+//! step 6.
+//!
+//! **This module ports step 6 only.** Steps 2, 4, 5, 7, 8 and 9 have no port
+//! yet — the doc states its own coverage rather than implying the module
+//! covers the whole walk.
+//!
+//! Two traps in that walk, both of which desync a tile if missed:
+//!
+//! * **Step 5's predicate is a DIFFERENT SET from step 6's.** DRL uses
+//!   `NEWMV || NEW_NEWMV || have_nearmv_in_inter_mode`; the MV write uses
+//!   `have_newmv_in_inter_mode` ([`mv_code_plan`]). `NEAR_NEWMV` and
+//!   `NEW_NEARMV` are in both; `NEARMV` and `NEAR_NEARMV` are DRL-only;
+//!   `NEAREST_NEWMV` and `NEW_NEARESTMV` are MV-only. One predicate for both
+//!   is wrong in four of the twelve inter modes.
+//! * **Step 6 reads `blk_ptr->predmv[ref]`, not a raw ref-MV-stack entry.**
+//!   `predmv` is what `svt_av1_find_best_ref_mvs_from_stack` produces, already
+//!   `lower_mv_precision`-rounded for the frame's precision. Passing an
+//!   unrounded stack MV as the reference changes the coded difference.
+//!
 //! # Reachability
 //!
 //! Nothing here is called yet: the public entry point still refuses inter
