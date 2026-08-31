@@ -76,8 +76,12 @@ split, `c_rtcd_blend_vs_c_scalar_blend` prints the 308-shape count.
 
 | host | before | after |
 |---|---|---|
-| aarch64 | 1932/1932 | **1935/1935** |
-| x86-64 | 1936/1939 (3 failures) | **1941/1942** (1 failure) |
+| aarch64 | not re-run at the base commit; this file's 4 tests were green here, which is what made the x86 failure ISA-specific | **1935/1935** |
+| x86-64 | 1936/1939 — 3 failures, measured (`~/tmp/x86-final.log:537, 559, 1557`) | **1941/1942** (1 failure) |
+
+The three new tests raise the count by 3, so the aarch64 "before" was almost
+certainly 1932/1932 — but that is arithmetic, not a run, and is not recorded as
+a measurement.
 
 The x86 residual is `c_parity_rc_process::new_framerate_matches_c`
 (`docs/SUSPECTED-C-BUGS.md` #17), a different lane's open item — present in the
