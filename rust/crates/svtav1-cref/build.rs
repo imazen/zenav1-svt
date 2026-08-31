@@ -86,6 +86,7 @@ fn main() {
     println!("cargo:rerun-if-changed=shims/ref_shims.c");
     println!("cargo:rerun-if-changed=shims/inter_mvp_shims.c");
     println!("cargo:rerun-if-changed=shims/inter_me_shims.c");
+    println!("cargo:rerun-if-changed=shims/md_subpel_shims.c");
     // The submodule's checked-out commit: when it moves, the oracle must be
     // rebuilt. (`reference/svt-av1/.git` is a gitdir pointer into the parent's
     // `.git/modules/…`; HEAD there is the file that changes on checkout.)
@@ -150,6 +151,9 @@ fn main() {
         // never share a shim file in one working copy.
         .file(manifest.join("shims/inter_mvp_shims.c"))
         .file(manifest.join("shims/inter_me_shims.c"))
+        // mcomp.c sub-pel tree oracle (lane wp-search) — its own TU for the
+        // same per-lane-file-ownership reason as the two above.
+        .file(manifest.join("shims/md_subpel_shims.c"))
         .include(c_root.join("Source/Lib/Codec"))
         .include(c_root.join("Source/API"))
         .include(c_root.join("Source/Lib/Globals"))

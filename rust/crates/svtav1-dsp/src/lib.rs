@@ -34,6 +34,7 @@ pub mod resize;
 pub mod restoration;
 pub mod sad;
 pub mod scale;
+pub mod subpel_variance;
 pub mod superres;
 pub mod txfm_dispatch;
 pub mod txfm_simd;
