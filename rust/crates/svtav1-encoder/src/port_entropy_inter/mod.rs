@@ -10,13 +10,14 @@
 //!
 //! # Coverage — what is here and what is NOT
 //!
-//! Ported (28 of the 31 queued C functions; see the lane report for the
-//! per-name list). NOT ported, and named rather than implied:
+//! Every function of the inter group is ported. Two carry a caveat rather
+//! than a gap, named rather than implied:
 //!
-//! * `write_frame_size_with_refs` (entropy_coding.c:3238) and its helper
-//!   `get_ref_order_hint` (:3230) — the s-frame / frame-resize header arm.
-//!   They need the DPB order-hint array and the reference-picture list, which
-//!   this port has no representation for yet.
+//! * `write_frame_size_with_refs` (entropy_coding.c:3238) takes its two
+//!   sub-writers (`write_superres_scale`, `write_frame_size`) as closures:
+//!   both live outside this lane's queue and already have counterparts in
+//!   `entropy/obu.rs`, and a second copy here would be a silently diverging
+//!   one. See [`framesize`].
 //! * `write_sgrproj_filter` (entropy_coding.c:4069) is here, but the
 //!   `RESTORE_SWITCHABLE` frame-level plumbing that would reach it lives in
 //!   `entropy/lr.rs`, which this lane does not own.
@@ -54,6 +55,7 @@
 //! calling the agreement tier 1 is exactly what §4 forbids.
 
 pub mod cdfs;
+pub mod framesize;
 pub mod gm;
 pub mod interp;
 pub mod modes;

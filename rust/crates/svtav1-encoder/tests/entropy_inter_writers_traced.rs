@@ -1165,3 +1165,94 @@ fn sequence_comparison_is_sensitive() {
         "an empty sequence must differ from a nonempty one"
     );
 }
+
+// ---- write_frame_size_with_refs / get_ref_order_hint (:3238 / :3230) ----
+
+#[test]
+fn write_frame_size_with_refs_traced() {
+    use svtav1_encoder::port_entropy_inter::framesize::{
+        FrameSizeRefs, INVALID_ORDER_HINT, RefPic, get_ref_order_hint, write_frame_size_with_refs,
+    };
+
+    let mk = |oh: u32, w: u32, h: u32| RefPic {
+        order_hint: oh,
+        width: w,
+        height: h,
+    };
+    // DPB slots 0..7 carry these order hints; LAST..ALTREF map onto slots
+    // 2, -1, 3, 4, 5, 6, 7 — LAST2 is deliberately absent.
+    let dpb = [90u32, 91, 20, 30, 40, 50, 60, 70];
+    let idx = [2i32, -1, 3, 4, 5, 6, 7];
+
+    // get_ref_order_hint: the absent slot returns the INVALID sentinel.
+    let refs_probe = FrameSizeRefs {
+        ref_dpb_index: idx,
+        dpb_order_hint: dpb,
+        list0: &[],
+        list1: &[],
+        cur_width: 64,
+        cur_height: 64,
+    };
+    assert_eq!(get_ref_order_hint(&refs_probe, 1), 20, "LAST -> slot 2");
+    assert_eq!(
+        get_ref_order_hint(&refs_probe, 2),
+        INVALID_ORDER_HINT,
+        "LAST2 has no DPB slot"
+    );
+    assert_eq!(get_ref_order_hint(&refs_probe, 7), 70, "ALTREF -> slot 7");
+
+    // 1. Nothing matches -> seven zero bits, then the explicit frame size.
+    let refs = FrameSizeRefs {
+        list0: &[mk(999, 64, 64)],
+        ..refs_probe
+    };
+    let mut wb = BitWriter::new();
+    let mut hit_superres = false;
+    let mut hit_framesize = false;
+    write_frame_size_with_refs(
+        &mut wb,
+        &refs,
+        |_| hit_superres = true,
+        |w| {
+            hit_framesize = true;
+            w.write_bit(true); // stand-in for write_frame_size's payload
+        },
+    );
+    assert!(!hit_superres && hit_framesize, "no match must fall through");
+    assert_eq!(wb.bit_len(), 8, "seven `found` bits plus the payload bit");
+    assert_eq!(wb.data(), &[0b0000_0001], "all seven found bits are zero");
+
+    // 2. LAST matches in list 0 -> ONE `1` bit, superres scale, and the loop
+    //    short-circuits (no further `found` bits).
+    let l0 = [mk(20, 64, 64)];
+    let refs = FrameSizeRefs {
+        list0: &l0,
+        ..refs_probe
+    };
+    let mut wb = BitWriter::new();
+    let mut hit_framesize = false;
+    write_frame_size_with_refs(
+        &mut wb,
+        &refs,
+        |w| w.write_bit(false),
+        |_| hit_framesize = true,
+    );
+    assert!(!hit_framesize, "a match must not write an explicit size");
+    assert_eq!(wb.bit_len(), 2, "one found bit plus the superres bit");
+    assert_eq!(wb.data(), &[0b1000_0000]);
+
+    // 3. A right order hint with the WRONG dimensions is not a match; the
+    //    walk continues to LAST3 (slot 3, hint 30), which matches in LIST 1.
+    let l0 = [mk(20, 32, 64)];
+    let l1 = [mk(30, 64, 64)];
+    let refs = FrameSizeRefs {
+        list0: &l0,
+        list1: &l1,
+        ..refs_probe
+    };
+    let mut wb = BitWriter::new();
+    write_frame_size_with_refs(&mut wb, &refs, |w| w.write_bit(true), |_| {});
+    // LAST 0 (size mismatch), LAST2 0 (no slot), LAST3 1, then superres 1.
+    assert_eq!(wb.bit_len(), 4);
+    assert_eq!(wb.data(), &[0b0011_0000]);
+}
