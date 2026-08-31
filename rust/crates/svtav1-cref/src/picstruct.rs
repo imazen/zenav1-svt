@@ -629,3 +629,13 @@ pub fn dg_detector_hme_level0(
     }
     m
 }
+
+unsafe extern "C" {
+    fn ref_tf_max_ref_per_struct(hierarchical_levels: u32, ty: u8, direction: i32) -> u8;
+}
+
+/// C `svt_aom_tf_max_ref_per_struct` (`enc_handle.c:2506-2519`).
+#[must_use]
+pub fn tf_max_ref_per_struct(hierarchical_levels: u32, ty: u8, direction: bool) -> u8 {
+    unsafe { ref_tf_max_ref_per_struct(hierarchical_levels, ty, i32::from(direction)) }
+}

@@ -691,6 +691,60 @@ that cell to the boundary. Left as-is here rather than edited, because
 changing another lane's assertion is not this file's job — but a red x86 CI on
 that test is this entry, not a new defect.
 
+## 18. `derive_tf_window_params`' past-window compaction is unreachable dead code
+
+**Status: REPRODUCED (the port keeps the translation, which is likewise never
+entered)**
+
+`Codec/pd_process.c` has two copies of the same block, at `3915-3920` (the
+low-delay arm) and `4091-4098` (the random-access inter arm):
+
+```c
+int actual_past_pics = num_past_pics;      /* 3873, 4042 */
+...
+pcs->past_altref_nframes = actual_past_pics;
+// adjust the temporal filtering pcs buffer to remove unused past pictures
+if (actual_past_pics != num_past_pics) {
+    pic_i = 0;
+    while (pcs->temp_filt_pcs_list[pic_i] != NULL) {
+        pcs->temp_filt_pcs_list[pic_i] =
+            pcs->temp_filt_pcs_list[pic_i + num_past_pics - actual_past_pics];
+        pic_i++;
+    }
+}
+```
+
+`actual_past_pics` is initialised to `num_past_pics` and **never modified** —
+`grep -n actual_past_pics Codec/pd_process.c` returns exactly the two
+initialisations, the two `past_altref_nframes` assignments and the two
+comparisons, with no decrement anywhere. Only `actual_future_pics` is
+incremented as pictures are found. So the guard is always false and the
+compaction never runs.
+
+The comment says what it was for: when `search_this_pic` fails to find some of
+the requested past pictures, their slots stay NULL and the window has holes at
+the FRONT (the found pictures sit at their natural indices, so the most recent
+past pictures are at the higher ones). The compaction was meant to shift the
+list left so the centre lands at `actual_past_pics`. As written, it cannot.
+
+Note the second-order effect if it ever were enabled: the `while` loop starts
+at index 0 and stops at the first NULL, which in exactly the case it is meant
+to fix is index 0 — so it would still do nothing. Fixing the counter alone
+would not fix the block.
+
+**Reachable:** the BLOCK is unreachable. The situation it was written for IS
+reachable — `avail_past_pictures` caps `num_past_pics` in the random-access
+arm, but the low-delay arm has no such cap and its `search_this_pic` lookups
+can miss at the start of a sequence.
+
+**What the port does:** `port_picstruct::compact_tf_past_window` translates the
+block faithfully, including the `while ... != NULL` bound, and
+`traced_compact_tf_past_window` asserts BOTH that it is a no-op on a
+front-holed list (matching C's loop bound) and that it shifts correctly on a
+list with no leading hole. The caller must reproduce C's `actual_past_pics ==
+num_past_pics` and therefore never invoke it; the translation is kept per
+`docs/WORKING-ON-THIS.md` §7.
+
 ## Adding an entry
 
 State the C `file:line`, quote the code, say why it looks wrong, and — this is

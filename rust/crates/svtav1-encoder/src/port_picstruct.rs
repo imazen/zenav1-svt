@@ -4096,3 +4096,444 @@ pub fn commit_sub_mini_gop_split(
         map.activity[sub_layer_idx1] = false;
     }
 }
+
+// ---------------------------------------------------------------------------
+// Temporal-filter window — pd_process.c:3642-4250
+// ---------------------------------------------------------------------------
+//
+// Reachability, measured: in LOW_DELAY `tf_level` is forced to 0 before any
+// preset logic (`enc_handle.c:3339-3343`), so this whole group is dead for the
+// campaign's first cell. It is ON BY DEFAULT in random access (tf_level 5 at
+// M3-M7), where the temporal filter REWRITES THE SOURCE PIXELS of base-layer
+// frames — so no random-access frame can be byte-identical without it.
+
+/// C `ALTREF_MAX_NFRAMES` (`definitions.h:338`).
+pub const ALTREF_MAX_NFRAMES: usize = 33;
+/// C `TF_MAX_EXTENSION` (`definitions.h:340`).
+pub const TF_MAX_EXTENSION: i32 = 6;
+/// C `TF_MAX_BASE_REF_PICS` (`definitions.h:341`).
+pub const TF_MAX_BASE_REF_PICS: u8 = 7;
+/// C `TF_MAX_L1_REF_PICS_6L` (`definitions.h:342`).
+pub const TF_MAX_L1_REF_PICS_6L: u8 = 2;
+/// C `TF_MAX_L1_REF_PICS_SUB_6L` (`definitions.h:343`).
+pub const TF_MAX_L1_REF_PICS_SUB_6L: u8 = 1;
+/// C `VQ_NOISE_LVL_TH` (`definitions.h:83`).
+pub const VQ_NOISE_LVL_TH: i32 = 15000;
+
+/// C `DIVIDE_AND_ROUND(x, y)` (`utility.h:96`) — `((x) + ((y) >> 1)) / (y)`.
+#[inline]
+#[must_use]
+pub fn divide_and_round(x: i32, y: i32) -> i32 {
+    (x + (y >> 1)) / y
+}
+
+/// C `svt_aom_tf_max_ref_per_struct` (`enc_handle.c:2506-2519`) — EXPORTED.
+///
+/// The per-side cap on temporal-filter reference pictures.
+///
+/// Two traps: `direction` is `(void)`-cast UNUSED (past and future share a
+/// cap), and the `type` encoding is 0 = I_SLICE, 1 = BASE, 2 = L1 — the
+/// I_SLICE arm is `1 << hierarchical_levels`, which is the ONLY arm that grows
+/// with the hierarchy.
+#[must_use]
+pub fn tf_max_ref_per_struct(hierarchical_levels: u32, ty: u8, _direction: bool) -> u8 {
+    if ty == 0 {
+        // C computes `1 << hierarchical_levels` into a uint8_t, so a hierarchy
+        // of 8 or more wraps. Reproduced with a wrapping shift.
+        (1u32 << hierarchical_levels) as u8
+    } else if ty == 1 {
+        TF_MAX_BASE_REF_PICS
+    } else if hierarchical_levels < 5 {
+        TF_MAX_L1_REF_PICS_SUB_6L
+    } else {
+        TF_MAX_L1_REF_PICS_6L
+    }
+}
+
+/// The `TfControls` fields the window derivation reads (`pcs.h`'s
+/// `TfControls`, the subset `pd_process.c` uses).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TfWindowCtrls {
+    /// C `tf_ctrls.enabled`.
+    pub enabled: bool,
+    /// C `tf_ctrls.modulate_pics` (0 disables modulation entirely).
+    pub modulate_pics: u8,
+    /// C `tf_ctrls.num_past_pics`.
+    pub num_past_pics: u8,
+    /// C `tf_ctrls.num_future_pics`.
+    pub num_future_pics: u8,
+    /// C `tf_ctrls.max_num_past_pics`.
+    pub max_num_past_pics: u8,
+    /// C `tf_ctrls.max_num_future_pics`.
+    pub max_num_future_pics: u8,
+    /// C `tf_ctrls.qp_opt`.
+    pub qp_opt: bool,
+    /// C `tf_ctrls.use_intra_for_noise_est`.
+    pub use_intra_for_noise_est: bool,
+    /// C `tf_ctrls.chroma_lvl`.
+    pub chroma_lvl: u8,
+}
+
+/// C `ref_pics_modulation` (`pd_process.c:3642-3745`) — static.
+///
+/// Modulates the temporal-filter reference count from the noise level (I
+/// slices) or the filtered-vs-unfiltered intra distortion ratio (inter). It
+/// changes how many pictures the filter averages, hence the SOURCE PIXELS.
+///
+/// Traps:
+/// * the I-slice arm reads noise DIRECTLY against three Q16 log1p constants
+///   (26572 = log1p(0.5), 45426 = log1p(1.0), 71998 = log1p(2.0)) and yields
+///   6 / 4 / 2 / 0 — a LOWER noise level gets MORE frames, which is the
+///   opposite of the intuitive direction and is what the C comment explains.
+/// * the inter arms divide by the noise level, so `noise == 0` short-circuits
+///   the ratio to 0 rather than dividing.
+/// * base-layer and non-base use DIFFERENT `modulate_pics` tables, and the
+///   non-base one has no `case 4`, so `modulate_pics == 4` falls through to
+///   `offset = 0` there while base-layer gives 0/1/2.
+///
+/// `q_weight` / `q_weight_denom` come from
+/// `svt_aom_get_qp_based_th_scaling_factors`, which belongs to the
+/// signal-derivation module; the caller supplies them and they are applied
+/// here only when `qp_opt`.
+#[must_use]
+pub fn ref_pics_modulation(
+    is_i_slice: bool,
+    temporal_layer_index: u8,
+    ctrls: &TfWindowCtrls,
+    noise_levels_log1p_fp16: i32,
+    filt_to_unfilt_diff: u32,
+    q_weight: u32,
+    q_weight_denom: u32,
+) -> i32 {
+    let mut offset: i32 = 0;
+
+    if is_i_slice {
+        // Q16 log1p thresholds; LOWER noise buys MORE filtering frames.
+        if noise_levels_log1p_fp16 < 26572 {
+            offset = 6;
+        } else if noise_levels_log1p_fp16 < 45426 {
+            offset = 4;
+        } else if noise_levels_log1p_fp16 < 71998 {
+            offset = 2;
+        }
+    } else {
+        // C computes the ratio in `int`; the guard avoids a divide by zero.
+        let ratio: i32 = if noise_levels_log1p_fp16 != 0 {
+            ((filt_to_unfilt_diff as i32).wrapping_mul(100)) / noise_levels_log1p_fp16
+        } else {
+            0
+        };
+        if temporal_layer_index == 0 {
+            offset = match ctrls.modulate_pics {
+                1 => {
+                    if ratio < 100 {
+                        5
+                    } else {
+                        TF_MAX_EXTENSION
+                    }
+                }
+                2 => {
+                    if ratio < 50 {
+                        3
+                    } else if ratio < 100 {
+                        5
+                    } else {
+                        TF_MAX_EXTENSION
+                    }
+                }
+                3 => {
+                    if ratio < 50 {
+                        3
+                    } else if ratio < 100 {
+                        4
+                    } else {
+                        5
+                    }
+                }
+                4 => {
+                    if ratio < 50 {
+                        0
+                    } else if ratio < 100 {
+                        1
+                    } else {
+                        2
+                    }
+                }
+                // case 0 and default.
+                _ => 0,
+            };
+        } else {
+            offset = match ctrls.modulate_pics {
+                1 => i32::from(ratio >= 25),
+                2 => i32::from(ratio >= 50),
+                3 => i32::from(ratio >= 75),
+                // case 0 and default — note there is NO case 4 here.
+                _ => 0,
+            };
+        }
+    }
+
+    if ctrls.qp_opt {
+        offset = divide_and_round(offset * q_weight as i32, q_weight_denom as i32);
+    }
+    offset
+}
+
+/// Which arm of `derive_tf_window_params` a picture takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TfWindowArm {
+    /// `pred_structure != RANDOM_ACCESS` (`pd_process.c:3851-3921`).
+    LowDelay,
+    /// `svt_aom_is_delayed_intra(pcs)` (`:3922-3965`).
+    DelayedIntra,
+    /// `pcs->idr_flag` inside random access (`:3966-4002`).
+    RandomAccessIdr,
+    /// Everything else inside random access (`:4004-4100`).
+    RandomAccessInter,
+}
+
+/// The past/future picture COUNTS `derive_tf_window_params` derives, before
+/// the buffers are searched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TfWindowCounts {
+    /// C `num_past_pics`.
+    pub num_past_pics: i32,
+    /// C `num_future_pics`.
+    pub num_future_pics: i32,
+}
+
+/// C `derive_tf_window_params`' COUNT derivation, per arm
+/// (`pd_process.c:3851`, `:3930`, `:3973`, `:4005-4015`) — static.
+///
+/// This is the half that decides how wide the filter window may be; the other
+/// half searches the reorder queue / mini-GOP array for pictures to fill it,
+/// which is buffer plumbing this port replaces.
+///
+/// The four arms differ in ways that are easy to blur together:
+/// * LOW DELAY adds `offset` only when `modulate_pics` is set, and caps
+///   against `max_num_{past,future}_pics` — no `tf_max_ref_per_struct` cap.
+/// * DELAYED INTRA has NO past pictures at all and caps future against
+///   `tf_max_ref_per_struct(hier, 0, 1)` — the I_SLICE row, `1 << hier`.
+/// * RANDOM-ACCESS IDR is the same shape as delayed intra.
+/// * RANDOM-ACCESS INTER takes `MAX(1, base + offset)` on BOTH sides — the
+///   `MAX(1, ...)` floor exists only here, so a negative modulation cannot
+///   empty the window — then caps against `max_num_*` and against
+///   `tf_max_ref_per_struct(hier, temporal_layer ? 2 : 1, dir)`.
+///
+/// Note that the inter arm adds `offset` UNCONDITIONALLY, while the low-delay
+/// arm adds it only under `modulate_pics`. `offset` is itself zero when
+/// `modulate_pics` is 0 (the caller gates `ref_pics_modulation` on it), so the
+/// two agree in practice — but only because of that outer gate.
+#[must_use]
+pub fn derive_tf_window_counts(
+    arm: TfWindowArm,
+    ctrls: &TfWindowCtrls,
+    offset: i32,
+    hierarchical_levels: u32,
+    temporal_layer_index: u8,
+) -> TfWindowCounts {
+    match arm {
+        TfWindowArm::LowDelay => {
+            let modulation = if ctrls.modulate_pics != 0 { offset } else { 0 };
+            let num_past = (i32::from(ctrls.num_past_pics) + modulation)
+                .min(i32::from(ctrls.max_num_past_pics));
+            let num_future = (i32::from(ctrls.num_future_pics) + modulation)
+                .min(i32::from(ctrls.max_num_future_pics));
+            TfWindowCounts {
+                num_past_pics: num_past,
+                num_future_pics: num_future,
+            }
+        }
+        TfWindowArm::DelayedIntra | TfWindowArm::RandomAccessIdr => {
+            let modulation = if ctrls.modulate_pics != 0 { offset } else { 0 };
+            // C computes this in a uint32_t, so a negative modulation wraps
+            // before the MIN clamps it back down. Reproduced with a saturating
+            // cast through u32 exactly as C does.
+            let raw = (u32::from(ctrls.num_future_pics)).wrapping_add(modulation as u32);
+            let num_future = raw.min(u32::from(ctrls.max_num_future_pics));
+            let num_future = num_future.min(u32::from(tf_max_ref_per_struct(
+                hierarchical_levels,
+                0,
+                true,
+            )));
+            TfWindowCounts {
+                num_past_pics: 0,
+                num_future_pics: num_future as i32,
+            }
+        }
+        TfWindowArm::RandomAccessInter => {
+            // The MAX(1, ...) floor exists ONLY on this arm.
+            let mut num_past = 1.max(i32::from(ctrls.num_past_pics) + offset);
+            let mut num_future = 1.max(i32::from(ctrls.num_future_pics) + offset);
+            num_past = num_past.min(i32::from(ctrls.max_num_past_pics));
+            num_future = num_future.min(i32::from(ctrls.max_num_future_pics));
+            let ty = if temporal_layer_index != 0 { 2 } else { 1 };
+            num_past = num_past.min(i32::from(tf_max_ref_per_struct(
+                hierarchical_levels,
+                ty,
+                false,
+            )));
+            num_future = num_future.min(i32::from(tf_max_ref_per_struct(
+                hierarchical_levels,
+                ty,
+                true,
+            )));
+            TfWindowCounts {
+                num_past_pics: num_past,
+                num_future_pics: num_future,
+            }
+        }
+    }
+}
+
+/// C's past-window compaction (`pd_process.c:3914-3920` and `:4091-4098`) —
+/// static.
+///
+/// When fewer past pictures were found than requested, the list is shifted
+/// LEFT by the shortfall so the centre lands at index `actual_past_pics`.
+///
+/// **This block is UNREACHABLE in C** and is translated anyway, per
+/// `docs/WORKING-ON-THIS.md` §7. `actual_past_pics` is initialised to
+/// `num_past_pics` at `:3873` and `:4042` and never modified — only
+/// `actual_future_pics` is incremented — so `actual_past_pics != num_past_pics`
+/// is always false. Written up as `docs/SUSPECTED-C-BUGS.md` #18, with the
+/// second-order finding that even a fixed counter would not fix the block:
+/// C's loop is `while (list[pic_i] != NULL)` from index 0, and the situation
+/// the block was written for is exactly the one that puts a NULL at index 0.
+///
+/// The caller must reproduce C's `actual_past_pics == num_past_pics` and
+/// therefore never invoke this.
+pub fn compact_tf_past_window(
+    list: &mut [Option<usize>; ALTREF_MAX_NFRAMES],
+    num_past_pics: usize,
+    actual_past_pics: usize,
+) {
+    if actual_past_pics == num_past_pics {
+        return;
+    }
+    let shift = num_past_pics - actual_past_pics;
+    let mut i = 0usize;
+    while i < ALTREF_MAX_NFRAMES && list[i].is_some() {
+        list[i] = if i + shift < ALTREF_MAX_NFRAMES {
+            list[i + shift]
+        } else {
+            None
+        };
+        i += 1;
+    }
+}
+
+/// C's `tf_avg_luma` / `tf_avg_ahd_error` reduction
+/// (`pd_process.c:4101-4118`) — static.
+///
+/// Averages the window's luma means and AHD errors, EXCLUDING the centre
+/// picture (the one at index `past_altref_nframes`).
+///
+/// Returns `(tf_avg_luma, tf_avg_ahd_error)`, both zero when the window is
+/// empty — C leaves `tf_avg_ahd_error` at 0 and does not touch `tf_avg_luma`
+/// in that case, which this reproduces by returning the zero pair.
+#[must_use]
+pub fn tf_window_averages(
+    window_avg_luma: &[u64],
+    window_ahd_error: &[i32],
+    past_altref_nframes: usize,
+    future_altref_nframes: usize,
+) -> (u64, i32) {
+    let n = past_altref_nframes + future_altref_nframes;
+    if n == 0 {
+        return (0, 0);
+    }
+    let mut tot_luma: u64 = 0;
+    let mut tot_err: i32 = 0;
+    for i in 0..=n {
+        if i != past_altref_nframes {
+            tot_luma = tot_luma.wrapping_add(window_avg_luma[i]);
+            tot_err = tot_err.wrapping_add(window_ahd_error[i]);
+        }
+    }
+    (tot_luma / n as u64, tot_err / n as i32)
+}
+
+/// C `low_delay_store_tf_pictures`' STORE PREDICATE
+/// (`pd_process.c:4127-4147`) — static.
+///
+/// A non-base low-delay picture joins the ring only when it is close enough to
+/// the end of the mini-GOP to be a past reference for the upcoming base:
+/// `temporal_layer_index != 0 && pic_idx_in_mg + 1 + tot_past >= mg_size`.
+///
+/// Reachability: in current mainline low-delay TF is disabled
+/// (`enc_handle.c:3339-3343`), so this is dead for the first cell. It becomes
+/// live the moment `tf_ld_controls` is given a non-zero level, which is why it
+/// is translated (`docs/WORKING-ON-THIS.md` §7). The live-count bookkeeping
+/// around it is buffer plumbing this port replaces.
+#[must_use]
+pub fn low_delay_should_store_tf_picture(
+    temporal_layer_index: u8,
+    pic_idx_in_mg: u32,
+    max_num_past_pics: u8,
+    hierarchical_levels: u32,
+) -> bool {
+    let mg_size = 1u32 << hierarchical_levels;
+    temporal_layer_index != 0 && pic_idx_in_mg + 1 + u32::from(max_num_past_pics) >= mg_size
+}
+
+/// C `mctf_frame`'s decision half (`pd_process.c:4194-4250`) — static.
+///
+/// Everything in `mctf_frame` that is not fifo posting or semaphore waiting:
+/// which of the two low-delay ring operations run, whether TF runs at all,
+/// the motion-direction verdict and `is_noise_level`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MctfFrameDecision {
+    /// Run `low_delay_store_tf_pictures` before filtering.
+    pub store_ld_tf_pictures: bool,
+    /// Run `derive_tf_window_params` + the filter.
+    pub run_tf: bool,
+    /// C `pcs->do_tf` — set FALSE when TF is off; C never sets it true here.
+    pub do_tf_cleared: bool,
+    /// C `pcs->is_noise_level`.
+    pub is_noise_level: bool,
+    /// Release the low-delay ring after filtering.
+    pub release_ld_tf_pictures: bool,
+}
+
+/// C `mctf_frame` (`pd_process.c:4194-4250`) — static, decision half.
+///
+/// Trap: the STORE gate and the RELEASE gate are NOT symmetric. Both require
+/// `pred_structure != RANDOM_ACCESS && tf_params_per_type[1].enabled`, but the
+/// RELEASE additionally requires `temporal_layer_index == 0` — the ring is
+/// filled by non-base pictures and drained by the base picture that consumed
+/// it.
+#[must_use]
+pub fn mctf_frame_decision(
+    seq_pred_structure: PredStructure,
+    base_tf_params_enabled: bool,
+    tf_ctrls_enabled: bool,
+    temporal_layer_index: u8,
+    last_i_noise_levels_log1p_fp16: i32,
+) -> MctfFrameDecision {
+    let ld = seq_pred_structure != PredStructure::RandomAccess;
+    MctfFrameDecision {
+        store_ld_tf_pictures: ld && base_tf_params_enabled,
+        run_tf: tf_ctrls_enabled,
+        do_tf_cleared: !tf_ctrls_enabled,
+        is_noise_level: last_i_noise_levels_log1p_fp16 >= VQ_NOISE_LVL_TH,
+        release_ld_tf_pictures: ld && base_tf_params_enabled && temporal_layer_index == 0,
+    }
+}
+
+/// C `mctf_frame`'s motion-direction verdict (`pd_process.c:4232-4238`).
+///
+/// `0` horizontal, `1` vertical, `-1` neither. The comparison is
+/// `horz > vert * 6 / 4`, i.e. a 1.5x margin, evaluated with INTEGER division
+/// on the right-hand side — `vert * 6 / 4` truncates, so at `vert == 1` the
+/// threshold is 1, not 1.5.
+#[must_use]
+pub fn tf_motion_direction(tf_tot_horz_blks: u32, tf_tot_vert_blks: u32) -> i8 {
+    if tf_tot_horz_blks > tf_tot_vert_blks * 6 / 4 {
+        0
+    } else if tf_tot_vert_blks > tf_tot_horz_blks * 6 / 4 {
+        1
+    } else {
+        -1
+    }
+}

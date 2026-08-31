@@ -661,3 +661,44 @@ fn c_parity_get_similar_ref_brightness() {
         100
     ));
 }
+
+/// `svt_aom_tf_max_ref_per_struct` over every reachable input, including the
+/// `direction` argument C `(void)`-casts away and hierarchies past the 0..5
+/// the encoder configures.
+#[test]
+fn c_parity_tf_max_ref_per_struct_exhaustive() {
+    let mut seen_values = std::collections::BTreeSet::new();
+    for hier in 0u32..=7 {
+        for ty in 0u8..=3 {
+            for dir in [false, true] {
+                let got = pp::tf_max_ref_per_struct(hier, ty, dir);
+                let want = cref::tf_max_ref_per_struct(hier, ty, dir);
+                assert_eq!(
+                    got, want,
+                    "tf_max_ref_per_struct(hier={hier}, type={ty}, dir={dir})"
+                );
+                seen_values.insert(got);
+            }
+        }
+    }
+    // Positive control: the sweep is not constant, and the I_SLICE row really
+    // does grow with the hierarchy (1, 2, 4, ... 128) while the other rows do
+    // not.
+    assert!(seen_values.len() > 3, "saw only {seen_values:?}");
+    assert_eq!(pp::tf_max_ref_per_struct(0, 0, false), 1);
+    assert_eq!(pp::tf_max_ref_per_struct(5, 0, false), 32);
+    assert_eq!(
+        pp::tf_max_ref_per_struct(5, 1, false),
+        pp::tf_max_ref_per_struct(0, 1, false)
+    );
+    // `direction` is (void)-cast in C: it must never change the answer.
+    for hier in 0u32..=7 {
+        for ty in 0u8..=3 {
+            assert_eq!(
+                cref::tf_max_ref_per_struct(hier, ty, false),
+                cref::tf_max_ref_per_struct(hier, ty, true),
+                "direction must be ignored (hier={hier}, type={ty})"
+            );
+        }
+    }
+}

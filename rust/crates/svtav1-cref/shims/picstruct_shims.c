@@ -564,3 +564,11 @@ void ref_dg_detector_hme_level0(uint8_t* src_data, uint32_t src_origin, uint32_t
     free(refpcs);
     free(ppcs);
 }
+
+/* ---- svt_aom_tf_max_ref_per_struct (enc_handle.c:2506-2519) ---- */
+
+uint8_t svt_aom_tf_max_ref_per_struct(uint32_t hierarchical_levels, uint8_t type, bool direction);
+
+uint8_t ref_tf_max_ref_per_struct(uint32_t hierarchical_levels, uint8_t type, int32_t direction) {
+    return svt_aom_tf_max_ref_per_struct(hierarchical_levels, type, direction != 0);
+}

@@ -2324,3 +2324,350 @@ fn traced_commit_sub_mini_gop_split() {
     assert!(!map.activity[pp::L6_INDEX]);
     assert!(map.activity[pp::L5_0_INDEX]);
 }
+
+// ---------------------------------------------------------------------------
+// Temporal-filter window — tier 4
+// ---------------------------------------------------------------------------
+
+/// `ref_pics_modulation` (`pd_process.c:3642-3745`).
+///
+/// Derivation of the three shapes:
+/// * I slice: three Q16 log1p thresholds, 26572 / 45426 / 71998, yielding
+///   6 / 4 / 2 / 0. LOWER noise buys MORE frames — the opposite of the
+///   intuitive direction, and the C comment says why.
+/// * base layer: five `modulate_pics` tables keyed on
+///   `ratio = filt_to_unfilt_diff * 100 / noise`.
+/// * non-base: three tables, each a single threshold yielding 0 or 1, and
+///   there is NO `case 4` — `modulate_pics == 4` falls through to 0 there
+///   while base layer gives 0/1/2.
+#[test]
+fn traced_ref_pics_modulation_three_shapes() {
+    let c = |modulate: u8| pp::TfWindowCtrls {
+        modulate_pics: modulate,
+        ..Default::default()
+    };
+
+    // I slice: the three noise bands and the fall-through.
+    for (noise, want) in [
+        (0i32, 6),
+        (26571, 6),
+        (26572, 4),
+        (45425, 4),
+        (45426, 2),
+        (71997, 2),
+        (71998, 0),
+    ] {
+        assert_eq!(
+            pp::ref_pics_modulation(true, 0, &c(1), noise, 0, 1, 1),
+            want,
+            "I slice at noise {noise}"
+        );
+    }
+    // The I-slice arm ignores modulate_pics entirely.
+    for m in 0u8..=4 {
+        assert_eq!(pp::ref_pics_modulation(true, 0, &c(m), 0, 0, 1, 1), 6);
+    }
+
+    // Base layer. ratio = diff * 100 / noise; pick noise = 100 so ratio == diff.
+    let base = |m: u8, ratio: u32| pp::ref_pics_modulation(false, 0, &c(m), 100, ratio, 1, 1);
+    assert_eq!(base(0, 999), 0, "modulate_pics 0 is always zero");
+    assert_eq!((base(1, 99), base(1, 100)), (5, pp::TF_MAX_EXTENSION));
+    assert_eq!(
+        (base(2, 49), base(2, 99), base(2, 100)),
+        (3, 5, pp::TF_MAX_EXTENSION)
+    );
+    assert_eq!((base(3, 49), base(3, 99), base(3, 100)), (3, 4, 5));
+    assert_eq!((base(4, 49), base(4, 99), base(4, 100)), (0, 1, 2));
+    assert_eq!(base(5, 100), 0, "an unknown level falls through to zero");
+
+    // Non-base: single thresholds, and NO case 4.
+    let nb = |m: u8, ratio: u32| pp::ref_pics_modulation(false, 1, &c(m), 100, ratio, 1, 1);
+    assert_eq!((nb(1, 24), nb(1, 25)), (0, 1));
+    assert_eq!((nb(2, 49), nb(2, 50)), (0, 1));
+    assert_eq!((nb(3, 74), nb(3, 75)), (0, 1));
+    assert_eq!(nb(4, 999), 0, "non-base has no case 4 -- it falls through");
+    assert_eq!(nb(0, 999), 0);
+
+    // Zero noise short-circuits the ratio to 0 rather than dividing.
+    assert_eq!(pp::ref_pics_modulation(false, 0, &c(1), 0, 9_999, 1, 1), 5);
+
+    // qp_opt applies DIVIDE_AND_ROUND(offset * q_weight, q_weight_denom).
+    let qp = pp::TfWindowCtrls {
+        modulate_pics: 1,
+        qp_opt: true,
+        ..Default::default()
+    };
+    // offset 5, weight 3/4 -> (15 + 2) / 4 = 4 (rounds, not truncates).
+    assert_eq!(pp::ref_pics_modulation(false, 0, &qp, 100, 99, 3, 4), 4);
+    // weight 1/1 is the identity.
+    assert_eq!(pp::ref_pics_modulation(false, 0, &qp, 100, 99, 1, 1), 5);
+}
+
+/// `derive_tf_window_params`' count derivation, all four arms.
+///
+/// The arms differ in ways that blur together on a quick read; each assertion
+/// below names the difference it pins.
+#[test]
+fn traced_derive_tf_window_counts_per_arm() {
+    let ctrls = pp::TfWindowCtrls {
+        enabled: true,
+        modulate_pics: 1,
+        num_past_pics: 2,
+        num_future_pics: 2,
+        max_num_past_pics: 8,
+        max_num_future_pics: 8,
+        ..Default::default()
+    };
+
+    // LOW DELAY: offset applies (modulate_pics != 0), no per-struct cap.
+    let c = pp::derive_tf_window_counts(pp::TfWindowArm::LowDelay, &ctrls, 3, 5, 0);
+    assert_eq!((c.num_past_pics, c.num_future_pics), (5, 5));
+    // With modulate_pics 0 the offset is dropped even if the caller passes one.
+    let no_mod = pp::TfWindowCtrls {
+        modulate_pics: 0,
+        ..ctrls
+    };
+    let c = pp::derive_tf_window_counts(pp::TfWindowArm::LowDelay, &no_mod, 3, 5, 0);
+    assert_eq!((c.num_past_pics, c.num_future_pics), (2, 2));
+    // max_num_* caps.
+    let capped = pp::TfWindowCtrls {
+        max_num_past_pics: 3,
+        max_num_future_pics: 3,
+        ..ctrls
+    };
+    let c = pp::derive_tf_window_counts(pp::TfWindowArm::LowDelay, &capped, 3, 5, 0);
+    assert_eq!((c.num_past_pics, c.num_future_pics), (3, 3));
+
+    // DELAYED INTRA: NO past pictures, and the future cap is the I_SLICE row
+    // of tf_max_ref_per_struct, i.e. 1 << hierarchical_levels.
+    for (hier, want) in [(0u32, 1i32), (1, 2), (2, 4), (3, 5)] {
+        let c = pp::derive_tf_window_counts(pp::TfWindowArm::DelayedIntra, &ctrls, 3, hier, 0);
+        assert_eq!(c.num_past_pics, 0, "delayed intra never filters the past");
+        assert_eq!(c.num_future_pics, want, "hier {hier}");
+    }
+    // RANDOM-ACCESS IDR takes the same shape.
+    let a = pp::derive_tf_window_counts(pp::TfWindowArm::DelayedIntra, &ctrls, 3, 2, 0);
+    let b = pp::derive_tf_window_counts(pp::TfWindowArm::RandomAccessIdr, &ctrls, 3, 2, 0);
+    assert_eq!(a, b);
+
+    // RANDOM-ACCESS INTER: the MAX(1, ...) floor exists only here, so a
+    // negative modulation cannot empty the window.
+    let c = pp::derive_tf_window_counts(pp::TfWindowArm::RandomAccessInter, &ctrls, -10, 5, 0);
+    assert_eq!((c.num_past_pics, c.num_future_pics), (1, 1));
+    // The low-delay arm has NO such floor: the same negative offset drives it
+    // below zero.
+    let c = pp::derive_tf_window_counts(pp::TfWindowArm::LowDelay, &ctrls, -10, 5, 0);
+    assert_eq!((c.num_past_pics, c.num_future_pics), (-8, -8));
+
+    // The inter arm's per-struct cap keys off the temporal layer: BASE takes
+    // row 1 (7 each side), non-base takes row 2 (1 below 6L, 2 at 6L).
+    let wide = pp::TfWindowCtrls {
+        num_past_pics: 9,
+        num_future_pics: 9,
+        max_num_past_pics: 30,
+        max_num_future_pics: 30,
+        ..ctrls
+    };
+    let c = pp::derive_tf_window_counts(pp::TfWindowArm::RandomAccessInter, &wide, 0, 4, 0);
+    assert_eq!(
+        (c.num_past_pics, c.num_future_pics),
+        (
+            i32::from(pp::TF_MAX_BASE_REF_PICS),
+            i32::from(pp::TF_MAX_BASE_REF_PICS)
+        )
+    );
+    let c = pp::derive_tf_window_counts(pp::TfWindowArm::RandomAccessInter, &wide, 0, 4, 1);
+    assert_eq!(
+        (c.num_past_pics, c.num_future_pics),
+        (
+            i32::from(pp::TF_MAX_L1_REF_PICS_SUB_6L),
+            i32::from(pp::TF_MAX_L1_REF_PICS_SUB_6L)
+        )
+    );
+    let c = pp::derive_tf_window_counts(pp::TfWindowArm::RandomAccessInter, &wide, 0, 5, 1);
+    assert_eq!(
+        (c.num_past_pics, c.num_future_pics),
+        (
+            i32::from(pp::TF_MAX_L1_REF_PICS_6L),
+            i32::from(pp::TF_MAX_L1_REF_PICS_6L)
+        )
+    );
+}
+
+/// The past-window compaction (`pd_process.c:3914-3920`, `:4091-4098`).
+///
+/// **This block is DEAD CODE in C** and the port keeps it anyway
+/// (`docs/WORKING-ON-THIS.md` §7; written up as
+/// `docs/SUSPECTED-C-BUGS.md` #18). `actual_past_pics` is initialised to
+/// `num_past_pics` and never modified — only `actual_future_pics` is
+/// incremented — so the guard `actual_past_pics != num_past_pics` is always
+/// false. Verified by `grep -n actual_past_pics Codec/pd_process.c`: two
+/// initialisations, two `past_altref_nframes` assignments, two comparisons, no
+/// decrement.
+///
+/// The first assertion below is the one that found it. My hand-derivation
+/// expected a front-holed list (past slots 2 and 3 filled, 0 and 1 NULL — the
+/// shape the block was written for) to compact to the front. It does not:
+/// C's loop is `while (list[pic_i] != NULL)` starting at index 0, so on
+/// exactly that shape it stops immediately. Fixing the counter alone would
+/// not fix the block.
+#[test]
+fn traced_compact_tf_past_window() {
+    // The shape the block was WRITTEN for: holes at the front. C's loop bound
+    // makes it a no-op, and so does the port's.
+    let mut list = [None; pp::ALTREF_MAX_NFRAMES];
+    list[2] = Some(20);
+    list[3] = Some(30);
+    list[4] = Some(40); // centre
+    list[5] = Some(50);
+    list[6] = Some(60);
+    let before = list;
+    pp::compact_tf_past_window(&mut list, 4, 2);
+    assert_eq!(list, before, "the `while != NULL` bound stops at index 0");
+
+    // With no leading hole the shift does happen, which is what the block
+    // would do if the counter ever differed.
+    let mut list = [None; pp::ALTREF_MAX_NFRAMES];
+    list[0] = Some(10);
+    list[1] = Some(20);
+    list[2] = Some(30);
+    list[3] = Some(40);
+    list[4] = Some(50);
+    pp::compact_tf_past_window(&mut list, 4, 2);
+    assert_eq!(&list[..3], &[Some(30), Some(40), Some(50)]);
+
+    // No shortfall: untouched, and the guard is not even entered.
+    let mut list = [None; pp::ALTREF_MAX_NFRAMES];
+    list[0] = Some(1);
+    list[1] = Some(2);
+    let before = list;
+    pp::compact_tf_past_window(&mut list, 1, 1);
+    assert_eq!(list, before);
+}
+
+/// The `tf_avg_luma` / `tf_avg_ahd_error` reduction
+/// (`pd_process.c:4101-4118`) — the CENTRE picture is excluded.
+#[test]
+fn traced_tf_window_averages_excludes_the_centre() {
+    // past 2, centre at index 2, future 1: indices 0, 1, 3 contribute.
+    let luma = [100u64, 200, 999_999, 300, 0];
+    let err = [10i32, 20, 999_999, 30, 0];
+    let (avg_luma, avg_err) = pp::tf_window_averages(&luma, &err, 2, 1);
+    assert_eq!(avg_luma, (100 + 200 + 300) / 3);
+    assert_eq!(avg_err, (10 + 20 + 30) / 3);
+
+    // An empty window returns zeros without dividing.
+    assert_eq!(pp::tf_window_averages(&luma, &err, 0, 0), (0, 0));
+
+    // Centre at index 0 (no past pictures) excludes index 0.
+    let (avg_luma, _) = pp::tf_window_averages(&[999_999, 10, 20], &[0, 1, 2], 0, 2);
+    assert_eq!(avg_luma, (10 + 20) / 2);
+}
+
+/// `low_delay_store_tf_pictures`' store predicate (`pd_process.c:4132`).
+///
+/// Derivation at hierarchical_levels 3 (mg_size 8) with one past picture:
+/// the predicate is `pic_idx_in_mg + 1 + 1 >= 8`, so only index 6 and 7
+/// qualify — the last two non-base pictures of the mini-GOP.
+#[test]
+fn traced_low_delay_store_tf_picture_predicate() {
+    for idx in 0u32..8 {
+        let want = idx >= 6;
+        assert_eq!(
+            pp::low_delay_should_store_tf_picture(1, idx, 1, 3),
+            want,
+            "pic_idx_in_mg {idx}"
+        );
+    }
+    // A BASE picture never joins the ring, however late it sits.
+    assert!(!pp::low_delay_should_store_tf_picture(0, 7, 1, 3));
+    // More past pictures widen the window backwards.
+    assert!(pp::low_delay_should_store_tf_picture(1, 4, 3, 3));
+    assert!(!pp::low_delay_should_store_tf_picture(1, 3, 3, 3));
+}
+
+/// `mctf_frame`'s decision half (`pd_process.c:4194-4250`).
+///
+/// The trap this pins: the STORE and RELEASE gates are NOT symmetric — RELEASE
+/// additionally requires `temporal_layer_index == 0`, because the ring is
+/// filled by non-base pictures and drained by the base picture that consumed
+/// it.
+#[test]
+fn traced_mctf_frame_decision_store_and_release_are_asymmetric() {
+    let ld = pp::PredStructure::LowDelay;
+    let ra = pp::PredStructure::RandomAccess;
+
+    // Low delay, base TF enabled, at a NON-base picture: store but do not
+    // release.
+    let d = pp::mctf_frame_decision(ld, true, true, 1, 0);
+    assert!(d.store_ld_tf_pictures && !d.release_ld_tf_pictures);
+
+    // The same at the BASE picture: both.
+    let d = pp::mctf_frame_decision(ld, true, true, 0, 0);
+    assert!(d.store_ld_tf_pictures && d.release_ld_tf_pictures);
+
+    // Random access: neither, whatever the layer.
+    for tl in [0u8, 1] {
+        let d = pp::mctf_frame_decision(ra, true, true, tl, 0);
+        assert!(!d.store_ld_tf_pictures && !d.release_ld_tf_pictures);
+    }
+
+    // tf_ctrls disabled clears do_tf and skips the filter, but the ring
+    // operations are gated on the SEQUENCE params, not on tf_ctrls -- so they
+    // still run.
+    let d = pp::mctf_frame_decision(ld, true, false, 0, 0);
+    assert!(!d.run_tf && d.do_tf_cleared);
+    assert!(d.store_ld_tf_pictures && d.release_ld_tf_pictures);
+
+    // is_noise_level is a plain threshold on the LAST I picture's noise.
+    assert!(!pp::mctf_frame_decision(ra, false, true, 0, pp::VQ_NOISE_LVL_TH - 1).is_noise_level);
+    assert!(pp::mctf_frame_decision(ra, false, true, 0, pp::VQ_NOISE_LVL_TH).is_noise_level);
+}
+
+/// `mctf_frame`'s motion-direction verdict (`pd_process.c:4232-4238`).
+///
+/// The margin is `other * 6 / 4` with INTEGER division on the right, so at
+/// `vert == 1` the threshold is 1 (not 1.5) and `horz == 2` already wins.
+#[test]
+fn traced_tf_motion_direction() {
+    assert_eq!(pp::tf_motion_direction(0, 0), -1);
+    assert_eq!(pp::tf_motion_direction(10, 10), -1);
+    // 1.5x margin at larger counts.
+    assert_eq!(pp::tf_motion_direction(151, 100), 0);
+    assert_eq!(pp::tf_motion_direction(150, 100), -1);
+    assert_eq!(pp::tf_motion_direction(100, 151), 1);
+    // The truncation at small counts: vert 1 -> threshold 6/4 = 1.
+    assert_eq!(pp::tf_motion_direction(2, 1), 0);
+    assert_eq!(pp::tf_motion_direction(1, 1), -1);
+    // Zero on one side always picks the other, if it is non-zero.
+    assert_eq!(pp::tf_motion_direction(1, 0), 0);
+    assert_eq!(pp::tf_motion_direction(0, 1), 1);
+}
+
+/// `svt_aom_tf_max_ref_per_struct` — the port copy, gated at tier 1 in
+/// `c_parity_picstruct.rs`. Repeated here only for the two shape facts a
+/// reader needs while reading the window derivation above.
+#[test]
+fn traced_tf_max_ref_per_struct_shape() {
+    // Only the I_SLICE row grows with the hierarchy.
+    assert_eq!(pp::tf_max_ref_per_struct(3, 0, false), 8);
+    assert_eq!(
+        pp::tf_max_ref_per_struct(3, 1, false),
+        pp::TF_MAX_BASE_REF_PICS
+    );
+    assert_eq!(
+        pp::tf_max_ref_per_struct(4, 2, false),
+        pp::TF_MAX_L1_REF_PICS_SUB_6L
+    );
+    assert_eq!(
+        pp::tf_max_ref_per_struct(5, 2, false),
+        pp::TF_MAX_L1_REF_PICS_6L
+    );
+    // `direction` is (void)-cast in C.
+    for ty in 0u8..=2 {
+        assert_eq!(
+            pp::tf_max_ref_per_struct(4, ty, false),
+            pp::tf_max_ref_per_struct(4, ty, true)
+        );
+    }
+}
