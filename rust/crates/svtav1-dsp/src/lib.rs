@@ -27,6 +27,7 @@ pub mod intra_pred;
 pub mod inv_txfm;
 pub mod loop_filter;
 pub mod obmc;
+pub mod port_compound_prep;
 pub mod port_convolve;
 pub mod port_convolve_hbd;
 pub mod port_convolve_scale;
