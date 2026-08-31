@@ -2722,6 +2722,11 @@ impl EncodePipeline {
             // Issue #9 item 5: C writes `static_config.chroma_sample_position`
             // into the 4:2:0 color_config (entropy_coding.c:2743).
             t.chroma_sample_position = self.chroma_sample_position;
+            // Inter campaign C1a: the non-reduced header's
+            // `initial_display_delay` is `min(hierarchical_levels + 1, 10)`
+            // (enc_handle.c:4975-4993). Unread on the still path, where those
+            // bits are not written at all.
+            t.hierarchical_levels = self.gop.hierarchical_levels;
             // [SVT_HDR_MODE] the fork ALWAYS signals separate_uv_delta_q
             // (its FH writes independent U/V deltas — entropy_coding.c
             // fork block hardcodes both flags true).

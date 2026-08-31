@@ -161,6 +161,10 @@ pub fn seq_tools_for_preset(preset: u8, allintra: bool) -> crate::entropy::obu::
         // Signalling-only config knob (issue #9 item 5); the pipeline
         // overwrites it from `EncodePipeline::chroma_sample_position`.
         chroma_sample_position: 0,
+        // GOP shape, not a speed feature — the pipeline overwrites it from
+        // its own `gop.hierarchical_levels`. Only the non-reduced (video)
+        // sequence header reads it.
+        hierarchical_levels: 0,
     }
 }
 

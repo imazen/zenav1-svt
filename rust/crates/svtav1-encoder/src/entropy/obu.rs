@@ -184,6 +184,13 @@ pub struct SeqTools {
     /// (entropy_coding.c:2743), default `EB_CSP_UNKNOWN` — every
     /// pre-existing caller writes the same 0 bits.
     pub chroma_sample_position: u8,
+    /// The config's `hierarchical_levels`, used ONLY to derive the
+    /// non-reduced header's `initial_display_delay`
+    /// (`min(hierarchical_levels + 1, 10)`, enc_handle.c:4975-4993). It has
+    /// no effect on a still (reduced) header, where those bits are not
+    /// written at all — so the default 0 keeps every existing cell
+    /// byte-identical.
+    pub hierarchical_levels: u8,
 }
 
 /// FH `superres_params()` (spec 5.9.8) — the frame's superres state.
@@ -684,7 +691,19 @@ fn write_sequence_header_inner(
         wb.write_bits(seq_level_idx as u32, 5);
     } else {
         wb.write_bit(false); // timing_info_present_flag = 0
-        wb.write_bit(false); // initial_display_delay_present_flag = 0
+        // initial_display_delay_present_flag: C sets this to 1 for every
+        // non-reduced header (enc_handle.c:4990), NOT 0. Writing 0 here
+        // omitted the five bits C always emits for operating point 0 (the
+        // per-op present bit plus the 4-bit delay), which shifted every
+        // following field — one of the four defects the inter refusal in
+        // pipeline.rs names.
+        //
+        // The delay itself is `min(hierarchical_levels + 1, 10)` — "the number
+        // of decoded frames that should be present in the buffer pool before
+        // the first presentable frame is displayed" (spec 6.4.1), which for
+        // SVT's TU output is one frame per temporal layer plus the displayable
+        // leaf (enc_handle.c:4975-4993). It is written biased by one.
+        wb.write_bit(true); // initial_display_delay_present_flag = 1
         wb.write_bits(0, 5); // operating_points_cnt_minus_1 = 0
         wb.write_bits(0, 12); // operating_point_idc[0] = 0
         wb.write_bits(seq_level_idx as u32, 5); // seq_level_idx[0]
@@ -694,6 +713,10 @@ fn write_sequence_header_inner(
         if seq_level_idx > 7 {
             wb.write_bit(false); // seq_tier[0] = 0 (main tier)
         }
+        // entropy_coding.c:3749-3755, inside the operating-point loop.
+        wb.write_bit(true); // initial_display_delay_present_for_this_op = 1
+        let display_delay = u32::from(tools.hierarchical_levels).saturating_add(1).min(10);
+        wb.write_bits(display_delay - 1, 4); // initial_display_delay_minus_1
     }
 
     // Frame dimensions
@@ -732,7 +755,6 @@ fn write_sequence_header_inner(
         wb.write_bit(true); // enable_order_hint = 1
         wb.write_bit(false); // enable_jnt_comp = 0
         wb.write_bit(false); // enable_ref_frame_mvs = 0
-        wb.write_bits(ORDER_HINT_BITS - 1, 3); // order_hint_bits_minus_1
 
         // seq_choose_screen_content_tools (1 bit, NOT 2!)
         wb.write_bit(true); // = 1 → seq_force_screen_content_tools = SELECT
@@ -740,6 +762,15 @@ fn write_sequence_header_inner(
         // seq_force_screen_content_tools > 0 (SELECT=2 > 0), so:
         // seq_choose_integer_mv (1 bit)
         wb.write_bit(true); // = 1 → seq_force_integer_mv = SELECT
+
+        // order_hint_bits_minus_1 comes AFTER the screen-content and
+        // integer-mv bits, not before them: spec 5.5.1 and C
+        // (entropy_coding.c:2836-2838, the second
+        // `if (enable_order_hint)` block, which follows the two
+        // seq_choose_* blocks). Writing it early put three bits in the wrong
+        // place and shifted everything after — the second of the four defects
+        // the inter refusal in pipeline.rs names.
+        wb.write_bits(ORDER_HINT_BITS - 1, 3); // order_hint_bits_minus_1
     }
 
     // enable_superres (spec 5.5.1): false on every existing gate cell, so the
