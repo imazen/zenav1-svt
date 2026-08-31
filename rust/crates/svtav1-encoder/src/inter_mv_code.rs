@@ -401,6 +401,34 @@ pub fn mv_bit_cost(mv: Mv, ref_mv: Mv, rate: &NmvRate, weight: i32) -> i32 {
     (v + (1 << 6)) >> 7
 }
 
+/// C `svt_aom_mv_err_cost` (av1me.c:141-149) over an [`NmvRate`] — the
+/// SSD-domain MV cost the sub-pel search pays, `use_mvcost` arm.
+///
+/// The inter search reads its tables through `x->nmv_vec_cost` /
+/// `x->mv_cost_stack`, which `svt_aom_md_init_xd`-time assignment points at
+/// `md_rate_est_ctx->nmv_vec_cost` / `nmvcoststack` (mode_decision.c:2098-2099,
+/// :2984-2985) — i.e. at the tables [`estimate_mv_rate`] builds, NOT at the dv
+/// tables `intrabc.rs` gates. On the `approx_inter_rate` arm those tables are
+/// zeroed, so the cost is 0; C reaches the same value through its own zero
+/// fill rather than through the `_light` twin, which has a separate call site.
+#[inline]
+pub fn mv_err_cost(mv: Mv, ref_mv: Mv, rate: &NmvRate, error_per_bit: i32) -> i32 {
+    match rate {
+        // Zeroed tables: mv_cost() is 0, and ROUND_POWER_OF_TWO_64(0, k) == 0.
+        NmvRate::Zero => 0,
+        NmvRate::Tables(t) => crate::intrabc::mv_err_cost(mv, ref_mv, t, error_per_bit),
+    }
+}
+
+/// C `svt_aom_mv_err_cost_light` (av1me.c:126-132) — the `approx_inter_rate`
+/// fast path. Textually identical to [`mv_bit_cost_light`]; C duplicates the
+/// body under two names for two call sites and this port keeps both so each
+/// call site cites the function it actually mirrors.
+#[inline]
+pub fn mv_err_cost_light(mv: Mv, ref_mv: Mv) -> i32 {
+    crate::intrabc::mv_err_cost_light(mv, ref_mv)
+}
+
 /// C `svt_av1_mv_bit_cost_light` (rd_cost.c:59-65) — the `approx_inter_rate`
 /// fast path, table-independent.
 #[inline]

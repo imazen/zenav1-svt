@@ -1181,3 +1181,67 @@ fn c_parity_sb_mv_rate_cadence() {
         }
     }
 }
+
+/// `svt_aom_mv_err_cost` / `_light` (av1me.c:141/:126, both EXPORTED) over the
+/// NMV tables — the arm the inter sub-pel search uses
+/// (`x->mv_cost_stack = md_rate_est_ctx->nmvcoststack`, mode_decision.c:2099).
+/// The pre-existing `c_parity_intrabc.rs` coverage exercises these only over
+/// the DV tables at `MvSubpelPrecision::None`, so the hp/low-precision arms
+/// were ungated until now.
+#[test]
+fn c_parity_mv_err_cost_over_nmv_tables() {
+    let mut rng = Rng(0x0C3_5001);
+    for iter in 0..3 {
+        let ctx = if iter == 0 {
+            NmvContext::default()
+        } else {
+            random_nmv_context(&mut rng)
+        };
+        let flat = flatten_nmv(&ctx);
+        for hp in [false, true] {
+            let c = cref::estimate_mv_rate(false, false, hp, Some(&flat), None, DV_SENTINEL);
+            let (c0, c1) = c.nmv_costs.split_at(cref::MV_VALS);
+            let rs = imc::estimate_mv_rate(&ctx, &ctx, hp, false, false);
+
+            let (mvs, refs) = mv_corpus(&mut rng, 200);
+            let mut nonzero = 0usize;
+            for (&m, &r) in mvs.iter().zip(&refs) {
+                let (mv, rf) = (Mv { x: m.0, y: m.1 }, Mv { x: r.0, y: r.1 });
+                for epb in [1i32, 63, 1024, 7276] {
+                    let want = cref::mv_err_cost(m, r, &c.nmv_joint, c0, c1, epb);
+                    let got = imc::mv_err_cost(mv, rf, &rs.nmv, epb);
+                    assert_eq!(
+                        got, want,
+                        "iter={iter} hp={hp} epb={epb} mv={m:?} ref={r:?}"
+                    );
+                    nonzero += usize::from(got != 0);
+                }
+                assert_eq!(
+                    imc::mv_err_cost_light(mv, rf),
+                    cref::mv_err_cost_light(m, r),
+                    "light mv={m:?} ref={r:?}"
+                );
+            }
+            assert!(
+                nonzero > mvs.len(),
+                "iter={iter} hp={hp}: err costs were mostly zero — tables look empty"
+            );
+        }
+    }
+    // The approx_inter_rate arm: zeroed tables cost 0 on both sides.
+    let ctx = NmvContext::default();
+    let approx = imc::estimate_mv_rate(&ctx, &ctx, true, false, true);
+    let c_zero_joint = [0i32; 4];
+    let c_zero = vec![0i32; cref::MV_VALS];
+    for &(m, r) in &[((0i16, 0i16), (0i16, 0i16)), ((1024, -777), (-3, 9))] {
+        let (mv, rf) = (Mv { x: m.0, y: m.1 }, Mv { x: r.0, y: r.1 });
+        for epb in [1i32, 7276] {
+            assert_eq!(imc::mv_err_cost(mv, rf, &approx.nmv, epb), 0);
+            assert_eq!(
+                cref::mv_err_cost(m, r, &c_zero_joint, &c_zero, &c_zero, epb),
+                0,
+                "C zeroed tables must also cost 0"
+            );
+        }
+    }
+}
