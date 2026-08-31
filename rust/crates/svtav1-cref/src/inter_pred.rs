@@ -1908,3 +1908,105 @@ pub fn log2f_safe(x: u32) -> i32 {
 pub fn get_msb(x: u32) -> i32 {
     unsafe { ref_get_msb(x) }
 }
+
+// ---------------------------------------------------------------------------
+// OBMC wsrc/mask producer.
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn ref_calc_target_weighted_pred_above(
+        n4_w: c_int,
+        rel_mi_col: c_int,
+        nb_mi_width: c_int,
+        mask_buf: *mut i32,
+        wsrc_buf: *mut i32,
+        tmp: *const u8,
+        tmp_stride: c_int,
+        overlap: c_int,
+    );
+    fn ref_calc_target_weighted_pred_left(
+        n4_w: c_int,
+        rel_mi_row: c_int,
+        nb_mi_height: c_int,
+        mask_buf: *mut i32,
+        wsrc_buf: *mut i32,
+        tmp: *const u8,
+        tmp_stride: c_int,
+        overlap: c_int,
+    );
+    fn ref_skip_u4x4_pred_in_obmc(bsize: c_int, dir: c_int, ssx: c_int, ssy: c_int) -> c_int;
+    fn ref_get_plane_block_size(bsize: c_int, ssx: c_int, ssy: c_int) -> c_int;
+    fn ref_get_obmc_mask(overlap: c_int, out: *mut u8);
+}
+
+/// Reference `svt_av1_calc_target_weighted_pred_above_c`
+/// (enc_inter_prediction.c:1577).
+#[allow(clippy::too_many_arguments)]
+pub fn calc_target_weighted_pred_above(
+    n4_w: usize,
+    rel_mi_col: usize,
+    nb_mi_width: usize,
+    mask_buf: &mut [i32],
+    wsrc_buf: &mut [i32],
+    tmp: &[u8],
+    tmp_stride: usize,
+    overlap: usize,
+) {
+    unsafe {
+        ref_calc_target_weighted_pred_above(
+            n4_w as i32,
+            rel_mi_col as i32,
+            nb_mi_width as i32,
+            mask_buf.as_mut_ptr(),
+            wsrc_buf.as_mut_ptr(),
+            tmp.as_ptr(),
+            tmp_stride as i32,
+            overlap as i32,
+        );
+    }
+}
+
+/// Reference `svt_av1_calc_target_weighted_pred_left_c`
+/// (enc_inter_prediction.c:1605).
+#[allow(clippy::too_many_arguments)]
+pub fn calc_target_weighted_pred_left(
+    n4_w: usize,
+    rel_mi_row: usize,
+    nb_mi_height: usize,
+    mask_buf: &mut [i32],
+    wsrc_buf: &mut [i32],
+    tmp: &[u8],
+    tmp_stride: usize,
+    overlap: usize,
+) {
+    unsafe {
+        ref_calc_target_weighted_pred_left(
+            n4_w as i32,
+            rel_mi_row as i32,
+            nb_mi_height as i32,
+            mask_buf.as_mut_ptr(),
+            wsrc_buf.as_mut_ptr(),
+            tmp.as_ptr(),
+            tmp_stride as i32,
+            overlap as i32,
+        );
+    }
+}
+
+/// Reference `svt_av1_skip_u4x4_pred_in_obmc` (inter_prediction.c:2403).
+pub fn skip_u4x4_pred_in_obmc(bsize: i32, dir: i32, ssx: i32, ssy: i32) -> i32 {
+    unsafe { ref_skip_u4x4_pred_in_obmc(bsize, dir, ssx, ssy) }
+}
+
+/// Reference `get_plane_block_size` (common_utils.h:135); `-1` is
+/// `BLOCK_INVALID`.
+pub fn get_plane_block_size(bsize: i32, ssx: i32, ssy: i32) -> i32 {
+    unsafe { ref_get_plane_block_size(bsize, ssx, ssy) }
+}
+
+/// Reference `svt_av1_get_obmc_mask(overlap)`.
+pub fn get_obmc_mask(overlap: usize) -> Vec<u8> {
+    let mut out = vec![0u8; overlap];
+    unsafe { ref_get_obmc_mask(overlap as i32, out.as_mut_ptr()) };
+    out
+}

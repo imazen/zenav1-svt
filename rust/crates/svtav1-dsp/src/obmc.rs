@@ -65,7 +65,7 @@ pub fn obmc_blend_left(
 /// (`obmc_mask_{1,2,4,8,16,32}` in inter_prediction.c). Weights rise from the
 /// boundary (neighbor-heavy) to 64 (fully current). C `assert(0)`s on any
 /// other length; only powers of two up to 32 ever occur (overlap = dim/2).
-fn obmc_mask(overlap: usize) -> &'static [u8] {
+pub(crate) fn obmc_mask(overlap: usize) -> &'static [u8] {
     match overlap {
         1 => &[64],
         2 => &[45, 64],

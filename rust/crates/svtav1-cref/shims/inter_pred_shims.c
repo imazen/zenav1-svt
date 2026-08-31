@@ -572,3 +572,53 @@ void ref_model_rd_from_sse(int bsize, int quantizer, int bit_depth, uint64_t sse
    the port's claim about it is checked against the header, not assumed. */
 int ref_log2f_safe(uint32_t x) { return svt_log2f_safe(x); }
 int ref_get_msb(uint32_t x) { return get_msb(x); }
+
+/* ---- OBMC wsrc/mask producer ------------------------------------------ */
+
+#include "enc_inter_prediction.h"
+#include "coding_unit.h"
+
+void svt_av1_calc_target_weighted_pred_above_c(uint8_t is16bit, MacroBlockD* xd, int rel_mi_col, uint8_t nb_mi_width,
+                                               MbModeInfo* nb_mi, void* fun_ctxt);
+void svt_av1_calc_target_weighted_pred_left_c(uint8_t is16bit, MacroBlockD* xd, int rel_mi_row, uint8_t nb_mi_height,
+                                              MbModeInfo* nb_mi, void* fun_ctxt);
+int  svt_av1_skip_u4x4_pred_in_obmc(BlockSize bsize, int dir, int subsampling_x, int subsampling_y);
+
+/* Both accumulators read exactly two things off the MacroBlockD: nothing at
+   all in the left case beyond `n4_w`, and `n4_w` in the above case. A
+   stack-local MacroBlockD with n4_w set is therefore a complete stand-in --
+   no per-call `static`, per ref_shims.c's rule. */
+void ref_calc_target_weighted_pred_above(int n4_w, int rel_mi_col, int nb_mi_width, int32_t* mask_buf,
+                                         int32_t* wsrc_buf, const uint8_t* tmp, int tmp_stride, int overlap) {
+    MacroBlockD xd;
+    memset(&xd, 0, sizeof(xd));
+    xd.n4_w                                    = (uint8_t)n4_w;
+    struct calc_target_weighted_pred_ctxt ctxt = {mask_buf, wsrc_buf, tmp, tmp_stride, overlap};
+    svt_av1_calc_target_weighted_pred_above_c(0, &xd, rel_mi_col, (uint8_t)nb_mi_width, NULL, &ctxt);
+}
+
+void ref_calc_target_weighted_pred_left(int n4_w, int rel_mi_row, int nb_mi_height, int32_t* mask_buf,
+                                        int32_t* wsrc_buf, const uint8_t* tmp, int tmp_stride, int overlap) {
+    MacroBlockD xd;
+    memset(&xd, 0, sizeof(xd));
+    xd.n4_w                                    = (uint8_t)n4_w;
+    struct calc_target_weighted_pred_ctxt ctxt = {mask_buf, wsrc_buf, tmp, tmp_stride, overlap};
+    svt_av1_calc_target_weighted_pred_left_c(0, &xd, rel_mi_row, (uint8_t)nb_mi_height, NULL, &ctxt);
+}
+
+int ref_skip_u4x4_pred_in_obmc(int bsize, int dir, int ssx, int ssy) {
+    return svt_av1_skip_u4x4_pred_in_obmc((BlockSize)bsize, dir, ssx, ssy);
+}
+
+/* `get_plane_block_size` (common_utils.h:135); -1 stands in for BLOCK_INVALID. */
+int ref_get_plane_block_size(int bsize, int ssx, int ssy) {
+    BlockSize b = get_plane_block_size((BlockSize)bsize, ssx, ssy);
+    return b == BLOCK_INVALID ? -1 : (int)b;
+}
+
+/* `svt_av1_get_obmc_mask(overlap)` -- copy the mask out. */
+const uint8_t* svt_av1_get_obmc_mask(int length);
+void           ref_get_obmc_mask(int overlap, uint8_t* out) {
+    const uint8_t* m = svt_av1_get_obmc_mask(overlap);
+    for (int i = 0; i < overlap; ++i) out[i] = m[i];
+}
