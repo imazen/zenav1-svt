@@ -15,6 +15,7 @@ pub mod picstruct;
 pub mod md_subpel;
 pub mod rate_control;
 pub mod txfm_pf;
+pub mod sig_deriv;
 
 use std::ffi::c_void;
 
