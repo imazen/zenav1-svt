@@ -69,6 +69,33 @@ Crates are not published to crates.io yet — depend by git.
   grids with a high 4xN population — which is what drives the `mi_step == 1`
   arm that rewinds the LOOP VARIABLE before reading the cell to its right.
 
+- **OBMC motion search — the other half of `av1me.c` (`inter_me/obmc_search.rs`)
+  — chunk C4, evidence TIER 1.** `av1me.c`'s IntraBC half was already in
+  `intrabc.rs`; this completes the file: `get_obmc_mvpred_var`,
+  `obmc_refining_search_sad`, `svt_av1_obmc_full_pixel_search`,
+  `set_subpel_mv_search_range`, `setup_obmc_center_error`,
+  `upsampled_obmc_pref_error`, `upsampled_setup_obmc_center_error`,
+  `sp`/`pre`/`search_step_table` and
+  `svt_av1_find_best_obmc_sub_pixel_tree_up`, plus the four C_DEFAULT kernels it
+  drives that nothing in this port needed yet (`obmc_sad`, `obmc_variance`,
+  `obmc_sub_pixel_variance` with both bilinear passes, `svt_aom_upsampled_pred`
+  and `svt_aom_convolve8_{horiz,vert}`). Nothing calls it yet. Gated by
+  `tests/c_parity_obmc_search.rs` (9 tests: the kernel families over 10 block
+  sizes x 64 sub-pel offsets, `convolve8` both directions, `upsampled_pred` over
+  all offsets x {2,4,8}-tap, and BOTH search drivers against the real C with an
+  `IntraBcContext` + `ModeDecisionContext` assembled in the shim).
+
+- **Recorded upstream defect: every NEON `obmc_sub_pixel_variance` above 4x8 is
+  the 4x8 kernel** (`docs/SUSPECTED-C-BUGS.md` #11). `aom_dsp_rtcd.c:731-750`
+  aliases all 20 sizes from 4x16 to 128x128 to
+  `svt_aom_obmc_sub_pixel_variance4x8_neon`; measured on macOS aarch64 for
+  `BLOCK_8X16` across all 64 offsets, the RTCD result is bit-identical to the
+  `_c` 4x8 kernel. `obmc_sad`/`obmc_variance` in the same block and the x86 SSE4
+  table are correct. The port follows the C SOURCE; the test suite compares the
+  live `USE_8_TAPS` path against the C binary everywhere and the `osvf` path only
+  where a control test proves this host's dispatch is faithful — that control
+  fails the day upstream fixes the table (fb5f8fa).
+
 - **Open-loop motion estimation — a wholesale port of `motion_estimation.c`
   (`inter_me/`) — inter-encode campaign chunk C4, evidence TIER 1 where a C
   symbol exists.** All 40 functions of SVT-AV1's 2,964-line
