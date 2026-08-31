@@ -23,6 +23,7 @@
 //! | [`coding_loop`] | the per-block helpers of `product_coding_loop.c` |
 //! | [`inject`] | inter-candidate injection (PD1 and PD0) |
 //! | [`ssim_hbd`] | the high-bit-depth arm of the tune-SSIM distortion |
+//! | [`md_search`] | the MD-level full-pel / sub-pel / PME searches |
 //!
 //! # Reachability
 //!
@@ -34,6 +35,7 @@
 pub mod coding_loop;
 pub mod drl;
 pub mod inject;
+pub mod md_search;
 pub mod nics;
 pub mod pme;
 pub mod predicates;
