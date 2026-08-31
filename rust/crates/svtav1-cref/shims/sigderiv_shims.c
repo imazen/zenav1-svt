@@ -1407,3 +1407,179 @@ void ref_sig_deriv_multi_processes_default(const int32_t* in, int64_t* out) {
 
 int32_t ref_multi_processes_in_slots(void) { return MP_I_COUNT; }
 int32_t ref_multi_processes_out_slots(void) { return MP_O_COUNT; }
+
+/* ===========================================================================
+ * svt_aom_sig_deriv_mode_decision_config_default (enc_mode_config.c:8900) --
+ * the largest function in the file; it assigns every per-picture level the MD
+ * path consumes.
+ *
+ * Deref safety, from the C body:
+ *  - mfmv_controls dereferences pcs->ref_pic_ptr_array[0][0] whenever its
+ *    r0_th is nonzero, so both wrappers are populated.
+ *  - rtime_alloc_ec_ctx_array runs when cdf_ctrl.enabled; picture_sb_width /
+ *    height are left 0 so the allocation is zero-sized, and the array is freed
+ *    here (EB_MALLOC_ARRAY comes from the C allocator, so the shim uses
+ *    EB_FREE_ARRAY to match).
+ *  - set_pic_pd0_lvl_default reads scs->super_block_size.
+ * ======================================================================== */
+
+enum {
+    MD_I_ENC_MODE = 0, MD_I_IS_REF, MD_I_TEMPORAL_LAYER, MD_I_INPUT_RES,
+    MD_I_IS_ISLICE, MD_I_SC_CLASS5, MD_I_FAST_DECODE, MD_I_HIER_LEVELS,
+    MD_I_TRANSITION, MD_I_IS_HIGHEST_LAYER, MD_I_SQ_QP, MD_I_MFMV_ENABLED,
+    MD_I_ERROR_RESILIENT, MD_I_BASE_Q, MD_I_REF_HP_PERC, MD_I_SCS_INPUT_RES,
+    MD_I_FRAME_IS_INTRA, MD_I_SUPERRES, MD_I_RESIZE_ENABLED, MD_I_SEQ_QP_MOD,
+    MD_I_RESIZE_MODE, MD_I_REF_INTRA_PERC, MD_I_RC_STAT_GEN, MD_I_REF_SKIP_PERC,
+    MD_I_COEFF_LVL, MD_I_REF_L0_TRY, MD_I_REF_L1_TRY, MD_I_ENABLE_II,
+    MD_I_BIT_DEPTH, MD_I_SEGMENTATION, MD_I_SB_SIZE, MD_I_HBD_MD,
+    MD_I_R0_GEN, MD_I_R0_MILLI, MD_I_PCS_TEMPORAL_LAYER, MD_I_TUNE,
+    MD_I_PICTURE_QP, MD_I_EXT_CRF_OFFSET,
+    MD_I_COUNT
+};
+
+enum {
+    MD_O_MFMV_BIT = 0, MD_O_RDOQ, MD_O_COEFF_SHAVE, MD_O_RATE_EST,
+    MD_O_CDF_MV, MD_O_CDF_SE, MD_O_CDF_COEF, MD_O_CDF_EN,
+    MD_O_FILTER_INTRA, MD_O_ACCURATE_PART_CTX, MD_O_ALLOW_HP_MV,
+    MD_O_WM_LEVEL, MD_O_ALLOW_WM, MD_O_MOTION_MODE_SWITCHABLE, MD_O_OBMC_LEVEL,
+    MD_O_APPROX_RATE, MD_O_SKIP_INTRA, MD_O_INTRA_LEVEL, MD_O_DIST_ANG_INTRA,
+    MD_O_CAND_RED, MD_O_TXT, MD_O_TX_SHORTCUT, MD_O_PD0_BIAS_WEIGHT,
+    MD_O_IFS_LEVEL, MD_O_INTERP_FILTER, MD_O_CHROMA, MD_O_CFL,
+    MD_O_NN_COMB, MD_O_UNI3X3, MD_O_BIPRED3X3, MD_O_INTER_COMP,
+    MD_O_REF_PRUNE, MD_O_SPATIAL_SSE, MD_O_NSQ_GEOM, MD_O_NSQ_SEARCH,
+    MD_O_INTER_INTRA, MD_O_TXS, MD_O_TX_MODE, MD_O_NIC,
+    MD_O_MD_SQ_MV, MD_O_MD_NSQ_MV, MD_O_MD_PME, MD_O_ME_SUBPEL, MD_O_PME_SUBPEL,
+    MD_O_MDS0, MD_O_DISALLOW_4X4, MD_O_BYPASS_ENCDEC, MD_O_PD0_LVL,
+    MD_O_DEPTH_REMOVAL, MD_O_DEPTH_REFINE, MD_O_LPD1_LVL, MD_O_LAMBDA_WEIGHT,
+    MD_O_COUNT
+};
+
+void ref_sig_deriv_md_config_default(const int32_t* in, int64_t* out) {
+    SequenceControlSet*      scs  = (SequenceControlSet*)calloc(1, sizeof(*scs));
+    PictureParentControlSet* ppcs = (PictureParentControlSet*)calloc(1, sizeof(*ppcs));
+    PictureControlSet*       pcs  = (PictureControlSet*)calloc(1, sizeof(*pcs));
+    EbObjectWrapper*   w0 = (EbObjectWrapper*)calloc(1, sizeof(*w0));
+    EbObjectWrapper*   w1 = (EbObjectWrapper*)calloc(1, sizeof(*w1));
+    EbReferenceObject* r0 = (EbReferenceObject*)calloc(1, sizeof(*r0));
+    EbReferenceObject* r1 = (EbReferenceObject*)calloc(1, sizeof(*r1));
+
+    scs->static_config.fast_decode = (uint8_t)in[MD_I_FAST_DECODE];
+    scs->static_config.qp          = (uint32_t)in[MD_I_SQ_QP];
+    scs->static_config.resize_mode = (uint8_t)in[MD_I_RESIZE_MODE];
+    scs->static_config.encoder_bit_depth = (uint32_t)in[MD_I_BIT_DEPTH];
+    scs->static_config.enable_dlf_flag   = 0; /* dlf ctrls are not compared */
+    scs->static_config.tune              = (uint8_t)in[MD_I_TUNE];
+    scs->static_config.extended_crf_qindex_offset = (uint8_t)in[MD_I_EXT_CRF_OFFSET];
+    scs->seq_qp_mod            = (uint8_t)in[MD_I_SEQ_QP_MOD];
+    scs->mfmv_enabled          = (uint8_t)in[MD_I_MFMV_ENABLED];
+    scs->rc_stat_gen_pass_mode = (uint8_t)in[MD_I_RC_STAT_GEN];
+    scs->input_resolution      = (ResolutionRange)in[MD_I_SCS_INPUT_RES];
+    scs->super_block_size      = (uint32_t)in[MD_I_SB_SIZE];
+    scs->seq_header.enable_interintra_compound = (uint8_t)in[MD_I_ENABLE_II];
+    scs->tpl                   = 0;
+
+    ppcs->scs                  = scs;
+    ppcs->is_ref               = (bool)in[MD_I_IS_REF];
+    ppcs->temporal_layer_index = (uint8_t)in[MD_I_TEMPORAL_LAYER];
+    ppcs->input_resolution     = (ResolutionRange)in[MD_I_INPUT_RES];
+    ppcs->sc_class5            = (uint8_t)in[MD_I_SC_CLASS5];
+    ppcs->hierarchical_levels  = (uint8_t)in[MD_I_HIER_LEVELS];
+    ppcs->transition_present   = (int8_t)in[MD_I_TRANSITION];
+    ppcs->is_highest_layer     = (bool)in[MD_I_IS_HIGHEST_LAYER];
+    ppcs->frame_superres_enabled = (bool)in[MD_I_SUPERRES];
+    ppcs->frame_resize_enabled   = (bool)in[MD_I_RESIZE_ENABLED];
+    ppcs->ref_list0_count_try  = (uint8_t)in[MD_I_REF_L0_TRY];
+    ppcs->ref_list1_count_try  = (uint8_t)in[MD_I_REF_L1_TRY];
+    ppcs->hbd_md               = (int8_t)in[MD_I_HBD_MD];
+    ppcs->r0_gen               = (bool)in[MD_I_R0_GEN];
+    ppcs->r0                   = (double)in[MD_I_R0_MILLI] / 1000.0;
+    ppcs->picture_qp           = (uint8_t)in[MD_I_PICTURE_QP];
+    ppcs->frm_hdr.error_resilient_mode = (uint8_t)in[MD_I_ERROR_RESILIENT];
+    ppcs->frm_hdr.quantization_params.base_q_idx = (int32_t)in[MD_I_BASE_Q];
+    ppcs->frm_hdr.frame_type = in[MD_I_FRAME_IS_INTRA] ? KEY_FRAME : INTER_FRAME;
+    ppcs->frm_hdr.segmentation_params.segmentation_enabled = (uint8_t)in[MD_I_SEGMENTATION];
+    ppcs->picture_sb_width  = 0;
+    ppcs->picture_sb_height = 0;
+
+    pcs->ppcs       = ppcs;
+    pcs->scs        = scs;
+    pcs->enc_mode   = (EncMode)in[MD_I_ENC_MODE];
+    pcs->slice_type = in[MD_I_IS_ISLICE] ? I_SLICE : B_SLICE;
+    pcs->ref_hp_percentage    = (int16_t)in[MD_I_REF_HP_PERC];
+    pcs->ref_intra_percentage = (uint8_t)in[MD_I_REF_INTRA_PERC];
+    pcs->ref_skip_percentage  = (uint8_t)in[MD_I_REF_SKIP_PERC];
+    pcs->coeff_lvl            = (InputCoeffLvl)in[MD_I_COEFF_LVL];
+    pcs->temporal_layer_index = (uint8_t)in[MD_I_PCS_TEMPORAL_LAYER];
+    r0->is_mfmv_used = 0;
+    r1->is_mfmv_used = 0;
+    w0->object_ptr = r0;
+    w1->object_ptr = r1;
+    pcs->ref_pic_ptr_array[REF_LIST_0][0] = w0;
+    pcs->ref_pic_ptr_array[REF_LIST_1][0] = w1;
+
+    svt_aom_sig_deriv_mode_decision_config_default(scs, pcs);
+
+    out[MD_O_MFMV_BIT]     = ppcs->frm_hdr.use_ref_frame_mvs;
+    out[MD_O_RDOQ]         = pcs->rdoq_level;
+    out[MD_O_COEFF_SHAVE]  = pcs->coeff_shaving_level;
+    out[MD_O_RATE_EST]     = pcs->rate_est_level;
+    out[MD_O_CDF_MV]       = pcs->cdf_ctrl.update_mv;
+    out[MD_O_CDF_SE]       = pcs->cdf_ctrl.update_se;
+    out[MD_O_CDF_COEF]     = pcs->cdf_ctrl.update_coef;
+    out[MD_O_CDF_EN]       = pcs->cdf_ctrl.enabled;
+    out[MD_O_FILTER_INTRA] = pcs->pic_filter_intra_level;
+    out[MD_O_ACCURATE_PART_CTX] = ppcs->use_accurate_part_ctx;
+    out[MD_O_ALLOW_HP_MV]  = ppcs->frm_hdr.allow_high_precision_mv;
+    out[MD_O_WM_LEVEL]     = pcs->wm_level;
+    out[MD_O_ALLOW_WM]     = ppcs->frm_hdr.allow_warped_motion;
+    out[MD_O_MOTION_MODE_SWITCHABLE] = ppcs->frm_hdr.is_motion_mode_switchable;
+    out[MD_O_OBMC_LEVEL]   = ppcs->pic_obmc_level;
+    out[MD_O_APPROX_RATE]  = pcs->approx_inter_rate;
+    out[MD_O_SKIP_INTRA]   = pcs->skip_intra;
+    out[MD_O_INTRA_LEVEL]  = pcs->intra_level;
+    out[MD_O_DIST_ANG_INTRA] = pcs->dist_based_ang_intra_level;
+    out[MD_O_CAND_RED]     = pcs->cand_reduction_level;
+    out[MD_O_TXT]          = pcs->txt_level;
+    out[MD_O_TX_SHORTCUT]  = pcs->tx_shortcut_level;
+    out[MD_O_PD0_BIAS_WEIGHT] = pcs->pd0_cost_bias_weight;
+    out[MD_O_IFS_LEVEL]    = pcs->interpolation_search_level;
+    out[MD_O_INTERP_FILTER] = ppcs->frm_hdr.interpolation_filter;
+    out[MD_O_CHROMA]       = pcs->chroma_level;
+    out[MD_O_CFL]          = pcs->cfl_level;
+    out[MD_O_NN_COMB]      = pcs->new_nearest_near_comb_injection;
+    out[MD_O_UNI3X3]       = pcs->unipred3x3_injection;
+    out[MD_O_BIPRED3X3]    = pcs->bipred3x3_injection;
+    out[MD_O_INTER_COMP]   = pcs->inter_compound_mode;
+    out[MD_O_REF_PRUNE]    = pcs->dist_based_ref_pruning;
+    out[MD_O_SPATIAL_SSE]  = pcs->spatial_sse_full_loop_level;
+    out[MD_O_NSQ_GEOM]     = pcs->nsq_geom_level;
+    out[MD_O_NSQ_SEARCH]   = pcs->nsq_search_level;
+    out[MD_O_INTER_INTRA]  = pcs->inter_intra_level;
+    out[MD_O_TXS]          = pcs->txs_level;
+    out[MD_O_TX_MODE]      = ppcs->frm_hdr.tx_mode;
+    out[MD_O_NIC]          = pcs->nic_level;
+    out[MD_O_MD_SQ_MV]     = pcs->md_sq_mv_search_level;
+    out[MD_O_MD_NSQ_MV]    = pcs->md_nsq_mv_search_level;
+    out[MD_O_MD_PME]       = pcs->md_pme_level;
+    out[MD_O_ME_SUBPEL]    = pcs->me_subpel_level;
+    out[MD_O_PME_SUBPEL]   = pcs->pme_subpel_level;
+    out[MD_O_MDS0]         = pcs->mds0_level;
+    out[MD_O_DISALLOW_4X4] = pcs->pic_disallow_4x4;
+    out[MD_O_BYPASS_ENCDEC] = pcs->pic_bypass_encdec;
+    out[MD_O_PD0_LVL]      = pcs->pic_pd0_lvl;
+    out[MD_O_DEPTH_REMOVAL] = pcs->pic_depth_removal_level;
+    out[MD_O_DEPTH_REFINE] = pcs->pic_block_based_depth_refinement_level;
+    out[MD_O_LPD1_LVL]     = pcs->pic_lpd1_lvl;
+    out[MD_O_LAMBDA_WEIGHT] = pcs->lambda_weight;
+
+    /* rtime_alloc_ec_ctx_array uses EB_MALLOC_ARRAY, which is plain malloc in
+       a release build (the tracking wrapper's svt_remove_mem_entry is not
+       linked here), so free() is the matching deallocation. picture_sb_width /
+       height are 0, so this is a zero-element array. */
+    free(pcs->ec_ctx_array);
+    free(r1); free(r0); free(w1); free(w0);
+    free(pcs); free(ppcs); free(scs);
+}
+
+int32_t ref_md_config_in_slots(void) { return MD_I_COUNT; }
+int32_t ref_md_config_out_slots(void) { return MD_O_COUNT; }
