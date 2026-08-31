@@ -24,17 +24,21 @@
 //!
 //! # What is NOT here, and why
 //!
-//! * `correspondence_from_mvs` (`global_motion.c:239`) and its dispatcher
-//!   `gm_compute_correspondence` (`:341`) walk
-//!   `pcs->pa_me_data->me_results[..]->me_candidate_array` and remap block
-//!   indices through `me_idx_85_8x8_to_16x16_conversion` /
-//!   `me_idx_16x16_to_parent_32x32_conversion`. That is the ME module's data
-//!   layout, not this group's, and porting it against a guessed layout would
-//!   be a stub wearing a port's name.
-//! * `determine_gm_params` (`:364`) is a one-line wrapper over
-//!   `svt_aom_ransac` (`Codec/ransac.c`) — double-precision least squares with
-//!   a PRNG-driven sample draw. The cost of that item is ransac.c, not the
-//!   wrapper.
+//! * `correspondence_from_corners` (`global_motion.c:238`) — the `CORNERS`
+//!   arm of `gm_compute_correspondence`. It needs `Codec/corner_detect.c`
+//!   (FAST) and `Codec/corner_match.c` (NCC matching), neither ported, and it
+//!   is unreachable at every preset this port can express (the only reachable
+//!   `gm` level is 4, which selects an MV method, never `CORNERS`).
+//!   [`crate::port_gm_correspondence::gm_compute_correspondence`] returns an
+//!   explicit `Err` for it rather than an empty set.
+//!
+//! Since first writing this module, two of the three gaps it listed have been
+//! closed and moved into their own files:
+//! * `correspondence_from_mvs` + `gm_compute_correspondence` ->
+//!   [`crate::port_gm_correspondence`] (tier 4 — the C functions take a
+//!   `PictureParentControlSet*` and there is no shim for one).
+//! * `determine_gm_params` + all of `Codec/ransac.c` ->
+//!   [`crate::port_ransac`] (tier 1 against the exported `svt_aom_ransac`).
 //!
 //! # Evidence
 //!
