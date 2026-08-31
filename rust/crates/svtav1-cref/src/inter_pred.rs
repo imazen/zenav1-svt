@@ -988,3 +988,405 @@ pub fn highbd_jnt_convolve_2d_copy(
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// MC dispatchers (svt_inter_predictor and friends).
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn ref_convolve_tables_are_pure_c() -> c_int;
+    fn ref_inter_predictor_pd0(
+        src: *const u8,
+        src_stride: i32,
+        dst: *mut u8,
+        dst_stride: i32,
+        w: i32,
+        h: i32,
+        xs: i32,
+        ys: i32,
+        subpel_x: i32,
+        subpel_y: i32,
+        conv_buf: *mut u16,
+        conv_stride: c_int,
+        is_compound: c_int,
+        do_average: c_int,
+        bd: c_int,
+    );
+    fn ref_inter_predictor(
+        src: *const u8,
+        src_stride: i32,
+        dst: *mut u8,
+        dst_stride: i32,
+        xs: i32,
+        ys: i32,
+        subpel_x: i32,
+        subpel_y: i32,
+        other_w: c_int,
+        other_h: c_int,
+        this_w: c_int,
+        this_h: c_int,
+        w: i32,
+        h: i32,
+        conv_buf: *mut u16,
+        conv_stride: c_int,
+        is_compound: c_int,
+        do_average: c_int,
+        use_jnt: c_int,
+        fwd: c_int,
+        bck: c_int,
+        interp_filters: u32,
+        is_intrabc: c_int,
+        bd: c_int,
+    );
+    fn ref_highbd_inter_predictor(
+        src: *const u16,
+        src_stride: i32,
+        dst: *mut u16,
+        dst_stride: i32,
+        xs: i32,
+        ys: i32,
+        subpel_x: i32,
+        subpel_y: i32,
+        other_w: c_int,
+        other_h: c_int,
+        this_w: c_int,
+        this_h: c_int,
+        w: i32,
+        h: i32,
+        conv_buf: *mut u16,
+        conv_stride: c_int,
+        is_compound: c_int,
+        do_average: c_int,
+        use_jnt: c_int,
+        fwd: c_int,
+        bck: c_int,
+        interp_filters: u32,
+        is_intrabc: c_int,
+        bd: c_int,
+    );
+    fn ref_inter_predictor_light_pd1_8bit(
+        src: *mut u8,
+        src_stride: i32,
+        dst: *mut u8,
+        dst_stride: i32,
+        w: i32,
+        h: i32,
+        interp_filters: u32,
+        xs: i32,
+        ys: i32,
+        subpel_x: i32,
+        subpel_y: i32,
+        conv_buf: *mut u16,
+        conv_stride: c_int,
+        is_compound: c_int,
+        do_average: c_int,
+        use_jnt: c_int,
+        fwd: c_int,
+        bck: c_int,
+    );
+    fn ref_convolve_2d_for_intrabc(
+        src: *const u8,
+        src_stride: c_int,
+        dst: *mut u8,
+        dst_stride: c_int,
+        w: c_int,
+        h: c_int,
+        subpel_x_q4: c_int,
+        subpel_y_q4: c_int,
+        bd: c_int,
+    );
+    fn ref_highbd_convolve_2d_for_intrabc(
+        src: *const u16,
+        src_stride: c_int,
+        dst: *mut u16,
+        dst_stride: c_int,
+        w: c_int,
+        h: c_int,
+        subpel_x_q4: c_int,
+        subpel_y_q4: c_int,
+        bd: c_int,
+    );
+    fn ref_get_convolve_filter_params(interp_filters: u32, w: c_int, h: c_int, out: *mut c_int);
+    fn ref_make_interp_filters(y_filter: c_int, x_filter: c_int) -> u32;
+}
+
+/// Whether the RTCD-filled `svt_aom_convolve` table holds the plain `_c`
+/// kernels (as opposed to a SIMD tier). Recorded by the parity test so a
+/// green run says WHICH C code it agreed with.
+pub fn convolve_tables_are_pure_c() -> bool {
+    unsafe { ref_convolve_tables_are_pure_c() != 0 }
+}
+
+/// The `SubpelParams` fields the dispatchers read.
+#[derive(Clone, Copy, Debug)]
+pub struct RefSubpel {
+    /// `xs`.
+    pub xs: i32,
+    /// `ys`.
+    pub ys: i32,
+    /// `subpel_x`.
+    pub subpel_x: i32,
+    /// `subpel_y`.
+    pub subpel_y: i32,
+}
+
+/// Reference `svt_inter_predictor_pd0` (inter_prediction.c:1256).
+#[allow(clippy::too_many_arguments)]
+pub fn inter_predictor_pd0(
+    src: &[u8],
+    src_origin: usize,
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    conv_buf: &mut [u16],
+    conv_stride: usize,
+    w: usize,
+    h: usize,
+    sp: RefSubpel,
+    is_compound: bool,
+    do_average: bool,
+) {
+    unsafe {
+        ref_inter_predictor_pd0(
+            src.as_ptr().add(src_origin),
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            w as i32,
+            h as i32,
+            sp.xs,
+            sp.ys,
+            sp.subpel_x,
+            sp.subpel_y,
+            conv_buf.as_mut_ptr(),
+            conv_stride as i32,
+            i32::from(is_compound),
+            i32::from(do_average),
+            8,
+        );
+    }
+}
+
+/// Compound knobs for the two full dispatchers.
+#[derive(Clone, Copy, Debug)]
+pub struct RefCompound {
+    /// `conv_params->is_compound`.
+    pub is_compound: bool,
+    /// `conv_params->do_average`.
+    pub do_average: bool,
+    /// `conv_params->use_jnt_comp_avg`.
+    pub use_jnt: bool,
+    /// `conv_params->fwd_offset`.
+    pub fwd: i32,
+    /// `conv_params->bck_offset`.
+    pub bck: i32,
+}
+
+/// Reference `svt_inter_predictor` (inter_prediction.c:1386). The four
+/// `*_w`/`*_h` values build the `ScaleFactors` C asserts on (and then ignores).
+#[allow(clippy::too_many_arguments)]
+pub fn inter_predictor(
+    src: &[u8],
+    src_origin: usize,
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    conv_buf: &mut [u16],
+    conv_stride: usize,
+    sp: RefSubpel,
+    frame_sizes: (i32, i32, i32, i32),
+    w: usize,
+    h: usize,
+    comp: RefCompound,
+    interp_filters: u32,
+    is_intrabc: bool,
+) {
+    unsafe {
+        ref_inter_predictor(
+            src.as_ptr().add(src_origin),
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            sp.xs,
+            sp.ys,
+            sp.subpel_x,
+            sp.subpel_y,
+            frame_sizes.0,
+            frame_sizes.1,
+            frame_sizes.2,
+            frame_sizes.3,
+            w as i32,
+            h as i32,
+            conv_buf.as_mut_ptr(),
+            conv_stride as i32,
+            i32::from(comp.is_compound),
+            i32::from(comp.do_average),
+            i32::from(comp.use_jnt),
+            comp.fwd,
+            comp.bck,
+            interp_filters,
+            i32::from(is_intrabc),
+            8,
+        );
+    }
+}
+
+/// Reference `svt_highbd_inter_predictor` (inter_prediction.c:1444).
+#[allow(clippy::too_many_arguments)]
+pub fn highbd_inter_predictor(
+    src: &[u16],
+    src_origin: usize,
+    src_stride: usize,
+    dst: &mut [u16],
+    dst_stride: usize,
+    conv_buf: &mut [u16],
+    conv_stride: usize,
+    sp: RefSubpel,
+    frame_sizes: (i32, i32, i32, i32),
+    w: usize,
+    h: usize,
+    comp: RefCompound,
+    interp_filters: u32,
+    is_intrabc: bool,
+    bd: i32,
+) {
+    unsafe {
+        ref_highbd_inter_predictor(
+            src.as_ptr().add(src_origin),
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            sp.xs,
+            sp.ys,
+            sp.subpel_x,
+            sp.subpel_y,
+            frame_sizes.0,
+            frame_sizes.1,
+            frame_sizes.2,
+            frame_sizes.3,
+            w as i32,
+            h as i32,
+            conv_buf.as_mut_ptr(),
+            conv_stride as i32,
+            i32::from(comp.is_compound),
+            i32::from(comp.do_average),
+            i32::from(comp.use_jnt),
+            comp.fwd,
+            comp.bck,
+            interp_filters,
+            i32::from(is_intrabc),
+            bd,
+        );
+    }
+}
+
+/// Reference `svt_inter_predictor_light_pd1` (inter_prediction.c:1283) on its
+/// 8-bit arm. The `bd > 8` arm needs a packed `src_2b` plane and is not bound.
+#[allow(clippy::too_many_arguments)]
+pub fn inter_predictor_light_pd1_8bit(
+    src: &mut [u8],
+    src_origin: usize,
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    conv_buf: &mut [u16],
+    conv_stride: usize,
+    w: usize,
+    h: usize,
+    interp_filters: u32,
+    sp: RefSubpel,
+    comp: RefCompound,
+) {
+    unsafe {
+        ref_inter_predictor_light_pd1_8bit(
+            src.as_mut_ptr().add(src_origin),
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            w as i32,
+            h as i32,
+            interp_filters,
+            sp.xs,
+            sp.ys,
+            sp.subpel_x,
+            sp.subpel_y,
+            conv_buf.as_mut_ptr(),
+            conv_stride as i32,
+            i32::from(comp.is_compound),
+            i32::from(comp.do_average),
+            i32::from(comp.use_jnt),
+            comp.fwd,
+            comp.bck,
+        );
+    }
+}
+
+/// Reference `convolve_2d_for_intrabc` (inter_prediction.c:1194).
+#[allow(clippy::too_many_arguments)]
+pub fn convolve_2d_for_intrabc(
+    src: &[u8],
+    src_origin: usize,
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    w: usize,
+    h: usize,
+    subpel_x_q4: i32,
+    subpel_y_q4: i32,
+) {
+    unsafe {
+        ref_convolve_2d_for_intrabc(
+            src.as_ptr().add(src_origin),
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            w as i32,
+            h as i32,
+            subpel_x_q4,
+            subpel_y_q4,
+            8,
+        );
+    }
+}
+
+/// Reference `highbd_convolve_2d_for_intrabc` (inter_prediction.c:1237).
+#[allow(clippy::too_many_arguments)]
+pub fn highbd_convolve_2d_for_intrabc(
+    src: &[u16],
+    src_origin: usize,
+    src_stride: usize,
+    dst: &mut [u16],
+    dst_stride: usize,
+    w: usize,
+    h: usize,
+    subpel_x_q4: i32,
+    subpel_y_q4: i32,
+    bd: i32,
+) {
+    unsafe {
+        ref_highbd_convolve_2d_for_intrabc(
+            src.as_ptr().add(src_origin),
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            w as i32,
+            h as i32,
+            subpel_x_q4,
+            subpel_y_q4,
+            bd,
+        );
+    }
+}
+
+/// Reference `av1_get_convolve_filter_params` (inter_prediction.h:139) ->
+/// `(x_filter_index, y_filter_index)`.
+pub fn get_convolve_filter_params(interp_filters: u32, w: i32, h: i32) -> (i32, i32) {
+    let mut out = [0i32; 2];
+    unsafe { ref_get_convolve_filter_params(interp_filters, w, h, out.as_mut_ptr()) };
+    (out[0], out[1])
+}
+
+/// Reference `av1_make_interp_filters` (filter.h:64) — Y first, X second.
+pub fn make_interp_filters(y_filter: i32, x_filter: i32) -> u32 {
+    unsafe { ref_make_interp_filters(y_filter, x_filter) }
+}
