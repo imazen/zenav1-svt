@@ -746,3 +746,168 @@ void ref_sig_deriv_enc_dec_default(const int32_t* in, int64_t* out) {
 
 int32_t ref_enc_dec_default_in_slots(void) { return ED_I_COUNT; }
 int32_t ref_enc_dec_default_out_slots(void) { return ED_O_COUNT; }
+
+/* ===========================================================================
+ * svt_aom_sig_deriv_enc_dec_pd0 (enc_mode_config.c:7207) -- the per-SB PD0
+ * signal set, shared by ALL THREE arms.
+ *
+ * Deref safety, from the C body:
+ *  - the SB128 branch (get_sb128_me_data) is avoided by leaving
+ *    scs->seq_header.sb_size at BLOCK_64X64.
+ *  - the three ppcs me arrays and b64_geom are indexed at sb_index 0, so one
+ *    element of each is allocated.
+ *  - set_intra_ctrls reaches get_sb_tpl_intra_stats, gated on
+ *    ppcs->tpl_ctrls.enable, which stays 0.
+ * ======================================================================== */
+
+enum {
+    PD0_I_LEVEL = 0, PD0_I_IS_ISLICE, PD0_I_ALLINTRA, PD0_I_RTC, PD0_I_UPDATE_TYPE,
+    PD0_I_ENC_MODE, PD0_I_TRANSITION, PD0_I_PRED_DEPTH_ONLY, PD0_I_CTX_HBD,
+    PD0_I_PCS_HBD, PD0_I_LAMBDA8, PD0_I_LAMBDA10, PD0_I_ME64_DIST,
+    PD0_I_ME8_VAR, PD0_I_ME8_DIST, PD0_I_BASE_Q, PD0_I_BIAS_WEIGHT,
+    PD0_I_RATE_EST, PD0_I_DISALLOW_4X4, PD0_I_DISALLOW_8X8,
+    PD0_I_DR_ENABLED, PD0_I_DR_B16, PD0_I_DR_B32, PD0_I_DR_B64,
+    PD0_I_B64_COMPLETE, PD0_I_SB_SIZE, PD0_I_COUNT
+};
+
+enum {
+    PD0_O_NSQ_OFF = 0, PD0_O_SHUT_FAST_RATE,
+    PD0_O_DEE_SPLIT, PD0_O_DEE_EXIT,
+    PD0_O_PARENT_BIAS, PD0_O_USE_SRC,
+    PD0_O_PF_SHAPE, PD0_O_SUBRES_STEP, PD0_O_SUBRES_DEV,
+    PD0_O_APPROX_RATE, PD0_O_UV_MODE,
+    /* rate_est_ctrls */
+    PD0_O_RE_SKIPCTX, PD0_O_RE_SKIPCOEFF, PD0_O_RE_COEFF_LVL,
+    PD0_O_RE_QP_OFFSET, PD0_O_RE_FAST_EST,
+    /* intra_ctrls -- from the UNPORTED set_intra_ctrls; the Rust side
+       cross-checks its own derived intra_level by driving C's set_intra_ctrls
+       through the enc_dec_default entry point at that level. */
+    PD0_O_IC_EN, PD0_O_IC_MODE_END, PD0_O_IC_ANG, PD0_O_IC_PRUNE_BEST,
+    PD0_O_IC_PRUNE_EDGE, PD0_O_IC_D1, PD0_O_IC_D2, PD0_O_IC_D3,
+    PD0_O_COUNT
+};
+
+void ref_sig_deriv_enc_dec_pd0(const int32_t* in, int64_t* out) {
+    SequenceControlSet*      scs  = (SequenceControlSet*)calloc(1, sizeof(*scs));
+    PictureParentControlSet* ppcs = (PictureParentControlSet*)calloc(1, sizeof(*ppcs));
+    PictureControlSet*       pcs  = (PictureControlSet*)calloc(1, sizeof(*pcs));
+    ModeDecisionContext*     ctx  = (ModeDecisionContext*)calloc(1, sizeof(*ctx));
+    uint32_t* me64 = (uint32_t*)calloc(1, sizeof(uint32_t));
+    uint32_t* me8v = (uint32_t*)calloc(1, sizeof(uint32_t));
+    uint32_t* me8d = (uint32_t*)calloc(1, sizeof(uint32_t));
+    B64Geom*  b64  = (B64Geom*)calloc(1, sizeof(B64Geom));
+
+    scs->allintra            = (bool)in[PD0_I_ALLINTRA];
+    scs->static_config.rtc   = (bool)in[PD0_I_RTC];
+    scs->super_block_size    = (uint32_t)in[PD0_I_SB_SIZE];
+    scs->seq_header.sb_size  = BLOCK_64X64; /* keep get_sb128_me_data unreachable */
+
+    me64[0] = (uint32_t)in[PD0_I_ME64_DIST];
+    me8v[0] = (uint32_t)in[PD0_I_ME8_VAR];
+    me8d[0] = (uint32_t)in[PD0_I_ME8_DIST];
+    b64->is_complete_b64 = (uint8_t)in[PD0_I_B64_COMPLETE];
+
+    ppcs->scs                   = scs;
+    ppcs->update_type           = (SvtAv1FrameUpdateType)in[PD0_I_UPDATE_TYPE];
+    ppcs->transition_present    = (int8_t)in[PD0_I_TRANSITION];
+    ppcs->me_64x64_distortion   = me64;
+    ppcs->me_8x8_cost_variance  = me8v;
+    ppcs->me_8x8_distortion     = me8d;
+    ppcs->b64_geom              = b64;
+    ppcs->frm_hdr.quantization_params.base_q_idx = (int32_t)in[PD0_I_BASE_Q];
+
+    pcs->ppcs                 = ppcs;
+    pcs->scs                  = scs;
+    pcs->enc_mode             = (EncMode)in[PD0_I_ENC_MODE];
+    pcs->slice_type           = in[PD0_I_IS_ISLICE] ? I_SLICE : B_SLICE;
+    pcs->hbd_md               = (uint8_t)in[PD0_I_PCS_HBD];
+    pcs->pd0_cost_bias_weight = (uint32_t)in[PD0_I_BIAS_WEIGHT];
+    pcs->rate_est_level       = (uint8_t)in[PD0_I_RATE_EST];
+
+    ctx->pd0_ctrls.pd0_level   = (Pd0Level)in[PD0_I_LEVEL];
+    ctx->pic_pred_depth_only   = (bool)in[PD0_I_PRED_DEPTH_ONLY];
+    ctx->hbd_md                = (uint8_t)in[PD0_I_CTX_HBD];
+    ctx->fast_lambda_md[EB_8_BIT_MD]  = (uint32_t)in[PD0_I_LAMBDA8];
+    ctx->fast_lambda_md[EB_10_BIT_MD] = (uint32_t)in[PD0_I_LAMBDA10];
+    ctx->disallow_4x4          = (bool)in[PD0_I_DISALLOW_4X4];
+    ctx->disallow_8x8          = (bool)in[PD0_I_DISALLOW_8X8];
+    ctx->depth_removal_ctrls.enabled              = (uint8_t)in[PD0_I_DR_ENABLED];
+    ctx->depth_removal_ctrls.disallow_below_16x16 = (uint8_t)in[PD0_I_DR_B16];
+    ctx->depth_removal_ctrls.disallow_below_32x32 = (uint8_t)in[PD0_I_DR_B32];
+    ctx->depth_removal_ctrls.disallow_below_64x64 = (uint8_t)in[PD0_I_DR_B64];
+
+    svt_aom_sig_deriv_enc_dec_pd0(scs, pcs, ctx);
+
+    out[PD0_O_NSQ_OFF]         = ctx->md_disallow_nsq_search;
+    out[PD0_O_SHUT_FAST_RATE]  = ctx->shut_fast_rate;
+    out[PD0_O_DEE_SPLIT]       = ctx->depth_early_exit_ctrls.split_cost_th;
+    out[PD0_O_DEE_EXIT]        = ctx->depth_early_exit_ctrls.early_exit_th;
+    out[PD0_O_PARENT_BIAS]     = ctx->parent_cost_bias;
+    out[PD0_O_USE_SRC]         = ctx->pd0_use_src_samples;
+    out[PD0_O_PF_SHAPE]        = ctx->pf_ctrls.pf_shape;
+    out[PD0_O_SUBRES_STEP]     = ctx->subres_ctrls.step;
+    out[PD0_O_SUBRES_DEV]      = ctx->subres_ctrls.odd_to_even_deviation_th;
+    out[PD0_O_APPROX_RATE]     = ctx->approx_inter_rate;
+    out[PD0_O_UV_MODE]         = ctx->uv_ctrls.uv_mode;
+    out[PD0_O_RE_SKIPCTX]      = ctx->rate_est_ctrls.update_skip_ctx_dc_sign_ctx;
+    out[PD0_O_RE_SKIPCOEFF]    = ctx->rate_est_ctrls.update_skip_coeff_ctx;
+    out[PD0_O_RE_COEFF_LVL]    = ctx->rate_est_ctrls.coeff_rate_est_lvl;
+    out[PD0_O_RE_QP_OFFSET]    = ctx->rate_est_ctrls.lpd0_qp_offset;
+    out[PD0_O_RE_FAST_EST]     = ctx->rate_est_ctrls.pd0_fast_coeff_est_level;
+    out[PD0_O_IC_EN]           = ctx->intra_ctrls.enable_intra;
+    out[PD0_O_IC_MODE_END]     = ctx->intra_ctrls.intra_mode_end;
+    out[PD0_O_IC_ANG]          = ctx->intra_ctrls.angular_pred_level;
+    out[PD0_O_IC_PRUNE_BEST]   = ctx->intra_ctrls.prune_using_best_mode;
+    out[PD0_O_IC_PRUNE_EDGE]   = ctx->intra_ctrls.prune_using_edge_info;
+    out[PD0_O_IC_D1]           = ctx->intra_ctrls.skip_angular_delta1_th;
+    out[PD0_O_IC_D2]           = ctx->intra_ctrls.skip_angular_delta2_th;
+    out[PD0_O_IC_D3]           = ctx->intra_ctrls.skip_angular_delta3_th;
+
+    free(b64); free(me8d); free(me8v); free(me64);
+    free(ctx); free(pcs); free(ppcs); free(scs);
+}
+
+/* Drive C's set_intra_ctrls alone, at a caller-chosen level, so the Rust side
+   can validate its own derived intra_level without transcribing that table.
+   set_intra_ctrls is `static`; svt_aom_sig_deriv_enc_dec_pd0 is the exported
+   entry point that reaches it with a level the caller controls, via
+   pd0_level == PD0_LVL_0 (intra_level = MAX_INTRA_LEVEL-1), an I-slice
+   (intra_level = 1) and so on -- which is not enough. Use the pd0 path with
+   an explicit override instead: the shim sets ctx->intra_ctrls from the C
+   table by calling the exported enc_dec_default entry point, whose
+   pcs->intra_level IS a direct input. */
+void ref_set_intra_ctrls_via_enc_dec_default(int32_t intra_level, int32_t dist_ang_level,
+                                             int32_t is_islice, int64_t out[8]) {
+    SequenceControlSet*      scs  = (SequenceControlSet*)calloc(1, sizeof(*scs));
+    PictureParentControlSet* ppcs = (PictureParentControlSet*)calloc(1, sizeof(*ppcs));
+    PictureControlSet*       pcs  = (PictureControlSet*)calloc(1, sizeof(*pcs));
+    ModeDecisionContext*     ctx  = (ModeDecisionContext*)calloc(1, sizeof(*ctx));
+    uint32_t* me_d = (uint32_t*)calloc(1, sizeof(uint32_t));
+    uint32_t* me_v = (uint32_t*)calloc(1, sizeof(uint32_t));
+
+    scs->super_block_size      = 64;
+    ppcs->scs                  = scs;
+    ppcs->hierarchical_levels  = 4;
+    ppcs->me_8x8_distortion    = me_d;
+    ppcs->me_8x8_cost_variance = me_v;
+    pcs->ppcs       = ppcs;
+    pcs->scs        = scs;
+    pcs->enc_mode   = ENC_M5;
+    pcs->slice_type = is_islice ? I_SLICE : B_SLICE;
+    pcs->intra_level                = (uint8_t)intra_level;
+    pcs->dist_based_ang_intra_level = (uint8_t)dist_ang_level;
+    /* every other level stays 0, which is in-domain for each table */
+    svt_aom_sig_deriv_enc_dec_default(pcs, ctx);
+    out[0] = ctx->intra_ctrls.enable_intra;
+    out[1] = ctx->intra_ctrls.intra_mode_end;
+    out[2] = ctx->intra_ctrls.angular_pred_level;
+    out[3] = ctx->intra_ctrls.prune_using_best_mode;
+    out[4] = ctx->intra_ctrls.prune_using_edge_info;
+    out[5] = ctx->intra_ctrls.skip_angular_delta1_th;
+    out[6] = ctx->intra_ctrls.skip_angular_delta2_th;
+    out[7] = ctx->intra_ctrls.skip_angular_delta3_th;
+    free(me_v); free(me_d); free(ctx); free(pcs); free(ppcs); free(scs);
+}
+
+int32_t ref_pd0_in_slots(void) { return PD0_I_COUNT; }
+int32_t ref_pd0_out_slots(void) { return PD0_O_COUNT; }

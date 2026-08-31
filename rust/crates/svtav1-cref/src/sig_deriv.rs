@@ -886,3 +886,151 @@ pub fn sig_deriv_enc_dec_default(input: &[i32; ed_in::COUNT]) -> [i64; ED_OUT_SL
     unsafe { ref_sig_deriv_enc_dec_default(input.as_ptr(), out.as_mut_ptr()) };
     out
 }
+
+// ---------------------------------------------------------------------------
+// svt_aom_sig_deriv_enc_dec_pd0
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn ref_sig_deriv_enc_dec_pd0(input: *const i32, out: *mut i64);
+    fn ref_set_intra_ctrls_via_enc_dec_default(
+        intra_level: i32,
+        dist_ang_level: i32,
+        is_islice: i32,
+        out: *mut i64,
+    );
+    fn ref_pd0_in_slots() -> i32;
+    fn ref_pd0_out_slots() -> i32;
+}
+
+/// Input slot indices for [`sig_deriv_enc_dec_pd0`], mirroring `PD0_I_*`.
+pub mod pd0_in {
+    /// `ctx->pd0_ctrls.pd0_level`
+    pub const LEVEL: usize = 0;
+    /// `pcs->slice_type == I_SLICE`
+    pub const IS_ISLICE: usize = 1;
+    /// `scs->allintra`
+    pub const ALLINTRA: usize = 2;
+    /// `scs->static_config.rtc`
+    pub const RTC: usize = 3;
+    /// `ppcs->update_type` (1 == leaf)
+    pub const UPDATE_TYPE: usize = 4;
+    /// `pcs->enc_mode`
+    pub const ENC_MODE: usize = 5;
+    /// `ppcs->transition_present`
+    pub const TRANSITION: usize = 6;
+    /// `ctx->pic_pred_depth_only`
+    pub const PRED_DEPTH_ONLY: usize = 7;
+    /// `ctx->hbd_md`
+    pub const CTX_HBD: usize = 8;
+    /// `pcs->hbd_md`
+    pub const PCS_HBD: usize = 9;
+    /// `ctx->fast_lambda_md[EB_8_BIT_MD]`
+    pub const LAMBDA8: usize = 10;
+    /// `ctx->fast_lambda_md[EB_10_BIT_MD]`
+    pub const LAMBDA10: usize = 11;
+    /// `ppcs->me_64x64_distortion[sb_index]`
+    pub const ME64_DIST: usize = 12;
+    /// `ppcs->me_8x8_cost_variance[sb_index]`
+    pub const ME8_VAR: usize = 13;
+    /// `ppcs->me_8x8_distortion[sb_index]`
+    pub const ME8_DIST: usize = 14;
+    /// `ppcs->frm_hdr.quantization_params.base_q_idx`
+    pub const BASE_Q: usize = 15;
+    /// `pcs->pd0_cost_bias_weight`
+    pub const BIAS_WEIGHT: usize = 16;
+    /// `pcs->rate_est_level`
+    pub const RATE_EST: usize = 17;
+    /// `ctx->disallow_4x4`
+    pub const DISALLOW_4X4: usize = 18;
+    /// `ctx->disallow_8x8`
+    pub const DISALLOW_8X8: usize = 19;
+    /// `ctx->depth_removal_ctrls.enabled`
+    pub const DR_ENABLED: usize = 20;
+    /// `ctx->depth_removal_ctrls.disallow_below_16x16`
+    pub const DR_B16: usize = 21;
+    /// `ctx->depth_removal_ctrls.disallow_below_32x32`
+    pub const DR_B32: usize = 22;
+    /// `ctx->depth_removal_ctrls.disallow_below_64x64`
+    pub const DR_B64: usize = 23;
+    /// `ppcs->b64_geom[sb_index].is_complete_b64`
+    pub const B64_COMPLETE: usize = 24;
+    /// `scs->super_block_size`
+    pub const SB_SIZE: usize = 25;
+    /// Number of input slots.
+    pub const COUNT: usize = 26;
+}
+
+/// Output slot indices for [`sig_deriv_enc_dec_pd0`], mirroring `PD0_O_*`.
+pub mod pd0_out {
+    /// `ctx->md_disallow_nsq_search`
+    pub const NSQ_OFF: usize = 0;
+    /// `ctx->shut_fast_rate`
+    pub const SHUT_FAST_RATE: usize = 1;
+    /// `ctx->depth_early_exit_ctrls.split_cost_th`
+    pub const DEE_SPLIT: usize = 2;
+    /// `ctx->depth_early_exit_ctrls.early_exit_th`
+    pub const DEE_EXIT: usize = 3;
+    /// `ctx->parent_cost_bias`
+    pub const PARENT_BIAS: usize = 4;
+    /// `ctx->pd0_use_src_samples`
+    pub const USE_SRC: usize = 5;
+    /// `ctx->pf_ctrls.pf_shape`
+    pub const PF_SHAPE: usize = 6;
+    /// `ctx->subres_ctrls.step`
+    pub const SUBRES_STEP: usize = 7;
+    /// `ctx->subres_ctrls.odd_to_even_deviation_th`
+    pub const SUBRES_DEV: usize = 8;
+    /// `ctx->approx_inter_rate`
+    pub const APPROX_RATE: usize = 9;
+    /// `ctx->uv_ctrls.uv_mode`
+    pub const UV_MODE: usize = 10;
+    /// First of the five `rate_est_ctrls` slots.
+    pub const RATE_EST: usize = 11;
+    /// First of the eight `intra_ctrls` slots.
+    pub const INTRA_CTRLS: usize = 16;
+    /// Number of output slots.
+    pub const COUNT: usize = 24;
+}
+
+/// C `svt_aom_sig_deriv_enc_dec_pd0` driven on a synthetic SCS/PCS/ctx.
+///
+/// # Panics
+/// If the C shim's slot counts disagree with [`pd0_in::COUNT`] /
+/// [`pd0_out::COUNT`].
+#[must_use]
+pub fn sig_deriv_enc_dec_pd0(input: &[i32; pd0_in::COUNT]) -> [i64; pd0_out::COUNT] {
+    assert_eq!(
+        unsafe { ref_pd0_in_slots() } as usize,
+        pd0_in::COUNT,
+        "C shim pd0 input slot count drifted"
+    );
+    assert_eq!(
+        unsafe { ref_pd0_out_slots() } as usize,
+        pd0_out::COUNT,
+        "C shim pd0 output slot count drifted"
+    );
+    let mut out = [0i64; pd0_out::COUNT];
+    unsafe { ref_sig_deriv_enc_dec_pd0(input.as_ptr(), out.as_mut_ptr()) };
+    out
+}
+
+/// C's `set_intra_ctrls` at a caller-chosen level, reached through the
+/// exported `svt_aom_sig_deriv_enc_dec_default`.
+///
+/// This exists so a derived `intra_level` can be validated against C without
+/// transcribing `set_intra_ctrls` (which this lane has not ported): feed the
+/// port's level in here and compare against what the pd0 path produced.
+#[must_use]
+pub fn set_intra_ctrls_at_level(intra_level: u8, dist_ang_level: u8, is_islice: bool) -> [i64; 8] {
+    let mut out = [0i64; 8];
+    unsafe {
+        ref_set_intra_ctrls_via_enc_dec_default(
+            i32::from(intra_level),
+            i32::from(dist_ang_level),
+            i32::from(is_islice),
+            out.as_mut_ptr(),
+        );
+    }
+    out
+}
