@@ -45,6 +45,7 @@ pub mod partition;
 pub mod pd0;
 pub mod perceptual;
 pub mod picture;
+pub mod port_full_loop;
 pub mod port_enc_mode_config;
 pub mod pipeline;
 pub mod port_entropy_inter;
