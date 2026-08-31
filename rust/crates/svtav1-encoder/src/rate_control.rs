@@ -395,6 +395,117 @@ pub fn tpl_sb_qp_offsets(
 }
 
 /// Update RC state after encoding a picture.
+/// C `svt_aom_dc_quant_qtx(qindex, 0, bit_depth)` — the DC quantizer step.
+///
+/// The tables are the port's existing transcriptions (`DC_QLOOKUP_8`, and
+/// `DC_QLOOKUP_10` for bd10); this is only the depth selection C's macro does.
+fn dc_quant_qtx(qindex: i32, bit_depth: u8) -> f64 {
+    let i = qindex.clamp(0, 255) as usize;
+    match bit_depth {
+        8 => f64::from(svtav1_dsp::quant_tables::DC_QLOOKUP_8[i]),
+        10 => f64::from(crate::bd10::DC_QLOOKUP_10[i]),
+        other => panic!("dc_quant_qtx: unsupported bit depth {other}"),
+    }
+}
+
+/// C `svt_av1_get_q_index_from_qstep_ratio` (rc_process.c:322).
+///
+/// Walks the qindex ladder from `leaf_qindex` until the DC quantizer step
+/// crosses `leaf_qstep * qstep_ratio` — down when the ratio is < 1 (a finer
+/// quantizer, i.e. a better frame), up otherwise. The linear walk is C's own;
+/// a binary search would be equivalent on a monotone table but this stays a
+/// transcription, and the table's monotonicity is not something this function
+/// should be asserting on C's behalf.
+#[must_use]
+pub fn q_index_from_qstep_ratio(leaf_qindex: i32, qstep_ratio: f64, bit_depth: u8) -> i32 {
+    const MINQ: i32 = 0;
+    const MAXQ: i32 = 255;
+    let leaf_qstep = dc_quant_qtx(leaf_qindex, bit_depth);
+    let target_qstep = leaf_qstep * qstep_ratio;
+    let mut qindex;
+    if qstep_ratio < 1.0 {
+        qindex = leaf_qindex;
+        while qindex > MINQ {
+            if dc_quant_qtx(qindex, bit_depth) <= target_qstep {
+                break;
+            }
+            qindex -= 1;
+        }
+    } else {
+        qindex = leaf_qindex;
+        while qindex <= MAXQ {
+            if dc_quant_qtx(qindex, bit_depth) >= target_qstep {
+                break;
+            }
+            qindex += 1;
+        }
+    }
+    qindex
+}
+
+/// C `SVT_QP_SCALE_WEIGHT` (definitions.h:249) for the mainline build:
+/// `1.000 + qp_scale_compress_strength * 0.125`.
+#[must_use]
+pub fn qp_scale_weight(qp_scale_compress_strength: f64) -> f64 {
+    1.0 + qp_scale_compress_strength * 0.125
+}
+
+/// C `cqp_qindex_calc` (rc_crf_cqp.c:393) — the `TUNE_CQP_CHROMA_SSIM = 1`
+/// branch, which is the one v4.2.0 compiles (`EbDebugMacros.h:68`).
+///
+/// **This is the still-vs-video fork in the encode, and it is why a video-mode
+/// key frame is not the still key frame this port already emits byte-
+/// identically.** C returns `qindex` untouched when `scs->allintra` — the
+/// entire existing 280/280 still envelope takes that early return — and only a
+/// VIDEO-mode encode reaches the qstep-ratio scaling below. Measured on
+/// `gradient 64x64 q40 p6`: 290 bytes still vs 930 bytes video, same pixels
+/// (docs/INTER-ENCODE-PLAN.md §1b).
+///
+/// `is_ref` / `temporal_layer_index` / `hierarchical_levels` come from the GOP;
+/// `cqp_base_q` is C's `scs->cqp_base_q`, written by the temporal-layer-0 arm
+/// and read by the arf arm, so the caller owns it across frames.
+#[must_use]
+pub fn cqp_qindex_calc(
+    qindex: i32,
+    allintra: bool,
+    slice_is_intra: bool,
+    is_ref: bool,
+    temporal_layer_index: u8,
+    hierarchical_levels: u8,
+    bit_depth: u8,
+    qp_scale_compress_strength: f64,
+    cqp_base_q: &mut i32,
+) -> i32 {
+    if allintra {
+        return qindex;
+    }
+    if hierarchical_levels == 0 && !slice_is_intra {
+        return qindex;
+    }
+    const MAXQ: f64 = 255.0;
+    let active_worst_quality = qindex;
+    if temporal_layer_index == 0 {
+        let qratio_grad = if hierarchical_levels <= 4 { 0.3 } else { 0.2 };
+        let qstep_ratio = (0.2 + (1.0 - f64::from(active_worst_quality) / MAXQ) * qratio_grad)
+            * qp_scale_weight(qp_scale_compress_strength);
+        let q = q_index_from_qstep_ratio(active_worst_quality, qstep_ratio, bit_depth);
+        *cqp_base_q = q;
+        q
+    } else if is_ref && temporal_layer_index < hierarchical_levels {
+        // C walks the arf ladder from `scs->cqp_base_q` toward the worst
+        // quality once per temporal height.
+        let mut this_height = i32::from(temporal_layer_index) + 1;
+        let mut arf_q = *cqp_base_q;
+        while this_height > 1 {
+            arf_q = (arf_q + active_worst_quality + 1) / 2;
+            this_height -= 1;
+        }
+        arf_q
+    } else {
+        active_worst_quality
+    }
+}
+
 pub fn update_rc_state(state: &mut RcState, bits_used: u64, new_qp: u8) {
     state.total_bits += bits_used;
     state.total_frames += 1;

@@ -866,6 +866,34 @@ pub fn convert_qindex_to_q_fp8(qindex: i32, bit_depth: i32) -> i32 {
     unsafe { svt_av1_convert_qindex_to_q_fp8(qindex, bit_depth) }
 }
 
+// ---- video-mode qindex derivation (rc_process.c, exported) ----
+//
+// These two are what the STILL path never calls: `cqp_qindex_calc` returns
+// early when `scs->allintra`, so a video-mode key frame's qindex comes from
+// here and a still frame's does not. Bound for the inter campaign's C1a.
+
+unsafe extern "C" {
+    fn svt_av1_convert_qindex_to_q(qindex: i32, bit_depth: i32) -> f64;
+    fn svt_av1_get_q_index_from_qstep_ratio(
+        leaf_qindex: i32,
+        qstep_ratio: f64,
+        bit_depth: i32,
+    ) -> i32;
+}
+
+/// C `svt_av1_convert_qindex_to_q` (rc_process.c:186). `bit_depth` is the
+/// EbBitDepth enum value (8/10/12).
+#[must_use]
+pub fn convert_qindex_to_q(qindex: i32, bit_depth: i32) -> f64 {
+    unsafe { svt_av1_convert_qindex_to_q(qindex, bit_depth) }
+}
+
+/// C `svt_av1_get_q_index_from_qstep_ratio` (rc_process.c:322).
+#[must_use]
+pub fn get_q_index_from_qstep_ratio(leaf_qindex: i32, qstep_ratio: f64, bit_depth: i32) -> i32 {
+    unsafe { svt_av1_get_q_index_from_qstep_ratio(leaf_qindex, qstep_ratio, bit_depth) }
+}
+
 /// C `svt_av1_compute_qdelta_fp`.
 pub fn compute_qdelta_fp(qstart_fp8: i32, qtarget_fp8: i32, bit_depth: i32) -> i32 {
     unsafe { svt_av1_compute_qdelta_fp(qstart_fp8, qtarget_fp8, bit_depth) }
