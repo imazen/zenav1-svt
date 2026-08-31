@@ -330,3 +330,83 @@ pub fn pad_input_pictures(
         );
     }
 }
+
+unsafe extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn ref_pre_gathering_picture_statistics(
+        calc_hist: i32,
+        calculate_variance: i32,
+        regions_w: u32,
+        regions_h: u32,
+        scene_change_detection: i32,
+        sixteenth: *mut u8,
+        s_origin: u32,
+        s_stride: u32,
+        s_w: u32,
+        s_h: u32,
+        out_histogram: *mut u32,
+        out_avg_intensity: *mut u64,
+        out_avg_luma: *mut u64,
+        out_pic_avg_variance: *mut u16,
+    ) -> i32;
+}
+
+/// What `svt_aom_gathering_picture_statistics` wrote into the PCS.
+pub struct GatheredStatistics {
+    /// `[region_w][region_h][bin]`, flattened row-major.
+    pub histogram: Vec<u32>,
+    /// `[region_w][region_h]`, flattened row-major.
+    pub average_intensity_per_region: Vec<u64>,
+    pub avg_luma: u64,
+    pub pic_avg_variance: u16,
+}
+
+/// `svt_aom_gathering_picture_statistics`.
+///
+/// Returns `None` when `calculate_variance` is set: that arm walks
+/// `pcs->b64_geom` and divides by `pcs->b64_total_count`, which a facade PCS
+/// cannot supply. `calculate_variance == 0` is the value the video-mode
+/// configuration uses (enc_handle.c:4361-4366).
+#[allow(clippy::too_many_arguments)]
+pub fn gathering_picture_statistics(
+    calc_hist: bool,
+    calculate_variance: bool,
+    regions_w: u32,
+    regions_h: u32,
+    scene_change_detection: bool,
+    sixteenth: &[u8],
+    s_origin: u32,
+    s_stride: u32,
+    s_w: u32,
+    s_h: u32,
+) -> Option<GatheredStatistics> {
+    let mut src = sixteenth.to_vec();
+    let mut histogram = vec![0u32; 4 * 4 * 256];
+    let mut average_intensity_per_region = vec![0u64; 4 * 4];
+    let mut avg_luma = 0u64;
+    let mut pic_avg_variance = 0u16;
+    let ok = unsafe {
+        ref_pre_gathering_picture_statistics(
+            i32::from(calc_hist),
+            i32::from(calculate_variance),
+            regions_w,
+            regions_h,
+            i32::from(scene_change_detection),
+            src.as_mut_ptr(),
+            s_origin,
+            s_stride,
+            s_w,
+            s_h,
+            histogram.as_mut_ptr(),
+            average_intensity_per_region.as_mut_ptr(),
+            &mut avg_luma,
+            &mut pic_avg_variance,
+        )
+    };
+    (ok != 0).then_some(GatheredStatistics {
+        histogram,
+        average_intensity_per_region,
+        avg_luma,
+        pic_avg_variance,
+    })
+}

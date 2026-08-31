@@ -515,3 +515,85 @@ fn pad_input_pictures_matches_c() {
     }
     assert_eq!(cells, 12);
 }
+
+#[test]
+fn gathering_picture_statistics_matches_c() {
+    let mut cells = 0usize;
+    let mut hist_ran = 0usize;
+    // HIGHER_THAN_CLASS_1_REGION_SPLIT_PER_* gives 4x4 for >= 64px sources;
+    // 1x1 is what a sub-64 axis gets (enc_handle.c:4392).
+    for &(rw, rh) in &[(4u32, 4u32), (1, 1), (4, 1)] {
+        // The 1/16 plane's own dimensions. 33x21 makes the last region on each
+        // axis absorb a non-zero remainder, which is where region_*_offset
+        // matters.
+        for &(w, h) in &[(16u32, 16u32), (33, 21), (8, 8)] {
+            for &scd in &[false, true] {
+                for &calc_hist in &[true, false] {
+                    let border = 4u32;
+                    let stride = w + 2 * border;
+                    let origin = border * stride + border;
+                    let alloc = (stride * (h + 2 * border)) as usize;
+                    let plane = fill(
+                        u64::from(w) * 811 + u64::from(h) * 13 + u64::from(rw) + u64::from(scd),
+                        alloc,
+                    );
+
+                    let c = cref::gathering_picture_statistics(
+                        calc_hist, false, rw, rh, scd, &plane, origin, stride, w, h,
+                    )
+                    .expect("calculate_variance == 0 is always drivable");
+
+                    let mut stats = port::PictureStatistics::default();
+                    port::gathering_picture_statistics(
+                        calc_hist,
+                        false,
+                        rw as usize,
+                        rh as usize,
+                        scd,
+                        &plane[origin as usize..],
+                        stride as usize,
+                        w as usize,
+                        h as usize,
+                        None,
+                        &mut stats,
+                    );
+
+                    assert_eq!(
+                        stats.avg_luma, c.avg_luma,
+                        "avg_luma mismatch {w}x{h} regions {rw}x{rh} scd {scd} calc_hist {calc_hist}"
+                    );
+                    assert_eq!(stats.pic_avg_variance, c.pic_avg_variance);
+
+                    if calc_hist {
+                        hist_ran += 1;
+                        // Only the regions C actually visited are written; the
+                        // rest of the PCS array is untouched on both sides, so
+                        // compare exactly the visited sub-grid.
+                        for wi in 0..rw as usize {
+                            for hi in 0..rh as usize {
+                                let base = (wi * 4 + hi) * 256;
+                                assert_eq!(
+                                    &stats.picture_histogram[wi][hi][..],
+                                    &c.histogram[base..base + 256],
+                                    "histogram mismatch region ({wi},{hi}) {w}x{h} regions {rw}x{rh} scd {scd}"
+                                );
+                                assert_eq!(
+                                    stats.average_intensity_per_region[wi][hi],
+                                    c.average_intensity_per_region[wi * 4 + hi],
+                                    "avg intensity mismatch region ({wi},{hi}) {w}x{h}"
+                                );
+                            }
+                        }
+                    } else {
+                        // The gate is off: avg_luma must be the INVALID_LUMA
+                        // sentinel on both sides, and nothing else is written.
+                        assert_eq!(c.avg_luma, 256);
+                    }
+                    cells += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(cells, 36);
+    assert_eq!(hist_ran, 18, "the calc_hist arm must actually run");
+}

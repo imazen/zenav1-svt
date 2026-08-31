@@ -526,6 +526,187 @@ pub fn pad_input_pictures<'p>(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Picture statistics: pic_analysis_process.c:528 / :625
+// ---------------------------------------------------------------------------
+
+/// `MAX_NUMBER_OF_REGIONS_IN_WIDTH` / `_IN_HEIGHT` (pcs.h:40-41).
+pub const MAX_NUMBER_OF_REGIONS: usize = 4;
+/// `HISTOGRAM_NUMBER_OF_BINS` (pcs.h:39).
+pub const HISTOGRAM_NUMBER_OF_BINS: usize = 256;
+/// `INVALID_LUMA` (definitions.h:90) — the sentinel `avg_luma` carries when
+/// the histogram gate is off.
+pub const INVALID_LUMA: u64 = 256;
+
+/// The per-picture statistics `svt_aom_gathering_picture_statistics` fills in.
+#[derive(Clone)]
+pub struct PictureStatistics {
+    /// `pcs->avg_luma`. `INVALID_LUMA` when `calc_hist` is 0.
+    pub avg_luma: u64,
+    /// `pcs->picture_histogram[w][h][bin]`.
+    pub picture_histogram:
+        [[[u32; HISTOGRAM_NUMBER_OF_BINS]; MAX_NUMBER_OF_REGIONS]; MAX_NUMBER_OF_REGIONS],
+    /// `pcs->average_intensity_per_region[w][h]` — a `uint8_t` truncation
+    /// stored in a `uint64_t` field.
+    pub average_intensity_per_region: [[u64; MAX_NUMBER_OF_REGIONS]; MAX_NUMBER_OF_REGIONS],
+    /// `pcs->pic_avg_variance`.
+    pub pic_avg_variance: u16,
+}
+
+impl Default for PictureStatistics {
+    fn default() -> Self {
+        Self {
+            avg_luma: 0,
+            picture_histogram: [[[0u32; HISTOGRAM_NUMBER_OF_BINS]; MAX_NUMBER_OF_REGIONS];
+                MAX_NUMBER_OF_REGIONS],
+            average_intensity_per_region: [[0u64; MAX_NUMBER_OF_REGIONS]; MAX_NUMBER_OF_REGIONS],
+            pic_avg_variance: 0,
+        }
+    }
+}
+
+/// `sub_sample_luma_generate_pixel_intensity_histogram_bins`
+/// (pic_analysis_process.c:528). `static` in C — reached at tier 1 only
+/// through the exported `svt_aom_gathering_picture_statistics` with
+/// `calc_hist = 1`, which is how it is gated here.
+///
+/// Runs on the 1/16 luma plane. `regions_per_width/height` come from the
+/// SequenceControlSet: `HIGHER_THAN_CLASS_1_REGION_SPLIT_PER_*` when the
+/// source is >= 64 px on that axis, else 1 (enc_handle.c:4392).
+///
+/// Faithfulness notes, each a place a "sensible" rewrite diverges:
+/// * every one of the 256 bins is pre-seeded to 1. C spells that
+///   `svt_initialize_buffer_32bits(p, 64, 0, 1)`, whose first argument is a
+///   count of 128-BIT GROUPS (`count128 * 4 + count32` u32 slots = 256), not
+///   a bin count;
+/// * only the LAST region on each axis absorbs the remainder, via
+///   `region_*_offset`; the others use the truncated `region_*`;
+/// * `sum` is scaled by `decim_step^2` AFTER the accumulation, and the
+///   per-region average rounds with `+ (area >> 1)` then TRUNCATES TO 8 BITS;
+/// * every bin is then multiplied by `4 * 4 * decim_step * decim_step` — the
+///   4x4 is the 1/16 decimation the plane already carries;
+/// * the returned total is divided by the SIXTEENTH plane's `width * height`,
+///   not by the full-resolution picture's.
+///
+/// Returns `sum_avg_intensity_ttl_regions_luma`.
+pub fn sub_sample_luma_generate_pixel_intensity_histogram_bins(
+    regions_per_width: usize,
+    regions_per_height: usize,
+    scene_change_detection: bool,
+    sixteenth: &[u8],
+    sixteenth_stride: usize,
+    width: usize,
+    height: usize,
+    picture_histogram: &mut [[[u32; HISTOGRAM_NUMBER_OF_BINS]; MAX_NUMBER_OF_REGIONS];
+             MAX_NUMBER_OF_REGIONS],
+    average_intensity_per_region: &mut [[u64; MAX_NUMBER_OF_REGIONS]; MAX_NUMBER_OF_REGIONS],
+) -> u64 {
+    let mut total: u64 = 0;
+    let region_width = width / regions_per_width;
+    let region_height = height / regions_per_height;
+
+    for wi in 0..regions_per_width {
+        for hi in 0..regions_per_height {
+            let mut sum: u64 = 0;
+
+            // All 256 bins, not 64 — see the note above.
+            picture_histogram[wi][hi] = [1u32; HISTOGRAM_NUMBER_OF_BINS];
+
+            let region_width_offset = if wi == regions_per_width - 1 {
+                width - regions_per_width * region_width
+            } else {
+                0
+            };
+            let region_height_offset = if hi == regions_per_height - 1 {
+                height - regions_per_height * region_height
+            } else {
+                0
+            };
+            let decim_step: usize = if scene_change_detection { 1 } else { 4 };
+
+            let origin = wi * region_width + hi * region_height * sixteenth_stride;
+            calculate_histogram(
+                &sixteenth[origin..],
+                region_width + region_width_offset,
+                region_height + region_height_offset,
+                sixteenth_stride,
+                decim_step,
+                &mut picture_histogram[wi][hi],
+                &mut sum,
+            );
+            sum *= (decim_step * decim_step) as u64;
+
+            let area = ((region_width + region_width_offset)
+                * (region_height + region_height_offset)) as u64;
+            // C casts the quotient to uint8_t and stores it in a uint64_t.
+            average_intensity_per_region[wi][hi] = u64::from(((sum + (area >> 1)) / area) as u8);
+            total += sum;
+
+            let scale = (4 * 4 * decim_step * decim_step) as u32;
+            for bin in picture_histogram[wi][hi].iter_mut() {
+                *bin *= scale;
+            }
+        }
+    }
+
+    total / (width * height) as u64
+}
+
+/// `svt_aom_gathering_picture_statistics` (pic_analysis_process.c:625).
+///
+/// Thin, but it is the GATE PAIR that decides whether the histogram and the
+/// b64 variance map are computed at all, and BOTH gates flip between the still
+/// and video configurations:
+/// * `scs->calculate_variance` (enc_handle.c:4361-4366) is 1 for all-intra and
+///   0 for the campaign's video config (aq_mode 0, no scene-change detection,
+///   tune PSNR so `sharpness_ctrls.tf == 0`, variance boost off) — so
+///   `compute_b64_variance` is NOT called in video mode and `pic_avg_variance`
+///   stays 0;
+/// * `scs->calc_hist` (enc_handle.c:1353) inverts: 0 for stills, 1 for any
+///   non-all-intra run with scene-change detection, scene transition, or any
+///   `tf_params_per_type` enabled.
+///
+/// The variance arm is DELEGATED, not skipped: `compute_picture_spatial_statistics`
+/// walks `pcs->b64_geom` calling `compute_b64_variance`, which the port already
+/// owns elsewhere. Pass the caller's already-computed picture-total variance and
+/// b64 count in `variance_total`; `None` means the gate is off.
+pub fn gathering_picture_statistics(
+    calc_hist: bool,
+    calculate_variance: bool,
+    regions_per_width: usize,
+    regions_per_height: usize,
+    scene_change_detection: bool,
+    sixteenth: &[u8],
+    sixteenth_stride: usize,
+    sixteenth_width: usize,
+    sixteenth_height: usize,
+    variance_total: Option<(u64, u16)>,
+    stats: &mut PictureStatistics,
+) {
+    stats.avg_luma = INVALID_LUMA;
+    if calc_hist {
+        stats.avg_luma = sub_sample_luma_generate_pixel_intensity_histogram_bins(
+            regions_per_width,
+            regions_per_height,
+            scene_change_detection,
+            sixteenth,
+            sixteenth_stride,
+            sixteenth_width,
+            sixteenth_height,
+            &mut stats.picture_histogram,
+            &mut stats.average_intensity_per_region,
+        );
+    }
+
+    if calculate_variance {
+        let (pic_tot_variance, b64_total_count) = variance_total
+            .expect("calculate_variance is set but no b64 variance total was supplied");
+        stats.pic_avg_variance = (pic_tot_variance / u64::from(b64_total_count)) as u16;
+    } else {
+        stats.pic_avg_variance = 0;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

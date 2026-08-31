@@ -193,3 +193,94 @@ void ref_pre_pad_input_pictures(int min_blk_only, uint32_t bit_depth, uint32_t c
     }
     free(scs);
 }
+
+/* ---- svt_aom_gathering_picture_statistics (EXPORTED) ---- */
+
+void svt_aom_gathering_picture_statistics(SequenceControlSet* scs, PictureParentControlSet* pcs,
+                                          EbPictureBufferDesc* input_padded_pic,
+                                          EbPictureBufferDesc* sixteenth_decimated_picture_ptr);
+
+/*
+ * Drives the real exported gate. The histogram arm
+ * (sub_sample_luma_generate_pixel_intensity_histogram_bins) is `static` in C,
+ * so calling it through this exported parent is how the port reaches it at
+ * TIER 1 rather than against hand-derived vectors.
+ *
+ * The `calculate_variance` arm is deliberately NOT driven: it walks
+ * pcs->b64_geom calling compute_b64_variance and divides by
+ * pcs->b64_total_count, so a facade PCS with no block geometry would divide by
+ * zero. That arm's leaf is gated elsewhere in the port; only
+ * calculate_variance == 0 is exercised here, which is also the value the
+ * VIDEO-mode configuration actually uses (enc_handle.c:4361-4366).
+ *
+ * pcs->picture_histogram is a uint32_t*** — allocated here as a real 4x4x256
+ * array-of-pointers so the C writes land somewhere the caller can read back.
+ */
+int ref_pre_gathering_picture_statistics(int calc_hist, int calculate_variance, uint32_t regions_w,
+                                         uint32_t regions_h, int scene_change_detection, uint8_t* sixteenth,
+                                         uint32_t s_origin, uint32_t s_stride, uint32_t s_w, uint32_t s_h,
+                                         uint32_t* out_histogram /* [4][4][256] flattened */,
+                                         uint64_t* out_avg_intensity /* [4][4] flattened */,
+                                         uint64_t* out_avg_luma, uint16_t* out_pic_avg_variance) {
+    if (calculate_variance) {
+        /* Not drivable through a facade PCS — see the comment above. */
+        return 0;
+    }
+    pre_ensure_rtcd();
+
+    SequenceControlSet*      scs = (SequenceControlSet*)calloc(1, sizeof(SequenceControlSet));
+    PictureParentControlSet* pcs = (PictureParentControlSet*)calloc(1, sizeof(PictureParentControlSet));
+
+    scs->calc_hist                                    = (uint8_t)(calc_hist != 0);
+    scs->calculate_variance                           = 0;
+    scs->picture_analysis_number_of_regions_per_width  = regions_w;
+    scs->picture_analysis_number_of_regions_per_height = regions_h;
+    scs->static_config.scene_change_detection          = (uint32_t)(scene_change_detection != 0);
+
+    /* Real 3-level pointer array over one flat 4*4*256 block of storage. */
+    uint32_t*  hist_storage = (uint32_t*)calloc((size_t)MAX_NUMBER_OF_REGIONS_IN_WIDTH *
+                                                    MAX_NUMBER_OF_REGIONS_IN_HEIGHT * HISTOGRAM_NUMBER_OF_BINS,
+                                                sizeof(uint32_t));
+    uint32_t** row_ptrs     = (uint32_t**)calloc((size_t)MAX_NUMBER_OF_REGIONS_IN_WIDTH *
+                                                 MAX_NUMBER_OF_REGIONS_IN_HEIGHT,
+                                             sizeof(uint32_t*));
+    uint32_t*** col_ptrs = (uint32_t***)calloc(MAX_NUMBER_OF_REGIONS_IN_WIDTH, sizeof(uint32_t**));
+    for (int w = 0; w < MAX_NUMBER_OF_REGIONS_IN_WIDTH; w++) {
+        col_ptrs[w] = &row_ptrs[(size_t)w * MAX_NUMBER_OF_REGIONS_IN_HEIGHT];
+        for (int h = 0; h < MAX_NUMBER_OF_REGIONS_IN_HEIGHT; h++) {
+            col_ptrs[w][h] = hist_storage +
+                (((size_t)w * MAX_NUMBER_OF_REGIONS_IN_HEIGHT + h) * HISTOGRAM_NUMBER_OF_BINS);
+        }
+    }
+    pcs->picture_histogram = col_ptrs;
+
+    EbPictureBufferDesc sixteenth_desc, padded_desc;
+    memset(&sixteenth_desc, 0, sizeof(sixteenth_desc));
+    memset(&padded_desc, 0, sizeof(padded_desc));
+    sixteenth_desc.y_buffer = sixteenth + s_origin;
+    sixteenth_desc.y_stride = s_stride;
+    sixteenth_desc.width    = s_w;
+    sixteenth_desc.height   = s_h;
+
+    svt_aom_gathering_picture_statistics(scs, pcs, &padded_desc, &sixteenth_desc);
+
+    memcpy(out_histogram,
+           hist_storage,
+           (size_t)MAX_NUMBER_OF_REGIONS_IN_WIDTH * MAX_NUMBER_OF_REGIONS_IN_HEIGHT * HISTOGRAM_NUMBER_OF_BINS *
+               sizeof(uint32_t));
+    for (int w = 0; w < MAX_NUMBER_OF_REGIONS_IN_WIDTH; w++) {
+        for (int h = 0; h < MAX_NUMBER_OF_REGIONS_IN_HEIGHT; h++) {
+            out_avg_intensity[(size_t)w * MAX_NUMBER_OF_REGIONS_IN_HEIGHT + h] =
+                pcs->average_intensity_per_region[w][h];
+        }
+    }
+    *out_avg_luma          = pcs->avg_luma;
+    *out_pic_avg_variance  = pcs->pic_avg_variance;
+
+    free(col_ptrs);
+    free(row_ptrs);
+    free(hist_storage);
+    free(pcs);
+    free(scs);
+    return 1;
+}
