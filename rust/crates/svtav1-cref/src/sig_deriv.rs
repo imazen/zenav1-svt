@@ -842,12 +842,26 @@ pub mod ed_in {
     pub const PICTURE_QP: usize = 39;
     /// `pcs->ref_skip_percentage`
     pub const REF_SKIP_PERC: usize = 40;
+    /// `scs->static_config.rtc` — read only by `set_cand_reduction_ctrls`'s
+    /// `use_flat_ipp` on this path.
+    pub const RTC: usize = 41;
+    /// `ppcs->hierarchical_levels`
+    pub const HIER_LEVELS: usize = 42;
+    /// `ctx->lpd1_ctrls.pd1_level` — `is_lpd1` is `> REGULAR_PD1`, and
+    /// `REGULAR_PD1` is **-1**, so a zeroed context already counts as LPD1.
+    pub const LPD1_PD1_LEVEL: usize = 43;
+    /// `ppcs->ref_list0_count_try`
+    pub const REF_L0_TRY: usize = 44;
+    /// `ppcs->ref_list1_count_try`
+    pub const REF_L1_TRY: usize = 45;
+    /// `ppcs->use_best_me_unipred_cand_only`
+    pub const PPCS_BEST_UNIPRED: usize = 46;
     /// Number of input slots.
-    pub const COUNT: usize = 41;
+    pub const COUNT: usize = 47;
 }
 
 /// Number of output slots the enc-dec-default dump uses.
-pub const ED_OUT_SLOTS: usize = 108;
+pub const ED_OUT_SLOTS: usize = 119;
 
 /// C `svt_aom_sig_deriv_enc_dec_default` driven on a synthetic PCS, with the
 /// resulting `ModeDecisionContext` dumped by slot.

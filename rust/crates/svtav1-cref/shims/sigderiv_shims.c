@@ -501,7 +501,11 @@ enum {
     ED_I_DIST_ANG_INTRA, ED_I_MDS0, ED_I_UPDATE_TYPE, ED_I_ME_8X8_DIST,
     ED_I_ME_8X8_VAR, ED_I_UNIPRED3X3, ED_I_NN_COMB, ED_I_APPROX_INTER_RATE,
     ED_I_ALLOW_INTRABC, ED_I_PALETTE_LEVEL, ED_I_GM_ENABLED, ED_I_PICTURE_QP,
-    ED_I_REF_SKIP_PERC, ED_I_COUNT
+    ED_I_REF_SKIP_PERC,
+    /* set_cand_reduction_ctrls reads these six beyond its level. */
+    ED_I_RTC, ED_I_HIER_LEVELS, ED_I_LPD1_PD1_LEVEL,
+    ED_I_REF_L0_TRY, ED_I_REF_L1_TRY, ED_I_PPCS_BEST_UNIPRED,
+    ED_I_COUNT
 };
 
 /* Output slot order. */
@@ -537,7 +541,13 @@ enum {
     ED_O_GM_INJ, ED_O_NN_INJ, ED_O_NNC_INJ, ED_O_UNI3X3_INJ,
     ED_O_ALLOW_IBC, ED_O_PALETTE_LVL, ED_O_APPROX_RATE, ED_O_SHUT_FAST_RATE,
     ED_O_MDS0_HADAMARD, ED_O_PARENT_COST_BIAS, ED_O_TUNE_SSIM,
-    ED_O_UV_MODE, ED_O_COUNT
+    ED_O_UV_MODE,
+    /* cand_reduction_ctrls */
+    ED_O_CR_RED_SCORE, ED_O_CR_RED_MAG, ED_O_CR_NEAR_EN, ED_O_CR_NEAR_CNT,
+    ED_O_CR_NEARNEAR_CNT, ED_O_CR_LPD1_MVP, ED_O_CR_USE_NEIGH,
+    ED_O_CR_ELIM_EN, ED_O_CR_ELIM_DC_TH, ED_O_CR_ELIM_SKIP_TH,
+    ED_O_CR_REDUCE_UNI,
+    ED_O_COUNT
 };
 
 void ref_sig_deriv_enc_dec_default(const int32_t* in, int64_t* out) {
@@ -549,12 +559,17 @@ void ref_sig_deriv_enc_dec_default(const int32_t* in, int64_t* out) {
     uint32_t*                me_v   = (uint32_t*)calloc(1, sizeof(uint32_t));
 
     scs->super_block_size  = 64; /* keep the SB128 me-data branch out of reach */
-    scs->static_config.rtc = false;
+    /* rtc is read ONLY by set_cand_reduction_ctrls's use_flat_ipp on this
+       path, so it is an input rather than a constant. */
+    scs->static_config.rtc = (bool)in[ED_I_RTC];
 
     ppcs->scs                  = scs;
     ppcs->picture_qp           = (uint32_t)in[ED_I_PICTURE_QP];
     ppcs->update_type          = (SvtAv1FrameUpdateType)in[ED_I_UPDATE_TYPE];
-    ppcs->hierarchical_levels  = 4;
+    ppcs->hierarchical_levels  = (uint8_t)in[ED_I_HIER_LEVELS];
+    ppcs->ref_list0_count_try  = (uint8_t)in[ED_I_REF_L0_TRY];
+    ppcs->ref_list1_count_try  = (uint8_t)in[ED_I_REF_L1_TRY];
+    ppcs->use_best_me_unipred_cand_only = (uint8_t)in[ED_I_PPCS_BEST_UNIPRED];
     ppcs->gm_ctrls.enabled     = (uint8_t)in[ED_I_GM_ENABLED];
     ppcs->pic_obmc_level       = (uint8_t)in[ED_I_OBMC];
     ppcs->frm_hdr.allow_intrabc = (uint8_t)in[ED_I_ALLOW_INTRABC];
@@ -599,6 +614,11 @@ void ref_sig_deriv_enc_dec_default(const int32_t* in, int64_t* out) {
     pcs->intra_level                = (uint8_t)in[ED_I_INTRA];
     pcs->dist_based_ang_intra_level = (uint8_t)in[ED_I_DIST_ANG_INTRA];
     pcs->mds0_level                 = (uint8_t)in[ED_I_MDS0];
+
+    /* is_lpd1 inside set_cand_reduction_ctrls is `pd1_level > REGULAR_PD1`,
+       and REGULAR_PD1 is -1 -- so a calloc'd context (pd1_level 0) is ALREADY
+       "lpd1". Set it explicitly so both arms are reachable. */
+    ctx->lpd1_ctrls.pd1_level = (Pd1Level)in[ED_I_LPD1_PD1_LEVEL];
 
     svt_aom_sig_deriv_enc_dec_default(pcs, ctx);
 
@@ -704,6 +724,17 @@ void ref_sig_deriv_enc_dec_default(const int32_t* in, int64_t* out) {
        NOT ported; it is exported so the Rust side can feed C's value back in
        for the blk_skip_decision check rather than guessing it. */
     out[ED_O_UV_MODE] = ctx->uv_ctrls.uv_mode;
+    out[ED_O_CR_RED_SCORE]    = ctx->cand_reduction_ctrls.redundant_cand_ctrls.score_th;
+    out[ED_O_CR_RED_MAG]      = ctx->cand_reduction_ctrls.redundant_cand_ctrls.mag_th;
+    out[ED_O_CR_NEAR_EN]      = ctx->cand_reduction_ctrls.near_count_ctrls.enabled;
+    out[ED_O_CR_NEAR_CNT]     = ctx->cand_reduction_ctrls.near_count_ctrls.near_count;
+    out[ED_O_CR_NEARNEAR_CNT] = ctx->cand_reduction_ctrls.near_count_ctrls.near_near_count;
+    out[ED_O_CR_LPD1_MVP]     = ctx->cand_reduction_ctrls.lpd1_mvp_best_me_list;
+    out[ED_O_CR_USE_NEIGH]    = ctx->cand_reduction_ctrls.use_neighbouring_mode_ctrls.enabled;
+    out[ED_O_CR_ELIM_EN]      = ctx->cand_reduction_ctrls.cand_elimination_ctrls.enabled;
+    out[ED_O_CR_ELIM_DC_TH]   = ctx->cand_reduction_ctrls.cand_elimination_ctrls.dc_only_th;
+    out[ED_O_CR_ELIM_SKIP_TH] = ctx->cand_reduction_ctrls.cand_elimination_ctrls.skip_dc_th;
+    out[ED_O_CR_REDUCE_UNI]   = ctx->cand_reduction_ctrls.reduce_unipred_candidates;
 
     free(me_v);
     free(me_d);

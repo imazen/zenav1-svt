@@ -814,6 +814,24 @@ pub struct EncDecDefaultInputs {
     pub palette_level: u8,
     /// `ppcs->gm_ctrls.enabled`
     pub gm_enabled: u8,
+    /// `pcs->cand_reduction_level`
+    pub cand_reduction_level: u8,
+    /// `ctx->lpd1_ctrls.pd1_level` — `is_lpd1` is `> REGULAR_PD1` (== -1).
+    pub lpd1_pd1_level: i8,
+    /// `scs->static_config.rtc`
+    pub rtc: bool,
+    /// `ppcs->hierarchical_levels`
+    pub hierarchical_levels: u8,
+    /// `ppcs->picture_qp`
+    pub picture_qp: u32,
+    /// `pcs->ref_skip_percentage`
+    pub ref_skip_percentage: u8,
+    /// `ppcs->ref_list0_count_try`
+    pub ref_list0_count_try: u32,
+    /// `ppcs->ref_list1_count_try`
+    pub ref_list1_count_try: u32,
+    /// `ppcs->use_best_me_unipred_cand_only`
+    pub use_best_me_unipred_cand_only: u8,
 }
 
 /// The subset of `ModeDecisionContext` that
@@ -891,6 +909,8 @@ pub struct EncDecDefaultSignals {
     pub parent_cost_bias: u16,
     /// `ctx->tune_ssim_level`
     pub tune_ssim_level: u8,
+    /// `ctx->cand_reduction_ctrls`
+    pub cand_reduction: CandReductionCtrls,
 }
 
 /// C `svt_aom_sig_deriv_enc_dec_default` (`enc_mode_config.c:7815`). EXPORTED.
@@ -933,6 +953,26 @@ pub fn sig_deriv_enc_dec_default(i: EncDecDefaultInputs) -> Option<EncDecDefault
         mds0_use_hadamard_sb: false,
         parent_cost_bias: 995,
         tune_ssim_level: SSIM_LVL_0,
+        // NOTE the four literals C passes here: me_8x8_cost_variance and
+        // me_64x64_distortion are `(uint32_t)~0` and both was_skip flags are 0
+        // (enc_mode_config.c:7819-7821), so on THIS arm the level-5/6
+        // `reduce_unipred_candidates` predicate collapses to
+        // `!is_not_last_layer ? 2 : 1`. The rtc arm passes real values.
+        cand_reduction: set_cand_reduction_ctrls(CandReductionInputs {
+            level: i.cand_reduction_level,
+            is_lpd1: i.lpd1_pd1_level > REGULAR_PD1,
+            is_not_last_layer: !i.is_leaf,
+            use_flat_ipp: i.rtc && i.hierarchical_levels == 0,
+            picture_qp: i.picture_qp,
+            me_8x8_cost_variance: u32::MAX,
+            me_64x64_distortion: u32::MAX,
+            l0_was_skip: 0,
+            l1_was_skip: 0,
+            ref_skip_perc: i.ref_skip_percentage,
+            ref_list0_count_try: i.ref_list0_count_try,
+            ref_list1_count_try: i.ref_list1_count_try,
+            use_best_me_unipred_cand_only: i.use_best_me_unipred_cand_only,
+        })?,
     })
 }
 
@@ -953,4 +993,248 @@ pub fn blk_skip_decision(uv_mode: u8) -> bool {
 #[must_use]
 pub fn redundant_blk(allow_hva_hvb: bool) -> bool {
     allow_hva_hvb
+}
+
+// ---------------------------------------------------------------------------
+// Candidate reduction
+// ---------------------------------------------------------------------------
+
+/// C `RedundantCandCtrls` (`md_process.h:675`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RedundantCandCtrls {
+    /// `score_th`
+    pub score_th: i32,
+    /// `mag_th`
+    pub mag_th: i32,
+}
+
+/// C `NearCountCtrls` (`md_process.h:181`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct NearCountCtrls {
+    /// `enabled`
+    pub enabled: u8,
+    /// `near_count`
+    pub near_count: u8,
+    /// `near_near_count`
+    pub near_near_count: u8,
+}
+
+/// C `CandEliminationCtlrs` (`md_process.h:523`, C's spelling).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CandEliminationCtrls {
+    /// `enabled`
+    pub enabled: u32,
+    /// `dc_only_th`
+    pub dc_only_th: u16,
+    /// `skip_dc_th`
+    pub skip_dc_th: u16,
+}
+
+/// C `CandReductionCtrls` (`md_process.h:814`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CandReductionCtrls {
+    /// `redundant_cand_ctrls`
+    pub redundant_cand_ctrls: RedundantCandCtrls,
+    /// `near_count_ctrls`
+    pub near_count_ctrls: NearCountCtrls,
+    /// `lpd1_mvp_best_me_list`
+    pub lpd1_mvp_best_me_list: u8,
+    /// `use_neighbouring_mode_ctrls.enabled`
+    pub use_neighbouring_mode_enabled: u8,
+    /// `cand_elimination_ctrls`
+    pub cand_elimination_ctrls: CandEliminationCtrls,
+    /// `reduce_unipred_candidates`
+    pub reduce_unipred_candidates: u8,
+    /// `reduce_filter_intra`
+    pub reduce_filter_intra: u8,
+}
+
+/// C `REGULAR_PD1` (`definitions.h:774`) — **-1**, so that LPD1 levels can
+/// start at 0. `is_lpd1` is `pd1_level > REGULAR_PD1`, i.e. `>= 0`.
+pub const REGULAR_PD1: i8 = -1;
+
+/// The inputs C `set_cand_reduction_ctrls` reads beyond its level.
+#[derive(Debug, Clone, Copy)]
+pub struct CandReductionInputs {
+    /// `cand_reduction_level`
+    pub level: u8,
+    /// `ctx->lpd1_ctrls.pd1_level > REGULAR_PD1`
+    pub is_lpd1: bool,
+    /// `!frame_is_leaf(ppcs)`
+    pub is_not_last_layer: bool,
+    /// `scs->static_config.rtc && ppcs->hierarchical_levels == 0`
+    pub use_flat_ipp: bool,
+    /// `picture_qp`
+    pub picture_qp: u32,
+    /// `me_8x8_cost_variance`
+    pub me_8x8_cost_variance: u32,
+    /// `me_64x64_distortion`
+    pub me_64x64_distortion: u32,
+    /// `l0_was_skip`
+    pub l0_was_skip: u8,
+    /// `l1_was_skip`
+    pub l1_was_skip: u8,
+    /// `ref_skip_perc`
+    pub ref_skip_perc: u8,
+    /// `ppcs->ref_list0_count_try`
+    pub ref_list0_count_try: u32,
+    /// `ppcs->ref_list1_count_try`
+    pub ref_list1_count_try: u32,
+    /// `ppcs->use_best_me_unipred_cand_only`
+    pub use_best_me_unipred_cand_only: u8,
+}
+
+/// C `set_cand_reduction_ctrls` (`enc_mode_config.c:4094`). static.
+///
+/// Reached at tier 1 through `svt_aom_sig_deriv_enc_dec_default`.
+///
+/// The `dc_only_th` ternary is the trap here. Written out, it is
+/// `is_lpd1 ? (use_flat_ipp ? A : is_not_last_layer ? 30 : B)
+///          : (is_not_last_layer ? 10 : 200)`
+/// where A and B are per-level and are NOT the same number above level 4:
+/// level 2/3 use A=200 B=200, level 4 uses A=600 B=600, levels 5/6 use A=800
+/// **B=600**. Collapsing A and B into one constant reproduces levels 2..4 and
+/// silently breaks 5 and 6.
+#[must_use]
+pub fn set_cand_reduction_ctrls(i: CandReductionInputs) -> Option<CandReductionCtrls> {
+    let mut c = CandReductionCtrls::default();
+
+    // The shared shape of the two arms of `dc_only_th`.
+    let dc_only_th = |flat_ipp_val: u16, not_flat_ipp_leaf_val: u16| -> u16 {
+        if i.is_lpd1 {
+            if i.use_flat_ipp {
+                flat_ipp_val
+            } else if i.is_not_last_layer {
+                30
+            } else {
+                not_flat_ipp_leaf_val
+            }
+        } else if i.is_not_last_layer {
+            10
+        } else {
+            200
+        }
+    };
+    // The level-5/6 `reduce_unipred_candidates` predicate.
+    let reduce_unipred_5_6 = || -> u8 {
+        let cond = !i.is_not_last_layer
+            || ((i.l0_was_skip != 0 && i.l1_was_skip != 0 && i.ref_skip_perc > 35)
+                && i.me_8x8_cost_variance < (500 * i.picture_qp)
+                && i.me_64x64_distortion < (500 * i.picture_qp));
+        if cond { 2 } else { 1 }
+    };
+
+    match i.level {
+        0 => {
+            c.reduce_filter_intra = 0;
+            c.redundant_cand_ctrls.score_th = 0;
+            c.use_neighbouring_mode_enabled = 0;
+            c.near_count_ctrls = NearCountCtrls {
+                enabled: 1,
+                near_count: 3,
+                near_near_count: 3,
+            };
+            c.lpd1_mvp_best_me_list = 0;
+            c.cand_elimination_ctrls.enabled = 0;
+            c.reduce_unipred_candidates = 0;
+        }
+        1 => {
+            c.reduce_filter_intra = 1;
+            c.redundant_cand_ctrls.score_th = 0;
+            c.use_neighbouring_mode_enabled = 0;
+            c.near_count_ctrls = NearCountCtrls {
+                enabled: 1,
+                near_count: 3,
+                near_near_count: 3,
+            };
+            c.lpd1_mvp_best_me_list = 0;
+            c.cand_elimination_ctrls.enabled = 0;
+            c.reduce_unipred_candidates = 0;
+        }
+        2 => {
+            c.reduce_filter_intra = 1;
+            c.redundant_cand_ctrls.score_th = 0;
+            c.use_neighbouring_mode_enabled = 1;
+            c.near_count_ctrls = NearCountCtrls {
+                enabled: 1,
+                near_count: 3,
+                near_near_count: 3,
+            };
+            c.lpd1_mvp_best_me_list = 0;
+            c.cand_elimination_ctrls = CandEliminationCtrls {
+                enabled: 1,
+                dc_only_th: dc_only_th(200, 200),
+                skip_dc_th: 0,
+            };
+            c.reduce_unipred_candidates = 0;
+        }
+        3 => {
+            c.reduce_filter_intra = 1;
+            c.redundant_cand_ctrls.score_th = 0;
+            c.use_neighbouring_mode_enabled = 1;
+            c.near_count_ctrls = NearCountCtrls {
+                enabled: 1,
+                near_count: 1,
+                near_near_count: 3,
+            };
+            c.lpd1_mvp_best_me_list = 0;
+            c.cand_elimination_ctrls = CandEliminationCtrls {
+                enabled: 1,
+                dc_only_th: dc_only_th(200, 200),
+                skip_dc_th: 0,
+            };
+            c.reduce_unipred_candidates = 1;
+        }
+        4 => {
+            c.reduce_filter_intra = 1;
+            c.redundant_cand_ctrls = RedundantCandCtrls {
+                score_th: 8,
+                mag_th: 64,
+            };
+            c.use_neighbouring_mode_enabled = 1;
+            c.near_count_ctrls = NearCountCtrls {
+                enabled: 1,
+                near_count: 1,
+                near_near_count: 1,
+            };
+            c.lpd1_mvp_best_me_list = 0;
+            c.cand_elimination_ctrls = CandEliminationCtrls {
+                enabled: 1,
+                dc_only_th: dc_only_th(600, 600),
+                skip_dc_th: 0,
+            };
+            c.reduce_unipred_candidates = 1;
+        }
+        5 | 6 => {
+            c.reduce_filter_intra = 1;
+            c.redundant_cand_ctrls = RedundantCandCtrls {
+                score_th: 8,
+                mag_th: 64,
+            };
+            c.use_neighbouring_mode_enabled = 1;
+            c.near_count_ctrls = NearCountCtrls {
+                enabled: 1,
+                // The ONLY field separating level 5 from level 6.
+                near_count: u8::from(i.level == 5),
+                near_near_count: 1,
+            };
+            c.lpd1_mvp_best_me_list = 1;
+            c.cand_elimination_ctrls = CandEliminationCtrls {
+                enabled: 1,
+                dc_only_th: dc_only_th(800, 600),
+                skip_dc_th: if i.is_not_last_layer { 5 } else { 15 },
+            };
+            c.reduce_unipred_candidates = reduce_unipred_5_6();
+        }
+        _ => return None,
+    }
+
+    // Post-switch: lpd1_mvp_best_me_list needs a single unipred ME candidate.
+    if !(i.ref_list0_count_try == 1
+        && i.ref_list1_count_try == 1
+        && i.use_best_me_unipred_cand_only != 0)
+    {
+        c.lpd1_mvp_best_me_list = 0;
+    }
+    Some(c)
 }

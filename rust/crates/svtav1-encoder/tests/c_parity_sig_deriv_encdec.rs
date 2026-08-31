@@ -58,6 +58,7 @@ const O_MDS0_HADAMARD: usize = 104;
 const O_PARENT_COST_BIAS: usize = 105;
 const O_TUNE_SSIM: usize = 106;
 const O_UV_MODE: usize = 107;
+const O_CR: usize = 108; // 11 fields: cand_reduction_ctrls
 
 fn flatten(s: &encdec::EncDecDefaultSignals) -> [i64; ED_OUT_SLOTS] {
     let mut o = [0i64; ED_OUT_SLOTS];
@@ -159,6 +160,18 @@ fn flatten(s: &encdec::EncDecDefaultSignals) -> [i64; ED_OUT_SLOTS] {
     o[O_MDS0_HADAMARD] = i64::from(s.mds0_use_hadamard_sb);
     o[O_PARENT_COST_BIAS] = i64::from(s.parent_cost_bias);
     o[O_TUNE_SSIM] = i64::from(s.tune_ssim_level);
+    let cr = &s.cand_reduction;
+    o[O_CR] = i64::from(cr.redundant_cand_ctrls.score_th);
+    o[O_CR + 1] = i64::from(cr.redundant_cand_ctrls.mag_th);
+    o[O_CR + 2] = i64::from(cr.near_count_ctrls.enabled);
+    o[O_CR + 3] = i64::from(cr.near_count_ctrls.near_count);
+    o[O_CR + 4] = i64::from(cr.near_count_ctrls.near_near_count);
+    o[O_CR + 5] = i64::from(cr.lpd1_mvp_best_me_list);
+    o[O_CR + 6] = i64::from(cr.use_neighbouring_mode_enabled);
+    o[O_CR + 7] = i64::from(cr.cand_elimination_ctrls.enabled);
+    o[O_CR + 8] = i64::from(cr.cand_elimination_ctrls.dc_only_th);
+    o[O_CR + 9] = i64::from(cr.cand_elimination_ctrls.skip_dc_th);
+    o[O_CR + 10] = i64::from(cr.reduce_unipred_candidates);
     o
 }
 
@@ -174,11 +187,22 @@ struct Case {
     enc_mode: i8,
     is_islice: bool,
     update_type: i32,
+    /// The same value passed to `build_input` as `noise`; `picture_qp` and
+    /// `ref_skip_percentage` are derived from it on BOTH sides so the
+    /// cand-reduction predicate sees identical inputs.
+    noise: i32,
     levels: Levels,
 }
 
 #[derive(Clone, Copy)]
 struct Levels {
+    cand_red: u8,
+    lpd1_pd1_level: i8,
+    rtc: bool,
+    hier_levels: u8,
+    ref_l0_try: u32,
+    ref_l1_try: u32,
+    ppcs_best_unipred: u8,
     tx_shortcut: u8,
     ifs: u8,
     wm: u8,
@@ -196,7 +220,8 @@ struct Levels {
     pme_subpel: u8,
 }
 
-fn build_input(c: &Case, noise: i32) -> [i32; ed_in::COUNT] {
+fn build_input(c: &Case) -> [i32; ed_in::COUNT] {
+    let noise = c.noise;
     let mut i = [0i32; ed_in::COUNT];
     i[ed_in::ENC_MODE] = i32::from(c.enc_mode);
     i[ed_in::IS_ISLICE] = i32::from(c.is_islice);
@@ -228,7 +253,6 @@ fn build_input(c: &Case, noise: i32) -> [i32; ed_in::COUNT] {
     // port that accidentally depended on one would diverge.
     i[ed_in::NSQ_SEARCH] = 1 + (noise % 3);
     i[ed_in::NIC] = 1 + (noise % 5);
-    i[ed_in::CAND_RED] = noise % 4;
     i[ed_in::TXT] = noise % 3;
     i[ed_in::CHROMA] = 1 + (noise % 4);
     i[ed_in::CFL] = noise % 2;
@@ -243,6 +267,13 @@ fn build_input(c: &Case, noise: i32) -> [i32; ed_in::COUNT] {
     i[ed_in::ME_8X8_VAR] = 500 * noise;
     i[ed_in::PICTURE_QP] = 20 + noise;
     i[ed_in::REF_SKIP_PERC] = (10 * noise) % 100;
+    i[ed_in::CAND_RED] = i32::from(l.cand_red);
+    i[ed_in::LPD1_PD1_LEVEL] = i32::from(l.lpd1_pd1_level);
+    i[ed_in::RTC] = i32::from(l.rtc);
+    i[ed_in::HIER_LEVELS] = i32::from(l.hier_levels);
+    i[ed_in::REF_L0_TRY] = l.ref_l0_try as i32;
+    i[ed_in::REF_L1_TRY] = l.ref_l1_try as i32;
+    i[ed_in::PPCS_BEST_UNIPRED] = i32::from(l.ppcs_best_unipred);
     i
 }
 
@@ -274,6 +305,15 @@ fn to_port_inputs(c: &Case) -> EncDecDefaultInputs {
         allow_intrabc: 1,
         palette_level: 3,
         gm_enabled: 1,
+        cand_reduction_level: l.cand_red,
+        lpd1_pd1_level: l.lpd1_pd1_level,
+        rtc: l.rtc,
+        hierarchical_levels: l.hier_levels,
+        picture_qp: (20 + c.noise) as u32,
+        ref_skip_percentage: ((10 * c.noise) % 100) as u8,
+        ref_list0_count_try: l.ref_l0_try,
+        ref_list1_count_try: l.ref_l1_try,
+        use_best_me_unipred_cand_only: l.ppcs_best_unipred,
     }
 }
 
@@ -300,7 +340,19 @@ fn sig_deriv_enc_dec_default_matches_c() {
                                             enc_mode: m,
                                             is_islice: islice,
                                             update_type: ut,
+                                            noise: n.abs() % 97 + 1,
                                             levels: Levels {
+                                                cand_red: (n % 7) as u8,
+                                                lpd1_pd1_level: if n % 2 == 0 {
+                                                    -1
+                                                } else {
+                                                    (n % 7) as i8
+                                                },
+                                                rtc: n % 3 == 0,
+                                                hier_levels: (n % 2) as u8 * 4,
+                                                ref_l0_try: (n % 2) as u32,
+                                                ref_l1_try: (n % 2) as u32,
+                                                ppcs_best_unipred: (n % 2) as u8,
                                                 tx_shortcut,
                                                 ifs,
                                                 wm: (n % 5) as u8,
@@ -322,10 +374,8 @@ fn sig_deriv_enc_dec_default_matches_c() {
                                             to_port_inputs(&case),
                                         )
                                         .expect("all levels in range");
-                                        let theirs = cref::sig_deriv_enc_dec_default(&build_input(
-                                            &case,
-                                            n.abs() % 97 + 1,
-                                        ));
+                                        let theirs =
+                                            cref::sig_deriv_enc_dec_default(&build_input(&case));
                                         assert_eq!(
                                             flatten(&ours),
                                             mask_unported(theirs),
@@ -357,7 +407,15 @@ fn subpel_tables_match_c_at_every_level() {
                 enc_mode: 5,
                 is_islice: false,
                 update_type: 1,
+                noise: 7,
                 levels: Levels {
+                    cand_red: 4,
+                    lpd1_pd1_level: 2,
+                    rtc: false,
+                    hier_levels: 4,
+                    ref_l0_try: 1,
+                    ref_l1_try: 1,
+                    ppcs_best_unipred: 1,
                     tx_shortcut: 1,
                     ifs: 1,
                     wm: 1,
@@ -376,7 +434,7 @@ fn subpel_tables_match_c_at_every_level() {
                 },
             };
             let ours = encdec::sig_deriv_enc_dec_default(to_port_inputs(&case)).expect("in range");
-            let theirs = cref::sig_deriv_enc_dec_default(&build_input(&case, 7));
+            let theirs = cref::sig_deriv_enc_dec_default(&build_input(&case));
             assert_eq!(
                 flatten(&ours),
                 mask_unported(theirs),
@@ -395,7 +453,15 @@ fn enc_dec_default_positive_controls() {
         enc_mode: 5,
         is_islice: false,
         update_type: 1,
+        noise: 3,
         levels: Levels {
+            cand_red: 6,
+            lpd1_pd1_level: 3,
+            rtc: false,
+            hier_levels: 4,
+            ref_l0_try: 1,
+            ref_l1_try: 1,
+            ppcs_best_unipred: 1,
             tx_shortcut: 3,
             ifs: 4,
             wm: 1,
@@ -413,7 +479,7 @@ fn enc_dec_default_positive_controls() {
             pme_subpel: 4,
         },
     };
-    let c = cref::sig_deriv_enc_dec_default(&build_input(&case, 3));
+    let c = cref::sig_deriv_enc_dec_default(&build_input(&case));
     // mds0_use_hadamard_sb is FALSE on the video arm (the allintra twin sets it).
     assert_eq!(c[O_MDS0_HADAMARD], 0, "video arm shuts Hadamard at MDS0");
     // parent_cost_bias is 995 here.
@@ -471,7 +537,15 @@ fn out_of_range_levels_are_refused() {
         enc_mode: 5,
         is_islice: false,
         update_type: 1,
+        noise: 1,
         levels: Levels {
+            cand_red: 0,
+            lpd1_pd1_level: -1,
+            rtc: false,
+            hier_levels: 4,
+            ref_l0_try: 1,
+            ref_l1_try: 1,
+            ppcs_best_unipred: 1,
             tx_shortcut: 0,
             ifs: 0,
             wm: 0,
@@ -498,4 +572,125 @@ fn out_of_range_levels_are_refused() {
     base.pme_subpel_level = 0;
     base.tx_shortcut_level = 4;
     assert!(encdec::sig_deriv_enc_dec_default(base).is_none());
+}
+
+/// `set_cand_reduction_ctrls` (`enc_mode_config.c:4094`) has the widest
+/// conditional surface of any table on this arm: its `dc_only_th` is a nested
+/// ternary over `is_lpd1` x `use_flat_ipp` x `is_not_last_layer` whose two
+/// leaf constants differ per level, and `lpd1_mvp_best_me_list` is cleared
+/// after the switch unless three PPCS conditions all hold. Sweep the whole
+/// product rather than sampling it.
+#[test]
+fn cand_reduction_ctrls_match_c_over_the_full_conditional_surface() {
+    for cand_red in 0u8..=6 {
+        // pd1_level -1 is REGULAR_PD1 (is_lpd1 false); 0..=6 are the LPD1
+        // levels, all of which make is_lpd1 true.
+        for &pd1 in &[-1i8, 0, 3, 6] {
+            for &rtc in &[false, true] {
+                for &hier in &[0u8, 4] {
+                    // update_type 1 == SVT_AV1_LF_UPDATE == leaf.
+                    for &ut in &[0i32, 1] {
+                        for &(l0, l1, best) in &[(1u32, 1u32, 1u8), (1, 1, 0), (1, 2, 1), (0, 1, 1)]
+                        {
+                            let case = Case {
+                                enc_mode: 5,
+                                is_islice: false,
+                                update_type: ut,
+                                noise: 11,
+                                levels: Levels {
+                                    cand_red,
+                                    lpd1_pd1_level: pd1,
+                                    rtc,
+                                    hier_levels: hier,
+                                    ref_l0_try: l0,
+                                    ref_l1_try: l1,
+                                    ppcs_best_unipred: best,
+                                    tx_shortcut: 1,
+                                    ifs: 1,
+                                    wm: 1,
+                                    bipred3x3: 1,
+                                    inter_comp: 1,
+                                    ref_prune: 1,
+                                    spatial_sse: 1,
+                                    coeff_shave: 1,
+                                    obmc: 1,
+                                    inter_intra: 1,
+                                    md_sq_mv: 1,
+                                    md_nsq_mv: 1,
+                                    md_pme: 1,
+                                    me_subpel: 1,
+                                    pme_subpel: 1,
+                                },
+                            };
+                            let ours = encdec::sig_deriv_enc_dec_default(to_port_inputs(&case))
+                                .expect("in range");
+                            let theirs = cref::sig_deriv_enc_dec_default(&build_input(&case));
+                            assert_eq!(
+                                flatten(&ours)[O_CR..O_CR + 11],
+                                mask_unported(theirs)[O_CR..O_CR + 11],
+                                "cand_red={cand_red} pd1={pd1} rtc={rtc} hier={hier} \
+                                 update_type={ut} refs=({l0},{l1},{best})"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Positive control for the cand-reduction sweep: the `dc_only_th` leaf
+/// constants must actually differ between the arms, otherwise the sweep above
+/// would pass against a collapsed ternary.
+#[test]
+fn cand_reduction_dc_only_th_arms_are_distinct() {
+    let probe = |cand_red: u8, pd1: i8, rtc: bool, hier: u8, ut: i32| -> i64 {
+        let case = Case {
+            enc_mode: 5,
+            is_islice: false,
+            update_type: ut,
+            noise: 11,
+            levels: Levels {
+                cand_red,
+                lpd1_pd1_level: pd1,
+                rtc,
+                hier_levels: hier,
+                ref_l0_try: 1,
+                ref_l1_try: 1,
+                ppcs_best_unipred: 1,
+                tx_shortcut: 1,
+                ifs: 1,
+                wm: 1,
+                bipred3x3: 1,
+                inter_comp: 1,
+                ref_prune: 1,
+                spatial_sse: 1,
+                coeff_shave: 1,
+                obmc: 1,
+                inter_intra: 1,
+                md_sq_mv: 1,
+                md_nsq_mv: 1,
+                md_pme: 1,
+                me_subpel: 1,
+                pme_subpel: 1,
+            },
+        };
+        cref::sig_deriv_enc_dec_default(&build_input(&case))[O_CR + 8]
+    };
+    // is_lpd1 + use_flat_ipp: the per-level A constant (200 / 600 / 800).
+    assert_eq!(probe(2, 0, true, 0, 1), 200);
+    assert_eq!(probe(4, 0, true, 0, 1), 600);
+    assert_eq!(probe(5, 0, true, 0, 1), 800);
+    assert_eq!(probe(6, 0, true, 0, 1), 800);
+    // is_lpd1, not flat, LEAF (is_not_last_layer false): the B constant, which
+    // is 200 at level 2 but 600 at levels 5 and 6 — the arms are NOT the same
+    // number, which is the transcription trap.
+    assert_eq!(probe(2, 0, false, 4, 1), 200);
+    assert_eq!(probe(5, 0, false, 4, 1), 600);
+    // is_lpd1, not flat, NOT a leaf: a flat 30 at every level.
+    assert_eq!(probe(2, 0, false, 4, 0), 30);
+    assert_eq!(probe(5, 0, false, 4, 0), 30);
+    // Not lpd1: 10 when not a leaf, 200 when a leaf, at every level.
+    assert_eq!(probe(5, -1, false, 4, 0), 10);
+    assert_eq!(probe(5, -1, false, 4, 1), 200);
 }
