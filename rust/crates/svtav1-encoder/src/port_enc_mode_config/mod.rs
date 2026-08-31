@@ -34,6 +34,7 @@
 //! `svtav1-cref`). File-`static` C functions are gated at **tier 4**
 //! (hand-derived vectors traced against the C source) and say so at the test.
 
+pub mod common;
 pub mod ctrls;
 pub mod encdec;
 pub mod leaf;

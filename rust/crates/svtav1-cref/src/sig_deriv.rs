@@ -1034,3 +1034,143 @@ pub fn set_intra_ctrls_at_level(intra_level: u8, dist_ang_level: u8, is_islice: 
     }
     out
 }
+
+// ---------------------------------------------------------------------------
+// svt_aom_sig_deriv_enc_dec_common
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn ref_sig_deriv_enc_dec_common(input: *const i32, out: *mut i64);
+    fn ref_common_in_slots() -> i32;
+    fn ref_common_out_slots() -> i32;
+}
+
+/// Input slot indices for [`sig_deriv_enc_dec_common`], mirroring `CM_I_*`.
+pub mod cm_in {
+    /// `pcs->enc_mode`
+    pub const ENC_MODE: usize = 0;
+    /// `scs->static_config.rtc`
+    pub const RTC: usize = 1;
+    /// `scs->allintra`
+    pub const ALLINTRA: usize = 2;
+    /// `ppcs->update_type` (1 == leaf)
+    pub const UPDATE_TYPE: usize = 3;
+    /// `frame_is_boosted(ppcs)`
+    pub const IS_BASE: usize = 4;
+    /// `pcs->pic_block_based_depth_refinement_level`
+    pub const DEPTH_REFINE_LVL: usize = 5;
+    /// `ppcs->b64_geom[sb_index].width`
+    pub const B64_W: usize = 6;
+    /// `ppcs->b64_geom[sb_index].height`
+    pub const B64_H: usize = 7;
+    /// `pcs->pic_disallow_4x4`
+    pub const PIC_DISALLOW_4X4: usize = 8;
+    /// `scs->super_block_size`
+    pub const SB_SIZE: usize = 9;
+    /// `pcs->pic_lpd1_lvl`
+    pub const PIC_LPD1_LVL: usize = 10;
+    /// `ctx->sb_ptr->qindex`
+    pub const SB_QINDEX: usize = 11;
+    /// `ppcs->frm_hdr.quantization_params.base_q_idx`
+    pub const BASE_Q: usize = 12;
+    /// `pcs->slice_type == I_SLICE`
+    pub const IS_ISLICE: usize = 13;
+    /// `ppcs->me_8x8_cost_variance[sb_index]`
+    pub const ME8_VAR: usize = 14;
+    /// `ctx->qp_index`
+    pub const QP_INDEX: usize = 15;
+    /// `scs->static_config.max_tx_size`
+    pub const MAX_TX_SIZE: usize = 16;
+    /// `pcs->pic_depth_removal_level`
+    pub const DR_LEVEL: usize = 17;
+    /// `ctx->fast_lambda_md[EB_8_BIT_MD]`
+    pub const LAMBDA8: usize = 18;
+    /// `ppcs->frm_hdr.delta_q_params.delta_q_present`
+    pub const DELTA_Q_PRESENT: usize = 19;
+    /// `ppcs->r0_delta_qp_md`
+    pub const R0_DELTA_QP: usize = 20;
+    /// `quantizer_to_qindex[ppcs->picture_qp]` — supplied to the port; the C
+    /// side derives it from `PICTURE_QP` through its own table.
+    pub const PIC_QINDEX: usize = 21;
+    /// `ppcs->picture_qp`
+    pub const PICTURE_QP: usize = 22;
+    /// `ppcs->me_64x64_distortion[sb_index]`
+    pub const DIST64: usize = 23;
+    /// `ppcs->me_32x32_distortion[sb_index]`
+    pub const DIST32: usize = 24;
+    /// `ppcs->me_16x16_distortion[sb_index]`
+    pub const DIST16: usize = 25;
+    /// `ppcs->me_8x8_distortion[sb_index]`
+    pub const DIST8: usize = 26;
+    /// `ppcs->sb_geom[sb_index].width`
+    pub const SB_GEOM_W: usize = 27;
+    /// `ppcs->sb_geom[sb_index].height`
+    pub const SB_GEOM_H: usize = 28;
+    /// Whether a same-POC same-size reference is available in both lists.
+    pub const REF_AVAIL: usize = 29;
+    /// That reference's `sb_min_sq_size[sb_index]`.
+    pub const REF_MIN_SQ_SIZE: usize = 30;
+    /// `ppcs->variance[sb_index][ME_TIER_ZERO_PU_64x64]`
+    pub const SB_VARIANCE: usize = 31;
+    /// `scs->qp_based_th_scaling_ctrls.cap_max_size_qp_based_th_scaling`
+    pub const CAP_QP_SCALING: usize = 32;
+    /// `scs->static_config.qp`
+    pub const STATIC_QP: usize = 33;
+    /// Number of input slots.
+    pub const COUNT: usize = 34;
+}
+
+/// Output slot indices for [`sig_deriv_enc_dec_common`], mirroring `CM_O_*`.
+pub mod cm_out {
+    /// `ctx->depth_refinement_ctrls.mode`
+    pub const DEPTH_REFINE_MODE: usize = 0;
+    /// `ctx->pred_depth_only`
+    pub const PRED_DEPTH_ONLY: usize = 1;
+    /// `ctx->pic_pred_depth_only`
+    pub const PIC_PRED_DEPTH_ONLY: usize = 2;
+    /// `ctx->depth_removal_ctrls.enabled`
+    pub const DR_ENABLED: usize = 3;
+    /// `ctx->depth_removal_ctrls.disallow_below_64x64`
+    pub const DR_B64: usize = 4;
+    /// `ctx->depth_removal_ctrls.disallow_below_32x32`
+    pub const DR_B32: usize = 5;
+    /// `ctx->depth_removal_ctrls.disallow_below_16x16`
+    pub const DR_B16: usize = 6;
+    /// `ctx->depth_removal_ctrls.disallow_4x4`
+    pub const DR_4X4: usize = 7;
+    /// `ctx->disallow_8x8`
+    pub const DISALLOW_8X8: usize = 8;
+    /// `ctx->disallow_4x4`
+    pub const DISALLOW_4X4: usize = 9;
+    /// `ctx->max_block_size`
+    pub const MAX_BLOCK_SIZE: usize = 10;
+    /// `ctx->pd1_lvl_refinement`
+    pub const PD1_LVL_REFINEMENT: usize = 11;
+    /// `ctx->lpd1_ctrls.pd1_level` — the observable proxy for the LPD1 level
+    /// this function derives.
+    pub const LPD1_PD1_LEVEL: usize = 12;
+    /// Number of output slots.
+    pub const COUNT: usize = 13;
+}
+
+/// C `svt_aom_sig_deriv_enc_dec_common` driven on a synthetic SCS/PCS/ctx.
+///
+/// # Panics
+/// If the C shim's slot counts disagree with [`cm_in::COUNT`] /
+/// [`cm_out::COUNT`].
+#[must_use]
+pub fn sig_deriv_enc_dec_common(input: &[i32; cm_in::COUNT]) -> [i64; cm_out::COUNT] {
+    assert_eq!(
+        unsafe { ref_common_in_slots() } as usize,
+        cm_in::COUNT,
+        "C shim common input slot count drifted"
+    );
+    assert_eq!(
+        unsafe { ref_common_out_slots() } as usize,
+        cm_out::COUNT,
+        "C shim common output slot count drifted"
+    );
+    let mut out = [0i64; cm_out::COUNT];
+    unsafe { ref_sig_deriv_enc_dec_common(input.as_ptr(), out.as_mut_ptr()) };
+    out
+}

@@ -911,3 +911,172 @@ void ref_set_intra_ctrls_via_enc_dec_default(int32_t intra_level, int32_t dist_a
 
 int32_t ref_pd0_in_slots(void) { return PD0_I_COUNT; }
 int32_t ref_pd0_out_slots(void) { return PD0_O_COUNT; }
+
+/* ===========================================================================
+ * svt_aom_sig_deriv_enc_dec_common (enc_mode_config.c:7086) -- the per-SB
+ * spine ALL THREE arms call, and set_depth_removal_level_controls (:2965),
+ * the largest table in the file, which it drives.
+ *
+ * Deref safety, from the C bodies:
+ *  - b64_geom[sb_index] and sb_geom[sb_index] are read; one of each is
+ *    allocated.
+ *  - ctx->sb_ptr->qindex is read; one SuperBlock is allocated.
+ *  - the four ppcs me_* arrays are indexed at sb_index 0.
+ *  - super_block_size is 64 so get_sb128_me_data stays unreachable.
+ *  - the reference-frame arm of set_depth_removal_level_controls runs only
+ *    when !rtc; ppcs->is_not_scaled makes svt_aom_is_ref_same_size return true
+ *    and the wrapper/EbReferenceObject chain below supplies sb_min_sq_size.
+ * ======================================================================== */
+#include "reference_object.h"
+
+enum {
+    CM_I_ENC_MODE = 0, CM_I_RTC, CM_I_ALLINTRA, CM_I_UPDATE_TYPE, CM_I_IS_BASE,
+    CM_I_DEPTH_REFINE_LVL, CM_I_B64_W, CM_I_B64_H, CM_I_PIC_DISALLOW_4X4,
+    CM_I_SB_SIZE, CM_I_PIC_LPD1_LVL, CM_I_SB_QINDEX, CM_I_BASE_Q,
+    CM_I_IS_ISLICE, CM_I_ME8_VAR, CM_I_QP_INDEX, CM_I_MAX_TX_SIZE,
+    /* set_depth_removal_level_controls */
+    CM_I_DR_LEVEL, CM_I_LAMBDA8, CM_I_DELTA_Q_PRESENT, CM_I_R0_DELTA_QP,
+    CM_I_PIC_QINDEX, CM_I_PICTURE_QP,
+    CM_I_DIST64, CM_I_DIST32, CM_I_DIST16, CM_I_DIST8,
+    CM_I_SB_GEOM_W, CM_I_SB_GEOM_H,
+    CM_I_REF_AVAIL, CM_I_REF_MIN_SQ_SIZE,
+    /* get_max_block_size_{allintra,rtc} read these three. */
+    CM_I_SB_VARIANCE, CM_I_CAP_QP_SCALING, CM_I_STATIC_QP,
+    CM_I_COUNT
+};
+
+enum {
+    CM_O_DEPTH_REFINE_MODE = 0, CM_O_PRED_DEPTH_ONLY, CM_O_PIC_PRED_DEPTH_ONLY,
+    CM_O_DR_ENABLED, CM_O_DR_B64, CM_O_DR_B32, CM_O_DR_B16, CM_O_DR_4X4,
+    CM_O_DISALLOW_8X8, CM_O_DISALLOW_4X4, CM_O_MAX_BLOCK_SIZE,
+    CM_O_PD1_LVL_REFINEMENT,
+    /* lpd1_ctrls.pd1_level is what set_lpd1_ctrls stores for the derived
+       level; it is the observable proxy for that level. */
+    CM_O_LPD1_PD1_LEVEL,
+    CM_O_COUNT
+};
+
+void ref_sig_deriv_enc_dec_common(const int32_t* in, int64_t* out) {
+    SequenceControlSet*      scs  = (SequenceControlSet*)calloc(1, sizeof(*scs));
+    PictureParentControlSet* ppcs = (PictureParentControlSet*)calloc(1, sizeof(*ppcs));
+    PictureControlSet*       pcs  = (PictureControlSet*)calloc(1, sizeof(*pcs));
+    ModeDecisionContext*     ctx  = (ModeDecisionContext*)calloc(1, sizeof(*ctx));
+    SuperBlock*              sb   = (SuperBlock*)calloc(1, sizeof(*sb));
+    B64Geom*                 b64  = (B64Geom*)calloc(1, sizeof(*b64));
+    SbGeom*                  sbg  = (SbGeom*)calloc(1, sizeof(*sbg));
+    uint32_t* d64 = (uint32_t*)calloc(1, sizeof(uint32_t));
+    uint32_t* d32 = (uint32_t*)calloc(1, sizeof(uint32_t));
+    uint32_t* d16 = (uint32_t*)calloc(1, sizeof(uint32_t));
+    uint32_t* d8  = (uint32_t*)calloc(1, sizeof(uint32_t));
+    uint32_t* mv  = (uint32_t*)calloc(1, sizeof(uint32_t));
+    EbObjectWrapper*   wrap0 = (EbObjectWrapper*)calloc(1, sizeof(*wrap0));
+    EbObjectWrapper*   wrap1 = (EbObjectWrapper*)calloc(1, sizeof(*wrap1));
+    EbReferenceObject* ref0  = (EbReferenceObject*)calloc(1, sizeof(*ref0));
+    EbReferenceObject* ref1  = (EbReferenceObject*)calloc(1, sizeof(*ref1));
+    uint8_t* minsq0 = (uint8_t*)calloc(1, sizeof(uint8_t));
+    uint8_t* minsq1 = (uint8_t*)calloc(1, sizeof(uint8_t));
+    /* ppcs->variance is SvtVarType** indexed [sb_index][ME_TIER_ZERO_PU_*];
+       get_max_block_size_allintra reads [sb_index][ME_TIER_ZERO_PU_64x64]. */
+    SvtVarType*  var_row  = (SvtVarType*)calloc(MAX_ME_PU_COUNT, sizeof(SvtVarType));
+    SvtVarType** var_rows = (SvtVarType**)calloc(1, sizeof(SvtVarType*));
+
+    scs->static_config.rtc         = (bool)in[CM_I_RTC];
+    scs->allintra                  = (bool)in[CM_I_ALLINTRA];
+    scs->super_block_size          = (uint32_t)in[CM_I_SB_SIZE];
+    scs->static_config.max_tx_size = (uint8_t)in[CM_I_MAX_TX_SIZE];
+    scs->static_config.qp          = (uint32_t)in[CM_I_STATIC_QP];
+    scs->qp_based_th_scaling_ctrls.cap_max_size_qp_based_th_scaling = (bool)in[CM_I_CAP_QP_SCALING];
+
+    b64->width  = (uint8_t)in[CM_I_B64_W];
+    b64->height = (uint8_t)in[CM_I_B64_H];
+    sbg->width  = (uint8_t)in[CM_I_SB_GEOM_W];
+    sbg->height = (uint8_t)in[CM_I_SB_GEOM_H];
+    d64[0] = (uint32_t)in[CM_I_DIST64];
+    d32[0] = (uint32_t)in[CM_I_DIST32];
+    d16[0] = (uint32_t)in[CM_I_DIST16];
+    d8[0]  = (uint32_t)in[CM_I_DIST8];
+    mv[0]  = (uint32_t)in[CM_I_ME8_VAR];
+
+    ppcs->scs                  = scs;
+    ppcs->update_type          = (SvtAv1FrameUpdateType)in[CM_I_UPDATE_TYPE];
+    ppcs->b64_geom             = b64;
+    ppcs->sb_geom              = sbg;
+    ppcs->me_64x64_distortion  = d64;
+    ppcs->me_32x32_distortion  = d32;
+    ppcs->me_16x16_distortion  = d16;
+    ppcs->me_8x8_distortion    = d8;
+    ppcs->me_8x8_cost_variance = mv;
+    ppcs->picture_qp           = (uint8_t)in[CM_I_PICTURE_QP];
+    ppcs->r0_delta_qp_md       = (bool)in[CM_I_R0_DELTA_QP];
+    ppcs->is_not_scaled        = 1;
+    var_row[ME_TIER_ZERO_PU_64x64] = (SvtVarType)in[CM_I_SB_VARIANCE];
+    var_rows[0]                = var_row;
+    ppcs->variance             = var_rows;
+    ppcs->ref_list1_count_try  = 1;
+    ppcs->frm_hdr.quantization_params.base_q_idx = (int32_t)in[CM_I_BASE_Q];
+    ppcs->frm_hdr.delta_q_params.delta_q_present = (uint8_t)in[CM_I_DELTA_Q_PRESENT];
+    /* frame_is_boosted: KEY_FRAME or an ARF/GF update. */
+    ppcs->frm_hdr.frame_type = in[CM_I_IS_BASE] ? KEY_FRAME : INTER_FRAME;
+
+    pcs->ppcs                 = ppcs;
+    pcs->scs                  = scs;
+    pcs->enc_mode             = (EncMode)in[CM_I_ENC_MODE];
+    pcs->slice_type           = in[CM_I_IS_ISLICE] ? I_SLICE : B_SLICE;
+    pcs->picture_number       = 10;
+    pcs->pic_block_based_depth_refinement_level = (uint8_t)in[CM_I_DEPTH_REFINE_LVL];
+    pcs->pic_disallow_4x4     = (uint8_t)in[CM_I_PIC_DISALLOW_4X4];
+    pcs->pic_depth_removal_level = (uint8_t)in[CM_I_DR_LEVEL];
+    pcs->pic_lpd1_lvl         = (uint8_t)in[CM_I_PIC_LPD1_LVL];
+    pcs->pic_pd0_lvl          = 0;
+    pcs->nsq_geom_level       = 0;
+    /* The reference wrappers must ALWAYS be non-NULL. ppcs->is_not_scaled is
+       1, so svt_aom_is_ref_same_size returns true without looking at the
+       pointer, and set_depth_removal_level_controls then dereferences
+       ref_pic_ptr_array[0][0] unconditionally on a non-I-slice. (Not a live C
+       bug -- an inter picture in the real encoder always has that pointer --
+       but it means "no reference" cannot be modelled with a NULL here.)
+       "Not available" is modelled the way C actually tests it: a ref_poc more
+       than one away from picture_number, which leaves sb_min_sq_size at its
+       (uint8_t)~0 sentinel and skips the threshold bump. */
+    minsq0[0] = (uint8_t)in[CM_I_REF_MIN_SQ_SIZE];
+    minsq1[0] = (uint8_t)in[CM_I_REF_MIN_SQ_SIZE];
+    ref0->ref_poc = in[CM_I_REF_AVAIL] ? 10 : 100;
+    ref1->ref_poc = in[CM_I_REF_AVAIL] ? 10 : 100;
+    ref0->sb_min_sq_size = minsq0;
+    ref1->sb_min_sq_size = minsq1;
+    wrap0->object_ptr = ref0;
+    wrap1->object_ptr = ref1;
+    pcs->ref_pic_ptr_array[REF_LIST_0][0] = wrap0;
+    pcs->ref_pic_ptr_array[REF_LIST_1][0] = wrap1;
+
+    ctx->sb_ptr   = sb;
+    sb->qindex    = (uint32_t)in[CM_I_SB_QINDEX];
+    ctx->qp_index = (uint8_t)in[CM_I_QP_INDEX];
+    ctx->fast_lambda_md[EB_8_BIT_MD] = (uint32_t)in[CM_I_LAMBDA8];
+
+    svt_aom_sig_deriv_enc_dec_common(scs, pcs, ctx);
+
+    out[CM_O_DEPTH_REFINE_MODE]  = ctx->depth_refinement_ctrls.mode;
+    out[CM_O_PRED_DEPTH_ONLY]    = ctx->pred_depth_only;
+    out[CM_O_PIC_PRED_DEPTH_ONLY] = ctx->pic_pred_depth_only;
+    out[CM_O_DR_ENABLED]  = ctx->depth_removal_ctrls.enabled;
+    out[CM_O_DR_B64]      = ctx->depth_removal_ctrls.disallow_below_64x64;
+    out[CM_O_DR_B32]      = ctx->depth_removal_ctrls.disallow_below_32x32;
+    out[CM_O_DR_B16]      = ctx->depth_removal_ctrls.disallow_below_16x16;
+    out[CM_O_DR_4X4]      = ctx->depth_removal_ctrls.disallow_4x4;
+    out[CM_O_DISALLOW_8X8] = ctx->disallow_8x8;
+    out[CM_O_DISALLOW_4X4] = ctx->disallow_4x4;
+    out[CM_O_MAX_BLOCK_SIZE] = ctx->max_block_size;
+    out[CM_O_PD1_LVL_REFINEMENT] = ctx->pd1_lvl_refinement;
+    out[CM_O_LPD1_PD1_LEVEL] = ctx->lpd1_ctrls.pd1_level;
+
+    free(var_rows); free(var_row);
+    free(minsq1); free(minsq0);
+    free(ref1); free(ref0); free(wrap1); free(wrap0);
+    free(mv); free(d8); free(d16); free(d32); free(d64);
+    free(sbg); free(b64); free(sb);
+    free(ctx); free(pcs); free(ppcs); free(scs);
+}
+
+int32_t ref_common_in_slots(void) { return CM_I_COUNT; }
+int32_t ref_common_out_slots(void) { return CM_O_COUNT; }
