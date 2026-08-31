@@ -2971,3 +2971,41 @@ void ref_reset_nmv_counter(const uint16_t* nmvc_in, uint16_t* nmvc_out) {
     memcpy(nmvc_out, &fc->nmvc, sizeof(NmvContext));
     free(fc);
 }
+
+/* Inter-mode predicates that select WHICH MVs a block codes.
+ * svt_aom_have_newmv_in_inter_mode (mode_decision.c:257) is EXPORTED;
+ * have_nearmv_in_inter_mode (inter_prediction.h:416), is_inter_compound_mode
+ * and is_inter_singleref_mode (definitions.h:1622/1626) are `static INLINE`
+ * in headers, so these thin wrappers make them linkable — the standard
+ * "expose a static INLINE" shim shape this file opens with. */
+int32_t svt_aom_have_newmv_in_inter_mode(PredictionMode mode);
+int32_t ref_have_newmv_in_inter_mode(int32_t mode) {
+    return svt_aom_have_newmv_in_inter_mode((PredictionMode)mode);
+}
+int32_t ref_have_nearmv_in_inter_mode(int32_t mode) {
+    return (int32_t)have_nearmv_in_inter_mode((PredictionMode)mode);
+}
+int32_t ref_is_inter_compound_mode(int32_t mode) {
+    return is_inter_compound_mode((PredictionMode)mode);
+}
+int32_t ref_is_inter_singleref_mode(int32_t mode) {
+    return is_inter_singleref_mode((PredictionMode)mode);
+}
+
+/* update_cdf_level derivations (enc_mode_config.c:8510/8524/8534, EXPORTED).
+ * These pick which CDF classes adapt during MD; `update_mv` (the MV arm) is
+ * derived from the returned level by the static set_cdf_controls (:8468). */
+uint8_t svt_aom_get_update_cdf_level_default(EncMode enc_mode, SliceType is_islice, uint8_t is_base);
+uint8_t svt_aom_get_update_cdf_level_rtc(EncMode enc_mode, SliceType is_islice);
+uint8_t svt_aom_get_update_cdf_level_allintra(EncMode enc_mode);
+
+int32_t ref_update_cdf_level_default(int32_t enc_mode, int32_t is_islice, int32_t is_base) {
+    return (int32_t)svt_aom_get_update_cdf_level_default(
+        (EncMode)enc_mode, (SliceType)is_islice, (uint8_t)is_base);
+}
+int32_t ref_update_cdf_level_rtc(int32_t enc_mode, int32_t is_islice) {
+    return (int32_t)svt_aom_get_update_cdf_level_rtc((EncMode)enc_mode, (SliceType)is_islice);
+}
+int32_t ref_update_cdf_level_allintra(int32_t enc_mode) {
+    return (int32_t)svt_aom_get_update_cdf_level_allintra((EncMode)enc_mode);
+}

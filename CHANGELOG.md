@@ -56,6 +56,41 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **Inter MV entropy coding + MV rate (`inter_mv_code.rs`) — inter-encode
+  campaign chunk C3, evidence TIER 1.** The layers between the already-gated
+  MV symbol writer (`entropy/mv_coding.rs`) and the already-gated cost-table
+  build chain (`intrabc.rs`): the `force_integer_mv` precision override
+  `svt_av1_encode_mv` performs internally (entropy_coding.c:1498-1500), the
+  per-inter-mode dispatch deciding WHICH of a block's MVs are coded
+  (:5216-5244) and priced (rd_cost.c:1088-1128), the full
+  `svt_aom_estimate_mv_rate` (md_rate_estimation.c:458-488 — the
+  `approx_inter_rate` zero-fill early return, the hp/non-hp stack selection,
+  the `allow_intrabc` dv arm), the CDF adaptation `av1_update_mv_stats` /
+  `update_mv_component_stats` (:650-705), `reset_nmv_counter`
+  (cabac_context_model.c:1956), `avg_nmv` (enc_dec_process.c:2567) and the
+  `update_mv` cadence (`set_cdf_controls`, enc_mode_config.c:8468-8498).
+  Gate: `crates/svtav1-encoder/tests/c_parity_mv_code.rs`, 17 tests driving
+  the REAL exported symbols `svt_av1_encode_mv`, `svt_av1_get_mv_joint`,
+  `svt_aom_estimate_mv_rate`, `svt_av1_mv_bit_cost{,_light}`,
+  `svt_aom_have_newmv_in_inter_mode`, `svt_av1_reset_cdf_symbol_counters` and
+  `svt_aom_get_update_cdf_level_{default,rtc,allintra}` through three new
+  `svtav1-cref` shims. Unlike the pre-existing `c_parity_mv.rs` (a C-side
+  transcription, default context, `ref_mv == 0`, bytes only) this drives the
+  real writer from RANDOMIZED `NmvContext`s with NONZERO reference MVs across
+  every (`allow_high_precision_mv`, `force_integer_mv`, `allow_update_cdf`)
+  combination and compares the ADAPTED CDF STATE as well as the bytes.
+  Teeth proved by six mutations (precision override, hp-bit stats update,
+  rate-table precision, the mode→ref plan, one `reset_nmv_counter` field, one
+  `avg_nmv` field) — each caught, naming the diverging context field.
+  Records a C asymmetry deliberately reproduced: under `force_integer_mv` the
+  WRITER codes at `MV_SUBPEL_NONE` while the RATE tables are still built at
+  `MV_SUBPEL_LOW_PRECISION`, because `svt_aom_estimate_mv_rate` passes
+  `allow_high_precision_mv` straight in and never consults `force_integer_mv`
+  (pinned by `c_parity_rate_tables_ignore_force_integer_mv`). NOT WIRED: the
+  public entry point still refuses inter frames at `pipeline.rs`'s `if !is_key`
+  guard, and `FrameContext` still carries no `nmvc` field — both belong to the
+  chunks that own those files.
+
 - **`AvifEncoder::encode_yuv420` emits a REAL AV1 bitstream — issue #9 item 6.**
   It returned three concatenated MONOCHROME streams behind u32 length prefixes,
   as `Ok(...)`, which no decoder accepts. It now routes through

@@ -25,6 +25,7 @@ pub mod entropy;
 pub mod film_grain;
 pub mod frame_geom;
 pub mod hdr_mode;
+pub mod inter_mv_code;
 pub mod intra_edge;
 pub mod intrabc;
 pub mod intrabc_hash;
