@@ -953,7 +953,10 @@ enum {
     /* lpd1_ctrls.pd1_level is what set_lpd1_ctrls stores for the derived
        level; it is the observable proxy for that level. */
     CM_O_LPD1_PD1_LEVEL,
-    CM_O_COUNT
+    /* lpd1_ctrls's seven per-level rows x nine fields, row-major:
+       CM_O_LPD1_ROWS + row*9 + field. */
+    CM_O_LPD1_ROWS,
+    CM_O_COUNT = CM_O_LPD1_ROWS + 7 * 9
 };
 
 void ref_sig_deriv_enc_dec_common(const int32_t* in, int64_t* out) {
@@ -1069,6 +1072,18 @@ void ref_sig_deriv_enc_dec_common(const int32_t* in, int64_t* out) {
     out[CM_O_MAX_BLOCK_SIZE] = ctx->max_block_size;
     out[CM_O_PD1_LVL_REFINEMENT] = ctx->pd1_lvl_refinement;
     out[CM_O_LPD1_PD1_LEVEL] = ctx->lpd1_ctrls.pd1_level;
+    for (int r = 0; r < 7; ++r) {
+        int64_t* o = &out[CM_O_LPD1_ROWS + r * 9];
+        o[0] = ctx->lpd1_ctrls.use_lpd1_detector[r];
+        o[1] = ctx->lpd1_ctrls.use_ref_info[r];
+        o[2] = ctx->lpd1_ctrls.cost_th_dist[r];
+        o[3] = ctx->lpd1_ctrls.cost_th_rate[r];
+        o[4] = ctx->lpd1_ctrls.nz_coeff_th[r];
+        o[5] = ctx->lpd1_ctrls.max_mv_length[r];
+        o[6] = ctx->lpd1_ctrls.me_8x8_cost_variance_th[r];
+        o[7] = ctx->lpd1_ctrls.skip_pd0_edge_dist_th[r];
+        o[8] = ctx->lpd1_ctrls.skip_pd0_me_shift[r];
+    }
 
     free(var_rows); free(var_row);
     free(minsq1); free(minsq0);

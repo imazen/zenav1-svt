@@ -422,11 +422,11 @@ pub fn lpd1_pd1_level(lpd1_lvl: u8) -> Option<i8> {
     match lpd1_lvl {
         0 => Some(REGULAR_PD1),
         1..=3 => Some(0), // LPD1_LVL_0
-        4 => Some(1),         // LPD1_LVL_1
-        5 => Some(3),         // LPD1_LVL_3 — LPD1_LVL_2 is skipped
-        6 => Some(4),         // LPD1_LVL_4
-        7 => Some(5),         // LPD1_LVL_5
-        8 => Some(6),         // LPD1_LVL_6
+        4 => Some(1),     // LPD1_LVL_1
+        5 => Some(3),     // LPD1_LVL_3 — LPD1_LVL_2 is skipped
+        6 => Some(4),     // LPD1_LVL_4
+        7 => Some(5),     // LPD1_LVL_5
+        8 => Some(6),     // LPD1_LVL_6
         _ => None,
     }
 }
@@ -516,6 +516,8 @@ pub struct CommonSignals {
     /// `ctx->lpd1_ctrls.pd1_level` — what `set_lpd1_ctrls` stores for
     /// [`Self::lpd1_lvl`]; see [`lpd1_pd1_level`], which is NOT the identity.
     pub lpd1_pd1_level: i8,
+    /// `ctx->lpd1_ctrls` in full.
+    pub lpd1: Lpd1Ctrls,
     /// `ctx->pd1_lvl_refinement`
     pub pd1_lvl_refinement: u8,
 }
@@ -636,6 +638,182 @@ pub fn sig_deriv_enc_dec_common(i: CommonInputs) -> Option<CommonSignals> {
         max_block_size,
         lpd1_lvl,
         lpd1_pd1_level: lpd1_pd1_level(u8::try_from(lpd1_lvl).ok()?)?,
+        lpd1: set_lpd1_ctrls(u8::try_from(lpd1_lvl).ok()?)?,
         pd1_lvl_refinement,
     })
+}
+
+// ---------------------------------------------------------------------------
+// set_lpd1_ctrls — the full table
+// ---------------------------------------------------------------------------
+
+/// C `LPD1_LEVELS` — the length of every per-level array in [`Lpd1Ctrls`].
+pub const LPD1_LEVELS: usize = 7;
+
+/// One row of C `Lpd1Ctrls`'s per-level arrays.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Lpd1Row {
+    /// `use_lpd1_detector[i]`
+    pub use_lpd1_detector: bool,
+    /// `use_ref_info[i]`
+    pub use_ref_info: u8,
+    /// `cost_th_dist[i]`
+    pub cost_th_dist: u32,
+    /// `cost_th_rate[i]`
+    pub cost_th_rate: u32,
+    /// `nz_coeff_th[i]`
+    pub nz_coeff_th: u32,
+    /// `max_mv_length[i]`
+    pub max_mv_length: u16,
+    /// `me_8x8_cost_variance_th[i]`
+    pub me_8x8_cost_variance_th: u32,
+    /// `skip_pd0_edge_dist_th[i]`
+    pub skip_pd0_edge_dist_th: u32,
+    /// `skip_pd0_me_shift[i]`
+    pub skip_pd0_me_shift: u16,
+}
+
+/// C `Lpd1Ctrls` (`md_process.h:706`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Lpd1Ctrls {
+    /// `pd1_level` — `REGULAR_PD1` (-1) when light-PD1 is not used.
+    pub pd1_level: i8,
+    /// The per-LPD1-level rows. A given `lpd1_lvl` writes rows
+    /// `0..=pd1_level` only; the rest keep the context's zeroed values.
+    pub rows: [Lpd1Row; LPD1_LEVELS],
+}
+
+impl Default for Lpd1Ctrls {
+    fn default() -> Self {
+        Self {
+            pd1_level: REGULAR_PD1,
+            rows: [Lpd1Row::default(); LPD1_LEVELS],
+        }
+    }
+}
+
+/// Shorthand for one row, in the C's field order.
+#[allow(clippy::too_many_arguments)]
+const fn row(
+    use_ref_info: u8,
+    cost_th_dist: u32,
+    cost_th_rate: u32,
+    nz_coeff_th: u32,
+    max_mv_length: u16,
+    me_8x8_cost_variance_th: u32,
+    skip_pd0_edge_dist_th: u32,
+    skip_pd0_me_shift: u16,
+) -> Lpd1Row {
+    Lpd1Row {
+        // Every row C writes sets the detector on; the off rows are the ones
+        // it never touches.
+        use_lpd1_detector: true,
+        use_ref_info,
+        cost_th_dist,
+        cost_th_rate,
+        nz_coeff_th,
+        max_mv_length,
+        me_8x8_cost_variance_th,
+        skip_pd0_edge_dist_th,
+        skip_pd0_me_shift,
+    }
+}
+
+/// C `set_lpd1_ctrls` (`enc_mode_config.c:5533`). static — reached at tier 1
+/// through `svt_aom_sig_deriv_enc_dec_common`.
+///
+/// Each `lpd1_lvl` writes rows `0..=pd1_level` and leaves the rest at the
+/// context's zeroed values, which is why the returned array is built from a
+/// `Default` rather than filled.
+///
+/// Two things worth stating: the C arithmetic is left un-folded in the
+/// comments beside each row (`256 << 10`, `6000 + 8192 * 500`) so an upstream
+/// edit is easy to diff; and level 8's rows 0..5 are IDENTICAL to level 7's —
+/// it only adds row 6.
+#[must_use]
+#[allow(clippy::too_many_lines)]
+pub fn set_lpd1_ctrls(lpd1_lvl: u8) -> Option<Lpd1Ctrls> {
+    // Frequently repeated row shapes.
+    // cost_th_dist 256<<10 = 262144, cost_th_rate 6000 + 8192*500 = 4_102_000.
+    const D10: u32 = 256 << 10;
+    const R8192: u32 = 6000 + 8192 * 500;
+    // 256<<8 = 65536, 6000 + 4096*500 = 2_054_000.
+    const D8: u32 = 256 << 8;
+    const R4096: u32 = 6000 + 4096 * 500;
+    const MV16: u16 = 2048 * 16;
+    const MV8: u16 = 2048 * 8;
+    const E7: u32 = 16384 * 7;
+    const E6: u32 = 16384 * 6;
+
+    let mut c = Lpd1Ctrls::default();
+    match lpd1_lvl {
+        0 => return Some(c),
+        1 => {
+            c.pd1_level = 0;
+            c.rows[0] = row(1, 25, 6000 + 40 * 500, 0, 300, 250_000 >> 3, 1024, 1);
+        }
+        2 => {
+            c.pd1_level = 0;
+            // Level 2 differs from level 1 ONLY in nz_coeff_th (0 -> 16).
+            c.rows[0] = row(1, 25, 6000 + 40 * 500, 16, 300, 250_000 >> 3, 1024, 1);
+        }
+        3 => {
+            c.pd1_level = 0;
+            c.rows[0] = row(0, 35, 6000 + 100 * 500, 16, 900, 750_000 >> 3, 16384, 3);
+        }
+        4 => {
+            c.pd1_level = 1;
+            c.rows[0] = row(0, 256 << 4, 6000 + 512 * 500, 32, 2048, 500_000, 16384, 3);
+            c.rows[1] = row(
+                1,
+                256 << 1,
+                6000 + 125 * 500,
+                32,
+                1600,
+                500_000 >> 3,
+                16384,
+                3,
+            );
+        }
+        5 => {
+            c.pd1_level = 3; // LPD1_LVL_2 is never selected as a pd1_level.
+            c.rows[0] = row(0, D10, R8192, 512, MV16, u32::MAX, E7, 5);
+            c.rows[1] = row(0, D8, R4096, 256, MV8, u32::MAX, E6, 5);
+            c.rows[2] = row(0, D8, R4096, 164, MV8, u32::MAX, E6, 5);
+            c.rows[3] = row(1, D8, R4096, 128, MV8, u32::MAX, E6, 5);
+        }
+        6 => {
+            c.pd1_level = 4;
+            c.rows[0] = row(0, D10, R8192, 512, MV16, u32::MAX, E7, 5);
+            c.rows[1] = row(0, D10, R8192, 512, MV16, u32::MAX, E7, 5);
+            c.rows[2] = row(0, D10, R8192, 256, MV16, u32::MAX, E7, 5);
+            c.rows[3] = row(0, D10, R8192, 164, MV16, u32::MAX, E7, 5);
+            c.rows[4] = row(
+                1,
+                256 << 4,
+                6000 + 1024 * 500,
+                128,
+                2048,
+                u32::MAX,
+                16384 * 2,
+                3,
+            );
+        }
+        7 | 8 => {
+            c.pd1_level = if lpd1_lvl == 7 { 5 } else { 6 };
+            // Rows 0..5 are byte-identical between levels 7 and 8; level 8
+            // only ADDS row 6.
+            c.rows[0] = row(0, D10, R8192, 256, MV16, u32::MAX, u32::MAX, u16::MAX);
+            c.rows[1] = row(0, D10, R8192, 128, MV16, u32::MAX, u32::MAX, u16::MAX);
+            c.rows[2] = row(0, D10, R8192, 96, MV16, u32::MAX, u32::MAX, u16::MAX);
+            c.rows[3] = row(0, D10, R8192, 96, MV16, u32::MAX, u32::MAX, u16::MAX);
+            c.rows[4] = row(1, D8, R4096, 64, MV8, u32::MAX, E6, 5);
+            c.rows[5] = row(1, D8, R4096, 64, MV8, u32::MAX, E6, 5);
+            if lpd1_lvl == 8 {
+                c.rows[6] = row(1, D8, R4096, 64, MV8, u32::MAX, E6, 5);
+            }
+        }
+        _ => return None,
+    }
+    Some(c)
 }

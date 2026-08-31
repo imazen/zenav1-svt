@@ -231,6 +231,36 @@ fn assert_case(c: &Case, msg: &str) {
         theirs[cm_out::LPD1_PD1_LEVEL],
     ];
     assert_eq!(got, want, "{msg}");
+
+    // The full lpd1_ctrls table: seven rows x nine fields.
+    for (r, row) in ours.lpd1.rows.iter().enumerate() {
+        let base = cm_out::LPD1_ROWS + r * 9;
+        assert_eq!(
+            [
+                i64::from(row.use_lpd1_detector),
+                i64::from(row.use_ref_info),
+                i64::from(row.cost_th_dist),
+                i64::from(row.cost_th_rate),
+                i64::from(row.nz_coeff_th),
+                i64::from(row.max_mv_length),
+                i64::from(row.me_8x8_cost_variance_th),
+                i64::from(row.skip_pd0_edge_dist_th),
+                i64::from(row.skip_pd0_me_shift),
+            ],
+            [
+                theirs[base],
+                theirs[base + 1],
+                theirs[base + 2],
+                theirs[base + 3],
+                theirs[base + 4],
+                theirs[base + 5],
+                theirs[base + 6],
+                theirs[base + 7],
+                theirs[base + 8],
+            ],
+            "lpd1_ctrls row {r} {msg}"
+        );
+    }
 }
 
 #[test]
@@ -619,6 +649,59 @@ fn max_block_size_positive_control() {
         32,
         "the rtc arm halves on high ME variance"
     );
+}
+
+/// Every `lpd1_lvl` the derivation can produce, driven through
+/// `set_lpd1_ctrls` from the exported entry point. This is the ~336-line table
+/// in full — nine fields x seven rows x nine levels — and it is the widest
+/// single table in the file after depth removal.
+#[test]
+fn lpd1_ctrls_table_matches_c_at_every_level() {
+    for pic_lpd1 in 0i32..=8 {
+        // enc_mode 11 takes the third LPD1 arm, where the picture level is
+        // bumped by the ME-variance test; drive both the bumped and unbumped
+        // paths so every derived level 0..=8 is reached.
+        for &m in &[5i8, 11] {
+            for &var in &[0i32, 100_000] {
+                for &islice in &[false, true] {
+                    let c = Case {
+                        enc_mode: m,
+                        pic_lpd1_lvl: pic_lpd1,
+                        me8_var: var,
+                        is_islice: islice,
+                        qp_index: 100,
+                        ..Case::default()
+                    };
+                    assert_case(
+                        &c,
+                        &format!("lpd1={pic_lpd1} m={m} var={var} islice={islice}"),
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Positive control for the table sweep: a level must actually write the rows
+/// up to its `pd1_level` and leave the rest zeroed.
+#[test]
+fn lpd1_ctrls_writes_only_the_rows_below_its_level() {
+    let c = Case {
+        enc_mode: 5,
+        pic_lpd1_lvl: 5,
+        ..Case::default()
+    };
+    let t = cref::sig_deriv_enc_dec_common(&build_input(&c));
+    assert_eq!(t[cm_out::LPD1_PD1_LEVEL], 3, "lpd1_lvl 5 -> LPD1_LVL_3");
+    // Rows 0..=3 are written (detector on), rows 4..6 are not.
+    for r in 0..=3 {
+        assert_eq!(t[cm_out::LPD1_ROWS + r * 9], 1, "row {r} detector on");
+    }
+    for r in 4..7 {
+        assert_eq!(t[cm_out::LPD1_ROWS + r * 9], 0, "row {r} untouched");
+    }
+    // And a non-trivial value inside: row 0's cost_th_dist is 256 << 10.
+    assert_eq!(t[cm_out::LPD1_ROWS + 2], 256 << 10);
 }
 
 /// The LPD1 level -> `pd1_level` mapping is NOT the identity; pin every entry

@@ -1149,8 +1149,14 @@ pub mod cm_out {
     /// `ctx->lpd1_ctrls.pd1_level` — the observable proxy for the LPD1 level
     /// this function derives.
     pub const LPD1_PD1_LEVEL: usize = 12;
+    /// First slot of `lpd1_ctrls`'s seven per-level rows x nine fields,
+    /// row-major: `LPD1_ROWS + row * 9 + field`, field order
+    /// `[use_lpd1_detector, use_ref_info, cost_th_dist, cost_th_rate,
+    ///   nz_coeff_th, max_mv_length, me_8x8_cost_variance_th,
+    ///   skip_pd0_edge_dist_th, skip_pd0_me_shift]`.
+    pub const LPD1_ROWS: usize = 13;
     /// Number of output slots.
-    pub const COUNT: usize = 13;
+    pub const COUNT: usize = 13 + 7 * 9;
 }
 
 /// C `svt_aom_sig_deriv_enc_dec_common` driven on a synthetic SCS/PCS/ctx.
