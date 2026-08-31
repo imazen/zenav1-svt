@@ -25,6 +25,7 @@
 //! | [`ssim_hbd`] | the high-bit-depth arm of the tune-SSIM distortion |
 //! | [`md_search`] | the MD-level full-pel / sub-pel / PME searches |
 //! | [`motion_mode`] | motion-mode refinement, inter-intra, PD0 staging |
+//! | [`ref_frame_rate`] | the reference-signalling rate + its contexts |
 //!
 //! # Reachability
 //!
@@ -41,4 +42,5 @@ pub mod motion_mode;
 pub mod nics;
 pub mod pme;
 pub mod predicates;
+pub mod ref_frame_rate;
 pub mod ssim_hbd;

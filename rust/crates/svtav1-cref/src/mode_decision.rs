@@ -663,3 +663,71 @@ pub fn spatial_full_distortion_ssim_hbd(
         )
     }
 }
+
+// ---------------------------------------------------------------------------
+// Reference-frame signalling rate.
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn ref_md_estimate_ref_frame_type_bits(
+        above: *const i32,
+        left: *const i32,
+        ref_frame_type: i32,
+        is_compound: i32,
+        comp_ref_type: *const i32,
+        uni_comp_ref: *const i32,
+        comp_ref: *const i32,
+        comp_bwd_ref: *const i32,
+        single_ref: *const i32,
+        mode_ctx_out: *mut i32,
+        ref_counts_out: *mut u8,
+    ) -> u64;
+}
+
+/// A neighbour as the shim packs it: `(ref0, ref1, use_intrabc)`.
+pub type RefNeighbor = (i8, i8, bool);
+
+/// The six `MdRateEstimationContext` tables, flattened in C's index
+/// order.
+pub struct RefRateTables {
+    pub comp_ref_type: Vec<i32>,
+    pub uni_comp_ref: Vec<i32>,
+    pub comp_ref: Vec<i32>,
+    pub comp_bwd_ref: Vec<i32>,
+    pub single_ref: Vec<i32>,
+}
+
+/// C `estimate_ref_frame_type_bits` (rd_cost.c:643, EXPORTED), plus the
+/// neighbour counts and reference-mode context the same driver collects.
+pub fn estimate_ref_frame_type_bits(
+    above: Option<RefNeighbor>,
+    left: Option<RefNeighbor>,
+    ref_frame_type: i32,
+    is_compound: bool,
+    t: &RefRateTables,
+) -> (u64, i32, [u8; 8]) {
+    let pack = |n: Option<RefNeighbor>| -> Option<[i32; 3]> {
+        n.map(|(a, b, ibc)| [i32::from(a), i32::from(b), i32::from(ibc)])
+    };
+    let a = pack(above);
+    let l = pack(left);
+    let mut mode_ctx = 0i32;
+    let mut counts = [0u8; 8];
+    let bits = unsafe {
+        ref_md_estimate_ref_frame_type_bits(
+            a.as_ref().map_or(std::ptr::null(), |v| v.as_ptr()),
+            l.as_ref().map_or(std::ptr::null(), |v| v.as_ptr()),
+            ref_frame_type,
+            i32::from(is_compound),
+            t.comp_ref_type.as_ptr(),
+            t.uni_comp_ref.as_ptr(),
+            t.comp_ref.as_ptr(),
+            t.comp_bwd_ref.as_ptr(),
+            t.single_ref.as_ptr(),
+            &mut mode_ctx,
+            counts.as_mut_ptr(),
+        )
+    };
+    (bits, mode_ctx, counts)
+}

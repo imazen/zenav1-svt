@@ -484,3 +484,110 @@ uint64_t ref_md_spatial_full_distortion_ssim(const uint16_t* input, uint32_t inp
                                                    hbd ? true : false,
                                                    ac_bias);
 }
+
+/* ------------------------------------------------------------------ *
+ * Reference-frame signalling rate.
+ *
+ *   svt_aom_collect_neighbors_ref_counts_new  entropy_coding.c:1877 (EXPORTED)
+ *   svt_aom_get_reference_mode_context_new    entropy_coding.c:1833 (EXPORTED)
+ *   estimate_ref_frame_type_bits              rd_cost.c:643         (EXPORTED)
+ *
+ * The last one reaches every prediction-context function in the family,
+ * because its only inputs beyond the rate tables are the two neighbours
+ * and each reference type takes a different path through them.
+ *
+ * Neighbours arrive as 3 i32s: ref0, ref1, use_intrabc; a NULL pointer
+ * means "edge not available".
+ * ------------------------------------------------------------------ */
+
+#include "rd_cost.h"
+
+void     svt_aom_collect_neighbors_ref_counts_new(MacroBlockD* const xd);
+int      svt_aom_get_reference_mode_context_new(const MacroBlockD* xd);
+uint64_t estimate_ref_frame_type_bits(ModeDecisionContext* ctx, BlkStruct* blk_ptr,
+                                      uint8_t ref_frame_type, bool is_compound);
+
+static void md_fill_neighbor(MbModeInfo* mbmi, const int32_t* spec) {
+    memset(mbmi, 0, sizeof(*mbmi));
+    mbmi->block_mi.ref_frame[0] = (MvReferenceFrame)spec[0];
+    mbmi->block_mi.ref_frame[1] = (MvReferenceFrame)spec[1];
+    mbmi->block_mi.use_intrabc  = (uint8_t)spec[2];
+}
+
+/* All six rate tables arrive flattened in C's index order. */
+uint64_t ref_md_estimate_ref_frame_type_bits(
+    const int32_t* above /*[3] or NULL*/, const int32_t* left /*[3] or NULL*/,
+    int32_t ref_frame_type, int32_t is_compound,
+    const int32_t* comp_ref_type /*[5][2]*/, const int32_t* uni_comp_ref /*[3][3][2]*/,
+    const int32_t* comp_ref /*[3][3][2]*/, const int32_t* comp_bwd_ref /*[3][2][2]*/,
+    const int32_t* single_ref /*[3][6][2]*/, int32_t* mode_ctx_out,
+    uint8_t* ref_counts_out /*[8]*/) {
+    ModeDecisionContext*     ctx  = (ModeDecisionContext*)calloc(1, sizeof(*ctx));
+    BlkStruct*               blk  = (BlkStruct*)calloc(1, sizeof(*blk));
+    MacroBlockD*             xd   = (MacroBlockD*)calloc(1, sizeof(*xd));
+    MdRateEstimationContext* rate = (MdRateEstimationContext*)calloc(1, sizeof(*rate));
+    MbModeInfo*              cur  = (MbModeInfo*)calloc(1, sizeof(*cur));
+    MbModeInfo               above_mi, left_mi;
+
+    ctx->blk_ptr         = blk;
+    ctx->md_rate_est_ctx = rate;
+    blk->av1xd           = xd;
+    xd->mi               = (MbModeInfo**)calloc(1, sizeof(MbModeInfo*));
+    xd->mi[0]            = cur;
+
+    if (above) {
+        md_fill_neighbor(&above_mi, above);
+        xd->above_mbmi     = &above_mi;
+        xd->up_available   = 1;
+    } else {
+        xd->above_mbmi   = NULL;
+        xd->up_available = 0;
+    }
+    if (left) {
+        md_fill_neighbor(&left_mi, left);
+        xd->left_mbmi     = &left_mi;
+        xd->left_available = 1;
+    } else {
+        xd->left_mbmi      = NULL;
+        xd->left_available = 0;
+    }
+
+    for (int c = 0; c < COMP_REF_TYPE_CONTEXTS; c++) {
+        for (int b = 0; b < 2; b++) {
+            rate->comp_ref_type_fac_bits[c][b] = comp_ref_type[c * 2 + b];
+        }
+    }
+    for (int c = 0; c < REF_CONTEXTS; c++) {
+        for (int i = 0; i < 3; i++) {
+            for (int b = 0; b < 2; b++) {
+                rate->uni_comp_ref_fac_bits[c][i][b] = uni_comp_ref[(c * 3 + i) * 2 + b];
+                rate->comp_ref_fac_bits[c][i][b]     = comp_ref[(c * 3 + i) * 2 + b];
+            }
+        }
+        for (int i = 0; i < 2; i++) {
+            for (int b = 0; b < 2; b++) {
+                rate->comp_bwd_ref_fac_bits[c][i][b] = comp_bwd_ref[(c * 2 + i) * 2 + b];
+            }
+        }
+        for (int i = 0; i < 6; i++) {
+            for (int b = 0; b < 2; b++) {
+                rate->single_ref_fac_bits[c][i][b] = single_ref[(c * 6 + i) * 2 + b];
+            }
+        }
+    }
+
+    svt_aom_collect_neighbors_ref_counts_new(xd);
+    for (int i = 0; i < TOTAL_REFS_PER_FRAME; i++) { ref_counts_out[i] = xd->neighbors_ref_counts[i]; }
+    *mode_ctx_out = svt_aom_get_reference_mode_context_new(xd);
+
+    const uint64_t out = estimate_ref_frame_type_bits(
+        ctx, blk, (uint8_t)ref_frame_type, is_compound ? true : false);
+
+    free(xd->mi);
+    free(cur);
+    free(rate);
+    free(xd);
+    free(blk);
+    free(ctx);
+    return out;
+}
