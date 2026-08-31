@@ -3085,3 +3085,193 @@ int32_t ref_get_frame_update_type(int32_t frame_type, int32_t hierarchical_level
     free(ppcs);
     return ret;
 }
+
+/* ---- warped_motion.c: model derivation + the normative warp kernel ----
+ *
+ * All of these are EXPORTED symbols, so these shims are thin adapters that
+ * only translate the calling convention (C structs -> flat arrays). They keep
+ * NO per-call state in a `static`, per this file's opening rule.
+ *
+ * The two `_table` shims copy the real C constant arrays out so the port's
+ * transcription of them is PINNED rather than trusted. */
+#include "warped_motion.h"
+
+bool svt_find_projection(int np, int* pts1, int* pts2, BlockSize bsize, Mv mv, WarpedMotionParams* wm_params,
+                         int mi_row, int mi_col);
+int  svt_get_shear_params(WarpedMotionParams* wm);
+uint8_t svt_aom_select_samples(Mv mv, int* pts, int* pts_inref, int len, BlockSize bsize);
+void svt_warp_plane(WarpedMotionParams* wm, const uint8_t* const ref, int width, int height, int stride, uint8_t* pred,
+                    int p_col, int p_row, int p_width, int p_height, int p_stride, int subsampling_x,
+                    int subsampling_y, ConvolveParams* conv_params);
+void svt_av1_warp_plane(WarpedMotionParams* wm, int use_hbd, int bd, const uint8_t* ref, const uint8_t* ref_2b,
+                        int width, int height, int stride, uint8_t* pred, int p_col, int p_row, int p_width,
+                        int p_height, int p_stride, int subsampling_x, int subsampling_y, ConvolveParams* conv_params);
+void svt_av1_highbd_warp_affine_c(const int32_t* mat, const uint8_t* ref8b, const uint8_t* ref2b, int width,
+                                  int height, int stride8b, int stride2b, uint16_t* pred, int p_col, int p_row,
+                                  int p_width, int p_height, int p_stride, int subsampling_x, int subsampling_y,
+                                  int bd, ConvolveParams* conv_params, int16_t alpha, int16_t beta, int16_t gamma,
+                                  int16_t delta);
+
+/* One phase of svt_aom_warped_filter (0 .. WARPEDPIXEL_PREC_SHIFTS*3). */
+void ref_warped_filter_row(int32_t phase, int16_t* out8) {
+    memcpy(out8, &svt_aom_warped_filter[phase][0], 8 * sizeof(int16_t));
+}
+
+/* svt_get_shear_params: writes alpha/beta/gamma/delta into out4 and returns
+   1 when the model is legal for the fast warp filter, 0 otherwise. */
+int32_t ref_get_shear_params(const int32_t* mat6, int16_t* out4) {
+    WarpedMotionParams wm;
+    memset(&wm, 0, sizeof(wm));
+    memcpy(wm.wmmat, mat6, 6 * sizeof(int32_t));
+    const int32_t ok = svt_get_shear_params(&wm);
+    out4[0]          = wm.alpha;
+    out4[1]          = wm.beta;
+    out4[2]          = wm.gamma;
+    out4[3]          = wm.delta;
+    return ok;
+}
+
+/* svt_find_projection: returns 1 on FAILURE (C's convention). On success
+   out_mat6 holds the derived model and out_shear4 the derived shear. */
+int32_t ref_find_projection(int32_t np, const int32_t* pts1, const int32_t* pts2, int32_t bsize, int16_t mv_x,
+                            int16_t mv_y, int32_t mi_row, int32_t mi_col, int32_t* out_mat6, int16_t* out_shear4) {
+    WarpedMotionParams wm;
+    memset(&wm, 0, sizeof(wm));
+    Mv  mv     = {{mv_x, mv_y}};
+    int p1[2 * LEAST_SQUARES_SAMPLES_MAX];
+    int p2[2 * LEAST_SQUARES_SAMPLES_MAX];
+    memcpy(p1, pts1, (size_t)np * 2 * sizeof(int));
+    memcpy(p2, pts2, (size_t)np * 2 * sizeof(int));
+    const int32_t fail = (int32_t)svt_find_projection(np, p1, p2, (BlockSize)bsize, mv, &wm, mi_row, mi_col);
+    memcpy(out_mat6, wm.wmmat, 6 * sizeof(int32_t));
+    out_shear4[0] = wm.alpha;
+    out_shear4[1] = wm.beta;
+    out_shear4[2] = wm.gamma;
+    out_shear4[3] = wm.delta;
+    return fail;
+}
+
+/* svt_aom_select_samples compacts survivors in place; pts/pts_inref are
+   IN-OUT here so the Rust side can compare the compaction, not just the
+   count. */
+int32_t ref_select_samples(int16_t mv_x, int16_t mv_y, int32_t* pts, int32_t* pts_inref, int32_t len, int32_t bsize) {
+    Mv mv = {{mv_x, mv_y}};
+    return (int32_t)svt_aom_select_samples(mv, pts, pts_inref, len, (BlockSize)bsize);
+}
+
+/* svt_warp_plane, non-compound 8-bit. `wm_io` is [wmtype, mat0..mat5,
+   alpha, beta, gamma, delta] and is written back so the ROTZOOM fix-up
+   (which MUTATES wm) is observable. */
+void ref_warp_plane(int32_t* wm_io, const uint8_t* ref, int32_t width, int32_t height, int32_t stride, uint8_t* pred,
+                    int32_t p_col, int32_t p_row, int32_t p_width, int32_t p_height, int32_t p_stride,
+                    int32_t subsampling_x, int32_t subsampling_y) {
+    /* svt_warp_plane / svt_av1_warp_plane call svt_av1_warp_affine, which is an
+       RTCD FUNCTION POINTER, not the _c symbol. Without this the pointer is
+       NULL and the call segfaults -- and note that this therefore drives the
+       kernel the ENCODER really runs (NEON here), which is the stronger
+       oracle. */
+    ref_rtcd_once();
+    WarpedMotionParams wm;
+    memset(&wm, 0, sizeof(wm));
+    wm.wmtype = (TransformationType)wm_io[0];
+    for (int i = 0; i < 6; ++i) {
+        wm.wmmat[i] = wm_io[1 + i];
+    }
+    wm.alpha       = (int16_t)wm_io[7];
+    wm.beta        = (int16_t)wm_io[8];
+    wm.gamma       = (int16_t)wm_io[9];
+    wm.delta       = (int16_t)wm_io[10];
+    ConvolveParams cp = get_conv_params(0, 8);
+    svt_warp_plane(&wm, ref, width, height, stride, pred, p_col, p_row, p_width, p_height, p_stride, subsampling_x,
+                   subsampling_y, &cp);
+    wm_io[0] = (int32_t)wm.wmtype;
+    for (int i = 0; i < 6; ++i) {
+        wm_io[1 + i] = wm.wmmat[i];
+    }
+}
+
+/* svt_av1_warp_plane, the bit-depth dispatcher. use_hbd == 0 takes `ref`
+   (8-bit) and writes `pred8`; use_hbd == 1 takes the 8+2 packed pair
+   (ref8b, ref2b) and writes `pred16`. */
+void ref_av1_warp_plane(int32_t* wm_io, int32_t use_hbd, int32_t bd, const uint8_t* ref8b, const uint8_t* ref2b,
+                        int32_t width, int32_t height, int32_t stride, uint8_t* pred, int32_t p_col, int32_t p_row,
+                        int32_t p_width, int32_t p_height, int32_t p_stride, int32_t subsampling_x,
+                        int32_t subsampling_y) {
+    /* svt_warp_plane / svt_av1_warp_plane call svt_av1_warp_affine, which is an
+       RTCD FUNCTION POINTER, not the _c symbol. Without this the pointer is
+       NULL and the call segfaults -- and note that this therefore drives the
+       kernel the ENCODER really runs (NEON here), which is the stronger
+       oracle. */
+    ref_rtcd_once();
+    WarpedMotionParams wm;
+    memset(&wm, 0, sizeof(wm));
+    wm.wmtype = (TransformationType)wm_io[0];
+    for (int i = 0; i < 6; ++i) {
+        wm.wmmat[i] = wm_io[1 + i];
+    }
+    wm.alpha          = (int16_t)wm_io[7];
+    wm.beta           = (int16_t)wm_io[8];
+    wm.gamma          = (int16_t)wm_io[9];
+    wm.delta          = (int16_t)wm_io[10];
+    ConvolveParams cp = get_conv_params(0, bd);
+    svt_av1_warp_plane(&wm, use_hbd, bd, ref8b, ref2b, width, height, stride, pred, p_col, p_row, p_width, p_height,
+                       p_stride, subsampling_x, subsampling_y, &cp);
+    wm_io[0] = (int32_t)wm.wmtype;
+    for (int i = 0; i < 6; ++i) {
+        wm_io[1 + i] = wm.wmmat[i];
+    }
+}
+
+/* svt_av1_warp_affine_c with SUBSAMPLING, which ref_warp_affine hardwires to
+   0/0 -- the chroma-plane geometry is as normative as the filter. */
+void ref_warp_affine_sub(const int32_t* mat, const uint8_t* ref, int32_t width, int32_t height, int32_t stride,
+                         uint8_t* pred, int32_t p_col, int32_t p_row, int32_t p_width, int32_t p_height,
+                         int32_t p_stride, int32_t subsampling_x, int32_t subsampling_y, int16_t alpha, int16_t beta,
+                         int16_t gamma, int16_t delta) {
+    ConvolveParams cp = get_conv_params(0, 8);
+    svt_av1_warp_affine_c(mat, ref, width, height, stride, pred, p_col, p_row, p_width, p_height, p_stride,
+                          subsampling_x, subsampling_y, &cp, alpha, beta, gamma, delta);
+}
+
+/* svt_av1_warp_affine_c, COMPOUND arm. `dst` is the ConvBufType accumulator;
+   do_average selects the second (averaging) pass which writes `pred`. */
+void ref_warp_affine_compound(const int32_t* mat, const uint8_t* ref, int32_t width, int32_t height, int32_t stride,
+                              uint8_t* pred, uint16_t* dst, int32_t dst_stride, int32_t do_average,
+                              int32_t use_jnt_comp_avg, int32_t fwd_offset, int32_t bck_offset, int32_t p_col,
+                              int32_t p_row, int32_t p_width, int32_t p_height, int32_t p_stride, int16_t alpha,
+                              int16_t beta, int16_t gamma, int16_t delta) {
+    ConvolveParams cp        = get_conv_params_no_round(do_average, dst, dst_stride, 1, 8);
+    cp.use_jnt_comp_avg      = use_jnt_comp_avg;
+    cp.fwd_offset            = fwd_offset;
+    cp.bck_offset            = bck_offset;
+    svt_av1_warp_affine_c(mat, ref, width, height, stride, pred, p_col, p_row, p_width, p_height, p_stride, 0, 0, &cp,
+                          alpha, beta, gamma, delta);
+}
+
+/* svt_av1_highbd_warp_affine_c, non-compound. The Rust port takes an already
+   unpacked u16 reference, so this shim SPLITS a u16 plane into SVT's 8+2
+   packed pair before calling -- the split is the shim's job, not the port's.
+   The C kernel reads `(ref8b[iy*stride8b + x] << 2) | ((ref2b[iy*stride2b + x]
+   >> 6) & 3)` -- so the 2b plane is ONE BYTE PER PIXEL with the low 2 bits
+   sitting in bits 7:6, NOT four pixels packed per byte, and highbd_warp_plane
+   passes stride2b == stride8b. Reading it as 4-per-byte silently samples the
+   wrong pixels. */
+void ref_highbd_warp_affine(const int32_t* mat, const uint16_t* ref16, int32_t width, int32_t height, int32_t stride,
+                            uint16_t* pred, int32_t p_col, int32_t p_row, int32_t p_width, int32_t p_height,
+                            int32_t p_stride, int32_t subsampling_x, int32_t subsampling_y, int32_t bd, int16_t alpha,
+                            int16_t beta, int16_t gamma, int16_t delta) {
+    uint8_t* r8 = (uint8_t*)calloc((size_t)height * (size_t)stride, 1);
+    uint8_t* r2 = (uint8_t*)calloc((size_t)height * (size_t)stride, 1);
+    for (int32_t y = 0; y < height; ++y) {
+        for (int32_t x = 0; x < width; ++x) {
+            const uint16_t v                           = ref16[(size_t)y * (size_t)stride + (size_t)x];
+            r8[(size_t)y * (size_t)stride + (size_t)x] = (uint8_t)(v >> 2);
+            r2[(size_t)y * (size_t)stride + (size_t)x] = (uint8_t)((v & 3) << 6);
+        }
+    }
+    ConvolveParams cp = get_conv_params(0, bd);
+    svt_av1_highbd_warp_affine_c(mat, r8, r2, width, height, stride, stride, pred, p_col, p_row, p_width, p_height,
+                                 p_stride, subsampling_x, subsampling_y, bd, &cp, alpha, beta, gamma, delta);
+    free(r8);
+    free(r2);
+}

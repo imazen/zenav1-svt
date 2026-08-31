@@ -23,7 +23,7 @@ What is ALREADY ported and C-gated, and is therefore not the gap:
 | piece | where | evidence |
 |---|---|---|
 | convolve8 horiz / vert (the **ME upsample** kernels) | `svtav1-dsp/src/inter_pred.rs` (768 lines) | `c_parity_inter_pred.rs` |
-| warped motion | `svtav1-dsp` | `c_parity_warp.rs` |
+| warped motion — model derivation + the normative 193-phase kernel (`find_projection`, `get_shear_params`, `select_samples`, `warp_affine` 8/10-bit, `warp_plane`, `av1_warp_plane`) | `svtav1-dsp/src/port_warp/` | `c_parity_warp_model.rs`, tier 1 |
 | OBMC blending | `svtav1-dsp/src/obmc.rs` | `c_parity_obmc.rs` |
 | MVP stack machinery (intra-frame branch) | `svtav1-encoder/src/intrabc_mvp.rs` (940 lines) — `scan_row_mbmi`, `scan_col_mbmi`, `add_ref_mv_candidate`, `sort_mvp_table`, `setup_ref_mv_list_intra` | IntraBC byte gates |
 | SAD / variance / hadamard / satd kernels | `svtav1-dsp` | `c_parity_sad.rs`, `c_parity_variance.rs`, `c_parity_hadamard.rs` |
@@ -47,6 +47,21 @@ group.
 Likewise `svtav1-dsp/src/scale.rs` is a homegrown Q14 divide, not a port of
 `svt_av1_setup_scale_factors_for_frame`; `tests/c_parity_scale.rs` pins that
 with an `assert_ne!`.
+
+**CORRECTION, 2026-08-31 (wp-filters lane).** The warped-motion row above
+originally read "warped motion | `svtav1-dsp` | `c_parity_warp.rs`" and was
+WRONG — it listed the gap as already closed. `svtav1-dsp/src/warp.rs` is a
+157-line homegrown approximation: 16-phase `SUB_PEL_FILTERS_8`, no shear, no
+8x8 tiling, `(sum + 64) >> 7` twice instead of ROUND0/ROUND1. Its own gate,
+`c_parity_warp.rs:112`, is an `assert_ne!` GAP-PIN whose message says so, and
+`rust/CLAUDE.md`'s 2026-07-14 audit had it right ("warp.rs / scale.rs /
+superres.rs — STUBS"). Anyone sequencing inter work off the original table
+would have skipped the largest normative gap in that module group. The row now
+points at the real port (`src/port_warp/`), which is tier-1 gated against
+`svt_av1_warp_affine_c`, `svt_find_projection`, `svt_get_shear_params`,
+`svt_aom_select_samples`, `svt_warp_plane`, `svt_av1_warp_plane` and
+`svt_av1_highbd_warp_affine_c`. `warp.rs` itself is untouched and still
+stubbed; its `assert_ne!` pin stays until a caller migration retires it.
 
 So the campaign is **encoder-side**, not kernel-side. The gap is: multi-frame
 plumbing, the real SVT ME, the inter branch of the MVP stack, inter candidate

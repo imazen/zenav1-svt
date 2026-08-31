@@ -30,6 +30,7 @@ pub mod obmc;
 pub mod port_convolve;
 pub mod port_convolve_hbd;
 pub mod port_scale_factors;
+pub mod port_warp;
 pub mod quant;
 pub mod quant_coding;
 pub mod quant_tables;

@@ -6,7 +6,19 @@
 //! sub-pixel interpolation. Used for blocks where motion is better
 //! described by rotation/zoom/shear than pure translation.
 //!
-//! Ported from SVT-AV1's warped_motion.c and enc_warped_motion.c.
+//! # NOT A PORT — see [`crate::port_warp`]
+//!
+//! This module is a homegrown 16-phase approximation, NOT a translation of
+//! `warped_motion.c`: it uses `SUB_PEL_FILTERS_8` where C uses the 193-phase
+//! `svt_aom_warped_filter`, ignores the alpha/beta/gamma/delta shear, has no
+//! 8x8 tiling, and does `(sum + 64) >> 7` twice instead of C's ROUND0/ROUND1
+//! offset scheme. `tests/c_parity_warp.rs` pins that divergence with an
+//! `assert_ne!`.
+//!
+//! The faithful port lives in [`crate::port_warp`] and is gated at evidence
+//! tier 1 against the real exported C symbols
+//! (`tests/c_parity_warp_model.rs`). New callers must use that one; this
+//! module is kept only until its existing callers are migrated.
 
 use svtav1_types::motion::WarpedMotionParams;
 

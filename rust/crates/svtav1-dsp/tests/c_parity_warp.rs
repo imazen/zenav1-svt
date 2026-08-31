@@ -11,8 +11,16 @@
 //!   * Rust also multiplies `m0`/`m1` by `1<<16` although they are already Q16.
 //!
 //! This suite (a) proves the C oracle is callable/correct on the identity case
-//! and (b) PINS the divergence on a sub-pel model. When warp.rs is properly
-//! ported, the `assert_ne!` below must become `assert_eq!` and pass.
+//! and (b) PINS the divergence on a sub-pel model.
+//!
+//! UPDATE 2026-08-31 (wp-filters lane): the faithful port now EXISTS, as
+//! `svtav1_dsp::port_warp`, gated at evidence tier 1 by
+//! `c_parity_warp_model.rs` against `svt_av1_warp_affine_c` and the rest of
+//! the chain. `warp.rs::warp_prediction` is unchanged and still a stub, so the
+//! `assert_ne!` below still holds and still earns its place — it is what stops
+//! the stub being mistaken for the port again. It retires when the last caller
+//! of `warp_prediction` moves to `port_warp::warp_affine`, at which point
+//! `warp.rs` goes away rather than the assertion flipping.
 
 use svtav1_cref as cref;
 use svtav1_dsp::warp::warp_prediction;
