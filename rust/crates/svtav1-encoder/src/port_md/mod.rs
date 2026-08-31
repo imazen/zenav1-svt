@@ -22,6 +22,7 @@
 //! | [`drl`] | DRL selection for NEWMV candidates |
 //! | [`coding_loop`] | the per-block helpers of `product_coding_loop.c` |
 //! | [`inject`] | inter-candidate injection (PD1 and PD0) |
+//! | [`ssim_hbd`] | the high-bit-depth arm of the tune-SSIM distortion |
 //!
 //! # Reachability
 //!
@@ -36,3 +37,4 @@ pub mod inject;
 pub mod nics;
 pub mod pme;
 pub mod predicates;
+pub mod ssim_hbd;

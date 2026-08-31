@@ -579,3 +579,87 @@ pub fn choose_best_av1_mv_pred(
     }
     *best_drl_index = drl as u8;
 }
+
+// ---------------------------------------------------------------------------
+// High-bit-depth tune-SSIM distortion.
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn ref_md_similarity(
+        sum_s: u32,
+        sum_r: u32,
+        sum_sq_s: u32,
+        sum_sq_r: u32,
+        sum_sxr: u32,
+        count: i32,
+        bd: u32,
+    ) -> f64;
+    fn ref_md_ssim_4x4_hbd(s: *const u16, sp: u32, r: *const u16, rp: u32) -> f64;
+    fn ref_md_ssim_8x8_hbd(s: *const u16, sp: u32, r: *const u16, rp: u32) -> f64;
+    #[allow(clippy::too_many_arguments)]
+    fn ref_md_spatial_full_distortion_ssim(
+        input: *const u16,
+        input_offset: u32,
+        input_stride: u32,
+        recon: *const u16,
+        recon_offset: i32,
+        recon_stride: u32,
+        area_width: u32,
+        area_height: u32,
+        hbd: i32,
+        ac_bias: f64,
+    ) -> u64;
+}
+
+/// C `svt_aom_similarity` (enc_dec_process.c:645, EXPORTED).
+pub fn similarity(
+    sum_s: u32,
+    sum_r: u32,
+    sum_sq_s: u32,
+    sum_sq_r: u32,
+    sum_sxr: u32,
+    count: i32,
+    bd: u32,
+) -> f64 {
+    unsafe { ref_md_similarity(sum_s, sum_r, sum_sq_s, sum_sq_r, sum_sxr, count, bd) }
+}
+
+/// C `svt_ssim_4x4_hbd_c` (mode_decision.c:4220, EXPORTED).
+pub fn ssim_4x4_hbd(s: &[u16], sp: usize, r: &[u16], rp: usize) -> f64 {
+    unsafe { ref_md_ssim_4x4_hbd(s.as_ptr(), sp as u32, r.as_ptr(), rp as u32) }
+}
+
+/// C `svt_ssim_8x8_hbd_c` (mode_decision.c:4245, EXPORTED).
+pub fn ssim_8x8_hbd(s: &[u16], sp: usize, r: &[u16], rp: usize) -> f64 {
+    unsafe { ref_md_ssim_8x8_hbd(s.as_ptr(), sp as u32, r.as_ptr(), rp as u32) }
+}
+
+/// C `svt_spatial_full_distortion_ssim_kernel` (mode_decision.c:4372,
+/// EXPORTED), driven on the `hbd` arm.
+#[allow(clippy::too_many_arguments)]
+pub fn spatial_full_distortion_ssim_hbd(
+    input: &[u16],
+    input_offset: usize,
+    input_stride: usize,
+    recon: &[u16],
+    recon_offset: usize,
+    recon_stride: usize,
+    area_width: usize,
+    area_height: usize,
+    ac_bias: f64,
+) -> u64 {
+    unsafe {
+        ref_md_spatial_full_distortion_ssim(
+            input.as_ptr(),
+            input_offset as u32,
+            input_stride as u32,
+            recon.as_ptr(),
+            recon_offset as i32,
+            recon_stride as u32,
+            area_width as u32,
+            area_height as u32,
+            1,
+            ac_bias,
+        )
+    }
+}

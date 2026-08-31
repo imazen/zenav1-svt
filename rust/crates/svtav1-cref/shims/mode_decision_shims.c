@@ -428,3 +428,59 @@ void ref_md_choose_best_av1_mv_pred(int32_t shut_fast_rate, int32_t approx_inter
     free(blk);
     free(ctx);
 }
+
+/* ------------------------------------------------------------------ *
+ * High-bit-depth tune-SSIM distortion.
+ *
+ *   svt_aom_similarity                       enc_dec_process.c:645 (EXPORTED)
+ *   svt_ssim_4x4_hbd_c                       mode_decision.c:4220  (EXPORTED)
+ *   svt_ssim_8x8_hbd_c                       mode_decision.c:4245  (EXPORTED)
+ *   svt_spatial_full_distortion_ssim_kernel  mode_decision.c:4372  (EXPORTED)
+ *
+ * The `_c` suffix on the two tile kernels is deliberate: they are the
+ * scalar references the port transcribes, not the RTCD pointers.
+ * ------------------------------------------------------------------ */
+
+double   svt_aom_similarity(uint32_t sum_s, uint32_t sum_r, uint32_t sum_sq_s, uint32_t sum_sq_r,
+                            uint32_t sum_sxr, int count, uint32_t bd);
+double   svt_ssim_4x4_hbd_c(const uint16_t* s, uint32_t sp, const uint16_t* r, uint32_t rp);
+double   svt_ssim_8x8_hbd_c(const uint16_t* s, uint32_t sp, const uint16_t* r, uint32_t rp);
+uint64_t svt_spatial_full_distortion_ssim_kernel(uint8_t* input, uint32_t input_offset,
+                                                 uint32_t input_stride, uint8_t* recon,
+                                                 int32_t recon_offset, uint32_t recon_stride,
+                                                 uint32_t area_width, uint32_t area_height,
+                                                 bool hbd, double ac_bias);
+
+double ref_md_similarity(uint32_t sum_s, uint32_t sum_r, uint32_t sum_sq_s, uint32_t sum_sq_r,
+                         uint32_t sum_sxr, int32_t count, uint32_t bd) {
+    return svt_aom_similarity(sum_s, sum_r, sum_sq_s, sum_sq_r, sum_sxr, count, bd);
+}
+
+double ref_md_ssim_4x4_hbd(const uint16_t* s, uint32_t sp, const uint16_t* r, uint32_t rp) {
+    return svt_ssim_4x4_hbd_c(s, sp, r, rp);
+}
+
+double ref_md_ssim_8x8_hbd(const uint16_t* s, uint32_t sp, const uint16_t* r, uint32_t rp) {
+    return svt_ssim_8x8_hbd_c(s, sp, r, rp);
+}
+
+/* The kernel takes uint8_t* and casts internally on the hbd arm, so the
+ * offsets it applies are in uint16_t ELEMENTS, not bytes. Forwarding a
+ * uint16_t buffer through a uint8_t* is exactly what C's own call sites
+ * do (they pass EbPictureBufferDesc::y_buffer). */
+uint64_t ref_md_spatial_full_distortion_ssim(const uint16_t* input, uint32_t input_offset,
+                                             uint32_t input_stride, const uint16_t* recon,
+                                             int32_t recon_offset, uint32_t recon_stride,
+                                             uint32_t area_width, uint32_t area_height,
+                                             int32_t hbd, double ac_bias) {
+    return svt_spatial_full_distortion_ssim_kernel((uint8_t*)input,
+                                                   input_offset,
+                                                   input_stride,
+                                                   (uint8_t*)recon,
+                                                   recon_offset,
+                                                   recon_stride,
+                                                   area_width,
+                                                   area_height,
+                                                   hbd ? true : false,
+                                                   ac_bias);
+}
