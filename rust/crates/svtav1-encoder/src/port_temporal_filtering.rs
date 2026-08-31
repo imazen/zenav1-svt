@@ -1814,3 +1814,276 @@ pub fn plan_saved_src_pic(
         dest_split_mode: is_16bit,
     }
 }
+
+// ---------------------------------------------------------------------------
+// The driver's decision layer: svt_av1_init_temporal_filtering (:3951) and
+// produce_temporally_filtered_pic (:2594)
+// ---------------------------------------------------------------------------
+
+/// `TF_QINDEX_CUTOFF` / `TF_Q_DECAY_THRESHOLD` (temporal_filtering.h:60/:43)
+/// and `VQ_PIC_AVG_VARIANCE_TH` (definitions.h:85).
+pub const TF_QINDEX_CUTOFF: i32 = 128;
+pub const TF_Q_DECAY_THRESHOLD: i32 = 20;
+pub const VQ_PIC_AVG_VARIANCE_TH: u16 = 1000;
+/// `FIXED_QP_OFFSET_COUNT` (md_process.h:1319).
+pub const FIXED_QP_OFFSET_COUNT: usize = 6;
+
+/// `percents` (md_process.c:25) — the libaom fixed-QP offsets.
+///
+/// TRAP, and the brief warned about exactly this shape: C indexes it
+/// `percents[centre_pcs->hierarchical_levels <= 4][offset_idx]`. The first
+/// index is a BOOLEAN, not a level. Row 0 is "more than 4 hierarchical
+/// levels"; row 1 is "4 or fewer". Reading `hierarchical_levels` as the index
+/// silently picks the wrong row (and reads out of bounds above 1).
+pub const PERCENTS: [[i32; FIXED_QP_OFFSET_COUNT]; 2] =
+    [[75, 70, 60, 20, 15, 0], [76, 60, 30, 15, 8, 4]];
+
+/// `me_ctx->tf_chroma` as `svt_av1_init_temporal_filtering` derives it
+/// (temporal_filtering.c:3960-3963). EXPORTED parent — the value is a
+/// transcription of the exported function's body; see the module note on
+/// tiering for this group.
+///
+/// `chroma_lvl == 1` always filters chroma; `chroma_lvl == 2` filters it only
+/// when the frame is chroma-noisy, defined as EITHER chroma plane's
+/// `noise_levels_log1p_fp16` exceeding luma's. Anything else is off.
+pub fn init_tf_chroma(chroma_lvl: u8, noise_levels_log1p_fp16: &[i32; 3]) -> bool {
+    let high_chroma_noise_lvl = noise_levels_log1p_fp16[0] < noise_levels_log1p_fp16[1]
+        || noise_levels_log1p_fp16[0] < noise_levels_log1p_fp16[2];
+    match chroma_lvl {
+        1 => true,
+        2 => high_chroma_noise_lvl,
+        _ => false,
+    }
+}
+
+/// `me_ctx->tf_mv_dist_th` (temporal_filtering.c:4018).
+///
+/// `CLIP3(64, 450, MIN(aligned_height, aligned_width) - 150)`. The subtraction
+/// is done in SIGNED int, so a picture smaller than 150 px on its short axis
+/// clamps up to 64 rather than wrapping.
+pub fn init_tf_mv_dist_th(aligned_width: u32, aligned_height: u32) -> u32 {
+    let v = aligned_height.min(aligned_width) as i32 - 150;
+    v.clamp(64, 450) as u32
+}
+
+/// Which source-buffer save `svt_av1_init_temporal_filtering` performs
+/// (temporal_filtering.c:4008-4014), if any.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SrcSaveChoice {
+    /// `save_src_pic_buffers` — all planes.
+    AllPlanes,
+    /// `save_y_src_pic_buffers` — luma only.
+    LumaOnly,
+    None,
+}
+
+/// `SUPERRES_AUTO` / `SUPERRES_AUTO_DUAL` / `SUPERRES_AUTO_ALL` and the two
+/// frame-update types the superres recode applies to.
+///
+/// The superres-recode predicate is
+/// `mode == SUPERRES_AUTO && (search == DUAL || search == ALL) &&
+///  (update == KF || update == ARF)` — recode applies only to key and arf.
+#[allow(clippy::too_many_arguments)]
+pub fn choose_src_save(
+    compute_psnr: bool,
+    compute_ssim: bool,
+    superres_mode_is_auto: bool,
+    superres_search_is_dual_or_all: bool,
+    frame_update_is_kf_or_arf: bool,
+    slice_is_i: bool,
+) -> SrcSaveChoice {
+    let superres_recode_enabled =
+        superres_mode_is_auto && superres_search_is_dual_or_all && frame_update_is_kf_or_arf;
+    if compute_psnr || compute_ssim || superres_recode_enabled {
+        SrcSaveChoice::AllPlanes
+    } else if slice_is_i {
+        SrcSaveChoice::LumaOnly
+    } else {
+        SrcSaveChoice::None
+    }
+}
+
+/// Which TF driver `svt_av1_init_temporal_filtering` dispatches to
+/// (temporal_filtering.c:4031).
+///
+/// `produce_temporally_filtered_pic_ld` for `LOW_DELAY`, otherwise
+/// `produce_temporally_filtered_pic`. MEASURED: `derive_tf_params`
+/// (enc_handle.c:3338-3343) returns `tf_level = 0` for all LOW_DELAY, so the
+/// `_ld` arm is not reached by the default configuration and the RANDOM_ACCESS
+/// driver is the live one.
+pub fn init_tf_driver_is_low_delay(pred_structure_is_low_delay: bool) -> bool {
+    pred_structure_is_low_delay
+}
+
+/// `decay_control[Y/U/V]` as `produce_temporally_filtered_pic` derives it
+/// (temporal_filtering.c:2667-2685). `static` in C — TIER 4.
+///
+/// The VQ arm sets all three to 1; otherwise the defaults are (3, 6, 6) and
+/// the LUMA one is bumped by 1 on a non-I slice whose
+/// `filt_to_unfilt_diff * 100 / noise_levels_log1p_fp16[Y]` exceeds 150.
+/// That ratio is where `filt_unfilt_dist`'s I-slice output re-enters the
+/// pipeline, which is why skipping it changes every later frame's TF strength.
+///
+/// The ratio guards against a zero denominator by yielding 0, not by dividing.
+pub fn derive_decay_control(
+    vq_sharpness_tf: bool,
+    is_noise_level: bool,
+    calculate_variance: bool,
+    pic_avg_variance: u16,
+    slice_is_i: bool,
+    filt_to_unfilt_diff: i32,
+    noise_levels_log1p_fp16: &[i32; 3],
+) -> [i32; 3] {
+    if vq_sharpness_tf
+        && is_noise_level
+        && calculate_variance
+        && pic_avg_variance < VQ_PIC_AVG_VARIANCE_TH
+    {
+        return [1, 1, 1];
+    }
+    let mut dc = [3, 6, 6];
+    if !slice_is_i {
+        let ratio = if noise_levels_log1p_fp16[0] != 0 {
+            (filt_to_unfilt_diff * 100) / noise_levels_log1p_fp16[0]
+        } else {
+            0
+        };
+        if ratio > 150 {
+            dc[0] += 1;
+        }
+    }
+    dc
+}
+
+/// The fixed-QP offset row index and slot `produce_temporally_filtered_pic`
+/// uses (temporal_filtering.c:2698-2705). `static` in C — TIER 4.
+///
+/// `offset_idx` is -1 for a non-reference frame, 0 for an IDR, else
+/// `min(temporal_layer_index + 1, FIXED_QP_OFFSET_COUNT - 1)`. -1 means "no
+/// offset at all", which is a DIFFERENT outcome from slot 0.
+pub fn tf_qp_offset_idx(is_ref: bool, idr_flag: bool, temporal_layer_index: i32) -> i32 {
+    if !is_ref {
+        -1
+    } else if idr_flag {
+        0
+    } else {
+        (temporal_layer_index + 1).min(FIXED_QP_OFFSET_COUNT as i32 - 1)
+    }
+}
+
+/// The target q the TF strength derivation aims at
+/// (temporal_filtering.c:2710-2712). `static` in C — TIER 4.
+///
+/// `offset_idx == -1` leaves `q_val_fp8` alone; otherwise it subtracts
+/// `q_val_fp8 * percents[hierarchical_levels <= 4][offset_idx] / 100`, floored
+/// at 0.
+///
+/// See `PERCENTS`: the first index is the BOOLEAN `hierarchical_levels <= 4`.
+pub fn tf_q_val_target_fp8(q_val_fp8: i32, offset_idx: i32, hierarchical_levels: u32) -> i32 {
+    if offset_idx == -1 {
+        return q_val_fp8;
+    }
+    let row = usize::from(hierarchical_levels <= 4);
+    let pct = PERCENTS[row][offset_idx as usize];
+    (q_val_fp8 - (q_val_fp8 * pct / 100)).max(0)
+}
+
+/// `q_decay_fp8` (temporal_filtering.c:2723-2728). `static` in C — TIER 4.
+///
+/// Two arms around `TF_QINDEX_CUTOFF`: at or above it `q_decay = (q*q) >> 5`,
+/// below it `max(q << 2, 1)`. The `q >= cutoff` arm is NOT a continuation of
+/// the other — the curve is deliberately discontinuous.
+pub fn tf_q_decay_fp8(q: i32) -> u32 {
+    if q >= TF_QINDEX_CUTOFF {
+        ((q * q) >> 5) as u32
+    } else {
+        (q << 2).max(1) as u32
+    }
+}
+
+/// The shift factor and the "TF off on this key frame" decision
+/// (temporal_filtering.c:2739-2800). `static` in C — TIER 4.
+///
+/// THE SVT_HDR_MODE TRAP LIVES HERE. Under `#if SVT_HDR_MODE` C computes
+/// `kf_tf_shift_factor = 10 + (4 - kf_tf_strength)`. The MAINLINE `#else` —
+/// the arm the oracle compiles, and the only one this port implements — sets
+/// `kf_tf_shift_factor = tf_shift_factor` and raises it by 1 (capped at 14)
+/// only when `vq_ctrls.sharpness_ctrls.tf` is set. Measured confirmation:
+/// sweeping `SVT_FORK_KF_TF_STRENGTH` over 0..4 at RANDOM_ACCESS 2f/8f/16f
+/// leaves frame 0 byte-identical, while sweeping `SVT_FORK_TF_STRENGTH` moves
+/// it.
+///
+/// `enable_tf > 1` selects the ADAPTIVE arm, where the base is
+/// `calculate_tf_shift_factor(tf_64x64_block_error)` and the key-frame variant
+/// is that plus 1, clipped to 0..=14.
+///
+/// When the key-frame shift factor lands on exactly 14, TF is DISABLED on the
+/// key frame: all three decay factors are zeroed. That is the switch the
+/// measured `SVT_FORK_TF_STRENGTH=0` run flipped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TfShiftDecision {
+    pub shift_factor: u8,
+    pub kf_shift_factor: u8,
+    /// True when the decay factors are zeroed instead of derived.
+    pub disable_on_this_frame: bool,
+}
+
+pub fn derive_tf_shift(
+    enable_tf: u8,
+    tf_strength: u8,
+    vq_sharpness_tf: bool,
+    frame_update_is_kf: bool,
+    tf_64x64_block_error: u64,
+) -> TfShiftDecision {
+    let (shift_factor, kf_shift_factor) = if enable_tf > 1 {
+        let adaptive = calculate_tf_shift_factor(tf_64x64_block_error);
+        debug_assert!(adaptive <= 14);
+        // C: CLIP3(0, 14, adaptive_tf_shift_factor + 1).
+        (adaptive, (i32::from(adaptive) + 1).clamp(0, 14) as u8)
+    } else {
+        // 10 + (4 - tf_strength): 0 -> 14 (8x weaker) .. 4 -> 10 (2x stronger).
+        let shift = (10 + (4 - i32::from(tf_strength))) as u8;
+        // MAINLINE (#else): kf_tf_shift_factor = tf_shift_factor, raised by 1
+        // and capped at 14 only under Tune VQ sharpness controls. The
+        // SVT_HDR_MODE arm reads kf_tf_strength instead and is NOT ported.
+        let kf = if vq_sharpness_tf {
+            (shift + 1).min(14)
+        } else {
+            shift
+        };
+        (shift, kf)
+    };
+    TfShiftDecision {
+        shift_factor,
+        kf_shift_factor,
+        disable_on_this_frame: frame_update_is_kf && kf_shift_factor == 14,
+    }
+}
+
+/// The block grid `produce_temporally_filtered_pic` walks
+/// (temporal_filtering.c:2630-2634). `static` in C — TIER 4.
+///
+/// `blk_cols = ceil(width / TF_BW)`, `blk_rows = ceil(height / TF_BH)`, both
+/// over the CENTRAL INPUT picture's dimensions — the unscaled source, not the
+/// padded one. Prediction strides are `TF_BW` for luma and `TF_BW >> ss_x` for
+/// both chroma planes (ss_x for BOTH, matching the central-filter kernel).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TfBlockGrid {
+    pub blk_cols: u32,
+    pub blk_rows: u32,
+    pub blk_width_ch: u32,
+    pub blk_height_ch: u32,
+    pub stride_pred: [u32; 3],
+}
+
+pub fn tf_block_grid(width: u32, height: u32, ss_x: u32, ss_y: u32) -> TfBlockGrid {
+    let blk_width_ch = (TF_BW as u32) >> ss_x;
+    let blk_height_ch = (TF_BH as u32) >> ss_y;
+    TfBlockGrid {
+        blk_cols: width.div_ceil(TF_BW as u32),
+        blk_rows: height.div_ceil(TF_BH as u32),
+        blk_width_ch,
+        blk_height_ch,
+        stride_pred: [TF_BW as u32, blk_width_ch, blk_width_ch],
+    }
+}

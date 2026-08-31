@@ -627,3 +627,224 @@ fn tier4_plan_saved_src_pic() {
     let p = port::plan_saved_src_pic(true, 640, 480, 2, 8);
     assert_eq!((p.width_uv, p.height_uv), (320, 480));
 }
+
+// ---------------------------------------------------------------------------
+// The driver's decision layer — TIER 4
+// ---------------------------------------------------------------------------
+//
+// `svt_av1_init_temporal_filtering` (temporal_filtering.c:3951) IS exported,
+// but it is NOT gated at tier 1 here and here is why, stated plainly rather
+// than left implied: it takes a `PictureParentControlSet**` list of up to
+// ALTREF_MAX_NFRAMES real PCSs, takes `centre_pcs->temp_filt_mutex`, posts
+// `temp_filt_done_semaphore`, allocates and frees per-reference highbd
+// buffers, and then runs the entire filter over the picture. A facade shim
+// would have to stand up the whole picture pipeline, and every value it
+// produced would come back through PCS fields a facade owns rather than
+// through a return value. The DECISIONS it makes are ported and traced here;
+// the machinery it drives is ported and tier-1 gated elsewhere in this module.
+//
+// `produce_temporally_filtered_pic` (temporal_filtering.c:2594) is `static`
+// with the same shape, so tier 4 is the strongest tier available for it too.
+
+#[test]
+fn tier4_init_tf_chroma() {
+    // chroma_lvl 1 -> always on, regardless of noise.
+    assert!(port::init_tf_chroma(1, &[100, 0, 0]));
+    // chroma_lvl 2 -> on only when EITHER chroma plane is noisier than luma.
+    assert!(!port::init_tf_chroma(2, &[100, 50, 50]));
+    assert!(port::init_tf_chroma(2, &[100, 101, 50]));
+    assert!(port::init_tf_chroma(2, &[100, 50, 101]));
+    // Strictly greater: equal noise is NOT "high chroma noise".
+    assert!(!port::init_tf_chroma(2, &[100, 100, 100]));
+    // Anything else is off.
+    assert!(!port::init_tf_chroma(0, &[0, 999, 999]));
+    assert!(!port::init_tf_chroma(3, &[0, 999, 999]));
+}
+
+#[test]
+fn tier4_init_tf_mv_dist_th() {
+    // CLIP3(64, 450, MIN(h, w) - 150).
+    assert_eq!(port::init_tf_mv_dist_th(1920, 1080), 450); // 1080-150 = 930 -> 450
+    assert_eq!(port::init_tf_mv_dist_th(640, 480), 330);
+    assert_eq!(port::init_tf_mv_dist_th(256, 200), 64); // 200-150 = 50 -> 64
+    // Smaller than 150 on the short axis: the subtraction is SIGNED, so it
+    // clamps up rather than wrapping to a huge unsigned value.
+    assert_eq!(port::init_tf_mv_dist_th(64, 64), 64);
+    // The MIN is over both axes.
+    assert_eq!(port::init_tf_mv_dist_th(300, 4000), 150);
+}
+
+#[test]
+fn tier4_choose_src_save() {
+    use port::SrcSaveChoice::*;
+    // The default configuration on an I slice: luma only.
+    assert_eq!(
+        port::choose_src_save(false, false, false, false, false, true),
+        LumaOnly
+    );
+    // Not an I slice and nothing else set: no save at all.
+    assert_eq!(
+        port::choose_src_save(false, false, false, false, false, false),
+        None
+    );
+    // PSNR or SSIM forces the all-planes save, even on a non-I slice.
+    assert_eq!(
+        port::choose_src_save(true, false, false, false, false, false),
+        AllPlanes
+    );
+    assert_eq!(
+        port::choose_src_save(false, true, false, false, false, false),
+        AllPlanes
+    );
+    // Superres recode needs ALL THREE of auto mode, dual/all search, and a
+    // KF/ARF update — any one missing falls through.
+    assert_eq!(
+        port::choose_src_save(false, false, true, true, true, false),
+        AllPlanes
+    );
+    assert_eq!(
+        port::choose_src_save(false, false, true, true, false, false),
+        None
+    );
+    assert_eq!(
+        port::choose_src_save(false, false, true, false, true, false),
+        None
+    );
+    assert_eq!(
+        port::choose_src_save(false, false, false, true, true, false),
+        None
+    );
+}
+
+#[test]
+fn tier4_derive_decay_control() {
+    // The VQ arm needs all four conditions.
+    assert_eq!(
+        port::derive_decay_control(true, true, true, 999, true, 0, &[0; 3]),
+        [1, 1, 1]
+    );
+    // pic_avg_variance == VQ_PIC_AVG_VARIANCE_TH (1000) is NOT below it.
+    assert_eq!(
+        port::derive_decay_control(true, true, true, 1000, true, 0, &[0; 3]),
+        [3, 6, 6]
+    );
+    // Default on an I slice: no ratio bump (the bump is non-I only).
+    assert_eq!(
+        port::derive_decay_control(false, false, false, 0, true, 1_000_000, &[1, 0, 0]),
+        [3, 6, 6]
+    );
+    // Non-I with ratio > 150 bumps LUMA only.
+    //   ratio = (filt_to_unfilt_diff * 100) / noise[Y] = (302 * 100) / 200 = 151
+    assert_eq!(
+        port::derive_decay_control(false, false, false, 0, false, 302, &[200, 0, 0]),
+        [4, 6, 6]
+    );
+    //   (300 * 100) / 200 = 150, which is NOT > 150.
+    assert_eq!(
+        port::derive_decay_control(false, false, false, 0, false, 300, &[200, 0, 0]),
+        [3, 6, 6]
+    );
+    // A zero luma noise level yields ratio 0 rather than dividing.
+    assert_eq!(
+        port::derive_decay_control(false, false, false, 0, false, 999_999, &[0, 0, 0]),
+        [3, 6, 6]
+    );
+}
+
+#[test]
+fn tier4_tf_qp_offset_idx_and_target() {
+    // Non-reference: -1, which means "no offset at all" — a DIFFERENT outcome
+    // from slot 0.
+    assert_eq!(port::tf_qp_offset_idx(false, false, 3), -1);
+    assert_eq!(port::tf_qp_offset_idx(false, true, 3), -1);
+    // IDR: slot 0.
+    assert_eq!(port::tf_qp_offset_idx(true, true, 3), 0);
+    // Otherwise temporal_layer_index + 1, capped at FIXED_QP_OFFSET_COUNT - 1.
+    assert_eq!(port::tf_qp_offset_idx(true, false, 0), 1);
+    assert_eq!(port::tf_qp_offset_idx(true, false, 3), 4);
+    assert_eq!(port::tf_qp_offset_idx(true, false, 4), 5);
+    assert_eq!(port::tf_qp_offset_idx(true, false, 99), 5);
+
+    // offset_idx == -1 leaves q alone.
+    assert_eq!(port::tf_q_val_target_fp8(10_000, -1, 5), 10_000);
+    // THE BOOLEAN-INDEX TRAP: percents[hierarchical_levels <= 4][idx].
+    // hier 5 -> row 0 -> percents[0][0] = 75 -> 10000 - 7500 = 2500.
+    assert_eq!(port::tf_q_val_target_fp8(10_000, 0, 5), 2_500);
+    // hier 4 -> row 1 -> percents[1][0] = 76 -> 10000 - 7600 = 2400.
+    assert_eq!(port::tf_q_val_target_fp8(10_000, 0, 4), 2_400);
+    // hier 0 also selects row 1 (0 <= 4). Indexing by the LEVEL instead of the
+    // predicate would read row 0 here and be wrong.
+    assert_eq!(port::tf_q_val_target_fp8(10_000, 0, 0), 2_400);
+    // Slot 5, row 0 is 0% -> unchanged; row 1 is 4%.
+    assert_eq!(port::tf_q_val_target_fp8(10_000, 5, 8), 10_000);
+    assert_eq!(port::tf_q_val_target_fp8(10_000, 5, 2), 9_600);
+    // Floored at 0.
+    assert_eq!(port::tf_q_val_target_fp8(0, 0, 4), 0);
+}
+
+#[test]
+fn tier4_tf_q_decay_fp8() {
+    // Below TF_QINDEX_CUTOFF (128): max(q << 2, 1).
+    assert_eq!(port::tf_q_decay_fp8(0), 1);
+    assert_eq!(port::tf_q_decay_fp8(1), 4);
+    assert_eq!(port::tf_q_decay_fp8(127), 508);
+    // At and above: (q * q) >> 5. The curve is deliberately DISCONTINUOUS —
+    // 127 gives 508 and 128 gives 512.
+    assert_eq!(port::tf_q_decay_fp8(128), 512);
+    assert_eq!(port::tf_q_decay_fp8(255), 2_032);
+}
+
+#[test]
+fn tier4_derive_tf_shift_mainline_arm() {
+    // enable_tf <= 1: shift = 10 + (4 - tf_strength). The default is 3 -> 11.
+    let d = port::derive_tf_shift(1, 3, false, false, 0);
+    assert_eq!(d.shift_factor, 11);
+    assert_eq!(d.kf_shift_factor, 11, "MAINLINE: kf shift == tf shift");
+    assert!(!d.disable_on_this_frame);
+
+    // tf_strength 0 -> 14, and on a KEY frame 14 DISABLES TF. This is the
+    // switch the measured SVT_FORK_TF_STRENGTH=0 run flipped (frame 0 496 B
+    // vs 495 B at RANDOM_ACCESS 2f).
+    let d = port::derive_tf_shift(1, 0, false, true, 0);
+    assert_eq!((d.shift_factor, d.kf_shift_factor), (14, 14));
+    assert!(d.disable_on_this_frame);
+    // The same shift on a NON-key frame does not disable anything.
+    let d = port::derive_tf_shift(1, 0, false, false, 0);
+    assert!(!d.disable_on_this_frame);
+
+    // Tune VQ raises the KEY-frame shift by one, capped at 14 — and NOT the
+    // per-frame one.
+    let d = port::derive_tf_shift(1, 3, true, false, 0);
+    assert_eq!((d.shift_factor, d.kf_shift_factor), (11, 12));
+    let d = port::derive_tf_shift(1, 0, true, true, 0);
+    assert_eq!(d.kf_shift_factor, 14, "capped at 14, not 15");
+
+    // enable_tf > 1 takes the ADAPTIVE arm off the 64x64 block error:
+    // calculate_tf_shift_factor(0) == 14, so kf is CLIP3(0, 14, 15) == 14 and
+    // a key frame is disabled.
+    let d = port::derive_tf_shift(2, 3, false, true, 0);
+    assert_eq!((d.shift_factor, d.kf_shift_factor), (14, 14));
+    assert!(d.disable_on_this_frame);
+    // block_err = (2000 << 12) >> 12 = 2000 -> 12; kf = 13.
+    let d = port::derive_tf_shift(2, 3, false, true, 2000 << 12);
+    assert_eq!((d.shift_factor, d.kf_shift_factor), (12, 13));
+    assert!(!d.disable_on_this_frame);
+}
+
+#[test]
+fn tier4_tf_block_grid() {
+    // ceil over TF_BW/TF_BH (64), on the CENTRAL INPUT dimensions.
+    let g = port::tf_block_grid(1920, 1080, 1, 1);
+    assert_eq!((g.blk_cols, g.blk_rows), (30, 17));
+    assert_eq!((g.blk_width_ch, g.blk_height_ch), (32, 32));
+    // Both chroma prediction strides use ss_x, matching the central-filter
+    // kernel's src_stride_ch = src_stride_y >> ss_x.
+    assert_eq!(g.stride_pred, [64, 32, 32]);
+    // 4:2:2 (ss_x 1, ss_y 0): the chroma HEIGHT stays full.
+    let g = port::tf_block_grid(64, 64, 1, 0);
+    assert_eq!((g.blk_cols, g.blk_rows), (1, 1));
+    assert_eq!((g.blk_width_ch, g.blk_height_ch), (32, 64));
+    // A partial trailing block still counts.
+    let g = port::tf_block_grid(65, 1, 1, 1);
+    assert_eq!((g.blk_cols, g.blk_rows), (2, 1));
+}
