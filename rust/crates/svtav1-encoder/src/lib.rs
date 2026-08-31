@@ -54,6 +54,7 @@ pub mod port_frame_update;
 pub mod port_md;
 pub mod port_picstruct;
 pub mod port_preanalysis;
+pub mod port_temporal_filtering;
 pub mod port_rc_process;
 pub mod qm;
 pub mod qm_tables;

@@ -19,6 +19,7 @@ pub mod rate_control;
 pub mod txfm_pf;
 pub mod sig_deriv;
 pub mod preanalysis;
+pub mod temporal_filtering;
 
 use std::ffi::c_void;
 

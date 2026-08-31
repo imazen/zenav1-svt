@@ -93,6 +93,7 @@ fn main() {
     println!("cargo:rerun-if-changed=shims/rc_shims.c");
     println!("cargo:rerun-if-changed=shims/sigderiv_shims.c");
     println!("cargo:rerun-if-changed=shims/preanalysis_shims.c");
+    println!("cargo:rerun-if-changed=shims/tf_shims.c");
     println!("cargo:rerun-if-changed=shims/mode_decision_shims.c");
     println!("cargo:rerun-if-changed=shims/entropy_inter_shims.c");
     // The submodule's checked-out commit: when it moves, the oracle must be
@@ -174,6 +175,8 @@ fn main() {
         .file(manifest.join("shims/sigderiv_shims.c"))
         // Pre-analysis oracle (temporal filtering / noise model / source stats).
         .file(manifest.join("shims/preanalysis_shims.c"))
+        // temporal_filtering.c oracle (lane wp-preanalysis) — own TU, same reason.
+        .file(manifest.join("shims/tf_shims.c"))
         // Mode-decision oracle (lane wp-modedecision) — likewise its own TU.
         .file(manifest.join("shims/mode_decision_shims.c"))
         // Inter bitstream-syntax oracle (entropy_coding.c inter group) — its
