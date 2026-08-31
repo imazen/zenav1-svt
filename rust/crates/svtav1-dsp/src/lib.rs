@@ -26,6 +26,7 @@ pub mod intra_pred;
 pub mod inv_txfm;
 pub mod loop_filter;
 pub mod obmc;
+pub mod port_convolve;
 pub mod quant;
 pub mod quant_coding;
 pub mod quant_tables;

@@ -10,6 +10,7 @@
 
 pub mod inter_me;
 pub mod inter_mvp;
+pub mod inter_pred;
 pub mod md_subpel;
 
 use std::ffi::c_void;

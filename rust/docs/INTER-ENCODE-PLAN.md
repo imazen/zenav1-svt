@@ -22,11 +22,31 @@ What is ALREADY ported and C-gated, and is therefore not the gap:
 
 | piece | where | evidence |
 |---|---|---|
-| convolve horiz / vert / 2d / copy (the MC core) | `svtav1-dsp/src/inter_pred.rs` (768 lines) | `c_parity_inter_pred.rs` |
+| convolve8 horiz / vert (the **ME upsample** kernels) | `svtav1-dsp/src/inter_pred.rs` (768 lines) | `c_parity_inter_pred.rs` |
 | warped motion | `svtav1-dsp` | `c_parity_warp.rs` |
 | OBMC blending | `svtav1-dsp/src/obmc.rs` | `c_parity_obmc.rs` |
 | MVP stack machinery (intra-frame branch) | `svtav1-encoder/src/intrabc_mvp.rs` (940 lines) — `scan_row_mbmi`, `scan_col_mbmi`, `add_ref_mv_candidate`, `sort_mvp_table`, `setup_ref_mv_list_intra` | IntraBC byte gates |
 | SAD / variance / hadamard / satd kernels | `svtav1-dsp` | `c_parity_sad.rs`, `c_parity_variance.rs`, `c_parity_hadamard.rs` |
+
+**CORRECTION, 2026-08-31 (measured, wp-interpred lane).** The first row of that
+table used to read "convolve horiz / vert / 2d / copy (the MC core)". That was
+wrong, and `c_parity_inter_pred.rs:1-16` said so itself the whole time: the
+kernels ported there are `svt_aom_convolve8_{horiz,vert}_c` — single-pass,
+`clip_pixel(ROUND_POWER_OF_TWO(sum, 7))`, the kernels
+`svt_aom_upsampled_pred_c` uses for ME sub-pel refinement — and its
+`convolve_2d` composes two of those through a **u8** intermediate. The AV1
+inter *reconstruction* kernels (`svt_av1_convolve_{2d,x,y,2d_copy}_sr_c`, the
+whole `jnt_*` compound family, and the highbd family) use a **16-bit**
+intermediate with the `ROUND0_BITS = 3` / `round_1 = 11` offset scheme; the two
+rounding contracts do not agree, so one cannot stand in for the other. The
+8-bit single and compound halves are now ported and C-gated at
+`svtav1-dsp/src/port_convolve.rs` + `tests/c_parity_port_convolve.rs`; the
+highbd half is not yet. So the campaign is **not** purely encoder-side for this
+group.
+
+Likewise `svtav1-dsp/src/scale.rs` is a homegrown Q14 divide, not a port of
+`svt_av1_setup_scale_factors_for_frame`; `tests/c_parity_scale.rs` pins that
+with an `assert_ne!`.
 
 So the campaign is **encoder-side**, not kernel-side. The gap is: multi-frame
 plumbing, the real SVT ME, the inter branch of the MVP stack, inter candidate
