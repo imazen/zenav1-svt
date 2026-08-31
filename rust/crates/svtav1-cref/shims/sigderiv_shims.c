@@ -1291,3 +1291,119 @@ void ref_sig_deriv_light_pd1_default(const int32_t* in, int64_t* out) {
 
 int32_t ref_light_pd1_in_slots(void) { return LP_I_COUNT; }
 int32_t ref_light_pd1_out_slots(void) { return LP_O_COUNT; }
+
+/* ===========================================================================
+ * svt_aom_sig_deriv_multi_processes_default (enc_mode_config.c:1973) -- the
+ * picture-level tool derivation for EVERY video-mode picture, key frame
+ * included.
+ *
+ * Deref safety: pcs->av1_cm is dereferenced by svt_aom_set_wn_filter_ctrls and
+ * svt_aom_set_sg_filter_ctrls, so an Av1Common is allocated.
+ * ======================================================================== */
+
+enum {
+    MP_I_ENC_MODE = 0, MP_I_IS_ISLICE, MP_I_TEMPORAL_LAYER, MP_I_INPUT_RES,
+    MP_I_FAST_DECODE, MP_I_SC_CLASS5, MP_I_IS_HIGHEST_LAYER, MP_I_TF_HME_LEVEL,
+    MP_I_ENABLE_INTRABC, MP_I_SEQ_CDEF_LEVEL, MP_I_CFG_CDEF_LEVEL,
+    MP_I_SEQ_ENABLE_RESTORATION, MP_I_INIT_LUMA_W, MP_I_INIT_LUMA_H,
+    MP_I_ENCODER_BIT_DEPTH, MP_I_CFG_HBD_MDS,
+    MP_I_COUNT
+};
+
+enum {
+    MP_O_GM_EN = 0, MP_O_GM_IDENTITY_EXIT, MP_O_GM_START, MP_O_GM_END,
+    MP_O_GM_SKIP_ID, MP_O_GM_BYPASS_ME, MP_O_GM_REFINE_STEPS, MP_O_GM_DOWNSAMPLE,
+    MP_O_GM_CORNERS, MP_O_GM_CHESS, MP_O_GM_MATCH_SZ, MP_O_GM_INJ_PSQ,
+    MP_O_GM_PP, MP_O_GM_REF_IDX0, MP_O_GM_RFN_EXIT, MP_O_GM_CORR_METHOD,
+    MP_O_HME, MP_O_HME_L0, MP_O_HME_L1, MP_O_HME_L2,
+    MP_O_TF_HME, MP_O_TF_HME_L0, MP_O_TF_HME_L1, MP_O_TF_HME_L2,
+    MP_O_MULTI_PASS_PD, MP_O_ALLOW_INTRABC, MP_O_PALETTE_LEVEL,
+    MP_O_ALLOW_SC_TOOLS, MP_O_CDEF_LEVEL,
+    MP_O_CDEF_RECON_BIAS, MP_O_CDEF_RECON_STRENGTH, MP_O_CDEF_RECON_DIST_TH,
+    MP_O_SG_EN, MP_O_SG_START0, MP_O_SG_START1, MP_O_SG_END0, MP_O_SG_END1,
+    MP_O_SG_INC0, MP_O_SG_INC1, MP_O_SG_REF0, MP_O_SG_REF1, MP_O_SG_CHROMA,
+    MP_O_ENABLE_RESTORATION, MP_O_FRAME_END_CDF, MP_O_HBD_MD,
+    MP_O_MAX_CAN_COUNT, MP_O_BEST_UNIPRED,
+    MP_O_COUNT
+};
+
+void ref_sig_deriv_multi_processes_default(const int32_t* in, int64_t* out) {
+    SequenceControlSet*      scs  = (SequenceControlSet*)calloc(1, sizeof(*scs));
+    PictureParentControlSet* pcs  = (PictureParentControlSet*)calloc(1, sizeof(*pcs));
+    Av1Common*               cm   = (Av1Common*)calloc(1, sizeof(*cm));
+
+    scs->static_config.fast_decode    = (uint8_t)in[MP_I_FAST_DECODE];
+    scs->static_config.enable_intrabc = (int8_t)in[MP_I_ENABLE_INTRABC];
+    scs->static_config.cdef_level     = in[MP_I_CFG_CDEF_LEVEL];
+    scs->static_config.hbd_mds        = in[MP_I_CFG_HBD_MDS];
+    scs->seq_header.cdef_level        = (uint8_t)in[MP_I_SEQ_CDEF_LEVEL];
+    scs->seq_header.enable_restoration = (uint8_t)in[MP_I_SEQ_ENABLE_RESTORATION];
+    scs->max_initial_input_luma_width  = (uint16_t)in[MP_I_INIT_LUMA_W];
+    scs->max_initial_input_luma_height = (uint16_t)in[MP_I_INIT_LUMA_H];
+    scs->encoder_bit_depth             = (uint32_t)in[MP_I_ENCODER_BIT_DEPTH];
+
+    pcs->scs                  = scs;
+    pcs->av1_cm               = cm;
+    pcs->enc_mode             = (EncMode)in[MP_I_ENC_MODE];
+    pcs->slice_type           = in[MP_I_IS_ISLICE] ? I_SLICE : B_SLICE;
+    pcs->temporal_layer_index = (uint8_t)in[MP_I_TEMPORAL_LAYER];
+    pcs->input_resolution     = (ResolutionRange)in[MP_I_INPUT_RES];
+    pcs->sc_class5            = (uint8_t)in[MP_I_SC_CLASS5];
+    pcs->is_highest_layer     = (bool)in[MP_I_IS_HIGHEST_LAYER];
+    pcs->tf_ctrls.hme_me_level = (uint8_t)in[MP_I_TF_HME_LEVEL];
+
+    svt_aom_sig_deriv_multi_processes_default(scs, pcs);
+
+    out[MP_O_GM_EN]            = pcs->gm_ctrls.enabled;
+    out[MP_O_GM_IDENTITY_EXIT] = pcs->gm_ctrls.identiy_exit;
+    out[MP_O_GM_START]         = pcs->gm_ctrls.search_start_model;
+    out[MP_O_GM_END]           = pcs->gm_ctrls.search_end_model;
+    out[MP_O_GM_SKIP_ID]       = pcs->gm_ctrls.skip_identity;
+    out[MP_O_GM_BYPASS_ME]     = pcs->gm_ctrls.bypass_based_on_me;
+    out[MP_O_GM_REFINE_STEPS]  = pcs->gm_ctrls.params_refinement_steps;
+    out[MP_O_GM_DOWNSAMPLE]    = pcs->gm_ctrls.downsample_level;
+    out[MP_O_GM_CORNERS]       = pcs->gm_ctrls.corners;
+    out[MP_O_GM_CHESS]         = pcs->gm_ctrls.chess_rfn;
+    out[MP_O_GM_MATCH_SZ]      = pcs->gm_ctrls.match_sz;
+    out[MP_O_GM_INJ_PSQ]       = pcs->gm_ctrls.inj_psq_glb;
+    out[MP_O_GM_PP]            = pcs->gm_ctrls.pp_enabled;
+    out[MP_O_GM_REF_IDX0]      = pcs->gm_ctrls.ref_idx0_only;
+    out[MP_O_GM_RFN_EXIT]      = pcs->gm_ctrls.rfn_early_exit;
+    out[MP_O_GM_CORR_METHOD]   = pcs->gm_ctrls.correspondence_method;
+    out[MP_O_HME]    = pcs->enable_hme_flag;
+    out[MP_O_HME_L0] = pcs->enable_hme_level0_flag;
+    out[MP_O_HME_L1] = pcs->enable_hme_level1_flag;
+    out[MP_O_HME_L2] = pcs->enable_hme_level2_flag;
+    out[MP_O_TF_HME]    = pcs->tf_enable_hme_flag;
+    out[MP_O_TF_HME_L0] = pcs->tf_enable_hme_level0_flag;
+    out[MP_O_TF_HME_L1] = pcs->tf_enable_hme_level1_flag;
+    out[MP_O_TF_HME_L2] = pcs->tf_enable_hme_level2_flag;
+    out[MP_O_MULTI_PASS_PD] = pcs->multi_pass_pd_level;
+    out[MP_O_ALLOW_INTRABC] = pcs->frm_hdr.allow_intrabc;
+    out[MP_O_PALETTE_LEVEL] = pcs->palette_level;
+    out[MP_O_ALLOW_SC_TOOLS] = pcs->frm_hdr.allow_screen_content_tools;
+    out[MP_O_CDEF_LEVEL]     = pcs->cdef_level;
+    out[MP_O_CDEF_RECON_BIAS]     = pcs->cdef_recon_ctrls.zero_fs_cost_bias;
+    out[MP_O_CDEF_RECON_STRENGTH] = pcs->cdef_recon_ctrls.zero_filter_strength_lvl;
+    out[MP_O_CDEF_RECON_DIST_TH]  = pcs->cdef_recon_ctrls.prev_cdef_dist_th;
+    out[MP_O_SG_EN]     = cm->sg_filter_ctrls.enabled;
+    out[MP_O_SG_START0] = cm->sg_filter_ctrls.start_ep[0];
+    out[MP_O_SG_START1] = cm->sg_filter_ctrls.start_ep[1];
+    out[MP_O_SG_END0]   = cm->sg_filter_ctrls.end_ep[0];
+    out[MP_O_SG_END1]   = cm->sg_filter_ctrls.end_ep[1];
+    out[MP_O_SG_INC0]   = cm->sg_filter_ctrls.ep_inc[0];
+    out[MP_O_SG_INC1]   = cm->sg_filter_ctrls.ep_inc[1];
+    out[MP_O_SG_REF0]   = cm->sg_filter_ctrls.refine[0];
+    out[MP_O_SG_REF1]   = cm->sg_filter_ctrls.refine[1];
+    out[MP_O_SG_CHROMA] = cm->sg_filter_ctrls.use_chroma;
+    out[MP_O_ENABLE_RESTORATION] = pcs->enable_restoration;
+    out[MP_O_FRAME_END_CDF]      = pcs->frame_end_cdf_update_mode;
+    out[MP_O_HBD_MD]             = pcs->hbd_md;
+    out[MP_O_MAX_CAN_COUNT]      = pcs->max_can_count;
+    out[MP_O_BEST_UNIPRED]       = pcs->use_best_me_unipred_cand_only;
+
+    free(cm); free(pcs); free(scs);
+}
+
+int32_t ref_multi_processes_in_slots(void) { return MP_I_COUNT; }
+int32_t ref_multi_processes_out_slots(void) { return MP_O_COUNT; }

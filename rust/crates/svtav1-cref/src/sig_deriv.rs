@@ -1319,3 +1319,121 @@ pub fn sig_deriv_light_pd1_default(input: &[i32; lp_in::COUNT]) -> [i64; lp_out:
     unsafe { ref_sig_deriv_light_pd1_default(input.as_ptr(), out.as_mut_ptr()) };
     out
 }
+
+// ---------------------------------------------------------------------------
+// svt_aom_sig_deriv_multi_processes_default
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn ref_sig_deriv_multi_processes_default(input: *const i32, out: *mut i64);
+    fn ref_multi_processes_in_slots() -> i32;
+    fn ref_multi_processes_out_slots() -> i32;
+}
+
+/// Input slot indices for [`sig_deriv_multi_processes_default`], `MP_I_*`.
+pub mod mp_in {
+    /// `pcs->enc_mode`
+    pub const ENC_MODE: usize = 0;
+    /// `pcs->slice_type == I_SLICE`
+    pub const IS_ISLICE: usize = 1;
+    /// `pcs->temporal_layer_index`
+    pub const TEMPORAL_LAYER: usize = 2;
+    /// `pcs->input_resolution`
+    pub const INPUT_RES: usize = 3;
+    /// `scs->static_config.fast_decode`
+    pub const FAST_DECODE: usize = 4;
+    /// `pcs->sc_class5`
+    pub const SC_CLASS5: usize = 5;
+    /// `pcs->is_highest_layer`
+    pub const IS_HIGHEST_LAYER: usize = 6;
+    /// `pcs->tf_ctrls.hme_me_level`
+    pub const TF_HME_LEVEL: usize = 7;
+    /// `scs->static_config.enable_intrabc`
+    pub const ENABLE_INTRABC: usize = 8;
+    /// `scs->seq_header.cdef_level`
+    pub const SEQ_CDEF_LEVEL: usize = 9;
+    /// `scs->static_config.cdef_level`
+    pub const CFG_CDEF_LEVEL: usize = 10;
+    /// `scs->seq_header.enable_restoration`
+    pub const SEQ_ENABLE_RESTORATION: usize = 11;
+    /// `scs->max_initial_input_luma_width`
+    pub const INIT_LUMA_W: usize = 12;
+    /// `scs->max_initial_input_luma_height`
+    pub const INIT_LUMA_H: usize = 13;
+    /// `scs->encoder_bit_depth`
+    pub const ENCODER_BIT_DEPTH: usize = 14;
+    /// `scs->static_config.hbd_mds`
+    pub const CFG_HBD_MDS: usize = 15;
+    /// Number of input slots.
+    pub const COUNT: usize = 16;
+}
+
+/// Output slot indices for [`sig_deriv_multi_processes_default`], `MP_O_*`.
+pub mod mp_out {
+    /// First of the sixteen `gm_ctrls` slots.
+    pub const GM: usize = 0;
+    /// `pcs->enable_hme_flag`
+    pub const HME: usize = 16;
+    /// `pcs->enable_hme_level0_flag`
+    pub const HME_L0: usize = 17;
+    /// `pcs->enable_hme_level1_flag`
+    pub const HME_L1: usize = 18;
+    /// `pcs->enable_hme_level2_flag`
+    pub const HME_L2: usize = 19;
+    /// `pcs->tf_enable_hme_flag`
+    pub const TF_HME: usize = 20;
+    /// `pcs->tf_enable_hme_level0_flag`
+    pub const TF_HME_L0: usize = 21;
+    /// `pcs->tf_enable_hme_level1_flag`
+    pub const TF_HME_L1: usize = 22;
+    /// `pcs->tf_enable_hme_level2_flag`
+    pub const TF_HME_L2: usize = 23;
+    /// `pcs->multi_pass_pd_level`
+    pub const MULTI_PASS_PD: usize = 24;
+    /// `frm_hdr->allow_intrabc`
+    pub const ALLOW_INTRABC: usize = 25;
+    /// `pcs->palette_level`
+    pub const PALETTE_LEVEL: usize = 26;
+    /// `frm_hdr->allow_screen_content_tools`
+    pub const ALLOW_SC_TOOLS: usize = 27;
+    /// `pcs->cdef_level`
+    pub const CDEF_LEVEL: usize = 28;
+    /// First of the three `cdef_recon_ctrls` slots.
+    pub const CDEF_RECON: usize = 29;
+    /// First of the ten `sg_filter_ctrls` slots.
+    pub const SG: usize = 32;
+    /// `pcs->enable_restoration`
+    pub const ENABLE_RESTORATION: usize = 42;
+    /// `pcs->frame_end_cdf_update_mode`
+    pub const FRAME_END_CDF: usize = 43;
+    /// `pcs->hbd_md`
+    pub const HBD_MD: usize = 44;
+    /// `pcs->max_can_count`
+    pub const MAX_CAN_COUNT: usize = 45;
+    /// `pcs->use_best_me_unipred_cand_only`
+    pub const BEST_UNIPRED: usize = 46;
+    /// Number of output slots.
+    pub const COUNT: usize = 47;
+}
+
+/// C `svt_aom_sig_deriv_multi_processes_default` on a synthetic SCS/PPCS.
+///
+/// # Panics
+/// If the C shim's slot counts disagree with [`mp_in::COUNT`] /
+/// [`mp_out::COUNT`].
+#[must_use]
+pub fn sig_deriv_multi_processes_default(input: &[i32; mp_in::COUNT]) -> [i64; mp_out::COUNT] {
+    assert_eq!(
+        unsafe { ref_multi_processes_in_slots() } as usize,
+        mp_in::COUNT,
+        "C shim multi-processes input slot count drifted"
+    );
+    assert_eq!(
+        unsafe { ref_multi_processes_out_slots() } as usize,
+        mp_out::COUNT,
+        "C shim multi-processes output slot count drifted"
+    );
+    let mut out = [0i64; mp_out::COUNT];
+    unsafe { ref_sig_deriv_multi_processes_default(input.as_ptr(), out.as_mut_ptr()) };
+    out
+}

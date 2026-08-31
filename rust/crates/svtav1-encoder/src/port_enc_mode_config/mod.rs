@@ -40,6 +40,7 @@ pub mod encdec;
 pub mod leaf;
 pub mod light_pd1;
 pub mod me;
+pub mod multi_processes;
 pub mod pd0;
 pub mod tail;
 
