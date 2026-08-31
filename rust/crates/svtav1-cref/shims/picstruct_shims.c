@@ -123,3 +123,89 @@ void ref_setup_skip_mode_allowed(int32_t enable_order_hint, uint8_t order_hint_b
     free(scs);
     free(ppcs);
 }
+
+/* ---- svt_aom_get_mini_gop_stats (utility.c:168-170) ---- */
+
+#include "utility.h"
+
+void ref_get_mini_gop_stats(uint32_t index, uint8_t* hier, uint8_t* start, uint8_t* end, uint8_t* len) {
+    const MiniGopStats* s = svt_aom_get_mini_gop_stats(index);
+    *hier                 = s->hierarchical_levels;
+    *start                = s->start_index;
+    *end                  = s->end_index;
+    *len                  = s->length;
+}
+
+/* ---- is_pic_cutting_short_ra_mg (pd_process.c:928-941) ----
+ *
+ * PictureDecisionContext is large; calloc/free per call (never a static, see
+ * the header note). Only mini_gop_length[] and mini_gop_idr_count[] are read. */
+
+uint8_t is_pic_cutting_short_ra_mg(PictureDecisionContext* pd_ctx, PictureParentControlSet* pcs, uint32_t mg_idx);
+
+int32_t ref_is_pic_cutting_short_ra_mg(uint32_t mg_len, uint32_t mg_idr_count, uint32_t entry_count,
+                                       uint8_t pic_pred_type, int32_t idr_flag, int32_t cra_flag) {
+    PictureDecisionContext*  ctx  = (PictureDecisionContext*)calloc(1, sizeof(*ctx));
+    PictureParentControlSet* ppcs = (PictureParentControlSet*)calloc(1, sizeof(*ppcs));
+    PredictionStructure*     ps   = (PredictionStructure*)calloc(1, sizeof(*ps));
+
+    ctx->mini_gop_length[0]     = mg_len;
+    ctx->mini_gop_idr_count[0]  = mg_idr_count;
+    ps->pred_struct_entry_count = entry_count;
+    ps->pred_type               = (PredStructure)pic_pred_type;
+    ppcs->pred_struct_ptr       = ps;
+    ppcs->idr_flag              = idr_flag != 0;
+    ppcs->cra_flag              = cra_flag != 0;
+
+    int32_t r = (int32_t)is_pic_cutting_short_ra_mg(ctx, ppcs, 0);
+    free(ps);
+    free(ppcs);
+    free(ctx);
+    return r;
+}
+
+/* ---- svt_aom_is_delayed_intra (pd_process.c:3620-3635) ---- */
+
+bool svt_aom_is_delayed_intra(PictureParentControlSet* pcs);
+
+int32_t ref_is_delayed_intra(int32_t idr_flag, int32_t cra_flag, uint8_t pred_structure, int32_t intra_period_length,
+                             int32_t end_of_sequence_flag, uint32_t pre_assignment_buffer_count,
+                             uint32_t pred_struct_entry_count) {
+    PictureParentControlSet* ppcs = (PictureParentControlSet*)calloc(1, sizeof(*ppcs));
+    SequenceControlSet*      scs  = (SequenceControlSet*)calloc(1, sizeof(*scs));
+    PredictionStructure*     ps   = (PredictionStructure*)calloc(1, sizeof(*ps));
+
+    ppcs->idr_flag                          = idr_flag != 0;
+    ppcs->cra_flag                          = cra_flag != 0;
+    ppcs->pred_structure                    = (PredStructure)pred_structure;
+    scs->static_config.intra_period_length  = intra_period_length;
+    ppcs->scs                               = scs;
+    ppcs->end_of_sequence_flag              = end_of_sequence_flag != 0;
+    ppcs->pre_assignment_buffer_count       = pre_assignment_buffer_count;
+    ps->pred_struct_entry_count             = pred_struct_entry_count;
+    ppcs->pred_struct_ptr                   = ps;
+
+    int32_t r = svt_aom_is_delayed_intra(ppcs) ? 1 : 0;
+    free(ps);
+    free(scs);
+    free(ppcs);
+    return r;
+}
+
+/* ---- search_this_pic (pd_process.c:3606-3619) ---- */
+
+int32_t search_this_pic(PictureParentControlSet** buf, uint32_t buf_size, uint64_t input_pic);
+
+int32_t ref_search_this_pic(const uint64_t* pocs, uint32_t buf_size, uint64_t input_pic) {
+    PictureParentControlSet** buf = (PictureParentControlSet**)calloc(buf_size ? buf_size : 1, sizeof(*buf));
+    for (uint32_t i = 0; i < buf_size; ++i) {
+        buf[i]                 = (PictureParentControlSet*)calloc(1, sizeof(PictureParentControlSet));
+        buf[i]->picture_number = pocs[i];
+    }
+    int32_t r = search_this_pic(buf, buf_size, input_pic);
+    for (uint32_t i = 0; i < buf_size; ++i) {
+        free(buf[i]);
+    }
+    free(buf);
+    return r;
+}

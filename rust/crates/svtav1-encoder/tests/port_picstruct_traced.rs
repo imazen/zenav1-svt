@@ -758,3 +758,498 @@ fn ref_index_constants_are_the_c_order() {
         [0, 1, 2, 3, 4, 5, 6]
     );
 }
+
+// ---------------------------------------------------------------------------
+// Mini-GOP window map — tier 4 (all four functions are `static` in C)
+// ---------------------------------------------------------------------------
+
+fn enc_ctx(count: u32, intra: u32, idr: u32) -> pp::EncCtxPicParams {
+    pp::EncCtxPicParams {
+        pre_assignment_buffer_count: count,
+        pre_assignment_buffer_intra_count: intra,
+        pre_assignment_buffer_idr_count: idr,
+        ..Default::default()
+    }
+}
+
+/// `initialize_mini_gop_activity_array` + `generate_picture_window_split` +
+/// `handle_incomplete_picture_window_map` on an EXACT 8-picture buffer.
+///
+/// Derivation. The activity array starts as `hierarchical_levels > 1` per
+/// entry, so every 2-picture (L1) shape is already inactive. With
+/// `count == 8` and no IDR the cascade clears `L4_0_INDEX` (entry 2, the
+/// `{3, 0, 7, 8}` shape) and neither nested arm fires because `8 - 8 == 0`.
+///
+/// The split loop then walks: entries 0 and 1 have `end_index` 31 and 15,
+/// both >= 8, so they are skipped but stay ACTIVE and stride by 1. Entry 2
+/// has `end_index == 7 < 8` and is inactive, so it is emitted — and strides by
+/// `mini_gop_offset[3 - 1] == 7`, jumping the whole subtree to entry 9. No
+/// later entry has `end_index < 8`, so exactly ONE mini-GOP comes out.
+///
+/// `handle_incomplete_picture_window_map` then finds `end_index[0] == 7 ==
+/// count - 1` and adds nothing.
+#[test]
+fn traced_mini_gop_window_split_exact_8() {
+    let mut map = pp::MiniGopMap::default();
+    let enc = enc_ctx(8, 1, 1);
+    let needs_dg = pp::initialize_mini_gop_activity_array(&mut map, &enc, false, false, false);
+    assert!(!needs_dg, "enable_dg is off in this cell");
+    assert!(
+        !map.activity[pp::L4_0_INDEX],
+        "the {{3,0,7,8}} shape is chosen"
+    );
+    assert!(map.activity[pp::L6_INDEX] && map.activity[pp::L5_0_INDEX]);
+
+    pp::generate_picture_window_split(&mut map, &enc);
+    assert_eq!(map.total_number_of_mini_gops, 1);
+    assert_eq!(
+        (map.start_index[0], map.end_index[0], map.length[0]),
+        (0, 7, 8)
+    );
+    assert_eq!(map.hierarchical_levels[0], 3);
+    assert_eq!((map.intra_count[0], map.idr_count[0]), (1, 1));
+
+    pp::handle_incomplete_picture_window_map(3, &mut map, &enc);
+    assert_eq!(map.total_number_of_mini_gops, 1, "nothing to fix up");
+}
+
+/// The SHORT last mini-GOP — the case a 5-frame test cell hits first.
+///
+/// Derivation at `count == 5`: the cascade clears `L3_0_INDEX` (entry 3, the
+/// `{2, 0, 3, 4}` shape) and `5 - 4 == 1` is not >= 2, so nothing nests. The
+/// split emits the 4-picture shape and strides by `mini_gop_offset[2 - 1] == 3`
+/// to entry 6, whose `end_index` is 7 >= 5. So one mini-GOP covering 0..3 and
+/// picture 4 is left over.
+///
+/// `handle_incomplete_picture_window_map` sees `end_index[0] == 3 < 4` and
+/// appends a second mini-GOP of length 1 at `MIN_HIERARCHICAL_LEVEL`, ZEROING
+/// the counts on the previous entry as it goes.
+#[test]
+fn traced_mini_gop_window_split_short_tail_5() {
+    let mut map = pp::MiniGopMap::default();
+    let enc = enc_ctx(5, 1, 1);
+    pp::initialize_mini_gop_activity_array(&mut map, &enc, false, false, false);
+    assert!(!map.activity[pp::L3_0_INDEX]);
+
+    pp::generate_picture_window_split(&mut map, &enc);
+    assert_eq!(map.total_number_of_mini_gops, 1);
+    assert_eq!(
+        (map.start_index[0], map.end_index[0], map.length[0]),
+        (0, 3, 4)
+    );
+    assert_eq!(map.hierarchical_levels[0], 2);
+
+    pp::handle_incomplete_picture_window_map(3, &mut map, &enc);
+    assert_eq!(map.total_number_of_mini_gops, 2);
+    assert_eq!(
+        (map.start_index[1], map.end_index[1], map.length[1]),
+        (4, 4, 1)
+    );
+    assert_eq!(
+        map.hierarchical_levels[1],
+        u32::from(pp::MIN_HIERARCHICAL_LEVEL)
+    );
+    // The counts moved from the first entry to the new last one.
+    assert_eq!((map.intra_count[0], map.idr_count[0]), (0, 0));
+    assert_eq!((map.intra_count[1], map.idr_count[1]), (1, 1));
+}
+
+/// The IDR guard: `count >= N && !(count == N && idr_flag)`.
+///
+/// Derivation at `count == 4`: WITHOUT an IDR the cascade clears
+/// `L3_0_INDEX`, giving one 4-picture mini-GOP. WITH an IDR the `count == 4`
+/// arm is refused, control falls to the `>= 2` arm which clears
+/// `L2_0_INDEX` — already inactive, so the array is unchanged — and the split
+/// therefore emits the two 2-picture shapes (entries 4 and 5) instead.
+///
+/// So a 4-picture buffer headed by an IDR is coded as TWO mini-GOPs, not one.
+/// That is the off-by-one this guard exists for and it only shows at a GOP
+/// boundary.
+#[test]
+fn traced_mini_gop_idr_guard_splits_the_buffer() {
+    let enc = enc_ctx(4, 1, 1);
+
+    let mut no_idr = pp::MiniGopMap::default();
+    pp::initialize_mini_gop_activity_array(&mut no_idr, &enc, false, false, false);
+    pp::generate_picture_window_split(&mut no_idr, &enc);
+    assert_eq!(no_idr.total_number_of_mini_gops, 1);
+    assert_eq!((no_idr.start_index[0], no_idr.end_index[0]), (0, 3));
+    assert_eq!(no_idr.hierarchical_levels[0], 2);
+
+    let mut with_idr = pp::MiniGopMap::default();
+    pp::initialize_mini_gop_activity_array(&mut with_idr, &enc, true, false, false);
+    assert!(
+        with_idr.activity[pp::L3_0_INDEX],
+        "the 4-picture shape stays ACTIVE"
+    );
+    pp::generate_picture_window_split(&mut with_idr, &enc);
+    assert_eq!(with_idr.total_number_of_mini_gops, 2);
+    assert_eq!(
+        (
+            with_idr.start_index[0],
+            with_idr.end_index[0],
+            with_idr.length[0]
+        ),
+        (0, 1, 2)
+    );
+    assert_eq!(
+        (
+            with_idr.start_index[1],
+            with_idr.end_index[1],
+            with_idr.length[1]
+        ),
+        (2, 3, 2)
+    );
+    assert_eq!(with_idr.hierarchical_levels[0], 1);
+}
+
+/// `set_mini_gop_structure` in LOW DELAY: `pre_assignment_buffer_count` is 1,
+/// so the subdivision NEVER runs and the single default mini-GOP stands.
+///
+/// This is the "degenerates in low delay" case named in the lane brief; the
+/// point of the test is that it degenerates to a WELL-DEFINED map, not to an
+/// unset one.
+#[test]
+fn traced_set_mini_gop_structure_low_delay_degenerates() {
+    let seq = ld_flat_cqp_seq();
+    let mut map = pp::MiniGopMap::for_sequence(0);
+    let mut enc = enc_ctx(1, 0, 0);
+    let pic = inter_frame(1, 0);
+    let needs_dg =
+        pp::set_mini_gop_structure(&mut map, &mut enc, &seq, &pic, 0, 0, false, true, false);
+    assert!(
+        !needs_dg,
+        "the subdivision never runs, so the dg split cannot fire"
+    );
+    assert_eq!(map.total_number_of_mini_gops, 1);
+    assert_eq!(
+        (map.start_index[0], map.end_index[0], map.length[0]),
+        (0, 0, 1)
+    );
+    assert_eq!(
+        map.hierarchical_levels[0], 0,
+        "the configured level, not a mini-GOP one"
+    );
+    // mini_gop_cnt_per_gop increments when the buffer holds no IDR.
+    assert_eq!(enc.mini_gop_cnt_per_gop, 1);
+
+    // With an IDR in the buffer the per-GOP counter RESETS instead.
+    let mut enc = enc_ctx(1, 1, 1);
+    enc.mini_gop_cnt_per_gop = 9;
+    let mut map = pp::MiniGopMap::for_sequence(0);
+    pp::set_mini_gop_structure(&mut map, &mut enc, &seq, &pic, 0, 0, true, false, false);
+    assert_eq!(enc.mini_gop_cnt_per_gop, 0);
+}
+
+/// `set_mini_gop_structure` in RANDOM ACCESS runs the full subdivision, and
+/// reports that the dynamic-GOP split is required when `enable_dg` is set and
+/// the 6L shape was chosen.
+///
+/// Measured (`enc_handle.c:4294-4300`): `enable_dg` is 1 for single-pass
+/// CQP/CRF `RANDOM_ACCESS` below 4K, so the `true` return is the DEFAULT there,
+/// not an exotic knob. `eval_sub_mini_gop` itself is not ported.
+#[test]
+fn traced_set_mini_gop_structure_random_access_reports_dg() {
+    let seq = pp::SeqPicParams {
+        pred_structure: pp::PredStructure::RandomAccess,
+        ..ld_flat_cqp_seq()
+    };
+    let mut map = pp::MiniGopMap::for_sequence(5);
+    let mut enc = enc_ctx(32, 0, 0);
+    let pic = inter_frame(1, 0);
+    let needs_dg =
+        pp::set_mini_gop_structure(&mut map, &mut enc, &seq, &pic, 5, 0, false, true, false);
+    // count == 32 clears L6_INDEX, so the dg evaluation is required.
+    assert!(needs_dg);
+    assert!(!map.activity[pp::L6_INDEX]);
+    assert_eq!(map.total_number_of_mini_gops, 1);
+    assert_eq!(
+        (map.start_index[0], map.end_index[0], map.length[0]),
+        (0, 31, 32)
+    );
+    assert_eq!(map.hierarchical_levels[0], 5);
+
+    // With enable_dg off the same buffer reports no dg work.
+    let mut map = pp::MiniGopMap::for_sequence(5);
+    let mut enc = enc_ctx(32, 0, 0);
+    assert!(!pp::set_mini_gop_structure(
+        &mut map, &mut enc, &seq, &pic, 5, 0, false, false, false
+    ));
+}
+
+/// `get_pred_struct_for_frame` (`pd_process.c:942-988`) — an IDR takes the
+/// SEQUENCE hierarchy, everyone else takes the MINI-GOP's.
+#[test]
+fn traced_get_pred_struct_for_frame_idr_takes_sequence_hierarchy() {
+    let mut map = pp::MiniGopMap::default();
+    map.hierarchical_levels[0] = 2;
+
+    let mut idr = key_frame(0);
+    pp::get_pred_struct_for_frame(
+        &mut idr,
+        &mut map,
+        0,
+        pp::PredStructure::RandomAccess,
+        5,
+        0,
+        true,
+        false,
+    );
+    assert_eq!(
+        idr.hierarchical_levels, 5,
+        "IDR -> the configured 5, not the MG's 2"
+    );
+    assert_eq!(idr.pred_struct_type, pp::PredStructure::RandomAccess);
+    assert!(map.is_startup_gop, "an IDR at POC 0 opens the startup GOP");
+
+    let mut b = inter_frame(1, 0);
+    pp::get_pred_struct_for_frame(
+        &mut b,
+        &mut map,
+        0,
+        pp::PredStructure::RandomAccess,
+        5,
+        0,
+        false,
+        false,
+    );
+    assert_eq!(b.hierarchical_levels, 2, "non-IDR -> the mini-GOP's 2");
+    assert!(map.is_startup_gop, "unchanged by a non-key picture");
+
+    // A later IDR (POC != 0) CLOSES the startup GOP.
+    let mut idr2 = key_frame(64);
+    pp::get_pred_struct_for_frame(
+        &mut idr2,
+        &mut map,
+        0,
+        pp::PredStructure::RandomAccess,
+        5,
+        0,
+        true,
+        false,
+    );
+    assert!(!map.is_startup_gop);
+}
+
+/// `store_mg_picture_arrays` (`pd_process.c:4966-4985`) — display order in,
+/// decode order out.
+///
+/// Derivation with a 4-picture random-access mini-GOP: display order
+/// [P4, P1, P2, P3] carries decode orders [0, 2, 1, 3] (the base layer is
+/// coded first), so the decode-order permutation is [0, 2, 1, 3].
+#[test]
+fn traced_store_mg_picture_arrays_sorts_by_decode_order() {
+    let (decode, display) = pp::store_mg_picture_arrays(&[0, 2, 1, 3]);
+    assert_eq!(display, [0, 1, 2, 3], "the display copy is the input order");
+    assert_eq!(decode, [0, 2, 1, 3]);
+
+    // A fully reversed decode order.
+    let (decode, _) = pp::store_mg_picture_arrays(&[3, 2, 1, 0]);
+    assert_eq!(decode, [3, 2, 1, 0]);
+
+    // An 8-picture 3L mini-GOP: display [P8,P1..P7] has decode orders
+    // [0, 3, 2, 4, 1, 6, 5, 7].
+    let (decode, _) = pp::store_mg_picture_arrays(&[0, 3, 2, 4, 1, 6, 5, 7]);
+    assert_eq!(decode, [0, 4, 2, 1, 3, 6, 5, 7]);
+
+    // Degenerate sizes must not panic.
+    assert_eq!(pp::store_mg_picture_arrays(&[]).0, Vec::<usize>::new());
+    assert_eq!(pp::store_mg_picture_arrays(&[5]).0, [0]);
+}
+
+/// `get_pic_idx_in_mg` (`pd_process.c:4872-4893`) — two different quantities
+/// out of one call.
+///
+/// Derivation, low delay: `pic_idx_in_mg` is 0 when `pred_struct_position` is
+/// 0 and `(position - 1) % entry_count` otherwise — NOT the position itself.
+/// `frame_offset` is `picture_number - last_idr_picture`, a different
+/// quantity, and it is written on every low-delay call.
+#[test]
+fn traced_get_pic_idx_in_mg_low_delay_and_random_access() {
+    let seq = ld_flat_cqp_seq();
+    let map = pp::MiniGopMap::default();
+
+    for (position, want_idx) in [(0u32, 0u32), (1, 0), (2, 1), (3, 2), (4, 3), (5, 0)] {
+        let mut pic = inter_frame(10, 3);
+        pic.pred_struct_entry_count = 4;
+        let enc = pp::EncCtxPicParams {
+            pred_struct_position: position,
+            last_idr_picture: 3,
+            ..Default::default()
+        };
+        let got = pp::get_pic_idx_in_mg(&mut pic, &seq, &enc, &map, 0, 0);
+        assert_eq!(got, want_idx, "low delay, pred_struct_position {position}");
+        assert_eq!(pic.frame_offset, 7, "10 - 3, written on every call");
+    }
+
+    // Random access: the index is the offset from the mini-GOP start, and
+    // frame_offset is NOT touched.
+    let ra = pp::SeqPicParams {
+        pred_structure: pp::PredStructure::RandomAccess,
+        ..ld_flat_cqp_seq()
+    };
+    let mut map = pp::MiniGopMap::default();
+    map.start_index[1] = 4;
+    let mut pic = inter_frame(10, 3);
+    pic.frame_offset = 999;
+    assert_eq!(
+        pp::get_pic_idx_in_mg(&mut pic, &ra, &Default::default(), &map, 6, 1),
+        2
+    );
+    assert_eq!(
+        pic.frame_offset, 999,
+        "random access leaves frame_offset alone"
+    );
+}
+
+/// `update_pred_struct_and_pic_type` (`pd_process.c:4814-4871`) — the position
+/// if/else CHAIN and its priority.
+#[test]
+fn traced_update_pred_struct_and_pic_type_position_chain() {
+    let base_map = || {
+        let mut m = pp::MiniGopMap::default();
+        m.length[0] = 8;
+        m.idr_count[0] = 0;
+        m
+    };
+    let base_pic = || {
+        let mut p = inter_frame(10, 0);
+        p.pred_struct_entry_count = 8;
+        p.pred_struct_type = pp::PredStructure::RandomAccess;
+        p
+    };
+
+    // Not cutting short (length == entry_count, no IDR count), not IDR/CRA,
+    // elapsed_non_cra_count > 0 -> ordinary increment, B slice.
+    let mut map = base_map();
+    let mut pic = base_pic();
+    let mut ctx = pp::PicDecisionCtx::default();
+    let mut enc = pp::EncCtxPicParams {
+        pred_struct_position: 3,
+        elapsed_non_cra_count: 5,
+        ..Default::default()
+    };
+    let st = pp::update_pred_struct_and_pic_type(
+        &mut pic, &mut enc, &mut map, &mut ctx, 0, false, false, false, false, 0,
+    );
+    assert_eq!(st, pp::SliceType::B);
+    assert_eq!(enc.pred_struct_position, 4);
+    assert_eq!(ctx.cut_short_ra_mg, 0);
+
+    // An IDR resets to init_pic_index, gives an I slice, and records the POC.
+    let mut map = base_map();
+    let mut pic = base_pic();
+    let mut ctx = pp::PicDecisionCtx::default();
+    let mut enc = pp::EncCtxPicParams {
+        pred_struct_position: 3,
+        elapsed_non_cra_count: 5,
+        ..Default::default()
+    };
+    let st = pp::update_pred_struct_and_pic_type(
+        &mut pic, &mut enc, &mut map, &mut ctx, 0, false, true, false, false, 1,
+    );
+    assert_eq!(st, pp::SliceType::I);
+    assert_eq!(enc.pred_struct_position, 1);
+    assert_eq!(enc.last_idr_picture, 10);
+
+    // Directly after a CRA (elapsed_non_cra_count == 0) -> init_pic_index + 1,
+    // NOT init_pic_index. This arm sits BELOW the IDR and CRA arms in the
+    // chain, so it only fires for an ordinary picture.
+    let mut map = base_map();
+    let mut pic = base_pic();
+    let mut ctx = pp::PicDecisionCtx::default();
+    let mut enc = pp::EncCtxPicParams {
+        pred_struct_position: 3,
+        elapsed_non_cra_count: 0,
+        ..Default::default()
+    };
+    pp::update_pred_struct_and_pic_type(
+        &mut pic, &mut enc, &mut map, &mut ctx, 0, false, false, false, false, 1,
+    );
+    assert_eq!(enc.pred_struct_position, 2);
+
+    // Cutting short a random-access mini-GOP switches the picture to LOW_DELAY
+    // and forces a B slice even though the mini-GOP holds an IDR.
+    let mut map = base_map();
+    map.idr_count[0] = 1;
+    let mut pic = base_pic();
+    let mut ctx = pp::PicDecisionCtx::default();
+    let mut enc = pp::EncCtxPicParams {
+        pred_struct_position: 5,
+        elapsed_non_cra_count: 5,
+        ..Default::default()
+    };
+    let st = pp::update_pred_struct_and_pic_type(
+        &mut pic, &mut enc, &mut map, &mut ctx, 0, true, false, false, false, 2,
+    );
+    assert_eq!(st, pp::SliceType::B);
+    assert_eq!(pic.pred_struct_type, pp::PredStructure::LowDelay);
+    assert_eq!(ctx.cut_short_ra_mg, 1);
+    // The first-pass correction subtracted init_pic_index (5 - 2 = 3), then
+    // the ordinary increment made it 4.
+    assert_eq!(enc.pred_struct_position, 4);
+
+    // The wrap: position == entry_count wraps to 0.
+    let mut map = base_map();
+    let mut pic = base_pic();
+    let mut ctx = pp::PicDecisionCtx::default();
+    let mut enc = pp::EncCtxPicParams {
+        pred_struct_position: 7,
+        elapsed_non_cra_count: 5,
+        ..Default::default()
+    };
+    pp::update_pred_struct_and_pic_type(
+        &mut pic, &mut enc, &mut map, &mut ctx, 0, false, false, false, false, 0,
+    );
+    assert_eq!(enc.pred_struct_position, 0, "8 wraps to 0 at entry_count 8");
+}
+
+/// `perform_sc_detection` (`pd_process.c:4769-4813`) — inter frames INHERIT.
+///
+/// This is the half that matters for parity: without it a port re-detects per
+/// frame and flips palette / IntraBC / SC-tuned thresholds mid-GOP.
+#[test]
+fn traced_perform_sc_detection_inheritance() {
+    let mut last_i = pp::ScClasses::default();
+    let detected = pp::ScClasses {
+        class: [1, 0, 1, 0, 1, 0],
+        is_luma_dominant_input: true,
+    };
+
+    // An I picture publishes its classes.
+    let got = pp::perform_sc_detection(true, detected, &mut last_i);
+    assert_eq!(got, detected);
+    assert_eq!(last_i, detected);
+
+    // Every following inter picture inherits them, ignoring whatever its own
+    // (never-run) detection would have produced.
+    let bogus = pp::ScClasses {
+        class: [9; 6],
+        is_luma_dominant_input: false,
+    };
+    for _ in 0..3 {
+        assert_eq!(
+            pp::perform_sc_detection(false, bogus, &mut last_i),
+            detected
+        );
+    }
+    assert_eq!(
+        last_i, detected,
+        "an inter picture never updates the context"
+    );
+}
+
+/// `avail_past_pictures` (`pd_process.c:3592-3605`) — the temporal-filter
+/// window cap at the start of a sequence.
+#[test]
+fn traced_avail_past_pictures() {
+    assert_eq!(pp::avail_past_pictures(&[], 5), 0);
+    assert_eq!(pp::avail_past_pictures(&[0, 1, 2, 3, 4, 5, 6], 4), 4);
+    assert_eq!(pp::avail_past_pictures(&[5], 5), 0, "equal is not past");
+    assert_eq!(pp::avail_past_pictures(&[9, 8, 7], 5), 0);
+    assert_eq!(
+        pp::avail_past_pictures(&[0, 1, 2], 0),
+        0,
+        "the sequence start"
+    );
+}

@@ -460,6 +460,24 @@ pub struct PicDecisionCtx {
     pub mg_size: u32,
 }
 
+impl PicDecisionCtx {
+    /// The state C's `svt_aom_picture_decision_context_ctor` leaves
+    /// (`pd_process.c:236-252`).
+    ///
+    /// The only field that differs from [`Default`] is `transition_detected`,
+    /// which C initialises to **-1**, not 0. Nothing this module does reads it
+    /// except `init_pic_settings`' `== 1` test, so the two are behaviourally
+    /// identical here — it is reproduced so a later consumer that treats 0 as
+    /// "no transition yet" does not inherit a value C never had.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            transition_detected: -1,
+            ..Self::default()
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Exported C symbols (tier 1 reachable)
 // ---------------------------------------------------------------------------
@@ -1598,4 +1616,741 @@ pub fn picture_decision_per_picture(
     update_dpb(pic, ctx);
     init_pic_settings(pic, seq, ctx);
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Mini-GOP structure (pd_process.c:759-988, 4720-4893) + utility.c's table
+// ---------------------------------------------------------------------------
+
+/// C `MINI_GOP_MAX_COUNT` (`utility.h:168`).
+pub const MINI_GOP_MAX_COUNT: usize = 31;
+/// C `MIN_HIERARCHICAL_LEVEL` (`utility.h:171`).
+pub const MIN_HIERARCHICAL_LEVEL: u8 = 1;
+/// C `MAX_HIERARCHICAL_LEVEL` (`API/EbSvtAv1Enc.h:34`).
+pub const MAX_HIERARCHICAL_LEVEL: u8 = 6;
+/// C `mini_gop_offset` (`utility.h:172`), indexed by
+/// `hierarchical_levels - MIN_HIERARCHICAL_LEVEL`.
+pub const MINI_GOP_OFFSET: [u8; (MAX_HIERARCHICAL_LEVEL - MIN_HIERARCHICAL_LEVEL) as usize] =
+    [1, 3, 7, 15, 31];
+
+/// C `MinigopIndex` (`utility.h:183-214`) — the entries the activity array is
+/// addressed by name.
+pub const L6_INDEX: usize = 0;
+/// See [`L6_INDEX`].
+pub const L5_0_INDEX: usize = 1;
+/// See [`L6_INDEX`].
+pub const L4_0_INDEX: usize = 2;
+/// See [`L6_INDEX`].
+pub const L3_0_INDEX: usize = 3;
+/// See [`L6_INDEX`].
+pub const L2_0_INDEX: usize = 4;
+/// See [`L6_INDEX`].
+pub const L3_2_INDEX: usize = 10;
+/// See [`L6_INDEX`].
+pub const L2_2_INDEX: usize = 7;
+/// See [`L6_INDEX`].
+pub const L2_4_INDEX: usize = 11;
+/// See [`L6_INDEX`].
+pub const L2_6_INDEX: usize = 14;
+/// See [`L6_INDEX`].
+pub const L5_1_INDEX: usize = 16;
+/// See [`L6_INDEX`].
+pub const L4_2_INDEX: usize = 17;
+/// See [`L6_INDEX`].
+pub const L3_4_INDEX: usize = 18;
+/// See [`L6_INDEX`].
+pub const L2_8_INDEX: usize = 19;
+/// See [`L6_INDEX`].
+pub const L2_10_INDEX: usize = 22;
+/// See [`L6_INDEX`].
+pub const L3_6_INDEX: usize = 25;
+/// See [`L6_INDEX`].
+pub const L2_12_INDEX: usize = 26;
+/// See [`L6_INDEX`].
+pub const L2_14_INDEX: usize = 29;
+
+/// C `MiniGopStats` (`utility.h:174-179`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MiniGopStats {
+    /// C `hierarchical_levels`.
+    pub hierarchical_levels: u8,
+    /// C `start_index` into the pre-assignment buffer.
+    pub start_index: u8,
+    /// C `end_index` (inclusive).
+    pub end_index: u8,
+    /// C `length` (== `end_index - start_index + 1`).
+    pub length: u8,
+}
+
+/// C `mini_gop_stats_array` (`utility.c:129-161`) — the 31 candidate mini-GOP
+/// shapes a 32-picture pre-assignment buffer can be cut into.
+const MINI_GOP_STATS_ARRAY: [MiniGopStats; MINI_GOP_MAX_COUNT] = {
+    const fn s(h: u8, a: u8, b: u8, l: u8) -> MiniGopStats {
+        MiniGopStats {
+            hierarchical_levels: h,
+            start_index: a,
+            end_index: b,
+            length: l,
+        }
+    }
+    [
+        s(5, 0, 31, 32),
+        s(4, 0, 15, 16),
+        s(3, 0, 7, 8),
+        s(2, 0, 3, 4),
+        s(1, 0, 1, 2),
+        s(1, 2, 3, 2),
+        s(2, 4, 7, 4),
+        s(1, 4, 5, 2),
+        s(1, 6, 7, 2),
+        s(3, 8, 15, 8),
+        s(2, 8, 11, 4),
+        s(1, 8, 9, 2),
+        s(1, 10, 11, 2),
+        s(2, 12, 15, 4),
+        s(1, 12, 13, 2),
+        s(1, 14, 15, 2),
+        s(4, 16, 31, 16),
+        s(3, 16, 23, 8),
+        s(2, 16, 19, 4),
+        s(1, 16, 17, 2),
+        s(1, 18, 19, 2),
+        s(2, 20, 23, 4),
+        s(1, 20, 21, 2),
+        s(1, 22, 23, 2),
+        s(3, 24, 31, 8),
+        s(2, 24, 27, 4),
+        s(1, 24, 25, 2),
+        s(1, 26, 27, 2),
+        s(2, 28, 31, 4),
+        s(1, 28, 29, 2),
+        s(1, 30, 31, 2),
+    ]
+};
+
+/// C `svt_aom_get_mini_gop_stats` (`utility.c:168-170`) — EXPORTED.
+///
+/// # Panics
+///
+/// Panics for `mini_gop_index >= MINI_GOP_MAX_COUNT`; C indexes the array
+/// unchecked, so an out-of-range index is caller misuse in both.
+#[must_use]
+pub fn get_mini_gop_stats(mini_gop_index: usize) -> MiniGopStats {
+    MINI_GOP_STATS_ARRAY[mini_gop_index]
+}
+
+/// The `EncodeContext` fields the mini-GOP and pred-struct derivation reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct EncCtxPicParams {
+    /// C `enc_ctx->pre_assignment_buffer_count`.
+    pub pre_assignment_buffer_count: u32,
+    /// C `enc_ctx->pre_assignment_buffer_intra_count`.
+    pub pre_assignment_buffer_intra_count: u32,
+    /// C `enc_ctx->pre_assignment_buffer_idr_count`.
+    pub pre_assignment_buffer_idr_count: u32,
+    /// C `enc_ctx->previous_mini_gop_hierarchical_levels`.
+    pub previous_mini_gop_hierarchical_levels: u32,
+    /// C `enc_ctx->mini_gop_cnt_per_gop`.
+    pub mini_gop_cnt_per_gop: u32,
+    /// C `enc_ctx->pred_struct_position`.
+    pub pred_struct_position: u32,
+    /// C `enc_ctx->last_idr_picture`.
+    pub last_idr_picture: u64,
+    /// C `enc_ctx->elapsed_non_cra_count`.
+    pub elapsed_non_cra_count: u32,
+}
+
+/// The mini-GOP window state `set_mini_gop_structure` fills.
+///
+/// C keeps these as parallel arrays on `PictureDecisionContext`; kept here as
+/// one struct so the whole window map moves together.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MiniGopMap {
+    /// C `ctx->mini_gop_activity_array[MINI_GOP_MAX_COUNT]`.
+    pub activity: [bool; MINI_GOP_MAX_COUNT],
+    /// C `ctx->mini_gop_start_index[]`.
+    pub start_index: [u32; MINI_GOP_MAX_COUNT],
+    /// C `ctx->mini_gop_end_index[]`.
+    pub end_index: [u32; MINI_GOP_MAX_COUNT],
+    /// C `ctx->mini_gop_length[]`.
+    pub length: [u32; MINI_GOP_MAX_COUNT],
+    /// C `ctx->mini_gop_hierarchical_levels[]`.
+    pub hierarchical_levels: [u32; MINI_GOP_MAX_COUNT],
+    /// C `ctx->mini_gop_intra_count[]`.
+    pub intra_count: [u32; MINI_GOP_MAX_COUNT],
+    /// C `ctx->mini_gop_idr_count[]`.
+    pub idr_count: [u32; MINI_GOP_MAX_COUNT],
+    /// C `ctx->total_number_of_mini_gops`.
+    pub total_number_of_mini_gops: usize,
+    /// C `ctx->enable_startup_mg`.
+    pub enable_startup_mg: bool,
+    /// C `ctx->is_startup_gop`.
+    pub is_startup_gop: bool,
+    /// C `ctx->sframe_hier_lvls`.
+    pub sframe_hier_lvls: i32,
+    /// C `ctx->list0_only`.
+    pub list0_only: bool,
+}
+
+impl Default for MiniGopMap {
+    fn default() -> Self {
+        Self {
+            activity: [false; MINI_GOP_MAX_COUNT],
+            start_index: [0; MINI_GOP_MAX_COUNT],
+            end_index: [0; MINI_GOP_MAX_COUNT],
+            length: [0; MINI_GOP_MAX_COUNT],
+            hierarchical_levels: [0; MINI_GOP_MAX_COUNT],
+            intra_count: [0; MINI_GOP_MAX_COUNT],
+            idr_count: [0; MINI_GOP_MAX_COUNT],
+            total_number_of_mini_gops: 0,
+            enable_startup_mg: false,
+            is_startup_gop: false,
+            // C's picture_decision_context_ctor sets 0 here
+            // (pd_process.c:249) -- but that value is DEAD: the kernel
+            // overwrites it with the configured hierarchy at picture_number 0
+            // (pd_process.c:5407-5409) before set_mini_gop_structure ever
+            // reads it. Use `MiniGopMap::for_sequence` so the live value is
+            // the one in play; the ctor value is reproduced here only so a
+            // reader who greps the C ctor finds the same number.
+            sframe_hier_lvls: 0,
+            list0_only: false,
+        }
+    }
+}
+
+impl MiniGopMap {
+    /// The state as of `picture_number == 0`, where the kernel initialises
+    /// `sframe_hier_lvls` from the configured hierarchy
+    /// (`pd_process.c:5407-5409`).
+    ///
+    /// Using [`Default`] instead leaves `sframe_hier_lvls` at C's *ctor* value
+    /// of 0, which makes [`set_mini_gop_structure`]'s S-frame override fire on
+    /// every non-zero configured hierarchy and collapse the mini-GOP to level
+    /// 0. That is a real trap: the ctor line is the one a grep finds first and
+    /// it is not the value the code runs with.
+    #[must_use]
+    pub fn for_sequence(config_hierarchical_levels: u8) -> Self {
+        Self {
+            sframe_hier_lvls: i32::from(config_hierarchical_levels),
+            ..Self::default()
+        }
+    }
+}
+
+/// C `initialize_mini_gop_activity_array` (`pd_process.c:759-848`) — static.
+///
+/// Chooses which mini-GOP shapes are permitted for the current pre-assignment
+/// buffer count. `activity[i] == true` means "this shape is still a candidate
+/// and must be subdivided"; the nested cascade clears the flag on the LARGEST
+/// shape that fits, then recurses into the remainder.
+///
+/// Trap: every arm is `count >= N && !(count == N && idr_flag)`. The IDR guard
+/// means a buffer holding EXACTLY N pictures whose first is an IDR does NOT
+/// take the N-picture shape — an off-by-one that only shows up at a GOP
+/// boundary, which is the case a short test cell hits first.
+///
+/// Returns `true` when the caller must run the dynamic-GOP 6L-vs-5L split
+/// (`eval_sub_mini_gop`), which is NOT ported: it needs `early_hme` /
+/// `calc_mini_gop_activity`, a different chunk. Measured: `scs->enable_dg` is
+/// 1 for single-pass CQP/CRF `RANDOM_ACCESS` below 4K
+/// (`enc_handle.c:4294-4300`), so this is on by default there — the caller
+/// must not treat a `true` return as an exotic case.
+pub fn initialize_mini_gop_activity_array(
+    map: &mut MiniGopMap,
+    enc: &EncCtxPicParams,
+    idr_flag: bool,
+    enable_dg: bool,
+    list0_only_base: bool,
+) -> bool {
+    for gopindex in 0..MINI_GOP_MAX_COUNT {
+        map.activity[gopindex] =
+            get_mini_gop_stats(gopindex).hierarchical_levels > MIN_HIERARCHICAL_LEVEL;
+    }
+
+    let n = enc.pre_assignment_buffer_count;
+    // `fits(k)` is C's `count >= k && !(count == k && idr_flag)`.
+    let fits = |count: u32, k: u32| count >= k && !(count == k && idr_flag);
+
+    if fits(n, 32) {
+        map.activity[L6_INDEX] = false;
+    } else if fits(n, 16) {
+        map.activity[L5_0_INDEX] = false;
+        if fits(n - 16, 8) {
+            map.activity[L4_2_INDEX] = false;
+            if fits(n - 16 - 8, 4) {
+                map.activity[L3_6_INDEX] = false;
+                if fits(n - 16 - 8 - 4, 2) {
+                    map.activity[L2_14_INDEX] = false;
+                }
+            } else if fits(n - 16 - 8, 2) {
+                map.activity[L2_12_INDEX] = false;
+            }
+        } else if fits(n - 16, 4) {
+            map.activity[L3_4_INDEX] = false;
+            if fits(n - 16 - 4, 2) {
+                map.activity[L2_10_INDEX] = false;
+            }
+        } else if fits(n - 16, 2) {
+            map.activity[L2_8_INDEX] = false;
+        }
+    } else if fits(n, 8) {
+        map.activity[L4_0_INDEX] = false;
+        if fits(n - 8, 4) {
+            map.activity[L3_2_INDEX] = false;
+            if fits(n - 8 - 4, 2) {
+                map.activity[L2_6_INDEX] = false;
+            }
+        } else if fits(n - 8, 2) {
+            map.activity[L2_4_INDEX] = false;
+        }
+    } else if fits(n, 4) {
+        map.activity[L3_0_INDEX] = false;
+        if fits(n - 4, 2) {
+            map.activity[L2_2_INDEX] = false;
+        }
+    } else if fits(n, 2) {
+        map.activity[L2_0_INDEX] = false;
+    }
+
+    map.list0_only = list0_only_base;
+
+    // 6L vs 5L: C calls eval_sub_mini_gop here.
+    enable_dg && !map.activity[L6_INDEX]
+}
+
+/// C `generate_picture_window_split` (`pd_process.c:857-891`) — static.
+///
+/// Turns the activity array into the concrete list of mini-GOPs. The loop's
+/// STRIDE is the subtle part: an ACTIVE (still-to-subdivide) shape advances by
+/// 1 so its children are visited, while an INACTIVE (chosen) shape skips its
+/// whole subtree via `mini_gop_offset[levels - MIN_HIERARCHICAL_LEVEL]`.
+pub fn generate_picture_window_split(map: &mut MiniGopMap, enc: &EncCtxPicParams) {
+    map.total_number_of_mini_gops = 0;
+    let mut gopindex = 0usize;
+    while gopindex < MINI_GOP_MAX_COUNT {
+        let stats = get_mini_gop_stats(gopindex);
+        if u32::from(stats.end_index) < enc.pre_assignment_buffer_count && !map.activity[gopindex] {
+            let t = map.total_number_of_mini_gops;
+            map.start_index[t] = u32::from(stats.start_index);
+            map.end_index[t] = u32::from(stats.end_index);
+            map.length[t] = u32::from(stats.length);
+            map.hierarchical_levels[t] = u32::from(stats.hierarchical_levels);
+            map.intra_count[t] = 0;
+            map.idr_count[t] = 0;
+            map.total_number_of_mini_gops += 1;
+        }
+        gopindex += if map.activity[gopindex] {
+            1
+        } else {
+            usize::from(
+                MINI_GOP_OFFSET[(stats.hierarchical_levels - MIN_HIERARCHICAL_LEVEL) as usize],
+            )
+        };
+    }
+    if map.total_number_of_mini_gops != 0 {
+        let last = map.total_number_of_mini_gops - 1;
+        map.intra_count[last] = enc.pre_assignment_buffer_intra_count;
+        map.idr_count[last] = enc.pre_assignment_buffer_idr_count;
+    }
+}
+
+/// C `handle_incomplete_picture_window_map` (`pd_process.c:892-927`) — static.
+///
+/// Fixes up the last, short mini-GOP at a GOP boundary — exactly the
+/// end-of-sequence case a 2- or 5-frame test cell hits first.
+pub fn handle_incomplete_picture_window_map(
+    hierarchical_level: u32,
+    map: &mut MiniGopMap,
+    enc: &EncCtxPicParams,
+) {
+    if map.total_number_of_mini_gops == 0 {
+        let hier = hierarchical_level.min(u32::from(MIN_HIERARCHICAL_LEVEL));
+        let t = map.total_number_of_mini_gops;
+        map.start_index[t] = 0;
+        map.end_index[t] = enc.pre_assignment_buffer_count - 1;
+        map.length[t] = enc.pre_assignment_buffer_count - map.start_index[t];
+        map.hierarchical_levels[t] = hier;
+        map.total_number_of_mini_gops += 1;
+    } else if map.end_index[map.total_number_of_mini_gops - 1] < enc.pre_assignment_buffer_count - 1
+    {
+        let t = map.total_number_of_mini_gops;
+        map.start_index[t] = map.end_index[t - 1] + 1;
+        map.end_index[t] = enc.pre_assignment_buffer_count - 1;
+        map.length[t] = enc.pre_assignment_buffer_count - map.start_index[t];
+        map.hierarchical_levels[t] = u32::from(MIN_HIERARCHICAL_LEVEL);
+        // C zeroes the PREVIOUS entry's counts here, then writes the buffer
+        // totals into the NEW last entry two lines later.
+        map.intra_count[t - 1] = 0;
+        map.idr_count[t - 1] = 0;
+        map.total_number_of_mini_gops += 1;
+    }
+    let last = map.total_number_of_mini_gops - 1;
+    map.intra_count[last] = enc.pre_assignment_buffer_intra_count;
+    map.idr_count[last] = enc.pre_assignment_buffer_idr_count;
+}
+
+/// C `set_mini_gop_structure` (`pd_process.c:4720-4768`) — static.
+///
+/// Sets the single default mini-GOP covering the whole pre-assignment buffer,
+/// then subdivides it (activity array -> window split -> incomplete fixup)
+/// only when the buffer holds more than one picture, or holds no intra picture
+/// in random access. In low delay `pre_assignment_buffer_count` is 1, so the
+/// subdivision never runs and the default MG stands — that is why this
+/// function "degenerates" in the campaign's first cell rather than being
+/// irrelevant to it.
+///
+/// Returns `true` when the caller must run the un-ported dynamic-GOP split;
+/// see [`initialize_mini_gop_activity_array`].
+#[allow(clippy::too_many_arguments)]
+pub fn set_mini_gop_structure(
+    map: &mut MiniGopMap,
+    enc: &mut EncCtxPicParams,
+    seq: &SeqPicParams,
+    pic: &PicParams,
+    config_hierarchical_levels: u32,
+    startup_mg_size: u32,
+    idr_flag: bool,
+    enable_dg: bool,
+    list0_only_base: bool,
+) -> bool {
+    let mut next_mg_hierarchical_levels = config_hierarchical_levels;
+    // S-frame mini-GOP size override.
+    if map.sframe_hier_lvls != config_hierarchical_levels as i32 {
+        next_mg_hierarchical_levels = map.sframe_hier_lvls as u32;
+    }
+    if map.enable_startup_mg {
+        next_mg_hierarchical_levels = startup_mg_size;
+    }
+    // RTC (implies LOW_DELAY + CBR) supports on-the-fly hierarchy changes.
+    if seq.pred_structure == PredStructure::LowDelay
+        && seq.rtc
+        && seq.rate_control_mode == RcMode::Cbr
+    {
+        next_mg_hierarchical_levels = u32::from(pic.hierarchical_levels);
+    }
+
+    map.start_index[0] = 0;
+    map.end_index[0] = enc.pre_assignment_buffer_count - 1;
+    map.length[0] = enc.pre_assignment_buffer_count;
+    map.hierarchical_levels[0] = next_mg_hierarchical_levels;
+    map.intra_count[0] = enc.pre_assignment_buffer_intra_count;
+    map.idr_count[0] = enc.pre_assignment_buffer_idr_count;
+    map.total_number_of_mini_gops = 1;
+
+    enc.previous_mini_gop_hierarchical_levels = if pic.picture_number == 0 {
+        next_mg_hierarchical_levels
+    } else {
+        enc.previous_mini_gop_hierarchical_levels
+    };
+    enc.mini_gop_cnt_per_gop = if enc.pre_assignment_buffer_idr_count != 0 {
+        0
+    } else {
+        enc.mini_gop_cnt_per_gop + 1
+    };
+
+    let mut needs_dg = false;
+    if enc.pre_assignment_buffer_count > 1
+        || (enc.pre_assignment_buffer_intra_count == 0
+            && seq.pred_structure == PredStructure::RandomAccess)
+    {
+        needs_dg =
+            initialize_mini_gop_activity_array(map, enc, idr_flag, enable_dg, list0_only_base);
+        generate_picture_window_split(map, enc);
+        handle_incomplete_picture_window_map(next_mg_hierarchical_levels, map, enc);
+    }
+    needs_dg
+}
+
+/// One picture's slice of `get_pred_struct_for_all_frames`
+/// (`pd_process.c:942-988`) — static.
+///
+/// Sets `pred_structure`, `hierarchical_levels` and `is_startup_gop`.
+/// Everything downstream (RPS branch selection, layer depth, TF params) keys
+/// off these.
+///
+/// Trap: an IDR takes the SEQUENCE's `hierarchical_levels`, every other
+/// picture takes the MINI-GOP's. A port that used one value for the whole
+/// buffer picks the wrong RPS branch on the frame after every key frame.
+///
+/// C also assigns `pcs->pred_struct_ptr` from the prediction-structure group;
+/// that table lives in `pred_structure.c` and is not this module's.
+pub fn get_pred_struct_for_frame(
+    pic: &mut PicParams,
+    map: &mut MiniGopMap,
+    mini_gop_index: usize,
+    seq_pred_structure: PredStructure,
+    config_hierarchical_levels: u8,
+    startup_mg_size: u32,
+    idr_flag: bool,
+    cra_flag: bool,
+) {
+    pic.pred_struct_type = seq_pred_structure;
+    pic.hierarchical_levels = if idr_flag {
+        config_hierarchical_levels
+    } else {
+        map.hierarchical_levels[mini_gop_index] as u8
+    };
+
+    if startup_mg_size != 0 {
+        if idr_flag || cra_flag {
+            map.enable_startup_mg = true;
+        } else if map.enable_startup_mg {
+            map.enable_startup_mg = false;
+        }
+    }
+    if idr_flag && pic.picture_number == 0 {
+        map.is_startup_gop = true;
+    } else if idr_flag || cra_flag {
+        map.is_startup_gop = false;
+    }
+}
+
+/// C `is_pic_cutting_short_ra_mg` (`pd_process.c:928-941`) — EXPORTED.
+///
+/// Detects a random-access mini-GOP cut short by an intra picture, which
+/// switches the picture to the LOW_DELAY prediction structure mid-stream.
+#[must_use]
+pub fn is_pic_cutting_short_ra_mg(
+    map: &MiniGopMap,
+    pic: &PicParams,
+    mg_idx: usize,
+    idr_flag: bool,
+    cra_flag: bool,
+) -> bool {
+    (map.length[mg_idx] < pic.pred_struct_entry_count || map.idr_count[mg_idx] > 0)
+        && pic.pred_struct_type == PredStructure::RandomAccess
+        && !idr_flag
+        && !cra_flag
+}
+
+/// C `svt_aom_is_delayed_intra` (`pd_process.c:3620-3635`) — EXPORTED.
+///
+/// Whether an intra picture is held back to join the next mini-GOP. Selects
+/// `tf_params_per_type[0]` in `copy_tf_params` and gates the delayed-intra
+/// handling in the picture-decision sequence.
+#[must_use]
+pub fn is_delayed_intra(
+    idr_flag: bool,
+    cra_flag: bool,
+    pred_structure: PredStructure,
+    intra_period_length: i32,
+    end_of_sequence_flag: bool,
+    pre_assignment_buffer_count: u32,
+    pred_struct_entry_count: u32,
+) -> bool {
+    if (idr_flag || cra_flag) && pred_structure == PredStructure::RandomAccess {
+        if intra_period_length == 0 || end_of_sequence_flag {
+            false
+        } else {
+            idr_flag || (cra_flag && pre_assignment_buffer_count < pred_struct_entry_count)
+        }
+    } else {
+        false
+    }
+}
+
+/// C `search_this_pic` (`pd_process.c:3606-3619`) — EXPORTED.
+///
+/// Locates a picture by POC in a picture buffer; returns -1 when absent. This
+/// is the lookup `derive_tf_window_params` uses to assemble its window.
+#[must_use]
+pub fn search_this_pic(buf: &[u64], input_pic: u64) -> i32 {
+    for (i, &poc) in buf.iter().enumerate() {
+        if poc == input_pic {
+            return i as i32;
+        }
+    }
+    -1
+}
+
+/// C `avail_past_pictures` (`pd_process.c:3592-3605`) — static.
+///
+/// Counts how many pictures in the buffer precede `input_pic`, which caps the
+/// temporal-filter window size at the start of a sequence.
+#[must_use]
+pub fn avail_past_pictures(buf: &[u64], input_pic: u64) -> i32 {
+    buf.iter().filter(|&&poc| poc < input_pic).count() as i32
+}
+
+/// C `perform_sc_detection`'s INHERITANCE half (`pd_process.c:4769-4813`) —
+/// static.
+///
+/// Inter frames do NOT run screen-content detection: they inherit
+/// `sc_class0..5` and `is_luma_dominant_input` from the last I picture. An I
+/// picture runs detection (single-threaded mode only) and then publishes its
+/// classes into the context.
+///
+/// Only the inheritance and publication are ported here; the detection calls
+/// themselves (`svt_aom_is_screen_content`,
+/// `svt_aom_is_screen_content_antialiasing_aware`,
+/// `svt_aom_is_input_luma_dominant`) live in the screen-content module. The
+/// caller passes the freshly detected classes for an I picture.
+///
+/// This matters because without it a port re-detects per frame and flips
+/// palette / IntraBC / SC-tuned thresholds mid-GOP.
+pub fn perform_sc_detection(
+    is_i_slice: bool,
+    detected: ScClasses,
+    last_i: &mut ScClasses,
+) -> ScClasses {
+    if is_i_slice {
+        *last_i = detected;
+        detected
+    } else {
+        *last_i
+    }
+}
+
+/// The screen-content classification a picture carries
+/// (`pcs->sc_class0..5` + `pcs->is_luma_dominant_input`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ScClasses {
+    /// C `pcs->sc_class0..5`.
+    pub class: [u8; 6],
+    /// C `pcs->is_luma_dominant_input`.
+    pub is_luma_dominant_input: bool,
+}
+
+/// C `store_mg_picture_arrays` (`pd_process.c:4966-4985`) — static.
+///
+/// Sorts the mini-GOP into DECODE order and keeps a display-order copy. It
+/// literally determines the order frames are coded into the bitstream in
+/// random access.
+///
+/// Trap: C's inner swap writes `mg_pics[i] = ctx->mg_pictures_array[j]` — the
+/// SAME array `mg_pics` aliases, so it is an ordinary selection sort and not,
+/// as the two spellings suggest, a copy from a second array. Reproduced as a
+/// stable-by-construction selection sort on `decode_order`.
+///
+/// `decode_orders[k]` is the `decode_order` of the k-th picture **in display
+/// order** (C's incoming `ctx->mg_pictures_array`). Returns
+/// `(decode_order_permutation, display_order_permutation)` as index lists into
+/// that same input.
+#[must_use]
+pub fn store_mg_picture_arrays(
+    decode_orders: &[u64],
+) -> (alloc::vec::Vec<usize>, alloc::vec::Vec<usize>) {
+    let n = decode_orders.len();
+    let display: alloc::vec::Vec<usize> = (0..n).collect();
+    let mut decode: alloc::vec::Vec<usize> = (0..n).collect();
+    for i in 0..n.saturating_sub(1) {
+        for j in (i + 1)..n {
+            if decode_orders[decode[j]] < decode_orders[decode[i]] {
+                decode.swap(i, j);
+            }
+        }
+    }
+    (decode, display)
+}
+
+/// C `get_pic_idx_in_mg` (`pd_process.c:4872-4893`) — static.
+///
+/// Produces the RPS branch selector (`pic_idx_in_mg`) and, in low delay, also
+/// writes `pcs->frame_offset` — the `set_frame_update_type` selector. Two
+/// distinct downstream decisions ride on this one call.
+///
+/// Trap: in low delay `pic_idx_in_mg` is `(pred_struct_position - 1) %
+/// entry_count`, with a special case for position 0 — NOT the position
+/// itself. `frame_offset` is the distance to the last IDR, which is a
+/// different quantity from `pic_idx_in_mg` and is written even when the
+/// S-frame branch overrides the index.
+///
+/// The `IS_SFRAME_FLEXIBLE_INSERT` override is not ported (S-frames are
+/// outside the port's envelope) and is named here rather than dropped.
+pub fn get_pic_idx_in_mg(
+    pic: &mut PicParams,
+    seq: &SeqPicParams,
+    enc: &EncCtxPicParams,
+    map: &MiniGopMap,
+    pic_idx: u32,
+    mini_gop_index: usize,
+) -> u32 {
+    match seq.pred_structure {
+        PredStructure::RandomAccess => pic_idx - map.start_index[mini_gop_index],
+        PredStructure::LowDelay => {
+            let mg_pos = u64::from(enc.pred_struct_position);
+            let idx = if mg_pos == 0 {
+                0
+            } else {
+                ((mg_pos - 1) % u64::from(pic.pred_struct_entry_count)) as u32
+            };
+            pic.frame_offset = pic.picture_number - enc.last_idr_picture;
+            idx
+        }
+        PredStructure::AllIntra => 0,
+    }
+}
+
+/// C `update_pred_struct_and_pic_type` (`pd_process.c:4814-4871`) — static.
+///
+/// Walks `enc_ctx->pred_struct_position` and picks the slice type. A wrong
+/// position means the wrong prediction-structure entry, i.e. the wrong
+/// temporal layer for the frame.
+///
+/// Returns the derived [`SliceType`]. Sets `pic.pred_struct_type` to
+/// `LOW_DELAY` and `map.cut_short_ra_mg` when the mini-GOP is cut short (C
+/// re-fetches the LOW_DELAY prediction structure at that point).
+///
+/// Trap: the position rules are an if/else CHAIN with a specific priority —
+/// mini-GOP switch, then IDR, then CRA-with-short-MG, then
+/// "directly after a CRA" (`elapsed_non_cra_count == 0`, which sets
+/// `init_pic_index + 1`, not `init_pic_index`), and only then the ordinary
+/// increment. Reordering any two arms changes the position on a real frame.
+#[allow(clippy::too_many_arguments)]
+pub fn update_pred_struct_and_pic_type(
+    pic: &mut PicParams,
+    enc: &mut EncCtxPicParams,
+    map: &mut MiniGopMap,
+    ctx: &mut PicDecisionCtx,
+    mini_gop_index: usize,
+    pre_assignment_buffer_first_pass_flag: bool,
+    idr_flag: bool,
+    cra_flag: bool,
+    init_pred_struct_position_flag: bool,
+    init_pic_index: u32,
+) -> SliceType {
+    let picture_type;
+    if is_pic_cutting_short_ra_mg(map, pic, mini_gop_index, idr_flag, cra_flag) {
+        // Correct the pred index before switching structures.
+        if pre_assignment_buffer_first_pass_flag {
+            enc.pred_struct_position -= init_pic_index;
+        }
+        pic.pred_struct_type = PredStructure::LowDelay;
+        picture_type = SliceType::B;
+        ctx.cut_short_ra_mg = 1;
+    } else {
+        picture_type = if idr_flag || cra_flag {
+            SliceType::I
+        } else {
+            SliceType::B
+        };
+    }
+
+    if init_pred_struct_position_flag {
+        enc.pred_struct_position = init_pic_index;
+    }
+
+    // The first two arms assign the same value in C too; they are kept
+    // separate (rather than or-ed) because their GUARDS differ and the chain's
+    // priority is the load-bearing part.
+    #[allow(clippy::if_same_then_else)]
+    if idr_flag {
+        enc.pred_struct_position = init_pic_index;
+    } else if cra_flag && map.length[mini_gop_index] < pic.pred_struct_entry_count {
+        enc.pred_struct_position = init_pic_index;
+    } else if enc.elapsed_non_cra_count == 0 {
+        // Directly after a CRA: skip the entry that would violate it.
+        enc.pred_struct_position = init_pic_index + 1;
+    } else {
+        enc.pred_struct_position += 1;
+    }
+
+    if idr_flag {
+        enc.last_idr_picture = pic.picture_number;
+    }
+
+    if enc.pred_struct_position == pic.pred_struct_entry_count {
+        enc.pred_struct_position -= pic.pred_struct_entry_count;
+    }
+    picture_type
 }

@@ -158,3 +158,97 @@ pub fn setup_skip_mode_allowed(
     }
     (a, i0, i1)
 }
+
+unsafe extern "C" {
+    fn ref_get_mini_gop_stats(
+        index: u32,
+        hier: *mut u8,
+        start: *mut u8,
+        end: *mut u8,
+        len: *mut u8,
+    );
+
+    fn ref_is_pic_cutting_short_ra_mg(
+        mg_len: u32,
+        mg_idr_count: u32,
+        entry_count: u32,
+        pic_pred_type: u8,
+        idr_flag: i32,
+        cra_flag: i32,
+    ) -> i32;
+
+    #[allow(clippy::too_many_arguments)]
+    fn ref_is_delayed_intra(
+        idr_flag: i32,
+        cra_flag: i32,
+        pred_structure: u8,
+        intra_period_length: i32,
+        end_of_sequence_flag: i32,
+        pre_assignment_buffer_count: u32,
+        pred_struct_entry_count: u32,
+    ) -> i32;
+
+    fn ref_search_this_pic(pocs: *const u64, buf_size: u32, input_pic: u64) -> i32;
+}
+
+/// C `svt_aom_get_mini_gop_stats` (`utility.c:168-170`).
+///
+/// Returns `(hierarchical_levels, start_index, end_index, length)`.
+#[must_use]
+pub fn get_mini_gop_stats(index: u32) -> (u8, u8, u8, u8) {
+    let (mut h, mut s, mut e, mut l) = (0u8, 0u8, 0u8, 0u8);
+    unsafe { ref_get_mini_gop_stats(index, &mut h, &mut s, &mut e, &mut l) };
+    (h, s, e, l)
+}
+
+/// C `is_pic_cutting_short_ra_mg` (`pd_process.c:928-941`).
+#[must_use]
+pub fn is_pic_cutting_short_ra_mg(
+    mg_len: u32,
+    mg_idr_count: u32,
+    entry_count: u32,
+    pic_pred_type: u8,
+    idr_flag: bool,
+    cra_flag: bool,
+) -> bool {
+    unsafe {
+        ref_is_pic_cutting_short_ra_mg(
+            mg_len,
+            mg_idr_count,
+            entry_count,
+            pic_pred_type,
+            i32::from(idr_flag),
+            i32::from(cra_flag),
+        ) != 0
+    }
+}
+
+/// C `svt_aom_is_delayed_intra` (`pd_process.c:3620-3635`).
+#[must_use]
+pub fn is_delayed_intra(
+    idr_flag: bool,
+    cra_flag: bool,
+    pred_structure: u8,
+    intra_period_length: i32,
+    end_of_sequence_flag: bool,
+    pre_assignment_buffer_count: u32,
+    pred_struct_entry_count: u32,
+) -> bool {
+    unsafe {
+        ref_is_delayed_intra(
+            i32::from(idr_flag),
+            i32::from(cra_flag),
+            pred_structure,
+            intra_period_length,
+            i32::from(end_of_sequence_flag),
+            pre_assignment_buffer_count,
+            pred_struct_entry_count,
+        ) != 0
+    }
+}
+
+/// C `search_this_pic` (`pd_process.c:3606-3619`).
+#[must_use]
+pub fn search_this_pic(pocs: &[u64], input_pic: u64) -> i32 {
+    unsafe { ref_search_this_pic(pocs.as_ptr(), pocs.len() as u32, input_pic) }
+}

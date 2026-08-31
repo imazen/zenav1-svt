@@ -252,3 +252,171 @@ fn c_parity_setup_skip_mode_allowed_grid() {
     assert!(saw_allowed, "grid never produced skip_mode_allowed = 1");
     assert!(saw_disallowed);
 }
+
+/// `svt_aom_get_mini_gop_stats` over ALL 31 entries of `mini_gop_stats_array`.
+///
+/// The table is transcribed into the port, so this is the differential that
+/// makes the transcription evidence rather than a claim.
+#[test]
+fn c_parity_get_mini_gop_stats_all_31_entries() {
+    for i in 0..31u32 {
+        let r = pp::get_mini_gop_stats(i as usize);
+        let want = cref::get_mini_gop_stats(i);
+        assert_eq!(
+            (r.hierarchical_levels, r.start_index, r.end_index, r.length),
+            want,
+            "mini_gop_stats_array[{i}]"
+        );
+    }
+    // Positive control: the table is not a constant row.
+    assert_ne!(cref::get_mini_gop_stats(0), cref::get_mini_gop_stats(30));
+}
+
+/// `is_pic_cutting_short_ra_mg` over the whole predicate lattice.
+///
+/// The C condition is
+/// `(length < entry_count || idr_count > 0) && pred_type == RANDOM_ACCESS &&
+/// !idr_flag && !cra_flag`, so the grid sweeps both disjuncts and all three
+/// conjuncts.
+#[test]
+fn c_parity_is_pic_cutting_short_ra_mg_lattice() {
+    let mut saw_true = false;
+    let mut saw_false = false;
+    for mg_len in [0u32, 1, 4, 8] {
+        for idr_count in [0u32, 1] {
+            for entry_count in [1u32, 4, 8] {
+                for pred_type in [0u8, 1, 2] {
+                    for idr in [false, true] {
+                        for cra in [false, true] {
+                            let map = pp::MiniGopMap {
+                                length: {
+                                    let mut a = [0u32; pp::MINI_GOP_MAX_COUNT];
+                                    a[0] = mg_len;
+                                    a
+                                },
+                                idr_count: {
+                                    let mut a = [0u32; pp::MINI_GOP_MAX_COUNT];
+                                    a[0] = idr_count;
+                                    a
+                                },
+                                ..Default::default()
+                            };
+                            let pic = pp::PicParams {
+                                pred_struct_entry_count: entry_count,
+                                pred_struct_type: match pred_type {
+                                    0 => pp::PredStructure::AllIntra,
+                                    1 => pp::PredStructure::LowDelay,
+                                    _ => pp::PredStructure::RandomAccess,
+                                },
+                                ..Default::default()
+                            };
+                            let got = pp::is_pic_cutting_short_ra_mg(&map, &pic, 0, idr, cra);
+                            let want = cref::is_pic_cutting_short_ra_mg(
+                                mg_len,
+                                idr_count,
+                                entry_count,
+                                pred_type,
+                                idr,
+                                cra,
+                            );
+                            assert_eq!(
+                                got, want,
+                                "is_pic_cutting_short_ra_mg(len={mg_len}, idr_count={idr_count}, \
+                                 entry={entry_count}, pred={pred_type}, idr={idr}, cra={cra})"
+                            );
+                            if got {
+                                saw_true = true;
+                            } else {
+                                saw_false = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(saw_true && saw_false, "the grid must reach both verdicts");
+}
+
+/// `svt_aom_is_delayed_intra` over the whole predicate lattice.
+#[test]
+fn c_parity_is_delayed_intra_lattice() {
+    let mut saw_true = false;
+    let mut saw_false = false;
+    for idr in [false, true] {
+        for cra in [false, true] {
+            for pred in [0u8, 1, 2] {
+                for period in [-1i32, 0, 1, 32] {
+                    for eos in [false, true] {
+                        for pab in [0u32, 1, 4, 8] {
+                            for entry in [1u32, 4, 8] {
+                                let got = pp::is_delayed_intra(
+                                    idr,
+                                    cra,
+                                    match pred {
+                                        0 => pp::PredStructure::AllIntra,
+                                        1 => pp::PredStructure::LowDelay,
+                                        _ => pp::PredStructure::RandomAccess,
+                                    },
+                                    period,
+                                    eos,
+                                    pab,
+                                    entry,
+                                );
+                                let want =
+                                    cref::is_delayed_intra(idr, cra, pred, period, eos, pab, entry);
+                                assert_eq!(
+                                    got, want,
+                                    "is_delayed_intra(idr={idr}, cra={cra}, pred={pred}, \
+                                     period={period}, eos={eos}, pab={pab}, entry={entry})"
+                                );
+                                if got {
+                                    saw_true = true;
+                                } else {
+                                    saw_false = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(saw_true && saw_false, "the grid must reach both verdicts");
+}
+
+/// `search_this_pic` — found, not found, first-match-wins and the empty buffer.
+#[test]
+fn c_parity_search_this_pic() {
+    let buffers: [&[u64]; 5] = [
+        &[],
+        &[7],
+        &[3, 1, 4, 1, 5, 9, 2, 6],
+        &[0, 0, 0, 0],
+        &[100, 99, 98, 97, 96],
+    ];
+    let mut saw_hit = false;
+    let mut saw_miss = false;
+    for buf in buffers {
+        for probe in 0u64..12 {
+            let got = pp::search_this_pic(buf, probe);
+            let want = cref::search_this_pic(buf, probe);
+            assert_eq!(got, want, "search_this_pic({buf:?}, {probe})");
+            if got >= 0 {
+                saw_hit = true;
+            } else {
+                saw_miss = true;
+            }
+        }
+        // A probe that is definitely present when the buffer is non-empty.
+        if let Some(&first) = buf.first() {
+            assert_eq!(
+                pp::search_this_pic(buf, first),
+                cref::search_this_pic(buf, first)
+            );
+        }
+    }
+    assert!(saw_hit && saw_miss);
+    // First match wins on a duplicate (buffer [3,1,4,1,...]: probe 1 -> 1).
+    assert_eq!(pp::search_this_pic(&[3, 1, 4, 1, 5], 1), 1);
+}
