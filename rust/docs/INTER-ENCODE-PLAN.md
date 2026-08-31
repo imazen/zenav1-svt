@@ -151,3 +151,41 @@ C1 depends on C0. C2/C3/C4/C5 are independent of both and of each other.
 - Report coverage as a fraction of the C surface, listing what is MISSING
   first. "Ported `motion_estimation.c`" means every function or a named subset,
   never "the important parts".
+
+## 4. A cross-lane PREREQUISITE the wiring chunk must land first (measured 2026-08-31, wp-entropy)
+
+Found by reading `entropy/context.rs::FrameContext::new_default`, not inferred:
+**seven of the inter CDF tables on `FrameContext` are UNIFORM PLACEHOLDERS, not
+the C defaults**, and twelve more have no field at all.
+
+| state | tables |
+|---|---|
+| placeholder (field exists, value is uniform) | `skip_mode_cdf`, `newmv_cdf`, `globalmv_cdf`, `refmv_cdf`, `drl_cdf`, `inter_compound_mode_cdf`, `interp_filter_cdf` |
+| absent (no field) | `comp_ref_type_cdf`, `uni_comp_ref_cdf`, `comp_bwdref_cdf`, `obmc_cdf`, `motion_mode_cdf`, `comp_group_idx_cdf`, `compound_index_cdf`, `compound_type_cdf`, `interintra_cdf`, `interintra_mode_cdf`, `wedge_interintra_cdf`, `wedge_idx_cdf` |
+| already correct | `single_ref_cdf`, `comp_ref_cdf`, `comp_inter_cdf`, `intra_inter_cdf`, `kf_y_mode_cdf`, `y_mode_cdf`, `tx_size_cdf`, `angle_delta_cdf` (the first three are asserted against C in `tests/c_parity_entropy_inter.rs`) |
+
+This is **byte-inert on the existing still envelope** — the public entry point
+still refuses inter frames and no intra site touches those tables — but the
+first inter block coded against a uniform table desyncs the tile immediately,
+so it gates EVERY inter block writer.
+
+All nineteen correct tables already exist, extracted from the real
+`svt_aom_init_mode_probs` and re-asserted against it at tier 1, in
+`svtav1_encoder::port_entropy_inter::cdfs`, with
+`port_entropy_inter::InterCdfs` as the per-frame mutable carrier. `FrameContext`
+is owned by the C1 lane, so the constants are **ready to lift, not lifted**:
+move them onto `FrameContext`, point `InterCdfs`'s users at it, and move
+`default_inter_cdf_tables_match_c` with them. Nothing else about the tables
+needs re-deriving.
+
+Two smaller notes from the same pass:
+
+- `entropy/obu.rs::write_inter_frame_header` writes **seven hardcoded zero
+  bits** for global motion. That is correct ONLY for all-IDENTITY with
+  `primary_ref_frame == PRIMARY_REF_NONE`;
+  `port_entropy_inter::gm::write_global_motion` is the real writer (its
+  `write_global_motion_traced` case pins the seven-zero-bit case as one
+  outcome, not the definition).
+- Guard #5 in `rust/CLAUDE.md` covered only the ALL-INTRA arm; SGR loop
+  restoration is LIVE in video mode at presets 0..3. Corrected in place as
+  guard 5c.
