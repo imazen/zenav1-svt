@@ -3275,3 +3275,106 @@ void ref_highbd_warp_affine(const int32_t* mat, const uint16_t* ref16, int32_t w
     free(r8);
     free(r2);
 }
+
+/* ---- restoration.c: the self-guided (SGR) chain ----
+ *
+ * svt_av1_selfguided_restoration_c and svt_apply_selfguided_restoration_c are
+ * EXPORTED and DRIVE the file's static helpers (boxsum / boxsum1 / boxsum2 /
+ * selfguided_restoration_internal / selfguided_restoration_fast_internal), so
+ * these two oracles cover the whole chain at tier 1.
+ *
+ * Both take the source with SGRPROJ_BORDER_{VERT,HORZ} = 3 pixels of usable
+ * border in every direction, so the Rust side passes an ORIGIN offset into a
+ * pre-extended plane and these shims just add it.
+ *
+ * The high-bit-depth arms use SVT's CONVERT_TO_SHORTPTR convention, which is
+ * NOT a plain cast: definitions.h:1019 is
+ *   #define CONVERT_TO_SHORTPTR(x) ((uint16_t*)(((uintptr_t)(x)) << 1))
+ *   #define CONVERT_TO_BYTEPTR(x)  ((uint8_t*)(((uintptr_t)(x)) >> 1))
+ * so the uint8_t* a caller hands in is the uint16_t* SHIFTED RIGHT BY ONE.
+ * Passing a plain (uint8_t*)u16ptr makes the callee dereference 2*ptr and
+ * SIGBUS on aarch64 (measured, 2026-08-31). It is also a DIFFERENT convention
+ * from the 8+2 packed pair the warp kernels take -- two high-bit-depth
+ * conventions in one C tree. */
+
+#define REF_HBD_IN(p) ((const uint8_t*)(((uintptr_t)(p)) >> 1))
+#define REF_HBD_OUT(p) ((uint8_t*)(((uintptr_t)(p)) >> 1))
+
+void svt_av1_selfguided_restoration_c(const uint8_t* dgd8, int32_t width, int32_t height, int32_t dgd_stride,
+                                      int32_t* flt0, int32_t* flt1, int32_t flt_stride, int32_t sgr_params_idx,
+                                      int32_t bit_depth, int32_t highbd);
+void svt_apply_selfguided_restoration_c(const uint8_t* dat8, int32_t width, int32_t height, int32_t stride,
+                                        int32_t eps, const int32_t* xqd, uint8_t* dst8, int32_t dst_stride,
+                                        int32_t* tmpbuf, int32_t bit_depth, int32_t highbd);
+void svt_decode_xq(const int32_t* xqd, int32_t* xq, const SgrParamsType* params);
+
+/* svt_decode_xq for one `ep` preset. */
+void ref_decode_xq(const int32_t* xqd, int32_t ep, int32_t* xq_out2) {
+    svt_decode_xq(xqd, xq_out2, &svt_aom_eb_sgr_params[ep]);
+}
+
+/* One entry of svt_aom_eb_sgr_params, so the port's transcription is pinned. */
+void ref_sgr_params(int32_t ep, int32_t* out4) {
+    out4[0] = svt_aom_eb_sgr_params[ep].r[0];
+    out4[1] = svt_aom_eb_sgr_params[ep].r[1];
+    out4[2] = svt_aom_eb_sgr_params[ep].s[0];
+    out4[3] = svt_aom_eb_sgr_params[ep].s[1];
+}
+
+/* The two lookup tables the A/B loop reads. */
+void ref_sgr_x_by_xplus1(int32_t* out256) { memcpy(out256, svt_aom_eb_x_by_xplus1, 256 * sizeof(int32_t)); }
+void ref_sgr_one_by_x(int32_t* out25) { memcpy(out25, svt_aom_eb_one_by_x, MAX_NELEM * sizeof(int32_t)); }
+
+/* svt_av1_selfguided_restoration_c, 8-bit. `dgd8` points at the pixel the
+   caller calls (0,0); the kernel reads 3 pixels outside in each direction. */
+void ref_selfguided_restoration_lbd(const uint8_t* dgd8, int32_t origin, int32_t width, int32_t height,
+                                    int32_t dgd_stride, int32_t* flt0, int32_t* flt1, int32_t flt_stride,
+                                    int32_t sgr_params_idx, int32_t bit_depth) {
+    svt_av1_selfguided_restoration_c(
+        dgd8 + origin, width, height, dgd_stride, flt0, flt1, flt_stride, sgr_params_idx, bit_depth, 0);
+}
+
+/* High bit depth: `dgd16` is a real uint16_t plane. */
+void ref_selfguided_restoration_hbd(const uint16_t* dgd16, int32_t origin, int32_t width, int32_t height,
+                                    int32_t dgd_stride, int32_t* flt0, int32_t* flt1, int32_t flt_stride,
+                                    int32_t sgr_params_idx, int32_t bit_depth) {
+    svt_av1_selfguided_restoration_c(REF_HBD_IN(dgd16 + origin),
+                                     width,
+                                     height,
+                                     dgd_stride,
+                                     flt0,
+                                     flt1,
+                                     flt_stride,
+                                     sgr_params_idx,
+                                     bit_depth,
+                                     1);
+}
+
+/* svt_apply_selfguided_restoration_c, 8-bit. The tmpbuf is calloc'd PER CALL
+   (SGRPROJ_TMPBUF_SIZE) -- a `static` here would race across test threads. */
+void ref_apply_selfguided_restoration_lbd(const uint8_t* dat8, int32_t origin, int32_t width, int32_t height,
+                                          int32_t stride, int32_t eps, const int32_t* xqd, uint8_t* dst8,
+                                          int32_t dst_origin, int32_t dst_stride, int32_t bit_depth) {
+    int32_t* tmpbuf = (int32_t*)calloc(1, SGRPROJ_TMPBUF_SIZE);
+    svt_apply_selfguided_restoration_c(
+        dat8 + origin, width, height, stride, eps, xqd, dst8 + dst_origin, dst_stride, tmpbuf, bit_depth, 0);
+    free(tmpbuf);
+}
+
+void ref_apply_selfguided_restoration_hbd(const uint16_t* dat16, int32_t origin, int32_t width, int32_t height,
+                                          int32_t stride, int32_t eps, const int32_t* xqd, uint16_t* dst16,
+                                          int32_t dst_origin, int32_t dst_stride, int32_t bit_depth) {
+    int32_t* tmpbuf = (int32_t*)calloc(1, SGRPROJ_TMPBUF_SIZE);
+    svt_apply_selfguided_restoration_c(REF_HBD_IN(dat16 + origin),
+                                       width,
+                                       height,
+                                       stride,
+                                       eps,
+                                       xqd,
+                                       REF_HBD_OUT(dst16 + dst_origin),
+                                       dst_stride,
+                                       tmpbuf,
+                                       bit_depth,
+                                       1);
+    free(tmpbuf);
+}

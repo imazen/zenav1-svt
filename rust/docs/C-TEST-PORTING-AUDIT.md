@@ -83,8 +83,29 @@ Consequences for classification:
 | `CdefTest.cc` | `cdef_filter_block`, `cdef_find_dir`, `compute_cdef_dist` | `c_parity_cdef.rs::filter_block_8bit_matches_c` (:342), `::filter_block_dispatch_all_tiers_match_c` (:619), `::find_dir_matches_c` (:82), `::compute_cdef_dist_8bit_matches_c` (:557); pick: `c_parity_cdef_pick.rs` (:13) | PORTED-diff (ASM tiers) |
 | `wiener_convolve_test.cc` | `wiener_convolve_add_src` (+HBD) | `c_parity_wiener.rs::wiener_convolve_matches_c` (:67); `c_parity_wiener_hbd.rs::highbd_wiener_convolve_matches_c` (:82) | PORTED-diff |
 | `RestorationPickTest.cc` | LR search stats (`compute_stats`, proj error) | `c_parity_wiener.rs::compute_stats_matches_c` (:133), `::compute_stats_all_tiers_match_c` (:188), `::filter_unit_matches_c` (:273); encoder search `svtav1-encoder/src/restoration.rs` | PORTED-diff (Wiener). **SGR proj-error N/A** |
-| `selfguided_filter_test.cc` | `apply_selfguided_restoration` (SGR) | — | **N/A** — sgrproj is never searched (`svtav1-encoder/src/restoration.rs:8`; C ENC_MR=-1 stills) |
-| `SelfGuidedUtilTest.cc` | SGR `pixel_proj_error`, `get_proj_subspace` | — | **N/A** — same (SGR not searched on stills) |
+| `selfguided_filter_test.cc` | `apply_selfguided_restoration` (SGR) | `c_parity_sgr.rs` (tier 1: `selfguided_restoration_matches_c_over_every_ep`, `apply_selfguided_restoration_matches_c_over_every_ep_and_xqd`, + bd10 and flat-content arms) | PORTED-diff |
+| `SelfGuidedUtilTest.cc` | SGR `pixel_proj_error`, `get_proj_subspace` | — | **OPEN** — the SEARCH side is not ported (the FILTER side now is) |
+
+**CORRECTION 2026-08-31 (wp-filters lane, measured against the C source).**
+The "SGR is never searched" verdict in the two rows above is **ALL-INTRA-ONLY**,
+and the inter campaign leaves that regime. `svt_aom_get_sg_filter_level_allintra`
+(`enc_mode_config.c:1431`) really is 1 only at `<= ENC_MR`. But the selector is
+`pd_process.c:4935-4938` — `allintra ? _allintra : rtc_tune ? _rtc : _default` —
+and `scs->allintra` is set only for `intra_period_length == 0 || avif`
+(`enc_handle.c:518`). With `SVT_AVIF=0` and a real GOP the frame lands on
+`svt_aom_get_sg_filter_level_default` (`enc_mode_config.c:1402`), which returns
+**3 for `enc_mode <= ENC_M3`**; `svt_aom_set_sg_filter_ctrls` case 3 (`:1326`)
+is `{enabled 1, use_chroma 1, ep 0..16 step 8 / ep 4..5 step 1, refine[0] 1,
+refine[1] 0}`. So in VIDEO mode at presets 0..3 SGR IS searched and
+`RESTORE_SGRPROJ` / `RESTORE_SWITCHABLE` are emittable. None of it is under
+`#if TUNE_*` or `SVT_HDR_MODE`.
+
+The SGR filter chain is now ported and tier-1 gated —
+`svtav1-dsp/src/port_sgr/` + `tests/c_parity_sgr.rs` (`svt_decode_xq`,
+`svt_av1_selfguided_restoration_c`, `svt_apply_selfguided_restoration_c`, which
+transitively drive `boxsum`/`boxsum1`/`boxsum2` and both internals). The SEARCH
+side (`restoration_pick.c`: `get_proj_subspace`, `pixel_proj_error`, the ep
+sweep, `search_switchable`) is a separate, still-open item.
 
 ### 1d. Distortion / SAD / variance / hadamard (mode decision)
 

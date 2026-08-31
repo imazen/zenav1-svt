@@ -32,6 +32,7 @@ pub mod port_convolve_hbd;
 pub mod port_inter_predictor;
 pub mod port_masked_compound;
 pub mod port_scale_factors;
+pub mod port_sgr;
 pub mod port_warp;
 pub mod quant;
 pub mod quant_coding;

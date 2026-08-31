@@ -132,9 +132,22 @@ difference is `int64` vs `int32` lanes, and the measured peak intermediate is
 `restoration_pick.c:1154` prices Wiener with the *syntax* window (7-tap luma)
 while `search_wiener_finish` (`:1276`) prices with the *search* window (5-tap).
 A future SGR/`RESTORE_SWITCHABLE` port must reproduce **both**. The port already
-reproduces the second deliberately; the first is unreachable because
-`RESTORE_SWITCHABLE` needs SGR, which C only enables at `ENC_MR` — a preset the
-port's `u8` cannot express.
+reproduces the second deliberately; the first is unreachable **on the ALL-INTRA
+path** because `RESTORE_SWITCHABLE` needs SGR, which
+`svt_aom_get_sg_filter_level_allintra` (`enc_mode_config.c:1431`) enables only at
+`ENC_MR` — a preset the port's `u8` cannot express.
+
+**CORRECTION 2026-08-31 (wp-filters lane).** That "unreachable" verdict does NOT
+hold in VIDEO mode. The level selector is `pd_process.c:4935-4938` —
+`allintra ? _allintra : rtc_tune ? _rtc : _default` — and `scs->allintra` is set
+only for `intra_period_length == 0 || avif` (`enc_handle.c:518`). A video-mode
+frame therefore takes `svt_aom_get_sg_filter_level_default`
+(`enc_mode_config.c:1402`), which returns **3 for `enc_mode <= ENC_M3`**, so SGR
+is enabled, `rest_finish_search` sets `force_restore_type_d = RESTORE_TYPES`
+(`restoration_pick.c:1566`) and `search_switchable` runs. Both halves of this
+suspected C bug are reachable at presets 0..3 once the inter/video path is live,
+and a `RESTORE_SWITCHABLE` port must reproduce both. The SGR FILTER chain is
+ported (`svtav1-dsp/src/port_sgr/`, tier 1); the SEARCH side is not yet.
 
 ---
 

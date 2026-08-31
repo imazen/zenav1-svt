@@ -76,6 +76,39 @@ cite the source, don't re-argue them.
    searches SGR"; cite it as "the port cannot express the only preset where C does."
    The same shape applies to CDEF search level 1 (16+48 candidates,
    `enc_mode_config.c:904-947`), which is likewise MR-only.
+5d. **CORRECTION 2026-08-31 (wp-filters lane) — guard 5 is ALL-INTRA-ONLY, and
+   the inter campaign leaves that regime.** Reached INDEPENDENTLY of 5c below,
+   from the same C source; two lanes reading `enc_mode_config.c` separately
+   agreed, which is why this is stated as settled rather than suspected. `svt_aom_get_sg_filter_level_allintra`
+   (`enc_mode_config.c:1431`) is indeed 1 only at `<= ENC_MR`. But it is not the
+   only selector: `pd_process.c:4935-4938` is
+   `allintra ? _allintra : rtc_tune ? _rtc : _default`, and `scs->allintra` is
+   set only when `intra_period_length == 0 || avif` (`enc_handle.c:518`). A
+   VIDEO-mode frame (`SVT_AVIF=0`, a real GOP) therefore takes
+   `svt_aom_get_sg_filter_level_default` (`:1402`), which returns **3 for
+   `enc_mode <= ENC_M3`** — `svt_aom_set_sg_filter_ctrls` case 3 (`:1326`):
+   `{enabled 1, use_chroma 1, ep 0..16 step 8 / ep 4..5 step 1, refine[0] 1,
+   refine[1] 0}`. With Wiener also on, `rest_finish_search` sets
+   `force_restore_type_d = RESTORE_TYPES` (`restoration_pick.c:1566`) and the
+   switchable decision runs. **So at presets 0..3 in video mode both
+   `RESTORE_SGRPROJ` and `RESTORE_SWITCHABLE` are emittable.** None of those
+   blocks is under `#if TUNE_*` or `SVT_HDR_MODE` (checked). At presets >= 4
+   `sg` is 0 and the Wiener-only path stays faithful. The SGR FILTER chain is
+   now ported and tier-1 gated (`svtav1-dsp/src/port_sgr/` +
+   `tests/c_parity_sgr.rs`); the SEARCH side (`restoration_pick.c`) is open.
+
+   A SECOND video-mode LR gap sits in the same place and no inventory lists it:
+   the Wiener LEVEL differs between the two selectors too.
+   `svt_aom_get_wn_filter_level_allintra` gives 3/3/4/0 by preset;
+   `svt_aom_get_wn_filter_level_default` (`enc_mode_config.c:1357`) gives
+   `is_not_last_layer ? 4 : 0` at `<= M3` and `is_not_last_layer ? 5 : 0` at
+   `<= M8`. Levels 4 and 5 differ only in `use_chroma` (1 vs 0), so a
+   video-mode key frame at preset 4..8 runs **luma-only** Wiener where the
+   port's `wn_filter_ctrls_allintra` (`svtav1-encoder/src/restoration.rs:83`)
+   runs luma+chroma, and a LAST-LAYER inter frame gets `wn = 0` entirely.
+   Both level derivations are now ported at
+   `svtav1-encoder/src/port_lr_level.rs` (tier 4 — both C functions are
+   `static` with no exported symbol; labelled as such in the module).
 
 5c. **Guard #5 covers the ALL-INTRA arm ONLY. In VIDEO mode SGR is LIVE at presets 0-3.**
    Added 2026-08-31 by the wp-entropy lane, re-derived from source (not from #5's wording):

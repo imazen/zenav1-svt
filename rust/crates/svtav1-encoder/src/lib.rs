@@ -52,6 +52,7 @@ pub mod port_enc_mode_config;
 pub mod pipeline;
 pub mod port_entropy_inter;
 pub mod port_frame_update;
+pub mod port_lr_level;
 pub mod port_md;
 pub mod port_picstruct;
 pub mod port_preanalysis;

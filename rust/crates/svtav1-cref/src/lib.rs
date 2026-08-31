@@ -12,14 +12,14 @@ pub mod entropy_inter;
 pub mod inter_me;
 pub mod inter_mvp;
 pub mod inter_pred;
-pub mod picstruct;
 pub mod md_subpel;
 pub mod mode_decision;
-pub mod rate_control;
-pub mod txfm_pf;
-pub mod sig_deriv;
+pub mod picstruct;
 pub mod preanalysis;
+pub mod rate_control;
+pub mod sig_deriv;
 pub mod temporal_filtering;
+pub mod txfm_pf;
 
 use std::ffi::c_void;
 
@@ -5292,6 +5292,227 @@ pub fn highbd_warp_affine(
             shear.1,
             shear.2,
             shear.3,
+        );
+    }
+}
+
+// --- restoration.c: the self-guided (SGR) chain ---
+
+unsafe extern "C" {
+    fn ref_decode_xq(xqd: *const i32, ep: i32, xq_out2: *mut i32);
+    fn ref_sgr_params(ep: i32, out4: *mut i32);
+    fn ref_sgr_x_by_xplus1(out256: *mut i32);
+    fn ref_sgr_one_by_x(out25: *mut i32);
+    #[allow(clippy::too_many_arguments)]
+    fn ref_selfguided_restoration_lbd(
+        dgd8: *const u8,
+        origin: i32,
+        width: i32,
+        height: i32,
+        dgd_stride: i32,
+        flt0: *mut i32,
+        flt1: *mut i32,
+        flt_stride: i32,
+        sgr_params_idx: i32,
+        bit_depth: i32,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn ref_selfguided_restoration_hbd(
+        dgd16: *const u16,
+        origin: i32,
+        width: i32,
+        height: i32,
+        dgd_stride: i32,
+        flt0: *mut i32,
+        flt1: *mut i32,
+        flt_stride: i32,
+        sgr_params_idx: i32,
+        bit_depth: i32,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn ref_apply_selfguided_restoration_lbd(
+        dat8: *const u8,
+        origin: i32,
+        width: i32,
+        height: i32,
+        stride: i32,
+        eps: i32,
+        xqd: *const i32,
+        dst8: *mut u8,
+        dst_origin: i32,
+        dst_stride: i32,
+        bit_depth: i32,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn ref_apply_selfguided_restoration_hbd(
+        dat16: *const u16,
+        origin: i32,
+        width: i32,
+        height: i32,
+        stride: i32,
+        eps: i32,
+        xqd: *const i32,
+        dst16: *mut u16,
+        dst_origin: i32,
+        dst_stride: i32,
+        bit_depth: i32,
+    );
+}
+
+/// Reference `svt_decode_xq` (restoration.c:597) for one `ep` preset.
+pub fn decode_xq(xqd: &[i32; 2], ep: i32) -> [i32; 2] {
+    let mut out = [0i32; 2];
+    unsafe { ref_decode_xq(xqd.as_ptr(), ep, out.as_mut_ptr()) };
+    out
+}
+
+/// One entry of the real `svt_aom_eb_sgr_params` (restoration.c:31), as
+/// `[r0, r1, s0, s1]`.
+pub fn sgr_params(ep: i32) -> [i32; 4] {
+    assert!((0..16).contains(&ep));
+    let mut out = [0i32; 4];
+    unsafe { ref_sgr_params(ep, out.as_mut_ptr()) };
+    out
+}
+
+/// The real `svt_aom_eb_x_by_xplus1` table (restoration.c).
+pub fn sgr_x_by_xplus1() -> [i32; 256] {
+    let mut out = [0i32; 256];
+    unsafe { ref_sgr_x_by_xplus1(out.as_mut_ptr()) };
+    out
+}
+
+/// The real `svt_aom_eb_one_by_x` table (restoration.c).
+pub fn sgr_one_by_x() -> [i32; 25] {
+    let mut out = [0i32; 25];
+    unsafe { ref_sgr_one_by_x(out.as_mut_ptr()) };
+    out
+}
+
+/// Reference `svt_av1_selfguided_restoration_c` (restoration.c:886), 8-bit.
+/// `origin` is the index of pixel `(0, 0)` in `dgd`; the kernel reads three
+/// pixels outside the unit in every direction, so `dgd` must be extended.
+#[allow(clippy::too_many_arguments)]
+pub fn selfguided_restoration_lbd(
+    dgd: &[u8],
+    origin: usize,
+    width: i32,
+    height: i32,
+    dgd_stride: usize,
+    flt0: &mut [i32],
+    flt1: &mut [i32],
+    flt_stride: usize,
+    sgr_params_idx: i32,
+    bit_depth: i32,
+) {
+    unsafe {
+        ref_selfguided_restoration_lbd(
+            dgd.as_ptr(),
+            origin as i32,
+            width,
+            height,
+            dgd_stride as i32,
+            flt0.as_mut_ptr(),
+            flt1.as_mut_ptr(),
+            flt_stride as i32,
+            sgr_params_idx,
+            bit_depth,
+        );
+    }
+}
+
+/// Reference `svt_av1_selfguided_restoration_c`, high bit depth. `dgd` is a
+/// real `u16` plane (SVT's `CONVERT_TO_SHORTPTR` convention), NOT the 8+2
+/// packed pair the warp kernels take.
+#[allow(clippy::too_many_arguments)]
+pub fn selfguided_restoration_hbd(
+    dgd: &[u16],
+    origin: usize,
+    width: i32,
+    height: i32,
+    dgd_stride: usize,
+    flt0: &mut [i32],
+    flt1: &mut [i32],
+    flt_stride: usize,
+    sgr_params_idx: i32,
+    bit_depth: i32,
+) {
+    unsafe {
+        ref_selfguided_restoration_hbd(
+            dgd.as_ptr(),
+            origin as i32,
+            width,
+            height,
+            dgd_stride as i32,
+            flt0.as_mut_ptr(),
+            flt1.as_mut_ptr(),
+            flt_stride as i32,
+            sgr_params_idx,
+            bit_depth,
+        );
+    }
+}
+
+/// Reference `svt_apply_selfguided_restoration_c` (restoration.c:924), 8-bit.
+#[allow(clippy::too_many_arguments)]
+pub fn apply_selfguided_restoration_lbd(
+    dat: &[u8],
+    origin: usize,
+    width: i32,
+    height: i32,
+    stride: usize,
+    eps: i32,
+    xqd: &[i32; 2],
+    dst: &mut [u8],
+    dst_origin: usize,
+    dst_stride: usize,
+    bit_depth: i32,
+) {
+    unsafe {
+        ref_apply_selfguided_restoration_lbd(
+            dat.as_ptr(),
+            origin as i32,
+            width,
+            height,
+            stride as i32,
+            eps,
+            xqd.as_ptr(),
+            dst.as_mut_ptr(),
+            dst_origin as i32,
+            dst_stride as i32,
+            bit_depth,
+        );
+    }
+}
+
+/// Reference `svt_apply_selfguided_restoration_c`, high bit depth.
+#[allow(clippy::too_many_arguments)]
+pub fn apply_selfguided_restoration_hbd(
+    dat: &[u16],
+    origin: usize,
+    width: i32,
+    height: i32,
+    stride: usize,
+    eps: i32,
+    xqd: &[i32; 2],
+    dst: &mut [u16],
+    dst_origin: usize,
+    dst_stride: usize,
+    bit_depth: i32,
+) {
+    unsafe {
+        ref_apply_selfguided_restoration_hbd(
+            dat.as_ptr(),
+            origin as i32,
+            width,
+            height,
+            stride as i32,
+            eps,
+            xqd.as_ptr(),
+            dst.as_mut_ptr(),
+            dst_origin as i32,
+            dst_stride as i32,
+            bit_depth,
         );
     }
 }
