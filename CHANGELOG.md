@@ -56,6 +56,19 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **`svt_aom_mode_context_analyzer` and the OBMC overlappable-neighbour counts
+  — chunk C2, evidence TIER 1.** `mode_context_analyzer`
+  (inter_prediction.c:2565) collapses `setup_ref_mv_list`'s packed mode context
+  into the single compound context through `svt_aom_compound_mode_ctx_map`;
+  `count_overlappable_neighbors` (adaptive_mv_pred.c:1893) plus its two static
+  helpers `count_overlappable_nb_{above,left}` (:1830, :1864) produce
+  `blk_ptr->overlappable_neighbors`, the OBMC gate. Both are gated against the
+  exported C symbols in `tests/c_parity_inter_mvp.rs` (now 8 tests): the
+  analyzer over every context `setup_ref_mv_list` can emit crossed with single
+  and both kinds of compound pair, and the neighbour count over randomized
+  grids with a high 4xN population — which is what drives the `mi_step == 1`
+  arm that rewinds the LOOP VARIABLE before reading the cell to its right.
+
 - **Open-loop motion estimation — a wholesale port of `motion_estimation.c`
   (`inter_me/`) — inter-encode campaign chunk C4, evidence TIER 1 where a C
   symbol exists.** All 40 functions of SVT-AV1's 2,964-line
@@ -491,6 +504,41 @@ Crates are not published to crates.io yet — depend by git.
   `EncodedAvif::{width, height}`. Arbitrary-dims MONOCHROME is a pipeline gap.
 
 ### Fixed
+
+- **`has_top_right`'s `PARTITION_VERT_A` check now reads the MUTATED `bs` in
+  `intrabc_mvp.rs` too.** The same defect fixed in `inter_mvp.rs` was present
+  in the IntraBC copy of the function, where the randomized `c_parity` sweep
+  had never happened to place a VERT_A cell on a geometry that advances `bs`.
+  Pinned by `c_parity_has_top_right_vert_a_uses_mutated_bs` in
+  `tests/c_parity_intrabc_mvp.rs`, which fails before the fix
+  (`ref_mv_stack[0].weight` 672 against C's 668) and passes after.
+  **Byte impact MEASURED, and it is none:** a 120-cell port-only sweep
+  (gb82-sc x 10 images x presets 1-4 x qp {20,32,48}) was run before and after,
+  and all 120 `(bytes, sha256)` pairs are identical —
+  `benchmarks/intrabc_has_top_right_vert_a_2026-08-31.{tsv,meta}`. So this is a
+  correctness fix with no shipped-byte change on that corpus; per
+  `docs/WORKING-ON-THIS.md` §3 it deliberately gets NO
+  `regression_spotcheck.sh` cell (a cell that never failed cannot guard it),
+  and per §7 it STAYS — the same function serves the inter MVP stack, where the
+  geometry is far less constrained. `regression_spotcheck.sh` is 35/35 after.
+- **Shim data race: per-call state in `static` (test harness).** cargo runs a
+  test binary's tests on several threads, so a `static` scratch buffer shared
+  by two concurrently-running `c_parity` tests is a data race that surfaces as
+  an occasional WRONG NUMBER, not a crash — which reads exactly like a port
+  bug. Measured: with `static CandidateMv stack2d[...]` in
+  `ref_setup_ref_mv_list_intra`, `c_parity_intrabc_mvp` failed at partition=0
+  with count 1 vs 2 under `--test-threads=3` and passed under
+  `--test-threads=1`. `shims/ref_shims.c` was then audited end to end: five
+  per-call `static`s found, all five now `calloc`/`free` per call — that
+  `stack2d`, `ref_lf_limits`'s `LoopFilterInfoN`, the three
+  `RestorationLineBuffers` scratch banks in the loop-restoration apply shims,
+  and `ref_noise_normalization`'s synthetic `SequenceControlSet` /
+  `PictureControlSet` (whose `noise_norm_strength` is written per call and read
+  by the callee). What stays `static` is documented in the file header with the
+  reason each is not per-call state: `g_fc` (a deliberate two-call protocol
+  with a caller-held mutex) and the three idempotent RTCD init flags. The rule
+  itself now leads that header so the next shim author does not re-introduce
+  it.
 
 - **`has_top_right`'s `PARTITION_VERT_A` check must read the MUTATED `bs`
   (chunk C2).** C's `has_top_right` (adaptive_mv_pred.c:266-325) shifts `bs`

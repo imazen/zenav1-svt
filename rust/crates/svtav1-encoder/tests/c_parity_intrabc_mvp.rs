@@ -349,3 +349,84 @@ fn compose_dv_ref_matches_c_semantics() {
     let dv_ref = mvp::compose_dv_ref(&out, tile, 16, 16);
     assert_eq!(dv_ref.as_int(), dv.as_int());
 }
+
+/// Directed regression, **tier 1**: C's `has_top_right` mutates `bs` in
+/// its 4x4-group loop (adaptive_mv_pred.c:303-313) and the
+/// `PARTITION_VERT_A` check at `:314-322` reads the MUTATED value, not the
+/// original argument.
+///
+/// This cell FAILED before the fix and passes after — the criterion in
+/// `docs/WORKING-ON-THIS.md` §3. Observed failure: an 8x8 block at
+/// `mi = (36, 10)` in a 64x64-mi superblock, uniform intrabc
+/// neighbourhood, current cell `partition == PARTITION_VERT_A` — `bs`
+/// enters as 2, `mask_col == 10` drives the loop to advance it to 4, and
+/// `mask_row == 4` then makes C drop the top-right candidate, for
+/// `ref_mv_stack[0].weight = 668` against the original-`bs` reading's 672.
+/// Only `partition == 6` diverges; the nine other partition types agree,
+/// which is what localizes it to that branch.
+///
+/// Found from the INTER side (`c_parity_inter_mvp.rs`, chunk C2) — the
+/// randomized sweep above never happened to place a VERT_A cell on a
+/// geometry where the loop advances `bs`.
+#[test]
+fn c_parity_has_top_right_vert_a_uses_mutated_bs() {
+    let (rows, cols) = (52usize, 52usize);
+    let (mi_rows, mi_cols) = (48i32, 48i32);
+    let tile = TileMiBounds {
+        mi_row_start: 0,
+        mi_row_end: mi_rows,
+        mi_col_start: 0,
+        mi_col_end: mi_cols,
+    };
+    let dv = Mv { x: -64, y: -8 };
+    let mut weights = Vec::new();
+    for part in 0u8..10 {
+        let entry = mvp::MvpMiEntry {
+            bsize: 12, // BLOCK_64X64
+            mode: 0,   // DC_PRED (intrabc blocks carry DC_PRED)
+            use_intrabc: true,
+            ref_frame: [0, -1],
+            mv: [dv, Mv::default()],
+            partition: part,
+        };
+        let grid = vec![entry; rows * cols];
+        let c_cells = to_c_cells(&grid);
+        let ctx = mvp::derive_block_ctx(36, 10, 3 /* BLOCK_8X8 */, mi_rows, mi_cols, tile, 16);
+        let gview = mvp::MvpGrid {
+            entries: &grid,
+            stride: cols as i32,
+            base: 36 * cols as i32 + 10,
+        };
+        let rs = mvp::generate_mvp_table_intra_frame(&gview, &ctx);
+        let c = cref::setup_ref_mv_list_intra(
+            &c_cells,
+            rows,
+            cols,
+            (36, 10),
+            3,
+            (mi_rows, mi_cols),
+            (0, mi_rows, 0, mi_cols),
+            false,
+        );
+        assert_eq!(rs.count, c.count, "count diverges at partition={part}");
+        for i in 0..8usize {
+            assert_eq!(
+                (rs.stack[i].this_mv.as_int(), rs.stack[i].weight),
+                c.stack[i],
+                "stack[{i}] diverges at partition={part}"
+            );
+        }
+        assert_eq!(
+            rs.mode_context, c.mode_context,
+            "mode_context diverges at partition={part}"
+        );
+        weights.push(c.stack[0].1);
+    }
+    // Anti-vacuity: the geometry MUST be one where the VERT_A branch fires,
+    // or the cell cannot witness the regression it exists for.
+    assert_ne!(
+        weights[6], weights[0],
+        "geometry no longer reaches the has_top_right VERT_A branch \
+         (weights per partition: {weights:?})"
+    );
+}

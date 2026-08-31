@@ -4,6 +4,40 @@
  * Exposes `static INLINE` functions from SVT-AV1 headers (which are not
  * linkable symbols) plus size/alignment info for opaque structs, so the Rust
  * side can drive the exact reference implementation.
+ *
+ * RULE: A SHIM MUST NOT KEEP PER-CALL STATE IN A `static`.
+ *
+ * cargo runs every test in a binary on SEVERAL THREADS by default, so two
+ * tests can be inside the same shim at the same time. A `static` scratch
+ * buffer or a `static` synthetic control-set is then a data race, and it does
+ * not fail as a crash -- it fails as an occasional wrong NUMBER, which reads
+ * exactly like a port bug and gets blamed on one. Measured 2026-08-31: with
+ * `static CandidateMv stack2d[...]` in `ref_setup_ref_mv_list_intra`,
+ * `c_parity_intrabc_mvp` failed at partition=0 with count 1 vs 2 under
+ * `--test-threads=3` and passed under `--test-threads=1`.
+ *
+ * So: small scratch goes on the stack; anything large enough to worry about
+ * (a control set, a line-buffer bank) gets `calloc`/`free` per call. "Large,
+ * keep it static" is not a reason -- `calloc` is, and it costs microseconds
+ * against a shim that already builds whole synthetic PCS/PPCS objects.
+ *
+ * AUDIT, 2026-08-31, whole file. Five per-call `static`s were found and all
+ * five are now `calloc`/`free` per call: the `stack2d` above,
+ * `ref_lf_limits`'s `LoopFilterInfoN`, the three `RestorationLineBuffers`
+ * scratch banks in the loop-restoration apply shims, and
+ * `ref_noise_normalization`'s synthetic `SequenceControlSet` /
+ * `PictureControlSet` (whose `noise_norm_strength` is written per call and
+ * read by the callee -- the clearest race of the set).
+ *
+ * What is LEFT `static`, and why each is not per-call state:
+ *   - `g_fc` (FRAME_CONTEXT): shared BY DESIGN across the
+ *     `ref_fc_init` / `ref_fc_copy_*` two-call protocol; its Rust binding
+ *     documents that callers hold the `fc_init` mutex.
+ *   - `g_rtcd_ready` / `g_dsp_rtcd_ready` / `g_ibc_rtcd_ready`: idempotent
+ *     one-shot init flags. A racing double-init re-runs the same RTCD setup
+ *     with the same CPU flags and lands the same function pointers, so the
+ *     worst case is wasted work, not a wrong answer.
+ *   - `static const` tables and `static` helper functions: not state.
  */
 #include <stddef.h>
 #include <stdint.h>
@@ -561,12 +595,14 @@ void ref_lpf_hbd(int32_t kind, uint16_t* buf, int32_t off, int32_t pitch, uint8_
 /* Reference limits per level for a sharpness setting: lim_out/mblim_out are
    64-entry arrays indexed by filter level (svt_aom_update_sharpness). */
 void ref_lf_limits(int32_t sharpness, uint8_t* lim_out, uint8_t* mblim_out) {
-    static LoopFilterInfoN lfi; /* large; keep off the stack */
-    svt_aom_update_sharpness(&lfi, sharpness);
+    /* per-call, heap: `static` here is a data race (see the file header). */
+    LoopFilterInfoN* lfi = (LoopFilterInfoN*)calloc(1, sizeof(*lfi));
+    svt_aom_update_sharpness(lfi, sharpness);
     for (int l = 0; l <= MAX_LOOP_FILTER; l++) {
-        lim_out[l]   = lfi.lfthr[l].lim[0];
-        mblim_out[l] = lfi.lfthr[l].mblim[0];
+        lim_out[l]   = lfi->lfthr[l].lim[0];
+        mblim_out[l] = lfi->lfthr[l].mblim[0];
     }
+    free(lfi);
 }
 
 /* ---- CDEF kernels (cdef.c) ---- */
@@ -802,10 +838,12 @@ void ref_loop_restoration_filter_unit(uint8_t need_boundaries, int32_t h_start, 
     rsb.stripe_boundary_below  = (uint8_t*)bdry_below;
     rsb.stripe_boundary_stride = bdry_stride;
     rsb.stripe_boundary_size   = 0;
-    static RestorationLineBuffers rlbs; /* large; single-threaded tests */
-    svt_av1_loop_restoration_filter_unit(need_boundaries, &limits, &rui, &rsb, &rlbs, &rect, tile_stripe0, ss_x,
+    /* per-call, heap: `static` here is a data race (see the file header). */
+    RestorationLineBuffers* rlbs = (RestorationLineBuffers*)calloc(1, sizeof(*rlbs));
+    svt_av1_loop_restoration_filter_unit(need_boundaries, &limits, &rui, &rsb, rlbs, &rect, tile_stripe0, ss_x,
                                          ss_y, /*highbd*/ 0, /*bit_depth*/ 8, data, stride, dst, dst_stride,
                                          /*tmpbuf*/ NULL, /*optimized_lr*/ 0);
+    free(rlbs);
 }
 
 void ref_extend_frame(uint8_t* data, int32_t width, int32_t height, int32_t stride, int32_t border_horz,
@@ -905,12 +943,13 @@ void ref_loop_restoration_filter_unit_highbd(int32_t h_start, int32_t h_end, int
     memcpy(rui.wiener_info.hfilter, hfilter, 8 * sizeof(int16_t));
     RestorationStripeBoundaries rsb;
     memset(&rsb, 0, sizeof(rsb));
-    static RestorationLineBuffers rlbs; /* large; single-threaded tests */
+    /* per-call, heap: `static` here is a data race (see the file header). */
+    RestorationLineBuffers* rlbs = (RestorationLineBuffers*)calloc(1, sizeof(*rlbs));
     svt_av1_loop_restoration_filter_unit(/*need_boundaries*/ 0,
                                          &limits,
                                          &rui,
                                          &rsb,
-                                         &rlbs,
+                                         rlbs,
                                          &rect,
                                          tile_stripe0,
                                          ss_x,
@@ -923,6 +962,7 @@ void ref_loop_restoration_filter_unit_highbd(int32_t h_start, int32_t h_end, int
                                          dst_stride,
                                          /*tmpbuf*/ NULL,
                                          /*optimized_lr*/ 0);
+    free(rlbs);
 }
 
 /* `svt_av1_loop_restoration_filter_unit` at highbd = 1 with the stripe-boundary
@@ -952,12 +992,13 @@ void ref_loop_restoration_filter_unit_highbd_bnd(uint8_t need_boundaries, int32_
     rsb.stripe_boundary_below  = (uint8_t*)bdry_below;
     rsb.stripe_boundary_stride = bdry_stride;
     rsb.stripe_boundary_size   = 0;
-    static RestorationLineBuffers rlbs; /* large; single-threaded tests */
+    /* per-call, heap: `static` here is a data race (see the file header). */
+    RestorationLineBuffers* rlbs = (RestorationLineBuffers*)calloc(1, sizeof(*rlbs));
     svt_av1_loop_restoration_filter_unit(need_boundaries,
                                          &limits,
                                          &rui,
                                          &rsb,
-                                         &rlbs,
+                                         rlbs,
                                          &rect,
                                          tile_stripe0,
                                          ss_x,
@@ -970,6 +1011,7 @@ void ref_loop_restoration_filter_unit_highbd_bnd(uint8_t need_boundaries, int32_
                                          dst_stride,
                                          /*tmpbuf*/ NULL,
                                          /*optimized_lr*/ 0);
+    free(rlbs);
 }
 
 /* Subexp-with-reference bit chain (tap coding). Returns the coded byte
@@ -1521,19 +1563,23 @@ void svt_av1_perform_noise_normalization(MacroblockPlane* p, QuantParam* qparam,
 void ref_noise_normalization(const int16_t dequant_dc, const int16_t dequant_ac, const int32_t* coeff,
                              int32_t* qcoeff, int32_t* dqcoeff, uint16_t* eob, int32_t tx_size, int32_t tx_type,
                              uint8_t strength) {
-    static SequenceControlSet g_nn_scs;
-    static PictureControlSet  g_nn_pcs;
-    int16_t                   dequant[2] = {dequant_dc, dequant_ac};
+    /* per-call, heap: `static` here is a data race (see the file header) --
+       the strength below is written per call and read by the callee. */
+    SequenceControlSet* nn_scs     = (SequenceControlSet*)calloc(1, sizeof(*nn_scs));
+    PictureControlSet*  nn_pcs     = (PictureControlSet*)calloc(1, sizeof(*nn_pcs));
+    int16_t             dequant[2] = {dequant_dc, dequant_ac};
     MacroblockPlane           p;
     QuantParam                qp;
     memset(&p, 0, sizeof(p));
     memset(&qp, 0, sizeof(qp));
     p.dequant_qtx                              = dequant;
     qp.iqmatrix                                = NULL;
-    g_nn_pcs.scs                               = &g_nn_scs;
-    g_nn_scs.static_config.noise_norm_strength = strength;
+    nn_pcs->scs                               = nn_scs;
+    nn_scs->static_config.noise_norm_strength = strength;
     svt_av1_perform_noise_normalization(
-        &p, &qp, (TranLow*)coeff, qcoeff, dqcoeff, (TxSize)tx_size, (TxType)tx_type, eob, &g_nn_pcs);
+        &p, &qp, (TranLow*)coeff, qcoeff, dqcoeff, (TxSize)tx_size, (TxType)tx_type, eob, nn_pcs);
+    free(nn_pcs);
+    free(nn_scs);
 }
 
 /* ===========================================================================
@@ -2401,7 +2447,14 @@ int32_t ref_setup_ref_mv_list_intra(const int32_t* cells, int32_t grid_rows, int
     xd.mi        = grid + (size_t)mi_row * grid_cols + mi_col;
 
     /* generate_av1_mvp_table INTRA_FRAME slice (:1358-1364). */
-    static CandidateMv stack2d[MODE_CTX_REF_FRAMES][MAX_REF_MV_STACK_SIZE];
+    /* NOT static: cargo runs the tests in one binary on several threads and
+       two of them drive this shim concurrently, so a shared buffer is a data
+       race that shows up as an intermittent count/weight mismatch. 2.8 KB on
+       the stack. (Measured 2026-08-31: with `static` here,
+       c_parity_intrabc_mvp failed at partition=0 with count 1 vs 2 under
+       --test-threads=3 and passed under --test-threads=1.) */
+    CandidateMv stack2d[MODE_CTX_REF_FRAMES][MAX_REF_MV_STACK_SIZE];
+    memset(stack2d, 0, sizeof(stack2d));
     memset(stack2d[INTRA_FRAME], 0, sizeof(CandidateMv) * MAX_REF_MV_STACK_SIZE);
     xd.ref_mv_count[INTRA_FRAME] = 0;
     Mv gm_mv[2];

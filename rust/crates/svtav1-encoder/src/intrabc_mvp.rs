@@ -430,6 +430,18 @@ fn scan_blk_mbmi(
 /// C `has_top_right` (adaptive_mv_pred.c:266-325). `bs` is
 /// `max(n8_w, n8_h)`; reads the CURRENT cell's partition for the VERT_A
 /// special case (PARTITION_VERT_A = 6, definitions.h:933-943).
+///
+/// **`bs` is MUTATED by the 4x4-group loop and the `PARTITION_VERT_A`
+/// check reads the MUTATED value** (C `:314-322` runs after the
+/// `bs <<= 1` loop at `:303-313`). This port originally kept the loop's
+/// shifting in a separate local and tested the ORIGINAL `bs`, which
+/// diverges: measured against the exported C symbol at `mi = (36, 10)`,
+/// an 8x8 block in a 64x64-mi SB with `partition == PARTITION_VERT_A`,
+/// `bs` enters as 2, `mask_col == 10` drives the loop to advance it to 4,
+/// and `mask_row == 4` then makes C drop the top-right candidate —
+/// `ref_mv_stack[0].weight` 668 in C against 672 here. Pinned by
+/// `c_parity_has_top_right_vert_a_uses_mutated_bs` in
+/// `tests/c_parity_intrabc_mvp.rs`.
 fn has_top_right(grid: &MvpGrid, ctx: &MvpBlockCtx, bs: i32) -> bool {
     if bs > 16 {
         // mi_size_wide[BLOCK_64X64]
@@ -446,23 +458,23 @@ fn has_top_right(grid: &MvpGrid, ctx: &MvpBlockCtx, bs: i32) -> bool {
     let mask_row = ctx.mi_row & (sb_mi_size - 1);
     let mask_col = ctx.mi_col & (sb_mi_size - 1);
 
+    let mut bs = bs;
     let mut has_tr = !((mask_row & bs != 0) && (mask_col & bs != 0));
 
-    let mut b = bs;
-    while b < sb_mi_size {
-        if mask_col & b != 0 {
-            if (mask_col & (2 * b) != 0) && (mask_row & (2 * b) != 0) {
+    while bs < sb_mi_size {
+        if mask_col & bs != 0 {
+            if (mask_col & (2 * bs) != 0) && (mask_row & (2 * bs) != 0) {
                 has_tr = false;
                 break;
             }
         } else {
             break;
         }
-        b <<= 1;
+        bs <<= 1;
     }
 
     if grid.at(0).partition == 6 {
-        // PARTITION_VERT_A
+        // PARTITION_VERT_A — reads the MUTATED bs (see the fn doc).
         if ctx.n8_w == ctx.n8_h && mask_row & bs != 0 {
             return false;
         }

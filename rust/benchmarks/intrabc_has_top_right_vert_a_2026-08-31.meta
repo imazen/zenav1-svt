@@ -1,0 +1,38 @@
+# Byte impact of the has_top_right PARTITION_VERT_A fix (mutated `bs`)
+#
+# QUESTION. C's has_top_right (adaptive_mv_pred.c:266-325) shifts `bs` left in
+# its 4x4-group loop (:303-313) and the PARTITION_VERT_A check at :314-322
+# reads the MUTATED value. intrabc_mvp.rs read the ORIGINAL. That is a proven
+# differential divergence (c_parity_has_top_right_vert_a_uses_mutated_bs, which
+# failed before the fix and passes after). Does it move any IntraBC BYTE?
+#
+# ANSWER: NO. 0 of 120 cells changed, before vs after, byte-for-byte.
+#
+# METHOD. Port-only sweep (no C oracle needed to ask whether the PORT's own
+# output moved): tools/identity_run, crop:512x512 from each gb82-sc image,
+# presets 1-4, qp {20,32,48} = 10 x 4 x 3 = 120 cells. Each cell recorded as
+#   <image> p<preset> q<qp> <bytes> <sha256 of the .obu>
+# The sweep was run twice on the same grid: once with has_top_right reading the
+# ORIGINAL bs (pre-fix) and once with the MUTATED bs (fixed), rebuilding
+# --release between the two. Every one of the 120 (bytes, sha256) pairs matched,
+# so only ONE copy of the table is committed — the two files were identical.
+#
+# WHY IT IS BYTE-INERT HERE. The divergence needs a square block whose current
+# mi cell carries partition == PARTITION_VERT_A, in an SB position where
+# mask_col drives the loop to advance `bs` AND mask_row & bs_mutated is set
+# while the original-bs test would have said otherwise. The differential test
+# reaches it by construction (mi = (36,10), 8x8, 64x64-mi SB); this corpus at
+# these presets/qps never does.
+#
+# STATUS. Per docs/WORKING-ON-THIS.md §3 this fix therefore gets NO cell in
+# tools/regression_spotcheck.sh — a cell that never failed cannot detect the
+# regression of a fix it never witnessed. Its gate is the c_parity cell above.
+# The fix STAYS (§7: a faithful translation with no measured effect is kept,
+# documented, not reverted) — it is byte-inert on THIS corpus, not in general,
+# and the same function serves the INTER MVP stack where the geometry is far
+# less constrained.
+#
+# host:     darwin 25.5.0, aarch64
+# corpus:   codec-corpus/gb82-sc (10 images)
+# sweeps:   2026-08-31, tools/identity_run at --release
+# gates:    regression_spotcheck.sh 35/35 after the fix
