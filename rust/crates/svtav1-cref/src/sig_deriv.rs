@@ -746,3 +746,129 @@ pub fn sig_deriv_me_tf(
     }
     out
 }
+
+// ---------------------------------------------------------------------------
+// svt_aom_sig_deriv_enc_dec_default
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn ref_sig_deriv_enc_dec_default(input: *const i32, out: *mut i64);
+    fn ref_enc_dec_default_in_slots() -> i32;
+    fn ref_enc_dec_default_out_slots() -> i32;
+}
+
+/// Input slot indices for [`sig_deriv_enc_dec_default`], mirroring the C shim's
+/// `ED_I_*` enum. The count is cross-checked at runtime against the C.
+pub mod ed_in {
+    /// `pcs->enc_mode`
+    pub const ENC_MODE: usize = 0;
+    /// `pcs->slice_type == I_SLICE`
+    pub const IS_ISLICE: usize = 1;
+    /// `pcs->nsq_search_level`
+    pub const NSQ_SEARCH: usize = 2;
+    /// `pcs->nic_level`
+    pub const NIC: usize = 3;
+    /// `pcs->cand_reduction_level`
+    pub const CAND_RED: usize = 4;
+    /// `pcs->txt_level`
+    pub const TXT: usize = 5;
+    /// `pcs->tx_shortcut_level`
+    pub const TX_SHORTCUT: usize = 6;
+    /// `pcs->interpolation_search_level`
+    pub const IFS: usize = 7;
+    /// `pcs->chroma_level`
+    pub const CHROMA: usize = 8;
+    /// `pcs->cfl_level`
+    pub const CFL: usize = 9;
+    /// `pcs->wm_level`
+    pub const WM: usize = 10;
+    /// `pcs->bipred3x3_injection`
+    pub const BIPRED3X3: usize = 11;
+    /// `pcs->inter_compound_mode`
+    pub const INTER_COMP: usize = 12;
+    /// `pcs->dist_based_ref_pruning`
+    pub const REF_PRUNE: usize = 13;
+    /// `pcs->spatial_sse_full_loop_level`
+    pub const SPATIAL_SSE: usize = 14;
+    /// `pcs->rdoq_level`
+    pub const RDOQ: usize = 15;
+    /// `pcs->coeff_shaving_level`
+    pub const COEFF_SHAVE: usize = 16;
+    /// `ppcs->pic_obmc_level`
+    pub const OBMC: usize = 17;
+    /// `pcs->inter_intra_level`
+    pub const INTER_INTRA: usize = 18;
+    /// `pcs->txs_level`
+    pub const TXS: usize = 19;
+    /// `pcs->pic_filter_intra_level`
+    pub const FILTER_INTRA: usize = 20;
+    /// `pcs->md_sq_mv_search_level`
+    pub const MD_SQ_MV: usize = 21;
+    /// `pcs->md_nsq_mv_search_level`
+    pub const MD_NSQ_MV: usize = 22;
+    /// `pcs->md_pme_level`
+    pub const MD_PME: usize = 23;
+    /// `pcs->me_subpel_level`
+    pub const ME_SUBPEL: usize = 24;
+    /// `pcs->pme_subpel_level`
+    pub const PME_SUBPEL: usize = 25;
+    /// `pcs->rate_est_level`
+    pub const RATE_EST: usize = 26;
+    /// `pcs->intra_level`
+    pub const INTRA: usize = 27;
+    /// `pcs->dist_based_ang_intra_level`
+    pub const DIST_ANG_INTRA: usize = 28;
+    /// `pcs->mds0_level`
+    pub const MDS0: usize = 29;
+    /// `ppcs->update_type` (`SVT_AV1_LF_UPDATE` == 1 makes it a leaf).
+    pub const UPDATE_TYPE: usize = 30;
+    /// `ppcs->me_8x8_distortion[sb_index]`
+    pub const ME_8X8_DIST: usize = 31;
+    /// `ppcs->me_8x8_cost_variance[sb_index]`
+    pub const ME_8X8_VAR: usize = 32;
+    /// `pcs->unipred3x3_injection`
+    pub const UNIPRED3X3: usize = 33;
+    /// `pcs->new_nearest_near_comb_injection`
+    pub const NN_COMB: usize = 34;
+    /// `pcs->approx_inter_rate`
+    pub const APPROX_INTER_RATE: usize = 35;
+    /// `ppcs->frm_hdr.allow_intrabc`
+    pub const ALLOW_INTRABC: usize = 36;
+    /// `ppcs->palette_level`
+    pub const PALETTE_LEVEL: usize = 37;
+    /// `ppcs->gm_ctrls.enabled`
+    pub const GM_ENABLED: usize = 38;
+    /// `ppcs->picture_qp`
+    pub const PICTURE_QP: usize = 39;
+    /// `pcs->ref_skip_percentage`
+    pub const REF_SKIP_PERC: usize = 40;
+    /// Number of input slots.
+    pub const COUNT: usize = 41;
+}
+
+/// Number of output slots the enc-dec-default dump uses.
+pub const ED_OUT_SLOTS: usize = 108;
+
+/// C `svt_aom_sig_deriv_enc_dec_default` driven on a synthetic PCS, with the
+/// resulting `ModeDecisionContext` dumped by slot.
+///
+/// # Panics
+/// If the C shim's slot counts disagree with [`ed_in::COUNT`] /
+/// [`ED_OUT_SLOTS`] — a layout drift that would otherwise silently misalign
+/// every comparison.
+#[must_use]
+pub fn sig_deriv_enc_dec_default(input: &[i32; ed_in::COUNT]) -> [i64; ED_OUT_SLOTS] {
+    assert_eq!(
+        unsafe { ref_enc_dec_default_in_slots() } as usize,
+        ed_in::COUNT,
+        "C shim input slot count drifted"
+    );
+    assert_eq!(
+        unsafe { ref_enc_dec_default_out_slots() } as usize,
+        ED_OUT_SLOTS,
+        "C shim output slot count drifted"
+    );
+    let mut out = [0i64; ED_OUT_SLOTS];
+    unsafe { ref_sig_deriv_enc_dec_default(input.as_ptr(), out.as_mut_ptr()) };
+    out
+}

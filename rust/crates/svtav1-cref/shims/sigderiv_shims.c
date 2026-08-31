@@ -471,3 +471,247 @@ void ref_sig_deriv_me_tf(uint8_t hme_me_level, int input_resolution, uint8_t qp_
    changes, because the C writes into a Rust-owned array of exactly that size
    and a silent growth is a buffer overrun, not a test failure. */
 typedef char me_out_slot_count_check[(ME_O_COUNT == 62) ? 1 : -1];
+
+/* ===========================================================================
+ * svt_aom_sig_deriv_enc_dec_default (enc_mode_config.c:7815) -- the PD1
+ * per-SB signal set for VIDEO.
+ *
+ * EXPORTED, and it reaches a dozen file-`static` tables by passing one
+ * picture-level level into each. Driving it on a synthetic PCS and reading the
+ * ModeDecisionContext back therefore gates those statics at TIER 1.
+ *
+ * Deref safety, checked against the C bodies rather than assumed:
+ *  - set_nsq_search_ctrls indexes ppcs->me_8x8_distortion[sb_index] and
+ *    ppcs->me_8x8_cost_variance[sb_index] when the picture is not an I-slice
+ *    and nsq_search_level != 0, so both arrays are allocated here.
+ *  - get_sb_tpl_intra_stats (reached from set_intra_ctrls) is gated on
+ *    ppcs->tpl_ctrls.enable, which stays 0, so pa_me_data is never touched.
+ *  - super_block_size is forced to 64 so the SB128 branch (get_sb128_me_data,
+ *    which walks further ppcs arrays) is not taken.
+ * ======================================================================== */
+
+/* Input slot order; the Rust side builds the same array. */
+enum {
+    ED_I_ENC_MODE = 0, ED_I_IS_ISLICE, ED_I_NSQ_SEARCH, ED_I_NIC, ED_I_CAND_RED,
+    ED_I_TXT, ED_I_TX_SHORTCUT, ED_I_IFS, ED_I_CHROMA, ED_I_CFL,
+    ED_I_WM, ED_I_BIPRED3X3, ED_I_INTER_COMP, ED_I_REF_PRUNE, ED_I_SPATIAL_SSE,
+    ED_I_RDOQ, ED_I_COEFF_SHAVE, ED_I_OBMC, ED_I_INTER_INTRA, ED_I_TXS,
+    ED_I_FILTER_INTRA, ED_I_MD_SQ_MV, ED_I_MD_NSQ_MV, ED_I_MD_PME,
+    ED_I_ME_SUBPEL, ED_I_PME_SUBPEL, ED_I_RATE_EST, ED_I_INTRA,
+    ED_I_DIST_ANG_INTRA, ED_I_MDS0, ED_I_UPDATE_TYPE, ED_I_ME_8X8_DIST,
+    ED_I_ME_8X8_VAR, ED_I_UNIPRED3X3, ED_I_NN_COMB, ED_I_APPROX_INTER_RATE,
+    ED_I_ALLOW_INTRABC, ED_I_PALETTE_LEVEL, ED_I_GM_ENABLED, ED_I_PICTURE_QP,
+    ED_I_REF_SKIP_PERC, ED_I_COUNT
+};
+
+/* Output slot order. */
+enum {
+    ED_O_SUBRES_STEP = 0, ED_O_SUBRES_DEV,
+    ED_O_PF_SHAPE,
+    ED_O_SSSE_LEVEL,
+    ED_O_TXSC_BYPASS, ED_O_TXSC_PF, ED_O_TXSC_CHROMA, ED_O_TXSC_MDS3,
+    ED_O_SHAVE_EN, ED_O_SHAVE_LVL, ED_O_SHAVE_GAP, ED_O_SHAVE_RD,
+    ED_O_DEE_SPLIT, ED_O_DEE_EXIT,
+    ED_O_SSD_EN, ED_O_SSD_MAX, ED_O_SSD_QUAD, ED_O_SSD_PERC,
+    ED_O_NSQME_EN, ED_O_NSQME_DIST, ED_O_NSQME_W, ED_O_NSQME_H, ED_O_NSQME_PSAD,
+    ED_O_SQME_EN, ED_O_SQME_DIST, ED_O_SQME_PAME_TH,
+    ED_O_SQME_L0_EN, ED_O_SQME_L0_STEP, ED_O_SQME_L0_W, ED_O_SQME_L0_H,
+    ED_O_SQME_L0_MAXW, ED_O_SQME_L0_MAXH, ED_O_SQME_L0_MULT,
+    ED_O_SQME_L1_EN, ED_O_SQME_L1_STEP, ED_O_SQME_L1_W, ED_O_SQME_L1_H,
+    ED_O_SQME_L1_MAXW, ED_O_SQME_L1_MAXH, ED_O_SQME_L1_MULT,
+    ED_O_SQME_L2_EN, ED_O_SQME_L2_STEP, ED_O_SQME_L2_W, ED_O_SQME_L2_H,
+    ED_O_SQME_PSAD,
+    ED_O_SPME_EN, ED_O_SPME_TYPE, ED_O_SPME_PREC, ED_O_SPME_METHOD,
+    ED_O_SPME_ITERS, ED_O_SPME_VAR_TH, ED_O_SPME_ABS_MULT, ED_O_SPME_ROUND_DEV,
+    ED_O_SPME_DIAG, ED_O_SPME_MINBLK, ED_O_SPME_MVP_TH, ED_O_SPME_HP_TH, ED_O_SPME_BIAS,
+    ED_O_SPPME_EN, ED_O_SPPME_TYPE, ED_O_SPPME_PREC, ED_O_SPPME_METHOD,
+    ED_O_SPPME_ITERS, ED_O_SPPME_VAR_TH, ED_O_SPPME_ABS_MULT, ED_O_SPPME_ROUND_DEV,
+    ED_O_SPPME_DIAG, ED_O_SPPME_MINBLK, ED_O_SPPME_MVP_TH, ED_O_SPPME_HP_TH, ED_O_SPPME_BIAS,
+    ED_O_OBMC_EN, ED_O_OBMC_REFINE_SZ, ED_O_OBMC_MAX_SZ, ED_O_OBMC_REFINE_LVL,
+    ED_O_OBMC_FACEOFF, ED_O_OBMC_RANGE, ED_O_OBMC_DIAG,
+    ED_O_II_EN, ED_O_II_RD, ED_O_II_WSQ, ED_O_II_WNSQ,
+    ED_O_IC_TOT, ED_O_IC_ME, ED_O_IC_PME, ED_O_IC_NN, ED_O_IC_NEAR,
+    ED_O_IC_NNN, ED_O_IC_3X3, ED_O_IC_GLOBAL, ED_O_IC_MULT, ED_O_IC_MAXMV,
+    ED_O_IC_SKIPREF, ED_O_IC_RATE, ED_O_IC_NOSYM,
+    ED_O_IFS_LEVEL,
+    ED_O_GM_INJ, ED_O_NN_INJ, ED_O_NNC_INJ, ED_O_UNI3X3_INJ,
+    ED_O_ALLOW_IBC, ED_O_PALETTE_LVL, ED_O_APPROX_RATE, ED_O_SHUT_FAST_RATE,
+    ED_O_MDS0_HADAMARD, ED_O_PARENT_COST_BIAS, ED_O_TUNE_SSIM,
+    ED_O_UV_MODE, ED_O_COUNT
+};
+
+void ref_sig_deriv_enc_dec_default(const int32_t* in, int64_t* out) {
+    SequenceControlSet*      scs    = (SequenceControlSet*)calloc(1, sizeof(*scs));
+    PictureParentControlSet* ppcs   = (PictureParentControlSet*)calloc(1, sizeof(*ppcs));
+    PictureControlSet*       pcs    = (PictureControlSet*)calloc(1, sizeof(*pcs));
+    ModeDecisionContext*     ctx    = (ModeDecisionContext*)calloc(1, sizeof(*ctx));
+    uint32_t*                me_d   = (uint32_t*)calloc(1, sizeof(uint32_t));
+    uint32_t*                me_v   = (uint32_t*)calloc(1, sizeof(uint32_t));
+
+    scs->super_block_size  = 64; /* keep the SB128 me-data branch out of reach */
+    scs->static_config.rtc = false;
+
+    ppcs->scs                  = scs;
+    ppcs->picture_qp           = (uint32_t)in[ED_I_PICTURE_QP];
+    ppcs->update_type          = (SvtAv1FrameUpdateType)in[ED_I_UPDATE_TYPE];
+    ppcs->hierarchical_levels  = 4;
+    ppcs->gm_ctrls.enabled     = (uint8_t)in[ED_I_GM_ENABLED];
+    ppcs->pic_obmc_level       = (uint8_t)in[ED_I_OBMC];
+    ppcs->frm_hdr.allow_intrabc = (uint8_t)in[ED_I_ALLOW_INTRABC];
+    ppcs->palette_level        = (uint8_t)in[ED_I_PALETTE_LEVEL];
+    me_d[0]                    = (uint32_t)in[ED_I_ME_8X8_DIST];
+    me_v[0]                    = (uint32_t)in[ED_I_ME_8X8_VAR];
+    ppcs->me_8x8_distortion    = me_d;
+    ppcs->me_8x8_cost_variance = me_v;
+
+    pcs->ppcs       = ppcs;
+    pcs->scs        = scs;
+    pcs->enc_mode   = (EncMode)in[ED_I_ENC_MODE];
+    pcs->slice_type = in[ED_I_IS_ISLICE] ? I_SLICE : B_SLICE;
+    pcs->ref_skip_percentage        = (uint8_t)in[ED_I_REF_SKIP_PERC];
+    pcs->nsq_search_level           = (uint8_t)in[ED_I_NSQ_SEARCH];
+    pcs->nic_level                  = (uint8_t)in[ED_I_NIC];
+    pcs->cand_reduction_level       = (uint8_t)in[ED_I_CAND_RED];
+    pcs->txt_level                  = (uint8_t)in[ED_I_TXT];
+    pcs->tx_shortcut_level          = (uint8_t)in[ED_I_TX_SHORTCUT];
+    pcs->interpolation_search_level = (uint8_t)in[ED_I_IFS];
+    pcs->chroma_level               = (uint8_t)in[ED_I_CHROMA];
+    pcs->cfl_level                  = (uint8_t)in[ED_I_CFL];
+    pcs->wm_level                   = (uint8_t)in[ED_I_WM];
+    pcs->bipred3x3_injection        = (uint8_t)in[ED_I_BIPRED3X3];
+    pcs->unipred3x3_injection       = (uint8_t)in[ED_I_UNIPRED3X3];
+    pcs->new_nearest_near_comb_injection = (uint8_t)in[ED_I_NN_COMB];
+    pcs->inter_compound_mode        = (uint8_t)in[ED_I_INTER_COMP];
+    pcs->dist_based_ref_pruning     = (uint8_t)in[ED_I_REF_PRUNE];
+    pcs->spatial_sse_full_loop_level = (uint8_t)in[ED_I_SPATIAL_SSE];
+    pcs->rdoq_level                 = (uint8_t)in[ED_I_RDOQ];
+    pcs->coeff_shaving_level        = (uint8_t)in[ED_I_COEFF_SHAVE];
+    pcs->inter_intra_level          = (uint8_t)in[ED_I_INTER_INTRA];
+    pcs->txs_level                  = (uint8_t)in[ED_I_TXS];
+    pcs->pic_filter_intra_level     = (uint8_t)in[ED_I_FILTER_INTRA];
+    pcs->md_sq_mv_search_level      = (uint8_t)in[ED_I_MD_SQ_MV];
+    pcs->md_nsq_mv_search_level     = (uint8_t)in[ED_I_MD_NSQ_MV];
+    pcs->md_pme_level               = (uint8_t)in[ED_I_MD_PME];
+    pcs->me_subpel_level            = (uint8_t)in[ED_I_ME_SUBPEL];
+    pcs->pme_subpel_level           = (uint8_t)in[ED_I_PME_SUBPEL];
+    pcs->rate_est_level             = (uint8_t)in[ED_I_RATE_EST];
+    pcs->approx_inter_rate          = (uint8_t)in[ED_I_APPROX_INTER_RATE];
+    pcs->intra_level                = (uint8_t)in[ED_I_INTRA];
+    pcs->dist_based_ang_intra_level = (uint8_t)in[ED_I_DIST_ANG_INTRA];
+    pcs->mds0_level                 = (uint8_t)in[ED_I_MDS0];
+
+    svt_aom_sig_deriv_enc_dec_default(pcs, ctx);
+
+    out[ED_O_SUBRES_STEP] = ctx->subres_ctrls.step;
+    out[ED_O_SUBRES_DEV]  = ctx->subres_ctrls.odd_to_even_deviation_th;
+    out[ED_O_PF_SHAPE]    = ctx->pf_ctrls.pf_shape;
+    out[ED_O_SSSE_LEVEL]  = ctx->spatial_sse_ctrls.level;
+    out[ED_O_TXSC_BYPASS] = ctx->tx_shortcut_ctrls.bypass_tx_th;
+    out[ED_O_TXSC_PF]     = ctx->tx_shortcut_ctrls.apply_pf_on_coeffs;
+    out[ED_O_TXSC_CHROMA] = ctx->tx_shortcut_ctrls.chroma_detector_level;
+    out[ED_O_TXSC_MDS3]   = ctx->tx_shortcut_ctrls.use_mds3_shortcuts_th;
+    out[ED_O_SHAVE_EN]    = ctx->coeff_shaving_ctrls.enabled;
+    out[ED_O_SHAVE_LVL]   = ctx->coeff_shaving_ctrls.level_threshold;
+    out[ED_O_SHAVE_GAP]   = ctx->coeff_shaving_ctrls.zero_gap_threshold;
+    out[ED_O_SHAVE_RD]    = ctx->coeff_shaving_ctrls.rd_zero_strength;
+    out[ED_O_DEE_SPLIT]   = ctx->depth_early_exit_ctrls.split_cost_th;
+    out[ED_O_DEE_EXIT]    = ctx->depth_early_exit_ctrls.early_exit_th;
+    out[ED_O_SSD_EN]      = ctx->skip_sub_depth_ctrls.enabled;
+    out[ED_O_SSD_MAX]     = ctx->skip_sub_depth_ctrls.max_size;
+    out[ED_O_SSD_QUAD]    = ctx->skip_sub_depth_ctrls.quad_deviation_th;
+    out[ED_O_SSD_PERC]    = ctx->skip_sub_depth_ctrls.coeff_perc;
+    out[ED_O_NSQME_EN]    = ctx->md_nsq_me_ctrls.enabled;
+    out[ED_O_NSQME_DIST]  = ctx->md_nsq_me_ctrls.dist_type;
+    out[ED_O_NSQME_W]     = ctx->md_nsq_me_ctrls.full_pel_search_width;
+    out[ED_O_NSQME_H]     = ctx->md_nsq_me_ctrls.full_pel_search_height;
+    out[ED_O_NSQME_PSAD]  = ctx->md_nsq_me_ctrls.enable_psad;
+    out[ED_O_SQME_EN]       = ctx->md_sq_me_ctrls.enabled;
+    out[ED_O_SQME_DIST]     = ctx->md_sq_me_ctrls.dist_type;
+    out[ED_O_SQME_PAME_TH]  = ctx->md_sq_me_ctrls.pame_distortion_th;
+    out[ED_O_SQME_L0_EN]    = ctx->md_sq_me_ctrls.sprs_lev0_enabled;
+    out[ED_O_SQME_L0_STEP]  = ctx->md_sq_me_ctrls.sprs_lev0_step;
+    out[ED_O_SQME_L0_W]     = ctx->md_sq_me_ctrls.sprs_lev0_w;
+    out[ED_O_SQME_L0_H]     = ctx->md_sq_me_ctrls.sprs_lev0_h;
+    out[ED_O_SQME_L0_MAXW]  = ctx->md_sq_me_ctrls.max_sprs_lev0_w;
+    out[ED_O_SQME_L0_MAXH]  = ctx->md_sq_me_ctrls.max_sprs_lev0_h;
+    out[ED_O_SQME_L0_MULT]  = ctx->md_sq_me_ctrls.sprs_lev0_multiplier;
+    out[ED_O_SQME_L1_EN]    = ctx->md_sq_me_ctrls.sprs_lev1_enabled;
+    out[ED_O_SQME_L1_STEP]  = ctx->md_sq_me_ctrls.sprs_lev1_step;
+    out[ED_O_SQME_L1_W]     = ctx->md_sq_me_ctrls.sprs_lev1_w;
+    out[ED_O_SQME_L1_H]     = ctx->md_sq_me_ctrls.sprs_lev1_h;
+    out[ED_O_SQME_L1_MAXW]  = ctx->md_sq_me_ctrls.max_sprs_lev1_w;
+    out[ED_O_SQME_L1_MAXH]  = ctx->md_sq_me_ctrls.max_sprs_lev1_h;
+    out[ED_O_SQME_L1_MULT]  = ctx->md_sq_me_ctrls.sprs_lev1_multiplier;
+    out[ED_O_SQME_L2_EN]    = ctx->md_sq_me_ctrls.sprs_lev2_enabled;
+    out[ED_O_SQME_L2_STEP]  = ctx->md_sq_me_ctrls.sprs_lev2_step;
+    out[ED_O_SQME_L2_W]     = ctx->md_sq_me_ctrls.sprs_lev2_w;
+    out[ED_O_SQME_L2_H]     = ctx->md_sq_me_ctrls.sprs_lev2_h;
+    out[ED_O_SQME_PSAD]     = ctx->md_sq_me_ctrls.enable_psad;
+#define DUMP_SUBPEL(base, c)                                     \
+    out[base + 0]  = (c).enabled;                                \
+    out[base + 1]  = (c).subpel_search_type;                     \
+    out[base + 2]  = (c).max_precision;                          \
+    out[base + 3]  = (c).subpel_search_method;                   \
+    out[base + 4]  = (c).subpel_iters_per_step;                  \
+    out[base + 5]  = (c).pred_variance_th;                       \
+    out[base + 6]  = (c).abs_th_mult;                            \
+    out[base + 7]  = (c).round_dev_th;                           \
+    out[base + 8]  = (c).skip_diag_refinement;                   \
+    out[base + 9]  = (c).min_blk_sz;                             \
+    out[base + 10] = (c).mvp_th;                                 \
+    out[base + 11] = (c).hp_mv_th;                               \
+    out[base + 12] = (c).bias_fp
+    DUMP_SUBPEL(ED_O_SPME_EN, ctx->md_subpel_me_ctrls);
+    DUMP_SUBPEL(ED_O_SPPME_EN, ctx->md_subpel_pme_ctrls);
+#undef DUMP_SUBPEL
+    out[ED_O_OBMC_EN]         = ctx->obmc_ctrls.enabled;
+    out[ED_O_OBMC_REFINE_SZ]  = ctx->obmc_ctrls.max_blk_size_to_refine;
+    out[ED_O_OBMC_MAX_SZ]     = ctx->obmc_ctrls.max_blk_size;
+    out[ED_O_OBMC_REFINE_LVL] = ctx->obmc_ctrls.refine_level;
+    out[ED_O_OBMC_FACEOFF]    = ctx->obmc_ctrls.trans_face_off;
+    out[ED_O_OBMC_RANGE]      = ctx->obmc_ctrls.fpel_search_range;
+    out[ED_O_OBMC_DIAG]       = ctx->obmc_ctrls.fpel_search_diag;
+    out[ED_O_II_EN]   = ctx->inter_intra_comp_ctrls.enabled;
+    out[ED_O_II_RD]   = ctx->inter_intra_comp_ctrls.use_rd_model;
+    out[ED_O_II_WSQ]  = ctx->inter_intra_comp_ctrls.wedge_mode_sq;
+    out[ED_O_II_WNSQ] = ctx->inter_intra_comp_ctrls.wedge_mode_nsq;
+    out[ED_O_IC_TOT]     = ctx->inter_comp_ctrls.tot_comp_types;
+    out[ED_O_IC_ME]      = ctx->inter_comp_ctrls.do_me;
+    out[ED_O_IC_PME]     = ctx->inter_comp_ctrls.do_pme;
+    out[ED_O_IC_NN]      = ctx->inter_comp_ctrls.do_nearest_nearest;
+    out[ED_O_IC_NEAR]    = ctx->inter_comp_ctrls.do_near_near;
+    out[ED_O_IC_NNN]     = ctx->inter_comp_ctrls.do_nearest_near_new;
+    out[ED_O_IC_3X3]     = ctx->inter_comp_ctrls.do_3x3_bi;
+    out[ED_O_IC_GLOBAL]  = ctx->inter_comp_ctrls.do_global;
+    out[ED_O_IC_MULT]    = ctx->inter_comp_ctrls.pred0_to_pred1_mult;
+    out[ED_O_IC_MAXMV]   = ctx->inter_comp_ctrls.max_mv_length;
+    out[ED_O_IC_SKIPREF] = ctx->inter_comp_ctrls.skip_on_ref_info;
+    out[ED_O_IC_RATE]    = ctx->inter_comp_ctrls.use_rate;
+    out[ED_O_IC_NOSYM]   = ctx->inter_comp_ctrls.no_sym_dist;
+    out[ED_O_IFS_LEVEL]  = ctx->ifs_ctrls.level;
+    out[ED_O_GM_INJ]     = ctx->global_mv_injection;
+    out[ED_O_NN_INJ]     = ctx->new_nearest_injection;
+    out[ED_O_NNC_INJ]    = ctx->new_nearest_near_comb_injection;
+    out[ED_O_UNI3X3_INJ] = ctx->unipred3x3_injection;
+    out[ED_O_ALLOW_IBC]  = ctx->md_allow_intrabc;
+    out[ED_O_PALETTE_LVL] = ctx->md_palette_level;
+    out[ED_O_APPROX_RATE] = ctx->approx_inter_rate;
+    out[ED_O_SHUT_FAST_RATE] = ctx->shut_fast_rate;
+    out[ED_O_MDS0_HADAMARD]  = ctx->mds0_use_hadamard_sb;
+    out[ED_O_PARENT_COST_BIAS] = ctx->parent_cost_bias;
+    out[ED_O_TUNE_SSIM]        = ctx->tune_ssim_level;
+    /* uv_mode comes from svt_aom_set_chroma_controls, a table this lane has
+       NOT ported; it is exported so the Rust side can feed C's value back in
+       for the blk_skip_decision check rather than guessing it. */
+    out[ED_O_UV_MODE] = ctx->uv_ctrls.uv_mode;
+
+    free(me_v);
+    free(me_d);
+    free(ctx);
+    free(pcs);
+    free(ppcs);
+    free(scs);
+}
+
+int32_t ref_enc_dec_default_in_slots(void) { return ED_I_COUNT; }
+int32_t ref_enc_dec_default_out_slots(void) { return ED_O_COUNT; }

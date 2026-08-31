@@ -35,6 +35,7 @@
 //! (hand-derived vectors traced against the C source) and say so at the test.
 
 pub mod ctrls;
+pub mod encdec;
 pub mod leaf;
 pub mod me;
 
