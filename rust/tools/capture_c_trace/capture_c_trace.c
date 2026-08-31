@@ -102,7 +102,9 @@ static void die(const char* msg, int32_t err) {
 int main(int argc, char** argv) {
     if (argc != 7 && argc != 8) {
         fprintf(stderr,
-                "usage: %s <width> <height> <cli_qp 0..63> <preset> <in.yuv> <out.obu> [bit_depth=8|10]\n",
+                "usage: %s <width> <height> <cli_qp 0..63> <preset> <in.yuv> <out.obu> [bit_depth=8|10]\n"
+                "  env: SVT_FRAMES=N (default 1; N>1 clears avif/still-picture and needs N frames in the .yuv),\n"
+                "       SVT_INTRA_PERIOD, SVT_HIER_LEVELS, SVT_PRED_STRUCT\n",
                 argv[0]);
         return 2;
     }
@@ -159,14 +161,34 @@ int main(int argc, char** argv) {
     const size_t csz = cw * ch;
     const size_t frame_bytes = (ysz + 2 * csz) * sample_size;
 
-    uint8_t* yuv = malloc(frame_bytes);
+    /* INTER campaign chunk C0: SVT_FRAMES=N reads and encodes N frames instead
+       of one. Absent (or =1) every byte of the pre-existing single-frame path
+       is unchanged — same malloc size, same single send, same avif=true still
+       config — so no existing cell moves.
+
+       N>1 REQUIRES N full frames in the .yuv and dies on a short read. It does
+       NOT repeat the last frame to fill: a silently-repeated frame is a
+       zero-motion cell wearing a motion cell's name, and this repo's harness
+       rules ban a probe whose absence is indistinguishable from its result. */
+    uint32_t n_frames = 1;
+    {
+        const char* frames_env = getenv("SVT_FRAMES");
+        if (frames_env && *frames_env) {
+            int v = atoi(frames_env);
+            if (v < 1 || v > 256)
+                die("SVT_FRAMES must be 1..256", EB_ErrorBadParameter);
+            n_frames = (uint32_t)v;
+        }
+    }
+
+    uint8_t* yuv = malloc(frame_bytes * (size_t)n_frames);
     if (!yuv)
         die("oom", 0);
     FILE* fi = fopen(in_yuv, "rb");
     if (!fi)
         die("cannot open input .yuv", 0);
-    if (fread(yuv, 1, frame_bytes, fi) != frame_bytes)
-        die("short read (need w*h*3/2 * sample_size bytes of I420)", 0);
+    if (fread(yuv, 1, frame_bytes * (size_t)n_frames, fi) != frame_bytes * (size_t)n_frames)
+        die("short read (need SVT_FRAMES * w*h*3/2 * sample_size bytes of I420)", 0);
     fclose(fi);
 
     /* STEP 1: handle + library defaults. */
@@ -186,6 +208,44 @@ int main(int argc, char** argv) {
     cfg.aq_mode                = 0;   /* rc 0 + aq 0 == CQP */
     cfg.qp                     = qp;  /* CLI domain 0..63 */
     cfg.avif                   = true; /* still_picture=1 + reduced_still_picture_header=1 */
+    /* INTER campaign chunk C0. `avif = true` sets still_picture=1 +
+       reduced_still_picture_header=1, which forbids anything but a single
+       KEY frame — so a multi-frame run MUST clear it, and that is the only
+       reason it is cleared. Single-frame runs never reach this branch.
+
+       The GOP shape is chosen by the caller, because the smallest demoable
+       inter cell and the eventual full envelope want different ones:
+         SVT_INTRA_PERIOD  -> cfg.intra_period_length (frames between key
+                              frames; -1 = only frame 0 is key)
+         SVT_HIER_LEVELS   -> cfg.hierarchical_levels (0 = flat, no pyramid)
+         SVT_PRED_STRUCT   -> cfg.pred_structure (1 = LOW_DELAY, P-only, the
+                              simplest inter structure to reach byte-parity on;
+                              2 = RANDOM_ACCESS, the library default)
+       Each is applied only when its env var is set, so a caller that sets only
+       SVT_FRAMES gets the library's own defaults for the rest. */
+    if (n_frames > 1)
+        cfg.avif = false;
+    /* SVT_AVIF=0 forces video mode at ANY frame count. This exists as a
+       CONTROL: it separates "still vs video configuration" from "one frame vs
+       many", which are two different variables that a multi-frame run changes
+       at once. Without it, a frame-0 divergence in a 2-frame cell cannot be
+       attributed. Absent => untouched. */
+    {
+        const char* avif_env = getenv("SVT_AVIF");
+        if (avif_env && *avif_env)
+            cfg.avif = atoi(avif_env) != 0;
+    }
+    {
+        const char* ip_env = getenv("SVT_INTRA_PERIOD");
+        if (ip_env && *ip_env)
+            cfg.intra_period_length = atoi(ip_env);
+        const char* hl_env = getenv("SVT_HIER_LEVELS");
+        if (hl_env && *hl_env)
+            cfg.hierarchical_levels = (uint32_t)atoi(hl_env);
+        const char* ps_env = getenv("SVT_PRED_STRUCT");
+        if (ps_env && *ps_env)
+            cfg.pred_structure = (PredStructure)atoi(ps_env);
+    }
     cfg.level_of_parallelism   = 1;   /* --lp 1 */
     cfg.encoder_bit_depth      = bit_depth;
     cfg.encoder_color_format   = EB_YUV420;
@@ -342,16 +402,23 @@ int main(int argc, char** argv) {
     io.cb_stride = (uint32_t)cw; /* ceiling chroma stride (matches the .yuv layout) */
     io.cr_stride = (uint32_t)cw;
 
-    EbBufferHeaderType in_hdr;
-    memset(&in_hdr, 0, sizeof(in_hdr));
-    in_hdr.size         = sizeof(EbBufferHeaderType);
-    in_hdr.p_buffer     = (uint8_t*)&io;
-    in_hdr.n_filled_len = (uint32_t)frame_bytes;
-    in_hdr.pts          = 0;
-    in_hdr.pic_type     = EB_AV1_INVALID_PICTURE; /* encoder decides; frame 0 is a key frame */
-    err                 = svt_av1_enc_send_picture(handle, &in_hdr);
-    if (err != EB_ErrorNone)
-        die("svt_av1_enc_send_picture", err);
+    for (uint32_t f = 0; f < n_frames; ++f) {
+        uint8_t* base = yuv + (size_t)f * frame_bytes;
+        io.luma       = base;
+        io.cb         = base + ysz * sample_size;
+        io.cr         = base + (ysz + csz) * sample_size;
+
+        EbBufferHeaderType in_hdr;
+        memset(&in_hdr, 0, sizeof(in_hdr));
+        in_hdr.size         = sizeof(EbBufferHeaderType);
+        in_hdr.p_buffer     = (uint8_t*)&io;
+        in_hdr.n_filled_len = (uint32_t)frame_bytes;
+        in_hdr.pts          = (int64_t)f;
+        in_hdr.pic_type     = EB_AV1_INVALID_PICTURE; /* encoder decides; frame 0 is a key frame */
+        err                 = svt_av1_enc_send_picture(handle, &in_hdr);
+        if (err != EB_ErrorNone)
+            die("svt_av1_enc_send_picture", err);
+    }
 
     EbBufferHeaderType eos_hdr;
     memset(&eos_hdr, 0, sizeof(eos_hdr));
@@ -378,6 +445,19 @@ int main(int argc, char** argv) {
             fwrite(pkt->p_buffer, 1, pkt->n_filled_len, fo);
             nbytes += pkt->n_filled_len;
             npkt++;
+            /* Multi-frame only: also write each packet on its own, named by
+               PTS, so a differ can compare one frame instead of a
+               concatenation whose first divergence would just be "frame 0's
+               length changed". Single-frame runs write nothing extra. */
+            if (n_frames > 1) {
+                char per[4096];
+                snprintf(per, sizeof(per), "%s.pts%lld", out, (long long)pkt->pts);
+                FILE* pf = fopen(per, "wb");
+                if (!pf)
+                    die("cannot open per-frame output", 0);
+                fwrite(pkt->p_buffer, 1, pkt->n_filled_len, pf);
+                fclose(pf);
+            }
             fprintf(stderr, "capture_c_trace: packet %u: %u bytes, pts=%lld, flags=0x%x\n", npkt,
                     pkt->n_filled_len, (long long)pkt->pts, pkt->flags);
         }

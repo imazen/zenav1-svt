@@ -460,6 +460,128 @@ fn main() {
     } else {
         (Vec::new(), Vec::new(), Vec::new())
     };
+    // INTER campaign chunk C0: SVTAV1_FRAMES=N encodes an N-frame sequence
+    // instead of a single still, so the harness can produce the Rust half of an
+    // INTER cell. Unset (or =1) leaves every byte of the still path below
+    // untouched — this whole block is skipped and no existing cell moves.
+    //
+    // The motion model is a pure horizontal TRANSLATION of frame 0 by
+    // `SVTAV1_FRAME_SHIFT` (default 3) pixels per frame, with edge
+    // replication. It is applied to the already-generated planes rather than
+    // by re-running content generation with an offset, so `file:`/`crop:`/
+    // `raw:` content translates exactly like synthetic content does, and both
+    // encoders still consume the ONE shared .yuv.
+    //
+    // Translation is deliberately the SIMPLEST real motion: a single global
+    // integer-pel MV is the right answer for nearly every block, so the first
+    // inter cell tests the plumbing (headers, DPB, MV coding) rather than the
+    // search's ability to find a hard MV. Harder motion belongs in later cells.
+    let n_frames: usize = std::env::var("SVTAV1_FRAMES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1);
+    assert!(
+        (1..=256).contains(&n_frames),
+        "SVTAV1_FRAMES must be 1..256, got {n_frames}"
+    );
+    if n_frames > 1 {
+        assert!(
+            bd == 8 && !hbd_src,
+            "SVTAV1_FRAMES>1 is 8-bit only for now (the bd10 entry points take one \
+             frame at a time); got bd={bd} hbd_src={hbd_src}"
+        );
+        let shift_px: usize = std::env::var("SVTAV1_FRAME_SHIFT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3);
+        // Translate a plane right by `dx`, replicating the left edge.
+        let translate = |src: &[u8], pw: usize, ph: usize, dx: usize| -> Vec<u8> {
+            let mut out = vec![0u8; pw * ph];
+            for r in 0..ph {
+                for c in 0..pw {
+                    let sc = c.saturating_sub(dx);
+                    out[r * pw + c] = src[r * pw + sc];
+                }
+            }
+            out
+        };
+        let mut yuv = Vec::with_capacity(n_frames * (w * h + 2 * cw * ch));
+        for f in 0..n_frames {
+            let dx = shift_px * f;
+            if f == 0 {
+                yuv.extend_from_slice(&y);
+                yuv.extend_from_slice(&u);
+                yuv.extend_from_slice(&v);
+            } else {
+                yuv.extend_from_slice(&translate(&y, w, h, dx));
+                yuv.extend_from_slice(&translate(&u, cw, ch, dx / 2));
+                yuv.extend_from_slice(&translate(&v, cw, ch, dx / 2));
+            }
+        }
+        std::fs::write(format!("{prefix}.yuv"), &yuv).expect("write .yuv");
+
+        // The GOP: only frame 0 is a key frame unless the caller says
+        // otherwise, matching the C driver's SVT_INTRA_PERIOD/-1 default for
+        // the first inter cell.
+        let intra_period: u32 = std::env::var("SVTAV1_INTRA_PERIOD")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(64);
+        let hier: u8 = std::env::var("SVTAV1_HIER_LEVELS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        let rc = RcConfig {
+            mode: RcMode::Cqp,
+            qp,
+            ..RcConfig::default()
+        };
+        // `mono` is derived here rather than read from the later binding:
+        // this block returns before that line, and duplicating one env read is
+        // cheaper than hoisting a binding the still path depends on.
+        let mono = std::env::var_os("SVTAV1_MONO").is_some();
+        let mut pipeline = EncodePipeline::new(w as u32, h as u32, preset, rc, hier, intra_period)
+            .with_bit_depth(bd);
+        if !mono {
+            pipeline = pipeline.with_chroma_420(true);
+        }
+        let frame_len = w * h + 2 * cw * ch;
+        let mut all = Vec::new();
+        for f in 0..n_frames {
+            let base = f * frame_len;
+            let fy = &yuv[base..base + w * h];
+            let fu = &yuv[base + w * h..base + w * h + cw * ch];
+            let fv = &yuv[base + w * h + cw * ch..base + frame_len];
+            let r = if mono {
+                pipeline.try_encode_frame(fy, w)
+            } else {
+                pipeline.try_encode_frame_420(fy, fu, fv, w)
+            };
+            match r {
+                Ok(bytes) => {
+                    // Per-frame file alongside the concatenation, so a differ
+                    // can compare ONE frame instead of a stream whose first
+                    // divergence is just "frame 0 got longer".
+                    std::fs::write(format!("{prefix}.obu.f{f}"), &bytes).expect("write frame obu");
+                    all.extend_from_slice(&bytes);
+                }
+                Err(e) => {
+                    // Write what DID encode, then exit 3 — the established
+                    // "correctly refused, did not crash" code. A gate reading
+                    // this can name the frame that stopped the sequence.
+                    std::fs::write(format!("{prefix}.obu"), &all).expect("write .obu");
+                    eprintln!("identity_run: REFUSED by the encoder at frame {f}: {e}");
+                    std::process::exit(3);
+                }
+            }
+        }
+        std::fs::write(format!("{prefix}.obu"), &all).expect("write .obu");
+        // The recon dumps below are single-frame constructs; a multi-frame run
+        // deliberately stops here rather than dumping a last-frame recon under
+        // a name that reads like the whole sequence.
+        return;
+    }
+
     if bd > 8 {
         let shift = (bd - 8) as u32;
         let mut yuv = Vec::with_capacity((w * h + 2 * cw * ch) * 2);

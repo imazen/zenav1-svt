@@ -2882,3 +2882,92 @@ size_t ref_fc_sizeof_spatial_pred_seg_cdf(void) { return sizeof(g_fc.seg.spatial
 void   ref_fc_copy_spatial_pred_seg_cdf(uint16_t* dst) {
     memcpy(dst, &g_fc.seg.spatial_pred_seg_cdf, sizeof(g_fc.seg.spatial_pred_seg_cdf));
 }
+
+/* ---- Inter MV entropy write + CDF adaptation oracle (chunk C3) ----
+ *
+ * Unlike ref_encode_mv_seq above (a faithful TRANSCRIPTION of
+ * svt_av1_encode_mv driving the real primitives, kept for its existing
+ * gates), these drive the REAL EXPORTED svt_av1_encode_mv / svt_av1_get_mv_joint
+ * symbols, and additionally hand back the FINAL adapted NmvContext so the
+ * port's CDF-adaptation can be diffed, not just its bytes.
+ *
+ * The precision the writer uses is derived INSIDE svt_av1_encode_mv from
+ * ppcs->frm_hdr.force_integer_mv (override to MV_SUBPEL_NONE) and the
+ * `usehp` argument (the caller always passes frm_hdr->allow_high_precision_mv,
+ * entropy_coding.c:5227/5235/5242) — so both knobs are exposed here rather
+ * than a pre-derived precision int.
+ */
+void svt_av1_encode_mv(PictureParentControlSet* pcs, AomWriter* ec_writer, const Mv* mv, const Mv* ref,
+                       NmvContext* mvctx, int32_t usehp);
+MvJointType svt_av1_get_mv_joint(const Mv* mv);
+
+int32_t ref_get_mv_joint(int16_t mv_x, int16_t mv_y) {
+    Mv m;
+    m.x = mv_x;
+    m.y = mv_y;
+    return (int32_t)svt_av1_get_mv_joint(&m);
+}
+
+uint32_t ref_encode_mv_real_seq(const int16_t* mv_x, const int16_t* mv_y, const int16_t* ref_x,
+                                const int16_t* ref_y, int32_t n, int32_t allow_high_precision_mv,
+                                int32_t force_integer_mv, int32_t allow_update_cdf,
+                                const uint16_t* nmvc_in, uint16_t* nmvc_out, uint8_t* out,
+                                uint32_t cap) {
+    if (!g_rtcd_ready) {
+        svt_aom_setup_common_rtcd_internal(svt_aom_get_cpu_flags_to_use());
+        g_rtcd_ready = 1;
+    }
+    PictureParentControlSet* ppcs = (PictureParentControlSet*)calloc(1, sizeof(*ppcs));
+    FRAME_CONTEXT*           fc   = (FRAME_CONTEXT*)calloc(1, sizeof(*fc));
+    svt_aom_init_mode_probs(fc);
+    if (nmvc_in)
+        memcpy(&fc->nmvc, nmvc_in, sizeof(NmvContext));
+    ppcs->frm_hdr.force_integer_mv        = (uint8_t)force_integer_mv;
+    ppcs->frm_hdr.allow_high_precision_mv = (uint8_t)allow_high_precision_mv;
+
+    AomWriter w;
+    memset(&w, 0, sizeof(w));
+    w.allow_update_cdf = (uint8_t)allow_update_cdf;
+    svt_od_ec_enc_init(&w.ec);
+    w.ec.buf = (unsigned char*)malloc(REF_EC_BUF_CAP);
+    svt_od_ec_enc_reset(&w.ec);
+
+    for (int32_t k = 0; k < n; ++k) {
+        Mv mv, rf;
+        mv.x = mv_x[k];
+        mv.y = mv_y[k];
+        rf.x = ref_x[k];
+        rf.y = ref_y[k];
+        svt_av1_encode_mv(ppcs, &w, &mv, &rf, &fc->nmvc, allow_high_precision_mv);
+    }
+
+    uint32_t       nbytes = 0;
+    const uint8_t* p      = svt_od_ec_enc_done(&w.ec, &nbytes);
+    if (p) {
+        uint32_t copyn = nbytes < cap ? nbytes : cap;
+        memcpy(out, p, copyn);
+    }
+    if (nmvc_out)
+        memcpy(nmvc_out, &fc->nmvc, sizeof(NmvContext));
+    free(w.ec.buf);
+    free(fc);
+    free(ppcs);
+    return nbytes;
+}
+
+/* svt_av1_reset_cdf_symbol_counters (cabac_context_model.c:1971, EXPORTED)
+ * drives the static reset_nmv_counter (:1956) over fc->nmvc and fc->ndvc.
+ * Seed a whole FRAME_CONTEXT with the caller's nmvc, reset, hand it back. */
+void svt_av1_reset_cdf_symbol_counters(FRAME_CONTEXT* fc);
+void ref_reset_nmv_counter(const uint16_t* nmvc_in, uint16_t* nmvc_out) {
+    if (!g_rtcd_ready) {
+        svt_aom_setup_common_rtcd_internal(svt_aom_get_cpu_flags_to_use());
+        g_rtcd_ready = 1;
+    }
+    FRAME_CONTEXT* fc = (FRAME_CONTEXT*)calloc(1, sizeof(*fc));
+    svt_aom_init_mode_probs(fc);
+    memcpy(&fc->nmvc, nmvc_in, sizeof(NmvContext));
+    svt_av1_reset_cdf_symbol_counters(fc);
+    memcpy(nmvc_out, &fc->nmvc, sizeof(NmvContext));
+    free(fc);
+}

@@ -57,6 +57,38 @@ encode" is not a one-day scope on either base; what IS achievable is a chain of
 byte-gated chunks, smallest-demoable-first, which is how every other envelope
 in this repo was built.
 
+## 1b. C0's first measurement changes the shape of C1 (2026-08-31)
+
+Running the new harness immediately produced a finding nobody had named, and it
+is bigger than the four header fields the refusal comment lists.
+
+Cell: `gradient 64x64 q40 p6`, the SAME `.yuv` on both sides.
+
+| C configuration | frame 0 bytes |
+|---|--:|
+| still (`avif = true`, the whole existing 280/280 envelope) | **290** |
+| video (`avif = false`), still ONE frame | **930** |
+| video, 2-frame low-delay-P GOP | **961** |
+
+So **3.2x of the difference is still-vs-video configuration, not multi-frame**.
+The port's key frame is a *still-picture* key frame; C's video-mode key frame is
+a different encode of the same pixels, because the still path bypasses the
+video rate-control qindex derivation (`rc_crf_cqp.c` — `active_worst_quality` /
+`active_best_quality`, `svt_av1_frame_type_qdelta`, and the temporal-layer
+adjustment) and the sequence-level GOP machinery. The remaining ~31 bytes
+between the 1-frame and 2-frame video runs is the GOP itself (temporal
+filtering is on at `kf_tf_strength = 3` in this config).
+
+**Consequence for the campaign:** byte-parity on an INTER frame is gated behind
+byte-parity on a VIDEO-MODE KEY frame, which needs the video qindex derivation
+ported first. C1 is therefore two steps, and the first is measurable on a
+ONE-frame cell (`SVT_AVIF=0`) with no inter machinery at all — the smallest
+demoable chunk in the whole campaign, and the one that must land first.
+
+The C driver gained `SVT_AVIF=0` precisely so this stays attributable: it
+separates "still vs video configuration" from "one frame vs many", two
+variables a naive multi-frame run changes at once.
+
 ## 2. Chunks
 
 Ownership is per-file and strict — two chunks must never edit the same file.
@@ -64,7 +96,8 @@ Ownership is per-file and strict — two chunks must never edit the same file.
 | # | chunk | owns | gate |
 |---|---|---|---|
 | C0 | Multi-frame C oracle + inter identity harness | `tools/capture_c_trace/capture_c_trace.c`, `tools/identity_run`, new `tools/identity_diff_inter.sh` | a C reference 2-frame stream exists and the harness diffs frame 1 |
-| C1 | Sequence/frame header parity for inter frames + CDF continuation (`primary_ref_frame`) | `entropy/obu.rs`, `pipeline.rs` header path | header bits byte-identical to C up to tile data |
+| C1a | **Video-mode KEY frame parity** — the video qindex derivation (`rc_crf_cqp.c`) + the non-reduced sequence header. Measurable on a 1-frame cell via `SVT_AVIF=0`; no inter machinery involved | `entropy/obu.rs`, `pipeline.rs` header path, rate control | `identity_diff_inter.sh` with `frames=1`, byte-identical |
+| C1b | Inter frame header + CDF continuation (`primary_ref_frame`) | same | frame 1 header bits byte-identical to C |
 | C2 | MVP stack, INTER branch | new `svtav1-encoder/src/inter_mvp.rs` + its tests | c_parity vs `svt_av1_find_best_ref_mvs_from_stack` + traced vectors |
 | C3 | MV entropy coding + MV rate | new `svtav1-encoder/src/inter_mv_code.rs` + its tests | c_parity vs `svt_av1_encode_mv`, `svt_av1_get_mv_class`, `svt_av1_mv_bit_cost`, `svt_aom_estimate_mv_rate` |
 | C4 | Wholesale ME port (`motion_estimation.c` + `av1me.c`) replacing the homegrown `motion_est.rs` | new `svtav1-encoder/src/inter_me.rs` + its tests | c_parity where symbols export; traced vectors where static, labelled tier 4 |
