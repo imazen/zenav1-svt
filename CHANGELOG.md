@@ -606,6 +606,23 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Fixed
 
+- **Three more x86_64-only NULL-RTCD SIGSEGVs, and the ISA-dependent C UB
+  behind the fourth.** `init_wedge` (`inter_pred_shims.c`) ran
+  `svt_av1_init_wedge_masks` without RTCD setup — it builds its tables with
+  bare `svt_memcpy` — and `ref_warp_error` / `ref_refine_integerized_param`
+  (`ref_shims.c`) initialized only the COMMON table, while `warp_error`
+  (`enc_warped_motion.c:21`) accumulates with `svt_nxm_sad_kernel` from the
+  ENCODER dsp table; all four calls landed at `rip = 0x0` on x86 and could not
+  fire on aarch64. The fifth x86 failure,
+  `c_parity_rc_process::new_framerate_matches_c`, is NOT a port defect and is
+  left for its owning lane: `pass2_strategy.c:887` casts a `double` past
+  `INT_MAX` to `int`, which is UB, and the hardware disagrees — `cvttsd2si`
+  gives `INT_MIN`, `fcvtzs` saturates to `INT_MAX`. The test probes
+  `target_bit_rate = 4_000_000_000`, which `verify_settings`
+  (`enc_settings.c:110`) rejects outright, so no port behaviour can satisfy
+  the cell on both hosts. Recorded as SUSPECTED-C-BUGS #17 with the boundary a
+  test may legitimately reach.
+
 - **Duplicate `ref_get_wedge_params_bits` broke the whole workspace link on
   x86_64-linux.** Byte-identical definitions in `inter_pred_shims.c:487` and
   `md_subpel_shims.c:333`; Apple's `ld64` takes the archive's first definition

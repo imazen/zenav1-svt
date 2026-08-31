@@ -479,7 +479,17 @@ const uint8_t* svt_aom_get_contiguous_soft_mask(int wedge_index, int wedge_sign,
    wasted work, not a wrong answer -- but pthread_once keeps a reader from
    seeing a half-written table. */
 static pthread_once_t g_wedge_once = PTHREAD_ONCE_INIT;
-static void           init_wedge(void) { svt_av1_init_wedge_masks(); }
+/* `svt_av1_init_wedge_masks` builds its tables with bare `svt_memcpy`
+ * (inter_prediction.c:2036 et al.) — an RTCD function pointer that is NULL
+ * until `svt_aom_setup_common_rtcd_internal` runs. On aarch64 NEON
+ * devirtualization makes `svt_memcpy` the concrete `svt_memcpy_neon` and the
+ * hazard cannot fire; on x86-64 the call lands at rip=0x0. MEASURED
+ * 2026-08-31: `every_wedge_mask_matches_c` SIGSEGVs on x86_64-linux without
+ * this and passes on aarch64-darwin. */
+static void           init_wedge(void) {
+    ensure_inter_pred_rtcd();
+    svt_av1_init_wedge_masks();
+}
 static void           ensure_wedge(void) { pthread_once(&g_wedge_once, init_wedge); }
 
 int ref_is_interintra_wedge_used(int bsize) { return svt_aom_is_interintra_wedge_used((BlockSize)bsize); }

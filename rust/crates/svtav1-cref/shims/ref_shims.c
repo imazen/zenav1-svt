@@ -3523,7 +3523,17 @@ int64_t ref_warp_error(int32_t* wm_io, const uint8_t* ref, int32_t width, int32_
                        const uint8_t* dst, int32_t dst_origin, int32_t p_col, int32_t p_row, int32_t p_width,
                        int32_t p_height, int32_t p_stride, int32_t subsampling_x, int32_t subsampling_y,
                        int32_t chess_refn, int64_t best_error) {
+    /* `warp_error` (enc_warped_motion.c:21, static) accumulates with
+       `svt_nxm_sad_kernel`, an RTCD pointer in the ENCODER dsp table
+       (svt_aom_setup_rtcd_internal), not the common one `ref_rtcd_once`
+       initializes — the same split `ref_highbd_get_sse` documents above.
+       Without the dsp init it is NULL and the call lands at rip=0x0 on
+       x86-64; aarch64 never notices because it is a plain pointer there too
+       but the tests that reach it happened to run after another entry had
+       initialized the table. MEASURED 2026-08-31: 3 of the
+       `c_parity_global_motion` tests SIGSEGV on x86_64-linux without it. */
     ref_rtcd_once();
+    ref_dsp_rtcd_once();
     WarpedMotionParams wm;
     memset(&wm, 0, sizeof(wm));
     wm.wmtype = (TransformationType)wm_io[0];
@@ -3568,6 +3578,7 @@ int64_t ref_refine_integerized_param(int32_t rfn_early_exit, int32_t* wm_io, int
                                      int32_t chess_refn, int64_t best_frame_error, uint32_t pic_sad,
                                      int32_t params_cost) {
     ref_rtcd_once();
+    ref_dsp_rtcd_once(); /* svt_av1_refine_integerized_param -> warp_error -> svt_nxm_sad_kernel */
     GmControls* gm = (GmControls*)calloc(1, sizeof(*gm));
     gm->rfn_early_exit = (uint8_t)rfn_early_exit;
     WarpedMotionParams wm;

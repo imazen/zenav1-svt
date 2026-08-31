@@ -639,6 +639,58 @@ reverse_search_stops_at_the_domain_edge_on_an_unreachable_target` pins the
 boundary result, so removing the guard turns a hanging CI job into a red test.
 
 
+## 17. `av1_rc_update_framerate`'s `(int)` cast is UB, and the two ISAs disagree
+
+**Status: UNREACHABLE in C's own shipping envelope (`verify_settings` rejects
+the input that triggers it) — but it makes the C BINARY a host-dependent
+oracle for `svt_av1_new_framerate`, so a differential must not probe past the
+envelope boundary.**
+
+`pass2_strategy.c:887`:
+
+```c
+rc->avg_frame_bandwidth = (int)(scs->static_config.target_bit_rate / scs->new_framerate);
+```
+
+`target_bit_rate` is `uint32_t` and `new_framerate` a `double`, so the quotient
+is a `double`. Converting a `double` whose value exceeds `INT_MAX` to `int` is
+**undefined behaviour** (C17 6.3.1.4p1), and the two ISAs realize it
+differently in hardware:
+
+| host | instruction | result for 4e10 |
+|---|---|---|
+| x86-64 | `cvttsd2si` | `INT_MIN` (`-2147483648`, the "integer indefinite" value) |
+| aarch64 | `fcvtzs` | `INT_MAX` (`2147483647`, saturating) |
+
+**MEASURED 2026-08-31** via `c_parity_rc_process::new_framerate_matches_c` at
+`(target_bit_rate = 4_000_000_000, framerate = 0.1)`: the C oracle returns
+`-2147483648` on x86_64-linux and `2147483647` on aarch64-darwin. The port
+returns `2147483647` on both — Rust's `as i32` is defined and saturating — so
+it agrees with C on aarch64 and disagrees on x86. **No single port behaviour
+can satisfy that cell on both hosts**; it is not a parity fact about the port.
+
+**Reachable:** NO, not through C's own API. `svt_av1_verify_settings`
+(`Globals/enc_settings.c:110`) rejects `target_bit_rate > 100000000`, so the
+encoder refuses the config long before `av1_rc_update_framerate` runs. At the
+envelope maximum (1e8 bits/s) the quotient overflows `int` only below
+~0.047 fps, which `verify_settings` also does not accept. The UB is reachable
+only by calling the internal function directly, which is exactly what a
+differential shim does.
+
+**What the port does:** saturates, deterministically and identically on every
+ISA — the behaviour the port's cross-ISA invariant requires
+(`tools/cross_isa_port_check.sh`). It does not reproduce either hardware
+result, because reproducing one would break the other.
+
+**What a test must do:** compare against C only for inputs inside C's stated
+envelope (`target_bit_rate <= 100000000`). A cell above it is asserting the
+host's floating-point conversion behaviour, not the port's fidelity. As of
+2026-08-31 `c_parity_rc_process.rs:958` still sweeps `4_000_000_000` and
+therefore FAILS on x86-64 and passes on aarch64; the owning lane should move
+that cell to the boundary. Left as-is here rather than edited, because
+changing another lane's assertion is not this file's job — but a red x86 CI on
+that test is this entry, not a new defect.
+
 ## Adding an entry
 
 State the C `file:line`, quote the code, say why it looks wrong, and — this is
