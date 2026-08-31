@@ -420,3 +420,120 @@ fn c_parity_search_this_pic() {
     // First match wins on a duplicate (buffer [3,1,4,1,...]: probe 1 -> 1).
     assert_eq!(pp::search_this_pic(&[3, 1, 4, 1, 5], 1), 1);
 }
+
+/// `svt_aom_get_tpl_group_level` over every `(tpl, enc_mode)` pair.
+#[test]
+fn c_parity_get_tpl_group_level_exhaustive() {
+    let mut seen = [false; 5];
+    for tpl in 0u8..=2 {
+        for enc_mode in -1i8..=14 {
+            let got = pp::get_tpl_group_level(tpl, enc_mode);
+            let want = cref::get_tpl_group_level(tpl, enc_mode);
+            assert_eq!(
+                got, want,
+                "get_tpl_group_level(tpl={tpl}, enc_mode={enc_mode})"
+            );
+            if (got as usize) < seen.len() {
+                seen[got as usize] = true;
+            }
+        }
+    }
+    // Positive control: the sweep reaches every level the function can return.
+    assert_eq!(
+        seen,
+        [true, true, false, true, true],
+        "levels 0, 1, 3, 4 (never 2)"
+    );
+}
+
+/// `svt_aom_set_tpl_group` over the full knob grid, INCLUDING the `pcs == NULL`
+/// probe path and the VBR clamp on `r0_adjust_factor`.
+///
+/// `r0_adjust_factor` is a `double` produced by a chain of literal
+/// multiplications, so it is compared for EXACT equality — the port must
+/// perform the same operations in the same order, not an equivalent
+/// rearrangement.
+#[test]
+fn c_parity_set_tpl_group_grid() {
+    let mut saw_reduced = false;
+    let mut saw_all = false;
+    let mut saw_nonzero_r0 = false;
+    for level in 0u8..=4 {
+        // pcs == NULL probe.
+        let (_, blk) = pp::set_tpl_group(None, level, 1920, 1080);
+        let want = cref::set_tpl_group(false, 0, 0, 0, 0, 0, level, 1920, 1080);
+        assert_eq!(
+            blk, want.returned,
+            "set_tpl_group(NULL, level={level}) block size"
+        );
+
+        for slice_type in [0u8, 1] {
+            for hier in 0u8..=5 {
+                for res in 0u8..=5 {
+                    for lad in [0u8, 1, 2] {
+                        for rc in [0u8, 1, 2] {
+                            for (w, h) in [(320u32, 240u32), (1280, 720), (1920, 1080)] {
+                                let p = pp::TplPicParams {
+                                    slice_type: if slice_type == 0 {
+                                        pp::SliceType::B
+                                    } else {
+                                        pp::SliceType::I
+                                    },
+                                    hierarchical_levels: hier,
+                                    input_resolution: res,
+                                    tpl_lad_mg: lad,
+                                    rate_control_mode: match rc {
+                                        0 => pp::RcMode::CqpOrCrf,
+                                        1 => pp::RcMode::Vbr,
+                                        _ => pp::RcMode::Cbr,
+                                    },
+                                };
+                                let (t, ret) = pp::set_tpl_group(Some(&p), level, w, h);
+                                let want = cref::set_tpl_group(
+                                    true, slice_type, hier, res, lad, rc, level, w, h,
+                                );
+                                let ctx = format!(
+                                    "set_tpl_group(level={level}, slice={slice_type}, \
+                                     hier={hier}, res={res}, lad={lad}, rc={rc}, {w}x{h})"
+                                );
+                                assert_eq!(t.enable, want.enable, "{ctx} enable");
+                                assert_eq!(
+                                    t.reduced_tpl_group, want.reduced_tpl_group,
+                                    "{ctx} reduced_tpl_group"
+                                );
+                                assert_eq!(
+                                    t.synth_blk_size, want.synth_blk_size,
+                                    "{ctx} synth_blk_size"
+                                );
+                                assert_eq!(ret, want.returned, "{ctx} return value");
+                                assert_eq!(
+                                    t.r0_adjust_factor.to_bits(),
+                                    want.r0_adjust_factor.to_bits(),
+                                    "{ctx} r0_adjust_factor ({} vs {})",
+                                    t.r0_adjust_factor,
+                                    want.r0_adjust_factor
+                                );
+                                if t.reduced_tpl_group >= 0 {
+                                    saw_reduced = true;
+                                } else {
+                                    saw_all = true;
+                                }
+                                if t.r0_adjust_factor != 0.0 {
+                                    saw_nonzero_r0 = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Positive controls: the grid reaches both reduced and full groups, and a
+    // non-zero r0 adjustment. Without these an all-(-1, 0.0) port would pass.
+    assert!(saw_reduced, "the grid never produced a reduced TPL group");
+    assert!(saw_all);
+    assert!(
+        saw_nonzero_r0,
+        "the grid never produced a non-zero r0_adjust_factor"
+    );
+}

@@ -252,3 +252,88 @@ pub fn is_delayed_intra(
 pub fn search_this_pic(pocs: &[u64], input_pic: u64) -> i32 {
     unsafe { ref_search_this_pic(pocs.as_ptr(), pocs.len() as u32, input_pic) }
 }
+
+unsafe extern "C" {
+    fn ref_get_tpl_group_level(tpl: u8, enc_mode: i8) -> u8;
+
+    #[allow(clippy::too_many_arguments)]
+    fn ref_set_tpl_group(
+        pcs_present: i32,
+        slice_type: u8,
+        hierarchical_levels: u8,
+        input_resolution: u8,
+        tpl_lad_mg: u8,
+        rate_control_mode: u8,
+        tpl_group_level: u8,
+        source_width: u32,
+        source_height: u32,
+        out_enable: *mut u8,
+        out_reduced: *mut i8,
+        out_synth: *mut u8,
+        out_r0_adjust: *mut f64,
+    ) -> u8;
+}
+
+/// C `svt_aom_get_tpl_group_level` (`initial_rc_process.c:190-202`).
+#[must_use]
+pub fn get_tpl_group_level(tpl: u8, enc_mode: i8) -> u8 {
+    unsafe { ref_get_tpl_group_level(tpl, enc_mode) }
+}
+
+/// The observable outputs of `svt_aom_set_tpl_group`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TplGroupOut {
+    /// `tpl_ctrls.enable`.
+    pub enable: u8,
+    /// `tpl_ctrls.reduced_tpl_group`.
+    pub reduced_tpl_group: i8,
+    /// `tpl_ctrls.synth_blk_size`.
+    pub synth_blk_size: u8,
+    /// `tpl_ctrls.r0_adjust_factor`.
+    pub r0_adjust_factor: f64,
+    /// The function's return value (also the synthesizer block size).
+    pub returned: u8,
+}
+
+/// C `svt_aom_set_tpl_group` (`initial_rc_process.c:204-306`).
+///
+/// `pcs_present == false` drives C's `pcs == NULL` probe path.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn set_tpl_group(
+    pcs_present: bool,
+    slice_type: u8,
+    hierarchical_levels: u8,
+    input_resolution: u8,
+    tpl_lad_mg: u8,
+    rate_control_mode: u8,
+    tpl_group_level: u8,
+    source_width: u32,
+    source_height: u32,
+) -> TplGroupOut {
+    let (mut e, mut red, mut synth, mut r0) = (0u8, 0i8, 0u8, 0f64);
+    let returned = unsafe {
+        ref_set_tpl_group(
+            i32::from(pcs_present),
+            slice_type,
+            hierarchical_levels,
+            input_resolution,
+            tpl_lad_mg,
+            rate_control_mode,
+            tpl_group_level,
+            source_width,
+            source_height,
+            &mut e,
+            &mut red,
+            &mut synth,
+            &mut r0,
+        )
+    };
+    TplGroupOut {
+        enable: e,
+        reduced_tpl_group: red,
+        synth_blk_size: synth,
+        r0_adjust_factor: r0,
+        returned,
+    }
+}

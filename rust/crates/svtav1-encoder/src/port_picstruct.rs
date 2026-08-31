@@ -2354,3 +2354,589 @@ pub fn update_pred_struct_and_pic_type(
     }
     picture_type
 }
+
+// ---------------------------------------------------------------------------
+// TPL group selection — Codec/initial_rc_process.c:161-526
+// ---------------------------------------------------------------------------
+//
+// Measured reachability (`enc_handle.c:3657-3668`): `get_tpl` returns 0 for
+// LOW_DELAY, for allintra and for `aq_mode == 0`, so everything in this
+// section is DEAD for the campaign's first cell and LIVE for the default
+// random-access video config. TPL sets `r0` and the per-SB qindex offsets in
+// random access, so no RA frame is byte-identical without it — the port keeps
+// it translated per `docs/WORKING-ON-THIS.md` §7 rather than dropping it
+// because the first cell does not reach it.
+
+/// C `TplControls` (`pcs.h:459-486`) — the subset `svt_aom_set_tpl_group` and
+/// `set_tpl_params` write.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TplControls {
+    /// C `enable` — 0: TPL off.
+    pub enable: u8,
+    /// C `compute_rate`.
+    pub compute_rate: u8,
+    /// C `enable_tpl_qps`.
+    pub enable_tpl_qps: u8,
+    /// C `disable_intra_pred_nref`.
+    pub disable_intra_pred_nref: u8,
+    /// C `intra_mode_end` (`PredictionMode`; `DC_PRED` = 0, `PAETH_PRED` = 12).
+    pub intra_mode_end: u8,
+    /// C `pf_shape` (`TxCoeffShape`; `DEFAULT_SHAPE` 0, `N2_SHAPE` 1, `N4_SHAPE` 2).
+    pub pf_shape: u8,
+    /// C `use_sad_in_src_search`.
+    pub use_sad_in_src_search: u8,
+    /// C `reduced_tpl_group` — the temporal-layer cutoff, -1 for "all".
+    pub reduced_tpl_group: i8,
+    /// C `r0_adjust_factor`.
+    pub r0_adjust_factor: f64,
+    /// C `dispenser_search_level`.
+    pub dispenser_search_level: u8,
+    /// C `subsample_tx`.
+    pub subsample_tx: u8,
+    /// C `synth_blk_size`.
+    pub synth_blk_size: u8,
+    /// C `subpel_depth` (`SUBPEL_FORCE_STOP`; `EIGHTH_PEL` 0, `QUARTER_PEL` 1,
+    /// `HALF_PEL` 2, `FULL_PEL` 3).
+    pub subpel_depth: u8,
+    /// C `subpel_diag_refinement`.
+    pub subpel_diag_refinement: u8,
+}
+
+impl Default for TplControls {
+    /// C initialises the struct with `TplControls tpl_ctrls_struct = {0}`,
+    /// so every unwritten field is zero — including `reduced_tpl_group`, whose
+    /// zero means "temporal layer 0 only", NOT "all frames" (-1). The level-0
+    /// arm writes only `enable`, so a level-0 `TplControls` really does carry
+    /// `reduced_tpl_group == 0`.
+    fn default() -> Self {
+        Self {
+            enable: 0,
+            compute_rate: 0,
+            enable_tpl_qps: 0,
+            disable_intra_pred_nref: 0,
+            intra_mode_end: 0,
+            pf_shape: 0,
+            use_sad_in_src_search: 0,
+            reduced_tpl_group: 0,
+            r0_adjust_factor: 0.0,
+            dispenser_search_level: 0,
+            subsample_tx: 0,
+            synth_blk_size: 0,
+            subpel_depth: 0,
+            subpel_diag_refinement: 0,
+        }
+    }
+}
+
+/// C `DC_PRED`.
+pub const DC_PRED: u8 = 0;
+/// C `PAETH_PRED`.
+pub const PAETH_PRED: u8 = 12;
+/// C `DEFAULT_SHAPE` / `N2_SHAPE` / `N4_SHAPE` (`definitions.h:2062-2064`).
+pub const DEFAULT_SHAPE: u8 = 0;
+/// See [`DEFAULT_SHAPE`].
+pub const N2_SHAPE: u8 = 1;
+/// See [`DEFAULT_SHAPE`].
+pub const N4_SHAPE: u8 = 2;
+/// C `SUBPEL_FORCE_STOP` (`definitions.h:868`).
+pub const EIGHTH_PEL: u8 = 0;
+/// See [`EIGHTH_PEL`].
+pub const QUARTER_PEL: u8 = 1;
+/// See [`EIGHTH_PEL`].
+pub const HALF_PEL: u8 = 2;
+/// See [`EIGHTH_PEL`].
+pub const FULL_PEL: u8 = 3;
+/// C `INPUT_SIZE_480p_RANGE` (`definitions.h:1826`).
+pub const INPUT_SIZE_480P_RANGE: u8 = 2;
+
+/// The sequence/picture inputs `svt_aom_set_tpl_group` reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TplPicParams {
+    /// C `pcs->slice_type` — used as a C truthiness test (`I_SLICE` == 1 is
+    /// TRUE, `B_SLICE` == 0 is FALSE), which reads backwards from its name.
+    pub slice_type: SliceType,
+    /// C `pcs->hierarchical_levels`.
+    pub hierarchical_levels: u8,
+    /// C `pcs->scs->input_resolution` (`ResolutionRange`).
+    pub input_resolution: u8,
+    /// C `pcs->scs->tpl_lad_mg`.
+    pub tpl_lad_mg: u8,
+    /// C `pcs->scs->static_config.rate_control_mode`.
+    pub rate_control_mode: RcMode,
+}
+
+/// C `svt_aom_get_tpl_group_level` (`initial_rc_process.c:190-202`) — EXPORTED.
+///
+/// Maps `(scs->tpl, enc_mode)` to the TPL group level.
+#[must_use]
+pub fn get_tpl_group_level(tpl: u8, enc_mode: i8) -> u8 {
+    const ENC_M5: i8 = 5;
+    const ENC_M8: i8 = 8;
+    if tpl == 0 {
+        0
+    } else if enc_mode <= ENC_M5 {
+        1
+    } else if enc_mode <= ENC_M8 {
+        3
+    } else {
+        4
+    }
+}
+
+/// C `svt_aom_set_tpl_group` (`initial_rc_process.c:204-306`) — EXPORTED.
+///
+/// Fills [`TplControls`] `enable` / `reduced_tpl_group` / `synth_blk_size` and
+/// the `r0_adjust_factor`. Returns `(controls, synth_blk_size)`.
+///
+/// `pic` is `None` for C's `pcs == NULL` probe call, which returns only the
+/// synthesizer block size and writes nothing back.
+///
+/// **The `slice_type` trap.** C writes `pcs->slice_type ? A : B`. `SliceType`
+/// is `B_SLICE = 0, I_SLICE = 1`, so the TRUE arm is the **I slice** and the
+/// FALSE arm is the inter slice — the opposite of what "slice_type ?" reads
+/// like. Every conditional below preserves that orientation explicitly.
+///
+/// # Panics
+///
+/// Panics on an unknown `tpl_group_level` (C asserts there).
+#[must_use]
+pub fn set_tpl_group(
+    pic: Option<&TplPicParams>,
+    tpl_group_level: u8,
+    source_width: u32,
+    source_height: u32,
+) -> (TplControls, u8) {
+    let mut t = TplControls::default();
+    let is_i = |p: &TplPicParams| p.slice_type == SliceType::I;
+    let small = |p: &TplPicParams| p.input_resolution <= INPUT_SIZE_480P_RANGE;
+
+    match tpl_group_level {
+        0 => t.enable = 0,
+        1 => {
+            t.enable = 1;
+            t.reduced_tpl_group = -1;
+            t.synth_blk_size = 16;
+        }
+        2 => {
+            t.enable = 1;
+            t.reduced_tpl_group = match pic {
+                None => -1,
+                Some(p) if is_i(p) => -1,
+                Some(p) => {
+                    if p.hierarchical_levels == 5 {
+                        4
+                    } else {
+                        3
+                    }
+                }
+            };
+            t.synth_blk_size = 16;
+        }
+        3 => {
+            t.enable = 1;
+            t.reduced_tpl_group = match pic {
+                None => -1,
+                Some(p) => {
+                    if p.hierarchical_levels == 5 {
+                        4
+                    } else {
+                        3
+                    }
+                }
+            };
+            t.synth_blk_size = 16;
+        }
+        4 => {
+            t.enable = 1;
+            t.reduced_tpl_group = match pic {
+                None => -1,
+                Some(p) => match p.hierarchical_levels {
+                    5 => {
+                        if is_i(p) {
+                            2
+                        } else if small(p) {
+                            3
+                        } else {
+                            1
+                        }
+                    }
+                    // C's hierarchical_levels == 4 arm really does yield 2
+                    // for BOTH the I-slice and the <= 480p inter case; the two
+                    // branches are kept apart because the C source spells them
+                    // out separately and they diverge at every other level.
+                    #[allow(clippy::if_same_then_else)]
+                    4 => {
+                        if is_i(p) {
+                            2
+                        } else if small(p) {
+                            2
+                        } else {
+                            1
+                        }
+                    }
+                    _ => {
+                        if is_i(p) {
+                            3
+                        } else if small(p) {
+                            2
+                        } else {
+                            0
+                        }
+                    }
+                },
+            };
+            t.synth_blk_size = if source_width.min(source_height) >= 720 {
+                32
+            } else {
+                16
+            };
+        }
+        _ => panic!("svt_aom_set_tpl_group: unknown tpl_group_level {tpl_group_level}"),
+    }
+
+    let Some(p) = pic else {
+        return (t, t.synth_blk_size);
+    };
+
+    if i32::from(p.hierarchical_levels) <= i32::from(t.reduced_tpl_group) {
+        t.reduced_tpl_group = -1;
+    }
+
+    if t.reduced_tpl_group >= 0 {
+        // The r0 compensation for TPL not using every available frame.
+        t.r0_adjust_factor = match i32::from(p.hierarchical_levels) - i32::from(t.reduced_tpl_group)
+        {
+            1 => {
+                if p.hierarchical_levels <= 2 {
+                    0.4
+                } else if p.hierarchical_levels <= 3 {
+                    0.8
+                } else {
+                    1.6
+                }
+            }
+            2 => {
+                if p.hierarchical_levels <= 2 {
+                    0.6
+                } else if p.hierarchical_levels <= 3 {
+                    1.2
+                } else {
+                    2.4
+                }
+            }
+            3 => {
+                if p.hierarchical_levels <= 3 {
+                    1.4
+                } else {
+                    2.8
+                }
+            }
+            4 => 4.0,
+            5 => 6.0,
+            // C's `case 0: default:` share an arm, so a NEGATIVE difference
+            // lands here too.
+            _ => 0.0,
+        };
+        if p.tpl_lad_mg == 0 {
+            t.r0_adjust_factor *= 1.25;
+        }
+    } else {
+        t.r0_adjust_factor = 0.0;
+        if p.tpl_lad_mg == 0 {
+            t.r0_adjust_factor = if is_i(p) {
+                0.0
+            } else if p.hierarchical_levels <= 2 {
+                0.4
+            } else if p.hierarchical_levels <= 3 {
+                0.8
+            } else {
+                1.6
+            };
+        }
+    }
+    if p.rate_control_mode == RcMode::Vbr {
+        t.r0_adjust_factor *= 1.25;
+        t.r0_adjust_factor = t.r0_adjust_factor.min(3.0);
+    }
+    (t, t.synth_blk_size)
+}
+
+/// C `get_tpl_params_level` (`initial_rc_process.c:307-318`) — static.
+#[must_use]
+pub fn get_tpl_params_level(enc_mode: i8) -> u8 {
+    const ENC_M2: i8 = 2;
+    const ENC_M7: i8 = 7;
+    if enc_mode <= ENC_M2 {
+        1
+    } else if enc_mode <= ENC_M7 {
+        4
+    } else {
+        5
+    }
+}
+
+/// C `set_tpl_params` (`initial_rc_process.c:319-405`) — static.
+///
+/// Sets what TPL computes and therefore what qindex each SB gets. Note that
+/// this MUTATES an existing [`TplControls`] (C writes through
+/// `&pcs->tpl_ctrls`) rather than starting from zero, so `enable`,
+/// `reduced_tpl_group`, `r0_adjust_factor` and `synth_blk_size` — all set by
+/// [`set_tpl_group`] — survive.
+///
+/// # Panics
+///
+/// Panics on an unknown `tpl_level` (C asserts there).
+pub fn set_tpl_params(t: &mut TplControls, tpl_level: u8, input_resolution: u8) {
+    let small_shape = if input_resolution <= INPUT_SIZE_480P_RANGE {
+        N2_SHAPE
+    } else {
+        N4_SHAPE
+    };
+    match tpl_level {
+        0 => {
+            t.compute_rate = 0;
+            t.enable_tpl_qps = 0;
+            t.disable_intra_pred_nref = 0;
+            t.intra_mode_end = DC_PRED;
+            t.pf_shape = DEFAULT_SHAPE;
+            t.use_sad_in_src_search = 0;
+            t.dispenser_search_level = 0;
+            t.subsample_tx = 0;
+            t.subpel_depth = FULL_PEL;
+            t.subpel_diag_refinement = 0;
+        }
+        1 => {
+            t.compute_rate = 1;
+            t.enable_tpl_qps = 1;
+            t.disable_intra_pred_nref = 0;
+            t.intra_mode_end = PAETH_PRED;
+            t.pf_shape = DEFAULT_SHAPE;
+            t.use_sad_in_src_search = 0;
+            t.dispenser_search_level = 0;
+            t.subsample_tx = 0;
+            t.subpel_depth = QUARTER_PEL;
+            t.subpel_diag_refinement = 0;
+        }
+        2 => {
+            t.compute_rate = 0;
+            t.enable_tpl_qps = 0;
+            t.disable_intra_pred_nref = 1;
+            t.intra_mode_end = PAETH_PRED;
+            t.pf_shape = small_shape;
+            t.use_sad_in_src_search = 1;
+            t.dispenser_search_level = 0;
+            t.subsample_tx = 0;
+            t.subpel_depth = QUARTER_PEL;
+            t.subpel_diag_refinement = 0;
+        }
+        3 => {
+            t.compute_rate = 0;
+            t.enable_tpl_qps = 0;
+            t.disable_intra_pred_nref = 1;
+            t.intra_mode_end = DC_PRED;
+            t.pf_shape = small_shape;
+            t.use_sad_in_src_search = 1;
+            t.dispenser_search_level = 0;
+            t.subsample_tx = 0;
+            t.subpel_depth = QUARTER_PEL;
+            t.subpel_diag_refinement = 4;
+        }
+        4 => {
+            t.compute_rate = 0;
+            t.enable_tpl_qps = 0;
+            t.disable_intra_pred_nref = 1;
+            t.intra_mode_end = DC_PRED;
+            t.pf_shape = small_shape;
+            t.use_sad_in_src_search = 1;
+            t.dispenser_search_level = 0;
+            t.subsample_tx = 0;
+            t.subpel_depth = FULL_PEL;
+            t.subpel_diag_refinement = 4;
+        }
+        5 => {
+            t.compute_rate = 0;
+            t.enable_tpl_qps = 0;
+            t.disable_intra_pred_nref = 1;
+            t.intra_mode_end = DC_PRED;
+            t.pf_shape = small_shape;
+            t.use_sad_in_src_search = 1;
+            t.dispenser_search_level = 1;
+            t.subsample_tx = 2;
+            t.subpel_depth = FULL_PEL;
+            t.subpel_diag_refinement = 4;
+        }
+        _ => panic!("set_tpl_params: unknown tpl_level {tpl_level}"),
+    }
+}
+
+/// C `is_frame_already_exists` (`initial_rc_process.c:161-170`) — static.
+///
+/// De-duplication inside the TPL group build. Omitting it double-counts a
+/// picture in the propagation.
+#[must_use]
+pub fn is_frame_already_exists(tpl_group_pocs: &[u64], end_index: usize, pic_num: u64) -> bool {
+    tpl_group_pocs[..end_index].contains(&pic_num)
+}
+
+/// C `validate_pic_for_tpl` (`initial_rc_process.c:171-189`) — EXPORTED.
+///
+/// Admission test for a picture into the TPL group. Returns whether the
+/// picture is valid; the caller increments `used_tpl_frame_num` when it is.
+///
+/// Trap: the `reduced_tpl_group` test is `temporal_layer_index <=
+/// reduced_tpl_group`, and it applies only when `reduced_tpl_group >= 0`. A
+/// value of 0 means "base layer only", NOT "no reduction" — that is -1.
+#[must_use]
+pub fn validate_pic_for_tpl(
+    tpl_group_pocs: &[u64],
+    tpl_group_layers: &[u8],
+    pic_index: usize,
+    reduced_tpl_group: i8,
+    is_pic_skipped: bool,
+) -> bool {
+    if is_frame_already_exists(tpl_group_pocs, pic_index, tpl_group_pocs[pic_index])
+        || is_pic_skipped
+    {
+        return false;
+    }
+    if reduced_tpl_group >= 0 {
+        i32::from(tpl_group_layers[pic_index]) <= i32::from(reduced_tpl_group)
+    } else {
+        true
+    }
+}
+
+/// One member of the extended lookahead group, as
+/// `store_extended_group` reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExtGroupPic {
+    /// C `pcs->picture_number`.
+    pub picture_number: u64,
+    /// C `pcs->slice_type`.
+    pub slice_type: SliceType,
+    /// C `pcs->temporal_layer_index`.
+    pub temporal_layer_index: u8,
+    /// C `pcs->ext_mg_id`.
+    pub ext_mg_id: i64,
+    /// C `svt_aom_is_delayed_intra(pcs)`, precomputed by the caller.
+    pub is_delayed_intra: bool,
+    /// C `svt_aom_is_pic_skipped(pcs)`, precomputed by the caller.
+    pub is_skipped: bool,
+}
+
+/// The TPL group `store_extended_group` produces.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TplGroup {
+    /// Indices into the extended group, in order — C's `pcs->tpl_group[]`.
+    pub members: alloc::vec::Vec<usize>,
+    /// C `pcs->tpl_valid_pic[]`, indexed like the EXTENDED group (not like
+    /// `members`) — C writes `tpl_valid_pic[i]` where `i` is the ext-group
+    /// index, which is the same as the member index only while nothing is
+    /// skipped.
+    pub valid: alloc::vec::Vec<u8>,
+    /// C `pcs->used_tpl_frame_num`.
+    pub used_tpl_frame_num: u32,
+}
+
+/// C `store_extended_group`'s GROUP-SELECTION half
+/// (`initial_rc_process.c:439-497`) — EXPORTED symbol, ported at tier 4.
+///
+/// Selects TPL group MEMBERSHIP: different membership is a different `r0` and
+/// a different qindex on every SB.
+///
+/// The first half of the C function (walking `ctx->lad_queue` to build
+/// `pcs->ext_group`) is NOT ported — it is queue plumbing over a circular
+/// buffer of in-flight PCS objects, which this port replaces by design. The
+/// caller passes the extended group directly.
+///
+/// Traps, all transcribed literally:
+/// * `tpl_valid_pic[0]` is forced to 1 BEFORE the loop, so picture 0 is
+///   admitted even if `validate_pic_for_tpl` would reject it — but
+///   `used_tpl_frame_num` is NOT incremented for it unless validation passes.
+/// * `limited_tpl_group_size` counts `1 + (tpl_lad_mg + 1) * mg_size` for an I
+///   slice and `(tpl_lad_mg + 1) * mg_size` otherwise, then clamps to the
+///   extended group size.
+/// * A non-delayed intra at `i != 0` is ADDED and then closes the GOP
+///   (`is_gop_end = 1`); a DELAYED intra at `i != 0` breaks immediately
+///   WITHOUT being added. The two arms look symmetric and are not.
+/// * After `is_gop_end`, only pictures with the SAME `ext_mg_id` as that intra
+///   continue; the first one with a different id breaks.
+#[must_use]
+pub fn store_extended_group(
+    ext_group: &[ExtGroupPic],
+    slice_type: SliceType,
+    hierarchical_levels: u8,
+    tpl_lad_mg: u32,
+    reduced_tpl_group: i8,
+) -> TplGroup {
+    let mut g = TplGroup {
+        members: alloc::vec::Vec::new(),
+        valid: alloc::vec![0u8; ext_group.len()],
+        used_tpl_frame_num: 0,
+    };
+    if ext_group.is_empty() {
+        return g;
+    }
+    g.valid[0] = 1;
+
+    let mg_size = 1u32 << hierarchical_levels;
+    let limited = if slice_type == SliceType::I {
+        (1 + (tpl_lad_mg + 1) * mg_size).min(ext_group.len() as u32)
+    } else {
+        ((tpl_lad_mg + 1) * mg_size).min(ext_group.len() as u32)
+    } as usize;
+
+    let mut is_gop_end = false;
+    let mut last_intra_mg_id: i64 = 0;
+    // Group POCs/layers accumulated so far, for the de-duplication test.
+    let mut pocs: alloc::vec::Vec<u64> = alloc::vec::Vec::new();
+    let mut layers: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+
+    let admit = |g: &mut TplGroup,
+                 pocs: &mut alloc::vec::Vec<u64>,
+                 layers: &mut alloc::vec::Vec<u8>,
+                 i: usize| {
+        let cur = ext_group[i];
+        g.members.push(i);
+        // C's validate_pic_for_tpl indexes pcs->tpl_group[pic_index] with the
+        // EXT-group index, and by construction the picture just appended sits
+        // at that index while nothing has been skipped.
+        pocs.push(cur.picture_number);
+        layers.push(cur.temporal_layer_index);
+        let at = pocs.len() - 1;
+        if validate_pic_for_tpl(pocs, layers, at, reduced_tpl_group, cur.is_skipped) {
+            g.valid[i] = 1;
+            g.used_tpl_frame_num += 1;
+        }
+    };
+
+    // The two `admit` arms after `is_gop_end` are identical in body and
+    // different in guard; C spells them out separately and the guards are the
+    // whole point, so they are not merged.
+    #[allow(clippy::if_same_then_else)]
+    for i in 0..limited {
+        let cur = ext_group[i];
+        if cur.slice_type == SliceType::I {
+            if cur.is_delayed_intra {
+                if i == 0 {
+                    admit(&mut g, &mut pocs, &mut layers, i);
+                } else {
+                    break;
+                }
+            } else if i == 0 {
+                admit(&mut g, &mut pocs, &mut layers, i);
+            } else {
+                admit(&mut g, &mut pocs, &mut layers, i);
+                last_intra_mg_id = cur.ext_mg_id;
+                is_gop_end = true;
+            }
+        } else if !is_gop_end {
+            admit(&mut g, &mut pocs, &mut layers, i);
+        } else if cur.ext_mg_id == last_intra_mg_id {
+            admit(&mut g, &mut pocs, &mut layers, i);
+        } else {
+            break;
+        }
+    }
+    g
+}

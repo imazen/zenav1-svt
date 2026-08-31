@@ -1253,3 +1253,205 @@ fn traced_avail_past_pictures() {
         "the sequence start"
     );
 }
+
+// ---------------------------------------------------------------------------
+// TPL group — tier 4 for the `static` half of initial_rc_process.c
+// ---------------------------------------------------------------------------
+
+/// `get_tpl_params_level` (`initial_rc_process.c:307-318`) — static.
+///
+/// Derivation: `<= ENC_M2` -> 1, `<= ENC_M7` -> 4, else 5. Level 4 covers
+/// M3..M7, which is the band the default random-access presets sit in.
+#[test]
+fn traced_get_tpl_params_level() {
+    for m in -1i8..=2 {
+        assert_eq!(pp::get_tpl_params_level(m), 1, "enc_mode {m}");
+    }
+    for m in 3i8..=7 {
+        assert_eq!(pp::get_tpl_params_level(m), 4, "enc_mode {m}");
+    }
+    for m in 8i8..=13 {
+        assert_eq!(pp::get_tpl_params_level(m), 5, "enc_mode {m}");
+    }
+}
+
+/// `set_tpl_params` (`initial_rc_process.c:319-405`) — static.
+///
+/// Two things this test pins that a simplified port loses:
+/// * it MUTATES an existing `TplControls`, so `enable`, `reduced_tpl_group`,
+///   `r0_adjust_factor` and `synth_blk_size` from `svt_aom_set_tpl_group`
+///   survive the call;
+/// * `pf_shape` is resolution-dependent from level 2 up
+///   (`<= INPUT_SIZE_480p_RANGE ? N2_SHAPE : N4_SHAPE`), and levels 0 and 1
+///   use `DEFAULT_SHAPE` regardless.
+#[test]
+fn traced_set_tpl_params_mutates_and_keys_off_resolution() {
+    // Start from a state svt_aom_set_tpl_group would have produced.
+    let mut t = pp::TplControls {
+        enable: 1,
+        reduced_tpl_group: 3,
+        synth_blk_size: 32,
+        r0_adjust_factor: 1.6,
+        ..Default::default()
+    };
+    pp::set_tpl_params(&mut t, 1, 5);
+    assert_eq!(
+        (t.enable, t.reduced_tpl_group, t.synth_blk_size),
+        (1, 3, 32)
+    );
+    assert!(
+        (t.r0_adjust_factor - 1.6).abs() < f64::EPSILON,
+        "untouched by set_tpl_params"
+    );
+    assert_eq!(
+        (t.compute_rate, t.enable_tpl_qps),
+        (1, 1),
+        "only level 1 computes rate"
+    );
+    assert_eq!(t.intra_mode_end, pp::PAETH_PRED);
+    assert_eq!(t.pf_shape, pp::DEFAULT_SHAPE);
+    assert_eq!(t.subpel_depth, pp::QUARTER_PEL);
+
+    // Level 0 is the only other DEFAULT_SHAPE level, and it is FULL_PEL.
+    let mut t = pp::TplControls::default();
+    pp::set_tpl_params(&mut t, 0, 5);
+    assert_eq!(t.pf_shape, pp::DEFAULT_SHAPE);
+    assert_eq!(t.subpel_depth, pp::FULL_PEL);
+
+    // Levels 2..5 take N2_SHAPE at <= 480p and N4_SHAPE above it.
+    for level in 2u8..=5 {
+        let mut small = pp::TplControls::default();
+        pp::set_tpl_params(&mut small, level, pp::INPUT_SIZE_480P_RANGE);
+        assert_eq!(small.pf_shape, pp::N2_SHAPE, "level {level} at <= 480p");
+
+        let mut big = pp::TplControls::default();
+        pp::set_tpl_params(&mut big, level, pp::INPUT_SIZE_480P_RANGE + 1);
+        assert_eq!(big.pf_shape, pp::N4_SHAPE, "level {level} above 480p");
+        assert_eq!(
+            big.disable_intra_pred_nref, 1,
+            "levels 2..5 disable NREF intra"
+        );
+        assert_eq!(big.use_sad_in_src_search, 1);
+    }
+
+    // Level 5 is the only one that raises dispenser_search_level / subsample_tx.
+    let mut t = pp::TplControls::default();
+    pp::set_tpl_params(&mut t, 5, 5);
+    assert_eq!((t.dispenser_search_level, t.subsample_tx), (1, 2));
+    let mut t = pp::TplControls::default();
+    pp::set_tpl_params(&mut t, 4, 5);
+    assert_eq!((t.dispenser_search_level, t.subsample_tx), (0, 0));
+}
+
+/// `is_frame_already_exists` + `validate_pic_for_tpl`
+/// (`initial_rc_process.c:161-189`).
+///
+/// Trap: `reduced_tpl_group == 0` means "base layer only", not "no
+/// reduction" — that is -1. A port that treated 0 as the off value would admit
+/// every layer.
+#[test]
+fn traced_validate_pic_for_tpl_reduced_group_zero_is_base_only() {
+    let pocs = [10u64, 11, 12, 11];
+    let layers = [0u8, 1, 2, 1];
+
+    // Duplicate at index 3 (POC 11 already at index 1) -> rejected.
+    assert!(pp::is_frame_already_exists(&pocs, 3, pocs[3]));
+    assert!(!pp::validate_pic_for_tpl(&pocs, &layers, 3, -1, false));
+
+    // reduced_tpl_group == -1 admits every layer.
+    for i in 0..3 {
+        assert!(
+            pp::validate_pic_for_tpl(&pocs, &layers, i, -1, false),
+            "index {i}"
+        );
+    }
+
+    // reduced_tpl_group == 0 admits ONLY temporal layer 0.
+    assert!(pp::validate_pic_for_tpl(&pocs, &layers, 0, 0, false));
+    assert!(!pp::validate_pic_for_tpl(&pocs, &layers, 1, 0, false));
+    assert!(!pp::validate_pic_for_tpl(&pocs, &layers, 2, 0, false));
+
+    // reduced_tpl_group == 1 admits layers 0 and 1.
+    assert!(pp::validate_pic_for_tpl(&pocs, &layers, 1, 1, false));
+    assert!(!pp::validate_pic_for_tpl(&pocs, &layers, 2, 1, false));
+
+    // A skipped picture is rejected whatever the group setting.
+    assert!(!pp::validate_pic_for_tpl(&pocs, &layers, 0, -1, true));
+}
+
+/// `store_extended_group`'s group-selection half
+/// (`initial_rc_process.c:439-497`).
+///
+/// Derivation for the asymmetric intra arms, which is the part worth pinning:
+/// a NON-delayed intra at `i != 0` is ADDED and then closes the GOP, while a
+/// DELAYED intra at `i != 0` breaks WITHOUT being added. After the close, only
+/// pictures carrying the same `ext_mg_id` as that intra continue.
+#[test]
+fn traced_store_extended_group_intra_arms_are_asymmetric() {
+    let mk = |poc: u64, i_slice: bool, layer: u8, mg: i64, delayed: bool| pp::ExtGroupPic {
+        picture_number: poc,
+        slice_type: if i_slice {
+            pp::SliceType::I
+        } else {
+            pp::SliceType::B
+        },
+        temporal_layer_index: layer,
+        ext_mg_id: mg,
+        is_delayed_intra: delayed,
+        is_skipped: false,
+    };
+
+    // A DELAYED intra at index 3 breaks BEFORE being added: members are 0..2.
+    let ext = [
+        mk(0, false, 0, 0, false),
+        mk(1, false, 1, 0, false),
+        mk(2, false, 1, 0, false),
+        mk(3, true, 0, 1, true),
+        mk(4, false, 1, 1, false),
+    ];
+    let g = pp::store_extended_group(&ext, pp::SliceType::B, 2, 1, -1);
+    assert_eq!(g.members, [0, 1, 2]);
+
+    // A NON-delayed intra at the same index IS added, closes the GOP, and the
+    // following picture continues only because it shares ext_mg_id 1.
+    let ext = [
+        mk(0, false, 0, 0, false),
+        mk(1, false, 1, 0, false),
+        mk(2, false, 1, 0, false),
+        mk(3, true, 0, 1, false),
+        mk(4, false, 1, 1, false),
+        mk(5, false, 1, 2, false),
+    ];
+    let g = pp::store_extended_group(&ext, pp::SliceType::B, 2, 1, -1);
+    assert_eq!(
+        g.members,
+        [0, 1, 2, 3, 4],
+        "index 5 has a different ext_mg_id"
+    );
+
+    // limited_tpl_group_size: a B slice takes (tpl_lad_mg + 1) * (1 << hier).
+    // At hier 2 and tpl_lad_mg 0 that is 4, so only four members are walked.
+    let ext: Vec<_> = (0..8).map(|i| mk(i, false, 1, 0, false)).collect();
+    let g = pp::store_extended_group(&ext, pp::SliceType::B, 2, 0, -1);
+    assert_eq!(g.members, [0, 1, 2, 3]);
+
+    // An I slice gets ONE extra: 1 + (tpl_lad_mg + 1) * mg_size = 5.
+    let g = pp::store_extended_group(&ext, pp::SliceType::I, 2, 0, -1);
+    assert_eq!(g.members, [0, 1, 2, 3, 4]);
+
+    // tpl_valid_pic[0] is forced to 1 before the loop even when the picture
+    // would not validate -- here every picture is layer 1 with a reduced group
+    // of 0, so nothing validates, yet slot 0 is still marked.
+    let g = pp::store_extended_group(&ext, pp::SliceType::B, 2, 0, 0);
+    assert_eq!(g.valid[0], 1);
+    assert_eq!(g.used_tpl_frame_num, 0, "no picture passed validation");
+    assert_eq!(&g.valid[1..4], &[0, 0, 0]);
+
+    // With a group that admits layer 1, every walked picture validates.
+    let g = pp::store_extended_group(&ext, pp::SliceType::B, 2, 0, 1);
+    assert_eq!(g.used_tpl_frame_num, 4);
+
+    // Degenerate: an empty extended group must not panic.
+    let g = pp::store_extended_group(&[], pp::SliceType::B, 2, 0, -1);
+    assert!(g.members.is_empty());
+}

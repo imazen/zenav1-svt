@@ -209,3 +209,48 @@ int32_t ref_search_this_pic(const uint64_t* pocs, uint32_t buf_size, uint64_t in
     free(buf);
     return r;
 }
+
+/* ---- svt_aom_get_tpl_group_level / svt_aom_set_tpl_group
+       (initial_rc_process.c:190-306) ---- */
+
+uint8_t svt_aom_get_tpl_group_level(uint8_t tpl, int8_t enc_mode);
+uint8_t svt_aom_set_tpl_group(PictureParentControlSet* pcs, uint8_t tpl_group_level, uint32_t source_width,
+                              uint32_t source_height);
+
+uint8_t ref_get_tpl_group_level(uint8_t tpl, int8_t enc_mode) {
+    return svt_aom_get_tpl_group_level(tpl, enc_mode);
+}
+
+/* pcs_present == 0 drives C's `pcs == NULL` probe path, which returns only the
+ * synthesizer block size and writes nothing back. */
+uint8_t ref_set_tpl_group(int32_t pcs_present, uint8_t slice_type, uint8_t hierarchical_levels,
+                          uint8_t input_resolution, uint8_t tpl_lad_mg, uint8_t rate_control_mode,
+                          uint8_t tpl_group_level, uint32_t source_width, uint32_t source_height,
+                          uint8_t* out_enable, int8_t* out_reduced, uint8_t* out_synth, double* out_r0_adjust) {
+    if (!pcs_present) {
+        uint8_t blk = svt_aom_set_tpl_group(NULL, tpl_group_level, source_width, source_height);
+        *out_enable = 0;
+        *out_reduced = 0;
+        *out_synth = blk;
+        *out_r0_adjust = 0.0;
+        return blk;
+    }
+    PictureParentControlSet* ppcs = (PictureParentControlSet*)calloc(1, sizeof(*ppcs));
+    SequenceControlSet*      scs  = (SequenceControlSet*)calloc(1, sizeof(*scs));
+
+    ppcs->slice_type                        = (SliceType)slice_type;
+    ppcs->hierarchical_levels               = hierarchical_levels;
+    scs->input_resolution                   = (ResolutionRange)input_resolution;
+    scs->tpl_lad_mg                         = tpl_lad_mg;
+    scs->static_config.rate_control_mode    = rate_control_mode;
+    ppcs->scs                               = scs;
+
+    uint8_t blk    = svt_aom_set_tpl_group(ppcs, tpl_group_level, source_width, source_height);
+    *out_enable    = ppcs->tpl_ctrls.enable;
+    *out_reduced   = ppcs->tpl_ctrls.reduced_tpl_group;
+    *out_synth     = ppcs->tpl_ctrls.synth_blk_size;
+    *out_r0_adjust = ppcs->tpl_ctrls.r0_adjust_factor;
+    free(scs);
+    free(ppcs);
+    return blk;
+}
