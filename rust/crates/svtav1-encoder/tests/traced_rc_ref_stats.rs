@@ -409,3 +409,116 @@ fn cqp_crf_counters_keep_disable_cdf_update_at_zero_forever() {
     // WOULD fire, so this test distinguishes the two worlds.
     assert!(would_disable(30, 0));
 }
+
+// ---------------------------------------------------------------------------
+// The small clamps and resets (rc_process.c:34-54, :552-592, :735;
+// rc_vbr_cbr.c:21). All `static` in C — TIER 4, hand-derived from the source.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn clip3_argument_order_is_min_max_value_and_does_not_panic_when_inverted() {
+    use svtav1_encoder::port_rc_process::clip3;
+    // C: `#define CLIP3(min_val, max_val, a)
+    //      (((a) < (min_val)) ? (min_val) : (((a) > (max_val)) ? (max_val) : (a)))`
+    assert_eq!(clip3(10, 20, 5), 10);
+    assert_eq!(clip3(10, 20, 15), 15);
+    assert_eq!(clip3(10, 20, 25), 20);
+    // With min > max, C's first test wins and it returns min. `i32::clamp`
+    // PANICS here, which is why this is not spelled as a clamp.
+    assert_eq!(clip3(20, 10, 15), 20);
+    assert_eq!(clip3(20, 10, 25), 10);
+}
+
+#[test]
+fn clamp_qp_clamps_in_the_qp_domain() {
+    use svtav1_encoder::port_rc_process::clamp_qp;
+    // rc_process.c:50 — `CLIP3(min_qp_allowed, max_qp_allowed, qp)`, QP units.
+    assert_eq!(clamp_qp(10, 50, 5), 10);
+    assert_eq!(clamp_qp(10, 50, 30), 30);
+    assert_eq!(clamp_qp(10, 50, 63), 50);
+}
+
+#[test]
+fn clamp_qindex_clamps_in_the_qindex_domain_not_the_qp_domain() {
+    use svtav1_encoder::port_rc_process::clamp_qindex;
+    use svtav1_encoder::rate_control::QUANTIZER_TO_QINDEX;
+    // rc_vbr_cbr.c:21 — the bounds go through quantizer_to_qindex FIRST.
+    // With min_qp 10 / max_qp 50 the bounds are QUANTIZER_TO_QINDEX[10] and
+    // [50], which are NOT 10 and 50, so a qindex of 30 is below the lower
+    // bound here while a QP of 30 was inside the range above.
+    let lo = i32::from(QUANTIZER_TO_QINDEX[10]);
+    let hi = i32::from(QUANTIZER_TO_QINDEX[50]);
+    assert!(
+        lo > 10,
+        "the two domains must differ for this test to mean anything"
+    );
+    assert_eq!(i32::from(clamp_qindex(10, 50, 0)), lo);
+    assert_eq!(i32::from(clamp_qindex(10, 50, 255)), hi);
+    assert_eq!(
+        i32::from(clamp_qindex(10, 50, (lo + hi) / 2)),
+        (lo + hi) / 2
+    );
+}
+
+#[test]
+fn use_rtc_cbr_path_needs_both_cbr_and_the_rtc_flag() {
+    use svtav1_encoder::port_rc_process::{AomRcMode, use_rtc_cbr_path};
+    assert!(use_rtc_cbr_path(AomRcMode::Cbr as i32, true));
+    assert!(!use_rtc_cbr_path(AomRcMode::Cbr as i32, false));
+    assert!(!use_rtc_cbr_path(AomRcMode::Vbr as i32, true));
+    assert!(!use_rtc_cbr_path(AomRcMode::Q as i32, true));
+}
+
+#[test]
+fn rc_param_reset_sets_size_to_minus_one_not_zero() {
+    use svtav1_encoder::port_rc_process::RcIntervalParams;
+    let p = RcIntervalParams::reset();
+    // C: `rc_param->size = -1;` — the "no interval" sentinel. Everything else
+    // is zeroed, so a blanket `Default::default()` would be wrong here.
+    assert_eq!(p.size, -1);
+    assert_eq!(p.processed_frame_number, 0);
+    assert_eq!(p.vbr_bits_off_target, 0);
+    assert_eq!(p.vbr_bits_off_target_fast, 0);
+    assert_eq!(p.rate_error_estimate, 0);
+    assert_eq!(p.total_actual_bits, 0);
+    assert_eq!(p.total_target_bits, 0);
+    assert_eq!(p.extend_minq, 0);
+    assert_eq!(p.extend_maxq, 0);
+    assert_eq!(p.extend_minq_fast, 0);
+}
+
+#[test]
+fn reset_rc_param_zeroes_the_three_ppcs_fields() {
+    use svtav1_encoder::port_rc_process::{PpcsRcParams, reset_rc_param};
+    assert_eq!(
+        reset_rc_param(),
+        PpcsRcParams {
+            loop_count: 0,
+            overshoot_seen: 0,
+            undershoot_seen: 0
+        }
+    );
+}
+
+#[test]
+fn generate_sb_qindex_skips_normalize_at_delta_q_res_one() {
+    use svtav1_encoder::port_rc_process::generate_sb_qindex_steps;
+    // C: `if (delta_q_present && delta_q_res != 1) svt_av1_normalize_sb_delta_q(pcs);`
+    // — delta-q ON with res == 1 must still SKIP the normalizer.
+    let s = generate_sb_qindex_steps(true, 1, false);
+    assert!(s.init_sb_qindex, "the init call is unconditional in C");
+    assert!(!s.normalize_sb_delta_q, "res == 1 must skip normalize");
+    assert!(!s.generate_b64_me_qindex_map);
+
+    let s = generate_sb_qindex_steps(true, 2, false);
+    assert!(s.normalize_sb_delta_q);
+
+    // delta_q_present off: res is irrelevant.
+    let s = generate_sb_qindex_steps(false, 4, false);
+    assert!(!s.normalize_sb_delta_q);
+    assert!(s.init_sb_qindex);
+
+    // The b64 ME qindex map is gated ONLY on stats_based_sb_lambda_modulation.
+    let s = generate_sb_qindex_steps(false, 1, true);
+    assert!(s.generate_b64_me_qindex_map);
+}

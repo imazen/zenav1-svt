@@ -348,3 +348,41 @@ void ref_rc_lambda_assign(const RefLambdaCtx* c, int32_t bit_depth, int32_t qp_i
         pcs, fast_lambda, full_lambda, (EbBitDepth)bit_depth, (uint8_t)qp_index, (bool)multiply_lambda);
     ref_lambda_free(pcs, ppcs, scs);
 }
+
+/* ------------------------------------------------------------------------
+ * `svt_av1_new_framerate` (pass2_strategy.c:900) — EXPORTED — and through it
+ * the `static` `av1_rc_update_framerate` (:880) it calls unconditionally.
+ * Same per-call calloc'd SequenceControlSet + EncodeContext pattern.
+ * ---------------------------------------------------------------------- */
+
+typedef struct {
+    uint32_t target_bit_rate;
+    int32_t  num_mbs;
+    int32_t  vbrmax_section;
+    double   framerate;
+} RefNewFramerateIn;
+
+typedef struct {
+    double  new_framerate;
+    int32_t avg_frame_bandwidth;
+    int32_t max_frame_bandwidth;
+} RefNewFramerateOut;
+
+void ref_rc_new_framerate(const RefNewFramerateIn* in, RefNewFramerateOut* out) {
+    SequenceControlSet* scs     = (SequenceControlSet*)calloc(1, sizeof(SequenceControlSet));
+    EncodeContext*      enc_ctx = (EncodeContext*)calloc(1, sizeof(EncodeContext));
+    scs->enc_ctx                = enc_ctx;
+
+    scs->static_config.target_bit_rate   = in->target_bit_rate;
+    enc_ctx->frame_info.num_mbs          = in->num_mbs;
+    enc_ctx->two_pass_cfg.vbrmax_section = in->vbrmax_section;
+
+    svt_av1_new_framerate(scs, in->framerate);
+
+    out->new_framerate       = scs->new_framerate;
+    out->avg_frame_bandwidth = enc_ctx->rc.avg_frame_bandwidth;
+    out->max_frame_bandwidth = enc_ctx->rc.max_frame_bandwidth;
+
+    free(enc_ctx);
+    free(scs);
+}

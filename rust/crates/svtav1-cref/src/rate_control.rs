@@ -413,3 +413,39 @@ pub fn lambda_assign(
     }
     (fast, full)
 }
+
+// ---------------------------------------------------------------------------
+// `svt_av1_new_framerate` (pass2_strategy.c:900), EXPORTED, and the `static`
+// `av1_rc_update_framerate` it calls.
+// ---------------------------------------------------------------------------
+
+/// Flattened inputs to `svt_av1_new_framerate`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NewFramerateIn {
+    pub target_bit_rate: u32,
+    pub num_mbs: i32,
+    pub vbrmax_section: i32,
+    pub framerate: f64,
+}
+
+/// Flattened outputs.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct NewFramerateOut {
+    pub new_framerate: f64,
+    pub avg_frame_bandwidth: i32,
+    pub max_frame_bandwidth: i32,
+}
+
+unsafe extern "C" {
+    fn ref_rc_new_framerate(input: *const NewFramerateIn, out: *mut NewFramerateOut);
+}
+
+/// Drive the real `svt_av1_new_framerate` on a per-call `SequenceControlSet`.
+#[must_use]
+pub fn new_framerate(input: &NewFramerateIn) -> NewFramerateOut {
+    let mut out = NewFramerateOut::default();
+    unsafe { ref_rc_new_framerate(input, &mut out) };
+    out
+}

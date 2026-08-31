@@ -934,3 +934,77 @@ fn update_lambda_gf_type_is_derived_not_the_ppcs_update_type() {
         "tl 0 and 2 must land on the same factor (150)"
     );
 }
+
+/// `svt_av1_new_framerate` (pass2_strategy.c:900) — EXPORTED, TIER 1 — and
+/// through it the `static` `av1_rc_update_framerate` (:880) it calls
+/// unconditionally. This is the step [`rc_init`] names as its own gap.
+#[test]
+fn new_framerate_matches_c() {
+    let mut rng = Rng(0x0fed_cba9_8765_4321);
+    // Frame rates around C's `< 0.1` cliff (which replaces the value with 30,
+    // NOT with 0.1), plus the usual broadcast/film rates.
+    let rates = [
+        0.0f64, 0.001, 0.05, 0.0999, 0.1, 0.5, 1.0, 23.976, 24.0, 25.0, 29.97, 30.0, 50.0, 59.94,
+        60.0, 120.0, 240.0, 1000.0,
+    ];
+    // num_mbs for 64x64 up to 8K, plus 0 and a value big enough that
+    // `MBs * MAX_MB_RATE` overflows `int` (which C does in int arithmetic).
+    let mb_counts = [0i32, 16, 396, 1620, 8160, 32_640, 129_600, 10_000_000];
+    let vbrmax = [0i32, 50, 100, 200, 400, 2000];
+    let mut cells = 0usize;
+    for &fr in &rates {
+        for &mbs in &mb_counts {
+            for &vmax in &vbrmax {
+                for &br in &[0u32, 1, 1_000, 500_000, 20_000_000, 4_000_000_000] {
+                    let got = svtav1_encoder::port_rc_process::new_framerate(br, mbs, vmax, fr);
+                    let want = svtav1_cref::rate_control::new_framerate(
+                        &svtav1_cref::rate_control::NewFramerateIn {
+                            target_bit_rate: br,
+                            num_mbs: mbs,
+                            vbrmax_section: vmax,
+                            framerate: fr,
+                        },
+                    );
+                    assert_eq!(
+                        got.new_framerate.to_bits(),
+                        want.new_framerate.to_bits(),
+                        "new_framerate(br={br}, mbs={mbs}, vmax={vmax}, fr={fr})"
+                    );
+                    assert_eq!(
+                        got.avg_frame_bandwidth, want.avg_frame_bandwidth,
+                        "avg_frame_bandwidth(br={br}, mbs={mbs}, vmax={vmax}, fr={fr})"
+                    );
+                    assert_eq!(
+                        got.max_frame_bandwidth, want.max_frame_bandwidth,
+                        "max_frame_bandwidth(br={br}, mbs={mbs}, vmax={vmax}, fr={fr})"
+                    );
+                    cells += 1;
+                }
+            }
+        }
+    }
+    let _ = rng.next();
+    assert_eq!(cells, rates.len() * mb_counts.len() * vbrmax.len() * 6);
+}
+
+/// The `< 0.1` cliff, read off C rather than asserted from the port: a
+/// sub-threshold frame rate becomes **30**, not 0.1, which is a 300x jump in
+/// `avg_frame_bandwidth`. If a future edit "clamps to 0.1" instead, this goes
+/// red with a number that explains itself.
+#[test]
+fn new_framerate_sub_threshold_jumps_to_30_not_to_the_threshold() {
+    let want =
+        svtav1_cref::rate_control::new_framerate(&svtav1_cref::rate_control::NewFramerateIn {
+            target_bit_rate: 3_000_000,
+            num_mbs: 1620,
+            vbrmax_section: 100,
+            framerate: 0.05,
+        });
+    assert_eq!(
+        want.new_framerate, 30.0,
+        "C replaced 0.05 with {}",
+        want.new_framerate
+    );
+    // 3_000_000 / 30 == 100_000. At a 0.1 clamp it would be 30_000_000.
+    assert_eq!(want.avg_frame_bandwidth, 100_000);
+}

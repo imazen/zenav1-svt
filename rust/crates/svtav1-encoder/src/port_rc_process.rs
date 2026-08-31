@@ -1327,3 +1327,214 @@ pub fn update_rc_counts(
     };
     (frames_since_key, frames_to_key, frames_since_cdf_update)
 }
+
+// ---------------------------------------------------------------------------
+// Frame-rate -> bandwidth, and the small clamps/resets
+// (pass2_strategy.c:880-903, rc_process.c:34-54, :552-592, :735)
+// ---------------------------------------------------------------------------
+
+/// C `MAX_MB_RATE` (pass2_strategy.c:878): the per-16x16-MB bit budget the
+/// 1080p-and-below decode-HW baseline assumes.
+pub const MAX_MB_RATE: i64 = 250;
+
+/// C `MAXRATE_1080P` (pass2_strategy.c:879) == `(1920 * 1080 / (16 * 16)) * 250`.
+pub const MAXRATE_1080P: i64 = 2_025_000;
+
+/// What `av1_rc_update_framerate` / `svt_av1_new_framerate` produce.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FramerateBandwidth {
+    /// `scs->new_framerate`.
+    pub new_framerate: f64,
+    /// `rc->avg_frame_bandwidth`.
+    pub avg_frame_bandwidth: i32,
+    /// `rc->max_frame_bandwidth`.
+    pub max_frame_bandwidth: i32,
+}
+
+/// C `svt_av1_new_framerate` (pass2_strategy.c:900), EXPORTED, plus the
+/// `static` `av1_rc_update_framerate` (:880) it calls unconditionally.
+///
+/// **This closes the gap [`rc_init`] names.** `rc_init`'s `mode != AOM_Q` tail
+/// calls exactly this; the port previously returned the AOM_Q-complete result
+/// and told the caller to run this step itself. Now the step exists.
+///
+/// THE FLOOR IS ON THE INPUT, NOT THE OUTPUT: `framerate < 0.1` is replaced by
+/// **30**, not by 0.1 — a sub-0.1 fps input jumps to 30 fps, which is a
+/// 300x change in `avg_frame_bandwidth`, not a clamp.
+///
+/// C's arithmetic, kept in its own types: `avg_frame_bandwidth` is
+/// `(int)(uint32 target_bit_rate / double new_framerate)` — a truncating
+/// double-to-int conversion; `vbr_max_bits` is computed in `int64_t` and then
+/// narrowed by `(int)` BEFORE the `AOMMIN(_, INT_MAX)`, so that AOMMIN can
+/// never fire and a genuinely huge product has already wrapped. Reproduced
+/// with a wrapping narrow, because that wrap is the C behaviour a bitstream
+/// would depend on.
+#[must_use]
+pub fn new_framerate(
+    target_bit_rate: u32,
+    num_mbs: i32,
+    vbrmax_section: i32,
+    framerate: f64,
+) -> FramerateBandwidth {
+    let new_framerate = if framerate < 0.1 { 30.0 } else { framerate };
+    let avg_frame_bandwidth = (f64::from(target_bit_rate) / new_framerate) as i32;
+    // C: `(int)(((int64_t)rc->avg_frame_bandwidth * vbrmax_section) / 100)`
+    // then `AOMMIN(_, INT_MAX)` — the cast to int already happened, so the
+    // AOMMIN is a no-op on a value that has already been narrowed.
+    let vbr_max_bits_i64 = (i64::from(avg_frame_bandwidth) * i64::from(vbrmax_section)) / 100;
+    // The `(int)` narrow happens BEFORE C's `AOMMIN(_, INT_MAX)`, so that
+    // AOMMIN is a no-op and a large product has already wrapped. `as i32` is
+    // the wrapping narrow; reproducing the wrap is the point.
+    let vbr_max_bits = vbr_max_bits_i64 as i32;
+    // `MBs * MAX_MB_RATE` and both AOMMAXes are plain `int` arithmetic in C,
+    // so the comparison chain stays in i32 (and the multiply wraps there too).
+    let mb_rate = num_mbs.wrapping_mul(MAX_MB_RATE as i32);
+    let max_frame_bandwidth = aom_max_i32(aom_max_i32(mb_rate, MAXRATE_1080P as i32), vbr_max_bits);
+    FramerateBandwidth {
+        new_framerate,
+        avg_frame_bandwidth,
+        max_frame_bandwidth,
+    }
+}
+
+/// C `AOMMAX` on `int` — the macro shape, kept for symmetry with [`aom_max`].
+fn aom_max_i32(a: i32, b: i32) -> i32 {
+    if a > b { a } else { b }
+}
+
+/// C `clamp_qp` (rc_process.c:50). `static` — tier 4.
+///
+/// `CLIP3(min_val, max_val, a)` (utility.h:101) is
+/// `a < min ? min : (a > max ? max : a)` — **min first, then max, then the
+/// value**, which is the opposite argument order from most clamp helpers and
+/// is why this is spelled out rather than mapped onto `i32::clamp`. When
+/// `min > max` C returns `min` and `i32::clamp` PANICS, so the two are not
+/// interchangeable.
+#[must_use]
+pub fn clamp_qp(min_qp_allowed: i32, max_qp_allowed: i32, qp: i32) -> u8 {
+    clip3(min_qp_allowed, max_qp_allowed, qp) as u8
+}
+
+/// C `clamp_qindex` (rc_vbr_cbr.c:21). `static` — tier 4. Same clamp as
+/// [`clamp_qp`] but the bounds go through `quantizer_to_qindex` first, so it
+/// clamps in the QINDEX domain rather than the QP domain.
+#[must_use]
+pub fn clamp_qindex(min_qp_allowed: i32, max_qp_allowed: i32, qindex: i32) -> u8 {
+    let qmin = i32::from(quantizer_to_qindex(min_qp_allowed));
+    let qmax = i32::from(quantizer_to_qindex(max_qp_allowed));
+    clip3(qmin, qmax, qindex) as u8
+}
+
+/// C `CLIP3` (utility.h:101). Note it is NOT `clamp`: with `min > max` it
+/// returns `min`, where `i32::clamp` panics.
+#[must_use]
+pub fn clip3(min_val: i32, max_val: i32, a: i32) -> i32 {
+    if a < min_val {
+        min_val
+    } else if a > max_val {
+        max_val
+    } else {
+        a
+    }
+}
+
+/// C `use_rtc_cbr_path` (rc_process.c:34). `static` — tier 4.
+/// `rc_cfg.mode == AOM_CBR && scs->static_config.rtc`.
+#[must_use]
+pub fn use_rtc_cbr_path(mode: i32, rtc: bool) -> bool {
+    mode == AomRcMode::Cbr as i32 && rtc
+}
+
+/// The `RateControlIntervalParamContext` fields C's `rc_param_reset`
+/// (rc_process.c:552) writes. `static` — tier 4.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RcIntervalParams {
+    /// C sets this to **-1**, not 0 — the "no interval" sentinel.
+    pub size: i64,
+    pub processed_frame_number: u32,
+    pub vbr_bits_off_target: i64,
+    pub vbr_bits_off_target_fast: i64,
+    pub rate_error_estimate: i32,
+    pub total_actual_bits: i64,
+    pub total_target_bits: i64,
+    pub extend_minq: i32,
+    pub extend_maxq: i32,
+    pub extend_minq_fast: i32,
+}
+
+impl RcIntervalParams {
+    /// C `rc_param_reset` (rc_process.c:552).
+    #[must_use]
+    pub fn reset() -> Self {
+        Self {
+            size: -1,
+            processed_frame_number: 0,
+            vbr_bits_off_target: 0,
+            vbr_bits_off_target_fast: 0,
+            rate_error_estimate: 0,
+            total_actual_bits: 0,
+            total_target_bits: 0,
+            extend_minq: 0,
+            extend_maxq: 0,
+            extend_minq_fast: 0,
+        }
+    }
+}
+
+/// The PPCS fields C's `reset_rc_param` (rc_process.c:589) zeroes. EXPORTED in
+/// C, but its whole body is three stores into a `PictureParentControlSet`, so
+/// there is nothing for a differential to compare that this type does not
+/// already state. Tier 4.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PpcsRcParams {
+    pub loop_count: u32,
+    pub overshoot_seen: u8,
+    pub undershoot_seen: u8,
+}
+
+/// C `reset_rc_param` (rc_process.c:589).
+#[must_use]
+pub fn reset_rc_param() -> PpcsRcParams {
+    PpcsRcParams::default()
+}
+
+/// Which steps C's `generate_sb_qindex` (rc_process.c:735) runs, given the
+/// frame's delta-q config. `static` — tier 4.
+///
+/// This is the SECOND false-"ported" row: the port's inventory matched
+/// `generate_sb_qindex` against the string `svt_av1_rc_init_sb_qindex` inside
+/// comments at `sb_qindex.rs:144`/`:264` and `variance_boost_recon.rs:10`.
+/// The first callee's logic does exist in [`crate::sb_qindex`]; this wrapper
+/// did not.
+///
+/// NOT PORTED, named rather than omitted: `svt_av1_generate_b64_me_qindex_map`
+/// (**rc_aq.c**:656) has no Rust counterpart and rc_aq.c is another module
+/// group's file, so it is not written here. `svt_av1_rc_init_sb_qindex`
+/// (rc_aq.c:871) and `svt_av1_normalize_sb_delta_q` (rc_aq.c:830) are both
+/// already ported in [`crate::sb_qindex`]. What this function contributes is
+/// only the CONTROL FLOW that rc_process.c owns — in particular that the
+/// normalize step is gated on `delta_q_present && delta_q_res != 1`, so
+/// `delta_q_res == 1` skips it even with delta-q on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SbQindexSteps {
+    /// `svt_av1_rc_init_sb_qindex` — unconditional.
+    pub init_sb_qindex: bool,
+    /// `svt_av1_normalize_sb_delta_q`.
+    pub normalize_sb_delta_q: bool,
+    /// `svt_av1_generate_b64_me_qindex_map` — NOT PORTED, see above.
+    pub generate_b64_me_qindex_map: bool,
+}
+
+/// C `generate_sb_qindex` (rc_process.c:735) — its step selection.
+#[must_use]
+pub fn generate_sb_qindex_steps(
+    delta_q_present: bool,
+    delta_q_res: u8,
+    stats_based_sb_lambda_modulation: bool,
+) -> SbQindexSteps {
+    SbQindexSteps {
+        init_sb_qindex: true,
+        normalize_sb_delta_q: delta_q_present && delta_q_res != 1,
+        generate_b64_me_qindex_map: stats_based_sb_lambda_modulation,
+    }
+}
