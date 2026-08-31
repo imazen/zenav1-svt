@@ -5989,3 +5989,62 @@ pub fn highbd_resize_plane_horizontal(
         "svt_av1_highbd_resize_plane_horizontal failed (rc {rc})"
     );
 }
+
+// --- ransac.c ---
+
+unsafe extern "C" {
+    fn ref_ransac(
+        pts4: *const i32,
+        npoints: i32,
+        ty: i32,
+        num_desired_motions: i32,
+        out_params: *mut f64,
+        out_num_inliers: *mut i32,
+        out_inliers: *mut i32,
+    ) -> i32;
+}
+
+/// One model as `svt_aom_ransac` produced it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RansacModelOut {
+    pub params: [f64; 6],
+    pub num_inliers: usize,
+    /// Interleaved `[x0, y0, x1, y1, ...]`, `num_inliers` pairs.
+    pub inliers: Vec<i32>,
+}
+
+/// Reference `svt_aom_ransac` (ransac.c:428). `points` is interleaved
+/// `[x, y, rx, ry]` per correspondence; `ty` is the `TransformationType`
+/// (1 = TRANSLATION, 2 = ROTZOOM, 3 = AFFINE — IDENTITY is rejected by C's
+/// own assert). Returns `(ok, models)`.
+pub fn ransac(points: &[i32], ty: i32, num_desired_motions: usize) -> (bool, Vec<RansacModelOut>) {
+    assert_eq!(points.len() % 4, 0);
+    let npoints = points.len() / 4;
+    assert!((1..=3).contains(&ty));
+    let mut params = vec![0f64; num_desired_motions * 6];
+    let mut counts = vec![0i32; num_desired_motions];
+    let mut inliers = vec![0i32; num_desired_motions * 2 * npoints.max(1)];
+    let ok = unsafe {
+        ref_ransac(
+            points.as_ptr(),
+            npoints as i32,
+            ty,
+            num_desired_motions as i32,
+            params.as_mut_ptr(),
+            counts.as_mut_ptr(),
+            inliers.as_mut_ptr(),
+        )
+    };
+    let models = (0..num_desired_motions)
+        .map(|i| {
+            let n = counts[i] as usize;
+            let base = i * 2 * npoints.max(1);
+            RansacModelOut {
+                params: params[i * 6..i * 6 + 6].try_into().unwrap(),
+                num_inliers: n,
+                inliers: inliers[base..base + 2 * n].to_vec(),
+            }
+        })
+        .collect();
+    (ok != 0, models)
+}

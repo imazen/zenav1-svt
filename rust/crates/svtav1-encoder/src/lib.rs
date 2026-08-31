@@ -54,6 +54,7 @@ pub mod port_entropy_inter;
 pub mod port_frame_update;
 pub mod port_global_motion;
 pub mod port_lr_level;
+pub mod port_ransac;
 pub mod port_sgr_search;
 pub mod port_md;
 pub mod port_picstruct;

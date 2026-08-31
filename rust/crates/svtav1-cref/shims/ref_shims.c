@@ -3656,3 +3656,49 @@ int32_t ref_highbd_resize_plane_horizontal(const uint16_t* input, int32_t height
     return (int32_t)svt_av1_highbd_resize_plane_horizontal(
         input, height, width, in_stride, output, height, width2, out_stride, bd);
 }
+
+/* ---- ransac.c: svt_aom_ransac (EXPORTED) ----
+ *
+ * Drives the whole RANSAC search, which covers every static in ransac.c
+ * (compare_motions, is_better_motion, score_translation, score_affine,
+ * find_translation, find_rotzoom, find_affine, ransac_internal) plus the
+ * inlined random.h / mathutils.h helpers.
+ *
+ * MotionModel::inliers is a caller-owned buffer of 2 * npoints ints per
+ * model; everything is calloc'd PER CALL per this file's no-static rule.
+ *
+ * Layout of `out_params`: num_desired_motions * MAX_PARAMDIM doubles.
+ * `out_num_inliers`: one int per model. `out_inliers`: num_desired_motions *
+ * 2 * npoints ints, only the first 2 * num_inliers of each block valid. */
+#include "ransac.h"
+
+bool svt_aom_ransac(const Correspondence* matched_points, int npoints, TransformationType type,
+                    MotionModel* motion_models, int num_desired_motions, bool* mem_alloc_failed);
+
+int32_t ref_ransac(const int32_t* pts4, int32_t npoints, int32_t type, int32_t num_desired_motions,
+                   double* out_params, int32_t* out_num_inliers, int32_t* out_inliers) {
+    Correspondence* corr = (Correspondence*)calloc((size_t)npoints > 0 ? (size_t)npoints : 1, sizeof(Correspondence));
+    for (int32_t i = 0; i < npoints; ++i) {
+        corr[i].x  = pts4[4 * i + 0];
+        corr[i].y  = pts4[4 * i + 1];
+        corr[i].rx = pts4[4 * i + 2];
+        corr[i].ry = pts4[4 * i + 3];
+    }
+    MotionModel* models = (MotionModel*)calloc((size_t)num_desired_motions, sizeof(MotionModel));
+    for (int32_t i = 0; i < num_desired_motions; ++i) {
+        models[i].inliers = (int*)calloc((size_t)(npoints > 0 ? npoints : 1) * 2, sizeof(int));
+    }
+    bool          mem_alloc_failed = false;
+    const int32_t ok = (int32_t)svt_aom_ransac(corr, npoints, (TransformationType)type, models, num_desired_motions,
+                                               &mem_alloc_failed);
+    for (int32_t i = 0; i < num_desired_motions; ++i) {
+        memcpy(out_params + (size_t)i * MAX_PARAMDIM, models[i].params, MAX_PARAMDIM * sizeof(double));
+        out_num_inliers[i] = models[i].num_inliers;
+        memcpy(out_inliers + (size_t)i * 2 * (size_t)npoints, models[i].inliers,
+               (size_t)models[i].num_inliers * 2 * sizeof(int));
+        free(models[i].inliers);
+    }
+    free(models);
+    free(corr);
+    return ok;
+}
