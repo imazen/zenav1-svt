@@ -1178,3 +1178,422 @@ pub fn pad_and_decimate_filtered_pic<'p>(
 
     pre::downsample_filtering_input_picture(hme, input_pic, quarter, sixteenth);
 }
+
+// ---------------------------------------------------------------------------
+// The sub-pel search chain and the per-block plumbing
+// ---------------------------------------------------------------------------
+
+/// `subblock_xy_16x16` (temporal_filtering.c:46) — `[pu_index] -> (idx_y, idx_x)`.
+/// Note the ORDER: row first, column second. Reading it as (x, y) transposes
+/// every 16x16 block's origin.
+#[rustfmt::skip]
+pub const SUBBLOCK_XY_16X16: [[u32; 2]; 16] = [
+    [0, 0], [0, 1], [0, 2], [0, 3],
+    [1, 0], [1, 1], [1, 2], [1, 3],
+    [2, 0], [2, 1], [2, 2], [2, 3],
+    [3, 0], [3, 1], [3, 2], [3, 3],
+];
+
+/// `idx_32x32_to_idx_16x16` (temporal_filtering.c:62).
+#[rustfmt::skip]
+pub const IDX_32X32_TO_IDX_16X16: [[u32; 4]; 4] = [
+    [0, 1, 4, 5], [2, 3, 6, 7], [8, 9, 12, 13], [10, 11, 14, 15],
+];
+
+/// `subblock_xy_8x8` (temporal_filtering.c:65) — `[pu_index] -> (idx_y, idx_x)`.
+pub const SUBBLOCK_XY_8X8: [[u32; 2]; 64] = {
+    let mut t = [[0u32; 2]; 64];
+    let mut i = 0;
+    while i < 64 {
+        t[i] = [(i / 8) as u32, (i % 8) as u32];
+        i += 1;
+    }
+    t
+};
+
+/// `idx_32x32_to_idx_8x8` (temporal_filtering.c:75).
+#[rustfmt::skip]
+pub const IDX_32X32_TO_IDX_8X8: [[[u32; 4]; 4]; 4] = [
+    [[0, 1, 8, 9],     [2, 3, 10, 11],   [16, 17, 24, 25], [18, 19, 26, 27]],
+    [[4, 5, 12, 13],   [6, 7, 14, 15],   [20, 21, 28, 29], [22, 23, 30, 31]],
+    [[32, 33, 40, 41], [34, 35, 42, 43], [48, 49, 56, 57], [50, 51, 58, 59]],
+    [[36, 37, 44, 45], [38, 39, 46, 47], [52, 53, 60, 61], [54, 55, 62, 63]],
+];
+
+/// `TF_SUBPEL_SEARCH_PARAMS` (temporal_filtering.h), the fields the search
+/// control flow reads. The MC-facing fields (`interp_filters`,
+/// `pu_origin_*`, `local_origin_*`, `encoder_bit_depth`) are carried through
+/// verbatim so the injected compensator can use them.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TfSubpelSearchParams {
+    pub subsampling_shift: u8,
+    pub interp_filters: u32,
+    pub pu_origin_x: u16,
+    pub pu_origin_y: u16,
+    pub local_origin_x: u16,
+    pub local_origin_y: u16,
+    pub bsize: u32,
+    pub is_highbd: bool,
+    pub encoder_bit_depth: i32,
+    pub idx_x: u32,
+    pub idx_y: u32,
+    pub mv_x: i16,
+    pub mv_y: i16,
+    pub xd: i16,
+    pub yd: i16,
+    pub subpel_pel_mode: u8,
+}
+
+/// The `tf_ctrls` fields the sub-pel search chain reads.
+///
+/// At `tf_level 5` (presets 3..7, the campaign presets) the live values are
+/// `half_pel_mode = 2`, `quarter_pel_mode = 1`, `eight_pel_mode = 0` and
+/// `enable_8x8_pred = 0` — the MODE VALUES change the candidate set, not just
+/// whether a level runs, because `svt_check_position` skips every DIAGONAL
+/// candidate when the mode is >= 2.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TfSearchCtrls {
+    pub half_pel_mode: u8,
+    pub quarter_pel_mode: u8,
+    pub eight_pel_mode: u8,
+    pub use_2tap: bool,
+    pub sub_sampling_shift: u8,
+    pub enable_8x8_pred: bool,
+}
+
+/// `svt_check_position` (temporal_filtering.c:1431) — the per-candidate
+/// compensate-and-score step, minus the compensation itself.
+///
+/// The compensation (`svt_aom_simple_luma_unipred`) and the distortion
+/// (`svt_aom_mefn_ptr[block_size].vf`) are INJECTED as `score`, which the
+/// caller implements over the port's own MC and variance kernels. Everything
+/// this function decides — the three early-outs, the block-size mapping, and
+/// the strict-improvement update rule — is transcribed here.
+///
+/// Three details that change which MV wins:
+/// * the diagonal skip: when `subpel_pel_mode >= 2`, a candidate with BOTH
+///   `xd != 0` and `yd != 0` is not even compensated;
+/// * the early exit threshold is `(bsize * bsize * tf_subpel_early_exit_th)
+///   << is_highbd`, compared against the CURRENT best, and it returns before
+///   the candidate is scored;
+/// * the update is `distortion < *best_dist`, STRICTLY less — a tie does NOT
+///   replace the incumbent, so the earlier candidate in the scan order wins.
+///
+/// `score` receives `(mv_x, mv_y, block_size_index_is_subsampled)` where the
+/// third value is C's `subsampling_shift` for the centre candidate and 0 for
+/// every offset candidate — C passes
+/// `xd == 0 && yd == 0 ? subsampling_shift : 0` to the compensator.
+pub fn check_position<F>(
+    p: &TfSubpelSearchParams,
+    tf_subpel_early_exit_th: u32,
+    best_dist: &mut u64,
+    best_mv_x: &mut i16,
+    best_mv_y: &mut i16,
+    score: &mut F,
+) where
+    F: FnMut(i16, i16, u8) -> u64,
+{
+    if p.subpel_pel_mode >= 2 && p.xd != 0 && p.yd != 0 {
+        return;
+    }
+    // If the best distortion is already 0 the new point cannot beat it.
+    if *best_dist == 0 {
+        return;
+    }
+    if tf_subpel_early_exit_th != 0 {
+        let th = u64::from(p.bsize * p.bsize * tf_subpel_early_exit_th) << u32::from(p.is_highbd);
+        if *best_dist < th {
+            return;
+        }
+    }
+
+    let mv_x = p.mv_x + p.xd;
+    let mv_y = p.mv_y + p.yd;
+    let compensate_shift = if p.xd == 0 && p.yd == 0 {
+        p.subsampling_shift
+    } else {
+        0
+    };
+    let distortion = score(mv_x, mv_y, compensate_shift);
+
+    if distortion < *best_dist {
+        *best_dist = distortion;
+        *best_mv_x = mv_x;
+        *best_mv_y = mv_y;
+    }
+}
+
+/// `tf_subpel_search` (temporal_filtering.c:1536) — the shared refinement body
+/// for all four block sizes.
+///
+/// The scan order is exactly C's and it matters, because ties keep the
+/// incumbent: centre first, then half-pel `i,j in {-4, 0, 4}` skipping
+/// `(0,0)`, then quarter-pel `{-2, 0, 2}`, then eighth-pel `{-1, 0, 1}` — each
+/// level RE-CENTRED on the best MV found so far, not on the original.
+///
+/// `i` is the X offset and `j` the Y offset: C assigns `xd = i`, `yd = j` with
+/// `i` the OUTER loop. Swapping them changes the order in which equal-cost
+/// candidates are seen, and therefore which MV survives the strict-improvement
+/// rule.
+pub fn subpel_search<F>(
+    p: &mut TfSubpelSearchParams,
+    ctrls: &TfSearchCtrls,
+    tf_subpel_early_exit_th: u32,
+    best_dist: &mut u64,
+    best_mv_x: &mut i16,
+    best_mv_y: &mut i16,
+    score: &mut F,
+) where
+    F: FnMut(i16, i16, u8) -> u64,
+{
+    // Check centre position.
+    p.subpel_pel_mode = ctrls.half_pel_mode;
+    p.mv_x = *best_mv_x;
+    p.mv_y = *best_mv_y;
+    p.xd = 0;
+    p.yd = 0;
+    check_position(
+        p,
+        tf_subpel_early_exit_th,
+        best_dist,
+        best_mv_x,
+        best_mv_y,
+        score,
+    );
+
+    for (mode, step) in [
+        (ctrls.half_pel_mode, 4i16),
+        (ctrls.quarter_pel_mode, 2),
+        (ctrls.eight_pel_mode, 1),
+    ] {
+        if mode == 0 {
+            continue;
+        }
+        p.subpel_pel_mode = mode;
+        p.mv_x = *best_mv_x;
+        p.mv_y = *best_mv_y;
+        let mut i = -step;
+        while i <= step {
+            let mut j = -step;
+            while j <= step {
+                if i == 0 && j == 0 {
+                    j += step;
+                    continue;
+                }
+                p.xd = i;
+                p.yd = j;
+                check_position(
+                    p,
+                    tf_subpel_early_exit_th,
+                    best_dist,
+                    best_mv_x,
+                    best_mv_y,
+                    score,
+                );
+                j += step;
+            }
+            i += step;
+        }
+    }
+}
+
+/// The per-block sub-pel search parameters for one block size, as
+/// `tf_64x64_sub_pel_search` / `tf_32x32_sub_pel_search` /
+/// `tf_16x16_sub_pel_search` / `tf_8x8_sub_pel_search` build them
+/// (temporal_filtering.c:1660 / :1770 / :1880 / :1990).
+///
+/// The four functions differ only in `bsize` and how `(idx_x, idx_y)` are
+/// derived; the parameter block itself is assembled identically. Returned
+/// rather than acted on so the caller supplies the compensator.
+pub fn subpel_params_for_block(
+    bsize: u32,
+    idx_x: u32,
+    idx_y: u32,
+    sb_origin_x: u32,
+    sb_origin_y: u32,
+    ctrls: &TfSearchCtrls,
+    interp_filters: u32,
+    encoder_bit_depth: i32,
+) -> TfSubpelSearchParams {
+    let local_origin_x = (idx_x * bsize) as u16;
+    let local_origin_y = (idx_y * bsize) as u16;
+    TfSubpelSearchParams {
+        subsampling_shift: ctrls.sub_sampling_shift,
+        interp_filters,
+        pu_origin_x: sb_origin_x as u16 + local_origin_x,
+        pu_origin_y: sb_origin_y as u16 + local_origin_y,
+        local_origin_x,
+        local_origin_y,
+        bsize,
+        is_highbd: encoder_bit_depth != 8,
+        encoder_bit_depth,
+        idx_x,
+        idx_y,
+        ..Default::default()
+    }
+}
+
+/// The `(idx_y, idx_x)` a 32x32 sub-pel search uses
+/// (temporal_filtering.c:1826-1827): `idx_x = idx_32x32 & 1`,
+/// `idx_y = idx_32x32 >> 1`.
+pub fn subpel_idx_32x32(idx_32x32: u32) -> (u32, u32) {
+    (idx_32x32 & 1, idx_32x32 >> 1)
+}
+
+/// The `(idx_y, idx_x)` a 16x16 sub-pel search uses
+/// (temporal_filtering.c:1935-1938), via `idx_32x32_to_idx_16x16` and
+/// `subblock_xy_16x16`. The table yields (ROW, COLUMN); C assigns
+/// `idx_y = [..][0]` and `idx_x = [..][1]`.
+pub fn subpel_idx_16x16(idx_32x32: usize, idx_16x16: usize) -> (u32, u32) {
+    let pu_index = IDX_32X32_TO_IDX_16X16[idx_32x32][idx_16x16] as usize;
+    (
+        SUBBLOCK_XY_16X16[pu_index][1],
+        SUBBLOCK_XY_16X16[pu_index][0],
+    )
+}
+
+/// The `(idx_y, idx_x)` an 8x8 sub-pel search uses
+/// (temporal_filtering.c:2044-2047). Reached only when
+/// `tf_ctrls.enable_8x8_pred` is set, which is 0 at tf_level 5 (presets 3..7)
+/// and 1 at tf_level 1/2 (presets 0..2).
+pub fn subpel_idx_8x8(idx_32x32: usize, idx_16x16: usize, idx_8x8: usize) -> (u32, u32) {
+    let pu_index = IDX_32X32_TO_IDX_8X8[idx_32x32][idx_16x16][idx_8x8] as usize;
+    (SUBBLOCK_XY_8X8[pu_index][1], SUBBLOCK_XY_8X8[pu_index][0])
+}
+
+/// The per-plane accum/count and src/pred offsets
+/// `apply_filtering_block_plane_wise` (temporal_filtering.c:1289) computes
+/// before dispatching to a filter kernel.
+///
+/// Wrong offsets silently mix planes, which is exactly the class of bug a
+/// visual check misses. Note the SRC offsets use the source strides and the
+/// BLOCK offsets use the prediction strides — the accum/count pointers are
+/// advanced by the PREDICTION offset, not the source one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TfBlockOffsets {
+    pub src: [usize; 3],
+    pub block: [usize; 3],
+}
+
+/// `apply_filtering_block_plane_wise` (temporal_filtering.c:1289), offset half.
+/// `static` in C — TIER 4.
+///
+/// The dispatch half selects the `zz` vs `medium` kernel on
+/// `tf_ctrls.use_zz_based_filter` and the 8-bit vs hbd kernel on
+/// `encoder_bit_depth`. The `zz` arm is DEAD (`use_zz_based_filter` is set
+/// only by `tf_ld_controls` levels 1/2, which `derive_tf_params` never
+/// selects), so the live dispatch is `medium` / `medium_hbd`, both of which
+/// this module ports and gates at tier 1.
+pub fn apply_filtering_block_plane_wise_offsets(
+    block_row: usize,
+    block_col: usize,
+    stride: &[usize; 3],
+    stride_pred: &[usize; 3],
+    block_width: usize,
+    block_height: usize,
+    ss_x: u32,
+    ss_y: u32,
+) -> TfBlockOffsets {
+    let blk_h = block_height;
+    let blk_w = block_width;
+    let ch_h = blk_h >> ss_y;
+    let ch_w = blk_w >> ss_x;
+    TfBlockOffsets {
+        src: [
+            block_row * blk_h * stride[0] + block_col * blk_w,
+            block_row * ch_h * stride[1] + block_col * ch_w,
+            block_row * ch_h * stride[2] + block_col * ch_w,
+        ],
+        block: [
+            block_row * blk_h * stride_pred[0] + block_col * blk_w,
+            block_row * ch_h * stride_pred[1] + block_col * ch_w,
+            block_row * ch_h * stride_pred[2] + block_col * ch_w,
+        ],
+    }
+}
+
+/// `SearchAreaMinMax` — the two width/height pairs
+/// `set_hme_search_params_mctf` writes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SearchAreaMinMax {
+    pub sa_min: (u16, u16),
+    pub sa_max: (u16, u16),
+}
+
+/// `set_hme_search_params_mctf` (temporal_filtering.c:2571). `static` in C —
+/// TIER 4.
+///
+/// Sets TF's OWN HME search-area parameters, which are NOT the encode-path
+/// HME parameters — reusing the encode-path ones would look right and search a
+/// different window. `tf_ctrls.hme_me_level` is 2 at tf_level 5, but this
+/// function only accepts levels 0 and 1 (C asserts on anything else), so
+/// hme_me_level 2 means "do not call this at all".
+///
+/// The two levels are NOT the same shift: level 1 doubles `sa_min` but
+/// QUADRUPLES `sa_max`.
+pub fn set_hme_search_params_mctf(
+    default_tf: SearchAreaMinMax,
+    hme_search_level: u8,
+) -> Option<SearchAreaMinMax> {
+    match hme_search_level {
+        0 => Some(default_tf),
+        1 => Some(SearchAreaMinMax {
+            sa_min: (default_tf.sa_min.0 << 1, default_tf.sa_min.1 << 1),
+            sa_max: (default_tf.sa_max.0 << 2, default_tf.sa_max.1 << 2),
+        }),
+        // C `assert(0)` here and leaves the fields unchanged in a release
+        // build; refusing is the port's equivalent (WORKING-ON-THIS.md §6).
+        _ => None,
+    }
+}
+
+/// `filt_unfilt_dist` (temporal_filtering.c:3922). `static` in C — TIER 4.
+///
+/// Computes `filt_to_unfilt_diff` on the I_SLICE. That value is carried
+/// forward and combined with the noise level to bump `decay_control[Y]` on
+/// later non-I frames (temporal_filtering.c:2677-2685, pd_process.c:3660), so
+/// skipping it silently changes every subsequent frame's TF strength.
+///
+/// The per-b64 spatial distortion is INJECTED as `sad` — it is
+/// `svt_spatial_full_distortion_kernel`, which the port owns in `svtav1-dsp`.
+/// What is transcribed here is the b64 tiling, the partial-block clamping
+/// against the ALIGNED dimensions, and the final division by the b64 COUNT
+/// (not by the pixel count).
+pub fn filt_unfilt_dist<F>(
+    aligned_width: u32,
+    aligned_height: u32,
+    b64_size: u32,
+    filt_stride: usize,
+    unfilt_stride: usize,
+    mut sad: F,
+) -> u32
+where
+    F: FnMut(usize, usize, usize, usize, u32, u32) -> u64,
+{
+    let pic_width_in_b64 = aligned_width.div_ceil(b64_size);
+    let pic_height_in_b64 = aligned_height.div_ceil(b64_size);
+
+    let mut dist: u32 = 0;
+    for y_b64_idx in 0..pic_height_in_b64 {
+        for x_b64_idx in 0..pic_width_in_b64 {
+            // The origins step by a LITERAL 64 while the clamp uses
+            // `scs->b64_size` — they are the same today, but transcribe both
+            // as C spells them.
+            let b64_origin_x = x_b64_idx * 64;
+            let b64_origin_y = y_b64_idx * 64;
+            let filt_offset = b64_origin_y as usize * filt_stride + b64_origin_x as usize;
+            let unfilt_offset = b64_origin_y as usize * unfilt_stride + b64_origin_x as usize;
+            let b64_width = b64_size.min(aligned_width - b64_origin_x);
+            let b64_height = b64_size.min(aligned_height - b64_origin_y);
+            dist = dist.wrapping_add(sad(
+                filt_offset,
+                filt_stride,
+                unfilt_offset,
+                unfilt_stride,
+                b64_width,
+                b64_height,
+            ) as u32);
+        }
+    }
+    dist / (pic_width_in_b64 * pic_height_in_b64)
+}
