@@ -465,3 +465,30 @@ void ref_highbd_blend_a64_hmask_16bit(uint16_t* dst, uint32_t dst_stride, const 
                                       int bd) {
     svt_aom_highbd_blend_a64_hmask_16bit_c(dst, dst_stride, src0, src0_stride, src1, src1_stride, mask, w, h, bd);
 }
+
+/* ---- wedge mask tables ------------------------------------------------ */
+
+void           svt_av1_init_wedge_masks(void);
+int            svt_aom_is_interintra_wedge_used(BlockSize bsize);
+int32_t        svt_aom_get_wedge_bits_lookup(BlockSize bsize);
+int            svt_aom_get_wedge_params_bits(BlockSize bsize);
+const uint8_t* svt_aom_get_contiguous_soft_mask(int wedge_index, int wedge_sign, BlockSize bsize);
+
+/* `svt_av1_init_wedge_masks` fills file-scope tables; it is idempotent (it
+   recomputes the same bytes from const inputs), so a racing double-init is
+   wasted work, not a wrong answer -- but pthread_once keeps a reader from
+   seeing a half-written table. */
+static pthread_once_t g_wedge_once = PTHREAD_ONCE_INIT;
+static void           init_wedge(void) { svt_av1_init_wedge_masks(); }
+static void           ensure_wedge(void) { pthread_once(&g_wedge_once, init_wedge); }
+
+int ref_is_interintra_wedge_used(int bsize) { return svt_aom_is_interintra_wedge_used((BlockSize)bsize); }
+int ref_get_wedge_bits_lookup(int bsize) { return svt_aom_get_wedge_bits_lookup((BlockSize)bsize); }
+int ref_get_wedge_params_bits(int bsize) { return svt_aom_get_wedge_params_bits((BlockSize)bsize); }
+
+/* Copy `n` bytes of wedge_params_lookup[bsize].masks[sign][index] out. */
+void ref_get_contiguous_soft_mask(int wedge_index, int wedge_sign, int bsize, uint8_t* out, int n) {
+    ensure_wedge();
+    const uint8_t* m = svt_aom_get_contiguous_soft_mask(wedge_index, wedge_sign, (BlockSize)bsize);
+    for (int i = 0; i < n; ++i) out[i] = m[i];
+}

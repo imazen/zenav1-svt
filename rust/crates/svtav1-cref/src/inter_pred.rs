@@ -1681,3 +1681,50 @@ pub fn highbd_blend_a64_hmask_16bit(
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Wedge mask tables.
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn ref_is_interintra_wedge_used(bsize: c_int) -> c_int;
+    fn ref_get_wedge_bits_lookup(bsize: c_int) -> c_int;
+    fn ref_get_wedge_params_bits(bsize: c_int) -> c_int;
+    fn ref_get_contiguous_soft_mask(
+        wedge_index: c_int,
+        wedge_sign: c_int,
+        bsize: c_int,
+        out: *mut u8,
+        n: c_int,
+    );
+}
+
+/// Reference `svt_aom_is_interintra_wedge_used` (inter_prediction.c:2015).
+pub fn is_interintra_wedge_used(bsize: i32) -> bool {
+    unsafe { ref_is_interintra_wedge_used(bsize) != 0 }
+}
+
+/// Reference `svt_aom_get_wedge_bits_lookup` (inter_prediction.c:2019).
+pub fn get_wedge_bits_lookup(bsize: i32) -> i32 {
+    unsafe { ref_get_wedge_bits_lookup(bsize) }
+}
+
+/// Reference `svt_aom_get_wedge_params_bits` (inter_prediction.c:2053).
+pub fn get_wedge_params_bits(bsize: i32) -> i32 {
+    unsafe { ref_get_wedge_params_bits(bsize) }
+}
+
+/// Reference `svt_aom_get_contiguous_soft_mask` (inter_prediction.c:2023),
+/// after `svt_av1_init_wedge_masks` has run. Returns `n` bytes of the mask.
+pub fn get_contiguous_soft_mask(
+    wedge_index: i32,
+    wedge_sign: i32,
+    bsize: i32,
+    n: usize,
+) -> Vec<u8> {
+    let mut out = vec![0u8; n];
+    unsafe {
+        ref_get_contiguous_soft_mask(wedge_index, wedge_sign, bsize, out.as_mut_ptr(), n as i32);
+    }
+    out
+}
