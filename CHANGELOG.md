@@ -56,6 +56,19 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **`svt_aom_generate_av1_mvp_table`'s ref loop is now gated too — chunk C2,
+  evidence TIER 1.** The per-ref sweep could not reach it: C keeps ONE
+  `Mv mv_ref0[64]` across the whole `ref_frames` loop (adaptive_mv_pred.c:1336)
+  and the `symteric_refs` shortcut in `add_tpl_ref_mv` depends on that sharing
+  — the `LAST_FRAME` pass stores a projected MV in slot *i* and the
+  `BWDREF_FRAME` / `LAST_BWD_FRAME` passes read it back. The C shim now takes
+  the scratch IN and OUT, so `c_parity_generate_av1_mvp_table_threads_mv_ref0`
+  drives the oracle three times threading it exactly as C's loop does. Teeth
+  verified: dropping the threading in the port fails the cell
+  (`stack[0]` 0 against C's 0x1e6_4bb2 at `rf=BWDREF`), and the cell
+  additionally re-runs each ref with a FRESH scratch and requires the answers
+  to differ in more than 10 cells — so it cannot pass vacuously against a port
+  that restarts the scratch per ref.
 - **`svt_aom_mode_context_analyzer` and the OBMC overlappable-neighbour counts
   — chunk C2, evidence TIER 1.** `mode_context_analyzer`
   (inter_prediction.c:2565) collapses `setup_ref_mv_list`'s packed mode context

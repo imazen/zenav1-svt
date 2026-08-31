@@ -146,6 +146,46 @@ pub fn setup_ref_mv_list_inter(
     tpl: &[TplCell],
     env: &InterMvpEnvC,
 ) -> InterMvpResult {
+    let mut scratch = [0u32; 64];
+    setup_ref_mv_list_inter_seeded(
+        cells,
+        grid_rows,
+        grid_cols,
+        mi_pos,
+        bsize_cur,
+        mi_dims,
+        tile,
+        sb_size_is_128,
+        ref_frame,
+        tpl,
+        env,
+        &mut scratch,
+    )
+}
+
+/// [`setup_ref_mv_list_inter`] with C's `Mv mv_ref0[64]` scratch passed IN
+/// and OUT.
+///
+/// `svt_aom_generate_av1_mvp_table` keeps ONE such array across its whole
+/// `ref_frames` loop (adaptive_mv_pred.c:1336) and the `symteric_refs`
+/// shortcut reads back what an earlier ref's pass stored there, so driving
+/// the refs one at a time with a fresh scratch is a DIFFERENT computation.
+/// This entry point is what lets a test reproduce the loop faithfully.
+#[allow(clippy::too_many_arguments)]
+pub fn setup_ref_mv_list_inter_seeded(
+    cells: &[InterMvpCell],
+    grid_rows: usize,
+    grid_cols: usize,
+    mi_pos: (i32, i32),
+    bsize_cur: usize,
+    mi_dims: (i32, i32),
+    tile: (i32, i32, i32, i32),
+    sb_size_is_128: bool,
+    ref_frame: i8,
+    tpl: &[TplCell],
+    env: &InterMvpEnvC,
+    mv_ref0: &mut [u32; 64],
+) -> InterMvpResult {
     assert_eq!(cells.len(), grid_rows * grid_cols);
     let packed: Vec<i32> = cells
         .iter()
@@ -171,7 +211,6 @@ pub fn setup_ref_mv_list_inter(
     let mut stack_out = [0i32; 24];
     let mut mode_ctx = 0i32;
     let (mut nearest, mut near) = (0u32, 0u32);
-    let mut mv_ref0 = [0u32; 64];
     let count = unsafe {
         ref_setup_ref_mv_list_inter(
             packed.as_ptr(),
@@ -224,7 +263,7 @@ pub fn setup_ref_mv_list_inter(
         mode_context: mode_ctx as i16,
         nearest,
         near,
-        mv_ref0,
+        mv_ref0: *mv_ref0,
     }
 }
 

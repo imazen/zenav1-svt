@@ -992,3 +992,191 @@ fn c_parity_count_overlappable_neighbors() {
     );
     assert!(counts.len() >= 5, "counts degenerate: {counts:?}");
 }
+
+/// `svt_aom_generate_av1_mvp_table`'s LOOP (adaptive_mv_pred.c:1329-1405),
+/// which the per-ref sweep above cannot reach: C keeps ONE `Mv
+/// mv_ref0[64]` across the whole `ref_frames` loop (`:1336`), and the
+/// `symteric_refs` shortcut in `add_tpl_ref_mv` depends on that sharing —
+/// the `LAST_FRAME` pass STORES a projected MV in slot *i* and the
+/// `BWDREF_FRAME` / `LAST_BWD_FRAME` passes read it back (negated for
+/// BWDREF).
+///
+/// So this drives the C oracle three times THREADING the scratch, exactly
+/// as the C loop does, and compares against
+/// `generate_av1_mvp_table`. It also proves the threading MATTERS by
+/// re-running the same three refs with a FRESH scratch each time and
+/// requiring the answers to differ — otherwise the test would pass just
+/// as happily against a port that restarted the scratch per ref.
+#[test]
+fn c_parity_generate_av1_mvp_table_threads_mv_ref0() {
+    let mut rng = Rng(0x5417_0C2_0053);
+    // C's symteric_refs gate fires only for exactly this ref list.
+    let ref_frames = [1i8, 5, 8]; // LAST_FRAME, BWDREF_FRAME, LAST_BWD_FRAME
+    assert!(
+        rmvp::symmetric_refs_gate(1, true, &ref_frames),
+        "the gate must accept the ref list this test is built on"
+    );
+    let mut checked = 0u64;
+    let mut threading_mattered = 0u64;
+
+    for grid_iter in 0..4 {
+        let grid = random_grid(&mut rng, [15u64, 35, 55][grid_iter % 3], 35);
+        let c_cells = to_c_cells(&grid);
+        // A dense temporal field: the threading is only observable when the
+        // MFMV walk actually reaches live cells.
+        let tpl = random_tpl(&mut rng, 85);
+        let c_tpl = to_c_tpl(&tpl);
+
+        let mut global_motion = [WarpedMotionParams::default(); 8];
+        for (i, slot) in global_motion.iter_mut().enumerate() {
+            *slot = if i == 0 {
+                WarpedMotionParams::default()
+            } else {
+                gm_model(rng.below(4), &mut rng)
+            };
+        }
+        let mut ref_frame_sign_bias = [0u32; 8];
+        for slot in ref_frame_sign_bias.iter_mut().skip(1) {
+            *slot = rng.below(2) as u32;
+        }
+        let mut ref_order_hint = [0i32; 8];
+        for slot in ref_order_hint.iter_mut().skip(1) {
+            *slot = rng.below(32) as i32;
+        }
+
+        let env = rmvp::InterMvpEnv {
+            global_motion: &global_motion,
+            ref_frame_sign_bias,
+            allow_high_precision_mv: false,
+            force_integer_mv: false,
+            use_ref_frame_mvs: true,
+            order_hint_info: rmvp::OrderHintInfo {
+                enable_order_hint: true,
+                order_hint_bits: 5,
+            },
+            cur_order_hint: 17,
+            ref_order_hint,
+            tpl_mvs: &tpl,
+            tpl_stride: TPL_STRIDE,
+            sb64_sq_no4xn_geom: false,
+            symmetric_refs: true,
+        };
+        let c_env = env_to_c(&env);
+        let tile = TileMiBounds {
+            mi_row_start: 0,
+            mi_row_end: MI_ROWS,
+            mi_col_start: 0,
+            mi_col_end: MI_COLS,
+        };
+
+        for &(bsize, w_mi, h_mi) in &SIZES {
+            for _ in 0..3 {
+                let span_r = ((MI_ROWS - h_mi) / h_mi).max(0) as u64 + 1;
+                let span_c = ((MI_COLS - w_mi) / w_mi).max(0) as u64 + 1;
+                let mi_row = (rng.below(span_r) as i32) * h_mi;
+                let mi_col = (rng.below(span_c) as i32) * w_mi;
+                if mi_row + h_mi > MI_ROWS || mi_col + w_mi > MI_COLS {
+                    continue;
+                }
+                let ctx = derive_block_ctx(
+                    mi_row,
+                    mi_col,
+                    usize::from(bsize),
+                    MI_ROWS,
+                    MI_COLS,
+                    tile,
+                    16,
+                );
+                let gview = MvpGrid {
+                    entries: &grid,
+                    stride: GRID_COLS as i32,
+                    base: mi_row * GRID_COLS as i32 + mi_col,
+                };
+
+                let rs = rmvp::generate_av1_mvp_table(
+                    &gview,
+                    &ctx,
+                    &env,
+                    usize::from(bsize),
+                    &ref_frames,
+                );
+                assert_eq!(rs.len(), ref_frames.len());
+
+                // C's loop: ONE scratch, threaded.
+                let mut scratch = [0u32; 64];
+                let mut differed_from_fresh = false;
+                for (i, &rf) in ref_frames.iter().enumerate() {
+                    let c = cinter::setup_ref_mv_list_inter_seeded(
+                        &c_cells,
+                        GRID_ROWS,
+                        GRID_COLS,
+                        (mi_row, mi_col),
+                        usize::from(bsize),
+                        (MI_ROWS, MI_COLS),
+                        (0, MI_ROWS, 0, MI_COLS),
+                        false,
+                        rf,
+                        &c_tpl,
+                        &c_env,
+                        &mut scratch,
+                    );
+                    let where_ = format!(
+                        "rf={rf} (slot {i}) bsize={bsize} mi=({mi_row},{mi_col}) grid={grid_iter}"
+                    );
+                    assert_eq!(rs[i].count, c.count, "count diverges: {where_}");
+                    for k in 0..8usize {
+                        assert_eq!(
+                            (
+                                rs[i].stack[k].this_mv.as_int(),
+                                rs[i].stack[k].comp_mv.as_int(),
+                                rs[i].stack[k].weight
+                            ),
+                            c.stack[k],
+                            "stack[{k}] diverges: {where_}"
+                        );
+                    }
+                    assert_eq!(
+                        rs[i].mode_context, c.mode_context,
+                        "mode_context diverges: {where_}"
+                    );
+
+                    // The teeth: same ref, FRESH scratch. If this agrees for
+                    // every ref of every cell then the threading is inert here
+                    // and the test proves nothing about it.
+                    let mut fresh = [0u32; 64];
+                    let c_fresh = cinter::setup_ref_mv_list_inter_seeded(
+                        &c_cells,
+                        GRID_ROWS,
+                        GRID_COLS,
+                        (mi_row, mi_col),
+                        usize::from(bsize),
+                        (MI_ROWS, MI_COLS),
+                        (0, MI_ROWS, 0, MI_COLS),
+                        false,
+                        rf,
+                        &c_tpl,
+                        &c_env,
+                        &mut fresh,
+                    );
+                    if c_fresh.stack != c.stack
+                        || c_fresh.count != c.count
+                        || c_fresh.mode_context != c.mode_context
+                    {
+                        differed_from_fresh = true;
+                    }
+                }
+                checked += 1;
+                if differed_from_fresh {
+                    threading_mattered += 1;
+                }
+            }
+        }
+    }
+
+    assert!(checked > 100, "too few mvp-table cases: {checked}");
+    assert!(
+        threading_mattered > 10,
+        "the shared mv_ref0 scratch never changed an answer, so this cell does \
+         NOT prove generate_av1_mvp_table threads it: {threading_mattered} of {checked}"
+    );
+}
