@@ -67,8 +67,10 @@ Crates are not published to crates.io yet — depend by git.
   `approx_inter_rate` zero-fill early return, the hp/non-hp stack selection,
   the `allow_intrabc` dv arm), the CDF adaptation `av1_update_mv_stats` /
   `update_mv_component_stats` (:650-705), `reset_nmv_counter`
-  (cabac_context_model.c:1956), `avg_nmv` (enc_dec_process.c:2567) and the
-  `update_mv` cadence (`set_cdf_controls`, enc_mode_config.c:8468-8498).
+  (cabac_context_model.c:1956), `avg_nmv` (enc_dec_process.c:2567), the
+  `update_mv` cadence (`set_cdf_controls`, enc_mode_config.c:8468-8498) and
+  `copy_mv_rate` + the per-SB rebuild-vs-copy choice its two call sites make
+  (enc_dec_process.c:36-56, :2802-2806, :2908-2912).
   Gate: `crates/svtav1-encoder/tests/c_parity_mv_code.rs`, 17 tests driving
   the REAL exported symbols `svt_av1_encode_mv`, `svt_av1_get_mv_joint`,
   `svt_aom_estimate_mv_rate`, `svt_av1_mv_bit_cost{,_light}`,
