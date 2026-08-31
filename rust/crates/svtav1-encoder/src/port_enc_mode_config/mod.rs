@@ -34,6 +34,7 @@
 //! `svtav1-cref`). File-`static` C functions are gated at **tier 4**
 //! (hand-derived vectors traced against the C source) and say so at the test.
 
+pub mod ctrls;
 pub mod leaf;
 
 /// C `ResolutionRange` (`Codec/definitions.h:1822`).

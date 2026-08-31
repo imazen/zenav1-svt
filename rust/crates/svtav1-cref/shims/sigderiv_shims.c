@@ -165,3 +165,117 @@ uint8_t ref_is_ref_same_size(uint8_t is_not_scaled, uint8_t is_b_slice, uint8_t 
     free(scs);
     return out;
 }
+
+/* ===========================================================================
+ * level -> controls tables (enc_mode_config.c).
+ *
+ * Each shim allocates a ZEROED ModeDecisionContext / PictureParentControlSet
+ * (calloc, per call -- never a `static`, see the file header), calls the real
+ * exported setter, and copies the resulting control struct out field by field.
+ * The zeroing matters: several C arms write only a subset of the struct, so
+ * "what the caller sees" for the untouched fields is the zeroed value, and the
+ * port models exactly that.
+ * ======================================================================== */
+
+/* ---- svt_aom_set_wm_controls (enc_mode_config.c:4397) ----
+ * out: enabled, use_wm_for_mvp, refinement_iterations, refine_diag,
+ *      refine_level, lower_band_th, upper_band_th, shut_approx_if_not_mds0. */
+void ref_set_wm_controls(uint8_t wm_level, uint32_t out[8]) {
+    ModeDecisionContext* ctx = (ModeDecisionContext*)calloc(1, sizeof(*ctx));
+    svt_aom_set_wm_controls(ctx, wm_level);
+    out[0] = ctx->wm_ctrls.enabled;
+    out[1] = ctx->wm_ctrls.use_wm_for_mvp;
+    out[2] = ctx->wm_ctrls.refinement_iterations;
+    out[3] = ctx->wm_ctrls.refine_diag;
+    out[4] = ctx->wm_ctrls.refine_level;
+    out[5] = ctx->wm_ctrls.lower_band_th;
+    out[6] = ctx->wm_ctrls.upper_band_th;
+    out[7] = ctx->wm_ctrls.shut_approx_if_not_mds0;
+    free(ctx);
+}
+
+/* svt_aom_set_bipred3x3_controls is EXPORTED (nm -g finds it in
+   libSvtAv1Enc.a) but has no prototype in enc_mode_config.h -- its only C
+   caller is inside the .c itself. Declare it here so the shim links against
+   the real symbol rather than an implicit declaration. */
+void svt_aom_set_bipred3x3_controls(ModeDecisionContext* ctx, uint8_t bipred3x3_injection);
+
+/* ---- svt_aom_set_bipred3x3_controls (enc_mode_config.c:5869) ----
+ * out: enabled, search_diag, use_best_list, use_l0_l1_dev. */
+void ref_set_bipred3x3_controls(uint8_t level, uint32_t out[4]) {
+    ModeDecisionContext* ctx = (ModeDecisionContext*)calloc(1, sizeof(*ctx));
+    svt_aom_set_bipred3x3_controls(ctx, level);
+    out[0] = ctx->bipred3x3_ctrls.enabled;
+    out[1] = ctx->bipred3x3_ctrls.search_diag;
+    out[2] = ctx->bipred3x3_ctrls.use_best_list;
+    out[3] = ctx->bipred3x3_ctrls.use_l0_l1_dev;
+    free(ctx);
+}
+
+/* ---- svt_aom_set_dist_based_ref_pruning_controls (enc_mode_config.c:5906) ----
+ * out: enabled, use_tpl_info_offset, check_closest_multiplier,
+ *      max_dev_to_best[11], closest_refs[11]  (25 slots). */
+void ref_set_dist_based_ref_pruning_controls(uint8_t level, uint32_t out[25]) {
+    ModeDecisionContext* ctx = (ModeDecisionContext*)calloc(1, sizeof(*ctx));
+    svt_aom_set_dist_based_ref_pruning_controls(ctx, level);
+    out[0] = ctx->ref_pruning_ctrls.enabled;
+    out[1] = ctx->ref_pruning_ctrls.use_tpl_info_offset;
+    out[2] = ctx->ref_pruning_ctrls.check_closest_multiplier;
+    for (int i = 0; i < TOT_INTER_GROUP; ++i) {
+        out[3 + i]  = ctx->ref_pruning_ctrls.max_dev_to_best[i];
+        out[14 + i] = ctx->ref_pruning_ctrls.closest_refs[i];
+    }
+    free(ctx);
+}
+
+/* ---- svt_aom_md_pme_search_controls (enc_mode_config.c:3310) ----
+ * out (int32 because four fields are `int` and take MIN/MAX_SIGNED_VALUE):
+ *   enabled, dist_type, full_pel_search_width, full_pel_search_height,
+ *   early_check_mv_th_multiplier, pre_fp_pme_to_me_cost_th,
+ *   pre_fp_pme_to_me_mv_th, post_fp_pme_to_me_cost_th,
+ *   post_fp_pme_to_me_mv_th, enable_psad, sa_q_weight. */
+void ref_md_pme_search_controls(uint8_t level, int32_t out[11]) {
+    ModeDecisionContext* ctx = (ModeDecisionContext*)calloc(1, sizeof(*ctx));
+    svt_aom_md_pme_search_controls(ctx, level);
+    out[0]  = ctx->md_pme_ctrls.enabled;
+    out[1]  = (int32_t)ctx->md_pme_ctrls.dist_type;
+    out[2]  = ctx->md_pme_ctrls.full_pel_search_width;
+    out[3]  = ctx->md_pme_ctrls.full_pel_search_height;
+    out[4]  = ctx->md_pme_ctrls.early_check_mv_th_multiplier;
+    out[5]  = ctx->md_pme_ctrls.pre_fp_pme_to_me_cost_th;
+    out[6]  = ctx->md_pme_ctrls.pre_fp_pme_to_me_mv_th;
+    out[7]  = ctx->md_pme_ctrls.post_fp_pme_to_me_cost_th;
+    out[8]  = ctx->md_pme_ctrls.post_fp_pme_to_me_mv_th;
+    out[9]  = ctx->md_pme_ctrls.enable_psad;
+    out[10] = ctx->md_pme_ctrls.sa_q_weight;
+    free(ctx);
+}
+
+/* ---- svt_aom_set_gm_controls (enc_mode_config.c:2491) ----
+ * Reads pcs->input_resolution for the MV-based correspondence method.
+ * out: enabled, identiy_exit, search_start_model, search_end_model,
+ *      skip_identity, bypass_based_on_me, params_refinement_steps,
+ *      downsample_level, corners, chess_rfn, match_sz, inj_psq_glb,
+ *      pp_enabled, ref_idx0_only, rfn_early_exit, correspondence_method. */
+void ref_set_gm_controls(uint8_t gm_level, int input_resolution, uint32_t out[16]) {
+    PictureParentControlSet* ppcs = (PictureParentControlSet*)calloc(1, sizeof(*ppcs));
+    ppcs->input_resolution = (ResolutionRange)input_resolution;
+    svt_aom_set_gm_controls(ppcs, gm_level);
+    out[0]  = ppcs->gm_ctrls.enabled;
+    out[1]  = ppcs->gm_ctrls.identiy_exit;
+    out[2]  = ppcs->gm_ctrls.search_start_model;
+    out[3]  = ppcs->gm_ctrls.search_end_model;
+    out[4]  = ppcs->gm_ctrls.skip_identity;
+    out[5]  = ppcs->gm_ctrls.bypass_based_on_me;
+    out[6]  = ppcs->gm_ctrls.params_refinement_steps;
+    out[7]  = ppcs->gm_ctrls.downsample_level;
+    out[8]  = ppcs->gm_ctrls.corners;
+    out[9]  = ppcs->gm_ctrls.chess_rfn;
+    out[10] = ppcs->gm_ctrls.match_sz;
+    out[11] = (uint32_t)ppcs->gm_ctrls.inj_psq_glb;
+    out[12] = (uint32_t)ppcs->gm_ctrls.pp_enabled;
+    out[13] = (uint32_t)ppcs->gm_ctrls.ref_idx0_only;
+    out[14] = ppcs->gm_ctrls.rfn_early_exit;
+    out[15] = (uint32_t)ppcs->gm_ctrls.correspondence_method;
+    free(ppcs);
+}

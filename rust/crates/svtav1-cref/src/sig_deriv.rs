@@ -407,3 +407,73 @@ pub fn is_ref_same_size(
         ) != 0
     }
 }
+
+// ---------------------------------------------------------------------------
+// level -> controls tables
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn ref_set_wm_controls(wm_level: u8, out: *mut u32);
+    fn ref_set_bipred3x3_controls(level: u8, out: *mut u32);
+    fn ref_set_dist_based_ref_pruning_controls(level: u8, out: *mut u32);
+    fn ref_md_pme_search_controls(level: u8, out: *mut i32);
+    fn ref_set_gm_controls(gm_level: u8, input_resolution: i32, out: *mut u32);
+}
+
+/// C `svt_aom_set_wm_controls` on a zeroed `ModeDecisionContext`.
+///
+/// `[enabled, use_wm_for_mvp, refinement_iterations, refine_diag,
+///   refine_level, lower_band_th, upper_band_th, shut_approx_if_not_mds0]`
+#[must_use]
+pub fn set_wm_controls(wm_level: u8) -> [u32; 8] {
+    let mut out = [0u32; 8];
+    unsafe { ref_set_wm_controls(wm_level, out.as_mut_ptr()) };
+    out
+}
+
+/// C `svt_aom_set_bipred3x3_controls` on a zeroed `ModeDecisionContext`.
+///
+/// `[enabled, search_diag, use_best_list, use_l0_l1_dev]`
+#[must_use]
+pub fn set_bipred3x3_controls(level: u8) -> [u32; 4] {
+    let mut out = [0u32; 4];
+    unsafe { ref_set_bipred3x3_controls(level, out.as_mut_ptr()) };
+    out
+}
+
+/// C `svt_aom_set_dist_based_ref_pruning_controls` on a zeroed context.
+///
+/// `[enabled, use_tpl_info_offset, check_closest_multiplier,
+///   max_dev_to_best[0..11], closest_refs[0..11]]`
+#[must_use]
+pub fn set_dist_based_ref_pruning_controls(level: u8) -> [u32; 25] {
+    let mut out = [0u32; 25];
+    unsafe { ref_set_dist_based_ref_pruning_controls(level, out.as_mut_ptr()) };
+    out
+}
+
+/// C `svt_aom_md_pme_search_controls` on a zeroed context.
+///
+/// `[enabled, dist_type, full_pel_search_width, full_pel_search_height,
+///   early_check_mv_th_multiplier, pre_fp_pme_to_me_cost_th,
+///   pre_fp_pme_to_me_mv_th, post_fp_pme_to_me_cost_th,
+///   post_fp_pme_to_me_mv_th, enable_psad, sa_q_weight]`
+#[must_use]
+pub fn md_pme_search_controls(level: u8) -> [i32; 11] {
+    let mut out = [0i32; 11];
+    unsafe { ref_md_pme_search_controls(level, out.as_mut_ptr()) };
+    out
+}
+
+/// C `svt_aom_set_gm_controls` on a zeroed `PictureParentControlSet`.
+///
+/// `[enabled, identiy_exit, search_start_model, search_end_model,
+///   skip_identity, bypass_based_on_me, params_refinement_steps,
+///   downsample_level, corners, chess_rfn, match_sz, inj_psq_glb, pp_enabled,
+///   ref_idx0_only, rfn_early_exit, correspondence_method]`
+#[must_use]
+pub fn set_gm_controls(gm_level: u8, input_resolution: u8) -> [u32; 16] {
+    let mut out = [0u32; 16];
+    unsafe { ref_set_gm_controls(gm_level, i32::from(input_resolution), out.as_mut_ptr()) };
+    out
+}
