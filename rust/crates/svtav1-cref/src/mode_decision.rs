@@ -498,3 +498,84 @@ pub fn set_md_stage_counts(
     }
     (out, b1 != 0, b2 != 0)
 }
+
+// ---------------------------------------------------------------------------
+// DRL selection.
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn ref_md_choose_best_av1_mv_pred(
+        shut_fast_rate: i32,
+        approx_inter_rate: i32,
+        stack: *const i32,
+        ref_mv_count: i32,
+        ref_frame: i32,
+        mode: i32,
+        mv0_as_int: u32,
+        mv1_as_int: u32,
+        nmv_vec_cost: *const i32,
+        nmv_costs0: *const i32,
+        nmv_costs1: *const i32,
+        drl_fac_bits: *const i32,
+        best_drl_index_io: *mut i32,
+        best_pred_mv_io: *mut u32,
+    );
+}
+
+/// C `MAX_REF_MV_STACK_SIZE`.
+pub const MAX_REF_MV_STACK_SIZE: usize = 8;
+/// C `DRL_MODE_CONTEXTS` (definitions.h:1343).
+pub const DRL_MODE_CONTEXTS: usize = 3;
+/// C `MV_JOINTS`.
+pub const MV_JOINTS: usize = 4;
+/// C `MV_VALS` (cabac_context_model.h:195).
+pub const MV_VALS: usize = ((1 << 14) - 1) * 2 + 1;
+
+/// C `svt_aom_choose_best_av1_mv_pred` (mode_decision.c:527, EXPORTED).
+///
+/// `best_drl_index` / `best_pred_mv` are IN/OUT: C leaves them untouched
+/// on the `shut_fast_rate` early return.
+#[allow(clippy::too_many_arguments)]
+pub fn choose_best_av1_mv_pred(
+    shut_fast_rate: bool,
+    approx_inter_rate: u8,
+    stack: &[(u32, u32, i32); MAX_REF_MV_STACK_SIZE],
+    ref_mv_count: u8,
+    ref_frame: i32,
+    mode: u8,
+    mv0_as_int: u32,
+    mv1_as_int: u32,
+    nmv_vec_cost: &[i32; MV_JOINTS],
+    nmv_costs0: &[i32],
+    nmv_costs1: &[i32],
+    drl_fac_bits: &[[i32; 2]; DRL_MODE_CONTEXTS],
+    best_drl_index: &mut u8,
+    best_pred_mv: &mut [u32; 2],
+) {
+    let flat: Vec<i32> = stack
+        .iter()
+        .flat_map(|&(a, b, w)| [a as i32, b as i32, w])
+        .collect();
+    let fac: Vec<i32> = drl_fac_bits.iter().flat_map(|r| [r[0], r[1]]).collect();
+    let mut drl = i32::from(*best_drl_index);
+    unsafe {
+        ref_md_choose_best_av1_mv_pred(
+            i32::from(shut_fast_rate),
+            i32::from(approx_inter_rate),
+            flat.as_ptr(),
+            i32::from(ref_mv_count),
+            ref_frame,
+            i32::from(mode),
+            mv0_as_int,
+            mv1_as_int,
+            nmv_vec_cost.as_ptr(),
+            nmv_costs0.as_ptr(),
+            nmv_costs1.as_ptr(),
+            fac.as_ptr(),
+            &mut drl,
+            best_pred_mv.as_mut_ptr(),
+        );
+    }
+    *best_drl_index = drl as u8;
+}

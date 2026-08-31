@@ -19,6 +19,7 @@
 //! | [`predicates`] | the pure gates and tables of `mode_decision.c` |
 //! | [`pme`] | the MD motion-search cost model + the PME SAD kernel |
 //! | [`nics`] | the per-stage candidate counts (`svt_aom_set_nics`) |
+//! | [`drl`] | DRL selection for NEWMV candidates |
 //!
 //! # Reachability
 //!
@@ -27,6 +28,7 @@
 //! translation with no caller stays translated and states its
 //! reachability rather than carrying `#[allow(dead_code)]`.
 
+pub mod drl;
 pub mod nics;
 pub mod pme;
 pub mod predicates;

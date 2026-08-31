@@ -347,3 +347,84 @@ void ref_md_set_md_stage_counts(int32_t s1, int32_t s2, int32_t s3, int32_t md_s
     free(ppcs);
     free(scs);
 }
+
+/* ------------------------------------------------------------------ *
+ * DRL selection.
+ *
+ *   svt_aom_choose_best_av1_mv_pred   mode_decision.c:527 (EXPORTED)
+ *
+ * The exported symbol reaches the `static INLINE` av1_drl_ctx
+ * (rd_cost.h:85) and svt_av1_mv_bit_cost / _light (rd_cost.c:59-78)
+ * along the way, so all four are covered by one tier-1 driver.
+ *
+ * `stack` arrives packed 3 i32s per CandidateMv:
+ *   this_mv_as_int, comp_mv_as_int, weight.
+ * ------------------------------------------------------------------ */
+
+#include "md_rate_estimation.h"
+
+void svt_aom_choose_best_av1_mv_pred(ModeDecisionContext* ctx, MvReferenceFrame ref_frame,
+                                     PredictionMode mode, Mv mv0, Mv mv1, uint8_t* bestDrlIndex,
+                                     Mv best_pred_mv[2]);
+
+void ref_md_choose_best_av1_mv_pred(int32_t shut_fast_rate, int32_t approx_inter_rate,
+                                    const int32_t* stack /*[MAX_REF_MV_STACK_SIZE][3]*/,
+                                    int32_t ref_mv_count, int32_t ref_frame, int32_t mode,
+                                    uint32_t mv0_as_int, uint32_t mv1_as_int,
+                                    const int32_t* nmv_vec_cost /*[MV_JOINTS]*/,
+                                    const int32_t* nmv_costs0 /*[MV_VALS]*/,
+                                    const int32_t* nmv_costs1 /*[MV_VALS]*/,
+                                    const int32_t* drl_fac_bits /*[DRL_MODE_CONTEXTS][2]*/,
+                                    int32_t* best_drl_index_io, uint32_t* best_pred_mv_io /*[2]*/) {
+    ModeDecisionContext*     ctx  = (ModeDecisionContext*)calloc(1, sizeof(*ctx));
+    BlkStruct*               blk  = (BlkStruct*)calloc(1, sizeof(*blk));
+    MacroBlockD*             xd   = (MacroBlockD*)calloc(1, sizeof(*xd));
+    MdRateEstimationContext* rate = (MdRateEstimationContext*)calloc(1, sizeof(*rate));
+
+    ctx->shut_fast_rate    = (uint8_t)shut_fast_rate;
+    ctx->approx_inter_rate = (uint8_t)approx_inter_rate;
+    ctx->blk_ptr           = blk;
+    blk->av1xd             = xd;
+    ctx->md_rate_est_ctx   = rate;
+    xd->ref_mv_count[ref_frame] = (uint8_t)ref_mv_count;
+
+    for (int i = 0; i < MAX_REF_MV_STACK_SIZE; i++) {
+        ctx->ref_mv_stack[ref_frame][i].this_mv.as_int = (uint32_t)stack[i * 3 + 0];
+        ctx->ref_mv_stack[ref_frame][i].comp_mv.as_int = (uint32_t)stack[i * 3 + 1];
+        ctx->ref_mv_stack[ref_frame][i].weight         = stack[i * 3 + 2];
+    }
+    for (int i = 0; i < MV_JOINTS; i++) { rate->nmv_vec_cost[i] = nmv_vec_cost[i]; }
+    for (int i = 0; i < MV_VALS; i++) {
+        rate->nmv_costs[0][i] = nmv_costs0[i];
+        rate->nmv_costs[1][i] = nmv_costs1[i];
+    }
+    rate->nmvcoststack[0] = &rate->nmv_costs[0][MV_MAX];
+    rate->nmvcoststack[1] = &rate->nmv_costs[1][MV_MAX];
+    for (int c = 0; c < DRL_MODE_CONTEXTS; c++) {
+        rate->drl_mode_fac_bits[c][0] = drl_fac_bits[c * 2 + 0];
+        rate->drl_mode_fac_bits[c][1] = drl_fac_bits[c * 2 + 1];
+    }
+
+    Mv mv0, mv1;
+    mv0.as_int = mv0_as_int;
+    mv1.as_int = mv1_as_int;
+    /* The two outputs are IN/OUT: C leaves them untouched on the
+     * shut_fast_rate early return, so the caller's prior value must be
+     * observable. */
+    uint8_t best_drl = (uint8_t)*best_drl_index_io;
+    Mv      best_pred_mv[2];
+    best_pred_mv[0].as_int = best_pred_mv_io[0];
+    best_pred_mv[1].as_int = best_pred_mv_io[1];
+
+    svt_aom_choose_best_av1_mv_pred(
+        ctx, (MvReferenceFrame)ref_frame, (PredictionMode)mode, mv0, mv1, &best_drl, best_pred_mv);
+
+    *best_drl_index_io = best_drl;
+    best_pred_mv_io[0] = best_pred_mv[0].as_int;
+    best_pred_mv_io[1] = best_pred_mv[1].as_int;
+
+    free(rate);
+    free(xd);
+    free(blk);
+    free(ctx);
+}
