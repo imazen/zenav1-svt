@@ -3846,10 +3846,12 @@ fn transform_two_d_core_pf(
 /// Forward 2-D transform at a reduced coefficient shape.
 ///
 /// `shape` selects the C entry family: `N2` is `svt_aom_transform_two_d_*_N2_c`
-/// / `svt_av1_fwd_txfm2d_*_N2_c`, `N4` the `_N4_c` twins. Returns `false` for
-/// the `(ADST, 32)` hole where C would dispatch the unpruned `av1_fadst32_new`
-/// (see [`fwd_txfm_type_to_func_n2`]); `Default` / `OnlyDc` are not this
-/// module's entries and also return `false`.
+/// / `svt_av1_fwd_txfm2d_*_N2_c`, `N4` the `_N4_c` twins, and `Default` is
+/// `svt_av1_transform_two_d_*_c` / `svt_av1_fwd_txfm2d_*_c` (with `div == 1`
+/// the shared core reduces exactly to `av1_tranform_two_d_core_c`). Returns
+/// `false` for the `(ADST, 32)` hole where C would dispatch the unpruned
+/// `av1_fadst32_new` (see [`fwd_txfm_type_to_func_n2`]), and for `OnlyDc`,
+/// which has no 2-D entry family of its own.
 ///
 /// `input` is the int16 residual at `input_stride`; `output` is a full
 /// `w * h` coefficient block whose entries outside the kept quadrant are
@@ -3862,21 +3864,228 @@ pub fn fwd_txfm2d_pf(
     tx_type: TxType,
     shape: TxCoeffShape,
 ) -> bool {
-    let div = match shape {
-        TxCoeffShape::N2 => 2,
-        TxCoeffShape::N4 => 4,
-        _ => return false,
+    let (div, lookup): (usize, fn(TxfmType) -> Option<Kernel1D>) = match shape {
+        TxCoeffShape::N2 => (2, fwd_txfm_type_to_func_n2),
+        TxCoeffShape::N4 => (4, fwd_txfm_type_to_func_n4),
+        TxCoeffShape::Default => (1, fwd_txfm_type_to_func_default),
+        TxCoeffShape::OnlyDc => return false,
     };
     let cfg = transform_config(tx_type, tx_size);
-    let lookup = if div == 2 {
-        fwd_txfm_type_to_func_n2
-    } else {
-        fwd_txfm_type_to_func_n4
-    };
     let (Some(col_func), Some(row_func)) = (lookup(cfg.txfm_type_col), lookup(cfg.txfm_type_row))
     else {
         return false;
     };
     transform_two_d_core_pf(input, input_stride, output, &cfg, div, col_func, row_func);
     true
+}
+
+// =============================================================================
+// The DEFAULT-shape 1-D dispatch, so `fwd_txfm2d_pf` can also serve
+// `TxCoeffShape::Default` — with `div == 1` the shared core reduces EXACTLY to
+// C's `av1_tranform_two_d_core_c` (transforms.c:2978): `row / 1` and `col / 1`
+// are the full lengths, the row loop runs over every row, and the trailing
+// zeroing loop's condition (`i % col >= col`, `i / col >= row`) is never true.
+// =============================================================================
+
+/// Port of C `svt_aom_fwd_txfm_type_to_func` (transforms.c:2940), expressed
+/// over the existing full 1-D kernels in [`crate::fwd_txfm`]. Same ADST32
+/// hole as the reduced-shape tables.
+pub fn fwd_txfm_type_to_func_default(t: TxfmType) -> Option<Kernel1D> {
+    let (family, n) = match t {
+        TxfmType::Dct4 => (0u8, 4usize),
+        TxfmType::Dct8 => (0, 8),
+        TxfmType::Dct16 => (0, 16),
+        TxfmType::Dct32 => (0, 32),
+        TxfmType::Dct64 => (0, 64),
+        TxfmType::Adst4 => (1, 4),
+        TxfmType::Adst8 => (1, 8),
+        TxfmType::Adst16 => (1, 16),
+        TxfmType::Adst32 => (1, 32),
+        TxfmType::Identity4 => (3, 4),
+        TxfmType::Identity8 => (3, 8),
+        TxfmType::Identity16 => (3, 16),
+        TxfmType::Identity32 => (3, 32),
+        TxfmType::Identity64 => (3, 64),
+        TxfmType::Invalid => return None,
+    };
+    crate::fwd_txfm::get_fwd_txfm_func(family, n)
+}
+
+// =============================================================================
+// `svt_av1_highbd_fwd_txfm{,_n2,_n4}` (transforms.c:4476 / :4409 / :4342)
+// and `svt_av1_wht_fwd_txfm` (:4527) — TPL's only transform entry.
+// =============================================================================
+
+/// What `svt_av1_highbd_fwd_txfm{,_n2,_n4}` actually dispatches to for
+/// `(shape, tx_size)`.
+///
+/// `None` is the **TX_4X4 hole**: all three C dispatchers have
+/// `case TX_4X4: //hack highbd_fwd_txfm_4x4(...); break;` (transforms.c:4388,
+/// :4455, :4522), so they return leaving the caller's coeff buffer at
+/// whatever it already held. TPL never asks for TX_4X4 (its smallest is
+/// TX_16X4, src_ops_process.c:380-382), so this is latent — but a dispatch
+/// table that "helpfully" transforms 4x4 diverges the moment anything else
+/// calls this entry. Note that `av1_estimate_transform_*` does NOT share the
+/// hole (transforms.c:3525/:3682/:3864 call `svt_av1_fwd_txfm2d_4x4*`
+/// normally).
+///
+/// `Some(Default)` for `(N2|N4, TX_4X16)` is the second quirk, and it is not
+/// a transcription slip: `highbd_fwd_txfm_4x16_n2` (transforms.c:4331) and
+/// `_n4` (:4101) both call the FULL `svt_av1_fwd_txfm2d_4x16`, while all 17
+/// of their siblings call their `_N2` / `_N4` twin. Verified by extracting
+/// the callee of all 54 wrappers.
+pub fn highbd_entry_shape(shape: TxCoeffShape, tx_size: TxSize) -> Option<TxCoeffShape> {
+    match (shape, tx_size) {
+        (_, TxSize::Tx4x4) => None,
+        (TxCoeffShape::N2 | TxCoeffShape::N4, TxSize::Tx4x16) => Some(TxCoeffShape::Default),
+        _ => Some(shape),
+    }
+}
+
+/// Port of C `svt_av1_highbd_fwd_txfm` (`shape == Default`, transforms.c:4476),
+/// `svt_av1_highbd_fwd_txfm_n2` (:4409) and `_n4` (:4342).
+///
+/// `coeff` must hold `w * h` entries. Returns `false` only when the (type,
+/// size) pair has no kernel (the ADST32 hole); the TX_4X4 hole returns `true`
+/// having written nothing, which is what C does.
+pub fn highbd_fwd_txfm(
+    input: &[i16],
+    coeff: &mut [i32],
+    diff_stride: usize,
+    tx_type: TxType,
+    tx_size: TxSize,
+    shape: TxCoeffShape,
+) -> bool {
+    let Some(effective) = highbd_entry_shape(shape, tx_size) else {
+        // TX_4X4: C leaves the buffer alone.
+        return true;
+    };
+    // The 64x64 / 16x64 / 64x16 wrappers pass the DCT_DCT *literal* through
+    // (the assert above them requires it); 32x64 / 64x32 forward the caller's
+    // tx_type. Same in all three variants.
+    let effective_type = match tx_size {
+        TxSize::Tx64x64 | TxSize::Tx16x64 | TxSize::Tx64x16 => TxType::DctDct,
+        _ => tx_type,
+    };
+    fwd_txfm2d_pf(
+        input,
+        coeff,
+        diff_stride,
+        tx_size,
+        effective_type,
+        effective,
+    )
+}
+
+/// Port of C `svt_av1_wht_fwd_txfm` (transforms.c:4527) — TPL's ONLY
+/// transform entry (`src_ops_process.c:725,857,937,1133`).
+///
+/// C hard-codes `tx_type = DCT_DCT`, `lossless = 0` and
+/// `tx_set_type = EXT_TX_SET_ALL16`, then routes on `pf_shape`: `N4_SHAPE`
+/// and `N2_SHAPE` take the matching dispatcher, and EVERY other value —
+/// `DEFAULT_SHAPE` and `ONLY_DC_SHAPE` alike — falls through the `default:`
+/// arm to `svt_av1_highbd_fwd_txfm`. `bw` is the source stride, not a width.
+pub fn wht_fwd_txfm(
+    src_diff: &[i16],
+    bw: usize,
+    coeff: &mut [i32],
+    tx_size: TxSize,
+    pf_shape: TxCoeffShape,
+    _bit_depth: i32,
+    _is_hbd: bool,
+) -> bool {
+    let shape = match pf_shape {
+        TxCoeffShape::N4 => TxCoeffShape::N4,
+        TxCoeffShape::N2 => TxCoeffShape::N2,
+        // C `default:` — DEFAULT_SHAPE *and* ONLY_DC_SHAPE both land here.
+        _ => TxCoeffShape::Default,
+    };
+    highbd_fwd_txfm(src_diff, coeff, bw, TxType::DctDct, tx_size, shape)
+}
+
+// =============================================================================
+// `svt_handle_transform*` (transforms.c:3105-3291) — the 64-dimension fold
+// and row repack. Both the full variants (which return the discarded
+// three-quarter energy) and the `_N2_N4_c` variants (which return 0).
+// =============================================================================
+
+/// C `energy_computation` (transforms.c:3092): sum of squares over an
+/// `area_width x area_height` window at `coeff_stride`.
+fn energy_computation(
+    coeff: &[i32],
+    offset: usize,
+    coeff_stride: usize,
+    area_width: usize,
+    area_height: usize,
+) -> u64 {
+    let mut acc: u64 = 0;
+    let mut base = offset;
+    for _ in 0..area_height {
+        for c in 0..area_width {
+            let v = coeff[base + c] as i64;
+            acc = acc.wrapping_add((v * v) as u64);
+        }
+        base += coeff_stride;
+    }
+    acc
+}
+
+/// Which 64-dimension `svt_handle_transform*` entry to run.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum HandleTransform {
+    /// `svt_handle_transform16x64{,_N2_N4}_c`
+    T16x64,
+    /// `svt_handle_transform32x64{,_N2_N4}_c`
+    T32x64,
+    /// `svt_handle_transform64x16{,_N2_N4}_c`
+    T64x16,
+    /// `svt_handle_transform64x32{,_N2_N4}_c`
+    T64x32,
+    /// `svt_handle_transform64x64{,_N2_N4}_c`
+    T64x64,
+}
+
+/// Port of the `svt_handle_transform*` family (transforms.c:3105-3291).
+///
+/// `pf == false` is the full variant: it measures the energy of the region
+/// AV1 discards and, for the three entries whose coefficient block is 64 wide,
+/// repacks rows 1.. from stride 64 down to stride 32. `pf == true` is the
+/// `_N2_N4_c` variant.
+///
+/// CORRECTION to a common summary of this family: the `_N2_N4_c` variants are
+/// NOT all no-ops. 16x64 and 32x64 do nothing and return 0, but 64x16, 64x32
+/// and 64x64 STILL DO THE ROW REPACK (transforms.c:3262, :3271, :3280) — they
+/// only drop the energy term. Getting that wrong leaves the coefficients at
+/// the wrong stride rather than merely mis-costing a block.
+pub fn handle_transform(which: HandleTransform, pf: bool, output: &mut [i32]) -> u64 {
+    let energy = if pf {
+        0
+    } else {
+        match which {
+            // bottom 16x32 area
+            HandleTransform::T16x64 => energy_computation(output, 16 * 32, 16, 16, 32),
+            // bottom 32x32 area
+            HandleTransform::T32x64 => energy_computation(output, 32 * 32, 32, 32, 32),
+            // top-right 32x16 area
+            HandleTransform::T64x16 => energy_computation(output, 32, 64, 32, 16),
+            // top-right 32x32 area
+            HandleTransform::T64x32 => energy_computation(output, 32, 64, 32, 32),
+            // top-right 32x32 area PLUS the bottom 64x32 area
+            HandleTransform::T64x64 => energy_computation(output, 32, 64, 32, 32)
+                .wrapping_add(energy_computation(output, 32 * 64, 64, 64, 32)),
+        }
+    };
+    // The repack happens for both variants on the three 64-wide entries.
+    let rows = match which {
+        HandleTransform::T16x64 | HandleTransform::T32x64 => 0,
+        HandleTransform::T64x16 => 16,
+        HandleTransform::T64x32 | HandleTransform::T64x64 => 32,
+    };
+    for row in 1..rows {
+        let (dst, src) = (row * 32, row * 64);
+        for i in 0..32 {
+            output[dst + i] = output[src + i];
+        }
+    }
+    energy
 }

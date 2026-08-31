@@ -264,3 +264,38 @@ pub fn call_inv_txfm_type_to_func(
         ) != 0
     }
 }
+
+unsafe extern "C" {
+    fn ref_fwd_txfm2d_default(
+        tx_size: i32,
+        input: *mut i16,
+        output: *mut i32,
+        input_stride: u32,
+        tx_type: i32,
+        bd: u8,
+    );
+}
+
+/// Reference DEFAULT-shape 2-D forward transform — the `_c` implementations
+/// (`svt_av1_transform_two_d_*_c` / `svt_av1_fwd_txfm2d_*_c`), NOT the RTCD
+/// pointers, so this is the pure-C oracle.
+pub fn fwd_txfm2d_default(
+    tx_size: usize,
+    input: &[i16],
+    output: &mut [i32],
+    input_stride: usize,
+    tx_type: usize,
+    bd: u8,
+) {
+    let mut inp = input.to_vec();
+    unsafe {
+        ref_fwd_txfm2d_default(
+            tx_size as i32,
+            inp.as_mut_ptr(),
+            output.as_mut_ptr(),
+            input_stride as u32,
+            tx_type as i32,
+            bd,
+        )
+    };
+}

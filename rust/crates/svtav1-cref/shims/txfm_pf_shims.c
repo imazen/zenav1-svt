@@ -143,16 +143,76 @@ void ref_fwd_txfm2d_pf(int32_t tx_size, int32_t shape, int16_t* input, int32_t* 
     f(input, output, input_stride, (TxType)tx_type, bd);
 }
 
+/* ---- DEFAULT-shape 2-D entries (the `_c` implementations, no RTCD) ---- */
+
+#define DECL2DC(NAME) void NAME(int16_t*, int32_t*, uint32_t, TxType, uint8_t);
+DECL2DC(svt_av1_transform_two_d_4x4_c)
+DECL2DC(svt_av1_transform_two_d_8x8_c)
+DECL2DC(svt_av1_transform_two_d_16x16_c)
+DECL2DC(svt_av1_transform_two_d_32x32_c)
+DECL2DC(svt_av1_transform_two_d_64x64_c)
+DECL2DC(svt_av1_fwd_txfm2d_4x8_c)
+DECL2DC(svt_av1_fwd_txfm2d_8x4_c)
+DECL2DC(svt_av1_fwd_txfm2d_8x16_c)
+DECL2DC(svt_av1_fwd_txfm2d_16x8_c)
+DECL2DC(svt_av1_fwd_txfm2d_16x32_c)
+DECL2DC(svt_av1_fwd_txfm2d_32x16_c)
+DECL2DC(svt_av1_fwd_txfm2d_32x64_c)
+DECL2DC(svt_av1_fwd_txfm2d_64x32_c)
+DECL2DC(svt_av1_fwd_txfm2d_4x16_c)
+DECL2DC(svt_av1_fwd_txfm2d_16x4_c)
+DECL2DC(svt_av1_fwd_txfm2d_8x32_c)
+DECL2DC(svt_av1_fwd_txfm2d_32x8_c)
+DECL2DC(svt_av1_fwd_txfm2d_16x64_c)
+DECL2DC(svt_av1_fwd_txfm2d_64x16_c)
+
+static const RefFwd2d ref_fwd2d_default[TX_SIZES_ALL] = {
+    svt_av1_transform_two_d_4x4_c,   svt_av1_transform_two_d_8x8_c,
+    svt_av1_transform_two_d_16x16_c, svt_av1_transform_two_d_32x32_c,
+    svt_av1_transform_two_d_64x64_c, svt_av1_fwd_txfm2d_4x8_c,
+    svt_av1_fwd_txfm2d_8x4_c,        svt_av1_fwd_txfm2d_8x16_c,
+    svt_av1_fwd_txfm2d_16x8_c,       svt_av1_fwd_txfm2d_16x32_c,
+    svt_av1_fwd_txfm2d_32x16_c,      svt_av1_fwd_txfm2d_32x64_c,
+    svt_av1_fwd_txfm2d_64x32_c,      svt_av1_fwd_txfm2d_4x16_c,
+    svt_av1_fwd_txfm2d_16x4_c,       svt_av1_fwd_txfm2d_8x32_c,
+    svt_av1_fwd_txfm2d_32x8_c,       svt_av1_fwd_txfm2d_16x64_c,
+    svt_av1_fwd_txfm2d_64x16_c,
+};
+
+void ref_fwd_txfm2d_default(int32_t tx_size, int16_t* input, int32_t* output, uint32_t input_stride, int32_t tx_type,
+                            uint8_t bd) {
+    ref_fwd2d_default[tx_size](input, output, input_stride, (TxType)tx_type, bd);
+}
+
 /* ---- svt_av1_wht_fwd_txfm and the highbd dispatch tables ---- */
+
+/* svt_av1_highbd_fwd_txfm* and svt_av1_wht_fwd_txfm route through the RTCD
+ * function-pointer table (aom_dsp_rtcd.h:120 et al.), which is NULL until
+ * setup runs. `g_txfm_pf_rtcd_ready` is an idempotent one-shot init flag, not
+ * per-call state: a racing double-init re-runs the same setup with the same
+ * CPU flags and lands the same pointers. */
+typedef uint64_t EbCpuFlags;
+EbCpuFlags svt_aom_get_cpu_flags_to_use(void);
+void       svt_aom_setup_rtcd_internal(EbCpuFlags flags);
+
+static int g_txfm_pf_rtcd_ready = 0;
+static void txfm_pf_ensure_rtcd(void) {
+    if (!g_txfm_pf_rtcd_ready) {
+        svt_aom_setup_rtcd_internal(svt_aom_get_cpu_flags_to_use());
+        g_txfm_pf_rtcd_ready = 1;
+    }
+}
 
 void ref_wht_fwd_txfm(int16_t* src_diff, int32_t bw, int32_t* coeff, int32_t tx_size, int32_t pf_shape,
                       int32_t bit_depth, int32_t is_hbd) {
+    txfm_pf_ensure_rtcd();
     svt_av1_wht_fwd_txfm(src_diff, bw, coeff, (TxSize)tx_size, (TxCoeffShape)pf_shape, bit_depth, is_hbd);
 }
 
 /* variant: 0 = default, 1 = _n2, 2 = _n4. */
 void ref_highbd_fwd_txfm(int32_t variant, int16_t* src_diff, int32_t* coeff, int32_t diff_stride, int32_t tx_type,
                          int32_t tx_size, int32_t bd) {
+    txfm_pf_ensure_rtcd();
     TxfmParam p;
     memset(&p, 0, sizeof(p));
     p.tx_type     = (TxType)tx_type;
