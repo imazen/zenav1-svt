@@ -427,3 +427,140 @@ uint8_t ref_set_all_ref_frame_type(uint8_t slice_type, uint8_t l0_try, uint8_t l
  * globalized static is only usable at tier 1 after that check. */
 
 #endif /* SVTAV1_CREF_PICSTRUCT_STATICS */
+
+/* ---- dg_detector_hme_level0 (pd_process.c:532-629) ----
+ *
+ * EXPORTED, so this is evidence tier 1. It is not cheap to reach: the callee
+ * walks ppcs->pa_ref_pic_wrapper -> EbPaReferenceObject ->
+ * sixteenth_downsampled_picture_ptr for BOTH the source and (through
+ * ppcs->dg_detector->ref_pic) the reference, and it takes a real mutex and
+ * posts a real semaphore. All of that is built and torn down per call.
+ *
+ * The two padded planes come in as one flat allocation each with an explicit
+ * origin, because the search reads NEGATIVE offsets from y_buffer (up to
+ * border-1 pixels left/up). */
+
+#include "reference_object.h"
+#include "pic_buffer_desc.h"
+
+void dg_detector_hme_level0(PictureParentControlSet* ppcs, uint32_t seg_idx);
+EbHandle svt_create_mutex(void);
+
+/* RTCD init is MANDATORY here, not defensive. early_hme_b64 calls
+ * `svt_sad_loop_kernel`, an RTCD FUNCTION POINTER that lives in .bss and is
+ * NULL until `svt_aom_setup_common_rtcd_internal` has run. MEASURED: without
+ * this, ref_dg_detector_hme_level0 SIGSEGVs on its very first cell.
+ *
+ * `g_dg_rtcd_ready` is a one-shot init flag, not per-call state: a racing
+ * double-init re-runs the same RTCD setup with the same CPU flags and lands
+ * the same function pointers, so the worst case is wasted work. (Same
+ * reasoning as ref_shims.c's g_rtcd_ready.) */
+/* svt_sad_loop_kernel lives in the ENCODER dsp table
+ * (aom_dsp_rtcd.c:548/932/1314), which is filled by
+ * `svt_aom_setup_rtcd_internal` -- NOT by
+ * `svt_aom_setup_common_rtcd_internal`, which fills the common table. Both are
+ * run because early_hme_b64's callee set may grow; getting only the common one
+ * still leaves svt_sad_loop_kernel NULL, which is how this was found. */
+void       svt_aom_setup_common_rtcd_internal(uint64_t flags);
+void       svt_aom_setup_rtcd_internal(uint64_t flags);
+uint64_t   svt_aom_get_cpu_flags_to_use(void);
+static int g_dg_rtcd_ready = 0;
+static void dg_ensure_rtcd(void) {
+    if (!g_dg_rtcd_ready) {
+        const uint64_t flags = svt_aom_get_cpu_flags_to_use();
+        svt_aom_setup_common_rtcd_internal(flags);
+        svt_aom_setup_rtcd_internal(flags);
+        g_dg_rtcd_ready = 1;
+    }
+}
+
+EbErrorType svt_destroy_mutex(EbHandle mutex_handle);
+EbHandle svt_create_semaphore(uint32_t initial_count, uint32_t max_count);
+EbErrorType svt_destroy_semaphore(EbHandle semaphore_handle);
+
+typedef struct RefDgPlane {
+    uint8_t* data;
+    uint32_t origin;
+    uint32_t stride;
+    uint16_t width;
+    uint16_t height;
+    uint16_t border;
+} RefDgPlane;
+
+static EbPictureBufferDesc* ref_make_plane(const RefDgPlane* p) {
+    EbPictureBufferDesc* d = (EbPictureBufferDesc*)calloc(1, sizeof(*d));
+    d->y_buffer = p->data + p->origin;
+    d->y_stride = p->stride;
+    d->width    = p->width;
+    d->height   = p->height;
+    d->border   = p->border;
+    return d;
+}
+
+void ref_dg_detector_hme_level0(uint8_t* src_data, uint32_t src_origin, uint32_t src_stride, uint16_t src_w,
+                                uint16_t src_h, uint16_t src_border, uint8_t* ref_data, uint32_t ref_origin,
+                                uint32_t ref_stride, uint16_t ref_w, uint16_t ref_h, uint16_t ref_border,
+                                uint8_t input_resolution, uint32_t aligned_width, uint32_t aligned_height,
+                                uint16_t b64_size, uint32_t seg_idx, uint32_t seg_cols, uint32_t seg_rows,
+                                uint64_t* out_tot_dist, uint32_t* out_tot_cplx, uint32_t* out_tot_active,
+                                int32_t* out_sum_in_vectors, uint16_t* out_seg_completed) {
+    dg_ensure_rtcd();
+    RefDgPlane sp = {src_data, src_origin, src_stride, src_w, src_h, src_border};
+    RefDgPlane rp = {ref_data, ref_origin, ref_stride, ref_w, ref_h, ref_border};
+
+    PictureParentControlSet* ppcs    = (PictureParentControlSet*)calloc(1, sizeof(*ppcs));
+    PictureParentControlSet* refpcs  = (PictureParentControlSet*)calloc(1, sizeof(*refpcs));
+    SequenceControlSet*      scs     = (SequenceControlSet*)calloc(1, sizeof(*scs));
+    DGDetectorSeg*           dg      = (DGDetectorSeg*)calloc(1, sizeof(*dg));
+    EbObjectWrapper*         src_wrp = (EbObjectWrapper*)calloc(1, sizeof(*src_wrp));
+    EbObjectWrapper*         ref_wrp = (EbObjectWrapper*)calloc(1, sizeof(*ref_wrp));
+    EbPaReferenceObject*     src_obj = (EbPaReferenceObject*)calloc(1, sizeof(*src_obj));
+    EbPaReferenceObject*     ref_obj = (EbPaReferenceObject*)calloc(1, sizeof(*ref_obj));
+
+    EbPictureBufferDesc* src_pic = ref_make_plane(&sp);
+    EbPictureBufferDesc* ref_pic = ref_make_plane(&rp);
+
+    src_obj->sixteenth_downsampled_picture_ptr = src_pic;
+    ref_obj->sixteenth_downsampled_picture_ptr = ref_pic;
+    src_wrp->object_ptr                        = src_obj;
+    ref_wrp->object_ptr                        = ref_obj;
+
+    ppcs->pa_ref_pic_wrapper   = src_wrp;
+    refpcs->pa_ref_pic_wrapper = ref_wrp;
+
+    scs->b64_size          = (uint8_t)b64_size;
+    ppcs->scs              = scs;
+    ppcs->input_resolution = (ResolutionRange)input_resolution;
+    ppcs->aligned_width    = aligned_width;
+    ppcs->aligned_height   = aligned_height;
+
+    ppcs->me_segments_column_count = (uint8_t)seg_cols;
+    ppcs->me_segments_row_count    = (uint8_t)seg_rows;
+
+    dg->ref_pic        = refpcs;
+    dg->metrics_mutex  = svt_create_mutex();
+    /* max_count covers the single post the last segment makes. */
+    dg->frame_done_sem = svt_create_semaphore(0, 1);
+    ppcs->dg_detector  = dg;
+
+    dg_detector_hme_level0(ppcs, seg_idx);
+
+    *out_tot_dist       = dg->metrics.tot_dist;
+    *out_tot_cplx       = dg->metrics.tot_cplx;
+    *out_tot_active     = dg->metrics.tot_active;
+    *out_sum_in_vectors = dg->metrics.sum_in_vectors;
+    *out_seg_completed  = dg->metrics.seg_completed;
+
+    svt_destroy_semaphore(dg->frame_done_sem);
+    svt_destroy_mutex(dg->metrics_mutex);
+    free(ref_pic);
+    free(src_pic);
+    free(ref_obj);
+    free(src_obj);
+    free(ref_wrp);
+    free(src_wrp);
+    free(dg);
+    free(scs);
+    free(refpcs);
+    free(ppcs);
+}

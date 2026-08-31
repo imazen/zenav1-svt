@@ -3662,3 +3662,437 @@ pub fn copy_histograms(
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Dynamic-GOP detector — pd_process.c:403-758
+// ---------------------------------------------------------------------------
+//
+// Reachability, measured (`enc_handle.c:4294-4300`): `scs->enable_dg` is 0 for
+// VBR, CBR, >= 4K, non-RANDOM_ACCESS and multi-pass, and 1 otherwise — so this
+// whole detector is ON BY DEFAULT for single-pass CQP/CRF random access below
+// 4K. It is not an exotic knob, and a one-SAD difference here flips the
+// mini-GOP SIZE, i.e. the temporal layer of every frame in it.
+
+/// C `FULL_SAD_SEARCH` (`definitions.h:1821`).
+pub const FULL_SAD_SEARCH: u8 = 1;
+/// C `INPUT_SIZE_360p_RANGE` (`definitions.h:1825`).
+pub const INPUT_SIZE_360P_RANGE: u8 = 1;
+/// C `HIGH_DIST_TH` (`pd_process.c:684`) — `16 * 16 * 18`.
+pub const HIGH_DIST_TH: u64 = 16 * 16 * 18;
+/// C `LOW_DIST_TH` (`pd_process.c:685`) — `16 * 16 * 2`.
+pub const LOW_DIST_TH: u64 = 16 * 16 * 2;
+
+/// A borrowed view of a sixteenth-downsampled luma plane, as
+/// `EbPictureBufferDesc` presents one to the detector.
+///
+/// `y_buffer` is the interior origin: the search can address NEGATIVE offsets
+/// (up to `border - 1` pixels left/up), so the backing allocation must extend
+/// `border` pixels in every direction and `origin` is where (0, 0) sits.
+#[derive(Debug, Clone, Copy)]
+pub struct DsPlane<'a> {
+    /// The whole padded allocation.
+    pub data: &'a [u8],
+    /// Index of pixel (0, 0) within `data`.
+    pub origin: usize,
+    /// C `y_stride`.
+    pub stride: usize,
+    /// C `width` (the un-padded picture width).
+    pub width: u16,
+    /// C `height`.
+    pub height: u16,
+    /// C `border` — padding on each side.
+    pub border: u16,
+}
+
+/// C `early_hme_b64` (`pd_process.c:403-491`) — static.
+///
+/// The per-64x64 search kernel underneath the dynamic-GOP detector. Needs a
+/// bit-exact port because a one-SAD difference flips the GOP-size decision.
+///
+/// Returns `(best_sad, sr_center)`.
+///
+/// Traps transcribed literally:
+/// * `sa_width` is rounded UP to a multiple of 8 on entry, then clamped
+///   against the picture, then rounded DOWN to a multiple of 8 — but only when
+///   it is at least 8 (`sa_width < 8 ? sa_width : sa_width & ~7`).
+/// * the left-edge correction `sa_width = sa_width - (-pad_width - (org_x +
+///   sa_origin_x))` is evaluated AFTER `sa_origin_x` has already been
+///   reassigned on the line above, so the parenthesised term is identically
+///   zero and the width is unchanged. That is C's code, not a transcription
+///   slip; a "fixed" version would clamp differently.
+/// * `best_sad` is doubled for the non-`FULL_SAD_SEARCH` method because only
+///   every other line was summed, and the centre is scaled by 4 because the
+///   search ran at sixteenth (quarter-per-axis) resolution.
+///
+/// # Panics
+///
+/// Panics if the search region falls outside `plane.data`; that is a caller
+/// error in the padding setup, and reading the wrong memory would silently
+/// produce a wrong SAD.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn early_hme_b64(
+    src: &[u8],
+    src_stride: usize,
+    hme_search_method: u8,
+    org_x: i16,
+    org_y: i16,
+    block_width: u32,
+    block_height: u32,
+    sa_width_in: i16,
+    sa_height_in: i16,
+    ref_plane: &DsPlane<'_>,
+) -> (u64, svtav1_types::motion::Mv) {
+    // Round the search width up to a multiple of 8: the SAD kernel costs the
+    // same for widths 1..8.
+    let mut sa_width = (sa_width_in + 7) & !0x07;
+    let mut sa_height = sa_height_in;
+    let pad_width = ref_plane.border as i16 - 1;
+    let pad_height = ref_plane.border as i16 - 1;
+
+    let mut sa_origin_x = -(sa_width >> 1);
+    let mut sa_origin_y = -(sa_height >> 1);
+
+    // Left edge. NOTE: C reassigns sa_origin_x first, so the width adjustment
+    // that follows subtracts zero. Reproduced exactly.
+    if org_x + sa_origin_x < -pad_width {
+        sa_origin_x = -pad_width - org_x;
+        sa_width -= -pad_width - (org_x + sa_origin_x);
+    }
+    // Right edge.
+    if org_x + sa_origin_x > ref_plane.width as i16 - 1 {
+        sa_origin_x -= (org_x + sa_origin_x) - (ref_plane.width as i16 - 1);
+    }
+    if org_x + sa_origin_x + sa_width > ref_plane.width as i16 {
+        sa_width = 1.max(sa_width - ((org_x + sa_origin_x + sa_width) - ref_plane.width as i16));
+    }
+    // Round DOWN to a multiple of 8, but only at 8 or more.
+    sa_width = if sa_width < 8 {
+        sa_width
+    } else {
+        sa_width & !0x07
+    };
+
+    // Top edge — same shape as the left edge, same zero-subtraction.
+    if org_y + sa_origin_y < -pad_height {
+        sa_origin_y = -pad_height - org_y;
+        sa_height -= -pad_height - (org_y + sa_origin_y);
+    }
+    if org_y + sa_origin_y > ref_plane.height as i16 - 1 {
+        sa_origin_y -= (org_y + sa_origin_y) - (ref_plane.height as i16 - 1);
+    }
+    if org_y + sa_origin_y + sa_height > ref_plane.height as i16 {
+        sa_height =
+            1.max(sa_height - ((org_y + sa_origin_y + sa_height) - ref_plane.height as i16));
+    }
+
+    let x_top_left = org_x + sa_origin_x;
+    let y_top_left = org_y + sa_origin_y;
+    let search_region_index =
+        i64::from(x_top_left) + i64::from(y_top_left) * ref_plane.stride as i64;
+
+    let full = hme_search_method == FULL_SAD_SEARCH;
+    let r = crate::inter_me::sad::sad_loop_kernel(
+        src,
+        if full { src_stride } else { src_stride * 2 },
+        ref_plane.data,
+        ref_plane.origin as i64 + search_region_index,
+        if full {
+            ref_plane.stride
+        } else {
+            ref_plane.stride * 2
+        },
+        if full {
+            block_height as usize
+        } else {
+            (block_height >> 1) as usize
+        },
+        block_width as usize,
+        ref_plane.stride,
+        0,
+        sa_width,
+        sa_height,
+    );
+
+    let best_sad = if full { r.best_sad } else { r.best_sad * 2 };
+    let mut mv = svtav1_types::motion::Mv { x: 0, y: 0 };
+    // Operating on 1/4 resolution per axis, hence the x4.
+    mv.x = (r.x_search_center + sa_origin_x) * 4;
+    mv.y = (r.y_search_center + sa_origin_y) * 4;
+    (best_sad, mv)
+}
+
+/// C `DGDetectorMetrics` (`pcs.h:710-716`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DgDetectorMetrics {
+    /// C `tot_dist`.
+    pub tot_dist: u64,
+    /// C `tot_cplx`.
+    pub tot_cplx: u32,
+    /// C `tot_active`.
+    pub tot_active: u32,
+    /// C `sum_in_vectors`.
+    pub sum_in_vectors: i32,
+    /// C `seg_completed`.
+    pub seg_completed: u16,
+}
+
+/// C `dg_detector_hme_level0` (`pd_process.c:532-629`) — EXPORTED.
+///
+/// Segment-level entry to the dynamic-GOP HME. Accumulates distortion,
+/// complexity, activity and an inward/outward motion-vector balance over the
+/// segment's 64x64 blocks.
+///
+/// Traps:
+/// * `hme_level0_sad` and `sr_center` are declared OUTSIDE the block loop and
+///   passed by pointer to [`early_hme_b64`], which OVERWRITES both, so no
+///   value carries between blocks — but the initial `~0` seed does reach the
+///   first call. `sad_loop_kernel` ignores its incoming value, so this is
+///   inert; it is preserved so a reader is not tempted to "fix" it.
+/// * the `sum_in_vectors` update SKIPS the middle row and column exactly
+///   (`< n/2` and `> n/2`, never `==`), so an odd block count leaves one row
+///   and one column contributing nothing.
+///
+/// `metrics` is accumulated in place, matching C's mutex-guarded shared
+/// struct.
+#[allow(clippy::too_many_arguments)]
+pub fn dg_detector_hme_level0(
+    metrics: &mut DgDetectorMetrics,
+    src_plane: &DsPlane<'_>,
+    ref_plane: &DsPlane<'_>,
+    input_resolution: u8,
+    aligned_width: u32,
+    aligned_height: u32,
+    b64_size: u32,
+    seg_idx: u32,
+    me_segments_column_count: u32,
+    me_segments_row_count: u32,
+) {
+    let (sa_width, sa_height) = if input_resolution <= INPUT_SIZE_360P_RANGE {
+        (16i16, 16i16)
+    } else if input_resolution <= INPUT_SIZE_480P_RANGE {
+        (64, 64)
+    } else {
+        (128, 128)
+    };
+
+    let pic_width_in_b64 = aligned_width.div_ceil(b64_size);
+    let pic_height_in_b64 = aligned_height.div_ceil(b64_size);
+
+    // SEGMENT_CONVERT_IDX_TO_XY(seg_idx, x, y, me_segments_column_count)
+    let y_seg_idx = seg_idx / me_segments_column_count;
+    let x_seg_idx = seg_idx - y_seg_idx * me_segments_column_count;
+    let x_b64_start = (x_seg_idx * pic_width_in_b64) / me_segments_column_count;
+    let x_b64_end = ((x_seg_idx + 1) * pic_width_in_b64) / me_segments_column_count;
+    let y_b64_start = (y_seg_idx * pic_height_in_b64) / me_segments_row_count;
+    let y_b64_end = ((y_seg_idx + 1) * pic_height_in_b64) / me_segments_row_count;
+
+    for y_b64_idx in y_b64_start..y_b64_end {
+        for x_b64_idx in x_b64_start..x_b64_end {
+            let b64_origin_x = x_b64_idx * 64;
+            let b64_origin_y = y_b64_idx * 64;
+            let buffer_index =
+                (b64_origin_y >> 2) as usize * src_plane.stride + (b64_origin_x >> 2) as usize;
+
+            let (sad, sr_center) = early_hme_b64(
+                &src_plane.data[src_plane.origin + buffer_index..],
+                src_plane.stride,
+                FULL_SAD_SEARCH,
+                (b64_origin_x as i16) >> 2,
+                (b64_origin_y as i16) >> 2,
+                16,
+                16,
+                sa_width,
+                sa_height,
+                ref_plane,
+            );
+
+            metrics.tot_dist += sad;
+            metrics.tot_cplx += u32::from(sad > (16 * 16 * 30));
+            metrics.tot_active += u32::from(sr_center.x.abs() > 0 || sr_center.y.abs() > 0);
+
+            // Row balance: the MIDDLE row is skipped (never `==`).
+            if y_b64_idx < pic_height_in_b64 / 2 {
+                if sr_center.y > 0 {
+                    metrics.sum_in_vectors -= 1;
+                } else if sr_center.y < 0 {
+                    metrics.sum_in_vectors += 1;
+                }
+            } else if y_b64_idx > pic_height_in_b64 / 2 {
+                if sr_center.y > 0 {
+                    metrics.sum_in_vectors += 1;
+                } else if sr_center.y < 0 {
+                    metrics.sum_in_vectors -= 1;
+                }
+            }
+            // Column balance: same shape, same skipped middle.
+            if x_b64_idx < pic_width_in_b64 / 2 {
+                if sr_center.x > 0 {
+                    metrics.sum_in_vectors -= 1;
+                } else if sr_center.x < 0 {
+                    metrics.sum_in_vectors += 1;
+                }
+            } else if x_b64_idx > pic_width_in_b64 / 2 {
+                if sr_center.x > 0 {
+                    metrics.sum_in_vectors += 1;
+                } else if sr_center.x < 0 {
+                    metrics.sum_in_vectors -= 1;
+                }
+            }
+        }
+    }
+    metrics.seg_completed += 1;
+}
+
+/// The per-pair result `early_hme` leaves on the picture-decision context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct EarlyHmeResult {
+    /// C `ctx->mv_in_out_count`.
+    pub mv_in_out_count: i16,
+    /// C `ctx->norm_dist`.
+    pub norm_dist: u64,
+    /// C `ctx->perc_cplx`.
+    pub perc_cplx: u8,
+    /// C `ctx->perc_active`.
+    pub perc_active: u8,
+}
+
+/// C `early_hme`'s reduction (`pd_process.c:669-684`) — static.
+///
+/// Turns the accumulated [`DgDetectorMetrics`] into the four per-pair numbers
+/// `calc_mini_gop_activity` consumes. The segment dispatch around it is
+/// threading this port replaces; the caller runs
+/// [`dg_detector_hme_level0`] over its segments and passes the totals.
+///
+/// Trap: the block counts here use a HARDCODED 64
+/// (`(aligned_width + 63) / 64`), not `scs->b64_size` as
+/// `dg_detector_hme_level0` does. The two agree at the default b64_size of 64
+/// and would not at 128 — reproduced rather than unified.
+#[must_use]
+pub fn early_hme_reduce(
+    metrics: &DgDetectorMetrics,
+    aligned_width: u32,
+    aligned_height: u32,
+) -> EarlyHmeResult {
+    let pic_width_in_b64 = aligned_width.div_ceil(64);
+    let pic_height_in_b64 = aligned_height.div_ceil(64);
+    let blocks = i64::from(pic_height_in_b64 * pic_width_in_b64);
+    EarlyHmeResult {
+        mv_in_out_count: (i64::from(metrics.sum_in_vectors) * 100 / blocks) as i16,
+        norm_dist: metrics.tot_dist / (blocks as u64),
+        perc_cplx: ((u64::from(metrics.tot_cplx) * 100) / blocks as u64) as u8,
+        perc_active: ((u64::from(metrics.tot_active) * 100) / blocks as u64) as u8,
+    }
+}
+
+/// C `calc_mini_gop_activity` (`pd_process.c:686-712`) — static.
+///
+/// The 6L-vs-5L split decision. Returns `true` when the top layer should be
+/// re-activated (i.e. SPLIT into the two sub layers); the caller then sets
+/// `activity[top] = true` and `activity[sub0] = activity[sub1] = false`.
+///
+/// Traps:
+/// * `bias` is 25 when the previous mini-GOP in this GOP was 5L and this is
+///   not the first mini-GOP, else 75 — a hysteresis toward staying at 6L.
+/// * `top_layer_mv_in_out_count` is `(void)`-cast UNUSED in C. It is accepted
+///   here for call-site fidelity and deliberately not read.
+/// * the CALL SITE passes the two sub-layer mv counts in the order
+///   (end-mid, mid-start) into parameters named `..._count1` and `..._count2`,
+///   so `count1` belongs to `sub_layer_idx1` and `count2` to `sub_layer_idx0`
+///   — the names are inverted relative to the indices. `cond3` takes a MIN and
+///   a MAX so the order does not change the result, which is presumably why it
+///   was never noticed.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn calc_mini_gop_activity(
+    mini_gop_cnt_per_gop: u32,
+    previous_mini_gop_hierarchical_levels: u32,
+    top_layer_dist: u64,
+    top_layer_perc_active: u8,
+    top_layer_perc_cplx: u8,
+    sub_layer_dist0: u64,
+    sub_layer0_perc_active: u8,
+    sub_layer0_perc_cplx: u8,
+    sub_layer_dist1: u64,
+    sub_layer1_perc_active: u8,
+    sub_layer1_perc_cplx: u8,
+    _top_layer_mv_in_out_count: i16,
+    sub_layer_mv_in_out_count1: i16,
+    sub_layer_mv_in_out_count2: i16,
+) -> bool {
+    let bias: u64 = if mini_gop_cnt_per_gop > 1 && previous_mini_gop_hierarchical_levels == 5 {
+        25
+    } else {
+        75
+    };
+
+    let cond1 = top_layer_perc_active >= 95
+        && !(sub_layer0_perc_active >= 95 && sub_layer1_perc_active < 75)
+        && !(sub_layer0_perc_active < 75 && sub_layer1_perc_active >= 95);
+    let cond2 = top_layer_dist > LOW_DIST_TH
+        && sub_layer_dist0 < HIGH_DIST_TH
+        && sub_layer_dist1 < HIGH_DIST_TH
+        && top_layer_perc_cplx > 0
+        && sub_layer0_perc_cplx < 25
+        && sub_layer1_perc_cplx < 25
+        && ((sub_layer_dist0 + sub_layer_dist1) / 2) < ((bias * top_layer_dist) / 100);
+    let cond3 = sub_layer_mv_in_out_count1.min(sub_layer_mv_in_out_count2) > 40
+        && sub_layer_mv_in_out_count1.max(sub_layer_mv_in_out_count2) > 55;
+
+    cond1 && (cond2 || cond3)
+}
+
+/// C `eval_sub_mini_gop` (`pd_process.c:713-758`) — static.
+///
+/// Runs three `early_hme` passes — (end, start), (end, mid), (mid, start) —
+/// and commits the split. The caller supplies the three reductions because the
+/// HME itself needs picture buffers; this is the decision half.
+///
+/// Argument-order trap, and it is the reason this wrapper exists at all: the
+/// C call maps `(end,start)` to the TOP layer, `(mid,start)` to sub layer 0
+/// and `(end,mid)` to sub layer 1 — NOT in the order the three passes are run.
+/// Getting that mapping wrong silently swaps the two sub layers' statistics.
+#[must_use]
+pub fn eval_sub_mini_gop(
+    mini_gop_cnt_per_gop: u32,
+    previous_mini_gop_hierarchical_levels: u32,
+    end_start: EarlyHmeResult,
+    end_mid: EarlyHmeResult,
+    mid_start: EarlyHmeResult,
+) -> bool {
+    calc_mini_gop_activity(
+        mini_gop_cnt_per_gop,
+        previous_mini_gop_hierarchical_levels,
+        // top layer <- (end, start)
+        end_start.norm_dist,
+        end_start.perc_active,
+        end_start.perc_cplx,
+        // sub layer 0 <- (mid, start)
+        mid_start.norm_dist,
+        mid_start.perc_active,
+        mid_start.perc_cplx,
+        // sub layer 1 <- (end, mid)
+        end_mid.norm_dist,
+        end_mid.perc_active,
+        end_mid.perc_cplx,
+        end_start.mv_in_out_count,
+        end_mid.mv_in_out_count,
+        mid_start.mv_in_out_count,
+    )
+}
+
+/// Apply [`eval_sub_mini_gop`]'s verdict to the activity array, as C does at
+/// `pd_process.c:707-711`.
+pub fn commit_sub_mini_gop_split(
+    map: &mut MiniGopMap,
+    split: bool,
+    top_layer_idx: usize,
+    sub_layer_idx0: usize,
+    sub_layer_idx1: usize,
+) {
+    if split {
+        map.activity[top_layer_idx] = true;
+        map.activity[sub_layer_idx0] = false;
+        map.activity[sub_layer_idx1] = false;
+    }
+}

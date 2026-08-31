@@ -2072,3 +2072,255 @@ fn traced_perform_scene_change_detection_arms() {
     assert!(o.cra_flag, "an incoming cra_flag survives");
     assert_eq!(o.transition_detected, -1);
 }
+
+// ---------------------------------------------------------------------------
+// Dynamic-GOP split decision — tier 4 (the HME half is tier 1, see
+// c_parity_picstruct_dg.rs)
+// ---------------------------------------------------------------------------
+
+/// `early_hme`'s reduction (`pd_process.c:669-684`).
+///
+/// Derivation, and the trap: the block counts here use a HARDCODED 64
+/// (`(aligned_width + 63) / 64`), while `dg_detector_hme_level0` divides by
+/// `scs->b64_size`. The two agree at the default b64_size of 64 and would not
+/// at 128 — reproduced rather than unified.
+#[test]
+fn traced_early_hme_reduce() {
+    let m = pp::DgDetectorMetrics {
+        tot_dist: 40_000,
+        tot_cplx: 5,
+        tot_active: 15,
+        sum_in_vectors: -10,
+        seg_completed: 1,
+    };
+    // 320x192 -> 5 x 3 = 20 blocks (192/64 = 3 exactly, 320/64 = 5).
+    let r = pp::early_hme_reduce(&m, 320, 192);
+    assert_eq!(r.norm_dist, 40_000 / 15);
+    assert_eq!(u32::from(r.perc_cplx), (5u32 * 100) / 15);
+    assert_eq!(u32::from(r.perc_active), (15u32 * 100) / 15);
+    assert_eq!(i32::from(r.mv_in_out_count), (-10i32 * 100) / 15);
+
+    // A partial block row/column rounds UP: 65x65 is 2x2 blocks, not 1x1.
+    let r = pp::early_hme_reduce(&m, 65, 65);
+    assert_eq!(r.norm_dist, 40_000 / 4);
+
+    // sum_in_vectors is signed, and the percentage keeps its sign.
+    let neg = pp::DgDetectorMetrics {
+        sum_in_vectors: -400,
+        ..m
+    };
+    assert!(pp::early_hme_reduce(&neg, 640, 640).mv_in_out_count < 0);
+}
+
+/// `calc_mini_gop_activity` (`pd_process.c:686-712`) — the split predicate.
+///
+/// Derivation of the three conditions:
+/// * `cond1` requires the TOP layer to be ≥ 95 % active AND rules out the two
+///   lopsided sub-layer combinations (one ≥ 95 while the other < 75). It gates
+///   everything: without it neither `cond2` nor `cond3` can fire.
+/// * `cond2` is the distortion test, and its `bias` is 25 when the previous
+///   mini-GOP in this GOP was 5L and this is not the first mini-GOP, else 75 —
+///   a hysteresis toward staying at 6L.
+/// * `cond3` is the motion test: MIN of the two sub-layer counts > 40 AND MAX
+///   > 55.
+#[test]
+fn traced_calc_mini_gop_activity_conditions() {
+    // A baseline that satisfies cond1 and cond2 with bias 75.
+    let base = |bias_prev_5l: bool| {
+        pp::calc_mini_gop_activity(
+            if bias_prev_5l { 2 } else { 0 },
+            if bias_prev_5l { 5 } else { 4 },
+            10_000, // top dist, > LOW_DIST_TH
+            95,     // top active
+            10,     // top cplx, > 0
+            1_000,  // sub0 dist, < HIGH_DIST_TH
+            95,     // sub0 active
+            10,     // sub0 cplx, < 25
+            1_000,  // sub1 dist
+            95,     // sub1 active
+            10,     // sub1 cplx
+            0,      // top mv count (UNUSED in C)
+            0,      // sub mv count 1
+            0,      // sub mv count 2
+        )
+    };
+    // bias 75: (1000 + 1000)/2 = 1000 < (75 * 10000)/100 = 7500 -> splits.
+    assert!(base(false));
+    // bias 25: 1000 < (25 * 10000)/100 = 2500 -> still splits.
+    assert!(base(true));
+
+    // Raise the sub-layer distortion so bias 75 passes and bias 25 does not.
+    // The value must stay UNDER HIGH_DIST_TH (16*16*18 = 4608) or cond2 fails
+    // for a different reason — my first attempt used 5000 and failed on
+    // exactly that, which is why the number is spelled out here.
+    // (4000 + 4000)/2 = 4000; 75% of 10000 is 7500, 25% is 2500.
+    let with_dist = |bias_prev_5l: bool| {
+        pp::calc_mini_gop_activity(
+            if bias_prev_5l { 2 } else { 0 },
+            if bias_prev_5l { 5 } else { 4 },
+            10_000,
+            95,
+            10,
+            4_000,
+            95,
+            10,
+            4_000,
+            95,
+            10,
+            0,
+            0,
+            0,
+        )
+    };
+    assert!(with_dist(false), "bias 75 admits the split");
+    assert!(
+        !with_dist(true),
+        "bias 25 is the hysteresis toward staying at 6L"
+    );
+
+    // cond1 gates everything: drop the top-layer activity below 95.
+    assert!(!pp::calc_mini_gop_activity(
+        0, 4, 10_000, 94, 10, 1_000, 95, 10, 1_000, 95, 10, 0, 0, 0
+    ));
+    // The lopsided sub-layer cases: (>=95, <75) and (<75, >=95).
+    assert!(!pp::calc_mini_gop_activity(
+        0, 4, 10_000, 95, 10, 1_000, 95, 10, 1_000, 74, 10, 0, 0, 0
+    ));
+    assert!(!pp::calc_mini_gop_activity(
+        0, 4, 10_000, 95, 10, 1_000, 74, 10, 1_000, 95, 10, 0, 0, 0
+    ));
+
+    // cond3 alone: cond2 fails (top cplx 0) but the motion test carries it.
+    assert!(pp::calc_mini_gop_activity(
+        0, 4, 10_000, 95, 0, 1_000, 95, 10, 1_000, 95, 10, 0, 41, 56
+    ));
+    // MIN must exceed 40 AND MAX must exceed 55 — 41/55 fails on the MAX.
+    assert!(!pp::calc_mini_gop_activity(
+        0, 4, 10_000, 95, 0, 1_000, 95, 10, 1_000, 95, 10, 0, 41, 55
+    ));
+    // 40/56 fails on the MIN.
+    assert!(!pp::calc_mini_gop_activity(
+        0, 4, 10_000, 95, 0, 1_000, 95, 10, 1_000, 95, 10, 0, 40, 56
+    ));
+
+    // The top-layer mv count is (void)-cast unused in C: changing it alone
+    // must change nothing.
+    let a =
+        pp::calc_mini_gop_activity(0, 4, 10_000, 95, 0, 1_000, 95, 10, 1_000, 95, 10, 0, 41, 56);
+    let b = pp::calc_mini_gop_activity(
+        0, 4, 10_000, 95, 0, 1_000, 95, 10, 1_000, 95, 10, 32_767, 41, 56,
+    );
+    assert_eq!(a, b, "top_layer_mv_in_out_count is unused");
+
+    // HIGH_DIST_TH / LOW_DIST_TH are exclusive bounds.
+    assert!(
+        !pp::calc_mini_gop_activity(
+            0,
+            4,
+            pp::LOW_DIST_TH,
+            95,
+            10,
+            1_000,
+            95,
+            10,
+            1_000,
+            95,
+            10,
+            0,
+            0,
+            0
+        ),
+        "top_layer_dist must be strictly greater than LOW_DIST_TH"
+    );
+    assert!(
+        !pp::calc_mini_gop_activity(
+            0,
+            4,
+            10_000,
+            95,
+            10,
+            pp::HIGH_DIST_TH,
+            95,
+            10,
+            1_000,
+            95,
+            10,
+            0,
+            0,
+            0
+        ),
+        "sub_layer_dist0 must be strictly less than HIGH_DIST_TH"
+    );
+}
+
+/// `eval_sub_mini_gop` (`pd_process.c:713-758`) — the pass-to-layer mapping.
+///
+/// The three `early_hme` passes run in the order (end,start), (end,mid),
+/// (mid,start), and are handed to `calc_mini_gop_activity` as
+/// TOP=(end,start), SUB0=(mid,start), SUB1=(end,mid) — NOT in run order.
+///
+/// **A finding, and it explains a C oddity.** `calc_mini_gop_activity` is
+/// FULLY SYMMETRIC in its two sub layers: the distortion enters as
+/// `(d0 + d1) / 2`, the two activity guards are mirror images, the two
+/// complexity guards are identical, and cond3 takes a MIN and a MAX. So
+/// swapping SUB0 and SUB1 can never change the verdict — which is why C's call
+/// site can pass `sub_layer_mv_in_out_count1` the (end,mid) value and
+/// `..._count2` the (mid,start) value, inverted relative to the layer indices
+/// they are named after, without anyone noticing. What DOES matter is the
+/// TOP-vs-SUB assignment, and that is asserted below.
+#[test]
+fn traced_eval_sub_mini_gop_layer_mapping() {
+    let r = |dist: u64, active: u8, cplx: u8, mv: i16| pp::EarlyHmeResult {
+        mv_in_out_count: mv,
+        norm_dist: dist,
+        perc_cplx: cplx,
+        perc_active: active,
+    };
+    let end_start = r(10_000, 95, 10, 10);
+    let end_mid = r(4_000, 95, 10, 20);
+    let mid_start = r(1_000, 95, 10, 30);
+
+    // Sub-layer symmetry: swapping the two sub inputs is inert.
+    assert_eq!(
+        pp::eval_sub_mini_gop(0, 4, end_start, end_mid, mid_start),
+        pp::eval_sub_mini_gop(0, 4, end_start, mid_start, end_mid),
+        "calc_mini_gop_activity is symmetric in its two sub layers"
+    );
+
+    // TOP-vs-SUB is NOT symmetric. With (end,start) as the top layer the
+    // distortion test passes: (1000 + 4000)/2 = 2500 < 75% of 10000.
+    assert!(pp::eval_sub_mini_gop(0, 4, end_start, end_mid, mid_start));
+    // Promote (mid,start) to the top layer instead and it fails: the top
+    // distortion is now 1000, and (10000 + 4000)/2 = 7000 is not < 750 — and
+    // 10000 also exceeds HIGH_DIST_TH as a sub layer.
+    assert!(!pp::eval_sub_mini_gop(0, 4, mid_start, end_mid, end_start));
+}
+
+/// `commit_sub_mini_gop_split` (`pd_process.c:707-711`) — the array write.
+#[test]
+fn traced_commit_sub_mini_gop_split() {
+    let mut map = pp::MiniGopMap::for_sequence(5);
+    map.activity[pp::L6_INDEX] = false;
+    map.activity[pp::L5_0_INDEX] = true;
+    map.activity[pp::L5_1_INDEX] = true;
+    pp::commit_sub_mini_gop_split(&mut map, true, pp::L6_INDEX, pp::L5_0_INDEX, pp::L5_1_INDEX);
+    assert!(
+        map.activity[pp::L6_INDEX],
+        "the 6L shape becomes ACTIVE (to be split)"
+    );
+    assert!(!map.activity[pp::L5_0_INDEX] && !map.activity[pp::L5_1_INDEX]);
+
+    // A false verdict writes NOTHING — C's whole block is inside the `if`.
+    let mut map = pp::MiniGopMap::for_sequence(5);
+    map.activity[pp::L6_INDEX] = false;
+    map.activity[pp::L5_0_INDEX] = true;
+    pp::commit_sub_mini_gop_split(
+        &mut map,
+        false,
+        pp::L6_INDEX,
+        pp::L5_0_INDEX,
+        pp::L5_1_INDEX,
+    );
+    assert!(!map.activity[pp::L6_INDEX]);
+    assert!(map.activity[pp::L5_0_INDEX]);
+}

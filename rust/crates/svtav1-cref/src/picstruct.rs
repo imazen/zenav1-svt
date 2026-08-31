@@ -512,3 +512,120 @@ pub fn set_all_ref_frame_type(slice_type: u8, l0_try: u8, l1_try: u8) -> Option<
         None
     }
 }
+
+unsafe extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn ref_dg_detector_hme_level0(
+        src_data: *mut u8,
+        src_origin: u32,
+        src_stride: u32,
+        src_w: u16,
+        src_h: u16,
+        src_border: u16,
+        ref_data: *mut u8,
+        ref_origin: u32,
+        ref_stride: u32,
+        ref_w: u16,
+        ref_h: u16,
+        ref_border: u16,
+        input_resolution: u8,
+        aligned_width: u32,
+        aligned_height: u32,
+        b64_size: u16,
+        seg_idx: u32,
+        seg_cols: u32,
+        seg_rows: u32,
+        out_tot_dist: *mut u64,
+        out_tot_cplx: *mut u32,
+        out_tot_active: *mut u32,
+        out_sum_in_vectors: *mut i32,
+        out_seg_completed: *mut u16,
+    );
+}
+
+/// One padded downsampled plane, as the dynamic-GOP detector reads it.
+///
+/// `origin` is the index of pixel (0, 0) inside `data`; the search reads
+/// negative offsets from there, so `data` must extend `border` pixels in every
+/// direction.
+#[derive(Debug)]
+pub struct DgPlane<'a> {
+    /// The whole padded allocation.
+    pub data: &'a mut [u8],
+    /// Index of pixel (0, 0).
+    pub origin: u32,
+    /// Row stride.
+    pub stride: u32,
+    /// Un-padded width.
+    pub width: u16,
+    /// Un-padded height.
+    pub height: u16,
+    /// Padding on each side.
+    pub border: u16,
+}
+
+/// C `DGDetectorMetrics` after one `dg_detector_hme_level0` segment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DgMetrics {
+    /// C `tot_dist`.
+    pub tot_dist: u64,
+    /// C `tot_cplx`.
+    pub tot_cplx: u32,
+    /// C `tot_active`.
+    pub tot_active: u32,
+    /// C `sum_in_vectors`.
+    pub sum_in_vectors: i32,
+    /// C `seg_completed`.
+    pub seg_completed: u16,
+}
+
+/// C `dg_detector_hme_level0` (`pd_process.c:532-629`).
+///
+/// Builds the whole `pa_ref_pic_wrapper` / `EbPaReferenceObject` /
+/// `DGDetectorSeg` chain the callee walks, with a REAL mutex and semaphore
+/// (it takes the one and posts the other), runs one segment, and returns the
+/// accumulated metrics.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn dg_detector_hme_level0(
+    src: &mut DgPlane<'_>,
+    reference: &mut DgPlane<'_>,
+    input_resolution: u8,
+    aligned_width: u32,
+    aligned_height: u32,
+    b64_size: u16,
+    seg_idx: u32,
+    seg_cols: u32,
+    seg_rows: u32,
+) -> DgMetrics {
+    let mut m = DgMetrics::default();
+    unsafe {
+        ref_dg_detector_hme_level0(
+            src.data.as_mut_ptr(),
+            src.origin,
+            src.stride,
+            src.width,
+            src.height,
+            src.border,
+            reference.data.as_mut_ptr(),
+            reference.origin,
+            reference.stride,
+            reference.width,
+            reference.height,
+            reference.border,
+            input_resolution,
+            aligned_width,
+            aligned_height,
+            b64_size,
+            seg_idx,
+            seg_cols,
+            seg_rows,
+            &mut m.tot_dist,
+            &mut m.tot_cplx,
+            &mut m.tot_active,
+            &mut m.sum_in_vectors,
+            &mut m.seg_completed,
+        );
+    }
+    m
+}
