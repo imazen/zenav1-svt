@@ -479,3 +479,472 @@ pub fn check_00_center(
     };
     (r, x, y)
 }
+
+// ---------------------------------------------------------------------------
+// av1me.c — the OBMC search and the four C_DEFAULT kernels it drives.
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn ref_obmc_kernel(
+        which: i32,
+        width: i32,
+        height: i32,
+        pre: *const u8,
+        pre_stride: i32,
+        xoffset: i32,
+        yoffset: i32,
+        wsrc: *const i32,
+        mask: *const i32,
+        sse: *mut u32,
+    ) -> u32;
+    #[allow(clippy::too_many_arguments)]
+    fn ref_upsampled_pred(
+        comp_pred: *mut u8,
+        width: i32,
+        height: i32,
+        subpel_x_q3: i32,
+        subpel_y_q3: i32,
+        ref_alloc: *const u8,
+        ref_base: i32,
+        ref_stride: i32,
+        subpel_search: i32,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn ref_me_convolve8_horiz(
+        src_alloc: *const u8,
+        src_base: i32,
+        src_stride: i32,
+        dst: *mut u8,
+        dst_stride: i32,
+        kernel: *const i16,
+        w: i32,
+        h: i32,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn ref_me_convolve8_vert(
+        src_alloc: *const u8,
+        src_base: i32,
+        src_stride: i32,
+        dst: *mut u8,
+        dst_stride: i32,
+        kernel: *const i16,
+        w: i32,
+        h: i32,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn ref_obmc_full_pixel_search(
+        pre_alloc: *const u8,
+        pre_base: i32,
+        pre_stride: i32,
+        wsrc: *mut i32,
+        mask: *mut i32,
+        bsize: i32,
+        mvp_x: i32,
+        mvp_y: i32,
+        sadpb: i32,
+        ref_mv_x: i32,
+        ref_mv_y: i32,
+        col_min: i32,
+        col_max: i32,
+        row_min: i32,
+        row_max: i32,
+        mv_joint: *const i32,
+        mv_cost0: *const i32,
+        mv_cost1: *const i32,
+        errorperbit: i32,
+        approx_inter_rate: i32,
+        fpel_range: i32,
+        fpel_diag: i32,
+        out_x: *mut i32,
+        out_y: *mut i32,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn ref_obmc_sub_pixel_tree_up(
+        pre_alloc: *const u8,
+        pre_base: i32,
+        pre_stride: i32,
+        wsrc: *mut i32,
+        mask: *mut i32,
+        bsize: i32,
+        best_x: i32,
+        best_y: i32,
+        ref_mv_x: i32,
+        ref_mv_y: i32,
+        allow_hp: i32,
+        errorperbit: i32,
+        forced_stop: i32,
+        iters_per_step: i32,
+        col_min: i32,
+        col_max: i32,
+        row_min: i32,
+        row_max: i32,
+        mv_joint: *const i32,
+        mv_cost0: *const i32,
+        mv_cost1: *const i32,
+        approx_inter_rate: i32,
+        use_accurate_subpel_search: i32,
+        out_x: *mut i32,
+        out_y: *mut i32,
+        out_distortion: *mut i32,
+        out_sse: *mut u32,
+    ) -> u32;
+}
+
+/// The MV cost tables C reads through `x->nmv_vec_cost` / `x->mv_cost_stack`.
+/// `comp[i]` is indexed from `MV_MAX` in C, so each half must be
+/// `2 * MV_MAX + 1` entries long.
+pub struct RefMvCost<'a> {
+    /// C `x->nmv_vec_cost` — 4 joint costs.
+    pub joint: &'a [i32; 4],
+    /// C `x->mv_cost_stack[0]` before the `+ MV_MAX` bias.
+    pub comp0: &'a [i32],
+    /// C `x->mv_cost_stack[1]` before the `+ MV_MAX` bias.
+    pub comp1: &'a [i32],
+}
+
+/// C `svt_aom_obmc_sadWxH_c` (C_DEFAULT/sad_av1.c). Panics on a size the shim
+/// does not instantiate rather than returning a sentinel nobody checks.
+pub fn obmc_sad(
+    pre: &[u8],
+    pre_stride: usize,
+    wsrc: &[i32],
+    mask: &[i32],
+    w: usize,
+    h: usize,
+) -> u32 {
+    let mut sse = 0u32;
+    let r = unsafe {
+        ref_obmc_kernel(
+            0,
+            w as i32,
+            h as i32,
+            pre.as_ptr(),
+            pre_stride as i32,
+            0,
+            0,
+            wsrc.as_ptr(),
+            mask.as_ptr(),
+            &mut sse,
+        )
+    };
+    assert_ne!(r, u32::MAX, "the C shim has no obmc_sad{w}x{h}");
+    r
+}
+
+/// C `svt_aom_obmc_varianceWxH_c` (C_DEFAULT/variance.c). Returns
+/// `(return_value, sse)`.
+pub fn obmc_variance(
+    pre: &[u8],
+    pre_stride: usize,
+    wsrc: &[i32],
+    mask: &[i32],
+    w: usize,
+    h: usize,
+) -> (u32, u32) {
+    let mut sse = 0u32;
+    let r = unsafe {
+        ref_obmc_kernel(
+            1,
+            w as i32,
+            h as i32,
+            pre.as_ptr(),
+            pre_stride as i32,
+            0,
+            0,
+            wsrc.as_ptr(),
+            mask.as_ptr(),
+            &mut sse,
+        )
+    };
+    assert_ne!(r, u32::MAX, "the C shim has no obmc_variance{w}x{h}");
+    (r, sse)
+}
+
+/// C `svt_aom_obmc_sub_pixel_varianceWxH_c` (C_DEFAULT/variance.c). Returns
+/// `(return_value, sse)`.
+#[allow(clippy::too_many_arguments)]
+pub fn obmc_sub_pixel_variance(
+    pre: &[u8],
+    pre_stride: usize,
+    xoffset: usize,
+    yoffset: usize,
+    wsrc: &[i32],
+    mask: &[i32],
+    w: usize,
+    h: usize,
+) -> (u32, u32) {
+    let mut sse = 0u32;
+    let r = unsafe {
+        ref_obmc_kernel(
+            2,
+            w as i32,
+            h as i32,
+            pre.as_ptr(),
+            pre_stride as i32,
+            xoffset as i32,
+            yoffset as i32,
+            wsrc.as_ptr(),
+            mask.as_ptr(),
+            &mut sse,
+        )
+    };
+    assert_ne!(
+        r,
+        u32::MAX,
+        "the C shim has no obmc_sub_pixel_variance{w}x{h}"
+    );
+    (r, sse)
+}
+
+/// C `svt_aom_upsampled_pred_c` (C_DEFAULT/variance.c:88).
+#[allow(clippy::too_many_arguments)]
+pub fn upsampled_pred(
+    comp_pred: &mut [u8],
+    width: usize,
+    height: usize,
+    subpel_x_q3: i32,
+    subpel_y_q3: i32,
+    ref_alloc: &[u8],
+    ref_base: i64,
+    ref_stride: usize,
+    subpel_search: i32,
+) {
+    unsafe {
+        ref_upsampled_pred(
+            comp_pred.as_mut_ptr(),
+            width as i32,
+            height as i32,
+            subpel_x_q3,
+            subpel_y_q3,
+            ref_alloc.as_ptr(),
+            ref_base as i32,
+            ref_stride as i32,
+            subpel_search,
+        );
+    }
+}
+
+/// C `svt_aom_convolve8_horiz_c` (convolve.c:288).
+#[allow(clippy::too_many_arguments)]
+pub fn convolve8_horiz(
+    src_alloc: &[u8],
+    src_base: i64,
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    kernel: &[i16; 8],
+    w: usize,
+    h: usize,
+) {
+    unsafe {
+        ref_me_convolve8_horiz(
+            src_alloc.as_ptr(),
+            src_base as i32,
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            kernel.as_ptr(),
+            w as i32,
+            h as i32,
+        );
+    }
+}
+
+/// C `svt_aom_convolve8_vert_c` (convolve.c:300).
+#[allow(clippy::too_many_arguments)]
+pub fn convolve8_vert(
+    src_alloc: &[u8],
+    src_base: i64,
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    kernel: &[i16; 8],
+    w: usize,
+    h: usize,
+) {
+    unsafe {
+        ref_me_convolve8_vert(
+            src_alloc.as_ptr(),
+            src_base as i32,
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            kernel.as_ptr(),
+            w as i32,
+            h as i32,
+        );
+    }
+}
+
+/// The full-pel limits C keeps in `x->mv_limits`.
+#[derive(Clone, Copy, Debug)]
+pub struct RefMvLimits {
+    /// C `col_min`.
+    pub col_min: i32,
+    /// C `col_max`.
+    pub col_max: i32,
+    /// C `row_min`.
+    pub row_min: i32,
+    /// C `row_max`.
+    pub row_max: i32,
+}
+
+/// C `svt_av1_obmc_full_pixel_search` (av1me.c:673). Returns
+/// `(cost, dst_mv_x, dst_mv_y)` with the MV in FULL-PEL.
+#[allow(clippy::too_many_arguments)]
+pub fn obmc_full_pixel_search(
+    pre_alloc: &[u8],
+    pre_base: i64,
+    pre_stride: usize,
+    wsrc: &mut [i32],
+    mask: &mut [i32],
+    bsize: i32,
+    mvp: (i32, i32),
+    sadpb: i32,
+    ref_mv: (i32, i32),
+    limits: RefMvLimits,
+    cost: &RefMvCost,
+    errorperbit: i32,
+    approx_inter_rate: bool,
+    fpel_range: i32,
+    fpel_diag: bool,
+) -> (i32, i32, i32) {
+    let mut ox = 0i32;
+    let mut oy = 0i32;
+    let r = unsafe {
+        ref_obmc_full_pixel_search(
+            pre_alloc.as_ptr(),
+            pre_base as i32,
+            pre_stride as i32,
+            wsrc.as_mut_ptr(),
+            mask.as_mut_ptr(),
+            bsize,
+            mvp.0,
+            mvp.1,
+            sadpb,
+            ref_mv.0,
+            ref_mv.1,
+            limits.col_min,
+            limits.col_max,
+            limits.row_min,
+            limits.row_max,
+            cost.joint.as_ptr(),
+            cost.comp0.as_ptr(),
+            cost.comp1.as_ptr(),
+            errorperbit,
+            i32::from(approx_inter_rate),
+            fpel_range,
+            i32::from(fpel_diag),
+            &mut ox,
+            &mut oy,
+        )
+    };
+    (r, ox, oy)
+}
+
+/// C `svt_av1_find_best_obmc_sub_pixel_tree_up` (av1me.c:878). Returns
+/// `(besterr, mv_x, mv_y, distortion, sse)` with the MV in EIGHTH-PEL.
+#[allow(clippy::too_many_arguments)]
+pub fn obmc_sub_pixel_tree_up(
+    pre_alloc: &[u8],
+    pre_base: i64,
+    pre_stride: usize,
+    wsrc: &mut [i32],
+    mask: &mut [i32],
+    bsize: i32,
+    best_mv: (i32, i32),
+    ref_mv: (i32, i32),
+    allow_hp: bool,
+    errorperbit: i32,
+    forced_stop: i32,
+    iters_per_step: i32,
+    limits: RefMvLimits,
+    cost: &RefMvCost,
+    approx_inter_rate: bool,
+    use_accurate_subpel_search: i32,
+) -> (u32, i32, i32, i32, u32) {
+    let mut ox = 0i32;
+    let mut oy = 0i32;
+    let mut dis = 0i32;
+    let mut sse = 0u32;
+    let r = unsafe {
+        ref_obmc_sub_pixel_tree_up(
+            pre_alloc.as_ptr(),
+            pre_base as i32,
+            pre_stride as i32,
+            wsrc.as_mut_ptr(),
+            mask.as_mut_ptr(),
+            bsize,
+            best_mv.0,
+            best_mv.1,
+            ref_mv.0,
+            ref_mv.1,
+            i32::from(allow_hp),
+            errorperbit,
+            forced_stop,
+            iters_per_step,
+            limits.col_min,
+            limits.col_max,
+            limits.row_min,
+            limits.row_max,
+            cost.joint.as_ptr(),
+            cost.comp0.as_ptr(),
+            cost.comp1.as_ptr(),
+            i32::from(approx_inter_rate),
+            use_accurate_subpel_search,
+            &mut ox,
+            &mut oy,
+            &mut dis,
+            &mut sse,
+        )
+    };
+    (r, ox, oy, dis, sse)
+}
+
+unsafe extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn ref_obmc_kernel_rtcd(
+        which: i32,
+        bsize: i32,
+        pre: *const u8,
+        pre_stride: i32,
+        xoffset: i32,
+        yoffset: i32,
+        wsrc: *const i32,
+        mask: *const i32,
+        sse: *mut u32,
+    ) -> u32;
+}
+
+/// The RTCD-dispatched OBMC kernel for `bsize` — whatever SIMD tier this host
+/// selects, i.e. what `svt_av1_find_best_obmc_sub_pixel_tree_up` actually
+/// calls. `which`: 0 = `osdf`, 1 = `ovf`, 2 = `osvf`. Returns
+/// `(return_value, sse)`.
+#[allow(clippy::too_many_arguments)]
+pub fn obmc_kernel_rtcd(
+    which: i32,
+    bsize: i32,
+    pre: &[u8],
+    pre_stride: usize,
+    xoffset: usize,
+    yoffset: usize,
+    wsrc: &[i32],
+    mask: &[i32],
+) -> (u32, u32) {
+    let mut sse = 0u32;
+    let r = unsafe {
+        ref_obmc_kernel_rtcd(
+            which,
+            bsize,
+            pre.as_ptr(),
+            pre_stride as i32,
+            xoffset as i32,
+            yoffset as i32,
+            wsrc.as_ptr(),
+            mask.as_ptr(),
+            &mut sse,
+        )
+    };
+    (r, sse)
+}

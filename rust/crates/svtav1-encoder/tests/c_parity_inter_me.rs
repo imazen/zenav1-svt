@@ -19,6 +19,10 @@
 //! the linker can reach agrees, and the search that composes them is only
 //! hand-traced".
 
+// `MeContext` has ~60 fields and each test sets one or two of them; spelling
+// `..Default::default()` at that size buries the one line that matters.
+#![allow(clippy::field_reassign_with_default)]
+
 use svtav1_cref::inter_me as cref;
 use svtav1_encoder::inter_me::context::{
     FULL_SAD_SEARCH, MeContext, MeSrcBufs, Plane, SUB_SAD_SEARCH,

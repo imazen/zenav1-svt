@@ -421,6 +421,51 @@ row, no write) instead of `write_tx_type_inter`. Real writers never set it.
 Unit witness `md_side_ibc_tx_type_update_adapts_the_intra_dc_row_like_c`;
 after the fix all 57 MDS1 costs at that block equal C's.
 
+## 11. Every NEON `obmc_sub_pixel_variance` above 4x8 is the 4x8 kernel
+
+**Status: AVOIDED (the port transcribes the `_c` kernel, which is correct) —
+and it makes the C BINARY a non-oracle for one branch on aarch64.**
+
+`Source/Lib/Codec/aom_dsp_rtcd.c:731-750` wires **every**
+`svt_aom_obmc_sub_pixel_variance` size from `4x16` through `128x128` to
+`svt_aom_obmc_sub_pixel_variance4x8_neon`:
+
+```c
+SET_NEON(svt_aom_obmc_sub_pixel_variance4x16, ..._c, svt_aom_obmc_sub_pixel_variance4x8_neon);
+SET_NEON(svt_aom_obmc_sub_pixel_variance8x16, ..._c, svt_aom_obmc_sub_pixel_variance4x8_neon);
+SET_NEON(svt_aom_obmc_sub_pixel_variance128x128, ..._c, svt_aom_obmc_sub_pixel_variance4x8_neon);
+```
+
+Only `4x4` and `4x8` get their own kernel. The two families immediately above
+it in the same block — `obmc_sad` (`:706-727`) and `obmc_variance` (`:752+`) —
+are wired correctly per size, which is what makes this read as a copy-paste
+slip rather than a deliberate fallback. The x86 table (`:348-369`, `SET_SSE41`)
+is correct.
+
+**MEASURED, 2026-08-31, macOS aarch64.** For `BLOCK_8X16` on random in-contract
+input (`mask` in `[0, 4096]`, `wsrc` in `[0, 255*4096]`), across all 64
+sub-pixel offsets, the RTCD kernel returns **exactly** what the `_c` **4x8**
+kernel returns on the same pointers — e.g. at offset (0,0): RTCD `236041`,
+`_c` 8x16 `960480`, `_c` 4x8 `236041`. Bit-identical to the 4x8 result at every
+cell, which is the signature of the alias rather than a rounding difference.
+
+**Reachable:** yes, on any aarch64 build with OBMC enabled.
+`svt_av1_find_best_obmc_sub_pixel_tree_up` (av1me.c:878) calls `vfp->osvf` on
+its `use_accurate_subpel_search == 0` branch, so the OBMC sub-pel MV of an
+8x16 block is chosen by a 4x8 variance. In v4.2.0 the *only* call site
+(`mode_decision.c:2148`) passes `USE_8_TAPS`, so the live encoder takes the
+upsampled branch and never reaches `osvf` — the defect is latent there, but any
+config or fork that sets `use_accurate_subpel_search = 0` walks into it.
+
+**What the port does:** `inter_me::obmc_search` transcribes the `_c` kernel, so
+it computes the size it was asked for. Consequence for testing:
+`tests/c_parity_obmc_search.rs` compares the sub-pixel tree against the C binary
+on the LIVE (`USE_8_TAPS`) path for every size, and on the `osvf` path only for
+the sizes where `obmc_osvf_dispatch_control` proves this host's dispatch is
+faithful — that control asserts, per (size, offset), either equality with `_c`
+or exact equality with the `_c` 4x8 kernel, so it FAILS the day upstream fixes
+the table and the exclusion has to be revisited.
+
 ## Harness note — `identity_diff.sh` can MIS-NAME the diverging field
 
 Not a C bug; a trap in our own differ, recorded here because it cost time on

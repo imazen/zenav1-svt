@@ -226,3 +226,246 @@ uint32_t ref_me_check_00_center(const uint8_t* b64_src, uint32_t b64_src_stride,
     free(ctx);
     return r;
 }
+
+/* ==========================================================================
+ * av1me.c — the OBMC search, and the four C_DEFAULT kernels it drives.
+ *
+ * svt_av1_obmc_full_pixel_search and svt_av1_find_best_obmc_sub_pixel_tree_up
+ * are EXPORTED, so both are called directly; the shim assembles the
+ * IntraBcContext / ModeDecisionContext shells the way mode_decision.c:2100-2170
+ * does. The kernels are compared against their `_c` spellings, not the RTCD
+ * pointers: the port transcribes the `_c` bodies, and comparing against a SIMD
+ * tier would be comparing against a different oracle.
+ * ========================================================================== */
+
+#include "md_process.h"
+
+#define DECL_OBMC(W, H)                                                                            \
+    unsigned int svt_aom_obmc_sad##W##x##H##_c(                                                    \
+        const uint8_t* ref, int ref_stride, const int32_t* wsrc, const int32_t* mask);             \
+    unsigned int svt_aom_obmc_variance##W##x##H##_c(const uint8_t* pre,                            \
+                                                    int            pre_stride,                     \
+                                                    const int32_t* wsrc,                           \
+                                                    const int32_t* mask,                           \
+                                                    unsigned int*  sse);                           \
+    unsigned int svt_aom_obmc_sub_pixel_variance##W##x##H##_c(const uint8_t* pre,                  \
+                                                              int            pre_stride,           \
+                                                              int            xoffset,              \
+                                                              int            yoffset,              \
+                                                              const int32_t* wsrc,                 \
+                                                              const int32_t* mask,                 \
+                                                              unsigned int*  sse);
+
+DECL_OBMC(4, 4)
+DECL_OBMC(4, 8)
+DECL_OBMC(8, 4)
+DECL_OBMC(8, 8)
+DECL_OBMC(8, 16)
+DECL_OBMC(16, 8)
+DECL_OBMC(16, 16)
+DECL_OBMC(16, 32)
+DECL_OBMC(32, 16)
+DECL_OBMC(32, 32)
+#undef DECL_OBMC
+
+void svt_aom_upsampled_pred_c(MacroBlockD* xd, const struct AV1Common* const cm, int mi_row, int mi_col,
+                              const Mv* const mv, uint8_t* comp_pred, int width, int height, int subpel_x_q3,
+                              int subpel_y_q3, const uint8_t* ref, int ref_stride, int subpel_search);
+void svt_aom_convolve8_horiz_c(const uint8_t* src, ptrdiff_t src_stride, uint8_t* dst, ptrdiff_t dst_stride,
+                               const int16_t* filter_x, int x_step_q4, const int16_t* filter_y, int y_step_q4, int w,
+                               int h);
+void svt_aom_convolve8_vert_c(const uint8_t* src, ptrdiff_t src_stride, uint8_t* dst, ptrdiff_t dst_stride,
+                              const int16_t* filter_x, int x_step_q4, const int16_t* filter_y, int y_step_q4, int w,
+                              int h);
+int svt_av1_obmc_full_pixel_search(ModeDecisionContext* ctx, IntraBcContext* x, const Mv* mvp_full, int sadpb,
+                                   const AomVarianceFnPtr* fn_ptr, const Mv* ref_mv, Mv* dst_mv, int is_second);
+int svt_av1_find_best_obmc_sub_pixel_tree_up(ModeDecisionContext* ctx, IntraBcContext* x,
+                                             const struct Av1Common* const cm, int mi_row, int mi_col, Mv* bestmv,
+                                             const Mv* ref_mv, int allow_hp, int error_per_bit,
+                                             const AomVarianceFnPtr* vfp, int forced_stop, int iters_per_step,
+                                             int* mvjcost, const int* mvcost[2], int* distortion, unsigned int* sse1,
+                                             int is_second, int use_accurate_subpel_search);
+void init_fn_ptr(void);
+extern AomVarianceFnPtr svt_aom_mefn_ptr[BLOCK_SIZES_ALL];
+
+static int obmc_rtcd_done = 0;
+static void obmc_ensure_init(void) {
+    if (!obmc_rtcd_done) {
+        me_ensure_rtcd();
+        init_fn_ptr();
+        obmc_rtcd_done = 1;
+    }
+}
+
+#define OBMC_CASE(W, H)                                                                  \
+    if (width == W && height == H) {                                                     \
+        switch (which) {                                                                 \
+        case 0: return svt_aom_obmc_sad##W##x##H##_c(pre, pre_stride, wsrc, mask);       \
+        case 1: return svt_aom_obmc_variance##W##x##H##_c(pre, pre_stride, wsrc, mask, sse); \
+        default:                                                                         \
+            return svt_aom_obmc_sub_pixel_variance##W##x##H##_c(                         \
+                pre, pre_stride, xoffset, yoffset, wsrc, mask, sse);                     \
+        }                                                                                \
+    }
+
+/* which: 0 = obmc_sad, 1 = obmc_variance, 2 = obmc_sub_pixel_variance.
+ * Returns UINT32_MAX with *sse untouched for an unsupported size, so the Rust
+ * side fails loudly instead of silently comparing nothing. */
+unsigned int ref_obmc_kernel(int which, int width, int height, const uint8_t* pre, int pre_stride, int xoffset,
+                             int yoffset, const int32_t* wsrc, const int32_t* mask, unsigned int* sse) {
+    OBMC_CASE(4, 4)
+    OBMC_CASE(4, 8)
+    OBMC_CASE(8, 4)
+    OBMC_CASE(8, 8)
+    OBMC_CASE(8, 16)
+    OBMC_CASE(16, 8)
+    OBMC_CASE(16, 16)
+    OBMC_CASE(16, 32)
+    OBMC_CASE(32, 16)
+    OBMC_CASE(32, 32)
+    return 0xFFFFFFFFu;
+}
+#undef OBMC_CASE
+
+void ref_upsampled_pred(uint8_t* comp_pred, int width, int height, int subpel_x_q3, int subpel_y_q3,
+                        const uint8_t* ref_alloc, int ref_base, int ref_stride, int subpel_search) {
+    Mv mv = {{0, 0}};
+    svt_aom_upsampled_pred_c(NULL, NULL, 0, 0, &mv, comp_pred, width, height, subpel_x_q3, subpel_y_q3,
+                             ref_alloc + ref_base, ref_stride, subpel_search);
+}
+
+void ref_me_convolve8_horiz(const uint8_t* src_alloc, int src_base, int src_stride, uint8_t* dst, int dst_stride,
+                         const int16_t* kernel, int w, int h) {
+    svt_aom_convolve8_horiz_c(src_alloc + src_base, src_stride, dst, dst_stride, kernel, 16, NULL, -1, w, h);
+}
+
+void ref_me_convolve8_vert(const uint8_t* src_alloc, int src_base, int src_stride, uint8_t* dst, int dst_stride,
+                        const int16_t* kernel, int w, int h) {
+    svt_aom_convolve8_vert_c(src_alloc + src_base, src_stride, dst, dst_stride, NULL, -1, kernel, 16, w, h);
+}
+
+/* Shared IntraBcContext + ModeDecisionContext assembly for the two OBMC
+ * search entry points (mode_decision.c:2100-2170). `pre_base` is the index of
+ * the reference block's (0,0) inside `pre_alloc`. */
+static void obmc_setup(IntraBcContext* x, ModeDecisionContext* mdc, BlockGeom* geom, MacroBlockD* xd,
+                       EbPictureBufferDesc* cur_buf, const int32_t** stack, const uint8_t* pre_alloc, int pre_base,
+                       int pre_stride, int32_t* wsrc, int32_t* mask, int bsize, int col_min, int col_max,
+                       int row_min, int row_max, const int32_t* mv_joint, const int32_t* mv_cost0,
+                       const int32_t* mv_cost1, int errorperbit, int approx_inter_rate, int fpel_range,
+                       int fpel_diag) {
+    memset(x, 0, sizeof(*x));
+    memset(mdc, 0, sizeof(*mdc));
+    memset(geom, 0, sizeof(*geom));
+    memset(xd, 0, sizeof(*xd));
+    memset(cur_buf, 0, sizeof(*cur_buf));
+
+    x->xdplane[0].pre[0].buf    = (uint8_t*)pre_alloc + pre_base;
+    x->xdplane[0].pre[0].stride = pre_stride;
+    x->mv_limits.col_min        = col_min;
+    x->mv_limits.col_max        = col_max;
+    x->mv_limits.row_min        = row_min;
+    x->mv_limits.row_max        = row_max;
+    x->errorperbit              = errorperbit;
+    x->approx_inter_rate        = (uint8_t)approx_inter_rate;
+    stack[0]                    = mv_cost0 + MV_MAX;
+    stack[1]                    = mv_cost1 + MV_MAX;
+    x->nmv_vec_cost             = (int*)mv_joint;
+    x->mv_cost_stack            = stack;
+    /* CONFIG_AV1_HIGHBITDEPTH is NOT defined in this tree, so
+     * upsampled_obmc_pref_error takes the plain 8-bit arm and never reads xd. */
+    x->xd                       = xd;
+
+    geom->bsize                    = (BlockSize)bsize;
+    mdc->blk_geom                  = geom;
+    mdc->wsrc_buf                  = wsrc;
+    mdc->mask_buf                  = mask;
+    mdc->approx_inter_rate         = (uint8_t)approx_inter_rate;
+    mdc->obmc_ctrls.fpel_search_range = (uint8_t)fpel_range;
+    mdc->obmc_ctrls.fpel_search_diag  = (uint8_t)fpel_diag;
+}
+
+int ref_obmc_full_pixel_search(const uint8_t* pre_alloc, int pre_base, int pre_stride, int32_t* wsrc, int32_t* mask,
+                               int bsize, int mvp_x, int mvp_y, int sadpb, int ref_mv_x, int ref_mv_y, int col_min,
+                               int col_max, int row_min, int row_max, const int32_t* mv_joint,
+                               const int32_t* mv_cost0, const int32_t* mv_cost1, int errorperbit,
+                               int approx_inter_rate, int fpel_range, int fpel_diag, int* out_x, int* out_y) {
+    obmc_ensure_init();
+    IntraBcContext       x;
+    BlockGeom            geom;
+    MacroBlockD          xd;
+    EbPictureBufferDesc  cur_buf;
+    const int32_t*       stack[2];
+    ModeDecisionContext* mdc = (ModeDecisionContext*)malloc(sizeof(*mdc));
+    obmc_setup(&x, mdc, &geom, &xd, &cur_buf, stack, pre_alloc, pre_base, pre_stride, wsrc, mask, bsize, col_min,
+               col_max, row_min, row_max, mv_joint, mv_cost0, mv_cost1, errorperbit, approx_inter_rate, fpel_range,
+               fpel_diag);
+    Mv mvp = {{(int16_t)mvp_x, (int16_t)mvp_y}};
+    Mv rmv = {{(int16_t)ref_mv_x, (int16_t)ref_mv_y}};
+    Mv dst = {{0, 0}};
+    int r  = svt_av1_obmc_full_pixel_search(mdc, &x, &mvp, sadpb, &svt_aom_mefn_ptr[bsize], &rmv, &dst, 0);
+    *out_x = dst.x;
+    *out_y = dst.y;
+    free(mdc);
+    return r;
+}
+
+unsigned int ref_obmc_sub_pixel_tree_up(const uint8_t* pre_alloc, int pre_base, int pre_stride, int32_t* wsrc,
+                                        int32_t* mask, int bsize, int best_x, int best_y, int ref_mv_x,
+                                        int ref_mv_y, int allow_hp, int errorperbit, int forced_stop,
+                                        int iters_per_step, int col_min, int col_max, int row_min, int row_max,
+                                        const int32_t* mv_joint, const int32_t* mv_cost0, const int32_t* mv_cost1,
+                                        int approx_inter_rate, int use_accurate_subpel_search, int* out_x,
+                                        int* out_y, int* out_distortion, unsigned int* out_sse) {
+    obmc_ensure_init();
+    IntraBcContext       x;
+    BlockGeom            geom;
+    MacroBlockD          xd;
+    EbPictureBufferDesc  cur_buf;
+    const int32_t*       stack[2];
+    ModeDecisionContext* mdc = (ModeDecisionContext*)malloc(sizeof(*mdc));
+    obmc_setup(&x, mdc, &geom, &xd, &cur_buf, stack, pre_alloc, pre_base, pre_stride, wsrc, mask, bsize, col_min,
+               col_max, row_min, row_max, mv_joint, mv_cost0, mv_cost1, errorperbit, approx_inter_rate, 8, 1);
+    Mv           best = {{(int16_t)best_x, (int16_t)best_y}};
+    Mv           rmv  = {{(int16_t)ref_mv_x, (int16_t)ref_mv_y}};
+    int          dis  = 0;
+    unsigned int sse  = 0;
+    unsigned int r    = (unsigned)svt_av1_find_best_obmc_sub_pixel_tree_up(mdc,
+                                                                       &x,
+                                                                       NULL,
+                                                                       0,
+                                                                       0,
+                                                                       &best,
+                                                                       &rmv,
+                                                                       allow_hp,
+                                                                       errorperbit,
+                                                                       &svt_aom_mefn_ptr[bsize],
+                                                                       forced_stop,
+                                                                       iters_per_step,
+                                                                       x.nmv_vec_cost,
+                                                                       x.mv_cost_stack,
+                                                                       &dis,
+                                                                       &sse,
+                                                                       0,
+                                                                       use_accurate_subpel_search);
+    *out_x          = best.x;
+    *out_y          = best.y;
+    *out_distortion = dis;
+    *out_sse        = sse;
+    free(mdc);
+    return r;
+}
+
+/* The RTCD-dispatched OBMC kernels — what the real encoder runs on THIS host.
+ * A test can assert they agree with the `_c` spellings the port transcribes;
+ * when they do not, the port is still faithful to the C SOURCE and the
+ * divergence belongs in docs/SUSPECTED-C-BUGS.md. `which` matches
+ * ref_obmc_kernel: 0 = osdf, 1 = ovf, 2 = osvf. */
+unsigned int ref_obmc_kernel_rtcd(int which, int bsize, const uint8_t* pre, int pre_stride, int xoffset, int yoffset,
+                                  const int32_t* wsrc, const int32_t* mask, unsigned int* sse) {
+    obmc_ensure_init();
+    switch (which) {
+    case 0: return svt_aom_mefn_ptr[bsize].osdf(pre, pre_stride, wsrc, mask);
+    case 1: return svt_aom_mefn_ptr[bsize].ovf(pre, pre_stride, wsrc, mask, sse);
+    default: return svt_aom_mefn_ptr[bsize].osvf(pre, pre_stride, xoffset, yoffset, wsrc, mask, sse);
+    }
+}

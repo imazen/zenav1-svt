@@ -18,6 +18,10 @@
 //!   blocks are two C implementations of the same accumulation; they must
 //!   agree. That catches an offset or MV-packing error without any oracle.
 
+// `MeContext` has ~60 fields and each test sets one or two of them; spelling
+// `..Default::default()` at that size buries the one line that matters.
+#![allow(clippy::field_reassign_with_default)]
+
 use svtav1_cref::inter_me as cref;
 use svtav1_encoder::inter_me::candidates::{
     compute_distortion, construct_me_candidate_array, construct_me_candidate_array_mrp_off,

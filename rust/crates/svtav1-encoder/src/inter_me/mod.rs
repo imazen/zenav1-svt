@@ -26,6 +26,7 @@
 //! | [`candidates`] | motion_estimation.c:2335-2786 |
 //! | [`b64`] | motion_estimation.c:2788-2964 (the entry point) |
 //! | [`tables`] | `tab8x8`, `z_to_raster`, the two ME index maps |
+//! | [`obmc_search`] | av1me.c's OBMC half + its four C_DEFAULT kernels |
 //!
 //! # Coverage against the C surface
 //!
@@ -39,13 +40,15 @@
 //!   fields and this port carries exactly those five; the rest belong to
 //!   `temporal_filtering.c`.
 //!
-//! `av1me.c` is NOT ported here: its IntraBC half already lives in
+//! `av1me.c` is covered across two modules. Its IntraBC half already lived in
 //! [`crate::intrabc`] (`svt_av1_full_pixel_search`, `svt_av1_diamond_search_sad_c`,
 //! `exhaustive_mesh_search`, `svt_av1_refining_search_sad`, `full_pixel_diamond`,
 //! `intrabc_full_pixel_exhaustive`, `svt_av1_set_mv_search_range`,
 //! `svt_av1_init3smotion_compensation`, `svt_av1_get_mvpred_var`,
-//! `svt_aom_mv_err_cost{,_light}`, `mvsad_err_cost{,_light}`), and its OBMC half
-//! is unported — see the crate-level chunk notes.
+//! `svt_aom_mv_err_cost{,_light}`, `mvsad_err_cost{,_light}`); its OBMC half is
+//! [`obmc_search`]. Between them, the only thing in `av1me.c` with no Rust
+//! counterpart is `init_fn_ptr` — a table of C function pointers whose Rust
+//! equivalent is direct calls, and `av1_get_filter`, which IS ported.
 //!
 //! # Evidence
 //!
@@ -60,6 +63,13 @@
 //! `svt_sad_loop_kernel_c`, `svt_nxm_sad_kernel_helper_c`,
 //! `svt_aom_get_scaled_picture_distance`, `hme_level_2` and `check_00_center`.
 //!
+//! [`obmc_search`] adds eight more exported oracles, gated by
+//! `tests/c_parity_obmc_search.rs`: the `obmc_sad` / `obmc_variance` /
+//! `obmc_sub_pixel_variance` families, `svt_aom_convolve8_{horiz,vert}_c`,
+//! `svt_aom_upsampled_pred_c`, `svt_av1_obmc_full_pixel_search` and
+//! `svt_av1_find_best_obmc_sub_pixel_tree_up` (the last two with a real
+//! `IntraBcContext` + `ModeDecisionContext` built in the shim).
+//!
 //! Everything else in `motion_estimation.c` is `static` and has **no** exported
 //! symbol, so it can only reach **tier 4** — hand-derived vectors traced
 //! against the C source. Those tests say so in their own doc comments. A tier-4
@@ -72,6 +82,7 @@ pub mod candidates;
 pub mod context;
 pub mod hme;
 pub mod integer;
+pub mod obmc_search;
 pub mod sad;
 pub mod tables;
 
